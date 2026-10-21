@@ -110,6 +110,13 @@ export interface MetricsHealthThresholds {
    *  ser avaliado — gate mecânico, não recomendação: abaixo disso, o motivo
    *  do skip é registrado, nunca um "0 findings" silencioso. */
   MIN_DIAS_SERIE: number;
+  /** Dias com valor numérico mínimos que precisam SOBRAR na baseline depois
+   *  de `baselineExcluida` tirar as janelas excluídas (#10653). O gate de
+   *  `MIN_DIAS_SERIE` conta a série inteira; sem este piso, uma janela paga
+   *  cobrindo quase toda a série deixava a queda ser decidida contra a média
+   *  de 1-2 dias isolados. Só se aplica quando a exclusão de fato removeu
+   *  algum dia — série sem exclusão segue governada só por `MIN_DIAS_SERIE`. */
+  MIN_DIAS_BASELINE: number;
   /** Fração máxima (0..1) de `MetaStatus.dias_indeterminados` sobre os dias
    *  da janela antes de virar sinal `indeterminado-alto`. */
   INDETERMINADO_MAX_FRACAO: number;
@@ -133,6 +140,11 @@ export const METRICS_HEALTH_THRESHOLDS: MetricsHealthThresholds = {
   QUEDA_MIN_ABS: { contagem: 2, razao: 0.05, brl: 5 },
   FRESCOR_MAX_DIAS: 2,
   MIN_DIAS_SERIE: 14,
+  // #10653: 5 dias úteis de regime orgânico. Não `MIN_DIAS_SERIE - 1` (=13):
+  // a série de queda tem exatamente 14 dias (`check-metrics-health.ts`), então
+  // esse piso pularia QUALQUER sobreposição com janela paga e neutralizaria a
+  // exclusão do #10647 por 13 dias depois de todo teste.
+  MIN_DIAS_BASELINE: 5,
   INDETERMINADO_MAX_FRACAO: 0.3,
 };
 
@@ -357,6 +369,18 @@ export function evaluateQueda(
       skipMotivo:
         `"${def.id}": todos os ${anterioresPontos.length} dia(s) anteriores ao atual caem em janela excluída da ` +
         `baseline (${excluidas.map((j) => `${j.de}..${j.ate} ${j.motivo}`).join("; ")}) — sinal de queda não avaliado`,
+    };
+  }
+  // #10653: o gate de MIN_DIAS_SERIE acima contou a série inteira — depois de
+  // tirar a janela excluída, a baseline pode ter sobrado com 1-2 dias.
+  if (excluidosDaBaseline > 0 && anteriores.length < thresholds.MIN_DIAS_BASELINE) {
+    return {
+      finding: null,
+      skipMotivo:
+        `"${def.id}": baseline curta depois de excluir ${excluidosDaBaseline} dia(s) de janela excluída da baseline ` +
+        `(${anteriores.length}/${thresholds.MIN_DIAS_BASELINE} dias restantes; ` +
+        `${excluidas.map((j) => `${j.de}..${j.ate} ${j.motivo}`).join("; ")}) — sinal de queda não avaliado, ` +
+        "gate mecânico, não recomendação",
     };
   }
   const baseline = anteriores.reduce((a, b) => a + b, 0) / anteriores.length;

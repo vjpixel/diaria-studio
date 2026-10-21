@@ -577,6 +577,41 @@ describe("evaluateQueda — baselineExcluida (#10647)", () => {
     assert.match(skipMotivo!, /janela excluída da baseline/);
   });
 
+  it("REGRESSÃO #10653: janela paga cobrindo quase tudo deixa 2 dias na baseline — skip, nunca queda contra 2 dias", () => {
+    // Série de 14 dias passa o gate de MIN_DIAS_SERIE, mas a janela paga
+    // (dias 0-10) só deixa os dias 11-12 na baseline. Antes do fix, a queda
+    // era decidida contra a média desses 2 dias (10 → 0 = alarme).
+    const serie = dias.map((d, i) => exato(d, i < 11 ? 25 : i === dias.length - 1 ? 0 : 10));
+    const quaseTudo = { de: dias[0], ate: dias[10], motivo: "(teste)" };
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, serie, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [quaseTudo],
+    });
+    assert.equal(finding, null);
+    assert.match(skipMotivo!, /baseline curta/);
+    assert.match(skipMotivo!, /2\/5 dias restantes/);
+  });
+
+  it("#10653: baseline restante exatamente no piso MIN_DIAS_BASELINE ainda é avaliada", () => {
+    // Janela 0-7 → baseline 8-12 (5 dias = piso) — avalia e alarma a queda real.
+    const serie = dias.map((d, i) => exato(d, i < 8 ? 25 : i === dias.length - 1 ? 0 : 10));
+    const janela = { de: dias[0], ate: dias[7], motivo: "(teste)" };
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, serie, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [janela],
+    });
+    assert.equal(skipMotivo, null);
+    assert.ok(finding);
+    assert.match(finding!.motivo, /baseline=10\.00/);
+  });
+
+  it("#10653: sem exclusão, o piso de baseline não se aplica (caso normal inalterado)", () => {
+    const serie = dias.map((d, i) => exato(d, i === dias.length - 1 ? 0 : 10));
+    const { finding } = evaluateQueda(CONTAGEM_DEF, serie, dias, {
+      ...METRICS_HEALTH_THRESHOLDS,
+      MIN_DIAS_BASELINE: 100,
+    });
+    assert.ok(finding, "série sem janela excluída segue governada só por MIN_DIAS_SERIE");
+  });
+
   it("o ponto atual nunca é removido pela exclusão (só a baseline)", () => {
     const serie = dias.map((d, i) => exato(d, i === dias.length - 1 ? 0 : 10));
     const cobreAtual = { de: dias[13], ate: dias[13], motivo: "(teste)" };
