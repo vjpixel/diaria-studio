@@ -12,7 +12,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -25,6 +25,7 @@ import {
   loadGhAliases,
   mergeTargetHints,
   parseGhAliasesYaml,
+  parseShellCommands,
 } from "../.claude/hooks/lib/gh-pr-merge-command.mjs";
 import * as targetRepo from "../.claude/hooks/lib/gh-target-repo.mjs";
 
@@ -751,4 +752,86 @@ describe("#10689 — hooks: coordenadora, sem coordenadora e concessão no modo 
       assert.equal(target.details.grantRepo, null);
     });
   }
+});
+
+// ─── Comandos documentados de resolução de threads (#10689 H) ────────────
+// Com o item H, `gh api graphql` cuja query tem um `$` que o SHELL expande é
+// lido como merge (modo estrito). Os comandos que as rodadas copiam das
+// skills/context têm que usar a query literal entre aspas simples e passar
+// valores como variável do GraphQL (`-f tid="$tid"`), senão o coordenador
+// cai no modo estrito (lock de todo repo) só pra resolver uma review thread.
+
+const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const SCAN_DIRS = [".claude/skills", ".claude/agents", "context", "hermes"];
+const SCAN_EXT = /\.(md|sh)$/;
+
+function scanFiles(): string[] {
+  const out: string[] = [];
+  for (const dir of SCAN_DIRS) {
+    const abs = join(REPO_ROOT, dir);
+    if (!existsSync(abs)) continue;
+    for (const rel of readdirSync(abs, { recursive: true, encoding: "utf8" })) {
+      if (SCAN_EXT.test(rel) && !rel.includes("node_modules")) out.push(join(abs, rel));
+    }
+  }
+  return out;
+}
+
+/** Linhas com `gh api graphql` cujo campo `query` tem expansão do shell (`$` fora de aspas simples, `$(…)`). */
+function shellExpandedGraphqlQueries(text: string): string[] {
+  const hits: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const at = line.indexOf("gh api graphql");
+    if (at === -1) continue;
+    for (const words of parseShellCommands(line.slice(at))) {
+      for (let k = 0; k < words.length; k++) {
+        const w = words[k];
+        let field: string | null = null;
+        if (["-f", "-F", "--field", "--raw-field"].includes(w)) field = words[k + 1] ?? "";
+        else if (/^-[fF]query=/.test(w)) field = w.slice(2);
+        else if (/^--(?:raw-)?field=query=/.test(w)) field = w.slice(w.indexOf("=") + 1);
+        if (field !== null && field.startsWith("query=") && /[\u0000-\u0004]/.test(field)) hits.push(line.trim());
+      }
+    }
+  }
+  return hits;
+}
+
+describe("#10689 H — forma documentada de resolver review thread", () => {
+  const DOC_FORMS = [
+    `RESULT=$(gh api graphql -f query='mutation($tid: ID!) { resolveReviewThread(input:{threadId:$tid}){ thread{ id isResolved } } }' -f tid="$tid")`,
+    `RESP=$(gh api graphql -f query='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }')`,
+    `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "ID"}) { thread { isResolved } } }'`,
+  ];
+  for (const cmd of DOC_FORMS) {
+    it(`não é merge: ${JSON.stringify(cmd)}`, () => {
+      assert.equal(isGhPrMergeCommand(cmd, opts), false, cmd);
+    });
+  }
+
+  it("a forma antiga (threadId/query interpolados pelo shell) é lida como merge — por isso foi migrada", () => {
+    const old = `RESULT=$(gh api graphql -f query="mutation { resolveReviewThread(input:{threadId:\\"$tid\\"}){ thread{ id isResolved } } }")`;
+    assert.equal(isGhPrMergeCommand(old, opts), true);
+    assert.deepEqual(shellExpandedGraphqlQueries(old), [old]);
+    assert.equal(shellExpandedGraphqlQueries('RESP=$(gh api graphql -f query="$QUERY")').length, 1);
+    assert.deepEqual(shellExpandedGraphqlQueries(DOC_FORMS.join("\n")), []);
+  });
+
+  it("o loop de resolução do overnight usa a forma nova e não é merge", () => {
+    const skill = readFileSync(join(REPO_ROOT, ".claude/skills/diaria-overnight/SKILL.md"), "utf8");
+    const lines = skill.split(/\r?\n/).filter((l) => l.includes("gh api graphql -f query="));
+    assert.ok(lines.length >= 3, "esperava as queries de threads e o resolveReviewThread no SKILL.md");
+    assert.ok(lines.some((l) => l.includes("resolveReviewThread(input:{threadId:$tid})")));
+    for (const l of lines) assert.equal(isGhPrMergeCommand(l.trim(), opts), false, l);
+  });
+
+  it("varredura: nenhum `gh api graphql` com $ de shell no texto da query em skills/agents/context/hermes", () => {
+    const offenders: string[] = [];
+    for (const file of scanFiles()) {
+      for (const hit of shellExpandedGraphqlQueries(readFileSync(file, "utf8"))) {
+        offenders.push(`${file.slice(REPO_ROOT.length)}: ${hit}`);
+      }
+    }
+    assert.deepEqual(offenders, []);
+  });
 });

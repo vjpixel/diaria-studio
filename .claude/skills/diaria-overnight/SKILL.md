@@ -468,8 +468,10 @@ O prompt do subagente inclui, obrigatoriamente:
 
    **Resolução das review threads** (passo obrigatório entre "fixer concluiu" e "gate determinístico"): após o fixer aplicar/decidir sobre os findings do self-review (#2038), o coordenador resolve as threads via GraphQL. **Guard de paginação (>100 threads — #2222)**: antes de iniciar o loop de resolução, a query já inclui `pageInfo { hasNextPage endCursor }`. Se `hasNextPage == true`, **abortar o gate automático imediatamente** (converter PR pra draft + comentar na issue explicando que >100 threads exigem resolução manual pelo editor) — não tentar paginar durante a resolução autônoma; o risco de false-green em páginas não percorridas supera qualquer conveniência. (a) Coletar resposta com guard de erro e de paginação, e extrair IDs não-resolvidas:
      ```bash
-     QUERY='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }'
-     RESP=$(gh api graphql -f query="$QUERY")
+     # Query LITERAL entre aspas simples, nunca guardada numa variável do shell (#10689 H): qualquer `$` que o
+     # shell expande dentro do texto da query faz o guard do #5716 ler o comando como merge em modo
+     # estrito. Valores variáveis vão como variável do GraphQL (`-f nome=valor`), nunca interpolados.
+     RESP=$(gh api graphql -f query='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }')
      # Guard de erro: se a query falhou (rede/auth/campo ausente), abortar — nunca tratar erro como 0 threads
      if ! echo "$RESP" | jq -e '.data.repository.pullRequest.reviewThreads' > /dev/null 2>&1; then
        echo "ABORT: gh api graphql falhou ou retornou erro — tratar como CI vermelho/pendente, não como 0 threads."
@@ -487,7 +489,7 @@ O prompt do subagente inclui, obrigatoriamente:
      FORBIDDEN_TIDS=""
      for tid in $TIDS; do
        tid=$(echo $tid | tr -d "'")
-       RESULT=$(gh api graphql -f query="mutation { resolveReviewThread(input:{threadId:\"$tid\"}){ thread{ id isResolved } } }")
+       RESULT=$(gh api graphql -f query='mutation($tid: ID!) { resolveReviewThread(input:{threadId:$tid}){ thread{ id isResolved } } }' -f tid="$tid")
        # Detectar FORBIDDEN pelo campo estruturado .errors[].type — nunca por grep no body inteiro
        if echo "$RESULT" | jq -e '[.errors[]? | select(.type == "FORBIDDEN")] | length > 0' > /dev/null 2>&1; then
          FORBIDDEN_TIDS="$FORBIDDEN_TIDS $tid"
@@ -501,7 +503,7 @@ O prompt do subagente inclui, obrigatoriamente:
    **Gate determinístico** — **2 condições independentes, ambas obrigatórias** (#2210, #2222): (1) `npx tsx scripts/check-pr-checks-gate.ts --pr {N}` deve sair com `exit 0` (cobre fail/pending/skipping de uma vez — ver `scripts/lib/pr-checks-gate.ts`; substitui `gh pr checks {N} --json bucket --jq '...'`, que não roda no `gh` 2.46.0 do `300`, achado #6225: `--json` só chegou em `gh pr checks` numa versão posterior, e a falha do comando dentro de `$(...)` vira string vazia — fácil de ler por engano como "0 checks reprovados". O script lê `gh pr view --json statusCheckRollup` e nunca confunde "comando falhou" com "zero achados": `exit 1` = check reprovado, `exit 2` = pendente/sem checks registrados ainda, `exit 3` = erro de comando/payload malformado, `exit 4` = `blocked_by_conflict` (#6768 — PR `CONFLICTING` com a base e nenhum check chegou a começar; o GitHub não computa merge ref pra rodar `pull_request` nesse SHA, então esperar não resolve — merge/rebase com a base primeiro, não repetir o poll até o timeout de 30 min do #2381) — só `exit 0` autoriza); (2) número de review threads não-resolvidas **excluindo as FORBIDDEN** deve ser `0` — fazer uma **nova query GraphQL pós-loop** para capturar o estado real após a etapa de resolução (não reutilizar `$RESP` do pré-loop, que seria stale e contaria threads já resolvidas):
      ```bash
      # Query fresca após o loop de resolução — $RESP do pré-loop está stale
-     RESP2=$(gh api graphql -f query="$QUERY")
+     RESP2=$(gh api graphql -f query='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }')
      if ! echo "$RESP2" | jq -e '.data.repository.pullRequest.reviewThreads' > /dev/null 2>&1; then
        echo "ABORT: query pós-loop falhou — tratar como CI vermelho/pendente."
        exit 1
