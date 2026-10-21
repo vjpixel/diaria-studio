@@ -117,7 +117,10 @@ import {
   evaluateMetaSinal,
   evaluateQueda,
   evaluateRegistryMudo,
+  closedPaidAcquisitionWindows,
+  serieQuedaSemDiaCorrente,
   metricsHealthFingerprint,
+  type PaidTestWindowSource,
   type MedicaoDia,
   type MetricsHealthFinding,
   type MetricsHealthThresholds,
@@ -132,6 +135,7 @@ import {
   type AlarmIssuesState,
   type AlarmIssueResult,
 } from "./lib/alarm-issues.ts";
+import { assertValidRunState } from "./lib/ads-test-run-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
@@ -176,6 +180,40 @@ const FRESCOR_MAX_DIAS_OVERRIDE: Partial<Record<string, number>> = {
   "base-ativa": 9,
   "leitor-v1": 9,
 };
+
+/** Pré-registros de testes de aquisição paga (#10647) — a janela de cada um
+ *  (`d0`..`fim_janela`) sai da baseline do sinal de queda das métricas de
+ *  aquisição depois de encerrada. Teste novo = nova entrada aqui (o
+ *  `run-state.json` é gravado por `scripts/ads-test-d0.ts`). */
+const PAID_TEST_RUN_STATES: ReadonlyArray<{ rotulo: string; path: string }> = [
+  { rotulo: "teste 2608", path: resolve(DATA_DIR, "aquisicao", "teste-2608", "run-state.json") },
+];
+
+/**
+ * Lê os `run-state.json` dos testes pagos (#10647). Fail-soft por arquivo:
+ * ausente = teste nunca registrado nesta máquina (sem aviso); inválido =
+ * aviso explícito no log e a janela NÃO é excluída (baseline volta ao
+ * comportamento anterior — nunca uma janela inventada).
+ */
+export function loadPaidTestWindowSources(
+  entries: ReadonlyArray<{ rotulo: string; path: string }> = PAID_TEST_RUN_STATES,
+): { sources: PaidTestWindowSource[]; avisos: string[] } {
+  const sources: PaidTestWindowSource[] = [];
+  const avisos: string[] = [];
+  for (const { rotulo, path } of entries) {
+    if (!existsSync(path)) continue;
+    try {
+      const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+      assertValidRunState(raw);
+      sources.push({ rotulo, d0: raw.d0, fim_janela: raw.fim_janela });
+    } catch (err) {
+      avisos.push(
+        `${rotulo}: run-state inválido em ${path} (${(err as Error).message}) — janela paga NÃO excluída da baseline de queda`,
+      );
+    }
+  }
+  return { sources, avisos };
+}
 
 function defaultCapturaLogPath(dbPath: string): string {
   return resolve(dirname(dbPath), "..", "metrics", "captura-log.jsonl");
@@ -709,6 +747,11 @@ async function main(): Promise<void> {
   }
 
   // ── Sinais 1-2 por métrica avaliada ───────────────────────────────────
+  // #10647: janelas de teste pago encerradas saem da baseline de queda das
+  // métricas de aquisição (o platô pago não é o regime orgânico).
+  const { sources: paidSources, avisos: paidAvisos } = loadPaidTestWindowSources();
+  skipMotivos.push(...paidAvisos);
+  const baselineExcluidaAquisicao = closedPaidAcquisitionWindows(paidSources, hoje);
   for (const id of WIRED_METRIC_IDS) {
     const medicoes = seriesById.get(id);
     if (!medicoes) continue;
@@ -721,7 +764,14 @@ async function main(): Promise<void> {
     // `doi-confirmacao-dia`, que documenta a MESMA dependência de F2 em
     // registry.ts); `base-ativa`/`leitor-v1` usam a cobertura de snapshot.
     const diasComInsumo = id === "base-ativa" || id === "leitor-v1" ? diasComSnapshot : diasComColetaCapturaLog;
-    const { finding: quedaFinding, skipMotivo } = evaluateQueda(def, medicoes, diasComInsumo, thresholds);
+    // #10647: aquisição compara o último dia COMPLETO (o corrente ainda não
+    // foi ingerido — ver `serieQuedaSemDiaCorrente`) contra uma baseline sem
+    // janela paga encerrada. As demais métricas seguem como antes.
+    const { finding: quedaFinding, skipMotivo } = isAcquisition
+      ? evaluateQueda(def, serieQuedaSemDiaCorrente(medicoes, hoje), diasComInsumo, thresholds, {
+          baselineExcluida: baselineExcluidaAquisicao,
+        })
+      : evaluateQueda(def, medicoes, diasComInsumo, thresholds);
     if (quedaFinding) findings.push(quedaFinding);
     if (skipMotivo) skipMotivos.push(skipMotivo);
 

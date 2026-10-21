@@ -163,6 +163,12 @@ export interface FollowupRunRecord {
    *  `counts[etapa].adiado_teto`), então isto só sobe pela defesa em
    *  profundidade pós-checagem — que não deveria disparar. */
   over_cap: number;
+  /** #10652: etapas cujo excedente do teto não cabe na janela
+   *  (`eligible > max_recipients_per_lot × grace_days`, ver
+   *  `capWindowOverflows`) — gente que vai virar `vencida` sem receber.
+   *  Conta como rodada falha (alarme de continuidade + exit 1). Opcional:
+   *  registros anteriores não têm o campo. */
+  cap_window_overflow?: number;
   /** Consultas ao Kit (listagem, leitura singular) que falharam. */
   lookups_failed: number;
   /** #10628: lotes que seguem sem confirmação depois da releitura do início do
@@ -594,6 +600,38 @@ export function splitDueByCap(
   return { within: due.filter((d) => keep.has(d)), deferred };
 }
 
+/** Etapa cujo excedente do teto não cabe na janela (#10652). */
+export interface CapWindowOverflow {
+  kind: FollowupStepKind;
+  eligible: number;
+  /** `cap × graceDays` — o máximo que a janela comporta com 1 rodada/dia. */
+  capacity: number;
+  /** Quantos, no mínimo, vão virar `vencida` sem receber (`eligible − capacity`). */
+  projected_vencidas: number;
+}
+
+/**
+ * @pure — #10652: depois do #10631 o excedente do teto (`adiado_teto`) não é
+ * falha, porque volta a ser devido na rodada seguinte. Mas quando a etapa tem
+ * mais elegíveis do que a janela comporta (`eligible > cap × graceDays`, com
+ * uma rodada por dia), o resto vira `vencida` sem nunca receber — e nada
+ * avisava. Devolve as etapas nessa situação.
+ *
+ * `form_lembrete` fica de fora: o lembrete não tem janela (repete a cada
+ * `form_reminder_days`), então o excedente só atrasa, nunca vence.
+ *
+ * É um piso, não uma projeção exata: quem entrou na janela há dias tem menos
+ * rodadas pela frente que `graceDays`, e chegam elegíveis novos todo dia.
+ * Com `eligible <= cap × graceDays` ainda pode vencer alguém nessas bordas —
+ * o alarme cobre o caso grande (coorte importada inteira no mesmo D+N).
+ */
+export function capWindowOverflows(deferred: readonly CapDeferral[], cap: number, graceDays: number): CapWindowOverflow[] {
+  const capacity = cap * graceDays;
+  return deferred
+    .filter((d) => d.kind !== "form_lembrete" && d.eligible > capacity)
+    .map((d) => ({ kind: d.kind, eligible: d.eligible, capacity, projected_vencidas: d.eligible - capacity }));
+}
+
 export interface LiveSubscriberCheck {
   state: string | null;
   /** Valor de `apoio_nivel` (`""` = não apoia). */
@@ -849,6 +887,8 @@ export function idsInUnresolvedFollowupLots(lots: Readonly<Record<string, Follow
 export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
   if (run.aborted === true) return true;
   if (run.lots_failed > 0 || run.over_cap > 0 || run.lookups_failed > 0 || (run.lots_unresolved ?? 0) > 0) return true;
+  // #10652: excedente do teto que não cabe na janela vira `vencida` em silêncio.
+  if ((run.cap_window_overflow ?? 0) > 0) return true;
   return run.form_blocked?.motivo === "respostas_indisponiveis";
 }
 
