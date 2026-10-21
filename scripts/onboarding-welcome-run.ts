@@ -102,7 +102,8 @@ import {
   buildBackendSwitchNote,
   BOOTSTRAP_GAP_COUNT_UNKNOWN,
   updateZeroDetectionStreak,
-  updateEmail3FailureStreak,
+  nextEmail3FailureStreak,
+  hasReachableBrevoEmail3,
   email3FailureAlarm,
   zeroDetectionAlarm,
   filterBrevoPlanForKitCutover,
@@ -1373,17 +1374,30 @@ async function main(): Promise<number | void> {
     }
   }
 
-  // #10603: streak de falha do e-mail 3 (só atualiza em rodada que tentou).
-  if (email3Ok || email3Failed != null) {
-    store.consecutive_email3_failures = updateEmail3FailureStreak(
-      store.consecutive_email3_failures ?? 0,
-      email3Failed != null,
-    );
+  // #10603: streak de falha do e-mail 3 — atualiza em rodada que tentou.
+  // #10678: rodada SEM tentativa zera o streak quando não sobra e-mail 3 da
+  // Brevo alcançável (escadas esgotadas depois do flip pro Kit) — senão ele
+  // congelava em ≥2 e a issue do `EMAIL3_CHECK` nunca fechava. Com e-mail 3
+  // Brevo ainda pendente, mantém: a próxima tentativa decide.
+  const prevEmail3Streak = store.consecutive_email3_failures ?? 0;
+  const email3Outcome = email3Failed != null ? "failed" : email3Ok ? "ok" : "no_attempt";
+  if (email3Outcome !== "no_attempt") {
+    store.consecutive_email3_failures = nextEmail3FailureStreak(prevEmail3Streak, email3Outcome, true);
     store.last_email3_error = email3Failed;
     const email3Alarm = email3FailureAlarm(store.consecutive_email3_failures, email3Failed);
     if (email3Alarm) {
       summary.notes.push(email3Alarm);
       process.stderr.write(`[onboarding] ${email3Alarm}\n`);
+    }
+  } else if (prevEmail3Streak > 0) {
+    const stillPossible = hasReachableBrevoEmail3(Object.values(store.entries), kitTransportEnabled);
+    const next = nextEmail3FailureStreak(prevEmail3Streak, "no_attempt", stillPossible);
+    if (next !== prevEmail3Streak) {
+      store.consecutive_email3_failures = next;
+      store.last_email3_error = null;
+      summary.notes.push(
+        `streak de falha do e-mail 3 zerado (${prevEmail3Streak} → 0): nenhum e-mail 3 da Brevo pendente — sem tentativa possível (#10678)`,
+      );
     }
   }
 
