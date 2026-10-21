@@ -43,7 +43,7 @@ O review recebe o diretório do binário `claude` à frente do `PATH`. Sob syste
 | 2 | Overnight falhou. O exit original do `claude` fica no log | `failed` |
 | 1 | Binário `claude` não encontrado; nada rodou | `failed` |
 
-Log da task: `data/overnight/.nightly-chain.log`. JSON de saída do `claude --print` do overnight: `data/overnight/.nightly-chain-last-overnight.json`. Transcript do review: `data/continuo/last-daily-review-output.txt`, que é o mesmo arquivo de antes.
+Log da task: `data/overnight/.nightly-chain.log` (gravado pelo task-runner só quando o processo termina). Log incremental, linha a linha na hora em que é emitida: `data/overnight/.nightly-chain.live.log` (#10672) — é ele que sobra quando a cadeia morre no meio (reboot, OOM, `systemctl stop`), com o início e o veredito do review já gravados antes de o overnight subir. JSON de saída do `claude --print` do overnight: `data/overnight/.nightly-chain-last-overnight.json`. Transcript do review: `data/continuo/last-daily-review-output.txt`, que é o mesmo arquivo de antes.
 
 ## Armar no `300` (passos manuais do editor)
 
