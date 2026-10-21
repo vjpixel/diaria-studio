@@ -46,10 +46,12 @@
  *   `formulario-lembrete.md`) mais a URL do formulário destravam a de
  *   formulário. Arquivo ausente, marcador `ONBOARDING-CORPO-PENDENTE`, assunto
  *   ou corpo faltando: bloqueio EXPLÍCITO com motivo, nunca erro silencioso.
- * - **Teto de lote.** Uma etapa com mais elegíveis que `max_recipients_per_lot`
- *   não sai na rodada (vira falha visível, alarme). Protege contra a coorte
+ * - **Teto de lote, em lotes parciais (#10631).** Uma etapa com mais elegíveis
+ *   que `max_recipients_per_lot` manda até o teto na rodada (cadastro mais
+ *   antigo primeiro) e deixa o restante para os dias seguintes, dentro da
+ *   janela da etapa (`adiado_teto`, não é falha). Protege contra a coorte
  *   migrada em bloco carregar `created_at` da importação e cair inteira no
- *   mesmo D+N.
+ *   mesmo D+N sem barrar a etapa para todo mundo. Ver `splitDueByCap`.
  */
 
 import type { OnboardingEntry } from "./onboarding-store.ts";
@@ -156,7 +158,10 @@ export interface FollowupRunRecord {
   form_blocked: { motivo: FollowupBlockReason; detalhe: string } | null;
   lots_created: number;
   lots_failed: number;
-  /** Etapas que não saíram por passar do teto de lote (`max_recipients_per_lot`). */
+  /** Etapas que não saíram por passar do teto de lote (`max_recipients_per_lot`).
+   *  Desde o #10631 o teto corta em lote parcial (o excedente aparece em
+   *  `counts[etapa].adiado_teto`), então isto só sobe pela defesa em
+   *  profundidade pós-checagem — que não deveria disparar. */
   over_cap: number;
   /** Consultas ao Kit (listagem, leitura singular) que falharam. */
   lookups_failed: number;
@@ -522,27 +527,71 @@ export function planFollowup(opts: {
   return { due, counts };
 }
 
-/** Resultado da leitura singular no Kit perto do envio. `null` = falhou. */
+/** Por etapa, quantos elegíveis havia e quantos ficaram para os dias seguintes. */
+export interface CapDeferral {
+  kind: FollowupStepKind;
+  eligible: number;
+  deferred: number;
+}
+
 /**
  * @pure — aplica o teto de lote POR ETAPA sobre os devidos ANTES da checagem
  * singular no Kit (review da PR #10623): uma coorte inteira caindo no mesmo
  * D+N (ex.: base migrada com `created_at` da importação) não pode gerar
- * milhares de `GET /subscribers/{id}` só pra ser descartada por
- * `acima_do_teto` depois. A etapa acima do teto sai INTEIRA (nunca um corte
- * parcial arbitrário) — mesma semântica do teto pós-checagem.
+ * milhares de `GET /subscribers/{id}`.
+ *
+ * **Lote parcial até o teto (#10631, decisão do editor 21/10/2026).** Etapa
+ * com mais elegíveis que `cap` NÃO é barrada inteira: saem os primeiros `cap`
+ * e o restante fica para as rodadas seguintes (motivo `adiado_teto`, não é
+ * falha). Vale igual para todas as etapas (apoio D+30/90/180/360 e
+ * formulário), porque o defeito era o mesmo em todas. O excedente não ganha
+ * registro nenhum no store, então continua devido no dia seguinte enquanto
+ * estiver dentro da janela `[D+N, D+N+grace)`; quem recebeu ganha o registro
+ * em `people[id].sends` e nunca volta a ser devido (sem envio duplicado).
+ * Excedente que não couber até o fim da janela vira `vencida` como qualquer
+ * outra pessoa fora da janela — a ordenação abaixo põe primeiro quem está mais
+ * perto disso.
+ *
+ * **Ordem determinística** dentro de cada etapa: `orderSec(d)` crescente (o
+ * executor passa o `created_at` do Kit para as etapas de apoio e a âncora da
+ * escada para o formulário — o cadastro mais ANTIGO sai primeiro, porque a
+ * janela dele fecha antes), `null` por último, desempate por
+ * `kit_subscriber_id` crescente. A ordem relativa entre etapas diferentes em
+ * `within` segue a de `due`.
  */
 export function splitDueByCap(
   due: readonly FollowupDue[],
   cap: number,
-): { within: FollowupDue[]; overCap: { kind: FollowupStepKind; eligible: number }[] } {
-  const byKind = new Map<FollowupStepKind, number>();
-  for (const d of due) byKind.set(d.kind, (byKind.get(d.kind) ?? 0) + 1);
-  const over = new Set<FollowupStepKind>();
-  for (const [kind, n] of byKind) if (n > cap) over.add(kind);
-  return {
-    within: due.filter((d) => !over.has(d.kind)),
-    overCap: ALL_FOLLOWUP_STEPS.filter((k) => over.has(k)).map((kind) => ({ kind, eligible: byKind.get(kind)! })),
-  };
+  orderSec: (d: FollowupDue) => number | null = () => null,
+): { within: FollowupDue[]; deferred: CapDeferral[] } {
+  const byKind = new Map<FollowupStepKind, FollowupDue[]>();
+  for (const d of due) {
+    const list = byKind.get(d.kind);
+    if (list) list.push(d);
+    else byKind.set(d.kind, [d]);
+  }
+  const keep = new Set<FollowupDue>();
+  const deferred: CapDeferral[] = [];
+  for (const kind of ALL_FOLLOWUP_STEPS) {
+    const list = byKind.get(kind);
+    if (!list) continue;
+    if (list.length <= cap) {
+      for (const d of list) keep.add(d);
+      continue;
+    }
+    const keyed = list.map((d) => ({ d, sec: orderSec(d) }));
+    keyed.sort((a, b) => {
+      if (a.sec !== b.sec) {
+        if (a.sec == null) return 1;
+        if (b.sec == null) return -1;
+        return a.sec - b.sec;
+      }
+      return a.d.kit_subscriber_id - b.d.kit_subscriber_id;
+    });
+    for (const { d } of keyed.slice(0, cap)) keep.add(d);
+    deferred.push({ kind, eligible: list.length, deferred: list.length - cap });
+  }
+  return { within: due.filter((d) => keep.has(d)), deferred };
 }
 
 export interface LiveSubscriberCheck {
