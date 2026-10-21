@@ -271,8 +271,8 @@ describe("integração com diaria-subscribers-db", () => {
     const db = freshDb();
     const rosterId = ensureSubscriber(db, "kit", "123", "pessoa@exemplo.com");
     const first = ingestKitWebhookEvents(db, [ev(), ev({ key: "ev:123:2026-10-20T08:00:00.000Z:click:cd", type: "click", url: "https://x", received_at: "2026-10-20T08:00:00.000Z" })]);
-    assert.deepEqual(first, { newEvents: 2, alreadyKnown: 0 });
-    assert.deepEqual(ingestKitWebhookEvents(db, [ev()]), { newEvents: 0, alreadyKnown: 1 });
+    assert.deepEqual(first, { newEvents: 2, alreadyKnown: 0, retryDuplicates: 0 });
+    assert.deepEqual(ingestKitWebhookEvents(db, [ev()]), { newEvents: 0, alreadyKnown: 1, retryDuplicates: 0 });
 
     assert.deepEqual(findSubscriberIdsByEmail(db, "pessoa@exemplo.com"), [rosterId]);
     const timeline = getKitWebhookEventsForSubscriber(db, rosterId);
