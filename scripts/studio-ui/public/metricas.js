@@ -254,6 +254,11 @@ function renderValorFonteDados(valor) {
     parts.push(`Amazon: ${escapeHtml(valor.amazonConfig.motivo)}`);
   }
 
+  // #10713: ARPU e churn saem do Kit (store unificado) quando há ativo Kit;
+  // o snapshot Beehiiv é o fallback sem store.
+  if (valor.populacao === "kit-store") {
+    parts.push("ARPU e churn pela base Kit (store unificado)");
+  }
   const periodo = valor.churnPeriodo;
   if (periodo) {
     parts.push(

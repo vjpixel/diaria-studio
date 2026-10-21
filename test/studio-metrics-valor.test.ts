@@ -99,7 +99,9 @@ describe("buildMetricsData — Valor (#8423) — receita e ARPU", () => {
 
       const data = await buildMetricsData(root, { forceRefresh: true, now: () => new Date("2026-09-15T12:00:00Z") });
       assert.equal(data.valor.receitaMensal.valor, 75); // 25 (apoia.se) + 50 (amazon)
-      assert.equal(data.valor.receitaMensal.qualidade, "exato");
+      // PISO desde #10713: Hotmart entra como fonte sem dado (paridade com o
+      // cac-report, #10703): apoia.se + Amazon presentes não bastam pra "exato".
+      assert.equal(data.valor.receitaMensal.qualidade, "piso");
       assert.ok(data.valor.arpuAtivo.valor != null);
       assert.ok(Math.abs(data.valor.arpuAtivo.valor - 75 / 2) < 1e-9); // base ativa Beehiiv = 2
       assert.equal(data.valor.apoiaSeCache.available, true);

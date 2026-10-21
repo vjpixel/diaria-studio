@@ -13,9 +13,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeLtvSection, formatCacReportMarkdown, loadKitLifecycleRows } from "../scripts/cac-report.ts";
+import { computeLtvSection, formatCacReportMarkdown } from "../scripts/cac-report.ts";
 import { buildCacReport, computeMonthBudgetUsage, type CacReport } from "../scripts/lib/cac.ts";
-import { computeChurnRate, computeKitLifetimeChurn, LTV_DEFAULT_HORIZON_MONTHS } from "../scripts/lib/ltv.ts";
+import { computeChurnRate, computeKitLifetimeChurn, loadKitLifecycleRows, LTV_DEFAULT_HORIZON_MONTHS } from "../scripts/lib/ltv.ts";
 import { openDiariaSubscribersDb } from "../scripts/lib/diaria-subscribers-db.ts";
 
 const NOW = new Date("2026-10-21T12:00:00Z");

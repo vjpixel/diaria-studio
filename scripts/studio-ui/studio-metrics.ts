@@ -100,8 +100,13 @@ import {
   computeChurnExitsBetweenSnapshots,
   excludeInternalAndTestSubscribers,
   resolveApoiaSeCampaignName,
+  computeKitLifetimeChurn,
+  loadKitLifecycleRows,
+  LTV_FONTES_SEM_INTEGRACAO,
   type ChurnExitEvent,
   type ApoiaSeMonthCacheEntry,
+  type KitLifecycleRow,
+  type KitLifetimeChurnResult,
 } from "../lib/ltv.ts";
 import { buildAdsData } from "./studio-ads.ts";
 import { evaluateMeta, type Meta, type MetaStatus, type MedicaoDia } from "../lib/metrics/metas.ts";
@@ -268,6 +273,15 @@ export interface MetricsValorLayer {
    *  `null` quando não há snapshot suficientemente espaçado (~30 dias) do
    *  mais recente, e `churnMensal` sai `indeterminado` nesse caso. */
   churnPeriodo: { baselineDate: string | null; latestDate: string | null; periodMonths: number | null };
+  /** De onde vêm o denominador do ARPU e o churn (#10713, paridade com o
+   *  `cac-report` do #10703): `kit-store` quando o store unificado tem
+   *  ativo Kit (a base migrou pro Kit, #7386, e o snapshot Beehiiv ficou
+   *  sem ativo); `beehiiv-snapshot` é o fallback sem store. No modo Kit,
+   *  `churnPeriodo.baselineDate` é o início do Kit (menor `entered_at`) e
+   *  `latestDate` o dia de `now` — churn por exposição, não diff de 2
+   *  snapshots. Conversão em apoiador e LTV por origem seguem na base
+   *  Beehiiv (vínculo por e-mail com UTM só existe lá). */
+  populacao: "kit-store" | "beehiiv-snapshot";
 }
 
 export interface MetricsSnapshot {
@@ -597,6 +611,7 @@ function countActive(subs: readonly BeehiivBackupSubscriber[]): number {
  */
 async function computeValorLayer(
   rootDir: string,
+  db: DatabaseSync | null,
   beehiivSubsRaw: readonly BeehiivBackupSubscriber[],
   beehiivRoot: string,
   beehiivDates: readonly string[],
@@ -635,6 +650,16 @@ async function computeValorLayer(
     "apoia-se": apoiaSeCacheAvailable ? revSummary.grossRevenueBrl : null,
     amazon: amazonConfig.valorMensalBrl,
   };
+  // Hotmart sem fonte no repo: fonte SEM dado, então receita/ARPU/LTV saem
+  // PISO — mesma lista do `cac-report` (#10703/#10713, paridade #9023).
+  for (const fonte of LTV_FONTES_SEM_INTEGRACAO) porFonte[fonte] = null;
+
+  // ── População Kit (#10713) — mesma do `cac-report` (#10703): o snapshot
+  //    Beehiiv ficou sem ativo depois da migração pro Kit (#7386), então
+  //    ARPU e churn saem do ciclo de vida das assinaturas Kit do store
+  //    quando há ativo Kit; o snapshot Beehiiv vira fallback.
+  const manualCleanupResult = loadManualCleanupEmails(rootDir);
+  const kitLifetime = loadKitLifetime(db, manualCleanupResult.emails, now.getTime());
 
   // População: só a base ATIVA BEEHIIV — é a única em que o vínculo por
   // e-mail com a apoia.se é resolvido aqui (ver docstring de
@@ -642,6 +667,7 @@ async function computeValorLayer(
   // nunca `0` fabricado.
   const activeBeehiiv = beehiivSubs.filter((s) => s.status === "active");
   const baseAtivaBeehiiv = activeBeehiiv.length > 0 ? activeBeehiiv.length : null;
+  const baseAtivaArpu = kitLifetime ? kitLifetime.activeCount : baseAtivaBeehiiv;
   // Snapshot Beehiiv vazio/anômalo (nenhum subscriber lido) — churn/ARPU/LTV
   // não rodam em cima dele (#8423 fleet review item 6): mesma condição que
   // `loadBeehiivSnapshotLayer` usa pra marcar `error` na camada de snapshot.
@@ -655,15 +681,25 @@ async function computeValorLayer(
   });
   const arpuAtivo = await getMetric("arpu-ativo")!.computar({
     janela: janelaMes,
-    deps: { porFonte, baseAtiva: baseAtivaBeehiiv } satisfies ArpuAtivoDeps,
+    deps: { porFonte, baseAtiva: baseAtivaArpu } satisfies ArpuAtivoDeps,
   });
 
-  // ── Churn — diff de 2 snapshots Beehiiv ~30 dias de distância ──────────
-  const manualCleanupResult = loadManualCleanupEmails(rootDir);
-  const baselineDate = !beehiivSnapshotEmpty && latestDate ? findChurnBaselineDate(beehiivDates, latestDate) : null;
+  // ── Churn — modo Kit (#10713): exposição desde o início do Kit; senão
+  //    diff de 2 snapshots Beehiiv ~30 dias de distância ──────────────────
+  const baselineDate = !kitLifetime && !beehiivSnapshotEmpty && latestDate ? findChurnBaselineDate(beehiivDates, latestDate) : null;
   let churnMensalDeps: ChurnMensalDeps;
   let churnPeriodo: MetricsValorLayer["churnPeriodo"] = { baselineDate, latestDate, periodMonths: null };
-  if (beehiivSnapshotEmpty || !latestDate || !baselineDate) {
+  // Churn computável com a população escolhida — o motivo de limpeza manual
+  // corrompida só se aplica quando há churn de fato rodando.
+  const churnComputavel = kitLifetime != null || (!beehiivSnapshotEmpty && latestDate != null && baselineDate != null);
+  if (kitLifetime) {
+    churnPeriodo = {
+      baselineDate: kitLifetime.periodStart?.slice(0, 10) ?? null,
+      latestDate: brtDateFromMs(now.getTime()),
+      periodMonths: kitLifetime.churnInput.periodMonths,
+    };
+    churnMensalDeps = { ...kitLifetime.churnInput };
+  } else if (beehiivSnapshotEmpty || !latestDate || !baselineDate) {
     churnMensalDeps = { exits: [], manualCleanupEmails: new Set(), periodMonths: 0, avgActiveBase: null };
   } else {
     const baselineSubs = baselineDate === latestDate ? beehiivSubs : excludeInternalAndTestSubscribers(readSnapshotSubscribers(beehiivRoot, baselineDate)).kept;
@@ -681,9 +717,9 @@ async function computeValorLayer(
   // churn rodando (baseline+latest presentes) — sem diff, já é indeterminado
   // pelo motivo de sempre.
   const manualCleanupUnavailableMotivo =
-    manualCleanupResult.error && baselineDate && latestDate && !beehiivSnapshotEmpty
+    manualCleanupResult.error && churnComputavel
       ? `conjunto de limpeza manual indisponível/corrompido (${manualCleanupEmailsPath(rootDir)}: ${manualCleanupResult.error}) — churn orgânico×com-limpeza não pode ser diferenciado com segurança`
-      : beehiivSnapshotEmpty
+      : !kitLifetime && beehiivSnapshotEmpty
         ? "snapshot Beehiiv vazio/anômalo — churn não computável"
         : null;
 
@@ -843,7 +879,32 @@ async function computeValorLayer(
       skipped: manualCleanupResult.skipped,
     },
     churnPeriodo,
+    populacao: kitLifetime ? "kit-store" : "beehiiv-snapshot",
   };
+}
+
+/**
+ * População Kit do bloco Valor (#10713) — mesma do `cac-report` (#10703):
+ * assinaturas Kit do store menos internos/teste (#9074). Devolve `null`
+ * (cai no snapshot Beehiiv) quando não há store, a leitura falha ou não há
+ * nenhum ativo Kit. Nunca lança.
+ */
+function loadKitLifetime(
+  db: DatabaseSync | null,
+  manualCleanupEmails: ReadonlySet<string>,
+  nowMs: number,
+): KitLifetimeChurnResult | null {
+  if (!db) return null;
+  let rows: KitLifecycleRow[];
+  try {
+    rows = loadKitLifecycleRows(db);
+  } catch (e) {
+    console.error(`[studio-metrics] valor: falha ao ler assinaturas Kit do store — cai no snapshot Beehiiv: ${(e as Error).message}`);
+    return null;
+  }
+  const kept = excludeInternalAndTestSubscribers(rows).kept;
+  if (!kept.some((r) => r.status === "active")) return null;
+  return computeKitLifetimeChurn(kept, manualCleanupEmails, nowMs);
 }
 
 // ─── cache (mesmo padrão de studio-ads.ts/studio-utms.ts) ──────────────
@@ -1033,7 +1094,7 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
 
   // ── Valor (#8423) — receita, ARPU, churn, conversão em apoiador, LTV ──
   const beehiivAllDates = listSnapshotDates(beehiivRoot);
-  const valor = await computeValorLayer(rootDir, beehiivSubs, beehiivRoot, beehiivAllDates, beehiivLayer.date, now());
+  const valor = await computeValorLayer(rootDir, db, beehiivSubs, beehiivRoot, beehiivAllDates, beehiivLayer.date, now());
 
   const data: MetricsSnapshot = {
     execMode,
