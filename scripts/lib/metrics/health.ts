@@ -140,10 +140,15 @@ export const METRICS_HEALTH_THRESHOLDS: MetricsHealthThresholds = {
   QUEDA_MIN_ABS: { contagem: 2, razao: 0.05, brl: 5 },
   FRESCOR_MAX_DIAS: 2,
   MIN_DIAS_SERIE: 14,
-  // #10653: 5 dias úteis de regime orgânico. Não `MIN_DIAS_SERIE - 1` (=13):
-  // a série de queda tem exatamente 14 dias (`check-metrics-health.ts`), então
-  // esse piso pularia QUALQUER sobreposição com janela paga e neutralizaria a
-  // exclusão do #10647 por 13 dias depois de todo teste.
+  // #10653: 5 dias CORRIDOS com valor numérico de regime orgânico (a baseline
+  // conta pontos da série, não dias úteis). A janela de `check-metrics-health.ts`
+  // tem 14 dias, mas a série de queda das métricas de aquisição passa por
+  // `serieQuedaSemDiaCorrente` (#10647) e fica com 13 pontos — 1 é o "atual",
+  // então a baseline tem no máximo 12. Um piso perto desse teto (ex.: 12)
+  // pularia QUALQUER sobreposição com janela paga e neutralizaria a exclusão
+  // do #10647 por quase 2 semanas depois de todo teste. Obs.: o gate de
+  // `MIN_DIAS_SERIE` (`diasComInsumo`) ainda conta o dia corrente — tirá-lo
+  // de lá exigiria baixar esse gate pra 13 nas métricas de aquisição (#10667).
   MIN_DIAS_BASELINE: 5,
   INDETERMINADO_MAX_FRACAO: 0.3,
 };

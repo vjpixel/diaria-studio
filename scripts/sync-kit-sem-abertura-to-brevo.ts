@@ -61,7 +61,10 @@
  * (`checkNewSignupsFitAccountQuota`): não cabendo, o Passo 3c inteiro aborta
  * sem mover ninguém. O backlog entra limitado pela fila (`daily_send_cap`) e
  * pela mesma cota. Circuit breaker pausado zera a rodada. `--max-add N`
- * limita a rodada inteira deste passo (novos inclusive).
+ * limita a rodada inteira deste passo (novos inclusive). Contato do backlog
+ * pulado na confirmação (blacklisted na Brevo, apoiador pelo GET singular)
+ * cede a vaga ao próximo da fila (#10664) — senão os mais antigos pulados
+ * ocupariam as mesmas vagas toda rodada e o backlog pararia.
  *
  * Sem MillionVerifier: são contatos que confirmaram o double opt-in (mesmo
  * raciocínio do #5807).
@@ -119,6 +122,7 @@ import {
   diariaSendDayUtc,
   formatKitSemAberturaLogLine,
   isKitSemAberturaEnabled,
+  KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS,
   parseDiariaBroadcastState,
   parseKitSemAberturaNumbers,
   planKitSemAberturaWave,
@@ -538,26 +542,42 @@ export async function runKitSemAberturaSync(
   let deferred = wave.deferred + (wave.toMove.length - capped.length);
   log(`onda: ${wave.newCount} cadastro(s) novo(s) + ${wave.backlogCount} do backlog; ${capped.length} nesta rodada, ${deferred} adiado(s).`);
 
-  // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
+  // #10664 — contato do BACKLOG pulado na confirmação (blacklisted na Brevo,
+  // apoiador pelo GET singular) libera a vaga pro próximo da fila. Sem isso
+  // ele, que não fica registrado em lugar nenhum, volta a ser selecionado
+  // amanhã e, sendo o mais antigo, ocupa a mesma vaga todo dia: com os N mais
+  // antigos blacklisted, o backlog nunca anda. Reposição só em pulo
+  // DEFINITIVO; falha de leitura adia sem repor (transitória — repor
+  // queimaria a fila numa instabilidade da API). Os cortados pelo
+  // `--max-add` vêm primeiro (são os mais antigos fora da rodada).
+  const reserve: typeof capped = [
+    ...wave.toMove.slice(capped.length).filter((c) => c.wave === "backlog"),
+    ...wave.backlogReserve.map((s) => ({ ...s, wave: "backlog" as const })),
+  ];
+  let replacements = 0;
+  let replacementCapHit = false;
+  const queue: typeof capped = [...capped];
+  const replace = (c: (typeof capped)[number]) => {
+    if (c.wave !== "backlog" || reserve.length === 0) return;
+    if (replacements >= KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS) {
+      replacementCapHit = true;
+      return;
+    }
+    queue.push(reserve.shift()!);
+    replacements++;
+    deferred--;
+  };
   const toMove: typeof capped = [];
   let skippedBlacklisted = 0;
-  for (const c of capped) {
-    let nivel: string | null;
-    try {
-      nivel = await deps.getApoioNivel(c.id);
-    } catch (e) {
-      deferred++;
-      log(`  ${c.email}: apoio_nivel não confirmado pelo GET singular (${(e as Error).message}) — adiado.`);
-      continue;
-    }
-    if (typeof nivel === "string" && nivel.trim() !== "") {
-      log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
-      continue;
-    }
+  for (let i = 0; i < queue.length; i++) {
+    const c = queue[i];
     // #10536 — já `emailBlacklisted` na conta Brevo da diária (bloqueio no
     // onboarding transacional #6042, hard bounce antigo, contato anterior ao
     // store): a campanha nunca chegaria, a tag a tiraria do envio do Kit, e o
     // Passo 0 do evaluate leria o blacklist como saída nova. Fica no Kit.
+    // Checado ANTES do GET singular no Kit (#10664): a leitura na Brevo não
+    // passa pelo pacer de 750ms do Kit, então um bloco de blacklisted na
+    // cabeça do backlog custa só leituras baratas.
     let blacklisted: boolean;
     try {
       blacklisted = await deps.isBrevoBlacklisted(c.email);
@@ -569,12 +589,36 @@ export async function runKitSemAberturaSync(
     if (blacklisted) {
       skippedBlacklisted++;
       log(`  ${c.email}: já emailBlacklisted na Brevo diária — fica no Kit, não é movido (#10536).`);
+      replace(c);
+      continue;
+    }
+    // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
+    let nivel: string | null;
+    try {
+      nivel = await deps.getApoioNivel(c.id);
+    } catch (e) {
+      deferred++;
+      log(`  ${c.email}: apoio_nivel não confirmado pelo GET singular (${(e as Error).message}) — adiado.`);
+      continue;
+    }
+    if (typeof nivel === "string" && nivel.trim() !== "") {
+      log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
+      replace(c);
       continue;
     }
     toMove.push(c);
   }
   if (skippedBlacklisted > 0) {
     log(`${skippedBlacklisted} selecionado(s) já blacklisted na Brevo — mantido(s) no Kit (#10536).`);
+  }
+  if (replacements > 0) {
+    log(`${replacements} vaga(s) do backlog repostas com o próximo da fila (pulados na confirmação, #10664).`);
+  }
+  if (replacementCapHit) {
+    log(
+      `AVISO: teto de ${KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS} reposições do backlog atingido nesta rodada — ` +
+        "vagas ficaram sem preencher; se repetir, a cabeça do backlog está dominada por pulados (#10664).",
+    );
   }
   const counts = { selected: selection.selected.length, deferred, skippedBlacklisted, orphansReturnedToKit };
 
