@@ -208,15 +208,16 @@ export function buildFollowupPanel(
     if (!c || !failedLot(lot) || !lot.last_error) continue;
     c.falhos += lot.recipient_subscription_ids.filter((id) => !(people[id]?.sends ?? []).some((s) => s.step === lot.kind)).length;
   }
-  const TERMINAL_RUN_MOTIVOS = new Set(["vencida", "nao_ativo"]);
+  // `nao_ativo` saiu daqui no #10675: virou pulo gravado (`p.skips`, acima).
+  const TERMINAL_RUN_MOTIVOS = new Set(["vencida"]);
   for (const [kind, byMotivo] of Object.entries(lastRun?.counts ?? {}) as [FollowupStepKind, Record<string, number>][]) {
     const c = followupCounts.get(kind);
     if (!c) continue;
     for (const [motivo, n] of Object.entries(byMotivo)) {
-      // `enviado`/`falhou` já contados pelos registros; `apoia` vem dos pulos gravados.
+      // `enviado`/`falhou` já contados pelos registros; `apoia`/`nao_ativo` vêm dos pulos gravados.
       // `excede_janela` (#10652) é projeção sobre quem já está em `adiado_teto` —
       // somar dobraria a contagem; aparece como alerta.
-      if (motivo === "enviado" || motivo === "falhou" || motivo === "apoia" || motivo === "excede_janela") continue;
+      if (motivo === "enviado" || motivo === "falhou" || motivo === "apoia" || motivo === "nao_ativo" || motivo === "excede_janela") continue;
       bump(TERMINAL_RUN_MOTIVOS.has(motivo) ? c.pulados : c.pendentes, motivo, n);
     }
   }

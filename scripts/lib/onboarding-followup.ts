@@ -119,8 +119,14 @@ export interface FollowupSkipRecord {
   /** ISO de quando a etapa foi pulada para esta pessoa (terminal pra etapa). */
   at: string;
   /** `apoia`: na checagem perto do envio, a pessoa já apoiava — a etapa de
-   *  apoio não sai para ela (a próxima ainda é avaliada de novo). */
-  motivo: "apoia";
+   *  apoio não sai para ela (a próxima ainda é avaliada de novo).
+   *  `nao_ativo` (#10675): na checagem perto do envio, a pessoa não estava
+   *  mais `active` no Kit (descadastrou, bounce, cancelada). Terminal para a
+   *  etapa; numa etapa de FORMULÁRIO encerra a sequência inteira do
+   *  formulário (`formStepDue` → `saiu`) — senão o lembrete, que não tem
+   *  janela, ficaria devido para sempre e ocuparia o teto do lote. Não
+   *  ressuscita se a pessoa voltar a se inscrever. */
+  motivo: "apoia" | "nao_ativo";
 }
 
 export interface FollowupPerson {
@@ -374,7 +380,13 @@ export function apoioStepDue(
 
 export type FormDueResult =
   | { due: FormStepKind }
-  | { due: null; motivo: "preencheu" | "sem_ancora" | "nao_venceu" | "vencida" };
+  | { due: null; motivo: "preencheu" | "saiu" | "sem_ancora" | "nao_venceu" | "vencida" };
+
+/** #10675: a checagem perto do envio já viu a pessoa fora do Kit numa etapa
+ *  do formulário — a sequência do formulário acabou para ela. */
+export function leftKitInFormSequence(person: FollowupPerson | undefined): boolean {
+  return (person?.skips ?? []).some((s) => s.motivo === "nao_ativo" && isFormStep(s.step));
+}
 
 /** Último envio de formulário registrado (epoch s), ou `null`. */
 export function lastFormSendSec(person: FollowupPerson | undefined): number | null {
@@ -395,6 +407,8 @@ export function formStepDue(
   cfg: Pick<FollowupConfig, "formFirstDays" | "formReminderDays" | "graceDays">,
 ): FormDueResult {
   if (person?.form_filled_at) return { due: null, motivo: "preencheu" };
+  // #10675: quem saiu do Kit não volta a ser devido (nem ocupa vaga do teto).
+  if (leftKitInFormSequence(person)) return { due: null, motivo: "saiu" };
   const last = lastFormSendSec(person);
   if (last == null) {
     if (anchorSec == null) return { due: null, motivo: "sem_ancora" };
@@ -775,21 +789,28 @@ export function applyFollowupLotToPeople(
   return n;
 }
 
-/** Registra o pulo terminal `apoia` (etapa de apoio, pessoa já apoiava). */
-export function recordApoiaSkips(
+/**
+ * Registra os pulos terminais da checagem perto do envio: `apoia` (etapa de
+ * apoio, pessoa já apoiava) e `nao_ativo` (#10675, pessoa fora do Kit — em
+ * qualquer etapa). `consulta_falhou` nunca vira pulo: a pessoa volta no dia
+ * seguinte. Idempotente por etapa.
+ */
+export function recordLiveCheckSkips(
   people: Record<string, FollowupPerson>,
   excluded: readonly { due: FollowupDue; motivo: LiveExclusionReason }[],
   nowIso: string,
 ): number {
   let n = 0;
   for (const x of excluded) {
-    if (x.motivo !== "apoia") continue;
+    if (x.motivo !== "apoia" && x.motivo !== "nao_ativo") continue;
     const person = ensurePerson(people, x.due.kit_subscriber_id, x.due.email);
-    person.apoia = true;
-    person.apoio_checked_at = nowIso;
+    if (x.motivo === "apoia") {
+      person.apoia = true;
+      person.apoio_checked_at = nowIso;
+    }
     person.skips ??= [];
     if (person.skips.some((s) => s.step === x.due.kind)) continue;
-    person.skips.push({ step: x.due.kind, at: nowIso, motivo: "apoia" });
+    person.skips.push({ step: x.due.kind, at: nowIso, motivo: x.motivo });
     n++;
   }
   return n;

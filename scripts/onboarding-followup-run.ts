@@ -74,7 +74,7 @@ import {
   normalizeEmail,
   parseFollowupSnippet,
   planFollowup,
-  recordApoiaSkips,
+  recordLiveCheckSkips,
   recordApoioChecks,
   recordFollowupRun,
   renderFollowupBody,
@@ -180,7 +180,7 @@ export function persistFollowupLot(storePath: string, lot: FollowupLot, cadastro
   });
 }
 
-/** Aplica uma mutação nas pessoas sob lock (respostas do formulário, pulos `apoia`). */
+/** Aplica uma mutação nas pessoas sob lock (respostas do formulário, pulos `apoia`/`nao_ativo`). */
 export function persistFollowupPeople(storePath: string, mutate: (people: FollowupBlock["people"]) => void): void {
   withStore(storePath, "gravar pessoas", (_store, block) => {
     mutate(block.people);
@@ -483,7 +483,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   for (const x of excluded) bump(x.due.kind, x.motivo);
   if (send) {
     persistFollowupPeople(storePath, (people) => {
-      recordApoiaSkips(people, excluded, nowIso);
+      recordLiveCheckSkips(people, excluded, nowIso);
       recordApoioChecks(people, toSend, nowIso);
     });
   }
