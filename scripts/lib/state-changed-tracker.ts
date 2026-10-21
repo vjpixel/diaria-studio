@@ -89,17 +89,41 @@ export type StateChangedCheckResult =
       /** #10618 — pendências de OUTRO repo, como `owner/repo#N`. Presente só
        * quando há alguma (shape legado intacto para planos só do studio). */
       foreign?: string[];
+      /** #10618 — entradas cuja identidade não dá pra ler (`"lixo"`,
+       * `{ number: 3, repo: "x" }`), em JSON. Bloqueiam o gate: uma pendência
+       * ilegível é pendência, nunca "nada pendente". Presente só quando há. */
+      unreadable?: string[];
     };
 
 /**
- * Pure: normaliza o campo `state_changed_issues` de um plan.json já
- * parseado. Ausente/não-array/entries não-numéricas viram `[]` — fail-open,
- * nunca lança.
+ * Pure: pendências do repo DEFAULT em `state_changed_issues`, como número
+ * legado. Aceita toda forma de identidade do studio (#10618, fatia 2): `21`,
+ * `"21"`, `"#21"`, `"vjpixel/diaria-studio#21"`, `{ number: 21 }`,
+ * `{ ref: "vjpixel/diaria-studio#21" }` — antes só o número cru contava e as
+ * outras formas sumiam do gate. Ausente/não-array → `[]`, nunca lança.
+ * Deduplicado, na ordem de 1ª aparição.
  */
 export function readStateChangedIssues(plan: PlanWithStateChanged): number[] {
   const raw = plan.state_changed_issues;
   if (!Array.isArray(raw)) return [];
-  return raw.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  const out: number[] = [];
+  for (const v of raw) {
+    const n = studioNumberOfPlanEntry(v);
+    if (n !== null && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * #10618 (fatia 2) — entradas de `state_changed_issues` sem identidade
+ * legível (nem studio nem outro repo). Devolvidas CRUAS: as regravações de
+ * `add`/`remove` as preservam (nunca somem numa reescrita) e o gate as conta
+ * como pendência (`unreadable`), pra alguém olhar o plano.
+ */
+export function readStateChangedUnreadable(plan: PlanWithStateChanged): unknown[] {
+  const raw = plan.state_changed_issues;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((v) => planEntryKey(v) === null);
 }
 
 /**
@@ -107,15 +131,17 @@ export function readStateChangedIssues(plan: PlanWithStateChanged): number[] {
  * `state_changed_issues` como `"owner/repo#N"` (string). Nunca entram em
  * `readStateChangedIssues` (que só devolve número = diaria-studio), mas
  * também nunca são descartadas: uma pendência é pendência, de qualquer repo.
- * Strings que não sejam de outro repo (ex.: `"#21"`) ficam fora daqui — a
- * forma legada do default continua sendo o número.
+ * Entradas do repo default (inclusive `"#21"`) ficam fora daqui — são lidas
+ * por `readStateChangedIssues` e regravadas como número.
  */
 export function readStateChangedForeignIssues(plan: PlanWithStateChanged): string[] {
   const raw = plan.state_changed_issues;
   if (!Array.isArray(raw)) return [];
   const out = new Set<string>();
   for (const v of raw) {
-    if (typeof v !== "string" || !isForeignPlanEntry(v)) continue;
+    // Qualquer forma (string qualificada, `{ ref }`, `{ number, repo }`) —
+    // a regravação normaliza pra `"owner/repo#N"`.
+    if (!isForeignPlanEntry(v)) continue;
     const key = planEntryKey(v);
     if (key) out.add(key);
   }
@@ -144,12 +170,26 @@ export function removeStateChangedIssue(issues: number[], issueNumber: number): 
  * issues explicitamente — nunca só "há pendências", pra a mensagem de erro
  * ser acionável.
  */
-export function checkStateChangedIssues(issues: number[], foreign: string[] = []): StateChangedCheckResult {
-  if (issues.length === 0 && foreign.length === 0) return { status: "ok" };
+export function checkStateChangedIssues(
+  issues: number[],
+  foreign: string[] = [],
+  unreadable: unknown[] = [],
+): StateChangedCheckResult {
+  if (issues.length === 0 && foreign.length === 0 && unreadable.length === 0) return { status: "ok" };
   const sorted = [...issues].sort((a, b) => a - b);
-  return foreign.length > 0
-    ? { status: "pending", issues: sorted, foreign: [...foreign].sort() }
-    : { status: "pending", issues: sorted };
+  return {
+    status: "pending",
+    issues: sorted,
+    ...(foreign.length > 0 ? { foreign: [...foreign].sort() } : {}),
+    ...(unreadable.length > 0 ? { unreadable: unreadable.map((v) => JSON.stringify(v)) } : {}),
+  };
+}
+
+/** #10618 — regrava `state_changed_issues` na forma canônica: números do
+ * studio, depois `"owner/repo#N"` de outro repo, depois as entradas
+ * ilegíveis CRUAS (preservadas, nunca descartadas numa reescrita). */
+function rewriteStateChanged(plan: PlanWithStateChanged, studio: number[], foreign: string[]): void {
+  plan.state_changed_issues = [...studio, ...foreign, ...readStateChangedUnreadable(plan)];
 }
 
 function readPlan(planPath: string): PlanWithStateChanged {
@@ -165,20 +205,21 @@ function writePlan(planPath: string, plan: PlanWithStateChanged): void {
 export function addPendingToPlan(planPath: string, issueNumber: number): void {
   const plan = readPlan(planPath);
   const current = readStateChangedIssues(plan);
-  // #10618: preserva pendências de outro repo (`"owner/repo#N"`).
-  plan.state_changed_issues = [...addStateChangedIssue(current, issueNumber), ...readStateChangedForeignIssues(plan)];
+  // #10618: preserva pendências de outro repo e entradas ilegíveis.
+  rewriteStateChanged(plan, addStateChangedIssue(current, issueNumber), readStateChangedForeignIssues(plan));
   writePlan(planPath, plan);
 }
 
 /** I/O: lê o plan.json, aplica `remove`, grava de volta.
  *
- * #10618: preserva as pendências de outro repo (`"owner/repo#N"`) — antes a
- * regravação filtrava o array pra números e apagaria essas entradas. */
+ * #10618: preserva as pendências de outro repo (`"owner/repo#N"`) e as
+ * entradas ilegíveis — antes a regravação filtrava o array pra números e
+ * apagaria essas entradas. Remove a issue em QUALQUER forma do studio
+ * (`21`, `"#21"`, `"vjpixel/diaria-studio#21"`, `{ ref }`). */
 export function removePendingFromPlan(planPath: string, issueNumber: number): void {
   const plan = readPlan(planPath);
   const current = readStateChangedIssues(plan);
-  const foreign = readStateChangedForeignIssues(plan);
-  plan.state_changed_issues = [...removeStateChangedIssue(current, issueNumber), ...foreign];
+  rewriteStateChanged(plan, removeStateChangedIssue(current, issueNumber), readStateChangedForeignIssues(plan));
   writePlan(planPath, plan);
 }
 
@@ -188,7 +229,7 @@ export function addForeignPendingToPlan(planPath: string, ref: string): void {
   const plan = readPlan(planPath);
   const foreign = readStateChangedForeignIssues(plan);
   const next = foreign.includes(ref) ? foreign : [...foreign, ref];
-  plan.state_changed_issues = [...readStateChangedIssues(plan), ...next];
+  rewriteStateChanged(plan, readStateChangedIssues(plan), next);
   writePlan(planPath, plan);
 }
 
@@ -196,14 +237,18 @@ export function addForeignPendingToPlan(planPath: string, ref: string): void {
 export function removeForeignPendingFromPlan(planPath: string, ref: string): void {
   const plan = readPlan(planPath);
   const foreign = readStateChangedForeignIssues(plan).filter((r) => r !== ref);
-  plan.state_changed_issues = [...readStateChangedIssues(plan), ...foreign];
+  rewriteStateChanged(plan, readStateChangedIssues(plan), foreign);
   writePlan(planPath, plan);
 }
 
 /** I/O: lê o plan.json e devolve o veredito de checagem. */
 export function checkStateChangedPending(planPath: string): StateChangedCheckResult {
   const plan = readPlan(planPath);
-  return checkStateChangedIssues(readStateChangedIssues(plan), readStateChangedForeignIssues(plan));
+  return checkStateChangedIssues(
+    readStateChangedIssues(plan),
+    readStateChangedForeignIssues(plan),
+    readStateChangedUnreadable(plan),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -252,11 +297,14 @@ export type ConvergenceScanResult =
   | { status: "ok"; novas_encontradas: 0 }
   | { status: "missing"; issues: number[]; novas_encontradas: number };
 
-/** Pure: extrai números de um valor arbitrário do `plan.json` — aceita
- * array de números, array de objetos `{ number }`, ou qualquer outra coisa
- * (ignorada, nunca lança). Serve tanto pra `goal.target_set`/`goal.tiers[*]`
- * quanto pro `issues[]` top-level legado, que pode guardar registros
- * `{ number, ... }` por issue em vez de números crus.
+/** Pure: extrai os números do repo DEFAULT de um valor arbitrário do
+ * `plan.json` — aceita array de números, de objetos `{ number }`/`{ ref }` e,
+ * desde a #10618 (fatia 2), de strings do studio (`"21"`, `"#21"`,
+ * `"vjpixel/diaria-studio#21"`). Entrada de OUTRO repo e entrada ilegível são
+ * ignoradas (nunca lança) — quem precisa contá-las usa `extractIssueKeys`.
+ * Serve tanto pra `goal.target_set`/`goal.tiers[*]` quanto pro `issues[]`
+ * top-level legado, que pode guardar registros `{ number, ... }` por issue
+ * em vez de números crus.
  *
  * Exportado (#5718) pra reuso por `develop-target-set-coverage.ts`, que
  * precisa da mesma extração pra ler `goal.target_set` isoladamente (sem os
@@ -535,22 +583,24 @@ export function findRetrackedUnworkedIssues(
   for (const entry of normalizeIssues<PlanIssueEntryLike>(
     plan as IssuesBearing<PlanIssueEntryLike>,
   )) {
-    if (!entry || typeof entry.number !== "number" || !Number.isFinite(entry.number)) continue;
+    if (!entry) continue;
     // #10618: `openIssues` vem do repo default; entrada de outro repo com o
-    // mesmo número nunca casa com ela.
-    if (studioNumberOfPlanEntry(entry) === null) continue;
-    if (seen.has(entry.number)) continue;
+    // mesmo número nunca casa com ela. A identidade sai de
+    // `studioNumberOfPlanEntry` (aceita `{ ref }` do studio sem `number`).
+    const n = studioNumberOfPlanEntry(entry);
+    if (n === null) continue;
+    if (seen.has(n)) continue;
     const motivo = unworkedMotivo(entry, opts.includeClaimed === true);
     if (!motivo) continue;
-    const open = byNumber.get(entry.number);
+    const open = byNumber.get(n);
     if (!open) continue;
     const trackAtual = classifyExecTrack({ labels: open.labels, body: open.body, now: opts.now });
     if (!RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
     const trackGravado =
       typeof entry.exec_track_painel === "string" ? entry.exec_track_painel : null;
     if (trackGravado === trackAtual) continue;
-    seen.add(entry.number);
-    out.push({ number: entry.number, motivo, track_gravado: trackGravado, track_atual: trackAtual });
+    seen.add(n);
+    out.push({ number: n, motivo, track_gravado: trackGravado, track_atual: trackAtual });
   }
   return out.sort((a, b) => a.number - b.number);
 }

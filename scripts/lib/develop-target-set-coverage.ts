@@ -33,7 +33,13 @@
  * `scripts/check-develop-target-set-coverage.ts`.
  *
  * @see scripts/lib/develop-plan-motivo.ts (gate irmão — motivo inválido em vez de cobertura ausente)
- * @see scripts/lib/state-changed-tracker.ts (`extractIssueNumbers`, reusado aqui; gate irmão de convergência)
+ * **#10618 (fatia 2):** a cobertura é por identidade canônica `owner/repo#N`
+ * (`extractIssueKeys` + `planEntryKey`), não mais por número — uma entrada do
+ * diaria-design nunca cobre o mesmo número do studio. A saída mantém o shape
+ * legado (`issues: number[]` = faltantes do studio) e ganha `foreign`
+ * (faltantes de outro repo) e `unreadable` (alvo ilegível) só quando há.
+ *
+ * @see scripts/lib/state-changed-tracker.ts (`extractIssueKeys`, reusado aqui; gate irmão de convergência)
  * @see scripts/lib/plan-issues-normalize.ts (`plan.issues` array vs dict)
  * @see .claude/skills/diaria-develop/SKILL.md § "'Nenhuma issue aberta' = estado terminal"
  */
@@ -71,6 +77,10 @@ export type TargetSetCoverageResult =
       /** #10618 — faltantes de OUTRO repo, como `owner/repo#N`. Presente só
        * quando há algum (shape legado intacto para planos só do studio). */
       foreign?: string[];
+      /** #10618 — entradas de `goal.target_set` cuja identidade não dá pra
+       * ler (em JSON). Nunca viram `ok` por omissão: um alvo ilegível não é
+       * um alvo coberto. Presente só quando há. */
+      unreadable?: string[];
     };
 
 /**
@@ -119,12 +129,19 @@ export function findMissingTargetSetCoverageKeys(
  * cobrir ainda, mesmo fail-open documentado nos gates irmãos. */
 export function checkTargetSetCoverageFromPlan(plan: PlanWithTargetSet): TargetSetCoverageResult {
   const targetKeys = extractIssueKeys(plan.goal?.target_set);
-  if (targetKeys.length === 0) return { status: "ok" };
+  // #10618: entrada ilegível de `target_set` (`"lixo"`, `{ number: 3, repo:
+  // "x" }`) — `extractIssueKeys` a descarta; aqui ela vira `missing`, nunca
+  // some (antes, um `target_set` só de entradas ilegíveis dava `ok`).
+  const rawTarget = plan.goal?.target_set;
+  const unreadable = Array.isArray(rawTarget)
+    ? rawTarget.filter((e) => planEntryKey(e) === null).map((e) => JSON.stringify(e))
+    : [];
+  if (targetKeys.length === 0 && unreadable.length === 0) return { status: "ok" };
   const issues = normalizeIssues<DevelopPlanIssueLike>(
     plan as IssuesBearing<DevelopPlanIssueLike>,
   );
   const missingKeys = findMissingTargetSetCoverageKeys(targetKeys, issues);
-  if (missingKeys.length === 0) return { status: "ok" };
+  if (missingKeys.length === 0 && unreadable.length === 0) return { status: "ok" };
   const missing: number[] = [];
   const foreign: string[] = [];
   for (const key of missingKeys) {
@@ -134,7 +151,12 @@ export function checkTargetSetCoverageFromPlan(plan: PlanWithTargetSet): TargetS
     else foreign.push(key);
   }
   missing.sort((a, b) => a - b);
-  return foreign.length > 0 ? { status: "missing", issues: missing, foreign } : { status: "missing", issues: missing };
+  return {
+    status: "missing",
+    issues: missing,
+    ...(foreign.length > 0 ? { foreign } : {}),
+    ...(unreadable.length > 0 ? { unreadable } : {}),
+  };
 }
 
 /** I/O: lê o plan.json do disco e devolve o veredito. */

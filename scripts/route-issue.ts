@@ -97,9 +97,10 @@
  * ## Issue de outro repo (#10618, fatia 2)
  *
  * `--issue owner/repo#N` (ex.: `--issue vjpixel/diaria-design#21`) roteia a
- * issue daquele repo: todo `gh issue view/edit/comment` recebe `-R
- * owner/repo`. Só repos de `platform.config.json → issue_repos`; fora da
- * allowlist é erro. `--issue N` sozinho continua sendo o diaria-studio.
+ * issue daquele repo. Todo `gh issue view/edit/comment` recebe `-R
+ * owner/repo` — inclusive o `--issue N` do diaria-studio, que leva `-R
+ * vjpixel/diaria-studio` em vez de depender do cwd. Só repos de
+ * `platform.config.json → issue_repos`; fora da allowlist é erro.
  * As labels de track/motivo precisam existir no repo de destino (o
  * `gh issue edit --add-label` falha alto se não existirem — nunca cria).
  * `--depends-on` ainda não aceita issue de outro repo (a reconciliação
@@ -129,7 +130,7 @@
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDefaultIssueRepo, loadIssueRepos, normalizeRepoSlug, parseIssueRef } from "./lib/issue-repos.ts";
+import { DEFAULT_ISSUE_REPO, isDefaultIssueRepo, loadIssueRepos, normalizeRepoSlug, parseIssueRef } from "./lib/issue-repos.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
   applyRouteLabelPlan,
@@ -296,17 +297,20 @@ function buildCommentBody(
 export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   const { issue, track, reason, until, cwd, now = new Date() } = options;
   const baseGhRun = options.ghRun ?? spawnGhSync;
-  // #10618: issue de outro repo — escopa TODA chamada `gh` (view, edit,
-  // comment, e as de `wait-until-sync`) com `-R owner/repo`. Sem isso o `gh`
-  // resolveria pelo cwd (diaria-studio) e editaria a issue de MESMO número
-  // do repo errado.
-  const foreignRepo = options.repo !== undefined && !isDefaultIssueRepo(options.repo)
-    ? normalizeRepoSlug(options.repo)
-    : null;
-  if (options.repo !== undefined && !isDefaultIssueRepo(options.repo) && !foreignRepo) {
+  // #10618: escopa TODA chamada `gh` (view, edit, comment, e as de
+  // `wait-until-sync`) com `-R owner/repo` — inclusive no repo default
+  // (`vjpixel/diaria-studio`). Sem `-R` o `gh` resolveria pelo cwd: rodado de
+  // um checkout do diaria-design, editaria a issue de MESMO número do repo
+  // errado. Todas as chamadas daqui são `gh issue ...`, que aceitam `-R`
+  // (`gh api` não aceitaria — travado por teste de contrato).
+  const targetRepo = options.repo === undefined ? DEFAULT_ISSUE_REPO : normalizeRepoSlug(options.repo);
+  if (!targetRepo) {
     return failResult(`repo inválido: "${options.repo}" (esperado owner/name) (#10618)`);
   }
-  const ghRun: GhRunFn = foreignRepo ? (args, c) => baseGhRun([...args, "-R", foreignRepo], c) : baseGhRun;
+  const foreignRepo = isDefaultIssueRepo(targetRepo) ? null : targetRepo;
+  // Rótulo das mensagens: `#N` (studio, como sempre) ou `owner/repo#N`.
+  const issueLabel = foreignRepo ? `${foreignRepo}#${issue}` : `#${issue}`;
+  const ghRun: GhRunFn = (args, c) => baseGhRun([...args, "-R", targetRepo], c);
   if (foreignRepo && options.dependsOn !== undefined) {
     return failResult(
       `--depends-on ainda não é suportado para issue de outro repo (${foreignRepo}#${issue}) — ` +
@@ -359,7 +363,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
 
   const fetchedBefore = fetchIssueState(issue, cwd, ghRun);
   if (!fetchedBefore.ok) {
-    return failResult(`falha ao ler estado da issue #${issue}: ${fetchedBefore.error}`);
+    return failResult(`falha ao ler estado da issue ${issueLabel}: ${fetchedBefore.error}`);
   }
 
   // #7270 — `--depends-on N` exige que o marcador `<!-- depends-on: #N -->`
@@ -372,7 +376,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     const declared = parseDependsOn(fetchedBefore.data.body, issue);
     if (!declared.includes(options.dependsOn)) {
       return failResult(
-        `--depends-on ${options.dependsOn} exige o marcador "<!-- depends-on: #${options.dependsOn} -->" já presente no corpo da issue #${issue} (#7137) — adicione-o antes de rotear.`,
+        `--depends-on ${options.dependsOn} exige o marcador "<!-- depends-on: #${options.dependsOn} -->" já presente no corpo da issue ${issueLabel} (#7137) — adicione-o antes de rotear.`,
       );
     }
   }
@@ -438,7 +442,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       validated: false,
       resolvedTrack: dryRunTrack,
       error:
-        `recusado (dry-run pré-escrita, #8230): aplicar --track ${track} na issue #${issue} resultaria em ` +
+        `recusado (dry-run pré-escrita, #8230): aplicar --track ${track} na issue ${issueLabel} resultaria em ` +
         `classifyExecTrack devolvendo "${dryRunTrack}" ≠ "${dryRunExpectedTrack}" — nenhuma label, marcador ou ` +
         `comentário foi escrito. Causa provável: outra label já presente na issue tem precedência mais alta ` +
         `sobre "${track}" (ver a docstring de precedência de classifyExecTrackWithRule em issue-exec-track.ts). ` +
@@ -454,7 +458,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     if (toRemove.length > 0) args.push("--remove-label", toRemove.join(","));
     const res = ghRun(args, cwd);
     if (res.status !== 0) {
-      return failResult(`falha ao editar labels da issue #${issue}: ${res.stderr.trim() || "gh issue edit falhou"}`);
+      return failResult(`falha ao editar labels da issue ${issueLabel}: ${res.stderr.trim() || "gh issue edit falhou"}`);
     }
   }
 
@@ -466,21 +470,21 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   if (track === "agendada") {
     const syncResult = syncWaitUntilMarkerOnIssue(issue, until as string, cwd, ghRun);
     if (!syncResult.ok) {
-      return failResult(`falha ao sincronizar marcador aguardando-ate na issue #${issue}: ${syncResult.error}`);
+      return failResult(`falha ao sincronizar marcador aguardando-ate na issue ${issueLabel}: ${syncResult.error}`);
     }
     markerAction = syncResult.action;
   } else if (vagueDeferralUntilIso) {
     const syncResult = syncWaitUntilMarkerOnIssue(issue, vagueDeferralUntilIso, cwd, ghRun);
     if (!syncResult.ok) {
       return failResult(
-        `falha ao sincronizar marcador aguardando-ate (deferimento vago, #6272) na issue #${issue}: ${syncResult.error}`,
+        `falha ao sincronizar marcador aguardando-ate (deferimento vago, #6272) na issue ${issueLabel}: ${syncResult.error}`,
       );
     }
     markerAction = syncResult.action;
   } else {
     const clearResult = clearWaitUntilMarkerOnIssue(issue, cwd, ghRun);
     if (!clearResult.ok) {
-      return failResult(`falha ao limpar marcador aguardando-ate da issue #${issue}: ${clearResult.error}`);
+      return failResult(`falha ao limpar marcador aguardando-ate da issue ${issueLabel}: ${clearResult.error}`);
     }
     markerAction = clearResult.action;
   }
@@ -532,7 +536,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
         markerAction,
         commentAction: "failed",
         validated: false,
-        error: `falha ao comentar na issue #${issue}: ${res.stderr.trim() || "gh issue comment falhou"}`,
+        error: `falha ao comentar na issue ${issueLabel}: ${res.stderr.trim() || "gh issue comment falhou"}`,
       };
     }
     commentAction = "posted";
@@ -548,7 +552,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       markerAction,
       commentAction,
       validated: false,
-      error: `falha ao reler estado da issue #${issue} pra validação: ${fetchedAfter.error}`,
+      error: `falha ao reler estado da issue ${issueLabel} pra validação: ${fetchedAfter.error}`,
     };
   }
   const resolvedTrack = classifyExecTrack({
@@ -575,7 +579,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       validated: false,
       resolvedTrack,
       error:
-        `validação pós-escrita falhou na issue #${issue}: pedido --track ${track}` +
+        `validação pós-escrita falhou na issue ${issueLabel}: pedido --track ${track}` +
         (vagueDeferralUntilIso ? ` (esperado "${expectedTrack}" por #6272, deferimento vago com marcador)` : "") +
         `, mas classifyExecTrack devolveu "${resolvedTrack}" com o estado final ` +
         `(labels=[${fetchedAfter.data.labels.join(", ")}], state=${fetchedAfter.data.state}). ` +

@@ -10,12 +10,23 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   claimIssueCheckAndSet,
+  claimReconciliationHasAdditions,
+  claimReleaseMsForKind,
+  cleanupReconciledSafeBackups,
+  decideClaimReconciliation,
+  endSession,
+  planClaimReconciliation,
+  planSafeBackupCapPrune,
+  planSafeBackupCleanup,
+  reconcileClaims,
   claimTargetLabel,
   isIssueClaimedByOther,
   isIssueClaimedByActiveSession,
@@ -38,9 +49,13 @@ import {
   extractIssueKeys,
   extractIssueNumbers,
   findRetrackedUnworkedIssues,
+  readStateChangedIssues,
   removeForeignPendingFromPlan,
   removePendingFromPlan,
 } from "../scripts/lib/state-changed-tracker.ts";
+import { loadIssueRepos } from "../scripts/lib/issue-repos.ts";
+import { main as reconcileMain } from "../scripts/reconcile-issue-dependencies.ts";
+import { ORPHAN_SWEEP_MIN_AGE_MS, planContinuoOrphanSweep } from "../scripts/sweep-continuo-orphan-sessions.ts";
 import { checkTargetSetCoverageFromPlan, findMissingTargetSetCoverage } from "../scripts/lib/develop-target-set-coverage.ts";
 import { parseArgs as parseRouteIssueArgs, routeIssue, type GhRunFn } from "../scripts/route-issue.ts";
 
@@ -325,11 +340,45 @@ describe("#10618 fatia 2 — route-issue.ts com --issue owner/repo#N", () => {
     }
   });
 
-  it("controle: sem repo (studio) nenhuma chamada leva -R — comportamento de sempre", () => {
+  it("studio (sem repo): TODA chamada leva -R vjpixel/diaria-studio — nunca depende do cwd (fleet item 3)", () => {
     const gh = fakeGh();
     const result = routeIssue({ issue: 21, track: "develop", reason: "teste", cwd: "/tmp", ghRun: gh.run });
     assert.equal(result.ok, true, result.error);
-    for (const c of gh.calls) assert.ok(!c.includes("-R"), c.join(" "));
+    assert.ok(gh.calls.length >= 3);
+    for (const c of gh.calls) {
+      const i = c.indexOf("-R");
+      assert.ok(i !== -1 && c[i + 1] === STUDIO, `chamada sem -R ${STUDIO}: ${c.join(" ")}`);
+      // Contrato (self-review 3/6): `-R` só vale pra `gh issue ...`; `gh api` não o aceita.
+      assert.equal(c[0], "issue", `chamada gh que não é \`gh issue\`: ${c.join(" ")}`);
+    }
+  });
+
+  it("--track agendada no diaria-design: as chamadas do wait-until-sync (view -q / edit --body) também levam -R", () => {
+    const gh = fakeGh();
+    const result = routeIssue({
+      issue: 21,
+      repo: DESIGN,
+      track: "agendada",
+      reason: "espera a data",
+      until: "2099-01-01",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.ok(gh.calls.some((c) => c.includes("-q")), "esperava a leitura do corpo do wait-until-sync");
+    assert.ok(gh.calls.some((c) => c[1] === "edit" && c.includes("--body")), "esperava a escrita do marcador");
+    for (const c of gh.calls) {
+      const i = c.indexOf("-R");
+      assert.ok(i !== -1 && c[i + 1] === DESIGN, `chamada sem -R ${DESIGN}: ${c.join(" ")}`);
+    }
+    assert.match(gh.state.body, /aguardando-ate: 2099-01-01/);
+  });
+
+  it("mensagem de erro de issue de outro repo usa o rótulo owner/repo#N", () => {
+    const run: GhRunFn = () => ({ status: 1, stdout: "", stderr: "gh: not found" });
+    const result = routeIssue({ issue: 21, repo: DESIGN, track: "develop", reason: "x", cwd: "/tmp", ghRun: run });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /vjpixel\/diaria-design#21/);
   });
 
   it("--depends-on com issue de outro repo é recusado antes de qualquer I/O", () => {
@@ -346,5 +395,297 @@ describe("#10618 fatia 2 — route-issue.ts com --issue owner/repo#N", () => {
     assert.equal(result.ok, false);
     assert.match(result.error ?? "", /depends-on/);
     assert.equal(gh.calls.length, 0);
+  });
+});
+
+// ─── Fleet review do PR #10745 (fixer) ──────────────────────────────────────
+
+function sessionFile(root: string, sessionId: string): string {
+  const dir = join(root, "data", "sessions");
+  return join(dir, readdirSync(dir).find((f) => f.includes(sessionId) && !f.includes("-safeBackup-") && f.endsWith(".json"))!);
+}
+
+describe("#10618 fatia 2 (fleet item 4) — claims de outro repo em reconcile/cleanup/cap-prune", () => {
+  const T0 = "2026-10-21T10:00:00.000Z";
+  const T1 = "2026-10-21T11:00:00.000Z"; // depois do heartbeat do real
+
+  it("decideClaimReconciliation devolve a claim do design presa só no backup (e respeita a regra #6698)", () => {
+    const real = { kind: "develop", machineTag: "h", sessionId: "s", startedAt: T0, lastHeartbeat: T0 } as never;
+    const backup = {
+      kind: "develop", machineTag: "h", sessionId: "s", startedAt: T0, lastHeartbeat: T1,
+      claimed_foreign_issues: ["vjpixel/diaria-design#21"],
+      claimed_foreign_issues_at: { "vjpixel/diaria-design#21": T1 },
+    } as never;
+    const d = decideClaimReconciliation(real, [backup]);
+    assert.deepEqual(d.addedIssues, []);
+    assert.deepEqual(d.addedForeignIssues, ["vjpixel/diaria-design#21"]);
+    assert.equal(claimReconciliationHasAdditions(d), true);
+    // Timestamp anterior/igual ao heartbeat do real = removida de propósito (#6698).
+    const oldBackup = { ...(backup as object), claimed_foreign_issues_at: { "vjpixel/diaria-design#21": T0 } } as never;
+    assert.equal(claimReconciliationHasAdditions(decideClaimReconciliation(real, [oldBackup])), false);
+  });
+
+  function setupGroup(prefix: string, backups: number) {
+    const root = tmpRoot(prefix);
+    registerSession(root, "develop", "sess-r", { tag: "host", startedAt: T0 });
+    const real = sessionFile(root, "sess-r");
+    const record = JSON.parse(readFileSync(real, "utf8"));
+    writeFileSync(real, JSON.stringify({ ...record, lastHeartbeat: T0 }));
+    const backupPaths: string[] = [];
+    for (let i = 1; i <= backups; i++) {
+      const bp = real.replace(/\.json$/, `-safeBackup-000${i}.json`);
+      const withClaim = i === 1;
+      writeFileSync(
+        bp,
+        JSON.stringify({
+          ...record,
+          lastHeartbeat: T0,
+          ...(withClaim
+            ? {
+                claimed_foreign_issues: ["vjpixel/diaria-design#21"],
+                claimed_foreign_issues_at: { "vjpixel/diaria-design#21": T1 },
+              }
+            : {}),
+        }),
+      );
+      backupPaths.push(bp);
+    }
+    return { root, real, backupPaths };
+  }
+
+  it("planSafeBackupCleanup: backup com claim do design NÃO vira removable (antes virava e a claim sumia)", () => {
+    const { root } = setupGroup("cleanup", 1);
+    const plan = planSafeBackupCleanup(root, { now: Date.parse(T1) });
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0]!.action, "pending-reconciliation", plan[0]!.reason);
+    const applied = cleanupReconciledSafeBackups(root, { now: Date.parse(T1) });
+    assert.equal(applied[0]!.action, "pending-reconciliation");
+  });
+
+  it("planSafeBackupCapPrune: o único backup com a claim do design é preservado mesmo acima do cap", () => {
+    const { root, backupPaths } = setupGroup("capprune", 3);
+    // O backup com a claim é o mais antigo (o 1º candidato a podar).
+    const plan = planSafeBackupCapPrune(root, { now: Date.parse(T1), capPerGroup: 1 });
+    const removed = plan.flatMap((r) => r.removed.map((e) => e.path));
+    assert.ok(!removed.includes(backupPaths[0]!), `podou o backup com a claim do design: ${JSON.stringify(removed)}`);
+  });
+
+  it("reconcileClaims grava a claim do design no real (claimed_foreign_issues, _at, _ever)", () => {
+    const { root, real } = setupGroup("reconcile", 1);
+    const plan = planClaimReconciliation(root);
+    const group = plan.find((e) => e.realPath === real)!;
+    assert.equal(group.action, "reconciled", group.reason);
+    assert.deepEqual(group.addedForeignIssues, ["vjpixel/diaria-design#21"]);
+    reconcileClaims(root);
+    const after = JSON.parse(readFileSync(real, "utf8"));
+    assert.deepEqual(after.claimed_foreign_issues, ["vjpixel/diaria-design#21"]);
+    assert.equal(after.claimed_foreign_issues_at["vjpixel/diaria-design#21"], T1);
+    assert.deepEqual(after.claimed_foreign_issues_ever, ["vjpixel/diaria-design#21"]);
+    // Depois de reconciliado, o grupo deixa de segurar a limpeza.
+    assert.equal(planSafeBackupCleanup(root, { now: Date.parse(T1) })[0]!.action, "removable");
+  });
+});
+
+describe("#10618 fatia 2 (fleet itens 5, 12, 13) — sweep, lifecycle e janela de retenção", () => {
+  it("sweep do contínuo: sessão com claim só do design é mantida", () => {
+    const now = Date.parse("2026-10-21T12:00:00.000Z");
+    const old = new Date(now - ORPHAN_SWEEP_MIN_AGE_MS - 60_000).toISOString();
+    const [c] = planContinuoOrphanSweep(
+      [
+        {
+          kind: "continuo",
+          machineTag: "300",
+          sessionId: "hermes-cron-job-t1",
+          startedAt: old,
+          lastHeartbeat: old,
+          claimed_issues: [],
+          claimed_foreign_issues: ["vjpixel/diaria-design#21"],
+        } as never,
+      ],
+      { jobId: "job", localTag: "300", now, excludeSessionId: "hermes-cron-job-atual" },
+    );
+    assert.equal(c!.action, "keep");
+    assert.match(c!.reason, /vjpixel\/diaria-design#21/);
+  });
+
+  it("evento de lifecycle do end leva as claims de outro repo", () => {
+    const root = tmpRoot("lifecycle");
+    const now = new Date().toISOString();
+    registerSession(root, "develop", "sess-l", { tag: "host", startedAt: now });
+    claimIssueCheckAndSet(root, "develop", "sess-l", { repo: DESIGN, number: 21 }, "host", now);
+    endSession(root, "develop", "sess-l", "host");
+    const lines = readFileSync(join(root, "data", "session-lifecycle.jsonl"), "utf8").trim().split("\n");
+    const ev = lines.map((l) => JSON.parse(l)).find((e) => e.sessionId === "sess-l");
+    assert.deepEqual(ev.claimed_foreign_issues, ["vjpixel/diaria-design#21"]);
+    assert.deepEqual(ev.claimed_foreign_issues_ever, ["vjpixel/diaria-design#21"]);
+  });
+
+  it("janela de retenção: claim de outro repo de sessão interactive ociosa é liberada como a do studio", () => {
+    const root = tmpRoot("retention");
+    const t0 = Date.parse("2026-10-21T10:00:00.000Z");
+    const iso = new Date(t0).toISOString();
+    registerSession(root, "interactive", "sess-i", { tag: "host", startedAt: iso });
+    claimIssueCheckAndSet(root, "interactive", "sess-i", { repo: DESIGN, number: 21 }, "host", iso);
+    claimIssueCheckAndSet(root, "interactive", "sess-i", 21, "host", iso);
+    const real = sessionFile(root, "sess-i");
+    writeFileSync(real, JSON.stringify({ ...JSON.parse(readFileSync(real, "utf8")), lastHeartbeat: iso }));
+    const inside = t0 + 60_000;
+    assert.equal(isIssueClaimedByOther(root, { repo: DESIGN, number: 21 }, "outra", inside)?.sessionId, "sess-i");
+    const outside = t0 + claimReleaseMsForKind("interactive") + 60_000;
+    const rec = listActiveSessions(root, outside).find((x) => x.sessionId === "sess-i");
+    assert.ok(rec, "sessão ainda listada (dentro do maxAge), só com as claims liberadas");
+    assert.deepEqual(rec.claimed_foreign_issues_effective, []);
+    assert.deepEqual(rec.claimed_issues_effective, []);
+    assert.equal(isIssueClaimedByOther(root, { repo: DESIGN, number: 21 }, "outra", outside), null);
+  });
+});
+
+describe("#10618 fatia 2 (fleet itens 6, 7, 9) — identidade ilegível e formas do studio", () => {
+  it("state_changed_issues: strings do studio contam como número; entrada ilegível bloqueia e sobrevive à reescrita", () => {
+    const root = tmpRoot("scforms");
+    const planPath = join(root, "plan.json");
+    writeFileSync(
+      planPath,
+      JSON.stringify({ state_changed_issues: ["vjpixel/diaria-studio#21", "#22", "23", { ref: "vjpixel/diaria-studio#24" }, "lixo"] }),
+    );
+    assert.deepEqual(checkStateChangedPending(planPath), {
+      status: "pending",
+      issues: [21, 22, 23, 24],
+      unreadable: ['"lixo"'],
+    });
+    // Remover a #21 (que estava como string qualificada) a remove de fato.
+    removePendingFromPlan(planPath, 21);
+    const after = JSON.parse(readFileSync(planPath, "utf8")).state_changed_issues;
+    assert.deepEqual(after, [22, 23, 24, "lixo"]);
+    // Só a ilegível sobrando: o gate continua bloqueando, nunca "ok".
+    for (const n of [22, 23, 24]) removePendingFromPlan(planPath, n);
+    assert.deepEqual(checkStateChangedPending(planPath), { status: "pending", issues: [], unreadable: ['"lixo"'] });
+    assert.deepEqual(readStateChangedIssues({ state_changed_issues: [5, "5", "#5"] }), [5]);
+  });
+
+  it("target_set com identidade ilegível vira missing, nunca ok", () => {
+    assert.deepEqual(checkTargetSetCoverageFromPlan({ goal: { target_set: ["lixo"] }, issues: [] }), {
+      status: "missing",
+      issues: [],
+      unreadable: ['"lixo"'],
+    });
+    assert.deepEqual(
+      checkTargetSetCoverageFromPlan({
+        goal: { target_set: [21, { number: 3, repo: "nao e slug" }] },
+        issues: [{ number: 21, status: "mergeada" }],
+      }),
+      { status: "missing", issues: [], unreadable: ['{"number":3,"repo":"nao e slug"}'] },
+    );
+  });
+
+  it("normalizeIssues: chave qualificada dá number do #N (sem NaN); findRetracked aceita { ref } do studio sem number", () => {
+    const out = normalizeIssues<{ number: number; ref?: string; status?: string }>({
+      issues: { "vjpixel/diaria-design#21": { status: "pulada" } },
+    });
+    assert.equal(out[0]!.number, 21);
+    assert.equal(out[0]!.ref, "vjpixel/diaria-design#21");
+    const plan = { issues: [{ ref: "vjpixel/diaria-studio#30", status: "pulada", motivo: "deixado-para-o-300" }] };
+    const open = [{ number: 30, labels: ["develop-track"], body: "" }];
+    assert.deepEqual(findRetrackedUnworkedIssues(plan as never, open).map((r) => r.number), [30]);
+  });
+});
+
+describe("#10618 fatia 2 (fleet item 8) — loadIssueRepos avisa no fallback", () => {
+  it("config com JSON inválido ou slug ilegível → aviso, nunca encolhe a allowlist em silêncio", () => {
+    const warns: string[] = [];
+    const bad = tmpRoot("badcfg");
+    writeFileSync(join(bad, "platform.config.json"), "{ nao e json");
+    assert.deepEqual(loadIssueRepos(bad, (m) => warns.push(m)), [STUDIO]);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0]!, /JSON inválido/);
+    const slug = tmpRoot("badslug");
+    writeFileSync(join(slug, "platform.config.json"), JSON.stringify({ issue_repos: [STUDIO, "lixo", DESIGN] }));
+    warns.length = 0;
+    assert.deepEqual(loadIssueRepos(slug, (m) => warns.push(m)), [STUDIO, DESIGN]);
+    assert.equal(warns.length, 1);
+    assert.match(warns[0]!, /lixo/);
+    // Arquivo AUSENTE: comportamento de sempre, sem aviso.
+    warns.length = 0;
+    assert.deepEqual(loadIssueRepos(tmpRoot("nocfg"), (m) => warns.push(m)), [STUDIO]);
+    assert.equal(warns.length, 0);
+  });
+});
+
+describe("#10618 fatia 2 (fleet item 3/13) — reconcile-issue-dependencies só no studio, com -R", () => {
+  it("fetch restrito ao default, issue do design ignorada, toda chamada gh com -R vjpixel/diaria-studio", async () => {
+    const calls: string[][] = [];
+    const ghRun: GhRunFn = (args) => {
+      calls.push(args);
+      if (args[1] === "view") return { status: 0, stdout: JSON.stringify({ state: "CLOSED" }), stderr: "" };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    let fetchOpts: unknown;
+    const fetchIssues = ((_cwd: string, opts: unknown) => {
+      fetchOpts = opts;
+      return {
+        issues: [
+          { repo: STUDIO, ref: "vjpixel/diaria-studio#40", number: 40, labels: ["dependencia-aberta"], body: "<!-- depends-on: #41 -->" },
+          { repo: DESIGN, ref: "vjpixel/diaria-design#21", number: 21, labels: [], body: "<!-- depends-on: #22 -->" },
+        ],
+      };
+    }) as never;
+    const log = console.log;
+    console.log = () => {};
+    try {
+      await reconcileMain(["--apply"], { ghRun, fetchIssues, cwd: "/tmp" });
+    } finally {
+      console.log = log;
+    }
+    assert.deepEqual(fetchOpts, { repos: [STUDIO] });
+    assert.ok(calls.length >= 2, JSON.stringify(calls));
+    for (const c of calls) {
+      const i = c.indexOf("-R");
+      assert.ok(i !== -1 && c[i + 1] === STUDIO, `chamada sem -R ${STUDIO}: ${c.join(" ")}`);
+      assert.ok(!c.includes(DESIGN), c.join(" "));
+    }
+    // A dependência do design (#22) nunca foi consultada.
+    assert.ok(!calls.some((c) => c[2] === "22"), JSON.stringify(calls));
+    assert.ok(calls.some((c) => c[1] === "edit" && c[2] === "40" && c.includes("--remove-label")));
+  });
+});
+
+describe("#10618 fatia 2 (fleet item 13) — CLIs com owner/repo#N", () => {
+  const SR_CLI = fileURLToPath(new URL("../scripts/lib/session-registry.ts", import.meta.url));
+  const SC_CLI = fileURLToPath(new URL("../scripts/check-state-changed-pending.ts", import.meta.url));
+  const TSX = pathToFileURL(fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url))).href;
+  function cli(script: string, cwd: string, args: string[]) {
+    const r = spawnSync(process.execPath, ["--import", TSX, script, ...args], { cwd, encoding: "utf8", timeout: 60_000 });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  it("session-registry: claim-issue/is-claimed/unclaim-issue com --issue vjpixel/diaria-design#21", () => {
+    const root = tmpRoot("srcli");
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ issue_repos: [STUDIO, DESIGN] }));
+    mkdirSync(join(root, "data", "sessions"), { recursive: true });
+    assert.equal(cli(SR_CLI, root, ["register", "--kind", "develop", "--session-id", "cli-a"]).status, 0);
+    const claim = cli(SR_CLI, root, ["claim-issue", "--kind", "develop", "--session-id", "cli-a", "--issue", "vjpixel/diaria-design#21"]);
+    assert.equal(claim.status, 0, claim.stderr + claim.stdout);
+    const design = cli(SR_CLI, root, ["is-claimed", "--issue", "vjpixel/diaria-design#21", "--session-id", "outra"]);
+    assert.equal(JSON.parse(design.stdout.trim()).claimed, true, design.stdout);
+    const studio = cli(SR_CLI, root, ["is-claimed", "--issue", "21", "--session-id", "outra"]);
+    assert.equal(JSON.parse(studio.stdout.trim()).claimed, false, studio.stdout);
+    const fork = cli(SR_CLI, root, ["claim-issue", "--kind", "develop", "--session-id", "cli-a", "--issue", "fork/x#1"]);
+    assert.notEqual(fork.status, 0);
+    const un = cli(SR_CLI, root, ["unclaim-issue", "--kind", "develop", "--session-id", "cli-a", "--issue", "vjpixel/diaria-design#21"]);
+    assert.equal(un.status, 0, un.stderr + un.stdout);
+    assert.match(un.stdout, /vjpixel\/diaria-design#21 liberada/);
+  });
+
+  it("check-state-changed-pending: --add-pending/--remove-pending owner/repo#N e o gate lista a ref", () => {
+    const root = tmpRoot("sccli");
+    const planPath = join(root, "plan.json");
+    writeFileSync(planPath, JSON.stringify({ state_changed_issues: [] }));
+    assert.equal(cli(SC_CLI, root, ["--add-pending", "vjpixel/diaria-design#21", "--plan", planPath]).status, 0);
+    const gate = cli(SC_CLI, root, ["--plan", planPath, "--skip-convergence"]);
+    assert.equal(gate.status, 1);
+    assert.match(gate.stderr, /vjpixel\/diaria-design#21/);
+    assert.equal(cli(SC_CLI, root, ["--remove-pending", "vjpixel/diaria-design#21", "--plan", planPath]).status, 0);
+    assert.equal(cli(SC_CLI, root, ["--plan", planPath, "--skip-convergence"]).status, 0);
   });
 });

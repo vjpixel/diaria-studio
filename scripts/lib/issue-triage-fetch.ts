@@ -37,17 +37,19 @@
  * #7018, só que na varredura incremental em vez da varredura completa que o
  * item 2 já fechou para overnight/develop.
  *
- * **Multi-repo (#10618, fatia 2):** varre TODOS os repos de
- * `platform.config.json → issue_repos` (lidos por `loadIssueRepos`, nunca
- * hardcode) — o default (`vjpixel/diaria-studio`) primeiro, do jeito de
- * sempre (sem `-R`, cwd), e cada outro com `-R owner/repo`. Cada item ganha
- * `repo` e `ref` (`owner/repo#N`); `number` continua o número cru, então
- * consumidor legado que lê `number` sem olhar `repo` segue certo para o
- * studio — mas precisa filtrar `repo` antes de tratar `number` como número
- * do studio (`isDefaultIssueRepo(item.repo)`). Falha de fetch do repo
- * default continua FATAL (`error`); falha de um repo extra é
- * `repoErrors` (visível no stderr do CLI, nunca silenciosa) e não derruba a
- * triagem do studio.
+ * **Multi-repo (#10618, fatia 2) — OPT-IN.** Sem `opts.repos`, varre SÓ o
+ * repo default (`vjpixel/diaria-studio`): overnight, contínuo e zerar-fila
+ * recebem exatamente a fila de antes, porque ~15 gates e consumidores ainda
+ * leem `number` como número do studio (fatia 3). Com `opts.repos` (o CLI
+ * resolve `--repos all`/lista via `resolveTriageRepos`, validada contra
+ * `platform.config.json → issue_repos`), varre também os repos pedidos — o
+ * default sempre primeiro. Toda chamada leva `-R owner/repo`, inclusive a do
+ * default: sem `-R`, o `gh` resolveria pelo cwd e um checkout do
+ * diaria-design rotularia as issues dele como do studio. Cada item ganha
+ * `repo` e `ref` (`owner/repo#N`); `number` continua o número cru dentro de
+ * `repo`. Falha de fetch do repo default continua FATAL (`error`); falha de
+ * um repo extra é `repoErrors` — o CLI sai com exit 3 (resultado PARCIAL,
+ * nunca 0), imprime a lista do que veio e avisa no stderr.
  *
  * @see scripts/lib/issue-exec-track.ts (classifyExecTrackFromListItem)
  * @see scripts/lib/state-changed-tracker.ts (fetchOpenIssuesForConvergence — mesmo padrão, escopo de campos menor)
@@ -130,11 +132,48 @@ export interface FetchOpenIssuesForTriageOptions {
    */
   since?: string;
   /**
-   * #10618 — repos a varrer. Default: `loadIssueRepos` do checkout deste
-   * módulo (`platform.config.json → issue_repos`). O repo default é sempre
-   * incluído e sempre varrido primeiro, mesmo que omitido aqui.
+   * #10618 — repos a varrer, OPT-IN. Ausente = só o repo default (a fila de
+   * sempre). O repo default é sempre incluído e sempre varrido primeiro,
+   * mesmo que omitido aqui. Slug ilegível é erro fatal (`error`), nunca
+   * descartado em silêncio. Validar contra a allowlist é papel de quem monta
+   * a lista (`resolveTriageRepos`).
    */
   repos?: readonly string[];
+}
+
+/** Allowlist de repos da triagem — `platform.config.json → issue_repos` do
+ * checkout deste módulo (independe do cwd). */
+export function triageAllowedRepos(): string[] {
+  return loadIssueRepos(MODULE_REPO_ROOT);
+}
+
+/**
+ * #10618 (fatia 2) — resolve o valor de `--repos` do CLI:
+ *   - ausente/vazio → `undefined` (só o repo default, a fila de sempre);
+ *   - `all` → todos de `allowedRepos` (`issue_repos`);
+ *   - lista `a,b` → cada slug normalizado e conferido contra `allowedRepos`.
+ * Slug ilegível ou fora da allowlist → `{ error }` (o CLI sai com exit 1) —
+ * nunca vira uma varredura menor que a pedida sem aviso.
+ */
+export function resolveTriageRepos(
+  spec: string | undefined,
+  allowedRepos: readonly string[],
+): { repos: string[] | undefined } | { error: string } {
+  if (spec === undefined || spec.trim() === "") return { repos: undefined };
+  const allowed = allowedRepos.map((r) => normalizeRepoSlug(r)).filter((r): r is string => r !== null);
+  if (spec.trim().toLowerCase() === "all") return { repos: [...new Set([DEFAULT_ISSUE_REPO, ...allowed])] };
+  const out: string[] = [];
+  for (const raw of spec.split(",").map((x) => x.trim()).filter(Boolean)) {
+    const slug = normalizeRepoSlug(raw);
+    if (!slug) return { error: `--repos: slug ilegível "${raw}" (esperado owner/name ou all) (#10618)` };
+    if (!allowed.includes(slug)) {
+      return {
+        error: `--repos: ${slug} não está em platform.config.json → issue_repos (permitidos: ${allowed.join(", ")}) (#10618)`,
+      };
+    }
+    if (!out.includes(slug)) out.push(slug);
+  }
+  return { repos: out.length > 0 ? out : undefined };
 }
 
 /**
@@ -149,16 +188,19 @@ export interface FetchOpenIssuesForTriageOptions {
  * `opts.since` (#7018 item 3) restringe a varredura ao delta desde aquele
  * instante (`--search "updated:>={since}"`) em vez do backlog aberto
  * inteiro — omitido/`undefined` preserva o comportamento original (full
- * scan), o único modo que overnight/develop usam.
+ * scan), o único modo que overnight/develop usam. `opts.repos` (#10618) é
+ * opt-in: sem ele, só o repo default (ver docblock do módulo); `since` vale
+ * igual em todas as chamadas.
  */
 export function fetchOpenIssuesForTriage(
   cwd: string,
   opts?: FetchOpenIssuesForTriageOptions,
 ): FetchOpenIssuesForTriageResult {
   const repos = [DEFAULT_ISSUE_REPO];
-  for (const r of opts?.repos ?? loadIssueRepos(MODULE_REPO_ROOT)) {
+  for (const r of opts?.repos ?? []) {
     const slug = normalizeRepoSlug(r);
-    if (slug && !repos.includes(slug)) repos.push(slug);
+    if (!slug) return { issues: [], error: `repo ilegível na lista de varredura: "${r}" (#10618)` };
+    if (!repos.includes(slug)) repos.push(slug);
   }
   const issues: TriageIssue[] = [];
   const repoErrors: Array<{ repo: string; error: string }> = [];
@@ -183,8 +225,9 @@ function fetchOneRepo(
   if (opts?.since) {
     args.push("--search", `updated:>=${opts.since}`);
   }
-  // Repo default: chamada idêntica à pré-#10618 (sem `-R`, resolve pelo cwd).
-  if (!isDefaultIssueRepo(repo)) args.push("-R", repo);
+  // #10618: sempre `-R`, inclusive no repo default — sem ele o `gh`
+  // resolveria pelo cwd e rotularia como do studio as issues de outro checkout.
+  args.push("-R", repo);
   const result = spawnSync("gh", args, { cwd, encoding: "utf8", timeout: 30_000 });
   if (result.error) {
     return { issues: [], error: `gh não pôde ser executado: ${result.error.message}` };

@@ -113,7 +113,11 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const orphanCount = plan.filter((e) => e.action === "orphan-backups-only").length;
   const unreadableRealCount = plan.filter((e) => e.action === "skipped-unreadable-real").length;
   const writeFailedCount = plan.filter((e) => e.action === "write-failed").length;
-  const totalIssuesAdded = reconciledEntries.reduce((sum, e) => sum + e.addedIssues.length, 0);
+  // #10618: conta também as claims de outro repo (`addedForeignIssues`).
+  const totalIssuesAdded = reconciledEntries.reduce(
+    (sum, e) => sum + e.addedIssues.length + (e.addedForeignIssues ?? []).length,
+    0,
+  );
   const groupsWithUnreadableBackups = plan.filter((e) => e.unreadableBackupCount > 0);
   const totalUnreadableBackups = groupsWithUnreadableBackups.reduce((sum, e) => sum + e.unreadableBackupCount, 0);
 

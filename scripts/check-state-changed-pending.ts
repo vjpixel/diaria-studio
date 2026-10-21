@@ -268,7 +268,12 @@ if (isMainModule(import.meta.url)) {
   }
 
   if (pendingResult.status !== "ok") {
-    const list = [...pendingResult.issues.map((n) => `#${n}`), ...(pendingResult.foreign ?? [])].join(", ");
+    const list = [
+      ...pendingResult.issues.map((n) => `#${n}`),
+      ...(pendingResult.foreign ?? []),
+      // #10618: entrada ilegível bloqueia (nunca some) — exibida crua.
+      ...(pendingResult.unreadable ?? []).map((v) => `ilegível ${v}`),
+    ].join(", ");
     console.error(
       `pendências de re-triagem: ${list} — reavalie dispatch antes de fechar a rodada`,
     );

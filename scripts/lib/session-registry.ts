@@ -2014,6 +2014,31 @@ export interface SessionLifecycleEvent {
    * registrada antes desta mudança que liberou uma claim antes do deploy não
    * a tem no histórico. */
   claimed_issues_ever?: number[];
+  /** #10618 (fatia 2) — snapshot de `claimed_foreign_issues` (claims de OUTRO
+   * repo, `owner/repo#N`) no momento da remoção. Presente só quando a sessão
+   * teve alguma claim de outro repo (shape legado intacto no resto). */
+  claimed_foreign_issues?: string[];
+  /** #10618 — histórico (ever ∪ finais) das claims de outro repo. */
+  claimed_foreign_issues_ever?: string[];
+}
+
+/** #10618 — `claimed_foreign_issues` (e o histórico) pro evento de lifecycle;
+ * `{}` quando a sessão nunca reivindicou fora do repo default. */
+function snapshotForeignClaims(record: SessionRecord): {
+  claimed_foreign_issues?: string[];
+  claimed_foreign_issues_ever?: string[];
+} {
+  const finals = Array.isArray(record.claimed_foreign_issues)
+    ? record.claimed_foreign_issues.filter((x): x is string => typeof x === "string")
+    : [];
+  const ever = Array.isArray(record.claimed_foreign_issues_ever)
+    ? record.claimed_foreign_issues_ever.filter((x): x is string => typeof x === "string")
+    : [];
+  if (finals.length === 0 && ever.length === 0) return {};
+  return {
+    claimed_foreign_issues: [...new Set(finals)].sort(),
+    claimed_foreign_issues_ever: [...new Set([...ever, ...finals])].sort(),
+  };
 }
 
 /** #8521 — cópia ordenada/deduplicada de `claimed_issues` pro evento de
@@ -2201,6 +2226,7 @@ export function endSession(
       lastHeartbeat: outcome.record.lastHeartbeat ?? null,
       claimed_issues: snapshotClaimedIssues(outcome.record),
       claimed_issues_ever: snapshotClaimedIssuesEver(outcome.record),
+      ...snapshotForeignClaims(outcome.record),
     });
   }
   return outcome.removed;
@@ -2957,6 +2983,12 @@ function resolveClaimTarget(issue: ClaimIssueTarget): ResolvedClaimTarget {
   return legacy !== null ? { legacy, foreignKey: null } : { legacy: null, foreignKey: formatIssueRef(ref) };
 }
 
+/** #10618 — rótulos (`#N` e `owner/repo#N`) das claims recuperadas de cópias
+ * órfãs, pras mensagens do CLI. */
+function recoveredClaimLabels(result: { recoveredClaims?: number[]; recoveredForeignClaims?: string[] }): string[] {
+  return [...(result.recoveredClaims ?? []).map((n) => `#${n}`), ...(result.recoveredForeignClaims ?? [])];
+}
+
 /** Rótulo pra mensagens: `#N` (legado) ou `owner/repo#N`. */
 export function claimTargetLabel(issue: ClaimIssueTarget): string {
   const t = resolveClaimTarget(issue);
@@ -3030,8 +3062,9 @@ function withClaimRemoved(record: SessionRecord, t: ResolvedClaimTarget): Sessio
 }
 
 /**
- * Faz check-and-set: adiciona `issueNumber` a `claimed_issues` da sessão SÓ
- * DEPOIS de confirmar que nenhuma OUTRA sessão ativa já a segura (#6236 —
+ * Faz check-and-set: adiciona `issueNumber` a `claimed_issues` da sessão
+ * (ou, quando é `IssueRef` de outro repo, a `claimed_foreign_issues` como
+ * `owner/repo#N` — #10618) SÓ DEPOIS de confirmar que nenhuma OUTRA sessão ativa já a segura (#6236 —
  * antes desta mudança, `claimIssue` escrevia cego no próprio arquivo sem
  * nunca consultar os das outras sessões; a checagem vivia inteiramente no
  * chamador via `is-claimed`, com uma janela TOCTOU clássica entre os dois
@@ -3136,6 +3169,9 @@ export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
   /** #7003 — claims que a reconstrução trouxe de volta das cópias órfãs.
    * Presente só em `autoRegisterMode: "recovered-from-orphan-backups"`. */
   recoveredClaims?: number[];
+  /** #10618 — claims de OUTRO repo (`owner/repo#N`) que a reconstrução
+   * trouxe de volta. Presente só quando há alguma. */
+  recoveredForeignClaims?: string[];
   /** #7003 — quantas cópias de conflito alimentaram a reconstrução. */
   recoveredFromFiles?: number;
 }
@@ -3219,6 +3255,9 @@ export function claimIssueAutoRegistering(
       autoRegistered: true,
       autoRegisterMode: "recovered-from-orphan-backups",
       recoveredClaims: [...(recovered.record.claimed_issues ?? [])],
+      ...((recovered.record.claimed_foreign_issues ?? []).length > 0
+        ? { recoveredForeignClaims: [...(recovered.record.claimed_foreign_issues ?? [])] }
+        : {}),
       recoveredFromFiles: recovered.files.length,
     };
   }
@@ -3297,6 +3336,9 @@ export function heartbeatAutoRegistering(
       autoRegistered: true,
       autoRegisterMode: "recovered-from-orphan-backups",
       recoveredClaims: [...(recovered.record.claimed_issues ?? [])],
+      ...((recovered.record.claimed_foreign_issues ?? []).length > 0
+        ? { recoveredForeignClaims: [...(recovered.record.claimed_foreign_issues ?? [])] }
+        : {}),
       recoveredFromFiles: recovered.files.length,
     };
   }
@@ -4491,9 +4533,14 @@ function decideSessionGc(
       // DISCO destes números, pra qualquer consumidor que leia
       // `data/sessions/` diretamente, sem passar pela união.
       const claimedIssues = Array.from(new Set(records.flatMap((r) => r.claimed_issues ?? []))).sort((a, b) => a - b);
+      // #10618: claims de outro repo (`owner/repo#N`) entram no mesmo aviso.
+      const claimLabels = [
+        ...claimedIssues.map((n) => `#${n}`),
+        ...Array.from(new Set(records.flatMap((r) => r.claimed_foreign_issues ?? []))).sort(),
+      ];
       const claimsNote =
-        claimedIssues.length > 0
-          ? ` — leva junto ${claimedIssues.length} claim(s) que estavam registrados neste arquivo órfão: #${claimedIssues.join(", #")}`
+        claimLabels.length > 0
+          ? ` — leva junto ${claimLabels.length} claim(s) que estavam registrados neste arquivo órfão: ${claimLabels.join(", ")}`
           : " — sem claimed_issues";
       return {
         action: "removed",
@@ -4680,6 +4727,7 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
         lastHeartbeat: lifecycleRecord.lastHeartbeat ?? null,
         claimed_issues: snapshotClaimedIssues(lifecycleRecord),
         claimed_issues_ever: snapshotClaimedIssuesEver(lifecycleRecord),
+        ...snapshotForeignClaims(lifecycleRecord),
       });
     }
   }
@@ -4733,6 +4781,12 @@ export interface ClaimReconciliationResult {
    * usado por `reconcileClaims` na escrita; nunca sobrescreve uma entrada já
    * existente no real. Vazio quando `addedIssues` é vazio. */
   addedClaimedIssuesAt: Record<string, string>;
+  /** #10618 — análogo de `addedIssues` para `claimed_foreign_issues`
+   * (`owner/repo#N`). Ausente (=vazio) em grupos sem claim de outro repo. */
+  addedForeignIssues?: string[];
+  /** #10618 — análogo de `addedClaimedIssuesAt` para
+   * `claimed_foreign_issues_at`. */
+  addedForeignClaimedIssuesAt?: Record<string, string>;
   /** Quantos `-safeBackup-*` do grupo estavam ilegíveis/corrompidos e por isso
    * ficaram de fora da união — as claims deles, se houver, ficam
    * irrecuperáveis por esta reconciliação (não é erro nem bloqueia o resto do
@@ -4752,6 +4806,24 @@ export interface ClaimReconciliationDecision {
   /** Entradas NOVAS de `claimed_issues_at` (só para `addedIssues`) — nunca
    * sobrescreve uma entrada já existente no real. */
   addedClaimedIssuesAt: Record<string, string>;
+  /** #10618 (fatia 2) — claims de OUTRO repo (`owner/repo#N`) presentes em
+   * algum backup e ausentes do real, mesma regra #6698 de `addedIssues`.
+   * Ausente quando nenhuma (shape legado intacto). Todo consumidor que decide
+   * "o backup ainda carrega claim que o real não tem" usa
+   * `claimReconciliationHasAdditions`, nunca só `addedIssues.length` — senão
+   * um backup com claim do diaria-design viraria `removable` e a claim
+   * sumiria. */
+  addedForeignIssues?: string[];
+  addedForeignClaimedIssuesAt?: Record<string, string>;
+}
+
+/** `true` quando a decisão tem QUALQUER claim a acrescentar ao real — do repo
+ * default (`addedIssues`) ou de outro repo (`addedForeignIssues`, #10618). */
+export function claimReconciliationHasAdditions(d: {
+  addedIssues: readonly number[];
+  addedForeignIssues?: readonly string[];
+}): boolean {
+  return d.addedIssues.length > 0 || (d.addedForeignIssues ?? []).length > 0;
 }
 
 /**
@@ -4793,6 +4865,7 @@ export function decideClaimReconciliation(
 ): ClaimReconciliationDecision {
   if (backupRecords.length === 0) return { addedIssues: [], addedClaimedIssuesAt: {} };
   const merged = mergeSessionRecords([realRecord, ...backupRecords]);
+  const foreign = decideForeignClaimReconciliation(realRecord, merged);
   const currentClaimed = new Set(realRecord.claimed_issues ?? []);
   const realHeartbeatMs = Date.parse(realRecord.lastHeartbeat ?? realRecord.startedAt ?? "");
   const candidateIssues = (merged.claimed_issues ?? []).filter((n) => !currentClaimed.has(n)).sort((a, b) => a - b);
@@ -4811,7 +4884,29 @@ export function decideClaimReconciliation(
     addedIssues.push(issue);
     if (at) addedClaimedIssuesAt[String(issue)] = at;
   }
-  return { addedIssues, addedClaimedIssuesAt };
+  return foreign.addedForeignIssues.length > 0
+    ? { addedIssues, addedClaimedIssuesAt, ...foreign }
+    : { addedIssues, addedClaimedIssuesAt };
+}
+
+/** #10618 — a mesma regra (#6698) de `decideClaimReconciliation`, sobre
+ * `claimed_foreign_issues`/`claimed_foreign_issues_at`. */
+function decideForeignClaimReconciliation(
+  realRecord: SessionRecord,
+  merged: SessionRecord,
+): { addedForeignIssues: string[]; addedForeignClaimedIssuesAt: Record<string, string> } {
+  const current = new Set(realRecord.claimed_foreign_issues ?? []);
+  const realHeartbeatMs = Date.parse(realRecord.lastHeartbeat ?? realRecord.startedAt ?? "");
+  const addedForeignIssues: string[] = [];
+  const addedForeignClaimedIssuesAt: Record<string, string> = {};
+  for (const key of [...(merged.claimed_foreign_issues ?? [])].filter((k) => !current.has(k)).sort()) {
+    const at = merged.claimed_foreign_issues_at?.[key];
+    const atMs = at ? Date.parse(at) : NaN;
+    if (at && Number.isFinite(atMs) && Number.isFinite(realHeartbeatMs) && atMs <= realHeartbeatMs) continue;
+    addedForeignIssues.push(key);
+    if (at) addedForeignClaimedIssuesAt[key] = at;
+  }
+  return { addedForeignIssues, addedForeignClaimedIssuesAt };
 }
 
 /**
@@ -4863,20 +4958,26 @@ export function planClaimReconciliation(repoRoot: string): ClaimReconciliationRe
       else unreadableCount++;
     }
 
-    const { addedIssues, addedClaimedIssuesAt } = decideClaimReconciliation(realRecord, backupRecords);
+    const decision = decideClaimReconciliation(realRecord, backupRecords);
+    const { addedIssues, addedClaimedIssuesAt } = decision;
+    const addedForeign = decision.addedForeignIssues ?? [];
+    const hasAdditions = claimReconciliationHasAdditions(decision);
     const unreadableNote = unreadableCount > 0 ? ` (${unreadableCount} backup(s) ilegível(is) do grupo ignorado(s))` : "";
+    const addedLabels = [...addedIssues.map(String), ...addedForeign];
     results.push({
       identity: stem,
       realPath,
       backupPaths,
       addedIssues,
       addedClaimedIssuesAt,
+      ...(addedForeign.length > 0
+        ? { addedForeignIssues: addedForeign, addedForeignClaimedIssuesAt: decision.addedForeignClaimedIssuesAt ?? {} }
+        : {}),
       unreadableBackupCount: unreadableCount,
-      action: addedIssues.length > 0 ? "reconciled" : "no-change",
-      reason:
-        addedIssues.length > 0
-          ? `${addedIssues.length} claim(s) presos em backup — issue(s) [${addedIssues.join(", ")}]${unreadableNote}`
-          : `nenhum claim exclusivo de backup${unreadableNote}`,
+      action: hasAdditions ? "reconciled" : "no-change",
+      reason: hasAdditions
+        ? `${addedLabels.length} claim(s) presos em backup — issue(s) [${addedLabels.join(", ")}]${unreadableNote}`
+        : `nenhum claim exclusivo de backup${unreadableNote}`,
     });
   }
 
@@ -4951,8 +5052,17 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
     const fresh = decideClaimReconciliation(current, freshBackupRecords);
     entry.addedIssues = fresh.addedIssues;
     entry.addedClaimedIssuesAt = fresh.addedClaimedIssuesAt;
+    const freshForeign = fresh.addedForeignIssues ?? [];
+    const freshForeignAt = fresh.addedForeignClaimedIssuesAt ?? {};
+    if (freshForeign.length > 0) {
+      entry.addedForeignIssues = freshForeign;
+      entry.addedForeignClaimedIssuesAt = freshForeignAt;
+    } else {
+      delete entry.addedForeignIssues;
+      delete entry.addedForeignClaimedIssuesAt;
+    }
 
-    if (fresh.addedIssues.length === 0) {
+    if (!claimReconciliationHasAdditions(fresh)) {
       entry.action = "no-change";
       entry.reason = `${entry.reason} [nada a adicionar contra o estado relido no momento da escrita — provavelmente já reconciliado, ou a claim foi legitimamente removida entre o plano e a escrita]`;
       continue;
@@ -4969,11 +5079,21 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
           const set = new Set(current.claimed_issues ?? []);
           for (const issue of fresh.addedIssues) set.add(issue);
           const at = { ...(current.claimed_issues_at ?? {}), ...fresh.addedClaimedIssuesAt };
-          return {
+          const next: SessionRecord = {
             ...current,
             claimed_issues: [...set].sort((a, b) => a - b),
             claimed_issues_at: at,
             claimed_issues_ever: [...new Set([...(current.claimed_issues_ever ?? []), ...fresh.addedIssues])].sort((a, b) => a - b),
+          };
+          // #10618: mesma escrita cirúrgica pras claims de outro repo.
+          if (freshForeign.length === 0) return next;
+          return {
+            ...next,
+            claimed_foreign_issues: [...new Set([...(current.claimed_foreign_issues ?? []), ...freshForeign])].sort(),
+            claimed_foreign_issues_at: { ...(current.claimed_foreign_issues_at ?? {}), ...freshForeignAt },
+            claimed_foreign_issues_ever: [
+              ...new Set([...(current.claimed_foreign_issues_ever ?? []), ...freshForeign]),
+            ].sort(),
           };
         },
         // `verify` checa PERTINÊNCIA das issues que este reconcile veio
@@ -4986,7 +5106,11 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
         // reconcile reportaria `write-failed` para uma escrita que funcionou.
         (onDisk) => {
           const claimedOnDisk = new Set(onDisk?.claimed_issues ?? []);
-          return fresh.addedIssues.every((issue) => claimedOnDisk.has(issue));
+          const foreignOnDisk = new Set(onDisk?.claimed_foreign_issues ?? []);
+          return (
+            fresh.addedIssues.every((issue) => claimedOnDisk.has(issue)) &&
+            freshForeign.every((key) => foreignOnDisk.has(key))
+          );
         },
       );
     } catch (e) {
@@ -5217,14 +5341,17 @@ export function planSafeBackupCleanup(repoRoot: string, opts: { now?: number } =
       if (r) backupRecords.push(r);
     }
 
-    const { addedIssues } = decideClaimReconciliation(realRecord, backupRecords);
-    if (addedIssues.length > 0) {
+    // #10618: claim de OUTRO repo presa num backup também segura o grupo —
+    // sem isto o backup virava `removable` e a claim do diaria-design sumia.
+    const pending = decideClaimReconciliation(realRecord, backupRecords);
+    if (claimReconciliationHasAdditions(pending)) {
+      const n = pending.addedIssues.length + (pending.addedForeignIssues ?? []).length;
       results.push({
         identity: stem,
         realPath,
         backupPaths,
         action: "pending-reconciliation",
-        reason: `${addedIssues.length} claim(s) do grupo ainda não estão no real — rode reconcileClaims primeiro`,
+        reason: `${n} claim(s) do grupo ainda não estão no real — rode reconcileClaims primeiro`,
       });
       continue;
     }
@@ -5315,8 +5442,7 @@ export function cleanupReconciledSafeBackups(repoRoot: string, opts: { now?: num
       continue;
     }
 
-    const { addedIssues } = decideClaimReconciliation(freshReal, freshBackupRecords);
-    if (addedIssues.length > 0) {
+    if (claimReconciliationHasAdditions(decideClaimReconciliation(freshReal, freshBackupRecords))) {
       entry.action = "pending-reconciliation";
       entry.reason = `${entry.reason} [claim nova apareceu num backup entre o plano e a remoção — pulado, retenta depois de reconciliar]`;
       continue;
@@ -5464,8 +5590,8 @@ export function planSafeBackupCapPrune(
       // regra de merge divergente.
       const composite = mergeSessionRecords([realRecord, ...otherRecords]);
 
-      const { addedIssues } = decideClaimReconciliation(composite, [candidateRecord]);
-      if (addedIssues.length > 0) {
+      // #10618: inclui claim de outro repo (`claimed_foreign_issues`).
+      if (claimReconciliationHasAdditions(decideClaimReconciliation(composite, [candidateRecord]))) {
         // Candidato carrega claim que nada mais no grupo reproduz — não é
         // seguro remover, mesmo acima do cap.
         continue;
@@ -6637,8 +6763,8 @@ function main(): void {
           : result.autoRegisterMode === "recovered-from-orphan-backups"
             ? ` [ALERTA: a ÂNCORA desta sessão SUMIU do disco com a sessão VIVA — reconstruída de ` +
               `${result.recoveredFromFiles} cópia(s) de conflito do OneDrive, ` +
-              `${(result.recoveredClaims ?? []).length} claim(s) recuperada(s)` +
-              `${(result.recoveredClaims ?? []).length > 0 ? `: #${(result.recoveredClaims ?? []).join(", #")}` : ""}` +
+              `${recoveredClaimLabels(result).length} claim(s) recuperada(s)` +
+              `${recoveredClaimLabels(result).length > 0 ? `: ${recoveredClaimLabels(result).join(", ")}` : ""}` +
               ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
             : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do heartbeat, ver #8443]";
         process.stdout.write(
@@ -6716,8 +6842,8 @@ function main(): void {
           : result.autoRegisterMode === "recovered-from-orphan-backups"
             ? ` [ALERTA: a ÂNCORA desta sessão SUMIU do disco com a sessão VIVA — reconstruída de ` +
               `${result.recoveredFromFiles} cópia(s) de conflito do OneDrive, ` +
-              `${(result.recoveredClaims ?? []).length} claim(s) recuperada(s)` +
-              `${(result.recoveredClaims ?? []).length > 0 ? `: #${(result.recoveredClaims ?? []).join(", #")}` : ""}` +
+              `${recoveredClaimLabels(result).length} claim(s) recuperada(s)` +
+              `${recoveredClaimLabels(result).length > 0 ? `: ${recoveredClaimLabels(result).join(", ")}` : ""}` +
               ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
             : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]";
         switch (result.reason) {
