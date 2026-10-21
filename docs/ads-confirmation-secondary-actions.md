@@ -13,7 +13,7 @@ Runbook do que resta da Etapa 1 do #8387. Nenhuma meta primária muda antes de
 | Pixel Meta deduplica com a CAPI | entregue (#8572, #8579) |
 | Confirmação pela Brevo termina em `/confirmada` | entregue (#8539, #8554) |
 | Doc-rot circular `confirmado.ts` x `confirmado-page.ts` | já resolvido: racional no bloco `#8387` de `scripts/lib/shared/confirmado-page.ts` |
-| 2ª ação por pageview (4 plataformas, Meta incluída) | proposta versionada: `docs/gtm-confirmation-secondary-import-proposal.json`; falta importar no GTM |
+| 2ª ação por pageview (4 plataformas, Meta incluída) | proposta versionada: `docs/gtm-confirmation-secondary-import-proposal.json`; falta importar no GTM. **Não importar a tag Meta `SubscriptionConfirmed` da proposta** (#10693, decisão do editor 21/10/2026): sem o `kitId` em `/confirmada` ela não deduplica com a CAPI e dobraria o evento de otimização. Na Meta o navegador já é coberto pelo `ConfirmationPageView` (GTM v24, id25). O Google já tem a ação secundária publicada (id24) |
 | "After confirming redirect to" do form Kit `9897918` | painel do Kit, pendente (ver `docs/kit-doi-confirmation-copy.md`) |
 | Promover a primária (Google + Meta juntos) | decisão depois de 27/09, ver abaixo |
 
