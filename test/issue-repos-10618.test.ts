@@ -38,6 +38,10 @@ import {
   requireLegacyClaimIssue,
   requireRepoFlag,
   machineTag,
+  registerSession,
+  grantMergeWindow,
+  grantRepoOf,
+  mergeLocksHeldBy,
 } from "../scripts/lib/session-registry.ts";
 // Hooks sem `.d.mts`: import dinâmico tipado à mão (evita TS7016 no ratchet).
 type Grant = { pr?: number; repo?: string } | null;
@@ -46,12 +50,14 @@ const {
   grantMatchesRepo,
   readMergeLockHolder,
   readLiveMergeGrantFor,
+  readLiveSelfAuthorizationFor,
   resolveMainRepoRoot: guardResolveMainRepoRoot,
 } = (await import(hookPath("block-gh-pr-merge-subagent.mjs"))) as {
   grantMatchesRepo: (g: Grant, repo: string) => boolean;
   readMergeLockHolder: (root: string, now?: number, repo?: string) => string | null | undefined;
   readLiveMergeGrantFor: (root: string, sid: string, now?: number, repo?: string) => { grantedBy: string } | null;
-  resolveMainRepoRoot: (execFn: () => string) => string;
+  readLiveSelfAuthorizationFor: (root: string, sid: string, now?: number, repo?: string) => { repo?: string } | null;
+  resolveMainRepoRoot: (execFn: () => string, looks?: unknown, hookDir?: string) => string | null;
 };
 const { isForeignRepoPrUrl } = (await import(hookPath("pr-create-review.mjs"))) as {
   isForeignRepoPrUrl: (url: string) => boolean;
@@ -59,6 +65,7 @@ const { isForeignRepoPrUrl } = (await import(hookPath("pr-create-review.mjs"))) 
 const {
   grantMatchesRepo: consumeGrantMatchesRepo,
   resolveMergeState,
+  stateQueryRepo,
   findLiveMergeGrantFile,
   consumeGrantUnderLock,
   resolveMainRepoRoot: consumeResolveMainRepoRoot,
@@ -81,7 +88,8 @@ const {
     pr?: number,
     opts?: { repo?: string },
   ) => boolean;
-  resolveMainRepoRoot: (execFn: () => string) => string;
+  resolveMainRepoRoot: (execFn: () => string, looks?: unknown, hookDir?: string) => string | null;
+  stateQueryRepo: (t: { repo: string; source: string | null }) => string | undefined;
   resolveMergeState: (
     pr: number,
     exec: unknown,
@@ -178,52 +186,105 @@ describe("paridade TS ↔ hooks/lib/gh-target-repo.mjs (#10618)", () => {
 });
 
 describe("repo alvo de gh pr create/merge (#10618)", () => {
-  it("-R/--repo/--repo= vence; URL de PR; GH_REPO=; senão null", () => {
-    assert.deepEqual(hookRepo.repoFromGhCommand(`gh pr merge 23 --squash -R ${DESIGN}`), { repo: DESIGN, source: "flag" });
-    assert.deepEqual(hookRepo.repoFromGhCommand(`gh pr merge --repo=${DESIGN} 23`), { repo: DESIGN, source: "flag" });
-    assert.deepEqual(hookRepo.repoFromGhCommand(`gh pr create --repo "${DESIGN}" --title t`), {
-      repo: DESIGN,
-      source: "flag",
-    });
-    assert.deepEqual(hookRepo.repoFromGhCommand(`gh pr merge https://github.com/${DESIGN}/pull/23 --squash`), {
-      repo: DESIGN,
-      source: "pr-url",
-    });
-    assert.deepEqual(hookRepo.repoFromGhCommand(`GH_REPO=${DESIGN} gh pr merge 23`), { repo: DESIGN, source: "gh-repo-env" });
-    assert.equal(hookRepo.repoFromGhCommand("gh pr merge 23 --squash"), null);
+  const seg = (command: string) => hookRepo.ghPrSegments(command).map((s) => ({ repo: s.repo, source: s.source }));
+  const fakeOrigin = (url: string) => () => url;
+  const boom = () => {
+    throw new Error("not a git repo");
+  };
+
+  it("-R/--repo/--repo=; URL de PR; GH_REPO=; senão nada explícito", () => {
+    assert.deepEqual(seg(`gh pr merge 23 --squash -R ${DESIGN}`), [{ repo: DESIGN, source: "flag" }]);
+    assert.deepEqual(seg(`gh pr merge --repo=${DESIGN} 23`), [{ repo: DESIGN, source: "flag" }]);
+    assert.deepEqual(seg(`gh pr create --repo "${DESIGN}" --title t`), [{ repo: DESIGN, source: "flag" }]);
+    assert.deepEqual(seg(`gh pr merge https://github.com/${DESIGN}/pull/23 --squash`), [{ repo: DESIGN, source: "pr-url" }]);
+    assert.deepEqual(seg(`GH_REPO=${DESIGN} gh pr merge 23`), [{ repo: DESIGN, source: "gh-repo-env" }]);
+    assert.deepEqual(seg("gh pr merge 23 --squash"), [{ repo: null, source: null }]);
   });
 
-  it("menção dentro de --body não conta como repo alvo", () => {
-    assert.equal(hookRepo.repoFromGhCommand(`gh pr create --title t --body "use -R ${DESIGN} lá"`), null);
+  it("valor de flag que consome argumento nunca é lido como -R/URL", () => {
+    assert.deepEqual(seg(`gh pr create --title t --body "use -R ${DESIGN} lá"`), [{ repo: null, source: null }]);
+    assert.deepEqual(seg(`gh pr create --title -R --body x`), [{ repo: null, source: null }]);
+    assert.deepEqual(seg(`gh pr merge 23 --subject https://github.com/${DESIGN}/pull/9`), [{ repo: null, source: null }]);
+    assert.deepEqual(seg(`gh pr merge 23 -b https://github.com/${DESIGN}/pull/9 -A x`), [{ repo: null, source: null }]);
   });
 
-  it("vale o ÚLTIMO gh pr <sub> do comando composto", () => {
-    assert.deepEqual(hookRepo.repoFromGhCommand(`gh pr merge 1 -R ${DESIGN} && gh pr merge 2 -R vjpixel/diaria-studio`), {
-      repo: DEFAULT_ISSUE_REPO,
-      source: "flag",
+  it("valor explícito ilegível ou contraditório é ESTRITO (nunca cai pro cwd)", () => {
+    for (const cmd of [
+      "gh pr merge 23 -R $REPO",
+      'gh pr merge 23 --repo "$REPO"',
+      "gh pr merge 23 -R ghe.host/o/r",
+      "GH_REPO=$X gh pr merge 23",
+      `gh pr merge https://github.com/${DESIGN}/pull/23 -R vjpixel/diaria-studio`,
+      "gh pr merge 23 -R a--b/c",
+    ]) {
+      assert.deepEqual(seg(cmd), [{ repo: null, source: "unparseable" }], cmd);
+      // Mesmo com o cwd sendo um checkout do design, o alvo vira o diaria-studio.
+      assert.deepEqual(
+        hookRepo.resolveGhTargets(cmd, "/x", { execFn: fakeOrigin(`https://github.com/${DESIGN}.git`) }),
+        [{ repo: DEFAULT_ISSUE_REPO, source: "unparseable" }],
+        cmd,
+      );
+    }
+  });
+
+  it("TODOS os segmentos contam (não só o último)", () => {
+    assert.deepEqual(
+      hookRepo.resolveGhTargets(`gh pr merge 1 && gh pr merge 2 -R ${DESIGN}`, "/x", { execFn: boom }).map((t) => t.repo),
+      [DEFAULT_ISSUE_REPO, DESIGN],
+    );
+    assert.deepEqual(hookRepo.resolveGhTargetRepo(`gh pr merge 1 && gh pr merge 2 -R ${DESIGN}`, "/x", { execFn: boom }), {
+      repo: null,
+      source: "mixed",
     });
   });
 
-  it("remote ssh/https do origin", () => {
-    assert.equal(hookRepo.repoFromRemoteUrl("git@github.com:vjpixel/diaria-design.git"), DESIGN);
-    assert.equal(hookRepo.repoFromRemoteUrl("https://github.com/vjpixel/diaria-studio.git\n"), DEFAULT_ISSUE_REPO);
-    assert.equal(hookRepo.repoFromRemoteUrl("/srv/git/bare.git"), null);
-  });
-
-  it("cai no origin do cwd quando o comando não diz; indeterminado não é estrangeiro", () => {
-    const fakeOrigin = (url: string) => () => url;
-    assert.deepEqual(hookRepo.resolveGhTargetRepo("gh pr create --title t", "/x", { execFn: fakeOrigin(`https://github.com/${DESIGN}.git`) }), {
-      repo: DESIGN,
-      source: "cwd-origin",
-    });
-    const boom = () => {
-      throw new Error("not a git repo");
+  it("cd X antes do gh: origin de X; com cdStrict o diaria-studio também entra", () => {
+    const calls: Array<string | undefined> = [];
+    const exec = (_c: string, _a: string[], o: { cwd?: string }) => {
+      calls.push(o.cwd);
+      return `https://github.com/${DESIGN}.git`;
     };
-    assert.deepEqual(hookRepo.resolveGhTargetRepo("gh pr create", "/x", { execFn: boom }), { repo: null, source: null });
+    const cmd = "cd ../design-wt && gh pr merge 23";
+    const plain = hookRepo.resolveGhTargets(cmd, "/repo/studio", { execFn: exec });
+    assert.deepEqual(plain, [{ repo: DESIGN, source: "cd-origin" }]);
+    assert.ok(String(calls[0]).replaceAll("\\", "/").endsWith("/repo/design-wt"), String(calls[0]));
+    assert.deepEqual(
+      hookRepo.resolveGhTargets(cmd, "/repo/studio", { execFn: exec, cdStrict: true }).map((t) => t.repo),
+      [DESIGN, DEFAULT_ISSUE_REPO],
+    );
+    // Hooks de gh pr create já passam a raiz do alvo do cd: não reaplica.
+    assert.equal(hookRepo.isForeignRepoGhCommand(cmd, "/repo/design-wt", { execFn: exec }), true);
+  });
+
+  it("allowlist: só repo de issue_repos é de fora; typo/fork/outro → regras do diaria-studio", () => {
     assert.equal(hookRepo.isForeignRepo(null), false);
     assert.equal(hookRepo.isForeignRepo(DEFAULT_ISSUE_REPO), false);
     assert.equal(hookRepo.isForeignRepo(DESIGN), true);
-    // -R explícito vence o origin do cwd (merge do design a partir do checkout do studio).
+    assert.equal(hookRepo.isForeignRepo("vjpixel/diaria-desing"), false);
+    assert.equal(hookRepo.isForeignRepo("alguem/diaria-design"), false);
+    assert.equal(hookRepo.isForeignRepo(DESIGN, new Set()), false, "allowlist vazia");
+    assert.deepEqual(hookRepo.resolveGhTargets("gh pr merge 1 -R alguem/fork", "/x", { execFn: boom }), [
+      { repo: DEFAULT_ISSUE_REPO, source: "flag:fora-da-allowlist" },
+    ]);
+    assert.ok(hookRepo.loadAllowedForeignRepos().has(DESIGN), "config real permite o diaria-design");
+  });
+
+  it("remote ssh/https do origin; owner com -- recusado", () => {
+    assert.equal(hookRepo.repoFromRemoteUrl("git@github.com:vjpixel/diaria-design.git"), DESIGN);
+    assert.equal(hookRepo.repoFromRemoteUrl("https://github.com/vjpixel/diaria-studio.git\n"), DEFAULT_ISSUE_REPO);
+    assert.equal(hookRepo.repoFromRemoteUrl("/srv/git/bare.git"), null);
+    assert.equal(hookRepo.normalizeRepoSlug("a--b/c"), null);
+    assert.equal(normalizeRepoSlug("a--b/c"), null);
+  });
+
+  it("origin do cwd quando o comando não diz; indeterminado = diaria-studio", () => {
+    assert.deepEqual(
+      hookRepo.resolveGhTargetRepo("gh pr create --title t", "/x", { execFn: fakeOrigin(`https://github.com/${DESIGN}.git`) }),
+      { repo: DESIGN, source: "cwd-origin" },
+    );
+    assert.deepEqual(hookRepo.resolveGhTargets("gh pr create", "/x", { execFn: boom }), [
+      { repo: DEFAULT_ISSUE_REPO, source: null },
+    ]);
     assert.equal(
       hookRepo.isForeignRepoGhCommand(`gh pr merge 23 -R ${DESIGN}`, "/x", {
         execFn: fakeOrigin("https://github.com/vjpixel/diaria-studio.git"),
@@ -232,9 +293,10 @@ describe("repo alvo de gh pr create/merge (#10618)", () => {
     );
   });
 
-  it("pr-create-review: URL do PR criado decide", () => {
+  it("pr-create-review: URL do PR criado decide (com allowlist)", () => {
     assert.equal(isForeignRepoPrUrl(`https://github.com/${DESIGN}/pull/23`), true);
     assert.equal(isForeignRepoPrUrl("https://github.com/vjpixel/diaria-studio/pull/10650"), false);
+    assert.equal(isForeignRepoPrUrl("https://github.com/alguem/fork/pull/1"), false);
     assert.equal(isForeignRepoPrUrl("não é url"), false);
   });
 });
@@ -264,6 +326,8 @@ describe("merge lock POR REPO (#10618)", () => {
     assert.equal(requireRepoFlag({}), DEFAULT_ISSUE_REPO);
     assert.equal(requireRepoFlag({ repo: "VJPixel/Diaria-Design" }), DESIGN);
     assert.throws(() => requireRepoFlag({ repo: "diaria-design" }), /--repo inválido/);
+    assert.throws(() => requireRepoFlag({}, new Set(["repo"])), /--repo sem valor/);
+    assert.throws(() => requireRepoFlag({ repo: "" }), /--repo sem valor/);
   });
 
   it("CLI de claim: --issue N segue funcionando; owner/repo#N do studio vira N; de outro repo é recusado", () => {
@@ -273,6 +337,11 @@ describe("merge lock POR REPO (#10618)", () => {
     assert.throws(() => requireLegacyClaimIssue({ issue: "vjpixel/diaria-design#21" }), /outro repo/);
     assert.throws(() => requireLegacyClaimIssue({ issue: "21", repo: DESIGN }), /outro repo/);
     assert.throws(() => requireLegacyClaimIssue({ issue: "abc" }), /--issue/);
+    assert.throws(() => requireLegacyClaimIssue({ issue: "" }), /--issue/);
+    assert.throws(
+      () => requireLegacyClaimIssue({ issue: "vjpixel/diaria-studio#5", repo: DESIGN }),
+      /repos diferentes/,
+    );
   });
 
   it("guard lê o lock do repo alvo", () => {
@@ -333,10 +402,18 @@ describe("e2e: guard do #5716 com lock por repo (#10618)", () => {
     return root;
   }
 
-  function run(root: string, command: string): string {
+  /** Checkout git vazio com `origin` apontando pra `repo` (o hook lê o origin). */
+  function checkout(repo: string): string {
+    const dir = tmpRoot("checkout");
+    sh("git", ["init", "-q"], dir);
+    sh("git", ["remote", "add", "origin", `https://github.com/${repo}.git`], dir);
+    return dir;
+  }
+
+  function run(root: string, command: string, cwd: string = root): string {
     const r = spawnSync(process.execPath, [HOOK], {
       cwd: root,
-      input: JSON.stringify({ session_id: "coord-A", tool_name: "Bash", cwd: root, tool_input: { command } }),
+      input: JSON.stringify({ session_id: "coord-A", tool_name: "Bash", cwd, tool_input: { command } }),
       encoding: "utf8",
       timeout: 15_000,
       windowsHide: true,
@@ -352,17 +429,187 @@ describe("e2e: guard do #5716 com lock por repo (#10618)", () => {
 
   it("lock do design preso bloqueia o merge do design, NÃO o do studio", () => {
     const root = setup(".merge-lock--vjpixel--diaria-design.json");
-    assert.match(run(root, `gh pr merge 23 --squash --repo ${DESIGN}`), /"permissionDecision":"deny"/);
+    const out = run(root, `gh pr merge 23 --squash --repo ${DESIGN}`);
+    assert.match(out, /"permissionDecision":"deny"/);
+    assert.match(out, /--repo vjpixel\/diaria-design/, "a mensagem pede o --repo");
     assert.equal(run(root, "gh pr merge 23 --squash"), "");
+  });
+
+  it("A: merge do studio + merge do design no MESMO comando confere o lock do studio também", () => {
+    const root = setup(".merge-lock.json");
+    const out = run(root, `gh pr merge 23 --squash && gh pr merge 23 --squash -R ${DESIGN}`);
+    assert.match(out, /"permissionDecision":"deny"/);
+    assert.match(out, /MAIS DE UM repo/);
+  });
+
+  it("B: cd pro checkout do design com o lock do design preso → bloqueia (o cwd do payload é o studio)", () => {
+    const root = setup(".merge-lock--vjpixel--diaria-design.json");
+    const design = checkout(DESIGN);
+    assert.match(run(root, `cd "${design}" && gh pr merge 23 --squash`), /"permissionDecision":"deny"/);
+  });
+
+  it("B: cd pro checkout do design com o lock do STUDIO preso → bloqueia também (cd sem -R é estrito)", () => {
+    const root = setup(".merge-lock.json");
+    const design = checkout(DESIGN);
+    assert.match(run(root, `cd "${design}" && gh pr merge 23 --squash`), /"permissionDecision":"deny"/);
+  });
+
+  it("B: cwd no checkout do design, cd pro checkout do studio com o lock do studio preso → bloqueia", () => {
+    const root = setup(".merge-lock.json");
+    const design = checkout(DESIGN);
+    const studio = checkout(DEFAULT_ISSUE_REPO);
+    assert.match(run(root, `cd "${studio}" && gh pr merge 23 --squash`, design), /"permissionDecision":"deny"/);
+  });
+
+  it("C: -R com variável não expandida cai no lock do studio (nunca no origin do cwd)", () => {
+    const root = setup(".merge-lock.json");
+    const design = checkout(DESIGN);
+    assert.match(run(root, "gh pr merge 23 --squash -R $REPO", design), /"permissionDecision":"deny"/);
+    assert.match(run(root, "gh pr merge 23 --squash -R ghe.host/o/r", design), /"permissionDecision":"deny"/);
+  });
+
+  it("D: repo fora da allowlist (fork/typo) recebe o lock do studio", () => {
+    const root = setup(".merge-lock.json");
+    assert.match(run(root, "gh pr merge 23 --squash -R vjpixel/diaria-desing"), /"permissionDecision":"deny"/);
+  });
+
+  it("E: URL e -R discordando → estrito (lock do studio)", () => {
+    const root = setup(".merge-lock.json");
+    assert.match(
+      run(root, `gh pr merge https://github.com/${DESIGN}/pull/23 -R vjpixel/diaria-studio`),
+      /"permissionDecision":"deny"/,
+    );
+  });
+
+  it("loga o repo alvo e a origem no run-log", () => {
+    const root = setup(".merge-lock--vjpixel--diaria-design.json");
+    run(root, `gh pr merge 23 --squash -R ${DESIGN}`);
+    const log = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
+    assert.match(log, /"message":"merge_target_repo"/);
+    assert.match(log, /"repo":"vjpixel\/diaria-design","source":"flag"/);
+  });
+});
+
+describe("escritores de concessão por repo (#10618 F)", () => {
+  const tag = machineTag();
+  function root(): string {
+    const r = tmpRoot("grant-writers");
+    mkdirSync(join(r, "data", "sessions"), { recursive: true });
+    return r;
+  }
+
+  it("repo ilegível é recusado na escrita; repo default não é gravado", () => {
+    const r = root();
+    registerSession(r, "develop", "A", { tag });
+    assert.throws(() => grantMergeWindow(r, "develop", "A", "benef", { pr: 1, repo: "ghe.host/o/r", tag }), /repo inválido/);
+    assert.equal(grantMergeWindow(r, "develop", "A", "benef", { pr: 1, repo: DEFAULT_ISSUE_REPO, tag }).ok, true);
+    const rec = JSON.parse(readFileSync(join(r, "data", "sessions", `develop-${tag}-A.json`), "utf8"));
+    assert.equal(rec.merge_grant.repo, undefined);
+  });
+
+  it("mesma concedente: o MESMO PR em outro repo não sobrescreve a concessão viva em silêncio", () => {
+    const r = root();
+    registerSession(r, "develop", "A", { tag });
+    assert.equal(grantMergeWindow(r, "develop", "A", "benef", { pr: 23, tag }).ok, true);
+    const second = grantMergeWindow(r, "develop", "A", "benef", { pr: 23, repo: DESIGN, tag });
+    assert.equal(second.ok, false);
+    assert.equal(second.reason, "live-grant-would-be-overwritten");
+  });
+
+  it("choque entre coordenadoras só no MESMO repo", () => {
+    const r = root();
+    registerSession(r, "develop", "A", { tag });
+    registerSession(r, "overnight", "B", { tag });
+    assert.equal(grantMergeWindow(r, "develop", "A", "benef", { pr: 23, tag }).ok, true);
+    assert.equal(grantMergeWindow(r, "overnight", "B", "benef2", { pr: 23, repo: DESIGN, tag }).ok, true, "outro repo: sem choque");
+    const r2 = root();
+    registerSession(r2, "develop", "A", { tag });
+    registerSession(r2, "overnight", "B", { tag });
+    assert.equal(grantMergeWindow(r2, "develop", "A", "benef", { pr: 23, tag }).ok, true);
+    const clash = grantMergeWindow(r2, "overnight", "B", "benef2", { pr: 23, tag });
+    assert.equal(clash.reason, "pr-already-granted-elsewhere");
+  });
+
+  it("leitores: repo presente mas ilegível não casa com nada; auto-autorização filtra por repo no leitor", () => {
+    assert.equal(grantMatchesRepo({ pr: 1, repo: "lixo" }, DEFAULT_ISSUE_REPO), false);
+    assert.equal(consumeGrantMatchesRepo({ pr: 1, repo: "lixo" }, DEFAULT_ISSUE_REPO), false);
+    assert.equal(grantRepoOf({ repo: "lixo" }), null);
+    assert.equal(grantRepoOf({}), DEFAULT_ISSUE_REPO);
+    const r = root();
+    const now = new Date().toISOString();
+    writeFileSync(
+      join(r, "data", "sessions", `interactive-${tag}-me.json`),
+      JSON.stringify({
+        kind: "interactive",
+        sessionId: "me",
+        machineTag: tag,
+        lastHeartbeat: now,
+        self_authorized_merge: { reason: "x", pr: 23, repo: DESIGN, authorizedAt: now },
+      }),
+    );
+    assert.equal(readLiveSelfAuthorizationFor(r, "me", Date.now(), DESIGN)?.repo, DESIGN);
+    assert.equal(readLiveSelfAuthorizationFor(r, "me", Date.now(), DEFAULT_ISSUE_REPO), null);
+  });
+
+  it("CLI grant-merge --repo grava o repo no record; release sem --repo avisa do lock do outro repo", () => {
+    const r = root();
+    sh("git", ["init", "-q"], r);
+    writeFileSync(join(r, "package.json"), JSON.stringify({ name: "diaria-studio" }));
+    const cli = (...args: string[]) =>
+      // `--import` com a URL resolvida daqui: o cwd do CLI é um diretório
+      // temporário sem node_modules, onde `--import tsx` não resolveria.
+      spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), join(ROOT, "scripts", "lib", "session-registry.ts"), ...args], {
+        cwd: r,
+        encoding: "utf8",
+        timeout: 60_000,
+        windowsHide: true,
+      });
+    const reg = cli("register", "--kind", "develop", "--session-id", "A");
+    assert.equal(reg.status, 0, reg.stderr + reg.stdout);
+    const g = cli("grant-merge", "--kind", "develop", "--session-id", "A", "--granted-to", "benef", "--pr", "23", "--repo", DESIGN);
+    assert.equal(g.status, 0, g.stderr + g.stdout);
+    const rec = JSON.parse(readFileSync(join(r, "data", "sessions", `develop-${tag}-A.json`), "utf8"));
+    assert.equal(rec.merge_grant.repo, DESIGN);
+    const acq = cli("merge-lock-acquire", "--session-id", "A", "--pr", "23", "--repo", DESIGN);
+    assert.match(acq.stdout, /merge-lock-acquire ok \[repo=vjpixel\/diaria-design\]/);
+    const rel = cli("merge-lock-release", "--session-id", "A", "--pr", "23");
+    assert.match(rel.stdout, /merge-lock-release ok \[repo=vjpixel\/diaria-studio\]/);
+    assert.match(rel.stderr, /--repo vjpixel\/diaria-design/);
+    const ren = cli("merge-lock-renew", "--session-id", "A");
+    assert.match(ren.stdout, /\[repo=vjpixel\/diaria-studio\]/);
+    assert.match(ren.stderr, /--repo vjpixel\/diaria-design/);
+    const bare = cli("merge-lock-release", "--session-id", "A", "--repo");
+    assert.notEqual(bare.status, 0);
+    assert.match(bare.stderr + bare.stdout, /--repo sem valor/);
+    assert.deepEqual(mergeLocksHeldBy(r, "A"), [DESIGN]);
+  });
+});
+
+describe("resolveMainRepoRoot sem checkout do diaria-studio → indeterminado (#10618 G)", () => {
+  it("nenhum candidato com data/sessions nem package.json do studio → null", () => {
+    const foreign = tmpRoot("foreign-hook");
+    for (const fn of [guardResolveMainRepoRoot, consumeResolveMainRepoRoot]) {
+      assert.equal(fn(() => join(foreign, ".git"), undefined, join(foreign, ".claude", "hooks")), null);
+    }
+  });
+});
+
+describe("consume: repo explícito na consulta de estado sempre que determinado (#10618 H)", () => {
+  it("determinado (inclusive o studio) vai explícito; indeterminado/ilegível/fora da allowlist não", () => {
+    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: "flag" }), DEFAULT_ISSUE_REPO);
+    assert.equal(stateQueryRepo({ repo: DESIGN, source: "cwd-origin" }), DESIGN);
+    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: null }), undefined);
+    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: "unparseable" }), undefined);
+    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: "flag:fora-da-allowlist" }), undefined);
   });
 });
 
 describe("e2e: guard de PII/artefato vale pra PR de QUALQUER repo (#10618)", () => {
   const HOOK = fileURLToPath(new URL("../.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs", import.meta.url));
 
-  function makeRepo(origin: string): string {
+  function makeRepo(origin: string, branch = "master"): string {
     const root = tmpRoot("pii-e2e");
-    sh("git", ["init", "-q", "-b", "master"], root);
+    sh("git", ["init", "-q", "-b", branch], root);
     sh("git", ["config", "user.email", "t@example.com"], root);
     sh("git", ["config", "user.name", "t"], root);
     writeFileSync(join(root, "README.md"), "x\n");
@@ -398,9 +645,31 @@ describe("e2e: guard de PII/artefato vale pra PR de QUALQUER repo (#10618)", () 
     assert.match(run(root, "gh pr create --title t --body b"), /"permissionDecision":"deny"/);
   });
 
-  it("-R explícito pro design também bloqueado", () => {
+  it("J: branch default `main` (como o diaria-design) é a base — antes passava sem auditoria", () => {
+    const root = makeRepo(`git@github.com:${DESIGN}.git`, "main");
+    const out = run(root, "gh pr create --title t --body b");
+    assert.match(out, /"permissionDecision":"deny"/);
+    assert.match(out, /_prbody/, "recusado pelo artefato, não por falta de base");
+  });
+
+  it("J: sem branch base nenhuma → fail-closed com mensagem clara", () => {
+    const root = makeRepo(`git@github.com:${DESIGN}.git`, "trunk");
+    const out = run(root, "gh pr create --title t --body b");
+    assert.match(out, /"permissionDecision":"deny"/);
+    assert.match(out, /não achei a branch base/);
+  });
+
+  it("J: -R pra OUTRO repo que não o checkout auditado → recusa (diffaria a branch errada)", () => {
     const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
-    assert.match(run(root, `gh pr create -R ${DESIGN} --title t --body b`), /"permissionDecision":"deny"/);
+    const out = run(root, `gh pr create -R ${DESIGN} --title t --body b`);
+    assert.match(out, /"permissionDecision":"deny"/);
+    assert.match(out, /checkout auditado/);
+  });
+
+  it("J: -R ilegível → recusa; -R igual ao origin segue o fluxo normal", () => {
+    const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
+    assert.match(run(root, "gh pr create -R $REPO --title t --body b"), /ilegível ou contraditório/);
+    assert.match(run(root, "gh pr create -R vjpixel/diaria-studio --title t --body b"), /_prbody/);
   });
 
   it("o hook de PII não usa o helper de repo (nunca pula por repo)", () => {
@@ -450,6 +719,19 @@ describe("e2e: hooks de regra do diaria-studio pulam PR de outro repo (#10618)",
   it("-R explícito pro design pula, mesmo com origin do studio", () => {
     const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
     assert.equal(run(root, `gh pr create -R ${DESIGN} --title t --body b`), "");
+  });
+
+  it("hook de tsc também pula o checkout do diaria-design (antes de procurar o tsc)", () => {
+    const tscHook = fileURLToPath(new URL("../.claude/hooks/block-pr-create-tsc-failure.mjs", import.meta.url));
+    const root = makeRepo(`git@github.com:${DESIGN}.git`);
+    const r = spawnSync(process.execPath, [tscHook], {
+      cwd: root,
+      input: JSON.stringify({ tool_name: "Bash", cwd: root, tool_input: { command: "gh pr create --title t --body b" } }),
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    assert.equal(r.stdout ?? "", "");
   });
 
   it("snapshot/tsc/test-runner usam o helper; o review dispara em qualquer repo e só pula o Closes", () => {
@@ -531,7 +813,7 @@ describe("resolveMainRepoRoot com cwd em checkout de outro repo (#10618)", () =>
     for (const fn of [guardResolveMainRepoRoot, consumeResolveMainRepoRoot]) {
       const got = fn(() => join(foreign, ".git"));
       assert.notEqual(got, foreign);
-      assert.ok(existsSync(join(got, "package.json")), got);
+      assert.ok(got !== null && existsSync(join(got, "package.json")), String(got));
     }
     const studioLike = tmpRoot("studiolike");
     mkdirSync(join(studioLike, "data", "sessions"), { recursive: true });

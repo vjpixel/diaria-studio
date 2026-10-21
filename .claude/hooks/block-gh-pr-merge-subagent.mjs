@@ -71,7 +71,9 @@
 // Gate 2) → permite, **exceto duas exceções pós-#6296** (achado do fleet
 // review #6303, Finding O — o resumo acima descrevia uma regra binária que o
 // guard deixou de implementar):
-//   - o merge lock (`data/sessions/.merge-lock.json`) está na mão de OUTRA
+//   - o merge lock DO REPO DO PR (`data/sessions/` + `mergeLockFileName(repo)`
+//     de `lib/gh-target-repo.mjs` — `.merge-lock.json` é o do diaria-studio,
+//     #10618; comando que mexe em mais de um repo confere TODOS) está na mão de OUTRA
 //     coordenadora → bloqueia mesmo sendo coordenadora registrada (há
 //     contenção real entre duas rodadas, ver `shouldBlockGhPrMerge`);
 //   - concessão de janela (`merge_grant`, #6296) viva pra uma sessão
@@ -120,7 +122,8 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { DIARIA_STUDIO_REPO, mergeLockFileName, normalizeRepoSlug, resolveGhTargetRepo } from "./lib/gh-target-repo.mjs";
+import { DIARIA_STUDIO_REPO, mergeLockFileName, normalizeRepoSlug, resolveGhTargets } from "./lib/gh-target-repo.mjs";
+import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
 // `block-askuserquestion-overnight-autonomous.mjs` — uma rodada
@@ -241,7 +244,8 @@ export const CLOCK_SKEW_TOLERANCE_MS = 60 * 1000;
 export const LOCK_HOLDER_CORRUPTED = "\u0000corrupted-merge-lock";
 
 /**
- * Lê `data/sessions/.merge-lock.json` e devolve quem o segura AGORA (#6296
+ * Lê o merge lock do repo `repo` (`data/sessions/` + `mergeLockFileName(repo)`;
+ * `.merge-lock.json` é o do diaria-studio, #10618) e devolve quem o segura AGORA (#6296
  * defeito 1; estados refinados no #6303 Finding C).
  *
  * QUATRO retornos distintos, e a distinção é o miolo da correção:
@@ -460,26 +464,38 @@ export function resolveGrantWasConsumed(consumedGrant, targetPr) {
  * vinculado. Mesmo racional/implementação dos hooks irmãos: `data/sessions/`
  * mora na junction compartilhada, só visível a partir da raiz principal.
  */
-export function resolveMainRepoRoot(execFn = execFileSync, looksLikeStudioRoot = looksLikeDiariaStudioRoot) {
-  const hookRepoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-  try {
-    // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
-    // invisível ao guard estático que só casa o nome literal do child_process.
-    const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
-      encoding: "utf8",
-      timeout: 10_000,
-      windowsHide: true,
-    }).trim();
-    const root = dirname(resolvePath(gitDir));
-    // #10618: com o cwd num checkout de OUTRO repo (ex: worktree do
-    // vjpixel/diaria-design), o `git` responde a raiz DAQUELE repo — sem
-    // `data/sessions/`, a varredura daria "nenhuma rodada ativa" e o guard
-    // liberaria qualquer merge. O registro das rodadas mora no diaria-studio,
-    // que é de onde este arquivo de hook foi carregado.
-    return looksLikeStudioRoot(root) ? root : hookRepoRoot;
-  } catch {
-    return hookRepoRoot;
+export function resolveMainRepoRoot(
+  execFn = execFileSync,
+  looksLikeStudioRoot = looksLikeDiariaStudioRoot,
+  hookDir = dirname(fileURLToPath(import.meta.url)),
+) {
+  // #10618: candidatos em ordem — o checkout do cwd (caso comum), o checkout
+  // PRINCIPAL de onde este hook foi carregado (`--git-common-dir` rodado no
+  // diretório do hook) e a raiz relativa ao arquivo. Com o cwd num checkout
+  // de OUTRO repo (ex: worktree do vjpixel/diaria-design) o 1º não serve: sem
+  // `data/sessions/`, a varredura diria "nenhuma rodada ativa" e o guard
+  // liberaria qualquer merge.
+  const commonRoot = (cwd) => {
+    try {
+      // windowsHide (#8017, mesma classe do #7952/#7959): via função injetada,
+      // invisível ao guard estático que só casa o nome literal do child_process.
+      const gitDir = execFn("git", ["rev-parse", "--git-common-dir"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        windowsHide: true,
+        ...(cwd ? { cwd } : {}),
+      }).trim();
+      return dirname(resolvePath(cwd ?? process.cwd(), gitDir));
+    } catch {
+      return null;
+    }
+  };
+  for (const candidate of [commonRoot(undefined), commonRoot(hookDir), join(hookDir, "..", "..")]) {
+    if (candidate && looksLikeStudioRoot(candidate)) return candidate;
   }
+  // Nenhum candidato é o diaria-studio: `null` = INDETERMINADO. O chamador
+  // trata como varredura degradada (bloqueia na dúvida), nunca como "sem rodada".
+  return null;
 }
 
 /** `true` se `dir` pode ser a raiz do registro de sessões: tem
@@ -506,7 +522,9 @@ export function looksLikeDiariaStudioRoot(dir) {
  */
 export function grantMatchesRepo(grant, targetRepo) {
   if (!grant) return false;
-  const grantRepo = normalizeRepoSlug(grant.repo ?? "") ?? DIARIA_STUDIO_REPO;
+  // Repo presente mas ilegível não casa com repo nenhum (nunca vira o default).
+  const grantRepo = grant.repo === undefined ? DIARIA_STUDIO_REPO : normalizeRepoSlug(grant.repo);
+  if (grantRepo === null) return false;
   const target = normalizeRepoSlug(targetRepo ?? "") ?? DIARIA_STUDIO_REPO;
   return grantRepo === target;
 }
@@ -1387,13 +1405,15 @@ export const SCOPED_GRANT_HINT =
  * "pegou".
  */
 export const LOCK_CONTENTION_HINT =
-  "O motivo REAL deste bloqueio agora é o MERGE LOCK (data/sessions/.merge-lock.json), não a falta de " +
+  "O motivo REAL deste bloqueio agora é o MERGE LOCK do repo do PR (data/sessions/.merge-lock.json pro " +
+  "diaria-studio; .merge-lock--{owner}--{repo}.json pros outros, #10618), não a falta de " +
   "identidade — se você já confirmou `check-merge-grant: granted: true` (ou já é a coordenadora " +
   "registrada) e caiu aqui de novo mesmo assim, é porque a concessão destrava IDENTIDADE, nunca TEMPO " +
   "(#6303 P1·a): havendo outra coordenadora ativa (ou o lock preso com outra sessão), é o lock quem " +
   "serializa quem mergeia AGORA. Passo certo: `npx tsx scripts/lib/session-registry.ts merge-lock-acquire " +
-  "--pr N` ANTES de rodar `gh pr merge` de novo, e `merge-lock-release --pr N` depois (sucesso ou " +
-  "desistência). Reconfirmar a concessão de novo sem adquirir o lock só repete este mesmo bloqueio.";
+  "--pr N` (com `--repo owner/name` quando o PR não é do diaria-studio) ANTES de rodar `gh pr merge` de " +
+  "novo, e `merge-lock-release --pr N` (mesmo `--repo`) depois (sucesso ou desistência). Reconfirmar a " +
+  "concessão de novo sem adquirir o lock só repete este mesmo bloqueio.";
 
 /**
  * Complemento ao `BLOCK_REASON` quando a causa REAL do bloqueio é uma
@@ -1426,6 +1446,38 @@ export const CONSUMED_GRANT_HINT =
   "`gh pr view N --json state` — se o PR já está MERGED, não há nada a refazer. A janela é de uso único e " +
   "não pode ser 'reativada': a saída é pedir uma NOVA concessão à coordenadora (`grant-merge --granted-to " +
   "{seu session_id} --pr N`) e NÃO chamar `consume-merge-grant` — o hook cuida disso depois do merge.";
+
+/**
+ * #10618 — combina os donos dos locks de VÁRIOS repos (comando que mexe em
+ * mais de um) num só valor pra `classifyMergeBlockCause`, sempre pelo lado
+ * mais restritivo: lock de OUTRA sessão (inclusive o sentinela de corrompido)
+ * > indeterminado (`undefined`) > livre (`null`) > da própria sessão.
+ */
+export function combineMergeLockHolders(holders, callerSessionId) {
+  const other = holders.find((h) => typeof h === "string" && h !== callerSessionId);
+  if (other !== undefined) return other;
+  if (holders.some((h) => h === undefined)) return undefined;
+  if (holders.some((h) => h === null)) return null;
+  return holders.length > 0 ? callerSessionId : null;
+}
+
+/** Sufixo da mensagem de bloqueio quando o PR não é (só) do diaria-studio (#10618). */
+export function buildRepoHint(targetRepos) {
+  const foreign = targetRepos.filter((r) => r !== DIARIA_STUDIO_REPO);
+  if (targetRepos.length > 1) {
+    return (
+      ` (#10618) Este comando mexe em MAIS DE UM repo (${targetRepos.join(", ")}): o guard confere o lock de ` +
+      "todos e não aceita concessão/auto-autorização (cada uma vale pra um repo só). Rode um `gh pr merge` por " +
+      "repo, cada um com o lock dele."
+    );
+  }
+  if (foreign.length === 0) return "";
+  const r = foreign[0];
+  return (
+    ` (#10618) Este PR é de ${r}: merge lock, concessão e auto-autorização são POR REPO — acrescente ` +
+    `\`--repo ${r}\` a merge-lock-acquire/merge-lock-release/merge-lock-renew/grant-merge/self-authorize-merge.`
+  );
+}
 
 /**
  * Monta a mensagem de bloqueio final. Três hints aditivos, independentes:
@@ -1485,12 +1537,36 @@ if (
       const command = payload.tool_input?.command;
       if (!isGhPrMergeCommand(command)) return;
       const repoRoot = resolveMainRepoRoot();
-      // #10618: repo do PR sendo mergeado (`-R`, URL, GH_REPO, origin do
-      // cwd). Indeterminado → diaria-studio, o comportamento anterior. Lock e
-      // concessões são lidos POR REPO; a identidade (quem é coordenadora) segue
-      // global — as rodadas são as mesmas pros dois repos.
-      const targetRepo =
-        resolveGhTargetRepo(command, payload.cwd, { subcommands: ["merge"] }).repo ?? DIARIA_STUDIO_REPO;
+      // #10618: repos de TODOS os `gh pr merge` do comando (`-R`, URL,
+      // GH_REPO, `cd X`, origin do cwd; ilegível/fora da allowlist → diaria-
+      // studio; `cd` sem repo explícito → também o diaria-studio). Lock e
+      // concessões são lidos POR REPO; a identidade (quem é coordenadora)
+      // segue global — as rodadas são as mesmas pros dois repos.
+      const targets = resolveGhTargets(command, payload.cwd, { subcommands: ["merge"], cdStrict: true });
+      const targetRepos = targets.length > 0 ? targets.map((t) => t.repo) : [DIARIA_STUDIO_REPO];
+      const singleRepo = targetRepos.length === 1 ? targetRepos[0] : null;
+      if (repoRoot !== null) {
+        appendHookRunLog(repoRoot, "merge-guard", targets.some((t) => t.source === null) ? "warn" : "info", "merge_target_repo", {
+          targets,
+        });
+      }
+      if (repoRoot === null) {
+        // Nenhum candidato é o checkout do diaria-studio: não dá pra ler o
+        // registro das rodadas. Mesmo tratamento de varredura degradada.
+        process.stdout.write(
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "deny",
+              permissionDecisionReason:
+                `${BLOCK_REASON} (#10618) Não foi possível localizar o checkout do diaria-studio (data/sessions/) ` +
+                "a partir do cwd nem do diretório do hook — varredura de sessões indeterminada, bloqueado na dúvida." +
+                buildRepoHint(targetRepos),
+            },
+          }),
+        );
+        return;
+      }
       // #6303 Finding B: usa a varredura completa (ids + degraded), não só o
       // Set — `shouldBlockGhPrMerge` precisa do sinal de degradação pra
       // decidir a leniência "solo".
@@ -1500,12 +1576,14 @@ if (
       const scan = readActiveCoordinatorScan(repoRoot, Date.now(), { crossMachine: true });
       // #10618: o filtro por repo roda DENTRO do leitor, antes de escolher —
       // uma concessão viva de outro repo nunca esconde a do repo certo.
-      const grant = readLiveMergeGrantFor(repoRoot, payload.session_id, Date.now(), targetRepo);
+      // Comando com mais de um repo: concessão nenhuma vale (cada uma é de um repo só).
+      const grant = singleRepo ? readLiveMergeGrantFor(repoRoot, payload.session_id, Date.now(), singleRepo) : null;
       const targetPr = extractGhPrMergeTargetPr(command);
       // #7171: só interessa quando NÃO há concessão viva (senão o bloqueio
       // nem seria "not-authorized") — diagnostica se a ausência é "nunca
       // teve" ou "teve e consumiu antes de mergear".
-      const consumedGrant = grant === null ? readConsumedGrantFor(repoRoot, payload.session_id, Date.now(), targetRepo) : null;
+      const consumedGrant =
+        grant === null && singleRepo ? readConsumedGrantFor(repoRoot, payload.session_id, Date.now(), singleRepo) : null;
       // #7303: auto-autorização só conta se, AGORA (não no instante em que
       // foi gravada), TODA coordenadora ativa continuar INALCANÇÁVEL
       // (#7546 — antes era "só `continuo`", ver
@@ -1527,7 +1605,9 @@ if (
       // futuro (ex: reordenar os checks de `classifyMergeBlockCause`)
       // poderia transformar em bypass de verdade — fechado aqui na origem,
       // não só confiando no check posterior.
-      const selfAuth = readLiveSelfAuthorizationFor(repoRoot, payload.session_id, Date.now(), targetRepo);
+      const selfAuth = singleRepo
+        ? readLiveSelfAuthorizationFor(repoRoot, payload.session_id, Date.now(), singleRepo)
+        : null;
       const selfAuthStillValid =
         selfAuth !== null && !scan.degraded && onlyUnreachableCoordinatorsActive(scan);
       const ctx = {
@@ -1542,7 +1622,11 @@ if (
         hasSelfAuthorization: selfAuthStillValid,
         selfAuthPr: selfAuthStillValid ? selfAuth?.pr : undefined,
         targetPr,
-        mergeLockHolder: readMergeLockHolder(repoRoot, Date.now(), targetRepo),
+        // #10618: o lock de CADA repo envolvido; o mais restritivo decide.
+        mergeLockHolder: combineMergeLockHolders(
+          targetRepos.map((r) => readMergeLockHolder(repoRoot, Date.now(), r)),
+          payload.session_id,
+        ),
         // #6303 Finding B: varredura degradada não pode alimentar a
         // leniência "sou a única coordenadora, posso sem lock".
         scanDegraded: scan.degraded,
@@ -1569,14 +1653,9 @@ if (
             hookSpecificOutput: {
               hookEventName: "PreToolUse",
               permissionDecision: "deny",
-              permissionDecisionReason:
-                buildBlockReason({ ...ctx, blockCause }) +
-                // #10618: os comandos citados acima miram o lock do
-                // diaria-studio por padrão — PR de outro repo precisa do --repo.
-                (targetRepo !== DIARIA_STUDIO_REPO
-                  ? ` (#10618) Este PR é de ${targetRepo}: o merge lock e as concessões são POR REPO — ` +
-                    `acrescente \`--repo ${targetRepo}\` a merge-lock-acquire/merge-lock-release/grant-merge.`
-                  : ""),
+              // #10618: os comandos citados acima miram o lock do
+              // diaria-studio por padrão — PR de outro repo precisa do --repo.
+              permissionDecisionReason: buildBlockReason({ ...ctx, blockCause }) + buildRepoHint(targetRepos),
             },
           }),
         );

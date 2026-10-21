@@ -1297,6 +1297,20 @@ export function resolveEmitDecision(toolResponseText, command) {
 }
 
 /**
+ * #10618 — `true` quando a URL do PR criado é de um repo de FORA permitido
+ * (`platform.config.json → issue_repos`, não o diaria-studio). Só decide se o
+ * conserto de `Closes #N` (`ensureCloseKeywords`, convenção de issues do
+ * diaria-studio) roda — o review automatizado dispara em PR de qualquer repo.
+ * URL ilegível ou repo fora da allowlist → `false` (regra do diaria-studio).
+ */
+export function isForeignRepoPrUrl(prUrl) {
+  const m = /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/i.exec(
+    typeof prUrl === "string" ? prUrl.trim() : "",
+  );
+  return m ? isForeignRepo(m[1]) : false;
+}
+
+/**
  * Decisão pura combinando os dois fixes do #6298: existe uma URL de PR
  * genuinamente criada (fix 1) E, quando o comando está disponível no payload,
  * ele de fato é um `gh pr create` (fix 2)? Retorna a URL a usar, ou `null`
@@ -1313,17 +1327,6 @@ export function resolveEmitDecision(toolResponseText, command) {
  * pré-#6298. Só quando o comando está presente E resolve `"not-create"` é
  * que o fix 2 nega o disparo — nunca por ausência do campo.
  */
-/**
- * #10618 — `true` quando a URL do PR criado é de um repo que NÃO é o
- * diaria-studio. URL ilegível → `false` (aplica o review, como antes).
- */
-export function isForeignRepoPrUrl(prUrl) {
-  const m = /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/i.exec(
-    typeof prUrl === "string" ? prUrl.trim() : "",
-  );
-  return m ? isForeignRepo(m[1]) : false;
-}
-
 export function shouldEmitReviewInstruction(toolResponseText, command) {
   return resolveEmitDecision(toolResponseText, command).prUrl;
 }

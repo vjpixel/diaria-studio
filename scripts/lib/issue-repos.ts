@@ -2,9 +2,12 @@
  * Identidade de issue multi-repo (#10618).
  *
  * Decisão do editor (20/10/2026, registrada na própria #10618): a identidade
- * de uma issue é `owner/repo#N` em todo lugar — plan.json, claims, marcadores,
- * relatórios. O número sozinho colide entre repos (o #21 existe tanto no
- * `vjpixel/diaria-studio` quanto no `vjpixel/diaria-design`).
+ * de uma issue é `owner/repo#N` — plan.json, claims, marcadores, relatórios.
+ * Isso é o ESTADO-ALVO: esta 1ª fatia entrega o modelo, o merge lock e o
+ * guard por repo e o escopo dos hooks; claims, fila, gates e relatórios ainda
+ * listam só o diaria-studio (fatia 2, ver o corpo da PR #10668). O número
+ * sozinho colide entre repos (o #21 existe tanto no `vjpixel/diaria-studio`
+ * quanto no `vjpixel/diaria-design`).
  *
  * **Compatibilidade com dado legado (invariante deste módulo):** todo número
  * "pelado" já gravado (`claimed_issues: [123]`, `--issue 123`, `#123` num
@@ -16,13 +19,21 @@
  *
  * **Lista de repos num lugar só:** `platform.config.json → issue_repos`. O 1º
  * item é o repo default (o `diaria-studio`, onde as rodadas rodam). Nenhum
- * script deve hardcodar a lista — use `readIssueRepos`.
+ * script deve hardcodar a lista — use `readIssueRepos` (hoje lida pelos
+ * hooks via `loadAllowedForeignRepos`; os scripts de fila passam a lê-la na
+ * fatia 2).
  *
  * Os hooks (`.claude/hooks/*.mjs`) são self-contained e não importam `.ts`
  * (ver docblock de `pr-create-review.mjs`); a parte deles — descobrir de qual
  * repo é o PR de um `gh pr create`/`gh pr merge` — vive em
  * `.claude/hooks/lib/gh-target-repo.mjs`. As duas cópias da constante do repo
- * default e do nome do arquivo de lock são travadas por paridade em
+ * default, de `normalizeRepoSlug` e do nome do arquivo de lock são travadas
+ * por paridade em `test/issue-repos-10618.test.ts`. Duas ressalvas do lado dos
+ * hooks: o repo de um `gh pr` sem `-R`/URL vem do `origin` do cwd, o que é
+ * HEURÍSTICA (o `gh` também respeita `gh repo set-default` e `upstream`); e o
+ * `resolveMainRepoRoot` dos hooks de merge só acha o registro de sessões a
+ * partir do cwd ou do checkout de onde o hook foi carregado — fora disso
+ * devolve `null` e o guard bloqueia na dúvida. Paridade em
  * `test/issue-repos-10618.test.ts`.
  */
 
@@ -41,8 +52,9 @@ export interface IssueRef {
 const REPO_SLUG_RE = /^([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)\/([A-Za-z0-9._-]+)$/;
 
 /**
- * Normaliza `owner/name` (aceita também `github.com/owner/name`, URL https e
- * sufixo `.git`). `null` quando não é um slug reconhecível — nunca adivinha.
+ * Normaliza `OWNER/REPO` (aceita também `github.com/OWNER/REPO`, com
+ * `https://` e sufixo `.git`; outro host não). Owner com `--` interno é
+ * recusado. `null` quando não é um slug reconhecível — nunca adivinha.
  */
 export function normalizeRepoSlug(input: string | null | undefined): string | null {
   if (typeof input !== "string") return null;
@@ -51,7 +63,7 @@ export function normalizeRepoSlug(input: string | null | undefined): string | nu
   s = s.replace(/^https?:\/\//i, "").replace(/^(?:www\.)?github\.com\//i, "");
   s = s.replace(/\.git$/i, "").replace(/\/+$/, "");
   const m = REPO_SLUG_RE.exec(s);
-  if (!m) return null;
+  if (!m || m[1].includes("--")) return null;
   return `${m[1]}/${m[2]}`.toLowerCase();
 }
 
@@ -142,7 +154,7 @@ export function legacyIssueNumber(ref: IssueRef): number | null {
  * serializam). O repo default mantém o nome histórico `.merge-lock.json` —
  * sessões já rodando, hooks e o painel continuam lendo o mesmo arquivo. Os
  * outros ganham sufixo; o ponto inicial mantém o arquivo fora das varreduras
- * de registro (`readdirSync` filtra dotfiles).
+ * de registro (cada varredura filtra `startsWith(".")` explicitamente).
  *
  * Espelhado em `.claude/hooks/lib/gh-target-repo.mjs` (`mergeLockFileName`),
  * paridade travada por teste.
