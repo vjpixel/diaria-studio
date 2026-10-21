@@ -42,10 +42,15 @@ const BACKLOG = [0, 1, 2, 3, 4].map((i) => ({
 /** Cadastro novo (dentro da janela default de 30 dias). */
 const NOVO = { id: 900, email: "n0@x.com", created_at: new Date(NOW - 3 * DAY).toISOString(), tagNames: [] as string[] };
 
-function deps(opts: { blacklisted: ReadonlySet<string>; withNovo?: boolean; maxBacklogReplacements?: number }) {
+function deps(opts: {
+  blacklisted: ReadonlySet<string>;
+  withNovo?: boolean;
+  maxBacklogReplacements?: number;
+  initialStore?: BrevoDiariaStore;
+}) {
   const calls: string[] = [];
   const lines: string[] = [];
-  let store: BrevoDiariaStore = { contacts: [] };
+  let store: BrevoDiariaStore = opts.initialStore ?? { contacts: [] };
   const people = opts.withNovo ? [NOVO, ...BACKLOG] : BACKLOG;
   const records = [1, 2, 3, 4, 5, 6].map((i) => ({ broadcastId: i, sentAt: new Date(NOW - (10 - i) * DAY).toISOString(), edition: `e${i}` }));
   const d: KitSemAberturaDeps = {
@@ -124,6 +129,31 @@ describe("Kit→Brevo: cadastro novo pulado cede a vaga (#10701 item 3)", () => 
     assert.equal(r.moved, 2);
     assert.deepEqual(ingested(calls), ["b0@x.com", "b1@x.com"]);
     assert.equal(r.deferred, 3);
+  });
+
+  it("fila já cheia: o novo entrou sem o teto da fila e, pulado, NÃO abre vaga pro backlog", async () => {
+    // 1 contato já in_brevo e daily_send_cap 1: o backlog não tem vaga com ou
+    // sem o novo, então trocar o novo pulado por um do backlog estouraria a fila.
+    const initialStore: BrevoDiariaStore = {
+      contacts: [
+        {
+          email: "ja@x.com",
+          beehiiv_subscription_id: "kit-sem-abertura:1",
+          status: "in_brevo",
+          opens_count: 0,
+          sends_count: 0,
+          last_open_rate: null,
+          added_at: "2026-10-01T00:00:00.000Z",
+          last_evaluated_at: null,
+        },
+      ],
+    };
+    const { d, calls } = deps({ blacklisted: new Set(["n0@x.com"]), withNovo: true, initialStore });
+    const r = await runKitSemAberturaSync(cfg(1), { push: true }, d);
+    assert.equal(r.skippedBlacklisted, 1);
+    assert.equal(r.moved, 0);
+    assert.deepEqual(ingested(calls), []);
+    assert.ok(!calls.includes("check:b0@x.com"), "nenhum substituto lido");
   });
 
   it("novo não blacklisted continua entrando antes do backlog (sem reposição)", async () => {

@@ -509,22 +509,23 @@ export async function runKitSemAberturaSync(
   } catch (e) {
     log(`aviso: cota da conta Brevo (dia de envio ${sendDay}) não lida (${(e as Error).message}).`);
   }
+  const backlogSlots = (newCount: number): number => {
+    const slots = computeBacklogSlots({
+      queueCap,
+      currentActiveCount,
+      seedCount: EDITOR_SEED_EMAILS.length,
+      newCount,
+      dailyLimit,
+      transactionalToday: transactional,
+    });
+    return opts.maxAdd !== undefined ? Math.min(slots, Math.max(0, opts.maxAdd - newCount)) : slots;
+  };
   const wave = planKitSemAberturaWave({
     selected: selection.selected,
     nowMs: deps.nowMs,
     newSignupWindowDays: numbers.newSignupWindowDays,
     rolloutPaused: deps.rolloutPaused(),
-    backlogSlots: (newCount) => {
-      const slots = computeBacklogSlots({
-        queueCap,
-        currentActiveCount,
-        seedCount: EDITOR_SEED_EMAILS.length,
-        newCount,
-        dailyLimit,
-        transactionalToday: transactional,
-      });
-      return opts.maxAdd !== undefined ? Math.min(slots, Math.max(0, opts.maxAdd - newCount)) : slots;
-    },
+    backlogSlots,
   });
   // `--max-add N` é teto explícito do operador sobre a rodada INTEIRA deste
   // passo, inclusive cadastros novos (`--max-add 0` = ninguém).
@@ -562,9 +563,10 @@ export async function runKitSemAberturaSync(
   // DEFINITIVO; falha de leitura adia sem repor (transitória — repor
   // queimaria a fila numa instabilidade da API). Os cortados pelo
   // `--max-add` vêm primeiro (são os mais antigos fora da rodada).
-  // #10701 — cadastro NOVO pulado também cede a vaga: ele ocupou uma vaga da
-  // fila/cota (`computeBacklogSlots` desconta os novos) ou do `--max-add`, e
-  // trocá-lo por um do backlog mantém o total da rodada. Sem isso, com
+  // #10701 — cadastro NOVO pulado também cede a vaga, mas só até o nº de
+  // vagas do backlog que os novos tiraram (`novoDisplacedSlots`): o novo
+  // entra sem o teto da fila, o backlog não, então com a fila já cheia trocar
+  // um novo por um do backlog estouraria `daily_send_cap`. Sem isso, com
   // `--max-add` cortando o backlog, um novo blacklisted deixava a rodada
   // abaixo do teto pedido pelo operador.
   const reserve: typeof capped = [
@@ -572,15 +574,18 @@ export async function runKitSemAberturaSync(
     ...wave.backlogReserve.map((s) => ({ ...s, wave: "backlog" as const })),
   ];
   const maxReplacements = deps.maxBacklogReplacements ?? KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS;
+  let novoDisplacedSlots = wave.newCount > 0 ? Math.max(0, backlogSlots(0) - backlogSlots(wave.newCount)) : 0;
   let replacements = 0;
   let replacementCapHit = false;
   const queue: typeof capped = [...capped];
-  const replace = () => {
+  const replace = (c: (typeof capped)[number]) => {
     if (reserve.length === 0) return;
+    if (c.wave === "novo" && novoDisplacedSlots === 0) return;
     if (replacements >= maxReplacements) {
       replacementCapHit = true;
       return;
     }
+    if (c.wave === "novo") novoDisplacedSlots--;
     queue.push(reserve.shift()!);
     replacements++;
     deferred--;
@@ -607,7 +612,7 @@ export async function runKitSemAberturaSync(
     if (blacklisted) {
       skippedBlacklisted++;
       log(`  ${c.email}: já emailBlacklisted na Brevo diária — fica no Kit, não é movido (#10536).`);
-      replace();
+      replace(c);
       continue;
     }
     // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
@@ -621,7 +626,7 @@ export async function runKitSemAberturaSync(
     }
     if (typeof nivel === "string" && nivel.trim() !== "") {
       log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
-      replace();
+      replace(c);
       continue;
     }
     toMove.push(c);
