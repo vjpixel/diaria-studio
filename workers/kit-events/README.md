@@ -12,6 +12,11 @@ Contrato (rotas, chave do KV, formato do registro):
 
 Aberturas não têm webhook no Kit e continuam vindo da ingestão por broadcast.
 
+Retries do Kit (#10722): o corpo do webhook não traz id de evento, então cada
+tentativa de entrega ganha chave própria no KV. A ingestão descarta como retry
+o evento do mesmo assinante, tipo e URL a até 30 min de um já ingerido
+(`KIT_WEBHOOK_RETRY_DEDUPE_MS`); o KV guarda todas as tentativas.
+
 ## Estado
 
 Código e deploy automático prontos. Sem KV e sem segredos, o Worker publicado

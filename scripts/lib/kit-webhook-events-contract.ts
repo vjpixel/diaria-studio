@@ -49,6 +49,12 @@
  * no formato antigo (assinante primeiro).
  * Sem TTL: o KV é a fonte durável enquanto o store local pode ser
  * reconstruído do zero (`--reset`), e a ingestão é idempotente pela chave.
+ *
+ * A chave identifica a TENTATIVA de entrega, não o evento do Kit: o corpo não
+ * traz id de evento nem de entrega, e um retry do Kit grava uma 2ª chave
+ * (outro horário, outro sufixo). A deduplicação desses retries é feita na
+ * ingestão, por janela (#10722, `KIT_WEBHOOK_RETRY_DEDUPE_MS` em
+ * `kit-webhook-events-ingest.ts`); o KV guarda todas as tentativas.
  */
 
 /** Tipo canônico do evento — o segmento `{tipo}` da URL do webhook. */
@@ -74,7 +80,8 @@ export const KIT_WEBHOOK_ROUTES: Readonly<Record<KitWebhookEventType, string>> =
 
 /** Registro gravado no KV e devolvido por `GET /api/eventos`. */
 export interface KitWebhookEventRecord {
-  /** Chave KV — id estável do evento, usado como chave natural na ingestão. */
+  /** Chave KV — id estável da tentativa de entrega, usado como chave natural
+   *  na ingestão. Um retry do Kit tem chave própria (#10722). */
   key: string;
   type: KitWebhookEventType;
   /** `subscriber.id` do Kit, como string. */

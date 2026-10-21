@@ -79,7 +79,13 @@ export async function main(
     }
     const result = ingestKitWebhookEvents(db, fetched.events);
     console.log(
-      JSON.stringify({ since, fetched: fetched.events.length, new_events: result.newEvents, already_known: result.alreadyKnown }),
+      JSON.stringify({
+        since,
+        fetched: fetched.events.length,
+        new_events: result.newEvents,
+        already_known: result.alreadyKnown,
+        retry_duplicates: result.retryDuplicates,
+      }),
     );
     return 0;
   } finally {

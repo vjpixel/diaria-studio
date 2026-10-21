@@ -1776,6 +1776,41 @@ export function recordKitWebhookEvent(
   return { inserted: Number(result.changes) > 0, subscriberId };
 }
 
+/** O evento já está no store pela própria chave do KV? */
+export function hasKitWebhookEventKey(db: DatabaseSync, key: string): boolean {
+  return db.prepare("SELECT 1 FROM kit_webhook_event WHERE event_key = ?").get(key) !== undefined;
+}
+
+/**
+ * Já existe no store OUTRO evento (chave diferente) do mesmo assinante Kit,
+ * mesmo tipo e mesma URL a no máximo `windowMs` de `ev.received_at`, em
+ * qualquer direção? É o critério de "retry do mesmo webhook" (#10722) — ver
+ * `KIT_WEBHOOK_RETRY_DEDUPE_MS` em `kit-webhook-events-ingest.ts`. Janela
+ * simétrica: se a listagem eventualmente consistente do KV entregar a
+ * tentativa posterior numa ingestão e a anterior só na seguinte, a segunda a
+ * chegar ainda casa com a primeira.
+ */
+export function hasKitWebhookEventNear(
+  db: DatabaseSync,
+  ev: Pick<KitWebhookEventInput, "key" | "type" | "kit_subscriber_id" | "url" | "received_at">,
+  windowMs: number,
+): boolean {
+  const t = Date.parse(ev.received_at);
+  if (Number.isNaN(t)) return false;
+  const from = new Date(t - windowMs).toISOString();
+  const to = new Date(t + windowMs).toISOString();
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM kit_webhook_event
+         WHERE received_at >= ? AND received_at <= ?
+           AND kit_subscriber_id = ? AND type = ? AND url IS ? AND event_key <> ?
+         LIMIT 1`,
+      )
+      .get(from, to, ev.kit_subscriber_id, ev.type, ev.url, ev.key) !== undefined
+  );
+}
+
 /** Linha do tempo de webhooks do Kit de 1 assinante, em ordem cronológica. */
 export function getKitWebhookEventsForSubscriber(
   db: DatabaseSync,

@@ -10,10 +10,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
   isKitWebhookEventRecord,
+  sortKitWebhookEvents,
   type KitWebhookEventRecord,
   type KitWebhookEventsPayload,
 } from "./kit-webhook-events-contract.ts";
-import { getLatestKitWebhookEventReceivedAt, recordKitWebhookEvent } from "./diaria-subscribers-db.ts";
+import {
+  getLatestKitWebhookEventReceivedAt,
+  hasKitWebhookEventKey,
+  hasKitWebhookEventNear,
+  recordKitWebhookEvent,
+} from "./diaria-subscribers-db.ts";
 
 /**
  * Margem subtraída do último `received_at` ingerido antes de pedir os
@@ -66,9 +72,35 @@ export async function fetchKitWebhookEvents(
   return { ok: true, events, malformed: list.length - events.length };
 }
 
+/**
+ * Janela de deduplicação de retries do webhook do Kit (#10722).
+ *
+ * O corpo do webhook do Kit não traz id de evento nem de entrega (só o
+ * `subscriber`, ver `kit-webhook-events-contract.ts`), e o Worker grava cada
+ * tentativa com chave própria (horário de recebimento + sufixo aleatório).
+ * Um retry de uma entrega que o Worker já gravou (resposta perdida, timeout
+ * do lado do Kit) vira 2 chaves no KV. Sem id estável, a única forma de
+ * reconhecer o retry é aproximada: mesmo assinante, mesmo tipo, mesma URL,
+ * a no máximo esta distância de um evento já ingerido.
+ *
+ * Política declarada (premissa da #10722, revisável aqui):
+ *  - O KV continua guardando TODAS as tentativas, sem perda: a dedup é só na
+ *    ingestão, então mudar a janela e reingerir (`--reset` + `--all`) refaz
+ *    a contagem sem depender de nada que já tenha sido apagado.
+ *  - Custo aceito: dois cliques legítimos do mesmo assinante no MESMO link
+ *    dentro da janela viram 1 registro (o payload é idêntico ao de um
+ *    retry, não há como separar). Para cancelamento/bounce/reclamação/
+ *    ativação, repetir o mesmo fato em 30 min não acrescenta informação.
+ *  - Eventos de tipo, URL ou assinante diferentes nunca são agrupados.
+ */
+export const KIT_WEBHOOK_RETRY_DEDUPE_MS = 30 * 60 * 1000;
+
 export interface KitWebhookIngestResult {
   newEvents: number;
+  /** Mesma chave já no store (releitura da margem incremental). */
   alreadyKnown: number;
+  /** Chave nova, mas é retry de um evento já ingerido (#10722). */
+  retryDuplicates: number;
 }
 
 export function ingestKitWebhookEvents(
@@ -78,12 +110,22 @@ export function ingestKitWebhookEvents(
 ): KitWebhookIngestResult {
   let newEvents = 0;
   let alreadyKnown = 0;
-  for (const ev of events) {
+  let retryDuplicates = 0;
+  // Ordem cronológica: dentro de um lote, a 1ª tentativa é a que fica.
+  for (const ev of sortKitWebhookEvents([...events])) {
+    if (hasKitWebhookEventKey(db, ev.key)) {
+      alreadyKnown++;
+      continue;
+    }
+    if (hasKitWebhookEventNear(db, ev, KIT_WEBHOOK_RETRY_DEDUPE_MS)) {
+      retryDuplicates++;
+      continue;
+    }
     const { inserted } = recordKitWebhookEvent(db, ev, now);
     if (inserted) newEvents++;
     else alreadyKnown++;
   }
-  return { newEvents, alreadyKnown };
+  return { newEvents, alreadyKnown, retryDuplicates };
 }
 
 /** Atalho: `since` incremental a partir do que o store já tem. */
