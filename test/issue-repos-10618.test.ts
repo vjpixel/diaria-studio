@@ -912,14 +912,69 @@ describe("fail-closed: comando fora da forma simples (verificação da PR #10668
     });
   }
 
-  it("prefixo/flag global antes do merge: o resolver já é estrito (detecção do merge é a #10688)", () => {
-    // `isGhPrMergeCommand` ainda não reconhece estas formas (#10681, PR #10688):
-    // até lá o guard nem roda pra elas. O lado deste PR — o alvo — já é estrito.
+  it("prefixo/flag global antes do merge: o resolver é estrito", () => {
     for (const command of [`GH_REPO=${DESIGN} gh pr merge 6`, `gh pr -R ${DESIGN} merge 6`, `env gh pr merge 6 -R ${DESIGN}`]) {
       const t = hookRepo.resolveGhTargets(command, "/x", { subcommands: ["merge"], cdStrict: true, execFn: () => { throw new Error("x"); } });
       assert.ok(hookRepo.isComplexTarget(t), command);
       assert.ok(t.some((x) => x.repo === DEFAULT_ISSUE_REPO), command);
     }
+  });
+
+  // #10681 (PR #10688) + #10618: o lexer DETECTA o merge nestas formas (antes o
+  // guard nem rodava) e `resolveMergeTargets` não consegue prová-las simples —
+  // caem no modo estrito, que confere o lock do studio. End-to-end pelo hook.
+  const prefixed: Array<[string, string]> = [
+    ["GH_REPO= do design", `GH_REPO=${DESIGN} gh pr merge 6`],
+    ["env", "env gh pr merge 6"],
+    ["-R do studio antes do merge", `gh pr -R ${DEFAULT_ISSUE_REPO} merge 6`],
+    ["bash -c", 'bash -c "gh pr merge 6"'],
+  ];
+  for (const [name, command] of prefixed) {
+    it(`#10681: forma antes invisível ao guard é negada com o lock do studio preso (${name})`, () => {
+      const root = setup({ lockHolder: "outra-sessao" });
+      assert.match(run(root, command), DENY, command);
+      const r = hookRepo.resolveMergeTargets(command, root, { execFn: () => { throw new Error("x"); } });
+      assert.equal(r.mode, "strict", command);
+      assert.equal(r.grantRepo, null, command);
+      assert.ok(r.targets.includes(DEFAULT_ISSUE_REPO), command);
+    });
+  }
+
+  // Verificação adversarial da PR #10688 @0e5a19f: heredoc alimentando um
+  // shell passava pelo guard. Corpo de heredoc agora é fail-closed.
+  const heredocProbes: Array<[string, string]> = [
+    ["bash -c \"$(cat <<'EOF' …)\"", `bash -c "$(cat <<'EOF'\ngh pr merge 6\nEOF\n)"`],
+    ["{ cat <<'EOF' … } | sh", "{ cat <<'EOF'\ngh pr merge 6\nEOF\n} | sh"],
+    ["while … eval … done <<'EOF'", `while read -r l; do\n  eval "$l"\ndone <<'EOF'\ngh pr merge 6\nEOF`],
+    ["bash <<< 'gh pr merge 6'", "bash <<< 'gh pr merge 6'"],
+  ];
+  for (const [name, command] of heredocProbes) {
+    it(`#10681: heredoc/here-string que alimenta shell é negado com o lock do studio preso (${name})`, () => {
+      const root = setup({ lockHolder: "outra-sessao" });
+      assert.match(run(root, command), DENY, command);
+    });
+  }
+
+  it("#10681: heredoc-como-dado da whitelist (git commit / gh pr create) não é merge, nem com o lock preso", () => {
+    const root = setup({ lockHolder: "outra-sessao" });
+    for (const command of [
+      "git commit -F - <<'EOF'\nfix: x\n\n&& gh pr merge 5\nEOF",
+      `git commit -m "$(cat <<'EOF'\nfix: x\n\nrodar && gh pr merge 5 depois\nEOF\n)"`,
+      `gh pr create --title "x" --body "$(cat <<'EOF'\nCloses #1\n\n&& gh pr merge 5\nEOF\n)"`,
+    ]) {
+      assert.equal(run(root, command), "", command);
+    }
+  });
+
+  it("#10681: concessão não vale pras formas com prefixo (estrito), nem pra beneficiária", () => {
+    const root = setup({ lockHolder: "benef", grantPr: 6 });
+    assert.equal(run(root, "gh pr merge 6 --squash", "benef"), "", "forma simples com concessão passa");
+    assert.match(run(root, "env gh pr merge 6 --squash", "benef"), DENY);
+  });
+
+  it("#10681: caso simples do studio segue passando (coordenadora com o próprio lock)", () => {
+    const root = setup({ lockHolder: "coord-A" });
+    assert.equal(run(root, "gh pr merge 123 --squash"), "");
   });
 
   it("subshell/pushd a partir do checkout do design também conferem o lock do studio", () => {

@@ -264,7 +264,6 @@
           {
             "type": "command",
             "command": "node",
-            "if": "Bash(gh pr merge*)",
             "timeout": 10,
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/consume-merge-grant-on-merge.mjs"
