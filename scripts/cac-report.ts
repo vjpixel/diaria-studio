@@ -187,6 +187,8 @@ import {
   excludeInternalAndTestSubscribers,
   resolveApoiaSeCampaignName,
   computeKitLifetimeChurn,
+  loadKitLifecycleRows,
+  LTV_FONTES_SEM_INTEGRACAO,
   type ApoiaSeMonthCacheEntry,
   type ArpuResult,
   type ChurnRateResult,
@@ -339,42 +341,12 @@ export type CacReportLtvSection =
 
 export type CacReportLtvPopulacao = "kit-store" | "beehiiv-snapshot";
 
-/** Hotmart vende, mas não tem fonte de receita no repo (#10703): entra no
- *  ARPU como fonte SEM dado, então o relatório diz qual falta e trata o
- *  número como piso em vez de omitir a fonte em silêncio. */
-const LTV_FONTES_SEM_INTEGRACAO = ["hotmart"] as const;
-
 export interface ComputeLtvSectionOptions {
   /** Store unificado de onde sai a população Kit (#10703). Default:
    *  `{rootDir}/data/diaria-subscribers/diaria-subscribers.db`. */
   storeDbPath?: string;
   /** Injetável pra teste — mesmo padrão de `loadStoreLeitorSection`. */
   openDb?: (path: string) => DatabaseSync | null;
-}
-
-/**
- * Lê as assinaturas Kit do store com o e-mail do alias Kit (#10703). Linha
- * sem alias com e-mail ganha um identificador sintético, pra não sumir da
- * contagem. Leitura pura sobre um `db` já aberto.
- */
-export function loadKitLifecycleRows(db: DatabaseSync): KitLifecycleRow[] {
-  const raw = db
-    .prepare(
-      `SELECT s.id AS id, MIN(ia.email) AS email, s.status AS status,
-              s.entered_at AS enteredAt, s.exited_at AS exitedAt
-       FROM subscription s
-       LEFT JOIN identity_alias ia
-         ON ia.subscriber_id = s.subscriber_id AND ia.platform = 'kit' AND ia.email IS NOT NULL
-       WHERE s.platform = 'kit'
-       GROUP BY s.id`,
-    )
-    .all() as Array<{ id: number; email: string | null; status: string | null; enteredAt: string | null; exitedAt: string | null }>;
-  return raw.map((r) => ({
-    email: r.email ?? `kit-subscription:${r.id}`,
-    status: r.status,
-    enteredAt: r.enteredAt,
-    exitedAt: r.exitedAt,
-  }));
 }
 
 function defaultLtvStoreDbPath(rootDir: string): string {

@@ -56,6 +56,7 @@
  */
 
 import { BRT_TIMEZONE, datePartsInTz } from "./next-edition-date.ts";
+import type { DatabaseSync } from "node:sqlite";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 // `cohorts.ts` é dependency-free (só importa `editor-copy.ts`, também sem
 // deps) — ao contrário de `cac.ts`, não arrasta `dotenv/config` (ver
@@ -796,6 +797,39 @@ export function computeKitLifetimeChurn(
     exposureMonths,
     semEntradaCount,
   };
+}
+
+/** Hotmart vende, mas não tem fonte de receita no repo (#10703): entra no
+ *  ARPU como fonte SEM dado, então o número sai PISO e diz qual fonte falta
+ *  em vez de omiti-la em silêncio. Compartilhado por `cac-report.ts` e pelo
+ *  bloco Valor do Studio (`studio-metrics.ts`, #10713) — paridade #9023. */
+export const LTV_FONTES_SEM_INTEGRACAO: readonly string[] = ["hotmart"];
+
+/**
+ * Lê as assinaturas Kit do store com o e-mail do alias Kit (#10703). Linha
+ * sem alias com e-mail ganha um identificador sintético, pra não sumir da
+ * contagem. Leitura pura sobre um `db` já aberto — morava em `cac-report.ts`
+ * e veio pra cá (#10713) pra o Studio reusar sem importar um script com
+ * `main`.
+ */
+export function loadKitLifecycleRows(db: DatabaseSync): KitLifecycleRow[] {
+  const raw = db
+    .prepare(
+      `SELECT s.id AS id, MIN(ia.email) AS email, s.status AS status,
+              s.entered_at AS enteredAt, s.exited_at AS exitedAt
+       FROM subscription s
+       LEFT JOIN identity_alias ia
+         ON ia.subscriber_id = s.subscriber_id AND ia.platform = 'kit' AND ia.email IS NOT NULL
+       WHERE s.platform = 'kit'
+       GROUP BY s.id`,
+    )
+    .all() as Array<{ id: number; email: string | null; status: string | null; enteredAt: string | null; exitedAt: string | null }>;
+  return raw.map((r) => ({
+    email: r.email ?? `kit-subscription:${r.id}`,
+    status: r.status,
+    enteredAt: r.enteredAt,
+    exitedAt: r.exitedAt,
+  }));
 }
 
 const NORMALIZED_INTERNAL_EMAILS_LTV = new Set(INTERNAL_EMAILS.map(normalizeEmailLocal));
