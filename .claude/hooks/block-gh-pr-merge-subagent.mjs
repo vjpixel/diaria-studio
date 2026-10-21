@@ -342,7 +342,7 @@ export function readMergeLockHolder(repoRoot, now = Date.now(), repo = DIARIA_ST
  *     não aqui), e a asserção explícita custa pouco — melhor que documentar
  *     "por que não precisa" e confiar que a premissa nunca muda.
  */
-export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now()) {
+export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now(), repo = undefined) {
   if (typeof sessionId !== "string" || sessionId === "") return null;
   const dir = sessionsDir(repoRoot);
   let entries;
@@ -361,6 +361,7 @@ export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now()) {
       if (Number.isFinite(grantorHeartbeatMs) && now - grantorHeartbeatMs > SOFT_STALE_MS) continue;
       const grant = record.merge_grant;
       if (!grant || grant.grantedTo !== sessionId) continue;
+      if (repo !== undefined && !grantMatchesRepo(grant, repo)) continue; // #10618: só o repo do merge
       if (grant.consumedAt) continue;
       if (grant.grantedTo === grant.grantedBy) continue;
       const grantedMs = Date.parse(grant.grantedAt);
@@ -396,7 +397,7 @@ export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now()) {
  * bloqueada recebe a mesma orientação genérica ("peça uma concessão"), que
  * não é o problema dela (ela TINHA uma; queimou sozinha).
  */
-export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now()) {
+export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now(), repo = undefined) {
   if (typeof sessionId !== "string" || sessionId === "") return null;
   const dir = sessionsDir(repoRoot);
   let entries;
@@ -415,6 +416,7 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now()) {
       if (Number.isFinite(grantorHeartbeatMs) && now - grantorHeartbeatMs > SOFT_STALE_MS) continue;
       const grant = record.merge_grant;
       if (!grant || grant.grantedTo !== sessionId) continue;
+      if (repo !== undefined && !grantMatchesRepo(grant, repo)) continue; // #10618: só o repo do merge
       if (!grant.consumedAt) continue; // aqui é o OPOSTO de readLiveMergeGrantFor
       if (grant.grantedTo === grant.grantedBy) continue;
       const grantedMs = Date.parse(grant.grantedAt);
@@ -879,7 +881,7 @@ export function readLiveInteractiveRegistrationFor(repoRoot, sessionId, now = Da
  * Mesma disciplina de TTL/clock-skew de `readLiveMergeGrantFor`. `null` em
  * qualquer estado onde não dá pra confirmar — nunca lança.
  */
-export function readLiveSelfAuthorizationFor(repoRoot, sessionId, now = Date.now()) {
+export function readLiveSelfAuthorizationFor(repoRoot, sessionId, now = Date.now(), repo = undefined) {
   if (typeof sessionId !== "string" || sessionId === "") return null;
   const dir = sessionsDir(repoRoot);
   const suffix = `-${sessionId}.json`;
@@ -896,6 +898,7 @@ export function readLiveSelfAuthorizationFor(repoRoot, sessionId, now = Date.now
       const record = JSON.parse(readFileSync(join(dir, name), "utf8"));
       const auth = record?.self_authorized_merge;
       if (!auth || typeof auth.authorizedAt !== "string") continue;
+      if (repo !== undefined && !grantMatchesRepo(auth, repo)) continue; // #10618
       const authorizedMs = Date.parse(auth.authorizedAt);
       if (!Number.isFinite(authorizedMs)) continue;
       const ageMs = now - authorizedMs;
@@ -1495,14 +1498,14 @@ if (
       // conjunto GLOBAL de coordenadoras (todas as máquinas), não só desta.
       // Ver docstring de `readActiveCoordinatorScan` acima.
       const scan = readActiveCoordinatorScan(repoRoot, Date.now(), { crossMachine: true });
-      const grantAnyRepo = readLiveMergeGrantFor(repoRoot, payload.session_id);
-      const grant = grantMatchesRepo(grantAnyRepo, targetRepo) ? grantAnyRepo : null;
+      // #10618: o filtro por repo roda DENTRO do leitor, antes de escolher —
+      // uma concessão viva de outro repo nunca esconde a do repo certo.
+      const grant = readLiveMergeGrantFor(repoRoot, payload.session_id, Date.now(), targetRepo);
       const targetPr = extractGhPrMergeTargetPr(command);
       // #7171: só interessa quando NÃO há concessão viva (senão o bloqueio
       // nem seria "not-authorized") — diagnostica se a ausência é "nunca
       // teve" ou "teve e consumiu antes de mergear".
-      const consumedAnyRepo = grant === null ? readConsumedGrantFor(repoRoot, payload.session_id) : null;
-      const consumedGrant = grantMatchesRepo(consumedAnyRepo, targetRepo) ? consumedAnyRepo : null;
+      const consumedGrant = grant === null ? readConsumedGrantFor(repoRoot, payload.session_id, Date.now(), targetRepo) : null;
       // #7303: auto-autorização só conta se, AGORA (não no instante em que
       // foi gravada), TODA coordenadora ativa continuar INALCANÇÁVEL
       // (#7546 — antes era "só `continuo`", ver
@@ -1524,8 +1527,7 @@ if (
       // futuro (ex: reordenar os checks de `classifyMergeBlockCause`)
       // poderia transformar em bypass de verdade — fechado aqui na origem,
       // não só confiando no check posterior.
-      const selfAuthAnyRepo = readLiveSelfAuthorizationFor(repoRoot, payload.session_id);
-      const selfAuth = grantMatchesRepo(selfAuthAnyRepo, targetRepo) ? selfAuthAnyRepo : null;
+      const selfAuth = readLiveSelfAuthorizationFor(repoRoot, payload.session_id, Date.now(), targetRepo);
       const selfAuthStillValid =
         selfAuth !== null && !scan.degraded && onlyUnreachableCoordinatorsActive(scan);
       const ctx = {

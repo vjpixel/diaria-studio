@@ -1392,13 +1392,7 @@ if (
           : JSON.stringify(payload.tool_response ?? "");
       const command = payload.tool_input?.command;
       const { prUrl, reason: emitReason } = resolveEmitDecision(resp, command);
-      if (prUrl && isForeignRepoPrUrl(prUrl)) {
-        // #10618: PR criado em OUTRO repo (ex: vjpixel/diaria-design) — o
-        // review automatizado, o effort por branch e o "Closes #N" são regras
-        // do diaria-studio. A URL devolvida pelo `gh` é a prova mais direta
-        // de onde o PR nasceu.
-        logSuppressedReviewInstruction({ reason: "foreign_repo", command });
-      } else if (prUrl) {
+      if (prUrl) {
         // #5156: repassa o session_id deste hook (a sessão que rodou `gh pr create`)
         // pra resolveEffort — permite que isOvernightRoundActive discrimine
         // marker com session_id sem quebrar o caminho default (marker sem
@@ -1421,9 +1415,12 @@ if (
         // "Closes #N" — melhor esforço, nunca bloqueia o resto do hook se
         // falhar (fail-soft dentro de ensureCloseKeywords) e, desde o #10453,
         // limitado ao prazo do hook pra nunca impedir a instrução de review.
-        const closeWarning = closeKeywordWarning(
-          ensureCloseKeywords(prUrl, { deadlineAt }),
-        );
+        // #10618: o review automatizado vale pra PR de qualquer repo, mas o
+        // conserto do "Closes #N" lê a convenção de issues do diaria-studio —
+        // em PR de outro repo (ex: vjpixel/diaria-design) não roda.
+        const closeWarning = isForeignRepoPrUrl(prUrl)
+          ? null
+          : closeKeywordWarning(ensureCloseKeywords(prUrl, { deadlineAt }));
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {

@@ -42,17 +42,46 @@ import {
 // Hooks sem `.d.mts`: import dinâmico tipado à mão (evita TS7016 no ratchet).
 type Grant = { pr?: number; repo?: string } | null;
 const hookPath = (f: string) => new URL(`../.claude/hooks/${f}`, import.meta.url).href;
-const { grantMatchesRepo, readMergeLockHolder } = (await import(hookPath("block-gh-pr-merge-subagent.mjs"))) as {
+const {
+  grantMatchesRepo,
+  readMergeLockHolder,
+  readLiveMergeGrantFor,
+  resolveMainRepoRoot: guardResolveMainRepoRoot,
+} = (await import(hookPath("block-gh-pr-merge-subagent.mjs"))) as {
   grantMatchesRepo: (g: Grant, repo: string) => boolean;
   readMergeLockHolder: (root: string, now?: number, repo?: string) => string | null | undefined;
+  readLiveMergeGrantFor: (root: string, sid: string, now?: number, repo?: string) => { grantedBy: string } | null;
+  resolveMainRepoRoot: (execFn: () => string) => string;
 };
 const { isForeignRepoPrUrl } = (await import(hookPath("pr-create-review.mjs"))) as {
   isForeignRepoPrUrl: (url: string) => boolean;
 };
-const { grantMatchesRepo: consumeGrantMatchesRepo, resolveMergeState } = (await import(
-  hookPath("consume-merge-grant-on-merge.mjs")
-)) as {
+const {
+  grantMatchesRepo: consumeGrantMatchesRepo,
+  resolveMergeState,
+  findLiveMergeGrantFile,
+  consumeGrantUnderLock,
+  resolveMainRepoRoot: consumeResolveMainRepoRoot,
+} = (await import(hookPath("consume-merge-grant-on-merge.mjs"))) as {
   grantMatchesRepo: (g: Grant, repo: string) => boolean;
+  findLiveMergeGrantFile: (
+    root: string,
+    sid: string,
+    now: number,
+    includeBackups: boolean,
+    pr?: number,
+    repo?: string,
+  ) => { grant: { grantedBy: string } } | null;
+  consumeGrantUnderLock: (
+    root: string,
+    sid: string,
+    nowIso: string,
+    attempts: number,
+    lockTimeoutMs: number,
+    pr?: number,
+    opts?: { repo?: string },
+  ) => boolean;
+  resolveMainRepoRoot: (execFn: () => string) => string;
   resolveMergeState: (
     pr: number,
     exec: unknown,
@@ -328,7 +357,7 @@ describe("e2e: guard do #5716 com lock por repo (#10618)", () => {
   });
 });
 
-describe("e2e: hook de gh pr create pula PR de outro repo (#10618)", () => {
+describe("e2e: guard de PII/artefato vale pra PR de QUALQUER repo (#10618)", () => {
   const HOOK = fileURLToPath(new URL("../.claude/hooks/block-pr-create-pii-runtime-artifacts.mjs", import.meta.url));
 
   function makeRepo(origin: string): string {
@@ -340,7 +369,7 @@ describe("e2e: hook de gh pr create pula PR de outro repo (#10618)", () => {
     sh("git", ["add", "README.md"], root);
     sh("git", ["commit", "-q", "-m", "base"], root);
     sh("git", ["checkout", "-q", "-b", "feat"], root);
-    // Artefato de rascunho de sessão — a regra do diaria-studio recusa.
+    // Artefato de rascunho de sessão — o guard de segurança recusa.
     writeFileSync(join(root, "_prbody.md"), "corpo\n");
     sh("git", ["add", "_prbody.md"], root);
     sh("git", ["commit", "-q", "-m", "artefato"], root);
@@ -359,7 +388,56 @@ describe("e2e: hook de gh pr create pula PR de outro repo (#10618)", () => {
     return r.stdout ?? "";
   }
 
-  it("PR do diaria-studio continua bloqueado (controle)", () => {
+  it("PR do diaria-studio bloqueado", () => {
+    const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
+    assert.match(run(root, "gh pr create --title t --body b"), /"permissionDecision":"deny"/);
+  });
+
+  it("checkout do diaria-design TAMBÉM bloqueado (guard de segurança, não regra editorial)", () => {
+    const root = makeRepo(`git@github.com:${DESIGN}.git`);
+    assert.match(run(root, "gh pr create --title t --body b"), /"permissionDecision":"deny"/);
+  });
+
+  it("-R explícito pro design também bloqueado", () => {
+    const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
+    assert.match(run(root, `gh pr create -R ${DESIGN} --title t --body b`), /"permissionDecision":"deny"/);
+  });
+
+  it("o hook de PII não usa o helper de repo (nunca pula por repo)", () => {
+    const src = readFileSync(join(ROOT, ".claude", "hooks", "block-pr-create-pii-runtime-artifacts.mjs"), "utf8");
+    assert.doesNotMatch(src, /isForeignRepoGhCommand\(/);
+  });
+});
+
+describe("e2e: hooks de regra do diaria-studio pulam PR de outro repo (#10618)", () => {
+  const HOOK = fileURLToPath(new URL("../.claude/hooks/block-pr-create-test-runner-import.mjs", import.meta.url));
+
+  function makeRepo(origin: string): string {
+    const root = tmpRoot("runner-e2e");
+    sh("git", ["init", "-q"], root);
+    mkdirSync(join(root, "test"), { recursive: true });
+    mkdirSync(join(root, "scripts", "lib"), { recursive: true });
+    writeFileSync(
+      join(root, "scripts", "lib", "test-runner-import-guard.ts"),
+      readFileSync(join(ROOT, "scripts", "lib", "test-runner-import-guard.ts"), "utf8"),
+    );
+    writeFileSync(join(root, "test", "bad.test.ts"), 'import { describe } from "vitest";\ndescribe("x", () => {});\n');
+    sh("git", ["remote", "add", "origin", origin], root);
+    return root;
+  }
+
+  function run(root: string, command: string): string {
+    const r = spawnSync(process.execPath, [HOOK], {
+      cwd: root,
+      input: JSON.stringify({ tool_name: "Bash", cwd: root, tool_input: { command } }),
+      encoding: "utf8",
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    return r.stdout ?? "";
+  }
+
+  it("diaria-studio: runner proibido bloqueia (controle)", () => {
     const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
     assert.match(run(root, "gh pr create --title t --body b"), /"permissionDecision":"deny"/);
   });
@@ -369,20 +447,96 @@ describe("e2e: hook de gh pr create pula PR de outro repo (#10618)", () => {
     assert.equal(run(root, "gh pr create --title t --body b"), "");
   });
 
-  it("-R explícito pro design também pula, mesmo com origin do studio", () => {
+  it("-R explícito pro design pula, mesmo com origin do studio", () => {
     const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
     assert.equal(run(root, `gh pr create -R ${DESIGN} --title t --body b`), "");
   });
 
-  it("os hooks de PR do diaria-studio importam o mesmo helper", () => {
+  it("snapshot/tsc/test-runner usam o helper; o review dispara em qualquer repo e só pula o Closes", () => {
     for (const f of [
       "block-pr-create-orchestrator-snapshot-stale.mjs",
       "block-pr-create-tsc-failure.mjs",
       "block-pr-create-test-runner-import.mjs",
-      "block-pr-create-pii-runtime-artifacts.mjs",
     ]) {
       const src = readFileSync(join(ROOT, ".claude", "hooks", f), "utf8");
       assert.match(src, /if \(isForeignRepoGhCommand\(command, cwd\)\) return;/, f);
+    }
+    const review = readFileSync(join(ROOT, ".claude", "hooks", "pr-create-review.mjs"), "utf8");
+    assert.doesNotMatch(review, /reason: "foreign_repo"/, "review não é mais suprimido por repo");
+    assert.match(review, /isForeignRepoPrUrl\(prUrl\)\s*\?\s*null\s*:\s*closeKeywordWarning\(ensureCloseKeywords/);
+  });
+});
+
+describe("concessão filtrada por repo ANTES de escolher (#10618)", () => {
+  function grantRoot(): string {
+    const root = tmpRoot("grants");
+    const dir = join(root, "data", "sessions");
+    mkdirSync(dir, { recursive: true });
+    const now = new Date().toISOString();
+    const tag = machineTag();
+    // Duas coordenadoras concederam janela pro MESMO PR #23, cada uma num repo.
+    writeFileSync(
+      join(dir, `develop-${tag}-a-studio.json`),
+      JSON.stringify({
+        kind: "develop",
+        sessionId: "a-studio",
+        machineTag: tag,
+        lastHeartbeat: now,
+        merge_grant: { grantedTo: "benef", grantedBy: "a-studio", pr: 23, grantedAt: now },
+      }),
+    );
+    writeFileSync(
+      join(dir, `overnight-${tag}-b-design.json`),
+      JSON.stringify({
+        kind: "overnight",
+        sessionId: "b-design",
+        machineTag: tag,
+        lastHeartbeat: now,
+        merge_grant: { grantedTo: "benef", grantedBy: "b-design", pr: 23, repo: DESIGN, grantedAt: now },
+      }),
+    );
+    return root;
+  }
+
+  it("guard: readLiveMergeGrantFor devolve a do repo pedido (nos dois sentidos)", () => {
+    const root = grantRoot();
+    assert.equal(readLiveMergeGrantFor(root, "benef", Date.now(), DESIGN)?.grantedBy, "b-design");
+    assert.equal(readLiveMergeGrantFor(root, "benef", Date.now(), DEFAULT_ISSUE_REPO)?.grantedBy, "a-studio");
+  });
+
+  it("consume: findLiveMergeGrantFile devolve a do repo pedido (nos dois sentidos)", () => {
+    const root = grantRoot();
+    assert.equal(findLiveMergeGrantFile(root, "benef", Date.now(), true, 23, DESIGN)?.grant.grantedBy, "b-design");
+    assert.equal(
+      findLiveMergeGrantFile(root, "benef", Date.now(), true, 23, DEFAULT_ISSUE_REPO)?.grant.grantedBy,
+      "a-studio",
+    );
+  });
+
+  it("consume: consumeGrantUnderLock só carimba a concessão do repo do merge", () => {
+    const root = grantRoot();
+    const dir = join(root, "data", "sessions");
+    const tag = machineTag();
+    assert.equal(consumeGrantUnderLock(root, "benef", new Date().toISOString(), 1, 500, 23, { repo: DESIGN }), true);
+    const design = JSON.parse(readFileSync(join(dir, `overnight-${tag}-b-design.json`), "utf8"));
+    const studio = JSON.parse(readFileSync(join(dir, `develop-${tag}-a-studio.json`), "utf8"));
+    assert.ok(design.merge_grant.consumedAt);
+    assert.equal(studio.merge_grant.consumedAt, undefined);
+  });
+});
+
+describe("resolveMainRepoRoot com cwd em checkout de outro repo (#10618)", () => {
+  it("guard e consume voltam pra raiz do hook quando o git aponta pra repo sem data/sessions", () => {
+    const foreign = tmpRoot("foreign");
+    for (const fn of [guardResolveMainRepoRoot, consumeResolveMainRepoRoot]) {
+      const got = fn(() => join(foreign, ".git"));
+      assert.notEqual(got, foreign);
+      assert.ok(existsSync(join(got, "package.json")), got);
+    }
+    const studioLike = tmpRoot("studiolike");
+    mkdirSync(join(studioLike, "data", "sessions"), { recursive: true });
+    for (const fn of [guardResolveMainRepoRoot, consumeResolveMainRepoRoot]) {
+      assert.equal(fn(() => join(studioLike, ".git")), studioLike);
     }
   });
 });
