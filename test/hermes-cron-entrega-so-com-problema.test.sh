@@ -236,9 +236,14 @@ assert_true \
   "daily-review: transcript sem marcador RESUMO avisa (não se afirma 'tudo bem' sem ler)" \
   "$(echo "$OUT" | grep -q 'não pôde ser lido' && echo 1 || echo 0)"
 
+# #10699: o transcript passou a ser o stream-json persistido em $STREAM_FILE
+# durante a execução; o invariante segue o mesmo — tee pro stderr (log), nunca stdout.
 assert_true \
   "daily-review: transcript do Opus vai pro log (tee ... >&2), não pro Telegram" \
-  "$(grep -qE 'tee "\$OUT_FILE" >&2' "$DAILY" && echo 1 || echo 0)"
+  "$(grep -qE 'tee "\$(OUT_FILE|STREAM_FILE)" >&2' "$DAILY" && echo 1 || echo 0)"
+assert_true \
+  "daily-review: texto final extraído do evento result vai pro OUT_FILE, não pro stdout (#10699)" \
+  "$(grep -qE '"\$STREAM_FILE" > "\$OUT_FILE"' "$DAILY" && echo 1 || echo 0)"
 assert_true \
   "daily-review: gate do marcador RESUMO-DAILY-REVIEW preservado (exit 4, review incompleto)" \
   "$(grep -q 'exit 4' "$DAILY" && echo 1 || echo 0)"
