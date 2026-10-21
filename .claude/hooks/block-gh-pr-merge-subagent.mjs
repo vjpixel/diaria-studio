@@ -123,7 +123,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { isGhPrMergeCommand, extractGhPrMergeTargetPr } from "./lib/gh-pr-merge-command.mjs";
-import { DIARIA_STUDIO_REPO, mergeLockFileName, normalizeRepoSlug, resolveMergeTargets } from "./lib/gh-target-repo.mjs";
+import {
+  DIARIA_STUDIO_REPO,
+  loadAllowedForeignRepos,
+  mergeLockFileName,
+  normalizeRepoSlug,
+  resolveMergeTargets,
+} from "./lib/gh-target-repo.mjs";
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
@@ -1483,6 +1489,38 @@ export function buildBlockReason(ctx = {}) {
   return reason;
 }
 
+/**
+ * Detecção de merge do guard com try/catch PRÓPRIO (#10689 L): exceção dentro
+ * do detector é `isMerge: true` (com `error`), nunca o catch fail-open do fim
+ * do hook. `diagnostics`: avisos do detector (config do gh ilegível), pra log.
+ * `detect` é injetável só pros testes.
+ */
+export function detectMergeForGuard(command, { detect = isGhPrMergeCommand } = {}) {
+  const diagnostics = [];
+  try {
+    const isMerge = detect(command, { onDiagnostic: (kind, details) => diagnostics.push({ kind, details }) });
+    return { isMerge: isMerge === true, error: null, diagnostics };
+  } catch (e) {
+    return { isMerge: true, error: e instanceof Error ? e.message : String(e), diagnostics };
+  }
+}
+
+/**
+ * Resolução usada quando a detecção ou a resolução de alvo lançou (#10689 L):
+ * modo ESTRITO com o diaria-studio e todo repo de `issue_repos` — nenhuma
+ * concessão conta, todo lock é conferido.
+ */
+export function strictAllReposResolution(allowed = loadAllowedForeignRepos()) {
+  return {
+    mode: "strict",
+    targets: [DIARIA_STUDIO_REPO, ...allowed],
+    grantRepo: null,
+    pr: null,
+    explicitRepo: null,
+    indeterminate: true,
+  };
+}
+
 // #2019-style CLI guard — só roda o corpo do hook quando este arquivo é o
 // entrypoint (nunca ao ser importado por test/block-gh-pr-merge-subagent-hook.test.ts).
 const _argv1 = process.argv[1]?.replaceAll("\\", "/") ?? "";
@@ -1500,15 +1538,38 @@ if (
       const payload = JSON.parse(data || "{}");
       if (payload.tool_name && payload.tool_name !== "Bash") return;
       const command = payload.tool_input?.command;
-      if (!isGhPrMergeCommand(command)) return;
+      // #10689 L: a detecção tem try/catch PRÓPRIO — uma exceção dentro dela
+      // não pode cair no catch fail-open do fim do hook. Exceção = merge, no
+      // modo estrito (todo lock de todo repo permitido, nenhuma concessão).
+      const detection = detectMergeForGuard(command);
+      const diagnostics = detection.diagnostics;
+      let detectionError = detection.error;
+      if (!detection.isMerge) return;
       const repoRoot = resolveMainRepoRoot();
+      if (repoRoot !== null) {
+        if (detectionError !== null) {
+          appendHookRunLog(repoRoot, "merge-guard", "warn", "merge_detection_error", { error: detectionError });
+        }
+        for (const d of diagnostics) appendHookRunLog(repoRoot, "merge-guard", "warn", d.kind, d.details);
+      }
       // #10618 — ÔNUS DA PROVA INVERTIDO (`resolveMergeTargets`): o lock do
       // diaria-studio entra SEMPRE, salvo quando o comando inteiro casa a
       // whitelist estrita de um único merge de repo de fora permitido. Fora da
       // whitelist e da forma simples do studio, nenhuma concessão conta e
       // todo lock que o comando possa tocar é conferido. Lock e concessões são
       // POR REPO; a identidade (quem é coordenadora) segue global.
-      const resolution = resolveMergeTargets(command, payload.cwd);
+      let resolution;
+      if (detectionError === null) {
+        try {
+          resolution = resolveMergeTargets(command, payload.cwd);
+        } catch (e) {
+          detectionError = e instanceof Error ? e.message : String(e);
+          if (repoRoot !== null) {
+            appendHookRunLog(repoRoot, "merge-guard", "warn", "merge_target_resolution_error", { error: detectionError });
+          }
+        }
+      }
+      if (resolution === undefined) resolution = strictAllReposResolution();
       const targetRepos = resolution.targets;
       const complex = resolution.mode === "strict";
       const singleRepo = resolution.grantRepo;
@@ -1549,7 +1610,15 @@ if (
       const grant = singleRepo ? readLiveMergeGrantFor(repoRoot, payload.session_id, Date.now(), singleRepo) : null;
       // #10618: na whitelist/forma simples o PR já foi lido (inclusive da URL
       // canônica); fora delas nenhuma concessão conta e vale o extrator antigo.
-      const targetPr = resolution.grantRepo !== null ? resolution.pr : extractGhPrMergeTargetPr(command);
+      let targetPr;
+      if (resolution.grantRepo !== null) targetPr = resolution.pr;
+      else if (detectionError === null) {
+        try {
+          targetPr = extractGhPrMergeTargetPr(command);
+        } catch {
+          targetPr = undefined; // só alimenta o diagnóstico de concessão — nenhuma vale no estrito
+        }
+      }
       // #7171: só interessa quando NÃO há concessão viva (senão o bloqueio
       // nem seria "not-authorized") — diagnostica se a ausência é "nunca
       // teve" ou "teve e consumiu antes de mergear".

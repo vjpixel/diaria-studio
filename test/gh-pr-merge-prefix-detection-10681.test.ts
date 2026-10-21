@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
 import { fileURLToPath } from "node:url";
 import {
   isGhPrMergeCommand,
@@ -329,6 +330,7 @@ describe("#10681 — entrypoint CLI do guard bloqueia as formas com prefixo", ()
       input: JSON.stringify({ session_id: "subagente-10681", tool_name: "Bash", tool_input: { command } }),
       encoding: "utf8",
       timeout: 10_000,
+      env: withIsolatedGhConfig(),
     });
     return { status: r.status, stdout: (r.stdout ?? "").trim(), stderr: r.stderr ?? "" };
   }

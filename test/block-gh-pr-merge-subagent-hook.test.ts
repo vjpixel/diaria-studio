@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
 import { fileURLToPath } from "node:url";
 import {
   isGhPrMergeCommand,
@@ -1516,6 +1517,7 @@ describe("#7353 Finding 1 — entrypoint CLI: varredura degradada NUNCA permite 
       input: JSON.stringify(payload),
       encoding: "utf8",
       timeout: 10_000,
+      env: withIsolatedGhConfig(),
     });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }

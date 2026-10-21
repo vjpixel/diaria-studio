@@ -41,11 +41,24 @@ export function parseStrictMerge(command: unknown): { repo: string | null; pr: n
 export type MergeResolution =
   | { mode: "foreign-whitelist"; targets: [string]; grantRepo: string; pr: number; explicitRepo: string }
   | { mode: "studio-plain"; targets: [string]; grantRepo: string; pr: number; explicitRepo: string | null }
-  | { mode: "strict"; targets: string[]; grantRepo: null; pr: number | null; explicitRepo: null };
+  | {
+      mode: "strict";
+      targets: string[];
+      grantRepo: null;
+      pr: number | null;
+      explicitRepo: null;
+      /** Alvo do merge indeterminado (#10689 M): todo repo de `issue_repos` está em `targets`. */
+      indeterminate: boolean;
+    };
 export function resolveMergeTargets(
   command: unknown,
   cwd: unknown,
-  opts?: { execFn?: ExecFn; allowed?: Set<string>; env?: Record<string, string | undefined> },
+  opts?: {
+    execFn?: ExecFn;
+    allowed?: Set<string>;
+    env?: Record<string, string | undefined>;
+    aliases?: ReadonlyMap<string, string | null>;
+  },
 ): MergeResolution;
 /** `/c/x` → `C:\x` só em win32. */
 export function toNativePath<T>(path: T, platform?: string): T;

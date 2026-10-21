@@ -30,6 +30,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
 import { fileURLToPath } from "node:url";
 import {
   classifyMergeBlockCause,
@@ -306,6 +307,7 @@ describe("#7702 entrypoint CLI — cenário real da PR #7696", () => {
       input: JSON.stringify(payload),
       encoding: "utf8",
       timeout: 10_000,
+      env: withIsolatedGhConfig(),
     });
     return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
