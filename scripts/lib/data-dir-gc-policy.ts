@@ -32,7 +32,8 @@
  *
  * `beehiiv-backup/` segue no guard (nunca candidato); desde #9725 o
  * dry-run só RELATA os snapshots semanais que uma retenção por N
- * liberaria (`planBeehiivSnapshotReport`) — apagar é decisão do editor.
+ * liberaria (`planBeehiivSnapshotReport`), sempre poupando o mais antigo
+ * de cada mês (#10710) — apagar é decisão do editor.
  *
  * Agendamento: `Diaria-Gc-Data-Dir-Weekly` em `scheduled-tasks.ts` (#9725).
  * Fora desta fatia (follow-up separado da #7278): alarme de cota, e
@@ -580,9 +581,34 @@ export interface BeehiivSnapshotReport {
   wouldRemove: SnapshotDirInfo[];
   wouldRemoveBytes: number;
   totalBytes: number;
+  /** Piso mensal (#10710): o snapshot MAIS ANTIGO de cada mês-calendário
+   *  fica sempre em `kept`, mesmo fora dos `keep` mais recentes — subconjunto
+   *  de `kept`, exposto à parte pro relatório dizer por que ficou. */
+  monthlyFloor: SnapshotDirInfo[];
 }
 
-/** @pure — ordena por nome (data ISO) desc e separa os `keep` mais recentes. */
+/** @pure — `YYYY-MM` de um `relPath` de snapshot (`beehiiv-backup/2026-09-06`
+ *  → `2026-09`); `null` quando o último segmento não é `YYYY-MM-DD`. */
+export function beehiivSnapshotMonth(relPath: string): string | null {
+  const name = relPath.split("/").pop() ?? "";
+  return isBeehiivSnapshotDirName(name) ? name.slice(0, 7) : null;
+}
+
+/**
+ * @pure — separa o que uma retenção MANTERIA do que liberaria. Mantém:
+ *   1. os `keep` snapshots mais recentes (data ISO desc), e
+ *   2. o piso mensal (#10710): o snapshot MAIS ANTIGO de cada mês-calendário,
+ *      sempre — nunca entra em `wouldRemove`.
+ *
+ * Por que o piso: a série de status por assinante só existe nestes snapshots.
+ * Em 14/10/2026 todos os snapshots anteriores a 04/10 sumiram de
+ * `data/beehiiv-backup/` (remoção vinda do OneDrive remoto, não deste script,
+ * que nunca remove nada daqui) — o relatório antigo ("mantendo os 4 mais
+ * recentes, 9 liberariam 533 MB") listava justamente esses como dispensáveis.
+ * Com o piso, o relatório nunca mais sugere apagar o único registro de um mês.
+ * O mais antigo (e não o mais recente) do mês porque é o que fica mais longe do
+ * mês seguinte e, no mês corrente, já existe e não muda a cada semana.
+ */
 export function planBeehiivSnapshotReport(
   snapshots: readonly SnapshotDirInfo[],
   keep: number = BEEHIIV_SNAPSHOT_KEEP_REPORT_DEFAULT,
@@ -591,12 +617,22 @@ export function planBeehiivSnapshotReport(
     throw new Error(`planBeehiivSnapshotReport: keep deve ser inteiro ≥ 1, recebido ${keep}`);
   }
   const ordered = [...snapshots].sort((a, b) => (a.relPath < b.relPath ? 1 : a.relPath > b.relPath ? -1 : 0));
-  const wouldRemove = ordered.slice(keep);
+  // Mais antigo de cada mês: percorrendo em ordem desc, o último visto por mês vence.
+  const oldestByMonth = new Map<string, SnapshotDirInfo>();
+  for (const s of ordered) {
+    const month = beehiivSnapshotMonth(s.relPath);
+    if (month) oldestByMonth.set(month, s);
+  }
+  const floorSet = new Set(oldestByMonth.values());
+  const recent = new Set(ordered.slice(0, keep));
+  const kept = ordered.filter((s) => recent.has(s) || floorSet.has(s));
+  const wouldRemove = ordered.filter((s) => !recent.has(s) && !floorSet.has(s));
   return {
     keep,
-    kept: ordered.slice(0, keep),
+    kept,
     wouldRemove,
     wouldRemoveBytes: wouldRemove.reduce((s, x) => s + x.sizeBytes, 0),
     totalBytes: ordered.reduce((s, x) => s + x.sizeBytes, 0),
+    monthlyFloor: ordered.filter((s) => floorSet.has(s) && !recent.has(s)),
   };
 }

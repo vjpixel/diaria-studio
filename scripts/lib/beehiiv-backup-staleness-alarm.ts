@@ -105,10 +105,13 @@ export function isAlarmVerdict(verdict: BeehiivBackupStalenessVerdict): boolean 
 
 export interface BeehiivBackupStalenessAlarmState {
   lastAlarmedFingerprint: string | null;
+  /** #10710 — idempotência dos 2 checks extras, independente do principal. */
+  lastCoverageFingerprint?: string | null;
+  lastExitHistoryFingerprint?: string | null;
 }
 
 export function emptyBeehiivBackupStalenessAlarmState(): BeehiivBackupStalenessAlarmState {
-  return { lastAlarmedFingerprint: null };
+  return { lastAlarmedFingerprint: null, lastCoverageFingerprint: null, lastExitHistoryFingerprint: null };
 }
 
 /** Fingerprint estável: veredito + data do snapshot mais recente conhecido
@@ -130,6 +133,106 @@ export function markBeehiivBackupStalenessAlarmed(
   evaluation: BeehiivBackupStalenessEvaluation,
 ): BeehiivBackupStalenessAlarmState {
   return { lastAlarmedFingerprint: computeBeehiivBackupStalenessFingerprint(evaluation) };
+}
+
+// ---------------------------------------------------------------------------
+// Cobertura mensal + exit-history (#10710)
+//
+// O alarme acima só olha o snapshot MAIS RECENTE — por isso não viu nada em
+// 14/10/2026, quando todos os snapshots anteriores a 04/10 sumiram de
+// `data/beehiiv-backup/` (remoção vinda do OneDrive remoto). Estes dois
+// checks fecham o buraco: (1) todo mês-calendário fechado desde o início da
+// task semanal precisa ter ao menos 1 snapshot; (2) o backup de
+// `exit-history/` (drain via MCP, #7248) precisa existir e estar completo.
+// ---------------------------------------------------------------------------
+
+/** 1º mês com a task semanal armada (`Diaria-Beehiiv-Backup`, 1º snapshot
+ *  semanal em 2026-08-14). Meses anteriores tinham snapshots avulsos
+ *  (2026-06), sem garantia de cobertura — não entram na checagem. */
+export const BEEHIIV_BACKUP_COVERAGE_START_MONTH = "2026-08";
+
+/** Meses cuja perda o editor já reconheceu como definitiva (ex: a Lixeira do
+ *  OneDrive expirou sem restauração). Mês listado aqui sai do alarme. Vazio
+ *  de propósito em 21/10/2026: agosto e setembro de 2026 ainda podem voltar
+ *  da Lixeira online do OneDrive (retenção ~30 dias a partir de 14/10). */
+export const BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS: readonly string[] = [];
+
+function monthOf(date: string): string {
+  return date.slice(0, 7);
+}
+
+function nextMonth(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+/**
+ * @pure — meses FECHADOS (de `startMonth` até o mês anterior ao de `todayIso`)
+ * sem nenhum snapshot em `snapshotDates` (`YYYY-MM-DD`), menos os
+ * `acknowledgedLost`. O mês corrente nunca entra: ainda pode receber o
+ * snapshot de domingo.
+ */
+export function findMonthsWithoutSnapshot(
+  snapshotDates: readonly string[],
+  todayIso: string,
+  startMonth: string = BEEHIIV_BACKUP_COVERAGE_START_MONTH,
+  acknowledgedLost: readonly string[] = BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS,
+): string[] {
+  const covered = new Set(snapshotDates.map(monthOf));
+  const ack = new Set(acknowledgedLost);
+  const current = monthOf(todayIso);
+  const missing: string[] = [];
+  for (let month = startMonth; month < current; month = nextMonth(month)) {
+    if (!covered.has(month) && !ack.has(month)) missing.push(month);
+  }
+  return missing;
+}
+
+/** Fingerprint estável do alarme de cobertura — muda só quando o conjunto de
+ *  meses faltantes muda (restaurar um mês, ou um mês novo sumir). */
+export function computeCoverageFingerprint(missingMonths: readonly string[]): string {
+  return `coverage-missing:${[...missingMonths].sort().join(",")}`;
+}
+
+export function buildCoverageAlarmEmail(missingMonths: readonly string[]): { subject: string; body: string } {
+  const subject = `⚠️ Beehiiv backup: ${missingMonths.length} mês(es) sem nenhum snapshot (${missingMonths.join(", ")})`;
+  const body = [
+    "Alarme automático de cobertura mensal do data/beehiiv-backup/ (#10710).",
+    "",
+    `Meses fechados sem nenhum snapshot semanal: ${missingMonths.join(", ")}.`,
+    "",
+    "A task semanal grava um snapshot por domingo, então um mês inteiro sem nenhum quer dizer que os snapshots " +
+      "foram apagados depois de gravados. Nenhum script do repo apaga data/beehiiv-backup/ (gc-data-dir.ts o exclui " +
+      "até no --apply); o caso de 14/10/2026 veio do OneDrive remoto.",
+    "",
+    "O que fazer: restaurar as pastas YYYY-MM-DD da Lixeira online do OneDrive (onedrive.live.com → Lixeira), que " +
+      "guarda o apagado por ~30 dias. Se a perda for definitiva, listar o mês em " +
+      "BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS (scripts/lib/beehiiv-backup-staleness-alarm.ts) pra este alarme parar.",
+  ].join("\n");
+  return { subject, body };
+}
+
+/** Fingerprint do alarme de exit-history — um por status (missing/incomplete/
+ *  unreadable); `complete` nunca alarma. */
+export function computeExitHistoryFingerprint(status: string): string {
+  return `exit-history:${status}`;
+}
+
+export function buildExitHistoryAlarmEmail(status: string): { subject: string; body: string } {
+  const subject = `⚠️ Beehiiv exit-history: ${status} (data/beehiiv-backup/exit-history/)`;
+  const body = [
+    "Alarme automático do backup de exit-history da Beehiiv (#10710, #7248).",
+    "",
+    `Estado do manifest data/beehiiv-backup/exit-history/manifest.json: ${status}.`,
+    "",
+    "Esse arquivo guarda o unsubscribed_on REAL dos assinantes inactive — dado que só a MCP list_subscriptions " +
+      "expõe e que some junto com o acesso à Beehiiv. Sem ele, a data de saída é estimada e o churn/LTV fica impreciso.",
+    "",
+    "O que fazer: numa sessão Claude Code com o conector Beehiiv, despachar " +
+      'Agent(subagent_type="beehiiv-exit-history-drain"). O Stage 0 da edição diária já despacha sozinho enquanto o ' +
+      "manifest não estiver completo (pendingAgentDispatch 0h.4 de scripts/stage-0-run.ts).",
+  ].join("\n");
+  return { subject, body };
 }
 
 // ---------------------------------------------------------------------------

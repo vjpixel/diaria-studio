@@ -48,6 +48,7 @@
  * `beehiiv-backup/` NUNCA é removido (guard). Desde #9725 o dry-run imprime
  * um RELATÓRIO dos snapshots semanais (`YYYY-MM-DD/`) com tamanho e quais
  * uma retenção dos `--beehiiv-keep` (default 4) mais recentes liberaria —
+ * nunca o snapshot mais antigo de cada mês (piso mensal, #10710) —
  * apagar é decisão do editor, fora deste script.
  *
  * **Agendado (#9725):** `Diaria-Gc-Data-Dir-Weekly` em
@@ -553,7 +554,8 @@ export function main(
       console.log(
         `\n📦 beehiiv-backup/ (SÓ RELATÓRIO — nunca removido por este script, decisão do editor, #9725): ` +
           `${beehiivReport.kept.length + beehiivReport.wouldRemove.length} snapshot(s), ${formatBytes(beehiivReport.totalBytes)}; ` +
-          `mantendo os ${beehiivReport.keep} mais recentes, ${beehiivReport.wouldRemove.length} liberariam ` +
+          `mantendo os ${beehiivReport.keep} mais recentes + o mais antigo de cada mês ` +
+          `(${beehiivReport.monthlyFloor.length} pelo piso mensal, #10710), ${beehiivReport.wouldRemove.length} liberariam ` +
           `${formatBytes(beehiivReport.wouldRemoveBytes)}:`,
       );
       for (const s of beehiivReport.wouldRemove) {
