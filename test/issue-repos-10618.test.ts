@@ -39,15 +39,27 @@ import {
   requireRepoFlag,
   machineTag,
 } from "../scripts/lib/session-registry.ts";
-import {
-  grantMatchesRepo,
-  readMergeLockHolder,
-} from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
-import { isForeignRepoPrUrl } from "../.claude/hooks/pr-create-review.mjs";
-import {
-  grantMatchesRepo as consumeGrantMatchesRepo,
-  resolveMergeState,
-} from "../.claude/hooks/consume-merge-grant-on-merge.mjs";
+// Hooks sem `.d.mts`: import dinâmico tipado à mão (evita TS7016 no ratchet).
+type Grant = { pr?: number; repo?: string } | null;
+const hookPath = (f: string) => new URL(`../.claude/hooks/${f}`, import.meta.url).href;
+const { grantMatchesRepo, readMergeLockHolder } = (await import(hookPath("block-gh-pr-merge-subagent.mjs"))) as {
+  grantMatchesRepo: (g: Grant, repo: string) => boolean;
+  readMergeLockHolder: (root: string, now?: number, repo?: string) => string | null | undefined;
+};
+const { isForeignRepoPrUrl } = (await import(hookPath("pr-create-review.mjs"))) as {
+  isForeignRepoPrUrl: (url: string) => boolean;
+};
+const { grantMatchesRepo: consumeGrantMatchesRepo, resolveMergeState } = (await import(
+  hookPath("consume-merge-grant-on-merge.mjs")
+)) as {
+  grantMatchesRepo: (g: Grant, repo: string) => boolean;
+  resolveMergeState: (
+    pr: number,
+    exec: unknown,
+    log: (...a: unknown[]) => void,
+    repo?: string,
+  ) => { state: string; raw: unknown };
+};
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const DESIGN = "vjpixel/diaria-design";
