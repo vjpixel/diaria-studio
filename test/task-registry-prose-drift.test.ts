@@ -7,7 +7,9 @@ import {
   resolveProseDriftExitCode,
   PROSE_DRIFT_FOUND_EXIT_CODE,
 } from "../scripts/lib/task-registry-prose-drift.ts";
-import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { getScheduledTaskByName, listScheduledTaskNames } from "../scripts/lib/scheduled-tasks.ts";
 
 const TASKS = ["Diaria-Foo", "Diaria-Bar", "Diaria-Baz"];
 
@@ -165,5 +167,26 @@ describe("Diaria-Task-Registry-Prose-Drift-Alarm — consistência successExitCo
     const def = getScheduledTaskByName("Diaria-Task-Registry-Prose-Drift-Alarm");
     assert.ok(def, "task deveria existir no registro");
     assert.deepEqual(def?.successExitCodes, [PROSE_DRIFT_FOUND_EXIT_CODE]);
+  });
+});
+
+describe("prosa REAL do registro — tasks *-Ads-* (#10758)", () => {
+  // Achado ao vivo (#10758): com a task do Microsoft Ads fora do registro
+  // (#10755), a linha histórica dela passou a ter como dono a 1ª task do
+  // registro citada ("espelhando `Diaria-Google-Ads-Spend-Ingest`") e o
+  // "NÃO ARMADA nesta unidade" histórico virava afirmação vigente sobre o
+  // Google Ads, armado e funcionando — alarme falso diário. Roda a função
+  // pura contra o doc REAL com TODAS as tasks armadas: nenhuma task de Ads
+  // pode sair com claim `not-armed` herdada de texto histórico.
+  it("com tudo armado, nenhuma task *-Ads-* recebe finding", () => {
+    const prose = readFileSync(
+      fileURLToPath(new URL("../docs/scheduled-tasks-registry.md", import.meta.url)),
+      "utf8",
+    );
+    const names = listScheduledTaskNames();
+    const allArmed = new Map(names.map((n) => [n, "armed" as const]));
+    const ev = evaluateProseDrift(prose, names, allArmed);
+    const adsFindings = ev.findings.filter((f) => /-Ads-/.test(f.task));
+    assert.deepEqual(adsFindings, []);
   });
 });
