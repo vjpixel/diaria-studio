@@ -53,7 +53,7 @@
         "consentSettings": {
           "consentStatus": "notSet"
         },
-        "notes": "#8387 — NAO reusar o rotulo dxY1CIb1v9EbEKmt_aJC (acao de cadastro 7418673798, primaria). Criar antes uma acao NOVA (Goals > Conversions > Website) com 'Incluir em Conversoes' DESMARCADO (secundaria) e contagem 'Uma'. Dedup por clique: a contagem 'Uma' faz o Google contar 1 conversao por clique de anuncio, mesmo com recargas; o guard de sessionStorage vale so para as tags HTML (Meta, UET, LinkedIn), esta tag nao tem guard. Distinta da acao UPLOAD_CLICKS do #8555 (import offline): as duas coexistem para a comparacao da fase 2."
+        "notes": "NAO IMPORTAR (#10693, 21/10/2026): a acao secundaria do Google por pageview de /confirmada ja esta publicada no container (v24, id24); importar criaria uma 2a acao duplicada. #8387 — NAO reusar o rotulo dxY1CIb1v9EbEKmt_aJC (acao de cadastro 7418673798, primaria). Criar antes uma acao NOVA (Goals > Conversions > Website) com 'Incluir em Conversoes' DESMARCADO (secundaria) e contagem 'Uma'. Dedup por clique: a contagem 'Uma' faz o Google contar 1 conversao por clique de anuncio, mesmo com recargas; o guard de sessionStorage vale so para as tags HTML (Meta, UET, LinkedIn), esta tag nao tem guard. Distinta da acao UPLOAD_CLICKS do #8555 (import offline): as duas coexistem para a comparacao da fase 2."
       },
       {
         "accountId": "000000000",
@@ -83,7 +83,7 @@
         "consentSettings": {
           "consentStatus": "notSet"
         },
-        "notes": "#8387 — evento CUSTOM de proposito: nao usar CompleteRegistration (evento de otimizacao do conjunto 'BR · conversao · sem teto'; misturar poluiria o sinal, licao do #8551). Nao cria conversao otimizavel: so aparece no Events Manager para observacao. Guard de sessionStorage evita 2 disparos por recarga (as plataformas nao deduplicam pageview por pessoa)."
+        "notes": "NAO IMPORTAR (#10693, decisao do editor 21/10/2026): o event_id da CAPI e sha256(capi:subscriptionconfirmed:kit:{kitId}) e o navegador em /confirmada nao tem o kitId; esta tag nao deduplica e dobraria a contagem do SubscriptionConfirmed, que hoje chega so pela CAPI. O navegador ja e coberto pelo ConfirmationPageView (v24, id25). #8387 — evento CUSTOM de proposito: nao usar CompleteRegistration (evento de otimizacao do conjunto 'BR · conversao · sem teto'; misturar poluiria o sinal, licao do #8551). Nao cria conversao otimizavel: so aparece no Events Manager para observacao. Guard de sessionStorage evita 2 disparos por recarga (as plataformas nao deduplicam pageview por pessoa)."
       },
       {
         "accountId": "000000000",

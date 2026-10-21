@@ -13,7 +13,7 @@ Runbook do que resta da Etapa 1 do #8387. Nenhuma meta primária muda antes de
 | Pixel Meta deduplica com a CAPI | entregue (#8572, #8579) |
 | Confirmação pela Brevo termina em `/confirmada` | entregue (#8539, #8554) |
 | Doc-rot circular `confirmado.ts` x `confirmado-page.ts` | já resolvido: racional no bloco `#8387` de `scripts/lib/shared/confirmado-page.ts` |
-| 2ª ação por pageview (4 plataformas, Meta incluída) | proposta versionada: `docs/gtm-confirmation-secondary-import-proposal.json`; falta importar no GTM |
+| 2ª ação por pageview | proposta versionada: `docs/gtm-confirmation-secondary-import-proposal.json`. Situação em 21/10/2026 (diagnóstico ao vivo do container v24, comentário na #10693): o Google já está publicado (id24) e a Meta já tem o `ConfirmationPageView` (id25). **Não importar as tags Google e Meta `SubscriptionConfirmed` da proposta** (#10693, decisão do editor): o Google duplicaria a id24 e a Meta, sem o `kitId` em `/confirmada`, não deduplica com a CAPI e dobraria a contagem do `SubscriptionConfirmed`. Sobram só a UET (Microsoft) e o LinkedIn, ainda não importados |
 | "After confirming redirect to" do form Kit `9897918` | painel do Kit, pendente (ver `docs/kit-doi-confirmation-copy.md`) |
 | Promover a primária (Google + Meta juntos) | decisão depois de 27/09, ver abaixo |
 
@@ -21,7 +21,7 @@ Runbook do que resta da Etapa 1 do #8387. Nenhuma meta primária muda antes de
 
 1. **Kit**: form `9897918`, "After confirming redirect to" = `https://diar.ia.br/confirmada`.
 2. **Criar as ações secundárias** (sem entrar em lance): Google Ads (website, "Incluir em Conversões" desmarcado, contagem "Uma"), Meta (nada a criar, é evento custom), Microsoft (goal de evento `newsletter_confirmed`), LinkedIn (conversão nova, id numérico).
-3. **GTM** (`GTM-TC8C65ZN`): importar `docs/gtm-confirmation-secondary-import-proposal.json` em modo **Merge**, substituir os `REPLACE_*`, validar no **Preview** em `https://diar.ia.br/confirmada` e em `https://diar.ia.br/confirmada?via=brevo` (mesmo disparo, uma vez por sessão; limpe o sessionStorage ou use janela anônima entre as duas URLs, senão o guard suprime o 2º disparo), confirmar que o Pixel base da Meta carrega na página (#5543), só então publicar. O container real usa o template oficial do Pixel, não Custom HTML (#8578): conferir o resultado do Merge.
+3. **GTM** (`GTM-TC8C65ZN`): importar `docs/gtm-confirmation-secondary-import-proposal.json` em modo **Merge** e **excluir do Merge as tags Google e Meta** (marcadas NAO IMPORTAR, #10693; só UET e LinkedIn entram), substituir os `REPLACE_*`, validar no **Preview** em `https://diar.ia.br/confirmada` e em `https://diar.ia.br/confirmada?via=brevo` (mesmo disparo, uma vez por sessão; limpe o sessionStorage ou use janela anônima entre as duas URLs, senão o guard suprime o 2º disparo), confirmar que o Pixel base da Meta carrega na página (#5543), só então publicar. O container real usa o template oficial do Pixel, não Custom HTML (#8578): conferir o resultado do Merge.
 4. **Checklist antes de publicar:** o arquivo/workspace final não pode conter nenhum `REPLACE_` (o placeholder do LinkedIn é JS válido e só falha em runtime com ReferenceError; o do Google vira rótulo inválido). Só grava o guard de sessão depois que `fbq`/`lintrk` rodam, então pixel tardio não queima o guard.
 5. Registrar a mudança em `edicoes.jsonl` (`scripts/ads-registrar-edicao.ts`) antes de publicar, pelo regime do teste 2608.
 
