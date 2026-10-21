@@ -15,6 +15,7 @@ import { capArticles, type Article } from "./article-cap.ts";
 // #2834: era byte-idêntico ao stripHtml de fetch-rss.ts — consolidado em
 // strip-html.ts como stripHtmlBasic.
 import { stripHtmlBasic as stripHtml } from "./strip-html.ts";
+import { describeFeedHttpFailure } from "./anti-bot-challenge.ts";
 
 export interface SitemapEntry {
   loc: string;
@@ -233,7 +234,7 @@ export async function fetchSitemapEntries(opts: {
         method: "sitemap",
         sitemap_url: opts.url,
         articles: [],
-        error: `HTTP ${res.status}`,
+        error: describeFeedHttpFailure(res),
       };
     }
     xml = await res.text();

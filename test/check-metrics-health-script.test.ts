@@ -23,7 +23,11 @@ import {
   toMetricsHealthAlarmFinding,
   buildCrossPlatformLeitorResult,
   resolveCrossPlatformDeps,
+  loadPaidTestWindowSources,
 } from "../scripts/check-metrics-health.ts";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { MetricsHealthFinding } from "../scripts/lib/metrics/health.ts";
 import type { Janela } from "../scripts/lib/metrics/registry.ts";
 import { CROSS_PLATFORM_FLOOR_NOTE } from "../scripts/lib/diaria-subscribers-identity-resolve.ts";
@@ -210,5 +214,50 @@ describe("resolveCrossPlatformDeps (#7515/#7516, achado do fleet review — sile
     );
     assert.deepEqual(result, { liveKitActive: null, crossPlatformLeitor: null, crossPlatformAsOf: null });
     assert.equal(closed, true, "close() precisa rodar mesmo quando readDeps() lança (finally)");
+  });
+});
+
+describe("loadPaidTestWindowSources (#10647)", () => {
+  const validRunState = {
+    d0: "2026-09-05",
+    fim_janela: "2026-09-23",
+    religar_brevo: "2026-09-26",
+    coorte_madura: "2026-10-20",
+    apuracao_snapshot: "2026-10-21",
+    bracos: ["Google Ads (teste 2608)"],
+    registrado_em: "2026-09-05T02:54:26.025Z",
+  };
+
+  it("lê d0/fim_janela do run-state real (fonte do pré-registro, nunca data fixa no código)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "metrics-health-10647-"));
+    try {
+      const path = join(dir, "run-state.json");
+      writeFileSync(path, JSON.stringify(validRunState));
+      const { sources, avisos } = loadPaidTestWindowSources([{ rotulo: "teste 2608", path }]);
+      assert.deepEqual(sources, [{ rotulo: "teste 2608", d0: "2026-09-05", fim_janela: "2026-09-23" }]);
+      assert.deepEqual(avisos, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo ausente: nenhuma janela, sem aviso", () => {
+    const { sources, avisos } = loadPaidTestWindowSources([{ rotulo: "x", path: "/nao/existe/run-state.json" }]);
+    assert.deepEqual(sources, []);
+    assert.deepEqual(avisos, []);
+  });
+
+  it("run-state inválido: nenhuma janela inventada, aviso explícito", () => {
+    const dir = mkdtempSync(join(tmpdir(), "metrics-health-10647-"));
+    try {
+      const path = join(dir, "run-state.json");
+      writeFileSync(path, JSON.stringify({ ...validRunState, fim_janela: "23/09" }));
+      const { sources, avisos } = loadPaidTestWindowSources([{ rotulo: "teste 2608", path }]);
+      assert.deepEqual(sources, []);
+      assert.equal(avisos.length, 1);
+      assert.match(avisos[0], /NÃO excluída/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

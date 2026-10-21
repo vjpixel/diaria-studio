@@ -797,7 +797,7 @@ for MODEL in "${MODELS[@]}"; do
     # (checar PR/worktree antes de unclaim) decidir. Cota do plano esgotada
     # ainda grava o marcador, como no ramo de rate-limit abaixo.
     if is_codex_lane_model "$MODEL" && CODEX_LANE_PARTIAL=$(codex_lane_partial_work "$CWD" "$CODEX_LANE_STATE_BEFORE"); then
-      if command grep -qiE "rate.?limit|too many requests|quota exceeded|usage limit" "$STDERR_ONLY_LOG"; then
+      if codex_lane_stderr_is_quota "$STDERR_ONLY_LOG"; then
         codex_lane_mark_quota_exhausted
       fi
       echo "[claude-openrouter] ABORT (#10560): elo codex falhou (rc=$RC) depois de deixar trabalho parcial — $CODEX_LANE_PARTIAL. NÃO passando pro próximo elo (reimplementaria e podia abrir uma 2ª PR); conferir PR/worktree da unidade antes de unclaim (SKILL.md §4); stderr cru em $STDERR_LOG" >&2
@@ -837,7 +837,11 @@ for MODEL in "${MODELS[@]}"; do
         SAW_CONFIG_ERROR_SIGNAL=1
         echo "[claude-openrouter] falhou model=$MODEL rc=$RC: MODELO INEXISTENTE/INVÁLIDO no provedor — confirmado ausente do catálogo agora (ou catálogo inacessível) (#6803); config permanente, NÃO é rate-limit; próximo da cadeia; stderr cru em $STDERR_LOG" >&2
       fi
-    elif command grep -qiE "rate.?limit|too many requests|quota exceeded|usage limit|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG"; then
+    elif command grep -qiE "rate.?limit|too many requests|quota exceeded|usage limit|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)" "$STDERR_ONLY_LOG" \
+        || { is_codex_lane_model "$MODEL" && codex_lane_stderr_is_quota "$STDERR_ONLY_LOG"; }; then
+      # #10560: no elo codex vale também CODEX_LANE_QUOTA_RE (lib/codex-lane.sh),
+      # com "out of credits"/"spend cap" dos planos de workspace, verbatim da
+      # Codex CLI na tag rust-v0.159.1.
       # #6617 review finding 4: "429" sozinho podia casar com ruído não
       # relacionado (contagem de bytes, linha) — agora exige contexto de
       # rate-limit textual OU o número junto de "http"/"status".

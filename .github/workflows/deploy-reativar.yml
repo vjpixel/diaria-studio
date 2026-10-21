@@ -38,6 +38,7 @@ on:
       # compartilhado não redeploya o Worker. Trava:
       # test/workers-deploy-workflow-coverage.test.ts.
       - 'scripts/lib/shared/**'
+      - 'scripts/lib/anti-bot-challenge.ts'
       - 'scripts/lib/article-cap.ts'
       - 'scripts/lib/canonical-urls.ts'
       - 'scripts/lib/fetch-sitemap.ts'
