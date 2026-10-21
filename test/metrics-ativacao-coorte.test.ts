@@ -210,14 +210,14 @@ describe("computeAberturaPrimeiraEdicao (#7183)", () => {
 
   it("decompõe por classe de aquisição (#7173) — soma das classes bate o denom", () => {
     const records = [
-      sub({ email: "a@example.com", utm_source: "linkedin", abriuPrimeiraEdicao: true }), // organico
+      sub({ email: "a@example.com", utm_source: "linkedin", abriuPrimeiraEdicao: true }), // rede (#10735)
       sub({ email: "b@example.com", utm_source: "brevo-diaria", abriuPrimeiraEdicao: false }), // reativacao
     ];
     const r = computeAberturaPrimeiraEdicao(records);
     const totalDenom = Object.values(r.porClasse).reduce((s, c) => s + c.denom, 0);
     assert.equal(totalDenom, r.denom);
-    assert.equal(r.porClasse.organico.denom, 1);
-    assert.equal(r.porClasse.organico.numeradorResolvido, 1);
+    assert.equal(r.porClasse.rede.denom, 1);
+    assert.equal(r.porClasse.rede.numeradorResolvido, 1);
     assert.equal(r.porClasse.reativacao.denom, 1);
   });
 });

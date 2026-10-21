@@ -41,9 +41,9 @@ describe("#7184 — classifyGa4Channel", () => {
     assert.equal(classifyGa4Channel({ sessionSource: "newsletter", sessionMedium: "email" }), "indeterminado");
   });
 
-  it("linkedin sempre organico (armadilha 1 de acquisition-class.ts), independente do medium", () => {
-    assert.equal(classifyGa4Channel({ sessionSource: "linkedin", sessionMedium: "referral" }), "organico");
-    assert.equal(classifyGa4Channel({ sessionSource: "linkedin.com", sessionMedium: "social" }), "organico");
+  it("linkedin sempre rede (#10735; armadilha 1 de acquisition-class.ts), independente do medium", () => {
+    assert.equal(classifyGa4Channel({ sessionSource: "linkedin", sessionMedium: "referral" }), "rede");
+    assert.equal(classifyGa4Channel({ sessionSource: "linkedin.com", sessionMedium: "social" }), "rede");
   });
 
   it("medium organic (busca) → organico", () => {
@@ -117,7 +117,8 @@ describe("#7184 — aggregateGa4SessionsByClasse", () => {
     ];
     const porClasse = aggregateGa4SessionsByClasse(rows);
     assert.equal(porClasse.pago, 8);
-    assert.equal(porClasse.organico, 10);
+    assert.equal(porClasse.rede, 10);
+    assert.equal(porClasse.organico, 0);
     assert.equal(porClasse.indeterminado, 20);
     assert.equal(porClasse.reativacao, 0);
     assert.equal(porClasse.iniciativa, 0);
@@ -133,32 +134,32 @@ describe("#7184 — aggregateGa4SessionsByClasse", () => {
 describe("#7184 — computeConversaoPorClasse (sem-par nunca vira 0%/Infinity)", () => {
   it("classe com sessões E cadastros → status ok, conversao = cadastros/sessoes", () => {
     const rows = computeConversaoPorClasse(
-      { pago: 100, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 },
-      { pago: 4, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 },
+      { pago: 100, reativacao: 0, iniciativa: 0, rede: 0, organico: 0, indeterminado: 0 },
+      { pago: 4, reativacao: 0, iniciativa: 0, rede: 0, organico: 0, indeterminado: 0 },
     );
     assert.deepEqual(rows, [{ classe: "pago", sessoes: 100, cadastros: 4, conversao: 0.04, status: "ok" }]);
   });
 
   it("classe com sessão e SEM cadastro (majoritário, ex: tagassistant.google.com) → sem-par (só GA4), conversao null", () => {
     const rows = computeConversaoPorClasse(
-      { pago: 0, reativacao: 0, iniciativa: 0, organico: 50, indeterminado: 0 },
-      { pago: 0, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 },
+      { pago: 0, reativacao: 0, iniciativa: 0, rede: 0, organico: 50, indeterminado: 0 },
+      { pago: 0, reativacao: 0, iniciativa: 0, rede: 0, organico: 0, indeterminado: 0 },
     );
     assert.deepEqual(rows, [{ classe: "organico", sessoes: 50, cadastros: 0, conversao: null, status: "sem-par (só GA4)" }]);
   });
 
   it("classe com cadastro e SEM sessão → sem-par (só cadastro), conversao null, nunca Infinity", () => {
     const rows = computeConversaoPorClasse(
-      { pago: 0, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 },
-      { pago: 0, reativacao: 2, iniciativa: 0, organico: 0, indeterminado: 0 },
+      { pago: 0, reativacao: 0, iniciativa: 0, rede: 0, organico: 0, indeterminado: 0 },
+      { pago: 0, reativacao: 2, iniciativa: 0, rede: 0, organico: 0, indeterminado: 0 },
     );
     assert.deepEqual(rows, [{ classe: "reativacao", sessoes: 0, cadastros: 2, conversao: null, status: "sem-par (só cadastro)" }]);
   });
 
   it("classe ausente dos dois lados nunca aparece na saída", () => {
     const rows = computeConversaoPorClasse(
-      { pago: 5, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 },
-      { pago: 1, reativacao: 0, iniciativa: 0, organico: 0, indeterminado: 0 },
+      { pago: 5, reativacao: 0, iniciativa: 0, rede: 0, organico: 0, indeterminado: 0 },
+      { pago: 1, reativacao: 0, iniciativa: 0, rede: 0, organico: 0, indeterminado: 0 },
     );
     assert.equal(rows.length, 1);
     assert.equal(rows[0].classe, "pago");

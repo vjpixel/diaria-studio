@@ -53,7 +53,7 @@ import { buildCacCompatibleSubscribersFromStore } from "./lib/leitor-store.ts";
 import { applyOrigemOverride, filterInternalAndTestSubscribers, type CacReport } from "./lib/cac.ts";
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { main as buildOrigemMapMain } from "./build-origem-map.ts";
-import { main as cacReportMain, cacReportSnapshotId, DEFAULT_ORIGEM_MAP_PATH, loadOrigemIndex } from "./cac-report.ts";
+import { main as cacReportMain, cacReportSnapshotId, cacReportRelPath, DEFAULT_ORIGEM_MAP_PATH, loadOrigemIndex } from "./cac-report.ts";
 import { reportId } from "./studio-ui/studio-reports.ts";
 import {
   planAdsTestWatchActions,
@@ -639,7 +639,10 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
           // (e portanto o path) leva o sufixo `--store` (`cacReportSnapshotId`,
           // fonte única compartilhada com `cac-report.ts::main()`).
           const snapshotId = cacReportSnapshotId(runState.apuracao_snapshot, "store");
-          const reportPath = `data/aquisicao/cac-reports/${reportId("cac", snapshotId)}.md`;
+          // #10730: path do arquivo vem de `cacReportRelPath` (o mesmo que
+          // `cac-report.ts::main()` escreve, sem prefixo); `reportId` é só o
+          // id do registry, usado na URL abaixo.
+          const reportPath = cacReportRelPath(snapshotId);
           const reportUrl = `/relatorios/${reportId("cac", snapshotId)}`;
           pendingApuracaoState = markApuracaoCompleted(watchState, now.toISOString(), reportPath);
           const { subject, body } = buildApuracaoSuccessEmail(runState.apuracao_snapshot, reportUrl, cacResult.coverageLines ?? []);

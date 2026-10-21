@@ -130,7 +130,7 @@ function renderPlacar(placar) {
     tile(
       `Placar da meta (${placar.janelaDias}d)`,
       escapeHtml(fmtValor(placar.naoPagoNaoReativacao, "contagem")),
-      "organico + iniciativa (não-pago e não-reativação)",
+      "organico + iniciativa + rede (não-pago e não-reativação)",
     ),
     tile(
       "Orgânico estrito",

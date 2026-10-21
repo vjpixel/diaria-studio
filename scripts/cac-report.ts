@@ -805,6 +805,18 @@ export function cacReportSnapshotId(
   return `${snapshotDate}${fonteSuffix}${windowSuffix}`;
 }
 
+/**
+ * Path relativo (à raiz do repo) do relatório congelado cujo id é `id`
+ * (`cacReportSnapshotId`). Fonte ÚNICA do path, consumida por `main()` (que
+ * escreve o arquivo) e por `scripts/ads-test-watch.ts` (que grava o path no
+ * `watch-state`). #10730: o watch montava o path com `reportId("cac", id)` —
+ * o id do REGISTRY, com prefixo `cac-` — e gravava um arquivo que não existe.
+ * O id do registry serve só pra URL `/relatorios/{id}`, nunca pro path. @pure
+ */
+export function cacReportRelPath(id: string): string {
+  return `data/aquisicao/cac-reports/${id}.md`;
+}
+
 /** Resolve `--desde`/`--ate` crus (strings AAAA-MM-DD) numa `CohortWindow`
  *  epoch, reusando os parsers/guard de `cohort-engagement.ts` (#5495 —
  *  "reusar filterWindow, nunca reimplementar" vale igual pro parsing da
@@ -917,7 +929,13 @@ export function formatCacReportMarkdown(
   } else {
     lines.push(`Nenhuma janela de cadastro aplicada (--desde/--ate) — números acumulados desde sempre, não recortados por período.`);
   }
-  lines.push(`Base (todos os ativos, todos os canais): abertura agregada ${fmtPct(report.base.aberturaAgregada)} (n=${report.base.amostraConsiderada}).`);
+  // #10729: `null` com amostra > 0 = a fonte não traz abertura (`--fonte
+  // store`), não "abertura zero" — dizer isso em vez de um `—` solto.
+  const baseAbertura =
+    report.base.aberturaAgregada == null && report.base.amostraConsiderada > 0
+      ? "— (sem dado de abertura nesta fonte)"
+      : fmtPct(report.base.aberturaAgregada);
+  lines.push(`Base (todos os ativos, todos os canais): abertura agregada ${baseAbertura} (n=${report.base.amostraConsiderada}).`);
   lines.push(`Orçamento do mês ${budget.monthKey}: ${fmtBrl(budget.spentBrl)} de ${fmtBrl(budget.budgetFloorBrl)} (${fmtPct(budget.fractionUsed)}).`);
   if (report.internalFiltered > 0) {
     lines.push(`${report.internalFiltered} conta(s) interna(s)/teste excluída(s) antes de agrupar.`);
@@ -1359,7 +1377,7 @@ export async function main(
     // `--fonte store --snapshot 2026-09-17` sobrescreveria em silêncio um
     // relatório `--fonte beehiiv` já registrado com o mesmo rótulo de data.
     const id = cacReportSnapshotId(snapshotDate, fonte, args.desde, args.ate);
-    const relPath = `data/aquisicao/cac-reports/${id}.md`;
+    const relPath = cacReportRelPath(id);
     writeFileSync(resolve(rootDir, relPath), markdown, "utf8");
     const result = registerReport(rootDir, {
       kind: "cac",

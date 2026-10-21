@@ -73,7 +73,7 @@ interface Ga4ClasseRule {
  * tem classe própria em F1 (`reativacao`, o mesmo `utm_source` que
  * `activateSubscription`/`promoteBeehiivSubscription` escrevem). `google/cpc`,
  * `bing/cpc`, `microsoft/cpc` e `facebook|instagram/paid_social` cobrem os 3
- * braços de `PREFLIGHT_UTM_ARMS`. `linkedin/*` é sempre `organico` (mesma
+ * braços de `PREFLIGHT_UTM_ARMS`. `linkedin/*` é sempre `rede` (#10735; mesma
  * regra da armadilha 1 de `acquisition-class.ts` — nenhuma campanha paga
  * rodou ainda).
  */
@@ -97,9 +97,11 @@ export const GA4_SOURCE_MEDIUM_CLASSE_TABLE: readonly Ga4ClasseRule[] = [
   { source: "newsletter", medium: "email", classe: "indeterminado" },
   { source: "beehiiv", medium: "email", classe: "indeterminado" },
 
-  // organico — LinkedIn sempre orgânico enquanto não houver gasto real
-  // (mesma armadilha 1 de acquisition-class.ts).
-  { sourcePrefix: "linkedin", classe: "organico" },
+  // rede — LinkedIn (posts do editor) enquanto não houver gasto real
+  // (mesma armadilha 1 de acquisition-class.ts; `rede` desde o #10735, pra
+  // casar com a classe que `classifyAcquisition` dá ao cadastro — senão a
+  // conversão sessão→cadastro por classe sairia "sem-par" dos dois lados).
+  { sourcePrefix: "linkedin", classe: "rede" },
   { medium: "organic", classe: "organico" },
   { medium: "social", classe: "organico" },
   { medium: "referral", classe: "organico" },
@@ -193,10 +195,14 @@ export function filterByHostAllowlist(
  * @pure
  */
 export function aggregateGa4SessionsByClasse(rows: readonly Ga4ChannelRow[]): Record<AcquisitionClass, number> {
+  // Literal (não `emptyAcquisitionClassCounts`): este módulo só importa TIPO
+  // de `acquisition-class.ts` — o `Record<AcquisitionClass, …>` já faz o tsc
+  // recusar uma classe esquecida.
   const porClasse: Record<AcquisitionClass, number> = {
     pago: 0,
     reativacao: 0,
     iniciativa: 0,
+    rede: 0,
     organico: 0,
     indeterminado: 0,
   };

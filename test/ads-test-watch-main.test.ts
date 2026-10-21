@@ -161,7 +161,9 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
       assert.ok(watchState.apuracaoCompletedAt);
       // #8238: realCacReport sempre roda com --fonte store — o id do
       // relatório carrega o sufixo "--store" (cacReportSnapshotId).
-      assert.equal(watchState.apuracaoReportPath, `data/aquisicao/cac-reports/cac-${runState.apuracao_snapshot}--store.md`);
+      // #10730: SEM o prefixo "cac-" do id do registry — é o nome do arquivo
+      // que cac-report.ts escreve (ver test/cac-report-store-10729-10730.test.ts).
+      assert.equal(watchState.apuracaoReportPath, `data/aquisicao/cac-reports/${runState.apuracao_snapshot}--store.md`);
     });
   });
 
