@@ -113,9 +113,12 @@
  *   o significado de sempre. Ex: merge do vjpixel/diaria-design#23 →
  *   `merge-lock-acquire --pr 23 --repo vjpixel/diaria-design`, que não
  *   espera nem trava o lock do diaria-studio. `claim-issue`/`is-claimed`/
- *   `unclaim-issue` aceitam `--issue owner/repo#N`, mas só do repo default
- *   por enquanto — claim de outro repo é recusada alto, ver
- *   `requireLegacyClaimIssue`.)
+ *   `unclaim-issue` aceitam `--issue owner/repo#N` de qualquer repo da
+ *   allowlist `platform.config.json → issue_repos` (fatia 2): a do repo
+ *   default vai em `claimed_issues` como número, a de outro repo em
+ *   `claimed_foreign_issues` como `owner/repo#N` — sem colisão entre o #21
+ *   de um e o #21 do outro. Repo fora da allowlist é recusado alto, ver
+ *   `requireClaimIssue`.)
  *   npx tsx scripts/lib/session-registry.ts merge-lock-renew
  *     (#6334 — renova o TTL de um lock que a PRÓPRIA sessão já detém; nunca
  *     concede um hold novo. Ver `renewMergeLock`.)
@@ -193,7 +196,16 @@ import { tryStealOrphan, withFileLock } from "./file-lock.ts";
 // — ver docblock de `session-id-required-subcommands.ts` pro motivo de ser
 // um módulo à parte em vez de o hook importar `session-registry.ts` inteiro.
 import { SESSION_ID_REQUIRED_SUBCOMMANDS, resolveEnvInjectedSessionId } from "./session-id-required-subcommands.ts";
-import { DEFAULT_ISSUE_REPO, legacyIssueNumber, mergeLockFileName, normalizeRepoSlug, parseIssueRef } from "./issue-repos.ts";
+import {
+  DEFAULT_ISSUE_REPO,
+  formatIssueRef,
+  type IssueRef,
+  legacyIssueNumber,
+  loadIssueRepos,
+  mergeLockFileName,
+  normalizeRepoSlug,
+  parseIssueRef,
+} from "./issue-repos.ts";
 
 /**
  * #6168: `interactive` é o 4º kind — sessão comum do editor, registrada
@@ -385,6 +397,25 @@ export interface SessionRecord {
    * lifecycle no `end` pro detector de fabricação distinguir "claim
    * liberada" de "claim nunca feita". Ausente em registros anteriores. */
   claimed_issues_ever?: number[];
+  /**
+   * #10618 (fatia 2) — claims de issue de OUTRO repo da allowlist
+   * (`platform.config.json → issue_repos`, ex.: `vjpixel/diaria-design#21`),
+   * na forma canônica `owner/repo#N`. Campo SEPARADO de `claimed_issues` de
+   * propósito: `claimed_issues` é `number[]` e todo consumidor legado lê um
+   * número pelado como `vjpixel/diaria-studio#N` — gravar `21` ali
+   * reivindicaria o `diaria-studio#21` em silêncio. Nunca contém ref do repo
+   * default (essa vai como número em `claimed_issues`, como sempre).
+   * Mesma semântica de `claimed_issues` (união fail-safe entre cópias de
+   * conflito, janela de retenção em `claimed_foreign_issues_effective`).
+   */
+  claimed_foreign_issues?: string[];
+  /** #10618 — timestamp da 1ª reivindicação de cada ref de
+   * `claimed_foreign_issues` (chave = `owner/repo#N`), mesma regra de
+   * `claimed_issues_at` (#6436: nunca sobrescreve em `already-own`). */
+  claimed_foreign_issues_at?: Record<string, string>;
+  /** #10618 — histórico (só cresce) de `claimed_foreign_issues`, análogo a
+   * `claimed_issues_ever` (#8521). */
+  claimed_foreign_issues_ever?: string[];
   /** Branch atual do checkout ONDE O HOOK MORA (#6168 Parte A) — nunca a
    * branch de um worktree que a sessão só visitou via `cd` numa chamada de
    * Bash. Lido de `.git/HEAD` pelo beacon — sem subprocesso. É o campo que
@@ -541,7 +572,15 @@ export interface SessionRecord {
  * teve o claim liberado e o trabalho tomado por outra sessão). Igual a
  * `claimed_issues` quando dentro da janela de retenção.
  */
-export type ActiveSessionRecord = SessionRecord & { stale: boolean; claimed_issues_effective: number[] };
+export type ActiveSessionRecord = SessionRecord & {
+  stale: boolean;
+  claimed_issues_effective: number[];
+  /** #10618 — análogo de `claimed_issues_effective` para
+   * `claimed_foreign_issues` (refs `owner/repo#N` de outro repo). Opcional só
+   * pra não quebrar fixtures de teste montadas à mão; `listActiveSessions`
+   * sempre preenche. */
+  claimed_foreign_issues_effective?: string[];
+};
 
 interface MergeLockRecord {
   heldBy: string;
@@ -1975,6 +2014,31 @@ export interface SessionLifecycleEvent {
    * registrada antes desta mudança que liberou uma claim antes do deploy não
    * a tem no histórico. */
   claimed_issues_ever?: number[];
+  /** #10618 (fatia 2) — snapshot de `claimed_foreign_issues` (claims de OUTRO
+   * repo, `owner/repo#N`) no momento da remoção. Presente só quando a sessão
+   * teve alguma claim de outro repo (shape legado intacto no resto). */
+  claimed_foreign_issues?: string[];
+  /** #10618 — histórico (ever ∪ finais) das claims de outro repo. */
+  claimed_foreign_issues_ever?: string[];
+}
+
+/** #10618 — `claimed_foreign_issues` (e o histórico) pro evento de lifecycle;
+ * `{}` quando a sessão nunca reivindicou fora do repo default. */
+function snapshotForeignClaims(record: SessionRecord): {
+  claimed_foreign_issues?: string[];
+  claimed_foreign_issues_ever?: string[];
+} {
+  const finals = Array.isArray(record.claimed_foreign_issues)
+    ? record.claimed_foreign_issues.filter((x): x is string => typeof x === "string")
+    : [];
+  const ever = Array.isArray(record.claimed_foreign_issues_ever)
+    ? record.claimed_foreign_issues_ever.filter((x): x is string => typeof x === "string")
+    : [];
+  if (finals.length === 0 && ever.length === 0) return {};
+  return {
+    claimed_foreign_issues: [...new Set(finals)].sort(),
+    claimed_foreign_issues_ever: [...new Set([...ever, ...finals])].sort(),
+  };
 }
 
 /** #8521 — cópia ordenada/deduplicada de `claimed_issues` pro evento de
@@ -2162,6 +2226,7 @@ export function endSession(
       lastHeartbeat: outcome.record.lastHeartbeat ?? null,
       claimed_issues: snapshotClaimedIssues(outcome.record),
       claimed_issues_ever: snapshotClaimedIssuesEver(outcome.record),
+      ...snapshotForeignClaims(outcome.record),
     });
   }
   return outcome.removed;
@@ -2478,6 +2543,16 @@ export function mergeSessionRecords(
   }
   const claimedUnion = new Set<number>();
   for (const r of records) for (const issue of r.claimed_issues ?? []) claimedUnion.add(issue);
+  // #10618 — mesma união fail-safe pras claims de outro repo.
+  const foreignUnion = new Set<string>();
+  for (const r of records) for (const ref of r.claimed_foreign_issues ?? []) foreignUnion.add(ref);
+  const foreignAtUnion: Record<string, string> = {};
+  for (const r of records) {
+    for (const [key, at] of Object.entries(r.claimed_foreign_issues_at ?? {})) {
+      const existing = foreignAtUnion[key];
+      if (!existing || Date.parse(at) < Date.parse(existing)) foreignAtUnion[key] = at;
+    }
+  }
   // #6436 — une `claimed_issues_at` de todas as cópias do grupo, mantendo o
   // timestamp MAIS ANTIGO por issue (a claim "de verdade" começou lá, mesmo
   // que uma cópia de conflito do OneDrive tenha um valor mais recente por
@@ -2579,6 +2654,14 @@ export function mergeSessionRecords(
     // OneDrive) — senão uma cópia vencedora sem o campo apagaria o histórico.
     ...(records.some((r) => r.claimed_issues_ever)
       ? { claimed_issues_ever: [...new Set(records.flatMap((r) => r.claimed_issues_ever ?? []))].sort((a, b) => a - b) }
+      : {}),
+    // #10618 — só materializa os campos de outro repo quando alguma cópia os
+    // tem, pra não mudar o shape de registros que nunca reivindicaram fora.
+    ...(records.some((r) => r.claimed_foreign_issues || r.claimed_foreign_issues_at)
+      ? { claimed_foreign_issues: [...foreignUnion].sort(), claimed_foreign_issues_at: foreignAtUnion }
+      : {}),
+    ...(records.some((r) => r.claimed_foreign_issues_ever)
+      ? { claimed_foreign_issues_ever: [...new Set(records.flatMap((r) => r.claimed_foreign_issues_ever ?? []))].sort() }
       : {}),
   };
 }
@@ -2767,6 +2850,15 @@ function dedupeBySessionId(records: readonly SessionRecord[]): SessionRecord[] {
       claimed_issues: claimsUnion.claimed_issues,
       claimed_issues_at: claimsUnion.claimed_issues_at,
       ...(claimsUnion.claimed_issues_ever ? { claimed_issues_ever: claimsUnion.claimed_issues_ever } : {}),
+      ...(claimsUnion.claimed_foreign_issues
+        ? {
+            claimed_foreign_issues: claimsUnion.claimed_foreign_issues,
+            claimed_foreign_issues_at: claimsUnion.claimed_foreign_issues_at,
+          }
+        : {}),
+      ...(claimsUnion.claimed_foreign_issues_ever
+        ? { claimed_foreign_issues_ever: claimsUnion.claimed_foreign_issues_ever }
+        : {}),
     });
   }
   return out;
@@ -2818,7 +2910,12 @@ export function listActiveSessions(
     // não "livre". Mesma regra de validade que `isIssueClaimedByOther`
     // aplica (abaixo), carregada aqui pra quem só lê `list-active`.
     const claimsReleased = ageMs > claimReleaseMsForKind(record.kind);
-    out.push({ ...record, stale, claimed_issues_effective: claimsReleased ? [] : (record.claimed_issues ?? []) });
+    out.push({
+      ...record,
+      stale,
+      claimed_issues_effective: claimsReleased ? [] : (record.claimed_issues ?? []),
+      claimed_foreign_issues_effective: claimsReleased ? [] : (record.claimed_foreign_issues ?? []),
+    });
   }
   return out;
 }
@@ -2859,8 +2956,115 @@ export interface ClaimIssueOptions {
 }
 
 /**
- * Faz check-and-set: adiciona `issueNumber` a `claimed_issues` da sessão SÓ
- * DEPOIS de confirmar que nenhuma OUTRA sessão ativa já a segura (#6236 —
+ * #10618 (fatia 2) — o que um `claim-issue`/`unclaim-issue`/`is-claimed`
+ * reivindica: número legado (= `vjpixel/diaria-studio#N`, como sempre) ou uma
+ * `IssueRef` qualificada. Ref do repo default é normalizada pro número legado
+ * (vai em `claimed_issues`); ref de outro repo vai em `claimed_foreign_issues`
+ * como `owner/repo#N` — os dois espaços nunca colidem (`diaria-design#21` ≠
+ * `diaria-studio#21`).
+ */
+export type ClaimIssueTarget = number | IssueRef;
+
+interface ResolvedClaimTarget {
+  /** Número a gravar em `claimed_issues` — só quando a issue é do repo default. */
+  legacy: number | null;
+  /** `owner/repo#N` a gravar em `claimed_foreign_issues` — só quando é de outro repo. */
+  foreignKey: string | null;
+}
+
+function resolveClaimTarget(issue: ClaimIssueTarget): ResolvedClaimTarget {
+  if (typeof issue === "number") return { legacy: issue, foreignKey: null };
+  const repo = normalizeRepoSlug(issue.repo);
+  if (!repo || !Number.isSafeInteger(issue.number) || issue.number <= 0) {
+    throw new Error(`claim: identidade de issue inválida (${JSON.stringify(issue)}) (#10618)`);
+  }
+  const ref = { repo, number: issue.number };
+  const legacy = legacyIssueNumber(ref);
+  return legacy !== null ? { legacy, foreignKey: null } : { legacy: null, foreignKey: formatIssueRef(ref) };
+}
+
+/** #10618 — rótulos (`#N` e `owner/repo#N`) das claims recuperadas de cópias
+ * órfãs, pras mensagens do CLI. */
+function recoveredClaimLabels(result: { recoveredClaims?: number[]; recoveredForeignClaims?: string[] }): string[] {
+  return [...(result.recoveredClaims ?? []).map((n) => `#${n}`), ...(result.recoveredForeignClaims ?? [])];
+}
+
+/** Rótulo pra mensagens: `#N` (legado) ou `owner/repo#N`. */
+export function claimTargetLabel(issue: ClaimIssueTarget): string {
+  const t = resolveClaimTarget(issue);
+  return t.foreignKey ?? `#${t.legacy}`;
+}
+
+function recordHoldsClaim(
+  record: Pick<SessionRecord, "claimed_issues" | "claimed_foreign_issues"> | null | undefined,
+  t: ResolvedClaimTarget,
+): boolean {
+  if (!record) return false;
+  if (t.legacy !== null) return (record.claimed_issues ?? []).includes(t.legacy);
+  return (record.claimed_foreign_issues ?? []).includes(t.foreignKey!);
+}
+
+function sessionEffectivelyHolds(session: ActiveSessionRecord, t: ResolvedClaimTarget): boolean {
+  if (t.legacy !== null) return session.claimed_issues_effective.includes(t.legacy);
+  return (session.claimed_foreign_issues_effective ?? []).includes(t.foreignKey!);
+}
+
+function withClaimAdded(record: SessionRecord, t: ResolvedClaimTarget, now: string): SessionRecord {
+  if (t.legacy !== null) {
+    const n = t.legacy;
+    const claimed = new Set(record.claimed_issues ?? []);
+    claimed.add(n);
+    // #6436 — grava o timestamp da PRIMEIRA reivindicação, nunca sobrescreve
+    // numa re-reivindicação da mesma issue (`already-own`) — ver docstring de
+    // `claimed_issues_at` em `SessionRecord`.
+    const claimedAt = { ...(record.claimed_issues_at ?? {}) };
+    if (!(String(n) in claimedAt)) claimedAt[String(n)] = now;
+    return {
+      ...record,
+      claimed_issues: [...claimed].sort((a, b) => a - b),
+      claimed_issues_at: claimedAt,
+      claimed_issues_ever: [...new Set([...(record.claimed_issues_ever ?? []), n])].sort((a, b) => a - b),
+    };
+  }
+  const key = t.foreignKey!;
+  const claimed = new Set(record.claimed_foreign_issues ?? []);
+  claimed.add(key);
+  const claimedAt = { ...(record.claimed_foreign_issues_at ?? {}) };
+  if (!(key in claimedAt)) claimedAt[key] = now;
+  return {
+    ...record,
+    claimed_foreign_issues: [...claimed].sort(),
+    claimed_foreign_issues_at: claimedAt,
+    claimed_foreign_issues_ever: [...new Set([...(record.claimed_foreign_issues_ever ?? []), key])].sort(),
+  };
+}
+
+function withClaimRemoved(record: SessionRecord, t: ResolvedClaimTarget): SessionRecord {
+  if (t.legacy !== null) {
+    const n = t.legacy;
+    // #6453 — limpa `claimed_issues_at` junto (ver `unclaimIssue`).
+    const claimedAt = { ...(record.claimed_issues_at ?? {}) };
+    delete claimedAt[String(n)];
+    return {
+      ...record,
+      claimed_issues: (record.claimed_issues ?? []).filter((x) => x !== n),
+      claimed_issues_at: claimedAt,
+    };
+  }
+  const key = t.foreignKey!;
+  const claimedAt = { ...(record.claimed_foreign_issues_at ?? {}) };
+  delete claimedAt[key];
+  return {
+    ...record,
+    claimed_foreign_issues: (record.claimed_foreign_issues ?? []).filter((x) => x !== key),
+    claimed_foreign_issues_at: claimedAt,
+  };
+}
+
+/**
+ * Faz check-and-set: adiciona `issueNumber` a `claimed_issues` da sessão
+ * (ou, quando é `IssueRef` de outro repo, a `claimed_foreign_issues` como
+ * `owner/repo#N` — #10618) SÓ DEPOIS de confirmar que nenhuma OUTRA sessão ativa já a segura (#6236 —
  * antes desta mudança, `claimIssue` escrevia cego no próprio arquivo sem
  * nunca consultar os das outras sessões; a checagem vivia inteiramente no
  * chamador via `is-claimed`, com uma janela TOCTOU clássica entre os dois
@@ -2899,16 +3103,17 @@ export function claimIssueCheckAndSet(
   repoRoot: string,
   kind: SessionKind,
   sessionId: string,
-  issueNumber: number,
+  issueNumber: ClaimIssueTarget,
   tag: string = machineTag(),
   now: string = new Date().toISOString(),
   options: ClaimIssueOptions = {},
 ): ClaimIssueResult {
+  const target = resolveClaimTarget(issueNumber);
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   const current = readJsonSafe<SessionRecord>(path);
   if (!current) return { ok: false, reason: "no-op-session-missing" };
 
-  const alreadyOwn = (current.claimed_issues ?? []).includes(issueNumber);
+  const alreadyOwn = recordHoldsClaim(current, target);
   let reason: ClaimIssueReason = "claimed";
   let overriddenOwner: ActiveSessionRecord | undefined;
   if (alreadyOwn) {
@@ -2927,29 +3132,15 @@ export function claimIssueCheckAndSet(
   // pode reescrever o record enquanto este claim tenta gravar, e um
   // `...current` congelado apagaria os campos dele (merge_grant,
   // touched_paths, etc.) — exatamente a mesma classe do #6952.
-  const issueKey = String(issueNumber);
   writeJsonSafeWithCas(
     path,
     (current) => {
       if (!current) throw new Error("claimIssueCheckAndSet: sessão sumiu entre a leitura e a escrita");
-      const claimed = new Set(current.claimed_issues ?? []);
-      claimed.add(issueNumber);
-      // #6436 — grava o timestamp da PRIMEIRA reivindicação, nunca sobrescreve
-      // numa re-reivindicação da mesma issue (`already-own`) — ver docstring de
-      // `claimed_issues_at` em `SessionRecord`.
-      const claimedAt = { ...(current.claimed_issues_at ?? {}) };
-      if (!(issueKey in claimedAt)) {
-        claimedAt[issueKey] = now;
-      }
-      return {
-        ...current,
-        claimed_issues: [...claimed].sort((a, b) => a - b),
-        claimed_issues_at: claimedAt,
-        claimed_issues_ever: [...new Set([...(current.claimed_issues_ever ?? []), issueNumber])].sort((a, b) => a - b),
-        lastHeartbeat: now,
-      };
+      // #10618: `withClaimAdded` grava em `claimed_issues` (repo default) ou
+      // `claimed_foreign_issues` (outro repo) — mesma regra #6436 do timestamp.
+      return { ...withClaimAdded(current, target, now), lastHeartbeat: now };
     },
-    (onDisk) => onDisk?.lastHeartbeat === now && (onDisk?.claimed_issues ?? []).includes(issueNumber),
+    (onDisk) => onDisk?.lastHeartbeat === now && recordHoldsClaim(onDisk, target),
   );
   return overriddenOwner ? { ok: true, reason, blockedBy: overriddenOwner } : { ok: true, reason };
 }
@@ -2978,6 +3169,9 @@ export interface ClaimIssueAutoRegisterResult extends ClaimIssueResult {
   /** #7003 — claims que a reconstrução trouxe de volta das cópias órfãs.
    * Presente só em `autoRegisterMode: "recovered-from-orphan-backups"`. */
   recoveredClaims?: number[];
+  /** #10618 — claims de OUTRO repo (`owner/repo#N`) que a reconstrução
+   * trouxe de volta. Presente só quando há alguma. */
+  recoveredForeignClaims?: string[];
   /** #7003 — quantas cópias de conflito alimentaram a reconstrução. */
   recoveredFromFiles?: number;
 }
@@ -3035,7 +3229,7 @@ export function claimIssueAutoRegistering(
   repoRoot: string,
   kind: SessionKind,
   sessionId: string,
-  issueNumber: number,
+  issueNumber: ClaimIssueTarget,
   tag: string = machineTag(),
   now: string = new Date().toISOString(),
   options: ClaimIssueOptions = {},
@@ -3061,6 +3255,9 @@ export function claimIssueAutoRegistering(
       autoRegistered: true,
       autoRegisterMode: "recovered-from-orphan-backups",
       recoveredClaims: [...(recovered.record.claimed_issues ?? [])],
+      ...((recovered.record.claimed_foreign_issues ?? []).length > 0
+        ? { recoveredForeignClaims: [...(recovered.record.claimed_foreign_issues ?? [])] }
+        : {}),
       recoveredFromFiles: recovered.files.length,
     };
   }
@@ -3139,6 +3336,9 @@ export function heartbeatAutoRegistering(
       autoRegistered: true,
       autoRegisterMode: "recovered-from-orphan-backups",
       recoveredClaims: [...(recovered.record.claimed_issues ?? [])],
+      ...((recovered.record.claimed_foreign_issues ?? []).length > 0
+        ? { recoveredForeignClaims: [...(recovered.record.claimed_foreign_issues ?? [])] }
+        : {}),
       recoveredFromFiles: recovered.files.length,
     };
   }
@@ -3316,7 +3516,7 @@ export function claimIssue(
   repoRoot: string,
   kind: SessionKind,
   sessionId: string,
-  issueNumber: number,
+  issueNumber: ClaimIssueTarget,
   tag: string = machineTag(),
   now: string = new Date().toISOString(),
   options: ClaimIssueOptions = {},
@@ -3452,10 +3652,11 @@ export function unclaimIssue(
   repoRoot: string,
   kind: SessionKind,
   sessionId: string,
-  issueNumber: number,
+  issueNumber: ClaimIssueTarget,
   tag: string = machineTag(),
   now: string = new Date().toISOString(),
 ): UnclaimIssueResult {
+  const target = resolveClaimTarget(issueNumber);
   const path = sessionFilePath(repoRoot, kind, tag, sessionId);
   const rawCurrent = readJsonSafe<SessionRecord>(path);
   if (!rawCurrent) {
@@ -3472,17 +3673,15 @@ export function unclaimIssue(
   // é legível (ela sempre inclui pelo menos o próprio arquivo real no merge).
   const current = readMergedRecordForRealFile(repoRoot, path) ?? rawCurrent;
 
-  const claimed = current.claimed_issues ?? [];
-  if (!claimed.includes(issueNumber)) return { ok: false, reason: "no-op-not-claimed" };
+  if (!recordHoldsClaim(current, target)) return { ok: false, reason: "no-op-not-claimed" };
 
-  // #6453 — limpa a entrada correspondente de `claimed_issues_at` junto com a
-  // remoção de `claimed_issues`. Sem isto, uma re-reivindicação futura da
-  // MESMA issue herda o timestamp da claim ANTERIOR (`claimIssueCheckAndSet`
-  // nunca sobrescreve uma chave já presente, #6436) e nasce artificialmente
+  // #6453 — `withClaimRemoved` limpa a entrada correspondente de
+  // `claimed_issues_at` (ou `claimed_foreign_issues_at`, #10618) junto com a
+  // remoção da claim. Sem isto, uma re-reivindicação futura da MESMA issue
+  // herda o timestamp da claim ANTERIOR (`claimIssueCheckAndSet` nunca
+  // sobrescreve uma chave já presente, #6436) e nasce artificialmente
   // "envelhecida" para `findAgedClaims`/`check-block-staleness.ts` — o falso
   // positivo exato que o gate de staleness existe para evitar.
-  const claimedAt = { ...(current.claimed_issues_at ?? {}) };
-  delete claimedAt[String(issueNumber)];
 
   // #6952: CAS em vez de read-modify-write solto — mesmo risco que
   // `claimIssueCheckAndSet`/`grantMergeWindow`.
@@ -3501,19 +3700,9 @@ export function unclaimIssue(
       // "Re-derivar do estado fresco" continua valendo — o que muda é QUAL
       // leitura é a fresca: a do GRUPO, não a de um arquivo do grupo.
       const base = readMergedRecordForRealFile(repoRoot, path) ?? fresh;
-      const claimed = base.claimed_issues ?? [];
-      const claimedAt = { ...(base.claimed_issues_at ?? {}) };
-      delete claimedAt[String(issueNumber)];
-      return {
-        ...base,
-        claimed_issues: claimed.filter((n) => n !== issueNumber),
-        claimed_issues_at: claimedAt,
-        lastHeartbeat: now,
-      };
+      return { ...withClaimRemoved(base, target), lastHeartbeat: now };
     },
-    (onDisk) =>
-      onDisk?.lastHeartbeat === now &&
-      !(onDisk?.claimed_issues ?? []).includes(issueNumber),
+    (onDisk) => onDisk?.lastHeartbeat === now && !recordHoldsClaim(onDisk, target),
   );
 
   // #6567: propaga a remoção a cada `-safeBackup-*` do grupo que ainda carrega
@@ -3522,10 +3711,7 @@ export function unclaimIssue(
   for (const backupPath of sessionGroupBackupPaths(repoRoot, path)) {
     const backupRecord = readJsonSafe<SessionRecord>(backupPath);
     if (!backupRecord) continue; // backup ilegível/parcialmente sincronizado — GC recolhe depois
-    const backupClaimed = backupRecord.claimed_issues ?? [];
-    if (!backupClaimed.includes(issueNumber)) continue;
-    const backupClaimedAt = { ...(backupRecord.claimed_issues_at ?? {}) };
-    delete backupClaimedAt[String(issueNumber)];
+    if (!recordHoldsClaim(backupRecord, target)) continue;
     // #6952 (4º review): esta PR promoveu este laço de `writeJsonSafe` (que
     // praticamente nunca lança) pra `writeJsonSafeWithCas` (que PODE exaurir).
     // Sem o try/catch, um backup que exaure interrompe o laço e os SEGUINTES
@@ -3538,16 +3724,9 @@ export function unclaimIssue(
         backupPath,
         (current) => {
           if (!current) throw new Error("unclaimIssue: backup sumiu entre a leitura e a escrita");
-          const claimed = current.claimed_issues ?? [];
-          const at = { ...(current.claimed_issues_at ?? {}) };
-          delete at[String(issueNumber)];
-          return {
-            ...current,
-            claimed_issues: claimed.filter((n) => n !== issueNumber),
-            claimed_issues_at: at,
-          };
+          return withClaimRemoved(current, target);
         },
-        (onDisk) => !(onDisk?.claimed_issues ?? []).includes(issueNumber),
+        (onDisk) => !recordHoldsClaim(onDisk, target),
       );
     } catch {
       // Um backup que falhou não impede limpar os outros. A remoção do
@@ -3569,10 +3748,11 @@ export function unclaimIssue(
  */
 export function isIssueClaimedByOther(
   repoRoot: string,
-  issueNumber: number,
+  issueNumber: ClaimIssueTarget,
   excludeSessionId: string,
   now: number = Date.now(),
 ): ActiveSessionRecord | null {
+  const target = resolveClaimTarget(issueNumber);
   for (const session of listActiveSessions(repoRoot, now)) {
     if (session.sessionId === excludeSessionId) continue;
     // #7227: lê `claimed_issues_effective` (já resolve a janela de retenção
@@ -3583,7 +3763,7 @@ export function isIssueClaimedByOther(
     // segurando a issue (ainda dentro de `claimReleaseMsForKind`, "provavelmente
     // ociosa" mas não livre), e gatear por `stale` sozinho voltaria a liberar
     // cedo demais o que este helper existe pra proteger (#5751).
-    if (session.claimed_issues_effective.includes(issueNumber)) return session;
+    if (sessionEffectivelyHolds(session, target)) return session;
   }
   return null;
 }
@@ -3624,14 +3804,15 @@ export function isIssueClaimedByOther(
  */
 export function isIssueClaimedByActiveSession(
   repoRoot: string,
-  issueNumber: number,
+  issueNumber: ClaimIssueTarget,
   excludeSessionId: string,
   now: number = Date.now(),
 ): ActiveSessionRecord | null {
+  const target = resolveClaimTarget(issueNumber);
   for (const session of listActiveSessions(repoRoot, now)) {
     if (session.sessionId === excludeSessionId) continue;
     if (session.stale) continue;
-    if (session.claimed_issues_effective.includes(issueNumber)) return session;
+    if (sessionEffectivelyHolds(session, target)) return session;
   }
   return null;
 }
@@ -4352,9 +4533,14 @@ function decideSessionGc(
       // DISCO destes números, pra qualquer consumidor que leia
       // `data/sessions/` diretamente, sem passar pela união.
       const claimedIssues = Array.from(new Set(records.flatMap((r) => r.claimed_issues ?? []))).sort((a, b) => a - b);
+      // #10618: claims de outro repo (`owner/repo#N`) entram no mesmo aviso.
+      const claimLabels = [
+        ...claimedIssues.map((n) => `#${n}`),
+        ...Array.from(new Set(records.flatMap((r) => r.claimed_foreign_issues ?? []))).sort(),
+      ];
       const claimsNote =
-        claimedIssues.length > 0
-          ? ` — leva junto ${claimedIssues.length} claim(s) que estavam registrados neste arquivo órfão: #${claimedIssues.join(", #")}`
+        claimLabels.length > 0
+          ? ` — leva junto ${claimLabels.length} claim(s) que estavam registrados neste arquivo órfão: ${claimLabels.join(", ")}`
           : " — sem claimed_issues";
       return {
         action: "removed",
@@ -4541,6 +4727,7 @@ export function garbageCollectSessions(repoRoot: string, opts: SessionGcOptions 
         lastHeartbeat: lifecycleRecord.lastHeartbeat ?? null,
         claimed_issues: snapshotClaimedIssues(lifecycleRecord),
         claimed_issues_ever: snapshotClaimedIssuesEver(lifecycleRecord),
+        ...snapshotForeignClaims(lifecycleRecord),
       });
     }
   }
@@ -4594,6 +4781,12 @@ export interface ClaimReconciliationResult {
    * usado por `reconcileClaims` na escrita; nunca sobrescreve uma entrada já
    * existente no real. Vazio quando `addedIssues` é vazio. */
   addedClaimedIssuesAt: Record<string, string>;
+  /** #10618 — análogo de `addedIssues` para `claimed_foreign_issues`
+   * (`owner/repo#N`). Ausente (=vazio) em grupos sem claim de outro repo. */
+  addedForeignIssues?: string[];
+  /** #10618 — análogo de `addedClaimedIssuesAt` para
+   * `claimed_foreign_issues_at`. */
+  addedForeignClaimedIssuesAt?: Record<string, string>;
   /** Quantos `-safeBackup-*` do grupo estavam ilegíveis/corrompidos e por isso
    * ficaram de fora da união — as claims deles, se houver, ficam
    * irrecuperáveis por esta reconciliação (não é erro nem bloqueia o resto do
@@ -4613,6 +4806,24 @@ export interface ClaimReconciliationDecision {
   /** Entradas NOVAS de `claimed_issues_at` (só para `addedIssues`) — nunca
    * sobrescreve uma entrada já existente no real. */
   addedClaimedIssuesAt: Record<string, string>;
+  /** #10618 (fatia 2) — claims de OUTRO repo (`owner/repo#N`) presentes em
+   * algum backup e ausentes do real, mesma regra #6698 de `addedIssues`.
+   * Ausente quando nenhuma (shape legado intacto). Todo consumidor que decide
+   * "o backup ainda carrega claim que o real não tem" usa
+   * `claimReconciliationHasAdditions`, nunca só `addedIssues.length` — senão
+   * um backup com claim do diaria-design viraria `removable` e a claim
+   * sumiria. */
+  addedForeignIssues?: string[];
+  addedForeignClaimedIssuesAt?: Record<string, string>;
+}
+
+/** `true` quando a decisão tem QUALQUER claim a acrescentar ao real — do repo
+ * default (`addedIssues`) ou de outro repo (`addedForeignIssues`, #10618). */
+export function claimReconciliationHasAdditions(d: {
+  addedIssues: readonly number[];
+  addedForeignIssues?: readonly string[];
+}): boolean {
+  return d.addedIssues.length > 0 || (d.addedForeignIssues ?? []).length > 0;
 }
 
 /**
@@ -4654,6 +4865,7 @@ export function decideClaimReconciliation(
 ): ClaimReconciliationDecision {
   if (backupRecords.length === 0) return { addedIssues: [], addedClaimedIssuesAt: {} };
   const merged = mergeSessionRecords([realRecord, ...backupRecords]);
+  const foreign = decideForeignClaimReconciliation(realRecord, merged);
   const currentClaimed = new Set(realRecord.claimed_issues ?? []);
   const realHeartbeatMs = Date.parse(realRecord.lastHeartbeat ?? realRecord.startedAt ?? "");
   const candidateIssues = (merged.claimed_issues ?? []).filter((n) => !currentClaimed.has(n)).sort((a, b) => a - b);
@@ -4672,7 +4884,29 @@ export function decideClaimReconciliation(
     addedIssues.push(issue);
     if (at) addedClaimedIssuesAt[String(issue)] = at;
   }
-  return { addedIssues, addedClaimedIssuesAt };
+  return foreign.addedForeignIssues.length > 0
+    ? { addedIssues, addedClaimedIssuesAt, ...foreign }
+    : { addedIssues, addedClaimedIssuesAt };
+}
+
+/** #10618 — a mesma regra (#6698) de `decideClaimReconciliation`, sobre
+ * `claimed_foreign_issues`/`claimed_foreign_issues_at`. */
+function decideForeignClaimReconciliation(
+  realRecord: SessionRecord,
+  merged: SessionRecord,
+): { addedForeignIssues: string[]; addedForeignClaimedIssuesAt: Record<string, string> } {
+  const current = new Set(realRecord.claimed_foreign_issues ?? []);
+  const realHeartbeatMs = Date.parse(realRecord.lastHeartbeat ?? realRecord.startedAt ?? "");
+  const addedForeignIssues: string[] = [];
+  const addedForeignClaimedIssuesAt: Record<string, string> = {};
+  for (const key of [...(merged.claimed_foreign_issues ?? [])].filter((k) => !current.has(k)).sort()) {
+    const at = merged.claimed_foreign_issues_at?.[key];
+    const atMs = at ? Date.parse(at) : NaN;
+    if (at && Number.isFinite(atMs) && Number.isFinite(realHeartbeatMs) && atMs <= realHeartbeatMs) continue;
+    addedForeignIssues.push(key);
+    if (at) addedForeignClaimedIssuesAt[key] = at;
+  }
+  return { addedForeignIssues, addedForeignClaimedIssuesAt };
 }
 
 /**
@@ -4724,20 +4958,26 @@ export function planClaimReconciliation(repoRoot: string): ClaimReconciliationRe
       else unreadableCount++;
     }
 
-    const { addedIssues, addedClaimedIssuesAt } = decideClaimReconciliation(realRecord, backupRecords);
+    const decision = decideClaimReconciliation(realRecord, backupRecords);
+    const { addedIssues, addedClaimedIssuesAt } = decision;
+    const addedForeign = decision.addedForeignIssues ?? [];
+    const hasAdditions = claimReconciliationHasAdditions(decision);
     const unreadableNote = unreadableCount > 0 ? ` (${unreadableCount} backup(s) ilegível(is) do grupo ignorado(s))` : "";
+    const addedLabels = [...addedIssues.map(String), ...addedForeign];
     results.push({
       identity: stem,
       realPath,
       backupPaths,
       addedIssues,
       addedClaimedIssuesAt,
+      ...(addedForeign.length > 0
+        ? { addedForeignIssues: addedForeign, addedForeignClaimedIssuesAt: decision.addedForeignClaimedIssuesAt ?? {} }
+        : {}),
       unreadableBackupCount: unreadableCount,
-      action: addedIssues.length > 0 ? "reconciled" : "no-change",
-      reason:
-        addedIssues.length > 0
-          ? `${addedIssues.length} claim(s) presos em backup — issue(s) [${addedIssues.join(", ")}]${unreadableNote}`
-          : `nenhum claim exclusivo de backup${unreadableNote}`,
+      action: hasAdditions ? "reconciled" : "no-change",
+      reason: hasAdditions
+        ? `${addedLabels.length} claim(s) presos em backup — issue(s) [${addedLabels.join(", ")}]${unreadableNote}`
+        : `nenhum claim exclusivo de backup${unreadableNote}`,
     });
   }
 
@@ -4812,8 +5052,17 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
     const fresh = decideClaimReconciliation(current, freshBackupRecords);
     entry.addedIssues = fresh.addedIssues;
     entry.addedClaimedIssuesAt = fresh.addedClaimedIssuesAt;
+    const freshForeign = fresh.addedForeignIssues ?? [];
+    const freshForeignAt = fresh.addedForeignClaimedIssuesAt ?? {};
+    if (freshForeign.length > 0) {
+      entry.addedForeignIssues = freshForeign;
+      entry.addedForeignClaimedIssuesAt = freshForeignAt;
+    } else {
+      delete entry.addedForeignIssues;
+      delete entry.addedForeignClaimedIssuesAt;
+    }
 
-    if (fresh.addedIssues.length === 0) {
+    if (!claimReconciliationHasAdditions(fresh)) {
       entry.action = "no-change";
       entry.reason = `${entry.reason} [nada a adicionar contra o estado relido no momento da escrita — provavelmente já reconciliado, ou a claim foi legitimamente removida entre o plano e a escrita]`;
       continue;
@@ -4830,11 +5079,21 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
           const set = new Set(current.claimed_issues ?? []);
           for (const issue of fresh.addedIssues) set.add(issue);
           const at = { ...(current.claimed_issues_at ?? {}), ...fresh.addedClaimedIssuesAt };
-          return {
+          const next: SessionRecord = {
             ...current,
             claimed_issues: [...set].sort((a, b) => a - b),
             claimed_issues_at: at,
             claimed_issues_ever: [...new Set([...(current.claimed_issues_ever ?? []), ...fresh.addedIssues])].sort((a, b) => a - b),
+          };
+          // #10618: mesma escrita cirúrgica pras claims de outro repo.
+          if (freshForeign.length === 0) return next;
+          return {
+            ...next,
+            claimed_foreign_issues: [...new Set([...(current.claimed_foreign_issues ?? []), ...freshForeign])].sort(),
+            claimed_foreign_issues_at: { ...(current.claimed_foreign_issues_at ?? {}), ...freshForeignAt },
+            claimed_foreign_issues_ever: [
+              ...new Set([...(current.claimed_foreign_issues_ever ?? []), ...freshForeign]),
+            ].sort(),
           };
         },
         // `verify` checa PERTINÊNCIA das issues que este reconcile veio
@@ -4847,7 +5106,11 @@ export function reconcileClaims(repoRoot: string): ClaimReconciliationResult[] {
         // reconcile reportaria `write-failed` para uma escrita que funcionou.
         (onDisk) => {
           const claimedOnDisk = new Set(onDisk?.claimed_issues ?? []);
-          return fresh.addedIssues.every((issue) => claimedOnDisk.has(issue));
+          const foreignOnDisk = new Set(onDisk?.claimed_foreign_issues ?? []);
+          return (
+            fresh.addedIssues.every((issue) => claimedOnDisk.has(issue)) &&
+            freshForeign.every((key) => foreignOnDisk.has(key))
+          );
         },
       );
     } catch (e) {
@@ -5078,14 +5341,17 @@ export function planSafeBackupCleanup(repoRoot: string, opts: { now?: number } =
       if (r) backupRecords.push(r);
     }
 
-    const { addedIssues } = decideClaimReconciliation(realRecord, backupRecords);
-    if (addedIssues.length > 0) {
+    // #10618: claim de OUTRO repo presa num backup também segura o grupo —
+    // sem isto o backup virava `removable` e a claim do diaria-design sumia.
+    const pending = decideClaimReconciliation(realRecord, backupRecords);
+    if (claimReconciliationHasAdditions(pending)) {
+      const n = pending.addedIssues.length + (pending.addedForeignIssues ?? []).length;
       results.push({
         identity: stem,
         realPath,
         backupPaths,
         action: "pending-reconciliation",
-        reason: `${addedIssues.length} claim(s) do grupo ainda não estão no real — rode reconcileClaims primeiro`,
+        reason: `${n} claim(s) do grupo ainda não estão no real — rode reconcileClaims primeiro`,
       });
       continue;
     }
@@ -5176,8 +5442,7 @@ export function cleanupReconciledSafeBackups(repoRoot: string, opts: { now?: num
       continue;
     }
 
-    const { addedIssues } = decideClaimReconciliation(freshReal, freshBackupRecords);
-    if (addedIssues.length > 0) {
+    if (claimReconciliationHasAdditions(decideClaimReconciliation(freshReal, freshBackupRecords))) {
       entry.action = "pending-reconciliation";
       entry.reason = `${entry.reason} [claim nova apareceu num backup entre o plano e a remoção — pulado, retenta depois de reconciliar]`;
       continue;
@@ -5325,8 +5590,8 @@ export function planSafeBackupCapPrune(
       // regra de merge divergente.
       const composite = mergeSessionRecords([realRecord, ...otherRecords]);
 
-      const { addedIssues } = decideClaimReconciliation(composite, [candidateRecord]);
-      if (addedIssues.length > 0) {
+      // #10618: inclui claim de outro repo (`claimed_foreign_issues`).
+      if (claimReconciliationHasAdditions(decideClaimReconciliation(composite, [candidateRecord]))) {
         // Candidato carrega claim que nada mais no grupo reproduz — não é
         // seguro remover, mesmo acima do cap.
         continue;
@@ -6257,11 +6522,11 @@ export function requireRepoFlag(
  * concordar com o repo da forma qualificada; divergência é erro alto. Devolve
  * o NÚMERO legado que `claimed_issues` guarda.
  *
- * Claim de issue de OUTRO repo ainda não tem onde morar (`claimed_issues` é
- * `number[]` e número pelado = diaria-studio em todo consumidor), então é
- * recusada alto — gravar `21` pro `vjpixel/diaria-design#21` reivindicaria o
+ * Para consumidores que só entendem NÚMERO: issue de OUTRO repo é recusada
+ * alto — gravar `21` pro `vjpixel/diaria-design#21` reivindicaria o
  * `vjpixel/diaria-studio#21` em silêncio, que é exatamente a colisão que a
- * #10618 existe pra evitar. Próxima fatia da #10618.
+ * #10618 existe pra evitar. O CLI de claim usa `requireClaimIssue` (fatia 2),
+ * que aceita outro repo da allowlist e grava em `claimed_foreign_issues`.
  */
 export function requireLegacyClaimIssue(
   values: Record<string, string | undefined>,
@@ -6282,6 +6547,39 @@ export function requireLegacyClaimIssue(
     );
   }
   return n;
+}
+
+/**
+ * `--issue` dos subcomandos de claim do CLI (#10618, fatia 2). Mesmo parse de
+ * `requireLegacyClaimIssue`, mas aceita issue de OUTRO repo — desde que ele
+ * esteja na allowlist `issue_repos` (`allowedRepos`, normalmente
+ * `loadIssueRepos(repoRoot)`). Devolve o número legado quando a issue é do
+ * repo default (grava em `claimed_issues`, como sempre) e a `IssueRef`
+ * quando é de outro repo (grava em `claimed_foreign_issues`). Repo fora da
+ * allowlist (typo, fork) é erro alto — nunca vira claim de um repo que as
+ * rodadas não listam.
+ */
+export function requireClaimIssue(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  allowedRepos: readonly string[],
+): ClaimIssueTarget {
+  const repoFlag = requireRepoFlag(values, flags);
+  const ref = parseIssueRef(values.issue ?? "", repoFlag);
+  if (!ref) throw new Error("--issue deve ser um inteiro ou owner/repo#N");
+  if (values.repo !== undefined && ref.repo !== repoFlag) {
+    throw new Error(`--issue ${values.issue} e --repo ${values.repo} apontam pra repos diferentes (#10618)`);
+  }
+  const legacy = legacyIssueNumber(ref);
+  if (legacy !== null) return legacy;
+  const allowed = new Set(allowedRepos.map((r) => normalizeRepoSlug(r)).filter((r): r is string => r !== null));
+  if (!allowed.has(ref.repo)) {
+    throw new Error(
+      `claim de ${ref.repo}#${ref.number} recusado — ${ref.repo} não está em platform.config.json → issue_repos ` +
+        `(permitidos: ${[...allowed].join(", ")}) (#10618).`,
+    );
+  }
+  return ref;
 }
 
 /**
@@ -6465,8 +6763,8 @@ function main(): void {
           : result.autoRegisterMode === "recovered-from-orphan-backups"
             ? ` [ALERTA: a ÂNCORA desta sessão SUMIU do disco com a sessão VIVA — reconstruída de ` +
               `${result.recoveredFromFiles} cópia(s) de conflito do OneDrive, ` +
-              `${(result.recoveredClaims ?? []).length} claim(s) recuperada(s)` +
-              `${(result.recoveredClaims ?? []).length > 0 ? `: #${(result.recoveredClaims ?? []).join(", #")}` : ""}` +
+              `${recoveredClaimLabels(result).length} claim(s) recuperada(s)` +
+              `${recoveredClaimLabels(result).length > 0 ? `: ${recoveredClaimLabels(result).join(", ")}` : ""}` +
               ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
             : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do heartbeat, ver #8443]";
         process.stdout.write(
@@ -6526,7 +6824,9 @@ function main(): void {
       case "claim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
-        const issue = requireLegacyClaimIssue(values, flags); // #10618: aceita owner/repo#N
+        // #10618: aceita owner/repo#N de qualquer repo da allowlist `issue_repos`.
+        const issue = requireClaimIssue(values, flags, loadIssueRepos(repoRoot));
+        const issueLabel = claimTargetLabel(issue);
         const force = flags.has("force");
         // #6369: sessão sem registro prévio (ex: ciclo `continuo` do cron
         // Hermes chamando `claim-issue` antes de qualquer `register`) não
@@ -6542,8 +6842,8 @@ function main(): void {
           : result.autoRegisterMode === "recovered-from-orphan-backups"
             ? ` [ALERTA: a ÂNCORA desta sessão SUMIU do disco com a sessão VIVA — reconstruída de ` +
               `${result.recoveredFromFiles} cópia(s) de conflito do OneDrive, ` +
-              `${(result.recoveredClaims ?? []).length} claim(s) recuperada(s)` +
-              `${(result.recoveredClaims ?? []).length > 0 ? `: #${(result.recoveredClaims ?? []).join(", #")}` : ""}` +
+              `${recoveredClaimLabels(result).length} claim(s) recuperada(s)` +
+              `${recoveredClaimLabels(result).length > 0 ? `: ${recoveredClaimLabels(result).join(", ")}` : ""}` +
               ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
             : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do claim, ver #6369]";
         switch (result.reason) {
@@ -6578,7 +6878,7 @@ function main(): void {
           case "blocked-by-other": {
             const owner = result.blockedBy;
             process.stdout.write(
-              `session-registry: claim-issue RECUSADO — issue #${issue} já está reivindicada por ` +
+              `session-registry: claim-issue RECUSADO — issue ${issueLabel} já está reivindicada por ` +
                 `${owner?.kind}-${owner?.machineTag}-${owner?.sessionId} (desde ${owner?.startedAt}, ` +
                 `último heartbeat ${owner?.lastHeartbeat}). Use --force para tomar mesmo assim.\n`,
             );
@@ -6591,15 +6891,16 @@ function main(): void {
       case "unclaim-issue": {
         const kind = requireKind(values.kind);
         const sessionId = requireSessionId(values);
-        const issue = requireLegacyClaimIssue(values, flags); // #10618: aceita owner/repo#N
+        const issue = requireClaimIssue(values, flags, loadIssueRepos(repoRoot)); // #10618
+        const issueLabel = claimTargetLabel(issue);
         const result = unclaimIssue(repoRoot, kind, sessionId, issue);
         switch (result.reason) {
           case "unclaimed":
-            process.stdout.write(`session-registry: unclaim-issue ok (issue #${issue} liberada)\n`);
+            process.stdout.write(`session-registry: unclaim-issue ok (issue ${issueLabel} liberada)\n`);
             break;
           case "no-op-not-claimed":
             process.stdout.write(
-              `session-registry: unclaim-issue no-op (issue #${issue} não estava reivindicada por esta sessão)\n`,
+              `session-registry: unclaim-issue no-op (issue ${issueLabel} não estava reivindicada por esta sessão)\n`,
             );
             process.exitCode = 1;
             break;
@@ -6620,7 +6921,7 @@ function main(): void {
         break;
       }
       case "is-claimed": {
-        const issue = requireLegacyClaimIssue(values, flags); // #10618: aceita owner/repo#N
+        const issue = requireClaimIssue(values, flags, loadIssueRepos(repoRoot)); // #10618
         const excludeSessionId = values["session-id"] ?? "";
         const owner = isIssueClaimedByOther(repoRoot, issue, excludeSessionId);
         process.stdout.write(JSON.stringify({ claimed: owner !== null, by: owner }) + "\n");

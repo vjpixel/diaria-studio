@@ -735,7 +735,7 @@ aqui.
    (`{last_scan_at}` é o campo novo em `plan.json`, ISO 8601, gravado ao fim
    de cada varredura bem-sucedida; ausente/vazio na 1ª rodada do dia =
    **omitir `--since`**, e o script cai sozinho em full-scan — mesmo
-   comportamento de overnight/develop, só nesse caso). **Nunca montar
+   comportamento de overnight/develop, só nesse caso). **Multi-repo (#10618):** a varredura sem flag cobre só o `vjpixel/diaria-studio` — a fila de sempre. O multi-repo (`--repos`) é opt-in e, até a fatia 3, exclusivo do `/diaria-develop`: não passar `--repos` aqui. **Nunca montar
    `gh issue list --search "updated:>=..."` à mão** — foi exatamente essa
    string, sem `body` no `--json`, que causou o #7018 na varredura
    incremental (o marcador `aguardando-ate:` fica invisível e uma issue

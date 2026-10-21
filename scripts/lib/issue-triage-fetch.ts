@@ -37,6 +37,20 @@
  * #7018, só que na varredura incremental em vez da varredura completa que o
  * item 2 já fechou para overnight/develop.
  *
+ * **Multi-repo (#10618, fatia 2) — OPT-IN.** Sem `opts.repos`, varre SÓ o
+ * repo default (`vjpixel/diaria-studio`): overnight, contínuo e zerar-fila
+ * recebem exatamente a fila de antes, porque ~15 gates e consumidores ainda
+ * leem `number` como número do studio (fatia 3). Com `opts.repos` (o CLI
+ * resolve `--repos all`/lista via `resolveTriageRepos`, validada contra
+ * `platform.config.json → issue_repos`), varre também os repos pedidos — o
+ * default sempre primeiro. Toda chamada leva `-R owner/repo`, inclusive a do
+ * default: sem `-R`, o `gh` resolveria pelo cwd e um checkout do
+ * diaria-design rotularia as issues dele como do studio. Cada item ganha
+ * `repo` e `ref` (`owner/repo#N`); `number` continua o número cru dentro de
+ * `repo`. Falha de fetch do repo default continua FATAL (`error`); falha de
+ * um repo extra é `repoErrors` — o CLI sai com exit 3 (resultado PARCIAL,
+ * nunca 0), imprime a lista do que veio e avisa no stderr.
+ *
  * @see scripts/lib/issue-exec-track.ts (classifyExecTrackFromListItem)
  * @see scripts/lib/state-changed-tracker.ts (fetchOpenIssuesForConvergence — mesmo padrão, escopo de campos menor)
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 3
@@ -45,6 +59,9 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_ISSUE_REPO, formatIssueRef, isDefaultIssueRepo, loadIssueRepos, normalizeRepoSlug } from "./issue-repos.ts";
 import {
   classifyExecTrackFromListItem,
   normalizeGhIssueListLabels,
@@ -55,6 +72,12 @@ import {
 /** Issue já normalizada + classificada — pronta pro coordenador consumir
  * sem precisar rechamar `classifyExecTrack` por conta própria. */
 export interface TriageIssue {
+  /** #10618 — repo da issue (`owner/name`, minúsculas). */
+  repo: string;
+  /** #10618 — identidade canônica `owner/repo#N` (decisão do editor). */
+  ref: string;
+  /** Número cru DENTRO de `repo`. Só é "o número do studio" quando
+   * `isDefaultIssueRepo(repo)`. */
   number: number;
   title: string;
   labels: string[];
@@ -67,8 +90,16 @@ export interface TriageIssue {
 
 export interface FetchOpenIssuesForTriageResult {
   issues: TriageIssue[];
+  /** Falha do repo default — fatal, como sempre foi. */
   error?: string;
+  /** #10618 — falhas de repos EXTRAS da allowlist. Não derrubam a triagem do
+   * studio, mas o caller precisa exibi-las (o CLI imprime no stderr). */
+  repoErrors?: Array<{ repo: string; error: string }>;
 }
+
+/** Raiz do checkout que contém este módulo — onde mora o `platform.config.json`
+ * que define `issue_repos`. Independente do cwd (que pode ser um subdiretório). */
+const MODULE_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Campos exigidos pela classificação completa da Fase 0 — `body` é o campo
  * cuja ausência este módulo existe pra prevenir; os demais (title, url,
@@ -100,6 +131,49 @@ export interface FetchOpenIssuesForTriageOptions {
    * item já retornado).
    */
   since?: string;
+  /**
+   * #10618 — repos a varrer, OPT-IN. Ausente = só o repo default (a fila de
+   * sempre). O repo default é sempre incluído e sempre varrido primeiro,
+   * mesmo que omitido aqui. Slug ilegível é erro fatal (`error`), nunca
+   * descartado em silêncio. Validar contra a allowlist é papel de quem monta
+   * a lista (`resolveTriageRepos`).
+   */
+  repos?: readonly string[];
+}
+
+/** Allowlist de repos da triagem — `platform.config.json → issue_repos` do
+ * checkout deste módulo (independe do cwd). */
+export function triageAllowedRepos(): string[] {
+  return loadIssueRepos(MODULE_REPO_ROOT);
+}
+
+/**
+ * #10618 (fatia 2) — resolve o valor de `--repos` do CLI:
+ *   - ausente/vazio → `undefined` (só o repo default, a fila de sempre);
+ *   - `all` → todos de `allowedRepos` (`issue_repos`);
+ *   - lista `a,b` → cada slug normalizado e conferido contra `allowedRepos`.
+ * Slug ilegível ou fora da allowlist → `{ error }` (o CLI sai com exit 1) —
+ * nunca vira uma varredura menor que a pedida sem aviso.
+ */
+export function resolveTriageRepos(
+  spec: string | undefined,
+  allowedRepos: readonly string[],
+): { repos: string[] | undefined } | { error: string } {
+  if (spec === undefined || spec.trim() === "") return { repos: undefined };
+  const allowed = allowedRepos.map((r) => normalizeRepoSlug(r)).filter((r): r is string => r !== null);
+  if (spec.trim().toLowerCase() === "all") return { repos: [...new Set([DEFAULT_ISSUE_REPO, ...allowed])] };
+  const out: string[] = [];
+  for (const raw of spec.split(",").map((x) => x.trim()).filter(Boolean)) {
+    const slug = normalizeRepoSlug(raw);
+    if (!slug) return { error: `--repos: slug ilegível "${raw}" (esperado owner/name ou all) (#10618)` };
+    if (!allowed.includes(slug)) {
+      return {
+        error: `--repos: ${slug} não está em platform.config.json → issue_repos (permitidos: ${allowed.join(", ")}) (#10618)`,
+      };
+    }
+    if (!out.includes(slug)) out.push(slug);
+  }
+  return { repos: out.length > 0 ? out : undefined };
 }
 
 /**
@@ -114,16 +188,46 @@ export interface FetchOpenIssuesForTriageOptions {
  * `opts.since` (#7018 item 3) restringe a varredura ao delta desde aquele
  * instante (`--search "updated:>={since}"`) em vez do backlog aberto
  * inteiro — omitido/`undefined` preserva o comportamento original (full
- * scan), o único modo que overnight/develop usam.
+ * scan), o único modo que overnight/develop usam. `opts.repos` (#10618) é
+ * opt-in: sem ele, só o repo default (ver docblock do módulo); `since` vale
+ * igual em todas as chamadas.
  */
 export function fetchOpenIssuesForTriage(
   cwd: string,
+  opts?: FetchOpenIssuesForTriageOptions,
+): FetchOpenIssuesForTriageResult {
+  const repos = [DEFAULT_ISSUE_REPO];
+  for (const r of opts?.repos ?? []) {
+    const slug = normalizeRepoSlug(r);
+    if (!slug) return { issues: [], error: `repo ilegível na lista de varredura: "${r}" (#10618)` };
+    if (!repos.includes(slug)) repos.push(slug);
+  }
+  const issues: TriageIssue[] = [];
+  const repoErrors: Array<{ repo: string; error: string }> = [];
+  for (const repo of repos) {
+    const one = fetchOneRepo(cwd, repo, opts);
+    if (one.error) {
+      if (isDefaultIssueRepo(repo)) return { issues: [], error: one.error };
+      repoErrors.push({ repo, error: one.error });
+      continue;
+    }
+    issues.push(...one.issues);
+  }
+  return repoErrors.length > 0 ? { issues, repoErrors } : { issues };
+}
+
+function fetchOneRepo(
+  cwd: string,
+  repo: string,
   opts?: FetchOpenIssuesForTriageOptions,
 ): FetchOpenIssuesForTriageResult {
   const args = ["issue", "list", "--state", "open", "--limit", String(TRIAGE_ISSUE_LIMIT), "--json", TRIAGE_JSON_FIELDS];
   if (opts?.since) {
     args.push("--search", `updated:>=${opts.since}`);
   }
+  // #10618: sempre `-R`, inclusive no repo default — sem ele o `gh`
+  // resolveria pelo cwd e rotularia como do studio as issues de outro checkout.
+  args.push("-R", repo);
   const result = spawnSync("gh", args, { cwd, encoding: "utf8", timeout: 30_000 });
   if (result.error) {
     return { issues: [], error: `gh não pôde ser executado: ${result.error.message}` };
@@ -157,8 +261,12 @@ export function fetchOpenIssuesForTriage(
       error: `gh issue list retornou exatamente ${TRIAGE_ISSUE_LIMIT} issues (o limite) — resultado pode estar truncado; tratando como fetch incompleto`,
     };
   }
-  const issues: TriageIssue[] = raw.map((item) => ({
-    number: typeof item.number === "number" ? item.number : Number(item.number),
+  const issues: TriageIssue[] = raw.map((item) => {
+    const number = typeof item.number === "number" ? item.number : Number(item.number);
+    return {
+    repo,
+    ref: formatIssueRef({ repo, number }),
+    number,
     title: typeof item.title === "string" ? item.title : "",
     labels: normalizeGhIssueListLabels(item.labels),
     body: (item.body ?? null) as string | null,
@@ -168,6 +276,7 @@ export function fetchOpenIssuesForTriage(
     // Lança (fail-closed, #7018) se `body` estiver ausente — não capturado
     // aqui de propósito, propaga pro caller do fetch inteiro.
     execTrack: classifyExecTrackFromListItem(item, { now: opts?.now }),
-  }));
+    };
+  });
   return { issues };
 }

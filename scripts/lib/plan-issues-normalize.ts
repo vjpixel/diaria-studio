@@ -21,6 +21,8 @@
  * `scripts/studio-ui/studio-round-queue.ts`, `scripts/studio-ui/studio-round.ts`.
  */
 
+import { parseIssueRef } from "./issue-repos.ts";
+
 /** Qualquer objeto "plan-like" — só precisa ter (ou não) um campo `issues`. */
 export interface IssuesBearing<T> {
   issues?: T[] | Record<string, Partial<T> & { number?: number }> | null;
@@ -45,7 +47,15 @@ export function normalizeIssues<T>(plan: IssuesBearing<T> | null | undefined): T
   if (Array.isArray(raw)) return raw;
   if (!raw || typeof raw !== "object") return [];
   return Object.entries(raw).map(([key, issue]) => {
-    const number = typeof issue?.number === "number" ? issue.number : Number(key);
-    return { ...(issue as object), number } as T;
+    // #10618 (fatia 2): chave qualificada (`"vjpixel/diaria-design#21"`) é a
+    // identidade da entrada — preservada como `ref` (quando a entrada não traz
+    // a sua) pra `scripts/lib/plan-issue-ref.ts` nunca ler o `number` dela
+    // como número do diaria-studio, e o `number` sai do `#N` da chave (antes
+    // `Number(key)` dava `NaN`). Chave numérica: comportamento de sempre.
+    const qualified = !/^\d+$/.test(key) && key.includes("#") ? parseIssueRef(key) : null;
+    const number = typeof issue?.number === "number" ? issue.number : (qualified?.number ?? Number(key));
+    const hasOwnRef = typeof (issue as { ref?: unknown } | null)?.ref === "string";
+    const refFromKey = qualified && !hasOwnRef ? { ref: key } : {};
+    return { ...(issue as object), ...refFromKey, number } as T;
   });
 }

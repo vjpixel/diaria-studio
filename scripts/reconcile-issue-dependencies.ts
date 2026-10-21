@@ -31,6 +31,7 @@
 
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { fetchOpenIssuesForTriage, type TriageIssue } from "./lib/issue-triage-fetch.ts";
+import { DEFAULT_ISSUE_REPO, isDefaultIssueRepo } from "./lib/issue-repos.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import type { GhRunFn } from "./lib/wait-until-sync.ts";
 import { DEPENDS_ON_BLOCK_LABEL } from "./lib/issue-exec-track.ts";
@@ -120,21 +121,46 @@ function fmtRow(row: ReconcileReportRow): string {
   return `#${row.issue}: depends-on [${dep}]${unresolved}${indeterminate} — label ${row.hasLabel ? "presente" : "ausente"} → ${row.action}`;
 }
 
-export async function main(argv: string[]): Promise<void> {
+/**
+ * #10618 (fatia 2) — escopa toda chamada `gh issue ...` desta reconciliação
+ * no repo default com `-R vjpixel/diaria-studio`. Sem isso o `gh` resolveria
+ * pelo cwd: rodado de um checkout do diaria-design, leria o estado e aplicaria
+ * a label `dependencia-aberta` na issue de MESMO número do repo errado.
+ * `depends-on: owner/repo#N` (dependência entre repos) fica pra fatia 3.
+ */
+export function defaultRepoGhRun(base: GhRunFn): GhRunFn {
+  return (args, cwd) => base([...args, "-R", DEFAULT_ISSUE_REPO], cwd);
+}
+
+export interface ReconcileMainDeps {
+  /** Injetável pra teste; default `spawnGhSync`. Sempre embrulhado por
+   * `defaultRepoGhRun`. */
+  ghRun?: GhRunFn;
+  /** Injetável pra teste; default `fetchOpenIssuesForTriage`. */
+  fetchIssues?: typeof fetchOpenIssuesForTriage;
+  cwd?: string;
+}
+
+export async function main(argv: string[], deps: ReconcileMainDeps = {}): Promise<void> {
   const args = parseArgs(argv);
   const apply = args.flags.has("apply");
   const onlyIssue = args.values.issue !== undefined ? Number.parseInt(args.values.issue, 10) : undefined;
-  const cwd = process.cwd();
-  const ghRun: GhRunFn = spawnGhSync;
+  const cwd = deps.cwd ?? process.cwd();
+  const ghRun: GhRunFn = defaultRepoGhRun(deps.ghRun ?? spawnGhSync);
+  const fetchIssues = deps.fetchIssues ?? fetchOpenIssuesForTriage;
 
-  const fetched = fetchOpenIssuesForTriage(cwd);
+  // #10618: esta reconciliação resolve `depends-on: #N` e aplica label só no
+  // repo default. O fetch de triagem já é só do default sem `repos` (opt-in),
+  // mas a lista explícita deixa a restrição à prova de mudança de default.
+  const fetched = fetchIssues(cwd, { repos: [DEFAULT_ISSUE_REPO] });
   if (fetched.error) {
     console.error(`[reconcile-issue-dependencies] busca de issues falhou: ${fetched.error}`);
     console.error("Nenhuma ação tomada — reconciliação requer o backlog completo pra não desarmar por engano.");
     return;
   }
 
-  let issues: TriageIssue[] = fetched.issues;
+  // Defesa em profundidade (#10618): só issues do repo default entram.
+  let issues: TriageIssue[] = fetched.issues.filter((i) => isDefaultIssueRepo(i.repo));
   if (onlyIssue !== undefined) {
     issues = issues.filter((i) => i.number === onlyIssue);
   }

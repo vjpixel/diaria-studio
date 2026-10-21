@@ -60,7 +60,10 @@ import {
   type PlanWithGoal,
   type RetrackedUnworkedIssue,
   removePendingFromPlan,
+  addForeignPendingToPlan,
+  removeForeignPendingFromPlan,
 } from "./lib/state-changed-tracker.ts";
+import { formatIssueRef, legacyIssueNumber, parseIssueRef } from "./lib/issue-repos.ts";
 
 /** #10407 — `claimed-por-outra-sessao` só conta na re-classificação numa
  * sessão develop (overnight/continuo não pegam develop/bloqueada, seria
@@ -162,13 +165,17 @@ export function fetchOpenIssuesForConvergence(cwd: string): FetchOpenIssuesResul
   return { issues };
 }
 
-function parseIssueArg(raw: string, flag: string): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n)) {
-    console.error(`[check-state-changed-pending] --${flag} inválido: ${raw}`);
+/** #10618 (fatia 2): aceita `N` (legado = diaria-studio) e `owner/repo#N`.
+ * Devolve o número legado quando é do repo default; a ref canônica quando é
+ * de outro repo. */
+function parseIssueArg(raw: string, flag: string): { legacy: number } | { foreign: string } {
+  const ref = parseIssueRef(raw);
+  if (!ref) {
+    console.error(`[check-state-changed-pending] --${flag} inválido: ${raw} (esperado N ou owner/repo#N)`);
     process.exit(2);
   }
-  return n;
+  const legacy = legacyIssueNumber(ref);
+  return legacy !== null ? { legacy } : { foreign: formatIssueRef(ref) };
 }
 
 if (isMainModule(import.meta.url)) {
@@ -187,16 +194,20 @@ if (isMainModule(import.meta.url)) {
   }
 
   if (values["add-pending"] !== undefined) {
-    const n = parseIssueArg(values["add-pending"], "add-pending");
-    addPendingToPlan(planPath, n);
-    console.log(`[check-state-changed-pending] #${n} adicionada a state_changed_issues (${planPath}).`);
+    const arg = parseIssueArg(values["add-pending"], "add-pending");
+    if ("legacy" in arg) addPendingToPlan(planPath, arg.legacy);
+    else addForeignPendingToPlan(planPath, arg.foreign);
+    const label = "legacy" in arg ? `#${arg.legacy}` : arg.foreign;
+    console.log(`[check-state-changed-pending] ${label} adicionada a state_changed_issues (${planPath}).`);
     process.exit(0);
   }
 
   if (values["remove-pending"] !== undefined) {
-    const n = parseIssueArg(values["remove-pending"], "remove-pending");
-    removePendingFromPlan(planPath, n);
-    console.log(`[check-state-changed-pending] #${n} removida de state_changed_issues (${planPath}).`);
+    const arg = parseIssueArg(values["remove-pending"], "remove-pending");
+    if ("legacy" in arg) removePendingFromPlan(planPath, arg.legacy);
+    else removeForeignPendingFromPlan(planPath, arg.foreign);
+    const label = "legacy" in arg ? `#${arg.legacy}` : arg.foreign;
+    console.log(`[check-state-changed-pending] ${label} removida de state_changed_issues (${planPath}).`);
     process.exit(0);
   }
 
@@ -257,7 +268,12 @@ if (isMainModule(import.meta.url)) {
   }
 
   if (pendingResult.status !== "ok") {
-    const list = pendingResult.issues.map((n) => `#${n}`).join(", ");
+    const list = [
+      ...pendingResult.issues.map((n) => `#${n}`),
+      ...(pendingResult.foreign ?? []),
+      // #10618: entrada ilegível bloqueia (nunca some) — exibida crua.
+      ...(pendingResult.unreadable ?? []).map((v) => `ilegível ${v}`),
+    ].join(", ");
     console.error(
       `pendências de re-triagem: ${list} — reavalie dispatch antes de fechar a rodada`,
     );

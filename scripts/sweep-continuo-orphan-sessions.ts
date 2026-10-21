@@ -18,7 +18,8 @@
  *      registro de outra máquina);
  *   2. `sessionId` do MESMO job do cron (`hermes-cron-{job}-…`) e diferente
  *      da sessão atual (`--exclude`);
- *   3. `claimed_issues` vazio — encerrar nunca libera uma claim. Vale a
+ *   3. `claimed_issues` E `claimed_foreign_issues` (#10618) vazios —
+ *      encerrar nunca libera uma claim. Vale a
  *      UNIÃO do arquivo real com as cópias `-safeBackup-` do grupo (#10015,
  *      mesma semântica do registry, #6623): claim só no backup também mantém;
  *   4. heartbeat mais recente (`lastHeartbeat ?? startedAt`, também da união) mais velho que
@@ -111,9 +112,14 @@ export function planContinuoOrphanSweep(
       keep(`registro de outra máquina (${r.machineTag})`);
       continue;
     }
-    const claims = Array.isArray(r.claimed_issues) ? r.claimed_issues : [];
+    // #10618: claim de OUTRO repo (`claimed_foreign_issues`, `owner/repo#N`)
+    // é claim — encerrar a sessão a liberaria igual.
+    const claims = [
+      ...(Array.isArray(r.claimed_issues) ? r.claimed_issues.map((n) => `#${n}`) : []),
+      ...(Array.isArray(r.claimed_foreign_issues) ? r.claimed_foreign_issues : []),
+    ];
     if (claims.length > 0) {
-      keep(`tem claimed_issues (#${claims.join(", #")}) — encerrar liberaria claim`);
+      keep(`tem claimed_issues (${claims.join(", ")}) — encerrar liberaria claim`);
       continue;
     }
     if (opts.deadTickSessionIds?.has(r.sessionId)) {

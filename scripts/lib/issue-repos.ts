@@ -3,9 +3,14 @@
  *
  * Decisão do editor (20/10/2026, registrada na própria #10618): a identidade
  * de uma issue é `owner/repo#N` — plan.json, claims, marcadores, relatórios.
- * Isso é o ESTADO-ALVO: esta 1ª fatia entrega o modelo, o merge lock e o
- * guard por repo e o escopo dos hooks; claims, fila, gates e relatórios ainda
- * listam só o diaria-studio (fatia 2, ver o corpo da PR #10668). O número
+ * Isso é o ESTADO-ALVO: a 1ª fatia (PR #10668) entregou o modelo, o merge
+ * lock e o guard por repo e o escopo dos hooks; a 2ª fatia, os claims do
+ * `session-registry` (`claimed_foreign_issues`), o fetch de triagem
+ * (`issue-triage-fetch.ts`), os gates que leem `plan.json`
+ * (`plan-issue-ref.ts`) e o `route-issue.ts --issue owner/repo#N`. A fila de
+ * triagem multi-repo é OPT-IN (`fetch-open-issues-for-triage.ts --repos`):
+ * sem a flag, as rodadas seguem vendo só o diaria-studio até os gates que
+ * ainda leem só `number` migrarem (fatia 3, resíduo na #10618). O número
  * sozinho colide entre repos (o #21 existe tanto no `vjpixel/diaria-studio`
  * quanto no `vjpixel/diaria-design`).
  *
@@ -19,9 +24,10 @@
  *
  * **Lista de repos num lugar só:** `platform.config.json → issue_repos`. O 1º
  * item é o repo default (o `diaria-studio`, onde as rodadas rodam). Nenhum
- * script deve hardcodar a lista — use `readIssueRepos` (hoje lida pelos
- * hooks via `loadAllowedForeignRepos`; os scripts de fila passam a lê-la na
- * fatia 2).
+ * script deve hardcodar a lista — use `readIssueRepos`/`loadIssueRepos`
+ * (lida pelos hooks via `loadAllowedForeignRepos` e, desde a fatia 2, pelo
+ * `session-registry` CLI de claim, pelo fetch de triagem e pelo
+ * `route-issue.ts`).
  *
  * Os hooks (`.claude/hooks/*.mjs`) são self-contained e não importam `.ts`
  * (ver docblock de `pr-create-review.mjs`); a parte deles — descobrir de qual
@@ -170,27 +176,62 @@ export function mergeLockFileName(repo: string | null | undefined = DEFAULT_ISSU
  * issue_repos`). Sempre começa pelo repo default, mesmo que o config o omita
  * ou o coloque em outra posição; duplicatas e slugs inválidos são descartados.
  * Config ausente/ilegível → só o default (comportamento pré-#10618).
+ *
+ * `onInvalid` (#10618, fatia 2) é chamado pra cada item descartado por não
+ * ser slug reconhecível e quando `issue_repos` existe mas não é array — quem
+ * lê o config de verdade (`loadIssueRepos`) avisa no stderr em vez de
+ * encolher a allowlist em silêncio.
  */
-export function readIssueRepos(config?: { issue_repos?: unknown } | null): string[] {
+export function readIssueRepos(
+  config?: { issue_repos?: unknown } | null,
+  onInvalid?: (detail: string) => void,
+): string[] {
   const out = [DEFAULT_ISSUE_REPO];
   const raw = config?.issue_repos;
   if (Array.isArray(raw)) {
     for (const item of raw) {
       const slug = typeof item === "string" ? normalizeRepoSlug(item) : null;
-      if (slug && !out.includes(slug)) out.push(slug);
+      if (!slug) {
+        onInvalid?.(`item ilegível em issue_repos: ${JSON.stringify(item)}`);
+        continue;
+      }
+      if (!out.includes(slug)) out.push(slug);
     }
+  } else if (raw !== undefined) {
+    onInvalid?.(`issue_repos não é um array (${JSON.stringify(raw)})`);
   }
   return out;
 }
 
-/** `readIssueRepos` lendo `platform.config.json` de `repoRoot`. Fail-soft. */
-export function loadIssueRepos(repoRoot: string): string[] {
+/** Aviso padrão de `loadIssueRepos` — stderr, prefixado. */
+function warnIssueRepos(detail: string): void {
+  console.error(`[issue-repos] AVISO (#10618): ${detail} — usando só o que foi legível (o repo default sempre entra).`);
+}
+
+/**
+ * `readIssueRepos` lendo `platform.config.json` de `repoRoot`. Fail-soft: cai
+ * em só o repo default, mas AVISA (`warn`, default stderr) quando o config
+ * existe e está ilegível ou tem slug inválido (#10618, fatia 2) — a allowlist
+ * encolhida em silêncio faria uma claim/route de outro repo ser recusada sem
+ * pista da causa. Arquivo AUSENTE não avisa: é o clone sem config (testes,
+ * sessão cloud), e o resultado — só o default — é o comportamento de sempre.
+ */
+export function loadIssueRepos(repoRoot: string, warn: (detail: string) => void = warnIssueRepos): string[] {
+  let text: string;
   try {
-    const config = JSON.parse(readFileSync(join(repoRoot, "platform.config.json"), "utf8")) as {
-      issue_repos?: unknown;
-    };
-    return readIssueRepos(config);
-  } catch {
+    text = readFileSync(join(repoRoot, "platform.config.json"), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      warn(`platform.config.json ilegível em ${repoRoot}: ${(e as Error).message}`);
+    }
     return readIssueRepos(null);
   }
+  let config: { issue_repos?: unknown };
+  try {
+    config = JSON.parse(text) as { issue_repos?: unknown };
+  } catch (e) {
+    warn(`platform.config.json com JSON inválido em ${repoRoot}: ${(e as Error).message}`);
+    return readIssueRepos(null);
+  }
+  return readIssueRepos(config, warn);
 }
