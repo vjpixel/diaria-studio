@@ -206,10 +206,12 @@ describe("#10605 parseFormSubmission com caixas de seleção", () => {
 });
 
 describe("#10605 HTML do formulário", () => {
-  const html = renderFormHtml('a+b@x.com"><script>');
+  const html = renderFormHtml('a+b@x.com"><script>', "SIG");
 
-  it("e-mail pré-preenchido e escapado, página móvel em pt-BR", () => {
-    assert.ok(html.includes('value="a+b@x.com&quot;&gt;&lt;script&gt;"'));
+  it("e-mail fixo (campo oculto, #10657) e escapado, página móvel em pt-BR", () => {
+    assert.ok(html.includes('<input type="hidden" name="email" value="a+b@x.com&quot;&gt;&lt;script&gt;">'));
+    assert.ok(html.includes('<input type="hidden" name="sig" value="SIG">'));
+    assert.ok(!html.includes('type="email"'), "o e-mail não é editável");
     assert.ok(html.includes('lang="pt-BR"') && html.includes("width=device-width"));
     assert.ok(html.includes(`São ${FORM_QUESTIONS.length} perguntas`));
     assert.ok(!ARROWS.test(html) && !LEGACY_BRAND.test(html));
@@ -247,9 +249,9 @@ describe("#10605 rascunhos dos e-mails (semente do --init-snippets)", () => {
       assert.ok(word.test(snip.previewText!), "número de perguntas no preview bate com FORM_QUESTIONS");
 
       const approved = parseFollowupSnippet(raw.split("\n").filter((l) => !l.includes(PENDING_BODY_MARKER)).join("\n"));
-      assert.deepEqual(formContentGate({ form: approved, form_lembrete: approved }, cfgOk), { blocked: false });
+      assert.deepEqual(formContentGate({ form: approved, form_lembrete: approved }, cfgOk, "segredo"), { blocked: false });
       const pend: FollowupSnippets = { form: snip, form_lembrete: snip };
-      assert.equal((formContentGate(pend, cfgOk) as { motivo: string }).motivo, "texto_pendente");
+      assert.equal((formContentGate(pend, cfgOk, "segredo") as { motivo: string }).motivo, "texto_pendente");
     });
   }
 

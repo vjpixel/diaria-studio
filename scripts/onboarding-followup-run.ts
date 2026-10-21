@@ -48,7 +48,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { listAllKitSubscribers, getSubscriberById } from "./lib/kit-subscribers.ts";
+import { listAllKitSubscribers, getSubscriberById, updateSubscriberFields } from "./lib/kit-subscribers.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
 import { findTagIdByName, listAllTagSubscriberEmails, deleteBroadcast } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
@@ -61,6 +61,7 @@ import { decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type
 import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails } from "./lib/onboarding-kit-pilot.ts";
 import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
+import { FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
 import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
@@ -76,6 +77,7 @@ import {
   idsInConfirmedFollowupLots,
   idsInUnresolvedFollowupLots,
   isApoioStep,
+  isFormStep,
   isoToSec,
   isUnresolvedFollowupLot,
   normalizeEmail,
@@ -304,6 +306,77 @@ export interface FollowupRoundDeps {
   /** #10676: o erro da leitura singular é retentável mais tarde (429/5xx/rede).
    *  Ausente = todo erro conta como transitório. */
   isTransientLookupError?(err: unknown): boolean;
+  /**
+   * #10657: grava a assinatura do link do formulário no custom field
+   * `form_sig` da pessoa e devolve o valor RELIDO da resposta (o Kit descarta
+   * campo inexistente com 2xx). Ausente = nenhuma assinatura gravável: quem
+   * ainda não tem a assinatura certa fica fora do lote do formulário.
+   */
+  setFormSig?(kitId: number, sig: string): Promise<string | null>;
+}
+
+export interface FormSigProvisionResult {
+  /** Devidos do formulário com a assinatura certa gravada no Kit. */
+  ok: FollowupDue[];
+  /** Gravação falhou para a pessoa (fica fora do lote; volta na próxima rodada). */
+  failed: { due: FollowupDue; error: string }[];
+  /** O Kit respondeu sem guardar o campo: `form_sig` não existe na conta.
+   *  Todo o resto do formulário fica fora (não adianta tentar pessoa a pessoa). */
+  fieldMissing: string | null;
+  /** Gravações feitas nesta rodada. */
+  written: number;
+}
+
+/**
+ * #10657: garante, pessoa a pessoa, que o custom field `form_sig` do Kit
+ * guarda a assinatura do e-mail ATUAL dela (o da leitura singular, que é o
+ * mesmo que a merge tag `{{ subscriber.email_address }}` vai pôr no link).
+ * Quem já tem o valor certo não gera escrita; o lembrete mensal reaproveita.
+ * Nunca deixa passar alguém sem assinatura confirmada: o link dela seria
+ * recusado pelo Worker.
+ */
+export async function provisionFormSigs(
+  due: readonly FollowupDue[],
+  checks: ReadonlyMap<number, LiveSubscriberCheck | null>,
+  secret: string,
+  deps: Pick<FollowupRoundDeps, "setFormSig" | "sleep">,
+  spacingMs = 350,
+): Promise<FormSigProvisionResult> {
+  const out: FormSigProvisionResult = { ok: [], failed: [], fieldMissing: null, written: 0 };
+  // Valor já confirmado por pessoa nesta rodada (mesma pessoa em duas etapas não regrava).
+  const confirmed = new Map<number, string>();
+  for (const d of due) {
+    if (out.fieldMissing) {
+      out.failed.push({ due: d, error: "campo form_sig ausente no Kit" });
+      continue;
+    }
+    const check = checks.get(d.kit_subscriber_id);
+    const expected = await signFormEmail(check?.email ?? d.email, secret);
+    const current = confirmed.get(d.kit_subscriber_id) ?? check?.formSig ?? null;
+    if (current === expected) {
+      out.ok.push(d);
+      continue;
+    }
+    if (!deps.setFormSig) {
+      out.failed.push({ due: d, error: "sem gravação de form_sig configurada" });
+      continue;
+    }
+    if (out.written > 0) await (deps.sleep ?? noSleep)(spacingMs);
+    try {
+      const stored = await deps.setFormSig(d.kit_subscriber_id, expected);
+      out.written++;
+      if (stored === expected) {
+        confirmed.set(d.kit_subscriber_id, expected);
+        out.ok.push(d);
+        continue;
+      }
+      out.fieldMissing = `PATCH de ${FORM_SIG_KIT_FIELD} respondeu 2xx sem guardar o valor — criar o custom field "${FORM_SIG_KIT_FIELD}" no Kit (#10657)`;
+      out.failed.push({ due: d, error: out.fieldMissing });
+    } catch (e) {
+      out.failed.push({ due: d, error: redactEmails((e as Error)?.message ?? String(e)) });
+    }
+  }
+  return out;
 }
 
 export interface FollowupLotReconcileRow {
@@ -385,6 +458,9 @@ export interface FollowupRoundOpts {
    *  de `refreshKitCandidates`: 350ms, 60s, 1 passada extra). A espera em si
    *  vem de `deps.sleep`. */
   lookupOpts?: Omit<RefreshKitCandidatesOpts, "sleep">;
+  /** #10657: `ONBOARDING_FORM_LINK_SECRET`. Ausente/vazio TRAVA o envio do
+   *  formulário (`assinatura_nao_configurada`), nunca sai link sem assinatura. */
+  formLinkSecret?: string | null;
 }
 
 const noSleep = () => Promise.resolve();
@@ -472,7 +548,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   const nowIso = new Date(nowMs).toISOString();
   const { cfg, snippets, storePath, send } = opts;
   let apoioBlocked = gateReason(apoioContentGate(snippets));
-  let formBlocked = gateReason(formContentGate(snippets, cfg));
+  let formBlocked = gateReason(formContentGate(snippets, cfg, opts.formLinkSecret));
   const run: FollowupRunRecord = {
     at: nowIso,
     apoio_blocked: apoioBlocked,
@@ -616,13 +692,35 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   if (failures.length > 0) {
     process.stderr.write(`${LOG} leituras singulares falhas: ${failures.length}/${checks.total} — ${lookupSplit.deferred} adiadas para amanhã, ${lookupSplit.blocking} contam como falha da rodada\n`);
   }
-  const { send: toSend, excluded } = filterDueByLiveCheck(dueWithinCap, checks.results);
+  const { send: liveOk, excluded } = filterDueByLiveCheck(dueWithinCap, checks.results);
   for (const x of excluded) bump(x.due.kind, x.motivo);
   if (send) {
     persistFollowupPeople(storePath, (people) => {
       recordLiveCheckSkips(people, excluded, nowIso);
-      recordApoioChecks(people, toSend, nowIso);
+      recordApoioChecks(people, liveOk, nowIso);
     });
+  }
+
+  // #10657: assinatura do link do formulário, pessoa a pessoa, no custom field
+  // do Kit. Só com `--send` (o dry-run nunca escreve no Kit). Quem não ficou
+  // com a assinatura confirmada sai do lote: o link dela seria recusado.
+  let toSend = liveOk;
+  const formDue = liveOk.filter((d) => isFormStep(d.kind));
+  if (send && formDue.length > 0) {
+    const prov = await provisionFormSigs(formDue, checks.results, opts.formLinkSecret ?? "", deps, opts.lookupOpts?.spacingMs);
+    const okSet = new Set(prov.ok);
+    toSend = liveOk.filter((d) => !isFormStep(d.kind) || okSet.has(d));
+    for (const f of prov.failed) bump(f.due.kind, "assinatura_falhou");
+    if (prov.fieldMissing) {
+      formBlocked = { motivo: "campo_assinatura_ausente", detalhe: prov.fieldMissing };
+      run.form_blocked = formBlocked;
+      process.stderr.write(`${LOG} ${prov.fieldMissing}\n`);
+    } else if (prov.failed.length > 0) {
+      run.lookups_failed += prov.failed.length;
+      for (const f of prov.failed) {
+        process.stderr.write(`${LOG} assinatura do formulário de ${f.due.kit_subscriber_id} não gravada — fora do envio de hoje: ${f.error}\n`);
+      }
+    }
   }
 
   const cadastroById = new Map(apoioCandidates.map((c) => [c.kit_subscriber_id, c.cadastro_at] as const));
@@ -724,7 +822,20 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
     async getSubscriber(kitId) {
       const s = await getSubscriberById(kitId, kitCfg);
       const nivel = s.fields?.[KIT_APOIO_NIVEL_FIELD_KEY];
-      return { state: s.state ?? null, apoioNivel: typeof nivel === "string" ? nivel : "" };
+      const sig = s.fields?.[FORM_SIG_KIT_FIELD];
+      return {
+        state: s.state ?? null,
+        apoioNivel: typeof nivel === "string" ? nivel : "",
+        email: s.email_address ?? null,
+        formSig: typeof sig === "string" ? sig : null,
+      };
+    },
+    async setFormSig(kitId, sig) {
+      // #10657: o PATCH devolve o assinante; o valor relido prova que o
+      // campo existe (o Kit descarta chave desconhecida com 2xx, #9663).
+      const s = await updateSubscriberFields(kitId, { [FORM_SIG_KIT_FIELD]: sig }, kitCfg);
+      const stored = s.fields?.[FORM_SIG_KIT_FIELD];
+      return typeof stored === "string" ? stored : null;
     },
     async listEnvioBrevoEmails() {
       // Tag ausente lança (trava a rodada): um rename no painel do Kit não pode
@@ -820,7 +931,8 @@ async function main(): Promise<void> {
   };
 
   const apoioGate = apoioContentGate(snippets);
-  const formGate = formContentGate(snippets, cfg);
+  const formLinkSecret = process.env[ONBOARDING_FORM_LINK_SECRET_ENV]?.trim() || null;
+  const formGate = formContentGate(snippets, cfg, formLinkSecret);
   // Travado pelos dois lados: nem precisa de credencial do Kit.
   let deps: FollowupRoundDeps;
   if (apoioGate.blocked && formGate.blocked) {
@@ -841,7 +953,7 @@ async function main(): Promise<void> {
 
   let out: { run: FollowupRunRecord; lots: unknown[] };
   try {
-    out = await runFollowupRound({ storePath, send: args.send, cfg, snippets }, deps);
+    out = await runFollowupRound({ storePath, send: args.send, cfg, snippets, formLinkSecret }, deps);
   } catch (e) {
     const msg = redactEmails((e as Error).message);
     record({ at: new Date().toISOString(), apoio_blocked: null, form_blocked: null, lots_created: 0, lots_failed: 0, over_cap: 0, lookups_failed: 0, counts: {}, aborted: true, error: msg });

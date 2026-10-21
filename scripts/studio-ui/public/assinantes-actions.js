@@ -35,6 +35,14 @@ export const BLOCK_ACTIONS = Object.freeze({
     link: null,
   }),
   respostas_indisponiveis: Object.freeze({ acao: "Conferir o Worker do formulário: as respostas não carregaram", link: null }),
+  assinatura_nao_configurada: Object.freeze({
+    acao: "Definir ONBOARDING_FORM_LINK_SECRET no .env/Doppler do servidor (mesmo valor do secret do Worker do formulário, #10657)",
+    link: null,
+  }),
+  campo_assinatura_ausente: Object.freeze({
+    acao: "Criar o custom field form_sig no Kit: sem ele o link do formulário sai sem assinatura (#10657)",
+    link: null,
+  }),
   kit_indisponivel: Object.freeze({ acao: "Investigar o acesso ao Kit na última rodada", link: TAREFAS_LINK }),
 });
 

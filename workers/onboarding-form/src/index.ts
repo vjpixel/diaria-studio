@@ -4,8 +4,13 @@
  * Formulário de perfil/interesses do onboarding. Contrato completo (rotas,
  * formato, como o executor grava "preencheu" no store) em
  * `scripts/lib/onboarding-form-contract.ts`; HTML em `./render.ts`. Sem o KV
- * `ONBOARDING_FORM` declarado (ver wrangler.toml) toda rota responde 503
- * `not_configured`.
+ * `ONBOARDING_FORM` declarado (ver wrangler.toml) ou sem o secret
+ * `ONBOARDING_FORM_LINK_SECRET` toda rota responde 503 `not_configured`.
+ *
+ * #10657: link assinado por pessoa (`?email=...&sig=...`,
+ * `scripts/lib/onboarding-form-link-sig.ts`). GET sem assinatura válida
+ * mostra a página de link inválido (sem formulário); POST sem assinatura
+ * válida para o e-mail enviado responde 403 e não grava nada no KV.
  */
 
 import {
@@ -15,11 +20,14 @@ import {
   prefillEmailFromQuery,
   type FormResponse,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
-import { collectFormFields, renderErrorHtml, renderFormHtml, renderThanksHtml } from "./render.ts";
+import { verifyFormEmailSig } from "../../../scripts/lib/onboarding-form-link-sig.ts";
+import { collectFormFields, renderErrorHtml, renderFormHtml, renderInvalidLinkHtml, renderThanksHtml } from "./render.ts";
 
-interface Env {
+export interface Env {
   ONBOARDING_FORM?: KVNamespace;
   RESPONSES_TOKEN?: string;
+  /** #10657: segredo do HMAC do link (mesmo valor do executor). */
+  ONBOARDING_FORM_LINK_SECRET?: string;
 }
 
 function html(body: string, status = 200): Response {
@@ -29,10 +37,14 @@ function html(body: string, status = 200): Response {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (!env.ONBOARDING_FORM) return new Response(JSON.stringify({ error: "not_configured" }), { status: 503 });
+    const secret = env.ONBOARDING_FORM_LINK_SECRET;
+    if (!env.ONBOARDING_FORM || !secret) return new Response(JSON.stringify({ error: "not_configured" }), { status: 503 });
 
     if (request.method === "GET" && url.pathname === "/") {
-      return html(renderFormHtml(prefillEmailFromQuery(url.searchParams.get("email"))));
+      const email = prefillEmailFromQuery(url.searchParams.get("email"));
+      const sig = url.searchParams.get("sig") ?? "";
+      if (!(await verifyFormEmailSig(email, sig, secret))) return html(renderInvalidLinkHtml(), 403);
+      return html(renderFormHtml(email, sig));
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {
@@ -44,7 +56,15 @@ export default {
         return html(renderErrorHtml("o envio chegou incompleto"), 400);
       }
       // Caixas de seleção mandam um valor por opção marcada: preservar os repetidos.
-      const parsed = parseFormSubmission(collectFormFields(form.entries()));
+      const fields = collectFormFields(form.entries());
+      // #10657: só grava com a assinatura do link para ESTE e-mail — sem isso
+      // qualquer um marcava outra pessoa como "preencheu" ou sobrescrevia as
+      // respostas dela. Verificado antes de qualquer outra validação.
+      const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? "";
+      if (!(await verifyFormEmailSig(one(fields.email), one(fields.sig), secret))) {
+        return html(renderInvalidLinkHtml(), 403);
+      }
+      const parsed = parseFormSubmission(fields);
       if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
       const record: FormResponse = { ...parsed.submission, submitted_at: new Date().toISOString() };
       try {

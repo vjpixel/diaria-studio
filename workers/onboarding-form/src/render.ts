@@ -75,15 +75,18 @@ function renderQuestion(q: FormQuestion): string {
   return `<fieldset>${label}${help}<select id="${id}" name="${id}"${req}><option value="">Escolha uma opção</option>${options}</select></fieldset>`;
 }
 
-/** Página do formulário com o e-mail pré-preenchido (editável). */
-export function renderFormHtml(email: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): string {
+/** Página do formulário para o e-mail do link assinado (#10657): o e-mail e a
+ *  assinatura vão em campos OCULTOS — a pessoa vê para quem está respondendo,
+ *  mas não troca o e-mail (trocar invalidaria a assinatura e o Worker recusaria). */
+export function renderFormHtml(email: string, sig: string, questions: readonly FormQuestion[] = FORM_QUESTIONS): string {
   return renderPage(
     `<h1>Conte pra gente sobre você</h1>` +
       `<p class="intro">São ${questions.length} perguntas rápidas, leva uns dois minutos. ` +
       `As respostas ajudam a escolher o que entra na diar.ia.br e o que mais podemos oferecer além dela.</p>` +
       `<form method="post" action="/enviar">` +
-      `<fieldset><label class="q" for="email">Seu e-mail</label>` +
-      `<input id="email" name="email" type="email" autocomplete="email" required value="${escapeHtml(email)}"></fieldset>` +
+      `<input type="hidden" name="email" value="${escapeHtml(email)}">` +
+      `<input type="hidden" name="sig" value="${escapeHtml(sig)}">` +
+      `<p class="intro">Respondendo como <strong>${escapeHtml(email)}</strong>.</p>` +
       questions.map(renderQuestion).join("") +
       `<button type="submit">Enviar respostas</button></form>`,
   );
@@ -93,6 +96,14 @@ export function renderThanksHtml(): string {
   return renderPage(
     `<h1>Obrigado!</h1><p>Suas respostas chegaram. Em breve você para de receber lembretes sobre este formulário.</p>` +
       `<p>Se quiser mudar alguma resposta, é só preencher de novo: vale a mais recente.</p>`,
+  );
+}
+
+/** Link sem assinatura válida (#10657): nada de formulário. */
+export function renderInvalidLinkHtml(): string {
+  return renderPage(
+    `<h1>Link inválido</h1><p>Este link do formulário não é válido ou está incompleto.</p>` +
+      `<p>Abra o formulário pelo botão do e-mail que você recebeu da diar.ia.br, sem editar o endereço.</p>`,
   );
 }
 

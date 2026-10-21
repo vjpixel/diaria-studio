@@ -57,6 +57,7 @@
 import type { OnboardingEntry } from "./onboarding-store.ts";
 import type { KitBroadcastLot } from "./onboarding-kit-transport.ts";
 import { PENDING_BODY_MARKER, parseOnboardingSnippet, reguaAnchorSec, type OnboardingSnippet } from "./onboarding-state.ts";
+import { FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV } from "./onboarding-form-link-sig.ts";
 
 const DAY_S = 86_400;
 
@@ -153,6 +154,12 @@ export type FollowupBlockReason =
   | "texto_pendente"
   | "snippet_invalido"
   | "form_nao_configurado"
+  /** #10657: `ONBOARDING_FORM_LINK_SECRET` ausente no executor — sem ele o
+   *  link sairia sem assinatura e o Worker recusaria (fail-closed). */
+  | "assinatura_nao_configurada"
+  /** #10657: o Kit não guardou o custom field `form_sig` (campo não existe
+   *  na conta: o Kit descarta a chave em silêncio). */
+  | "campo_assinatura_ausente"
   | "respostas_indisponiveis"
   | "kit_indisponivel"
   | "desligado";
@@ -286,9 +293,16 @@ export function apoioContentGate(snippets: FollowupSnippets): ContentGate {
 }
 
 /** @pure — o formulário só destrava com os 2 textos aprovados, o link do
- *  formulário no corpo e o formulário configurado (URL pública + endpoint de
- *  respostas: sem saber quem preencheu, os lembretes não param). */
-export function formContentGate(snippets: FollowupSnippets, cfg: Pick<FollowupConfig, "formUrl" | "formResponsesUrl">): ContentGate {
+ *  formulário no corpo, o formulário configurado (URL pública + endpoint de
+ *  respostas: sem saber quem preencheu, os lembretes não param) e o segredo
+ *  que assina o link por pessoa (#10657). `linkSecret` é obrigatório de
+ *  propósito: ausente/vazio TRAVA (fail-closed), nunca vira link sem
+ *  assinatura. */
+export function formContentGate(
+  snippets: FollowupSnippets,
+  cfg: Pick<FollowupConfig, "formUrl" | "formResponsesUrl">,
+  linkSecret: string | null | undefined,
+): ContentGate {
   for (const step of FORM_STEPS) {
     const gate = checkSnippet(step.kind, snippets[step.kind]);
     if (gate.blocked) return gate;
@@ -307,19 +321,28 @@ export function formContentGate(snippets: FollowupSnippets, cfg: Pick<FollowupCo
       detalhe: "onboarding.followup.form_url/form_responses_url ausentes — Worker do formulário não publicado (#10605)",
     };
   }
+  if (!linkSecret || linkSecret.trim() === "") {
+    return {
+      blocked: true,
+      motivo: "assinatura_nao_configurada",
+      detalhe: `${ONBOARDING_FORM_LINK_SECRET_ENV} ausente no ambiente do executor — o link do formulário sairia sem assinatura (#10657)`,
+    };
+  }
   return { blocked: false };
 }
 
-/** @pure — troca o placeholder pelo link do formulário com o e-mail
- *  pré-preenchido pela merge tag do Kit. SEM filtro Liquid de propósito
- *  (review #10623): `url_encode` não foi confirmado ao vivo no Kit, e um
- *  filtro desconhecido pode quebrar o link inteiro. O e-mail vai cru; o Worker
- *  restaura o `+` que a query decodifica como espaço (`prefillEmailFromQuery`)
- *  e o campo segue editável. */
+/** @pure — troca o placeholder pelo link do formulário com o e-mail e a
+ *  assinatura da pessoa, ambos por merge tag do Kit (o corpo é um só pro lote
+ *  inteiro). A assinatura vem do custom field `form_sig`, gravado pelo
+ *  executor antes do lote (#10657, `provisionFormSigs`). SEM filtro Liquid de
+ *  propósito (review #10623): `url_encode` não foi confirmado ao vivo no Kit,
+ *  e um filtro desconhecido pode quebrar o link inteiro. O e-mail vai cru; o
+ *  Worker restaura o `+` que a query decodifica como espaço
+ *  (`prefillEmailFromQuery`). A assinatura é base64url, segura na query. */
 export function renderFollowupBody(body: string, formUrl: string | null): string {
   if (formUrl == null || !body.includes(FORM_URL_PLACEHOLDER)) return body;
   const sep = formUrl.includes("?") ? "&" : "?";
-  const link = `${formUrl}${sep}email={{ subscriber.email_address }}`;
+  const link = `${formUrl}${sep}email={{ subscriber.email_address }}&sig={{ subscriber.${FORM_SIG_KIT_FIELD} }}`;
   return body.split(FORM_URL_PLACEHOLDER).join(link);
 }
 
@@ -716,6 +739,12 @@ export interface LiveSubscriberCheck {
   state: string | null;
   /** Valor de `apoio_nivel` (`""` = não apoia). */
   apoioNivel: string | null;
+  /** #10657: valor atual do custom field `form_sig` (assinatura do link do
+   *  formulário). Ausente/diferente do esperado = o executor regrava. */
+  formSig?: string | null;
+  /** #10657: e-mail atual no Kit — é o que a merge tag põe no link, então é
+   *  o que a assinatura cobre. Ausente = cai no e-mail do store. */
+  email?: string | null;
 }
 
 export type LiveExclusionReason = "apoia" | "nao_ativo" | "consulta_falhou";
@@ -1028,7 +1057,9 @@ export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
   if (run.lots_failed > 0 || run.over_cap > 0 || run.lookups_failed > 0 || (run.lots_unresolved ?? 0) > 0) return true;
   // #10652: excedente do teto que não cabe na janela vira `vencida` em silêncio.
   if ((run.cap_window_overflow ?? 0) > 0) return true;
-  return run.form_blocked?.motivo === "respostas_indisponiveis";
+  // #10657: campo `form_sig` inexistente no Kit trava o formulário em
+  // silêncio toda rodada — precisa do alarme, não só do painel.
+  return run.form_blocked?.motivo === "respostas_indisponiveis" || run.form_blocked?.motivo === "campo_assinatura_ausente";
 }
 
 /** @pure — muta e devolve o bloco. */

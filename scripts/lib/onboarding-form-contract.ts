@@ -13,11 +13,12 @@
  *
  * ## Endpoints do Worker
  *
- *  - `GET  /?email={e-mail}` — página do formulário, com o e-mail
- *    pré-preenchido (editável).
- *  - `POST /enviar` (form-urlencoded) — valida com `parseFormSubmission` e
- *    grava a resposta (KV, chave `resp:{email normalizado}`; a última
- *    resposta vence).
+ *  - `GET  /?email={e-mail}&sig={assinatura}` — página do formulário para
+ *    aquele e-mail (fixo, em campo oculto). Sem assinatura válida: página de
+ *    link inválido (#10657, `onboarding-form-link-sig.ts`).
+ *  - `POST /enviar` (form-urlencoded) — exige a assinatura do e-mail enviado
+ *    (senão 403, nada gravado); valida com `parseFormSubmission` e grava a
+ *    resposta (KV, chave `resp:{email normalizado}`; a última resposta vence).
  *  - `GET  /api/respostas` com `Authorization: Bearer {token}` — lista as
  *    respostas no formato `FormResponsesPayload`. É o que o executor lê a
  *    cada rodada para marcar "preencheu" no store e parar os lembretes.
