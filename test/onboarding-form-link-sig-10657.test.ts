@@ -74,11 +74,11 @@ describe("#10657 executor: link com assinatura, envio travado sem o segredo", ()
   const ok = parseFollowupSnippet(`<!--\nassunto: "A"\npreview_text: "P"\n-->\nResponda: {{FORM_URL}}`);
   const formSnippets: FollowupSnippets = { apoio30: null, apoio90: null, apoio180: null, apoio360: null, form: ok, form_lembrete: ok };
 
-  it("o link leva e-mail e assinatura por merge tag do custom field form_sig", () => {
+  it("o link leva e-mail (url_encode) e assinatura por merge tag do custom field form_sig", () => {
     assert.equal(FORM_SIG_KIT_FIELD, "form_sig");
     assert.equal(
       renderFollowupBody("{{FORM_URL}}", "https://form.example/?ref=x"),
-      "https://form.example/?ref=x&email={{ subscriber.email_address }}&sig={{ subscriber.form_sig }}",
+      "https://form.example/?ref=x&email={{ subscriber.email_address | url_encode }}&sig={{ subscriber.form_sig }}",
     );
   });
 
@@ -156,7 +156,7 @@ describe("#10657 executor: link com assinatura, envio travado sem o segredo", ()
       [2, await signFormEmail("2@x.com", SECRET)],
     ]);
     assert.deepEqual(d.lots, [["1", "2"]]);
-    assert.ok(d.bodies[0]!.includes("&sig={{ subscriber.form_sig }}"));
+    assert.ok(d.bodies[0]!.includes("email={{ subscriber.email_address | url_encode }}&sig={{ subscriber.form_sig }}"));
   });
 
   it("assinatura já certa no Kit: não regrava (o lembrete reaproveita)", async () => {
@@ -208,8 +208,90 @@ describe("#10657 executor: link com assinatura, envio travado sem o segredo", ()
 
   it("provisionFormSigs sem gravação configurada: ninguém sem assinatura confirmada passa", async () => {
     const due = [{ kit_subscriber_id: 7, email: "7@x.com", kind: "form" as const }];
-    const r = await provisionFormSigs(due, new Map([[7, { state: "active", apoioNivel: "" }]]), SECRET, {});
+    const r = await provisionFormSigs(due, new Map([[7, { state: "active", apoioNivel: "" }]]), SECRET, { getSubscriber: async () => ({ state: "active", apoioNivel: "" }) });
     assert.deepEqual(r.ok, []);
+    assert.equal(r.failed.length, 1);
+  });
+
+  const due7 = [{ kit_subscriber_id: 7, email: "7@x.com", kind: "form" as const }];
+  const checks7 = () => new Map([[7, { state: "active", apoioNivel: "", email: "7@x.com", formSig: null }]]);
+
+  it("gravação: 429 é retentado depois do cooldown, com o mesmo espaçamento das leituras", async () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const r = await provisionFormSigs(due7, checks7(), SECRET, {
+      getSubscriber: async () => assert.fail("não relê com fields na resposta"),
+      async setFormSig(_id, sig) {
+        calls++;
+        if (calls === 1) throw Object.assign(new Error("HTTP 429"), { status: 429 });
+        return sig;
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      isTransientLookupError: (e) => (e as { status?: number }).status === 429,
+    }, { spacingMs: 350, retryDelayMs: 60_000, retryPasses: 1 });
+    assert.equal(calls, 2);
+    assert.deepEqual(r.ok, due7);
+    assert.deepEqual(r.failed, []);
+    assert.deepEqual(sleeps, [60_000]);
+  });
+
+  it("gravação: erro não transitório (403) não é retentado; transitório que persiste esgota as passadas", async () => {
+    let calls = 0;
+    const r403 = await provisionFormSigs(due7, checks7(), SECRET, {
+      getSubscriber: async () => assert.fail("não relê"),
+      async setFormSig() {
+        calls++;
+        throw Object.assign(new Error("HTTP 403"), { status: 403 });
+      },
+      isTransientLookupError: (e) => (e as { status?: number }).status !== 403,
+    });
+    assert.equal(calls, 1);
+    assert.equal(r403.failed.length, 1);
+
+    calls = 0;
+    const r500 = await provisionFormSigs(due7, checks7(), SECRET, {
+      getSubscriber: async () => assert.fail("não relê"),
+      async setFormSig() {
+        calls++;
+        throw new Error("HTTP 503");
+      },
+      isTransientLookupError: () => true,
+    }, { retryPasses: 2 });
+    assert.equal(calls, 3);
+    assert.equal(r500.failed.length, 1);
+    assert.equal(r500.fieldMissing, null);
+  });
+
+  it("resposta do PATCH sem fields: relê pelo GET singular antes de concluir", async () => {
+    const sig = await signFormEmail("7@x.com", SECRET);
+    let gets = 0;
+    const ok = await provisionFormSigs(due7, checks7(), SECRET, {
+      async getSubscriber() {
+        gets++;
+        return { state: "active", apoioNivel: "", formSig: sig };
+      },
+      setFormSig: async () => undefined,
+    });
+    assert.equal(gets, 1);
+    assert.deepEqual(ok.ok, due7);
+    assert.equal(ok.fieldMissing, null);
+
+    const missing = await provisionFormSigs(due7, checks7(), SECRET, {
+      getSubscriber: async () => ({ state: "active", apoioNivel: "", formSig: null }),
+      setFormSig: async () => undefined,
+    });
+    assert.deepEqual(missing.ok, []);
+    assert.match(missing.fieldMissing ?? "", /form_sig/);
+  });
+
+  it("resposta do PATCH COM fields sem form_sig: campo ausente, sem reler", async () => {
+    const r = await provisionFormSigs(due7, checks7(), SECRET, {
+      getSubscriber: async () => assert.fail("não relê com fields na resposta"),
+      setFormSig: async () => null,
+    });
+    assert.match(r.fieldMissing ?? "", /form_sig/);
     assert.equal(r.failed.length, 1);
   });
 });
@@ -251,6 +333,21 @@ describe("#10657 Worker: só grava com assinatura válida para o e-mail", () => 
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.ok(body.includes('name="sig"') && body.includes('value="a+b@x.com"'));
+  });
+
+  it("e-mails com +, & e # chegam inteiros pelo link com url_encode (GET e POST)", async () => {
+    for (const email of ["a+b@x.com", "a&b@x.com", "a#b@x.com"]) {
+      const sig = await signFormEmail(email, SECRET);
+      // O que `{{ subscriber.email_address | url_encode }}` produz.
+      const res = await worker.fetch(new Request(`https://form.example/?email=${encodeURIComponent(email)}&sig=${sig}`), env().e);
+      assert.equal(res.status, 200, email);
+      const body = await res.text();
+      assert.ok(body.includes(`name="email" value="${email.replace(/&/g, "&amp;")}"`), email);
+      const { e, puts } = env();
+      const post2 = await worker.fetch(post([["email", email], ["sig", sig], ...answers()]), e);
+      assert.equal(post2.status, 200, email);
+      assert.deepEqual(puts.map(([k]) => k), [`resp:${email}`], email);
+    }
   });
 
   it("GET sem assinatura ou com assinatura errada: página de link inválido, sem formulário", async () => {

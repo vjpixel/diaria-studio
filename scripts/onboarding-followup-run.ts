@@ -308,11 +308,14 @@ export interface FollowupRoundDeps {
   isTransientLookupError?(err: unknown): boolean;
   /**
    * #10657: grava a assinatura do link do formulário no custom field
-   * `form_sig` da pessoa e devolve o valor RELIDO da resposta (o Kit descarta
-   * campo inexistente com 2xx). Ausente = nenhuma assinatura gravável: quem
-   * ainda não tem a assinatura certa fica fora do lote do formulário.
+   * `form_sig` da pessoa e devolve o valor lido da RESPOSTA do PATCH (o Kit
+   * descarta campo inexistente com 2xx): string = valor guardado; `null` = a
+   * resposta trouxe `fields` sem `form_sig`; `undefined` = a resposta veio sem
+   * `fields` (não prova nada — o executor relê pelo GET singular). Ausente =
+   * nenhuma assinatura gravável: quem ainda não tem a assinatura certa fica
+   * fora do lote do formulário.
    */
-  setFormSig?(kitId: number, sig: string): Promise<string | null>;
+  setFormSig?(kitId: number, sig: string): Promise<string | null | undefined>;
 }
 
 export interface FormSigProvisionResult {
@@ -323,9 +326,13 @@ export interface FormSigProvisionResult {
   /** O Kit respondeu sem guardar o campo: `form_sig` não existe na conta.
    *  Todo o resto do formulário fica fora (não adianta tentar pessoa a pessoa). */
   fieldMissing: string | null;
-  /** Gravações feitas nesta rodada. */
+  /** Gravações (PATCH) tentadas nesta rodada, contando as de retry. */
   written: number;
 }
+
+/** Espaçamento/cooldown/passadas da gravação — mesmos defaults das leituras
+ *  singulares (`refreshKitCandidates`, #10616/#10676): 350ms, 60s, 1 passada. */
+export type FormSigWriteOpts = Pick<RefreshKitCandidatesOpts, "spacingMs" | "retryDelayMs" | "retryPasses">;
 
 /**
  * #10657: garante, pessoa a pessoa, que o custom field `form_sig` do Kit
@@ -334,47 +341,101 @@ export interface FormSigProvisionResult {
  * Quem já tem o valor certo não gera escrita; o lembrete mensal reaproveita.
  * Nunca deixa passar alguém sem assinatura confirmada: o link dela seria
  * recusado pelo Worker.
+ *
+ * Mesmo regime das leituras (#10676): 1ª passada espaçada, depois passada(s)
+ * extra(s) só sobre erro transitório (429/5xx/rede) após cooldown; erro não
+ * transitório (401/403) não é retentado.
+ *
+ * Confirmação pós-escrita: o valor da resposta do PATCH; se a resposta vier
+ * sem `fields`, relê pelo GET singular (autoritativo — a LISTAGEM do Kit serve
+ * `fields` defasado, o GET singular não). Só conclui "campo ausente" com um
+ * `fields` lido que não traz o valor.
  */
 export async function provisionFormSigs(
   due: readonly FollowupDue[],
   checks: ReadonlyMap<number, LiveSubscriberCheck | null>,
   secret: string,
-  deps: Pick<FollowupRoundDeps, "setFormSig" | "sleep">,
-  spacingMs = 350,
+  deps: Pick<FollowupRoundDeps, "setFormSig" | "sleep" | "isTransientLookupError" | "getSubscriber">,
+  opts: FormSigWriteOpts = {},
 ): Promise<FormSigProvisionResult> {
+  const spacingMs = opts.spacingMs ?? 350;
+  const retryDelayMs = opts.retryDelayMs ?? 60_000;
+  const retryPasses = opts.retryPasses ?? 1;
+  const sleep = deps.sleep ?? noSleep;
+  const isTransient = deps.isTransientLookupError ?? (() => true);
   const out: FormSigProvisionResult = { ok: [], failed: [], fieldMissing: null, written: 0 };
-  // Valor já confirmado por pessoa nesta rodada (mesma pessoa em duas etapas não regrava).
-  const confirmed = new Map<number, string>();
+
+  // Assinatura esperada por pessoa e quem precisa de escrita (1 escrita por
+  // pessoa, mesmo com duas etapas do formulário devidas).
+  const expectedById = new Map<number, string>();
+  const dueById = new Map<number, FollowupDue[]>();
   for (const d of due) {
-    if (out.fieldMissing) {
-      out.failed.push({ due: d, error: "campo form_sig ausente no Kit" });
-      continue;
+    const id = d.kit_subscriber_id;
+    if (!expectedById.has(id)) {
+      const check = checks.get(id);
+      expectedById.set(id, await signFormEmail(check?.email ?? d.email, secret));
     }
-    const check = checks.get(d.kit_subscriber_id);
-    const expected = await signFormEmail(check?.email ?? d.email, secret);
-    const current = confirmed.get(d.kit_subscriber_id) ?? check?.formSig ?? null;
-    if (current === expected) {
-      out.ok.push(d);
-      continue;
-    }
-    if (!deps.setFormSig) {
-      out.failed.push({ due: d, error: "sem gravação de form_sig configurada" });
-      continue;
-    }
-    if (out.written > 0) await (deps.sleep ?? noSleep)(spacingMs);
-    try {
-      const stored = await deps.setFormSig(d.kit_subscriber_id, expected);
-      out.written++;
-      if (stored === expected) {
-        confirmed.set(d.kit_subscriber_id, expected);
-        out.ok.push(d);
+    const list = dueById.get(id) ?? [];
+    list.push(d);
+    dueById.set(id, list);
+  }
+  const accept = (id: number) => out.ok.push(...dueById.get(id)!);
+  const reject = (id: number, error: string) => {
+    for (const d of dueById.get(id)!) out.failed.push({ due: d, error });
+  };
+
+  let pending: number[] = [];
+  for (const id of dueById.keys()) {
+    if (checks.get(id)?.formSig === expectedById.get(id)) accept(id);
+    else pending.push(id);
+  }
+  if (pending.length > 0 && !deps.setFormSig) {
+    for (const id of pending) reject(id, "sem gravação de form_sig configurada");
+    return out;
+  }
+
+  const missingMsg = `PATCH de ${FORM_SIG_KIT_FIELD} respondeu 2xx sem guardar o valor — criar o custom field "${FORM_SIG_KIT_FIELD}" no Kit (#10657)`;
+  for (let pass = 0; pass <= retryPasses && pending.length > 0; pass++) {
+    if (pass > 0) await sleep(retryDelayMs);
+    const retry: number[] = [];
+    let first = true;
+    for (const id of pending) {
+      if (out.fieldMissing) {
+        reject(id, "campo form_sig ausente no Kit");
         continue;
       }
-      out.fieldMissing = `PATCH de ${FORM_SIG_KIT_FIELD} respondeu 2xx sem guardar o valor — criar o custom field "${FORM_SIG_KIT_FIELD}" no Kit (#10657)`;
-      out.failed.push({ due: d, error: out.fieldMissing });
-    } catch (e) {
-      out.failed.push({ due: d, error: redactEmails((e as Error)?.message ?? String(e)) });
+      if (!first) await sleep(spacingMs);
+      first = false;
+      const expected = expectedById.get(id)!;
+      try {
+        out.written++;
+        let stored = await deps.setFormSig!(id, expected);
+        if (stored === undefined) {
+          // Resposta sem `fields`: não prova nada — relê pelo GET singular.
+          await sleep(spacingMs);
+          const reread = await deps.getSubscriber(id);
+          stored = reread.formSig ?? null;
+        }
+        if (stored === expected) {
+          accept(id);
+          continue;
+        }
+        out.fieldMissing = missingMsg;
+        reject(id, missingMsg);
+      } catch (e) {
+        const msg = redactEmails((e as Error)?.message ?? String(e));
+        if (isTransient(e) && pass < retryPasses) {
+          retry.push(id);
+        } else {
+          reject(id, msg);
+        }
+      }
     }
+    if (out.fieldMissing) {
+      for (const id of retry) reject(id, "campo form_sig ausente no Kit");
+      break;
+    }
+    pending = retry;
   }
   return out;
 }
@@ -707,7 +768,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   let toSend = liveOk;
   const formDue = liveOk.filter((d) => isFormStep(d.kind));
   if (send && formDue.length > 0) {
-    const prov = await provisionFormSigs(formDue, checks.results, opts.formLinkSecret ?? "", deps, opts.lookupOpts?.spacingMs);
+    const prov = await provisionFormSigs(formDue, checks.results, opts.formLinkSecret ?? "", deps, opts.lookupOpts);
     const okSet = new Set(prov.ok);
     toSend = liveOk.filter((d) => !isFormStep(d.kind) || okSet.has(d));
     for (const f of prov.failed) bump(f.due.kind, "assinatura_falhou");
@@ -834,7 +895,9 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
       // #10657: o PATCH devolve o assinante; o valor relido prova que o
       // campo existe (o Kit descarta chave desconhecida com 2xx, #9663).
       const s = await updateSubscriberFields(kitId, { [FORM_SIG_KIT_FIELD]: sig }, kitCfg);
-      const stored = s.fields?.[FORM_SIG_KIT_FIELD];
+      // Sem `fields` na resposta: `undefined` faz o executor reler pelo GET singular.
+      if (s.fields == null || typeof s.fields !== "object") return undefined;
+      const stored = s.fields[FORM_SIG_KIT_FIELD];
       return typeof stored === "string" ? stored : null;
     },
     async listEnvioBrevoEmails() {

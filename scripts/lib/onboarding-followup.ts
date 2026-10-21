@@ -334,15 +334,20 @@ export function formContentGate(
 /** @pure — troca o placeholder pelo link do formulário com o e-mail e a
  *  assinatura da pessoa, ambos por merge tag do Kit (o corpo é um só pro lote
  *  inteiro). A assinatura vem do custom field `form_sig`, gravado pelo
- *  executor antes do lote (#10657, `provisionFormSigs`). SEM filtro Liquid de
- *  propósito (review #10623): `url_encode` não foi confirmado ao vivo no Kit,
- *  e um filtro desconhecido pode quebrar o link inteiro. O e-mail vai cru; o
- *  Worker restaura o `+` que a query decodifica como espaço
- *  (`prefillEmailFromQuery`). A assinatura é base64url, segura na query. */
+ *  executor antes do lote (#10657, `provisionFormSigs`).
+ *
+ *  #10657 reverte a decisão do review #10623: o e-mail agora vai com o filtro
+ *  Liquid `url_encode`. Com a assinatura, um e-mail cortado na query (`&`,
+ *  `#` no local part) deixou de ser só um campo incompleto e editável: vira
+ *  "Link inválido". O Worker decodifica a query normalmente
+ *  (`URLSearchParams`), então `+`, `&` e `#` chegam intactos. O filtro ainda
+ *  não foi confirmado ao vivo no Kit; o e-mail de teste antes de ligar o
+ *  formulário confere isso (passo pré-lançamento da PR). A assinatura é
+ *  base64url, segura na query sem filtro. */
 export function renderFollowupBody(body: string, formUrl: string | null): string {
   if (formUrl == null || !body.includes(FORM_URL_PLACEHOLDER)) return body;
   const sep = formUrl.includes("?") ? "&" : "?";
-  const link = `${formUrl}${sep}email={{ subscriber.email_address }}&sig={{ subscriber.${FORM_SIG_KIT_FIELD} }}`;
+  const link = `${formUrl}${sep}email={{ subscriber.email_address | url_encode }}&sig={{ subscriber.${FORM_SIG_KIT_FIELD} }}`;
   return body.split(FORM_URL_PLACEHOLDER).join(link);
 }
 

@@ -217,10 +217,9 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
     assert.equal((formContentGate(allApproved(), resolveFollowupConfig({}), "segredo") as { motivo: string }).motivo, "form_nao_configurado");
   });
 
-  it("link do formulário leva o e-mail pré-preenchido via merge tag do Kit, sem filtro Liquid não confirmado (#10623)", () => {
+  it("link do formulário leva o e-mail (url_encode, #10657) e a assinatura via merge tag do Kit", () => {
     const out = renderFollowupBody("Responda: {{FORM_URL}}", "https://f.example/");
-    assert.equal(out, "Responda: https://f.example/?email={{ subscriber.email_address }}&sig={{ subscriber.form_sig }}");
-    assert.ok(!out.includes("url_encode"));
+    assert.equal(out, "Responda: https://f.example/?email={{ subscriber.email_address | url_encode }}&sig={{ subscriber.form_sig }}");
   });
 
   it("--init-snippets cria os 6 textos com o marcador e nunca sobrescreve", () => {

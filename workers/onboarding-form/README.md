@@ -34,7 +34,7 @@ o `form_sig`).
 
 ## Link assinado (#10657)
 
-O link do e-mail é `{form_url}?email={{ subscriber.email_address }}&sig={{ subscriber.form_sig }}`,
+O link do e-mail é `{form_url}?email={{ subscriber.email_address | url_encode }}&sig={{ subscriber.form_sig }}`,
 com `sig = base64url(HMAC-SHA256(ONBOARDING_FORM_LINK_SECRET, "onboarding-form:v1:" + e-mail normalizado))`
 (`scripts/lib/onboarding-form-link-sig.ts`). O Worker:
 
