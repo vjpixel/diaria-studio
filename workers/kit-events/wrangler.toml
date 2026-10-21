@@ -9,20 +9,21 @@ workers_dev = true
 # integrada ao diaria-subscribers-db. Contrato: scripts/lib/kit-webhook-events-contract.ts.
 #
 # Deploy automático via .github/workflows/deploy-kit-events.yml (#5337).
-# Publicado SEM KV e SEM segredos, ele falha FECHADO: POST /webhook/* responde
-# 404 (segredo ausente) e GET /api/eventos responde 401/503 — nada é gravado.
+# Sem os segredos ele falha FECHADO: POST /webhook/* responde 404 (segredo
+# ausente) e GET /api/eventos responde 401/503 — nada é gravado.
 #
-# Para ligar (ação pendente, sessão /diaria-develop com o editor — ver README.md):
+# Ligação (sessão /diaria-develop 261021, 21/10/2026 — ver README.md):
 #   1. wrangler kv namespace create KIT_EVENTS
-#   2. Declarar aqui o binding (NÃO declarado agora de propósito: um id
-#      placeholder quebraria `wrangler deploy`, mesmo racional de
-#      workers/onboarding-form/wrangler.toml):
-#        [[kv_namespaces]]
-#        binding = "KIT_EVENTS"
-#        id = "<id do passo 1>"
+#   2. Declarar aqui o binding (bloco [[kv_namespaces]] abaixo; nunca com id
+#      placeholder, que quebraria `wrangler deploy`)
 #   3. wrangler secret put KIT_WEBHOOK_SECRET  (vai na URL registrada no Kit)
 #   4. wrangler secret put EVENTS_READ_TOKEN   (KIT_EVENTS_READ_TOKEN no .env do servidor)
 #   5. Registrar os webhooks no Kit (README.md, tabela KIT_WEBHOOK_ROUTES).
+
+# Passos 1-4 feitos em 21/10/2026; passo 5 no comentário da #10648.
+[[kv_namespaces]]
+binding = "KIT_EVENTS"
+id = "a7b81b1c392f44cd9b605b5f7188a902"
 
 # #10724: a URL contém KIT_WEBHOOK_SECRET. Workers Logs inclui a URL nos
 # metadados de invocação, mesmo sem console.log(request.url). Desligar a
