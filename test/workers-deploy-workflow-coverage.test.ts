@@ -123,7 +123,13 @@ describe("cobertura de deploy workflow por worker (#5337)", () => {
     for (const worker of discoverWorkers()) {
       const own = `workers/${worker.workerDir}/**`;
       const deployWorkflows = workflowFiles.filter((f) => f.paths.includes(own));
-      if (deployWorkflows.length === 0) continue; // 1º teste já reprova esse caso
+      if (deployWorkflows.length === 0) {
+        // Nunca pular em silêncio: o 1º teste aceita o literal em qualquer
+        // lugar do arquivo, então um workflow em sintaxe que o parser não lê
+        // (`on: [push]`, `"on":`) passaria lá e escaparia daqui.
+        problems.push(`${worker.workerDir}: nenhum workflow com '${own}' em on.push.paths legível por extractPushPaths`);
+        continue;
+      }
 
       const { external, unresolved } = computeWorkerExternalImports(ROOT, worker.workerDir);
       for (const u of unresolved) problems.push(`${worker.workerDir}: import relativo não resolvido (${u})`);
