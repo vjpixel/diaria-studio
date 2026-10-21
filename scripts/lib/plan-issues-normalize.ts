@@ -46,6 +46,12 @@ export function normalizeIssues<T>(plan: IssuesBearing<T> | null | undefined): T
   if (!raw || typeof raw !== "object") return [];
   return Object.entries(raw).map(([key, issue]) => {
     const number = typeof issue?.number === "number" ? issue.number : Number(key);
-    return { ...(issue as object), number } as T;
+    // #10618 (fatia 2): chave qualificada (`"vjpixel/diaria-design#21"`) é a
+    // identidade da entrada — preservada como `ref` (quando a entrada não traz
+    // a sua) pra `scripts/lib/plan-issue-ref.ts` nunca ler o `number` dela
+    // como número do diaria-studio. Chave numérica: comportamento de sempre.
+    const hasOwnRef = typeof (issue as { ref?: unknown } | null)?.ref === "string";
+    const refFromKey = !/^\d+$/.test(key) && key.includes("#") && !hasOwnRef ? { ref: key } : {};
+    return { ...(issue as object), ...refFromKey, number } as T;
   });
 }

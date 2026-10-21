@@ -3,9 +3,12 @@
  *
  * Decisão do editor (20/10/2026, registrada na própria #10618): a identidade
  * de uma issue é `owner/repo#N` — plan.json, claims, marcadores, relatórios.
- * Isso é o ESTADO-ALVO: esta 1ª fatia entrega o modelo, o merge lock e o
- * guard por repo e o escopo dos hooks; claims, fila, gates e relatórios ainda
- * listam só o diaria-studio (fatia 2, ver o corpo da PR #10668). O número
+ * Isso é o ESTADO-ALVO: a 1ª fatia (PR #10668) entregou o modelo, o merge
+ * lock e o guard por repo e o escopo dos hooks; a 2ª fatia, os claims do
+ * `session-registry` (`claimed_foreign_issues`), o fetch de triagem
+ * (`issue-triage-fetch.ts`), os gates que leem `plan.json`
+ * (`plan-issue-ref.ts`) e o `route-issue.ts --issue owner/repo#N`. O que
+ * ainda lista só o diaria-studio está no corpo da PR da fatia 2. O número
  * sozinho colide entre repos (o #21 existe tanto no `vjpixel/diaria-studio`
  * quanto no `vjpixel/diaria-design`).
  *
@@ -19,9 +22,10 @@
  *
  * **Lista de repos num lugar só:** `platform.config.json → issue_repos`. O 1º
  * item é o repo default (o `diaria-studio`, onde as rodadas rodam). Nenhum
- * script deve hardcodar a lista — use `readIssueRepos` (hoje lida pelos
- * hooks via `loadAllowedForeignRepos`; os scripts de fila passam a lê-la na
- * fatia 2).
+ * script deve hardcodar a lista — use `readIssueRepos`/`loadIssueRepos`
+ * (lida pelos hooks via `loadAllowedForeignRepos` e, desde a fatia 2, pelo
+ * `session-registry` CLI de claim, pelo fetch de triagem e pelo
+ * `route-issue.ts`).
  *
  * Os hooks (`.claude/hooks/*.mjs`) são self-contained e não importam `.ts`
  * (ver docblock de `pr-create-review.mjs`); a parte deles — descobrir de qual

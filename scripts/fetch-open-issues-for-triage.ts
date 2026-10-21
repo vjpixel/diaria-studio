@@ -14,6 +14,13 @@
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --bugs
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --priority P0,P1
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --since 2026-08-29T10:00:00Z
+ *   npx tsx scripts/fetch-open-issues-for-triage.ts --repos vjpixel/diaria-studio
+ *
+ * **Multi-repo (#10618):** sem `--repos`, varre todos os repos de
+ * `platform.config.json → issue_repos`. Cada item traz `repo` e `ref`
+ * (`owner/repo#N`); `number` é o número cru dentro de `repo`. Falha de um
+ * repo EXTRA vira aviso no stderr (exit 0, issues do studio impressas);
+ * falha do repo default continua exit 1.
  *
  * `--since {ISO 8601}` (item 3, exclusivo do `/diaria-continuo` — ver
  * SKILL.md § Loop invariável passo 2): restringe a varredura ao delta desde
@@ -51,9 +58,11 @@ export function main(argv: string[], cwd: string): number {
     return 1;
   }
 
+  const repos = values.repos ? values.repos.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+
   let result;
   try {
-    result = fetchOpenIssuesForTriage(cwd, { since });
+    result = fetchOpenIssuesForTriage(cwd, { since, repos });
   } catch (e) {
     console.error(`[fetch-open-issues-for-triage] ${(e as Error).message}`);
     return 1;
@@ -61,6 +70,9 @@ export function main(argv: string[], cwd: string): number {
   if (result.error) {
     console.error(`[fetch-open-issues-for-triage] ${result.error}`);
     return 1;
+  }
+  for (const { repo, error } of result.repoErrors ?? []) {
+    console.error(`[fetch-open-issues-for-triage] AVISO — issues de ${repo} NÃO entraram na lista: ${error}`);
   }
   const issues = filterByFlags(result.issues, bugsOnly, priorityFilter);
   console.log(JSON.stringify(issues, null, 2));

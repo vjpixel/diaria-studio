@@ -40,7 +40,9 @@
 
 import { readFileSync } from "node:fs";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
-import { extractIssueNumbers } from "./state-changed-tracker.ts";
+import { extractIssueKeys } from "./state-changed-tracker.ts";
+import { planEntryKey, studioNumberOfPlanEntry } from "./plan-issue-ref.ts";
+import { legacyIssueNumber, parseIssueRef } from "./issue-repos.ts";
 import type { DevelopPlanIssueLike } from "./develop-plan-motivo.ts";
 
 /**
@@ -62,7 +64,14 @@ export interface PlanWithTargetSet {
 
 export type TargetSetCoverageResult =
   | { status: "ok" }
-  | { status: "missing"; issues: number[] };
+  | {
+      status: "missing";
+      /** Faltantes do repo default (número legado). */
+      issues: number[];
+      /** #10618 — faltantes de OUTRO repo, como `owner/repo#N`. Presente só
+       * quando há algum (shape legado intacto para planos só do studio). */
+      foreign?: string[];
+    };
 
 /**
  * Pure: entre os números de `targetSet`, devolve os que não têm entrada
@@ -77,26 +86,55 @@ export function findMissingTargetSetCoverage(
 ): number[] {
   const covered = new Set<number>();
   for (const issue of issues) {
-    const hasNumber = typeof issue?.number === "number" && Number.isFinite(issue.number);
+    // #10618: entrada de OUTRO repo (`{ ref }`/`{ number, repo }`) nunca cobre
+    // o número do diaria-studio — `studioNumberOfPlanEntry` devolve `null`.
+    const n = studioNumberOfPlanEntry(issue);
     const hasStatus = typeof issue?.status === "string" && issue.status.length > 0;
-    if (hasNumber && hasStatus) covered.add(issue.number as number);
+    if (n !== null && hasStatus) covered.add(n);
   }
   const missing = targetSet.filter((n) => !covered.has(n));
   return [...new Set(missing)].sort((a, b) => a - b);
+}
+
+/**
+ * #10618 (fatia 2) — mesma regra de `findMissingTargetSetCoverage`, sobre a
+ * identidade canônica `owner/repo#N` (cobre issue de qualquer repo, sem
+ * colisão de número). Saída ordenada e deduplicada.
+ */
+export function findMissingTargetSetCoverageKeys(
+  targetKeys: string[],
+  issues: DevelopPlanIssueLike[],
+): string[] {
+  const covered = new Set<string>();
+  for (const issue of issues) {
+    const key = planEntryKey(issue);
+    const hasStatus = typeof issue?.status === "string" && issue.status.length > 0;
+    if (key && hasStatus) covered.add(key);
+  }
+  return [...new Set(targetKeys.filter((k) => !covered.has(k)))].sort();
 }
 
 /** Pure: veredito a partir do plano já parseado. `target_set` ausente/vazio
  * (política `table_only`, ou Fase 0.5 ainda não gravou) → `ok` — nada pra
  * cobrir ainda, mesmo fail-open documentado nos gates irmãos. */
 export function checkTargetSetCoverageFromPlan(plan: PlanWithTargetSet): TargetSetCoverageResult {
-  const targetSet = extractIssueNumbers(plan.goal?.target_set);
-  if (targetSet.length === 0) return { status: "ok" };
+  const targetKeys = extractIssueKeys(plan.goal?.target_set);
+  if (targetKeys.length === 0) return { status: "ok" };
   const issues = normalizeIssues<DevelopPlanIssueLike>(
     plan as IssuesBearing<DevelopPlanIssueLike>,
   );
-  const missing = findMissingTargetSetCoverage(targetSet, issues);
-  if (missing.length === 0) return { status: "ok" };
-  return { status: "missing", issues: missing };
+  const missingKeys = findMissingTargetSetCoverageKeys(targetKeys, issues);
+  if (missingKeys.length === 0) return { status: "ok" };
+  const missing: number[] = [];
+  const foreign: string[] = [];
+  for (const key of missingKeys) {
+    const ref = parseIssueRef(key);
+    const n = ref ? legacyIssueNumber(ref) : null;
+    if (n !== null) missing.push(n);
+    else foreign.push(key);
+  }
+  missing.sort((a, b) => a - b);
+  return foreign.length > 0 ? { status: "missing", issues: missing, foreign } : { status: "missing", issues: missing };
 }
 
 /** I/O: lê o plan.json do disco e devolve o veredito. */

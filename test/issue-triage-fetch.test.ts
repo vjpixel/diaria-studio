@@ -36,7 +36,18 @@ afterEach(() => {
   }
 });
 
-function setupFakeGh(ghResponse: { stdout?: string; exitCode?: number }): { env: NodeJS.ProcessEnv; argvFile: string } {
+/**
+ * #10618 — o CLI varre todos os repos de `issue_repos`; o fake responde
+ * `foreignStdout`/`foreignExitCode` (default `[]`/0) para a chamada com `-R`
+ * (repo extra) e `stdout`/`exitCode` para a chamada do repo default (sem
+ * `-R`). `argvLog` acumula o argv de CADA chamada (uma linha JSON por chamada).
+ */
+function setupFakeGh(ghResponse: {
+  stdout?: string;
+  exitCode?: number;
+  foreignStdout?: string;
+  foreignExitCode?: number;
+}): { env: NodeJS.ProcessEnv; argvFile: string; argvLog: string } {
   root = mkdtempSync(join(tmpdir(), "issue-triage-fetch-gh-"));
   const ghDir = join(root, "bin");
   mkdirSync(ghDir);
@@ -58,18 +69,25 @@ function setupFakeGh(ghResponse: { stdout?: string; exitCode?: number }): { env:
       // quando `since` é passado, e omitido quando não é.
       "  const argvOutPath = process.env.GH_FAKE_ARGV_FILE;",
       "  if (argvOutPath) fs.writeFileSync(argvOutPath, JSON.stringify(process.argv.slice(1)), 'utf8');",
-      "  const respPath = process.env.GH_FAKE_RESPONSE_FILE;",
+      "  const argvLogPath = process.env.GH_FAKE_ARGV_LOG;",
+      "  if (argvLogPath) fs.appendFileSync(argvLogPath, JSON.stringify(process.argv.slice(1)) + '\\n', 'utf8');",
+      "  const foreign = process.argv.includes('-R');",
+      "  const respPath = foreign ? process.env.GH_FAKE_FOREIGN_RESPONSE_FILE : process.env.GH_FAKE_RESPONSE_FILE;",
       "  if (respPath) process.stdout.write(fs.readFileSync(respPath, 'utf8'));",
-      "  process.exit(Number(process.env.GH_FAKE_EXIT_CODE || 0));",
+      "  process.exit(Number((foreign ? process.env.GH_FAKE_FOREIGN_EXIT_CODE : process.env.GH_FAKE_EXIT_CODE) || 0));",
       "}",
     ].join("\n"),
     "utf8",
   );
   const respPath = join(ghDir, "gh-fake-response.json");
   writeFileSync(respPath, ghResponse.stdout ?? "[]", "utf8");
+  const foreignRespPath = join(ghDir, "gh-fake-foreign-response.json");
+  writeFileSync(foreignRespPath, ghResponse.foreignStdout ?? "[]", "utf8");
+  const argvLog = join(ghDir, "gh-fake-argv.log");
 
   return {
     argvFile,
+    argvLog,
     env: {
       ...process.env,
       PATH: ghDir,
@@ -78,6 +96,9 @@ function setupFakeGh(ghResponse: { stdout?: string; exitCode?: number }): { env:
       GH_FAKE_RESPONSE_FILE: respPath,
       GH_FAKE_ARGV_FILE: argvFile,
       GH_FAKE_EXIT_CODE: String(ghResponse.exitCode ?? 0),
+      GH_FAKE_FOREIGN_RESPONSE_FILE: foreignRespPath,
+      GH_FAKE_FOREIGN_EXIT_CODE: String(ghResponse.foreignExitCode ?? 0),
+      GH_FAKE_ARGV_LOG: argvLog,
     },
   };
 }
@@ -199,6 +220,62 @@ describe("fetch-open-issues-for-triage CLI (#7018)", () => {
     assert.equal(r.status, 1);
     assert.match(r.stderr, /sem a chave "body"/);
     assert.equal(r.stdout.trim(), "");
+  });
+
+  // #10618 (fatia 2) — fila multi-repo.
+  it("#10618: varre o repo default (sem -R) E o diaria-design (-R), cada item com repo/ref", () => {
+    const item = (number: number) => ({
+      number,
+      title: `t${number}`,
+      labels: [{ name: "P2" }],
+      body: "",
+      url: "",
+      updatedAt: null,
+      state: "OPEN",
+    });
+    const { env, argvLog } = setupFakeGh({
+      stdout: JSON.stringify([item(21)]),
+      foreignStdout: JSON.stringify([item(21)]),
+    });
+    const r = run([], env);
+    assert.equal(r.status, 0, r.stderr);
+    const parsed = JSON.parse(r.stdout);
+    // O #21 existe nos dois repos — nunca colapsa nem confunde.
+    assert.deepEqual(
+      parsed.map((i: { ref: string; repo: string; number: number }) => [i.ref, i.repo, i.number]),
+      [
+        ["vjpixel/diaria-studio#21", "vjpixel/diaria-studio", 21],
+        ["vjpixel/diaria-design#21", "vjpixel/diaria-design", 21],
+      ],
+    );
+    const calls = readFileSync(argvLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
+    assert.equal(calls.length, 2);
+    assert.ok(!calls[0]!.includes("-R"), `1ª chamada (studio) sem -R: ${JSON.stringify(calls[0])}`);
+    const rIdx = calls[1]!.indexOf("-R");
+    assert.equal(calls[1]![rIdx + 1], "vjpixel/diaria-design");
+  });
+
+  it("#10618: falha do repo EXTRA não derruba a triagem do studio — aviso alto no stderr, exit 0", () => {
+    const { env } = setupFakeGh({
+      stdout: JSON.stringify([
+        { number: 7, title: "a", labels: [], body: "", url: "", updatedAt: null, state: "OPEN" },
+      ]),
+      foreignStdout: "",
+      foreignExitCode: 1,
+    });
+    const r = run([], env);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /AVISO — issues de vjpixel\/diaria-design NÃO entraram/);
+    const parsed = JSON.parse(r.stdout);
+    assert.deepEqual(parsed.map((i: { ref: string }) => i.ref), ["vjpixel/diaria-studio#7"]);
+  });
+
+  it("#10618: --repos vjpixel/diaria-studio restringe ao repo default (uma chamada só)", () => {
+    const { env, argvLog } = setupFakeGh({ stdout: "[]" });
+    const r = run(["--repos", "vjpixel/diaria-studio"], env);
+    assert.equal(r.status, 0, r.stderr);
+    const calls = readFileSync(argvLog, "utf8").trim().split("\n");
+    assert.equal(calls.length, 1);
   });
 
   it("--since ausente e vazio (--since=) → erro claro, nunca --search vazio silencioso", () => {

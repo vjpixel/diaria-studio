@@ -94,6 +94,17 @@
  * de `BLOCKED_LABELS` (ex: `external-blocker`), ela é PRESERVADA em vez
  * de ser substituída por `bloqueio-execucao`.
  *
+ * ## Issue de outro repo (#10618, fatia 2)
+ *
+ * `--issue owner/repo#N` (ex.: `--issue vjpixel/diaria-design#21`) roteia a
+ * issue daquele repo: todo `gh issue view/edit/comment` recebe `-R
+ * owner/repo`. Só repos de `platform.config.json → issue_repos`; fora da
+ * allowlist é erro. `--issue N` sozinho continua sendo o diaria-studio.
+ * As labels de track/motivo precisam existir no repo de destino (o
+ * `gh issue edit --add-label` falha alto se não existirem — nunca cria).
+ * `--depends-on` ainda não aceita issue de outro repo (a reconciliação
+ * `reconcile-issue-dependencies.ts` só cobre o diaria-studio).
+ *
  * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
  *
  * Modo alternativo, sem nenhuma chamada `gh`: a issue ainda não existe, não
@@ -116,6 +127,9 @@
  * "·sem sinal" explícito no comentário/corpo em vez de fingir que sabia.
  */
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
+import { dirname, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
+import { isDefaultIssueRepo, loadIssueRepos, normalizeRepoSlug, parseIssueRef } from "./lib/issue-repos.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
   applyRouteLabelPlan,
@@ -146,6 +160,9 @@ export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
 export interface RouteIssueOptions {
   issue: number;
+  /** #10618 — repo da issue (`owner/name`). Ausente = diaria-studio (o
+   * significado de sempre). Outro repo faz todo `gh issue ...` levar `-R`. */
+  repo?: string;
   track: RouteTrack;
   /** Obrigatório para `track === "bloqueada"` e `track === "agendada"` desde
    * #7270/#7288 — ver docstring de `routeIssue`. Continua opcional pros
@@ -278,7 +295,24 @@ function buildCommentBody(
  */
 export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   const { issue, track, reason, until, cwd, now = new Date() } = options;
-  const ghRun = options.ghRun ?? spawnGhSync;
+  const baseGhRun = options.ghRun ?? spawnGhSync;
+  // #10618: issue de outro repo — escopa TODA chamada `gh` (view, edit,
+  // comment, e as de `wait-until-sync`) com `-R owner/repo`. Sem isso o `gh`
+  // resolveria pelo cwd (diaria-studio) e editaria a issue de MESMO número
+  // do repo errado.
+  const foreignRepo = options.repo !== undefined && !isDefaultIssueRepo(options.repo)
+    ? normalizeRepoSlug(options.repo)
+    : null;
+  if (options.repo !== undefined && !isDefaultIssueRepo(options.repo) && !foreignRepo) {
+    return failResult(`repo inválido: "${options.repo}" (esperado owner/name) (#10618)`);
+  }
+  const ghRun: GhRunFn = foreignRepo ? (args, c) => baseGhRun([...args, "-R", foreignRepo], c) : baseGhRun;
+  if (foreignRepo && options.dependsOn !== undefined) {
+    return failResult(
+      `--depends-on ainda não é suportado para issue de outro repo (${foreignRepo}#${issue}) — ` +
+        "a reconciliação de dependências só cobre o diaria-studio (#10618, fatia 2).",
+    );
+  }
 
   // Validation antés da I/O: --motivo explícito, e --until só com agendada.
   if (options.motivo && !(options.motivo in MOTIVO_LABEL)) {
@@ -635,7 +669,8 @@ export function routeIssueForCreate(options: ForCreateOptions): ForCreateResult 
 
 interface ParsedArgs {
   forCreate: boolean;
-  issue?: number;
+  /** `--issue` cru — `N` ou `owner/repo#N` (#10618). */
+  issue?: string;
   track?: string;
   reason?: string;
   motivo?: string;
@@ -655,7 +690,7 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--for-create") out.forCreate = true;
-    else if (a === "--issue") out.issue = Number(argv[++i]);
+    else if (a === "--issue") out.issue = argv[++i];
     else if (a === "--track") out.track = argv[++i];
     else if (a === "--reason") out.reason = argv[++i];
     else if (a === "--motivo") out.motivo = argv[++i];
@@ -669,12 +704,27 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
   return out;
 }
 
-function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
+/** Raiz do checkout deste script — onde mora o `platform.config.json` (#10618). */
+const MODULE_REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+
+export function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   const raw = parseRawArgs(argv);
   if ("error" in raw) return raw;
-  const { issue, track, reason, motivo } = raw;
-  if (!issue || !Number.isInteger(issue) || issue <= 0) {
-    return { error: `--issue N (inteiro positivo) é obrigatório` };
+  const { track, reason, motivo } = raw;
+  // #10618: `--issue N` (diaria-studio) ou `--issue owner/repo#N` (repo da
+  // allowlist `issue_repos`).
+  const ref = parseIssueRef(raw.issue ?? "");
+  if (!ref) {
+    return { error: `--issue N (inteiro positivo) ou owner/repo#N é obrigatório` };
+  }
+  const issue = ref.number;
+  if (!isDefaultIssueRepo(ref.repo)) {
+    const allowed = loadIssueRepos(MODULE_REPO_ROOT);
+    if (!allowed.includes(ref.repo)) {
+      return {
+        error: `--issue ${raw.issue}: ${ref.repo} não está em platform.config.json → issue_repos (permitidos: ${allowed.join(", ")}) (#10618)`,
+      };
+    }
   }
   if (!track || !(ROUTE_TRACKS as string[]).includes(track)) {
     return { error: `--track é obrigatório, um de: ${ROUTE_TRACKS.join(", ")}` };
@@ -694,6 +744,7 @@ function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   }
   return {
     issue,
+    ...(isDefaultIssueRepo(ref.repo) ? {} : { repo: ref.repo }),
     track: track as RouteTrack,
     reason,
     motivo: motivo as RouteMotivo | undefined,

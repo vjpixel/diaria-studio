@@ -31,6 +31,7 @@
 
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { fetchOpenIssuesForTriage, type TriageIssue } from "./lib/issue-triage-fetch.ts";
+import { DEFAULT_ISSUE_REPO } from "./lib/issue-repos.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import type { GhRunFn } from "./lib/wait-until-sync.ts";
 import { DEPENDS_ON_BLOCK_LABEL } from "./lib/issue-exec-track.ts";
@@ -127,7 +128,12 @@ export async function main(argv: string[]): Promise<void> {
   const cwd = process.cwd();
   const ghRun: GhRunFn = spawnGhSync;
 
-  const fetched = fetchOpenIssuesForTriage(cwd);
+  // #10618: o fetch de triagem passou a varrer todos os repos de
+  // `issue_repos`, mas esta reconciliação ainda resolve `depends-on: #N` e
+  // aplica label pelo cwd (= diaria-studio). Restringe ao repo default — sem
+  // isso, o #21 do diaria-design viraria label no diaria-studio#21. Suporte
+  // a `depends-on: owner/repo#N` fica pra próxima fatia (resíduo no PR).
+  const fetched = fetchOpenIssuesForTriage(cwd, { repos: [DEFAULT_ISSUE_REPO] });
   if (fetched.error) {
     console.error(`[reconcile-issue-dependencies] busca de issues falhou: ${fetched.error}`);
     console.error("Nenhuma ação tomada — reconciliação requer o backlog completo pra não desarmar por engano.");

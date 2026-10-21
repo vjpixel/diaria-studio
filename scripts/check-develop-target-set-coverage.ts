@@ -48,12 +48,13 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  const list = result.issues.map((n) => `#${n}`).join(", ");
+  const list = [...result.issues.map((n) => `#${n}`), ...(result.foreign ?? [])].join(", ");
   console.error(
     `[check-develop-target-set-coverage] issue(s) de goal.target_set sem entrada em issues[]: ${list}`,
   );
   console.error(
-    `  → pra cada uma, adicionar { number, status: "${DEVELOP_NAO_TENTADA_STATUS}" } a issues[] antes de fechar o relatório (backfill mecânico, sem julgamento).`,
+    `  → pra cada uma, adicionar { number, status: "${DEVELOP_NAO_TENTADA_STATUS}" } a issues[] antes de fechar o relatório (backfill mecânico, sem julgamento). ` +
+      `Issue de outro repo (#10618): { ref: "owner/repo#N", status: "${DEVELOP_NAO_TENTADA_STATUS}" }.`,
   );
   process.exit(1);
 }

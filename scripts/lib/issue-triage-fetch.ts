@@ -37,6 +37,18 @@
  * #7018, só que na varredura incremental em vez da varredura completa que o
  * item 2 já fechou para overnight/develop.
  *
+ * **Multi-repo (#10618, fatia 2):** varre TODOS os repos de
+ * `platform.config.json → issue_repos` (lidos por `loadIssueRepos`, nunca
+ * hardcode) — o default (`vjpixel/diaria-studio`) primeiro, do jeito de
+ * sempre (sem `-R`, cwd), e cada outro com `-R owner/repo`. Cada item ganha
+ * `repo` e `ref` (`owner/repo#N`); `number` continua o número cru, então
+ * consumidor legado que lê `number` sem olhar `repo` segue certo para o
+ * studio — mas precisa filtrar `repo` antes de tratar `number` como número
+ * do studio (`isDefaultIssueRepo(item.repo)`). Falha de fetch do repo
+ * default continua FATAL (`error`); falha de um repo extra é
+ * `repoErrors` (visível no stderr do CLI, nunca silenciosa) e não derruba a
+ * triagem do studio.
+ *
  * @see scripts/lib/issue-exec-track.ts (classifyExecTrackFromListItem)
  * @see scripts/lib/state-changed-tracker.ts (fetchOpenIssuesForConvergence — mesmo padrão, escopo de campos menor)
  * @see .claude/skills/diaria-overnight/SKILL.md § Fase 0 passo 3
@@ -45,6 +57,9 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_ISSUE_REPO, formatIssueRef, isDefaultIssueRepo, loadIssueRepos, normalizeRepoSlug } from "./issue-repos.ts";
 import {
   classifyExecTrackFromListItem,
   normalizeGhIssueListLabels,
@@ -55,6 +70,12 @@ import {
 /** Issue já normalizada + classificada — pronta pro coordenador consumir
  * sem precisar rechamar `classifyExecTrack` por conta própria. */
 export interface TriageIssue {
+  /** #10618 — repo da issue (`owner/name`, minúsculas). */
+  repo: string;
+  /** #10618 — identidade canônica `owner/repo#N` (decisão do editor). */
+  ref: string;
+  /** Número cru DENTRO de `repo`. Só é "o número do studio" quando
+   * `isDefaultIssueRepo(repo)`. */
   number: number;
   title: string;
   labels: string[];
@@ -67,8 +88,16 @@ export interface TriageIssue {
 
 export interface FetchOpenIssuesForTriageResult {
   issues: TriageIssue[];
+  /** Falha do repo default — fatal, como sempre foi. */
   error?: string;
+  /** #10618 — falhas de repos EXTRAS da allowlist. Não derrubam a triagem do
+   * studio, mas o caller precisa exibi-las (o CLI imprime no stderr). */
+  repoErrors?: Array<{ repo: string; error: string }>;
 }
+
+/** Raiz do checkout que contém este módulo — onde mora o `platform.config.json`
+ * que define `issue_repos`. Independente do cwd (que pode ser um subdiretório). */
+const MODULE_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Campos exigidos pela classificação completa da Fase 0 — `body` é o campo
  * cuja ausência este módulo existe pra prevenir; os demais (title, url,
@@ -100,6 +129,12 @@ export interface FetchOpenIssuesForTriageOptions {
    * item já retornado).
    */
   since?: string;
+  /**
+   * #10618 — repos a varrer. Default: `loadIssueRepos` do checkout deste
+   * módulo (`platform.config.json → issue_repos`). O repo default é sempre
+   * incluído e sempre varrido primeiro, mesmo que omitido aqui.
+   */
+  repos?: readonly string[];
 }
 
 /**
@@ -120,10 +155,36 @@ export function fetchOpenIssuesForTriage(
   cwd: string,
   opts?: FetchOpenIssuesForTriageOptions,
 ): FetchOpenIssuesForTriageResult {
+  const repos = [DEFAULT_ISSUE_REPO];
+  for (const r of opts?.repos ?? loadIssueRepos(MODULE_REPO_ROOT)) {
+    const slug = normalizeRepoSlug(r);
+    if (slug && !repos.includes(slug)) repos.push(slug);
+  }
+  const issues: TriageIssue[] = [];
+  const repoErrors: Array<{ repo: string; error: string }> = [];
+  for (const repo of repos) {
+    const one = fetchOneRepo(cwd, repo, opts);
+    if (one.error) {
+      if (isDefaultIssueRepo(repo)) return { issues: [], error: one.error };
+      repoErrors.push({ repo, error: one.error });
+      continue;
+    }
+    issues.push(...one.issues);
+  }
+  return repoErrors.length > 0 ? { issues, repoErrors } : { issues };
+}
+
+function fetchOneRepo(
+  cwd: string,
+  repo: string,
+  opts?: FetchOpenIssuesForTriageOptions,
+): FetchOpenIssuesForTriageResult {
   const args = ["issue", "list", "--state", "open", "--limit", String(TRIAGE_ISSUE_LIMIT), "--json", TRIAGE_JSON_FIELDS];
   if (opts?.since) {
     args.push("--search", `updated:>=${opts.since}`);
   }
+  // Repo default: chamada idêntica à pré-#10618 (sem `-R`, resolve pelo cwd).
+  if (!isDefaultIssueRepo(repo)) args.push("-R", repo);
   const result = spawnSync("gh", args, { cwd, encoding: "utf8", timeout: 30_000 });
   if (result.error) {
     return { issues: [], error: `gh não pôde ser executado: ${result.error.message}` };
@@ -157,8 +218,12 @@ export function fetchOpenIssuesForTriage(
       error: `gh issue list retornou exatamente ${TRIAGE_ISSUE_LIMIT} issues (o limite) — resultado pode estar truncado; tratando como fetch incompleto`,
     };
   }
-  const issues: TriageIssue[] = raw.map((item) => ({
-    number: typeof item.number === "number" ? item.number : Number(item.number),
+  const issues: TriageIssue[] = raw.map((item) => {
+    const number = typeof item.number === "number" ? item.number : Number(item.number);
+    return {
+    repo,
+    ref: formatIssueRef({ repo, number }),
+    number,
     title: typeof item.title === "string" ? item.title : "",
     labels: normalizeGhIssueListLabels(item.labels),
     body: (item.body ?? null) as string | null,
@@ -168,6 +233,7 @@ export function fetchOpenIssuesForTriage(
     // Lança (fail-closed, #7018) se `body` estiver ausente — não capturado
     // aqui de propósito, propaga pro caller do fetch inteiro.
     execTrack: classifyExecTrackFromListItem(item, { now: opts?.now }),
-  }));
+    };
+  });
   return { issues };
 }
