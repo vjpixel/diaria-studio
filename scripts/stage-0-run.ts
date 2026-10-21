@@ -72,6 +72,10 @@
  *       não-vazio, o resultado inclui `pendingAgentDispatch` com o manifest
  *       já persistido em disco — o orchestrator faz o dispatch e, se quiser,
  *       roda `verify-clicks-enrichment.ts` por conta própria (#4732) depois.
+ *   0h.4. Drain de exit-history via `Agent(subagent_type="beehiiv-exit-
+ *       history-drain")` (#10710/#7248) — o script só decide se precisa
+ *       (`planExitHistoryDispatch`: manifest ausente/incompleto) e devolve
+ *       o `pendingAgentDispatch`; o orchestrator despacha.
  *   0j (decisão humana s/n/d) e o dispatch do agent `auto-reporter` em si —
  *       o script só detecta e relata via `pendingHumanDecision`.
  *   0n. Detecção de falhas de CI via Gmail MCP (`search_threads`/
@@ -138,6 +142,7 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { type FacebookCredentialsFile, loadFacebookPagesConfig, resolveFacebookPages } from "./lib/facebook-pages.ts";
 import { CAPTURE_EMPTY_MESSAGE, evaluateCaptureYield } from "./lib/newsletter-capture-yield.ts";
+import { EXIT_HISTORY_MANIFEST_REL_PATH, exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
 // qualquer outro código, em module scope.
@@ -818,6 +823,33 @@ export interface Stage0RunResult {
   notes: string[];
 }
 
+/** 0h.4 (#10710) — dispatch do `beehiiv-exit-history-drain` enquanto o
+ *  manifest de `exit-history/` não estiver completo; `null` quando completo ou
+ *  quando `data/beehiiv-backup/` não existe nesta máquina. */
+export function planExitHistoryDispatch(deps: Pick<Stage0RunDeps, "rootDir" | "existsSync" | "readFile">): PendingAgentDispatch | null {
+  if (!deps.existsSync(resolve(deps.rootDir, "data/beehiiv-backup"))) return null;
+  const manifestAbs = resolve(deps.rootDir, EXIT_HISTORY_MANIFEST_REL_PATH);
+  let raw: string | null = null;
+  if (deps.existsSync(manifestAbs)) {
+    try {
+      raw = deps.readFile(manifestAbs);
+    } catch {
+      raw = "";
+    }
+  }
+  const status = exitHistoryDrainStatus(raw);
+  if (status === "complete") return null;
+  return {
+    step: "0h.4",
+    agent: "beehiiv-exit-history-drain",
+    detail:
+      `exit-history da Beehiiv ${status} — dispatch via Agent(subagent_type="beehiiv-exit-history-drain"), ` +
+      `prompt "retome do manifest" (o agent lê ${EXIT_HISTORY_MANIFEST_REL_PATH} sozinho). Só com BEEHIIV_MCP=true; ` +
+      `fail-soft, nunca bloqueia o Stage 0 (#10710, #7248).`,
+    manifestPath: EXIT_HISTORY_MANIFEST_REL_PATH,
+  };
+}
+
 const DELEGATED_STEPS = [
   "0n — detecção de falhas de CI via Gmail MCP (search_threads/get_thread) — nunca executado por este script",
   "0-replies — rascunho de respostas via Gmail MCP + gate humano — nunca executado por este script (roda só quando pre_gate=true, decisão do orchestrator)",
@@ -960,6 +992,15 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   } else {
     logEvent(deps, opts.edition, "warn", "beehiiv-sync falhou — CTR pode ficar desatualizado");
   }
+
+  // 0h.4 — exit-history da Beehiiv (#10710). O agent `beehiiv-exit-history-drain`
+  // (#7248) existia, mas nenhum ponto do pipeline o despachava: em 21/10/2026
+  // `data/beehiiv-backup/exit-history/` nunca tinha sido criado. Enquanto o
+  // manifest não estiver `complete`, cada Stage 0 pede o dispatch (o agent
+  // retoma do manifest; ~9 páginas de 100). Só com `data/beehiiv-backup/`
+  // presente — sem ele (sessão cloud, clone fresco) não há onde gravar.
+  const exitHistoryDispatch = planExitHistoryDispatch(deps);
+  if (exitHistoryDispatch) pendingAgentDispatch.push(exitHistoryDispatch);
 
   // 0h.1-kit — kit-sync (#7570). Fail-soft, mesmo tratamento do lado Beehiiv:
   // sem manifest/dispatch de agent, porque clicks/stats do Kit são REST

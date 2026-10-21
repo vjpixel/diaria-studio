@@ -10,6 +10,11 @@
  * nesta semana" no journal de `check-acquisition-health.ts` (domingo 03:30),
  * que roda logo depois e nunca dispara e-mail sozinho pra esse caso.
  *
+ * Desde #10710 faz mais 2 checks independentes, cada um com fingerprint
+ * próprio: cobertura mensal (mês fechado sem nenhum snapshot = snapshots
+ * apagados depois de gravados) e exit-history (`exit-history/manifest.json`
+ * ausente ou incompleto = o drain via MCP do #7248 não rodou inteiro).
+ *
  * Lógica pura em `scripts/lib/beehiiv-backup-staleness-alarm.ts` — este
  * arquivo é só I/O (existsSync via `beehiiv-backup-snapshots.ts`, envio de
  * e-mail). **NUNCA chama a API Beehiiv ao vivo** — leitura local apenas
@@ -37,7 +42,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
-import { latestSnapshotDate, isSubscribersSnapshotUsable } from "./lib/beehiiv-backup-snapshots.ts";
+import { latestSnapshotDate, isSubscribersSnapshotUsable, listSnapshotDates } from "./lib/beehiiv-backup-snapshots.ts";
+import { exitHistoryDrainStatus } from "./lib/beehiiv-exit-history.ts";
 import { snapshotDateToEpochSeconds } from "./lib/acquisition-health.ts";
 import {
   evaluateBeehiivBackupStalenessAlarm,
@@ -46,6 +52,11 @@ import {
   emptyBeehiivBackupStalenessAlarmState,
   buildBeehiivBackupStalenessAlarmEmail,
   computeBeehiivBackupStalenessFingerprint,
+  findMonthsWithoutSnapshot,
+  computeCoverageFingerprint,
+  buildCoverageAlarmEmail,
+  computeExitHistoryFingerprint,
+  buildExitHistoryAlarmEmail,
   type BeehiivBackupStalenessAlarmState,
 } from "./lib/beehiiv-backup-staleness-alarm.ts";
 
@@ -59,8 +70,11 @@ export function loadState(statePath: string): BeehiivBackupStalenessAlarmState {
   if (!existsSync(statePath)) return emptyBeehiivBackupStalenessAlarmState();
   try {
     const raw = JSON.parse(readFileSync(statePath, "utf8")) as Partial<BeehiivBackupStalenessAlarmState>;
+    const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
     return {
-      lastAlarmedFingerprint: typeof raw.lastAlarmedFingerprint === "string" ? raw.lastAlarmedFingerprint : null,
+      lastAlarmedFingerprint: str(raw.lastAlarmedFingerprint),
+      lastCoverageFingerprint: str(raw.lastCoverageFingerprint),
+      lastExitHistoryFingerprint: str(raw.lastExitHistoryFingerprint),
     };
   } catch {
     return emptyBeehiivBackupStalenessAlarmState();
@@ -88,44 +102,73 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     `${LOG_PREFIX} latest=${latest ?? "nenhum"} ageDays=${evaluation.ageDays ?? "n/d"} verdict=${evaluation.verdict}`,
   );
 
-  const state = loadState(statePath);
+  let state = loadState(statePath);
+  const notify = async (check: string, fingerprint: string, subject: string, body: string): Promise<boolean> => {
+    if (isDryRun) {
+      console.log(`${LOG_PREFIX} --dry-run: registraria alarme (${check}):\n--- subject ---\n${subject}\n--- body ---\n${body}`);
+      return false;
+    }
+    // #7960: portão notifyEditor — severidade "acao" (sem envio/dinheiro em
+    // risco), issue sem e-mail sob `email_policy: "urgent_only"`.
+    const result = await notifyEditor({ check, fingerprint, severity: "acao", subject, body }, { cwd: ROOT, emailTo: toOverride });
+    if (result.issue?.action === "failed") {
+      throw new Error(`ensureAlarmIssue falhou (${check}): ${result.issue.error}`);
+    }
+    console.log(`${LOG_PREFIX} alarme registrado (${check}, issue #${result.issue?.issueNumber ?? "?"}).`);
+    return true;
+  };
+
+  // 1) snapshot mais recente: ausente/vencido/inutilizável (#5494).
   if (!shouldSendBeehiivBackupStalenessAlarm(evaluation, state)) {
     console.log(
       evaluation.verdict === "ok" || evaluation.verdict === "ok-too-early"
         ? `${LOG_PREFIX} nada a alarmar (${evaluation.verdict}).`
         : `${LOG_PREFIX} já alarmado pra este estado (${evaluation.verdict}, ${latest ?? "nenhum"}) — não reenvia.`,
     );
-    return;
+  } else {
+    const { subject, body } = buildBeehiivBackupStalenessAlarmEmail(evaluation, MAX_AGE_DAYS);
+    // Fingerprint pelo par (veredito, snapshot mais recente) — não só o
+    // veredito (#7969).
+    if (await notify("beehiiv-backup-staleness-alarm", computeBeehiivBackupStalenessFingerprint(evaluation), subject, body)) {
+      state = { ...state, ...markBeehiivBackupStalenessAlarmed(evaluation) };
+      saveState(state, statePath);
+    }
   }
 
-  const { subject, body } = buildBeehiivBackupStalenessAlarmEmail(evaluation, MAX_AGE_DAYS);
-  if (isDryRun) {
-    console.log(`${LOG_PREFIX} --dry-run: registraria alarme:\n--- subject ---\n${subject}\n--- body ---\n${body}`);
-    console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
-    return;
+  // 2) cobertura mensal (#10710): mês fechado sem nenhum snapshot = snapshots
+  //    apagados depois de gravados. Só olha o disco local.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const missingMonths = findMonthsWithoutSnapshot(listSnapshotDates(root), todayIso);
+  console.log(`${LOG_PREFIX} cobertura mensal: ${missingMonths.length === 0 ? "ok" : `faltando ${missingMonths.join(", ")}`}`);
+  if (missingMonths.length > 0) {
+    const fp = computeCoverageFingerprint(missingMonths);
+    if (fp !== state.lastCoverageFingerprint) {
+      const { subject, body } = buildCoverageAlarmEmail(missingMonths);
+      if (await notify("beehiiv-backup-monthly-coverage", fp, subject, body)) {
+        state = { ...state, lastCoverageFingerprint: fp };
+        saveState(state, statePath);
+      }
+    }
   }
-  // #7960: migrado de sendGmailMessage direto pro portão notifyEditor —
-  // severidade "acao" (staleness, sem envio/dinheiro em risco), issue sem
-  // e-mail sob `email_policy: "urgent_only"`. Fingerprint pelo par
-  // (veredito, snapshot mais recente) — não só o veredito (#7969): sem a
-  // data, um 2º incidente com snapshot DIFERENTE casa com uma issue ainda
-  // aberta do 1º incidente e sai como `action: "reused"` (sem e-mail, sem
-  // comentário, sob `email_policy: "urgent_only"`).
-  const result = await notifyEditor(
-    {
-      check: "beehiiv-backup-staleness-alarm",
-      fingerprint: computeBeehiivBackupStalenessFingerprint(evaluation),
-      severity: "acao",
-      subject,
-      body,
-    },
-    { cwd: ROOT, emailTo: toOverride },
-  );
-  if (result.issue?.action === "failed") {
-    throw new Error(`ensureAlarmIssue falhou: ${result.issue.error}`);
+
+  // 3) exit-history (#10710/#7248): o drain via MCP precisa ter rodado inteiro.
+  const exitManifestPath = resolve(root, "exit-history/manifest.json");
+  const exitStatus = exitHistoryDrainStatus(existsSync(exitManifestPath) ? readFileSync(exitManifestPath, "utf8") : null);
+  console.log(`${LOG_PREFIX} exit-history: ${exitStatus}`);
+  if (exitStatus !== "complete") {
+    const fp = computeExitHistoryFingerprint(exitStatus);
+    if (fp !== state.lastExitHistoryFingerprint) {
+      const { subject, body } = buildExitHistoryAlarmEmail(exitStatus);
+      if (await notify("beehiiv-exit-history", fp, subject, body)) {
+        state = { ...state, lastExitHistoryFingerprint: fp };
+        saveState(state, statePath);
+      }
+    }
   }
-  saveState(markBeehiivBackupStalenessAlarmed(evaluation), statePath);
-  console.log(`${LOG_PREFIX} alarme registrado (issue #${result.issue?.issueNumber ?? "?"}, verdict=${evaluation.verdict}).`);
+
+  // O estado é gravado logo após cada alarme registrado (um throw no 2º não
+  // faz o 1º reenviar na próxima rodada).
+  if (isDryRun) console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
 }
 
 if (isMainModule(import.meta.url)) {

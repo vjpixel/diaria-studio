@@ -259,12 +259,14 @@ describe("#9725 — planBeehiivSnapshotReport (só relatório)", () => {
       relPath: `beehiiv-backup/${d}`,
       sizeBytes: 10,
     }));
-    const r = planBeehiivSnapshotReport(snaps, 4);
+    // keep=2 pra sobrar algo além do piso mensal (#10710): 09-06 e 08-30 são
+    // os mais antigos dos seus meses e ficam; 09-13/09-20 liberariam.
+    const r = planBeehiivSnapshotReport(snaps, 2);
     assert.deepEqual(
       r.kept.map((s) => s.relPath),
-      ["beehiiv-backup/2026-10-04", "beehiiv-backup/2026-09-27", "beehiiv-backup/2026-09-20", "beehiiv-backup/2026-09-13"],
+      ["beehiiv-backup/2026-10-04", "beehiiv-backup/2026-09-27", "beehiiv-backup/2026-09-06", "beehiiv-backup/2026-08-30"],
     );
-    assert.deepEqual(r.wouldRemove.map((s) => s.relPath), ["beehiiv-backup/2026-09-06", "beehiiv-backup/2026-08-30"]);
+    assert.deepEqual(r.wouldRemove.map((s) => s.relPath), ["beehiiv-backup/2026-09-20", "beehiiv-backup/2026-09-13"]);
     assert.equal(r.wouldRemoveBytes, 20);
     assert.equal(r.totalBytes, 60);
     assert.throws(() => planBeehiivSnapshotReport(snaps, 0));
@@ -427,9 +429,9 @@ describe("#9725 — beehiiv-backup/: relatório no dry-run, NUNCA removido", () 
 
   it("collectBeehiivBackupReport lista os snapshots que uma retenção liberaria, sem dirs não-snapshot", () => {
     const tmp = fixture();
-    const r = collectBeehiivBackupReport(tmp, 4);
+    const r = collectBeehiivBackupReport(tmp, 2);
     assert.ok(r);
-    assert.deepEqual(r!.wouldRemove.map((s) => s.relPath), ["beehiiv-backup/2026-09-06", "beehiiv-backup/2026-08-30"]);
+    assert.deepEqual(r!.wouldRemove.map((s) => s.relPath), ["beehiiv-backup/2026-09-20", "beehiiv-backup/2026-09-13"]);
     assert.equal(r!.wouldRemoveBytes, 200);
     assert.equal(r!.kept.some((s) => s.relPath.includes("subscriber-engagement")), false);
   });
@@ -439,7 +441,7 @@ describe("#9725 — beehiiv-backup/: relatório no dry-run, NUNCA removido", () 
     const { out } = runMain(["--data-root", tmp, "--json", "--beehiiv-keep", "2"]);
     const parsed = JSON.parse(out[out.length - 1]);
     assert.equal(parsed.beehiiv_backup_report.keep, 2);
-    assert.equal(parsed.beehiiv_backup_report.wouldRemove.length, 4);
+    assert.equal(parsed.beehiiv_backup_report.wouldRemove.length, 2, "piso mensal (#10710) poupa 08-30 e 09-06");
     assert.equal(parsed.candidates.some((c: { relPath: string }) => c.relPath.startsWith("beehiiv-backup")), false);
   });
 

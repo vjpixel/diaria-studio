@@ -64,11 +64,11 @@ Design de 2 fases (o script é um processo Node puro — não alcança MCP):
 - `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo
   próprio script) — parar mesmo com `auto_approve`, mesma regra do 0d.bis
   original (nunca bypassa).
-- `pendingAgentDispatch[]` (hoje só `0h.2`) → para cada entry, disparar
+- `pendingAgentDispatch[]` (`0h.2`, `0h.4`) → `0h.2`: disparar
   `Agent(subagent_type: entry.agent, prompt: <manifest em entry.manifestPath,
   1 item por linha "post_id=<id> title=<title>">)` — mesmo fluxo de §0h.2
   abaixo, incluindo a validação determinística pós-dispatch (`verify-clicks-
-  enrichment.ts`).
+  enrichment.ts`). `0h.4` (#10710): `Agent(subagent_type: "beehiiv-exit-history-drain", prompt: "retome do manifest")`, só com `BEEHIIV_MCP = true`, fail-soft (warn); some quando o manifest fica `complete` — conferir no disco (#573).
 - `pendingHumanDecision[]` (hoje `0g` freshness stale e `0j` drafts
   pendentes) → apresentar `detail`/`prompt`/`options` ao editor exatamente
   como as subseções correspondentes abaixo descrevem, e agir conforme a
