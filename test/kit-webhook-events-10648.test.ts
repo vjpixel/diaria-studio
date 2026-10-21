@@ -45,6 +45,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 class FakeKv implements EventsKv {
   store = new Map<string, { value: string; metadata?: unknown }>();
   failPut = false;
+  listed: string[] = [];
   async put(key: string, value: string, options?: { metadata?: unknown }): Promise<void> {
     if (this.failPut) throw new Error("kv down");
     this.store.set(key, { value, metadata: options?.metadata });
@@ -57,6 +58,7 @@ class FakeKv implements EventsKv {
     // Paginação de 2 em 2 pra exercitar o cursor.
     const start = options.cursor ? Number(options.cursor) : 0;
     const page = names.slice(start, start + 2);
+    this.listed.push(...page);
     const next = start + 2;
     return {
       keys: page.map((name) => ({ name, metadata: this.store.get(name)?.metadata })),
@@ -100,9 +102,9 @@ describe("contrato", () => {
     assert.equal(KIT_WEBHOOK_ROUTES.click, "subscriber.link_click");
   });
 
-  it("chave lista por assinante em ordem cronológica e devolve o horário", () => {
+  it("chave lista por horário em ordem cronológica e devolve o horário", () => {
     const k = buildKitEventKey("123", "2026-10-20T22:55:01.000Z", "unsubscribe", "ab");
-    assert.equal(k, "ev:123:2026-10-20T22:55:01.000Z:unsubscribe:ab");
+    assert.equal(k, "ev:2026-10-20T22:55:01.000Z:123:unsubscribe:ab");
     assert.equal(receivedAtFromKey(k), "2026-10-20T22:55:01.000Z");
     assert.equal(receivedAtFromKey("ev:123:lixo"), null);
     assert.equal(receivedAtFromKey("outra:123"), null);
@@ -135,13 +137,13 @@ describe("contrato", () => {
 });
 
 describe("Worker kit-events", () => {
-  it("grava cancelamento com horário e chave por assinante", async () => {
+  it("grava cancelamento com horário e chave por horário", async () => {
     const kv = new FakeKv();
     const res = await handleRequest(post(`/webhook/${SECRET}/unsubscribe`, sub(123)), env(kv), deps("2026-10-20T22:55:01.000Z"));
     assert.equal(res.status, 200);
     assert.equal(kv.store.size, 1);
     const [key, entry] = [...kv.store.entries()][0];
-    assert.match(key, /^ev:123:2026-10-20T22:55:01\.000Z:unsubscribe:/);
+    assert.match(key, /^ev:2026-10-20T22:55:01\.000Z:123:unsubscribe:/);
     const rec = JSON.parse(entry.value) as KitWebhookEventRecord;
     assert.equal(rec.type, "unsubscribe");
     assert.equal(rec.email, "pessoa@exemplo.com");
@@ -200,13 +202,42 @@ describe("Worker kit-events", () => {
       ["2026-10-19T12:00:00.000Z", "2026-10-20T08:00:00.000Z", "2026-10-20T22:55:01.000Z"],
     );
 
+    kv.listed = [];
     const since = (await (await handleRequest(listReq("?since=2026-10-20T00:00:00Z"), env(kv))).json()) as {
       events: KitWebhookEventRecord[];
     };
     assert.equal(since.events.length, 2);
+    assert.equal(kv.listed.length, 2);
+    assert.ok(kv.listed.every((key) => !key.includes("2026-10-19")));
+    assert.equal(new Set(kv.listed).size, kv.listed.length);
+    const exact = await (await handleRequest(listReq("?since=2026-10-20T22:55:01Z&subscriber=9"), env(kv))).json() as { events: KitWebhookEventRecord[] };
+    assert.equal(exact.events.length, 1);
+
 
     const one = (await (await handleRequest(listReq("?subscriber=10"), env(kv))).json()) as { events: KitWebhookEventRecord[] };
     assert.deepEqual(one.events.map((e) => e.type), ["bounce"]);
+  });
+
+  it("#10723: since não lista histórico, inclui o corte e pagina prefixos entre anos", async () => {
+    const kv = new FakeKv();
+    const times = [
+      "2024-01-01T00:00:00.000Z",
+      "2026-12-31T23:59:59.998Z",
+      "2026-12-31T23:59:59.999Z",
+      "2027-01-01T00:00:00.000Z",
+      "2027-01-01T00:00:00.001Z",
+      "2027-01-01T00:00:00.002Z",
+    ];
+    for (const time of times) {
+      await handleRequest(post(`/webhook/${SECRET}/click`, sub(9)), env(kv), deps(time));
+    }
+    const result = await (await handleRequest(
+      listReq("?since=2026-12-31T23:59:59.999Z"), env(kv),
+    )).json() as { events: KitWebhookEventRecord[] };
+    assert.deepEqual(result.events.map((e) => e.received_at), times.slice(2));
+    assert.equal(kv.listed.length, 4);
+    assert.equal(new Set(kv.listed).size, 4);
+    assert.ok(kv.listed.every((key) => key >= "ev:2026-12-31T23:59:59.999Z"));
   });
 
   it("URL longa demais pra metadata: leitura busca o valor", async () => {
@@ -226,7 +257,7 @@ describe("integração com diaria-subscribers-db", () => {
   }
 
   const ev = (over: Partial<KitWebhookEventRecord> = {}): KitWebhookEventRecord => ({
-    key: "ev:123:2026-10-20T22:55:01.000Z:unsubscribe:ab",
+    key: "ev:2026-10-20T22:55:01.000Z:123:unsubscribe:ab",
     type: "unsubscribe",
     kit_subscriber_id: "123",
     email: "pessoa@exemplo.com",

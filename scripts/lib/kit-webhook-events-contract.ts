@@ -42,11 +42,11 @@
  *
  * ## Chave no KV
  *
- * `ev:{id Kit}:{received_at ISO}:{tipo}:{sufixo aleatório}` — prefixo por
- * assinante (`ev:{id}:` lista a linha do tempo de 1 pessoa já em ordem
- * cronológica, porque ISO 8601 em UTC ordena lexicograficamente) e o horário
- * legível no próprio nome, o que deixa o filtro `since` ser aplicado sem ler
- * o valor. O sufixo evita colisão de 2 eventos iguais no mesmo milissegundo.
+ * `ev:{received_at ISO}:{id Kit}:{tipo}:{sufixo aleatório}` — horário
+ * primeiro permite listar intervalos por prefixos disjuntos, sem percorrer
+ * chaves anteriores ao corte. O assinante é filtrado pelo leitor.
+ * Formato adotado antes da ativação do KV; não migra chaves experimentais
+ * no formato antigo (assinante primeiro).
  * Sem TTL: o KV é a fonte durável enquanto o store local pode ser
  * reconstruído do zero (`--reset`), e a ingestão é idempotente pela chave.
  */
@@ -95,9 +95,22 @@ export interface KitWebhookEventsPayload {
 
 export const KIT_EVENT_KEY_PREFIX = "ev:";
 
-/** Prefixo de listagem de 1 assinante. */
-export function kitEventSubscriberPrefix(kitSubscriberId: string): string {
-  return `${KIT_EVENT_KEY_PREFIX}${kitSubscriberId}:`;
+/**
+ * Cobertura lexicográfica de [since, infinito) para timestamps ISO UTC de
+ * quatro dígitos de ano. Cada ramo diverge num dígito maior que o corte;
+ * o ramo exato inclui o milissegundo do corte. Prefixos não se sobrepõem,
+ * e a quantidade de chamadas não depende do tamanho/idade do histórico.
+ */
+export function kitEventSincePrefixes(since: string | null): string[] {
+  if (since === null) return [KIT_EVENT_KEY_PREFIX];
+  const prefixes = [KIT_EVENT_KEY_PREFIX + since + ":"];
+  for (let i = since.length - 1; i >= 0; i--) {
+    if (!/[0-9]/.test(since[i])) continue;
+    for (let digit = Number(since[i]) + 1; digit <= 9; digit++) {
+      prefixes.push(KIT_EVENT_KEY_PREFIX + since.slice(0, i) + digit);
+    }
+  }
+  return prefixes.sort();
 }
 
 export function buildKitEventKey(
@@ -106,23 +119,19 @@ export function buildKitEventKey(
   type: KitWebhookEventType,
   suffix: string,
 ): string {
-  return `${kitEventSubscriberPrefix(kitSubscriberId)}${receivedAt}:${type}:${suffix}`;
+  return `${KIT_EVENT_KEY_PREFIX}${receivedAt}:${kitSubscriberId}:${type}:${suffix}`;
 }
 
 /**
  * Lê `received_at` de volta do nome da chave, sem ler o valor. Devolve null
  * se a chave não segue o formato (o leitor pula em vez de quebrar).
  *
- * O id do Kit é numérico, sem `:`, então o 2º segmento começa logo após o
- * primeiro `:` depois do prefixo. O horário ISO contém `:` (HH:MM:SS), por
- * isso o corte é pelo formato fixo de `toISOString()` (24 caracteres).
  */
 export function receivedAtFromKey(key: string): string | null {
   if (!key.startsWith(KIT_EVENT_KEY_PREFIX)) return null;
   const rest = key.slice(KIT_EVENT_KEY_PREFIX.length);
-  const sep = rest.indexOf(":");
-  if (sep <= 0) return null;
-  const ts = rest.slice(sep + 1, sep + 1 + 24);
+  const ts = rest.slice(0, 24);
+  if (rest[24] !== ":") return null;
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(ts) ? ts : null;
 }
 

@@ -22,8 +22,7 @@ import {
   isAuthorizedEventsReadRequest,
   isKitWebhookEventType,
   isValidWebhookSecret,
-  KIT_EVENT_KEY_PREFIX,
-  kitEventSubscriberPrefix,
+  kitEventSincePrefixes,
   parseKitWebhookPayload,
   receivedAtFromKey,
   sortKitWebhookEvents,
@@ -130,31 +129,34 @@ export async function handleListEvents(request: Request, env: Env): Promise<Resp
   const sinceIso = since !== null ? new Date(since).toISOString() : null;
   const subscriber = url.searchParams.get("subscriber");
   if (subscriber !== null && !/^\d+$/.test(subscriber)) return json({ error: "invalid_subscriber" }, 400);
-  const prefix = subscriber !== null ? kitEventSubscriberPrefix(subscriber) : KIT_EVENT_KEY_PREFIX;
+  const prefixes = kitEventSincePrefixes(sinceIso);
 
   const events: KitWebhookEventRecord[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await env.KIT_EVENTS.list({ prefix, cursor });
-    for (const k of page.keys) {
-      const ts = receivedAtFromKey(k.name);
-      if (ts === null) continue;
-      if (sinceIso !== null && ts < sinceIso) continue;
-      const meta = k.metadata as KitWebhookEventRecord | undefined;
-      if (meta && meta.key === k.name) {
-        events.push(meta);
-        continue;
+  for (const prefix of prefixes) {
+    let cursor: string | undefined;
+    do {
+      const page = await env.KIT_EVENTS.list({ prefix, cursor });
+      for (const k of page.keys) {
+        const ts = receivedAtFromKey(k.name);
+        if (ts === null) continue;
+        if (subscriber !== null && k.name.slice("ev:".length + ts.length + 1).split(":")[0] !== subscriber) continue;
+        if (sinceIso !== null && ts < sinceIso) continue;
+        const meta = k.metadata as KitWebhookEventRecord | undefined;
+        if (meta && meta.key === k.name) {
+          events.push(meta);
+          continue;
+        }
+        const raw = await env.KIT_EVENTS.get(k.name);
+        if (!raw) continue;
+        try {
+          events.push(JSON.parse(raw) as KitWebhookEventRecord);
+        } catch {
+          console.error(`[kit-events] valor ilegível na chave ${k.name}, pulado.`);
+        }
       }
-      const raw = await env.KIT_EVENTS.get(k.name);
-      if (!raw) continue;
-      try {
-        events.push(JSON.parse(raw) as KitWebhookEventRecord);
-      } catch {
-        console.error(`[kit-events] valor ilegível na chave ${k.name}, pulado.`);
-      }
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+  }
 
   return json({ events: sortKitWebhookEvents(events) });
 }
