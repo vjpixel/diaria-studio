@@ -32,9 +32,11 @@
 //     `"${cmd[@]}"`) — o valor só existe em tempo de execução;
 //   - corpo de heredoc (`<<EOF`/`<<'EOF'`/`<<-EOF`) é pulado como TEXTO até
 //     a linha do delimitador — `git commit -F - <<'EOF'` cuja mensagem cita
-//     `gh pr merge` não é merge. Exceção fail-closed: delimitador sem aspas
-//     com `$(`/crase no corpo (o shell executa) → o corpo é lido como
-//     comandos. Heredoc sem a linha de fechamento vai até o fim do comando;
+//     `gh pr merge` não é merge. Exceções fail-closed, com o corpo lido como
+//     comandos: shell/`source`/`.`/`eval` em qualquer palavra da linha do
+//     `<<` (`bash <<EOF`, `cat <<EOF | sh`), ou delimitador sem aspas com
+//     `$(`/crase no corpo. Heredoc sem a linha de fechamento vai até o fim do
+//     comando;
 //   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`).
 // Na dúvida o lexer fica do lado de VER o merge: flag desconhecida de wrapper
 // é tratada como booleana (não engole a palavra seguinte).
@@ -68,6 +70,7 @@ function scan(src, start, closer, commands, depth) {
   let skipNext = false; // próxima palavra é alvo de redirecionamento
   let heredocOp = null; // `<<`/`<<-` visto: a próxima palavra é o delimitador
   const heredocs = []; // { delim, quoted, strip } pendentes até o fim da linha
+  let lineStart = commands.length; // 1º comando da linha corrente em `commands`
 
   const endWord = () => {
     if (!inWord) return;
@@ -91,13 +94,16 @@ function scan(src, start, closer, commands, depth) {
   /**
    * Corpo dos heredocs pendentes, a partir de `from` (logo depois do newline
    * que encerra a linha do `<<`). Devolve onde a leitura continua. Corpo é
-   * TEXTO, nunca comando — `git commit -F - <<'EOF'` com uma linha
-   * `gh pr merge 5` na mensagem não é um merge (#10681). Exceção fail-closed:
-   * delimitador SEM aspas expande `$(...)`/crase no corpo, que o shell
-   * executa — aí o corpo inteiro é lido como comandos.
+   * TEXTO — `git commit -F - <<'EOF'` com uma linha `gh pr merge 5` na
+   * mensagem não é um merge (#10681). Exceções fail-closed, em que o corpo é
+   * lido como comandos: (1) a linha do `<<` tem um shell/`source`/`.` em
+   * qualquer palavra (`bash <<EOF`, `cat <<EOF | sh`) — o corpo É executado;
+   * (2) delimitador SEM aspas com `$(...)`/crase no corpo — o shell expande.
    */
   const skipHeredocBodies = (from) => {
     let pos = from;
+    const lineWords = commands.slice(lineStart).concat([words]);
+    const bodyRuns = lineWords.some((ws) => ws.some((w) => BODY_RUNNERS.has(basename(w).replace(/\.exe$/i, ""))));
     for (const h of heredocs) {
       const bodyStart = pos;
       let bodyEnd = n;
@@ -114,9 +120,11 @@ function scan(src, start, closer, commands, depth) {
         }
         pos = next;
       }
-      if (!h.quoted && depth < MAX_DEPTH) {
+      if (depth < MAX_DEPTH) {
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
-        if (body.includes("$(") || body.includes("`")) scan(body, 0, null, commands, depth + 1);
+        if (bodyRuns || (!h.quoted && (body.includes("$(") || body.includes("`")))) {
+          scan(body, 0, null, commands, depth + 1);
+        }
       }
     }
     heredocs.length = 0;
@@ -234,7 +242,10 @@ function scan(src, start, closer, commands, depth) {
     if (ch === "\n" || ch === ";") {
       endCommand();
       i++;
-      if (ch === "\n" && heredocs.length > 0) i = skipHeredocBodies(i);
+      if (ch === "\n") {
+        if (heredocs.length > 0) i = skipHeredocBodies(i);
+        lineStart = commands.length;
+      }
       continue;
     }
     if (ch === "|") {
@@ -283,6 +294,8 @@ function scan(src, start, closer, commands, depth) {
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh"]);
+/** Palavra que, na linha de um heredoc, faz o corpo ser EXECUTADO (lido como comandos). */
+const BODY_RUNNERS = new Set([...SHELLS, "source", ".", "eval"]);
 /** Palavras reservadas que podem anteceder um comando simples. */
 const RESERVED_PREFIX = new Set(["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until"]);
 
@@ -370,13 +383,21 @@ function mergeArgsOf(words, depth, out) {
         const flag = w.includes("=") ? w.slice(0, w.indexOf("=")) : w;
         // `env -S 'gh pr merge 5'` / `-S'...'` / `--split-string=...`: a
         // string vira o comando — analisada como um comando à parte.
-        if (name === "env" && (flag === "--split-string" || w.startsWith("-S"))) {
+        // Cluster de flags curtas com S (`env -iS 'gh pr merge 5'`): o S
+        // consome o resto do cluster ou, vazio, a próxima palavra.
+        const shortS = !w.startsWith("--") ? /^-[A-Za-z]*?S/.exec(w) : null;
+        let sTakesNext = false;
+        if (name === "env" && (flag === "--split-string" || shortS)) {
           let value;
           if (flag === "--split-string") value = w.includes("=") ? w.slice(w.indexOf("=") + 1) : words[i + 1];
-          else value = w === "-S" ? words[i + 1] : w.slice(2);
+          else {
+            const rest = w.slice(shortS[0].length);
+            sTakesNext = rest === "";
+            value = sTakesNext ? words[i + 1] : rest;
+          }
           if (typeof value === "string") collect(value, depth + 1, out);
         }
-        if (wrapper.valueFlags.has(w) && !w.includes("=")) i += 2;
+        if (sTakesNext || (wrapper.valueFlags.has(w) && !w.includes("="))) i += 2;
         else i++;
         continue;
       }

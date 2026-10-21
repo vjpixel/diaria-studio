@@ -84,6 +84,9 @@ const POSITIVES: Array<[string, number | undefined]> = [
   ['sh -lc "GH_REPO=x gh pr merge 38"', 38],
   ["eval gh pr merge 39", 39],
   ["env -S 'gh pr merge 40'", 40],
+  // Self-review F3: cluster de flags curtas com S.
+  ["env -iS 'gh pr merge 52'", 52],
+  ["env -iS'gh pr merge 53'", 53],
   ["> out.log gh pr merge 41", 41],
   ["GH_REPO=x gh pr merge 42 2>&1 | tail -5", 42],
   ["git fetch && GH_REPO=x gh pr merge 43", 43],
@@ -102,6 +105,12 @@ const POSITIVES: Array<[string, number | undefined]> = [
   ["cat <<EOF; gh pr merge 46\ncorpo\nEOF", 46],
   // Fail-closed: delimitador sem aspas expande `$(...)` no corpo (executa).
   ["cat <<EOF\n$(gh pr merge 47)\nEOF", 47],
+  // Fail-closed: shell na linha do heredoc executa o corpo.
+  ["bash <<'EOF'\ngh pr merge 48\nEOF", 48],
+  ["cat <<'EOF' | sh\ngh pr merge 49\nEOF", 49],
+  ["/bin/bash -s <<EOF\nGH_REPO=x gh pr merge 50\nEOF", 50],
+  // Self-review F2: aspa solta no corpo (prosa) não esconde o merge depois dele.
+  ["cat <<'EOF' > nota.md\nit's a note\nEOF\ngh pr merge 51", 51],
 ];
 
 /** Mencionam `gh pr merge` sem executar — nunca podem virar merge. */
