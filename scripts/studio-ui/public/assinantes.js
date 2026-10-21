@@ -1,7 +1,15 @@
 // assinantes.js (#6590) — busca por e-mail -> timeline unificada + coorte
 // por migração. Vanilla JS, sem build step (mesmo padrão de ads.js/
-// tarefas.js). READ-ONLY: nenhuma chamada de escrita nesta página, de
-// propósito (decisão do editor, corpo da issue #6590).
+// tarefas.js). READ-ONLY: nenhuma escrita em assinante ou em ESP, de
+// propósito (decisão do editor, corpo da issue #6590). O único POST
+// (`/api/onboarding/funnel/refresh-brevo`) só faz GET de campanhas na Brevo
+// e devolve o snapshot; não cria, agenda nem cancela nada.
+//
+// #10606 (revisão do editor, 20/10/2026): o topo da página mostra o que pede
+// ação, com a ação ao lado (assinantes-actions.js, lógica pura e testada); o
+// contexto sem ação vive no <details> "Detalhes".
+
+import { escapeHtml, actionItemsHtml, panelState, stageBreakdownRows } from "./assinantes-actions.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -24,7 +32,6 @@ const el = {
   attributeCoverageTbody: document.getElementById("attribute-coverage-tbody"),
   attributeCoverageEmpty: document.getElementById("attribute-coverage-empty"),
 
-  refreshCohortOrigemBtn: document.getElementById("refresh-cohort-origem-btn"),
   cohortOrigemFilterForm: document.getElementById("cohort-origem-filter-form"),
   cohortOrigemFrom: document.getElementById("cohort-origem-from"),
   cohortOrigemTo: document.getElementById("cohort-origem-to"),
@@ -35,20 +42,19 @@ const el = {
 
   refreshOnboardingBtn: document.getElementById("refresh-onboarding-btn"),
   onboardingNodata: document.getElementById("onboarding-nodata"),
-  onboardingCorrupted: document.getElementById("onboarding-corrupted"),
+  acoesList: document.getElementById("acoes-list"),
+  acoesEmpty: document.getElementById("acoes-empty"),
+  onboardingLoadError: document.getElementById("onboarding-load-error"),
+  staleBlock: document.getElementById("stale-block"),
   onboardingNote: document.getElementById("onboarding-note"),
-  onboardingApoiadorError: document.getElementById("onboarding-apoiador-error"),
-  onboardingRefreshErrors: document.getElementById("onboarding-refresh-errors"),
-  onboardingStageCounts: document.getElementById("onboarding-stage-counts"),
+  onboardingStageTbody: document.getElementById("onboarding-stage-tbody"),
+  refreshOnboardingDetailsBtn: document.getElementById("refresh-onboarding-details-btn"),
   onboardingCohortSummary: document.getElementById("onboarding-cohort-summary"),
   onboardingStaleTbody: document.getElementById("onboarding-stale-tbody"),
-  onboardingStaleEmpty: document.getElementById("onboarding-stale-empty"),
-  onboardingProviderCounts: document.getElementById("onboarding-provider-counts"),
   onboardingKitRun: document.getElementById("onboarding-kit-run"),
   onboardingKitLotsTbody: document.getElementById("onboarding-kit-lots-tbody"),
   onboardingKitLotsEmpty: document.getElementById("onboarding-kit-lots-empty"),
   onboardingKitPilot: document.getElementById("onboarding-kit-pilot"),
-  onboardingAlerts: document.getElementById("onboarding-alerts"),
   onboardingFollowupBlocked: document.getElementById("onboarding-followup-blocked"),
   onboardingStepsTbody: document.getElementById("onboarding-steps-tbody"),
   onboardingPeopleNaoApoia: document.getElementById("onboarding-people-nao-apoia"),
@@ -56,14 +62,6 @@ const el = {
   onboardingPeopleCount: document.getElementById("onboarding-people-count"),
   onboardingPeopleTbody: document.getElementById("onboarding-people-tbody"),
 };
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 function setFetchStatus(status, label) {
   el.fetchDot.className = "dot " + status; // "ok" | "down" | ""
@@ -364,7 +362,6 @@ async function refreshCohortOrigem() {
   }
 }
 
-el.refreshCohortOrigemBtn.addEventListener("click", refreshCohortOrigem);
 el.cohortOrigemFilterForm.addEventListener("submit", (ev) => {
   ev.preventDefault();
   refreshCohortOrigem();
@@ -374,25 +371,31 @@ el.cohortOrigemFilterForm.addEventListener("submit", (ev) => {
 // #7917 — funil de onboarding até o convite de apoio (D+10)
 // ---------------------------------------------------------------------------
 
-const ONBOARDING_STAGE_LABELS = {
-  aguardando_confirmacao: "Aguardando confirmação",
-  not_due: "D+10 não venceu",
-  aguardando_dados: "Aguardando dados de abertura",
-  rascunho_criado: "Rascunho criado",
-  agendado: "Agendado",
-  enviado: "Enviado",
-  cancelado: "Cancelado",
-  skipped_no_open: "Sem abertura (terminal)",
-  skipped_inactive: "Inativo na decisão",
-  skipped_sem_dados: "Sem dados (terminal)",
-  skipped_backlog_descartado: "Backlog descartado (terminal)",
-  falha_consulta: "Falha de consulta",
-  estado_ambiguo: "Estado ambíguo (Brevo)",
-};
+// #10606: os 13 cartões por estágio do e-mail 3 e os 4 cartões "e-mails 1/2
+// por transporte" saíram da página. O detalhamento por estágio virou uma
+// tabela só com os estágios > 0 em Detalhes > Convite de apoio; o que pede
+// ação (falha de consulta, estado ambíguo) virou item do bloco do topo.
 
-function renderOnboardingStageCounts(byStage) {
-  el.onboardingStageCounts.innerHTML = Object.entries(ONBOARDING_STAGE_LABELS)
-    .map(([key, label]) => tile(label, byStage?.[key] ?? 0))
+// Topo da página: decisão inteira em panelState (assinantes-actions.js, puro
+// e testado) — aqui só aplica no DOM.
+function applyPanelState(state) {
+  el.acoesList.innerHTML = actionItemsHtml(state.items);
+  el.acoesEmpty.hidden = state.emptyHidden;
+  el.onboardingNodata.hidden = state.nodataHidden;
+  el.onboardingLoadError.hidden = state.loadErrorText == null;
+  el.onboardingLoadError.textContent = state.loadErrorText ?? "";
+  el.staleBlock.hidden = state.staleRows.length === 0;
+  el.onboardingStaleTbody.innerHTML = state.staleRows
+    .map(
+      (r) =>
+        `<tr><td>${escapeHtml(r.email)}</td><td>${escapeHtml(r.provider)}</td><td class="mono">${escapeHtml(r.idade)}</td><td class="mono">${escapeHtml(r.campanha)}</td><td>${escapeHtml(r.acao)}</td></tr>`,
+    )
+    .join("");
+}
+
+function renderStageBreakdown(byEmail3Stage) {
+  el.onboardingStageTbody.innerHTML = stageBreakdownRows(byEmail3Stage)
+    .map((r) => `<tr><td>${escapeHtml(r.label)}</td><td class="mono">${r.count}</td></tr>`)
     .join("");
 }
 
@@ -412,38 +415,7 @@ function renderOnboardingCohortSummary(cohort) {
   ].join("");
 }
 
-function renderOnboardingStale(staleDrafts) {
-  if (!staleDrafts || staleDrafts.length === 0) {
-    el.onboardingStaleTbody.innerHTML = "";
-    el.onboardingStaleEmpty.hidden = false;
-    return;
-  }
-  el.onboardingStaleEmpty.hidden = true;
-  el.onboardingStaleTbody.innerHTML = staleDrafts
-    .map((d) => {
-      const provider = d.provider ? escapeHtml(d.provider) : "—";
-      const idade = d.ageDays == null ? "—" : String(d.ageDays);
-      const campanha = d.campaignOrBroadcastId == null ? "—" : escapeHtml(String(d.campaignOrBroadcastId));
-      const stage = ONBOARDING_STAGE_LABELS[d.stage] ?? escapeHtml(d.stage);
-      return `<tr><td>${escapeHtml(d.email)}</td><td>${provider}</td><td>${escapeHtml(stage)}</td><td class="mono">${idade}</td><td class="mono">${campanha}</td><td>${escapeHtml(d.nextAction)}</td></tr>`;
-    })
-    .join("");
-}
-
-// #7922 — e-mails 1/2 por transporte + lotes Kit (produção e piloto separados)
-function renderOnboardingProviderCounts(sentByProvider) {
-  if (!sentByProvider) {
-    el.onboardingProviderCounts.innerHTML = "";
-    return;
-  }
-  el.onboardingProviderCounts.innerHTML = [
-    tile("E-mail 1 via Brevo", sentByProvider.email1.brevo),
-    tile("E-mail 1 via Kit", sentByProvider.email1.kit),
-    tile("E-mail 2 via Brevo", sentByProvider.email2.brevo),
-    tile("E-mail 2 via Kit", sentByProvider.email2.kit),
-  ].join("");
-}
-
+// #7922 — lotes Kit (produção e piloto separados), em Detalhes desde #10606.
 const KIT_LOT_STATUS_LABELS = {
   pending: "Pendente (sem broadcast confirmado)",
   created: "Rascunho criado",
@@ -493,21 +465,8 @@ function renderOnboardingKitLots(kitLots) {
   }
 }
 
-function renderOnboardingRefreshErrors(refreshErrors) {
-  if (!refreshErrors || refreshErrors.length === 0) {
-    el.onboardingRefreshErrors.hidden = true;
-    el.onboardingRefreshErrors.innerHTML = "";
-    return;
-  }
-  el.onboardingRefreshErrors.hidden = false;
-  const items = refreshErrors
-    .map((e) => `<li>campanha ${escapeHtml(String(e.campaignId))}: ${escapeHtml(e.message)}</li>`)
-    .join("");
-  el.onboardingRefreshErrors.innerHTML = `⚠ Falha ao consultar ${refreshErrors.length} campanha(s) na Brevo — entradas afetadas aparecem como "Falha de consulta":<ul>${items}</ul>`;
-}
-
-// #10606 — contagem por e-mail, tabela por pessoa (e-mail já vem MASCARADO
-// do servidor) e falha em destaque no topo da página.
+// #10606 — contagem por e-mail e tabela por pessoa (e-mail já vem MASCARADO
+// do servidor), ambas em Detalhes. A falha em destaque vai pro bloco de ação.
 const FOLLOWUP_MOTIVO_LABELS = {
   aguardando_confirmacao: "aguardando confirmação",
   na_fila: "na fila",
@@ -555,19 +514,11 @@ function renderOnboardingPeople() {
 
 function renderOnboardingFollowup(followup) {
   if (!followup) {
-    el.onboardingAlerts.hidden = true;
     el.onboardingFollowupBlocked.hidden = true;
     el.onboardingStepsTbody.innerHTML = "";
     onboardingPeople = [];
     renderOnboardingPeople();
     return;
-  }
-  if (followup.alerts.length > 0) {
-    el.onboardingAlerts.hidden = false;
-    el.onboardingAlerts.innerHTML =
-      `⚠ Onboarding com falha:<ul>` + followup.alerts.map((a) => `<li><strong>${escapeHtml(a.etapa)}</strong>: ${escapeHtml(a.mensagem)}</li>`).join("") + `</ul>`;
-  } else {
-    el.onboardingAlerts.hidden = true;
   }
   const blocked = [];
   if (followup.blocked.apoio) blocked.push(`Apoio D+30/90/180/360 travado: ${followup.blocked.apoio.detalhe}`);
@@ -593,44 +544,28 @@ function renderOnboardingData(data) {
   // "sem dados" — um store.json presente mas ilegível NUNCA deve renderizar
   // como onboarding vazio (`onboarding-nodata`), que o editor leria como
   // "nenhuma rodada rodou ainda".
-  if (data.db.corrupted) {
-    el.onboardingNodata.hidden = true;
-    el.onboardingCorrupted.hidden = false;
-    renderOnboardingStageCounts(null);
+  // Desde #10606 o store corrompido é um item do bloco de ação, com o que
+  // fazer ao lado — continua nunca virando "nada pedindo ação" nem "sem
+  // dados" (panelState).
+  lastOnboardingData = data;
+  applyPanelState(panelState({ data }));
+  if (data.db.corrupted || !data.db.available) {
     renderOnboardingCohortSummary(null);
-    renderOnboardingStale([]);
-    renderOnboardingProviderCounts(null);
+    renderStageBreakdown(null);
     renderOnboardingKitLots(null);
     renderOnboardingFollowup(null);
     return;
   }
-  el.onboardingCorrupted.hidden = true;
-  if (!data.db.available) {
-    el.onboardingNodata.hidden = false;
-    renderOnboardingStageCounts(null);
-    renderOnboardingCohortSummary(null);
-    renderOnboardingStale([]);
-    renderOnboardingProviderCounts(null);
-    renderOnboardingKitLots(null);
-    renderOnboardingFollowup(null);
-    return;
-  }
-  el.onboardingNodata.hidden = true;
-  el.onboardingNote.textContent = data.refreshWarning ? `${data.note} ${data.refreshWarning}` : data.note;
-  if (data.apoiadorDataError) {
-    el.onboardingApoiadorError.hidden = false;
-    el.onboardingApoiadorError.textContent = `Vínculo com apoiadores indisponível: ${data.apoiadorDataError}`;
-  } else {
-    el.onboardingApoiadorError.hidden = true;
-  }
-  renderOnboardingRefreshErrors(data.refreshErrors);
-  renderOnboardingStageCounts(data.summary.byEmail3Stage);
+  el.onboardingNote.textContent = data.note;
   renderOnboardingCohortSummary(data.summary.cohort);
-  renderOnboardingStale(data.summary.staleDrafts);
-  renderOnboardingProviderCounts(data.summary.sentByProvider);
+  renderStageBreakdown(data.summary.byEmail3Stage);
   renderOnboardingKitLots(data.kitLots);
   renderOnboardingFollowup(data.followup);
 }
+
+// Último payload bom: numa falha de refresh, o topo segue mostrando a lista
+// anterior (ainda válida) junto do erro.
+let lastOnboardingData = null;
 
 async function loadOnboarding() {
   try {
@@ -638,26 +573,44 @@ async function loadOnboarding() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderOnboardingData(await res.json());
   } catch (e) {
-    el.onboardingNote.textContent = `Falha ao carregar funil de onboarding: ${e.message}`;
+    // Falha de carga fica no TOPO: sem o funil, o bloco de ação não sabe
+    // dizer se há algo a fazer.
+    applyPanelState(panelState({ loadError: e.message }));
   }
 }
 
+function refreshButtons() {
+  return [el.refreshOnboardingBtn, el.refreshOnboardingDetailsBtn, ...el.acoesList.querySelectorAll('[data-action="refresh-brevo"]')];
+}
+
+// Três pontos de entrada pro mesmo POST (bloco de rascunhos parados, item
+// "Consulta à Brevo falhou" e Detalhes > Convite de apoio). Só consulta
+// campanhas BREVO do e-mail 3 ainda em rascunho local; lotes Kit não mudam.
 async function refreshOnboardingViaBrevo() {
-  el.refreshOnboardingBtn.disabled = true;
-  el.refreshOnboardingBtn.textContent = "Consultando Brevo…";
+  for (const b of refreshButtons()) {
+    b.disabled = true;
+    b.textContent = "Consultando a Brevo…";
+  }
   try {
     const res = await fetch("/api/onboarding/funnel/refresh-brevo", { method: "POST" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     renderOnboardingData(await res.json());
   } catch (e) {
-    el.onboardingNote.textContent = `Falha ao atualizar via Brevo: ${e.message}`;
+    applyPanelState(panelState({ data: lastOnboardingData, refreshError: e.message }));
   } finally {
-    el.refreshOnboardingBtn.disabled = false;
-    el.refreshOnboardingBtn.textContent = "Atualizar via Brevo";
+    for (const b of refreshButtons()) {
+      b.disabled = false;
+      b.textContent = "Reconsultar a Brevo";
+    }
   }
 }
 
 el.refreshOnboardingBtn.addEventListener("click", refreshOnboardingViaBrevo);
+el.refreshOnboardingDetailsBtn.addEventListener("click", refreshOnboardingViaBrevo);
+el.acoesList.addEventListener("click", (ev) => {
+  const btn = ev.target instanceof Element ? ev.target.closest('[data-action="refresh-brevo"]') : null;
+  if (btn) refreshOnboardingViaBrevo();
+});
 
 refreshCohort();
 refreshCohortOrigem();
