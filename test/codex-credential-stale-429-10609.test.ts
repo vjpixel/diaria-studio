@@ -106,6 +106,41 @@ describe("classifyCodexCredential — esgotamento real além de 6h (#10639)", ()
     assert.equal(v.verdicts.find((c) => c.label === "a")?.state, "esgotada");
   });
 
+  it("caso misto: 429 + falha sem razão de cota com o MESMO resets_at — aviso e rebaixamento concordam (nenhum dos dois)", () => {
+    // Conta b: erro de OAuth/rede com `last_error_reset_at` gravado, sem 429
+    // nem `usage_limit_reached`. Não é esgotamento, então a data dela não
+    // torna a do 429 da conta a "compartilhada".
+    const v = evaluateCodexPool(
+      [
+        { ...real, label: "a" },
+        { label: "b", last_status: "error", last_error_reason: "auth_failed", last_error_code: 401, last_error_reset_at: RESET, last_status_at: STALE_AT_10639 },
+      ],
+      undefined,
+      LATER,
+    );
+    assert.equal(v.verdicts.find((c) => c.label === "a")?.state, "esgotada", "429 único não pode ser rebaixado");
+    assert.equal(v.verdicts.find((c) => c.label === "b")?.state, "indeterminada");
+    assert.deepEqual(findSharedResetAt(v.verdicts), [], "aviso de data compartilhada usa o mesmo critério do rebaixamento");
+    assert.doesNotMatch(buildCodexAlarmMessage(v, LATER), /MESMA data de retorno/);
+  });
+
+  it("caso misto: dois 429 (um velho, um recente) + falha de OAuth com o mesmo resets_at — aviso E rebaixamento", () => {
+    const v = evaluateCodexPool(
+      [
+        { ...real, label: "a" },
+        { ...real, label: "b", last_status_at: Date.parse(LATER) / 1000 - 3600 },
+        { label: "c", last_status: "error", last_error_reason: "auth_failed", last_error_code: 401, last_error_reset_at: RESET },
+      ],
+      undefined,
+      LATER,
+    );
+    assert.equal(v.verdicts.find((c) => c.label === "a")?.state, "indeterminada", "429 velho com data compartilhada é rebaixado");
+    assert.equal(v.verdicts.find((c) => c.label === "b")?.state, "esgotada", "429 recente segue esgotada");
+    const shared = findSharedResetAt(v.verdicts);
+    assert.equal(shared.length, 1);
+    assert.deepEqual([...shared[0]!.labels].sort(), ["a", "b"], "conta sem assinatura de esgotamento não entra no grupo");
+  });
+
   it("data de retorno vencida continua indeterminada (#7320 intacto)", () => {
     const after = new Date((RESET + 60) * 1000).toISOString();
     assert.equal(evaluateCodexPool([{ ...real, label: "a" }], undefined, after).verdicts[0]?.state, "indeterminada");

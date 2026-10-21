@@ -85,9 +85,11 @@
  * bloco do alarme das contas Codex.
  *
  * **Por que as 3 contas apareceram com o MESMO `resets_at` (20/10/2026).**
- * Conclusão por leitura deste módulo e do script: o alarme NÃO agrega nem
- * propaga data entre contas — `classifyCodexCredential` lê só o
- * `last_error_reset_at` da própria entrada, e `evaluateCodexPool` só mapeia.
+ * Conclusão por leitura deste módulo e do script: o alarme NÃO propaga data
+ * entre contas — `classifyCodexCredential` lê só o `last_error_reset_at` da
+ * própria entrada. Desde o #10639, `evaluateCodexPool` COMPARA as datas entre
+ * as contas (`countExhaustionResets`) para decidir o rebaixamento do 429
+ * velho, mas não copia nem altera a data de nenhuma — só a lê.
  * A data idêntica já estava gravada assim em `auth.json`, e quem grava é o
  * Hermes (código externo a este repo; nenhum script daqui escreve no pool
  * `openai-codex`). Ou o Hermes copiou o 429 de uma conta para as outras, ou
@@ -199,6 +201,11 @@ export interface CodexCredentialVerdict {
   readonly resetsAtIso: string | null;
   /** Por que este veredito — texto curto, para a mensagem do alarme. */
   readonly reason: string;
+  /** A conta tem assinatura de esgotamento de cota (razão `usage_limit_reached`
+   *  ou HTTP 429), independente do estado final — `hasExhaustionSignature`.
+   *  `findSharedResetAt` e o rebaixamento do #10639 usam este mesmo
+   *  critério (#10639, review). */
+  readonly exhaustionSignal: boolean;
 }
 
 /** Converte o `last_error_reset_at` do Hermes (epoch em segundos, número ou
@@ -267,16 +274,17 @@ export function classifyCodexCredential(
   const label = entry.label ?? entry.id ?? "(sem rótulo)";
   const resetsAtIso = parseResetAt(entry.last_error_reset_at);
   const status = (entry.last_status ?? "").toLowerCase();
-  const reason = (entry.last_error_reason ?? "").toLowerCase();
   const code = entry.last_error_code === null || entry.last_error_code === undefined
     ? null
     : Number(entry.last_error_code);
 
   if (status === "ok") {
-    return { label, state: "viva", resetsAtIso: null, reason: "last_status=ok" };
+    return { label, state: "viva", resetsAtIso: null, reason: "last_status=ok", exhaustionSignal: false };
   }
 
-  if (reason === CODEX_EXHAUSTION_REASON || code === CODEX_EXHAUSTION_CODE) {
+  // Mesmo predicado de `countExhaustionResets` (#10639): a classificação e a
+  // contagem de data compartilhada concordam sobre o que é "esgotamento".
+  if (hasExhaustionSignature(entry)) {
     const base = `${entry.last_error_reason ?? "?"} (HTTP ${code ?? "?"})`;
     // #7320: a data de retorno já passou e nada usou a conta desde então —
     // não dá pra afirmar nem esgotamento nem recuperação.
@@ -292,6 +300,7 @@ export function classifyCodexCredential(
         state: "indeterminada",
         resetsAtIso,
         reason: `${base}, mas a data de retorno já passou e nada tentou usar a conta desde então`,
+        exhaustionSignal: true,
       };
     }
     // #10609: 429 gravado há mais de N horas não é reconfirmado — "não sei",
@@ -312,13 +321,14 @@ export function classifyCodexCredential(
         state: "indeterminada",
         resetsAtIso,
         reason: `${base}, mas o 429 foi gravado há mais de ${CODEX_STALE_429_HOURS}h com a MESMA data de retorno de outra conta e não foi reconfirmado (rode um codex exec mínimo para confirmar)`,
+        exhaustionSignal: true,
       };
     }
-    return { label, state: "esgotada", resetsAtIso, reason: base };
+    return { label, state: "esgotada", resetsAtIso, reason: base, exhaustionSignal: true };
   }
 
   if (!status) {
-    return { label, state: "indeterminada", resetsAtIso, reason: "sem last_status registrado" };
+    return { label, state: "indeterminada", resetsAtIso, reason: "sem last_status registrado", exhaustionSignal: false };
   }
 
   return {
@@ -326,6 +336,7 @@ export function classifyCodexCredential(
     state: "indeterminada",
     resetsAtIso,
     reason: `last_status=${entry.last_status} sem razão de cota reconhecida`,
+    exhaustionSignal: false,
   };
 }
 
@@ -401,7 +412,10 @@ export function findSharedResetAt(
 ): ReadonlyArray<{ readonly resetsAtIso: string; readonly labels: readonly string[] }> {
   const byIso = new Map<string, string[]>();
   for (const v of verdicts) {
-    if (v.state === "viva" || v.resetsAtIso === null) continue;
+    // Mesmo critério de `countExhaustionResets` (#10639): só contas com
+    // assinatura de esgotamento entram — uma falha de OAuth/rede com
+    // `resets_at` gravado não conta como "mesma data de retorno".
+    if (!v.exhaustionSignal || v.resetsAtIso === null) continue;
     const labels = byIso.get(v.resetsAtIso) ?? [];
     labels.push(v.label);
     byIso.set(v.resetsAtIso, labels);
