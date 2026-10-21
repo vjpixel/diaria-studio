@@ -310,19 +310,53 @@ codex_lane_snapshot_state() {
 # essa saída aparece no meio da transcrição; o erro que derruba o `codex exec`
 # é o que fica por último. #10591: quando termina em `Error:`, considerar
 # só essa linha — um `ERROR:` de script pode estar colado logo acima.
+#
+# #10560 (formato real, codex-rs na tag rust-v0.159.1 — a versão do `300`):
+# o `codex exec` em modo humano imprime o erro do turno como `ERROR: <msg>`
+# (exec/src/event_processor_with_human_output.rs, ramos
+# ServerNotification::Error e TurnStatus::Failed) e, DEPOIS dele, se o turno
+# chegou a consumir token, o rodapé `tokens used` + o total numa 2ª linha
+# (print_final_output; o número sai com separador do locale, ex. `2.004` em
+# pt-BR). Sem descartar esse rodapé, a última linha era o número, o bloco
+# final de `ERROR:` saía vazio e a cota esgotada NO MEIO da tarefa nunca
+# gravava o marcador de backoff. Códigos ANSI (cor forçada por
+# FORCE_COLOR/CLICOLOR_FORCE apesar do `--color never` que o elo passa)
+# também são removidos antes de casar.
 codex_lane_cli_error_lines() {
   local f="$1"
   [ -r "$f" ] || return 0
   awk '
+    { gsub(/\033\[[0-9;]*[A-Za-z]/, "") }
     /^[[:space:]]*$/ { next }
     { n++; l[n] = $0 }
     END {
+      if (n == 0) exit
+      # Rodapé `tokens used` / <total> do codex exec (#10560).
+      if (n >= 2 && l[n - 1] ~ /^tokens used[[:space:]]*$/ && l[n] ~ /^[0-9]/ && l[n] !~ /[A-Za-z]/) n -= 2
       if (n == 0) exit
       i = n
       if (l[n] ~ /^Error:/) { print l[n]; exit }
       while (i >= 1 && l[i] ~ /^(\[[^]]*\][[:space:]]*)?ERROR:/) i--
       for (j = i + 1; j <= n; j++) print l[j]
     }' "$f" 2>/dev/null || true
+}
+
+# #10560: mensagens de cota/crédito da Codex CLI, verbatim da tag
+# rust-v0.159.1 (codex-rs/protocol/src/error.rs, `impl Display for
+# UsageLimitReachedError` e as variantes `#[error]` de CodexErrorDetails):
+#   - "You’ve hit your usage limit. ..." (apóstrofo U+2019; o plano `go` do
+#     pool sai como "... Upgrade to Plus to continue using Codex
+#     (https://chatgpt.com/explore/plus), or try again at <data>.");
+#   - "You’ve hit your usage limit for <limite>. Switch to another model now, ...";
+#   - "Your workspace is out of credits. ..." e "You hit your spend cap ..."
+#     (planos de workspace — sem "usage limit" no texto);
+#   - "Quota exceeded. Check your plan and billing details.";
+#   - "rate limit exceeded: ..." e "exceeded retry limit, last status: 429 Too Many Requests".
+# Roda só sobre as linhas de erro da CLI (`codex_lane_cli_error_lines`).
+CODEX_LANE_QUOTA_RE="rate.?limit|too many requests|quota exceeded|usage limit|out of credits|spend cap|http.{0,10}429|status.{0,10}429|429.{0,10}(too many|rate)|\\(429\\)"
+
+codex_lane_stderr_is_quota() {
+  command grep -qiE "$CODEX_LANE_QUOTA_RE" "$1" 2>/dev/null
 }
 
 # 0 = houve trabalho parcial desde o snapshot $2 (descrição em stdout);
@@ -391,6 +425,7 @@ codex_lane_run() {
       -m "$CODEX_LANE_MODEL" \
       -c "model_reasoning_effort=\"$CODEX_LANE_EFFORT\"" \
       --sandbox "$CODEX_LANE_SANDBOX" \
+      --color never \
       -C "$cwd" \
       - 2> "$attempt_log"
   )

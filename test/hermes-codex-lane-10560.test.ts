@@ -150,6 +150,9 @@ before(() => {
       // #10591: simula pull de outra sessão, sem o hook do subprocesso codex.
       '  foreign-head-advance) next=$(printf "alheio\\n" | git -C "$CODEX_STUB_REPO" -c user.name=t -c user.email=t@example.com commit-tree "HEAD^{tree}" -p HEAD); git -C "$CODEX_STUB_REPO" -c core.hooksPath=/dev/null update-ref HEAD "$next"; echo "erro qualquer" >&2; exit 1 ;;',
       '  transcript-error-adjacent) { echo "ERROR: Brevo rate limit exceeded"; echo "Error: stream disconnected"; } >&2; exit 1 ;;',
+      // #10560: stderr verbatim do codex-rs (tag rust-v0.159.1), escrito pelo teste.
+      '  stderr-file) cat "$CODEX_STUB_STDERR_FILE" >&2; exit 1 ;;',
+      '  partial-stderr-file) git -C "$CODEX_STUB_REPO" branch "continuo/fix-10560-sf-$$" >/dev/null 2>&1; cat "$CODEX_STUB_STDERR_FILE" >&2; exit 1 ;;',
       '  partial-new-worktree) git -C "$CODEX_STUB_REPO" worktree add -q --detach "$TMPDIR/wt-novo-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
       // #10588 item a: `ERROR:` de script no MEIO da transcrição não é erro da CLI.
       '  transcript-error-mid) { echo "exec bash -lc npx-tsx-scripts-x"; echo "ERROR: Brevo rate limit exceeded (429) — usage limit"; echo "vou tentar de novo mais tarde"; echo "timeout no meio"; } >&2; exit 1 ;;',
@@ -582,6 +585,111 @@ describe("#10586 — classificação só sobre linhas de erro da Codex CLI", () 
   });
 });
 
+// #10560 (resíduo): formato REAL do stderr de cota esgotada. Strings verbatim
+// do codex-rs na tag rust-v0.159.1 (a versão instalada no `300`):
+//   - mensagem: protocol/src/error.rs, `impl Display for UsageLimitReachedError`
+//     (ramo `KnownPlan::Free | KnownPlan::Go`, o plano das contas do pool) e o
+//     teste upstream `usage_limit_reached_error_formats_go_plan`
+//     (protocol/src/error_tests.rs). Apóstrofo U+2019, não ASCII.
+//   - formato da linha: exec/src/event_processor_with_human_output.rs —
+//     `ERROR: <msg>` sem timestamp, impresso 2x (ServerNotification::Error e
+//     TurnStatus::Failed), e depois `print_final_output` imprime `tokens used`
+//     + total (separador do locale) se o turno consumiu token antes de falhar.
+const UPSTREAM_GO_QUOTA =
+  "You’ve hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again at Nov 16th, 2026 9:36 PM.";
+const UPSTREAM_GO_QUOTA_NO_RESET =
+  "You’ve hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again later.";
+const UPSTREAM_OTHER_LIMIT =
+  "You’ve hit your usage limit for codex_other. Switch to another model now, or try again at Nov 16th, 2026 9:36 PM.";
+const UPSTREAM_WORKSPACE_CREDITS = "Your workspace is out of credits. Add credits to continue.";
+const UPSTREAM_SPEND_CAP = "You hit your spend cap set in your workspace. Increase your spend cap to continue.";
+
+function upstreamStderr(msg: string, opts: { tokens?: string; transcript?: boolean; ansi?: boolean } = {}): string {
+  const err = opts.ansi ? `\u001b[1m\u001b[31mERROR:\u001b[0m\u001b[0m ${msg}` : `ERROR: ${msg}`;
+  const lines = [
+    ...(opts.transcript
+      ? ["thinking", "Vou tratar o rate limit do Brevo (usage limit 100/h).", "exec bash -lc 'npx tsx --test test/x.test.ts'", "succeeded in 3.2s:"]
+      : []),
+    err,
+    err,
+    ...(opts.tokens ? [opts.ansi ? "\u001b[2mtokens used\u001b[0m" : "tokens used", opts.tokens] : []),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+describe("#10560 — stderr real de cota esgotada (codex-rs rust-v0.159.1)", () => {
+  const cliLines = (content: string): string => {
+    const f = join(runTmp, "stderr-upstream.txt");
+    writeFileSync(f, content, "utf8");
+    const res = spawnSync(
+      "bash",
+      ["-c", `source '${join(ROOT, "hermes/scripts/lib/codex-lane.sh")}'; codex_lane_cli_error_lines '${f}'`],
+      { encoding: "utf8" },
+    );
+    assert.equal(res.status, 0, res.stderr);
+    return res.stdout.trimEnd();
+  };
+
+  it("codex_lane_cli_error_lines: rodapé `tokens used` depois do ERROR não esvazia o bloco", () => {
+    for (const tokens of ["2,004", "2.004", "12 345", "987"]) {
+      assert.equal(
+        cliLines(upstreamStderr(UPSTREAM_GO_QUOTA, { tokens, transcript: true })),
+        [`ERROR: ${UPSTREAM_GO_QUOTA}`, `ERROR: ${UPSTREAM_GO_QUOTA}`].join("\n"),
+        `tokens=${tokens}`,
+      );
+    }
+  });
+
+  it("codex_lane_cli_error_lines: ANSI forçado (FORCE_COLOR) não esconde o ERROR", () => {
+    assert.equal(
+      cliLines(upstreamStderr(UPSTREAM_GO_QUOTA, { tokens: "2,004", ansi: true })),
+      [`ERROR: ${UPSTREAM_GO_QUOTA}`, `ERROR: ${UPSTREAM_GO_QUOTA}`].join("\n"),
+    );
+  });
+
+  it("rodapé sem ERROR antes (sucesso que saiu rc≠0 por outro motivo) não vira cota", () => {
+    assert.equal(cliLines(["thinking", "rate limit da Brevo", "tokens used", "2,004", ""].join("\n")), "");
+  });
+
+  for (const [nome, msg, tokens] of [
+    ["plano go, com data de retorno, cota no 1º request", UPSTREAM_GO_QUOTA, undefined],
+    ["plano go, cota esgotada NO MEIO da tarefa (rodapé tokens used)", UPSTREAM_GO_QUOTA, "2.004"],
+    ["plano go, sem data de retorno", UPSTREAM_GO_QUOTA_NO_RESET, "2,004"],
+    ["limite de outro modelo", UPSTREAM_OTHER_LIMIT, undefined],
+    ["workspace sem crédito (sem 'usage limit' no texto)", UPSTREAM_WORKSPACE_CREDITS, "2,004"],
+    ["spend cap do workspace", UPSTREAM_SPEND_CAP, undefined],
+  ] as const) {
+    it(`e2e: ${nome} → RATE-LIMIT/QUOTA, marcador gravado, cai no próximo elo`, () => {
+      writeSessionFile();
+      const f = join(runTmp, "codex-stderr.txt");
+      writeFileSync(f, upstreamStderr(msg, { tokens, transcript: true }), "utf8");
+      const r = runWrapper(
+        wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "stderr-file", CODEX_STUB_STDERR_FILE: f }),
+      );
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stdout, /resposta fake claude/);
+      assert.match(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT\/QUOTA/);
+      assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")), "marcador de cota não gravado");
+    });
+  }
+
+  it("e2e: trabalho parcial + cota esgotada no meio (rodapé tokens used): aborta E grava o marcador", () => {
+    writeSessionFile();
+    const f = join(runTmp, "codex-stderr.txt");
+    writeFileSync(f, upstreamStderr(UPSTREAM_GO_QUOTA, { tokens: "2.004", transcript: true }), "utf8");
+    const r = runWrapper(
+      wrapperEnv({
+        CLAUDE_DELEGATE_CODEX_LANE: "1",
+        CODEX_STUB_MODE: "partial-stderr-file",
+        CODEX_STUB_STDERR_FILE: f,
+        CODEX_STUB_REPO: repo,
+      }),
+    );
+    assert.equal(r.status, 95, r.stderr);
+    assert.ok(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")), "marcador de cota não gravado");
+  });
+});
+
 describe("#10584 — guard de master só no checkout-alvo", () => {
   it("e2e: dentro do codex, commit em master de repo descartável passa; no checkout-alvo é recusado", () => {
     const target = join(tmp, `repo-scope-${Date.now()}`);
@@ -637,7 +745,7 @@ describe("#10584 — guard de master só no checkout-alvo", () => {
 });
 
 describe("#10560 — invocação e ambiente do processo codex", () => {
-  it("argv pinado: exec -m gpt-6.1-sol -c model_reasoning_effort=\"low\" --sandbox ... -C <cwd> -", () => {
+  it("argv pinado: exec -m gpt-6.1-sol -c model_reasoning_effort=\"low\" --sandbox ... --color never -C <cwd> -", () => {
     writeSessionFile();
     const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1" }), ["--effort", "high"]);
     assert.equal(r.status, 0, r.stderr);
@@ -650,6 +758,8 @@ describe("#10560 — invocação e ambiente do processo codex", () => {
       'model_reasoning_effort="low"',
       "--sandbox",
       "danger-full-access",
+      "--color",
+      "never",
       "-C",
       repo,
       "-",

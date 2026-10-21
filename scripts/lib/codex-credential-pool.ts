@@ -66,7 +66,18 @@
  * ─── 429 falso/velho no pool (#10609) ───────────────────────────────────────
  *
  * Um 429 gravado há mais de `CODEX_STALE_429_HOURS` (via `last_status_at`) vira
- * `indeterminada`, não `esgotada`. Se o Hermes mantiver a conta parada mesmo
+ * `indeterminada`, não `esgotada` — **só quando o `resets_at` dele é o mesmo
+ * de outra conta do pool (#10639)**, a assinatura do caso de 20/10. Com
+ * `resets_at` próprio o 429 continua `esgotada` até a data: o Hermes
+ * (NousResearch/hermes-agent, `agent/credential_pool.py`, `_exhausted_until` +
+ * `_available_entries`) não seleciona conta `exhausted` antes do
+ * `last_error_reset_at`, e a sonda de reabertura antecipada
+ * (`_codex_quota_restored_upstream`) só reescreve a entrada quando a cota
+ * VOLTOU — com a cota ainda esgotada, `last_status_at` fica parado no 1º 429.
+ * A idade do 429, sozinha, não distingue esgotamento real de 429 velho; a
+ * coincidência de data entre contas distingue. (Lido no `main` do
+ * hermes-agent em 21/10/2026; a versão instalada no `300` não foi conferida.)
+ * Se o Hermes mantiver a conta parada mesmo
  * assim, `hermes auth reset openai-codex` respeita o `resets_at` futuro e pode
  * não limpá-la: confirme com um `codex exec` mínimo e, só então, limpe o
  * `last_status`/`last_error_*` dessa entrada à mão em `~/.hermes/auth.json`
@@ -150,6 +161,36 @@ export interface CodexCredentialEntry {
 
 export type CodexCredentialState = "viva" | "esgotada" | "indeterminada";
 
+/** Contexto do pool que a classificação de UMA conta não enxerga sozinha. */
+export interface CodexClassifyOptions {
+  /** `true` quando outra conta do pool tem 429 com o MESMO `resets_at`
+   *  (#10639). Só nesse caso um 429 velho é rebaixado a `indeterminada`.
+   *  Ausente = `false`: chamada isolada mantém o esgotamento. */
+  readonly resetAtSharedWithOtherAccount?: boolean;
+}
+
+/** Entrada com a assinatura de esgotamento de cota (razão ou HTTP 429). */
+function hasExhaustionSignature(entry: CodexCredentialEntry): boolean {
+  if ((entry.last_status ?? "").toLowerCase() === "ok") return false;
+  const reason = (entry.last_error_reason ?? "").toLowerCase();
+  const code = entry.last_error_code === null || entry.last_error_code === undefined
+    ? null
+    : Number(entry.last_error_code);
+  return reason === CODEX_EXHAUSTION_REASON || code === CODEX_EXHAUSTION_CODE;
+}
+
+/** Quantas contas com assinatura de esgotamento têm cada `resets_at` (ISO). */
+function countExhaustionResets(entries: readonly CodexCredentialEntry[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const e of entries) {
+    if (!hasExhaustionSignature(e)) continue;
+    const iso = parseResetAt(e.last_error_reset_at);
+    if (iso === null) continue;
+    counts.set(iso, (counts.get(iso) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export interface CodexCredentialVerdict {
   /** Rótulo legível da conta. Nunca o token. */
   readonly label: string;
@@ -221,6 +262,7 @@ export function parseResetAt(raw: number | string | null | undefined): string | 
 export function classifyCodexCredential(
   entry: CodexCredentialEntry,
   nowIso: string = new Date().toISOString(),
+  opts: CodexClassifyOptions = {},
 ): CodexCredentialVerdict {
   const label = entry.label ?? entry.id ?? "(sem rótulo)";
   const resetsAtIso = parseResetAt(entry.last_error_reset_at);
@@ -254,8 +296,14 @@ export function classifyCodexCredential(
     }
     // #10609: 429 gravado há mais de N horas não é reconfirmado — "não sei",
     // não "esgotada". Sem `last_status_at` legível, mantém esgotada.
+    // #10639: só quando a data de retorno é COMPARTILHADA com outra conta
+    // (a assinatura do 429 copiado de 20/10). Com `resets_at` próprio, o
+    // Hermes não retesta a conta antes dessa data e `last_status_at` não
+    // avança — a idade do 429 não diz nada, e rebaixar faria um esgotamento
+    // real virar "estado a reconfirmar" 6h depois.
     const statusAtMs = parseStatusAtMs(entry.last_status_at);
     if (
+      opts.resetAtSharedWithOtherAccount === true &&
       statusAtMs !== null && Number.isFinite(nowMs) &&
       nowMs - statusAtMs > CODEX_STALE_429_HOURS * 3_600_000
     ) {
@@ -263,7 +311,7 @@ export function classifyCodexCredential(
         label,
         state: "indeterminada",
         resetsAtIso,
-        reason: `${base}, mas o 429 foi gravado há mais de ${CODEX_STALE_429_HOURS}h e não foi reconfirmado (rode um codex exec mínimo para confirmar)`,
+        reason: `${base}, mas o 429 foi gravado há mais de ${CODEX_STALE_429_HOURS}h com a MESMA data de retorno de outra conta e não foi reconfirmado (rode um codex exec mínimo para confirmar)`,
       };
     }
     return { label, state: "esgotada", resetsAtIso, reason: base };
@@ -316,7 +364,14 @@ export function evaluateCodexPool(
   liveThreshold: number = CODEX_ALARM_LIVE_THRESHOLD,
   nowIso: string = new Date().toISOString(),
 ): CodexPoolVerdict {
-  const verdicts = entries.map((e) => classifyCodexCredential(e, nowIso));
+  // #10639: o rebaixamento do 429 velho (#10609) depende de a data de retorno
+  // ser compartilhada com outra conta — contexto do pool, não da entrada.
+  const resetCounts = countExhaustionResets(entries);
+  const verdicts = entries.map((e) => {
+    const iso = parseResetAt(e.last_error_reset_at);
+    const shared = iso !== null && (resetCounts.get(iso) ?? 0) > 1;
+    return classifyCodexCredential(e, nowIso, { resetAtSharedWithOtherAccount: shared });
+  });
   const vivas = verdicts.filter((v) => v.state === "viva").length;
   const esgotadas = verdicts.filter((v) => v.state === "esgotada").length;
   const indeterminadas = verdicts.filter((v) => v.state === "indeterminada").length;
@@ -440,7 +495,7 @@ export function buildCodexAlarmMessage(v: CodexPoolVerdict, nowIso: string): str
   // pode afirmar a errada. A razão específica de cada conta já sai na linha
   // dela acima; aqui fica só o que vale para todas.
   const indet = v.indeterminadas > 0
-    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — ou o Hermes registrou falha sem razão de cota reconhecível (pode ser OAuth expirado ou rede), ou a data de retorno já passou e nada tentou usar a conta desde então, ou o 429 foi gravado há mais de ${CODEX_STALE_429_HOURS}h e não foi reconfirmado. Ver a razão de cada uma acima. Não são contadas como vivas (fail-closed): "não sei" nunca vira "está tudo bem", e também nunca vira "está esgotada".\n`
+    ? `\n${v.indeterminadas} conta(s) em estado INDETERMINADO — ou o Hermes registrou falha sem razão de cota reconhecível (pode ser OAuth expirado ou rede), ou a data de retorno já passou e nada tentou usar a conta desde então, ou o 429 foi gravado há mais de ${CODEX_STALE_429_HOURS}h com a mesma data de retorno de outra conta e não foi reconfirmado. Ver a razão de cada uma acima. Não são contadas como vivas (fail-closed): "não sei" nunca vira "está tudo bem", e também nunca vira "está esgotada".\n`
     : "";
 
   // #10609: mesma data de retorno em 2+ contas — provável 429 copiado.
