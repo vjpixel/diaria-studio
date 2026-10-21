@@ -266,18 +266,25 @@ codex_lane_pr_log() {
 # overnight/develop commitam nos próprios worktrees o tempo todo — commit
 # alheio durante a tentativa virava exit 95 falso e os elos `:free`/sonnet
 # nunca rodavam. Agora só conta o que ESTA tentativa pode produzir: HEAD do
-# $CWD (ref + sha), branches com NOME novo (o sha vai só pra descrição),
+# $CWD (ref + sha, exceto master/main, #10591), branches com NOME novo
+# (o sha vai só pra descrição),
 # worktrees com CAMINHO novo e linhas novas no log de PRs do gh shim. Commit
 # em branch/worktree pré-existente fora do $CWD e remoções não contam.
 # Branch/worktree NOVO de outra sessão no mesmo intervalo ainda conta — falso
 # positivo residual, do lado seguro (aborta a cadeia, nunca duplica trabalho).
 codex_lane_snapshot_state() {
-  local cwd="$1" log n=0
+  local cwd="$1" log head_ref n=0
   log="$(codex_lane_pr_log)"
   [ -f "$log" ] && n=$(wc -l < "$log" 2>/dev/null | tr -d '[:space:]')
   printf 'prlog-lines %s\n' "${n:-0}"
-  printf 'head-ref %s\n' "$(git -C "$cwd" symbolic-ref -q HEAD 2>/dev/null || echo '(destacado)')"
-  printf 'head-sha %s\n' "$(git -C "$cwd" rev-parse -q --verify HEAD 2>/dev/null || echo '(sem-commit)')"
+  head_ref=$(git -C "$cwd" symbolic-ref -q HEAD 2>/dev/null || echo '(destacado)')
+  printf 'head-ref %s\n' "$head_ref"
+  # #10591: o hook reference-transaction impede commits do codex em
+  # master/main. Seu avanço no checkout compartilhado é atividade alheia.
+  case "$head_ref" in
+    refs/heads/master|refs/heads/main) ;;
+    *) printf 'head-sha %s\n' "$(git -C "$cwd" rev-parse -q --verify HEAD 2>/dev/null || echo '(sem-commit)')" ;;
+  esac
   git -C "$cwd" for-each-ref --format='branch %(refname:short) %(objectname)' 'refs/heads/' 2>/dev/null || true
   # Só o caminho de cada worktree (#10588): HEAD de worktree pré-existente
   # muda a cada commit de outra sessão.
@@ -298,9 +305,11 @@ codex_lane_snapshot_state() {
 # #10588 item a: `ERROR:` só conta em COLUNA 0 (opcionalmente depois do
 # `[timestamp] `) e só no BLOCO FINAL do stderr — a sequência de linhas não
 # vazias no fim do arquivo formada só por `ERROR:` (mais um `Error:` opcional
-# como última linha). Scripts deste repo imprimem `ERROR: ...` em coluna 0 e
+# como última linha, regra refinada abaixo no #10591). Scripts deste repo
+# imprimem `ERROR: ...` em coluna 0 e
 # essa saída aparece no meio da transcrição; o erro que derruba o `codex exec`
-# é o que fica por último.
+# é o que fica por último. #10591: quando termina em `Error:`, considerar
+# só essa linha — um `ERROR:` de script pode estar colado logo acima.
 codex_lane_cli_error_lines() {
   local f="$1"
   [ -r "$f" ] || return 0
@@ -310,7 +319,7 @@ codex_lane_cli_error_lines() {
     END {
       if (n == 0) exit
       i = n
-      if (l[n] ~ /^Error:/) i = n - 1
+      if (l[n] ~ /^Error:/) { print l[n]; exit }
       while (i >= 1 && l[i] ~ /^(\[[^]]*\][[:space:]]*)?ERROR:/) i--
       for (j = i + 1; j <= n; j++) print l[j]
     }' "$f" 2>/dev/null || true
