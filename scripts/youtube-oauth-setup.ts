@@ -37,11 +37,13 @@ import {
   buildYouTubeAuthUrl,
   checkAuthorizedChannel,
   explainYouTubeApiError,
+  missingGrantedScopes,
   parseChannelsResponse,
 } from "./lib/youtube-oauth.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONSENT_TIMEOUT_MS = 15 * 60 * 1000;
+const HTTP_TIMEOUT_MS = 30_000;
 
 function openBrowser(url: string): void {
   // Sem cmd.exe: o `&` da query string cortaria a URL.
@@ -64,10 +66,11 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
         res.end();
         return;
       }
+      const stateOk = url.searchParams.get("state") === state;
       res.writeHead(200, { "Content-Type": "text/html;charset=utf-8", Connection: "close" });
       res.end(
         `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:3rem">` +
-          (code ? "<h1>Pronto</h1><p>Pode fechar esta aba e voltar ao terminal.</p>" : "<h1>Falhou</h1><p>Veja o terminal.</p>") +
+          (code && stateOk ? "<h1>Pronto</h1><p>Pode fechar esta aba e voltar ao terminal.</p>" : "<h1>Falhou</h1><p>Veja o terminal.</p>") +
           `</body>`,
       );
       const finish = (fn: () => void) => {
@@ -76,8 +79,8 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
         server.closeIdleConnections();
         fn();
       };
-      if (error) return finish(() => reject(new Error(`consentimento negado: ${error}`)));
-      if (url.searchParams.get("state") !== state) {
+      if (error) return finish(() => reject(new Error(`consentimento negado: ${error} ${url.searchParams.get("error_description") ?? ""}`.trim())));
+      if (!stateOk) {
         return finish(() => reject(new Error("state divergente — callback descartado por segurança")));
       }
       finish(() => resolveCode(code as string));
@@ -92,13 +95,14 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
       openBrowser(authUrl);
       timer = setTimeout(() => {
         server.close();
+        server.closeIdleConnections();
         reject(new Error("timeout esperando o consentimento no navegador (15 min)"));
       }, CONSENT_TIMEOUT_MS);
     });
   });
 }
 
-async function exchangeCode(code: string, clientId: string, clientSecret: string): Promise<{ access_token: string; refresh_token?: string }> {
+async function exchangeCode(code: string, clientId: string, clientSecret: string): Promise<{ access_token: string; refresh_token?: string; scope?: string }> {
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -109,9 +113,10 @@ async function exchangeCode(code: string, clientId: string, clientSecret: string
       redirect_uri: YOUTUBE_OAUTH_REDIRECT_URI,
       grant_type: "authorization_code",
     }),
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`troca de código falhou (${res.status}): ${(await res.text()).slice(0, 300)}`);
-  return (await res.json()) as { access_token: string; refresh_token?: string };
+  return (await res.json()) as { access_token: string; refresh_token?: string; scope?: string };
 }
 
 async function main(): Promise<number> {
@@ -129,16 +134,29 @@ async function main(): Promise<number> {
     console.error("✖ O Google não devolveu refresh_token. Revogue o app em https://myaccount.google.com/permissions e rode de novo.");
     return 1;
   }
+  const missing = missingGrantedScopes(tokens.scope);
+  if (missing.length > 0) {
+    console.error(`✖ O consentimento não concedeu: ${missing.join(", ")}. Rode de novo e deixe os 2 escopos marcados. Nada foi gravado.`);
+    return 1;
+  }
 
   const chRes = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
+    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   });
   const chBody = await chRes.text();
   if (!chRes.ok) {
     console.error(`✖ ${explainYouTubeApiError(chRes.status, chBody)}. Nada foi gravado.`);
     return 1;
   }
-  const check = checkAuthorizedChannel(parseChannelsResponse(JSON.parse(chBody)));
+  let chJson: unknown;
+  try {
+    chJson = JSON.parse(chBody);
+  } catch {
+    console.error("✖ channels.list devolveu um corpo que não é JSON. Nada foi gravado.");
+    return 1;
+  }
+  const check = checkAuthorizedChannel(parseChannelsResponse(chJson));
   if (!check.ok) {
     console.error(`✖ ${check.reason}. Nada foi gravado.`);
     return 1;

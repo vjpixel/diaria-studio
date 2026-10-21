@@ -5,6 +5,7 @@ import {
   buildYouTubeAuthUrl,
   checkAuthorizedChannel,
   explainYouTubeApiError,
+  missingGrantedScopes,
   parseChannelsResponse,
 } from "../scripts/lib/youtube-oauth.ts";
 
@@ -43,5 +44,16 @@ test("checkAuthorizedChannel aceita @diariabr sem caixa e recusa outro canal ou 
 
 test("explainYouTubeApiError reconhece API desativada", () => {
   assert.match(explainYouTubeApiError(403, '{"error":{"errors":[{"reason":"accessNotConfigured"}]}}'), /não está ativada/);
-  assert.equal(explainYouTubeApiError(500, "boom"), "YouTube API respondeu 500");
+  assert.match(explainYouTubeApiError(500, "boom"), /respondeu 500: boom/);
+});
+
+test("missingGrantedScopes acusa youtube.upload desmarcado no consentimento granular (#10757)", () => {
+  const all = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly";
+  assert.deepEqual(missingGrantedScopes(all), []);
+  assert.deepEqual(missingGrantedScopes("https://www.googleapis.com/auth/youtube.readonly"), ["https://www.googleapis.com/auth/youtube.upload"]);
+  assert.equal(missingGrantedScopes(undefined).length, 2);
+});
+
+test("checkAuthorizedChannel aceita handle sem @", () => {
+  assert.equal(checkAuthorizedChannel([{ id: "UC1", title: "x", customUrl: "diariabr" }]).ok, true);
 });

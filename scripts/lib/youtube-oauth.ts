@@ -78,8 +78,9 @@ export function checkAuthorizedChannel(
   if (channels.length === 0) {
     return { ok: false, reason: "a conta autorizada não tem canal do YouTube (escolha a conta/canal de marca do @diariabr no consentimento)" };
   }
-  const want = expectedHandle.toLowerCase();
-  const match = channels.find((c) => (c.customUrl ?? "").toLowerCase() === want);
+  const norm = (h: string) => h.trim().toLowerCase().replace(/^@/, "");
+  const want = norm(expectedHandle);
+  const match = channels.find((c) => norm(c.customUrl ?? "") === want);
   if (match) return { ok: true, channel: match };
   const seen = channels.map((c) => `${c.title} (${c.customUrl ?? "sem handle"})`).join(", ");
   return { ok: false, reason: `canal autorizado não é ${expectedHandle}: ${seen}` };
@@ -93,5 +94,15 @@ export function explainYouTubeApiError(status: number, body: string): string {
   if (status === 403 && /insufficientPermissions|insufficient authentication scopes/i.test(body)) {
     return "token sem o escopo youtube.readonly — o consentimento não concedeu todos os escopos pedidos";
   }
-  return `YouTube API respondeu ${status}`;
+  return `YouTube API respondeu ${status}: ${body.slice(0, 300)}`;
+}
+
+/**
+ * Escopo concedido de fato (#10757). O consentimento granular do Google deixa
+ * desmarcar um escopo: sem `youtube.upload` o token passa na checagem do canal
+ * (que só usa readonly) e falharia só no 1º upload. Devolve os ausentes.
+ */
+export function missingGrantedScopes(grantedScope: string | undefined): string[] {
+  const granted = new Set(String(grantedScope ?? "").split(/\s+/).filter(Boolean));
+  return YOUTUBE_OAUTH_SCOPES.filter((s) => !granted.has(s));
 }
