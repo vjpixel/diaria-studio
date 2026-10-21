@@ -261,6 +261,8 @@ Ao encerrar, **devolver o estado**: `end` do registro, e uma mensagem final às 
 merge-lock-acquire --pr N   →   gh pr merge N --squash   →   merge-lock-release --pr N
 ```
 
+PR de outro repo (ex: vjpixel/diaria-design): o lock é POR REPO (#10618) — `--repo owner/name` no acquire/release e `-R owner/name` no `gh pr merge`; a branch base de lá é `main`, não `master`.
+
 **Antes de cada merge, `git fetch origin master` e confira o head.** O merge lock é advisory entre máquinas (#6182) e fica cego quando o sync do `data/` cai (#7169) — o estado do GitHub é o único sinal que atravessa máquina de verdade.
 
 **Se precisar conceder janela a outra sessão** (`grant-merge --kind develop --granted-to {id} --pr N`): quem recebe **nunca** roda `consume-merge-grant` antes do merge — o gate ignora concessão com `consumedAt`, e o comando responde `ok`, então a falha é silenciosa (#7171). O carimbo é do merge.

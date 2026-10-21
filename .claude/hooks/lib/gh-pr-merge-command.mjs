@@ -30,10 +30,11 @@
 //     ferramenta (curl, script) ou por um script em arquivo (`bash x.sh`);
 //   - expansão de variável na posição de comando (`$GH pr merge 5`,
 //     `"${cmd[@]}"`) — o valor só existe em tempo de execução;
-//   - corpo de heredoc é lido como texto comum, igual ao regex antigo: uma
-//     linha `gh pr merge` no corpo conta como merge (fail-closed, preserva o
-//     comportamento anterior), e uma aspa solta no corpo pode esconder o resto
-//     do comando (mesmo limite de `stripQuotedSpans`);
+//   - corpo de heredoc (`<<EOF`/`<<'EOF'`/`<<-EOF`) é pulado como TEXTO até
+//     a linha do delimitador — `git commit -F - <<'EOF'` cuja mensagem cita
+//     `gh pr merge` não é merge. Exceção fail-closed: delimitador sem aspas
+//     com `$(`/crase no corpo (o shell executa) → o corpo é lido como
+//     comandos. Heredoc sem a linha de fechamento vai até o fim do comando;
 //   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`).
 // Na dúvida o lexer fica do lado de VER o merge: flag desconhecida de wrapper
 // é tratada como booleana (não engole a palavra seguinte).
@@ -65,9 +66,15 @@ function scan(src, start, closer, commands, depth) {
   let inWord = false;
   let wordQuoted = false;
   let skipNext = false; // próxima palavra é alvo de redirecionamento
+  let heredocOp = null; // `<<`/`<<-` visto: a próxima palavra é o delimitador
+  const heredocs = []; // { delim, quoted, strip } pendentes até o fim da linha
 
   const endWord = () => {
     if (!inWord) return;
+    if (heredocOp !== null) {
+      heredocs.push({ delim: word, quoted: wordQuoted, strip: heredocOp === "<<-" });
+      heredocOp = null;
+    }
     if (skipNext) skipNext = false;
     else words.push(word);
     word = "";
@@ -79,6 +86,41 @@ function scan(src, start, closer, commands, depth) {
     if (words.length > 0) commands.push(words);
     words = [];
     skipNext = false;
+    heredocOp = null;
+  };
+  /**
+   * Corpo dos heredocs pendentes, a partir de `from` (logo depois do newline
+   * que encerra a linha do `<<`). Devolve onde a leitura continua. Corpo é
+   * TEXTO, nunca comando — `git commit -F - <<'EOF'` com uma linha
+   * `gh pr merge 5` na mensagem não é um merge (#10681). Exceção fail-closed:
+   * delimitador SEM aspas expande `$(...)`/crase no corpo, que o shell
+   * executa — aí o corpo inteiro é lido como comandos.
+   */
+  const skipHeredocBodies = (from) => {
+    let pos = from;
+    for (const h of heredocs) {
+      const bodyStart = pos;
+      let bodyEnd = n;
+      while (pos < n) {
+        const nl = src.indexOf("\n", pos);
+        const lineEnd = nl === -1 ? n : nl;
+        let line = src.slice(pos, lineEnd).replace(/\r$/, "");
+        if (h.strip) line = line.replace(/^\t+/, "");
+        const next = nl === -1 ? n : nl + 1;
+        if (line === h.delim) {
+          bodyEnd = pos;
+          pos = next;
+          break;
+        }
+        pos = next;
+      }
+      if (!h.quoted && depth < MAX_DEPTH) {
+        const body = src.slice(bodyStart, Math.min(bodyEnd, n));
+        if (body.includes("$(") || body.includes("`")) scan(body, 0, null, commands, depth + 1);
+      }
+    }
+    heredocs.length = 0;
+    return pos;
   };
   const nested = (from, close) => {
     if (depth >= MAX_DEPTH) return n;
@@ -192,6 +234,7 @@ function scan(src, start, closer, commands, depth) {
     if (ch === "\n" || ch === ";") {
       endCommand();
       i++;
+      if (ch === "\n" && heredocs.length > 0) i = skipHeredocBodies(i);
       continue;
     }
     if (ch === "|") {
@@ -222,6 +265,7 @@ function scan(src, start, closer, commands, depth) {
       const op = /^(<<<|<<-|<<|<>|<&|>>|>&|>\||<|>)/.exec(src.slice(i, i + 3))[0];
       i += op.length;
       skipNext = true;
+      if (op === "<<" || op === "<<-") heredocOp = op;
       continue;
     }
     if (ch === " " || ch === "\t" || ch === "\r") {

@@ -26,206 +26,182 @@
   </header>
 
   <main>
-    <div id="onboarding-alerts" class="panel alert-banner" role="alert" hidden></div>
-
-    <section class="panel">
-      <h1>Assinantes — histórico unificado</h1>
+    <!-- #10606 (revisão do editor, 20/10/2026): no topo, só o que pede uma
+         ação, com a ação escrita ao lado (itens e tabela de rascunhos
+         parados); a busca serve para atender um leitor. Números de contexto
+         ficam em "Detalhes", recolhido no fim da página. -->
+    <section class="panel" id="acoes-panel">
+      <h1>Assinantes: o que pede ação</h1>
       <p class="hint">
-        Beehiiv + Brevo + Kit numa timeline só (épico #6464). Read-only por
-        construção — não é uma quarta plataforma de envio: sem fusão manual
-        de identidade, sem edição de assinante. Toda métrica cross-plataforma
-        aqui é <strong>piso</strong>, nunca exata — identidade não-casada
-        aparece como churn + cadastro novo (#6589).
+        Falhas de envio, sequências travadas e rascunhos parados do onboarding,
+        cada um com a ação ao lado. Os números de contexto ficam em "Detalhes",
+        no fim da página.
       </p>
-      <div id="nodata-banner" class="hint" hidden>
-        Sem dados nesta sessão — <code>data/diaria-subscribers/</code> ausente
-        (sessão cloud sem a junction OneDrive, ou nenhuma ingestão rodou
-        ainda). Rode <code>diaria-subscribers-ingest-kit.ts</code>/
-        <code>diaria-subscribers-ingest-brevo.ts</code> numa sessão local.
+      <div id="onboarding-nodata" class="hint" hidden>
+        Sem dados de onboarding nesta sessão: <code>data/onboarding/store.json</code>
+        ausente (sessão sem a junction <code>data/</code>, ou o executor nunca rodou).
+      </div>
+      <div id="acoes-list"></div>
+      <p class="hint assinantes-acoes-ok" id="acoes-empty" hidden>Nada pedindo ação agora.</p>
+      <p class="hint" id="onboarding-load-error" hidden></p>
+
+      <div id="stale-block" hidden>
+        <h2>Rascunhos e lotes parados</h2>
+        <p class="hint">Convite de apoio (e-mail 3) preparado há dias sem agendar nem enviar. A coluna "Ação" diz o que fazer em cada um.</p>
+        <div class="table-scroll">
+          <table class="triage-table" id="onboarding-stale-table">
+            <thead>
+              <tr><th>E-mail</th><th>Provedor</th><th>Idade (dias)</th><th>Campanha/broadcast</th><th>Ação</th></tr>
+            </thead>
+            <tbody id="onboarding-stale-tbody"></tbody>
+          </table>
+        </div>
+        <button id="refresh-onboarding-btn" type="button" class="assinantes-action-btn">Reconsultar a Brevo</button>
       </div>
     </section>
 
     <section class="panel">
-      <h2>Buscar por e-mail</h2>
+      <h2>Buscar um assinante</h2>
+      <p class="hint">Para quando um leitor escreve (não recebe, quer sair, diz que apoia): mostra em que plataforma ele está e o histórico dele.</p>
       <form id="search-form" class="assinantes-search-form">
         <input type="text" id="search-email" placeholder="leitor@exemplo.com" autocomplete="off" />
         <button type="submit" id="search-btn">Buscar</button>
       </form>
+      <div id="nodata-banner" class="hint" hidden>
+        Sem dados nesta sessão: <code>data/diaria-subscribers/</code> ausente.
+        Rode <code>diaria-subscribers-ingest-kit.ts</code>/<code>diaria-subscribers-ingest-brevo.ts</code> numa sessão local.
+      </div>
       <div id="search-empty" class="hint" hidden>Nenhum assinante encontrado com este e-mail.</div>
       <div id="search-results"></div>
     </section>
 
-    <section class="panel">
-      <div class="panel-header-row">
-        <h2>Coorte por migração</h2>
+    <details class="panel assinantes-details" id="detalhes">
+      <summary>Detalhes (contexto, sem ação direta)</summary>
+      <p class="hint">
+        Beehiiv + Brevo + Kit numa timeline só (épico #6464), só leitura. Toda
+        métrica cross-plataforma é <strong>piso</strong>: identidade não casada
+        aparece como saída + cadastro novo (#6589).
+      </p>
+
+      <details class="assinantes-subdetails">
+        <summary>Onboarding: quantos receberam cada e-mail</summary>
+        <p class="hint">
+          "Recebidos" = enviado/agendado confirmado pelo nosso registro
+          (<code>data/onboarding/store.json</code>), sem consultar o ESP. Piloto
+          (<code>pilot:*</code>) fica fora. Nas sequências de apoio e formulário,
+          pendentes e pulados vêm da última rodada do executor.
+        </p>
+        <p class="hint" id="onboarding-note"></p>
+        <p class="hint" id="onboarding-followup-blocked" hidden></p>
+        <div class="table-scroll">
+          <table class="triage-table" id="onboarding-steps-table">
+            <thead>
+              <tr><th>E-mail</th><th>Recebidos</th><th>Kit</th><th>Brevo</th><th>Pendentes</th><th>Pulados</th><th>Falhos</th></tr>
+            </thead>
+            <tbody id="onboarding-steps-tbody"></tbody>
+          </table>
+        </div>
+        <h3>Convite de apoio (D+10)</h3>
+        <div class="assinantes-summary-grid" id="onboarding-cohort-summary"></div>
+        <div class="table-scroll">
+          <table class="triage-table" id="onboarding-stage-table">
+            <thead>
+              <tr><th>Estágio do convite</th><th>Assinantes</th></tr>
+            </thead>
+            <tbody id="onboarding-stage-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint">Reconsultar a Brevo atualiza só as campanhas do e-mail 3 ainda em rascunho local; lotes Kit não mudam.</p>
+        <button id="refresh-onboarding-details-btn" type="button" class="assinantes-action-btn">Reconsultar a Brevo</button>
+      </details>
+
+      <details class="assinantes-subdetails">
+        <summary>Onboarding: por pessoa</summary>
+        <form id="onboarding-people-filter" class="assinantes-search-form">
+          <label><input type="checkbox" id="onboarding-people-nao-apoia" /> só quem não apoia</label>
+          <select id="onboarding-people-sort" aria-label="Ordenar">
+            <option value="apoio">mais pedidos de apoio</option>
+            <option value="form">mais e-mails de formulário</option>
+            <option value="cadastro">cadastro mais recente</option>
+          </select>
+        </form>
+        <p class="hint" id="onboarding-people-count"></p>
+        <div class="table-scroll">
+          <table class="triage-table" id="onboarding-people-table">
+            <thead>
+              <tr><th>E-mail</th><th>Cadastro</th><th>E-mails de apoio</th><th>E-mails de formulário</th><th>Preencheu</th><th>Apoia</th></tr>
+            </thead>
+            <tbody id="onboarding-people-tbody"></tbody>
+          </table>
+        </div>
+      </details>
+
+      <details class="assinantes-subdetails">
+        <summary>Onboarding: lotes Kit</summary>
+        <p class="hint" id="onboarding-kit-run"></p>
+        <div class="table-scroll">
+          <table class="triage-table" id="onboarding-kit-lots-table">
+            <thead>
+              <tr><th>Lote</th><th>Etapa</th><th>Status</th><th>Destinatários</th><th>Broadcast</th><th>Criado em</th><th>Último erro</th></tr>
+            </thead>
+            <tbody id="onboarding-kit-lots-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="onboarding-kit-lots-empty" hidden>Nenhum lote Kit de produção no store.</p>
+        <p class="hint" id="onboarding-kit-pilot" hidden></p>
+      </details>
+
+      <details class="assinantes-subdetails">
+        <summary>Coorte por migração entre plataformas</summary>
+        <div id="floor-note" class="assinantes-floor-note" hidden></div>
+        <div class="assinantes-summary-grid" id="cohort-by-platform"></div>
+        <h3>Atravessaram 2+ plataformas</h3>
+        <div class="table-scroll">
+          <table class="triage-table" id="migrations-table">
+            <thead>
+              <tr><th>Plataforma A</th><th>Plataforma B</th><th>Assinantes</th></tr>
+            </thead>
+            <tbody id="migrations-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="migrations-empty" hidden>Nenhuma migração: ninguém tem alias em 2+ plataformas ainda.</p>
+        <h3>Reativação via Brevo</h3>
+        <p class="hint" id="reactivation-stat"></p>
+        <h3>Não casados (identidade não resolvida)</h3>
+        <div id="unmatched-summary"></div>
+        <h3>Cobertura de atributos</h3>
+        <div class="table-scroll">
+          <table class="triage-table" id="attribute-coverage-table">
+            <thead>
+              <tr><th>Plataforma</th><th>Chave</th><th>Com valor</th><th>Assinantes na plataforma</th><th>Cobertura</th></tr>
+            </thead>
+            <tbody id="attribute-coverage-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="attribute-coverage-empty" hidden>Nenhum atributo gravado no store ainda.</p>
         <button id="refresh-cohort-btn" type="button">Atualizar</button>
-      </div>
-      <div id="floor-note" class="assinantes-floor-note" hidden></div>
+      </details>
 
-      <div class="assinantes-summary-grid" id="cohort-by-platform"></div>
-
-      <h3>Atravessaram 2+ plataformas</h3>
-      <div class="table-scroll">
-        <table class="triage-table" id="migrations-table">
-          <thead>
-            <tr><th>Plataforma A</th><th>Plataforma B</th><th>Assinantes</th></tr>
-          </thead>
-          <tbody id="migrations-tbody"></tbody>
-        </table>
-      </div>
-      <p class="hint" id="migrations-empty" hidden>Nenhuma migração — ninguém tem alias em 2+ plataformas ainda.</p>
-
-      <h3>Reativação via Brevo (canal de reativação)</h3>
-      <p class="hint" id="reactivation-stat"></p>
-
-      <h3>Não-casados (identidade não resolvida)</h3>
-      <div id="unmatched-summary"></div>
-
-      <h3>Cobertura de atributos</h3>
-      <p class="hint">
-        Quantos assinantes de cada plataforma têm cada atributo preenchido
-        (apoio_nivel, respostas de survey, poll_sig, etc. — #7202). Responde
-        "esse atributo vale alguma coisa ou está vazio pra quase todo mundo?".
-      </p>
-      <div class="table-scroll">
-        <table class="triage-table" id="attribute-coverage-table">
-          <thead>
-            <tr><th>Plataforma</th><th>Chave</th><th>Com valor</th><th>Assinantes na plataforma</th><th>Cobertura</th></tr>
-          </thead>
-          <tbody id="attribute-coverage-tbody"></tbody>
-        </table>
-      </div>
-      <p class="hint" id="attribute-coverage-empty" hidden>Nenhum atributo gravado no store ainda.</p>
-    </section>
-
-    <section class="panel">
-      <div class="panel-header-row">
-        <h2>Coorte de aquisição por origem</h2>
-        <button id="refresh-cohort-origem-btn" type="button">Atualizar</button>
-      </div>
-      <p class="hint">
-        Cadastros (1 linha por subscriber resolvido, nunca por
-        <code>subscription</code>) agrupados por dia de cadastro (BRT) ×
-        classe de aquisição × <code>utm_source</code> (#7916, fatia 2/N).
-        Confirmado/pendente (double opt-in) só é observável hoje no Kit —
-        Beehiiv e Brevo não distinguem essa fase nos dados ingeridos.
-      </p>
-      <p class="hint" id="cohort-origem-confirmation-note"></p>
-      <form id="cohort-origem-filter-form" class="assinantes-search-form">
-        <input type="date" id="cohort-origem-from" aria-label="De (dia BRT)" />
-        <input type="date" id="cohort-origem-to" aria-label="Até (dia BRT)" />
-        <button type="submit">Filtrar</button>
-      </form>
-      <p class="hint" id="cohort-origem-gap" hidden></p>
-      <div class="table-scroll">
-        <table class="triage-table" id="cohort-origem-table">
-          <thead>
-            <tr><th>Dia (BRT)</th><th>Origem</th><th>Classe</th><th>Cadastros</th><th>Confirmados (Kit)</th><th>Pendentes (Kit)</th></tr>
-          </thead>
-          <tbody id="cohort-origem-tbody"></tbody>
-        </table>
-      </div>
-      <p class="hint" id="cohort-origem-empty" hidden>Nenhum cadastro com data conhecida no período.</p>
-    </section>
-
-    <section class="panel">
-      <div class="panel-header-row">
-        <h2>Onboarding — funil até o convite de apoio</h2>
-        <button id="refresh-onboarding-btn" type="button">Atualizar via Brevo</button>
-      </div>
-      <p class="hint">
-        D0 (e-mail 1) → D+3 (e-mail 2) → D+10 (convite de apoio, #7917).
-        <code>campaign_created</code> (Brevo) ou lote Kit criado confirmam só
-        PREPARAÇÃO do convite — nunca envio, entrega ou conversão. "Atualizar
-        via Brevo" consulta ao vivo só as campanhas ainda em rascunho local
-        (1 consulta por campanha distinta, nunca por assinante — a cota da
-        Brevo é 100 req/hora por conta).
-      </p>
-      <div id="onboarding-nodata" class="hint" hidden>
-        Sem dados nesta sessão — <code>data/onboarding/store.json</code>
-        ausente (sessão cloud sem a junction OneDrive, ou o executor
-        <code>onboarding-welcome-run.ts</code> nunca rodou ainda).
-      </div>
-      <div id="onboarding-corrupted" class="panel alert-banner" role="alert" hidden>
-        ⚠ <code>data/onboarding/store.json</code> existe mas está ILEGÍVEL
-        (JSON corrompido) — estado DESCONHECIDO, não onboarding vazio. Não
-        confundir com "nenhuma rodada rodou ainda": aqui há dado, só que não
-        dá pra lê-lo. Investigar o arquivo antes de assumir qualquer
-        contagem abaixo.
-      </div>
-      <p class="hint" id="onboarding-note"></p>
-      <p class="hint" id="onboarding-apoiador-error" hidden></p>
-      <div id="onboarding-refresh-errors" class="panel alert-banner" role="alert" hidden></div>
-
-      <div class="assinantes-summary-grid" id="onboarding-stage-counts"></div>
-
-      <h3>Comparação de coorte</h3>
-      <div class="assinantes-summary-grid" id="onboarding-cohort-summary"></div>
-
-      <h3>Rascunhos/lotes parados (sem agendar/enviar)</h3>
-      <div class="table-scroll">
-        <table class="triage-table" id="onboarding-stale-table">
-          <thead>
-            <tr><th>E-mail</th><th>Provedor</th><th>Estágio</th><th>Idade (dias)</th><th>Campanha/broadcast</th><th>Próxima ação</th></tr>
-          </thead>
-          <tbody id="onboarding-stale-tbody"></tbody>
-        </table>
-      </div>
-      <p class="hint" id="onboarding-stale-empty" hidden>Nenhum rascunho parado no momento.</p>
-
-      <h3>E-mails 1/2 enviados por transporte</h3>
-      <div class="assinantes-summary-grid" id="onboarding-provider-counts"></div>
-
-      <h3>Lotes Kit (transporte Kit, #7922)</h3>
-      <p class="hint" id="onboarding-kit-run"></p>
-      <div class="table-scroll">
-        <table class="triage-table" id="onboarding-kit-lots-table">
-          <thead>
-            <tr><th>Lote</th><th>Etapa</th><th>Status</th><th>Destinatários</th><th>Broadcast</th><th>Criado em</th><th>Último erro</th></tr>
-          </thead>
-          <tbody id="onboarding-kit-lots-tbody"></tbody>
-        </table>
-      </div>
-      <p class="hint" id="onboarding-kit-lots-empty" hidden>Nenhum lote Kit de produção no store.</p>
-      <p class="hint" id="onboarding-kit-pilot" hidden></p>
-
-      <h3>Por e-mail (escada + apoio D+30/90/180/360 + formulário)</h3>
-      <p class="hint">
-        "Recebidos" = enviado/agendado confirmado pelo nosso registro
-        (<code>data/onboarding/store.json</code>), sem consultar o ESP — entrega
-        e abertura reais são outra métrica (#10606). Piloto (<code>pilot:*</code>)
-        fica fora. Nas sequências de apoio e formulário, pendentes e pulados por
-        motivo vêm da última rodada do executor.
-      </p>
-      <p class="hint" id="onboarding-followup-blocked" hidden></p>
-      <div class="table-scroll">
-        <table class="triage-table" id="onboarding-steps-table">
-          <thead>
-            <tr><th>E-mail</th><th>Recebidos</th><th>Kit</th><th>Brevo</th><th>Pendentes</th><th>Pulados</th><th>Falhos</th></tr>
-          </thead>
-          <tbody id="onboarding-steps-tbody"></tbody>
-        </table>
-      </div>
-
-      <h3>Por pessoa</h3>
-      <form id="onboarding-people-filter" class="assinantes-search-form">
-        <label><input type="checkbox" id="onboarding-people-nao-apoia" /> só quem não apoia</label>
-        <select id="onboarding-people-sort" aria-label="Ordenar">
-          <option value="apoio">mais pedidos de apoio</option>
-          <option value="form">mais e-mails de formulário</option>
-          <option value="cadastro">cadastro mais recente</option>
-        </select>
-      </form>
-      <p class="hint" id="onboarding-people-count"></p>
-      <div class="table-scroll">
-        <table class="triage-table" id="onboarding-people-table">
-          <thead>
-            <tr><th>E-mail</th><th>Cadastro</th><th>E-mails de apoio</th><th>E-mails de formulário</th><th>Preencheu</th><th>Apoia</th></tr>
-          </thead>
-          <tbody id="onboarding-people-tbody"></tbody>
-        </table>
-      </div>
-    </section>
+      <details class="assinantes-subdetails">
+        <summary>Cadastros por origem</summary>
+        <p class="hint" id="cohort-origem-confirmation-note"></p>
+        <form id="cohort-origem-filter-form" class="assinantes-search-form">
+          <input type="date" id="cohort-origem-from" aria-label="De (dia BRT)" />
+          <input type="date" id="cohort-origem-to" aria-label="Até (dia BRT)" />
+          <button type="submit">Filtrar</button>
+        </form>
+        <p class="hint" id="cohort-origem-gap" hidden></p>
+        <div class="table-scroll">
+          <table class="triage-table" id="cohort-origem-table">
+            <thead>
+              <tr><th>Dia (BRT)</th><th>Origem</th><th>Classe</th><th>Cadastros</th><th>Confirmados (Kit)</th><th>Pendentes (Kit)</th></tr>
+            </thead>
+            <tbody id="cohort-origem-tbody"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="cohort-origem-empty" hidden>Nenhum cadastro com data conhecida no período.</p>
+      </details>
+    </details>
   </main>
 
   <script>window.STUDIO_PAGE = "assinantes";</script>

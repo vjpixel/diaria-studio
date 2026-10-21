@@ -108,6 +108,7 @@ describe("parseAudienceRunArgs", () => {
       responsesPath: "r.json",
       dryRun: true,
       skipBeehiivResolve: true,
+      allowFormOnly: false,
     });
   });
 
@@ -118,6 +119,7 @@ describe("parseAudienceRunArgs", () => {
       responsesPath: undefined,
       dryRun: false,
       skipBeehiivResolve: false,
+      allowFormOnly: false,
     });
   });
 });

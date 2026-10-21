@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Tue, 20 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 21 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Você já viu IA mentir. Já viu roubar?</title>
+      <link>https://diar.ia.br/p/voce-ja-viu-ia-mentir-ja-viu-roubar</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/voce-ja-viu-ia-mentir-ja-viu-roubar</guid>
+      <pubDate>Wed, 21 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Cloudflare lança modelo que lê sem gerar texto | Curso de IA supera medicina na nota de corte da UFG</description>
+    </item>
     <item>
       <title>Seu cargo de júnior sobreviveria na Anthropic?</title>
       <link>https://diar.ia.br/p/seu-cargo-de-junior-sobreviveria-na-anthropic</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/medicina-teme-formar-medicos-sem-raciocinio</guid>
       <pubDate>Tue, 11 Aug 2026 09:00:00 GMT</pubDate>
       <description>Entrevistas de emprego ganham avatar sintético | OpenAI freia modelo por risco cibernético</description>
-    </item>
-    <item>
-      <title>IA de Stanford cria vírus funcional em lab</title>
-      <link>https://diar.ia.br/p/ia-de-stanford-cria-virus-funcional-em-lab</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/ia-de-stanford-cria-virus-funcional-em-lab</guid>
-      <pubDate>Mon, 10 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Meta é a terceira empresa de IA a relatar invasão | RH: candidatos burlam triagem com prompts</description>
     </item>
   </channel>
 </rss>

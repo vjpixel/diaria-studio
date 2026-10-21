@@ -55,6 +55,7 @@ import {
   resolveRepoRootCandidates,
   resolveGitRoot,
 } from "./block-pr-create-pii-runtime-artifacts.mjs";
+import { isForeignRepoGhCommand } from "./lib/gh-target-repo.mjs";
 
 /** Var de ambiente do escape hatch — nome único pra não colidir com nenhum
  * outro guard/flag do repo. */
@@ -210,6 +211,10 @@ if (
       const hookDir = dirname(fileURLToPath(import.meta.url));
       const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));
       if (cwd === null) return; // fail-open: nenhum candidato é repo git
+      // #10618: PR de OUTRO repo (ex: vjpixel/diaria-design, `-R` ou cwd num
+      // checkout dele) — esta é uma regra do diaria-studio, não se aplica lá.
+      // Repo indeterminado segue aplicando a regra (comportamento anterior).
+      if (isForeignRepoGhCommand(command, cwd)) return;
 
       if (process.env[TSC_PR_GUARD_BYPASS_ENV] === "1") {
         logTscGuardEvent(

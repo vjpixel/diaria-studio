@@ -59,3 +59,12 @@ Isso registra a task `Diaria-Beehiiv-Backup` (domingos 03:00 BRT / 06:00 UTC). I
 ## Log
 
 `data/beehiiv-backup/.backup.log` (append-only, uma seção por execução da task agendada).
+
+## Retenção e alarmes (#10710)
+
+Nenhum script do repo apaga `data/beehiiv-backup/` — o `gc-data-dir.ts` o exclui até no `--apply`, e o relatório do dry-run nunca lista como dispensável o snapshot mais antigo de cada mês. Em 14/10/2026 todos os snapshots anteriores a 04/10 sumiram por uma remoção vinda do OneDrive remoto (o journal do cliente `onedrive` na `300` registra `Deleting local file`, ou seja, a remoção chegou de fora). A Lixeira online do OneDrive guarda o apagado por ~30 dias.
+
+O alarme semanal (`beehiiv-backup-staleness-alarm.ts`) checa também:
+
+- **Cobertura mensal:** todo mês fechado desde 2026-08 precisa ter ao menos 1 snapshot. Se a perda de um mês for definitiva, listar o mês em `BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS` (`scripts/lib/beehiiv-backup-staleness-alarm.ts`).
+- **Exit-history:** `exit-history/manifest.json` precisa existir com `complete: true`. O drain é feito pelo agent `beehiiv-exit-history-drain` (#7248), que só roda numa sessão com o conector Beehiiv; o Stage 0 da diária devolve o dispatch (`pendingAgentDispatch` `0h.4`) enquanto o manifest não estiver completo.

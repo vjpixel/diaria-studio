@@ -71,6 +71,12 @@ function deps(over: Partial<FollowupRoundDeps> & { calls: string[] }): FollowupR
     async listEnvioBrevoEmails() {
       return [];
     },
+    async setFormSig(_id: number, sig: string) {
+      return { kind: "stored" as const, value: sig };
+    },
+    async probeFormLink() {
+      return { status: 200, bodyHasForm: true };
+    },
     async fetchFormResponses() {
       return [];
     },
@@ -90,7 +96,7 @@ const apoioSubs = async () => [{ kit_subscriber_id: 1, email: "a@x.com", cadastr
 async function dayOneApoio(storePath: string): Promise<void> {
   const calls: string[] = [];
   const r = await runFollowupRound(
-    { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 30 * DAY) * 1000 },
+    { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 30 * DAY) * 1000 },
     deps({ calls, listActiveSubscribers: apoioSubs, runLot: failingRunLot(calls) }),
   );
   assert.equal(r.run.lots_failed, 1);
@@ -107,7 +113,7 @@ describe("#10628 apoio: lote schedule_failed não vira lote duplicado no dia seg
 
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -137,7 +143,7 @@ describe("#10628 apoio: lote schedule_failed não vira lote duplicado no dia seg
 
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -165,7 +171,7 @@ describe("#10628 apoio: lote schedule_failed não vira lote duplicado no dia seg
 
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -189,7 +195,7 @@ describe("#10628 apoio: lote schedule_failed não vira lote duplicado no dia seg
     await dayOneApoio(storePath);
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -210,7 +216,7 @@ describe("#10628 apoio: lote schedule_failed não vira lote duplicado no dia seg
     await dayOneApoio(storePath);
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: false, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: false, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -230,7 +236,7 @@ describe("#10633 conta Kit gravada no lote: 404 na releitura cancela quando a co
   async function dayOneWithAccount(storePath: string, accountId: () => Promise<string>): Promise<void> {
     const calls: string[] = [];
     const r = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 30 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 30 * DAY) * 1000 },
       deps({ calls, listActiveSubscribers: apoioSubs, runLot: failingRunLot(calls), getAccountId: accountId }),
     );
     assert.equal(r.run.lots_failed, 1);
@@ -251,7 +257,7 @@ describe("#10633 conta Kit gravada no lote: 404 na releitura cancela quando a co
     await dayOneWithAccount(storePath, async () => "acc-1");
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -276,7 +282,7 @@ describe("#10633 conta Kit gravada no lote: 404 na releitura cancela quando a co
     await dayOneWithAccount(storePath, async () => "acc-1");
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -300,7 +306,7 @@ describe("#10633 conta Kit gravada no lote: 404 na releitura cancela quando a co
     assert.equal(lot.kit_account_id, undefined);
     const calls: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: apoioOnly, nowMs: (T0 + 31 * DAY) * 1000 },
       deps({
         calls,
         listActiveSubscribers: apoioSubs,
@@ -332,13 +338,13 @@ describe("#10628 form_lembrete: mesma barreira (a dedup dele dependia só de peo
   it("PATCH ok + releitura falha + limpeza falha → dia seguinte não cria outro lembrete", async () => {
     const storePath = tempStore(seed);
     const c1: string[] = [];
-    const r1 = await runFollowupRound({ storePath, send: true, cfg, snippets: formOnly, nowMs: day1 }, deps({ calls: c1, runLot: failingRunLot(c1) }));
+    const r1 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: formOnly, nowMs: day1 }, deps({ calls: c1, runLot: failingRunLot(c1) }));
     assert.deepEqual(c1, ["lot:form_lembrete"]);
     assert.equal(r1.run.lots_failed, 1);
 
     const c2: string[] = [];
     const r2 = await runFollowupRound(
-      { storePath, send: true, cfg, snippets: formOnly, nowMs: day1 + DAY * 1000 },
+      { storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: formOnly, nowMs: day1 + DAY * 1000 },
       deps({
         calls: c2,
         async getBroadcast() {
@@ -358,9 +364,9 @@ describe("#10628 form_lembrete: mesma barreira (a dedup dele dependia só de peo
   it("sem as deps de releitura o lote também fica não resolvido (nunca libera às cegas)", async () => {
     const storePath = tempStore(seed);
     const c1: string[] = [];
-    await runFollowupRound({ storePath, send: true, cfg, snippets: formOnly, nowMs: day1 }, deps({ calls: c1, runLot: failingRunLot(c1) }));
+    await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: formOnly, nowMs: day1 }, deps({ calls: c1, runLot: failingRunLot(c1) }));
     const c2: string[] = [];
-    const r2 = await runFollowupRound({ storePath, send: true, cfg, snippets: formOnly, nowMs: day1 + DAY * 1000 }, deps({ calls: c2 }));
+    const r2 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: formOnly, nowMs: day1 + DAY * 1000 }, deps({ calls: c2 }));
     assert.equal(c2.length, 0);
     assert.equal(r2.run.lots_unresolved, 1);
   });

@@ -447,6 +447,48 @@ export function hasHardBounce(statistics: BrevoContactStatistics | undefined): b
   return Array.isArray(arr) && arr.length > 0;
 }
 
+/** #10666 — Pura: `true` se existir >=1 reclamação de spam
+ * (`statistics.complaints`). Campo ausente/malformado → `false` (fail-safe,
+ * mesmo padrão de `hasHardBounce`). */
+export function hasComplaint(statistics: BrevoContactStatistics | undefined): boolean {
+  const arr = statistics?.complaints;
+  return Array.isArray(arr) && arr.length > 0;
+}
+
+/** Motivo da saída `bounced` (sem clique de descadastro) de um contato `emailBlacklisted` na Brevo. */
+export type NativeBounceReason = "native_complaint" | "native_bounce" | "native_admin_block";
+
+/**
+ * #10666 — Pura: motivo de um `emailBlacklisted` SEM `userUnsubscription`.
+ * Reclamação de spam vem antes do hard bounce: é sinal de reputação e nunca
+ * pode ser diluída em `native_admin_block`. `spamComplained` ausente (estado
+ * montado antes do #10666) equivale a `false`.
+ *
+ * Precedência quando reclamação e hard bounce coexistem (decisão do #10701):
+ * vence `native_complaint`. A ação é a mesma nos dois casos (o contato sai e
+ * não volta), então a escolha só afeta a contagem. A taxa de reclamação tem
+ * limiar bem mais baixo que a de bounce (spam ≥0,1% contra bounce duro
+ * ≥2% em `lib/brevo-diaria-guardrail.ts`), e uma reclamação contada como bounce some de onde pesa mais.
+ *
+ * Consequências pra quem monitora:
+ * - a taxa de reclamação deve ler `resolution_reason: "native_complaint"` no
+ *   store; o contador `complainedNative` só aparece no log da rodada;
+ * - registros gravados antes do #10666 continuam `native_admin_block`, sem
+ *   migração (a reclamação deles não foi lida na época).
+ */
+export function nativeBounceReason(state: Pick<BrevoContactState, "hardBounced" | "spamComplained">): NativeBounceReason {
+  if (state.spamComplained === true) return "native_complaint";
+  if (state.hardBounced) return "native_bounce";
+  return "native_admin_block";
+}
+
+/** #10666 — Pura: como `nativeBounceReason`, mas o descadastro por clique do usuário vence (caminho próprio, propaga). */
+export function nativeBlacklistExitReason(
+  state: Pick<BrevoContactState, "userUnsubscribed" | "hardBounced" | "spamComplained">,
+): "native_unsubscribe" | NativeBounceReason {
+  return state.userUnsubscribed ? "native_unsubscribe" : nativeBounceReason(state);
+}
+
 /** Pura — `true` só se existir >=1 evento de descadastro por INICIATIVA DO
  * USUÁRIO (`statistics.unsubscriptions.userUnsubscription`, não vazio).
  * `adminUnsubscription` isolado (bounce, ação admin-side na Brevo) NUNCA
@@ -540,6 +582,10 @@ export interface BrevoContactState {
    * admin-side/complaint), usado só quando `emailBlacklisted && !userUnsubscribed`
    * pra escolher entre `resolution_reason` `"native_bounce"`/`"native_admin_block"`. */
   hardBounced: boolean;
+  /** #10666 — `statistics.complaints` não vazio (reclamação de spam). Usado
+   * por `nativeBlacklistExitReason` pra gravar `native_complaint` em vez de
+   * `native_admin_block`. Opcional: ausente equivale a `false`. */
+  spamComplained?: boolean;
   /** #6705 — ISO do envio Brevo mais recente (`statistics.messagesSent`,
    * `latestEventTime`), ou `null` se nunca houve envio. Usado exclusivamente
    * pela instrumentação da janela de duplicidade Kit×Brevo (ver
@@ -623,6 +669,8 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     userUnsubscribed: hasUserUnsubscription(res.body?.statistics),
     hardBounced: hasHardBounce(res.body?.statistics),
     last_messagesSent_at: latestEventTime(res.body?.statistics?.messagesSent),
+    // #10666 — só presente quando houve reclamação (mesmo racional do shape acima).
+    ...(hasComplaint(res.body?.statistics) ? { spamComplained: true } : {}),
     ...(blacklistAt !== null ? { blacklist_event_latest_at: blacklistAt } : {}),
     ...(blacklistUndated ? { blacklist_event_undated: true } : {}),
   };
@@ -1945,6 +1993,10 @@ export interface RunEvaluationResult {
    * ação admin-side), 4ª saída terminal puramente local (nunca escreve na
    * Beehiiv). */
   bouncedNative: number;
+  /** #10666 — mesma saída local `bounced` de `bouncedNative`, mas por
+   * reclamação de spam (`resolution_reason: "native_complaint"`). Contada à
+   * parte (NÃO entra em `bouncedNative`) porque é sinal de reputação. */
+  complainedNative: number;
   selfConfirmed: number;
   promoted: number;
   suppressed: number;
@@ -2214,6 +2266,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let unsubscribedNative = 0;
   let unsubscribedNativeBeehiivNotFound = 0;
   let bouncedNative = 0;
+  let complainedNative = 0; // #10666
   let selfConfirmed = 0;
   let promoted = 0;
   let suppressed = 0;
@@ -2413,14 +2466,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             }
             continue;
           }
-          const exitReason = nativeState.userUnsubscribed
-            ? "native_unsubscribe"
-            : nativeState.hardBounced
-              ? "native_bounce"
-              : "native_admin_block";
+          const exitReason = nativeBlacklistExitReason(nativeState); // #10666
           log(`${contact.email}: emailBlacklisted na Brevo (${exitReason}), origem kit-sem-abertura → saída nas duas bases (#10437).`);
           if (!push) {
-            if (nativeState.userUnsubscribed) unsubscribedNative++;
+            if (exitReason === "native_unsubscribe") unsubscribedNative++;
+            else if (exitReason === "native_complaint") complainedNative++;
             else bouncedNative++;
             continue;
           }
@@ -2432,12 +2482,13 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             continue;
           }
           await unlinkFromBrevoList(brevoApiKey, listId, contact.email);
-          if (nativeState.userUnsubscribed) {
+          if (exitReason === "native_unsubscribe") {
             unsubscribedNative++;
             store = applyNativeUnsubscribe(store, contact.email, new Date().toISOString(), "native_unsubscribe_kit_sem_abertura");
           } else {
-            bouncedNative++;
-            store = applyBrevoDiariaBounced(store, contact.email, exitReason as "native_bounce" | "native_admin_block");
+            if (exitReason === "native_complaint") complainedNative++;
+            else bouncedNative++;
+            store = applyBrevoDiariaBounced(store, contact.email, exitReason);
           }
           continue;
         }
@@ -2505,12 +2556,13 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             // bounce isolado, mesmo racional do caminho Beehiiv abaixo (mas
             // este ramo JÁ é 100% local — nunca chamou Beehiiv nem Kit pra
             // escrever, só leu o Kit pra decidir).
-            const bounceReason = nativeState.hardBounced ? "native_bounce" : "native_admin_block";
+            const bounceReason = nativeBounceReason(nativeState); // #10666
             log(
               `${contact.email}: emailBlacklisted na Brevo sem userUnsubscription (${bounceReason}), origem Kit → ` +
                 "marcado bounced localmente (zero chamada Beehiiv/Kit), libera slot.",
             );
-            bouncedNative++;
+            if (bounceReason === "native_complaint") complainedNative++;
+            else bouncedNative++;
             if (push) {
               await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
               store = applyBrevoDiariaBounced(store, contact.email, bounceReason);
@@ -2614,12 +2666,13 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             // nada pra ele. Saída terminal LOCAL dedicada em vez de "segue
             // avaliação normal" (comportamento antigo, #4630) — o contato
             // ficava preso `in_brevo` pra sempre.
-            const bounceReason = nativeState.hardBounced ? "native_bounce" : "native_admin_block";
+            const bounceReason = nativeBounceReason(nativeState); // #10666
             log(
               `${contact.email}: emailBlacklisted na Brevo sem userUnsubscription (${bounceReason}) → NÃO ` +
                 "propagado pra Beehiiv (#5351, decisão do editor), marcado bounced localmente, libera slot.",
             );
-            bouncedNative++;
+            if (bounceReason === "native_complaint") complainedNative++;
+            else bouncedNative++;
             if (push) {
               await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
               store = applyBrevoDiariaBounced(store, contact.email, bounceReason);
@@ -3174,6 +3227,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     unsubscribedNative,
     unsubscribedNativeBeehiivNotFound,
     bouncedNative,
+    complainedNative,
     selfConfirmed,
     promoted,
     suppressed,
@@ -3325,6 +3379,7 @@ async function main(): Promise<number> {
     `resumo: ${result.unsubscribedNative} descadastrado(s) nativamente ` +
       `(${result.unsubscribedNativeBeehiivNotFound} via 404 permanente Beehiiv, ver resolution_reason), ` +
       `${result.bouncedNative} bounced (bounce/ação admin, #5351 — NUNCA propagado pra Beehiiv), ` +
+      `${result.complainedNative} reclamação(ões) de spam (bounced, native_complaint, #10666), ` +
       `${result.selfConfirmed} auto-confirmado(s), ` +
       `${result.promoted} promovido(s) por taxa de abertura, ${result.suppressed} suprimido(s), ` +
       `${result.kept} mantido(s), ${result.failed} falha(s), ` +

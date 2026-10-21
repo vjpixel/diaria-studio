@@ -222,8 +222,14 @@ export interface BrevoDiariaContact {
     | "native_bounce"
     /** #5351 Parte B — `emailBlacklisted` sem `userUnsubscription` E sem
      * `hardBounces`: ação admin-side/complaint na Brevo, motivo exato não
-     * distinguível pela API disponível. */
+     * distinguível pela API disponível. Registros gravados antes do #10666
+     * podem ser reclamação de spam — o motivo dedicado abaixo não existia. */
     | "native_admin_block"
+    /** #10666 — `emailBlacklisted` com `statistics.complaints` não vazio (e
+     * sem `userUnsubscription`): o contato marcou a diária como spam. Sinal de
+     * REPUTAÇÃO, separado de `native_admin_block` pra não cegar o
+     * monitoramento de complaint rate. Mesmo status `bounced`. */
+    | "native_complaint"
     /** #6485 — motivo dedicado de `converted_to_kit` (ver docstring do
      * status acima). Único `resolution_reason` pareado com esse status —
      * mantido como união distinta (não reaproveitado de outro) porque o
@@ -453,7 +459,8 @@ export function applyNativeUnsubscribe(
  * nunca reentra). Mesmo guard de idempotência dos outros `apply*` acima —
  * só contatos `in_brevo` transicionam.
  *
- * @param reason `"native_bounce"` quando `statistics.hardBounces` não
+ * @param reason `"native_complaint"` quando `statistics.complaints` não
+ * vazio (#10666), `"native_bounce"` quando `statistics.hardBounces` não
  * vazio, `"native_admin_block"` caso contrário — decidido pelo caller a
  * partir do MESMO `GET /contacts/{email}` já feito (`fetchBrevoContactState`
  * ganha o campo `hardBounced`), zero chamada nova.
@@ -461,7 +468,7 @@ export function applyNativeUnsubscribe(
 export function applyBrevoDiariaBounced(
   store: BrevoDiariaStore,
   email: string,
-  reason: Extract<BrevoDiariaContact["resolution_reason"], "native_bounce" | "native_admin_block">,
+  reason: Extract<BrevoDiariaContact["resolution_reason"], "native_bounce" | "native_admin_block" | "native_complaint">,
   now: string = new Date().toISOString(),
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);

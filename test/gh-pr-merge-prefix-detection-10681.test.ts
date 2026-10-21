@@ -35,7 +35,7 @@ const consume = (await import(
 )) as Detector & {
   decideConsumeAfterBash: (
     command: string,
-    deps: { findLiveGrant: (pr: number | undefined) => unknown; execFn?: () => never },
+    deps: { findLiveGrant: (pr: number | undefined) => unknown; execFn?: () => never; targetPr?: number },
   ) => { consume: boolean; targetPr: number | undefined; reason: string };
 };
 
@@ -96,6 +96,12 @@ const POSITIVES: Array<[string, number | undefined]> = [
   ['gh pr merge --body "encerrado depois de 100 dias" 6303', 6303],
   ["gh pr merge --subject 5 6", 6],
   ["gh pr merge --squash", undefined],
+  // Heredoc: o corpo é texto, mas o que vem DEPOIS do delimitador é comando.
+  ["cat <<'EOF' > f.txt\ngh pr merge 7\nEOF\ngh pr merge 44", 44],
+  ["cat <<-EOF\n\tgh pr merge 7\n\tEOF\ngh pr merge 45", 45],
+  ["cat <<EOF; gh pr merge 46\ncorpo\nEOF", 46],
+  // Fail-closed: delimitador sem aspas expande `$(...)` no corpo (executa).
+  ["cat <<EOF\n$(gh pr merge 47)\nEOF", 47],
 ];
 
 /** Mencionam `gh pr merge` sem executar — nunca podem virar merge. */
@@ -121,6 +127,13 @@ const NEGATIVES: string[] = [
   "npx tsx scripts/lib/session-registry.ts check-merge-grant",
   "gh pr merge-x",
   "gh-pr merge 5",
+  // Comentário na #10681: mensagem de commit em heredoc que CITA o merge.
+  // O regex antigo não via (tudo dentro de "..."); o lexer, antes de pular o
+  // corpo do heredoc, via — e o guard negava o commit de um subagente.
+  `git commit -m "$(cat <<'EOF'\nfix: x\n\nrodar && gh pr merge 5 depois\ngh pr merge 6\nEOF\n)"`,
+  "git commit -F - <<'EOF'\nfix: x\n\n&& gh pr merge 5\nEOF",
+  'git commit -F - <<"EOF"\n&& gh pr merge 5\nEOF',
+  "cat <<'EOF'\n$(gh pr merge 5)\nEOF",
 ];
 
 describe("#10681 — detector reconhece gh pr merge com prefixos", () => {
@@ -173,6 +186,27 @@ describe("#10681 — os dois hooks usam o MESMO detector", () => {
     });
     assert.equal(decision.consume, true);
     assert.equal(decision.targetPr, 5);
+  });
+
+  it("nº da PR: o consumidor usa o mesmo que o guard (resolveMergeTargets), inclusive de URL canônica", () => {
+    // `extractGhPrMergeTargetPr` não lê nº de URL; o guard (via
+    // `resolveMergeTargets`) lê. Sem o `targetPr` repassado, o consumidor via
+    // `undefined` e consumia como `pr-undetermined` uma concessão escopada.
+    const url = "gh pr merge https://github.com/vjpixel/diaria-studio/pull/77 --squash";
+    assert.equal(extractGhPrMergeTargetPr(url), undefined);
+    const seen: Array<number | undefined> = [];
+    const decision = consume.decideConsumeAfterBash(url, {
+      targetPr: 77,
+      findLiveGrant: (pr) => {
+        seen.push(pr);
+        return { pr: 99 }; // concessão de OUTRA PR: não casa
+      },
+      execFn: () => {
+        throw new Error("não deveria consultar o GitHub");
+      },
+    });
+    assert.deepEqual(seen, [77]);
+    assert.equal(decision.targetPr, 77);
   });
 
   it("settings.json não restringe o consumidor a comandos que COMEÇAM com gh pr merge", () => {
@@ -236,7 +270,12 @@ describe("#10681 — entrypoint CLI do guard bloqueia as formas com prefixo", ()
     });
   }
 
-  for (const cmd of ['echo "GH_REPO=x gh pr merge 5"', "GH_REPO=x gh pr view 5"]) {
+  for (const cmd of [
+    'echo "GH_REPO=x gh pr merge 5"',
+    "GH_REPO=x gh pr view 5",
+    `git commit -m "$(cat <<'EOF'\nfix: x\n\nrodar && gh pr merge 5 depois\nEOF\n)"`,
+    "git commit -F - <<'EOF'\nfix: x\n\n&& gh pr merge 5\nEOF",
+  ]) {
     it(`não interfere: ${JSON.stringify(cmd)}`, () => {
       const res = runHook(root, cmd);
       assert.equal(res.status, 0);

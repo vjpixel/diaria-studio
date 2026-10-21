@@ -301,3 +301,12 @@ tendência + anti-repetição — ver seção acima).
 de cima do box do topo, coloque `<!-- box0-sem-rotulo -->` dentro do bloco
 do box no `02-reviewed.md` (logo após o `<!-- box0 -->`, antes do `---` que
 fecha o box). O marcador nunca entra no conteúdo do box nem no HTML.
+Desde #10696 ele também vale na linha logo ACIMA do `<!-- box0 -->`, desde
+que no mesmo bloco (sem `---` entre os dois); fora desse bloco o lint
+`orphan-box-in-gap` avisa que ele seria ignorado.
+
+**Limites do slot 0 (#10696):** o box0 termina no primeiro `---` depois do
+`<!-- box0 -->`, então o conteúdo do box não pode ter `---` interno (o que
+sobrar depois dele é apontado pelo `orphan-box-in-gap`). E qualquer bloco
+entre a cobertura e o `<!-- box0 -->` que não seja callout nem trailer dele
+não é renderizado; o mesmo lint avisa em vez de deixar sumir.

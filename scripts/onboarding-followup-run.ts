@@ -24,7 +24,11 @@
  * `form_responses_url`) a de formulário não sai. Com as duas travadas a rodada
  * NÃO chama a API do Kit (zero leitura da base) e só registra o bloqueio
  * (`followup.last_run`), que o painel mostra. `--init-snippets` cria os
- * arquivos que faltam já com o marcador (nunca sobrescreve).
+ * arquivos que faltam já com o marcador (nunca sobrescreve texto editado).
+ * Quando existe rascunho versionado da etapa em
+ * `context/templates/onboarding-followup/` (#10605: os 2 do formulário), é
+ * ele que vira o arquivo, com o marcador pendente intacto; um arquivo que
+ * ainda é o modelo vazio de antes do rascunho é trocado pelo rascunho.
  *
  * SEGURANÇA:
  *  - Default é DRY-RUN: sem `--send` nada é criado no Kit nem gravado no store.
@@ -35,7 +39,7 @@
  * Uso:
  *   npx tsx scripts/onboarding-followup-run.ts                 # dry-run
  *   npx tsx scripts/onboarding-followup-run.ts --send          # cria/agenda os lotes devidos
- *   npx tsx scripts/onboarding-followup-run.ts --init-snippets # cria os textos faltantes com o marcador
+ *   npx tsx scripts/onboarding-followup-run.ts --init-snippets # cria os textos faltantes com o marcador (rascunho versionado quando há)
  * Flags auxiliares: --store <path>, --snippets-dir <path>, --config <path>, --env-root <path>, --skip-if-disabled.
  */
 
@@ -44,7 +48,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
-import { listAllKitSubscribers, getSubscriberById } from "./lib/kit-subscribers.ts";
+import { listAllKitSubscribers, getSubscriberById, updateSubscriberFields } from "./lib/kit-subscribers.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts";
 import { findTagIdByName, listAllTagSubscriberEmails, deleteBroadcast } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
@@ -53,9 +57,12 @@ import { withFileLock } from "./lib/file-lock.ts";
 import { resolveNewsletterSubscriberBackend } from "./lib/shared/newsletter-subscriber-source.ts";
 import { unixSecondsToBrtDate } from "./lib/beehiiv-publish-date.ts";
 import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from "./lib/onboarding-store.ts";
-import { decideLotReconciliation, LOT_STALE_AFTER_MS } from "./lib/onboarding-kit-transport.ts";
+import { decideLotReconciliation, LOT_STALE_AFTER_MS, refreshKitCandidates, type RefreshKitCandidatesOpts } from "./lib/onboarding-kit-transport.ts";
+import { isKitTransientError } from "./onboarding-welcome-run.ts";
 import { redactEmails } from "./lib/onboarding-kit-pilot.ts";
 import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
+import { FORM_PAGE_MARKER, FORM_SIG_KIT_FIELD, ONBOARDING_FORM_LINK_SECRET_ENV, signFormEmail } from "./lib/onboarding-form-link-sig.ts";
+import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
   apoioContentGate,
@@ -63,23 +70,28 @@ import {
   applyFormResponses,
   buildFollowupLotId,
   filterDueByLiveCheck,
+  isConcreteKitState,
   findLatestFollowupLot,
   formCandidatesFromEntries,
   formContentGate,
+  buildFormLink,
+  FORM_LINK_PROBE_EMAIL,
   idsInConfirmedFollowupLots,
   idsInUnresolvedFollowupLots,
   isApoioStep,
+  isFormStep,
   isoToSec,
   isUnresolvedFollowupLot,
   normalizeEmail,
   parseFollowupSnippet,
   planFollowup,
-  recordApoiaSkips,
+  recordLiveCheckSkips,
   recordApoioChecks,
   recordFollowupRun,
   renderFollowupBody,
   splitDueByCap,
   capWindowOverflows,
+  classifyLookupFailures,
   resolveFollowupConfig,
   snippetFileFor,
   snippetTemplate,
@@ -95,6 +107,7 @@ import {
   type FollowupStepKind,
   type FormResponseRecord,
   type LiveSubscriberCheck,
+  type LookupFailure,
 } from "./lib/onboarding-followup.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { CliExit, runCli } from "./lib/cli-exit.ts";
@@ -180,7 +193,7 @@ export function persistFollowupLot(storePath: string, lot: FollowupLot, cadastro
   });
 }
 
-/** Aplica uma mutação nas pessoas sob lock (respostas do formulário, pulos `apoia`). */
+/** Aplica uma mutação nas pessoas sob lock (respostas do formulário, pulos `apoia`/`nao_ativo`). */
 export function persistFollowupPeople(storePath: string, mutate: (people: FollowupBlock["people"]) => void): void {
   withStore(storePath, "gravar pessoas", (_store, block) => {
     mutate(block.people);
@@ -208,17 +221,55 @@ export function loadFollowupSnippets(dirAbs: string): FollowupSnippets {
   return out;
 }
 
-/** Cria os textos que faltam já com o marcador pendente. Nunca sobrescreve. */
-export function initFollowupSnippets(dirAbs: string): string[] {
+/** Rascunhos versionados dos textos (#10605) — semente do `--init-snippets`. */
+export const FOLLOWUP_DRAFTS_DIR = resolve(ROOT, "context/templates/onboarding-followup");
+
+/**
+ * Cria os textos que faltam já com o marcador pendente: o rascunho versionado
+ * da etapa quando existe (`draftsDirAbs`), senão o modelo vazio. Nunca
+ * sobrescreve texto editado; só troca um arquivo que ainda é EXATAMENTE o
+ * modelo vazio (`snippetTemplate`) pelo rascunho, caso de quem rodou
+ * `--init-snippets` antes de o rascunho existir. Rascunho sem o marcador
+ * pendente é recusado (lança): a semente nunca pode destravar envio sozinha.
+ * A validação de TODOS os rascunhos acontece antes de qualquer escrita, então
+ * uma recusa não deixa o diretório pela metade.
+ * Devolve os caminhos gravados (`written`) e os que ficaram como estavam
+ * (`skipped`, com o motivo).
+ */
+export interface InitSnippetsResult {
+  written: string[];
+  skipped: { path: string; reason: "texto_existente" | "ja_e_o_rascunho" }[];
+}
+
+export function initFollowupSnippets(dirAbs: string, draftsDirAbs: string = FOLLOWUP_DRAFTS_DIR): InitSnippetsResult {
+  const drafts = new Map<FollowupStepKind, string | null>();
+  for (const kind of ALL_FOLLOWUP_STEPS) {
+    const draftPath = resolve(draftsDirAbs, snippetFileFor(kind));
+    const draft = existsSync(draftPath) ? readFileSync(draftPath, "utf8") : null;
+    if (draft != null && !draft.includes(PENDING_BODY_MARKER)) {
+      throw new Error(`[onboarding-followup] rascunho ${draftPath} sem ${PENDING_BODY_MARKER}: a semente nunca pode sair já aprovada`);
+    }
+    drafts.set(kind, draft);
+  }
   mkdirSync(dirAbs, { recursive: true });
-  const created: string[] = [];
+  const out: InitSnippetsResult = { written: [], skipped: [] };
   for (const kind of ALL_FOLLOWUP_STEPS) {
     const p = resolve(dirAbs, snippetFileFor(kind));
-    if (existsSync(p)) continue;
-    writeFileSync(p, snippetTemplate(kind), { flag: "wx" });
-    created.push(p);
+    const draft = drafts.get(kind) ?? null;
+    if (existsSync(p)) {
+      const current = readFileSync(p, "utf8");
+      if (draft != null && current === snippetTemplate(kind)) {
+        writeFileSync(p, draft);
+        out.written.push(p);
+      } else {
+        out.skipped.push({ path: p, reason: draft != null && current === draft ? "ja_e_o_rascunho" : "texto_existente" });
+      }
+      continue;
+    }
+    writeFileSync(p, draft ?? snippetTemplate(kind), { flag: "wx" });
+    out.written.push(p);
   }
-  return created;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +299,211 @@ export interface FollowupRoundDeps {
    * (`verifyLotAccount`). Ausente = lote nasce sem id e 404 nunca cancela.
    */
   getAccountId?(): Promise<string>;
+  /**
+   * #10676: espera entre as leituras singulares e antes da passada de retry
+   * (espaçamento/cooldown de `refreshKitCandidates`, #10616). Ausente = não
+   * espera (testes); o executor real passa `setTimeout`.
+   */
+  sleep?(ms: number): Promise<void>;
+  /** #10676: o erro da leitura singular é retentável mais tarde (429/5xx/rede).
+   *  Ausente = todo erro conta como transitório. */
+  isTransientLookupError?(err: unknown): boolean;
+  /**
+   * #10657: grava a assinatura do link do formulário no custom field
+   * `form_sig` da pessoa (PATCH) e diz o que a RESPOSTA mostra do campo (o
+   * Kit descarta campo inexistente com 2xx, #9663). Ausente = nenhuma
+   * assinatura gravável: quem ainda não tem a assinatura certa fica fora do
+   * lote do formulário.
+   */
+  setFormSig?(kitId: number, sig: string): Promise<FormSigWriteResult>;
+  /**
+   * #10657: sonda de ponta a ponta do link — `GET` no link do formulário
+   * assinado para `FORM_LINK_PROBE_EMAIL`, sem efeito colateral. Devolve o
+   * status HTTP e se o corpo é a página REAL do formulário
+   * (`FORM_PAGE_MARKER`); lança em erro de rede/timeout. Ausente = formulário
+   * travado (`link_rejeitado_pelo_worker`): sem a sonda ninguém sabe se o
+   * Worker aceita o link. O executor real usa `fetchFormProbe`.
+   */
+  probeFormLink?(url: string): Promise<FormProbeResult>;
+}
+
+export interface FormProbeResult {
+  status: number;
+  /** O corpo traz `FORM_PAGE_MARKER` — 200 sem ele (página de desafio da
+   *  Cloudflare, "Link inválido" servido com 200 por algum proxy) não vale. */
+  bodyHasForm: boolean;
+}
+
+/** User-Agent de navegador na sonda: sem ele a Cloudflare pode responder com
+ *  página de desafio em vez do Worker. */
+export const FORM_PROBE_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+export const FORM_PROBE_TIMEOUT_MS = 15_000;
+
+/** #10657: o GET real da sonda — User-Agent de navegador, sem seguir
+ *  redirect, com timeout (lança no abort; o chamador trava o formulário). */
+export async function fetchFormProbe(
+  url: string,
+  fetchFn: typeof fetch = fetch,
+  timeoutMs = FORM_PROBE_TIMEOUT_MS,
+): Promise<FormProbeResult> {
+  const res = await fetchFn(url, {
+    redirect: "manual",
+    headers: { "user-agent": FORM_PROBE_USER_AGENT, accept: "text/html" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const body = await res.text();
+  return { status: res.status, bodyHasForm: body.includes(FORM_PAGE_MARKER) };
+}
+
+/** O que a resposta do PATCH mostra do `form_sig`:
+ *  - `stored`: `fields` traz o campo com este valor;
+ *  - `absent`: `fields` veio sem o campo (o Kit descartou a chave);
+ *  - `unknown`: a resposta veio sem `fields` — não prova nada, relê pelo GET singular. */
+export type FormSigWriteResult = { kind: "stored"; value: string } | { kind: "absent" } | { kind: "unknown" };
+
+/** Por que uma pessoa ficou fora do lote do formulário (vira contagem por etapa). */
+export type FormSigFailureReason =
+  /** Erro na gravação (depois do retry, ou não transitório). */
+  | "assinatura_falhou"
+  /** A releitura trouxe OUTRO valor (concorrência, ou Kit mexendo no valor) — por pessoa. */
+  | "assinatura_divergente_pos_escrita"
+  /** Releitura sem o campo: `form_sig` não existe no Kit — trava o formulário inteiro. */
+  | "campo_assinatura_ausente";
+
+export interface FormSigProvisionResult {
+  /** Devidos do formulário com a assinatura certa gravada no Kit. */
+  ok: FollowupDue[];
+  /** Fora do lote nesta rodada (volta na próxima). `ok` + `failed` cobrem todos os devidos. */
+  failed: { due: FollowupDue; motivo: FormSigFailureReason; error: string }[];
+  /** A releitura (resposta do PATCH, ou GET singular quando ela veio sem
+   *  `fields`) não trouxe o `form_sig`: o campo não existe na conta. Todo o
+   *  resto do formulário fica fora (não adianta tentar pessoa a pessoa). */
+  fieldMissing: string | null;
+  /** Gravações (PATCH) tentadas nesta rodada, contando as de retry. */
+  written: number;
+}
+
+/** Espaçamento/cooldown/passadas da gravação — mesmos defaults das leituras
+ *  singulares (`refreshKitCandidates`, #10616/#10676): 350ms, 60s, 1 passada. */
+export type FormSigWriteOpts = Pick<RefreshKitCandidatesOpts, "spacingMs" | "retryDelayMs" | "retryPasses">;
+
+/**
+ * #10657: garante, pessoa a pessoa, que o custom field `form_sig` do Kit
+ * guarda a assinatura do e-mail ATUAL dela (o da leitura singular, que é o
+ * mesmo que a merge tag `{{ subscriber.email_address }}` vai pôr no link; sem
+ * ele, o e-mail do store). Quem já tem o valor certo não gera escrita; o
+ * lembrete reaproveita. A mesma pessoa devida em `form` e `form_lembrete`
+ * gera UMA escrita e as duas entram em `ok`. Nunca deixa passar alguém sem
+ * assinatura confirmada: o link dela seria recusado pelo Worker.
+ *
+ * Mesmo regime das leituras (#10676): 1ª passada espaçada, depois passada(s)
+ * extra(s) só sobre erro transitório (429/5xx/rede) após cooldown; erro não
+ * transitório (401/403) não é retentado.
+ *
+ * Confirmação pós-escrita: o que a resposta do PATCH mostra; se ela vier sem
+ * `fields`, relê pelo GET singular (autoritativo — a LISTAGEM do Kit serve
+ * `fields` defasado, o GET singular não). Releitura SEM o campo = campo
+ * ausente no Kit (`fieldMissing`, trava tudo); releitura com OUTRO valor =
+ * falha só daquela pessoa (`assinatura_divergente_pos_escrita`).
+ * `secret` é o segredo já validado por `formContentGate`.
+ */
+export async function provisionFormSigs(
+  due: readonly FollowupDue[],
+  checks: ReadonlyMap<number, LiveSubscriberCheck | null>,
+  secret: string,
+  deps: Pick<FollowupRoundDeps, "setFormSig" | "sleep" | "isTransientLookupError" | "getSubscriber">,
+  opts: FormSigWriteOpts = {},
+): Promise<FormSigProvisionResult> {
+  const spacingMs = opts.spacingMs ?? 350;
+  const retryDelayMs = opts.retryDelayMs ?? 60_000;
+  const retryPasses = opts.retryPasses ?? 1;
+  const sleep = deps.sleep ?? noSleep;
+  const isTransient = deps.isTransientLookupError ?? (() => true);
+  const out: FormSigProvisionResult = { ok: [], failed: [], fieldMissing: null, written: 0 };
+
+  // Assinatura esperada por pessoa e quem precisa de escrita (1 escrita por
+  // pessoa, mesmo com duas etapas do formulário devidas).
+  const expectedById = new Map<number, string>();
+  const dueById = new Map<number, FollowupDue[]>();
+  for (const d of due) {
+    const id = d.kit_subscriber_id;
+    if (!expectedById.has(id)) {
+      const check = checks.get(id);
+      expectedById.set(id, await signFormEmail(check?.email || d.email, secret));
+    }
+    const list = dueById.get(id) ?? [];
+    list.push(d);
+    dueById.set(id, list);
+  }
+  const accept = (id: number) => out.ok.push(...dueById.get(id)!);
+  const reject = (id: number, motivo: FormSigFailureReason, error: string) => {
+    for (const d of dueById.get(id)!) out.failed.push({ due: d, motivo, error });
+  };
+
+  let pending: number[] = [];
+  for (const id of dueById.keys()) {
+    if (checks.get(id)?.formSig === expectedById.get(id)) accept(id);
+    else pending.push(id);
+  }
+  if (pending.length > 0 && !deps.setFormSig) {
+    for (const id of pending) reject(id, "assinatura_falhou", "sem gravação de form_sig configurada");
+    return out;
+  }
+
+  const missingMsg = `releitura do ${FORM_SIG_KIT_FIELD} sem o campo depois do PATCH 2xx — criar o custom field "${FORM_SIG_KIT_FIELD}" no Kit (#10657)`;
+  const skippedMsg = `não tentado: ${FORM_SIG_KIT_FIELD} ausente no Kit`;
+  for (let pass = 0; pass <= retryPasses && pending.length > 0; pass++) {
+    if (pass > 0) await sleep(retryDelayMs);
+    const retry: number[] = [];
+    let first = true;
+    for (const id of pending) {
+      if (out.fieldMissing) {
+        reject(id, "campo_assinatura_ausente", skippedMsg);
+        continue;
+      }
+      if (!first) await sleep(spacingMs);
+      first = false;
+      const expected = expectedById.get(id)!;
+      try {
+        out.written++;
+        let res = await deps.setFormSig!(id, expected);
+        if (res.kind === "unknown") {
+          // Resposta sem `fields`: não prova nada — relê pelo GET singular.
+          await sleep(spacingMs);
+          const reread = (await deps.getSubscriber(id)).formSig;
+          res = typeof reread === "string" && reread !== "" ? { kind: "stored", value: reread } : { kind: "absent" };
+        }
+        if (res.kind === "stored" && res.value === expected) {
+          accept(id);
+          continue;
+        }
+        if (res.kind === "stored") {
+          reject(
+            id,
+            "assinatura_divergente_pos_escrita",
+            `releitura do ${FORM_SIG_KIT_FIELD} com outro valor (${res.value.length} caracteres, esperado ${expected.length})`,
+          );
+          continue;
+        }
+        out.fieldMissing = missingMsg;
+        reject(id, "campo_assinatura_ausente", missingMsg);
+      } catch (e) {
+        const msg = redactEmails((e as Error)?.message ?? String(e));
+        if (isTransient(e) && pass < retryPasses) {
+          retry.push(id);
+        } else {
+          reject(id, "assinatura_falhou", msg);
+        }
+      }
+    }
+    if (out.fieldMissing) {
+      for (const id of retry) reject(id, "campo_assinatura_ausente", skippedMsg);
+      break;
+    }
+    pending = retry;
+  }
+  return out;
 }
 
 export interface FollowupLotReconcileRow {
@@ -325,10 +581,117 @@ export interface FollowupRoundOpts {
   cfg: FollowupConfig;
   snippets: FollowupSnippets;
   nowMs?: number;
+  /** #10676: espaçamento/cooldown/passadas das leituras singulares (defaults
+   *  de `refreshKitCandidates`: 350ms, 60s, 1 passada extra). A espera em si
+   *  vem de `deps.sleep`. */
+  lookupOpts?: Omit<RefreshKitCandidatesOpts, "sleep">;
+  /** #10657: `ONBOARDING_FORM_LINK_SECRET`. Ausente/vazio TRAVA o envio do
+   *  formulário (`assinatura_nao_configurada`), nunca sai link sem assinatura. */
+  formLinkSecret?: string | null;
 }
 
-function gateReason(g: ReturnType<typeof apoioContentGate>): { motivo: FollowupBlockReason; detalhe: string } | null {
+const noSleep = () => Promise.resolve();
+
+export interface LiveCheckOutcome {
+  /** Leitura por id — `null` = falhou (nunca autoriza envio). */
+  results: Map<number, LiveSubscriberCheck | null>;
+  /** Ids que seguiram falhando depois do retry, com o devido, se o erro era
+   *  transitório e a mensagem (já sem e-mail) para o log. */
+  failed: Map<number, { due: FollowupDue; transient: boolean; error: string }>;
+  /** Leituras distintas tentadas. */
+  total: number;
+}
+
+/**
+ * #10676: leitura singular dos devidos (1 por pessoa) via `refreshKitCandidates`
+ * (#10616) — 1ª passada espaçada, depois passada(s) extra(s) só sobre erro
+ * transitório após cooldown. Erro não transitório (401/403) não é retentado.
+ */
+class MissingStateError extends Error {
+  constructor(id: number) {
+    super(`GET /subscribers/${id} sem state`);
+    this.name = "MissingStateError";
+  }
+}
+
+export async function liveCheckDue(
+  due: readonly FollowupDue[],
+  opts: Pick<FollowupRoundOpts, "lookupOpts">,
+  deps: Pick<FollowupRoundDeps, "getSubscriber" | "sleep" | "isTransientLookupError">,
+): Promise<LiveCheckOutcome> {
+  const byId = new Map<number, FollowupDue>();
+  for (const d of due) if (!byId.has(d.kit_subscriber_id)) byId.set(d.kit_subscriber_id, d);
+  const isTransient = deps.isTransientLookupError ?? (() => true);
+  const reads = new Map<number, LiveSubscriberCheck>();
+  const lastError = new Map<number, { transient: boolean; error: string }>();
+  const list = [...byId.keys()].map((id) => ({ subscription_id: String(id), id }));
+  const refreshed = await refreshKitCandidates(
+    list,
+    async (c, diag) => {
+      try {
+        const r = await deps.getSubscriber(c.id);
+        // #10685: resposta sem `state` concreto não prova saída — é leitura
+        // falha (transitória, entra no retry), nunca pulo terminal `nao_ativo`.
+        if (!isConcreteKitState(r.state)) throw new MissingStateError(c.id);
+        reads.set(c.id, r);
+        lastError.delete(c.id);
+        return { status: r.state ?? undefined, stats: null };
+      } catch (e) {
+        diag.transportError = true;
+        diag.transient = e instanceof MissingStateError ? true : isTransient(e);
+        lastError.set(c.id, { transient: diag.transient, error: redactEmails((e as Error)?.message ?? String(e)) });
+        return null;
+      }
+    },
+    { ...opts.lookupOpts, sleep: deps.sleep ?? noSleep },
+  );
+  const results = new Map<number, LiveSubscriberCheck | null>();
+  const failed: LiveCheckOutcome["failed"] = new Map();
+  for (const { id } of list) {
+    const ok = reads.get(id);
+    if (ok && !refreshed.failed.has(String(id))) {
+      results.set(id, ok);
+      continue;
+    }
+    results.set(id, null);
+    const err = lastError.get(id) ?? { transient: true, error: "leitura sem resultado" };
+    failed.set(id, { due: byId.get(id)!, ...err });
+  }
+  return { results, failed, total: list.length };
+}
+
+function gateReason(g: { blocked: false } | { blocked: true; motivo: FollowupBlockReason; detalhe: string }): { motivo: FollowupBlockReason; detalhe: string } | null {
   return g.blocked ? { motivo: g.motivo, detalhe: g.detalhe } : null;
+}
+
+/**
+ * #10657: sonda de ponta a ponta antes do 1º lote do formulário da rodada —
+ * assina `FORM_LINK_PROBE_EMAIL` com o segredo do executor e faz `GET` no
+ * link (montado igual ao do e-mail, com o e-mail cru). Pega segredo diferente
+ * do Worker, Worker defasado e `form_url` errado ANTES de alguém receber um
+ * link que daria "Link inválido". `null` = Worker aceitou (200 com a página
+ * real do formulário).
+ */
+export async function probeFormLinkEndToEnd(
+  formUrl: string,
+  secret: string,
+  deps: Pick<FollowupRoundDeps, "probeFormLink">,
+): Promise<{ motivo: "link_rejeitado_pelo_worker"; detalhe: string } | null> {
+  if (!deps.probeFormLink) {
+    return { motivo: "link_rejeitado_pelo_worker", detalhe: "sonda do link não configurada no executor — sem ela não há como saber se o Worker aceita o link" };
+  }
+  const url = buildFormLink(formUrl, FORM_LINK_PROBE_EMAIL, await signFormEmail(FORM_LINK_PROBE_EMAIL, secret));
+  try {
+    const { status, bodyHasForm } = await deps.probeFormLink(url);
+    if (status === 200 && bodyHasForm) return null;
+    const what = status === 200 ? "HTTP 200 sem a página do formulário (desafio da Cloudflare ou página errada)" : `HTTP ${status} (esperado 200)`;
+    return {
+      motivo: "link_rejeitado_pelo_worker",
+      detalhe: `GET do link assinado de sonda respondeu ${what} — conferir ONBOARDING_FORM_LINK_SECRET igual no Worker e no executor, Worker publicado e onboarding.followup.form_url`,
+    };
+  } catch (e) {
+    return { motivo: "link_rejeitado_pelo_worker", detalhe: `GET do link assinado de sonda falhou: ${redactEmails((e as Error)?.message ?? String(e))}` };
+  }
 }
 
 /**
@@ -342,7 +705,10 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   const nowIso = new Date(nowMs).toISOString();
   const { cfg, snippets, storePath, send } = opts;
   let apoioBlocked = gateReason(apoioContentGate(snippets));
-  let formBlocked = gateReason(formContentGate(snippets, cfg));
+  const formGate = formContentGate(snippets, cfg, opts.formLinkSecret);
+  // Segredo já validado (trim + tamanho) — é o que assina; nunca o valor cru.
+  const linkSecret = formGate.blocked ? null : formGate.linkSecret;
+  let formBlocked = gateReason(formGate);
   const run: FollowupRunRecord = {
     at: nowIso,
     apoio_blocked: apoioBlocked,
@@ -469,23 +835,64 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   }
 
   // Checagem perto do envio: ativo + não apoia (leitura singular, nunca a listagem).
-  const checks = new Map<number, LiveSubscriberCheck | null>();
-  for (const d of dueWithinCap) {
-    if (checks.has(d.kit_subscriber_id)) continue;
-    try {
-      checks.set(d.kit_subscriber_id, await deps.getSubscriber(d.kit_subscriber_id));
-    } catch {
-      checks.set(d.kit_subscriber_id, null);
-      run.lookups_failed++;
-    }
+  // #10676: até `max_recipients_per_lot` GETs por etapa — mesmo espaçamento e
+  // passada de retry após cooldown do refresh da escada (#10616), senão uma
+  // coorte enchendo o teto toma 429 e um GET esgotado derrubava a rodada.
+  const checks = await liveCheckDue(dueWithinCap, opts, deps);
+  const failures: LookupFailure[] = [];
+  for (const f of checks.failed.values()) {
+    failures.push({ due: f.due, transient: f.transient, anchorSec: orderSec(f.due) });
   }
-  const { send: toSend, excluded } = filterDueByLiveCheck(dueWithinCap, checks);
+  const lookupSplit = classifyLookupFailures(failures, checks.total, nowSec, cfg);
+  run.lookups_failed += lookupSplit.blocking;
+  if (lookupSplit.deferred > 0) run.lookups_deferred = lookupSplit.deferred;
+  for (const [id, f] of checks.failed) {
+    process.stderr.write(`${LOG} leitura de ${id} (${f.due.kind}) falhou depois do retry — fora do envio de hoje: ${f.error}\n`);
+  }
+  if (failures.length > 0) {
+    process.stderr.write(`${LOG} leituras singulares falhas: ${failures.length}/${checks.total} — ${lookupSplit.deferred} adiadas para amanhã, ${lookupSplit.blocking} contam como falha da rodada\n`);
+  }
+  const { send: liveOk, excluded } = filterDueByLiveCheck(dueWithinCap, checks.results);
   for (const x of excluded) bump(x.due.kind, x.motivo);
   if (send) {
     persistFollowupPeople(storePath, (people) => {
-      recordApoiaSkips(people, excluded, nowIso);
-      recordApoioChecks(people, toSend, nowIso);
+      recordLiveCheckSkips(people, excluded, nowIso);
+      recordApoioChecks(people, liveOk, nowIso);
     });
+  }
+
+  // #10657: assinatura do link do formulário. Só com `--send` (o dry-run
+  // nunca escreve no Kit nem chama o Worker). 1º a sonda de ponta a ponta
+  // (o Worker aceita um link assinado por este executor?), depois a
+  // assinatura pessoa a pessoa no custom field do Kit. Quem não ficou com a
+  // assinatura confirmada sai do lote: o link dela seria recusado.
+  let toSend = liveOk;
+  const formDue = liveOk.filter((d) => isFormStep(d.kind));
+  if (send && formDue.length > 0 && linkSecret != null && cfg.formUrl != null) {
+    const probe = await probeFormLinkEndToEnd(cfg.formUrl, linkSecret, deps);
+    if (probe) {
+      formBlocked = probe;
+      run.form_blocked = formBlocked;
+      for (const d of formDue) bump(d.kind, "link_rejeitado");
+      toSend = liveOk.filter((d) => !isFormStep(d.kind));
+      process.stderr.write(`${LOG} formulário travado: ${probe.detalhe}\n`);
+    } else {
+      const prov = await provisionFormSigs(formDue, checks.results, linkSecret, deps, opts.lookupOpts);
+      const okSet = new Set(prov.ok);
+      toSend = liveOk.filter((d) => !isFormStep(d.kind) || okSet.has(d));
+      for (const f of prov.failed) {
+        bump(f.due.kind, f.motivo);
+        process.stderr.write(`${LOG} assinatura do formulário de ${f.due.kit_subscriber_id} (${f.due.kind}) não confirmada — fora do envio de hoje: ${f.motivo}: ${f.error}\n`);
+      }
+      // Falhas por pessoa contam como falha da rodada (alarme); o campo
+      // ausente já conta pelo `form_blocked`.
+      run.lookups_failed += prov.failed.filter((f) => f.motivo !== "campo_assinatura_ausente").length;
+      if (prov.fieldMissing) {
+        formBlocked = { motivo: "campo_assinatura_ausente", detalhe: prov.fieldMissing };
+        run.form_blocked = formBlocked;
+        process.stderr.write(`${LOG} formulário travado: ${prov.fieldMissing}\n`);
+      }
+    }
   }
 
   const cadastroById = new Map(apoioCandidates.map((c) => [c.kit_subscriber_id, c.cadastro_at] as const));
@@ -525,7 +932,9 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     try {
       await deps.runLot(lot, {
         subject: snip.assunto ?? "",
-        body: renderFollowupBody(snip.body, cfg.formUrl),
+        // {{FORM_URL}} só existe nas etapas do formulário; num texto de apoio
+        // o `apoioContentGate` já travou (#10657).
+        body: isFormStep(kind) ? renderFollowupBody(snip.body, cfg.formUrl) : snip.body,
         previewText: snip.previewText ?? undefined,
       });
       const marked = persistFollowupLot(storePath, lot, cadastroById, nowMs);
@@ -587,7 +996,24 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
     async getSubscriber(kitId) {
       const s = await getSubscriberById(kitId, kitCfg);
       const nivel = s.fields?.[KIT_APOIO_NIVEL_FIELD_KEY];
-      return { state: s.state ?? null, apoioNivel: typeof nivel === "string" ? nivel : "" };
+      const sig = s.fields?.[FORM_SIG_KIT_FIELD];
+      return {
+        state: s.state ?? null,
+        apoioNivel: typeof nivel === "string" ? nivel : "",
+        email: s.email_address ?? null,
+        formSig: typeof sig === "string" ? sig : null,
+      };
+    },
+    // GET sem efeito colateral: o Worker só renderiza a página.
+    probeFormLink: (url) => fetchFormProbe(url),
+    async setFormSig(kitId, sig) {
+      // #10657: o PATCH devolve o assinante; o valor relido prova que o
+      // campo existe (o Kit descarta chave desconhecida com 2xx, #9663).
+      const s = await updateSubscriberFields(kitId, { [FORM_SIG_KIT_FIELD]: sig }, kitCfg);
+      // Sem `fields` na resposta: `unknown` faz o executor reler pelo GET singular.
+      if (s.fields == null || typeof s.fields !== "object") return { kind: "unknown" };
+      const stored = s.fields[FORM_SIG_KIT_FIELD];
+      return typeof stored === "string" && stored !== "" ? { kind: "stored", value: stored } : { kind: "absent" };
     },
     async listEnvioBrevoEmails() {
       // Tag ausente lança (trava a rodada): um rename no painel do Kit não pode
@@ -621,6 +1047,9 @@ function buildRealDeps(kitCfg: KitConfig, cfg: FollowupConfig): FollowupRoundDep
     },
     getBroadcast: (id) => getBroadcast(id, kitCfg),
     deleteBroadcast: (id) => deleteBroadcast(id, kitCfg),
+    // #10676: espaçamento/cooldown reais das leituras singulares (#10616).
+    sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    isTransientLookupError: isKitTransientError,
     async getAccountId() {
       if (!accountIdMemo) {
         const { memoizeAccountId, fetchKitAccountId } = await import("./onboarding-kit-transport-run.ts");
@@ -642,8 +1071,11 @@ async function main(): Promise<void> {
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? rawCfg.onboarding?.snippets_dir ?? "data/snippets");
 
   if (args.initSnippets) {
-    const created = initFollowupSnippets(snippetsDirAbs);
-    console.log(JSON.stringify({ mode: "init-snippets", created }));
+    // JSON: `written` = caminhos gravados (criados, ou modelo vazio trocado pelo
+    // rascunho); `skipped` = {path, reason} dos que ficaram como estavam.
+    // (Antes do #10605 a chave única era `created`.)
+    const { written, skipped } = initFollowupSnippets(snippetsDirAbs);
+    console.log(JSON.stringify({ mode: "init-snippets", written, skipped }));
     return;
   }
   if (!cfg.enabled) {
@@ -677,7 +1109,9 @@ async function main(): Promise<void> {
   };
 
   const apoioGate = apoioContentGate(snippets);
-  const formGate = formContentGate(snippets, cfg);
+  // Cru: a normalização (trim + tamanho mínimo) é do `formContentGate`/`checkLinkSecret`.
+  const formLinkSecret = process.env[ONBOARDING_FORM_LINK_SECRET_ENV] ?? null;
+  const formGate = formContentGate(snippets, cfg, formLinkSecret);
   // Travado pelos dois lados: nem precisa de credencial do Kit.
   let deps: FollowupRoundDeps;
   if (apoioGate.blocked && formGate.blocked) {
@@ -698,7 +1132,7 @@ async function main(): Promise<void> {
 
   let out: { run: FollowupRunRecord; lots: unknown[] };
   try {
-    out = await runFollowupRound({ storePath, send: args.send, cfg, snippets }, deps);
+    out = await runFollowupRound({ storePath, send: args.send, cfg, snippets, formLinkSecret }, deps);
   } catch (e) {
     const msg = redactEmails((e as Error).message);
     record({ at: new Date().toISOString(), apoio_blocked: null, form_blocked: null, lots_created: 0, lots_failed: 0, over_cap: 0, lookups_failed: 0, counts: {}, aborted: true, error: msg });

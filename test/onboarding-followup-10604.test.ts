@@ -210,24 +210,25 @@ describe("#10604/#10605 envio travado até os textos serem aprovados", () => {
   });
 
   it("formulário exige o link no corpo e o Worker configurado", () => {
-    assert.equal(formContentGate(allApproved(), cfg).blocked, false);
+    assert.equal(formContentGate(allApproved(), cfg, "segredo-de-teste-com-32-caracteres-ou-mais").blocked, false);
     const semLink = allApproved();
     semLink.form = parseFollowupSnippet(okSnippet(false));
-    assert.equal((formContentGate(semLink, cfg) as { motivo: string }).motivo, "snippet_invalido");
-    assert.equal((formContentGate(allApproved(), resolveFollowupConfig({})) as { motivo: string }).motivo, "form_nao_configurado");
+    assert.equal((formContentGate(semLink, cfg, "segredo-de-teste-com-32-caracteres-ou-mais") as { motivo: string }).motivo, "snippet_invalido");
+    assert.equal((formContentGate(allApproved(), resolveFollowupConfig({}), "segredo-de-teste-com-32-caracteres-ou-mais") as { motivo: string }).motivo, "form_nao_configurado");
   });
 
-  it("link do formulário leva o e-mail pré-preenchido via merge tag do Kit, sem filtro Liquid não confirmado (#10623)", () => {
+  it("link do formulário leva o e-mail cru (sem filtro Liquid não confirmado, #10623) e a assinatura via merge tag do Kit (#10657)", () => {
     const out = renderFollowupBody("Responda: {{FORM_URL}}", "https://f.example/");
-    assert.equal(out, "Responda: https://f.example/?email={{ subscriber.email_address }}");
+    assert.equal(out, "Responda: https://f.example/?email={{ subscriber.email_address }}&sig={{ subscriber.form_sig }}");
     assert.ok(!out.includes("url_encode"));
   });
 
   it("--init-snippets cria os 6 textos com o marcador e nunca sobrescreve", () => {
     const dir = mkdtempSync(join(tmpdir(), "followup-snip-"));
     writeFileSync(join(dir, "apoio-30.md"), "editado pelo editor");
-    const created = initFollowupSnippets(dir);
-    assert.equal(created.length, 5);
+    const { written, skipped } = initFollowupSnippets(dir);
+    assert.equal(written.length, 5);
+    assert.deepEqual(skipped, [{ path: join(dir, "apoio-30.md"), reason: "texto_existente" }]);
     assert.equal(readFileSync(join(dir, "apoio-30.md"), "utf8"), "editado pelo editor");
     const snips = loadFollowupSnippets(dir);
     assert.equal(snips.apoio90?.hasPendingMarker, true);
@@ -258,6 +259,12 @@ function fakeDeps(over: Partial<FollowupRoundDeps> = {}): FollowupRoundDeps & { 
       calls.push("envio-brevo");
       return [];
     },
+    async setFormSig(_id: number, sig: string) {
+      return { kind: "stored" as const, value: sig };
+    },
+    async probeFormLink() {
+      return { status: 200, bodyHasForm: true };
+    },
     async fetchFormResponses() {
       calls.push("responses");
       return [];
@@ -277,7 +284,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
   it("textos pendentes dos dois lados: nenhuma chamada ao Kit nem ao formulário; bloqueio registrado", async () => {
     const storePath = tempStore();
     const deps = fakeDeps();
-    const { run } = await runFollowupRound({ storePath, send: true, cfg, snippets: {} }, deps);
+    const { run } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: {} }, deps);
     assert.deepEqual(deps.calls, []);
     assert.equal(run.apoio_blocked?.motivo, "snippet_ausente");
     assert.equal(run.form_blocked?.motivo, "snippet_ausente");
@@ -299,7 +306,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
       },
     });
     const snippets = { ...allApproved(), form: null };
-    const r1 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs }, deps);
+    const r1 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets, nowMs }, deps);
     assert.equal(r1.run.lots_created, 1);
     assert.equal(r1.run.counts.apoio30?.enviado, 1);
     assert.equal(r1.run.counts.apoio30?.apoia, 1);
@@ -309,7 +316,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     assert.equal(store.followup?.people["2"].sends.length, 0);
     assert.equal(Object.keys(store.followup?.lots ?? {}).length, 1);
 
-    const r2 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: nowMs + DAY * 1000 }, deps);
+    const r2 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets, nowMs: nowMs + DAY * 1000 }, deps);
     assert.equal(r2.run.lots_created, 0, "etapa já enviada/pulada não volta");
   });
 
@@ -322,7 +329,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
       },
     });
     const small = { ...cfg, maxRecipientsPerLot: 2 };
-    const { run } = await runFollowupRound({ storePath, send: true, cfg: small, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    const { run } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg: small, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
     assert.equal(run.over_cap, 0);
     assert.equal(run.counts.apoio30?.enviado, 2);
     assert.equal(run.counts.apoio30?.adiado_teto, 1);
@@ -341,7 +348,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
       },
     });
     const small = { ...cfg, maxRecipientsPerLot: 2 };
-    const { run, lots } = await runFollowupRound({ storePath, send: false, cfg: small, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    const { run, lots } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: false, cfg: small, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
     assert.deepEqual(deps.calls.filter((c) => c.startsWith("get:")), ["get:1", "get:2"], "nenhum GET /subscribers/{id} pro excedente adiado");
     assert.equal(run.over_cap, 0);
     assert.equal(run.counts.apoio30?.adiado_teto, 1);
@@ -362,7 +369,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
         ];
       },
     });
-    const { run } = await runFollowupRound({ storePath, send: true, cfg, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    const { run } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
     assert.equal(run.counts.apoio30?.envio_brevo, 1);
     assert.equal(run.counts.apoio30?.enviado, 1);
     assert.ok(!deps.calls.includes("get:2"), "excluído antes da checagem singular");
@@ -386,7 +393,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
   it("#10623 tag envio-brevo ilegível trava os dois lados (nunca envia às cegas)", async () => {
     const storePath = tempStore();
     const deps = fakeDeps({ async listEnvioBrevoEmails() { throw new Error("tag envio-brevo não existe no Kit"); } });
-    const { run } = await runFollowupRound({ storePath, send: true, cfg, snippets: allApproved(), nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    const { run } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: allApproved(), nowMs: (T0 + 30 * DAY) * 1000 }, deps);
     assert.equal(run.apoio_blocked?.motivo, "kit_indisponivel");
     assert.equal(run.form_blocked?.motivo, "kit_indisponivel");
     assert.equal(deps.calls.filter((c) => c.startsWith("lot:") || c.startsWith("get:")).length, 0);
@@ -397,7 +404,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
     const before = readFileSync(storePath, "utf8");
     const cad = new Date(T0 * 1000).toISOString();
     const deps = fakeDeps({ async listActiveSubscribers() { return [{ kit_subscriber_id: 1, email: "a@x.com", cadastro_at: cad }]; } });
-    await runFollowupRound({ storePath, send: false, cfg, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
+    await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: false, cfg, snippets: { ...allApproved(), form: null }, nowMs: (T0 + 30 * DAY) * 1000 }, deps);
     assert.equal(readFileSync(storePath, "utf8"), before);
     assert.equal(deps.calls.filter((c) => c.startsWith("lot:")).length, 0);
   });
@@ -405,7 +412,7 @@ describe("#10604 rodada do executor (store real em disco, Kit fingido)", () => {
   it("respostas do formulário indisponíveis travam os lembretes (nunca supõe que ninguém preencheu)", async () => {
     const storePath = tempStore();
     const deps = fakeDeps({ async fetchFormResponses() { throw new Error("HTTP 500"); } });
-    const { run } = await runFollowupRound({ storePath, send: true, cfg, snippets: { ...allApproved(), apoio30: null } }, deps);
+    const { run } = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets: { ...allApproved(), apoio30: null } }, deps);
     assert.equal(run.form_blocked?.motivo, "respostas_indisponiveis");
   });
 });

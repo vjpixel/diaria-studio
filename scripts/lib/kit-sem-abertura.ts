@@ -33,6 +33,12 @@
  * - **Abertura/clique em envio ainda não maduro também exclui.** A maturação
  *   só vale pra CONTAR envios (dar tempo de a abertura chegar); engajamento
  *   em qualquer broadcast da diária, maduro ou não, prova que a pessoa lê.
+ * - **O filtro do Kit indexa com atraso (#10697, medido ao vivo).** No
+ *   broadcast segmentado 26499469 (envio 20/10 09:00 UTC), `sent`/`opens`
+ *   pelo `/subscribers/filter` voltavam 0 ~17h depois do envio e 954/348 ~22h
+ *   depois (stats: 954 destinatários, 362 aberturas). A maturação de 48h
+ *   cobre esse atraso. Enquanto o filtro devolve 0 entregues, o broadcast não
+ *   soma envio maduro a ninguém, então não faz ninguém parecer "sem abertura".
  *
  * Exclusões: apoiadores (custom field `apoio_nivel` preenchido ou tag
  * `apoio-*` — tirar do Kit cortaria também a Retrospectiva, #7660; o
@@ -439,7 +445,31 @@ export interface KitSemAberturaWave {
   newCount: number;
   backlogCount: number;
   deferred: number;
+  /**
+   * #10664 — o resto do backlog (fora de `slots`), na mesma ordem (mais antigo
+   * primeiro). O sync puxa daqui quando um contato do backlog da onda é pulado
+   * na confirmação (blacklisted na Brevo, apoiador pelo GET singular): sem a
+   * reposição, quem é pulado não fica registrado em lugar nenhum, volta a ser
+   * selecionado na rodada seguinte e, sendo o mais antigo, ocupa a mesma vaga
+   * todo dia — a fila para. Contado em `deferred`.
+   */
+  backlogReserve: KitSemAberturaSelected[];
 }
+
+/**
+ * #10664 — teto de reposições do backlog por rodada (contatos pulados na
+ * confirmação e trocados pelo próximo da fila). Cada reposição custa uma
+ * leitura na Brevo (blacklist) e, se passar, um GET singular no Kit; o teto só
+ * limita o pior caso de uma rodada (milhares de blacklisted seguidos na cabeça
+ * do backlog). Atingido, o sync avisa no log e marca
+ * `backlogReplacementCapHit` no resultado (#10701, teste do caso atingido em
+ * `test/kit-sem-abertura-replacement-cap-10701.test.ts`).
+ *
+ * O valor 1000 é estimativa, sem medição. Os pulados (blacklisted na Brevo)
+ * seguem sem registro e são relidos a cada rodada; registrá-los (2ª opção da
+ * #10664) fica para quando o aviso aparecer em produção.
+ */
+export const KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS = 1000;
 
 /** Pura — "novo" = cadastrado no Kit há no máximo `newSignupWindowDays` dias.
  *  Novos entram ANTES do backlog e sem o teto da fila, mas sujeitos à cota da
@@ -462,7 +492,7 @@ export function planKitSemAberturaWave(params: {
   rolloutPaused: boolean;
 }): KitSemAberturaWave {
   if (params.rolloutPaused) {
-    return { toMove: [], newCount: 0, backlogCount: 0, deferred: params.selected.length };
+    return { toMove: [], newCount: 0, backlogCount: 0, deferred: params.selected.length, backlogReserve: [] };
   }
   const novos = params.selected.filter((s) => isNewSignup(s.created_at, params.nowMs, params.newSignupWindowDays));
   const backlog = params.selected
@@ -478,6 +508,7 @@ export function planKitSemAberturaWave(params: {
     newCount: novos.length,
     backlogCount: backlogNow.length,
     deferred: backlog.length - backlogNow.length,
+    backlogReserve: backlog.slice(backlogNow.length),
   };
 }
 
@@ -503,7 +534,7 @@ export interface KitSemAberturaExitLogEntry {
   event: "kit_unsubscribed";
   email: string;
   kit_subscriber_id: number;
-  /** Motivo da saída na Brevo (`native_unsubscribe`, `native_bounce`, `native_admin_block`, `suppress`). */
+  /** Motivo da saída na Brevo (`native_unsubscribe`, `native_complaint` #10666, `native_bounce`, `native_admin_block`, `suppress`). */
   brevo_exit: string;
 }
 

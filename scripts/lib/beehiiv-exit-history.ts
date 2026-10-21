@@ -279,3 +279,34 @@ export function nextExitHistoryPage(manifest: ExitHistoryManifest): number {
   while (applied.has(page)) page++;
   return page;
 }
+
+// ---------------------------------------------------------------------------
+// Estado do drain — quem decide se o agent precisa rodar (#10710)
+// ---------------------------------------------------------------------------
+
+/** Path do manifest, relativo à raiz do repo (`data/` é o junction). */
+export const EXIT_HISTORY_MANIFEST_REL_PATH = "data/beehiiv-backup/exit-history/manifest.json";
+
+/**
+ * `missing`: nenhum manifest — o drain nunca rodou (estado encontrado em
+ * 21/10/2026, #10710: o agent existia desde #7248, mas nada o disparava).
+ * `incomplete`: rodou e parou no meio (rate-limit, teto de páginas).
+ * `unreadable`: o arquivo existe mas não é um manifest válido — tratado
+ * como pendente, nunca como completo.
+ */
+export type ExitHistoryDrainStatus = "missing" | "incomplete" | "unreadable" | "complete";
+
+/** @pure — classifica o conteúdo cru do manifest (`null` = arquivo ausente). */
+export function exitHistoryDrainStatus(rawManifest: string | null): ExitHistoryDrainStatus {
+  if (rawManifest == null) return "missing";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawManifest);
+  } catch {
+    return "unreadable";
+  }
+  if (!parsed || typeof parsed !== "object" || typeof (parsed as { complete?: unknown }).complete !== "boolean") {
+    return "unreadable";
+  }
+  return (parsed as { complete: boolean }).complete ? "complete" : "incomplete";
+}

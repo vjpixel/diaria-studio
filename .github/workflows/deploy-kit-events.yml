@@ -1,0 +1,32 @@
+name: Deploy kit-events Worker
+
+# #10648: webhooks do Kit (cancelamento, clique, bounce, reclamação, ativação)
+# gravados com horário no KV. Todo worker em workers/ precisa de deploy
+# automático (#5337, guard em test/workers-deploy-workflow-coverage.test.ts).
+#
+# Deployar antes do KV e dos secrets é inócuo: sem KIT_WEBHOOK_SECRET todo
+# POST /webhook/* responde 404, sem o binding KIT_EVENTS nada é gravado, e
+# nenhum webhook do Kit aponta pra cá até a sessão de registro (ver
+# workers/kit-events/README.md).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/kit-events/**'
+      # O Worker importa o contrato compartilhado com a ingestão local
+      # (formato de chave e de registro). Mudar só o contrato sem redeployar
+      # deixaria os dois lados divergentes.
+      - 'scripts/lib/kit-webhook-events-contract.ts'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-kit-events
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy-worker.yml
+    with:
+      worker: kit-events
+    secrets: inherit

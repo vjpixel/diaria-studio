@@ -61,7 +61,10 @@
  * (`checkNewSignupsFitAccountQuota`): não cabendo, o Passo 3c inteiro aborta
  * sem mover ninguém. O backlog entra limitado pela fila (`daily_send_cap`) e
  * pela mesma cota. Circuit breaker pausado zera a rodada. `--max-add N`
- * limita a rodada inteira deste passo (novos inclusive).
+ * limita a rodada inteira deste passo (novos inclusive). Contato do backlog
+ * pulado na confirmação (blacklisted na Brevo, apoiador pelo GET singular)
+ * cede a vaga ao próximo da fila (#10664) — senão os mais antigos pulados
+ * ocupariam as mesmas vagas toda rodada e o backlog pararia.
  *
  * Sem MillionVerifier: são contatos que confirmaram o double opt-in (mesmo
  * raciocínio do #5807).
@@ -119,6 +122,7 @@ import {
   diariaSendDayUtc,
   formatKitSemAberturaLogLine,
   isKitSemAberturaEnabled,
+  KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS,
   parseDiariaBroadcastState,
   parseKitSemAberturaNumbers,
   planKitSemAberturaWave,
@@ -195,6 +199,12 @@ export interface KitSemAberturaDeps {
    */
   untagKit: (tagId: number, subscriberId: number) => Promise<void>;
   appendLog: (line: string) => void;
+  /**
+   * #10701 — teto de reposições do backlog por rodada. Ausente ⇒
+   * `KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS`; injetável pra testar o caso
+   * em que o teto é atingido sem montar mil contatos.
+   */
+  maxBacklogReplacements?: number;
 }
 
 export interface KitSemAberturaRunResult {
@@ -215,6 +225,12 @@ export interface KitSemAberturaRunResult {
    * confirmou) e voltam a receber a diária por lá. Nunca gravados no store.
    */
   orphansReturnedToKit?: number;
+  /**
+   * #10701 — o teto de reposições do backlog (`KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS`)
+   * foi atingido: vagas ficaram vazias com gente ainda na fila. Se aparecer em
+   * produção, é o gatilho pra registrar os pulados (2ª opção da #10664).
+   */
+  backlogReplacementCapHit?: boolean;
   summary: string;
 }
 
@@ -493,22 +509,23 @@ export async function runKitSemAberturaSync(
   } catch (e) {
     log(`aviso: cota da conta Brevo (dia de envio ${sendDay}) não lida (${(e as Error).message}).`);
   }
+  const backlogSlots = (newCount: number): number => {
+    const slots = computeBacklogSlots({
+      queueCap,
+      currentActiveCount,
+      seedCount: EDITOR_SEED_EMAILS.length,
+      newCount,
+      dailyLimit,
+      transactionalToday: transactional,
+    });
+    return opts.maxAdd !== undefined ? Math.min(slots, Math.max(0, opts.maxAdd - newCount)) : slots;
+  };
   const wave = planKitSemAberturaWave({
     selected: selection.selected,
     nowMs: deps.nowMs,
     newSignupWindowDays: numbers.newSignupWindowDays,
     rolloutPaused: deps.rolloutPaused(),
-    backlogSlots: (newCount) => {
-      const slots = computeBacklogSlots({
-        queueCap,
-        currentActiveCount,
-        seedCount: EDITOR_SEED_EMAILS.length,
-        newCount,
-        dailyLimit,
-        transactionalToday: transactional,
-      });
-      return opts.maxAdd !== undefined ? Math.min(slots, Math.max(0, opts.maxAdd - newCount)) : slots;
-    },
+    backlogSlots,
   });
   // `--max-add N` é teto explícito do operador sobre a rodada INTEIRA deste
   // passo, inclusive cadastros novos (`--max-add 0` = ninguém).
@@ -538,26 +555,52 @@ export async function runKitSemAberturaSync(
   let deferred = wave.deferred + (wave.toMove.length - capped.length);
   log(`onda: ${wave.newCount} cadastro(s) novo(s) + ${wave.backlogCount} do backlog; ${capped.length} nesta rodada, ${deferred} adiado(s).`);
 
-  // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
+  // #10664 — contato do BACKLOG pulado na confirmação (blacklisted na Brevo,
+  // apoiador pelo GET singular) libera a vaga pro próximo da fila. Sem isso
+  // ele, que não fica registrado em lugar nenhum, volta a ser selecionado
+  // amanhã e, sendo o mais antigo, ocupa a mesma vaga todo dia: com os N mais
+  // antigos blacklisted, o backlog nunca anda. Reposição só em pulo
+  // DEFINITIVO; falha de leitura adia sem repor (transitória — repor
+  // queimaria a fila numa instabilidade da API). Os cortados pelo
+  // `--max-add` vêm primeiro (são os mais antigos fora da rodada).
+  // #10701 — cadastro NOVO pulado também cede a vaga, mas só até o nº de
+  // vagas do backlog que os novos tiraram (`novoDisplacedSlots`): o novo
+  // entra sem o teto da fila, o backlog não, então com a fila já cheia trocar
+  // um novo por um do backlog estouraria `daily_send_cap`. Sem isso, com
+  // `--max-add` cortando o backlog, um novo blacklisted deixava a rodada
+  // abaixo do teto pedido pelo operador.
+  const reserve: typeof capped = [
+    ...wave.toMove.slice(capped.length).filter((c) => c.wave === "backlog"),
+    ...wave.backlogReserve.map((s) => ({ ...s, wave: "backlog" as const })),
+  ];
+  const maxReplacements = deps.maxBacklogReplacements ?? KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS;
+  let novoDisplacedSlots = wave.newCount > 0 ? Math.max(0, backlogSlots(0) - backlogSlots(wave.newCount)) : 0;
+  let replacements = 0;
+  let replacementCapHit = false;
+  const queue: typeof capped = [...capped];
+  const replace = (c: (typeof capped)[number]) => {
+    if (reserve.length === 0) return;
+    if (c.wave === "novo" && novoDisplacedSlots === 0) return;
+    if (replacements >= maxReplacements) {
+      replacementCapHit = true;
+      return;
+    }
+    if (c.wave === "novo") novoDisplacedSlots--;
+    queue.push(reserve.shift()!);
+    replacements++;
+    deferred--;
+  };
   const toMove: typeof capped = [];
   let skippedBlacklisted = 0;
-  for (const c of capped) {
-    let nivel: string | null;
-    try {
-      nivel = await deps.getApoioNivel(c.id);
-    } catch (e) {
-      deferred++;
-      log(`  ${c.email}: apoio_nivel não confirmado pelo GET singular (${(e as Error).message}) — adiado.`);
-      continue;
-    }
-    if (typeof nivel === "string" && nivel.trim() !== "") {
-      log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
-      continue;
-    }
+  for (let i = 0; i < queue.length; i++) {
+    const c = queue[i];
     // #10536 — já `emailBlacklisted` na conta Brevo da diária (bloqueio no
     // onboarding transacional #6042, hard bounce antigo, contato anterior ao
     // store): a campanha nunca chegaria, a tag a tiraria do envio do Kit, e o
     // Passo 0 do evaluate leria o blacklist como saída nova. Fica no Kit.
+    // Checado ANTES do GET singular no Kit (#10664): a leitura na Brevo não
+    // passa pelo pacer de 750ms do Kit, então um bloco de blacklisted na
+    // cabeça do backlog custa só leituras baratas.
     let blacklisted: boolean;
     try {
       blacklisted = await deps.isBrevoBlacklisted(c.email);
@@ -569,6 +612,21 @@ export async function runKitSemAberturaSync(
     if (blacklisted) {
       skippedBlacklisted++;
       log(`  ${c.email}: já emailBlacklisted na Brevo diária — fica no Kit, não é movido (#10536).`);
+      replace(c);
+      continue;
+    }
+    // Apoiador confirmado pelo GET singular (a listagem serve `fields` defasado).
+    let nivel: string | null;
+    try {
+      nivel = await deps.getApoioNivel(c.id);
+    } catch (e) {
+      deferred++;
+      log(`  ${c.email}: apoio_nivel não confirmado pelo GET singular (${(e as Error).message}) — adiado.`);
+      continue;
+    }
+    if (typeof nivel === "string" && nivel.trim() !== "") {
+      log(`  ${c.email}: apoiador (${KIT_APOIO_NIVEL_FIELD_KEY}=${nivel} no GET singular) — fora.`);
+      replace(c);
       continue;
     }
     toMove.push(c);
@@ -576,7 +634,22 @@ export async function runKitSemAberturaSync(
   if (skippedBlacklisted > 0) {
     log(`${skippedBlacklisted} selecionado(s) já blacklisted na Brevo — mantido(s) no Kit (#10536).`);
   }
-  const counts = { selected: selection.selected.length, deferred, skippedBlacklisted, orphansReturnedToKit };
+  if (replacements > 0) {
+    log(`${replacements} vaga(s) do backlog repostas com o próximo da fila (pulados na confirmação, #10664).`);
+  }
+  if (replacementCapHit) {
+    log(
+      `AVISO: teto de ${maxReplacements} reposições do backlog atingido nesta rodada — ` +
+        "vagas ficaram sem preencher; se repetir, a cabeça do backlog está dominada por pulados (#10664).",
+    );
+  }
+  const counts = {
+    selected: selection.selected.length,
+    deferred,
+    skippedBlacklisted,
+    orphansReturnedToKit,
+    ...(replacementCapHit ? { backlogReplacementCapHit: true } : {}),
+  };
 
   if (!push) {
     for (const c of toMove) log(`  + ${c.email} (kit ${c.id}, ${c.matureSends} envio(s) maduro(s), ${c.wave})`);

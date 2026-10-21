@@ -381,6 +381,29 @@ CREATE TABLE IF NOT EXISTS subscriber_attribute (
 );
 CREATE INDEX IF NOT EXISTS idx_subscriber_attribute_subscriber ON subscriber_attribute(subscriber_id);
 CREATE INDEX IF NOT EXISTS idx_subscriber_attribute_key ON subscriber_attribute(platform, key);
+
+-- Eventos do Kit recebidos por webhook (#10648), com horário de RECEBIMENTO.
+-- Tabela PRÓPRIA, não linhas em "event": a ingestão do Kit já grava clique
+-- (por broadcast/URL) e unsub (por dia de captura) em "event", e somar o
+-- mesmo fato vindo de 2 fontes com chaves naturais diferentes dobraria toda
+-- contagem que lê type = 'click'/'unsub' ali (channel-cohort-funnel-store,
+-- getCohortEventCounts). Aqui fica a linha do tempo fina ("o que essa pessoa
+-- fez, com dia e hora, antes de sair"); "event" segue sendo o eixo das
+-- métricas. event_key é a chave do KV do Worker: reingestão é idempotente.
+CREATE TABLE IF NOT EXISTS kit_webhook_event (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  subscriber_id      INTEGER,
+  kit_subscriber_id  TEXT NOT NULL,
+  email              TEXT,
+  type               TEXT NOT NULL,
+  state              TEXT,
+  url                TEXT,
+  received_at        TEXT NOT NULL,
+  event_key          TEXT NOT NULL UNIQUE,
+  ingested_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kit_webhook_event_subscriber ON kit_webhook_event(subscriber_id, received_at);
+CREATE INDEX IF NOT EXISTS idx_kit_webhook_event_received ON kit_webhook_event(received_at);
 `;
 
 /**
@@ -1679,4 +1702,98 @@ export function getAllEventsBySubscriber(
     list.push(rest);
   }
   return map;
+}
+
+// ---------------------------------------------------------------------------
+// Eventos do Kit por webhook (#10648) — tabela `kit_webhook_event`
+// ---------------------------------------------------------------------------
+
+/** Linha de `kit_webhook_event` como lida pelos consumidores. */
+export interface KitWebhookEventRow {
+  subscriber_id: number | null;
+  kit_subscriber_id: string;
+  email: string | null;
+  type: string;
+  state: string | null;
+  url: string | null;
+  received_at: string;
+  event_key: string;
+}
+
+/** Evento vindo do Worker `kit-events` (mesmo formato de
+ *  `KitWebhookEventRecord` em `kit-webhook-events-contract.ts`). */
+export interface KitWebhookEventInput {
+  key: string;
+  type: string;
+  kit_subscriber_id: string;
+  email: string | null;
+  state: string | null;
+  url: string | null;
+  received_at: string;
+}
+
+/**
+ * Grava 1 evento de webhook do Kit, resolvendo o subscriber pelo id do Kit que
+ * o roster já gravou (`identity_alias` com `platform = 'kit'`) — o evento cai
+ * na pessoa que a ingestão do Kit já conhece, mesmo com e-mail ausente ou
+ * trocado no Kit (#10717). Id desconhecido cai em `ensureSubscriber`. Idempotente pela chave do KV (`INSERT OR
+ * IGNORE` sobre `event_key UNIQUE`).
+ */
+export function recordKitWebhookEvent(
+  db: DatabaseSync,
+  ev: KitWebhookEventInput,
+  now: string = new Date().toISOString(),
+): { inserted: boolean; subscriberId: number } {
+  // Resolve SEMPRE pelo id do Kit primeiro, com ou sem e-mail no corpo: o id
+  // é inequívoco dentro da plataforma, o e-mail não. Sem e-mail, a tripla
+  // (kit, id, NULL) nunca casa com o alias do roster; com e-mail trocado no
+  // Kit depois da ingestão do roster (#10717), a tripla (kit, id, e-mail novo)
+  // também não casa — nos dois casos `ensureSubscriber` criaria uma 2ª pessoa
+  // com o mesmo id Kit. Só quando o id ainda não está no store cai no
+  // find-or-create de sempre.
+  const byKitId = db
+    .prepare("SELECT MIN(subscriber_id) AS id FROM identity_alias WHERE platform = 'kit' AND external_id = ?")
+    .get(ev.kit_subscriber_id) as { id: number | null } | undefined;
+  const subscriberId =
+    byKitId?.id != null ? byKitId.id : ensureSubscriber(db, "kit", ev.kit_subscriber_id, ev.email, now);
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO kit_webhook_event
+         (subscriber_id, kit_subscriber_id, email, type, state, url, received_at, event_key, ingested_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      subscriberId,
+      ev.kit_subscriber_id,
+      ev.email ? ev.email.trim().toLowerCase() : null,
+      ev.type,
+      ev.state,
+      ev.url,
+      ev.received_at,
+      ev.key,
+      now,
+    );
+  return { inserted: Number(result.changes) > 0, subscriberId };
+}
+
+/** Linha do tempo de webhooks do Kit de 1 assinante, em ordem cronológica. */
+export function getKitWebhookEventsForSubscriber(
+  db: DatabaseSync,
+  subscriberId: number,
+): KitWebhookEventRow[] {
+  return db
+    .prepare(
+      `SELECT subscriber_id, kit_subscriber_id, email, type, state, url, received_at, event_key
+       FROM kit_webhook_event WHERE subscriber_id = ? ORDER BY received_at ASC, event_key ASC`,
+    )
+    .all(subscriberId) as unknown as KitWebhookEventRow[];
+}
+
+/** `received_at` mais recente já ingerido (null com a tabela vazia) — ponto
+ *  de partida incremental da próxima leitura do Worker. */
+export function getLatestKitWebhookEventReceivedAt(db: DatabaseSync): string | null {
+  const row = db.prepare("SELECT MAX(received_at) AS ts FROM kit_webhook_event").get() as
+    | { ts: string | null }
+    | undefined;
+  return row?.ts ?? null;
 }

@@ -121,6 +121,44 @@ describe("#10522 — congelamento por par host × bot", () => {
     }
   });
 
+  it("#10665 — bot alheio à issue medido no host não autoriza a herança", () => {
+    const OLD = keyFor(["ClaudeBot", "GPTBot"]);
+    let state: AlarmIssuesState = { [OLD]: { ...openEntry(), missingStreak: 1 } };
+    const probes = [
+      probe("ClaudeBot", "inconclusive"),
+      probe("GPTBot", "inconclusive"),
+      // CCBot medido no MESMO host, mas fora do conjunto da issue aberta.
+      probe("CCBot", "allowed"),
+    ];
+    for (let i = 0; i < 3; i++) {
+      assert.deepEqual(carryForwardInconclusiveProbes(probes, state), probes);
+      const result = round(state, probes);
+      assert.deepEqual(result.findings, []);
+      assert.deepEqual(result.frozen, [{ key: OLD, issueNumber: 42 }]);
+      assert.deepEqual(result.ghCalls, []);
+      assert.equal(result.nextState[OLD].missingStreak, 1);
+      assert.equal(result.nextState[OLD].closedAt, null);
+      state = result.nextState;
+    }
+  });
+
+  it("#10665 — bot da própria issue medido blocked ainda autoriza a herança do outro", () => {
+    const OLD = keyFor(["ClaudeBot", "GPTBot"]);
+    const state: AlarmIssuesState = { [OLD]: openEntry() };
+    const out = carryForwardInconclusiveProbes(
+      [probe("ClaudeBot", "inconclusive"), probe("GPTBot", "blocked"), probe("CCBot", "allowed")],
+      state,
+    );
+    assert.deepEqual(
+      out.map((p) => [p.bot, p.status]),
+      [
+        ["ClaudeBot", "blocked"],
+        ["GPTBot", "blocked"],
+        ["CCBot", "allowed"],
+      ],
+    );
+  });
+
   it("issue fechada não herda bot inconclusivo", () => {
     const OLD = keyFor(["GPTBot"]);
     const state: AlarmIssuesState = { [OLD]: { ...openEntry(), closedAt: "2026-10-01T00:00:00Z" } };
