@@ -92,6 +92,12 @@ function deps(
     async listEnvioBrevoEmails() {
       return [];
     },
+    async setFormSig(_id: number, sig: string) {
+      return { kind: "stored" as const, value: sig };
+    },
+    async probeFormLink() {
+      return { status: 200, bodyHasForm: true };
+    },
     async fetchFormResponses() {
       return [];
     },
@@ -113,7 +119,7 @@ describe("#10675 descadastrado não fica devido para sempre no lembrete do formu
     const day = (n: number) => (T0 + 36 * DAY + n * DAY) * 1000;
 
     // D+36: os 3 vencem o lembrete; o teto (2) pega a id 1 (âncora mais antiga) e a 2.
-    const r1 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: day(0) }, d);
+    const r1 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets, nowMs: day(0) }, d);
     assert.equal(r1.run.counts.form_lembrete?.nao_ativo, 1);
     assert.equal(r1.run.counts.form_lembrete?.adiado_teto, 1);
     assert.deepEqual(d.lots, [["2"]]);
@@ -122,7 +128,7 @@ describe("#10675 descadastrado não fica devido para sempre no lembrete do formu
 
     // D+37: a id 1 sumiu do plano — a vaga vai para a id 3, sem GET da id 1.
     d.gets.length = 0;
-    const r2 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: day(1) }, d);
+    const r2 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets, nowMs: day(1) }, d);
     assert.deepEqual(d.gets, [3]);
     assert.deepEqual(d.lots[1], ["3"]);
     assert.equal(r2.run.counts.form_lembrete?.nao_ativo, undefined);
@@ -131,7 +137,7 @@ describe("#10675 descadastrado não fica devido para sempre no lembrete do formu
     // D+40 e muito depois (o cenário da issue: `form` há 40+ dias): nunca mais devido.
     for (const n of [4, 100]) {
       d.gets.length = 0;
-      await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: day(n) }, d);
+      await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets, nowMs: day(n) }, d);
       assert.ok(!d.gets.includes(1), `D+${36 + n}: nenhuma consulta para quem saiu`);
     }
     const after = readStore(storePath).store.followup!.people["1"];
@@ -175,7 +181,7 @@ describe("#10675 descadastrado não fica devido para sempre no lembrete do formu
     const day = (n: number) => (T0 + 36 * DAY + n * DAY) * 1000;
 
     // D+36: leitura da id 1 sem state → consulta falha (adiada), sem pulo.
-    const r1 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: day(0) }, d);
+    const r1 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets, nowMs: day(0) }, d);
     assert.equal(r1.run.counts.form_lembrete?.nao_ativo, undefined);
     assert.equal(r1.run.counts.form_lembrete?.consulta_falhou, 1);
     assert.equal(readStore(storePath).store.followup!.people["1"].skips, undefined, "state nulo nunca vira pulo terminal");
@@ -183,7 +189,7 @@ describe("#10675 descadastrado não fica devido para sempre no lembrete do formu
     // D+37: a id 1 continua devida (nova leitura) e agora vem `cancelled` → pulo terminal.
     state1 = "cancelled";
     d.gets.length = 0;
-    const r2 = await runFollowupRound({ storePath, send: true, cfg, snippets, nowMs: day(1) }, d);
+    const r2 = await runFollowupRound({ storePath, formLinkSecret: "segredo-de-teste-com-32-caracteres-ou-mais", send: true, cfg, snippets, nowMs: day(1) }, d);
     assert.ok(d.gets.includes(1), "quem teve leitura sem state volta no dia seguinte");
     assert.equal(r2.run.counts.form_lembrete?.nao_ativo, 1);
     assert.deepEqual(

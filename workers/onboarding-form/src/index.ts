@@ -6,6 +6,17 @@
  * `scripts/lib/onboarding-form-contract.ts`; HTML em `./render.ts`. Sem o KV
  * `ONBOARDING_FORM` declarado (ver wrangler.toml) toda rota responde 503
  * `not_configured`.
+ *
+ * #10657: link assinado por pessoa (`?email=...&sig=...`,
+ * `scripts/lib/onboarding-form-link-sig.ts`, o MESMO módulo do executor —
+ * trim e tamanho mínimo do segredo vivem lá). Só as rotas do formulário (`/`
+ * e `/enviar`) exigem o secret `ONBOARDING_FORM_LINK_SECRET` (ausente ou
+ * curto: 503 `not_configured`); `/api/respostas` não depende dele, senão um
+ * secret faltando apareceria no executor como "respostas indisponíveis". GET
+ * sem assinatura válida mostra a página de link inválido (sem formulário);
+ * POST sem assinatura válida para o e-mail enviado responde 403 e não grava
+ * nada no KV. Toda recusa vai pro log com o motivo, nunca com e-mail ou
+ * assinatura.
  */
 
 import {
@@ -15,27 +26,52 @@ import {
   prefillEmailFromQuery,
   type FormResponse,
 } from "../../../scripts/lib/onboarding-form-contract.ts";
-import { collectFormFields, renderErrorHtml, renderFormHtml, renderThanksHtml } from "./render.ts";
+import { checkFormEmailSig, checkLinkSecret, type FormSigRejection } from "../../../scripts/lib/onboarding-form-link-sig.ts";
+import { collectFormFields, renderErrorHtml, renderFormHtml, renderInvalidLinkHtml, renderThanksHtml } from "./render.ts";
 
-interface Env {
+export interface Env {
   ONBOARDING_FORM?: KVNamespace;
   RESPONSES_TOKEN?: string;
+  /** #10657: segredo do HMAC do link (mesmo valor do executor). */
+  ONBOARDING_FORM_LINK_SECRET?: string;
 }
 
 function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+function notConfigured(what: string): Response {
+  console.error(JSON.stringify({ event: "not_configured", what }));
+  return new Response(JSON.stringify({ error: "not_configured" }), { status: 503 });
+}
+
+/** Log de recusa do link: só rota e motivo (nunca e-mail nem assinatura). */
+function rejectLink(route: "/" | "/enviar", reason: FormSigRejection): Response {
+  console.warn(JSON.stringify({ event: "link_invalido", route, reason }));
+  return html(renderInvalidLinkHtml(), 403);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (!env.ONBOARDING_FORM) return new Response(JSON.stringify({ error: "not_configured" }), { status: 503 });
+    if (!env.ONBOARDING_FORM) return notConfigured("kv ONBOARDING_FORM");
+    const isFormRoute = (request.method === "GET" && url.pathname === "/") || (request.method === "POST" && url.pathname === "/enviar");
+    const secretCheck = checkLinkSecret(env.ONBOARDING_FORM_LINK_SECRET);
+    if (isFormRoute && !secretCheck.ok) return notConfigured("secret ONBOARDING_FORM_LINK_SECRET");
+    const secret = secretCheck.ok ? secretCheck.secret : "";
 
     if (request.method === "GET" && url.pathname === "/") {
-      return html(renderFormHtml(prefillEmailFromQuery(url.searchParams.get("email"))));
+      const email = prefillEmailFromQuery(url.searchParams.get("email"));
+      const sig = url.searchParams.get("sig") ?? "";
+      const check = await checkFormEmailSig(email, sig, secret);
+      if (!check.ok) return rejectLink("/", check.reason);
+      return html(renderFormHtml(email, sig));
     }
 
     if (request.method === "POST" && url.pathname === "/enviar") {
+      // Ordem: (1) corpo legível; (2) assinatura do link para o e-mail enviado
+      // — antes de QUALQUER validação das respostas, para um POST forjado
+      // nunca chegar perto do KV; (3) respostas válidas; (4) gravação.
       let form: FormData;
       try {
         form = await request.formData();
@@ -44,7 +80,17 @@ export default {
         return html(renderErrorHtml("o envio chegou incompleto"), 400);
       }
       // Caixas de seleção mandam um valor por opção marcada: preservar os repetidos.
-      const parsed = parseFormSubmission(collectFormFields(form.entries()));
+      const fields = collectFormFields(form.entries());
+      // #10657: só grava com a assinatura do link para ESTE e-mail — sem isso
+      // qualquer um marcava outra pessoa como "preencheu" ou sobrescrevia as
+      // respostas dela. Campo repetido: vale o 1º, o MESMO que
+      // `parseFormSubmission` usa como e-mail (a chave gravada é sempre a do
+      // e-mail verificado). Segredo trocado depois de o formulário abrir: este
+      // POST volta 403 e as respostas preenchidas se perdem (ver o módulo).
+      const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? "";
+      const check = await checkFormEmailSig(one(fields.email), one(fields.sig), secret);
+      if (!check.ok) return rejectLink("/enviar", check.reason);
+      const parsed = parseFormSubmission(fields);
       if (!parsed.ok) return html(renderErrorHtml(parsed.error), 400);
       const record: FormResponse = { ...parsed.submission, submitted_at: new Date().toISOString() };
       try {

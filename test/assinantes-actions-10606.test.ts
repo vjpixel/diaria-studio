@@ -184,6 +184,9 @@ describe("buildActionItems (#10606)", () => {
       snippet_invalido: true,
       form_nao_configurado: true,
       respostas_indisponiveis: true,
+      assinatura_nao_configurada: true,
+      campo_assinatura_ausente: true,
+      link_rejeitado_pelo_worker: true,
       kit_indisponivel: true,
       desligado: true,
     };

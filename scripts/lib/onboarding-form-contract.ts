@@ -13,11 +13,12 @@
  *
  * ## Endpoints do Worker
  *
- *  - `GET  /?email={e-mail}` — página do formulário, com o e-mail
- *    pré-preenchido (editável).
- *  - `POST /enviar` (form-urlencoded) — valida com `parseFormSubmission` e
- *    grava a resposta (KV, chave `resp:{email normalizado}`; a última
- *    resposta vence).
+ *  - `GET  /?email={e-mail}&sig={assinatura}` — página do formulário para
+ *    aquele e-mail (fixo, em campo oculto). Sem assinatura válida: página de
+ *    link inválido (#10657, `onboarding-form-link-sig.ts`).
+ *  - `POST /enviar` (form-urlencoded) — exige a assinatura do e-mail enviado
+ *    (senão 403, nada gravado); valida com `parseFormSubmission` e grava a
+ *    resposta (KV, chave `resp:{email normalizado}`; a última resposta vence).
  *  - `GET  /api/respostas` com `Authorization: Bearer {token}` — lista as
  *    respostas no formato `FormResponsesPayload`. É o que o executor lê a
  *    cada rodada para marcar "preencheu" no store e parar os lembretes.
@@ -200,13 +201,14 @@ export interface FormResponsesPayload {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
- * @pure — e-mail pré-preenchido a partir do `?email=` do link (review #10623).
- * O link vai SEM filtro Liquid (`url_encode` não foi confirmado no Kit), então
- * o e-mail chega cru na query: `@` e `.` passam intactos, mas um `+` do local
- * part vira espaço no `URLSearchParams`. E-mail não tem espaço, então espaço
- * aqui é sempre um `+` decodificado — restaurado. Caracteres raros que a query
- * corta (`&`, `#`) deixam o campo incompleto, nunca errado em silêncio: o
- * campo é visível, editável e validado no envio.
+ * @pure — e-mail do `?email=` do link (review #10623, #10657). O link vai SEM
+ * filtro Liquid (`url_encode` não foi confirmado no Kit), então o e-mail chega
+ * cru na query: `@` e `.` passam intactos, mas um `+` do local part vira
+ * espaço no `URLSearchParams`. E-mail não tem espaço, então espaço aqui é
+ * sempre um `+` decodificado — restaurado, e é isso que faz a assinatura de
+ * `a+b@x.com` conferir. Resíduo aceito (#10657): `&` ou `#` no local part
+ * cortam o e-mail na query, a assinatura não confere e a pessoa vê "Link
+ * inválido" — nunca grava para o e-mail errado.
  */
 export function prefillEmailFromQuery(raw: string | null | undefined): string {
   return String(raw ?? "").trim().replace(/ /g, "+");
