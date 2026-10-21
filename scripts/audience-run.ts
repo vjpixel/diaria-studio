@@ -71,6 +71,14 @@
  *      grava `data/audience-raw.json`, roda `update-audience.ts`, imprime
  *      o topo do profile gerado.
  *
+ * Passo 4b (#10605): antes de gravar `data/audience-raw.json`, o script lê
+ * sozinho as respostas do formulário do onboarding (`GET
+ * onboarding.followup.form_responses_url`, token em
+ * `form_responses_token_env`) e as soma às da survey, no mesmo formato. As 3
+ * perguntas de perfil caem nas seções que já existem; as de produto ganham a
+ * seção 4 do perfil. Fail-soft: sem formulário configurado, sem token ou com
+ * a leitura falhando, o perfil sai só com a survey (aviso no stderr).
+ *
  * Cada sub-script downstream (`update-audience.ts`) é invocado por SPAWN
  * (`process.execPath --import tsx`, nunca `npx tsx` — guard #4343), nunca
  * por import.
@@ -97,6 +105,9 @@ import { spawnSync } from "node:child_process";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
+import { parseFormResponsesPayload, type FormResponse } from "./lib/onboarding-form-contract.ts";
+import { resolveFollowupConfig, type FollowupConfigRaw } from "./lib/onboarding-followup.ts";
+import { onboardingFormToSurveyResponses } from "./lib/audience-survey-questions.ts";
 
 // #4983 (mesma lição do clarice-novos-run.ts): este é o processo
 // ORQUESTRADOR — precisa de BEEHIIV_API_KEY no PRÓPRIO process.env pra
@@ -132,6 +143,8 @@ export interface PlatformConfig {
     profileSurveyId?: string;
     [key: string]: unknown;
   };
+  /** #10605: só `followup.form_responses_url`/`form_responses_token_env` interessam aqui. */
+  onboarding?: { followup?: FollowupConfigRaw; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -307,6 +320,54 @@ export function normalizeSurveyResponses(raw: unknown[]): NormalizeResult {
 }
 
 // ---------------------------------------------------------------------------
+// Passo 4b (#10605) — respostas do formulário do onboarding (Worker
+// `workers/onboarding-form`). Somadas às da survey antes de gravar
+// `data/audience-raw.json`. FAIL-SOFT: formulário não configurado, token
+// ausente ou leitura falhando nunca derruba a regeneração do perfil, só sai
+// sem essas respostas (com aviso no stderr).
+// ---------------------------------------------------------------------------
+
+/** `null` = formulário não configurado (sem `form_responses_url`). Lança em falha de leitura. */
+export type FetchFormResponsesFn = (cfg: PlatformConfig) => Promise<FormResponse[] | null>;
+
+export async function loadOnboardingFormSurveyResponses(
+  cfg: PlatformConfig,
+  fetchFn: FetchFormResponsesFn | undefined,
+): Promise<BeehiivSurveyResponse[]> {
+  if (!fetchFn) return [];
+  let responses: FormResponse[] | null;
+  try {
+    responses = await fetchFn(cfg);
+  } catch (e) {
+    console.error(`[audience-run] ⚠ respostas do formulário do onboarding não lidas, perfil sai sem elas: ${(e as Error).message}`);
+    return [];
+  }
+  if (responses == null) {
+    console.error("[audience-run] formulário do onboarding não configurado (onboarding.followup.form_responses_url ausente) — seguindo só com a survey.");
+    return [];
+  }
+  const converted = onboardingFormToSurveyResponses(responses);
+  console.error(`[audience-run] ${converted.length} resposta(s) do formulário do onboarding somada(s) à survey.`);
+  return converted;
+}
+
+async function fetchOnboardingFormResponsesReal(cfg: PlatformConfig): Promise<FormResponse[] | null> {
+  const fc = resolveFollowupConfig(cfg.onboarding?.followup);
+  if (fc.formResponsesUrl == null) return null;
+  const token = process.env[fc.formResponsesTokenEnv];
+  if (!token) throw new Error(`${fc.formResponsesTokenEnv} ausente no ambiente (form_responses_url está configurado)`);
+  const res = await fetch(fc.formResponsesUrl, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`GET respostas do formulário: HTTP ${res.status}`);
+  }
+  return parseFormResponsesPayload(await res.json());
+}
+
+// ---------------------------------------------------------------------------
 // CLI args
 // ---------------------------------------------------------------------------
 
@@ -378,6 +439,8 @@ export interface AudienceRunDeps {
   exec: ExecFn;
   readFile: (path: string) => string;
   writeFile: (path: string, content: string) => void;
+  /** #10605 — ausente = não lê o formulário do onboarding (testes antigos). */
+  fetchFormResponses?: FetchFormResponsesFn;
 }
 
 async function fetchPublicationsReal(apiKey: string | undefined): Promise<PublicationCandidate[]> {
@@ -400,6 +463,7 @@ export function productionDeps(rootDir: string = ROOT): AudienceRunDeps {
     exec: realExec(rootDir),
     readFile: (p) => readFileSync(p, "utf8"),
     writeFile: (p, c) => writeFileSync(p, c, "utf8"),
+    fetchFormResponses: fetchOnboardingFormResponsesReal,
   };
 }
 
@@ -521,7 +585,11 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
     }
     console.error(`[audience-run] ${normalized.valid.length} resposta(s) válida(s) de ${rawResponses.length} total.`);
 
-    if (normalized.valid.length === 0) {
+    // --- Passo 4b (#10605): soma as respostas do formulário do onboarding (fail-soft) ---
+    const formResponses = await loadOnboardingFormSurveyResponses(cfg, deps.fetchFormResponses);
+    const allResponses = [...normalized.valid, ...formResponses];
+
+    if (allResponses.length === 0) {
       throw new AudienceAbort("Nenhuma resposta válida após normalização — 0 respostas não gera profile novo.");
     }
 
@@ -529,7 +597,8 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
 
     if (opts.dryRun) {
       console.error(
-        `[audience-run] --dry-run: pararia aqui — escreveria ${normalized.valid.length} resposta(s) em ` +
+        `[audience-run] --dry-run: pararia aqui — escreveria ${allResponses.length} resposta(s) ` +
+          `(${formResponses.length} do formulário do onboarding) em ` +
           `${audienceRawPath} e rodaria update-audience.ts. Nenhum arquivo tocado.`,
       );
       return { code: 0 };
@@ -537,8 +606,8 @@ export async function runAudience(argv: string[], deps: AudienceRunDeps): Promis
 
     // --- Passo 5: grava data/audience-raw.json no formato de update-audience.ts ---
     mkdirSync(dirname(audienceRawPath), { recursive: true });
-    deps.writeFile(audienceRawPath, JSON.stringify(normalized.valid, null, 2) + "\n");
-    console.error(`[audience-run] ${normalized.valid.length} resposta(s) gravada(s) em ${audienceRawPath}`);
+    deps.writeFile(audienceRawPath, JSON.stringify(allResponses, null, 2) + "\n");
+    console.error(`[audience-run] ${allResponses.length} resposta(s) gravada(s) em ${audienceRawPath}`);
 
     // --- Passo 6: roda update-audience.ts (spawn, nunca import — #4343) ---
     const updateResult = deps.exec("scripts/update-audience.ts", [audienceRawPath]);

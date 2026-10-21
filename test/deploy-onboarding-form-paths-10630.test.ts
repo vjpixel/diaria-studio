@@ -15,7 +15,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { resolve, relative, dirname } from "node:path";
+import { resolve, relative, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -31,7 +31,10 @@ function externalImports(): string[] {
     const src = readFileSync(resolve(SRC_DIR, f), "utf8");
     for (const m of src.matchAll(/\bfrom\s+["'](\.{1,2}\/[^"']+)["']/g)) {
       const abs = resolve(SRC_DIR, m[1]);
-      if (!abs.startsWith(WORKER_DIR + "/") && abs !== WORKER_DIR) {
+      // relative() e não startsWith(dir + "/"): no Windows o path vem com "\\" e
+      // todo import local (ex: ./render.ts, #10605) contaria como externo.
+      const rel = relative(WORKER_DIR, abs);
+      if (rel.startsWith("..") || isAbsolute(rel)) {
         out.add(relative(ROOT, abs).split("\\").join("/"));
       }
     }

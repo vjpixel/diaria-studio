@@ -24,7 +24,11 @@
  * `form_responses_url`) a de formulário não sai. Com as duas travadas a rodada
  * NÃO chama a API do Kit (zero leitura da base) e só registra o bloqueio
  * (`followup.last_run`), que o painel mostra. `--init-snippets` cria os
- * arquivos que faltam já com o marcador (nunca sobrescreve).
+ * arquivos que faltam já com o marcador (nunca sobrescreve texto editado).
+ * Quando existe rascunho versionado da etapa em
+ * `context/templates/onboarding-followup/` (#10605: os 2 do formulário), é
+ * ele que vira o arquivo, com o marcador pendente intacto; um arquivo que
+ * ainda é o modelo vazio de antes do rascunho é trocado pelo rascunho.
  *
  * SEGURANÇA:
  *  - Default é DRY-RUN: sem `--send` nada é criado no Kit nem gravado no store.
@@ -35,7 +39,7 @@
  * Uso:
  *   npx tsx scripts/onboarding-followup-run.ts                 # dry-run
  *   npx tsx scripts/onboarding-followup-run.ts --send          # cria/agenda os lotes devidos
- *   npx tsx scripts/onboarding-followup-run.ts --init-snippets # cria os textos faltantes com o marcador
+ *   npx tsx scripts/onboarding-followup-run.ts --init-snippets # cria os textos faltantes com o marcador (rascunho versionado quando há)
  * Flags auxiliares: --store <path>, --snippets-dir <path>, --config <path>, --env-root <path>, --skip-if-disabled.
  */
 
@@ -56,6 +60,7 @@ import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from 
 import { decideLotReconciliation, LOT_STALE_AFTER_MS } from "./lib/onboarding-kit-transport.ts";
 import { redactEmails } from "./lib/onboarding-kit-pilot.ts";
 import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
+import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
   apoioContentGate,
@@ -207,17 +212,39 @@ export function loadFollowupSnippets(dirAbs: string): FollowupSnippets {
   return out;
 }
 
-/** Cria os textos que faltam já com o marcador pendente. Nunca sobrescreve. */
-export function initFollowupSnippets(dirAbs: string): string[] {
+/** Rascunhos versionados dos textos (#10605) — semente do `--init-snippets`. */
+export const FOLLOWUP_DRAFTS_DIR = resolve(ROOT, "context/templates/onboarding-followup");
+
+/**
+ * Cria os textos que faltam já com o marcador pendente: o rascunho versionado
+ * da etapa quando existe (`draftsDirAbs`), senão o modelo vazio. Nunca
+ * sobrescreve texto editado; só troca um arquivo que ainda é EXATAMENTE o
+ * modelo vazio (`snippetTemplate`) pelo rascunho, caso de quem rodou
+ * `--init-snippets` antes de o rascunho existir. Rascunho sem o marcador
+ * pendente é recusado (lança): a semente nunca pode destravar envio sozinha.
+ * Devolve os caminhos gravados.
+ */
+export function initFollowupSnippets(dirAbs: string, draftsDirAbs: string = FOLLOWUP_DRAFTS_DIR): string[] {
   mkdirSync(dirAbs, { recursive: true });
-  const created: string[] = [];
+  const written: string[] = [];
   for (const kind of ALL_FOLLOWUP_STEPS) {
-    const p = resolve(dirAbs, snippetFileFor(kind));
-    if (existsSync(p)) continue;
-    writeFileSync(p, snippetTemplate(kind), { flag: "wx" });
-    created.push(p);
+    const file = snippetFileFor(kind);
+    const p = resolve(dirAbs, file);
+    const draftPath = resolve(draftsDirAbs, file);
+    const draft = existsSync(draftPath) ? readFileSync(draftPath, "utf8") : null;
+    if (draft != null && !draft.includes(PENDING_BODY_MARKER)) {
+      throw new Error(`[onboarding-followup] rascunho ${draftPath} sem ${PENDING_BODY_MARKER}: a semente nunca pode sair já aprovada`);
+    }
+    if (existsSync(p)) {
+      if (draft == null || readFileSync(p, "utf8") !== snippetTemplate(kind)) continue;
+      writeFileSync(p, draft);
+      written.push(p);
+      continue;
+    }
+    writeFileSync(p, draft ?? snippetTemplate(kind), { flag: "wx" });
+    written.push(p);
   }
-  return created;
+  return written;
 }
 
 // ---------------------------------------------------------------------------
@@ -627,8 +654,8 @@ async function main(): Promise<void> {
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? rawCfg.onboarding?.snippets_dir ?? "data/snippets");
 
   if (args.initSnippets) {
-    const created = initFollowupSnippets(snippetsDirAbs);
-    console.log(JSON.stringify({ mode: "init-snippets", created }));
+    const written = initFollowupSnippets(snippetsDirAbs);
+    console.log(JSON.stringify({ mode: "init-snippets", created: written }));
     return;
   }
   if (!cfg.enabled) {
