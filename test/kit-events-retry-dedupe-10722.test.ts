@@ -150,3 +150,56 @@ describe("#10722 retry do webhook do Kit", () => {
     );
   });
 });
+
+describe("#10747 evento de outro tipo no meio desfaz o retry", () => {
+  const ev = (type: KitWebhookEventRecord["type"], iso: string, suffix: string) =>
+    rec({ key: `ev:${iso}:123:${type}:${suffix}`, type, received_at: iso, state: type === "activate" ? "active" : "cancelled" });
+  const a1 = ev("activate", "2026-10-21T10:00:00.000Z", "a1");
+  const u = ev("unsubscribe", "2026-10-21T10:10:00.000Z", "u");
+  const a2 = ev("activate", "2026-10-21T10:20:00.000Z", "a2");
+
+  it("activate → unsubscribe → activate em 20 min no mesmo lote: 3 registros", () => {
+    const db = freshDb();
+    const id = ensureSubscriber(db, "kit", "123", "pessoa@exemplo.com");
+    assert.deepEqual(ingestKitWebhookEvents(db, [a1, u, a2]), { newEvents: 3, alreadyKnown: 0, retryDuplicates: 0 });
+    assert.deepEqual(
+      getKitWebhookEventsForSubscriber(db, id).map((t) => t.type),
+      ["activate", "unsubscribe", "activate"],
+    );
+  });
+
+  it("mesma sequência em 3 ingestões separadas: 3 registros", () => {
+    const db = freshDb();
+    ingestKitWebhookEvents(db, [a1]);
+    ingestKitWebhookEvents(db, [u]);
+    assert.deepEqual(ingestKitWebhookEvents(db, [a2]), { newEvents: 1, alreadyKnown: 0, retryDuplicates: 0 });
+  });
+
+  it("o activate posterior chega antes; o do meio e o anterior só depois: 3 registros", () => {
+    const db = freshDb();
+    ingestKitWebhookEvents(db, [a2]);
+    assert.deepEqual(ingestKitWebhookEvents(db, [a1, u]), { newEvents: 2, alreadyKnown: 0, retryDuplicates: 0 });
+  });
+
+  it("outro tipo FORA do intervalo entre os dois não impede o retry", () => {
+    const db = freshDb();
+    const before = ev("unsubscribe", "2026-10-21T09:55:00.000Z", "u0");
+    const retry = ev("activate", "2026-10-21T10:02:00.000Z", "a1r");
+    assert.deepEqual(ingestKitWebhookEvents(db, [before, a1, retry]), {
+      newEvents: 2,
+      alreadyKnown: 0,
+      retryDuplicates: 1,
+    });
+  });
+
+  it("outro tipo de OUTRO assinante no meio não impede o retry", () => {
+    const db = freshDb();
+    const other = rec({ key: "ev:2026-10-21T10:01:00.000Z:456:unsubscribe:x", kit_subscriber_id: "456", received_at: "2026-10-21T10:01:00.000Z" });
+    const retry = ev("activate", "2026-10-21T10:02:00.000Z", "a1r");
+    assert.deepEqual(ingestKitWebhookEvents(db, [a1, other, retry]), {
+      newEvents: 2,
+      alreadyKnown: 0,
+      retryDuplicates: 1,
+    });
+  });
+});
