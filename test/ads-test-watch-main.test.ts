@@ -854,6 +854,30 @@ describe("#8238 — loadApuracaoCohortGuard / realIsStoreFresh sobre store fixtu
     });
   });
 
+  it("#10595: e-mail reatribuído pelo mapa de origem não conta no braço do store (sem alarme falso)", async () => {
+    await withTmpDir(async (dir) => {
+      const storePath = await seedStore(dir, { linkDelivered: true });
+      // build-origem-map reatribuiu os 4 cadastros "google-ads" a outra origem
+      // (e-mail em caixa diferente: o índice normaliza) — o cac-report --fonte
+      // store aplica esse mapa e sai com 0 no braço; o guard precisa ver o mesmo.
+      const origemPath = join(dir, "origem-original.json");
+      const origem: Record<string, { utm_source: string; referring_site: string }> = {};
+      for (let i = 0; i < 4; i++) origem[`Leitor${i}@Example.com`] = { utm_source: "linkedin-organico", referring_site: "" };
+      writeFileSync(origemPath, JSON.stringify({ origem }));
+      const guard = loadApuracaoCohortGuard(reportWith(0), [GOOGLE], storePath, origemPath);
+      assert.deepEqual(guard.problems, [], guard.problems.join("\n"));
+      assert.ok(guard.coverageLines.some((l) => /0 cadastro\(s\) no store, 0 no relatório/.test(l)), guard.coverageLines.join("\n"));
+    });
+  });
+
+  it("#10595: mapa de origem ausente → cai na UTM crua (mesmo comportamento do relatório)", async () => {
+    await withTmpDir(async (dir) => {
+      const storePath = await seedStore(dir, { linkDelivered: true });
+      const guard = loadApuracaoCohortGuard(reportWith(0), [GOOGLE], storePath, join(dir, "sem-mapa.json"));
+      assert.ok(guard.problems.some((p) => /0 cadastros, mas o store tem 4/.test(p)), guard.problems.join("\n"));
+    });
+  });
+
   it("store ilegível → problema, nunca 'passa'", async () => {
     await withTmpDir(async (dir) => {
       const guard = loadApuracaoCohortGuard(reportWith(4), [GOOGLE], join(dir, "nao-existe.db"));

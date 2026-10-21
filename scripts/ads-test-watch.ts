@@ -50,10 +50,10 @@ import {
   getSubscriptionAsOf,
 } from "./lib/diaria-subscribers-db.ts";
 import { buildCacCompatibleSubscribersFromStore } from "./lib/leitor-store.ts";
-import { filterInternalAndTestSubscribers, type CacReport } from "./lib/cac.ts";
+import { applyOrigemOverride, filterInternalAndTestSubscribers, type CacReport } from "./lib/cac.ts";
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { main as buildOrigemMapMain } from "./build-origem-map.ts";
-import { main as cacReportMain, cacReportSnapshotId } from "./cac-report.ts";
+import { main as cacReportMain, cacReportSnapshotId, DEFAULT_ORIGEM_MAP_PATH, loadOrigemIndex } from "./cac-report.ts";
 import { reportId } from "./studio-ui/studio-reports.ts";
 import {
   planAdsTestWatchActions,
@@ -259,11 +259,21 @@ async function realCacReport(snapshotDate: string, bracos: readonly string[]): P
  * o guard de coorte contra o relatório recém-gerado. Store ilegível aqui
  * (ele acabou de ser lido pelo `cac-report`) vira PROBLEMA, nunca "passa":
  * sem o guard avaliado não há como afirmar que a coorte é confiável.
+ *
+ * #10595: a coorte do store passa pelo MESMO mapa de origem que o
+ * `cac-report --fonte store` aplica (`applyOrigemOverride` antes do filtro
+ * de internos, cac-report.ts) — sem isso, um e-mail que o
+ * `build-origem-map` reatribuiu a outro canal contava 0 no relatório e 1 no
+ * store, e o guard bloqueava a apuração todo dia com alarme falso.
+ * `origemMapPath` default = o mesmo default do `cac-report` (que
+ * `realCacReport` chama sem `--origem`); mapa ausente/ilegível cai no
+ * `utm_source` cru, igual ao relatório.
  */
 export function loadApuracaoCohortGuard(
   report: CacReport,
   bracos: readonly string[],
   storeDbPath: string = DEFAULT_STORE_DB_PATH,
+  origemMapPath: string = DEFAULT_ORIGEM_MAP_PATH,
 ): { problems: string[]; coverageLines: string[] } {
   // `existsSync` antes: `openDiariaSubscribersDb` CRIA um store vazio num
   // path ausente — e um store vazio "passaria" no guard (0 ativos).
@@ -272,7 +282,9 @@ export function loadApuracaoCohortGuard(
     return { problems: [`store ilegível em ${storeDbPath} — guard de coorte não pôde ser avaliado.`], coverageLines: [] };
   }
   try {
-    const subs = filterInternalAndTestSubscribers(buildCacCompatibleSubscribersFromStore(db)).kept;
+    const { index: origemIndex } = loadOrigemIndex(origemMapPath);
+    const overridden = applyOrigemOverride(buildCacCompatibleSubscribersFromStore(db), origemIndex);
+    const subs = filterInternalAndTestSubscribers(overridden).kept;
     return evaluateApuracaoCohortGuard(computeApuracaoArmStats(subs, report.rows, bracos));
   } catch (e) {
     return { problems: [`falha ao avaliar o guard de coorte no store: ${(e as Error).message}`], coverageLines: [] };
