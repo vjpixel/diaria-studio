@@ -20,7 +20,8 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
-import { refreshOwnerFor, type OnboardingEntry } from "../scripts/lib/onboarding-state.ts";
+import { refreshOwnerFor } from "../scripts/lib/onboarding-state.ts";
+import type { OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = resolve(ROOT, "scripts", "onboarding-welcome-run.ts");

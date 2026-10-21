@@ -25,8 +25,8 @@ import {
   hasReachableBrevoEmail3,
   nextEmail3FailureStreak,
   EMAIL3_FAILURE_ALARM_THRESHOLD_RUNS,
-  type OnboardingEntry,
 } from "../scripts/lib/onboarding-state.ts";
+import type { OnboardingEntry } from "../scripts/lib/onboarding-store.ts";
 import { evaluateContinuityRound, EMAIL3_CHECK } from "../scripts/onboarding-continuity-alarm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
