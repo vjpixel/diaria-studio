@@ -540,6 +540,27 @@ function canonicalSlugToken(v) {
 }
 const MERGE_BOOL_FLAGS = new Set(["--squash", "--merge", "--rebase", "-s", "-m", "-r", "--delete-branch", "-d", "--auto", "--admin"]);
 
+// #10716: `--subject`/`--body` (e `-t`/`-b`) com argumento ENTRE ASPAS — a
+// forma que `.claude/skills/diaria-overnight/SKILL.md` manda usar no merge.
+// O valor é só texto da mensagem de commit: não muda o repo-alvo do gh, então
+// sai do comando ANTES da whitelist por token (e não entra na varredura de
+// repos citados). Só a forma cujo quoting é inequívoco:
+//   - aspas duplas sem `"`, `$`, crase nem `\` seguido de `"$\`\\` (sem
+//     expansão, sem fechar a aspa antes do que a regex enxerga — `\n` literal
+//     passa, como no SKILL.md);
+//   - aspas simples sem `'`;
+//   - em ambas, sem `;`, `&` nem `|` — defesa em profundidade: valor que
+//     parece encadear outro comando (caso "J && entre aspas" do
+//     test/issue-repos-10618.test.ts) segue estrito, mesmo com o quoting
+//     correto.
+// Precedido por espaço e seguido de espaço/fim. Qualquer outra forma (`=`,
+// sem aspas, `$(...)`, aspas aninhadas) fica no texto e cai no modo ESTRITO.
+// Prova de que a remoção não muda o parsing do shell: depois de remover, o
+// restante não pode ter aspa nenhuma (a whitelist por token recusa), então
+// toda aspa do comando estava num trecho removido — e cada trecho abre e
+// fecha a aspa exatamente onde o shell abre e fecha.
+const MERGE_MESSAGE_FLAG_RE = / (?:--subject|--body|-t|-b) (?:"(?:[^"$`\\;&|]|\\[^"$`\\;&|])*"|'[^';&|]*')(?= |$)/g;
+
 /**
  * Lê `gh pr merge` na forma EXATA da whitelist. Devolve `{ repo, pr, cd }`
  * (`repo` = do -R/--repo ou da URL canônica; `null` se nenhum dos dois) ou
@@ -558,6 +579,11 @@ export function parseStrictMerge(command) {
     cd = cdm[1];
     core = cdm[2];
   }
+  // #10716: remove `--subject "…"`/`--body "…"` (ver MERGE_MESSAGE_FLAG_RE) só
+  // do trecho do `gh` — depois do `cd`, cujo caminho aceita `\` e poderia
+  // escapar o espaço antes do flag. O restante segue pela whitelist por token,
+  // que recusa qualquer aspa ou `\` que tenha sobrado.
+  core = core.replace(MERGE_MESSAGE_FLAG_RE, "");
   const tokens = core.split(" ");
   if (tokens[0] !== "gh" || tokens[1] !== "pr" || tokens[2] !== "merge") return null;
   let pr = null;
