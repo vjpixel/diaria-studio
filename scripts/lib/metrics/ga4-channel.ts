@@ -1,7 +1,7 @@
 /**
  * scripts/lib/metrics/ga4-channel.ts (#7184, fatia 12 do épico #7172)
  *
- * Classificação de sessões GA4 nas mesmas 5 classes de aquisição de F1
+ * Classificação de sessões GA4 nas mesmas 6 classes de aquisição de F1
  * (`scripts/lib/metrics/acquisition-class.ts`) + allowlist de `hostName` —
  * o núcleo puro que F12 usa para calcular `sessoes-dia`,
  * `sessoes-por-classe-dia` e `conversao-visita-cadastro`.
@@ -14,7 +14,7 @@
  * (`google`/`cpc`, `facebook`/`paid_social`, `linkedin`/`referral`) — dois
  * espaços de nomes diferentes, casamento por igualdade de string sempre
  * falharia. `GA4_SOURCE_MEDIUM_CLASSE_TABLE` é a tabela de equivalência
- * explícita e versionada entre o vocabulário GA4 e as 5 classes de F1.
+ * explícita e versionada entre o vocabulário GA4 e as 6 classes de F1.
  *
  * ## Allowlist de `hostName`
  *
@@ -116,7 +116,7 @@ function normalize(value: string | undefined | null): string {
 
 /**
  * Classifica UMA linha de sessão GA4 (sessionSource/sessionMedium) numa das
- * 5 classes de F1. Nunca lança — combinação não mapeada cai em
+ * 6 classes de F1. Nunca lança — combinação não mapeada cai em
  * `indeterminado` (mesmo default de `classifyAcquisition` para
  * direct/sem-sinal), nunca em `organico` por omissão.
  *
@@ -188,7 +188,7 @@ export function filterByHostAllowlist(
 // ---------------------------------------------------------------------------
 
 /**
- * Soma `sessions` por classe (5 classes de F1) sobre linhas JÁ filtradas
+ * Soma `sessions` por classe (6 classes de F1) sobre linhas JÁ filtradas
  * pela allowlist (`filterByHostAllowlist().included`). Não filtra por dia —
  * o CHAMADOR decide a janela ao montar `rows`.
  *

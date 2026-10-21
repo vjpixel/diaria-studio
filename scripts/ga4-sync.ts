@@ -27,7 +27,7 @@
  *     agrupamento heurístico do próprio Google, coluna de CONFERÊNCIA ao
  *     lado da classificação de `channel` (nunca a fonte da classificação —
  *     ver docstring de `ga4-channel.ts` pro porquê ele diverge da taxonomia
- *     de 5 classes do projeto).
+ *     de 6 classes do projeto).
  *
  * Salva snapshot em `data/ga4-cache/{YYYY-MM-DD}.json` (timestamp da
  * execução) + `data/ga4-cache/latest.json` (ponteiro pro snapshot mais
@@ -164,7 +164,7 @@ export interface Ga4Snapshot {
   partial?: boolean;
   overview: Ga4FlatRow[];
   top_pages: Ga4FlatRow[];
-  /** Relatório FINO — o que classifica sessões nas 5 classes de F1 via
+  /** Relatório FINO — o que classifica sessões nas 6 classes de F1 via
    *  `scripts/lib/metrics/ga4-channel.ts` (#7184). */
   channel: Ga4FlatRow[];
   /** Relatório de CONFERÊNCIA (`sessionDefaultChannelGroup`, agrupamento
@@ -195,7 +195,7 @@ export function buildSyncRequests(
       dateRanges,
       limit: TOP_PAGES_LIMIT,
     },
-    // #7184 — relatório fino: o que classifica sessões nas 5 classes de F1
+    // #7184 — relatório fino: o que classifica sessões nas 6 classes de F1
     // (scripts/lib/metrics/ga4-channel.ts). hostName é obrigatório aqui —
     // sem ele a `/` do apex funde com a `/` de todos os outros Workers da
     // mesma propriedade GA4 (516813959 cobre o Vigil.ia.br inteiro).

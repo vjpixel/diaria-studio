@@ -221,7 +221,7 @@ export const NAO_AQUISICAO_UTM_SOURCES: readonly string[] = [
  * Classe = `organico`, não `iniciativa`: `iniciativa` é audiência de
  * PARCEIRO ou de outro produto nosso (Clarice, boost, SparkLoop);
  * `SUPERFICIE_PROPRIA_UTM_SOURCES` é tráfego que chegou numa página NOSSA
- * (mesma natureza do apex). O placar (`organico + iniciativa`) sai igual
+ * (mesma natureza do apex). O placar (`organico + iniciativa + rede`) sai igual
  * nas duas leituras — só muda o "orgânico estrito".
  */
 export const SUPERFICIE_PROPRIA_UTM_SOURCES: readonly string[] = [

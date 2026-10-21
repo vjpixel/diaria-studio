@@ -455,7 +455,7 @@ const cadastrosDiaDef: MetricDef<AcquisitionMetricDeps> = {
     KIT_SERIES_FLOOR +
     " — dias anteriores vêm do snapshot Beehiiv (F7, fora desta fatia); o CHAMADOR decide quais " +
     "registros passa para registros(), este texto só documenta o piso, nunca filtra sozinho. " +
-    "decomposicao 'classe' devolve as 5 classes de #7173.",
+    "decomposicao 'classe' devolve as 6 classes de #7173.",
   unidade: "contagem",
   direcao: "maior-melhor",
   fonte: "store do #6464 (data/diaria-subscribers/diaria-subscribers.db, subscriber/subscription) + data/metrics/captura-log.jsonl (F2)",
@@ -957,7 +957,7 @@ export interface Ga4TrafficMetricDeps extends MetricDeps {
 }
 
 /** Núcleo compartilhado por `sessoes-dia`/`sessoes-por-classe-dia`: aplica a
- *  allowlist de `hostName` e classifica cada linha nas 5 classes de F1.
+ *  allowlist de `hostName` e classifica cada linha nas 6 classes de F1.
  *  Nunca soma host fora da allowlist — linhas descartadas ficam em
  *  `unclassifiedHosts`, disponíveis para quem quiser expor a conferência
  *  (não incluído no `MetricResult` desta fatia, ver "Fora de escopo" da
@@ -991,7 +991,7 @@ const sessoesDiaDef: MetricDef<Ga4TrafficMetricDeps> = {
     "SUM(sessions) do relatório fino GA4 (date,sessionSource,sessionMedium,sessionCampaignName,hostName) " +
     `restrito à allowlist de hostName [${GA4_HOSTNAME_ALLOWLIST.join(", ")}] (host fora da allowlist nunca ` +
     "entra, mesmo que a propriedade GA4 516813959 cubra o Vigil.ia.br inteiro). decomposicao 'classe' " +
-    "devolve as 5 classes de #7173, classificadas por GA4_SOURCE_MEDIUM_CLASSE_TABLE (ga4-channel.ts) — " +
+    "devolve as 6 classes de #7173, classificadas por GA4_SOURCE_MEDIUM_CLASSE_TABLE (ga4-channel.ts) — " +
     "NUNCA sessionDefaultChannelGroup, que é só coluna de conferência.",
   unidade: "contagem",
   direcao: "maior-melhor",
