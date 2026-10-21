@@ -147,6 +147,9 @@ before(() => {
       // num worktree pré-existente e remoção de branch — não é trabalho do
       // codex; a cadeia segue.
       '  foreign-activity) G="git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false"; echo f > "$CODEX_STUB_WT/f-$$.txt" && $G -C "$CODEX_STUB_WT" add . && $G -C "$CODEX_STUB_WT" commit -q -m alheio; git -C "$CODEX_STUB_REPO" branch -D "$CODEX_STUB_DEL" >/dev/null 2>&1; echo "erro qualquer" >&2; exit 1 ;;',
+      // #10591: simula pull de outra sessão, sem o hook do subprocesso codex.
+      '  foreign-head-advance) next=$(printf "alheio\\n" | git -C "$CODEX_STUB_REPO" -c user.name=t -c user.email=t@example.com commit-tree "HEAD^{tree}" -p HEAD); git -C "$CODEX_STUB_REPO" -c core.hooksPath=/dev/null update-ref HEAD "$next"; echo "erro qualquer" >&2; exit 1 ;;',
+      '  transcript-error-adjacent) { echo "ERROR: Brevo rate limit exceeded"; echo "Error: stream disconnected"; } >&2; exit 1 ;;',
       '  partial-new-worktree) git -C "$CODEX_STUB_REPO" worktree add -q --detach "$TMPDIR/wt-novo-$$" >/dev/null 2>&1; echo "timeout no meio" >&2; exit 1 ;;',
       // #10588 item a: `ERROR:` de script no MEIO da transcrição não é erro da CLI.
       '  transcript-error-mid) { echo "exec bash -lc npx-tsx-scripts-x"; echo "ERROR: Brevo rate limit exceeded (429) — usage limit"; echo "vou tentar de novo mais tarde"; echo "timeout no meio"; } >&2; exit 1 ;;',
@@ -334,6 +337,25 @@ describe("#10560 — ordem da cadeia", () => {
     assert.ok(FIRST_NON_CODEX.has(order[1]), `2º elo inesperado: ${order}`);
   });
 
+  for (const branch of ["master", "main"]) {
+    it(`#10591: avanço alheio de ${branch} no CWD permite fallback`, () => {
+      const target = join(tmp, `repo-head-${branch}-${Date.now()}`);
+      initRepo(target);
+      if (branch === "main") assert.equal(sh("git", ["branch", "-m", "main"], target).status, 0);
+      const before = sh("git", ["rev-parse", "HEAD"], target).stdout.trim();
+      writeSessionFile();
+      const r = runWrapper(wrapperEnv({
+        CLAUDE_DELEGATE_CODEX_LANE: "1",
+        CODEX_STUB_MODE: "foreign-head-advance",
+        CODEX_STUB_REPO: target,
+      }), [], target);
+      assert.notEqual(sh("git", ["rev-parse", "HEAD"], target).stdout.trim(), before);
+      assert.equal(r.status, 0, r.stderr);
+      assert.doesNotMatch(r.stderr, /trabalho parcial/);
+      assert.match(r.stdout, /resposta fake claude/);
+    });
+  }
+
   it("falha do codex DEPOIS de abrir worktree NOVO: aborta com exit 95", () => {
     const r2 = join(tmp, `repo-newwt-${Date.now()}`);
     initRepo(r2);
@@ -503,6 +525,15 @@ describe("#10586 — classificação só sobre linhas de erro da Codex CLI", () 
     assert.doesNotMatch(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT/);
   });
 
+  it("#10591: ERROR de script colado ao Error final não marca cota", () => {
+    writeSessionFile();
+    const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1", CODEX_STUB_MODE: "transcript-error-adjacent" }));
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /resposta fake claude/);
+    assert.equal(existsSync(join(runTmp, "codex-lane-quota-exhausted-until")), false);
+    assert.doesNotMatch(r.stderr, /falhou model=codex:gpt-6\.1-sol rc=1: RATE-LIMIT/);
+  });
+
   it("codex_lane_cli_error_lines: só o bloco final de `ERROR:` em coluna 0", () => {
     const f = join(runTmp, "stderr-mid.txt");
     const run = (lines: string[]) => {
@@ -524,7 +555,7 @@ describe("#10586 — classificação só sobre linhas de erro da Codex CLI", () 
     assert.equal(run([]), "");
   });
 
-  it("codex_lane_cli_error_lines: ERROR: (com/sem timestamp) + `Error:` só na última linha", () => {
+  it("codex_lane_cli_error_lines: `Error:` final é a única linha considerada", () => {
     const f = join(runTmp, "stderr.txt");
     writeFileSync(
       f,
@@ -546,8 +577,6 @@ describe("#10586 — classificação só sobre linhas de erro da Codex CLI", () 
     );
     assert.equal(res.status, 0, res.stderr);
     assert.deepEqual(res.stdout.trimEnd().split("\n"), [
-      "[2026-10-19T01:02:03] ERROR: unexpected status 429 Too Many Requests",
-      "ERROR: model not found",
       "Error: falha de topo da CLI",
     ]);
   });
