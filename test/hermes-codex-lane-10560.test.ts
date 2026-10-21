@@ -1142,6 +1142,8 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
       join(r, ".claude/hooks/block-pr-create-pii-runtime-artifacts.mjs"),
     );
     cpSync(join(ROOT, ".claude/hooks/lib/shell-quote-strip.mjs"), join(r, ".claude/hooks/lib/shell-quote-strip.mjs"));
+    // #10618: o guard de PII importa gh-target-repo.mjs (checagem de -R × checkout).
+    cpSync(join(ROOT, ".claude/hooks/lib/gh-target-repo.mjs"), join(r, ".claude/hooks/lib/gh-target-repo.mjs"));
     writeFileSync(join(r, "_prbody.md"), "corpo solto\n");
     assert.equal(sh("git", ["add", "_prbody.md"], r).status, 0);
     assert.equal(sh("git", ["commit", "-q", "-m", "artefato"], r).status, 0);

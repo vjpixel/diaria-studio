@@ -68,6 +68,9 @@ function makeRoot(): string {
   // caminho principal: o CLI e o hook resolvem a raiz pelo cwd.
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "diaria-studio" }));
   spawnSync("git", ["init", "-q"], { cwd: root });
+  // #10618: checkout do studio de verdade — o consume só usa concessão com prova
+  // POSITIVA de que o merge é do diaria-studio (origin do cwd).
+  spawnSync("git", ["remote", "add", "origin", "https://github.com/vjpixel/diaria-studio.git"], { cwd: root });
   return root;
 }
 
@@ -97,6 +100,10 @@ function runHook(root: string, sessionId: string, command: string, extraEnv: Rec
   const env: Record<string, string | undefined> = { ...process.env, ...extraEnv };
   delete env.GH_REPO;
   delete env.GH_HOST;
+  // #10618: com o origin do studio no repo temporário, o `gh` real resolveria
+  // `{owner}/{repo}` e consultaria o PR de verdade — GH_HOST inválido mantém a
+  // consulta falhando offline quando não há gh falso no PATH.
+  if (!binDir) env.GH_HOST = "github.invalid";
   if (binDir) {
     const pathKey = Object.keys(env).find((k) => k.toLowerCase() === "path") ?? "PATH";
     env[pathKey] = `${binDir}${delimiter}${env[pathKey] ?? ""}`;
@@ -104,7 +111,7 @@ function runHook(root: string, sessionId: string, command: string, extraEnv: Rec
   return spawnSync(process.execPath, [CONSUME_HOOK], {
     cwd: root,
     env,
-    input: JSON.stringify({ session_id: sessionId, tool_name: "Bash", tool_input: { command } }),
+    input: JSON.stringify({ session_id: sessionId, tool_name: "Bash", cwd: root, tool_input: { command } }),
     encoding: "utf8",
     timeout: 15_000,
   });

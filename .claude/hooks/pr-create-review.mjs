@@ -118,6 +118,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { isForeignRepo } from "./lib/gh-target-repo.mjs";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -1296,6 +1297,20 @@ export function resolveEmitDecision(toolResponseText, command) {
 }
 
 /**
+ * #10618 — `true` quando a URL do PR criado é de um repo de FORA permitido
+ * (`platform.config.json → issue_repos`, não o diaria-studio). Só decide se o
+ * conserto de `Closes #N` (`ensureCloseKeywords`, convenção de issues do
+ * diaria-studio) roda — o review automatizado dispara em PR de qualquer repo.
+ * URL ilegível ou repo fora da allowlist → `false` (regra do diaria-studio).
+ */
+export function isForeignRepoPrUrl(prUrl) {
+  const m = /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/i.exec(
+    typeof prUrl === "string" ? prUrl.trim() : "",
+  );
+  return m ? isForeignRepo(m[1]) : false;
+}
+
+/**
  * Decisão pura combinando os dois fixes do #6298: existe uma URL de PR
  * genuinamente criada (fix 1) E, quando o comando está disponível no payload,
  * ele de fato é um `gh pr create` (fix 2)? Retorna a URL a usar, ou `null`
@@ -1403,9 +1418,12 @@ if (
         // "Closes #N" — melhor esforço, nunca bloqueia o resto do hook se
         // falhar (fail-soft dentro de ensureCloseKeywords) e, desde o #10453,
         // limitado ao prazo do hook pra nunca impedir a instrução de review.
-        const closeWarning = closeKeywordWarning(
-          ensureCloseKeywords(prUrl, { deadlineAt }),
-        );
+        // #10618: o review automatizado vale pra PR de qualquer repo, mas o
+        // conserto do "Closes #N" lê a convenção de issues do diaria-studio —
+        // em PR de outro repo (ex: vjpixel/diaria-design) não roda.
+        const closeWarning = isForeignRepoPrUrl(prUrl)
+          ? null
+          : closeKeywordWarning(ensureCloseKeywords(prUrl, { deadlineAt }));
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {

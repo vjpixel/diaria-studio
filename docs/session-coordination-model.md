@@ -150,7 +150,7 @@ teria dado na 1ª tentativa.
 ao bater neste guard, ler a mensagem completa até o fim ANTES de agir — se
 ela contém a frase "O motivo REAL deste bloqueio agora é o MERGE LOCK", a
 causa é lock, não identidade, e `register`/`grant-merge` não resolvem nada;
-o passo é `merge-lock-acquire --pr N` e tentar de novo. Alternativa mais
+o passo é `merge-lock-acquire --pr N` (com `--repo owner/name` se o PR não é do diaria-studio — o lock é por repo, #10618) e tentar de novo. Alternativa mais
 rápida que ler a mensagem inteira: chamar
 `.claude/hooks/block-gh-pr-merge-subagent.mjs`'s `classifyMergeBlockCause`
 diretamente (via o mesmo import que os testes usam) pra obter a causa em

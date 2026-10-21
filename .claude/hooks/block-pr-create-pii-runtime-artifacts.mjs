@@ -79,6 +79,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
+import { ghPrSegments, repoFromCwdOrigin } from "./lib/gh-target-repo.mjs";
 
 /**
  * Remove o CONTEÚDO de spans entre aspas (simples ou duplas), preservando
@@ -576,10 +577,14 @@ export function buildDenyMessage(findings) {
   return lines.join("\n");
 }
 
-/** Resolve o alvo de comparação (`origin/master` preferido, `master` como
- * fallback) — `null` se nenhum dos dois resolver (fail-open no chamador). */
-function resolveBaseRef(cwd) {
-  for (const ref of ["origin/master", "master"]) {
+/** Resolve o alvo de comparação: a branch default do repo (`origin/HEAD`,
+ * ex. `origin/main` no vjpixel/diaria-design, #10618), depois `origin/master`,
+ * `origin/main`, `master`, `main`. `null` se nenhum resolver — o chamador
+ * recusa (fail-closed): sem base não dá pra saber o que a PR leva. */
+export function resolveBaseRef(cwd) {
+  const head = runGit(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
+  const candidates = [head ? head.trim() : "", "origin/master", "origin/main", "master", "main"].filter(Boolean);
+  for (const ref of candidates) {
     // windowsHide (#7959): sem isso, este `spawnSync("git", ...)` aloca
     // console próprio no Windows a cada `gh pr create` interceptado.
     const result = spawnSync("git", ["rev-parse", "--verify", ref], {
@@ -591,6 +596,39 @@ function resolveBaseRef(cwd) {
     if (!result.error && result.status === 0) return ref;
   }
   return null;
+}
+
+function denyWith(reason) {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
+    }),
+  );
+}
+
+/**
+ * #10618 — o repo que o `gh pr create` mira bate com o checkout que este
+ * guard vai auditar? Devolve a mensagem de recusa, ou `null` quando está tudo
+ * certo (nenhum repo explícito, ou explícito igual ao `origin` do checkout).
+ */
+export function repoMismatchReason(command, cwd, originOf = repoFromCwdOrigin) {
+  const segments = ghPrSegments(command, ["create"]);
+  if (segments.some((sg) => sg.source === "unparseable")) {
+    return (
+      "gh pr create bloqueado pelo guard de PII/artefato (#6753/#10618): o repo alvo (`-R`/`--repo`/URL/`GH_REPO`) " +
+      "está ilegível ou contraditório — não dá pra saber qual checkout auditar. Use `owner/name` literal ou rode " +
+      "de dentro do checkout do repo alvo, sem `-R`."
+    );
+  }
+  const explicit = [...new Set(segments.filter((sg) => sg.repo).map((sg) => sg.repo))];
+  if (explicit.length === 0) return null;
+  const origin = originOf(cwd);
+  if (explicit.length === 1 && origin === explicit[0]) return null;
+  return (
+    `gh pr create bloqueado pelo guard de PII/artefato (#6753/#10618): a PR mira ${explicit.join(", ")}, mas o ` +
+    `checkout auditado ("${cwd}") é de ${origin ?? "repo indeterminado"} — o guard diffaria a branch errada. Rode o ` +
+    "`gh pr create` de dentro do checkout do repo alvo (`cd <checkout> && gh pr create ...`)."
+  );
 }
 
 function runGit(args, cwd) {
@@ -740,19 +778,50 @@ if (
       // worktree e fazia o guard julgar a branch errada).
       const cwd = resolveGitRoot(resolveRepoRootCandidates(payload.cwd, hookDir, command));
       if (cwd === null) return; // fail-open: nenhum candidato é repo git
+      // #10618: este guard vale pra PR de QUALQUER repo (inclusive o
+      // vjpixel/diaria-design) — é guard de segurança (PII/artefato de
+      // runtime), não regra editorial do diaria-studio. Não pular por repo.
+      // Mas ele só sabe auditar o checkout em `cwd`: um `-R`/URL/GH_REPO que
+      // aponte pra OUTRO repo (ou ilegível) faria o guard diffar a branch
+      // errada — recusa com instrução em vez de passar sem ter olhado.
+      const mismatch = repoMismatchReason(command, cwd);
+      if (mismatch) {
+        denyWith(mismatch);
+        return;
+      }
 
       const baseRef = resolveBaseRef(cwd);
-      if (!baseRef) return; // fail-open: não deu pra achar master/origin-master
+      // #10618: fail-CLOSED — antes era `return` (fail-open), e o diaria-design
+      // (branch default `main`) passava sem auditoria nenhuma.
+      if (!baseRef) {
+        denyWith(
+          `gh pr create bloqueado pelo guard de PII/artefato (#6753/#10618): não achei a branch base em "${cwd}" ` +
+            "(origin/HEAD, origin/master, origin/main, master, main) — sem base não dá pra auditar o que a PR leva. " +
+            "Rode `git fetch origin` (ou `git remote set-head origin -a`) e tente de novo.",
+        );
+        return;
+      }
 
       const mergeBase = runGit(["merge-base", baseRef, "HEAD"], cwd);
-      if (mergeBase === null) return; // fail-open
-      const base = mergeBase.trim();
-      if (!base) return;
+      const base = mergeBase === null ? "" : mergeBase.trim();
+      if (!base) {
+        denyWith(
+          `gh pr create bloqueado pelo guard de PII/artefato (#6753/#10618): sem merge-base entre ${baseRef} e HEAD ` +
+            `em "${cwd}" — não dá pra auditar o que a PR leva. Confira a branch e rode \`git fetch origin\`.`,
+        );
+        return;
+      }
 
       const nameStatusRaw = runGit(["diff", "--name-status", base, "HEAD"], cwd);
-      if (nameStatusRaw === null) return; // fail-open
-      const diffRaw = runGit(["diff", base, "HEAD"], cwd);
-      if (diffRaw === null) return; // fail-open
+      const diffRaw = nameStatusRaw === null ? null : runGit(["diff", base, "HEAD"], cwd);
+      if (nameStatusRaw === null || diffRaw === null) {
+        // #10618: fail-CLOSED — sem o diff não dá pra saber o que a PR leva.
+        denyWith(
+          `gh pr create bloqueado pelo guard de PII/artefato (#6753/#10618): \`git diff ${base}..HEAD\` falhou em ` +
+            `"${cwd}" — não dá pra auditar o que a PR leva. Confira o checkout e tente de novo.`,
+        );
+        return;
+      }
 
       const nameStatusEntries = parseNameStatus(nameStatusRaw);
       const addedLinesByFile = parseAddedLinesByFile(diffRaw);
