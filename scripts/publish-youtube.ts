@@ -42,9 +42,12 @@ import {
   buildYouTubeInsertRequest,
   buildYouTubeMetadata,
   deriveEpisodeNumber,
+  resolveEffectiveVisibility,
   resolveYouTubeSchedule,
+  YOUTUBE_API_PROJECT_AUDITED,
   youtubeVideoFileName,
   type YouTubeInsertRequest,
+  type YouTubeEffectiveVisibility,
   type YouTubeMetadata,
   type YouTubeScheduleDecision,
 } from "./lib/diaria/youtube-video.ts";
@@ -59,6 +62,8 @@ export interface YouTubePublishPlanInput {
   publishAt?: string;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   thumb: { path: string; exists: boolean };
+  /** Projeto GCP auditado? Default `YOUTUBE_API_PROJECT_AUDITED` (false). */
+  projectAudited?: boolean;
 }
 
 export interface YouTubePublishPlan {
@@ -66,6 +71,8 @@ export interface YouTubePublishPlan {
   episode: number;
   metadata: YouTubeMetadata;
   schedule: YouTubeScheduleDecision;
+  /** O que o vídeo de fato fica — difere de `schedule` sem a auditoria do GCP. */
+  effective: YouTubeEffectiveVisibility;
   request: YouTubeInsertRequest;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   thumbnail: { path: string; exists: boolean; endpoint: string } | null;
@@ -101,6 +108,14 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
   });
   const schedule = resolveYouTubeSchedule(input.aammdd, input.now, input.publishAt ?? null);
   premises.push(schedule.premise);
+  const effective = resolveEffectiveVisibility(schedule, input.projectAudited ?? YOUTUBE_API_PROJECT_AUDITED);
+  if (effective.auditBlocked) {
+    const pedido = schedule.mode === "immediate" ? "publicação na hora (public)" : `agendamento (publishAt ${schedule.publishAt})`;
+    warnings.push(
+      `projeto GCP sem auditoria: o plano pede ${pedido}, mas o YouTube trava todo upload via API em private — ` +
+        "o vídeo sairia como rascunho privado e precisaria ser publicado à mão no Studio do YouTube (#10659)",
+    );
+  }
 
   if (!input.video.exists) {
     warnings.push(`vídeo ausente em ${input.video.path} — o upload real seria pulado (fail-soft)`);
@@ -119,6 +134,7 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     episode,
     metadata,
     schedule,
+    effective,
     request,
     video: input.video,
     thumbnail: input.thumb.exists

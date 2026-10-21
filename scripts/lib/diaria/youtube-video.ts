@@ -79,7 +79,9 @@ export function stripInlineMarkdown(text: string): string {
   return text
     .replace(/\[([^\]]+)\]\((?:[^()\s]|\([^()\s]*\))+\)/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2")
+    // Itálico só com delimitador "de palavra": `*x*` vira `x`, mas asterisco
+    // literal colado em alfanumérico (`2*3*4`, `a*b`) fica intacto.
+    .replace(/(^|[^\p{L}\p{N}*])\*(?=\S)([^*\n]*?\S)\*(?![\p{L}\p{N}*])/gu, "$1$2")
     .replace(/__([^_]+)__/g, "$1")
     .replace(/[ \t]+/g, " ")
     .split(/\r?\n/)
@@ -175,9 +177,17 @@ export function buildYouTubeDescription(input: YouTubeMetadataInput): string {
   let summary = sanitizeForYouTube(stripInlineMarkdown(d1.body));
   const budget = YOUTUBE_DESCRIPTION_MAX_BYTES - utf8Bytes(tail) - 2;
   if (utf8Bytes(summary) > budget) {
-    const chars = Array.from(summary);
-    while (chars.length > 0 && utf8Bytes(chars.join("")) + utf8Bytes("…") > budget) chars.pop();
-    summary = `${chars.join("").trimEnd()}…`;
+    // Corte linear: soma os bytes por code point até o orçamento (menos o "…").
+    const limit = budget - utf8Bytes("…");
+    let used = 0;
+    let cut = "";
+    for (const ch of summary) {
+      const b = utf8Bytes(ch);
+      if (used + b > limit) break;
+      used += b;
+      cut += ch;
+    }
+    summary = `${cut.trimEnd()}…`;
   }
   return summary ? `${summary}\n\n${sanitizeForYouTube(tail)}` : sanitizeForYouTube(tail);
 }
@@ -225,6 +235,34 @@ export function resolveYouTubeSchedule(
     privacyStatus: "public",
     premise: `horário-alvo ${iso} já passou em ${now.toISOString()} — publicando na hora (issue #10659 item 6)`,
   };
+}
+
+/**
+ * Sem a auditoria do projeto GCP (pendência do #10659), o YouTube trava em
+ * `private` todo vídeo enviado via `videos.insert` — o `privacyStatus: public`
+ * do modo "na hora" é ignorado e o `publishAt` do modo agendado não chega a
+ * torná-lo público. Virar `true` só depois da auditoria aprovada.
+ */
+export const YOUTUBE_API_PROJECT_AUDITED = false;
+
+export interface YouTubeEffectiveVisibility {
+  /** O que o vídeo de fato fica após o upload (não o que o request pede). */
+  privacyStatus: "private" | "public";
+  /** `publishAt` que de fato vai virar o vídeo público; null se nenhum. */
+  publishAt: string | null;
+  /** true quando a falta de auditoria rebaixa o pedido para `private`. */
+  auditBlocked: boolean;
+}
+
+/** Visibilidade EFETIVA do upload, dado o estado de auditoria do projeto GCP. */
+export function resolveEffectiveVisibility(
+  schedule: YouTubeScheduleDecision,
+  projectAudited: boolean = YOUTUBE_API_PROJECT_AUDITED,
+): YouTubeEffectiveVisibility {
+  if (projectAudited) {
+    return { privacyStatus: schedule.privacyStatus, publishAt: schedule.publishAt, auditBlocked: false };
+  }
+  return { privacyStatus: "private", publishAt: null, auditBlocked: true };
 }
 
 export interface YouTubeInsertRequest {

@@ -8,8 +8,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   YOUTUBE_DESCRIPTION_MAX_BYTES,
@@ -21,6 +23,7 @@ import {
   buildYouTubeTags,
   buildYouTubeTitle,
   deriveEpisodeNumber,
+  resolveEffectiveVisibility,
   resolveYouTubeSchedule,
   stripInlineMarkdown,
   withYouTubeUtm,
@@ -127,6 +130,12 @@ describe("metadados do vídeo (#10659 item 2)", () => {
 
   it("stripInlineMarkdown remove negrito, itálico e links", () => {
     assert.equal(stripInlineMarkdown("um **b** e *i* e [l](https://x.com/a_(b))"), "um b e i e l");
+  });
+
+  it("stripInlineMarkdown preserva asterisco literal colado em alfanumérico", () => {
+    assert.equal(stripInlineMarkdown("custo 2*3*4 vezes"), "custo 2*3*4 vezes");
+    assert.equal(stripInlineMarkdown("a*b e c*d"), "a*b e c*d");
+    assert.equal(stripInlineMarkdown("*início* e (*meio*)."), "início e (meio).");
   });
 
   it("episódio pela cadência diária: 261021 = #1, 261022 = #2, virada de mês ok", () => {
@@ -240,7 +249,9 @@ describe("planYouTubePublish (dry-run)", () => {
     assert.equal(plan.schedule.mode, "scheduled");
     assert.ok(plan.premises.some((p) => /cadência diária/.test(p)));
     assert.ok(plan.premises.some((p) => /slug do título/.test(p)));
-    assert.equal(plan.warnings.length, 0);
+    // Projeto GCP ainda sem auditoria: único aviso é o rebaixamento para private.
+    assert.equal(plan.warnings.length, 1);
+    assert.match(plan.warnings[0], /sem auditoria/);
     assert.ok(plan.thumbnail?.endpoint.includes("thumbnails/set"));
   });
 
@@ -257,8 +268,29 @@ describe("planYouTubePublish (dry-run)", () => {
       video: { path: "/x/v.mp4", exists: false, sizeBytes: null },
       thumb: { path: "/x/t.jpg", exists: false },
     });
-    assert.equal(plan.warnings.length, 2);
+    assert.equal(plan.warnings.filter((w) => /ausente/.test(w)).length, 2);
     assert.equal(plan.thumbnail, null);
+  });
+
+  it("modo 'na hora' sem auditoria do GCP: request pede public, mas o efetivo é private + aviso", () => {
+    const plan = planYouTubePublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
+    assert.equal(plan.schedule.mode, "immediate");
+    assert.equal(plan.request.body.status.privacyStatus, "public");
+    assert.deepEqual(plan.effective, { privacyStatus: "private", publishAt: null, auditBlocked: true });
+    assert.ok(plan.warnings.some((w) => /publicação na hora \(public\)/.test(w) && /private/.test(w)));
+  });
+
+  it("projeto auditado: efetivo segue o plano e não há aviso de auditoria", () => {
+    const now = planYouTubePublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), projectAudited: true });
+    assert.deepEqual(now.effective, { privacyStatus: "public", publishAt: null, auditBlocked: false });
+    const sched = planYouTubePublish({ ...base, projectAudited: true });
+    assert.equal(sched.effective.publishAt, sched.schedule.publishAt);
+    assert.equal(sched.warnings.length, 0);
+  });
+
+  it("resolveEffectiveVisibility sem auditoria rebaixa também o agendado", () => {
+    const s = resolveYouTubeSchedule("261022", new Date("2026-10-21T23:00:00Z"));
+    assert.deepEqual(resolveEffectiveVisibility(s, false), { privacyStatus: "private", publishAt: null, auditBlocked: true });
   });
 
   it("sem DESTAQUE 1 lança", () => {
@@ -275,8 +307,30 @@ describe("guardas do CLI e da skill", () => {
     assert.doesNotMatch(cli, /process\.exit\(/);
   });
 
-  it("sem --dry-run o CLI recusa (exit 2) — upload real pendente de OAuth", () => {
-    assert.match(cli, /if \(!flags\.has\("dry-run"\)\)[\s\S]{0,400}return 2;/);
+  it("sem --dry-run o CLI recusa (exit 2) antes de ler a edição ou imprimir plano", () => {
+    // Executa o CLI de verdade (o caminho sem --dry-run não chama API nenhuma):
+    // com uma edição VÁLIDA no disco, só o guard explica o exit 2 sem stdout.
+    const dir = mkdtempSync(join(tmpdir(), "publish-youtube-10659-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_MD);
+      const script = resolve(ROOT, "scripts/publish-youtube.ts");
+      const r = spawnSync(process.execPath, ["--import", "tsx", script, "261022", "--edition-dir", dir], {
+        encoding: "utf8",
+        cwd: ROOT,
+      });
+      assert.equal(r.status, 2, r.stderr);
+      assert.equal(r.stdout, "");
+      assert.match(r.stderr, /--dry-run/);
+      // Controle: a mesma edição com --dry-run produz o plano (exit 0).
+      const ok = spawnSync(process.execPath, ["--import", "tsx", script, "261022", "--edition-dir", dir, "--dry-run"], {
+        encoding: "utf8",
+        cwd: ROOT,
+      });
+      assert.equal(ok.status, 0, ok.stderr);
+      assert.match(ok.stdout, /"dry_run": true/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("skill /diaria-youtube existe e usa o publisher com --dry-run", () => {
