@@ -30,13 +30,15 @@
 //     ferramenta (curl, script) ou por um script em arquivo (`bash x.sh`);
 //   - expansão de variável na posição de comando (`$GH pr merge 5`,
 //     `"${cmd[@]}"`) — o valor só existe em tempo de execução;
-//   - corpo de heredoc (`<<EOF`/`<<'EOF'`/`<<-EOF`) é pulado como TEXTO até
-//     a linha do delimitador — `git commit -F - <<'EOF'` cuja mensagem cita
-//     `gh pr merge` não é merge. Exceções fail-closed, com o corpo lido como
-//     comandos: shell/`source`/`.`/`eval` em qualquer palavra da linha do
-//     `<<` (`bash <<EOF`, `cat <<EOF | sh`), ou delimitador sem aspas com
-//     `$(`/crase no corpo. Heredoc sem a linha de fechamento vai até o fim do
-//     comando;
+//   - corpo de heredoc: FAIL-CLOSED, lido como comandos E como string entre
+//     aspas duplas (`$(...)`/crase) — conta merge se qualquer leitura achar.
+//     Quem alimenta um shell com o corpo é inenumerável (`| sh`, `bash -c
+//     "$(cat <<…)"`, `while … eval`, `$SHELL <<…`, `ssh host <<…`), então
+//     não há lista de "runners": o corpo só é pulado quando o comando INTEIRO
+//     casa a whitelist de `isHeredocDataCommand` (git commit -F -/-m "$(cat
+//     <<'D' …)", gh pr|issue create/comment --body "$(cat <<'D' …)").
+//     Falso positivo fora dela (ex.: `cat <<'EOF' > nota.md` citando o merge
+//     numa rodada) é aceito;
 //   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`).
 // Na dúvida o lexer fica do lado de VER o merge: flag desconhecida de wrapper
 // é tratada como booleana (não engole a palavra seguinte).
@@ -53,14 +55,43 @@ const MAX_DEPTH = 8;
  * Redirecionamentos (`>x`, `2>&1`, `<<EOF`, `<<<x`) saem da lista de
  * palavras junto com o alvo.
  */
-export function parseShellCommands(src, depth = 0) {
+export function parseShellCommands(src, depth = 0, ctx = DEFAULT_CTX) {
   const commands = [];
   if (typeof src !== "string" || depth > MAX_DEPTH) return commands;
-  scan(src, 0, null, commands, depth);
+  scan(src, 0, null, commands, depth, ctx);
   return commands;
 }
 
-function scan(src, start, closer, commands, depth) {
+/** `skipHeredocData`: pular o corpo dos heredocs (só sob a whitelist). */
+const DEFAULT_CTX = Object.freeze({ skipHeredocData: false });
+
+/**
+ * Corpo de heredoc lido como string entre aspas duplas: só `\`, `$(...)`,
+ * crase e `$[...]` têm efeito — nunca o lexing completo de shell (um `#` ou
+ * uma `'` solta no texto não podem esconder um `$(gh pr merge 5)`).
+ */
+function scanSubstitutionsOnly(body, commands, depth, ctx) {
+  if (depth > MAX_DEPTH) return;
+  let j = 0;
+  while (j < body.length) {
+    if (body[j] === "\\") j += 2;
+    else if (body[j] === "$" && body[j + 1] === "(") j = scan(body, j + 2, ")", commands, depth, ctx);
+    else if (body[j] === "`") j = scan(body, j + 1, "`", commands, depth, ctx);
+    else j++;
+  }
+}
+
+/** Fim de um `$[...]` (aritmética antiga) a partir do `[`, com aninhamento. */
+function arithEnd(src, open) {
+  let level = 0;
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === "[") level++;
+    else if (src[j] === "]" && --level === 0) return j + 1;
+  }
+  return src.length;
+}
+
+function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
   const n = src.length;
   let i = start;
   let words = [];
@@ -70,13 +101,20 @@ function scan(src, start, closer, commands, depth) {
   let skipNext = false; // próxima palavra é alvo de redirecionamento
   let heredocOp = null; // `<<`/`<<-` visto: a próxima palavra é o delimitador
   const heredocs = []; // { delim, quoted, strip } pendentes até o fim da linha
-  let lineStart = commands.length; // 1º comando da linha corrente em `commands`
+  let hereString = false; // `<<<`: a próxima palavra é o texto do here-string
+  let hereStrings = []; // textos de here-string do comando corrente
 
   const endWord = () => {
     if (!inWord) return;
     if (heredocOp !== null) {
-      heredocs.push({ delim: word, quoted: wordQuoted, strip: heredocOp === "<<-" });
+      // Delimitador com substituição (`<<"$(x)"`): o valor só existe em
+      // execução — o corpo nunca é pulado, segue lido como comandos inline.
+      if (!word.includes("\u0000")) heredocs.push({ delim: word, quoted: wordQuoted, strip: heredocOp === "<<-" });
       heredocOp = null;
+    }
+    if (hereString) {
+      hereStrings.push(word);
+      hereString = false;
     }
     if (skipNext) skipNext = false;
     else words.push(word);
@@ -86,24 +124,31 @@ function scan(src, start, closer, commands, depth) {
   };
   const endCommand = () => {
     endWord();
+    if (hereStrings.length > 0) {
+      // `bash <<< 'gh pr merge 5'`: o texto vai pro stdin do comando — quem
+      // decide se ele executa é `mergeArgsOf` (shell/source/eval sem -c).
+      Object.defineProperty(words, "hereStrings", { value: hereStrings, enumerable: false });
+    }
     if (words.length > 0) commands.push(words);
     words = [];
+    hereStrings = [];
+    hereString = false;
     skipNext = false;
     heredocOp = null;
   };
   /**
    * Corpo dos heredocs pendentes, a partir de `from` (logo depois do newline
-   * que encerra a linha do `<<`). Devolve onde a leitura continua. Corpo é
-   * TEXTO — `git commit -F - <<'EOF'` com uma linha `gh pr merge 5` na
-   * mensagem não é um merge (#10681). Exceções fail-closed, em que o corpo é
-   * lido como comandos: (1) a linha do `<<` tem um shell/`source`/`.` em
-   * qualquer palavra (`bash <<EOF`, `cat <<EOF | sh`) — o corpo É executado;
-   * (2) delimitador SEM aspas com `$(...)`/crase no corpo — o shell expande.
+   * que encerra a linha do `<<`). Devolve onde a leitura continua (depois da
+   * linha do delimitador). FAIL-CLOSED: o corpo é lido de DUAS formas — como
+   * comandos (alguém pode estar alimentando um shell com ele: `| sh`,
+   * `bash -c "$(cat <<…)"`, `while … eval`, `$SHELL <<…`, …) e como string
+   * entre aspas duplas (só `$(...)`/crase, que o shell expande num corpo de
+   * delimitador sem aspas) — e conta merge se qualquer uma achar. A ÚNICA
+   * exceção, em que o corpo é pulado, é o comando inteiro casar a whitelist
+   * de `isHeredocDataCommand` (`ctx.skipHeredocData`).
    */
   const skipHeredocBodies = (from) => {
     let pos = from;
-    const lineWords = commands.slice(lineStart).concat([words]);
-    const bodyRuns = lineWords.some((ws) => ws.some((w) => BODY_RUNNERS.has(basename(w).replace(/\.exe$/i, ""))));
     for (const h of heredocs) {
       const bodyStart = pos;
       let bodyEnd = n;
@@ -120,11 +165,10 @@ function scan(src, start, closer, commands, depth) {
         }
         pos = next;
       }
-      if (depth < MAX_DEPTH) {
+      if (!ctx.skipHeredocData && depth < MAX_DEPTH) {
         const body = src.slice(bodyStart, Math.min(bodyEnd, n));
-        if (bodyRuns || (!h.quoted && (body.includes("$(") || body.includes("`")))) {
-          scan(body, 0, null, commands, depth + 1);
-        }
+        scan(body, 0, null, commands, depth + 1, ctx);
+        scanSubstitutionsOnly(body, commands, depth + 1, ctx);
       }
     }
     heredocs.length = 0;
@@ -132,7 +176,7 @@ function scan(src, start, closer, commands, depth) {
   };
   const nested = (from, close) => {
     if (depth >= MAX_DEPTH) return n;
-    return scan(src, from, close, commands, depth + 1);
+    return scan(src, from, close, commands, depth + 1, ctx);
   };
 
   while (i < n) {
@@ -213,6 +257,13 @@ function scan(src, start, closer, commands, depth) {
       inWord = true;
       continue;
     }
+    if (ch === "$" && src[i + 1] === "[") {
+      // `$[1<<2]`: aritmética antiga, um span só — o `<<` dali não é heredoc.
+      i = arithEnd(src, i + 1);
+      word += "\u0000";
+      inWord = true;
+      continue;
+    }
     if (ch === "`") {
       i = nested(i + 1, "`");
       word += "\u0000";
@@ -242,10 +293,7 @@ function scan(src, start, closer, commands, depth) {
     if (ch === "\n" || ch === ";") {
       endCommand();
       i++;
-      if (ch === "\n") {
-        if (heredocs.length > 0) i = skipHeredocBodies(i);
-        lineStart = commands.length;
-      }
+      if (ch === "\n" && heredocs.length > 0) i = skipHeredocBodies(i);
       continue;
     }
     if (ch === "|") {
@@ -277,6 +325,7 @@ function scan(src, start, closer, commands, depth) {
       i += op.length;
       skipNext = true;
       if (op === "<<" || op === "<<-") heredocOp = op;
+      if (op === "<<<") hereString = true;
       continue;
     }
     if (ch === " " || ch === "\t" || ch === "\r") {
@@ -294,7 +343,7 @@ function scan(src, start, closer, commands, depth) {
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh"]);
-/** Palavra que, na linha de um heredoc, faz o corpo ser EXECUTADO (lido como comandos). */
+/** Palavra que faz um here-string (`<<<`) ser EXECUTADO (lido como comandos). */
 const BODY_RUNNERS = new Set([...SHELLS, "source", ".", "eval"]);
 /** Palavras reservadas que podem anteceder um comando simples. */
 const RESERVED_PREFIX = new Set(["!", "{", "}", "then", "do", "else", "elif", "if", "while", "until"]);
@@ -354,7 +403,20 @@ const MERGE_VALUE_FLAGS = new Set([
  * `bash -c '...'`, `eval ...` e `env -S '...'` (recursão em `depth`).
  */
 function mergeArgsOf(words, depth, out) {
+  // `bash <<< 'gh pr merge 5'` / `eval`/`source` com here-string: o texto
+  // vai pro stdin de quem o executa. Fail-closed: qualquer palavra que seja
+  // um shell/source/./eval, ou a palavra de comando vinda de expansão
+  // (`$SHELL <<< …`), faz o here-string ser lido como comandos.
+  if (Array.isArray(words.hereStrings) && words.hereStrings.length > 0) {
+    const cmdWord = words.find((w) => !ASSIGNMENT_RE.test(w)) ?? "";
+    const runs =
+      cmdWord.startsWith("$") ||
+      cmdWord.includes("\u0000") ||
+      words.some((w) => BODY_RUNNERS.has(basename(w).replace(/\.exe$/i, "")));
+    if (runs) for (const s of words.hereStrings) collect(s, depth + 1, out);
+  }
   let i = 0;
+  let viaXargs = false;
   for (;;) {
     while (i < words.length && (ASSIGNMENT_RE.test(words[i]) || RESERVED_PREFIX.has(words[i]))) i++;
     if (i >= words.length) return;
@@ -370,6 +432,7 @@ function mergeArgsOf(words, depth, out) {
     }
     const wrapper = Object.hasOwn(WRAPPERS, name) ? WRAPPERS[name] : null;
     if (wrapper === null) break;
+    if (name === "xargs") viaXargs = true;
     i++;
     let positional = wrapper.positional ?? 0;
     while (i < words.length) {
@@ -421,6 +484,12 @@ function mergeArgsOf(words, depth, out) {
       if (GH_VALUE_FLAGS.has(words[i])) i += 2;
       else i++;
     }
+    // `xargs … gh` / `xargs gh pr`: o xargs completa o comando com o que vier
+    // do stdin (`pr merge 5`) — fail-closed, conta como merge.
+    if (i >= words.length && viaXargs) {
+      out.push([]);
+      return;
+    }
     if (i >= words.length || words[i] !== expected) return;
     i++;
   }
@@ -451,9 +520,50 @@ function shellDashCScript(words, from) {
   return hasC && i < words.length ? words[i] : null;
 }
 
-function collect(command, depth, out) {
+function collect(command, depth, out, ctx = DEFAULT_CTX) {
   if (depth > MAX_DEPTH) return;
-  for (const words of parseShellCommands(command, depth)) mergeArgsOf(words, depth, out);
+  for (const words of parseShellCommands(command, depth, ctx)) mergeArgsOf(words, depth, out);
+}
+
+// ─── Whitelist de heredoc-como-DADO ──────────────────────────────────────
+// Fora daqui, todo corpo de heredoc é lido como comandos (fail-closed). As
+// formas abaixo são as que as rodadas usam o tempo todo pra passar TEXTO
+// (mensagem de commit, corpo de PR/issue/comentário) — o corpo nunca vai pra
+// um shell. Casa o comando INTEIRO; qualquer desvio volta pro fail-closed.
+
+/** Argumento simples: sem `$`, crase, `\`, metacaractere nem aspas abertas. */
+const SIMPLE_ARG = String.raw`(?:[A-Za-z0-9_./:@=+,%-]+|"[^"$\x60\\\n]*"|'[^'\n]*')`;
+const ARGS = `(?: ${SIMPLE_ARG})*`;
+const DELIM = "'([A-Za-z_]+)'";
+const GIT_PUSH = `(?: && git push${ARGS})?`;
+const HEAD_FORMS = [
+  // git commit [flags] -F - <<'D' [&& git push ...]  →  depois do D, nada.
+  { re: new RegExp(`^git commit${ARGS} -F - <<${DELIM}${GIT_PUSH}$`), tail: /^\s*$/ },
+  // git commit [flags] -m "$(cat <<'D'  …  D  )" [flags] [&& git push ...]
+  { re: new RegExp(`^git commit${ARGS} -m "\\$\\(cat <<${DELIM}$`), tail: new RegExp(`^\\)"${ARGS}${GIT_PUSH}\\s*$`) },
+  // gh pr create|pr comment|issue comment|issue create … --body "$(cat <<'D'  …  D  )" …
+  {
+    re: new RegExp(`^gh (?:pr create|pr comment|issue comment|issue create)${ARGS} --body "\\$\\(cat <<${DELIM}$`),
+    tail: new RegExp(`^\\)"${ARGS}\\s*$`),
+  },
+];
+
+/**
+ * `true` quando o comando INTEIRO é uma das formas de `HEAD_FORMS`: 1ª linha
+ * casando o cabeçalho, corpo até a PRIMEIRA linha igual ao delimitador
+ * (aspado, `[A-Za-z_]+`, sem `<<-`) e, depois dela, só o fecho esperado.
+ */
+export function isHeredocDataCommand(command) {
+  if (typeof command !== "string" || command.includes("\r")) return false;
+  const lines = command.split("\n");
+  for (const { re, tail } of HEAD_FORMS) {
+    const m = re.exec(lines[0]);
+    if (!m) continue;
+    const close = lines.indexOf(m[1], 1);
+    if (close === -1) return false;
+    return tail.test(lines.slice(close + 1).join("\n"));
+  }
+  return false;
 }
 
 /**
@@ -463,7 +573,7 @@ function collect(command, depth, out) {
 export function findGhPrMergeInvocations(command) {
   const out = [];
   if (typeof command !== "string") return out;
-  collect(command, 0, out);
+  collect(command, 0, out, { skipHeredocData: isHeredocDataCommand(command) });
   return out;
 }
 

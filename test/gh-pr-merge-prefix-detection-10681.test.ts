@@ -141,9 +141,73 @@ const NEGATIVES: string[] = [
   // corpo do heredoc, via — e o guard negava o commit de um subagente.
   `git commit -m "$(cat <<'EOF'\nfix: x\n\nrodar && gh pr merge 5 depois\ngh pr merge 6\nEOF\n)"`,
   "git commit -F - <<'EOF'\nfix: x\n\n&& gh pr merge 5\nEOF",
-  'git commit -F - <<"EOF"\n&& gh pr merge 5\nEOF',
-  "cat <<'EOF'\n$(gh pr merge 5)\nEOF",
+  // Whitelist de heredoc-como-dado (fora dela o corpo é lido como comandos).
+  "git commit -q --no-verify -F - <<'EOF' && git push -u origin HEAD\nfix\ngh pr merge 5\nEOF",
+  `git commit -m "$(cat <<'MSG'\nfix && gh pr merge 5\nMSG\n)" --no-verify && git push origin HEAD`,
+  `gh pr create --title "fix(#1): x" --base master --body "$(cat <<'EOF'\nCloses #1\n\nrodar && gh pr merge 5 depois\n$(gh pr merge 6)\nEOF\n)"`,
+  `gh pr comment 10688 --body "$(cat <<'EOF'\n\`gh pr merge 5\`\nEOF\n)"`,
+  `gh issue comment 10681 --body "$(cat <<'EOF'\neval gh pr merge 5\nEOF\n)"`,
+  `gh issue create --title "x" --label bug --label P2 --body "$(cat <<'EOF'\n| sh\ngh pr merge 5\nEOF\n)"`,
 ];
+
+/** Probes da verificação adversarial da PR #10688 @0e5a19f (bash real com gh falso): todos executam o merge. */
+const HEREDOC_FAIL_OPEN_PROBES: string[] = [
+  "cat <<EOF && gh pr merge 5\nbody\nEOF",
+  "cat <<A <<'B'\na\nA\nb\nB\ngh pr merge 5",
+  "cat <<'EOF' | sh\ngh pr merge 5\nEOF",
+  "cat <<'EOF' | bash -\ngh pr merge 5\nEOF",
+  "cat <<'EOF' | command sh\ngh pr merge 5\nEOF",
+  "cat <<'EOF' | env bash\ngh pr merge 5\nEOF",
+  "cat <<'EOF' | fish\ngh pr merge 5\nEOF",
+  "cat <<'EOF' | busybox ash\ngh pr merge 5\nEOF",
+  "cat <<'EOF' | pwsh -Command -\ngh pr merge 5\nEOF",
+  "cat <<'EOF' | tee >(sh)\ngh pr merge 5\nEOF",
+  "docker exec -i c sh <<'EOF'\ngh pr merge 5\nEOF",
+  "ssh host <<'EOF'\ngh pr merge 5\nEOF",
+  "sh <(cat <<'EOF'\ngh pr merge 5\nEOF\n)",
+  "source <(cat <<'EOF'\ngh pr merge 5\nEOF\n)",
+  `eval "$(cat <<'EOF'\ngh pr merge 5\nEOF\n)"`,
+  `eval "$(cat <<EOF\ngh pr merge 5\nEOF\n)"`,
+  `bash -c "$(cat <<'EOF'\ngh pr merge 5\nEOF\n)"`,
+  "bash <<< 'gh pr merge 5'",
+  "source /dev/stdin <<< 'gh pr merge 5'",
+  "cat <<'EOF' |\ngh pr merge 5\nEOF\nsh",
+  "{ cat <<'EOF'\ngh pr merge 5\nEOF\n} | sh",
+  "( cat <<'EOF'\ngh pr merge 5\nEOF\n) | bash",
+  `while read -r l; do\n  eval "$l"\ndone <<'EOF'\ngh pr merge 5\nEOF`,
+  "cat <<EOF\n# $(gh pr merge 5)\nEOF",
+  "cat <<EOF\nit's done: $(gh pr merge 5)\nEOF",
+  "cat <<EOF\nit's `gh pr merge 5`\nEOF",
+  "cat <<'EOF'\n$(gh pr merge 5)\nEOF",
+  "echo $[1<<2]\ngh pr merge 5",
+  `cat <<"$(x)"\nhi\n$(x)\ngh pr merge 5`,
+  "cat <<$'EOF'\nhi\nEOF\ngh pr merge 5",
+  "$SHELL <<'EOF'\ngh pr merge 5\nEOF",
+  "${SHELL:-bash} <<'EOF'\ngh pr merge 5\nEOF",
+  "sudo -s <<'EOF'\ngh pr merge 5\nEOF",
+  "su root <<'EOF'\ngh pr merge 5\nEOF",
+  "at now <<'EOF'\ngh pr merge 5\nEOF",
+  "xargs -L1 gh <<'EOF'\npr merge 5\nEOF",
+  "cat <<'EOF'\nbody\ngh pr merge 5",
+  "cat <<'EOF'\nEOF \ngh pr merge 5\nEOF",
+  "cat <<'EOF'\r\nb\r\nEOF\r\ngh pr merge 5\r\n",
+  "cat <<E\"O\"F\nx\nEOF\ngh pr merge 5",
+  "cat <<\\EOF\nx\nEOF\ngh pr merge 5",
+  // Variações das formas da whitelist que saem dela (voltam pro fail-closed).
+  "git commit -F - <<'EOF'\nfix\nEOF\ngh pr merge 5",
+  `git commit -m "$(cat <<'EOF'\nfix\nEOF\n)" && gh pr merge 5`,
+  `git commit -m "$(cat <<'EOF'\nfix\nEOF\ngh pr merge 5\nEOF\n)"`,
+  "git commit -F - <<'EOF' | sh\ngh pr merge 5\nEOF",
+  `gh pr create --body "$(cat <<'EOF'\nx\nEOF\n)" ; gh pr merge 5`,
+];
+
+describe("#10681 — heredoc FAIL-CLOSED: probes da verificação adversarial", () => {
+  for (const cmd of HEREDOC_FAIL_OPEN_PROBES) {
+    it(`merge: ${JSON.stringify(cmd)}`, () => {
+      assert.equal(isGhPrMergeCommand(cmd), true, cmd);
+    });
+  }
+});
 
 describe("#10681 — detector reconhece gh pr merge com prefixos", () => {
   for (const [cmd, pr] of POSITIVES) {

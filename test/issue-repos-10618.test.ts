@@ -940,6 +940,32 @@ describe("fail-closed: comando fora da forma simples (verificação da PR #10668
     });
   }
 
+  // Verificação adversarial da PR #10688 @0e5a19f: heredoc alimentando um
+  // shell passava pelo guard. Corpo de heredoc agora é fail-closed.
+  const heredocProbes: Array<[string, string]> = [
+    ["bash -c \"$(cat <<'EOF' …)\"", `bash -c "$(cat <<'EOF'\ngh pr merge 6\nEOF\n)"`],
+    ["{ cat <<'EOF' … } | sh", "{ cat <<'EOF'\ngh pr merge 6\nEOF\n} | sh"],
+    ["while … eval … done <<'EOF'", `while read -r l; do\n  eval "$l"\ndone <<'EOF'\ngh pr merge 6\nEOF`],
+    ["bash <<< 'gh pr merge 6'", "bash <<< 'gh pr merge 6'"],
+  ];
+  for (const [name, command] of heredocProbes) {
+    it(`#10681: heredoc/here-string que alimenta shell é negado com o lock do studio preso (${name})`, () => {
+      const root = setup({ lockHolder: "outra-sessao" });
+      assert.match(run(root, command), DENY, command);
+    });
+  }
+
+  it("#10681: heredoc-como-dado da whitelist (git commit / gh pr create) não é merge, nem com o lock preso", () => {
+    const root = setup({ lockHolder: "outra-sessao" });
+    for (const command of [
+      "git commit -F - <<'EOF'\nfix: x\n\n&& gh pr merge 5\nEOF",
+      `git commit -m "$(cat <<'EOF'\nfix: x\n\nrodar && gh pr merge 5 depois\nEOF\n)"`,
+      `gh pr create --title "x" --body "$(cat <<'EOF'\nCloses #1\n\n&& gh pr merge 5\nEOF\n)"`,
+    ]) {
+      assert.equal(run(root, command), "", command);
+    }
+  });
+
   it("#10681: concessão não vale pras formas com prefixo (estrito), nem pra beneficiária", () => {
     const root = setup({ lockHolder: "benef", grantPr: 6 });
     assert.equal(run(root, "gh pr merge 6 --squash", "benef"), "", "forma simples com concessão passa");
