@@ -29,6 +29,14 @@
 //      `platform.config.json → issue_repos`. Qualquer outro (typo, fork,
 //      origin renomeado) recebe as regras do diaria-studio.
 //
+// MERGE — ÔNUS DA PROVA INVERTIDO (re-verificação da PR #10668): os hooks de
+// merge usam `resolveMergeTargets`, não `resolveGhTargets`. O lock do
+// diaria-studio entra SEMPRE, salvo quando o comando inteiro casa a whitelist
+// estrita de `parseStrictMerge` (um único `gh pr merge N|<URL canônica>` com
+// flags booleanas conhecidas e `-R`/`--repo` canônico, opcionalmente
+// `cd /abs && ` e `2>&1 | tail -N`). Fora dela, concessão nenhuma conta.
+// As regras abaixo (`resolveGhTargets`) seguem valendo pros hooks de create.
+//
 // FAIL-CLOSED (verificação da PR #10668): o resolver só confia num comando
 // em FORMA SIMPLES — palavras + separadores `&&` `;` `||` `|` newline, `cd X`
 // opcional, `-R`/`--repo`/URL. Qualquer `&` solto, `|&`, `#`, `(` `)` `{` `}`,
@@ -487,6 +495,139 @@ export function resolveGhTargets(command, cwd, opts = {}) {
     if (useCd && cdStrict) add(DIARIA_STUDIO_REPO, "cd-strict");
   }
   return targets;
+}
+
+// ─── Merge: ônus da prova invertido (re-verificação da PR #10668) ──────────
+//
+// Pra `gh pr merge`, o diaria-studio está SEMPRE no conjunto de alvos — e a
+// concessão só conta pro diaria-studio — a menos que o comando inteiro case
+// uma WHITELIST estrita que PROVA ser um único merge de outro repo. Nada de
+// tokenizar shell aqui: a whitelist é uma regex por token sobre o texto cru,
+// e qualquer coisa fora dela (aspas, `$`, controle, clusters de flag, `--`,
+// URL não canônica, outro separador...) cai no modo ESTRITO.
+
+const PIPE_SUFFIX_RE = /^(.*?)(?: 2>&1)? \| (?:tail|head)(?: -\d+)?$/s;
+// Caminho absoluto sem aspas, espaço, `$`, `~` nem metacaractere (Windows ou POSIX).
+const CD_PREFIX_RE = /^cd ((?:[A-Za-z]:)?[\\/][A-Za-z0-9_.\\/:-]*) && (.*)$/s;
+const CANONICAL_PR_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+)\/pull\/(\d+)$/;
+const SLUG_TOKEN_RE = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+
+/** Slug só vale na forma CANÔNICA literal (minúsculo, sem sufixo de remote):
+ * qualquer variação que o gh normalizaria sozinho fica fora da whitelist. */
+function canonicalSlugToken(v) {
+  if (!SLUG_TOKEN_RE.test(v)) return null;
+  const slug = normalizeRepoSlug(v);
+  return slug === v ? slug : null;
+}
+const MERGE_BOOL_FLAGS = new Set(["--squash", "--merge", "--rebase", "-s", "-m", "-r", "--delete-branch", "-d", "--auto", "--admin"]);
+
+/**
+ * Lê `gh pr merge` na forma EXATA da whitelist. Devolve `{ repo, pr, cd }`
+ * (`repo` = do -R/--repo ou da URL canônica; `null` se nenhum dos dois) ou
+ * `null` quando QUALQUER token foge do formato.
+ */
+export function parseStrictMerge(command) {
+  if (typeof command !== "string" || command.length > 2000) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(command)) return null; // \r, \n, \t, ...
+  let core = command;
+  const pipe = PIPE_SUFFIX_RE.exec(core);
+  if (pipe) core = pipe[1];
+  let cd = null;
+  const cdm = CD_PREFIX_RE.exec(core);
+  if (cdm) {
+    cd = cdm[1];
+    core = cdm[2];
+  }
+  const tokens = core.split(" ");
+  if (tokens[0] !== "gh" || tokens[1] !== "pr" || tokens[2] !== "merge") return null;
+  let pr = null;
+  let urlRepo = null;
+  let flagRepo = null;
+  for (let k = 3; k < tokens.length; k++) {
+    const t = tokens[k];
+    if (/^\d+$/.test(t)) {
+      if (pr !== null) return null;
+      pr = Number(t);
+      continue;
+    }
+    const url = CANONICAL_PR_URL_RE.exec(t);
+    if (url) {
+      if (pr !== null) return null;
+      pr = Number(url[2]);
+      urlRepo = canonicalSlugToken(url[1]);
+      if (!urlRepo) return null;
+      continue;
+    }
+    if (MERGE_BOOL_FLAGS.has(t)) continue;
+    if (t === "-R" || t === "--repo") {
+      const v = tokens[k + 1] ?? "";
+      if (flagRepo !== null) return null;
+      flagRepo = canonicalSlugToken(v);
+      if (!flagRepo) return null;
+      k++;
+      continue;
+    }
+    const eq = /^--repo=(.+)$/.exec(t);
+    if (eq) {
+      if (flagRepo !== null) return null;
+      flagRepo = canonicalSlugToken(eq[1]);
+      if (!flagRepo) return null;
+      continue;
+    }
+    return null; // token fora do formato (vazio = espaço duplo, cluster, --, aspas...)
+  }
+  if (pr === null) return null;
+  if (urlRepo && flagRepo && urlRepo !== flagRepo) return null;
+  return { repo: flagRepo ?? urlRepo, pr, cd };
+}
+
+/**
+ * Alvos de um `gh pr merge` (ônus da prova invertido). Devolve
+ * `{ mode, targets, grantRepo, pr }`:
+ *   - `foreign-whitelist`: o comando PROVA ser um único merge de um repo de
+ *     fora permitido → `targets = [esse repo]`, concessão desse repo conta;
+ *   - `studio-plain`: forma estrita sem repo de fora, cwd (e `cd`) sem origin
+ *     de fora → `targets = [diaria-studio]`, concessão do studio conta;
+ *   - `strict`: qualquer outra coisa → diaria-studio + todo repo permitido
+ *     que o comando possa tocar; NENHUMA concessão conta (`grantRepo: null`).
+ */
+export function resolveMergeTargets(command, cwd, opts = {}) {
+  const { execFn = execFileSync, allowed = loadAllowedForeignRepos() } = opts;
+  const parsed = parseStrictMerge(command);
+  if (parsed) {
+    const { repo, cd, pr } = parsed;
+    if (repo !== null && repo !== DIARIA_STUDIO_REPO) {
+      // Repo de fora: só vale se permitido e, com `cd`, se o diretório é dele.
+      if (allowed.has(repo) && (cd === null || repoFromCwdOrigin(cd, execFn) === repo)) {
+        return { mode: "foreign-whitelist", targets: [repo], grantRepo: repo, pr, explicitRepo: repo };
+      }
+    } else if (repo === DIARIA_STUDIO_REPO) {
+      return { mode: "studio-plain", targets: [DIARIA_STUDIO_REPO], grantRepo: DIARIA_STUDIO_REPO, pr, explicitRepo: repo };
+    } else {
+      // Sem -R/URL o gh mira o repo do diretório: não pode ser um de fora.
+      const o = repoFromCwdOrigin(cd ?? cwd, execFn);
+      if (!(o && allowed.has(o))) {
+        return { mode: "studio-plain", targets: [DIARIA_STUDIO_REPO], grantRepo: DIARIA_STUDIO_REPO, pr, explicitRepo: repo };
+      }
+    }
+  }
+  // ESTRITO: studio + tudo que o comando possa tocar.
+  const repos = new Set([DIARIA_STUDIO_REPO, ...reposMentioned(command, allowed)]);
+  const base = typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
+  const dirs = [cwd];
+  for (const m of String(command).matchAll(/(?:^|[\s;&|(){}!])(?:cd|pushd)\s+([^\s;&|()]+)/g)) {
+    try {
+      dirs.push(resolvePath(base, m[1].replace(/^['"]|['"]$/g, "")));
+    } catch {
+      // diretório ilegível: o studio já está no conjunto
+    }
+  }
+  for (const d of dirs) {
+    const o = repoFromCwdOrigin(d, execFn);
+    if (o && allowed.has(o)) repos.add(o);
+  }
+  return { mode: "strict", targets: [...repos], grantRepo: null, pr: parsed?.pr ?? null, explicitRepo: null };
 }
 
 /** `true` quando a resolução caiu no modo COMPLEXO (fail-closed). */

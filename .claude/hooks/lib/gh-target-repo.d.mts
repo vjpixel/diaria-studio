@@ -34,6 +34,20 @@ export function ghPrSegments(command: unknown, subcommands?: string[]): GhPrSegm
 export function repoFromCwdOrigin(cwd: unknown, execFn?: ExecFn): string | null;
 export function resolveGhTargets(command: unknown, cwd: unknown, opts?: ResolveOpts): GhTarget[];
 export function resolveGhTargetRepo(command: unknown, cwd: unknown, opts?: ResolveOpts): GhTargetRepo;
+/** `gh pr merge` na forma exata da whitelist, ou `null`. */
+export function parseStrictMerge(command: unknown): { repo: string | null; pr: number; cd: string | null } | null;
+
+/** Resolução de um merge com ônus da prova invertido (#10618). */
+export type MergeResolution =
+  | { mode: "foreign-whitelist"; targets: [string]; grantRepo: string; pr: number; explicitRepo: string }
+  | { mode: "studio-plain"; targets: [string]; grantRepo: string; pr: number; explicitRepo: string | null }
+  | { mode: "strict"; targets: string[]; grantRepo: null; pr: number | null; explicitRepo: null };
+export function resolveMergeTargets(
+  command: unknown,
+  cwd: unknown,
+  opts?: { execFn?: ExecFn; allowed?: Set<string> },
+): MergeResolution;
+
 /** Motivos de o comando não estar na forma simples (vazio = simples). */
 export function commandComplexity(command: unknown): string[];
 export function reposMentioned(command: unknown, allowed?: Set<string>): Set<string>;

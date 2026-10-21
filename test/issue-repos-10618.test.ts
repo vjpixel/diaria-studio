@@ -89,7 +89,7 @@ const {
     opts?: { repo?: string },
   ) => boolean;
   resolveMainRepoRoot: (execFn: () => string, looks?: unknown, hookDir?: string) => string | null;
-  stateQueryRepo: (t: { repo: string; source: string | null }) => string | undefined;
+  stateQueryRepo: (r: { grantRepo: string | null; explicitRepo: string | null }) => string | undefined;
   resolveMergeState: (
     pr: number,
     exec: unknown,
@@ -445,7 +445,7 @@ describe("e2e: guard do #5716 com lock por repo (#10618)", () => {
     const root = setup(".merge-lock.json");
     const out = run(root, `gh pr merge 23 --squash && gh pr merge 23 --squash -R ${DESIGN}`);
     assert.match(out, /"permissionDecision":"deny"/);
-    assert.match(out, /MAIS DE UM repo/);
+    assert.match(out, /forma que o guard consegue provar/);
   });
 
   it("B: cd pro checkout do design com o lock do design preso → bloqueia (o cwd do payload é o studio)", () => {
@@ -492,7 +492,7 @@ describe("e2e: guard do #5716 com lock por repo (#10618)", () => {
     run(root, `gh pr merge 23 --squash -R ${DESIGN}`);
     const log = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
     assert.match(log, /"message":"merge_target_repo"/);
-    assert.match(log, /"repo":"vjpixel\/diaria-design","source":"flag"/);
+    assert.match(log, /"mode":"foreign-whitelist","targets":\["vjpixel\/diaria-design"\]/);
   });
 });
 
@@ -601,12 +601,15 @@ describe("resolveMainRepoRoot sem checkout do diaria-studio → indeterminado (#
 });
 
 describe("consume: repo explícito na consulta de estado sempre que determinado (#10618 H)", () => {
-  it("determinado (inclusive o studio) vai explícito; indeterminado/ilegível/fora da allowlist não", () => {
-    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: "flag" }), DEFAULT_ISSUE_REPO);
-    assert.equal(stateQueryRepo({ repo: DESIGN, source: "cwd-origin" }), DESIGN);
-    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: null }), undefined);
-    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: "unparseable" }), undefined);
-    assert.equal(stateQueryRepo({ repo: DEFAULT_ISSUE_REPO, source: "flag:fora-da-allowlist" }), undefined);
+  it("explícito (inclusive o studio via -R) vai explícito; sem repo explícito ou estrito não", () => {
+    const boom = () => {
+      throw new Error("sem git");
+    };
+    const res = (c: string) => hookRepo.resolveMergeTargets(c, "/x", { execFn: boom });
+    assert.equal(stateQueryRepo(res(`gh pr merge 23 -R ${DESIGN}`)), DESIGN);
+    assert.equal(stateQueryRepo(res("gh pr merge 23 -R vjpixel/diaria-studio")), DEFAULT_ISSUE_REPO);
+    assert.equal(stateQueryRepo(res("gh pr merge 23 --squash")), undefined);
+    assert.equal(stateQueryRepo(res("gh pr merge 23 --squash # x")), undefined);
   });
 });
 
@@ -1023,5 +1026,187 @@ describe("hooks de gh pr create com comando complexo (#10618)", () => {
     assert.match(run(design, 'gh pr create -R vjpixel/diaria-studio --body "$(cat x)"'), /"permissionDecision":"deny"/);
     const studio = makeRepo("https://github.com/vjpixel/diaria-studio.git");
     assert.match(run(studio, 'gh pr create --body "$(cat x)"'), /"permissionDecision":"deny"/);
+  });
+});
+
+describe("ônus da prova invertido: whitelist estrita de merge de fora (re-verificação da PR #10668)", () => {
+  const HOOK = fileURLToPath(new URL("../.claude/hooks/block-gh-pr-merge-subagent.mjs", import.meta.url));
+  const tag = machineTag();
+  const BS = "\\";
+  const DENY = /"permissionDecision":"deny"/;
+
+  /** coord-A ativa; `studioLock`/`designLock` = dono de cada lock (ausente = livre);
+   * concessão opcional de coord-A pra `benef`. */
+  function setup(opts: { studioLock?: string; designLock?: string; grant?: { pr: number; repo?: string } }): string {
+    const root = tmpRoot("wl");
+    const dir = join(root, "data", "sessions");
+    mkdirSync(dir, { recursive: true });
+    sh("git", ["init", "-q"], root);
+    const now = new Date().toISOString();
+    writeFileSync(
+      join(dir, `overnight-${tag}-coord-A.json`),
+      JSON.stringify({
+        kind: "overnight",
+        sessionId: "coord-A",
+        machineTag: tag,
+        startedAt: now,
+        lastHeartbeat: now,
+        ...(opts.grant
+          ? { merge_grant: { grantedTo: "benef", grantedBy: "coord-A", grantedAt: now, ...opts.grant } }
+          : {}),
+      }),
+    );
+    if (opts.studioLock) writeFileSync(join(dir, ".merge-lock.json"), JSON.stringify({ heldBy: opts.studioLock, acquiredAt: now }));
+    if (opts.designLock) {
+      writeFileSync(join(dir, ".merge-lock--vjpixel--diaria-design.json"), JSON.stringify({ heldBy: opts.designLock, acquiredAt: now }));
+    }
+    return root;
+  }
+
+  function checkout(repo: string): string {
+    const dir = tmpRoot("wl-co");
+    sh("git", ["init", "-q"], dir);
+    sh("git", ["remote", "add", "origin", `https://github.com/${repo}.git`], dir);
+    return dir;
+  }
+
+  function run(root: string, command: string, sessionId = "coord-A", cwd = root): string {
+    const r = spawnSync(process.execPath, [HOOK], {
+      cwd: root,
+      input: JSON.stringify({ session_id: sessionId, tool_name: "Bash", cwd, tool_input: { command } }),
+      encoding: "utf8",
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    return r.stdout ?? "";
+  }
+
+  // Linhas da sonda rv3 (todas as que não são whitelist legítima). Cada uma tem
+  // que bloquear com o lock do STUDIO na mão de outra sessão.
+  const fromStudioCwd: Array<[string, string]> = [
+    ["A cluster -db -R colado", `gh pr merge 6 --squash -db -R${DESIGN}`],
+    ["A2 cluster -st", `gh pr merge 6 -st -R${DESIGN}`],
+    ["A3 -dF", `gh pr merge 6 --squash -dF -R ${DESIGN}`],
+    ["A4 -sb --repo=", `gh pr merge 6 -sb --repo=${DESIGN}`],
+    ["B \\r", `gh pr merge 6 --squash --subject=a\r-R${DESIGN}`],
+    ["C ANSI-C", `gh pr merge 5 --squash -R ${DESIGN}; echo $'${BS}''; gh pr merge 6 --squash`],
+    ["C2 ANSI-C único", `gh pr merge 6 --squash -R ${DESIGN} $'${BS}'' ; gh pr merge 7 --squash`],
+    ["D URL com porta", `gh pr merge https://github.com:443/vjpixel/diaria-studio/pull/6 --squash -R ${DESIGN}`],
+    ["D2 URL com userinfo", `gh pr merge https://x@github.com/vjpixel/diaria-studio/pull/6 --squash -R ${DESIGN}`],
+    ["D3 URL subdomínio", `gh pr merge https://api.github.com/vjpixel/diaria-studio/pull/6 --squash -R ${DESIGN}`],
+    ["G -R duas vezes", `gh pr merge 6 -R ${DESIGN} -R vjpixel/diaria-studio`],
+    ["G2 --repo= não canônico", "gh pr merge 6 --repo=VJPIXEL/Diaria-Design.git"],
+    ["H -- fim de opções", `gh pr merge --squash -- -R${DESIGN}`],
+    ["J && entre aspas", `gh pr merge 6 -R ${DESIGN} --subject 'a && gh pr merge 7'`],
+    ["K \\;", `gh pr merge 6 -R ${DESIGN} ${BS}; gh pr merge 7`],
+    ["L $'\\n'", `gh pr merge 6 -R ${DESIGN} $'${BS}n' gh pr merge 7`],
+    ["M comando longo", `gh pr merge 6 -R ${DESIGN} ` + "x ".repeat(5000)],
+    ["R redirecionamento + ;", `gh pr merge 6 -R ${DESIGN} >&2; gh pr merge 7`],
+    ["espaço duplo", `gh pr merge 6  -R ${DESIGN}`],
+    ["aspas no slug", `gh pr merge 6 -R "${DESIGN}"`],
+  ];
+  for (const [name, command] of fromStudioCwd) {
+    it(`bloqueia (lock do studio com outra sessão): ${name}`, () => {
+      assert.match(run(setup({ studioLock: "outra-sessao" }), command), DENY, command);
+    });
+  }
+
+  // Do checkout do DESIGN: comandos que acabam mergeando no studio por um
+  // caminho que o resolver não prova (classe E/F/I/O/P/Q/S/T + D4).
+  const fromDesignCwd: Array<[string, string]> = [
+    ["D4 URL não canônica sem -R", "gh pr merge https://github.com:443/vjpixel/diaria-studio/pull/6 --squash"],
+    ["E builtin cd", "builtin cd STUDIO && gh pr merge 6 --squash"],
+    ["E2 if cd", "if cd STUDIO; then :; fi; gh pr merge 6 --squash"],
+    ["E3 ! cd", "! cd STUDIO; gh pr merge 6 --squash"],
+    ["F export GH_REPO", "export GH_REPO=vjpixel/diaria-studio; gh pr merge 6 --squash"],
+    ["F2 declare -x", "declare -x GH_REPO=vjpixel/diaria-studio; gh pr merge 6 --squash"],
+    ["I cd sem argumento", "cd && gh pr merge 6"],
+    ["I2 cd -", "cd - && gh pr merge 6"],
+    ["I3 cd ~", "cd ~/x && gh pr merge 6"],
+    ["O case", "case 1 in 1) cd STUDIO;; esac; gh pr merge 6"],
+    ["P while", "while cd STUDIO; do break; done; gh pr merge 6"],
+    ["Q for", "for d in STUDIO; do cd $d; done; gh pr merge 6"],
+    ["S then cd", "true; then cd STUDIO; gh pr merge 6"],
+    ["T função", "f() { cd STUDIO; }; f; gh pr merge 6"],
+    ["merge simples a partir do design", "gh pr merge 6 --squash"],
+  ];
+  for (const [name, template] of fromDesignCwd) {
+    it(`bloqueia a partir do checkout do design (lock do studio com outra sessão): ${name}`, () => {
+      const root = setup({ studioLock: "outra-sessao" });
+      const design = checkout(DESIGN);
+      const studio = checkout(DEFAULT_ISSUE_REPO).replaceAll("\\", "/");
+      const command = template.replaceAll("STUDIO", studio);
+      assert.match(run(root, command, "coord-A", design), DENY, command);
+    });
+  }
+
+  it("concessão do design só vale na whitelist: forma fora dela é recusada mesmo com o lock do design", () => {
+    const root = setup({ designLock: "benef", grant: { pr: 23, repo: DESIGN } });
+    for (const command of [
+      `gh pr merge 23 -sd -R ${DESIGN}`,
+      `gh pr merge 23 --squash -R ${DESIGN} # ok`,
+      `gh pr merge 23 --squash --repo ${DESIGN} --subject x`,
+    ]) {
+      assert.match(run(root, command, "benef"), DENY, command);
+    }
+  });
+
+  it("whitelist positiva do design: -R, URL canônica, os dois concordando, cd pro checkout dele e | tail", () => {
+    // Lock do studio com OUTRA sessão: se o studio entrasse no conjunto, bloquearia.
+    const root = setup({ studioLock: "outra-sessao" });
+    const design = checkout(DESIGN).replaceAll("\\", "/");
+    for (const command of [
+      `gh pr merge 23 --squash -R ${DESIGN}`,
+      `gh pr merge 23 --repo=${DESIGN} -d --squash`,
+      `gh pr merge https://github.com/${DESIGN}/pull/23 --squash`,
+      `gh pr merge https://github.com/${DESIGN}/pull/23 --squash -R ${DESIGN}`,
+      `gh pr merge 23 -m -R ${DESIGN} 2>&1 | tail -5`,
+      `cd ${design} && gh pr merge 23 --squash -R ${DESIGN}`,
+    ]) {
+      assert.equal(run(root, command), "", command);
+    }
+    // Beneficiária com concessão do design#23 e o lock do design.
+    const g = setup({ studioLock: "outra-sessao", designLock: "benef", grant: { pr: 23, repo: DESIGN } });
+    assert.equal(run(g, `gh pr merge 23 --squash -R ${DESIGN}`, "benef"), "");
+    assert.equal(run(g, `gh pr merge https://github.com/${DESIGN}/pull/23 --squash`, "benef"), "");
+  });
+
+  it("casos comuns do studio seguem passando", () => {
+    const root = setup({ studioLock: "coord-A" });
+    const studio = checkout(DEFAULT_ISSUE_REPO).replaceAll("\\", "/");
+    for (const command of [
+      "gh pr merge 123 --squash",
+      "gh pr merge 123 --squash 2>&1 | tail -5",
+      "gh pr merge 123 --squash --delete-branch 2>&1 | tail -20",
+      `cd ${studio} && gh pr merge 123 --squash`,
+      "gh pr merge 123 --squash --repo vjpixel/diaria-studio",
+    ]) {
+      assert.equal(run(root, command), "", command);
+    }
+    const g = setup({ studioLock: "benef", grant: { pr: 123 } });
+    assert.equal(run(g, "gh pr merge 123 --squash", "benef"), "");
+    assert.equal(run(g, "gh pr merge 123 --squash 2>&1 | tail -5", "benef"), "");
+    // Concessão do studio + forma fora da whitelist: recusado (aceitável, a mensagem explica).
+    assert.match(run(g, 'gh pr merge 123 --squash --body "$(cat x)"', "benef"), DENY);
+  });
+
+  it("unit: parseStrictMerge só aceita a forma exata", () => {
+    assert.deepEqual(hookRepo.parseStrictMerge(`gh pr merge 23 --squash -R ${DESIGN}`), { repo: DESIGN, pr: 23, cd: null });
+    assert.deepEqual(hookRepo.parseStrictMerge("gh pr merge 23 --squash 2>&1 | tail -5"), { repo: null, pr: 23, cd: null });
+    for (const bad of [
+      "gh pr merge --squash",
+      "gh pr merge 1 2",
+      `gh pr merge 1 -R ${DESIGN} -R ${DESIGN}`,
+      `gh pr merge https://github.com/${DESIGN}/pull/1 -R vjpixel/diaria-studio`,
+      "gh pr merge 1 -sd",
+      "gh pr merge 1 --",
+      "gh pr merge 1 --subject=x",
+      "gh pr merge 1\t--squash",
+      "gh pr merge 1 --squash\r",
+      "cd ~/x && gh pr merge 1",
+      'cd "/x y" && gh pr merge 1',
+    ]) {
+      assert.equal(hookRepo.parseStrictMerge(bad), null, JSON.stringify(bad));
+    }
   });
 });

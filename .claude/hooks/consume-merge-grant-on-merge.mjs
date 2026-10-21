@@ -119,7 +119,7 @@ import { breakStaleLock, isDeletePendingExhausted, tryAcquireOwnedLock } from ".
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 import { execFileSync } from "node:child_process";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { DIARIA_STUDIO_REPO, isComplexTarget, normalizeRepoSlug, resolveGhTargets } from "./lib/gh-target-repo.mjs";
+import { DIARIA_STUDIO_REPO, normalizeRepoSlug, resolveMergeTargets } from "./lib/gh-target-repo.mjs";
 
 /** Duplicado de `MERGE_GRANT_TTL_MS` — ver session-registry.ts e
  * block-gh-pr-merge-subagent.mjs pro racional (10min: cobre a janela da
@@ -418,15 +418,15 @@ export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), in
 }
 
 /**
- * #10618 — repo a passar explícito pra `resolveMergeState`: o do alvo sempre
- * que ele foi DETERMINADO (inclusive o diaria-studio via `-R` a partir do cwd
- * de outro repo). Indeterminado, ilegível ou fora da allowlist → `undefined`
- * (a consulta segue com `{owner}/{repo}` do cwd, como antes).
+ * #10618 — repo a passar explícito pra `resolveMergeState`, a partir da
+ * resolução de `resolveMergeTargets`: o repo de fora da whitelist, ou o
+ * diaria-studio quando ele veio explícito (`-R`/URL, inclusive a partir do
+ * cwd de outro repo). Sem repo explícito → `undefined` (a consulta segue com
+ * `{owner}/{repo}` do cwd, como antes).
  */
-export function stateQueryRepo(target) {
-  if (!target || typeof target.source !== "string") return undefined;
-  if (target.source === "unparseable" || target.source.includes(":")) return undefined;
-  return target.repo;
+export function stateQueryRepo(resolution) {
+  if (!resolution || resolution.grantRepo === null) return undefined;
+  return resolution.explicitRepo ?? undefined;
 }
 
 /**
@@ -644,22 +644,22 @@ if (
       // #10618: a concessão só é consumida pelo merge do MESMO repo em que
       // foi emitida (ausente = diaria-studio) — ver `grantMatchesRepo`.
       const command = payload.tool_input?.command;
-      // Mesma resolução do guard (cdStrict + modo complexo): os dois hooks
+      // Mesma resolução do guard (`resolveMergeTargets`): os dois hooks
       // concordam sobre quando uma concessão foi de fato usada.
-      const targets = resolveGhTargets(command, payload.cwd, { subcommands: ["merge"], cdStrict: true });
-      appendHookRunLog(repoRoot, "consume-merge-grant", targets.some((t) => t.source === null) ? "warn" : "info", "merge_target_repo", {
-        targets,
+      const resolution = resolveMergeTargets(command, payload.cwd);
+      appendHookRunLog(repoRoot, "consume-merge-grant", resolution.mode === "strict" ? "warn" : "info", "merge_target_repo", {
+        mode: resolution.mode,
+        targets: resolution.targets,
+        grantRepo: resolution.grantRepo,
       });
-      // Comando com mais de um repo: concessão nenhuma foi usada pelo guard
-      // (cada uma vale pra um repo só) — não há o que consumir.
-      if (targets.length > 1 || isComplexTarget(targets)) return;
-      const target = targets[0] ?? { repo: DIARIA_STUDIO_REPO, source: null };
-      const targetRepo = target.repo;
+      // Fora da whitelist/forma simples o guard não aceitou concessão — não há o que consumir.
+      if (resolution.grantRepo === null) return;
+      const targetRepo = resolution.grantRepo;
       // O repo vai explícito pra consulta do estado sempre que foi
       // DETERMINADO (inclusive o diaria-studio via -R de um cwd de outro repo);
       // indeterminado/ilegível/fora da allowlist segue com `{owner}/{repo}` do cwd.
       const decision = decideConsumeAfterBash(command, {
-        repo: stateQueryRepo(target),
+        repo: stateQueryRepo(resolution),
         findLiveGrant: (pr) => findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, pr, targetRepo)?.grant ?? null,
         log: (level, message, details) => appendHookRunLog(repoRoot, "consume-merge-grant", level, message, details),
       });

@@ -122,7 +122,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { DIARIA_STUDIO_REPO, isComplexTarget, mergeLockFileName, normalizeRepoSlug, resolveGhTargets } from "./lib/gh-target-repo.mjs";
+import { DIARIA_STUDIO_REPO, mergeLockFileName, normalizeRepoSlug, resolveMergeTargets } from "./lib/gh-target-repo.mjs";
 import { appendHookRunLog } from "./lib/hook-run-log.mjs";
 
 // Mesmo valor usado em `session-registry.ts`/`pr-create-review.mjs`/
@@ -1466,9 +1466,11 @@ export function buildRepoHint(targetRepos, complex = false) {
   const foreign = targetRepos.filter((r) => r !== DIARIA_STUDIO_REPO);
   if (complex) {
     return (
-      " (#10618) Comando fora da forma simples (`&` solto, `#`, subshell, `$(`, heredoc, prefixo antes do gh...): " +
-      `o guard confere o lock de todo repo que ele pode tocar (${targetRepos.join(", ")}) e não aceita ` +
-      "concessão/auto-autorização. Rode o merge sozinho: `gh pr merge N --squash [-R owner/name]`."
+      " (#10618) O comando não está na forma que o guard consegue provar (`gh pr merge N|<URL canônica> " +
+      "[--squash|--merge|--rebase|-d|--auto|--admin] [-R owner/name]`, sozinho, sem aspas/`$`/clusters, " +
+      "opcionalmente `cd /caminho/absoluto && ` e `2>&1 | tail -N`): o guard confere o lock de todo repo que " +
+      `ele pode tocar (${targetRepos.join(", ")}) e não aceita concessão/auto-autorização. Rode o merge ` +
+      "sozinho, nessa forma."
     );
   }
   if (targetRepos.length > 1) {
@@ -1544,20 +1546,21 @@ if (
       const command = payload.tool_input?.command;
       if (!isGhPrMergeCommand(command)) return;
       const repoRoot = resolveMainRepoRoot();
-      // #10618: repos de TODOS os `gh pr merge` do comando (`-R`, URL,
-      // GH_REPO, `cd X`, origin do cwd; ilegível/fora da allowlist → diaria-
-      // studio; `cd` sem repo explícito → também o diaria-studio). Lock e
-      // concessões são lidos POR REPO; a identidade (quem é coordenadora)
-      // segue global — as rodadas são as mesmas pros dois repos.
-      const targets = resolveGhTargets(command, payload.cwd, { subcommands: ["merge"], cdStrict: true });
-      const targetRepos = targets.length > 0 ? targets.map((t) => t.repo) : [DIARIA_STUDIO_REPO];
-      // Comando COMPLEXO (`&` solto, `#`, subshell, prefixo antes do gh...,
-      // ver `commandComplexity`): FAIL-CLOSED — todos os locks, nenhuma concessão.
-      const complex = isComplexTarget(targets);
-      const singleRepo = targetRepos.length === 1 && !complex ? targetRepos[0] : null;
+      // #10618 — ÔNUS DA PROVA INVERTIDO (`resolveMergeTargets`): o lock do
+      // diaria-studio entra SEMPRE, salvo quando o comando inteiro casa a
+      // whitelist estrita de um único merge de repo de fora permitido. Fora da
+      // whitelist e da forma simples do studio, nenhuma concessão conta e
+      // todo lock que o comando possa tocar é conferido. Lock e concessões são
+      // POR REPO; a identidade (quem é coordenadora) segue global.
+      const resolution = resolveMergeTargets(command, payload.cwd);
+      const targetRepos = resolution.targets;
+      const complex = resolution.mode === "strict";
+      const singleRepo = resolution.grantRepo;
       if (repoRoot !== null) {
-        appendHookRunLog(repoRoot, "merge-guard", targets.some((t) => t.source === null) ? "warn" : "info", "merge_target_repo", {
-          targets,
+        appendHookRunLog(repoRoot, "merge-guard", complex ? "warn" : "info", "merge_target_repo", {
+          mode: resolution.mode,
+          targets: targetRepos,
+          grantRepo: resolution.grantRepo,
         });
       }
       if (repoRoot === null) {
@@ -1588,7 +1591,9 @@ if (
       // uma concessão viva de outro repo nunca esconde a do repo certo.
       // Comando com mais de um repo: concessão nenhuma vale (cada uma é de um repo só).
       const grant = singleRepo ? readLiveMergeGrantFor(repoRoot, payload.session_id, Date.now(), singleRepo) : null;
-      const targetPr = extractGhPrMergeTargetPr(command);
+      // #10618: na whitelist/forma simples o PR já foi lido (inclusive da URL
+      // canônica); fora delas nenhuma concessão conta e vale o extrator antigo.
+      const targetPr = resolution.grantRepo !== null ? resolution.pr : extractGhPrMergeTargetPr(command);
       // #7171: só interessa quando NÃO há concessão viva (senão o bloqueio
       // nem seria "not-authorized") — diagnostica se a ausência é "nunca
       // teve" ou "teve e consumiu antes de mergear".
