@@ -79,6 +79,7 @@ import {
   recordFollowupRun,
   renderFollowupBody,
   splitDueByCap,
+  capWindowOverflows,
   resolveFollowupConfig,
   snippetFileFor,
   snippetTemplate,
@@ -452,6 +453,17 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
     bump(o.kind, "adiado_teto", o.deferred);
     lotsOut.push({ kind: o.kind, eligible: o.eligible, deferred: o.deferred, cap: cfg.maxRecipientsPerLot });
   }
+  // #10652: excedente que não cabe na janela vira `vencida` sem receber —
+  // a decisão de lote parcial (#10631) fica, mas isso não pode passar calado.
+  const windowOverflows = capWindowOverflows(capDeferred, cfg.maxRecipientsPerLot, cfg.graceDays);
+  run.cap_window_overflow = windowOverflows.length;
+  for (const w of windowOverflows) {
+    bump(w.kind, "excede_janela", w.projected_vencidas);
+    lotsOut.push({ kind: w.kind, cap_window_overflow: true, eligible: w.eligible, capacity: w.capacity, projected_vencidas: w.projected_vencidas });
+    process.stderr.write(
+      `${LOG} ${w.kind}: ${w.eligible} elegíveis passam do que a janela comporta (${cfg.maxRecipientsPerLot}/lote × ${cfg.graceDays} dias = ${w.capacity}) — ao menos ${w.projected_vencidas} vão vencer sem receber; conferir com o editor (subir onboarding.followup.max_recipients_per_lot ou grace_days)\n`,
+    );
+  }
 
   // Checagem perto do envio: ativo + não apoia (leitura singular, nunca a listagem).
   const checks = new Map<number, LiveSubscriberCheck | null>();
@@ -691,7 +703,7 @@ async function main(): Promise<void> {
   }
   record(out.run);
   console.log(JSON.stringify({ mode: args.send ? "SEND" : "dry-run", ...out.run, lots: out.lots }, null, 2));
-  if (out.run.lots_failed > 0 || out.run.over_cap > 0 || (out.run.lots_unresolved ?? 0) > 0) process.exitCode = 1;
+  if (out.run.lots_failed > 0 || out.run.over_cap > 0 || (out.run.lots_unresolved ?? 0) > 0 || (out.run.cap_window_overflow ?? 0) > 0) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {

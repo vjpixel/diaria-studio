@@ -21,6 +21,8 @@ import {
   evaluateMetaSinal,
   evaluateQueda,
   evaluateRegistryMudo,
+  closedPaidAcquisitionWindows,
+  serieQuedaSemDiaCorrente,
   metricsHealthFingerprint,
   type MedicaoDia,
   type MetricsHealthFinding,
@@ -526,5 +528,137 @@ describe("ciclo de issue (planAlarmReconciliation/applyAlarmReconciliation) sobr
     assert.equal(findingOutcomes[0].action, "reopened");
     assert.equal(nextState[key].closedAt, null);
     assert.ok(calls.some((c) => c.includes("reopen")));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #10647 — baseline sem janela paga encerrada + sem o dia corrente não ingerido
+// ---------------------------------------------------------------------------
+
+describe("evaluateQueda — baselineExcluida (#10647)", () => {
+  // Série com platô pago (dias 0-6, 25/dia) seguido do regime orgânico pós-
+  // teste (dias 7-13, 3/dia) — reproduz o alarme #8223/#8224, que abria
+  // `queda` toda execução porque o platô entrava na média.
+  const dias = dias14("2026-10-10");
+  const medicoes = dias.map((d, i) => exato(d, i < 7 ? 25 : 3));
+  const janelaPaga = { de: dias[0], ate: dias[6], motivo: "(aquisição paga encerrada — teste 2608)" };
+
+  it("REGRESSÃO: sem exclusão, o fim do platô pago dispara queda (comportamento antigo)", () => {
+    const { finding } = evaluateQueda(CONTAGEM_DEF, medicoes, dias);
+    assert.ok(finding, "baseline contaminada pelo platô deveria disparar");
+    assert.match(finding!.motivo, /baseline=14\.85/);
+  });
+
+  it("com a janela paga excluída, baseline sai no nível pós-teste e não há queda", () => {
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [janelaPaga],
+    });
+    assert.equal(finding, null);
+    assert.equal(skipMotivo, null);
+  });
+
+  it("queda orgânica REAL depois do teste continua alarmando, e o motivo cita o recorte", () => {
+    const comQueda = dias.map((d, i) => exato(d, i < 7 ? 25 : i === dias.length - 1 ? 0 : 6));
+    const { finding } = evaluateQueda(CONTAGEM_DEF, comQueda, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [janelaPaga],
+    });
+    assert.ok(finding);
+    assert.match(finding!.motivo, /baseline=6\.00/);
+    assert.match(finding!.motivo, /baseline sem 7 dia\(s\) de janela excluída/);
+    assert.match(finding!.motivo, /teste 2608/);
+  });
+
+  it("todos os dias anteriores excluídos — skip explícito, nunca baseline vazia silenciosa", () => {
+    const tudoPago = { de: dias[0], ate: dias[12], motivo: "(teste)" };
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, medicoes, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [tudoPago],
+    });
+    assert.equal(finding, null);
+    assert.match(skipMotivo!, /janela excluída da baseline/);
+  });
+
+  it("REGRESSÃO #10653: janela paga cobrindo quase tudo deixa 2 dias na baseline — skip, nunca queda contra 2 dias", () => {
+    // Série de 14 dias passa o gate de MIN_DIAS_SERIE, mas a janela paga
+    // (dias 0-10) só deixa os dias 11-12 na baseline. Antes do fix, a queda
+    // era decidida contra a média desses 2 dias (10 → 0 = alarme).
+    const serie = dias.map((d, i) => exato(d, i < 11 ? 25 : i === dias.length - 1 ? 0 : 10));
+    const quaseTudo = { de: dias[0], ate: dias[10], motivo: "(teste)" };
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, serie, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [quaseTudo],
+    });
+    assert.equal(finding, null);
+    assert.match(skipMotivo!, /baseline curta/);
+    assert.match(skipMotivo!, /2\/5 dias restantes/);
+  });
+
+  it("#10653: baseline restante exatamente no piso MIN_DIAS_BASELINE ainda é avaliada", () => {
+    // Janela 0-7 → baseline 8-12 (5 dias = piso) — avalia e alarma a queda real.
+    const serie = dias.map((d, i) => exato(d, i < 8 ? 25 : i === dias.length - 1 ? 0 : 10));
+    const janela = { de: dias[0], ate: dias[7], motivo: "(teste)" };
+    const { finding, skipMotivo } = evaluateQueda(CONTAGEM_DEF, serie, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [janela],
+    });
+    assert.equal(skipMotivo, null);
+    assert.ok(finding);
+    assert.match(finding!.motivo, /baseline=10\.00/);
+  });
+
+  it("#10653: sem exclusão, o piso de baseline não se aplica (caso normal inalterado)", () => {
+    const serie = dias.map((d, i) => exato(d, i === dias.length - 1 ? 0 : 10));
+    const { finding } = evaluateQueda(CONTAGEM_DEF, serie, dias, {
+      ...METRICS_HEALTH_THRESHOLDS,
+      MIN_DIAS_BASELINE: 100,
+    });
+    assert.ok(finding, "série sem janela excluída segue governada só por MIN_DIAS_SERIE");
+  });
+
+  it("o ponto atual nunca é removido pela exclusão (só a baseline)", () => {
+    const serie = dias.map((d, i) => exato(d, i === dias.length - 1 ? 0 : 10));
+    const cobreAtual = { de: dias[13], ate: dias[13], motivo: "(teste)" };
+    const { finding } = evaluateQueda(CONTAGEM_DEF, serie, dias, METRICS_HEALTH_THRESHOLDS, {
+      baselineExcluida: [cobreAtual],
+    });
+    assert.ok(finding);
+    assert.match(finding!.motivo, /atual=0/);
+  });
+});
+
+describe("closedPaidAcquisitionWindows (#10647)", () => {
+  const teste2608 = { rotulo: "teste 2608", d0: "2026-09-05", fim_janela: "2026-09-23" };
+
+  it("teste encerrado vira janela d0..fim_janela", () => {
+    assert.deepEqual(closedPaidAcquisitionWindows([teste2608], "2026-10-21"), [
+      { de: "2026-09-05", ate: "2026-09-23", motivo: "(aquisição paga encerrada — teste 2608)" },
+    ]);
+  });
+
+  it("teste ainda em veiculação (fim_janela >= hoje) não é excluído", () => {
+    assert.deepEqual(closedPaidAcquisitionWindows([teste2608], "2026-09-23"), []);
+    assert.deepEqual(closedPaidAcquisitionWindows([teste2608], "2026-09-10"), []);
+  });
+
+  it("janela invertida (d0 > fim_janela) é ignorada, nunca vira exclusão", () => {
+    assert.deepEqual(
+      closedPaidAcquisitionWindows([{ rotulo: "x", d0: "2026-09-30", fim_janela: "2026-09-01" }], "2026-10-21"),
+      [],
+    );
+  });
+});
+
+describe("serieQuedaSemDiaCorrente (#10647)", () => {
+  it("REGRESSÃO: o dia corrente ainda não ingerido (valor 0) deixa de ser o 'atual'", () => {
+    const dias = dias14("2026-10-20");
+    // Pós-teste medido em 20/10/2026: 2-3/dia, e o dia corrente sempre 0
+    // porque a ingestão do Kit só roda na madrugada seguinte.
+    const medicoes = dias.map((d, i) => exato(d, i === dias.length - 1 ? 0 : i % 2 === 0 ? 3 : 2));
+    const antes = evaluateQueda(CONTAGEM_DEF, medicoes, dias);
+    assert.ok(antes.finding, "comportamento antigo: dia corrente 0 dispara queda");
+
+    const serie = serieQuedaSemDiaCorrente(medicoes, "2026-10-20");
+    assert.equal(serie.length, 13);
+    assert.equal(serie[serie.length - 1].chave, "2026-10-19");
+    const depois = evaluateQueda(CONTAGEM_DEF, serie, dias);
+    assert.equal(depois.finding, null);
+    assert.equal(depois.skipMotivo, null);
   });
 });
