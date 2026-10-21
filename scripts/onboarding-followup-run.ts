@@ -24,7 +24,11 @@
  * `form_responses_url`) a de formulário não sai. Com as duas travadas a rodada
  * NÃO chama a API do Kit (zero leitura da base) e só registra o bloqueio
  * (`followup.last_run`), que o painel mostra. `--init-snippets` cria os
- * arquivos que faltam já com o marcador (nunca sobrescreve).
+ * arquivos que faltam já com o marcador (nunca sobrescreve texto editado).
+ * Quando existe rascunho versionado da etapa em
+ * `context/templates/onboarding-followup/` (#10605: os 2 do formulário), é
+ * ele que vira o arquivo, com o marcador pendente intacto; um arquivo que
+ * ainda é o modelo vazio de antes do rascunho é trocado pelo rascunho.
  *
  * SEGURANÇA:
  *  - Default é DRY-RUN: sem `--send` nada é criado no Kit nem gravado no store.
@@ -35,7 +39,7 @@
  * Uso:
  *   npx tsx scripts/onboarding-followup-run.ts                 # dry-run
  *   npx tsx scripts/onboarding-followup-run.ts --send          # cria/agenda os lotes devidos
- *   npx tsx scripts/onboarding-followup-run.ts --init-snippets # cria os textos faltantes com o marcador
+ *   npx tsx scripts/onboarding-followup-run.ts --init-snippets # cria os textos faltantes com o marcador (rascunho versionado quando há)
  * Flags auxiliares: --store <path>, --snippets-dir <path>, --config <path>, --env-root <path>, --skip-if-disabled.
  */
 
@@ -56,6 +60,7 @@ import { readStore, writeStore, DEFAULT_STORE_PATH, type OnboardingStore } from 
 import { decideLotReconciliation, LOT_STALE_AFTER_MS } from "./lib/onboarding-kit-transport.ts";
 import { redactEmails } from "./lib/onboarding-kit-pilot.ts";
 import { parseFormResponsesPayload } from "./lib/onboarding-form-contract.ts";
+import { PENDING_BODY_MARKER } from "./lib/onboarding-state.ts";
 import {
   ALL_FOLLOWUP_STEPS,
   apoioContentGate,
@@ -208,17 +213,55 @@ export function loadFollowupSnippets(dirAbs: string): FollowupSnippets {
   return out;
 }
 
-/** Cria os textos que faltam já com o marcador pendente. Nunca sobrescreve. */
-export function initFollowupSnippets(dirAbs: string): string[] {
+/** Rascunhos versionados dos textos (#10605) — semente do `--init-snippets`. */
+export const FOLLOWUP_DRAFTS_DIR = resolve(ROOT, "context/templates/onboarding-followup");
+
+/**
+ * Cria os textos que faltam já com o marcador pendente: o rascunho versionado
+ * da etapa quando existe (`draftsDirAbs`), senão o modelo vazio. Nunca
+ * sobrescreve texto editado; só troca um arquivo que ainda é EXATAMENTE o
+ * modelo vazio (`snippetTemplate`) pelo rascunho, caso de quem rodou
+ * `--init-snippets` antes de o rascunho existir. Rascunho sem o marcador
+ * pendente é recusado (lança): a semente nunca pode destravar envio sozinha.
+ * A validação de TODOS os rascunhos acontece antes de qualquer escrita, então
+ * uma recusa não deixa o diretório pela metade.
+ * Devolve os caminhos gravados (`written`) e os que ficaram como estavam
+ * (`skipped`, com o motivo).
+ */
+export interface InitSnippetsResult {
+  written: string[];
+  skipped: { path: string; reason: "texto_existente" | "ja_e_o_rascunho" }[];
+}
+
+export function initFollowupSnippets(dirAbs: string, draftsDirAbs: string = FOLLOWUP_DRAFTS_DIR): InitSnippetsResult {
+  const drafts = new Map<FollowupStepKind, string | null>();
+  for (const kind of ALL_FOLLOWUP_STEPS) {
+    const draftPath = resolve(draftsDirAbs, snippetFileFor(kind));
+    const draft = existsSync(draftPath) ? readFileSync(draftPath, "utf8") : null;
+    if (draft != null && !draft.includes(PENDING_BODY_MARKER)) {
+      throw new Error(`[onboarding-followup] rascunho ${draftPath} sem ${PENDING_BODY_MARKER}: a semente nunca pode sair já aprovada`);
+    }
+    drafts.set(kind, draft);
+  }
   mkdirSync(dirAbs, { recursive: true });
-  const created: string[] = [];
+  const out: InitSnippetsResult = { written: [], skipped: [] };
   for (const kind of ALL_FOLLOWUP_STEPS) {
     const p = resolve(dirAbs, snippetFileFor(kind));
-    if (existsSync(p)) continue;
-    writeFileSync(p, snippetTemplate(kind), { flag: "wx" });
-    created.push(p);
+    const draft = drafts.get(kind) ?? null;
+    if (existsSync(p)) {
+      const current = readFileSync(p, "utf8");
+      if (draft != null && current === snippetTemplate(kind)) {
+        writeFileSync(p, draft);
+        out.written.push(p);
+      } else {
+        out.skipped.push({ path: p, reason: draft != null && current === draft ? "ja_e_o_rascunho" : "texto_existente" });
+      }
+      continue;
+    }
+    writeFileSync(p, draft ?? snippetTemplate(kind), { flag: "wx" });
+    out.written.push(p);
   }
-  return created;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,13 +498,16 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   }
   // #10652: excedente que não cabe na janela vira `vencida` sem receber —
   // a decisão de lote parcial (#10631) fica, mas isso não pode passar calado.
-  const windowOverflows = capWindowOverflows(capDeferred, cfg.maxRecipientsPerLot, cfg.graceDays);
+  // #10660: capacidade por pessoa (dias que restam da janela de cada um), na
+  // mesma ordem do corte acima. `due` é contado antes do filtro ao vivo
+  // (`nao_ativo`/`apoia`, logo abaixo): a projeção é um teto superior.
+  const windowOverflows = capWindowOverflows(due, cfg.maxRecipientsPerLot, nowSec, cfg, orderSec);
   run.cap_window_overflow = windowOverflows.length;
   for (const w of windowOverflows) {
     bump(w.kind, "excede_janela", w.projected_vencidas);
     lotsOut.push({ kind: w.kind, cap_window_overflow: true, eligible: w.eligible, capacity: w.capacity, projected_vencidas: w.projected_vencidas });
     process.stderr.write(
-      `${LOG} ${w.kind}: ${w.eligible} elegíveis passam do que a janela comporta (${cfg.maxRecipientsPerLot}/lote × ${cfg.graceDays} dias = ${w.capacity}) — ao menos ${w.projected_vencidas} vão vencer sem receber; conferir com o editor (subir onboarding.followup.max_recipients_per_lot ou grace_days)\n`,
+      `${LOG} ${w.kind}: ${w.eligible} elegíveis, só ${w.capacity} cabem nos dias que restam das janelas (${cfg.maxRecipientsPerLot}/lote/dia) — ${w.projected_vencidas} vão vencer sem receber; conferir com o editor (subir onboarding.followup.max_recipients_per_lot ou grace_days)\n`,
     );
   }
 
@@ -639,8 +685,11 @@ async function main(): Promise<void> {
   const snippetsDirAbs = resolve(ROOT, args.snippetsDir ?? rawCfg.onboarding?.snippets_dir ?? "data/snippets");
 
   if (args.initSnippets) {
-    const created = initFollowupSnippets(snippetsDirAbs);
-    console.log(JSON.stringify({ mode: "init-snippets", created }));
+    // JSON: `written` = caminhos gravados (criados, ou modelo vazio trocado pelo
+    // rascunho); `skipped` = {path, reason} dos que ficaram como estavam.
+    // (Antes do #10605 a chave única era `created`.)
+    const { written, skipped } = initFollowupSnippets(snippetsDirAbs);
+    console.log(JSON.stringify({ mode: "init-snippets", written, skipped }));
     return;
   }
   if (!cfg.enabled) {

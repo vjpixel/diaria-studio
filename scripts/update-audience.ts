@@ -38,6 +38,7 @@ import { editionsRoot } from "./lib/edition-paths.ts";
 // compatibilidade com testes e importadores externos.
 import { isAprofundeAnchor, isNonEditorialHost } from "./lib/ctr-utils.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { SURVEY_MATCHERS, isOnboardingFormResponse, type SurveyResponseRecord } from "./lib/audience-survey-questions.ts";
 import {
   DEFAULT_DB_PATH,
   openDiariaSubscribersDbSafe,
@@ -68,11 +69,8 @@ const H4_HISTORY = resolve(ROOT, "data/scorer-ctr-history.jsonl");
 
 // ─── Survey helpers ────────────────────────────────────────────────────────────
 
-type BeehiivResponse = {
-  id: string;
-  status?: string;
-  answers: { question_id: string; question_prompt: string; answer: string }[];
-};
+/** Uma resposta de `data/audience-raw.json` (tipo único, #10605: `SurveyResponseRecord`). */
+export type BeehiivResponse = SurveyResponseRecord;
 
 function countAnswers(responses: BeehiivResponse[], questionMatcher: RegExp) {
   const counts = new Map<string, number>();
@@ -88,6 +86,38 @@ function countAnswers(responses: BeehiivResponse[], questionMatcher: RegExp) {
   return [...counts.entries()]
     .map(([label, n]) => ({ label, weight: total ? +(n / total).toFixed(3) : 0, count: n }))
     .sort((a, b) => b.weight - a.weight);
+}
+
+/** #10605: " (N do formulário do onboarding)" quando há respostas de lá. */
+export function formRespondentsNote(responses: readonly BeehiivResponse[]): string {
+  const n = responses.filter(isOnboardingFormResponse).length;
+  return n > 0 ? ` (${n} do formulário do onboarding)` : "";
+}
+
+/**
+ * #10605: seção 4 do perfil, sondagem de produto (só existe no formulário do
+ * onboarding). Vazia quando ninguém respondeu essas perguntas, para o perfil
+ * de quem só tem a survey antiga não ganhar uma seção sem dado. Texto livre
+ * NÃO entra no perfil (o arquivo vai para prompts): só a contagem.
+ */
+export function renderProductInterestSection(responses: BeehiivResponse[]): string[] {
+  const formats = countAnswers(responses, SURVEY_MATCHERS.productFormats);
+  const topics = countAnswers(responses, SURVEY_MATCHERS.courseTopics);
+  const price = countAnswers(responses, SURVEY_MATCHERS.coursePrice);
+  const openCount = countAnswers(responses, SURVEY_MATCHERS.openSuggestion).reduce((s, e) => s + e.count, 0);
+  if (formats.length === 0 && topics.length === 0 && price.length === 0 && openCount === 0) return [];
+  const block = (title: string, entries: { label: string; weight: number; count: number }[]): string[] =>
+    entries.length === 0 ? [] : ["", `### ${title}`, "", ...entries.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`)];
+  return [
+    "",
+    "## 4. Interesse em produtos (formulário do onboarding)",
+    "",
+    `Fonte: formulário do onboarding (#10605). Sondagem para decidir que cursos ou outros produtos oferecer; não usar para pontuar notícias.`,
+    ...block("Formatos de interesse", formats),
+    ...block("Temas de curso", topics),
+    ...block("Quanto investiria num curso", price),
+    ...(openCount > 0 ? ["", `Respostas abertas: ${openCount} (o texto livre não entra no perfil; ler em \`data/audience-raw.json\`).`] : []),
+  ];
 }
 
 // ─── CTR helpers ───────────────────────────────────────────────────────────────
@@ -752,7 +782,7 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       : subscribers > 0
         ? [`**subscribers ativos:** ${subscribers}`]
         : []),
-    ...(surveyResponses.length > 0 ? [`**respondentes survey:** ${surveyResponses.length}`] : []),
+    ...(surveyResponses.length > 0 ? [`**respondentes survey:** ${surveyResponses.length}${formRespondentsNote(surveyResponses)}`] : []),
     ...(ctr
       ? [
           `**links analisados:** ${ctr.totalLinks} (${ctr.totalEditions} edições, 7+ dias de idade)`,
@@ -914,10 +944,10 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
   // ─── Section 2: Survey (secondary) ────────────────────────────────────────
 
   if (surveyResponses.length > 0) {
-    const contentTypes = countAnswers(surveyResponses, /se[çc][õo]es|tipos? de conte[úu]do/i);
-    const sectors = countAnswers(surveyResponses, /setor de atua[çc][ãa]o da organiza/i);
-    const areas = countAnswers(surveyResponses, /principal [áa]rea de atua[çc][ãa]o/i);
-    const aiLevel = countAnswers(surveyResponses, /n[íi]vel de conhecimento em ia/i);
+    const contentTypes = countAnswers(surveyResponses, SURVEY_MATCHERS.contentTypes);
+    const sectors = countAnswers(surveyResponses, SURVEY_MATCHERS.sectors);
+    const areas = countAnswers(surveyResponses, SURVEY_MATCHERS.areas);
+    const aiLevel = countAnswers(surveyResponses, SURVEY_MATCHERS.aiLevel);
 
     lines.push(
       "",
@@ -945,6 +975,7 @@ export function main(deps: UpdateAudienceDeps = {}): UpdateAudienceResult {
       "",
       ...areas.map((e) => `- **${e.label}** — weight ${e.weight} (${e.count} respostas)`),
     );
+    lines.push(...renderProductInterestSection(surveyResponses));
   }
 
   lines.push(

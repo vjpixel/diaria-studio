@@ -163,8 +163,8 @@ export interface FollowupRunRecord {
    *  `counts[etapa].adiado_teto`), então isto só sobe pela defesa em
    *  profundidade pós-checagem — que não deveria disparar. */
   over_cap: number;
-  /** #10652: etapas cujo excedente do teto não cabe na janela
-   *  (`eligible > max_recipients_per_lot × grace_days`, ver
+  /** #10652: etapas cujo excedente do teto não cabe na janela de cada
+   *  pessoa (capacidade por pessoa desde #10660, ver
    *  `capWindowOverflows`) — gente que vai virar `vencida` sem receber.
    *  Conta como rodada falha (alarme de continuidade + exit 1). Opcional:
    *  registros anteriores não têm o campo. */
@@ -540,6 +540,20 @@ export interface CapDeferral {
   deferred: number;
 }
 
+/** Ordem do corte do teto (ver `splitDueByCap`): `orderSec` crescente, `null` por último, desempate por id. */
+function sortByCapOrder(list: readonly FollowupDue[], orderSec: (d: FollowupDue) => number | null): FollowupDue[] {
+  const keyed = list.map((d) => ({ d, sec: orderSec(d) }));
+  keyed.sort((a, b) => {
+    if (a.sec !== b.sec) {
+      if (a.sec == null) return 1;
+      if (b.sec == null) return -1;
+      return a.sec - b.sec;
+    }
+    return a.d.kit_subscriber_id - b.d.kit_subscriber_id;
+  });
+  return keyed.map((k) => k.d);
+}
+
 /**
  * @pure — aplica o teto de lote POR ETAPA sobre os devidos ANTES da checagem
  * singular no Kit (review da PR #10623): uma coorte inteira caindo no mesmo
@@ -585,51 +599,97 @@ export function splitDueByCap(
       for (const d of list) keep.add(d);
       continue;
     }
-    const keyed = list.map((d) => ({ d, sec: orderSec(d) }));
-    keyed.sort((a, b) => {
-      if (a.sec !== b.sec) {
-        if (a.sec == null) return 1;
-        if (b.sec == null) return -1;
-        return a.sec - b.sec;
-      }
-      return a.d.kit_subscriber_id - b.d.kit_subscriber_id;
-    });
-    for (const { d } of keyed.slice(0, cap)) keep.add(d);
+    for (const d of sortByCapOrder(list, orderSec).slice(0, cap)) keep.add(d);
     deferred.push({ kind, eligible: list.length, deferred: list.length - cap });
   }
   return { within: due.filter((d) => keep.has(d)), deferred };
 }
 
-/** Etapa cujo excedente do teto não cabe na janela (#10652). */
+/** Etapa cujo excedente do teto não cabe na janela (#10652, por pessoa desde #10660). */
 export interface CapWindowOverflow {
   kind: FollowupStepKind;
   eligible: number;
-  /** `cap × graceDays` — o máximo que a janela comporta com 1 rodada/dia. */
+  /** Quantos elegíveis cabem até o fim da janela de cada um (1 lote de `cap`/dia). */
   capacity: number;
-  /** Quantos, no mínimo, vão virar `vencida` sem receber (`eligible − capacity`). */
+  /** Quantos vão virar `vencida` sem receber (`eligible − capacity`). */
   projected_vencidas: number;
+}
+
+/**
+ * Início da janela da etapa `[start, start + grace)` a partir da âncora que o
+ * executor passa para a ordem do teto (`created_at` do Kit nas etapas de
+ * apoio, âncora da escada no formulário). `null` = sem janela (âncora
+ * ausente, ou `form_lembrete`, que não tem janela).
+ */
+export function capWindowStartSec(
+  kind: FollowupStepKind,
+  anchorSec: number | null,
+  cfg: Pick<FollowupConfig, "formFirstDays">,
+): number | null {
+  if (anchorSec == null) return null;
+  if (isApoioStep(kind)) return anchorSec + APOIO_STEPS.find((s) => s.kind === kind)!.days * DAY_S;
+  if (kind === "form") return anchorSec + cfg.formFirstDays * DAY_S;
+  return null;
 }
 
 /**
  * @pure — #10652: depois do #10631 o excedente do teto (`adiado_teto`) não é
  * falha, porque volta a ser devido na rodada seguinte. Mas quando a etapa tem
- * mais elegíveis do que a janela comporta (`eligible > cap × graceDays`, com
- * uma rodada por dia), o resto vira `vencida` sem nunca receber — e nada
- * avisava. Devolve as etapas nessa situação.
+ * mais elegíveis do que as janelas deles comportam (uma rodada por dia), o
+ * resto vira `vencida` sem nunca receber — e nada avisava. Devolve as etapas
+ * nessa situação.
  *
- * `form_lembrete` fica de fora: o lembrete não tem janela (repete a cada
- * `form_reminder_days`), então o excedente só atrasa, nunca vence.
+ * **Capacidade por pessoa (#10660).** A conta antiga (`cap × graceDays`)
+ * tratava a coorte como se estivesse no 1º dia da janela: o alarme sumia
+ * antes da perda acabar (a coorte encolhe, os dias também), excedente pequeno
+ * só alarmava no dia 0, e coorte entrando no meio da janela passava calada.
+ * Agora, para cada devido, `diasRestantes = ceil((start + grace·DAY − now) /
+ * DAY)` (rodadas que ainda pegam a pessoa dentro da janela, a de hoje
+ * inclusive), e a simulação segue a MESMA ordem de `splitDueByCap` (cadastro
+ * mais antigo primeiro): quem está na posição `i` sai na rodada
+ * `floor(i / cap)`; se essa rodada já não está dentro da janela dele, é
+ * `vencida` projetada. Como a ordem é por início de janela e a janela tem o
+ * mesmo tamanho na etapa, ela coincide com a do prazo — é a melhor ordem
+ * possível, então a projeção não acusa perda evitável por outra ordem.
  *
- * É um piso, não uma projeção exata: quem entrou na janela há dias tem menos
- * rodadas pela frente que `graceDays`, e chegam elegíveis novos todo dia.
- * Com `eligible <= cap × graceDays` ainda pode vencer alguém nessas bordas —
- * o alarme cobre o caso grande (coorte importada inteira no mesmo D+N).
+ * Etapa com `eligible <= cap` sai inteira hoje e nunca vence. `form_lembrete`
+ * fica de fora: o lembrete não tem janela (repete a cada `form_reminder_days`),
+ * então o excedente só atrasa, nunca vence. Devido sem âncora (`start` nulo)
+ * não tem prazo conhecido e não conta como vencida.
+ *
+ * Limites: não projeta elegíveis que entram nos próximos dias (só piora a
+ * conta), e `due` é contado ANTES do filtro ao vivo (`nao_ativo`/`apoia`,
+ * `filterDueByLiveCheck`) — quem sair por esse filtro libera vaga, então a
+ * projeção é um teto superior da perda em relação a esse filtro.
  */
-export function capWindowOverflows(deferred: readonly CapDeferral[], cap: number, graceDays: number): CapWindowOverflow[] {
-  const capacity = cap * graceDays;
-  return deferred
-    .filter((d) => d.kind !== "form_lembrete" && d.eligible > capacity)
-    .map((d) => ({ kind: d.kind, eligible: d.eligible, capacity, projected_vencidas: d.eligible - capacity }));
+export function capWindowOverflows(
+  due: readonly FollowupDue[],
+  cap: number,
+  nowSec: number,
+  cfg: Pick<FollowupConfig, "graceDays" | "formFirstDays">,
+  anchorSec: (d: FollowupDue) => number | null,
+): CapWindowOverflow[] {
+  const byKind = new Map<FollowupStepKind, FollowupDue[]>();
+  for (const d of due) {
+    if (d.kind === "form_lembrete") continue;
+    const list = byKind.get(d.kind);
+    if (list) list.push(d);
+    else byKind.set(d.kind, [d]);
+  }
+  const out: CapWindowOverflow[] = [];
+  for (const kind of ALL_FOLLOWUP_STEPS) {
+    const list = byKind.get(kind);
+    if (!list || list.length <= cap) continue;
+    let vencidas = 0;
+    sortByCapOrder(list, anchorSec).forEach((d, i) => {
+      const start = capWindowStartSec(kind, anchorSec(d), cfg);
+      if (start == null) return;
+      const diasRestantes = Math.ceil((start + cfg.graceDays * DAY_S - nowSec) / DAY_S);
+      if (Math.floor(i / cap) >= diasRestantes) vencidas++;
+    });
+    if (vencidas > 0) out.push({ kind, eligible: list.length, capacity: list.length - vencidas, projected_vencidas: vencidas });
+  }
+  return out;
 }
 
 export interface LiveSubscriberCheck {
