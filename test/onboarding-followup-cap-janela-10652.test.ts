@@ -20,7 +20,9 @@ import {
   parseFollowupSnippet,
   recordFollowupRun,
   resolveFollowupConfig,
+  type FollowupDue,
   type FollowupSnippets,
+  type FollowupStepKind,
 } from "../scripts/lib/onboarding-followup.ts";
 import { buildFollowupPanel } from "../scripts/lib/onboarding-followup-panel.ts";
 import { runFollowupRound, type FollowupRoundDeps } from "../scripts/onboarding-followup-run.ts";
@@ -29,21 +31,30 @@ import { emptyStore, readStore, writeStore } from "../scripts/lib/onboarding-sto
 const DAY = 86_400;
 const T0 = Date.parse("2026-01-01T12:00:00Z") / 1000;
 
+// Coorte no 1º dia da janela de D+30 (assinatura nova desde o #10660:
+// capacidade por pessoa; ver test/onboarding-followup-cap-por-pessoa-10660.test.ts).
+function cohortDue(kind: FollowupStepKind, n: number): FollowupDue[] {
+  return Array.from({ length: n }, (_, i) => ({ kit_subscriber_id: i + 1, email: `${i + 1}@x.com`, kind }));
+}
+const day0 = { nowSec: T0 + 30 * DAY, anchor: () => T0 };
+const cfg10 = { graceDays: 10, formFirstDays: 30 };
+
 describe("#10652 capWindowOverflows — excedente que não cabe na janela", () => {
-  it("eligible > cap × grace: acusa a etapa com o piso de vencidas", () => {
-    assert.deepEqual(capWindowOverflows([{ kind: "apoio30", eligible: 5000, deferred: 4700 }], 300, 10), [
+  it("eligible > cap × grace no 1º dia: acusa a etapa com as vencidas", () => {
+    assert.deepEqual(capWindowOverflows(cohortDue("apoio30", 5000), 300, day0.nowSec, cfg10, day0.anchor), [
       { kind: "apoio30", eligible: 5000, capacity: 3000, projected_vencidas: 2000 },
     ]);
   });
 
   it("dentro da janela (inclusive no limite exato) não acusa", () => {
-    assert.deepEqual(capWindowOverflows([{ kind: "apoio90", eligible: 3000, deferred: 2700 }], 300, 10), []);
-    assert.deepEqual(capWindowOverflows([{ kind: "apoio90", eligible: 400, deferred: 100 }], 300, 10), []);
+    assert.deepEqual(capWindowOverflows(cohortDue("apoio30", 3000), 300, day0.nowSec, cfg10, day0.anchor), []);
+    assert.deepEqual(capWindowOverflows(cohortDue("apoio30", 400), 300, day0.nowSec, cfg10, day0.anchor), []);
   });
 
   it("form_lembrete não tem janela (só atrasa, nunca vence): fica de fora", () => {
-    assert.deepEqual(capWindowOverflows([{ kind: "form_lembrete", eligible: 9999, deferred: 9699 }], 300, 10), []);
-    assert.equal(capWindowOverflows([{ kind: "form", eligible: 3001, deferred: 2701 }], 300, 10).length, 1);
+    assert.deepEqual(capWindowOverflows(cohortDue("form_lembrete", 9999), 300, day0.nowSec, cfg10, day0.anchor), []);
+    // `form`: âncora da escada + form_first_days (30) — mesmo dia 0 da janela.
+    assert.equal(capWindowOverflows(cohortDue("form", 3001), 300, day0.nowSec, cfg10, day0.anchor).length, 1);
   });
 });
 
