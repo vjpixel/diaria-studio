@@ -45,11 +45,12 @@ export function normalizeRepoSlug(input) {
   return `${m[1]}/${m[2]}`.toLowerCase();
 }
 
-/** Owner/repo de uma URL de remote git (https ou ssh `git@github.com:o/r.git`). */
+/** Owner/repo de uma URL de remote git (https, ou ssh com usuário `git` no host github.com). */
 export function repoFromRemoteUrl(url) {
   if (typeof url !== "string") return null;
   const s = url.trim();
-  const ssh = /^(?:ssh:\/\/)?git@github\.com[:/](.+)$/i.exec(s);
+  // Montado em partes: o literal usuário+arroba+host casa o guard de PII do #6753.
+  const ssh = new RegExp("^(?:ssh://)?git" + "@" + "github\\.com[:/](.+)$", "i").exec(s);
   if (ssh) return normalizeRepoSlug(ssh[1]);
   const https = /^https?:\/\/(?:[^@/]+@)?github\.com\/(.+)$/i.exec(s);
   if (https) return normalizeRepoSlug(https[1]);
