@@ -50,6 +50,37 @@ Kit aponta pra cá ainda.
 
 ## Trocar o segredo
 
-O segredo faz parte da URL registrada no Kit. Para trocar: `wrangler secret put
-KIT_WEBHOOK_SECRET` com o novo valor e recriar os webhooks no Kit com a URL
-nova (os antigos passam a receber 404).
+O segredo faz parte da URL registrada no Kit. Rotação é uma ação de conta,
+executada pelo editor em sessão supervisionada; não publicar valores em issues,
+PRs, comandos com argumento literal ou logs.
+
+1. Confirmar o deploy da configuração de logs abaixo antes de usar o novo segredo.
+2. Gerar um segredo novo com ≥24 caracteres e guardar em local seguro.
+3. Executar `npx wrangler secret put KIT_WEBHOOK_SECRET` em `workers/kit-events`
+   e informar o valor pelo prompt interativo.
+4. Recriar os webhooks no Kit com a URL nova e os mesmos eventos e
+   `initiator_value` dos anteriores. Remover os registros antigos.
+5. Conferir as entregas no Kit e a ingestão com `--dry-run`, sem copiar URLs
+   com segredo para o terminal ou relatórios. Os endpoints antigos retornam 404.
+
+Há uma janela entre os passos 3 e 4 em que as URLs antigas falham; fazer a
+troca numa janela supervisionada e conferir eventuais falhas de entrega no Kit.
+Rotacionar `EVENTS_READ_TOKEN` separadamente exige atualizar também
+`KIT_EVENTS_READ_TOKEN` no servidor.
+
+## Logs e segredo na URL (#10724)
+
+`wrangler.toml` desliga explicitamente a observabilidade persistida
+(`enabled = false`, amostragem zero). O workflow de deploy existente aplica
+essa política após o merge; alterar só o código do handler não mascara os
+metadados de invocação coletados pela plataforma. Reduzir a amostragem para
+um valor positivo ainda permite registrar o segredo.
+Referência: [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/).
+
+Isso também elimina os logs persistidos de erros do Worker. Acompanhar as
+entregas pelo Kit e pela ingestão local. Não usar `wrangler tail` nem adicionar
+Tail Workers/Logpush sem revisar a exposição das URLs. Esta configuração não
+apaga logs anteriores nem configura coletores externos da conta: se o segredo
+já foi usado com coleta ligada, tratá-lo como exposto e executar a rotação
+acima após o deploy. Verificar retenção e acesso aos logs históricos é ação
+externa, a cargo do editor.
