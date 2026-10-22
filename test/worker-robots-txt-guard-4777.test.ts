@@ -91,6 +91,9 @@ const EXPECTED_HOSTS = [
   "artigos:especial.diar.ia.br",
   "cursos:cursos.diar.ia.br",
   "livros:livros.diar.ia.br",
+  // #10797/#10809: formulário de onboarding (link assinado, sem nada a indexar)
+  // — serve robots.txt próprio como os demais, com /enviar e /api/ fora.
+  "onboarding-form:formulario.diar.ia.br",
   "poll:eia.diar.ia.br",
   "retrospectiva:anual.diar.ia.br",
   "retrospectiva:artigo.diar.ia.br",
