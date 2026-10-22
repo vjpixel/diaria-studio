@@ -73,7 +73,7 @@ import {
   addForeignPendingToPlan,
   removeForeignPendingFromPlan,
 } from "./lib/state-changed-tracker.ts";
-import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
+import { formatIssueRef, ISSUE_REPOS_CONFIG_ROOT, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 import type { IssueKey } from "./lib/issue-key.ts";
 
 /** #10407 — `claimed-por-outra-sessao` só conta na re-classificação numa
@@ -203,7 +203,7 @@ export function scanForeignConvergence(
   opts: { includeClaimed?: boolean } = {},
   fetcher: (cwd: string, repo: string) => FetchOpenIssuesResult = fetchOpenIssuesForConvergence,
 ): ForeignConvergenceScan {
-  const allowlist = loadIssueRepos(cwd);
+  const allowlist = loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT);
   const allowed = new Set(allowlist);
   const out: ForeignConvergenceScan = { missing: [], notScanned: [], retracked: [] };
   for (const repo of convergenceReposOfPlan(plan, allowlist)) {
