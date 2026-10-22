@@ -8,11 +8,18 @@
  * 22/10/2026 no #10772.
  *
  * Uso:
- *   npx tsx scripts/link-video-d1.ts AAMMDD --video-url URL [--save]
- *     [--edition-dir DIR] [--now ISO]
+ *   npx tsx scripts/link-video-d1.ts AAMMDD [--video-url URL] [--save]
+ *     [--assume-public] [--edition-dir DIR] [--now ISO]
  *
  * O que faz:
- *   - valida e normaliza a URL (`https://youtu.be/{id}`);
+ *   - valida e normaliza a URL (`https://youtu.be/{id}`). Sem `--video-url`,
+ *     usa a `url` do registro do upload (`_internal/05-youtube-published.json`,
+ *     `publish-youtube.ts --upload`);
+ *   - recusa (exit 1, nada gravado) vídeo que o leitor não abre (#10858): se o
+ *     registro do upload é deste vídeo e o estado relido é privado sem
+ *     agendamento, indeterminado, ou agendado para depois do post do D1. O
+ *     estado do registro é o da releitura no upload — se o editor publicou à
+ *     mão no Studio depois, `--assume-public` libera;
  *   - `--save` grava `_internal/05-video-url.txt`. Com o arquivo presente
  *     ANTES do Stage 5, `prep-twitter-posts.ts`, `publish-threads.ts` e
  *     `publish-facebook.ts` já põem o link no texto do D1 (X e Threads só se
@@ -28,6 +35,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
@@ -37,6 +45,16 @@ import {
   planD1VideoLink,
   type D1PostEntryLike,
 } from "./lib/diaria/d1-video-link.ts";
+import { d1SocialSlotAt, gateVideoLink, readYouTubeRecordSummary } from "./lib/diaria/youtube-video-link-gate.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function loadSocialConfig(): Record<string, unknown> | null {
+  const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
+    publishing?: { social?: Record<string, unknown> };
+  };
+  return cfg.publishing?.social ?? null;
+}
 
 function readPublishedEntries(dir: string): { entries: D1PostEntryLike[]; source: string | null } {
   for (const p of [join(dir, "_internal", "06-social-published.json"), join(dir, "06-social-published.json")]) {
@@ -51,12 +69,12 @@ function readPublishedEntries(dir: string): { entries: D1PostEntryLike[]; source
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
   const aammdd = positional[0];
-  const rawUrl = values["video-url"];
-  if (!aammdd || !/^\d{6}$/.test(aammdd) || !rawUrl) {
-    console.error("uso: link-video-d1.ts AAMMDD --video-url URL [--save] [--edition-dir DIR] [--now ISO]");
+  if (!aammdd || !/^\d{6}$/.test(aammdd)) {
+    console.error(
+      "uso: link-video-d1.ts AAMMDD [--video-url URL] [--save] [--assume-public] [--edition-dir DIR] [--now ISO]",
+    );
     return 2;
   }
-  const videoUrl = normalizeYouTubeVideoUrl(rawUrl);
   const now = values["now"] ? new Date(values["now"]) : new Date();
   if (Number.isNaN(now.getTime())) throw new Error(`--now inválido: ${JSON.stringify(values["now"])}`);
 
@@ -64,6 +82,30 @@ async function main(): Promise<number> {
   if (!existsSync(dir)) {
     console.error(`link-video-d1: ${dir} não existe`);
     return 1;
+  }
+
+  // #10858: o registro do upload diz se o vídeo abre para o leitor.
+  const record = readYouTubeRecordSummary(dir);
+  const rawUrl = values["video-url"] ?? record?.url ?? null;
+  if (!rawUrl) {
+    console.error(
+      `link-video-d1: sem --video-url e sem url no registro do upload (${record?.path ?? "_internal/05-youtube-published.json ausente"})`,
+    );
+    return 2;
+  }
+  const videoUrl = normalizeYouTubeVideoUrl(rawUrl);
+  const gate = gateVideoLink({ videoUrl, record, d1SlotAt: d1SocialSlotAt(aammdd, loadSocialConfig()) });
+  if (!gate.ok) {
+    if (!flags.has("assume-public")) {
+      console.error(
+        `link-video-d1: recusado — ${gate.reason}. Nada gravado. Publique (ou agende antes do post do D1) no YouTube Studio ` +
+          "e rode de novo com --assume-public (#10858).",
+      );
+      return 1;
+    }
+    console.error(`[aviso] --assume-public: ${gate.reason} — seguindo porque o editor confirmou o vídeo público no Studio`);
+  } else if (!gate.record_matched) {
+    console.error(`[aviso] ${gate.reason}`);
   }
 
   const urlFile = join(dir, D1_VIDEO_URL_FILE);
@@ -81,6 +123,7 @@ async function main(): Promise<number> {
         dry_run: true,
         edition: aammdd,
         video_url: videoUrl,
+        video_link_gate: gate,
         video_url_file: flags.has("save") ? urlFile : existsSync(urlFile) ? urlFile : null,
         social_published: source,
         steps,
