@@ -19,27 +19,28 @@ import {
   circleStackTitle,
   buildCircleStackUrl,
   DEFAULT_CIRCLE_STACK_OPENING,
+  type CircleStackItem,
   type CircleStackSelection,
 } from "../scripts/lib/circle-stack-render.ts";
-import { resolveCircleStackConfig, resolveCycleArg } from "../scripts/publish-circle-stack.ts";
+import { scoreCandidate, selectCircleStack, parseInterestProfile } from "../scripts/lib/circle-stack-select.ts";
+import type { WeeklyRawCandidate } from "../scripts/lib/weekly-linkedin-parse.ts";
+import { resolveCircleStackConfig } from "../scripts/publish-circle-stack.ts";
+
+const item = (over: Partial<CircleStackItem>): CircleStackItem => ({
+  editionDate: "261013", url: "https://ex.com/x", title: "T", body: "Corpo.", why: "", ...over,
+});
 
 const selection: CircleStackSelection = {
   cycle: "26w42",
   contentWindow: ["261012", "261013", "261014", "261015", "261016"],
-  headlines: [
-    {
-      editionDate: "261013",
-      url: "https://cloud.google.com/blog/x",
-      title: "Gemini vira colega com e-mail & agenda",
-      body: "Parágrafo um.\n\nParágrafo dois.",
-      why: "Porque sim.",
-    },
-    { editionDate: "261099", url: "https://ex.com/a", title: "Sem edição", body: "Corpo.", why: "" },
+  destaques: [
+    item({ url: "https://cloud.google.com/blog/x", title: "Gemini vira colega com e-mail & agenda", body: "Parágrafo um.\n\nParágrafo dois.", why: "Porque sim." }),
+    item({ editionDate: "261099", url: "https://ex.com/a", title: "Sem edição" }),
   ],
-  useMelhor: { editionDate: "261015", url: "https://ex.com/um", title: "Curso grátis", body: "Descrição." },
-  weeklyEditions: [
-    { editionDate: "261013", url: "https://diar.ia.br/p/gemini", destaques: ["A", "B", "C"] },
-  ],
+  lancamentos: [item({ url: "https://ex.com/l", title: "Lovable 3", body: "Lançou.", stackNote: "Nota para builders." })],
+  useMelhor: [item({ url: "https://ex.com/um", title: "Curso grátis", body: "Descrição." })],
+  radar: [],
+  weeklyEditions: [{ editionDate: "261013", url: "https://diar.ia.br/p/gemini", destaques: ["A", "B", "C"] }],
 };
 
 describe("buildCreatePostPayload", () => {
@@ -119,7 +120,7 @@ describe("renderCircleStackPost", () => {
   });
 
   it("título do destaque literal (escapado) e abertura default", () => {
-    assert.match(html, /<h2>Gemini vira colega com e-mail &amp; agenda<\/h2>/);
+    assert.match(html, /<h3>Gemini vira colega com e-mail &amp; agenda<\/h3>/);
     assert.ok(html.includes(DEFAULT_CIRCLE_STACK_OPENING));
   });
 
@@ -149,8 +150,19 @@ describe("renderCircleStackPost", () => {
     assert.ok(!r.html.includes("utm_content=cta-fim"));
   });
 
-  it("seleção sem manchetes é erro", () => {
-    assert.throws(() => renderCircleStackPost({ ...selection, headlines: [] }), /sem manchetes/);
+  it("stackNote substitui a descrição no item de lista; seção vazia some", () => {
+    assert.ok(html.includes('<h2>Lançamentos e ferramentas</h2>\n<ul>\n<li><a href="https://ex.com/l">Lovable 3</a><br>Nota para builders.</li>'));
+    assert.ok(!html.includes("<h2>Radar</h2>"));
+  });
+
+  it("stackNote no destaque substitui o por que importa da edição", () => {
+    const r = renderCircleStackPost({ ...selection, destaques: [item({ why: "Original.", stackNote: "Para quem constrói." })] });
+    assert.ok(r.html.includes("<p>Para quem constrói.</p>"));
+    assert.ok(!r.html.includes("Original."));
+  });
+
+  it("seleção sem destaques é erro", () => {
+    assert.throws(() => renderCircleStackPost({ ...selection, destaques: [] }), /sem destaques/);
   });
 });
 
@@ -164,9 +176,52 @@ describe("config e ciclo", () => {
   it("status inválido é erro", () => {
     assert.throws(() => resolveCircleStackConfig({ circle_stack: { status: "scheduled" } }), /status/);
   });
-  it("ciclo via --cycle ou --publish-monday", () => {
-    assert.equal(resolveCycleArg("26w42", undefined), "26w42");
-    assert.equal(resolveCycleArg(undefined, "261019"), "26w42");
-    assert.throws(() => resolveCycleArg(undefined, undefined), /--cycle/);
+  it("interests do config substituem o perfil default; inválido é erro", () => {
+    const c = resolveCircleStackConfig({ circle_stack: { interests: [{ pattern: "foo", weight: 1 }] } });
+    assert.deepEqual(c.interests, [{ label: "foo", pattern: "foo", weight: 1 }]);
+    assert.throws(() => parseInterestProfile([{ pattern: "x" }]), /weight/);
+    assert.throws(() => parseInterestProfile([]), /não vazia/);
+  });
+});
+
+const cand = (over: Partial<WeeklyRawCandidate>): WeeklyRawCandidate => ({
+  editionDate: "261013", url: `https://ex.com/${Math.random()}`, title: "Título neutro", body: "Corpo neutro.",
+  why: "", kind: "section", category: "RADAR", section: "radar", ...over,
+});
+
+describe("scoreCandidate", () => {
+  it("título pesa em dobro e registra os termos casados", () => {
+    const s = scoreCandidate(cand({ title: "Lovable lança agentes", body: "" }));
+    assert.equal(s.score, 4 * 2 + 3 * 2);
+    assert.deepEqual(s.matchedTerms, ["Lovable", "agentes"]);
+  });
+  it("respeita borda de palavra (apple não casa app; cursorial não casa cursor)", () => {
+    assert.equal(scoreCandidate(cand({ title: "Apple e o cursorial", body: "" })).score, 0);
+  });
+  it("bônus de seção prática", () => {
+    assert.equal(scoreCandidate(cand({ section: "lancamentos" })).score, 2);
+  });
+});
+
+describe("selectCircleStack", () => {
+  it("prioriza destaques aderentes e completa o mínimo mesmo sem aderência", () => {
+    const picks = selectCircleStack([
+      cand({ kind: "destaque", section: "destaque", title: "Eleição e TSE" }),
+      cand({ kind: "destaque", section: "destaque", title: "Cursor ganha agentes" }),
+    ]);
+    assert.equal(picks.destaques.length, 2);
+    assert.equal(picks.destaques[0].title, "Cursor ganha agentes");
+  });
+  it("seções exigem aderência acima do bônus; URL nunca repete; links próprios saem", () => {
+    const picks = selectCircleStack([
+      cand({ url: "https://a.com/1", kind: "destaque", section: "destaque", title: "n8n 2.0" }),
+      cand({ url: "https://a.com/1", section: "radar", title: "n8n 2.0" }),
+      cand({ section: "lancamentos", title: "Modelo de imagem" }),
+      cand({ section: "lancamentos", title: "Replit Agent" }),
+      cand({ url: "https://diar.ia.br/p/x", section: "radar", title: "Claude Code" }),
+    ]);
+    assert.deepEqual(picks.lancamentos.map((c) => c.title), ["Replit Agent"]);
+    assert.equal(picks.radar.length, 0);
+    assert.equal(picks.destaques[0].title, "n8n 2.0");
   });
 });

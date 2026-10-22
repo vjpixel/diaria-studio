@@ -1,22 +1,28 @@
 /**
  * circle-stack-render.ts (#10904)
  *
- * Monta o post semanal do espaço "Radar de Notícias Stack" (Circle da Stack)
- * a partir da MESMA seleção semanal do LinkedIn
- * (`data/weekly/{cycle}/_internal/ln-selection.json`, gerada por
- * `select-linkedin-weekly.ts`). Reusar a seleção é deliberado: o ranking por
- * clique da semana já está feito e revisado ali — o Circle é só mais uma
- * saída do mesmo conteúdo, não uma curadoria nova.
+ * Monta o post da edição semanal da diar.ia.br para o espaço "Radar de
+ * Notícias Stack" (Circle da Stack) a partir da seleção por interesse dos
+ * alunos (`circle-stack-select.ts`, gravada em
+ * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
+ *
+ * Estrutura: abertura · Destaques da semana (título, corpo, "Por que isso
+ * importa:", links) · Lançamentos e ferramentas · Use melhor · Radar ·
+ * Edições da semana · fecho + CTA.
+ *
+ * `stackNote` (opcional, por item): texto escrito para o público da Stack
+ * (o ângulo de quem constrói). Quando presente, substitui o "por que isso
+ * importa" da edição diária no destaque, ou entra como 2ª linha nos itens
+ * de lista. Nunca é gerado aqui — vem preenchido na seleção.
  *
  * Regras herdadas da newsletter (context/editorial-rules.md):
  *   - "Por que isso importa:" em parágrafo próprio.
  *   - Nunca seta (→/←) em link ou CTA (#9721).
- *   - Título do destaque entra literal.
+ *   - Título do item entra literal.
  *
- * UTM própria do canal: `utm_source=stack&utm_medium=circle&
+ * UTM do canal: `utm_source=stack&utm_medium=circle&
  * utm_campaign=stack-{cycle}&utm_content=edicao|cta-fim` — só nos links
- * para a diar.ia.br. Link de fonte (matéria original) sai sem UTM, como
- * na newsletter.
+ * para a diar.ia.br. Link de fonte sai sem UTM, como na newsletter.
  */
 
 export const CIRCLE_STACK_UTM_SOURCE = "stack";
@@ -26,26 +32,20 @@ export const CIRCLE_STACK_SUBSCRIBE_BASE_URL = "https://diar.ia.br";
 export type CircleStackUtmContent = "edicao" | "cta-fim";
 
 export const DEFAULT_CIRCLE_STACK_OPENING =
-  "Os destaques de IA da semana, escolhidos pela curadoria da diar.ia.br a partir do que os leitores mais leram na edição diária.";
+  "A edição semanal da diar.ia.br para quem constrói com IA: o que saiu na semana sobre ferramentas, agentes, automação e produto.";
 
 export const DEFAULT_CIRCLE_STACK_CLOSING =
   "A diar.ia.br sai de segunda a sexta, de graça, no seu e-mail.";
 
 const CTA_FIM_LABEL = "Assinar a diar.ia.br";
 
-export interface CircleStackHeadline {
+export interface CircleStackItem {
   editionDate: string;
   url: string;
   title: string;
   body: string;
   why: string;
-}
-
-export interface CircleStackUseMelhor {
-  editionDate: string;
-  url: string;
-  title: string;
-  body: string;
+  stackNote?: string;
 }
 
 export interface CircleStackEdition {
@@ -54,12 +54,14 @@ export interface CircleStackEdition {
   destaques: string[];
 }
 
-/** Subconjunto de `ln-selection.json` que o render consome. */
+/** Shape de `circle-stack-selection.json` que o render consome. */
 export interface CircleStackSelection {
   cycle: string;
   contentWindow: string[];
-  headlines: CircleStackHeadline[];
-  useMelhor?: CircleStackUseMelhor | null;
+  destaques: CircleStackItem[];
+  lancamentos: CircleStackItem[];
+  useMelhor: CircleStackItem[];
+  radar: CircleStackItem[];
   weeklyEditions: CircleStackEdition[];
 }
 
@@ -107,7 +109,7 @@ function escapeHtml(s: string): string {
 
 function paragraphs(text: string): string[] {
   return text
-    .split(/\n\s*\n|\n/)
+    .split(/\n+/)
     .map((p) => p.trim())
     .filter(Boolean)
     .map((p) => `<p>${escapeHtml(p)}</p>`);
@@ -117,19 +119,30 @@ function link(href: string, label: string): string {
   return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
 }
 
+function listSection(heading: string, items: CircleStackItem[]): string[] {
+  if (items.length === 0) return [];
+  const lis = items.map((it) => {
+    const desc = it.stackNote?.trim() || it.body.trim();
+    return `<li>${link(it.url, it.title)}${desc ? `<br>${escapeHtml(desc)}` : ""}</li>`;
+  });
+  return [`<h2>${escapeHtml(heading)}</h2>`, `<ul>\n${lis.join("\n")}\n</ul>`];
+}
+
 /** Pure: monta título + HTML do post. */
 export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleStackRenderOptions = {}): CircleStackRendered {
-  if (sel.headlines.length === 0) throw new Error(`Seleção ${sel.cycle} sem manchetes — nada a publicar`);
+  if (sel.destaques.length === 0) throw new Error(`Seleção ${sel.cycle} sem destaques — nada a publicar`);
 
   const editionUrlByDate = new Map(sel.weeklyEditions.map((e) => [e.editionDate, e.url]));
   const out: string[] = [];
 
   out.push(...paragraphs(opts.opening?.trim() || DEFAULT_CIRCLE_STACK_OPENING));
 
-  for (const h of sel.headlines) {
-    out.push(`<h2>${escapeHtml(h.title)}</h2>`);
+  out.push(`<h2>Destaques da semana</h2>`);
+  for (const h of sel.destaques) {
+    out.push(`<h3>${escapeHtml(h.title)}</h3>`);
     out.push(...paragraphs(h.body));
-    if (h.why.trim()) out.push(`<p><strong>Por que isso importa:</strong></p>`, ...paragraphs(h.why));
+    const why = h.stackNote?.trim() || h.why.trim();
+    if (why) out.push(`<p><strong>Por que isso importa:</strong></p>`, ...paragraphs(why));
     const editionUrl = editionUrlByDate.get(h.editionDate);
     const links = [link(h.url, "Leia na fonte")];
     if (editionUrl) {
@@ -138,11 +151,9 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     out.push(`<p>${links.join(" | ")}</p>`);
   }
 
-  if (sel.useMelhor) {
-    out.push(`<h2>Use melhor</h2>`);
-    out.push(`<p>${link(sel.useMelhor.url, sel.useMelhor.title)}</p>`);
-    out.push(...paragraphs(sel.useMelhor.body));
-  }
+  out.push(...listSection("Lançamentos e ferramentas", sel.lancamentos));
+  out.push(...listSection("Use melhor", sel.useMelhor));
+  out.push(...listSection("Radar", sel.radar));
 
   if (sel.weeklyEditions.length > 0) {
     out.push(`<h2>Edições da semana</h2>`);
