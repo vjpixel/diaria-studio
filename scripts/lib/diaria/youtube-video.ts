@@ -238,10 +238,13 @@ export function resolveYouTubeSchedule(
 }
 
 /**
- * Sem a auditoria do projeto GCP (pendência do #10659), o YouTube trava em
- * `private` todo vídeo enviado via `videos.insert` — o `privacyStatus: public`
- * do modo "na hora" é ignorado e o `publishAt` do modo agendado não chega a
- * torná-lo público. Virar `true` só depois da auditoria aprovada.
+ * Sem a auditoria do projeto GCP (pendência do #10659), o vídeo enviado via
+ * `videos.insert` PODE sair travado em `private` — restrição de 28/07/2020 no
+ * revision history; a página atual de `videos.insert` diz o contrário ("not
+ * restricted to private viewing mode"), e o 1º upload real confirma pela
+ * releitura. Enquanto não confirmado, o plano trata o pedido como rebaixável
+ * (`public` ignorado, `publishAt` sem efeito). Virar `true` depois da
+ * auditoria aprovada ou da releitura mostrar que a restrição não vale.
  */
 export const YOUTUBE_API_PROJECT_AUDITED = false;
 
