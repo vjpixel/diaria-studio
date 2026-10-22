@@ -46,15 +46,14 @@ export const D1_VIDEO_FALLBACK_URL = DIARIA_YOUTUBE_URL;
  * vídeo e para o fallback do canal: a cópia da imagem é gerada no upload, antes
  * de a URL do vídeo existir, então ela não pode depender de qual dos dois vale.
  */
-export const D1_INVITE_LINES = ["Clique e assista", "a notícia comentada"] as const;
-export const D1_INVITE_TEXT = D1_INVITE_LINES.join(" ");
+export const D1_INVITE_TEXT = "Clique e assista a notícia comentada";
 
 /**
  * Versão do desenho do convite, carimbada junto do md5 do hero: mudar o desenho
  * (texto, faixa, posição) sem mudar o hero também regera a cópia. Subir a versão
- * a cada mudança em `buildInviteSvg`/`D1_INVITE_LINES`.
+ * a cada mudança em `buildInviteSvg`/`D1_INVITE_TEXT`.
  */
-export const D1_INVITE_VERSION = "invite-v3";
+export const D1_INVITE_VERSION = "invite-v4";
 
 /** `alt` da imagem do D1 quando ela é link: a imagem é o único conteúdo do link e o convite está só nos pixels. */
 export function d1HeroAlt(title: string): string {
@@ -101,21 +100,21 @@ export function editionFromDir(editionDir: string): string | null {
 
 /**
  * Geometria do convite: faixa no CANTO INFERIOR DIREITO com o símbolo de play à
- * esquerda e o texto em duas linhas à direita dele. Separada do SVG para o
+ * esquerda e o texto em UMA linha à direita dele. Separada do SVG para o
  * teste conferir que o texto cabe na faixa. A largura reservada ao texto tem
  * folga sobre Georgia e sobre a fonte de reserva do rasterizador (a medição
  * local deu +10%; DejaVu Serif no servidor Linux não foi medida).
  */
 export function inviteGeometry(width: number, height: number) {
   if (!(width > 0 && height > 0)) throw new Error(`buildInviteSvg: dimensões inválidas ${width}x${height}`);
-  const fontSize = width * 0.034;
+  const fontSize = width * 0.024;
   const margin = width * 0.03;
   const padX = fontSize * 0.9;
-  const iconD = fontSize * 1.7;
-  const gap = fontSize * 0.6;
-  const textW = fontSize * 12.2;
+  const iconD = fontSize * 1.5;
+  const gap = fontSize * 0.5;
+  const textW = fontSize * 21.8; // Georgia bold mede ~19.5em; +12% de folga
   const w = padX * 2 + iconD + gap + textW;
-  const h = fontSize * 3;
+  const h = fontSize * 2.4;
   const x = width - margin - w;
   const y = height - margin - h;
   return { fontSize, padX, iconD, gap, pill: { x, y, w, h } };
@@ -125,7 +124,7 @@ export function inviteGeometry(width: number, height: number) {
  * SVG do convite, do tamanho da imagem, para compor sobre o hero: faixa na cor
  * de tinta do design system (#171411, 82% de opacidade) no canto inferior
  * direito, com círculo branco e triângulo de play à esquerda e o texto branco
- * em duas linhas. Fica fora do centro para não cobrir o assunto da arte.
+ * em uma linha. Fica fora do centro para não cobrir o assunto da arte.
  * `textLength` não é usado: o rasterizador (librsvg) o ignora.
  */
 export function buildInviteSvg(width: number, height: number): string {
@@ -139,8 +138,7 @@ export function buildInviteSvg(width: number, height: number): string {
   const tx1 = iconCx - tri * 0.35;
   const tx2 = iconCx + tri * 0.65;
   const textX = pill.x + g.padX + g.iconD + g.gap;
-  const lineGap = g.fontSize * 1.25;
-  const y1 = cyMid - lineGap / 2 + g.fontSize * 0.35;
+  const y1 = cyMid + g.fontSize * 0.35;
   const text = (y: number, line: string) =>
     `<text x="${f(textX)}" y="${f(y)}" font-family="Georgia, 'DejaVu Serif', serif" font-weight="bold" font-size="${f(g.fontSize)}" fill="#FFFFFF">${line}</text>`;
   return (
@@ -148,8 +146,7 @@ export function buildInviteSvg(width: number, height: number): string {
     `<rect x="${f(pill.x)}" y="${f(pill.y)}" width="${f(pill.w)}" height="${f(pill.h)}" rx="${f(pill.h * 0.28)}" fill="#171411" fill-opacity="0.82"/>` +
     `<circle cx="${f(iconCx)}" cy="${f(cyMid)}" r="${f(r)}" fill="#FFFFFF"/>` +
     `<polygon points="${f(tx1)},${f(cyMid - tri / 2)} ${f(tx2)},${f(cyMid)} ${f(tx1)},${f(cyMid + tri / 2)}" fill="#171411"/>` +
-    text(y1, D1_INVITE_LINES[0]) +
-    text(y1 + lineGap, D1_INVITE_LINES[1]) +
+    text(y1, D1_INVITE_TEXT) +
     `</svg>`
   );
 }

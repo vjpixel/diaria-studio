@@ -11,7 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import {
-  D1_INVITE_LINES,
   D1_INVITE_TEXT,
   D1_INVITE_VERSION,
   D1_PLAY_HERO_FILE,
@@ -188,7 +187,7 @@ describe("#10784 — cópia do hero com play", () => {
       const px = (x: number, y: number) => data[(y * info.width + x) * info.channels];
       assert.ok(px(200 - 30, 100) < 60, `centro não pode ter play, veio ${px(170, 100)}`);
       // Faixa de tinta (#171411 a 82%) na parte de baixo: R cai de 40 para ~26.
-      assert.ok(px(172, 165) < 33, `faixa do convite (canto inferior direito) deveria escurecer a base, veio ${px(172, 165)}`);
+      assert.ok(px(146, 176) < 33, `faixa do convite (canto inferior direito) deveria escurecer a base, veio ${px(146, 176)}`);
       assert.ok(px(30, 165) > 30, "a faixa fica no canto direito: o canto inferior esquerdo segue com a arte");
       assert.ok(px(10, 10) < 100, "canto segue com a arte original");
 
@@ -247,12 +246,13 @@ describe("#10784 — cópia do hero com play", () => {
     assert.ok(right <= W && bottom <= H && (left + right) / 2 > W / 2 && (top + bottom) / 2 > H / 2, "faixa no canto inferior direito");
   });
 
-  it("buildInviteSvg: faixa no canto inferior direito, play ao lado do texto de 2 linhas", () => {
+  it("buildInviteSvg: faixa no canto inferior direito, play ao lado do texto de 1 linha", () => {
     const svg = buildInviteSvg(1600, 800);
     const { pill } = inviteGeometry(1600, 800);
     assert.ok(svg.includes(`x="${pill.x.toFixed(1)}"`) && svg.includes(`y="${pill.y.toFixed(1)}"`), svg);
     assert.ok(pill.x + pill.w < 1600 && pill.y + pill.h < 800 && pill.x + pill.w / 2 > 800 && pill.y > 400, "canto inferior direito, com margem");
-    for (const l of D1_INVITE_LINES) assert.ok(svg.includes(l), l);
+    assert.equal((svg.match(/<text /g) ?? []).length, 1, "convite em uma linha só");
+    assert.ok(svg.includes(D1_INVITE_TEXT), D1_INVITE_TEXT);
     assert.equal(D1_INVITE_TEXT, "Clique e assista a notícia comentada");
     assert.ok(svg.includes(`fill="#171411"`));
     assert.ok(svg.includes("<circle") && svg.includes("<polygon"), "símbolo de play ao lado do texto");
