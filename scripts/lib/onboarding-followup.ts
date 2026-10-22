@@ -147,6 +147,10 @@ export interface FollowupPerson {
   /** #10763: etapas cuja leitura singular falhou na última tentativa (transitório,
    *  NUNCA pulo terminal). Só rebaixa a pessoa na ordem do teto; sai no 1º sucesso. */
   live_failures?: { step: FollowupStepKind; at: string; n: number }[];
+  /** #10774: e-mails anteriores (normalizados, mais recente por último) de
+   *  quem trocou de e-mail no Kit. `applyFormResponses` também casa por eles:
+   *  uma resposta assinada com o e-mail antigo continua valendo. */
+  previous_emails?: string[];
 }
 
 /** Lote Kit de uma etapa destas sequências — mesma forma do lote da escada. */
@@ -622,6 +626,33 @@ export interface CapDeferral {
   deferred: number;
 }
 
+/**
+ * @pure — #10773: rebaixamento do rodízio (#10763) que CEDE no fim da janela.
+ * Quem falhou a leitura na rodada anterior (`failedLastRound`) vai para o fim
+ * da fila, exceto quando hoje é a última rodada que ainda o pega dentro da
+ * janela da etapa (`diasRestantes <= 1`, mesma conta de `capWindowOverflows`):
+ * aí volta à ordem normal, senão viraria `vencida` sem nunca ser lido (a marca
+ * só sai com uma leitura, e quem fica em `adiado_teto` não é lido). Sem
+ * janela conhecida (âncora nula, `form_lembrete`) o rebaixamento vale sempre.
+ */
+export function isCapDemoted(
+  d: FollowupDue,
+  failedLastRound: boolean,
+  anchorSec: number | null,
+  nowSec: number,
+  cfg: Pick<FollowupConfig, "graceDays" | "formFirstDays">,
+): boolean {
+  if (!failedLastRound) return false;
+  const start = capWindowStartSec(d.kind, anchorSec, cfg);
+  if (start == null) return true;
+  return windowRoundsLeft(start, nowSec, cfg.graceDays) > 1;
+}
+
+/** Rodadas diárias (a de hoje inclusive) que ainda pegam a janela `[start, start + grace)`. */
+function windowRoundsLeft(startSec: number, nowSec: number, graceDays: number): number {
+  return Math.ceil((startSec + graceDays * DAY_S - nowSec) / DAY_S);
+}
+
 /** Ordem do corte do teto (ver `splitDueByCap`): `orderSec` crescente, `null` por último, desempate por id. */
 function sortByCapOrder(
   list: readonly FollowupDue[],
@@ -667,7 +698,10 @@ function sortByCapOrder(
  * falhou a leitura singular na rodada anterior) vai depois de quem não
  * falhou, mantendo a ordem acima dentro de cada grupo — falha recorrente não
  * monopoliza o teto nem aumenta o número de GETs; a pessoa continua devida
- * (não é pulo terminal) e volta à frente assim que a leitura passa. A ordem relativa entre etapas diferentes em
+ * (não é pulo terminal) e volta à frente assim que a leitura passa. O
+ * executor monta `demoted` com `isCapDemoted` (#10773): no último dia da
+ * janela o rebaixamento cede, senão a pessoa nunca seria lida enquanto a
+ * etapa estiver acima do teto. A ordem relativa entre etapas diferentes em
  * `within` segue a de `due`.
  */
 export function splitDueByCap(
@@ -740,9 +774,16 @@ export function capWindowStartSec(
  * inclusive), e a simulação segue a MESMA ordem de `splitDueByCap` (cadastro
  * mais antigo primeiro): quem está na posição `i` sai na rodada
  * `floor(i / cap)`; se essa rodada já não está dentro da janela dele, é
- * `vencida` projetada. Como a ordem é por início de janela e a janela tem o
- * mesmo tamanho na etapa, ela coincide com a do prazo — é a melhor ordem
- * possível, então a projeção não acusa perda evitável por outra ordem.
+ * `vencida` projetada. Sem rebaixados, a ordem é por início de janela e a
+ * janela tem o mesmo tamanho na etapa, então ela coincide com a do prazo.
+ *
+ * **Rebaixamento (#10773).** `failedLastRound` é o mesmo sinal que o
+ * executor usa no corte (`hasLiveFailure`), e a simulação aplica a mesma
+ * regra (`isCapDemoted`) rodada a rodada: o rebaixado vai para o fim da fila
+ * nas rodadas em que ainda sobra janela e volta à ordem normal na última.
+ * Sem falhas, a ordem é a mesma em toda rodada e o resultado é o da conta
+ * por posição acima.
+ *
  *
  * Etapa com `eligible <= cap` sai inteira hoje e nunca vence. `form_lembrete`
  * fica de fora: o lembrete não tem janela (repete a cada `form_reminder_days`),
@@ -769,6 +810,7 @@ export function capWindowOverflows(
   nowSec: number,
   cfg: Pick<FollowupConfig, "graceDays" | "formFirstDays">,
   anchorSec: (d: FollowupDue) => number | null,
+  failedLastRound: (d: FollowupDue) => boolean = () => false,
 ): CapWindowOverflow[] {
   const byKind = new Map<FollowupStepKind, FollowupDue[]>();
   for (const d of due) {
@@ -782,12 +824,19 @@ export function capWindowOverflows(
     const list = byKind.get(kind);
     if (!list || list.length <= cap) continue;
     let vencidas = 0;
-    sortByCapOrder(list, anchorSec).forEach((d, i) => {
-      const start = capWindowStartSec(kind, anchorSec(d), cfg);
-      if (start == null) return;
-      const diasRestantes = Math.ceil((start + cfg.graceDays * DAY_S - nowSec) / DAY_S);
-      if (Math.floor(i / cap) >= diasRestantes) vencidas++;
-    });
+    const perRound = Math.max(1, cap);
+    let remaining = list;
+    for (let k = 0; remaining.length > 0; k++) {
+      const roundSec = nowSec + k * DAY_S;
+      const ordered = sortByCapOrder(remaining, anchorSec, (d) =>
+        isCapDemoted(d, failedLastRound(d), anchorSec(d), roundSec, cfg),
+      );
+      for (const d of ordered.slice(0, perRound)) {
+        const start = capWindowStartSec(kind, anchorSec(d), cfg);
+        if (start != null && k >= windowRoundsLeft(start, nowSec, cfg.graceDays)) vencidas++;
+      }
+      remaining = ordered.slice(perRound);
+    }
     if (vencidas > 0) out.push({ kind, eligible: list.length, capacity: list.length - vencidas, projected_vencidas: vencidas });
   }
   return out;
@@ -850,6 +899,12 @@ export function filterDueByLiveCheck(
  *  qual a falha deixa de ser "isolada" e a rodada conta como falha. */
 export const FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION = 0.5;
 
+/** #10694: amostra mínima de leituras para a fração valer. Com 1 ou 2
+ *  devidos no dia, uma única falha transitória já é ≥ 50% e virava "falha
+ *  sistêmica" (exit 1 + streak do alarme). Abaixo disso, cada falha é
+ *  classificada sozinha (erro não transitório ou último dia da janela). */
+export const FOLLOWUP_LOOKUP_SYSTEMIC_MIN_LOOKUPS = 10;
+
 export interface LookupFailure {
   due: FollowupDue;
   /** O erro é retentável mais tarde (429, 5xx, rede). 401/403 não é. */
@@ -866,7 +921,10 @@ export interface LookupFailure {
  * amanhã já estiver fora da janela. Conta como falha (`blocking`):
  *   - erro não transitório (401/403: não passa com o tempo);
  *   - último dia da janela da etapa (amanhã a pessoa vira `vencida`);
- *   - falha sistêmica: `≥ FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION` das leituras.
+ *   - falha sistêmica: `≥ FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION` das leituras,
+ *     só com `totalLookups ≥ FOLLOWUP_LOOKUP_SYSTEMIC_MIN_LOOKUPS` (#10694).
+ *     Numa amostra pequena, uma pane real do Kit ainda aparece: a pessoa
+ *     volta amanhã e, no último dia da janela, a falha conta.
  * O resto é `deferred`. `form_lembrete` não tem janela, então só sai por
  * erro não transitório ou falha sistêmica.
  */
@@ -877,7 +935,10 @@ export function classifyLookupFailures(
   cfg: Pick<FollowupConfig, "graceDays" | "formFirstDays">,
 ): { blocking: number; deferred: number } {
   if (failures.length === 0) return { blocking: 0, deferred: 0 };
-  if (totalLookups > 0 && failures.length / totalLookups >= FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION) {
+  if (
+    totalLookups >= FOLLOWUP_LOOKUP_SYSTEMIC_MIN_LOOKUPS &&
+    failures.length / totalLookups >= FOLLOWUP_LOOKUP_SYSTEMIC_FRACTION
+  ) {
     return { blocking: failures.length, deferred: 0 };
   }
   let blocking = 0;
@@ -1012,10 +1073,48 @@ export interface FormResponseRecord {
   answers?: Record<string, string>;
 }
 
+/** Quantos e-mails anteriores guardar por pessoa (#10774). */
+export const FOLLOWUP_PREVIOUS_EMAILS_MAX = 5;
+
+/**
+ * #10774: atualiza `email` de quem já está no store a partir da leitura
+ * singular FRESCA do Kit (o mesmo e-mail que a merge tag põe no link e que a
+ * assinatura `form_sig` cobre). Sem isto, quem trocou de e-mail no Kit
+ * respondia o formulário com o e-mail novo, `applyFormResponses` procurava
+ * pelo antigo, a resposta caía em `unmatched` e o lembrete saía para sempre.
+ * O e-mail antigo vai para `previous_emails` (resposta já enviada com ele
+ * continua casando). Leitura falha (`null`) ou sem e-mail não mexe em nada.
+ * Muta `people`; devolve quantas pessoas mudaram.
+ */
+export function refreshPeopleEmailsFromChecks(
+  people: Record<string, FollowupPerson>,
+  checks: ReadonlyMap<number, LiveSubscriberCheck | null>,
+): number {
+  let n = 0;
+  for (const [id, check] of checks) {
+    const fresh = normalizeEmail(check?.email ?? "");
+    if (fresh === "") continue;
+    const p = people[String(id)];
+    if (!p) continue;
+    const old = normalizeEmail(p.email);
+    if (old === fresh) continue;
+    if (old !== "") {
+      const prev = (p.previous_emails ?? []).filter((e) => e !== old && e !== fresh);
+      prev.push(old);
+      p.previous_emails = prev.slice(-FOLLOWUP_PREVIOUS_EMAILS_MAX);
+    }
+    p.email = fresh;
+    n++;
+  }
+  return n;
+}
+
 /**
  * Marca "preencheu" (para os lembretes na hora) em quem respondeu — casando
  * por e-mail (minúsculo, sem espaços) com as pessoas já conhecidas (só quem
- * recebeu o e-mail do formulário tem o link). Devolve marcadas e não casadas.
+ * recebeu o e-mail do formulário tem o link). Casa pelo e-mail atual e, sem
+ * colisão com o atual de outra pessoa, pelos `previous_emails` (#10774).
+ * Devolve marcadas e não casadas.
  */
 export function applyFormResponses(
   people: Record<string, FollowupPerson>,
@@ -1023,6 +1122,12 @@ export function applyFormResponses(
 ): { marked: number; unmatched: number } {
   const byEmail = new Map<string, FollowupPerson>();
   for (const p of Object.values(people)) byEmail.set(normalizeEmail(p.email), p);
+  for (const p of Object.values(people)) {
+    for (const e of p.previous_emails ?? []) {
+      const k = normalizeEmail(e);
+      if (k !== "" && !byEmail.has(k)) byEmail.set(k, p);
+    }
+  }
   let marked = 0;
   let unmatched = 0;
   for (const r of responses) {
@@ -1157,6 +1262,29 @@ export function isFailedFollowupRun(run: FollowupRunRecord): boolean {
     m === "campo_assinatura_ausente" ||
     m === "link_rejeitado_pelo_worker"
   );
+}
+
+/** #10661: exit do `onboarding-followup-run.ts` quando o ÚNICO problema da
+ *  rodada é o excedente do teto que não cabe na janela (`cap_window_overflow`).
+ *  É achado operacional, não quebra do executor: a task
+ *  `Diaria-Onboarding-Welcome-Run` declara `successExitCodes: [3]`, então a
+ *  unit e o `/tarefas` não ficam vermelhos por dias enquanto o excedente
+ *  durar (e uma falha real dos passos `run`/`kit` no período continua
+ *  visível). O excedente segue contando no alarme de continuidade
+ *  (`isFailedFollowupRun`) e no painel. */
+export const FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE = 3;
+
+/**
+ * @pure — #10661: exit code da rodada. Falha de entrega (lote falho, acima do
+ * teto, lote não resolvido) é `1` e vence o excedente; só o excedente é
+ * `FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE`; o resto é `0`.
+ */
+export function resolveFollowupExitCode(
+  run: Pick<FollowupRunRecord, "lots_failed" | "over_cap" | "lots_unresolved" | "cap_window_overflow">,
+): 0 | 1 | typeof FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE {
+  if (run.lots_failed > 0 || run.over_cap > 0 || (run.lots_unresolved ?? 0) > 0) return 1;
+  if ((run.cap_window_overflow ?? 0) > 0) return FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE;
+  return 0;
 }
 
 /** @pure — muta e devolve o bloco. */
