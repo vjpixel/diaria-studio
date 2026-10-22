@@ -104,6 +104,7 @@
  */
 
 import { classifyExecTrack, type ExecTrack } from "./issue-exec-track.ts";
+import { studioNumberOfPlanEntry } from "./plan-issue-ref.ts";
 
 /**
  * Status de `plan.json` que significam **"esta sessão terminou de trabalhar
@@ -236,6 +237,10 @@ export function checkDevelopLabelCleared(
 
   for (const issue of planIssues) {
     if (!isWorkFinished(issue)) continue;
+    // #10778: `issueStates` vem de `gh issue view N` no diaria-studio. Entrada
+    // de outro repo casaria com o estado da studio#N — nunca avaliada aqui. O
+    // CLI já filtra e avisa (`partitionStudioPlanEntries`).
+    if (studioNumberOfPlanEntry(issue) === null) continue;
     const state = byNumber.get(issue.number);
     if (!state) continue; // sem dado — nunca acusa por ausência
 
