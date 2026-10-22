@@ -212,7 +212,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // instagram
     if (!input.instagramReady) {
       warnings.push(`instagram: ${input.instagramNotReadyReason ?? "sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN"}`);
-      return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: "INSTAGRAM_*" };
+      return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: input.instagramNotReadyReason ?? "INSTAGRAM_*" };
     }
     let caption: string;
     try {
@@ -385,7 +385,8 @@ export type InstagramAuthor =
   | { ready: false; reason: string };
 
 /**
- * Resolve a conta do Instagram que publica o Reels. Com `authorPage`, é a conta
+ * Resolve a conta do Instagram que publica o Reels (faz um GET na Graph, inclusive no
+ * dry-run). Com `authorPage`, é a conta
  * VINCULADA a essa página do Facebook, usando o token da página (precisa de
  * `instagram_content_publish`). Sem vínculo ou sem token → não pronto, com o
  * passo que destrava: nunca cai em silêncio na conta da diar.ia.br.
