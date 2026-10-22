@@ -1237,3 +1237,34 @@ describe("#10618 fatia 4 (review 2, item 5) — gh-pr-safe-edit rodado do worktr
     assert.equal(SAFE_EDIT_CONFIG_ROOT, ROOT);
   });
 });
+
+describe("#10618 fatia 4 (review 2, item 1) — comandos inline do Gate 2 com o repo do PR", () => {
+  const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
+  const RULE = /Colchetes `\[--issue \{ref\}\]`\/`\[--repo \{repo\}\]`\/`\[-R \{repo\}\]`/;
+
+  it("overnight: condição 1, condição 3, lock, merge e confirmação levam o placeholder", () => {
+    const s = read(".claude/skills/diaria-overnight/SKILL.md");
+    assert.match(s, RULE);
+    assert.match(s, /check-pr-checks-gate\.ts --pr \{N\} \[--issue \{ref\}\]`/);
+    assert.match(s, /check-pr-retido-gate\.ts --pr \{N\} \[--issue \{ref\}\]`/);
+    assert.match(s, /merge-lock-acquire --pr \{N\} \[--repo \{repo\}\]`/);
+    assert.match(s, /merge-lock-release --pr \{N\} \[--repo \{repo\}\]`/);
+    assert.match(s, /gh pr merge \{N\} \[-R \{repo\}\] --squash/);
+    assert.match(s, /gh pr view \{N\} \[-R \{repo\}\] --json state,mergedAt`/);
+    // nenhum comando inline de Gate 2 sobrou sem o placeholder
+    assert.doesNotMatch(s, /check-pr-checks-gate\.ts --pr \{N\}`/);
+    assert.doesNotMatch(s, /merge-lock-acquire --pr \{N\}`/);
+    assert.doesNotMatch(s, /gh pr merge \{N\} --squash/);
+  });
+
+  it("develop e contínuo: mesma regra e placeholders", () => {
+    const d = read(".claude/skills/diaria-develop/SKILL.md");
+    assert.match(d, RULE);
+    assert.match(d, /check-pr-checks-gate\.ts --pr \{N\} \[--issue \{ref\}\]`/);
+    assert.match(d, /merge-lock-acquire --pr \{N\} \[--repo \{repo\}\]`/);
+    assert.doesNotMatch(d, /merge-lock-acquire --pr \{N\}`/);
+    const c = read(".claude/skills/diaria-continuo/SKILL.md");
+    assert.match(c, RULE);
+    assert.match(c, /check-pr-retido-gate\.ts --pr \{N\} \[--issue \{ref\}\]`/);
+  });
+});

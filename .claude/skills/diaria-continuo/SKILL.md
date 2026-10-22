@@ -339,7 +339,8 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   degradação automática (bissecta até o piso se o lote vier vermelho).
 - **PR retida para o editor (#10278/#10294) — condição 3 do gate de merge,
   também aqui.** Antes de QUALQUER merge por esta skill (solo ou trem),
-  `npx tsx scripts/check-pr-retido-gate.ts --pr {N}` precisa sair `exit 0`.
+  `npx tsx scripts/check-pr-retido-gate.ts --pr {N} [--issue {ref}]` precisa sair `exit 0`.
+  **Colchetes `[--issue {ref}]`/`[--repo {repo}]`/`[-R {repo}]` (#10618, fatia 4):** usar SÓ quando o PR é de issue de OUTRO repo (`{ref}` = `owner/repo#N` da issue, `{repo}` = `owner/repo` dela — hoje `vjpixel/diaria-design`); PR do studio omite os colchetes (a chamada de sempre). Sem eles, os gates leem e o merge age no PR #N do studio.
   `exit 1` = label `retido-para-editor` (ou marcador
   `<!-- retido-para-editor -->` no corpo), aplicada por qualquer trilha: não
   mergear, comentar e seguir pra próxima unidade. `exit 3` = erro,
