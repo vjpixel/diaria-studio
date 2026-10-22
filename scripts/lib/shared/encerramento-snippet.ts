@@ -57,8 +57,24 @@ import {
  * anterior). Sempre o ÚLTIMO parágrafo da seção `PARA ENCERRAR`
  * (invariante do #3219/#3368, preservada).
  */
+export const SOCIAL_INVITE_PREFIX =
+  "Para acompanhar as 3 principais notícias de IA todos os dias, siga a";
+
 export const SOCIAL_INVITE =
-  `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}), [X](${DIARIA_X_URL}) ou [YouTube](${DIARIA_YOUTUBE_URL}).`;
+  `${SOCIAL_INVITE_PREFIX} **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}), [X](${DIARIA_X_URL}) ou [YouTube](${DIARIA_YOUTUBE_URL}).`;
+
+/**
+ * #10781: o parágrafo é o convite social? Casa pelo PREFIXO estável
+ * (`SOCIAL_INVITE_PREFIX`), não pela igualdade com a constante atual — toda
+ * edição costurada com uma versão anterior de `SOCIAL_INVITE` (ex.: antes do
+ * YouTube entrar na lista, #10761) tem o texto antigo em `02-reviewed.md` e
+ * perdia a caixa "painel" ao re-renderizar. Também aceita a redação legada
+ * "Agora que chegou…" (#1148).
+ */
+export function isSocialInviteParagraph(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith(SOCIAL_INVITE_PREFIX) || /^agora que chegou/i.test(t);
+}
 
 /**
  * Monta `{url}?utm_source=...&utm_medium=...&utm_campaign=...` a partir de um
