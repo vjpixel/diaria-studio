@@ -24,6 +24,8 @@ on:
       - 'scripts/lib/onboarding-form-contract.ts'
       # #10657: assinatura do link (mesmo HMAC do executor).
       - 'scripts/lib/onboarding-form-link-sig.ts'
+      # #10809: robots.txt próprio (helper compartilhado com os outros Workers).
+      - 'scripts/lib/shared/robots-txt.ts'
   workflow_dispatch:
 
 concurrency:
