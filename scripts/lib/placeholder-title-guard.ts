@@ -29,13 +29,36 @@
 const PLACEHOLDER_HIGHLIGHT_TITLE_RE =
   /^\((?:inbox|no title|sem t[ií]tulo|newsletter:.*)\)$/i;
 
+/**
+ * #10843: `<title>` de página-stub de redirect HTTP ("301 Moved Permanently",
+ * "302 Found", "Document moved", "Object moved", "Redirecting...") — o que
+ * sobra quando um fetcher parseia a resposta 3xx em vez de seguir o
+ * `Location`. Medido em 261019–261022: 39 artigos `newsletter_extracted` com
+ * esses títulos, 8 chegaram ao `01-approved` e um virou destaque ("Document
+ * moved", Voxtral 3, 261022). Fonte ÚNICA do padrão: `isPlaceholderHighlightTitle`
+ * (e por tabela topic-cluster, assemble-scored, dedup e o invariante
+ * `no-placeholder-title-highlights`) e `enrich-inbox-articles.ts` leem daqui.
+ * Âncoras `^...$`: só o título INTEIRO de stub casa — "Found: o modelo que..."
+ * ou "Redirecting the AI race" continuam títulos reais.
+ */
+const REDIRECT_STUB_TITLE_RE =
+  /^(?:\d{3}\s*[-:]?\s*)?(?:document moved|object moved|moved permanently|moved temporarily|moved|found|see other|temporary redirect|permanent redirect|redirect|redirecting(?:\s+to\s+\S+)?)\s*(?:\.{1,3}|…)?$/i;
+
+/** True se o título (trim) é o `<title>` de uma página-stub de redirect (#10843). */
+export function isRedirectStubTitle(title: string | null | undefined): boolean {
+  const t = (title ?? "").trim();
+  if (!t) return false;
+  return REDIRECT_STUB_TITLE_RE.test(t);
+}
+
 /** True se o título (trim) é vazio ou casa integralmente um padrão placeholder
  * conhecido — âncoras `^...$` evitam falso-positivo em título real que apenas
- * CONTÉM parênteses (ex: "GPT-5 (versão de pesquisa) chega em outubro"). */
+ * CONTÉM parênteses (ex: "GPT-5 (versão de pesquisa) chega em outubro").
+ * Inclui título de stub de redirect (#10843). */
 export function isPlaceholderHighlightTitle(title: string | null | undefined): boolean {
   const t = (title ?? "").trim();
   if (!t) return true;
-  return PLACEHOLDER_HIGHLIGHT_TITLE_RE.test(t);
+  return PLACEHOLDER_HIGHLIGHT_TITLE_RE.test(t) || isRedirectStubTitle(t);
 }
 
 /**
