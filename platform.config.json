@@ -273,6 +273,13 @@
       "instagram": true,
       "instagram_author_page": "vjpixel",
       "instagram_collaborators": ["diar.ia.br"],
+      "schedule": {
+        "rotation_times": ["12:00", "19:00"],
+        "rotation_start": "2026-10-22",
+        "rotation_end": "2026-11-04",
+        "default_time": "12:00",
+        "note": "#10831: horario proprio do vertical (o horizontal sai 06:00 com a newsletter). Teste de 2 semanas alternando rotation_times dia a dia (dias corridos) a partir de rotation_start, comparando as visualizacoes nas primeiras 24 h. Fora da janela vale default_time (12:00, o horario de 261022) ate o editor escolher o vencedor. Lido por scripts/lib/diaria/short-video.ts (resolveShortTime)."
+      },
       "note": "#10769: video curto (vertical) de cada edicao como Reels — scripts/publish-shorts.ts, skill /diaria-shorts. Decisao do editor 21/10/2026, revista em 22/10 (#10790): Reels todo dia nas paginas diar.ia.br e VJ Pixel (MemeLab saiu) (slugs de social.facebook.pages — o enabled de la e dos posts diarios e NAO vale aqui) + Instagram na conta pessoal do editor (@vjpixel, vinculada a pagina VJ pixel — instagram_author_page) com a diar.ia.br em collab (instagram_collaborators). Perfil pessoal e YouTube Shorts sao destinos guiados fixos no codigo (listShortDestinations), nao configuraveis aqui: a Graph API nao publica em perfil e o YouTube trava em private sem a auditoria do GCP (#10659). Jandig, Teatro vs Game e Criaturas Afetivas ficam fora da rotina, so quando o editor pedir. Teste de 2 semanas a partir de 261022: manter so os destinos que trouxerem gente pro canal."
     },
     "social": {

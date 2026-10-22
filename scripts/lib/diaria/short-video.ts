@@ -8,15 +8,20 @@
  *
  * Decisões do editor que este módulo codifica (#10769, 21-22/10/2026):
  *   - objetivo é levar gente pro canal do YouTube (@diariabr) — o CTA aponta
- *     pro canal; o link da edição vai na legenda do Facebook e no comentário
- *     fixado do Shorts (no Instagram, "link da bio");
- *   - Reels TODO DIA nas páginas diar.ia.br, VJ Pixel e MemeLab e no perfil
- *     pessoal do editor. Jandig, Teatro vs Game e Criaturas Afetivas ficam fora
+ *     pro canal; o link da edição vai na legenda do Facebook (no Instagram,
+ *     "link da bio");
+ *   - Reels TODO DIA nas páginas diar.ia.br e VJ Pixel (MemeLab saiu, #10790)
+ *     e no perfil pessoal do editor. Jandig, Teatro vs Game e Criaturas Afetivas ficam fora
  *     da rotina — só quando o editor pedir, nunca automático;
  *   - YouTube Shorts: título `{D1} #Shorts`, descrição curta, vídeo
- *     relacionado = o longo da edição, e o link da edição num comentário FIXADO
- *     (link na descrição de Short não é clicável) — fluxo validado à mão no 1º
- *     Short, https://youtube.com/shorts/nhMUtgPPs4U.
+ *     relacionado = o longo da edição — fluxo validado à mão no 1º Short,
+ *     https://youtube.com/shorts/nhMUtgPPs4U. SEM comentário fixado (#10831):
+ *     desde 2023 link em descrição E em comentário de Short não é clicável; o
+ *     único caminho clicável é o vídeo relacionado, vinculado depois que o
+ *     horizontal publica (#10811);
+ *   - horário próprio do vertical (#10831): o horizontal sai às 06:00 junto da
+ *     newsletter; o vertical sai num teste de 2 semanas alternando 12:00 e
+ *     19:00 BRT (`resolveShortTime`, config `publishing.shorts.schedule`).
  *
  * Por que YouTube Shorts e o perfil pessoal são passos GUIADOS (Chrome, com o
  * editor escolhendo o arquivo) e não API:
@@ -27,6 +32,7 @@
  */
 
 import { BEEHIIV_BASE_URL } from "../edition-url.ts";
+import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } from "../social-schedule-rotation.ts";
 import { YOUTUBE_TITLE_MAX_CHARS, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
@@ -84,11 +90,13 @@ export function withShortUtm(
   return u.toString();
 }
 
+/**
+ * Metadados do Short. Sem comentário fixado (#10831): link em comentário de
+ * Short não é clicável desde 2023 — o funil clicável é o vídeo relacionado.
+ */
 export interface YouTubeShortMetadata {
   title: string;
   description: string;
-  /** Texto do comentário a fixar (o link clicável do Short). */
-  pinnedComment: string;
 }
 
 /** Título `{D1} #Shorts`, truncando só o D1 se passar de 100 caracteres. */
@@ -101,7 +109,7 @@ export function buildYouTubeShortTitle(d1Title: string): string {
   return `${head}${suffix}`;
 }
 
-export function buildYouTubeShortMetadata(input: { aammdd: string; d1: ShortD1Input; editionUrl: string }): YouTubeShortMetadata {
+export function buildYouTubeShortMetadata(input: { d1: ShortD1Input }): YouTubeShortMetadata {
   if (!input.d1.title.trim()) throw new Error("D1 sem título");
   const hook = sanitizeForYouTube(firstSentence(input.d1.body));
   const description = [
@@ -113,12 +121,7 @@ export function buildYouTubeShortMetadata(input: { aammdd: string; d1: ShortD1In
     .filter((l, i) => i > 0 || l)
     .join("\n")
     .trim();
-  const editionLink = withShortUtm(input.editionUrl, { source: "youtube", medium: "shorts", campaign: input.aammdd });
-  return {
-    title: buildYouTubeShortTitle(input.d1.title),
-    description,
-    pinnedComment: `Leia a edição completa: ${editionLink}`,
-  };
+  return { title: buildYouTubeShortTitle(input.d1.title), description };
 }
 
 export type ReelsPlatform = "facebook" | "instagram";
@@ -300,9 +303,93 @@ export function parseShortsPublishedFile(raw: string, aammdd: string, where = SH
 }
 
 /**
- * Horário do Reels no Facebook: mesmo alvo do vídeo longo (06:00 BRT do dia
- * da edição), mas com piso de 10 min — o Facebook só aceita agendar de 10 min
- * a 75 dias à frente. Com menos de 10 min de folga (ou já passado), na hora.
+ * Horário do vertical (#10831). O horizontal sai às 06:00 BRT junto da
+ * newsletter; o vertical sai em horário PRÓPRIO, num teste de 2 semanas que
+ * alterna `rotation_times` dia a dia a partir de `rotation_start` (261022 saiu
+ * às 12:00, à mão), comparando as visualizações nas primeiras 24 h. Fora da
+ * janela `[rotation_start, rotation_end]` vale `default_time`.
+ *
+ * Premissas registradas (não documentadas na decisão do editor):
+ *   - o horário vale pro vertical em TODOS os destinos (Shorts, Reels das
+ *     páginas, Instagram, perfil) — em 261022 "tudo foi ajustado à mão pra 12:00";
+ *   - a alternância conta dias CORRIDOS, não edições publicadas: dia sem
+ *     edição não desloca o horário dos seguintes (plano reconstruível);
+ *   - fora da janela, `default_time` = 12:00 (o horário de 261022) até o
+ *     editor decidir o vencedor do teste e mudar o config.
+ *
+ * A regra de grade da #10819 (alinhar com o que já está agendado em outras
+ * contas / espaçar na mesma conta) ainda não existe; quando existir, ela
+ * ajusta este horário.
+ */
+export interface ShortScheduleConfig {
+  rotationTimes: string[];
+  rotationStart: CivilDate;
+  /** Inclusivo. `null` = sem fim. */
+  rotationEnd: CivilDate | null;
+  defaultTime: string;
+}
+
+const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+/** Decisão do editor de 22/10/2026 (#10831): 2 semanas alternando 12:00/19:00 a partir de 261022. */
+export const DEFAULT_SHORT_SCHEDULE_RAW = Object.freeze({
+  rotation_times: Object.freeze(["12:00", "19:00"]),
+  rotation_start: "2026-10-22",
+  rotation_end: "2026-11-04",
+  default_time: "12:00",
+});
+
+/** Lê `publishing.shorts.schedule`; ausente → default (#10831). Malformado LANÇA (estragaria o teste em silêncio). */
+export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
+  const raw = (config as any)?.publishing?.shorts?.schedule ?? DEFAULT_SHORT_SCHEDULE_RAW;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("[shorts] publishing.shorts.schedule precisa ser um objeto (#10831).");
+  }
+  const times = raw.rotation_times;
+  if (!Array.isArray(times) || !times.length || times.some((t: unknown) => typeof t !== "string" || !HHMM_RE.test(t))) {
+    throw new Error("[shorts] publishing.shorts.schedule.rotation_times precisa ser uma lista não vazia de HH:MM (#10831).");
+  }
+  if (typeof raw.default_time !== "string" || !HHMM_RE.test(raw.default_time)) {
+    throw new Error("[shorts] publishing.shorts.schedule.default_time precisa ser HH:MM (#10831).");
+  }
+  if (typeof raw.rotation_start !== "string") throw new Error("[shorts] publishing.shorts.schedule.rotation_start precisa ser AAAA-MM-DD (#10831).");
+  const start = parseIsoCivilDate(raw.rotation_start, "publishing.shorts.schedule.rotation_start");
+  let end: CivilDate | null = null;
+  if (raw.rotation_end !== null && raw.rotation_end !== undefined) {
+    if (typeof raw.rotation_end !== "string") throw new Error("[shorts] publishing.shorts.schedule.rotation_end precisa ser AAAA-MM-DD ou null (#10831).");
+    end = parseIsoCivilDate(raw.rotation_end, "publishing.shorts.schedule.rotation_end");
+    if (civilDayNumber(end) < civilDayNumber(start)) throw new Error("[shorts] publishing.shorts.schedule.rotation_end antes de rotation_start.");
+  }
+  return { rotationTimes: [...times], rotationStart: start, rotationEnd: end, defaultTime: raw.default_time };
+}
+
+export interface ShortTime {
+  /** HH:MM em BRT, no dia da edição. */
+  hhmm: string;
+  source: "rotation" | "default";
+  /** Explicação curta pra premissa do plano. */
+  reason: string;
+}
+
+/** Pure: horário (BRT) do vertical da edição `AAMMDD` (#10831). */
+export function resolveShortTime(sched: ShortScheduleConfig, aammdd: string): ShortTime {
+  const m = /^(\d{2})(\d{2})(\d{2})$/.exec(aammdd);
+  if (!m) throw new Error(`AAMMDD inválido: ${JSON.stringify(aammdd)}`);
+  const date = parseIsoCivilDate(`20${m[1]}-${m[2]}-${m[3]}`, "data da edição");
+  const day = civilDayNumber(date);
+  const start = civilDayNumber(sched.rotationStart);
+  const inWindow = day >= start && (sched.rotationEnd === null || day <= civilDayNumber(sched.rotationEnd));
+  if (!inWindow) {
+    return { hhmm: sched.defaultTime, source: "default", reason: `fora do teste de horário (${formatCivilDate(sched.rotationStart)} a ${sched.rotationEnd ? formatCivilDate(sched.rotationEnd) : "sem fim"}) — horário fixo` };
+  }
+  const k = day - start;
+  const hhmm = sched.rotationTimes[k % sched.rotationTimes.length];
+  return { hhmm, source: "rotation", reason: `teste de horário do vertical, dia ${k + 1} (alterna ${sched.rotationTimes.join("/")})` };
+}
+
+/**
+ * Agendar ou publicar já: o Facebook só aceita agendar de 10 min a 75 dias à
+ * frente. Com menos de 10 min de folga (ou já passado), na hora.
  */
 export function resolveReelsSchedule(targetIso: string, now: Date): { mode: "scheduled"; at: string } | { mode: "immediate" } {
   const t = Date.parse(targetIso);

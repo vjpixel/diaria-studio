@@ -24,21 +24,29 @@
  *     liga os posts diários da página, não o Reels. Página sem credencial =
  *     aviso e segue (rode `scripts/facebook-page-token-setup.ts`). Até 90 s
  *     sobe por `video_reels`; acima disso (a API de Reels recusa), por
- *     `/{page-id}/videos` — vídeo vertical aparece como Reel.
+ *     `/{page-id}/videos` em upload RESUMABLE (start/transfer/finish, #10815:
+ *     o POST único dava 413 com o vertical de 275 MB) — vídeo vertical aparece
+ *     como Reel.
  *   - `instagram` (API) — Reels no Instagram. Autora: a conta do Instagram
  *     vinculada à página `publishing.shorts.instagram_author_page` (#10790:
  *     conta pessoal do editor, ligada à página VJ pixel, publicando com o
  *     token dessa página); `null` = conta da diar.ia.br
  *     (`INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN`). Contas de
- *     `instagram_collaborators` entram como collab (aceitam o convite no app).
+ *     `instagram_collaborators` entram como collab (aceitam o convite no app);
+ *     depois do publish o script relê os collaborators da mídia e avisa se o
+ *     convite foi descartado (#10820). No dry-run confere também se o token da
+ *     página tem `instagram_content_publish` (#10820).
  *   - `youtube_shorts` e `facebook_profile` (guiados) — o JSON traz título,
- *     descrição, comentário fixado e legenda; o skill `/diaria-shorts` executa
- *     no Chrome e grava com `--mark`.
+ *     descrição, horário e legenda; o skill `/diaria-shorts` executa no Chrome
+ *     e grava com `--mark`. Sem comentário fixado: link em comentário de Short
+ *     não é clicável (#10831).
  *
- * Horário: 06:00 BRT do dia da edição com pelo menos 10 min de folga (o
- * Facebook agenda; a folga é reconferida antes de cada página); senão publica
- * na hora. O Instagram não agenda Reels pela API — com horário futuro ele fica
- * pendente até rodar de novo depois das 06:00 (ou `--now`).
+ * Horário (#10831): o do vertical, `resolveShortTime` — teste de 2 semanas
+ * alternando 12:00/19:00 BRT a partir de 261022 (`publishing.shorts.schedule`),
+ * nunca as 06:00 do horizontal. Com pelo menos 10 min de folga o Facebook
+ * agenda (a folga é reconferida antes de cada página); senão publica na hora.
+ * O Instagram não agenda Reels pela API — com horário futuro ele fica pendente
+ * até rodar de novo depois do horário (ou `--now`).
  *
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
  * Stage 5) > slug derivado do título do D1 (aviso).
@@ -73,15 +81,19 @@ import {
   isDestinationDone,
   knownDestinationIds,
   listShortDestinations,
+  loadShortScheduleConfig,
   loadShortsConfig,
   mp4DurationSeconds,
   parseShortsPublishedFile,
   resolveReelsSchedule,
+  resolveShortTime,
   shortVideoFileName,
   upsertShortEntry,
   type ShortDestination,
   type ShortPublishedEntry,
+  type ShortsConfig,
   type ShortsPublishedFile,
+  type ShortTime,
   type YouTubeShortMetadata,
 } from "./lib/diaria/short-video.ts";
 import { youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
@@ -109,6 +121,8 @@ export interface ShortsPlan {
   video: { path: string; exists: boolean; sizeBytes: number | null };
   longVideo: string;
   youtube: YouTubeShortMetadata;
+  /** Horário do vertical (#10831): HH:MM BRT, ISO no dia da edição, de onde veio. */
+  shortTime: ShortTime & { at: string };
   items: ShortsPlanItem[];
   premises: string[];
   warnings: string[];
@@ -123,6 +137,8 @@ export interface ShortsPlanInput {
   instagramReady: boolean;
   /** Por que o Instagram não está pronto (vira o aviso do plano). */
   instagramNotReadyReason?: string;
+  /** Avisos do Instagram pronto mas não totalmente conferido (ex.: escopo do token, #10820). */
+  instagramWarnings?: string[];
   published: ShortsPublishedFile;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   editionUrl?: string;
@@ -146,17 +162,19 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     warnings.push(`link da edição derivado do slug do título do D1: ${editionUrl} — confira; passe --edition-url se o publicado divergir`);
   }
   const d1In = { title: d1.title, body: d1.body };
-  const youtube = buildYouTubeShortMetadata({ aammdd: input.aammdd, d1: d1In, editionUrl });
+  const youtube = buildYouTubeShortMetadata({ d1: d1In });
 
-  const schedule = input.forceNow
-    ? ({ mode: "immediate" } as const)
-    : resolveReelsSchedule(resolveEditionScheduledAt(input.aammdd), input.now);
+  // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
+  const time = resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
+  const shortTime = { ...time, at: resolveEditionScheduledAt(input.aammdd, time.hhmm) };
+  premises.push(`horário do vertical: ${time.hhmm} BRT (${time.reason})`);
+  const schedule = input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(shortTime.at, input.now);
   premises.push(
     schedule.mode === "scheduled"
-      ? `Reels do Facebook agendado para ${schedule.at} (06:00 BRT do dia da edição); Instagram fica pendente até lá`
+      ? `Reels do Facebook agendado para ${schedule.at} (${time.hhmm} BRT do dia da edição); Instagram fica pendente até lá`
       : input.forceNow
         ? "--now: publica na hora"
-        : "06:00 BRT do dia da edição já passou (ou falta <10 min) — publica na hora",
+        : `${time.hhmm} BRT do dia da edição já passou (ou falta <10 min) — publica na hora`,
   );
   if (!input.video.exists) warnings.push(`vídeo curto ausente em ${input.video.path} — nada a publicar até ele existir`);
 
@@ -165,6 +183,10 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (!input.pages.some((p) => p.slug === slug)) {
       throw new Error(`publishing.shorts.facebook_pages: página "${slug}" não existe em publishing.social.facebook.pages`);
     }
+  }
+  // #10820: mesmo tratamento do facebook_pages — slug inválido é erro de config, não aviso de runtime.
+  if (cfg.instagram && cfg.instagramAuthorPage !== null && !input.pages.some((p) => p.slug === cfg.instagramAuthorPage)) {
+    throw new Error(`publishing.shorts.instagram_author_page: página "${cfg.instagramAuthorPage}" não existe em publishing.social.facebook.pages`);
   }
   const known = knownDestinationIds(cfg);
   const only = input.only && input.only.length ? new Set(input.only) : null;
@@ -210,6 +232,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       };
     }
     // instagram
+    for (const w of input.instagramWarnings ?? []) warnings.push(`instagram: ${w}`);
     if (!input.instagramReady) {
       warnings.push(`instagram: ${input.instagramNotReadyReason ?? "sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN"}`);
       return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: input.instagramNotReadyReason ?? "INSTAGRAM_*" };
@@ -229,13 +252,24 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         action: "pending_schedule",
         caption,
         scheduledAt: schedule.at,
-        detail: "o Instagram não agenda Reels pela API — rode de novo depois das 06:00 BRT (ou use --now)",
+        detail: `o Instagram não agenda Reels pela API — rode de novo depois das ${time.hhmm} BRT (ou use --now)`,
       };
     }
     return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
   }
 
-  return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, items, premises, warnings };
+  return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, items, premises, warnings };
+}
+
+/**
+ * Pure (#10820): esta rodada precisa resolver a autora do Instagram? Não quando
+ * o Instagram está desligado, fora do `--only`, ou já registrado (skip_done) —
+ * aí a resolução seria só uma chamada à Graph (e um aviso) à toa.
+ */
+export function wantsInstagram(cfg: Pick<ShortsConfig, "instagram">, only: string[] | null, published: ShortsPublishedFile): boolean {
+  if (!cfg.instagram) return false;
+  if (only && only.length && !only.includes("instagram")) return false;
+  return !isDestinationDone(published, "instagram");
 }
 
 // ── Graph API ────────────────────────────────────────────────────────────────
@@ -320,9 +354,76 @@ export interface PublishOutcome {
   entry: ShortPublishedEntry;
   /** true quando o processamento não foi confirmado no tempo de espera. */
   unconfirmed?: boolean;
+  /** Avisos pós-publicação (ex.: convite de collab descartado, #10820). */
+  warnings?: string[];
 }
 
-/** Reels numa Página. ≤90 s: `video_reels` (start → rupload → finish). >90 s: `/videos` multipart. */
+/** Teto de blocos do upload resumable — só existe pra nunca virar loop infinito (o servidor dita o tamanho do bloco). */
+const FACEBOOK_RESUMABLE_MAX_CHUNKS = 10_000;
+/** Tentativas por bloco no `transfer` (falha transitória não joga fora o que já subiu). */
+const FACEBOOK_RESUMABLE_CHUNK_ATTEMPTS = 3;
+
+/**
+ * Upload RESUMABLE em `/{page-id}/videos` (#10815): `start` (tamanho) →
+ * `transfer` dos blocos que o servidor pedir (offsets devolvidos a cada
+ * resposta) → `finish` com legenda e agendamento. Substitui o POST único,
+ * que dava `413` com o vertical exportado (275 MB em 261022). Devolve o
+ * `video_id`.
+ */
+export async function uploadFacebookVideoResumable(
+  deps: GraphDeps,
+  page: ResolvedFacebookPage,
+  apiVersion: string,
+  file: Buffer,
+  caption: string,
+  scheduledAt: string | null,
+): Promise<string> {
+  const path = `${page.pageId}/videos`;
+  const start = await graphPost(deps, path, { upload_phase: "start", file_size: String(file.length), access_token: page.token }, apiVersion, GRAPH_VIDEO);
+  const sessionId: string | undefined = start.upload_session_id;
+  const videoId: string | undefined = start.video_id;
+  if (!sessionId || !videoId) throw new Error(`POST ${path} (start) sem upload_session_id/video_id: ${JSON.stringify(start)}`);
+  let from = Number(start.start_offset);
+  let to = Number(start.end_offset);
+  for (let chunk = 0; from < file.length; chunk++) {
+    if (chunk >= FACEBOOK_RESUMABLE_MAX_CHUNKS) throw new Error(`POST ${path} (transfer): mais de ${FACEBOOK_RESUMABLE_MAX_CHUNKS} blocos — abortado`);
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to <= from || to > file.length) {
+      throw new Error(`POST ${path} (transfer): offsets inválidos do servidor (start ${from}, end ${to}, arquivo ${file.length})`);
+    }
+    let json: any;
+    for (let attempt = 1; ; attempt++) {
+      const form = new FormData();
+      form.append("access_token", page.token);
+      form.append("upload_phase", "transfer");
+      form.append("upload_session_id", sessionId);
+      form.append("start_offset", String(from));
+      form.append("video_file_chunk", new Blob([new Uint8Array(file.subarray(from, to))], { type: "application/octet-stream" }), "chunk");
+      const res = await deps.fetch(`${GRAPH_VIDEO}/${apiVersion}/${path}`, { method: "POST", body: form });
+      json = await readJson(res);
+      if (res.ok && !json.error) break;
+      const msg = `POST ${path} (transfer ${from}-${to}): ${res.status} ${JSON.stringify(json.error ?? json)}`;
+      if (attempt >= FACEBOOK_RESUMABLE_CHUNK_ATTEMPTS) throw new Error(msg);
+      deps.log(`[aviso] ${msg} — tentando o bloco de novo (${attempt}/${FACEBOOK_RESUMABLE_CHUNK_ATTEMPTS})`);
+      await deps.sleep(5_000);
+    }
+    const next = Number(json.start_offset);
+    if (!Number.isInteger(next) || next <= from) {
+      throw new Error(`POST ${path} (transfer): o upload não avançou (start ${from} → ${json.start_offset})`);
+    }
+    from = next;
+    to = Number(json.end_offset);
+  }
+  const finish: Record<string, string> = { upload_phase: "finish", upload_session_id: sessionId, description: caption, access_token: page.token };
+  if (scheduledAt) {
+    finish.published = "false";
+    finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
+  }
+  const done = await graphPost(deps, path, finish, apiVersion, GRAPH_VIDEO);
+  if (done.success !== true) throw new Error(`POST ${path} (finish) sem success: ${JSON.stringify(done)}`);
+  return videoId;
+}
+
+/** Reels numa Página. ≤90 s: `video_reels` (start → rupload → finish). >90 s: `/videos` resumable (#10815). */
 export async function publishFacebookReel(
   deps: GraphDeps,
   page: ResolvedFacebookPage,
@@ -351,18 +452,7 @@ export async function publishFacebookReel(
     const done = await graphPost(deps, `${page.pageId}/video_reels`, finish, apiVersion);
     if (done.success !== true) throw new Error(`video_reels finish sem success: ${JSON.stringify(done)}`);
   } else {
-    const form = new FormData();
-    form.append("access_token", page.token);
-    form.append("description", caption);
-    if (scheduledAt) {
-      form.append("published", "false");
-      form.append("scheduled_publish_time", String(Math.floor(Date.parse(scheduledAt) / 1000)));
-    }
-    form.append("source", new Blob([new Uint8Array(file)], { type: "video/mp4" }), "short.mp4");
-    const res = await deps.fetch(`${GRAPH_VIDEO}/${apiVersion}/${page.pageId}/videos`, { method: "POST", body: form });
-    const json = await readJson(res);
-    if (!res.ok || json.error || !json.id) throw new Error(`POST ${page.pageId}/videos: ${res.status} ${JSON.stringify(json.error ?? json)}`);
-    videoId = json.id;
+    videoId = await uploadFacebookVideoResumable(deps, page, apiVersion, file, caption, scheduledAt);
   }
 
   const confirmed = await waitFacebookProcessing(deps, videoId, page.token, apiVersion);
@@ -381,8 +471,27 @@ export async function publishFacebookReel(
 
 /** Autora do Reels no Instagram, resolvida pra uma conta + token (#10790). */
 export type InstagramAuthor =
-  | { ready: true; igUserId: string; token: string; username: string | null; source: string }
+  | { ready: true; igUserId: string; token: string; username: string | null; source: string; warnings?: string[] }
   | { ready: false; reason: string };
+
+/** Escopo que o token da página precisa pra publicar no Instagram vinculado. */
+export const INSTAGRAM_PUBLISH_SCOPE = "instagram_content_publish";
+
+/**
+ * Escopos do token via `debug_token` (#10820). `error` = não deu pra conferir
+ * (erro da Graph ou resposta sem `scopes`): o caller avisa e segue, porque
+ * recusar aí bloquearia um token válido por falha de leitura.
+ */
+async function readTokenScopes(deps: Pick<GraphDeps, "fetch">, token: string, apiVersion: string): Promise<{ scopes: string[] } | { error: string }> {
+  try {
+    const json = await graphGet(deps as GraphDeps, "debug_token", { input_token: token, access_token: token }, apiVersion);
+    const scopes = json?.data?.scopes;
+    if (!Array.isArray(scopes)) return { error: "debug_token sem lista de escopos" };
+    return { scopes: scopes.filter((x: unknown): x is string => typeof x === "string") };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
 
 /**
  * Resolve a conta do Instagram que publica o Reels (faz um GET na Graph, inclusive no
@@ -404,7 +513,7 @@ export async function resolveInstagramAuthor(
   }
   const page = pages.find((p) => p.slug === authorPage);
   if (!page) return { ready: false, reason: `instagram_author_page "${authorPage}" não existe em publishing.social.facebook.pages` };
-  if (page.missing.length || !page.token) {
+  if (page.missing.length || !page.token || !page.pageId) {
     return { ready: false, reason: `página ${authorPage} sem credencial (${page.missing.join(", ")}) — rode scripts/facebook-page-token-setup.ts --pages ${authorPage}` };
   }
   let json: any;
@@ -423,7 +532,29 @@ export async function resolveInstagramAuthor(
         `(scripts/facebook-page-token-setup.ts --pages ${authorPage})`,
     };
   }
-  return { ready: true, igUserId: ig.id, token: page.token, username: ig.username ?? null, source: `conta vinculada à página ${authorPage}` };
+  // #10820: ler a conta vinculada não prova que o token PUBLICA — sem o escopo, a falha só apareceria no --publish.
+  const scopeCheck = await readTokenScopes(deps, page.token, apiVersion);
+  const warnings: string[] = [];
+  if ("scopes" in scopeCheck) {
+    if (!scopeCheck.scopes.includes(INSTAGRAM_PUBLISH_SCOPE)) {
+      return {
+        ready: false,
+        reason:
+          `o token da página ${authorPage} lê a conta vinculada mas não tem o escopo ${INSTAGRAM_PUBLISH_SCOPE} — ` +
+          `gere de novo com esse escopo (scripts/facebook-page-token-setup.ts --pages ${authorPage})`,
+      };
+    }
+  } else {
+    warnings.push(`não deu pra conferir se o token da página ${authorPage} tem ${INSTAGRAM_PUBLISH_SCOPE} (${scopeCheck.error}) — a falha, se houver, aparece no --publish`);
+  }
+  return {
+    ready: true,
+    igUserId: ig.id,
+    token: page.token,
+    username: ig.username ?? null,
+    source: `conta vinculada à página ${authorPage}`,
+    ...(warnings.length ? { warnings } : {}),
+  };
 }
 
 /** Reels no Instagram: container resumable → rupload → espera FINISHED → media_publish. */
@@ -469,7 +600,35 @@ export async function publishInstagramReel(
   } catch (e) {
     deps.log(`[aviso] instagram: permalink indisponível (${(e as Error).message}) — o id ${pub.id} identifica o Reels`);
   }
-  return { entry: { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: deps.now().toISOString() } };
+  const warnings = collaborators.length ? await checkInstagramCollaborators(deps, pub.id, token, apiVersion, collaborators) : [];
+  return {
+    entry: { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: deps.now().toISOString() },
+    ...(warnings.length ? { warnings } : {}),
+  };
+}
+
+/**
+ * Relê os collaborators da mídia publicada (#10820): o Instagram pode descartar
+ * o convite sem erro no `media_publish` (conta inexistente, conta que não
+ * aceita collab). Nunca lança — o Reels já está no ar; devolve avisos.
+ */
+export async function checkInstagramCollaborators(
+  deps: Pick<GraphDeps, "fetch">,
+  mediaId: string,
+  token: string,
+  apiVersion: string,
+  expected: string[],
+): Promise<string[]> {
+  let json: any;
+  try {
+    json = await graphGet(deps as GraphDeps, `${mediaId}/collaborators`, { fields: "username,invite_status", access_token: token }, apiVersion);
+  } catch (e) {
+    return [`não deu pra conferir o convite de collab (${(e as Error).message}) — confira no app`];
+  }
+  if (!Array.isArray(json?.data)) return ["resposta de collaborators sem lista — confira o convite de collab no app"];
+  const found = new Set(json.data.map((c: any) => String(c?.username ?? "").toLowerCase()));
+  const missing = expected.filter((u) => !found.has(u.toLowerCase()));
+  return missing.length ? [`convite de collab descartado pelo Instagram: ${missing.map((u) => `@${u}`).join(", ")} — convide à mão no app`] : [];
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
@@ -577,8 +736,7 @@ async function main(): Promise<number> {
     return 2;
   }
   const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
-  const wantsInstagram = shortsCfg.instagram && (!onlyList || onlyList.includes("instagram"));
-  const igAuthor: InstagramAuthor = wantsInstagram
+  const igAuthor: InstagramAuthor = wantsInstagram(shortsCfg, onlyList, published)
     ? await resolveInstagramAuthor(defaultGraphDeps, shortsCfg.instagramAuthorPage, pages, igApiVersion, {
         igUserId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
         token: process.env.INSTAGRAM_ACCESS_TOKEN ?? "",
@@ -600,6 +758,7 @@ async function main(): Promise<number> {
       pages,
       instagramReady: igAuthor.ready,
       instagramNotReadyReason: igAuthor.ready ? undefined : igAuthor.reason,
+      instagramWarnings: igAuthor.ready ? igAuthor.warnings : undefined,
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
       editionUrl: editionUrlIn.url,
@@ -627,7 +786,7 @@ async function main(): Promise<number> {
   const duration = mp4DurationSeconds(file);
   console.error(`[premissa] duração ${duration === null ? "desconhecida" : `${duration.toFixed(1)} s`} → Facebook via ${facebookUploadRoute(duration)}`);
   const deps = defaultGraphDeps;
-  const results: Array<{ destination: string; ok: boolean; entry?: ShortPublishedEntry; unconfirmed?: boolean; error?: string }> = [];
+  const results: Array<{ destination: string; ok: boolean; entry?: ShortPublishedEntry; unconfirmed?: boolean; warnings?: string[]; error?: string }> = [];
   for (const item of plan.items) {
     if (item.action !== "publish") continue;
     let outcome: PublishOutcome;
@@ -658,8 +817,9 @@ async function main(): Promise<number> {
       results.push({ destination: item.destination, ok: false, entry, error: `registro não gravado: ${(e as Error).message}` });
       continue;
     }
-    results.push({ destination: item.destination, ok: true, entry, unconfirmed });
+    results.push({ destination: item.destination, ok: true, entry, unconfirmed, ...(outcome.warnings?.length ? { warnings: outcome.warnings } : {}) });
     console.error(`[ok] ${item.destination}: ${entry.status} ${entry.url ?? entry.id}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
+    for (const w of outcome.warnings ?? []) console.error(`[aviso] ${item.destination}: ${w}`);
   }
   const summary = {
     published: results.filter((r) => r.ok).length,
