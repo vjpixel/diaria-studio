@@ -39,6 +39,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
+import { partitionStudioPlanEntries } from "./lib/plan-issue-ref.ts";
 import {
   checkDevelopLabelCleared,
   isWorkFinished,
@@ -135,6 +136,19 @@ function main(): void {
     process.exitCode = 2;
     return;
   }
+
+  // #10778: este gate só consulta o diaria-studio (`gh issue view N` sem
+  // `-R`). Entrada de outro repo (`"vjpixel/diaria-design#21"` normaliza pra
+  // `number: 21`) consultaria a studio#21 e daria veredito sobre a issue
+  // errada — fica de fora, com aviso explícito.
+  const { studio, skipped } = partitionStudioPlanEntries(planIssues);
+  if (skipped.length > 0) {
+    process.stderr.write(
+      `${LOG_PREFIX} ${skipped.length} entrada(s) de outro repo (ou identidade desconhecida) FORA deste gate, ` +
+        `que só consulta o diaria-studio: ${skipped.join(", ")}\n`,
+    );
+  }
+  planIssues = studio;
 
   // Só as issues que ESTA sessão terminou entram no veredito — as demais o
   // gate ignora por design. Buscar as outras seria trabalho jogado fora E

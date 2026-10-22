@@ -77,6 +77,7 @@ import {
 } from "./lib/block-staleness.ts";
 import { isIssueClaimedByActiveSession, listActiveSessions } from "./lib/session-registry.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
+import { partitionStudioPlanEntries } from "./lib/plan-issue-ref.ts";
 import { flattenClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-staleness.ts";
 
 /** Monta um consultor real, apoiado em `gh` (PR state + labels) e
@@ -242,9 +243,19 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  const issues = normalizeIssues<BlockStalenessPlanIssue>(
-    planRaw as IssuesBearing<BlockStalenessPlanIssue>,
+  // #10778: o consultor real só conhece o diaria-studio (`gh issue view N`
+  // sem `-R`, claims por número). Entrada de outro repo
+  // (`"vjpixel/diaria-design#21"` normaliza pra `number: 21`) seria checada
+  // contra a studio#21 — fica de fora, com aviso explícito.
+  const { studio: issues, skipped } = partitionStudioPlanEntries(
+    normalizeIssues<BlockStalenessPlanIssue>(planRaw as IssuesBearing<BlockStalenessPlanIssue>),
   );
+  if (skipped.length > 0) {
+    console.error(
+      `[check-block-staleness] ${skipped.length} entrada(s) de outro repo (ou identidade desconhecida) FORA ` +
+        `desta checagem, que só consulta o diaria-studio: ${skipped.join(", ")}`,
+    );
+  }
 
   const repoRoot = process.cwd();
   const consultor = buildRealConsultor(repoRoot);

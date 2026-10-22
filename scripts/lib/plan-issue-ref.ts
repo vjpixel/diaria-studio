@@ -57,3 +57,27 @@ export function isForeignPlanEntry(entry: unknown): boolean {
   const ref = planEntryRef(entry);
   return ref !== null && ref.repo !== DEFAULT_ISSUE_REPO;
 }
+
+/**
+ * Separa as entradas do `plan.json` que são inequivocamente do repo default
+ * (`vjpixel/diaria-studio`) das demais (#10778). Gates que só sabem consultar
+ * o diaria-studio por número (`gh issue view N` sem `-R`, claims por número)
+ * passam por aqui ANTES de consultar: desde a fatia 2 do #10618 uma entrada
+ * `"vjpixel/diaria-design#21"` normaliza pra `number: 21`, e consultar esse
+ * número no cwd devolveria o estado da studio#21 — veredito errado em
+ * silêncio. `skipped` traz a identidade de cada entrada descartada
+ * (`owner/repo#N`, ou `"(identidade desconhecida)"`) pro chamador avisar em
+ * stderr; descartar sem avisar trocaria um veredito errado por um veredito
+ * incompleto igualmente silencioso.
+ *
+ * Pura — nenhum I/O.
+ */
+export function partitionStudioPlanEntries<T>(entries: readonly T[]): { studio: T[]; skipped: string[] } {
+  const studio: T[] = [];
+  const skipped: string[] = [];
+  for (const entry of entries) {
+    if (studioNumberOfPlanEntry(entry) !== null) studio.push(entry);
+    else skipped.push(planEntryKey(entry) ?? "(identidade desconhecida)");
+  }
+  return { studio, skipped };
+}
