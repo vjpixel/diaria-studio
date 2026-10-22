@@ -1360,6 +1360,23 @@ describe("runStage1 --phase post-select-render", () => {
     });
   });
 
+  it("#10792: mérito fora do top-3 aparece antes do gate sem bloquear", async () => {
+    return withTmpRoot("stage-1-run-top3-merit-", (root, editionDir) => {
+      seedScored(root, editionDir);
+      writeJson(root, "selection.json", {});
+      const { exec } = makeFakeExec(happyHandlers({
+        "check-invariants.ts": (args) => args.includes("top3-merit-warning")
+          ? ok(JSON.stringify({ passed: true, violations: [{ message: "Item fora do top-3: pesquisa (92)" }] }))
+          : ok(),
+      }));
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-select-render", "--edition", "260423", "--selection-json", "selection.json"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(result.notes.some(n => n.includes("Item fora do top-3: pesquisa (92)")));
+      });
+    });
+  });
+
   it("check-invariants categorized-has-eia-section exit 1 -> HALT (code 2)", async () => {
     return withTmpRoot("stage-1-run-p4-invariants-", (root, editionDir) => {
       seedScored(root, editionDir);

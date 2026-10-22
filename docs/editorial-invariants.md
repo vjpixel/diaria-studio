@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 117 invariants.
+**Total**: 119 invariants.
 
 ## Static (estrutura do repo)
 
@@ -40,6 +40,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `no-missing-summary-highlights` | highlights[] nunca contém item com article.summary ausente/vazio (#5081) | #5081 |
 | `no-placeholder-title-highlights` | highlights[] nunca contém item com título placeholder não-enriquecido (#4102) | #4102 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
+| `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |
 | `url-matches-article-url` | url === article.url em todo item de highlights[] e runners_up[] (#4837, #4865) | #4837 |
 
 ## Stage 2 — Escrita
@@ -115,6 +116,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
 | `titulo-subtitulo-not-provisional` | TÍTULO/SUBTÍTULO não carrega o título provisório (da fonte) deixado pelo swap-destaque depois que o D{N} ganhou título final (#9601) | #9601 |
+| `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |
 | `truncated-secondary-item-summary` | descrição de item secundário não termina em reticências de truncamento (#2596) | #2596 |
 | `use-melhor-image-key-without-file` | 06-public-images.json com chave um_carousel_* de slide que não existe mais no disco — sobra de carrossel do 4º post com mais slides (#9795, warning-only) | #9795 |
 | `use-melhor-post-item-rendered` | item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — o 4º post seria pulado no Stage 5 (#9592, warning-only) | #9592 |

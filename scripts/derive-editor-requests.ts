@@ -581,7 +581,7 @@ export function classifyNewsletterDiff(
       requestType = "link-swap";
     } else if (section === "para-encerrar") {
       target = "newsletter";
-      requestType = "section-order";
+      requestType = "other"; // #10792: fechamento editado não é reordenação de destaques
     }
 
     // Tentar classificar melhor o tipo de mudança
