@@ -56,6 +56,12 @@ export function main(argv: string[], cwd: string, run: GhRunner = defaultRunner)
     console.error(`[sync-issue-labels] ${repo} está fora de platform.config.json → issue_repos; nada a sincronizar.`);
     return 2;
   }
+  // `--source` presente mas ilegível é erro de uso — nunca cai no default
+  // em silêncio (copiaria cor/descrição de um repo que ninguém pediu).
+  if (flags.has("source") || values.source === "" || (values.source !== undefined && !normalizeRepoSlug(values.source))) {
+    console.error(`[sync-issue-labels] --source inválido: "${values.source ?? ""}" (esperado owner/name)`);
+    return 2;
+  }
   const source = normalizeRepoSlug(values.source) ?? DEFAULT_ISSUE_REPO;
   const apply = flags.has("apply");
   if (apply && flags.has("dry-run")) {

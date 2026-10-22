@@ -65,6 +65,8 @@ import { attachClaims, clearTriageCache, fetchTriageData, parseIssues, type GhRu
 import { buildBeaconRecord } from "../.claude/hooks/session-beacon.mjs";
 import { planLabelSync, requiredIssueLabels } from "../scripts/lib/issue-label-sync.ts";
 import { resolvePrTargetRepo, resolveRepoFlag } from "../scripts/lib/issue-repos.ts";
+import { citesIssueNumber } from "../scripts/lib/issue-duplicate-preflight.ts";
+import { assessOpenPrCoverage } from "../scripts/lib/issue-open-pr-check.ts";
 import { main as syncLabelsMain, type GhRunner } from "../scripts/sync-issue-labels.ts";
 import { ROUTABLE_LABELS } from "../scripts/lib/issue-route.ts";
 
@@ -697,7 +699,7 @@ describe("#10618 fatia 4 (review H) — visão local nunca volta a ser a studio#
 
   it("checkDevelopLabelCleared: entrada do design fora de um grupo (sem a marca) nunca é avaliada como studio#N", () => {
     const r = checkDevelopLabelCleared(
-      [{ number: 21, ref: `${DESIGN}#21`, status: "mergeada" }],
+      [{ number: 21, ref: `${DESIGN}#21`, status: "mergeada" } as never],
       [{ number: 21, labels: ["windows"], body: "" }],
     );
     assert.equal(r.findings.length, 0);
@@ -1140,5 +1142,58 @@ describe("#10618 fatia 4 (review C/K/L) — prosa das skills", () => {
     }
     assert.doesNotMatch(rules, /repository\(owner: "vjpixel", name: "diaria-studio"\)/, "item 11 parametrizado");
     assert.match(read(".claude/agents/dev-implementador.md"), /item 32/);
+  });
+});
+
+describe("#10618 fatia 4 (review P3) — matchers e flags", () => {
+  it("citesIssueNumber/citesIssueInRepo: ref qualificada de OUTRO repo não é a #N deste repo", () => {
+    assert.equal(citesIssueNumber("fix: x (vjpixel/diaria-studio#21)", 21, DESIGN), false);
+    assert.equal(citesIssueNumber("fix: x (#21)", 21, DESIGN), true);
+    assert.equal(citesIssueNumber(`Closes ${DESIGN}#21`, 21, DESIGN), true);
+    assert.equal(citesIssueNumber(`ver ${DESIGN}#21`, 21), false, "default = studio: a design#21 não é a studio#21");
+    assert.equal(citesIssueNumber("ver vjpixel/diaria-studio#21 e #21", 21, DESIGN), true, "qualquer citação solta conta");
+    assert.equal(citesIssueNumber("#210", 21, DESIGN), false);
+  });
+
+  it("fetchRepoCommitsForIssue no design: commit que cita só a studio#21 qualificada é descartado", () => {
+    const r = fetchRepoCommitsForIssue("/x", DESIGN, 21, () => ({
+      status: 0,
+      stdout: [
+        JSON.stringify({ sha: "s1", message: "chore: espelha vjpixel/diaria-studio#21", date: "2026-10-20T00:00:00Z" }),
+        JSON.stringify({ sha: "d1", message: "fix: y\n\nCloses #21", date: "2026-10-21T00:00:00Z" }),
+      ].join("\n"),
+    }));
+    assert.deepEqual(r.commits.map((c) => c.sha), ["d1"]);
+  });
+
+  it("assessOpenPrCoverage no design: PR que só menciona vjpixel/diaria-studio#21 não cobre a design#21", () => {
+    const pr = {
+      number: 5,
+      title: "x",
+      body: "relacionado a vjpixel/diaria-studio#21",
+      headRefName: "feat-x",
+      author: null,
+      updatedAt: "2026-10-22T00:00:00Z",
+    };
+    assert.equal(assessOpenPrCoverage(21, [pr], DESIGN).matches.length, 0);
+    assert.equal(assessOpenPrCoverage(21, [{ ...pr, body: "relacionado a #21" }], DESIGN).matches.length, 1);
+  });
+
+  it("sync-issue-labels: --source ilegível ou sem valor → exit 2 sem chamar gh", () => {
+    const root = tmpRepoRoot();
+    const calls: string[][] = [];
+    const run: GhRunner = (args) => {
+      calls.push(args);
+      return { status: 0, stdout: "[]", stderr: "" };
+    };
+    const err = console.error;
+    console.error = () => {};
+    try {
+      assert.equal(syncLabelsMain(["--repo", DESIGN, "--source", "lixo"], root, run), 2);
+      assert.equal(syncLabelsMain(["--repo", DESIGN, "--source"], root, run), 2);
+    } finally {
+      console.error = err;
+    }
+    assert.equal(calls.length, 0);
   });
 });

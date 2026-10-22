@@ -76,7 +76,7 @@ export function main(argv: string[], cwd: string, runner?: CommandRunner): numbe
     return 2;
   }
 
-  const result = assessOpenPrCoverage(issueNumber, fetched.prs);
+  const result = assessOpenPrCoverage(issueNumber, fetched.prs, repoArg);
   console.log(JSON.stringify(foreignRef === null ? result : { ...result, ref: foreignRef }, null, 2));
   return result.verdict === "open-pr-covers-scope" ? 1 : 0;
 }

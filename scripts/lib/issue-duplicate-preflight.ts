@@ -41,6 +41,8 @@
  * @see context/overnight-dispatch-rules.md item 14 (rede de segurança no subagente)
  */
 
+import { DEFAULT_ISSUE_REPO, normalizeRepoSlug } from "./issue-repos.ts";
+
 /** Marcador de fechamento encontrado no corpo do commit — `unknown` quando
  * nenhum dos dois padrões aparece (commit anterior à convenção do #5010,
  * ou citação incidental sem marcador formal). Tratado como resíduo
@@ -71,8 +73,32 @@ function buildRefsRe(issueNumber: number): RegExp {
  * com precisão de boundary de dígito, o resultado (propositalmente amplo)
  * de `git --grep`, que não suporta `\b` de forma portável entre motores de
  * regex do `git`. */
-export function citesIssueNumber(commitMessage: string, issueNumber: number): boolean {
-  return new RegExp(numberBoundary(issueNumber)).test(commitMessage);
+export function citesIssueNumber(
+  commitMessage: string,
+  issueNumber: number,
+  repo: string = DEFAULT_ISSUE_REPO,
+): boolean {
+  return citesIssueInRepo(commitMessage, issueNumber, repo);
+}
+
+/**
+ * `#N` citado como issue DE `repo` (#10618, fatia 4, review P3): `#N` solto
+ * conta (é do repo onde o texto mora) e `owner/repo#N` conta só quando o
+ * slug é o próprio `repo`. `vjpixel/diaria-studio#21` num commit do
+ * diaria-design NÃO é a design#21 — e vice-versa. Boundary de dígito igual a
+ * `numberBoundary` (`#77` nunca casa dentro de `#7788`).
+ */
+export function citesIssueInRepo(text: string, issueNumber: number, repo: string = DEFAULT_ISSUE_REPO): boolean {
+  const own = normalizeRepoSlug(repo) ?? DEFAULT_ISSUE_REPO;
+  const re = new RegExp(numberBoundary(issueNumber), "g");
+  for (const m of text.matchAll(re)) {
+    const before = text.slice(Math.max(0, (m.index ?? 0) - 200), m.index ?? 0);
+    const q = /([A-Za-z0-9][\w.-]*\/[\w.-]+)$/.exec(before);
+    if (!q) return true;
+    const slug = normalizeRepoSlug(q[1]);
+    if (slug === null || slug === own) return true;
+  }
+  return false;
 }
 
 /** Extrai o marcador de fechamento (`closes`/`refs`/`unknown`) de um corpo

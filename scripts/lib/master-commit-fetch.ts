@@ -182,7 +182,9 @@ export function fetchRepoCommitsForIssue(
     if (typeof row.sha !== "string" || typeof row.message !== "string") continue;
     const [subject = "", ...rest] = row.message.split("\n");
     const body = rest.join("\n").trim();
-    if (!citesIssueNumber(body, issueNumber) && !citesIssueNumber(subject, issueNumber)) continue;
+    // Citação qualificada de OUTRO repo (`vjpixel/diaria-studio#21` num
+    // commit do design) não é esta issue — o matcher recebe o repo.
+    if (!citesIssueNumber(body, issueNumber, repo) && !citesIssueNumber(subject, issueNumber, repo)) continue;
     commits.push({ sha: row.sha, subject, authorDateIso: typeof row.date === "string" ? row.date : "", body });
   }
   return { commits };
