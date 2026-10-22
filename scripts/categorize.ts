@@ -172,10 +172,14 @@ const REDIRECT_BODY_RE =
   /\b(?:moved (?:permanently|temporarily|to)|has moved|object moved|document moved|redirect(?:ing|ed)? to)\b/i;
 
 export function hasUnresolvedRedirectStubTitle(article: Article): boolean {
-  if (!isRedirectStubTitle(article.title)) return false;
-  if (!isAmbiguousRedirectStubTitle(article.title)) return true;
-  const summary = (article.summary ?? "").trim();
-  return summary.length < 30 || REDIRECT_BODY_RE.test(summary);
+  // A palavra solta NÃO casa `isRedirectStubTitle` desde o #10881 item 4 (só
+  // casa com o código HTTP antes) — por isso é checada primeiro, por conta
+  // própria, e só então o caso inequívoco ("302 Found", "Document moved").
+  if (isAmbiguousRedirectStubTitle(article.title)) {
+    const summary = (article.summary ?? "").trim();
+    return summary.length < 30 || REDIRECT_BODY_RE.test(summary);
+  }
+  return isRedirectStubTitle(article.title);
 }
 
 /** Evento de run-log sem `edition` — o caller (main) injeta a edição. */
