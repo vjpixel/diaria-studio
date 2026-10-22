@@ -34,6 +34,7 @@ import { sanitizeDescriptionBoilerplate } from "./lib/sanitize-description-boile
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { shouldDiscardSummary } from "./lib/summary-matches-title.ts"; // #8594
 import { logEvent } from "./lib/run-log.ts";
+import { isRedirectStubTitle } from "./lib/placeholder-title-guard.ts"; // #10843
 
 // ---------------------------------------------------------------------------
 // Types
@@ -124,7 +125,10 @@ function hasPlaceholderTitle(article: InboxArticle): boolean {
     PLACEHOLDER_TITLES.includes(title.toLowerCase()) ||
     /^\[inbox\]/i.test(title) ||
     /^\(inbox/i.test(title) ||
-    NEWSLETTER_PLACEHOLDER_RE.test(title)
+    NEWSLETTER_PLACEHOLDER_RE.test(title) ||
+    // #10843: título herdado de página-stub de redirect ("Document moved",
+    // "301 Moved Permanently") — o artigo volta a ser re-buscado.
+    isRedirectStubTitle(title)
   );
 }
 
@@ -199,15 +203,61 @@ function extractTitleTag(html: string): string | null {
   return cleaned.length > 0 ? cleaned : null;
 }
 
+function rawPageTitle(html: string): string | null {
+  return (
+    extractMetaContent(html, "og:title", "property") ??
+    extractMetaContent(html, "twitter:title", "name") ??
+    extractTitleTag(html)
+  );
+}
+
+/**
+ * #10843: o HTML é uma página-stub de redirect (título "Document moved",
+ * "301 Moved Permanently", "Redirecting..."). Usado para descartar um body
+ * desses vindo do cache intra-edição e refazer o fetch (que segue redirects).
+ */
+export function isRedirectStubHtml(html: string): boolean {
+  return isRedirectStubTitle(rawPageTitle(html));
+}
+
+/**
+ * #10843 (C): destino de `<meta http-equiv="refresh" content="N; url=...">`,
+ * resolvido contra `baseUrl`. Só aceita refresh "de redirect" (delay ≤
+ * META_REFRESH_MAX_DELAY_S e com url) — refresh periódico de portal
+ * (`content="300"`, sem url, ou apontando para a própria página) devolve null.
+ */
+export const META_REFRESH_MAX_DELAY_S = 10;
+
+export function extractMetaRefreshUrl(html: string, baseUrl: string): string | null {
+  const tag = html.match(/<meta[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/i)?.[0];
+  if (!tag) return null;
+  const content =
+    tag.match(/content\s*=\s*"([^"]*)"/i)?.[1] ??
+    tag.match(/content\s*=\s*'([^']*)'/i)?.[1] ??
+    tag.match(/content\s*=\s*([^\s>]+)/i)?.[1];
+  if (!content) return null;
+  const m = decodeHtmlEntities(content).match(
+    /^\s*(\d+(?:\.\d+)?)\s*[;,]\s*(?:url\s*=\s*)?["']?([^"']+?)["']?\s*$/i,
+  );
+  if (!m || Number(m[1]) > META_REFRESH_MAX_DELAY_S) return null;
+  try {
+    const target = new URL(m[2], baseUrl).toString();
+    return target === new URL(baseUrl).toString() ? null : target;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Extracts the strongest available title and summary from raw HTML.
  * Priority for both fields: og:* > twitter:* > <title> / meta description.
  */
 export function extractMetadata(html: string): PageMetadata {
-  const title =
-    extractMetaContent(html, "og:title", "property") ??
-    extractMetaContent(html, "twitter:title", "name") ??
-    extractTitleTag(html);
+  const rawTitle = rawPageTitle(html);
+  // #10843: `<title>` de stub de redirect ("Document moved") não é título do
+  // artigo — devolve null para cair nos fallbacks (submitted_subject, placeholder
+  // + guards) em vez de virar o título publicado.
+  const title = isRedirectStubTitle(rawTitle) ? null : rawTitle;
 
   const summary =
     extractMetaContent(html, "og:description", "property") ??
@@ -297,22 +347,59 @@ export function titleFromSubmittedSubject(article: InboxArticle): string | null 
 // Network — fetch HTML with timeout
 // ---------------------------------------------------------------------------
 
-async function fetchHtml(
+/**
+ * #10843: teto de saltos de redirect (HTTP 3xx + meta refresh somados).
+ * O `request` do undici NÃO segue redirect — antes deste fix a resposta 3xx
+ * era parseada e o `<title>` do stub ("Document moved") virava o título.
+ */
+export const MAX_REDIRECTS = 5;
+
+export async function fetchHtml(
   url: string,
   timeoutMs: number,
   userAgent: string,
+  maxRedirects: number = MAX_REDIRECTS,
 ): Promise<string | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await request(url, {
-      method: "GET",
-      signal: ctrl.signal,
-      headers: { "user-agent": userAgent, accept: "text/html,*/*" },
-    });
-    if (res.statusCode >= 400) return null;
-    const body = await res.body.text();
-    return body;
+    let current = url;
+    for (let hop = 0; hop <= maxRedirects; hop++) {
+      const res = await request(current, {
+        method: "GET",
+        signal: ctrl.signal,
+        headers: { "user-agent": userAgent, accept: "text/html,*/*" },
+      });
+      if (res.statusCode >= 300 && res.statusCode < 400) {
+        const loc = res.headers.location;
+        const location = Array.isArray(loc) ? loc[0] : loc;
+        await res.body.dump().catch(() => {});
+        if (!location) return null; // 304/3xx sem Location: nada a seguir
+        try {
+          current = new URL(location, current).toString();
+        } catch {
+          return null;
+        }
+        continue;
+      }
+      if (res.statusCode >= 400) {
+        await res.body.dump().catch(() => {});
+        return null;
+      }
+      const body = await res.body.text();
+      // #10843 (C): página 200 que só redireciona via meta refresh (ex:
+      // "Redirecting..." do blog.google). Só segue quando a página não tem
+      // título utilizável — artigo real com refresh periódico fica como está.
+      if (extractMetadata(body).title === null) {
+        const refresh = extractMetaRefreshUrl(body, current);
+        if (refresh) {
+          current = refresh;
+          continue;
+        }
+      }
+      return body;
+    }
+    return null; // saltos esgotados — nunca devolve o stub do último 3xx
   } catch {
     return null;
   } finally {
@@ -396,7 +483,9 @@ export async function enrichArticles(
       let cacheHit = false;
       if (bodiesDir !== null) {
         const cached = loadCachedBody(bodiesDir, job.article.url);
-        if (cached !== null) {
+        // #10843: body cacheado que é stub de redirect conta como cache-miss —
+        // o fetch de rede segue o redirect até a página real.
+        if (cached !== null && !isRedirectStubHtml(cached)) {
           html = cached;
           cacheHit = true;
           stats.cache_hits++;
