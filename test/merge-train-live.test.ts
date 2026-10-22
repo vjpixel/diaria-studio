@@ -809,7 +809,10 @@ describe("runner real — regressão #10849", () => {
   }
   it("diagnostica ENOENT e preserva outros erros", () => {
     for (const code of ["ENOENT", "ETIMEDOUT"]) {
-      const spawn = (() => ({ error: Object.assign(new Error("spawn falhou"), { code }) })) as typeof import("node:child_process").spawnSync;
+      const spawn = ((): import("node:child_process").SpawnSyncReturns<string | Buffer> => ({
+        pid: 0, output: [], stdout: "", stderr: "", status: null, signal: null,
+        error: Object.assign(new Error("spawn falhou"), { code }),
+      })) as typeof import("node:child_process").spawnSync;
       const result = createRealTrainRunner("/repo", "linux", spawn).exec("npx", ["tsx"]);
       assert.equal(result.ok, false);
       assert.equal(result.stderr, code === "ENOENT"
