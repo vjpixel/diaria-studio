@@ -18,6 +18,7 @@ import {
   D1_PLAY_STAMP_FILE,
   buildD1VideoLink,
   buildInviteSvg,
+  inviteGeometry,
   editionFromDir,
 } from "../scripts/lib/diaria/d1-video-hero.ts";
 import { ensureD1PlayImage } from "../scripts/lib/diaria/d1-play-image.ts";
@@ -187,7 +188,8 @@ describe("#10784 — cópia do hero com play", () => {
       const px = (x: number, y: number) => data[(y * info.width + x) * info.channels];
       assert.ok(px(200 - 30, 100) < 60, `centro não pode ter play, veio ${px(170, 100)}`);
       // Faixa de tinta (#171411 a 82%) na parte de baixo: R cai de 40 para ~26.
-      assert.ok(px(60, 164) < 33, `faixa do convite deveria escurecer a base, veio ${px(60, 164)}`);
+      assert.ok(px(172, 165) < 33, `faixa do convite (canto inferior direito) deveria escurecer a base, veio ${px(172, 165)}`);
+      assert.ok(px(30, 165) > 30, "a faixa fica no canto direito: o canto inferior esquerdo segue com a arte");
       assert.ok(px(10, 10) < 100, "canto segue com a arte original");
 
       const r2 = await ensureD1PlayImage(dir);
@@ -233,20 +235,27 @@ describe("#10784 — cópia do hero com play", () => {
     const svg = buildInviteSvg(W, H).replace(/font-family="[^"]*"/g, `font-family="NoSuchFontXYZ"`);
     const out = await sharp(flat).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).raw().toBuffer({ resolveWithObject: true });
     const px = (x: number, y: number) => out.data[(y * out.info.width + x) * out.info.channels];
-    const pillW = W * 0.74;
-    const left = (W - pillW) / 2, right = left + pillW;
-    let minX = W, maxX = -1;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (px(x, y) > 200) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+    const { pill } = inviteGeometry(W, H);
+    const left = pill.x, right = pill.x + pill.w, top = pill.y, bottom = pill.y + pill.h;
+    let minX = W, maxX = -1, minY = H, maxY = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (px(x, y) > 200) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
     assert.ok(maxX > 0, "o texto deveria ter sido desenhado (branco)");
-    assert.ok(minX >= left + 20 && maxX <= right - 20, `texto ${minX}-${maxX} fora da faixa ${left}-${right}`);
+    assert.ok(minX >= left + 10 && maxX <= right - 10, `texto ${minX}-${maxX} fora da faixa ${left}-${right}`);
+    assert.ok(minY >= top && maxY <= bottom, `texto ${minY}-${maxY} fora da faixa vertical ${top}-${bottom}`);
+    assert.ok(right <= W && bottom <= H && (left + right) / 2 > W / 2 && (top + bottom) / 2 > H / 2, "faixa no canto inferior direito");
   });
 
-  it("buildInviteSvg: faixa de 74% da largura na base, 2 linhas do convite, sem círculo de play", () => {
+  it("buildInviteSvg: faixa no canto inferior direito, play ao lado do texto de 2 linhas", () => {
     const svg = buildInviteSvg(1600, 800);
-    assert.ok(svg.includes(`width="1184.0"`), svg);
+    const { pill } = inviteGeometry(1600, 800);
+    assert.ok(svg.includes(`x="${pill.x.toFixed(1)}"`) && svg.includes(`y="${pill.y.toFixed(1)}"`), svg);
+    assert.ok(pill.x + pill.w < 1600 && pill.y + pill.h < 800 && pill.x + pill.w / 2 > 800 && pill.y > 400, "canto inferior direito, com margem");
     for (const l of D1_INVITE_LINES) assert.ok(svg.includes(l), l);
+    assert.equal(D1_INVITE_TEXT, "Clique e assista a notícia comentada");
     assert.ok(svg.includes(`fill="#171411"`));
-    assert.ok(!svg.includes("<circle") && !svg.includes("<polygon"), "sem ícone de play");
+    assert.ok(svg.includes("<circle") && svg.includes("<polygon"), "símbolo de play ao lado do texto");
   });
 
   it("upload modo newsletter gera a cópia e sobe d1_play; falha vira warning", async () => {
