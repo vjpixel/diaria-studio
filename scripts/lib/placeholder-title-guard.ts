@@ -51,6 +51,21 @@ export function isRedirectStubTitle(title: string | null | undefined): boolean {
   return REDIRECT_STUB_TITLE_RE.test(t);
 }
 
+/**
+ * #10796 (review do PR #10890): subconjunto AMBÍGUO de `REDIRECT_STUB_TITLE_RE`
+ * — a palavra solta, sem código de status nem reticências ("Found", "Moved",
+ * "Redirect"). Também é título possível de matéria real; quem DESCARTA artigo
+ * com base no título (categorize) precisa de contexto de redirect extra antes
+ * de tratar isso como stub. "302 Found", "Moved Permanently", "Redirecting..."
+ * continuam inequívocos.
+ */
+const AMBIGUOUS_REDIRECT_STUB_TITLE_RE = /^(?:found|moved|redirect)$/i;
+
+/** True se o título (trim) é stub de redirect, mas só a palavra solta e ambígua (#10796). */
+export function isAmbiguousRedirectStubTitle(title: string | null | undefined): boolean {
+  return AMBIGUOUS_REDIRECT_STUB_TITLE_RE.test((title ?? "").trim());
+}
+
 /** True se o título (trim) é vazio ou casa integralmente um padrão placeholder
  * conhecido — âncoras `^...$` evitam falso-positivo em título real que apenas
  * CONTÉM parênteses (ex: "GPT-5 (versão de pesquisa) chega em outubro").

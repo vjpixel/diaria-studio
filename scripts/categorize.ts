@@ -36,6 +36,8 @@ import { applySemanticTiebreaker, type CategorizedBuckets } from "./lib/semantic
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9380
 import { isNonAITopic } from "./lib/ai-relevance.ts"; // #9402
+import { isRedirectStubTitle, isAmbiguousRedirectStubTitle } from "./lib/placeholder-title-guard.ts"; // #10796
+import { logEvent, type RunLogEvent } from "./lib/run-log.ts"; // #10796
 import {
   AI_RELEVANT_TERMS,
   isArticleAIRelevant,
@@ -150,7 +152,49 @@ export function isUnresolvableInboxArticle(article: Article): boolean {
   return titleIsPlaceholder && summaryTooShort;
 }
 
-export function categorizeArticles(articles: Article[]): BucketedArticles {
+/**
+ * #10796: título que ainda é o `<title>` de uma página-stub de redirect
+ * ("Document moved", "301 Moved Permanently", "Redirecting...") quando chega
+ * na categorização. O `enrich-inbox-articles` (1k) já segue redirects e
+ * troca esse título pelo og:title real (#10843); se ele chegou até aqui, o
+ * enrichment FALHOU (fetch bloqueado, timeout, página sem metadata) e o
+ * artigo não tem título nenhum utilizável. Diferente do #722, vale pra
+ * qualquer `flag` — o caso real (Voxtral 3, 261022) era `newsletter_extracted`
+ * — e independe do summary: um summary bom não salva o título, que seria
+ * renderizado como "Document moved" na seção do pool.
+ *
+ * Palavra solta e ambígua ("Found", "Moved", "Redirect") só conta como stub
+ * com contexto de redirect: summary ausente/curto, ou summary que é o próprio
+ * corpo da página-stub ("Object moved to here"). Matéria real com esse título
+ * e summary de verdade segue no pool.
+ */
+const REDIRECT_BODY_RE =
+  /\b(?:moved (?:permanently|temporarily|to)|has moved|object moved|document moved|redirect(?:ing|ed)? to)\b/i;
+
+export function hasUnresolvedRedirectStubTitle(article: Article): boolean {
+  if (!isRedirectStubTitle(article.title)) return false;
+  if (!isAmbiguousRedirectStubTitle(article.title)) return true;
+  const summary = (article.summary ?? "").trim();
+  return summary.length < 30 || REDIRECT_BODY_RE.test(summary);
+}
+
+/** Evento de run-log sem `edition` — o caller (main) injeta a edição. */
+export type CategorizeEvent = Omit<RunLogEvent, "edition">;
+
+export interface CategorizeOptions {
+  /**
+   * #10796: sink dos descartes/sinalizações. `main()` grava em
+   * `data/run-log.jsonl` via `logEvent`; default no-op mantém a função pura
+   * pros testes (nenhum teste escreve no run-log real).
+   */
+  onEvent?: (event: CategorizeEvent) => void;
+}
+
+export function categorizeArticles(
+  articles: Article[],
+  opts: CategorizeOptions = {},
+): BucketedArticles {
+  const emit = opts.onEvent ?? (() => {});
   const result: BucketedArticles = {
     lancamento: [],
     radar: [],
@@ -169,7 +213,47 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
     // falhas de enrich — não há conteúdo para o writer usar. Descartar silenciosamente.
     if (isUnresolvableInboxArticle(article)) {
       console.error(`[categorize] dropping unresolvable inbox article: ${article.url}`);
+      emit({
+        stage: 1,
+        agent: "categorize",
+        level: "warn",
+        message: `artigo do inbox descartado (enrich falhou, sem título nem summary): ${article.url}`,
+        details: { url: article.url, reason: "unresolvable_inbox", issue: 722 },
+      });
       continue;
+    }
+    // #10796: enrichment não conseguiu trocar o título de stub de redirect.
+    let titleUnresolved = false;
+    if (hasUnresolvedRedirectStubTitle(article)) {
+      if (article.flag === "editor_submitted") {
+        // Submissão do editor nunca some em silêncio (review #10890): fica no
+        // pool com o título de stub — `isPlaceholderHighlightTitle` já a
+        // barra de virar destaque e o lint de placeholder do Stage 4 avisa —,
+        // marcada com `title_unresolved` e um warn no run-log.
+        titleUnresolved = true;
+        console.warn(
+          `[categorize] #10796: editor_submitted kept with unresolved redirect-stub title "${article.title}": ${article.url}`,
+        );
+        emit({
+          stage: 1,
+          agent: "categorize",
+          level: "warn",
+          message: `submissão do editor com título de stub de redirect "${article.title}" mantida no pool — corrigir o título: ${article.url}`,
+          details: { url: article.url, title: article.title, reason: "redirect_stub_title_kept", issue: 10796 },
+        });
+      } else {
+        console.error(
+          `[categorize] dropping article with redirect-stub title "${article.title}": ${article.url}`,
+        );
+        emit({
+          stage: 1,
+          agent: "categorize",
+          level: "warn",
+          message: `artigo descartado com título de stub de redirect "${article.title}": ${article.url}`,
+          details: { url: article.url, title: article.title, flag: article.flag ?? null, reason: "redirect_stub_title", issue: 10796 },
+        });
+        continue;
+      }
     }
     // #6647: categorizeWithRule() é a mesma decisão de categorize() (wrapper
     // fino sobre ela) — usar a versão instrumentada aqui não muda `cat` em
@@ -230,7 +314,8 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
         : article.title;
     // title_raw preserva o título da fonte quando mudou (auditoria/dedup).
     const rawField = normalizedTitle !== article.title ? { title_raw: article.title } : {};
-    result[bucket].push({ ...article, ...rawField, title: normalizedTitle, category: cat, category_rule: categoryRule });
+    const unresolvedField = titleUnresolved ? { title_unresolved: "redirect_stub" } : {}; // #10796
+    result[bucket].push({ ...article, ...rawField, ...unresolvedField, title: normalizedTitle, category: cat, category_rule: categoryRule });
   }
 
   // #1473: detectar summaries em inglês e flaggar para tradução downstream.
@@ -275,7 +360,11 @@ async function main(): Promise<void> {
   const edition = values["edition"] ?? null; // #8211: opcional, só pra correlacionar no run-log
 
   const articles: Article[] = JSON.parse(readFileSync(articlesPath, "utf8"));
-  let result: CategorizedBuckets = categorizeArticles(articles);
+  // #10796: descartes/sinalizações vão também pro run-log (/diaria-log,
+  // collect-edition-signals), não só pro stderr do stage-1-run.
+  let result: CategorizedBuckets = categorizeArticles(articles, {
+    onEvent: (e) => logEvent({ ...e, edition }),
+  });
 
   // #8211: passo OPCIONAL, atrás de flag (platform.config.json →
   // semantic_tiebreaker.enabled), que reconsidera SÓ os artigos que caíram
