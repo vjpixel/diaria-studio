@@ -207,7 +207,7 @@ describe("#10769 plano do publish-shorts", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z"), forceNow: true });
     const ig = plan.items.find((i) => i.destination === "instagram")!;
     assert.equal(ig.action, "publish");
-    assert.equal(plan.items.find((i) => i.destination === "facebook:diaria")!.scheduledAt, null);
+    assert.equal((plan.items.find((i) => i.destination === "facebook:diaria") as { scheduledAt: string | null }).scheduledAt, null);
   });
 
   it("destino já registrado é pulado; --only restringe", () => {

@@ -194,7 +194,6 @@ export type ShortDestination =
   | { id: "facebook_profile"; kind: "facebook_profile"; mode: "guided" };
 
 export type FacebookDestinationId = `facebook:${string}`;
-export type ShortDestinationId = "youtube_shorts" | "instagram" | "facebook_profile" | FacebookDestinationId;
 
 export function facebookDestinationId(slug: string): FacebookDestinationId {
   return `facebook:${slug}`;
