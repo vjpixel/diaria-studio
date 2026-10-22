@@ -144,6 +144,9 @@ export interface FollowupPerson {
   form_filled_at?: string | null;
   /** Respostas do formulário, como vieram do Worker (#10605). */
   form_answers?: Record<string, string>;
+  /** #10763: etapas cuja leitura singular falhou na última tentativa (transitório,
+   *  NUNCA pulo terminal). Só rebaixa a pessoa na ordem do teto; sai no 1º sucesso. */
+  live_failures?: { step: FollowupStepKind; at: string; n: number }[];
 }
 
 /** Lote Kit de uma etapa destas sequências — mesma forma do lote da escada. */
@@ -620,9 +623,14 @@ export interface CapDeferral {
 }
 
 /** Ordem do corte do teto (ver `splitDueByCap`): `orderSec` crescente, `null` por último, desempate por id. */
-function sortByCapOrder(list: readonly FollowupDue[], orderSec: (d: FollowupDue) => number | null): FollowupDue[] {
-  const keyed = list.map((d) => ({ d, sec: orderSec(d) }));
+function sortByCapOrder(
+  list: readonly FollowupDue[],
+  orderSec: (d: FollowupDue) => number | null,
+  demoted: (d: FollowupDue) => boolean = () => false,
+): FollowupDue[] {
+  const keyed = list.map((d) => ({ d, sec: orderSec(d), dem: demoted(d) }));
   keyed.sort((a, b) => {
+    if (a.dem !== b.dem) return a.dem ? 1 : -1;
     if (a.sec !== b.sec) {
       if (a.sec == null) return 1;
       if (b.sec == null) return -1;
@@ -655,13 +663,18 @@ function sortByCapOrder(list: readonly FollowupDue[], orderSec: (d: FollowupDue)
  * executor passa o `created_at` do Kit para as etapas de apoio e a âncora da
  * escada para o formulário — o cadastro mais ANTIGO sai primeiro, porque a
  * janela dele fecha antes), `null` por último, desempate por
- * `kit_subscriber_id` crescente. A ordem relativa entre etapas diferentes em
+ * `kit_subscriber_id` crescente. **Rodízio (#10763):** `demoted(d)` (quem
+ * falhou a leitura singular na rodada anterior) vai depois de quem não
+ * falhou, mantendo a ordem acima dentro de cada grupo — falha recorrente não
+ * monopoliza o teto nem aumenta o número de GETs; a pessoa continua devida
+ * (não é pulo terminal) e volta à frente assim que a leitura passa. A ordem relativa entre etapas diferentes em
  * `within` segue a de `due`.
  */
 export function splitDueByCap(
   due: readonly FollowupDue[],
   cap: number,
   orderSec: (d: FollowupDue) => number | null = () => null,
+  demoted: (d: FollowupDue) => boolean = () => false,
 ): { within: FollowupDue[]; deferred: CapDeferral[] } {
   const byKind = new Map<FollowupStepKind, FollowupDue[]>();
   for (const d of due) {
@@ -678,7 +691,7 @@ export function splitDueByCap(
       for (const d of list) keep.add(d);
       continue;
     }
-    for (const d of sortByCapOrder(list, orderSec).slice(0, cap)) keep.add(d);
+    for (const d of sortByCapOrder(list, orderSec, demoted).slice(0, cap)) keep.add(d);
     deferred.push({ kind, eligible: list.length, deferred: list.length - cap });
   }
   return { within: due.filter((d) => keep.has(d)), deferred };
@@ -946,6 +959,37 @@ export function recordLiveCheckSkips(
     n++;
   }
   return n;
+}
+
+/** @pure — #10763: a pessoa falhou a leitura singular desta etapa na rodada anterior. */
+export function hasLiveFailure(person: FollowupPerson | undefined, step: FollowupStepKind): boolean {
+  return !!person?.live_failures?.some((f) => f.step === step);
+}
+
+/**
+ * #10763: grava `consulta_falhou` como marca transitória (só rebaixa na ordem
+ * do teto) e limpa a marca de quem leu bem. Nunca cria pulo terminal.
+ */
+export function recordLiveCheckFailures(
+  people: Record<string, FollowupPerson>,
+  excluded: readonly { due: FollowupDue; motivo: LiveExclusionReason }[],
+  read: readonly FollowupDue[],
+  nowIso: string,
+): void {
+  for (const x of excluded) {
+    if (x.motivo !== "consulta_falhou") continue;
+    const person = ensurePerson(people, x.due.kit_subscriber_id, x.due.email);
+    const list = (person.live_failures ??= []);
+    const cur = list.find((f) => f.step === x.due.kind);
+    if (cur) { cur.n++; cur.at = nowIso; } else list.push({ step: x.due.kind, at: nowIso, n: 1 });
+  }
+  const cleared = [...read, ...excluded.filter((x) => x.motivo !== "consulta_falhou").map((x) => x.due)];
+  for (const d of cleared) {
+    const person = people[String(d.kit_subscriber_id)];
+    if (!person?.live_failures) continue;
+    person.live_failures = person.live_failures.filter((f) => f.step !== d.kind);
+    if (person.live_failures.length === 0) delete person.live_failures;
+  }
 }
 
 /** Guarda o resultado da checagem de apoio de quem vai receber (não apoia). */

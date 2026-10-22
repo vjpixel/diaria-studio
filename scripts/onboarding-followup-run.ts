@@ -86,6 +86,8 @@ import {
   parseFollowupSnippet,
   planFollowup,
   recordLiveCheckSkips,
+  recordLiveCheckFailures,
+  hasLiveFailure,
   recordApoioChecks,
   recordFollowupRun,
   renderFollowupBody,
@@ -814,7 +816,12 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   const anchorSecById = new Map(formCandidates.map((c) => [c.kit_subscriber_id, c.anchorSec] as const));
   const orderSec = (d: { kit_subscriber_id: number; kind: FollowupStepKind }) =>
     (isApoioStep(d.kind) ? cadastroSecById.get(d.kit_subscriber_id) : anchorSecById.get(d.kit_subscriber_id)) ?? null;
-  const { within: dueWithinCap, deferred: capDeferred } = splitDueByCap(due, cfg.maxRecipientsPerLot, orderSec);
+  const { within: dueWithinCap, deferred: capDeferred } = splitDueByCap(
+    due,
+    cfg.maxRecipientsPerLot,
+    orderSec,
+    (d) => hasLiveFailure(block.people[String(d.kit_subscriber_id)], d.kind),
+  );
   for (const o of capDeferred) {
     bump(o.kind, "adiado_teto", o.deferred);
     lotsOut.push({ kind: o.kind, eligible: o.eligible, deferred: o.deferred, cap: cfg.maxRecipientsPerLot });
@@ -859,6 +866,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   if (send) {
     persistFollowupPeople(storePath, (people) => {
       recordLiveCheckSkips(people, excluded, nowIso);
+      recordLiveCheckFailures(people, excluded, liveOk, nowIso);
       recordApoioChecks(people, liveOk, nowIso);
     });
   }
