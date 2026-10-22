@@ -44,10 +44,10 @@ describe("pool: corte/troca de item não é title-choice nem length-cut (#9879/#
     assert.equal((out[0].context as any).items_added, 0);
   });
 
-  it("item trocado por outro no LANÇAMENTOS → link-swap itens-trocados", () => {
+  it("item trocado por outro no LANÇAMENTOS → pool-cut + pool-add", () => {
     const old = section("**🚀 LANÇAMENTOS**", [A, B, C]);
     const neu = section("**🚀 LANÇAMENTOS**", [D, B]);
-    assert.deepEqual(kinds(old, neu), ["lancamentos:link-swap:itens-trocados"]);
+    assert.deepEqual(kinds(old, neu), ["lancamentos:pool-cut:itens-cortados", "lancamentos:pool-add:itens-adicionados"]);
   });
 
   it("item adicionado → pool-add", () => {

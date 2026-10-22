@@ -65,9 +65,9 @@ describe("#9989 — edição de texto em item de pool vira pool-text-edit", () =
     assert.deepEqual(kinds(section("**🛠️ USE MELHOR**", [longA]), section("**🛠️ USE MELHOR**", [shortA])), ["use-melhor:length-cut:"]);
   });
 
-  it("troca de item (conjunto muda) continua link-swap itens-trocados", () => {
+  it("troca de item (conjunto muda) continua pool-cut + pool-add", () => {
     const D = item("Outro artigo", "https://outro.example/x", "Descrição. (5 min)");
-    assert.deepEqual(kinds(section("**📡 RADAR**", [A, B]), section("**📡 RADAR**", [D, B])), ["radar:link-swap:itens-trocados"]);
+    assert.deepEqual(kinds(section("**📡 RADAR**", [A, B]), section("**📡 RADAR**", [D, B])), ["radar:pool-cut:itens-cortados", "radar:pool-add:itens-adicionados"]);
   });
 
   it("classifyPoolTextEdit casa por URL, não por posição", () => {
