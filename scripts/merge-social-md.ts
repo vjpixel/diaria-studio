@@ -352,13 +352,17 @@ function main(): void {
   // #3991: seção única `# Social` — substitui `# LinkedIn`/`# Facebook`/
   // `# Instagram`. Banner explica que a linha de CTA por canal é injetada só
   // no publish (nunca aparece aqui) e o papel do `## um` (4º post, #9568 —
-  // substituiu o `post_pixel`, que não é mais gerado; #9619 corrigiu o banner).
+  // substituiu o `post_pixel`, que não é mais gerado; #9619 corrigiu o banner;
+  // #10833: o LinkedIn pessoal é automático desde #9568 — o banner dizia
+  // "manualmente" e induziu o agente a relatar errado ao editor).
   const socialHeader =
     `# Social\n\n> **Texto único (#3991)** — o mesmo corpo + hashtags vai para LinkedIn, ` +
     `Facebook e Instagram. Cada publisher injeta sua própria linha de CTA/canal no momento ` +
     `do publish (\`scripts/lib/social-cta-lines.ts\`) — esta seção nunca contém CTA de canal. ` +
     `\`## um\` (quando existe) é o 4º post, do item USE MELHOR (#9568): fail-soft, sai nos ` +
-    `mesmos canais e o mesmo texto vai manualmente no LinkedIn pessoal (lembrete no Stage 6).\n`;
+    `mesmos canais e o mesmo texto vai automaticamente no LinkedIn pessoal ` +
+    `(\`publish-linkedin-personal.ts --arm\` no Stage 6, publicado pelas tasks ` +
+    `\`Diaria-LinkedIn-Personal\`; lembrete manual só quando o token falta).\n`;
   // #3992: seção `# Curto` só entra quando o tmp opcional existe — texto único
   // compartilhado por Twitter/X (dispatch via Buffer MCP, #3994) e Threads
   // (publish-threads.ts, que passa a preferir esta seção ao fallback Facebook).
