@@ -129,10 +129,10 @@ describe("#10676 checagem singular espaçada, com retry e sem alarme falso", () 
     assert.equal(isFailedFollowupRun(r.run), true);
   });
 
-  it("falha sistêmica (metade ou mais das leituras) e erro não transitório contam como falha", async () => {
-    const half = deps(4, { alwaysFail: new Set([1, 2]) });
+  it("falha sistêmica (metade ou mais das leituras, com amostra ≥ 10 — #10694) e erro não transitório contam como falha", async () => {
+    const half = deps(10, { alwaysFail: new Set([1, 2, 3, 4, 5]) });
     const r1 = await runFollowupRound({ storePath: tempStore(), send: true, cfg, snippets, nowMs: (T0 + 30 * DAY) * 1000 }, half.d);
-    assert.equal(r1.run.lookups_failed, 2);
+    assert.equal(r1.run.lookups_failed, 5);
     assert.equal(isFailedFollowupRun(r1.run), true);
 
     const auth = deps(10, { alwaysFail: new Set([5]), nonTransient: true });
