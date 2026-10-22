@@ -14,11 +14,36 @@ export type LoadedGhAliases = Map<string, string | null> & {
   readonly unparsed?: readonly string[];
 };
 
-/** Argumentos de uma invocação de merge; `targetUnknown` = repo indeterminado. */
-export type GhMergeInvocation = string[] & { readonly targetUnknown?: true };
+/** Por que uma invocação é `opaque` (informativo: todas têm o mesmo tratamento). */
+export type GhOpaqueMergeReason =
+  | "xargs"
+  | "endpoint"
+  | "subcommand"
+  | "alias-unreadable"
+  | "alias-import"
+  | "alias-loop"
+  | "depth";
+
+/** Repo de um `gh api` REST de merge: literal do caminho, o do diretório (`{owner}/{repo}`), ou indeterminado. */
+export type GhRestMergeRepo = { kind: "literal"; slug: string } | { kind: "cwd" } | { kind: "unknown" };
+
+/**
+ * Uma invocação de merge (#10751). `pr-merge.args` = o que vem depois de
+ * `merge` (com `-R` global antes); `opaque.args` = o que deu pra ler, no
+ * mesmo formato. Só `pr-merge` pode sair do modo estrito (`requiresStrict`).
+ */
+export type GhMergeInvocation =
+  | { readonly via: "pr-merge"; readonly args: string[] }
+  | { readonly via: "api-rest"; readonly repo: GhRestMergeRepo; readonly pr: number | null }
+  | { readonly via: "api-graphql" }
+  | { readonly via: "opaque"; readonly reason: GhOpaqueMergeReason; readonly args: string[] };
 
 export function parseShellCommands(src: unknown, depth?: number): string[][];
 export function findGhPrMergeInvocations(command: unknown, opts?: GhMergeDetectOptions): GhMergeInvocation[];
+/** `true` pra toda invocação que não é `gh pr merge` literal (#10751). */
+export function requiresStrict(inv: GhMergeInvocation): boolean;
+/** Nº da PR de uma invocação; `undefined` = não legível. */
+export function invocationTargetPr(inv: GhMergeInvocation): number | undefined;
 export function isGhPrMergeCommand(command: unknown, opts?: GhMergeDetectOptions): boolean;
 export function extractGhPrMergeTargetPr(command: unknown, opts?: GhMergeDetectOptions): number | undefined;
 export function mergeTargetHints(command: unknown, opts?: GhMergeDetectOptions): { repos: string[]; unknown: boolean };

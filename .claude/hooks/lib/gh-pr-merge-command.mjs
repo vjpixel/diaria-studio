@@ -46,7 +46,8 @@
 //   - subcomando do gh opaco (`gh $S merge 5`, `gh pr $M 5`) e aninhamento
 //     além de `MAX_DEPTH`.
 // Invocação cujo REPO não dá pra saber (GraphQL, caminho/`-R`/URL opaco,
-// alias ilegível) é marcada `targetUnknown`: o modo estrito do guard confere
+// alias ilegível) sai como `api-graphql`, `opaque` ou `api-rest` de repo
+// `unknown` (#10751, ver a união logo abaixo): o modo estrito do guard confere
 // o lock de todo repo de `issue_repos` (`mergeTargetHints`).
 //
 // LIMITES CONHECIDOS (documentados, não cobertos):
@@ -114,10 +115,40 @@ function isOpaque(v) {
   return isExpanded(v) || v.includes("$");
 }
 
-/** Marca a invocação como de REPO indeterminado (lido por `mergeTargetHints`). */
-function unknownTarget(args) {
-  Object.defineProperty(args, "targetUnknown", { value: true, enumerable: false });
-  return args;
+// ─── Resultado do detector: união discriminada (#10751) ─────────────────
+// Cada invocação de merge encontrada é UM destes objetos (campo `via`):
+//   { via: "pr-merge", args }        — `gh pr merge …` literal (inclusive o que
+//                                      um alias legível expande): `args` é o
+//                                      que vem depois de `merge`, precedido do
+//                                      `-R` global se houver. `args` sem número
+//                                      = o gh infere a PR pela branch.
+//   { via: "api-rest", repo, pr }    — `gh api` REST de merge. `repo.kind`:
+//                                      "literal" (`repos/o/r/…`, `repo.slug`),
+//                                      "cwd" (`{owner}/{repo}` = repo do
+//                                      diretório) ou "unknown". `pr` = nº de
+//                                      `pulls/N/merge`, ou `null`.
+//   { via: "api-graphql" }           — mutation de merge (ou query ilegível).
+//   { via: "opaque", reason, args }  — o shell completa o comando em execução
+//                                      ou o alvo não dá pra ler. `reason`:
+//                                      "xargs", "endpoint", "subcommand",
+//                                      "alias-unreadable", "alias-import",
+//                                      "alias-loop", "depth". `args` = o que
+//                                      deu pra ler, no formato de `pr-merge`.
+// ANTES do #10751 era `string[][]` com `targetUnknown` não-enumerável, e `[]`
+// tinha seis sentidos indistinguíveis. Só `pr-merge` pode sair do modo
+// ESTRITO do guard (`requiresStrict`).
+
+const prMergeInvocation = (args) => ({ via: "pr-merge", args });
+const opaqueInvocation = (reason, args = []) => ({ via: "opaque", reason, args });
+const GRAPHQL_INVOCATION = Object.freeze({ via: "api-graphql" });
+
+/**
+ * `true` quando a invocação NÃO é um `gh pr merge` literal — toda outra forma
+ * (REST, GraphQL, opaca) cai no modo ESTRITO do guard: nenhuma concessão conta
+ * e todo lock que o comando possa tocar é conferido (#10751).
+ */
+export function requiresStrict(inv) {
+  return inv?.via !== "pr-merge";
 }
 
 /**
@@ -560,7 +591,7 @@ const MERGE_VALUE_FLAGS = new Set([
 function mergeArgsOf(words, depth, out, env) {
   // Aninhamento além do teto (#10689 N): acusa em vez de aceitar.
   if (depth > MAX_DEPTH || words[0] === DEPTH_EXCEEDED) {
-    out.push(unknownTarget([]));
+    out.push(opaqueInvocation("depth"));
     return;
   }
   // `bash <<< 'gh pr merge 5'` / `eval`/`source` com here-string: o texto
@@ -697,7 +728,7 @@ function findExecCommands(words, from, depth, out, env) {
 function ghInvocation(args, depth, out, ctx) {
   const { appends, env, chain } = ctx;
   if (depth > MAX_DEPTH) {
-    out.push(unknownTarget([]));
+    out.push(opaqueInvocation("depth"));
     return;
   }
   let i = 0;
@@ -724,28 +755,28 @@ function ghInvocation(args, depth, out, ctx) {
   // `xargs … gh`: o xargs completa o comando com o que vier do stdin
   // (`pr merge 5`) — fail-closed, conta como merge.
   if (i >= args.length) {
-    if (appends) out.push(unknownTarget([...repoArgs]));
+    if (appends) out.push(opaqueInvocation("xargs", [...repoArgs]));
     return;
   }
   const sub = args[i];
   i++;
   // `gh $S merge 5`: o subcomando só existe em execução (#10689 O).
   if (isExpanded(sub)) {
-    out.push(unknownTarget([...repoArgs]));
+    out.push(opaqueInvocation("subcommand", [...repoArgs]));
     return;
   }
   if (sub === "pr") {
     skipFlags();
     if (i >= args.length) {
-      if (appends) out.push(unknownTarget([...repoArgs]));
+      if (appends) out.push(opaqueInvocation("xargs", [...repoArgs]));
       return;
     }
     if (isExpanded(args[i])) {
-      out.push(unknownTarget([...repoArgs, ...args.slice(i + 1)])); // `gh pr $M 5` (#10689 O)
+      out.push(opaqueInvocation("subcommand", [...repoArgs, ...args.slice(i + 1)])); // `gh pr $M 5` (#10689 O)
       return;
     }
     if (args[i] !== "merge") return;
-    out.push([...repoArgs, ...args.slice(i + 1)]);
+    out.push(prMergeInvocation([...repoArgs, ...args.slice(i + 1)]));
     return;
   }
   if (sub === "api") {
@@ -764,7 +795,7 @@ function ghInvocation(args, depth, out, ctx) {
     // Alias cuja expansão não dá pra ler (bloco YAML, `gh alias import` no
     // mesmo comando, valor vindo de expansão, config ilegível) ou que volta
     // a si mesmo: fail-closed, conta como merge, repo indeterminado.
-    out.push(unknownTarget([...repoArgs]));
+    out.push(opaqueInvocation(opaqueAliasReason(sub, env, chain), [...repoArgs]));
     return;
   }
   const rest = args.slice(i);
@@ -811,9 +842,9 @@ const splitsIntoWords = (w) => /^[\u0000\u0001]/.test(w);
 const isMultiWordExpansion = (w) => /[\u0001\u0003]\$(?:[@*]|\{[^}]*\[[@*]\]\})/.test(w);
 
 /**
- * Lê os argumentos depois de `gh api`. Devolve a lista de argumentos no
- * formato de `gh pr merge` (`["-R", "o/r", "5"]`, `["5"]` ou `[]` quando o nº
- * não é legível) se a chamada mergeia — ou pode mergear — uma PR, ou `null`.
+ * Lê os argumentos depois de `gh api`. Devolve a invocação (`api-rest`,
+ * `api-graphql`, ou `opaque` com `reason: "endpoint"` quando o endpoint vem do
+ * stdin do xargs) se a chamada mergeia — ou pode mergear — uma PR, ou `null`.
  *
  * `appends`: o comando veio de um `xargs` sem `-I`, que ANEXA o stdin (inclusive
  * flags como `-X PUT`) ao fim — o método nunca é dado como só-leitura.
@@ -886,11 +917,11 @@ function apiMergeArgs(args, appends) {
     else if (idx === endIdx && splitsIntoWords(w)) uncertain = true;
   });
   // `xargs gh api …` sem endpoint: ele vem do stdin — fail-closed.
-  if (endIdx === -1) return uncertain ? unknownTarget([]) : null;
+  if (endIdx === -1) return uncertain ? opaqueInvocation("endpoint") : null;
   const segs = normalizeApiPath(positional[endIdx]);
   const lower = segs.map((s) => s.toLowerCase());
   if ((segs.length === 1 && lower[0] === "graphql") || (segs.length === 2 && lower[0] === "api" && lower[1] === "graphql")) {
-    return graphqlIsMerge(fields, bodyFromFile || uncertain) ? unknownTarget([]) : null;
+    return graphqlIsMerge(fields, bodyFromFile || uncertain) ? GRAPHQL_INVOCATION : null;
   }
   // Sem `-X`, o gh usa POST quando há campos/corpo e GET quando não há.
   const effective = method === null ? (hasBody ? "POST" : "GET") : method;
@@ -971,35 +1002,36 @@ function literalSuffix(seg) {
  *   - de fim OPACO (`$URL`, `"$P/$E"`, `repos/$R/$P`, `pul$X/5/merg$E`, `{}`
  *     do xargs — #10689 D/E), salvo quando uma coleção literal que não leva a
  *     merge vem depois de tudo que poderia levar (`repos/$REPO/issues/$N`).
- * O repo (`-R o/r`) vai junto quando `repos/{o}/{r}` é literal; `{owner}/
- * {repo}` é o repo do diretório; qualquer outra forma marca o repo como
- * indeterminado (`unknownTarget`).
+ * `repo` da invocação: `{ kind: "literal", slug: "o/r" }` quando `repos/{o}/{r}`
+ * é literal; `{ kind: "cwd" }` pra `{owner}/{repo}` (o repo do diretório);
+ * `{ kind: "unknown" }` pra qualquer outra forma.
  */
 function restMergeArgs(segs, method) {
   const n = segs.length;
   if (n === 0) return null;
   const lower = segs.map((s) => s.toLowerCase());
   const opaque = segs.map(isOpaque);
-  let repoArgs = null;
+  let repo = { kind: "unknown" };
   if (n >= 3 && lower[0] === "repos" && !opaque[1] && !opaque[2]) {
-    if (segs[1] === "{owner}" && segs[2] === "{repo}") repoArgs = [];
-    else if (isRepoWord(segs[1]) && isRepoWord(segs[2])) repoArgs = ["-R", `${segs[1]}/${segs[2]}`];
+    if (segs[1] === "{owner}" && segs[2] === "{repo}") repo = { kind: "cwd" };
+    else if (isRepoWord(segs[1]) && isRepoWord(segs[2])) repo = { kind: "literal", slug: `${segs[1]}/${segs[2]}` };
   }
-  const result = (pr) => {
-    const args = [...(repoArgs ?? []), ...pr];
-    return repoArgs === null ? unknownTarget(args) : args;
-  };
+  const result = (pr = null) => ({ via: "api-rest", repo, pr });
   const last = n - 1;
   if (!opaque[last]) {
     if (lower[last] === "merge") {
       const num = segs[n - 2];
-      return result(n >= 3 && lower[n - 3] === "pulls" && /^\d+$/.test(num ?? "") ? [num] : []);
+      if (n >= 3 && lower[n - 3] === "pulls" && /^\d+$/.test(num ?? "")) {
+        const pr = Number(num);
+        return result(Number.isFinite(pr) ? pr : null);
+      }
+      return result();
     }
-    if (lower[last] === "merges") return result([]);
-    if (method !== "DELETE" && isBranchRefPath(lower, opaque)) return result([]);
+    if (lower[last] === "merges") return result();
+    if (method !== "DELETE" && isBranchRefPath(lower, opaque)) return result();
     return null;
   }
-  if (method !== "DELETE" && isBranchRefPath(lower, opaque)) return result([]);
+  if (method !== "DELETE" && isBranchRefPath(lower, opaque)) return result();
   const suffix = literalSuffix(segs[last]).toLowerCase();
   if (suffix !== "" && !"merge".endsWith(suffix) && !"merges".endsWith(suffix)) return null;
   // Última coleção literal que não leva a merge; se nenhum `pulls`/`merges`/
@@ -1007,7 +1039,7 @@ function restMergeArgs(segs, method) {
   let anchor = -1;
   for (let k = 0; k < last; k++) if (!opaque[k] && NON_MERGE_COLLECTIONS.has(lower[k])) anchor = k;
   if (anchor !== -1 && !lower.some((s, k) => k > anchor && !opaque[k] && MERGE_PATH_WORDS.has(s))) return null;
-  return result([]);
+  return result();
 }
 
 /**
@@ -1193,6 +1225,18 @@ function lookupGhAlias(name, env) {
   return env.importSeen || aliasesUnreliable(env.aliases) ? null : undefined;
 }
 
+/**
+ * `reason` da invocação opaca de um alias ilegível (só informativo — toda
+ * variante opaca tem o mesmo tratamento). Roda depois de `lookupGhAlias`, que
+ * já leu o config quando precisava.
+ */
+function opaqueAliasReason(name, env, chain) {
+  if (chain.includes(name)) return "alias-loop";
+  if (env.local.has(name) || env.configOverridden) return "alias-unreadable";
+  if (env.aliases.get(name) !== undefined) return "alias-unreadable";
+  return env.importSeen ? "alias-import" : "alias-unreadable";
+}
+
 /** Valor de `--shell`/`-s` (`--shell=false` desliga; ausente = ligado). */
 function shellFlagValue(w) {
   const eq = w.indexOf("=");
@@ -1259,7 +1303,7 @@ function shellDashCScript(words, from) {
 
 function collect(command, depth, out, ctx, env) {
   if (depth > MAX_DEPTH) {
-    out.push(unknownTarget([])); // #10689 N: fundo demais conta como merge
+    out.push(opaqueInvocation("depth")); // #10689 N: fundo demais conta como merge
     return;
   }
   for (const words of parseShellCommands(command, depth, ctx ?? DEFAULT_CTX)) mergeArgsOf(words, depth, out, env);
@@ -1324,11 +1368,9 @@ export function isHeredocDataCommand(command) {
 /**
  * Todas as invocações reais de merge em `command` (`gh pr merge`, `gh api`
  * de merge, alias do gh que expande pra um deles — #10689), na ordem em que
- * aparecem; cada item é a lista de argumentos no formato de `gh pr merge`
- * (o que vem depois de `merge`, precedido do `-R` global se houver; pra
- * `gh api`, `["-R", "o/r", "N"]`/`["N"]` ou `[]` quando o nº não é legível).
- * Invocação de repo indeterminado leva a propriedade não-enumerável
- * `targetUnknown: true` (ver `mergeTargetHints`).
+ * aparecem; cada item é um objeto da união discriminada `via` (#10751 —
+ * `pr-merge`/`api-rest`/`api-graphql`/`opaque`, descrita no topo do módulo).
+ * Só `pr-merge` pode sair do modo estrito (`requiresStrict`).
  *
  * `opts.aliases`: `Map<nome, expansão>` dos aliases do gh — default: os do
  * `config.yml` do gh (`loadGhAliases`). Testes passam um Map explícito; um
@@ -1374,12 +1416,31 @@ export function isGhPrMergeCommand(command, opts = {}) {
  * primeiro argumento todo-dígitos que não seja valor de uma flag (`--body
  * "100 dias"`, `--subject 5`, `-R o/r`). `undefined` quando a invocação não
  * traz número (o gh infere a PR pela branch; mutation GraphQL; caminho
- * opaco) ou não há merge nenhum.
+ * opaco) ou não há merge nenhum. Fachada compatível sobre a união (#10751).
  */
 export function extractGhPrMergeTargetPr(command, opts = {}) {
   const all = findGhPrMergeInvocations(command, opts);
   if (all.length === 0) return undefined;
-  const args = all[all.length - 1];
+  return invocationTargetPr(all[all.length - 1]);
+}
+
+/** Nº da PR de UMA invocação (`undefined` = não legível). */
+export function invocationTargetPr(inv) {
+  switch (inv?.via) {
+    case "api-rest":
+      return inv.pr ?? undefined;
+    case "api-graphql":
+      return undefined;
+    case "pr-merge":
+    case "opaque":
+      return prFromMergeArgs(inv.args);
+    default:
+      return undefined;
+  }
+}
+
+/** 1º argumento todo-dígitos que não seja valor de flag, no formato de `gh pr merge`. */
+function prFromMergeArgs(args) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (MERGE_VALUE_FLAGS.has(a)) {
@@ -1410,12 +1471,32 @@ export function mergeTargetHints(command, opts = {}) {
   const invocations = findGhPrMergeInvocations(command, opts);
   if (invocations.length > 0 && /GH_REPO\+?=["']?(?:\$|`)/.test(String(command))) unknown = true;
   for (const inv of invocations) {
-    if (inv.targetUnknown === true) unknown = true;
-    for (let k = 0; k < inv.length; k++) {
-      const a = inv[k];
+    switch (inv.via) {
+      case "api-graphql":
+        unknown = true; // `pullRequestId` não diz o repo
+        continue;
+      case "api-rest":
+        if (inv.repo.kind === "unknown") unknown = true;
+        else if (inv.repo.kind === "literal") {
+          if (isOpaque(inv.repo.slug)) unknown = true;
+          else repos.add(inv.repo.slug);
+        }
+        continue; // `cwd`: o repo do diretório, que `resolveMergeTargets` já lê
+      case "opaque":
+        unknown = true;
+        break; // os `args` legíveis ainda podem citar repos
+      case "pr-merge":
+        break;
+      default:
+        unknown = true; // forma desconhecida: fail-closed
+        continue;
+    }
+    const args = inv.args;
+    for (let k = 0; k < args.length; k++) {
+      const a = args[k];
       let value = null;
       if (a === "-R" || a === "--repo") {
-        value = inv[k + 1] ?? SUBST;
+        value = args[k + 1] ?? SUBST;
         k++;
       } else if (a.startsWith("--repo=")) value = a.slice(7);
       else if (/^-R./.test(a)) value = a.slice(2).replace(/^=/, "");
