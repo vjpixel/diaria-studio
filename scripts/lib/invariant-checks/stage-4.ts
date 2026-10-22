@@ -53,6 +53,7 @@ import {
 } from "../use-melhor-post.ts"; // #9568
 import { findOverflowingUseMelhorSlides, lintUseMelhorPostShape } from "../use-melhor-carousel.ts"; // #9568, #9789/#9791, #10246
 import { readUseMelhorCarouselStamp, staleUseMelhorImageKeys } from "../use-melhor-slide-files.ts"; // #9795
+import { gatherUseMelhorStatusInput } from "../use-melhor-status.ts"; // #10879
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
@@ -2731,6 +2732,47 @@ function checkUseMelhorPublicImageKeysHaveFiles(editionDir: string): InvariantVi
 }
 
 /**
+ * (#10879) Carrossel do 4º post (`04-um-carousel-*`) defasado em relação ao
+ * `## um` atual NO GATE. O pré-render do Stage 4 (`upload-images-public.ts
+ * --mode social`) já regera o carrossel defasado sozinho (#10834); se ele
+ * continua defasado aqui, a regeração falhou — caso típico: a máquina não tem
+ * a fonte Georgia (servidor 300) — e o Stage 5 vai pular o 4º post no
+ * LinkedIn/Instagram/Facebook. Antes deste check isso só aparecia como warning
+ * no stderr do upload, sem nada no gate. Warning, nunca error: o 4º post é
+ * fail-soft (#9568) e a edição não bloqueia por ele.
+ */
+function checkUseMelhorCarouselStaleAtGate(
+  editionDir: string,
+  /** Injetável pra teste; default = `platform.config.json` do repo. */
+  useMelhorConfig?: UseMelhorPostConfigState,
+): InvariantViolation[] {
+  const config = useMelhorConfig ?? loadUseMelhorPostConfigState(ROOT);
+  if (!config.enabled) return [];
+  let stale: boolean;
+  try {
+    stale = gatherUseMelhorStatusInput(editionDir, config).carouselStale === true;
+  } catch {
+    return []; // arquivo ilegível já é coberto pelos checks de estrutura
+  }
+  if (!stale) return [];
+  return [
+    {
+      rule: "use-melhor-carousel-stale",
+      message:
+        `carrossel do 4º post (USE MELHOR) está DEFASADO em relação ao '## ${USE_MELHOR_POST_ID}' atual de 03-social.md ` +
+        `e o pré-render não conseguiu regerar (causa mais comum: fonte Georgia ausente nesta máquina, #10879). ` +
+        `Sem conserto, o Stage 5 PULA o 4º post no LinkedIn/Instagram/Facebook. Conserto: numa máquina com Georgia, ` +
+        `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" + ` +
+        `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir} --mode social" ` +
+        `(o motivo exato sai no stderr do upload).`,
+      source_issue: "#10879",
+      severity: "warning",
+      file: resolve(editionDir, "03-social.md"),
+    },
+  ];
+}
+
+/**
  * (#9592) O 4º post (USE MELHOR) só sai se o item ESCOLHIDO — o de
  * `_internal/use-melhor-post.json`, pro qual o `## um` foi escrito — seguir
  * renderizado no USE MELHOR do `02-reviewed.md` final. Edição 261005: os 5
@@ -3813,6 +3855,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: (editionDir) => checkUseMelhorPostItemRendered(editionDir),
   },
   {
+    id: "use-melhor-carousel-stale",
+    description: "carrossel do 4º post (USE MELHOR) defasado em relação ao '## um' no gate — a regeração do pré-render falhou (ex.: Georgia ausente) e o Stage 5 pularia o 4º post (#10879, warning-only)",
+    source_issue: "#10879",
+    stage: 4,
+    run: (editionDir) => checkUseMelhorCarouselStaleAtGate(editionDir),
+  },
+  {
     id: "use-melhor-image-key-without-file",
     description: "06-public-images.json com chave um_carousel_* de slide que não existe mais no disco — sobra de carrossel do 4º post com mais slides (#9795, warning-only)",
     source_issue: "#9795",
@@ -3914,6 +3963,7 @@ export {
   checkCarouselTextOverflow,
   checkUseMelhorPostItemRendered,
   checkUseMelhorPublicImageKeysHaveFiles,
+  checkUseMelhorCarouselStaleAtGate,
   checkInstagramCommentDeliveryPromise,
   checkBoxDivulgacaoRuntimeExcluded,
   checkRenderWarnings,
