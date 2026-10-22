@@ -84,6 +84,8 @@ import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Part
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
+import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
+import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import {
@@ -627,6 +629,9 @@ async function main(): Promise<number | void> {
   const resolvedEditionUrl = existsSync(editionUrlFile)
     ? readFileSync(editionUrlFile, "utf8").trim() || null
     : null;
+  // #10772: URL do vídeo do dia (opcional) pro texto do D1.
+  const d1Video = readD1VideoUrl(editionDir);
+  if (d1Video.warning) console.warn(`AVISO threads/d1: ${d1Video.warning}`);
 
   const tagAndAppend = (entry: PostEntry): void => {
     if (isTest) entry.is_test = true;
@@ -726,6 +731,14 @@ async function main(): Promise<number | void> {
         // #4295: tag UTM per-channel (utm_source=threads) na URL já resolvida.
         text = tagEditionUrlInText(text, editionUrl, THREADS_EDITION_UTM);
       }
+    }
+
+    // #10772: link do vídeo do dia no texto curto do D1 — só se couber em 1
+    // chunk (o agendamento recusa mais de 1); senão o texto fica como está.
+    if (d === "d1" && d1Video.url) {
+      const inj = injectVideoLinkWithinLimit(text, d1Video.url, THREADS_CHAR_LIMIT);
+      if (inj.injected) text = inj.text;
+      else console.warn(`AVISO threads/d1: link do vídeo não entrou no texto — ${inj.reason}`);
     }
 
     // Dividir em chunks de 500 chars se necessário

@@ -58,6 +58,8 @@ import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10451 — lin
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { runCli } from "./lib/cli-exit.ts";
+import { insertVideoLinkLine } from "./lib/diaria/d1-video-link.ts"; // #10772
+import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import {
@@ -75,6 +77,21 @@ import {
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * #10772: linha com o link do vídeo do dia no post do D1 — só na página
+ * diar.ia.br (decisão do editor; as outras páginas seguem sem o link). Sem URL,
+ * outro destaque ou outra página: caption intacta.
+ */
+export function withD1VideoLink(
+  caption: string,
+  destaque: string,
+  pageSlug: string,
+  videoUrl: string | null,
+): string {
+  if (!videoUrl || destaque !== "d1" || pageSlug !== DEFAULT_FACEBOOK_PAGE_SLUG) return caption;
+  return insertVideoLinkLine(caption, videoUrl);
+}
 
 /**
  * #2834: migrado pra lib/cli-args.ts. Os 6 flags booleanos abaixo eram
@@ -712,6 +729,7 @@ async function rescheduleFacebookPosts(opts: {
     let caption: string;
     try {
       caption = applyFacebookPageUtm(extractPostText(opts.socialMd, "facebook", d), opts.page); // #10458
+      caption = withD1VideoLink(caption, d, slug, readD1VideoUrl(opts.editionDir).url); // #10772
     } catch (e: any) {
       console.error(`ERROR re-extracting text for ${facebookLogLabel(slug, d)}: ${e.message}`);
       failed += 1;
@@ -970,6 +988,10 @@ async function main(): Promise<number | void> {
   const useMelhorSummary = summarizeUseMelhor(umPlan, umPost);
   const dispatchIds = [...destaques, ...(umPost?.ok ? useMelhorDispatchIds(umPlan) : [])];
 
+  // #10772: URL do vídeo do dia (opcional) pro post do D1 da página diar.ia.br.
+  const d1Video = readD1VideoUrl(editionDir);
+  if (d1Video.warning) console.warn(`AVISO facebook/d1: ${d1Video.warning}`);
+
   // #10458: mesma sequência de posts, uma vez por página publicável (mesmo
   // texto + mesmo horário). Falha de uma página fica nas entradas dela.
   for (const page of pagePlan.publishable) {
@@ -997,6 +1019,7 @@ async function main(): Promise<number | void> {
           d === "um" && umPost?.ok ? umPost.caption : extractPostText(socialMd, "facebook", d),
           page,
         );
+        caption = withD1VideoLink(caption, d, page.slug, d1Video.url); // #10772
       } catch (e: any) {
         console.error(`ERROR extracting text for ${facebookLogLabel(page.slug, d)}: ${e.message}`);
         const entry: PostEntry = {
