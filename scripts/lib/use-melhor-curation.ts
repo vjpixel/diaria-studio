@@ -17,6 +17,7 @@ import { canonicalize } from "./url-utils.ts";
 import { hasRoundupSignalInUrlOrTitle, urlSlugText } from "./roundup-detect.ts";
 // #6739: detecta URL de vídeo (YouTube/Vimeo) pra priorizar duração real sobre heurística de título.
 import { isVideoUrl } from "./video-youtube-resolve.ts";
+import { looksEnglish } from "./lang-detect.ts";
 
 // ---------------------------------------------------------------------------
 // #2276 — Boost: tutorial/academy oficial
@@ -772,10 +773,63 @@ const MEDIUM_TUTORIAL_RE =
  * pelo caller em `_internal/use-melhor-tempo-source.json` pra medir depois
  * quanto ainda sai de placeholder de título (ver `estimateUseMelhorTempoDetailed`).
  */
-export type UseMelhorTempoSource = "wordcount" | "youtube" | "title-heuristic";
+export type UseMelhorTempoSource = "wordcount" | "youtube" | "steps" | "title-heuristic";
 
 /** #6739: velocidade de leitura assumida para PT-BR (palavras por minuto). */
 const WORDS_PER_MINUTE_PTBR = 200;
+
+/**
+ * #10765: velocidade assumida para texto em INGLÊS lido por leitor PT-BR
+ * (segunda língua, ~20% mais lento). Premissa do implementador — o leitor da
+ * diar.ia.br é quem lê, então o ppm segue o idioma do texto, não o do autor.
+ */
+const WORDS_PER_MINUTE_EN_FOR_PTBR_READER = 160;
+
+/**
+ * #10765: o texto do body está em inglês? `<html lang="en…">` decide quando
+ * presente; sem o atributo, cai pro detector de stop words (`looksEnglish`).
+ */
+export function isEnglishBody(html: string, text: string): boolean {
+  const m = html.match(/<html[^>]*\blang\s*=\s*["']?([a-zA-Z]{2})/i);
+  if (m) return m[1].toLowerCase() === "en";
+  return looksEnglish(text.slice(0, 5000));
+}
+
+/** #10765: minutos assumidos por passo ao EXECUTAR um tutorial passo a passo. */
+const MINUTES_PER_TUTORIAL_STEP = 3;
+/** #10765: abaixo disso a página não é "passo a passo" — só leitura conta. */
+const TUTORIAL_MIN_STEPS = 4;
+
+/**
+ * #10765: conta passos de um tutorial no HTML — itens `<li>` dentro de `<ol>`
+ * ou headings "Step N"/"Passo N". Pega o maior dos dois (evita somar a mesma
+ * lista duas vezes). Puro.
+ */
+export function countTutorialSteps(html: string): number {
+  // Headings "Step N"/"Passo N"/"Etapa N" são evidência direta de passos.
+  const headings = (html.match(/<h[1-4][^>]*>\s*(?:step|passo|etapa)\s*\d+/gi) ?? []).length;
+  // `<ol>` genérico (ranking, lista de itens) NÃO é tutorial: só conta com
+  // contexto procedural no título/headings da página.
+  let olItems = 0;
+  if (hasTutorialContext(html)) {
+    for (const ol of html.matchAll(/<ol\b[\s\S]*?<\/ol>/gi)) {
+      olItems += (ol[0].match(/<li\b/gi) ?? []).length;
+    }
+  }
+  return Math.max(olItems, headings);
+}
+
+const TUTORIAL_CONTEXT_RE =
+  /\b(how[\s-]+to|tutorial|step[\s-]*by[\s-]*step|getting\s+started|quick\s*start|walkthrough|passo\s+a\s+passo|como\s+(?:fazer|criar|usar|configurar|instalar|construir|montar)|guia\s+pr[aá]tico)\b/i;
+
+/** #10765: <title>/<h1>/<h2> sinalizam conteúdo procedural (não ranking/lista). */
+function hasTutorialContext(html: string): boolean {
+  const heads = [
+    ...html.matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi),
+    ...html.matchAll(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/gi),
+  ];
+  return heads.some((h) => TUTORIAL_CONTEXT_RE.test(h[1].replace(/<[^>]+>/g, " ")));
+}
 
 /**
  * #6739: só confiar na contagem de palavras do body cacheado quando ele tem
@@ -896,10 +950,18 @@ export function estimateUseMelhorTempoDetailed(
         return { estimate: `(${minutes} min)`, source: "youtube" };
       }
     }
-    const words = countWords(extractPlainTextFromHtml(bodyHtml));
+    const text = extractPlainTextFromHtml(bodyHtml);
+    const words = countWords(text);
     if (words >= WORD_COUNT_MIN_THRESHOLD) {
-      const minutes = roundToReadingMinutesBucket(words / WORDS_PER_MINUTE_PTBR);
-      return { estimate: `(${minutes} min)`, source: "wordcount" };
+      const ppm = isEnglishBody(bodyHtml, text) ? WORDS_PER_MINUTE_EN_FOR_PTBR_READER : WORDS_PER_MINUTE_PTBR;
+      const readingMinutes = words / ppm;
+      // #10765: tutorial passo a passo → tempo de EXECUÇÃO (não só leitura).
+      const steps = countTutorialSteps(bodyHtml);
+      const execMinutes = steps >= TUTORIAL_MIN_STEPS ? steps * MINUTES_PER_TUTORIAL_STEP : 0;
+      if (execMinutes > readingMinutes) {
+        return { estimate: `(${roundToReadingMinutesBucket(execMinutes)} min)`, source: "steps" };
+      }
+      return { estimate: `(${roundToReadingMinutesBucket(readingMinutes)} min)`, source: "wordcount" };
     }
   }
   return { estimate: estimateUseMelhorTempoTitleHeuristic(title, url), source: "title-heuristic" };
