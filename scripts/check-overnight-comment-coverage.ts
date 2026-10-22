@@ -27,6 +27,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
+import { partitionStudioPlanEntries } from "./lib/plan-issue-ref.ts";
 import {
   checkCoverage,
   checkLabelCoverage,
@@ -110,7 +111,18 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  const issues = normalizeIssues<PlanIssueLike>(planRaw as IssuesBearing<PlanIssueLike>);
+  // #10778: comentários/labels são buscados por número no diaria-studio.
+  // Entrada de outro repo (`"vjpixel/diaria-design#21"` → `number: 21`)
+  // seria checada contra a studio#21 — fica de fora, com aviso explícito.
+  const { studio: issues, skipped } = partitionStudioPlanEntries(
+    normalizeIssues<PlanIssueLike>(planRaw as IssuesBearing<PlanIssueLike>),
+  );
+  if (skipped.length > 0) {
+    console.error(
+      `[check-overnight-comment-coverage] ${skipped.length} entrada(s) de outro repo (ou identidade desconhecida) FORA ` +
+        `desta checagem, que só consulta o diaria-studio: ${skipped.join(", ")}`,
+    );
+  }
   const cwd = process.cwd();
 
   // Passo 1: para toda issue "mergeada" com `pr`, buscar o body do PR — só
