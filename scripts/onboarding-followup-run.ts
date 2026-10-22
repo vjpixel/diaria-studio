@@ -88,6 +88,9 @@ import {
   recordLiveCheckSkips,
   recordLiveCheckFailures,
   hasLiveFailure,
+  isCapDemoted,
+  refreshPeopleEmailsFromChecks,
+  resolveFollowupExitCode,
   recordApoioChecks,
   recordFollowupRun,
   renderFollowupBody,
@@ -816,12 +819,11 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   const anchorSecById = new Map(formCandidates.map((c) => [c.kit_subscriber_id, c.anchorSec] as const));
   const orderSec = (d: { kit_subscriber_id: number; kind: FollowupStepKind }) =>
     (isApoioStep(d.kind) ? cadastroSecById.get(d.kit_subscriber_id) : anchorSecById.get(d.kit_subscriber_id)) ?? null;
-  const { within: dueWithinCap, deferred: capDeferred } = splitDueByCap(
-    due,
-    cfg.maxRecipientsPerLot,
-    orderSec,
-    (d) => hasLiveFailure(block.people[String(d.kit_subscriber_id)], d.kind),
-  );
+  // #10763 rodízio; #10773: o rebaixamento cede no último dia da janela, e a
+  // projeção do teto (`capWindowOverflows`) aplica a mesma regra.
+  const failedLastRound = (d: FollowupDue) => hasLiveFailure(block.people[String(d.kit_subscriber_id)], d.kind);
+  const demoted = (d: FollowupDue) => isCapDemoted(d, failedLastRound(d), orderSec(d), nowSec, cfg);
+  const { within: dueWithinCap, deferred: capDeferred } = splitDueByCap(due, cfg.maxRecipientsPerLot, orderSec, demoted);
   for (const o of capDeferred) {
     bump(o.kind, "adiado_teto", o.deferred);
     lotsOut.push({ kind: o.kind, eligible: o.eligible, deferred: o.deferred, cap: cfg.maxRecipientsPerLot });
@@ -833,7 +835,7 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   // precede o filtro ao vivo: exclusões ocupam vaga sem reposição hoje; falhas de
   // consulta podem voltar amanhã. Estimativa, sem limite garantido de perdas
   // e com imprecisão de ~1h na fronteira diária (ver capWindowOverflows).
-  const windowOverflows = capWindowOverflows(due, cfg.maxRecipientsPerLot, nowSec, cfg, orderSec);
+  const windowOverflows = capWindowOverflows(due, cfg.maxRecipientsPerLot, nowSec, cfg, orderSec, failedLastRound);
   run.cap_window_overflow = windowOverflows.length;
   for (const w of windowOverflows) {
     bump(w.kind, "excede_janela", w.projected_vencidas);
@@ -868,6 +870,9 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       recordLiveCheckSkips(people, excluded, nowIso);
       recordLiveCheckFailures(people, excluded, liveOk, nowIso);
       recordApoioChecks(people, liveOk, nowIso);
+      // #10774: o link do formulário é assinado com o e-mail ATUAL do Kit;
+      // a resposta tem de casar com ele, não com o e-mail da 1ª gravação.
+      refreshPeopleEmailsFromChecks(people, checks.results);
     });
   }
 
@@ -959,6 +964,9 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
       lotsOut.push({ kind, lot_id: lot.lot_id, created: false, status: lot.status, error: lot.last_error });
     }
   }
+  // #10774: quem entrou no store agora (1º envio) nasceu com o e-mail do
+  // plano; alinha ao e-mail atual do Kit, o mesmo que assinou o link.
+  if (send && run.lots_created > 0) persistFollowupPeople(storePath, (people) => refreshPeopleEmailsFromChecks(people, checks.results));
   return { run, lots: lotsOut };
 }
 
@@ -1150,7 +1158,11 @@ async function main(): Promise<void> {
   }
   record(out.run);
   console.log(JSON.stringify({ mode: args.send ? "SEND" : "dry-run", ...out.run, lots: out.lots }, null, 2));
-  if (out.run.lots_failed > 0 || out.run.over_cap > 0 || (out.run.lots_unresolved ?? 0) > 0 || (out.run.cap_window_overflow ?? 0) > 0) process.exitCode = 1;
+  // #10661: excedente do teto sozinho sai 3 (`successExitCodes: [3]` na task);
+  // nunca rebaixa um exit 1 já posto (ex.: falha ao registrar a rodada).
+  const code = resolveFollowupExitCode(out.run);
+  if (code !== 0 && (process.exitCode ?? 0) === 0) process.exitCode = code;
+  else if (code === 1) process.exitCode = 1;
 }
 
 if (isMainModule(import.meta.url)) {
