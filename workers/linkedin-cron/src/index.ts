@@ -134,7 +134,9 @@ export type WebhookTarget = "diaria" | "pixel";
  * comparar com o que os publishers da diária emitem — `um` (4º post, item USE
  * MELHOR) entrou aqui; sem ele o Worker devolvia 400 e o 4º post nunca agendava.
  */
-export const QUEUE_DESTAQUE_RE = /^(d[123]|um|weekly(-[a-z]+)?|especial(-[a-z]+)?|eia-\d{6})$/;
+// #10766: `eia-{AAMMDD}` (post avulso do "É IA?") saiu — o quiz não é mais
+// publicado nas redes, só na newsletter. Recusar no enqueue é o guard pra não voltar.
+export const QUEUE_DESTAQUE_RE = /^(d[123]|um|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/;
 export type QueueAction = "post" | "comment";
 // #3817/#3944 Parte B — canal de disparo. Ausente/undefined = "linkedin" SEMPRE
 // (backward-compat obrigatória: entries já em produção no KV nunca tiveram este campo).
@@ -144,7 +146,7 @@ export interface QueueEntry {
   text: string;
   image_url: string | null;
   scheduled_at: string; // ISO 8601
-  destaque: string; // d1 | d2 | d3 | um (#9568) | weekly[-mode] | especial[-mode] | eia-{AAMMDD}
+  destaque: string; // d1 | d2 | d3 | um (#9568) | weekly[-mode] | especial[-mode]
   created_at: string;
   retry_count?: number; // #880 — incrementado a cada falha de fetch
   // #595 — fields opcionais pra suportar comments. Default `webhook_target`
@@ -331,12 +333,11 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // carrossel semanal; #5330 renomeou "weekly" pra "weekly-clicked" /
   // "weekly-highlights", mas "weekly" cru segue aceito — entries antigas no
   // KV/DLQ e qualquer chamador que ainda não migrou não devem quebrar).
-  // `eia-{AAMMDD}`: post avulso do quiz "É IA?" (`scripts/publish-eia-social.ts`).
-  // Sufixo numérico e não `[a-z]` como os outros porque o discriminador aqui é
-  // a EDIÇÃO, não um modo — dois posts do quiz só diferem pela data.
+  // `eia-{AAMMDD}` (quiz "É IA?") foi aceito até o #10766 — o quiz não sai
+  // mais nas redes, então o enqueue recusa.
   // `um`: 4º post diário (item USE MELHOR, #9568) — publish-linkedin/instagram/threads.
   if (!QUEUE_DESTAQUE_RE.test(body.destaque as string)) {
-    return json({ error: "destaque must be d1, d2, d3, um, weekly[-mode], especial[-mode], or eia-{AAMMDD}" }, 400);
+    return json({ error: "destaque must be d1, d2, d3, um, weekly[-mode], or especial[-mode]" }, 400);
   }
 
   // #595 — Validar webhook_target e action (opcionais; defaults aplicados

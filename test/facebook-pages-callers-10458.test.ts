@@ -8,7 +8,6 @@
  *   - verify-stage-4-dispatch (/scheduled_posts e token POR PÁGINA);
  *   - delete-test-schedules (deletar a memelab não marca a diaria);
  *   - verify-facebook-posts (token da página de cada entry);
- *   - publish-eia-social (um plano por página, idempotência por página);
  *   - social-followers(-collect) (uma série por página);
  *   - studio-integrations (status de credencial por página).
  *
@@ -34,7 +33,6 @@ import { checkFbPageIdSet, checkFbTokenSet } from "../scripts/lib/invariant-chec
 import { verifyFacebookEntries } from "../scripts/verify-stage-4-dispatch.ts";
 import { markDeletedEntries } from "../scripts/delete-test-schedules.ts";
 import { verifyPublished } from "../scripts/verify-facebook-posts.ts";
-import { eiaPlanKey, expandFacebookPlans, pendingChannels, type EiaDispatchPlan } from "../scripts/publish-eia-social.ts";
 import {
   computeDailyBalances,
   parseSocialFollowersJsonl,
@@ -249,33 +247,6 @@ describe("#10458 verify-facebook-posts — token da página de cada entry", () =
     });
     assert.deepEqual(tokensSeen, ["tok-diaria", "tok-meme"]);
     assert.equal(updated.posts[2].status, "scheduled", "página sem credencial: entry intocada, nunca 'failed' inventado");
-  });
-});
-
-describe("#10458 publish-eia-social — um plano por página", () => {
-  const base: EiaDispatchPlan[] = [
-    { channel: "linkedin", text: "li", images: ["a"] },
-    { channel: "facebook", text: "Vote em https://diar.ia.br/?utm_source=facebook&utm_medium=social", images: ["a"] },
-  ];
-
-  it("expande o Facebook em uma entrada por página habilitada, com a UTM da página", () => {
-    const out = expandFacebookPlans(base, pages(FULL_ENV));
-    assert.deepEqual(out.map(eiaPlanKey), ["linkedin", "facebook", "facebook[memelab]"]);
-    assert.doesNotMatch(out[1].text, /utm_content/, "diaria (utm_content null) sai idêntica");
-    assert.match(out[2].text, /utm_content=page-memelab/);
-  });
-
-  it("memelab desligada → só a diaria, com a chave de estado de sempre", () => {
-    const out = expandFacebookPlans(base, pages(FULL_ENV, false));
-    assert.deepEqual(out.map(eiaPlanKey), ["linkedin", "facebook"]);
-  });
-
-  it("idempotência por página: diaria já agendada (estado legado 'facebook') não bloqueia a memelab", () => {
-    const plans = expandFacebookPlans(base, pages(FULL_ENV));
-    const state = { edition: "261019", scheduled_at: "x", channels: { facebook: { ref: "1", scheduled_at: "x" } } };
-    const { todo, alreadyDone } = pendingChannels(plans, state, false);
-    assert.deepEqual(alreadyDone, ["facebook"]);
-    assert.deepEqual(todo.map(eiaPlanKey), ["linkedin", "facebook[memelab]"]);
   });
 });
 
