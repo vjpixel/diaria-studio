@@ -81,10 +81,10 @@ describe("config REAL: default não muda o que vai ao ar (#10458)", () => {
   const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const pages = loadFacebookPagesConfig(config);
 
-  it("diaria ligada, memelab desligada", () => {
+  it("diaria ligada, memelab e vjpixel desligadas (vjpixel só recebe o Reels, #10769)", () => {
     assert.deepEqual(
       pages.map((p) => [p.slug, p.enabled]),
-      [["diaria", true], ["memelab", false]],
+      [["diaria", true], ["memelab", false], ["vjpixel", false]],
     );
   });
 
@@ -101,16 +101,18 @@ describe("config REAL: default não muda o que vai ao ar (#10458)", () => {
     assert.equal(m.token_env, "FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN");
   });
 
-  it("com as duas credenciais presentes, só a diaria é publicável", () => {
+  it("com todas as credenciais presentes, só a diaria é publicável", () => {
     const resolved = resolveFacebookPages(pages, {
       FACEBOOK_PAGE_ID: "1",
       FACEBOOK_PAGE_ACCESS_TOKEN: "t1",
       FACEBOOK_MEMELAB_PAGE_ID: "2",
       FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN: "t2",
+      FACEBOOK_VJPIXEL_PAGE_ID: "3",
+      FACEBOOK_VJPIXEL_PAGE_ACCESS_TOKEN: "t3",
     });
     const plan = planFacebookPages(resolved);
     assert.deepEqual(plan.publishable.map((p) => p.slug), ["diaria"]);
-    assert.deepEqual(plan.disabled, ["memelab"]);
+    assert.deepEqual(plan.disabled, ["memelab", "vjpixel"]);
     assert.deepEqual(plan.missingCredentials, []);
   });
 
