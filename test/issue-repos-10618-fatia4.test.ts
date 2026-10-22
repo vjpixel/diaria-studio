@@ -131,7 +131,12 @@ function fakeGh(root: string, responses: Record<string, unknown>) {
       "  if (!(key in map)) { process.stderr.write('sem resposta: ' + key); process.exit(1); }",
       // Falha de PROCESSO (não de API): stdout acima do maxBuffer do spawnSync
       // vira `result.error` (ENOBUFS) — o mesmo caminho de spawn/timeout.
-      "  if (map[key] === '__PROCESS_FAILURE__') { process.stdout.write('x'.repeat(2 * 1024 * 1024)); process.exit(0); }",
+      // Escrita SÍNCRONA no fd 1 (bloqueante, nunca via `process.stdout`):
+      // no Linux `process.stdout` num pipe é assíncrono e o `process.exit`
+      // logo depois truncava a saída abaixo do maxBuffer — o pai recebia lixo
+      // ("xxxx", JSON malformado, erro de API) em vez do ENOBUFS. Bloqueando,
+      // o pai sempre passa do maxBuffer e mata o filho; EPIPE aqui é esperado.
+      "  if (map[key] === '__PROCESS_FAILURE__') { const chunk = Buffer.alloc(64 * 1024, 120); try { for (let i = 0; i < 64; i++) { for (;;) { try { fs.writeSync(1, chunk); break; } catch (e) { if (e.code !== 'EAGAIN') throw e; } } } } catch {} process.exit(0); }",
       "  process.stdout.write(JSON.stringify(map[key]));",
       "  process.exit(0);",
       "}",

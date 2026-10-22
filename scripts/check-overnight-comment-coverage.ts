@@ -289,7 +289,8 @@ if (isMainModule(import.meta.url)) {
     ...[...partialFailures].map(([r, n]) => `${r} (${n} consulta(s) com erro)`),
   ];
   const okPrefix = partialNote.length > 0 ? "ok PARCIAL" : "ok";
-  const partialSuffix = partialNote.length > 0 ? ` — PARCIAL — NÃO avaliados: ${partialNote.join(", ")}` : "";
+  // O "PARCIAL" já vem no prefixo (`ok PARCIAL`); aqui só o que ficou de fora.
+  const partialSuffix = partialNote.length > 0 ? ` (NÃO avaliados: ${partialNote.join(", ")})` : "";
   if (partialNote.length > 0) {
     console.error(`[check-overnight-comment-coverage] PARCIAL — NÃO avaliados: ${partialNote.join(", ")}`);
   }
