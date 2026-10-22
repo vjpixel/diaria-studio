@@ -226,3 +226,56 @@ describe("parseIssuesFlag (#10698)", () => {
     assert.throws(() => parseIssuesFlag("abc"));
   });
 });
+
+describe("#10618 fatia 4 (review B) — PR de outro repo da allowlist", () => {
+  const DESIGN = "vjpixel/diaria-design";
+
+  it("setPrBodyRest com repo: PATCH em repos/{repo}/pulls/N e releitura com -R (nunca o PR do cwd)", () => {
+    const calls: string[][] = [];
+    let stored = "";
+    const run: GhRunFn = (args) => {
+      calls.push(args);
+      if (args[0] === "api") {
+        stored = args.find((a) => a.startsWith("body="))!.slice("body=".length);
+        return ok();
+      }
+      return ok(`${stored}\n`);
+    };
+    assert.equal(setPrBodyRest(23, "Closes #21", "/repo", run, DESIGN).ok, true);
+    assert.ok(calls[0].includes(`repos/${DESIGN}/pulls/23`));
+    assert.ok(!calls.some((c) => c.some((a) => a.includes("{owner}"))), "sem placeholder do cwd");
+    assert.deepEqual(calls[1].slice(calls[1].indexOf("-R"), calls[1].indexOf("-R") + 2), ["-R", DESIGN]);
+  });
+
+  it("addPrLabelsRest com repo: POST em repos/{repo}/issues/N/labels e releitura com -R", () => {
+    const calls: string[][] = [];
+    const run: GhRunFn = (args) => {
+      calls.push(args);
+      return args[0] === "api" ? ok() : ok("no-regression-test\n");
+    };
+    assert.equal(addPrLabelsRest(23, ["no-regression-test"], "/repo", run, DESIGN).ok, true);
+    assert.ok(calls[0].includes(`repos/${DESIGN}/issues/23/labels`));
+    assert.ok(calls[1].includes("-R") && calls[1].includes(DESIGN));
+  });
+
+  it("resolveExpectedIssues com repo: lê a branch do PR no repo dado", () => {
+    const calls: string[][] = [];
+    const r = resolveExpectedIssues(23, null, "/repo", (args) => {
+      calls.push(args);
+      return ok("develop/fix-21-x\n");
+    }, DESIGN);
+    assert.deepEqual(r, { ok: true, issues: [21], branch: "develop/fix-21-x" });
+    assert.ok(calls[0].includes("-R") && calls[0].includes(DESIGN));
+  });
+
+  it("sem repo: comportamento de sempre (placeholder do cwd, sem -R)", () => {
+    const calls: string[][] = [];
+    const run: GhRunFn = (args) => {
+      calls.push(args);
+      return args[0] === "api" ? ok() : ok("x\n");
+    };
+    setPrBodyRest(23, "x", "/repo", run);
+    assert.ok(calls[0].includes("repos/{owner}/{repo}/pulls/23"));
+    assert.ok(!calls[1].includes("-R"));
+  });
+});
