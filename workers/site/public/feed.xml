@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 21 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 22 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Claude projetou proteínas contra veneno de escorpião</title>
+      <link>https://diar.ia.br/p/claude-projetou-proteinas-contra-veneno-de-escorpiao</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/claude-projetou-proteinas-contra-veneno-de-escorpiao</guid>
+      <pubDate>Thu, 22 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Nubank dá nota de até mil para sua carteira | Mistral desafia ElevenLabs com voz mais barata</description>
+    </item>
     <item>
       <title>Você já viu IA mentir. Já viu roubar?</title>
       <link>https://diar.ia.br/p/voce-ja-viu-ia-mentir-ja-viu-roubar</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado</guid>
       <pubDate>Wed, 12 Aug 2026 09:00:00 GMT</pubDate>
       <description>Meta lança Muse Glimmer, modelo de 30B aberto | Sessões do Claude Code agora se falam</description>
-    </item>
-    <item>
-      <title>Medicina teme formar médicos sem raciocínio</title>
-      <link>https://diar.ia.br/p/medicina-teme-formar-medicos-sem-raciocinio</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/medicina-teme-formar-medicos-sem-raciocinio</guid>
-      <pubDate>Tue, 11 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Entrevistas de emprego ganham avatar sintético | OpenAI freia modelo por risco cibernético</description>
     </item>
   </channel>
 </rss>
