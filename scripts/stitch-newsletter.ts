@@ -27,7 +27,6 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { writeFileAtomicIfChanged } from "./lib/atomic-write.ts";
 import { cleanSummary } from "./lib/clean-summary.ts";
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1790 (era inline divergente)
 import {
@@ -57,8 +56,6 @@ import { findDuplicateSnippetUrls, formatDuplicateSnippetUrlWarnings, loadSnippe
 import { resolveBoxesForEdition } from "./select-boxes-by-clicks.ts"; // #4626: seleção automática de boxes 1/2/3 por cliques+tendência+anti-repetição — só afeta main() (CLI), stitchNewsletter() em si permanece pura/sem I/O de auto-seleção
 import { matchEditionHub, extractBoldLinkTitles } from "./lib/hub-match.ts"; // #4907: link contextual pro hub temático quando as manchetes do dia casam HUB_KEYWORD_PATTERNS
 import { selectRelatedEditions, renderRelatedEditionsMarkdown, loadRecentRelatedEditionUrls } from "./lib/related-editions.ts"; // #5122/#5181: aresta edição->edição no fim do corpo — independente do #4907 acima (não exige match único edição-wide), exclusão mútua aplicada abaixo
-import { resolveHubDivulgacaoBoxSource, renderGeneratedSnippet } from "./build-hub-divulgacao-box.ts"; // #5263: regen do box rotativo de hubs — wiring que faltava, ver regenerateHubDivulgacaoBoxForEdition() abaixo
-import { buildHubDivulgacaoBoxMarkdown } from "./lib/shared/hub-divulgacao-box.ts"; // #5263
 
 interface ArticleLike {
   url?: string;
@@ -1009,59 +1006,6 @@ export function stitchNewsletter(input: StitchInput): string {
   return parts.join("\n");
 }
 
-export interface HubDivulgacaoBoxRegenResult {
-  readonly ok: boolean;
-  readonly path: string;
-  readonly slug?: string;
-  readonly error?: string;
-}
-
-/**
- * #5263: regenera `data/snippets/hub-divulgacao-rotativo.md` pra `editionDate`
- * ANTES de `resolveBoxesForEdition()` rodar a seleção automática de boxes —
- * sem isso o candidato do box rotativo de hubs nunca tinha dado fresco pra
- * competir no ranking (o arquivo em disco ficava preso na última edição em
- * que alguém rodou `build-hub-divulgacao-box.ts` manualmente, se é que
- * rodou — achado do #5263, o mecanismo do PR #5277 nunca foi chamado por
- * lugar nenhum do pipeline).
- *
- * Reusa a MESMA lógica pura do CLI (`resolveHubDivulgacaoBoxSource` +
- * `buildHubDivulgacaoBoxMarkdown` + `renderGeneratedSnippet`, de
- * `build-hub-divulgacao-box.ts`/`lib/shared/hub-divulgacao-box.ts`) — import
- * direto de função em vez de invocar o CLI como subprocess (mais barato,
- * mais testável, sem custo extra de `npx tsx` por edição).
- *
- * **Fail-soft por design** (mesmo princípio de `Diaria-Entity-Pages-Regen`/
- * `Diaria-Hub-Drift-Check`, CLAUDE.md): este box é OPCIONAL — qualquer falha
- * na regeneração (hub sem dataset, I/O, `data/` ausente em clone
- * fresco/sessão cloud) nunca deve abortar o Stage 2. `main()` trata o
- * resultado só como log de warning e segue com o `hub-divulgacao-rotativo.md`
- * que já estiver em disco (ou sem candidato nenhum, se nunca foi gerado —
- * degradação aceitável: `resolveBoxesForEdition()`/`loadSnippets()` a jusante
- * simplesmente não veem esse box entrar no ranking).
- *
- * **Idempotente/no-op quando nada mudou**: usa `writeFileAtomicIfChanged` —
- * regenerar a mesma edição 2x (resume, retry) não re-escreve o arquivo nem
- * bumpa o mtime se o conteúdo byte-a-byte for igual (mesmo hub em rotação,
- * mesmo dataset).
- */
-export function regenerateHubDivulgacaoBoxForEdition(
-  editionDate: string,
-  snippetsDir: string,
-): HubDivulgacaoBoxRegenResult {
-  const path = join(snippetsDir, "hub-divulgacao-rotativo.md");
-  try {
-    const source = resolveHubDivulgacaoBoxSource(editionDate);
-    const markdown = buildHubDivulgacaoBoxMarkdown(source);
-    const content = renderGeneratedSnippet(editionDate, markdown);
-    mkdirSync(snippetsDir, { recursive: true });
-    writeFileAtomicIfChanged(path, content);
-    return { ok: true, path, slug: source.slug };
-  } catch (err) {
-    return { ok: false, path, error: (err as Error).message };
-  }
-}
-
 async function main(): Promise<number | void> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseArgs(process.argv.slice(2));
@@ -1112,17 +1056,11 @@ async function main(): Promise<number | void> {
     // `platform.config.json`: a mudança vale só pra esta stitch.
     const editionAammdd = editionDirArg.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
 
-    // #5263: regenera o box rotativo de hubs pra ESTA edição antes da
-    // seleção automática de boxes rodar — sem isso o candidato nunca tem
-    // dado fresco pra competir no ranking (ver docstring de
-    // `regenerateHubDivulgacaoBoxForEdition`). Fail-soft: warning, nunca
-    // aborta o stitch — este box é opcional.
-    const hubBoxRegen = regenerateHubDivulgacaoBoxForEdition(editionAammdd, join(ROOT, "data", "snippets"));
-    if (hubBoxRegen.ok) {
-      process.stderr.write(`[stitch-newsletter] hub-divulgacao-rotativo.md regenerado pra ${editionAammdd} (hub "${hubBoxRegen.slug}")\n`);
-    } else {
-      console.error(`[stitch-newsletter] warn — falha regenerando hub-divulgacao-rotativo.md (#5263, seguindo com o arquivo existente em disco, se houver): ${hubBoxRegen.error}`);
-    }
+    // #10832: o box rotativo de hubs (#5263) NÃO é mais regenerado aqui — o
+    // editor decidiu que ele não deve sair como box. Regenerar a cada stitch
+    // desfazia o arquivamento manual de `hub-divulgacao-rotativo.md` em
+    // `data/snippets/_arquivo/`; a seleção de boxes também o recusa
+    // (`isSnippetEligibleForDiaria`, `NON_BOX_SNIPPET_FILES`).
 
     // #9218: warn (não bloqueia) pra caixas com URL completa idêntica.
     for (const line of formatDuplicateSnippetUrlWarnings(findDuplicateSnippetUrls(loadSnippets(join(ROOT, "data", "snippets"))))) {

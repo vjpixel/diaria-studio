@@ -126,8 +126,19 @@ function avg(nums: number[]): number {
  * literal antiga) = diária, mesmo default de `resolveSnippetAudience`.
  */
 export function isSnippetEligibleForDiaria(snippet: SnippetInfo): boolean {
+  if (NON_BOX_SNIPPET_FILES.has(snippet.file)) return false;
   return (snippet.audience ?? DEFAULT_SNIPPET_AUDIENCE) === DEFAULT_SNIPPET_AUDIENCE;
 }
+
+/**
+ * #10832: snippets em `data/snippets/` que NUNCA saem como box de divulgação,
+ * em nenhum slot nem modo (pin, ranking, fallback, auto desligado). O box
+ * rotativo de hubs (#5263) foi tirado da newsletter por decisão do editor
+ * (revisão da 261022: "não deveria ser um box"); o arquivo pode continuar em
+ * disco (gerado à mão pelo CLI `build-hub-divulgacao-box.ts`, ou sobra de
+ * edição antiga) e sem este filtro voltaria a competir no ranking.
+ */
+export const NON_BOX_SNIPPET_FILES: ReadonlySet<string> = new Set(["hub-divulgacao-rotativo.md"]);
 
 // ── Histórico por edição (pure, dado I/O injetado) ─────────────────────────
 
@@ -620,6 +631,16 @@ export function resolveBoxesForEdition(opts: ResolveBoxesOpts): ResolveBoxesResu
   if (isExpired(effective.slot0)) {
     warnExpired("slot 0", effective.slot0!, "slot fica vazio nesta edição");
     effective.slot0 = null;
+  }
+
+  // #10832: arquivo que nunca é box (ex.: hub rotativo) sai de qualquer slot
+  // configurado, inclusive com a auto-seleção desligada.
+  for (const key of ["slot0", "slot1", "slot2"] as const) {
+    const f = effective[key];
+    if (f && NON_BOX_SNIPPET_FILES.has(f)) {
+      process.stderr.write(`[select-boxes-by-clicks] warn — ${key}: \`${f}\` não sai como box (#10832); slot fica vazio\n`);
+      effective[key] = null;
+    }
   }
 
   // #6748: registro do slot 3 é sempre "disabled"/vazio — nunca participa do

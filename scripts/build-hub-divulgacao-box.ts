@@ -9,12 +9,10 @@
  * docstring de
  * `scripts/lib/shared/hub-divulgacao-box.ts` pro racional completo.
  *
- * **Wiring (#5263 lacuna fechada):** `scripts/stitch-newsletter.ts` chama
- * `regenerateHubDivulgacaoBoxForEdition()` — que reusa `resolveHubDivulgacaoBoxSource`
- * e `renderGeneratedSnippet` deste módulo diretamente (import de função, não
- * subprocess) — ANTES de `resolveBoxesForEdition()`, pra este arquivo ter
- * dado fresco da edição corrente antes de entrar no ranking de boxes. O CLI
- * abaixo continua útil pra debug/regen manual fora do pipeline.
+ * **Fora da newsletter desde o #10832:** o stitch não chama mais este gerador
+ * e a seleção de boxes recusa o arquivo (`NON_BOX_SNIPPET_FILES` em
+ * `scripts/select-boxes-by-clicks.ts`) — o editor decidiu que o hub não sai
+ * como box. O CLI segue só pra gerar o texto à mão.
  *
  * Uso:
  *   npx tsx scripts/build-hub-divulgacao-box.ts --edition AAMMDD
@@ -72,9 +70,8 @@ entre os 6 de HUB_META (#5263). Formato bold-line/mid-callout, mesma família
 de clarice-divulgacao.md/livros-divulgacao.md (ver context/snippets/README.md,
 que continua a spec do formato mesmo com o conteúdo em data/snippets/).
 
-Regenerado automaticamente por stitch-newsletter.ts (#5263) a cada edição,
-antes da seleção automática de boxes — não requer regen manual no fluxo
-normal. Este CLI continua útil pra debug/regen fora do pipeline.
+Desde o #10832 este arquivo NÃO sai como box na newsletter (o stitch não o
+regenera e a seleção de boxes o recusa); o CLI só gera o texto à mão.
 -->
 ${markdown}
 `;

@@ -11,6 +11,7 @@ import { resolve, dirname, basename } from "node:path";
 import { detectBoxSelectionConfigDrift, formatBoxSelectionDrift } from "../box-selection-drift.ts"; // #9253
 import { aammddToIsoDate, readSnippetExpiry } from "../shared/snippet-header.ts"; // #10174
 import { readSnippetFileRaw } from "../shared/snippet-loader.ts"; // #10174
+import { detectSocialInviteDrift } from "../shared/encerramento-snippet.ts"; // #10835
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
@@ -3510,6 +3511,29 @@ export function checkNewsletterHtmlNotBehindReviewed(
   ];
 }
 
+/**
+ * #10835: convite social ("Para acompanhar… siga a diar.ia.br no…") do
+ * `02-reviewed.md` divergente do `SOCIAL_INVITE` atual. Duas situações, ambas
+ * warning (o editor decide; a edição sai do mesmo jeito):
+ * - `unrecognized`: o parágrafo parece o convite mas o renderer não o
+ *   reconhece (`isSocialInviteParagraph`) — sai SEM a borda de box, em
+ *   silêncio (caso da 261022 antes do #10781).
+ * - `outdated`: ganha a caixa, mas o texto difere da constante atual (ex.:
+ *   costurado antes do YouTube entrar, #10761) — o leitor vê a lista velha.
+ * Lógica pura em `detectSocialInviteDrift` (`shared/encerramento-snippet.ts`).
+ */
+export function checkSocialInviteDrift(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const drift = detectSocialInviteDrift(readFileSync(path, "utf8"));
+  if (!drift) return [];
+  const preview = drift.paragraph.length > 120 ? `${drift.paragraph.slice(0, 120)}…` : drift.paragraph;
+  const message = drift.kind === "unrecognized"
+    ? `Convite social do PARA ENCERRAR não foi reconhecido pelo renderer e vai sair SEM a borda de box: "${preview}". Restaurar o início "Para acompanhar as 3 principais notícias de IA todos os dias, siga a" (ou colar o SOCIAL_INVITE atual de scripts/lib/shared/encerramento-snippet.ts).`
+    : `Convite social do PARA ENCERRAR difere do SOCIAL_INVITE atual (ex.: lista de redes desatualizada): "${preview}". Sai com a caixa, mas com o texto antigo; colar o SOCIAL_INVITE atual de scripts/lib/shared/encerramento-snippet.ts se a diferença não for intencional.`;
+  return [{ rule: "social-invite-drift", message, source_issue: "#10835", severity: "warning", file: path }];
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "newsletter-html-not-behind-reviewed",
@@ -3719,6 +3743,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#9253",
     stage: 4,
     run: (editionDir: string) => checkBoxSelectionConfigDrift(editionDir),
+  },
+  {
+    id: "social-invite-drift",
+    description: "convite social do PARA ENCERRAR diverge do SOCIAL_INVITE atual — não reconhecido (sai sem a borda de box) ou com texto desatualizado (#10835, warning-only)",
+    source_issue: "#10835",
+    stage: 4,
+    run: checkSocialInviteDrift,
   },
   {
     id: "box-divulgacao-expiry",

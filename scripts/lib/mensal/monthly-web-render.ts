@@ -50,6 +50,7 @@ import {
   parseDestaqueChunk,
   parseDivulgacaoChunk,
   parseEncerramento,
+  applyMonthlyImageToolToCredits,
   parseLinkListChunk,
   pillPosicao,
   renderInline,
@@ -324,7 +325,7 @@ export function draftToWebArticle(input: MonthlyWebRenderInput): { subject: stri
           );
           break;
         case "encerramento": {
-          const body = chunkBody(chunk);
+          const body = applyMonthlyImageToolToCredits(chunkBody(chunk), input.destaqueImageCaption); // #10826
           if (body) parts.push(renderEncerramentoWeb(body));
           break;
         }

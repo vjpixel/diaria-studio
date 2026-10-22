@@ -22,6 +22,7 @@ import { applyBrandWordmark, breakBrandDomainAutolink } from "../shared/brand-wo
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
 import { isUnpairedBoldMarker, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { imageCreditCaption, imageToolNameFromCaption, applyImageToolNameToCredits } from "../shared/image-tool-name.ts"; // #10826 — mesmo mapa slug → ferramenta da diária
 import type { Brand } from "../../../workers/poll/src/lib.ts"; // #7633 — fonte única do vocabulário de brand (só o TIPO, sem runtime do worker)
 // #4040/#4041: fonte única dos valores de UTM + composição do sufixo de posição.
 import {
@@ -577,22 +578,27 @@ export function renderParagraphs(text: string): string {
 }
 
 /**
- * #2018: mapa gerador → legenda da imagem. Centralizado aqui (único lugar)
- * para que publish-monthly.ts e monthly-preview-cloudflare.ts importem em vez
- * de duplicar. Adicionando um novo gerador, basta atualizar este mapa.
+ * #2018: legenda da imagem a partir do slug do gerador — centralizado aqui
+ * pra publish-monthly.ts, monthly-preview-cloudflare.ts e os renders de
+ * apoiadores não duplicarem. #10826: o mapa slug → ferramenta é o MESMO da
+ * diária (`shared/image-tool-name.ts`); o mapa próprio do mensal divergia em
+ * `openai`/`cloudflare`. Fallback: "Criada com IA".
  */
-export const GENERATOR_LABELS: Record<string, string> = {
-  gemini: "Criada com Gemini",
-  comfyui: "Criada com ComfyUI",
-  cloudflare: "Criada com Cloudflare AI",
-  openai: "Criada com DALL-E",
-  codex: "Criada com ChatGPT",
-};
-
-/** Deriva a legenda de imagem a partir do slug do gerador configurado.
- * Fallback: "Criada com IA" (genérico, seguro para qualquer gerador). */
 export function captionForGenerator(imageGenerator: string): string {
-  return GENERATOR_LABELS[imageGenerator] ?? "Criada com IA";
+  return imageCreditCaption(imageGenerator);
+}
+
+/**
+ * #10826: alinha o parágrafo de ferramentas do PARA ENCERRAR do mensal
+ * ("…, Gemini para criar imagens…", escrito pelo writer-monthly a partir do
+ * snippet de encerramento) com o gerador real das imagens, derivado da MESMA
+ * legenda que vai sob as imagens dos destaques. Sem legenda (caller que não
+ * resolve gerador, fixture de teste) o texto sai intacto. Compartilhado pelo
+ * e-mail (`draftToEmail`) e pela página web (`monthly-web-render.ts`).
+ */
+export function applyMonthlyImageToolToCredits(body: string, imageCaption: string | undefined): string {
+  const name = imageToolNameFromCaption(imageCaption);
+  return name ? applyImageToolNameToCredits(body, name) : body;
 }
 
 /**
@@ -1783,7 +1789,7 @@ export function draftToEmail(
         bodyParts.push(renderEia(chunk, yymm, eiaImageUrlA, eiaImageUrlB, eiaCredit, eiaPrevResultLine, utmProfile));
         break;
       case "encerramento": {
-        const body = chunkBody(chunk);
+        const body = applyMonthlyImageToolToCredits(chunkBody(chunk), destaqueImageCaption);
         if (body) bodyParts.push(renderEncerramento(body));
         break;
       }
