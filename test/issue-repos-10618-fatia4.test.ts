@@ -725,6 +725,25 @@ describe("#10618 fatia 4 (review) — falha num repo extra nunca descarta o vere
     assert.match(r.stdout, /^ok PARCIAL .*NÃO avaliados: vjpixel\/diaria-design \(1 consulta\(s\) com erro\)/);
   });
 
+  it("trade-off-label-cleared: label presente e comentários ilegíveis → exit 3 (não verificável), nunca 'nenhuma decisão'", () => {
+    const root = tmpRepoRoot();
+    const { env } = fakeGh(root, {
+      [`issue_view_${DESIGN}_21_labels`]: { labels: [{ name: "trade-off-real" }] },
+      // comments → sem resposta → gh sai 1 (403/404)
+    });
+    const r = runCli(root, env, "check-trade-off-label-cleared.ts", ["--issue", `${DESIGN}#21`]);
+    assert.equal(r.status, 3, r.stdout + r.stderr);
+    assert.match(r.stderr, /NÃO verificável/);
+    assert.doesNotMatch(r.stdout, /nenhuma decisão registrada/);
+  });
+
+  it("trade-off-label-cleared: sem a label, falha nos comentários não muda o veredito (exit 0)", () => {
+    const root = tmpRepoRoot();
+    const { env } = fakeGh(root, { [`issue_view_${DESIGN}_21_labels`]: { labels: [] } });
+    const r = runCli(root, env, "check-trade-off-label-cleared.ts", ["--issue", `${DESIGN}#21`]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+  });
+
   it("comment-coverage: design mergeada com REFS-NÃO-CLOSES — body lido com -R e comentário cobrado no design", () => {
     const root = tmpRepoRoot();
     const planPath = writePlan(root, {

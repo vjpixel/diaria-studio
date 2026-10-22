@@ -605,14 +605,39 @@ export function trustedCommentBodiesFromIssueViewJson(stdout: string): string[] 
  * Desde o #9752 devolve só comentários de autor confiável — ver
  * `trustedCommentBodiesFromIssueViewJson`. */
 export function fetchCommentBodies(issueNumber: number, cwd: string, repo?: string): string[] {
+  return fetchCommentBodiesResult(issueNumber, cwd, repo).bodies;
+}
+
+/**
+ * Variante de `fetchCommentBodies` que NÃO confunde "falha de leitura" com
+ * "nenhum comentário" (#10618, fatia 4, review G): um gate que decide por
+ * "há decisão registrada?" precisa saber que não leu nada, senão a falha vira
+ * "no-decision" e o gate passa. Nunca lança; `error` presente ⇒ `bodies: []`
+ * não significa nada.
+ */
+export function fetchCommentBodiesResult(
+  issueNumber: number,
+  cwd: string,
+  repo?: string,
+): { bodies: string[]; error?: string } {
   // #10618 (fatia 4): `repo` = outro repo da allowlist → `-R owner/repo`.
   const result = spawnSync(
     "gh",
     ["issue", "view", String(issueNumber), ...(repo ? ["-R", repo] : []), "--json", "comments"],
     { cwd, encoding: "utf8", timeout: 15_000 },
   );
-  if (result.status !== 0 || !result.stdout) return [];
-  return trustedCommentBodiesFromIssueViewJson(result.stdout);
+  if (result.error) return { bodies: [], error: `gh não pôde ser executado: ${result.error.message}` };
+  if (result.status !== 0) {
+    const stderr = (result.stderr ?? "").toString().trim();
+    return { bodies: [], error: `gh issue view saiu com status ${result.status}${stderr ? `: ${stderr}` : ""}` };
+  }
+  if (!result.stdout) return { bodies: [], error: "gh issue view retornou stdout vazio" };
+  try {
+    JSON.parse(result.stdout);
+  } catch (e) {
+    return { bodies: [], error: `JSON malformado de gh issue view: ${(e as Error).message}` };
+  }
+  return { bodies: trustedCommentBodiesFromIssueViewJson(result.stdout) };
 }
 
 /**

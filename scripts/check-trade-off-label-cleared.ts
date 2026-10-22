@@ -18,11 +18,17 @@
  * stderr, `exit 0` (não trava a rodada por causa de rede/CLI ausente — o
  * mesmo espírito dos gates irmãos).
  *
+ * **`exit 3` = não verificável (#10618, fatia 4, review G):** labels lidas,
+ * `trade-off-real` presente, mas a leitura dos COMENTÁRIOS falhou — sem eles
+ * não dá pra saber se já há decisão registrada. Antes isso virava "nenhuma
+ * decisão" e `exit 0`, deixando passar justo o esquecimento que o gate pega.
+ * O chamador trata `exit 3` como "rodar de novo"; nunca como `ok`.
+ *
  * Uso:
  *   npx tsx scripts/check-trade-off-label-cleared.ts --issue 5415
  *
  * @see scripts/lib/trade-off-label-gate.ts
- * @see scripts/lib/issue-decisions.ts (fetchCommentBodies, latestDecisionFor, reusados aqui)
+ * @see scripts/lib/issue-decisions.ts (fetchCommentBodiesResult, latestDecisionFor, reusados aqui)
  * @see scripts/check-state-changed-pending.ts (padrão de estilo/gate irmão)
  * @see .claude/skills/diaria-overnight/SKILL.md (Fase 0 passo 5 — briefing)
  * @see .claude/skills/diaria-develop/SKILL.md (Fase 0.5)
@@ -30,7 +36,7 @@
 
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { fetchCommentBodies } from "./lib/issue-decisions.ts";
+import { fetchCommentBodiesResult } from "./lib/issue-decisions.ts";
 import { checkTradeOffLabelCleared, TRADE_OFF_LABEL } from "./lib/trade-off-label-gate.ts";
 import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 
@@ -98,7 +104,7 @@ if (isMainModule(import.meta.url)) {
   const label = foreign ? formatIssueRef(ref) : `#${issueNumber}`;
   const editArgs = foreign ? `${issueNumber} -R ${ref.repo}` : `${issueNumber}`;
   const labelsResult = fetchIssueLabels(issueNumber, cwd, repoArg);
-  const bodies = fetchCommentBodies(issueNumber, cwd, repoArg);
+  const comments = fetchCommentBodiesResult(issueNumber, cwd, repoArg);
 
   if (labelsResult.error) {
     console.error(
@@ -107,7 +113,17 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  const result = checkTradeOffLabelCleared(labelsResult.labels, bodies);
+  // Sem a label não há o que cobrar — a falha de comentários não muda o
+  // veredito (nenhuma das saídas exige ler a decisão). Com a label presente,
+  // os comentários decidem: falha de leitura = não verificável, nunca "ok".
+  if (comments.error && labelsResult.labels.includes(TRADE_OFF_LABEL)) {
+    console.error(
+      `[check-trade-off-label-cleared] ${label}: label '${TRADE_OFF_LABEL}' presente, mas os comentários não puderam ser lidos — NÃO verificável (exit 3), rode de novo: ${comments.error}`,
+    );
+    process.exit(3);
+  }
+
+  const result = checkTradeOffLabelCleared(labelsResult.labels, comments.bodies);
 
   if (result.status === "no-decision") {
     console.log(`[check-trade-off-label-cleared] ${label}: nenhuma decisão registrada ainda — gate não se aplica.`);
