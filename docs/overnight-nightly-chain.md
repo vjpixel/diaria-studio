@@ -40,10 +40,16 @@ O review recebe o diretório do binário `claude` à frente do `PATH`. Sob syste
 |---|---|---|
 | 0 | Overnight ok (ou pulado por sessão ativa) e review ok/noop | ok |
 | 3 | Review falhou ou estourou o tempo, e o overnight rodou | `failed`, de propósito: o `Diaria-Systemd-Failed-Units-Alarm` avisa |
-| 2 | Overnight falhou. O exit original do `claude` fica no log | `failed` |
+| 4 | Overnight saiu 0 sem gravar `plan.json` nem `report.md` em `data/overnight/*` durante a run: aborto cedo (#10808) | `failed`, de propósito |
+| 2 | Overnight falhou: exit ≠ 0 do `claude`, ou evento `result` com `is_error`. O exit original fica no log | `failed` |
 | 1 | Binário `claude` não encontrado; nada rodou | `failed` |
 
 Log da task: `data/overnight/.nightly-chain.log` (gravado pelo task-runner só quando o processo termina). Log incremental, linha a linha na hora em que é emitida: `data/overnight/.nightly-chain.live.log` (#10672) — é ele que sobra quando a cadeia morre no meio (reboot, OOM, `systemctl stop`), com o início e o veredito do review já gravados antes de o overnight subir. O caminho dele deriva do `logPath` da task (`x.log` → `x.live.log`), e a cada run o da run anterior vira `.nightly-chain.live.log.prev` (#10699), então o arquivo não cresce sem limite. Saída incremental do `claude --print` do overnight: `data/overnight/.nightly-chain-last-overnight.json` (desde #10699, **JSONL de eventos `stream-json`**, um objeto por linha; o evento `result` contém o resultado final). stdout do review: `.nightly-chain-last-review.log`, no mesmo diretório; stderr dos dois filhos: `.nightly-chain-last-{review,overnight}.stderr.log`. Os filhos escrevem diretamente nesses arquivos durante a execução, preservando uma geração `.prev` quando cada etapa começa. O review também preserva os eventos Claude durante a execução em `data/continuo/last-daily-review-output.jsonl` (com uma geração `.prev`); só um evento `result` sem erro gera o texto usado pelo gate de resumo e avanço do marco. Transcript final do review: `data/continuo/last-daily-review-output.txt`, que é o mesmo arquivo de antes.
+
+O que cada passo deixa no log da cadeia:
+
+- **Review** (#10779): `review: {status} exit=N resumo=… tail=…`. O `noop` só é reconhecido pela linha exata `[daily-review] nada novo desde o último review (…) — noop`, ancorada por linha: o stderr do review carrega o stream-json inteiro, e um diff que contivesse "— noop" num `tool_result` rotulava um review completo como noop. O `tail` descarta os eventos stream-json e corta cada linha em 500 caracteres. A linha `RESUMO-DAILY-REVIEW:` não sai mais no stderr; com status `ok` ela é lida de `last-daily-review-output.txt` e entra como `resumo=`.
+- **Overnight** (#10808): `overnight: resultado subtype=… is_error=… turns=N duracao_s=N tail=…`, com as últimas linhas do texto final do `claude`, ou um `AVISO` explícito quando o stream-json não tem evento `result`. Depois, `overnight: rastro {dir}/plan.json` com o que a rodada gravou. Se nenhum `plan.json`/`report.md` em `data/overnight/*` foi modificado desde o início do passo, a linha é `overnight: SEM RASTRO` e a cadeia sai 4: "fila vazia" grava `plan.json` na Fase 0 (e, no modo agendado, um `report.md` curto), então sair sem nada é aborto cedo, que antes aparecia como `overnight=ok`.
 
 ## Armar no `300` (passos manuais do editor)
 
