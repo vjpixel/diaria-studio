@@ -68,7 +68,7 @@
  * Capa: `{editionDir}/04-youtube-thumb.jpg` (1280x720), opcional.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
@@ -300,8 +300,8 @@ export function writeD1VideoUrlAfterUpload(
   const urlFile = join(editionDir, D1_VIDEO_URL_FILE);
   // #10881 item 2: depois de `--upload --force`, o arquivo pode apontar para
   // o vídeo SUBSTITUÍDO (gravado pelo upload anterior). Esse link não serve
-  // mais: é trocado pelo novo quando o novo passa no portão, e removido
-  // quando não passa. URL que não veio de upload nosso (o editor gravou com
+  // mais: é trocado pelo novo quando o novo passa no portão, e MANTIDO (com
+  // aviso) quando não passa — decisão do editor no review do #10892. URL que não veio de upload nosso (o editor gravou com
   // link-video-d1) segue intocada.
   const previousUrls = new Set(
     (record.previous_uploads ?? [])
@@ -317,12 +317,11 @@ export function writeD1VideoUrlAfterUpload(
   const staleFromPreviousUpload = currentRaw !== "" && previousUrls.has(currentRaw);
   if (!verdict.ok) {
     if (staleFromPreviousUpload) {
-      try {
-        rmSync(urlFile, { force: true });
-        log(`[aviso] ${urlFile} apontava para o vídeo substituído (${currentRaw}) — removido; o D1 sai sem link de vídeo até o novo abrir.`);
-      } catch (e) {
-        log(`[erro] ${urlFile} aponta para o vídeo substituído (${currentRaw}) e não foi removido: ${(e as Error).message} — apague à mão.`);
-      }
+      // Decisão do editor (#10892 review): o link do vídeo substituído é
+      // MANTIDO enquanto o novo não abre — tirar o link de um vídeo que ainda
+      // funciona deixaria o D1 sem vídeo. Só avisa; quando o novo passar no
+      // portão, a gravação abaixo troca o link.
+      log(`[aviso] ${urlFile} segue apontando para o vídeo substituído (${currentRaw}) — mantido até o novo abrir; confira se o antigo ainda está público.`);
     }
     // Mensagem já dirigida pela premissa de auditoria (#10866: sem ela, agendar não resolve).
     log(

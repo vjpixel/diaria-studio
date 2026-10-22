@@ -336,16 +336,35 @@ export function periodoCoberto(cobertura: readonly Periodo[], de: string, ate: s
   return cobertura.some((p) => p.de <= de && p.ate >= ate);
 }
 
-/** Estado depois de uma janela lida por inteiro. */
+/**
+ * Trecho da janela que pode entrar na cobertura (#10892 review):
+ * - o dia de HOJE (Brasília) nunca conta como lido por inteiro: a rodada só
+ *   viu as vendas até a hora em que rodou. A cobertura para em ONTEM — ex.:
+ *   a varredura das 04:30 de sábado 31/10 cobre outubro só até 30/10, e o
+ *   mês só fica coberto na rodada seguinte, que lê o dia 31 inteiro;
+ * - janela com registro devolvido fora do formato (`descartados > 0`) não
+ *   conta: há venda que não chegou ao espelho, e o mês não pode sair
+ *   "coberto" com receita a menos sem rótulo de PISO.
+ * Devolve `null` quando nada da janela pode ser registrado.
+ */
+export function trechoCobertoDaJanela(janela: Periodo, descartados: number, nowMs: number): Periodo | null {
+  if (descartados > 0) return null;
+  const ontem = diaDe(diaMs(brtDay(nowMs)) - DAY_MS);
+  if (janela.de > ontem) return null;
+  return { de: janela.de, ate: janela.ate < ontem ? janela.ate : ontem };
+}
+
+/** Estado depois de uma janela lida. `trechoCoberto` é o que
+ * `trechoCobertoDaJanela` devolveu (`null` = não amplia a cobertura). */
 export function registrarJanelaNoEstado(
   estado: EstadoSync,
-  janela: Periodo,
+  trechoCoberto: Periodo | null,
   chavesInvalidasNovas: readonly string[],
   nowIso: string,
 ): EstadoSync {
   return {
     v: ESTADO_SYNC_VERSION,
-    cobertura: fundirCobertura([...estado.cobertura, janela]),
+    cobertura: trechoCoberto ? fundirCobertura([...estado.cobertura, trechoCoberto]) : [...estado.cobertura],
     chaves_invalidas_conhecidas: [...new Set([...estado.chaves_invalidas_conhecidas, ...chavesInvalidasNovas])].sort(),
     atualizado_em: nowIso,
   };
@@ -382,6 +401,8 @@ export interface JanelaConcluida {
   readonly novos: readonly VendaRecord[];
   /** Chaves inválidas desta janela que ainda não eram conhecidas. */
   readonly chavesIgnoradasNovas: readonly string[];
+  /** Registros desta janela que a rota devolveu fora do formato. */
+  readonly descartados: number;
 }
 
 /**
@@ -421,7 +442,7 @@ export async function sincronizarEspelho(opts: {
     const nomes = r.chavesIgnoradas ?? [];
     const novasDaJanela = [...new Set(nomes.filter((k) => !conhecidas.has(k) && !chavesIgnoradasNovas.includes(k)))];
     const semNome = Math.max(0, r.ignoradosNoKv - nomes.length);
-    opts.aoConcluirJanela?.({ janela: j, acrescentar: texto, novos: mescla.novos, chavesIgnoradasNovas: novasDaJanela });
+    opts.aoConcluirJanela?.({ janela: j, acrescentar: texto, novos: mescla.novos, chavesIgnoradasNovas: novasDaJanela, descartados: r.descartados });
     existentes.push(...mescla.novos);
     todosNovos.push(...mescla.novos);
     textoCorrente += texto;

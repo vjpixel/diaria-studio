@@ -11,8 +11,8 @@
  * (`scripts/studio-ui/studio-metrics.ts`) — os dois montam o mesmo
  * `revenueBySource` (paridade #9023).
  *
- * Fail-soft: espelho ausente, estado ausente/ilegível ou mês fora da
- * cobertura devolvem `valorBrl: null` com `motivo` — a Hotmart segue no ARPU
+ * Fail-soft: espelho ausente ou com linha inválida, estado ausente/ilegível
+ * ou mês fora da cobertura devolvem `valorBrl: null` com `motivo` — a Hotmart segue no ARPU
  * como fonte SEM dado (o número sai PISO), como antes do #10734 4b. Nunca
  * lança, nunca devolve R$ 0 por falta de dado.
  */
@@ -31,7 +31,12 @@ export function loadHotmartMonthRevenue(rootDir: string, month: string): Hotmart
   try {
     const estado = parseEstadoSync(readFileSync(estadoPath, "utf8"));
     const texto = existsSync(espelhoPath) ? readFileSync(espelhoPath, "utf8") : "";
-    const { registros } = lerEspelho(texto);
+    const { registros, invalidas } = lerEspelho(texto);
+    // #10892 review: linha inválida no espelho é venda que a soma não vê —
+    // devolver um valor menor sem rótulo de PISO seria fabricar.
+    if (invalidas > 0) {
+      return semDado(`${invalidas} linha(s) inválida(s) no espelho Hotmart ${espelhoPath} — receita do mês não confiável`);
+    }
     return computeHotmartMonthRevenue({ registros, cobertura: estado.cobertura, month });
   } catch (e) {
     return semDado(`falha ao ler o espelho Hotmart (${(e as Error).message})`);

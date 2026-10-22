@@ -6,7 +6,8 @@
  *   baixado no cache forense.
  * Item 2 — `link-video-d1.ts` ignorava `audit_blocked` do registro do upload;
  *   a mensagem sugeria agendar (não resolve sem auditoria, #10866); depois de
- *   `--upload --force` o link do vídeo substituído ficava.
+ *   `--upload --force` o link do vídeo substituído não era trocado pelo novo
+ *   (se o novo não passa no portão, o antigo é mantido — #10892 review).
  * Item 3 — hotmart sync: em `hotmart-sync-ltv-10876-10881-10734.test.ts`.
  * Item 4 — título de stub de redirect: palavra solta sem código HTTP não é
  *   placeholder; variantes em português são.
@@ -139,7 +140,7 @@ describe("#10881 item 2: link do vídeo segue a premissa de auditoria do upload"
     }
   });
 
-  it("após --upload --force: link do vídeo substituído é trocado pelo novo, ou removido se o novo não passa", () => {
+  it("após --upload --force: link do vídeo substituído é trocado pelo novo, ou mantido (com aviso) se o novo não passa", () => {
     const d = tmp("yt-10881-force-");
     const urlFile = join(d, D1_VIDEO_URL_FILE);
     const VELHO = "https://youtu.be/velhoVIDEO1";
@@ -165,7 +166,8 @@ describe("#10881 item 2: link do vídeo segue a premissa de auditoria do upload"
         (l) => logs.push(l),
       );
       assert.equal(naoPassa, false);
-      assert.ok(!existsSync(urlFile), "link do vídeo substituído tem que sair");
+      // Decisão do editor (#10892 review): o link antigo fica até o novo abrir.
+      assert.equal(readFileSync(urlFile, "utf8").trim(), VELHO, "link do vídeo substituído é mantido enquanto o novo não abre");
       assert.match(logs.join("\n"), /substituído/);
 
       // URL que não veio de upload nosso continua intocada.

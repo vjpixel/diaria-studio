@@ -28,6 +28,7 @@ import {
   planejarJanelas,
   registrarJanelaNoEstado,
   sincronizarEspelho,
+  trechoCobertoDaJanela,
   ESTADO_SYNC_VAZIO,
   SYNC_DIAS_PADRAO,
   SYNC_DIAS_VARREDURA,
@@ -178,6 +179,27 @@ describe("#10881 item 3: chave inválida conhecida não repete o alarme", () => 
       { de: "2026-01-10", ate: "2026-01-20" },
     ]);
     assert.equal(estadoPathDoEspelho("/x/hotmart/vendas.jsonl"), "/x/hotmart/vendas.estado.json");
+  });
+
+  it("#10892 review: a cobertura para em ONTEM (Brasília) — o dia da rodada nunca conta como lido por inteiro", () => {
+    // Sábado 31/10/2026, 04:30 BRT (07:30Z): a varredura lê outubro até a hora da rodada.
+    const sab0430 = Date.parse("2026-10-31T07:30:00Z");
+    const outubro = { de: "2026-10-01", ate: "2026-10-31" };
+    assert.deepEqual(trechoCobertoDaJanela(outubro, 0, sab0430), { de: "2026-10-01", ate: "2026-10-30" });
+    const e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, trechoCobertoDaJanela(outubro, 0, sab0430), [], "t");
+    assert.equal(periodoCoberto(e.cobertura, "2026-10-01", "2026-10-31"), false, "outubro não pode sair coberto no próprio dia 31");
+    // A rodada seguinte (01/11) lê o dia 31 inteiro e fecha o mês.
+    const e2 = registrarJanelaNoEstado(e, trechoCobertoDaJanela({ de: "2026-10-03", ate: "2026-11-01" }, 0, Date.parse("2026-11-01T07:30:00Z")), [], "t2");
+    assert.equal(periodoCoberto(e2.cobertura, "2026-10-01", "2026-10-31"), true);
+    // 23:30 BRT do dia 31 = 02:30Z do dia 1: o "hoje" é Brasília, não UTC.
+    assert.deepEqual(trechoCobertoDaJanela(outubro, 0, Date.parse("2026-11-01T02:30:00Z")), { de: "2026-10-01", ate: "2026-10-30" });
+    // Janela só de hoje: nada a registrar, mas as chaves inválidas seguem acumulando.
+    assert.equal(trechoCobertoDaJanela({ de: "2026-10-31", ate: "2026-10-31" }, 0, sab0430), null);
+    const e3 = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, null, ["k"], "t3");
+    assert.deepEqual(e3.cobertura, []);
+    assert.deepEqual(e3.chaves_invalidas_conhecidas, ["k"]);
+    // Janela com registro fora do formato: venda faltando, não conta como coberta.
+    assert.equal(trechoCobertoDaJanela({ de: "2026-09-01", ate: "2026-09-30" }, 1, sab0430), null);
   });
 });
 
@@ -342,6 +364,12 @@ describe("#10734 4b: loadHotmartMonthRevenue (I/O fail-soft)", () => {
       assert.match(loadHotmartMonthRevenue(root, "2026-09").motivo!, /estado do sync Hotmart ausente/);
       escreverEspelho(root, [rec({ valor_bruto: 120 })], SETEMBRO);
       assert.equal(loadHotmartMonthRevenue(root, "2026-09").valorBrl, 120);
+      // #10892 review: linha inválida no espelho = venda que a soma não vê → null, nunca valor a menos.
+      writeFileSync(join(root, "data", "hotmart", "vendas.jsonl"), readFileSync(join(root, "data", "hotmart", "vendas.jsonl"), "utf8") + "{nao-e-venda}\n");
+      const comInvalida = loadHotmartMonthRevenue(root, "2026-09");
+      assert.equal(comInvalida.valorBrl, null);
+      assert.match(comInvalida.motivo!, /inválida/);
+      escreverEspelho(root, [rec({ valor_bruto: 120 })], SETEMBRO);
       writeFileSync(join(root, "data", "hotmart", "vendas.estado.json"), "{quebrado");
       const ruim = loadHotmartMonthRevenue(root, "2026-09");
       assert.equal(ruim.valorBrl, null);

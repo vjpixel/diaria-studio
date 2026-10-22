@@ -81,6 +81,7 @@ import {
   periodoPadrao,
   planejarJanelas,
   registrarJanelaNoEstado,
+  trechoCobertoDaJanela,
   sincronizarEspelho,
   type EstadoSync,
   type Periodo,
@@ -260,7 +261,13 @@ async function main(): Promise<number> {
                 linhasGravadas += j.novos.length;
               }
               janelasConcluidas++;
-              estado = registrarJanelaNoEstado(estado, j.janela, j.chavesIgnoradasNovas, new Date().toISOString());
+              const agora = Date.now();
+              estado = registrarJanelaNoEstado(
+                estado,
+                trechoCobertoDaJanela(j.janela, j.descartados, agora),
+                j.chavesIgnoradasNovas,
+                new Date(agora).toISOString(),
+              );
               writeFileAtomic(estadoPath, JSON.stringify(estado, null, 2) + "\n");
             },
       });
