@@ -29,7 +29,7 @@
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { assessOpenPrCoverage } from "./lib/issue-open-pr-check.ts";
 import { fetchOpenPrs, type CommandRunner } from "./lib/gh-open-pr-fetch.ts";
-import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
+import { formatIssueRef, ISSUE_REPOS_CONFIG_ROOT, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 
 /**
  * `runner` é injetável (default: `gh` real via `fetchOpenPrs`) — permite
@@ -52,7 +52,7 @@ export function main(argv: string[], cwd: string, runner?: CommandRunner): numbe
   }
   const issueNumber = ref.number;
   const foreignRef = legacyIssueNumber(ref) === null ? formatIssueRef(ref) : null;
-  if (foreignRef !== null && !loadIssueRepos(cwd).includes(ref.repo)) {
+  if (foreignRef !== null && !loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT).includes(ref.repo)) {
     console.error(`[check-issue-open-pr] ${foreignRef}: repo fora de issue_repos, não consultado`);
     return 2;
   }

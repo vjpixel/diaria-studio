@@ -28,7 +28,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import { groupPlanEntriesByRepo, labelInRepo } from "./lib/plan-issue-ref.ts";
-import { loadIssueRepos } from "./lib/issue-repos.ts";
+import { ISSUE_REPOS_CONFIG_ROOT, loadIssueRepos } from "./lib/issue-repos.ts";
 import {
   detectLabelDriftDetailed,
   type DriftFinding,
@@ -156,7 +156,7 @@ if (isMainModule(import.meta.url)) {
     normalizeIssues<GatePlanIssue>(planRaw as IssuesBearing<GatePlanIssue>),
   );
   const cwd = process.cwd();
-  const allowedRepos = new Set(loadIssueRepos(cwd));
+  const allowedRepos = new Set(loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT));
   const skipped = [...unknown];
   for (const g of groups) {
     if (!allowedRepos.has(g.repo)) skipped.push(...g.entries.map((e) => `${labelInRepo(g.repo, e.number)} (repo fora de issue_repos)`));
