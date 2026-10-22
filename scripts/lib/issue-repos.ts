@@ -45,7 +45,19 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Raiz do checkout que contém este módulo — onde mora o `platform.config.json`
+ * com `issue_repos` (#10901). Os gates de PR que autorizam merge
+ * (`check-pr-checks-gate.ts`, `check-pr-retido-gate.ts`,
+ * `check-pr-review-authenticity.ts`) resolvem a allowlist por aqui, não pelo
+ * cwd: rodados de um subdiretório, de um worktree sem o config ou do checkout
+ * do diaria-design, o cwd recusava `--repo vjpixel/diaria-design` como "fora
+ * da allowlist". Mesma regra de `SAFE_EDIT_CONFIG_ROOT` (`gh-pr-safe-edit.ts`).
+ */
+export const ISSUE_REPOS_CONFIG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Repo onde as rodadas rodam e cujo número "pelado" é o significado legado. */
 export const DEFAULT_ISSUE_REPO = "vjpixel/diaria-studio";

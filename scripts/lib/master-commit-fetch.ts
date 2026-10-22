@@ -134,58 +134,77 @@ function defaultCommitFetchRunner(cmd: string, args: string[], opts: { cwd: stri
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", error: r.error };
 }
 
+/** #10901: teto de páginas (100 commits cada) da busca na branch default de
+ * outro repo. O `--paginate` lia o histórico INTEIRO a cada preflight. */
+export const REPO_COMMITS_MAX_PAGES = 10;
+const REPO_COMMITS_PER_PAGE = 100;
+
 /**
  * #10618 (fatia 4): o mesmo "quais commits da branch default citam a issue
  * #N", para issue de OUTRO repo (ex: vjpixel/diaria-design). O checkout local
  * é do diaria-studio e não enxerga o outro repo, então a busca vai pela API:
- * `gh api --paginate repos/{repo}/commits` (só a branch default, mesma regra
- * do "nunca `--all`": commit de PR fechada sem merge não aparece aí). O
- * filtro de boundary de dígito é o mesmo (`citesIssueNumber`). Fail-soft
- * como o resto do módulo: falha volta como `{ commits: [], error }`.
+ * `gh api repos/{repo}/commits` (só a branch default, mesma regra do "nunca
+ * `--all`": commit de PR fechada sem merge não aparece aí). O filtro de
+ * boundary de dígito é o mesmo (`citesIssueNumber`). Fail-soft como o resto do
+ * módulo: falha volta como `{ commits: [], error }`.
+ *
+ * #10901: página a página, até `maxPages` (os commits mais recentes primeiro).
+ * Página incompleta = fim do histórico. Teto atingido sem nenhum commit citando
+ * a issue volta como `error` (cannot-verify), nunca como "não está na branch
+ * default" — o commit pode estar além do teto.
  */
 export function fetchRepoCommitsForIssue(
   cwd: string,
   repo: string,
   issueNumber: number,
   runner: CommitFetchRunner = defaultCommitFetchRunner,
+  maxPages: number = REPO_COMMITS_MAX_PAGES,
 ): FetchMasterCommitsResult {
-  const result = runner(
-    "gh",
-    [
-      "api",
-      "--paginate",
-      `repos/${repo}/commits?per_page=100`,
-      "--jq",
-      ".[] | {sha: .sha, message: .commit.message, date: .commit.author.date}",
-    ],
-    { cwd },
-  );
-  if (result.error) {
-    return { commits: [], error: `gh não pôde ser executado: ${result.error.message}` };
-  }
-  if (result.status !== 0) {
-    const stderr = (result.stderr ?? "").toString().trim();
-    return {
-      commits: [],
-      error: `gh api repos/${repo}/commits saiu com status ${result.status}${stderr ? `: ${stderr}` : ""}`,
-    };
-  }
   const commits: MasterCommitInfo[] = [];
-  for (const line of (result.stdout ?? "").split("\n")) {
-    if (!line.trim()) continue;
-    let row: { sha?: unknown; message?: unknown; date?: unknown };
-    try {
-      row = JSON.parse(line) as typeof row;
-    } catch (e) {
-      return { commits: [], error: `JSON malformado de gh api repos/${repo}/commits: ${(e as Error).message}` };
+  for (let page = 1; page <= maxPages; page++) {
+    const result = runner(
+      "gh",
+      [
+        "api",
+        `repos/${repo}/commits?per_page=${REPO_COMMITS_PER_PAGE}&page=${page}`,
+        "--jq",
+        ".[] | {sha: .sha, message: .commit.message, date: .commit.author.date}",
+      ],
+      { cwd },
+    );
+    if (result.error) {
+      return { commits: [], error: `gh não pôde ser executado: ${result.error.message}` };
     }
-    if (typeof row.sha !== "string" || typeof row.message !== "string") continue;
-    const [subject = "", ...rest] = row.message.split("\n");
-    const body = rest.join("\n").trim();
-    // Citação qualificada de OUTRO repo (`vjpixel/diaria-studio#21` num
-    // commit do design) não é esta issue — o matcher recebe o repo.
-    if (!citesIssueNumber(body, issueNumber, repo) && !citesIssueNumber(subject, issueNumber, repo)) continue;
-    commits.push({ sha: row.sha, subject, authorDateIso: typeof row.date === "string" ? row.date : "", body });
+    if (result.status !== 0) {
+      const stderr = (result.stderr ?? "").toString().trim();
+      return {
+        commits: [],
+        error: `gh api repos/${repo}/commits saiu com status ${result.status}${stderr ? `: ${stderr}` : ""}`,
+      };
+    }
+    let rows = 0;
+    for (const line of (result.stdout ?? "").split("\n")) {
+      if (!line.trim()) continue;
+      rows++;
+      let row: { sha?: unknown; message?: unknown; date?: unknown };
+      try {
+        row = JSON.parse(line) as typeof row;
+      } catch (e) {
+        return { commits: [], error: `JSON malformado de gh api repos/${repo}/commits: ${(e as Error).message}` };
+      }
+      if (typeof row.sha !== "string" || typeof row.message !== "string") continue;
+      const [subject = "", ...rest] = row.message.split("\n");
+      const body = rest.join("\n").trim();
+      // Citação qualificada de OUTRO repo (`vjpixel/diaria-studio#21` num
+      // commit do design) não é esta issue — o matcher recebe o repo.
+      if (!citesIssueNumber(body, issueNumber, repo) && !citesIssueNumber(subject, issueNumber, repo)) continue;
+      commits.push({ sha: row.sha, subject, authorDateIso: typeof row.date === "string" ? row.date : "", body });
+    }
+    if (rows < REPO_COMMITS_PER_PAGE) return { commits };
   }
-  return { commits };
+  if (commits.length > 0) return { commits };
+  return {
+    commits: [],
+    error: `gh api repos/${repo}/commits: teto de ${maxPages} páginas (${maxPages * REPO_COMMITS_PER_PAGE} commits) atingido sem achar #${issueNumber} — histórico mais antigo não consultado`,
+  };
 }

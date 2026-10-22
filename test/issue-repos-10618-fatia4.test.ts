@@ -346,9 +346,37 @@ describe("#10618 fatia 4 — preflights por issue consultam o repo da issue", ()
       };
     });
     assert.deepEqual(r.commits.map((c) => c.sha), ["b2"]);
-    assert.ok(seen[0].includes(`repos/${DESIGN}/commits?per_page=100`));
+    // #10901: página a página (sem --paginate); página incompleta encerra.
+    assert.ok(seen[0].includes(`repos/${DESIGN}/commits?per_page=100&page=1`));
+    assert.ok(!seen[0].includes("--paginate"));
+    assert.equal(seen.length, 1);
     const fail = fetchRepoCommitsForIssue("/x", DESIGN, 21, () => ({ status: 1, stderr: "boom" }));
     assert.match(fail.error ?? "", /saiu com status 1: boom/);
+  });
+
+  it("#10901 fetchRepoCommitsForIssue: teto de páginas — achado volta commits; sem achado vira cannot-verify", () => {
+    const fullPage = (page: number, hitAt: number | null) =>
+      Array.from({ length: 100 }, (_, i) =>
+        JSON.stringify({
+          sha: `p${page}-${i}`,
+          message: page === hitAt && i === 0 ? "fix: z\n\nCloses #21" : `chore: ${page}-${i}`,
+        }),
+      ).join("\n");
+    let calls = 0;
+    const found = fetchRepoCommitsForIssue("/x", DESIGN, 21, (_c, args) => {
+      calls++;
+      const page = Number(/[?&]page=(\d+)/.exec(args[1])?.[1]);
+      return { status: 0, stdout: fullPage(page, 2) };
+    }, 3);
+    assert.equal(calls, 3);
+    assert.deepEqual(found.commits.map((c) => c.sha), ["p2-0"]);
+    assert.equal(found.error, undefined);
+    const none = fetchRepoCommitsForIssue("/x", DESIGN, 21, (_c, args) => {
+      const page = Number(/[?&]page=(\d+)/.exec(args[1])?.[1]);
+      return { status: 0, stdout: fullPage(page, null) };
+    }, 3);
+    assert.equal(none.commits.length, 0);
+    assert.match(none.error ?? "", /teto de 3 páginas/);
   });
 
   it("check-issue-duplicate-preflight --issue design#21: commit 'Closes #21' do design → exit 1, ref no output", () => {

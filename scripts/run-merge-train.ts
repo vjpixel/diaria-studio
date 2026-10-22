@@ -44,16 +44,18 @@
  *       de fato (excluído na descoberta, ou status `retido` no merge) NÃO
  *       conta como falha — é retenção deliberada pro editor.
  *   2 = uso inválido (--session-id/--kind ausentes; nem --prs nem --open;
- *       --prs vazio/token inválido; --max-batch-size inválido; PR que não é
- *       um PR ABERTO do vjpixel/diaria-studio mirando master — o trem é
- *       só-studio, #10618 fatia 4: `checkStudioTrainPr`)
+ *       --prs vazio/token inválido; --max-batch-size inválido; PR de `--prs`
+ *       que não é do vjpixel/diaria-studio mirando master — o trem é
+ *       só-studio, #10618 fatia 4: `checkStudioTrainPr`). Em `--open` esse PR
+ *       é só filtrado, e PR fechado é pulado nos dois modos (#10901,
+ *       `screenTrainPrs`).
  */
 
 import { isMainModule, parseArgs, getIntArg, getStringArg } from "./lib/cli-args.ts";
 import { composeTrainBatches, summarizeTrainCiRuns, type TrainCandidate, type TrainPrInfo } from "./lib/merge-train.ts";
 import { filesForPr, discoverOpenPrs, parsePrsArg } from "./lib/merge-train-discovery.ts";
 import {
-  checkStudioTrainPr,
+  screenTrainPrs,
   createRealTrainRunner,
   fetchTrainPrInfo,
   partitionRetidoCandidates,
@@ -143,25 +145,28 @@ async function main() {
   // #10618 (fatia 4, review 2): o trem é só-studio. Todo PR de `--prs`/`--open`
   // precisa ser um PR ABERTO do vjpixel/diaria-studio mirando master — o número
   // de um PR do diaria-design passado aqui resolveria o studio PR #N (o `gh` sem
-  // `-R`) e seria mergeado no lugar. Confirmado estrangeiro = recusa o trem
-  // inteiro (exit 2, uso inválido); ilegível = falha operacional (exit 1).
+  // `-R`) e seria mergeado no lugar. Ilegível = falha operacional (exit 1).
+  // #10901: PR de fora passado EXPLICITAMENTE em `--prs` recusa o trem inteiro
+  // (exit 2); em `--open` (descoberta) só é filtrado; PR fechado entre a
+  // composição e o trem é pulado nos dois modos (`screenTrainPrs`).
   {
-    const foreign: string[] = [];
-    const unreadable: string[] = [];
-    for (const pr of prNumbers) {
-      const check = checkStudioTrainPr(runner, pr);
-      if (check.verdict === "foreign") foreign.push(check.reason);
-      else if (check.verdict === "unreadable") unreadable.push(check.reason);
-    }
-    if (foreign.length > 0) {
-      for (const f of foreign) console.error(`run-merge-train: RECUSADO — ${f}`);
+    const screen = screenTrainPrs(runner, prNumbers, !values.prs);
+    if (screen.refused.length > 0) {
+      for (const f of screen.refused) console.error(`run-merge-train: RECUSADO — ${f}`);
       console.error("run-merge-train: PR de outro repo (ex.: vjpixel/diaria-design) nunca entra no trem — merge isolado com -R (item 32 de context/overnight-dispatch-rules.md).");
       process.exit(2);
       return;
     }
-    if (unreadable.length > 0) {
-      for (const u of unreadable) console.error(`run-merge-train: ${u}`);
+    if (screen.unreadable.length > 0) {
+      for (const u of screen.unreadable) console.error(`run-merge-train: ${u}`);
       process.exit(1);
+      return;
+    }
+    for (const s of screen.skipped) console.log(`run-merge-train: PULADO — ${s}`);
+    prNumbers = screen.admitted;
+    if (prNumbers.length === 0) {
+      console.log("run-merge-train: nenhum PR do studio aberto entre os candidatos — nada a fazer.");
+      process.exit(0);
       return;
     }
   }

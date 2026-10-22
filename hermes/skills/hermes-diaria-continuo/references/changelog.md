@@ -13,6 +13,18 @@ corrente no frontmatter (`version:`) e o comportamento ATUAL/operacional;
 este arquivo é o "porquê" de cada mudança — para quem investiga uma decisão
 passada, não para quem está rodando um tick.
 
+- 0.5.18 (22/10/2026): #10900 (resíduo #10618) — o tick passa a varrer
+  todos os repos de `issue_repos` (`fetch-open-issues-for-triage.ts --repos
+  all`, que já devolve `execTrack`; antes era `gh issue list` cru no studio +
+  `classifyExecTrackWithRule` inline) e a reivindicar por ref
+  (`claim-issue --issue vjpixel/diaria-design#N`). Novo passo 4.2b: issue do
+  design segue o item 32 de `context/overnight-dispatch-rules.md` (checkout
+  `../diaria-design`, worktree de `origin/main`, PR no design), com teto de 1
+  PR `continuo/*` aberta no design no lugar do gate de coerência (só-studio);
+  o merge dessa PR fica humano até `continuo-pr-review.sh` ganhar `-R`.
+  `detect-tick-claim-fabrication.py` cruza a claim por ref contra
+  `claimed_foreign_issues`. Para caber no teto de tamanho, 4 parágrafos de
+  rationale foram para `references/rationale-extraido-10900.md`.
 - 0.5.17 (24/09/2026): #8740 — registro de sessão (`session-registry.ts
   register --kind continuo`, passo 1.3) deixa de depender só do modelo
   lembrar no meio da skill. `hermes/scripts/register-continuo-tick.sh`

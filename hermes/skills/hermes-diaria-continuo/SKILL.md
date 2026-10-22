@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.17
+version: 0.5.18
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -140,13 +140,8 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
    registrar no relatório deste tick que veio ausente**: a leitura não
    distingue "1º tick" de "o tick anterior morreu antes de gravar", e sem
    essa linha as duas viram a mesma ausência muda.
-   **Substitui `context_from: ["self"]` no job do cron, que foi removido:**
-   aquele mecanismo reinjetava o output ANTERIOR INTEIRO, e esse output é
-   `header + SKILL.md verbatim + prompt + relatório` — ou seja, reinjetava
-   uma 2ª cópia completa desta skill, que o tick já carrega fresco. Medido
-   em 05/09/2026: ~36 KB de duplicação (~10,6k tokens, ~20% do baseline de
-   54,3k medido no #6712) para trazer ~3 KB de relatório. Ler este arquivo
-   entrega a mesma continuidade sem a duplicação.
+   Substitui `context_from: ["self"]` no job do cron, que foi removido
+   (porquê: `references/rationale-extraido-10900.md` §1).
 2. Guard de colisão editorial: `npx tsx scripts/lib/find-current-edition.ts
    --stage 2` (e stages relevantes). Edição em curso → registrar pausa, não
    despachar trabalho técnico concorrente neste tick.
@@ -173,20 +168,20 @@ relatório no Telegram). Quem pensa sobre código é o harness delegado.
 
 ### 2. Classificar — SEM LLM, executando o código real
 
-Nunca parafrasear a regra. Para o backlog aberto:
+Nunca parafrasear a regra. Para o backlog aberto de TODOS os repos de
+`platform.config.json → issue_repos` (studio + `vjpixel/diaria-design`, #10900):
 
 ```bash
-gh issue list --state open --json number,labels,body,state --limit 200 > /tmp/issues.json
-npx tsx --eval "
-import('./scripts/lib/issue-exec-track.ts').then(async ({classifyExecTrackWithRule}) => {
-  const issues = JSON.parse(require('fs').readFileSync('/tmp/issues.json','utf8'));
-  for (const i of issues) {
-    const labels = i.labels.map(l=>l.name);
-    const r = classifyExecTrackWithRule({labels, body: i.body||'', state: i.state});
-    console.log(JSON.stringify({n:i.number, track:r.track, rule:r.matched}));
-  }
-})"
+npx tsx scripts/fetch-open-issues-for-triage.ts --repos all > /tmp/issues.json
+jq -c '.[] | {ref, track: .execTrack}' /tmp/issues.json
 ```
+
+`exit 3` = parcial (repo extra falhou, o studio veio inteiro): seguir com o
+que veio e registrar no relatório. `exit 1` = falha do studio → `Parada`.
+
+**Identidade é o `ref` (`owner/repo#N`), nunca o `number`** — o #21 existe
+nos dois repos. Issue do studio segue citada `#N`; a de outro repo, SEMPRE
+`vjpixel/diaria-design#N` no relatório, no claim e nos preflights.
 
 O output é a verdade — 6 categorias (`overnight`/`develop`/`agendada`/
 `bloqueada`/`epica`/`fora-de-rodada`), sempre da versão de hoje do código.
@@ -362,17 +357,9 @@ Não confundir com #6917 ("PR aberta encerra o tick") — isto não encerra nem 
 Para cada issue elegível (após claim):
 
 0. **Gate de coerência (#6752), ANTES do claim — barra cedo, não depois de
-   implementar.** Auditoria de 29/08/2026 mediu 2,4× de retrabalho em PRs
-   `continuo` vs `overnight`/`develop` da mesma janela — não por qualidade
-   de diff isolado (notas próximas), mas por FALTA DE MEMÓRIA ENTRE PRs: o
-   caso canônico (#6699) é uma PR criando um módulo canônico em
-   `scripts/lib/shared/` e, dois commits depois, outra PR do mesmo dia
-   contornando essa mesma abstração com um literal hardcoded — a abstração
-   foi criada e imediatamente pisada pelo próprio autor. Decisão do editor
-   (#6752, 30/08/2026): checagem MECÂNICA aqui no passo de seleção, **sem**
-   eixo novo em `classifyExecTrack` nem label dedicada — rejeitar aqui não
-   grava NADA na issue, ela só não é reivindicada NESTE tick, continua
-   `track=overnight` normal pro overnight/develop.
+   implementar** (porquê: `references/rationale-extraido-10900.md` §3).
+   Rejeitar aqui não grava NADA na issue: ela só não é reivindicada NESTE
+   tick e continua `track=overnight` pro overnight/develop.
 
    Rodar, pra cada candidata ANTES de `claim-issue`:
    ```bash
@@ -384,14 +371,7 @@ Para cada issue elegível (após claim):
    (`error` — `gh`/`git` falhou, inconclusivo) → tratar como `reject`
    também (fail-closed, mesma disciplina do guard de caminho sensível do
    §3 passo 2: não sabe responder ⇒ não arrisca). Ver
-   `scripts/lib/continuo-coherence-gate.ts` pro que o gate mede
-   (overlap de path com PR aberta/merge recente, refactor/consolidação,
-   abstração compartilhada, fatia de épico, dependência cruzada explícita
-   de outra PR) e por que é mecânico em vez de julgamento — não é um
-   classificador perfeito (decide ANTES do diff existir), mas erra pro
-   lado de barrar mais, porque o custo do falso-positivo (issue boa espera
-   o overnight) é muito menor que o do falso-negativo medido (retrabalho
-   2,4×, 3 das 4 quebras recentes de master).
+   `scripts/lib/continuo-coherence-gate.ts` pro que o gate mede.
 1. **Claim é LEASE de trabalho imediato, nunca reserva de fila** (regra dura,
    28/08 — incidente recorrente antes do #6443: o contínuo acumulava claims
    sem PR nenhum e travava as issues para o develop indefinidamente, porque
@@ -403,8 +383,10 @@ Para cada issue elegível (após claim):
    - Reivindicar **UMA issue por vez**, e somente no instante em que a
      implementação dela vai começar NESTE tick. Nunca reivindicar "as
      elegíveis" em lote no início do ciclo. Comando: `session-registry.ts
-     claim-issue --kind continuo --issue N --session-id "$SESSION_ID"`
-     (sempre `--kind continuo`, nunca `overnight` — ver passo 1.3).
+     claim-issue --kind continuo --issue {N|ref} --session-id "$SESSION_ID"`
+     (sempre `--kind continuo`, nunca `overnight` — ver passo 1.3; issue de
+     outro repo vai por ref, `--issue vjpixel/diaria-design#N`, e o mesmo
+     vale pro `unclaim-issue`).
    - Só issues `track=overnight` podem ser reivindicadas. `bloqueada`/
      `develop`/`epica`/`agendada` NUNCA — mesmo que pareçam fáceis.
    - **Fim de tick = higiene obrigatória**: para cada issue em
@@ -431,19 +413,8 @@ Para cada issue elegível (após claim):
    indistinguíveis pro guard de merge (#5716), que só sabe ler idade de
    heartbeat.
    
-   **Por que é um processo em background, não uma instrução pra chamar
-   heartbeat "de vez em quando"**: uma instrução em prosa depende do
-   agente lembrar de executá-la no meio de um trabalho que está
-   absorvendo a atenção dele — falha exatamente como a #6849 mediu pro
-   marcador de review (o comportamento correto existe só enquanto quem
-   executa coopera). Um renovador destacado, iniciado ANTES da delegação
-   e morto DEPOIS dela, não depende de julgamento nenhum: se o processo
-   pai (este tick) está vivo, o `wait`/`kill` no fim do bloco garante que
-   ele para; se o pai morre no meio (SIGKILL do gateway, #6885), o teto de
-   15 iterações (~45min, folga sobre os 40min do `--timeout`) garante que
-   o renovador nunca fica batendo heartbeat pra sempre num tick que já
-   morreu — o mesmo problema que existe pra resolver, só que órfão em vez
-   de esquecido.
+   Renovador em background, nunca instrução em prosa; teto de 15
+   iterações (~45min) — porquê: `references/rationale-extraido-10900.md` §4.
 
 ```bash
 (
@@ -478,15 +449,29 @@ curtos) — se um novo passo longo e bloqueante entrar na skill no futuro,
 envolvê-lo com o mesmo renovador em vez de assumir que o heartbeat do
 passo 1.3 ainda está fresco.
 
-**NUNCA baixar o `--budget` para "economizar" (#6712).** Ele não controla o
-gasto desta pipeline — o CLI não reconhece o slug do gateway e estima o custo
-a preço da Anthropic, ~14-18x o real, então um teto "econômico" aborta a
-delegação no meio gastando centavos. Quem limita gasto é o teto diário da key
-na OpenRouter, aplicado pelo provedor. Em 29/08/2026 o tick reagiu a
-`Exceeded USD budget` tentando 1.5 e depois 1.0 — a direção errada: 3
-delegações morreram, o tick de 40min produziu zero PRs e deixou worktree
-órfão. Se este erro aparecer, o valor a mexer é para CIMA.
+**NUNCA baixar o `--budget` para "economizar" (#6712)** — o CLI estima o custo
+a preço da Anthropic (~14-18x o real) e um teto "econômico" aborta a
+delegação no meio. Com `Exceeded USD budget`, o valor a mexer é para CIMA
+(incidente: `references/rationale-extraido-10900.md` §5).
 
+2b. **Issue de outro repo (`vjpixel/diaria-design#N`, #10900)** — item 32
+   de `context/overnight-dispatch-rules.md`, adaptado ao tick:
+   - O gate de coerência do passo 0 é só-studio: no lugar dele, só
+     reivindicar se `gh pr list -R vjpixel/diaria-design --state open
+     --search "head:continuo/" --json number --jq length` der `0` (no máximo
+     1 PR `continuo/*` aberta no design; o teto do §3c não conta o design).
+   - Checkout `../diaria-design` (ausente → `gh repo clone
+     vjpixel/diaria-design ../diaria-design`); `git -C ../diaria-design fetch
+     origin` e `git -C ../diaria-design worktree add -b continuo/fix-N-slug
+     .claude/worktrees/continuo-N origin/main`. Clone ou worktree falhou →
+     `unclaim-issue` e registrar "checkout do design indisponível: {erro}";
+     NUNCA implementar num worktree do studio.
+   - Delegar (bloco do passo 2) com só o `claude-delegate.sh` dentro de
+     `(cd {worktree do design} && ...)` (o heartbeat fica no studio); a PR sai lá com `gh pr create -R
+     vjpixel/diaria-design --base main` e `Closes #N` LOCAL.
+   - O merge dessa PR NÃO é automático: `continuo-pr-review.sh` e o pickup
+     do overnight são só-studio. Registrar no relatório "PR do design
+     aguardando merge humano: vjpixel/diaria-design#P".
 3. **Antes** de entrar na fila (próximo item): `npx tsx
    scripts/check-branch-issue-consistency.ts --pr N`. **Rastreabilidade
    (#6804)**, achado ao limpar 61 branches `continuo/`: branch nomeada

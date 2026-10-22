@@ -833,9 +833,10 @@ describe("#10618 fatia 4 (review 2, item 2) — checkStudioTrainPr: o trem é s�
     assert.deepEqual(checkStudioTrainPr(view(studio), 23), { verdict: "studio" });
   });
 
-  it("número de PR do design resolvendo um studio PR já fechado → foreign (nunca mergeado de novo)", () => {
+  it("studio PR já fechado/mergeado → closed (nunca mergeado de novo; #10901: pulado, não recusa o trem)", () => {
     const r = checkStudioTrainPr(view({ ...studio, state: "MERGED" }), 23);
-    assert.equal(r.verdict, "foreign");
+    assert.equal(r.verdict, "closed");
+    assert.doesNotMatch((r as { reason: string }).reason, /outro repo/);
   });
 
   it("url de outro repo, base main ou fork → foreign", () => {
@@ -852,9 +853,9 @@ describe("#10618 fatia 4 (review 2, item 2) — checkStudioTrainPr: o trem é s�
     assert.equal(checkStudioTrainPr(bad, 23).verdict, "unreadable");
   });
 
-  it("run-merge-train.ts chama checkStudioTrainPr antes de compor lotes (fiação)", () => {
+  it("run-merge-train.ts chama screenTrainPrs (checkStudioTrainPr) antes de compor lotes (fiação)", () => {
     const src = readFileSync(join(import.meta.dirname, "..", "scripts", "run-merge-train.ts"), "utf8");
-    const check = src.indexOf("checkStudioTrainPr(runner, pr)");
+    const check = src.indexOf("screenTrainPrs(runner, prNumbers, !values.prs)");
     assert.ok(check > 0);
     assert.ok(check < src.indexOf("partitionRetidoCandidates(runner, prNumbers)"));
     assert.ok(check < src.indexOf("composeTrainBatches("));
