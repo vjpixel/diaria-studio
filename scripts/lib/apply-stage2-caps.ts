@@ -28,6 +28,8 @@
  * Slot liberado é preenchido pelo próximo de score mais alto no bucket.
  */
 
+import { curatePool } from "./pool-quality.ts";
+import type { PublishedDestaque } from "./same-fact-demotion.ts";
 import { canonicalize } from "./url-utils.ts";
 import { dropMirrorClusterSources, type ClusterSource } from "./cluster-sources.ts";
 import { selectDomainExcess, editorialDomain, DEFAULT_MAX_PER_DOMAIN, type DomainLimitCandidate } from "./domain-diversity.ts";
@@ -385,7 +387,9 @@ function dedupAgainstHighlights(
  */
 export function applyStage2Caps(
   approved: ApprovedJson,
+  past: PublishedDestaque[] = [],
 ): { approved: ApprovedJson; report: CapReport } {
+  approved = curatePool(approved, past);
   const dest = approved.highlights?.length ?? 0;
   const lOriginal = approved.lancamento?.length ?? 0;
   const rOriginal = approved.radar?.length ?? 0;

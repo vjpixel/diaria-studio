@@ -29,6 +29,9 @@ import {
   readCaptureFailedFromMarker,
   renderCaptureFailedLine,
 } from "./lib/inbox-stats.ts";
+import { readRecentPublishedDestaques } from "./demote-same-fact-highlights.ts";
+import { deriveCurrentEdition } from "./lib/past-editions-extract.ts";
+import { POOL_PAST_WINDOW } from "./lib/pool-quality.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
@@ -56,7 +59,12 @@ function main(): void {
   }
 
   const approved = JSON.parse(readFileSync(inPath, "utf8")) as ApprovedJson;
-  const { approved: capped, report } = applyStage2Caps(approved);
+  const current = deriveCurrentEdition(inPath);
+  const past = current ? readRecentPublishedDestaques(resolve(ROOT, "data/editions"), POOL_PAST_WINDOW, current) : [];
+  const { approved: capped, report } = applyStage2Caps(approved, past);
+  for (const entry of (capped.pool_reserve ?? []) as Array<{ bucket: string; article: { url?: string }; reason: string }>) {
+    console.error(`[apply-stage2-caps] reserva ${entry.bucket}: ${entry.article.url} (${entry.reason}; #10794)`);
+  }
 
   // #8593: nunca em silêncio — cada item removido pelo limite de domínio vai
   // pro stderr e pro run-log (warn). A coverage.line abaixo já recontará o total.
