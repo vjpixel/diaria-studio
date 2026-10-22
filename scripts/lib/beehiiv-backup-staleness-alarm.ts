@@ -188,6 +188,30 @@ export function findMonthsWithoutSnapshot(
   return missing;
 }
 
+/**
+ * Decide o que fazer com o fingerprint de um check extra (#10780).
+ *
+ * `alarmFingerprint` é o fingerprint do estado atual quando ele alarma, ou
+ * `null` quando o check deu ok. O fingerprint gravado precisa ser zerado no
+ * ok: senão a sequência incompleto → completo → incompleto termina com o
+ * mesmo fingerprint de antes e a recorrência passa calada.
+ *
+ * - `send`: alarma e grava `alarmFingerprint`;
+ * - `skip`: já alarmado pra este mesmo estado;
+ * - `reset`: voltou ao ok, zera o campo;
+ * - `noop`: ok e nada gravado.
+ */
+export type FingerprintedAlarmAction = "send" | "skip" | "reset" | "noop";
+
+export function planFingerprintedAlarm(
+  alarmFingerprint: string | null,
+  lastFingerprint: string | null | undefined,
+): FingerprintedAlarmAction {
+  const last = lastFingerprint ?? null;
+  if (alarmFingerprint === null) return last === null ? "noop" : "reset";
+  return alarmFingerprint === last ? "skip" : "send";
+}
+
 /** Fingerprint estável do alarme de cobertura — muda só quando o conjunto de
  *  meses faltantes muda (restaurar um mês, ou um mês novo sumir). */
 export function computeCoverageFingerprint(missingMonths: readonly string[]): string {
