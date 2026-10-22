@@ -42,6 +42,8 @@ import {
   type PublishedDestaque,
 } from "./lib/same-fact-demotion.ts";
 
+import { applyNegativeHighlightPolicy } from "./lib/negative-highlight-policy.ts";
+
 type Rec = Record<string, unknown>;
 
 function approvedSummaries(editionDir: string): Map<string, { title?: string; summary?: string }> {
@@ -185,7 +187,11 @@ async function main(): Promise<void> {
   const past = readRecentPublishedDestaques(editionsDir, window, current);
   const result = demoteSameFactHighlights(highlights, past);
 
-  const notes = result.demoted.map(formatDemotionNote);
+  const policy = applyNegativeHighlightPolicy(result.highlights, readRecentPublishedDestaques(editionsDir, 14, current), current);
+  result.highlights = policy.highlights;
+  // A política #10795 pode retirar um repetido que o guard antigo preservou pela cota.
+  result.kept = result.kept.filter(k => result.highlights.slice(0, 3).some(h => canonicalize(String(h.url ?? h.article?.url ?? "")) === canonicalize(k.url)));
+  const notes = [...result.demoted.map(formatDemotionNote), ...policy.notes];
   for (const k of result.kept) {
     notes.push(
       `🚨 MESMO FATO — "${k.title}" (D${k.rank}) repete o D${k.match.matched_destaque} de ${k.match.matched_edition} "${k.match.matched_title}"; ${k.reason}.`,
@@ -198,7 +204,7 @@ async function main(): Promise<void> {
 
   const outLog = args["out-log"];
   if (!dryRun) {
-    if (result.demoted.length > 0) {
+    if (result.demoted.length > 0 || JSON.stringify(highlights) !== JSON.stringify(result.highlights)) {
       const marks = new Map<string, unknown>(
         result.demoted.map((d) => [
           canonicalize(d.url),
@@ -210,8 +216,8 @@ async function main(): Promise<void> {
     }
     // Resume: rodada sem nada novo não apaga o registro de uma rodada anterior
     // (o JSON já reordenado não reproduz o rebaixamento).
-    if (outLog && (result.demoted.length > 0 || result.kept.length > 0 || !existsSync(outLog))) {
-      writeFileSync(outLog, JSON.stringify({ demoted: result.demoted, kept: result.kept }, null, 2) + "\n", "utf8");
+    if (outLog && (result.demoted.length > 0 || result.kept.length > 0 || policy.notes.length > 0 || !existsSync(outLog))) {
+      writeFileSync(outLog, JSON.stringify({ demoted: result.demoted, kept: result.kept, negative_policy_notes: policy.notes }, null, 2) + "\n", "utf8");
     }
   }
   process.stdout.write(

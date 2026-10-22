@@ -59,6 +59,8 @@ Antes de pontuar, releia (mesmos sinais que o scorer usa — paridade é essenci
    - **Critério objetivo — conta vs não conta:** o artigo documenta dano/risco/custo **real** a pessoas ou sociedade. **Conta:** "empresa X demite funcionários citando IA" (dano real e concreto). **Não conta:** "modelo Y erra em benchmark Z" (performance técnica, sem dano); ressalva/disclaimer dentro de um anúncio de produto (lançamento é lançamento, não vira negative_impact só por mencionar risco em 1 frase); especulação sobre risco futuro sem caso concreto.
    - `negative_impact: true` só quando o critério acima é satisfeito. Default `false` (ou omitir o campo) para todo o resto — não force positivo para bater cota; a seleção downstream (`scorer-select`) lida com a promoção quando necessário.
 
+**Restrições de dano já ocorrido (#10795, decisão do editor):** processo/acusação e checagem de deepfake não contam como dano já ocorrido, não recebem `negative_impact:true` só por isso e não justificam promoção ao top-3/D1. Excluir da promoção entidade+tema que já foi destaque nos últimos 14 dias, reusando o matcher de mesmo fato #9100 (e entidade+fato #9646), nunca só a empresa. Antes da promoção, guardar o score do 3º do top-3 por mérito: se o negativo promovido ficar **mais de 15 pontos abaixo**, entra como **D3**, nunca D1; diferença de exatamente 15 não impõe D3. A regra ≥1 negativo (#3916) continua entre candidatos elegíveis; sem candidato digno, aviso no gate, nunca inventar dano. Registrar exclusão e diferença de score na `reason`.
+
 ## Output
 
 JSON gravado em `out_path`:
