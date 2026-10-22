@@ -299,9 +299,12 @@ describe("buildTrainMergeCommitTitle / buildTrainMergeCommitBody — commit squa
     assert.match(title, /#100.*#101|#101.*#100/);
   });
 
-  it("corpo tem 1 linha Closes com a UNIÃO ordenada de todas as issues do lote", () => {
+  it("corpo tem 1 linha `Closes #N` POR ISSUE, na UNIÃO ordenada de todas as issues do lote (#10878)", () => {
     const body = buildTrainMergeCommitBody({ prs: [100, 101] }, prInfos);
-    assert.match(body, /^Closes #10, #11, #12$/m);
+    assert.match(body, /^Closes #10$/m);
+    assert.match(body, /^Closes #11$/m);
+    assert.match(body, /^Closes #12$/m);
+    assert.deepEqual(parseClosesIssues(body), [10, 11, 12]);
   });
 
   it("issue repetida entre 2 PRs do lote aparece só 1 vez no Closes", () => {
@@ -310,7 +313,8 @@ describe("buildTrainMergeCommitTitle / buildTrainMergeCommitBody — commit squa
       { pr: 101, headRefName: "b", title: "b", issueNumbers: [20] },
     ];
     const body = buildTrainMergeCommitBody({ prs: [100, 101] }, dup);
-    assert.match(body, /^Closes #10, #20$/m);
+    assert.equal(body.match(/^Closes #20$/gm)?.length, 1);
+    assert.deepEqual(parseClosesIssues(body), [10, 20]);
   });
 
   it("nenhum PR do lote tem issue detectada — corpo NÃO tem linha Closes (nunca uma linha vazia 'Closes ')", () => {

@@ -62,6 +62,7 @@ import { join } from "node:path";
 import { resolveWorktreeRemoval } from "./worktree-remove.ts"; // #8209
 import {
   parseClosesIssues,
+  parseRefsIssues,
   bisectBatch,
   buildTrainPrTitle,
   buildTrainPrBody,
@@ -71,6 +72,7 @@ import {
   type TrainPrInfo,
 } from "./merge-train.ts";
 import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
+import { extractRemovalDeclaration } from "./pr-removal-declaration.ts"; // #10848
 import { evaluatePrRetido, type PrRetidoResult } from "./pr-retido-para-editor.ts";
 
 export interface ExecResult {
@@ -143,6 +145,8 @@ export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPr
     headRefName: p.headRefName,
     title: p.title,
     issueNumbers: parseClosesIssues(p.body ?? ""),
+    refsIssueNumbers: parseRefsIssues(p.body ?? ""),
+    removalDeclaration: extractRemovalDeclaration(p.body ?? ""),
   };
 }
 

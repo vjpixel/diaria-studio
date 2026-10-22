@@ -37,6 +37,14 @@ export function hasRemovalDeclaration(body: string): boolean {
   return MARKER_RE.test(body);
 }
 
+/** Pura — o texto da declaração (`removal-declaration: <isto>`), aparado,
+ * ou `null` quando o body não tem marcador válido. Usado pelo trem de merge
+ * (#10848) pra agregar as declarações das PRs do lote no corpo do PR-trem. */
+export function extractRemovalDeclaration(body: string): string | null {
+  const m = MARKER_RE.exec(body);
+  return m ? m[1].trim() : null;
+}
+
 /** Pura — o PR precisa declarar remoção quando `added` ultrapassa o
  * limiar. Só `added` importa (não `net`/`ratio`) — um PR que adiciona muito
  * E remove muito ainda merece a pergunta "o resto do que adicionou tinha
