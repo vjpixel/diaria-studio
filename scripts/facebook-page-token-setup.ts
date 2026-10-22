@@ -4,15 +4,18 @@
  *
  * Gera e grava o token de PÁGINA (que não expira) das páginas do Facebook em
  * `publishing.social.facebook.pages` — hoje usado pra ligar o Reels diário
- * nas páginas VJ Pixel e MemeLab (`scripts/publish-shorts.ts`).
+ * na página VJ Pixel (`scripts/publish-shorts.ts`; MemeLab saiu da rotina no #10790).
+ * O token da VJ Pixel também publica o Reels no Instagram pessoal do editor,
+ * vinculado a essa página (`publishing.shorts.instagram_author_page`, #10790).
  *
  * Passo do editor (o token nunca passa pelo chat nem pelo Claude):
  *   1. Graph API Explorer (https://developers.facebook.com/tools/explorer),
  *      app da diar.ia.br, "Get User Access Token" com as permissões
  *      pages_show_list, pages_read_engagement, pages_manage_posts (as mesmas
- *      do token da página diar.ia.br).
+ *      do token da página diar.ia.br) — e, para a vjpixel, também
+ *      instagram_basic + instagram_content_publish (Instagram pessoal, #10790).
  *   2. No terminal: copie o token e rode
- *        npx tsx scripts/facebook-page-token-setup.ts --pages vjpixel,memelab
+ *        npx tsx scripts/facebook-page-token-setup.ts --pages vjpixel
  *      e cole o token quando o script pedir (stdin, sem eco na tela e fora do
  *      histórico do shell).
  *
@@ -120,7 +123,7 @@ async function main(): Promise<number> {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const slugs = (values["pages"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   if (!slugs.length) {
-    console.error("uso: facebook-page-token-setup.ts --pages vjpixel,memelab [--page-id slug=ID,...]");
+    console.error("uso: facebook-page-token-setup.ts --pages vjpixel[,outra] [--page-id slug=ID,...]");
     return 2;
   }
   const pageIds: Record<string, string> = { ...KNOWN_PAGE_IDS };

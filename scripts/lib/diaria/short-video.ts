@@ -161,19 +161,42 @@ export function buildReelsCaption(input: {
 export interface ShortsConfig {
   /** Slugs de `publishing.social.facebook.pages` que recebem o Reels (ignora o `enabled` de lá — aquele é o dos posts diários). */
   facebookPages: string[];
-  /** Publica o Reels no Instagram da diar.ia.br. */
+  /** Publica o Reels no Instagram. */
   instagram: boolean;
+  /**
+   * Slug de `publishing.social.facebook.pages` cuja conta do Instagram VINCULADA é a autora do Reels
+   * (#10790: conta pessoal do editor, ligada à página VJ pixel). `null` = conta da diar.ia.br
+   * (`INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN`).
+   */
+  instagramAuthorPage: string | null;
+  /** Usernames convidados como collab no Reels (#10790: `diar.ia.br`). Máx. 3 (limite da Graph API). */
+  instagramCollaborators: string[];
 }
 
+/** Limite de collaborators por mídia na Graph API do Instagram. */
+export const INSTAGRAM_MAX_COLLABORATORS = 3;
+
 export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
-  facebookPages: Object.freeze(["diaria", "vjpixel", "memelab"]) as unknown as string[],
+  // #10790 (decisão do editor, 22/10/2026): MemeLab fora da rotina.
+  facebookPages: Object.freeze(["diaria", "vjpixel"]) as unknown as string[],
   instagram: true,
+  instagramAuthorPage: "vjpixel",
+  instagramCollaborators: Object.freeze(["diar.ia.br"]) as unknown as string[],
 });
 
-/** Lê e valida `publishing.shorts`; ausente → default (decisão do editor, #10769). */
+function defaultShortsConfig(): ShortsConfig {
+  return {
+    facebookPages: [...DEFAULT_SHORTS_CONFIG.facebookPages],
+    instagram: DEFAULT_SHORTS_CONFIG.instagram,
+    instagramAuthorPage: DEFAULT_SHORTS_CONFIG.instagramAuthorPage,
+    instagramCollaborators: [...DEFAULT_SHORTS_CONFIG.instagramCollaborators],
+  };
+}
+
+/** Lê e valida `publishing.shorts`; ausente → default (decisão do editor, #10769/#10790). */
 export function loadShortsConfig(config: unknown): ShortsConfig {
   const raw = (config as any)?.publishing?.shorts;
-  if (raw === undefined) return { facebookPages: [...DEFAULT_SHORTS_CONFIG.facebookPages], instagram: DEFAULT_SHORTS_CONFIG.instagram };
+  if (raw === undefined) return defaultShortsConfig();
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("[shorts] publishing.shorts precisa ser um objeto (#10769).");
   }
@@ -183,7 +206,18 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
   }
   if (new Set(pages).size !== pages.length) throw new Error("[shorts] slug repetido em publishing.shorts.facebook_pages.");
   if (typeof raw.instagram !== "boolean") throw new Error("[shorts] publishing.shorts.instagram precisa ser boolean.");
-  return { facebookPages: [...pages], instagram: raw.instagram };
+  const author = raw.instagram_author_page ?? null;
+  if (author !== null && (typeof author !== "string" || !author)) {
+    throw new Error("[shorts] publishing.shorts.instagram_author_page precisa ser o slug de uma página ou null (#10790).");
+  }
+  const collabs = raw.instagram_collaborators ?? [];
+  if (!Array.isArray(collabs) || collabs.some((c: unknown) => typeof c !== "string" || !/^[A-Za-z0-9._]{1,30}$/.test(c))) {
+    throw new Error("[shorts] publishing.shorts.instagram_collaborators precisa ser uma lista de usernames do Instagram, sem @ (#10790).");
+  }
+  if (collabs.length > INSTAGRAM_MAX_COLLABORATORS) {
+    throw new Error(`[shorts] publishing.shorts.instagram_collaborators aceita no máximo ${INSTAGRAM_MAX_COLLABORATORS} contas.`);
+  }
+  return { facebookPages: [...pages], instagram: raw.instagram, instagramAuthorPage: author, instagramCollaborators: [...collabs] };
 }
 
 /** Um destino do vídeo curto. `api` = o script publica; `guided` = passo no Chrome com o editor. */

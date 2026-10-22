@@ -28,7 +28,7 @@ import {
   shortVideoFileName,
   upsertShortEntry,
 } from "../scripts/lib/diaria/short-video.ts";
-import { parseMarkArg, planShortsPublish, publishFacebookReel, publishInstagramReel, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { parseMarkArg, planShortsPublish, publishFacebookReel, publishInstagramReel, resolveInstagramAuthor, type GraphDeps } from "../scripts/publish-shorts.ts";
 import { matchPages } from "../scripts/facebook-page-token-setup.ts";
 import { loadFacebookPagesConfig, type ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
@@ -114,7 +114,7 @@ describe("#10769 metadados e legendas", () => {
 });
 
 describe("#10769 config e destinos", () => {
-  it("config ausente → decisão do editor (diar.ia.br, VJ Pixel, MemeLab + Instagram)", () => {
+  it("config ausente → decisão do editor (diar.ia.br, VJ Pixel + Instagram pessoal em collab; sem MemeLab, #10790)", () => {
     assert.deepEqual(loadShortsConfig({}), DEFAULT_SHORTS_CONFIG);
   });
 
@@ -130,12 +130,14 @@ describe("#10769 config e destinos", () => {
     const shorts = loadShortsConfig(config);
     const slugs = loadFacebookPagesConfig(config).map((p) => p.slug);
     for (const s of shorts.facebookPages) assert.ok(slugs.includes(s), `slug ${s} sem página configurada`);
-    assert.deepEqual(shorts.facebookPages, ["diaria", "vjpixel", "memelab"]);
+    assert.deepEqual(shorts.facebookPages, ["diaria", "vjpixel"]);
+    assert.equal(shorts.instagramAuthorPage, "vjpixel");
+    assert.deepEqual(shorts.instagramCollaborators, ["diar.ia.br"]);
   });
 
   it("páginas fora da rotina (Jandig, Teatro vs Game, Criaturas Afetivas) não entram no default", () => {
     const ids = listShortDestinations(DEFAULT_SHORTS_CONFIG).map((d) => d.id);
-    assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook:vjpixel", "facebook:memelab", "instagram", "facebook_profile"]);
+    assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook:vjpixel", "instagram", "facebook_profile"]);
   });
 
   it("idempotência: destino registrado conta como feito; upsert mantém 1 entrada por destino", () => {
@@ -166,7 +168,7 @@ describe("#10769 config e destinos", () => {
   });
 
   it("instagram: false tira o Instagram dos destinos", () => {
-    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false }).map((d) => d.id);
+    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false, instagramAuthorPage: null, instagramCollaborators: [] }).map((d) => d.id);
     assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook_profile"]);
   });
 
@@ -196,7 +198,7 @@ describe("#10769 plano do publish-shorts", () => {
     assert.equal(by["facebook:diaria"].action, "publish");
     assert.equal(by["facebook:diaria"].scheduledAt, "2026-10-22T09:00:00.000Z");
     assert.equal(by["facebook:vjpixel"].action, "skip_missing_credentials");
-    assert.equal(by["facebook:memelab"].action, "publish");
+    assert.equal(by["facebook:memelab"], undefined, "MemeLab saiu da rotina (#10790)");
     assert.equal(by["instagram"].action, "pending_schedule");
     assert.equal(by["youtube_shorts"].action, "guided");
     assert.equal(by["facebook_profile"].action, "guided");
@@ -235,6 +237,11 @@ describe("#10769 plano do publish-shorts", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), editionUrl: undefined });
     assert.equal(plan.editionUrl, EDITION_URL);
     assert.ok(plan.warnings.some((w) => w.includes("derivado do slug")));
+  });
+
+  it("#10790: motivo de Instagram não pronto vira o aviso do plano", () => {
+    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), instagramReady: false, instagramNotReadyReason: "nenhuma conta do Instagram vinculada à página vjpixel" });
+    assert.ok(plan.warnings.some((w) => w === "instagram: nenhuma conta do Instagram vinculada à página vjpixel"));
   });
 
   it("instagramReady false → skip com aviso; perfil pessoal sai com utm_content=perfil", () => {
@@ -439,5 +446,76 @@ describe("#10769 facebook-page-token-setup", () => {
   it("resposta sem `tasks` falha FECHADA (não persiste token sem prova de permissão)", () => {
     const r = matchPages(["vjpixel"], configPages, [{ id: "937293496367847", name: "VJ pixel", access_token: "t1" }], { vjpixel: "937293496367847" });
     assert.equal(r[0].ok, false);
+  });
+});
+
+describe("#10790 Instagram: autora pessoal + collab, MemeLab fora", () => {
+  const vjpixel: ResolvedFacebookPage = { slug: "vjpixel", enabled: false, pageId: "937", token: "ptok", missing: [], utmContent: "page-vjpixel" };
+  function fetchOnce(json: any, status = 200): { deps: Pick<GraphDeps, "fetch">; urls: string[] } {
+    const urls: string[] = [];
+    return { deps: { fetch: async (url) => { urls.push(url); return new Response(JSON.stringify(json), { status }); } }, urls };
+  }
+
+  it("config valida instagram_author_page e instagram_collaborators", () => {
+    const mk = (extra: object) => ({ publishing: { shorts: { facebook_pages: ["diaria"], instagram: true, ...extra } } });
+    const ok = loadShortsConfig(mk({ instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] }));
+    assert.equal(ok.instagramAuthorPage, "vjpixel");
+    assert.deepEqual(ok.instagramCollaborators, ["diar.ia.br"]);
+    const legacy = loadShortsConfig(mk({}));
+    assert.equal(legacy.instagramAuthorPage, null, "sem o campo = conta da diar.ia.br (env)");
+    assert.deepEqual(legacy.instagramCollaborators, []);
+    assert.throws(() => loadShortsConfig(mk({ instagram_collaborators: ["@diar.ia.br"] })), /sem @/);
+    assert.throws(() => loadShortsConfig(mk({ instagram_collaborators: ["a", "b", "c", "d"] })), /no máximo 3/);
+    assert.throws(() => loadShortsConfig(mk({ instagram_author_page: "" })), /instagram_author_page/);
+  });
+
+  it("autora = conta vinculada à página, publicando com o token da página", async () => {
+    const { deps, urls } = fetchOnce({ instagram_business_account: { id: "1784", username: "vjpixel" } });
+    const a = await resolveInstagramAuthor(deps, "vjpixel", [vjpixel], "v25.0", { igUserId: "env-ig", token: "env-tok" });
+    assert.deepEqual(a, { ready: true, igUserId: "1784", token: "ptok", username: "vjpixel", source: "conta vinculada à página vjpixel" });
+    assert.match(urls[0], /\/v25\.0\/937\?fields=instagram_business_account/);
+  });
+
+  it("página sem Instagram vinculado → NÃO pronto com o passo que destrava (nunca cai na conta da diar.ia.br)", async () => {
+    const { deps } = fetchOnce({ name: "VJ pixel", id: "937" });
+    const a = await resolveInstagramAuthor(deps, "vjpixel", [vjpixel], "v25.0", { igUserId: "env-ig", token: "env-tok" });
+    assert.equal(a.ready, false);
+    assert.match((a as { reason: string }).reason, /nenhuma conta do Instagram vinculada à página vjpixel/);
+  });
+
+  it("página sem credencial ou erro da Graph → não pronto; sem author_page usa o env", async () => {
+    const semToken = { ...vjpixel, token: "", missing: ["FACEBOOK_VJPIXEL_PAGE_ACCESS_TOKEN"] };
+    const a = await resolveInstagramAuthor(fetchOnce({}).deps, "vjpixel", [semToken], "v25.0", { igUserId: "", token: "" });
+    assert.match((a as { reason: string }).reason, /sem credencial/);
+    const b = await resolveInstagramAuthor(fetchOnce({ error: { message: "perm" } }, 400).deps, "vjpixel", [vjpixel], "v25.0", { igUserId: "", token: "" });
+    assert.match((b as { reason: string }).reason, /não foi possível ler/);
+    const c = await resolveInstagramAuthor(fetchOnce({}).deps, null, [], "v25.0", { igUserId: "ig", token: "t" });
+    assert.equal(c.ready && c.igUserId, "ig");
+    const d = await resolveInstagramAuthor(fetchOnce({}).deps, null, [], "v25.0", { igUserId: "", token: "" });
+    assert.equal(d.ready, false);
+  });
+
+  it("container do Reels leva collaborators como JSON; sem collab, o campo não vai", async () => {
+    const bodies: any[] = [];
+    const seq = [{ id: "c1" }, { success: true }, { status_code: "FINISHED" }, { id: "m1" }, { permalink: "p" }];
+    const mk = (): GraphDeps => {
+      let i = 0;
+      return {
+        fetch: async (_url, init) => {
+          bodies.push(init?.body instanceof URLSearchParams ? Object.fromEntries(init.body) : null);
+          return new Response(JSON.stringify(seq[i++]), { status: 200 });
+        },
+        sleep: async () => {},
+        now: () => new Date("2026-10-22T12:00:00Z"),
+        log: () => {},
+      };
+    };
+    const buf = Buffer.from([0]);
+    await publishInstagramReel(mk(), "1784", "ptok", "v25.0", buf, "legenda", ["diar.ia.br"]);
+    assert.equal(bodies[0].collaborators, JSON.stringify(["diar.ia.br"]));
+    assert.equal(bodies[0].access_token, "ptok");
+    bodies.length = 0;
+    await publishInstagramReel(mk(), "1784", "ptok", "v25.0", buf, "legenda");
+    assert.equal(bodies[0].collaborators, undefined);
   });
 });
