@@ -49,16 +49,13 @@ export type IssueKey = string & { readonly [ISSUE_KEY_BRAND]: true };
  * default), `"#N"`, `"N"`, `"owner/repo#N"` e URL de issue/PR. `null` quando
  * não é inequívoca — nunca chuta.
  */
-export function toIssueKey(
-  input: IssueRef | string | number | null | undefined,
-  defaultRepo: string = DEFAULT_ISSUE_REPO,
-): IssueKey | null {
+export function toIssueKey(input: IssueRef | string | number | null | undefined): IssueKey | null {
   if (input && typeof input === "object") {
     const repo = normalizeRepoSlug(input.repo);
     if (!repo || !Number.isSafeInteger(input.number) || input.number <= 0) return null;
     return formatIssueRef({ repo, number: input.number }) as IssueKey;
   }
-  const ref = parseIssueRef(input as string | number | null | undefined, defaultRepo);
+  const ref = parseIssueRef(input as string | number | null | undefined);
   return ref ? (formatIssueRef(ref) as IssueKey) : null;
 }
 
@@ -179,8 +176,8 @@ export function groupIssueKeysByRepo(
 
 /** Erro do guard: entrada de outro repo lida como número do diaria-studio. */
 export class ForeignIssueNumberError extends Error {
-  readonly key: string | null;
-  constructor(where: string, key: string | null) {
+  readonly key: IssueKey | null;
+  constructor(where: string, key: IssueKey | null) {
     super(
       `[${where}] entrada ${key ?? "(identidade desconhecida)"} lida como número do diaria-studio — ` +
         `uma API que só entende número não pode receber issue de outro repo (#10618). ` +
@@ -194,16 +191,51 @@ export class ForeignIssueNumberError extends Error {
 /**
  * Guard (#10618, fatia 3): número do diaria-studio de uma entrada, ou LANÇA.
  *
- * Toda API que só entende número (devolve `number[]`, chama `gh` sem `-R`,
- * indexa por número) deve ler o número da entrada por aqui, nunca por
- * `entry.number`. Entrada de outro repo — inclusive a que `normalizeIssues`
- * já preencheu com `number` a partir da chave `"owner/repo#N"` — e entrada de
- * identidade desconhecida (`repo` ilegível) lançam `ForeignIssueNumberError`:
- * falhar alto é melhor que devolver o número de OUTRA issue sem aviso.
+ * Para API que só entende número e NÃO pode descartar a entrada em silêncio
+ * (devolve `number[]` a quem vai chamar `gh` sem `-R`): entrada de outro repo
+ * — inclusive a que `normalizeIssues` já preencheu com `number` a partir da
+ * chave `"owner/repo#N"` — e entrada de identidade desconhecida (`repo`
+ * ilegível) lançam `ForeignIssueNumberError`: falhar alto é melhor que
+ * devolver o número de OUTRA issue sem aviso.
+ *
+ * Estado real dos chamadores (não é a única defesa): hoje só
+ * `planIssuesRequiringRouting` (`skipped-develop-track.ts`, API legada) lança
+ * por aqui. Os gates de fim de rodada que só consultam o studio filtram ANTES
+ * com os equivalentes que não lançam — `partitionStudioPlanEntries` (separa e
+ * avisa: `check-overnight-comment-coverage`, `check-decision-label-drift-gate`,
+ * `check-develop-label-cleared`) ou `studioNumberOfPlanEntry`
+ * (`collectKnownIssueNumbers`, `findRetrackedUnworkedIssues`) — e os que
+ * cobrem outros repos leem a `IssueKey` (`issueKeyOfPlanEntry`). Nenhum
+ * desses lê `entry.number` cru.
  */
 export function requireStudioIssueNumber(entry: unknown, where: string): number {
   const ref = planEntryRef(entry);
   const n = ref ? legacyIssueNumber(ref) : null;
-  if (n === null) throw new ForeignIssueNumberError(where, ref ? formatIssueRef(ref) : null);
+  if (n === null) throw new ForeignIssueNumberError(where, ref ? (formatIssueRef(ref) as IssueKey) : null);
   return n;
+}
+
+/**
+ * Descrição crua de uma entrada do plano de identidade desconhecida, pra
+ * aviso de gate: índice + `ref`/`repo`/`number` como vieram (#10618, fatia 3)
+ * — "(identidade desconhecida)" sozinho não diz ao coordenador QUAL entrada
+ * corrigir.
+ */
+export function describeUnknownPlanEntry(entry: unknown, index: number): string {
+  if (!entry || typeof entry !== "object") return `entrada [${index}] ${JSON.stringify(entry) ?? String(entry)}`;
+  const e = entry as { ref?: unknown; repo?: unknown; number?: unknown };
+  const parts: string[] = [];
+  if (e.ref !== undefined) parts.push(`ref=${JSON.stringify(e.ref)}`);
+  if (e.repo !== undefined) parts.push(`repo=${JSON.stringify(e.repo)}`);
+  if (e.number !== undefined) parts.push(`number=${JSON.stringify(e.number)}`);
+  return `entrada [${index}] (${parts.length > 0 ? parts.join(", ") : "sem ref/repo/number"})`;
+}
+
+/** `true` quando a entrada tenta declarar identidade (`ref` ou `repo`
+ * presentes) — distingue "identidade ilegível" de "entrada sem número"
+ * (esta última, os gates ignoram como sempre). */
+export function planEntryDeclaresIdentity(entry: unknown): boolean {
+  if (!entry || typeof entry !== "object") return false;
+  const e = entry as { ref?: unknown; repo?: unknown };
+  return (e.ref !== undefined && e.ref !== null) || (e.repo !== undefined && e.repo !== null);
 }

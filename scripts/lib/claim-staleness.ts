@@ -50,6 +50,7 @@
 export const CLAIM_STALE_AGE_MS = 6 * 60 * 60 * 1000;
 
 import {
+  claimKeysOf,
   compareIssueKeys,
   isStudioIssueKey,
   issueNumberInRepo,
@@ -161,17 +162,29 @@ export function flattenClaims(sessions: readonly ClaimBearingSession[]): ClaimEn
 export function flattenAllClaims(sessions: readonly ClaimBearingSession[]): ClaimEntry[] {
   const out = flattenClaims(sessions);
   for (const session of sessions) {
-    const refs = session.claimed_foreign_issues_effective ?? session.claimed_foreign_issues ?? [];
-    for (const raw of refs) {
-      const issueKey = typeof raw === "string" ? toIssueKey(raw) : null;
-      if (!issueKey || isStudioIssueKey(issueKey)) continue; // ilegível, ou studio já coberto acima
+    // `claimKeysOf` é a fonte única de "claims de uma sessão como IssueKey"
+    // (mesmo critério `*_effective ?? cru`, entrada ilegível descartada). Só
+    // o lado estrangeiro é passado: o studio já veio de `flattenClaims`.
+    const foreignKeys = claimKeysOf({
+      claimed_foreign_issues: session.claimed_foreign_issues,
+      claimed_foreign_issues_effective: session.claimed_foreign_issues_effective,
+    });
+    // `claimed_foreign_issues_at` é chaveado pela string gravada — canoniza
+    // as chaves pra achar o timestamp de `Vjpixel/Diaria-Design#21` também.
+    const atByKey = new Map<IssueKey, string>();
+    for (const [raw, at] of Object.entries(session.claimed_foreign_issues_at ?? {})) {
+      const k = toIssueKey(raw);
+      if (k && typeof at === "string" && !atByKey.has(k)) atByKey.set(k, at);
+    }
+    for (const issueKey of foreignKeys) {
+      if (isStudioIssueKey(issueKey)) continue; // studio já coberto acima
       out.push({
         issueNumber: issueNumberInRepo(issueKey),
         issueKey,
         kind: session.kind,
         machineTag: session.machineTag,
         sessionId: session.sessionId,
-        claimedAt: session.claimed_foreign_issues_at?.[issueKey] ?? session.claimed_foreign_issues_at?.[raw] ?? null,
+        claimedAt: atByKey.get(issueKey) ?? null,
         stale: session.stale ?? false,
       });
     }
@@ -214,27 +227,38 @@ export function findAgedClaims(
   maxAgeMs: number,
   hasOpenPr: (issueNumber: number, repo?: string) => boolean | null,
   isIssueClosed?: (issueNumber: number, repo?: string) => boolean | null,
+  /** #10618 (fatia 3): chamado pra cada claim que NÃO pôde ser avaliada —
+   * `sem-timestamp` (sem `claimedAt` legível: idade desconhecida) ou
+   * `nao-verificavel` (passou do teto mas `hasOpenPr` devolveu `null`). O
+   * veredito não muda (fail-soft de sempre); o CLI usa pra pôr a ressalva na
+   * linha de ok em vez de deixar a claim sumir em silêncio. */
+  onUnevaluated?: (issueKey: IssueKey, reason: "sem-timestamp" | "nao-verificavel") => void,
 ): AgedClaimFinding[] {
   const out: AgedClaimFinding[] = [];
   for (const entry of entries) {
     // #10618 (fatia 3): claim de outro repo chega com `issueKey`; os
     // consultores recebem o `repo` (só nesse caso — claim do studio segue
-    // chamando com o número sozinho, como sempre).
+    // chamando com o número sozinho, como sempre). O número sai da chave
+    // quando ela existe — `issueNumber` é só o fallback legado.
     const issueKey = entry.issueKey ?? toIssueKey(entry.issueNumber);
     if (!issueKey) continue;
+    const issueNumber = issueNumberInRepo(issueKey);
     const repo = isStudioIssueKey(issueKey) ? undefined : repoOfIssueKey(issueKey);
-    if (!entry.claimedAt) continue;
-    const claimedAtMs = Date.parse(entry.claimedAt);
-    if (!Number.isFinite(claimedAtMs)) continue;
+    const claimedAtMs = entry.claimedAt ? Date.parse(entry.claimedAt) : Number.NaN;
+    if (!entry.claimedAt || !Number.isFinite(claimedAtMs)) {
+      onUnevaluated?.(issueKey, "sem-timestamp");
+      continue;
+    }
     const ageMs = now - claimedAtMs;
     if (ageMs < maxAgeMs) continue;
-    if ((repo ? isIssueClosed?.(entry.issueNumber, repo) : isIssueClosed?.(entry.issueNumber)) === true) {
+    if ((repo ? isIssueClosed?.(issueNumber, repo) : isIssueClosed?.(issueNumber)) === true) {
       continue; // issue fechada — nunca precisa de re-triagem
     }
-    const openPr = repo ? hasOpenPr(entry.issueNumber, repo) : hasOpenPr(entry.issueNumber);
+    const openPr = repo ? hasOpenPr(issueNumber, repo) : hasOpenPr(issueNumber);
+    if (openPr === null) onUnevaluated?.(issueKey, "nao-verificavel");
     if (openPr !== false) continue; // true ou null (não verificável) → nunca reporta
     out.push({
-      issueNumber: entry.issueNumber,
+      issueNumber,
       issueKey,
       kind: entry.kind,
       machineTag: entry.machineTag,

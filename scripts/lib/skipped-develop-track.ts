@@ -8,7 +8,9 @@ import { classifyExecTrack } from "./issue-exec-track.ts";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
 import {
   compareIssueKeys,
+  describeUnknownPlanEntry,
   issueKeyOfPlanEntry,
+  planEntryDeclaresIdentity,
   requireStudioIssueNumber,
   studioNumberOfIssueKey,
   type IssueKey,
@@ -110,18 +112,29 @@ export function findUnroutedSkipKeys(
   return [...out].sort(compareIssueKeys);
 }
 
-/** #10618 (fatia 3) — entradas que exigem roteamento, como `IssueKey` (todos
- * os repos), e quantas têm identidade desconhecida (não verificáveis). */
+/**
+ * #10618 (fatia 3) — entradas que exigem roteamento, como `IssueKey` (todos
+ * os repos), e as de identidade desconhecida (não verificáveis).
+ *
+ * "Identidade desconhecida" é só a entrada que DECLARA identidade (`ref` ou
+ * `repo` presente) e ela é ilegível. Entrada sem número nem `ref` segue
+ * ignorada, como no caminho legado (`planIssuesRequiringRouting`) — não é
+ * "não verificada", é entrada sem issue nenhuma.
+ */
 export function planIssueKeysRequiringRouting(plan: IssuesBearing<SkippedPlanIssue>): {
   keys: IssueKey[];
   unknownIdentity: number;
+  /** Descrição crua de cada entrada de identidade desconhecida (índice +
+   * `ref`/`repo`/`number`), pro aviso do CLI. */
+  unknownEntries: string[];
 } {
   const keys = new Set<IssueKey>();
-  let unknownIdentity = 0;
-  for (const issue of normalizeIssues(plan).filter(requiresDevelopRouting)) {
+  const unknownEntries: string[] = [];
+  normalizeIssues(plan).forEach((issue, index) => {
+    if (!requiresDevelopRouting(issue)) return;
     const key = issueKeyOfPlanEntry(issue);
     if (key) keys.add(key);
-    else unknownIdentity++;
-  }
-  return { keys: [...keys].sort(compareIssueKeys), unknownIdentity };
+    else if (planEntryDeclaresIdentity(issue)) unknownEntries.push(describeUnknownPlanEntry(issue, index));
+  });
+  return { keys: [...keys].sort(compareIssueKeys), unknownIdentity: unknownEntries.length, unknownEntries };
 }

@@ -27,7 +27,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   checkDevelopPlanMotivos,
-  findDeixadoPara300Buraco,
+  findDeixadoPara300BuracoLabels,
+  planEntryLabel,
   DEVELOP_PULADA_MOTIVOS,
   type DevelopPlanIssueLike,
 } from "./lib/develop-plan-motivo.ts";
@@ -51,7 +52,9 @@ if (isMainModule(import.meta.url)) {
   // deixado-para-o-helios, #7682) em issue de track develop/bloqueada.
   // Reportado junto, mesma passada de gate.
   const plan = JSON.parse(readFileSync(planPath, "utf8")) as IssuesBearing<DevelopPlanIssueLike>;
-  const deixadoPara300Buraco = findDeixadoPara300Buraco(normalizeIssues(plan));
+  // #10618 (fatia 3): rótulo pela identidade (`owner/repo#N` em outro repo),
+  // nunca o `number` cru — a design#21 não pode sair como "#21".
+  const deixadoPara300Buraco = findDeixadoPara300BuracoLabels(normalizeIssues(plan));
   if (result.status === "ok" && deixadoPara300Buraco.length === 0) {
     console.log("ok — todo motivo de issue pulada está no vocabulário fechado");
     process.exit(0);
@@ -61,8 +64,8 @@ if (isMainModule(import.meta.url)) {
     console.error(
       `[validate-develop-plan-motivo] #5907(b): status "deixado-para-o-300" (ou o alias legado "deixado-para-o-helios") em issue de track develop/bloqueada — o 300 NUNCA pega essas; a issue fica num buraco (develop não faz, overnight não faz). Reclassifique (mergeada / entregue-fora-de-codigo / nao-tentada / pulada com motivo válido) ou corrija o exec_track_painel:`,
     );
-    for (const n of deixadoPara300Buraco) {
-      console.error(`  #${Number.isFinite(n) ? n : "?"}`);
+    for (const label of deixadoPara300Buraco) {
+      console.error(`  ${label}`);
     }
   }
   if (result.status !== "ok") {
@@ -70,7 +73,7 @@ if (isMainModule(import.meta.url)) {
       `[validate-develop-plan-motivo] motivo fora do vocabulário fechado (${DEVELOP_PULADA_MOTIVOS.join(", ")}), ou sem evidência obrigatória:`,
     );
     for (const entry of result.entries) {
-      const label = Number.isFinite(entry.number) ? `#${entry.number}` : "#?";
+      const label = planEntryLabel(entry);
       if (entry.reason === "missing-evidencia") {
         console.error(
           `  ${label} — motivo "${entry.motivo}" sem campo ja_resolvida_evidencia (evidência obrigatória, ver docstring de develop-plan-motivo.ts)`,

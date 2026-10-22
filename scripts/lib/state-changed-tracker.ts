@@ -401,10 +401,15 @@ export function collectKnownIssueNumbers(plan: PlanWithGoal): Set<number> {
 export function readRoundScopeFilters(plan: PlanWithGoal): {
   bugsOnly: boolean;
   priorityFilter: string[] | null;
-  /** Números do diaria-studio do `--issues`. */
+  /** Números do diaria-studio do `--issues`. `null` = SEM filtro (campo
+   * ausente ou ilegível — toda issue do studio em escopo). `[]` = filtro
+   * presente que não cita nenhuma issue do studio (ex.: só
+   * `"vjpixel/diaria-design#22"`) — NENHUMA issue do studio em escopo; nunca
+   * confundir com `null`. */
   issuesFilter: number[] | null;
   /** #10618 (fatia 3): o mesmo filtro como `IssueKey` (todos os repos) —
-   * `null` exatamente quando `issuesFilter` é `null`. */
+   * `null` exatamente quando `issuesFilter` é `null` (sem filtro). Presente,
+   * restringe cada repo às chaves dele (ver `findMissingForeignConvergenceKeys`). */
   issuesFilterKeys: Set<IssueKey> | null;
 } {
   const bugsOnly = plan.bugs_only === true;
@@ -542,10 +547,11 @@ export function foreignReposOfPlan(plan: PlanWithGoal): string[] {
  * Pure (#10618, fatia 3): convergência de UM repo que não é o diaria-studio.
  * Mesmo critério de `checkConvergenceScan` (filtros de escopo da rodada,
  * `classifyExecTrack` = `overnight`/`develop`), mas por chave: issue aberta
- * do `repo` fora das chaves conhecidas do plano é "nova". O `--issues` só
- * restringe este repo quando cita alguma chave dele — um filtro só de números
- * do studio diz que a rodada pediu issues do studio, então nada deste repo
- * está em escopo.
+ * do `repo` fora das chaves conhecidas do plano é "nova". Com `--issues`
+ * presente (`issuesFilterKeys !== null`), só as chaves DESTE repo citadas no
+ * filtro estão em escopo — um filtro só com números do studio diz que a
+ * rodada pediu issues do studio, então este repo inteiro fica fora de escopo
+ * (devolve `[]`). Sem filtro, toda issue aberta do repo entra na comparação.
  */
 export function findMissingForeignConvergenceKeys(
   plan: PlanWithGoal,
@@ -590,18 +596,28 @@ export function checkConvergenceScan(
  * varredura completa rodou e quantas issues novas ela achou, análogo ao
  * contador puro `rescans_done` mas com timestamp explícito. Cria `goal` como
  * objeto vazio se ainda não existir (plano legado/parcial) em vez de lançar.
+ *
+ * #10618 (fatia 3): `reposNaoVarridos` (`"owner/repo (motivo)"`) grava também
+ * `repos_nao_varridos` — a varredura "completa" que não alcançou um repo do
+ * plano fica registrada como parcial, não como zero issue nova. Lista vazia
+ * não grava o campo (shape de sempre).
  */
 export function recordConvergenceScan(
   planPath: string,
   novasEncontradas: number,
   at: string = new Date().toISOString(),
+  reposNaoVarridos: readonly string[] = [],
 ): void {
   const plan = readPlan(planPath) as PlanWithGoal;
   const goal = (plan.goal && typeof plan.goal === "object" ? plan.goal : {}) as Record<
     string,
     unknown
   >;
-  goal.last_convergence_scan = { at, novas_encontradas: novasEncontradas };
+  goal.last_convergence_scan = {
+    at,
+    novas_encontradas: novasEncontradas,
+    ...(reposNaoVarridos.length > 0 ? { repos_nao_varridos: [...reposNaoVarridos] } : {}),
+  };
   plan.goal = goal;
   writePlan(planPath, plan);
 }
@@ -631,7 +647,11 @@ export const UNWORKED_CLAIMED_MOTIVO = "claimed-por-outra-sessao";
 const RETRACK_HOLE_TRACKS: ReadonlySet<string> = new Set(["develop", "bloqueada"]);
 
 export interface RetrackedUnworkedIssue {
+  /** Número no repo DELA (`key` diz qual; ausente = diaria-studio). */
   number: number;
+  /** #10618 (fatia 3): `owner/repo#N` — só nas entradas de OUTRO repo
+   * (`findRetrackedUnworkedForeignIssues`); ausente no studio (shape de sempre). */
+  key?: IssueKey;
   /** Motivo terminal gravado no plano (`deixado-para-o-300`, ...). */
   motivo: string;
   /** `exec_track_painel` gravado no plano, ou `null` se ausente. */
@@ -709,4 +729,42 @@ export function findRetrackedUnworkedIssues(
     out.push({ number: n, motivo, track_gravado: trackGravado, track_atual: trackAtual });
   }
   return out.sort((a, b) => a.number - b.number);
+}
+
+/**
+ * Pure (#10618, fatia 3): `findRetrackedUnworkedIssues` para UM repo que não
+ * é o diaria-studio. `openIssues` são as issues abertas DESSE repo (a mesma
+ * busca `gh issue list -R` da convergência); só as entradas do plano cuja
+ * chave é desse repo são cruzadas — a design#21 nunca é julgada pelas labels
+ * da studio#21, nem o contrário. Saída com `key` (`owner/repo#N`).
+ */
+export function findRetrackedUnworkedForeignIssues(
+  plan: PlanWithGoal,
+  repo: string,
+  openIssues: ConvergenceScanIssue[],
+  opts: { now?: Date; includeClaimed?: boolean } = {},
+): RetrackedUnworkedIssue[] {
+  const byKey = new Map<IssueKey, ConvergenceScanIssue>();
+  for (const issue of openIssues) {
+    const key = toIssueKey({ repo, number: issue.number });
+    if (key) byKey.set(key, issue);
+  }
+  const out: RetrackedUnworkedIssue[] = [];
+  const seen = new Set<IssueKey>();
+  for (const entry of normalizeIssues<PlanIssueEntryLike>(plan as IssuesBearing<PlanIssueEntryLike>)) {
+    if (!entry) continue;
+    const key = issueKeyOfPlanEntry(entry);
+    if (!key || repoOfIssueKey(key) === DEFAULT_ISSUE_REPO || seen.has(key)) continue;
+    const motivo = unworkedMotivo(entry, opts.includeClaimed === true);
+    if (!motivo) continue;
+    const open = byKey.get(key);
+    if (!open) continue; // outro repo, ou issue fechada
+    const trackAtual = classifyExecTrack({ labels: open.labels, body: open.body, now: opts.now });
+    if (!RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
+    const trackGravado = typeof entry.exec_track_painel === "string" ? entry.exec_track_painel : null;
+    if (trackGravado === trackAtual) continue;
+    seen.add(key);
+    out.push({ number: open.number, key, motivo, track_gravado: trackGravado, track_atual: trackAtual });
+  }
+  return out.sort((a, b) => compareIssueKeys(a.key as IssueKey, b.key as IssueKey));
 }

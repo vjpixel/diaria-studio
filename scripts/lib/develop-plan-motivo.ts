@@ -62,6 +62,7 @@
 
 import { readFileSync } from "node:fs";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
+import { compareIssueKeys, issueKeyLabel, issueKeyOfPlanEntry, isStudioIssueKey } from "./issue-key.ts";
 
 /**
  * Vocabulário fechado de `motivo` para issues `status: "pulada"` no
@@ -122,6 +123,10 @@ export interface DevelopPlanIssueLike {
 
 export interface InvalidMotivoEntry {
   number: number;
+  /** #10618 (fatia 3): `owner/repo#N` — presente só quando a entrada é de
+   * OUTRO repo (o `number` dela é o número NAQUELE repo, nunca o da
+   * studio#N); ausente no studio, shape de sempre. Rótulo do CLI. */
+  ref?: string;
   /** `null` quando `motivo` está ausente ou não é string — issue `pulada`
    * sem motivo registrado é o mesmo problema, silenciosamente pior. */
   motivo: string | null;
@@ -131,6 +136,23 @@ export interface InvalidMotivoEntry {
    * vocabulário" pra CLI reportar a mensagem certa. Ausente (não
    * `undefined` explícito) nos demais casos, preservando o shape antigo. */
   reason?: "missing-evidencia";
+}
+
+/** `{ ref }` quando a entrada é de OUTRO repo; `{}` no studio/identidade
+ * desconhecida (#10618, fatia 3). */
+function foreignRefOf(issue: DevelopPlanIssueLike): { ref?: string } {
+  const key = issueKeyOfPlanEntry(issue);
+  return key && !isStudioIssueKey(key) ? { ref: key } : {};
+}
+
+/**
+ * Rótulo de uma entrada pra mensagem de gate (#10618, fatia 3): `#N` no
+ * studio, `owner/repo#N` em outro repo, `#?` sem identidade legível — nunca
+ * o `number` cru de uma entrada de outro repo como se fosse a studio#N.
+ */
+export function planEntryLabel(entry: unknown): string {
+  const key = issueKeyOfPlanEntry(entry);
+  return key ? issueKeyLabel(key) : "#?";
 }
 
 function hasJaResolvidaEvidencia(issue: DevelopPlanIssueLike): boolean {
@@ -153,12 +175,13 @@ export function findInvalidPuladaMotivos(
     if (issue?.status !== "pulada") continue;
     const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
     const number = typeof issue.number === "number" ? issue.number : Number.NaN;
+    const ref = foreignRefOf(issue);
     if (motivo === null || !isDevelopPuladaMotivo(motivo)) {
-      out.push({ number, motivo });
+      out.push({ number, ...ref, motivo });
       continue;
     }
     if (motivo === JA_RESOLVIDA_MOTIVO && !hasJaResolvidaEvidencia(issue)) {
-      out.push({ number, motivo, reason: "missing-evidencia" });
+      out.push({ number, ...ref, motivo, reason: "missing-evidencia" });
     }
   }
   return out;
@@ -186,15 +209,27 @@ export function findInvalidPuladaMotivos(
 export function findDeixadoPara300Buraco(
   issues: DevelopPlanIssueLike[],
 ): number[] {
-  const out: number[] = [];
-  for (const issue of issues) {
-    if (issue?.status !== "deixado-para-o-300" && issue?.status !== "deixado-para-o-helios") continue;
+  return buracoEntries(issues)
+    .map((issue) => (typeof issue.number === "number" ? issue.number : Number.NaN))
+    .sort((a, b) => a - b);
+}
+
+/** #10618 (fatia 3): como `findDeixadoPara300Buraco`, mas devolve o rótulo de
+ * cada entrada (`planEntryLabel`) — a entrada de outro repo sai como
+ * `owner/repo#N`, nunca como o `#N` da studio. É o que o CLI imprime. */
+export function findDeixadoPara300BuracoLabels(issues: DevelopPlanIssueLike[]): string[] {
+  return buracoEntries(issues)
+    .map((issue) => ({ issue, key: issueKeyOfPlanEntry(issue) }))
+    .sort((a, b) => (a.key && b.key ? compareIssueKeys(a.key, b.key) : a.key ? -1 : b.key ? 1 : 0))
+    .map(({ issue }) => planEntryLabel(issue));
+}
+
+function buracoEntries(issues: DevelopPlanIssueLike[]): DevelopPlanIssueLike[] {
+  return issues.filter((issue) => {
+    if (issue?.status !== "deixado-para-o-300" && issue?.status !== "deixado-para-o-helios") return false;
     const track = typeof issue.exec_track_painel === "string" ? issue.exec_track_painel : null;
-    if (track === "develop" || track === "bloqueada" || track === "epica") {
-      out.push(typeof issue.number === "number" ? issue.number : Number.NaN);
-    }
-  }
-  return out.sort((a, b) => a - b);
+    return track === "develop" || track === "bloqueada" || track === "epica";
+  });
 }
 
 export type DevelopPlanMotivoCheckResult =

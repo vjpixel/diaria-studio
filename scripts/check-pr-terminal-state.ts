@@ -25,10 +25,15 @@
  * **#10618 (fatia 3) — multi-repo.** O PR de uma issue mora no repo dela:
  * entrada `"vjpixel/diaria-design#21"` com `pr: 23` é cruzada com os PRs
  * abertos do diaria-design (`gh pr list -R vjpixel/diaria-design`), nunca com
- * o PR #23 do studio. Os repos extras consultados são os que aparecem no
- * `plan.json` E estão na allowlist `platform.config.json → issue_repos`; repo
- * fora dela, entrada de identidade desconhecida e falha do `gh` num repo
- * extra viram aviso em stderr ("NÃO avaliada"), nunca "ok" silencioso.
+ * o PR #23 do studio. Os repos extras consultados são os de TODA entrada do
+ * `plan.json` de outro repo (`issueKeyOfPlanEntry`, com ou sem `pr` — um PR
+ * `develop/fix-N-*` esquecido no diaria-design, sem registro no plano, só
+ * aparece como candidato se o repo dele for consultado) que estão na
+ * allowlist `platform.config.json → issue_repos`. Repo fora dela, entrada de
+ * identidade desconhecida e falha do `gh` num repo extra viram aviso em
+ * stderr E ressalva na linha de veredito ("ok PARCIAL — NÃO avaliados: …"),
+ * nunca "ok" sem ressalva. PR registrado num repo não consultado é listado
+ * como NÃO avaliado — nunca lido como "fechado" por não estar na lista.
  *
  * Uso:
  *   npx tsx scripts/check-pr-terminal-state.ts --plan data/overnight/260820/plan.json
@@ -47,6 +52,12 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
 import { DEFAULT_ISSUE_REPO, loadIssueRepos } from "./lib/issue-repos.ts";
+import {
+  describeUnknownPlanEntry,
+  issueKeyOfPlanEntry,
+  planEntryDeclaresIdentity,
+  repoOfIssueKey,
+} from "./lib/issue-key.ts";
 import {
   checkPrTerminalState,
   foreignClaimedIssueKeys,
@@ -143,31 +154,50 @@ if (isMainModule(import.meta.url)) {
   const openPrs = [...(fetched.value ?? [])];
   const planIssues = normalizeIssues<PlanIssueWithPrLike>(planRaw as IssuesBearing<PlanIssueWithPrLike>);
 
-  // #10618 (fatia 3): PRs abertos dos outros repos citados no plano (só os da
-  // allowlist `issue_repos`). Falha de um repo extra não derruba o gate: as
-  // entradas daquele repo ficam "NÃO avaliadas", com aviso.
+  // #10618 (fatia 3): PRs abertos dos outros repos citados no plano — TODA
+  // entrada de outro repo, com ou sem `pr` (PR não registrado em branch
+  // `develop/fix-N-*` do design só vira candidato se o repo for consultado).
+  // Só repos da allowlist `issue_repos`. Repo não consultado (fora dela, ou
+  // `gh` falhou) e identidade desconhecida entram na ressalva da linha final.
   const allowlist = new Set(loadIssueRepos(process.cwd()));
   const extraRepos = new Set<string>();
-  for (const issue of planIssues) {
-    if (typeof issue.pr !== "number") continue;
-    const repo = prRepoOfPlanEntry(issue);
+  /** repo → motivo de não ter sido consultado. */
+  const unevaluated = new Map<string, string>();
+  const unknownEntries: string[] = [];
+  planIssues.forEach((issue, index) => {
+    const key = issueKeyOfPlanEntry(issue);
+    const repo = key ? repoOfIssueKey(key) : typeof issue.pr === "number" ? prRepoOfPlanEntry(issue) : null;
     if (repo === null) {
-      console.error(
-        `[check-pr-terminal-state] aviso (#10618): entrada com PR #${issue.pr} e identidade desconhecida (repo ilegível) — NÃO avaliada`,
-      );
-    } else if (repo !== DEFAULT_ISSUE_REPO) {
-      if (allowlist.has(repo)) extraRepos.add(repo);
-      else console.error(`[check-pr-terminal-state] aviso (#10618): ${repo} fora de issue_repos — PR #${issue.pr} NÃO avaliado`);
+      // Só conta entrada que o gate avaliaria: tem PR registrado ou declara
+      // identidade (`ref`/`repo`) ilegível. Entrada sem número nem `ref` é
+      // ignorada, como sempre.
+      if (typeof issue.pr === "number" || planEntryDeclaresIdentity(issue)) {
+        unknownEntries.push(describeUnknownPlanEntry(issue, index));
+      }
+      return;
     }
-  }
+    if (repo === DEFAULT_ISSUE_REPO) return;
+    if (allowlist.has(repo)) extraRepos.add(repo);
+    else unevaluated.set(repo, "fora de issue_repos");
+  });
   for (const repo of [...extraRepos].sort()) {
     const extra = fetchOpenPrs(process.cwd(), repo);
     if (extra.error) {
-      console.error(`[check-pr-terminal-state] aviso (#10618): PRs de ${repo} NÃO avaliados — ${extra.error}`);
+      unevaluated.set(repo, `gh falhou: ${extra.error}`);
       continue;
     }
     openPrs.push(...(extra.value ?? []));
   }
+  for (const [repo, motivo] of unevaluated) {
+    console.error(`[check-pr-terminal-state] aviso (#10618): PRs de ${repo} NÃO avaliados — ${motivo}`);
+  }
+  for (const d of unknownEntries) {
+    console.error(`[check-pr-terminal-state] aviso (#10618): ${d} com identidade desconhecida (repo/ref ilegível) — NÃO avaliada`);
+  }
+  /** Ressalva da linha de veredito (vazia = cobertura completa). */
+  const ressalvaParts = [...unevaluated].map(([repo, motivo]) => `${repo} (${motivo.split("\n")[0]})`);
+  if (unknownEntries.length > 0) ressalvaParts.push(`${unknownEntries.length} entrada(s) de identidade desconhecida`);
+  const ressalva = ressalvaParts.length > 0 ? `NÃO avaliados: ${ressalvaParts.join("; ")}` : "";
   // #10439: sessões vivas do registry — fail-soft (registro ilegível = sem
   // evidência alheia, nunca reprova por isso).
   let sessions: LiveSessionLike[] = [];
@@ -185,7 +215,7 @@ if (isMainModule(import.meta.url)) {
     confirmedPrKeys: readAlienPrKeysConfirmed(planRaw),
     liveForeignClaimedIssues: foreignClaimedIssues(sessions, ownSessionId),
     liveForeignClaimedKeys: foreignClaimedIssueKeys(sessions, ownSessionId),
-  });
+  }, new Set(unevaluated.keys()));
   /** `PR #N` (studio) ou `owner/repo PR #N`. */
   const prLabel = (d: { pr: number; repo?: string }) => (d.repo ? `${d.repo} PR #${d.pr}` : `PR #${d.pr}`);
 
@@ -196,9 +226,20 @@ if (isMainModule(import.meta.url)) {
     }
   }
 
+  if (verdict.notEvaluated.length > 0) {
+    console.error(
+      "[check-pr-terminal-state] aviso (#10618): PR(s) registrado(s) em plan.json num repo NÃO consultado — estado desconhecido (não lido como fechado):",
+    );
+    for (const d of verdict.notEvaluated) {
+      console.error(`  ${prLabel(d)} — issue(s) ${d.issueNumbers.map((n) => `${d.repo}#${n}`).join(", ")}`);
+    }
+  }
+
   if (verdict.status === "ok") {
     console.log(
-      `ok — nenhum PR aberto sem estado terminal registrado (${openPrs.length} PR(s) aberto(s) checado(s))`,
+      ressalva
+        ? `ok PARCIAL — nenhum PR aberto sem estado terminal registrado nos repos consultados (${openPrs.length} PR(s) aberto(s) checado(s)); ${ressalva}`
+        : `ok — nenhum PR aberto sem estado terminal registrado (${openPrs.length} PR(s) aberto(s) checado(s))`,
     );
     process.exit(0);
   }
@@ -226,8 +267,13 @@ if (isMainModule(import.meta.url)) {
     console.error(
       "[check-pr-terminal-state] → confirme o estado real de cada PR (gh pr view N), mergeie/feche/atualize plan.json com o status correto (ex.: `retida-para-editor` para PR retida, #10430) antes de escrever o relatório final.",
     );
+    if (ressalva) console.error(`[check-pr-terminal-state] ${ressalva}`);
   } else {
-    console.log("ok — nenhuma divergência confirmada (só candidato(s) listado(s) acima, informativo)");
+    console.log(
+      ressalva
+        ? `ok PARCIAL — nenhuma divergência confirmada nos repos consultados (só candidato(s) listado(s) acima, informativo); ${ressalva}`
+        : "ok — nenhuma divergência confirmada (só candidato(s) listado(s) acima, informativo)",
+    );
   }
   process.exit(exitCode);
 }

@@ -32,12 +32,12 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
   const plan = JSON.parse(readFileSync(values.plan, "utf8"));
-  const { keys, unknownIdentity } = planIssueKeysRequiringRouting(plan);
+  const { keys, unknownEntries } = planIssueKeysRequiringRouting(plan);
   const allowlist = new Set(loadIssueRepos(process.cwd()));
   const snapshots = new Map<IssueKey, IssueSnapshot>();
-  let ghFailures = unknownIdentity;
-  if (unknownIdentity > 0) {
-    console.warn(`[check-skipped-develop-track] ${unknownIdentity} entrada(s) com identidade desconhecida (repo ilegível) — não verificadas`);
+  let ghFailures = unknownEntries.length;
+  for (const d of unknownEntries) {
+    console.warn(`[check-skipped-develop-track] ${d}: identidade desconhecida (repo/ref ilegível) — não verificada`);
   }
   for (const key of keys) {
     const repo = repoOfIssueKey(key);
@@ -58,7 +58,9 @@ if (isMainModule(import.meta.url)) {
   }
   const bad = findUnroutedSkipKeys(normalizeIssues(plan) as SkippedPlanIssue[], snapshots);
   if (ghFailures > 0 && !bad.length) {
-    console.error(`[check-skipped-develop-track] ${ghFailures} issue(s) não verificadas (gh falhou) — não dá pra afirmar ok`);
+    console.error(
+      `[check-skipped-develop-track] ${ghFailures} issue(s) não verificadas (gh falhou, repo fora de issue_repos ou identidade desconhecida — ver avisos acima) — não dá pra afirmar ok`,
+    );
     process.exit(2);
   }
   if (bad.length) {

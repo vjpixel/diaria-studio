@@ -145,7 +145,31 @@ describe("#10618 fatia 3 — guard requireStudioIssueNumber", () => {
       issues: { [`${DESIGN}#21`]: { status: "pulada", motivo: "requer-sessao-local" } } as never,
     } as IssuesBearing<SkippedPlanIssue>;
     assert.throws(() => planIssuesRequiringRouting(mixed), ForeignIssueNumberError);
-    assert.deepEqual(planIssueKeysRequiringRouting(mixed), { keys: [key(`${DESIGN}#21`)], unknownIdentity: 0 });
+    assert.deepEqual(planIssueKeysRequiringRouting(mixed), {
+      keys: [key(`${DESIGN}#21`)],
+      unknownIdentity: 0,
+      unknownEntries: [],
+    });
+  });
+
+  it("entrada pulada SEM número nem ref é ignorada (não vira identidade desconhecida) — como o caminho legado", () => {
+    const plan = { issues: [{ status: "pulada", motivo: "guard-de-execucao" }] } as IssuesBearing<SkippedPlanIssue>;
+    assert.deepEqual(planIssuesRequiringRouting(plan), []);
+    assert.deepEqual(planIssueKeysRequiringRouting(plan), { keys: [], unknownIdentity: 0, unknownEntries: [] });
+  });
+
+  it("só `repo`/`ref` presente mas ilegível conta como identidade desconhecida, com índice e campos crus", () => {
+    const plan = {
+      issues: [
+        { number: 1, status: "pulada", motivo: "guard-de-execucao" },
+        { number: 5, repo: 42, status: "pulada", motivo: "guard-de-execucao" },
+        { ref: "lixo", status: "pulada", motivo: "requer-sessao-local" },
+      ],
+    } as IssuesBearing<SkippedPlanIssue>;
+    const r = planIssueKeysRequiringRouting(plan);
+    assert.deepEqual(r.keys, [key(1)]);
+    assert.equal(r.unknownIdentity, 2);
+    assert.deepEqual(r.unknownEntries, ['entrada [1] (repo=42, number=5)', 'entrada [2] (ref="lixo")']);
   });
 });
 
@@ -250,7 +274,7 @@ describe("#10618 fatia 3 — block-staleness avalia a entrada no repo dela", () 
       [key(`${DESIGN}#21`)],
     );
     assert.deepEqual(
-      suppressAgedClaimOverlap(findings, new Set<string>([`${DESIGN}#21`])).map((f) => f.key),
+      suppressAgedClaimOverlap(findings, new Set<IssueKey>([key(`${DESIGN}#21`)])).map((f) => f.key),
       [key(21)],
     );
   });
@@ -531,30 +555,6 @@ describe("#10618 fatia 3 — CLI check-state-changed-pending varre o repo de out
   });
 });
 
-describe("#10618 fatia 3 — CLI check-block-staleness consulta a entrada do design no repo dela", () => {
-  function runGate(plan: unknown) {
-    const dir = mkdtempSync(join(tmpdir(), "fatia3-block-"));
-    try {
-      const planPath = join(dir, "plan.json");
-      writeFileSync(planPath, JSON.stringify(plan));
-      return spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts/check-block-staleness.ts"), "--plan", planPath], {
-        cwd: ROOT,
-        encoding: "utf8",
-        env: { ...process.env, PATH: dir, Path: dir },
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    }
-  }
-
-  it("design#21 não é pulada (repo na allowlist) e nunca aparece como a studio#21", () => {
-    const r = runGate({ issues: { [`${DESIGN}#21`]: { status: "pulada", motivo: "claimed-por-outra-sessao" } } });
-    assert.doesNotMatch(r.stderr, /FORA desta checagem/);
-    assert.doesNotMatch(r.stderr, /(?<!diaria-design)#21\b/, r.stderr);
-  });
-
-  it("repo fora de issue_repos fica FORA, com aviso", () => {
-    const r = runGate({ issues: { "fork/diaria-design#21": { status: "pulada", motivo: "claimed-por-outra-sessao" } } });
-    assert.match(r.stderr, /FORA desta checagem.*fork\/diaria-design#21 \(repo fora de issue_repos\)/);
-  });
-});
+// O teste de CLI de check-block-staleness (antes aqui, com PATH sem gh e
+// asserções só negativas) foi substituído por gh fake com asserção positiva
+// em test/issue-key-10618-fatia3-cli.test.ts.

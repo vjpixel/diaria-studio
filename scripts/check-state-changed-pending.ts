@@ -62,6 +62,7 @@ import {
   checkStateChangedPending,
   checkConvergenceScan,
   findMissingForeignConvergenceKeys,
+  findRetrackedUnworkedForeignIssues,
   findRetrackedUnworkedIssues,
   foreignReposOfPlan,
   recordConvergenceScan,
@@ -241,6 +242,7 @@ if (isMainModule(import.meta.url)) {
   // #10618 (fatia 3): issue nova de outro repo citado no plano.
   let foreignMissing: IssueKey[] = [];
   const foreignNotScanned: string[] = [];
+  const foreignRetracked: RetrackedUnworkedIssue[] = [];
   if (flags.has("skip-convergence")) {
     console.error(
       "[check-state-changed-pending] --skip-convergence: pulando re-varredura de convergência (não avaliada nesta invocação).",
@@ -267,6 +269,7 @@ if (isMainModule(import.meta.url)) {
         // #10618 (fatia 3): os outros repos que o plano cita, só os da
         // allowlist. Repo fora dela nunca é consultado (typo/fork).
         const allowlist = new Set(loadIssueRepos(process.cwd()));
+        const includeClaimed = isDevelopPlan(planPath, values.kind);
         for (const repo of foreignReposOfPlan(planRaw as PlanWithGoal)) {
           if (!allowlist.has(repo)) {
             foreignNotScanned.push(`${repo} (fora de issue_repos)`);
@@ -274,25 +277,35 @@ if (isMainModule(import.meta.url)) {
           }
           const extra = fetchOpenIssuesForConvergence(process.cwd(), repo);
           if (extra.error) {
-            foreignNotScanned.push(`${repo} (${extra.error})`);
+            foreignNotScanned.push(`${repo} (${extra.error.split("\n")[0]})`);
             continue;
           }
           foreignMissing.push(...findMissingForeignConvergenceKeys(planRaw as PlanWithGoal, repo, extra.issues));
+          // #10407 aplicado ao repo extra (#10618): mesma busca, por chave.
+          foreignRetracked.push(
+            ...findRetrackedUnworkedForeignIssues(planRaw as PlanWithGoal, repo, extra.issues, { includeClaimed }),
+          );
         }
-        recordConvergenceScan(planPath, convergence.novas_encontradas + foreignMissing.length);
+        recordConvergenceScan(
+          planPath,
+          convergence.novas_encontradas + foreignMissing.length,
+          undefined,
+          foreignNotScanned,
+        );
         convergenceRan = true;
         // #10407 — issue JÁ no plano como "não trabalhada por esta sessão"
         // que outra sessão re-roteou pra develop/bloqueada no meio da rodada.
-        retracked = findRetrackedUnworkedIssues(planRaw as PlanWithGoal, fetched.issues, {
-          includeClaimed: isDevelopPlan(planPath, values.kind),
-        });
+        retracked = [
+          ...findRetrackedUnworkedIssues(planRaw as PlanWithGoal, fetched.issues, { includeClaimed }),
+          ...foreignRetracked,
+        ];
       }
     }
   }
 
   if (foreignNotScanned.length > 0) {
     console.error(
-      `[check-state-changed-pending] re-varredura de convergência NÃO executada para: ${foreignNotScanned.join("; ")} (#10618 — issue nova desses repos não foi checada)`,
+      `[check-state-changed-pending] re-varredura de convergência NÃO executada para: ${foreignNotScanned.join("; ")} (#10618 — issue nova e re-roteamento (#10407) desses repos não foram checados)`,
     );
   }
 
@@ -303,7 +316,7 @@ if (isMainModule(import.meta.url)) {
     retracked.length === 0
   ) {
     const convergenceNote = convergenceRan
-      ? `nenhuma issue nova fora da varredura${foreignNotScanned.length > 0 ? " (exceto nos repos NÃO varridos acima)" : ""}, nenhuma issue do plano re-roteada pra develop/bloqueada`
+      ? `nenhuma issue nova fora da varredura, nenhuma issue do plano re-roteada pra develop/bloqueada${foreignNotScanned.length > 0 ? " (exceto nos repos NÃO varridos acima)" : ""}`
       : "re-varredura de convergência NÃO executada (--skip-convergence ou gh indisponível) — só pendência explícita foi checada";
     console.log(`ok — nenhuma pendência de re-triagem, ${convergenceNote}`);
     process.exit(0);
@@ -328,7 +341,7 @@ if (isMainModule(import.meta.url)) {
   }
   if (retracked.length > 0) {
     const list = retracked
-      .map((r) => `#${r.number} (${r.motivo}, ${r.track_gravado ?? "sem exec_track_painel"} → ${r.track_atual})`)
+      .map((r) => `${r.key ?? `#${r.number}`} (${r.motivo}, ${r.track_gravado ?? "sem exec_track_painel"} → ${r.track_atual})`)
       .join(", ");
     console.error(
       `re-classificação (#10407): issue(s) do plano marcada(s) como não trabalhada(s) por esta sessão que agora são develop/bloqueada: ${list} — o 300 não pega essas; atualize exec_track_painel e reavalie dispatch antes de fechar a rodada`,

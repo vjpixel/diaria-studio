@@ -82,6 +82,15 @@ const TRANSIENT_MOTIVOS: ReadonlySet<string> = new Set<StaleBlockCategory>([
   "bloqueio-execucao",
 ]);
 
+/** Pure (#10618, fatia 3): `true` quando `findStaleBlocks` avaliaria a
+ * entrada — `pulada` com um dos 3 motivos transitórios. O CLI só avisa
+ * "fora da checagem" (identidade desconhecida, repo fora da allowlist) pra
+ * entrada que passa daqui: aviso sobre entrada que o gate nunca olharia é
+ * ruído. */
+export function isTransientBlockEntry(entry: { status?: unknown; motivo?: unknown }): boolean {
+  return entry?.status === "pulada" && typeof entry.motivo === "string" && TRANSIENT_MOTIVOS.has(entry.motivo);
+}
+
 export interface StaleBlockFinding {
   /** Número da issue no repo DELA (`key` diz qual) — pro diaria-studio é o
    * número legado de sempre. */
@@ -167,10 +176,16 @@ export function extractPrNumber(entry: BlockStalenessPlanIssue): number | null {
  * transitório e cujo consultor confirma que o bloqueio já caducou. Nunca
  * reporta issue com motivo fora de `TRANSIENT_MOTIVOS`, nem issue cujo
  * consultor devolveu "não sei" — ver docblock do módulo.
+ *
+ * `onUnverifiable` (#10618, fatia 3): chamado com a chave da issue quando a
+ * checagem dela ficou inconclusiva por "não sei" do consultor (`getPrState`
+ * `UNKNOWN`, `hasLabel` `null`). Não muda o veredito — serve pro CLI contar
+ * e pôr a ressalva na linha de ok, em vez de o "não sei" sumir em silêncio.
  */
 export function findStaleBlocks(
   issues: readonly BlockStalenessPlanIssue[],
   consultor: BlockStalenessConsultor,
+  onUnverifiable?: (key: IssueKey, what: string) => void,
 ): StaleBlockFinding[] {
   const findings: StaleBlockFinding[] = [];
 
@@ -206,13 +221,17 @@ export function findStaleBlocks(
       const pr = extractPrNumber(entry);
       if (pr === null) continue; // não verificável — nunca falso positivo
       const state = consultor.getPrState(pr, repo);
+      if (state === "UNKNOWN") onUnverifiable?.(key, `estado do PR #${pr}`);
       if (state === "MERGED" || state === "CLOSED") {
         findings.push({
           number: issueNumber,
           key,
           category,
           motivo,
-          reason: `PR #${pr} já está ${state === "MERGED" ? "mergeado" : "fechado"} — bloqueio caducou`,
+          // #10618 (fatia 3): o PR mora no repo da issue — rótulo com o repo
+          // quando não é o studio (mesmo formato do `prLabel` do
+          // check-pr-terminal-state).
+          reason: `${repo ? `${repo} PR #${pr}` : `PR #${pr}`} já está ${state === "MERGED" ? "mergeado" : "fechado"} — bloqueio caducou`,
         });
       }
       continue;
@@ -244,7 +263,10 @@ export function findStaleBlocks(
         consultor.hasLabel(issueNumber, label, repo),
       );
       if (results.some((r) => r === true)) continue; // alguma label de bloqueio ainda presente
-      if (results.some((r) => r === null)) continue; // alguma não verificável — fail-soft
+      if (results.some((r) => r === null)) {
+        onUnverifiable?.(key, "labels da issue");
+        continue; // alguma não verificável — fail-soft
+      }
       findings.push({
         number: issueNumber,
         key,
@@ -281,7 +303,7 @@ export function findStaleBlocks(
  */
 export function suppressAgedClaimOverlap(
   findings: readonly StaleBlockFinding[],
-  agedClaims: ReadonlySet<number | string>,
+  agedClaims: ReadonlySet<number | IssueKey>,
 ): StaleBlockFinding[] {
   // #10618 (fatia 3): o conjunto aceita `IssueKey` (`owner/repo#N`) e, por
   // compatibilidade, número — número é SEMPRE diaria-studio, então só casa

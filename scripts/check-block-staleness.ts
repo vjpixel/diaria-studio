@@ -61,10 +61,14 @@
  * leva `-R owner/repo` e a claim é lida como `IssueRef` (nunca o número cru,
  * que é o da studio#21). Só repo da allowlist `platform.config.json →
  * issue_repos` é consultado; repo fora dela e identidade desconhecida ficam
- * FORA da checagem, com aviso em stderr (#10778). A checagem de claim
- * envelhecida (#6436) também cobre `claimed_foreign_issues`
- * (`flattenAllClaims`). Saída: `#N` pro diaria-studio (como sempre),
- * `owner/repo#N` pros outros.
+ * FORA da checagem, com aviso em stderr (#10778) que nomeia a entrada (índice
+ * + `ref`/`repo` crus) — só pra entrada que o gate avaliaria (`pulada` com
+ * motivo transitório). A checagem de claim envelhecida (#6436) também cobre
+ * `claimed_foreign_issues` (`flattenAllClaims`). Toda consulta que voltou
+ * "não sei" (`gh` falhou, repo fora da allowlist) e toda claim sem timestamp
+ * é listada por chave em stderr, e a linha de ok vira "ok PARCIAL — … (exceto
+ * N não verificáveis …)" — nunca "ok" sem ressalva. Saída: `#N` pro
+ * diaria-studio (como sempre), `owner/repo#N` pros outros.
  *
  * @see scripts/lib/block-staleness.ts
  * @see scripts/lib/claim-staleness.ts (#6436, checagem de claim envelhecida)
@@ -80,6 +84,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   findStaleBlocks,
   findingKey,
+  isTransientBlockEntry,
   suppressAgedClaimOverlap,
   type BlockStalenessConsultor,
   type BlockStalenessPlanIssue,
@@ -90,7 +95,14 @@ import { isIssueClaimedByActiveSession, listActiveSessions } from "./lib/session
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import { flattenAllClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-staleness.ts";
 import { DEFAULT_ISSUE_REPO, loadIssueRepos, normalizeRepoSlug } from "./lib/issue-repos.ts";
-import { issueKeyLabel, issueKeyOfPlanEntry, repoOfIssueKey, type IssueKey } from "./lib/issue-key.ts";
+import {
+  compareIssueKeys,
+  describeUnknownPlanEntry,
+  issueKeyLabel,
+  issueKeyOfPlanEntry,
+  repoOfIssueKey,
+  type IssueKey,
+} from "./lib/issue-key.ts";
 
 /** `-R owner/repo` para um repo que não é o diaria-studio; `[]` para o
  * studio (a chamada de sempre, que resolve pelo cwd). */
@@ -304,20 +316,34 @@ if (isMainModule(import.meta.url)) {
   const allowedRepos = new Set(allowlist);
   const issues: BlockStalenessPlanIssue[] = [];
   const skipped: string[] = [];
-  for (const entry of normalizeIssues<BlockStalenessPlanIssue>(planRaw as IssuesBearing<BlockStalenessPlanIssue>)) {
+  normalizeIssues<BlockStalenessPlanIssue>(planRaw as IssuesBearing<BlockStalenessPlanIssue>).forEach((entry, index) => {
+    // Só avisa sobre entrada que o gate avaliaria (`pulada` com motivo
+    // transitório) — o resto nunca foi olhado por este gate.
+    if (!isTransientBlockEntry(entry)) return;
     const key = issueKeyOfPlanEntry(entry);
-    if (!key) skipped.push("(identidade desconhecida)");
+    if (!key) skipped.push(`${describeUnknownPlanEntry(entry, index)} (identidade desconhecida)`);
     else if (!allowedRepos.has(repoOfIssueKey(key))) skipped.push(`${key} (repo fora de issue_repos)`);
     else issues.push(entry);
-  }
+  });
   if (skipped.length > 0) {
     console.error(
       `[check-block-staleness] ${skipped.length} entrada(s) FORA desta checagem (não dá pra consultar o repo certo): ${skipped.join(", ")}`,
     );
   }
 
+  // #10618 (fatia 3): toda checagem que ficou inconclusiva por "não sei" do
+  // `gh` (estado do PR, labels, PR aberto da claim) ou por claim sem
+  // timestamp — por chave. Nunca muda o veredito (fail-soft), mas entra na
+  // linha de ok como ressalva.
+  const unverifiable = new Map<IssueKey, Set<string>>();
+  const markUnverifiable = (key: IssueKey, what: string) => {
+    const set = unverifiable.get(key) ?? new Set<string>();
+    set.add(what);
+    unverifiable.set(key, set);
+  };
+
   const consultor = buildRealConsultor(repoRoot, allowlist);
-  const rawFindings = findStaleBlocks(issues, consultor);
+  const rawFindings = findStaleBlocks(issues, consultor, markUnverifiable);
 
   // #6436 — teto de idade de claim sem PR aberto, INDEPENDENTE do plan.json
   // (varre `data/sessions/` inteiro, não só as issues `pulada` deste plano —
@@ -333,6 +359,11 @@ if (isMainModule(import.meta.url)) {
     CLAIM_STALE_AGE_MS,
     hasOpenPr,
     isIssueClosed,
+    (key, reason) => {
+      if (reason === "sem-timestamp") markUnverifiable(key, "claim sem timestamp (claimed_*_at)");
+      else if (!allowedRepos.has(repoOfIssueKey(key))) markUnverifiable(key, "claim de repo fora de issue_repos");
+      else markUnverifiable(key, "PR aberto da claim (gh falhou)");
+    },
   );
 
   // #8842 — suprime `claimed-por-outra-sessao` quando a mesma issue já
@@ -342,9 +373,23 @@ if (isMainModule(import.meta.url)) {
   const agedClaimKeys = new Set<IssueKey>(agedClaims.map((c) => c.issueKey));
   const findings = suppressAgedClaimOverlap(rawFindings, agedClaimKeys);
 
+  // Chave que virou finding foi verificada o bastante — sai da ressalva.
+  for (const f of findings) unverifiable.delete(findingKey(f));
+  for (const c of agedClaims) unverifiable.delete(c.issueKey);
+  if (unverifiable.size > 0) {
+    console.error(`[check-block-staleness] ${unverifiable.size} issue(s) NÃO verificáveis nesta invocação (fail-soft, não reprova):`);
+    for (const [key, what] of [...unverifiable].sort(([a], [b]) => compareIssueKeys(a, b))) {
+      console.error(`  ${issueKeyLabel(key)} — ${[...what].join("; ")}`);
+    }
+  }
+  const ressalvaParts: string[] = [];
+  if (unverifiable.size > 0) ressalvaParts.push(`${unverifiable.size} não verificáveis`);
+  if (skipped.length > 0) ressalvaParts.push(`${skipped.length} entrada(s) fora da checagem`);
+  const ressalva = ressalvaParts.length > 0 ? ` (exceto ${ressalvaParts.join(" e ")}, listadas acima)` : "";
+
   if (findings.length === 0 && agedClaims.length === 0) {
     console.log(
-      "ok — nenhum bloqueio pulada (pr-em-voo/claimed-por-outra-sessao/bloqueio-execucao) caducado, nenhuma claim envelhecida sem PR",
+      `ok${ressalva ? " PARCIAL" : ""} — nenhum bloqueio pulada (pr-em-voo/claimed-por-outra-sessao/bloqueio-execucao) caducado, nenhuma claim envelhecida sem PR${ressalva}`,
     );
     process.exit(0);
   }
