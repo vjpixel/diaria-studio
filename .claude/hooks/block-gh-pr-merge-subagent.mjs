@@ -1412,14 +1412,21 @@ export const CONSUMED_GRANT_HINT =
 /**
  * #10618 — combina os donos dos locks de VÁRIOS repos (comando que mexe em
  * mais de um) num só valor pra `classifyMergeBlockCause`, sempre pelo lado
- * mais restritivo: lock de OUTRA sessão (inclusive o sentinela de corrompido)
- * > indeterminado (`undefined`) > livre (`null`) > da própria sessão.
+ * mais restritivo SEGUNDO `classifyMergeBlockCause`: lock de OUTRA sessão
+ * (inclusive o sentinela de corrompido) > livre (`null`) > indeterminado
+ * (`undefined`) > da própria sessão.
+ *
+ * #10776: `null` vem ANTES de `undefined` — é o `null` que ativa a regra de
+ * contenção (`contention-multi-coordinator`/`contention-grantee`); `undefined`
+ * só bloqueia junto com varredura degradada, que o classificador confere à
+ * parte. Na ordem antiga, lock do studio livre + falha de I/O no lock do
+ * design dava `undefined` e liberava o merge que o studio sozinho bloquearia.
  */
 export function combineMergeLockHolders(holders, callerSessionId) {
   const other = holders.find((h) => typeof h === "string" && h !== callerSessionId);
   if (other !== undefined) return other;
-  if (holders.some((h) => h === undefined)) return undefined;
   if (holders.some((h) => h === null)) return null;
+  if (holders.some((h) => h === undefined)) return undefined;
   return holders.length > 0 ? callerSessionId : null;
 }
 

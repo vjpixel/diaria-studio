@@ -130,12 +130,183 @@ export function loadAllowedForeignRepos(root = HOOK_REPO_ROOT) {
 
 const SEPARATORS = new Set(["&&", "||", ";", "|", "\n", "&", "|&"]);
 
+/** Fim (índice depois da aspa de fecho) de um trecho entre aspas duplas que
+ * começa em `from` (logo depois da aspa de abertura). `$(…)` e crase lá
+ * dentro são pulados inteiros — uma `"` dentro deles não fecha a aspa (#10776). */
+function doubleQuoteEnd(s, from) {
+  let j = from;
+  while (j < s.length) {
+    const c = s[j];
+    if (c === "\\") j += 2;
+    else if (c === '"') return j + 1;
+    else if (c === "$" && s[j + 1] === "(") j = substitutionEnd(s, j + 2);
+    else if (c === "`") j = backtickEnd(s, j + 1);
+    else j++;
+  }
+  return s.length;
+}
+
+/** Fim (índice depois da crase de fecho) de uma substituição por crase. */
+function backtickEnd(s, from) {
+  let j = from;
+  while (j < s.length) {
+    if (s[j] === "\\") j += 2;
+    else if (s[j] === "`") return j + 1;
+    else j++;
+  }
+  return s.length;
+}
+
+/**
+ * #10776 — fim (índice depois do `)` de fecho) de uma substituição `$(…)` que
+ * começa em `from` (logo depois do `$(`). Respeita aspas, crase, `$(…)`
+ * aninhado, comentário e CORPO DE HEREDOC: no corpo, aspas e parênteses são
+ * texto (`Monitor de 27"` num `$(cat <<'EOF' … EOF)` não abre aspa nenhuma).
+ * Como no bash, dentro de `$(…)` o heredoc também fecha numa linha `D)`/`D )`.
+ * Sem fecho (entrada truncada, `case … )` desbalanceado): o resto todo.
+ */
+function substitutionEnd(s, from) {
+  const n = s.length;
+  let depth = 1;
+  let i = from;
+  let atWordStart = true;
+  const pending = []; // heredocs abertos nesta linha: { delim, strip }
+  while (i < n) {
+    const ch = s[i];
+    if (ch === "\\") {
+      i += 2;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "'") {
+      const end = s.indexOf("'", i + 1);
+      i = end === -1 ? n : end + 1;
+      atWordStart = false;
+      continue;
+    }
+    if (ch === '"') {
+      i = doubleQuoteEnd(s, i + 1);
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "`") {
+      i = backtickEnd(s, i + 1);
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "$" && s[i + 1] === "(") {
+      i = substitutionEnd(s, i + 2);
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "#" && atWordStart) {
+      while (i < n && s[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "<" && s[i + 1] === "<" && s[i + 2] !== "<") {
+      i += 2;
+      const strip = s[i] === "-";
+      if (strip) i++;
+      while (s[i] === " " || s[i] === "\t") i++;
+      let delim = "";
+      while (i < n && !" \t\n;|&<>()".includes(s[i])) {
+        if (s[i] === "'" || s[i] === '"') {
+          const q = s[i];
+          const end = s.indexOf(q, i + 1);
+          const stop = end === -1 ? n : end;
+          delim += s.slice(i + 1, stop);
+          i = stop + 1;
+        } else if (s[i] === "\\" && i + 1 < n) {
+          delim += s[i + 1];
+          i += 2;
+        } else {
+          delim += s[i];
+          i++;
+        }
+      }
+      if (delim !== "") pending.push({ delim, strip });
+      atWordStart = false;
+      continue;
+    }
+    if (ch === "\n") {
+      i++;
+      atWordStart = true;
+      while (pending.length > 0) {
+        const { delim, strip } = pending.shift();
+        let closedByParen = false;
+        while (i < n) {
+          const nl = s.indexOf("\n", i);
+          const lineEnd = nl === -1 ? n : nl;
+          const raw = s.slice(i, lineEnd);
+          const lead = strip ? /^\t*/.exec(raw)[0].length : 0;
+          const line = raw.slice(lead);
+          if (line === delim) {
+            i = nl === -1 ? n : nl + 1;
+            break;
+          }
+          const gap = line.startsWith(delim) ? /^[ \t]*\)/.exec(line.slice(delim.length)) : null;
+          if (gap) {
+            // `D)`: fecha o heredoc E volta a ler a partir do `)`.
+            i += lead + delim.length + gap[0].length - 1;
+            closedByParen = true;
+            break;
+          }
+          i = nl === -1 ? n : nl + 1;
+        }
+        if (closedByParen) {
+          pending.length = 0;
+          break;
+        }
+      }
+      continue;
+    }
+    if (ch === "(") depth++;
+    if (ch === ")" && --depth === 0) return i + 1;
+    atWordStart = " \t;|&(".includes(ch);
+    i++;
+  }
+  return n;
+}
+
+/** A palavra tem algo que o shell EXECUTA ao expandir (`$(…)` ou crase). */
+function hasCommandSubstitution(w) {
+  return typeof w === "string" && (w.includes("$(") || w.includes("`"));
+}
+
+/**
+ * #10776 — valor de `--body`/`--title` que é só TEXTO: sem `$(…)`/crase, ou
+ * exatamente `$(cat <<'D' … D)` com delimitador aspado (o corpo é literal e
+ * nada mais roda na substituição). Qualquer outra substituição pode executar
+ * comando — não é "só texto" e segue contando.
+ */
+export function isInertMessageValue(w) {
+  if (typeof w !== "string") return false;
+  if (!hasCommandSubstitution(w)) return true;
+  const head = /^\$\(cat <<(-?)[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)")[ \t]*\n/.exec(w);
+  if (!head) return false;
+  const delim = head[2] ?? head[3];
+  const lines = w.slice(head[0].length).split("\n");
+  const early = new RegExp(`^${delim}[ \\t]*\\)`);
+  for (let k = 0; k < lines.length; k++) {
+    const line = head[1] ? lines[k].replace(/^\t+/, "") : lines[k];
+    if (line === delim) return /^\s*\)$/.test(lines.slice(k + 1).join("\n"));
+    const m = early.exec(line);
+    if (m) return k === lines.length - 1 && line.slice(m[0].length) === "";
+  }
+  return false;
+}
+
 /**
  * Quebra um comando shell em palavras, respeitando aspas simples/duplas e
  * escapes, e emitindo os separadores de comando (`&&`, `||`, `;`, `|`,
  * newline) como tokens próprios — só fora de aspas. Não expande variável:
  * `$REPO` fica literal (e é recusado como slug). Não é um parser de shell
  * completo: basta pra achar `gh pr <sub>` e as flags do mesmo segmento.
+ *
+ * #10776: `$(…)` e crase (dentro ou fora de aspas duplas) entram CRUS e
+ * inteiros na palavra corrente — inclusive heredoc dentro deles. Antes, a 1ª
+ * `"` do corpo de um `--body "$(cat <<'EOF' … EOF)"` fechava a aspa e o resto
+ * do corpo virava argumento do `gh pr create`.
  */
 export function splitShellWords(command) {
   const out = [];
@@ -177,11 +348,37 @@ export function splitShellWords(command) {
           j += 2;
           continue;
         }
+        if (command[j] === "$" && command[j + 1] === "(") {
+          const end = substitutionEnd(command, j + 2);
+          cur += command.slice(j, end);
+          j = end;
+          continue;
+        }
+        if (command[j] === "`") {
+          const end = backtickEnd(command, j + 1);
+          cur += command.slice(j, end);
+          j = end;
+          continue;
+        }
         cur += command[j];
         j++;
       }
       has = true;
       i = j + 1;
+      continue;
+    }
+    if (ch === "$" && command[i + 1] === "(") {
+      const end = substitutionEnd(command, i + 2);
+      cur += command.slice(i, end);
+      has = true;
+      i = end;
+      continue;
+    }
+    if (ch === "`") {
+      const end = backtickEnd(command, i + 1);
+      cur += command.slice(i, end);
+      has = true;
+      i = end;
       continue;
     }
     if (ch === "\n" || ch === ";") {
@@ -284,10 +481,20 @@ export function ghPrSegments(command, subcommands = ["create", "merge"]) {
       if (current !== null && current !== slug) bad = true;
       return slug;
     };
+    const valueFlags = VALUE_FLAGS[seg[ghAt + 2]] ?? VALUE_FLAGS.create;
     for (let k = ghAt + 3; k < seg.length; k++) {
       const w = seg[k];
-      if ((VALUE_FLAGS[seg[ghAt + 2]] ?? VALUE_FLAGS.create).has(w)) {
+      if (valueFlags.has(w)) {
         k++;
+        continue;
+      }
+      // `--body=…`: o valor vem colado — também nunca é lido como -R/URL.
+      const glued = /^(--[A-Za-z-]+)=/.exec(w);
+      if (glued && valueFlags.has(glued[1])) continue;
+      // #10776: `$(…)`/crase fora do valor de uma flag de texto pode render
+      // `-R x/y` ou uma URL em execução — o repo alvo é ilegível (estrito).
+      if (hasCommandSubstitution(w)) {
+        bad = true;
         continue;
       }
       if (w === "-R" || w === "--repo") {
@@ -304,7 +511,7 @@ export function ghPrSegments(command, subcommands = ["create", "merge"]) {
       if (url) urlRepo = take(urlRepo, url[1]);
     }
     for (let k = 0; k < ghAt; k++) {
-      const env = /^GH_REPO=(.*)$/.exec(seg[k]);
+      const env = /^GH_REPO=(.*)$/s.exec(seg[k]);
       if (env) envRepo = take(envRepo, env[1]);
     }
     if (flagRepo !== null && urlRepo !== null && flagRepo !== urlRepo) bad = true;
@@ -737,6 +944,42 @@ export function isForeignRepo(repo, allowed = loadAllowedForeignRepos()) {
   return slug !== null && slug !== DIARIA_STUDIO_REPO && allowed.has(slug);
 }
 
+/** Flags de `gh pr|issue <sub>` cujo valor é TEXTO livre (corpo/título). */
+const MESSAGE_FLAGS = new Set(["-b", "--body", "-t", "--title"]);
+
+/**
+ * #10776 — as palavras do comando (juntas por espaço) SEM o valor inerte de
+ * `--body`/`--title` dos segmentos `gh pr …`/`gh issue …`. Serve só pra procurar menção
+ * a repo: valor que pode executar algo (`$(…)` que não seja um `cat <<'D'`)
+ * fica no texto (lado estrito).
+ */
+export function commandWithoutMessageText(command) {
+  const words = splitShellWords(command);
+  const kept = [];
+  let inGh = false;
+  for (let k = 0; k < words.length; k++) {
+    const w = words[k];
+    if (SEPARATORS.has(w)) {
+      inGh = false;
+      kept.push(w);
+      continue;
+    }
+    if (w === "gh" && (words[k + 1] === "pr" || words[k + 1] === "issue")) inGh = true;
+    if (inGh && MESSAGE_FLAGS.has(w) && k + 1 < words.length && !SEPARATORS.has(words[k + 1]) && isInertMessageValue(words[k + 1])) {
+      kept.push(w);
+      k++;
+      continue;
+    }
+    const glued = /^(--body|--title)=([\s\S]*)$/.exec(w);
+    if (inGh && glued && isInertMessageValue(glued[2])) {
+      kept.push(glued[1]);
+      continue;
+    }
+    kept.push(w);
+  }
+  return kept.join(" ");
+}
+
 /**
  * Hooks de `gh pr create`: `true` quando TODO segmento do comando mira um
  * repo de fora permitido. `cwd` é a raiz já resolvida pelo hook (inclui o
@@ -745,13 +988,16 @@ export function isForeignRepo(repo, allowed = loadAllowedForeignRepos()) {
 export function isForeignRepoGhCommand(command, cwd, opts = {}) {
   // Comando COMPLEXO (ex: o habitual `--body "$(cat <<'EOF' ...)"`): decide
   // pelo checkout em `cwd` — de onde o `gh pr create` sai — e só pula se ele
-  // é um repo de fora permitido E o texto não menciona o diaria-studio.
+  // é um repo de fora permitido E o comando não menciona o diaria-studio.
   // Tratar todo create complexo como diaria-studio reabriria o bloqueio do
   // vjpixel/diaria-design#23; sem lock em jogo aqui, o checkout basta.
+  // #10776: a menção é procurada FORA do texto de `--body`/`--title` (só
+  // quando esse texto é inerte, ver `isInertMessageValue`) — PR do design cujo
+  // corpo cita `vjpixel/diaria-studio#N` é o caso comum, não um alvo.
   if (commandComplexity(command).length > 0) {
     const allowed = opts.allowed ?? loadAllowedForeignRepos();
     const origin = repoFromCwdOrigin(cwd, opts.execFn ?? execFileSync);
-    return isForeignRepo(origin, allowed) && !reposMentioned(command, allowed).has(DIARIA_STUDIO_REPO);
+    return isForeignRepo(origin, allowed) && !reposMentioned(commandWithoutMessageText(command), allowed).has(DIARIA_STUDIO_REPO);
   }
   const targets = resolveGhTargets(command, cwd, { cwdAlreadyResolved: true, ...opts });
   return targets.length > 0 && targets.every((t) => t.repo !== DIARIA_STUDIO_REPO);
