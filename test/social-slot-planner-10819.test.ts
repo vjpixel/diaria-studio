@@ -9,6 +9,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_MIN_GAP_MINUTES,
+  DEFAULT_PEAK_WINDOWS_BRT,
   brtDayWindow,
   gridFromShortsPublished,
   gridFromSocialPublished,
@@ -199,5 +201,63 @@ describe("#10819 adaptadores dos stores", () => {
   it("socialAccountKey normaliza caixa e página ausente", () => {
     assert.equal(socialAccountKey("Instagram"), "instagram:diaria");
     assert.equal(socialAccountKey("facebook", "VJPixel"), "facebook:vjpixel");
+  });
+});
+
+describe("#10819 decisão do editor (briefing 261022b): espaçamento mínimo 2 h + preferência por picos", () => {
+  it("defaults: 120 min e picos manhã/almoço/noite", () => {
+    assert.equal(DEFAULT_MIN_GAP_MINUTES, 120);
+    assert.deepEqual(
+      DEFAULT_PEAK_WINDOWS_BRT.map((w) => `${w.start}-${w.end}`),
+      ["07:00-09:00", "12:00-14:00", "18:00-21:00"],
+    );
+  });
+
+  it("grade 261022 + Reels às 12:00 na diar.ia.br: o 2º post novo do dia fica em pico e a ≥2 h de todos", () => {
+    // Reels (12:00, teste #10831) já agendado no Facebook da diar.ia.br além dos 4 posts diários.
+    const grid = [...dailyGrid(), { account: "facebook:diaria", at: brt("12:00") }];
+    const d = planSlot(grid, { account: "facebook:diaria", window: WINDOW, preferredAt: brt("12:00") });
+    assert.equal(d.rule, "spread-same-account");
+    // A ≥120 min de 07/11/12/15/19: 09:00, 17:00, 21:00 e 22:00. Em pico: 09:00 e 21:00.
+    // 09:00 fica a 120 min dos vizinhos; 21:00 só a 60 da borda das 22:00 → 09:00.
+    assert.equal(d.at, brt("09:00"));
+    assert.equal(d.warning, undefined);
+    assert.match(d.premise, /pico de uso/);
+  });
+
+  it("pico vence espalhamento quando os dois respeitam 2 h", () => {
+    // Um post às 10:00, janela 06–22. Sem picos, o mais espalhado é 16:00 (360 min do post e da borda).
+    // Com picos, só os horários de pico a ≥2 h disputam: 14:00 e 18:00 empatam (240 min) → o mais cedo.
+    const grid: ScheduledSlot[] = [{ account: "instagram:diaria", at: brt("10:00") }];
+    const withPeaks = planSlot(grid, { account: "instagram:diaria", window: WINDOW });
+    assert.equal(withPeaks.at, brt("14:00"));
+    const noPeaks = planSlot(grid, { account: "instagram:diaria", window: WINDOW, peakWindows: [] });
+    assert.equal(noPeaks.at, brt("16:00"));
+  });
+
+  it("respeitar 2 h vem antes do pico: horário de pico colado (<2 h) perde para um fora de pico a 2 h", () => {
+    // Posts às 08, 11, 13 e 19: manhã e almoço inteiros ficam a <2 h de algum post; da noite só 21:00
+    // (120 min do 19:00) respeita o espaçamento → 21:00, mesmo perto da borda.
+    const grid: ScheduledSlot[] = ["08:00", "11:00", "13:00", "19:00"].map((h) => ({ account: "linkedin:diaria", at: brt(h) }));
+    const d = planSlot(grid, { account: "linkedin:diaria", window: WINDOW, preferredAt: brt("12:00") });
+    assert.equal(d.at, brt("21:00"));
+    // Com pico só no almoço (todo colado), o espaçamento vence o pico: 16:00, o mais espalhado entre os livres.
+    const lunchOnly = planSlot(grid, { account: "linkedin:diaria", window: WINDOW, peakWindows: [{ start: "12:00", end: "14:00" }] });
+    assert.equal(lunchOnly.at, brt("16:00"));
+    assert.equal(lunchOnly.warning, undefined);
+  });
+
+  it("nenhum horário respeita 2 h → escolhe o mais espaçado e avisa (pico não pesa aí)", () => {
+    const grid: ScheduledSlot[] = ["07:00", "09:00", "11:00", "13:00", "15:00", "17:00", "19:00", "21:00"].map((h) => ({ account: "x:y", at: brt(h) }));
+    const d = planSlot(grid, { account: "x:y", window: WINDOW });
+    assert.match(d.warning ?? "", /espaçamento mínimo de 120 min/);
+    assert.ok(d.at);
+  });
+
+  it("peakWindows inválida lança", () => {
+    assert.throws(
+      () => planSlot([{ account: "a:b", at: brt("10:00") }], { account: "a:b", window: WINDOW, peakWindows: [{ start: "9:00", end: "10:00" }] }),
+      /peakWindows/,
+    );
   });
 });

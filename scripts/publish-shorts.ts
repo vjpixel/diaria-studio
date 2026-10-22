@@ -89,9 +89,11 @@ import {
   buildYouTubeShortMetadata,
   facebookDestinationId,
   facebookUploadRoute,
+  instagramReelsApiFit,
   isDestinationDone,
   knownDestinationIds,
   listShortDestinations,
+  loadInstagramApiMaxSeconds,
   loadShortScheduleConfig,
   loadShortsConfig,
   mp4DurationSeconds,
@@ -122,8 +124,15 @@ const GRAPH = "https://graph.facebook.com";
 const GRAPH_VIDEO = "https://graph-video.facebook.com";
 const RUPLOAD = "https://rupload.facebook.com";
 
-/** Destinos que só o skill faz (Chrome) — os únicos que `--mark` aceita. */
+/** Destinos que só o skill faz (Chrome). */
 export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile"]);
+
+/**
+ * Destinos que `--mark` aceita: os guiados + o `instagram`, que vira passo
+ * guiado quando o vertical passa do teto de duração da API (#10893) — o editor
+ * posta no app e registra, e a próxima rodada não tenta o rupload de novo.
+ */
+export const MARKABLE_DESTINATIONS = new Set([...GUIDED_DESTINATIONS, "instagram"]);
 
 export type ShortsPlanItem =
   | { destination: string; mode: "api"; action: "publish"; caption: string; scheduledAt: string | null }
@@ -167,6 +176,12 @@ export interface ShortsPlanInput {
   instagramQueue?: InstagramQueueReadiness;
   published: ShortsPublishedFile;
   video: { path: string; exists: boolean; sizeBytes: number | null };
+  /**
+   * #10893: duração do vertical (`mp4DurationSeconds`). Ausente = não medida;
+   * null = medida mas ilegível. Nos dois casos o Instagram segue pela API
+   * (com aviso no null, se o vídeo existe).
+   */
+  videoDurationSeconds?: number | null;
   editionUrl?: string;
   /** De onde veio o `editionUrl` (só pra premissa). */
   editionUrlSource?: string;
@@ -220,10 +235,14 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   const destinations = listShortDestinations(cfg).filter((d) => !only || only.has(d.id));
-  // Sem credencial o destino é pulado — não disputa a grade nem gera premissa de horário.
+  // #10893: Reels acima do teto medido da API do Instagram vira passo guiado
+  // ANTES do upload, em vez de falhar no rupload depois de subir o arquivo.
+  const igMax = loadInstagramApiMaxSeconds(input.config);
+  const igFit = instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax);
+  // Sem credencial (ou acima do teto, no Instagram) o destino não sai pela API — não disputa a grade nem gera premissa de horário.
   function publishable(d: ShortDestination): boolean {
     if (d.kind === "facebook_page") return !input.pages.find((p) => p.slug === d.slug)!.missing.length;
-    if (d.kind === "instagram") return input.instagramReady;
+    if (d.kind === "instagram") return input.instagramReady && igFit.fits;
     return false;
   }
   // #10819: só os destinos que esta rodada ainda vai publicar disputam a grade;
@@ -286,6 +305,24 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       };
     }
     // instagram
+    if (!igFit.fits) {
+      const collab = cfg.instagramCollaborators.length ? ` com ${cfg.instagramCollaborators.map((c) => `@${c}`).join(", ")} em collab` : "";
+      const detail =
+        `${igFit.reason} — poste à mão no app do Instagram${collab}, no horário do vertical (${time.hhmm} BRT), ` +
+        `e registre com --mark instagram=URL`;
+      warnings.push(`instagram: ${detail}`);
+      let caption: string | undefined;
+      try {
+        caption = buildReelsCaption({ platform: "instagram", aammdd: input.aammdd, d1: d1In, editionUrl });
+      } catch (e) {
+        warnings.push(`instagram: ${(e as Error).message}`);
+      }
+      return { destination: dest.id, mode: "guided", action: "guided", ...(caption ? { caption } : {}), detail };
+    }
+    // Só quando o caller MEDIU e não conseguiu ler (null); ausente = não medido (testes, chamadas antigas).
+    if (input.videoDurationSeconds === null && igMax !== null && input.video.exists && input.instagramReady) {
+      warnings.push(`instagram: duração do vertical não lida do MP4 — sobe pela API sem conferir o teto de ~${igMax} s (#10893); se o rupload der ProcessingFailedError, poste à mão`);
+    }
     for (const w of input.instagramWarnings ?? []) warnings.push(`instagram: ${w}`);
     if (!input.instagramReady) {
       warnings.push(`instagram: ${input.instagramNotReadyReason ?? "sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN"}`);
@@ -665,7 +702,19 @@ export async function publishInstagramReel(
   const container = await graphPost(deps, `${igUserId}/media`, params, apiVersion);
   const containerId: string = container.id;
   if (!containerId) throw new Error(`media (REELS) sem id: ${JSON.stringify(container)}`);
-  await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
+  try {
+    await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
+  } catch (e) {
+    const msg = (e as Error).message;
+    // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
+    if (/ProcessingFailedError/.test(msg)) {
+      throw new Error(
+        `${msg} — padrão do teto de duração do Reels pela API (#10893); poste à mão no app e registre com --mark instagram=URL ` +
+          `(ajuste publishing.shorts.instagram_api_max_seconds se o teto mudou)`,
+      );
+    }
+    throw e;
+  }
   let last = "";
   for (let i = 0; ; i++) {
     if (i >= 60) throw new Error(`container ${containerId} não ficou pronto em 10 min (último: ${last || "sem resposta"})`);
@@ -792,12 +841,12 @@ export function loadScheduledGrid(dir: string, published: ShortsPublishedFile, i
   }
 }
 
-/** `--mark DESTINO=URL`: só destinos guiados, só URL http(s). */
+/** `--mark DESTINO=URL`: só destinos guiados (+ `instagram`, #10893), só URL http(s). */
 export function parseMarkArg(raw: string): { destination: string; url: string } {
   const m = raw.match(/^([a-z_]+)=(https?:\/\/\S+)$/);
   if (!m) throw new Error(`--mark espera DESTINO=URL (http/https), recebido ${JSON.stringify(raw)}`);
-  if (!GUIDED_DESTINATIONS.has(m[1])) {
-    throw new Error(`--mark só registra destinos guiados (${[...GUIDED_DESTINATIONS].join(", ")}); "${m[1]}" é publicado pelo script`);
+  if (!MARKABLE_DESTINATIONS.has(m[1])) {
+    throw new Error(`--mark só registra destinos guiados (${[...MARKABLE_DESTINATIONS].join(", ")}); "${m[1]}" é publicado pelo script`);
   }
   return { destination: m[1], url: m[2] };
 }
@@ -874,6 +923,9 @@ async function main(): Promise<number> {
     console.error(`[ok] vídeo curto baixado do Drive (${(buf.length / 1e6).toFixed(1)} MB) → ${videoPath}`);
   }
   const videoExists = existsSync(videoPath);
+  // #10893: a duração decide já no plano (dry-run incluso) se o Instagram vai pela API ou vira passo guiado.
+  const file = videoExists ? readFileSync(videoPath) : null;
+  const duration = file ? mp4DurationSeconds(file) : null;
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
   const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
@@ -925,6 +977,7 @@ async function main(): Promise<number> {
       instagramQueue,
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
+      videoDurationSeconds: duration,
       editionUrl: editionUrlIn.url,
       editionUrlSource: editionUrlIn.source,
       forceNow: flags.has("now"),
@@ -942,13 +995,11 @@ async function main(): Promise<number> {
     console.log(JSON.stringify({ dry_run: true, ...plan }, null, 2));
     return 0;
   }
-  if (!videoExists) {
+  if (!file) {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
   }
 
-  const file = readFileSync(videoPath);
-  const duration = mp4DurationSeconds(file);
   console.error(`[premissa] duração ${duration === null ? "desconhecida" : `${duration.toFixed(1)} s`} → Facebook via ${facebookUploadRoute(duration)}`);
   const deps = defaultGraphDeps;
   const results: Array<{ destination: string; ok: boolean; entry?: ShortPublishedEntry; unconfirmed?: boolean; warnings?: string[]; error?: string }> = [];
