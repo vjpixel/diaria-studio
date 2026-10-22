@@ -1,4 +1,8 @@
-# onboarding-form (#10605): ainda sem KV nem rota pública
+# onboarding-form (#10605)
+
+No ar em https://formulario.diar.ia.br (22/10/2026: KV, secrets, rota, `form_sig` no Kit,
+`ONBOARDING_FORM_TOKEN`/`ONBOARDING_FORM_LINK_SECRET` no Doppler). O envio segue
+travado só pela aprovação dos textos (item 1 abaixo).
 
 Formulário de perfil/interesses do onboarding (decisão do editor, 20/10/2026:
 form próprio num Worker nosso). O executor `scripts/onboarding-followup-run.ts`
