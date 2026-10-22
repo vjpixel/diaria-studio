@@ -25,7 +25,7 @@
  */
 
 import { ABANDONOS_MAX_DIAS, brtDay } from "./shared/hotmart-abandono.ts";
-import { parseVendaRecord, type VendaRecord } from "./shared/hotmart-vendas.ts";
+import { parseVendaRecord, VENDA_KV_PREFIX, type VendaRecord } from "./shared/hotmart-vendas.ts";
 
 /** Caminho do espelho, relativo a `data/`. */
 export const ESPELHO_REL_PATH = "hotmart/vendas.jsonl";
@@ -189,6 +189,15 @@ function diaMs(dia: string): number {
   return ms;
 }
 
+function diaExiste(dia: string): boolean {
+  try {
+    diaMs(dia);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function diaDe(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
@@ -336,35 +345,78 @@ export function periodoCoberto(cobertura: readonly Periodo[], de: string, ate: s
   return cobertura.some((p) => p.de <= de && p.ate >= ate);
 }
 
+/** O que a janela perdeu no caminho até o espelho (#10909). */
+export interface PerdasDaJanela {
+  /** Registros que a rota devolveu fora do formato (sem dia conhecido). */
+  readonly descartados: number;
+  /** Chaves do KV que o Worker pulou por conteúdo inválido — conhecidas ou
+   * novas: chave "já avisada" continua sendo venda que não chegou ao espelho. */
+  readonly ignoradosNoKv: number;
+  /** Nomes dessas chaves, quando a rota os devolve. */
+  readonly chavesIgnoradas: readonly string[];
+}
+
+const DIA_DA_CHAVE_RE = /^(\d{4}-\d{2}-\d{2}):/;
+
 /**
- * Trecho da janela que pode entrar na cobertura (#10892 review):
+ * Trechos da janela que podem entrar na cobertura (#10892 review, #10909):
  * - o dia de HOJE (Brasília) nunca conta como lido por inteiro: a rodada só
  *   viu as vendas até a hora em que rodou. A cobertura para em ONTEM — ex.:
  *   a varredura das 04:30 de sábado 31/10 cobre outubro só até 30/10, e o
  *   mês só fica coberto na rodada seguinte, que lê o dia 31 inteiro;
  * - janela com registro devolvido fora do formato (`descartados > 0`) não
  *   conta: há venda que não chegou ao espelho, e o mês não pode sair
- *   "coberto" com receita a menos sem rótulo de PISO.
- * Devolve `null` quando nada da janela pode ser registrado.
+ *   "coberto" com receita a menos sem rótulo de PISO;
+ * - chave inválida no KV (#10909) é a mesma perda, inclusive a já conhecida
+ *   (ela só deixa de repetir o ALARME, a venda continua fora do espelho). A
+ *   chave traz o dia (`hotmart:venda:{dia}:...`), então só esse dia fica fora
+ *   e o resto da janela entra: o mês do dia afetado segue sem cobertura (sai
+ *   sem dado, com motivo) e os outros meses da janela não são penalizados.
+ *   Chave sem nome, fora do formato ou com dia fora da janela tira a janela
+ *   inteira — sem saber o dia, não dá para isolar a perda.
+ * Devolve `[]` quando nada da janela pode ser registrado.
  */
-export function trechoCobertoDaJanela(janela: Periodo, descartados: number, nowMs: number): Periodo | null {
-  if (descartados > 0) return null;
+export function trechosCobertosDaJanela(janela: Periodo, perdas: PerdasDaJanela, nowMs: number): Periodo[] {
+  if (perdas.descartados > 0) return [];
   const ontem = diaDe(diaMs(brtDay(nowMs)) - DAY_MS);
-  if (janela.de > ontem) return null;
-  return { de: janela.de, ate: janela.ate < ontem ? janela.ate : ontem };
+  if (janela.de > ontem) return [];
+  const fim = janela.ate < ontem ? janela.ate : ontem;
+  if (perdas.ignoradosNoKv > perdas.chavesIgnoradas.length) return [];
+  const diasPerdidos = new Set<string>();
+  for (const chave of perdas.chavesIgnoradas) {
+    const m = chave.startsWith(VENDA_KV_PREFIX) ? DIA_DA_CHAVE_RE.exec(chave.slice(VENDA_KV_PREFIX.length)) : null;
+    const dia = m?.[1];
+    // Dia inexistente (ex.: 2026-02-30, que `Date.parse` aceita) nunca casaria
+    // com um dia do laço abaixo e a janela sairia coberta inteira.
+    if (!dia || !diaExiste(dia) || dia < janela.de || dia > janela.ate) return [];
+    diasPerdidos.add(dia);
+  }
+  const trechos: Periodo[] = [];
+  let inicio: string | null = null;
+  for (let ms = diaMs(janela.de); ms <= diaMs(fim); ms += DAY_MS) {
+    const dia = diaDe(ms);
+    if (diasPerdidos.has(dia)) {
+      if (inicio) trechos.push({ de: inicio, ate: diaDe(ms - DAY_MS) });
+      inicio = null;
+    } else if (!inicio) {
+      inicio = dia;
+    }
+  }
+  if (inicio) trechos.push({ de: inicio, ate: fim });
+  return trechos;
 }
 
-/** Estado depois de uma janela lida. `trechoCoberto` é o que
- * `trechoCobertoDaJanela` devolveu (`null` = não amplia a cobertura). */
+/** Estado depois de uma janela lida. `trechosCobertos` é o que
+ * `trechosCobertosDaJanela` devolveu (`[]` = não amplia a cobertura). */
 export function registrarJanelaNoEstado(
   estado: EstadoSync,
-  trechoCoberto: Periodo | null,
+  trechosCobertos: readonly Periodo[],
   chavesInvalidasNovas: readonly string[],
   nowIso: string,
 ): EstadoSync {
   return {
     v: ESTADO_SYNC_VERSION,
-    cobertura: trechoCoberto ? fundirCobertura([...estado.cobertura, trechoCoberto]) : [...estado.cobertura],
+    cobertura: fundirCobertura([...estado.cobertura, ...trechosCobertos]),
     chaves_invalidas_conhecidas: [...new Set([...estado.chaves_invalidas_conhecidas, ...chavesInvalidasNovas])].sort(),
     atualizado_em: nowIso,
   };
@@ -403,6 +455,11 @@ export interface JanelaConcluida {
   readonly chavesIgnoradasNovas: readonly string[];
   /** Registros desta janela que a rota devolveu fora do formato. */
   readonly descartados: number;
+  /** Chaves do KV que o Worker pulou nesta janela, conhecidas ou não (#10909):
+   * entram em `trechosCobertosDaJanela` para o dia afetado não sair coberto. */
+  readonly ignoradosNoKv: number;
+  /** Nomes de todas essas chaves (conhecidas e novas), quando a rota os devolve. */
+  readonly chavesIgnoradas: readonly string[];
 }
 
 /**
@@ -442,7 +499,15 @@ export async function sincronizarEspelho(opts: {
     const nomes = r.chavesIgnoradas ?? [];
     const novasDaJanela = [...new Set(nomes.filter((k) => !conhecidas.has(k) && !chavesIgnoradasNovas.includes(k)))];
     const semNome = Math.max(0, r.ignoradosNoKv - nomes.length);
-    opts.aoConcluirJanela?.({ janela: j, acrescentar: texto, novos: mescla.novos, chavesIgnoradasNovas: novasDaJanela, descartados: r.descartados });
+    opts.aoConcluirJanela?.({
+      janela: j,
+      acrescentar: texto,
+      novos: mescla.novos,
+      chavesIgnoradasNovas: novasDaJanela,
+      descartados: r.descartados,
+      ignoradosNoKv: r.ignoradosNoKv,
+      chavesIgnoradas: nomes,
+    });
     existentes.push(...mescla.novos);
     todosNovos.push(...mescla.novos);
     textoCorrente += texto;
