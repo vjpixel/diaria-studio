@@ -30,7 +30,8 @@ import {
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
-import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
+import { isSocialInviteParagraph } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo; #10781: detecção por prefixo estável (sobrevive a versões anteriores da constante)
+import { applyImageToolToCredits, imageCreditCaption } from "./shared/image-tool-name.ts"; // #10783
 import { readSnippetFile, readSnippetFileRaw } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded; readSnippetFileRaw #5882 — header cru pra ler titulo:
 import { normalizeNumericArrows, stripCtaArrows, stripUnambiguousCtaArrows } from "./shared/arrow-glyph.ts"; // #9721/#9727: a seta nunca chega ao leitor
 import { readBoxTituloFlag } from "./shared/snippet-header.ts"; // #5882 — titulo:false declarado, substitui detecção por regex de copy (isConviteAmigoBox, aposentada)
@@ -632,21 +633,33 @@ export function renderHeadlineInner(title: string, url: string): string {
  * "Criada com ChatGPT" numa imagem gerada pelo Gemini.
  */
 export function imageGeneratorCredit(effectiveGenerator?: string): string {
+  // #10783: mapa slug → ferramenta vive em `shared/image-tool-name.ts`, a
+  // mesma fonte do parágrafo de ferramentas do PARA ENCERRAR.
+  return imageCreditCaption(effectiveGenerator ?? configuredImageGenerator());
+}
+
+/** `image_generator` de `platform.config.json` (default "gemini"); `null` se o
+ *  config estiver ilegível (o caller cai no genérico "IA"). */
+export function configuredImageGenerator(): string | null {
   try {
-    const gen = effectiveGenerator
-      ?? JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")).image_generator
-      ?? "gemini";
-    const credits: Record<string, string> = {
-      gemini:     "Criada com Gemini",
-      openai:     "Criada com gpt-image-2",
-      codex:      "Criada com ChatGPT",
-      cloudflare: "Criada com Cloudflare FLUX",
-      comfyui:    "Criada com ComfyUI",
-    };
-    return credits[gen] ?? "Criada com IA";
+    return JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")).image_generator ?? "gemini";
   } catch {
-    return "Criada com IA";
+    return null;
   }
+}
+
+/**
+ * #10783: gerador ÚNICO da edição pro parágrafo de ferramentas do PARA
+ * ENCERRAR — os sidecars dos destaques (#9095) quando existem (todos iguais →
+ * esse; divergentes → `mixed`, que vira o genérico "IA"), senão o config.
+ * Mesma regra de `resolveEditionImageGenerator` (mensal), aplicada aos
+ * destaques já parseados.
+ */
+export function editionImageGenerator(destaques: ReadonlyArray<{ imageGenerator?: string }>): string | null {
+  const found = new Set(destaques.map((d) => d.imageGenerator).filter((g): g is string => !!g));
+  if (found.size === 1) return [...found][0];
+  if (found.size > 1) return "mixed";
+  return configuredImageGenerator();
 }
 
 /**
@@ -2354,12 +2367,15 @@ export function renderEncerrar(text: string, conviteAmigoHtml: string | null = n
   // fixo (`SOCIAL_INVITE`, #4413) OU que começa com a redação legada "Agora
   // que chegou" (edições já stitchadas antes deste PR mergear, ou overrides
   // de teste que ainda usam o texto antigo) — render o resto inline e o
-  // último envelopado em box.
+  // último envelopado em box. #10781: a igualdade exata com a constante
+  // ATUAL perdia a caixa em toda edição costurada com uma versão anterior
+  // dela (ex.: antes do YouTube entrar, #10761) — `isSocialInviteParagraph`
+  // casa pelo prefixo estável.
   const lastBlock = blocks[blocks.length - 1];
   const lastBlockText = lastBlock?.content.join(" ").trim() ?? "";
   const isAgoraCta =
     lastBlock?.type === "p" &&
-    (lastBlockText === SOCIAL_INVITE || /^agora que chegou/i.test(lastBlockText));
+    isSocialInviteParagraph(lastBlockText);
   const mainBlocks = isAgoraCta ? blocks.slice(0, -1) : blocks;
   const ctaBlock = isAgoraCta ? lastBlock : null;
 
@@ -2934,7 +2950,9 @@ function renderHTMLUnsanitized(content: NewsletterContent, opts: RenderOpts): st
   // pra nunca sumir em silêncio (mesma classe de `convite_amigo_snippet_missing`).
   if (content.encerrar) {
     const conviteAmigoHtml = renderConviteAmigo(opts.rootDir, content.eia.edition, true);
-    parts.push(renderEncerrar(content.encerrar, conviteAmigoHtml || null));
+    // #10783: o parágrafo de ferramentas cita o MESMO gerador da legenda do hero.
+    const encerrar = applyImageToolToCredits(content.encerrar, editionImageGenerator(content.destaques));
+    parts.push(renderEncerrar(encerrar, conviteAmigoHtml || null));
   } else {
     parts.push(renderConviteAmigo(opts.rootDir, content.eia.edition, false));
     if (content.eia.edition) {
