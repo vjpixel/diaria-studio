@@ -29,6 +29,9 @@ import { citesIssueNumber, type MasterCommitInfo } from "./issue-duplicate-prefl
 export interface FetchMasterCommitsResult {
   commits: MasterCommitInfo[];
   error?: string;
+  /** Busca incompleta mas NÃO bloqueante (#10901): o chamador segue com
+   * `commits` como "sem indício" e só registra o aviso. */
+  warning?: string;
 }
 
 // Separadores de campo/registro improváveis de aparecer em mensagem de
@@ -134,24 +137,78 @@ function defaultCommitFetchRunner(cmd: string, args: string[], opts: { cwd: stri
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", error: r.error };
 }
 
-/** #10901: teto de páginas (100 commits cada) da busca na branch default de
- * outro repo. O `--paginate` lia o histórico INTEIRO a cada preflight. */
+/** #10901: teto de páginas (100 commits cada) da varredura FALLBACK da branch
+ * default de outro repo — só usada quando a busca dirigida falha. */
 export const REPO_COMMITS_MAX_PAGES = 10;
 const REPO_COMMITS_PER_PAGE = 100;
+const COMMIT_ROW_JQ = ".[] | {sha: .sha, message: .commit.message, date: .commit.author.date}";
+const SEARCH_ROW_JQ = ".items[] | {sha: .sha, message: .commit.message, date: .commit.author.date}";
+
+type CollectOutcome = { ok: true; rows: number } | { ok: false; error: string };
+
+/**
+ * Roda um `gh api` que devolve uma linha JSON `{sha, message, date}` por
+ * commit e acumula em `into` (dedup por SHA) os que citam a issue.
+ */
+function collectCitingCommits(
+  runner: CommitFetchRunner,
+  cwd: string,
+  args: string[],
+  label: string,
+  repo: string,
+  issueNumber: number,
+  into: Map<string, MasterCommitInfo>,
+): CollectOutcome {
+  const result = runner("gh", args, { cwd });
+  if (result.error) return { ok: false, error: `gh não pôde ser executado: ${result.error.message}` };
+  if (result.status !== 0) {
+    const stderr = (result.stderr ?? "").toString().trim();
+    return { ok: false, error: `gh api ${label} saiu com status ${result.status}${stderr ? `: ${stderr}` : ""}` };
+  }
+  let rows = 0;
+  for (const line of (result.stdout ?? "").split("\n")) {
+    if (!line.trim()) continue;
+    rows++;
+    let row: { sha?: unknown; message?: unknown; date?: unknown };
+    try {
+      row = JSON.parse(line) as typeof row;
+    } catch (e) {
+      return { ok: false, error: `JSON malformado de gh api ${label}: ${(e as Error).message}` };
+    }
+    if (typeof row.sha !== "string" || typeof row.message !== "string") continue;
+    const [subject = "", ...rest] = row.message.split("\n");
+    const body = rest.join("\n").trim();
+    // Citação qualificada de OUTRO repo (`vjpixel/diaria-studio#21` num
+    // commit do design) não é esta issue — o matcher recebe o repo.
+    if (!citesIssueNumber(body, issueNumber, repo) && !citesIssueNumber(subject, issueNumber, repo)) continue;
+    if (!into.has(row.sha)) {
+      into.set(row.sha, { sha: row.sha, subject, authorDateIso: typeof row.date === "string" ? row.date : "", body });
+    }
+  }
+  return { ok: true, rows };
+}
 
 /**
  * #10618 (fatia 4): o mesmo "quais commits da branch default citam a issue
  * #N", para issue de OUTRO repo (ex: vjpixel/diaria-design). O checkout local
- * é do diaria-studio e não enxerga o outro repo, então a busca vai pela API:
- * `gh api repos/{repo}/commits` (só a branch default, mesma regra do "nunca
- * `--all`": commit de PR fechada sem merge não aparece aí). O filtro de
- * boundary de dígito é o mesmo (`citesIssueNumber`). Fail-soft como o resto do
- * módulo: falha volta como `{ commits: [], error }`.
+ * é do diaria-studio e não enxerga o outro repo, então a busca vai pela API —
+ * sempre só a branch default (mesma regra do "nunca `--all`": commit de PR
+ * fechada sem merge não aparece aí). O filtro de boundary de dígito é o mesmo
+ * (`citesIssueNumber`). Fail-soft como o resto do módulo.
  *
- * #10901: página a página, até `maxPages` (os commits mais recentes primeiro).
- * Página incompleta = fim do histórico. Teto atingido sem nenhum commit citando
- * a issue volta como `error` (cannot-verify), nunca como "não está na branch
- * default" — o commit pode estar além do teto.
+ * #10901: busca DIRIGIDA, com custo que não cresce com o histórico:
+ *   1. 1ª página de `repos/{repo}/commits` (100 mais recentes) — cobre o
+ *      atraso de indexação da busca para um merge de minutos atrás e, se o
+ *      histórico inteiro cabe nela, já é a resposta completa;
+ *   2. `search/commits` com `repo:{repo} "#N"` (a busca de commits do GitHub
+ *      só indexa a branch default) — prefiltro amplo, a precisão vem do
+ *      `citesIssueNumber`.
+ * Se a busca falhar (rate limit, 422), cai na varredura página a página até
+ * `maxPages`. Teto atingido sem achado NUNCA vira `error` (cannot-verify, que
+ * o preflight trata como exit 2 bloqueante): volta `commits: []` com
+ * `warning` — "sem indício de duplicidade", aceitando um falso negativo raro
+ * (busca fora do ar E commit além do teto) em vez de travar o despacho de
+ * toda issue do repo. `error` fica só para `gh` quebrado de fato.
  */
 export function fetchRepoCommitsForIssue(
   cwd: string,
@@ -160,51 +217,54 @@ export function fetchRepoCommitsForIssue(
   runner: CommitFetchRunner = defaultCommitFetchRunner,
   maxPages: number = REPO_COMMITS_MAX_PAGES,
 ): FetchMasterCommitsResult {
-  const commits: MasterCommitInfo[] = [];
-  for (let page = 1; page <= maxPages; page++) {
-    const result = runner(
-      "gh",
-      [
-        "api",
-        `repos/${repo}/commits?per_page=${REPO_COMMITS_PER_PAGE}&page=${page}`,
-        "--jq",
-        ".[] | {sha: .sha, message: .commit.message, date: .commit.author.date}",
-      ],
-      { cwd },
-    );
-    if (result.error) {
-      return { commits: [], error: `gh não pôde ser executado: ${result.error.message}` };
-    }
-    if (result.status !== 0) {
-      const stderr = (result.stderr ?? "").toString().trim();
-      return {
-        commits: [],
-        error: `gh api repos/${repo}/commits saiu com status ${result.status}${stderr ? `: ${stderr}` : ""}`,
-      };
-    }
-    let rows = 0;
-    for (const line of (result.stdout ?? "").split("\n")) {
-      if (!line.trim()) continue;
-      rows++;
-      let row: { sha?: unknown; message?: unknown; date?: unknown };
-      try {
-        row = JSON.parse(line) as typeof row;
-      } catch (e) {
-        return { commits: [], error: `JSON malformado de gh api repos/${repo}/commits: ${(e as Error).message}` };
-      }
-      if (typeof row.sha !== "string" || typeof row.message !== "string") continue;
-      const [subject = "", ...rest] = row.message.split("\n");
-      const body = rest.join("\n").trim();
-      // Citação qualificada de OUTRO repo (`vjpixel/diaria-studio#21` num
-      // commit do design) não é esta issue — o matcher recebe o repo.
-      if (!citesIssueNumber(body, issueNumber, repo) && !citesIssueNumber(subject, issueNumber, repo)) continue;
-      commits.push({ sha: row.sha, subject, authorDateIso: typeof row.date === "string" ? row.date : "", body });
-    }
-    if (rows < REPO_COMMITS_PER_PAGE) return { commits };
+  const found = new Map<string, MasterCommitInfo>();
+  const commitsLabel = `repos/${repo}/commits`;
+  const pageArgs = (page: number) => [
+    "api",
+    `${commitsLabel}?per_page=${REPO_COMMITS_PER_PAGE}&page=${page}`,
+    "--jq",
+    COMMIT_ROW_JQ,
+  ];
+
+  const first = collectCitingCommits(runner, cwd, pageArgs(1), commitsLabel, repo, issueNumber, found);
+  if (!first.ok) return { commits: [], error: first.error };
+  if (first.rows < REPO_COMMITS_PER_PAGE) return { commits: [...found.values()] };
+
+  const search = collectCitingCommits(
+    runner,
+    cwd,
+    [
+      "api",
+      "--paginate",
+      "-X",
+      "GET",
+      "search/commits",
+      "-f",
+      `q=repo:${repo} "#${issueNumber}"`,
+      "-f",
+      `per_page=${REPO_COMMITS_PER_PAGE}`,
+      "--jq",
+      SEARCH_ROW_JQ,
+    ],
+    `search/commits (${repo} #${issueNumber})`,
+    repo,
+    issueNumber,
+    found,
+  );
+  if (search.ok) return { commits: [...found.values()] };
+
+  // Fallback: busca indisponível → varredura com teto.
+  for (let page = 2; page <= maxPages; page++) {
+    const r = collectCitingCommits(runner, cwd, pageArgs(page), commitsLabel, repo, issueNumber, found);
+    if (!r.ok) return { commits: [], error: r.error };
+    if (r.rows < REPO_COMMITS_PER_PAGE) return { commits: [...found.values()] };
   }
-  if (commits.length > 0) return { commits };
+  if (found.size > 0) return { commits: [...found.values()] };
   return {
     commits: [],
-    error: `gh api repos/${repo}/commits: teto de ${maxPages} páginas (${maxPages * REPO_COMMITS_PER_PAGE} commits) atingido sem achar #${issueNumber} — histórico mais antigo não consultado`,
+    warning:
+      `busca dirigida indisponível (${search.error}) e teto de ${maxPages} páginas ` +
+      `(${maxPages * REPO_COMMITS_PER_PAGE} commits) de ${commitsLabel} atingido sem achar #${issueNumber} — ` +
+      `tratado como sem indício de duplicidade; histórico mais antigo não consultado`,
   };
 }

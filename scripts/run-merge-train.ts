@@ -27,7 +27,13 @@
  *   npx tsx scripts/run-merge-train.ts --session-id <uuid> --kind develop --prs 6340,6341 --max-batch-size 3 --ci-timeout-ms 1800000
  *
  * Exit codes:
- *   0 = todos os PRs candidatos terminaram em `merged`/`solo-merged`
+ *   0 = todos os PRs ADMITIDOS no trem terminaram em `merged`/`solo-merged`.
+ *       NÃO significa "todo PR passado entrou": PR fechado pulado (`--prs` ou
+ *       `--open`) e PR de outro repo filtrado em `--open` (#10901,
+ *       `screenTrainPrs`) também saem com `0` sem merge — inclusive quando
+ *       nenhum sobra ("nada a fazer"). Esses aparecem no stdout como
+ *       `run-merge-train: PULADO — …`; quem precisa saber o que entrou lê o
+ *       stdout, não só o exit code.
  *   1 = pelo menos 1 terminou `solo-failed`, `lock-blocked`,
  *       `retido-ilegivel` (#10299 — sinal de retenção ilegível no instante
  *       do merge) OU `indeterminate` (falha real de merge, ou lote sem resolução — não

@@ -354,29 +354,72 @@ describe("#10618 fatia 4 — preflights por issue consultam o repo da issue", ()
     assert.match(fail.error ?? "", /saiu com status 1: boom/);
   });
 
-  it("#10901 fetchRepoCommitsForIssue: teto de páginas — achado volta commits; sem achado vira cannot-verify", () => {
-    const fullPage = (page: number, hitAt: number | null) =>
-      Array.from({ length: 100 }, (_, i) =>
-        JSON.stringify({
-          sha: `p${page}-${i}`,
-          message: page === hitAt && i === 0 ? "fix: z\n\nCloses #21" : `chore: ${page}-${i}`,
-        }),
-      ).join("\n");
-    let calls = 0;
-    const found = fetchRepoCommitsForIssue("/x", DESIGN, 21, (_c, args) => {
-      calls++;
-      const page = Number(/[?&]page=(\d+)/.exec(args[1])?.[1]);
-      return { status: 0, stdout: fullPage(page, 2) };
-    }, 3);
-    assert.equal(calls, 3);
+  // Histórico > 1 página: a página N tem 100 commits; `hitAt` põe "Closes #21" no 1º.
+  const fullPage = (page: number, hitAt: number | null) =>
+    Array.from({ length: 100 }, (_, i) =>
+      JSON.stringify({
+        sha: `p${page}-${i}`,
+        message: page === hitAt && i === 0 ? "fix: z\n\nCloses #21" : `chore: ${page}-${i}`,
+      }),
+    ).join("\n");
+  const pageOf = (args: string[]) => Number(/[?&]page=(\d+)/.exec(args.join(" "))?.[1]);
+  const isSearch = (args: string[]) => args.includes("search/commits");
+
+  it("#10901 fetchRepoCommitsForIssue: histórico grande → busca dirigida por #N (sem varrer páginas)", () => {
+    const seen: string[][] = [];
+    const r = fetchRepoCommitsForIssue("/x", DESIGN, 21, (_c, args) => {
+      seen.push(args);
+      if (isSearch(args)) {
+        return {
+          status: 0,
+          stdout: [
+            JSON.stringify({ sha: "old", message: "fix: antigo\n\nCloses #21", date: "2025-01-01T00:00:00Z" }),
+            JSON.stringify({ sha: "x", message: "chore: 2021-21", date: "2025-01-02T00:00:00Z" }),
+          ].join("\n"),
+        };
+      }
+      return { status: 0, stdout: fullPage(pageOf(args), null) };
+    });
+    assert.deepEqual(r.commits.map((c) => c.sha), ["old"]);
+    assert.equal(r.error, undefined);
+    assert.equal(r.warning, undefined);
+    assert.equal(seen.length, 2, "1ª página (atraso de índice) + busca; nunca as 10 páginas");
+    const q = seen[1][seen[1].indexOf("search/commits") + 2];
+    assert.equal(q, `q=repo:${DESIGN} "#21"`);
+  });
+
+  it("#10901 fetchRepoCommitsForIssue: busca fora do ar → varredura com teto; teto sem achado é aviso, nunca cannot-verify", () => {
+    const searchDown = (hitAt: number | null) => (_c: string, args: string[]) =>
+      isSearch(args) ? { status: 1, stderr: "API rate limit exceeded" } : { status: 0, stdout: fullPage(pageOf(args), hitAt) };
+    const found = fetchRepoCommitsForIssue("/x", DESIGN, 21, searchDown(2), 3);
     assert.deepEqual(found.commits.map((c) => c.sha), ["p2-0"]);
     assert.equal(found.error, undefined);
-    const none = fetchRepoCommitsForIssue("/x", DESIGN, 21, (_c, args) => {
-      const page = Number(/[?&]page=(\d+)/.exec(args[1])?.[1]);
-      return { status: 0, stdout: fullPage(page, null) };
-    }, 3);
+    const none = fetchRepoCommitsForIssue("/x", DESIGN, 21, searchDown(null), 3);
     assert.equal(none.commits.length, 0);
-    assert.match(none.error ?? "", /teto de 3 páginas/);
+    assert.equal(none.error, undefined, "teto não pode virar cannot-verify bloqueante");
+    assert.match(none.warning ?? "", /teto de 3 páginas.*sem indício de duplicidade/);
+    assert.match(none.warning ?? "", /rate limit/);
+  });
+
+  it("#10901 check-issue-duplicate-preflight: teto atingido no design → exit 0 (not-in-master) com aviso no stderr", () => {
+    const root = tmpRepoRoot();
+    const out: string[] = [];
+    const errs: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = (s: string) => out.push(s);
+    console.error = (s: string) => errs.push(s);
+    try {
+      const code = duplicatePreflightMain(["--issue", `${DESIGN}#21`], root, (_c, args) =>
+        isSearch(args) ? { status: 1, stderr: "boom" } : { status: 0, stdout: fullPage(pageOf(args), null) },
+      );
+      assert.equal(code, 0);
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+    assert.equal(JSON.parse(out.join("\n")).verdict, "not-in-master");
+    assert.ok(errs.some((e) => /aviso: .*teto de 10 páginas/.test(e)));
   });
 
   it("check-issue-duplicate-preflight --issue design#21: commit 'Closes #21' do design → exit 1, ref no output", () => {

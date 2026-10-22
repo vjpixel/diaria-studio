@@ -67,6 +67,8 @@ export function main(argv: string[], cwd: string, runner?: CommitFetchRunner): n
     console.error(`[check-issue-duplicate-preflight] ${fetchResult.error}`);
     return 2;
   }
+  // #10901: busca incompleta mas não bloqueante — segue como "sem indício".
+  if (fetchResult.warning) console.error(`[check-issue-duplicate-preflight] aviso: ${fetchResult.warning}`);
 
   // Preflight de PROVENIÊNCIA (#7801) — quando o fix pode estar sob outro número.
   const provenanceRaw = values.provenance ? String(values.provenance) : "";

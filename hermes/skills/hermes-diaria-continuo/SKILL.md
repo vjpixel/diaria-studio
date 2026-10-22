@@ -458,8 +458,13 @@ delegação no meio. Com `Exceeded USD budget`, o valor a mexer é para CIMA
    de `context/overnight-dispatch-rules.md`, adaptado ao tick:
    - O gate de coerência do passo 0 é só-studio: no lugar dele, só
      reivindicar se `gh pr list -R vjpixel/diaria-design --state open
-     --search "head:continuo/" --json number --jq length` der `0` (no máximo
-     1 PR `continuo/*` aberta no design; o teto do §3c não conta o design).
+     --limit 100 --json headRefName --jq '[.[] | select(.headRefName |
+     startswith("continuo/"))] | length'` der `0` (no máximo 1 PR
+     `continuo/*` aberta no design; o teto do §3c não conta o design). O
+     filtro de prefixo é no `--jq`, não no `--search "head:continuo/"`: a
+     busca casou por prefixo quando medida (22/10/2026), mas a doc do GitHub
+     não garante essa semântica e, se ela mudar, a contagem cai pra `0` em
+     silêncio e o teto deixa de segurar.
    - Checkout `../diaria-design` (ausente → `gh repo clone
      vjpixel/diaria-design ../diaria-design`); `git -C ../diaria-design fetch
      origin` e `git -C ../diaria-design worktree add -b continuo/fix-N-slug
@@ -468,7 +473,10 @@ delegação no meio. Com `Exceeded USD budget`, o valor a mexer é para CIMA
      NUNCA implementar num worktree do studio.
    - Delegar (bloco do passo 2) com só o `claude-delegate.sh` dentro de
      `(cd {worktree do design} && ...)` (o heartbeat fica no studio); a PR sai lá com `gh pr create -R
-     vjpixel/diaria-design --base main` e `Closes #N` LOCAL.
+     vjpixel/diaria-design --base main` e `Closes #N` LOCAL. Acrescentar ao
+     prompt que o worktree JÁ está na branch `continuo/fix-N-slug` (criada
+     pelo `worktree add -b`): pular o `git switch -c` do bloco e passar
+     `--base main` explícito no `gh pr create`.
    - O merge dessa PR NÃO é automático: `continuo-pr-review.sh` e o pickup
      do overnight são só-studio. Registrar no relatório "PR do design
      aguardando merge humano: vjpixel/diaria-design#P".
