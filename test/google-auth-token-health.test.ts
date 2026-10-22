@@ -1,18 +1,22 @@
 /**
  * test/google-auth-token-health.test.ts (#1973)
  *
- * Cobre os helpers PUROS do health-check de token OAuth. A `checkTokenHealth`
- * em si depende de `data/.credentials.json` (gitignored, OneDrive — ausente no
- * CI), então testamos suas peças puras: classificação de erro, idade do refresh
- * token, e o banner consolidado.
+ * Cobre os helpers PUROS do health-check de token OAuth (classificação de
+ * erro, idade do refresh token, banner consolidado) e, desde o #10785, a
+ * própria `checkTokenHealth` contra um `.credentials.json` em tmpdir
+ * (`DIARIA_TEST_CREDENTIALS_PATH`) com `fetch` injetado.
  */
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  CREDENTIALS_PATH_TEST_OVERRIDE_ENV,
+  checkTokenHealth,
   classifyRefreshError,
-  classifyRefreshAge,
+  refreshAgeDays,
   renderTokenHealthBanner,
-  TESTING_REFRESH_TTL_DAYS,
   type TokenHealth,
 } from "../scripts/google-auth.ts";
 
@@ -29,26 +33,62 @@ describe("classifyRefreshError (#1973)", () => {
   });
 });
 
-describe("classifyRefreshAge (#1973)", () => {
+describe("refreshAgeDays (#10785)", () => {
   const now = 10 * DAY;
-  it("sem obtainedMs → sem idade, nearLimit false (creds legadas)", () => {
-    assert.deepEqual(classifyRefreshAge(undefined, now), { nearLimit: false });
+  it("sem obtainedMs → undefined (creds legadas)", () => {
+    assert.equal(refreshAgeDays(undefined, now), undefined);
   });
-  it("refresh novo (1d) → não perto do limite", () => {
-    const r = classifyRefreshAge(now - 1 * DAY, now);
-    assert.equal(Math.round(r.ageDays!), 1);
-    assert.equal(r.nearLimit, false);
+  it("idade em dias, só informativa", () => {
+    assert.equal(refreshAgeDays(now - 6 * DAY, now), 6);
   });
-  it("refresh com 6d (limite 7d − 1.5 = 5.5) → nearLimit true", () => {
-    const r = classifyRefreshAge(now - 6 * DAY, now);
-    assert.equal(r.nearLimit, true);
+});
+
+describe("checkTokenHealth com app em produção (#10785)", () => {
+  // Regressão: até o #10785 um refresh com mais de 5,5 dias virava
+  // `expiring_soon` (ok: false) mesmo com o refresh funcionando — falso
+  // alarme depois que o app OAuth foi publicado em produção.
+  const dir = mkdtempSync(join(tmpdir(), "google-auth-health-"));
+  const credsPath = join(dir, ".credentials.json");
+  const prev = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  before(() => {
+    process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = credsPath;
   });
-  it("exatamente no threshold 5.5d → nearLimit true", () => {
-    const r = classifyRefreshAge(now - 5.5 * DAY, now);
-    assert.equal(r.nearLimit, true);
+  after(() => {
+    if (prev === undefined) delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+    else process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prev;
+    rmSync(dir, { recursive: true, force: true });
   });
-  it("5d (< 5.5) → nearLimit false", () => {
-    assert.equal(classifyRefreshAge(now - 5 * DAY, now).nearLimit, false);
+  const writeCreds = () =>
+    writeFileSync(
+      credsPath,
+      JSON.stringify({
+        client_id: "c",
+        client_secret: "s",
+        access_token: "a",
+        refresh_token: "r",
+        expiry_ms: 0,
+        refresh_obtained_ms: Date.now() - 30 * DAY,
+      }),
+    );
+
+  it("refresh com 30 dias que renova ok → valid (sem aviso de idade)", async () => {
+    writeCreds();
+    const okFetch = (async () =>
+      new Response(JSON.stringify({ access_token: "novo", expires_in: 3600 }), { status: 200 })) as typeof fetch;
+    const h = await checkTokenHealth(okFetch);
+    assert.equal(h.status, "valid");
+    assert.equal(h.ok, true);
+    assert.equal(Math.round(h.refreshAgeDays!), 30);
+    assert.equal(renderTokenHealthBanner(h), "");
+  });
+
+  it("refresh revogado → invalid_grant (o alarme que continua valendo)", async () => {
+    writeCreds();
+    const revoked = (async () =>
+      new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })) as typeof fetch;
+    const h = await checkTokenHealth(revoked);
+    assert.equal(h.status, "invalid_grant");
+    assert.equal(h.ok, false);
   });
 });
 
@@ -63,12 +103,6 @@ describe("renderTokenHealthBanner (#1973)", () => {
     assert.match(b, /Drive sync · inbox-drain.*· upload de imagens sociais/);
     assert.match(b, /oauth-setup\.ts/);
     assert.match(b, /diaria-inbox/);
-  });
-  it("expiring_soon → menciona o limite de 7d + idade", () => {
-    const b = renderTokenHealthBanner(base({ status: "expiring_soon", refreshAgeDays: 6.2 }));
-    assert.match(b, new RegExp(`${TESTING_REFRESH_TTL_DAYS}d`));
-    assert.match(b, /EXPIRANDO/);
-    assert.match(b, /6\.2d/);
   });
   it("no_credentials → banner de ausente", () => {
     assert.match(renderTokenHealthBanner(base({ status: "no_credentials", detail: "ausente" })), /AUSENTE/);

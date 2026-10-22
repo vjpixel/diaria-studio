@@ -3,16 +3,16 @@
  *
  * Pré-flight do Stage 0 §0c: checa proativamente a saúde do token OAuth Google
  * (mesmo token cobre Drive + Gmail/inbox-drain + upload de imagens sociais).
- * Emite UM banner consolidado se expirado/expirando, antes de qualquer passo
+ * Emite UM banner consolidado se expirado/inválido, antes de qualquer passo
  * que dependa de Drive/Gmail — em vez de 3 falhas espalhadas no meio do pipeline.
  *
  * Uso:
  *   npx tsx scripts/check-google-token.ts
  *
  * Exit codes:
- *   0 = token válido (ou expiring_soon — funciona, mas imprime aviso)
+ *   0 = token válido
  *   1 = expirado/inválido/ausente (banner com a ação) — orchestrator surfaça
- *   (expiring_soon imprime o banner mas NÃO derruba — exit 0, só avisa)
+ *   (o aviso por idade do modo Testing saiu no #10785: app em produção)
  */
 
 import { checkTokenHealth, renderTokenHealthBanner } from "./google-auth.ts";
@@ -23,8 +23,7 @@ async function main(): Promise<number> {
   console.log(JSON.stringify(health, null, 2));
   const banner = renderTokenHealthBanner(health);
   if (banner) console.error("\n" + banner + "\n");
-  // expiring_soon ainda funciona (refresh ok) → não derruba o pipeline, só avisa.
-  if (health.status === "valid" || health.status === "expiring_soon") return 0;
+  if (health.status === "valid") return 0;
   return 1;
 }
 

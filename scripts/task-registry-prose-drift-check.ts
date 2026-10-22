@@ -39,7 +39,7 @@ import {
   PROSE_DRIFT_FOUND_EXIT_CODE,
   type RealArmedState,
 } from "./lib/task-registry-prose-drift.ts";
-import { listScheduledTaskNames } from "./lib/scheduled-tasks.ts";
+import { listScheduledTaskNames, RETIRED_TASK_NAMES } from "./lib/scheduled-tasks.ts";
 import { isExitCodeArmedForUnit } from "./lib/systemd-unit-exit-guard.ts";
 
 /** Nome exato da task no registro — reusado por `isExitCodeArmedForUnit`
@@ -83,7 +83,7 @@ const realByTask = new Map<string, RealArmedState>(
   taskNames.map((name) => [name, armedSet.has(unitBaseName(name)) ? "armed" : "not-armed"]),
 );
 
-const evaluation = evaluateProseDrift(prose, taskNames, realByTask);
+const evaluation = evaluateProseDrift(prose, taskNames, realByTask, [...RETIRED_TASK_NAMES]);
 
 if (hasFlag(process.argv, "json")) {
   console.log(JSON.stringify(evaluation, null, 2));

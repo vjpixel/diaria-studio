@@ -450,13 +450,9 @@ Meta e Google Ads, não há chamada de API pronta para colar aqui. Verificação
    Signup"** — status deixa de exibir o aviso "não está recebendo
    conversões" (leva algumas horas para o primeiro dado aparecer, mesmo com
    o tag correto).
-3. Programático, fora do escopo desta issue: a Reporting API (mesmo padrão
-   assíncrono documentado em `docs/microsoft-ads-api-setup.md`,
-   `GoalConversionPerformanceReport` em vez de `CampaignPerformanceReport`)
-   poderia expor isso via `scripts/lib/microsoft-ads-ingest.ts` — mas hoje
-   esse módulo só está testado contra fixture, sem credencial real (mesmo
-   estado documentado nesse doc), e implementar o goal report é trabalho
-   adicional não coberto aqui.
+3. Programático: não há mais caminho no repo. A ingestão via Reporting API
+   do Microsoft Ads saiu com o encerramento do canal (#10755, ver
+   `docs/microsoft-ads-encerramento.md`).
 
 ---
 

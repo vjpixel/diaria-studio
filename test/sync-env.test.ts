@@ -25,7 +25,7 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EnvBackupError, LocalOnlyEnvKeysError, syncEnv } from "../scripts/sync-env.ts";
+import { EnvBackupError, LocalOnlyEnvKeysError, MACHINE_LOCAL_ENV_KEYS, syncEnv } from "../scripts/sync-env.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -533,5 +533,74 @@ describe("defaultDopplerRunner fallback (#8795)", () => {
       rmSync(emptyHome, { recursive: true, force: true });
       rmSync(binDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("chaves machine-local (#10803)", () => {
+  function withDir(fn: (envPath: string) => void): void {
+    const dir = mkdtempSync(join(tmpdir(), "sync-env-test-"));
+    try {
+      fn(join(dir, ".env"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("a allowlist é exatamente as 2 chaves da issue", () => {
+    assert.deepEqual([...MACHINE_LOCAL_ENV_KEYS].sort(), ["DOPPLER_MCP_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS"]);
+  });
+
+  it("não aborta por chave machine-local e mantém a linha local no .env novo", () => {
+    withDir((envPath) => {
+      writeFileSync(
+        envPath,
+        "CLARICE_API_KEY=old\nGOOGLE_APPLICATION_CREDENTIALS=/home/x/creds.json\nDOPPLER_MCP_TOKEN=dp.mcp.local\n",
+      );
+      syncEnv(envPath, () => "CLARICE_API_KEY=new\nONBOARDING_FORM_X=1\n");
+      assert.equal(
+        readFileSync(envPath, "utf8"),
+        "CLARICE_API_KEY=new\nONBOARDING_FORM_X=1\nGOOGLE_APPLICATION_CREDENTIALS=/home/x/creds.json\nDOPPLER_MCP_TOKEN=dp.mcp.local\n",
+      );
+    });
+  });
+
+  it("chave só-local FORA da allowlist continua abortando, mesmo junto de machine-local", () => {
+    withDir((envPath) => {
+      const original = "DOPPLER_MCP_TOKEN=dp.mcp.local\nANTHROPIC_API_KEY=segredo\n";
+      writeFileSync(envPath, original);
+      assert.throws(
+        () => syncEnv(envPath, () => "CLARICE_API_KEY=new\n"),
+        (err: unknown) => {
+          assert.ok(err instanceof LocalOnlyEnvKeysError);
+          assert.deepEqual(err.keys, ["ANTHROPIC_API_KEY"]);
+          return true;
+        },
+      );
+      assert.equal(readFileSync(envPath, "utf8"), original);
+    });
+  });
+
+  it("com force:true a chave machine-local também é mantida (o --force não a apaga mais)", () => {
+    withDir((envPath) => {
+      writeFileSync(envPath, "ANTHROPIC_API_KEY=segredo\nDOPPLER_MCP_TOKEN=dp.mcp.local\n");
+      syncEnv(envPath, () => "CLARICE_API_KEY=new\n", { force: true });
+      assert.equal(readFileSync(envPath, "utf8"), "CLARICE_API_KEY=new\nDOPPLER_MCP_TOKEN=dp.mcp.local\n");
+    });
+  });
+
+  it("se o vault passa a trazer a chave, vale o valor do vault (sem linha duplicada)", () => {
+    withDir((envPath) => {
+      writeFileSync(envPath, "DOPPLER_MCP_TOKEN=local\n");
+      syncEnv(envPath, () => "DOPPLER_MCP_TOKEN=vault\n");
+      assert.equal(readFileSync(envPath, "utf8"), "DOPPLER_MCP_TOKEN=vault\n");
+    });
+  });
+
+  it("snapshot sem newline final ganha separador antes da linha mantida", () => {
+    withDir((envPath) => {
+      writeFileSync(envPath, "GOOGLE_APPLICATION_CREDENTIALS=/c.json\n");
+      syncEnv(envPath, () => "A=1");
+      assert.equal(readFileSync(envPath, "utf8"), "A=1\nGOOGLE_APPLICATION_CREDENTIALS=/c.json\n");
+    });
   });
 });

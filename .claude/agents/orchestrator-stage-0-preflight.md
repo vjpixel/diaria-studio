@@ -208,7 +208,7 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   ```bash
   npx tsx scripts/check-google-token.ts
   ```
-  Exit 0 = válido. Exit 1 = expirado/inválido/ausente → **default (#5321): alertar o editor (banner) e seguir sem bloquear** — registrar warn no run-log; o editor roda `npx tsx scripts/oauth-setup.ts` quando quiser reautenticar. Ver `docs/google-oauth-production.md` pra causa raiz dos 7d.
+  Exit 0 = válido. Exit 1 = expirado/inválido/ausente → **default (#5321): alertar o editor (banner) e seguir sem bloquear** — registrar warn no run-log; o editor roda `npx tsx scripts/oauth-setup.ts` quando quiser reautenticar. Com o app OAuth em produção desde 22/10/2026 (#10785), token inválido é revogação, não o vencimento de 7d do modo Testing (`docs/google-oauth-production.md`).
 - **Pre-flight token Cloudflare/wrangler (#2286).** O `CLOUDFLARE_API_TOKEN` expirado só estoura em `maintain-valid-editions` (§0d.bis) — depois de gastar tokens em dedup e CTR. Checar ANTES, análogo ao check-google-token:
   ```bash
   npx tsx scripts/check-cloudflare-token.ts

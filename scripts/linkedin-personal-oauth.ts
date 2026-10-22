@@ -25,7 +25,7 @@
  */
 
 import { createServer } from "node:http";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -34,7 +34,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { upsertEnvVar } from "./lib/google-ads-credentials.ts";
+import { defaultDopplerSet, persistSecrets } from "./lib/secret-persist.ts";
 import {
   LINKEDIN_PERSONAL_ENV,
   LINKEDIN_PERSONAL_REDIRECT_PORT,
@@ -47,54 +47,6 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONSENT_TIMEOUT_MS = 5 * 60 * 1000;
-
-export type DopplerSet = (name: string, value: string) => { ok: boolean; error?: string };
-
-/** `doppler secrets set NAME --silent` com o valor pelo stdin (nunca na linha de comando). */
-export const defaultDopplerSet: DopplerSet = (name, value) => {
-  const r = spawnSync("doppler", ["secrets", "set", name, "--silent"], {
-    input: value,
-    encoding: "utf8",
-    shell: process.platform === "win32",
-  });
-  if (r.error || r.status !== 0) {
-    // stderr do Doppler (sem o valor — ele foi pelo stdin) explica a causa:
-    // `doppler login` vencido, ou diretório sem `doppler setup` (projeto/config).
-    return { ok: false, error: (r.error?.message ?? (r.stderr || "").trim()) || `exit ${r.status}` };
-  }
-  return { ok: true };
-};
-
-export type PersistResult = { doppler: string[]; dopplerFailed: string[]; dopplerErrors: string[]; envWritten: boolean };
-
-/**
- * Grava os segredos no Doppler e no `.env`. Falha do Doppler não aborta o
- * `.env` (o token vale nesta máquina), mas é reportada: sem Doppler o `300`
- * nunca recebe o token. Pura em relação ao I/O (tudo injetado).
- */
-export function persistSecrets(args: {
-  secrets: Record<string, string>;
-  dopplerSet: DopplerSet;
-  envPath: string;
-  readEnv: (p: string) => string | null;
-  writeEnv: (p: string, content: string) => void;
-}): PersistResult {
-  const doppler: string[] = [];
-  const dopplerFailed: string[] = [];
-  const dopplerErrors: string[] = [];
-  for (const [name, value] of Object.entries(args.secrets)) {
-    const r = args.dopplerSet(name, value);
-    if (r.ok) doppler.push(name);
-    else {
-      dopplerFailed.push(name);
-      if (r.error && !dopplerErrors.includes(r.error)) dopplerErrors.push(r.error);
-    }
-  }
-  let content = args.readEnv(args.envPath) ?? "";
-  for (const [name, value] of Object.entries(args.secrets)) content = upsertEnvVar(content, name, value);
-  args.writeEnv(args.envPath, content.endsWith("\n") ? content : content + "\n");
-  return { doppler, dopplerFailed, dopplerErrors, envWritten: true };
-}
 
 function openBrowser(url: string): void {
   // Sem cmd.exe: o `&` da query string cortaria a URL (mesmo racional de

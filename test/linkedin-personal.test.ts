@@ -50,7 +50,7 @@ import {
   readIntent,
   type FireOutcome,
 } from "../scripts/publish-linkedin-personal.ts";
-import { persistSecrets } from "../scripts/linkedin-personal-oauth.ts";
+import { persistSecrets } from "../scripts/lib/secret-persist.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 import { writeUseMelhorPostState } from "../scripts/lib/use-melhor-post.ts";
 import { buildUseMelhorSlides, hashUseMelhorSlides } from "../scripts/lib/use-melhor-carousel.ts";

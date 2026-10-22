@@ -21,6 +21,12 @@
  *    anterior), escrito atomicamente (tmp + rename), antes de sobrescrever
  *    `.env` — só roda se o guard acima não abortou.
  *
+ * **#10803 — chaves machine-local.** `MACHINE_LOCAL_ENV_KEYS` lista as
+ * chaves que, por natureza, só existem no `.env` de cada máquina e nunca
+ * vão pro vault (caminho de arquivo local, token do MCP do Doppler). Elas
+ * não disparam o guard 1 e são mantidas do `.env` atual no arquivo novo,
+ * inclusive com `--force`. Qualquer outra chave só-local continua abortando.
+ *
  * Ver `docs/doppler-env-sync.md` pro mecanismo completo (setup, racional de
  * abortar em vez de mesclar, caminho inverso pra subir chave pro vault).
  *
@@ -81,6 +87,21 @@ export interface SyncEnvOptions {
    */
   force?: boolean;
 }
+
+/**
+ * Chaves que existem só no `.env` de cada máquina e nunca vão pro vault
+ * (#10803). O sync mantém a linha local delas quando o snapshot do Doppler
+ * não traz a chave; se o vault passar a trazer, vale o valor do vault.
+ *
+ * - `GOOGLE_APPLICATION_CREDENTIALS`: caminho de arquivo da máquina,
+ *   gravado por `scripts/materialize-google-ads-credentials.ts`.
+ * - `DOPPLER_MCP_TOKEN`: token do MCP do Doppler, lido por
+ *   `scripts/mcp/mcp-wrapper-core.mjs`.
+ */
+export const MACHINE_LOCAL_ENV_KEYS: readonly string[] = [
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "DOPPLER_MCP_TOKEN",
+];
 
 /**
  * Lançado quando o `.env` local tem chave(s) ausentes no snapshot do
@@ -186,6 +207,26 @@ function parseEnvKeys(content: string): ParsedEnvKeys {
 }
 
 /**
+ * Linhas `KEY=...` do `.env` local para as chaves de `keys`, na ordem do
+ * arquivo (#10803). Só a linha de atribuição: valor multilinha não é
+ * suportado aqui, e as chaves machine-local são todas de uma linha.
+ */
+function extractEnvLines(content: string, keys: ReadonlySet<string>): string[] {
+  const withoutBom = content.startsWith("\uFEFF") ? content.slice(1) : content;
+  const lines: string[] = [];
+  for (const rawLine of withoutBom.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eqIndex = line.indexOf("=");
+    if (eqIndex === -1) continue;
+    let key = line.slice(0, eqIndex).trim();
+    if (key.startsWith("export ")) key = key.slice("export ".length).trim();
+    if (keys.has(key)) lines.push(line);
+  }
+  return lines;
+}
+
+/**
  * Baixa o snapshot do Doppler e escreve em `envPath` só se o download tiver
  * sucesso — se `runner` lançar, `envPath` fica intocado (nunca truncado).
  *
@@ -204,7 +245,8 @@ export function syncEnv(
   const tmpPath = `${envPath}.tmp`;
   const backupPath = `${envPath}.bak`;
   const backupTmpPath = `${backupPath}.tmp`;
-  const content = runner(["secrets", "download", "--no-file", "--format", "env"]);
+  const downloaded = runner(["secrets", "download", "--no-file", "--format", "env"]);
+  let content = downloaded;
 
   if (existsSync(envPath)) {
     let existingContent: string;
@@ -230,12 +272,21 @@ export function syncEnv(
       );
     }
 
+    const { keys: remoteKeys } = parseEnvKeys(downloaded);
+    const machineLocal = new Set(MACHINE_LOCAL_ENV_KEYS);
     if (!options.force) {
-      const { keys: remoteKeys } = parseEnvKeys(content);
-      const localOnlyKeys = [...localKeys].filter((key) => !remoteKeys.has(key));
+      const localOnlyKeys = [...localKeys].filter((key) => !remoteKeys.has(key) && !machineLocal.has(key));
       if (localOnlyKeys.length > 0) {
         throw new LocalOnlyEnvKeysError(localOnlyKeys);
       }
+    }
+
+    // #10803: mantém as chaves machine-local que o vault não traz.
+    const keep = new Set([...machineLocal].filter((key) => localKeys.has(key) && !remoteKeys.has(key)));
+    const keptLines = extractEnvLines(existingContent, keep);
+    if (keptLines.length > 0) {
+      const sep = downloaded === "" || downloaded.endsWith("\n") ? "" : "\n";
+      content = `${downloaded}${sep}${keptLines.join("\n")}\n`;
     }
 
     try {

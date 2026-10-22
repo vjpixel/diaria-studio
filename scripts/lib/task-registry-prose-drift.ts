@@ -25,6 +25,14 @@
  * registro = ignorada. Afirmação ausente na linha do dono = sem claim
  * (`unknown`) — nunca alarma.
  *
+ * TASKS RETIRADAS (#10805): uma task que saiu do registro
+ * (`RETIRED_TASK_NAMES` de `scripts/lib/scheduled-tasks.ts`) continua
+ * citada na prosa como histórico. Sem conhecê-la, a posse da linha dela
+ * caía na 1ª task ATIVA citada por referência cruzada, e um "NÃO ARMADA"
+ * histórico virava afirmação sobre a vizinha (#10758). Passando os nomes
+ * retirados, eles disputam a posse como qualquer task; linha cujo dono é
+ * uma task retirada é descartada — a regra deixa de depender da redação.
+ *
  * Este módulo NUNCA executa systemctl — só classifica; I/O fica no script.
  *
  * @module
@@ -53,7 +61,8 @@ const NOT_ARMED_PATTERNS: RegExp[] = [
 ];
 
 export interface LineOwnership {
-  /** Primeira task do registro mencionada na linha (dono das afirmações). */
+  /** Primeira task do registro mencionada na linha (dono das afirmações).
+   *  Pode ser uma task retirada, quando `retiredTaskNames` é passado. */
   owner: string | null;
   /** Afirmação de arme da linha — vence o ÚLTIMO padrão (a prosa narra
    * atualizações cronologicamente: "era NÃO armada, agora ARMADA"). */
@@ -61,14 +70,23 @@ export interface LineOwnership {
 }
 
 /**
- * Resolve o dono e a afirmação de UMA linha.
+ * Resolve o dono e a afirmação de UMA linha. `retiredTaskNames` (#10805)
+ * entram na disputa pela posse ao lado de `taskNames`. Empate de posição
+ * (um nome é prefixo de outro, ex. `Diaria-Clarice-Novos` e
+ * `Diaria-Clarice-Novos-Abort-Alarm`) fica com o nome mais longo, que é o
+ * citado de fato.
  */
-export function resolveLineOwnership(line: string, taskNames: readonly string[]): LineOwnership {
+export function resolveLineOwnership(
+  line: string,
+  taskNames: readonly string[],
+  retiredTaskNames: readonly string[] = [],
+): LineOwnership {
   let owner: string | null = null;
   let firstIdx = Infinity;
-  for (const task of taskNames) {
+  for (const task of [...taskNames, ...retiredTaskNames]) {
     const idx = line.indexOf(task);
-    if (idx !== -1 && idx < firstIdx) {
+    if (idx === -1) continue;
+    if (idx < firstIdx || (idx === firstIdx && owner !== null && task.length > owner.length)) {
       firstIdx = idx;
       owner = task;
     }
@@ -137,12 +155,17 @@ export interface ProseDriftEvaluation {
  * @param prose        Conteúdo integral do `docs/scheduled-tasks-registry.md`.
  * @param taskNames    Nomes canônicos das tasks (`listScheduledTaskNames()`).
  * @param realByTask   Estado real por task name.
+ * @param retiredTaskNames Tasks fora do registro (`RETIRED_TASK_NAMES`,
+ *                     #10805): disputam a posse da linha e, quando donas,
+ *                     a linha é descartada (histórico, não afirmação).
  */
 export function evaluateProseDrift(
   prose: string,
   taskNames: readonly string[],
   realByTask: ReadonlyMap<string, RealArmedState>,
+  retiredTaskNames: readonly string[] = [],
 ): ProseDriftEvaluation {
+  const retired = new Set(retiredTaskNames);
   const findings: ProseDriftFinding[] = [];
   const unverifiable = new Set<string>();
   let checked = 0;
@@ -151,8 +174,8 @@ export function evaluateProseDrift(
   // recente — linha mais abaixo — é a vigente).
   const lastClaimByTask = new Map<string, { claim: Exclude<ProseArmedClaim, "unknown">; line: number }>();
   for (let i = 0; i < lines.length; i++) {
-    const { owner, claim } = resolveLineOwnership(lines[i], taskNames);
-    if (!owner || claim === "unknown") continue;
+    const { owner, claim } = resolveLineOwnership(lines[i], taskNames, retiredTaskNames);
+    if (!owner || claim === "unknown" || retired.has(owner)) continue;
     lastClaimByTask.set(owner, { claim, line: i + 1 });
   }
   for (const [task, { claim, line }] of lastClaimByTask) {

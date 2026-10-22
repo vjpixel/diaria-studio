@@ -17,8 +17,8 @@
  * `/ads` ao vivo desde #7536. Este script reusa a função, nunca reimplementa
  * fetch/auth/paginação — só agrega o `ChannelDailyMetric[]` diário
  * resultante por MÊS (`aggregateMetaAdsChannelMetricsByMonth` abaixo, este
- * arquivo) e passa por `mergeSpendRows`, igual Google/Microsoft
- * (`google-ads-ingest-spend.ts`/`microsoft-ads-ingest-spend.ts`). Sem
+ * arquivo) e passa por `mergeSpendRows`, igual Google
+ * (`google-ads-ingest-spend.ts`). Sem
  * `META_ADS_ACCESS_TOKEN` no ambiente: `fallback()` com o motivo explícito
  * "variável(is) de ambiente ausente(s): META_ADS_ACCESS_TOKEN" — nunca
  * silêncio, e desde o #9012 **exit não-zero** (`META_ADS_INGEST_FAILURE_EXIT_CODE`
@@ -420,8 +420,8 @@ function fallback(reason: string): void {
  * ambiente, busca via `fetchMetaAdsChannelMetrics` (reuso do fetch REST do
  * `/ads`, sem reimplementar auth/paginação) e grava em `spend.csv` via
  * `runSpendIngest`/`mergeSpendRows` (`scripts/lib/spend-ingest.ts`) — o
- * mesmo núcleo genérico fetch→merge que `google-ads-ingest.ts`/
- * `microsoft-ads-ingest.ts` já usam, em vez de reimplementar a orquestração
+ * mesmo núcleo genérico fetch→merge que `google-ads-ingest.ts` já usa,
+ * em vez de reimplementar a orquestração
  * aqui (achado do code-review da PR #8304). Sem o token: `fallback()` com o
  * motivo explícito e `META_ADS_INGEST_FAILURE_EXIT_CODE` (#9012). Cada
  * chamada à Graph API passa por `withMetaAdsFetchRetry` (#9012). `fetchImpl`
