@@ -673,9 +673,18 @@ export function editionImageGenerator(destaques: ReadonlyArray<{ imageGenerator?
  * wrapper mesmo com o `<!--[if mso]-->` da tabela externa. Clientes
  * modernos continuam responsivos via `style="width:100%;height:auto"`.
  */
-export function renderHeroImageInner(placeholder: string, alt = "", caption = imageGeneratorCredit()): string {
-  return `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="${HERO_WIDTH}" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>
-  <p style="margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};">${esc(caption)}</p>`;
+export function renderHeroImageInner(placeholder: string, alt = "", caption = imageGeneratorCredit(), href?: string): string {
+  const img = `<img class="hero" src="{{IMG:${placeholder}}}" alt="${esc(alt)}" width="${HERO_WIDTH}" style="display:block;width:100%;height:auto;border-radius:6px;margin-top:24px;" border="0"/>`;
+  const captionStyle = `margin:10px 0 0;font-family:${FONT_LABEL};font-size:12px;letter-spacing:${LS_LABEL};text-transform:uppercase;color:${TEXT_COLOR};`;
+  if (!href) {
+    return `${img}
+  <p style="${captionStyle}">${esc(caption)}</p>`;
+  }
+  // #10784: imagem do D1 vira link pro vídeo (ou canal). `display:block` no
+  // `<a>` mantém o bloco da imagem; a legenda (convite) leva ao mesmo destino.
+  const a = `href="${esc(href)}" target="_blank" rel="noopener noreferrer"`;
+  return `<a class="hero-video" ${a} style="display:block;text-decoration:none;">${img}</a>
+  <p style="${captionStyle}"><a ${a} style="color:${TEXT_COLOR};text-decoration:none;">${esc(caption)}</a></p>`;
 }
 
 /** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno.
@@ -1513,12 +1522,17 @@ export function renderDestaque(d: RenderDestaque, whatsappShareHtml = "", esp: E
   // D1). Sem <hr> separador (cada seção abre com kicker). Hero usa sempre o
   // arquivo 2:1 — D1 já era "04-d1-2x1.jpg"; D2/D3 passam a usar
   // "04-d{N}-2x1.jpg" gerado pelo Stage 3 (#2133/#2141).
-  const heroFile = `04-d${d.n}-2x1.jpg`;
+  // #10784: só o D1 vira link pro vídeo — `videoLink`/`heroFile` só são
+  // preenchidos pro D1 (`d1VideoHeroFields`); o guard `d.n === 1` impede que
+  // um D2/D3 montado à mão herde o link. Legenda do D1 com link = só o
+  // convite; o crédito da ferramenta fica no rodapé (#10783).
+  const video = d.n === 1 ? d.videoLink : undefined;
+  const heroFile = (d.n === 1 && d.heroFile) || `04-d${d.n}-2x1.jpg`;
   const pad = d.n === 1 ? PAD_LEAD : PAD_SECTION;
   const inner = [
     renderKicker(d.category),
     renderHeadlineInner(d.title, d.url),
-    renderHeroImageInner(heroFile, d.title, imageGeneratorCredit(d.imageGenerator)), // #9095
+    renderHeroImageInner(heroFile, d.title, video ? video.caption : imageGeneratorCredit(d.imageGenerator), video?.href), // #9095, #10784
     renderBodyParasInner(d.body, esp), // #5176: pPad/margem condicionais ao ESP
     renderWhyBoxInner(d.why),
     d.n === 1 ? whatsappShareHtml : "", // #5152

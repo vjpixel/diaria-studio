@@ -344,7 +344,7 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.deepEqual(
       keys.sort(),
       [
-        "cover", "d2_2x1", "d3_2x1",
+        "cover", "d1_play", "d2_2x1", "d3_2x1", // #10784: d1_play = hero do D1 com ícone de play
         "box_slot0_image", "box_slot1_image", "box_slot2_image", "box_slot3_image", // #4274: slot0 (introdução)
         "eia_a", "eia_b", "livros_promo",
       ].sort(),
@@ -710,6 +710,9 @@ describe("uploadPublicImages — warnings (#5085): spec optional ausente com cac
         uploaders: {
           uploadToCloudflare: async (_imagePath: string, key: string) => `https://x/${key}`,
         },
+        // #10784: os bytes fake do hero não são JPEG — o sharp real falharia e
+        // geraria o warning (legítimo) da cópia com play, fora do escopo deste teste.
+        ensureD1PlayImage: async () => ({ status: "no_hero", path: null }),
       });
 
       assert.equal(

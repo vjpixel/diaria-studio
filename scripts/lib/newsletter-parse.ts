@@ -10,6 +10,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
 import { readImageGeneratorSidecar } from "./shared/image-generator-sidecar.ts"; // #9095
+import { buildD1VideoLink, D1_PLAY_HERO_FILE, editionFromDir } from "./diaria/d1-video-hero.ts"; // #10784
+import { readD1VideoUrl } from "./diaria/d1-video-link-file.ts"; // #10784 (fonte da URL: #10772)
 import { readSnippetFile } from "./shared/snippet-loader.ts"; // #8756 — casamento por conteúdo em box-selection.json
 import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
@@ -50,6 +52,12 @@ export interface RenderDestaque extends BaseDestaque {
   /** #9095: backend que de fato gerou o hero (sidecar `_internal/04-d{N}-generator.json`).
    * Ausente → a legenda usa `image_generator` do config (edições pré-#9095). */
   imageGenerator?: string;
+  /** #10784: só no D1 — a imagem vira link pro vídeo do dia (ou pro canal) e a
+   * legenda vira o convite. Ausente → hero sem link, legenda de crédito. */
+  videoLink?: { href: string; caption: string; kind: "video" | "channel" };
+  /** #10784: arquivo do hero quando difere do default `04-d{N}-2x1.jpg`
+   * (cópia com play do D1, `04-d1-2x1-play.jpg`, quando existe no disco). */
+  heroFile?: string;
   // imageFile removed: was inconsistent (D1=2x1, D2/D3=1x1) and unused after
   // #2133/#2141 expanded hero to all destaques. renderDestaque derives heroFile
   // directly as `04-d${d.n}-2x1.jpg`. (#2158 finding 6)
@@ -2398,6 +2406,23 @@ export function readBoxDivulgacaoRuntimeExcludedForSlot(
 // lidos de `editionDir` normalmente, sem relação com o draft. `undefined`
 // (todo caller pré-#6447) preserva o comportamento original: ler
 // `02-reviewed.md` do disco e lançar se ausente.
+/**
+ * #10784: link + legenda + arquivo do hero do D1. URL do vídeo de
+ * `_internal/05-video-url.txt` (#10772); ausente ou inválida → canal
+ * (nunca link quebrado). Diretório sem AAMMDD no nome (fixture de teste) →
+ * sem link: a UTM exige a edição.
+ */
+export function d1VideoHeroFields(editionDir: string): Pick<RenderDestaque, "videoLink" | "heroFile"> {
+  const aammdd = editionFromDir(editionDir);
+  if (!aammdd) return {};
+  const { url, warning } = readD1VideoUrl(editionDir);
+  if (warning) console.warn(`[newsletter-parse] warn — ${warning} — a imagem do D1 aponta pro canal (#10784)`);
+  return {
+    videoLink: buildD1VideoLink(url, aammdd),
+    ...(existsSync(resolve(editionDir, D1_PLAY_HERO_FILE)) ? { heroFile: D1_PLAY_HERO_FILE } : {}),
+  };
+}
+
 export function extractContent(editionDir: string, overrideReviewedText?: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -2441,6 +2466,7 @@ export function extractContent(editionDir: string, overrideReviewedText?: string
       const g = readImageGeneratorSidecar(editionDir, `d${d.n}`); // #9095
       return g ? { imageGenerator: g } : {};
     })(),
+    ...(d.n === 1 ? d1VideoHeroFields(editionDir) : {}), // #10784
   }));
 
   // Sections: parsed here (extract-destaques doesn't handle these)
