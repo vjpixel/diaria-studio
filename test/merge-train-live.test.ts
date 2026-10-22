@@ -29,6 +29,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createRealTrainRunner,
   fetchTrainPrInfo,
   revalidateGate2,
   buildIntegrationBranch,
@@ -784,5 +785,38 @@ describe("checkPrRetido / partitionRetidoCandidates (#10294)", () => {
     const result = revalidateGate2(runner, 100);
     assert.equal(result.ok, false);
     assert.equal(result.retido, null);
+  });
+});
+
+describe("runner real — regressão #10849", () => {
+  for (const platform of ["win32", "linux", "darwin"] as const) {
+    it(`comando por plataforma: ${platform}`, () => {
+      const calls: unknown[][] = [];
+      const spawn = ((...params: unknown[]) => {
+        calls.push(params);
+        return { status: 0, stdout: "ok", stderr: "" };
+      }) as typeof import("node:child_process").spawnSync;
+      const runner = createRealTrainRunner("/repo com espaço", platform, spawn);
+      const args = ["tsx", "scripts/lib/session-registry.ts", "merge-lock-acquire", "--session-id", "sessão & teste"];
+      assert.equal(runner.exec("npx", args).ok, true);
+      assert.equal(calls[0][0], platform === "win32" ? process.execPath : "npx");
+      assert.deepEqual(calls[0][1], platform === "win32" ? ["--import", "tsx", ...args.slice(1)] : args);
+      assert.deepEqual(calls[0][2], { cwd: "/repo com espaço", encoding: "utf8", timeout: 60_000, maxBuffer: 20 * 1024 * 1024 });
+      runner.exec("gh", ["--version"], "/outro");
+      assert.equal(calls[1][0], "gh");
+      assert.equal((calls[1][2] as { cwd: string }).cwd, "/outro");
+    });
+  }
+  it("diagnostica ENOENT e preserva outros erros", () => {
+    for (const code of ["ENOENT", "ETIMEDOUT"]) {
+      const spawn = ((): import("node:child_process").SpawnSyncReturns<string | Buffer> => ({
+        pid: 0, output: [], stdout: "", stderr: "", status: null, signal: null,
+        error: Object.assign(new Error("spawn falhou"), { code }),
+      })) as typeof import("node:child_process").spawnSync;
+      const result = createRealTrainRunner("/repo", "linux", spawn).exec("npx", ["tsx"]);
+      assert.equal(result.ok, false);
+      assert.equal(result.stderr, code === "ENOENT"
+        ? "executável não encontrado: npx (cwd: /repo): spawn falhou" : "spawn falhou");
+    }
   });
 });
