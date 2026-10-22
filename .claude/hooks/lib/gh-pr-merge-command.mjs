@@ -17,7 +17,9 @@
 // palavras, com aspas e escapes já resolvidos), e cada comando é lido pela
 // POSIÇÃO de comando: pula atribuições e wrappers conhecidos, exige que a
 // palavra de comando seja `gh` (ou um caminho terminado em `/gh`), pula flags
-// entre `gh`/`pr`/`merge` e só então reconhece o merge.
+// entre `gh`/`pr`/`merge` e só então reconhece o merge. Palavras reservadas
+// que antecedem o comando (`!`, `{`, `if`, `while`, …, e desde o #10777
+// `function NOME` e `coproc [NOME]`) também são puladas.
 //
 // Por que isso não aumenta falso positivo: `gh pr merge` citado dentro de
 // aspas vira UMA palavra só (`echo "gh pr merge"` → [echo, "gh pr merge"]) e
@@ -69,7 +71,8 @@
 //     "$(cat <<…)"`, `while … eval`, `$SHELL <<…`, `ssh host <<…`), então
 //     não há lista de "runners": o corpo só é pulado quando o comando INTEIRO
 //     casa a whitelist de `isHeredocDataCommand` (git commit -F -/-m "$(cat
-//     <<'D' …)", gh pr|issue create/comment --body "$(cat <<'D' …)").
+//     <<'D' …)", gh pr|issue create/comment --body "$(cat <<'D' …)", com
+//     `cd <caminho simples> && ` opcional antes — #10777).
 //     Falso positivo fora dela (ex.: `cat <<'EOF' > nota.md` citando o merge
 //     numa rodada) é aceito;
 //   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`).
@@ -577,7 +580,18 @@ function mergeArgsOf(words, depth, out, env) {
   /** String de substituição do `xargs -I`/`-i`/`--replace` (#10689 E). */
   let xargsReplace = null;
   for (;;) {
-    while (i < words.length && (ASSIGNMENT_RE.test(words[i]) || RESERVED_PREFIX.has(words[i]))) i++;
+    for (;;) {
+      if (i < words.length && (ASSIGNMENT_RE.test(words[i]) || RESERVED_PREFIX.has(words[i]))) i++;
+      // #10777: `function f { gh pr merge 5; }` — `function` + o NOME da
+      // função antecedem o corpo (a forma `function f() {…}` já se quebra no
+      // `)` e o `{` cai no RESERVED_PREFIX).
+      else if (words[i] === "function") i += 2;
+      // #10777: `coproc gh pr merge 5` (comando simples, sem nome) e
+      // `coproc NOME { …; }`/`coproc NOME while …` (composto: o nome vem antes
+      // da palavra reservada). `coproc NOME ( … )` já vira subshell no lexer.
+      else if (words[i] === "coproc") i += RESERVED_PREFIX.has(words[i + 2]) && !RESERVED_PREFIX.has(words[i + 1]) ? 2 : 1;
+      else break;
+    }
     if (i >= words.length) return;
     const name = basename(words[i]);
     if (name === "find") {
@@ -1262,14 +1276,20 @@ const SIMPLE_ARG = String.raw`(?:[A-Za-z0-9_./:@=+,%-]+|"[^"$\x60\\\n]*"|'[^'\n]
 const ARGS = `(?: ${SIMPLE_ARG})*`;
 const DELIM = "'([A-Za-z_]+)'";
 const GIT_PUSH = `(?: && git push${ARGS})?`;
+// #10777: `cd <worktree> && ` antes do comando — a forma padrão dos
+// subagentes (o cwd é resetado a cada chamada). O caminho é um SIMPLE_ARG
+// (sem `$`, crase, `\` nem aspas abertas): o `cd` não executa nada além de
+// trocar de diretório. Wrapper/env (`env X=1 git commit …`) segue fora da
+// whitelist (fail-closed: o corpo é lido como comandos).
+const CD_PREFIX = `(?:cd ${SIMPLE_ARG} && )?`;
 const HEAD_FORMS = [
   // git commit [flags] -F - <<'D' [&& git push ...]  →  depois do D, nada.
-  { re: new RegExp(`^git commit${ARGS} -F - <<${DELIM}${GIT_PUSH}$`), tail: /^\s*$/ },
+  { re: new RegExp(`^${CD_PREFIX}git commit${ARGS} -F - <<${DELIM}${GIT_PUSH}$`), tail: /^\s*$/ },
   // git commit [flags] -m "$(cat <<'D'  …  D  )" [flags] [&& git push ...]
-  { re: new RegExp(`^git commit${ARGS} -m "\\$\\(cat <<${DELIM}$`), tail: new RegExp(`^\\)"${ARGS}${GIT_PUSH}\\s*$`) },
+  { re: new RegExp(`^${CD_PREFIX}git commit${ARGS} -m "\\$\\(cat <<${DELIM}$`), tail: new RegExp(`^\\)"${ARGS}${GIT_PUSH}\\s*$`) },
   // gh pr create|pr comment|issue comment|issue create … --body "$(cat <<'D'  …  D  )" …
   {
-    re: new RegExp(`^gh (?:pr create|pr comment|issue comment|issue create)${ARGS} --body "\\$\\(cat <<${DELIM}$`),
+    re: new RegExp(`^${CD_PREFIX}gh (?:pr create|pr comment|issue comment|issue create)${ARGS} --body "\\$\\(cat <<${DELIM}$`),
     tail: new RegExp(`^\\)"${ARGS}\\s*$`),
   },
 ];

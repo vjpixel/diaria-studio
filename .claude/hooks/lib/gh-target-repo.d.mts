@@ -4,6 +4,10 @@ export function repoFromRemoteUrl(url: unknown): string | null;
 export function mergeLockFileName(repo?: string | null): string;
 export function loadAllowedForeignRepos(root?: string): Set<string>;
 export function splitShellWords(command: unknown): string[];
+/** #10776: valor de `--body`/`--title` que é só texto (nada executa ao expandir). */
+export function isInertMessageValue(w: unknown): boolean;
+/** #10776: palavras do comando sem o valor inerte de `--body`/`--title` dos segmentos `gh pr|issue`. */
+export function commandWithoutMessageText(command: unknown): string;
 
 /** Segmento `gh pr <sub>`: repo explícito, explícito-mas-ilegível, ou nada explícito. */
 export type GhPrSegment =
