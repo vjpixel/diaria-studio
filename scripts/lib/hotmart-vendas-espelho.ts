@@ -189,6 +189,15 @@ function diaMs(dia: string): number {
   return ms;
 }
 
+function diaExiste(dia: string): boolean {
+  try {
+    diaMs(dia);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function diaDe(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
@@ -377,7 +386,9 @@ export function trechosCobertosDaJanela(janela: Periodo, perdas: PerdasDaJanela,
   for (const chave of perdas.chavesIgnoradas) {
     const m = chave.startsWith(VENDA_KV_PREFIX) ? DIA_DA_CHAVE_RE.exec(chave.slice(VENDA_KV_PREFIX.length)) : null;
     const dia = m?.[1];
-    if (!dia || Number.isNaN(Date.parse(`${dia}T00:00:00Z`)) || dia < janela.de || dia > janela.ate) return [];
+    // Dia inexistente (ex.: 2026-02-30, que `Date.parse` aceita) nunca casaria
+    // com um dia do laço abaixo e a janela sairia coberta inteira.
+    if (!dia || !diaExiste(dia) || dia < janela.de || dia > janela.ate) return [];
     diasPerdidos.add(dia);
   }
   const trechos: Periodo[] = [];

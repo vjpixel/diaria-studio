@@ -235,6 +235,11 @@ describe("#10881 item 3: chave inválida conhecida não repete o alarme", () => 
       [],
       "dia fora da janela",
     );
+    assert.deepEqual(
+      trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-09-31:A:aprovada"] }, agora),
+      [],
+      "dia inexistente (Date.parse aceita 31/09)",
+    );
   });
 
   it("#10909: sincronizarEspelho entrega a aoConcluirJanela TODAS as chaves ignoradas da janela, conhecidas inclusive", async () => {
