@@ -1564,6 +1564,12 @@ async function runPostSelectRender(deps: Stage1RunDeps, opts: Stage1RunOptions, 
     return baseResult("post-select-render", 2, report, { editionDir, categorizedPath, mdPath, haltRequired: { stage: "1 — Pesquisa", reason, action } });
   }
 
+  // #10792: aviso de mérito chega ao relatório ANTES da apresentação do gate 1.
+  const merit = deps.exec("scripts/check-invariants.ts", ["--stage", "1", "--rule", "top3-merit-warning", "--edition-dir", `${editionDir}/`]);
+  const meritResult = parseStepJson<{ violations?: Array<{ message: string }> }>(merit.stdout);
+  for (const warning of meritResult?.violations ?? []) report.note(`⚠️  ${warning.message}`);
+  if (merit.code !== 0) report.note("⚠️  top3-merit-warning: falha ao consultar mérito; seguindo sem bloquear o gate.");
+
   // --- §1w-ter payload sizes (informativo) ---
   softStep(deps, report, "log-stage-1-payload-sizes (1w-ter)", "scripts/log-stage-1-payload-sizes.ts", ["--edition", opts.edition]);
 

@@ -38,8 +38,8 @@ describe("scorer-select — regras de ordem/seleção do #9883", () => {
 
   it("a regra de ordem não revoga o invariante de impacto negativo (#3916)", () => {
     const idx = txt.indexOf("Score não é a ordem (#9883");
-    const block = txt.slice(idx, idx + 3000);
-    assert.match(block, /não muda quais 6 entram nem o passo 3/);
+    const block = txt.slice(idx, idx + 4000);
+    assert.match(block, /não muda quais 3 ou quais 6 entram nem o passo 3/);
   });
 
   it("o desempate do #5809 não libera mais levantamento de percentual como D1", () => {
@@ -71,8 +71,10 @@ describe("peso por categoria na ordem e no desempate do D1 (#10165/#10166)", () 
   it("scorer-select tem a regra e preserva os invariantes", () => {
     const txt = read("scorer-select.md");
     assert.match(txt, /Peso por categoria \(#10165\/#10166/);
-    assert.match(txt, /`bucket: lancamento` ou de regulação[^\n]*ANTES de destaque de pesquisa ou mercado/);
-    assert.match(txt, /nada disso muda quais 6 entram/);
+    assert.match(txt, /desempate puro/);
+    assert.match(txt, /3 melhores por mérito/);
+    assert.match(txt, /Medir mais 10 edições/);
+    assert.match(txt, /não muda quais 3 ou quais 6 entram/);
     assert.match(txt, /vem ANTES deste desempate de estilo/);
   });
 
@@ -80,7 +82,7 @@ describe("peso por categoria na ordem e no desempate do D1 (#10165/#10166)", () 
     const txt = read("scorer.md");
     const idx = txt.indexOf("Peso por categoria (#10165/#10166");
     assert.ok(idx > 0);
-    assert.match(txt.slice(idx, idx + 400), /vencem este peso[\s\S]*Não muda o passo 5/);
+    assert.match(txt.slice(idx, idx + 900), /desempate puro[\s\S]*Não muda o passo 5/);
     const before = txt.slice(0, idx);
     assert.equal(
       (before.match(/CALIBRATED:[a-z_]+:start/g) ?? []).length,

@@ -121,7 +121,7 @@ import {
   intentionalErrorJsonPath,
   scanWrongValueAdoption, // #7324
 } from "../intentional-errors.ts";
-import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
+import { checkHasNegativeImpactHighlight, checkTop3Merit } from "./stage-1.ts"; // #3916, #3918
 import { detectSponsoredMarkers } from "../lint-checks/sponsored-source-markers.ts"; // #10169
 import { loadCachedBody } from "../url-body-cache.ts"; // #10169
 import { hero2x1KeyFor, isDestaqueImagePresent } from "../shared/public-image-keys.ts"; // #7399, extraído em #7596
@@ -3699,6 +3699,11 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#2878",
     stage: 4,
     run: checkCaptureFailedSubmissionCount,
+  },
+  {
+    id: "top3-merit-warning",
+    description: "item fora do top-3 com score ≥ maior do trio (warning-only)",
+    source_issue: "#10792", stage: 4, run: checkTop3Merit,
   },
   {
     id: "has-negative-impact-highlight",

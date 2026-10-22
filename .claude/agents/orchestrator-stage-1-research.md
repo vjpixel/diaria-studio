@@ -691,6 +691,7 @@ Chamada idempotente — reapresentações (após "rejeitar e re-rodar") não sob
    - `lancamentosWarnings` (do enrich-primary-source)
    - `validateOutput.assertions` (do 1w-bis, status=warn)
    - `payload sizes` (do 1w-ter)
+   - `top3-merit-warning` (#10792) — apresentar o aviso determinístico de item fora do top-3 com score ≥ maior do trio; é somente aviso, sem reordenar. O runner já o inclui nas notas pré-gate. No caminho manual, rodar `npx tsx scripts/check-invariants.ts --stage 1 --rule top3-merit-warning --edition-dir {EDITION_DIR}` e mostrar as violações.
    - `same_fact_warnings` (do 1w-quint-b, #9100) — **apresentar PRIMEIRO e destacado**: produto+versão em comum com um DESTAQUE recente (ex: "Sonnet 5.5"), candidato a destaque ou pool. Desde #9595 também `evidence: "numbers"` — candidato a destaque com ≥2 cifras distintivas em comum (`shared_numbers`) com um destaque recente: a mesma história de outro veículo (ex: "554 deepfakes", Lula 379/Flávio 190). Alta precisão; só sinaliza, o editor decide trocar/remover. Em `--auto` o aviso dos destaques aprovados sai nas notas do `stage-1-run.ts` pós-gate. Desde #9100, mostrar também `_internal/01-same-fact-demoted.json` (`demoted[]`): itens já rebaixados do top-3 por MESMO FATO, que seguem no pool — o editor pode promovê-los de volta se for ângulo novo.
    - `repeatTheme` (do 1w-quint-b, se houver)
    - `editorSubmittedLost` (do 1l, se houver — item 4a do gate)

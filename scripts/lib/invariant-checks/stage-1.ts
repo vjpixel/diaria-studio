@@ -270,6 +270,50 @@ function isNegativeImpactHighlight(h: HighlightLike): boolean {
   return false;
 }
 
+/** #10792: aviso pós-seleção; nunca reordena ou muda a seleção do editor. */
+export function checkTop3Merit(editionDir: string): InvariantViolation[] {
+  const scoredPath = resolve(editionDir, "_internal", "tmp-scored.json");
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  const read = (path: string): ApprovedJson | null => {
+    try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
+  };
+  const scored = read(scoredPath);
+  const selected = read(approvedPath) ?? scored;
+  if (!selected || !Array.isArray(selected.highlights)) return [];
+  const top = selected.highlights.slice(0, 3);
+  const score = (h: HighlightLike): number | undefined =>
+    typeof h.score === "number" && Number.isFinite(h.score) ? h.score : undefined;
+  const url = (h: HighlightLike) => h.article?.url ?? h.url;
+  const scores = top.map(score);
+  if (top.length < 2 || scores.some(s => s === undefined)) return [];
+  const max = Math.max(...scores as number[]);
+  const urls = new Set(top.map(url).filter(Boolean));
+  const pool: HighlightLike[] = [];
+  for (const data of [selected, scored]) {
+    if (!data) continue;
+    for (const key of ["highlights", "runners_up", "all_scored", "lancamento", "radar"]) {
+      const items = data[key];
+      if (Array.isArray(items)) pool.push(...items);
+    }
+  }
+  const seen = new Set<string>();
+  const offenders = pool.filter(h => {
+    const key = url(h);
+    const value = score(h);
+    if (!key || urls.has(key) || seen.has(key) || value === undefined || value < max || h.bucket === "use_melhor" || isPlaceholderTitleHighlight(h)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!offenders.length) return [];
+  return [{
+    rule: "top3-merit-warning", source_issue: "#10792", severity: "warning",
+    file: existsSync(approvedPath) ? approvedPath : scoredPath,
+    message: `Item fora do top-3 com score ≥ maior score do top-3 (${max}): ` +
+      offenders.map(h => `${h.article?.title ?? h.title ?? url(h)} (${h.score})`).join("; ") +
+      ". Confira seleção por mérito antes da ordem editorial; a decisão continua com o editor.",
+  }];
+}
+
 function checkHasNegativeImpactHighlight(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "01-approved.json");
   if (!existsSync(path)) return []; // coberto por approved-exists
@@ -545,6 +589,11 @@ export const STAGE_1_RULES: InvariantRule[] = [
     source_issue: "#3436",
     stage: 1,
     run: checkNoUseMelhorHighlights,
+  },
+  {
+    id: "top3-merit-warning",
+    description: "item fora do top-3 com score ≥ maior do trio (warning-only)",
+    source_issue: "#10792", stage: 1, run: checkTop3Merit,
   },
   {
     id: "has-negative-impact-highlight",
