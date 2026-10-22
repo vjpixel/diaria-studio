@@ -15,7 +15,8 @@
  * ## `--dry-run` (default seguro)
  *
  * Lê a edição (`02-reviewed.md`), deriva título/descrição/tags do D1, decide
- * o agendamento (06:00 BRT do dia da edição, ou na hora se já passou) e
+ * o agendamento (06:00 BRT do dia da edição, ou na hora se já passou ou
+ * faltam menos de 15 min, #10875) e
  * imprime o request de `videos.insert` + o passo de `thumbnails.set` como
  * JSON — SEM chamar a API e sem escrever nada.
  *
@@ -23,7 +24,8 @@
  *
  * Mesmo plano, enviado de verdade (`scripts/lib/diaria/youtube-upload.ts`):
  * refresh token → confere o canal (`YOUTUBE_CHANNEL_ID`) → `videos.insert`
- * resumable com `privacyStatus`/`publishAt` do plano → `thumbnails.set` com
+ * resumable com `privacyStatus`/`publishAt` do plano (PUT dos bytes retomado
+ * na mesma sessão em falha transitória, #10875) → `thumbnails.set` com
  * a capa (falha aqui não desfaz o vídeo) → releitura do `status` normalizada
  * por `resolveYouTubeState` (#573). Grava o resultado em
  * `_internal/05-youtube-published.json`; com esse registro presente, um novo
