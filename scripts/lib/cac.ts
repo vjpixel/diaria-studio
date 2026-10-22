@@ -428,6 +428,46 @@ export interface CacBoostRow {
 
 export type CacRow = CacMeasuredRow | CacBoostRow;
 
+/** Totais de UM canal somando todas as suas linhas `measured`. */
+export interface CacChannelTotals {
+  canal: string;
+  gasto: number;
+  cadastros: number;
+  ativos: number;
+  leitores: number;
+  /** Quantas linhas `measured` foram somadas (≥ 1). */
+  linhas: number;
+}
+
+/**
+ * Agrega as linhas `measured` de `CacReport.rows` por canal (#10775).
+ *
+ * Desde #10679 um canal pode ter VÁRIAS linhas `measured` — uma por mês de
+ * gasto (coorte particionada), e também uma por sub-canal. Consumidor que
+ * indexa por `row.canal` com `map.set`/atribuição fica só com a ÚLTIMA linha
+ * (ex.: Meta Ads com 418 cadastros em 2026-09 e 2 em 2026-10 virava "2
+ * cadastros"). Todo consumidor que quer o valor POR CANAL deve passar por
+ * aqui. Linhas `boost-estimate` ficam de fora (não têm cadastros medidos).
+ * Ordem de inserção = ordem da 1ª aparição do canal em `rows`. @pure
+ */
+export function aggregateMeasuredRowsByCanal(rows: readonly CacRow[]): Map<string, CacChannelTotals> {
+  const byCanal = new Map<string, CacChannelTotals>();
+  for (const row of rows) {
+    if (row.kind !== "measured") continue;
+    const acc = byCanal.get(row.canal) ?? { canal: row.canal, gasto: 0, cadastros: 0, ativos: 0, leitores: 0, linhas: 0 };
+    // `?.`: linhas montadas à mão (fixtures, callers que só olham cadastros)
+    // podem vir sem `spend` — um consumidor de cadastros não pode quebrar por
+    // causa de um campo que não usa.
+    acc.gasto += row.spend?.valor ?? 0;
+    acc.cadastros += row.cadastros;
+    acc.ativos += row.ativos;
+    acc.leitores += row.leitores;
+    acc.linhas += 1;
+    byCanal.set(row.canal, acc);
+  }
+  return byCanal;
+}
+
 /** Gasto de `spend.csv` cujo canal (ou canal/subcanal) não bateu com nenhuma
  *  spec de `CHANNEL_KEY_SPECS` nem com a string exata `"Beehiiv Boosts"`
  *  (#5860). `label` é o mesmo formato de `spendChannelLabel` (inclui
@@ -669,13 +709,20 @@ function resolveChannelSubs(
 
 const SPEND_MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
-/** Início (epoch segundos, UTC — mesma convenção de `parseSinceToEpochSeconds`)
- *  do mês `AAAA-MM`; `null` quando `mes` não é um mês único válido (a coluna
- *  é livre, ver `SpendRow.mes`). @pure */
-function spendMonthStartEpoch(mes: string): number | null {
+/** Offset de BRT (America/Sao_Paulo) em horas a somar ao UTC pra chegar à
+ *  meia-noite local — fixo em -03:00, sem horário de verão desde 2019 (mesma
+ *  premissa de `ads-rolling-window.ts`/`ads-test-pause-window.ts`). */
+const BRT_MIDNIGHT_UTC_HOUR = 3;
+
+/** Início (epoch segundos) do mês `AAAA-MM` no fuso da conta de anúncios:
+ *  dia 1 às 00:00 BRT = 03:00 UTC (#10695). Os meses de `spend.csv` seguem o
+ *  fuso da conta (BRT); com a virada em UTC, um cadastro de 21:00–23:59 BRT
+ *  do último dia do mês caía na linha do mês seguinte. `null` quando `mes`
+ *  não é um mês único válido (a coluna é livre, ver `SpendRow.mes`). @pure */
+export function spendMonthStartEpoch(mes: string): number | null {
   const m = SPEND_MONTH_RE.exec(mes);
   if (!m) return null;
-  return Date.UTC(Number(m[1]), Number(m[2]) - 1, 1) / 1000;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, 1, BRT_MIDNIGHT_UTC_HOUR) / 1000;
 }
 
 /**
