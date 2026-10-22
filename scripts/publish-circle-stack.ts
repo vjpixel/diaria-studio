@@ -16,20 +16,21 @@
  *      arquivo já existe, é REUSADO (preserva ajustes manuais e `stackNote`
  *      escritos depois) — `--reselect` refaz do zero.
  *   3. Renderiza `data/weekly/{cycle}/circle-stack-{cycle}.html`.
- *   4. Só com `--publish`: cria o post via Admin API v2, com o status de
- *      `circle_stack.status` (default `draft`) ou `--status`. Idempotente por
- *      ciclo via `_internal/circle-stack-published.json` (`--force` sobrepõe).
+ *   4. Só com `--publish`: envia ao webhook n8n da Stack
+ *      (`scripts/lib/stack-webhook.ts`), que
+ *      publica NA HORA — não há rascunho. Idempotente por ciclo via
+ *      `_internal/circle-stack-published.json` (`--force` sobrepõe).
  *
- * `--list-spaces` lista os espaços visíveis ao token — use uma vez pra achar
- * o `space_id` do Radar e gravar em `circle_stack.space_id`.
+ * `--hello` envia um post curto de teste ("Olá, mundo") — também publicado
+ * na hora; combine com a Stack antes, eles acompanham o 1º envio.
  *
- * Token: `CIRCLE_STACK_API_TOKEN` (Doppler/.env).
+ * Doppler/.env: `STACK_WEBHOOK_URL` (URL do webhook n8n — fora do repo, que é
+ * público) e `STACK_WEBHOOK_KEY` (enviado em `X-Webhook-Key`).
  *
  * Uso:
  *   npx tsx scripts/publish-circle-stack.ts --publish-monday 261026
- *   npx tsx scripts/publish-circle-stack.ts --publish-monday 261026 --publish [--status published]
- *   npx tsx scripts/publish-circle-stack.ts --list-spaces
- *   npx tsx scripts/publish-circle-stack.ts --hello [--status published]   (post de teste "Olá, mundo")
+ *   npx tsx scripts/publish-circle-stack.ts --publish-monday 261026 --publish
+ *   npx tsx scripts/publish-circle-stack.ts --hello   (post de teste "Olá, mundo")
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
  */
 
@@ -44,13 +45,7 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
 import { parseDestaques } from "./extract-destaques.ts";
-import {
-  createCirclePost,
-  listCircleSpaces,
-  buildCreatePostPayload,
-  type CircleAuthScheme,
-  type CirclePostStatus,
-} from "./lib/circle-api.ts";
+import { buildStackPostPayload, sendStackPost, STACK_WEBHOOK_KEY_ENV, STACK_WEBHOOK_URL_ENV } from "./lib/stack-webhook.ts";
 import {
   selectCircleStack,
   parseInterestProfile,
@@ -67,43 +62,24 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-export const CIRCLE_STACK_TOKEN_ENV = "CIRCLE_STACK_API_TOKEN";
-
 export interface CircleStackConfig {
   enabled: boolean;
-  baseUrl?: string;
-  authScheme: CircleAuthScheme;
-  spaceId: number | null;
-  authorEmail: string | null;
-  status: CirclePostStatus;
-  isCommentsEnabled: boolean;
-  skipNotifications: boolean;
   subscribeUrl: string | null;
   interests: InterestTerm[];
 }
 
-const VALID_STATUS: CirclePostStatus[] = ["draft", "published"];
-
-/** Pure: lê o bloco `circle_stack` do config, com defaults conservadores (rascunho). */
+/** Pure: lê o bloco `circle_stack` do config. */
 export function resolveCircleStackConfig(platformConfig: Record<string, unknown>): CircleStackConfig {
   const raw = (platformConfig.circle_stack ?? {}) as Record<string, unknown>;
-  const status = (raw.status ?? "draft") as CirclePostStatus;
-  if (!VALID_STATUS.includes(status)) throw new Error(`circle_stack.status inválido: ${String(raw.status)}`);
-  const scheme = (raw.auth_scheme ?? "auto") as CircleAuthScheme;
-  if (!["auto", "Token", "Bearer"].includes(scheme)) throw new Error(`circle_stack.auth_scheme inválido: ${String(raw.auth_scheme)}`);
   return {
     enabled: raw.enabled !== false,
-    baseUrl: typeof raw.base_url === "string" ? raw.base_url : undefined,
-    authScheme: scheme,
-    spaceId: typeof raw.space_id === "number" ? raw.space_id : null,
-    authorEmail: typeof raw.author_email === "string" && raw.author_email ? raw.author_email : null,
-    status,
-    isCommentsEnabled: raw.is_comments_enabled !== false,
-    skipNotifications: raw.skip_notifications === true,
     subscribeUrl: typeof raw.subscribe_url === "string" && raw.subscribe_url ? raw.subscribe_url : null,
     interests: parseInterestProfile(raw.interests) ?? STACK_INTEREST_PROFILE,
   };
 }
+
+/** Pure: post curto de teste combinado com a Stack (1º envio). */
+export const HELLO_POST = { titulo: "Olá, mundo", corpo: "Olá, mundo. Teste de publicação da **diar.ia.br** no Radar de Notícias Stack." };
 
 interface EditionRead {
   date: string;
@@ -181,33 +157,13 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const platformConfig = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const cfg = resolveCircleStackConfig(platformConfig);
-  const token = process.env[CIRCLE_STACK_TOKEN_ENV] ?? "";
-  const client = { token, baseUrl: cfg.baseUrl, authScheme: cfg.authScheme };
-
-  if (hasFlag(argv, "list-spaces")) {
-    if (!token) throw new Error(`${CIRCLE_STACK_TOKEN_ENV} ausente`);
-    const spaces = await listCircleSpaces(client);
-    for (const s of spaces) console.log(`${s.id}\t${s.slug}\t${s.name}`);
-    if (spaces.length === 0) console.log("Nenhum espaço visível para este token.");
-    return;
-  }
+  const key = process.env[STACK_WEBHOOK_KEY_ENV] ?? "";
+  const webhookUrl = process.env[STACK_WEBHOOK_URL_ENV] ?? "";
 
   if (hasFlag(argv, "hello")) {
-    // Teste de conectividade (#10904): um post "Olá, mundo" no espaço, sem notificar os membros.
-    if (!token) throw new Error(`${CIRCLE_STACK_TOKEN_ENV} ausente (Doppler/.env)`);
-    if (!cfg.spaceId) throw new Error("circle_stack.space_id não configurado — rode --list-spaces e grave o id no platform.config.json");
-    const statusArg = getStringArg(argv, "status") as CirclePostStatus | undefined;
-    if (statusArg && !VALID_STATUS.includes(statusArg)) throw new Error(`--status inválido: ${statusArg}`);
-    const result = await createCirclePost(client, {
-      spaceId: cfg.spaceId,
-      name: "Olá, mundo",
-      html: "<p>Olá, mundo. Teste de publicação da diar.ia.br.</p>",
-      status: statusArg ?? cfg.status,
-      userEmail: cfg.authorEmail ?? undefined,
-      skipNotifications: true,
-    });
-    console.log(`Post de teste criado: id=${result.id ?? "?"} status=${result.status ?? "?"} ${result.url ?? ""}`);
-    console.log(JSON.stringify(result.raw, null, 2).slice(0, 2000));
+    if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
+    await sendStackPost(webhookUrl, key, buildStackPostPayload(HELLO_POST.titulo, HELLO_POST.corpo));
+    console.log(`Post de teste publicado no Radar de Notícias Stack: "${HELLO_POST.titulo}"`);
     return;
   }
 
@@ -238,52 +194,31 @@ async function main(): Promise<void> {
     subscribeUrl: cfg.subscribeUrl ?? undefined,
   });
 
-  const statusArg = getStringArg(argv, "status") as CirclePostStatus | undefined;
-  if (statusArg && !VALID_STATUS.includes(statusArg)) throw new Error(`--status inválido: ${statusArg}`);
-  const status = statusArg ?? cfg.status;
+  const mdPath = join(cycleDir, `circle-stack-${cycle}.md`);
+  writeFileAtomic(mdPath, `# ${rendered.title}
 
-  const htmlPath = join(cycleDir, `circle-stack-${cycle}.html`);
-  writeFileAtomic(htmlPath, rendered.html);
-
-  const postInput = {
-    spaceId: cfg.spaceId ?? 0,
-    name: rendered.title,
-    html: rendered.html,
-    status,
-    userEmail: cfg.authorEmail ?? undefined,
-    isCommentsEnabled: cfg.isCommentsEnabled,
-    skipNotifications: cfg.skipNotifications,
-  };
+${rendered.markdown}
+`);
+  const payload = buildStackPostPayload(rendered.title, rendered.markdown);
 
   if (!hasFlag(argv, "publish")) {
-    const preview = cfg.spaceId ? buildCreatePostPayload(postInput) : { ...postInput, spaceId: "(circle_stack.space_id não configurado)" };
-    writeFileAtomic(join(cycleDir, "_internal", "circle-stack-payload.json"), JSON.stringify(preview, null, 2));
+    writeFileAtomic(join(cycleDir, "_internal", "circle-stack-payload.json"), JSON.stringify(payload, null, 2));
     console.log(`[dry-run] ${rendered.title}`);
     console.log(`[dry-run] Seleção: ${selectionPath}`);
-    console.log(`[dry-run] HTML: ${htmlPath}`);
-    console.log(`[dry-run] status que seria usado: ${status}. Passe --publish para criar o post.`);
+    console.log(`[dry-run] Prévia: ${mdPath}`);
+    console.log("[dry-run] Passe --publish para enviar (o post sai PUBLICADO na hora).");
     return;
   }
 
   if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
-  if (!token) throw new Error(`${CIRCLE_STACK_TOKEN_ENV} ausente (Doppler/.env)`);
-  if (!cfg.spaceId) throw new Error("circle_stack.space_id não configurado — rode --list-spaces e grave o id no platform.config.json");
-
   const statePath = join(cycleDir, "_internal", "circle-stack-published.json");
   if (existsSync(statePath) && !hasFlag(argv, "force")) {
-    throw new Error(`Ciclo ${cycle} já publicado no Circle (${statePath}). Use --force para publicar de novo.`);
+    throw new Error(`Ciclo ${cycle} já publicado na Stack (${statePath}). Use --force para publicar de novo.`);
   }
 
-  const result = await createCirclePost(client, postInput);
-  writeFileAtomic(
-    statePath,
-    JSON.stringify(
-      { cycle, post_id: result.id, url: result.url, status: result.status ?? status, title: rendered.title, created_at: new Date().toISOString() },
-      null,
-      2,
-    ),
-  );
-  console.log(`Post criado no Circle: id=${result.id ?? "?"} status=${result.status ?? status} ${result.url ?? ""}`);
+  await sendStackPost(webhookUrl, key, payload);
+  writeFileAtomic(statePath, JSON.stringify({ cycle, title: rendered.title, published_at: new Date().toISOString() }, null, 2));
+  console.log(`Publicado no Radar de Notícias Stack: ${rendered.title}`);
 }
 
 if (isMainModule(import.meta.url)) {

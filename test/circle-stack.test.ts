@@ -8,12 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import {
-  buildCreatePostPayload,
-  createCirclePost,
-  parsePostResponse,
-  parseSpacesResponse,
-} from "../scripts/lib/circle-api.ts";
+import { buildStackPostPayload, sendStackPost } from "../scripts/lib/stack-webhook.ts";
 import {
   renderCircleStackPost,
   circleStackTitle,
@@ -43,122 +38,107 @@ const selection: CircleStackSelection = {
   weeklyEditions: [{ editionDate: "261013", url: "https://diar.ia.br/p/gemini", destaques: ["A", "B", "C"] }],
 };
 
-describe("buildCreatePostPayload", () => {
-  it("monta o corpo mínimo e omite opcionais não definidos", () => {
-    const p = buildCreatePostPayload({ spaceId: 42, name: "T", html: "<p>x</p>", status: "draft" });
-    assert.deepEqual(p, { space_id: 42, name: "T", body: "<p>x</p>", status: "draft" });
+describe("buildStackPostPayload", () => {
+  it("monta titulo/corpo", () => {
+    assert.deepEqual(buildStackPostPayload("T", "**x**"), { titulo: "T", corpo: "**x**" });
   });
-
-  it("inclui autor, comentários e notificações quando definidos", () => {
-    const p = buildCreatePostPayload({
-      spaceId: 1, name: "T", html: "<p>x</p>", status: "published",
-      userEmail: "a@b.c", isCommentsEnabled: false, skipNotifications: true,
-    });
-    assert.equal(p.user_email, "a@b.c");
-    assert.equal(p.is_comments_enabled, false);
-    assert.equal(p.skip_notifications, true);
-  });
-
-  it("recusa space_id ausente, corpo vazio e agendado sem data", () => {
-    assert.throws(() => buildCreatePostPayload({ spaceId: 0, name: "T", html: "x", status: "draft" }), /space_id/);
-    assert.throws(() => buildCreatePostPayload({ spaceId: 1, name: "T", html: "  ", status: "draft" }), /vazio/);
-    assert.throws(() => buildCreatePostPayload({ spaceId: 1, name: "T", html: "x", status: "scheduled" }), /publishedAt/);
+  it("recusa vazio, HTML e imagem (o webhook remove/recusa)", () => {
+    assert.throws(() => buildStackPostPayload(" ", "x"), /Título/);
+    assert.throws(() => buildStackPostPayload("T", "<p>x</p>"), /HTML/);
+    assert.throws(() => buildStackPostPayload("T", "![a](https://x/a.png)"), /imagem/);
   });
 });
 
-describe("createCirclePost — esquema de auth", () => {
-  function fakeFetch(statusByScheme: Record<string, number>, seen: string[]) {
-    return (async (_url: string, init: RequestInit) => {
-      const auth = (init.headers as Record<string, string>).Authorization;
-      seen.push(auth);
-      const scheme = auth.split(" ")[0];
-      const status = statusByScheme[scheme] ?? 500;
-      return new Response(status === 200 ? JSON.stringify({ post: { id: 7, url: "https://u", status: "draft" } }) : "nope", { status });
+describe("sendStackPost", () => {
+  const url = "https://n8n.example/webhook/x";
+  function fake(status: number, body: string, seen: RequestInit[] = []) {
+    return (async (_u: string, init: RequestInit) => {
+      seen.push(init);
+      return new Response(body, { status });
     }) as unknown as typeof fetch;
   }
-  const input = { spaceId: 1, name: "T", html: "<p>x</p>", status: "draft" as const };
+  const payload = { titulo: "T", corpo: "c" };
 
-  it("auto: tenta Token e cai pra Bearer só em 401", async () => {
-    const seen: string[] = [];
-    const r = await createCirclePost({ token: "k" }, input, fakeFetch({ Token: 401, Bearer: 200 }, seen));
-    assert.deepEqual(seen, ["Token k", "Bearer k"]);
-    assert.equal(r.id, 7);
+  it("200 com ok:true é sucesso e manda a chave no header", async () => {
+    const seen: RequestInit[] = [];
+    await sendStackPost(url, "k", payload, fake(200, '{"ok": true}', seen));
+    assert.equal((seen[0].headers as Record<string, string>)["X-Webhook-Key"], "k");
+    assert.deepEqual(JSON.parse(seen[0].body as string), payload);
   });
-
-  it("auto: erro que não é 401 não troca de esquema", async () => {
-    const seen: string[] = [];
-    await assert.rejects(createCirclePost({ token: "k" }, input, fakeFetch({ Token: 422 }, seen)), /HTTP 422/);
-    assert.deepEqual(seen, ["Token k"]);
+  it("200 sem ok:true não confirma publicação", async () => {
+    await assert.rejects(sendStackPost(url, "k", payload, fake(200, "{}")), /não confirmada/);
+    await assert.rejects(sendStackPost(url, "k", payload, fake(200, "aceito")), /não confirmada/);
   });
-
-  it("esquema fixo não faz fallback", async () => {
-    const seen: string[] = [];
-    await assert.rejects(createCirclePost({ token: "k", authScheme: "Token" }, input, fakeFetch({ Token: 401 }, seen)), /HTTP 401/);
-    assert.equal(seen.length, 1);
+  it("502 vira erro do Circle; outro status vira HTTP", async () => {
+    await assert.rejects(sendStackPost(url, "k", payload, fake(502, "")), /Circle recusou/);
+    await assert.rejects(sendStackPost(url, "k", payload, fake(401, "")), /HTTP 401/);
   });
-});
-
-describe("parsers de resposta", () => {
-  it("parsePostResponse aceita post aninhado ou na raiz", () => {
-    assert.equal(parsePostResponse({ post: { id: 3 } }).id, 3);
-    assert.equal(parsePostResponse({ id: 4, url: "x" }).url, "x");
-    assert.equal(parsePostResponse(null).id, null);
-  });
-  it("parseSpacesResponse lê records", () => {
-    assert.deepEqual(parseSpacesResponse({ records: [{ id: 9, name: "Radar", slug: "radar" }, { name: "sem id" }] }), [
-      { id: 9, name: "Radar", slug: "radar" },
-    ]);
+  it("sem URL, URL http ou sem chave não chama a rede", async () => {
+    const seen: RequestInit[] = [];
+    await assert.rejects(sendStackPost("", "k", payload, fake(200, '{"ok":true}', seen)), /STACK_WEBHOOK_URL/);
+    await assert.rejects(sendStackPost("http://x", "k", payload, fake(200, '{"ok":true}', seen)), /https/);
+    await assert.rejects(sendStackPost(url, "", payload, fake(200, '{"ok":true}', seen)), /STACK_WEBHOOK_KEY/);
+    assert.equal(seen.length, 0);
   });
 });
 
 describe("renderCircleStackPost", () => {
-  const { title, html } = renderCircleStackPost(selection);
+  const { title, markdown: md } = renderCircleStackPost(selection);
 
   it("título cobre segunda a sexta da semana de conteúdo", () => {
     assert.equal(title, "Radar de Notícias Stack — semana de 12/10 a 16/10");
     assert.equal(circleStackTitle(["261012"]), "Radar de Notícias Stack — semana de 12/10 a 12/10");
   });
 
-  it("título do destaque literal (escapado) e abertura default", () => {
-    assert.match(html, /<h3>Gemini vira colega com e-mail &amp; agenda<\/h3>/);
-    assert.ok(html.includes(DEFAULT_CIRCLE_STACK_OPENING));
+  it("sai em Markdown, sem nenhuma tag HTML", () => {
+    assert.ok(!/<\/?[a-z][^>]*>/i.test(md));
+    assert.doesNotThrow(() => buildStackPostPayload(title, md));
+  });
+
+  it("título do destaque literal e abertura default", () => {
+    assert.ok(md.includes("### Gemini vira colega com e-mail & agenda"));
+    assert.ok(md.includes(DEFAULT_CIRCLE_STACK_OPENING));
   });
 
   it("'Por que isso importa:' em parágrafo próprio, só quando há why", () => {
-    assert.equal((html.match(/Por que isso importa:/g) ?? []).length, 1);
-    assert.match(html, /<p><strong>Por que isso importa:<\/strong><\/p>\n<p>Porque sim.<\/p>/);
+    assert.equal((md.match(/Por que isso importa:/g) ?? []).length, 1);
+    assert.ok(md.includes("**Por que isso importa:**\n\nPorque sim."));
   });
 
   it("fonte sem UTM; edição e CTA com UTM stack/circle", () => {
-    assert.ok(html.includes('href="https://cloud.google.com/blog/x"'));
-    assert.ok(html.includes(buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao").replace(/&/g, "&amp;")));
-    assert.ok(html.includes("utm_content=cta-fim"));
-    assert.ok(html.includes("utm_campaign=stack-26w42"));
+    assert.ok(md.includes("[Leia na fonte](https://cloud.google.com/blog/x)"));
+    assert.ok(md.includes(`(${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})`));
+    assert.ok(md.includes("utm_content=cta-fim"));
   });
 
   it("destaque sem edição correspondente sai só com link da fonte", () => {
-    assert.ok(!html.includes("Na edição de 99/10"));
+    assert.ok(!md.includes("Na edição de 99/10"));
   });
 
-  it("nunca usa seta em link ou CTA (#9721)", () => {
-    assert.ok(!/[→←]/.test(html));
-  });
-
-  it("subscribeUrl alternativo entra sem UTM adicionada", () => {
-    const r = renderCircleStackPost(selection, { subscribeUrl: "https://go.pm3.com.br/x" });
-    assert.ok(r.html.includes('href="https://go.pm3.com.br/x"'));
-    assert.ok(!r.html.includes("utm_content=cta-fim"));
+  it("nunca usa seta (#9721)", () => {
+    assert.ok(!/[→←]/.test(md));
   });
 
   it("stackNote substitui a descrição no item de lista; seção vazia some", () => {
-    assert.ok(html.includes('<h2>Lançamentos e ferramentas</h2>\n<ul>\n<li><a href="https://ex.com/l">Lovable 3</a><br>Nota para builders.</li>'));
-    assert.ok(!html.includes("<h2>Radar</h2>"));
+    assert.ok(md.includes("## Lançamentos e ferramentas\n\n- [Lovable 3](https://ex.com/l): Nota para builders."));
+    assert.ok(!md.includes("## Radar"));
   });
 
   it("stackNote no destaque substitui o por que importa da edição", () => {
     const r = renderCircleStackPost({ ...selection, destaques: [item({ why: "Original.", stackNote: "Para quem constrói." })] });
-    assert.ok(r.html.includes("<p>Para quem constrói.</p>"));
-    assert.ok(!r.html.includes("Original."));
+    assert.ok(r.markdown.includes("Para quem constrói."));
+    assert.ok(!r.markdown.includes("Original."));
+  });
+
+  it("colchetes no rótulo e parênteses na URL não quebram o link", () => {
+    const r = renderCircleStackPost({ ...selection, lancamentos: [item({ title: "Modelo [beta]", url: "https://ex.com/a_(b)", body: "" })] });
+    assert.ok(r.markdown.includes("- [Modelo (beta)](https://ex.com/a_%28b%29)"));
+  });
+
+  it("subscribeUrl alternativo entra sem UTM adicionada", () => {
+    const r = renderCircleStackPost(selection, { subscribeUrl: "https://go.pm3.com.br/x" });
+    assert.ok(r.markdown.includes("(https://go.pm3.com.br/x)"));
+    assert.ok(!r.markdown.includes("utm_content=cta-fim"));
   });
 
   it("seleção sem destaques é erro", () => {
@@ -166,16 +146,7 @@ describe("renderCircleStackPost", () => {
   });
 });
 
-describe("config e ciclo", () => {
-  it("defaults conservadores: rascunho, auth auto", () => {
-    const c = resolveCircleStackConfig({});
-    assert.equal(c.status, "draft");
-    assert.equal(c.authScheme, "auto");
-    assert.equal(c.spaceId, null);
-  });
-  it("status inválido é erro", () => {
-    assert.throws(() => resolveCircleStackConfig({ circle_stack: { status: "scheduled" } }), /status/);
-  });
+describe("config", () => {
   it("interests do config substituem o perfil default; inválido é erro", () => {
     const c = resolveCircleStackConfig({ circle_stack: { interests: [{ pattern: "foo", weight: 1 }] } });
     assert.deepEqual(c.interests, [{ label: "foo", pattern: "foo", weight: 1 }]);

@@ -1,7 +1,7 @@
 /**
  * circle-stack-render.ts (#10904)
  *
- * Monta o post da edição semanal da diar.ia.br para o espaço "Radar de
+ * Monta (em Markdown) o post da edição semanal da diar.ia.br para o espaço "Radar de
  * Notícias Stack" (Circle da Stack) a partir da seleção por interesse dos
  * alunos (`circle-stack-select.ts`, gravada em
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
@@ -74,7 +74,8 @@ export interface CircleStackRenderOptions {
 
 export interface CircleStackRendered {
   title: string;
-  html: string;
+  /** Corpo em Markdown — o webhook da Stack remove HTML. */
+  markdown: string;
 }
 
 export function circleStackCampaign(cycle: string): string {
@@ -103,70 +104,76 @@ export function circleStackTitle(contentWindow: string[]): string {
   return `Radar de Notícias Stack — semana de ${ddmm(contentWindow[0])} a ${ddmm(contentWindow[contentWindow.length - 1])}`;
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+/** Pure: rótulo de link sem colchetes (quebrariam a sintaxe `[rótulo](url)`). */
+function mdLabel(s: string): string {
+  return s.replace(/\[/g, "(").replace(/\]/g, ")").replace(/\s+/g, " ").trim();
 }
 
+/** Pure: URL segura dentro de `( )` do Markdown. */
+function mdUrl(u: string): string {
+  return u.replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/\s/g, "%20");
+}
+
+function link(href: string, label: string): string {
+  return `[${mdLabel(label)}](${mdUrl(href)})`;
+}
+
+/** Pure: parágrafos separados por linha em branco (o webhook da Stack trata linha em branco como parágrafo). */
 function paragraphs(text: string): string[] {
   return text
     .split(/\n+/)
     .map((p) => p.trim())
-    .filter(Boolean)
-    .map((p) => `<p>${escapeHtml(p)}</p>`);
-}
-
-function link(href: string, label: string): string {
-  return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
+    .filter(Boolean);
 }
 
 function listSection(heading: string, items: CircleStackItem[]): string[] {
   if (items.length === 0) return [];
-  const lis = items.map((it) => {
-    const desc = it.stackNote?.trim() || it.body.trim();
-    return `<li>${link(it.url, it.title)}${desc ? `<br>${escapeHtml(desc)}` : ""}</li>`;
+  const lines = items.map((it) => {
+    const desc = (it.stackNote?.trim() || it.body.trim()).replace(/\s*\n+\s*/g, " ");
+    return `- ${link(it.url, it.title)}${desc ? `: ${desc}` : ""}`;
   });
-  return [`<h2>${escapeHtml(heading)}</h2>`, `<ul>\n${lis.join("\n")}\n</ul>`];
+  return [`## ${heading}`, lines.join("\n")];
 }
 
-/** Pure: monta título + HTML do post. */
+/** Pure: monta título + corpo em Markdown do post (formato aceito pelo webhook da Stack). */
 export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleStackRenderOptions = {}): CircleStackRendered {
   if (sel.destaques.length === 0) throw new Error(`Seleção ${sel.cycle} sem destaques — nada a publicar`);
 
   const editionUrlByDate = new Map(sel.weeklyEditions.map((e) => [e.editionDate, e.url]));
-  const out: string[] = [];
+  const blocks: string[] = [];
 
-  out.push(...paragraphs(opts.opening?.trim() || DEFAULT_CIRCLE_STACK_OPENING));
+  blocks.push(...paragraphs(opts.opening?.trim() || DEFAULT_CIRCLE_STACK_OPENING));
 
-  out.push(`<h2>Destaques da semana</h2>`);
+  blocks.push(`## Destaques da semana`);
   for (const h of sel.destaques) {
-    out.push(`<h3>${escapeHtml(h.title)}</h3>`);
-    out.push(...paragraphs(h.body));
+    blocks.push(`### ${h.title.replace(/\s+/g, " ").trim()}`);
+    blocks.push(...paragraphs(h.body));
     const why = h.stackNote?.trim() || h.why.trim();
-    if (why) out.push(`<p><strong>Por que isso importa:</strong></p>`, ...paragraphs(why));
+    if (why) blocks.push(`**Por que isso importa:**`, ...paragraphs(why));
     const editionUrl = editionUrlByDate.get(h.editionDate);
     const links = [link(h.url, "Leia na fonte")];
     if (editionUrl) {
       links.push(link(buildCircleStackUrl(editionUrl, sel.cycle, "edicao"), `Na edição de ${ddmm(h.editionDate)}`));
     }
-    out.push(`<p>${links.join(" | ")}</p>`);
+    blocks.push(links.join(" | "));
   }
 
-  out.push(...listSection("Lançamentos e ferramentas", sel.lancamentos));
-  out.push(...listSection("Use melhor", sel.useMelhor));
-  out.push(...listSection("Radar", sel.radar));
+  blocks.push(...listSection("Lançamentos e ferramentas", sel.lancamentos));
+  blocks.push(...listSection("Use melhor", sel.useMelhor));
+  blocks.push(...listSection("Radar", sel.radar));
 
   if (sel.weeklyEditions.length > 0) {
-    out.push(`<h2>Edições da semana</h2>`);
-    const items = sel.weeklyEditions.map(
-      (e) =>
-        `<li>${link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate))}: ${escapeHtml(e.destaques.join(" · "))}</li>`,
+    blocks.push(`## Edições da semana`);
+    blocks.push(
+      sel.weeklyEditions
+        .map((e) => `- ${link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate))}: ${e.destaques.join(" · ")}`)
+        .join("\n"),
     );
-    out.push(`<ul>\n${items.join("\n")}\n</ul>`);
   }
 
-  out.push(...paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING));
+  blocks.push(...paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING));
   const subscribeHref = opts.subscribeUrl?.trim() || buildCircleStackUrl(CIRCLE_STACK_SUBSCRIBE_BASE_URL, sel.cycle, "cta-fim");
-  out.push(`<p>${link(subscribeHref, CTA_FIM_LABEL)}</p>`);
+  blocks.push(link(subscribeHref, CTA_FIM_LABEL));
 
-  return { title: circleStackTitle(sel.contentWindow), html: out.join("\n") };
+  return { title: circleStackTitle(sel.contentWindow), markdown: blocks.join("\n\n") };
 }

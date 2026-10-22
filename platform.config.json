@@ -393,15 +393,8 @@
   },
   "circle_stack": {
     "enabled": true,
-    "base_url": "https://app.circle.so",
-    "auth_scheme": "auto",
-    "space_id": null,
-    "author_email": null,
-    "status": "draft",
-    "is_comments_enabled": true,
-    "skip_notifications": false,
     "subscribe_url": null,
-    "note": "#10904 — post semanal no espaco Radar de Noticias Stack (plataforma.stack.com.br, Circle) via scripts/publish-circle-stack.ts. Token em CIRCLE_STACK_API_TOKEN. space_id: descobrir com --list-spaces. status draft ate o 1o teste real; author_email so se o token permitir definir autor (senao sai como o dono do token). subscribe_url null = diar.ia.br com UTM stack/circle."
+    "note": "#10904 — edicao semanal no espaco Radar de Noticias Stack (plataforma.stack.com.br, Circle) via webhook n8n da Stack: scripts/publish-circle-stack.ts. URL e chave fora do repo (publico): STACK_WEBHOOK_URL e STACK_WEBHOOK_KEY no Doppler/.env. O post sai PUBLICADO na hora, sem rascunho; autor e capa definidos pela Stack. Selecao por interesse dos alunos (scripts/lib/circle-stack-select.ts; termos substituiveis por circle_stack.interests). subscribe_url null = diar.ia.br com UTM stack/circle."
   },
   "meta_ads": {
     "campaign_ids": ["52527432124198"],
