@@ -28,7 +28,16 @@
  * de um falso positivo aqui é 1 notificação a mais, nunca um merge indevido
  * nem uma PR escalada ficando muda para sempre).
  *
- * Exit code sempre 0 exceto uso inválido (`--pr` ausente/não-numérico, 2).
+ * `--repo owner/name` (#10901, opcional): a PR mora em outro repo da
+ * allowlist `platform.config.json → issue_repos` (ex.: `vjpixel/diaria-design`).
+ * Toda chamada `gh` (leitura de labels, criação/aplicação do label, marcador
+ * de head) passa a mirar esse repo. Ausente, ou o próprio repo default →
+ * comportamento de sempre (`{owner}/{repo}` e `gh pr view` resolvidos pelo
+ * cwd — o `continuo-pr-review.sh` do Hermes chama sem `--repo`). Fora da
+ * allowlist ou ilegível → uso inválido (exit 2), nunca cai no default.
+ *
+ * Exit code sempre 0 exceto uso inválido (`--pr` ausente/não-numérico,
+ * `--head`/`--repo` inválido, 2).
  *
  * @see scripts/lib/continuo-escalate-owner.ts
  * @see hermes/scripts/continuo-pr-review.sh (ramo `1)` de `try_merge_gate()`)
@@ -39,26 +48,38 @@ import { formatEscalateHeadMarker, isAlreadyEscalated, needsEscalateHeadMarker }
 import { TRUSTED_AUTHOR_JQ_SELECT } from "./lib/trusted-comment-author.ts";
 import { CONTINUO_ESCALATED_LABEL_SPEC, ensureContinuoLabel } from "./lib/continuo-labels.ts";
 import { addPrLabelsRest } from "./lib/gh-pr-safe-edit.ts";
+import { ISSUE_REPOS_CONFIG_ROOT, resolveRepoFlag } from "./lib/issue-repos.ts";
 
 const SHA_RE = /^[0-9a-f]{7,40}$/;
 
-function parseArgs(argv: string[]): { pr: string; head: string | null } | null {
+function parseArgs(argv: string[]): { pr: string; head: string | null; repo: string | undefined } | { error: string } {
   let pr: string | null = null;
   let head: string | null = null;
+  let repoRaw: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--pr") pr = argv[++i] ?? null;
     else if (argv[i] === "--head") head = argv[++i] ?? "";
+    else if (argv[i] === "--repo") repoRaw = argv[++i] ?? "";
   }
-  if (!pr || !/^\d+$/.test(pr)) return null;
-  if (head !== null && !SHA_RE.test(head)) return null;
-  return { pr, head };
+  if (!pr || !/^\d+$/.test(pr)) return { error: "--pr ausente ou não-numérico" };
+  if (head !== null && !SHA_RE.test(head)) return { error: `--head inválido: "${head}"` };
+  // #10901: mesma validação dos gates de PR (allowlist pela raiz do checkout
+  // deste script, nunca pelo cwd).
+  const repo = resolveRepoFlag(repoRaw === undefined ? {} : { repo: repoRaw }, new Set(), ISSUE_REPOS_CONFIG_ROOT);
+  if ("error" in repo) return { error: repo.error };
+  return { pr, head, repo: repo.repo };
+}
+
+/** `repos/{owner}/{repo}` resolvido pelo `gh` via cwd, ou o repo explícito. */
+function apiRepoPath(repo: string | undefined): string {
+  return `repos/${repo ?? "{owner}/{repo}"}`;
 }
 
 /** `null` = `gh` falhou de verdade (rede, auth, PR sumiu) — distinto de "0
  *  labels" (array vazio), que é estado válido, não erro. */
-function fetchLabels(pr: string): string[] | null {
+function fetchLabels(pr: string, repo: string | undefined): string[] | null {
   try {
-    const out = execFileSync("gh", ["pr", "view", pr, "--json", "labels", "--jq", "[.labels[].name]"], {
+    const out = execFileSync("gh", ["pr", "view", pr, ...(repo ? ["-R", repo] : []), "--json", "labels", "--jq", "[.labels[].name]"], {
       encoding: "utf8",
       timeout: 30_000,
     });
@@ -83,15 +104,15 @@ function fetchLabels(pr: string): string[] | null {
  * `firstTime` já foi tomada), mas o motivo da falha agora sai em stderr em
  * vez de sumir, pra `continuo-pr-review.sh` registrar como erro de infra.
  */
-function applyLabel(pr: string): boolean {
+function applyLabel(pr: string, repo: string | undefined): boolean {
   const cwd = process.cwd();
-  const ensured = ensureContinuoLabel(CONTINUO_ESCALATED_LABEL_SPEC, cwd);
+  const ensured = ensureContinuoLabel(CONTINUO_ESCALATED_LABEL_SPEC, cwd, undefined, repo);
   if (!ensured.ok) {
     process.stderr.write(`[check-continuo-escalate-label] ${CONTINUO_ESCALATED_LABEL_SPEC.name}: ${ensured.error}\n`);
     return false;
   }
 
-  const applied = addPrLabelsRest(Number(pr), [CONTINUO_ESCALATED_LABEL_SPEC.name], cwd);
+  const applied = addPrLabelsRest(Number(pr), [CONTINUO_ESCALATED_LABEL_SPEC.name], cwd, undefined, repo);
   if (!applied.ok) {
     process.stderr.write(`[check-continuo-escalate-label] PR #${pr}: ${applied.error}\n`);
     return false;
@@ -111,7 +132,7 @@ function applyLabel(pr: string): boolean {
  * head B nunca foi escalado (o ponto cego que o #9156 fechou). Sem `head`,
  * não grava nada: ausência de marcador conta pro alarme.
  */
-function markEscalatedHead(pr: string, head: string | null): void {
+function markEscalatedHead(pr: string, head: string | null, repo: string | undefined): void {
   if (head === null) {
     process.stderr.write(`[check-continuo-escalate-label] PR #${pr}: --head ausente — marcador de head escalado não gravado\n`);
     return;
@@ -122,7 +143,7 @@ function markEscalatedHead(pr: string, head: string | null): void {
       // #9632: só marcador de autor com vínculo ao repo conta como "já
       // gravado" — um terceiro (repo público) postando o marcador do head
       // atual não pode impedir que o NOSSO seja gravado.
-      ["api", `repos/{owner}/{repo}/issues/${pr}/comments`, "--paginate", "--jq", `.[] | ${TRUSTED_AUTHOR_JQ_SELECT} | .body | @json`],
+      ["api", `${apiRepoPath(repo)}/issues/${pr}/comments`, "--paginate", "--jq", `.[] | ${TRUSTED_AUTHOR_JQ_SELECT} | .body | @json`],
       { encoding: "utf8", timeout: 60_000 },
     )
       .split("\n")
@@ -131,7 +152,7 @@ function markEscalatedHead(pr: string, head: string | null): void {
     if (!needsEscalateHeadMarker(bodies, head)) return;
     execFileSync(
       "gh",
-      ["api", "--method", "POST", `repos/{owner}/{repo}/issues/${pr}/comments`, "-f", `body=${formatEscalateHeadMarker(head)}`],
+      ["api", "--method", "POST", `${apiRepoPath(repo)}/issues/${pr}/comments`, "-f", `body=${formatEscalateHeadMarker(head)}`],
       { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] },
     );
   } catch (e) {
@@ -141,13 +162,14 @@ function markEscalatedHead(pr: string, head: string | null): void {
 
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
-  if (!args) {
-    process.stderr.write("uso: check-continuo-escalate-label.ts --pr <N> [--head <sha>]\n");
+  if ("error" in args) {
+    process.stderr.write(`[check-continuo-escalate-label] ${args.error}\n`);
+    process.stderr.write("uso: check-continuo-escalate-label.ts --pr <N> [--head <sha>] [--repo owner/name]\n");
     process.exitCode = 2;
     return;
   }
 
-  const labels = fetchLabels(args.pr);
+  const labels = fetchLabels(args.pr, args.repo);
   if (labels === null) {
     console.log(JSON.stringify({ firstTime: true, labelApplied: false, source: "error" }));
     return;
@@ -162,8 +184,8 @@ function main(): void {
    *  reportar `false` ali faria o bash acusar falha a cada tick, para sempre,
    *  com stderr vazio. Quem quer saber se houve escrita nesta chamada lê
    *  `firstTime`. */
-  const labelApplied = alreadyEscalated ? true : applyLabel(args.pr);
-  markEscalatedHead(args.pr, args.head);
+  const labelApplied = alreadyEscalated ? true : applyLabel(args.pr, args.repo);
+  markEscalatedHead(args.pr, args.head, args.repo);
   console.log(JSON.stringify({ firstTime: !alreadyEscalated, labelApplied, source: "ok" }));
 }
 

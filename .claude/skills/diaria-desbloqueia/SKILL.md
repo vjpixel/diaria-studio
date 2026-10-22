@@ -135,6 +135,7 @@ npx tsx scripts/desbloqueia-scan.ts --issues 123,456    # só essas issues
 npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # 1 bucket (bloqueada|develop|sem-sinal|fora-de-rodada)
 npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal     # sem o bucket ·sem sinal
 npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas  # varre também on-hold/wontfix
+npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos (números DAQUELE repo; re-rotear com route-issue.ts --issue owner/repo#N)
 ```
 
 O bucket `·sem sinal` entra **por default** — é o motivo de a #7694 existir,

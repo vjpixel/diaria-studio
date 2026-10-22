@@ -56,6 +56,14 @@
  * por padrão quando não há marcador. Ver docstring de
  * `decideDependsOnLabelAction` pro racional completo.
  *
+ * ─── Multi-repo (#10901) ──────────────────────────────────────────────────
+ *
+ * Os números do marcador são RELATIVOS AO REPO DA ISSUE que o carrega (como
+ * todo `#N` no GitHub): `depends-on: #22` numa issue do diaria-design é o
+ * #22 do design. Este módulo é puro e não conhece repo; quem resolve o estado
+ * no repo certo é o reconciliador (`--repos`, `-R` por repo). Dependência
+ * ENTRE repos (`owner/repo#N`) não é sintaxe do marcador.
+ *
  * @see scripts/lib/issue-exec-track.ts (classifyExecTrack, BLOCKED_LABELS, DEPENDS_ON_BLOCK_LABEL)
  * @see scripts/lib/wait-until-sync.ts (mesmo padrão de marcador + sync via gh, pra data em vez de issue)
  * @see scripts/reconcile-issue-dependencies.ts (CLI de I/O que usa este módulo)
