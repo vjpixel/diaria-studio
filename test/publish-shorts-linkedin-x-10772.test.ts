@@ -20,7 +20,14 @@ import {
   planLinkedInRepostSlot,
   upsertShortEntry,
 } from "../scripts/lib/diaria/short-video.ts";
-import { parseMarkArg, planShortsPublish, publishLinkedInProfileVideo } from "../scripts/publish-shorts.ts";
+import {
+  blockRepostOnProfileFailure,
+  buildMarkEntry,
+  parseMarkArg,
+  planShortsPublish,
+  prepareBufferItem,
+  publishLinkedInProfileVideo,
+} from "../scripts/publish-shorts.ts";
 import { postVideoToPersonalProfile, validateUploadInstructions, LINKEDIN_VIDEOS_FINALIZE_URL, LINKEDIN_VIDEOS_INIT_URL } from "../scripts/lib/linkedin-video.ts";
 import { LINKEDIN_POSTS_URL } from "../scripts/lib/linkedin-personal.ts";
 import { gridFromLinkedInPersonalIntent, gridFromShortsPublished, type ScheduledSlot } from "../scripts/lib/social-slot-planner.ts";
@@ -150,6 +157,53 @@ describe("#10772 plano", () => {
     const p = by(planShortsPublish({ ...base, now: new Date("2026-10-22T16:00:00Z"), published: roundTrip }));
     assert.equal(p.linkedin_profile.action, "skip_done");
   });
+
+  // F1: repost de um vídeo que não existe nunca é oferecido.
+  it("F1: perfil pulado (sem credencial) e não registrado → repost skip_invalid com o motivo", () => {
+    const p = planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z"), linkedinPersonal: { ready: false, reason: "token ausente" } });
+    const repost = by(p).linkedin_page_repost;
+    assert.equal(repost.action, "skip_invalid");
+    assert.match(repost.detail, /linkedin_profile.*não sai nesta rodada/);
+    assert.ok(!p.premises.some((x) => x.startsWith("linkedin_page_repost:")), "sem premissa de horário pro repost pulado");
+  });
+
+  it("F1: --only linkedin_page_repost sem o perfil registrado → skip_invalid; com o perfil registrado → guiado", () => {
+    const sem = by(planShortsPublish({ ...base, now: new Date("2026-10-22T16:00:00Z"), only: ["linkedin_page_repost"] }));
+    assert.equal(sem.linkedin_page_repost.action, "skip_invalid");
+    assert.match(sem.linkedin_page_repost.detail, /não está registrado/);
+    const published = upsertShortEntry({ aammdd: "261022", entries: [] }, { destination: "linkedin_profile", status: "published", id: "urn", url: "https://www.linkedin.com/feed/update/urn/", at: "2026-10-22T15:00:00Z" });
+    const com = by(planShortsPublish({ ...base, now: new Date("2026-10-22T16:00:00Z"), only: ["linkedin_page_repost"], published, linkedinPersonal: { ready: false, reason: "x" } }));
+    assert.equal(com.linkedin_page_repost.action, "guided");
+    assert.ok(com.linkedin_page_repost.detail.includes("https://www.linkedin.com/feed/update/urn/"));
+  });
+
+  it("F1 em runtime: perfil falhou no --publish (sem registro) → repost vira skip_invalid; com sucesso, fica guiado", () => {
+    const items = planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z"), forceNow: true }).items;
+    const failed = blockRepostOnProfileFailure(items, [{ destination: "linkedin_profile", ok: false, error: "PROCESSING_FAILED" }]);
+    assert.equal(failed.find((i) => i.destination === "linkedin_page_repost")!.action, "skip_invalid");
+    assert.strictEqual(blockRepostOnProfileFailure(items, [{ destination: "linkedin_profile", ok: true, entry: {} }]), items);
+    // Registro não gravado com a plataforma já tendo aceitado (ok:false + entry) não bloqueia: o vídeo existe.
+    assert.strictEqual(blockRepostOnProfileFailure(items, [{ destination: "linkedin_profile", ok: false, entry: {}, error: "registro" }]), items);
+  });
+
+  // F4: teto de atraso do vídeo do perfil.
+  it("F4: mais de 3 h depois do horário do perfil → skip_late (passo manual), e o repost não é oferecido", () => {
+    const p = planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z") });
+    const slotAt = Date.parse(p.slots.find((s) => s.destination === "linkedin_profile")!.at);
+    const late = planShortsPublish({ ...base, now: new Date(slotAt + 3 * 3_600_000 + 60_000) });
+    const items = by(late);
+    assert.equal(items.linkedin_profile.action, "skip_late");
+    assert.match(items.linkedin_profile.detail, /--mark linkedin_profile=URL/);
+    assert.ok(late.warnings.some((w) => w.startsWith("linkedin_profile:") && w.includes("teto 3 h")));
+    assert.equal(items.linkedin_page_repost.action, "skip_invalid");
+  });
+
+  it("F4: dentro do teto publica; --now publica mesmo bem atrasado", () => {
+    const p = planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z") });
+    const slotAt = Date.parse(p.slots.find((s) => s.destination === "linkedin_profile")!.at);
+    assert.equal(by(planShortsPublish({ ...base, now: new Date(slotAt + 3 * 3_600_000 - 60_000) })).linkedin_profile.action, "publish");
+    assert.equal(by(planShortsPublish({ ...base, now: new Date(slotAt + 20 * 3_600_000), forceNow: true })).linkedin_profile.action, "publish");
+  });
 });
 
 describe("#10772 grade", () => {
@@ -253,6 +307,42 @@ describe("#10772 registro e estado", () => {
     assert.deepEqual(parseMarkArg("x=buffer:abc_123"), { destination: "x", url: null, bufferId: "abc_123" });
     assert.deepEqual(parseMarkArg("linkedin_page_repost=https://www.linkedin.com/feed/update/x"), { destination: "linkedin_page_repost", url: "https://www.linkedin.com/feed/update/x" });
     assert.throws(() => parseMarkArg("youtube_shorts=buffer:abc"), /DESTINO=URL/);
+  });
+
+  it("F6: --mark x=buffer:{id} --scheduled-at grava entrada scheduled com o horário normalizado", () => {
+    const at = "2026-10-22T03:00:00.000Z";
+    const r = buildMarkEntry(parseMarkArg("x=buffer:abc_123"), "2026-10-22T12:00:00-03:00", at);
+    assert.deepEqual(r, { ok: true, entry: { destination: "x", status: "scheduled", id: "buffer:abc_123", scheduled_at: "2026-10-22T15:00:00.000Z", at } });
+    const reg = upsertShortEntry({ aammdd: "261022", entries: [] }, (r as { ok: true; entry: any }).entry);
+    assert.equal(isDestinationDone(parseShortsPublishedFile(JSON.stringify(reg), "261022"), "x"), true);
+    assert.equal(resolveShortEntryState((r as { ok: true; entry: any }).entry, new Date(at)), "scheduled");
+  });
+
+  it("F6: --mark x=buffer sem --scheduled-at grava scheduled_at null; --scheduled-at inválido ou fora do buffer é recusado", () => {
+    const sem = buildMarkEntry(parseMarkArg("x=buffer:abc"), undefined, "2026-10-22T03:00:00.000Z");
+    assert.equal(sem.ok && sem.entry.scheduled_at, null);
+    assert.deepEqual(buildMarkEntry(parseMarkArg("x=buffer:abc"), "amanhã", "t"), { ok: false, error: "--scheduled-at só vale com --mark x=buffer:{id} e precisa ser ISO 8601" });
+    assert.equal(buildMarkEntry(parseMarkArg("youtube_shorts=https://youtu.be/x"), "2026-10-22T15:00:00Z", "t").ok, false);
+    const url = buildMarkEntry(parseMarkArg("youtube_shorts=https://youtu.be/x"), undefined, "t");
+    assert.deepEqual(url, { ok: true, entry: { destination: "youtube_shorts", status: "published", id: "https://youtu.be/x", url: "https://youtu.be/x", at: "t" } });
+  });
+
+  it("F6: ramo buffer do --publish sobe o vídeo e devolve text/dueAt/videoUrl; erro do R2 (síncrono ou não) vira ok:false", async () => {
+    const item = { destination: "x", mode: "guided", action: "buffer", caption: "Texto", scheduledAt: "2026-10-22T15:00:00.000Z", detail: "d" } as const;
+    let calls = 0;
+    const ok = await prepareBufferItem(item, async () => {
+      calls++;
+      return "https://pub.r2.dev/shorts/v.mp4";
+    });
+    assert.deepEqual(ok, { destination: "x", ok: true, buffer: { text: "Texto", dueAt: "2026-10-22T15:00:00.000Z", videoUrl: "https://pub.r2.dev/shorts/v.mp4" } });
+    assert.equal(calls, 1);
+    const sync = await prepareBufferItem(item, () => {
+      throw new Error("R2 não configurado (SHORTS_R2_BUCKET)");
+    });
+    assert.deepEqual(sync, { destination: "x", ok: false, error: "R2 não configurado (SHORTS_R2_BUCKET)" });
+    const async_ = await prepareBufferItem(item, async () => Promise.reject(new Error("PUT 403")));
+    assert.equal(async_.ok, false);
+    assert.equal(async_.buffer, undefined);
   });
 
   it("estado normalizado (#573): agendado no passado ou sem horário não é 'publicado'", () => {

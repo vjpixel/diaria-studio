@@ -135,7 +135,7 @@ import { gridFromLinkedInPersonalIntent, gridFromShortsPublished, gridFromSocial
 import { loadR2UploadConfig, uploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
-import { LINKEDIN_PERSONAL_ENV, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
+import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
 
@@ -161,7 +161,8 @@ export type ShortsPlanItem =
   /** #10823: Reels do Instagram com horário futuro, entregue à fila do Worker. */
   | { destination: string; mode: "api"; action: "enqueue"; caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount }
   | { destination: string; mode: "api" | "guided"; action: "skip_done" }
-  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid"; detail: string }
+  /** `skip_late` (#10772 F4): o horário do destino passou além do teto de atraso — vira passo manual. */
+  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late"; detail: string }
   /** `at`: horário planejado do passo guiado quando não é o `shortTime` (repost da página, #10772). */
   | { destination: string; mode: "guided"; action: "guided"; caption?: string; detail: string; at?: string }
   /**
@@ -313,9 +314,42 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     );
   }
 
+  const socialText = (platform: "linkedin" | "x") =>
+    buildShortSocialText({ platform, aammdd: input.aammdd, d1: d1In, editionUrl, videoUrl: input.youtubeVideoUrl ?? null });
+
+  // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
+  // roda. Sem teto, uma rodada horas depois (ou no dia seguinte) publicaria fora
+  // do horário do teste (#10831). Mesmo teto do `--fire-due` do 4º post; `--now`
+  // é a exceção explícita.
+  const profileLate = ((): string | null => {
+    const slot = slotOf.get("linkedin_profile");
+    if (!slot || input.forceNow) return null;
+    const lateMs = input.now.getTime() - Date.parse(slot.at);
+    if (!(lateMs > MAX_FIRE_LATENESS_MS)) return null;
+    return `${slot.hhmm} BRT passou há ${Math.round(lateMs / 60_000)} min (teto ${MAX_FIRE_LATENESS_MS / 3_600_000} h)`;
+  })();
+
+  // #10772 F1: o repost da página só existe se o vídeo do perfil já está
+  // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
+  // receberia um passo de repost de um vídeo que não existe.
+  const profileBlocker = ((): string | null => {
+    if (isDestinationDone(input.published, "linkedin_profile")) return null;
+    const dest = destinations.find((d) => d.kind === "linkedin_profile");
+    if (!dest) return "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada";
+    if (!publishable(dest)) return "o vídeo do perfil (linkedin_profile) não sai nesta rodada (sem credencial)";
+    if (profileLate) return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${profileLate})`;
+    try {
+      socialText("linkedin");
+    } catch (e) {
+      return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${(e as Error).message})`;
+    }
+    return null;
+  })();
+
   // #10772: repost da página — depois do vídeo do perfil, num horário da grade da página.
   const repostSlot = (() => {
     if (!destinations.some((d) => d.kind === "linkedin_page_repost") || isDestinationDone(input.published, "linkedin_page_repost")) return null;
+    if (profileBlocker) return null;
     const profileEntry = input.published.entries.find((e) => e.destination === "linkedin_profile");
     const profileAt = profileEntry ? (profileEntry.scheduled_at ?? profileEntry.at) : (slotOf.get("linkedin_profile")?.at ?? shortTime.at);
     const plannedGrid = [...(input.grid ?? []), ...slots.map((s) => ({ account: s.account, at: s.at, label: `shorts ${s.destination}` }))];
@@ -324,8 +358,6 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (s.warning) warnings.push(s.warning);
     return s;
   })();
-  const socialText = (platform: "linkedin" | "x") =>
-    buildShortSocialText({ platform, aammdd: input.aammdd, d1: d1In, editionUrl, videoUrl: input.youtubeVideoUrl ?? null });
   if (destinations.some((d) => d.kind === "linkedin_profile" || d.kind === "x") && !input.youtubeVideoUrl) {
     premises.push("LinkedIn/X: sem _internal/05-video-url.txt — o texto aponta pro canal do YouTube em vez do vídeo completo");
   }
@@ -344,6 +376,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         const reason = input.linkedinPersonal?.ready === false ? input.linkedinPersonal.reason : "credencial LINKEDIN_PERSONAL_* não conferida";
         warnings.push(`linkedin_profile: ${reason}`);
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
+      }
+      if (profileLate) {
+        const detail =
+          `${profileLate} — fora do horário do teste (#10831), não publica sozinho. ` +
+          `Publique à mão no perfil e registre com --mark linkedin_profile=URL, ou rode com --now para publicar mesmo assim`;
+        warnings.push(`linkedin_profile: ${detail}`);
+        return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
       let text: string;
       try {
@@ -368,6 +407,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null, title };
     }
     if (dest.kind === "linkedin_page_repost") {
+      if (profileBlocker) {
+        const detail = `${profileBlocker} — repost só depois que o vídeo do perfil sair (ou for registrado com --mark linkedin_profile=URL)`;
+        warnings.push(`linkedin_page_repost: ${detail}`);
+        return { destination: dest.id, mode: "guided", action: "skip_invalid", detail };
+      }
       const profile = input.published.entries.find((e) => e.destination === "linkedin_profile");
       const where = profile?.url ? ` (${profile.url})` : profile ? "" : " — depois que o vídeo do perfil (linkedin_profile) sair";
       return {
@@ -954,6 +998,9 @@ export async function publishLinkedInProfileVideo(
   text: string,
   title: string,
 ): Promise<PublishOutcome> {
+  // CONFERIR NA 1ª EXECUÇÃO REAL (#10772 F3): `new Uint8Array(file)` copia o
+  // vertical inteiro (275 MB em 261022). Se a memória do processo apertar, trocar
+  // por `new Uint8Array(file.buffer, file.byteOffset, file.length)` (sem cópia).
   const r = await postVideoToPersonalProfile({ deps, creds, apiVersion, text, title, bytes: new Uint8Array(file) });
   const at = deps.now().toISOString();
   if (r.ok) {
@@ -1027,6 +1074,74 @@ export function parseMarkArg(raw: string): { destination: string; url: string | 
   return { destination: m[1], url: m[2] };
 }
 
+/**
+ * Entrada que o `--mark` grava (#10772 F6). `x=buffer:{id}` vira `scheduled`
+ * com o `--scheduled-at` (ISO) — sem ele, `scheduled_at` null (estado
+ * `unknown` até conferir). Os demais viram `published` com a URL.
+ */
+export function buildMarkEntry(
+  mark: ReturnType<typeof parseMarkArg>,
+  scheduledAt: string | undefined,
+  at: string,
+): { ok: true; entry: ShortPublishedEntry } | { ok: false; error: string } {
+  if (scheduledAt !== undefined && (!mark.bufferId || Number.isNaN(Date.parse(scheduledAt)))) {
+    return { ok: false, error: "--scheduled-at só vale com --mark x=buffer:{id} e precisa ser ISO 8601" };
+  }
+  if (mark.bufferId) {
+    return {
+      ok: true,
+      entry: { destination: "x", status: "scheduled", id: `buffer:${mark.bufferId}`, scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null, at },
+    };
+  }
+  return { ok: true, entry: { destination: mark.destination, status: "published", id: mark.url!, url: mark.url!, at } };
+}
+
+/** O que o `--publish` devolve pro destino do X (#10772): a URL pública do vertical pra Buffer, ou o erro. */
+export interface BufferPrepResult {
+  destination: string;
+  ok: boolean;
+  error?: string;
+  buffer?: { text: string; dueAt: string | null; videoUrl: string };
+}
+
+/**
+ * Ramo `buffer` do `--publish` (#10772 F6): só sobe o vertical (R2) e devolve o
+ * que a skill passa pra Buffer `create_post`. Nada é registrado aqui — o
+ * registro vem do `--mark x=buffer:{id}` depois do `create_post`.
+ */
+export async function prepareBufferItem(
+  item: Extract<ShortsPlanItem, { action: "buffer" }>,
+  uploadVideo: () => Promise<string>,
+): Promise<BufferPrepResult> {
+  try {
+    const videoUrl = await uploadVideo();
+    return { destination: item.destination, ok: true, buffer: { text: item.caption, dueAt: item.scheduledAt, videoUrl } };
+  } catch (e) {
+    return { destination: item.destination, ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * #10772 F1 (em runtime): o plano oferece o repost da página contando com o
+ * vídeo do perfil desta rodada; se o `--publish` falhar no perfil (sem nada
+ * registrado), o repost vira `skip_invalid` em vez de passo guiado de um vídeo
+ * que não existe.
+ */
+export function blockRepostOnProfileFailure(items: ShortsPlanItem[], results: Array<{ destination: string; ok: boolean; entry?: unknown; error?: string }>): ShortsPlanItem[] {
+  const failed = results.some((r) => r.destination === "linkedin_profile" && !r.ok && !r.entry);
+  if (!failed) return items;
+  return items.map((i) =>
+    i.destination === "linkedin_page_repost" && i.action === "guided"
+      ? {
+          destination: i.destination,
+          mode: "guided",
+          action: "skip_invalid",
+          detail: "o vídeo do perfil (linkedin_profile) falhou nesta rodada — repost só depois que ele sair (ou for registrado com --mark linkedin_profile=URL)",
+        }
+      : i,
+  );
+}
+
 /** Link da edição: --edition-url > `_internal/05-edition-url.txt` > (derivado, no plano). */
 function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
   if (flag) return { url: flag, source: "--edition-url" };
@@ -1063,18 +1178,12 @@ async function main(): Promise<number> {
       console.error((e as Error).message);
       return 2;
     }
-    const scheduledAt = values["scheduled-at"];
-    if (scheduledAt !== undefined && (!mark.bufferId || Number.isNaN(Date.parse(scheduledAt)))) {
-      console.error("--scheduled-at só vale com --mark x=buffer:{id} e precisa ser ISO 8601");
+    const built = buildMarkEntry(mark, values["scheduled-at"], new Date().toISOString());
+    if (!built.ok) {
+      console.error(built.error);
       return 2;
     }
-    const at = new Date().toISOString();
-    published = upsertShortEntry(
-      published,
-      mark.bufferId
-        ? { destination: "x", status: "scheduled", id: `buffer:${mark.bufferId}`, scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null, at }
-        : { destination: mark.destination, status: "published", id: mark.url!, url: mark.url!, at },
-    );
+    published = upsertShortEntry(published, built.entry);
     writePublished(publishedPath, published);
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
     return 0;
@@ -1218,15 +1327,9 @@ async function main(): Promise<number> {
   for (const item of plan.items) {
     if (item.action === "buffer") {
       // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
-      try {
-        const videoUrl = await uploadVideo();
-        results.push({ destination: item.destination, ok: true, buffer: { text: item.caption, dueAt: item.scheduledAt, videoUrl } });
-        console.error(`[ok] ${item.destination}: vídeo no R2 (${videoUrl}) — falta o create_post na Buffer (skill)`);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        results.push({ destination: item.destination, ok: false, error: msg });
-        console.error(`[erro] ${item.destination}: ${msg}`);
-      }
+      const r = await prepareBufferItem(item, uploadVideo);
+      results.push(r);
+      console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
       continue;
     }
     if (item.action !== "publish" && item.action !== "enqueue") continue;
@@ -1284,6 +1387,11 @@ async function main(): Promise<number> {
     const where = item.action === "enqueue" ? `na fila do Worker para ${entry.scheduled_at} (key ${entry.id})` : (entry.url ?? entry.id);
     console.error(`[ok] ${item.destination}: ${entry.status} (estado ${state}) ${where}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
     for (const w of outcome.warnings ?? []) console.error(`[aviso] ${item.destination}: ${w}`);
+  }
+  const finalItems = blockRepostOnProfileFailure(plan.items, results);
+  if (finalItems !== plan.items) {
+    console.error("[aviso] linkedin_page_repost: o vídeo do perfil falhou nesta rodada — repost não oferecido");
+    plan = { ...plan, items: finalItems };
   }
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,

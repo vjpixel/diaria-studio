@@ -115,6 +115,10 @@ export async function uploadLinkedInVideo(deps: LinkedInVideoDeps, creds: Person
     }
     const etags: string[] = [];
     for (const [i, p] of parts.entries()) {
+      // CONFERIR NA 1ª EXECUÇÃO REAL (#10772 F2): a doc da Videos API mostra o PUT
+      // na URL pré-assinada só com Content-Type; o Bearer está aqui por paridade
+      // com o upload de imagem (`linkedin-personal.ts`). Se o PUT der 4xx, tirar o
+      // header Authorization.
       const put = await deps.fetchFn(
         p.uploadUrl,
         timeout(LINKEDIN_VIDEO_PART_TIMEOUT_MS, {
