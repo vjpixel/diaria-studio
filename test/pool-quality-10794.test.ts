@@ -92,7 +92,7 @@ it('A: history includes exactly the seven prior editions, never the current or f
 it('C: both daily scorers keep the same explicit penalty and exclusion boundary', () => {
   const policies = ['scorer.md', 'scorer-chunk.md'].map(name => {
     const text = readFileSync(new URL(`../.claude/agents/${name}`, import.meta.url), 'utf8');
-    const policy = text.split('\n').find(line => line.includes('Anúncio corporativo de baixa afinidade (#10794)'));
+    const policy = text.split('\n').find(line => line.includes('Anúncio corporativo de baixa afinidade (#10794,'));
     assert.ok(policy);
     for (const word of ['infraestrutura', 'parceria', 'nuvem/região', 'filing financeiro', 'corporate_announcement:-10', 'nunca exclusão']) assert.ok(policy.includes(word), word);
     return policy;
