@@ -250,6 +250,12 @@ export function buildParaEncerrar(
   // #10783: o parágrafo de ferramentas cita a ferramenta de imagem derivada de
   // `image_generator` (a mesma da legenda do hero), não o nome fixo do
   // snippet/fallback — que seguiu dizendo "Gemini" depois da troca pro Codex.
+  // #10881 item 5: o stitch roda ANTES das imagens (Stage 2), então aqui só
+  // existe o nome do CONFIG. Se o fallback gerar as imagens, o
+  // `02-reviewed.md` fica com o nome errado — quem chega ao leitor é o HTML,
+  // e `renderHTML` reaplica o nome pelos sidecars (`editionImageGenerator`).
+  // Todo envio (Beehiiv, Kit, Brevo) passa por `renderHTML`; não ler o nome
+  // da ferramenta direto do markdown (travado em test/residuos-review-10881).
   const slotA = applyImageToolToCredits(cfg.slotA ?? computeParaEncerrarSlotADefault(rootDir), imageGenerator);
   const relatedBlock = relatedEditionsMarkdown ? `\n\n${relatedEditionsMarkdown}` : "";
   return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}${relatedBlock}\n\n${SOCIAL_INVITE}`;
@@ -601,6 +607,8 @@ function writeUseMelhorTempoInstrumentation(
 export async function fetchBodyForCache(
   bodiesDir: string,
   url: string,
+  /** `false` busca sem gravar no cache forense (dry-run do `move-pool-item`, #10881 item 1). */
+  persist = true,
 ): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
@@ -617,7 +625,7 @@ export async function fetchBodyForCache(
     }
     const body = await res.text();
     if (body.length < 500) return null;
-    saveCachedBody(bodiesDir, url, body);
+    if (persist) saveCachedBody(bodiesDir, url, body);
     return body;
   } catch {
     return null;

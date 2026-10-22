@@ -105,6 +105,12 @@ export interface YouTubeRecordSummary {
   publishAt: string | null;
   /** `in_progress`/`upload_indeterminado` — upload sem vídeo confirmado. */
   sentinel: string | null;
+  /**
+   * `audit_blocked` gravado pelo upload (#10881 item 2): o plano previa o
+   * rebaixamento pra private por falta da auditoria. `null` em registro sem o
+   * campo (o gate cai na constante `YOUTUBE_API_PROJECT_AUDITED`).
+   */
+  auditBlocked: boolean | null;
   path: string;
 }
 
@@ -131,6 +137,7 @@ export function readYouTubeRecordSummary(editionDir: string): YouTubeRecordSumma
     state: str(raw.state),
     publishAt: str(reread?.publishAt) ?? str(requested?.publishAt),
     sentinel: status === "in_progress" || status === "upload_indeterminado" ? status : null,
+    auditBlocked: typeof raw.audit_blocked === "boolean" ? raw.audit_blocked : null,
     path,
   };
 }
@@ -151,7 +158,11 @@ export function gateVideoLink(input: {
   videoUrl: string;
   record: YouTubeRecordSummary | null;
   d1SlotAt: Date | null;
-  /** Default `YOUTUBE_API_PROJECT_AUDITED` (#10865). */
+  /**
+   * Default: o `audit_blocked` do registro do upload, quando existe (#10881
+   * item 2 — a mesma premissa com que `publish-youtube.ts` gravou o link);
+   * sem ele, `YOUTUBE_API_PROJECT_AUDITED` (#10865).
+   */
   projectAudited?: boolean;
 }): VideoLinkGate {
   const id = extractYouTubeVideoId(input.videoUrl);
@@ -169,7 +180,19 @@ export function gateVideoLink(input: {
     state: rec.state,
     publishAt: rec.publishAt,
     d1SlotAt: input.d1SlotAt,
-    projectAudited: input.projectAudited,
+    projectAudited: input.projectAudited ?? (rec.auditBlocked == null ? undefined : !rec.auditBlocked),
   });
   return { ok: v.ok, reason: v.reason, record_matched: true };
+}
+
+/**
+ * Pure: instrução de "o que fazer" quando o link é recusado (#10881 item 2).
+ * Sem a auditoria do YouTube API Services, agendar antes do D1 não resolve
+ * (#10866: o `publishAt` pode nunca tornar o vídeo público) — só publicar à
+ * mão no Studio.
+ */
+export function videoLinkRemedy(projectAudited: boolean): string {
+  return projectAudited
+    ? "Publique (ou agende antes do post do D1) no YouTube Studio"
+    : "Publique o vídeo no YouTube Studio (agendar não resolve sem a auditoria do YouTube API Services, #10866)";
 }

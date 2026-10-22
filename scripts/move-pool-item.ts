@@ -223,6 +223,21 @@ function itemBlocks(lines: string[], sec: SectionRange): Array<{ start: number; 
   return blocks;
 }
 
+/**
+ * #10881 item 1: troca o PRIMEIRO tempo de leitura da linha por `N`,
+ * preservando a forma em que ele aparece — "(N min…)" vira "(N min)",
+ * "– N min" vira "– N min", "~N min" vira "N min". Sem tempo reconhecível,
+ * devolve a linha intacta. @pure
+ */
+const INLINE_TEMPO_RE = /\(\s*~?\s*\d+\s*min[^)]*\)|([–—])\s*~?\s*\d+\s*min\b|~\s*\d+\s*min\b/;
+
+export function replaceInlineTempo(line: string, minutes: number): string {
+  return line.replace(
+    INLINE_TEMPO_RE,
+    (_m, dash: string | undefined) => (_m.startsWith("(") ? `(${minutes} min)` : dash ? `${dash} ${minutes} min` : `${minutes} min`),
+  );
+}
+
 const TEMPO_SUFFIX_RE = /\s*(?:\(\s*~?\s*\d+\s*min[^)]*\)|[–—]\s*~?\s*\d+\s*min(?:\s+de\s+leitura)?)\s*$/;
 
 export interface MdMoveResult {
@@ -346,8 +361,19 @@ export function moveItemInReviewedMd(
       const stripped = block[last].replace(TEMPO_SUFFIX_RE, "");
       if (stripped !== block[last]) block[last] = stripped;
       else {
+        // #10881 item 1: tempo no MEIO da linha, em qualquer das 3 formas
+        // que USE_MELHOR_TEMPO_RE aceita ("(N min)", "– N min", "~N min").
+        // A troca antiga só cobria a forma entre parênteses: nas outras o
+        // texto não mudava, mas `tempo_added` e o `md_tempo` registrado
+        // diziam o valor novo.
         const i = block.findIndex((l) => USE_MELHOR_TEMPO_RE.test(l));
-        block[i] = block[i].replace(/\(\s*~?\s*\d+\s*min[^)]*\)/, tempoAdded);
+        const antes = block[i];
+        block[i] = replaceInlineTempo(antes, opts.tempo);
+        if (!INLINE_TEMPO_RE.test(antes)) {
+          throw new Error(
+            `não consegui substituir o tempo de leitura existente no item (${antes.trim()}) — ajuste à mão ou passe --tempo igual ao do texto.`,
+          );
+        }
         tempoAdded = null;
       }
     }
@@ -498,18 +524,22 @@ export function movePoolItem(
  * (caso Cowork). Sem `--tempo` o medido SUBSTITUI o texto existente; com
  * `--tempo` explícito a escolha manual é preservada e a medição só é
  * registrada pra comparação (`md_tempo` ≠ `estimate`), nunca passando por medida.
- * Fail-soft: sem corpo, `title-heuristic` (sinalizado no gate). Não grava nada;
- * quem grava é `recordTempoMeasurement`, depois do move bem-sucedido.
+ * Fail-soft: sem corpo, `title-heuristic` (sinalizado no gate). Grava só o
+ * corpo baixado no cache forense (nunca em `--dry-run`, #10881 item 1); a
+ * medição quem grava é `recordTempoMeasurement`, depois do move bem-sucedido.
  */
 export async function measureTempoForMove(
   editionDir: string,
   url: string,
+  /** #10881 item 1: `--dry-run` não grava nada, nem o corpo baixado no cache forense. */
+  opts: { dryRun?: boolean; fetchBody?: typeof fetchBodyForCache } = {},
 ): Promise<{ tempo: number; source: string; title: string; estimate: string }> {
   const md = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8").replace(/\r\n/g, "\n").split("\n");
   const found = locatePoolItem(md, url);
   const title = md[found.block.start].match(/\[([^\]]+)\]\(/)?.[1] ?? "";
   const bodiesDir = resolve(editionDir, "_internal", "_forensic", "link-verify-bodies");
-  const body = loadCachedBody(bodiesDir, url) ?? (await fetchBodyForCache(bodiesDir, url));
+  const fetchBody = opts.fetchBody ?? fetchBodyForCache;
+  const body = loadCachedBody(bodiesDir, url) ?? (await fetchBody(bodiesDir, url, opts.dryRun !== true));
   const { estimate, source } = estimateUseMelhorTempoDetailed(title, url, body);
   return { tempo: Number(estimate.match(/\d+/)![0]), source, title, estimate };
 }
@@ -551,7 +581,7 @@ async function main(): Promise<void> {
     let measured: Awaited<ReturnType<typeof measureTempoForMove>> | null = null;
     let replaceTempo = false;
     if (to === "use_melhor") {
-      measured = await measureTempoForMove(resolve(editionDir), url);
+      measured = await measureTempoForMove(resolve(editionDir), url, { dryRun });
       if (tempo === undefined) {
         tempo = measured.tempo;
         replaceTempo = true;
