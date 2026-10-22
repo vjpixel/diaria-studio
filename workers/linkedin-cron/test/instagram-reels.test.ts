@@ -17,6 +17,7 @@ import {
   fireQueueEntry,
   resolveInstagramVjpixelCreds,
   REELS_POLL_DEADLINE_MS,
+  REELS_VERIFY_FETCH_TIMEOUT_MS,
   type FireConfig,
 } from "../src/dispatch.ts";
 
@@ -98,13 +99,17 @@ const baseConfig = (over: Partial<FireConfig> = {}): FireConfig => ({
 
 type Call = { url: string; body: string; headers?: Record<string, string> };
 
-function mockGraph(statusSequence: string[]): Call[] {
+/** #10877 — URL da lista de mídias da conta (busca de dedup antes do container). */
+const isMediaList = (u: string) => /\/media\?fields=/.test(u);
+
+function mockGraph(statusSequence: string[], mediaList: unknown = { data: [] }): Call[] {
   const calls: Call[] = [];
   let poll = 0;
   globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
     const u = typeof url === "string" ? url : url.url;
     const body = init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body ?? "");
     calls.push({ url: u, body, headers: init?.headers as Record<string, string> | undefined });
+    if (isMediaList(u)) return new Response(JSON.stringify(mediaList), { status: 200 });
     if (u.endsWith("/media_publish")) return new Response(JSON.stringify({ id: "reel-media-id" }), { status: 200 });
     if (u.includes("status_code")) {
       const st = statusSequence[Math.min(poll++, statusSequence.length - 1)];
@@ -189,6 +194,7 @@ describe("#10823 Reels: disparo pela fila", () => {
     globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
       const u = typeof url === "string" ? url : url.url;
       calls.push({ url: u, body: String(init?.body ?? "") });
+      if (isMediaList(u)) return new Response(JSON.stringify({ data: [] }), { status: 200 });
       if (u.includes("status_code")) {
         // Simula a Graph pendurada: só termina quando o signal aborta.
         return new Promise<Response>((_, reject) => {
@@ -221,9 +227,12 @@ describe("#10823 Reels: disparo pela fila", () => {
     assert.ok(Date.now() - t0 < 2_000, `levou ${Date.now() - t0}ms`);
   });
 
-  it("teto de produção: criação + poll + publish cabem no CLAIM_TTL_MS com margem", () => {
-    const worstCase = FETCH_TIMEOUT_MS + REELS_POLL_DEADLINE_MS + FETCH_TIMEOUT_MS;
-    assert.ok(worstCase < CLAIM_TTL_MS, `pior caso ${worstCase}ms >= CLAIM_TTL_MS ${CLAIM_TTL_MS}ms`);
+  it("teto de produção: dedup + criação + poll + publish + conferência cabem no CLAIM_TTL_MS com margem", () => {
+    // #10877: busca de dedup antes do container e conferência do container
+    // depois de um media_publish que falhou entram no pior caso.
+    const worstCase =
+      REELS_VERIFY_FETCH_TIMEOUT_MS + FETCH_TIMEOUT_MS + REELS_POLL_DEADLINE_MS + FETCH_TIMEOUT_MS + REELS_VERIFY_FETCH_TIMEOUT_MS;
+    assert.ok(worstCase <= CLAIM_TTL_MS - 30_000, `pior caso ${worstCase}ms sem 30 s de margem sobre CLAIM_TTL_MS ${CLAIM_TTL_MS}ms`);
   });
 
   it("ig_account=vjpixel sem credencial no disparo → DLQ com motivo claro, sem nenhuma chamada", async () => {

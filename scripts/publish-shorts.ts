@@ -45,8 +45,13 @@
  * alternando 12:00/19:00 BRT a partir de 261022 (`publishing.shorts.schedule`),
  * nunca as 06:00 do horizontal. Com pelo menos 10 min de folga o Facebook
  * agenda (a folga é reconferida antes de cada página); senão publica na hora.
- * O Instagram não agenda Reels pela API — com horário futuro ele fica pendente
- * até rodar de novo depois do horário (ou `--now`).
+ * O Instagram não agenda Reels pela API — com horário futuro o Reels vai pra
+ * FILA do Worker `diaria-linkedin-cron` (#10823), que publica no horário: o
+ * vertical sobe pro R2 (`scripts/lib/r2-object-upload.ts`, a Graph baixa pelo
+ * `video_url` público) e a entry leva a conta (`ig_account`) e os collabs.
+ * Sem Worker (`DIARIA_LINKEDIN_CRON_URL`/`_TOKEN`), sem R2 (`R2_*`,
+ * `SHORTS_R2_*`) ou com autora que o Worker não conhece, cai no comportamento
+ * de antes: fica pendente até rodar de novo depois do horário (ou `--now`).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
  * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
@@ -108,6 +113,9 @@ import { youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
 import { gridFromShortsPublished, gridFromSocialPublished, type ScheduledSlot } from "./lib/social-slot-planner.ts";
+import { loadR2UploadConfig, uploadToR2 } from "./lib/r2-object-upload.ts";
+import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
+import { resolveWorkerQueueState } from "./lib/publish-state.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const GRAPH = "https://graph.facebook.com";
@@ -120,6 +128,8 @@ export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile"
 export type ShortsPlanItem =
   | { destination: string; mode: "api"; action: "publish"; caption: string; scheduledAt: string | null }
   | { destination: string; mode: "api"; action: "pending_schedule"; caption: string; scheduledAt: string; detail: string }
+  /** #10823: Reels do Instagram com horário futuro, entregue à fila do Worker. */
+  | { destination: string; mode: "api"; action: "enqueue"; caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount }
   | { destination: string; mode: "api" | "guided"; action: "skip_done" }
   | { destination: string; mode: "api"; action: "skip_missing_credentials" | "skip_invalid"; detail: string }
   | { destination: string; mode: "guided"; action: "guided"; caption?: string; detail: string };
@@ -150,6 +160,11 @@ export interface ShortsPlanInput {
   instagramNotReadyReason?: string;
   /** Avisos do Instagram pronto mas não totalmente conferido (ex.: escopo do token, #10820). */
   instagramWarnings?: string[];
+  /**
+   * #10823: dá pra agendar o Reels pela fila do Worker? Ausente = não (o
+   * Instagram com horário futuro fica `pending_schedule`, como antes).
+   */
+  instagramQueue?: InstagramQueueReadiness;
   published: ShortsPublishedFile;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   editionUrl?: string;
@@ -232,7 +247,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     const sch = scheduleFor(s);
     premises.push(
       sch.mode === "scheduled"
-        ? `${s.destination}: ${s.destination === "instagram" ? "pendente até" : "agendado para"} ${sch.at} (${s.hhmm} BRT do dia da edição)`
+        ? `${s.destination}: ${s.destination !== "instagram" ? "agendado para" : input.instagramQueue?.ready ? "fila do Worker para" : "pendente até"} ${sch.at} (${s.hhmm} BRT do dia da edição)`
         : `${s.destination}: ${s.hhmm} BRT do dia da edição já passou (ou falta <10 min) — publica na hora`,
     );
   }
@@ -287,19 +302,55 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     const slot = slotOf.get(dest.id)!;
     const schedule = scheduleFor(slot);
     if (schedule.mode === "scheduled") {
+      // #10823: a fila do Worker publica no horário (o Instagram não agenda Reels pela API).
+      if (input.instagramQueue?.ready) {
+        return { destination: dest.id, mode: "api", action: "enqueue", caption, scheduledAt: schedule.at, igAccount: input.instagramQueue.account };
+      }
+      const why = input.instagramQueue ? ` Fila do Worker indisponível: ${input.instagramQueue.reason}.` : "";
+      if (input.instagramQueue) warnings.push(`instagram: sem fila do Worker (${input.instagramQueue.reason}) — fica pendente até ${slot.hhmm} BRT`);
       return {
         destination: dest.id,
         mode: "api",
         action: "pending_schedule",
         caption,
         scheduledAt: schedule.at,
-        detail: `o Instagram não agenda Reels pela API — rode de novo depois das ${slot.hhmm} BRT (ou use --now)`,
+        detail: `o Instagram não agenda Reels pela API — rode de novo depois das ${slot.hhmm} BRT (ou use --now).${why}`,
       };
     }
     return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
   }
 
   return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
+}
+
+/** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823). */
+export type WorkerInstagramAccount = "diaria" | "vjpixel";
+
+export type InstagramQueueReadiness = { ready: true; account: WorkerInstagramAccount } | { ready: false; reason: string };
+
+/**
+ * Pure (#10823): a fila do Worker consegue agendar o Reels desta autora? Precisa
+ * do Worker (URL + token), do R2 pro `video_url` público e de uma autora que o
+ * Worker conhece: `instagram_author_page` null = conta da diar.ia.br
+ * (`diaria`); `vjpixel` = a conta vinculada à página VJ pixel (secrets
+ * `INSTAGRAM_VJPIXEL_*` no Worker). Qualquer outra página não tem credencial
+ * no Worker.
+ */
+export function resolveInstagramQueueReadiness(input: {
+  authorPage: string | null;
+  workerUrl: string;
+  workerToken: string;
+  r2Missing: string[];
+}): InstagramQueueReadiness {
+  const account: WorkerInstagramAccount | null = input.authorPage === null ? "diaria" : input.authorPage === "vjpixel" ? "vjpixel" : null;
+  if (!account) return { ready: false, reason: `o Worker só publica nas contas diaria e vjpixel, não na da página ${input.authorPage}` };
+  const missing = [
+    ...(input.workerUrl ? [] : ["DIARIA_LINKEDIN_CRON_URL"]),
+    ...(input.workerToken ? [] : ["DIARIA_LINKEDIN_CRON_TOKEN"]),
+    ...input.r2Missing,
+  ];
+  if (missing.length) return { ready: false, reason: `falta ${missing.join(", ")}` };
+  return { ready: true, account };
 }
 
 /**
@@ -672,6 +723,46 @@ export async function checkInstagramCollaborators(
   return missing.length ? [`convite de collab descartado pelo Instagram: ${missing.map((u) => `@${u}`).join(", ")} — convide à mão no app`] : [];
 }
 
+export interface InstagramEnqueueDeps {
+  /** Sobe o vertical e devolve a URL pública (R2). */
+  uploadVideo: () => Promise<string>;
+  /** `POST /queue` do Worker. */
+  enqueue: (payload: WorkerQueuePayload) => Promise<{ key: string; scheduled_at: string }>;
+  now: () => Date;
+}
+
+/**
+ * #10823: agenda o Reels pela fila do Worker — sobe o vertical, enfileira com a
+ * conta e os collabs, e registra como `scheduled` com a key da fila no `id`.
+ * O 202 do Worker só prova que a entry está na fila, nunca que saiu
+ * (`resolveWorkerQueueState`, #573): o registro nunca diz `published`.
+ */
+export async function enqueueInstagramReel(
+  deps: InstagramEnqueueDeps,
+  item: { caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount },
+  collaborators: string[],
+): Promise<PublishOutcome> {
+  const videoUrl = await deps.uploadVideo();
+  let queued: { key: string; scheduled_at: string };
+  try {
+    queued = await deps.enqueue(
+      buildReelsQueuePayload({ caption: item.caption, videoUrl, scheduledAt: item.scheduledAt, account: item.igAccount, collaborators }),
+    );
+  } catch (e) {
+    if (e instanceof WorkerQueueError && e.code === "instagram_account_creds_missing") {
+      throw new Error(
+        `o Worker recusou a conta ${item.igAccount}: faltam os secrets INSTAGRAM_VJPIXEL_ACCOUNT_ID/INSTAGRAM_VJPIXEL_ACCESS_TOKEN no diaria-linkedin-cron (${e.message})`,
+      );
+    }
+    throw e;
+  }
+  const state = resolveWorkerQueueState({ key: queued.key, scheduled_at: queued.scheduled_at }, deps.now());
+  return {
+    entry: { destination: "instagram", status: "scheduled", id: queued.key, scheduled_at: queued.scheduled_at, at: deps.now().toISOString() },
+    ...(state === "scheduled" ? {} : { warnings: [`fila do Worker devolveu scheduled_at ${queued.scheduled_at} (estado ${state}) — confira se a entry não disparou na hora`] }),
+  };
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 function readPublished(path: string, aammdd: string): ShortsPublishedFile {
@@ -805,6 +896,20 @@ async function main(): Promise<number> {
     console.error(`[premissa] Instagram: autora ${igAuthor.username ? `@${igAuthor.username}` : igAuthor.igUserId} (${igAuthor.source})${collab}`);
   }
   const editionUrlIn = resolveEditionUrlInput(dir, values["edition-url"]);
+  // #10823: fila do Worker pro Reels com horário futuro (mesmas vars do publish-instagram.ts --schedule).
+  const workerUrl: string =
+    process.env.DIARIA_LINKEDIN_CRON_URL ??
+    config?.publishing?.social?.instagram?.cloudflare_worker_url ??
+    config?.publishing?.social?.linkedin?.cloudflare_worker_url ??
+    "";
+  const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+  const r2 = loadR2UploadConfig(process.env);
+  const instagramQueue = resolveInstagramQueueReadiness({
+    authorPage: shortsCfg.instagramAuthorPage,
+    workerUrl,
+    workerToken,
+    r2Missing: r2.ready ? [] : r2.missing,
+  });
 
   let plan: ShortsPlan;
   try {
@@ -817,6 +922,7 @@ async function main(): Promise<number> {
       instagramReady: igAuthor.ready,
       instagramNotReadyReason: igAuthor.ready ? undefined : igAuthor.reason,
       instagramWarnings: igAuthor.ready ? igAuthor.warnings : undefined,
+      instagramQueue,
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
       editionUrl: editionUrlIn.url,
@@ -846,11 +952,28 @@ async function main(): Promise<number> {
   console.error(`[premissa] duração ${duration === null ? "desconhecida" : `${duration.toFixed(1)} s`} → Facebook via ${facebookUploadRoute(duration)}`);
   const deps = defaultGraphDeps;
   const results: Array<{ destination: string; ok: boolean; entry?: ShortPublishedEntry; unconfirmed?: boolean; warnings?: string[]; error?: string }> = [];
+  // Sobe o vertical no máximo uma vez por rodada (só o Instagram agendado usa).
+  let uploaded: Promise<string> | null = null;
+  const uploadVideo = () => {
+    if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
+    uploaded ??= uploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4");
+    return uploaded;
+  };
   for (const item of plan.items) {
-    if (item.action !== "publish") continue;
+    if (item.action !== "publish" && item.action !== "enqueue") continue;
     let outcome: PublishOutcome;
     try {
-      if (item.destination === "instagram") {
+      if (item.action === "enqueue") {
+        outcome = await enqueueInstagramReel(
+          {
+            uploadVideo,
+            enqueue: (payload) => postToWorkerQueue(workerUrl, workerToken, payload, 2, "publish-shorts"),
+            now: () => new Date(),
+          },
+          item,
+          shortsCfg.instagramCollaborators,
+        );
+      } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         outcome = await publishInstagramReel(deps, igAuthor.igUserId, igAuthor.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
       } else {
@@ -870,18 +993,20 @@ async function main(): Promise<number> {
     } catch (e) {
       // A plataforma JÁ aceitou: não pode virar "falhou" (a próxima rodada duplicaria).
       console.error(
-        `[erro] ${item.destination}: PUBLICADO (${entry.url ?? entry.id}) mas o registro não foi gravado: ${(e as Error).message}. ` +
+        `[erro] ${item.destination}: ${entry.status === "scheduled" ? "AGENDADO" : "PUBLICADO"} (${entry.url ?? entry.id}) mas o registro não foi gravado: ${(e as Error).message}. ` +
           `NÃO rode --publish de novo para este destino sem antes registrá-lo em ${publishedPath}.`,
       );
       results.push({ destination: item.destination, ok: false, entry, error: `registro não gravado: ${(e as Error).message}` });
       continue;
     }
     results.push({ destination: item.destination, ok: true, entry, unconfirmed, ...(outcome.warnings?.length ? { warnings: outcome.warnings } : {}) });
-    console.error(`[ok] ${item.destination}: ${entry.status} ${entry.url ?? entry.id}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
+    const where = item.action === "enqueue" ? `na fila do Worker para ${entry.scheduled_at} (key ${entry.id})` : (entry.url ?? entry.id);
+    console.error(`[ok] ${item.destination}: ${entry.status} ${where}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
     for (const w of outcome.warnings ?? []) console.error(`[aviso] ${item.destination}: ${w}`);
   }
   const summary = {
-    published: results.filter((r) => r.ok).length,
+    published: results.filter((r) => r.ok && r.entry?.status === "published").length,
+    scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,
     failed: results.filter((r) => !r.ok).length,
     pending: plan.items.filter((i) => i.action === "pending_schedule").length,
     skipped: plan.items.filter((i) => i.action.startsWith("skip_") && i.action !== "skip_done").length,

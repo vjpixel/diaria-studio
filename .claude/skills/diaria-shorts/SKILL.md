@@ -17,7 +17,7 @@ Invocar a skill é o pedido de publicação: publicar nos destinos abaixo não p
 |---|---|---|
 | `youtube_shorts` | guiado (Chrome) | a API trava todo upload em `private` sem a auditoria do GCP (#10659) |
 | `facebook:diaria`, `facebook:vjpixel` | API | agenda pro horário do vertical (abaixo) se faltar mais de 10 min (piso do Facebook); senão, na hora. Até 90 s sobe como Reels (`video_reels`); acima disso, como vídeo da Página (`/videos`, upload resumable em blocos, #10815), que o Facebook mostra como Reel quando é vertical |
-| `instagram` | API (Reels resumable) | autora = conta pessoal do editor (@vjpixel), a conta do Instagram vinculada à página VJ pixel (`instagram_author_page`), publicando com o token dessa página; `diar.ia.br` entra como collab (`instagram_collaborators`) e aceita o convite no app. Sem conta vinculada, ou com token sem `instagram_content_publish` (conferido no dry-run, #10820), o destino é pulado com o passo que destrava, nunca cai na conta da diar.ia.br. Depois do publish o script relê os collabs e avisa se o convite foi descartado. O Instagram não agenda Reels por API: com horário futuro fica pendente até rodar de novo depois do horário do vertical (ou `--now`) |
+| `instagram` | API (Reels resumable) | autora = conta pessoal do editor (@vjpixel), a conta do Instagram vinculada à página VJ pixel (`instagram_author_page`), publicando com o token dessa página; `diar.ia.br` entra como collab (`instagram_collaborators`) e aceita o convite no app. Sem conta vinculada, ou com token sem `instagram_content_publish` (conferido no dry-run, #10820), o destino é pulado com o passo que destrava, nunca cai na conta da diar.ia.br. Depois do publish o script relê os collabs e avisa se o convite foi descartado. O Instagram não agenda Reels por API: com horário futuro o script sobe o vertical pro R2 e põe o Reels na fila do Worker `diaria-linkedin-cron`, que publica no horário (#10823; conta por `ig_account`, collabs na entry). Sem Worker (`DIARIA_LINKEDIN_CRON_URL`/`_TOKEN`) ou sem R2 (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `SHORTS_R2_BUCKET`, `SHORTS_R2_PUBLIC_BASE`), fica pendente até rodar de novo depois do horário do vertical (ou `--now`), como antes |
 | `facebook_profile` | guiado (Chrome) | a Graph API não publica em perfil pessoal |
 
 **Horário do vertical (#10831):** o horizontal sai às 06:00 junto da newsletter; o vertical (Short, Reels e Instagram) sai em horário **próprio**, nunca às 06:00. Teste de 2 semanas a partir de 261022 alternando **12:00 e 19:00 BRT** dia a dia (`publishing.shorts.schedule`, `resolveShortTime`), comparando as visualizações nas primeiras 24 h; fora da janela vale `default_time`. O plano traz o horário em `shortTime` (`hhmm`, `at`). **Grade (#10819):** o plano lê o que já está agendado no dia (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante o teste, o horário do teste vale pra todos os destinos e a grade só vira `[aviso]` quando ele cola (<60 min) num post da mesma conta; fora do teste, cada destino de API tem horário próprio em `slots` (alinha a post de outra conta ou espalha entre os da mesma conta, `scripts/lib/social-slot-planner.ts`). Destinos guiados seguem `shortTime`.
@@ -58,7 +58,7 @@ Dry-run: imprime título/descrição e horário do Shorts, a legenda de cada Ree
 npx tsx scripts/publish-shorts.ts {AAMMDD} --publish
 ```
 
-Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois do horário do vertical só para o Instagram. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
+Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois do horário do vertical só para o Instagram (quando ele ficou pendente por falta de fila). Instagram enfileirado é gravado `scheduled` com a key da fila no `id` — re-rodar não enfileira de novo. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
 
 ## Passo 4 — YouTube Shorts (Chrome)
 
@@ -92,6 +92,6 @@ Se o vídeo subiu por `publish-youtube.ts --upload`, `--video-url` é opcional (
 
 ## Passo 6 — Relatar
 
-Uma linha por destino: publicado/agendado (com URL), pendente (Instagram antes do horário do vertical), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
+Uma linha por destino: publicado/agendado (com URL), na fila do Worker (Instagram, `scheduled` até a hora, depois `unknown` até confirmar no app — `resolveWorkerQueueState`), pendente (Instagram sem fila, antes do horário do vertical), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
 
 Teste de 2 semanas a partir de 261022 (#10769): no fim, comparar os visualizadores e as visitas ao canal por destino, e manter só os destinos que trouxerem gente.
