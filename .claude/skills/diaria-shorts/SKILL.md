@@ -16,9 +16,11 @@ Invocar a skill é o pedido de publicação: publicar nos destinos abaixo não p
 | Destino | Como | Observação |
 |---|---|---|
 | `youtube_shorts` | guiado (Chrome) | a API trava todo upload em `private` sem a auditoria do GCP (#10659) |
-| `facebook:diaria`, `facebook:vjpixel` | API | agenda pras 06:00 BRT se faltar mais de 10 min (piso do Facebook); senão, na hora. Até 90 s sobe como Reels (`video_reels`); acima disso, como vídeo da Página (`/videos`), que o Facebook mostra como Reel quando é vertical |
-| `instagram` | API (Reels resumable) | autora = conta pessoal do editor (@vjpixel), a conta do Instagram vinculada à página VJ pixel (`instagram_author_page`), publicando com o token dessa página; `diar.ia.br` entra como collab (`instagram_collaborators`) e aceita o convite no app. Sem conta vinculada, o destino é pulado com o passo que destrava, nunca cai na conta da diar.ia.br. O Instagram não agenda Reels por API: com horário futuro fica pendente até rodar de novo depois das 06:00 (ou `--now`) |
+| `facebook:diaria`, `facebook:vjpixel` | API | agenda pro horário do vertical (abaixo) se faltar mais de 10 min (piso do Facebook); senão, na hora. Até 90 s sobe como Reels (`video_reels`); acima disso, como vídeo da Página (`/videos`, upload resumable em blocos, #10815), que o Facebook mostra como Reel quando é vertical |
+| `instagram` | API (Reels resumable) | autora = conta pessoal do editor (@vjpixel), a conta do Instagram vinculada à página VJ pixel (`instagram_author_page`), publicando com o token dessa página; `diar.ia.br` entra como collab (`instagram_collaborators`) e aceita o convite no app. Sem conta vinculada, ou com token sem `instagram_content_publish` (conferido no dry-run, #10820), o destino é pulado com o passo que destrava, nunca cai na conta da diar.ia.br. Depois do publish o script relê os collabs e avisa se o convite foi descartado. O Instagram não agenda Reels por API: com horário futuro fica pendente até rodar de novo depois do horário do vertical (ou `--now`) |
 | `facebook_profile` | guiado (Chrome) | a Graph API não publica em perfil pessoal |
+
+**Horário do vertical (#10831):** o horizontal sai às 06:00 junto da newsletter; o vertical (Short, Reels e Instagram) sai em horário **próprio**, nunca às 06:00. Teste de 2 semanas a partir de 261022 alternando **12:00 e 19:00 BRT** dia a dia (`publishing.shorts.schedule`, `resolveShortTime`), comparando as visualizações nas primeiras 24 h; fora da janela vale `default_time`. O plano traz o horário em `shortTime` (`hhmm`, `at`). A regra de grade da #10819 (alinhar/espaçar com o que já está agendado) ainda não existe: quando existir, ela ajusta esse horário.
 
 Os dois destinos guiados aparecem no plano, mas o script não os executa: são os Passos 4 e 5. MemeLab saiu da rotina em 22/10/2026 (#10790). Jandig, Teatro vs Game e Criaturas Afetivas também ficam **fora** da rotina — só quando o editor pedir.
 
@@ -48,7 +50,7 @@ Mais de um candidato (V1, V2, V3…): usar a versão mais alta. Se a escolha nã
 npx tsx scripts/publish-shorts.ts {AAMMDD}
 ```
 
-Dry-run: imprime título/descrição/comentário do Shorts, a legenda de cada Reels, o horário e o que será pulado (já publicado, sem credencial, pendente). Link da edição: `--edition-url` > `_internal/05-edition-url.txt` > slug derivado do título (vira `[aviso]` — conferir antes de publicar).
+Dry-run: imprime título/descrição e horário do Shorts, a legenda de cada Reels, o horário e o que será pulado (já publicado, sem credencial, pendente). Link da edição: `--edition-url` > `_internal/05-edition-url.txt` > slug derivado do título (vira `[aviso]` — conferir antes de publicar).
 
 ## Passo 3 — Reels por API
 
@@ -56,7 +58,7 @@ Dry-run: imprime título/descrição/comentário do Shorts, a legenda de cada Re
 npx tsx scripts/publish-shorts.ts {AAMMDD} --publish
 ```
 
-Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois das 06:00 só para o Instagram. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
+Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois do horário do vertical só para o Instagram. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
 
 ## Passo 4 — YouTube Shorts (Chrome)
 
@@ -64,10 +66,11 @@ Carregar as ferramentas do Claude in Chrome. Abrir `https://studio.youtube.com/c
 
 1. **Chamar o editor** para clicar em "Selecionar arquivos" e escolher o vertical: o upload de arquivo é bloqueado no Chrome (e o `file_upload` tem limite de 10 MB).
 2. Título e descrição do plano (`youtube.title`, `youtube.description`). Em "Mostrar mais": tags do vídeo longo, idioma Português (Brasil), categoria Ciência e tecnologia. Público: "Não é conteúdo para crianças".
-3. Elementos do vídeo → **Vídeo relacionado**: o vídeo longo da mesma edição.
-4. Visibilidade **Público**. **Esperar "Verificações concluídas"** antes de clicar em Publicar: publicar durante a verificação mostra o aviso "Ainda estamos verificando seu conteúdo" (risco de advertência ou visibilidade restrita).
-5. Na página do vídeo, comentar `youtube.pinnedComment` e **fixar** (menu ⋮ → Fixar no topo).
-6. Registrar: `npx tsx scripts/publish-shorts.ts {AAMMDD} --mark youtube_shorts={URL do Short}` (`--mark` só aceita `youtube_shorts` e `facebook_profile`, com URL http/https).
+3. **Capa:** um frame do próprio vídeo com o lettering do título (orientação na #10800; enquanto a geração não existir, escolher o frame no Studio).
+4. Visibilidade **Agendar** para o horário do vertical (`shortTime.hhmm` BRT do dia da edição; se já passou, Público). **Esperar "Verificações concluídas"** antes de confirmar: publicar durante a verificação mostra o aviso "Ainda estamos verificando seu conteúdo" (risco de advertência ou visibilidade restrita).
+5. **Vídeo relacionado não se vincula no upload:** o seletor só lista vídeo público e o horizontal ainda está agendado. O vínculo (Elementos do vídeo → Vídeo relacionado → o horizontal da edição) acontece depois que o horizontal publica às 06:00 e antes do horário do Short — automação na #10811; até ela existir, é passo manual nessa janela.
+6. Sem comentário fixado: desde 2023 link em descrição e em comentário de Short não é clicável (#10831). O único caminho clicável até a edição é o vídeo relacionado.
+7. Registrar: `npx tsx scripts/publish-shorts.ts {AAMMDD} --mark youtube_shorts={URL do Short}` (`--mark` só aceita `youtube_shorts` e `facebook_profile`, com URL http/https).
 
 ## Passo 5 — Perfil pessoal (Chrome)
 
@@ -87,6 +90,6 @@ npx tsx scripts/link-video-d1.ts {AAMMDD} --video-url {URL do YouTube} --save
 
 ## Passo 6 — Relatar
 
-Uma linha por destino: publicado/agendado (com URL), pendente (Instagram antes das 06:00), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
+Uma linha por destino: publicado/agendado (com URL), pendente (Instagram antes do horário do vertical), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
 
 Teste de 2 semanas a partir de 261022 (#10769): no fim, comparar os visualizadores e as visitas ao canal por destino, e manter só os destinos que trouxerem gente.

@@ -85,15 +85,12 @@ describe("#10769 metadados e legendas", () => {
     assert.ok(t.endsWith("… #Shorts"));
   });
 
-  it("Short: descrição curta com #Shorts e link da edição no comentário fixado com utm_medium=shorts", () => {
-    const m = buildYouTubeShortMetadata({ aammdd: "261022", d1: D1, editionUrl: EDITION_URL });
+  it("Short: descrição curta com #Shorts, sem link e sem comentário fixado (#10831)", () => {
+    const m = buildYouTubeShortMetadata({ d1: D1 });
     assert.match(m.description, /^Um modelo da OpenAI/);
     assert.match(m.description, /#Shorts/);
-    assert.ok(!m.description.includes("http"), "link na descrição de Short não é clicável — vai no comentário");
-    assert.equal(
-      m.pinnedComment,
-      `Leia a edição completa: ${EDITION_URL}?utm_source=youtube&utm_medium=shorts&utm_campaign=261022`,
-    );
+    assert.ok(!m.description.includes("http"), "link na descrição de Short não é clicável");
+    assert.deepEqual(Object.keys(m).sort(), ["description", "title"], "link em comentário de Short não é clicável — sem pinnedComment");
   });
 
   it("Reels Facebook: CTA do canal + link da edição com UTM da página", () => {
@@ -194,11 +191,11 @@ describe("#10769 plano do publish-shorts", () => {
     editionUrl: EDITION_URL,
   };
 
-  it("antes das 06:00 BRT: Facebook agenda, Instagram fica pendente, página sem token é pulada com aviso", () => {
+  it("antes do horário do vertical: Facebook agenda (12:00 BRT em 261022, #10831), Instagram fica pendente, página sem token é pulada com aviso", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z") });
     const by = Object.fromEntries(plan.items.map((i) => [i.destination, i]));
     assert.equal(by["facebook:diaria"].action, "publish");
-    assert.equal(by["facebook:diaria"].scheduledAt, "2026-10-22T09:00:00.000Z");
+    assert.equal(by["facebook:diaria"].scheduledAt, "2026-10-22T15:00:00.000Z");
     assert.equal(by["facebook:vjpixel"].action, "skip_missing_credentials");
     assert.equal(by["facebook:memelab"], undefined, "MemeLab saiu da rotina (#10790)");
     assert.equal(by["instagram"].action, "pending_schedule");
@@ -217,7 +214,7 @@ describe("#10769 plano do publish-shorts", () => {
   it("destino já registrado é pulado; --only restringe", () => {
     const plan = planShortsPublish({
       ...base,
-      now: new Date("2026-10-22T12:00:00Z"),
+      now: new Date("2026-10-22T16:00:00Z"),
       published: { aammdd: "261022", entries: [{ destination: "facebook:diaria", status: "published", id: "9", at: "z" }] },
       only: ["facebook:diaria", "instagram"],
     });
@@ -266,8 +263,6 @@ describe("#10769 plano do publish-shorts", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
     assert.doesNotMatch(plan.youtube.description, /^Fonte:/m);
     assert.ok(!plan.youtube.description.includes(D1_SOURCE_URL));
-    assert.doesNotMatch(plan.youtube.pinnedComment, /^Fonte:/m);
-    assert.ok(!plan.youtube.pinnedComment.includes(D1_SOURCE_URL));
   });
 });
 
@@ -389,12 +384,21 @@ describe("#10769 fluxos da Graph API (fetch falso)", () => {
     await assert.rejects(publishFacebookReel(b.deps, page, "v25.0", short, "x", null), /recusou o vídeo/);
   });
 
-  it("Facebook >90 s vai por /videos multipart (agendado com published=false)", async () => {
-    const { deps, calls } = fakeDeps([() => ({ id: "v9" }), () => ({ status: { video_status: "ready" } })]);
-    const out = await publishFacebookReel(deps, page, "v25.0", shortMp4(120), "legenda", "2026-10-23T09:00:00.000Z");
+  it("Facebook >90 s vai por /videos resumable (#10815): start → transfer → finish agendado com published=false", async () => {
+    const file = shortMp4(120);
+    const { deps, calls } = fakeDeps([
+      () => ({ video_id: "v9", upload_session_id: "s1", start_offset: "0", end_offset: String(file.length) }),
+      () => ({ start_offset: String(file.length), end_offset: String(file.length) }),
+      () => ({ success: true }),
+      () => ({ status: { video_status: "ready" } }),
+    ]);
+    const out = await publishFacebookReel(deps, page, "v25.0", file, "legenda", "2026-10-23T09:00:00.000Z");
     assert.match(calls[0].url, /graph-video\.facebook\.com\/v25\.0\/179\/videos$/);
-    assert.equal(calls[0].body.description, "legenda");
-    assert.equal(calls[0].body.published, "false");
+    assert.equal(calls[0].body.upload_phase, "start");
+    assert.equal(calls[1].body.upload_phase, "transfer");
+    assert.equal(calls[2].body.upload_phase, "finish");
+    assert.equal(calls[2].body.description, "legenda");
+    assert.equal(calls[2].body.published, "false");
     assert.equal(out.entry.id, "v9");
     assert.equal(out.entry.status, "scheduled");
   });
@@ -483,7 +487,9 @@ describe("#10790 Instagram: autora pessoal + collab, MemeLab fora", () => {
   });
 
   it("autora = conta vinculada à página, publicando com o token da página", async () => {
-    const { deps, urls } = fetchOnce({ instagram_business_account: { id: "1784", username: "vjpixel" } });
+    const urls: string[] = [];
+    const seq = [{ instagram_business_account: { id: "1784", username: "vjpixel" } }, { data: { scopes: ["instagram_content_publish"] } }];
+    const deps = { fetch: async (url: string) => { urls.push(url); return new Response(JSON.stringify(seq[urls.length - 1])); } };
     const a = await resolveInstagramAuthor(deps, "vjpixel", [vjpixel], "v25.0", { igUserId: "env-ig", token: "env-tok" });
     assert.deepEqual(a, { ready: true, igUserId: "1784", token: "ptok", username: "vjpixel", source: "conta vinculada à página vjpixel" });
     assert.match(urls[0], /\/v25\.0\/937\?fields=instagram_business_account/);
