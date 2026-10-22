@@ -50,7 +50,14 @@ import { readFileSync } from "node:fs";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
 import type { DevelopPlanIssueLike } from "./develop-plan-motivo.ts";
 import type { ExecTrack } from "./issue-exec-track.ts";
-import { compareIssueKeys, issueKeyOfPlanEntry, issueNumberInRepo, studioNumberOfIssueKey, type IssueKey } from "./issue-key.ts";
+import {
+  compareIssueKeys,
+  issueKeyOfPlanEntry,
+  issueNumberInRepo,
+  planEntryDeclaresIdentity,
+  studioNumberOfIssueKey,
+  type IssueKey,
+} from "./issue-key.ts";
 
 /** Os únicos valores válidos de `exec_track_painel` — espelho do enum
  * `ExecTrack` de `issue-exec-track.ts` (reexportado como literal pra este
@@ -107,11 +114,19 @@ export function findMissingExecTrack(issues: DevelopPlanIssueLike[]): {
   const valid = new Set<string>(EXEC_TRACK_VALUES);
   const missing = new Set<number>();
   const missingForeign = new Set<IssueKey>();
+  const unreadable: string[] = [];
   const invalid: Array<{ number: number; value: string; ref?: string }> = [];
   for (const issue of issues) {
     // Identidade por chave (#10618): `{ ref }` sem `number` também é avaliada.
     const key = issueKeyOfPlanEntry(issue);
-    if (!key) continue;
+    if (!key) {
+      // Entrada que DECLARA repo/ref mas ilegível: antes contava como a
+      // studio#number; agora a identidade é desconhecida — nunca some em
+      // silêncio, vira `missing` rotulada como tal (o gate não confirma
+      // cobertura de algo que não sabe qual issue é).
+      if (planEntryDeclaresIdentity(issue)) unreadable.push(describeEntry(issue));
+      continue;
+    }
     const studio = studioNumberOfIssueKey(key);
     const raw = issue?.exec_track_painel;
     if (typeof raw !== "string" || raw.length === 0) {
@@ -127,9 +142,17 @@ export function findMissingExecTrack(issues: DevelopPlanIssueLike[]): {
   }
   return {
     missing: [...missing].sort((a, b) => a - b),
-    ...(missingForeign.size > 0 ? { missingForeign: [...missingForeign].sort(compareIssueKeys) } : {}),
+    ...(missingForeign.size > 0 || unreadable.length > 0
+      ? { missingForeign: [...[...missingForeign].sort(compareIssueKeys), ...unreadable] }
+      : {}),
     invalid: invalid.sort((a, b) => a.number - b.number),
   };
+}
+
+/** Rótulo de entrada de identidade ilegível (`repo`/`ref` crus). */
+function describeEntry(issue: DevelopPlanIssueLike): string {
+  const raw = issue as { ref?: unknown; repo?: unknown; number?: unknown };
+  return `(identidade desconhecida: ref=${JSON.stringify(raw.ref)} repo=${JSON.stringify(raw.repo)} number=${JSON.stringify(raw.number)})`;
 }
 
 /** Pure: veredito a partir do plano já parseado. */

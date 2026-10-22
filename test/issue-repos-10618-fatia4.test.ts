@@ -251,6 +251,15 @@ describe("#10618 fatia 4 — gates sem consulta ao GitHub rotulam por chave", ()
     assert.deepEqual(verdict, { status: "missing", numbers: [], foreign: [`${DESIGN}#21`] });
   });
 
+  it("findMissingExecTrack: entrada com repo ilegível sem track não some em silêncio", () => {
+    const r = findMissingExecTrack([{ number: 5, repo: 42 } as never]);
+    assert.deepEqual(r.missing, []);
+    assert.equal(r.missingForeign?.length, 1);
+    assert.match(r.missingForeign![0], /^\(identidade desconhecida: .*repo=42/);
+    // Entrada SEM número nem repo/ref continua ignorada (contrato de sempre).
+    assert.deepEqual(findMissingExecTrack([{ status: "x" } as never]), { missing: [], invalid: [] });
+  });
+
   it("findMissingExecTrack: plano só-studio mantém o shape de sempre (sem missingForeign)", () => {
     assert.deepEqual(findMissingExecTrack([{ number: 5 } as never]), { missing: [5], invalid: [] });
   });
@@ -577,6 +586,39 @@ describe("#10618 fatia 4 — gates de fim de rodada avaliam a entrada do design 
     assert.equal(r.status, 1, r.stdout + r.stderr);
     assert.match(r.stderr, /cobertura de comentário faltando: vjpixel\/diaria-design#21 \(pulada\)/);
     assert.ok(calls().every((c) => c.includes("-R") && c.includes(DESIGN)), "só o design consultado, com -R");
+  });
+
+  it("check-decision-label-drift-gate: falha só no design NÃO descarta o drift achado no studio", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: {
+        "7": { status: "pulada", motivo: "x", scope_note: "bloqueio externo: falta conta do painel", in_round: false },
+        [`${DESIGN}#21`]: { status: "pulada", motivo: "x", scope_note: "y", in_round: false },
+      },
+    });
+    const { env } = fakeGh(root, {
+      "issue_list_default_list_number,labels,body": [{ number: 7, labels: [], body: "" }],
+    });
+    const r = runCli(root, env, "check-decision-label-drift-gate.ts", ["--plan", planPath]);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /^#7\texternal-blocker/m);
+    assert.match(r.stderr, /vjpixel\/diaria-design: lista de issues abertas indisponível/);
+  });
+
+  it("check-decision-label-drift-gate: sem drift e design falhando → 'ok PARCIAL' nomeando o repo", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: {
+        "7": { status: "pulada", motivo: "x", scope_note: "nada", in_round: false },
+        [`${DESIGN}#21`]: { status: "pulada", motivo: "x", scope_note: "y", in_round: false },
+      },
+    });
+    const { env } = fakeGh(root, {
+      "issue_list_default_list_number,labels,body": [{ number: 7, labels: [], body: "" }],
+    });
+    const r = runCli(root, env, "check-decision-label-drift-gate.ts", ["--plan", planPath]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /^ok PARCIAL .*NÃO avaliado\(s\): vjpixel\/diaria-design/);
   });
 
   it("check-decision-label-drift-gate: lista de issues abertas do design buscada com -R", () => {

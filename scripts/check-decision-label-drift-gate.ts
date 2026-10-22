@@ -171,16 +171,26 @@ if (isMainModule(import.meta.url)) {
   const allSuppressed: Array<SuppressedFinding & { label: string }> = [];
   let ghUnavailable = false;
 
+  const reposNotEvaluated: string[] = [];
   for (const g of groups) {
     if (!allowedRepos.has(g.repo)) continue;
     const repoArg = g.isDefault ? undefined : g.repo;
     // Buscar todas as issues abertas DO REPO DO GRUPO para pegar labels atuais
     const fetched = fetchOpenIssues(cwd, repoArg);
     if (fetched.error) {
+      if (g.isDefault) {
+        console.error(
+          `[check-decision-label-drift-gate] gh indisponível — pulando checagem de drift de label (fail-soft, #738): ${fetched.error}`,
+        );
+        process.exit(0);
+      }
+      // #10618 (fatia 4): falha só num repo extra NÃO descarta o veredito
+      // do studio já calculado — o repo fica fora, com ressalva na linha final.
       console.error(
-        `[check-decision-label-drift-gate] gh indisponível — pulando checagem de drift de label (fail-soft, #738): ${repoArg ? `${repoArg}: ` : ""}${fetched.error}`,
+        `[check-decision-label-drift-gate] ${g.repo}: lista de issues abertas indisponível — entrada(s) desse repo NÃO avaliada(s) (fail-soft, #738): ${fetched.error}`,
       );
-      process.exit(0);
+      reposNotEvaluated.push(g.repo);
+      continue;
     }
 
     const evaluations = buildGateEvaluations(
@@ -240,8 +250,12 @@ if (isMainModule(import.meta.url)) {
   }
 
   if (allFindings.length === 0) {
+    const ressalvas = [
+      ...(skipped.length > 0 ? [`${skipped.length} entrada(s) FORA desta checagem`] : []),
+      ...(reposNotEvaluated.length > 0 ? [`repo(s) NÃO avaliado(s): ${reposNotEvaluated.join(", ")}`] : []),
+    ];
     console.log(
-      `ok — nenhum drift de label de decisão detectado nas issues da rodada${skipped.length > 0 ? ` (exceto ${skipped.length} entrada(s) FORA desta checagem, ver stderr)` : ""}`,
+      `ok${reposNotEvaluated.length > 0 ? " PARCIAL" : ""} — nenhum drift de label de decisão detectado nas issues da rodada${ressalvas.length > 0 ? ` (exceto ${ressalvas.join("; ")}, ver stderr)` : ""}`,
     );
     process.exit(0);
   }
