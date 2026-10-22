@@ -47,7 +47,7 @@ function syncDeps(isBlacklisted: (email: string) => Promise<boolean>) {
       { id: 42, email: "bloqueada@x.com", created_at: "2026-09-01T00:00:00.000Z", tagNames: [] },
       { id: 43, email: "livre@x.com", created_at: "2026-09-01T00:00:00.000Z", tagNames: [] },
     ],
-    fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["bloqueada@x.com", "livre@x.com"], opens: [], clicks: [] }),
+    fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["bloqueada@x.com", "livre@x.com"], opens: ["leitor-fora-da-base@x.com"], clicks: [] }),
     findEnvioBrevoTagId: async () => 555,
     readStore: () => store,
     writeStore: (s) => {

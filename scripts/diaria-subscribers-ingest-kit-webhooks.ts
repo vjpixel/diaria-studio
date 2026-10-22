@@ -19,9 +19,9 @@
  *
  * Config (.env): `KIT_EVENTS_URL` (base do Worker, ex.
  * https://kit-events.<conta>.workers.dev) e `KIT_EVENTS_READ_TOKEN` (mesmo
- * valor do secret `EVENTS_READ_TOKEN` do Worker). Sem os dois, sai 0 com
- * aviso: o canal ainda não foi ligado (ver workers/kit-events/README.md), o
- * que não é falha desta execução.
+ * valor do secret `EVENTS_READ_TOKEN` do Worker). O canal está ligado desde
+ * 21/10/2026: sem os dois, `--write` (a task agendada) sai 1 para o alarme de
+ * units falhas avisar (#10788); o dry-run manual só avisa e sai 0.
  *
  * Leitura de 1 pessoa: `findSubscriberIdsByEmail` +
  * `getKitWebhookEventsForSubscriber` (diaria-subscribers-db.ts).
@@ -47,10 +47,22 @@ export async function main(
   if (env === process.env) loadProjectEnv();
   const baseUrl = (env.KIT_EVENTS_URL ?? "").trim();
   const token = (env.KIT_EVENTS_READ_TOKEN ?? "").trim();
+  const shouldWrite = hasFlag(argv, "write") && !hasFlag(argv, "dry-run");
   if (!baseUrl || !token) {
-    console.error(
-      "ℹ️  KIT_EVENTS_URL/KIT_EVENTS_READ_TOKEN ausentes — Worker kit-events ainda não ligado (workers/kit-events/README.md). Nada a fazer.",
-    );
+    const missing = [!baseUrl && "KIT_EVENTS_URL", !token && "KIT_EVENTS_READ_TOKEN"].filter(Boolean).join(", ");
+    // #10788: o canal está ligado desde 21/10/2026 e a task agendada é o
+    // único caller com `--write`. Ali, var ausente é regressão de config
+    // (`sync-env` com vault incompleto, máquina nova): sair 0 deixava o passo
+    // no-op todo dia sem alarme, com os eventos acumulando no KV sem TTL.
+    // Exit 1 deixa a unit failed e o alarme de units falhas avisa. Rodada
+    // manual sem `--write` (clone novo, sessão sem .env) segue só avisando.
+    if (shouldWrite) {
+      console.error(
+        `❌ ${missing} ausente(s) no ambiente — o canal kit-events está ligado (workers/kit-events/README.md), então a ingestão com --write não pode virar no-op. Rodar \`npm run sync-env\` ou conferir o .env.`,
+      );
+      return 1;
+    }
+    console.error(`⚠️  ${missing} ausente(s) — dry-run sem leitura do Worker kit-events. Nada a fazer.`);
     return 0;
   }
 
@@ -61,7 +73,6 @@ export async function main(
     return 1;
   }
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
-  const shouldWrite = hasFlag(argv, "write") && !hasFlag(argv, "dry-run");
   // Escritor único (#10746): cópia de conflito do OneDrive ao lado do banco
   // indica que outra máquina gravou nele. Mesmo guard do roster.
   if (shouldWrite) {

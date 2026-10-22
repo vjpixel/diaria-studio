@@ -351,7 +351,7 @@ describe("integração com diaria-subscribers-db", () => {
     assert.equal(f.ok, false);
   });
 
-  it("CLI ponta a ponta contra o Worker (KV falso) e sem config sai 0", async () => {
+  it("CLI ponta a ponta contra o Worker (KV falso) e dry-run sem config sai 0", async () => {
     const kv = new FakeKv();
     await handleRequest(post(`/webhook/${SECRET}/unsubscribe`, sub(77, "x@y.com")), env(kv), deps("2026-10-20T22:55:01.000Z"));
     const workerFetch = (async (input: string | URL | Request, init?: RequestInit) =>
@@ -402,6 +402,30 @@ describe("escritor único e task agendada (#10746)", () => {
     mkdirSync(dbDir, { recursive: true });
     writeFileSync(join(dbDir, "store-Neo.db"), "");
     assert.equal(await ingestMain(["--db", join(dbDir, "store.db"), "--write"], fetchW, envVars), 1);
+  });
+
+  it("#10788: --write sem KIT_EVENTS_* sai 1 (canal ligado, nunca no-op silencioso)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kit-webhooks-noenv-10788-"));
+    const dbPath = join(dir, "diaria-subscribers", "store.db");
+    let called = false;
+    const spyFetch = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    assert.equal(await ingestMain(["--db", dbPath, "--write"], spyFetch, {}), 1);
+    assert.equal(
+      await ingestMain(["--db", dbPath, "--write"], spyFetch, { KIT_EVENTS_URL: envVars.KIT_EVENTS_URL }),
+      1,
+      "só o token ausente também falha",
+    );
+    assert.equal(
+      await ingestMain(["--db", dbPath, "--write"], spyFetch, { KIT_EVENTS_READ_TOKEN: READ_TOKEN, KIT_EVENTS_URL: "  " }),
+      1,
+      "URL só com espaço conta como ausente",
+    );
+    // `--write --dry-run` é dry-run: segue só avisando.
+    assert.equal(await ingestMain(["--db", dbPath, "--write", "--dry-run"], spyFetch, {}), 0);
+    assert.equal(called, false, "sem config, nenhuma leitura do Worker");
   });
 
   it("Diaria-Kit-Roster-Ingest roda a ingestão dos webhooks com --write", () => {

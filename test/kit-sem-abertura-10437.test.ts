@@ -215,7 +215,7 @@ function fakeDeps(overrides: Partial<KitSemAberturaDeps> = {}) {
     log: () => {},
     readRegistry: () => records,
     listKitActive: async () => [candidate("mover@x.com", { id: 42 })],
-    fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["mover@x.com"], opens: [], clicks: [] }),
+    fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["mover@x.com"], opens: ["leitor-fora-da-base@x.com"], clicks: [] }),
     findEnvioBrevoTagId: async () => 555,
     readStore: () => store,
     writeStore: (s) => {
@@ -739,7 +739,7 @@ describe("registro de broadcasts: escopo DOI real no layout aninhado (#10437, ar
         readRegistry: () => readDiariaBroadcastRegistry(root),
         fetchEngagement: async (id) => {
           asked.push(id);
-          return { broadcastId: id, delivered: ["mover@x.com"], opens: [], clicks: [] };
+          return { broadcastId: id, delivered: ["mover@x.com"], opens: ["leitor-fora-da-base@x.com"], clicks: [] };
         },
       });
       const r = await runKitSemAberturaSync(cfg(true, true), { push: false }, deps);
@@ -824,7 +824,7 @@ describe("cota da conta também pros cadastros novos, no DIA DE ENVIO (#10437)",
   it("cadastros novos que não cabem na cota ⇒ Passo 3c abortado (exit 1), ninguém movido", async () => {
     const { deps, calls } = fakeDeps({
       listKitActive: async () => [candidate("novo@x.com", { id: 43, created_at: new Date(NOW - 5 * DAY).toISOString() })],
-      fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["novo@x.com"], opens: [], clicks: [] }),
+      fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["novo@x.com"], opens: ["leitor-fora-da-base@x.com"], clicks: [] }),
       transactionalOnSendDay: async () => 299,
     });
     const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
@@ -837,7 +837,7 @@ describe("cota da conta também pros cadastros novos, no DIA DE ENVIO (#10437)",
   it("cota ilegível com cadastros novos ⇒ abortado (cota ilegível nunca vira permissão)", async () => {
     const { deps, calls } = fakeDeps({
       listKitActive: async () => [candidate("novo@x.com", { id: 43, created_at: new Date(NOW - 5 * DAY).toISOString() })],
-      fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["novo@x.com"], opens: [], clicks: [] }),
+      fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["novo@x.com"], opens: ["leitor-fora-da-base@x.com"], clicks: [] }),
       transactionalOnSendDay: async () => null,
     });
     const r = await runKitSemAberturaSync(cfg(true, true), { push: true }, deps);
