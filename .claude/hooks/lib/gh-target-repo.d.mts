@@ -64,6 +64,8 @@ export function resolveMergeTargets(
     aliases?: ReadonlyMap<string, string | null>;
   },
 ): MergeResolution;
+/** O detector acha merge e nenhuma invocação exige o modo estrito (#10751); exceção → `false`. */
+export function detectorConfirmsPlainMerge(command: unknown, opts?: { aliases?: ReadonlyMap<string, string | null> }): boolean;
 /** `/c/x` → `C:\x` só em win32. */
 export function toNativePath<T>(path: T, platform?: string): T;
 

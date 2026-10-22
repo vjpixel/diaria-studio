@@ -58,7 +58,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mergeTargetHints } from "./gh-pr-merge-command.mjs";
+import { findGhPrMergeInvocations, mergeTargetHints, requiresStrict } from "./gh-pr-merge-command.mjs";
 
 export const DIARIA_STUDIO_REPO = "vjpixel/diaria-studio";
 
@@ -858,7 +858,11 @@ export function parseStrictMerge(command) {
 export function resolveMergeTargets(command, cwd, opts = {}) {
   const { execFn = execFileSync, allowed = loadAllowedForeignRepos(), env = process.env } = opts;
   const parsed = parseStrictMerge(command);
-  if (parsed) {
+  // #10751: a whitelist textual SÓ vale se o detector concordar que todas as
+  // invocações são `gh pr merge` literal — o invariante deixa de depender só
+  // de `parseStrictMerge` reler o comando cru (defesa em profundidade; com a
+  // whitelist de hoje as duas leituras sempre concordam).
+  if (parsed && detectorConfirmsPlainMerge(command, opts)) {
     const { repo, cd, pr } = parsed;
     if (repo !== null && repo !== DIARIA_STUDIO_REPO) {
       // Repo de fora: só vale se permitido e, com `cd`, se o diretório é dele.
@@ -917,6 +921,20 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
     explicitRepo: null,
     indeterminate: hints.unknown,
   };
+}
+
+/**
+ * `true` quando o detector acha ao menos um merge e NENHUMA invocação exige o
+ * modo estrito (`requiresStrict`, #10751). Exceção na leitura, ou detector sem
+ * merge nenhum → `false` (fail-closed: cai no estrito).
+ */
+export function detectorConfirmsPlainMerge(command, opts = {}) {
+  try {
+    const invocations = findGhPrMergeInvocations(command, opts.aliases !== undefined ? { aliases: opts.aliases } : {});
+    return invocations.length > 0 && !invocations.some(requiresStrict);
+  } catch {
+    return false;
+  }
 }
 
 /** `true` quando a resolução caiu no modo COMPLEXO (fail-closed). */
