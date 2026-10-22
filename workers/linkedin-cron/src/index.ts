@@ -69,6 +69,10 @@
  *                                    authenticationMethod que o scenario ANTERIOR (2270381) já tinha.
  *   INSTAGRAM_BUSINESS_ACCOUNT_ID  → (#3817) conta @diar.ia.br pra channel="instagram"
  *   INSTAGRAM_ACCESS_TOKEN         → (#3817) token de página com escopo instagram_content_publish
+ *   INSTAGRAM_VJPIXEL_ACCOUNT_ID   → (#10823) conta do Instagram vinculada à página VJ pixel
+ *                                    (`ig_account: "vjpixel"`) — opcional; ausente = o enqueue
+ *                                    recusa entries dessa conta (400 `instagram_account_creds_missing`)
+ *   INSTAGRAM_VJPIXEL_ACCESS_TOKEN → (#10823) token da página VJ pixel com instagram_content_publish
  *   THREADS_ACCESS_TOKEN           → (#3944 Parte B) token de longa duração do app Threads da Meta
  *   THREADS_USER_ID                → (#3944 Parte B) Threads user ID da conta @diar.ia.br
  *   LINKEDIN_ACCESS_TOKEN          → (#8052) token com escopo w_organization_social (ou w_member_social)
@@ -105,6 +109,12 @@ export interface Env {
   INSTAGRAM_BUSINESS_ACCOUNT_ID?: string;
   INSTAGRAM_ACCESS_TOKEN?: string;
   INSTAGRAM_API_VERSION?: string; // default "v25.0" aplicado em dispatch.ts
+  // #10823 — 2ª conta do Instagram (a vinculada à página VJ pixel), usada por
+  // entries com `ig_account: "vjpixel"` (Reels do /diaria-shorts). Mesma
+  // versão de API da conta da diar.ia.br. Opcionais: ausentes = o enqueue
+  // recusa entries dessa conta (fail-early, mesmo racional do #8303).
+  INSTAGRAM_VJPIXEL_ACCOUNT_ID?: string;
+  INSTAGRAM_VJPIXEL_ACCESS_TOKEN?: string;
   // #3944 Parte B — credenciais Threads API pro canal "threads". Opcionais pra
   // backward-compat: se ausentes quando um item channel="threads" for
   // disparado, vai pra DLQ com motivo claro (mesmo padrão do Instagram, ver
@@ -136,11 +146,22 @@ export type WebhookTarget = "diaria" | "pixel";
  */
 // #10766: `eia-{AAMMDD}` (post avulso do "É IA?") saiu — o quiz não é mais
 // publicado nas redes, só na newsletter. Recusar no enqueue é o guard pra não voltar.
-export const QUEUE_DESTAQUE_RE = /^(d[123]|um|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/;
+// #10823: `shorts` — Reels do vídeo curto da edição (/diaria-shorts).
+export const QUEUE_DESTAQUE_RE = /^(d[123]|um|shorts|weekly(-[a-z]+)?|especial(-[a-z]+)?)$/;
 export type QueueAction = "post" | "comment";
 // #3817/#3944 Parte B — canal de disparo. Ausente/undefined = "linkedin" SEMPRE
 // (backward-compat obrigatória: entries já em produção no KV nunca tiveram este campo).
 export type QueueChannel = "linkedin" | "instagram" | "threads";
+/**
+ * #10823 — conta do Instagram que publica a entry. Ausente = "diaria" SEMPRE
+ * (backward-compat: entries já no KV nunca tiveram este campo).
+ */
+export type InstagramAccount = "diaria" | "vjpixel";
+export const INSTAGRAM_ACCOUNTS: readonly InstagramAccount[] = ["diaria", "vjpixel"];
+/** #10823 — a Graph API aceita no máximo 3 colaboradores por mídia. */
+export const MAX_COLLABORATORS = 3;
+/** #10823 — username do Instagram: letras, dígitos, `.` e `_`, até 30. */
+export const IG_USERNAME_RE = /^[A-Za-z0-9._]{1,30}$/;
 
 export interface QueueEntry {
   text: string;
@@ -164,6 +185,15 @@ export interface QueueEntry {
   // 3 passos da Graph API); length === 1 ou ausente = caminho single-image de
   // sempre (via `image_urls[0]` ou `image_url`, indistinguível pro caller).
   image_urls?: string[];
+  // #10823 — Reels agendado. `media_type: "REELS"` exige `channel: "instagram"`
+  // e `video_url` público (https); `image_url`/`image_urls` não se aplicam.
+  // Ausente = post de imagem/carrossel de sempre.
+  media_type?: "REELS";
+  video_url?: string;
+  /** #10823 — usernames convidados como collab (só com media_type=REELS, ≤3). */
+  collaborators?: string[];
+  /** #10823 — conta do Instagram que publica (default "diaria"). Ver InstagramAccount. */
+  ig_account?: InstagramAccount;
   // (#2230 bug 2 fix) Tombstone de cancelamento: setado por handleQueueDelete quando
   // o KV.delete falha após o DO cancel. O cron detecta este flag, pula o item sem
   // postar, e o deleta do KV (cleanup do tombstone).
@@ -302,7 +332,69 @@ import { LinkedInScheduler, type DoStoredPayload } from "./durable-object";
 export * from "./dispatch";
 export * from "./maintenance";
 import { withRefreshedThreadsToken, maybeRefreshThreadsToken, alertNewDlqEntries, shouldSweepDlq } from "./maintenance";
-import { resolveInstagramCreds, resolveThreadsCreds, resolveLinkedInCreds } from "./dispatch";
+import { resolveInstagramCreds, resolveInstagramVjpixelCreds, resolveThreadsCreds, resolveLinkedInCreds } from "./dispatch";
+
+/**
+ * #10823 — valida os campos de Reels (`media_type`, `video_url`,
+ * `collaborators`) e a conta do Instagram (`ig_account`). Devolve o corpo do
+ * 400 ou `null` quando está tudo certo. Puro sobre `body` + `env` (só lê se a
+ * credencial da 2ª conta existe).
+ */
+export function validateReelsFields(
+  body: Partial<QueueEntry>,
+  env: Env,
+): { body: { error: string; code?: string } } | null {
+  const isInstagram = body.channel === "instagram";
+  if (body.ig_account !== undefined) {
+    if (!INSTAGRAM_ACCOUNTS.includes(body.ig_account as InstagramAccount)) {
+      return { body: { error: `ig_account must be one of: ${INSTAGRAM_ACCOUNTS.join(", ")}` } };
+    }
+    if (!isInstagram) return { body: { error: "ig_account only applies to channel='instagram'" } };
+    if (body.ig_account === "vjpixel" && !resolveInstagramVjpixelCreds(env)) {
+      return {
+        body: {
+          error:
+            "ig_account='vjpixel' requer INSTAGRAM_VJPIXEL_ACCOUNT_ID e INSTAGRAM_VJPIXEL_ACCESS_TOKEN configurados no Worker — não configurados",
+          code: "instagram_account_creds_missing",
+        },
+      };
+    }
+  }
+  if (body.media_type !== undefined && body.media_type !== "REELS") {
+    return { body: { error: "media_type must be 'REELS' (omit for image/carousel posts)" } };
+  }
+  const isReels = body.media_type === "REELS";
+  if (!isReels) {
+    if (body.video_url !== undefined) return { body: { error: "video_url requires media_type='REELS'" } };
+    if (body.collaborators !== undefined) return { body: { error: "collaborators requires media_type='REELS'" } };
+    return null;
+  }
+  if (!isInstagram) return { body: { error: "media_type='REELS' requires channel='instagram'" } };
+  if (body.image_url || body.image_urls !== undefined) {
+    return { body: { error: "media_type='REELS' does not take image_url/image_urls (use video_url)" } };
+  }
+  if (typeof body.video_url !== "string" || !body.video_url) {
+    return { body: { error: "video_url is required when media_type='REELS'" } };
+  }
+  if (body.video_url.length > MAX_URL_LENGTH) {
+    return { body: { error: `video_url exceeds ${MAX_URL_LENGTH} chars` } };
+  }
+  if (!/^https:\/\//.test(body.video_url)) {
+    return { body: { error: "video_url must be a public https URL (the Graph API fetches it)" } };
+  }
+  if (body.collaborators !== undefined) {
+    if (!Array.isArray(body.collaborators)) return { body: { error: "collaborators must be an array of usernames" } };
+    if (body.collaborators.length > MAX_COLLABORATORS) {
+      return { body: { error: `collaborators exceeds the Graph API max of ${MAX_COLLABORATORS}` } };
+    }
+    for (const c of body.collaborators as unknown[]) {
+      if (typeof c !== "string" || !IG_USERNAME_RE.test(c)) {
+        return { body: { error: `collaborators must contain Instagram usernames (got ${JSON.stringify(c)})` } };
+      }
+    }
+  }
+  return null;
+}
 
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
@@ -337,7 +429,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // mais nas redes, então o enqueue recusa.
   // `um`: 4º post diário (item USE MELHOR, #9568) — publish-linkedin/instagram/threads.
   if (!QUEUE_DESTAQUE_RE.test(body.destaque as string)) {
-    return json({ error: "destaque must be d1, d2, d3, um, weekly[-mode], or especial[-mode]" }, 400);
+    return json({ error: "destaque must be d1, d2, d3, um, shorts, weekly[-mode], or especial[-mode]" }, 400);
   }
 
   // #595 — Validar webhook_target e action (opcionais; defaults aplicados
@@ -410,12 +502,19 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  // #10823 — Reels agendado + conta do Instagram por entry. Validado no
+  // enqueue pelo mesmo motivo dos guards abaixo: um payload inválido só
+  // falharia no disparo, horas depois, com o store local dizendo "agendado".
+  const reelsError = validateReelsFields(body, env);
+  if (reelsError) return json(reelsError.body, 400);
+
   // Instagram Graph API (Content Publishing) exige imagem — sem ela o
   // container nem chega a ser criado. Falhar aqui (enqueue) é melhor que
   // falhar só no disparo, horas/dias depois. #4153 — `image_urls` (não-vazio,
   // já validado acima) também satisfaz esta exigência, não só `image_url`.
   if (
     body.channel === "instagram" &&
+    body.media_type !== "REELS" &&
     !body.image_url &&
     !(Array.isArray(body.image_urls) && body.image_urls.length > 0)
   ) {
@@ -509,6 +608,11 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.channel !== undefined && { channel: body.channel as QueueEntry["channel"] }),
     // #4153 — omitido se undefined: entries sem image_urls usam image_url (single-image)
     ...(body.image_urls !== undefined && { image_urls: body.image_urls as string[] }),
+    // #10823 — omitidos se undefined: entries sem eles seguem o caminho de imagem da conta diar.ia.br
+    ...(body.media_type !== undefined && { media_type: body.media_type }),
+    ...(body.video_url !== undefined && { video_url: body.video_url }),
+    ...(body.collaborators !== undefined && { collaborators: body.collaborators }),
+    ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
   };
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
 
@@ -548,6 +652,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     // tem acesso a `env` no alarm() (só ao payload persistido), então tudo
     // que o disparo precisar tem que estar aqui.
     const igCreds = resolveInstagramCreds(env);
+    const igVjpixelCreds = resolveInstagramVjpixelCreds(env); // #10823
     const threadsCreds = resolveThreadsCreds(env);
     const linkedinCreds = resolveLinkedInCreds(env); // #8052
     const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
@@ -558,6 +663,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
       ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
       ...(igCreds !== undefined && { instagram: igCreds }),
+      ...(igVjpixelCreds !== undefined && { instagramVjpixel: igVjpixelCreds }),
       ...(threadsCreds !== undefined && { threads: threadsCreds }),
       ...(linkedinCreds !== undefined && { linkedin: linkedinCreds }),
     };
@@ -897,6 +1003,7 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
       // após um deploy que introduziu channel="instagram"/"threads" ou
       // rotacionou o secret.
       const igCreds = resolveInstagramCreds(env);
+      const igVjpixelCreds = resolveInstagramVjpixelCreds(env); // #10823
       const threadsCreds = resolveThreadsCreds(env);
       const linkedinCreds = resolveLinkedInCreds(env); // #8052
       const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
@@ -907,6 +1014,7 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
         ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
         ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
         ...(igCreds !== undefined && { instagram: igCreds }),
+        ...(igVjpixelCreds !== undefined && { instagramVjpixel: igVjpixelCreds }),
         ...(threadsCreds !== undefined && { threads: threadsCreds }),
         ...(linkedinCreds !== undefined && { linkedin: linkedinCreds }),
       };

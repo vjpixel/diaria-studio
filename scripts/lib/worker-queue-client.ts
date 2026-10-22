@@ -47,6 +47,41 @@ export interface WorkerQueuePayload {
   // servidor. Usado por `publish-weekly-social.ts` pra enfileirar o post
   // semanal de LinkedIn pelo mesmo endpoint `/queue` (Make.com scenario).
   channel: "linkedin" | "instagram" | "threads";
+  // #10823 — Reels agendado (só `channel: "instagram"`): `media_type: "REELS"`
+  // + `video_url` público (https) no lugar de `image_url`; `collaborators`
+  // (≤3 usernames) e `ig_account` (conta que publica, default "diaria"). O
+  // Worker valida tudo no enqueue — ver `validateReelsFields` em
+  // workers/linkedin-cron/src/index.ts. Monte com `buildReelsQueuePayload`.
+  media_type?: "REELS";
+  video_url?: string;
+  collaborators?: string[];
+  ig_account?: "diaria" | "vjpixel";
+}
+
+/**
+ * #10823 — payload de Reels agendado pela fila do Worker. O Instagram não
+ * agenda mídia pela Graph API; a fila publica no horário (`scheduled_at`).
+ * `image_url` vai `null` (o Worker recusa imagem junto de REELS) e
+ * `collaborators` vazio é omitido.
+ */
+export function buildReelsQueuePayload(input: {
+  caption: string;
+  videoUrl: string;
+  scheduledAt: string;
+  account?: "diaria" | "vjpixel";
+  collaborators?: string[];
+}): WorkerQueuePayload {
+  return {
+    text: input.caption,
+    image_url: null,
+    scheduled_at: input.scheduledAt,
+    destaque: "shorts",
+    channel: "instagram",
+    media_type: "REELS",
+    video_url: input.videoUrl,
+    ...(input.collaborators && input.collaborators.length > 0 && { collaborators: input.collaborators }),
+    ...(input.account && { ig_account: input.account }),
+  };
 }
 
 /**
