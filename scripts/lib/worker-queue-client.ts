@@ -56,6 +56,11 @@ export interface WorkerQueuePayload {
   video_url?: string;
   collaborators?: string[];
   ig_account?: "diaria" | "vjpixel";
+  // #10906 — chave idempotente: o Worker deriva a key da fila dela, então o
+  // MESMO POST repetido (retry do `postToWorkerQueue` depois de uma resposta
+  // perdida) cai na mesma entry em vez de criar uma 2ª. Formato aceito:
+  // `[A-Za-z0-9._:-]{1,128}` (IDEMPOTENCY_KEY_RE no Worker).
+  idempotency_key?: string;
 }
 
 /**
@@ -70,6 +75,8 @@ export function buildReelsQueuePayload(input: {
   scheduledAt: string;
   account?: "diaria" | "vjpixel";
   collaborators?: string[];
+  /** #10906 — ver `WorkerQueuePayload.idempotency_key`. */
+  idempotencyKey?: string;
 }): WorkerQueuePayload {
   return {
     text: input.caption,
@@ -81,6 +88,7 @@ export function buildReelsQueuePayload(input: {
     video_url: input.videoUrl,
     ...(input.collaborators && input.collaborators.length > 0 && { collaborators: input.collaborators }),
     ...(input.account && { ig_account: input.account }),
+    ...(input.idempotencyKey && { idempotency_key: input.idempotencyKey }),
   };
 }
 
@@ -165,7 +173,7 @@ export async function postToWorkerQueue(
   payload: WorkerQueuePayload,
   maxAttempts = 2,
   logPrefix = "worker-queue-client",
-): Promise<{ queued: true; key: string; scheduled_at: string; destaque: string }> {
+): Promise<{ queued: true; key: string; scheduled_at: string; destaque: string; duplicate?: boolean }> {
   const queueUrl = workerUrl.replace(/\/+$/, "") + "/queue";
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -195,13 +203,20 @@ export async function postToWorkerQueue(
         throw new WorkerQueueError(res.status, bodyText, code);
       }
       const text = await res.text();
+      let parsed: ReturnType<typeof parseWorkerQueueResponse>;
       try {
-        return parseWorkerQueueResponse(JSON.parse(text));
+        parsed = parseWorkerQueueResponse(JSON.parse(text));
       } catch (parseErr) {
         throw new Error(
           `Worker response inválido (schema ou JSON): ${text.slice(0, 200)} — ${(parseErr as Error).message}`,
         );
       }
+      // #10906 — o Worker achou a entry da mesma `idempotency_key` (o POST
+      // anterior foi gravado mesmo com a resposta perdida): sucesso, sem 2ª entry.
+      if (parsed.duplicate === true) {
+        console.error(`[${logPrefix}] worker: ${parsed.key} já estava na fila (idempotency_key) — reaproveitada, nada duplicado`);
+      }
+      return parsed as { queued: true; key: string; scheduled_at: string; destaque: string; duplicate?: boolean };
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
       console.error(`[${logPrefix}] worker attempt ${attempt} failed: ${lastError.message}`);
