@@ -3,8 +3,8 @@
  *
  * Cobre `META_ADS_CANAL` de `scripts/meta-ads-ingest-spend.ts` — o canal
  * escrito em `spend.csv` pelo caminho mensal do Meta durante o teste 2608.
- * Espelha `test/microsoft-ads-ingest-spend.ts` (#7544, mesma classe de
- * defeito já corrigida pro Microsoft): antes desta PR,
+ * Mesma classe de defeito já corrigida pro Microsoft no #7544 (canal
+ * encerrado no #10755): antes desta PR,
  * `meta-ads-ingest-spend.ts` não sobrescrevia o `canal` passado a
  * `runMetaAdsIngest`, então caía no default `"Meta"` (`RESERVED_CHANNEL_NAMES`,
  * sem spec própria em `CHANNEL_KEY_SPECS`) — a 1ª execução real teria criado

@@ -3,7 +3,7 @@
  *
  * Núcleo genérico de `scripts/lib/spend-ingest.ts` (`mergeSpendRows` +
  * `runSpendIngest`) — o motor agnóstico de canal que
- * `google-ads-ingest.ts`/`microsoft-ads-ingest.ts` adaptam. Não repete os
+ * `google-ads-ingest.ts`/`meta-ads-ingest.ts` adaptam. Não repete os
  * testes de `google-ads-ingest-5237.test.ts` (esses continuam cobrindo o
  * adaptador Google ponta a ponta, inalterados pelo refactor); aqui é só o
  * motor genérico com um fetcher sintético.

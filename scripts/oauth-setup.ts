@@ -327,7 +327,8 @@ async function main(): Promise<number | void> {
     access_token: tokens.access_token,
     refresh_token: tokens.refresh_token,
     expiry_ms: Date.now() + tokens.expires_in * 1000,
-    // #1973: stamp pra o health-check avisar antes do limite de 7d (app Testing).
+    // #1973: idade do refresh, só informativa desde o #10785 (app em produção,
+    // o refresh não vence mais em 7 dias).
     refresh_obtained_ms: Date.now(),
   };
 

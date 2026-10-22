@@ -16,7 +16,7 @@ Ativo vs histórico. `context/` é o que entra no prompt cache (curado, ver `CLA
 | [`make-595-comments-setup.md`](./make-595-comments-setup.md) | Extensão do scenario Make (#595) pra suportar comments automáticos no LinkedIn |
 | [`linkedin-cron-worker-setup.md`](./linkedin-cron-worker-setup.md) | Cloudflare Worker `diaria-linkedin-cron` pra agendamento real de posts (substitui Make Data Store) |
 | [`clarice-dashboard-access-setup.md`](./clarice-dashboard-access-setup.md) | Cookie-token auth do clarice-dashboard |
-| [`google-oauth-production.md`](./google-oauth-production.md) | Publicar app OAuth Google em "Produção" (fix causa-raiz da expiração de 7 dias) |
+| [`google-oauth-production.md`](./google-oauth-production.md) | App OAuth Google em "Produção" desde 22/10/2026 (#10785): histórico da expiração de 7 dias do modo Testing |
 | [`branch-protection.md`](./branch-protection.md) | Exigir CI verde antes de merge em `master` |
 | [`scheduled-edicao-setup.md`](./scheduled-edicao-setup.md) | **DEPRECATED (260711, #3259)** — Agendamento automático (Task Scheduler) da edição diária (#2068); task removida, doc mantido como histórico |
 | [`overnight-watchdog-setup.md`](./overnight-watchdog-setup.md) | Watchdog de stall do `/diaria-overnight` via Task Scheduler (#2688) |

@@ -1,5 +1,14 @@
 # Publicar o app OAuth Google em "Produção" (causa-raiz da expiração de 7 dias)
 
+> **Estado atual (#10785): feito.** O app OAuth do projeto GCP
+> `gen-lang-client-0315370011` (client de `GOOGLE_CLIENT_ID`) foi publicado
+> em produção em 22/10/2026, por decisão do editor. Tokens emitidos a partir
+> daí não vencem em 7 dias. O aviso por idade do refresh token
+> (`expiring_soon` em `checkTokenHealth`) saiu junto; o health-check segue
+> alarmando o que continua valendo em produção: refresh falhando
+> (`invalid_grant`, token revogado ou inválido). O resto desta página é o
+> histórico do problema.
+
 ## Sintoma (#1973)
 
 O token OAuth do Google (`data/.credentials.json`) **expira a cada ~7 dias**, derrubando de uma vez:
@@ -16,9 +25,9 @@ Apps OAuth no Google Cloud Console em **"Publishing status: Testing"** têm refr
 
 ### 1. Alerta proativo (já implementado — #1973)
 
-- Stage 0 §0c roda `npx tsx scripts/check-google-token.ts` **antes** de qualquer passo que dependa de Drive/Gmail. Banner único e claro se expirado/expirando (idade do refresh token vs limite de 7d), em vez de 3 falhas espalhadas.
+- Stage 0 §0c roda `npx tsx scripts/check-google-token.ts` **antes** de qualquer passo que dependa de Drive/Gmail. Banner único e claro se o token estiver expirado ou revogado, em vez de 3 falhas espalhadas. (Até o #10785 também avisava pela idade do refresh token vs o limite de 7d.)
 - `inbox-drain.ts` com `invalid_grant` emite warn LOUD: **submissões do editor podem ter sido perdidas** + ação (`oauth-setup.ts` → `/diaria-inbox`).
-- `oauth-setup.ts` carimba `refresh_obtained_ms` pra o health-check medir a idade.
+- `oauth-setup.ts` carimba `refresh_obtained_ms` (desde o #10785, só informativo).
 
 Resolve o **impacto silencioso**, mas não a recorrência (ainda precisa re-auth a cada ~7d).
 
@@ -41,7 +50,7 @@ Ambas as mitigações são gratuitas (não envolvem GCP billing). Publicar o app
 ## Verificação
 
 ```bash
-npx tsx scripts/check-google-token.ts   # exit 0 = válido; banner se expirado/expirando
+npx tsx scripts/check-google-token.ts   # exit 0 = válido; banner se expirado/revogado
 ```
 
 Relacionado: `scripts/google-auth.ts` (`checkTokenHealth`), `scripts/oauth-setup.ts`, `scripts/inbox-drain.ts` (`isAuthExpiredError`), #494.

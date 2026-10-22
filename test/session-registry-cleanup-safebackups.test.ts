@@ -46,6 +46,27 @@ function setMtime(root: string, name: string, isoOrMs: string | number): void {
   utimesSync(join(sessionsDir(root), name), t / 1000, t / 1000);
 }
 
+/** Nome do arquivo de um path absoluto, com `/` OU `\\` como separador.
+ * `planSafeBackupCapPrune` monta os paths com `path.join`, que no Windows
+ * usa `\\`: o `split("/")` antigo devolvia o path inteiro no Neo e o teste
+ * "grupo acima do cap" falhava só lá (#10789). O defeito era do teste, não
+ * do código: a poda nunca compara paths como string. */
+function fileNameOf(path: string): string | undefined {
+  return path.split(/[\\/]/).pop();
+}
+
+describe("fileNameOf (#10789)", () => {
+  it("extrai o nome de um path Windows sintético (o CI Linux pega a regressão)", () => {
+    assert.equal(
+      fileNameOf("C:\\Users\\x\\data\\sessions\\develop-Neo-s1-safeBackup-a.json"),
+      "develop-Neo-s1-safeBackup-a.json",
+    );
+  });
+  it("extrai o nome de um path POSIX", () => {
+    assert.equal(fileNameOf("/tmp/data/sessions/develop-Neo-s1-safeBackup-a.json"), "develop-Neo-s1-safeBackup-a.json");
+  });
+});
+
 const BASE: SessionRecord = {
   kind: "develop",
   machineTag: "Neo",
@@ -486,7 +507,7 @@ describe("planSafeBackupCapPrune (#7858)", () => {
     assert.equal(plan.length, 1);
     assert.equal(plan[0]!.removed.length, 2, "5 backups, cap 3 → remove os 2 mais antigos");
     assert.deepEqual(
-      plan[0]!.removed.map((r) => r.path.split("/").pop()),
+      plan[0]!.removed.map((r) => fileNameOf(r.path)),
       ["develop-Neo-s1-safeBackup-a.json", "develop-Neo-s1-safeBackup-b.json"],
       "remove do mais antigo pro mais novo, nunca o inverso",
     );
@@ -507,7 +528,7 @@ describe("planSafeBackupCapPrune (#7858)", () => {
 
     const plan = planSafeBackupCapPrune(root, { capPerGroup: 2 });
     assert.equal(plan.length, 1);
-    const removedNames = plan[0]!.removed.map((r) => r.path.split("/").pop());
+    const removedNames = plan[0]!.removed.map((r) => fileNameOf(r.path));
     assert.ok(!removedNames.includes(names[0]), "backup com claim única nunca é removido");
     // Mesmo com "a" protegido, o backstop ainda tenta trazer o grupo ao cap
     // removendo outros candidatos seguros (b, que é redundante).
@@ -531,7 +552,7 @@ describe("planSafeBackupCapPrune (#7858)", () => {
 
     const now = Date.parse(grantedAt) + 60_000; // dentro do TTL de 10min
     const plan = planSafeBackupCapPrune(root, { capPerGroup: 2, now });
-    const removedNames = plan[0]!.removed.map((r) => r.path.split("/").pop());
+    const removedNames = plan[0]!.removed.map((r) => fileNameOf(r.path));
     assert.ok(!removedNames.includes(names[0]), "backup com merge_grant vivo único nunca é removido");
   });
 

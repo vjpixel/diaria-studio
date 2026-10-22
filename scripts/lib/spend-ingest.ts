@@ -15,9 +15,9 @@
  * pode derrubar `cac-report.ts`, mesma disciplina do #5237).
  *
  * O que é ESPECÍFICO por canal (fica no adaptador, ex:
- * `google-ads-ingest.ts`/`microsoft-ads-ingest.ts`): a forma da resposta
- * bruta da API (GAQL vs Reporting API do Bing Ads), a autenticação
- * (OAuth2 do Google vs Azure AD do Microsoft), e a normalização
+ * `google-ads-ingest.ts`/`meta-ads-ingest.ts`): a forma da resposta
+ * bruta da API (GAQL vs Graph API), a autenticação (OAuth2 do Google vs
+ * System User token da Meta), e a normalização
  * "resposta bruta → `{mes, valor}`". Um adaptador implementa só
  * `SpendIngestFetcher` (busca + normaliza, devolvendo `SpendRow[]` já no
  * formato final) e chama `runSpendIngest` — o merge nunca é reimplementado.
@@ -55,7 +55,7 @@ export type SpendIngestFetchResult =
 
 /** Um adaptador de canal implementa isto: busca na API + normaliza pro
  *  formato `SpendRow[]`, nunca lançando (fail-soft é responsabilidade do
- *  PRÓPRIO adaptador — ver `google-ads-ingest.ts`/`microsoft-ads-ingest.ts`
+ *  PRÓPRIO adaptador — ver `google-ads-ingest.ts`/`meta-ads-ingest.ts`
  *  pro padrão de "toda etapa de rede devolve `{error}` em vez de lançar"). */
 export type SpendIngestFetcher = () => Promise<SpendIngestFetchResult>;
 

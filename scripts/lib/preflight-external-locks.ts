@@ -115,8 +115,7 @@ export async function checkOAuthLock(
     };
   }
 
-  if (health.status === "valid" || health.status === "expiring_soon") {
-    // expiring_soon ainda funciona — não bloqueia, mas detalha
+  if (health.status === "valid") {
     return {
       dependency: "OAuth Google (Drive + Gmail + imagens)",
       state: "ok",

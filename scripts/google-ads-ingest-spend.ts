@@ -71,9 +71,9 @@ export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.
  * gasto (`Google Ads` da ingestão automática + `Google Ads (teste 2608)` da
  * reconciliação manual), somadas silenciosamente no tile "Orçamento" do
  * Studio `/ads` — gasto contado 2× (achado ao vivo #8210, 17/09/2026:
- * R$ 1.807,34 exibido contra R$ 1.306,44 real). Espelha
- * `MICROSOFT_ADS_CANAL` (`scripts/microsoft-ads-ingest-spend.ts`), mesmo
- * padrão. Quando as specs temporárias "(teste 2608)" saírem (decisão da
+ * R$ 1.807,34 exibido contra R$ 1.306,44 real). Mesmo padrão que o
+ * `MICROSOFT_ADS_CANAL` seguia antes do encerramento do canal (#10755).
+ * Quando as specs temporárias "(teste 2608)" saírem (decisão da
  * #5862), este valor muda junto — `test/google-ads-ingest-spend.test.ts`
  * trava que ele sempre bate com uma entrada real de `CHANNEL_KEY_SPECS`.
  */

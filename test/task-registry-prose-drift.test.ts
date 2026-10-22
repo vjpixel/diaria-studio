@@ -9,7 +9,7 @@ import {
 } from "../scripts/lib/task-registry-prose-drift.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { getScheduledTaskByName, listScheduledTaskNames } from "../scripts/lib/scheduled-tasks.ts";
+import { getScheduledTaskByName, listScheduledTaskNames, RETIRED_TASK_NAMES } from "../scripts/lib/scheduled-tasks.ts";
 
 const TASKS = ["Diaria-Foo", "Diaria-Bar", "Diaria-Baz"];
 
@@ -186,6 +186,47 @@ describe("prosa REAL do registro — tasks *-Ads-* (#10758)", () => {
     const names = listScheduledTaskNames();
     const allArmed = new Map(names.map((n) => [n, "armed" as const]));
     const ev = evaluateProseDrift(prose, names, allArmed);
+    const adsFindings = ev.findings.filter((f) => /-Ads-/.test(f.task));
+    assert.deepEqual(adsFindings, []);
+  });
+});
+
+describe("evaluateProseDrift com tasks retiradas (#10805)", () => {
+  // Linha histórica de task retirada citando vizinha ativa por referência
+  // cruzada — o padrão exato do #10758, sem depender de redação.
+  const prose =
+    "`Diaria-Old-Ingest` (retirada): espelhando `Diaria-Live-Ingest`, NÃO ARMADA nesta unidade.";
+  const real = new Map([["Diaria-Live-Ingest", "armed" as const]]);
+
+  it("sem retiredTaskNames, a afirmação histórica cai na vizinha ativa (o defeito que motivou)", () => {
+    const ev = evaluateProseDrift(prose, ["Diaria-Live-Ingest"], real);
+    assert.equal(ev.findings.length, 1);
+    assert.equal(ev.findings[0].task, "Diaria-Live-Ingest");
+  });
+
+  it("com retiredTaskNames, a linha pertence à task retirada e é descartada", () => {
+    const ev = evaluateProseDrift(prose, ["Diaria-Live-Ingest"], real, ["Diaria-Old-Ingest"]);
+    assert.deepEqual(ev.findings, []);
+    assert.equal(ev.checked, 0);
+  });
+
+  it("empate de posição (nome prefixo de outro) fica com o nome mais longo", () => {
+    const own = resolveLineOwnership(
+      "`Diaria-Clarice-Novos-Abort-Alarm`: NÃO ARMADA.",
+      ["Diaria-Clarice-Novos"],
+      ["Diaria-Clarice-Novos-Abort-Alarm"],
+    );
+    assert.equal(own.owner, "Diaria-Clarice-Novos-Abort-Alarm");
+  });
+
+  it("prosa REAL: com RETIRED_TASK_NAMES e tudo armado, nenhuma task ativa herda claim de linha retirada", () => {
+    const realProse = readFileSync(
+      fileURLToPath(new URL("../docs/scheduled-tasks-registry.md", import.meta.url)),
+      "utf8",
+    );
+    const names = listScheduledTaskNames();
+    const allArmed = new Map(names.map((n) => [n, "armed" as const]));
+    const ev = evaluateProseDrift(realProse, names, allArmed, [...RETIRED_TASK_NAMES]);
     const adsFindings = ev.findings.filter((f) => /-Ads-/.test(f.task));
     assert.deepEqual(adsFindings, []);
   });
