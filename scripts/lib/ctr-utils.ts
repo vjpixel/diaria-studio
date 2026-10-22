@@ -54,6 +54,13 @@ export const NON_EDITORIAL_HOST_FAMILIES = [
   // nunca é capturado por engano.
   "diar.ia.br", // + subdomínios: livros.diar.ia.br, cursos.diar.ia.br, ...
   "apoia.se",
+  // #10804: botão "Compartilhar no WhatsApp" do D1 e box "Convide um amigo"
+  // (`wa.me/?text=`) — link da casa, não fonte editorial. Mesma dupla que
+  // `monthly-click-sections.ts`/`capture-newsletter-urls.ts` já excluem.
+  // Hosts exatos: "whatsapp.com" genérico capturaria blog.whatsapp.com, que
+  // é fonte legítima quando o WhatsApp anuncia algo.
+  "wa.me",
+  "api.whatsapp.com",
 ] as const;
 
 /**
