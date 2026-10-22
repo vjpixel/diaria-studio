@@ -271,7 +271,7 @@
     "shorts": {
       "facebook_pages": ["diaria", "vjpixel", "memelab"],
       "instagram": true,
-      "note": "#10769: video curto (vertical) de cada edicao como Reels — scripts/publish-shorts.ts, skill /diaria-shorts. Decisao do editor 21/10/2026: Reels todo dia nas paginas diar.ia.br, VJ Pixel e MemeLab (slugs de social.facebook.pages — o enabled de la e dos posts diarios e NAO vale aqui) + perfil pessoal (passo guiado, a Graph API nao publica em perfil). Jandig, Teatro vs Game e Criaturas Afetivas ficam fora da rotina. YouTube Shorts tambem e passo guiado ate a auditoria do GCP (#10659). Teste de 2 semanas a partir de 261022: manter so os destinos que trouxerem gente pro canal."
+      "note": "#10769: video curto (vertical) de cada edicao como Reels — scripts/publish-shorts.ts, skill /diaria-shorts. Decisao do editor 21/10/2026: Reels todo dia nas paginas diar.ia.br, VJ Pixel e MemeLab (slugs de social.facebook.pages — o enabled de la e dos posts diarios e NAO vale aqui) + Instagram. Perfil pessoal e YouTube Shorts sao destinos guiados fixos no codigo (listShortDestinations), nao configuraveis aqui: a Graph API nao publica em perfil e o YouTube trava em private sem a auditoria do GCP (#10659). Jandig, Teatro vs Game e Criaturas Afetivas ficam fora da rotina, so quando o editor pedir. Teste de 2 semanas a partir de 261022: manter so os destinos que trouxerem gente pro canal."
     },
     "social": {
       "mode": "draft_or_schedule",
@@ -306,7 +306,7 @@
             "note": "#10769: pagina VJ pixel (page_id 937293496367847). Desligada pros posts diarios — so recebe o Reels do video curto (publishing.shorts.facebook_pages). Token: scripts/facebook-page-token-setup.ts --pages vjpixel. utm_content ausente = page-vjpixel."
           }
         ],
-        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Percorrem a lista: publish-facebook (Stage 5), weekly, eia, verify-stage-4-dispatch, verify-facebook-posts, delete-test-schedules, invariante do Stage 5, seguidores (uma serie por pagina) e o painel de integracoes do Studio. A Retrospectiva mensal (publish-retrospectiva-social) tambem publica em TODAS as paginas ligadas, sem aviso (#10542) - ligar uma pagina aqui faz ela receber a Retrospectiva."
+        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Percorrem a lista: publish-facebook (Stage 5), publish-shorts (Reels do video curto, #10769 — so os slugs de publishing.shorts.facebook_pages, ignorando enabled), weekly, eia, verify-stage-4-dispatch, verify-facebook-posts, delete-test-schedules, invariante do Stage 5, seguidores (uma serie por pagina) e o painel de integracoes do Studio. A Retrospectiva mensal (publish-retrospectiva-social) tambem publica em TODAS as paginas ligadas, sem aviso (#10542) - ligar uma pagina aqui faz ela receber a Retrospectiva."
       },
       "twitter": {
         "enabled": true,

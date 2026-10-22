@@ -17,14 +17,18 @@ import {
   buildYouTubeShortMetadata,
   buildYouTubeShortTitle,
   firstSentence,
+  FACEBOOK_REELS_API_MAX_SECONDS,
+  facebookUploadRoute,
   isDestinationDone,
   listShortDestinations,
   loadShortsConfig,
+  mp4DurationSeconds,
+  parseShortsPublishedFile,
   resolveReelsSchedule,
   shortVideoFileName,
   upsertShortEntry,
 } from "../scripts/lib/diaria/short-video.ts";
-import { planShortsPublish } from "../scripts/publish-shorts.ts";
+import { parseMarkArg, planShortsPublish, publishFacebookReel, publishInstagramReel, type GraphDeps } from "../scripts/publish-shorts.ts";
 import { matchPages } from "../scripts/facebook-page-token-setup.ts";
 import { loadFacebookPagesConfig, type ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
@@ -134,13 +138,36 @@ describe("#10769 config e destinos", () => {
     assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook:vjpixel", "facebook:memelab", "instagram", "facebook_profile"]);
   });
 
-  it("idempotência: published/scheduled contam como feito, processing não", () => {
+  it("idempotência: destino registrado conta como feito; upsert mantém 1 entrada por destino", () => {
     let f = { aammdd: "261022", entries: [] as any[] };
-    f = upsertShortEntry(f, { destination: "instagram", status: "processing", id: "1", at: "x" });
     assert.equal(isDestinationDone(f, "instagram"), false);
+    f = upsertShortEntry(f, { destination: "instagram", status: "scheduled", id: "1", at: "x" });
     f = upsertShortEntry(f, { destination: "instagram", status: "published", id: "2", at: "y" });
     assert.equal(f.entries.length, 1);
     assert.equal(isDestinationDone(f, "instagram"), true);
+  });
+
+  it("registro ilegível ABORTA em vez de virar 'nada publicado' (evita Reels duplicados)", () => {
+    const ok = JSON.stringify({ aammdd: "261022", entries: [{ destination: "instagram", status: "published", id: "1", at: "x" }] });
+    assert.equal(parseShortsPublishedFile(ok, "261022").entries.length, 1);
+    assert.throws(() => parseShortsPublishedFile("{", "261022"), /JSON inválido/);
+    assert.throws(() => parseShortsPublishedFile(JSON.stringify({ aammdd: "261022" }), "261022"), /entries/);
+    assert.throws(() => parseShortsPublishedFile(JSON.stringify({ aammdd: "261022", entries: {} }), "261022"), /entries/);
+    assert.throws(() => parseShortsPublishedFile(ok, "261023"), /edição 261022/);
+    assert.throws(
+      () => parseShortsPublishedFile(JSON.stringify({ aammdd: "261022", entries: [{ destination: "instagram", status: "processing", id: "1" }] }), "261022"),
+      /status inválido/,
+    );
+  });
+
+  it("publishing.shorts null/não-objeto lança com mensagem clara", () => {
+    assert.throws(() => loadShortsConfig({ publishing: { shorts: null } }), /precisa ser um objeto/);
+    assert.throws(() => loadShortsConfig({ publishing: { shorts: 5 } }), /precisa ser um objeto/);
+  });
+
+  it("instagram: false tira o Instagram dos destinos", () => {
+    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false }).map((d) => d.id);
+    assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook_profile"]);
   });
 
   it("horário: agenda com >10 min de folga, senão publica na hora", () => {
@@ -193,10 +220,186 @@ describe("#10769 plano do publish-shorts", () => {
     assert.deepEqual(plan.items.map((i) => [i.destination, i.action]), [["facebook:diaria", "skip_done"], ["instagram", "publish"]]);
   });
 
+  it("slug de shorts sem página configurada LANÇA (typo nunca vira 'publica em lugar nenhum')", () => {
+    assert.throws(
+      () => planShortsPublish({ ...base, now: new Date(), config: { publishing: { shorts: { facebook_pages: ["diaria", "memlab"], instagram: true } } } }),
+      /memlab/,
+    );
+  });
+
+  it("--only com destino desconhecido LANÇA em vez de publicar nada com exit 0", () => {
+    assert.throws(() => planShortsPublish({ ...base, now: new Date(), only: ["facebook:vjpxel"] }), /desconhecido: facebook:vjpxel/);
+  });
+
+  it("sem --edition-url, o link derivado do título vira AVISO (não premissa silenciosa)", () => {
+    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), editionUrl: undefined });
+    assert.equal(plan.editionUrl, EDITION_URL);
+    assert.ok(plan.warnings.some((w) => w.includes("derivado do slug")));
+  });
+
+  it("instagramReady false → skip com aviso; perfil pessoal sai com utm_content=perfil", () => {
+    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), instagramReady: false });
+    const by = Object.fromEntries(plan.items.map((i) => [i.destination, i])) as any;
+    assert.equal(by.instagram.action, "skip_missing_credentials");
+    assert.match(by.facebook_profile.caption, /utm_content=perfil/);
+  });
+
   it("YouTube Shorts sai com os metadados guiados", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
     assert.equal(plan.youtube.title, "Você já viu IA mentir. Já viu roubar? #Shorts");
     assert.equal(plan.longVideo, "diaria-comentada-261022.mp4");
+  });
+});
+
+describe("#10769 duração e rota do Facebook", () => {
+  function box(type: string, payload: Buffer): Buffer {
+    const h = Buffer.alloc(8);
+    h.writeUInt32BE(8 + payload.length, 0);
+    h.write(type, 4, "latin1");
+    return Buffer.concat([h, payload]);
+  }
+  function mvhdV0(timescale: number, duration: number): Buffer {
+    const p = Buffer.alloc(100);
+    p.writeUInt8(0, 0);
+    p.writeUInt32BE(timescale, 12);
+    p.writeUInt32BE(duration, 16);
+    return box("mvhd", p);
+  }
+
+  it("lê a duração do moov/mvhd (v0), pulando caixas antes do moov", () => {
+    const mp4 = Buffer.concat([box("ftyp", Buffer.alloc(16)), box("mdat", Buffer.alloc(32)), box("moov", mvhdV0(1000, 120_500))]);
+    assert.equal(mp4DurationSeconds(mp4), 120.5);
+  });
+
+  it("lê mvhd v1 (64 bits)", () => {
+    const p = Buffer.alloc(112);
+    p.writeUInt8(1, 0);
+    p.writeUInt32BE(600, 20);
+    p.writeBigUInt64BE(BigInt(600 * 45), 24);
+    assert.equal(mp4DurationSeconds(box("moov", box("mvhd", p))), 45);
+  });
+
+  it("arquivo sem moov ou truncado → null, sem lançar", () => {
+    assert.equal(mp4DurationSeconds(box("ftyp", Buffer.alloc(8))), null);
+    assert.equal(mp4DurationSeconds(Buffer.from([0, 0, 0, 99, 0x6d, 0x6f, 0x6f, 0x76])), null);
+  });
+
+  it(`até ${FACEBOOK_REELS_API_MAX_SECONDS} s vai por video_reels; acima, ou desconhecida, por /videos`, () => {
+    assert.equal(facebookUploadRoute(90), "video_reels");
+    assert.equal(facebookUploadRoute(120), "videos");
+    assert.equal(facebookUploadRoute(null), "videos");
+  });
+});
+
+describe("#10769 --mark", () => {
+  it("só destinos guiados e só URL http(s)", () => {
+    assert.deepEqual(parseMarkArg("youtube_shorts=https://youtube.com/shorts/x"), { destination: "youtube_shorts", url: "https://youtube.com/shorts/x" });
+    assert.throws(() => parseMarkArg("instagram=https://x"), /destinos guiados/);
+    assert.throws(() => parseMarkArg("youtube_short=https://x"), /destinos guiados/);
+    assert.throws(() => parseMarkArg("youtube_shorts=nao-e-url"), /http/);
+  });
+});
+
+describe("#10769 fluxos da Graph API (fetch falso)", () => {
+  type Call = { url: string; body: any; headers: any };
+  function fakeDeps(responses: Array<(c: Call) => any>, now = new Date("2026-10-22T12:00:00Z")): { deps: GraphDeps; calls: Call[] } {
+    const calls: Call[] = [];
+    let i = 0;
+    const deps: GraphDeps = {
+      fetch: async (url, init) => {
+        let body: any = null;
+        if (init?.body instanceof URLSearchParams) body = Object.fromEntries(init.body);
+        else if (init?.body instanceof FormData) body = Object.fromEntries([...init.body].filter(([, v]) => typeof v === "string"));
+        else if (init?.body) body = "<binary>";
+        const call = { url, body, headers: init?.headers ?? {} };
+        calls.push(call);
+        const r = responses[i++];
+        if (!r) throw new Error(`chamada inesperada: ${url}`);
+        const out = r(call);
+        const { __http, ...json } = out;
+        return new Response(JSON.stringify(json), { status: __http ?? 200 });
+      },
+      sleep: async () => {},
+      now: () => now,
+      log: () => {},
+    };
+    return { deps, calls };
+  }
+  const page = { slug: "memelab", enabled: false, pageId: "179", token: "tok", missing: [] as string[], utmContent: "page-memelab" };
+  function shortMp4(seconds: number): Buffer {
+    const p = Buffer.alloc(100);
+    p.writeUInt32BE(1000, 12);
+    p.writeUInt32BE(seconds * 1000, 16);
+    const mvhd = Buffer.concat([Buffer.from([0, 0, 0, 108, 0x6d, 0x76, 0x68, 0x64]), p]);
+    return Buffer.concat([Buffer.from([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]), Buffer.from([0, 0, 0, 116, 0x6d, 0x6f, 0x6f, 0x76]), mvhd]);
+  }
+  const short = shortMp4(60);
+
+  it("Facebook ≤90 s agendado: start → rupload → finish SCHEDULED com epoch em segundos → status pronto", async () => {
+    const { deps, calls } = fakeDeps([
+      () => ({ video_id: "v1", upload_url: "https://rupload.facebook.com/video-upload/v25.0/v1" }),
+      () => ({ success: true }),
+      () => ({ success: true }),
+      () => ({ status: { video_status: "ready" } }),
+    ]);
+    const out = await publishFacebookReel(deps, page, "v25.0", short, "legenda", "2026-10-23T09:00:00.000Z");
+    assert.match(calls[0].url, /\/179\/video_reels$/);
+    assert.equal(calls[1].headers.Authorization, "OAuth tok");
+    assert.equal(calls[2].body.video_state, "SCHEDULED");
+    assert.equal(calls[2].body.scheduled_publish_time, String(Date.parse("2026-10-23T09:00:00.000Z") / 1000));
+    assert.equal(out.entry.destination, "facebook:memelab");
+    assert.equal(out.entry.status, "scheduled");
+    assert.equal(out.unconfirmed, false);
+  });
+
+  it("Facebook: horário a menos de 10 min na hora do finish → publica na hora", async () => {
+    const { deps, calls } = fakeDeps(
+      [() => ({ video_id: "v1" }), () => ({ success: true }), () => ({ success: true }), () => ({ status: { video_status: "ready" } })],
+      new Date("2026-10-23T08:55:00Z"),
+    );
+    const out = await publishFacebookReel(deps, page, "v25.0", short, "legenda", "2026-10-23T09:00:00.000Z");
+    assert.equal(calls[2].body.video_state, "PUBLISHED");
+    assert.equal(out.entry.status, "published");
+  });
+
+  it("Facebook: rupload sem success:true e erro de processamento LANÇAM", async () => {
+    const a = fakeDeps([() => ({ video_id: "v1" }), () => ({})]);
+    await assert.rejects(publishFacebookReel(a.deps, page, "v25.0", short, "x", null), /rupload/);
+    const b = fakeDeps([() => ({ video_id: "v1" }), () => ({ success: true }), () => ({ success: true }), () => ({ status: { video_status: "error" } })]);
+    await assert.rejects(publishFacebookReel(b.deps, page, "v25.0", short, "x", null), /recusou o vídeo/);
+  });
+
+  it("Facebook >90 s vai por /videos multipart (agendado com published=false)", async () => {
+    const { deps, calls } = fakeDeps([() => ({ id: "v9" }), () => ({ status: { video_status: "ready" } })]);
+    const out = await publishFacebookReel(deps, page, "v25.0", shortMp4(120), "legenda", "2026-10-23T09:00:00.000Z");
+    assert.match(calls[0].url, /graph-video\.facebook\.com\/v25\.0\/179\/videos$/);
+    assert.equal(calls[0].body.description, "legenda");
+    assert.equal(calls[0].body.published, "false");
+    assert.equal(out.entry.id, "v9");
+    assert.equal(out.entry.status, "scheduled");
+  });
+
+  it("Instagram: container → rupload → poll tolera falha transitória → FINISHED → publish → permalink", async () => {
+    const { deps, calls } = fakeDeps([
+      () => ({ id: "c1", uri: "https://rupload.facebook.com/ig-api-upload/v25.0/c1" }),
+      () => ({ success: true }),
+      () => ({ __http: 500, error: { message: "tmp" } }),
+      () => ({ status_code: "IN_PROGRESS" }),
+      () => ({ status_code: "FINISHED" }),
+      () => ({ id: "m1" }),
+      () => ({ permalink: "https://instagram.com/reel/m1" }),
+    ]);
+    const out = await publishInstagramReel(deps, "ig", "tok", "v25.0", short, "legenda");
+    assert.equal(calls[0].body.media_type, "REELS");
+    assert.equal(calls[0].body.upload_type, "resumable");
+    assert.equal(out.entry.url, "https://instagram.com/reel/m1");
+  });
+
+  it("Instagram: container ERROR e media_publish sem id LANÇAM", async () => {
+    const a = fakeDeps([() => ({ id: "c1" }), () => ({ success: true }), () => ({ status_code: "ERROR", status: "codec" })]);
+    await assert.rejects(publishInstagramReel(a.deps, "ig", "tok", "v25.0", short, "x"), /ERROR/);
+    const b = fakeDeps([() => ({ id: "c1" }), () => ({ success: true }), () => ({ status_code: "FINISHED" }), () => ({})]);
+    await assert.rejects(publishInstagramReel(b.deps, "ig", "tok", "v25.0", short, "x"), /media_publish sem id/);
   });
 });
 
@@ -226,9 +429,15 @@ describe("#10769 facebook-page-token-setup", () => {
       diaria: "111",
     });
     assert.equal(r[0].ok, true);
+    assert.equal((r[0] as any).page.access_token, "t1");
     assert.equal(r[1].ok, false);
     assert.match((r[1] as any).reason, /CREATE_CONTENT/);
     assert.match((r[2] as any).reason, /não administra/);
     assert.match((r[3] as any).reason, /não existe/);
+  });
+
+  it("resposta sem `tasks` falha FECHADA (não persiste token sem prova de permissão)", () => {
+    const r = matchPages(["vjpixel"], configPages, [{ id: "937293496367847", name: "VJ pixel", access_token: "t1" }], { vjpixel: "937293496367847" });
+    assert.equal(r[0].ok, false);
   });
 });

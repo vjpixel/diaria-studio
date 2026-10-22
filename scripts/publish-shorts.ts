@@ -13,41 +13,49 @@
  *     [--only facebook:diaria,instagram] [--now] [--video PATH]
  *     [--edition-dir DIR] [--edition-url URL]
  *   npx tsx scripts/publish-shorts.ts AAMMDD --from-drive FILE_ID
- *                                                           # baixa o vertical do Drive pro nome da convenção
+ *                                                           # baixa o vertical do Drive (OAuth do projeto, não o conector)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --mark youtube_shorts=URL
- *                                                           # registra destino guiado já feito
+ *                                                           # registra destino GUIADO já feito
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
  *     credencial pelas env vars da página em `publishing.social.facebook.pages`
  *     (`scripts/lib/facebook-pages.ts`). O `enabled` de lá NÃO vale aqui: ele
  *     liga os posts diários da página, não o Reels. Página sem credencial =
- *     aviso e segue (rode `scripts/facebook-page-token-setup.ts`).
+ *     aviso e segue (rode `scripts/facebook-page-token-setup.ts`). Até 90 s
+ *     sobe por `video_reels`; acima disso (a API de Reels recusa), por
+ *     `/{page-id}/videos` — vídeo vertical aparece como Reel.
  *   - `instagram` (API) — Reels no Instagram da diar.ia.br
  *     (`INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN`).
  *   - `youtube_shorts` e `facebook_profile` (guiados) — o JSON traz título,
  *     descrição, comentário fixado e legenda; o skill `/diaria-shorts` executa
  *     no Chrome e grava com `--mark`.
  *
- * Horário: 06:00 BRT do dia da edição se ainda não passou (Facebook agenda);
- * senão publica na hora. O Instagram não agenda Reels pela API — com horário
- * futuro ele fica pendente até rodar de novo depois das 06:00 (ou `--now`).
+ * Horário: 06:00 BRT do dia da edição com pelo menos 10 min de folga (o
+ * Facebook agenda; a folga é reconferida antes de cada página); senão publica
+ * na hora. O Instagram não agenda Reels pela API — com horário futuro ele fica
+ * pendente até rodar de novo depois das 06:00 (ou `--now`).
  *
- * Upload: as duas redes aceitam o arquivo local (upload resumable em
- * `rupload.facebook.com`), sem precisar de URL pública. Registro por destino
- * em `{edição}/_internal/06-shorts-published.json` — destino já
- * publicado/agendado é pulado (idempotente, re-rodável).
+ * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
+ * Stage 5) > slug derivado do título do D1 (aviso).
+ *
+ * Registro por destino em `{edição}/_internal/06-shorts-published.json`
+ * (escrita atômica, logo após cada destino). Destino registrado é pulado.
+ * Registro ilegível ABORTA (nunca vira "nada publicado", o que duplicaria
+ * Reels públicos). Se a plataforma aceitar e a gravação falhar, o erro mostra
+ * o id/URL e o comando `--mark` pra registrar à mão.
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
@@ -56,9 +64,14 @@ import {
   SHORTS_PUBLISHED_FILE,
   buildReelsCaption,
   buildYouTubeShortMetadata,
+  facebookDestinationId,
+  facebookUploadRoute,
   isDestinationDone,
+  knownDestinationIds,
   listShortDestinations,
   loadShortsConfig,
+  mp4DurationSeconds,
+  parseShortsPublishedFile,
   resolveReelsSchedule,
   shortVideoFileName,
   upsertShortEntry,
@@ -73,16 +86,18 @@ import { DRIVE_API } from "./lib/drive-constants.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const GRAPH = "https://graph.facebook.com";
+const GRAPH_VIDEO = "https://graph-video.facebook.com";
 const RUPLOAD = "https://rupload.facebook.com";
 
-export interface ShortsPlanItem {
-  destination: string;
-  mode: "api" | "guided";
-  action: "publish" | "skip_done" | "skip_missing_credentials" | "pending_schedule" | "guided";
-  caption?: string;
-  scheduledAt?: string | null;
-  detail?: string;
-}
+/** Destinos que só o skill faz (Chrome) — os únicos que `--mark` aceita. */
+export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile"]);
+
+export type ShortsPlanItem =
+  | { destination: string; mode: "api"; action: "publish"; caption: string; scheduledAt: string | null }
+  | { destination: string; mode: "api"; action: "pending_schedule"; caption: string; scheduledAt: string; detail: string }
+  | { destination: string; mode: "api" | "guided"; action: "skip_done" }
+  | { destination: string; mode: "api"; action: "skip_missing_credentials" | "skip_invalid"; detail: string }
+  | { destination: string; mode: "guided"; action: "guided"; caption?: string; detail: string };
 
 export interface ShortsPlan {
   aammdd: string;
@@ -105,21 +120,24 @@ export interface ShortsPlanInput {
   published: ShortsPublishedFile;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   editionUrl?: string;
+  /** De onde veio o `editionUrl` (só pra premissa). */
+  editionUrlSource?: string;
   forceNow?: boolean;
   only?: string[] | null;
 }
 
-/** Miolo puro: o que cada destino faria, sem I/O. */
+/** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
 export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const premises: string[] = [];
   const warnings: string[] = [];
   const d1 = parseDestaques(input.reviewedMd).find((d) => d.n === 1);
   if (!d1) throw new Error("02-reviewed.md sem DESTAQUE 1 — nada para derivar o vídeo curto");
 
-  let editionUrl = input.editionUrl;
-  if (!editionUrl) {
-    editionUrl = deriveEditionUrl(d1.title);
-    premises.push(`link da edição derivado do slug do título do D1: ${editionUrl} (passe --edition-url se divergir)`);
+  const editionUrl: string = input.editionUrl ?? deriveEditionUrl(d1.title);
+  if (input.editionUrl) {
+    premises.push(`link da edição: ${editionUrl} (${input.editionUrlSource ?? "--edition-url"})`);
+  } else {
+    warnings.push(`link da edição derivado do slug do título do D1: ${editionUrl} — confira; passe --edition-url se o publicado divergir`);
   }
   const d1In = { title: d1.title, body: d1.body };
   const youtube = buildYouTubeShortMetadata({ aammdd: input.aammdd, d1: d1In, editionUrl });
@@ -129,7 +147,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     : resolveReelsSchedule(resolveEditionScheduledAt(input.aammdd), input.now);
   premises.push(
     schedule.mode === "scheduled"
-      ? `Reels agendado para ${schedule.at} (06:00 BRT do dia da edição)`
+      ? `Reels do Facebook agendado para ${schedule.at} (06:00 BRT do dia da edição); Instagram fica pendente até lá`
       : input.forceNow
         ? "--now: publica na hora"
         : "06:00 BRT do dia da edição já passou (ou falta <10 min) — publica na hora",
@@ -137,7 +155,18 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   if (!input.video.exists) warnings.push(`vídeo curto ausente em ${input.video.path} — nada a publicar até ele existir`);
 
   const cfg = loadShortsConfig(input.config);
+  for (const slug of cfg.facebookPages) {
+    if (!input.pages.some((p) => p.slug === slug)) {
+      throw new Error(`publishing.shorts.facebook_pages: página "${slug}" não existe em publishing.social.facebook.pages`);
+    }
+  }
+  const known = knownDestinationIds(cfg);
   const only = input.only && input.only.length ? new Set(input.only) : null;
+  if (only) {
+    const unknown = [...only].filter((d) => !known.has(d));
+    if (unknown.length) throw new Error(`--only com destino desconhecido: ${unknown.join(", ")} (válidos: ${[...known].join(", ")})`);
+  }
+
   const items: ShortsPlanItem[] = [];
   for (const dest of listShortDestinations(cfg)) {
     if (only && !only.has(dest.id)) continue;
@@ -156,16 +185,12 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "guided",
         action: "guided",
-        caption: buildReelsCaption({ platform: "facebook", aammdd: input.aammdd, d1: d1In, editionUrl: editionUrl!, utmContent: "perfil" }),
+        caption: buildReelsCaption({ platform: "facebook", aammdd: input.aammdd, d1: d1In, editionUrl, utmContent: "perfil" }),
         detail: "perfil pessoal: a Graph API não publica em perfil de pessoa — Chrome, ou compartilhar o Reels da página",
       };
     }
     if (dest.kind === "facebook_page") {
-      const page = input.pages.find((p) => p.slug === dest.slug);
-      if (!page) {
-        warnings.push(`página "${dest.slug}" não existe em publishing.social.facebook.pages`);
-        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: "página desconhecida" };
-      }
+      const page = input.pages.find((p) => p.slug === dest.slug)!;
       if (page.missing.length) {
         warnings.push(`${dest.id}: sem credencial (${page.missing.join(", ")}) — rode scripts/facebook-page-token-setup.ts`);
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: page.missing.join(", ") };
@@ -174,7 +199,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "api",
         action: "publish",
-        caption: buildReelsCaption({ platform: "facebook", aammdd: input.aammdd, d1: d1In, editionUrl: editionUrl!, utmContent: page.utmContent }),
+        caption: buildReelsCaption({ platform: "facebook", aammdd: input.aammdd, d1: d1In, editionUrl, utmContent: page.utmContent }),
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
       };
     }
@@ -183,7 +208,14 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       warnings.push("instagram: sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN");
       return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: "INSTAGRAM_*" };
     }
-    const caption = buildReelsCaption({ platform: "instagram", aammdd: input.aammdd, d1: d1In, editionUrl: editionUrl! });
+    let caption: string;
+    try {
+      caption = buildReelsCaption({ platform: "instagram", aammdd: input.aammdd, d1: d1In, editionUrl });
+    } catch (e) {
+      // Legenda grande demais só derruba o Instagram, não os outros destinos.
+      warnings.push(`instagram: ${(e as Error).message}`);
+      return { destination: dest.id, mode: "api", action: "skip_invalid", detail: (e as Error).message };
+    }
     if (schedule.mode === "scheduled") {
       return {
         destination: dest.id,
@@ -197,133 +229,234 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
   }
 
-  return {
-    aammdd: input.aammdd,
-    editionUrl,
-    video: input.video,
-    longVideo: youtubeVideoFileName(input.aammdd),
-    youtube,
-    items,
-    premises,
-    warnings,
-  };
+  return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, items, premises, warnings };
 }
 
 // ── Graph API ────────────────────────────────────────────────────────────────
 
-async function graphPost(path: string, params: Record<string, string>, apiVersion: string): Promise<any> {
-  const res = await fetch(`${GRAPH}/${apiVersion}/${path}`, { method: "POST", body: new URLSearchParams(params) });
-  const json = await res.json().catch(() => ({}));
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+
+export interface GraphDeps {
+  fetch: FetchLike;
+  sleep: (ms: number) => Promise<void>;
+  now: () => Date;
+  log: (msg: string) => void;
+}
+
+export const defaultGraphDeps: GraphDeps = {
+  fetch: (url, init) => fetch(url, init),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  now: () => new Date(),
+  log: (m) => console.error(m),
+};
+
+async function readJson(res: Response): Promise<any> {
+  return res.json().catch(() => ({}));
+}
+
+async function graphPost(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string, base = GRAPH): Promise<any> {
+  const res = await deps.fetch(`${base}/${apiVersion}/${path}`, { method: "POST", body: new URLSearchParams(params) });
+  const json = await readJson(res);
   if (!res.ok || json.error) throw new Error(`POST ${path}: ${res.status} ${JSON.stringify(json.error ?? json)}`);
   return json;
 }
 
-async function graphGet(path: string, params: Record<string, string>, apiVersion: string): Promise<any> {
-  const res = await fetch(`${GRAPH}/${apiVersion}/${path}?${new URLSearchParams(params)}`);
-  const json = await res.json().catch(() => ({}));
+async function graphGet(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string): Promise<any> {
+  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${path}?${new URLSearchParams(params)}`);
+  const json = await readJson(res);
   if (!res.ok || json.error) throw new Error(`GET ${path}: ${res.status} ${JSON.stringify(json.error ?? json)}`);
   return json;
 }
 
-/** Envia o arquivo inteiro num POST ao rupload (offset 0). */
-async function ruploadBinary(url: string, token: string, file: Buffer): Promise<any> {
-  const res = await fetch(url, {
+/** Envia o arquivo inteiro num POST ao rupload (offset 0). Só `success: true` conta. */
+async function ruploadBinary(deps: GraphDeps, url: string, token: string, file: Buffer): Promise<void> {
+  const res = await deps.fetch(url, {
     method: "POST",
     headers: { Authorization: `OAuth ${token}`, offset: "0", file_size: String(file.length) },
     body: new Uint8Array(file),
   });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || json.error || json.success === false) throw new Error(`rupload: ${res.status} ${JSON.stringify(json.error ?? json)}`);
-  return json;
+  const json = await readJson(res);
+  if (!res.ok || json.success !== true) throw new Error(`rupload: ${res.status} ${JSON.stringify(json.error ?? json)}`);
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Folga mínima do Facebook pra agendar (10 min); abaixo disso, publica na hora. */
+function stillSchedulable(scheduledAt: string | null, now: Date): string | null {
+  if (!scheduledAt) return null;
+  return Date.parse(scheduledAt) - now.getTime() > 10 * 60_000 ? scheduledAt : null;
+}
 
-/** Reels numa Página: start → upload binário → finish (PUBLISHED ou SCHEDULED). */
-async function publishFacebookReel(
+/**
+ * Espera o Facebook processar o vídeo (até 5 min). Erro de processamento
+ * lança; tempo esgotado só avisa (o vídeo pode terminar depois) — o registro
+ * sai com `unconfirmed` pra o relatório dizer "confira".
+ */
+async function waitFacebookProcessing(deps: GraphDeps, videoId: string, token: string, apiVersion: string): Promise<boolean> {
+  for (let i = 0; i < 30; i++) {
+    let st: any;
+    try {
+      st = (await graphGet(deps, videoId, { fields: "status", access_token: token }, apiVersion)).status ?? {};
+    } catch (e) {
+      deps.log(`[aviso] status do vídeo ${videoId}: ${(e as Error).message} — tentando de novo`);
+      await deps.sleep(10_000);
+      continue;
+    }
+    const phases = [st.uploading_phase, st.processing_phase, st.publishing_phase].map((p: any) => p?.status);
+    if (st.video_status === "error" || st.video_status === "expired" || phases.includes("error")) {
+      throw new Error(`Facebook recusou o vídeo ${videoId} no processamento: ${JSON.stringify(st)}`);
+    }
+    if (st.video_status === "ready" || st.processing_phase?.status === "complete") return true;
+    await deps.sleep(10_000);
+  }
+  return false;
+}
+
+export interface PublishOutcome {
+  entry: ShortPublishedEntry;
+  /** true quando o processamento não foi confirmado no tempo de espera. */
+  unconfirmed?: boolean;
+}
+
+/** Reels numa Página. ≤90 s: `video_reels` (start → rupload → finish). >90 s: `/videos` multipart. */
+export async function publishFacebookReel(
+  deps: GraphDeps,
   page: ResolvedFacebookPage,
   apiVersion: string,
   file: Buffer,
   caption: string,
-  scheduledAt: string | null,
-): Promise<ShortPublishedEntry> {
-  const start = await graphPost(`${page.pageId}/video_reels`, { upload_phase: "start", access_token: page.token }, apiVersion);
-  const videoId: string = start.video_id;
-  if (!videoId) throw new Error(`video_reels start sem video_id: ${JSON.stringify(start)}`);
-  await ruploadBinary(start.upload_url ?? `${RUPLOAD}/video-upload/${apiVersion}/${videoId}`, page.token, file);
-  const finish: Record<string, string> = {
-    upload_phase: "finish",
-    video_id: videoId,
-    description: caption,
-    access_token: page.token,
-  };
-  if (scheduledAt) {
-    finish.video_state = "SCHEDULED";
-    finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
+  plannedScheduledAt: string | null,
+): Promise<PublishOutcome> {
+  const scheduledAt = stillSchedulable(plannedScheduledAt, deps.now());
+  if (plannedScheduledAt && !scheduledAt) deps.log(`[premissa] ${facebookDestinationId(page.slug)}: menos de 10 min pro horário — publicando na hora`);
+  const route = facebookUploadRoute(mp4DurationSeconds(file));
+  let videoId: string;
+
+  if (route === "video_reels") {
+    const start = await graphPost(deps, `${page.pageId}/video_reels`, { upload_phase: "start", access_token: page.token }, apiVersion);
+    videoId = start.video_id;
+    if (!videoId) throw new Error(`video_reels start sem video_id: ${JSON.stringify(start)}`);
+    await ruploadBinary(deps, start.upload_url ?? `${RUPLOAD}/video-upload/${apiVersion}/${videoId}`, page.token, file);
+    const finish: Record<string, string> = { upload_phase: "finish", video_id: videoId, description: caption, access_token: page.token };
+    if (scheduledAt) {
+      finish.video_state = "SCHEDULED";
+      finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
+    } else {
+      finish.video_state = "PUBLISHED";
+    }
+    const done = await graphPost(deps, `${page.pageId}/video_reels`, finish, apiVersion);
+    if (done.success !== true) throw new Error(`video_reels finish sem success: ${JSON.stringify(done)}`);
   } else {
-    finish.video_state = "PUBLISHED";
+    const form = new FormData();
+    form.append("access_token", page.token);
+    form.append("description", caption);
+    if (scheduledAt) {
+      form.append("published", "false");
+      form.append("scheduled_publish_time", String(Math.floor(Date.parse(scheduledAt) / 1000)));
+    }
+    form.append("source", new Blob([new Uint8Array(file)], { type: "video/mp4" }), "short.mp4");
+    const res = await deps.fetch(`${GRAPH_VIDEO}/${apiVersion}/${page.pageId}/videos`, { method: "POST", body: form });
+    const json = await readJson(res);
+    if (!res.ok || json.error || !json.id) throw new Error(`POST ${page.pageId}/videos: ${res.status} ${JSON.stringify(json.error ?? json)}`);
+    videoId = json.id;
   }
-  const done = await graphPost(`${page.pageId}/video_reels`, finish, apiVersion);
-  if (done.success === false) throw new Error(`video_reels finish recusado: ${JSON.stringify(done)}`);
+
+  const confirmed = await waitFacebookProcessing(deps, videoId, page.token, apiVersion);
   return {
-    destination: `facebook:${page.slug}`,
-    status: scheduledAt ? "scheduled" : "published",
-    id: videoId,
-    url: `https://www.facebook.com/reel/${videoId}`,
-    scheduled_at: scheduledAt,
-    at: new Date().toISOString(),
+    entry: {
+      destination: facebookDestinationId(page.slug),
+      status: scheduledAt ? "scheduled" : "published",
+      id: videoId,
+      url: route === "video_reels" ? `https://www.facebook.com/reel/${videoId}` : `https://www.facebook.com/${page.pageId}/videos/${videoId}`,
+      scheduled_at: scheduledAt,
+      at: deps.now().toISOString(),
+    },
+    unconfirmed: !confirmed,
   };
 }
 
-/** Reels no Instagram: container resumable → upload binário → espera FINISHED → media_publish. */
-async function publishInstagramReel(
+/** Reels no Instagram: container resumable → rupload → espera FINISHED → media_publish. */
+export async function publishInstagramReel(
+  deps: GraphDeps,
   igUserId: string,
   token: string,
   apiVersion: string,
   file: Buffer,
   caption: string,
-): Promise<ShortPublishedEntry> {
+): Promise<PublishOutcome> {
   const container = await graphPost(
+    deps,
     `${igUserId}/media`,
     { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token },
     apiVersion,
   );
   const containerId: string = container.id;
   if (!containerId) throw new Error(`media (REELS) sem id: ${JSON.stringify(container)}`);
-  await ruploadBinary(container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
+  await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
+  let last = "";
   for (let i = 0; ; i++) {
-    const st = await graphGet(containerId, { fields: "status_code,status", access_token: token }, apiVersion);
+    if (i >= 60) throw new Error(`container ${containerId} não ficou pronto em 10 min (último: ${last || "sem resposta"})`);
+    let st: any;
+    try {
+      st = await graphGet(deps, containerId, { fields: "status_code,status", access_token: token }, apiVersion);
+    } catch (e) {
+      // Falha transitória na consulta não joga fora o upload — tenta de novo até o teto.
+      last = (e as Error).message;
+      deps.log(`[aviso] instagram: status do container falhou (${last}) — tentando de novo`);
+      await deps.sleep(10_000);
+      continue;
+    }
+    last = st.status_code;
     if (st.status_code === "FINISHED") break;
     if (st.status_code === "ERROR" || st.status_code === "EXPIRED") throw new Error(`container ${containerId}: ${st.status_code} ${st.status ?? ""}`);
-    if (i >= 60) throw new Error(`container ${containerId} não ficou pronto em 10 min (último: ${st.status_code})`);
-    await sleep(10_000);
+    await deps.sleep(10_000);
   }
-  const pub = await graphPost(`${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
+  const pub = await graphPost(deps, `${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
+  if (!pub.id) throw new Error(`media_publish sem id: ${JSON.stringify(pub)}`);
   let url: string | undefined;
   try {
-    url = (await graphGet(pub.id, { fields: "permalink", access_token: token }, apiVersion)).permalink;
-  } catch {
-    // permalink é cosmético — o id já identifica o Reels
+    url = (await graphGet(deps, pub.id, { fields: "permalink", access_token: token }, apiVersion)).permalink;
+  } catch (e) {
+    deps.log(`[aviso] instagram: permalink indisponível (${(e as Error).message}) — o id ${pub.id} identifica o Reels`);
   }
-  return { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: new Date().toISOString() };
+  return { entry: { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: deps.now().toISOString() } };
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 function readPublished(path: string, aammdd: string): ShortsPublishedFile {
   if (!existsSync(path)) return { aammdd, entries: [] };
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as ShortsPublishedFile;
-  return { aammdd, entries: Array.isArray(parsed.entries) ? parsed.entries : [] };
+  return parseShortsPublishedFile(readFileSync(path, "utf8"), aammdd, path);
 }
 
 function writePublished(path: string, file: ShortsPublishedFile): void {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(file, null, 2) + "\n");
+  writeFileAtomic(path, JSON.stringify(file, null, 2) + "\n");
+}
+
+/** `--mark DESTINO=URL`: só destinos guiados, só URL http(s). */
+export function parseMarkArg(raw: string): { destination: string; url: string } {
+  const m = raw.match(/^([a-z_]+)=(https?:\/\/\S+)$/);
+  if (!m) throw new Error(`--mark espera DESTINO=URL (http/https), recebido ${JSON.stringify(raw)}`);
+  if (!GUIDED_DESTINATIONS.has(m[1])) {
+    throw new Error(`--mark só registra destinos guiados (${[...GUIDED_DESTINATIONS].join(", ")}); "${m[1]}" é publicado pelo script`);
+  }
+  return { destination: m[1], url: m[2] };
+}
+
+/** Link da edição: --edition-url > `_internal/05-edition-url.txt` > (derivado, no plano). */
+function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
+  if (flag) return { url: flag, source: "--edition-url" };
+  const p = join(dir, "_internal", "05-edition-url.txt");
+  if (existsSync(p)) {
+    const url = readFileSync(p, "utf8").trim();
+    if (/^https?:\/\//.test(url)) return { url, source: "_internal/05-edition-url.txt" };
+  }
+  return {};
 }
 
 const USAGE =
-  "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH] [--edition-dir DIR] [--edition-url URL]\n" +
-  "     publish-shorts.ts AAMMDD --mark DESTINO=URL";
+  "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
+  "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
+  "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -337,14 +470,16 @@ async function main(): Promise<number> {
   let published = readPublished(publishedPath, aammdd);
 
   if (values["mark"]) {
-    const m = values["mark"].match(/^([a-z_]+(?::[a-z0-9-]+)?)=(\S+)$/);
-    if (!m) {
-      console.error(`--mark espera DESTINO=URL, recebido ${JSON.stringify(values["mark"])}`);
+    let mark: { destination: string; url: string };
+    try {
+      mark = parseMarkArg(values["mark"]);
+    } catch (e) {
+      console.error((e as Error).message);
       return 2;
     }
-    published = upsertShortEntry(published, { destination: m[1], status: "published", id: m[2], url: m[2], at: new Date().toISOString() });
+    published = upsertShortEntry(published, { destination: mark.destination, status: "published", id: mark.url, url: mark.url, at: new Date().toISOString() });
     writePublished(publishedPath, published);
-    console.log(JSON.stringify({ marked: m[1], url: m[2] }));
+    console.log(JSON.stringify({ marked: mark.destination, url: mark.url }));
     return 0;
   }
 
@@ -365,9 +500,17 @@ async function main(): Promise<number> {
       console.error(`publish-shorts: download do Drive falhou (${res.status}): ${(await res.text()).slice(0, 300)}`);
       return 1;
     }
+    const type = res.headers.get("content-type") ?? "";
     const buf = Buffer.from(await res.arrayBuffer());
+    if (!type.startsWith("video/") || buf.length === 0) {
+      console.error(`publish-shorts: o arquivo ${id} do Drive não é vídeo (content-type "${type}", ${buf.length} bytes) — nada gravado`);
+      return 1;
+    }
+    if (existsSync(videoPath)) console.error(`[aviso] substituindo ${videoPath} pelo arquivo do Drive`);
     mkdirSync(dirname(videoPath), { recursive: true });
-    writeFileSync(videoPath, buf);
+    const tmp = `${videoPath}.part`;
+    writeFileAtomic(tmp, buf);
+    renameSync(tmp, videoPath);
     console.error(`[ok] vídeo curto baixado do Drive (${(buf.length / 1e6).toFixed(1)} MB) → ${videoPath}`);
   }
   const videoExists = existsSync(videoPath);
@@ -376,20 +519,28 @@ async function main(): Promise<number> {
   const igUserId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "";
   const igToken = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
   const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
+  const editionUrlIn = resolveEditionUrlInput(dir, values["edition-url"]);
 
-  const plan = planShortsPublish({
-    aammdd,
-    reviewedMd: readFileSync(reviewedPath, "utf8"),
-    now: new Date(),
-    config,
-    pages,
-    instagramReady: Boolean(igUserId && igToken),
-    published,
-    video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
-    editionUrl: values["edition-url"],
-    forceNow: flags.has("now"),
-    only: values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null,
-  });
+  let plan: ShortsPlan;
+  try {
+    plan = planShortsPublish({
+      aammdd,
+      reviewedMd: readFileSync(reviewedPath, "utf8"),
+      now: new Date(),
+      config,
+      pages,
+      instagramReady: Boolean(igUserId && igToken),
+      published,
+      video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
+      editionUrl: editionUrlIn.url,
+      editionUrlSource: editionUrlIn.source,
+      forceNow: flags.has("now"),
+      only: values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null,
+    });
+  } catch (e) {
+    console.error(`publish-shorts: ${(e as Error).message}`);
+    return 2;
+  }
   for (const p of plan.premises) console.error(`[premissa] ${p}`);
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);
 
@@ -403,30 +554,51 @@ async function main(): Promise<number> {
   }
 
   const file = readFileSync(videoPath);
-  const results: Array<{ destination: string; ok: boolean; entry?: ShortPublishedEntry; error?: string }> = [];
+  const duration = mp4DurationSeconds(file);
+  console.error(`[premissa] duração ${duration === null ? "desconhecida" : `${duration.toFixed(1)} s`} → Facebook via ${facebookUploadRoute(duration)}`);
+  const deps = defaultGraphDeps;
+  const results: Array<{ destination: string; ok: boolean; entry?: ShortPublishedEntry; unconfirmed?: boolean; error?: string }> = [];
   for (const item of plan.items) {
     if (item.action !== "publish") continue;
+    let outcome: PublishOutcome;
     try {
-      let entry: ShortPublishedEntry;
       if (item.destination === "instagram") {
-        entry = await publishInstagramReel(igUserId, igToken, igApiVersion, file, item.caption!);
+        outcome = await publishInstagramReel(deps, igUserId, igToken, igApiVersion, file, item.caption);
       } else {
-        const slug = item.destination.slice("facebook:".length);
-        const page = pages.find((p) => p.slug === slug)!;
-        entry = await publishFacebookReel(page, apiVersion, file, item.caption!, item.scheduledAt ?? null);
+        const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
+        outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt);
       }
-      published = upsertShortEntry(published, entry);
-      writePublished(publishedPath, published); // grava a cada destino — crash no meio não republica o que já saiu
-      results.push({ destination: item.destination, ok: true, entry });
-      console.error(`[ok] ${item.destination}: ${entry.status} ${entry.url ?? entry.id}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       results.push({ destination: item.destination, ok: false, error: msg });
       console.error(`[erro] ${item.destination}: ${msg}`);
+      continue;
     }
+    const { entry, unconfirmed } = outcome;
+    try {
+      published = upsertShortEntry(published, entry);
+      writePublished(publishedPath, published); // grava a cada destino — reduz a janela de duplicação num crash
+    } catch (e) {
+      // A plataforma JÁ aceitou: não pode virar "falhou" (a próxima rodada duplicaria).
+      console.error(
+        `[erro] ${item.destination}: PUBLICADO (${entry.url ?? entry.id}) mas o registro não foi gravado: ${(e as Error).message}. ` +
+          `NÃO rode --publish de novo para este destino sem antes registrá-lo em ${publishedPath}.`,
+      );
+      results.push({ destination: item.destination, ok: false, entry, error: `registro não gravado: ${(e as Error).message}` });
+      continue;
+    }
+    results.push({ destination: item.destination, ok: true, entry, unconfirmed });
+    console.error(`[ok] ${item.destination}: ${entry.status} ${entry.url ?? entry.id}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
   }
-  console.log(JSON.stringify({ dry_run: false, ...plan, results }, null, 2));
-  return results.some((r) => !r.ok) ? 1 : 0;
+  const summary = {
+    published: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+    pending: plan.items.filter((i) => i.action === "pending_schedule").length,
+    skipped: plan.items.filter((i) => i.action.startsWith("skip_") && i.action !== "skip_done").length,
+    guided: plan.items.filter((i) => i.action === "guided").length,
+  };
+  console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
+  return summary.failed > 0 ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {

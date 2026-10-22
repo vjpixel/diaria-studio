@@ -9,18 +9,18 @@ Vídeo curto de cada edição, decisão do editor de 21/10/2026: além do vídeo
 
 Invocar a skill é o pedido de publicação: publicar nos destinos abaixo não precisa de confirmação extra.
 
-**Data:** `AAMMDD` é obrigatório. Se não for passado, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`), nunca perguntar.
+**Data:** se o editor não passar `AAMMDD`, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`), nunca perguntar, e passar a data explicitamente ao script (ele exige).
 
 ## Destinos (`platform.config.json` → `publishing.shorts`)
 
 | Destino | Como | Observação |
 |---|---|---|
 | `youtube_shorts` | guiado (Chrome) | a API trava todo upload em `private` sem a auditoria do GCP (#10659) |
-| `facebook:diaria`, `facebook:vjpixel`, `facebook:memelab` | API (`video_reels`) | agenda pras 06:00 BRT se ainda não passou; senão, na hora |
+| `facebook:diaria`, `facebook:vjpixel`, `facebook:memelab` | API | agenda pras 06:00 BRT se faltar mais de 10 min (piso do Facebook); senão, na hora. Até 90 s sobe como Reels (`video_reels`); acima disso, como vídeo da Página (`/videos`), que o Facebook mostra como Reel quando é vertical |
 | `instagram` | API (Reels resumable) | o Instagram não agenda Reels por API: com horário futuro fica pendente até rodar de novo depois das 06:00 (ou `--now`) |
 | `facebook_profile` | guiado (Chrome) | a Graph API não publica em perfil pessoal |
 
-Jandig, Teatro vs Game e Criaturas Afetivas ficam **fora** da rotina — só quando o editor pedir para um tema específico.
+Os dois destinos guiados aparecem no plano, mas o script não os executa: são os Passos 4 e 5. Jandig, Teatro vs Game e Criaturas Afetivas ficam **fora** da rotina — só quando o editor pedir.
 
 Página sem token (`[aviso] facebook:{slug}: sem credencial`) não bloqueia as outras. Para gerar o token, o **editor** roda no terminal dele (o token nunca passa pelo chat):
 
@@ -28,13 +28,13 @@ Página sem token (`[aviso] facebook:{slug}: sem credencial`) não bloqueia as o
 npx tsx scripts/facebook-page-token-setup.ts --pages vjpixel,memelab
 ```
 
-O script pede o User Access Token do Graph API Explorer (permissões `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`) e grava id + token de página no Doppler e no `.env`. Nunca pedir nem colar o token aqui.
+O script pede o User Access Token do Graph API Explorer (permissões `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`), lê sem eco na tela e grava id + token de página no `.env` e no Doppler. Nunca pedir nem colar o token aqui.
 
 ## Passo 1 — O vídeo
 
 Convenção: `data/editions/{AAMM}/{AAMMDD}/diaria-comentada-{AAMMDD}-short.mp4`.
 
-Se não estiver lá, procurar no Drive pelo conector do Google Drive (`search_files`, `mimeType contains 'video/'`, `modifiedTime` recente, título com `Vertical`) e baixar pelo id:
+Se não estiver lá, achar o id no Drive pelo conector do Google Drive (`search_files`, `mimeType contains 'video/'`, `modifiedTime` recente, título com `Vertical`) e baixar pelo id. O download usa o OAuth do próprio projeto (`data/.credentials.json`), não o conector: se falhar por token, renovar com `oauth-setup.ts`. O script exige `02-reviewed.md` antes de baixar.
 
 ```bash
 npx tsx scripts/publish-shorts.ts {AAMMDD} --from-drive {FILE_ID}
@@ -48,7 +48,7 @@ Mais de um candidato (V1, V2, V3…): usar a versão mais alta. Se a escolha nã
 npx tsx scripts/publish-shorts.ts {AAMMDD}
 ```
 
-Dry-run: imprime título/descrição/comentário do Shorts, a legenda de cada Reels, o horário e o que será pulado (já publicado, sem credencial, pendente).
+Dry-run: imprime título/descrição/comentário do Shorts, a legenda de cada Reels, o horário e o que será pulado (já publicado, sem credencial, pendente). Link da edição: `--edition-url` > `_internal/05-edition-url.txt` > slug derivado do título (vira `[aviso]` — conferir antes de publicar).
 
 ## Passo 3 — Reels por API
 
@@ -56,7 +56,7 @@ Dry-run: imprime título/descrição/comentário do Shorts, a legenda de cada Re
 npx tsx scripts/publish-shorts.ts {AAMMDD} --publish
 ```
 
-Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois das 06:00 só para o Instagram.
+Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois das 06:00 só para o Instagram. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
 
 ## Passo 4 — YouTube Shorts (Chrome)
 
@@ -67,7 +67,7 @@ Carregar as ferramentas do Claude in Chrome. Abrir `https://studio.youtube.com/c
 3. Elementos do vídeo → **Vídeo relacionado**: o vídeo longo da mesma edição.
 4. Visibilidade **Público**. **Esperar "Verificações concluídas"** antes de clicar em Publicar: publicar durante a verificação mostra o aviso "Ainda estamos verificando seu conteúdo" (risco de advertência ou visibilidade restrita).
 5. Na página do vídeo, comentar `youtube.pinnedComment` e **fixar** (menu ⋮ → Fixar no topo).
-6. Registrar: `npx tsx scripts/publish-shorts.ts {AAMMDD} --mark youtube_shorts={URL do Short}`.
+6. Registrar: `npx tsx scripts/publish-shorts.ts {AAMMDD} --mark youtube_shorts={URL do Short}` (`--mark` só aceita `youtube_shorts` e `facebook_profile`, com URL http/https).
 
 ## Passo 5 — Perfil pessoal (Chrome)
 

@@ -8,10 +8,11 @@
  *
  * Decisões do editor que este módulo codifica (#10769, 21-22/10/2026):
  *   - objetivo é levar gente pro canal do YouTube (@diariabr) — o CTA aponta
- *     pro canal, e o link da edição vai junto;
+ *     pro canal; o link da edição vai na legenda do Facebook e no comentário
+ *     fixado do Shorts (no Instagram, "link da bio");
  *   - Reels TODO DIA nas páginas diar.ia.br, VJ Pixel e MemeLab e no perfil
- *     pessoal do editor (Jandig, Teatro vs Game e Criaturas Afetivas só quando o
- *     tema casar — fora da rotina, nunca automático);
+ *     pessoal do editor. Jandig, Teatro vs Game e Criaturas Afetivas ficam fora
+ *     da rotina — só quando o editor pedir, nunca automático;
  *   - YouTube Shorts: título `{D1} #Shorts`, descrição curta, vídeo
  *     relacionado = o longo da edição, e o link da edição num comentário FIXADO
  *     (link na descrição de Short não é clicável) — fluxo validado à mão no 1º
@@ -53,7 +54,10 @@ export interface ShortD1Input {
 
 /**
  * 1ª frase do corpo do D1, sem markdown — o "gancho" das legendas curtas.
- * Frase longa demais é cortada na última palavra que cabe (com "…").
+ * Frase longa demais é cortada na última palavra que cabe (com "…"); se a
+ * última palavra começar antes da metade do limite, corta seco no caractere.
+ * O fim de frase é o 1º `.`/`!`/`?` seguido de espaço — abreviação ("Dr. X")
+ * corta antes; aceitável pra um gancho, e o texto inteiro está no vídeo.
  */
 export function firstSentence(body: string, maxChars = 220): string {
   const plain = stripInlineMarkdown(body).replace(/\s+/g, " ").trim();
@@ -120,8 +124,8 @@ export function buildYouTubeShortMetadata(input: { aammdd: string; d1: ShortD1In
 export type ReelsPlatform = "facebook" | "instagram";
 
 /**
- * Legenda do Reels. O link em legenda de Reels não é clicável em nenhuma das
- * duas redes, então o CTA principal é o canal escrito por extenso; no Facebook
+ * Legenda do Reels. Tratamos link em legenda de Reels como não clicável nas
+ * duas redes (é o comportamento do app hoje), então o CTA principal é o canal escrito por extenso; no Facebook
  * o link da edição vai com UTM (atribuível se alguém copiar), no Instagram a
  * chamada é pro link da bio (padrão dos posts diários).
  */
@@ -161,15 +165,18 @@ export interface ShortsConfig {
   instagram: boolean;
 }
 
-export const DEFAULT_SHORTS_CONFIG: ShortsConfig = {
-  facebookPages: ["diaria", "vjpixel", "memelab"],
+export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
+  facebookPages: Object.freeze(["diaria", "vjpixel", "memelab"]) as unknown as string[],
   instagram: true,
-};
+});
 
 /** Lê e valida `publishing.shorts`; ausente → default (decisão do editor, #10769). */
 export function loadShortsConfig(config: unknown): ShortsConfig {
   const raw = (config as any)?.publishing?.shorts;
-  if (raw === undefined) return { ...DEFAULT_SHORTS_CONFIG, facebookPages: [...DEFAULT_SHORTS_CONFIG.facebookPages] };
+  if (raw === undefined) return { facebookPages: [...DEFAULT_SHORTS_CONFIG.facebookPages], instagram: DEFAULT_SHORTS_CONFIG.instagram };
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("[shorts] publishing.shorts precisa ser um objeto (#10769).");
+  }
   const pages = raw.facebook_pages;
   if (!Array.isArray(pages) || pages.some((p: unknown) => typeof p !== "string" || !p)) {
     throw new Error("[shorts] publishing.shorts.facebook_pages precisa ser uma lista de slugs (#10769).");
@@ -181,12 +188,15 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
 
 /** Um destino do vídeo curto. `api` = o script publica; `guided` = passo no Chrome com o editor. */
 export type ShortDestination =
-  | { id: string; kind: "facebook_page"; mode: "api"; slug: string }
+  | { id: FacebookDestinationId; kind: "facebook_page"; mode: "api"; slug: string }
   | { id: "instagram"; kind: "instagram"; mode: "api" }
   | { id: "youtube_shorts"; kind: "youtube_shorts"; mode: "guided" }
   | { id: "facebook_profile"; kind: "facebook_profile"; mode: "guided" };
 
-export function facebookDestinationId(slug: string): string {
+export type FacebookDestinationId = `facebook:${string}`;
+export type ShortDestinationId = "youtube_shorts" | "instagram" | "facebook_profile" | FacebookDestinationId;
+
+export function facebookDestinationId(slug: string): FacebookDestinationId {
   return `facebook:${slug}`;
 }
 
@@ -199,11 +209,16 @@ export function listShortDestinations(cfg: ShortsConfig): ShortDestination[] {
   return out;
 }
 
+/** Ids válidos de destino pra uma config (pra validar `--only`/`--mark`). */
+export function knownDestinationIds(cfg: ShortsConfig): Set<string> {
+  return new Set(listShortDestinations(cfg).map((d) => d.id));
+}
+
 /** Entrada de `_internal/06-shorts-published.json`. */
 export interface ShortPublishedEntry {
   destination: string;
-  status: "published" | "scheduled" | "processing";
-  /** id do vídeo/mídia na plataforma. */
+  status: "published" | "scheduled";
+  /** id do vídeo/mídia na plataforma; nos destinos guiados (`--mark`), a própria URL. */
   id: string;
   url?: string;
   scheduled_at?: string | null;
@@ -217,22 +232,99 @@ export interface ShortsPublishedFile {
 
 /** Upsert por destino (o último registro de um destino vence). */
 export function upsertShortEntry(file: ShortsPublishedFile, entry: ShortPublishedEntry): ShortsPublishedFile {
+  if (!entry.destination) throw new Error("entrada sem destino");
   return { ...file, entries: [...file.entries.filter((e) => e.destination !== entry.destination), entry] };
 }
 
-/** Destino já publicado/agendado? `processing` não conta — o script reconsulta. */
+/** Destino já tem registro (publicado ou agendado)? */
 export function isDestinationDone(file: ShortsPublishedFile, destination: string): boolean {
-  return file.entries.some((e) => e.destination === destination && (e.status === "published" || e.status === "scheduled"));
+  return file.entries.some((e) => e.destination === destination);
 }
 
 /**
- * Horário do Reels no Facebook: 06:00 BRT do dia da edição se ainda não
- * passou (o Facebook aceita agendar de 10 min a 75 dias à frente — abaixo de
- * 10 min, publica na hora); senão, na hora. Mesma regra do vídeo longo
- * (`resolveYouTubeSchedule`).
+ * Lê o registro de forma ESTRITA. Um registro quebrado nunca vira "nada
+ * publicado": isso republicaria Reels públicos em duplicata. Arquivo de outra
+ * edição também é recusado.
+ */
+export function parseShortsPublishedFile(raw: string, aammdd: string, where = SHORTS_PUBLISHED_FILE): ShortsPublishedFile {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`${where}: JSON inválido (${(e as Error).message}) — corrija ou apague à mão, conferindo antes o que já foi publicado`);
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.entries)) {
+    throw new Error(`${where}: sem lista "entries" — corrija à mão antes de publicar (risco de duplicar Reels)`);
+  }
+  if (parsed.aammdd !== aammdd) throw new Error(`${where}: é da edição ${parsed.aammdd}, não de ${aammdd}`);
+  for (const [i, e] of parsed.entries.entries()) {
+    if (!e || typeof e.destination !== "string" || !e.destination || typeof e.id !== "string" || !e.id) {
+      throw new Error(`${where}: entrada ${i} sem destination/id`);
+    }
+    if (e.status !== "published" && e.status !== "scheduled") throw new Error(`${where}: entrada ${i} com status inválido (${e.status})`);
+  }
+  return { aammdd, entries: parsed.entries };
+}
+
+/**
+ * Horário do Reels no Facebook: mesmo alvo do vídeo longo (06:00 BRT do dia
+ * da edição), mas com piso de 10 min — o Facebook só aceita agendar de 10 min
+ * a 75 dias à frente. Com menos de 10 min de folga (ou já passado), na hora.
  */
 export function resolveReelsSchedule(targetIso: string, now: Date): { mode: "scheduled"; at: string } | { mode: "immediate" } {
   const t = Date.parse(targetIso);
   if (Number.isNaN(t)) throw new Error(`horário inválido: ${JSON.stringify(targetIso)}`);
   return t - now.getTime() > 10 * 60_000 ? { mode: "scheduled", at: new Date(t).toISOString() } : { mode: "immediate" };
+}
+
+/**
+ * Teto da API de Reels de Página (`/{page-id}/video_reels`): 90 s. Vídeo
+ * maior vai pelo endpoint de vídeo da Página (`/{page-id}/videos`), que o
+ * Facebook exibe como Reel quando é vertical.
+ */
+export const FACEBOOK_REELS_API_MAX_SECONDS = 90;
+
+/**
+ * Duração (s) de um MP4 lida do átomo `moov/mvhd`, sem ffprobe. Devolve null
+ * se não achar (arquivo truncado, contêiner não-MP4) — o caller decide o
+ * fallback. Só lê cabeçalhos de caixa; não decodifica nada.
+ */
+export function mp4DurationSeconds(buf: Buffer): number | null {
+  const findBox = (start: number, end: number, type: string): { start: number; end: number } | null => {
+    let off = start;
+    while (off + 8 <= end) {
+      let size = buf.readUInt32BE(off);
+      const t = buf.toString("latin1", off + 4, off + 8);
+      let header = 8;
+      if (size === 1) {
+        if (off + 16 > end) return null;
+        size = Number(buf.readBigUInt64BE(off + 8));
+        header = 16;
+      } else if (size === 0) {
+        size = end - off;
+      }
+      if (size < header || off + size > end) return null;
+      if (t === type) return { start: off + header, end: off + size };
+      off += size;
+    }
+    return null;
+  };
+  const moov = findBox(0, buf.length, "moov");
+  if (!moov) return null;
+  const mvhd = findBox(moov.start, moov.end, "mvhd");
+  if (!mvhd) return null;
+  const version = buf.readUInt8(mvhd.start);
+  const timescaleOff = mvhd.start + (version === 1 ? 20 : 12);
+  const durationOff = timescaleOff + 4;
+  if (durationOff + (version === 1 ? 8 : 4) > mvhd.end) return null;
+  const timescale = buf.readUInt32BE(timescaleOff);
+  const duration = version === 1 ? Number(buf.readBigUInt64BE(durationOff)) : buf.readUInt32BE(durationOff);
+  if (!timescale) return null;
+  return duration / timescale;
+}
+
+/** Qual endpoint do Facebook usar pra este vídeo. */
+export function facebookUploadRoute(durationSeconds: number | null): "video_reels" | "videos" {
+  // Duração desconhecida → `videos`, que aceita qualquer duração (o `video_reels` recusaria >90 s depois do upload).
+  return durationSeconds !== null && durationSeconds <= FACEBOOK_REELS_API_MAX_SECONDS ? "video_reels" : "videos";
 }
