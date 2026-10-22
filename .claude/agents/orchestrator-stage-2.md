@@ -499,7 +499,7 @@ Substitui as 5 invocações separadas que existiam aqui antes (`relative-time`, 
 
   Social — revise {EDITION_DIR}/03-social.md:
       — 1 texto por destaque (d1/d2/d3), compartilhado por LinkedIn/Facebook/Instagram (#3991)
-      — + 4º post USE MELHOR (um, #9568 — mesmo texto vai no LinkedIn pessoal, manual)
+      — + 4º post USE MELHOR (um, #9568 — mesmo texto vai no LinkedIn pessoal, automatico via publish-linkedin-personal.ts, #10833)
   ```
   Quando o editor responder "sim", os arquivos locais são os textos finais.
 

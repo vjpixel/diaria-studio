@@ -51,6 +51,7 @@ import {
   buildUseMelhorSlides,
   findOverflowingUseMelhorSlides,
   hashUseMelhorSlides,
+  isUseMelhorCarouselStale, // #10834
   readUseMelhorCarouselStamp,
   removeStaleUseMelhorSlides,
   renderUseMelhorSlides,
@@ -58,6 +59,7 @@ import {
   writeUseMelhorCarouselStamp,
 } from "./lib/use-melhor-carousel.ts"; // #9568
 import { pruneStaleUseMelhorPublicImages } from "./lib/use-melhor-slide-files.ts"; // #9795
+import { readUseMelhorBlock } from "./lib/use-melhor-status.ts"; // #10834
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
@@ -298,6 +300,77 @@ async function genUseMelhorCarousel(
   // isso o upload/preview seguiam listando `um_carousel_p{k}` de slide apagado.
   const prunedKeys = pruneStaleUseMelhorPublicImages(editionDir, slots);
   return { status: "generated", slots, files, ...(prunedKeys.length > 0 && { pruned_image_keys: prunedKeys }) };
+}
+
+export interface UseMelhorCarouselRefresh {
+  /**
+   * - `noop`: nada a conferir (feature desligada, sem carimbo, sem item, sem `## um`);
+   * - `fresh`: carimbo em dia com o `## um` atual;
+   * - `regenerated`: estava defasado e foi regerado agora;
+   * - `skipped`: estava defasado e o regerar foi pulado (ex.: `## um` novo não cabe no card);
+   * - `failed`: estava defasado e o regerar falhou (fonte de marca ausente, sharp).
+   */
+  status: "noop" | "fresh" | "regenerated" | "skipped" | "failed";
+  reason?: string;
+  slots?: string[];
+}
+
+/**
+ * (#10834) Regera SÓ o carrossel do 4º post quando o carimbo do Stage 3 está
+ * defasado em relação ao `## um` atual — caso real 261022: o `## um` foi
+ * editado depois do Stage 3, o carimbo ficou para trás e os publicadores
+ * pularam o 4º post no LinkedIn, Facebook e Instagram (X saiu só com texto).
+ * Chamado por `upload-images-public.ts` (modo social/all) ANTES de decidir
+ * quais slides subir, então vale no pré-render do Stage 4 e no Stage 5.
+ *
+ * Nunca lança: o 4º post é fail-soft e o upload de D1/D2/D3 não pode cair por
+ * causa dele. Sem carimbo (carrossel nunca gerado) é `noop` de propósito: isso
+ * é falta do Stage 3, já avisada no gate 4, não defasagem.
+ */
+export async function refreshStaleUseMelhorCarousel(
+  editionDir: string,
+  opts: {
+    useMelhorConfig?: UseMelhorPostConfigState;
+    render?: RenderUseMelhorSlidesFn;
+    assertFont?: (scriptName: string) => Promise<void>;
+  } = {},
+): Promise<UseMelhorCarouselRefresh> {
+  try {
+    const stamp = readUseMelhorCarouselStamp(editionDir);
+    if (!stamp) return { status: "noop", reason: "carrossel do 4º post sem carimbo" };
+    const umConfig = opts.useMelhorConfig ?? loadUseMelhorPostConfigState(REPO_ROOT);
+    if (!umConfig.enabled) return { status: "noop", reason: umConfig.reason ?? "4º post desligado" };
+    const socialMdPath = resolve(editionDir, "03-social.md");
+    if (!existsSync(socialMdPath)) return { status: "noop", reason: "03-social.md ausente" };
+    const socialMd = readFileSync(socialMdPath, "utf8");
+    const state = readUseMelhorPostState(editionDir);
+    const socialUm = readUseMelhorBlock(socialMd, "Social");
+    if (!state?.item || !socialUm) return { status: "noop", reason: "sem item ou sem '## um'" };
+    const reviewedPath = resolve(editionDir, "02-reviewed.md");
+    const coverTitle = resolveUseMelhorCoverTitle(state.item, {
+      reviewedMd: existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : null,
+      approved: readApprovedForUseMelhor(editionDir),
+    });
+    let ctaOverride: CarouselCtaOverride | null = null;
+    try {
+      ctaOverride = readInstagramTestOverride(editionDir)?.cta_slide ?? null;
+    } catch {
+      ctaOverride = null;
+    }
+    if (!isUseMelhorCarouselStale(stamp, socialUm, coverTitle, ctaOverride)) {
+      return { status: "fresh", slots: stamp.slots };
+    }
+    // Mesmo guard do `main()` — sem a fonte de marca a arte sairia fora da marca em silêncio.
+    await (opts.assertFont ?? assertBrandSerifAvailable)("gen-carousel-cards (4º post, #10834)");
+    const outcome = await genUseMelhorCarousel(editionDir, socialMd, {
+      ctaOverride,
+      render: opts.render ?? renderUseMelhorSlides,
+    });
+    if (outcome.status === "skipped") return { status: "skipped", reason: outcome.reason };
+    return { status: outcome.status === "generated" ? "regenerated" : "fresh", slots: outcome.slots };
+  } catch (e) {
+    return { status: "failed", reason: (e as Error).message };
+  }
 }
 
 /**

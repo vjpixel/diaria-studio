@@ -44,6 +44,8 @@ import {
   useMelhorSlideFilename,
   useMelhorSlideImageKey,
 } from "./lib/use-melhor-slide-files.ts"; // #9568 — slides do 4º post (módulo folha: use-melhor-carousel.ts fecharia ciclo via weekly-flat-card.ts)
+// #10834: só o TIPO (apagado na compilação) — o valor vem por import dinâmico em `uploadPublicImages`.
+import type { UseMelhorCarouselRefresh } from "./gen-carousel-cards.ts";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -92,6 +94,11 @@ export interface PublicImagesOutput {
    * silenciosa. Vazio na maioria das rodadas.
    */
   warnings: string[];
+  /**
+   * #10834: conferência do carrossel do 4º post antes do upload (modo
+   * social/all). Ausente no modo newsletter e com `destaques` explícitos.
+   */
+  use_melhor_carousel?: UseMelhorCarouselRefresh;
 }
 
 /**
@@ -455,6 +462,12 @@ export interface UploadOptions {
    * cross-mode sem rede (gFetch faz OAuth do Google, inviável em teste).
    */
   uploaders?: UploadDeps;
+  /**
+   * #10834: seam da regeração do carrossel do 4º post defasado. Default:
+   * `refreshStaleUseMelhorCarousel` de `gen-carousel-cards.ts` (import
+   * dinâmico — sharp + fonte de marca só carregam no modo social).
+   */
+  refreshUseMelhorCarousel?: (editionDir: string) => Promise<UseMelhorCarouselRefresh>;
 }
 
 export interface UploadDeps {
@@ -505,6 +518,8 @@ export async function uploadPublicImages(
   // Determinar lista de imagens a upload
   let specs: ImageSpec[];
   let useMelhorSlots: string[] = [];
+  let useMelhorCarousel: UseMelhorCarouselRefresh | undefined;
+  const warnings: string[] = [];
   if (opts.destaques) {
     // Retrocompat: destaques explícitos
     specs = opts.destaques.map((d) => ({ key: d, filename: sourceImageFor(d) }));
@@ -513,6 +528,28 @@ export async function uploadPublicImages(
     // atual (import dinâmico — o estático fecharia ciclo de módulos, ver
     // `useMelhorSlideSpecs`). Modo newsletter não sobe slides sociais.
     if (mode !== "newsletter") {
+      // #10834: `## um` editado depois do Stage 3 deixava o carimbo defasado e
+      // os publicadores pulavam o 4º post. Regera o carrossel ANTES de decidir
+      // os slots — fail-soft (a função nunca lança; o seam idem por contrato).
+      const refresh =
+        opts.refreshUseMelhorCarousel ??
+        (async (dir: string) => (await import("./gen-carousel-cards.ts")).refreshStaleUseMelhorCarousel(dir));
+      try {
+        useMelhorCarousel = await refresh(editionDir);
+      } catch (e) {
+        useMelhorCarousel = { status: "failed", reason: (e as Error).message };
+      }
+      if (useMelhorCarousel.status === "regenerated") {
+        console.error(
+          `upload-images-public: carrossel do 4º post estava defasado ('## um' mudou depois do Stage 3) — regerado (#10834).`,
+        );
+      } else if (useMelhorCarousel.status === "skipped" || useMelhorCarousel.status === "failed") {
+        warnings.push(
+          `carrossel do 4º post DEFASADO e não regerado (${useMelhorCarousel.status}: ${useMelhorCarousel.reason ?? "sem motivo"}) — ` +
+            `os slides não sobem e o 4º post é pulado no LinkedIn/Instagram/Facebook (#10834). ` +
+            `Conserto: corrigir o motivo e rodar "npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" + este upload de novo.`,
+        );
+      }
       const { freshUseMelhorCarouselSlots } = await import("./lib/use-melhor-dispatch.ts");
       useMelhorSlots = freshUseMelhorCarouselSlots(editionDir);
     }
@@ -553,7 +590,6 @@ export async function uploadPublicImages(
     cfConfig = { kvNamespaceId, workerUrl };
   }
 
-  const warnings: string[] = [];
   for (const spec of specs) {
     const imagePath = resolve(editionDir, spec.filename);
     if (!existsSync(imagePath)) {
@@ -657,7 +693,7 @@ export async function uploadPublicImages(
     console.warn(`⚠️  upload-images-public: ${w}`);
   }
 
-  return { out_path: cachePath, images, warnings };
+  return { out_path: cachePath, images, warnings, ...(useMelhorCarousel && { use_melhor_carousel: useMelhorCarousel }) };
 }
 
 // #7596: hero2x1KeyFor migrou pra lib/shared/public-image-keys.ts (módulo

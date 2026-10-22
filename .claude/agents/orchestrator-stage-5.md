@@ -173,6 +173,8 @@ O script grava em `_internal/site-page-published.json` o registro que o Stage 6 
 npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode social
 ```
 
+**Carrossel do 4º post defasado é regerado aqui (#10834).** Se o `## um` mudou depois do Stage 3, o proprio upload regera o carrossel (`refreshStaleUseMelhorCarousel` em `gen-carousel-cards.ts`) antes de subir os slides — nao rodar `gen-carousel-cards.ts` a mao. O JSON de saida traz `use_melhor_carousel.status`: `regenerated` → seguir; `skipped`/`failed` → o 4º post vai ser pulado no LinkedIn/Instagram/Facebook — levar o `reason` pra linha "4º post" do resumo abaixo (nunca silencioso). Nao e halt: o 4º post e fail-soft.
+
 **Fail-loud:** se exit != 0, **halt** Stage 5 com banner:
 ```bash
 npx tsx scripts/render-halt-banner.ts \
@@ -489,6 +491,7 @@ Publicacao dispatchada — edicao {AAMMDD}
   LinkedIn: agendado x 3 (+1 do 4º post USE MELHOR, #9568 — `use_melhor` da saida: "ready" → horario da entry um; "skip"/"off" → "4º post pulado — {reason}")
   Facebook: agendado x 3 (+1 do 4º post, idem)
   Instagram: agendado x 3 (+1 carrossel do 4º post) (ou "env vars ausentes — pular" se nao configurado)
+  4º post (USE MELHOR): saiu em {canais com use_melhor "ready"}; pulado em {canal}: {reason} (#10834 — uma linha por canal pulado, incluindo X; carrossel nao regerado no 5c-pre entra aqui com o `use_melhor_carousel.reason`. Omitir a linha so com o 4º post "off")
   Threads: agendado x N (ou "env vars ausentes — pular" se nao configurado; destaques >500 chars ficam de fora, ver failed em 06-social-published.json)
   Brevo diária: rascunho criado (campaign_id {N}, addedActual {N} — #6793: sem teto de max-add desde o item 7) — agendamento no Stage 6 (ou "pulado — {motivo}" se status skipped/failed, #5772)
 
