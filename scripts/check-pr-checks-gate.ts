@@ -67,7 +67,7 @@
  */
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
+import { ISSUE_REPOS_CONFIG_ROOT, prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrChecksGate, type PrChecksGateResult } from "./lib/pr-checks-gate.ts";
 import { CLAUDE_BINARY_ERROR_SIGNATURE, findClaudeBinaryErrorSignature } from "./lib/detect-claude-binary-error.ts";
@@ -319,7 +319,7 @@ if (isMainModule(import.meta.url)) {
   }
   // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`,
   // ou derivado de `--issue owner/repo#N` — review J: o PR mora no repo da issue).
-  const repoFlag = resolvePrTargetRepo(values, flags, process.cwd());
+  const repoFlag = resolvePrTargetRepo(values, flags, ISSUE_REPOS_CONFIG_ROOT);
   if ("error" in repoFlag) {
     console.error(`[check-pr-checks-gate] ${repoFlag.error}`);
     process.exit(2);

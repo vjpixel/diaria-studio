@@ -258,6 +258,54 @@ def test_adversarial_falsos_negativos_extraem_todos():
     print("adversarial: lista longa / ; / titulo longo / reivindiquei — OK")
 
 
+def test_regressao_10900_claim_por_ref_de_outro_repo():
+    """#10900 (resíduo #10618): o contínuo reivindica issue do diaria-design
+    por ref (`claim-issue --issue vjpixel/diaria-design#21`), e o registro
+    guarda em `claimed_foreign_issues` (string). Antes, o relatório
+    "Reivindiquei vjpixel/diaria-design#21" virava a chave 21 e era cruzado
+    contra `claimed_issues` do studio -> fabrication_suspected falso (ou, pior,
+    "ok" se a studio#21 estivesse reivindicada por coincidência)."""
+    mod = _load_module()
+    linha = "Reivindiquei vjpixel/diaria-design#21 para implementar neste tick."
+    got = mod.extract_claimed_issue_refs(linha)
+    assert set(got) == {"vjpixel/diaria-design#21"}, got
+    # Prefixo do repo default continua sendo o int de sempre.
+    got_def = mod.extract_claimed_issue_refs("Reivindiquei vjpixel/diaria-studio#300.")
+    assert set(got_def) == {300}, got_def
+    # Sem prefixo: retrocompatível.
+    assert set(mod.extract_claimed_issue_refs("Reivindiquei #300.")) == {300}
+    # Lista mista: ordenação não lança TypeError.
+    mista = "Reivindiquei #300 e vjpixel/diaria-design#21 neste tick."
+    assert set(mod.extract_claimed_issue_refs(mista)) == {300, "vjpixel/diaria-design#21"}
+    # PR de outro repo não é claim de issue.
+    pr = "Claim de #300 mantido; PR vjpixel/diaria-design#5 aberta, reivindicada #300."
+    assert "vjpixel/diaria-design#5" not in mod.extract_claimed_issue_refs(pr)
+
+    with tempfile.TemporaryDirectory() as td:
+        sessions = Path(td) / "sessions"
+        now = datetime.now(timezone.utc)
+        _write_session(sessions, "t1", now - timedelta(minutes=5), now, claimed_issues=[300])
+        rec_path = sessions / "continuo-300-t1.json"
+        rec = json.loads(rec_path.read_text(encoding="utf-8"))
+        rec["claimed_foreign_issues"] = ["vjpixel/diaria-design#21"]
+        rec_path.write_text(json.dumps(rec), encoding="utf-8")
+        claimed = mod.all_continuo_claimed_issues(sessions)
+        assert claimed == {300, "vjpixel/diaria-design#21"}, claimed
+        ok = mod.check_claimed_issues(mista, claimed, True, session_correlated=True)
+        assert ok["status"] == "ok", ok
+        # A studio#21 reivindicada NÃO cobre a design#21 (número colide).
+        so_studio = mod.check_claimed_issues(linha, {21}, True, session_correlated=True)
+        assert so_studio["status"] == "fabrication_suspected", so_studio
+
+    # Evento 'ended' com histórico de claims de outro repo.
+    snap = mod._snapshot_from_events([
+        {"claimed_issues_ever": [300],
+         "claimed_foreign_issues_ever": ["VJPixel/Diaria-Design#21"]},
+    ])
+    assert snap == {300, "vjpixel/diaria-design#21"}, snap
+    print("#10900: claim por ref de outro repo cruza com claimed_foreign_issues — OK")
+
+
 def test_controle_claim_proprio_ausente_do_registro_e_fabricacao():
     mod = _load_module()
     texto = "Issues reivindicadas neste tick: #8301, #8302, #8303, #8304, #8305, #8306."
@@ -1357,6 +1405,7 @@ def main() -> int:
         test_regressao_exclusao_por_ref_nao_bloqueia_claim_proprio()
         test_adversarial_falsos_negativos_extraem_todos()
         test_controle_claim_proprio_ausente_do_registro_e_fabricacao()
+        test_regressao_10900_claim_por_ref_de_outro_repo()
         test_regressao_8463_falsos_positivos_lista_atribuida_outro_ator()
         test_regressao_8521_negacao_nao_e_claim()
         test_regressao_8863_nenhuma_e_antes_do_claim()

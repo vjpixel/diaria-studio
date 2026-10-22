@@ -136,8 +136,11 @@ export const TRAIN_BASE_BRANCH = "master";
 
 export type StudioTrainPrCheck =
   | { verdict: "studio" }
-  /** Confirmado que NÃO é um PR aberto do studio mirando master. */
+  /** Confirmado que NÃO é um PR do studio mirando master (outro repo, outra base, fork). */
   | { verdict: "foreign"; reason: string }
+  /** #10901: PR do studio que não está mais aberto (fechado/mergeado entre a
+   * composição e o trem). Nada a mergear — pula, nunca recusa o trem. */
+  | { verdict: "closed"; reason: string }
   /** Não deu pra ler (gh falhou/JSON ruim) — fail-closed, mas é falha operacional. */
   | { verdict: "unreadable"; reason: string };
 
@@ -159,17 +162,13 @@ export function checkStudioTrainPr(runner: TrainRunner, prNumber: number): Studi
   } catch (e) {
     return { verdict: "unreadable", reason: `PR #${prNumber}: JSON malformado de gh pr view (${(e as Error).message})` };
   }
-  if (!p || typeof p !== "object") return { verdict: "unreadable", reason: `PR #${prNumber}: payload inesperado de gh pr view` };
+  if (!p || typeof p !== "object" || Array.isArray(p)) {
+    return { verdict: "unreadable", reason: `PR #${prNumber}: payload inesperado de gh pr view` };
+  }
   const url = typeof p.url === "string" ? p.url : "";
   const expectedUrl = new RegExp(`^https://github\\.com/${TRAIN_REPO}/pull/${prNumber}$`, "i");
   if (!expectedUrl.test(url)) {
     return { verdict: "foreign", reason: `PR #${prNumber} não é do ${TRAIN_REPO} (url: ${url || "ausente"}) — o trem é só-studio` };
-  }
-  if (p.state !== "OPEN") {
-    return {
-      verdict: "foreign",
-      reason: `studio PR #${prNumber} não está aberto (state: ${String(p.state)}) — número de PR de outro repo passado em --prs?`,
-    };
   }
   if (p.baseRefName !== TRAIN_BASE_BRANCH) {
     return { verdict: "foreign", reason: `studio PR #${prNumber} mira "${String(p.baseRefName)}", não ${TRAIN_BASE_BRANCH}` };
@@ -177,7 +176,47 @@ export function checkStudioTrainPr(runner: TrainRunner, prNumber: number): Studi
   if (p.isCrossRepository === true) {
     return { verdict: "foreign", reason: `PR #${prNumber} vem de fork (isCrossRepository) — fora do trem` };
   }
+  if (p.state !== "OPEN") {
+    // #10901: a mensagem antiga ("número de PR de outro repo?") enganava no caso
+    // comum — PR fechado/mergeado entre a composição e o trem.
+    return {
+      verdict: "closed",
+      reason: `studio PR #${prNumber} não está aberto (state: ${String(p.state)}) — fechado ou mergeado depois de entrar na lista; nada a mergear`,
+    };
+  }
   return { verdict: "studio" };
+}
+
+/** Resultado da triagem só-studio de todos os PRs candidatos (#10901). */
+export interface TrainPrScreen {
+  /** PRs abertos do studio mirando master — seguem pro trem. */
+  admitted: number[];
+  /** Pulados sem falhar o trem (PR fechado; ou, em `--open`, PR de fora). */
+  skipped: string[];
+  /** Recusam o trem inteiro (exit 2): PR de fora passado EXPLICITAMENTE em `--prs`. */
+  refused: string[];
+  /** Leitura impossível — falha operacional (exit 1), fail-closed. */
+  unreadable: string[];
+}
+
+/**
+ * Aplica `checkStudioTrainPr` a cada candidato (#10901). `discovered` = os PRs
+ * vieram de `--open` (descoberta automática): aí um PR de fork ou com base
+ * diferente de `master` é só filtrado — ninguém o pediu, e recusar o trem
+ * inteiro por ele travaria todos os outros. Em `--prs` (lista explícita) o PR
+ * de fora continua recusando o trem: é sinal de número de outro repo passado
+ * por engano. PR fechado é pulado nos dois modos.
+ */
+export function screenTrainPrs(runner: TrainRunner, prNumbers: number[], discovered: boolean): TrainPrScreen {
+  const out: TrainPrScreen = { admitted: [], skipped: [], refused: [], unreadable: [] };
+  for (const pr of prNumbers) {
+    const check = checkStudioTrainPr(runner, pr);
+    if (check.verdict === "studio") out.admitted.push(pr);
+    else if (check.verdict === "closed") out.skipped.push(check.reason);
+    else if (check.verdict === "foreign") (discovered ? out.skipped : out.refused).push(check.reason);
+    else out.unreadable.push(check.reason);
+  }
+  return out;
 }
 
 /** Busca metadados reais de um PR (`gh pr view`) e extrai as issues que
