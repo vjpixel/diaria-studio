@@ -283,3 +283,31 @@ export function resolveYouTubeState(
   }
   return "unknown";
 }
+
+// ─── Vertical (`_internal/06-shorts-published.json`, #10769/#10772) ──────────
+
+export interface ShortEntryLike {
+  status?: string | null;
+  scheduled_at?: string | null;
+}
+
+/**
+ * Normaliza uma entrada do registro do vertical (#573). O registro só diz o
+ * que o SCRIPT fez:
+ *   - `published` → "published";
+ *   - `scheduled` com horário futuro → "scheduled"; com horário passado ou
+ *     sem horário (X agendado na Buffer, fila do Worker) → "unknown": deveria
+ *     ter saído, mas nada aqui confirma — conferir na rede antes de dizer
+ *     "publicado";
+ *   - `send_unknown` (timeout/5xx na criação do post) ou qualquer outro →
+ *     "unknown".
+ */
+export function resolveShortEntryState(entry: ShortEntryLike, now: Date = new Date()): PublishState {
+  if (entry.status === "published") return "published";
+  if (entry.status === "scheduled") {
+    const ms = Date.parse(entry.scheduled_at ?? "");
+    if (Number.isNaN(ms)) return "unknown";
+    return ms > now.getTime() ? "scheduled" : "unknown";
+  }
+  return "unknown";
+}
