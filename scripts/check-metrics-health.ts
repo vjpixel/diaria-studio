@@ -128,6 +128,8 @@ import {
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
+  listFrozenUnmeasuredKeys,
+  alarmIssueStateKey,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
   saveState,
@@ -405,10 +407,32 @@ const SINAL_LABEL: Record<MetricsHealthFinding["sinal"], string> = {
   "identidade-duplicada": "identidade duplicada",
 };
 
+const METRICS_HEALTH_CHECK = "metrics-health";
+
+/**
+ * #10662 — chaves de estado (`metrics-health:queda:{id}`) cujo sinal de queda
+ * NÃO foi avaliado nesta execução: `evaluateQueda` devolveu `skipMotivo`
+ * (baseline curta depois de excluir janela paga, todos os dias excluídos,
+ * série curta). Ausência de achado aí não é evidência de que a queda sumiu —
+ * repassado como `isAbsenceUnmeasured` (#10520), congela a issue aberta em vez
+ * de comentar "não reproduz mais" e fechá-la a partir de uma leitura que não
+ * aconteceu (mesma ideia do `planEvaluatedChecks`, #7776).
+ */
+export function quedaNaoAvaliadaKeys(
+  avaliacoes: readonly { metricaId: string; skipMotivo: string | null }[],
+): Set<string> {
+  const keys = new Set<string>();
+  for (const { metricaId, skipMotivo } of avaliacoes) {
+    if (skipMotivo === null) continue;
+    keys.add(alarmIssueStateKey(METRICS_HEALTH_CHECK, metricsHealthFingerprint({ sinal: "queda", metrica_id: metricaId })));
+  }
+  return keys;
+}
+
 export function toMetricsHealthAlarmFinding(f: MetricsHealthFinding): AlarmFinding {
   const fingerprint = metricsHealthFingerprint(f);
   return {
-    check: "metrics-health",
+    check: METRICS_HEALTH_CHECK,
     fingerprint,
     title: `[diar.ia.br] saúde de métrica — ${SINAL_LABEL[f.sinal]}: ${f.metrica_id}`,
     body: [
@@ -752,6 +776,7 @@ async function main(): Promise<void> {
   const { sources: paidSources, avisos: paidAvisos } = loadPaidTestWindowSources();
   skipMotivos.push(...paidAvisos);
   const baselineExcluidaAquisicao = closedPaidAcquisitionWindows(paidSources, hoje);
+  const quedaAvaliacoes: { metricaId: string; skipMotivo: string | null }[] = [];
   for (const id of WIRED_METRIC_IDS) {
     const medicoes = seriesById.get(id);
     if (!medicoes) continue;
@@ -774,6 +799,7 @@ async function main(): Promise<void> {
       : evaluateQueda(def, medicoes, diasComInsumo, thresholds);
     if (quedaFinding) findings.push(quedaFinding);
     if (skipMotivo) skipMotivos.push(skipMotivo);
+    quedaAvaliacoes.push({ metricaId: id, skipMotivo });
 
     const frescorMaxDias = FRESCOR_MAX_DIAS_OVERRIDE[id] ?? thresholds.FRESCOR_MAX_DIAS;
     const frescorResultFinding = evaluateFrescorFromResult(id, medicoes, hoje, frescorMaxDias);
@@ -826,8 +852,15 @@ async function main(): Promise<void> {
     ? (JSON.parse(readFileSync(ALARM_ISSUES_STATE_PATH, "utf8")) as AlarmIssuesState)
     : emptyAlarmIssuesState();
 
+  // #10662: queda pulada nesta execução congela a issue aberta, nunca a fecha.
+  const quedaNaoAvaliadas = quedaNaoAvaliadaKeys(quedaAvaliacoes);
+  const isAbsenceUnmeasured = (key: string) => quedaNaoAvaliadas.has(key);
+  for (const { key, issueNumber } of listFrozenUnmeasuredKeys(alarmFindings, alarmState, isAbsenceUnmeasured)) {
+    console.log(`${LOG_PREFIX} issue #${issueNumber} (${key}) congelada: queda não avaliada nesta execução — nem comenta nem fecha.`);
+  }
+
   if (isDryRun) {
-    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, [], isAbsenceUnmeasured);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, estado NÃO gravado, ` +
@@ -839,6 +872,7 @@ async function main(): Promise<void> {
   const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
     cwd: ROOT,
     closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    isAbsenceUnmeasured,
   });
   saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
   saveState(nextMetaAtingidaState, META_STICKY_STATE_PATH);

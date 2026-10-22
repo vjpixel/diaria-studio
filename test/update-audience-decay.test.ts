@@ -93,6 +93,16 @@ describe("isNonEditorialHost", () => {
     assert.equal(isNonEditorialHost("apoia.se"), true);
   });
 
+  it("exclui wa.me e api.whatsapp.com (botão de compartilhar da casa, #10804)", () => {
+    assert.equal(isNonEditorialHost("wa.me"), true);
+    assert.equal(isNonEditorialHost("api.whatsapp.com"), true);
+  });
+
+  it("NÃO captura blog.whatsapp.com (fonte editorial legítima, #10804)", () => {
+    assert.equal(isNonEditorialHost("blog.whatsapp.com"), false);
+    assert.equal(isNonEditorialHost("whatsapp.com"), false);
+  });
+
   it("é case-insensitive e ignora www.", () => {
     assert.equal(isNonEditorialHost("LinkedIn.com"), true);
     assert.equal(isNonEditorialHost("www.linkedin.com"), true);

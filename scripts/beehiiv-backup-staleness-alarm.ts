@@ -57,6 +57,7 @@ import {
   buildCoverageAlarmEmail,
   computeExitHistoryFingerprint,
   buildExitHistoryAlarmEmail,
+  planFingerprintedAlarm,
   type BeehiivBackupStalenessAlarmState,
 } from "./lib/beehiiv-backup-staleness-alarm.ts";
 
@@ -140,34 +141,40 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const todayIso = new Date().toISOString().slice(0, 10);
   const missingMonths = findMonthsWithoutSnapshot(listSnapshotDates(root), todayIso);
   console.log(`${LOG_PREFIX} cobertura mensal: ${missingMonths.length === 0 ? "ok" : `faltando ${missingMonths.join(", ")}`}`);
-  if (missingMonths.length > 0) {
-    const fp = computeCoverageFingerprint(missingMonths);
-    if (fp !== state.lastCoverageFingerprint) {
-      const { subject, body } = buildCoverageAlarmEmail(missingMonths);
-      if (await notify("beehiiv-backup-monthly-coverage", fp, subject, body)) {
-        state = { ...state, lastCoverageFingerprint: fp };
-        saveState(state, statePath);
-      }
+  const coverageFp = missingMonths.length > 0 ? computeCoverageFingerprint(missingMonths) : null;
+  const coverageAction = planFingerprintedAlarm(coverageFp, state.lastCoverageFingerprint);
+  if (coverageAction === "send" && coverageFp) {
+    const { subject, body } = buildCoverageAlarmEmail(missingMonths);
+    if (await notify("beehiiv-backup-monthly-coverage", coverageFp, subject, body)) {
+      state = { ...state, lastCoverageFingerprint: coverageFp };
+      saveState(state, statePath);
     }
+  } else if (coverageAction === "reset") {
+    // #10780: voltou ao ok — zera, senão o mesmo conjunto sumindo de novo não alarma.
+    state = { ...state, lastCoverageFingerprint: null };
+    if (!isDryRun) saveState(state, statePath);
   }
 
   // 3) exit-history (#10710/#7248): o drain via MCP precisa ter rodado inteiro.
   const exitManifestPath = resolve(root, "exit-history/manifest.json");
   const exitStatus = exitHistoryDrainStatus(existsSync(exitManifestPath) ? readFileSync(exitManifestPath, "utf8") : null);
   console.log(`${LOG_PREFIX} exit-history: ${exitStatus}`);
-  if (exitStatus !== "complete") {
-    const fp = computeExitHistoryFingerprint(exitStatus);
-    if (fp !== state.lastExitHistoryFingerprint) {
-      const { subject, body } = buildExitHistoryAlarmEmail(exitStatus);
-      if (await notify("beehiiv-exit-history", fp, subject, body)) {
-        state = { ...state, lastExitHistoryFingerprint: fp };
-        saveState(state, statePath);
-      }
+  const exitFp = exitStatus !== "complete" ? computeExitHistoryFingerprint(exitStatus) : null;
+  const exitAction = planFingerprintedAlarm(exitFp, state.lastExitHistoryFingerprint);
+  if (exitAction === "send" && exitFp) {
+    const { subject, body } = buildExitHistoryAlarmEmail(exitStatus);
+    if (await notify("beehiiv-exit-history", exitFp, subject, body)) {
+      state = { ...state, lastExitHistoryFingerprint: exitFp };
+      saveState(state, statePath);
     }
+  } else if (exitAction === "reset") {
+    // #10780: manifest voltou a `complete` — zera, senão incompleto → completo → incompleto passa calado.
+    state = { ...state, lastExitHistoryFingerprint: null };
+    if (!isDryRun) saveState(state, statePath);
   }
 
-  // O estado é gravado logo após cada alarme registrado (um throw no 2º não
-  // faz o 1º reenviar na próxima rodada).
+  // O estado é gravado logo após cada alarme registrado ou fingerprint zerado
+  // (um throw no 2º não faz o 1º reenviar na próxima rodada).
   if (isDryRun) console.log(`${LOG_PREFIX} --dry-run: estado NÃO gravado.`);
 }
 
