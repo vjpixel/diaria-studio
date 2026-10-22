@@ -200,13 +200,15 @@ export class ForeignIssueNumberError extends Error {
  *
  * Estado real dos chamadores (não é a única defesa): hoje só
  * `planIssuesRequiringRouting` (`skipped-develop-track.ts`, API legada) lança
- * por aqui. Os gates de fim de rodada que só consultam o studio filtram ANTES
- * com os equivalentes que não lançam — `partitionStudioPlanEntries` (separa e
- * avisa: `check-overnight-comment-coverage`, `check-decision-label-drift-gate`,
- * `check-develop-label-cleared`) ou `studioNumberOfPlanEntry`
- * (`collectKnownIssueNumbers`, `findRetrackedUnworkedIssues`) — e os que
- * cobrem outros repos leem a `IssueKey` (`issueKeyOfPlanEntry`). Nenhum
- * desses lê `entry.number` cru.
+ * por aqui. Desde a fatia 4, os gates de fim de rodada
+ * (`check-overnight-comment-coverage`, `check-decision-label-drift-gate`,
+ * `check-develop-label-cleared`) avaliam cada repo à parte via
+ * `groupPlanEntriesByRepo`, cuja cópia em visão local de uma entrada de outro
+ * repo MANTÉM `ref` (review H) — passada aqui, ela continua lançando, nunca
+ * vira a studio#N; o número local dentro do grupo sai de
+ * `localNumberOfPlanEntry`. Os demais filtram com `studioNumberOfPlanEntry`
+ * (`collectKnownIssueNumbers`, `findRetrackedUnworkedIssues`) ou leem a
+ * `IssueKey` (`issueKeyOfPlanEntry`).
  */
 export function requireStudioIssueNumber(entry: unknown, where: string): number {
   const ref = planEntryRef(entry);

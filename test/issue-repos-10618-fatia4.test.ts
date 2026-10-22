@@ -47,7 +47,16 @@ import {
   type BlockStalenessConsultor,
   type BlockStalenessPlanIssue,
 } from "../scripts/lib/block-staleness.ts";
-import { groupPlanEntriesByRepo, labelInRepo } from "../scripts/lib/plan-issue-ref.ts";
+import {
+  groupPlanEntriesByRepo,
+  isLocalViewPlanEntry,
+  labelInRepo,
+  localNumberOfPlanEntry,
+  planEntryKey,
+  studioNumberOfPlanEntry,
+} from "../scripts/lib/plan-issue-ref.ts";
+import { requireStudioIssueNumber } from "../scripts/lib/issue-key.ts";
+import { checkDevelopLabelCleared } from "../scripts/lib/develop-label-gate.ts";
 import { normalizeIssues, type IssuesBearing } from "../scripts/lib/plan-issues-normalize.ts";
 import { attachClaims, clearTriageCache, fetchTriageData, parseIssues, type GhRunFn } from "../scripts/studio-ui/studio-issues.ts";
 // TS7016 — hook `.mjs` puro sem `.d.ts` (mesmo padrão dos testes que importam
@@ -549,11 +558,44 @@ describe("#10618 fatia 4 — groupPlanEntriesByRepo", () => {
       { number: 5, repo: 42 },
     ]);
     assert.deepEqual(groups.map((g) => g.repo), [STUDIO, DESIGN]);
-    assert.deepEqual(groups[1].entries, [{ number: 21, status: "pulada" }]);
+    assert.equal(groups[1].entries.length, 1);
+    assert.equal(groups[1].entries[0].number, 21);
+    assert.equal(groups[1].entries[0].status, "pulada");
     assert.equal(groups[0].isDefault, true);
-    assert.deepEqual(unknown, ["(identidade desconhecida)"]);
+    assert.deepEqual(unknown, ["entrada [2] (repo=42, number=5) (identidade desconhecida)"]);
     assert.equal(labelInRepo(STUDIO, 21), "#21");
     assert.equal(labelInRepo(DESIGN, 21), `${DESIGN}#21`);
+  });
+});
+
+describe("#10618 fatia 4 (review H) — visão local nunca volta a ser a studio#N", () => {
+  it("cópia do design mantém a identidade: resolvedores veem owner/repo#N, guard local vê o número", () => {
+    const { groups } = groupPlanEntriesByRepo([
+      { number: 21, repo: DESIGN, status: "pulada" },
+      `${DESIGN}#22`,
+    ]);
+    const [a] = groups[0].entries as Array<{ number: number }>;
+    assert.equal(groups[0].repo, DESIGN);
+    assert.equal(planEntryKey(a), `${DESIGN}#21`);
+    assert.equal(studioNumberOfPlanEntry(a), null, "nunca a studio#21");
+    assert.throws(() => requireStudioIssueNumber(a, "teste"), /diaria-design#21/);
+    assert.equal(localNumberOfPlanEntry(a), 21);
+    assert.equal(isLocalViewPlanEntry(a), true);
+    // JSON não carrega a marca, mas carrega `ref`: a identidade sobrevive.
+    const roundTrip = JSON.parse(JSON.stringify(a));
+    assert.equal(planEntryKey(roundTrip), `${DESIGN}#21`);
+    assert.equal(localNumberOfPlanEntry(roundTrip), null);
+  });
+
+  it("checkDevelopLabelCleared: entrada do design fora de um grupo (sem a marca) nunca é avaliada como studio#N", () => {
+    const r = checkDevelopLabelCleared(
+      [{ number: 21, ref: `${DESIGN}#21`, status: "mergeada" }],
+      [{ number: 21, labels: ["windows"], body: "" }],
+    );
+    assert.equal(r.findings.length, 0);
+    const { groups } = groupPlanEntriesByRepo([{ number: 21, ref: `${DESIGN}#21`, status: "mergeada" }]);
+    const local = checkDevelopLabelCleared(groups[0].entries, [{ number: 21, labels: ["windows"], body: "" }]);
+    assert.equal(local.findings.length, 1, "dentro do grupo, a cópia local é avaliada");
   });
 });
 
