@@ -16,7 +16,12 @@ import { fetchHtml, enrichArticles } from "../scripts/enrich-inbox-articles.ts";
 import {
   categorizeArticles,
   hasUnresolvedRedirectStubTitle,
+  type CategorizeEvent,
 } from "../scripts/categorize.ts";
+import {
+  isAmbiguousRedirectStubTitle,
+  isPlaceholderHighlightTitle,
+} from "../scripts/lib/placeholder-title-guard.ts";
 
 const STUB_DOC_MOVED =
   '<html><head><title>Document moved</title></head><body>Object moved to <a href="/news/voxtral-3/">here</a></body></html>';
@@ -99,6 +104,87 @@ describe("#10796 — redirect sem barra final (Voxtral 3, 261022)", () => {
     }
     for (const title of ["Voxtral 3", "Redirecting the AI race to Europe", "", "(inbox)"]) {
       assert.equal(hasUnresolvedRedirectStubTitle({ url: "https://a.com/x", title }), false, title);
+    }
+  });
+});
+
+describe("#10796 — review do PR #10890", () => {
+  const LONG_SUMMARY = "Resumo de uma matéria real sobre IA, com conteúdo suficiente para o pool.";
+
+  it("editor_submitted com título de stub NÃO é descartado: fica no pool marcado, com warn", () => {
+    const events: CategorizeEvent[] = [];
+    const buckets = categorizeArticles(
+      [{ url: "https://mistral.ai/news/voxtral-3", title: "Document moved", flag: "editor_submitted", summary: LONG_SUMMARY }],
+      { onEvent: (e) => events.push(e) },
+    );
+    const kept = Object.values(buckets).flat();
+    assert.equal(kept.length, 1, "submissão do editor não some");
+    assert.equal(kept[0].title, "Document moved");
+    assert.equal(kept[0].title_unresolved, "redirect_stub");
+    // continua barrada de destaque pelo guard compartilhado
+    assert.equal(isPlaceholderHighlightTitle(kept[0].title), true);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].level, "warn");
+    assert.equal((events[0].details as { reason: string }).reason, "redirect_stub_title_kept");
+  });
+
+  it("cada descarte por stub emite evento warn pro run-log", () => {
+    const events: CategorizeEvent[] = [];
+    categorizeArticles(
+      [
+        { url: "https://mistral.ai/news/voxtral-3", title: "301 Moved Permanently", flag: "newsletter_extracted" },
+        { url: "https://b.com/y", title: "Redirecting...", summary: LONG_SUMMARY },
+      ],
+      { onEvent: (e) => events.push(e) },
+    );
+    assert.equal(events.length, 2);
+    for (const e of events) {
+      assert.equal(e.level, "warn");
+      assert.equal(e.agent, "categorize");
+      assert.equal(e.stage, 1);
+      assert.equal((e.details as { reason: string }).reason, "redirect_stub_title");
+    }
+    assert.match(events[0].message, /voxtral-3/);
+  });
+
+  it("drop #722 (inbox sem conteúdo) também emite evento", () => {
+    const events: CategorizeEvent[] = [];
+    categorizeArticles([{ url: "https://c.com/z", title: "(inbox)", flag: "editor_submitted" }], {
+      onEvent: (e) => events.push(e),
+    });
+    assert.equal(events.length, 1);
+    assert.equal((events[0].details as { reason: string }).reason, "unresolvable_inbox");
+  });
+
+  it("palavra solta 'Found'/'Moved' com summary real NÃO é descartada", () => {
+    for (const title of ["Found", "Moved", "Redirect"]) {
+      assert.equal(isAmbiguousRedirectStubTitle(title), true, title);
+      assert.equal(
+        hasUnresolvedRedirectStubTitle({ url: "https://a.com/x", title, summary: LONG_SUMMARY }),
+        false,
+        title,
+      );
+    }
+    const buckets = categorizeArticles([
+      { url: "https://www.theverge.com/ai/found-film", title: "Found", summary: "Documentário sobre IA generativa no cinema chega aos cinemas." },
+    ]);
+    assert.equal(Object.values(buckets).flat().length, 1);
+  });
+
+  it("palavra solta com contexto de redirect (summary vazio ou corpo de stub) é descartada", () => {
+    assert.equal(hasUnresolvedRedirectStubTitle({ url: "https://a.com/x", title: "Found" }), true);
+    assert.equal(
+      hasUnresolvedRedirectStubTitle({
+        url: "https://a.com/x",
+        title: "Moved",
+        summary: "The document has moved to a new location, click here to continue.",
+      }),
+      true,
+    );
+    // forma inequívoca não depende do summary
+    for (const title of ["302 Found", "Moved Permanently", "Document moved"]) {
+      assert.equal(isAmbiguousRedirectStubTitle(title), false, title);
+      assert.equal(hasUnresolvedRedirectStubTitle({ url: "https://a.com/x", title, summary: LONG_SUMMARY }), true, title);
     }
   });
 });
