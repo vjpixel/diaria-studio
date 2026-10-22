@@ -189,6 +189,10 @@ const POOL_SECTION_KEYS: ReadonlySet<string> = new Set(["use-melhor", "lancament
  * valendo. Antes, item cortado encolhia a seção >30% e virava `length-cut`
  * apontando pro `writer-destaque.md`, que nem escreve o pool.
  *
+ * #10793: remoção + inclusão mantém as duas contagens, com corte como tipo
+ * primário. O consumidor emite pool-cut e pool-add separadamente; esta
+ * comparação de conjuntos não demonstra troca de fonte da mesma história.
+ *
  * #9943 — `elsewhere` (opcional): chaves dos itens que estão em OUTRAS seções
  * (pool ou destaque) antes (`before`) e depois (`after`). Item que saiu desta
  * seção mas segue em outra (`movedOut`) ou entrou vindo de outra (`movedIn`)
@@ -214,7 +218,8 @@ export function classifyPoolItemSetChange(
   }
   if (added === 0) return { type: "pool-cut", kind: "itens-cortados", removed, added, ...moved };
   if (removed === 0) return { type: "pool-add", kind: "itens-adicionados", removed, added, ...moved };
-  return { type: "link-swap", kind: "itens-trocados", removed, added, ...moved };
+  // #10793: corte + inclusão não prova troca de fonte da mesma história.
+  return { type: "pool-cut", kind: "itens-cortados", removed, added, ...moved };
 }
 
 /** Chaves host+path (`titleLineUrlKey`) das linhas de título `**[t](url)**` de uma seção, na ordem. */
@@ -539,6 +544,24 @@ export function classifyNewsletterDiff(
           resolution: "accepted",
           context: { section, from_section: from, url: newItemUrls.get(k) ?? k, change_kind: "item-movido" },
         });
+      }
+      // #10793: emitir os dois lados separadamente, sem inflar link-swap.
+      if (poolClass.removed > 0 && poolClass.added > 0) {
+        for (const type of ["pool-cut", "pool-add"] as const) {
+          results.push({
+            request_type: type,
+            target: POOL_SECTION_TARGETS[section] ?? "newsletter",
+            description: `Itens ${type === "pool-cut" ? "cortados" : "adicionados"} em ${section} no 02-reviewed.md`,
+            resolution: "accepted",
+            context: {
+              section,
+              change_kind: type === "pool-cut" ? "itens-cortados" : "itens-adicionados",
+              items_removed: type === "pool-cut" ? poolClass.removed : 0,
+              items_added: type === "pool-add" ? poolClass.added : 0,
+            },
+          });
+        }
+        continue;
       }
       if (poolClass.removed === 0 && poolClass.added === 0) {
         // #9949: a única mudança no CONJUNTO foi movimentação — mas os outros
