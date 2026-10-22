@@ -589,6 +589,42 @@ describe("run-nightly-chain — desfecho e rastro do overnight (#10808)", () => 
     assert.ok(logs.some((l) => /fim review=ok overnight=no-trace exit=4/.test(l)));
   });
 
+  it("#10880: halt da sonda exige relatório antes do encerramento, sem apagar o erro", () => {
+    const skill = readFileSync(join(import.meta.dirname, "..", ".claude/skills/diaria-overnight/SKILL.md"), "utf8");
+    const halt = skill.split("\n").find((line) => line.startsWith("- **Sonda do par efetivo (passo 1):**"));
+    assert.ok(halt);
+    assert.match(halt, /Exit 1 ou 2 é HALT/);
+    assert.match(halt, /coordinator_model_probe_failed.*--level error/);
+    assert.match(halt, /Antes de encerrar, grave um \x60report\.md\x60 mínimo.*path.*passo 0/);
+    assert.match(halt, /sufixo de colisão; nunca sobrescreva relatório de outra sessão/);
+    assert.match(halt, /timestamp ISO real, exit code da sonda.*motivo\/diagnóstico/);
+    assert.match(halt, /preserve o evento de erro.*Depois rode o encerramento/);
+  });
+
+  for (const probeExit of [1, 2]) {
+    it(`#10880: relatório mínimo do halt da sonda (exit ${probeExit}) é rastro válido no runner real`, () => {
+      const root = makeRepo();
+      const dir = join(root, "data", "overnight", "261022b");
+      mkdirSync(dir, { recursive: true });
+      const { deps, logs } = harness({ status: 0 }, { status: 0 });
+      const spawn = deps.spawn;
+      deps.spawn = ((command, args, options) => {
+        if (command !== "bash") {
+          writeFileSync(join(dir, "report.md"),
+            `coordinator_model_probe_failed\nTimestamp: ${new Date().toISOString()}\nExit: ${probeExit}\nSonda inválida; fase autônoma não começou.\n`);
+          // Evita depender da resolução de mtime do filesystem.
+          const fresh = new Date(Date.now() + 1000);
+          utimesSync(join(dir, "report.md"), fresh, fresh);
+        }
+        return spawn(command, args, options);
+      }) as typeof deps.spawn;
+      deps.findRoundTrace = findRoundTraceSince;
+      assert.equal(main(root, deps), 0);
+      assert.ok(logs.includes("overnight: rastro 261022b/report.md"));
+      assert.ok(!logs.some((line) => line.startsWith("overnight: SEM RASTRO")));
+    });
+  }
+
   it("evento result com is_error e exit 0 → falha do overnight", () => {
     const { deps } = harness({ status: 0 }, { status: 0, stdout: ev({ type: "result", subtype: "error_during_execution", is_error: true, result: "" }) });
     deps.findRoundTrace = () => ["x/plan.json"];
