@@ -57,6 +57,21 @@ describe("#10908 — title_unresolved barra destaque com título de stub ambígu
     assert.ok(!out.some((h) => h.url === STUB_URL));
   });
 
+  it("scorer-select (LLM) que não copiou title_unresolved: o marcador do finalista da mesma URL basta", () => {
+    const stub = keptFoundSubmission();
+    const { title_unresolved: _dropped, ...stubSemMarcador } = stub;
+    const real = { url: "https://b.com/real", title: "OpenAI lança modelo novo" };
+    const { highlights: out, demotions } = demotePlaceholderTitleHighlights(
+      [{ rank: 1, score: 98, url: STUB_URL, article: stubSemMarcador }],
+      [
+        { url: STUB_URL, score: 98, article: stub },
+        { url: real.url, score: 75, article: real },
+      ],
+    );
+    assert.equal(demotions.length, 1);
+    assert.equal(out[0].url, real.url);
+  });
+
   it("finalista 'Found' marcado nunca é escolhido como substituto de outro placeholder", () => {
     const stub = keptFoundSubmission();
     const { highlights: out, demotions } = demotePlaceholderTitleHighlights(

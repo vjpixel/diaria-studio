@@ -170,9 +170,22 @@ export function demotePlaceholderTitleHighlights<H extends PlaceholderHighlightL
   highlights: H[],
   finalists: PlaceholderFinalistLike[],
 ): { highlights: H[]; demotions: PlaceholderDemotion[] } {
+  // #10908: o `article` do highlight vem da seleção do `scorer-select` (LLM),
+  // que pode não copiar `title_unresolved`. O finalista da mesma URL vem do
+  // merge determinístico e carrega o marcador — vale como fonte de reserva.
+  const unresolvedFinalistUrls = new Set(
+    finalists
+      .filter((f) => Boolean(f.article?.title_unresolved))
+      .map((f) => f.url),
+  );
   const offenderIdxs = highlights
     .map((h, i) => ({ h, i }))
-    .filter(({ h }) => isPlaceholderHighlightItem(h)); // #10908: lê title_unresolved
+    .filter(({ h }) => {
+      if (isPlaceholderHighlightItem(h)) return true;
+      const u = urlOf(h);
+      return u !== undefined && unresolvedFinalistUrls.has(u) &&
+        isPlaceholderHighlightTitleOrUnresolved(titleOf(h), true);
+    });
 
   if (offenderIdxs.length === 0) return { highlights, demotions: [] };
 
