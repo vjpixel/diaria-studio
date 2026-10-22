@@ -119,7 +119,7 @@ describe("#10652 executor — alarme quando o excedente vai vencer", () => {
     const view = buildFollowupPanel(store, {});
     const alert = view.alerts.find((a) => a.mensagem.includes("não cabe na janela"));
     assert.ok(alert, "painel mostra o alerta já na 1ª rodada");
-    assert.match(alert!.mensagem, /: 4 vão vencer/);
+    assert.match(alert!.mensagem, /estimativa de vencimento sem envio: Apoio D\+30: 4/);
     // `excede_janela` é subconjunto de `adiado_teto`: não soma de novo nos pendentes.
     const step = view.steps.find((s) => s.step === "apoio30")!;
     assert.equal(step.pendentes.adiado_teto, 8);

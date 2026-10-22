@@ -300,7 +300,7 @@ export function buildFollowupPanel(
     alerts.push({
       kind: "cap_window_overflow",
       etapa: "Sequências de apoio/formulário",
-      mensagem: `excedente do teto de lote não cabe na janela — ao menos ${perda} vão vencer sem receber (subir max_recipients_per_lot ou grace_days)`,
+      mensagem: `excedente do teto de lote não cabe na janela — estimativa de vencimento sem envio: ${perda} (subir max_recipients_per_lot ou grace_days)`,
     });
   }
   for (const lot of [...kitLots, ...fLots]) {

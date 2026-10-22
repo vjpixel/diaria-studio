@@ -690,7 +690,7 @@ export interface CapWindowOverflow {
   eligible: number;
   /** Quantos elegíveis cabem até o fim da janela de cada um (1 lote de `cap`/dia). */
   capacity: number;
-  /** Quantos vão virar `vencida` sem receber (`eligible − capacity`). */
+  /** Estimativa de quantos virariam `vencida` sem receber (`eligible − capacity`). */
   projected_vencidas: number;
 }
 
@@ -736,10 +736,19 @@ export function capWindowStartSec(
  * então o excedente só atrasa, nunca vence. Devido sem âncora (`start` nulo)
  * não tem prazo conhecido e não conta como vencida.
  *
- * Limites: não projeta elegíveis que entram nos próximos dias (só piora a
- * conta), e `due` é contado ANTES do filtro ao vivo (`nao_ativo`/`apoia`,
- * `filterDueByLiveCheck`) — quem sair por esse filtro libera vaga, então a
- * projeção é um teto superior da perda em relação a esse filtro.
+ * Precisão de horário (#10680): assume rodadas a cada 24h exatas. O followup
+ * é o 3º passo da task Welcome-Run e seu horário varia com os passos anteriores
+ * e execuções manuais. Considere margem operacional de aproximadamente 1h na
+ * fronteira: com 23,9h restantes, esta conta prevê só hoje, mas uma próxima
+ * rodada em 23,8h ainda alcançaria a janela. A margem é documentada, não
+ * somada à janela real nem ao cálculo; o alarme nessa faixa pode ser falso.
+ *
+ * Limites: não projeta elegíveis que entram nos próximos dias. O teto é
+ * aplicado ANTES de `filterDueByLiveCheck`: exclusões `apoia`, `nao_ativo`
+ * e `consulta_falhou` ocupam vaga hoje, sem reposição. `apoia` e `nao_ativo`
+ * ganham pulo terminal; `consulta_falhou` não ganha registro e pode voltar
+ * a ocupar vaga amanhã. A projeção pode errar nos dois sentidos; não é teto
+ * superior nem mínimo garantido de perdas.
  */
 export function capWindowOverflows(
   due: readonly FollowupDue[],
