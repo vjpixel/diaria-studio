@@ -9,8 +9,11 @@
  * em `private`; copiar a `url` do registro para o D1 publicaria um link que o
  * leitor não abre. Regra (estado RELIDO, nunca o pedido — #573):
  *   - `published` (público) → pode;
- *   - `scheduled` (privado com `publishAt` futuro) → pode só se o `publishAt`
- *     não passar do horário do post do D1 do dia (o 1º post que leva o link);
+ *   - `scheduled` (privado com `publishAt` futuro) → pode só com o projeto GCP
+ *     auditado (`YOUTUBE_API_PROJECT_AUDITED`, #10865) E o `publishAt` até o
+ *     horário do post do D1 do dia (o 1º post que leva o link). Sem auditoria
+ *     o agendamento pode nunca tornar o vídeo público: o link fica para
+ *     `link-video-d1.ts --assume-public`, depois de o editor conferir no Studio;
  *   - `draft` (privado sem agendamento), `unknown` ou qualquer outro → não.
  *
  * Premissa: o "primeiro slot social" do #10858 é o do post do D1 —
@@ -27,6 +30,7 @@ import {
   resolveDailyPostTime,
 } from "../social-schedule-rotation.ts";
 import { extractYouTubeVideoId } from "./d1-video-link.ts";
+import { YOUTUBE_API_PROJECT_AUDITED } from "./youtube-video.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./youtube-upload.ts";
 
 /** Offset de America/Sao_Paulo (sem horário de verão desde 2019). */
@@ -40,10 +44,24 @@ export function videoLinkEligibility(input: {
   publishAt: string | null | undefined;
   /** Horário do post do D1; `null` = desconhecido (então `scheduled` não passa). */
   d1SlotAt: Date | null;
+  /**
+   * Projeto GCP auditado? Default `YOUTUBE_API_PROJECT_AUDITED` (#10865). Sem
+   * auditoria `scheduled` não passa: o `publishAt` pode não tornar o vídeo
+   * público (`resolveEffectiveVisibility`).
+   */
+  projectAudited?: boolean;
 }): VideoLinkVerdict {
   const state = input.state ?? "unknown";
   if (state === "published") return { ok: true, reason: "vídeo público" };
   if (state === "scheduled") {
+    if (!(input.projectAudited ?? YOUTUBE_API_PROJECT_AUDITED)) {
+      return {
+        ok: false,
+        reason:
+          `vídeo agendado para ${input.publishAt ?? "?"}, mas o projeto GCP não tem a auditoria do YouTube API Services — ` +
+          "o agendamento pode não torná-lo público; confira no YouTube Studio que ele abre (#10865)",
+      };
+    }
     const at = input.publishAt ? Date.parse(input.publishAt) : NaN;
     if (!Number.isFinite(at)) {
       return { ok: false, reason: "vídeo agendado sem publishAt legível — não dá para garantir que fica público antes do D1" };
@@ -133,6 +151,8 @@ export function gateVideoLink(input: {
   videoUrl: string;
   record: YouTubeRecordSummary | null;
   d1SlotAt: Date | null;
+  /** Default `YOUTUBE_API_PROJECT_AUDITED` (#10865). */
+  projectAudited?: boolean;
 }): VideoLinkGate {
   const id = extractYouTubeVideoId(input.videoUrl);
   const rec = input.record;
@@ -145,6 +165,11 @@ export function gateVideoLink(input: {
         : "sem registro de upload deste vídeo — confira no Studio que ele é público",
     };
   }
-  const v = videoLinkEligibility({ state: rec.state, publishAt: rec.publishAt, d1SlotAt: input.d1SlotAt });
+  const v = videoLinkEligibility({
+    state: rec.state,
+    publishAt: rec.publishAt,
+    d1SlotAt: input.d1SlotAt,
+    projectAudited: input.projectAudited,
+  });
   return { ok: v.ok, reason: v.reason, record_matched: true };
 }

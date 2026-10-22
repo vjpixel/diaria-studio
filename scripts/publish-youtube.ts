@@ -288,11 +288,14 @@ export function writeD1VideoUrlAfterUpload(
   record: Pick<YouTubePublishedRecord, "aammdd" | "url" | "state" | "rereadStatus">,
   d1SlotAt: Date | null,
   log: (line: string) => void,
+  /** Default `YOUTUBE_API_PROJECT_AUDITED`; sem auditoria, `scheduled` não grava (#10865). */
+  projectAudited: boolean = YOUTUBE_API_PROJECT_AUDITED,
 ): boolean {
   const verdict = videoLinkEligibility({
     state: record.state,
     publishAt: record.rereadStatus?.publishAt ?? null,
     d1SlotAt,
+    projectAudited,
   });
   const urlFile = join(editionDir, D1_VIDEO_URL_FILE);
   if (!verdict.ok) {
@@ -500,7 +503,10 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
     );
     return { exitCode: 1, record, skipped: false };
   }
-  const videoUrlWritten = failed ? false : writeD1VideoUrlAfterUpload(input.editionDir, record, input.d1SlotAt ?? null, log);
+  // #10865: mesma premissa de auditoria com que o plano foi montado.
+  const videoUrlWritten = failed
+    ? false
+    : writeD1VideoUrlAfterUpload(input.editionDir, record, input.d1SlotAt ?? null, log, !plan.effective.auditBlocked);
   return { exitCode: failed ? 1 : 0, record, skipped: false, videoUrlWritten };
 }
 
