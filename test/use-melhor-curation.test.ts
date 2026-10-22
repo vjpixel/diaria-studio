@@ -32,6 +32,7 @@ import {
   isOpinionOrStudy,
   estimateUseMelhorTempo,
   estimateUseMelhorTempoDetailed, // #6739
+  isEnglishBody, // #10765
   roundToReadingMinutesBucket, // #6739
   extractPlainTextFromHtml, // #6739
   countWords, // #6739
@@ -2334,6 +2335,21 @@ describe("estimateUseMelhorTempoDetailed (#6739) — causa raiz: 60% saía em (5
     // Confirma que a heurística de título SOZINHA teria dado o placeholder (5 min) —
     // é exatamente a discrepância que motivou a issue.
     assert.equal(estimateUseMelhorTempo("Using LLMs to Secure Source Code", "https://example.com/threat-model"), "(5 min)");
+  });
+
+  it("#10765: body em inglês usa ppm menor que PT-BR (mesmas 2400 palavras: EN 15 min, PT 10 min)", () => {
+    const words = new Array(2400).fill("palavra").join(" ");
+    const pt = estimateUseMelhorTempoDetailed("Guia", "https://example.com/a", `<html lang="pt-BR"><body><p>${words}</p></body></html>`);
+    const en = estimateUseMelhorTempoDetailed("Guia", "https://example.com/a", `<html lang="en"><body><p>${words}</p></body></html>`);
+    assert.equal(pt.estimate, "(10 min)");
+    assert.equal(en.estimate, "(15 min)");
+    assert.equal(en.source, "wordcount");
+  });
+
+  it("#10765: sem atributo lang, detecta inglês pelo texto", () => {
+    const en = new Array(250).fill("the quick brown fox is on the table and it is in a house").join(" ");
+    assert.equal(isEnglishBody("<body></body>", en), true);
+    assert.equal(isEnglishBody("<body></body>", new Array(300).fill("palavra").join(" ")), false);
   });
 
   it("bodyHtml de página YouTube com lengthSeconds → usa duração real do vídeo (source: youtube)", () => {
