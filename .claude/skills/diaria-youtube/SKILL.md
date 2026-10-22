@@ -1,6 +1,6 @@
 ---
 name: diaria-youtube
-description: Prepara o vídeo diário "diar.ia.br comentada" (Pixel comentando o D1) para o canal @diariabr no YouTube — metadados derivados da edição (título do D1, descrição com resumo + fonte + link da edição + CTA com UTM youtube, 6 tags), capa e agendamento 06:00 BRT (ou na hora, se já passou). Roda fora da pipeline, para o caso do vídeo ficar pronto depois do Stage 5. Hoje só em modo dry-run — o upload real depende do OAuth da conta @diariabr e da auditoria do projeto GCP (#10659). Uso — `/diaria-youtube AAMMDD`.
+description: Prepara o vídeo diário "diar.ia.br comentada" (Pixel comentando o D1) para o canal @diariabr no YouTube — metadados derivados da edição (título do D1, descrição com resumo + link da edição com UTM + CTA com UTM youtube, 6 tags), capa e agendamento 06:00 BRT (ou na hora, se já passou). Roda fora da pipeline, para o caso do vídeo ficar pronto depois do Stage 5. Hoje só em modo dry-run — o upload real depende do OAuth da conta @diariabr e da auditoria do projeto GCP (#10659). Uso — `/diaria-youtube AAMMDD`.
 ---
 
 # /diaria-youtube AAMMDD (#10659)

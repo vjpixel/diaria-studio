@@ -86,7 +86,7 @@ import {
   type LtvCacRatioDeps,
 } from "../lib/metrics/registry.ts";
 import { classifyAcquisition, type AcquisitionClass } from "../lib/metrics/acquisition-class.ts";
-import { normalizeEmail } from "../lib/cac.ts";
+import { aggregateMeasuredRowsByCanal, normalizeEmail } from "../lib/cac.ts";
 import { readMonthCacheDetailed } from "../lib/apoia-se.ts";
 import { loadAmazonRevenueConfig } from "../lib/amazon-revenue-config.ts";
 import { loadManualCleanupEmails, manualCleanupEmailsPath } from "../lib/manual-cleanup-emails.ts";
@@ -836,11 +836,14 @@ async function computeValorLayer(
   try {
     const adsSnapshot = buildAdsData(rootDir);
     if (adsSnapshot.report) {
-      for (const row of adsSnapshot.report.rows) {
-        // Custo por ATIVO (gasto ÷ ativos), não `row.custoPorLeitor`: o LTV
-        // é por ativo (ARPU = receita ÷ base ativa), então o denominador
-        // precisa da mesma unidade (#9023).
-        if (row.kind === "measured") custoPorCanal[row.canal] = computeCustoPorAtivo(row.spend.valor, row.ativos);
+      // Custo por ATIVO (gasto ÷ ativos), não `row.custoPorLeitor`: o LTV
+      // é por ativo (ARPU = receita ÷ base ativa), então o denominador
+      // precisa da mesma unidade (#9023). Soma TODAS as linhas do canal antes
+      // de dividir (#10775): desde #10679 um canal com gasto em meses
+      // diferentes tem uma linha por mês, e a última (às vezes com 0 ativos)
+      // sobrescrevia o custo do canal inteiro.
+      for (const totals of aggregateMeasuredRowsByCanal(adsSnapshot.report.rows).values()) {
+        custoPorCanal[totals.canal] = computeCustoPorAtivo(totals.gasto, totals.ativos);
       }
     }
   } catch (e) {

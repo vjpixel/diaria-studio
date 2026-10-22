@@ -39,10 +39,12 @@ const D1 = {
   body: "Um modelo da **OpenAI** gastou o saldo de uma [carteira](https://x.com/a) de terceiros. O caso foi descoberto depois.",
 };
 const EDITION_URL = "https://diar.ia.br/p/voce-ja-viu-ia-mentir-ja-viu-roubar";
+// Link da fonte individual do D1 no fixture REVIEWED — nunca pode vazar pro Short (#10799).
+const D1_SOURCE_URL = "https://alignment.openai.com/x";
 
 const REVIEWED = `DESTAQUE 1 | 🔐 SEGURANÇA
 
-[${D1.title}](https://alignment.openai.com/x)
+[${D1.title}](${D1_SOURCE_URL})
 
 ${D1.body}
 
@@ -255,6 +257,17 @@ describe("#10769 plano do publish-shorts", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
     assert.equal(plan.youtube.title, "Você já viu IA mentir. Já viu roubar? #Shorts");
     assert.equal(plan.longVideo, "diaria-comentada-261022.mp4");
+  });
+
+  it("Short nunca cita a fonte individual na descrição nem no comentário fixado (#10799)", () => {
+    // Plano real: REVIEWED carrega D1_SOURCE_URL no link do título do D1 — se o
+    // publish-shorts passasse d1.url adiante pro metadado, isto quebra.
+    assert.ok(REVIEWED.includes(D1_SOURCE_URL), "fixture precisa conter a URL da fonte");
+    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
+    assert.doesNotMatch(plan.youtube.description, /^Fonte:/m);
+    assert.ok(!plan.youtube.description.includes(D1_SOURCE_URL));
+    assert.doesNotMatch(plan.youtube.pinnedComment, /^Fonte:/m);
+    assert.ok(!plan.youtube.pinnedComment.includes(D1_SOURCE_URL));
   });
 });
 

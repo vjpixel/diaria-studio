@@ -70,7 +70,13 @@ describe("fmtValor — rótulo da faixa por métrica (#9023)", () => {
 describe("studio-metrics — LTV÷CAC divide por custo por ATIVO (#9023 item 2)", () => {
   it("custoPorCanal vem de computeCustoPorAtivo(spend, ativos), nunca de row.custoPorLeitor", () => {
     const src = readFileSync(join(ROOT, "scripts", "studio-ui", "studio-metrics.ts"), "utf8");
-    assert.match(src, /custoPorCanal\[row\.canal\]\s*=\s*computeCustoPorAtivo\(row\.spend\.valor,\s*row\.ativos\)/);
-    assert.doesNotMatch(src, /custoPorCanal\[row\.canal\]\s*=\s*row\.custoPorLeitor/);
+    // Desde #10775 o custo é calculado sobre os TOTAIS do canal (todas as
+    // linhas `measured` somadas por `aggregateMeasuredRowsByCanal`), não por
+    // linha — a regex trava o numerador (gasto) e o denominador (ATIVOS) do
+    // mesmo agregado; o invariante do #9023 (por ativo, nunca por leitor)
+    // continua o mesmo.
+    assert.match(src, /custoPorCanal\[totals\.canal\]\s*=\s*computeCustoPorAtivo\(totals\.gasto,\s*totals\.ativos\)/);
+    assert.doesNotMatch(src, /custoPorCanal\[[^\]]+\]\s*=\s*\w+\.custoPorLeitor/);
+    assert.doesNotMatch(src, /computeCustoPorAtivo\([^)]*leitores\)/);
   });
 });
