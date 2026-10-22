@@ -28,6 +28,17 @@ import {
 } from "../../../scripts/lib/onboarding-form-contract.ts";
 import { checkFormEmailSig, checkLinkSecret, type FormSigRejection } from "../../../scripts/lib/onboarding-form-link-sig.ts";
 import { collectFormFields, renderErrorHtml, renderFormHtml, renderInvalidLinkHtml, renderThanksHtml } from "./render.ts";
+import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #10809
+
+/**
+ * `robots.txt` PRÓPRIO de `formulario.diar.ia.br` (#10809, guard #4777): todo
+ * Worker com `custom_domain` serve o seu, senão nasce servindo o default da
+ * Cloudflare. Mesmo helper dos outros Workers. O formulário só abre com link
+ * assinado por pessoa, então não há o que indexar: sem `Sitemap:`, e o envio
+ * (`/enviar`) e a API do executor (`/api/`) ficam fora do rastreamento. Não
+ * depende de KV nem de secret.
+ */
+const ROBOTS_TXT = renderCuradoriaRobotsTxt(undefined, { extraDisallowPaths: ["/enviar", "/api/"] });
 
 export interface Env {
   ONBOARDING_FORM?: KVNamespace;
@@ -54,6 +65,12 @@ function rejectLink(route: "/" | "/enviar", reason: FormSigRejection): Response 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    // #10809: antes do check de KV — robots.txt não depende de configuração.
+    if (request.method === "GET" && url.pathname === "/robots.txt") {
+      return new Response(ROBOTS_TXT, {
+        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=3600" },
+      });
+    }
     if (!env.ONBOARDING_FORM) return notConfigured("kv ONBOARDING_FORM");
     const isFormRoute = (request.method === "GET" && url.pathname === "/") || (request.method === "POST" && url.pathname === "/enviar");
     const secretCheck = checkLinkSecret(env.ONBOARDING_FORM_LINK_SECRET);
