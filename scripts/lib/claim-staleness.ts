@@ -49,10 +49,24 @@
  * sem gerar falso positivo numa unidade só um pouco lenta). */
 export const CLAIM_STALE_AGE_MS = 6 * 60 * 60 * 1000;
 
+import {
+  compareIssueKeys,
+  isStudioIssueKey,
+  issueNumberInRepo,
+  repoOfIssueKey,
+  toIssueKey,
+  type IssueKey,
+} from "./issue-key.ts";
+
 /** Uma entrada de claim, já achatada a partir de `listActiveSessions` — uma
  * linha por (sessão, issue reivindicada). */
 export interface ClaimEntry {
+  /** Número da issue no repo DELA (`issueKey` diz qual; ausente = studio). */
   issueNumber: number;
+  /** #10618 (fatia 3): identidade `owner/repo#N` — presente nas claims de
+   * outro repo de `flattenAllClaims`. Ausente = diaria-studio#`issueNumber`
+   * (`flattenClaims` não preenche, pra não mudar o shape que o painel lê). */
+  issueKey?: IssueKey;
   kind: string;
   machineTag: string;
   sessionId: string;
@@ -93,6 +107,11 @@ export interface ClaimBearingSession {
    * chamador que não passou por `listActiveSessions`) cai no fallback
    * `claimed_issues` bruto, comportamento anterior preservado. */
   claimed_issues_effective?: number[];
+  /** #10618 (fatia 3) — claims de OUTRO repo (`owner/repo#N`), lidas só por
+   * `flattenAllClaims`. */
+  claimed_foreign_issues?: string[];
+  claimed_foreign_issues_at?: Record<string, string>;
+  claimed_foreign_issues_effective?: string[];
 }
 
 /** Pure: achata as claims EFETIVAS de cada sessão numa lista de `ClaimEntry`.
@@ -129,8 +148,42 @@ export function flattenClaims(sessions: readonly ClaimBearingSession[]): ClaimEn
   return out;
 }
 
+/**
+ * #10618 (fatia 3): como `flattenClaims`, mas inclui as claims de OUTRO repo
+ * (`claimed_foreign_issues[_effective]`, `owner/repo#N`), cada uma com
+ * `issueKey` e o número no repo dela. Fica separado de `flattenClaims` de
+ * propósito: o painel `/triagem` (`attachClaims`, `studio-issues.ts`) indexa
+ * as claims por número do diaria-studio e ainda não sabe de outro repo — se
+ * `flattenClaims` passasse a devolver a design#21, o painel a mostraria na
+ * studio#21. Mesmo critério de janela dos dois lados (`*_effective` quando
+ * presente).
+ */
+export function flattenAllClaims(sessions: readonly ClaimBearingSession[]): ClaimEntry[] {
+  const out = flattenClaims(sessions);
+  for (const session of sessions) {
+    const refs = session.claimed_foreign_issues_effective ?? session.claimed_foreign_issues ?? [];
+    for (const raw of refs) {
+      const issueKey = typeof raw === "string" ? toIssueKey(raw) : null;
+      if (!issueKey || isStudioIssueKey(issueKey)) continue; // ilegível, ou studio já coberto acima
+      out.push({
+        issueNumber: issueNumberInRepo(issueKey),
+        issueKey,
+        kind: session.kind,
+        machineTag: session.machineTag,
+        sessionId: session.sessionId,
+        claimedAt: session.claimed_foreign_issues_at?.[issueKey] ?? session.claimed_foreign_issues_at?.[raw] ?? null,
+        stale: session.stale ?? false,
+      });
+    }
+  }
+  return out;
+}
+
 export interface AgedClaimFinding {
+  /** Número no repo da issue (`issueKey`). */
   issueNumber: number;
+  /** #10618 (fatia 3): identidade `owner/repo#N`. */
+  issueKey: IssueKey;
   kind: string;
   machineTag: string;
   sessionId: string;
@@ -159,21 +212,30 @@ export function findAgedClaims(
   entries: readonly ClaimEntry[],
   now: number,
   maxAgeMs: number,
-  hasOpenPr: (issueNumber: number) => boolean | null,
-  isIssueClosed?: (issueNumber: number) => boolean | null,
+  hasOpenPr: (issueNumber: number, repo?: string) => boolean | null,
+  isIssueClosed?: (issueNumber: number, repo?: string) => boolean | null,
 ): AgedClaimFinding[] {
   const out: AgedClaimFinding[] = [];
   for (const entry of entries) {
+    // #10618 (fatia 3): claim de outro repo chega com `issueKey`; os
+    // consultores recebem o `repo` (só nesse caso — claim do studio segue
+    // chamando com o número sozinho, como sempre).
+    const issueKey = entry.issueKey ?? toIssueKey(entry.issueNumber);
+    if (!issueKey) continue;
+    const repo = isStudioIssueKey(issueKey) ? undefined : repoOfIssueKey(issueKey);
     if (!entry.claimedAt) continue;
     const claimedAtMs = Date.parse(entry.claimedAt);
     if (!Number.isFinite(claimedAtMs)) continue;
     const ageMs = now - claimedAtMs;
     if (ageMs < maxAgeMs) continue;
-    if (isIssueClosed?.(entry.issueNumber) === true) continue; // issue fechada — nunca precisa de re-triagem
-    const openPr = hasOpenPr(entry.issueNumber);
+    if ((repo ? isIssueClosed?.(entry.issueNumber, repo) : isIssueClosed?.(entry.issueNumber)) === true) {
+      continue; // issue fechada — nunca precisa de re-triagem
+    }
+    const openPr = repo ? hasOpenPr(entry.issueNumber, repo) : hasOpenPr(entry.issueNumber);
     if (openPr !== false) continue; // true ou null (não verificável) → nunca reporta
     out.push({
       issueNumber: entry.issueNumber,
+      issueKey,
       kind: entry.kind,
       machineTag: entry.machineTag,
       sessionId: entry.sessionId,
@@ -181,5 +243,5 @@ export function findAgedClaims(
       ageMs,
     });
   }
-  return out.sort((a, b) => a.issueNumber - b.issueNumber);
+  return out.sort((a, b) => compareIssueKeys(a.issueKey, b.issueKey));
 }

@@ -29,6 +29,13 @@
  *   # track que virou develop/bloqueada desde a gravação → exit 1.
  *   # `--kind develop|overnight|continuo` sobrepõe a inferência pelo path.
  *
+ *   # #10618 (fatia 3): plano com issue de outro repo (`"vjpixel/diaria-design#21"`)
+ *   # também varre os repos dela (`gh issue list -R owner/repo`), só os da
+ *   # allowlist `platform.config.json → issue_repos`. Issue nova do outro repo
+ *   # sai como `owner/repo#N`; falha do `gh` num repo extra é aviso (aquele
+ *   # repo NÃO avaliado), igual ao fail-soft do default. Plano só-studio não
+ *   # faz chamada extra nenhuma.
+ *
  *   # pular a re-varredura de convergência (gh indisponível/offline)
  *   npx tsx scripts/check-state-changed-pending.ts --plan {path} --skip-convergence
  *
@@ -54,7 +61,9 @@ import {
   addPendingToPlan,
   checkStateChangedPending,
   checkConvergenceScan,
+  findMissingForeignConvergenceKeys,
   findRetrackedUnworkedIssues,
+  foreignReposOfPlan,
   recordConvergenceScan,
   type ConvergenceScanIssue,
   type PlanWithGoal,
@@ -63,7 +72,8 @@ import {
   addForeignPendingToPlan,
   removeForeignPendingFromPlan,
 } from "./lib/state-changed-tracker.ts";
-import { formatIssueRef, legacyIssueNumber, parseIssueRef } from "./lib/issue-repos.ts";
+import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
+import type { IssueKey } from "./lib/issue-key.ts";
 
 /** #10407 — `claimed-por-outra-sessao` só conta na re-classificação numa
  * sessão develop (overnight/continuo não pegam develop/bloqueada, seria
@@ -105,12 +115,15 @@ const CONVERGENCE_ISSUE_LIMIT = 200;
 /** Exportado (#6435) — mesma fonte única que `scripts/check-overnight-fila-convergence-gate.ts`
  * (gate mecânico da Fase 1 passo 1) usa, em vez de duplicar o fetch fail-soft
  * + a detecção de truncamento por `--limit`. */
-export function fetchOpenIssuesForConvergence(cwd: string): FetchOpenIssuesResult {
+export function fetchOpenIssuesForConvergence(cwd: string, repo?: string): FetchOpenIssuesResult {
+  // #10618 (fatia 3): `repo` = outro repo da allowlist → `-R owner/repo`. Sem
+  // `repo`, a chamada de sempre (o diaria-studio, pelo cwd).
   const result = spawnSync(
     "gh",
     [
       "issue",
       "list",
+      ...(repo ? ["-R", repo] : []),
       "--state",
       "open",
       "--limit",
@@ -225,6 +238,9 @@ if (isMainModule(import.meta.url)) {
   // pra fechar.
   let convergenceRan = false;
   let retracked: RetrackedUnworkedIssue[] = [];
+  // #10618 (fatia 3): issue nova de outro repo citado no plano.
+  let foreignMissing: IssueKey[] = [];
+  const foreignNotScanned: string[] = [];
   if (flags.has("skip-convergence")) {
     console.error(
       "[check-state-changed-pending] --skip-convergence: pulando re-varredura de convergência (não avaliada nesta invocação).",
@@ -248,7 +264,22 @@ if (isMainModule(import.meta.url)) {
       if (planRaw !== undefined) {
         const convergence = checkConvergenceScan(planRaw as PlanWithGoal, fetched.issues);
         convergenceMissing = convergence.status === "missing" ? convergence.issues : [];
-        recordConvergenceScan(planPath, convergence.novas_encontradas);
+        // #10618 (fatia 3): os outros repos que o plano cita, só os da
+        // allowlist. Repo fora dela nunca é consultado (typo/fork).
+        const allowlist = new Set(loadIssueRepos(process.cwd()));
+        for (const repo of foreignReposOfPlan(planRaw as PlanWithGoal)) {
+          if (!allowlist.has(repo)) {
+            foreignNotScanned.push(`${repo} (fora de issue_repos)`);
+            continue;
+          }
+          const extra = fetchOpenIssuesForConvergence(process.cwd(), repo);
+          if (extra.error) {
+            foreignNotScanned.push(`${repo} (${extra.error})`);
+            continue;
+          }
+          foreignMissing.push(...findMissingForeignConvergenceKeys(planRaw as PlanWithGoal, repo, extra.issues));
+        }
+        recordConvergenceScan(planPath, convergence.novas_encontradas + foreignMissing.length);
         convergenceRan = true;
         // #10407 — issue JÁ no plano como "não trabalhada por esta sessão"
         // que outra sessão re-roteou pra develop/bloqueada no meio da rodada.
@@ -259,9 +290,20 @@ if (isMainModule(import.meta.url)) {
     }
   }
 
-  if (pendingResult.status === "ok" && convergenceMissing.length === 0 && retracked.length === 0) {
+  if (foreignNotScanned.length > 0) {
+    console.error(
+      `[check-state-changed-pending] re-varredura de convergência NÃO executada para: ${foreignNotScanned.join("; ")} (#10618 — issue nova desses repos não foi checada)`,
+    );
+  }
+
+  if (
+    pendingResult.status === "ok" &&
+    convergenceMissing.length === 0 &&
+    foreignMissing.length === 0 &&
+    retracked.length === 0
+  ) {
     const convergenceNote = convergenceRan
-      ? "nenhuma issue nova fora da varredura, nenhuma issue do plano re-roteada pra develop/bloqueada"
+      ? `nenhuma issue nova fora da varredura${foreignNotScanned.length > 0 ? " (exceto nos repos NÃO varridos acima)" : ""}, nenhuma issue do plano re-roteada pra develop/bloqueada`
       : "re-varredura de convergência NÃO executada (--skip-convergence ou gh indisponível) — só pendência explícita foi checada";
     console.log(`ok — nenhuma pendência de re-triagem, ${convergenceNote}`);
     process.exit(0);
@@ -278,8 +320,8 @@ if (isMainModule(import.meta.url)) {
       `pendências de re-triagem: ${list} — reavalie dispatch antes de fechar a rodada`,
     );
   }
-  if (convergenceMissing.length > 0) {
-    const list = convergenceMissing.map((n) => `#${n}`).join(", ");
+  if (convergenceMissing.length > 0 || foreignMissing.length > 0) {
+    const list = [...convergenceMissing.map((n) => `#${n}`), ...foreignMissing].join(", ");
     console.error(
       `re-varredura de convergência: issue(s) nova(s) fora de target_set/tiers/issues e não-triangulada(s) (agendada/bloqueada/fora-de-rodada): ${list} — classifique e reavalie dispatch antes de fechar a rodada`,
     );

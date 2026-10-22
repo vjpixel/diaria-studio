@@ -83,7 +83,13 @@ const TRANSIENT_MOTIVOS: ReadonlySet<string> = new Set<StaleBlockCategory>([
 ]);
 
 export interface StaleBlockFinding {
+  /** Número da issue no repo DELA (`key` diz qual) — pro diaria-studio é o
+   * número legado de sempre. */
   number: number;
+  /** #10618 (fatia 3): identidade canônica `owner/repo#N` — sempre presente
+   * no que `findStaleBlocks` devolve. Opcional só no tipo: finding montado à
+   * mão sem `key` (fixture legada) é lido como diaria-studio#`number`. */
+  key?: IssueKey;
   category: StaleBlockCategory;
   motivo: string;
   reason: string;
@@ -102,7 +108,15 @@ export type IssueState = "OPEN" | "CLOSED" | "UNKNOWN";
  * (`external-blocker`, `kit-migration`, `beehiiv`) que `classifyExecTrack`
  * já reconhece. */
 import { BLOCKED_LABELS_SET } from "./issue-exec-track.ts";
-import { studioNumberOfPlanEntry } from "./plan-issue-ref.ts";
+import {
+  compareIssueKeys,
+  issueKeyOfPlanEntry,
+  issueNumberInRepo,
+  isStudioIssueKey,
+  repoOfIssueKey,
+  toIssueKey,
+  type IssueKey,
+} from "./issue-key.ts";
 export { BLOCKED_LABELS_SET };
 
 /**
@@ -112,17 +126,27 @@ export { BLOCKED_LABELS_SET };
  * silêncio a reabrir um bloqueio genuíno por engano.
  */
 export interface BlockStalenessConsultor {
-  getPrState(prNumber: number): PrState;
+  /**
+   * #10618 (fatia 3): `true` declara que o consultor responde por QUALQUER
+   * repo — todo método abaixo recebe `repo` (`owner/repo`) quando a entrada
+   * não é do diaria-studio, e consulta esse repo (`gh -R`). Sem a marca, o
+   * consultor é tratado como só-studio e entrada de outro repo nunca é
+   * avaliada (o comportamento do #10778): um consultor legado que ignorasse
+   * `repo` responderia pela studio#N com o mesmo número.
+   */
+  multiRepo?: boolean;
+  /** `repo` ausente = diaria-studio (o PR mora no repo da issue, decisão da #10618). */
+  getPrState(prNumber: number, repo?: string): PrState;
   /** `true` = ainda reivindicada por sessão ativa não-stale; `false` = livre. */
-  isIssueClaimedActive(issueNumber: number): boolean;
+  isIssueClaimedActive(issueNumber: number, repo?: string): boolean;
   /** `true`/`false` = presença confirmada; `null` = não verificável (gh
    * indisponível) — nunca reportar caducidade nesse caso. */
-  hasLabel(issueNumber: number, label: string): boolean | null;
+  hasLabel(issueNumber: number, label: string, repo?: string): boolean | null;
   /** Estado atual da ISSUE em si (não do PR/label) — `"UNKNOWN"` quando não
    * verificável (gh indisponível). Espelha `getPrState` (#6784): uma issue
    * já `CLOSED` (ex: auto-fechada por alarme que se auto-normalizou) não tem
    * "dispatch a reavaliar" — reportá-la como "bloqueio caducado" é ruído. */
-  getIssueState(issueNumber: number): IssueState;
+  getIssueState(issueNumber: number, repo?: string): IssueState;
 }
 
 /** Pure: extrai o número do PR citado numa entrada — prioriza o campo
@@ -152,11 +176,17 @@ export function findStaleBlocks(
 
   for (const entry of issues) {
     if (entry.status !== "pulada") continue;
-    // #10778: o consultor responde por número do diaria-studio. Entrada de
-    // outro repo (ou de identidade desconhecida) seria avaliada contra a
-    // issue errada — nunca vira finding. O CLI já filtra e avisa
-    // (`partitionStudioPlanEntries`); isto é a defesa do contrato puro.
-    if (studioNumberOfPlanEntry(entry) === null) continue;
+    // #10778/#10618 (fatia 3): identidade pela chave, nunca por
+    // `entry.number` cru. Identidade desconhecida nunca vira finding; entrada
+    // de outro repo só é avaliada por consultor `multiRepo`, que recebe o
+    // `repo` em toda consulta — um consultor só-studio responderia pela
+    // studio#N com o mesmo número.
+    const key = issueKeyOfPlanEntry(entry);
+    if (!key) continue;
+    const studio = isStudioIssueKey(key);
+    if (!studio && consultor.multiRepo !== true) continue;
+    const repo = studio ? undefined : repoOfIssueKey(key);
+    const issueNumber = issueNumberInRepo(key);
     const motivo = typeof entry.motivo === "string" ? entry.motivo : null;
     if (!motivo || !TRANSIENT_MOTIVOS.has(motivo as StaleBlockCategory)) continue;
     const category = motivo as StaleBlockCategory;
@@ -170,15 +200,16 @@ export function findStaleBlocks(
     // estavam CLOSED, auto-fechadas por alarme auto-normalizado).
     // `UNKNOWN` (gh indisponível) não pula — fail-soft na direção oposta:
     // preferir reportar de mais a esconder um bloqueio genuinamente caducado.
-    if (consultor.getIssueState(entry.number) === "CLOSED") continue;
+    if (consultor.getIssueState(issueNumber, repo) === "CLOSED") continue;
 
     if (category === "pr-em-voo") {
       const pr = extractPrNumber(entry);
       if (pr === null) continue; // não verificável — nunca falso positivo
-      const state = consultor.getPrState(pr);
+      const state = consultor.getPrState(pr, repo);
       if (state === "MERGED" || state === "CLOSED") {
         findings.push({
-          number: entry.number,
+          number: issueNumber,
+          key,
           category,
           motivo,
           reason: `PR #${pr} já está ${state === "MERGED" ? "mergeado" : "fechado"} — bloqueio caducou`,
@@ -188,10 +219,11 @@ export function findStaleBlocks(
     }
 
     if (category === "claimed-por-outra-sessao") {
-      const stillClaimed = consultor.isIssueClaimedActive(entry.number);
+      const stillClaimed = consultor.isIssueClaimedActive(issueNumber, repo);
       if (!stillClaimed) {
         findings.push({
-          number: entry.number,
+          number: issueNumber,
+          key,
           category,
           motivo,
           reason: "nenhuma sessão ativa segura mais esta issue — claim liberado",
@@ -209,12 +241,13 @@ export function findStaleBlocks(
       // label ⇒ fail-soft, não reporta. Só reporta quando TODAS foram
       // confirmadas ausentes.
       const results = [...BLOCKED_LABELS_SET].map((label) =>
-        consultor.hasLabel(entry.number, label),
+        consultor.hasLabel(issueNumber, label, repo),
       );
       if (results.some((r) => r === true)) continue; // alguma label de bloqueio ainda presente
       if (results.some((r) => r === null)) continue; // alguma não verificável — fail-soft
       findings.push({
-        number: entry.number,
+        number: issueNumber,
+        key,
         category,
         motivo,
         reason: "nenhuma label de bloqueio (bloqueio-execucao/external-blocker/kit-migration/beehiiv) está mais presente na issue — bloqueio caducou",
@@ -223,7 +256,7 @@ export function findStaleBlocks(
     }
   }
 
-  return findings.sort((a, b) => a.number - b.number);
+  return findings.sort((a, b) => compareIssueKeys(findingKey(a), findingKey(b)));
 }
 
 /**
@@ -248,9 +281,23 @@ export function findStaleBlocks(
  */
 export function suppressAgedClaimOverlap(
   findings: readonly StaleBlockFinding[],
-  agedClaimIssueNumbers: ReadonlySet<number>,
+  agedClaims: ReadonlySet<number | string>,
 ): StaleBlockFinding[] {
-  return findings.filter(
-    (f) => !(f.category === "claimed-por-outra-sessao" && agedClaimIssueNumbers.has(f.number)),
-  );
+  // #10618 (fatia 3): o conjunto aceita `IssueKey` (`owner/repo#N`) e, por
+  // compatibilidade, número — número é SEMPRE diaria-studio, então só casa
+  // finding do studio (a design#21 nunca é suprimida pela claim da studio#21).
+  return findings.filter((f) => {
+    if (f.category !== "claimed-por-outra-sessao") return true;
+    const key = findingKey(f);
+    if (agedClaims.has(key)) return false;
+    return !(isStudioIssueKey(key) && agedClaims.has(f.number));
+  });
+}
+
+/** Chave do finding — `key` quando presente; senão o número é do diaria-studio
+ * (finding legado montado à mão). */
+export function findingKey(f: Pick<StaleBlockFinding, "number" | "key">): IssueKey {
+  const key = f.key ?? toIssueKey(f.number);
+  if (!key) throw new Error(`StaleBlockFinding sem identidade válida: ${JSON.stringify(f)} (#10618)`);
+  return key;
 }

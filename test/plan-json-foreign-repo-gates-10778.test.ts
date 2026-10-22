@@ -101,8 +101,10 @@ describe("#10778 — check-develop-label-cleared não julga a studio#21 pela des
 });
 
 describe("#10778 — todo gate de fim de rodada que consulta por número avisa e pula a entrada de outro repo", () => {
+  // `check-block-staleness.ts` saiu desta lista na fatia 3 do #10618: passou a
+  // consultar a entrada do diaria-design no repo dela (`-R`) em vez de pular —
+  // coberto em `test/issue-key-10618-fatia3.test.ts`.
   const GATES = [
-    "scripts/check-block-staleness.ts",
     "scripts/check-overnight-comment-coverage.ts",
     "scripts/check-decision-label-drift-gate.ts",
   ];

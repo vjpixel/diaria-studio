@@ -56,6 +56,16 @@
  * `is-claimed` recusam de novo. Ver docstring de `suppressAgedClaimOverlap`
  * em `block-staleness.ts` pro racional completo e o achado ao vivo (#8795).
  *
+ * **#10618 (fatia 3) — multi-repo.** Entrada do `plan.json` de outro repo
+ * (`"vjpixel/diaria-design#21"`) é avaliada NO REPO DELA: toda consulta `gh`
+ * leva `-R owner/repo` e a claim é lida como `IssueRef` (nunca o número cru,
+ * que é o da studio#21). Só repo da allowlist `platform.config.json →
+ * issue_repos` é consultado; repo fora dela e identidade desconhecida ficam
+ * FORA da checagem, com aviso em stderr (#10778). A checagem de claim
+ * envelhecida (#6436) também cobre `claimed_foreign_issues`
+ * (`flattenAllClaims`). Saída: `#N` pro diaria-studio (como sempre),
+ * `owner/repo#N` pros outros.
+ *
  * @see scripts/lib/block-staleness.ts
  * @see scripts/lib/claim-staleness.ts (#6436, checagem de claim envelhecida)
  * @see scripts/check-state-changed-pending.ts (padrão de estilo + gate irmão)
@@ -69,6 +79,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   findStaleBlocks,
+  findingKey,
   suppressAgedClaimOverlap,
   type BlockStalenessConsultor,
   type BlockStalenessPlanIssue,
@@ -77,8 +88,25 @@ import {
 } from "./lib/block-staleness.ts";
 import { isIssueClaimedByActiveSession, listActiveSessions } from "./lib/session-registry.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
-import { partitionStudioPlanEntries } from "./lib/plan-issue-ref.ts";
-import { flattenClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-staleness.ts";
+import { flattenAllClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-staleness.ts";
+import { DEFAULT_ISSUE_REPO, loadIssueRepos, normalizeRepoSlug } from "./lib/issue-repos.ts";
+import { issueKeyLabel, issueKeyOfPlanEntry, repoOfIssueKey, type IssueKey } from "./lib/issue-key.ts";
+
+/** `-R owner/repo` para um repo que não é o diaria-studio; `[]` para o
+ * studio (a chamada de sempre, que resolve pelo cwd). */
+function repoArgs(repo: string | undefined): string[] {
+  return repo && repo !== DEFAULT_ISSUE_REPO ? ["-R", repo] : [];
+}
+
+/**
+ * #10618 (fatia 3): `true` quando `repo` pode ser consultado — o diaria-studio
+ * (ausente) ou um repo da allowlist `issue_repos`. Consultor que receber repo
+ * fora dela responde "não sei" (nunca roda `gh -R` num repo arbitrário).
+ */
+function makeRepoAllowed(allowlist: readonly string[]): (repo: string | undefined) => boolean {
+  const allowed = new Set(allowlist);
+  return (repo) => repo === undefined || allowed.has(normalizeRepoSlug(repo) ?? "");
+}
 
 /** Monta um consultor real, apoiado em `gh` (PR state + labels) e
  * `isIssueClaimedByActiveSession` (leitura direta de `data/sessions/*.json`,
@@ -87,7 +115,8 @@ import { flattenClaims, findAgedClaims, CLAIM_STALE_AGE_MS } from "./lib/claim-s
  * falha de `gh` (offline, sem auth, rate limit) vira `UNKNOWN`/`null`, nunca
  * lança — `findStaleBlocks` já trata esses valores como "não verificável".
  */
-function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
+function buildRealConsultor(repoRoot: string, allowlist: readonly string[]): BlockStalenessConsultor {
+  const repoAllowed = makeRepoAllowed(allowlist);
   // #6754 fleet review — a categoria `bloqueio-execucao` agora checa TODAS
   // as labels de `BLOCKED_LABELS_SET` (4 labels) por issue; sem cache isso
   // vira 4 chamadas `gh issue view` idênticas (mesmo issue, mesmo campo
@@ -101,11 +130,19 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
     labels: Set<string> | null;
     state: IssueState;
   }
-  const issueDataCache = new Map<number, IssueData>();
-  function fetchIssueData(issueNumber: number): IssueData {
-    const cached = issueDataCache.get(issueNumber);
+  // #10618 (fatia 3): cache por `repo#N` — a design#21 e a studio#21 são
+  // entradas diferentes.
+  const issueDataCache = new Map<string, IssueData>();
+  function fetchIssueData(issueNumber: number, repo?: string): IssueData {
+    const cacheKey = `${repo ?? DEFAULT_ISSUE_REPO}#${issueNumber}`;
+    const cached = issueDataCache.get(cacheKey);
     if (cached) return cached;
-    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "labels,state"], {
+    if (!repoAllowed(repo)) {
+      const unknown: IssueData = { labels: null, state: "UNKNOWN" };
+      issueDataCache.set(cacheKey, unknown);
+      return unknown;
+    }
+    const result = spawnSync("gh", ["issue", "view", String(issueNumber), ...repoArgs(repo), "--json", "labels,state"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 15_000,
@@ -127,13 +164,15 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
         value = { labels: null, state: "UNKNOWN" };
       }
     }
-    issueDataCache.set(issueNumber, value);
+    issueDataCache.set(cacheKey, value);
     return value;
   }
 
   return {
-    getPrState(prNumber: number): PrState {
-      const result = spawnSync("gh", ["pr", "view", String(prNumber), "--json", "state"], {
+    multiRepo: true,
+    getPrState(prNumber: number, repo?: string): PrState {
+      if (!repoAllowed(repo)) return "UNKNOWN";
+      const result = spawnSync("gh", ["pr", "view", String(prNumber), ...repoArgs(repo), "--json", "state"], {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 15_000,
@@ -148,11 +187,14 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
         return "UNKNOWN";
       }
     },
-    isIssueClaimedActive(issueNumber: number): boolean {
+    isIssueClaimedActive(issueNumber: number, repo?: string): boolean {
       try {
         // #7297 — janela CURTA (90min, `session.stale`), não a de retenção
         // de 24h — ver docstring do arquivo/da função importada.
-        return isIssueClaimedByActiveSession(repoRoot, issueNumber, "") !== null;
+        // #10618 (fatia 3): issue de outro repo é lida como `IssueRef`
+        // (`claimed_foreign_issues`), nunca pelo número cru.
+        const target = repo && repo !== DEFAULT_ISSUE_REPO ? { repo, number: issueNumber } : issueNumber;
+        return isIssueClaimedByActiveSession(repoRoot, target, "") !== null;
       } catch {
         // Falha de leitura de data/sessions/ (junction ausente, JSON
         // corrompido por conflito de sync) — fail-soft pro lado "ainda
@@ -160,13 +202,13 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
         return true;
       }
     },
-    hasLabel(issueNumber: number, label: string): boolean | null {
-      const { labels } = fetchIssueData(issueNumber);
+    hasLabel(issueNumber: number, label: string, repo?: string): boolean | null {
+      const { labels } = fetchIssueData(issueNumber, repo);
       if (labels === null) return null;
       return labels.has(label);
     },
-    getIssueState(issueNumber: number): IssueState {
-      return fetchIssueData(issueNumber).state;
+    getIssueState(issueNumber: number, repo?: string): IssueState {
+      return fetchIssueData(issueNumber, repo).state;
     },
   };
 }
@@ -178,11 +220,16 @@ function buildRealConsultor(repoRoot: string): BlockStalenessConsultor {
  * `findAgedClaims` trata `null` como "não reportar" (mesmo princípio dos
  * demais métodos de `buildRealConsultor` acima).
  */
-function buildHasOpenPr(repoRoot: string): (issueNumber: number) => boolean | null {
-  return (issueNumber: number): boolean | null => {
+function buildHasOpenPr(
+  repoRoot: string,
+  allowlist: readonly string[],
+): (issueNumber: number, repo?: string) => boolean | null {
+  const repoAllowed = makeRepoAllowed(allowlist);
+  return (issueNumber: number, repo?: string): boolean | null => {
+    if (!repoAllowed(repo)) return null;
     const result = spawnSync(
       "gh",
-      ["pr", "list", "--state", "open", "--search", `#${issueNumber}`, "--json", "number"],
+      ["pr", "list", ...repoArgs(repo), "--state", "open", "--search", `#${issueNumber}`, "--json", "number"],
       { cwd: repoRoot, encoding: "utf8", timeout: 15_000 },
     );
     if (result.error || result.status !== 0 || !result.stdout) return null;
@@ -201,9 +248,14 @@ function buildHasOpenPr(repoRoot: string): (issueNumber: number) => boolean | nu
  * fechada nunca precisa de re-triagem por claim envelhecida — ver docstring
  * de `findAgedClaims` em `claim-staleness.ts`.
  */
-function buildIsIssueClosed(repoRoot: string): (issueNumber: number) => boolean | null {
-  return (issueNumber: number): boolean | null => {
-    const result = spawnSync("gh", ["issue", "view", String(issueNumber), "--json", "state"], {
+function buildIsIssueClosed(
+  repoRoot: string,
+  allowlist: readonly string[],
+): (issueNumber: number, repo?: string) => boolean | null {
+  const repoAllowed = makeRepoAllowed(allowlist);
+  return (issueNumber: number, repo?: string): boolean | null => {
+    if (!repoAllowed(repo)) return null;
+    const result = spawnSync("gh", ["issue", "view", String(issueNumber), ...repoArgs(repo), "--json", "state"], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 15_000,
@@ -243,31 +295,38 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  // #10778: o consultor real só conhece o diaria-studio (`gh issue view N`
-  // sem `-R`, claims por número). Entrada de outro repo
-  // (`"vjpixel/diaria-design#21"` normaliza pra `number: 21`) seria checada
-  // contra a studio#21 — fica de fora, com aviso explícito.
-  const { studio: issues, skipped } = partitionStudioPlanEntries(
-    normalizeIssues<BlockStalenessPlanIssue>(planRaw as IssuesBearing<BlockStalenessPlanIssue>),
-  );
+  // #10618 (fatia 3): entrada de outro repo é consultada no repo dela (`-R`),
+  // desde que o repo esteja na allowlist `issue_repos`. Identidade
+  // desconhecida (`repo` ilegível) e repo fora da allowlist ficam de fora,
+  // com aviso — nunca caem no diaria-studio por omissão (#10778).
+  const repoRoot = process.cwd();
+  const allowlist = loadIssueRepos(repoRoot);
+  const allowedRepos = new Set(allowlist);
+  const issues: BlockStalenessPlanIssue[] = [];
+  const skipped: string[] = [];
+  for (const entry of normalizeIssues<BlockStalenessPlanIssue>(planRaw as IssuesBearing<BlockStalenessPlanIssue>)) {
+    const key = issueKeyOfPlanEntry(entry);
+    if (!key) skipped.push("(identidade desconhecida)");
+    else if (!allowedRepos.has(repoOfIssueKey(key))) skipped.push(`${key} (repo fora de issue_repos)`);
+    else issues.push(entry);
+  }
   if (skipped.length > 0) {
     console.error(
-      `[check-block-staleness] ${skipped.length} entrada(s) de outro repo (ou identidade desconhecida) FORA ` +
-        `desta checagem, que só consulta o diaria-studio: ${skipped.join(", ")}`,
+      `[check-block-staleness] ${skipped.length} entrada(s) FORA desta checagem (não dá pra consultar o repo certo): ${skipped.join(", ")}`,
     );
   }
 
-  const repoRoot = process.cwd();
-  const consultor = buildRealConsultor(repoRoot);
+  const consultor = buildRealConsultor(repoRoot, allowlist);
   const rawFindings = findStaleBlocks(issues, consultor);
 
   // #6436 — teto de idade de claim sem PR aberto, INDEPENDENTE do plan.json
   // (varre `data/sessions/` inteiro, não só as issues `pulada` deste plano —
   // uma issue claimed pela `continuo` pode nunca ter entrado neste plan.json).
   const sessions = listActiveSessions(repoRoot);
-  const claimEntries = flattenClaims(sessions);
-  const hasOpenPr = buildHasOpenPr(repoRoot);
-  const isIssueClosed = buildIsIssueClosed(repoRoot);
+  // #10618 (fatia 3): inclui as claims de outro repo (`claimed_foreign_issues`).
+  const claimEntries = flattenAllClaims(sessions);
+  const hasOpenPr = buildHasOpenPr(repoRoot, allowlist);
+  const isIssueClosed = buildIsIssueClosed(repoRoot, allowlist);
   const agedClaims = findAgedClaims(
     claimEntries,
     Date.now(),
@@ -280,8 +339,8 @@ if (isMainModule(import.meta.url)) {
   // aparece como claim envelhecida (#6436): reavaliar dispatch nesse caso é
   // garantidamente inútil (`claim-issue` recusa até a janela de 24h passar,
   // #7227) — ver docstring de `suppressAgedClaimOverlap`.
-  const agedClaimIssueNumbers = new Set(agedClaims.map((c) => c.issueNumber));
-  const findings = suppressAgedClaimOverlap(rawFindings, agedClaimIssueNumbers);
+  const agedClaimKeys = new Set<IssueKey>(agedClaims.map((c) => c.issueKey));
+  const findings = suppressAgedClaimOverlap(rawFindings, agedClaimKeys);
 
   if (findings.length === 0 && agedClaims.length === 0) {
     console.log(
@@ -295,7 +354,7 @@ if (isMainModule(import.meta.url)) {
       `[check-block-staleness] bloqueio(s) caducado(s) — reavalie dispatch antes de fechar a rodada:`,
     );
     for (const f of findings) {
-      console.error(`  #${f.number} (motivo "${f.motivo}"): ${f.reason}`);
+      console.error(`  ${issueKeyLabel(findingKey(f))} (motivo "${f.motivo}"): ${f.reason}`);
     }
   }
   if (agedClaims.length > 0) {
@@ -305,7 +364,7 @@ if (isMainModule(import.meta.url)) {
     for (const c of agedClaims) {
       const ageH = (c.ageMs / 3_600_000).toFixed(1);
       console.error(
-        `  #${c.issueNumber} — claimed por ${c.kind}-${c.machineTag}-${c.sessionId} há ${ageH}h (desde ${c.claimedAt}), sem PR aberto`,
+        `  ${issueKeyLabel(c.issueKey)} — claimed por ${c.kind}-${c.machineTag}-${c.sessionId} há ${ageH}h (desde ${c.claimedAt}), sem PR aberto`,
       );
     }
   }
