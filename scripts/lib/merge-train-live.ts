@@ -103,11 +103,21 @@ export interface TrainRunner {
 /** Runner real — `spawnSync`, timeout de 60s por chamada individual (não é
  * o timeout do POLLING de CI, que é orquestrado por `pollTrainCi` chamando
  * este `exec` várias vezes). */
-export function createRealTrainRunner(defaultCwd: string): TrainRunner {
+export function createRealTrainRunner(
+  defaultCwd: string,
+  platform: NodeJS.Platform = process.platform,
+  spawn: typeof spawnSync = spawnSync,
+): TrainRunner {
   return {
     exec(cmd, args, cwd) {
-      const r = spawnSync(cmd, args, { cwd: cwd ?? defaultCwd, encoding: "utf8", timeout: 60_000, maxBuffer: 20 * 1024 * 1024 });
-      if (r.error) return { ok: false, stdout: "", stderr: r.error.message };
+      // npx.cmd exige shell no Windows; Node + tsx preserva argv (#7053).
+      const directTsx = platform === "win32" && cmd === "npx" && args[0] === "tsx";
+      const executable = directTsx ? process.execPath : cmd;
+      const spawnArgs = directTsx ? ["--import", "tsx", ...args.slice(1)] : args;
+      const r = spawn(executable, spawnArgs, { cwd: cwd ?? defaultCwd, encoding: "utf8", timeout: 60_000, maxBuffer: 20 * 1024 * 1024 });
+      if (r.error) return { ok: false, stdout: "", stderr: (r.error as NodeJS.ErrnoException).code === "ENOENT"
+        ? `executável não encontrado: ${executable} (cwd: ${cwd ?? defaultCwd}): ${r.error.message}`
+        : r.error.message };
       return { ok: r.status === 0, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
