@@ -506,6 +506,23 @@ export function cloudflareKvKey(
   return `img-${aammdd}-${base}-${md5short}${ext}`;
 }
 
+/**
+ * (#10879) Aviso do carrossel do 4º post defasado que não pôde ser regerado
+ * porque a fonte de marca (Georgia) não existe nesta máquina. Georgia não é
+ * redistribuível (#4090), então o conserto é rodar a geração numa máquina com
+ * ela (ou aceitar o fallback de fonte de propósito) — nunca "tentar de novo aqui".
+ */
+export function useMelhorFontMissingWarning(editionDir: string): string {
+  return (
+    `carrossel do 4º post DEFASADO e NÃO regerado: a fonte Georgia não existe nesta máquina (#10879). ` +
+    `O 4º post (USE MELHOR) vai ser PULADO no LinkedIn/Instagram/Facebook (#10834). ` +
+    `Conserto: numa máquina com Georgia (Windows/macOS), rodar ` +
+    `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" e ` +
+    `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir} --mode social"; ` +
+    `ou, aceitando a arte fora da marca, re-rodar este upload com DIARIA_ALLOW_FONT_FALLBACK=1.`
+  );
+}
+
 export async function uploadPublicImages(
   opts: UploadOptions,
 ): Promise<PublicImagesOutput> {
@@ -543,6 +560,12 @@ export async function uploadPublicImages(
         console.error(
           `upload-images-public: carrossel do 4º post estava defasado ('## um' mudou depois do Stage 3) — regerado (#10834).`,
         );
+      } else if (useMelhorCarousel.status === "failed" && useMelhorCarousel.cause === "font_missing") {
+        // #10879: Georgia ausente (servidor 300). O aviso genérico abaixo mandava
+        // "corrigir o motivo" sem dizer qual — e o motivo não tem conserto nesta máquina.
+        const msg = useMelhorFontMissingWarning(editionDir);
+        console.error(`upload-images-public: ${msg}`);
+        warnings.push(msg);
       } else if (useMelhorCarousel.status === "skipped" || useMelhorCarousel.status === "failed") {
         warnings.push(
           `carrossel do 4º post DEFASADO e não regerado (${useMelhorCarousel.status}: ${useMelhorCarousel.reason ?? "sem motivo"}) — ` +

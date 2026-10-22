@@ -173,7 +173,7 @@ O script grava em `_internal/site-page-published.json` o registro que o Stage 6 
 npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode social
 ```
 
-**Carrossel do 4º post defasado é regerado aqui (#10834).** Se o `## um` mudou depois do Stage 3, o proprio upload regera o carrossel (`refreshStaleUseMelhorCarousel` em `gen-carousel-cards.ts`) antes de subir os slides — nao rodar `gen-carousel-cards.ts` a mao. O JSON de saida traz `use_melhor_carousel.status`: `regenerated` → seguir; `skipped`/`failed` → o 4º post vai ser pulado no LinkedIn/Instagram/Facebook — levar o `reason` pra linha "4º post" do resumo abaixo (nunca silencioso). Nao e halt: o 4º post e fail-soft.
+**Carrossel do 4º post defasado é regerado aqui (#10834).** Se o `## um` mudou depois do Stage 3, o proprio upload regera o carrossel (`refreshStaleUseMelhorCarousel` em `gen-carousel-cards.ts`) antes de subir os slides — nao rodar `gen-carousel-cards.ts` a mao. O JSON de saida traz `use_melhor_carousel.status`: `regenerated` → seguir; `skipped`/`failed` → o 4º post vai ser pulado no LinkedIn/Instagram/Facebook — levar o `reason` pra linha "4º post" do resumo abaixo (nunca silencioso). Com `use_melhor_carousel.cause: "font_missing"` (#10879 — Georgia ausente nesta maquina, caso do servidor 300) a linha diz isso com todas as letras e leva o conserto do warning (regerar numa maquina com Georgia + re-subir), nunca so "falhou". Nao e halt: o 4º post e fail-soft; o gate do Stage 4 ja acusa o caso pela invariante `use-melhor-carousel-stale`.
 
 **Fail-loud:** se exit != 0, **halt** Stage 5 com banner:
 ```bash

@@ -313,6 +313,13 @@ export interface UseMelhorCarouselRefresh {
   status: "noop" | "fresh" | "regenerated" | "skipped" | "failed";
   reason?: string;
   slots?: string[];
+  /**
+   * (#10879) Só com `status: "failed"`: `"font_missing"` quando a falha foi a
+   * fonte de marca (Georgia) ausente nesta máquina — o caso do servidor 300.
+   * Separado dos demais `failed` porque o conserto é outro (regerar numa
+   * máquina com Georgia), e quem consome precisa dizer isso em voz alta.
+   */
+  cause?: "font_missing";
 }
 
 /**
@@ -361,7 +368,12 @@ export async function refreshStaleUseMelhorCarousel(
       return { status: "fresh", slots: stamp.slots };
     }
     // Mesmo guard do `main()` — sem a fonte de marca a arte sairia fora da marca em silêncio.
-    await (opts.assertFont ?? assertBrandSerifAvailable)("gen-carousel-cards (4º post, #10834)");
+    // #10879: a falha de fonte sai marcada (`cause`), pra o upload avisar com o conserto certo.
+    try {
+      await (opts.assertFont ?? assertBrandSerifAvailable)("gen-carousel-cards (4º post, #10834)");
+    } catch (e) {
+      return { status: "failed", cause: "font_missing", reason: (e as Error).message };
+    }
     const outcome = await genUseMelhorCarousel(editionDir, socialMd, {
       ctaOverride,
       render: opts.render ?? renderUseMelhorSlides,

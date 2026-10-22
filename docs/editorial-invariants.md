@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 119 invariants.
+**Total**: 120 invariants.
 
 ## Static (estrutura do repo)
 
@@ -118,6 +118,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `titulo-subtitulo-not-provisional` | TÍTULO/SUBTÍTULO não carrega o título provisório (da fonte) deixado pelo swap-destaque depois que o D{N} ganhou título final (#9601) | #9601 |
 | `top3-merit-warning` | item fora do top-3 com score ≥ maior do trio (warning-only) | #10792 |
 | `truncated-secondary-item-summary` | descrição de item secundário não termina em reticências de truncamento (#2596) | #2596 |
+| `use-melhor-carousel-stale` | carrossel do 4º post (USE MELHOR) defasado em relação ao '## um' no gate — a regeração do pré-render falhou (ex.: Georgia ausente) e o Stage 5 pularia o 4º post (#10879, warning-only) | #10879 |
 | `use-melhor-image-key-without-file` | 06-public-images.json com chave um_carousel_* de slide que não existe mais no disco — sobra de carrossel do 4º post com mais slides (#9795, warning-only) | #9795 |
 | `use-melhor-post-item-rendered` | item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — o 4º post seria pulado no Stage 5 (#9592, warning-only) | #9592 |
 | `use-melhor-sentinel` | itens USE MELHOR sem descrição real (sentinel [DESCRIÇÃO PENDENTE] presente, #2464) | #2464 |
