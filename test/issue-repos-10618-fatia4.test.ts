@@ -1092,3 +1092,53 @@ describe("#10618 fatia 4 — sync-issue-labels", () => {
     assert.equal(calls.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Guard de prosa (review C/K/L): as skills ligam o design e dizem COMO
+// implementá-lo, sem o trem de merge e sem worktree do studio.
+// ---------------------------------------------------------------------------
+
+describe("#10618 fatia 4 (review C/K/L) — prosa das skills", () => {
+  const read = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
+  const SKILLS = {
+    overnight: ".claude/skills/diaria-overnight/SKILL.md",
+    develop: ".claude/skills/diaria-develop/SKILL.md",
+    continuo: ".claude/skills/diaria-continuo/SKILL.md",
+  };
+
+  it("overnight e contínuo varrem com --repos all (contínuo também no comando incremental)", () => {
+    assert.match(read(SKILLS.overnight), /fetch-open-issues-for-triage\.ts --repos all/);
+    const continuo = read(SKILLS.continuo);
+    assert.match(continuo, /fetch-open-issues-for-triage\.ts --repos all --since \{last_scan_at\}/);
+    assert.match(continuo, /last_scan_at = now\(\)` ao fim da varredura \(exceto\s+exit 3/);
+  });
+
+  it("as 3 skills: pré-requisito de labels, item 32, PR no design e merge fora do trem", () => {
+    for (const [name, rel] of Object.entries(SKILLS)) {
+      const s = read(rel);
+      assert.match(s, /sync-issue-labels\.ts --repo vjpixel\/diaria-design --apply/, `${name}: pré-requisito de labels`);
+      assert.match(s, /item 32 de `context\/overnight-dispatch-rules\.md`/, `${name}: cita o passo-a-passo`);
+      assert.match(s, /gh pr create -R vjpixel\/diaria-design --base main/, `${name}: PR no design`);
+      assert.match(s, /bloqueio-execucao/, `${name}: salvaguarda sem checkout`);
+      assert.match(s, /nunca entra no trem/i, `${name}: trem é só-studio`);
+    }
+  });
+
+  it("dispatch rules item 32 e dev-implementador cobrem worktree, PR, merge -R e a salvaguarda", () => {
+    const rules = read("context/overnight-dispatch-rules.md");
+    const item32 = rules.slice(rules.indexOf("## 32."));
+    assert.ok(item32.length > 0);
+    for (const re of [
+      /worktree add -b \{branch\} \.claude\/worktrees\/\{nome\}\s+origin\/main/,
+      /`Closes #N` LOCAL/,
+      /merge-lock-acquire --pr P --repo vjpixel\/diaria-design/,
+      /run-merge-train\.ts` é só-studio/,
+      /motivo: "bloqueio-execucao"/,
+      /sync-issue-labels\.ts --repo vjpixel\/diaria-design --apply/,
+    ]) {
+      assert.match(item32, re);
+    }
+    assert.doesNotMatch(rules, /repository\(owner: "vjpixel", name: "diaria-studio"\)/, "item 11 parametrizado");
+    assert.match(read(".claude/agents/dev-implementador.md"), /item 32/);
+  });
+});

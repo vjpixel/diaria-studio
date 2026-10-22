@@ -332,7 +332,9 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   o parágrafo "Trem de merge" do Gate 2 do overnight (`.claude/skills/
   diaria-overnight/SKILL.md`) se aplica aqui por citação, igual ao resto
   desta seção — única diferença é `--kind continuo` em vez de `--kind
-  overnight` na chamada de `scripts/run-merge-train.ts`. Mesmo gatilho
+  overnight` na chamada de `scripts/run-merge-train.ts`. Só PRs do studio:
+  PR de issue do `vjpixel/diaria-design` nunca entra no trem (#10618,
+  item 32 de `context/overnight-dispatch-rules.md`). Mesmo gatilho
   (≥2 unidades Gate-2-verde sem colisão de arquivo ao mesmo tempo), mesma
   degradação automática (bissecta até o piso se o lote vier vermelho).
 - **PR retida para o editor (#10278/#10294) — condição 3 do gate de merge,
@@ -731,11 +733,11 @@ aqui.
    caro de overnight/develop.** Em vez de `gh issue list --state open` do
    zero a cada ciclo (31 issues abertas reclassificadas do zero toda vez,
    medição de 15/08/2026), rodar `npx tsx
-   scripts/fetch-open-issues-for-triage.ts --since {last_scan_at}`
+   scripts/fetch-open-issues-for-triage.ts --repos all --since {last_scan_at}`
    (`{last_scan_at}` é o campo novo em `plan.json`, ISO 8601, gravado ao fim
    de cada varredura bem-sucedida; ausente/vazio na 1ª rodada do dia =
    **omitir `--since`**, e o script cai sozinho em full-scan — mesmo
-   comportamento de overnight/develop, só nesse caso). **Multi-repo (#10618, ligado por padrão desde a fatia 4, decisão do editor 22/10/2026):** passar SEMPRE `--repos all` junto (`… --repos all --since {last_scan_at}`): entram todos os repos de `platform.config.json → issue_repos` (hoje também `vjpixel/diaria-design`). Issue de outro repo se identifica SEMPRE pelo `ref` (`owner/repo#N`), nunca pelo `number`: claim, `route-issue.ts`, preflights (`check-issue-duplicate-preflight.ts`/`check-issue-open-pr.ts --issue {ref}`) e `plan.json` `{ ref, ... }`. A implementação vai num worktree do repo da issue, com PR lá, e o merge sai do trem (só-studio): gates de PR com `--repo {repo}` (`check-pr-checks-gate.ts`/`check-pr-retido-gate.ts`/`check-pr-review-authenticity.ts`), `merge-lock-acquire --pr N --repo {repo}` + `gh pr merge N -R {repo}`. **Exit 3 = parcial** (um repo extra falhou; a fila do studio veio completa): seguir com o studio e NÃO avançar `last_scan_at`, pra o próximo ciclo varrer de novo o intervalo que o repo extra perdeu. O consumidor externo (`hermes-diaria-continuo` no `300`) segue só-studio até ganhar unidade própria. **Nunca montar
+   comportamento de overnight/develop, só nesse caso). **Multi-repo (#10618, ligado por padrão desde a fatia 4, decisão do editor 22/10/2026):** passar SEMPRE `--repos all` junto (`… --repos all --since {last_scan_at}`): entram todos os repos de `platform.config.json → issue_repos` (hoje também `vjpixel/diaria-design`). Issue de outro repo se identifica SEMPRE pelo `ref` (`owner/repo#N`), nunca pelo `number`: claim, `route-issue.ts`, preflights (`check-issue-duplicate-preflight.ts`/`check-issue-open-pr.ts --issue {ref}`) e `plan.json` `{ ref, ... }`. **Pré-requisito no início da sessão:** `npx tsx scripts/sync-issue-labels.ts --repo vjpixel/diaria-design --apply` (idempotente). **Implementar issue do design = item 32 de `context/overnight-dispatch-rules.md`**: checkout `../diaria-design` (clonar se faltar), worktree a partir de `origin/main` (branch base `main`), dispatch sem `isolation: worktree` com cwd no worktree do design, PR aberta NO design (`gh pr create -R vjpixel/diaria-design --base main`) com `Closes #N` LOCAL — nunca PR no studio fechando a studio#N; checkout indisponível → `pulada` `bloqueio-execucao` com o erro, nunca um worktree do studio. O merge NUNCA entra no trem (`run-merge-train.ts` é só-studio): gates de PR com `--issue {ref}` ou `--repo {repo}` (`check-pr-checks-gate.ts`/`check-pr-retido-gate.ts`/`check-pr-review-authenticity.ts`), threads resolvidas com `owner`/`name` do repo do PR, `gh-pr-safe-edit.ts --repo {repo}`, `merge-lock-acquire --pr N --repo {repo}` + `gh pr merge N -R {repo}`. **Exit 3 = parcial** (um repo extra falhou; a fila do studio veio completa): seguir com o studio e NÃO avançar `last_scan_at`, pra o próximo ciclo varrer de novo o intervalo que o repo extra perdeu. O consumidor externo (`hermes-diaria-continuo` no `300`) segue só-studio até ganhar unidade própria. **Nunca montar
    `gh issue list --search "updated:>=..."` à mão** — foi exatamente essa
    string, sem `body` no `--json`, que causou o #7018 na varredura
    incremental (o marcador `aguardando-ate:` fica invisível e uma issue
@@ -752,8 +754,8 @@ aqui.
    Issue fechada entre varreduras não aparece no delta incremental por não
    ter `updated:>=`; o passo 2 já lida com isso indiretamente (issue fechada
    não volta a ser candidata a dispatch, então não precisa de tratamento
-   especial aqui). Gravar `last_scan_at = now()` ao fim da varredura, mesmo
-   quando o delta veio vazio (idempotente — evita re-scan do mesmo intervalo
+   especial aqui). Gravar `last_scan_at = now()` ao fim da varredura (exceto
+   exit 3, ver acima), mesmo quando o delta veio vazio (idempotente — evita re-scan do mesmo intervalo
    no próximo ciclo).
 3. **Ainda seca** → heartbeat `--phase varrendo-bloqueadas`, varrer o backlog
    **bloqueado** (issues `bloqueada-externa` na classificação do overnight —
