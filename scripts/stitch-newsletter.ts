@@ -43,6 +43,7 @@ import {
   SOCIAL_INVITE,
   CURADORIA_PILLS,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (apoio Apoia.se + ferramentas), compartilhada com o mensal; renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o slot A não tem override); SOCIAL_INVITE/CURADORIA_PILLS #4413/#4411 (blocos fixos, não mais lidos de config/snippet por edição)
+import { applyImageToolToCredits } from "./lib/shared/image-tool-name.ts"; // #10783
 import { readSnippetFile, readSnippetFileRaw } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
 import { hasMisplacedHeaderComment, misplacedHeaderWarning } from "./lib/shared/snippet-header.ts"; // #10178
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, BOX0_SENTINEL } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao0 #4274; BOX0_SENTINEL #4338; extractBoxDivulgacao3 removido do stitch pelo #6748 (slot 3 eliminado) — a função continua existindo em newsletter-parse.ts pros lints que ainda leem edições antigas
@@ -107,7 +108,7 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
   // deixava vulnerável a sumir por inteiro sempre que o editor sobrescrevia
   // `para_encerrar.slot_a` pelo painel Caixas (override é all-or-nothing por
   // slot — ver `buildParaEncerrar`).
-  para_encerrar_tools: `Nesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).`,
+  para_encerrar_tools: `Nesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, {{IMAGE_TOOL}} para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).`,
 
   // #4357: lista de pills "Acesse nossas curadorias" — navegação estrutural
   // PERMANENTE (não copy editorial), concatenada por `buildParaEncerrar`
@@ -193,6 +194,22 @@ export function loadParaEncerrarConfig(): ParaEncerrarConfig {
  * está ausente/vazio (nunca houve conteúdo real pra perder). `rootDir`
  * (opcional) — override de teste, ver `loadDivulgacaoSnippet`.
  */
+/**
+ * #10783: `image_generator` de `platform.config.json` (default "gemini", mesmo
+ * default de `image-generate.ts`). Config ilegível → `null`, que
+ * `applyImageToolToCredits` trata como o genérico "IA" — nunca nomeia uma
+ * ferramenta que pode não ter gerado as imagens.
+ */
+export function loadImageGeneratorConfig(): string | null {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  try {
+    const raw = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
+    return typeof raw.image_generator === "string" && raw.image_generator ? raw.image_generator : "gemini";
+  } catch {
+    return null;
+  }
+}
+
 function computeParaEncerrarSlotADefault(rootDir?: string): string {
   return renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY, rootDir) ?? FIXED_BLOCKS.para_encerrar_tools;
 }
@@ -230,9 +247,13 @@ export function buildParaEncerrar(
   override?: ParaEncerrarConfig,
   relatedEditionsMarkdown?: string | null,
   rootDir?: string,
+  imageGenerator: string | null = loadImageGeneratorConfig(),
 ): string {
   const cfg = override ?? loadParaEncerrarConfig();
-  const slotA = cfg.slotA ?? computeParaEncerrarSlotADefault(rootDir);
+  // #10783: o parágrafo de ferramentas cita a ferramenta de imagem derivada de
+  // `image_generator` (a mesma da legenda do hero), não o nome fixo do
+  // snippet/fallback — que seguiu dizendo "Gemini" depois da troca pro Codex.
+  const slotA = applyImageToolToCredits(cfg.slotA ?? computeParaEncerrarSlotADefault(rootDir), imageGenerator);
   const relatedBlock = relatedEditionsMarkdown ? `\n\n${relatedEditionsMarkdown}` : "";
   return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}${relatedBlock}\n\n${SOCIAL_INVITE}`;
 }
