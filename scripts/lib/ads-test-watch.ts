@@ -46,7 +46,7 @@ import Papa from "papaparse";
 import { addDays, daysBetween, type DateOnlyString } from "./ads-test-schedule.ts";
 import type { AdsTestRunState } from "./ads-test-run-state.ts";
 import { plannedBudgetBRL, type AdsTestBudgetPeriod, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
-import { subscribersForChannel, type CacReport, type CacRow } from "./cac.ts";
+import { aggregateMeasuredRowsByCanal, subscribersForChannel, type CacReport, type CacRow } from "./cac.ts";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 
 // ---------------------------------------------------------------------------
@@ -681,12 +681,12 @@ export function buildApuracaoSuccessEmail(
 /** Cadastros medidos por canal — só linhas `measured` de `CacReport.rows`
  *  têm o campo `cadastros`; qualquer outro tipo (`boost-estimate`) ou canal
  *  ausente do relatório conta como 0 (sinal igualmente ruim: nem apareceu).
+ *  SOMA as linhas do canal (#10775): desde #10679 um canal com gasto em
+ *  meses diferentes tem uma linha por mês, e a última sozinha subconta.
  *  @pure */
 function cadastrosPorCanal(rows: readonly CacRow[]): Map<string, number> {
   const byCanal = new Map<string, number>();
-  for (const row of rows) {
-    if (row.kind === "measured") byCanal.set(row.canal, row.cadastros);
-  }
+  for (const [canal, totals] of aggregateMeasuredRowsByCanal(rows)) byCanal.set(canal, totals.cadastros);
   return byCanal;
 }
 
