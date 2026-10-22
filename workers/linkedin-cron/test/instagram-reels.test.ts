@@ -12,8 +12,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import workerDefault, { type Env, type QueueEntry } from "../src/index.ts";
-import { fireQueueEntry, resolveInstagramVjpixelCreds, type FireConfig } from "../src/dispatch.ts";
+import workerDefault, { type Env, type QueueEntry, CLAIM_TTL_MS, FETCH_TIMEOUT_MS } from "../src/index.ts";
+import {
+  fireQueueEntry,
+  resolveInstagramVjpixelCreds,
+  REELS_POLL_DEADLINE_MS,
+  type FireConfig,
+} from "../src/dispatch.ts";
 
 class MockKV {
   store = new Map<string, string>();
@@ -172,6 +177,53 @@ describe("#10823 Reels: disparo pela fila", () => {
     const out = await fireQueueEntry(reelsEntry(), baseConfig());
     assert.equal(out.status, "failed");
     assert.equal(calls.filter((c) => c.url.endsWith("/media_publish")).length, 0);
+  });
+
+  // #10856 self-review (P2) — sem teto TOTAL, o pior caso do poll (todo
+  // fetch de status esperando o FETCH_TIMEOUT_MS) passava de 20 min, acima do
+  // CLAIM_TTL_MS da fila: o claim expirava com o 1º disparo ainda no poll e
+  // outra volta re-disparava o mesmo Reels. Sem o teto, os dois testes abaixo
+  // estouram o timeout do próprio teste (30 s por fetch / 10 s por intervalo).
+  it("teto total: status que nunca responde → failed rápido, sem publicar", { timeout: 10_000 }, async () => {
+    const calls: Call[] = [];
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      const u = typeof url === "string" ? url : url.url;
+      calls.push({ url: u, body: String(init?.body ?? "") });
+      if (u.includes("status_code")) {
+        // Simula a Graph pendurada: só termina quando o signal aborta.
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+        });
+      }
+      if (u.endsWith("/media_publish")) return new Response(JSON.stringify({ id: "x" }), { status: 200 });
+      return new Response(JSON.stringify({ id: "reel-container" }), { status: 200 });
+    }) as typeof fetch;
+    const t0 = Date.now();
+    const out = await fireQueueEntry(reelsEntry(), baseConfig({ reelsPollDeadlineMs: 200 }));
+    assert.equal(out.status, "failed", "estouro do teto é retentável, nunca DLQ");
+    assert.match((out as { reason: string }).reason, /teto total/);
+    assert.equal(calls.filter((c) => c.url.endsWith("/media_publish")).length, 0, "nunca publica");
+    assert.ok(Date.now() - t0 < 5_000, `poll deveria parar no teto, levou ${Date.now() - t0}ms`);
+  });
+
+  it("teto total: a espera entre polls também respeita o teto", { timeout: 10_000 }, async () => {
+    const calls = mockGraph(["IN_PROGRESS"]);
+    const t0 = Date.now();
+    const out = await fireQueueEntry(
+      reelsEntry(),
+      baseConfig({ reelsPollIntervalMs: 100, reelsPollDeadlineMs: 150 }),
+    );
+    assert.equal(out.status, "failed");
+    assert.match((out as { reason: string }).reason, /teto total/);
+    assert.equal(calls.filter((c) => c.url.endsWith("/media_publish")).length, 0);
+    const polls = calls.filter((c) => c.url.includes("status_code")).length;
+    assert.ok(polls < 36, `parou no teto antes de esgotar as tentativas (${polls} polls)`);
+    assert.ok(Date.now() - t0 < 2_000, `levou ${Date.now() - t0}ms`);
+  });
+
+  it("teto de produção: criação + poll + publish cabem no CLAIM_TTL_MS com margem", () => {
+    const worstCase = FETCH_TIMEOUT_MS + REELS_POLL_DEADLINE_MS + FETCH_TIMEOUT_MS;
+    assert.ok(worstCase < CLAIM_TTL_MS, `pior caso ${worstCase}ms >= CLAIM_TTL_MS ${CLAIM_TTL_MS}ms`);
   });
 
   it("ig_account=vjpixel sem credencial no disparo → DLQ com motivo claro, sem nenhuma chamada", async () => {

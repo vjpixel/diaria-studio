@@ -69,6 +69,9 @@ export interface FireConfig {
   /** #10823 — intervalo entre polls do container de Reels (ms). Só os testes
    * passam; produção usa `REELS_POLL_INTERVAL_MS`. */
   reelsPollIntervalMs?: number;
+  /** #10856 — teto total do poll do Reels (ms). Só os testes passam;
+   * produção usa `REELS_POLL_DEADLINE_MS`. */
+  reelsPollDeadlineMs?: number;
 }
 
 export type FireOutcome =
@@ -382,9 +385,19 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
  * caminho single-image (#3817, inalterado) ou carrossel (#4153) conforme a
  * contagem de imagens resolvida por `resolveImageUrls`.
  */
-async function fireInstagram(entry: QueueEntry, creds: InstagramCreds, reelsPollIntervalMs?: number): Promise<FireOutcome> {
+async function fireInstagram(
+  entry: QueueEntry,
+  creds: InstagramCreds,
+  reelsPollIntervalMs?: number,
+  reelsPollDeadlineMs?: number,
+): Promise<FireOutcome> {
   if (entry.media_type === "REELS") {
-    return fireInstagramReels(entry, creds, reelsPollIntervalMs ?? REELS_POLL_INTERVAL_MS);
+    return fireInstagramReels(
+      entry,
+      creds,
+      reelsPollIntervalMs ?? REELS_POLL_INTERVAL_MS,
+      reelsPollDeadlineMs ?? REELS_POLL_DEADLINE_MS,
+    );
   }
   const images = resolveImageUrls(entry);
   if (images.length === 0) {
@@ -556,15 +569,37 @@ async function pollInstagramContainerStatus(
   // vídeo passa um orçamento maior. Defaults = comportamento do carrossel.
   maxAttempts: number = IG_POLL_MAX_ATTEMPTS,
   intervalMs: number = IG_POLL_INTERVAL_MS,
+  // #10856 self-review — teto TOTAL de tempo de parede do poll (ms). Contar
+  // tentativas não basta: cada fetch pode levar até FETCH_TIMEOUT_MS, e o pior
+  // caso do Reels (36 × (30 s + 5 s)) passaria de 20 min, muito acima do
+  // CLAIM_TTL_MS da fila — com o claim expirado, outra volta re-dispararia a
+  // mesma entry e o Reels sairia em dobro. Undefined = sem teto (carrossel,
+  // cujo pior caso já cabe no TTL).
+  deadlineMs?: number,
 ): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
-  const IG_POLL_MAX_ATTEMPTS = maxAttempts;
-  const IG_POLL_INTERVAL_MS = intervalMs;
-  for (let attempt = 1; attempt <= IG_POLL_MAX_ATTEMPTS; attempt++) {
+  const deadline = deadlineMs === undefined ? Infinity : Date.now() + deadlineMs;
+  const remaining = () => deadline - Date.now();
+  const deadlineExceeded = () => ({
+    ok: false as const,
+    permanent: false,
+    reason:
+      `Instagram container não ficou FINISHED dentro do teto total de ` +
+      `${Math.round((deadlineMs ?? 0) / 1000)}s do poll — container_id=${containerId}, ` +
+      `fail-closed (não publica, retry normal).`,
+  });
+  const waitBeforeNext = async (attempt: number) => {
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, Math.max(0, Math.min(intervalMs, remaining()))));
+    }
+  };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (remaining() <= 0) return deadlineExceeded();
     try {
       // Token vai no header Authorization, nunca na query string (#7779).
       const res = await fetch(`${base}/${containerId}?fields=status_code`, {
         headers: { Authorization: `Bearer ${accessToken}` },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        // O timeout do fetch nunca passa do que resta do teto total.
+        signal: AbortSignal.timeout(Math.max(1, Math.min(FETCH_TIMEOUT_MS, remaining()))),
       });
       const text = await res.text();
       let data: { status_code?: string; error?: { message?: string } };
@@ -572,16 +607,16 @@ async function pollInstagramContainerStatus(
         data = JSON.parse(text);
       } catch {
         console.warn(
-          `[instagram-poll] resposta não-JSON na tentativa ${attempt}/${IG_POLL_MAX_ATTEMPTS} (container_id=${containerId}): HTTP ${res.status}: ${text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+          `[instagram-poll] resposta não-JSON na tentativa ${attempt}/${maxAttempts} (container_id=${containerId}): HTTP ${res.status}: ${text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
         );
-        if (attempt < IG_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, IG_POLL_INTERVAL_MS));
+        await waitBeforeNext(attempt);
         continue;
       }
       if (!res.ok || data.error) {
         console.warn(
-          `[instagram-poll] HTTP ${res.status} na tentativa ${attempt}/${IG_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
+          `[instagram-poll] HTTP ${res.status} na tentativa ${attempt}/${maxAttempts} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
         );
-        if (attempt < IG_POLL_MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, IG_POLL_INTERVAL_MS));
+        await waitBeforeNext(attempt);
         continue;
       }
       if (data.status_code === "FINISHED") return { ok: true };
@@ -597,19 +632,18 @@ async function pollInstagramContainerStatus(
       const err = e as Error;
       const timeout = err.name === "AbortError" || err.name === "TimeoutError";
       console.warn(
-        `[instagram-poll] fetch ${timeout ? "timeout" : "failed"} na tentativa ${attempt}/${IG_POLL_MAX_ATTEMPTS} (container_id=${containerId}): ${err.message} — tratado como transitório, tentando de novo.`,
+        `[instagram-poll] fetch ${timeout ? "timeout" : "failed"} na tentativa ${attempt}/${maxAttempts} (container_id=${containerId}): ${err.message} — tratado como transitório, tentando de novo.`,
       );
     }
-    if (attempt < IG_POLL_MAX_ATTEMPTS) {
-      await new Promise((r) => setTimeout(r, IG_POLL_INTERVAL_MS));
-    }
+    await waitBeforeNext(attempt);
   }
+  if (remaining() <= 0) return deadlineExceeded();
   return {
     ok: false,
     permanent: false,
     reason:
-      `Instagram container nunca ficou FINISHED após ${IG_POLL_MAX_ATTEMPTS} tentativas ` +
-      `(~${Math.round((IG_POLL_MAX_ATTEMPTS * IG_POLL_INTERVAL_MS) / 1000)}s) — ` +
+      `Instagram container nunca ficou FINISHED após ${maxAttempts} tentativas ` +
+      `(~${Math.round((maxAttempts * intervalMs) / 1000)}s) — ` +
       `container_id=${containerId}, fail-closed (não publica).`,
   };
 }
@@ -621,6 +655,13 @@ async function pollInstagramContainerStatus(
  * novo na próxima volta (container não publicado não aparece pra ninguém). */
 export const REELS_POLL_MAX_ATTEMPTS = 36;
 export const REELS_POLL_INTERVAL_MS = 5000;
+/** #10856 self-review — teto TOTAL de tempo de parede do poll do Reels:
+ * 3,5 min. Somado ao fetch de criação do container e ao de `media_publish`
+ * (até `FETCH_TIMEOUT_MS` cada), o disparo inteiro fica em ≤4,5 min, abaixo
+ * do `CLAIM_TTL_MS` (5 min) da fila — o claim nunca expira com o 1º disparo
+ * ainda em andamento, então outra volta não re-dispara o mesmo Reels. Estouro
+ * = `failed` sem publicar (retry normal cria container novo). */
+export const REELS_POLL_DEADLINE_MS = 210_000;
 
 /**
  * Dispara um Reels agendado (#10823) — fluxo da Graph API com vídeo por URL:
@@ -637,7 +678,12 @@ export const REELS_POLL_INTERVAL_MS = 5000;
  * arquivo. Falhas transitórias (HTTP/fetch/poll esgotado) são `failed`
  * (retry normal); nada é publicado até o passo 3.
  */
-async function fireInstagramReels(entry: QueueEntry, creds: InstagramCreds, pollIntervalMs: number): Promise<FireOutcome> {
+async function fireInstagramReels(
+  entry: QueueEntry,
+  creds: InstagramCreds,
+  pollIntervalMs: number,
+  pollDeadlineMs: number,
+): Promise<FireOutcome> {
   if (!entry.video_url) {
     return { status: "dlq", reason: "Instagram Reels: video_url ausente" };
   }
@@ -689,6 +735,7 @@ async function fireInstagramReels(entry: QueueEntry, creds: InstagramCreds, poll
     creds.accessToken,
     REELS_POLL_MAX_ATTEMPTS,
     pollIntervalMs,
+    pollDeadlineMs,
   );
   if (!poll.ok) {
     return { status: poll.permanent ? "dlq" : "failed", reason: `Instagram Reels: ${poll.reason}` };
@@ -1462,7 +1509,7 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
             "channel=instagram, ig_account=vjpixel mas credenciais (INSTAGRAM_VJPIXEL_ACCOUNT_ID/INSTAGRAM_VJPIXEL_ACCESS_TOKEN) não configuradas",
         };
       }
-      return fireInstagram(entry, config.instagramVjpixel, config.reelsPollIntervalMs);
+      return fireInstagram(entry, config.instagramVjpixel, config.reelsPollIntervalMs, config.reelsPollDeadlineMs);
     }
     if (!config.instagram) {
       return {
@@ -1471,7 +1518,7 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
           "channel=instagram mas credenciais Instagram (INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN) não configuradas",
       };
     }
-    return fireInstagram(entry, config.instagram, config.reelsPollIntervalMs);
+    return fireInstagram(entry, config.instagram, config.reelsPollIntervalMs, config.reelsPollDeadlineMs);
   }
 
   if (channel === "threads") {
