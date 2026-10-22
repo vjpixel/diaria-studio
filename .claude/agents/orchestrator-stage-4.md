@@ -164,7 +164,7 @@ npx tsx scripts/render-halt-banner.ts \
    npx tsx scripts/close-poll.ts --edition {AAMMDD}
    ```
 
-5. **Pre-dispatch invariants (#1007 Fase 1).** Validar que `06-public-images.json` está populado e env vars críticas estão setadas:
+5. **Pre-dispatch invariants (#1007 Fase 1).** ANTES, medir o tempo dos USE MELHOR inseridos/alterados à mão no gate (#10765; não reescreve o md, fail-soft exit 0): `npx tsx scripts/refresh-use-melhor-tempo.ts --edition-dir {EDITION_DIR}/` — `use-melhor-tempo-item-sem-medicao` avisa a divergência. Depois: Validar que `06-public-images.json` está populado e env vars críticas estão setadas:
    ```bash
    npx tsx scripts/check-invariants.ts --stage 4 --edition-dir {EDITION_DIR}/
    ```
