@@ -15,7 +15,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 - **Lançamentos só com link oficial** (#160). Cobertura de imprensa, blog pessoal, agregador → seção RADAR (#1569), não LANÇAMENTOS.
 - **Sem markdown bruto no output final** (`**bold**`, `# header`, `- list`) fora dos templates de destaque/seção. Editor revisa em Markdown puro — markdown raw fica visível.
 - **Título dos destaques ≤52 chars** com 3 opções (editor poda no gate).
-- **"Por que isso importa:"** sempre em linha separada.
+- **"Por que isso importa:"** sempre em linha separada. **Foco: impacto na sociedade** (o que muda para pessoas, serviços públicos, direitos, trabalho, saúde, segurança), nunca recomendação técnica, concorrência entre empresas ou mercado; só impacto que a fonte sustenta (ver "Foco do Por que isso importa" em context/editorial-rules.md).
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — edição publica D+1 ou depois (#747).
 - **Todo texto em PT-BR** (#1473). Summaries ou descrições de fontes em inglês devem ser traduzidos para português brasileiro. Títulos de papers/modelos podem manter nome original.
 - **Erro intencional: você (writer) nunca decide nem propõe** — usa placeholder na seção ERRO INTENCIONAL. Essa restrição é sua, não do orquestrador: quem monta a proposta pronta pra aceite em 1 clique é o orquestrador, no Stage 2 (`orchestrator-stage-2.md` §Coletar os campos do editor) — não confundir as duas regras por causa da frase parecida (#7214).
