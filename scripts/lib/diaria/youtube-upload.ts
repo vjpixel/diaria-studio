@@ -13,7 +13,8 @@
  *   2. `channels.list?mine=true` — confere que o token é do canal esperado
  *      (`YOUTUBE_CHANNEL_ID`) ANTES de subir qualquer byte;
  *   3. `videos.insert` resumable: POST de início (metadados + status com
- *      `privacyStatus`/`publishAt` do plano) → `Location` → PUT dos bytes;
+ *      `privacyStatus`/`publishAt` do plano) → `Location` → PUT dos bytes,
+ *      retomado na mesma sessão em falha transitória (#10875);
  *   4. `thumbnails.set` com a capa — falha aqui NÃO desfaz o vídeo, só vira
  *      `thumbnail.ok = false` no resultado;
  *   5. releitura de `videos.list?part=status` e normalização por
@@ -46,12 +47,29 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export interface YouTubeUploadDeps {
   fetch: FetchLike;
   now: () => Date;
+  /** Espera entre retomadas do PUT (#10875). Ausente = sem espera (testes). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export const defaultYouTubeUploadDeps: YouTubeUploadDeps = {
   fetch: (url, init) => globalThis.fetch(url, init),
   now: () => new Date(),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
+
+/**
+ * Quantas vezes o PUT dos bytes é retomado na MESMA sessão resumable depois de
+ * uma falha transitória (rede caindo, 5xx) antes de desistir (#10875).
+ */
+export const YOUTUBE_UPLOAD_MAX_RESUMES = 5;
+
+/** Backoff exponencial entre retomadas: 1s, 2s, 4s… teto de 30s. */
+export function resumeBackoffMs(attempt: number): number {
+  return Math.min(30_000, 1000 * 2 ** Math.max(0, attempt - 1));
+}
+
+/** Status que a doc do resumable upload manda retomar (não recomeçar). */
+const RETRYABLE_UPLOAD_STATUS = new Set([500, 502, 503, 504]);
 
 /** Etapas que lançam `YouTubeUploadError` (antes do vídeo estar confirmado). */
 export type YouTubeUploadStep = "token" | "channel" | "insert" | "upload";
@@ -248,25 +266,134 @@ export interface UploadedVideoResource {
   };
 }
 
-/** PUT dos bytes na sessão resumable; devolve o resource `videos` criado. */
+/**
+ * Bytes já confirmados pelo servidor a partir do header `Range` de uma
+ * resposta 308 (`bytes=0-N` → N+1). Sem header = nada recebido (0).
+ */
+export function parseUploadedRange(range: string | null, total: number): number {
+  if (!range) return 0;
+  const m = /^bytes=0-(\d+)$/.exec(range.trim());
+  if (!m) throw new YouTubeUploadError(`a sessão de upload devolveu Range inesperado: ${JSON.stringify(range.slice(0, 80))}`, "upload");
+  const received = Number(m[1]) + 1;
+  if (received > total) {
+    throw new YouTubeUploadError(`a sessão de upload diz ter recebido ${received} bytes de um vídeo de ${total}`, "upload");
+  }
+  return received;
+}
+
+/** Resultado de uma ida à sessão resumable (envio de bytes ou consulta de status). */
+type UploadAttempt =
+  | { kind: "done"; res: Response }
+  | { kind: "incomplete"; received: number }
+  | { kind: "transient"; why: string };
+
+/**
+ * Classifica a resposta de um PUT na sessão: 2xx = terminou; 308 = parcial
+ * (retomar do `Range`); 5xx da lista de retomada = transitório; resto lança.
+ */
+async function classifyUploadResponse(res: Response, total: number): Promise<UploadAttempt> {
+  if (res.ok) return { kind: "done", res };
+  if (res.status === 308) return { kind: "incomplete", received: parseUploadedRange(res.headers.get("range"), total) };
+  const body = await errorSnippet(res);
+  if (RETRYABLE_UPLOAD_STATUS.has(res.status)) return { kind: "transient", why: explainYouTubeUploadError(res.status, body, "upload") };
+  if (res.status === 404 || res.status === 410) {
+    throw new YouTubeUploadError(
+      `a sessão de upload expirou (HTTP ${res.status}) — não dá para retomar; confira o canal antes de subir de novo`,
+      "upload",
+    );
+  }
+  throw new YouTubeUploadError(explainYouTubeUploadError(res.status, body, "upload"), "upload");
+}
+
+/**
+ * PUT dos bytes na sessão resumable; devolve o resource `videos` criado.
+ *
+ * Retomável (#10875): em falha transitória (rede caindo, 500/502/503/504) ou
+ * resposta 308 parcial, consulta a MESMA `sessionUrl` (PUT vazio com o
+ * Content-Range de consulta, `bytes ` + `*` + `/N`) e reenvia só a partir do último byte
+ * confirmado, até `maxResumes` retomadas. Esgotadas, lança na etapa `upload`
+ * (o vídeo PODE existir — `isIndeterminateUploadFailure`).
+ */
 export async function putVideoBytes(
   deps: YouTubeUploadDeps,
   token: string,
   sessionUrl: string,
   file: Buffer,
   contentType: string,
+  opts: { maxResumes?: number } = {},
 ): Promise<UploadedVideoResource> {
+  const total = file.length;
+  const maxResumes = opts.maxResumes ?? YOUTUBE_UPLOAD_MAX_RESUMES;
+  const sleep = deps.sleep ?? (async () => {});
+
+  /** Envia `file[offset..]`. offset 0 = PUT inteiro, como na 1ª tentativa. */
+  const sendFrom = async (offset: number): Promise<UploadAttempt> => {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": contentType,
+      "Content-Length": String(total - offset),
+    };
+    if (offset > 0) headers["Content-Range"] = `bytes ${offset}-${total - 1}/${total}`;
+    let res: Response;
+    try {
+      res = await deps.fetch(sessionUrl, {
+        method: "PUT",
+        headers,
+        body: asBody(offset > 0 ? file.subarray(offset) : file),
+        redirect: "manual",
+      });
+    } catch (e) {
+      return { kind: "transient", why: `envio dos bytes do vídeo falhou (rede): ${(e as Error).message}` };
+    }
+    return classifyUploadResponse(res, total);
+  };
+
+  /** Consulta quantos bytes a sessão já confirmou. */
+  const queryStatus = async (): Promise<UploadAttempt> => {
+    let res: Response;
+    try {
+      res = await deps.fetch(sessionUrl, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Length": "0", "Content-Range": `bytes */${total}` },
+        redirect: "manual",
+      });
+    } catch (e) {
+      return { kind: "transient", why: `consulta da sessão de upload falhou (rede): ${(e as Error).message}` };
+    }
+    return classifyUploadResponse(res, total);
+  };
+
+  let offset = 0;
+  let resumes = 0;
+  let next: "send" | "query" = "send";
   let res: Response;
-  try {
-    res = await deps.fetch(sessionUrl, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType, "Content-Length": String(file.length) },
-      body: asBody(file),
-    });
-  } catch (e) {
-    throw new YouTubeUploadError(`envio dos bytes do vídeo falhou (rede): ${(e as Error).message}`, "upload");
+  for (;;) {
+    const attempt = next === "send" ? await sendFrom(offset) : await queryStatus();
+    if (attempt.kind === "done") {
+      res = attempt.res;
+      break;
+    }
+    if (attempt.kind === "incomplete" && next === "query" && attempt.received < total) {
+      // Resposta da consulta: retoma do byte confirmado sem contar tentativa.
+      offset = attempt.received;
+      next = "send";
+      continue;
+    }
+    // Falha transitória, ou envio que terminou parcial: conta uma retomada.
+    resumes++;
+    const why = attempt.kind === "transient" ? attempt.why : `a sessão confirmou só ${attempt.received} de ${total} bytes`;
+    if (resumes > maxResumes) {
+      throw new YouTubeUploadError(`${why} — upload interrompido após ${maxResumes} retomadas da mesma sessão`, "upload");
+    }
+    if (attempt.kind === "incomplete" && attempt.received < total) {
+      offset = attempt.received;
+      next = "send";
+    } else {
+      next = "query";
+    }
+    await sleep(resumeBackoffMs(resumes));
   }
-  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res), "upload"), "upload");
+
   const json = (await readJson(res)) as UploadedVideoResource | null | undefined;
   if (json === undefined) {
     throw new YouTubeUploadError(`o upload terminou com corpo não-JSON (HTTP ${res.status}), sem o id do vídeo`, "upload");

@@ -13,7 +13,8 @@
  *     assinatura `https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign={AAMMDD}`;
  *   - 6 tags; idioma pt-BR; "não é conteúdo para crianças";
  *   - agendado pras 06:00 BRT do dia da edição (`publishAt`); se esse horário
- *     já passou, publica na hora (premissa registrada no plano, issue item 6).
+ *     já passou ou falta menos de 15 min (#10875), publica na hora (premissa
+ *     registrada no plano, issue item 6).
  *
  * Limites da API respeitados aqui (documentação `videos` resource):
  *   - `snippet.title` ≤ 100 caracteres, `snippet.description` ≤ 5000 bytes,
@@ -222,19 +223,40 @@ export type YouTubeScheduleDecision =
   | { mode: "immediate"; publishAt: null; privacyStatus: "public"; premise: string };
 
 /**
+ * Folga mínima entre a decisão do agendamento e o `publishAt` (#10875). O
+ * `publishAt` é decidido ANTES do upload; se faltar menos que isso, o envio
+ * dos bytes pode terminar com o horário já no passado (o YouTube recusa ou a
+ * releitura fica `unknown`) — então publica na hora.
+ */
+export const YOUTUBE_SCHEDULE_MIN_LEAD_MS = 15 * 60_000;
+
+/**
  * 06:00 BRT do dia da edição (ou `--publish-at` explícito). Se o instante já
- * passou em `now`, publica na hora — premissa registrada (issue item 6).
+ * passou em `now` — ou falta menos que `YOUTUBE_SCHEDULE_MIN_LEAD_MS` (#10875)
+ * —, publica na hora; premissa registrada (issue item 6).
  */
 export function resolveYouTubeSchedule(
   aammdd: string,
   now: Date,
   publishAtOverride?: string | null,
+  minLeadMs: number = YOUTUBE_SCHEDULE_MIN_LEAD_MS,
 ): YouTubeScheduleDecision {
   const target = publishAtOverride ?? resolveEditionScheduledAt(aammdd, DEFAULT_EDITION_SCHEDULE_HHMM);
   const targetMs = Date.parse(target);
   if (Number.isNaN(targetMs)) throw new Error(`publishAt não é ISO 8601 válido: ${JSON.stringify(target)}`);
   const iso = new Date(targetMs).toISOString();
-  if (targetMs > now.getTime()) {
+  const leadMs = targetMs - now.getTime();
+  if (leadMs > 0 && leadMs < minLeadMs) {
+    return {
+      mode: "immediate",
+      publishAt: null,
+      privacyStatus: "public",
+      premise:
+        `horário-alvo ${iso} está a ${Math.ceil(leadMs / 60_000)} min de ${now.toISOString()} — menos que a folga de ` +
+        `${Math.round(minLeadMs / 60_000)} min para o upload terminar antes dele; publicando na hora (#10875)`,
+    };
+  }
+  if (leadMs > 0) {
     return {
       mode: "scheduled",
       publishAt: iso,
