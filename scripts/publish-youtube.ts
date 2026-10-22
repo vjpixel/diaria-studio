@@ -30,6 +30,11 @@
  * `--upload` recusa (exit 0, nada enviado) a menos que venha `--force`, que
  * guarda o registro anterior em `previous_uploads`.
  *
+ * Com o vídeo enviado, grava também `_internal/05-video-url.txt` (link do
+ * vídeo no D1, #10772) — só se o estado relido for `published`, ou
+ * `scheduled` com `publishAt` até o post do D1 (#10858); vídeo `private`
+ * nunca vira link no D1.
+ *
  * Antes do PUT dos bytes o mesmo arquivo recebe um marcador
  * `{ status: "in_progress" }`; se o upload falhar dali em diante (5xx, rede
  * caindo, PUT sem id) ele vira `{ status: "upload_indeterminado", step }`.
@@ -100,6 +105,8 @@ import {
   type YouTubeUploadDeps,
   type YouTubeUploadResult,
 } from "./lib/diaria/youtube-upload.ts";
+import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
+import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -255,12 +262,63 @@ export interface RunUploadInput {
   force: boolean;
   readFile: (p: string) => Buffer;
   log: (line: string) => void;
+  /**
+   * Horário do post do D1 (#10858) — limite para um vídeo `scheduled` virar
+   * link no D1. `null`/ausente: só vídeo `published` vira link.
+   */
+  d1SlotAt?: Date | null;
 }
 
 export interface RunUploadOutcome {
   exitCode: number;
   record: YouTubePublishedRecord | null;
   skipped: boolean;
+  /** `_internal/05-video-url.txt` gravado nesta rodada (#10858). */
+  videoUrlWritten?: boolean;
+}
+
+/**
+ * Depois do upload, grava `_internal/05-video-url.txt` (o link do vídeo no D1,
+ * #10772) só quando o estado RELIDO deixa o leitor abrir o vídeo — nunca com o
+ * vídeo `private` (#10858). Não sobrescreve uma URL diferente já gravada à mão.
+ * Nunca lança: o vídeo já subiu, falha aqui vira aviso.
+ */
+export function writeD1VideoUrlAfterUpload(
+  editionDir: string,
+  record: Pick<YouTubePublishedRecord, "aammdd" | "url" | "state" | "rereadStatus">,
+  d1SlotAt: Date | null,
+  log: (line: string) => void,
+): boolean {
+  const verdict = videoLinkEligibility({
+    state: record.state,
+    publishAt: record.rereadStatus?.publishAt ?? null,
+    d1SlotAt,
+  });
+  const urlFile = join(editionDir, D1_VIDEO_URL_FILE);
+  if (!verdict.ok) {
+    log(
+      `[aviso] link do vídeo NÃO gravado em ${urlFile}: ${verdict.reason}. Depois de publicar (ou agendar antes do D1) ` +
+        `no Studio, rode \`npx tsx scripts/link-video-d1.ts ${record.aammdd} --save --assume-public\` (#10858).`,
+    );
+    return false;
+  }
+  try {
+    if (existsSync(urlFile)) {
+      const current = readFileSync(urlFile, "utf8").trim();
+      if (current && current !== record.url) {
+        log(`[aviso] ${urlFile} já aponta para ${current} — mantido; o vídeo enviado é ${record.url} (#10858)`);
+        return false;
+      }
+      if (current === record.url) return false;
+    }
+    mkdirSync(dirname(urlFile), { recursive: true });
+    writeFileAtomic(urlFile, `${record.url}\n`);
+    log(`[ok] ${urlFile} gravado (${verdict.reason}) — o Stage 5 põe o link no D1 de X, Threads e Facebook`);
+    return true;
+  } catch (e) {
+    log(`[aviso] link do vídeo não gravado em ${urlFile}: ${(e as Error).message} — rode link-video-d1.ts --save`);
+    return false;
+  }
 }
 
 const SENTINEL_STATUSES = new Set(["in_progress", "upload_indeterminado"]);
@@ -442,7 +500,21 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
     );
     return { exitCode: 1, record, skipped: false };
   }
-  return { exitCode: failed ? 1 : 0, record, skipped: false };
+  const videoUrlWritten = failed ? false : writeD1VideoUrlAfterUpload(input.editionDir, record, input.d1SlotAt ?? null, log);
+  return { exitCode: failed ? 1 : 0, record, skipped: false, videoUrlWritten };
+}
+
+/** Horário do post do D1 pelo `platform.config.json`; `null` se não der (nunca lança). */
+function loadD1SlotAt(aammdd: string): Date | null {
+  try {
+    const cfg = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")) as {
+      publishing?: { social?: Record<string, unknown> };
+    };
+    return d1SocialSlotAt(aammdd, cfg.publishing?.social ?? null);
+  } catch (e) {
+    console.error(`[aviso] horário do D1 não derivado (${(e as Error).message}) — só vídeo público vira link no D1`);
+    return null;
+  }
 }
 
 const USAGE =
@@ -504,6 +576,7 @@ async function main(): Promise<number> {
     force: flags.has("force"),
     readFile: (p) => readFileSync(p),
     log: (line) => console.error(line),
+    d1SlotAt: loadD1SlotAt(aammdd),
   });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
   return outcome.exitCode;

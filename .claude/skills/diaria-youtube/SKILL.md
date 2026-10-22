@@ -84,6 +84,14 @@ Mesmas flags do dry-run. Saída:
 
 Com `--force`, o registro anterior vai para `previous_uploads` no novo.
 
+**Link do vídeo no D1 (#10772, #10858).** Depois do upload, o próprio `--upload` grava `_internal/05-video-url.txt` — o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook — **só** quando o estado relido deixa o leitor abrir o vídeo: `published`, ou `scheduled` com `publishAt` até o horário do post do D1 do dia (rotação do #10305 incluída). Com `draft` (privado, a trava da auditoria) ou `unknown`, o arquivo não é gravado e o log diz por quê; uma URL diferente já gravada à mão nunca é sobrescrita. Depois de publicar (ou agendar antes do D1) no Studio, o editor libera o link com:
+
+```bash
+npx tsx scripts/link-video-d1.ts {AAMMDD} --save --assume-public
+```
+
+Sem `--video-url`, o `link-video-d1` usa a `url` do registro. Sem `--assume-public`, ele recusa (exit 1, nada gravado) o vídeo cujo registro diz privado, indeterminado ou agendado para depois do D1 — vídeo `private` nunca vira link no D1.
+
 ## Passo 4 — Relatar
 
 Mostrar ao editor: título, primeiras linhas da descrição, tags, horário (`publishAt` ou "na hora") e as premissas/avisos. Depois de `--upload`, relatar o link e o `state` relido. Com `state: draft` (sem a auditoria do YouTube API Services), dizer que o vídeo subiu **privado** e precisa ser publicado ou agendado à mão no Studio. Com `state: scheduled` e `audit_blocked: true`, dizer que está agendado, mas que o agendamento pode não torná-lo público, e conferir no Studio depois do horário. Só com `--dry-run`, a publicação segue manual pelo YouTube Studio usando esses metadados.

@@ -88,6 +88,8 @@ npx tsx scripts/link-video-d1.ts {AAMMDD} --video-url {URL do YouTube} --save
 
 `--save` grava `_internal/05-video-url.txt`. Se isso acontecer antes do Stage 5, o próprio Stage 5 põe o link no D1 do X (1º link do texto), do Threads e do Facebook diar.ia.br (X e Threads só se couber no limite). O JSON impresso é o plano para posts do D1 já agendados ou publicados: `edit_scheduled` (editar antes do disparo), `comment_after` (comentar/responder; no LinkedIn é sempre o 1º comentário). O script não edita nem comenta nada: aplicar o plano ainda é manual.
 
+Se o vídeo subiu por `publish-youtube.ts --upload`, `--video-url` é opcional (vale a `url` de `_internal/05-youtube-published.json`) e o script recusa (exit 1) o vídeo que o registro diz privado ou agendado para depois do D1 (#10858). Confirmado público no Studio, rodar com `--assume-public`.
+
 ## Passo 6 — Relatar
 
 Uma linha por destino: publicado/agendado (com URL), pendente (Instagram antes do horário do vertical), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
