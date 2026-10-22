@@ -54,7 +54,7 @@ export interface YouTubeD1Input {
   title: string;
   /** Corpo do D1 (parágrafos antes de "Por que isso importa:"), pode ter markdown. */
   body: string;
-  /** URL da fonte primária do D1. */
+  /** URL da fonte primária do D1 — não usar na descrição (#10799). */
   url: string;
   /** Categoria do header `DESTAQUE 1 | CATEGORIA`. */
   category?: string;

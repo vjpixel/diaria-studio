@@ -96,13 +96,6 @@ describe("#10769 metadados e legendas", () => {
     );
   });
 
-  it("Short nunca cita a fonte individual na descrição nem no comentário (#10799)", () => {
-    const m = buildYouTubeShortMetadata({ aammdd: "261022", d1: D1, editionUrl: EDITION_URL });
-    assert.doesNotMatch(m.description, /^Fonte:/m);
-    assert.ok(!m.description.includes(D1_SOURCE_URL));
-    assert.ok(!m.pinnedComment.includes(D1_SOURCE_URL));
-  });
-
   it("Reels Facebook: CTA do canal + link da edição com UTM da página", () => {
     const c = buildReelsCaption({ platform: "facebook", aammdd: "261022", d1: D1, editionUrl: EDITION_URL, utmContent: "page-memelab" });
     assert.match(c, /^Você já viu IA mentir/);
@@ -257,6 +250,17 @@ describe("#10769 plano do publish-shorts", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
     assert.equal(plan.youtube.title, "Você já viu IA mentir. Já viu roubar? #Shorts");
     assert.equal(plan.longVideo, "diaria-comentada-261022.mp4");
+  });
+
+  it("Short nunca cita a fonte individual na descrição nem no comentário fixado (#10799)", () => {
+    // Plano real: REVIEWED carrega D1_SOURCE_URL no link do título do D1 — se o
+    // publish-shorts passasse d1.url adiante pro metadado, isto quebra.
+    assert.ok(REVIEWED.includes(D1_SOURCE_URL), "fixture precisa conter a URL da fonte");
+    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z") });
+    assert.doesNotMatch(plan.youtube.description, /^Fonte:/m);
+    assert.ok(!plan.youtube.description.includes(D1_SOURCE_URL));
+    assert.doesNotMatch(plan.youtube.pinnedComment, /^Fonte:/m);
+    assert.ok(!plan.youtube.pinnedComment.includes(D1_SOURCE_URL));
   });
 });
 
