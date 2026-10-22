@@ -57,7 +57,7 @@
  * `enabled: false`; ligada em 20/10/2026). Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, renameSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
@@ -91,13 +91,24 @@ export const EXIT_OVERNIGHT_FAILED = 2;
 /** Review falhou mas o overnight rodou (ou foi pulado legitimamente). Fora de `successExitCodes` de propósito. */
 export const EXIT_REVIEW_FAILED = 3;
 
+/**
+ * Overnight saiu 0 mas não gravou `plan.json` nem `report.md` em
+ * `data/overnight/*` durante a run (#10808). A Fase 0 grava o `plan.json`
+ * antes de decidir qualquer coisa, inclusive "0 elegíveis"; sair sem ele é
+ * aborto cedo, que antes aparecia como `overnight=ok`. Fora de
+ * `successExitCodes`: a unit sai `failed` e o alarme de units avisa.
+ */
+export const EXIT_OVERNIGHT_NO_TRACE = 4;
+
 export type ReviewStatus = "ok" | "noop" | "failed" | "timeout";
-export type OvernightStatus = "ok" | "failed" | "skipped-active-session";
+export type OvernightStatus = "ok" | "failed" | "no-trace" | "skipped-active-session";
 
 export interface ReviewOutcome {
   status: ReviewStatus;
   exitCode: number | null;
   tail: string;
+  /** Linha `RESUMO-DAILY-REVIEW:` do review completo, lida do transcript final (#10779). */
+  summary?: string | null;
 }
 
 export interface OvernightOutcome {
@@ -170,6 +181,16 @@ export function tailLines(text: string, n = 8): string {
 }
 
 /**
+ * Linha EXATA que `opus-daily-diff-review.sh` emite no noop (#10779). Ancorada
+ * por linha (flag `m`): desde o #10699 o stderr do review carrega o stream-json
+ * inteiro, com os `tool_result` de `git diff`/`git show`, e qualquer diff que
+ * contivesse a string "— noop" (o próprio script, este arquivo) rotulava um
+ * review completo como noop. Dentro de um evento JSON a mensagem fica no meio
+ * da linha, com a quebra escapada, então a âncora `^...$` não casa.
+ */
+export const REVIEW_NOOP_LINE_RE = /^\[daily-review\] nada novo desde o último review \(.*\) — noop$/m;
+
+/**
  * Classifica o resultado do review. O script sai 0 tanto no review completo
  * quanto no noop ("nada novo desde o último review"); o noop só é
  * distinguível pelo stderr.
@@ -179,7 +200,136 @@ export function classifyReviewResult(r: Pick<SpawnSyncReturns<string>, "status" 
   if (err && err.code === "ETIMEDOUT") return "timeout";
   if (r.signal === "SIGTERM" && r.status === null) return "timeout";
   if (err || r.status !== 0) return "failed";
-  return /— noop/.test(r.stderr ?? "") ? "noop" : "ok";
+  return REVIEW_NOOP_LINE_RE.test(r.stderr ?? "") ? "noop" : "ok";
+}
+
+/** Teto por linha no tail legível (#10779): nenhuma linha solta pode inflar o log da cadeia. */
+export const TAIL_LINE_MAX_CHARS = 500;
+
+function capLine(l: string): string {
+  return l.length > TAIL_LINE_MAX_CHARS ? `${l.slice(0, TAIL_LINE_MAX_CHARS)}…` : l;
+}
+
+/**
+ * Tail LEGÍVEL de uma saída que mistura linhas de texto com eventos
+ * stream-json (#10779). Descarta as linhas de evento (começam com `{`) e o
+ * fragmento de evento que sobra quando a cauda lida do disco começa no meio
+ * de uma linha (termina com `}`), e corta cada linha restante em
+ * `TAIL_LINE_MAX_CHARS`.
+ */
+export function readableTail(text: string, n = 8): string {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("{") && !l.endsWith("}"))
+    .map(capLine);
+  return tailLines(lines.join("\n"), n);
+}
+
+/** Transcript final do review, relativo a `data/` (`$OUT_FILE` de `opus-daily-diff-review.sh`). */
+export const REVIEW_OUTPUT_REL = "continuo/last-daily-review-output.txt";
+
+/** Primeira linha `RESUMO-DAILY-REVIEW:` do texto (mesmo `grep -m1` do script), ou null. */
+export function extractReviewSummary(text: string): string | null {
+  const line = text.split(/\r?\n/).find((l) => l.includes("RESUMO-DAILY-REVIEW:"));
+  return line ? capLine(line.trim()) : null;
+}
+
+/**
+ * Lê o resumo do review completo de `$OUT_FILE` (#10779). Só chamado com
+ * status `ok`: o script trunca o arquivo antes do `claude -p` e só sai 0 depois
+ * de conferir o marcador, então nesse caso o arquivo é desta run. Fail-soft.
+ */
+export function readReviewSummary(repoRootAbs: string): string | null {
+  const path = join(repoRootAbs, "data", ...REVIEW_OUTPUT_REL.split("/"));
+  try {
+    return existsSync(path) ? extractReviewSummary(readFileTail(path)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Evento `result` do stream-json do `claude --print` (#10808). */
+export interface StreamResult {
+  subtype: string | null;
+  isError: boolean;
+  numTurns: number | null;
+  durationMs: number | null;
+  result: string;
+}
+
+/**
+ * Último evento `type: "result"` de uma saída stream-json (#10808). Linhas que
+ * não parseiam (o fragmento inicial da cauda lida do disco, texto solto) são
+ * ignoradas. null = nenhum evento `result`: a sessão não chegou ao fim normal.
+ */
+export function parseStreamResult(stdout: string): StreamResult | null {
+  const lines = stdout.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim();
+    if (!l.startsWith("{")) continue;
+    let ev: unknown;
+    try {
+      ev = JSON.parse(l);
+    } catch {
+      continue;
+    }
+    if (!ev || typeof ev !== "object") continue;
+    const e = ev as Record<string, unknown>;
+    if (e.type !== "result") continue;
+    return {
+      subtype: typeof e.subtype === "string" ? e.subtype : null,
+      isError: e.is_error === true,
+      numTurns: typeof e.num_turns === "number" ? e.num_turns : null,
+      durationMs: typeof e.duration_ms === "number" ? e.duration_ms : null,
+      result: typeof e.result === "string" ? e.result : "",
+    };
+  }
+  return null;
+}
+
+/** Linha de log com o desfecho da sessão do overnight (#10808). */
+export function formatStreamResult(r: StreamResult | null): string {
+  if (!r) {
+    return "overnight: AVISO — sem evento result no stream-json (a sessão não chegou ao fim normal; ver .nightly-chain-last-overnight.json)";
+  }
+  const secs = r.durationMs === null ? "?" : String(Math.round(r.durationMs / 1000));
+  return `overnight: resultado subtype=${r.subtype ?? "?"} is_error=${r.isError} turns=${r.numTurns ?? "?"} duracao_s=${secs} tail=${readableTail(r.result) || "(vazio)"}`;
+}
+
+/** Arquivos que contam como rastro de uma rodada overnight (#10808). */
+export const ROUND_TRACE_FILES = ["plan.json", "report.md"] as const;
+
+/** Folga de mtime pra granularidade de filesystem/OneDrive. */
+const ROUND_TRACE_MTIME_SLACK_MS = 2000;
+
+/**
+ * Arquivos de rodada (`data/overnight/{dir}/plan.json|report.md`) modificados
+ * desde `sinceMs` (#10808). null = não dá pra verificar (sem `data/`, ou a
+ * leitura do diretório falhou); [] = verificado, nenhum rastro.
+ */
+export function findRoundTraceSince(repoRootAbs: string, sinceMs: number): string[] | null {
+  if (!existsSync(join(repoRootAbs, "data"))) return null;
+  const dir = join(repoRootAbs, "data", "overnight");
+  if (!existsSync(dir)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  const hits: string[] = [];
+  for (const name of entries) {
+    if (name.startsWith(".")) continue;
+    for (const f of ROUND_TRACE_FILES) {
+      try {
+        if (statSync(join(dir, name, f)).mtimeMs >= sinceMs - ROUND_TRACE_MTIME_SLACK_MS) hits.push(`${name}/${f}`);
+      } catch {
+        // ausente, ou `name` não é diretório: não é rastro
+      }
+    }
+  }
+  return hits;
 }
 
 /**
@@ -191,6 +341,7 @@ export function chainExitCode(review: ReviewStatus, overnight: OvernightOutcome)
   // Código fixo, não o exit do `claude`: um `claude` que saísse 3 seria lido
   // como "só o review falhou". O exit original fica no log.
   if (overnight.status === "failed") return EXIT_OVERNIGHT_FAILED;
+  if (overnight.status === "no-trace") return EXIT_OVERNIGHT_NO_TRACE;
   if (review === "failed" || review === "timeout") return EXIT_REVIEW_FAILED;
   return 0;
 }
@@ -208,6 +359,13 @@ export interface NightlyChainDeps {
   appendLiveLog?: (repoRootAbs: string, line: string) => void;
   /** Rotaciona o log incremental da run anterior (#10699). Opcional, chamado uma vez no início do `main`. */
   rotateLiveLog?: (repoRootAbs: string) => void;
+  /** Resumo do review completo (#10779). Opcional: ausente, o log fica sem `resumo=`. */
+  readReviewSummary?: (repoRootAbs: string) => string | null;
+  /**
+   * Rastro de rodada gravado desde `sinceMs` (#10808). Opcional: ausente, ou
+   * devolvendo null (não verificável), o runner não reprova por falta de rastro.
+   */
+  findRoundTrace?: (repoRootAbs: string, sinceMs: number) => string[] | null;
 }
 
 /** Nome da task no registro (`scripts/lib/scheduled-tasks.ts`) que dispara este runner. */
@@ -355,6 +513,8 @@ export const DEFAULT_DEPS: NightlyChainDeps = {
   log: (line) => console.log(`[${new Date().toISOString()}] ${line}`),
   appendLiveLog: defaultAppendLiveLog,
   rotateLiveLog,
+  readReviewSummary,
+  findRoundTrace: findRoundTraceSince,
 };
 
 export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): ReviewOutcome {
@@ -371,11 +531,14 @@ export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyC
     maxBuffer: 64 * 1024 * 1024,
   });
   const status = classifyReviewResult(r);
-  const tail = tailLines(`${r.stdout ?? ""}\n${r.stderr ?? ""}${r.error ? `\n${r.error.message}` : ""}`);
-  return { status, exitCode: r.status, tail };
+  // Sem os eventos stream-json (#10779): o stderr do review carrega o stream inteiro.
+  const tail = readableTail(`${r.stdout ?? ""}\n${r.stderr ?? ""}${r.error ? `\n${r.error.message}` : ""}`);
+  const summary = status === "ok" ? (deps.readReviewSummary?.(repoRootAbs) ?? null) : null;
+  return { status, exitCode: r.status, tail, summary };
 }
 
 export function runOvernight(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): OvernightOutcome {
+  const startedAt = Date.now();
   const r = deps.spawn(claudeBin, buildOvernightClaudeArgs(repoRootAbs), {
     cwd: repoRootAbs,
     encoding: "utf8",
@@ -383,11 +546,30 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
     env: buildOvernightEnv(deps.env),
     maxBuffer: 256 * 1024 * 1024,
   });
+  // Desfecho da sessão no log da cadeia, em qualquer exit (#10808): sem isto,
+  // "fila vazia" e "abortou cedo" eram a mesma linha `overnight=ok`.
+  const result = parseStreamResult(r.stdout ?? "");
+  deps.log(formatStreamResult(result));
   if (r.error || r.status !== 0) {
     deps.log(
       `overnight: FALHOU exit=${r.status ?? "?"} ${r.error ? `erro=${r.error.message} ` : ""}tail=${tailLines(r.stderr ?? "")}`,
     );
     return { status: "failed", exitCode: r.status };
+  }
+  if (result?.isError) {
+    deps.log(`overnight: FALHOU — exit 0, mas o evento result veio com is_error (subtype=${result.subtype ?? "?"})`);
+    return { status: "failed", exitCode: 0 };
+  }
+  const trace = deps.findRoundTrace?.(repoRootAbs, startedAt) ?? null;
+  if (trace === null) {
+    if (deps.findRoundTrace) deps.log("overnight: AVISO — não deu pra verificar o rastro da rodada em data/overnight/");
+  } else if (trace.length === 0) {
+    deps.log(
+      "overnight: SEM RASTRO — exit 0, mas nenhum plan.json/report.md em data/overnight/ foi gravado nesta run (aborto cedo; ver .nightly-chain-last-overnight.json)",
+    );
+    return { status: "no-trace", exitCode: 0 };
+  } else {
+    deps.log(`overnight: rastro ${trace.join(", ")}`);
   }
   return { status: "ok", exitCode: 0 };
 }
@@ -422,7 +604,9 @@ export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_D
   } catch (e) {
     review = { status: "failed", exitCode: null, tail: (e as Error).message };
   }
-  deps.log(`review: ${review.status} exit=${review.exitCode ?? "?"} tail=${review.tail}`);
+  deps.log(
+    `review: ${review.status} exit=${review.exitCode ?? "?"}${review.summary ? ` resumo=${review.summary}` : ""} tail=${review.tail}`,
+  );
   if (review.status === "failed" || review.status === "timeout") {
     deps.log("review: falhou — o overnight sobe mesmo assim (o backlog existe de qualquer jeito)");
   }
