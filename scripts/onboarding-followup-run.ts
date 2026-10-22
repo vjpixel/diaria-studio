@@ -822,15 +822,17 @@ export async function runFollowupRound(opts: FollowupRoundOpts, deps: FollowupRo
   // #10652: excedente que não cabe na janela vira `vencida` sem receber —
   // a decisão de lote parcial (#10631) fica, mas isso não pode passar calado.
   // #10660: capacidade por pessoa (dias que restam da janela de cada um), na
-  // mesma ordem do corte acima. `due` é contado antes do filtro ao vivo
-  // (`nao_ativo`/`apoia`, logo abaixo): a projeção é um teto superior.
+  // mesma ordem do corte acima. A projeção usa todos os devidos; o corte
+  // precede o filtro ao vivo: exclusões ocupam vaga sem reposição hoje; falhas de
+  // consulta podem voltar amanhã. Estimativa, sem limite garantido de perdas
+  // e com imprecisão de ~1h na fronteira diária (ver capWindowOverflows).
   const windowOverflows = capWindowOverflows(due, cfg.maxRecipientsPerLot, nowSec, cfg, orderSec);
   run.cap_window_overflow = windowOverflows.length;
   for (const w of windowOverflows) {
     bump(w.kind, "excede_janela", w.projected_vencidas);
     lotsOut.push({ kind: w.kind, cap_window_overflow: true, eligible: w.eligible, capacity: w.capacity, projected_vencidas: w.projected_vencidas });
     process.stderr.write(
-      `${LOG} ${w.kind}: ${w.eligible} elegíveis, só ${w.capacity} cabem nos dias que restam das janelas (${cfg.maxRecipientsPerLot}/lote/dia) — ${w.projected_vencidas} vão vencer sem receber; conferir com o editor (subir onboarding.followup.max_recipients_per_lot ou grace_days)\n`,
+      `${LOG} ${w.kind}: ${w.eligible} elegíveis, só ${w.capacity} cabem nos dias que restam das janelas (${cfg.maxRecipientsPerLot}/lote/dia) — estimativa de ${w.projected_vencidas} vencimentos sem envio; conferir com o editor (subir onboarding.followup.max_recipients_per_lot ou grace_days)\n`,
     );
   }
 

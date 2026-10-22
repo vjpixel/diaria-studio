@@ -26,6 +26,8 @@ import {
 import { runFollowupRound, type FollowupRoundDeps } from "../scripts/onboarding-followup-run.ts";
 import { emptyStore, writeStore } from "../scripts/lib/onboarding-store.ts";
 
+import { buildFollowupPanel } from "../scripts/lib/onboarding-followup-panel.ts";
+
 const DAY = 86_400;
 const T0 = Date.parse("2026-01-01T12:00:00Z") / 1000;
 
@@ -150,5 +152,51 @@ describe("#10660 executor — dias 30, 31 e 32 sobre a mesma coorte", () => {
     }
     assert.deepEqual(runs.slice(0, 3).map((r) => r.counts.apoio30?.enviado), [2, 2, 2]);
     assert.equal(runs[3].counts.apoio30?.vencida, undefined);
+  });
+});
+
+describe("#10680 precisão e limites da projeção", () => {
+  const cfg = { graceDays: 10, formFirstDays: 6 };
+
+  it("39,5 dias: meio dia restante comporta somente o lote de hoje", () => {
+    assert.deepEqual(capWindowOverflows(dueOf("apoio30", 6), 3, T0 + 39.5 * DAY, cfg, () => T0), [
+      { kind: "apoio30", eligible: 6, capacity: 3, projected_vencidas: 3 },
+    ]);
+  });
+
+  it("1,5 dia restante comporta hoje e amanhã; 1,4 também (ceil, não round)", () => {
+    for (const day of [38.5, 38.6]) {
+      assert.deepEqual(capWindowOverflows(dueOf("apoio30", 9), 3, T0 + day * DAY, cfg, () => T0), [
+        { kind: "apoio30", eligible: 9, capacity: 6, projected_vencidas: 3 },
+      ]);
+    }
+  });
+
+  it("form no meio da janela usa formFirstDays e fração restante", () => {
+    assert.deepEqual(capWindowOverflows(dueOf("form", 8), 2, T0 + 12.5 * DAY, cfg, () => T0), []);
+    assert.deepEqual(capWindowOverflows(dueOf("form", 10), 2, T0 + 12.5 * DAY, cfg, () => T0), [
+      { kind: "form", eligible: 10, capacity: 8, projected_vencidas: 2 },
+    ]);
+  });
+
+  it("âncora nula fica depois das válidas e não ganha vencimento inventado", () => {
+    assert.deepEqual(capWindowOverflows(dueOf("apoio30", 4), 1, T0 + 39.5 * DAY, cfg,
+      (d) => d.kit_subscriber_id === 1 ? null : T0), [
+      { kind: "apoio30", eligible: 4, capacity: 2, projected_vencidas: 2 },
+    ]);
+  });
+
+  it("painel apresenta estimativa sem prometer um mínimo de perdas", () => {
+    const store = emptyStore();
+    store.followup = { people: {}, lots: {}, last_run: {
+      at: "2026-02-09T12:00:00Z", apoio_blocked: null, form_blocked: null,
+      lots_created: 0, lots_failed: 0, over_cap: 0, lookups_failed: 0,
+      cap_window_overflow: 1, counts: { apoio30: { excede_janela: 3 } },
+    } };
+    const alert = buildFollowupPanel(store).alerts.find((a) => a.kind === "cap_window_overflow");
+    assert.ok(alert);
+    assert.match(alert.mensagem, /estimativa/i);
+    assert.doesNotMatch(alert.mensagem, /ao menos|vão vencer/);
+    assert.match(alert.mensagem, /3/);
   });
 });
