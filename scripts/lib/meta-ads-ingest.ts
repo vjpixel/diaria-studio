@@ -3,11 +3,10 @@
  *
  * Traduz a resposta do MCP oficial da Meta (`mcp.facebook.com/ads`,
  * `ads_get_ad_entities`) para o formato `spend.csv` de #5236 (`canal,mes,
- * moeda,valor,fonte`). Espelha `scripts/lib/google-ads-ingest.ts` (#5237) e
- * `scripts/lib/microsoft-ads-ingest.ts` (#5502) na forma (parse puro +
- * orquestração fail-soft sobre `runSpendIngest`), mas difere num ponto
- * estrutural: Google/Microsoft expõem uma API REST com credencial estática
- * (`GOOGLE_ADS_*`/`MICROSOFT_ADS_*` no ambiente) que o script chama via
+ * moeda,valor,fonte`). Espelha `scripts/lib/google-ads-ingest.ts` (#5237)
+ * na forma (parse puro + orquestração fail-soft sobre `runSpendIngest`),
+ * mas difere num ponto estrutural: o Google expõe uma API REST com
+ * credencial estática (`GOOGLE_ADS_*` no ambiente) que o script chama via
  * `fetch` direto. A Meta Ads MCP (`mcp__claude_ai_Meta_Ads__*`) só existe
  * dentro de uma sessão do Claude Code — não há endpoint REST documentado
  * com key própria para este projeto. (Desde #7536, `META_ADS_ACCESS_TOKEN`
@@ -257,7 +256,7 @@ export type MetaAdsIngestResult =
  * `{ kind: "fallback", reason }` em vez de lançar — o CLI decide o que
  * logar, mas NUNCA quebra o relatório (`cac-report.ts` segue lendo o
  * `spend.csv` intocado). Implementado como adaptador de `runSpendIngest`
- * (mesmo núcleo genérico de `google-ads-ingest.ts`/`microsoft-ads-ingest.ts`).
+ * (mesmo núcleo genérico de `google-ads-ingest.ts`).
  */
 export async function runMetaAdsIngest(opts: RunMetaAdsIngestOptions): Promise<MetaAdsIngestResult> {
   const canal = opts.canal ?? META_ADS_CANAL;

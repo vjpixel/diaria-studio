@@ -39,7 +39,7 @@ import { createInterface } from "node:readline";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { defaultDopplerSet, persistSecrets } from "./linkedin-personal-oauth.ts";
+import { defaultDopplerSet, persistSecrets } from "./lib/secret-persist.ts";
 import { loadFacebookPagesConfig, resolveFacebookApiVersion, type FacebookPageConfig } from "./lib/facebook-pages.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

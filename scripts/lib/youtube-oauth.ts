@@ -8,8 +8,9 @@
  * Reusa o MESMO client OAuth (GOOGLE_CLIENT_ID/SECRET, tipo "Desktop app",
  * que aceita qualquer redirect de loopback).
  *
- * Armadilha conhecida: com o app OAuth em modo "Testing" (#1973), o refresh
- * token expira em 7 dias. Por isso gravamos `YOUTUBE_REFRESH_OBTAINED_AT`.
+ * O app OAuth está em produção desde 22/10/2026 (#10785): o refresh token
+ * não vence mais em 7 dias como no modo "Testing" (#1973).
+ * `YOUTUBE_REFRESH_OBTAINED_AT` ficou como registro de quando foi gerado.
  */
 
 export const YOUTUBE_OAUTH_ENV = {
@@ -105,4 +106,74 @@ export function explainYouTubeApiError(status: number, body: string): string {
 export function missingGrantedScopes(grantedScope: string | undefined): string[] {
   const granted = new Set(String(grantedScope ?? "").split(/\s+/).filter(Boolean));
   return YOUTUBE_OAUTH_SCOPES.filter((s) => !granted.has(s));
+}
+
+/** Resposta do `oauth2.googleapis.com/token` que interessa à decisão. */
+export type YouTubeTokenResponse = { access_token: string; refresh_token?: string; scope?: string };
+
+export type PersistDecision =
+  | { persist: true; refreshToken: string; channel: YouTubeChannel }
+  | { persist: false; reason: string };
+
+/**
+ * Regra de "nunca gravar" do setup (#10786), extraída de `main` para ser
+ * testada caso a caso. Recebe os tokens já trocados e a resposta CRUA de
+ * `channels.list?mine=true` (status + corpo em texto) e decide se o token
+ * pode ser gravado. Sem refresh token, escopo faltando, `channels.list`
+ * falhando, corpo que não é JSON ou canal que não é o @diariabr: não grava.
+ */
+export function decidePersist(args: {
+  tokens: YouTubeTokenResponse;
+  channelsStatus: number;
+  channelsBody: string;
+  expectedHandle?: string;
+}): PersistDecision {
+  const { tokens, channelsStatus, channelsBody } = args;
+  if (!tokens.refresh_token) {
+    return {
+      persist: false,
+      reason: "O Google não devolveu refresh_token. Revogue o app em https://myaccount.google.com/permissions e rode de novo",
+    };
+  }
+  const missing = missingGrantedScopes(tokens.scope);
+  if (missing.length > 0) {
+    return {
+      persist: false,
+      reason: `O consentimento não concedeu: ${missing.join(", ")}. Rode de novo e deixe os 2 escopos marcados`,
+    };
+  }
+  if (channelsStatus < 200 || channelsStatus >= 300) {
+    return { persist: false, reason: explainYouTubeApiError(channelsStatus, channelsBody) };
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(channelsBody);
+  } catch {
+    return { persist: false, reason: "channels.list devolveu um corpo que não é JSON" };
+  }
+  const check = checkAuthorizedChannel(parseChannelsResponse(json), args.expectedHandle);
+  if (!check.ok) return { persist: false, reason: check.reason };
+  return { persist: true, refreshToken: tokens.refresh_token, channel: check.channel };
+}
+
+/** Desfecho de uma requisição recebida no servidor de loopback (#10786). */
+export type CallbackOutcome =
+  | { kind: "ignore" } // não é o callback (favicon, path errado, sem code/error)
+  | { kind: "bad-state" } // state divergente: responde 400 e CONTINUA esperando
+  | { kind: "denied"; error: string; description: string }
+  | { kind: "code"; code: string };
+
+/**
+ * Classifica uma requisição no redirect de loopback. State divergente não
+ * encerra mais o fluxo (#10786): qualquer requisição local a
+ * `/youtube/callback?code=x` nos 15 min de espera obrigaria o editor a
+ * recomeçar. O callback legítimo, com o state certo, ainda pode chegar.
+ */
+export function classifyCallback(url: URL, expectedState: string): CallbackOutcome {
+  const code = url.searchParams.get("code");
+  const error = url.searchParams.get("error");
+  if (url.pathname !== "/youtube/callback" || (!code && !error)) return { kind: "ignore" };
+  if (url.searchParams.get("state") !== expectedState) return { kind: "bad-state" };
+  if (error) return { kind: "denied", error, description: url.searchParams.get("error_description") ?? "" };
+  return { kind: "code", code: code as string };
 }

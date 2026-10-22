@@ -9,12 +9,14 @@
  * (o mesmo client "Desktop app" do oauth-setup.ts).
  *
  * Antes de gravar, confirma via `channels.list?mine=true` que o canal
- * autorizado é o @diariabr — se não for, aborta sem gravar nada.
+ * autorizado é o @diariabr — se não for, aborta sem gravar nada. A regra de
+ * "não grava" mora em `decidePersist` (`scripts/lib/youtube-oauth.ts`,
+ * testada caso a caso, #10786).
  *
  * Grava, SEM nunca imprimir valor, no Doppler e no `.env` local:
- *   YOUTUBE_REFRESH_TOKEN        refresh token (expira em 7 dias com o app em "Testing", #1973)
+ *   YOUTUBE_REFRESH_TOKEN        refresh token (app OAuth em produção desde 22/10/2026, #10785: não vence em 7 dias)
  *   YOUTUBE_CHANNEL_ID           id do canal autorizado
- *   YOUTUBE_REFRESH_OBTAINED_AT  ISO — base para alarme de expiração
+ *   YOUTUBE_REFRESH_OBTAINED_AT  ISO — quando o token foi gerado (informativo)
  *
  * Uso:  npx tsx scripts/youtube-oauth-setup.ts
  */
@@ -29,16 +31,15 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { defaultDopplerSet, persistSecrets } from "./linkedin-personal-oauth.ts";
+import { defaultDopplerSet, persistSecrets } from "./lib/secret-persist.ts";
 import {
   YOUTUBE_OAUTH_ENV,
   YOUTUBE_OAUTH_REDIRECT_PORT,
   YOUTUBE_OAUTH_REDIRECT_URI,
   buildYouTubeAuthUrl,
-  checkAuthorizedChannel,
-  explainYouTubeApiError,
-  missingGrantedScopes,
-  parseChannelsResponse,
+  classifyCallback,
+  decidePersist,
+  type YouTubeTokenResponse,
 } from "./lib/youtube-oauth.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -58,32 +59,33 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
   return new Promise((resolveCode, reject) => {
     let timer: NodeJS.Timeout;
     const server = createServer((req, res) => {
-      const url = new URL(req.url ?? "/", YOUTUBE_OAUTH_REDIRECT_URI);
-      const code = url.searchParams.get("code");
-      const error = url.searchParams.get("error");
-      if (url.pathname !== "/youtube/callback" || (!code && !error)) {
+      const outcome = classifyCallback(new URL(req.url ?? "/", YOUTUBE_OAUTH_REDIRECT_URI), state);
+      if (outcome.kind === "ignore") {
         res.writeHead(204, { Connection: "close" });
         res.end();
         return;
       }
-      const stateOk = url.searchParams.get("state") === state;
+      if (outcome.kind === "bad-state") {
+        // #10786: descarta e continua esperando o callback legítimo.
+        res.writeHead(400, { "Content-Type": "text/plain;charset=utf-8", Connection: "close" });
+        res.end("state divergente: callback descartado");
+        console.error("⚠ Callback com state divergente descartado; seguindo à espera do consentimento.");
+        return;
+      }
       res.writeHead(200, { "Content-Type": "text/html;charset=utf-8", Connection: "close" });
       res.end(
         `<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:3rem">` +
-          (code && stateOk ? "<h1>Pronto</h1><p>Pode fechar esta aba e voltar ao terminal.</p>" : "<h1>Falhou</h1><p>Veja o terminal.</p>") +
+          (outcome.kind === "code" ? "<h1>Pronto</h1><p>Pode fechar esta aba e voltar ao terminal.</p>" : "<h1>Falhou</h1><p>Veja o terminal.</p>") +
           `</body>`,
       );
-      const finish = (fn: () => void) => {
-        clearTimeout(timer);
-        server.close();
-        server.closeIdleConnections();
-        fn();
-      };
-      if (error) return finish(() => reject(new Error(`consentimento negado: ${error} ${url.searchParams.get("error_description") ?? ""}`.trim())));
-      if (!stateOk) {
-        return finish(() => reject(new Error("state divergente — callback descartado por segurança")));
+      clearTimeout(timer);
+      server.close();
+      server.closeIdleConnections();
+      if (outcome.kind === "denied") {
+        reject(new Error(`consentimento negado: ${outcome.error} ${outcome.description}`.trim()));
+        return;
       }
-      finish(() => resolveCode(code as string));
+      resolveCode(outcome.code);
     });
     server.on("error", (err: NodeJS.ErrnoException) => {
       clearTimeout(timer);
@@ -102,7 +104,7 @@ function waitForCode(authUrl: string, state: string): Promise<string> {
   });
 }
 
-async function exchangeCode(code: string, clientId: string, clientSecret: string): Promise<{ access_token: string; refresh_token?: string; scope?: string }> {
+async function exchangeCode(code: string, clientId: string, clientSecret: string): Promise<YouTubeTokenResponse> {
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -116,7 +118,7 @@ async function exchangeCode(code: string, clientId: string, clientSecret: string
     signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`troca de código falhou (${res.status}): ${(await res.text()).slice(0, 300)}`);
-  return (await res.json()) as { access_token: string; refresh_token?: string; scope?: string };
+  return (await res.json()) as YouTubeTokenResponse;
 }
 
 async function main(): Promise<number> {
@@ -130,43 +132,28 @@ async function main(): Promise<number> {
   const state = randomBytes(16).toString("hex");
   const code = await waitForCode(buildYouTubeAuthUrl(clientId, state), state);
   const tokens = await exchangeCode(code, clientId, clientSecret);
-  if (!tokens.refresh_token) {
-    console.error("✖ O Google não devolveu refresh_token. Revogue o app em https://myaccount.google.com/permissions e rode de novo.");
-    return 1;
+  // Sem refresh token não adianta consultar o canal: decidePersist recusa antes.
+  let channelsStatus = 0;
+  let channelsBody = "";
+  if (tokens.refresh_token) {
+    const chRes = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    });
+    channelsStatus = chRes.status;
+    channelsBody = await chRes.text();
   }
-  const missing = missingGrantedScopes(tokens.scope);
-  if (missing.length > 0) {
-    console.error(`✖ O consentimento não concedeu: ${missing.join(", ")}. Rode de novo e deixe os 2 escopos marcados. Nada foi gravado.`);
-    return 1;
-  }
-
-  const chRes = await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-    signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-  });
-  const chBody = await chRes.text();
-  if (!chRes.ok) {
-    console.error(`✖ ${explainYouTubeApiError(chRes.status, chBody)}. Nada foi gravado.`);
-    return 1;
-  }
-  let chJson: unknown;
-  try {
-    chJson = JSON.parse(chBody);
-  } catch {
-    console.error("✖ channels.list devolveu um corpo que não é JSON. Nada foi gravado.");
-    return 1;
-  }
-  const check = checkAuthorizedChannel(parseChannelsResponse(chJson));
-  if (!check.ok) {
-    console.error(`✖ ${check.reason}. Nada foi gravado.`);
+  const decision = decidePersist({ tokens, channelsStatus, channelsBody });
+  if (!decision.persist) {
+    console.error(`✖ ${decision.reason}. Nada foi gravado.`);
     return 1;
   }
 
   const obtainedAt = new Date().toISOString();
   const r = persistSecrets({
     secrets: {
-      [YOUTUBE_OAUTH_ENV.refreshToken]: tokens.refresh_token,
-      [YOUTUBE_OAUTH_ENV.channelId]: check.channel.id,
+      [YOUTUBE_OAUTH_ENV.refreshToken]: decision.refreshToken,
+      [YOUTUBE_OAUTH_ENV.channelId]: decision.channel.id,
       [YOUTUBE_OAUTH_ENV.obtainedAt]: obtainedAt,
     },
     dopplerSet: defaultDopplerSet,
@@ -174,14 +161,17 @@ async function main(): Promise<number> {
     readEnv: (p) => (existsSync(p) ? readFileSync(p, "utf8") : null),
     writeEnv: (p, c) => writeFileAtomic(p, c),
   });
-  console.log(`✔ Canal autorizado: ${check.channel.title} (${check.channel.customUrl}, ${check.channel.id}).`);
-  console.log("✔ Refresh token gravado no .env local (valor nunca impresso).");
-  console.log("⚠ Com o app OAuth em modo Testing (#1973), o refresh token expira em 7 dias.");
+  const ch = decision.channel;
+  console.log(`✔ Canal autorizado: ${ch.title} (${ch.customUrl}, ${ch.id}).`);
+  // #10786: o resultado do Doppler vem antes do ".env gravado" — a ordem
+  // inversa parecia sucesso logo antes da falha (exit 2).
   if (r.dopplerFailed.length > 0) {
     console.error(`✖ Doppler NÃO recebeu: ${r.dopplerFailed.join(", ")}. Doppler disse: ${r.dopplerErrors.join(" | ") || "sem stderr"}`);
+    console.error("  O refresh token ficou só no .env local (valor nunca impresso); o 300 não o vê até subir pro vault.");
     return 2;
   }
   console.log(`✔ Doppler: ${r.doppler.join(", ")}. No 300: \`npm run sync-env\`.`);
+  console.log("✔ Refresh token gravado também no .env local (valor nunca impresso).");
   return 0;
 }
 

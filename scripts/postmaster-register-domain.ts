@@ -149,14 +149,14 @@ export function classifyCreateResponse(status: number, body: string): RegisterCl
     );
   }
   // `gFetch` já retenta 401 uma vez com token renovado; um 401 que chega aqui
-  // significa que a renovação não resolveu (refresh token revogado/expirado —
-  // apps OAuth em "Testing" expiram em 7 dias, #1973). Sem este ramo, cairia
+  // significa que a renovação não resolveu (refresh token revogado/expirado;
+  // o app está em produção desde o #10785). Sem este ramo, cairia
   // no genérico e imprimiria JSON cru sem apontar o conserto.
   if (status === 401) {
     return classify(
       "unauthenticated",
-      "401 mesmo após o retry com token renovado — refresh token revogado ou expirado " +
-        "(apps OAuth em 'Testing' expiram em 7 dias, #1973). Rode `npx tsx scripts/oauth-setup.ts`.",
+      "401 mesmo após o retry com token renovado — refresh token revogado ou expirado. " +
+        "Rode `npx tsx scripts/oauth-setup.ts`.",
     );
   }
   if (status === 403) {

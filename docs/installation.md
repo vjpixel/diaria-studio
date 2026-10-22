@@ -153,9 +153,8 @@ Setup único no Cloud Console (não precisa repetir por máquina):
    - **Authorized domains**: `diar.ia.br`
    - **Developer contact information**: `vjpixel@gmail.com`
 4. Salvar.
-5. **Publishing status**: pra uso interno (1 editor), manter em **Testing** mode
-   com `vjpixel@gmail.com` listado em **Test users** é suficiente — refresh
-   tokens em Testing valem 7 dias (re-auth trivial via `oauth-setup.ts`). Em
+5. **Publishing status**: o app do projeto está em **Production** desde
+   22/10/2026 (#10785). Em **Testing**, refresh tokens valem 7 dias. Em
    **Production** (Publish app), refresh tokens não têm TTL fixo; só são
    revogados após 6 meses de inatividade ou em eventos específicos (user
    revogou, mudou senha, >100 grants do mesmo client). Ver
