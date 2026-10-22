@@ -560,6 +560,57 @@ export function mp4DurationSeconds(buf: Buffer): number | null {
   return duration / timescale;
 }
 
+/**
+ * Teto MEDIDO do Reels pela Content Publishing API do Instagram (#10893): em
+ * 22/10/2026 a conta @vjpixel aceitou 35 s e 40 s e recusou 42 s em diante no
+ * rupload (`400 ProcessingFailedError`), e a rota `video_url` deu container
+ * `ERROR` 2207076 com o vertical de 113,9 s — apesar da doc pública falar em
+ * 3 s–15 min. A causa do lado da Meta segue em aberto; o teto é configurável
+ * (`publishing.shorts.instagram_api_max_seconds`, `null` desliga) pra sumir
+ * sem deploy quando a Meta liberar.
+ */
+export const INSTAGRAM_REELS_API_MAX_SECONDS = 40;
+
+/**
+ * Lê `publishing.shorts.instagram_api_max_seconds` (#10893). Ausente → o teto
+ * medido; `null` → sem teto (a API decide); número positivo → esse teto.
+ * Qualquer outra coisa LANÇA: um teto quebrado mandaria o Reels pro rupload
+ * que já sabemos que falha, ou tiraria da API um vídeo que caberia.
+ */
+export function loadInstagramApiMaxSeconds(config: unknown): number | null {
+  const shorts = (config as any)?.publishing?.shorts;
+  if (!shorts || typeof shorts !== "object" || !("instagram_api_max_seconds" in shorts)) return INSTAGRAM_REELS_API_MAX_SECONDS;
+  const v = shorts.instagram_api_max_seconds;
+  if (v === null) return null;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+    throw new Error("[shorts] publishing.shorts.instagram_api_max_seconds precisa ser um número de segundos > 0 ou null (#10893).");
+  }
+  return v;
+}
+
+/**
+ * Pure (#10893): o vertical cabe no Reels pela API do Instagram? Duração
+ * desconhecida (`mp4DurationSeconds` null) segue pela API — o teto é medido,
+ * não documentado, e travar o destino por falta de leitura seria pior; o
+ * caller avisa. Acima do teto o Instagram vira passo GUIADO (postar no app),
+ * nunca um corte automático do vídeo: recortar uma versão ≤ teto muda o
+ * conteúdo e é decisão editorial (corpo da #10893).
+ */
+export function instagramReelsApiFit(
+  durationSeconds: number | null,
+  maxSeconds: number | null,
+): { fits: true; unknown: boolean } | { fits: false; reason: string } {
+  if (maxSeconds === null) return { fits: true, unknown: durationSeconds === null };
+  if (durationSeconds === null) return { fits: true, unknown: true };
+  if (durationSeconds <= maxSeconds) return { fits: true, unknown: false };
+  return {
+    fits: false,
+    reason:
+      `o vertical tem ${durationSeconds.toFixed(1)} s e a API do Instagram recusa Reels acima de ~${maxSeconds} s nesta conta ` +
+      `(rupload 400 ProcessingFailedError / 2207076, #10893)`,
+  };
+}
+
 /** Qual endpoint do Facebook usar pra este vídeo. */
 export function facebookUploadRoute(durationSeconds: number | null): "video_reels" | "videos" {
   // Duração desconhecida → `videos`, que aceita qualquer duração (o `video_reels` recusaria >90 s depois do upload).

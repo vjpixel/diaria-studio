@@ -309,7 +309,9 @@ describe("#10769 duração e rota do Facebook", () => {
 describe("#10769 --mark", () => {
   it("só destinos guiados e só URL http(s)", () => {
     assert.deepEqual(parseMarkArg("youtube_shorts=https://youtube.com/shorts/x"), { destination: "youtube_shorts", url: "https://youtube.com/shorts/x" });
-    assert.throws(() => parseMarkArg("instagram=https://x"), /destinos guiados/);
+    // #10893: instagram passou a aceitar --mark (vira passo guiado acima do teto de duração da API).
+    assert.deepEqual(parseMarkArg("instagram=https://instagram.com/reel/x"), { destination: "instagram", url: "https://instagram.com/reel/x" });
+    assert.throws(() => parseMarkArg("facebook:diaria=https://x"), /DESTINO=URL|destinos guiados/);
     assert.throws(() => parseMarkArg("youtube_short=https://x"), /destinos guiados/);
     assert.throws(() => parseMarkArg("youtube_shorts=nao-e-url"), /http/);
   });

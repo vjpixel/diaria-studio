@@ -12,18 +12,31 @@
  *      dela e as bordas da janela), respeitando um espaçamento mínimo. Nunca
  *      empilha nem cola.
  *
- * Premissas (registradas em `premise` de cada decisão; nenhuma veio do editor):
+ * Critério da regra 2 (decisão do editor no briefing do overnight 261022b,
+ * comentário na #10819): **espaçamento mínimo de 2 h** entre posts da mesma
+ * conta + **preferência pelos picos de uso**. Ordem de escolha:
+ *   (a) horários que respeitam o espaçamento mínimo vêm antes dos que não
+ *       respeitam (se nenhum respeita, escolhe o mais espaçado e avisa);
+ *   (b) entre eles, os que caem num pico de uso (`peakWindows`);
+ *   (c) depois, o que mais distribui o dia (distância ao vizinho mais próximo,
+ *       contando as bordas da janela);
+ *   (d) depois, o que coincide com post de outra conta (regra 1 como
+ *       desempate), o mais perto de `preferredAt`, o mais cedo.
+ *
+ * Premissas (registradas em `premise` de cada decisão; não vieram do editor):
  *   - "Conta" = `{plataforma}:{página/perfil}` (`socialAccountKey`) — o
  *     Facebook da diar.ia.br e o Instagram da diar.ia.br são contas diferentes.
  *   - Regra 1, com vários horários de outras contas: o mais próximo do
  *     `preferredAt` (o horário que o caller usaria sem esta regra); empate ou
- *     sem `preferredAt` → o mais cedo.
- *   - Regra 2: espaçamento mínimo default 60 min, grade de 15 min a partir do
- *     início da janela; as bordas da janela contam como vizinhos (sem isso o
- *     fim da noite, longe de tudo, ganharia sempre). Empate na distância → horário que coincide com post de
- *     outra conta (regra 1 como desempate), depois o mais perto de
- *     `preferredAt`, depois o mais cedo. Ainda não há dado de pico de uso por
- *     conta; quando houver, entra como mais um critério de desempate.
+ *     sem `preferredAt` → o mais cedo. Pico não pesa na regra 1: o editor pediu
+ *     alinhar a um post existente, e esse horário já foi escolhido por alguém.
+ *   - Picos default (`DEFAULT_PEAK_WINDOWS_BRT`): 07:00–09:00, 12:00–14:00 e
+ *     18:00–21:00 BRT, inclusivos — deslocamento da manhã, almoço e noite, o
+ *     padrão geral de uso de rede social no Brasil. Não há dado de pico POR
+ *     CONTA no projeto; quando houver, o caller passa `peakWindows`.
+ *   - Grade de 15 min a partir do início da janela; as bordas da janela contam
+ *     como vizinhos em (c) (sem isso o fim da noite, longe de tudo, ganharia
+ *     sempre) mas não em (a): espaçamento mínimo é só entre posts.
  *   - Grade vazia (nenhuma conta com post no dia): `preferredAt` se cabe na
  *     janela; senão o meio da janela útil ("distribuir uniformemente" com um
  *     post só).
@@ -54,8 +67,10 @@ export interface SlotRequest {
   preferredAt?: string;
   /** Nada antes disto (ex.: agora + folga de agendamento). */
   notBefore?: string;
-  /** Espaçamento mínimo entre posts da mesma conta (default 60). */
+  /** Espaçamento mínimo entre posts da mesma conta (default 120, decisão do editor). */
   minGapMinutes?: number;
+  /** Picos de uso, `HH:MM` BRT inclusivos (default `DEFAULT_PEAK_WINDOWS_BRT`; `[]` desliga). */
+  peakWindows?: readonly PeakWindow[];
   /** Passo da grade de candidatos na regra 2 (default 15). */
   stepMinutes?: number;
 }
@@ -71,7 +86,22 @@ export interface SlotDecision {
   warning?: string;
 }
 
-export const DEFAULT_MIN_GAP_MINUTES = 60;
+export interface PeakWindow {
+  /** `HH:MM` BRT. */
+  start: string;
+  /** `HH:MM` BRT, inclusivo. */
+  end: string;
+}
+
+/** Decisão do editor (#10819, briefing 261022b): 2 h entre posts da mesma conta. */
+export const DEFAULT_MIN_GAP_MINUTES = 120;
+/** Premissa (#10819): manhã, almoço e noite — sem dado de pico por conta ainda. */
+export const DEFAULT_PEAK_WINDOWS_BRT: readonly PeakWindow[] = Object.freeze([
+  Object.freeze({ start: "07:00", end: "09:00" }),
+  Object.freeze({ start: "12:00", end: "14:00" }),
+  Object.freeze({ start: "18:00", end: "21:00" }),
+]);
+const PEAK_HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 export const DEFAULT_STEP_MINUTES = 15;
 const MIN = 60_000;
 
@@ -158,16 +188,28 @@ export function planSlot(grid: readonly ScheduledSlot[], req: SlotRequest): Slot
     return { ...base, at: null, rule: "no-slot", premise: "nenhum horário da grade cabe na janela" };
   }
   const othersSet = new Set(others);
-  // Pontuação: distância ao vizinho mais próximo contando as BORDAS da janela
-  // como vizinhos — senão a borda (22:00, longe de tudo) vence sempre e o post
-  // vai pro fim da noite em vez de dividir o maior intervalo do dia.
-  // `real` (só posts da conta) é o que decide o aviso de espaçamento.
+  const peaks = req.peakWindows ?? DEFAULT_PEAK_WINDOWS_BRT;
+  for (const w of peaks) {
+    if (!PEAK_HHMM_RE.test(w.start) || !PEAK_HHMM_RE.test(w.end) || w.end < w.start) {
+      throw new Error(`peakWindows: janela inválida ${JSON.stringify(w)} (HH:MM, end >= start)`);
+    }
+  }
+  const inPeak = (t: number) => {
+    const h = hhmmBrt(t);
+    return peaks.some((w) => h >= w.start && h <= w.end);
+  };
+  // `real` = distância ao post mais próximo DA CONTA: decide o espaçamento
+  // mínimo (a) e o aviso. `d` conta também as BORDAS da janela como vizinhos —
+  // senão a borda (22:00, longe de tudo) vence (c) sempre e o post vai pro fim
+  // da noite em vez de dividir o maior intervalo do dia.
   const scored = [...candidates].map((t) => {
     const real = Math.min(...same.map((s) => Math.abs(t - s)));
-    return { t, real, d: Math.min(real, t - start, end - t) };
+    return { t, real, ok: real >= minGap, peak: inPeak(t), d: Math.min(real, t - start, end - t) };
   });
   scored.sort(
     (a, b) =>
+      Number(b.ok) - Number(a.ok) ||
+      (b.ok ? Number(b.peak) - Number(a.peak) : 0) ||
       b.d - a.d ||
       Number(othersSet.has(b.t)) - Number(othersSet.has(a.t)) ||
       distToPreferred(a.t) - distToPreferred(b.t) ||
@@ -180,6 +222,7 @@ export function planSlot(grid: readonly ScheduledSlot[], req: SlotRequest): Slot
     rule: "spread-same-account",
     premise:
       `conta com ${same.length} post(s) no dia: ${hhmmBrt(best.t)} BRT fica a ${Math.round(best.real / MIN)} min do post mais próximo dela` +
+      (best.ok && best.peak ? ", em pico de uso" : "") +
       (othersSet.has(best.t) ? ", alinhado a post de outra conta" : ""),
   };
   if (best.real < minGap) {
