@@ -1657,7 +1657,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       { key: "ingest", script: "scripts/diaria-subscribers-ingest-kit.ts", args: ["--write"] },
       // #10648: eventos por assinante dos webhooks do Kit (Worker kit-events,
       // ligado em 21/10/2026). Incremental pelo último evento já no banco; sem
-      // KIT_EVENTS_URL/KIT_EVENTS_READ_TOKEN no .env sai 0 com aviso. `--write`
+      // KIT_EVENTS_URL/KIT_EVENTS_READ_TOKEN no .env sai 1 (#10788). `--write`
       // explícito e guard de cópia de conflito no próprio script (escritor único,
       // #10746). Sem bestEffort de propósito: Worker fora do ar ou 401 deixa a
       // unit failed e o alarme de units falhas avisa, mesmo com o roster ok.

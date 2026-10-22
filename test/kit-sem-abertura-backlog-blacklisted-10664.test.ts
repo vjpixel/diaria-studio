@@ -52,7 +52,7 @@ function deps(opts: {
     log: () => {},
     readRegistry: () => records,
     listKitActive: async () => BACKLOG.map((b) => ({ ...b })),
-    fetchEngagement: async (id) => ({ broadcastId: id, delivered: BACKLOG.map((b) => b.email), opens: [], clicks: [] }),
+    fetchEngagement: async (id) => ({ broadcastId: id, delivered: BACKLOG.map((b) => b.email), opens: ["leitor-fora-da-base@x.com"], clicks: [] }),
     findEnvioBrevoTagId: async () => 555,
     readStore: () => store,
     writeStore: (s) => {

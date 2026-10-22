@@ -58,7 +58,7 @@ function deps(opts: {
     log: (m) => lines.push(m),
     readRegistry: () => records,
     listKitActive: async () => people.map((p) => ({ ...p })),
-    fetchEngagement: async (id) => ({ broadcastId: id, delivered: people.map((p) => p.email), opens: [], clicks: [] }),
+    fetchEngagement: async (id) => ({ broadcastId: id, delivered: people.map((p) => p.email), opens: ["leitor-fora-da-base@x.com"], clicks: [] }),
     findEnvioBrevoTagId: async () => 555,
     readStore: () => store,
     writeStore: (s) => {

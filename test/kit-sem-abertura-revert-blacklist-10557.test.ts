@@ -180,7 +180,7 @@ function orphanDeps(overrides: Partial<KitSemAberturaDeps>) {
     listKitActive: async () => [
       { id: 42, email: "orfa@x.com", created_at: "2026-09-01T00:00:00.000Z", tagNames: [KIT_ENVIO_BREVO_TAG_NAME] },
     ],
-    fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["orfa@x.com"], opens: [], clicks: [] }),
+    fetchEngagement: async (id) => ({ broadcastId: id, delivered: ["orfa@x.com"], opens: ["leitor-fora-da-base@x.com"], clicks: [] }),
     findEnvioBrevoTagId: async () => TAG,
     readStore: () => store,
     writeStore: (s) => {

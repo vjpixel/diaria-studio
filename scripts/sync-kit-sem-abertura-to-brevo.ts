@@ -125,6 +125,7 @@ import {
   KIT_SEM_ABERTURA_MAX_BACKLOG_REPLACEMENTS,
   parseDiariaBroadcastState,
   parseKitSemAberturaNumbers,
+  partitionIndexedEngagement,
   planKitSemAberturaWave,
   selectKitSemAbertura,
   type BroadcastEngagement,
@@ -475,8 +476,21 @@ export async function runKitSemAberturaSync(
   const perBroadcast: BroadcastEngagement[] = [];
   for (const id of plan.toFetch) perBroadcast.push(await deps.fetchEngagement(id));
   log(`engajamento: ${plan.toFetch.length} broadcast(s) relido(s) do Kit, ${sentIds.length - plan.toFetch.length} do cache.`);
-  const engagement = mergeEngagementIndexes(plan.cachedIndex, buildEngagementIndex(perBroadcast, new Set(matureIds)));
-  const nextCache = deps.engagementCache ? extendKitEngagementCache(plan, perBroadcast) : null;
+  // #10787: broadcast que o filtro do Kit ainda não indexou (0 entregues, ou
+  // entregues sem nenhuma abertura/clique) não soma envio a ninguém e não
+  // congela no cache — é relido na próxima rodada.
+  const { usable, unindexedIds } = partitionIndexedEngagement(perBroadcast);
+  if (unindexedIds.length > 0) {
+    log(
+      `aviso: ${unindexedIds.length} broadcast(s) ainda não indexado(s) pelo /subscribers/filter (${unindexedIds.join(", ")}) — ` +
+        `não contam envio nesta rodada e não entram no cache.`,
+    );
+  }
+  const unindexed = new Set(unindexedIds);
+  const engagement = mergeEngagementIndexes(plan.cachedIndex, buildEngagementIndex(usable, new Set(matureIds)));
+  const nextCache = deps.engagementCache
+    ? extendKitEngagementCache(plan, perBroadcast.filter((b) => !unindexed.has(b.broadcastId)))
+    : null;
   if (nextCache) {
     try {
       deps.engagementCache!.write(nextCache);

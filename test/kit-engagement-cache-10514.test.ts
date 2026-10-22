@@ -56,7 +56,9 @@ function history(n: number, seed = 1) {
     // Maiúsculas em parte dos e-mails: o agregado precisa normalizar igual ao índice.
     const opens = delivered.filter(() => r() < 0.03).map((e, k) => (k % 2 ? e.toUpperCase() : e));
     const clicks = delivered.filter(() => r() < 0.01);
-    data.set(id, { broadcastId: id, delivered, opens, clicks });
+    // Leitor fora da base: broadcast real sempre tem abertura (#10787 trata
+    // entregues sem nenhuma abertura como ainda não indexado).
+    data.set(id, { broadcastId: id, delivered, opens: [...opens, "leitor-fora-da-base@x.com"], clicks });
   }
   return { records, data };
 }

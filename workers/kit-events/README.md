@@ -28,7 +28,9 @@ Ligado em 21/10/2026 (`/diaria-develop 261021`):
   no Kit. Os de `click` (um por link) não foram registrados;
 - passo 5: a ingestão roda como 2º passo da task `Diaria-Kit-Roster-Ingest`
   (04:25 BRT), com `--write`. Rodada manual sem `--write` só lê (escritor único). No `300`, o `.env` precisa das duas vars `KIT_EVENTS_*`
-  (`npm run sync-env`); sem elas, a ingestão sai 0 com aviso.
+  (`npm run sync-env`); sem elas, a ingestão com `--write` sai 1 e a unit
+  fica failed, para o alarme de units falhas avisar (#10788). O dry-run manual
+  só avisa.
 
 Se os segredos forem removidos, o Worker volta a não gravar nada (POST responde
 404, leitura responde 401/503).

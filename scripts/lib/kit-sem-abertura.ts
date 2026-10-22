@@ -39,6 +39,8 @@
  *   depois (stats: 954 destinatários, 362 aberturas). A maturação de 48h
  *   cobre esse atraso. Enquanto o filtro devolve 0 entregues, o broadcast não
  *   soma envio maduro a ninguém, então não faz ninguém parecer "sem abertura".
+ *   Para atraso maior que as 48h, inclusive o parcial (entregues indexados,
+ *   aberturas não), ver `partitionIndexedEngagement` (#10787).
  *
  * Exclusões: apoiadores (custom field `apoio_nivel` preenchido ou tag
  * `apoio-*` — tirar do Kit cortaria também a Retrospectiva, #7660; o
@@ -273,6 +275,42 @@ export function buildEngagementIndex(
     for (const email of new Set(b.clicks.map(normalizeEmail))) get(email).clicks++;
   }
   return index;
+}
+
+/**
+ * Pura (#10787) — separa o engajamento lido em "indexado" e "ainda não
+ * indexado pelo filtro do Kit". O `/subscribers/filter` já devolveu 0
+ * entregues/aberturas num broadcast segmentado com 954 destinatários (#10697,
+ * atraso de indexação de ~17-22h). A maturação de 48h cobre o atraso medido,
+ * mas nada garante que todo atraso caiba nela, e o caso perigoso é o parcial:
+ * entregues já indexados e aberturas ainda não. Aí todo mundo daquele envio
+ * ganharia 1 envio maduro sem abertura.
+ *
+ * Um broadcast da diária com entregues e 0 aberturas E 0 cliques não acontece
+ * com a base real (centenas de aberturas por envio), então é tratado como não
+ * indexado: os entregues dele não contam envio (aberturas/cliques, se houver,
+ * seguem contando, porque só tiram gente da seleção). Broadcast com 0
+ * entregues também é não indexado. Nenhum dos dois pode ser congelado no
+ * cache (#10514): congelado com dado vazio, nunca mais seria relido.
+ *
+ * Erro possível: um envio legítimo com 0 aberturas deixaria de contar envio.
+ * É o lado conservador (move menos gente), e o log da rodada nomeia o id.
+ */
+export function partitionIndexedEngagement(perBroadcast: readonly BroadcastEngagement[]): {
+  usable: BroadcastEngagement[];
+  unindexedIds: number[];
+} {
+  const usable: BroadcastEngagement[] = [];
+  const unindexedIds: number[] = [];
+  for (const b of perBroadcast) {
+    const indexed = b.delivered.length > 0 && (b.opens.length > 0 || b.clicks.length > 0);
+    if (indexed) usable.push(b);
+    else {
+      unindexedIds.push(b.broadcastId);
+      usable.push({ ...b, delivered: [] });
+    }
+  }
+  return { usable, unindexedIds };
 }
 
 // ── seleção ──────────────────────────────────────────────────────────────
