@@ -180,7 +180,7 @@ function titleLineUrlKey(line: string): string | null {
 }
 
 /** Seções de pool (chave de `normalizeSectionKey`): um título por item, sem 3 opções. */
-const POOL_SECTION_KEYS: ReadonlySet<string> = new Set(["use-melhor", "lancamentos", "lancamento", "radar", "videos"]);
+const POOL_SECTION_KEYS: ReadonlySet<string> = new Set(["use-melhor", "lancamentos", "lancamento", "radar", "videos", "video"]);
 
 /**
  * #9879/#9880: compara o CONJUNTO de itens (chave host+path do link do título)
@@ -310,7 +310,77 @@ const POOL_SECTION_TARGETS: Readonly<Record<string, RequestTarget>> = {
   lancamento: "lancamentos",
   radar: "radar",
   videos: "video",
+  video: "video", // #10883: cabeçalho real no singular (`**📺 VÍDEO**`)
 };
+
+/**
+ * #10883: seções cujo conteúdo próprio termina no 1º `---`. O que vem depois
+ * dele, até o próximo cabeçalho reconhecido, é caixa de divulgação/CTA
+ * (`boxes_divulgacao`) ou uma seção que o parser não reconhece — nunca texto
+ * do writer. Sem o corte, trocar a caixa abaixo do D1 virava `lead-rewrite`
+ * do d1 (261014) e o VÍDEO editado virava mudança no "É IA?" (261016).
+ */
+const SECTIONS_ENDING_AT_RULE = (section: string): boolean =>
+  section.startsWith("destaque-") || section === EIA_SECTION_KEY;
+
+/** Bloco entre `---` marcado como caixa (`<!-- box0 -->`, `<!-- box0-sem-rotulo -->`, ...). */
+const BOX_MARKER_RE = /<!--\s*box/i;
+
+/**
+ * #10883: tira caixas de divulgação do texto de uma seção antes do diff.
+ * `destaque-N` e "É IA?" ficam só até o 1º `---`; nas demais (intro
+ * incluída) sai todo bloco entre `---` que traga marcador `<!-- box... -->`.
+ * Pura.
+ */
+export function stripSectionBoxes(section: string, text: string): string {
+  const lines = text.split("\n");
+  if (SECTIONS_ENDING_AT_RULE(section)) {
+    const rule = lines.findIndex((l) => l.trim() === "---");
+    return rule < 0 ? text : lines.slice(0, rule).join("\n");
+  }
+  const blocks: string[][] = [[]];
+  for (const line of lines) {
+    if (line.trim() === "---") blocks.push([line]);
+    else blocks[blocks.length - 1].push(line);
+  }
+  if (!blocks.some((b) => b.some((l) => BOX_MARKER_RE.test(l)))) return text;
+  return blocks.filter((b) => !b.some((l) => BOX_MARKER_RE.test(l))).map((b) => b.join("\n")).join("\n");
+}
+
+/** #10883: limiar abaixo do qual o corpo do MESMO destaque (casado por URL) conta como reescrito. */
+export const LEAD_REWRITE_SIMILARITY_THRESHOLD = 0.9;
+
+/**
+ * #10883: corpo de um destaque para comparar reescrita — sem a linha de
+ * cabeçalho `**DESTAQUE N | ...**` nem as linhas de título `**[...](...)**`.
+ */
+function destaqueBody(text: string): string {
+  return text
+    .split("\n")
+    .filter((l) => !/^\*\*(?:[^\p{L}\p{N}*]+)?DESTAQUE \d+/u.test(l.trim()) && !l.trim().startsWith("**["))
+    .join("\n");
+}
+
+/**
+ * #10883: similaridade de palavras `2·LCS / (|a|+|b|)` sobre tokens
+ * minúsculos sem pontuação — a métrica da análise da #10791
+ * (`docs/lead-rewrite-analysis-10791.md`). 1 = iguais; dois vazios = 1. Pura.
+ */
+export function wordSimilarity(a: string, b: string): number {
+  const tok = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const x = tok(a);
+  const y = tok(b);
+  if (x.length === 0 && y.length === 0) return 1;
+  let prev = new Array<number>(y.length + 1).fill(0);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = new Array<number>(y.length + 1).fill(0);
+    for (let j = 1; j <= y.length; j++) {
+      cur[j] = x[i - 1] === y[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    }
+    prev = cur;
+  }
+  return (2 * prev[y.length]) / (x.length + y.length);
+}
 
 /**
  * #9936: o destaque novo é a MESMA história do que saiu, só com outra URL
@@ -461,7 +531,7 @@ export function classifyNewsletterDiff(
       // reconhecida e todo corte/movimentação no RADAR/USE MELHOR caía como
       // "lead-rewrite" do d3. ERRO INTENCIONAL ganha seção própria pelo
       // mesmo motivo (senão o preenchimento do erro virava link-swap no RADAR).
-      const headerMatch = line.match(/^\*\*(?:[^\p{L}\p{N}*]+)?((DESTAQUE \d+)(?:\s*\|\s*[^*]*)?|É IA\?|USE MELHOR|LANÇAMENTOS?|RADAR|VÍDEOS|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL)\*\*$/u);
+      const headerMatch = line.match(/^\*\*(?:[^\p{L}\p{N}*]+)?((DESTAQUE \d+)(?:\s*\|\s*[^*]*)?|É IA\?|USE MELHOR|LANÇAMENTOS?|RADAR|VÍDEOS?|SORTEIO|PARA ENCERRAR|ERRO INTENCIONAL)\*\*$/u);
       if (headerMatch) {
         if (currentContent.length > 0) {
           sections.set(currentSection, currentContent.join("\n"));
@@ -482,6 +552,8 @@ export function classifyNewsletterDiff(
     if (currentContent.length > 0) {
       sections.set(currentSection, currentContent.join("\n"));
     }
+    // #10883: caixas de divulgação não são texto da seção.
+    for (const [key, text] of sections) sections.set(key, stripSectionBoxes(key, text));
     return sections;
   };
 
@@ -599,7 +671,7 @@ export function classifyNewsletterDiff(
     } else if (section === "radar") {
       target = "radar";
       requestType = "link-swap";
-    } else if (section === "videos" || section === "vídeos") {
+    } else if (section === "videos" || section === "video") {
       target = "newsletter";
       requestType = "link-swap";
     } else if (section === "para-encerrar") {
@@ -687,9 +759,16 @@ export function classifyNewsletterDiff(
     const newLen = newText.length;
     if (newLen < oldLen * 0.7) {
       requestType = "length-cut";
-    } else if (newLen > oldLen * 1.3) {
+    } else if (newLen > oldLen * 1.3 && section.startsWith("destaque-")) {
+      // #10883: só em destaque. Em erro-intencional/intro/É IA? crescer >30% é
+      // placeholder preenchido ou caixa nova, não reescrita de lead.
       requestType = "lead-rewrite";
     }
+
+    // #10883: preencher `{PREENCHER_*}` é o fluxo esperado do erro intencional
+    // (261015), não pedido de correção — fica `other`, fora da recorrência.
+    const filledPlaceholder = /\{PREENCHER_[A-Z_]*\}/.test(oldText) && !/\{PREENCHER_[A-Z_]*\}/.test(newText);
+    if (filledPlaceholder && !section.startsWith("destaque-")) requestType = "other";
 
     // #8694: distinguir "editor reescreveu o lead/1º parágrafo de um destaque
     // MANTIDO" de "editor trocou o destaque inteiro por outro artigo" —
@@ -775,8 +854,53 @@ export function classifyNewsletterDiff(
         ...(urlClass ? { change_kind: urlClass.kind } : {}),
         ...(poolTextKind ? { change_kind: poolTextKind } : {}),
         ...(poolClass ? { change_kind: poolClass.kind, items_removed: poolClass.removed, items_added: poolClass.added } : {}),
+        ...(filledPlaceholder && requestType === "other" ? { change_kind: "placeholder-preenchido" } : {}),
       },
     });
+
+    // #10883: reordenação que também reescreveu o corpo. O `section-order`
+    // acima sozinho escondia a reescrita (261016 D3, similaridade 0,33 com o
+    // texto do writer). Casa o destaque pela URL (história) com o slot antigo
+    // e compara só o corpo; abaixo do limiar, emite também `lead-rewrite`.
+    if (requestType === "section-order" && urlClass?.kind === "reordenado" && newTitleLine) {
+      const newKey = titleLineUrlKey(newTitleLine);
+      const oldMatch = newKey === null
+        ? undefined
+        : [...oldSections].find(([k, t]) => {
+            if (!k.startsWith("destaque-")) return false;
+            const line = t.split("\n").find((l) => l.trim().startsWith("**[") && l.includes("]("));
+            const key = line ? titleLineUrlKey(line) : null;
+            return key !== null && story(key) === story(newKey);
+          });
+      if (oldMatch) {
+        const similarity = wordSimilarity(destaqueBody(oldMatch[1]), destaqueBody(newText));
+        if (similarity < LEAD_REWRITE_SIMILARITY_THRESHOLD) {
+          results.push({
+            request_type: "lead-rewrite",
+            target,
+            description: `Destaque reordenado (${oldMatch[0]} → ${section}) com o corpo reescrito (similaridade ${similarity.toFixed(2)})`,
+            resolution: "accepted",
+            context: {
+              section,
+              from_section: oldMatch[0],
+              url: newTitleLine.match(/\]\((https?:[^)\s]+)\)/)?.[1] ?? articleUrl,
+              similarity: Math.round(similarity * 100) / 100,
+              change_kind: "reordenado-reescrito",
+            },
+          });
+        }
+      }
+    }
+  }
+
+  // #10883: TÍTULO/SUBTÍTULO e a contagem de itens da intro derivam dos
+  // destaques. Se a edição reordenou ou trocou destaque, mudar a intro é
+  // consequência disso, não um pedido à parte (261021).
+  const destaquesMoved = results.some(
+    (r) => (r.request_type === "section-order" || r.request_type === "destaque-swap") && String(r.context?.section ?? "").startsWith("destaque-"),
+  );
+  if (destaquesMoved) {
+    for (let i = results.length - 1; i >= 0; i--) if (results[i].context?.section === "intro") results.splice(i, 1);
   }
 
   // Detectar seções novas (promoção)
