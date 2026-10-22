@@ -580,7 +580,7 @@ Resultado da última edição: 62% das pessoas acertaram.
 `;
 
 
-describe("#7678 — seção '## eia' removida (vestigial, publish-eia-social.ts usa 01-eia-social.md)", () => {
+describe("#7678 — seção '## eia' removida (o É IA? não sai nas redes, #10766)", () => {
   it("03-social.md NUNCA recebe '## eia' mesmo com 01-eia.md presente (regressão)", () => {
     const dir = makeEditionDir();
     try {

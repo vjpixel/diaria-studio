@@ -185,7 +185,6 @@ describe("guard: publicadores usam o ponto único (#10441)", () => {
     "scripts/publish-threads.ts",
     "scripts/prep-twitter-posts.ts",
     "scripts/resolve-post-pixel.ts",
-    "scripts/publish-eia-social.ts",
     "scripts/render-social-html.ts",
   ];
   for (const file of FILES) {

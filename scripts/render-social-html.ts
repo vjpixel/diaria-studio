@@ -432,8 +432,8 @@ export interface DestaqueGroup {
  * de destino. Ordem: destaques numerados, depois post_pixel.
  *
  * #7678: a seção `## eia` (post do "É IA?") não é mais gerada em
- * `03-social.md` pelo `merge-social-md.ts` — o post é dispatchado por
- * `publish-eia-social.ts` a partir de `01-eia-social.md`. groupByDestaque
+ * `03-social.md` pelo `merge-social-md.ts` — e desde #10766 o "É IA?" não
+ * sai nas redes por caminho nenhum (só na newsletter). groupByDestaque
  * ignora posts cujo destaque seja "eia" (não há mais como gerar um grupo
  * dele a partir de `03-social.md`): se um `## eia` sobrar em um
  * `03-social.md` legado (edições antigas, ou reestrutura manual), o bloco
@@ -605,8 +605,7 @@ export function renderDestaqueGroup(group: DestaqueGroup, color: string): string
   // #7678: o ramo `extraImages` (par A/B do "É IA?") saiu junto com a seção
   // `## eia` — nada mais popula esse campo a partir de 03-social.md, então
   // era uma condição que nunca podia ser verdadeira. O par A/B continua
-  // existindo no produto, só que pelo caminho de `publish-eia-social.ts` /
-  // `01-eia-social.md`, que não passa por aqui.
+  // existindo só na newsletter — o "É IA?" não sai nas redes (#10766).
   const imgHtml = group.carouselImages?.length
     ? renderCarouselGallery(group)
     : group.imageUrl

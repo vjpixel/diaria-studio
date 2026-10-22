@@ -308,7 +308,7 @@
             "note": "#10769: pagina VJ pixel (page_id 937293496367847). Desligada pros posts diarios — so recebe o Reels do video curto (publishing.shorts.facebook_pages). Token: scripts/facebook-page-token-setup.ts --pages vjpixel. utm_content ausente = page-vjpixel."
           }
         ],
-        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Percorrem a lista: publish-facebook (Stage 5), publish-shorts (Reels do video curto, #10769 — so os slugs de publishing.shorts.facebook_pages, ignorando enabled), weekly, eia, verify-stage-4-dispatch, verify-facebook-posts, delete-test-schedules, invariante do Stage 5, seguidores (uma serie por pagina) e o painel de integracoes do Studio. A Retrospectiva mensal (publish-retrospectiva-social) tambem publica em TODAS as paginas ligadas, sem aviso (#10542) - ligar uma pagina aqui faz ela receber a Retrospectiva."
+        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Percorrem a lista: publish-facebook (Stage 5), publish-shorts (Reels do video curto, #10769 — so os slugs de publishing.shorts.facebook_pages, ignorando enabled), weekly, verify-stage-4-dispatch, verify-facebook-posts, delete-test-schedules, invariante do Stage 5, seguidores (uma serie por pagina) e o painel de integracoes do Studio. A Retrospectiva mensal (publish-retrospectiva-social) tambem publica em TODAS as paginas ligadas, sem aviso (#10542) - ligar uma pagina aqui faz ela receber a Retrospectiva."
       },
       "twitter": {
         "enabled": true,

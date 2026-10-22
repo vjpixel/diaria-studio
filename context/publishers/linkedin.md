@@ -566,106 +566,15 @@ ao lado do botão Publish, e o artigo agendado aparece em
 
 ---
 
-## É IA? nas redes (dispatch avulso, fora do `/diaria-5-publicacao`)
+## É IA? não sai nas redes (#10766)
 
-O quiz "É IA?" não sai pelo `/diaria-5-publicacao` (#6169). Existem dois
-scripts, sempre nessa ordem — a arte primeiro, o dispatch depois:
+O quiz "É IA?" é só da newsletter (bloco, crédito, poll, link "Jogar É IA?",
+sorteio). Ele não é publicado no LinkedIn, Facebook, Instagram, Threads nem X
+— decisão do editor de 22/10/2026. O `/diaria-5-publicacao` já não o
+despachava desde o #6169, e o caminho avulso que sobrava
+(`gen-eia-linkedin-cards.ts` + `publish-eia-social.ts`, lendo
+`01-eia-social.md`) foi removido no #10766. O Worker `diaria-linkedin-cron`
+recusa `destaque: "eia-{AAMMDD}"` no enqueue, e
+`test/eia-not-on-social-10766.test.ts` falha se algum desses caminhos voltar.
+Voltar a publicar o quiz nas redes é decisão editorial nova, não restauração.
 
-```
-npx tsx scripts/gen-eia-linkedin-cards.ts --edition AAMMDD
-npx tsx scripts/publish-eia-social.ts --edition AAMMDD \
-  --at 2026-08-26T09:50:00-03:00 [--skip canal[,canal]] [--dry-run] [--force]
-```
-
-Nenhum dos dois é chamado por skill nenhuma — gatilho é sempre manual, o
-editor decide quando o quiz vai pras redes (risco de script órfão conhecido
-e aceito, ver #6169). Docstring de cada arquivo tem o detalhe completo
-(flags, exit codes, idempotência); aqui vai só o que muda por rede.
-
-### 1. Arte (`gen-eia-linkedin-cards.ts`)
-
-Saem 3 arquivos na raiz da edição: `01-eia-linkedin-ab.jpg` (composto 4:5,
-as duas fotos empilhadas — usado por LinkedIn/Facebook/Threads/X) e os
-avulsos `01-eia-linkedin-{A,B}.jpg` (1:1 — usados só pelo carrossel do
-Instagram). A colagem multi-imagem corta as laterais de cada tile e come
-justamente o carimbo A/B — por isso o composto único é o formato seguro
-fora do Instagram.
-
-A arte abre com a pergunta ("Qual imagem foi gerada por IA?") porque muita
-gente passa o olho na imagem sem ler a legenda do post.
-
-### 2. Textos por canal (`01-eia-social.md`, escrito à mão)
-
-`publish-eia-social.ts` lê o texto de cada rede de uma seção `## {canal}`
-nesse arquivo, na raiz da edição — `## linkedin`, `## facebook`,
-`## instagram`, `## threads`, `## twitter` (mesma forma dos `## d{N}` de
-`03-social.md`, mas nível 2 sob um único `#`). O link com UTM (ver abaixo)
-já vai escrito dentro do texto de cada seção — o script não injeta nada,
-só extrai. Falta a seção de um canal que não foi passado em `--skip` →
-o script aborta com erro nomeando qual falta.
-
-### 3. Dispatch (`publish-eia-social.ts`)
-
-Por canal:
-
-| Canal | Caminho | Arte |
-|---|---|---|
-| LinkedIn, Instagram, Threads | fila do Worker `diaria-linkedin-cron` (mesma da Etapa 5) | composto 4:5 (Instagram: carrossel A→B, os dois 1:1) |
-| Facebook | Graph API, `scheduled_publish_time` | composto 4:5 |
-| X (Twitter) | NÃO despachado daqui — a API da Buffer só é alcançável por MCP, dentro de uma sessão de agente. O script imprime `twitter_handoff` (texto + `image_url` + `due_at`) pra sessão criar o post via `mcp__claude_ai_Buffer__create_post` | composto 4:5 |
-
-`--at` é obrigatório e precisa ser ISO **com offset** (`2026-08-26T09:50:00-03:00`)
-— nunca "amanhã 9h" resolvido pelo script, porque o fuso da máquina que
-dispara não é necessariamente o do editor. IDEMPOTENTE por canal: cada
-agendamento bem-sucedido grava em `_internal/eia-social-published.json`, e
-um canal já registrado é pulado num re-run (retry seguro após falha
-parcial) — `--force` ignora o registro e agenda de novo, criando um post
-NOVO (nunca move o que já existe). `--dry-run` faz tudo menos as chamadas
-de escrita (upload de imagem, fila, Graph API) e imprime o plano.
-
-Como não existe enquete com imagem em nenhuma dessas redes, o palpite vai
-nos comentários (A ou B) e o **gabarito é um comentário no post original,
-48h depois** — não um post novo. O alcance orgânico se concentra nas
-primeiras 24-48h e o post continua circulando enquanto recebe comentário;
-responder no mesmo dia mata o jogo pra quem chega no dia seguinte, e passar
-de 3 dias entrega o gabarito pra ninguém.
-
-### Verificação pós-dispatch
-
-Não existe verificador dedicado pro estado `eia-*` — `verify-social-worker-dispatch.ts`
-foi desenhado pro fluxo padrão da Etapa 5 (`06-social-published.json`), não
-pro `eia-social-published.json` avulso (`verify-scheduled-post.ts` é caso à
-parte: verifica só o post da newsletter no Beehiiv, `05-published.json` —
-nunca teve relação com canais sociais). Pra conferir se um canal realmente
-saiu: X via
-`mcp__claude_ai_Buffer__get_post` (status `sent`/`error` + `sentAt`);
-LinkedIn/Instagram/Threads exigem `DIARIA_LINKEDIN_CRON_URL`/`_TOKEN` pra
-consultar o Worker; Facebook exige o token de página (Graph API). Sem essas
-credenciais na sessão, a verificação não é possível sem inventar dado —
-reportar o que faltou, não assumir sucesso.
-
-### Link no corpo — exceção ao #595/#3627, escopo deste post
-
-Decisão do editor em 25/08/2026: o post do É IA? **leva a URL no corpo**,
-diferente do invariante geral desta página (post principal do LinkedIn sem
-link externo, `LINKEDIN_CTA_LINE = null` em `scripts/lib/social-cta-lines.ts`).
-A alternativa oferecida foi link no primeiro comentário; o editor preferiu no
-corpo mesmo sabendo do custo. Trade-off aceito: alcance menor em troca de
-clique atribuível — sem URL no post, o único caminho até o `/jogar` seria o
-comentário, que muita gente não abre.
-
-**A exceção é só deste post manual.** Os posts diários automáticos da Etapa 5
-continuam sem link no corpo; mudar isso é editar `LINKEDIN_CTA_LINE` e não
-foi pedido.
-
-Link com UTM (mesmo formato do `scripts/lib/shared/utm-registry.ts` —
-`utm_source` por rede, `utm_medium=organic_social`, campanha própria
-`eia-post`), apontando pro jogo e não pra home, porque quem acabou de
-palpitar tem onde continuar e a página tem cadastro embutido:
-
-```
-https://eia.diar.ia.br/jogar?utm_source=linkedin&utm_medium=organic_social&utm_campaign=eia-post
-```
-
-A URL fecha o post **sem ponto final** — pontuação colada na query string é
-engolida por linkificador de algumas redes.
