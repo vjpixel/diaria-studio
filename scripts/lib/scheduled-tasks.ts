@@ -605,6 +605,23 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#4052, #4320",
   },
   {
+    // #10734 item 4c: espelha as vendas da Hotmart do KV CURSOS_SUBSCRIBERS
+    // (TTL 400 dias) em data/hotmart/vendas.jsonl, append-only e idempotente
+    // por transação + evento. Lê pela rota GET /hotmart/vendas do Worker
+    // `site` (HOTMART_VENDAS_TOKEN do .env), últimos 35 dias por rodada:
+    // semanal sobra (cada evento passa por ~5 rodadas antes de sair da
+    // janela). Sem guard.requiredFile: o próprio script aborta (exit 2) sem
+    // gravar quando data/ não está montado, e o espelho não existe antes da
+    // 1ª rodada. Sábado 04:30 BRT, slot livre (a única outra semanal de
+    // sábado é 03:40; dailies vizinhas em 04:25 e 04:40).
+    name: "Diaria-Hotmart-Vendas-Sync",
+    description: "sync semanal das vendas Hotmart do KV para data/hotmart/vendas.jsonl",
+    steps: [{ key: "sync", script: "scripts/sync-hotmart-vendas.ts" }],
+    logPath: "hotmart/.vendas-sync.log",
+    schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 4, minute: 30 },
+    issue: "#10734",
+  },
+  {
     // #6093: mantém o Kit convergente com os assinantes ativos da Beehiiv
     // (cria/reativa quem falta) — sem recorrência, o Kit volta a congelar
     // no próximo assinante novo (comportamento observado antes do #6091:
