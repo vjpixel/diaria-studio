@@ -273,6 +273,10 @@
       "instagram": true,
       "instagram_author_page": "vjpixel",
       "instagram_collaborators": ["diar.ia.br"],
+      "linkedin_profile": true,
+      "linkedin_page_repost": true,
+      "x": true,
+      "linkedin_x_note": "#10772 (tabela confirmada no briefing 261022b): vertical NATIVO no perfil pessoal do LinkedIn (Videos API, token LINKEDIN_PERSONAL_* do 4o post) + repost pela pagina diar.ia.br (passo guiado, horario da grade da pagina, longe dos 4 posts da rotacao #10305) + X @diariabr via Buffer (skill, video por URL publica do R2). O horizontal fica so no YouTube. Threads (conta pessoal + repost) ainda nao: falta o token da conta pessoal.",
       "schedule": {
         "rotation_times": ["12:00", "19:00"],
         "rotation_start": "2026-10-22",

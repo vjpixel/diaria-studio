@@ -278,7 +278,7 @@ export type PostResult =
   | { ok: true; postUrn: string | null; imageUsed: boolean }
   | { ok: false; phase: "before_send" | "ambiguous"; reason: string; revoked?: boolean };
 
-function restHeaders(token: string, apiVersion: string): Record<string, string> {
+export function restHeaders(token: string, apiVersion: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
@@ -342,8 +342,16 @@ export async function postToPersonalProfile(args: {
   apiVersion: string;
   text: string;
   imageBytes?: Uint8Array | null;
+  /**
+   * #10772: mídia JÁ subida (ex.: `urn:li:video:…` da Videos API,
+   * `scripts/lib/linkedin-video.ts`). Exclusiva com `imageBytes`.
+   */
+  media?: { id: string; title?: string } | null;
 }): Promise<PostResult> {
   const { fetchFn, creds, apiVersion } = args;
+  if (args.media && args.imageBytes && args.imageBytes.length > 0) {
+    return { ok: false, phase: "before_send", reason: "post com imagem E mídia já subida — escolha uma" };
+  }
   let imageUrn: string | null = null;
   if (args.imageBytes && args.imageBytes.length > 0) {
     const up = await uploadImage(fetchFn, creds, apiVersion, args.imageBytes);
@@ -363,6 +371,7 @@ export async function postToPersonalProfile(args: {
           visibility: "PUBLIC",
           distribution: { feedDistribution: "MAIN_FEED", targetEntities: [], thirdPartyDistributionChannels: [] },
           ...(imageUrn ? { content: { media: { id: imageUrn } } } : {}),
+          ...(args.media ? { content: { media: { id: args.media.id, ...(args.media.title ? { title: args.media.title } : {}) } } } : {}),
           lifecycleState: "PUBLISHED",
           isReshareDisabledByAuthor: false,
         }),

@@ -29,13 +29,23 @@
  *     em `private` (`YOUTUBE_API_PROJECT_AUDITED`, #10659) — o Short não fica
  *     público por API até a auditoria;
  *   - perfil pessoal: a Graph API não publica em perfil de pessoa, só em Página.
+ *
+ * LinkedIn e X (#10772, tabela confirmada pelo editor no briefing 261022b): o
+ * vertical sobe NATIVO no perfil pessoal do LinkedIn (Videos API, mesmo app e
+ * token do `publish-linkedin-personal.ts`) com repost pela página — passo
+ * guiado, num horário da grade da página que não cola nos 4 posts do dia — e
+ * no X @diariabr via Buffer (MCP, só a skill alcança), com o vídeo por URL
+ * pública (R2). O horizontal fica só no YouTube. Threads (conta pessoal +
+ * repost) ainda não entrou: falta o token da conta pessoal.
  */
 
 import { BEEHIIV_BASE_URL } from "../edition-url.ts";
+import { TWITTER_CHAR_LIMIT, computeTwitterWeightedLength } from "../twitter-weight.ts";
 import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } from "../social-schedule-rotation.ts";
 import {
   DEFAULT_MIN_GAP_MINUTES,
   brtDayWindow,
+  planSlot,
   planSlots,
   socialAccountKey,
   type ScheduledSlot,
@@ -85,10 +95,15 @@ export function firstSentence(body: string, maxChars = 220): string {
   return `${(lastSpace > maxChars / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
-/** UTMs de um link do projeto num vídeo curto (`utm_medium=shorts|reels`). */
+/** UTMs de um link do projeto num vídeo curto (`utm_medium=shorts|reels|video`). */
 export function withShortUtm(
   url: string,
-  utm: { source: "youtube" | "facebook" | "instagram"; medium: "shorts" | "reels"; campaign: string; content?: string | null },
+  utm: {
+    source: "youtube" | "facebook" | "instagram" | "linkedin" | "twitter";
+    medium: "shorts" | "reels" | "video";
+    campaign: string;
+    content?: string | null;
+  },
 ): string {
   const u = new URL(url);
   u.searchParams.set("utm_source", utm.source);
@@ -168,6 +183,53 @@ export function buildReelsCaption(input: {
   return caption;
 }
 
+/** Plataformas do vertical NATIVO com link clicável no texto (#10772). */
+export type ShortLinkPlatform = "linkedin" | "x";
+
+/** Teto do texto do post no LinkedIn (`commentary` da Posts API). */
+export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
+
+/**
+ * Texto do post do vertical no LinkedIn pessoal e no X (#10772). Ao contrário
+ * da legenda do Reels, o link é clicável nas duas redes: o vídeo completo
+ * (horizontal, URL do YouTube de `_internal/05-video-url.txt`; ausente = canal)
+ * e a edição com UTM `utm_source={linkedin|twitter}&utm_medium=video&utm_campaign={AAMMDD}`
+ * (a fonte do X segue o `utm_source=twitter` dos posts diários, #4295).
+ *
+ * X: título + vídeo + edição, sem o gancho; título longo é cortado até caber
+ * em 280 com URL pesando 23 (`computeTwitterWeightedLength`). Lança se nem o
+ * título mínimo couber (não acontece com URL de 23).
+ */
+export function buildShortSocialText(input: {
+  platform: ShortLinkPlatform;
+  aammdd: string;
+  d1: ShortD1Input;
+  editionUrl: string;
+  /** URL do vídeo completo no YouTube; null = link do canal. */
+  videoUrl: string | null;
+}): string {
+  const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
+  if (!title) throw new Error("D1 sem título");
+  const video = input.videoUrl ?? DIARIA_YOUTUBE_CHANNEL_URL;
+  const source = input.platform === "x" ? "twitter" : "linkedin";
+  const edition = withShortUtm(input.editionUrl, { source, medium: "video", campaign: input.aammdd });
+  if (input.platform === "linkedin") {
+    const text = [title, firstSentence(input.d1.body), `Vídeo completo no YouTube: ${video}`, `Edição completa: ${edition}`, SHORTS_HASHTAGS.join(" ")]
+      .filter(Boolean)
+      .join("\n\n");
+    if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
+    return text;
+  }
+  const tail = `\n\nVídeo completo: ${video}\nEdição: ${edition}`;
+  const chars = Array.from(title);
+  for (let n = chars.length; n >= 10; n--) {
+    const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
+    const text = head + tail;
+    if (computeTwitterWeightedLength(text) <= TWITTER_CHAR_LIMIT) return text;
+  }
+  throw new Error(`texto do X não cabe em ${TWITTER_CHAR_LIMIT} caracteres`);
+}
+
 /** Configuração `publishing.shorts` em `platform.config.json`. */
 export interface ShortsConfig {
   /** Slugs de `publishing.social.facebook.pages` que recebem o Reels (ignora o `enabled` de lá — aquele é o dos posts diários). */
@@ -182,6 +244,12 @@ export interface ShortsConfig {
   instagramAuthorPage: string | null;
   /** Usernames convidados como collab no Reels (#10790: `diar.ia.br`). Máx. 3 (limite da Graph API). */
   instagramCollaborators: string[];
+  /** #10772: vídeo nativo no perfil pessoal do LinkedIn (Videos API, token `LINKEDIN_PERSONAL_*`). */
+  linkedinProfile: boolean;
+  /** #10772: repost do vídeo do perfil pela página diar.ia.br (passo guiado, horário da grade da página). */
+  linkedinPageRepost: boolean;
+  /** #10772: vídeo no X @diariabr via Buffer (MCP, passo da skill), com o vertical por URL pública (R2). */
+  x: boolean;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -193,6 +261,10 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   instagram: true,
   instagramAuthorPage: "vjpixel",
   instagramCollaborators: Object.freeze(["diar.ia.br"]) as unknown as string[],
+  // #10772 (tabela confirmada no briefing 261022b): LinkedIn pessoal + repost da página, X @diariabr.
+  linkedinProfile: true,
+  linkedinPageRepost: true,
+  x: true,
 });
 
 function defaultShortsConfig(): ShortsConfig {
@@ -201,7 +273,18 @@ function defaultShortsConfig(): ShortsConfig {
     instagram: DEFAULT_SHORTS_CONFIG.instagram,
     instagramAuthorPage: DEFAULT_SHORTS_CONFIG.instagramAuthorPage,
     instagramCollaborators: [...DEFAULT_SHORTS_CONFIG.instagramCollaborators],
+    linkedinProfile: DEFAULT_SHORTS_CONFIG.linkedinProfile,
+    linkedinPageRepost: DEFAULT_SHORTS_CONFIG.linkedinPageRepost,
+    x: DEFAULT_SHORTS_CONFIG.x,
   };
+}
+
+/** Booleano opcional do config: ausente = default; qualquer outra coisa que não boolean lança. */
+function optionalBool(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
+  const v = raw[key];
+  if (v === undefined) return fallback;
+  if (typeof v !== "boolean") throw new Error(`[shorts] publishing.shorts.${key} precisa ser boolean (#10772).`);
+  return v;
 }
 
 /** Lê e valida `publishing.shorts`; ausente → default (decisão do editor, #10769/#10790). */
@@ -228,7 +311,20 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
   if (collabs.length > INSTAGRAM_MAX_COLLABORATORS) {
     throw new Error(`[shorts] publishing.shorts.instagram_collaborators aceita no máximo ${INSTAGRAM_MAX_COLLABORATORS} contas.`);
   }
-  return { facebookPages: [...pages], instagram: raw.instagram, instagramAuthorPage: author, instagramCollaborators: [...collabs] };
+  const linkedinProfile = optionalBool(raw, "linkedin_profile", DEFAULT_SHORTS_CONFIG.linkedinProfile);
+  const linkedinPageRepost = optionalBool(raw, "linkedin_page_repost", DEFAULT_SHORTS_CONFIG.linkedinPageRepost);
+  if (linkedinPageRepost && !linkedinProfile) {
+    throw new Error("[shorts] publishing.shorts.linkedin_page_repost exige linkedin_profile: o repost é do vídeo do perfil (#10772).");
+  }
+  return {
+    facebookPages: [...pages],
+    instagram: raw.instagram,
+    instagramAuthorPage: author,
+    instagramCollaborators: [...collabs],
+    linkedinProfile,
+    linkedinPageRepost,
+    x: optionalBool(raw, "x", DEFAULT_SHORTS_CONFIG.x),
+  };
 }
 
 /** Um destino do vídeo curto. `api` = o script publica; `guided` = passo no Chrome com o editor. */
@@ -236,7 +332,13 @@ export type ShortDestination =
   | { id: FacebookDestinationId; kind: "facebook_page"; mode: "api"; slug: string }
   | { id: "instagram"; kind: "instagram"; mode: "api" }
   | { id: "youtube_shorts"; kind: "youtube_shorts"; mode: "guided" }
-  | { id: "facebook_profile"; kind: "facebook_profile"; mode: "guided" };
+  | { id: "facebook_profile"; kind: "facebook_profile"; mode: "guided" }
+  /** #10772: Videos API no perfil pessoal (a Posts API não agenda — publica na hora). */
+  | { id: "linkedin_profile"; kind: "linkedin_profile"; mode: "api" }
+  /** #10772: repost do vídeo do perfil pela página (sem token de organização local — Chrome). */
+  | { id: "linkedin_page_repost"; kind: "linkedin_page_repost"; mode: "guided" }
+  /** #10772: Buffer só é alcançável pela skill (MCP); o script prepara texto, horário e URL do vídeo. */
+  | { id: "x"; kind: "x"; mode: "guided" };
 
 export type FacebookDestinationId = `facebook:${string}`;
 
@@ -249,6 +351,9 @@ export function listShortDestinations(cfg: ShortsConfig): ShortDestination[] {
   const out: ShortDestination[] = [{ id: "youtube_shorts", kind: "youtube_shorts", mode: "guided" }];
   for (const slug of cfg.facebookPages) out.push({ id: facebookDestinationId(slug), kind: "facebook_page", mode: "api", slug });
   if (cfg.instagram) out.push({ id: "instagram", kind: "instagram", mode: "api" });
+  if (cfg.linkedinProfile) out.push({ id: "linkedin_profile", kind: "linkedin_profile", mode: "api" });
+  if (cfg.linkedinProfile && cfg.linkedinPageRepost) out.push({ id: "linkedin_page_repost", kind: "linkedin_page_repost", mode: "guided" });
+  if (cfg.x) out.push({ id: "x", kind: "x", mode: "guided" });
   out.push({ id: "facebook_profile", kind: "facebook_profile", mode: "guided" });
   return out;
 }
@@ -261,7 +366,12 @@ export function knownDestinationIds(cfg: ShortsConfig): Set<string> {
 /** Entrada de `_internal/06-shorts-published.json`. */
 export interface ShortPublishedEntry {
   destination: string;
-  status: "published" | "scheduled";
+  /**
+   * `send_unknown` (#10772): o envio pode ter sido aceito (timeout/5xx na
+   * criação do post do LinkedIn). Conta como feito — re-tentar arriscaria
+   * vídeo duplicado no perfil; o editor confere e registra com `--mark`.
+   */
+  status: "published" | "scheduled" | "send_unknown";
   /** id do vídeo/mídia na plataforma; nos destinos guiados (`--mark`), a própria URL. */
   id: string;
   url?: string;
@@ -305,7 +415,9 @@ export function parseShortsPublishedFile(raw: string, aammdd: string, where = SH
     if (!e || typeof e.destination !== "string" || !e.destination || typeof e.id !== "string" || !e.id) {
       throw new Error(`${where}: entrada ${i} sem destination/id`);
     }
-    if (e.status !== "published" && e.status !== "scheduled") throw new Error(`${where}: entrada ${i} com status inválido (${e.status})`);
+    if (e.status !== "published" && e.status !== "scheduled" && e.status !== "send_unknown") {
+      throw new Error(`${where}: entrada ${i} com status inválido (${e.status})`);
+    }
   }
   return { aammdd, entries: parsed.entries };
 }
@@ -414,7 +526,57 @@ export interface ShortSlot {
 export function shortDestinationAccount(dest: ShortDestination, cfg: Pick<ShortsConfig, "instagramAuthorPage">): string | null {
   if (dest.kind === "facebook_page") return socialAccountKey("facebook", dest.slug);
   if (dest.kind === "instagram") return socialAccountKey("instagram", cfg.instagramAuthorPage ?? "diaria");
+  if (dest.kind === "linkedin_profile") return LINKEDIN_PERSONAL_ACCOUNT;
+  // X sai pela skill (Buffer), mas o horário (`dueAt`) vem da grade como os destinos de API.
+  if (dest.kind === "x") return socialAccountKey("twitter", "diaria");
+  // O repost tem regra própria (`planLinkedInRepostSlot`); os outros guiados seguem `shortTime`.
   return null;
+}
+
+/** Conta da grade do perfil pessoal do LinkedIn (o 4º post do `publish-linkedin-personal.ts` e o vertical). */
+export const LINKEDIN_PERSONAL_ACCOUNT = socialAccountKey("linkedin", "pessoal");
+/** Conta da grade da página diar.ia.br no LinkedIn (os posts diários da rotação #10305). */
+export const LINKEDIN_PAGE_ACCOUNT = socialAccountKey("linkedin", "diaria");
+/** Folga mínima entre o vídeo no perfil e o repost da página. */
+export const LINKEDIN_REPOST_MIN_DELAY_MINUTES = 30;
+
+/**
+ * Pure (#10772): horário do repost do vertical pela página diar.ia.br. A
+ * página já recebe os posts diários da rotação (#10305), então o repost passa
+ * pelo `planSlot` na conta da página — espaçamento mínimo de 2 h e picos de
+ * uso (#10819) — e nunca antes de `LINKEDIN_REPOST_MIN_DELAY_MINUTES` depois do
+ * vídeo do perfil (não existe repost de post que ainda não saiu). Vale também
+ * durante o teste de horário do #10831: o repost não é o vertical, é o
+ * compartilhamento dele. Sem horário na janela, cai na folga mínima com aviso.
+ */
+export function planLinkedInRepostSlot(input: { aammdd: string; profileAt: string; grid: readonly ScheduledSlot[] }): ShortSlot {
+  const notBefore = new Date(Date.parse(input.profileAt) + LINKEDIN_REPOST_MIN_DELAY_MINUTES * 60_000).toISOString();
+  const d = planSlot(input.grid, {
+    account: LINKEDIN_PAGE_ACCOUNT,
+    window: brtDayWindow(input.aammdd),
+    notBefore,
+    preferredAt: notBefore,
+  });
+  if (!d.at) {
+    return {
+      destination: "linkedin_page_repost",
+      account: LINKEDIN_PAGE_ACCOUNT,
+      at: notBefore,
+      hhmm: brtHHMM(notBefore),
+      rule: d.rule,
+      premise: d.premise,
+      warning: `linkedin_page_repost: a grade da página não achou horário (${d.premise}) — ${brtHHMM(notBefore)} BRT, ${LINKEDIN_REPOST_MIN_DELAY_MINUTES} min depois do perfil`,
+    };
+  }
+  return {
+    destination: "linkedin_page_repost",
+    account: LINKEDIN_PAGE_ACCOUNT,
+    at: d.at,
+    hhmm: brtHHMM(d.at),
+    rule: d.rule,
+    premise: d.premise,
+    ...(d.warning ? { warning: `linkedin_page_repost: ${d.warning}` } : {}),
+  };
 }
 
 const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISOString().slice(11, 16);

@@ -287,10 +287,33 @@ export function gridFromShortsPublished(data: unknown, instagramAccount = "diari
     if (!at || Number.isNaN(Date.parse(at))) continue;
     const account = e.destination === "instagram"
       ? socialAccountKey("instagram", instagramAccount)
-      : e.destination.includes(":")
-        ? e.destination.toLowerCase()
-        : socialAccountKey(e.destination, "diaria");
+      : SHORTS_DESTINATION_ACCOUNTS[e.destination] ??
+        (e.destination.includes(":") ? e.destination.toLowerCase() : socialAccountKey(e.destination, "diaria"));
     out.push({ account, at, label: `shorts ${e.destination}` });
   }
   return out;
+}
+
+/**
+ * Destinos do vertical cujo id não é chave de conta (#10772): o vídeo do perfil
+ * pessoal do LinkedIn, o repost dele pela página e o X @diariabr (que nos
+ * stores diários é `platform: "twitter"`).
+ */
+const SHORTS_DESTINATION_ACCOUNTS: Readonly<Record<string, string>> = Object.freeze({
+  linkedin_profile: socialAccountKey("linkedin", "pessoal"),
+  linkedin_page_repost: socialAccountKey("linkedin", "diaria"),
+  x: socialAccountKey("twitter", "diaria"),
+});
+
+/**
+ * `_internal/06-linkedin-personal.json` (#9568, o 4º post no perfil pessoal) →
+ * grade da conta `linkedin:pessoal` (#10772). Só intenção armada ou publicada
+ * ocupa slot; o resto (falhou, expirou, ambíguo) fica de fora.
+ */
+export function gridFromLinkedInPersonalIntent(data: unknown): ScheduledSlot[] {
+  const intent = data as { status?: unknown; scheduled_at?: unknown; published_at?: unknown } | null;
+  if (!intent || (intent.status !== "armed" && intent.status !== "posting" && intent.status !== "published")) return [];
+  const at = typeof intent.published_at === "string" && intent.published_at ? intent.published_at : intent.scheduled_at;
+  if (typeof at !== "string" || Number.isNaN(Date.parse(at))) return [];
+  return [{ account: socialAccountKey("linkedin", "pessoal"), at, label: "linkedin pessoal (4º post)" }];
 }
