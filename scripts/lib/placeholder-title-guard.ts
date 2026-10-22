@@ -94,6 +94,31 @@ export function isPlaceholderHighlightTitle(title: string | null | undefined): b
 }
 
 /**
+ * #10908: versão de `isPlaceholderHighlightTitle` que também lê o marcador
+ * `title_unresolved` gravado pelo `categorize` (#10796) na submissão do editor
+ * que ficou no pool com título de stub de redirect. A palavra solta ("Found",
+ * "Moved", "Redirect") não casa `isPlaceholderHighlightTitle` desde o #10881
+ * item 4 — sem ler o marcador, o item podia virar D1 intitulado "Found".
+ *
+ * O marcador só conta enquanto o título AINDA é a palavra ambígua: se o editor
+ * corrigiu o título no gate do Stage 1, o `title_unresolved` herdado fica
+ * velho e não pode demover/bloquear um título real.
+ */
+export function isPlaceholderHighlightTitleOrUnresolved(
+  title: string | null | undefined,
+  titleUnresolved: unknown,
+): boolean {
+  if (isPlaceholderHighlightTitle(title)) return true;
+  return Boolean(titleUnresolved) && isAmbiguousRedirectStubTitle(title);
+}
+
+/** Lê título e `title_unresolved` de um highlight/finalista (top-level ou `article`). */
+export function isPlaceholderHighlightItem(h: { title?: unknown; article?: Record<string, unknown> }): boolean {
+  const marker = h.article?.title_unresolved ?? (h as Record<string, unknown>).title_unresolved;
+  return isPlaceholderHighlightTitleOrUnresolved(titleOf(h), marker);
+}
+
+/**
  * Shapes deliberadamente soltas (compatíveis com `FinalistLike`/`HighlightLike`
  * de `negative-impact-promotion.ts`, reusadas por `assemble-scored.ts` no
  * mesmo call site) — `article` é `Record<string, unknown>`-like porque cada
@@ -147,7 +172,7 @@ export function demotePlaceholderTitleHighlights<H extends PlaceholderHighlightL
 ): { highlights: H[]; demotions: PlaceholderDemotion[] } {
   const offenderIdxs = highlights
     .map((h, i) => ({ h, i }))
-    .filter(({ h }) => isPlaceholderHighlightTitle(titleOf(h)));
+    .filter(({ h }) => isPlaceholderHighlightItem(h)); // #10908: lê title_unresolved
 
   if (offenderIdxs.length === 0) return { highlights, demotions: [] };
 
@@ -159,7 +184,7 @@ export function demotePlaceholderTitleHighlights<H extends PlaceholderHighlightL
   // Candidatos ordenados por score desc — reusados entre múltiplos ofensores
   // (raro, mas o loop consome candidatos conforme os aloca).
   const candidatesSorted = finalists
-    .filter((f) => !isPlaceholderHighlightTitle(titleOf(f)) && !highlightUrls.has(f.url))
+    .filter((f) => !isPlaceholderHighlightItem(f) && !highlightUrls.has(f.url))
     .sort((a, b) => b.score - a.score);
 
   const offenderIdxSet = new Set(offenderIdxs.map(({ i }) => i));
