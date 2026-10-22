@@ -36,6 +36,7 @@ import { applySemanticTiebreaker, type CategorizedBuckets } from "./lib/semantic
 import { looksEnglish } from "./lib/lang-detect.ts"; // #1473/#1790 (era inline)
 import { normalizeItemTitle } from "./lib/strip-publisher-suffix.ts"; // #9380
 import { isNonAITopic } from "./lib/ai-relevance.ts"; // #9402
+import { isRedirectStubTitle } from "./lib/placeholder-title-guard.ts"; // #10796
 import {
   AI_RELEVANT_TERMS,
   isArticleAIRelevant,
@@ -150,6 +151,21 @@ export function isUnresolvableInboxArticle(article: Article): boolean {
   return titleIsPlaceholder && summaryTooShort;
 }
 
+/**
+ * #10796: título que ainda é o `<title>` de uma página-stub de redirect
+ * ("Document moved", "301 Moved Permanently", "Redirecting...") quando chega
+ * na categorização. O `enrich-inbox-articles` (1k) já segue redirects e
+ * troca esse título pelo og:title real (#10843); se ele chegou até aqui, o
+ * enrichment FALHOU (fetch bloqueado, timeout, página sem metadata) e o
+ * artigo não tem título nenhum utilizável. Diferente do #722, vale pra
+ * qualquer `flag` — o caso real (Voxtral 3, 261022) era `newsletter_extracted`
+ * — e independe do summary: um summary bom não salva o título, que seria
+ * renderizado como "Document moved" na seção do pool.
+ */
+export function hasUnresolvedRedirectStubTitle(article: Article): boolean {
+  return isRedirectStubTitle(article.title);
+}
+
 export function categorizeArticles(articles: Article[]): BucketedArticles {
   const result: BucketedArticles = {
     lancamento: [],
@@ -169,6 +185,13 @@ export function categorizeArticles(articles: Article[]): BucketedArticles {
     // falhas de enrich — não há conteúdo para o writer usar. Descartar silenciosamente.
     if (isUnresolvableInboxArticle(article)) {
       console.error(`[categorize] dropping unresolvable inbox article: ${article.url}`);
+      continue;
+    }
+    // #10796: enrichment não conseguiu trocar o título de stub de redirect.
+    if (hasUnresolvedRedirectStubTitle(article)) {
+      console.error(
+        `[categorize] dropping article with redirect-stub title "${article.title}": ${article.url}`,
+      );
       continue;
     }
     // #6647: categorizeWithRule() é a mesma decisão de categorize() (wrapper
