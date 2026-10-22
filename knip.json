@@ -48,5 +48,5 @@
   // linha de comando de um PID antes de sinalizá-lo -- no Linux lê
   // /proc/{pid}/cmdline e no Windows usa PowerShell; `ps` é utilitário do
   // SO, só o fallback das demais plataformas, não uma dependência npm.
-  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd", "ps"]
+  "ignoreBinaries": ["systemd-analyze", "doppler", "rundll32", "tasklist", "taskkill", "jq", "codex", "codex.cmd", "ps", "ffmpeg"]
 }
