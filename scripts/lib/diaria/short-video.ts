@@ -33,6 +33,14 @@
 
 import { BEEHIIV_BASE_URL } from "../edition-url.ts";
 import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } from "../social-schedule-rotation.ts";
+import {
+  DEFAULT_MIN_GAP_MINUTES,
+  brtDayWindow,
+  planSlots,
+  socialAccountKey,
+  type ScheduledSlot,
+  type SlotRule,
+} from "../social-slot-planner.ts";
 import { YOUTUBE_TITLE_MAX_CHARS, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
@@ -318,8 +326,8 @@ export function parseShortsPublishedFile(raw: string, aammdd: string, where = SH
  *     editor decidir o vencedor do teste e mudar o config.
  *
  * A regra de grade da #10819 (alinhar com o que já está agendado em outras
- * contas / espaçar na mesma conta) ainda não existe; quando existir, ela
- * ajusta este horário.
+ * contas / espaçar na mesma conta) entra por `planShortSlots`, abaixo: durante
+ * o teste este horário tem precedência; fora dele, a grade decide.
  */
 export interface ShortScheduleConfig {
   rotationTimes: string[];
@@ -385,6 +393,115 @@ export function resolveShortTime(sched: ShortScheduleConfig, aammdd: string): Sh
   const k = day - start;
   const hhmm = sched.rotationTimes[k % sched.rotationTimes.length];
   return { hhmm, source: "rotation", reason: `teste de horário do vertical, dia ${k + 1} (alterna ${sched.rotationTimes.join("/")})` };
+}
+
+/** Horário escolhido pra um destino de API do vertical (#10819). */
+export interface ShortSlot {
+  destination: string;
+  /** Chave de conta da grade (`socialAccountKey`). */
+  account: string;
+  /** ISO UTC. */
+  at: string;
+  /** HH:MM BRT. */
+  hhmm: string;
+  /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
+  rule: "test-schedule" | SlotRule;
+  premise: string;
+  warning?: string;
+}
+
+/** Conta da grade de um destino de API do vertical; guiados não entram (`null`). */
+export function shortDestinationAccount(dest: ShortDestination, cfg: Pick<ShortsConfig, "instagramAuthorPage">): string | null {
+  if (dest.kind === "facebook_page") return socialAccountKey("facebook", dest.slug);
+  if (dest.kind === "instagram") return socialAccountKey("instagram", cfg.instagramAuthorPage ?? "diaria");
+  return null;
+}
+
+const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISOString().slice(11, 16);
+
+/**
+ * Pure (#10819): horário de cada destino de API do vertical contra a grade já
+ * agendada (`gridFromSocialPublished` + `gridFromShortsPublished`).
+ *
+ * Premissas (registradas em `premise`; a precedência do teste veio do
+ * coordenador da rodada, o resto não veio do editor):
+ *   - DURANTE o teste de horário do #10831 (`time.source === "rotation"`) o
+ *     horário do teste vale pra todos os destinos: mover um destino tiraria
+ *     aquele dia da comparação 12:00 × 19:00. A grade só gera AVISO quando o
+ *     horário do teste cai a menos de `DEFAULT_MIN_GAP_MINUTES` de um post da
+ *     MESMA conta (colado/empilhado), pro editor decidir à mão;
+ *   - FORA do teste (`default_time`), `planSlots` decide por destino com
+ *     `preferredAt` = `default_time`, janela 06:00–22:00 BRT do dia da edição e
+ *     sem `notBefore` (o plano não depende da hora em que roda; horário que já
+ *     passou cai em "publica na hora" no `resolveReelsSchedule`, como antes).
+ *     Cada destino planejado entra na grade antes do seguinte;
+ *   - destinos guiados (YouTube Shorts, perfil pessoal) seguem `shortTime`: o
+ *     skill lê um horário só pra eles.
+ */
+export function planShortSlots(input: {
+  aammdd: string;
+  time: ShortTime;
+  /** ISO do `time.hhmm` no dia da edição. */
+  timeAt: string;
+  destinations: readonly ShortDestination[];
+  cfg: Pick<ShortsConfig, "instagramAuthorPage">;
+  grid: readonly ScheduledSlot[];
+}): ShortSlot[] {
+  const api = input.destinations
+    .map((d) => ({ dest: d, account: shortDestinationAccount(d, input.cfg) }))
+    .filter((x): x is { dest: ShortDestination; account: string } => x.account !== null);
+
+  if (input.time.source === "rotation") {
+    const t = Date.parse(input.timeAt);
+    return api.map(({ dest, account }) => {
+      const close = input.grid
+        .filter((s) => s.account === account && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
+        .map((s) => brtHHMM(s.at));
+      const slot: ShortSlot = {
+        destination: dest.id,
+        account,
+        at: new Date(t).toISOString(),
+        hhmm: input.time.hhmm,
+        rule: "test-schedule",
+        premise: `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
+      };
+      if (close.length) {
+        slot.warning =
+          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta ` +
+          `(${[...new Set(close)].join(", ")} BRT) — mantido por causa do teste; mova à mão se não quiser colado`;
+      }
+      return slot;
+    });
+  }
+
+  const window = brtDayWindow(input.aammdd);
+  const decisions = planSlots(
+    input.grid,
+    api.map(({ account }) => ({ account, window, preferredAt: input.timeAt })),
+  );
+  return api.map(({ dest, account }, i) => {
+    const d = decisions[i];
+    if (!d.at) {
+      return {
+        destination: dest.id,
+        account,
+        at: new Date(Date.parse(input.timeAt)).toISOString(),
+        hhmm: input.time.hhmm,
+        rule: d.rule,
+        premise: d.premise,
+        warning: `${dest.id}: a grade não achou horário (${d.premise}) — mantido ${input.time.hhmm} BRT`,
+      };
+    }
+    return {
+      destination: dest.id,
+      account,
+      at: d.at,
+      hhmm: brtHHMM(d.at),
+      rule: d.rule,
+      premise: d.premise,
+      ...(d.warning ? { warning: `${dest.id}: ${d.warning}` } : {}),
+    };
+  });
 }
 
 /**

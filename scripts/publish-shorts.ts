@@ -48,6 +48,12 @@
  * O Instagram não agenda Reels pela API — com horário futuro ele fica pendente
  * até rodar de novo depois do horário (ou `--now`).
  *
+ * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
+ * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
+ * o teste do #10831 o horário do teste vale pra todos os destinos e a grade só
+ * avisa quando ele cola num post da mesma conta; fora do teste, cada destino
+ * de API tem o próprio horário (`slots` no plano) pelo `social-slot-planner`.
+ *
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
  * Stage 5) > slug derivado do título do D1 (aviso).
  *
@@ -85,12 +91,14 @@ import {
   loadShortsConfig,
   mp4DurationSeconds,
   parseShortsPublishedFile,
+  planShortSlots,
   resolveReelsSchedule,
   resolveShortTime,
   shortVideoFileName,
   upsertShortEntry,
   type ShortDestination,
   type ShortPublishedEntry,
+  type ShortSlot,
   type ShortsConfig,
   type ShortsPublishedFile,
   type ShortTime,
@@ -99,6 +107,7 @@ import {
 import { youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
+import { gridFromShortsPublished, gridFromSocialPublished, type ScheduledSlot } from "./lib/social-slot-planner.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const GRAPH = "https://graph.facebook.com";
@@ -121,8 +130,10 @@ export interface ShortsPlan {
   video: { path: string; exists: boolean; sizeBytes: number | null };
   longVideo: string;
   youtube: YouTubeShortMetadata;
-  /** Horário do vertical (#10831): HH:MM BRT, ISO no dia da edição, de onde veio. */
+  /** Horário do vertical (#10831): HH:MM BRT, ISO no dia da edição, de onde veio. Base dos destinos guiados. */
   shortTime: ShortTime & { at: string };
+  /** Horário de cada destino de API desta rodada contra a grade já agendada (#10819). */
+  slots: ShortSlot[];
   items: ShortsPlanItem[];
   premises: string[];
   warnings: string[];
@@ -146,6 +157,11 @@ export interface ShortsPlanInput {
   editionUrlSource?: string;
   forceNow?: boolean;
   only?: string[] | null;
+  /**
+   * Posts já agendados/publicados no dia, por conta (#10819) — `06-social-published.json`
+   * + `06-shorts-published.json`. Ausente = grade vazia.
+   */
+  grid?: ScheduledSlot[];
 }
 
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
@@ -168,14 +184,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const time = resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
   const shortTime = { ...time, at: resolveEditionScheduledAt(input.aammdd, time.hhmm) };
   premises.push(`horário do vertical: ${time.hhmm} BRT (${time.reason})`);
-  const schedule = input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(shortTime.at, input.now);
-  premises.push(
-    schedule.mode === "scheduled"
-      ? `Reels do Facebook agendado para ${schedule.at} (${time.hhmm} BRT do dia da edição); Instagram fica pendente até lá`
-      : input.forceNow
-        ? "--now: publica na hora"
-        : `${time.hhmm} BRT do dia da edição já passou (ou falta <10 min) — publica na hora`,
-  );
+  if (input.forceNow) premises.push("--now: publica na hora");
   if (!input.video.exists) warnings.push(`vídeo curto ausente em ${input.video.path} — nada a publicar até ele existir`);
 
   const cfg = loadShortsConfig(input.config);
@@ -195,11 +204,40 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (unknown.length) throw new Error(`--only com destino desconhecido: ${unknown.join(", ")} (válidos: ${[...known].join(", ")})`);
   }
 
-  const items: ShortsPlanItem[] = [];
-  for (const dest of listShortDestinations(cfg)) {
-    if (only && !only.has(dest.id)) continue;
-    items.push(planDestination(dest));
+  const destinations = listShortDestinations(cfg).filter((d) => !only || only.has(d.id));
+  // Sem credencial o destino é pulado — não disputa a grade nem gera premissa de horário.
+  function publishable(d: ShortDestination): boolean {
+    if (d.kind === "facebook_page") return !input.pages.find((p) => p.slug === d.slug)!.missing.length;
+    if (d.kind === "instagram") return input.instagramReady;
+    return false;
   }
+  // #10819: só os destinos que esta rodada ainda vai publicar disputam a grade;
+  // os já registrados entram nela pelo `06-shorts-published.json`.
+  const slots = planShortSlots({
+    aammdd: input.aammdd,
+    time,
+    timeAt: shortTime.at,
+    destinations: destinations.filter((d) => !isDestinationDone(input.published, d.id) && publishable(d)),
+    cfg,
+    grid: input.grid ?? [],
+  });
+  const slotOf = new Map(slots.map((s) => [s.destination, s]));
+  for (const s of slots) {
+    if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
+    if (s.warning) warnings.push(s.warning);
+  }
+  const scheduleFor = (s: ShortSlot) => (input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(s.at, input.now));
+  for (const s of slots) {
+    if (input.forceNow) continue;
+    const sch = scheduleFor(s);
+    premises.push(
+      sch.mode === "scheduled"
+        ? `${s.destination}: ${s.destination === "instagram" ? "pendente até" : "agendado para"} ${sch.at} (${s.hhmm} BRT do dia da edição)`
+        : `${s.destination}: ${s.hhmm} BRT do dia da edição já passou (ou falta <10 min) — publica na hora`,
+    );
+  }
+
+  const items: ShortsPlanItem[] = destinations.map((dest) => planDestination(dest));
 
   function planDestination(dest: ShortDestination): ShortsPlanItem {
     if (isDestinationDone(input.published, dest.id)) {
@@ -223,6 +261,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         warnings.push(`${dest.id}: sem credencial (${page.missing.join(", ")}) — rode scripts/facebook-page-token-setup.ts`);
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: page.missing.join(", ") };
       }
+      const schedule = scheduleFor(slotOf.get(dest.id)!);
       return {
         destination: dest.id,
         mode: "api",
@@ -245,6 +284,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       warnings.push(`instagram: ${(e as Error).message}`);
       return { destination: dest.id, mode: "api", action: "skip_invalid", detail: (e as Error).message };
     }
+    const slot = slotOf.get(dest.id)!;
+    const schedule = scheduleFor(slot);
     if (schedule.mode === "scheduled") {
       return {
         destination: dest.id,
@@ -252,13 +293,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         action: "pending_schedule",
         caption,
         scheduledAt: schedule.at,
-        detail: `o Instagram não agenda Reels pela API — rode de novo depois das ${time.hhmm} BRT (ou use --now)`,
+        detail: `o Instagram não agenda Reels pela API — rode de novo depois das ${slot.hhmm} BRT (ou use --now)`,
       };
     }
     return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
   }
 
-  return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, items, premises, warnings };
+  return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
 }
 
 /**
@@ -643,6 +684,23 @@ function writePublished(path: string, file: ShortsPublishedFile): void {
   writeFileAtomic(path, JSON.stringify(file, null, 2) + "\n");
 }
 
+/**
+ * Grade já agendada do dia (#10819): posts sociais da edição + o que o vertical
+ * já registrou. Store social ausente = só o do vertical; ilegível = aviso e
+ * segue sem ele (a grade só ajusta horário; nunca é motivo pra não publicar).
+ */
+export function loadScheduledGrid(dir: string, published: ShortsPublishedFile, instagramAccount: string | null, warn: (m: string) => void): ScheduledSlot[] {
+  const grid = gridFromShortsPublished(published, instagramAccount ?? "diaria");
+  const p = join(dir, "_internal", "06-social-published.json");
+  if (!existsSync(p)) return grid;
+  try {
+    return [...gridFromSocialPublished(JSON.parse(readFileSync(p, "utf8"))), ...grid];
+  } catch (e) {
+    warn(`${p} ilegível (${(e as Error).message}) — grade #10819 sem os posts sociais do dia`);
+    return grid;
+  }
+}
+
 /** `--mark DESTINO=URL`: só destinos guiados, só URL http(s). */
 export function parseMarkArg(raw: string): { destination: string; url: string } {
   const m = raw.match(/^([a-z_]+)=(https?:\/\/\S+)$/);
@@ -765,6 +823,7 @@ async function main(): Promise<number> {
       editionUrlSource: editionUrlIn.source,
       forceNow: flags.has("now"),
       only: onlyList,
+      grid: loadScheduledGrid(dir, published, shortsCfg.instagramAuthorPage, (m) => console.error(`[aviso] ${m}`)),
     });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
