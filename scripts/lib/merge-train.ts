@@ -25,7 +25,9 @@
  * skills de uma vez (overnight/develop/contínuo); default ATIVO sem flag
  * de opt-in (degrada sozinho pro caminho de hoje se algo falhar — mesma
  * garantia que a bissecção já dá); 1 commit squash por lote com
- * `Closes #N1, #N2, #N3` (mesma convenção da fusão de cluster colidente no
+ * `Closes` de todas as issues do lote — uma linha `Closes #N` por issue,
+ * porque o GitHub só fecha a 1ª de uma lista `Closes #A, #B` (#10878) —
+ * (mesma convenção da fusão de cluster colidente no
  * develop, #4319 — revert é tudo-ou-nada pro lote); testar ao vivo contra
  * PRs reais é autorizado, com cautela (lote pequeno, abortar pro
  * 1-a-1 se colidir com outra sessão). Ver `scripts/lib/merge-train-live.ts`
@@ -180,6 +182,19 @@ export interface TrainPrInfo {
   readonly title: string;
   /** Issues que este PR fecha, extraídas do corpo (ver `parseClosesIssues`). */
   readonly issueNumbers: readonly number[];
+  /**
+   * Issues citadas como `REFS #N` / `Refs #N` (escopo parcial, sem fechar) no
+   * corpo — `parseRefsIssues`. Opcional: só entra no commit squash como linha
+   * `Refs` de rastreabilidade (#10878), nunca fecha nada.
+   */
+  readonly refsIssueNumbers?: readonly number[];
+  /**
+   * Conteúdo da linha `removal-declaration:` do corpo da PR original (#7115),
+   * ou `null`/ausente quando ela não declarou. Agregado no corpo do PR-trem
+   * (#10848) — a soma dos diffs do lote passa do limiar de 500 adições mesmo
+   * quando cada PR sozinha passou.
+   */
+  readonly removalDeclaration?: string | null;
 }
 
 /**
@@ -197,6 +212,23 @@ export function parseClosesIssues(body: string): number[] {
   const found = new Set<number>();
   let m: RegExpExecArray | null;
   while ((m = re.exec(body))) found.add(Number(m[1]));
+  return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * Extrai números de issue citados como referência sem fechamento (`REFS #N`,
+ * `Refs #A, #B`, case-insensitive) — a convenção `REFS #N, NÃO CLOSES
+ * (motivo)` do `context/overnight-dispatch-rules.md` item 9. Aceita lista
+ * separada por vírgula logo após a palavra-chave. Usado só pra carregar a
+ * rastreabilidade pro commit squash do trem (#10878); nunca fecha nada.
+ */
+export function parseRefsIssues(body: string): number[] {
+  const re = /\brefs?\b[:\s]+((?:#\d+(?:\s*,\s*(?=#)|\s*))+)/gi;
+  const found = new Set<number>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body))) {
+    for (const n of m[1].matchAll(/#(\d+)/g)) found.add(Number(n[1]));
+  }
   return [...found].sort((a, b) => a - b);
 }
 
@@ -223,7 +255,32 @@ export function buildTrainPrBody(batch: TrainBatch, prInfos: readonly TrainPrInf
     `PR-trem descartável (#6300) — valida a COMBINAÇÃO destes ${batch.prs.length} PRs com 1 run de CI só.\n\n` +
     `${lines.join("\n")}\n\n` +
     `Refs ${batch.prs.map((n) => `#${n}`).join(", ")} — NÃO CLOSES (fechamento acontece no squash-merge deste PR-trem, não aqui).\n\n` +
+    `${buildTrainRemovalDeclaration(batch, prInfos)}\n\n` +
     `Nunca mergear este PR isoladamente por engano — ele É o merge, mas o commit squash usa uma mensagem própria com \`Closes\` pras issues.`
+  );
+}
+
+/**
+ * Linha `removal-declaration:` do PR-trem (#10848). O gate #7115 mede a
+ * SOMA dos diffs do lote: 3 PRs de ~1.200 linhas, cada uma verde sozinha,
+ * juntas passam do limiar de 500 e o PR-trem saía vermelho só por isso —
+ * o trem lia o vermelho como falha da combinação e bissectava à toa.
+ *
+ * Sempre emitida (mesmo em lote pequeno — a linha não atrapalha abaixo do
+ * limiar), numa linha só, porque o gate lê o conteúdo até o fim da linha
+ * (`MARKER_RE` em `pr-removal-declaration.ts`). Agrega as declarações que
+ * as PRs do lote já fizeram; PR sem declaração (diff pequeno, não precisou)
+ * aparece como tal — a revisão de cada uma já aconteceu no próprio PR.
+ */
+export function buildTrainRemovalDeclaration(batch: TrainBatch, prInfos: readonly TrainPrInfo[]): string {
+  const byNumber = new Map(prInfos.map((p) => [p.pr, p]));
+  const parts = batch.prs.map((n) => {
+    const decl = byNumber.get(n)?.removalDeclaration?.replace(/\s+/g, " ").trim();
+    return `#${n}: ${decl ? decl : "sem declaração própria (abaixo do limiar no PR original)"}`;
+  });
+  return (
+    `removal-declaration: PR-trem (#6300) é a soma de ${batch.prs.length} PRs já validadas ` +
+    `individualmente pelo #7115, sem código próprio — ${parts.join("; ")}`
   );
 }
 
@@ -236,24 +293,41 @@ export function buildTrainMergeCommitTitle(batch: TrainBatch): string {
 
 /**
  * Corpo do commit squash final — a UNIÃO ordenada de `issueNumbers` de
- * TODOS os PRs do lote, uma linha `Closes #A, #B, #C` (decisão do editor,
- * 26/08/2026: 1 commit squash só por lote, mesma convenção de fusão de
- * cluster colidente do develop, #4319 — revert é tudo-ou-nada pro lote
- * inteiro). PR sem nenhuma issue detectada (`issueNumbers` vazio) não
- * quebra nada — só não contribui número nenhum pra linha `Closes`.
+ * TODOS os PRs do lote (decisão do editor, 26/08/2026: 1 commit squash só
+ * por lote, mesma convenção de fusão de cluster colidente do develop, #4319
+ * — revert é tudo-ou-nada pro lote inteiro). PR sem nenhuma issue
+ * detectada (`issueNumbers` vazio) não quebra nada — só não contribui
+ * número nenhum.
+ *
+ * **Uma linha `Closes #N` POR ISSUE (#10878).** O GitHub só auto-fecha a
+ * issue que vem IMEDIATAMENTE depois da palavra-chave: `Closes #A, #B, #C`
+ * fecha só #A. Foi o que aconteceu no commit 66a77a766 (PR-trem #10846):
+ * `Closes #10695, #10775, #10799` fechou #10695 e deixou as outras duas
+ * abertas. A keyword precisa se repetir por issue.
+ *
+ * Issues que alguma PR do lote só referenciou (`REFS #N`, escopo parcial)
+ * e que nenhuma outra PR do lote fecha entram numa linha `Refs` — mantém a
+ * rastreabilidade no histórico sem fechar nada.
  */
 export function buildTrainMergeCommitBody(batch: TrainBatch, prInfos: readonly TrainPrInfo[]): string {
   const byNumber = new Map(prInfos.map((p) => [p.pr, p]));
   const allIssues = new Set<number>();
+  const allRefs = new Set<number>();
   for (const n of batch.prs) {
-    for (const i of byNumber.get(n)?.issueNumbers ?? []) allIssues.add(i);
+    const info = byNumber.get(n);
+    for (const i of info?.issueNumbers ?? []) allIssues.add(i);
+    for (const i of info?.refsIssueNumbers ?? []) allRefs.add(i);
   }
-  const closesLine = allIssues.size > 0 ? `Closes ${[...allIssues].sort((a, b) => a - b).map((i) => `#${i}`).join(", ")}` : "";
+  for (const i of allIssues) allRefs.delete(i);
+  const sorted = (s: Set<number>) => [...s].sort((a, b) => a - b);
+  const closesLines = sorted(allIssues).map((i) => `Closes #${i}`);
+  const refsLine = allRefs.size > 0 ? `Refs ${sorted(allRefs).map((i) => `#${i}`).join(", ")} — NÃO CLOSES (escopo parcial declarado nas PRs do lote)` : "";
   const prList = batch.prs.map((n) => `#${n}`).join(", ");
   return [
     `Trem de merge (#6300) — ${batch.prs.length} PRs validados juntos com 1 run de CI: ${prList}.`,
     "",
-    closesLine,
+    ...closesLines,
+    refsLine,
   ]
     .filter((l) => l !== "")
     .join("\n");
