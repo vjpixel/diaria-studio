@@ -391,6 +391,18 @@
     "subscriber_filter_created_after": "2026-08-25",
     "subscriber_filter_created_after_note": "#7357 (03/09/2026) — resgata cadastros nativos do Kit que ficam presos sem receber a edição: `subscribeToKit` nunca taggeia no cadastro (grava custom fields + inscreve na sequence de boas-vindas, só isso), então quem se cadastra fora de uma rodada manual de tagueamento (ondas 0/1 acima) não entra em `rampa-kit` e não recebe por canal nenhum — nem Kit (sem tag), nem Beehiiv (nunca existiu lá). Achado ao vivo: 34 assinantes ativos presos, 30 deles entre 29/08 e 03/09; broadcast 260903 confirmou `recipients: 280` = exatamente o tamanho da tag, provando que ninguém fora dela recebeu. Decisão do editor: filtro por data, sem tag nova (rejeitou taggear em `subscribeToKit` — contaminaria a coorte que é gate da rampa Gmail #6504 em TODO cadastro futuro, sem corte — e rejeitou criar tag dedicada). Data escolhida: 2026-08-25, a mais antiga das 3 datas em que `SUBSCRIBE_BACKEND` virou \"kit\" nos workers (poll 25/08 17:57 BRT, cursos 25/08 18:55 BRT, reativar 25/08 19:06 BRT — antes disso o Kit não aceitava cadastro nenhum, então nada fica de fora por engano). PAREDE DE PLATAFORMA (não reabrir sem capacidade nova do Kit): `POST /v4/broadcasts` só aceita `subscriber_filter` do tipo `tag`/`segment` (confirmado contra a doc oficial, developers.kit.com/api-reference/broadcasts/create-a-broadcast — sem tipo `date`, sem endpoint de criação de segment), então \"tag rampa-kit OU criado após esta data\" não vira um operador de filtro — vira `kit-diaria-stage5-dispatch.ts` aplicando a MESMA tag `rampa-kit` (nunca uma nova) a quem foi criado on/after esta data e ainda não a tem, ANTES de montar o broadcast; o `subscriber_filter` em si continua sendo só `type: \"tag\"`. Ver a docstring de `listActiveSubscribersCreatedAfter` (`scripts/lib/kit-broadcasts.ts`) e de `subscriber_filter_created_after` (`scripts/lib/kit-diaria-channel.ts`) para o mecanismo completo. Consequência aceita pelo editor: a tag `rampa-kit` deixa de representar só as ondas 0/1 controladas manualmente — passa a crescer com todo cadastro nativo pós-corte, misturando a coorte de medição da rampa Gmail (`kit-provider-split.ts`) com gente admitida por data. Ausente/vazio ⇒ resgate desligado (comportamento pré-#7357)."
   },
+  "circle_stack": {
+    "enabled": true,
+    "base_url": "https://app.circle.so",
+    "auth_scheme": "auto",
+    "space_id": null,
+    "author_email": null,
+    "status": "draft",
+    "is_comments_enabled": true,
+    "skip_notifications": false,
+    "subscribe_url": null,
+    "note": "#10904 — post semanal no espaco Radar de Noticias Stack (plataforma.stack.com.br, Circle) via scripts/publish-circle-stack.ts. Token em CIRCLE_STACK_API_TOKEN. space_id: descobrir com --list-spaces. status draft ate o 1o teste real; author_email so se o token permitir definir autor (senao sai como o dono do token). subscribe_url null = diar.ia.br com UTM stack/circle."
+  },
   "meta_ads": {
     "campaign_ids": ["52527432124198"],
     "note": "#9378 — campanhas da conta Meta Ads (act_10151064543294811) cujo gasto/cadastro conta como canal da newsletter (`Meta Ads (teste 2608)`). A conta tambem roda campanhas de outros produtos (ingresso do evento agente-ia desde 24/09/2026); a ingestao (scripts/meta-ads-ingest-spend.ts, painel /ads, aquisicao-conversions-ingest) consulta insights com level=campaign filtrando por estes ids. Lista vazia = conta inteira (level=account), comportamento anterior ao #9378. Campanha nova da newsletter precisa entrar aqui."
