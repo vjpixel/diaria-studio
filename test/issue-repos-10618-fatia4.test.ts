@@ -67,6 +67,7 @@ import { planLabelSync, requiredIssueLabels } from "../scripts/lib/issue-label-s
 import { resolvePrTargetRepo, resolveRepoFlag } from "../scripts/lib/issue-repos.ts";
 import { citesIssueNumber } from "../scripts/lib/issue-duplicate-preflight.ts";
 import { assessOpenPrCoverage } from "../scripts/lib/issue-open-pr-check.ts";
+import { resolveSafeEditRepo, SAFE_EDIT_CONFIG_ROOT } from "../scripts/lib/gh-pr-safe-edit.ts";
 import { main as syncLabelsMain, type GhRunner } from "../scripts/sync-issue-labels.ts";
 import { ROUTABLE_LABELS } from "../scripts/lib/issue-route.ts";
 
@@ -1212,5 +1213,27 @@ describe("#10618 fatia 4 (review P3) — matchers e flags", () => {
       console.error = err;
     }
     assert.equal(calls.length, 0);
+  });
+});
+
+describe("#10618 fatia 4 (review 2, item 5) — gh-pr-safe-edit rodado do worktree do design", () => {
+  it("allowlist vem do checkout do script: cwd sem platform.config.json aceita --repo design", () => {
+    const root = mkdtempSync(join(tmpdir(), "fatia4-design-wt-"));
+    tmpRoots.push(root); // sem platform.config.json, como um worktree do diaria-design
+    const { env, calls } = fakeGh(root, { [`pr_view_${DESIGN}_23_body`]: "Closes #21" });
+    const r = spawnSync(
+      process.execPath,
+      ["--import", TSX_LOADER, join(ROOT, "scripts", "lib", "gh-pr-safe-edit.ts"), "--pr", "23", "--repo", DESIGN, "--verify-body", "--issues", "21"],
+      { cwd: root, encoding: "utf8", env },
+    );
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /"ok":true/);
+    assert.ok(calls()[0].includes("-R") && calls()[0].includes(DESIGN));
+  });
+
+  it("resolveSafeEditRepo: fora da allowlist do checkout do script continua recusado", () => {
+    assert.ok("error" in resolveSafeEditRepo({ repo: "fork/diaria-design" }, new Set()));
+    assert.deepEqual(resolveSafeEditRepo({ repo: DESIGN }, new Set()), { repo: DESIGN });
+    assert.equal(SAFE_EDIT_CONFIG_ROOT, ROOT);
   });
 });

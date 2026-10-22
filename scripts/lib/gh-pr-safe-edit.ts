@@ -43,7 +43,27 @@
  */
 import { spawnGhSync, type GhSpawnResult } from "./shared/gh-run.ts";
 import { isMainModule, parseArgs } from "./cli-args.ts";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { prLabelInRepo, resolveRepoFlag } from "./issue-repos.ts";
+
+/**
+ * Raiz do checkout do diaria-studio ONDE ESTE SCRIPT MORA (review 2, item 5
+ * da #10618): a allowlist `issue_repos` vem do `platform.config.json` daqui,
+ * não do cwd — o helper é rodado de dentro do worktree do diaria-design
+ * (`--repo vjpixel/diaria-design`), que não tem esse config, e resolver pelo
+ * cwd recusaria o repo legítimo.
+ */
+export const SAFE_EDIT_CONFIG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** `--repo` do CLI resolvido contra a allowlist do checkout do script. */
+export function resolveSafeEditRepo(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  configRoot: string = SAFE_EDIT_CONFIG_ROOT,
+): { repo: string | undefined } | { error: string } {
+  return resolveRepoFlag(values, flags, configRoot);
+}
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
@@ -252,8 +272,9 @@ async function main() {
 
   const cwd = process.cwd();
   // #10618 (fatia 4, review B): PR de outro repo da allowlist. Sem `--repo`,
-  // tudo resolve pelo remote do cwd (o diaria-studio).
-  const repoFlag = resolveRepoFlag(values, flags, cwd);
+  // tudo resolve pelo remote do cwd (o diaria-studio). A allowlist vem do
+  // checkout do script, não do cwd (review 2, item 5).
+  const repoFlag = resolveSafeEditRepo(values, flags);
   if ("error" in repoFlag) {
     console.error(`[gh-pr-safe-edit] ${repoFlag.error}\n\n${usage()}`);
     process.exitCode = 1;
