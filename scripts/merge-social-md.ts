@@ -41,10 +41,9 @@
  * pelo #3991.
  *
  * #7678: a seção `## eia` gerada aqui (#3471) foi REMOVIDA. O post do
- * "É IA?" hoje é dispatchado por `publish-eia-social.ts`, que lê
- * `01-eia-social.md` (escrito à mão pelo editor, com UTM embutido) — uma
- * fonte de texto independente daquela gerada automaticamente em
- * `03-social.md`, que nunca alimentou nenhum publisher. Manter a seção
+ * "É IA?" não sai mais nas redes (#10766 — segue só na newsletter; o
+ * dispatch avulso `publish-eia-social.ts` foi removido) — o texto gerado em
+ * `03-social.md` nunca alimentou nenhum publisher. Manter a seção
  * gerada só confundia a revisão no gate (dava a impressão de um post
  * "É IA?" agendado quando o texto de verdade morra em outro arquivo).
  * O gerador (`extractEiaCreditLine`/`buildEiaSocialSection`/
@@ -331,8 +330,8 @@ function main(): void {
   socialStripped = socialAfterHeaderStrip.trim();
 
   // #7678: a seção `## eia` gerada automaticamente (#3471) foi REMOVIDA —
-  // o post do "É IA?" é dispatchado por `publish-eia-social.ts` a partir de
-  // `01-eia-social.md`, não de `03-social.md`. Nenhum bloco é injetado aqui.
+  // o "É IA?" não é publicado nas redes (#10766), só na newsletter.
+  // Nenhum bloco é injetado aqui.
   // (O gerador `buildEiaSocialSection`/`insertEiaSection` e o leitor
   // `extractEiaCreditLine` foram removidos junto; `01-eia.md` continua sendo
   // gerado por `eia-compose.ts` pra a seção da newsletter, não é mais lido

@@ -358,6 +358,26 @@ describe("#882 /queue payload size validation", () => {
     });
   }
 
+  // #10766: o "É IA?" não sai mais nas redes — `eia-{AAMMDD}` deixou de ser
+  // aceito no enqueue (era o post avulso do publish-eia-social.ts, removido).
+  it('destaque="eia-261022" (É IA? fora das redes, #10766) retorna 400', async () => {
+    const { env, kv } = mkEnv();
+    const body = {
+      text: "Qual imagem foi gerada por IA?",
+      image_url: "https://example.com/eia-ab.jpg",
+      scheduled_at: "2026-12-01T12:00:00Z",
+      destaque: "eia-261022",
+    };
+    const req = authedRequest("https://w.test/queue", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await workerDefault.fetch(req, env);
+    assert.equal(res.status, 400);
+    assert.equal(kv.store.size, 0);
+  });
+
   it('destaque="d4" (fora de d1-d3 e fora do padrão weekly[-mode]) continua 400', async () => {
     const { env } = mkEnv();
     const body = {

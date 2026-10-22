@@ -321,8 +321,8 @@ Texto do d2.
       "ordem final deve ser d1→d3, depois post_pixel — independente da ordem no MD",
     );
     // #7678: o `## eia` do MD (aqui de propósito, simulando um 03-social.md
-    // legado) NÃO vira grupo — o post do "É IA?" saiu de 03-social.md e é
-    // dispatchado por `publish-eia-social.ts` a partir de 01-eia-social.md.
+    // legado) NÃO vira grupo — o "É IA?" saiu de 03-social.md e não é mais
+    // publicado nas redes (#10766).
     assert.ok(!groups.some((g) => g.key === "eia"), "seção `## eia` legada é ignorada, não vira grupo");
   });
 

@@ -159,8 +159,8 @@ const ROOT = resolve(import.meta.dirname, "..");
 
 /**
  * `destaque` no store e no Worker — `especial-{sufixo}` é o único namespace do
- * Worker publicado sem semântica alheia (`d[123]`, `weekly-*`, `eia-*` são da
- * diária, do semanal e do "É IA?"). Ampliar o regex exigiria deploy.
+ * Worker publicado sem semântica alheia (`d[123]`/`um` e `weekly-*` são da
+ * diária e do semanal; `eia-*` saiu no #10766). Ampliar o regex exigiria deploy.
  */
 export const RETROSPECTIVA_SOCIAL_DESTAQUE = "especial-retrospectiva";
 
