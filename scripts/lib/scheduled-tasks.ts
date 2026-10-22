@@ -610,7 +610,11 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // por transação + evento. Lê pela rota GET /hotmart/vendas do Worker
     // `diaria-site` (workers/site; HOTMART_VENDAS_TOKEN do .env), últimos 35
     // dias por rodada: semanal sobra (cada evento passa por ~5 rodadas antes
-    // de sair da janela). guard.requiredFile é o store de assinantes, não o
+    // de sair da janela). A rodada dos dias 1-7 do mês lê 93 dias (#10876:
+    // evento reenviado com creation_date antigo); grava janela a janela e
+    // guarda cobertura + chaves inválidas já avisadas em vendas.estado.json
+    // (#10876/#10881), então uma chave ruim persistente não dá exit 3 toda
+    // semana. guard.requiredFile é o store de assinantes, não o
     // espelho (que não existe antes da 1ª rodada) nem a pasta data/ (que o
     // próprio runner cria ao gravar o log mesmo com a junction desmontada).
     // O script checa o mesmo sentinela (SENTINELA_DATA_REL_PATH, travado por

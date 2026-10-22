@@ -62,6 +62,9 @@ import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 // deps) — ao contrário de `cac.ts`, não arrasta `dotenv/config` (ver
 // `normalizeEmailLocal` abaixo), então importar daqui preserva a pureza.
 import { INTERNAL_EMAILS, isTestAccount } from "./cohorts.ts";
+// Miolos puros (sem fs/rede/dotenv) das vendas Hotmart (#10734 4b).
+import { saldoReceita, type VendaRecord } from "./shared/hotmart-vendas.ts";
+import { periodoCoberto, type Periodo } from "./hotmart-vendas-espelho.ts";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -799,11 +802,83 @@ export function computeKitLifetimeChurn(
   };
 }
 
-/** Hotmart vende, mas não tem fonte de receita no repo (#10703): entra no
- *  ARPU como fonte SEM dado, então o número sai PISO e diz qual fonte falta
- *  em vez de omiti-la em silêncio. Compartilhado por `cac-report.ts` e pelo
- *  bloco Valor do Studio (`studio-metrics.ts`, #10713) — paridade #9023. */
-export const LTV_FONTES_SEM_INTEGRACAO: readonly string[] = ["hotmart"];
+// ---------------------------------------------------------------------------
+// Hotmart — vendas do espelho `data/hotmart/vendas.jsonl` (#10734 4b)
+// ---------------------------------------------------------------------------
+
+/** Nome da fonte Hotmart em `revenueBySource`/`porFonte` (#10703: entrava
+ *  como fonte SEM dado; desde #10734 4b, com dado quando o mês está coberto). */
+export const LTV_FONTE_HOTMART = "hotmart";
+
+export interface HotmartMonthRevenue {
+  /** Saldo BRUTO em BRL do mês (aprovadas − uma reversão por transação),
+   *  ou `null` quando o mês não pode ser medido — nunca `0` por ausência. */
+  valorBrl: number | null;
+  aprovadas: number;
+  estornos: number;
+  motivo: string | null;
+}
+
+function ultimoDiaDoMes(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return `${month}-${String(last).padStart(2, "0")}`;
+}
+
+/**
+ * Receita Hotmart do mês de competência `month` (AAAA-MM, Brasília), a partir
+ * dos eventos do espelho (#10734 4b). Regras:
+ *
+ * - Receita BRUTA (`valor_bruto`, o preço pago), pela definição do #8423 —
+ *   igual à apoia.se. Não depende da premissa sobre a comissão no evento de
+ *   reembolso (item 3 da issue, ainda por conferir na 1ª entrega real), que só
+ *   afeta o líquido.
+ * - Regime de caixa: cada evento conta no mês do seu `dia` (aprovada soma,
+ *   reembolso/chargeback subtraem, no máximo uma reversão por transação,
+ *   cancelada não mexe — `saldoReceita`).
+ * - Só conta com o mês INTEIRO dentro de um intervalo de `cobertura` (estado
+ *   do sync, `hotmart-vendas-espelho.ts`). Fora disso, `null`: espelho
+ *   parcial viraria receita subestimada sem rótulo.
+ * - Evento que mexe na receita sem valor bruto, ou em moeda que não BRL, deixa
+ *   o mês `null` com motivo (somar só o resto seria um piso sem rótulo).
+ *
+ * Mês coberto e sem venda nenhuma é R$ 0 legítimo (o espelho viu o mês todo).
+ * @pure
+ */
+export function computeHotmartMonthRevenue(input: {
+  registros: readonly VendaRecord[];
+  cobertura: readonly Periodo[];
+  month: string;
+}): HotmartMonthRevenue {
+  const de = `${input.month}-01`;
+  const ate = ultimoDiaDoMes(input.month);
+  if (!periodoCoberto(input.cobertura, de, ate)) {
+    const cob = input.cobertura.map((p) => `${p.de}..${p.ate}`).join(", ") || "nenhuma";
+    return {
+      valorBrl: null,
+      aprovadas: 0,
+      estornos: 0,
+      motivo: `espelho Hotmart não cobre ${de}..${ate} inteiro (cobertura: ${cob}) — rode scripts/sync-hotmart-vendas.ts`,
+    };
+  }
+  const doMes = input.registros.filter((r) => r.dia >= de && r.dia <= ate);
+  const saldo = saldoReceita(doMes, "bruto");
+  const outras = saldo.porMoeda.filter((p) => p.moeda !== "BRL");
+  if (saldo.semValorLiquido > 0 || outras.length > 0) {
+    const partes = [
+      saldo.semValorLiquido > 0 ? `${saldo.semValorLiquido} evento(s) sem valor bruto` : null,
+      outras.length > 0 ? `evento(s) em ${outras.map((p) => p.moeda).join(", ")}` : null,
+    ].filter(Boolean);
+    return {
+      valorBrl: null,
+      aprovadas: 0,
+      estornos: 0,
+      motivo: `Hotmart ${input.month}: ${partes.join(" e ")} — fora do ARPU para não somar só parte do mês`,
+    };
+  }
+  const brl = saldo.porMoeda.find((p) => p.moeda === "BRL");
+  return { valorBrl: brl?.liquido ?? 0, aprovadas: brl?.aprovadas ?? 0, estornos: brl?.estornos ?? 0, motivo: null };
+}
 
 /**
  * Lê as assinaturas Kit do store com o e-mail do alias Kit (#10703). Linha

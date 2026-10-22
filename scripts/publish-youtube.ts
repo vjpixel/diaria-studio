@@ -108,7 +108,7 @@ import {
   type YouTubeUploadResult,
 } from "./lib/diaria/youtube-upload.ts";
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
-import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
+import { d1SocialSlotAt, videoLinkEligibility, videoLinkRemedy } from "./lib/diaria/youtube-video-link-gate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -287,7 +287,7 @@ export interface RunUploadOutcome {
  */
 export function writeD1VideoUrlAfterUpload(
   editionDir: string,
-  record: Pick<YouTubePublishedRecord, "aammdd" | "url" | "state" | "rereadStatus">,
+  record: Pick<YouTubePublishedRecord, "aammdd" | "url" | "state" | "rereadStatus"> & Partial<Pick<YouTubePublishedRecord, "previous_uploads">>,
   d1SlotAt: Date | null,
   log: (line: string) => void,
   /** Default `YOUTUBE_API_PROJECT_AUDITED`; sem auditoria, `scheduled` não grava (#10865). */
@@ -300,17 +300,42 @@ export function writeD1VideoUrlAfterUpload(
     projectAudited,
   });
   const urlFile = join(editionDir, D1_VIDEO_URL_FILE);
+  // #10881 item 2: depois de `--upload --force`, o arquivo pode apontar para
+  // o vídeo SUBSTITUÍDO (gravado pelo upload anterior). Esse link não serve
+  // mais: é trocado pelo novo quando o novo passa no portão, e MANTIDO (com
+  // aviso) quando não passa — decisão do editor no review do #10892. URL que não veio de upload nosso (o editor gravou com
+  // link-video-d1) segue intocada.
+  const previousUrls = new Set(
+    (record.previous_uploads ?? [])
+      .map((p) => ("url" in p && typeof p.url === "string" ? p.url : null))
+      .filter((u): u is string => !!u && u !== record.url),
+  );
+  let currentRaw = "";
+  try {
+    currentRaw = existsSync(urlFile) ? readFileSync(urlFile, "utf8").trim() : "";
+  } catch {
+    // Ilegível: o bloco de gravação abaixo relê e registra o erro.
+  }
+  const staleFromPreviousUpload = currentRaw !== "" && previousUrls.has(currentRaw);
   if (!verdict.ok) {
+    if (staleFromPreviousUpload) {
+      // Decisão do editor (#10892 review): o link do vídeo substituído é
+      // MANTIDO enquanto o novo não abre — tirar o link de um vídeo que ainda
+      // funciona deixaria o D1 sem vídeo. Só avisa; quando o novo passar no
+      // portão, a gravação abaixo troca o link.
+      log(`[aviso] ${urlFile} segue apontando para o vídeo substituído (${currentRaw}) — mantido até o novo abrir; confira se o antigo ainda está público.`);
+    }
+    // Mensagem já dirigida pela premissa de auditoria (#10866: sem ela, agendar não resolve).
     log(
-      `[aviso] link do vídeo NÃO gravado em ${urlFile}: ${verdict.reason}. Depois de publicar (ou agendar antes do D1) ` +
-        `no Studio, rode \`npx tsx scripts/link-video-d1.ts ${record.aammdd} --save --assume-public\` (#10858).`,
+      `[aviso] link do vídeo NÃO gravado em ${urlFile}: ${verdict.reason}. ${videoLinkRemedy(projectAudited)} ` +
+        `e rode \`npx tsx scripts/link-video-d1.ts ${record.aammdd} --save --assume-public\` (#10858).`,
     );
     return false;
   }
   try {
     if (existsSync(urlFile)) {
       const current = readFileSync(urlFile, "utf8").trim();
-      if (current && current !== record.url) {
+      if (current && current !== record.url && !staleFromPreviousUpload) {
         log(`[aviso] ${urlFile} já aponta para ${current} — mantido; o vídeo enviado é ${record.url} (#10858)`);
         return false;
       }

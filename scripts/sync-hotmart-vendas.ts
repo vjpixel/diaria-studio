@@ -11,18 +11,30 @@
  *
  * Idempotente por transação + evento (`scripts/lib/hotmart-vendas-espelho.ts`):
  * rodar de novo não acrescenta nada; linha já espelhada nunca é reescrita. Só
- * acrescenta ao arquivo (`appendFileSync`), nunca o reescreve. Leitura e
+ * acrescenta ao arquivo (`appendFileSync`), nunca o reescreve, e acrescenta
+ * JANELA A JANELA (#10876 item 2): num backfill longo, a falha numa janela não
+ * descarta as anteriores. Ao lado do espelho fica o estado
+ * (`vendas.estado.json`): cobertura de dias já lidos (o ARPU/LTV só conta a
+ * Hotmart de um mês coberto, `ltv.ts`) e as chaves inválidas do KV já
+ * avisadas (#10881 item 3).
+ *
+ * Janela sem período explícito: 35 dias, e 93 dias na rodada dos dias 1-7 do
+ * mês (varredura mensal, #10876 item 1: pega evento reenviado com
+ * `creation_date` antigo). Evento que chega com `creation_date` mais de 93
+ * dias no passado só entra por backfill manual (`--de`). Leitura e
  * acréscimo rodam sob um lock (`{espelho}.lock`, aberto com `wx`): duas
  * rodadas ao mesmo tempo acrescentariam as mesmas linhas duas vezes. Lock com
  * mais de 1h é considerado abandonado e tomado, com aviso.
  *
  * Uso:
- *   npx tsx scripts/sync-hotmart-vendas.ts                       # últimos 35 dias
+ *   npx tsx scripts/sync-hotmart-vendas.ts                       # últimos 35 dias (93 nos dias 1-7 do mês, #10876)
  *   npx tsx scripts/sync-hotmart-vendas.ts --dias 90
  *   npx tsx scripts/sync-hotmart-vendas.ts --de 2026-01-01 --ate 2026-10-22   # backfill (janelas de 93 dias)
  *   npx tsx scripts/sync-hotmart-vendas.ts --de 2026-01-01       # --ate default = hoje (Brasília)
  *   npx tsx scripts/sync-hotmart-vendas.ts --dry-run             # lê e conta, não grava
  *   npx tsx scripts/sync-hotmart-vendas.ts --out /tmp/vendas.jsonl
+ *
+ * Em falha (exit 1) as janelas concluídas antes dela já ficaram gravadas.
  *
  * `--ate` sozinho (sem `--de`) é recusado: não há início óbvio para o backfill.
  *
@@ -33,13 +45,16 @@
  * Saída:
  *   0 = ok (com ou sem novidade);
  *   1 = falha de leitura/escrita/rede (inclui timeout de 30s por janela e lock
- *       ocupado por outra rodada); nada é gravado;
+ *       ocupado por outra rodada); só ficam gravadas as janelas concluídas
+ *       antes da falha;
  *   2 = configuração ou argumento inválido (token ausente, junction `data/`
  *       não montada sem `--out`, data inválida, período invertido, flags
  *       conflitantes); nada é gravado;
  *   3 = o que era válido foi gravado, mas a rota devolveu registros fora do
- *       formato ou o Worker pulou chaves inválidas no KV. Não está em
- *       `successExitCodes` da task: a unit sai `failed` e o alarme pega.
+ *       formato ou o Worker pulou chaves inválidas NOVAS no KV. Não está em
+ *       `successExitCodes` da task: a unit sai `failed` e o alarme pega. A
+ *       chave inválida vai para o estado e, nas rodadas seguintes, só gera
+ *       aviso (senão a task falharia toda semana até o TTL de 400 dias).
  *
  * Agendado: task `Diaria-Hotmart-Vendas-Sync` (semanal), ver
  * `scripts/lib/scheduled-tasks.ts` e `docs/scheduled-tasks-registry.md`. O
@@ -59,14 +74,20 @@ import { HOTMART_VENDAS_PATH } from "./lib/shared/hotmart-vendas.ts";
 import {
   ESPELHO_REL_PATH,
   SENTINELA_DATA_REL_PATH,
-  SYNC_DIAS_PADRAO,
+  diasPadraoDoSync,
+  estadoPathDoEspelho,
+  parseEstadoSync,
   parseRespostaVendas,
   periodoPadrao,
   planejarJanelas,
+  registrarJanelaNoEstado,
+  trechoCobertoDaJanela,
   sincronizarEspelho,
+  type EstadoSync,
   type Periodo,
   type RespostaVendas,
 } from "./lib/hotmart-vendas-espelho.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_BASE_URL = "https://diar.ia.br";
@@ -167,7 +188,7 @@ export function resolverPeriodoCli(opts: { de?: string; ate?: string; dias?: num
   const { de, ate, dias, nowMs } = opts;
   if ((de || ate) && dias !== undefined) throw new Error("use --dias OU --de/--ate, não os dois.");
   if (ate && !de) throw new Error("--ate exige --de (sem --de não há início para o backfill).");
-  const periodo: Periodo = de ? { de, ate: ate ?? brtDay(nowMs) } : periodoPadrao(nowMs, dias ?? SYNC_DIAS_PADRAO);
+  const periodo: Periodo = de ? { de, ate: ate ?? brtDay(nowMs) } : periodoPadrao(nowMs, dias ?? diasPadraoDoSync(nowMs));
   return { periodo, janelas: planejarJanelas(periodo.de, periodo.ate) };
 }
 
@@ -216,11 +237,49 @@ async function main(): Promise<number> {
   }
   try {
     const textoAtual = existsSync(outPath) ? readFileSync(outPath, "utf8") : "";
-    const r = await sincronizarEspelho({
-      janelas,
-      buscarJanela: (d, a) => buscarJanelaHttp(baseUrl, token, d, a),
-      textoAtual,
-    });
+    // #10876/#10881: estado ao lado do espelho (cobertura + chaves inválidas
+    // já avisadas). Ilegível lança: zerá-lo reabriria alarmes e apagaria a
+    // cobertura que o ARPU/LTV lê.
+    const estadoPath = estadoPathDoEspelho(outPath);
+    let estado: EstadoSync = parseEstadoSync(existsSync(estadoPath) ? readFileSync(estadoPath, "utf8") : null);
+    let linhasGravadas = 0;
+    let janelasConcluidas = 0;
+    let r: Awaited<ReturnType<typeof sincronizarEspelho>>;
+    try {
+      r = await sincronizarEspelho({
+        janelas,
+        buscarJanela: (d, a) => buscarJanelaHttp(baseUrl, token, d, a),
+        textoAtual,
+        chavesInvalidasConhecidas: new Set(estado.chaves_invalidas_conhecidas),
+        // #10876 item 2: grava janela a janela; a falha da janela N não
+        // descarta o que as anteriores leram.
+        aoConcluirJanela: dryRun
+          ? undefined
+          : (j) => {
+              if (j.acrescentar) {
+                appendFileSync(outPath, j.acrescentar, "utf8");
+                linhasGravadas += j.novos.length;
+              }
+              janelasConcluidas++;
+              const agora = Date.now();
+              estado = registrarJanelaNoEstado(
+                estado,
+                trechoCobertoDaJanela(j.janela, j.descartados, agora),
+                j.chavesIgnoradasNovas,
+                new Date(agora).toISOString(),
+              );
+              writeFileAtomic(estadoPath, JSON.stringify(estado, null, 2) + "\n");
+            },
+      });
+    } catch (e) {
+      if (janelasConcluidas > 0) {
+        console.error(
+          `sync-hotmart-vendas: falhou depois de ${janelasConcluidas} janela(s) concluída(s); ${linhasGravadas} linha(s) delas ficaram gravadas em ${outPath} ` +
+            "(rodar de novo continua de onde parou, a dedup ignora o que já está lá).",
+        );
+      }
+      throw e;
+    }
 
     console.log(
       `sync-hotmart-vendas: ${periodo.de}..${periodo.ate} em ${r.janelas} janela(s): ${r.recebidos} evento(s) lidos, ` +
@@ -238,14 +297,21 @@ async function main(): Promise<number> {
     if (dryRun) {
       console.log(`sync-hotmart-vendas: --dry-run, nada gravado (destino seria ${outPath}).`);
     } else if (r.acrescentar) {
-      appendFileSync(outPath, r.acrescentar, "utf8");
       console.log(`sync-hotmart-vendas: ${r.novos.length} linha(s) acrescentada(s) em ${outPath}.`);
     }
 
-    if (r.descartados + r.ignoradosNoKv > 0) {
+    const invalidasJaConhecidas = r.ignoradosNoKv - r.ignoradosNoKvNovos;
+    if (invalidasJaConhecidas > 0) {
+      console.warn(
+        `sync-hotmart-vendas: AVISO: ${invalidasJaConhecidas} chave(s) inválida(s) no KV já avisada(s) numa rodada anterior ` +
+          `(lista em ${estadoPath}); não viram alarme de novo.`,
+      );
+    }
+    if (r.descartados + r.ignoradosNoKvNovos > 0) {
       console.error(
-        `sync-hotmart-vendas: ${r.descartados} registro(s) fora do formato na resposta e ${r.ignoradosNoKv} chave(s) ` +
-          "inválida(s) no KV ficaram de fora do espelho; o resto foi gravado. Exit 3 para virar alarme.",
+        `sync-hotmart-vendas: ${r.descartados} registro(s) fora do formato na resposta e ${r.ignoradosNoKvNovos} chave(s) ` +
+          "inválida(s) NOVA(S) no KV ficaram de fora do espelho; o resto foi gravado. Exit 3 para virar alarme" +
+          (dryRun ? "." : " (as chaves novas ficam registradas no estado e não repetem o alarme na próxima rodada)."),
       );
       return EXIT_REGISTROS_INVALIDOS;
     }

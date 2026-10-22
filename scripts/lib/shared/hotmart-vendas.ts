@@ -377,11 +377,11 @@ export interface SaldoVendas {
  * mais antiga por `criado_em`; empate cai no `evento_id`, para o resultado não
  * depender da ordem de chegada. Devolve o conjunto de registros escolhidos.
  */
-function reversoesContadas(registros: readonly VendaRecord[]): Set<VendaRecord> {
+function reversoesContadas(registros: readonly VendaRecord[], base: BaseReceita = "liquido"): Set<VendaRecord> {
   const escolhida = new Map<string, VendaRecord>();
   const melhor = (a: VendaRecord, b: VendaRecord): VendaRecord => {
-    const aVal = a.valor_liquido !== null && a.moeda_liquido !== null;
-    const bVal = b.valor_liquido !== null && b.moeda_liquido !== null;
+    const aVal = valorDaBase(a, base).valor !== null && valorDaBase(a, base).moeda !== null;
+    const bVal = valorDaBase(b, base).valor !== null && valorDaBase(b, base).moeda !== null;
     if (aVal !== bVal) return aVal ? a : b;
     const t = a.criado_em.localeCompare(b.criado_em);
     if (t !== 0) return t < 0 ? a : b;
@@ -395,28 +395,45 @@ function reversoesContadas(registros: readonly VendaRecord[]): Set<VendaRecord> 
   return new Set(escolhida.values());
 }
 
+/** Qual valor do registro o saldo soma: o LÍQUIDO (comissão do produtor) ou
+ * o BRUTO (preço pago pelo comprador). O ARPU/LTV usa o bruto (#10734 4b),
+ * pela definição do #8423: receita BRUTA. */
+export type BaseReceita = "liquido" | "bruto";
+
+function valorDaBase(r: VendaRecord, base: BaseReceita): { valor: number | null; moeda: string | null } {
+  return base === "bruto" ? { valor: r.valor_bruto, moeda: r.moeda_bruto } : { valor: r.valor_liquido, moeda: r.moeda_liquido };
+}
+
 /** Saldo líquido do período, por moeda (regime de caixa: o reembolso conta no
  * dia em que chegou, não no da compra). No máximo UMA reversão por transação
  * (`reversoesContadas`, #10750) — dentro dos registros recebidos: um reembolso
  * e um chargeback da mesma compra lidos em períodos diferentes contam um em
  * cada leitura. */
 export function saldoLiquido(registros: readonly VendaRecord[]): SaldoVendas {
+  return saldoReceita(registros, "liquido");
+}
+
+/** Mesmo saldo de `saldoLiquido`, sobre o valor de `base`. Com `"bruto"`,
+ * `porMoeda[].liquido` é o saldo BRUTO e `semValorLiquido` conta os eventos
+ * sem valor bruto (o nome dos campos fica pelo contrato de `saldoLiquido`). */
+export function saldoReceita(registros: readonly VendaRecord[], base: BaseReceita): SaldoVendas {
   const acc = new Map<string, { liquido: number; aprovadas: number; estornos: number }>();
   let semValorLiquido = 0;
-  const reversoes = reversoesContadas(registros);
+  const reversoes = reversoesContadas(registros, base);
   for (const r of registros) {
     const s = sinalReceita(r.evento);
     if (s === 0) continue;
     if (s < 0 && !reversoes.has(r)) continue;
-    if (r.valor_liquido === null || r.moeda_liquido === null) {
+    const { valor, moeda } = valorDaBase(r, base);
+    if (valor === null || moeda === null) {
       semValorLiquido++;
       continue;
     }
-    const cur = acc.get(r.moeda_liquido) ?? { liquido: 0, aprovadas: 0, estornos: 0 };
-    cur.liquido = Math.round((cur.liquido + s * r.valor_liquido) * 100) / 100;
+    const cur = acc.get(moeda) ?? { liquido: 0, aprovadas: 0, estornos: 0 };
+    cur.liquido = Math.round((cur.liquido + s * valor) * 100) / 100;
     if (s > 0) cur.aprovadas++;
     else cur.estornos++;
-    acc.set(r.moeda_liquido, cur);
+    acc.set(moeda, cur);
   }
   const porMoeda = [...acc.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([moeda, v]) => ({ moeda, ...v }));
   return { porMoeda, semValorLiquido };

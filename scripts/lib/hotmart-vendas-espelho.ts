@@ -45,6 +45,31 @@ export const JANELA_MAX_DIAS = ABANDONOS_MAX_DIAS;
  * perde nada. */
 export const SYNC_DIAS_PADRAO = 35;
 
+/** Janela da VARREDURA mensal (#10876 item 1): o teto da rota, 93 dias. */
+export const SYNC_DIAS_VARREDURA = JANELA_MAX_DIAS;
+
+/** Até este dia do mês (Brasília), a rodada sem período explícito usa a
+ * varredura de 93 dias em vez da janela de 35. Com a task semanal (sábado),
+ * todo mês tem exatamente uma rodada nos dias 1-7. */
+export const VARREDURA_ATE_DIA_DO_MES = 7;
+
+/**
+ * Dias da rodada sem período explícito (#10876 item 1). A chave do KV é
+ * indexada pelo dia de `creation_date`, não pelo dia em que o evento chegou:
+ * um reenvio manual de evento antigo pelo painel da Hotmart, ou uma
+ * retentativa tardia, grava num dia que a janela de 35 dias já não lê. Uma
+ * vez por mês a rodada lê 93 dias para trás e pega esse evento.
+ *
+ * Limite que fica: evento que chega com `creation_date` mais de 93 dias no
+ * passado nunca é espelhado (a rota não lê mais que 93 dias por chamada e o
+ * sync não varre o KV inteiro); só um backfill manual com `--de` o traz,
+ * enquanto o TTL de 400 dias não o apagar.
+ */
+export function diasPadraoDoSync(nowMs: number): number {
+  const diaDoMes = Number(brtDay(nowMs).slice(8, 10));
+  return diaDoMes <= VARREDURA_ATE_DIA_DO_MES ? SYNC_DIAS_VARREDURA : SYNC_DIAS_PADRAO;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -196,6 +221,10 @@ export interface RespostaVendas {
   readonly descartados: number;
   /** Chaves do KV que o próprio Worker já pulou por conteúdo inválido. */
   readonly ignoradosNoKv: number;
+  /** Nomes dessas chaves, quando a rota os devolve (#10881 item 3). Sem
+   * nomes, toda chave ignorada conta como nova (não dá para saber se já foi
+   * avisada). */
+  readonly chavesIgnoradas?: readonly string[];
 }
 
 /** Valida o corpo de `GET /hotmart/vendas`. Lança se a resposta não for um
@@ -214,7 +243,131 @@ export function parseRespostaVendas(body: unknown): RespostaVendas {
     if (rec) registros.push(rec);
     else descartados++;
   }
-  return { registros, descartados, ignoradosNoKv: Array.isArray(o.ignorados) ? o.ignorados.length : 0 };
+  const ignorados = Array.isArray(o.ignorados) ? o.ignorados : [];
+  return {
+    registros,
+    descartados,
+    ignoradosNoKv: ignorados.length,
+    chavesIgnoradas: ignorados.filter((k): k is string => typeof k === "string"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Estado do sync (#10876, #10881 item 3, #10734 4b)
+// ---------------------------------------------------------------------------
+
+export const ESTADO_SYNC_VERSION = 1;
+
+/**
+ * Estado gravado ao lado do espelho (`estadoPathDoEspelho`), atualizado a cada
+ * janela concluída:
+ * - `cobertura`: intervalos de dias já lidos por inteiro da rota, fundidos
+ *   quando se tocam. É o que diz ao ARPU/LTV (`ltv.ts`) se um mês inteiro já
+ *   passou pelo espelho; sem estado, a Hotmart segue como fonte sem dado.
+ * - `chaves_invalidas_conhecidas`: chaves do KV que o Worker pulou e que já
+ *   viraram alarme uma vez. Uma chave inválida persistente fica no KV por até
+ *   400 dias; sem esta lista, a task semanal sairia com exit 3 toda semana até
+ *   o TTL (#10881 item 3). Chave nova continua dando exit 3.
+ */
+export interface EstadoSync {
+  readonly v: typeof ESTADO_SYNC_VERSION;
+  readonly cobertura: readonly Periodo[];
+  readonly chaves_invalidas_conhecidas: readonly string[];
+  readonly atualizado_em: string | null;
+}
+
+export const ESTADO_SYNC_VAZIO: EstadoSync = { v: ESTADO_SYNC_VERSION, cobertura: [], chaves_invalidas_conhecidas: [], atualizado_em: null };
+
+/** `data/hotmart/vendas.jsonl` → `data/hotmart/vendas.estado.json`. */
+export function estadoPathDoEspelho(espelhoPath: string): string {
+  return `${espelhoPath.replace(/\.jsonl$/i, "")}.estado.json`;
+}
+
+/**
+ * Lê o estado. `null` (arquivo ausente) vira o estado vazio. Conteúdo
+ * ilegível LANÇA: tratá-lo como vazio apagaria a cobertura e reabriria os
+ * alarmes de chaves já conhecidas, em silêncio.
+ */
+export function parseEstadoSync(texto: string | null): EstadoSync {
+  if (texto === null || texto.trim() === "") return ESTADO_SYNC_VAZIO;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(texto);
+  } catch (e) {
+    throw new Error(`estado do sync Hotmart ilegível (${(e as Error).message})`);
+  }
+  const o = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+  if (!o || !Array.isArray(o.cobertura) || !Array.isArray(o.chaves_invalidas_conhecidas)) {
+    throw new Error("estado do sync Hotmart ilegível (formato inesperado)");
+  }
+  const cobertura: Periodo[] = [];
+  for (const p of o.cobertura) {
+    const q = p && typeof p === "object" ? (p as Record<string, unknown>) : {};
+    if (typeof q.de !== "string" || typeof q.ate !== "string" || !DAY_RE.test(q.de) || !DAY_RE.test(q.ate) || q.ate < q.de) {
+      throw new Error(`estado do sync Hotmart ilegível (intervalo de cobertura inválido: ${JSON.stringify(p)})`);
+    }
+    cobertura.push({ de: q.de, ate: q.ate });
+  }
+  return {
+    v: ESTADO_SYNC_VERSION,
+    cobertura: fundirCobertura(cobertura),
+    chaves_invalidas_conhecidas: o.chaves_invalidas_conhecidas.filter((k): k is string => typeof k === "string"),
+    atualizado_em: typeof o.atualizado_em === "string" ? o.atualizado_em : null,
+  };
+}
+
+/** Ordena e funde intervalos que se sobrepõem ou se tocam (dia seguinte). */
+export function fundirCobertura(intervalos: readonly Periodo[]): Periodo[] {
+  const ord = [...intervalos].sort((a, b) => a.de.localeCompare(b.de));
+  const out: Periodo[] = [];
+  for (const p of ord) {
+    const ult = out[out.length - 1];
+    if (ult && diaMs(p.de) <= diaMs(ult.ate) + DAY_MS) {
+      if (p.ate > ult.ate) out[out.length - 1] = { de: ult.de, ate: p.ate };
+    } else {
+      out.push({ de: p.de, ate: p.ate });
+    }
+  }
+  return out;
+}
+
+/** `true` se `de..ate` cabe inteiro num único intervalo da cobertura. */
+export function periodoCoberto(cobertura: readonly Periodo[], de: string, ate: string): boolean {
+  return cobertura.some((p) => p.de <= de && p.ate >= ate);
+}
+
+/**
+ * Trecho da janela que pode entrar na cobertura (#10892 review):
+ * - o dia de HOJE (Brasília) nunca conta como lido por inteiro: a rodada só
+ *   viu as vendas até a hora em que rodou. A cobertura para em ONTEM — ex.:
+ *   a varredura das 04:30 de sábado 31/10 cobre outubro só até 30/10, e o
+ *   mês só fica coberto na rodada seguinte, que lê o dia 31 inteiro;
+ * - janela com registro devolvido fora do formato (`descartados > 0`) não
+ *   conta: há venda que não chegou ao espelho, e o mês não pode sair
+ *   "coberto" com receita a menos sem rótulo de PISO.
+ * Devolve `null` quando nada da janela pode ser registrado.
+ */
+export function trechoCobertoDaJanela(janela: Periodo, descartados: number, nowMs: number): Periodo | null {
+  if (descartados > 0) return null;
+  const ontem = diaDe(diaMs(brtDay(nowMs)) - DAY_MS);
+  if (janela.de > ontem) return null;
+  return { de: janela.de, ate: janela.ate < ontem ? janela.ate : ontem };
+}
+
+/** Estado depois de uma janela lida. `trechoCoberto` é o que
+ * `trechoCobertoDaJanela` devolveu (`null` = não amplia a cobertura). */
+export function registrarJanelaNoEstado(
+  estado: EstadoSync,
+  trechoCoberto: Periodo | null,
+  chavesInvalidasNovas: readonly string[],
+  nowIso: string,
+): EstadoSync {
+  return {
+    v: ESTADO_SYNC_VERSION,
+    cobertura: trechoCoberto ? fundirCobertura([...estado.cobertura, trechoCoberto]) : [...estado.cobertura],
+    chaves_invalidas_conhecidas: [...new Set([...estado.chaves_invalidas_conhecidas, ...chavesInvalidasNovas])].sort(),
+    atualizado_em: nowIso,
+  };
 }
 
 export interface ResultadoSync {
@@ -227,44 +380,91 @@ export interface ResultadoSync {
   readonly descartados: number;
   /** Soma, entre as janelas, das chaves que o Worker pulou por conteúdo inválido. */
   readonly ignoradosNoKv: number;
+  /** Dessas, as que não estavam em `chavesInvalidasConhecidas` (só elas viram
+   * alarme, #10881 item 3). Chave sem nome conta sempre como nova. */
+  readonly ignoradosNoKvNovos: number;
+  /** Nomes das chaves ignoradas novas (para gravar no estado). */
+  readonly chavesIgnoradasNovas: readonly string[];
   /** Linhas do espelho atual que não são registro válido (ficam como estão). */
   readonly invalidasNoEspelho: number;
   /** Linhas do espelho atual com chave repetida (ficam como estão). */
   readonly duplicadasNoEspelho: number;
-  /** Texto a acrescentar ao espelho (vazio se nada novo). */
+  /** Texto acrescentado ao espelho, todas as janelas juntas (vazio se nada novo). */
   readonly acrescentar: string;
+}
+
+/** O que `aoConcluirJanela` recebe ao fim de cada janela lida. */
+export interface JanelaConcluida {
+  readonly janela: Periodo;
+  /** Texto a acrescentar AGORA ao espelho (vazio se a janela não trouxe nada novo). */
+  readonly acrescentar: string;
+  readonly novos: readonly VendaRecord[];
+  /** Chaves inválidas desta janela que ainda não eram conhecidas. */
+  readonly chavesIgnoradasNovas: readonly string[];
+  /** Registros desta janela que a rota devolveu fora do formato. */
+  readonly descartados: number;
 }
 
 /**
  * Orquestra o sync sem tocar fs nem rede: busca cada janela com `buscarJanela`
- * (erro sobe: janela que falhou não pode virar "sem vendas") e devolve o que
- * acrescentar ao espelho atual.
+ * (erro sobe: janela que falhou não pode virar "sem vendas").
+ *
+ * Grava POR JANELA (#10876 item 2): ao fim de cada janela lida,
+ * `aoConcluirJanela` recebe o texto a acrescentar daquela janela, já
+ * deduplicado contra o espelho e contra as janelas anteriores. Num backfill de
+ * várias janelas, um erro na última não descarta o que as anteriores leram — o
+ * chamador já gravou. Sem `aoConcluirJanela` (dry-run, teste), nada é gravado e
+ * `acrescentar` traz o texto total.
  */
 export async function sincronizarEspelho(opts: {
   janelas: readonly Periodo[];
   buscarJanela: (de: string, ate: string) => Promise<RespostaVendas>;
   textoAtual: string;
+  chavesInvalidasConhecidas?: ReadonlySet<string>;
+  aoConcluirJanela?: (j: JanelaConcluida) => void;
 }): Promise<ResultadoSync> {
-  const recebidos: VendaRecord[] = [];
+  const conhecidas = opts.chavesInvalidasConhecidas ?? new Set<string>();
+  const { registros: existentesIniciais, invalidas, duplicadas } = lerEspelho(opts.textoAtual);
+  const existentes: VendaRecord[] = [...existentesIniciais];
+  let textoCorrente = opts.textoAtual;
+  let acrescentado = "";
+  const todosNovos: VendaRecord[] = [];
+  let recebidos = 0;
+  let jaPresentes = 0;
   let descartados = 0;
   let ignoradosNoKv = 0;
+  let ignoradosNoKvNovos = 0;
+  const chavesIgnoradasNovas: string[] = [];
   for (const j of opts.janelas) {
     const r = await opts.buscarJanela(j.de, j.ate);
-    recebidos.push(...r.registros);
+    const mescla = mesclarEspelho(existentes, r.registros);
+    const texto = textoParaAcrescentar(mescla.novos, textoCorrente);
+    const nomes = r.chavesIgnoradas ?? [];
+    const novasDaJanela = [...new Set(nomes.filter((k) => !conhecidas.has(k) && !chavesIgnoradasNovas.includes(k)))];
+    const semNome = Math.max(0, r.ignoradosNoKv - nomes.length);
+    opts.aoConcluirJanela?.({ janela: j, acrescentar: texto, novos: mescla.novos, chavesIgnoradasNovas: novasDaJanela, descartados: r.descartados });
+    existentes.push(...mescla.novos);
+    todosNovos.push(...mescla.novos);
+    textoCorrente += texto;
+    acrescentado += texto;
+    recebidos += r.registros.length;
+    jaPresentes += mescla.jaPresentes;
     descartados += r.descartados;
     ignoradosNoKv += r.ignoradosNoKv;
+    ignoradosNoKvNovos += novasDaJanela.length + semNome;
+    chavesIgnoradasNovas.push(...novasDaJanela);
   }
-  const { registros: existentes, invalidas, duplicadas } = lerEspelho(opts.textoAtual);
-  const { novos, jaPresentes } = mesclarEspelho(existentes, recebidos);
   return {
     janelas: opts.janelas.length,
-    recebidos: recebidos.length,
-    novos,
+    recebidos,
+    novos: todosNovos,
     jaPresentes,
     descartados,
     ignoradosNoKv,
+    ignoradosNoKvNovos,
+    chavesIgnoradasNovas,
     invalidasNoEspelho: invalidas,
     duplicadasNoEspelho: duplicadas,
-    acrescentar: textoParaAcrescentar(novos, opts.textoAtual),
+    acrescentar: acrescentado,
   };
 }

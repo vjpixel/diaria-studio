@@ -40,9 +40,24 @@ const PLACEHOLDER_HIGHLIGHT_TITLE_RE =
  * `no-placeholder-title-highlights`) e `enrich-inbox-articles.ts` leem daqui.
  * Âncoras `^...$`: só o título INTEIRO de stub casa — "Found: o modelo que..."
  * ou "Redirecting the AI race" continuam títulos reais.
+ *
+ * #10881 item 4: as palavras soltas "Found", "Moved" e "Redirect" (sem o
+ * código HTTP antes) podiam ser título real de artigo ou produto — elas só
+ * casam com o código ("302 Found", "301 Moved", "302 Redirect"). E entram as
+ * variantes em português de servidor/CMS configurado em pt-BR ("Documento
+ * movido", "Movido permanentemente", "Redirecionando...").
  */
-const REDIRECT_STUB_TITLE_RE =
-  /^(?:\d{3}\s*[-:]?\s*)?(?:document moved|object moved|moved permanently|moved temporarily|moved|found|see other|temporary redirect|permanent redirect|redirect|redirecting(?:\s+to\s+\S+)?)\s*(?:\.{1,3}|…)?$/i;
+const REDIRECT_STUB_SEM_CODIGO =
+  "document moved|object moved|moved permanently|moved temporarily|see other|temporary redirect|permanent redirect|" +
+  "redirecting(?:\\s+to\\s+\\S+)?|" +
+  "documento movido|objeto movido|movido permanentemente|movido temporariamente|redirecionamento tempor[áa]rio|" +
+  "redirecionamento permanente|redirecionando(?:\\s+para\\s+\\S+)?";
+/** Palavra solta que só é stub com o código HTTP antes (#10881 item 4). */
+const REDIRECT_STUB_SO_COM_CODIGO = "moved|found|redirect|movido|encontrado|redirecionamento";
+const REDIRECT_STUB_TITLE_RE = new RegExp(
+  `^(?:(?:\\d{3}\\s*[-:]?\\s*)?(?:${REDIRECT_STUB_SEM_CODIGO})|\\d{3}\\s*[-:]?\\s*(?:${REDIRECT_STUB_SO_COM_CODIGO}))\\s*(?:\\.{1,3}|…)?$`,
+  "i",
+);
 
 /** True se o título (trim) é o `<title>` de uma página-stub de redirect (#10843). */
 export function isRedirectStubTitle(title: string | null | undefined): boolean {

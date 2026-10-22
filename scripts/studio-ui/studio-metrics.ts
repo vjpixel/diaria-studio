@@ -89,6 +89,7 @@ import { classifyAcquisition, type AcquisitionClass } from "../lib/metrics/acqui
 import { aggregateMeasuredRowsByCanal, normalizeEmail } from "../lib/cac.ts";
 import { readMonthCacheDetailed } from "../lib/apoia-se.ts";
 import { loadAmazonRevenueConfig } from "../lib/amazon-revenue-config.ts";
+import { loadHotmartMonthRevenue } from "../lib/hotmart-revenue-source.ts";
 import { loadManualCleanupEmails, manualCleanupEmailsPath } from "../lib/manual-cleanup-emails.ts";
 import {
   computeChurnRate,
@@ -102,7 +103,7 @@ import {
   resolveApoiaSeCampaignName,
   computeKitLifetimeChurn,
   loadKitLifecycleRows,
-  LTV_FONTES_SEM_INTEGRACAO,
+  LTV_FONTE_HOTMART,
   type ChurnExitEvent,
   type ApoiaSeMonthCacheEntry,
   type KitLifecycleRow,
@@ -650,9 +651,13 @@ async function computeValorLayer(
     "apoia-se": apoiaSeCacheAvailable ? revSummary.grossRevenueBrl : null,
     amazon: amazonConfig.valorMensalBrl,
   };
-  // Hotmart sem fonte no repo: fonte SEM dado, então receita/ARPU/LTV saem
-  // PISO — mesma lista do `cac-report` (#10703/#10713, paridade #9023).
-  for (const fonte of LTV_FONTES_SEM_INTEGRACAO) porFonte[fonte] = null;
+  // Hotmart (#10734 4b): com dado só quando o espelho cobre o mês inteiro;
+  // senão fonte SEM dado, então receita/ARPU/LTV saem PISO — mesma regra do
+  // `cac-report` (#10703/#10713, paridade #9023).
+  const hotmart = loadHotmartMonthRevenue(rootDir, month);
+  // Motivo não vai pro log aqui (o snapshot recalcula a cada abertura do
+  // painel); a fonte aparece em `fontesSemDado` e o `cac-report` imprime o motivo.
+  porFonte[LTV_FONTE_HOTMART] = hotmart.valorBrl;
 
   // ── População Kit (#10713) — mesma do `cac-report` (#10703): o snapshot
   //    Beehiiv ficou sem ativo depois da migração pro Kit (#7386), então

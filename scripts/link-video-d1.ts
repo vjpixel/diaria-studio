@@ -45,7 +45,8 @@ import {
   planD1VideoLink,
   type D1PostEntryLike,
 } from "./lib/diaria/d1-video-link.ts";
-import { d1SocialSlotAt, gateVideoLink, readYouTubeRecordSummary } from "./lib/diaria/youtube-video-link-gate.ts";
+import { d1SocialSlotAt, gateVideoLink, readYouTubeRecordSummary, videoLinkRemedy } from "./lib/diaria/youtube-video-link-gate.ts";
+import { YOUTUBE_API_PROJECT_AUDITED } from "./lib/diaria/youtube-video.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -97,8 +98,11 @@ async function main(): Promise<number> {
   const gate = gateVideoLink({ videoUrl, record, d1SlotAt: d1SocialSlotAt(aammdd, loadSocialConfig()) });
   if (!gate.ok) {
     if (!flags.has("assume-public")) {
+      // #10881 item 2: a mesma premissa de auditoria que o gate usou (o
+      // `audit_blocked` do registro, senão a constante).
+      const projectAudited = record?.auditBlocked == null ? YOUTUBE_API_PROJECT_AUDITED : !record.auditBlocked;
       console.error(
-        `link-video-d1: recusado — ${gate.reason}. Nada gravado. Publique (ou agende antes do post do D1) no YouTube Studio ` +
+        `link-video-d1: recusado — ${gate.reason}. Nada gravado. ${videoLinkRemedy(projectAudited)} ` +
           "e rode de novo com --assume-public (#10858).",
       );
       return 1;

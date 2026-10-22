@@ -173,6 +173,7 @@ import {
 } from "./lib/leitor-store.ts";
 import { readMonthCacheDetailed } from "./lib/apoia-se.ts";
 import { loadAmazonRevenueConfig } from "./lib/amazon-revenue-config.ts";
+import { loadHotmartMonthRevenue } from "./lib/hotmart-revenue-source.ts";
 import { loadManualCleanupEmails, manualCleanupEmailsPath } from "./lib/manual-cleanup-emails.ts";
 import {
   LTV_DEFAULT_HORIZON_MONTHS,
@@ -189,7 +190,7 @@ import {
   resolveApoiaSeCampaignName,
   computeKitLifetimeChurn,
   loadKitLifecycleRows,
-  LTV_FONTES_SEM_INTEGRACAO,
+  LTV_FONTE_HOTMART,
   type ApoiaSeMonthCacheEntry,
   type ArpuResult,
   type ChurnRateResult,
@@ -439,7 +440,11 @@ function computeLtvSectionCore(
     "apoia-se": cacheAvailable ? revSummary.grossRevenueBrl : null,
     amazon: amazonConfig.valorMensalBrl,
   };
-  for (const fonte of LTV_FONTES_SEM_INTEGRACAO) revenueBySource[fonte] = null;
+  // #10734 4b: Hotmart com dado só quando o espelho cobre o mês inteiro;
+  // senão segue fonte SEM dado (ARPU sai PISO e diz qual fonte falta).
+  const hotmart = loadHotmartMonthRevenue(rootDir, month);
+  revenueBySource[LTV_FONTE_HOTMART] = hotmart.valorBrl;
+  if (hotmart.motivo) console.error(`[cac-report] valor: ${hotmart.motivo}`);
 
   // #10703: população Kit (store unificado) primeiro — o snapshot Beehiiv
   // ficou sem ativo depois da migração pro Kit (#7386).
