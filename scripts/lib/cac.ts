@@ -375,6 +375,15 @@ export interface CacMeasuredRow {
   kind: "measured";
   canal: string;
   spend: SpendRow;
+  /**
+   * Presente quando esta linha carrega a coorte INTEIRA do canal porque o
+   * grupo de gasto (canal+subcanal) tem várias linhas mas não dá pra
+   * particionar por mês (`partitionChannelSubsBySpendMonth` → `null`, #10679).
+   * Linhas com a mesma chave compartilham os mesmos cadastros/ativos/leitores:
+   * quem agrega por canal soma o gasto delas, mas toma a coorte UMA vez
+   * (`aggregateMeasuredRowsByCanal`, #10861). Ausente = coorte própria da linha.
+   */
+  sharedCohortKey?: string;
   cadastros: number;
   ativos: number;
   leitores: number;
@@ -448,10 +457,15 @@ export interface CacChannelTotals {
  * (ex.: Meta Ads com 418 cadastros em 2026-09 e 2 em 2026-10 virava "2
  * cadastros"). Todo consumidor que quer o valor POR CANAL deve passar por
  * aqui. Linhas `boost-estimate` ficam de fora (não têm cadastros medidos).
- * Ordem de inserção = ordem da 1ª aparição do canal em `rows`. @pure
+ * Ordem de inserção = ordem da 1ª aparição do canal em `rows`.
+ *
+ * Linhas com o mesmo `sharedCohortKey` (grupo não particionável por mês, cada
+ * linha com a coorte inteira) somam o gasto, mas cadastros/ativos/leitores
+ * entram uma vez só — senão a mesma coorte era contada N vezes (#10861). @pure
  */
 export function aggregateMeasuredRowsByCanal(rows: readonly CacRow[]): Map<string, CacChannelTotals> {
   const byCanal = new Map<string, CacChannelTotals>();
+  const seenSharedCohorts = new Set<string>();
   for (const row of rows) {
     if (row.kind !== "measured") continue;
     const acc = byCanal.get(row.canal) ?? { canal: row.canal, gasto: 0, cadastros: 0, ativos: 0, leitores: 0, linhas: 0 };
@@ -459,9 +473,13 @@ export function aggregateMeasuredRowsByCanal(rows: readonly CacRow[]): Map<strin
     // podem vir sem `spend` — um consumidor de cadastros não pode quebrar por
     // causa de um campo que não usa.
     acc.gasto += row.spend?.valor ?? 0;
-    acc.cadastros += row.cadastros;
-    acc.ativos += row.ativos;
-    acc.leitores += row.leitores;
+    const sharedKey = row.sharedCohortKey == null ? null : `${row.canal}\u0000${row.sharedCohortKey}`;
+    if (sharedKey == null || !seenSharedCohorts.has(sharedKey)) {
+      if (sharedKey != null) seenSharedCohorts.add(sharedKey);
+      acc.cadastros += row.cadastros;
+      acc.ativos += row.ativos;
+      acc.leitores += row.leitores;
+    }
     acc.linhas += 1;
     byCanal.set(row.canal, acc);
   }
@@ -780,12 +798,16 @@ function spendChannelGroupKey(spend: SpendRow): string {
 
 /** Pré-calcula, por índice de `spendRows`, a coorte já particionada por mês
  *  (#10679) — `undefined` no índice = usar a coorte inteira do canal
- *  (grupo de 1 linha, canal não resolvido, ou grupo não particionável). @pure */
+ *  (grupo de 1 linha, canal não resolvido, ou grupo não particionável).
+ *  `sharedCohortKeys[i]` vem preenchido nas linhas de grupo com 2+ linhas
+ *  que NÃO deu pra particionar — todas carregam a coorte inteira e a chave
+ *  deixa o agregado por canal contá-la uma vez só (#10861). @pure */
 function partitionSubsAcrossSpendRows(
   spendRows: readonly SpendRow[],
   subsPool: BeehiivBackupSubscriber[],
-): Array<BeehiivBackupSubscriber[] | undefined> {
+): { subs: Array<BeehiivBackupSubscriber[] | undefined>; sharedCohortKeys: Array<string | undefined> } {
   const result: Array<BeehiivBackupSubscriber[] | undefined> = spendRows.map(() => undefined);
+  const sharedCohortKeys: Array<string | undefined> = spendRows.map(() => undefined);
   const groups = new Map<string, number[]>();
   spendRows.forEach((row, idx) => {
     const key = spendChannelGroupKey(row);
@@ -804,15 +826,18 @@ function partitionSubsAcrossSpendRows(
     if (!buckets) {
       console.warn(
         `[cac] ${spendChannelLabel(spendRows[indices[0]])}: ${indices.length} linhas de gasto sem mês AAAA-MM único por linha — ` +
-          `cada linha recebe a coorte INTEIRA do canal (não dá pra separar por período, #10679).`,
+          `cada linha recebe a coorte INTEIRA do canal (não dá pra separar por período, #10679); ` +
+          `o agregado por canal soma o gasto e conta a coorte uma vez só (#10861).`,
       );
+      const key = spendChannelGroupKey(spendRows[indices[0]]);
+      for (const rowIdx of indices) sharedCohortKeys[rowIdx] = key;
       continue;
     }
     indices.forEach((rowIdx, k) => {
       result[rowIdx] = buckets[k];
     });
   }
-  return result;
+  return { subs: result, sharedCohortKeys };
 }
 
 /** Recusa `spendRows` que misturem, no mesmo `(canal, mes)`, uma linha de
@@ -928,10 +953,13 @@ export function buildCacReport(
     if (resolved.matched) {
       const effectiveWindow = intersectWindows(opts.window, resolved.specWindow);
       const resolvedPrevious = opts.previousSubs
-        ? (partitionedPrevious?.[rowIdx] ?? resolveChannelSubs(spend, opts.previousSubs).subs)
+        ? (partitionedPrevious?.subs[rowIdx] ?? resolveChannelSubs(spend, opts.previousSubs).subs)
         : undefined;
-      const channelSubs = partitionedSubs[rowIdx] ?? resolved.subs;
-      rows.push(computeMeasuredRow(spend, channelSubs, { previousChannelSubs: resolvedPrevious, window: effectiveWindow }));
+      const channelSubs = partitionedSubs.subs[rowIdx] ?? resolved.subs;
+      const row = computeMeasuredRow(spend, channelSubs, { previousChannelSubs: resolvedPrevious, window: effectiveWindow });
+      const sharedCohortKey = partitionedSubs.sharedCohortKeys[rowIdx];
+      if (sharedCohortKey != null) row.sharedCohortKey = sharedCohortKey;
+      rows.push(row);
       continue;
     }
     // Canal sem spec conhecida: tratado como boost-estimate SÓ se for

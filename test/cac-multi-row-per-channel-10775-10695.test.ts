@@ -11,6 +11,12 @@
  * #10695 — o início do mês de gasto era 00:00 UTC; os meses de `spend.csv`
  * seguem o fuso da conta (BRT). Um cadastro de 30/09 às 23:30 BRT
  * (= 01/10 02:30 UTC) caía na linha de outubro.
+ *
+ * #10861 — grupo de gasto com 2+ linhas que NÃO dá pra particionar por mês
+ * (mês repetido, ou valor livre tipo `2026-09..2026-10`) dá a coorte INTEIRA
+ * a cada linha. Somar as linhas no agregado por canal contava a mesma coorte
+ * N vezes (420 cadastros viravam 840). Contrato: soma o gasto, conta a coorte
+ * uma vez por grupo.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -100,5 +106,64 @@ describe("virada do mês de gasto em BRT (#10695)", () => {
     assert.ok(buckets);
     assert.deepEqual(buckets[0].map((s) => s.email), [tardio.email]);
     assert.deepEqual(buckets[1].map((s) => s.email), [cedo.email]);
+  });
+});
+
+describe("grupo não particionável conta a coorte uma vez (#10861)", () => {
+  it("2 linhas do mesmo mês sem subcanal: gasto soma, cadastros/ativos/leitores não dobram", () => {
+    const report = buildCacReport([spend("2026-10", 100), spend("2026-10", 50)], SEPT_SUBS);
+    const measured = report.rows.filter((r): r is CacMeasuredRow => r.kind === "measured" && r.canal === META);
+    assert.equal(measured.length, 2, "pré-condição: o canal tem 2 linhas");
+    // Pré-condição: cada linha carrega a coorte inteira (caminho null do #10679).
+    assert.equal(measured[0].cadastros, 4);
+    assert.equal(measured[1].cadastros, 4);
+    assert.ok(measured[0].sharedCohortKey);
+    assert.equal(measured[0].sharedCohortKey, measured[1].sharedCohortKey);
+    const totals = aggregateMeasuredRowsByCanal(report.rows).get(META);
+    assert.ok(totals);
+    assert.equal(totals.linhas, 2);
+    assert.equal(totals.cadastros, 4);
+    assert.equal(totals.ativos, measured[0].ativos);
+    assert.equal(totals.leitores, measured[0].leitores);
+    assert.ok(Math.abs(totals.gasto - 150) < 1e-9);
+  });
+
+  it("mês em formato livre também não dobra a coorte", () => {
+    const report = buildCacReport([spend("2026-09", 100), spend("2026-09..2026-10", 50)], SEPT_SUBS);
+    const totals = aggregateMeasuredRowsByCanal(report.rows).get(META);
+    assert.ok(totals);
+    assert.equal(totals.cadastros, 4);
+  });
+
+  it("ads-test-watch conta os cadastros do braço uma vez só", () => {
+    const report = buildCacReport([spend("2026-10", 100), spend("2026-10", 50)], SEPT_SUBS);
+    const [stats] = computeApuracaoArmStats(SEPT_SUBS, report.rows, [META]);
+    assert.equal(stats.cadastrosRelatorio, 4);
+  });
+
+  it("grupo particionado por mês não recebe sharedCohortKey e segue somando as linhas", () => {
+    const report = buildCacReport([spend("2026-09", 1435.51), spend("2026-10", 8.3)], SEPT_SUBS);
+    for (const row of report.rows) {
+      if (row.kind === "measured") assert.equal(row.sharedCohortKey, undefined);
+    }
+  });
+
+  it("grupos de subcanais distintos no mesmo mês seguem com coorte própria e somam", () => {
+    const pmax = sub(10, "2026-02-10T12:00:00Z", { utm_source: "googlesyndication", referring_site: "" });
+    const search = sub(11, "2026-02-11T12:00:00Z", { utm_source: "google.com", referring_site: "" });
+    const rows = [
+      { canal: "Google Ads", subcanal: "PMax", mes: "2026-02", moeda: "BRL", valor: 10, fonte: "t" },
+      { canal: "Google Ads", subcanal: "Search", mes: "2026-02", moeda: "BRL", valor: 20, fonte: "t" },
+    ] as SpendRow[];
+    const report = buildCacReport(rows, [pmax, search]);
+    for (const row of report.rows) {
+      if (row.kind === "measured") assert.equal(row.sharedCohortKey, undefined);
+    }
+    const measured = report.rows.filter((r): r is CacMeasuredRow => r.kind === "measured");
+    const totals = aggregateMeasuredRowsByCanal(report.rows).get("Google Ads");
+    assert.ok(totals);
+    assert.deepEqual(measured.map((r) => r.cadastros), [1, 1], "pré-condição: cada subcanal com a própria coorte");
+    assert.equal(totals.cadastros, 2);
+    assert.ok(Math.abs(totals.gasto - 30) < 1e-9);
   });
 });
