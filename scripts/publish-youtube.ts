@@ -10,18 +10,40 @@
  *   npx tsx scripts/publish-youtube.ts AAMMDD --dry-run
  *     [--edition-dir DIR] [--video PATH] [--episode N]
  *     [--edition-url URL] [--publish-at ISO]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force]
  *
- * ## Estado atual: só `--dry-run`
+ * ## `--dry-run` (default seguro)
  *
- * O dry-run lê a edição (`02-reviewed.md`), deriva título/descrição/tags do
- * D1, decide o agendamento (06:00 BRT do dia da edição, ou na hora se já
- * passou) e imprime o request de `videos.insert` + o passo de
- * `thumbnails.set` como JSON — SEM chamar a API e sem escrever nada.
+ * Lê a edição (`02-reviewed.md`), deriva título/descrição/tags do D1, decide
+ * o agendamento (06:00 BRT do dia da edição, ou na hora se já passou) e
+ * imprime o request de `videos.insert` + o passo de `thumbnails.set` como
+ * JSON — SEM chamar a API e sem escrever nada.
  *
- * O upload real ainda NÃO existe: depende do OAuth da conta dona do
- * `@diariabr` (refresh token no Doppler) e da auditoria do projeto GCP (sem
- * ela, todo upload via API sai forçado `private`). Sem `--dry-run` o script
- * recusa com exit 2 — nunca sobe nada por acidente. Pendências no #10659.
+ * ## `--upload` (upload real, #10659)
+ *
+ * Mesmo plano, enviado de verdade (`scripts/lib/diaria/youtube-upload.ts`):
+ * refresh token → confere o canal (`YOUTUBE_CHANNEL_ID`) → `videos.insert`
+ * resumable com `privacyStatus`/`publishAt` do plano → `thumbnails.set` com
+ * a capa (falha aqui não desfaz o vídeo) → releitura do `status` normalizada
+ * por `resolveYouTubeState` (#573). Grava o resultado em
+ * `_internal/05-youtube-published.json`; com esse registro presente, um novo
+ * `--upload` recusa (exit 0, nada enviado) a menos que venha `--force`.
+ *
+ * Credenciais (Doppler → `.env`, nunca impressas): GOOGLE_CLIENT_ID,
+ * GOOGLE_CLIENT_SECRET (mesmo client do `youtube-oauth-setup.ts`),
+ * YOUTUBE_REFRESH_TOKEN e YOUTUBE_CHANNEL_ID (gravados por
+ * `scripts/youtube-oauth-setup.ts`, PR #10757). Ausentes → exit 1.
+ *
+ * **Sem a auditoria do YouTube API Services, todo upload via API sai
+ * `private`** — mesmo pedindo `public` ou `publishAt`. A releitura mostra o
+ * estado real ("draft") e o vídeo precisa ser publicado à mão no Studio.
+ *
+ * Saída: exit 0 = vídeo enviado (inclusive quando só a capa falhou — vira
+ * `[aviso]`); exit 1 = nada enviado (sem credencial, sem vídeo, erro de API)
+ * ou enviado sem conseguir gravar o registro; exit 2 = uso inválido.
+ *
+ * Fora de escopo aqui: download do vídeo pelo Drive e passo no Stage 5 (a
+ * convenção de nome do arquivo ainda não foi confirmada).
  *
  * Arquivo de vídeo: convenção `{editionDir}/diaria-comentada-{AAMMDD}.mp4`
  * (sobrescrevível com `--video`). Ausente → aviso (o passo do Stage 5 será
@@ -29,8 +51,11 @@
  * Capa: `{editionDir}/04-youtube-thumb.jpg` (1280x720), opcional.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
@@ -51,6 +76,18 @@ import {
   type YouTubeMetadata,
   type YouTubeScheduleDecision,
 } from "./lib/diaria/youtube-video.ts";
+import {
+  YOUTUBE_PUBLISHED_FILE,
+  YouTubeUploadError,
+  defaultYouTubeUploadDeps,
+  describeYouTubeState,
+  missingYouTubeCredentials,
+  uploadYouTubeVideo,
+  type YouTubeUploadDeps,
+  type YouTubeUploadResult,
+} from "./lib/diaria/youtube-upload.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface YouTubePublishPlanInput {
   aammdd: string;
@@ -151,18 +188,150 @@ function parseEpisode(raw: string | undefined): number | undefined {
   return Number(raw);
 }
 
+/** Registro do upload em `_internal/05-youtube-published.json`. */
+export interface YouTubePublishedRecord extends YouTubeUploadResult {
+  aammdd: string;
+  episode: number;
+  title: string;
+  video_path: string;
+  thumbnail_path: string | null;
+  /** O plano previa o rebaixamento pra private (projeto GCP sem auditoria). */
+  audit_blocked: boolean;
+}
+
+export interface RunUploadInput {
+  plan: YouTubePublishPlan;
+  editionDir: string;
+  env: Record<string, string | undefined>;
+  force: boolean;
+  readFile: (p: string) => Buffer;
+  log: (line: string) => void;
+}
+
+export interface RunUploadOutcome {
+  exitCode: number;
+  record: YouTubePublishedRecord | null;
+  skipped: boolean;
+}
+
+/** Lê o registro anterior, se houver e for desta edição. */
+export function readPublishedRecord(path: string, aammdd: string): YouTubePublishedRecord | null {
+  if (!existsSync(path)) return null;
+  let rec: YouTubePublishedRecord;
+  try {
+    rec = JSON.parse(readFileSync(path, "utf8")) as YouTubePublishedRecord;
+  } catch (e) {
+    // Registro corrompido: não dá pra saber se o vídeo já subiu — recusar é mais seguro que duplicar.
+    throw new Error(`registro ${path} ilegível (${(e as Error).message}) — confira o canal e apague/corrija o arquivo antes de --upload`);
+  }
+  return rec && rec.aammdd === aammdd && typeof rec.videoId === "string" && rec.videoId ? rec : null;
+}
+
+/**
+ * `--upload`: envia o plano de verdade e grava o registro. Separado do `main`
+ * pra o teste injetar `deps.fetch` e o ambiente sem tocar a rede nem o `.env`.
+ */
+export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUploadInput): Promise<RunUploadOutcome> {
+  const { plan, log } = input;
+  const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
+
+  let previous: YouTubePublishedRecord | null;
+  try {
+    previous = readPublishedRecord(recordPath, plan.aammdd);
+  } catch (e) {
+    log(`publish-youtube: ${(e as Error).message}. Nada foi enviado.`);
+    return { exitCode: 1, record: null, skipped: false };
+  }
+  if (previous && !input.force) {
+    log(
+      `[ok] vídeo desta edição já enviado (${previous.url}, estado relido em ${previous.rereadAt}: ${previous.state}) — nada enviado. ` +
+        "Use --force para subir de novo (cria OUTRO vídeo no canal).",
+    );
+    return { exitCode: 0, record: previous, skipped: true };
+  }
+
+  const missing = missingYouTubeCredentials(input.env);
+  if (missing.length > 0) {
+    log(
+      `publish-youtube: faltam ${missing.join(", ")} no ambiente — rode \`npx tsx scripts/youtube-oauth-setup.ts\` ` +
+        "(e `npm run sync-env` no 300). Nada foi enviado.",
+    );
+    return { exitCode: 1, record: null, skipped: false };
+  }
+  if (!plan.video.exists) {
+    log(`publish-youtube: vídeo ausente em ${plan.video.path} — nada foi enviado (passe --video PATH)`);
+    return { exitCode: 1, record: null, skipped: false };
+  }
+
+  let result: YouTubeUploadResult;
+  try {
+    result = await uploadYouTubeVideo(deps, {
+      creds: {
+        clientId: (input.env.GOOGLE_CLIENT_ID ?? "").trim(),
+        clientSecret: (input.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+        refreshToken: (input.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+        channelId: (input.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+      },
+      request: plan.request,
+      video: input.readFile(plan.video.path),
+      contentType: "video/mp4",
+      thumbnail: plan.thumbnail ? input.readFile(plan.thumbnail.path) : null,
+    });
+  } catch (e) {
+    const msg = e instanceof YouTubeUploadError ? `${e.message} (etapa ${e.step})` : (e as Error).message;
+    log(`publish-youtube: upload falhou — ${msg}. Nada foi publicado.`);
+    return { exitCode: 1, record: null, skipped: false };
+  }
+
+  const record: YouTubePublishedRecord = {
+    aammdd: plan.aammdd,
+    episode: plan.episode,
+    title: plan.metadata.title,
+    video_path: plan.video.path,
+    thumbnail_path: plan.thumbnail?.path ?? null,
+    audit_blocked: plan.effective.auditBlocked,
+    ...result,
+  };
+
+  if (result.thumbnail.attempted && !result.thumbnail.ok) {
+    log(`[aviso] vídeo enviado, mas a capa falhou: ${result.thumbnail.error} — suba ${plan.thumbnail?.path} à mão no Studio`);
+  }
+  if (result.rereadError) log(`[aviso] releitura do estado falhou: ${result.rereadError}`);
+  log(`[ok] vídeo enviado: ${result.url} — estado relido: ${result.state} (${describeYouTubeState(result.state)})`);
+
+  try {
+    mkdirSync(dirname(recordPath), { recursive: true });
+    writeFileAtomic(recordPath, JSON.stringify(record, null, 2) + "\n");
+  } catch (e) {
+    // O YouTube JÁ aceitou: não pode virar "falhou" silencioso (a próxima rodada duplicaria).
+    log(
+      `[erro] vídeo ENVIADO (${result.url}) mas o registro não foi gravado em ${recordPath}: ${(e as Error).message}. ` +
+        "NÃO rode --upload de novo sem antes conferir o canal.",
+    );
+    return { exitCode: 1, record, skipped: false };
+  }
+  return { exitCode: 0, record, skipped: false };
+}
+
+const USAGE =
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
+
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
   const aammdd = values["edition"] ?? positional[0];
   if (!aammdd || !/^\d{6}$/.test(aammdd)) {
-    console.error("uso: publish-youtube.ts AAMMDD --dry-run [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]");
+    console.error(USAGE);
     return 2;
   }
-  if (!flags.has("dry-run")) {
+  const dryRun = flags.has("dry-run");
+  const upload = flags.has("upload");
+  if (dryRun === upload) {
     console.error(
-      "publish-youtube: upload real ainda não implementado — pendente OAuth da conta @diariabr " +
-        "(refresh token youtube.upload no Doppler) e auditoria do projeto GCP (#10659). Use --dry-run.",
+      dryRun
+        ? "publish-youtube: --dry-run e --upload são exclusivos."
+        : "publish-youtube: escolha o modo — --dry-run (só o plano) ou --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659).",
     );
+    console.error(USAGE);
     return 2;
   }
 
@@ -189,8 +358,22 @@ async function main(): Promise<number> {
 
   for (const p of plan.premises) console.error(`[premissa] ${p}`);
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);
-  console.log(JSON.stringify({ dry_run: true, ...plan }, null, 2));
-  return 0;
+  if (dryRun) {
+    console.log(JSON.stringify({ dry_run: true, ...plan }, null, 2));
+    return 0;
+  }
+
+  loadProjectEnv(ROOT);
+  const outcome = await runYouTubeUpload(defaultYouTubeUploadDeps, {
+    plan,
+    editionDir: dir,
+    env: process.env,
+    force: flags.has("force"),
+    readFile: (p) => readFileSync(p),
+    log: (line) => console.error(line),
+  });
+  if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
+  return outcome.exitCode;
 }
 
 if (isMainModule(import.meta.url)) {
