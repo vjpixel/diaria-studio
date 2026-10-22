@@ -20,7 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
-import { isPlaceholderHighlightTitle } from "../placeholder-title-guard.ts"; // #4102
+import { isPlaceholderHighlightItem } from "../placeholder-title-guard.ts"; // #4102, #10908
 // #6440: backstop — mesma verificação POSITIVA de produto (#1968) usada no
 // gate do Stage 2 (`validate-lancamentos.ts --approved`), rodada aqui como
 // invariante do Stage 1 (bloqueia ANTES do gate). `categorize.ts` já ganhou
@@ -371,8 +371,9 @@ function checkHasNegativeImpactHighlight(editionDir: string): InvariantViolation
  * trade-off editorial aqui.
  */
 function isPlaceholderTitleHighlight(h: HighlightLike): boolean {
-  const title = h.article?.title ?? h.title;
-  return isPlaceholderHighlightTitle(title);
+  // #10908: também barra submissão do editor marcada `title_unresolved` pelo
+  // categorize (#10796) cujo título ainda é a palavra solta ("Found").
+  return isPlaceholderHighlightItem(h);
 }
 
 function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolation[] {
@@ -393,7 +394,7 @@ function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolati
       rule: "no-placeholder-title-highlights",
       message:
         `${offenders.length} destaque(s) com título placeholder (nunca enriquecido) em highlights[] — ` +
-        `URLs: ${urls}. Título sintético (ex: "(newsletter:...)", "(inbox)") não pode virar D1/D2/D3 (#4102). ` +
+        `URLs: ${urls}. Título sintético (ex: "(newsletter:...)", "(inbox)", stub de redirect como "Found") não pode virar D1/D2/D3 (#4102, #10908). ` +
         `Resolver o título via og:title/submitted_subject antes de aprovar, ou trocar por outro candidato do pool.`,
       source_issue: "#4102",
       severity: "error",

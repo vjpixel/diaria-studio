@@ -30,7 +30,7 @@ import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-a
 import { ensureNegativeImpactHighlight, type FinalistLike } from "./lib/negative-impact-promotion.ts"; // #3916, #3918
 import {
   demotePlaceholderTitleHighlights,
-  isPlaceholderHighlightTitle,
+  isPlaceholderHighlightItem,
   type PlaceholderDemotion,
 } from "./lib/placeholder-title-guard.ts"; // #4102
 import { reconcileClusterSources, type ClusterSourcesRestoration } from "./lib/cluster-sources-backstop.ts"; // #4838
@@ -306,7 +306,7 @@ export function applyExplorationQuotaBackstop(
       weekUsageBefore,
       affinityOf,
       // Título placeholder nunca vira destaque (#4102) — a cota não é brecha.
-      isEligibleCandidate: (f) => !isPlaceholderHighlightTitle(f.article?.title as string | undefined),
+      isEligibleCandidate: (f) => !isPlaceholderHighlightItem(f), // #10908: lê title_unresolved
     });
 
     const nextState = recordExplorationDecision(

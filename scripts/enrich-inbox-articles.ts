@@ -34,7 +34,7 @@ import { sanitizeDescriptionBoilerplate } from "./lib/sanitize-description-boile
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { shouldDiscardSummary } from "./lib/summary-matches-title.ts"; // #8594
 import { logEvent } from "./lib/run-log.ts";
-import { isRedirectStubTitle } from "./lib/placeholder-title-guard.ts"; // #10843
+import { isAmbiguousRedirectStubTitle, isRedirectStubTitle } from "./lib/placeholder-title-guard.ts"; // #10843, #10908
 
 // ---------------------------------------------------------------------------
 // Types
@@ -128,7 +128,12 @@ function hasPlaceholderTitle(article: InboxArticle): boolean {
     NEWSLETTER_PLACEHOLDER_RE.test(title) ||
     // #10843: título herdado de página-stub de redirect ("Document moved",
     // "301 Moved Permanently") — o artigo volta a ser re-buscado.
-    isRedirectStubTitle(title)
+    isRedirectStubTitle(title) ||
+    // #10908: a palavra solta ("Found", "Moved", "Redirect") saiu de
+    // `isRedirectStubTitle` no #10881 item 4. Em submissão do inbox ela ainda
+    // conta como placeholder — refaz o fetch e deixa o og:title (ou o assunto
+    // do e-mail) substituir. Fonte regular fica de fora: lá é título de fonte.
+    (isInboxArticle(article) && isAmbiguousRedirectStubTitle(title))
   );
 }
 
