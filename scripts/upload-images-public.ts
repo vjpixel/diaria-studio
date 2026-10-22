@@ -29,7 +29,7 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv(); // #1157 — carrega .env antes de process.env access (CLOUDFLARE_*)
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
@@ -46,6 +46,8 @@ import {
 } from "./lib/use-melhor-slide-files.ts"; // #9568 — slides do 4º post (módulo folha: use-melhor-carousel.ts fecharia ciclo via weekly-flat-card.ts)
 // #10834: só o TIPO (apagado na compilação) — o valor vem por import dinâmico em `uploadPublicImages`.
 import type { UseMelhorCarouselRefresh } from "./gen-carousel-cards.ts";
+import { D1_PLAY_HERO_FILE, D1_PLAY_IMAGE_KEY } from "./lib/diaria/d1-video-hero.ts"; // #10784
+import type { D1PlayImageResult } from "./lib/diaria/d1-play-image.ts"; // #10784 (sharp só carrega via import dinâmico)
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -295,6 +297,10 @@ export function imageSpecsFor(
   // /prep-twitter-posts.ts.
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
+    // #10784: cópia do hero do D1 com ícone de play, gerada por
+    // `ensureD1PlayImage` logo antes do upload. optional: falha ao gerar cai
+    // no hero sem play (o render só usa a cópia quando ela existe no disco).
+    { key: D1_PLAY_IMAGE_KEY, filename: D1_PLAY_HERO_FILE, optional: true },
     // #2133/#2141: d2/d3 hero 2x1 entram no email como {{IMG:04-d{N}-2x1.jpg}}.
     // optional=true: não bloqueiam o upload se ausentes (ex: re-run de edição
     // pré-#2133, ou regeneração manual falhou parcialmente). Desde #7399, este
@@ -468,6 +474,8 @@ export interface UploadOptions {
    * dinâmico — sharp + fonte de marca só carregam no modo social).
    */
   refreshUseMelhorCarousel?: (editionDir: string) => Promise<UseMelhorCarouselRefresh>;
+  /** #10784: seam da geração da cópia do hero do D1 com play (default: sharp real). */
+  ensureD1PlayImage?: (editionDir: string) => Promise<D1PlayImageResult>;
 }
 
 export interface UploadDeps {
@@ -577,6 +585,30 @@ export async function uploadPublicImages(
       useMelhorSlots = freshUseMelhorCarouselSlots(editionDir);
     }
     specs = imageSpecsFor(mode, editionDir, { useMelhorSlots });
+  }
+
+  // #10784: a cópia do hero do D1 com play é derivada — (re)gera antes do
+  // upload sempre que o hero mudou. Fail-soft: sem a cópia, a newsletter usa o
+  // hero sem play (ainda com link pro vídeo/canal).
+  if (mode !== "social" && specs.some((s) => s.key === D1_PLAY_IMAGE_KEY)) {
+    const ensure =
+      opts.ensureD1PlayImage ??
+      (async (dir: string) => (await import("./lib/diaria/d1-play-image.ts")).ensureD1PlayImage(dir));
+    let play: D1PlayImageResult;
+    try {
+      play = await ensure(editionDir);
+    } catch (e) {
+      // Cópia antiga pode ser de outra arte — sem regerar, não pode ir pro e-mail.
+      rmSync(resolve(editionDir, D1_PLAY_HERO_FILE), { force: true });
+      play = { status: "failed", path: null, reason: (e as Error).message };
+    }
+    if (play.status === "failed") {
+      const msg = `cópia do hero do D1 com play NÃO gerada (${play.reason}) — a newsletter sai com o hero sem o ícone (#10784)`;
+      console.error(`upload-images-public: ${msg}`);
+      warnings.push(msg);
+    } else if (play.status === "generated") {
+      console.error(`upload-images-public: ${D1_PLAY_HERO_FILE} gerado a partir do hero do D1 (#10784).`);
+    }
   }
 
   const cachePath = resolve(editionDir, "06-public-images.json");
