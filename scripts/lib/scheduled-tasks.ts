@@ -2351,6 +2351,15 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       { key: "followup", script: "scripts/onboarding-followup-run.ts", args: ["--send", "--skip-if-disabled"] },
     ],
     logPath: "onboarding/.welcome-run.log",
+    // #10661: exit 3 do passo followup = só o excedente do teto que não cabe
+    // na janela (`FOLLOWUP_CAP_WINDOW_OVERFLOW_EXIT_CODE`) — achado
+    // operacional, segue no alarme de continuidade e no painel. Sem isto a
+    // task ficava vermelha por dias e escondia falha real de `run`/`kit`
+    // (que saem 1/2 e continuam reprovando). Nenhum dos 3 passos usa 3 para
+    // outra coisa. Unit já armada no `300` só passa a honrar isto depois de
+    // `setup-systemd-timers.ts` + `daemon-reload` (#6695); até lá o exit 3
+    // reprova a unit como o exit 1 de antes.
+    successExitCodes: [3],
     // 09:05 BRT — logo depois de Diaria-Clarice-Novos (09:00, mesmo cluster
     // matinal de detecção/onboarding de gente nova), antes do resto do
     // cluster 09:15-09:50 já ocupado (ver grep de `kind: "daily"` neste
