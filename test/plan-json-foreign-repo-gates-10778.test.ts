@@ -100,6 +100,37 @@ describe("#10778 — check-develop-label-cleared não julga a studio#21 pela des
   });
 });
 
+describe("#10778 — todo gate de fim de rodada que consulta por número avisa e pula a entrada de outro repo", () => {
+  const GATES = [
+    "scripts/check-block-staleness.ts",
+    "scripts/check-overnight-comment-coverage.ts",
+    "scripts/check-decision-label-drift-gate.ts",
+  ];
+  for (const gate of GATES) {
+    it(gate, () => {
+      const dir = mkdtempSync(join(tmpdir(), "plan-10778-"));
+      try {
+        const planPath = join(dir, "plan.json");
+        writeFileSync(
+          planPath,
+          JSON.stringify({
+            issues: { "vjpixel/diaria-design#21": { status: "pulada", motivo: "claimed-por-outra-sessao" } },
+          }),
+        );
+        const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, gate), "--plan", planPath], {
+          cwd: ROOT,
+          encoding: "utf8",
+          env: { ...process.env, PATH: dir },
+        });
+        assert.match(r.stderr, /FORA desta checagem.*vjpixel\/diaria-design#21/, r.stderr);
+        assert.doesNotMatch(r.stderr, /(?<!diaria-design)#21\b/, "nenhuma menção à studio#21 crua");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe("#10778 — findStaleBlocks não consulta a claim da studio#22 pela design#22", () => {
   it("entrada de outro repo nunca vira finding, mesmo com o consultor dizendo 'claim liberado'", () => {
     const issues = normalizeIssues<BlockStalenessPlanIssue>(mixedPlan());
