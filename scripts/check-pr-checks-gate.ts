@@ -25,6 +25,8 @@
  *
  * Uso:
  *   npx tsx scripts/check-pr-checks-gate.ts --pr 6212
+ *   npx tsx scripts/check-pr-checks-gate.ts --pr 23 --issue vjpixel/diaria-design#21   (#10618: repo do PR derivado da issue)
+ *   npx tsx scripts/check-pr-checks-gate.ts --pr 23 --repo vjpixel/diaria-design
  *
  * Exit codes (todo valor != 0 significa "condição 1 NÃO satisfeita" — o
  * chamador nunca precisa distinguir "erro" de "reprovado" pra decidir se
@@ -65,7 +67,7 @@
  */
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { prLabelInRepo, resolveRepoFlag } from "./lib/issue-repos.ts";
+import { prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrChecksGate, type PrChecksGateResult } from "./lib/pr-checks-gate.ts";
 import { CLAUDE_BINARY_ERROR_SIGNATURE, findClaudeBinaryErrorSignature } from "./lib/detect-claude-binary-error.ts";
@@ -312,11 +314,12 @@ if (isMainModule(import.meta.url)) {
   const prRaw = values.pr;
   const prNumber = prRaw ? Number(prRaw) : NaN;
   if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0) {
-    console.error("[check-pr-checks-gate] uso: --pr N [--repo owner/name]");
+    console.error("[check-pr-checks-gate] uso: --pr N [--repo owner/name | --issue N|owner/repo#N]");
     process.exit(2);
   }
-  // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`).
-  const repoFlag = resolveRepoFlag(values, flags, process.cwd());
+  // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`,
+  // ou derivado de `--issue owner/repo#N` — review J: o PR mora no repo da issue).
+  const repoFlag = resolvePrTargetRepo(values, flags, process.cwd());
   if ("error" in repoFlag) {
     console.error(`[check-pr-checks-gate] ${repoFlag.error}`);
     process.exit(2);

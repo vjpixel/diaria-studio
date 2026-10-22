@@ -64,6 +64,7 @@ import { attachClaims, clearTriageCache, fetchTriageData, parseIssues, type GhRu
 // @ts-expect-error TS7016
 import { buildBeaconRecord } from "../.claude/hooks/session-beacon.mjs";
 import { planLabelSync, requiredIssueLabels } from "../scripts/lib/issue-label-sync.ts";
+import { resolvePrTargetRepo, resolveRepoFlag } from "../scripts/lib/issue-repos.ts";
 import { main as syncLabelsMain, type GhRunner } from "../scripts/sync-issue-labels.ts";
 import { ROUTABLE_LABELS } from "../scripts/lib/issue-route.ts";
 
@@ -466,6 +467,95 @@ describe("#10618 fatia 4 — gates de PR com --repo leem o PR do repo certo", ()
     const empty = runCli(root, env, "check-pr-checks-gate.ts", ["--pr", "23", "--repo"]);
     assert.equal(empty.status, 2);
     assert.equal(calls().length, 0);
+  });
+});
+
+describe("#10618 fatia 4 (review J/L) — repo do PR nos gates de merge", () => {
+  const PASS_PAYLOAD = {
+    statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
+    mergeable: "MERGEABLE",
+    commits: [{ committedDate: "2026-01-01T00:00:00Z" }],
+  };
+
+  it("check-pr-checks-gate --repo design (caminho válido): gh pr view com -R do design → pass", () => {
+    const root = tmpRepoRoot();
+    const { env, calls } = fakeGh(root, {
+      [`pr_view_${DESIGN}_23_statusCheckRollup,mergeable,commits`]: PASS_PAYLOAD,
+    });
+    const r = runCli(root, env, "check-pr-checks-gate.ts", ["--pr", "23", "--repo", DESIGN]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /vjpixel\/diaria-design PR #23: verdict=pass/);
+    assert.equal(calls().length, 1);
+    const c = calls()[0];
+    assert.deepEqual(c.slice(c.indexOf("-R"), c.indexOf("-R") + 2), ["-R", DESIGN]);
+  });
+
+  it("check-pr-checks-gate --issue design#21: repo do PR derivado da issue (sem --repo)", () => {
+    const root = tmpRepoRoot();
+    const { env, calls } = fakeGh(root, {
+      [`pr_view_${DESIGN}_23_statusCheckRollup,mergeable,commits`]: PASS_PAYLOAD,
+    });
+    const r = runCli(root, env, "check-pr-checks-gate.ts", ["--pr", "23", "--issue", `${DESIGN}#21`]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.ok(calls()[0].includes("-R") && calls()[0].includes(DESIGN));
+  });
+
+  it("gates de PR: --issue do design com --repo do studio divergem → erro de uso, sem consultar nada", () => {
+    const root = tmpRepoRoot();
+    const { env, calls } = fakeGh(root, {});
+    const checks = runCli(root, env, "check-pr-checks-gate.ts", ["--pr", "23", "--issue", `${DESIGN}#21`, "--repo", STUDIO]);
+    assert.equal(checks.status, 2);
+    assert.match(checks.stderr, /diverge do repo da --issue/);
+    const retido = runCli(root, env, "check-pr-retido-gate.ts", ["--pr", "23", "--issue", `${DESIGN}#21`, "--repo", STUDIO]);
+    assert.equal(retido.status, 3);
+    const auth = runCli(root, env, "check-pr-review-authenticity.ts", ["--pr", "23", "--issue", "fork/x#1"]);
+    assert.equal(auth.status, 4);
+    assert.match(auth.stderr, /fora de platform\.config\.json/);
+    assert.equal(calls().length, 0);
+  });
+
+  it("resolveRepoFlag: tabela de entradas", () => {
+    const root = tmpRepoRoot();
+    const none = new Set<string>();
+    assert.deepEqual(resolveRepoFlag({}, none, root), { repo: undefined });
+    assert.deepEqual(resolveRepoFlag({ repo: DESIGN }, none, root), { repo: DESIGN });
+    assert.deepEqual(resolveRepoFlag({ repo: "VJPixel/Diaria-Design" }, none, root), { repo: DESIGN });
+    assert.deepEqual(resolveRepoFlag({ repo: `https://github.com/${DESIGN}.git` }, none, root), { repo: DESIGN });
+    assert.deepEqual(resolveRepoFlag({ repo: STUDIO }, none, root), { repo: undefined }, "default explícito = chamada de sempre");
+    assert.ok("error" in resolveRepoFlag({ repo: "" }, none, root));
+    assert.ok("error" in resolveRepoFlag({}, new Set(["repo"]), root));
+    assert.ok("error" in resolveRepoFlag({ repo: "não-é-slug" }, none, root));
+    assert.ok("error" in resolveRepoFlag({ repo: "fork/diaria-design" }, none, root));
+    assert.ok("error" in resolveRepoFlag({ repo: DESIGN }, none, tmpRepoRoot([STUDIO])), "fora da allowlist do config");
+  });
+
+  it("resolvePrTargetRepo: --issue deriva, concorda ou diverge do --repo", () => {
+    const root = tmpRepoRoot();
+    const none = new Set<string>();
+    assert.deepEqual(resolvePrTargetRepo({ issue: `${DESIGN}#21` }, none, root), { repo: DESIGN });
+    assert.deepEqual(resolvePrTargetRepo({ issue: "21" }, none, root), { repo: undefined });
+    assert.deepEqual(resolvePrTargetRepo({ issue: `${DESIGN}#21`, repo: DESIGN }, none, root), { repo: DESIGN });
+    assert.ok("error" in resolvePrTargetRepo({ issue: "21", repo: DESIGN }, none, root));
+    assert.ok("error" in resolvePrTargetRepo({ issue: "lixo" }, none, root));
+    assert.ok("error" in resolvePrTargetRepo({}, new Set(["issue"]), root));
+  });
+
+  it("check-issue-duplicate-preflight: erro do gh api no design → exit 2 (nunca 'not-in-master')", () => {
+    const root = tmpRepoRoot();
+    const out: string[] = [];
+    const errs: string[] = [];
+    const [origLog, origErr] = [console.log, console.error];
+    console.log = (s: string) => out.push(s);
+    console.error = (s: string) => errs.push(s);
+    try {
+      const code = duplicatePreflightMain(["--issue", `${DESIGN}#21`], root, () => ({ status: 1, stderr: "HTTP 403" }));
+      assert.equal(code, 2);
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+    assert.ok(!out.join("\n").includes("not-in-master"));
+    assert.match(errs.join("\n"), /403/);
   });
 });
 

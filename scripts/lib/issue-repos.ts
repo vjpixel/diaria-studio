@@ -8,9 +8,10 @@
  * `session-registry` (`claimed_foreign_issues`), o fetch de triagem
  * (`issue-triage-fetch.ts`), os gates que leem `plan.json`
  * (`plan-issue-ref.ts`) e o `route-issue.ts --issue owner/repo#N`. A fila de
- * triagem multi-repo é OPT-IN (`fetch-open-issues-for-triage.ts --repos`):
- * sem a flag, as rodadas seguem vendo só o diaria-studio até os gates que
- * ainda leem só `number` migrarem (fatia 3, resíduo na #10618). O número
+ * triagem multi-repo era opt-in na fatia 2; desde a fatia 4 as rodadas
+ * (overnight, contínuo, develop) chamam `fetch-open-issues-for-triage.ts
+ * --repos all` por padrão — o diaria-design entra na fila sem flag extra —
+ * e os gates de fim de rodada avaliam cada repo à parte. O número
  * sozinho colide entre repos (o #21 existe tanto no `vjpixel/diaria-studio`
  * quanto no `vjpixel/diaria-design`).
  *
@@ -259,6 +260,38 @@ export function resolveRepoFlag(
     return { error: `--repo ${slug} está fora de platform.config.json → issue_repos` };
   }
   return { repo: slug };
+}
+
+/**
+ * Repo do PR dos gates de merge (#10618, fatia 4, review J): `--repo` como em
+ * `resolveRepoFlag`, mais `--issue {ref}` opcional — a identidade da issue
+ * que o PR fecha (`N` ou `owner/repo#N`). Com `--issue`, o repo do PR é
+ * DERIVADO dela (o PR mora no repo da issue, decisão da #10618), de modo que
+ * o coordenador que passa a ref da issue não consegue esquecer o `--repo` e
+ * ler o PR #N do studio. `--repo` e `--issue` juntos têm de concordar;
+ * divergência, `--issue` ilegível ou repo fora da allowlist → `{ error }`.
+ */
+export function resolvePrTargetRepo(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  repoRoot: string,
+): { repo: string | undefined } | { error: string } {
+  const fromRepo = resolveRepoFlag(values, flags, repoRoot);
+  if ("error" in fromRepo) return fromRepo;
+  if (flags.has("issue") || values.issue === "") return { error: "--issue sem valor (esperado N ou owner/repo#N)" };
+  if (values.issue === undefined) return fromRepo;
+  const ref = parseIssueRef(values.issue);
+  if (!ref) return { error: `--issue inválido: "${values.issue}" (esperado N ou owner/repo#N)` };
+  const issueRepo = isDefaultIssueRepo(ref.repo) ? undefined : ref.repo;
+  if (issueRepo && !loadIssueRepos(repoRoot).includes(issueRepo)) {
+    return { error: `--issue ${formatIssueRef(ref)}: repo fora de platform.config.json → issue_repos` };
+  }
+  if (values.repo !== undefined && fromRepo.repo !== issueRepo) {
+    return {
+      error: `--repo ${fromRepo.repo ?? DEFAULT_ISSUE_REPO} diverge do repo da --issue ${formatIssueRef(ref)} (o PR mora no repo da issue)`,
+    };
+  }
+  return { repo: issueRepo };
 }
 
 /** Rótulo de PR pra mensagem: `PR #N` no studio, `owner/repo PR #N` nos outros. */

@@ -15,6 +15,8 @@
  *
  * Uso:
  *   npx tsx scripts/check-pr-retido-gate.ts --pr 10221
+ *   npx tsx scripts/check-pr-retido-gate.ts --pr 23 --issue vjpixel/diaria-design#21   (#10618: repo do PR derivado da issue)
+ *   npx tsx scripts/check-pr-retido-gate.ts --pr 23 --repo vjpixel/diaria-design
  *
  * Exit codes (todo valor != 0 significa "NÃO mergear"):
  *   0 = livre    (sem label `retido-para-editor` e sem marcador no corpo)
@@ -28,18 +30,19 @@
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrRetido } from "./lib/pr-retido-para-editor.ts";
-import { prLabelInRepo, resolveRepoFlag } from "./lib/issue-repos.ts";
+import { prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
 
 function run(): number {
   const { values, flags } = parseArgs(process.argv.slice(2));
   const prRaw = values.pr;
   const prNumber = prRaw ? Number(prRaw) : NaN;
   if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0) {
-    console.error("[check-pr-retido-gate] uso: --pr N [--repo owner/name]");
+    console.error("[check-pr-retido-gate] uso: --pr N [--repo owner/name | --issue N|owner/repo#N]");
     return 3;
   }
-  // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`).
-  const repoFlag = resolveRepoFlag(values, flags, process.cwd());
+  // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`,
+  // ou derivado de `--issue owner/repo#N` — review J: o PR mora no repo da issue).
+  const repoFlag = resolvePrTargetRepo(values, flags, process.cwd());
   if ("error" in repoFlag) {
     console.error(`[check-pr-retido-gate] ${repoFlag.error}`);
     return 3;
