@@ -178,11 +178,14 @@ describe("#10689 — sem falso positivo novo", () => {
 });
 
 describe("#10689 — repo do caminho da API", () => {
-  it("a invocação carrega -R owner/repo quando o caminho traz o repo literal", () => {
+  it("a invocação carrega o repo quando o caminho traz o repo literal", () => {
+    // Forma desde o #10751 (união discriminada); antes: [["-R", "vjpixel/diaria-design", "7"]] e [["7"]].
     assert.deepEqual(findGhPrMergeInvocations("gh api -X PUT repos/vjpixel/diaria-design/pulls/7/merge", opts), [
-      ["-R", "vjpixel/diaria-design", "7"],
+      { via: "api-rest", repo: { kind: "literal", slug: "vjpixel/diaria-design" }, pr: 7 },
     ]);
-    assert.deepEqual(findGhPrMergeInvocations("gh api -X PUT repos/{owner}/{repo}/pulls/7/merge", opts), [["7"]]);
+    assert.deepEqual(findGhPrMergeInvocations("gh api -X PUT repos/{owner}/{repo}/pulls/7/merge", opts), [
+      { via: "api-rest", repo: { kind: "cwd" }, pr: 7 },
+    ]);
   });
 
   it("reposMentioned enxerga o repo de fora no caminho repos/o/r/…", () => {
