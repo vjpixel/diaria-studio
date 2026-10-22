@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import {
+  D1_INVITE_FONT_FAMILY,
   D1_INVITE_TEXT,
   D1_INVITE_VERSION,
   D1_PLAY_HERO_FILE,
@@ -20,7 +21,7 @@ import {
   inviteGeometry,
   editionFromDir,
 } from "../scripts/lib/diaria/d1-video-hero.ts";
-import { ensureD1PlayImage } from "../scripts/lib/diaria/d1-play-image.ts";
+import { ensureD1PlayImage, measureInviteText } from "../scripts/lib/diaria/d1-play-image.ts";
 import { d1VideoHeroFields, type RenderDestaque } from "../scripts/lib/newsletter-parse.ts";
 import { renderDestaque } from "../scripts/lib/newsletter-render-html.ts";
 import { md5OfFile } from "../scripts/lib/shared/file-md5.ts";
@@ -187,7 +188,9 @@ describe("#10784 — cópia do hero com play", () => {
       const px = (x: number, y: number) => data[(y * info.width + x) * info.channels];
       assert.ok(px(200 - 30, 100) < 60, `centro não pode ter play, veio ${px(170, 100)}`);
       // Faixa de tinta (#171411 a 82%) na parte de baixo: R cai de 40 para ~26.
-      assert.ok(px(146, 176) < 33, `faixa do convite (canto inferior direito) deveria escurecer a base, veio ${px(146, 176)}`);
+      const geo = inviteGeometry(400, 200, await measureInviteText(400));
+      const probeX = Math.round(geo.pill.x + 2), probeY = Math.round(geo.pill.y + geo.pill.h / 2);
+      assert.ok(px(probeX, probeY) < 33, `faixa do convite (canto inferior direito) deveria escurecer a base, veio ${px(probeX, probeY)} em ${probeX},${probeY}`);
       assert.ok(px(30, 165) > 30, "a faixa fica no canto direito: o canto inferior esquerdo segue com a arte");
       assert.ok(px(10, 10) < 100, "canto segue com a arte original");
 
@@ -228,22 +231,33 @@ describe("#10784 — cópia do hero com play", () => {
     }
   });
 
-  it("o texto cabe na faixa mesmo com fonte inexistente (fallback do rasterizador)", async () => {
+  it("alinhamento: padding igual dos dois lados e texto centrado na vertical, em Georgia e com fonte inexistente", async () => {
     const W = 1600, H = 800;
-    const flat = await sharp({ create: { width: W, height: H, channels: 3, background: { r: 40, g: 60, b: 90 } } }).png().toBuffer();
-    const svg = buildInviteSvg(W, H).replace(/font-family="[^"]*"/g, `font-family="NoSuchFontXYZ"`);
-    const out = await sharp(flat).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).raw().toBuffer({ resolveWithObject: true });
-    const px = (x: number, y: number) => out.data[(y * out.info.width + x) * out.info.channels];
-    const { pill } = inviteGeometry(W, H);
-    const left = pill.x, right = pill.x + pill.w, top = pill.y, bottom = pill.y + pill.h;
-    let minX = W, maxX = -1, minY = H, maxY = -1;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (px(x, y) > 200) {
-      if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+    for (const family of [D1_INVITE_FONT_FAMILY, "NoSuchFontXYZ"]) {
+      const m = await measureInviteText(W, family);
+      const flat = await sharp({ create: { width: W, height: H, channels: 3, background: { r: 40, g: 60, b: 90 } } }).png().toBuffer();
+      const svg = buildInviteSvg(W, H, m, family);
+      const out = await sharp(flat).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).raw().toBuffer({ resolveWithObject: true });
+      const px = (x: number, y: number) => out.data[(y * out.info.width + x) * out.info.channels];
+      const { pill, iconCx, iconD } = inviteGeometry(W, H, m);
+      // Caixa dos pixels brancos (ícone + texto) dentro da faixa.
+      let minX = W, maxX = -1, minY = H, maxY = -1;
+      for (let y = Math.floor(pill.y); y < pill.y + pill.h; y++) for (let x = Math.floor(pill.x); x < pill.x + pill.w; x++) {
+        if (px(x, y) > 200) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+      }
+      assert.ok(maxX > 0, `${family}: conteúdo branco deveria ter sido desenhado`);
+      const padL = minX - pill.x, padR = pill.x + pill.w - maxX;
+      assert.ok(Math.abs(padL - padR) <= 4, `${family}: padding esquerdo ${padL.toFixed(1)} x direito ${padR.toFixed(1)}`);
+      // Texto (à direita do play): centrado na vertical pela caixa real.
+      const textLeft = iconCx + iconD / 2 + 4;
+      let tMinY = H, tMaxY = -1;
+      for (let y = Math.floor(pill.y); y < pill.y + pill.h; y++) for (let x = Math.floor(textLeft); x < pill.x + pill.w; x++) {
+        if (px(x, y) > 200) { if (y < tMinY) tMinY = y; if (y > tMaxY) tMaxY = y; }
+      }
+      const padT = tMinY - pill.y, padB = pill.y + pill.h - tMaxY;
+      assert.ok(Math.abs(padT - padB) <= 4, `${family}: respiro em cima ${padT.toFixed(1)} x embaixo ${padB.toFixed(1)}`);
+      assert.ok(pill.x + pill.w <= W && pill.y + pill.h <= H && (pill.x + pill.w / 2) > W / 2 && (pill.y + pill.h / 2) > H / 2, "faixa no canto inferior direito");
     }
-    assert.ok(maxX > 0, "o texto deveria ter sido desenhado (branco)");
-    assert.ok(minX >= left + 10 && maxX <= right - 10, `texto ${minX}-${maxX} fora da faixa ${left}-${right}`);
-    assert.ok(minY >= top && maxY <= bottom, `texto ${minY}-${maxY} fora da faixa vertical ${top}-${bottom}`);
-    assert.ok(right <= W && bottom <= H && (left + right) / 2 > W / 2 && (top + bottom) / 2 > H / 2, "faixa no canto inferior direito");
   });
 
   it("buildInviteSvg: faixa no canto inferior direito, play ao lado do texto de 1 linha", () => {

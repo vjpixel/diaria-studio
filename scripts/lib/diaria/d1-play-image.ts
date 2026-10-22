@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { md5OfFile } from "../shared/file-md5.ts";
-import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, buildInviteSvg } from "./d1-video-hero.ts";
+import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_TEXT, buildInviteSvg, type InviteTextMetrics } from "./d1-video-hero.ts";
 
 export type D1PlayImageResult =
   | { status: "generated" | "fresh"; path: string }
@@ -40,12 +40,35 @@ function readStamp(stampPath: string): { md5: string | null; overlay: string | n
   }
 }
 
+/**
+ * Mede o texto do convite na fonte que o rasterizador (librsvg) realmente usar:
+ * desenha o texto sozinho numa tela maior e corta (`trim`) o espaço vazio. Mede
+ * com o mesmo motor que vai desenhar, então vale para Georgia no Windows e para
+ * a fonte de reserva do servidor Linux.
+ */
+export async function measureInviteText(width: number, fontFamily: string = D1_INVITE_FONT_FAMILY): Promise<InviteTextMetrics> {
+  const fontSize = width * 0.024;
+  const W = Math.ceil(fontSize * 30);
+  const H = Math.ceil(fontSize * 4);
+  const baseline = Math.round(fontSize * 2.5);
+  const x0 = Math.round(fontSize);
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    `<rect width="${W}" height="${H}" fill="#000000"/>` +
+    `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${D1_INVITE_TEXT}</text>` +
+    `</svg>`;
+  const { info } = await sharp(Buffer.from(svg)).trim({ background: "#000000", threshold: 40 }).toBuffer({ resolveWithObject: true });
+  const top = -(info.trimOffsetTop ?? 0);
+  return { textW: info.width, ascent: baseline - top, descent: top + info.height - baseline };
+}
+
 /** Compõe o convite sobre o hero e devolve o JPEG. */
 export async function renderD1PlayImage(heroBytes: Buffer): Promise<Buffer> {
   const img = sharp(heroBytes);
   const meta = await img.metadata();
   if (!meta.width || !meta.height) throw new Error("hero do D1 sem dimensões legíveis");
-  const svg = Buffer.from(buildInviteSvg(meta.width, meta.height));
+  const metrics = await measureInviteText(meta.width);
+  const svg = Buffer.from(buildInviteSvg(meta.width, meta.height, metrics));
   return img.composite([{ input: svg, top: 0, left: 0 }]).jpeg({ quality: 88 }).toBuffer();
 }
 

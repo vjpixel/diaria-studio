@@ -53,7 +53,7 @@ export const D1_INVITE_TEXT = "Clique e assista a notícia comentada";
  * (texto, faixa, posição) sem mudar o hero também regera a cópia. Subir a versão
  * a cada mudança em `buildInviteSvg`/`D1_INVITE_TEXT`.
  */
-export const D1_INVITE_VERSION = "invite-v4";
+export const D1_INVITE_VERSION = "invite-v5";
 
 /** `alt` da imagem do D1 quando ela é link: a imagem é o único conteúdo do link e o convite está só nos pixels. */
 export function d1HeroAlt(title: string): string {
@@ -98,26 +98,52 @@ export function editionFromDir(editionDir: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Pilha de fontes do convite (Georgia; DejaVu Serif no servidor Linux). */
+export const D1_INVITE_FONT_FAMILY = "Georgia, 'DejaVu Serif', serif";
+
 /**
- * Geometria do convite: faixa no CANTO INFERIOR DIREITO com o símbolo de play à
- * esquerda e o texto em UMA linha à direita dele. Separada do SVG para o
- * teste conferir que o texto cabe na faixa. A largura reservada ao texto tem
- * folga sobre Georgia e sobre a fonte de reserva do rasterizador (a medição
- * local deu +10%; DejaVu Serif no servidor Linux não foi medida).
+ * Medidas do texto do convite NA FONTE QUE O RASTERIZADOR USAR (largura, e
+ * quanto o texto sobe e desce da linha de base). Quem renderiza mede
+ * (`measureInviteText`, em d1-play-image.ts) e passa para cá, então a faixa
+ * abraça o texto com a mesma folga dos dois lados em qualquer fonte. Sem
+ * medida (testes que só olham o desenho), uma estimativa de Georgia bold.
  */
-export function inviteGeometry(width: number, height: number) {
+export interface InviteTextMetrics {
+  textW: number;
+  ascent: number;
+  descent: number;
+}
+
+export function estimateInviteTextMetrics(width: number): InviteTextMetrics {
+  const fontSize = width * 0.024;
+  return { textW: fontSize * 19.5, ascent: fontSize * 0.74, descent: fontSize * 0.22 };
+}
+
+/**
+ * Geometria do convite: faixa no CANTO INFERIOR DIREITO, com o símbolo de play
+ * à esquerda e o texto em UMA linha à direita dele. Separada do SVG para o
+ * teste conferir o alinhamento. A faixa tem padding igual dos dois lados do
+ * conteúdo (play + texto) e o texto fica centralizado na vertical pelo seu
+ * retângulo real (do topo do "l"/"q" ao rodapé do "q"), não pela linha de base.
+ */
+export function inviteGeometry(width: number, height: number, m: InviteTextMetrics = estimateInviteTextMetrics(width)) {
   if (!(width > 0 && height > 0)) throw new Error(`buildInviteSvg: dimensões inválidas ${width}x${height}`);
   const fontSize = width * 0.024;
   const margin = width * 0.03;
   const padX = fontSize * 0.9;
   const iconD = fontSize * 1.5;
   const gap = fontSize * 0.5;
-  const textW = fontSize * 21.8; // Georgia bold mede ~19.5em; +12% de folga
-  const w = padX * 2 + iconD + gap + textW;
+  const w = padX * 2 + iconD + gap + m.textW;
   const h = fontSize * 2.4;
   const x = width - margin - w;
   const y = height - margin - h;
-  return { fontSize, padX, iconD, gap, pill: { x, y, w, h } };
+  const cyMid = y + h / 2;
+  const iconCx = x + padX + iconD / 2;
+  const textX = x + padX + iconD + gap;
+  // O retângulo do texto vai de (baseline - ascent) a (baseline + descent);
+  // centro em cyMid => baseline = cyMid + (ascent - descent) / 2.
+  const baseline = cyMid + (m.ascent - m.descent) / 2;
+  return { fontSize, padX, iconD, gap, pill: { x, y, w, h }, cyMid, iconCx, textX, baseline };
 }
 
 /**
@@ -127,26 +153,25 @@ export function inviteGeometry(width: number, height: number) {
  * em uma linha. Fica fora do centro para não cobrir o assunto da arte.
  * `textLength` não é usado: o rasterizador (librsvg) o ignora.
  */
-export function buildInviteSvg(width: number, height: number): string {
-  const g = inviteGeometry(width, height);
+export function buildInviteSvg(
+  width: number,
+  height: number,
+  m: InviteTextMetrics = estimateInviteTextMetrics(width),
+  fontFamily: string = D1_INVITE_FONT_FAMILY,
+): string {
+  const g = inviteGeometry(width, height, m);
   const f = (n: number) => n.toFixed(1);
   const { pill } = g;
-  const cyMid = pill.y + pill.h / 2;
-  const iconCx = pill.x + g.padX + g.iconD / 2;
   const r = g.iconD / 2;
   const tri = r * 0.8;
-  const tx1 = iconCx - tri * 0.35;
-  const tx2 = iconCx + tri * 0.65;
-  const textX = pill.x + g.padX + g.iconD + g.gap;
-  const y1 = cyMid + g.fontSize * 0.35;
-  const text = (y: number, line: string) =>
-    `<text x="${f(textX)}" y="${f(y)}" font-family="Georgia, 'DejaVu Serif', serif" font-weight="bold" font-size="${f(g.fontSize)}" fill="#FFFFFF">${line}</text>`;
+  const tx1 = g.iconCx - tri * 0.35;
+  const tx2 = g.iconCx + tri * 0.65;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
     `<rect x="${f(pill.x)}" y="${f(pill.y)}" width="${f(pill.w)}" height="${f(pill.h)}" rx="${f(pill.h * 0.28)}" fill="#171411" fill-opacity="0.82"/>` +
-    `<circle cx="${f(iconCx)}" cy="${f(cyMid)}" r="${f(r)}" fill="#FFFFFF"/>` +
-    `<polygon points="${f(tx1)},${f(cyMid - tri / 2)} ${f(tx2)},${f(cyMid)} ${f(tx1)},${f(cyMid + tri / 2)}" fill="#171411"/>` +
-    text(y1, D1_INVITE_TEXT) +
+    `<circle cx="${f(g.iconCx)}" cy="${f(g.cyMid)}" r="${f(r)}" fill="#FFFFFF"/>` +
+    `<polygon points="${f(tx1)},${f(g.cyMid - tri / 2)} ${f(tx2)},${f(g.cyMid)} ${f(tx1)},${f(g.cyMid + tri / 2)}" fill="#171411"/>` +
+    `<text x="${f(g.textX)}" y="${f(g.baseline)}" font-family="${fontFamily}" font-weight="bold" font-size="${f(g.fontSize)}" fill="#FFFFFF">${D1_INVITE_TEXT}</text>` +
     `</svg>`
   );
 }
