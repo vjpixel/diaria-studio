@@ -201,7 +201,6 @@ if (isMainModule(import.meta.url)) {
     }
 
     const candidates: CandidateIssue[] = deriveCandidateIssues(issues, prBodies);
-    candidatesTotal += candidates.length;
     if (candidates.length === 0) continue;
 
     // Passo 2: para cada candidata, buscar os comentários E labels da issue
@@ -241,6 +240,9 @@ if (isMainModule(import.meta.url)) {
       continue;
     }
 
+    // Review 2, item 4: só conta candidatas de grupo AVALIADO — grupo
+    // abandonado acima (falha de processo no repo extra) não infla o N.
+    candidatesTotal += candidates.length;
     const verdict = checkCoverage(candidates, commentsByIssue, kind ?? undefined);
     unresolvedLabels.push(...verdict.unresolved.map((c) => label(c.number)));
 

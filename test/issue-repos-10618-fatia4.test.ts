@@ -864,6 +864,23 @@ describe("#10618 fatia 4 (review) — falha num repo extra nunca descarta o vere
     const r = runCli(root, env, "check-overnight-comment-coverage.ts", ["--plan", planPath]);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(r.stdout, /^ok PARCIAL .*NÃO avaliados: vjpixel\/diaria-design \(gh falhou\)/);
+    // Review 2, item 4: a candidata do grupo abandonado não entra no N.
+    assert.doesNotMatch(r.stdout, /todas as 1 issue/);
+    assert.match(r.stdout, /nenhuma issue pulada/);
+  });
+
+  it("drift-gate (review 2, item 3): 403/404 nos comentários do design → 'ok PARCIAL', nunca 'ok' limpo", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: { [`${DESIGN}#21`]: { status: "pulada", motivo: "x", scope_note: "nada" } },
+    });
+    const { env } = fakeGh(root, {
+      [`issue_list_${DESIGN}_list_number,labels,body`]: [{ number: 21, labels: [], body: "" }],
+      // comments do design sem resposta → gh sai 1 (erro de API, não de processo)
+    });
+    const r = runCli(root, env, "check-decision-label-drift-gate.ts", ["--plan", planPath]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /^ok PARCIAL .*comentários NÃO avaliados: vjpixel\/diaria-design \(1 leitura/);
   });
 
   it("comment-coverage: PR do design inacessível (erro de API) → 'ok PARCIAL', nunca 'ok' limpo", () => {

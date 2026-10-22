@@ -172,6 +172,10 @@ if (isMainModule(import.meta.url)) {
   let ghUnavailable = false;
 
   const reposNotEvaluated: string[] = [];
+  // Review 2, item 3: erro de API (403/404) ao ler comentários num repo
+  // EXTRA — o gate segue com a prosa do plano, mas a linha final diz PARCIAL
+  // (mesma regra do `notePartial` de check-overnight-comment-coverage).
+  const partialFailures = new Map<string, number>();
   for (const g of groups) {
     if (!allowedRepos.has(g.repo)) continue;
     const repoArg = g.isDefault ? undefined : g.repo;
@@ -222,6 +226,8 @@ if (isMainModule(import.meta.url)) {
               groupAbandoned = true;
               break;
             }
+          } else if (!g.isDefault) {
+            partialFailures.set(g.repo, (partialFailures.get(g.repo) ?? 0) + 1);
           }
           // Sem os comentários, ainda dá pra avaliar a prosa do plano — não
           // abortar a issue inteira por causa de uma falha de fetch.
@@ -273,13 +279,19 @@ if (isMainModule(import.meta.url)) {
     console.error("");
   }
 
+  const partialNote = [...partialFailures].map(([r, n]) => `${r} (${n} leitura(s) de comentário com erro)`);
+  if (partialNote.length > 0) {
+    console.error(`[check-decision-label-drift-gate] PARCIAL — comentários NÃO avaliados: ${partialNote.join(", ")}`);
+  }
   if (allFindings.length === 0) {
     const ressalvas = [
       ...(skipped.length > 0 ? [`${skipped.length} entrada(s) FORA desta checagem`] : []),
       ...(reposNotEvaluated.length > 0 ? [`repo(s) NÃO avaliado(s): ${reposNotEvaluated.join(", ")}`] : []),
+      ...(partialNote.length > 0 ? [`comentários NÃO avaliados: ${partialNote.join(", ")}`] : []),
     ];
+    const parcial = reposNotEvaluated.length > 0 || partialNote.length > 0;
     console.log(
-      `ok${reposNotEvaluated.length > 0 ? " PARCIAL" : ""} — nenhum drift de label de decisão detectado nas issues da rodada${ressalvas.length > 0 ? ` (exceto ${ressalvas.join("; ")}, ver stderr)` : ""}`,
+      `ok${parcial ? " PARCIAL" : ""} — nenhum drift de label de decisão detectado nas issues da rodada${ressalvas.length > 0 ? ` (exceto ${ressalvas.join("; ")}, ver stderr)` : ""}`,
     );
     process.exit(0);
   }
