@@ -23,6 +23,7 @@ import {
   buildYouTubeTags,
   buildYouTubeTitle,
   deriveEpisodeNumber,
+  normalizeCategoryTag,
   resolveEffectiveVisibility,
   resolveYouTubeSchedule,
   stripInlineMarkdown,
@@ -128,6 +129,29 @@ describe("metadados do vídeo (#10659 item 2)", () => {
   it("sem categoria (ou categoria repetida) ainda dá 6 tags", () => {
     assert.equal(buildYouTubeTags().length, 6);
     assert.equal(buildYouTubeTags("IA").length, 6);
+  });
+
+  it("tag da seção sai sem emoji (#10798: '🔬 PESQUISA' virava '🔬 pesquisa')", () => {
+    const tags = buildYouTubeTags("🔬 PESQUISA");
+    assert.equal(tags[5], "pesquisa");
+    for (const t of tags) assert.doesNotMatch(t, /\p{Extended_Pictographic}/u);
+    assert.equal(normalizeCategoryTag("⚠️ SEGURANÇA"), "segurança");
+    assert.equal(normalizeCategoryTag("  👩🏽‍💻  USE   MELHOR 🔬 "), "use melhor");
+    // Só emoji: vira vazio e cai no fallback "newsletter".
+    assert.equal(buildYouTubeTags("🔬")[5], "newsletter");
+  });
+
+  it("dry-run com header 'DESTAQUE 1 | 🔬 PESQUISA' gera tag sem emoji (#10798)", () => {
+    const md = REVIEWED_MD.replace("DESTAQUE 1 | SEGURANÇA", "DESTAQUE 1 | 🔬 PESQUISA");
+    const plan = planYouTubePublish({
+      aammdd: "261022",
+      reviewedMd: md,
+      now: new Date("2026-10-21T23:00:00Z"),
+      video: { path: "/x/v.mp4", exists: true, sizeBytes: 1 },
+      thumb: { path: "/x/t.jpg", exists: true },
+    });
+    assert.ok(plan.metadata.tags.includes("pesquisa"), JSON.stringify(plan.metadata.tags));
+    assert.equal(plan.metadata.tags.some((t) => /\p{Extended_Pictographic}/u.test(t)), false);
   });
 
   it("stripInlineMarkdown remove negrito, itálico e links", () => {

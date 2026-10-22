@@ -28,7 +28,33 @@ Na pasta da edição (`data/editions/{AAMM}/{AAMMDD}/`):
 
 - `02-reviewed.md` — obrigatório (é de onde sai o D1);
 - `diaria-comentada-{AAMMDD}.mp4` — o vídeo (convenção de nome; outro caminho via `--video`). Ausente vira aviso, não erro;
-- `04-youtube-thumb.jpg` — capa 1280x720 aprovada (opcional; sem ela o YouTube gera a dele, que já veio com contorno neon no #1).
+- `04-youtube-thumb.jpg` — capa 1280x720 aprovada (opcional; sem ela o YouTube gera a dele, que já veio com contorno neon no #1). Ausente: gerar no Passo 1b.
+
+## Passo 1b — Capas no padrão diar.ia.br (#10800)
+
+Regra do editor: **a única imagem realista é o editor.** Todo o resto é pintura Van Gogh/impasto, a linguagem das imagens de destaque. Referências aprovadas: `data/editions/2610/261021/04-youtube-thumb.jpg` e `data/editions/2610/261022/04-youtube-thumb.jpg`. A proposta da IA do YouTube Studio não serve (261022: laboratório e escorpião fotorrealistas, reprovada).
+
+**Horizontal (`04-youtube-thumb.jpg`):**
+
+1. **Gancho:** 2 ou 3 palavras derivadas do D1, pergunta ou tensão (ex.: "IA ladra?", "IA antiveneno?"). Propor e seguir com ele; o editor aprova vendo a capa no passo 5.
+2. **Retrato:** Codex CLI pela assinatura ChatGPT (`codex exec -i frame1.png -i frame2.png`, mesmo guard de env do `scripts/codex-image.js`), a partir de 2 frames do vídeo do dia (`ffmpeg -ss {t} -i {vídeo} -frames:v 1 frameN.png`). Prompt: o mesmo homem, do peito pra cima, olhando pra câmera, sorriso leve, bem iluminado, camiseta cinza como no vídeo, fundo escuro liso. Recortar com `rembg` modelo `birefnet-portrait` (só a pessoa, PNG com transparência).
+3. **Fundo:** outpaint da `04-d1-2x1.jpg` pelo Codex para 16:9, com o objeto do D1 menor e inteiro à direita e o terço esquerdo livre, em pintura impasto nítida. Nunca desfoque.
+4. **Composição** (determinística):
+
+   ```bash
+   npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --hook "IA ladra?" --portrait retrato.png --background fundo-16x9.png
+   ```
+
+   Grava `04-youtube-thumb.jpg` (1280x720, ≤ 2 MB): fundo sem desfoque, gradiente escuro embaixo, retrato à esquerda na base, gancho em Georgia bold cor papel no canto inferior direito com o `?` em teal. Retrato sem transparência é recusado. Sem `--background` usa a `04-d1-2x1.jpg` crua com recorte central e um `[aviso]`. Precisa de Georgia instalada (guard #4090).
+5. **Mostrar ao editor antes de subir** (pedido explícito).
+
+**Short (`04-youtube-short-capa.jpg`):** um frame do próprio vídeo vertical em que aparece o lettering do título do D1 (só nos ~3,5 s iniciais; depois entra a vinheta). Escolher o frame com a melhor expressão (olhando pra câmera, boca fechada ou sorriso, mãos fora do quadro):
+
+```bash
+npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --short-cover --at 1.8
+```
+
+Default do vídeo: `diaria-comentada-{AAMMDD}-short.mp4` na pasta da edição (`--video` para outro). Frame depois de 3,5 s vira `[aviso]`. Também mostrar ao editor; no Studio, "Enviar arquivo" com o frame.
 
 ## Passo 2 — Plano (dry-run)
 
