@@ -23,6 +23,18 @@ workers_dev = true
 #       responde 503 "not_configured") + custom field `form_sig` criado no Kit
 #   4. Rota/domínio + onboarding.followup.form_url/form_responses_url no platform.config.json
 # Sem o binding o Worker responde 503 "not_configured" — nunca lança.
+#
+# 22/10/2026: passos 1-4 feitos (KV criado, secrets RESPONSES_TOKEN e
+# ONBOARDING_FORM_LINK_SECRET no Worker, form_sig no Kit, rota abaixo).
+# workers_dev = true continua ativo como fallback.
+
+[[routes]]
+pattern = "formulario.diar.ia.br"
+custom_domain = true
+
+[[kv_namespaces]]
+binding = "ONBOARDING_FORM"
+id = "b40a817cabd547f68a360300a3f41f39"
 
 [observability]
 enabled = true
