@@ -85,11 +85,12 @@ describe("metadados do vídeo (#10659 item 2)", () => {
     assert.doesNotMatch(meta.description, /[<>]/);
   });
 
-  it("descrição = resumo sem markdown + fonte + edição com UTM + CTA com UTM youtube", () => {
+  it("descrição = resumo sem markdown + edição com UTM, sem fonte (#10799) + CTA com UTM youtube", () => {
     const desc = buildYouTubeDescription({ aammdd: "261022", episode: 2, editionUrl: "https://diar.ia.br/p/ia-ladra", d1: D1 });
     assert.match(desc, /^Pesquisadores mostraram que um agente conseguiu abrir o cofre sem senha\./);
     assert.doesNotMatch(desc, /\*\*|\]\(/);
-    assert.match(desc, /Fonte: https:\/\/fonte\.exemplo\.com\/artigo/);
+    assert.doesNotMatch(desc, /^Fonte:/m);
+    assert.ok(!desc.includes(D1.url));
     assert.match(desc, /https:\/\/diar\.ia\.br\/p\/ia-ladra\?utm_source=youtube&utm_medium=video&utm_campaign=261022/);
     assert.ok(desc.includes("https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign=261022"));
   });
@@ -112,7 +113,8 @@ describe("metadados do vídeo (#10659 item 2)", () => {
     });
     assert.ok(Buffer.byteLength(desc, "utf8") <= YOUTUBE_DESCRIPTION_MAX_BYTES);
     assert.ok(desc.includes("utm_source=youtube&utm_medium=video&utm_campaign=261022"));
-    assert.ok(desc.includes("Fonte: "));
+    assert.doesNotMatch(desc, /^Fonte:/m);
+    assert.ok(!desc.includes(D1.url));
   });
 
   it("6 tags (decisão do editor), categoria do D1 entra em minúsculas, soma ≤ 500", () => {
@@ -245,7 +247,8 @@ describe("planYouTubePublish (dry-run)", () => {
     const plan = planYouTubePublish(base);
     assert.equal(plan.episode, 2);
     assert.equal(plan.metadata.title, `${D1.title} | diar.ia.br comentada #2`);
-    assert.match(plan.request.body.snippet.description, /Fonte: https:\/\/fonte\.exemplo\.com\/artigo/);
+    assert.doesNotMatch(plan.request.body.snippet.description, /^Fonte:/m);
+    assert.ok(!plan.request.body.snippet.description.includes(D1.url));
     assert.equal(plan.schedule.mode, "scheduled");
     assert.ok(plan.premises.some((p) => /cadência diária/.test(p)));
     assert.ok(plan.premises.some((p) => /slug do título/.test(p)));
