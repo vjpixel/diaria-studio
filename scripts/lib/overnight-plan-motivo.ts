@@ -41,6 +41,7 @@
 
 import { readFileSync } from "node:fs";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
+import { issueKeyOfPlanEntry, issueNumberInRepo, studioNumberOfIssueKey } from "./issue-key.ts";
 
 /**
  * Vocabulário fechado de `motivo` para issues `status: "pulada"` no
@@ -86,6 +87,9 @@ export interface OvernightPlanIssueLike {
 
 export interface InvalidOvernightMotivoEntry {
   number: number;
+  /** #10618 (fatia 4): `owner/repo#N` quando a entrada é de outro repo —
+   * o rótulo da mensagem nunca é o `#N` cru da design como se fosse a studio. */
+  ref?: string;
   /** `null` quando `motivo` está ausente ou não é string — issue `pulada`
    * sem motivo registrado é o mesmo problema, silenciosamente pior. */
   motivo: string | null;
@@ -103,9 +107,11 @@ export function findInvalidPuladaMotivos(
   for (const issue of issues) {
     if (issue?.status !== "pulada") continue;
     const motivo = typeof issue.motivo === "string" ? issue.motivo : null;
-    const number = typeof issue.number === "number" ? issue.number : Number.NaN;
+    const key = issueKeyOfPlanEntry(issue);
+    const studio = key ? studioNumberOfIssueKey(key) : null;
+    const number = key ? (studio ?? issueNumberInRepo(key)) : Number.NaN;
     if (motivo === null || !isOvernightPuladaMotivo(motivo)) {
-      out.push({ number, motivo });
+      out.push(key && studio === null ? { number, motivo, ref: key } : { number, motivo });
     }
   }
   return out;

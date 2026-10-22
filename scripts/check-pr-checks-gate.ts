@@ -25,6 +25,8 @@
  *
  * Uso:
  *   npx tsx scripts/check-pr-checks-gate.ts --pr 6212
+ *   npx tsx scripts/check-pr-checks-gate.ts --pr 23 --issue vjpixel/diaria-design#21   (#10618: repo do PR derivado da issue)
+ *   npx tsx scripts/check-pr-checks-gate.ts --pr 23 --repo vjpixel/diaria-design
  *
  * Exit codes (todo valor != 0 significa "condição 1 NÃO satisfeita" — o
  * chamador nunca precisa distinguir "erro" de "reprovado" pra decidir se
@@ -65,6 +67,7 @@
  */
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrChecksGate, type PrChecksGateResult } from "./lib/pr-checks-gate.ts";
 import { CLAUDE_BINARY_ERROR_SIGNATURE, findClaudeBinaryErrorSignature } from "./lib/detect-claude-binary-error.ts";
@@ -273,10 +276,11 @@ export function resolveGateResult(result: GhPrViewSpawnOutcome): CliGateResult {
  * `"claude_binary_error"`, #7189), nunca `"pass"`, e o entrypoint sai com
  * código != 0. Nunca lança.
  */
-function fetchPrChecksGate(prNumber: number, cwd: string): CliGateResult {
+function fetchPrChecksGate(prNumber: number, cwd: string, repo?: string): CliGateResult {
   const result = spawnSync(
     "gh",
-    ["pr", "view", String(prNumber), "--json", "statusCheckRollup,mergeable,commits"],
+    // #10618 (fatia 4): `-R` quando o PR é de outro repo da allowlist.
+    ["pr", "view", String(prNumber), ...(repo ? ["-R", repo] : []), "--json", "statusCheckRollup,mergeable,commits"],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
   return resolveGateResult(result);
@@ -306,16 +310,23 @@ const EXIT_CODES: Record<CliGateResult["verdict"], number> = {
 };
 
 if (isMainModule(import.meta.url)) {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const prRaw = values.pr;
   const prNumber = prRaw ? Number(prRaw) : NaN;
   if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0) {
-    console.error("[check-pr-checks-gate] uso: --pr N");
+    console.error("[check-pr-checks-gate] uso: --pr N [--repo owner/name | --issue N|owner/repo#N]");
+    process.exit(2);
+  }
+  // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`,
+  // ou derivado de `--issue owner/repo#N` — review J: o PR mora no repo da issue).
+  const repoFlag = resolvePrTargetRepo(values, flags, process.cwd());
+  if ("error" in repoFlag) {
+    console.error(`[check-pr-checks-gate] ${repoFlag.error}`);
     process.exit(2);
   }
 
-  const result = fetchPrChecksGate(prNumber, process.cwd());
-  const prefix = `[check-pr-checks-gate] PR #${prNumber}: verdict=${result.verdict}`;
+  const result = fetchPrChecksGate(prNumber, process.cwd(), repoFlag.repo);
+  const prefix = `[check-pr-checks-gate] ${prLabelInRepo(prNumber, repoFlag.repo)}: verdict=${result.verdict}`;
 
   if (result.verdict === "pass") {
     console.log(`${prefix} — ${result.reason}`);

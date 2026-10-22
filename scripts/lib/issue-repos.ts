@@ -8,9 +8,10 @@
  * `session-registry` (`claimed_foreign_issues`), o fetch de triagem
  * (`issue-triage-fetch.ts`), os gates que leem `plan.json`
  * (`plan-issue-ref.ts`) e o `route-issue.ts --issue owner/repo#N`. A fila de
- * triagem multi-repo é OPT-IN (`fetch-open-issues-for-triage.ts --repos`):
- * sem a flag, as rodadas seguem vendo só o diaria-studio até os gates que
- * ainda leem só `number` migrarem (fatia 3, resíduo na #10618). O número
+ * triagem multi-repo era opt-in na fatia 2; desde a fatia 4 as rodadas
+ * (overnight, contínuo, develop) chamam `fetch-open-issues-for-triage.ts
+ * --repos all` por padrão — o diaria-design entra na fila sem flag extra —
+ * e os gates de fim de rodada avaliam cada repo à parte. O número
  * sozinho colide entre repos (o #21 existe tanto no `vjpixel/diaria-studio`
  * quanto no `vjpixel/diaria-design`).
  *
@@ -234,4 +235,66 @@ export function loadIssueRepos(repoRoot: string, warn: (detail: string) => void 
     return readIssueRepos(null);
   }
   return readIssueRepos(config, warn);
+}
+
+/**
+ * `--repo owner/name` dos gates de PR que autorizam merge (#10618, fatia 4):
+ * o PR de uma issue do diaria-design mora no diaria-design, e um gate que
+ * consultasse `gh pr view N` sem `-R` daria o veredito do PR #N do studio.
+ * Ausente → `undefined` (o diaria-studio, chamada de sempre). Presente sem
+ * valor, ilegível ou fora da allowlist `issue_repos` → `{ error }` (o gate
+ * sai com erro de uso, nunca cai no default em silêncio). O repo default
+ * explícito também devolve `undefined`.
+ */
+export function resolveRepoFlag(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  repoRoot: string,
+): { repo: string | undefined } | { error: string } {
+  if (flags.has("repo") || values.repo === "") return { error: "--repo sem valor (esperado owner/name)" };
+  if (values.repo === undefined) return { repo: undefined };
+  const slug = normalizeRepoSlug(values.repo);
+  if (!slug) return { error: `--repo inválido: "${values.repo}" (esperado owner/name)` };
+  if (slug === DEFAULT_ISSUE_REPO) return { repo: undefined };
+  if (!loadIssueRepos(repoRoot).includes(slug)) {
+    return { error: `--repo ${slug} está fora de platform.config.json → issue_repos` };
+  }
+  return { repo: slug };
+}
+
+/**
+ * Repo do PR dos gates de merge (#10618, fatia 4, review J): `--repo` como em
+ * `resolveRepoFlag`, mais `--issue {ref}` opcional — a identidade da issue
+ * que o PR fecha (`N` ou `owner/repo#N`). Com `--issue`, o repo do PR é
+ * DERIVADO dela (o PR mora no repo da issue, decisão da #10618), de modo que
+ * o coordenador que passa a ref da issue não consegue esquecer o `--repo` e
+ * ler o PR #N do studio. `--repo` e `--issue` juntos têm de concordar;
+ * divergência, `--issue` ilegível ou repo fora da allowlist → `{ error }`.
+ */
+export function resolvePrTargetRepo(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  repoRoot: string,
+): { repo: string | undefined } | { error: string } {
+  const fromRepo = resolveRepoFlag(values, flags, repoRoot);
+  if ("error" in fromRepo) return fromRepo;
+  if (flags.has("issue") || values.issue === "") return { error: "--issue sem valor (esperado N ou owner/repo#N)" };
+  if (values.issue === undefined) return fromRepo;
+  const ref = parseIssueRef(values.issue);
+  if (!ref) return { error: `--issue inválido: "${values.issue}" (esperado N ou owner/repo#N)` };
+  const issueRepo = isDefaultIssueRepo(ref.repo) ? undefined : ref.repo;
+  if (issueRepo && !loadIssueRepos(repoRoot).includes(issueRepo)) {
+    return { error: `--issue ${formatIssueRef(ref)}: repo fora de platform.config.json → issue_repos` };
+  }
+  if (values.repo !== undefined && fromRepo.repo !== issueRepo) {
+    return {
+      error: `--repo ${fromRepo.repo ?? DEFAULT_ISSUE_REPO} diverge do repo da --issue ${formatIssueRef(ref)} (o PR mora no repo da issue)`,
+    };
+  }
+  return { repo: issueRepo };
+}
+
+/** Rótulo de PR pra mensagem: `PR #N` no studio, `owner/repo PR #N` nos outros. */
+export function prLabelInRepo(prNumber: number, repo: string | undefined): string {
+  return repo ? `${repo} PR #${prNumber}` : `PR #${prNumber}`;
 }

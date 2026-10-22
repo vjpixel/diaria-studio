@@ -528,12 +528,16 @@ describe("#10618 fatia 3 — CLI check-state-changed-pending varre o repo de out
     assert.deepEqual(c[1].slice(c[1].indexOf("-R"), c[1].indexOf("-R") + 2), ["-R", DESIGN]);
   });
 
-  it("plano só-studio: uma chamada só, sem -R (comportamento de sempre)", () => {
-    const { run, calls } = setup({ goal: { target_set: [22] } }, { default: [{ number: 22, labels: [], body: "" }] });
+  it("plano só-studio: a do studio sem -R, e (fatia 4) o design de issue_repos varrido por padrão", () => {
+    const { run, calls } = setup(
+      { goal: { target_set: [22] } },
+      { default: [{ number: 22, labels: [], body: "" }], [DESIGN]: [] },
+    );
     const r = run();
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.deepEqual(calls().length, 1);
+    assert.deepEqual(calls().length, 2);
     assert.equal(calls()[0].includes("-R"), false);
+    assert.deepEqual(calls()[1].slice(calls()[1].indexOf("-R"), calls()[1].indexOf("-R") + 2), ["-R", DESIGN]);
   });
 
   it("falha do gh no repo extra: aviso de NÃO varrido, sem acusar nada nem dar ok enganoso", () => {
@@ -548,10 +552,12 @@ describe("#10618 fatia 3 — CLI check-state-changed-pending varre o repo de out
   });
 
   it("repo fora de issue_repos nunca é consultado", () => {
-    const { run, calls } = setup({ goal: { target_set: ["fork/diaria-design#21"] } }, { default: [] });
+    const { run, calls } = setup({ goal: { target_set: ["fork/diaria-design#21"] } }, { default: [], [DESIGN]: [] });
     const r = run();
     assert.match(r.stderr, /fork\/diaria-design \(fora de issue_repos\)/);
-    assert.equal(calls().length, 1);
+    // studio + o design da allowlist (varrido por padrão desde a fatia 4); o fork nunca.
+    assert.equal(calls().length, 2);
+    assert.equal(calls().some((c) => c.includes("fork/diaria-design")), false);
   });
 });
 

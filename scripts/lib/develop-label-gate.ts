@@ -104,7 +104,7 @@
  */
 
 import { classifyExecTrack, type ExecTrack } from "./issue-exec-track.ts";
-import { studioNumberOfPlanEntry } from "./plan-issue-ref.ts";
+import { localNumberOfPlanEntry } from "./plan-issue-ref.ts";
 
 /**
  * Status de `plan.json` que significam **"esta sessão terminou de trabalhar
@@ -237,10 +237,12 @@ export function checkDevelopLabelCleared(
 
   for (const issue of planIssues) {
     if (!isWorkFinished(issue)) continue;
-    // #10778: `issueStates` vem de `gh issue view N` no diaria-studio. Entrada
-    // de outro repo casaria com o estado da studio#N — nunca avaliada aqui. O
-    // CLI já filtra e avisa (`partitionStudioPlanEntries`).
-    if (studioNumberOfPlanEntry(issue) === null) continue;
+    // #10778 → #10618 (fatia 4): `issueStates` vem do repo do grupo que o CLI
+    // está avaliando (`groupPlanEntriesByRepo` + `gh issue view N [-R repo]`).
+    // Entra a entrada do default ou a cópia em visão local do grupo; entrada
+    // de outro repo FORA de um grupo casaria com o estado da studio#N — nunca
+    // avaliada aqui.
+    if (localNumberOfPlanEntry(issue) === null) continue;
     const state = byNumber.get(issue.number);
     if (!state) continue; // sem dado — nunca acusa por ausência
 

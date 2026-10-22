@@ -24,6 +24,7 @@
  */
 
 import { DEFAULT_ISSUE_REPO, formatIssueRef, legacyIssueNumber, normalizeRepoSlug, parseIssueRef, type IssueRef } from "./issue-repos.ts";
+import { describeUnknownPlanEntry } from "./issue-key.ts";
 
 /** Identidade da entrada, ou `null` quando não é inequívoca. */
 export function planEntryRef(entry: unknown): IssueRef | null {
@@ -50,6 +51,37 @@ export function planEntryKey(entry: unknown): string | null {
 export function studioNumberOfPlanEntry(entry: unknown): number | null {
   const ref = planEntryRef(entry);
   return ref ? legacyIssueNumber(ref) : null;
+}
+
+/**
+ * Marca de "visão local" (#10618, fatia 4, review H) que
+ * `groupPlanEntriesByRepo` põe na cópia de uma entrada de OUTRO repo. A cópia
+ * mantém `ref` canônico — qualquer resolvedor de identidade
+ * (`planEntryRef`, `studioNumberOfPlanEntry`, `requireStudioIssueNumber`)
+ * continua vendo `owner/repo#N`, nunca a studio#N — e a marca só autoriza
+ * `localNumberOfPlanEntry` a devolver o número local DENTRO do grupo.
+ * `Symbol.for` (e não um campo string) pra não sair num `JSON.stringify`.
+ */
+const LOCAL_VIEW = Symbol.for("diaria.plan-entry.local-view");
+
+/** `true` quando a entrada é uma cópia em visão local de `groupPlanEntriesByRepo`. */
+export function isLocalViewPlanEntry(entry: unknown): boolean {
+  return !!entry && typeof entry === "object" && (entry as Record<symbol, unknown>)[LOCAL_VIEW] === true;
+}
+
+/**
+ * Número da entrada DENTRO do grupo de `groupPlanEntriesByRepo`: o número
+ * local de uma cópia em visão local, ou o número do studio de uma entrada do
+ * default. Entrada de outro repo FORA de um grupo (sem a marca) devolve
+ * `null` — mesma recusa de `studioNumberOfPlanEntry`. Só pra libs que casam
+ * por número contra dados já buscados no repo do grupo (`gh -R`).
+ */
+export function localNumberOfPlanEntry(entry: unknown): number | null {
+  if (isLocalViewPlanEntry(entry)) {
+    const n = (entry as { number?: unknown }).number;
+    return typeof n === "number" && Number.isSafeInteger(n) && n > 0 ? n : null;
+  }
+  return studioNumberOfPlanEntry(entry);
 }
 
 /** `true` quando a entrada é inequivocamente de um repo que NÃO é o default. */
@@ -80,4 +112,73 @@ export function partitionStudioPlanEntries<T>(entries: readonly T[]): { studio: 
     else skipped.push(planEntryKey(entry) ?? "(identidade desconhecida)");
   }
   return { studio, skipped };
+}
+
+/** Um repo e as entradas do plano que são dele, numeradas localmente. */
+export interface PlanEntriesOfRepo<T> {
+  /** `owner/repo` (o default incluso). */
+  repo: string;
+  /** `true` quando é o repo default (`vjpixel/diaria-studio`). */
+  isDefault: boolean;
+  /**
+   * Entradas do repo em "visão local": a do default sai como veio; a de
+   * outro repo sai como cópia com `number` = o número NAQUELE repo, `ref`
+   * canônico (`owner/repo#N`) e a marca de visão local, de modo que uma lib
+   * que casa por número (sem saber de repo) a trate como "o #N deste repo"
+   * — só é seguro porque cada grupo é avaliado sozinho, com dados buscados
+   * no repo dele (`gh -R`). A cópia NÃO perde a identidade (review H): se
+   * vazar pra um resolvedor (`studioNumberOfPlanEntry`,
+   * `requireStudioIssueNumber`), ele continua vendo o repo de verdade, nunca
+   * a studio#N. Guard que precise do número local usa
+   * `localNumberOfPlanEntry`.
+   */
+  entries: T[];
+}
+
+/**
+ * Agrupa as entradas do `plan.json` por repo (#10618, fatia 4) — o caminho
+ * para um gate que só sabe casar por número avaliar também o diaria-design:
+ * roda a mesma lógica uma vez por grupo, buscando os dados no repo do grupo.
+ * O grupo do default vem primeiro, os demais em ordem alfabética. `unknown`
+ * traz uma marca por entrada sem identidade legível, pro chamador avisar.
+ *
+ * Pura — nenhum I/O.
+ */
+export function groupPlanEntriesByRepo<T>(entries: readonly T[]): {
+  groups: PlanEntriesOfRepo<T>[];
+  unknown: string[];
+} {
+  const byRepo = new Map<string, T[]>();
+  const unknown: string[] = [];
+  entries.forEach((entry, index) => {
+    const ref = planEntryRef(entry);
+    if (!ref) {
+      unknown.push(`${describeUnknownPlanEntry(entry, index)} (identidade desconhecida)`);
+      return;
+    }
+    const list = byRepo.get(ref.repo) ?? [];
+    if (ref.repo === DEFAULT_ISSUE_REPO || !entry || typeof entry !== "object") {
+      list.push(entry);
+    } else {
+      list.push({
+        ...(entry as Record<string, unknown>),
+        number: ref.number,
+        ref: formatIssueRef(ref),
+        [LOCAL_VIEW]: true,
+      } as T);
+    }
+    byRepo.set(ref.repo, list);
+  });
+  const repos = [...byRepo.keys()].sort((a, b) =>
+    a === DEFAULT_ISSUE_REPO ? -1 : b === DEFAULT_ISSUE_REPO ? 1 : a.localeCompare(b),
+  );
+  return {
+    groups: repos.map((repo) => ({ repo, isDefault: repo === DEFAULT_ISSUE_REPO, entries: byRepo.get(repo)! })),
+    unknown,
+  };
+}
+
+/** Rótulo da issue `n` do repo de um grupo: `#N` no default, `owner/repo#N` nos outros. */
+export function labelInRepo(repo: string, n: number): string {
+  return repo === DEFAULT_ISSUE_REPO ? `#${n}` : `${repo}#${n}`;
 }

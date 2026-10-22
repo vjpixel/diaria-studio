@@ -61,12 +61,13 @@ if (isMainModule(import.meta.url)) {
   }
 
   if (result.status === "missing") {
-    const list = result.numbers.map((n) => `#${n}`).join(", ");
+    // #10618 (fatia 4): entrada de outro repo sai como owner/repo#N.
+    const list = [...result.numbers.map((n) => `#${n}`), ...(result.foreign ?? [])].join(", ");
     console.error(
       `[check-exec-track-coverage] entrada(s) de issues[] sem exec_track_painel: ${list}`,
     );
   } else {
-    const list = result.entries.map((e) => `#${e.number} (valor: "${e.value}")`).join(", ");
+    const list = result.entries.map((e) => `${e.ref ?? `#${e.number}`} (valor: "${e.value}")`).join(", ");
     console.error(
       `[check-exec-track-coverage] exec_track_painel fora do enum de tracks: ${list}`,
     );

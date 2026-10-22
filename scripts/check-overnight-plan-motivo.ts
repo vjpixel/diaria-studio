@@ -50,7 +50,7 @@ if (isMainModule(import.meta.url)) {
     `[check-overnight-plan-motivo] motivo fora do vocabulário fechado (${OVERNIGHT_PULADA_MOTIVOS.join(", ")}), ou ausente:`,
   );
   for (const entry of result.entries) {
-    const label = Number.isFinite(entry.number) ? `#${entry.number}` : "#?";
+    const label = entry.ref ?? (Number.isFinite(entry.number) ? `#${entry.number}` : "#?");
     console.error(`  ${label} — motivo: ${entry.motivo ?? "(ausente)"}`);
   }
   process.exit(1);

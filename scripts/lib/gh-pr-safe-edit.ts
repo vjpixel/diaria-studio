@@ -31,18 +31,55 @@
  * literalmente quando rodado dentro do checkout do repo (o `gh` os resolve
  * a partir do remote `origin`) — não precisamos descobrir o slug à mão.
  *
+ * **#10618 (fatia 4, review B):** PR de OUTRO repo da allowlist
+ * (`vjpixel/diaria-design`) precisa de `repo` explícito (`--repo owner/name`
+ * no CLI): sem ele, os placeholders e o `gh pr view` sem `-R` resolveriam o
+ * PR #N do diaria-studio a partir do cwd — e a escrita cairia no PR errado.
+ * Com `repo`, todo caminho vira `repos/{repo}/...` e toda leitura `-R repo`.
+ *
  * Mesmo padrão de dependency injection de `scripts/route-issue.ts`/
  * `scripts/lib/wait-until-sync.ts`/`scripts/lib/alarm-issues.ts`: `ghRun`
  * injetável (default `spawnGhSync`), testável sem `gh`/rede real.
  */
 import { spawnGhSync, type GhSpawnResult } from "./shared/gh-run.ts";
 import { isMainModule, parseArgs } from "./cli-args.ts";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { prLabelInRepo, resolveRepoFlag } from "./issue-repos.ts";
+
+/**
+ * Raiz do checkout do diaria-studio ONDE ESTE SCRIPT MORA (review 2, item 5
+ * da #10618): a allowlist `issue_repos` vem do `platform.config.json` daqui,
+ * não do cwd — o helper é rodado de dentro do worktree do diaria-design
+ * (`--repo vjpixel/diaria-design`), que não tem esse config, e resolver pelo
+ * cwd recusaria o repo legítimo.
+ */
+export const SAFE_EDIT_CONFIG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** `--repo` do CLI resolvido contra a allowlist do checkout do script. */
+export function resolveSafeEditRepo(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  configRoot: string = SAFE_EDIT_CONFIG_ROOT,
+): { repo: string | undefined } | { error: string } {
+  return resolveRepoFlag(values, flags, configRoot);
+}
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
 export interface SafeEditResult {
   ok: boolean;
   error?: string;
+}
+
+/** `repos/{owner}/{repo}` (do remote do cwd) ou `repos/owner/name` explícito. */
+function repoPath(repo?: string): string {
+  return `repos/${repo ?? "{owner}/{repo}"}`;
+}
+
+/** `-R owner/name` quando o PR é de outro repo; vazio no default. */
+function repoArgs(repo?: string): string[] {
+  return repo ? ["-R", repo] : [];
 }
 
 /**
@@ -54,16 +91,17 @@ export function setPrBodyRest(
   body: string,
   cwd: string,
   ghRun: GhRunFn = spawnGhSync,
+  repo?: string,
 ): SafeEditResult {
   const write = ghRun(
-    ["api", "-X", "PATCH", `repos/{owner}/{repo}/pulls/${pr}`, "-f", `body=${body}`],
+    ["api", "-X", "PATCH", `${repoPath(repo)}/pulls/${pr}`, "-f", `body=${body}`],
     cwd,
   );
   if (write.status !== 0) {
     return { ok: false, error: `gh api PATCH pulls/${pr} falhou: ${write.stderr.trim() || write.stdout.trim() || "sem saída"}` };
   }
 
-  const verify = ghRun(["pr", "view", String(pr), "--json", "body", "--jq", ".body"], cwd);
+  const verify = ghRun(["pr", "view", String(pr), ...repoArgs(repo), "--json", "body", "--jq", ".body"], cwd);
   if (verify.status !== 0) {
     return { ok: false, error: `escrita OK mas releitura pós-escrita falhou: ${verify.stderr.trim() || "gh pr view falhou"}` };
   }
@@ -92,17 +130,18 @@ export function addPrLabelsRest(
   labels: readonly string[],
   cwd: string,
   ghRun: GhRunFn = spawnGhSync,
+  repo?: string,
 ): SafeEditResult {
   if (labels.length === 0) return { ok: true };
 
-  const args = ["api", "-X", "POST", `repos/{owner}/{repo}/issues/${pr}/labels`];
+  const args = ["api", "-X", "POST", `${repoPath(repo)}/issues/${pr}/labels`];
   for (const label of labels) args.push("-f", `labels[]=${label}`);
   const write = ghRun(args, cwd);
   if (write.status !== 0) {
     return { ok: false, error: `gh api POST issues/${pr}/labels falhou: ${write.stderr.trim() || write.stdout.trim() || "sem saída"}` };
   }
 
-  const verify = ghRun(["pr", "view", String(pr), "--json", "labels", "--jq", ".labels[].name"], cwd);
+  const verify = ghRun(["pr", "view", String(pr), ...repoArgs(repo), "--json", "labels", "--jq", ".labels[].name"], cwd);
   if (verify.status !== 0) {
     return { ok: false, error: `escrita OK mas releitura pós-escrita falhou: ${verify.stderr.trim() || "gh pr view falhou"}` };
   }
@@ -171,11 +210,12 @@ export function resolveExpectedIssues(
   explicit: readonly number[] | null,
   cwd: string,
   ghRun: GhRunFn = spawnGhSync,
+  repo?: string,
 ): { ok: true; issues: number[]; branch?: string } | { ok: false; error: string } {
   if (explicit && explicit.length > 0) return { ok: true, issues: [...explicit] };
-  const r = ghRun(["pr", "view", String(pr), "--json", "headRefName", "--jq", ".headRefName"], cwd);
+  const r = ghRun(["pr", "view", String(pr), ...repoArgs(repo), "--json", "headRefName", "--jq", ".headRefName"], cwd);
   if (r.status !== 0) {
-    return { ok: false, error: `não consegui ler a branch da PR #${pr}: ${r.stderr.trim() || "gh pr view falhou"} — passe --issues N,M` };
+    return { ok: false, error: `não consegui ler a branch da ${prLabelInRepo(pr, repo)}: ${r.stderr.trim() || "gh pr view falhou"} — passe --issues N,M` };
   }
   const branch = r.stdout.trim();
   return { ok: true, issues: issuesFromBranch(branch), branch };
@@ -209,9 +249,10 @@ export function parseIssuesFlag(raw: string | undefined): number[] | null {
 function usage(): string {
   return (
     "Uso:\n" +
-    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --body-file arquivo.md [--issues N,M] [--allow-missing-issue-marker]\n" +
-    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --verify-body [--issues N,M]\n" +
-    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N --add-label a,b,c\n" +
+    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N [--repo owner/name] --body-file arquivo.md [--issues N,M] [--allow-missing-issue-marker]\n" +
+    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N [--repo owner/name] --verify-body [--issues N,M]\n" +
+    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N [--repo owner/name] --add-label a,b,c\n" +
+    "--repo: PR de outro repo de issue_repos (ex.: vjpixel/diaria-design, #10618); sem ele, o repo do cwd.\n" +
     "Substitui `gh pr edit --body`/`--add-label` (falha em silêncio, #6292) por REST + verificação pós-escrita.\n" +
     "--body-file recusa corpo que não cita (Closes/REFS) as issues da PR — da branch, ou de --issues (#10698).\n" +
     "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`."
@@ -230,6 +271,16 @@ async function main() {
   }
 
   const cwd = process.cwd();
+  // #10618 (fatia 4, review B): PR de outro repo da allowlist. Sem `--repo`,
+  // tudo resolve pelo remote do cwd (o diaria-studio). A allowlist vem do
+  // checkout do script, não do cwd (review 2, item 5).
+  const repoFlag = resolveSafeEditRepo(values, flags);
+  if ("error" in repoFlag) {
+    console.error(`[gh-pr-safe-edit] ${repoFlag.error}\n\n${usage()}`);
+    process.exitCode = 1;
+    return;
+  }
+  const repo = repoFlag.repo;
 
   let explicitIssues: number[] | null;
   try {
@@ -242,7 +293,7 @@ async function main() {
 
   // Conferência do corpo contra as issues da PR (#10698). Devolve `null` se ok.
   const citesCheck = (body: string): SafeEditResult | null => {
-    const expected = resolveExpectedIssues(pr, explicitIssues, cwd);
+    const expected = resolveExpectedIssues(pr, explicitIssues, cwd, spawnGhSync, repo);
     if (!expected.ok) return { ok: false, error: expected.error };
     if (expected.issues.length === 0) {
       console.error(
@@ -255,7 +306,7 @@ async function main() {
   };
 
   if (flags.has("verify-body")) {
-    const view = spawnGhSync(["pr", "view", String(pr), "--json", "body", "--jq", ".body"], cwd);
+    const view = spawnGhSync(["pr", "view", String(pr), ...repoArgs(repo), "--json", "body", "--jq", ".body"], cwd);
     if (view.status !== 0) {
       console.log(JSON.stringify({ ok: false, error: `gh pr view falhou: ${view.stderr.trim() || "sem saída"}` }));
       process.exitCode = 1;
@@ -278,7 +329,7 @@ async function main() {
         return;
       }
     }
-    const result = setPrBodyRest(pr, body, cwd);
+    const result = setPrBodyRest(pr, body, cwd, spawnGhSync, repo);
     console.log(JSON.stringify(result));
     if (!result.ok) process.exitCode = 1;
     return;
@@ -289,7 +340,7 @@ async function main() {
       .split(",")
       .map((l) => l.trim())
       .filter(Boolean);
-    const result = addPrLabelsRest(pr, labels, cwd);
+    const result = addPrLabelsRest(pr, labels, cwd, spawnGhSync, repo);
     console.log(JSON.stringify(result));
     if (!result.ok) process.exitCode = 1;
     return;

@@ -629,6 +629,12 @@ describe("#9752 — fetchCommentBodies só confia em autor com vínculo com o re
     assert.ok(start >= 0);
     const end = src.indexOf("\n}\n", start);
     const fn = src.slice(start, end);
-    assert.match(fn, /trustedCommentBodiesFromIssueViewJson\(result\.stdout\)/);
+    // #10618 (fatia 4, review G): delega pra `fetchCommentBodiesResult`, que
+    // é quem lê o stdout — a fiação do filtro é conferida lá.
+    assert.match(fn, /fetchCommentBodiesResult\(/);
+    const rStart = src.indexOf("export function fetchCommentBodiesResult(");
+    assert.ok(rStart >= 0);
+    const rFn = src.slice(rStart, src.indexOf("\n}\n", rStart));
+    assert.match(rFn, /trustedCommentBodiesFromIssueViewJson\(result\.stdout\)/);
   });
 });

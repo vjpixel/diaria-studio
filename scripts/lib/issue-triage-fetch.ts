@@ -37,12 +37,12 @@
  * #7018, só que na varredura incremental em vez da varredura completa que o
  * item 2 já fechou para overnight/develop.
  *
- * **Multi-repo (#10618, fatia 2) — OPT-IN.** Sem `opts.repos`, varre SÓ o
- * repo default (`vjpixel/diaria-studio`): overnight, contínuo e zerar-fila
- * recebem exatamente a fila de antes, porque ~15 gates e consumidores ainda
- * leem `number` como número do studio (fatia 3). Com `opts.repos` (o CLI
- * resolve `--repos all`/lista via `resolveTriageRepos`, validada contra
- * `platform.config.json → issue_repos`), varre também os repos pedidos — o
+ * **Multi-repo (#10618).** Sem `opts.repos`, varre SÓ o repo default
+ * (`vjpixel/diaria-studio`), o que o zerar-fila usa. Desde a fatia 4 o
+ * overnight, o contínuo e o develop passam `--repos all` por padrão. Com
+ * `opts.repos` (o CLI resolve `--repos all`/lista via `resolveTriageRepos`,
+ * validada contra `platform.config.json → issue_repos`), varre também os
+ * repos pedidos — o
  * default sempre primeiro. Toda chamada leva `-R owner/repo`, inclusive a do
  * default: sem `-R`, o `gh` resolveria pelo cwd e um checkout do
  * diaria-design rotularia as issues dele como do studio. Cada item ganha
@@ -132,8 +132,9 @@ export interface FetchOpenIssuesForTriageOptions {
    */
   since?: string;
   /**
-   * #10618 — repos a varrer, OPT-IN. Ausente = só o repo default (a fila de
-   * sempre). O repo default é sempre incluído e sempre varrido primeiro,
+   * #10618 — repos a varrer. Ausente = só o repo default (o que o
+   * zerar-fila usa); as rodadas passam a allowlist inteira (`--repos all`)
+   * desde a fatia 4. O repo default é sempre incluído e sempre varrido primeiro,
    * mesmo que omitido aqui. Slug ilegível é erro fatal (`error`), nunca
    * descartado em silêncio. Validar contra a allowlist é papel de quem monta
    * a lista (`resolveTriageRepos`).

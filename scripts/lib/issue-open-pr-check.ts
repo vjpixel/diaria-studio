@@ -65,6 +65,8 @@
  * @see context/overnight-dispatch-rules.md item 21 (preflight de duplicidade do coordenador)
  */
 
+import { citesIssueInRepo } from "./issue-duplicate-preflight.ts";
+
 /** Estado agregado de CI da PR — `"unknown"` cobre tanto "sem
  * `statusCheckRollup` no payload" quanto "payload malformado"; nunca
  * confundido com `"pending"` (que significa "há checks, ainda rodando"). */
@@ -124,13 +126,13 @@ export interface OpenPrCheckResult {
   recommendation: string;
 }
 
-/** `#N` sem dígito colado antes/depois — mesma técnica de
- * `citesIssueNumber`/`numberBoundary` em `issue-duplicate-preflight.ts`
- * (não importado daqui pra manter este módulo sem dependência do arquivo
- * que a PR #7803 já toca — ver nota de colisão de arquivo). Evita `#77`
- * casar dentro de `#7788`. */
-function citesIssue(text: string, issueNumber: number): boolean {
-  return new RegExp(`(?<!\\d)#${issueNumber}(?!\\d)`).test(text);
+/** `#N` sem dígito colado antes/depois (evita `#77` casar dentro de
+ * `#7788`) e citado como issue DESTE repo — delega a `citesIssueInRepo` de
+ * `issue-duplicate-preflight.ts` (#10618; a cópia local existia só pela
+ * colisão de arquivo da PR #7803, já mergeada). */
+function citesIssue(text: string, issueNumber: number, repo?: string): boolean {
+  // #10618 (fatia 4, review P3): `owner/outro#N` não é a issue #N deste repo.
+  return citesIssueInRepo(text, issueNumber, repo);
 }
 
 /** `closes`/`fixes`/`resolves #N` (case-insensitive) — inclui as formas no
@@ -207,7 +209,12 @@ const MATCH_KIND_STRENGTH: Record<OpenPrMatchKind, number> = {
  * Veredito puro: dada a issue e a lista de PRs abertas já buscadas, decide
  * se há uma PR cobrindo o escopo. Nunca lança, nunca faz I/O.
  */
-export function assessOpenPrCoverage(issueNumber: number, prs: readonly OpenPrInfo[]): OpenPrCheckResult {
+export function assessOpenPrCoverage(
+  issueNumber: number,
+  prs: readonly OpenPrInfo[],
+  /** Repo das PRs/da issue (#10618); ausente = o diaria-studio. */
+  repo?: string,
+): OpenPrCheckResult {
   const matches: OpenPrMatch[] = [];
 
   for (const pr of prs) {
@@ -220,7 +227,7 @@ export function assessOpenPrCoverage(issueNumber: number, prs: readonly OpenPrIn
       matchKind = "closes-marker";
     } else if (branchNumbers.includes(issueNumber)) {
       matchKind = "branch-pattern";
-    } else if (citesIssue(title, issueNumber) || citesIssue(body, issueNumber)) {
+    } else if (citesIssue(title, issueNumber, repo) || citesIssue(body, issueNumber, repo)) {
       matchKind = "mention-only";
     }
 

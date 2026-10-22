@@ -23,17 +23,31 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
-import { appendWave, buildWaveRecord, checkOvernightWaves, findDuplicateWave } from "./lib/overnight-waves.ts";
+import {
+  appendWave,
+  buildWaveRecord,
+  checkOvernightWaves,
+  findDuplicateWave,
+  type WaveIssueId,
+} from "./lib/overnight-waves.ts";
+import { formatIssueRef, legacyIssueNumber, parseIssueRef } from "./lib/issue-repos.ts";
 
 const INT = /^\d+$/;
 
-/** Pure: `"8290,8291;8300"` → `[[8290,8291],[8300]]`; lança em token que não é inteiro decimal. */
-export function parseUnits(raw: string): number[][] {
+/**
+ * Pure: `"8290,8291;8300"` → `[[8290,8291],[8300]]`. Desde a fatia 4 da
+ * #10618 aceita também `owner/repo#N` (issue de outro repo, gravada como a
+ * string canônica); `vjpixel/diaria-studio#N` vira o número de sempre. Lança
+ * em token que não é inteiro decimal nem `owner/repo#N`.
+ */
+export function parseUnits(raw: string): WaveIssueId[][] {
   return raw.split(";").map((unit) =>
     unit.split(",").map((tok) => {
       const t = tok.trim();
-      if (!INT.test(t)) throw new Error(`--units: token inválido "${t}" (esperado inteiro decimal)`);
-      return Number(t);
+      if (INT.test(t)) return Number(t);
+      const ref = t.includes("/") ? parseIssueRef(t) : null;
+      if (!ref) throw new Error(`--units: token inválido "${t}" (esperado inteiro decimal ou owner/repo#N)`);
+      return legacyIssueNumber(ref) ?? formatIssueRef(ref);
     }),
   );
 }

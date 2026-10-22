@@ -182,7 +182,9 @@ números das issues da unidade e um sufixo aleatório (ex.:
 `/tmp/pr-body-10698-10699-$RANDOM.md`), nunca um nome genérico como
 `pr-body.md`. Logo após o `gh pr create`, rodar `npx tsx
 scripts/lib/gh-pr-safe-edit.ts --pr N --verify-body --issues A,B` (em PR solo
-`--issues` é opcional: o número sai da branch `*/fix-N-*`). `exit 1` = o corpo
+`--issues` é opcional: o número sai da branch `*/fix-N-*`). PR de outro repo
+(issue do `vjpixel/diaria-design`, item 32) leva `--repo owner/name` em toda
+chamada do helper — sem ele, o helper lê e escreve o PR #N do diaria-studio. `exit 1` = o corpo
 não cita alguma issue com `Closes`/`REFS`: reescrever o arquivo e corrigir via
 `--body-file`. O `--body-file` faz a mesma conferência antes de escrever e
 recusa o corpo que não cita as issues (`--allow-missing-issue-marker` só
@@ -283,10 +285,12 @@ a causa real é `required_review_thread_resolution: true`: comentários de
 review inline (self-review do subagente, findings do review consolidado)
 ficam como threads não-resolvidas e bloqueiam o merge até alguém resolver
 via GraphQL. Antes de `gh pr merge`, resolver todos os review threads
-pendentes:
+pendentes — `owner`/`name` são os do repo DO PR (`vjpixel`/`diaria-studio`,
+ou `vjpixel`/`diaria-design` para PR de issue do design, #10618 fatia 4),
+passados como variável do GraphQL, nunca fixos no texto da query:
 ```
-gh api graphql -f query='query { repository(owner: "vjpixel", name: "diaria-studio") { pullRequest(number: N) { reviewThreads(first: 20) { nodes { id isResolved path } } } } }'
-gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "ID"}) { thread { isResolved } } }'
+gh api graphql -f owner=vjpixel -f name=diaria-studio -F pr=N -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $pr) { reviewThreads(first: 20) { nodes { id isResolved path } } } } }'
+gh api graphql -f tid=ID -f query='mutation($tid: ID!) { resolveReviewThread(input: {threadId: $tid}) { thread { isResolved } } }'
 ```
 
 ## 12. Matar processo próprio: sempre por PID, nunca por nome de imagem (#5432)
@@ -1062,3 +1066,59 @@ apareceu. Sem o helper (ex.: shell sem `npx`), o equivalente manual é o
 mesmo `gh api` seguido de `gh pr view N --json labels` para conferir.
 Mesma regra do corpo (item 29, `--body-file`). Trava:
 `test/pr-label-via-rest-10429.test.ts`.
+
+## 32. Issue de outro repo (`vjpixel/diaria-design`): worktree, PR e merge no repo da issue (#10618, fatia 4)
+
+As rodadas (overnight, develop, contínuo) varrem `--repos all` e podem pegar
+issue do `vjpixel/diaria-design` (identidade `owner/repo#N`, parágrafo
+multi-repo de cada `SKILL.md`). O número colide entre os repos (o #21 existe
+nos dois), então a implementação inteira mora no repo da issue — nunca num
+worktree do diaria-studio.
+
+**Pré-requisito do coordenador (idempotente, rodar no início da rodada):**
+`npx tsx scripts/sync-issue-labels.ts --repo vjpixel/diaria-design --apply`
+— cria no design as labels de track/prioridade que o roteamento usa (lista
+derivada do código). Sem elas, `route-issue.ts --issue vjpixel/diaria-design#N`
+falha ao aplicar label.
+
+**Coordenador, antes do dispatch:**
+1. Checkout do design: `../diaria-design`, ao lado do checkout do studio.
+   Ausente → `gh repo clone vjpixel/diaria-design ../diaria-design`. Branch
+   base: `main` (não `master`).
+2. Worktree do design, NUNCA do studio: `git -C ../diaria-design fetch origin`
+   e `git -C ../diaria-design worktree add -b {branch} .claude/worktrees/{nome}
+   origin/main` (caminho relativo ao checkout do design). Branch com a mesma
+   convenção do item 2 (`overnight/fix-N-slug`, `develop/fix-N`,
+   `continuo/fix-N-slug`), com o `N` LOCAL do design. Dispatch sem
+   `isolation: worktree` (essa isolação cria worktree do studio), com o cwd
+   explícito no worktree do design.
+3. **Salvaguarda:** se o checkout do design não existe e não pode ser criado
+   (clone falhou, sem rede, sem acesso), ou o worktree não sobe, a issue é
+   **pulada** com `motivo: "bloqueio-execucao"` e nota "checkout do
+   vjpixel/diaria-design indisponível nesta máquina: {erro}" no `plan.json` —
+   nunca implementada num worktree do studio "por enquanto".
+4. Preflight com a ref: `check-issue-duplicate-preflight.ts --issue
+   vjpixel/diaria-design#N` e `check-issue-open-pr.ts --issue
+   vjpixel/diaria-design#N`.
+
+**Implementador (no worktree do design):** `gh pr create -R
+vjpixel/diaria-design --base main`, corpo com `Closes #N` LOCAL (o `#N` do
+design — o GitHub resolve no repo do PR). Nunca abrir PR no studio fechando
+`#N` do studio, nem citar `vjpixel/diaria-design#N` num PR do studio como se
+o fechasse. Conferência do corpo: `gh-pr-safe-edit.ts --pr P --repo
+vjpixel/diaria-design --verify-body --issues N` (rodado do checkout do
+studio, onde o helper mora). Testes/typecheck: os do próprio design (ler o
+`package.json`/README dele) — `npx tsc`/`test/lib-boundary.test.ts` do item 4
+são do studio.
+
+**Merge (coordenador), fora do trem:** `run-merge-train.ts` é só-studio — PR
+de outro repo nunca entra no trem. Gate 2 com o repo do PR:
+`check-pr-checks-gate.ts`, `check-pr-retido-gate.ts`,
+`check-pr-review-authenticity.ts --pr P --issue vjpixel/diaria-design#N` (o
+repo do PR sai da issue; `--repo vjpixel/diaria-design` também serve),
+threads resolvidas com `owner=vjpixel name=diaria-design` (item 11), guard de
+`Closes` com `gh pr view P -R vjpixel/diaria-design --json body`, depois
+`session-registry.ts merge-lock-acquire --pr P --repo vjpixel/diaria-design`
+(o lock é POR REPO: não serializa com o studio), o merge com `-R
+vjpixel/diaria-design --squash` e a confirmação com `gh pr view P -R
+vjpixel/diaria-design --json state,mergedAt`.

@@ -64,6 +64,10 @@ function setupFakeGh(ghResponse: { stdout?: string; exitCode?: number }): {
       "const fs = require('node:fs');",
       "const path = require('node:path');",
       "if (process.argv[1] && path.basename(process.argv[1]) === 'issue') {",
+      // #10618 (fatia 4): a convergência varre também os repos extras de
+      // `issue_repos` (`-R owner/repo`) por padrão. Este fake responde pelo
+      // diaria-studio; repo extra devolve lista vazia (nenhuma issue lá).
+      "  if (process.argv.includes('-R')) { process.stdout.write('[]'); process.exit(0); }",
       "  const respPath = process.env.GH_FAKE_RESPONSE_FILE;",
       "  if (respPath) process.stdout.write(fs.readFileSync(respPath, 'utf8'));",
       "  process.exit(Number(process.env.GH_FAKE_EXIT_CODE || 0));",

@@ -10,6 +10,8 @@
  *
  * Uso:
  *   npx tsx scripts/check-pr-review-authenticity.ts --pr 6782
+ *   npx tsx scripts/check-pr-review-authenticity.ts --pr 23 --issue vjpixel/diaria-design#21   (#10618: repo do PR derivado da issue)
+ *   npx tsx scripts/check-pr-review-authenticity.ts --pr 23 --repo vjpixel/diaria-design
  *
  * Exit codes (fail-closed — todo valor != 0 significa "NÃO mergear ainda"):
  *   0 = pass        (review independente confirmado)
@@ -43,6 +45,7 @@ import {
   evaluatePrReviewAuthenticity,
   type PrReviewAuthenticityResult,
 } from "./lib/pr-review-authenticity.ts";
+import { prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
 
 /**
  * Busca `comments` via `gh pr view`. Fail-hard por design (mesmo padrão de
@@ -50,8 +53,9 @@ import {
  * merge — qualquer falha de comando vira `verdict: "error"`, nunca `"pass"`.
  * Nunca lança.
  */
-function fetchPrReviewAuthenticity(prNumber: number, cwd: string): PrReviewAuthenticityResult {
-  const result = spawnSync("gh", ["pr", "view", String(prNumber), "--json", "comments"], {
+function fetchPrReviewAuthenticity(prNumber: number, cwd: string, repo?: string): PrReviewAuthenticityResult {
+  // #10618 (fatia 4): `-R` quando o PR é de outro repo da allowlist.
+  const result = spawnSync("gh", ["pr", "view", String(prNumber), ...(repo ? ["-R", repo] : []), "--json", "comments"], {
     cwd,
     encoding: "utf8",
     timeout: 30_000,
@@ -90,16 +94,23 @@ const EXIT_CODES: Record<PrReviewAuthenticityResult["verdict"], number> = {
 };
 
 if (isMainModule(import.meta.url)) {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const prRaw = values.pr;
   const prNumber = prRaw ? Number(prRaw) : NaN;
   if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0) {
-    console.error("[check-pr-review-authenticity] uso: --pr N");
+    console.error("[check-pr-review-authenticity] uso: --pr N [--repo owner/name | --issue N|owner/repo#N]");
+    process.exit(4);
+  }
+  // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`,
+  // ou derivado de `--issue owner/repo#N` — review J: o PR mora no repo da issue).
+  const repoFlag = resolvePrTargetRepo(values, flags, process.cwd());
+  if ("error" in repoFlag) {
+    console.error(`[check-pr-review-authenticity] ${repoFlag.error}`);
     process.exit(4);
   }
 
-  const result = fetchPrReviewAuthenticity(prNumber, process.cwd());
-  const prefix = `[check-pr-review-authenticity] PR #${prNumber}: verdict=${result.verdict}`;
+  const result = fetchPrReviewAuthenticity(prNumber, process.cwd(), repoFlag.repo);
+  const prefix = `[check-pr-review-authenticity] ${prLabelInRepo(prNumber, repoFlag.repo)}: verdict=${result.verdict}`;
 
   if (result.verdict === "pass") {
     console.log(`${prefix} — ${result.reason}`);

@@ -22,6 +22,9 @@
  * Puro (sem I/O). CLI: `scripts/record-overnight-wave.ts`.
  */
 
+import { compareIssueKeys, toIssueKey, type IssueKey } from "./issue-key.ts";
+
+
 /**
  * Teto de unidades concorrentes numa onda do overnight (3 até #8486, 6 até
  * #10821). Subiu para 10 a pedido do editor (22/10/2026) depois que as 2
@@ -45,9 +48,26 @@ export const OVERNIGHT_WAVE_CAP = 10;
  */
 export const OVERNIGHT_WAVE_DEDUP_WINDOW_MS = 30 * 60 * 1000;
 
+/**
+ * Identidade de uma issue numa onda (#10618, fatia 4): número = diaria-studio
+ * (o shape de sempre); string `owner/repo#N` = issue de outro repo da
+ * allowlist (o diaria-design entra por padrão nas rodadas desde a fatia 4).
+ */
+export type WaveIssueId = number | string;
+
+/** Pure: chave canônica (`owner/repo#N`) de um id de onda, ou `null` se ilegível. */
+export function waveIssueKey(id: WaveIssueId): IssueKey | null {
+  return toIssueKey(id);
+}
+
 /** Pure: conjunto (ordenado) de todas as issues de uma onda, achatando as unidades. */
-function waveIssueSet(record: Pick<OvernightWaveRecord, "units">): number[] {
-  return [...new Set(record.units.flatMap((u) => u.issues))].sort((a, b) => a - b);
+function waveIssueSet(record: Pick<OvernightWaveRecord, "units">): string[] {
+  const keys = new Set<IssueKey>();
+  for (const id of record.units.flatMap((u) => u.issues)) {
+    const key = waveIssueKey(id);
+    if (key) keys.add(key);
+  }
+  return [...keys].sort(compareIssueKeys);
 }
 
 /**
@@ -77,7 +97,7 @@ export function findDuplicateWave(
 }
 
 export interface OvernightWaveUnit {
-  issues: number[];
+  issues: WaveIssueId[];
 }
 
 export interface OvernightWaveRecord {
@@ -92,7 +112,7 @@ export interface OvernightWaveRecord {
 
 export interface BuildWaveInput {
   /** Unidades a despachar, já ordenadas por prioridade. */
-  units: number[][];
+  units: WaveIssueId[][];
   /** Unidades prontas que ficaram de fora só por causa do teto. */
   deferred?: number;
   cap?: number;
@@ -116,7 +136,10 @@ export function buildWaveRecord(input: BuildWaveInput): OvernightWaveRecord {
     throw new Error(`onda com ${input.units.length} unidades estoura o teto ${cap} (#6299/#8486/#10821)`);
   }
   for (const u of input.units) {
-    if (u.length === 0 || u.some((n) => !Number.isInteger(n) || n <= 0)) {
+    if (
+      u.length === 0 ||
+      u.some((n) => (typeof n === "number" ? !Number.isInteger(n) || n <= 0 : waveIssueKey(n) === null))
+    ) {
       throw new Error(`unidade inválida: ${JSON.stringify(u)}`);
     }
   }

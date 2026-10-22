@@ -63,8 +63,14 @@ const JSON_FIELDS = "number,title,body,headRefName,author,updatedAt,statusCheckR
  * deste módulo, pra permitir teste determinístico sem bater na API do
  * GitHub.
  */
-export function fetchOpenPrs(cwd: string, runner: CommandRunner = defaultRunner): FetchOpenPrsResult {
-  const result = runner("gh", ["pr", "list", "--state", "open", "--json", JSON_FIELDS, "--limit", "300"], { cwd });
+export function fetchOpenPrs(cwd: string, runner: CommandRunner = defaultRunner, repo?: string): FetchOpenPrsResult {
+  // #10618 (fatia 4): `repo` = outro repo da allowlist → `-R owner/repo` (a PR
+  // de uma issue mora no repo da issue). Sem `repo`, a chamada de sempre.
+  const result = runner(
+    "gh",
+    ["pr", "list", ...(repo ? ["-R", repo] : []), "--state", "open", "--json", JSON_FIELDS, "--limit", "300"],
+    { cwd },
+  );
   if (result.error) {
     return { prs: [], error: `gh não pôde ser executado: ${result.error.message}` };
   }

@@ -64,7 +64,7 @@ import {
   findMissingForeignConvergenceKeys,
   findRetrackedUnworkedForeignIssues,
   findRetrackedUnworkedIssues,
-  foreignReposOfPlan,
+  convergenceReposOfPlan,
   recordConvergenceScan,
   type ConvergenceScanIssue,
   type PlanWithGoal,
@@ -179,6 +179,51 @@ export function fetchOpenIssuesForConvergence(cwd: string, repo?: string): Fetch
   return { issues };
 }
 
+export interface ForeignConvergenceScan {
+  /** Issue nova (fora do plano) de outro repo, `owner/repo#N`. */
+  missing: IssueKey[];
+  /** `"owner/repo (motivo)"` — repo que NÃO foi varrido (fora da allowlist ou `gh` falhou). */
+  notScanned: string[];
+  /** #10407 aplicado aos repos extras. */
+  retracked: RetrackedUnworkedIssue[];
+}
+
+/**
+ * I/O (#10618, fatias 3-4): re-varredura de convergência dos repos que não
+ * são o diaria-studio. Varre `convergenceReposOfPlan` — os repos que o plano
+ * cita e, desde a fatia 4, todo repo da allowlist `issue_repos` (o design
+ * entra por padrão na fila das rodadas). Repo citado no plano mas fora da
+ * allowlist nunca é consultado (typo/fork) e volta em `notScanned`.
+ * Fonte única para `check-state-changed-pending.ts` (Fase 2) e
+ * `check-overnight-fila-convergence-gate.ts` (Fase 1 passo 1).
+ */
+export function scanForeignConvergence(
+  plan: PlanWithGoal,
+  cwd: string,
+  opts: { includeClaimed?: boolean } = {},
+  fetcher: (cwd: string, repo: string) => FetchOpenIssuesResult = fetchOpenIssuesForConvergence,
+): ForeignConvergenceScan {
+  const allowlist = loadIssueRepos(cwd);
+  const allowed = new Set(allowlist);
+  const out: ForeignConvergenceScan = { missing: [], notScanned: [], retracked: [] };
+  for (const repo of convergenceReposOfPlan(plan, allowlist)) {
+    if (!allowed.has(repo)) {
+      out.notScanned.push(`${repo} (fora de issue_repos)`);
+      continue;
+    }
+    const extra = fetcher(cwd, repo);
+    if (extra.error) {
+      out.notScanned.push(`${repo} (${extra.error.split("\n")[0]})`);
+      continue;
+    }
+    out.missing.push(...findMissingForeignConvergenceKeys(plan, repo, extra.issues));
+    out.retracked.push(
+      ...findRetrackedUnworkedForeignIssues(plan, repo, extra.issues, { includeClaimed: opts.includeClaimed }),
+    );
+  }
+  return out;
+}
+
 /** #10618 (fatia 2): aceita `N` (legado = diaria-studio) e `owner/repo#N`.
  * Devolve o número legado quando é do repo default; a ref canônica quando é
  * de outro repo. */
@@ -266,26 +311,11 @@ if (isMainModule(import.meta.url)) {
       if (planRaw !== undefined) {
         const convergence = checkConvergenceScan(planRaw as PlanWithGoal, fetched.issues);
         convergenceMissing = convergence.status === "missing" ? convergence.issues : [];
-        // #10618 (fatia 3): os outros repos que o plano cita, só os da
-        // allowlist. Repo fora dela nunca é consultado (typo/fork).
-        const allowlist = new Set(loadIssueRepos(process.cwd()));
         const includeClaimed = isDevelopPlan(planPath, values.kind);
-        for (const repo of foreignReposOfPlan(planRaw as PlanWithGoal)) {
-          if (!allowlist.has(repo)) {
-            foreignNotScanned.push(`${repo} (fora de issue_repos)`);
-            continue;
-          }
-          const extra = fetchOpenIssuesForConvergence(process.cwd(), repo);
-          if (extra.error) {
-            foreignNotScanned.push(`${repo} (${extra.error.split("\n")[0]})`);
-            continue;
-          }
-          foreignMissing.push(...findMissingForeignConvergenceKeys(planRaw as PlanWithGoal, repo, extra.issues));
-          // #10407 aplicado ao repo extra (#10618): mesma busca, por chave.
-          foreignRetracked.push(
-            ...findRetrackedUnworkedForeignIssues(planRaw as PlanWithGoal, repo, extra.issues, { includeClaimed }),
-          );
-        }
+        const foreign = scanForeignConvergence(planRaw as PlanWithGoal, process.cwd(), { includeClaimed });
+        foreignMissing = foreign.missing;
+        foreignNotScanned.push(...foreign.notScanned);
+        foreignRetracked.push(...foreign.retracked);
         recordConvergenceScan(
           planPath,
           convergence.novas_encontradas + foreignMissing.length,

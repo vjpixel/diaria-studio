@@ -805,6 +805,10 @@ describe("#10689 H — forma documentada de resolver review thread", () => {
     `RESULT=$(gh api graphql -f query='mutation($tid: ID!) { resolveReviewThread(input:{threadId:$tid}){ thread{ id isResolved } } }' -f tid="$tid")`,
     `RESP=$(gh api graphql -f query='{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:{N}){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }')`,
     `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "ID"}) { thread { isResolved } } }'`,
+    // #10618 (fatia 4, review A): owner/name do repo DO PR como variável do GraphQL.
+    `RESP=$(gh api graphql -f owner={owner} -f name={name} -F pr={N} -f query='query($owner:String!,$name:String!,$pr:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$pr){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }')`,
+    `gh api graphql -f owner=vjpixel -f name=diaria-design -F pr=23 -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $pr) { reviewThreads(first: 20) { nodes { id isResolved path } } } } }'`,
+    `gh api graphql -f tid=ID -f query='mutation($tid: ID!) { resolveReviewThread(input: {threadId: $tid}) { thread { isResolved } } }'`,
   ];
   for (const cmd of DOC_FORMS) {
     it(`não é merge: ${JSON.stringify(cmd)}`, () => {
@@ -822,10 +826,19 @@ describe("#10689 H — forma documentada de resolver review thread", () => {
 
   it("o loop de resolução do overnight usa a forma nova e não é merge", () => {
     const skill = readFileSync(join(REPO_ROOT, ".claude/skills/diaria-overnight/SKILL.md"), "utf8");
-    const lines = skill.split(/\r?\n/).filter((l) => l.includes("gh api graphql -f query="));
+    const lines = skill.split(/\r?\n/).filter((l) => l.includes("gh api graphql") && l.includes("-f query="));
     assert.ok(lines.length >= 3, "esperava as queries de threads e o resolveReviewThread no SKILL.md");
     assert.ok(lines.some((l) => l.includes("resolveReviewThread(input:{threadId:$tid})")));
     for (const l of lines) assert.equal(isGhPrMergeCommand(l.trim(), opts), false, l);
+    // #10618 (fatia 4, review A): a query de threads lê o repo DO PR (variáveis
+    // owner/name), nunca o diaria-studio fixo — senão o PR do design teria as
+    // threads de studio PR #N resolvidas/contadas no lugar das dele.
+    const threadQueries = lines.filter((l) => l.includes("reviewThreads"));
+    assert.ok(threadQueries.length >= 2);
+    for (const l of threadQueries) {
+      assert.doesNotMatch(l, /name:\s*"diaria-studio"/, l);
+      assert.match(l, /repository\(owner:\$owner,name:\$name\)/, l);
+    }
   });
 
   it("varredura: nenhum `gh api graphql` com $ de shell no texto da query em skills/agents/context/hermes", () => {

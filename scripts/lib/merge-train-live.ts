@@ -129,6 +129,57 @@ export function createRealTrainRunner(
   };
 }
 
+/** Repo do trem de merge (#10618, fatia 4, review 2): o trem é SÓ-studio. */
+export const TRAIN_REPO = "vjpixel/diaria-studio";
+/** Branch base dos PRs do studio — PR do diaria-design mira `main`. */
+export const TRAIN_BASE_BRANCH = "master";
+
+export type StudioTrainPrCheck =
+  | { verdict: "studio" }
+  /** Confirmado que NÃO é um PR aberto do studio mirando master. */
+  | { verdict: "foreign"; reason: string }
+  /** Não deu pra ler (gh falhou/JSON ruim) — fail-closed, mas é falha operacional. */
+  | { verdict: "unreadable"; reason: string };
+
+/**
+ * Recusa mecânica de PR de outro repo no trem (#10618, fatia 4, review 2).
+ * `run-merge-train.ts` consulta `gh pr view N` SEM `-R` — o número de um PR
+ * do diaria-design passado por engano em `--prs` resolveria o PR #N do
+ * studio e o trem o mergearia. Confere, pelo próprio GitHub, que o PR é do
+ * studio (`url` em `github.com/vjpixel/diaria-studio/pull/N`), está ABERTO,
+ * mira `master` (PR do design mira `main`) e não vem de fork. Qualquer
+ * divergência = `foreign`; leitura impossível = `unreadable` (nunca `studio`).
+ */
+export function checkStudioTrainPr(runner: TrainRunner, prNumber: number): StudioTrainPrCheck {
+  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,state,baseRefName,url,isCrossRepository"]);
+  if (!res.ok) return { verdict: "unreadable", reason: `gh pr view falhou pro PR #${prNumber}: ${res.stderr.trim() || "sem saída"}` };
+  let p: { state?: unknown; baseRefName?: unknown; url?: unknown; isCrossRepository?: unknown };
+  try {
+    p = JSON.parse(res.stdout) as typeof p;
+  } catch (e) {
+    return { verdict: "unreadable", reason: `PR #${prNumber}: JSON malformado de gh pr view (${(e as Error).message})` };
+  }
+  if (!p || typeof p !== "object") return { verdict: "unreadable", reason: `PR #${prNumber}: payload inesperado de gh pr view` };
+  const url = typeof p.url === "string" ? p.url : "";
+  const expectedUrl = new RegExp(`^https://github\\.com/${TRAIN_REPO}/pull/${prNumber}$`, "i");
+  if (!expectedUrl.test(url)) {
+    return { verdict: "foreign", reason: `PR #${prNumber} não é do ${TRAIN_REPO} (url: ${url || "ausente"}) — o trem é só-studio` };
+  }
+  if (p.state !== "OPEN") {
+    return {
+      verdict: "foreign",
+      reason: `studio PR #${prNumber} não está aberto (state: ${String(p.state)}) — número de PR de outro repo passado em --prs?`,
+    };
+  }
+  if (p.baseRefName !== TRAIN_BASE_BRANCH) {
+    return { verdict: "foreign", reason: `studio PR #${prNumber} mira "${String(p.baseRefName)}", não ${TRAIN_BASE_BRANCH}` };
+  }
+  if (p.isCrossRepository === true) {
+    return { verdict: "foreign", reason: `PR #${prNumber} vem de fork (isCrossRepository) — fora do trem` };
+  }
+  return { verdict: "studio" };
+}
+
 /** Busca metadados reais de um PR (`gh pr view`) e extrai as issues que
  * ele fecha do próprio corpo (`parseClosesIssues`, mesmo parser que
  * `buildTrainPrBody`/`buildTrainMergeCommitBody` consomem via `TrainPrInfo`). */

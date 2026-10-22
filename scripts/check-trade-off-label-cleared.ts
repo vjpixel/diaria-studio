@@ -18,11 +18,17 @@
  * stderr, `exit 0` (não trava a rodada por causa de rede/CLI ausente — o
  * mesmo espírito dos gates irmãos).
  *
+ * **`exit 3` = não verificável (#10618, fatia 4, review G):** labels lidas,
+ * `trade-off-real` presente, mas a leitura dos COMENTÁRIOS falhou — sem eles
+ * não dá pra saber se já há decisão registrada. Antes isso virava "nenhuma
+ * decisão" e `exit 0`, deixando passar justo o esquecimento que o gate pega.
+ * O chamador trata `exit 3` como "rodar de novo"; nunca como `ok`.
+ *
  * Uso:
  *   npx tsx scripts/check-trade-off-label-cleared.ts --issue 5415
  *
  * @see scripts/lib/trade-off-label-gate.ts
- * @see scripts/lib/issue-decisions.ts (fetchCommentBodies, latestDecisionFor, reusados aqui)
+ * @see scripts/lib/issue-decisions.ts (fetchCommentBodiesResult, latestDecisionFor, reusados aqui)
  * @see scripts/check-state-changed-pending.ts (padrão de estilo/gate irmão)
  * @see .claude/skills/diaria-overnight/SKILL.md (Fase 0 passo 5 — briefing)
  * @see .claude/skills/diaria-develop/SKILL.md (Fase 0.5)
@@ -30,8 +36,9 @@
 
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { fetchCommentBodies } from "./lib/issue-decisions.ts";
+import { fetchCommentBodiesResult } from "./lib/issue-decisions.ts";
 import { checkTradeOffLabelCleared, TRADE_OFF_LABEL } from "./lib/trade-off-label-gate.ts";
+import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 
 interface GhIssueViewLabels {
   labels?: Array<{ name?: string } | string>;
@@ -45,10 +52,10 @@ interface FetchLabelsResult {
 /** Busca as labels atuais de uma issue via `gh issue view`. Fail-soft — nunca
  * lança; qualquer falha (CLI ausente, sem auth, rate limit, JSON malformado)
  * volta como `{ labels: [], error }` pro chamador degradar (#738). */
-function fetchIssueLabels(issueNumber: number, cwd: string): FetchLabelsResult {
+function fetchIssueLabels(issueNumber: number, cwd: string, repo?: string): FetchLabelsResult {
   const result = spawnSync(
     "gh",
-    ["issue", "view", String(issueNumber), "--json", "labels"],
+    ["issue", "view", String(issueNumber), ...(repo ? ["-R", repo] : []), "--json", "labels"],
     { cwd, encoding: "utf8", timeout: 15_000 },
   );
   if (result.error) {
@@ -80,15 +87,24 @@ function fetchIssueLabels(issueNumber: number, cwd: string): FetchLabelsResult {
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
   const issueRaw = values.issue;
-  const issueNumber = issueRaw ? Number(issueRaw) : NaN;
-  if (!issueRaw || !Number.isInteger(issueNumber) || issueNumber <= 0) {
-    console.error("[check-trade-off-label-cleared] uso: --issue N");
+  // #10618 (fatia 4): `N` (diaria-studio) ou `owner/repo#N` (repo da allowlist).
+  const ref = issueRaw ? parseIssueRef(String(issueRaw)) : null;
+  if (!ref) {
+    console.error("[check-trade-off-label-cleared] uso: --issue N | owner/repo#N");
     process.exit(2);
   }
-
+  const issueNumber = ref.number;
   const cwd = process.cwd();
-  const labelsResult = fetchIssueLabels(issueNumber, cwd);
-  const bodies = fetchCommentBodies(issueNumber, cwd);
+  const foreign = legacyIssueNumber(ref) === null;
+  if (foreign && !loadIssueRepos(cwd).includes(ref.repo)) {
+    console.error(`[check-trade-off-label-cleared] ${formatIssueRef(ref)}: repo fora de issue_repos, não consultado`);
+    process.exit(2);
+  }
+  const repoArg = foreign ? ref.repo : undefined;
+  const label = foreign ? formatIssueRef(ref) : `#${issueNumber}`;
+  const editArgs = foreign ? `${issueNumber} -R ${ref.repo}` : `${issueNumber}`;
+  const labelsResult = fetchIssueLabels(issueNumber, cwd, repoArg);
+  const comments = fetchCommentBodiesResult(issueNumber, cwd, repoArg);
 
   if (labelsResult.error) {
     console.error(
@@ -97,21 +113,31 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  const result = checkTradeOffLabelCleared(labelsResult.labels, bodies);
+  // Sem a label não há o que cobrar — a falha de comentários não muda o
+  // veredito (nenhuma das saídas exige ler a decisão). Com a label presente,
+  // os comentários decidem: falha de leitura = não verificável, nunca "ok".
+  if (comments.error && labelsResult.labels.includes(TRADE_OFF_LABEL)) {
+    console.error(
+      `[check-trade-off-label-cleared] ${label}: label '${TRADE_OFF_LABEL}' presente, mas os comentários não puderam ser lidos — NÃO verificável (exit 3), rode de novo: ${comments.error}`,
+    );
+    process.exit(3);
+  }
+
+  const result = checkTradeOffLabelCleared(labelsResult.labels, comments.bodies);
 
   if (result.status === "no-decision") {
-    console.log(`[check-trade-off-label-cleared] #${issueNumber}: nenhuma decisão registrada ainda — gate não se aplica.`);
+    console.log(`[check-trade-off-label-cleared] ${label}: nenhuma decisão registrada ainda — gate não se aplica.`);
     process.exit(0);
   }
 
   if (result.status === "ok") {
-    console.log(`[check-trade-off-label-cleared] #${issueNumber}: ok — decisão registrada e label '${TRADE_OFF_LABEL}' já removida.`);
+    console.log(`[check-trade-off-label-cleared] ${label}: ok — decisão registrada e label '${TRADE_OFF_LABEL}' já removida.`);
     process.exit(0);
   }
 
   console.error(
-    `[check-trade-off-label-cleared] #${issueNumber}: decisão registrada em ${result.decision?.decided_at}, mas a label '${TRADE_OFF_LABEL}' ainda está presente. ` +
-      `Rode: gh issue edit ${issueNumber} --remove-label ${TRADE_OFF_LABEL}`,
+    `[check-trade-off-label-cleared] ${label}: decisão registrada em ${result.decision?.decided_at}, mas a label '${TRADE_OFF_LABEL}' ainda está presente. ` +
+      `Rode: gh issue edit ${editArgs} --remove-label ${TRADE_OFF_LABEL}`,
   );
   process.exit(1);
 }

@@ -32,6 +32,13 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { fmtTimeBrt } from "./lib/format.ts";
 import { EPIC_DEFERRED_STATUS } from "./overnight-statusline.ts"; // #3072 (review do #3071)
 import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860 (extraído daqui pelo #4817)
+import { issueKeyLabel, issueKeyOfPlanEntry } from "./lib/issue-key.ts";
+
+/** #10618 (fatia 4): `#N` no studio, `owner/repo#N` em outro repo. */
+function issueRowLabel(issue: PlanIssue): string {
+  const key = issueKeyOfPlanEntry(issue);
+  return key ? issueKeyLabel(key) : `#${issue.number}`;
+}
 
 // ─── tipos ──────────────────────────────────────────────────────────────────
 
@@ -283,12 +290,12 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
 
     if (!batch || batch === "null") {
       // Solo: emitir imediatamente
-      rows.push(makeRow(`#${issue.number}`, issue.timeline, countFixIterations(issue.timeline), issue.status));
+      rows.push(makeRow(issueRowLabel(issue), issue.timeline, countFixIterations(issue.timeline), issue.status));
     } else if (!emittedBatches.has(batch)) {
       // Primeiro aparecimento do lote: emitir a row do lote aqui
       emittedBatches.add(batch);
       const batchIssues = batchMap.get(batch)!;
-      const numbers = batchIssues.map((i) => `#${i.number}`).join(", ");
+      const numbers = batchIssues.map(issueRowLabel).join(", ");
       const label = `lote ${batch} (${numbers})`;
 
       // Representante: 1ª com dispatch, ou a 1ª do lote

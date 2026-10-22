@@ -27,7 +27,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
-import { partitionStudioPlanEntries } from "./lib/plan-issue-ref.ts";
+import { groupPlanEntriesByRepo, labelInRepo } from "./lib/plan-issue-ref.ts";
+import { loadIssueRepos } from "./lib/issue-repos.ts";
 import {
   detectLabelDriftDetailed,
   type DriftFinding,
@@ -52,10 +53,11 @@ interface FetchOpenIssuesResult {
 const DRIFT_ISSUE_LIMIT = 200;
 
 /** Busca issues abertas (número + labels) via `gh issue list` — fail-soft. */
-function fetchOpenIssues(cwd: string): FetchOpenIssuesResult {
+function fetchOpenIssues(cwd: string, repo?: string): FetchOpenIssuesResult {
+  // #10618 (fatia 4): `repo` = outro repo da allowlist → `-R owner/repo`.
   const result = spawnSync(
     "gh",
-    ["issue", "list", "--state", "open", "--json", "number,labels,body", "--limit", String(DRIFT_ISSUE_LIMIT)],
+    ["issue", "list", ...(repo ? ["-R", repo] : []), "--state", "open", "--json", "number,labels,body", "--limit", String(DRIFT_ISSUE_LIMIT)],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
   if (result.error) {
@@ -84,10 +86,11 @@ function fetchOpenIssues(cwd: string): FetchOpenIssuesResult {
 function fetchIssueComments(
   issue: number,
   cwd: string,
+  repo?: string,
 ): { comments: string[] | null; error?: string } {
   const result = spawnSync(
     "gh",
-    ["issue", "view", String(issue), "--json", "comments"],
+    ["issue", "view", String(issue), ...(repo ? ["-R", repo] : []), "--json", "comments"],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
   if (result.error) {
@@ -145,64 +148,114 @@ if (isMainModule(import.meta.url)) {
 
   // Escopo, corte por track e decisão de buscar comentários vivem em
   // `lib/decision-label-drift-gate.ts` (#5955) — puros e testados sem `gh`.
-  // #10778: labels e comentários vêm do diaria-studio, casados por número.
-  // Entrada de outro repo (`"vjpixel/diaria-design#21"` → `number: 21`)
-  // seria julgada pela studio#21 — fica de fora, com aviso explícito.
-  const { studio: planIssues, skipped } = partitionStudioPlanEntries(
+  // #10778 → #10618 (fatia 4): cada repo é avaliado sozinho, com labels e
+  // comentários buscados NO REPO DELE (`gh … -R owner/repo`). Só fica fora a
+  // entrada de repo fora da allowlist `issue_repos` ou de identidade
+  // desconhecida, com aviso explícito.
+  const { groups, unknown } = groupPlanEntriesByRepo(
     normalizeIssues<GatePlanIssue>(planRaw as IssuesBearing<GatePlanIssue>),
   );
+  const cwd = process.cwd();
+  const allowedRepos = new Set(loadIssueRepos(cwd));
+  const skipped = [...unknown];
+  for (const g of groups) {
+    if (!allowedRepos.has(g.repo)) skipped.push(...g.entries.map((e) => `${labelInRepo(g.repo, e.number)} (repo fora de issue_repos)`));
+  }
   if (skipped.length > 0) {
     console.error(
-      `[check-decision-label-drift-gate] ${skipped.length} entrada(s) de outro repo (ou identidade desconhecida) FORA ` +
-        `desta checagem, que só consulta o diaria-studio: ${skipped.join(", ")}`,
+      `[check-decision-label-drift-gate] ${skipped.length} entrada(s) FORA desta checagem (repo fora de issue_repos ou identidade desconhecida): ${skipped.join(", ")}`,
     );
   }
 
-  const cwd = process.cwd();
-
-  // Buscar todas as issues abertas para pegar labels atuais
-  const fetched = fetchOpenIssues(cwd);
-  if (fetched.error) {
-    console.error(
-      `[check-decision-label-drift-gate] gh indisponível — pulando checagem de drift de label (fail-soft, #738): ${fetched.error}`,
-    );
-    process.exit(0);
-  }
-
-  const allFindings: DriftFinding[] = [];
-  const allSuppressed: SuppressedFinding[] = [];
+  const allFindings: Array<DriftFinding & { label: string; repo?: string }> = [];
+  const allSuppressed: Array<SuppressedFinding & { label: string }> = [];
   let ghUnavailable = false;
 
-  const evaluations = buildGateEvaluations(
-    planIssues,
-    fetched.issues.map((i) => ({ number: i.number, labels: normalizeLabels(i), body: i.body })),
-  );
-
-  for (const evaluation of evaluations) {
-    let commentBodies: string[] = [];
-    if (evaluation.needsComments) {
-      const commentsResult = fetchIssueComments(evaluation.issueNumber, cwd);
-      if (commentsResult.error) {
+  const reposNotEvaluated: string[] = [];
+  // Review 2, item 3: erro de API (403/404) ao ler comentários num repo
+  // EXTRA — o gate segue com a prosa do plano, mas a linha final diz PARCIAL
+  // (mesma regra do `notePartial` de check-overnight-comment-coverage).
+  const partialFailures = new Map<string, number>();
+  for (const g of groups) {
+    if (!allowedRepos.has(g.repo)) continue;
+    const repoArg = g.isDefault ? undefined : g.repo;
+    // Buscar todas as issues abertas DO REPO DO GRUPO para pegar labels atuais
+    const fetched = fetchOpenIssues(cwd, repoArg);
+    if (fetched.error) {
+      if (g.isDefault) {
         console.error(
-          `[check-decision-label-drift-gate] falha ao buscar comentários de #${evaluation.issueNumber} (fail-soft, #738): ${commentsResult.error}`,
+          `[check-decision-label-drift-gate] gh indisponível — pulando checagem de drift de label (fail-soft, #738): ${fetched.error}`,
         );
-        if (commentsResult.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
-        // Sem os comentários, ainda dá pra avaliar a prosa do plano — não
-        // abortar a issue inteira por causa de uma falha de fetch.
-      } else {
-        commentBodies = commentsResult.comments ?? [];
+        process.exit(0);
       }
+      // #10618 (fatia 4): falha só num repo extra NÃO descarta o veredito
+      // do studio já calculado — o repo fica fora, com ressalva na linha final.
+      console.error(
+        `[check-decision-label-drift-gate] ${g.repo}: lista de issues abertas indisponível — entrada(s) desse repo NÃO avaliada(s) (fail-soft, #738): ${fetched.error}`,
+      );
+      reposNotEvaluated.push(g.repo);
+      continue;
     }
 
-    const detailed = detectLabelDriftDetailed({
-      issueNumber: evaluation.issueNumber,
-      labels: evaluation.labels,
-      commentBodies,
-      planTexts: evaluation.planTexts,
-      currentTrack: evaluation.currentTrack,
-    });
-    allFindings.push(...detailed.findings);
-    allSuppressed.push(...detailed.suppressedByRoute);
+    const evaluations = buildGateEvaluations(
+      g.entries,
+      fetched.issues.map((i) => ({ number: i.number, labels: normalizeLabels(i), body: i.body })),
+    );
+
+    // #10618 (fatia 4, review): achados do grupo ficam num buffer local e só
+    // entram no veredito se o grupo terminar. Falha de PROCESSO (spawn,
+    // timeout) ao ler comentários de um repo extra tira só aquele repo do
+    // veredito (`reposNotEvaluated`) — nunca descarta o que o studio já achou.
+    // No repo default continua sendo o fail-soft global de sempre (#738).
+    const groupFindings: typeof allFindings = [];
+    const groupSuppressed: typeof allSuppressed = [];
+    let groupAbandoned = false;
+    for (const evaluation of evaluations) {
+      let commentBodies: string[] = [];
+      if (evaluation.needsComments) {
+        const commentsResult = fetchIssueComments(evaluation.issueNumber, cwd, repoArg);
+        if (commentsResult.error) {
+          console.error(
+            `[check-decision-label-drift-gate] falha ao buscar comentários de ${labelInRepo(g.repo, evaluation.issueNumber)} (fail-soft, #738): ${commentsResult.error}`,
+          );
+          if (commentsResult.error.startsWith("gh não pôde ser executado")) {
+            if (g.isDefault) {
+              ghUnavailable = true;
+            } else {
+              reposNotEvaluated.push(g.repo);
+              groupAbandoned = true;
+              break;
+            }
+          } else if (!g.isDefault) {
+            partialFailures.set(g.repo, (partialFailures.get(g.repo) ?? 0) + 1);
+          }
+          // Sem os comentários, ainda dá pra avaliar a prosa do plano — não
+          // abortar a issue inteira por causa de uma falha de fetch.
+        } else {
+          commentBodies = commentsResult.comments ?? [];
+        }
+      }
+
+      const detailed = detectLabelDriftDetailed({
+        issueNumber: evaluation.issueNumber,
+        labels: evaluation.labels,
+        commentBodies,
+        planTexts: evaluation.planTexts,
+        currentTrack: evaluation.currentTrack,
+      });
+      groupFindings.push(
+        ...detailed.findings.map((f) => ({ ...f, label: labelInRepo(g.repo, f.issueNumber), ...(repoArg ? { repo: repoArg } : {}) })),
+      );
+      groupSuppressed.push(...detailed.suppressedByRoute.map((f) => ({ ...f, label: labelInRepo(g.repo, f.issueNumber) })));
+    }
+    if (groupAbandoned) {
+      console.error(
+        `[check-decision-label-drift-gate] ${g.repo}: gh falhou ao ler comentários — entrada(s) desse repo NÃO avaliada(s); o veredito dos demais repos segue (fail-soft por repo, #738).`,
+      );
+      continue;
+    }
+    allFindings.push(...groupFindings);
+    allSuppressed.push(...groupSuppressed);
   }
 
   if (ghUnavailable) {
@@ -221,13 +274,25 @@ if (isMainModule(import.meta.url)) {
       `[check-decision-label-drift-gate] ${allSuppressed.length} achado(s) SUPRIMIDO(S) por route-issue posterior (não bloqueiam o gate — ver docstring de scripts/lib/decision-label-drift.ts, seção "route-issue posterior vence"):`,
     );
     for (const s of allSuppressed) {
-      console.error(`  #${s.issueNumber}\t${s.patternId}\t${s.commentExcerpt}`);
+      console.error(`  ${s.label}\t${s.patternId}\t${s.commentExcerpt}`);
     }
     console.error("");
   }
 
+  const partialNote = [...partialFailures].map(([r, n]) => `${r} (${n} leitura(s) de comentário com erro)`);
+  if (partialNote.length > 0) {
+    console.error(`[check-decision-label-drift-gate] PARCIAL — comentários NÃO avaliados: ${partialNote.join(", ")}`);
+  }
   if (allFindings.length === 0) {
-    console.log("ok — nenhum drift de label de decisão detectado nas issues da rodada");
+    const ressalvas = [
+      ...(skipped.length > 0 ? [`${skipped.length} entrada(s) FORA desta checagem`] : []),
+      ...(reposNotEvaluated.length > 0 ? [`repo(s) NÃO avaliado(s): ${reposNotEvaluated.join(", ")}`] : []),
+      ...(partialNote.length > 0 ? [`comentários NÃO avaliados: ${partialNote.join(", ")}`] : []),
+    ];
+    const parcial = reposNotEvaluated.length > 0 || partialNote.length > 0;
+    console.log(
+      `ok${parcial ? " PARCIAL" : ""} — nenhum drift de label de decisão detectado nas issues da rodada${ressalvas.length > 0 ? ` (exceto ${ressalvas.join("; ")}, ver stderr)` : ""}`,
+    );
     process.exit(0);
   }
 
@@ -239,11 +304,11 @@ if (isMainModule(import.meta.url)) {
     const expected = f.expectedLabels.join("|");
     const actual = f.actualLabels.length > 0 ? f.actualLabels.join(",") : "(nenhuma)";
     const fonte = f.source === "plan" ? "plan.json" : "comentário";
-    console.error(`#${f.issueNumber}\t${f.patternId}\t${fonte}\t${expected}\t${actual}\t${f.commentExcerpt}`);
+    console.error(`${f.label}\t${f.patternId}\t${fonte}\t${expected}\t${actual}\t${f.commentExcerpt}`);
   }
   console.error("");
   console.error("Isto é um achado de auditoria (heurística por regex, não NLP). Confirme antes de aplicar/remover label.");
-  console.error("Aplique as labels esperadas nas issues listadas (gh issue edit N --add-label ...) antes de fechar a rodada.");
+  console.error("Aplique as labels esperadas nas issues listadas (gh issue edit N [-R owner/repo] --add-label ...) antes de fechar a rodada.");
 
   process.exit(1);
 }

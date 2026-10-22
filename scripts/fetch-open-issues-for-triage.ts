@@ -17,10 +17,11 @@
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --repos all
  *   npx tsx scripts/fetch-open-issues-for-triage.ts --repos vjpixel/diaria-studio,vjpixel/diaria-design
  *
- * **Multi-repo (#10618) é OPT-IN.** Sem `--repos`, varre SÓ o
- * `vjpixel/diaria-studio` — a fila de sempre, a que overnight, contínuo e
- * zerar-fila consomem (vários gates ainda leem `number` como número do
- * studio; até a fatia 3, só o `/diaria-develop` passa `--repos`).
+ * **Multi-repo (#10618).** Sem `--repos`, varre SÓ o
+ * `vjpixel/diaria-studio` (o default do CLI, que o zerar-fila usa). Desde a
+ * fatia 4 o overnight, o contínuo e o develop passam `--repos all` por
+ * padrão (decisão do editor, 22/10/2026): os gates de fim de rodada
+ * consultam a entrada de outro repo no repo dela.
  * `--repos all` = todos de `platform.config.json → issue_repos`; `--repos a,b`
  * = lista validada contra essa allowlist (slug ilegível ou fora dela → exit 1).
  * O repo default entra sempre, primeiro. Cada item traz `repo` e `ref`
@@ -76,9 +77,9 @@ export function main(argv: string[], cwd: string): number {
     return 1;
   }
 
-  // #10618: multi-repo só por opt-in explícito (`--repos all` ou lista
-  // validada contra `issue_repos`). Sem a flag: só o diaria-studio, sem ler o
-  // config (nenhum AVISO de config num caminho que master nunca tocava).
+  // #10618: multi-repo só com `--repos all` ou lista validada contra
+  // `issue_repos` (overnight/contínuo/develop passam `--repos all` desde a
+  // fatia 4). Sem a flag: só o diaria-studio, sem ler o config.
   const resolvedRepos = values.repos?.trim()
     ? resolveTriageRepos(values.repos, triageAllowedRepos())
     : { repos: undefined };

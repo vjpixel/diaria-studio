@@ -406,7 +406,7 @@ function renderIssuesTable() {
  * (mesmo padrão de `dispatchBadge`/`reasonCell`). */
 export function issueRowHtml(i) {
   return `<tr>
-      <td><a href="${escapeHtml(i.url)}" target="_blank" rel="noopener">#${i.number}</a></td>
+      <td><a href="${escapeHtml(i.url)}" target="_blank" rel="noopener">${escapeHtml(i.ref ?? `#${i.number}`)}</a></td>
       <td>${escapeHtml(i.title)}</td>
       <td>${dispatchBadge(i.execTrack, i.execTrackMatched)}${claimBadge(i.claim)}</td>
       <td>${priorityBadge(i.priority)}</td>
@@ -420,7 +420,7 @@ export function issueRowHtml(i) {
 export function prRowHtml(p) {
   const draftTag = p.isDraft ? ' <span class="draft-tag">draft</span>' : "";
   return `<tr>
-      <td><a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">#${p.number}</a></td>
+      <td><a href="${escapeHtml(p.url)}" target="_blank" rel="noopener">${escapeHtml(p.ref ?? `#${p.number}`)}</a></td>
       <td>${escapeHtml(p.title)}${draftTag}</td>
       <td>${trackBadge(p.track)}</td>
       <td>${priorityBadge(p.priority)}</td>
@@ -506,6 +506,11 @@ function renderError() {
     el.error.textContent = data.cached
       ? `gh falhou nesta tentativa (mostrando o último snapshot bom): ${data.error}`
       : `gh falhou e não há cache anterior: ${data.error}`;
+  } else if (Array.isArray(data.repoErrors) && data.repoErrors.length > 0) {
+    // #10618 (fatia 4): repo extra de `issue_repos` que não respondeu — a
+    // lista do diaria-studio está completa, a desse repo está fora.
+    el.error.hidden = false;
+    el.error.textContent = `Issues destes repos NÃO aparecem (gh falhou): ${data.repoErrors.join("; ")}`;
   } else {
     el.error.hidden = true;
   }

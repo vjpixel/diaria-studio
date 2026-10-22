@@ -42,6 +42,7 @@ import {
   checkPrRetido,
   partitionRetidoCandidates,
   trainHasRealFailure,
+  checkStudioTrainPr,
   type TrainRunner,
   type ExecResult,
 } from "../scripts/lib/merge-train-live.ts";
@@ -818,5 +819,44 @@ describe("runner real — regressão #10849", () => {
       assert.equal(result.stderr, code === "ENOENT"
         ? "executável não encontrado: npx (cwd: /repo): spawn falhou" : "spawn falhou");
     }
+  });
+});
+
+describe("#10618 fatia 4 (review 2, item 2) — checkStudioTrainPr: o trem é só-studio", () => {
+  const view = (payload: unknown) =>
+    new FakeTrainRunner().on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("number,state,baseRefName,url,isCrossRepository"), () =>
+      ok(JSON.stringify(payload)),
+    );
+  const studio = { state: "OPEN", baseRefName: "master", url: "https://github.com/vjpixel/diaria-studio/pull/23", isCrossRepository: false };
+
+  it("PR aberto do studio mirando master → studio", () => {
+    assert.deepEqual(checkStudioTrainPr(view(studio), 23), { verdict: "studio" });
+  });
+
+  it("número de PR do design resolvendo um studio PR já fechado → foreign (nunca mergeado de novo)", () => {
+    const r = checkStudioTrainPr(view({ ...studio, state: "MERGED" }), 23);
+    assert.equal(r.verdict, "foreign");
+  });
+
+  it("url de outro repo, base main ou fork → foreign", () => {
+    assert.equal(checkStudioTrainPr(view({ ...studio, url: "https://github.com/vjpixel/diaria-design/pull/23" }), 23).verdict, "foreign");
+    assert.equal(checkStudioTrainPr(view({ ...studio, baseRefName: "main" }), 23).verdict, "foreign");
+    assert.equal(checkStudioTrainPr(view({ ...studio, isCrossRepository: true }), 23).verdict, "foreign");
+    assert.equal(checkStudioTrainPr(view({ ...studio, url: "https://github.com/vjpixel/diaria-studio/pull/230" }), 23).verdict, "foreign");
+  });
+
+  it("gh falhou ou JSON ruim → unreadable (fail-closed, nunca studio)", () => {
+    const failing = new FakeTrainRunner().on("gh", () => true, () => fail("HTTP 404"));
+    assert.equal(checkStudioTrainPr(failing, 23).verdict, "unreadable");
+    const bad = new FakeTrainRunner().on("gh", () => true, () => ok("não-json"));
+    assert.equal(checkStudioTrainPr(bad, 23).verdict, "unreadable");
+  });
+
+  it("run-merge-train.ts chama checkStudioTrainPr antes de compor lotes (fiação)", () => {
+    const src = readFileSync(join(import.meta.dirname, "..", "scripts", "run-merge-train.ts"), "utf8");
+    const check = src.indexOf("checkStudioTrainPr(runner, pr)");
+    assert.ok(check > 0);
+    assert.ok(check < src.indexOf("partitionRetidoCandidates(runner, prNumbers)"));
+    assert.ok(check < src.indexOf("composeTrainBatches("));
   });
 });
