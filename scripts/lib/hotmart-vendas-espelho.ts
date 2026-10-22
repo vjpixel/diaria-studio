@@ -2,10 +2,11 @@
  * scripts/lib/hotmart-vendas-espelho.ts (#10734, item 4c)
  *
  * Espelho local, append-only, das vendas da Hotmart gravadas no KV
- * `CURSOS_SUBSCRIBERS` pelo Worker `site` (`hotmart-vendas.ts`). O KV guarda
- * cada evento por 400 dias (`VENDA_TTL_SECONDS`); passado isso, a chave some.
- * O espelho em `data/hotmart/vendas.jsonl` é o que sobra depois disso: uma
- * linha por evento de venda, no MESMO formato do registro do KV (allowlist de
+ * `CURSOS_SUBSCRIBERS` pelo Worker `diaria-site` (`workers/site`,
+ * `hotmart-vendas.ts`). O KV guarda cada evento por 400 dias
+ * (`VENDA_TTL_SECONDS`); passado isso, a chave some. O espelho em
+ * `data/hotmart/vendas.jsonl` é o que sobra depois disso: uma linha por evento
+ * de venda, no MESMO formato do registro do KV (allowlist de
  * `parseVendaRecord`, e-mail só como hash).
  *
  * Idempotência: a chave do espelho é transação + evento, a mesma da dedup de
@@ -19,7 +20,8 @@
  * máximo `ABANDONOS_MAX_DIAS` (93) dias por chamada (`resolvePeriodo`); um
  * período maior é quebrado em janelas por `planejarJanelas`.
  *
- * Miolo PURO: sem fs, sem rede. O CLI é `scripts/sync-hotmart-vendas.ts`.
+ * Miolo PURO: sem fs, sem rede. O CLI é `scripts/sync-hotmart-vendas.ts` (lá
+ * ficam o lock do arquivo e a checagem da junction `data/`).
  */
 
 import { ABANDONOS_MAX_DIAS, brtDay } from "./shared/hotmart-abandono.ts";
@@ -27,6 +29,13 @@ import { parseVendaRecord, type VendaRecord } from "./shared/hotmart-vendas.ts";
 
 /** Caminho do espelho, relativo a `data/`. */
 export const ESPELHO_REL_PATH = "hotmart/vendas.jsonl";
+
+/** Arquivo que só existe com a junction `data/` do OneDrive montada (o store
+ * unificado de assinantes), relativo a `data/`. A existência de `data/` não
+ * serve de sinal: o runner das tasks (`task-runner.ts`, `defaultAppendLog`)
+ * cria `data/` ao gravar o log mesmo com a junction desmontada. Usado pelo
+ * guard da task `Diaria-Hotmart-Vendas-Sync` e pelo próprio CLI. */
+export const SENTINELA_DATA_REL_PATH = "diaria-subscribers/diaria-subscribers.db";
 
 /** Teto de dias por chamada da rota (o mesmo de `resolvePeriodo`). */
 export const JANELA_MAX_DIAS = ABANDONOS_MAX_DIAS;
@@ -39,22 +48,37 @@ export const SYNC_DIAS_PADRAO = 35;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Período fechado de dias (AAAA-MM-DD, inclusive nas duas pontas). */
+export interface Periodo {
+  readonly de: string;
+  readonly ate: string;
+}
+
 /** Chave de idempotência do espelho: transação + evento. */
 export function chaveEspelho(r: Pick<VendaRecord, "transacao" | "evento">): string {
   return `${r.transacao}\u0000${r.evento}`;
 }
 
 export interface EspelhoLido {
-  registros: VendaRecord[];
+  /** Um registro por chave (transação + evento): o da primeira linha. */
+  readonly registros: readonly VendaRecord[];
   /** Linhas não vazias que não são um registro de venda válido. Ficam no
    * arquivo como estão (o sync nunca reescreve linhas antigas). */
-  invalidas: number;
+  readonly invalidas: number;
+  /** Linhas válidas cuja chave já apareceu numa linha anterior. Só acontece
+   * se duas gravações correram ao mesmo tempo (o CLI usa lock para evitar)
+   * ou se alguém editou o arquivo à mão. Ficam no arquivo; a leitura conta
+   * só a primeira. */
+  readonly duplicadas: number;
 }
 
-/** Lê o conteúdo do espelho (JSONL, LF ou CRLF). Nunca lança. */
+/** Lê o conteúdo do espelho (JSONL, LF ou CRLF), deduplicando por
+ * `chaveEspelho`. Nunca lança. */
 export function lerEspelho(texto: string): EspelhoLido {
   const registros: VendaRecord[] = [];
+  const vistas = new Set<string>();
   let invalidas = 0;
+  let duplicadas = 0;
   for (const linha of texto.split(/\r?\n/)) {
     if (!linha.trim()) continue;
     let parsed: unknown;
@@ -65,28 +89,46 @@ export function lerEspelho(texto: string): EspelhoLido {
       continue;
     }
     const rec = parseVendaRecord(parsed);
-    if (rec) registros.push(rec);
-    else invalidas++;
+    if (!rec) {
+      invalidas++;
+      continue;
+    }
+    const k = chaveEspelho(rec);
+    if (vistas.has(k)) {
+      duplicadas++;
+      continue;
+    }
+    vistas.add(k);
+    registros.push(rec);
   }
-  return { registros, invalidas };
+  return { registros, invalidas, duplicadas };
 }
 
 export interface MesclaEspelho {
   /** Eventos que ainda não estavam no espelho, em ordem de `criado_em`. */
-  novos: VendaRecord[];
+  readonly novos: readonly VendaRecord[];
   /** Eventos recebidos cuja chave já estava no espelho (ou repetida no
    * próprio lote recebido). */
-  jaPresentes: number;
+  readonly jaPresentes: number;
+}
+
+/** Instante de `criado_em` em ms; data ilegível vai para o fim. */
+function instante(r: VendaRecord): number {
+  const ms = Date.parse(r.criado_em);
+  return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
 }
 
 /**
- * Separa, dos eventos recebidos do KV, os que faltam no espelho. Repetição
- * dentro do próprio lote (duas janelas que se sobrepõem, ou o mesmo evento em
- * dias diferentes) fica só no mais antigo, como em `lerVendas`.
+ * Separa, dos eventos recebidos do KV, os que faltam no espelho. As janelas
+ * de `planejarJanelas` não se sobrepõem, mas o mesmo evento ainda pode vir
+ * repetido no lote: o Worker grava uma chave por dia de recebimento, e um
+ * reenvio da Hotmart noutro dia cai noutra janela (ou na mesma, noutro dia).
+ * A repetição fica só no mais antigo por `Date.parse(criado_em)`, como em
+ * `lerVendas`.
  */
 export function mesclarEspelho(existentes: readonly VendaRecord[], recebidos: readonly VendaRecord[]): MesclaEspelho {
   const vistos = new Set(existentes.map(chaveEspelho));
-  const ordenados = [...recebidos].sort((a, b) => a.criado_em.localeCompare(b.criado_em));
+  const ordenados = [...recebidos].sort((a, b) => instante(a) - instante(b));
   const novos: VendaRecord[] = [];
   let jaPresentes = 0;
   for (const r of ordenados) {
@@ -128,7 +170,7 @@ function diaDe(ms: number): string {
 
 /** Período padrão do sync: os últimos `dias` dias, terminando hoje em
  * Brasília (inclusive). */
-export function periodoPadrao(nowMs: number, dias: number = SYNC_DIAS_PADRAO): { de: string; ate: string } {
+export function periodoPadrao(nowMs: number, dias: number = SYNC_DIAS_PADRAO): Periodo {
   if (!Number.isInteger(dias) || dias < 1) throw new Error(`dias deve ser inteiro ≥ 1, recebido ${dias}`);
   const ate = brtDay(nowMs);
   return { de: diaDe(diaMs(ate) - (dias - 1) * DAY_MS), ate };
@@ -136,12 +178,12 @@ export function periodoPadrao(nowMs: number, dias: number = SYNC_DIAS_PADRAO): {
 
 /** Quebra `de..ate` (inclusive) em janelas consecutivas de até `maxDias`
  * dias, sem buraco nem sobreposição. Lança em data inválida ou invertida. */
-export function planejarJanelas(de: string, ate: string, maxDias: number = JANELA_MAX_DIAS): Array<{ de: string; ate: string }> {
+export function planejarJanelas(de: string, ate: string, maxDias: number = JANELA_MAX_DIAS): Periodo[] {
   if (!Number.isInteger(maxDias) || maxDias < 1) throw new Error(`maxDias deve ser inteiro ≥ 1, recebido ${maxDias}`);
   const inicio = diaMs(de);
   const fim = diaMs(ate);
   if (fim < inicio) throw new Error(`período invertido: ${de} depois de ${ate}`);
-  const janelas: Array<{ de: string; ate: string }> = [];
+  const janelas: Periodo[] = [];
   for (let ms = inicio; ms <= fim; ms += maxDias * DAY_MS) {
     janelas.push({ de: diaDe(ms), ate: diaDe(Math.min(ms + (maxDias - 1) * DAY_MS, fim)) });
   }
@@ -149,11 +191,11 @@ export function planejarJanelas(de: string, ate: string, maxDias: number = JANEL
 }
 
 export interface RespostaVendas {
-  registros: VendaRecord[];
+  readonly registros: readonly VendaRecord[];
   /** Registros da resposta que não passaram por `parseVendaRecord`. */
-  descartados: number;
+  readonly descartados: number;
   /** Chaves do KV que o próprio Worker já pulou por conteúdo inválido. */
-  ignoradosNoKv: number;
+  readonly ignoradosNoKv: number;
 }
 
 /** Valida o corpo de `GET /hotmart/vendas`. Lança se a resposta não for um
@@ -176,14 +218,21 @@ export function parseRespostaVendas(body: unknown): RespostaVendas {
 }
 
 export interface ResultadoSync {
-  janelas: number;
-  recebidos: number;
-  novos: VendaRecord[];
-  jaPresentes: number;
-  descartados: number;
-  ignoradosNoKv: number;
+  readonly janelas: number;
+  /** Soma, entre as janelas, dos registros válidos recebidos. */
+  readonly recebidos: number;
+  readonly novos: readonly VendaRecord[];
+  readonly jaPresentes: number;
+  /** Soma, entre as janelas, dos registros que a rota devolveu fora do formato. */
+  readonly descartados: number;
+  /** Soma, entre as janelas, das chaves que o Worker pulou por conteúdo inválido. */
+  readonly ignoradosNoKv: number;
+  /** Linhas do espelho atual que não são registro válido (ficam como estão). */
+  readonly invalidasNoEspelho: number;
+  /** Linhas do espelho atual com chave repetida (ficam como estão). */
+  readonly duplicadasNoEspelho: number;
   /** Texto a acrescentar ao espelho (vazio se nada novo). */
-  acrescentar: string;
+  readonly acrescentar: string;
 }
 
 /**
@@ -192,7 +241,7 @@ export interface ResultadoSync {
  * acrescentar ao espelho atual.
  */
 export async function sincronizarEspelho(opts: {
-  janelas: ReadonlyArray<{ de: string; ate: string }>;
+  janelas: readonly Periodo[];
   buscarJanela: (de: string, ate: string) => Promise<RespostaVendas>;
   textoAtual: string;
 }): Promise<ResultadoSync> {
@@ -205,7 +254,7 @@ export async function sincronizarEspelho(opts: {
     descartados += r.descartados;
     ignoradosNoKv += r.ignoradosNoKv;
   }
-  const { registros: existentes } = lerEspelho(opts.textoAtual);
+  const { registros: existentes, invalidas, duplicadas } = lerEspelho(opts.textoAtual);
   const { novos, jaPresentes } = mesclarEspelho(existentes, recebidos);
   return {
     janelas: opts.janelas.length,
@@ -214,6 +263,8 @@ export async function sincronizarEspelho(opts: {
     jaPresentes,
     descartados,
     ignoradosNoKv,
+    invalidasNoEspelho: invalidas,
+    duplicadasNoEspelho: duplicadas,
     acrescentar: textoParaAcrescentar(novos, opts.textoAtual),
   };
 }

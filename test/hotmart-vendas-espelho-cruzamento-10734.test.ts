@@ -9,14 +9,17 @@
  *
  * 4a — cruzamento com o store: o hash que o cruzamento calcula sobre o e-mail
  * do store é o MESMO que o Worker grava (`buildVendaRecord` e o webhook de
- * verdade); casamento com assinante ativo, ex-assinante, fora da base e venda
- * sem e-mail; nenhum e-mail em claro no relatório.
+ * verdade); situação do comprador NO MOMENTO da compra (janelas
+ * `entered_at`/`exited_at` do store): assinante na compra, assinou depois, na
+ * base sem assinatura ativa, fora da base e venda sem e-mail; nenhum e-mail em
+ * claro no relatório. Mais os fixes do review da PR #10841 (sentinela da
+ * junction, lock, exit 3, timeout, CLI do cruzamento de ponta a ponta).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -31,13 +34,27 @@ import {
   sincronizarEspelho,
   textoParaAcrescentar,
   JANELA_MAX_DIAS,
+  SENTINELA_DATA_REL_PATH,
   type RespostaVendas,
 } from "../scripts/lib/hotmart-vendas-espelho.ts";
 import {
+  assinantesDoStore,
   cruzarVendas,
   hashEmailComoWorker,
   indexarAssinantesPorHash,
+  situacaoNaCompra,
+  SITUACOES,
 } from "../scripts/lib/hotmart-vendas-cruzamento.ts";
+import { ensureSubscriber, openDiariaSubscribersDb, upsertSubscription, type SubscriptionRecord } from "../scripts/lib/diaria-subscribers-db.ts";
+import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
+import {
+  adquirirLock,
+  buscarJanelaHttp,
+  dataMontado,
+  EXIT_REGISTROS_INVALIDOS,
+  LOCK_STALE_MS,
+  resolverPeriodoCli,
+} from "../scripts/sync-hotmart-vendas.ts";
 import { buildVendaRecord, HOTMART_VENDAS_PATH, type VendaRecord } from "../scripts/lib/shared/hotmart-vendas.ts";
 import { ABANDONOS_MAX_DIAS, HOTMART_WEBHOOK_PATH } from "../scripts/lib/shared/hotmart-abandono.ts";
 import worker from "../workers/site/src/index.ts";
@@ -209,13 +226,96 @@ describe("#10734 4a hash do e-mail idêntico ao do Worker", () => {
   });
 });
 
+describe("#10734 4a situação no momento da compra (janelas do store)", () => {
+  const T = Date.parse("2026-10-20T12:00:00.000Z");
+  const j = (status: string | null, entered_at: string | null, exited_at: string | null) => ({ status, entered_at, exited_at });
+
+  it("assinatura ativa que começou antes cobre a compra", () => {
+    assert.equal(situacaoNaCompra([j("active", "2026-01-01T00:00:00Z", null)], T), "assinante-na-compra");
+  });
+
+  it("janela fechada que contém a compra cobre, mesmo com status atual inativo", () => {
+    assert.equal(situacaoNaCompra([j("inactive", "2026-01-01T00:00:00Z", "2026-10-21T00:00:00Z")], T), "assinante-na-compra");
+  });
+
+  it("assinou depois de comprar não conta como assinante na compra", () => {
+    assert.equal(situacaoNaCompra([j("active", "2026-10-21T00:00:00Z", null)], T), "assinou-depois");
+  });
+
+  it("saiu antes da compra, nunca foi ativo ou sem data de entrada: na base sem assinatura ativa", () => {
+    assert.equal(situacaoNaCompra([j("inactive", "2026-01-01T00:00:00Z", "2026-10-20T12:00:00.000Z")], T), "na-base-sem-assinatura-ativa");
+    assert.equal(situacaoNaCompra([j("inactive", "2026-01-01T00:00:00Z", null)], T), "na-base-sem-assinatura-ativa");
+    assert.equal(situacaoNaCompra([j("pending", "2026-01-01T00:00:00Z", null)], T), "na-base-sem-assinatura-ativa");
+    assert.equal(situacaoNaCompra([j("active", null, null)], T), "na-base-sem-assinatura-ativa");
+    assert.equal(situacaoNaCompra([], T), "na-base-sem-assinatura-ativa");
+    assert.equal(situacaoNaCompra([j("active", "2026-01-01T00:00:00Z", null)], Number.NaN), "na-base-sem-assinatura-ativa");
+  });
+
+  it("qualquer plataforma que cubra a compra basta; cobrir vence 'assinou depois'", () => {
+    assert.equal(
+      situacaoNaCompra([j("active", "2026-11-01T00:00:00Z", null), j("inactive", "2026-01-01T00:00:00Z", "2026-12-01T00:00:00Z")], T),
+      "assinante-na-compra",
+    );
+  });
+
+  it("SITUACOES lista as 5 situações e é a fonte do tipo", () => {
+    assert.deepEqual([...SITUACOES], ["assinante-na-compra", "assinou-depois", "na-base-sem-assinatura-ativa", "fora-da-base", "sem-email"]);
+  });
+});
+
+describe("#10734 4a assinantesDoStore", () => {
+  it("monta emails, janelas e origem pela precedência do store", () => {
+    const sub = (over: Partial<SubscriptionRecord>): SubscriptionRecord => ({
+      platform: "beehiiv",
+      status: "active",
+      entered_at: "2026-01-01T00:00:00Z",
+      exited_at: null,
+      source: null,
+      utm_medium: null,
+      utm_campaign: null,
+      utm_channel: null,
+      referring_site: null,
+      origem_cadastro: null,
+      utm_source: null,
+      utm_term: null,
+      utm_content: null,
+      atribuicao_fonte: null,
+      reativado: null,
+      origem_serie: null,
+      updated_at: "2026-10-01T00:00:00Z",
+      ...over,
+    });
+    const aliases = new Map([
+      [5, [{ email: "a@exemplo.com" }, { email: null }]],
+      [6, [{ email: "b@exemplo.com" }]],
+    ]);
+    const subs = new Map([
+      [5, [sub({ platform: "beehiiv", utm_source: "google" }), sub({ platform: "kit", status: "inactive", exited_at: "2026-05-01T00:00:00Z", utm_source: "linkedin" })]],
+    ]);
+    assert.deepEqual(assinantesDoStore(aliases, subs), [
+      {
+        subscriberId: 5,
+        emails: ["a@exemplo.com", null],
+        assinaturas: [
+          { status: "active", entered_at: "2026-01-01T00:00:00Z", exited_at: null },
+          { status: "inactive", entered_at: "2026-01-01T00:00:00Z", exited_at: "2026-05-01T00:00:00Z" },
+        ],
+        origem: "linkedin", // kit tem precedência sobre beehiiv
+      },
+      { subscriberId: 6, emails: ["b@exemplo.com"], assinaturas: [], origem: null },
+    ]);
+  });
+});
+
 describe("#10734 4a cruzarVendas", () => {
-  it("separa assinante ativo, ex-assinante, fora da base e sem e-mail, sem e-mail em claro", async () => {
+  it("classifica cada venda pela situação no momento da compra, sem e-mail em claro", async () => {
     const indice = await indexarAssinantesPorHash([
-      { subscriberId: 7, emails: ["Ativo@Exemplo.com"], ativo: true, origem: "linkedin" },
-      // mesma pessoa partida em 2 subscribers (store ainda não fundiu): ativo em um basta
-      { subscriberId: 3, emails: ["outro@exemplo.com", "ativo@exemplo.com"], ativo: false, origem: null },
-      { subscriberId: 9, emails: ["ex@exemplo.com", null, "não-é-email"], ativo: false, origem: null },
+      // mesma pessoa partida em 2 subscribers (store ainda não fundiu): a janela de qualquer um vale.
+      // O id maior vem primeiro de propósito: o menor id é calculado, não herdado da ordem do índice.
+      { subscriberId: 7, emails: ["Ativo@Exemplo.com"], assinaturas: [{ status: "active", entered_at: "2026-01-01T00:00:00Z", exited_at: null }], origem: "linkedin" },
+      { subscriberId: 3, emails: ["outro@exemplo.com", "ativo@exemplo.com"], assinaturas: [], origem: null },
+      { subscriberId: 9, emails: ["ex@exemplo.com", null, "não-é-email"], assinaturas: [{ status: "inactive", entered_at: "2025-01-01T00:00:00Z", exited_at: "2026-03-01T00:00:00Z" }], origem: null },
+      { subscriberId: 11, emails: ["depois@exemplo.com"], assinaturas: [{ status: "active", entered_at: "2026-11-01T00:00:00Z", exited_at: null }], origem: "meta" },
     ]);
     const h = async (e: string) => (await hashEmailComoWorker(e))!;
     const vendas = [
@@ -225,23 +325,27 @@ describe("#10734 4a cruzarVendas", () => {
       rec({ transacao: "T3", email_hash: await h("desconhecido@exemplo.com") }),
       rec({ transacao: "T4", email_hash: await h("desconhecido@exemplo.com") }),
       rec({ transacao: "T5", email_hash: null }),
+      rec({ transacao: "T6", email_hash: await h("depois@exemplo.com") }),
     ];
     const r = cruzarVendas(vendas, indice);
-    assert.equal(r.totalEventos, 6);
+    assert.equal(r.totalEventos, 7);
     assert.deepEqual(r.aprovadas, {
-      "assinante-ativo": { eventos: 1, compradores: 1 },
-      "ex-assinante": { eventos: 1, compradores: 1 },
+      "assinante-na-compra": { eventos: 1, compradores: 1 },
+      "assinou-depois": { eventos: 1, compradores: 1 },
+      "na-base-sem-assinatura-ativa": { eventos: 1, compradores: 1 },
       "fora-da-base": { eventos: 2, compradores: 1 },
       "sem-email": { eventos: 1, compradores: 1 },
     });
-    assert.equal(r.todos["assinante-ativo"].eventos, 2);
+    assert.equal(r.todos["assinante-na-compra"].eventos, 2);
     const t1 = r.vendas.find((v) => v.transacao === "T1" && v.evento === "aprovada")!;
     assert.equal(t1.subscriber_id, 3);
     assert.equal(t1.origem_assinante, "linkedin");
     assert.equal(r.vendas.find((v) => v.transacao === "T3")!.subscriber_id, null);
+    assert.equal(r.vendas.find((v) => v.transacao === "T5")!.subscriber_id, null);
     assert.deepEqual(r.aprovadasPorOrigem, [
       { origem: "(sem origem no store)", eventos: 1 },
       { origem: "linkedin", eventos: 1 },
+      { origem: "meta", eventos: 1 },
     ]);
     const json = JSON.stringify(r);
     assert.ok(!json.includes("@"), "relatório não pode levar e-mail");
@@ -387,5 +491,278 @@ describe("#10734 4c CLI sync-hotmart-vendas de ponta a ponta", () => {
   it("a URL da janela usa a rota do Worker", async () => {
     const { urlDaJanela } = await import("../scripts/sync-hotmart-vendas.ts");
     assert.equal(urlDaJanela("https://diar.ia.br", "2026-10-01", "2026-10-02"), `https://diar.ia.br${HOTMART_VENDAS_PATH}?de=2026-10-01&ate=2026-10-02`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fixes do review da PR #10841.
+// ---------------------------------------------------------------------------
+
+describe("#10734 review: leitura do espelho deduplica e o sync soma entre janelas", () => {
+  it("lerEspelho conta linha com chave repetida e lê só a primeira", () => {
+    const a = rec({ valor_liquido: 1 });
+    const texto = [a, rec({ valor_liquido: 2, evento_id: "outro" }), rec({ evento: "reembolsada", evento_id: "r" })].map((x) => JSON.stringify(x)).join("\n");
+    const { registros, duplicadas, invalidas } = lerEspelho(texto);
+    assert.equal(duplicadas, 1);
+    assert.equal(invalidas, 0);
+    assert.equal(registros.length, 2);
+    assert.equal(registros[0]!.valor_liquido, 1);
+  });
+
+  it("sincronizarEspelho soma recebidos, descartados e ignorados entre janelas e expõe as linhas ruins do espelho", async () => {
+    const porJanela: Record<string, RespostaVendas> = {
+      "2026-01-01": { registros: [rec({ transacao: "A" })], descartados: 1, ignoradosNoKv: 2 },
+      "2026-04-04": { registros: [rec({ transacao: "B" }), rec({ transacao: "C" })], descartados: 3, ignoradosNoKv: 0 },
+      "2026-07-06": { registros: [], descartados: 0, ignoradosNoKv: 4 },
+    };
+    const atual = `lixo\n${JSON.stringify(rec({ transacao: "A" }))}\n${JSON.stringify(rec({ transacao: "A" }))}\n`;
+    const r = await sincronizarEspelho({
+      janelas: planejarJanelas("2026-01-01", "2026-07-19"),
+      buscarJanela: async (de) => porJanela[de]!,
+      textoAtual: atual,
+    });
+    assert.equal(r.janelas, 3);
+    assert.equal(r.recebidos, 3);
+    assert.equal(r.descartados, 4);
+    assert.equal(r.ignoradosNoKv, 6);
+    assert.equal(r.invalidasNoEspelho, 1);
+    assert.equal(r.duplicadasNoEspelho, 1);
+    assert.deepEqual(r.novos.map((x) => x.transacao), ["B", "C"]);
+    assert.equal(r.jaPresentes, 1);
+  });
+
+  it("mesclarEspelho ordena por instante (Date.parse), não por texto", () => {
+    // 01:00Z é antes de 23:00-03:00 (= 02:00Z do dia seguinte), embora venha depois em ordem alfabética
+    const cedo = rec({ criado_em: "2026-10-19T01:00:00.000Z", evento_id: "cedo" });
+    const tarde = rec({ criado_em: "2026-10-18T23:00:00-03:00", evento_id: "tarde" });
+    assert.deepEqual(mesclarEspelho([], [tarde, cedo]).novos.map((r) => r.evento_id), ["cedo"]);
+  });
+});
+
+describe("#10734 review: guard da junction data/ e da task", () => {
+  it("data/ existindo sem o sentinela não conta como montado (o runner cria data/ para o log)", () => {
+    const root = mkdtempSync(join(tmpdir(), "hotmart-sentinela-"));
+    try {
+      mkdirSync(join(root, "data", "hotmart"), { recursive: true });
+      assert.equal(dataMontado(root), false);
+      mkdirSync(join(root, "data", "diaria-subscribers"), { recursive: true });
+      writeFileSync(join(root, "data", ...SENTINELA_DATA_REL_PATH.split("/")), "");
+      assert.equal(dataMontado(root), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a task declara guard no mesmo sentinela e não trata exit 3 como sucesso", () => {
+    const t = SCHEDULED_TASKS.find((x) => x.name === "Diaria-Hotmart-Vendas-Sync");
+    assert.ok(t, "task Diaria-Hotmart-Vendas-Sync ausente");
+    assert.equal(t.guard?.requiredFile, SENTINELA_DATA_REL_PATH);
+    assert.ok(!(t.successExitCodes ?? []).includes(EXIT_REGISTROS_INVALIDOS));
+    assert.equal(EXIT_REGISTROS_INVALIDOS, 3);
+  });
+});
+
+describe("#10734 review: lock do espelho", () => {
+  it("lock recente recusa; lock com mais de 1h é tomado com aviso; liberar remove", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hotmart-lock-"));
+    const lock = join(dir, "vendas.jsonl.lock");
+    try {
+      const avisos: string[] = [];
+      const liberar = adquirirLock(lock, Date.now(), (m) => avisos.push(m));
+      assert.ok(existsSync(lock));
+      assert.throws(() => adquirirLock(lock, Date.now(), (m) => avisos.push(m)), /ocupado/);
+      const liberar2 = adquirirLock(lock, statSync(lock).mtimeMs + LOCK_STALE_MS + 60_000, (m) => avisos.push(m));
+      assert.equal(avisos.length, 1);
+      assert.match(avisos[0]!, /abandonado/);
+      liberar2();
+      assert.ok(!existsSync(lock));
+      liberar(); // idempotente
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#10734 review: período da linha de comando", () => {
+  const now = Date.UTC(2026, 9, 22, 15, 0);
+  it("--de sem --ate vai até hoje em Brasília", () => {
+    assert.deepEqual(resolverPeriodoCli({ de: "2026-10-01", nowMs: now }).periodo, { de: "2026-10-01", ate: "2026-10-22" });
+  });
+  it("--ate sem --de, --dias com --de, data inválida e período invertido lançam", () => {
+    assert.throws(() => resolverPeriodoCli({ ate: "2026-10-01", nowMs: now }), /exige --de/);
+    assert.throws(() => resolverPeriodoCli({ de: "2026-10-01", dias: 3, nowMs: now }), /não os dois/);
+    assert.throws(() => resolverPeriodoCli({ de: "2026-02-30", ate: "2026-03-01", nowMs: now }), /inexistente/);
+    assert.throws(() => resolverPeriodoCli({ de: "2026-10-05", ate: "2026-10-01", nowMs: now }), /invertido/);
+  });
+});
+
+describe("#10734 review: rota real aceita cada janela de um backfill longo", () => {
+  it("toda janela de planejarJanelas (2 anos) devolve 200 em /hotmart/vendas", async () => {
+    const env = envWith(fakeKv());
+    const janelas = planejarJanelas("2024-11-01", "2026-10-22");
+    assert.ok(janelas.length >= 8);
+    for (const j of janelas) {
+      const res = await worker.fetch(
+        new Request(`https://diar.ia.br${HOTMART_VENDAS_PATH}?de=${j.de}&ate=${j.ate}`, { headers: { Authorization: `Bearer ${VENDAS_TOKEN}` } }),
+        env,
+      );
+      assert.equal(res.status, 200, `${j.de}..${j.ate}: ${await res.text()}`);
+    }
+    // e a janela de 94 dias, que planejarJanelas nunca gera, é recusada: o teto é o mesmo dos dois lados
+    const res = await worker.fetch(
+      new Request(`https://diar.ia.br${HOTMART_VENDAS_PATH}?de=2026-01-01&ate=2026-04-04`, { headers: { Authorization: `Bearer ${VENDAS_TOKEN}` } }),
+      env,
+    );
+    assert.notEqual(res.status, 200);
+  });
+});
+
+function servidorFixo(responder: (res: import("node:http").ServerResponse) => void): Promise<{ base: string; fechar: () => void }> {
+  const server = createServer((_req, res) => responder(res));
+  return new Promise((ok) =>
+    server.listen(0, "127.0.0.1", () =>
+      ok({
+        base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        fechar: () => {
+          server.closeAllConnections();
+          server.close();
+        },
+      }),
+    ),
+  );
+}
+
+describe("#10734 review: CLI sync — timeout, registros inválidos e argumentos", () => {
+  it("buscarJanelaHttp desiste com mensagem de timeout quando o servidor não responde", async () => {
+    const { base, fechar } = await servidorFixo(() => {
+      /* nunca responde */
+    });
+    try {
+      await assert.rejects(buscarJanelaHttp(base, "t", "2026-10-01", "2026-10-02", 200), /timeout/);
+    } finally {
+      fechar();
+    }
+  });
+
+  it("grava o válido e sai 3 quando a rota devolve registro fora do formato ou chave inválida no KV", { timeout: 60_000 }, async () => {
+    const { base, fechar } = await servidorFixo((res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, registros: [rec(), { lixo: 1 }], ignorados: ["hotmart:venda:x"] }));
+    });
+    const dir = mkdtempSync(join(tmpdir(), "hotmart-vendas-espelho-"));
+    const out = join(dir, "vendas.jsonl");
+    try {
+      const r = await runSync(["--de", "2026-10-20", "--ate", "2026-10-20", "--out", out], base);
+      assert.equal(r.code, 3, r.out);
+      assert.match(r.out, /1 registro\(s\) fora do formato/);
+      assert.equal(readFileSync(out, "utf8").trim().split("\n").length, 1);
+      assert.ok(!existsSync(`${out}.lock`), "lock tem que ser removido no fim");
+    } finally {
+      fechar();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("data inválida ou período invertido: exit 2, sem chamar a rota", { timeout: 60_000 }, async () => {
+    let chamadas = 0;
+    const { base, fechar } = await servidorFixo((res) => {
+      chamadas++;
+      res.writeHead(500);
+      res.end("{}");
+    });
+    const dir = mkdtempSync(join(tmpdir(), "hotmart-vendas-espelho-"));
+    try {
+      const out = join(dir, "vendas.jsonl");
+      assert.equal((await runSync(["--de", "2026-02-30", "--ate", "2026-03-01", "--out", out], base)).code, 2);
+      assert.equal((await runSync(["--de", "2026-10-05", "--ate", "2026-10-01", "--out", out], base)).code, 2);
+      assert.equal((await runSync(["--ate", "2026-10-01", "--out", out], base)).code, 2);
+      assert.equal(chamadas, 0);
+      assert.ok(!existsSync(out));
+    } finally {
+      fechar();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+function runCruzamento(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "scripts/hotmart-vendas-cruzamento.ts", ...args], { cwd: ROOT, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", (code) => done({ code, stdout, stderr }));
+  });
+}
+
+describe("#10734 review: CLI hotmart-vendas-cruzamento de ponta a ponta", () => {
+  it("store SQLite temporário + espelho: filtra --de/--ate, --json sem e-mail nem hash", { timeout: 60_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hotmart-cruzamento-"));
+    const dbPath = join(dir, "diaria-subscribers.db");
+    const espelho = join(dir, "vendas.jsonl");
+    try {
+      const db = openDiariaSubscribersDb(dbPath);
+      const base = { source: null, exitedAt: null } as const;
+      const a = ensureSubscriber(db, "kit", "k1", "Antes@Exemplo.com");
+      upsertSubscription(db, a, "kit", { ...base, status: "active", enteredAt: "2026-01-01T00:00:00.000Z", utmSource: "linkedin" });
+      const d = ensureSubscriber(db, "kit", "k2", "depois@exemplo.com");
+      upsertSubscription(db, d, "kit", { ...base, status: "active", enteredAt: "2026-10-25T00:00:00.000Z" });
+      db.close();
+
+      const h = async (e: string) => (await hashEmailComoWorker(e))!;
+      const linhas = [
+        rec({ transacao: "V1", email_hash: await h("antes@exemplo.com") }),
+        rec({ transacao: "V2", email_hash: await h("depois@exemplo.com") }),
+        rec({ transacao: "V3", email_hash: await h("fora@exemplo.com") }),
+        rec({ transacao: "V4", email_hash: await h("antes@exemplo.com"), dia: "2026-09-01", criado_em: "2026-09-01T12:00:00.000Z" }),
+      ];
+      writeFileSync(espelho, linhas.map((x) => JSON.stringify(x)).join("\n") + "\n" + JSON.stringify(linhas[0]) + "\n");
+
+      const r = await runCruzamento(["--espelho", espelho, "--db", dbPath, "--de", "2026-10-01", "--ate", "2026-10-31", "--json"]);
+      assert.equal(r.code, 0, r.stderr);
+      assert.ok(!r.stdout.includes("@"), "saída não pode levar e-mail");
+      for (const x of linhas) assert.ok(!r.stdout.includes(x.email_hash!), "saída não pode levar hash");
+      const j = JSON.parse(r.stdout);
+      assert.equal(j.totalEventos, 3, "V4 fica fora do --de/--ate");
+      assert.equal(j.linhas_duplicadas_no_espelho, 1);
+      assert.match(r.stderr, /chave repetida/);
+      assert.deepEqual(
+        Object.fromEntries(j.vendas.map((v: { transacao: string; situacao: string }) => [v.transacao, v.situacao])),
+        { V1: "assinante-na-compra", V2: "assinou-depois", V3: "fora-da-base" },
+      );
+      assert.deepEqual(j.aprovadasPorOrigem, [
+        { origem: "(sem origem no store)", eventos: 1 },
+        { origem: "linkedin", eventos: 1 },
+      ]);
+
+      const texto = await runCruzamento(["--espelho", espelho, "--db", dbPath]);
+      assert.equal(texto.code, 0, texto.stderr);
+      assert.match(texto.stdout, /assinante-na-compra\s+2 compra\(s\), 1 comprador\(es\)/);
+      assert.ok(!texto.stdout.includes("@"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--de inválido: exit 2", { timeout: 60_000 }, async () => {
+    const r = await runCruzamento(["--de", "01/10/2026"]);
+    assert.equal(r.code, 2, r.stderr);
+    assert.match(r.stderr, /AAAA-MM-DD/);
+  });
+
+  it("store que não abre: exit 2 com a mensagem do erro", { timeout: 60_000 }, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hotmart-cruzamento-"));
+    try {
+      const espelho = join(dir, "vendas.jsonl");
+      writeFileSync(espelho, "");
+      const dbPath = join(dir, "nao-e-sqlite.db");
+      writeFileSync(dbPath, "isto não é um banco sqlite, é texto puro com bytes suficientes para o cabeçalho");
+      const r = await runCruzamento(["--espelho", espelho, "--db", dbPath]);
+      assert.equal(r.code, 2, r.stderr);
+      assert.match(r.stderr, /não abriu o store .*: \S/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -608,17 +608,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // #10734 item 4c: espelha as vendas da Hotmart do KV CURSOS_SUBSCRIBERS
     // (TTL 400 dias) em data/hotmart/vendas.jsonl, append-only e idempotente
     // por transação + evento. Lê pela rota GET /hotmart/vendas do Worker
-    // `site` (HOTMART_VENDAS_TOKEN do .env), últimos 35 dias por rodada:
-    // semanal sobra (cada evento passa por ~5 rodadas antes de sair da
-    // janela). Sem guard.requiredFile: o próprio script aborta (exit 2) sem
-    // gravar quando data/ não está montado, e o espelho não existe antes da
-    // 1ª rodada. Sábado 04:30 BRT, slot livre (a única outra semanal de
+    // `diaria-site` (workers/site; HOTMART_VENDAS_TOKEN do .env), últimos 35
+    // dias por rodada: semanal sobra (cada evento passa por ~5 rodadas antes
+    // de sair da janela). guard.requiredFile é o store de assinantes, não o
+    // espelho (que não existe antes da 1ª rodada) nem a pasta data/ (que o
+    // próprio runner cria ao gravar o log mesmo com a junction desmontada).
+    // O script checa o mesmo sentinela (SENTINELA_DATA_REL_PATH, travado por
+    // teste) e sai 2 sem gravar. Exit 3 (registros inválidos na rota/KV) fica
+    // FORA de successExitCodes de propósito, pra unit sair `failed` e o
+    // alarme pegar. Sábado 04:30 BRT, slot livre (a única outra semanal de
     // sábado é 03:40; dailies vizinhas em 04:25 e 04:40).
     name: "Diaria-Hotmart-Vendas-Sync",
     description: "sync semanal das vendas Hotmart do KV para data/hotmart/vendas.jsonl",
     steps: [{ key: "sync", script: "scripts/sync-hotmart-vendas.ts" }],
     logPath: "hotmart/.vendas-sync.log",
     schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 4, minute: 30 },
+    guard: {
+      requiredFile: "diaria-subscribers/diaria-subscribers.db",
+      abortMessage:
+        "diaria-subscribers.db nao encontrado (data/diaria-subscribers/diaria-subscribers.db) -- provavel junction " +
+        "data/ nao montada ainda; abortando sem gravar o espelho de vendas.",
+    },
     issue: "#10734",
   },
   {
