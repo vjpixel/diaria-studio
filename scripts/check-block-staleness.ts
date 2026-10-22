@@ -182,6 +182,7 @@ function buildRealConsultor(repoRoot: string, allowlist: readonly string[]): Blo
 
   return {
     multiRepo: true,
+    issueRepos: allowlist,
     getPrState(prNumber: number, repo?: string): PrState {
       if (!repoAllowed(repo)) return "UNKNOWN";
       const result = spawnSync("gh", ["pr", "view", String(prNumber), ...repoArgs(repo), "--json", "state"], {

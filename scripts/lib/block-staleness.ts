@@ -147,6 +147,12 @@ export interface BlockStalenessConsultor {
    * `repo` responderia pela studio#N com o mesmo número.
    */
   multiRepo?: boolean;
+  /**
+   * #10618 (fatia 4, review I): allowlist `issue_repos` — só um repo desta
+   * lista é aceito como "repo do PR" numa citação qualificada
+   * (`extractPrRef`). Ausente = só o diaria-studio.
+   */
+  issueRepos?: readonly string[];
   /** `repo` ausente = diaria-studio (o PR mora no repo da issue, decisão da #10618). */
   getPrState(prNumber: number, repo?: string): PrState;
   /** `true` = ainda reivindicada por sessão ativa não-stale; `false` = livre. */
@@ -185,23 +191,42 @@ export interface CitedPrRef {
  * OUTRO repo (ex: a issue do studio esperando um PR do diaria-design). Formas
  * aceitas, nesta ordem:
  * - campo `pr` numérico → repo da issue;
- * - campo `pr` string `owner/repo#N` ou URL `github.com/owner/repo/pull/N`;
- * - em `nota`: URL de PR, `owner/repo#N`, `owner/repo PR #N` (o formato que
- *   o próprio gate imprime) e, por último, `PR #N` (repo da issue).
+ * - campo `pr` string `owner/repo#N` ou URL `github.com/owner/repo/pull/N`
+ *   (repo fora de `allowedRepos` → `null`: citação explícita de um repo que
+ *   não dá pra consultar é "não verificável", nunca o repo da issue);
+ * - em `nota`: URL de PR (mesma regra), `owner/repo#N`, `owner/repo PR #N`
+ *   (o formato que o próprio gate imprime) e, por último, `PR #N` (repo da
+ *   issue).
+ *
+ * Review I: em prosa livre, `algo/coisa PR #N` casa também nome de branch
+ * (`develop/fix-x PR #N`) e caminho (`scripts/lib PR #500`). Por isso, na
+ * `nota`, o `owner/repo` só é aceito quando está em `allowedRepos`
+ * (`issue_repos`); senão a citação cai no `PR #N` do repo da issue.
  * `null` quando nada é legível — o chamador trata como "não verificável".
  */
-export function extractPrRef(entry: BlockStalenessPlanIssue): CitedPrRef | null {
+export function extractPrRef(
+  entry: BlockStalenessPlanIssue,
+  allowedRepos: readonly string[] = [DEFAULT_ISSUE_REPO],
+): CitedPrRef | null {
+  const allowed = new Set(allowedRepos.map((r) => normalizeRepoSlug(r)).filter((r): r is string => r !== null));
   if (typeof entry.pr === "number" && Number.isFinite(entry.pr)) return { number: entry.pr, repo: null };
   if (typeof entry.pr === "string") {
     const ref = parseIssueRef(entry.pr.trim());
-    if (ref && /[/]/.test(entry.pr)) return { number: ref.number, repo: ref.repo };
+    if (ref && /[/]/.test(entry.pr)) return allowed.has(ref.repo) ? { number: ref.number, repo: ref.repo } : null;
     if (ref) return { number: ref.number, repo: null };
   }
   const nota = typeof entry.nota === "string" ? entry.nota : "";
   const url = nota.match(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/i);
-  if (url) return qualifiedPr(url[1], url[2]);
-  const qualified = nota.match(/PR\s*([\w.-]+\/[\w.-]+)#(\d+)/i) ?? nota.match(/([\w.-]+\/[\w.-]+)\s+PR\s*#(\d+)/i);
-  if (qualified) return qualifiedPr(qualified[1], qualified[2]);
+  if (url) {
+    const cited = qualifiedPr(url[1], url[2]);
+    return cited && cited.repo && allowed.has(cited.repo) ? cited : null;
+  }
+  for (const re of [/PR\s*([\w.-]+\/[\w.-]+)#(\d+)/gi, /([\w.-]+\/[\w.-]+)\s+PR\s*#(\d+)/gi]) {
+    for (const m of nota.matchAll(re)) {
+      const cited = qualifiedPr(m[1], m[2]);
+      if (cited && cited.repo && allowed.has(cited.repo)) return cited;
+    }
+  }
   const match = nota.match(/PR\s*#(\d+)/i);
   return match ? { number: Number(match[1]), repo: null } : null;
 }
@@ -260,8 +285,14 @@ export function findStaleBlocks(
     if (consultor.getIssueState(issueNumber, repo) === "CLOSED") continue;
 
     if (category === "pr-em-voo") {
-      const cited = extractPrRef(entry);
-      if (cited === null) continue; // não verificável — nunca falso positivo
+      const cited = extractPrRef(entry, consultor.issueRepos ?? [DEFAULT_ISSUE_REPO]);
+      if (cited === null) {
+        // não verificável — nunca falso positivo, mas nunca em silêncio:
+        // `pr-em-voo` sem PR legível (ou citando repo fora de issue_repos)
+        // entra na ressalva da linha de ok.
+        onUnverifiable?.(key, "PR citado ilegível ou de repo fora de issue_repos");
+        continue;
+      }
       const pr = cited.number;
       // #10618 (fatia 4): o PR mora no repo CITADO quando a entrada nomeia
       // um; senão no repo da issue. PR de outro repo só é consultado por
@@ -282,9 +313,9 @@ export function findStaleBlocks(
           key,
           category,
           motivo,
-          // #10618 (fatia 3): o PR mora no repo da issue — rótulo com o repo
-          // quando não é o studio (mesmo formato do `prLabel` do
-          // check-pr-terminal-state).
+          // #10618 (fatia 3/4): rótulo com o repo onde o PR mora (o citado,
+          // ou o da issue) quando não é o studio — mesmo formato do
+          // `prLabel` do check-pr-terminal-state.
           reason: `${prRepo ? `${prRepo} PR #${pr}` : `PR #${pr}`} já está ${state === "MERGED" ? "mergeado" : "fechado"} — bloqueio caducou`,
         });
       }

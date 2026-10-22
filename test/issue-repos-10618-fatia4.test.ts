@@ -476,20 +476,36 @@ describe("#10618 fatia 4 — gates de PR com --repo leem o PR do repo certo", ()
 describe("#10618 fatia 4 — pr-em-voo com PR citado em outro repo", () => {
   it("extractPrRef: número, ref qualificada, URL e as formas da nota", () => {
     const e = (over: Partial<BlockStalenessPlanIssue>) => ({ number: 1, ...over }) as BlockStalenessPlanIssue;
-    assert.deepEqual(extractPrRef(e({ pr: 6216 })), { number: 6216, repo: null });
-    assert.deepEqual(extractPrRef(e({ pr: `${DESIGN}#23` })), { number: 23, repo: DESIGN });
-    assert.deepEqual(extractPrRef(e({ pr: `https://github.com/${DESIGN}/pull/23` })), { number: 23, repo: DESIGN });
-    assert.deepEqual(extractPrRef(e({ nota: `aguarda o ${DESIGN} PR #23 mergear` })), { number: 23, repo: DESIGN });
-    assert.deepEqual(extractPrRef(e({ nota: `PR ${DESIGN}#23 aberto` })), { number: 23, repo: DESIGN });
-    assert.deepEqual(extractPrRef(e({ nota: `ver https://github.com/${DESIGN}/pull/23` })), { number: 23, repo: DESIGN });
-    assert.deepEqual(extractPrRef(e({ nota: "PR #6216 aberto por outra sessão" })), { number: 6216, repo: null });
-    assert.equal(extractPrRef(e({ nota: "sem pr" })), null);
+    const both = [STUDIO, DESIGN];
+    assert.deepEqual(extractPrRef(e({ pr: 6216 }), both), { number: 6216, repo: null });
+    assert.deepEqual(extractPrRef(e({ pr: `${DESIGN}#23` }), both), { number: 23, repo: DESIGN });
+    assert.deepEqual(extractPrRef(e({ pr: `https://github.com/${DESIGN}/pull/23` }), both), { number: 23, repo: DESIGN });
+    assert.deepEqual(extractPrRef(e({ nota: `aguarda o ${DESIGN} PR #23 mergear` }), both), { number: 23, repo: DESIGN });
+    assert.deepEqual(extractPrRef(e({ nota: `PR ${DESIGN}#23 aberto` }), both), { number: 23, repo: DESIGN });
+    assert.deepEqual(extractPrRef(e({ nota: `ver https://github.com/${DESIGN}/pull/23` }), both), { number: 23, repo: DESIGN });
+    assert.deepEqual(extractPrRef(e({ nota: "PR #6216 aberto por outra sessão" }), both), { number: 6216, repo: null });
+    assert.equal(extractPrRef(e({ nota: "sem pr" }), both), null);
+  });
+
+  it("extractPrRef (review I): branch/caminho na nota nunca vira repo — cai no PR #N do repo da issue", () => {
+    const e = (over: Partial<BlockStalenessPlanIssue>) => ({ number: 1, ...over }) as BlockStalenessPlanIssue;
+    const both = [STUDIO, DESIGN];
+    assert.deepEqual(extractPrRef(e({ nota: "develop/fix-10618 PR #10895 aberto" }), both), { number: 10895, repo: null });
+    assert.deepEqual(extractPrRef(e({ nota: "mexe em scripts/lib PR #500" }), both), { number: 500, repo: null });
+    // branch antes, repo de verdade depois: o da allowlist vence.
+    assert.deepEqual(extractPrRef(e({ nota: `develop/fix-x PR #9; ver ${DESIGN} PR #23` }), both), { number: 23, repo: DESIGN });
+    // sem a allowlist (default = só studio), o design citado não é aceito como repo do PR.
+    assert.deepEqual(extractPrRef(e({ nota: `aguarda ${DESIGN} PR #23` })), { number: 23, repo: null });
+    // citação ESTRUTURADA de repo fora da allowlist → não verificável, nunca o repo da issue.
+    assert.equal(extractPrRef(e({ pr: "fork/diaria-design#23" }), both), null);
+    assert.equal(extractPrRef(e({ nota: "ver https://github.com/fork/diaria-design/pull/23" }), both), null);
   });
 
   it("issue do studio esperando PR do design: o estado é lido no design (repo citado), não no studio", () => {
     const asked: Array<[number, string | undefined]> = [];
     const consultor: BlockStalenessConsultor = {
       multiRepo: true,
+      issueRepos: [STUDIO, DESIGN],
       getPrState: (n, repo) => {
         asked.push([n, repo]);
         return repo === DESIGN ? "MERGED" : "OPEN";
@@ -511,6 +527,7 @@ describe("#10618 fatia 4 — pr-em-voo com PR citado em outro repo", () => {
     const asked: Array<[number, string | undefined]> = [];
     const consultor: BlockStalenessConsultor = {
       multiRepo: true,
+      issueRepos: [STUDIO, DESIGN],
       getPrState: (n, repo) => {
         asked.push([n, repo]);
         return "OPEN";
@@ -533,6 +550,7 @@ describe("#10618 fatia 4 — pr-em-voo com PR citado em outro repo", () => {
     const findings = findStaleBlocks(
       [{ number: 500, status: "pulada", motivo: "pr-em-voo", pr: `${DESIGN}#23` }],
       {
+        issueRepos: [STUDIO, DESIGN],
         getPrState: () => "MERGED",
         isIssueClaimedActive: () => true,
         hasLabel: () => true,
