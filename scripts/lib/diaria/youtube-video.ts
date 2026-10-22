@@ -9,7 +9,7 @@
  * Decisões do editor que este módulo codifica (comentários do #10659,
  * 21/10/2026, 1º vídeo https://youtu.be/QRbXMprk9o0):
  *   - título `{título do D1} | diar.ia.br comentada #{N}`;
- *   - descrição = resumo do D1 + link da fonte + link da edição + CTA de
+ *   - descrição = resumo do D1 + link da edição com UTM + CTA de
  *     assinatura `https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign={AAMMDD}`;
  *   - 6 tags; idioma pt-BR; "não é conteúdo para crianças";
  *   - agendado pras 06:00 BRT do dia da edição (`publishAt`); se esse horário
@@ -169,7 +169,6 @@ function utf8Bytes(s: string): number {
 export function buildYouTubeDescription(input: YouTubeMetadataInput): string {
   const { aammdd, d1, editionUrl } = input;
   const tail = [
-    `Fonte: ${d1.url}`,
     `Leia a edição completa: ${withYouTubeUtm(editionUrl, aammdd)}`,
     "",
     `Receba a diar.ia.br de graça todo dia de manhã: ${youtubeSubscribeCtaUrl(aammdd)}`,

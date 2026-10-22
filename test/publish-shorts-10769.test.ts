@@ -94,6 +94,13 @@ describe("#10769 metadados e legendas", () => {
     );
   });
 
+  it("Short nunca cita a fonte individual na descrição nem no comentário (#10799)", () => {
+    const m = buildYouTubeShortMetadata({ aammdd: "261022", d1: D1, editionUrl: EDITION_URL });
+    assert.doesNotMatch(m.description, /^Fonte:/m);
+    assert.ok(!m.description.includes(D1.url));
+    assert.ok(!m.pinnedComment.includes(D1.url));
+  });
+
   it("Reels Facebook: CTA do canal + link da edição com UTM da página", () => {
     const c = buildReelsCaption({ platform: "facebook", aammdd: "261022", d1: D1, editionUrl: EDITION_URL, utmContent: "page-memelab" });
     assert.match(c, /^Você já viu IA mentir/);
