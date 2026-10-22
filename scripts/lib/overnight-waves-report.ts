@@ -13,8 +13,8 @@
  *   de fato o limite.
  * - **`pr→merge` p90 segmentado por `cap_hit`**: se subir muito acima de
  *   ~30min (ou o volume de `draft-ci-vermelho` subir) nas ondas com
- *   `cap_hit: true`, é sinal de que o teto 6 está sobrecarregando o
- *   coordenador/CI e vale reverter pra 3.
+ *   `cap_hit: true`, é sinal de que o teto 10 (#10821; era 6 no #8486)
+ *   está sobrecarregando o coordenador/CI e vale reverter pra 6.
  *
  * `pr→merge` de uma UNIDADE (não de uma issue isolada) é definido como o
  * intervalo entre o `pr_opened` MAIS CEDO e o `merged` MAIS TARDE entre as
