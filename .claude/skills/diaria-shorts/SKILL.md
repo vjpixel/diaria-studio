@@ -75,6 +75,16 @@ O Facebook do Chrome costuma estar na identidade da página diar.ia.br. Trocar p
 
 Atalho aceitável: compartilhar no perfil o Reels já publicado na página diar.ia.br, com a mesma legenda.
 
+## Link do vídeo no post do D1 (#10772)
+
+Decisão do editor (22/10/2026): no LinkedIn página, no X, no Threads e no Facebook diar.ia.br o vídeo não sobe nativo — o link do YouTube entra no post do D1.
+
+```bash
+npx tsx scripts/link-video-d1.ts {AAMMDD} --video-url {URL do YouTube} --save
+```
+
+`--save` grava `_internal/05-video-url.txt`. Se isso acontecer antes do Stage 5, o próprio Stage 5 põe o link no D1 do X (1º link do texto), do Threads e do Facebook diar.ia.br (X e Threads só se couber no limite). O JSON impresso é o plano para posts do D1 já agendados ou publicados: `edit_scheduled` (editar antes do disparo), `comment_after` (comentar/responder; no LinkedIn é sempre o 1º comentário). O script não edita nem comenta nada: aplicar o plano ainda é manual.
+
 ## Passo 6 — Relatar
 
 Uma linha por destino: publicado/agendado (com URL), pendente (Instagram antes das 06:00), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".

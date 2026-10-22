@@ -110,6 +110,8 @@ import {
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #8056 — multi-imagem
 import { TWITTER_CHAR_LIMIT, TWITTER_URL_WEIGHT, computeTwitterWeightedLength } from "./lib/twitter-weight.ts"; // #10180
+import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
+import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -365,6 +367,11 @@ export function prepTwitterPosts(
   const editionUrlFile = resolve(editionDir, "_internal", "05-edition-url.txt");
   const editionUrl = existsSync(editionUrlFile) ? readFileSync(editionUrlFile, "utf8").trim() : null;
 
+  // #10772: link do vídeo do dia no D1, como 1º link do texto (o X monta o
+  // card com o primeiro link). Ausente = caso normal; inválido = só aviso.
+  const d1Video = readD1VideoUrl(editionDir);
+  if (d1Video.warning) console.warn(`AVISO twitter/d1: ${d1Video.warning}`);
+
   const published = readSocialPublished(publishedPath);
 
   for (const d of destaques) {
@@ -402,6 +409,14 @@ export function prepTwitterPosts(
     // resolvida no texto — nunca muda o char count ponderado (a URL, com ou
     // sem query string, sempre conta TWITTER_URL_WEIGHT via t.co, ver abaixo).
     if (editionUrl) text = tagEditionUrlInText(text, editionUrl, TWITTER_EDITION_UTM);
+
+    // #10772: só se couber no peso do X — estourar mantém o texto original
+    // (o link vai depois, como resposta), nunca derruba o post do D1.
+    if (d === "d1" && d1Video.url) {
+      const inj = injectVideoLinkWithinLimit(text, d1Video.url, TWITTER_CHAR_LIMIT, computeTwitterWeightedLength);
+      if (inj.injected) text = inj.text;
+      else console.warn(`AVISO twitter/d1: link do vídeo não entrou no texto — ${inj.reason}`);
+    }
 
     // #4285/#4264 adendo do editor: conta URL como TWITTER_URL_WEIGHT (peso
     // real do X via t.co), não o comprimento literal — {edition_url} resolvido
