@@ -13,8 +13,8 @@
  * hash e o relatório só leva contagens, `subscriber_id` e dados da venda.
  *
  * Limite conhecido: o Worker hasheia o e-mail como a Hotmart o mandou (trim +
- * minúsculas), sem `canonicalizeGmail`. Quem comprou com `fu.lano@gmail.com`
- * e assinou com `fulano@gmail.com` não casa. Os aliases do store entram todos
+ * minúsculas), sem `canonicalizeGmail`. Quem comprou com uma variante do
+ * Gmail com ponto no usuário e assinou sem o ponto não casa. Os aliases do store entram todos
  * no índice, então basta UMA das formas que a pessoa usou bater.
  *
  * Miolo PURO, exceto o hash (Web Crypto, assíncrono). O CLI é
