@@ -102,6 +102,7 @@ export type IssueState = "OPEN" | "CLOSED" | "UNKNOWN";
  * (`external-blocker`, `kit-migration`, `beehiiv`) que `classifyExecTrack`
  * já reconhece. */
 import { BLOCKED_LABELS_SET } from "./issue-exec-track.ts";
+import { studioNumberOfPlanEntry } from "./plan-issue-ref.ts";
 export { BLOCKED_LABELS_SET };
 
 /**
@@ -151,6 +152,11 @@ export function findStaleBlocks(
 
   for (const entry of issues) {
     if (entry.status !== "pulada") continue;
+    // #10778: o consultor responde por número do diaria-studio. Entrada de
+    // outro repo (ou de identidade desconhecida) seria avaliada contra a
+    // issue errada — nunca vira finding. O CLI já filtra e avisa
+    // (`partitionStudioPlanEntries`); isto é a defesa do contrato puro.
+    if (studioNumberOfPlanEntry(entry) === null) continue;
     const motivo = typeof entry.motivo === "string" ? entry.motivo : null;
     if (!motivo || !TRANSIENT_MOTIVOS.has(motivo as StaleBlockCategory)) continue;
     const category = motivo as StaleBlockCategory;

@@ -27,6 +27,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
+import { partitionStudioPlanEntries } from "./lib/plan-issue-ref.ts";
 import {
   detectLabelDriftDetailed,
   type DriftFinding,
@@ -144,7 +145,18 @@ if (isMainModule(import.meta.url)) {
 
   // Escopo, corte por track e decisão de buscar comentários vivem em
   // `lib/decision-label-drift-gate.ts` (#5955) — puros e testados sem `gh`.
-  const planIssues = normalizeIssues<GatePlanIssue>(planRaw as IssuesBearing<GatePlanIssue>);
+  // #10778: labels e comentários vêm do diaria-studio, casados por número.
+  // Entrada de outro repo (`"vjpixel/diaria-design#21"` → `number: 21`)
+  // seria julgada pela studio#21 — fica de fora, com aviso explícito.
+  const { studio: planIssues, skipped } = partitionStudioPlanEntries(
+    normalizeIssues<GatePlanIssue>(planRaw as IssuesBearing<GatePlanIssue>),
+  );
+  if (skipped.length > 0) {
+    console.error(
+      `[check-decision-label-drift-gate] ${skipped.length} entrada(s) de outro repo (ou identidade desconhecida) FORA ` +
+        `desta checagem, que só consulta o diaria-studio: ${skipped.join(", ")}`,
+    );
+  }
 
   const cwd = process.cwd();
 
