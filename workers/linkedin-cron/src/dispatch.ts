@@ -60,9 +60,15 @@ export interface FireConfig {
    * (migração incremental, scenario Make ainda sem auth configurada). */
   apiKey?: string;
   instagram?: InstagramCreds;
+  /** #10823 — 2ª conta do Instagram (vinculada à página VJ pixel), usada por
+   * entries com `ig_account: "vjpixel"`. */
+  instagramVjpixel?: InstagramCreds;
   threads?: ThreadsCreds;
   /** #8052 — credenciais da API direta do LinkedIn, só pro caminho carrossel. */
   linkedin?: LinkedInCreds;
+  /** #10823 — intervalo entre polls do container de Reels (ms). Só os testes
+   * passam; produção usa `REELS_POLL_INTERVAL_MS`. */
+  reelsPollIntervalMs?: number;
 }
 
 export type FireOutcome =
@@ -87,6 +93,21 @@ export function resolveInstagramCreds(env: Env): InstagramCreds | undefined {
   return {
     igUserId: env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
     accessToken: env.INSTAGRAM_ACCESS_TOKEN,
+    apiVersion: env.INSTAGRAM_API_VERSION || "v25.0",
+  };
+}
+
+/**
+ * #10823 — credenciais da 2ª conta do Instagram (a vinculada à página VJ
+ * pixel, publicando com o token dessa página). Mesma versão de API da conta
+ * da diar.ia.br. `undefined` se qualquer uma faltar — o enqueue recusa
+ * entries `ig_account: "vjpixel"` nesse caso, e o disparo cai em DLQ.
+ */
+export function resolveInstagramVjpixelCreds(env: Env): InstagramCreds | undefined {
+  if (!env.INSTAGRAM_VJPIXEL_ACCOUNT_ID || !env.INSTAGRAM_VJPIXEL_ACCESS_TOKEN) return undefined;
+  return {
+    igUserId: env.INSTAGRAM_VJPIXEL_ACCOUNT_ID,
+    accessToken: env.INSTAGRAM_VJPIXEL_ACCESS_TOKEN,
     apiVersion: env.INSTAGRAM_API_VERSION || "v25.0",
   };
 }
@@ -361,7 +382,10 @@ async function fireLinkedInCarousel(imageUrls: string[], caption: string, creds:
  * caminho single-image (#3817, inalterado) ou carrossel (#4153) conforme a
  * contagem de imagens resolvida por `resolveImageUrls`.
  */
-async function fireInstagram(entry: QueueEntry, creds: InstagramCreds): Promise<FireOutcome> {
+async function fireInstagram(entry: QueueEntry, creds: InstagramCreds, reelsPollIntervalMs?: number): Promise<FireOutcome> {
+  if (entry.media_type === "REELS") {
+    return fireInstagramReels(entry, creds, reelsPollIntervalMs ?? REELS_POLL_INTERVAL_MS);
+  }
   const images = resolveImageUrls(entry);
   if (images.length === 0) {
     return { status: "dlq", reason: "image_url ausente — Instagram Graph API exige imagem" };
@@ -528,7 +552,13 @@ async function pollInstagramContainerStatus(
   base: string,
   containerId: string,
   accessToken: string,
+  // #10823 — Reels transcodifica por minutos, não segundos: o caminho de
+  // vídeo passa um orçamento maior. Defaults = comportamento do carrossel.
+  maxAttempts: number = IG_POLL_MAX_ATTEMPTS,
+  intervalMs: number = IG_POLL_INTERVAL_MS,
 ): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
+  const IG_POLL_MAX_ATTEMPTS = maxAttempts;
+  const IG_POLL_INTERVAL_MS = intervalMs;
   for (let attempt = 1; attempt <= IG_POLL_MAX_ATTEMPTS; attempt++) {
     try {
       // Token vai no header Authorization, nunca na query string (#7779).
@@ -582,6 +612,123 @@ async function pollInstagramContainerStatus(
       `(~${Math.round((IG_POLL_MAX_ATTEMPTS * IG_POLL_INTERVAL_MS) / 1000)}s) — ` +
       `container_id=${containerId}, fail-closed (não publica).`,
   };
+}
+
+/** #10823 — orçamento do poll do container de Reels: 36 × 5s = 3 min. O
+ * vídeo é transcodificado de forma assíncrona pela Graph API (minutos, não os
+ * segundos de uma imagem). Cabe no limite de tempo de parede do alarm do DO e
+ * do cron. Esgotar NÃO é DLQ: vira `failed` e o retry normal cria um container
+ * novo na próxima volta (container não publicado não aparece pra ninguém). */
+export const REELS_POLL_MAX_ATTEMPTS = 36;
+export const REELS_POLL_INTERVAL_MS = 5000;
+
+/**
+ * Dispara um Reels agendado (#10823) — fluxo da Graph API com vídeo por URL:
+ *   1. POST /{ig-user-id}/media com `media_type=REELS`, `video_url` (público,
+ *      a Graph baixa), `caption`, `share_to_feed=true` e, se houver,
+ *      `collaborators` (lista JSON — cada conta aceita o convite no app).
+ *   2. Poll OBRIGATÓRIO do `status_code` até FINISHED (mesmo helper do
+ *      carrossel, #7630, com orçamento de vídeo). ERROR/EXPIRED = DLQ (o vídeo
+ *      não serve; re-tentar com o mesmo arquivo dá o mesmo erro).
+ *   3. POST /{ig-user-id}/media_publish.
+ *
+ * Diferente de `publish-shorts.ts` (upload resumable do binário local), aqui o
+ * vídeo já precisa estar numa URL pública no disparo — o Worker não tem o
+ * arquivo. Falhas transitórias (HTTP/fetch/poll esgotado) são `failed`
+ * (retry normal); nada é publicado até o passo 3.
+ */
+async function fireInstagramReels(entry: QueueEntry, creds: InstagramCreds, pollIntervalMs: number): Promise<FireOutcome> {
+  if (!entry.video_url) {
+    return { status: "dlq", reason: "Instagram Reels: video_url ausente" };
+  }
+  const base = `https://graph.facebook.com/${creds.apiVersion}`;
+
+  let containerId: string;
+  try {
+    const params = new URLSearchParams({
+      media_type: "REELS",
+      video_url: entry.video_url,
+      caption: entry.text,
+      share_to_feed: "true",
+      access_token: creds.accessToken,
+    });
+    if (entry.collaborators && entry.collaborators.length > 0) {
+      params.set("collaborators", JSON.stringify(entry.collaborators));
+    }
+    const res = await fetch(`${base}/${creds.igUserId}/media`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { status: "failed", reason: `Instagram Reels /media resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "failed",
+        reason: `Instagram Reels /media HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
+      };
+    }
+    if (!data.id) {
+      return { status: "failed", reason: `Instagram Reels /media sem id: ${text.slice(0, 200)}` };
+    }
+    containerId = data.id;
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return { status: "failed", reason: `Instagram Reels /media fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
+  }
+
+  const poll = await pollInstagramContainerStatus(
+    base,
+    containerId,
+    creds.accessToken,
+    REELS_POLL_MAX_ATTEMPTS,
+    pollIntervalMs,
+  );
+  if (!poll.ok) {
+    return { status: poll.permanent ? "dlq" : "failed", reason: `Instagram Reels: ${poll.reason}` };
+  }
+
+  try {
+    const params = new URLSearchParams({ creation_id: containerId, access_token: creds.accessToken });
+    const res = await fetch(`${base}/${creds.igUserId}/media_publish`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        status: "failed",
+        reason: `Instagram Reels /media_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (container_id=${containerId})`,
+      };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "failed",
+        reason: `Instagram Reels /media_publish HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
+      };
+    }
+    if (!data.id) {
+      return { status: "failed", reason: `Instagram Reels /media_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
+    }
+    return { status: "fired" };
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "failed",
+      reason: `Instagram Reels /media_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
+    };
+  }
 }
 
 /**
@@ -1306,6 +1453,17 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
   const channel = entry.channel ?? "linkedin";
 
   if (channel === "instagram") {
+    // #10823 — conta por entry; ausente = diar.ia.br (backward-compat).
+    if (entry.ig_account === "vjpixel") {
+      if (!config.instagramVjpixel) {
+        return {
+          status: "dlq",
+          reason:
+            "channel=instagram, ig_account=vjpixel mas credenciais (INSTAGRAM_VJPIXEL_ACCOUNT_ID/INSTAGRAM_VJPIXEL_ACCESS_TOKEN) não configuradas",
+        };
+      }
+      return fireInstagram(entry, config.instagramVjpixel, config.reelsPollIntervalMs);
+    }
     if (!config.instagram) {
       return {
         status: "dlq",
@@ -1313,7 +1471,7 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
           "channel=instagram mas credenciais Instagram (INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN) não configuradas",
       };
     }
-    return fireInstagram(entry, config.instagram);
+    return fireInstagram(entry, config.instagram, config.reelsPollIntervalMs);
   }
 
   if (channel === "threads") {

@@ -2,7 +2,7 @@
  * publish-state.ts (#782)
  *
  * State machine normalizado pra estado de publicação externa
- * (Beehiiv, LinkedIn, Facebook, Threads, Brevo, YouTube). Centraliza a lógica de "este post está
+ * (Beehiiv, LinkedIn, Facebook, Threads, Brevo, YouTube, fila do Worker). Centraliza a lógica de "este post está
  * agendado ou já saiu?" pra evitar que cada caller re-derive isso (ou
  * pior, deixe pra um subagente Haiku descobrir e errar).
  *
@@ -201,6 +201,39 @@ export function resolveBrevoCampaignState(campaign: BrevoCampaignLike): PublishS
   if (status === "queued") return "scheduled";
   if (status === "sent" || status === "inprocess" || status === "in_process") return "published";
   return "unknown";
+}
+
+// ─── Fila do Worker diaria-linkedin-cron (Reels/Instagram agendado, #10823) ──
+
+export interface WorkerQueueEntryLike {
+  /** `key` devolvido pelo `POST /queue` (202). Ausente = nunca enfileirou. */
+  key?: string | null;
+  /** ISO do disparo programado. */
+  scheduled_at?: string | null;
+  /** Id da mídia publicada, quando algum caller já o confirmou na plataforma. */
+  media_id?: string | null;
+}
+
+/**
+ * Normaliza o estado de um post agendado pela FILA do Worker (#10823 — o
+ * Instagram não agenda mídia pela Graph API; quem agenda é a fila). O `202`
+ * do enqueue só prova que a entry está na fila, não que saiu:
+ *
+ *   - `media_id` presente → "published" (confirmado na plataforma);
+ *   - `key` + `scheduled_at` futuro → "scheduled";
+ *   - `key` + `scheduled_at` passado → "unknown" — pode ter disparado, pode
+ *     estar em retry ou na DLQ; afirmar "publicado" aqui é o erro do #573;
+ *   - sem `key` → "draft" (nada na fila).
+ */
+export function resolveWorkerQueueState(
+  entry: WorkerQueueEntryLike,
+  now: Date = new Date(),
+): PublishState {
+  if (entry.media_id) return "published";
+  if (!entry.key) return "draft";
+  const ms = Date.parse(entry.scheduled_at ?? "");
+  if (Number.isNaN(ms)) return "unknown";
+  return ms > now.getTime() ? "scheduled" : "unknown";
 }
 
 // ─── YouTube (resource `videos` da YouTube Data API v3, #10659) ──────────────

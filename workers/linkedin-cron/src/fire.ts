@@ -1,6 +1,12 @@
 import type { Env, QueueEntry } from "./index";
 import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS } from "./index";
-import { fireQueueEntry, resolveInstagramCreds, resolveThreadsCreds, resolveLinkedInCreds } from "./dispatch";
+import {
+  fireQueueEntry,
+  resolveInstagramCreds,
+  resolveInstagramVjpixelCreds,
+  resolveThreadsCreds,
+  resolveLinkedInCreds,
+} from "./dispatch";
 
 // ── Cron handler — fira items maduros ──────────────────────────────────────
 
@@ -150,6 +156,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL,
       apiKey: env.MAKE_WEBHOOK_API_KEY, // #3903
       instagram: resolveInstagramCreds(env),
+      instagramVjpixel: resolveInstagramVjpixelCreds(env), // #10823
       threads: resolveThreadsCreds(env),
       linkedin: resolveLinkedInCreds(env), // #8052
     };

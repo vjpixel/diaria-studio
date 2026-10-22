@@ -17,6 +17,8 @@ export interface DoStoredPayload {
   // #3817 — credenciais Graph API do Instagram, capturadas no enqueue (o DO
   // não tem acesso a `env` no alarm() — só ao que foi persistido aqui).
   instagram?: InstagramCreds;
+  // #10823 — mesmo racional, pra 2ª conta do Instagram (`ig_account: "vjpixel"`).
+  instagramVjpixel?: InstagramCreds;
   // #3944 Parte B — mesmo racional acima, pra credenciais Threads.
   threads?: ThreadsCreds;
   // #8052 — mesmo racional acima, pra credenciais da API direta do LinkedIn
@@ -233,7 +235,7 @@ export class LinkedInScheduler {
       return;
     }
 
-    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram, threads, linkedin } = payload;
+    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram, instagramVjpixel, threads, linkedin } = payload;
     const channel = entry.channel ?? "linkedin";
 
     // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
@@ -253,6 +255,7 @@ export class LinkedInScheduler {
       pixelWebhookUrl,
       apiKey: webhookApiKey,
       instagram,
+      instagramVjpixel,
       threads,
       linkedin,
     });
