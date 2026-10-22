@@ -655,13 +655,117 @@ async function pollInstagramContainerStatus(
  * novo na próxima volta (container não publicado não aparece pra ninguém). */
 export const REELS_POLL_MAX_ATTEMPTS = 36;
 export const REELS_POLL_INTERVAL_MS = 5000;
-/** #10856 self-review — teto TOTAL de tempo de parede do poll do Reels:
- * 3,5 min. Somado ao fetch de criação do container e ao de `media_publish`
- * (até `FETCH_TIMEOUT_MS` cada), o disparo inteiro fica em ≤4,5 min, abaixo
- * do `CLAIM_TTL_MS` (5 min) da fila — o claim nunca expira com o 1º disparo
- * ainda em andamento, então outra volta não re-dispara o mesmo Reels. Estouro
- * = `failed` sem publicar (retry normal cria container novo). */
-export const REELS_POLL_DEADLINE_MS = 210_000;
+/** #10856 self-review — teto TOTAL de tempo de parede do poll do Reels.
+ * Somado ao fetch de criação do container e ao de `media_publish` (até
+ * `FETCH_TIMEOUT_MS` cada) e às 2 consultas de dedup do #10877 (até
+ * `REELS_VERIFY_FETCH_TIMEOUT_MS` cada), o disparo inteiro fica em ≤4,5 min,
+ * abaixo do `CLAIM_TTL_MS` (5 min) da fila — o claim nunca expira com o 1º
+ * disparo ainda em andamento, então outra volta não re-dispara o mesmo Reels.
+ * Estouro = `failed` sem publicar (retry normal cria container novo).
+ * #10877: baixou de 210 s pra 190 s pra abrir espaço às consultas de dedup. */
+export const REELS_POLL_DEADLINE_MS = 190_000;
+
+/** #10877 — timeout de cada consulta de dedup (lista de mídias da conta antes
+ * de criar o container; `status_code` do container depois de um
+ * `media_publish` que falhou). Menor que `FETCH_TIMEOUT_MS` pra caber no
+ * `CLAIM_TTL_MS` junto com o resto do disparo. */
+export const REELS_VERIFY_FETCH_TIMEOUT_MS = 10_000;
+
+/** #10877 — janela da busca por Reels já publicado: mídias da conta com
+ * legenda idêntica publicadas a partir de `scheduled_at - 24h`. */
+export const REELS_DEDUP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+/** #10877 — quantas mídias recentes da conta a busca de dedup lê. */
+const REELS_DEDUP_MEDIA_LIMIT = 25;
+
+export type ReelLookup =
+  | { kind: "found"; mediaId: string }
+  | { kind: "absent" }
+  /** Não deu pra consultar. `transient` = vale tentar de novo na próxima volta
+   * (5xx, timeout, resposta ilegível); `false` = recusa da Graph (4xx). */
+  | { kind: "unverifiable"; reason: string; transient: boolean };
+
+/**
+ * #10877 — procura, entre as mídias recentes da conta, um Reels com a MESMA
+ * legenda publicado a partir de `sinceMs`. É a defesa contra o Reels em dobro:
+ * se uma volta anterior chamou `/media_publish`, estourou o tempo (ou caiu) e
+ * a Meta publicou mesmo assim, o resultado foi `failed` e a fila re-tenta. O
+ * id do container daquela volta não sobrevive (o caminho do alarm do DO não
+ * grava nada no KV), então a prova de "já saiu" tem que vir da própria conta.
+ *
+ * Legenda idêntica é a identidade: a do Reels diário carrega o link da edição
+ * com UTM, e um Reels manual com a mesma legenda (ex.: `publish-shorts.ts
+ * --now`) também é duplicata. Timestamp ilegível conta como dentro da janela
+ * (na dúvida, não publica de novo).
+ */
+export async function findPublishedReel(
+  base: string,
+  creds: InstagramCreds,
+  caption: string,
+  sinceMs: number,
+): Promise<ReelLookup> {
+  try {
+    const fields = "id,caption,timestamp,media_product_type";
+    // Token no header Authorization, nunca na query string (#7779).
+    const res = await fetch(`${base}/${creds.igUserId}/media?fields=${fields}&limit=${REELS_DEDUP_MEDIA_LIMIT}`, {
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      signal: AbortSignal.timeout(REELS_VERIFY_FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: {
+      data?: Array<{ id?: string; caption?: string; timestamp?: string; media_product_type?: string }>;
+      error?: { message?: string };
+    };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { kind: "unverifiable", transient: true, reason: `lista de mídias resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+    }
+    if (!res.ok || data.error) {
+      return {
+        kind: "unverifiable",
+        transient: res.status >= 500 || res.status === 429,
+        reason: `lista de mídias HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
+      };
+    }
+    if (!Array.isArray(data.data)) {
+      return { kind: "unverifiable", transient: true, reason: `lista de mídias sem \`data\`: ${text.slice(0, 200)}` };
+    }
+    const want = caption.trim();
+    for (const m of data.data) {
+      if (!m?.id || (m.caption ?? "").trim() !== want) continue;
+      if (m.media_product_type && m.media_product_type !== "REELS") continue;
+      const ts = Date.parse(m.timestamp ?? "");
+      if (!Number.isNaN(ts) && ts < sinceMs) continue;
+      return { kind: "found", mediaId: m.id };
+    }
+    return { kind: "absent" };
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return { kind: "unverifiable", transient: true, reason: `lista de mídias fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
+  }
+}
+
+/**
+ * #10877 — depois de um `/media_publish` que falhou (timeout, queda, resposta
+ * ilegível, erro), confere o `status_code` do container: `PUBLISHED` quer dizer
+ * que a Meta publicou apesar da falha — é sucesso, não retry. Qualquer outra
+ * resposta (inclusive erro na consulta) devolve `false` e o caller segue com o
+ * `failed`; a busca por legenda no início da próxima volta é a 2ª rede.
+ */
+async function containerWasPublished(base: string, containerId: string, accessToken: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/${containerId}?fields=status_code`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(REELS_VERIFY_FETCH_TIMEOUT_MS),
+    });
+    const data = JSON.parse(await res.text()) as { status_code?: string };
+    return res.ok && data.status_code === "PUBLISHED";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Dispara um Reels agendado (#10823) — fluxo da Graph API com vídeo por URL:
@@ -688,6 +792,36 @@ async function fireInstagramReels(
     return { status: "dlq", reason: "Instagram Reels: video_url ausente" };
   }
   const base = `https://graph.facebook.com/${creds.apiVersion}`;
+
+  // #10877 — antes de criar container novo, confere se uma volta anterior já
+  // publicou este Reels (media_publish que estourou o tempo mas saiu). Roda em
+  // toda volta, não só em retry: o caminho do alarm do DO não incrementa
+  // `retry_count`, então "1ª tentativa" não é distinguível de forma confiável.
+  const scheduledMs = Date.parse(entry.scheduled_at);
+  const prior = await findPublishedReel(
+    base,
+    creds,
+    entry.text,
+    (Number.isNaN(scheduledMs) ? Date.now() : scheduledMs) - REELS_DEDUP_LOOKBACK_MS,
+  );
+  if (prior.kind === "found") {
+    console.warn(
+      `[instagram-reels] Reels com a mesma legenda já publicado (media_id=${prior.mediaId}) — ` +
+        `tratado como disparado, sem criar container novo (#10877).`,
+    );
+    return { status: "fired" };
+  }
+  if (prior.kind === "unverifiable") {
+    if (prior.transient) {
+      // Sem saber se já saiu, não publica: falha transitória na consulta vira
+      // retry normal (custa uma volta do cron; o Reels em dobro não tem desfazer).
+      return { status: "failed", reason: `Instagram Reels: dedup inconclusivo, não publica nesta volta — ${prior.reason}` };
+    }
+    // Recusa da Graph (4xx, ex.: token sem permissão de leitura): repetir dá o
+    // mesmo erro e travaria todo Reels na DLQ. Segue sem a 1ª rede; a conferência
+    // do container depois do media_publish continua valendo.
+    console.warn(`[instagram-reels] dedup indisponível (${prior.reason}) — publicando sem a busca prévia (#10877).`);
+  }
 
   let containerId: string;
   try {
@@ -741,6 +875,23 @@ async function fireInstagramReels(
     return { status: poll.permanent ? "dlq" : "failed", reason: `Instagram Reels: ${poll.reason}` };
   }
 
+  const publishFailure = await publishReelsContainer(base, creds, containerId);
+  if (publishFailure === null) return { status: "fired" };
+  // #10877 — falha no media_publish não prova que o Reels não saiu (timeout com
+  // a Meta publicando do outro lado). Container PUBLISHED = sucesso, nunca retry.
+  if (await containerWasPublished(base, containerId, creds.accessToken)) {
+    console.warn(
+      `[instagram-reels] media_publish falhou (${publishFailure}) mas o container ${containerId} ` +
+        `está PUBLISHED — tratado como disparado (#10877).`,
+    );
+    return { status: "fired" };
+  }
+  return { status: "failed", reason: `Instagram Reels /media_publish ${publishFailure} (container_id=${containerId})` };
+}
+
+/** POST /media_publish do container de Reels. `null` = publicado (com id);
+ * string = o motivo da falha, sem o container_id (o caller acrescenta). */
+async function publishReelsContainer(base: string, creds: InstagramCreds, containerId: string): Promise<string | null> {
   try {
     const params = new URLSearchParams({ creation_id: containerId, access_token: creds.accessToken });
     const res = await fetch(`${base}/${creds.igUserId}/media_publish`, {
@@ -753,28 +904,15 @@ async function fireInstagramReels(
     try {
       data = JSON.parse(text);
     } catch {
-      return {
-        status: "failed",
-        reason: `Instagram Reels /media_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (container_id=${containerId})`,
-      };
+      return `resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}`;
     }
-    if (!res.ok || data.error) {
-      return {
-        status: "failed",
-        reason: `Instagram Reels /media_publish HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
-      };
-    }
-    if (!data.id) {
-      return { status: "failed", reason: `Instagram Reels /media_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
-    }
-    return { status: "fired" };
+    if (!res.ok || data.error) return `HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`;
+    if (!data.id) return `sem id: ${text.slice(0, 200)}`;
+    return null;
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return {
-      status: "failed",
-      reason: `Instagram Reels /media_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
-    };
+    return `fetch ${timeout ? "timeout" : "failed"}: ${err.message}`;
   }
 }
 
