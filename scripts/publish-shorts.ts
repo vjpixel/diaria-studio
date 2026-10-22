@@ -159,7 +159,8 @@ export type ShortsPlanItem =
   | { destination: string; mode: "api"; action: "publish"; caption: string; scheduledAt: string | null; title?: string }
   | { destination: string; mode: "api"; action: "pending_schedule"; caption: string; scheduledAt: string; detail: string }
   /** #10823: Reels do Instagram com horário futuro, entregue à fila do Worker. */
-  | { destination: string; mode: "api"; action: "enqueue"; caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount }
+  /** `idempotencyKey` (#10906): o POST /queue repetido cai na mesma entry do Worker. */
+  | { destination: string; mode: "api"; action: "enqueue"; caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount; idempotencyKey: string }
   | { destination: string; mode: "api" | "guided"; action: "skip_done" }
   /** `skip_late` (#10772 F4): o horário do destino passou além do teto de atraso — vira passo manual. */
   | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late"; detail: string }
@@ -333,6 +334,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
   // receberia um passo de repost de um vídeo que não existe.
   const profileBlocker = ((): string | null => {
+    // #10907: `send_unknown` conta como feito pra NÃO repostar o vídeo do perfil,
+    // mas não prova que ele existe — o repost espera o editor conferir e registrar a URL.
+    if (input.published.entries.some((e) => e.destination === "linkedin_profile" && e.status === "send_unknown")) {
+      return PROFILE_SEND_UNKNOWN_BLOCKER;
+    }
     if (isDestinationDone(input.published, "linkedin_profile")) return null;
     const dest = destinations.find((d) => d.kind === "linkedin_profile");
     if (!dest) return "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada";
@@ -511,7 +517,15 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (schedule.mode === "scheduled") {
       // #10823: a fila do Worker publica no horário (o Instagram não agenda Reels pela API).
       if (input.instagramQueue?.ready) {
-        return { destination: dest.id, mode: "api", action: "enqueue", caption, scheduledAt: schedule.at, igAccount: input.instagramQueue.account };
+        return {
+          destination: dest.id,
+          mode: "api",
+          action: "enqueue",
+          caption,
+          scheduledAt: schedule.at,
+          igAccount: input.instagramQueue.account,
+          idempotencyKey: shortsReelsIdempotencyKey(input.aammdd, input.instagramQueue.account),
+        };
       }
       const why = input.instagramQueue ? ` Fila do Worker indisponível: ${input.instagramQueue.reason}.` : "";
       if (input.instagramQueue) warnings.push(`instagram: sem fila do Worker (${input.instagramQueue.reason}) — fica pendente até ${slot.hhmm} BRT`);
@@ -532,6 +546,20 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
 
 /** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823). */
 export type WorkerInstagramAccount = "diaria" | "vjpixel";
+
+/**
+ * #10906 — chave idempotente do Reels na fila do Worker: um por edição e conta.
+ * O retry do `postToWorkerQueue` (resposta perdida depois do commit) e uma
+ * rodada repetida no mesmo horário caem na mesma entry, nunca numa 2ª que
+ * publicaria o mesmo Reels de novo.
+ */
+export function shortsReelsIdempotencyKey(aammdd: string, account: WorkerInstagramAccount): string {
+  return `shorts-instagram-${aammdd}-${account}`;
+}
+
+/** #10907 — motivo do bloqueio do repost quando o vídeo do perfil ficou em `send_unknown`. */
+export const PROFILE_SEND_UNKNOWN_BLOCKER =
+  "o vídeo do perfil (linkedin_profile) ficou em send_unknown (envio ambíguo) — confira o perfil e registre com --mark linkedin_profile=URL";
 
 export type InstagramQueueReadiness = { ready: true; account: WorkerInstagramAccount } | { ready: false; reason: string };
 
@@ -958,14 +986,21 @@ export interface InstagramEnqueueDeps {
  */
 export async function enqueueInstagramReel(
   deps: InstagramEnqueueDeps,
-  item: { caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount },
+  item: { caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount; idempotencyKey: string },
   collaborators: string[],
 ): Promise<PublishOutcome> {
   const videoUrl = await deps.uploadVideo();
   let queued: { key: string; scheduled_at: string };
   try {
     queued = await deps.enqueue(
-      buildReelsQueuePayload({ caption: item.caption, videoUrl, scheduledAt: item.scheduledAt, account: item.igAccount, collaborators }),
+      buildReelsQueuePayload({
+        caption: item.caption,
+        videoUrl,
+        scheduledAt: item.scheduledAt,
+        account: item.igAccount,
+        collaborators,
+        idempotencyKey: item.idempotencyKey,
+      }),
     );
   } catch (e) {
     if (e instanceof WorkerQueueError && e.code === "instagram_account_creds_missing") {
@@ -1127,17 +1162,21 @@ export async function prepareBufferItem(
  * registrado), o repost vira `skip_invalid` em vez de passo guiado de um vídeo
  * que não existe.
  */
-export function blockRepostOnProfileFailure(items: ShortsPlanItem[], results: Array<{ destination: string; ok: boolean; entry?: unknown; error?: string }>): ShortsPlanItem[] {
-  const failed = results.some((r) => r.destination === "linkedin_profile" && !r.ok && !r.entry);
-  if (!failed) return items;
+export function blockRepostOnProfileFailure(
+  items: ShortsPlanItem[],
+  results: Array<{ destination: string; ok: boolean; entry?: { status?: string } | unknown; error?: string }>,
+): ShortsPlanItem[] {
+  const profile = results.filter((r) => r.destination === "linkedin_profile");
+  const failed = profile.some((r) => !r.ok && !r.entry);
+  // #10907: envio ambíguo nesta mesma rodada — o vídeo pode não existir.
+  const unknown = profile.some((r) => (r.entry as { status?: string } | undefined)?.status === "send_unknown");
+  if (!failed && !unknown) return items;
+  const detail = unknown
+    ? `${PROFILE_SEND_UNKNOWN_BLOCKER} — repost só depois disso`
+    : "o vídeo do perfil (linkedin_profile) falhou nesta rodada — repost só depois que ele sair (ou for registrado com --mark linkedin_profile=URL)";
   return items.map((i) =>
     i.destination === "linkedin_page_repost" && i.action === "guided"
-      ? {
-          destination: i.destination,
-          mode: "guided",
-          action: "skip_invalid",
-          detail: "o vídeo do perfil (linkedin_profile) falhou nesta rodada — repost só depois que ele sair (ou for registrado com --mark linkedin_profile=URL)",
-        }
+      ? { destination: i.destination, mode: "guided", action: "skip_invalid", detail }
       : i,
   );
 }
@@ -1390,7 +1429,7 @@ async function main(): Promise<number> {
   }
   const finalItems = blockRepostOnProfileFailure(plan.items, results);
   if (finalItems !== plan.items) {
-    console.error("[aviso] linkedin_page_repost: o vídeo do perfil falhou nesta rodada — repost não oferecido");
+    console.error("[aviso] linkedin_page_repost: o vídeo do perfil falhou ou ficou em send_unknown nesta rodada — repost não oferecido");
     plan = { ...plan, items: finalItems };
   }
   const summary = {
