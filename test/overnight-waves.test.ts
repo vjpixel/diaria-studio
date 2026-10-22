@@ -1,6 +1,6 @@
 /**
  * overnight-waves.test.ts (#8486)
- * Cobre o teto mecânico (6), `cap_hit` e a validação do campo `waves`.
+ * Cobre o teto mecânico (10 desde #10821, era 6), `cap_hit` e a validação do campo `waves`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +14,7 @@ import {
 const NOW = new Date("2026-09-19T20:00:00Z");
 
 describe("buildWaveRecord", () => {
-  it("teto é 6", () => assert.equal(OVERNIGHT_WAVE_CAP, 6));
+  it("teto é 10 (#10821, era 6)", () => assert.equal(OVERNIGHT_WAVE_CAP, 10));
 
   it("onda que cabe inteira: cap_hit false", () => {
     const r = buildWaveRecord({ units: [[1, 2], [3]], now: NOW });
@@ -30,10 +30,17 @@ describe("buildWaveRecord", () => {
     assert.equal(r.unit_count, 6);
   });
 
-  it("7 unidades estoura o teto (regressão: teto era só prosa)", () => {
+  it("10 unidades cabem no teto (#10821)", () => {
+    const r = buildWaveRecord({ units: [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10]], now: NOW });
+    assert.equal(r.unit_count, 10);
+    assert.equal(r.cap, 10);
+    assert.equal(r.cap_hit, false);
+  });
+
+  it("11 unidades estoura o teto (regressão: teto era só prosa)", () => {
     assert.throws(
-      () => buildWaveRecord({ units: [[1], [2], [3], [4], [5], [6], [7]] }),
-      /estoura o teto 6/,
+      () => buildWaveRecord({ units: [[1], [2], [3], [4], [5], [6], [7], [8], [9], [10], [11]] }),
+      /estoura o teto 10/,
     );
   });
 
@@ -100,10 +107,10 @@ describe("CLI record-overnight-wave (#8486, review #8492)", () => {
     assert.equal(w[1].cap_hit, true);
   });
 
-  it("7 unidades => exit 1 e plano intocado", async () => {
+  it("11 unidades => exit 1 e plano intocado", async () => {
     const { readFileSync } = await import("node:fs");
     const p = await tmp('{"issues":[]}');
-    assert.equal((await run(["--units", "1;2;3;4;5;6;7"], p)).status, 1);
+    assert.equal((await run(["--units", "1;2;3;4;5;6;7;8;9;10;11"], p)).status, 1);
     assert.equal(readFileSync(p, "utf8"), '{"issues":[]}');
   });
 

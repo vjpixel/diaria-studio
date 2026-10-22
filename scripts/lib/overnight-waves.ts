@@ -22,8 +22,15 @@
  * Puro (sem I/O). CLI: `scripts/record-overnight-wave.ts`.
  */
 
-/** Teto de unidades concorrentes numa onda do overnight (era 3 até #8486). */
-export const OVERNIGHT_WAVE_CAP = 6;
+/**
+ * Teto de unidades concorrentes numa onda do overnight (3 até #8486, 6 até
+ * #10821). Subiu para 10 a pedido do editor (22/10/2026) depois que as 2
+ * primeiras ondas da rodada 261022 bateram o teto (`cap_hit=true`). O teto
+ * do `/diaria-develop` continua 6. Critério de reversão do #8486 segue
+ * valendo: `pr→merge` p90 > ~30 min ou `draft-ci-vermelho` subindo = voltar
+ * a 6.
+ */
+export const OVERNIGHT_WAVE_CAP = 10;
 
 /**
  * Janela de dedup de onda (#8496 item 3). Re-executar `record-overnight-wave.ts`
@@ -106,7 +113,7 @@ export function buildWaveRecord(input: BuildWaveInput): OvernightWaveRecord {
     throw new Error("onda sem unidades — nada a registrar");
   }
   if (input.units.length > cap) {
-    throw new Error(`onda com ${input.units.length} unidades estoura o teto ${cap} (#6299/#8486)`);
+    throw new Error(`onda com ${input.units.length} unidades estoura o teto ${cap} (#6299/#8486/#10821)`);
   }
   for (const u of input.units) {
     if (u.length === 0 || u.some((n) => !Number.isInteger(n) || n <= 0)) {
