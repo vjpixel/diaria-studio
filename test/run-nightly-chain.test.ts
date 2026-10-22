@@ -10,7 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -19,7 +19,15 @@ import {
   DAILY_REVIEW_SCRIPT,
   DEFAULT_DEPS,
   EXIT_OVERNIGHT_FAILED,
+  EXIT_OVERNIGHT_NO_TRACE,
   EXIT_REVIEW_FAILED,
+  REVIEW_OUTPUT_REL,
+  TAIL_LINE_MAX_CHARS,
+  extractReviewSummary,
+  findRoundTraceSince,
+  parseStreamResult,
+  readReviewSummary,
+  readableTail,
   LIVE_LOG_PREV_SUFFIX,
   LIVE_LOG_REL,
   NIGHTLY_CHAIN_TASK_NAME,
@@ -214,7 +222,10 @@ describe("Diaria-Nightly-Chain no registro (#10552)", () => {
 describe("run-nightly-chain — classificação e exit code", () => {
   it("classifyReviewResult distingue ok, noop, failed e timeout", () => {
     assert.equal(classifyReviewResult({ status: 0, signal: null, stderr: "" }), "ok");
-    assert.equal(classifyReviewResult({ status: 0, signal: null, stderr: "x — noop" }), "noop");
+    assert.equal(
+      classifyReviewResult({ status: 0, signal: null, stderr: "[daily-review] nada novo desde o último review (abc123) — noop" }),
+      "noop",
+    );
     assert.equal(classifyReviewResult({ status: 1, signal: null, stderr: "" }), "failed");
     assert.equal(
       classifyReviewResult({ status: null, signal: "SIGTERM", stderr: "", error: Object.assign(new Error("t"), { code: "ETIMEDOUT" }) }),
@@ -367,7 +378,7 @@ describe("run-nightly-chain — log incremental derivado do registro e rotaciona
       assert.equal(main(root, deps), 0);
     };
     run("[daily-review] concluído");
-    run("[daily-review] nada novo (x) — noop");
+    run("[daily-review] nada novo desde o último review (x) — noop");
     run("[daily-review] concluído");
     const current = readFileSync(liveLogPath(root), "utf8");
     const prev = readFileSync(`${liveLogPath(root)}${LIVE_LOG_PREV_SUFFIX}`, "utf8");
@@ -475,5 +486,146 @@ describe("saída dos filhos persiste antes de o runner morrer", () => {
     const ok = run([{ type: "system" }, { type: "result", result: "RESUMO-DAILY-REVIEW: findings=0" }]);
     assert.equal(ok.status, 0);
     assert.equal(ok.stdout, "RESUMO-DAILY-REVIEW: findings=0");
+  });
+});
+
+// #10779 — desde o #10699 o stderr do review carrega o stream-json inteiro,
+// inclusive os tool_result de `git diff`. Um diff contendo "— noop" rotulava
+// o review completo como noop, e o tail do log virava eventos JSON gigantes.
+describe("run-nightly-chain — classificação do review com stream-json no stderr (#10779)", () => {
+  const diffEvent = JSON.stringify({
+    type: "user",
+    message: {
+      content: [
+        {
+          type: "tool_result",
+          content:
+            '+  echo "[daily-review] nada novo desde o último review ($HEAD_SHA) — noop" >&2\n+  return /— noop/.test(r.stderr) ? "noop" : "ok";\n',
+        },
+      ],
+    },
+  });
+  const resultEvent = JSON.stringify({ type: "result", is_error: false, result: "x".repeat(50_000) });
+
+  it("review completo cujo diff contém '— noop' num tool_result continua ok", () => {
+    const stderr = ["[daily-review] revisando abc..def", diffEvent, resultEvent, "[daily-review] concluído — marco avançado para def"].join("\n");
+    assert.equal(classifyReviewResult({ status: 0, signal: null, stderr }), "ok");
+  });
+
+  it("a linha exata do noop, entre outras linhas, ainda é noop", () => {
+    const stderr = "[daily-review] preflight ok\n[daily-review] nada novo desde o último review (abc123) — noop\n";
+    assert.equal(classifyReviewResult({ status: 0, signal: null, stderr }), "noop");
+  });
+
+  it("main: o mesmo stderr chega ao log como review: ok, com resumo e tail legível, sem eventos JSON", () => {
+    const stderr = [diffEvent, resultEvent, "[daily-review] concluído — marco avançado para def"].join("\n");
+    const { deps, logs } = harness({ status: 0, stderr }, { status: 0 });
+    deps.readReviewSummary = () => "RESUMO-DAILY-REVIEW: commits=3 findings=1 issues_criadas=nenhuma issues_falharam=0";
+    main(makeRepo(), deps);
+    const line = logs.find((l) => l.startsWith("review: "));
+    assert.ok(line);
+    assert.match(line, /^review: ok exit=0 resumo=RESUMO-DAILY-REVIEW: commits=3 findings=1/);
+    assert.match(line, /tail=\[daily-review\] concluído/);
+    assert.doesNotMatch(line, /"type"/);
+    assert.ok(line.length < 2000, `linha de log grande demais: ${line.length}`);
+  });
+
+  it("readableTail descarta eventos, fragmento final de evento e corta linhas longas", () => {
+    const t = readableTail(['"fragmento","session_id":"s"}', '{"type":"system"}', "linha A", "y".repeat(TAIL_LINE_MAX_CHARS + 100)].join("\n"));
+    assert.ok(!t.includes("fragmento"));
+    assert.ok(!t.includes("system"));
+    assert.ok(t.startsWith("linha A / "));
+    assert.equal(t.length, "linha A / ".length + TAIL_LINE_MAX_CHARS + 1);
+  });
+
+  it("resumo lido de $OUT_FILE só no review ok; ausente/sem marcador → null", () => {
+    const root = makeRepo();
+    assert.equal(readReviewSummary(root), null);
+    const out = join(root, "data", ...REVIEW_OUTPUT_REL.split("/"));
+    mkdirSync(join(out, ".."), { recursive: true });
+    writeFileSync(out, "texto\nRESUMO-DAILY-REVIEW: commits=1 findings=0\n");
+    assert.equal(readReviewSummary(root), "RESUMO-DAILY-REVIEW: commits=1 findings=0");
+    assert.equal(extractReviewSummary("sem marcador"), null);
+    const noop = harness({ status: 0, stderr: "[daily-review] nada novo desde o último review (a) — noop" }, { status: 0 });
+    let called = false;
+    noop.deps.readReviewSummary = () => {
+      called = true;
+      return "x";
+    };
+    main(makeRepo(), noop.deps);
+    assert.equal(called, false, "noop não deve ler o transcript (é da run anterior)");
+  });
+});
+
+// #10808 — overnight agendado saiu em 29s, exit 0, sem plan.json/report.md, e
+// o log da cadeia só dizia `overnight=ok`.
+describe("run-nightly-chain — desfecho e rastro do overnight (#10808)", () => {
+  const ev = (o: unknown) => JSON.stringify(o);
+  const okResult = ev({ type: "result", subtype: "success", is_error: false, num_turns: 4, duration_ms: 29_000, result: "Fila vazia: 0 elegíveis de 12 varridas." });
+
+  it("parseStreamResult pega o último evento result e ignora fragmento/linha inválida", () => {
+    const r = parseStreamResult(['partial":1}', ev({ type: "system" }), "{quebrado", okResult, ""].join("\n"));
+    assert.deepEqual(r, { subtype: "success", isError: false, numTurns: 4, durationMs: 29_000, result: "Fila vazia: 0 elegíveis de 12 varridas." });
+    assert.equal(parseStreamResult(ev({ type: "assistant" })), null);
+    assert.equal(parseStreamResult(""), null);
+  });
+
+  it("o resultado do claude vai pro log da cadeia", () => {
+    const { deps, logs } = harness({ status: 0 }, { status: 0, stdout: okResult });
+    deps.findRoundTrace = () => ["261022/plan.json"];
+    assert.equal(main(makeRepo(), deps), 0);
+    assert.ok(
+      logs.some((l) => /^overnight: resultado subtype=success is_error=false turns=4 duracao_s=29 tail=Fila vazia: 0 elegíveis/.test(l)),
+      logs.join("\n"),
+    );
+    assert.ok(logs.includes("overnight: rastro 261022/plan.json"));
+  });
+
+  it("exit 0 sem plan.json/report.md novo → no-trace, exit EXIT_OVERNIGHT_NO_TRACE (antes saía 'ok')", () => {
+    const { deps, logs } = harness({ status: 0 }, { status: 0, stdout: okResult });
+    deps.findRoundTrace = () => [];
+    assert.equal(main(makeRepo(), deps), EXIT_OVERNIGHT_NO_TRACE);
+    assert.ok(logs.some((l) => l.startsWith("overnight: SEM RASTRO")));
+    assert.ok(logs.some((l) => /fim review=ok overnight=no-trace exit=4/.test(l)));
+  });
+
+  it("evento result com is_error e exit 0 → falha do overnight", () => {
+    const { deps } = harness({ status: 0 }, { status: 0, stdout: ev({ type: "result", subtype: "error_during_execution", is_error: true, result: "" }) });
+    deps.findRoundTrace = () => ["x/plan.json"];
+    assert.equal(main(makeRepo(), deps), EXIT_OVERNIGHT_FAILED);
+  });
+
+  it("no-trace não mascara falha do review, mas fica atrás da falha do overnight", () => {
+    assert.equal(chainExitCode("failed", { status: "no-trace", exitCode: 0 }), EXIT_OVERNIGHT_NO_TRACE);
+    assert.equal(chainExitCode("ok", { status: "failed", exitCode: 1 }), EXIT_OVERNIGHT_FAILED);
+  });
+
+  it("sem evento result: aviso explícito no log; rastro não verificável não reprova", () => {
+    const { deps, logs } = harness({ status: 0 }, { status: 0, stdout: "" });
+    deps.findRoundTrace = () => null;
+    assert.equal(main(makeRepo(), deps), 0);
+    assert.ok(logs.some((l) => l.startsWith("overnight: AVISO — sem evento result")));
+    assert.ok(logs.some((l) => l.startsWith("overnight: AVISO — não deu pra verificar o rastro")));
+  });
+
+  it("findRoundTraceSince: só plan.json/report.md modificados desde o início contam", () => {
+    const root = makeRepo();
+    assert.equal(findRoundTraceSince(root, 0), null, "sem data/ não é verificável");
+    const dir = join(root, "data", "overnight");
+    mkdirSync(join(dir, "261021c"), { recursive: true });
+    mkdirSync(join(dir, "261022"), { recursive: true });
+    writeFileSync(join(dir, "261021c", "report.md"), "velho");
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(join(dir, "261021c", "report.md"), old, old);
+    writeFileSync(join(dir, ".nightly-chain.log"), "x");
+    const since = Date.now() - 60_000;
+    assert.deepEqual(findRoundTraceSince(root, since), []);
+    writeFileSync(join(dir, "261022", "plan.json"), "{}");
+    assert.deepEqual(findRoundTraceSince(root, since), ["261022/plan.json"]);
+  });
+
+  it("DEFAULT_DEPS verifica o rastro e lê o resumo", () => {
+    assert.equal(DEFAULT_DEPS.findRoundTrace, findRoundTraceSince);
+    assert.equal(DEFAULT_DEPS.readReviewSummary, readReviewSummary);
   });
 });
