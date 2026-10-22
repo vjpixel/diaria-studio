@@ -33,6 +33,7 @@ import {
   DIARIA_THREADS_URL,
   DIARIA_FACEBOOK_PAGE_URL,
   DIARIA_X_URL,
+  DIARIA_YOUTUBE_URL,
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
   DIARIA_AMAZON_LOJA_URL,
@@ -52,12 +53,12 @@ import {
  * nunca editável por edição (decisão do editor, 260801, comentário do
  * #4413/#4421 — já publicado no ciclo 2607-08, 9 campanhas #102–#110,
  * ~30 mil pessoas). Ordem das redes: LinkedIn → Instagram → Threads →
- * Facebook → X (o Facebook caiu do 2º pro 4º lugar em relação à redação
+ * Facebook → X → YouTube (o Facebook caiu do 2º pro 4º lugar em relação à redação
  * anterior). Sempre o ÚLTIMO parágrafo da seção `PARA ENCERRAR`
  * (invariante do #3219/#3368, preservada).
  */
 export const SOCIAL_INVITE =
-  `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) ou [X](${DIARIA_X_URL}).`;
+  `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}), [X](${DIARIA_X_URL}) ou [YouTube](${DIARIA_YOUTUBE_URL}).`;
 
 /**
  * Monta `{url}?utm_source=...&utm_medium=...&utm_campaign=...` a partir de um

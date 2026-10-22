@@ -123,7 +123,7 @@ Da diar.ia.br:
 ```
    3. O convite social — texto FIXO, idêntico ao diário, nunca parafrasear (#4413, decisão do editor 260801, constante `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`):
 
-      `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br) ou [X](https://x.com/diariabr).`
+      `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br), [X](https://x.com/diariabr) ou [YouTube](https://www.youtube.com/@diariabr).`
 
    Não reescrever nenhuma das 3 peças de memória — os itens 1 e 3 têm fonte única compartilhada com o diário (`scripts/stitch-newsletter.ts`/`scripts/lib/shared/encerramento-snippet.ts`); um ajuste de texto/link nessas fontes deve propagar pros dois formatos sem duplicar a manutenção.
 

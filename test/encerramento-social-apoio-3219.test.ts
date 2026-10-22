@@ -78,6 +78,7 @@ import {
   DIARIA_INSTAGRAM_URL,
   DIARIA_THREADS_URL,
   DIARIA_X_URL,
+  DIARIA_YOUTUBE_URL,
   DIARIA_APOIASE_URL,
 } from "../scripts/lib/canonical-urls.ts";
 
@@ -253,14 +254,41 @@ describe("data/snippets/encerramento-social-apoio.md — mecanismo de load/rende
   });
 });
 
+describe("#10761 — YouTube no convite social", () => {
+  it("inclui o canal aprovado só no convite, sem criar pill avulsa", () => {
+    assert.ok(SOCIAL_INVITE.endsWith("[X](https://x.com/diariabr) ou [YouTube](https://www.youtube.com/@diariabr)."));
+    assert.doesNotMatch(CURADORIA_PILLS, /YouTube|youtube/);
+  });
+
+  it("preserva o link dentro do painel final do e-mail compartilhado por Kit/Beehiiv", () => {
+    const body = extractTemplateBlock(buildParaEncerrar(), "🙋🏼‍♀️ PARA ENCERRAR");
+    assert.ok(body);
+    const html = renderEncerrar(body);
+    const tables = [...html.matchAll(/<table\b[\s\S]*?<\/table>/g)];
+    const painel = tables.at(-1)?.[0] ?? "";
+    assert.match(painel, /border-radius:12px/);
+    assert.match(painel, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*>YouTube<\/a>/);
+    assert.match(painel, /Para acompanhar as 3 principais notícias/);
+  });
+
+  it("renderiza o YouTube no convite do digest mensal copiado do prompt", () => {
+    const prompt = readFileSync(WRITER_MONTHLY_MD, "utf8");
+    const convite = prompt.split("\n").find((line) => line.includes("`Para acompanhar"));
+    assert.ok(convite);
+    const html = renderEncerramento(convite.trim().slice(1, -1));
+    assert.match(html, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*>YouTube<\/a>/);
+  });
+});
+
 describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em diária e mensal (#4413/#4411, drift-guard)", () => {
-  it("SOCIAL_INVITE menciona os 5 canais na ordem LinkedIn > Instagram > Threads > Facebook > X", () => {
+  it("SOCIAL_INVITE menciona os 6 canais na ordem LinkedIn > Instagram > Threads > Facebook > X > YouTube", () => {
     const order = [
       DIARIA_LINKEDIN_PAGE_URL,
       DIARIA_INSTAGRAM_URL,
       DIARIA_THREADS_URL,
       DIARIA_FACEBOOK_PAGE_URL,
       DIARIA_X_URL,
+      DIARIA_YOUTUBE_URL,
     ].map((url) => SOCIAL_INVITE.indexOf(url));
     assert.ok(order.every((i) => i >= 0), "algum canal está ausente do SOCIAL_INVITE");
     for (let i = 1; i < order.length; i++) {
@@ -480,7 +508,7 @@ describe("templates — nomeação de seção PARA ENCERRAR (#3219)", () => {
 });
 
 describe("integração de render — diário (renderEncerrar processa o novo bloco, #3219/#4413, fixture estável #4139)", () => {
-  it("o HTML resultante inclui o link de apoio e o CTA social (5 canais), com o parágrafo social boxed (CTA)", () => {
+  it("o HTML resultante inclui o link de apoio e o CTA social (6 canais), com o parágrafo social boxed (CTA)", () => {
     withStableSnippet(() => {
       const full = buildParaEncerrar();
       const body = extractTemplateBlock(full, "🙋🏼‍♀️ PARA ENCERRAR");

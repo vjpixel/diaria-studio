@@ -184,7 +184,7 @@ Da diar.ia.br:
    LinkedIn/Facebook/Instagram/Threads/X" livre que existia antes desta
    redação):
 
-Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br) ou [X](https://x.com/diariabr).]
+Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br), [X](https://x.com/diariabr) ou [YouTube](https://www.youtube.com/@diariabr).]
 ```
 
 **Exemplo negativo (NÃO fazer) — #2794:**
