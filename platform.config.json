@@ -268,6 +268,11 @@
       "subscriber_backend": "kit",
       "subscriber_backend_note": "#6051 — chave PROPRIA pra leitura de ASSINANTE (contagem/agregacao por UTM em scripts/count-subscriptions-by-utm.ts, consumido por studio-ui/studio-utms.ts), via scripts/lib/shared/newsletter-subscriber-source.ts. Nao reacoplar com \"backend\"/\"read_backend\" acima — as tres prontidoes sao independentes. VIROU \"kit\" em 04/09/2026 (#7395), na sequência do #7388: a correção #7359 (03/09/2026) já tinha derrubado o bloqueio técnico (a atribuicao real vive nos custom fields utm_source/utm_campaign gravados por subscribeToKit, e fetchAndAggregateKit ja le essa fonte primeiro desde o #7359 — atribuicao nativa do Kit virou so fallback) e deixou só o acoplamento a `backend`/`read_backend` como razão de não trocar ainda (\"reavaliar... quando o editor decidir trocar backend/read_backend juntos\"). Com `backend` já em \"kit\" (#7388) e a Beehiiv zerada (0 ativos, #7386), manter esta chave em \"beehiiv\" media a base ERRADA: `count-subscriptions-by-utm.ts` reportava TOTAL 1497 (base Beehiiv inteira, todos os status, 0 ativos) em vez dos 626 ativos reais do Kit — cadastro vindo de anúncio nascia no Kit e nunca aparecia na contagem por UTM, medido ao vivo horas antes da rodada paga acender (#7395). `read_backend` continua independente e NÃO migrou junto — motivo próprio (leitura de POSTS/newsletter sem histórico real public:true no Kit), consumidores distintos."
     },
+    "shorts": {
+      "facebook_pages": ["diaria", "vjpixel", "memelab"],
+      "instagram": true,
+      "note": "#10769: video curto (vertical) de cada edicao como Reels — scripts/publish-shorts.ts, skill /diaria-shorts. Decisao do editor 21/10/2026: Reels todo dia nas paginas diar.ia.br, VJ Pixel e MemeLab (slugs de social.facebook.pages — o enabled de la e dos posts diarios e NAO vale aqui) + Instagram. Perfil pessoal e YouTube Shorts sao destinos guiados fixos no codigo (listShortDestinations), nao configuraveis aqui: a Graph API nao publica em perfil e o YouTube trava em private sem a auditoria do GCP (#10659). Jandig, Teatro vs Game e Criaturas Afetivas ficam fora da rotina, so quando o editor pedir. Teste de 2 semanas a partir de 261022: manter so os destinos que trouxerem gente pro canal."
+    },
     "social": {
       "mode": "draft_or_schedule",
       "instagram": {
@@ -292,9 +297,16 @@
             "page_id_env": "FACEBOOK_MEMELAB_PAGE_ID",
             "token_env": "FACEBOOK_MEMELAB_PAGE_ACCESS_TOKEN",
             "note": "#10458/#10456: pagina #memeLab. Desligada ate o editor gerar o token de pagina (pages_manage_posts) e setar as 2 env vars; ligar = trocar enabled pra true. utm_content ausente = page-memelab (compoe com usemelhor no 4o post)."
+          },
+          {
+            "slug": "vjpixel",
+            "enabled": false,
+            "page_id_env": "FACEBOOK_VJPIXEL_PAGE_ID",
+            "token_env": "FACEBOOK_VJPIXEL_PAGE_ACCESS_TOKEN",
+            "note": "#10769: pagina VJ pixel (page_id 937293496367847). Desligada pros posts diarios — so recebe o Reels do video curto (publishing.shorts.facebook_pages). Token: scripts/facebook-page-token-setup.ts --pages vjpixel. utm_content ausente = page-vjpixel."
           }
         ],
-        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Percorrem a lista: publish-facebook (Stage 5), weekly, eia, verify-stage-4-dispatch, verify-facebook-posts, delete-test-schedules, invariante do Stage 5, seguidores (uma serie por pagina) e o painel de integracoes do Studio. A Retrospectiva mensal (publish-retrospectiva-social) tambem publica em TODAS as paginas ligadas, sem aviso (#10542) - ligar uma pagina aqui faz ela receber a Retrospectiva."
+        "note": "#10458: lista de paginas do Facebook (fonte unica: scripts/lib/facebook-pages.ts). Percorrem a lista: publish-facebook (Stage 5), publish-shorts (Reels do video curto, #10769 — so os slugs de publishing.shorts.facebook_pages, ignorando enabled), weekly, eia, verify-stage-4-dispatch, verify-facebook-posts, delete-test-schedules, invariante do Stage 5, seguidores (uma serie por pagina) e o painel de integracoes do Studio. A Retrospectiva mensal (publish-retrospectiva-social) tambem publica em TODAS as paginas ligadas, sem aviso (#10542) - ligar uma pagina aqui faz ela receber a Retrospectiva."
       },
       "twitter": {
         "enabled": true,
