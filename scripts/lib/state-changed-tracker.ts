@@ -74,6 +74,15 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { classifyExecTrack, type ExecTrackInput } from "./issue-exec-track.ts";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
 import { isForeignPlanEntry, planEntryKey, studioNumberOfPlanEntry } from "./plan-issue-ref.ts";
+import { DEFAULT_ISSUE_REPO } from "./issue-repos.ts";
+import {
+  compareIssueKeys,
+  issueKeyOfPlanEntry,
+  repoOfIssueKey,
+  studioNumberOfIssueKey,
+  toIssueKey,
+  type IssueKey,
+} from "./issue-key.ts";
 
 export interface PlanWithStateChanged {
   state_changed_issues?: unknown;
@@ -392,7 +401,16 @@ export function collectKnownIssueNumbers(plan: PlanWithGoal): Set<number> {
 export function readRoundScopeFilters(plan: PlanWithGoal): {
   bugsOnly: boolean;
   priorityFilter: string[] | null;
+  /** Números do diaria-studio do `--issues`. `null` = SEM filtro (campo
+   * ausente ou ilegível — toda issue do studio em escopo). `[]` = filtro
+   * presente que não cita nenhuma issue do studio (ex.: só
+   * `"vjpixel/diaria-design#22"`) — NENHUMA issue do studio em escopo; nunca
+   * confundir com `null`. */
   issuesFilter: number[] | null;
+  /** #10618 (fatia 3): o mesmo filtro como `IssueKey` (todos os repos) —
+   * `null` exatamente quando `issuesFilter` é `null` (sem filtro). Presente,
+   * restringe cada repo às chaves dele (ver `findMissingForeignConvergenceKeys`). */
+  issuesFilterKeys: Set<IssueKey> | null;
 } {
   const bugsOnly = plan.bugs_only === true;
   const rawPriority = plan.priority_filter;
@@ -401,11 +419,22 @@ export function readRoundScopeFilters(plan: PlanWithGoal): {
       ? (rawPriority as string[])
       : null;
   const rawIssues = plan.issues_filter;
-  const issuesFilter =
-    Array.isArray(rawIssues) && rawIssues.every((n) => typeof n === "number")
-      ? (rawIssues as number[])
-      : null;
-  return { bugsOnly, priorityFilter, issuesFilter };
+  // #10618 (fatia 3): além de número (legado = studio), aceita a string
+  // QUALIFICADA `"owner/repo#N"`. String numérica (`"6616"`, `"#6616"`) segue
+  // sendo shape errado, como sempre foi. Qualquer item ilegível desliga o
+  // filtro inteiro (fail-open documentado acima).
+  let issuesFilter: number[] | null = null;
+  let issuesFilterKeys: Set<IssueKey> | null = null;
+  if (Array.isArray(rawIssues)) {
+    const keys = rawIssues.map((n) =>
+      typeof n === "number" ? toIssueKey(n) : typeof n === "string" && /^[^#\s]+\/[^#\s]+#\d+$/.test(n.trim()) ? toIssueKey(n) : null,
+    );
+    if (keys.every((k): k is IssueKey => k !== null)) {
+      issuesFilterKeys = new Set(keys);
+      issuesFilter = keys.map(studioNumberOfIssueKey).filter((n): n is number => n !== null);
+    }
+  }
+  return { bugsOnly, priorityFilter, issuesFilter, issuesFilterKeys };
 }
 
 /**
@@ -462,6 +491,89 @@ export function findMissingConvergenceIssues(
   return missing.sort((a, b) => a - b);
 }
 
+// ---------------------------------------------------------------------------
+// Convergência multi-repo (#10618, fatia 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure: toda chave `owner/repo#N` que o plano conhece — a mesma união de
+ * `collectKnownIssueNumbers` (`goal.target_set`, `goal.tiers[*]`, `issues`),
+ * mas com identidade, incluindo as entradas de outro repo.
+ */
+export function collectKnownIssueKeys(plan: PlanWithGoal): Set<IssueKey> {
+  const known = new Set<IssueKey>();
+  const add = (entry: unknown) => {
+    const key = issueKeyOfPlanEntry(entry);
+    if (key) known.add(key);
+  };
+  const goal = plan.goal;
+  if (goal && typeof goal === "object") {
+    if (Array.isArray(goal.target_set)) goal.target_set.forEach(add);
+    const tiers = goal.tiers;
+    if (tiers && typeof tiers === "object" && !Array.isArray(tiers)) {
+      for (const tierIssues of Object.values(tiers as Record<string, unknown>)) {
+        if (Array.isArray(tierIssues)) tierIssues.forEach(add);
+      }
+    }
+  }
+  normalizeIssues<unknown>(plan as IssuesBearing<unknown>).forEach(add);
+  return known;
+}
+
+/**
+ * Pure: repos que NÃO são o diaria-studio e aparecem no plano (entradas
+ * conhecidas, `issues_filter` e pendências `state_changed_issues` de outro
+ * repo). São os repos que a re-varredura de convergência precisa varrer além
+ * do default: a rodada que pegou issue do diaria-design tem de ver também a
+ * issue NOVA do diaria-design. Plano só-studio → `[]` (nenhuma chamada extra).
+ */
+export function foreignReposOfPlan(plan: PlanWithGoal): string[] {
+  const repos = new Set<string>();
+  const keys: IssueKey[] = [...collectKnownIssueKeys(plan)];
+  const { issuesFilterKeys } = readRoundScopeFilters(plan);
+  if (issuesFilterKeys) keys.push(...issuesFilterKeys);
+  for (const raw of readStateChangedForeignIssues(plan as PlanWithStateChanged)) {
+    const key = toIssueKey(raw);
+    if (key) keys.push(key);
+  }
+  for (const key of keys) {
+    const repo = repoOfIssueKey(key);
+    if (repo !== DEFAULT_ISSUE_REPO) repos.add(repo);
+  }
+  return [...repos].sort();
+}
+
+/**
+ * Pure (#10618, fatia 3): convergência de UM repo que não é o diaria-studio.
+ * Mesmo critério de `checkConvergenceScan` (filtros de escopo da rodada,
+ * `classifyExecTrack` = `overnight`/`develop`), mas por chave: issue aberta
+ * do `repo` fora das chaves conhecidas do plano é "nova". Com `--issues`
+ * presente (`issuesFilterKeys !== null`), só as chaves DESTE repo citadas no
+ * filtro estão em escopo — um filtro só com números do studio diz que a
+ * rodada pediu issues do studio, então este repo inteiro fica fora de escopo
+ * (devolve `[]`). Sem filtro, toda issue aberta do repo entra na comparação.
+ */
+export function findMissingForeignConvergenceKeys(
+  plan: PlanWithGoal,
+  repo: string,
+  openIssues: ConvergenceScanIssue[],
+  now?: Date,
+): IssueKey[] {
+  const known = collectKnownIssueKeys(plan);
+  const { bugsOnly, priorityFilter, issuesFilterKeys } = readRoundScopeFilters(plan);
+  const missing: IssueKey[] = [];
+  for (const issue of openIssues) {
+    const key = toIssueKey({ repo, number: issue.number });
+    if (!key || known.has(key)) continue;
+    if (bugsOnly && !issue.labels.includes("bug")) continue;
+    if (priorityFilter && !issue.labels.some((l) => priorityFilter.includes(l))) continue;
+    if (issuesFilterKeys && !issuesFilterKeys.has(key)) continue;
+    const track = classifyExecTrack({ labels: issue.labels, body: issue.body, now });
+    if (track === "overnight" || track === "develop") missing.push(key);
+  }
+  return missing.sort(compareIssueKeys);
+}
+
 /** Pure: veredito de convergência a partir do plano já parseado + issues
  * abertas já buscadas (I/O de busca fica no chamador — CLI ou teste).
  * Aplica `filterIssuesByRoundScope` antes de comparar contra `known`
@@ -484,18 +596,28 @@ export function checkConvergenceScan(
  * varredura completa rodou e quantas issues novas ela achou, análogo ao
  * contador puro `rescans_done` mas com timestamp explícito. Cria `goal` como
  * objeto vazio se ainda não existir (plano legado/parcial) em vez de lançar.
+ *
+ * #10618 (fatia 3): `reposNaoVarridos` (`"owner/repo (motivo)"`) grava também
+ * `repos_nao_varridos` — a varredura "completa" que não alcançou um repo do
+ * plano fica registrada como parcial, não como zero issue nova. Lista vazia
+ * não grava o campo (shape de sempre).
  */
 export function recordConvergenceScan(
   planPath: string,
   novasEncontradas: number,
   at: string = new Date().toISOString(),
+  reposNaoVarridos: readonly string[] = [],
 ): void {
   const plan = readPlan(planPath) as PlanWithGoal;
   const goal = (plan.goal && typeof plan.goal === "object" ? plan.goal : {}) as Record<
     string,
     unknown
   >;
-  goal.last_convergence_scan = { at, novas_encontradas: novasEncontradas };
+  goal.last_convergence_scan = {
+    at,
+    novas_encontradas: novasEncontradas,
+    ...(reposNaoVarridos.length > 0 ? { repos_nao_varridos: [...reposNaoVarridos] } : {}),
+  };
   plan.goal = goal;
   writePlan(planPath, plan);
 }
@@ -525,7 +647,11 @@ export const UNWORKED_CLAIMED_MOTIVO = "claimed-por-outra-sessao";
 const RETRACK_HOLE_TRACKS: ReadonlySet<string> = new Set(["develop", "bloqueada"]);
 
 export interface RetrackedUnworkedIssue {
+  /** Número no repo DELA (`key` diz qual; ausente = diaria-studio). */
   number: number;
+  /** #10618 (fatia 3): `owner/repo#N` — só nas entradas de OUTRO repo
+   * (`findRetrackedUnworkedForeignIssues`); ausente no studio (shape de sempre). */
+  key?: IssueKey;
   /** Motivo terminal gravado no plano (`deixado-para-o-300`, ...). */
   motivo: string;
   /** `exec_track_painel` gravado no plano, ou `null` se ausente. */
@@ -603,4 +729,42 @@ export function findRetrackedUnworkedIssues(
     out.push({ number: n, motivo, track_gravado: trackGravado, track_atual: trackAtual });
   }
   return out.sort((a, b) => a.number - b.number);
+}
+
+/**
+ * Pure (#10618, fatia 3): `findRetrackedUnworkedIssues` para UM repo que não
+ * é o diaria-studio. `openIssues` são as issues abertas DESSE repo (a mesma
+ * busca `gh issue list -R` da convergência); só as entradas do plano cuja
+ * chave é desse repo são cruzadas — a design#21 nunca é julgada pelas labels
+ * da studio#21, nem o contrário. Saída com `key` (`owner/repo#N`).
+ */
+export function findRetrackedUnworkedForeignIssues(
+  plan: PlanWithGoal,
+  repo: string,
+  openIssues: ConvergenceScanIssue[],
+  opts: { now?: Date; includeClaimed?: boolean } = {},
+): RetrackedUnworkedIssue[] {
+  const byKey = new Map<IssueKey, ConvergenceScanIssue>();
+  for (const issue of openIssues) {
+    const key = toIssueKey({ repo, number: issue.number });
+    if (key) byKey.set(key, issue);
+  }
+  const out: RetrackedUnworkedIssue[] = [];
+  const seen = new Set<IssueKey>();
+  for (const entry of normalizeIssues<PlanIssueEntryLike>(plan as IssuesBearing<PlanIssueEntryLike>)) {
+    if (!entry) continue;
+    const key = issueKeyOfPlanEntry(entry);
+    if (!key || repoOfIssueKey(key) === DEFAULT_ISSUE_REPO || seen.has(key)) continue;
+    const motivo = unworkedMotivo(entry, opts.includeClaimed === true);
+    if (!motivo) continue;
+    const open = byKey.get(key);
+    if (!open) continue; // outro repo, ou issue fechada
+    const trackAtual = classifyExecTrack({ labels: open.labels, body: open.body, now: opts.now });
+    if (!RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
+    const trackGravado = typeof entry.exec_track_painel === "string" ? entry.exec_track_painel : null;
+    if (trackGravado === trackAtual) continue;
+    seen.add(key);
+    out.push({ number: open.number, key, motivo, track_gravado: trackGravado, track_atual: trackAtual });
+  }
+  return out.sort((a, b) => compareIssueKeys(a.key as IssueKey, b.key as IssueKey));
 }

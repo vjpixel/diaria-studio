@@ -66,9 +66,66 @@
  * `fix-{N}` está reivindicada por OUTRA sessão viva do `session-registry`
  * (cruzamento feito no CLI). Lote (`batch-…`) não carrega número no branch:
  * só (a) o confirma. Nunca `known_worktrees` — ver `foreignClaimedIssues`.
+ *
+ * ## Multi-repo (#10618, fatia 3)
+ *
+ * O PR de uma issue mora no repo DELA (decisão da #10618: worktree, CI e
+ * merge seguem o repo de origem). Uma entrada `"vjpixel/diaria-design#21"`
+ * com `pr: 23` aponta pro PR #23 do diaria-design — nunca pro #23 do studio.
+ * Por isso todo cruzamento aqui é por `owner/repo#N`: `OpenPrLike.repo`
+ * (ausente = diaria-studio) diz de qual repo veio cada PR aberto, e a entrada
+ * do plano dá o repo pela própria identidade (`issueKeyOfPlanEntry`).
+ * Entrada de identidade desconhecida (`repo` ilegível) não é cruzada com
+ * nenhum repo — o CLI avisa. `alien_prs_confirmed` aceita número (PR do
+ * studio, como sempre) e `"owner/repo#N"`.
  */
 
 import { evaluatePrRetido } from "./pr-retido-para-editor.ts";
+import { DEFAULT_ISSUE_REPO, normalizeRepoSlug } from "./issue-repos.ts";
+import {
+  claimKeysOf,
+  issueKeyOfPlanEntry,
+  issueNumberInRepo,
+  repoOfIssueKey,
+  toIssueKey,
+  type IssueKey,
+} from "./issue-key.ts";
+
+/** Repo de um PR aberto — `repo` ausente/ilegível é o diaria-studio (o
+ * `gh pr list` sem `-R` de sempre). */
+export function repoOfOpenPr(pr: Pick<OpenPrLike, "repo">): string {
+  return normalizeRepoSlug(pr.repo ?? "") ?? DEFAULT_ISSUE_REPO;
+}
+
+/**
+ * #10618 (fatia 3): repo do PR registrado numa entrada do plano — o repo da
+ * issue (`issueKeyOfPlanEntry`). Entrada sem número legível mas também sem
+ * `repo`/`ref` é do diaria-studio (o legado: só o `pr` importa aqui). Entrada
+ * com `repo`/`ref` ilegível devolve `null` — não dá pra saber o repo do PR.
+ */
+export function prRepoOfPlanEntry(entry: PlanIssueWithPrLike): string | null {
+  const key = issueKeyOfPlanEntry(entry);
+  if (key) return repoOfIssueKey(key);
+  const e = entry as { repo?: unknown; ref?: unknown };
+  return e.repo === undefined && e.ref === undefined ? DEFAULT_ISSUE_REPO : null;
+}
+
+/** `owner/repo#N` de um PR (mesmo formato de issue — PR e issue dividem a
+ * numeração do repo). `null` quando repo/número não formam chave válida. */
+function prKey(repo: string, pr: number): IssueKey | null {
+  return toIssueKey({ repo, number: pr });
+}
+
+function comparePrs(a: { repo?: string; pr: number }, b: { repo?: string; pr: number }): number {
+  const ra = a.repo ?? DEFAULT_ISSUE_REPO;
+  const rb = b.repo ?? DEFAULT_ISSUE_REPO;
+  if (ra !== rb) {
+    if (ra === DEFAULT_ISSUE_REPO) return -1;
+    if (rb === DEFAULT_ISSUE_REPO) return 1;
+    return ra < rb ? -1 : 1;
+  }
+  return a.pr - b.pr;
+}
 
 /** Shape mínimo de uma entrada de `gh pr list --json headRefName,number,createdAt`. */
 export interface OpenPrLike {
@@ -80,6 +137,10 @@ export interface OpenPrLike {
   labels?: unknown;
   /** `body` cru do `gh pr list --json body` (#10430). */
   body?: unknown;
+  /** #10618 (fatia 3): repo de onde o PR veio (`owner/repo`). Ausente = o
+   * diaria-studio (o `gh pr list` sem `-R` de sempre). O CLI preenche nos PRs
+   * buscados com `-R` de outro repo. */
+  repo?: string;
 }
 
 /** `true` só quando a PR carrega o sinal `retido-para-editor` (#10278) de
@@ -124,7 +185,11 @@ type PrTerminalDivergenceKind = "registered-not-terminal" | "unregistered-branch
 export interface RegisteredNotTerminalDivergence {
   kind: "registered-not-terminal";
   pr: number;
-  /** Todas as issues do plano que apontam pra este PR (lote = >1). */
+  /** #10618 (fatia 3): repo do PR (e das issues), só quando NÃO é o
+   * diaria-studio — ausente = studio, o shape de sempre. */
+  repo?: string;
+  /** Todas as issues do plano que apontam pra este PR (lote = >1), com o
+   * número no repo delas (`repo`). */
   issueNumbers: number[];
   /** Status já registrado para essas issues, na mesma ordem — `undefined`
    * quando a issue não tem `status`. Útil pro relatório mostrar "estava em
@@ -135,6 +200,8 @@ export interface RegisteredNotTerminalDivergence {
 export interface UnregisteredBranchCandidate {
   kind: "unregistered-branch-candidate";
   pr: number;
+  /** #10618 (fatia 3): repo do PR, só quando NÃO é o diaria-studio. */
+  repo?: string;
   headRefName: string;
   /** #10430: a PR já está retida para o editor (#10278) — informativo pro relatório. */
   retida?: boolean;
@@ -151,19 +218,33 @@ export interface PrTerminalStateVerdict {
   unregisteredCandidates: UnregisteredBranchCandidate[];
   /** #10439: candidatos cuja autoria alheia foi confirmada — informativo. */
   alienConfirmed: AlienConfirmedPr[];
+  /** #10618 (fatia 3): PRs registrados em repo NÃO consultado — não mudam o
+   * `status` (o gate não tem como afirmar divergência), mas o CLI nunca dá
+   * "ok" sem ressalva quando há repo não consultado. */
+  notEvaluated: RegisteredUnevaluatedPr[];
 }
 
 /** #10439: sinais de autoria alheia confirmada. */
 export interface AlienEvidence {
-  /** `plan.json.alien_prs_confirmed` (números de PR). */
+  /** `plan.json.alien_prs_confirmed` (números de PR) — número é sempre PR
+   * do diaria-studio, só casa candidato do studio (#10618). */
   confirmedPrs?: ReadonlySet<number>;
+  /** #10618 (fatia 3): `alien_prs_confirmed` como `owner/repo#N`
+   * (`readAlienPrKeysConfirmed`) — casa PR de qualquer repo. */
+  confirmedPrKeys?: ReadonlySet<IssueKey>;
   /** Issues reivindicadas por OUTRA sessão viva (`foreignClaimedIssues`),
-   * casadas pelo branch `fix-{N}` do PR. */
+   * casadas pelo branch `fix-{N}` do PR — número = diaria-studio, só casa
+   * candidato do studio. */
   liveForeignClaimedIssues?: ReadonlySet<number>;
+  /** #10618 (fatia 3): o mesmo como `IssueKey` (`foreignClaimedIssueKeys`),
+   * casado pelo branch `fix-{N}` + repo do PR — cobre outro repo. */
+  liveForeignClaimedKeys?: ReadonlySet<IssueKey>;
 }
 
 export interface AlienConfirmedPr {
   pr: number;
+  /** #10618 (fatia 3): repo do PR, só quando NÃO é o diaria-studio. */
+  repo?: string;
   headRefName: string;
   source: "plan-alien_prs_confirmed" | "session-registry";
 }
@@ -179,12 +260,29 @@ export function readAlienPrsConfirmed(planRaw: unknown): Set<number> {
   return out;
 }
 
+/** #10618 (fatia 3): `alien_prs_confirmed` como chaves `owner/repo#N` — aceita
+ * número (PR do diaria-studio) e string `owner/repo#N`/URL de PR. Forma
+ * ilegível é descartada (nunca lança). */
+export function readAlienPrKeysConfirmed(planRaw: unknown): Set<IssueKey> {
+  const out = new Set<IssueKey>();
+  if (!planRaw || typeof planRaw !== "object") return out;
+  const v = (planRaw as Record<string, unknown>).alien_prs_confirmed;
+  if (!Array.isArray(v)) return out;
+  for (const item of v) {
+    const key = typeof item === "number" || typeof item === "string" ? toIssueKey(item) : null;
+    if (key) out.add(key);
+  }
+  return out;
+}
+
 /** Shape mínimo de uma sessão do `session-registry` (`listActiveSessions`). */
 export interface LiveSessionLike {
   sessionId?: string;
   stale?: boolean;
   /** Claims vigentes (`ActiveSessionRecord.claimed_issues_effective`). */
   claimed_issues_effective?: number[];
+  /** #10618 — claims vigentes de OUTRO repo (`owner/repo#N`). */
+  claimed_foreign_issues_effective?: string[];
 }
 
 /**
@@ -215,6 +313,26 @@ export function foreignClaimedIssues(
   return out;
 }
 
+/**
+ * #10618 (fatia 3): como `foreignClaimedIssues`, mas em `IssueKey` e
+ * incluindo as claims de outro repo (`claimKeysOf`) — a design#21 de outra
+ * sessão confirma o PR `develop/fix-21-*` do diaria-design, nunca o do studio.
+ */
+export function foreignClaimedIssueKeys(
+  sessions: readonly LiveSessionLike[],
+  ownSessionId: string | undefined,
+): Set<IssueKey> {
+  const out = new Set<IssueKey>();
+  if (!ownSessionId) return out;
+  const own = new Set<IssueKey>();
+  for (const s of sessions) if (s.sessionId === ownSessionId) for (const k of claimKeysOf(s)) own.add(k);
+  for (const s of sessions) {
+    if (s.stale || !s.sessionId || s.sessionId === ownSessionId) continue;
+    for (const k of claimKeysOf(s)) if (!own.has(k)) out.add(k);
+  }
+  return out;
+}
+
 /** Pure: issue de um branch de unidade solo (`{overnight,develop,continuo}/{fix,feat,blast}-{N}[-…]`), ou `null`.
  * `feat-N`/`blast-N` (#10548) são convenções do develop (`blast` = cat. D), já reconhecidas por
  * `branchDeclaredIssueNumbers` em `issue-open-pr-check.ts`. Branch fundida (`fix-N-M-slug`) devolve só o 1º N. */
@@ -231,10 +349,22 @@ export function partitionAlienCandidates(
   const remaining: UnregisteredBranchCandidate[] = [];
   const alienConfirmed: AlienConfirmedPr[] = [];
   for (const c of candidates) {
-    if (evidence.confirmedPrs?.has(c.pr)) {
-      alienConfirmed.push({ pr: c.pr, headRefName: c.headRefName, source: "plan-alien_prs_confirmed" });
-    } else if (evidence.liveForeignClaimedIssues?.has(issueFromBranch(c.headRefName) ?? -1)) {
-      alienConfirmed.push({ pr: c.pr, headRefName: c.headRefName, source: "session-registry" });
+    // #10618 (fatia 3): número (PR/issue) só confirma candidato do studio;
+    // chave `owner/repo#N` confirma candidato do repo dela.
+    const repo = c.repo ?? DEFAULT_ISSUE_REPO;
+    const isStudio = repo === DEFAULT_ISSUE_REPO;
+    const branchIssue = issueFromBranch(c.headRefName);
+    const base = { pr: c.pr, ...(c.repo ? { repo: c.repo } : {}), headRefName: c.headRefName };
+    const ck = prKey(repo, c.pr);
+    const bk = branchIssue !== null ? prKey(repo, branchIssue) : null;
+    if ((isStudio && evidence.confirmedPrs?.has(c.pr)) || (ck !== null && evidence.confirmedPrKeys?.has(ck))) {
+      alienConfirmed.push({ ...base, source: "plan-alien_prs_confirmed" });
+    } else if (
+      branchIssue !== null &&
+      ((isStudio && evidence.liveForeignClaimedIssues?.has(branchIssue)) ||
+        (bk !== null && evidence.liveForeignClaimedKeys?.has(bk)))
+    ) {
+      alienConfirmed.push({ ...base, source: "session-registry" });
     } else {
       remaining.push(c);
     }
@@ -249,40 +379,104 @@ export function partitionAlienCandidates(
  * aparece em nenhuma issue do plano NÃO entra aqui — é candidato do
  * cenário 2 (`findUnregisteredBranchCandidates`), tratado separadamente.
  */
+type RegisteredPrGroup = {
+  repo: string;
+  pr: number;
+  issues: Array<{ entry: PlanIssueWithPrLike; key: IssueKey | null }>;
+};
+
+/** PRs registrados no plano (`pr` de ≥1 entrada), agrupados por
+ * `owner/repo#N` do PR — o repo é o da issue (`prRepoOfPlanEntry`). Entrada
+ * de identidade desconhecida fica de fora (não dá pra saber de qual repo é o
+ * PR — nunca cai no studio por omissão). */
+function groupRegisteredPrs(planIssues: readonly PlanIssueWithPrLike[]): Map<IssueKey, RegisteredPrGroup> {
+  const byPr = new Map<IssueKey, RegisteredPrGroup>();
+  for (const issue of planIssues) {
+    if (typeof issue.pr !== "number" || !Number.isFinite(issue.pr)) continue;
+    const repo = prRepoOfPlanEntry(issue);
+    if (!repo) continue;
+    const k = prKey(repo, issue.pr);
+    if (!k) continue;
+    const group = byPr.get(k) ?? { repo, pr: issue.pr, issues: [] };
+    group.issues.push({ entry: issue, key: issueKeyOfPlanEntry(issue) });
+    byPr.set(k, group);
+  }
+  return byPr;
+}
+
+function issueNumbersOf(group: RegisteredPrGroup): number[] {
+  return group.issues
+    .map(({ key }) => (key ? issueNumberInRepo(key) : null))
+    .filter((n): n is number => n !== null)
+    .sort((a, b) => a - b);
+}
+
+/** #10618 (fatia 3): PR registrado num repo que o gate NÃO conseguiu
+ * consultar (fora da allowlist, ou `gh pr list -R` falhou). */
+export interface RegisteredUnevaluatedPr {
+  pr: number;
+  repo: string;
+  /** Números das issues do plano que apontam pra este PR, no repo delas. */
+  issueNumbers: number[];
+}
+
+/**
+ * Pure (#10618, fatia 3): PRs registrados no plano cujo repo está em
+ * `unevaluatedRepos`. Sem a lista de PRs abertos daquele repo, a ausência do
+ * PR em `openPrs` NÃO quer dizer "fechado" — estes ficam fora de
+ * `findRegisteredNotTerminal` e voltam aqui pro CLI listar como NÃO
+ * avaliados (nunca como ok).
+ */
+export function findRegisteredInUnevaluatedRepos(
+  planIssues: readonly PlanIssueWithPrLike[],
+  unevaluatedRepos: ReadonlySet<string>,
+): RegisteredUnevaluatedPr[] {
+  const out: RegisteredUnevaluatedPr[] = [];
+  for (const group of groupRegisteredPrs(planIssues).values()) {
+    if (!unevaluatedRepos.has(group.repo)) continue;
+    out.push({ pr: group.pr, repo: group.repo, issueNumbers: issueNumbersOf(group) });
+  }
+  return out.sort(comparePrs);
+}
+
 export function findRegisteredNotTerminal(
   openPrs: OpenPrLike[],
   planIssues: PlanIssueWithPrLike[],
+  unevaluatedRepos: ReadonlySet<string> = new Set(),
 ): RegisteredNotTerminalDivergence[] {
-  const openPrNumbers = new Set(
-    openPrs.map((p) => p.number).filter((n): n is number => typeof n === "number" && Number.isFinite(n)),
-  );
-  const retidaPrNumbers = new Set(openPrs.filter(isPrRetidaParaEditor).map((p) => p.number));
-
-  const byPr = new Map<number, PlanIssueWithPrLike[]>();
-  for (const issue of planIssues) {
-    if (typeof issue.pr !== "number" || !Number.isFinite(issue.pr)) continue;
-    const list = byPr.get(issue.pr) ?? [];
-    list.push(issue);
-    byPr.set(issue.pr, list);
+  // #10618 (fatia 3): PR identificado por `owner/repo#N` — o PR #23 do
+  // diaria-design e o #23 do studio são PRs diferentes.
+  const openPrKeys = new Set<IssueKey>();
+  const retidaPrKeys = new Set<IssueKey>();
+  for (const p of openPrs) {
+    if (typeof p.number !== "number" || !Number.isFinite(p.number)) continue;
+    const k = prKey(repoOfOpenPr(p), p.number);
+    if (!k) continue;
+    openPrKeys.add(k);
+    if (isPrRetidaParaEditor(p)) retidaPrKeys.add(k);
   }
 
   const out: RegisteredNotTerminalDivergence[] = [];
-  for (const [pr, issues] of byPr) {
-    if (!openPrNumbers.has(pr)) continue; // PR já fechado/mergeado no GitHub — nada a checar aqui
-    const accounted = issues.some((i) => typeof i.status === "string" && PR_ACCOUNTED_STATUSES.has(i.status));
+  for (const [k, group] of groupRegisteredPrs(planIssues)) {
+    const { repo, pr, issues } = group;
+    // Repo não consultado (#10618): ausência em `openPrs` não prova
+    // "fechado" — fica pra `findRegisteredInUnevaluatedRepos`.
+    if (unevaluatedRepos.has(repo)) continue;
+    if (!openPrKeys.has(k)) continue; // PR já fechado/mergeado no GitHub — nada a checar aqui
+    const accounted = issues.some(
+      ({ entry }) => typeof entry.status === "string" && PR_ACCOUNTED_STATUSES.has(entry.status),
+    );
     if (accounted) continue;
-    if (retidaPrNumbers.has(pr)) continue; // #10430: retida no GitHub = handoff terminal
+    if (retidaPrKeys.has(k)) continue; // #10430: retida no GitHub = handoff terminal
     out.push({
       kind: "registered-not-terminal",
       pr,
-      issueNumbers: issues
-        .map((i) => i.number)
-        .filter((n): n is number => typeof n === "number" && Number.isFinite(n))
-        .sort((a, b) => a - b),
-      statuses: issues.map((i) => i.status),
+      ...(repo !== DEFAULT_ISSUE_REPO ? { repo } : {}),
+      issueNumbers: issueNumbersOf(group),
+      statuses: issues.map(({ entry }) => entry.status),
     });
   }
-  return out.sort((a, b) => a.pr - b.pr);
+  return out.sort(comparePrs);
 }
 
 /**
@@ -297,23 +491,28 @@ export function findUnregisteredBranchCandidates(
   planIssues: PlanIssueWithPrLike[],
   branchPrefixes: readonly string[] = SESSION_BRANCH_PREFIXES,
 ): UnregisteredBranchCandidate[] {
-  const registeredPrNumbers = new Set(
-    planIssues
-      .map((i) => i.pr)
-      .filter((n): n is number => typeof n === "number" && Number.isFinite(n)),
-  );
+  // #10618 (fatia 3): registro por `owner/repo#N` do PR (repo da issue). Uma
+  // entrada de identidade desconhecida não registra PR em repo nenhum.
+  const registeredPrKeys = new Set<IssueKey>(groupRegisteredPrs(planIssues).keys());
 
   const out: UnregisteredBranchCandidate[] = [];
   for (const pr of openPrs) {
     if (typeof pr.number !== "number" || !Number.isFinite(pr.number)) continue;
-    if (registeredPrNumbers.has(pr.number)) continue;
+    const repo = repoOfOpenPr(pr);
+    const k = prKey(repo, pr.number);
+    if (k !== null && registeredPrKeys.has(k)) continue;
     const ref = pr.headRefName ?? "";
     if (!branchPrefixes.some((prefix) => ref.startsWith(prefix))) continue;
-    const candidate: UnregisteredBranchCandidate = { kind: "unregistered-branch-candidate", pr: pr.number, headRefName: ref };
+    const candidate: UnregisteredBranchCandidate = {
+      kind: "unregistered-branch-candidate",
+      pr: pr.number,
+      ...(repo !== DEFAULT_ISSUE_REPO ? { repo } : {}),
+      headRefName: ref,
+    };
     if (isPrRetidaParaEditor(pr)) candidate.retida = true;
     out.push(candidate);
   }
-  return out.sort((a, b) => a.pr - b.pr);
+  return out.sort(comparePrs);
 }
 
 /**
@@ -326,15 +525,19 @@ export function checkPrTerminalState(
   planIssues: PlanIssueWithPrLike[],
   branchPrefixes: readonly string[] = SESSION_BRANCH_PREFIXES,
   alienEvidence: AlienEvidence = {},
+  /** #10618 (fatia 3): repos cujos PRs abertos NÃO foram buscados (fora da
+   * allowlist, `gh` falhou) — PR registrado neles vai pra `notEvaluated`. */
+  unevaluatedRepos: ReadonlySet<string> = new Set(),
 ): PrTerminalStateVerdict {
-  const registeredNotTerminal = findRegisteredNotTerminal(openPrs, planIssues);
+  const registeredNotTerminal = findRegisteredNotTerminal(openPrs, planIssues, unevaluatedRepos);
+  const notEvaluated = findRegisteredInUnevaluatedRepos(planIssues, unevaluatedRepos);
   const { candidates: unregisteredCandidates, alienConfirmed } = partitionAlienCandidates(
     findUnregisteredBranchCandidates(openPrs, planIssues, branchPrefixes),
     alienEvidence,
   );
   const status: PrTerminalStateVerdict["status"] =
     registeredNotTerminal.length > 0 ? "divergent" : unregisteredCandidates.length > 0 ? "candidates" : "ok";
-  return { status, registeredNotTerminal, unregisteredCandidates, alienConfirmed };
+  return { status, registeredNotTerminal, unregisteredCandidates, alienConfirmed, notEvaluated };
 }
 
 /** Pure: exit code do CLI para um veredito — só divergência confirmada
