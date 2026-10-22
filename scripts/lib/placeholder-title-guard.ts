@@ -67,9 +67,11 @@ export function isRedirectStubTitle(title: string | null | undefined): boolean {
 }
 
 /**
- * #10796 (review do PR #10890): subconjunto AMBÍGUO de `REDIRECT_STUB_TITLE_RE`
- * — a palavra solta, sem código de status nem reticências ("Found", "Moved",
- * "Redirect"). Também é título possível de matéria real; quem DESCARTA artigo
+ * #10796 (review do PR #10890): a palavra solta e AMBÍGUA, sem código de status
+ * nem reticências ("Found", "Moved", "Redirect"). Desde o #10881 item 4 ela
+ * fica FORA de `REDIRECT_STUB_TITLE_RE` (lá só casa com o código antes), então
+ * `isRedirectStubTitle("Found")` é false e esta função é a única que a
+ * reconhece. Também é título possível de matéria real; quem DESCARTA artigo
  * com base no título (categorize) precisa de contexto de redirect extra antes
  * de tratar isso como stub. "302 Found", "Moved Permanently", "Redirecting..."
  * continuam inequívocos.
