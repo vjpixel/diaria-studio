@@ -198,6 +198,14 @@ if (isMainModule(import.meta.url)) {
       fetched.issues.map((i) => ({ number: i.number, labels: normalizeLabels(i), body: i.body })),
     );
 
+    // #10618 (fatia 4, review): achados do grupo ficam num buffer local e só
+    // entram no veredito se o grupo terminar. Falha de PROCESSO (spawn,
+    // timeout) ao ler comentários de um repo extra tira só aquele repo do
+    // veredito (`reposNotEvaluated`) — nunca descarta o que o studio já achou.
+    // No repo default continua sendo o fail-soft global de sempre (#738).
+    const groupFindings: typeof allFindings = [];
+    const groupSuppressed: typeof allSuppressed = [];
+    let groupAbandoned = false;
     for (const evaluation of evaluations) {
       let commentBodies: string[] = [];
       if (evaluation.needsComments) {
@@ -206,7 +214,15 @@ if (isMainModule(import.meta.url)) {
           console.error(
             `[check-decision-label-drift-gate] falha ao buscar comentários de ${labelInRepo(g.repo, evaluation.issueNumber)} (fail-soft, #738): ${commentsResult.error}`,
           );
-          if (commentsResult.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
+          if (commentsResult.error.startsWith("gh não pôde ser executado")) {
+            if (g.isDefault) {
+              ghUnavailable = true;
+            } else {
+              reposNotEvaluated.push(g.repo);
+              groupAbandoned = true;
+              break;
+            }
+          }
           // Sem os comentários, ainda dá pra avaliar a prosa do plano — não
           // abortar a issue inteira por causa de uma falha de fetch.
         } else {
@@ -221,11 +237,19 @@ if (isMainModule(import.meta.url)) {
         planTexts: evaluation.planTexts,
         currentTrack: evaluation.currentTrack,
       });
-      allFindings.push(
+      groupFindings.push(
         ...detailed.findings.map((f) => ({ ...f, label: labelInRepo(g.repo, f.issueNumber), ...(repoArg ? { repo: repoArg } : {}) })),
       );
-      allSuppressed.push(...detailed.suppressedByRoute.map((f) => ({ ...f, label: labelInRepo(g.repo, f.issueNumber) })));
+      groupSuppressed.push(...detailed.suppressedByRoute.map((f) => ({ ...f, label: labelInRepo(g.repo, f.issueNumber) })));
     }
+    if (groupAbandoned) {
+      console.error(
+        `[check-decision-label-drift-gate] ${g.repo}: gh falhou ao ler comentários — entrada(s) desse repo NÃO avaliada(s); o veredito dos demais repos segue (fail-soft por repo, #738).`,
+      );
+      continue;
+    }
+    allFindings.push(...groupFindings);
+    allSuppressed.push(...groupSuppressed);
   }
 
   if (ghUnavailable) {

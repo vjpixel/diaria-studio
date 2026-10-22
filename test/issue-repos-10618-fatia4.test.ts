@@ -116,6 +116,9 @@ function fakeGh(root: string, responses: Record<string, unknown>) {
       "  const key = [sub, args[0], repo, n, json].join('_');",
       "  const map = JSON.parse(fs.readFileSync(process.env.GH_FAKE_RESP, 'utf8'));",
       "  if (!(key in map)) { process.stderr.write('sem resposta: ' + key); process.exit(1); }",
+      // Falha de PROCESSO (não de API): stdout acima do maxBuffer do spawnSync
+      // vira `result.error` (ENOBUFS) — o mesmo caminho de spawn/timeout.
+      "  if (map[key] === '__PROCESS_FAILURE__') { process.stdout.write('x'.repeat(2 * 1024 * 1024)); process.exit(0); }",
       "  process.stdout.write(JSON.stringify(map[key]));",
       "  process.exit(0);",
       "}",
@@ -635,6 +638,106 @@ describe("#10618 fatia 4 — gates de fim de rodada avaliam a entrada do design 
     assert.match(r.stdout, /^ok/);
     assert.ok(calls().length >= 1);
     assert.ok(calls().every((c) => c.includes("-R") && c.includes(DESIGN)), "só o design consultado, com -R");
+  });
+});
+
+describe("#10618 fatia 4 (review) — falha num repo extra nunca descarta o veredito do studio", () => {
+  const PF = "__PROCESS_FAILURE__";
+
+  it("drift-gate: falha de PROCESSO ao ler comentários do design não descarta o drift do studio", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: {
+        "7": { status: "pulada", motivo: "x", scope_note: "bloqueio externo: falta conta do painel", in_round: false },
+        [`${DESIGN}#21`]: { status: "pulada", motivo: "bloqueio-externo" },
+      },
+    });
+    const { env, calls } = fakeGh(root, {
+      "issue_list_default_list_number,labels,body": [{ number: 7, labels: [], body: "" }],
+      // Sem label: a #21 do design classifica `overnight` e precisa dos comentários.
+      [`issue_list_${DESIGN}_list_number,labels,body`]: [{ number: 21, labels: [], body: "" }],
+      [`issue_view_${DESIGN}_21_comments`]: PF,
+    });
+    const r = runCli(root, env, "check-decision-label-drift-gate.ts", ["--plan", planPath]);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /^#7	external-blocker/m);
+    assert.match(r.stderr, /vjpixel\/diaria-design: gh falhou ao ler comentários/);
+    assert.ok(calls().some((c) => c[0] === "issue" && c[1] === "view" && c.includes(DESIGN)), "o design foi de fato consultado");
+  });
+
+  it("drift-gate: sem drift no studio e falha de processo no design → 'ok PARCIAL' nomeando o repo", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: {
+        "7": { status: "pulada", motivo: "x", scope_note: "nada", in_round: false },
+        [`${DESIGN}#21`]: { status: "pulada", motivo: "bloqueio-externo" },
+      },
+    });
+    const { env } = fakeGh(root, {
+      "issue_list_default_list_number,labels,body": [{ number: 7, labels: [], body: "" }],
+      // Sem label: a #21 do design classifica `overnight` e precisa dos comentários.
+      [`issue_list_${DESIGN}_list_number,labels,body`]: [{ number: 21, labels: [], body: "" }],
+      [`issue_view_${DESIGN}_21_comments`]: PF,
+    });
+    const r = runCli(root, env, "check-decision-label-drift-gate.ts", ["--plan", planPath]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /^ok PARCIAL .*NÃO avaliado\(s\): vjpixel\/diaria-design/);
+  });
+
+  it("comment-coverage: falha de PROCESSO no design não descarta a pendência do studio", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: {
+        "5": { status: "pulada", motivo: "outro" },
+        [`${DESIGN}#21`]: { status: "pulada", motivo: "outro" },
+      },
+    });
+    const { env } = fakeGh(root, {
+      "issue_view_default_5_comments,labels": { comments: [], labels: [] },
+      [`issue_view_${DESIGN}_21_comments,labels`]: PF,
+    });
+    const r = runCli(root, env, "check-overnight-comment-coverage.ts", ["--plan", planPath]);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /cobertura de comentário faltando: #5 \(pulada\)/);
+    assert.match(r.stderr, /vjpixel\/diaria-design: gh falhou ao executar/);
+    assert.match(r.stderr, /PARCIAL — NÃO avaliados: vjpixel\/diaria-design \(gh falhou\)/);
+  });
+
+  it("comment-coverage: studio limpo e falha de processo no design → 'ok PARCIAL' nomeando o repo", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: { [`${DESIGN}#21`]: { status: "pulada", motivo: "outro" } },
+    });
+    const { env } = fakeGh(root, { [`issue_view_${DESIGN}_21_comments,labels`]: PF });
+    const r = runCli(root, env, "check-overnight-comment-coverage.ts", ["--plan", planPath]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /^ok PARCIAL .*NÃO avaliados: vjpixel\/diaria-design \(gh falhou\)/);
+  });
+
+  it("comment-coverage: PR do design inacessível (erro de API) → 'ok PARCIAL', nunca 'ok' limpo", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: { [`${DESIGN}#21`]: { status: "mergeada", pr: 23 } },
+    });
+    const { env } = fakeGh(root, {}); // pr view do design → exit 1 (404/403)
+    const r = runCli(root, env, "check-overnight-comment-coverage.ts", ["--plan", planPath]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /^ok PARCIAL .*NÃO avaliados: vjpixel\/diaria-design \(1 consulta\(s\) com erro\)/);
+  });
+
+  it("comment-coverage: design mergeada com REFS-NÃO-CLOSES — body lido com -R e comentário cobrado no design", () => {
+    const root = tmpRepoRoot();
+    const planPath = writePlan(root, {
+      issues: { [`${DESIGN}#21`]: { status: "mergeada", pr: 23 } },
+    });
+    const { env, calls } = fakeGh(root, {
+      [`pr_view_${DESIGN}_23_body`]: { body: "REFS #21, NÃO CLOSES (parcial)" },
+      [`issue_view_${DESIGN}_21_comments,labels`]: { comments: [], labels: [] },
+    });
+    const r = runCli(root, env, "check-overnight-comment-coverage.ts", ["--plan", planPath]);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /vjpixel\/diaria-design#21 \(vjpixel\/diaria-design PR #23 REFS-NÃO-CLOSES\)/);
+    assert.ok(calls().length === 2 && calls().every((c) => c.includes("-R") && c.includes(DESIGN)));
   });
 });
 

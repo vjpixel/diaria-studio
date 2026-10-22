@@ -147,6 +147,16 @@ if (isMainModule(import.meta.url)) {
   const unresolvedLabels: string[] = [];
   const missingComment: string[] = [];
   const missingLabel: string[] = [];
+  // #10618 (fatia 4, review): falha num repo EXTRA nunca derruba o veredito
+  // do studio nem some em silêncio. Falha de processo (spawn/timeout) tira o
+  // repo inteiro (`reposNotEvaluated`); erro de API (403/404) num PR/issue
+  // daquele repo conta em `partialFailures` — as duas viram "PARCIAL" na
+  // linha final. No repo default o comportamento é o de sempre: falha de
+  // processo = fail-soft global (#738), erro individual = local àquele item.
+  const reposNotEvaluated: string[] = [];
+  const partialFailures = new Map<string, number>();
+  const notePartial = (repo: string) => partialFailures.set(repo, (partialFailures.get(repo) ?? 0) + 1);
+  const isSpawnFailure = (err: string) => err.startsWith("gh não pôde ser executado");
 
   for (const g of groups) {
     if (!allowedRepos.has(g.repo)) continue;
@@ -163,6 +173,7 @@ if (isMainModule(import.meta.url)) {
     }
 
     const prBodies = new Map<number, string | null>();
+    let groupAbandoned = false;
     for (const pr of prsToFetch) {
       const fetched = fetchPrBody(pr, cwd, repoArg);
       if (fetched.error) {
@@ -170,15 +181,24 @@ if (isMainModule(import.meta.url)) {
           `[check-overnight-comment-coverage] falha ao buscar ${repoArg ? `${repoArg} ` : ""}PR #${pr} (fail-soft, #738): ${fetched.error}`,
         );
         // "gh não pôde ser executado" é sinal de CLI ausente/offline — afeta
-        // TODA a checagem, não só este PR; qualquer outro erro (PR
+        // TODA a checagem do repo, não só este PR; qualquer outro erro (PR
         // individual apagado/inacessível) é local a este PR só.
-        if (fetched.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
+        if (isSpawnFailure(fetched.error)) {
+          if (g.isDefault) ghUnavailable = true;
+          else groupAbandoned = true;
+          break;
+        }
+        if (!g.isDefault) notePartial(g.repo);
         prBodies.set(pr, null);
       } else {
         prBodies.set(pr, fetched.value?.body ?? null);
       }
     }
     if (ghUnavailable) break;
+    if (groupAbandoned) {
+      reposNotEvaluated.push(g.repo);
+      continue;
+    }
 
     const candidates: CandidateIssue[] = deriveCandidateIssues(issues, prBodies);
     candidatesTotal += candidates.length;
@@ -199,7 +219,12 @@ if (isMainModule(import.meta.url)) {
         console.error(
           `[check-overnight-comment-coverage] falha ao buscar comentários de ${label(candidate.number)} (fail-soft, #738): ${fetched.error}`,
         );
-        if (fetched.error.startsWith("gh não pôde ser executado")) ghUnavailable = true;
+        if (isSpawnFailure(fetched.error)) {
+          if (g.isDefault) ghUnavailable = true;
+          else groupAbandoned = true;
+          break;
+        }
+        if (!g.isDefault) notePartial(g.repo);
         commentsByIssue.set(candidate.number, null);
         labelFetchFailed.add(candidate.number);
       } else {
@@ -211,6 +236,10 @@ if (isMainModule(import.meta.url)) {
       }
     }
     if (ghUnavailable) break;
+    if (groupAbandoned) {
+      reposNotEvaluated.push(g.repo);
+      continue;
+    }
 
     const verdict = checkCoverage(candidates, commentsByIssue, kind ?? undefined);
     unresolvedLabels.push(...verdict.unresolved.map((c) => label(c.number)));
@@ -248,9 +277,24 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
+  for (const repo of reposNotEvaluated) {
+    console.error(
+      `[check-overnight-comment-coverage] ${repo}: gh falhou ao executar — entrada(s) desse repo NÃO avaliada(s); o veredito dos demais repos segue (fail-soft por repo, #738).`,
+    );
+  }
+  const partialNote = [
+    ...reposNotEvaluated.map((r) => `${r} (gh falhou)`),
+    ...[...partialFailures].map(([r, n]) => `${r} (${n} consulta(s) com erro)`),
+  ];
+  const okPrefix = partialNote.length > 0 ? "ok PARCIAL" : "ok";
+  const partialSuffix = partialNote.length > 0 ? ` — PARCIAL — NÃO avaliados: ${partialNote.join(", ")}` : "";
+  if (partialNote.length > 0) {
+    console.error(`[check-overnight-comment-coverage] PARCIAL — NÃO avaliados: ${partialNote.join(", ")}`);
+  }
+
   if (candidatesTotal === 0) {
     console.log(
-      `ok — nenhuma issue pulada ou mergeada-com-REFS-NÃO-CLOSES nesta rodada${skipped.length > 0 ? ` (exceto ${skipped.length} entrada(s) FORA desta checagem, ver stderr)` : ""}`,
+      `${okPrefix} — nenhuma issue pulada ou mergeada-com-REFS-NÃO-CLOSES nesta rodada${skipped.length > 0 ? ` (exceto ${skipped.length} entrada(s) FORA desta checagem, ver stderr)` : ""}${partialSuffix}`,
     );
     process.exit(0);
   }
@@ -263,9 +307,10 @@ if (isMainModule(import.meta.url)) {
 
   if (missingComment.length === 0 && missingLabel.length === 0) {
     console.log(
-      `ok — todas as ${candidatesTotal} issue(s) candidata(s) (pulada/REFS-NÃO-CLOSES) têm comentário overnight` +
+      `${okPrefix} — todas as ${candidatesTotal} issue(s) candidata(s) (pulada/REFS-NÃO-CLOSES) têm comentário overnight` +
         (labelCandidatesTotal > 0 ? ` e as ${labelCandidatesTotal} com motivo mapeado têm a label esperada` : "") +
-        (skipped.length > 0 ? ` (exceto ${skipped.length} entrada(s) FORA desta checagem, ver stderr)` : ""),
+        (skipped.length > 0 ? ` (exceto ${skipped.length} entrada(s) FORA desta checagem, ver stderr)` : "") +
+        partialSuffix,
     );
     process.exit(0);
   }
