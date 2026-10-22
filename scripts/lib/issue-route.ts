@@ -306,7 +306,7 @@ const BLOCKED_SPECIFIC_LABELS = new Set([
  * o overnight COM sinal positivo (#7493) passa `--motivo trade-off`, que
  * aplica `trade-off-real` sem sair do track.
  */
-const TRACK_ADD_LABEL: Partial<Record<RouteTrack, string>> = {
+export const TRACK_ADD_LABEL: Readonly<Partial<Record<RouteTrack, string>>> = {
   develop: "develop-track",
   bloqueada: "bloqueio-execucao",
   // #6201 — `epica` é o único veredito onde a label default e a única opção

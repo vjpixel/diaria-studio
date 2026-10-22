@@ -81,3 +81,66 @@ export function partitionStudioPlanEntries<T>(entries: readonly T[]): { studio: 
   }
   return { studio, skipped };
 }
+
+/** Um repo e as entradas do plano que são dele, numeradas localmente. */
+export interface PlanEntriesOfRepo<T> {
+  /** `owner/repo` (o default incluso). */
+  repo: string;
+  /** `true` quando é o repo default (`vjpixel/diaria-studio`). */
+  isDefault: boolean;
+  /**
+   * Entradas do repo em "visão local": a do default sai como veio; a de
+   * outro repo sai como cópia com `number` = o número NAQUELE repo e sem
+   * `repo`/`ref`, de modo que uma lib que casa por número (sem saber de
+   * repo) a trate como "o #N deste repo". Só é seguro porque cada grupo é
+   * avaliado sozinho, com dados buscados no repo dele (`gh -R`): dentro de
+   * um repo o número não colide.
+   */
+  entries: T[];
+}
+
+/**
+ * Agrupa as entradas do `plan.json` por repo (#10618, fatia 4) — o caminho
+ * para um gate que só sabe casar por número avaliar também o diaria-design:
+ * roda a mesma lógica uma vez por grupo, buscando os dados no repo do grupo.
+ * O grupo do default vem primeiro, os demais em ordem alfabética. `unknown`
+ * traz uma marca por entrada sem identidade legível, pro chamador avisar.
+ *
+ * Pura — nenhum I/O.
+ */
+export function groupPlanEntriesByRepo<T>(entries: readonly T[]): {
+  groups: PlanEntriesOfRepo<T>[];
+  unknown: string[];
+} {
+  const byRepo = new Map<string, T[]>();
+  const unknown: string[] = [];
+  for (const entry of entries) {
+    const ref = planEntryRef(entry);
+    if (!ref) {
+      unknown.push("(identidade desconhecida)");
+      continue;
+    }
+    const list = byRepo.get(ref.repo) ?? [];
+    if (ref.repo === DEFAULT_ISSUE_REPO || !entry || typeof entry !== "object") {
+      list.push(entry);
+    } else {
+      const rest: Record<string, unknown> = { ...(entry as Record<string, unknown>) };
+      delete rest.repo;
+      delete rest.ref;
+      list.push({ ...rest, number: ref.number } as T);
+    }
+    byRepo.set(ref.repo, list);
+  }
+  const repos = [...byRepo.keys()].sort((a, b) =>
+    a === DEFAULT_ISSUE_REPO ? -1 : b === DEFAULT_ISSUE_REPO ? 1 : a.localeCompare(b),
+  );
+  return {
+    groups: repos.map((repo) => ({ repo, isDefault: repo === DEFAULT_ISSUE_REPO, entries: byRepo.get(repo)! })),
+    unknown,
+  };
+}
+
+/** Rótulo da issue `n` do repo de um grupo: `#N` no default, `owner/repo#N` nos outros. */
+export function labelInRepo(repo: string, n: number): string {
+  return repo === DEFAULT_ISSUE_REPO ? `#${n}` : `${repo}#${n}`;
+}

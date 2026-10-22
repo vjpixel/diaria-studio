@@ -544,6 +544,24 @@ export function foreignReposOfPlan(plan: PlanWithGoal): string[] {
 }
 
 /**
+ * Pure (#10618, fatia 4): repos extras que a re-varredura de convergência
+ * varre — os de `foreignReposOfPlan` MAIS todo repo da allowlist
+ * `issue_repos` que não é o default. Desde a fatia 4 o diaria-design entra
+ * por padrão na fila do overnight/contínuo/develop (`--repos all`), então
+ * uma issue nova do design criada no meio da rodada tem de ser vista mesmo
+ * quando o plano ainda não tem nenhuma entrada do design. Repo citado no
+ * plano mas fora da allowlist continua na lista (o chamador o reporta como
+ * "fora de issue_repos", nunca o consulta).
+ */
+export function convergenceReposOfPlan(plan: PlanWithGoal, allowlist: readonly string[]): string[] {
+  const repos = new Set(foreignReposOfPlan(plan));
+  for (const repo of allowlist) {
+    if (repo !== DEFAULT_ISSUE_REPO) repos.add(repo);
+  }
+  return [...repos].sort();
+}
+
+/**
  * Pure (#10618, fatia 3): convergência de UM repo que não é o diaria-studio.
  * Mesmo critério de `checkConvergenceScan` (filtros de escopo da rodada,
  * `classifyExecTrack` = `overnight`/`develop`), mas por chave: issue aberta

@@ -210,7 +210,8 @@ try:
     d = json.load(sys.stdin)
     now = dt.datetime.now(dt.timezone.utc)
     for s in d.get('sessions', []):
-        claims = s.get('claimed_issues') or []
+        # #10618 (fatia 4): claim de outro repo (owner/repo#N) também prende fila.
+        claims = (s.get('claimed_issues') or []) + (s.get('claimed_foreign_issues') or [])
         hb = s.get('lastHeartbeat')
         if not claims or not hb: continue
         age_min = (now - dt.datetime.fromisoformat(hb.replace('Z', '+00:00'))).total_seconds() / 60

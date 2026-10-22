@@ -29,6 +29,7 @@
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { assessOpenPrCoverage } from "./lib/issue-open-pr-check.ts";
 import { fetchOpenPrs, type CommandRunner } from "./lib/gh-open-pr-fetch.ts";
+import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 
 /**
  * `runner` é injetável (default: `gh` real via `fetchOpenPrs`) — permite
@@ -42,13 +43,22 @@ export function main(argv: string[], cwd: string, runner?: CommandRunner): numbe
     console.error("[check-issue-open-pr] uso: --issue N");
     return 2;
   }
-  const issueNumber = Number(issueRaw);
-  if (!Number.isFinite(issueNumber) || issueNumber <= 0) {
-    console.error(`[check-issue-open-pr] --issue inválido: ${issueRaw}`);
+  // #10618 (fatia 4): `N` (diaria-studio) ou `owner/repo#N` — a PR de uma
+  // issue do diaria-design mora no diaria-design, então a busca vai com `-R`.
+  const ref = parseIssueRef(String(issueRaw));
+  if (!ref) {
+    console.error(`[check-issue-open-pr] --issue inválido: ${issueRaw} (esperado N ou owner/repo#N)`);
     return 2;
   }
+  const issueNumber = ref.number;
+  const foreignRef = legacyIssueNumber(ref) === null ? formatIssueRef(ref) : null;
+  if (foreignRef !== null && !loadIssueRepos(cwd).includes(ref.repo)) {
+    console.error(`[check-issue-open-pr] ${foreignRef}: repo fora de issue_repos, não consultado`);
+    return 2;
+  }
+  const repoArg = foreignRef === null ? undefined : ref.repo;
 
-  const fetched = runner ? fetchOpenPrs(cwd, runner) : fetchOpenPrs(cwd);
+  const fetched = runner ? fetchOpenPrs(cwd, runner, repoArg) : fetchOpenPrs(cwd, undefined, repoArg);
   if (fetched.error) {
     // Regra inegociável do #7788: falha de fetch NUNCA vira "sem PR
     // aberta". Sempre cannot-verify, sempre exit 2.
@@ -67,7 +77,7 @@ export function main(argv: string[], cwd: string, runner?: CommandRunner): numbe
   }
 
   const result = assessOpenPrCoverage(issueNumber, fetched.prs);
-  console.log(JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(foreignRef === null ? result : { ...result, ref: foreignRef }, null, 2));
   return result.verdict === "open-pr-covers-scope" ? 1 : 0;
 }
 

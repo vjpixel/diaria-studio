@@ -28,24 +28,33 @@
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrRetido } from "./lib/pr-retido-para-editor.ts";
+import { prLabelInRepo, resolveRepoFlag } from "./lib/issue-repos.ts";
 
 function run(): number {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   const prRaw = values.pr;
   const prNumber = prRaw ? Number(prRaw) : NaN;
   if (!prRaw || !Number.isInteger(prNumber) || prNumber <= 0) {
-    console.error("[check-pr-retido-gate] uso: --pr N");
+    console.error("[check-pr-retido-gate] uso: --pr N [--repo owner/name]");
     return 3;
   }
+  // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`).
+  const repoFlag = resolveRepoFlag(values, flags, process.cwd());
+  if ("error" in repoFlag) {
+    console.error(`[check-pr-retido-gate] ${repoFlag.error}`);
+    return 3;
+  }
+  const repo = repoFlag.repo;
+  const label = prLabelInRepo(prNumber, repo);
 
-  const result = spawnSync("gh", ["pr", "view", String(prNumber), "--json", "labels,body"], {
+  const result = spawnSync("gh", ["pr", "view", String(prNumber), ...(repo ? ["-R", repo] : []), "--json", "labels,body"], {
     encoding: "utf8",
     timeout: 30_000,
   });
   if (result.error || result.status !== 0 || !result.stdout) {
     const why = result.error?.message ?? (result.stderr ?? "").toString().trim();
     console.error(
-      `[check-pr-retido-gate] PR #${prNumber}: gh falhou — ${why || (result.status === 0 ? "stdout vazio" : `status ${result.status}`)}`,
+      `[check-pr-retido-gate] ${label}: gh falhou — ${why || (result.status === 0 ? "stdout vazio" : `status ${result.status}`)}`,
     );
     return 3;
   }
@@ -54,18 +63,18 @@ function run(): number {
   try {
     payload = JSON.parse(result.stdout);
   } catch (e) {
-    console.error(`[check-pr-retido-gate] PR #${prNumber}: JSON malformado de gh — ${(e as Error).message}`);
+    console.error(`[check-pr-retido-gate] ${label}: JSON malformado de gh — ${(e as Error).message}`);
     return 3;
   }
 
   const verdict = evaluatePrRetido({ labels: payload.labels, body: payload.body });
-  console.log(JSON.stringify({ pr: prNumber, retido: verdict.retido, reason: verdict.reason }));
+  console.log(JSON.stringify({ pr: prNumber, ...(repo ? { repo } : {}), retido: verdict.retido, reason: verdict.reason }));
   if (verdict.retido === null) {
-    console.error(`[check-pr-retido-gate] PR #${prNumber}: ${verdict.reason}`);
+    console.error(`[check-pr-retido-gate] ${label}: ${verdict.reason}`);
     return 3;
   }
   if (verdict.retido) {
-    console.error(`[check-pr-retido-gate] PR #${prNumber}: ${verdict.reason}`);
+    console.error(`[check-pr-retido-gate] ${label}: ${verdict.reason}`);
     return 1;
   }
   return 0;

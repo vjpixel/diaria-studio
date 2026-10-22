@@ -25,21 +25,24 @@
  * efetivamente mergeadas respondem "quanto tempo levou".
  */
 
-import type { OvernightWaveRecord } from "./overnight-waves.ts";
+import { waveIssueKey, type OvernightWaveRecord, type WaveIssueId } from "./overnight-waves.ts";
+import { issueKeyOfPlanEntry, type IssueKey } from "./issue-key.ts";
 import type { PlanIssue } from "../render-overnight-timeline.ts";
 
 export interface WaveUnitDuration {
-  issues: number[];
+  issues: WaveIssueId[];
   cap_hit: boolean;
   /** ms entre o pr_opened mais cedo e o merged mais tarde da unidade; null se incompleto. */
   duration_ms: number | null;
 }
 
-/** Pure: índice `número da issue -> PlanIssue`, ignorando issues sem `number` válido. */
-function indexIssuesByNumber(issues: PlanIssue[]): Map<number, PlanIssue> {
-  const map = new Map<number, PlanIssue>();
+/** Pure: índice `owner/repo#N -> PlanIssue` (#10618, fatia 4: por chave, a
+ * design#21 não colide com a studio#21), ignorando entradas sem identidade. */
+function indexIssuesByKey(issues: PlanIssue[]): Map<IssueKey, PlanIssue> {
+  const map = new Map<IssueKey, PlanIssue>();
   for (const issue of issues) {
-    if (Number.isInteger(issue.number)) map.set(issue.number, issue);
+    const key = issueKeyOfPlanEntry(issue);
+    if (key) map.set(key, issue);
   }
   return map;
 }
@@ -59,14 +62,15 @@ export function computeWaveUnitDurations(
   waves: OvernightWaveRecord[],
   issues: PlanIssue[],
 ): WaveUnitDuration[] {
-  const byNumber = indexIssuesByNumber(issues);
+  const byKey = indexIssuesByKey(issues);
   const out: WaveUnitDuration[] = [];
   for (const wave of waves) {
     for (const unit of wave.units) {
       let earliestOpen: number | null = null;
       let latestMerged: number | null = null;
-      for (const num of unit.issues) {
-        const tl = byNumber.get(num)?.timeline;
+      for (const id of unit.issues) {
+        const key = waveIssueKey(id);
+        const tl = key ? byKey.get(key)?.timeline : undefined;
         const open = parseISO(tl?.pr_opened);
         const merged = parseISO(tl?.merged);
         if (open !== null && (earliestOpen === null || open < earliestOpen)) earliestOpen = open;

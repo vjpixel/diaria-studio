@@ -25,22 +25,44 @@
  */
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { assessDuplicatePreflight } from "./lib/issue-duplicate-preflight.ts";
-import { fetchMasterCommitsForIssue, fetchMasterCommitsForProvenance } from "./lib/master-commit-fetch.ts";
+import {
+  fetchMasterCommitsForIssue,
+  fetchMasterCommitsForProvenance,
+  fetchRepoCommitsForIssue,
+  type CommitFetchRunner,
+} from "./lib/master-commit-fetch.ts";
+import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 
-export function main(argv: string[], cwd: string): number {
+/**
+ * `--issue` aceita `N` (diaria-studio, `origin/master` local, como sempre) ou
+ * `owner/repo#N` (#10618, fatia 4): issue de outro repo da allowlist
+ * `issue_repos` é checada contra a branch default DAQUELE repo, via `gh api`
+ * (`fetchRepoCommitsForIssue`). `runner` só é usado nesse caminho (teste).
+ */
+export function main(argv: string[], cwd: string, runner?: CommitFetchRunner): number {
   const { values } = parseArgs(argv);
   const issueRaw = values.issue;
   if (!issueRaw) {
     console.error("[check-issue-duplicate-preflight] uso: --issue N [--updated-at ISO8601]");
     return 2;
   }
-  const issueNumber = Number(issueRaw);
-  if (!Number.isFinite(issueNumber) || issueNumber <= 0) {
-    console.error(`[check-issue-duplicate-preflight] --issue inválido: ${issueRaw}`);
+  const ref = parseIssueRef(String(issueRaw));
+  if (!ref) {
+    console.error(`[check-issue-duplicate-preflight] --issue inválido: ${issueRaw} (esperado N ou owner/repo#N)`);
+    return 2;
+  }
+  const studioNumber = legacyIssueNumber(ref);
+  const issueNumber = ref.number;
+  const foreignRef = studioNumber === null ? formatIssueRef(ref) : null;
+  if (foreignRef !== null && !loadIssueRepos(cwd).includes(ref.repo)) {
+    console.error(`[check-issue-duplicate-preflight] ${foreignRef}: repo fora de issue_repos, não consultado`);
     return 2;
   }
 
-  const fetchResult = fetchMasterCommitsForIssue(cwd, issueNumber);
+  const fetchResult =
+    foreignRef === null
+      ? fetchMasterCommitsForIssue(cwd, issueNumber)
+      : fetchRepoCommitsForIssue(cwd, ref.repo, issueNumber, runner);
   if (fetchResult.error) {
     console.error(`[check-issue-duplicate-preflight] ${fetchResult.error}`);
     return 2;
@@ -50,7 +72,8 @@ export function main(argv: string[], cwd: string): number {
   const provenanceRaw = values.provenance ? String(values.provenance) : "";
   const provenanceVals = provenanceRaw ? provenanceRaw.split(",").map((s) => s.trim()).filter(Boolean) : [];
   const provenanceCommits: import("./lib/issue-duplicate-preflight.ts").MasterCommitInfo[] = [];
-  for (const p of provenanceVals) {
+  // Proveniência busca no `origin/master` do studio: não se aplica a issue de outro repo.
+  for (const p of foreignRef === null ? provenanceVals : []) {
     const pr = fetchMasterCommitsForProvenance(cwd, String(p));
     if (!pr.error) provenanceCommits.push(...pr.commits);
   }
@@ -65,7 +88,7 @@ export function main(argv: string[], cwd: string): number {
     provenanceCommits: provenanceUnique,
   });
 
-  console.log(JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(foreignRef === null ? result : { ...result, ref: foreignRef }, null, 2));
   return result.verdict === "not-in-master" ? 0 : 1;
 }
 

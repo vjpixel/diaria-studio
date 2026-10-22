@@ -56,7 +56,9 @@ import {
   type ExecTrackMatch,
 } from "../lib/issue-exec-track.ts";
 import { listActiveSessions, type ActiveSessionRecord } from "../lib/session-registry.ts";
-import { flattenClaims, type ClaimBearingSession } from "../lib/claim-staleness.ts";
+import { flattenAllClaims, type ClaimBearingSession } from "../lib/claim-staleness.ts";
+import { DEFAULT_ISSUE_REPO, loadIssueRepos } from "../lib/issue-repos.ts";
+import { toIssueKey, type IssueKey } from "../lib/issue-key.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -95,6 +97,12 @@ export type TrackLabel = "overnight" | "develop" | "continuo" | "other";
 
 export interface TriageIssue {
   number: number;
+  /** #10618 (fatia 4): `owner/repo` e `owner/repo#N` — presentes SÓ nas
+   * issues de outro repo da allowlist `issue_repos` (ex: vjpixel/diaria-design).
+   * Ausentes = diaria-studio (o shape de sempre). O painel exibe `ref` no
+   * lugar de `#N`, porque o número sozinho colide entre repos. */
+  repo?: string;
+  ref?: string;
   title: string;
   url: string;
   state: string;
@@ -169,6 +177,9 @@ export interface TriageClaimInfo {
 
 export interface TriagePr {
   number: number;
+  /** #10618 (fatia 4): como em `TriageIssue` — só nos PRs de outro repo. */
+  repo?: string;
+  ref?: string;
   title: string;
   url: string;
   state: string;
@@ -215,6 +226,10 @@ export interface TriageData {
   /** Mensagem de erro da última tentativa de fetch via `gh`, ou `null` se a
    * última tentativa (ou o dado servido do cache) foi bem-sucedida. */
   error: string | null;
+  /** #10618 (fatia 4): repos extras de `issue_repos` cuja busca falhou —
+   * `"owner/repo: motivo"`. As issues do diaria-studio vieram completas; as
+   * desses repos estão FORA da lista. Ausente quando todos responderam. */
+  repoErrors?: string[];
   /** `true` quando os dados vieram do cache em memória (fresco OU stale
    * após falha de `gh`) em vez de um fetch novo bem-sucedido. */
   cached: boolean;
@@ -318,7 +333,8 @@ function labelNames(raw: Array<{ name: string }> | undefined): string[] {
 }
 
 /** Normaliza o JSON cru de `gh issue list` pro shape de `TriageIssue`. Pura. */
-export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
+export function parseIssues(raw: GhIssueRaw[], repo?: string): TriageIssue[] {
+  const foreign = repo !== undefined && repo !== DEFAULT_ISSUE_REPO ? repo : null;
   return raw.map((i) => {
     const labels = labelNames(i.labels);
     const files = extractFilePaths(`${i.title}
@@ -326,6 +342,7 @@ ${i.body ?? ""}`);
     const result = classifyExecTrackWithRule({ labels, body: i.body, state: i.state });
     return {
       number: i.number,
+      ...(foreign ? { repo: foreign, ref: `${foreign}#${i.number}` } : {}),
       title: i.title,
       url: i.url,
       state: i.state,
@@ -404,10 +421,13 @@ export function attachClaims(
   issues: readonly TriageIssue[],
   sessions: readonly ClaimBearingSession[],
 ): TriageIssue[] {
-  const byIssue = new Map<number, TriageClaimInfo>();
-  for (const entry of flattenClaims(sessions)) {
-    if (byIssue.has(entry.issueNumber)) continue;
-    byIssue.set(entry.issueNumber, {
+  // #10618 (fatia 4): indexado por `owner/repo#N` — a claim da design#21
+  // (`claimed_foreign_issues`) aparece na design#21, nunca na studio#21.
+  const byIssue = new Map<IssueKey, TriageClaimInfo>();
+  for (const entry of flattenAllClaims(sessions)) {
+    const key = entry.issueKey ?? toIssueKey(entry.issueNumber);
+    if (!key || byIssue.has(key)) continue;
+    byIssue.set(key, {
       kind: entry.kind,
       machineTag: entry.machineTag,
       sessionId: entry.sessionId,
@@ -415,7 +435,10 @@ export function attachClaims(
       stale: entry.stale,
     });
   }
-  return issues.map((issue) => ({ ...issue, claim: byIssue.get(issue.number) ?? null }));
+  return issues.map((issue) => {
+    const key = toIssueKey(issue.ref ?? issue.number);
+    return { ...issue, claim: (key && byIssue.get(key)) ?? null };
+  });
 }
 
 /**
@@ -576,11 +599,13 @@ export function summarizeChecks(rollup: unknown): CiState {
 }
 
 /** Normaliza o JSON cru de `gh pr list` pro shape de `TriagePr`. Pura. */
-export function parsePrs(raw: GhPrRaw[]): TriagePr[] {
+export function parsePrs(raw: GhPrRaw[], repo?: string): TriagePr[] {
+  const foreign = repo !== undefined && repo !== DEFAULT_ISSUE_REPO ? repo : null;
   return raw.map((p) => {
     const labels = labelNames(p.labels);
     return {
       number: p.number,
+      ...(foreign ? { repo: foreign, ref: `${foreign}#${p.number}` } : {}),
       title: p.title,
       url: p.url,
       state: p.state,
@@ -641,9 +666,11 @@ function runGhJson(run: GhRunFn, cwd: string, args: string[]): unknown[] {
 }
 
 /** `gh issue list --state open ...` — lança em caso de falha (caller decide fallback). */
-export function fetchGhIssues(cwd: string, run: GhRunFn = defaultGhRun, limit = 200): GhIssueRaw[] {
+export function fetchGhIssues(cwd: string, run: GhRunFn = defaultGhRun, limit = 200, repo?: string): GhIssueRaw[] {
   return runGhJson(run, cwd, [
     "issue", "list",
+    // #10618 (fatia 4): `-R` só pra outro repo — a chamada do studio é a de sempre.
+    ...(repo && repo !== DEFAULT_ISSUE_REPO ? ["-R", repo] : []),
     "--state", "open",
     "--json", ISSUE_FIELDS,
     "--limit", String(limit),
@@ -651,9 +678,10 @@ export function fetchGhIssues(cwd: string, run: GhRunFn = defaultGhRun, limit = 
 }
 
 /** `gh pr list --state open ...` — lança em caso de falha (caller decide fallback). */
-export function fetchGhPrs(cwd: string, run: GhRunFn = defaultGhRun, limit = 100): GhPrRaw[] {
+export function fetchGhPrs(cwd: string, run: GhRunFn = defaultGhRun, limit = 100, repo?: string): GhPrRaw[] {
   return runGhJson(run, cwd, [
     "pr", "list",
+    ...(repo && repo !== DEFAULT_ISSUE_REPO ? ["-R", repo] : []),
     "--state", "open",
     "--json", PR_FIELDS,
     "--limit", String(limit),
@@ -713,6 +741,27 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
   try {
     const issuesRaw = fetchGhIssues(rootDir, run, opts.issueLimit);
     const prsRaw = fetchGhPrs(rootDir, run, opts.prLimit);
+    // #10618 (fatia 4): os outros repos de `platform.config.json → issue_repos`
+    // (hoje o diaria-design) entram no painel, com `ref` `owner/repo#N`.
+    // Falha num repo extra NUNCA derruba o painel (o do studio veio
+    // completo): vira `repoErrors`, servido junto, e as issues dele ficam de
+    // fora. Config ausente (clone sem `platform.config.json`) = só o studio.
+    const extraIssues: TriageIssue[] = [];
+    const extraPrs: TriagePr[] = [];
+    const repoErrors: string[] = [];
+    for (const repo of loadIssueRepos(rootDir)) {
+      if (repo === DEFAULT_ISSUE_REPO) continue;
+      try {
+        // Os dois fetches antes de anexar: repo que falha em qualquer um fica
+        // INTEIRO de fora (o aviso `repoErrors` diz isso), nunca pela metade.
+        const repoIssues = parseIssues(fetchGhIssues(rootDir, run, opts.issueLimit, repo), repo);
+        const repoPrs = parsePrs(fetchGhPrs(rootDir, run, opts.prLimit, repo), repo);
+        extraIssues.push(...repoIssues);
+        extraPrs.push(...repoPrs);
+      } catch (e) {
+        repoErrors.push(`${repo}: ${(e as Error).message}`);
+      }
+    }
     // #6436 — `listActiveSessions` é fail-soft (nunca lança; `data/sessions/`
     // ausente ou ilegível vira array vazio), então nunca degrada este `try`
     // pro caminho de erro do `gh`. Filtra `stale` ANTES de repassar pra
@@ -741,16 +790,19 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
     // nunca perder pra uma stale (não deveria colidir de qualquer forma,
     // `claimIssueCheckAndSet` recusa 2 sessões na mesma issue, #6236).
     const staleRetainedSessions = allSessions.filter(
-      (s) => s.stale && s.claimed_issues_effective.length > 0,
+      (s) =>
+        s.stale &&
+        (s.claimed_issues_effective.length > 0 || (s.claimed_foreign_issues_effective ?? []).length > 0),
     );
     const sessions = [...freshSessions, ...staleRetainedSessions];
     const data: TriageData = {
       generatedAt: new Date(nowMs).toISOString(),
-      issues: attachClaims(parseIssues(issuesRaw), sessions),
-      prs: parsePrs(prsRaw),
+      issues: attachClaims([...parseIssues(issuesRaw), ...extraIssues], sessions),
+      prs: [...parsePrs(prsRaw), ...extraPrs],
       execTrackUi: EXEC_TRACK_UI,
       execTrackReasonUi: { reasons: EXEC_TRACK_MATCH_REASON, actionable: EXEC_TRACK_ACTIONABLE },
       error: null,
+      ...(repoErrors.length > 0 ? { repoErrors } : {}),
       cached: false,
     };
     cacheByRoot.set(rootDir, { data, expiresAt: nowMs + cacheTtlMs });

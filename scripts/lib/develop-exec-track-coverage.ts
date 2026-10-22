@@ -50,6 +50,7 @@ import { readFileSync } from "node:fs";
 import { normalizeIssues, type IssuesBearing } from "./plan-issues-normalize.ts";
 import type { DevelopPlanIssueLike } from "./develop-plan-motivo.ts";
 import type { ExecTrack } from "./issue-exec-track.ts";
+import { compareIssueKeys, issueKeyOfPlanEntry, issueNumberInRepo, studioNumberOfIssueKey, type IssueKey } from "./issue-key.ts";
 
 /** Os únicos valores válidos de `exec_track_painel` — espelho do enum
  * `ExecTrack` de `issue-exec-track.ts` (reexportado como literal pra este
@@ -79,8 +80,8 @@ export interface PlanWithIssues {
 
 export type ExecTrackCoverageResult =
   | { status: "ok" }
-  | { status: "missing"; numbers: number[] }
-  | { status: "invalid"; entries: Array<{ number: number; value: string }> };
+  | { status: "missing"; numbers: number[]; foreign?: string[] }
+  | { status: "invalid"; entries: Array<{ number: number; value: string; ref?: string }> };
 
 /**
  * Pure: separa as entradas de `issues` em cobertas vs. problemáticas.
@@ -96,24 +97,37 @@ export type ExecTrackCoverageResult =
  */
 export function findMissingExecTrack(issues: DevelopPlanIssueLike[]): {
   missing: number[];
-  invalid: Array<{ number: number; value: string }>;
+  /** #10618 (fatia 4): entradas de outro repo sem `exec_track_painel`, como
+   * `owner/repo#N` — nunca somadas ao `missing` por número (a design#21 não
+   * se confunde com a studio#21 no dedup). Ausente quando não há nenhuma
+   * (o shape de sempre num plano só-studio). */
+  missingForeign?: string[];
+  invalid: Array<{ number: number; value: string; ref?: string }>;
 } {
   const valid = new Set<string>(EXEC_TRACK_VALUES);
   const missing = new Set<number>();
-  const invalid: Array<{ number: number; value: string }> = [];
+  const missingForeign = new Set<IssueKey>();
+  const invalid: Array<{ number: number; value: string; ref?: string }> = [];
   for (const issue of issues) {
-    if (typeof issue?.number !== "number" || !Number.isFinite(issue.number)) continue;
-    const raw = issue.exec_track_painel;
+    // Identidade por chave (#10618): `{ ref }` sem `number` também é avaliada.
+    const key = issueKeyOfPlanEntry(issue);
+    if (!key) continue;
+    const studio = studioNumberOfIssueKey(key);
+    const raw = issue?.exec_track_painel;
     if (typeof raw !== "string" || raw.length === 0) {
-      missing.add(issue.number);
+      if (studio !== null) missing.add(studio);
+      else missingForeign.add(key);
       continue;
     }
     if (!valid.has(raw)) {
-      invalid.push({ number: issue.number, value: raw });
+      invalid.push(
+        studio !== null ? { number: studio, value: raw } : { number: issueNumberInRepo(key), value: raw, ref: key },
+      );
     }
   }
   return {
     missing: [...missing].sort((a, b) => a - b),
+    ...(missingForeign.size > 0 ? { missingForeign: [...missingForeign].sort(compareIssueKeys) } : {}),
     invalid: invalid.sort((a, b) => a.number - b.number),
   };
 }
@@ -123,8 +137,12 @@ export function checkExecTrackCoverageFromPlan(plan: PlanWithIssues): ExecTrackC
   const issues = normalizeIssues<DevelopPlanIssueLike>(
     plan as IssuesBearing<DevelopPlanIssueLike>,
   );
-  const { missing, invalid } = findMissingExecTrack(issues);
-  if (missing.length > 0) return { status: "missing", numbers: missing };
+  const { missing, missingForeign, invalid } = findMissingExecTrack(issues);
+  if (missing.length > 0 || missingForeign) {
+    return missingForeign
+      ? { status: "missing", numbers: missing, foreign: missingForeign }
+      : { status: "missing", numbers: missing };
+  }
   if (invalid.length > 0) return { status: "invalid", entries: invalid };
   return { status: "ok" };
 }

@@ -39,7 +39,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
-import { partitionStudioPlanEntries } from "./lib/plan-issue-ref.ts";
+import { groupPlanEntriesByRepo, labelInRepo } from "./lib/plan-issue-ref.ts";
+import { loadIssueRepos } from "./lib/issue-repos.ts";
 import {
   checkDevelopLabelCleared,
   isWorkFinished,
@@ -59,10 +60,11 @@ interface FetchedIssue extends DevelopGateIssueState {
  * volta como `{ error }` pro chamador degradar (#738). O corpo importa porque
  * `classifyExecTrack` também lê o marcador `aguardando-ate:` de lá.
  */
-function fetchIssue(issueNumber: number, cwd: string): FetchedIssue {
+function fetchIssue(issueNumber: number, cwd: string, repo?: string): FetchedIssue {
   const result = spawnSync(
     "gh",
-    ["issue", "view", String(issueNumber), "--json", "labels,body"],
+    // #10618 (fatia 4): `repo` = outro repo da allowlist → `-R owner/repo`.
+    ["issue", "view", String(issueNumber), ...(repo ? ["-R", repo] : []), "--json", "labels,body"],
     // Sem `shell: true` de propósito: com array de argumentos ele NÃO escapa
     // nada (só concatena — o Node emite `DEP0190` avisando exatamente isso), e
     // é desnecessário: `spawnSync("gh", [...])` resolve `gh.exe` no Windows
@@ -137,18 +139,21 @@ function main(): void {
     return;
   }
 
-  // #10778: este gate só consulta o diaria-studio (`gh issue view N` sem
-  // `-R`). Entrada de outro repo (`"vjpixel/diaria-design#21"` normaliza pra
-  // `number: 21`) consultaria a studio#21 e daria veredito sobre a issue
-  // errada — fica de fora, com aviso explícito.
-  const { studio, skipped } = partitionStudioPlanEntries(planIssues);
+  // #10778 → #10618 (fatia 4): cada repo é avaliado sozinho, com labels e
+  // corpo buscados NO REPO DELE (`gh issue view N -R owner/repo`). Antes, a
+  // entrada do diaria-design ficava fora com aviso; agora só fica fora a de
+  // repo fora da allowlist `issue_repos` ou de identidade desconhecida.
+  const { groups, unknown } = groupPlanEntriesByRepo(planIssues);
+  const allowedRepos = new Set(loadIssueRepos(cwd));
+  const skipped = [...unknown];
+  for (const g of groups) {
+    if (!allowedRepos.has(g.repo)) skipped.push(...g.entries.map((e) => `${labelInRepo(g.repo, e.number)} (repo fora de issue_repos)`));
+  }
   if (skipped.length > 0) {
     process.stderr.write(
-      `${LOG_PREFIX} ${skipped.length} entrada(s) de outro repo (ou identidade desconhecida) FORA deste gate, ` +
-        `que só consulta o diaria-studio: ${skipped.join(", ")}\n`,
+      `${LOG_PREFIX} ${skipped.length} entrada(s) FORA deste gate (repo fora de issue_repos ou identidade desconhecida): ${skipped.join(", ")}\n`,
     );
   }
-  planIssues = studio;
 
   // Só as issues que ESTA sessão terminou entram no veredito — as demais o
   // gate ignora por design. Buscar as outras seria trabalho jogado fora E
@@ -157,17 +162,42 @@ function main(): void {
   // uma issue "não consultada" (achado do fleet review, #6320). Filtrar aqui
   // colapsa isso pro que de fato importa — num plano de 42 issues com 3
   // mergeadas, são 3 buscas em vez de 42.
-  const toFetch = planIssues.filter(isWorkFinished);
-
-  const states: DevelopGateIssueState[] = [];
+  const result: { ok: boolean; findings: Array<{ label: string; issueArg: string; status: string; developLabels: string[] }>; cleared: string[]; justified: string[] } = {
+    ok: true,
+    findings: [],
+    cleared: [],
+    justified: [],
+  };
+  let statesTotal = 0;
+  let toFetchTotal = 0;
   const fetchErrors: string[] = [];
-  for (const issue of toFetch) {
-    const fetched = fetchIssue(issue.number, cwd);
-    if (fetched.error) {
-      fetchErrors.push(`#${issue.number}: ${fetched.error}`);
-      continue;
+  for (const g of groups) {
+    if (!allowedRepos.has(g.repo)) continue;
+    const repoArg = g.isDefault ? undefined : g.repo;
+    const toFetch = g.entries.filter(isWorkFinished);
+    toFetchTotal += toFetch.length;
+    const states: DevelopGateIssueState[] = [];
+    for (const issue of toFetch) {
+      const fetched = fetchIssue(issue.number, cwd, repoArg);
+      if (fetched.error) {
+        fetchErrors.push(`${labelInRepo(g.repo, issue.number)}: ${fetched.error}`);
+        continue;
+      }
+      states.push(fetched);
     }
-    states.push(fetched);
+    statesTotal += states.length;
+    const r = checkDevelopLabelCleared(g.entries, states);
+    if (!r.ok) result.ok = false;
+    for (const f of r.findings) {
+      result.findings.push({
+        label: labelInRepo(g.repo, f.number),
+        issueArg: g.isDefault ? String(f.number) : `${g.repo}#${f.number}`,
+        status: f.status,
+        developLabels: f.developLabels,
+      });
+    }
+    result.cleared.push(...r.cleared.map((n) => labelInRepo(g.repo, n)));
+    result.justified.push(...r.justified.map((n) => labelInRepo(g.repo, n)));
   }
 
   // Toda busca falhou E havia o que buscar → é rede/CLI, não veredito.
@@ -178,7 +208,7 @@ function main(): void {
   // nada a consultar, e reportar "o gate não rodou" ali seria alarme falso na
   // direção oposta — o gate rodou e concluiu, corretamente, que não havia o
   // que avaliar.
-  if (states.length === 0 && toFetch.length > 0) {
+  if (statesTotal === 0 && toFetchTotal > 0) {
     process.stderr.write(
       `${LOG_PREFIX} nenhuma issue pôde ser consultada via gh (${fetchErrors.length} falha(s)) — ` +
         `fail-soft (#738), exit 0. NÃO é um veredito de "sem resíduo": o gate não rodou.\n` +
@@ -193,11 +223,11 @@ function main(): void {
     );
   }
 
-  const result = checkDevelopLabelCleared(planIssues, states);
+
 
   for (const j of result.justified) {
     process.stdout.write(
-      `${LOG_PREFIX} #${j}: segue em Develop com justificativa explícita (develop_track_justificado) — ok\n`,
+      `${LOG_PREFIX} ${j}: segue em Develop com justificativa explícita (develop_track_justificado) — ok\n`,
     );
   }
 
@@ -208,10 +238,11 @@ function main(): void {
     // podia ser exatamente a que deu timeout. É literalmente a doença que o
     // #6303 acabou de corrigir no guard de merge — "estado indeterminado nunca
     // vira aprovação implícita" — reintroduzida aqui pelo caminho parcial.
-    const ressalva =
-      fetchErrors.length > 0
-        ? ` — ATENÇÃO: ${fetchErrors.length} issue(s) NÃO consultada(s) (ver stderr acima), FORA deste veredito`
-        : "";
+    const ressalvas = [
+      ...(fetchErrors.length > 0 ? [`${fetchErrors.length} issue(s) NÃO consultada(s) (ver stderr acima), FORA deste veredito`] : []),
+      ...(skipped.length > 0 ? [`${skipped.length} entrada(s) FORA deste gate (repo fora de issue_repos/identidade desconhecida)`] : []),
+    ];
+    const ressalva = ressalvas.length > 0 ? ` — ATENÇÃO: ${ressalvas.join("; ")}` : "";
     process.stdout.write(
       `${LOG_PREFIX} ok — ${result.cleared.length} issue(s) terminada(s) confirmada(s) sem resíduo${ressalva}.\n`,
     );
@@ -224,9 +255,9 @@ function main(): void {
   );
   for (const f of result.findings) {
     process.stdout.write(
-      `  #${f.number} (status: ${f.status}) — label(s) que mantêm em Develop: ${f.developLabels.join(", ") || "(nenhuma; ver corpo)"}\n` +
+      `  ${f.label} (status: ${f.status}) — label(s) que mantêm em Develop: ${f.developLabels.join(", ") || "(nenhuma; ver corpo)"}\n` +
         `     A razão que a trouxe pro Develop ainda existe? Se NÃO:\n` +
-        `       npx tsx scripts/route-issue.ts --issue ${f.number} --track {overnight|bloqueada} --reason "..."\n` +
+        `       npx tsx scripts/route-issue.ts --issue ${f.issueArg} --track {overnight|bloqueada} --reason "..."\n` +
         `     Se SIM (ex: parte 2 segue exigindo Chrome logado), grave o porquê em\n` +
         `     develop_track_justificado no plan.json desta issue.\n`,
     );

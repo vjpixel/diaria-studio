@@ -79,7 +79,11 @@ describe("#10778 — check-develop-label-cleared não julga a studio#21 pela des
     assert.deepEqual(r.cleared, [4800], "a studio#21 nunca entra como 'limpa' em nome da design#21");
   });
 
-  it("CLI: plan só com entrada de outro repo avisa em stderr e não consulta nada", () => {
+  // #10618 (fatia 4): o gate passou a consultar a entrada do design NO REPO
+  // DELA (`gh issue view 21 -R vjpixel/diaria-design`), em vez de pular. Sem
+  // `gh` no PATH a consulta falha, e a falha é rotulada pela chave do design,
+  // nunca como a studio#21.
+  it("CLI: plan só com entrada de outro repo consulta o repo dela e rotula por owner/repo#N", () => {
     const dir = mkdtempSync(join(tmpdir(), "plan-10778-"));
     try {
       const planPath = join(dir, "plan.json");
@@ -92,18 +96,21 @@ describe("#10778 — check-develop-label-cleared não julga a studio#21 pela des
         { cwd: ROOT, encoding: "utf8", env: { ...process.env, PATH: dir } },
       );
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stderr, /FORA deste gate.*vjpixel\/diaria-design#21/);
-      assert.doesNotMatch(r.stderr, /não consultada|nenhuma issue pôde ser consultada/);
+      assert.match(r.stderr, /nenhuma issue pôde ser consultada/);
+      assert.match(r.stderr, /vjpixel\/diaria-design#21: /);
+      assert.doesNotMatch(r.stderr, /(?<!diaria-design)#21\b/, "nenhuma menção à studio#21 crua");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 });
 
-describe("#10778 — todo gate de fim de rodada que consulta por número avisa e pula a entrada de outro repo", () => {
-  // `check-block-staleness.ts` saiu desta lista na fatia 3 do #10618: passou a
-  // consultar a entrada do diaria-design no repo dela (`-R`) em vez de pular —
-  // coberto em `test/issue-key-10618-fatia3.test.ts`.
+describe("#10778 → #10618 fatia 4 — gate de fim de rodada consulta a entrada de outro repo no repo dela", () => {
+  // `check-block-staleness.ts` saiu desta lista na fatia 3 do #10618; os dois
+  // abaixo, na fatia 4: em vez de pular com aviso, avaliam o grupo do
+  // diaria-design buscando no repo dele (`-R`). Sem `gh` no PATH a busca
+  // falha — o que importa aqui é que a entrada é nomeada pela chave do
+  // design e nunca vira a studio#21.
   const GATES = [
     "scripts/check-overnight-comment-coverage.ts",
     "scripts/check-decision-label-drift-gate.ts",
@@ -116,7 +123,7 @@ describe("#10778 — todo gate de fim de rodada que consulta por número avisa e
         writeFileSync(
           planPath,
           JSON.stringify({
-            issues: { "vjpixel/diaria-design#21": { status: "pulada", motivo: "claimed-por-outra-sessao" } },
+            issues: { "vjpixel/diaria-design#21": { status: "pulada", motivo: "bloqueio-externo" } },
           }),
         );
         const r = spawnSync(process.execPath, ["--import", "tsx", join(ROOT, gate), "--plan", planPath], {
@@ -124,7 +131,9 @@ describe("#10778 — todo gate de fim de rodada que consulta por número avisa e
           encoding: "utf8",
           env: { ...process.env, PATH: dir },
         });
-        assert.match(r.stderr, /FORA desta checagem.*vjpixel\/diaria-design#21/, r.stderr);
+        assert.equal(r.status, 0, r.stderr);
+        assert.match(r.stderr, /vjpixel\/diaria-design/, r.stderr);
+        assert.doesNotMatch(r.stderr, /FORA desta checagem/, "a entrada do design não é mais pulada");
         assert.doesNotMatch(r.stderr, /(?<!diaria-design)#21\b/, "nenhuma menção à studio#21 crua");
       } finally {
         rmSync(dir, { recursive: true, force: true });

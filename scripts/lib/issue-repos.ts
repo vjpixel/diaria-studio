@@ -235,3 +235,33 @@ export function loadIssueRepos(repoRoot: string, warn: (detail: string) => void 
   }
   return readIssueRepos(config, warn);
 }
+
+/**
+ * `--repo owner/name` dos gates de PR que autorizam merge (#10618, fatia 4):
+ * o PR de uma issue do diaria-design mora no diaria-design, e um gate que
+ * consultasse `gh pr view N` sem `-R` daria o veredito do PR #N do studio.
+ * Ausente → `undefined` (o diaria-studio, chamada de sempre). Presente sem
+ * valor, ilegível ou fora da allowlist `issue_repos` → `{ error }` (o gate
+ * sai com erro de uso, nunca cai no default em silêncio). O repo default
+ * explícito também devolve `undefined`.
+ */
+export function resolveRepoFlag(
+  values: Record<string, string | undefined>,
+  flags: ReadonlySet<string>,
+  repoRoot: string,
+): { repo: string | undefined } | { error: string } {
+  if (flags.has("repo") || values.repo === "") return { error: "--repo sem valor (esperado owner/name)" };
+  if (values.repo === undefined) return { repo: undefined };
+  const slug = normalizeRepoSlug(values.repo);
+  if (!slug) return { error: `--repo inválido: "${values.repo}" (esperado owner/name)` };
+  if (slug === DEFAULT_ISSUE_REPO) return { repo: undefined };
+  if (!loadIssueRepos(repoRoot).includes(slug)) {
+    return { error: `--repo ${slug} está fora de platform.config.json → issue_repos` };
+  }
+  return { repo: slug };
+}
+
+/** Rótulo de PR pra mensagem: `PR #N` no studio, `owner/repo PR #N` nos outros. */
+export function prLabelInRepo(prNumber: number, repo: string | undefined): string {
+  return repo ? `${repo} PR #${prNumber}` : `PR #${prNumber}`;
+}

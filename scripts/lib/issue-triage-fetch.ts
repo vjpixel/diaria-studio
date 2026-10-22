@@ -37,10 +37,10 @@
  * #7018, só que na varredura incremental em vez da varredura completa que o
  * item 2 já fechou para overnight/develop.
  *
- * **Multi-repo (#10618, fatia 2) — OPT-IN.** Sem `opts.repos`, varre SÓ o
- * repo default (`vjpixel/diaria-studio`): overnight, contínuo e zerar-fila
- * recebem exatamente a fila de antes, porque ~15 gates e consumidores ainda
- * leem `number` como número do studio (fatia 3). Com `opts.repos` (o CLI
+ * **Multi-repo (#10618).** Sem `opts.repos`, varre SÓ o repo default
+ * (`vjpixel/diaria-studio`), o que o zerar-fila usa. Desde a fatia 4 o
+ * overnight, o contínuo e o develop passam `--repos all` por padrão. Com
+ * `opts.repos` (o CLI
  * resolve `--repos all`/lista via `resolveTriageRepos`, validada contra
  * `platform.config.json → issue_repos`), varre também os repos pedidos — o
  * default sempre primeiro. Toda chamada leva `-R owner/repo`, inclusive a do

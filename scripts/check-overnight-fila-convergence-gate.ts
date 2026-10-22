@@ -41,6 +41,12 @@
  * elegível, ou `pulada` com motivo do vocabulário de `overnight-plan-motivo.ts`)
  * antes de repetir a checagem.
  *
+ * **Multi-repo (#10618, fatia 4):** além do diaria-studio, varre todo repo
+ * de `platform.config.json → issue_repos` (`scanForeignConvergence`, a mesma
+ * fonte do gate da Fase 2), mesmo sem entrada dele no plano — o diaria-design
+ * entra por padrão na fila da rodada. Issue nova de lá sai como
+ * `owner/repo#N`; repo não varrido vira `ok PARCIAL`, nunca "confirmada".
+ *
  * Uso (chamado pelo coordenador toda vez que a Fase 1 passo 1 esvaziar a fila):
  *   npx tsx scripts/check-overnight-fila-convergence-gate.ts --plan data/overnight/{AAMMDD}/plan.json
  *
@@ -56,7 +62,7 @@ import {
   recordConvergenceScan,
   type PlanWithGoal,
 } from "./lib/state-changed-tracker.ts";
-import { fetchOpenIssuesForConvergence } from "./check-state-changed-pending.ts";
+import { fetchOpenIssuesForConvergence, scanForeignConvergence } from "./check-state-changed-pending.ts";
 
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
@@ -97,14 +103,36 @@ if (isMainModule(import.meta.url)) {
   }
 
   const convergence = checkConvergenceScan(planRaw as PlanWithGoal, fetched.issues);
-  recordConvergenceScan(planPath, convergence.novas_encontradas);
+  // #10618 (fatia 4): o diaria-design (e todo repo de `issue_repos`) entra
+  // por padrão na fila da rodada, então a convergência varre também esses
+  // repos — antes este gate era só-studio e uma issue nova do design criada
+  // no meio da rodada passava sem ser vista.
+  const foreign = scanForeignConvergence(planRaw as PlanWithGoal, process.cwd());
+  recordConvergenceScan(
+    planPath,
+    convergence.novas_encontradas + foreign.missing.length,
+    undefined,
+    foreign.notScanned,
+  );
+  if (foreign.notScanned.length > 0) {
+    console.error(
+      `[check-overnight-fila-convergence-gate] re-scan NÃO executado para: ${foreign.notScanned.join("; ")} (#10618 — issue nova desses repos não foi checada)`,
+    );
+  }
 
-  if (convergence.status === "ok") {
-    console.log("ok — convergência confirmada: nenhuma issue nova/fora do conjunto conhecido em gh issue list.");
+  const studioMissing = convergence.status === "missing" ? convergence.issues : [];
+  if (studioMissing.length === 0 && foreign.missing.length === 0) {
+    if (foreign.notScanned.length > 0) {
+      console.log(
+        "ok PARCIAL — nenhuma issue nova nos repos varridos; os repos NÃO varridos acima ficam como convergência NÃO confirmada.",
+      );
+    } else {
+      console.log("ok — convergência confirmada: nenhuma issue nova/fora do conjunto conhecido em gh issue list.");
+    }
     process.exit(0);
   }
 
-  const list = convergence.issues.map((n) => `#${n}`).join(", ");
+  const list = [...studioMissing.map((n) => `#${n}`), ...foreign.missing].join(", ");
   console.error(
     `[check-overnight-fila-convergence-gate] issue(s) nova(s) fora de goal.target_set/tiers/issues[]: ${list} — classifique cada uma (mid-round elegível OU pulada com motivo válido) antes de declarar a fila esgotada.`,
   );

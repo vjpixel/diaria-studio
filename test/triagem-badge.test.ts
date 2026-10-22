@@ -70,7 +70,7 @@ for (const key of ["document", "window", "fetch"]) {
 // chaveada por arquivo+código, então um arquivo de teste NOVO precisa
 // suprimir localmente em vez de herdar a entrada já aceita de outro arquivo).
 // @ts-expect-error TS7016
-const { dispatchBadge, claimBadge, reasonCell } = await import("../scripts/studio-ui/public/triagem.js");
+const { dispatchBadge, claimBadge, reasonCell, issueRowHtml, prRowHtml } = await import("../scripts/studio-ui/public/triagem.js");
 
 after(() => {
   for (const [key, value] of Object.entries(originals)) {
@@ -285,5 +285,35 @@ describe("triagem.js claimBadge — #6436 visibilidade de claim ativo", () => {
     const html = claimBadge({ kind: "overnight", machineTag: "neo", sessionId: "x", claimedAt: null, stale: false });
     assert.match(html, />em andamento — overnight-neo</);
     assert.ok(!html.includes("claim-stale"));
+  });
+});
+
+describe("triagem.js — #10618 fatia 4: item de outro repo exibe owner/repo#N", () => {
+  const base = {
+    number: 21,
+    url: "https://example.test/x",
+    title: "t",
+    execTrack: "overnight",
+    execTrackMatched: "default",
+    claim: null,
+    priority: null,
+    createdAt: null,
+    updatedAt: null,
+    execTrackWaitUntilLabel: null,
+    execTrackReason: null,
+  };
+
+  it("issue do studio continua #N; a do design mostra o ref", () => {
+    assert.match(issueRowHtml(base), />#21<\/a>/);
+    assert.match(
+      issueRowHtml({ ...base, repo: "vjpixel/diaria-design", ref: "vjpixel/diaria-design#21" }),
+      />vjpixel\/diaria-design#21<\/a>/,
+    );
+  });
+
+  it("PR do design mostra o ref", () => {
+    const pr = { number: 23, url: "u", title: "p", isDraft: false, track: "develop", priority: null, ciState: "none", reviewDecision: null, updatedAt: null };
+    assert.match(prRowHtml(pr), />#23<\/a>/);
+    assert.match(prRowHtml({ ...pr, ref: "vjpixel/diaria-design#23" }), />vjpixel\/diaria-design#23<\/a>/);
   });
 });

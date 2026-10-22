@@ -604,10 +604,11 @@ export function trustedCommentBodiesFromIssueViewJson(stdout: string): string[] 
  *
  * Desde o #9752 devolve só comentários de autor confiável — ver
  * `trustedCommentBodiesFromIssueViewJson`. */
-export function fetchCommentBodies(issueNumber: number, cwd: string): string[] {
+export function fetchCommentBodies(issueNumber: number, cwd: string, repo?: string): string[] {
+  // #10618 (fatia 4): `repo` = outro repo da allowlist → `-R owner/repo`.
   const result = spawnSync(
     "gh",
-    ["issue", "view", String(issueNumber), "--json", "comments"],
+    ["issue", "view", String(issueNumber), ...(repo ? ["-R", repo] : []), "--json", "comments"],
     { cwd, encoding: "utf8", timeout: 15_000 },
   );
   if (result.status !== 0 || !result.stdout) return [];
