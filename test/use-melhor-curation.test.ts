@@ -33,6 +33,7 @@ import {
   estimateUseMelhorTempo,
   estimateUseMelhorTempoDetailed, // #6739
   isEnglishBody, // #10765
+  countTutorialSteps, // #10765
   roundToReadingMinutesBucket, // #6739
   extractPlainTextFromHtml, // #6739
   countWords, // #6739
@@ -2344,6 +2345,22 @@ describe("estimateUseMelhorTempoDetailed (#6739) — causa raiz: 60% saía em (5
     assert.equal(pt.estimate, "(10 min)");
     assert.equal(en.estimate, "(15 min)");
     assert.equal(en.source, "wordcount");
+  });
+
+  it("#10765: tutorial passo a passo estima tempo de EXECUÇÃO (source steps), não só leitura", () => {
+    const words = new Array(400).fill("palavra").join(" ");
+    const lis = new Array(8).fill("<li>passo</li>").join("");
+    const html = `<html lang="pt-BR"><body><p>${words}</p><ol>${lis}</ol></body></html>`;
+    assert.equal(countTutorialSteps(html), 8);
+    const r = estimateUseMelhorTempoDetailed("Guia", "https://example.com/a", html);
+    assert.equal(r.source, "steps");
+    assert.equal(r.estimate, "(20 min)"); // 8 passos * 3 = 24 → bucket 20; leitura seria 5
+  });
+
+  it("#10765: poucos passos (<4) mantêm wordcount", () => {
+    const words = new Array(400).fill("palavra").join(" ");
+    const html = `<html lang="pt"><body><p>${words}</p><ol><li>a</li><li>b</li></ol></body></html>`;
+    assert.equal(estimateUseMelhorTempoDetailed("Guia", "https://example.com/a", html).source, "wordcount");
   });
 
   it("#10765: sem atributo lang, detecta inglês pelo texto", () => {

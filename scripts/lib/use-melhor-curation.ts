@@ -773,7 +773,7 @@ const MEDIUM_TUTORIAL_RE =
  * pelo caller em `_internal/use-melhor-tempo-source.json` pra medir depois
  * quanto ainda sai de placeholder de título (ver `estimateUseMelhorTempoDetailed`).
  */
-export type UseMelhorTempoSource = "wordcount" | "youtube" | "title-heuristic";
+export type UseMelhorTempoSource = "wordcount" | "youtube" | "steps" | "title-heuristic";
 
 /** #6739: velocidade de leitura assumida para PT-BR (palavras por minuto). */
 const WORDS_PER_MINUTE_PTBR = 200;
@@ -793,6 +793,25 @@ export function isEnglishBody(html: string, text: string): boolean {
   const m = html.match(/<html[^>]*\blang\s*=\s*["']?([a-zA-Z]{2})/i);
   if (m) return m[1].toLowerCase() === "en";
   return looksEnglish(text.slice(0, 5000));
+}
+
+/** #10765: minutos assumidos por passo ao EXECUTAR um tutorial passo a passo. */
+const MINUTES_PER_TUTORIAL_STEP = 3;
+/** #10765: abaixo disso a página não é "passo a passo" — só leitura conta. */
+const TUTORIAL_MIN_STEPS = 4;
+
+/**
+ * #10765: conta passos de um tutorial no HTML — itens `<li>` dentro de `<ol>`
+ * ou headings "Step N"/"Passo N". Pega o maior dos dois (evita somar a mesma
+ * lista duas vezes). Puro.
+ */
+export function countTutorialSteps(html: string): number {
+  let olItems = 0;
+  for (const ol of html.matchAll(/<ol\b[\s\S]*?<\/ol>/gi)) {
+    olItems += (ol[0].match(/<li\b/gi) ?? []).length;
+  }
+  const headings = (html.match(/<h[1-4][^>]*>\s*(?:step|passo|etapa)\s*\d+/gi) ?? []).length;
+  return Math.max(olItems, headings);
 }
 
 /**
@@ -918,8 +937,14 @@ export function estimateUseMelhorTempoDetailed(
     const words = countWords(text);
     if (words >= WORD_COUNT_MIN_THRESHOLD) {
       const ppm = isEnglishBody(bodyHtml, text) ? WORDS_PER_MINUTE_EN_FOR_PTBR_READER : WORDS_PER_MINUTE_PTBR;
-      const minutes = roundToReadingMinutesBucket(words / ppm);
-      return { estimate: `(${minutes} min)`, source: "wordcount" };
+      const readingMinutes = words / ppm;
+      // #10765: tutorial passo a passo → tempo de EXECUÇÃO (não só leitura).
+      const steps = countTutorialSteps(bodyHtml);
+      const execMinutes = steps >= TUTORIAL_MIN_STEPS ? steps * MINUTES_PER_TUTORIAL_STEP : 0;
+      if (execMinutes > readingMinutes) {
+        return { estimate: `(${roundToReadingMinutesBucket(execMinutes)} min)`, source: "steps" };
+      }
+      return { estimate: `(${roundToReadingMinutesBucket(readingMinutes)} min)`, source: "wordcount" };
     }
   }
   return { estimate: estimateUseMelhorTempoTitleHeuristic(title, url), source: "title-heuristic" };

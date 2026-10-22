@@ -17,9 +17,10 @@
  *      que fica vazia é removida (header + `---`); headers singular/plural
  *      ajustados à contagem nova (LANÇAMENTO/LANÇAMENTOS, VÍDEO/VÍDEOS);
  *   2. tempo de leitura: indo pro USE MELHOR sem "(N min)" na descrição, exige
- *      `--tempo N` (minutos, informado pelo editor) e anexa " (N min)". O
- *      script NÃO estima tempo — tempo sem fonte é exatamente o chute que o
- *      editor teve que fazer em 261006. Saindo do USE MELHOR, o "(N min)" do
+ *      `--tempo N` (minutos) e anexa " (N min)". Sem `--tempo` (#10765), o CLI
+ *      busca o corpo da página e MEDE (`measureTempoForMove`: wordcount/
+ *      youtube/passos), registrando a fonte pro gate; sem corpo, cai na
+ *      heurística de título COM aviso (nunca silencioso). Saindo do USE MELHOR, o "(N min)" do
  *      fim da descrição é removido (as outras seções não usam);
  *   3. intro "selecionei os N": recalculada se a contagem real mudou
  *      (`replaceIntroClaimedCount`, mesma fonte do invariante);
@@ -45,7 +46,7 @@
  * Exit: 0 ok; 2 uso errado ou movimento recusado (nada gravado).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgsWithTrueDefault, isMainModule } from "./lib/cli-args.ts";
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts";
@@ -60,6 +61,9 @@ import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts";
 import { countSelectedItems, lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts";
 import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts";
 import { readUseMelhorPostState } from "./lib/use-melhor-post.ts";
+import { estimateUseMelhorTempoDetailed } from "./lib/use-melhor-curation.ts";
+import { loadCachedBody } from "./lib/url-body-cache.ts";
+import { fetchBodyForCache } from "./stitch-newsletter.ts";
 
 export const POOL_BUCKETS: readonly SectionBucket[] = ["lancamento", "radar", "use_melhor", "video"];
 
@@ -329,8 +333,8 @@ export function moveItemInReviewedMd(
   if (to === "use_melhor" && !USE_MELHOR_TEMPO_RE.test(block.join(" "))) {
     if (opts.tempo === undefined) {
       throw new Error(
-        `o item vai pro USE MELHOR sem tempo de leitura na descrição — passe --tempo N (minutos). ` +
-          `O script não estima tempo (lint use-melhor-tempo, #2372).`,
+        `o item vai pro USE MELHOR sem tempo de leitura na descrição — passe --tempo N (minutos) ` +
+          `(o CLI mede sozinho quando --tempo é omitido; lint use-melhor-tempo, #2372).`,
       );
     }
     tempoAdded = `(${opts.tempo} min)`;
@@ -473,7 +477,43 @@ export function movePoolItem(
   };
 }
 
-function main(): void {
+/**
+ * #10765 item 1: sem `--tempo`, busca o corpo da página e MEDE (wordcount/
+ * youtube/steps) em vez de exigir chute. Registra a fonte em
+ * `_internal/use-melhor-tempo-source.json` pro gate do Stage 4 distinguir
+ * medido de "estimado por título". Fail-soft: sem corpo, cai na heurística de
+ * título (source `title-heuristic`, sinalizado no gate).
+ */
+export async function measureTempoForMove(
+  editionDir: string,
+  url: string,
+  dryRun = false,
+): Promise<{ tempo: number; source: string; title: string }> {
+  const md = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8").replace(/\r\n/g, "\n").split("\n");
+  const found = locatePoolItem(md, url);
+  const title = md[found.block.start].match(/\[([^\]]+)\]\(/)?.[1] ?? "";
+  const bodiesDir = resolve(editionDir, "_internal", "_forensic", "link-verify-bodies");
+  const body = loadCachedBody(bodiesDir, url) ?? (await fetchBodyForCache(bodiesDir, url));
+  const { estimate, source } = estimateUseMelhorTempoDetailed(title, url, body);
+  const tempo = Number(estimate.match(/\d+/)![0]);
+  if (!dryRun) {
+    const artifact = resolve(editionDir, "_internal", "use-melhor-tempo-source.json");
+    let entries: unknown[] = [];
+    try {
+      const parsed = JSON.parse(readFileSync(artifact, "utf8"));
+      if (Array.isArray(parsed)) entries = parsed;
+    } catch {
+      // artifact ausente/inválido: recomeça a lista.
+    }
+    entries = entries.filter((e) => (e as { url?: string }).url !== url);
+    entries.push({ url, title, estimate, source });
+    mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+    writeFileSync(artifact, JSON.stringify(entries, null, 2), "utf8");
+  }
+  return { tempo, source, title };
+}
+
+async function main(): Promise<void> {
   const args = parseArgsWithTrueDefault(process.argv.slice(2));
   const editionDir = args["edition-dir"];
   const url = args.url;
@@ -494,7 +534,22 @@ function main(): void {
     }
   }
   try {
-    const result = movePoolItem(resolve(editionDir), url, to, { tempo, dryRun: args["dry-run"] === "true" });
+    const dryRun = args["dry-run"] === "true";
+    const measureWarnings: string[] = [];
+    if (to === "use_melhor" && tempo === undefined) {
+      const mdText = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8");
+      const lines = mdText.replace(/\r\n/g, "\n").split("\n");
+      const found = locatePoolItem(lines, url);
+      if (!USE_MELHOR_TEMPO_RE.test(lines.slice(found.block.start, found.block.end).join(" "))) {
+        const m = await measureTempoForMove(resolve(editionDir), url, dryRun);
+        tempo = m.tempo;
+        if (m.source === "title-heuristic") {
+          measureWarnings.push(`tempo (${m.tempo} min) ESTIMADO POR TÍTULO — corpo da página não mediu; confira no gate.`);
+        }
+      }
+    }
+    const result = movePoolItem(resolve(editionDir), url, to, { tempo, dryRun });
+    for (const w of measureWarnings) console.error(`⚠️  ${w}`);
     for (const w of result.warnings) console.error(`⚠️  ${w}`);
     console.log(JSON.stringify(result, null, 2));
   } catch (e) {
@@ -503,4 +558,4 @@ function main(): void {
   }
 }
 
-if (isMainModule(import.meta.url)) main();
+if (isMainModule(import.meta.url)) main().catch((e) => { console.error(`move-pool-item: ${(e as Error).message}`); process.exit(2); });

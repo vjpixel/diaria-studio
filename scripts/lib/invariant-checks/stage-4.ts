@@ -964,6 +964,70 @@ function checkUseMelhorTempoTitleHeuristicShare(editionDir: string): InvariantVi
 }
 
 /**
+ * #10765 itens 4 e 6: warning INDIVIDUAL por item USE MELHOR sem tempo medido —
+ * (a) estimado por título (`title-heuristic` no artifact) ou (b) sem fonte de
+ * medição nenhuma (item inserido/movido à mão no gate, ausente do artifact).
+ * O agregado `use-melhor-tempo-title-heuristic-share` só dava contagem; aqui o
+ * editor vê QUAIS títulos conferir. Warning-only, fail-soft (mesma disciplina
+ * do #7668).
+ */
+export function checkUseMelhorTempoItemSemMedicao(editionDir: string): InvariantViolation[] {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(reviewedPath)) return [];
+  let md: string;
+  try {
+    md = readFileSync(reviewedPath, "utf8");
+  } catch {
+    return [];
+  }
+  const items: { title: string; url: string }[] = [];
+  let inSection = false;
+  for (const raw of md.replace(/\r\n/g, "\n").split("\n")) {
+    const t = raw.trim();
+    if (/^\*\*.*USE\s+MELHOR.*\*\*$/u.test(t)) {
+      inSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+    if (t === "---" || /^\*\*[^[\]]+\*\*$/u.test(t)) {
+      inSection = false;
+      continue;
+    }
+    const m = t.match(/^\*\*\[([^\]]+)\]\((\S+?)\)\*\*/);
+    if (m) items.push({ title: m[1], url: m[2] });
+  }
+  if (items.length === 0) return [];
+  const artifact = resolve(editionDir, "_internal", "use-melhor-tempo-source.json");
+  const sources = new Map<string, string>();
+  try {
+    const parsed = JSON.parse(readFileSync(artifact, "utf8"));
+    if (Array.isArray(parsed)) {
+      for (const e of parsed as { url?: string; source?: string }[]) {
+        if (e.url && e.source) sources.set(e.url, e.source);
+      }
+    }
+  } catch {
+    // artifact ausente/inválido: nenhum item tem fonte registrada.
+  }
+  const out: InvariantViolation[] = [];
+  for (const it of items) {
+    const source = sources.get(it.url);
+    if (source && source !== "title-heuristic") continue;
+    out.push({
+      rule: "use-melhor-tempo-item-sem-medicao",
+      message: source
+        ? `USE MELHOR "${it.title}": tempo ESTIMADO POR TÍTULO (corpo não medido) — conferir o "(N min)" no gate.`
+        : `USE MELHOR "${it.title}": sem fonte de medição do tempo (item inserido/movido à mão) — ` +
+          `conferir o "(N min)" ou re-medir com move-pool-item.ts sem --tempo.`,
+      source_issue: "#10765",
+      severity: "warning",
+      file: reviewedPath,
+    });
+  }
+  return out;
+}
+
+/**
  * #2377/#2411/#2419/#6734 (rewrite): detecta quando a fonte do reveal para a PRÓXIMA
  * edição seria inválida — genérica, catalog-shaped (label interno "DESTAQUE N"), sem
  * o prefixo temporal correto, ou agramatical.
@@ -3557,6 +3621,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#7668",
     stage: 4,
     run: checkUseMelhorTempoTitleHeuristicShare,
+  },
+  {
+    id: "use-melhor-tempo-item-sem-medicao",
+    description: "warning individual por item USE MELHOR com tempo estimado por título ou sem fonte de medição (#10765)",
+    source_issue: "#10765",
+    stage: 4,
+    run: checkUseMelhorTempoItemSemMedicao,
   },
   {
     id: "narrative-not-generic-placeholder",
