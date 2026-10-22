@@ -54,7 +54,7 @@ export interface RenderDestaque extends BaseDestaque {
   imageGenerator?: string;
   /** #10784: só no D1 — a imagem vira link pro vídeo do dia (ou pro canal) e a
    * legenda vira o convite. Ausente → hero sem link, legenda de crédito. */
-  videoLink?: { href: string; caption: string; kind: "video" | "channel" };
+  videoLink?: { href: string; kind: "video" | "channel" };
   /** #10784: arquivo do hero quando difere do default `04-d{N}-2x1.jpg`
    * (cópia com play do D1, `04-d1-2x1-play.jpg`, quando existe no disco). */
   heroFile?: string;

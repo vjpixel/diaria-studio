@@ -1,8 +1,8 @@
 /**
  * scripts/lib/diaria/d1-play-image.ts (#10784)
  *
- * Gera `04-d1-2x1-play.jpg`: cópia do hero do D1 com o ícone de play
- * desenhado (`buildPlayIconSvg`), só para a newsletter. O hero original
+ * Gera `04-d1-2x1-play.jpg`: cópia do hero do D1 com o convite escrito
+ * (`buildInviteSvg`, sem ícone de play), só para a newsletter. O hero original
  * (`04-d1-2x1.jpg`) nunca é tocado — as redes seguem usando ele.
  *
  * Artefato derivado: regera quando o hero muda (md5 carimbado em
@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { md5OfFile } from "../shared/file-md5.ts";
-import { D1_HERO_FILE, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, buildPlayIconSvg } from "./d1-video-hero.ts";
+import { D1_HERO_FILE, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, buildInviteSvg } from "./d1-video-hero.ts";
 
 export type D1PlayImageResult =
   | { status: "generated" | "fresh"; path: string }
@@ -37,12 +37,12 @@ function readStampMd5(stampPath: string): string | null {
   }
 }
 
-/** Compõe o play sobre o hero e devolve o JPEG. */
+/** Compõe o convite sobre o hero e devolve o JPEG. */
 export async function renderD1PlayImage(heroBytes: Buffer): Promise<Buffer> {
   const img = sharp(heroBytes);
   const meta = await img.metadata();
   if (!meta.width || !meta.height) throw new Error("hero do D1 sem dimensões legíveis");
-  const svg = Buffer.from(buildPlayIconSvg(meta.width, meta.height));
+  const svg = Buffer.from(buildInviteSvg(meta.width, meta.height));
   return img.composite([{ input: svg, top: 0, left: 0 }]).jpeg({ quality: 88 }).toBuffer();
 }
 

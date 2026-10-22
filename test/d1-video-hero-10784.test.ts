@@ -11,11 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import {
-  D1_CHANNEL_CAPTION,
+  D1_INVITE_TEXT,
   D1_PLAY_HERO_FILE,
-  D1_VIDEO_CAPTION,
   buildD1VideoLink,
-  buildPlayIconSvg,
+  buildInviteSvg,
   editionFromDir,
 } from "../scripts/lib/diaria/d1-video-hero.ts";
 import { ensureD1PlayImage } from "../scripts/lib/diaria/d1-play-image.ts";
@@ -54,7 +53,6 @@ describe("#10784 — link da imagem do D1", () => {
   it("vídeo do dia: URL do vídeo + UTM video-d1-{AAMMDD} + convite", () => {
     const l = buildD1VideoLink("https://youtu.be/abcdefghijk", "261022");
     assert.equal(l.kind, "video");
-    assert.equal(l.caption, D1_VIDEO_CAPTION);
     const u = new URL(l.href);
     assert.equal(u.origin + u.pathname, "https://youtu.be/abcdefghijk");
     assert.equal(u.searchParams.get("utm_source"), "newsletter");
@@ -65,7 +63,6 @@ describe("#10784 — link da imagem do D1", () => {
   it("sem URL do vídeo: aponta pro canal @diariabr, com a mesma UTM", () => {
     const l = buildD1VideoLink(null, "261022");
     assert.equal(l.kind, "channel");
-    assert.equal(l.caption, D1_CHANNEL_CAPTION);
     const u = new URL(l.href);
     assert.equal(u.origin + u.pathname, "https://www.youtube.com/@diariabr");
     assert.equal(u.searchParams.get("utm_campaign"), "video-d1-261022");
@@ -122,7 +119,7 @@ describe("#10784 — fonte da URL e arquivo do hero (d1VideoHeroFields)", () => 
 describe("#10784 — render do hero", () => {
   const link = buildD1VideoLink("https://youtu.be/abcdefghijk", "261022");
 
-  it("D1: imagem com play embrulhada no link do vídeo, legenda = só o convite", () => {
+  it("D1: imagem com o convite embrulhada no link do vídeo, legenda = crédito padrão (sem link)", () => {
     const html = renderDestaque(destaque(1, { videoLink: link, heroFile: D1_PLAY_HERO_FILE }));
     const hrefEsc = link.href.replace(/&/g, "&amp;");
     assert.ok(
@@ -130,8 +127,9 @@ describe("#10784 — render do hero", () => {
       "o <a> do vídeo precisa envolver a imagem do D1",
     );
     assert.match(html, /<a class="hero-video"[^>]*><img class="hero" src="\{\{IMG:04-d1-2x1-play\.jpg\}\}"/);
-    assert.ok(html.includes(D1_VIDEO_CAPTION));
-    assert.ok(!/Criada com/.test(html), "crédito da ferramenta sai da legenda do D1 (fica no rodapé, #10783)");
+    assert.ok(/Criada com/.test(html), "legenda do D1 volta a ser o crédito padrão, como no D2/D3");
+    assert.ok(!/Clique na imagem/.test(html), "o convite está escrito na imagem, não na legenda");
+    assert.ok(/<p [^>]*>Imagem criada com|<p [^>]*>[^<]*Criada com/i.test(html), "crédito é texto puro, sem <a>");
     assert.ok(!/[←→]/.test(html), "sem seta no que chega ao leitor (#9721)");
   });
 
@@ -157,7 +155,7 @@ describe("#10784 — render do hero", () => {
 });
 
 describe("#10784 — cópia do hero com play", () => {
-  it("gera a cópia sem tocar no hero; play branco no centro; regera só quando o hero muda", async () => {
+  it("gera a cópia sem tocar no hero; sem play no centro, faixa do convite embaixo; regera só quando o hero muda", async () => {
     const { root, dir } = editionDir();
     try {
       await writeHero(dir);
@@ -171,10 +169,12 @@ describe("#10784 — cópia do hero com play", () => {
       const meta = await sharp(playPath).metadata();
       assert.equal(meta.width, 400);
       assert.equal(meta.height, 200);
-      // Ponto dentro do círculo e fora do triângulo (à esquerda dele): branco.
+      // Sem ícone de play: o centro segue com a arte original (R=40).
       const { data, info } = await sharp(playPath).raw().toBuffer({ resolveWithObject: true });
       const px = (x: number, y: number) => data[(y * info.width + x) * info.channels];
-      assert.ok(px(200 - 30, 100) > 200, `pixel no círculo deveria ser claro, veio ${px(170, 100)}`);
+      assert.ok(px(200 - 30, 100) < 60, `centro não pode ter play, veio ${px(170, 100)}`);
+      // Faixa de tinta (#171411 a 82%) na parte de baixo: R cai de 40 para ~26.
+      assert.ok(px(45, 172) < 33, `faixa do convite deveria escurecer a base, veio ${px(45, 172)}`);
       assert.ok(px(10, 10) < 100, "canto segue com a arte original");
 
       const r2 = await ensureD1PlayImage(dir);
@@ -206,10 +206,12 @@ describe("#10784 — cópia do hero com play", () => {
     }
   });
 
-  it("buildPlayIconSvg: círculo de 18% da largura, centralizado", () => {
-    const svg = buildPlayIconSvg(1600, 800);
-    assert.ok(svg.includes(`cx="800.0" cy="400.0" r="144.0"`), svg);
+  it("buildInviteSvg: faixa de 80% da largura na base, texto do convite, sem círculo de play", () => {
+    const svg = buildInviteSvg(1600, 800);
+    assert.ok(svg.includes(`width="1280.0"`), svg);
     assert.ok(svg.includes(`fill="#171411"`));
+    assert.ok(svg.includes(D1_INVITE_TEXT));
+    assert.ok(!svg.includes("<circle") && !svg.includes("<polygon"), "sem ícone de play");
   });
 
   it("upload modo newsletter gera a cópia e sobe d1_play; falha vira warning", async () => {
