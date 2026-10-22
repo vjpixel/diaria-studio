@@ -146,9 +146,23 @@ function tagCost(tag: string): number {
   return tag.length + (/\s/.test(tag) ? 2 : 0);
 }
 
+/**
+ * Normaliza o rótulo da seção do D1 pra tag (#10798): o header vem como
+ * `🔬 PESQUISA`, e tag com emoji é ruído na busca. Remove pictogramas, o
+ * seletor de variação (U+FE0F), ZWJ e modificadores de tom de pele, colapsa
+ * espaços e apara as pontas.
+ */
+export function normalizeCategoryTag(category?: string): string {
+  return (category ?? "")
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 export function buildYouTubeTags(category?: string): string[] {
   const tags: string[] = [...YOUTUBE_BASE_TAGS];
-  const cat = (category ?? "").trim().toLowerCase();
+  const cat = normalizeCategoryTag(category);
   if (cat && !tags.some((t) => t.toLowerCase() === cat)) tags.push(cat);
   else tags.push("newsletter");
   const out: string[] = [];
