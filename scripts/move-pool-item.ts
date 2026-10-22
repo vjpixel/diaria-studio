@@ -46,7 +46,7 @@
  * Exit: 0 ok; 2 uso errado ou movimento recusado (nada gravado).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgsWithTrueDefault, isMainModule } from "./lib/cli-args.ts";
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts";
@@ -64,6 +64,7 @@ import { readUseMelhorPostState } from "./lib/use-melhor-post.ts";
 import { estimateUseMelhorTempoDetailed } from "./lib/use-melhor-curation.ts";
 import { loadCachedBody } from "./lib/url-body-cache.ts";
 import { fetchBodyForCache } from "./stitch-newsletter.ts";
+import { readTempoArtifact, writeTempoArtifact } from "./lib/use-melhor-tempo-refresh.ts";
 
 export const POOL_BUCKETS: readonly SectionBucket[] = ["lancamento", "radar", "use_melhor", "video"];
 
@@ -311,7 +312,7 @@ export function moveItemInReviewedMd(
   md: string,
   url: string,
   to: SectionBucket,
-  opts: { tempo?: number } = {},
+  opts: { tempo?: number; replaceTempo?: boolean } = {},
 ): MdMoveResult {
   const eol = md.includes("\r\n") ? "\r\n" : "\n";
   const lines = md.replace(/\r\n/g, "\n").split("\n");
@@ -330,7 +331,8 @@ export function moveItemInReviewedMd(
   const block = lines.slice(found.block.start, found.block.end);
   let tempoAdded: string | null = null;
   let tempoRemoved = false;
-  if (to === "use_melhor" && !USE_MELHOR_TEMPO_RE.test(block.join(" "))) {
+  const hasTempo = USE_MELHOR_TEMPO_RE.test(block.join(" "));
+  if (to === "use_melhor" && (!hasTempo || (opts.replaceTempo && opts.tempo !== undefined))) {
     if (opts.tempo === undefined) {
       throw new Error(
         `o item vai pro USE MELHOR sem tempo de leitura na descrição — passe --tempo N (minutos) ` +
@@ -338,8 +340,21 @@ export function moveItemInReviewedMd(
       );
     }
     tempoAdded = `(${opts.tempo} min)`;
-    const last = block.length - 1;
-    block[last] = `${block[last].replace(/\s+$/, "")} ${tempoAdded}`;
+    if (hasTempo) {
+      // #10765: tempo manual pré-existente é SUBSTITUÍDO pelo medido (sufixo ou inline).
+      const last = block.length - 1;
+      const stripped = block[last].replace(TEMPO_SUFFIX_RE, "");
+      if (stripped !== block[last]) block[last] = stripped;
+      else {
+        const i = block.findIndex((l) => USE_MELHOR_TEMPO_RE.test(l));
+        block[i] = block[i].replace(/\(\s*~?\s*\d+\s*min[^)]*\)/, tempoAdded);
+        tempoAdded = null;
+      }
+    }
+    if (tempoAdded) {
+      const last = block.length - 1;
+      block[last] = `${block[last].replace(/\s+$/, "")} ${tempoAdded}`;
+    } else tempoAdded = `(${opts.tempo} min)`;
   } else if (from === "use_melhor" && to !== "use_melhor") {
     const last = block.length - 1;
     const stripped = block[last].replace(TEMPO_SUFFIX_RE, "");
@@ -394,7 +409,7 @@ export function movePoolItem(
   editionDir: string,
   url: string,
   to: SectionBucket,
-  opts: { tempo?: number; dryRun?: boolean } = {},
+  opts: { tempo?: number; replaceTempo?: boolean; dryRun?: boolean } = {},
 ): MovePoolItemResult {
   if (!POOL_BUCKETS.includes(to)) {
     throw new Error(`--to precisa ser um de ${POOL_BUCKETS.join("|")} (recebido: ${to})`);
@@ -405,7 +420,7 @@ export function movePoolItem(
   if (!existsSync(mdPath)) throw new Error(`02-reviewed.md não encontrado em ${editionDir}`);
 
   // 0. Tudo validado em memória antes de gravar qualquer coisa.
-  const mdResult = moveItemInReviewedMd(readFileSync(mdPath, "utf8"), url, to, { tempo: opts.tempo });
+  const mdResult = moveItemInReviewedMd(readFileSync(mdPath, "utf8"), url, to, { tempo: opts.tempo, replaceTempo: opts.replaceTempo });
 
   const approvedFiles = ["01-approved.json", "01-approved-capped.json"]
     .map((f) => resolve(internalDir, f))
@@ -478,39 +493,36 @@ export function movePoolItem(
 }
 
 /**
- * #10765 item 1: sem `--tempo`, busca o corpo da página e MEDE (wordcount/
- * youtube/steps) em vez de exigir chute. Registra a fonte em
- * `_internal/use-melhor-tempo-source.json` pro gate do Stage 4 distinguir
- * medido de "estimado por título". Fail-soft: sem corpo, cai na heurística de
- * título (source `title-heuristic`, sinalizado no gate).
+ * #10765 item 1: ao entrar no USE MELHOR, SEMPRE busca o corpo da página e MEDE
+ * (wordcount/youtube/steps) — inclusive quando o item já traz "(N min)" manual
+ * (caso Cowork). Sem `--tempo` o medido SUBSTITUI o texto existente; com
+ * `--tempo` explícito a escolha manual é preservada e a medição só é
+ * registrada pra comparação (`md_tempo` ≠ `estimate`), nunca passando por medida.
+ * Fail-soft: sem corpo, `title-heuristic` (sinalizado no gate). Não grava nada;
+ * quem grava é `recordTempoMeasurement`, depois do move bem-sucedido.
  */
 export async function measureTempoForMove(
   editionDir: string,
   url: string,
-  dryRun = false,
-): Promise<{ tempo: number; source: string; title: string }> {
+): Promise<{ tempo: number; source: string; title: string; estimate: string }> {
   const md = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8").replace(/\r\n/g, "\n").split("\n");
   const found = locatePoolItem(md, url);
   const title = md[found.block.start].match(/\[([^\]]+)\]\(/)?.[1] ?? "";
   const bodiesDir = resolve(editionDir, "_internal", "_forensic", "link-verify-bodies");
   const body = loadCachedBody(bodiesDir, url) ?? (await fetchBodyForCache(bodiesDir, url));
   const { estimate, source } = estimateUseMelhorTempoDetailed(title, url, body);
-  const tempo = Number(estimate.match(/\d+/)![0]);
-  if (!dryRun) {
-    const artifact = resolve(editionDir, "_internal", "use-melhor-tempo-source.json");
-    let entries: unknown[] = [];
-    try {
-      const parsed = JSON.parse(readFileSync(artifact, "utf8"));
-      if (Array.isArray(parsed)) entries = parsed;
-    } catch {
-      // artifact ausente/inválido: recomeça a lista.
-    }
-    entries = entries.filter((e) => (e as { url?: string }).url !== url);
-    entries.push({ url, title, estimate, source });
-    mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
-    writeFileSync(artifact, JSON.stringify(entries, null, 2), "utf8");
-  }
-  return { tempo, source, title };
+  return { tempo: Number(estimate.match(/\d+/)![0]), source, title, estimate };
+}
+
+/** Registra a medição no artifact lido pelo gate (`md_tempo` = o que o texto passa a dizer). */
+export function recordTempoMeasurement(
+  editionDir: string,
+  m: { url: string; title: string; estimate: string; source: string },
+  mdTempo: number,
+): void {
+  const entries = readTempoArtifact(editionDir).filter((e) => e.url !== m.url);
+  entries.push({ url: m.url, title: m.title, estimate: m.estimate, source: m.source, md_tempo: mdTempo });
+  writeTempoArtifact(editionDir, entries);
 }
 
 async function main(): Promise<void> {
@@ -536,19 +548,24 @@ async function main(): Promise<void> {
   try {
     const dryRun = args["dry-run"] === "true";
     const measureWarnings: string[] = [];
-    if (to === "use_melhor" && tempo === undefined) {
-      const mdText = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8");
-      const lines = mdText.replace(/\r\n/g, "\n").split("\n");
-      const found = locatePoolItem(lines, url);
-      if (!USE_MELHOR_TEMPO_RE.test(lines.slice(found.block.start, found.block.end).join(" "))) {
-        const m = await measureTempoForMove(resolve(editionDir), url, dryRun);
-        tempo = m.tempo;
-        if (m.source === "title-heuristic") {
-          measureWarnings.push(`tempo (${m.tempo} min) ESTIMADO POR TÍTULO — corpo da página não mediu; confira no gate.`);
+    let measured: Awaited<ReturnType<typeof measureTempoForMove>> | null = null;
+    let replaceTempo = false;
+    if (to === "use_melhor") {
+      measured = await measureTempoForMove(resolve(editionDir), url);
+      if (tempo === undefined) {
+        tempo = measured.tempo;
+        replaceTempo = true;
+        if (measured.source === "title-heuristic") {
+          measureWarnings.push(`tempo (${tempo} min) ESTIMADO POR TÍTULO — corpo da página não mediu; confira no gate.`);
         }
+      } else if (measured.source === "title-heuristic") {
+        measureWarnings.push(`--tempo ${tempo} mantido; corpo não mediu (só heurística de título: ${measured.tempo} min).`);
+      } else if (measured.tempo !== tempo) {
+        measureWarnings.push(`--tempo ${tempo} mantido (escolha manual); medido: ${measured.tempo} min (${measured.source}).`);
       }
     }
-    const result = movePoolItem(resolve(editionDir), url, to, { tempo, dryRun });
+    const result = movePoolItem(resolve(editionDir), url, to, { tempo, replaceTempo, dryRun });
+    if (measured && !dryRun) recordTempoMeasurement(resolve(editionDir), { url, ...measured }, tempo!);
     for (const w of measureWarnings) console.error(`⚠️  ${w}`);
     for (const w of result.warnings) console.error(`⚠️  ${w}`);
     console.log(JSON.stringify(result, null, 2));

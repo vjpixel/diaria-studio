@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { parseUseMelhorItems, readTempoArtifact, estimateMinutes } from "../use-melhor-tempo-refresh.ts"; // #10765
 import { resolve, dirname, basename } from "node:path";
 import { detectBoxSelectionConfigDrift, formatBoxSelectionDrift } from "../box-selection-drift.ts"; // #9253
 import { aammddToIsoDate, readSnippetExpiry } from "../shared/snippet-header.ts"; // #10174
@@ -980,49 +981,29 @@ export function checkUseMelhorTempoItemSemMedicao(editionDir: string): Invariant
   } catch {
     return [];
   }
-  const items: { title: string; url: string }[] = [];
-  let inSection = false;
-  for (const raw of md.replace(/\r\n/g, "\n").split("\n")) {
-    const t = raw.trim();
-    if (/^\*\*.*USE\s+MELHOR.*\*\*$/u.test(t)) {
-      inSection = true;
-      continue;
-    }
-    if (!inSection) continue;
-    if (t === "---" || /^\*\*[^[\]]+\*\*$/u.test(t)) {
-      inSection = false;
-      continue;
-    }
-    const m = t.match(/^\*\*\[([^\]]+)\]\((\S+?)\)\*\*/);
-    if (m) items.push({ title: m[1], url: m[2] });
-  }
+  const items = parseUseMelhorItems(md);
   if (items.length === 0) return [];
-  const artifact = resolve(editionDir, "_internal", "use-melhor-tempo-source.json");
-  const sources = new Map<string, string>();
-  try {
-    const parsed = JSON.parse(readFileSync(artifact, "utf8"));
-    if (Array.isArray(parsed)) {
-      for (const e of parsed as { url?: string; source?: string }[]) {
-        if (e.url && e.source) sources.set(e.url, e.source);
-      }
-    }
-  } catch {
-    // artifact ausente/inválido: nenhum item tem fonte registrada.
-  }
+  const entries = readTempoArtifact(editionDir);
   const out: InvariantViolation[] = [];
+  const warn = (message: string) =>
+    out.push({ rule: "use-melhor-tempo-item-sem-medicao", message, source_issue: "#10765", severity: "warning", file: reviewedPath });
   for (const it of items) {
-    const source = sources.get(it.url);
-    if (source && source !== "title-heuristic") continue;
-    out.push({
-      rule: "use-melhor-tempo-item-sem-medicao",
-      message: source
-        ? `USE MELHOR "${it.title}": tempo ESTIMADO POR TÍTULO (corpo não medido) — conferir o "(N min)" no gate.`
-        : `USE MELHOR "${it.title}": sem fonte de medição do tempo (item inserido/movido à mão) — ` +
-          `conferir o "(N min)" ou re-medir com move-pool-item.ts sem --tempo.`,
-      source_issue: "#10765",
-      severity: "warning",
-      file: reviewedPath,
-    });
+    const e = entries.find((x) => x.url === it.url);
+    const measured = estimateMinutes(e?.estimate);
+    if (!e?.source) {
+      warn(
+        `USE MELHOR "${it.title}": sem fonte de medição do tempo (item inserido/movido à mão) — ` +
+          `rode refresh-use-melhor-tempo.ts ou re-meça com move-pool-item.ts sem --tempo.`,
+      );
+    } else if (e.source === "title-heuristic") {
+      warn(`USE MELHOR "${it.title}": tempo ESTIMADO POR TÍTULO (corpo não medido) — conferir o "(N min)" no gate.`);
+    } else if (measured !== null && it.mdTempo !== measured) {
+      warn(
+        e.md_tempo === it.mdTempo
+          ? `USE MELHOR "${it.title}": texto diz ${it.mdTempo ?? "?"} min, medido ${measured} min (${e.source}) — escolha manual preservada, confira.`
+          : `USE MELHOR "${it.title}": o "(N min)" mudou desde a última medição (${measured} min, ${e.source}) — rode refresh-use-melhor-tempo.ts.`,
+      );
+    }
   }
   return out;
 }

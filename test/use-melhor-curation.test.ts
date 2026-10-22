@@ -2350,11 +2350,24 @@ describe("estimateUseMelhorTempoDetailed (#6739) — causa raiz: 60% saía em (5
   it("#10765: tutorial passo a passo estima tempo de EXECUÇÃO (source steps), não só leitura", () => {
     const words = new Array(400).fill("palavra").join(" ");
     const lis = new Array(8).fill("<li>passo</li>").join("");
-    const html = `<html lang="pt-BR"><body><p>${words}</p><ol>${lis}</ol></body></html>`;
+    const html = `<html lang="pt-BR"><head><title>Tutorial: como criar um agente</title></head><body><p>${words}</p><ol>${lis}</ol></body></html>`;
     assert.equal(countTutorialSteps(html), 8);
     const r = estimateUseMelhorTempoDetailed("Guia", "https://example.com/a", html);
     assert.equal(r.source, "steps");
     assert.equal(r.estimate, "(20 min)"); // 8 passos * 3 = 24 → bucket 20; leitura seria 5
+  });
+
+  it("#10765: <ol> de 4+ itens SEM contexto de tutorial (ranking) não conta como passos", () => {
+    const words = new Array(400).fill("palavra").join(" ");
+    const lis = new Array(8).fill("<li>ferramenta</li>").join("");
+    const html = `<html lang="pt"><head><title>As 8 melhores ferramentas de IA</title></head><body><h1>Ranking</h1><p>${words}</p><ol>${lis}</ol></body></html>`;
+    assert.equal(countTutorialSteps(html), 0);
+    assert.equal(estimateUseMelhorTempoDetailed("Ranking", "https://example.com/a", html).source, "wordcount");
+  });
+
+  it("#10765: headings Step/Passo contam mesmo sem ol", () => {
+    const hs = [1, 2, 3, 4].map((n) => `<h2>Step ${n}</h2>`).join("");
+    assert.equal(countTutorialSteps(`<body>${hs}</body>`), 4);
   });
 
   it("#10765: poucos passos (<4) mantêm wordcount", () => {

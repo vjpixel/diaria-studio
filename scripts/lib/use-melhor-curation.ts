@@ -806,12 +806,29 @@ const TUTORIAL_MIN_STEPS = 4;
  * lista duas vezes). Puro.
  */
 export function countTutorialSteps(html: string): number {
-  let olItems = 0;
-  for (const ol of html.matchAll(/<ol\b[\s\S]*?<\/ol>/gi)) {
-    olItems += (ol[0].match(/<li\b/gi) ?? []).length;
-  }
+  // Headings "Step N"/"Passo N"/"Etapa N" são evidência direta de passos.
   const headings = (html.match(/<h[1-4][^>]*>\s*(?:step|passo|etapa)\s*\d+/gi) ?? []).length;
+  // `<ol>` genérico (ranking, lista de itens) NÃO é tutorial: só conta com
+  // contexto procedural no título/headings da página.
+  let olItems = 0;
+  if (hasTutorialContext(html)) {
+    for (const ol of html.matchAll(/<ol\b[\s\S]*?<\/ol>/gi)) {
+      olItems += (ol[0].match(/<li\b/gi) ?? []).length;
+    }
+  }
   return Math.max(olItems, headings);
+}
+
+const TUTORIAL_CONTEXT_RE =
+  /\b(how[\s-]+to|tutorial|step[\s-]*by[\s-]*step|getting\s+started|quick\s*start|walkthrough|passo\s+a\s+passo|como\s+(?:fazer|criar|usar|configurar|instalar|construir|montar)|guia\s+pr[aá]tico)\b/i;
+
+/** #10765: <title>/<h1>/<h2> sinalizam conteúdo procedural (não ranking/lista). */
+function hasTutorialContext(html: string): boolean {
+  const heads = [
+    ...html.matchAll(/<title[^>]*>([\s\S]*?)<\/title>/gi),
+    ...html.matchAll(/<h[12][^>]*>([\s\S]*?)<\/h[12]>/gi),
+  ];
+  return heads.some((h) => TUTORIAL_CONTEXT_RE.test(h[1].replace(/<[^>]+>/g, " ")));
 }
 
 /**
