@@ -20,20 +20,23 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { md5OfFile } from "../shared/file-md5.ts";
-import { D1_HERO_FILE, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, buildInviteSvg } from "./d1-video-hero.ts";
+import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, buildInviteSvg } from "./d1-video-hero.ts";
 
 export type D1PlayImageResult =
   | { status: "generated" | "fresh"; path: string }
   | { status: "no_hero"; path: null }
   | { status: "failed"; path: null; reason: string };
 
-function readStampMd5(stampPath: string): string | null {
-  if (!existsSync(stampPath)) return null;
+function readStamp(stampPath: string): { md5: string | null; overlay: string | null } {
+  if (!existsSync(stampPath)) return { md5: null, overlay: null };
   try {
-    const raw = JSON.parse(readFileSync(stampPath, "utf8")) as { source_md5?: unknown };
-    return typeof raw.source_md5 === "string" ? raw.source_md5 : null;
+    const raw = JSON.parse(readFileSync(stampPath, "utf8")) as { source_md5?: unknown; overlay?: unknown };
+    return {
+      md5: typeof raw.source_md5 === "string" ? raw.source_md5 : null,
+      overlay: typeof raw.overlay === "string" ? raw.overlay : null,
+    };
   } catch {
-    return null; // carimbo ilegível = regerar
+    return { md5: null, overlay: null }; // carimbo ilegível = regerar
   }
 }
 
@@ -57,13 +60,16 @@ export async function ensureD1PlayImage(editionDir: string): Promise<D1PlayImage
   }
   try {
     const heroMd5 = md5OfFile(heroPath);
-    if (existsSync(playPath) && readStampMd5(stampPath) === heroMd5) {
+    const stamp = readStamp(stampPath);
+    // Fresca só se o hero E o desenho do convite são os mesmos (#10784: cópia
+    // antiga com ícone de play, sem `overlay`, regera).
+    if (existsSync(playPath) && stamp.md5 === heroMd5 && stamp.overlay === D1_INVITE_VERSION) {
       return { status: "fresh", path: playPath };
     }
     const out = await renderD1PlayImage(readFileSync(heroPath));
     writeFileSync(playPath, out);
     mkdirSync(dirname(stampPath), { recursive: true });
-    writeFileSync(stampPath, `${JSON.stringify({ source: D1_HERO_FILE, source_md5: heroMd5 }, null, 2)}\n`, "utf8");
+    writeFileSync(stampPath, `${JSON.stringify({ source: D1_HERO_FILE, source_md5: heroMd5, overlay: D1_INVITE_VERSION }, null, 2)}\n`, "utf8");
     return { status: "generated", path: playPath };
   } catch (e) {
     rmSync(playPath, { force: true });

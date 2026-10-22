@@ -46,7 +46,20 @@ export const D1_VIDEO_FALLBACK_URL = DIARIA_YOUTUBE_URL;
  * vídeo e para o fallback do canal: a cópia da imagem é gerada no upload, antes
  * de a URL do vídeo existir, então ela não pode depender de qual dos dois vale.
  */
-export const D1_INVITE_TEXT = "Clique aqui e veja a notícia comentada no YouTube";
+export const D1_INVITE_LINES = ["Clique aqui e veja a notícia", "comentada no YouTube"] as const;
+export const D1_INVITE_TEXT = D1_INVITE_LINES.join(" ");
+
+/**
+ * Versão do desenho do convite, carimbada junto do md5 do hero: mudar o desenho
+ * (texto, faixa, posição) sem mudar o hero também regera a cópia. Subir a versão
+ * a cada mudança em `buildInviteSvg`/`D1_INVITE_LINES`.
+ */
+export const D1_INVITE_VERSION = "invite-v2";
+
+/** `alt` da imagem do D1 quando ela é link: a imagem é o único conteúdo do link e o convite está só nos pixels. */
+export function d1HeroAlt(title: string): string {
+  return `${title}. ${D1_INVITE_TEXT}.`;
+}
 
 export const D1_VIDEO_UTM_SOURCE = "newsletter";
 export const D1_VIDEO_UTM_MEDIUM = "email";
@@ -89,23 +102,30 @@ export function editionFromDir(editionDir: string): string | null {
 /**
  * SVG do convite, do tamanho da imagem, para compor sobre o hero. Faixa
  * arredondada na cor de tinta do design system (#171411, 82% de opacidade)
- * na parte de baixo, com o texto em branco. Fica fora do centro para não cobrir
- * o assunto da arte. `textLength` fixa a largura do texto, então a faixa cabe
- * mesmo se a fonte do rasterizador for outra (o servidor Linux pode não ter
- * Georgia).
+ * na parte de baixo, com o texto em branco em DUAS linhas (fonte maior que numa
+ * linha só, que fica ilegível no celular). Fica fora do centro para não cobrir
+ * o assunto da arte. A faixa tem folga larga sobre o texto de Georgia e sobre a
+ * fonte de reserva (DejaVu Serif, mais larga) do servidor Linux; o teste mede
+ * o texto com uma fonte inexistente. `textLength` não é usado: o rasterizador
+ * (librsvg) o ignora.
  */
 export function buildInviteSvg(width: number, height: number): string {
   if (!(width > 0 && height > 0)) throw new Error(`buildInviteSvg: dimensões inválidas ${width}x${height}`);
-  const fontSize = width * 0.028;
-  const pillW = width * 0.8;
-  const pillH = fontSize * 2.1;
+  const fontSize = width * 0.032;
+  const lineGap = fontSize * 1.25;
+  const pillW = width * 0.74;
+  const pillH = lineGap * 2 + fontSize * 0.9;
   const cx = width / 2;
-  const cy = height * 0.86;
+  const cy = height * 0.84;
   const f = (n: number) => n.toFixed(1);
+  const y1 = cy - lineGap / 2 + fontSize * 0.35;
+  const text = (y: number, line: string) =>
+    `<text x="${f(cx)}" y="${f(y)}" text-anchor="middle" font-family="Georgia, 'DejaVu Serif', serif" font-weight="bold" font-size="${f(fontSize)}" fill="#FFFFFF">${line}</text>`;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
-    `<rect x="${f(cx - pillW / 2)}" y="${f(cy - pillH / 2)}" width="${f(pillW)}" height="${f(pillH)}" rx="${f(pillH / 2)}" fill="#171411" fill-opacity="0.82"/>` +
-    `<text x="${f(cx)}" y="${f(cy + fontSize * 0.35)}" text-anchor="middle" font-family="Georgia, 'DejaVu Serif', serif" font-weight="bold" font-size="${f(fontSize)}" fill="#FFFFFF" textLength="${f(pillW * 0.88)}" lengthAdjust="spacingAndGlyphs">${D1_INVITE_TEXT}</text>` +
+    `<rect x="${f(cx - pillW / 2)}" y="${f(cy - pillH / 2)}" width="${f(pillW)}" height="${f(pillH)}" rx="${f(pillH * 0.28)}" fill="#171411" fill-opacity="0.82"/>` +
+    text(y1, D1_INVITE_LINES[0]) +
+    text(y1 + lineGap, D1_INVITE_LINES[1]) +
     `</svg>`
   );
 }

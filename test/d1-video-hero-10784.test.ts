@@ -1,8 +1,8 @@
 /**
  * #10784 — imagem do D1 na newsletter vira link pro vídeo do dia no YouTube
- * (UTM `video-d1-{AAMMDD}`), legenda do D1 = só o convite, cópia do hero com
- * ícone de play só pra newsletter, fallback pro canal quando o vídeo ainda
- * não tem URL (nunca link quebrado, nunca imagem sem link).
+ * (UTM `video-d1-{AAMMDD}`), convite escrito na imagem (sem ícone de play), legenda
+ * do D1 = crédito padrão, cópia do hero só pra newsletter, fallback pro canal
+ * quando o vídeo ainda não tem URL (nunca link quebrado). Sem a cópia, sem link.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -11,8 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
 import {
+  D1_INVITE_LINES,
   D1_INVITE_TEXT,
+  D1_INVITE_VERSION,
   D1_PLAY_HERO_FILE,
+  D1_PLAY_STAMP_FILE,
   buildD1VideoLink,
   buildInviteSvg,
   editionFromDir,
@@ -80,12 +83,14 @@ describe("#10784 — link da imagem do D1", () => {
 });
 
 describe("#10784 — fonte da URL e arquivo do hero (d1VideoHeroFields)", () => {
-  it("sem _internal/05-video-url.txt → canal; sem cópia com play → hero default", () => {
+  it("sem _internal/05-video-url.txt → canal (com a cópia); sem a cópia → sem link", () => {
     const { root, dir } = editionDir();
     try {
+      assert.deepEqual(d1VideoHeroFields(dir), {}, "sem a cópia com o convite não há link");
+      writeFileSync(join(dir, D1_PLAY_HERO_FILE), "x");
       const f = d1VideoHeroFields(dir);
       assert.equal(f.videoLink?.kind, "channel");
-      assert.equal(f.heroFile, undefined);
+      assert.equal(f.heroFile, D1_PLAY_HERO_FILE);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -109,6 +114,7 @@ describe("#10784 — fonte da URL e arquivo do hero (d1VideoHeroFields)", () => 
     const { root, dir } = editionDir();
     try {
       writeFileSync(join(dir, "_internal", "05-video-url.txt"), "https://exemplo.com/nao-e-video\n");
+      writeFileSync(join(dir, D1_PLAY_HERO_FILE), "x");
       assert.equal(d1VideoHeroFields(dir).videoLink?.kind, "channel");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -129,13 +135,20 @@ describe("#10784 — render do hero", () => {
     assert.match(html, /<a class="hero-video"[^>]*><img class="hero" src="\{\{IMG:04-d1-2x1-play\.jpg\}\}"/);
     assert.ok(/Criada com/.test(html), "legenda do D1 volta a ser o crédito padrão, como no D2/D3");
     assert.ok(!/Clique na imagem/.test(html), "o convite está escrito na imagem, não na legenda");
-    assert.ok(/<p [^>]*>Imagem criada com|<p [^>]*>[^<]*Criada com/i.test(html), "crédito é texto puro, sem <a>");
+    assert.equal(html.split(hrefEsc).length - 1, 1, "o href aparece só na imagem: a legenda de crédito não é link");
+    assert.ok(html.includes(`alt="Título D1. ${D1_INVITE_TEXT}."`), "alt da imagem do D1 carrega o convite (leitor de tela, imagens bloqueadas)");
     assert.ok(!/[←→]/.test(html), "sem seta no que chega ao leitor (#9721)");
   });
 
-  it("D1 sem cópia com play: hero default, ainda com link", () => {
-    const html = renderDestaque(destaque(1, { videoLink: link }));
-    assert.match(html, /<a class="hero-video"[^>]*><img class="hero" src="\{\{IMG:04-d1-2x1\.jpg\}\}"/);
+  it("D1 sem a cópia com o convite: hero default e SEM link (nada de link escondido)", () => {
+    const { root, dir } = editionDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "05-video-url.txt"), "https://youtu.be/abcdefghijk\n");
+      assert.deepEqual(d1VideoHeroFields(dir), {});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("D2/D3 nunca viram link, mesmo com videoLink setado à mão", () => {
@@ -174,11 +187,19 @@ describe("#10784 — cópia do hero com play", () => {
       const px = (x: number, y: number) => data[(y * info.width + x) * info.channels];
       assert.ok(px(200 - 30, 100) < 60, `centro não pode ter play, veio ${px(170, 100)}`);
       // Faixa de tinta (#171411 a 82%) na parte de baixo: R cai de 40 para ~26.
-      assert.ok(px(45, 172) < 33, `faixa do convite deveria escurecer a base, veio ${px(45, 172)}`);
+      assert.ok(px(60, 164) < 33, `faixa do convite deveria escurecer a base, veio ${px(60, 164)}`);
       assert.ok(px(10, 10) < 100, "canto segue com a arte original");
 
       const r2 = await ensureD1PlayImage(dir);
       assert.equal(r2.status, "fresh");
+
+      // Cópia antiga (carimbo sem `overlay`, do ícone de play) regera mesmo com o hero igual.
+      const stampPath = join(dir, D1_PLAY_STAMP_FILE);
+      const stamp = JSON.parse(readFileSync(stampPath, "utf8"));
+      assert.equal(stamp.overlay, D1_INVITE_VERSION);
+      delete stamp.overlay;
+      writeFileSync(stampPath, JSON.stringify(stamp));
+      assert.equal((await ensureD1PlayImage(dir)).status, "generated", "mudou só o desenho: regera");
 
       await writeHero(dir, { r: 200, g: 30, b: 30 }); // editor troca a arte no Stage 4
       const r3 = await ensureD1PlayImage(dir);
@@ -206,11 +227,25 @@ describe("#10784 — cópia do hero com play", () => {
     }
   });
 
-  it("buildInviteSvg: faixa de 80% da largura na base, texto do convite, sem círculo de play", () => {
+  it("o texto cabe na faixa mesmo com fonte inexistente (fallback do rasterizador)", async () => {
+    const W = 1600, H = 800;
+    const flat = await sharp({ create: { width: W, height: H, channels: 3, background: { r: 40, g: 60, b: 90 } } }).png().toBuffer();
+    const svg = buildInviteSvg(W, H).replace(/font-family="[^"]*"/g, `font-family="NoSuchFontXYZ"`);
+    const out = await sharp(flat).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).raw().toBuffer({ resolveWithObject: true });
+    const px = (x: number, y: number) => out.data[(y * out.info.width + x) * out.info.channels];
+    const pillW = W * 0.74;
+    const left = (W - pillW) / 2, right = left + pillW;
+    let minX = W, maxX = -1;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (px(x, y) > 200) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+    assert.ok(maxX > 0, "o texto deveria ter sido desenhado (branco)");
+    assert.ok(minX >= left + 20 && maxX <= right - 20, `texto ${minX}-${maxX} fora da faixa ${left}-${right}`);
+  });
+
+  it("buildInviteSvg: faixa de 74% da largura na base, 2 linhas do convite, sem círculo de play", () => {
     const svg = buildInviteSvg(1600, 800);
-    assert.ok(svg.includes(`width="1280.0"`), svg);
+    assert.ok(svg.includes(`width="1184.0"`), svg);
+    for (const l of D1_INVITE_LINES) assert.ok(svg.includes(l), l);
     assert.ok(svg.includes(`fill="#171411"`));
-    assert.ok(svg.includes(D1_INVITE_TEXT));
     assert.ok(!svg.includes("<circle") && !svg.includes("<polygon"), "sem ícone de play");
   });
 

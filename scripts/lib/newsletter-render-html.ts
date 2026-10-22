@@ -32,6 +32,7 @@ import {
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
 import { isSocialInviteParagraph } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo; #10781: detecção por prefixo estável (sobrevive a versões anteriores da constante)
 import { applyImageToolToCredits, imageCreditCaption } from "./shared/image-tool-name.ts"; // #10783
+import { d1HeroAlt } from "./diaria/d1-video-hero.ts"; // #10784
 import { readSnippetFile, readSnippetFileRaw } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded; readSnippetFileRaw #5882 — header cru pra ler titulo:
 import { normalizeNumericArrows, stripCtaArrows, stripUnambiguousCtaArrows } from "./shared/arrow-glyph.ts"; // #9721/#9727: a seta nunca chega ao leitor
 import { readBoxTituloFlag } from "./shared/snippet-header.ts"; // #5882 — titulo:false declarado, substitui detecção por regex de copy (isConviteAmigoBox, aposentada)
@@ -1533,7 +1534,7 @@ export function renderDestaque(d: RenderDestaque, whatsappShareHtml = "", esp: E
   const inner = [
     renderKicker(d.category),
     renderHeadlineInner(d.title, d.url),
-    renderHeroImageInner(heroFile, d.title, imageGeneratorCredit(d.imageGenerator), video?.href), // #9095, #10784
+    renderHeroImageInner(heroFile, video ? d1HeroAlt(d.title) : d.title, imageGeneratorCredit(d.imageGenerator), video?.href), // #9095, #10784
     renderBodyParasInner(d.body, esp), // #5176: pPad/margem condicionais ao ESP
     renderWhyBoxInner(d.why),
     d.n === 1 ? whatsappShareHtml : "", // #5152
