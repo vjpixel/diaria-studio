@@ -103,8 +103,9 @@
  * `platform.config.json → issue_repos`; fora da allowlist é erro.
  * As labels de track/motivo precisam existir no repo de destino (o
  * `gh issue edit --add-label` falha alto se não existirem — nunca cria).
- * `--depends-on` ainda não aceita issue de outro repo (a reconciliação
- * `reconcile-issue-dependencies.ts` só cobre o diaria-studio).
+ * `--depends-on` ainda não aceita issue de OUTRO repo (dependência entre
+ * repos não é sintaxe do marcador; `reconcile-issue-dependencies.ts
+ * --repos all` reconcilia cada repo à parte desde o #10901).
  *
  * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
  *

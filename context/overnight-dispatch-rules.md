@@ -770,7 +770,9 @@ resolve a declaração; a label `dependencia-aberta`
 classificação — mas as duas só ficam sincronizadas se algo RODAR a
 reconciliação antes de qualquer sessão classificar o backlog.
 
-**Mecanismo:** `npx tsx scripts/reconcile-issue-dependencies.ts --apply`
+**Mecanismo:** `npx tsx scripts/reconcile-issue-dependencies.ts --apply --repos all`
+(#10901: `--repos all` reconcilia também as issues do diaria-design, cada
+`depends-on: #N` resolvido no repo da própria issue; sem `--repos`, só o studio)
 (dry-run sem `--apply` — nunca rodar sem a flag numa rodada automatizada,
 senão nenhuma label muda). Varre o backlog aberto, lê `depends-on:` de cada
 issue, consulta o estado real de cada dependência via `gh`, e
@@ -835,7 +837,7 @@ resolvidos. Sem `gh`/rede, o comando degrada sozinho pra warning + `exit 0`
 
 Roda logo depois do item 25 (gate de drift de label), mesma fase, mas com
 uma diferença deliberada: **nunca bloqueia** — sempre `exit 0`, mesmo com
-achados. `npx tsx scripts/check-dependency-prose-lint.ts` (sem `--plan`;
+achados. `npx tsx scripts/check-dependency-prose-lint.ts --repos all` (sem `--plan`;
 varre o backlog aberto inteiro via `gh issue list`, não o `plan.json` da
 rodada) reporta issues que citam prosa de dependência ("pré-requisito",
 "depende do #N", "depois que #N", "só depois") sem carregar o marcador
