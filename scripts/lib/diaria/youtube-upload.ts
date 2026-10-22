@@ -18,8 +18,14 @@
  *      `thumbnail.ok = false` no resultado;
  *   5. releitura de `videos.list?part=status` e normalização por
  *      `resolveYouTubeState` (#573) — o estado relatado é o RELIDO, nunca o
- *      pedido. Sem a auditoria do YouTube API Services o YouTube trava o
- *      vídeo em `private` e a releitura mostra isso ("draft").
+ *      pedido. Sem a auditoria do YouTube API Services o vídeo PODE sair
+ *      travado em `private` (restrição de 28/07/2020 no revision history; a
+ *      página atual de `videos.insert` diz o contrário — o 1º upload real
+ *      confirma pela releitura, que mostra `draft` ou `scheduled`).
+ *
+ * Quota (determine_quota_cost, conferido em 22/10/2026): `videos.insert`
+ * custa 1 unidade no balde próprio "Video Uploads", limite 100 chamadas/dia;
+ * `thumbnails.set` custa 50 unidades no balde geral de 10.000/dia.
  *
  * Erros saem como `YouTubeUploadError` com mensagem curta e acionável, sem
  * token nem stack trace. A mensagem nunca inclui o access/refresh token.
@@ -47,22 +53,36 @@ export const defaultYouTubeUploadDeps: YouTubeUploadDeps = {
   now: () => new Date(),
 };
 
+/** Etapas que lançam `YouTubeUploadError` (antes do vídeo estar confirmado). */
+export type YouTubeUploadStep = "token" | "channel" | "insert" | "upload";
+/** Etapas de chamada à API, inclusive as pós-upload que não lançam. */
+export type YouTubeApiStep = YouTubeUploadStep | "thumbnail" | "reread";
+
 export class YouTubeUploadError extends Error {
   constructor(
     message: string,
-    /** Etapa em que falhou — o vídeo só existe a partir de `thumbnail`. */
-    readonly step: "token" | "channel" | "insert" | "upload",
+    /**
+     * Etapa em que falhou. Até `insert` nenhum byte foi enviado e nada existe
+     * no canal. A partir de `upload` o vídeo PODE existir: o PUT pode ter sido
+     * aceito mesmo quando a resposta falhou (5xx, rede caindo, corpo sem id).
+     */
+    readonly step: YouTubeUploadStep,
   ) {
     super(message);
     this.name = "YouTubeUploadError";
   }
 }
 
+/** true quando a falha deixa o vídeo em estado incerto (pode ter sido criado). */
+export function isIndeterminateUploadFailure(e: unknown): boolean {
+  return !(e instanceof YouTubeUploadError) || e.step === "upload";
+}
+
 export interface YouTubeCredentials {
   clientId: string;
   clientSecret: string;
   refreshToken: string;
-  /** Canal esperado (`YOUTUBE_CHANNEL_ID`); vazio = não confere. */
+  /** Canal esperado (`YOUTUBE_CHANNEL_ID`); obrigatório — vazio lança na etapa `channel`. */
   channelId: string;
 }
 
@@ -87,19 +107,42 @@ async function errorSnippet(res: Response): Promise<string> {
   }
 }
 
+/** Lê o corpo como JSON; `undefined` quando o corpo não é JSON (distinto de `null`). */
+async function readJson(res: Response): Promise<unknown> {
+  try {
+    return await res.json();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Explica falhas de `videos.insert`/`thumbnails.set`/token sem expor nada
- * sensível. Cobre os motivos que o editor consegue resolver sozinho.
+ * sensível. Cobre os motivos que o editor consegue resolver sozinho. `step`
+ * restringe mensagens que só fazem sentido numa etapa (ex.: capa customizada).
  */
-export function explainYouTubeUploadError(status: number, body: string): string {
+export function explainYouTubeUploadError(status: number, body: string, step?: YouTubeApiStep): string {
   if (/invalid_grant/i.test(body)) {
     return "refresh token do YouTube inválido ou expirado — rode `npx tsx scripts/youtube-oauth-setup.ts` de novo (e `npm run sync-env` no 300)";
+  }
+  if (/invalid_client|unauthorized_client/i.test(body)) {
+    // #8237: o app desktop injeta GOOGLE_CLIENT_* no ambiente com valores de OUTRO
+    // client, e `loadProjectEnv` não sobrescreve var já presente. Refazer o
+    // consentimento não resolve — o client errado é o do ambiente.
+    return (
+      "o Google recusou o client OAuth (invalid_client/unauthorized_client) — provável divergência entre " +
+      "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET do ambiente do processo e os do `.env` (#8237, ver o aviso de divergência " +
+      "do `loadProjectEnv` no stderr). Rode com as vars do ambiente removidas antes de refazer o consentimento"
+    );
   }
   if (status === 401) {
     return "o YouTube recusou o token (401) — refaça o consentimento com `npx tsx scripts/youtube-oauth-setup.ts`";
   }
   if (status === 403 && /quotaExceeded|dailyLimitExceeded/i.test(body)) {
-    return "quota diária da YouTube Data API esgotada (upload custa 1.600 de 10.000 unidades) — tente amanhã ou suba à mão no Studio";
+    return (
+      "quota diária da YouTube Data API esgotada (videos.insert: balde próprio \"Video Uploads\", 100 chamadas/dia; " +
+      "thumbnails.set: 50 unidades do balde geral de 10.000/dia) — tente amanhã ou suba à mão no Studio"
+    );
   }
   if (status === 403 && /uploadLimitExceeded/i.test(body)) {
     return "o canal atingiu o limite de uploads do YouTube — suba à mão no Studio mais tarde";
@@ -111,7 +154,9 @@ export function explainYouTubeUploadError(status: number, body: string): string 
     return "YouTube Data API v3 não está ativada no projeto GCP do client OAuth";
   }
   if (status === 403 && /forbidden/i.test(body)) {
-    return "o YouTube recusou (403 forbidden) — para capa customizada o canal precisa estar verificado (youtube.com/verify)";
+    return step === "thumbnail"
+      ? "o YouTube recusou a capa (403 forbidden) — para capa customizada o canal precisa estar verificado (youtube.com/verify)"
+      : `o YouTube recusou (403 forbidden${step ? `, etapa ${step}` : ""}) — o token não tem permissão para essa operação neste canal`;
   }
   return `YouTube API respondeu ${status}: ${body.slice(0, 300)}`;
 }
@@ -133,8 +178,11 @@ export async function refreshYouTubeAccessToken(deps: YouTubeUploadDeps, creds: 
   } catch (e) {
     throw new YouTubeUploadError(`sem rede para renovar o token do YouTube: ${(e as Error).message}`, "token");
   }
-  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res)), "token");
-  const json = (await res.json().catch(() => null)) as { access_token?: unknown } | null;
+  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res), "token"), "token");
+  const json = (await readJson(res)) as { access_token?: unknown } | null | undefined;
+  if (json === undefined) {
+    throw new YouTubeUploadError(`a troca do refresh token devolveu corpo não-JSON (HTTP ${res.status})`, "token");
+  }
   if (!json || typeof json.access_token !== "string" || !json.access_token) {
     throw new YouTubeUploadError("a troca do refresh token não devolveu access_token", "token");
   }
@@ -143,12 +191,22 @@ export async function refreshYouTubeAccessToken(deps: YouTubeUploadDeps, creds: 
 
 /** Confere que o token pertence ao canal esperado antes de subir qualquer byte. */
 export async function assertExpectedChannel(deps: YouTubeUploadDeps, token: string, expectedChannelId: string): Promise<void> {
-  if (!expectedChannelId) return;
-  const res = await deps.fetch(`${YOUTUBE_API_BASE}/channels?part=id&mine=true`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res)), "channel");
-  const json = (await res.json().catch(() => null)) as { items?: Array<{ id?: unknown }> } | null;
+  if (!expectedChannelId.trim()) {
+    throw new YouTubeUploadError("canal esperado vazio (YOUTUBE_CHANNEL_ID) — sem ele não dá para conferir o token; nada foi enviado", "channel");
+  }
+  let res: Response;
+  try {
+    res = await deps.fetch(`${YOUTUBE_API_BASE}/channels?part=id&mine=true`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (e) {
+    throw new YouTubeUploadError(`sem rede para conferir o canal do token: ${(e as Error).message}`, "channel");
+  }
+  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res), "channel"), "channel");
+  const json = (await readJson(res)) as { items?: Array<{ id?: unknown }> } | null | undefined;
+  if (json === undefined) {
+    throw new YouTubeUploadError(`channels.list devolveu corpo não-JSON (HTTP ${res.status}) — nada foi enviado`, "channel");
+  }
   const ids = (json?.items ?? []).map((i) => i.id).filter((id): id is string => typeof id === "string");
   if (!ids.includes(expectedChannelId)) {
     throw new YouTubeUploadError(
@@ -160,12 +218,17 @@ export async function assertExpectedChannel(deps: YouTubeUploadDeps, token: stri
 
 /** POST de início do resumable upload; devolve a URL de sessão (`Location`). */
 export async function startResumableUpload(deps: YouTubeUploadDeps, token: string, request: YouTubeInsertRequest): Promise<string> {
-  const res = await deps.fetch(request.url, {
-    method: request.method,
-    headers: { ...request.headers, Authorization: `Bearer ${token}` },
-    body: JSON.stringify(request.body),
-  });
-  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res)), "insert");
+  let res: Response;
+  try {
+    res = await deps.fetch(request.url, {
+      method: request.method,
+      headers: { ...request.headers, Authorization: `Bearer ${token}` },
+      body: JSON.stringify(request.body),
+    });
+  } catch (e) {
+    throw new YouTubeUploadError(`sem rede para abrir a sessão de upload (videos.insert): ${(e as Error).message}`, "insert");
+  }
+  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res), "insert"), "insert");
   const location = res.headers.get("location");
   if (!location) throw new YouTubeUploadError("videos.insert não devolveu a URL de upload (header Location)", "insert");
   return location;
@@ -174,7 +237,15 @@ export async function startResumableUpload(deps: YouTubeUploadDeps, token: strin
 export interface UploadedVideoResource {
   id: string;
   snippet?: { channelId?: string; title?: string };
-  status?: { uploadStatus?: string; privacyStatus?: string; publishAt?: string | null };
+  status?: {
+    uploadStatus?: string;
+    privacyStatus?: string;
+    publishAt?: string | null;
+    /** Presente quando `uploadStatus = rejected`. */
+    rejectionReason?: string;
+    /** Presente quando `uploadStatus = failed`. */
+    failureReason?: string;
+  };
 }
 
 /** PUT dos bytes na sessão resumable; devolve o resource `videos` criado. */
@@ -195,8 +266,11 @@ export async function putVideoBytes(
   } catch (e) {
     throw new YouTubeUploadError(`envio dos bytes do vídeo falhou (rede): ${(e as Error).message}`, "upload");
   }
-  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res)), "upload");
-  const json = (await res.json().catch(() => null)) as UploadedVideoResource | null;
+  if (!res.ok) throw new YouTubeUploadError(explainYouTubeUploadError(res.status, await errorSnippet(res), "upload"), "upload");
+  const json = (await readJson(res)) as UploadedVideoResource | null | undefined;
+  if (json === undefined) {
+    throw new YouTubeUploadError(`o upload terminou com corpo não-JSON (HTTP ${res.status}), sem o id do vídeo`, "upload");
+  }
   if (!json || typeof json.id !== "string" || !json.id) {
     throw new YouTubeUploadError("o upload terminou sem devolver o id do vídeo — confira no YouTube Studio antes de tentar de novo", "upload");
   }
@@ -210,7 +284,7 @@ export async function setThumbnail(deps: YouTubeUploadDeps, token: string, video
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "image/jpeg", "Content-Length": String(jpeg.length) },
     body: asBody(jpeg),
   });
-  if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res)));
+  if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "thumbnail"));
 }
 
 /** Relê `status` do vídeo. `null` se a API não devolver o item. */
@@ -222,8 +296,9 @@ export async function fetchVideoStatus(
   const res = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=status&id=${encodeURIComponent(videoId)}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res)));
-  const json = (await res.json().catch(() => null)) as { items?: UploadedVideoResource[] } | null;
+  if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "reread"));
+  const json = (await readJson(res)) as { items?: UploadedVideoResource[] } | null | undefined;
+  if (json === undefined) throw new Error(`videos.list devolveu corpo não-JSON (HTTP ${res.status})`);
   const item = json?.items?.find((i) => i.id === videoId);
   return item?.status ?? null;
 }
@@ -235,6 +310,12 @@ export interface YouTubeUploadInput {
   contentType?: string;
   /** Capa (JPEG); null = sem `thumbnails.set`. */
   thumbnail: Buffer | null;
+  /**
+   * Chamado logo antes do PUT dos bytes — o ponto a partir do qual o vídeo
+   * pode existir. O CLI grava aqui o marcador `in_progress`. Se lançar, o PUT
+   * não acontece (falha na etapa `insert`, nada enviado).
+   */
+  beforeVideoBytes?: () => void;
 }
 
 export interface YouTubeUploadResult {
@@ -254,7 +335,8 @@ export interface YouTubeUploadResult {
 }
 
 /**
- * Upload completo. Lança `YouTubeUploadError` até o vídeo existir; depois
+ * Upload completo. Lança `YouTubeUploadError` até o vídeo estar confirmado (com
+ * `step: "upload"` o vídeo PODE existir — ver `isIndeterminateUploadFailure`); depois
  * disso (capa, releitura) nunca lança — falha vira campo no resultado, pra o
  * caller sempre conseguir gravar o videoId e não duplicar o upload.
  */
@@ -262,6 +344,13 @@ export async function uploadYouTubeVideo(deps: YouTubeUploadDeps, input: YouTube
   const token = await refreshYouTubeAccessToken(deps, input.creds);
   await assertExpectedChannel(deps, token, input.creds.channelId);
   const sessionUrl = await startResumableUpload(deps, token, input.request);
+  if (input.beforeVideoBytes) {
+    try {
+      input.beforeVideoBytes();
+    } catch (e) {
+      throw new YouTubeUploadError(`marcador de upload em andamento não gravado (${(e as Error).message}) — bytes não enviados`, "insert");
+    }
+  }
   const resource = await putVideoBytes(deps, token, sessionUrl, input.video, input.contentType ?? "video/mp4");
   const uploadedAt = deps.now().toISOString();
   const videoId = resource.id;
@@ -305,15 +394,28 @@ export async function uploadYouTubeVideo(deps: YouTubeUploadDeps, input: YouTube
   };
 }
 
-/** Explica o estado relido para o editor (nunca diz "publicado" sem `published`). */
-export function describeYouTubeState(state: PublishState): string {
+/** `uploadStatus` relido que significa que o vídeo não vai ao ar. */
+export function failedUploadStatus(status: UploadedVideoResource["status"] | null): string | null {
+  const s = (status?.uploadStatus ?? "").toLowerCase();
+  return s === "failed" || s === "rejected" || s === "deleted" ? s : null;
+}
+
+/**
+ * Explica o estado relido para o editor (nunca diz "publicado" sem `published`).
+ * `auditBlocked`: projeto GCP sem auditoria — o agendamento pode não tornar o
+ * vídeo público (restrição de 2020; a página atual de `videos.insert` diz o
+ * contrário, então só o horário confirma).
+ */
+export function describeYouTubeState(state: PublishState, opts: { auditBlocked?: boolean } = {}): string {
   switch (state) {
     case "published":
       return "público";
     case "scheduled":
-      return "agendado (privado até o publishAt)";
+      return opts.auditBlocked
+        ? "agendado (privado até o publishAt) — projeto GCP sem auditoria: o agendamento pode não tornar o vídeo público (restrição de 2020); confira no Studio depois do horário"
+        : "agendado (privado até o publishAt)";
     case "draft":
-      return "privado sem agendamento — sem a auditoria do YouTube API Services o YouTube trava todo upload via API em private; publique à mão no Studio";
+      return "privado sem agendamento — sem a auditoria do YouTube API Services o upload via API pode sair travado em private (restrição de 2020); publique ou agende à mão no Studio";
     default:
       return "estado não confirmado na releitura — confira no YouTube Studio antes de afirmar qualquer coisa";
   }

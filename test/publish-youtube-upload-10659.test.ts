@@ -17,6 +17,7 @@ import { join } from "node:path";
 import {
   YOUTUBE_PUBLISHED_FILE,
   YouTubeUploadError,
+  describeYouTubeState,
   explainYouTubeUploadError,
   missingYouTubeCredentials,
   uploadYouTubeVideo,
@@ -318,6 +319,117 @@ describe("releitura do estado (#573)", () => {
     const { outcome } = await run(deps, plan);
     assert.equal(outcome.record!.state, "unknown");
   });
+
+  for (const [uploadStatus, reasonField, reason] of [
+    ["rejected", "rejectionReason", "duplicate"],
+    ["failed", "failureReason", "codec"],
+    ["deleted", null, null],
+  ] as const) {
+    it(`releitura com uploadStatus=${uploadStatus}: [erro] com status e motivo, exit 1, registro mantido`, async () => {
+      const plan = buildPlan(dir);
+      const status: Record<string, string> = { uploadStatus, privacyStatus: "private" };
+      if (reasonField) status[reasonField] = reason!;
+      const { deps } = mockDeps(
+        happyRoutes({
+          reread: (c) => (c.url.includes("/videos?part=status") ? json(200, { items: [{ id: VIDEO_ID, status }] }) : undefined),
+        }),
+      );
+      const { outcome, logs } = await run(deps, plan);
+      assert.equal(outcome.exitCode, 1);
+      const err = logs.find((l) => l.startsWith("[erro]")) ?? "";
+      assert.match(err, new RegExp(`uploadStatus=${uploadStatus}`));
+      if (reason) assert.match(err, new RegExp(reason));
+      assert.equal(logs.some((l) => l.startsWith("[ok]")), false);
+      assert.equal(JSON.parse(readFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), "utf8")).videoId, VIDEO_ID);
+    });
+  }
+
+  it("com audit_blocked, 'scheduled' avisa que o agendamento pode não tornar público", () => {
+    assert.match(describeYouTubeState("scheduled", { auditBlocked: true }), /pode não tornar o vídeo público/);
+    assert.doesNotMatch(describeYouTubeState("scheduled"), /pode não/);
+  });
+});
+
+describe("estado incerto a partir do PUT (vídeo PODE existir)", () => {
+  const cases: Array<[string, Route]> = [
+    ["PUT 5xx", (c) => (c.method === "PUT" ? json(503, { error: "backend" }) : undefined)],
+    [
+      "PUT lança (rede caindo)",
+      (c) => {
+        if (c.method === "PUT") throw new Error("socket hang up");
+        return undefined;
+      },
+    ],
+    ["PUT 2xx sem id", (c) => (c.method === "PUT" ? json(200, {}) : undefined)],
+    ["PUT 2xx corpo não-JSON", (c) => (c.method === "PUT" ? new Response("<html>ok</html>", { status: 200 }) : undefined)],
+  ];
+  for (const [name, put] of cases) {
+    it(`${name}: exit 1, mensagem de estado incerto, marcador gravado, 2º --upload recusa sem --force`, async () => {
+      const plan = buildPlan(dir);
+      let markerDuringPut: unknown = null;
+      const { deps } = mockDeps(
+        happyRoutes({
+          put: (c) => {
+            if (c.method === "PUT") markerDuringPut = JSON.parse(readFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), "utf8"));
+            return put(c);
+          },
+        }),
+      );
+      const { outcome, logs } = await run(deps, plan);
+      const text = logs.join("\n");
+      assert.equal(outcome.exitCode, 1);
+      assert.equal(outcome.record, null);
+      assert.match(text, /PODE ter sido criado/);
+      assert.match(text, /confira o canal antes de rodar de novo/);
+      assert.doesNotMatch(text, /Nada foi publicado/);
+      assertNoSecrets(text);
+      // Marcador `in_progress` existia ANTES do PUT.
+      assert.equal((markerDuringPut as { status?: string } | null)?.status, "in_progress");
+      const onDisk = JSON.parse(readFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), "utf8"));
+      assert.equal(onDisk.status, "upload_indeterminado");
+      assert.equal(onDisk.aammdd, "261022");
+      assert.equal(onDisk.step, "upload");
+      assert.ok(onDisk.at);
+
+      const again = mockDeps(happyRoutes());
+      const second = await run(again.deps, plan);
+      assert.equal(second.outcome.exitCode, 1);
+      assert.equal(again.calls.length, 0);
+      assert.match(second.logs.join("\n"), /estado incerto/);
+
+      const forced = mockDeps(happyRoutes());
+      const third = await run(forced.deps, plan, { force: true });
+      assert.equal(third.outcome.exitCode, 0);
+      assert.equal(third.outcome.record!.previous_uploads?.length, 1);
+      assert.equal((third.outcome.record!.previous_uploads![0] as { status?: string }).status, "upload_indeterminado");
+    });
+  }
+
+  it("falha antes dos bytes (insert) não grava marcador e diz 'Nada foi publicado'", async () => {
+    const plan = buildPlan(dir);
+    const { deps } = mockDeps(happyRoutes({ insert: (c) => (c.url.includes("uploadType=resumable") ? json(500, {}) : undefined) }));
+    const { outcome, logs } = await run(deps, plan);
+    assert.equal(outcome.exitCode, 1);
+    assert.match(logs.join("\n"), /Nada foi publicado/);
+    assert.equal(existsSync(join(dir, YOUTUBE_PUBLISHED_FILE)), false);
+  });
+
+  it("rede caindo no channels.list / no início do insert: YouTubeUploadError com a etapa", async () => {
+    const plan = buildPlan(dir);
+    const boom: Route = () => {
+      throw new Error("ECONNRESET");
+    };
+    const ch = mockDeps(happyRoutes({ channel: (c) => (c.url.includes("/channels") ? boom(c) : undefined) }));
+    const r1 = await run(ch.deps, plan);
+    assert.equal(r1.outcome.exitCode, 1);
+    assert.match(r1.logs.join("\n"), /etapa channel/);
+    assert.match(r1.logs.join("\n"), /Nada foi publicado/);
+
+    const ins = mockDeps(happyRoutes({ insert: (c) => (c.url.includes("uploadType=resumable") ? boom(c) : undefined) }));
+    const r2 = await run(ins.deps, plan);
+    assert.match(r2.logs.join("\n"), /etapa insert/);
+    assert.match(r2.logs.join("\n"), /Nada foi publicado/);
+  });
 });
 
 describe("idempotência do registro", () => {
@@ -338,6 +450,55 @@ describe("idempotência do registro", () => {
     const forced = await run(second.deps, plan, { force: true });
     assert.equal(forced.outcome.exitCode, 0);
     assert.equal(forced.outcome.record!.videoId, VIDEO_ID);
+    // --force preserva o registro substituído em previous_uploads.
+    const onDisk = JSON.parse(readFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), "utf8"));
+    assert.deepEqual(onDisk.previous_uploads.map((p: { videoId: string }) => p.videoId), ["old1"]);
+
+    // Um 2º --force empilha o histórico (mais antigo primeiro), sem aninhar.
+    const third = mockDeps(happyRoutes());
+    await run(third.deps, plan, { force: true });
+    const after = JSON.parse(readFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), "utf8"));
+    assert.deepEqual(after.previous_uploads.map((p: { videoId: string }) => p.videoId), ["old1", VIDEO_ID]);
+    assert.equal(after.previous_uploads[1].previous_uploads, undefined);
+  });
+
+  for (const [name, content] of [
+    ["de outra edição", JSON.stringify({ aammdd: "261021", videoId: "x1", url: "https://youtu.be/x1" })],
+    ["sem videoId", JSON.stringify({ aammdd: "261022", url: "https://youtu.be/x1" })],
+    ["null", "null"],
+    ["{}", "{}"],
+  ] as const) {
+    it(`registro JSON válido mas ${name}: recusa como ilegível, sem rede`, async () => {
+      const plan = buildPlan(dir);
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, YOUTUBE_PUBLISHED_FILE), content);
+      const { deps, calls } = mockDeps(happyRoutes());
+      const { outcome, logs } = await run(deps, plan);
+      assert.equal(outcome.exitCode, 1);
+      assert.equal(calls.length, 0);
+      assert.match(logs.join("\n"), /ilegível/);
+      assert.match(logs.join("\n"), /Nada foi enviado/);
+    });
+  }
+
+  it("falha ao gravar o registro depois do upload ok: exit 1, record no outcome, [erro] mandando NÃO repetir", async () => {
+    const plan = buildPlan(dir);
+    const internal = join(dir, "_internal");
+    const { deps } = mockDeps(
+      happyRoutes({
+        put: (c) => {
+          if (c.method !== "PUT") return undefined;
+          // O marcador in_progress já foi gravado; troca `_internal` por um ARQUIVO pra a gravação final falhar.
+          rmSync(internal, { recursive: true, force: true });
+          writeFileSync(internal, "não sou diretório");
+          return json(200, { id: VIDEO_ID, status: { uploadStatus: "uploaded", privacyStatus: "private" } });
+        },
+      }),
+    );
+    const { outcome, logs } = await run(deps, plan);
+    assert.equal(outcome.exitCode, 1);
+    assert.equal(outcome.record!.videoId, VIDEO_ID);
+    assert.ok(logs.some((l) => /^\[erro\] vídeo ENVIADO .*NÃO rode --upload de novo/.test(l)));
   });
 
   it("registro corrompido: recusa (não dá pra saber se já subiu)", async () => {
@@ -395,5 +556,99 @@ describe("miolo da lib", () => {
     assert.match(explainYouTubeUploadError(403, '{"reason":"uploadLimitExceeded"}'), /limite de uploads/);
     assert.match(explainYouTubeUploadError(403, "insufficientPermissions"), /youtube\.upload/);
     assert.match(explainYouTubeUploadError(418, "x"), /418/);
+  });
+
+  it("invalid_client/unauthorized_client aponta divergência do client no ambiente (#8237), sem mandar refazer consentimento", () => {
+    for (const body of ['{"error":"invalid_client"}', '{"error":"unauthorized_client"}']) {
+      const m = explainYouTubeUploadError(401, body, "token");
+      assert.match(m, /GOOGLE_CLIENT_ID/);
+      assert.match(m, /#8237/);
+      assert.doesNotMatch(m, /refaça o consentimento/);
+    }
+  });
+
+  it("403 forbidden só cita capa customizada na etapa thumbnail", () => {
+    const body = '{"error":{"errors":[{"reason":"forbidden"}]}}';
+    assert.match(explainYouTubeUploadError(403, body, "thumbnail"), /capa customizada/);
+    assert.doesNotMatch(explainYouTubeUploadError(403, body, "insert"), /capa/);
+    assert.match(explainYouTubeUploadError(403, body, "insert"), /etapa insert/);
+    assert.doesNotMatch(explainYouTubeUploadError(403, body), /capa/);
+  });
+
+  it("quota: balde próprio do videos.insert (100 chamadas/dia), não os 1.600 antigos", () => {
+    const m = explainYouTubeUploadError(403, "quotaExceeded");
+    assert.match(m, /100 chamadas\/dia/);
+    assert.doesNotMatch(m, /1\.600/);
+  });
+
+  it("channelId vazio na lib: lança na etapa channel sem chamar channels.list", async () => {
+    const plan = buildPlan(dir);
+    const { deps, calls } = mockDeps(happyRoutes());
+    await assert.rejects(
+      uploadYouTubeVideo(deps, {
+        creds: { clientId: "a", clientSecret: "b", refreshToken: "c", channelId: "  " },
+        request: plan.request,
+        video: Buffer.from("x"),
+        thumbnail: null,
+      }),
+      (e: unknown) => e instanceof YouTubeUploadError && e.step === "channel",
+    );
+    assert.equal(calls.some((c) => c.url.includes("/channels")), false);
+  });
+
+  it("corpo não-JSON em token/channel/releitura diz 'corpo não-JSON'", async () => {
+    const plan = buildPlan(dir);
+    const html = () => new Response("<html>proxy</html>", { status: 200 });
+    const creds = { clientId: "a", clientSecret: "b", refreshToken: "c", channelId: SECRETS.YOUTUBE_CHANNEL_ID };
+    const input = { creds, request: plan.request, video: Buffer.from("x"), thumbnail: null };
+
+    const tok = mockDeps(happyRoutes({ token: (c) => (c.url.includes("oauth2") ? html() : undefined) }));
+    await assert.rejects(uploadYouTubeVideo(tok.deps, input), (e: unknown) => e instanceof YouTubeUploadError && e.step === "token" && /não-JSON/.test(e.message));
+
+    const ch = mockDeps(happyRoutes({ channel: (c) => (c.url.includes("/channels") ? html() : undefined) }));
+    await assert.rejects(
+      uploadYouTubeVideo(ch.deps, input),
+      (e: unknown) => e instanceof YouTubeUploadError && e.step === "channel" && /não-JSON/.test(e.message) && !/nenhum canal/.test(e.message),
+    );
+
+    const rr = mockDeps(happyRoutes({ reread: (c) => (c.url.includes("/videos?part=status") ? html() : undefined) }));
+    const res = await uploadYouTubeVideo(rr.deps, input);
+    assert.match(res.rereadError ?? "", /não-JSON/);
+    assert.doesNotMatch(res.rereadError ?? "", /indexado/);
+  });
+
+  it("bytes enviados no PUT e na capa são exatamente os do arquivo (inclusive Buffer com byteOffset≠0)", async () => {
+    const plan = buildPlan(dir);
+    const videoBytes = Buffer.from("conteudo-do-video-mp4");
+    const thumbBytes = Buffer.from("jpeg-da-capa");
+    // Fatias de um Buffer maior: byteOffset≠0, o caso em que `buf.buffer` inteiro vazaria.
+    const video = Buffer.concat([Buffer.from("LIXO-ANTES"), videoBytes, Buffer.from("LIXO-DEPOIS")]).subarray(10, 10 + videoBytes.length);
+    const thumb = Buffer.concat([Buffer.from("XX"), thumbBytes]).subarray(2);
+    assert.notEqual(video.byteOffset, 0);
+    assert.notEqual(thumb.byteOffset, 0);
+    const { deps, calls } = mockDeps(happyRoutes());
+    await uploadYouTubeVideo(deps, {
+      creds: { clientId: "a", clientSecret: "b", refreshToken: "c", channelId: SECRETS.YOUTUBE_CHANNEL_ID },
+      request: plan.request,
+      video,
+      thumbnail: thumb,
+    });
+    const put = calls.find((c) => c.method === "PUT")!;
+    assert.ok(Buffer.from(put.body as Uint8Array).equals(videoBytes));
+    assert.equal(put.headers["Content-Type"], "video/mp4");
+    assert.equal(put.headers["Content-Length"], String(videoBytes.length));
+    const th = calls.find((c) => c.url.includes("thumbnails/set"))!;
+    assert.ok(Buffer.from(th.body as Uint8Array).equals(thumbBytes));
+    assert.equal(th.headers["Content-Type"], "image/jpeg");
+    assert.equal(th.headers["Content-Length"], String(thumbBytes.length));
+  });
+
+  it("aviso de vídeo ausente: 'fail-soft' só no dry-run; no --upload reflete o exit 1", () => {
+    const base = { aammdd: "261022", reviewedMd: REVIEWED_MD, now: NOW, episode: 2, editionUrl: "https://diar.ia.br/p/x",
+      video: { path: "/nao/existe.mp4", exists: false, sizeBytes: null }, thumb: { path: "/t.jpg", exists: true } };
+    assert.ok(planYouTubePublish(base).warnings.some((w) => /fail-soft/.test(w)));
+    const up = planYouTubePublish({ ...base, mode: "upload" }).warnings.find((w) => /vídeo ausente/.test(w)) ?? "";
+    assert.match(up, /exit 1/);
+    assert.doesNotMatch(up, /fail-soft/);
   });
 });

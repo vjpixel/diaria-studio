@@ -9,7 +9,7 @@ Investigação de 22/10/2026, pedida pelo editor antes de decidir o caminho da t
 - O que mais se aproxima é `brandPartner` (`channelId`/`channelHandle`), adicionado em 07/07/2026. Ele liga o vídeo a uma marca parceira, não a outro vídeo.
 - O histórico de revisões da API não tem entrada sobre vídeo relacionado de Shorts nem sobre telas finais. A entrada mais recente lida é de 15/10/2026. O único item de "related videos" é a remoção do parâmetro `search.list relatedToVideoId`, descontinuado em 12/06/2023 e removido em 07/08/2023, que servia para buscar vídeos relacionados e não para vincular um.
 - A Central de Ajuda descreve o recurso só no YouTube Studio: Conteúdo → o Short → "Vídeo relacionado" → Salvar. O recurso exige acesso a recursos avançados, o vídeo escolhido precisa ser **público ou não listado**, e o vínculo é feito depois do upload. A página não cita API.
-- A API só **mede** o recurso. Nos relatórios do YouTube Analytics/Reporting, `insightTrafficSourceType = 32` ("Related video") conta as visualizações vindas do link de vídeo relacionado no player do Short.
+- A API só **mede** o recurso. Na Reporting API, a dimensão é `traffic_source_type = 32` ("Related video"). Na Analytics API, é `insightTrafficSourceType = RELATED_VIDEO`. As duas contam as visualizações vindas do link de vídeo relacionado no player do Short.
 
 ## Conclusão
 
@@ -21,7 +21,7 @@ Achado lateral útil para a decisão: o seletor aceita vídeo **não listado**, 
 
 1. **Claude in Chrome no YouTube Studio logado** (o caminho já previsto na issue, label `windows`): 1 ação editorial por dia na conta do editor, aceitável pela regra de ToS do `CLAUDE.md`. A API ajuda nas pontas: confirmar por `videos.list?part=status` (determinístico, #573, `resolveYouTubeState`) que o horizontal está `public` antes de abrir o Studio. Não há como reler o vínculo pela API, então a confirmação também precisa ser pela página do Studio.
 2. **Manual, com lembrete:** manter o passo de 1 minuto no Studio e só automatizar o alerta (a API confirma que o horizontal ficou público; o lembrete sai antes do horário do Short).
-3. **Medir antes de automatizar:** o tráfego `insightTrafficSourceType = 32` mostra quantas visualizações o link de fato gera. Se for pouco, a automação via Chrome pode não compensar.
+3. **Medir antes de automatizar:** o tráfego `traffic_source_type = 32` (Reporting API) / `insightTrafficSourceType = RELATED_VIDEO` (Analytics API) mostra quantas visualizações o link de fato gera. Se for pouco, a automação via Chrome pode não compensar.
 
 A escolha entre 1, 2 e 3 é do editor (#10811).
 
