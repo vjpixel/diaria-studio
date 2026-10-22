@@ -25,8 +25,12 @@
  *     aviso e segue (rode `scripts/facebook-page-token-setup.ts`). Até 90 s
  *     sobe por `video_reels`; acima disso (a API de Reels recusa), por
  *     `/{page-id}/videos` — vídeo vertical aparece como Reel.
- *   - `instagram` (API) — Reels no Instagram da diar.ia.br
- *     (`INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN`).
+ *   - `instagram` (API) — Reels no Instagram. Autora: a conta do Instagram
+ *     vinculada à página `publishing.shorts.instagram_author_page` (#10790:
+ *     conta pessoal do editor, ligada à página VJ pixel, publicando com o
+ *     token dessa página); `null` = conta da diar.ia.br
+ *     (`INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN`). Contas de
+ *     `instagram_collaborators` entram como collab (aceitam o convite no app).
  *   - `youtube_shorts` e `facebook_profile` (guiados) — o JSON traz título,
  *     descrição, comentário fixado e legenda; o skill `/diaria-shorts` executa
  *     no Chrome e grava com `--mark`.
@@ -117,6 +121,8 @@ export interface ShortsPlanInput {
   config: unknown;
   pages: ResolvedFacebookPage[];
   instagramReady: boolean;
+  /** Por que o Instagram não está pronto (vira o aviso do plano). */
+  instagramNotReadyReason?: string;
   published: ShortsPublishedFile;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   editionUrl?: string;
@@ -205,7 +211,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     // instagram
     if (!input.instagramReady) {
-      warnings.push("instagram: sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN");
+      warnings.push(`instagram: ${input.instagramNotReadyReason ?? "sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN"}`);
       return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: "INSTAGRAM_*" };
     }
     let caption: string;
@@ -373,6 +379,52 @@ export async function publishFacebookReel(
   };
 }
 
+/** Autora do Reels no Instagram, resolvida pra uma conta + token (#10790). */
+export type InstagramAuthor =
+  | { ready: true; igUserId: string; token: string; username: string | null; source: string }
+  | { ready: false; reason: string };
+
+/**
+ * Resolve a conta do Instagram que publica o Reels. Com `authorPage`, é a conta
+ * VINCULADA a essa página do Facebook, usando o token da página (precisa de
+ * `instagram_content_publish`). Sem vínculo ou sem token → não pronto, com o
+ * passo que destrava: nunca cai em silêncio na conta da diar.ia.br.
+ */
+export async function resolveInstagramAuthor(
+  deps: Pick<GraphDeps, "fetch">,
+  authorPage: string | null,
+  pages: ResolvedFacebookPage[],
+  apiVersion: string,
+  envAccount: { igUserId: string; token: string },
+): Promise<InstagramAuthor> {
+  if (authorPage === null) {
+    if (!envAccount.igUserId || !envAccount.token) return { ready: false, reason: "sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN" };
+    return { ready: true, igUserId: envAccount.igUserId, token: envAccount.token, username: null, source: "conta da diar.ia.br (env)" };
+  }
+  const page = pages.find((p) => p.slug === authorPage);
+  if (!page) return { ready: false, reason: `instagram_author_page "${authorPage}" não existe em publishing.social.facebook.pages` };
+  if (page.missing.length || !page.token) {
+    return { ready: false, reason: `página ${authorPage} sem credencial (${page.missing.join(", ")}) — rode scripts/facebook-page-token-setup.ts --pages ${authorPage}` };
+  }
+  let json: any;
+  try {
+    json = await graphGet(deps as GraphDeps, page.pageId, { fields: "instagram_business_account{id,username}", access_token: page.token }, apiVersion);
+  } catch (e) {
+    return { ready: false, reason: `não foi possível ler a conta do Instagram vinculada à página ${authorPage}: ${(e as Error).message}` };
+  }
+  const ig = json?.instagram_business_account;
+  if (!ig?.id) {
+    return {
+      ready: false,
+      reason:
+        `nenhuma conta do Instagram vinculada à página ${authorPage} — torne a conta pessoal profissional (criador), ` +
+        `vincule-a à página no Facebook e gere de novo o token da página com instagram_content_publish ` +
+        `(scripts/facebook-page-token-setup.ts --pages ${authorPage})`,
+    };
+  }
+  return { ready: true, igUserId: ig.id, token: page.token, username: ig.username ?? null, source: `conta vinculada à página ${authorPage}` };
+}
+
 /** Reels no Instagram: container resumable → rupload → espera FINISHED → media_publish. */
 export async function publishInstagramReel(
   deps: GraphDeps,
@@ -381,13 +433,12 @@ export async function publishInstagramReel(
   apiVersion: string,
   file: Buffer,
   caption: string,
+  collaborators: string[] = [],
 ): Promise<PublishOutcome> {
-  const container = await graphPost(
-    deps,
-    `${igUserId}/media`,
-    { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token },
-    apiVersion,
-  );
+  const params: Record<string, string> = { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token };
+  // #10790: collab — a Graph API recebe a lista como JSON; cada conta aceita o convite no app.
+  if (collaborators.length) params.collaborators = JSON.stringify(collaborators);
+  const container = await graphPost(deps, `${igUserId}/media`, params, apiVersion);
   const containerId: string = container.id;
   if (!containerId) throw new Error(`media (REELS) sem id: ${JSON.stringify(container)}`);
   await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
@@ -516,9 +567,26 @@ async function main(): Promise<number> {
   const videoExists = existsSync(videoPath);
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
-  const igUserId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "";
-  const igToken = process.env.INSTAGRAM_ACCESS_TOKEN ?? "";
   const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
+  let shortsCfg: ReturnType<typeof loadShortsConfig>;
+  try {
+    shortsCfg = loadShortsConfig(config);
+  } catch (e) {
+    console.error(`publish-shorts: ${(e as Error).message}`);
+    return 2;
+  }
+  const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
+  const wantsInstagram = shortsCfg.instagram && (!onlyList || onlyList.includes("instagram"));
+  const igAuthor: InstagramAuthor = wantsInstagram
+    ? await resolveInstagramAuthor(defaultGraphDeps, shortsCfg.instagramAuthorPage, pages, igApiVersion, {
+        igUserId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
+        token: process.env.INSTAGRAM_ACCESS_TOKEN ?? "",
+      })
+    : { ready: false, reason: "fora desta rodada" };
+  if (igAuthor.ready) {
+    const collab = shortsCfg.instagramCollaborators.length ? ` + collab ${shortsCfg.instagramCollaborators.map((c) => `@${c}`).join(", ")}` : "";
+    console.error(`[premissa] Instagram: autora ${igAuthor.username ? `@${igAuthor.username}` : igAuthor.igUserId} (${igAuthor.source})${collab}`);
+  }
   const editionUrlIn = resolveEditionUrlInput(dir, values["edition-url"]);
 
   let plan: ShortsPlan;
@@ -529,13 +597,14 @@ async function main(): Promise<number> {
       now: new Date(),
       config,
       pages,
-      instagramReady: Boolean(igUserId && igToken),
+      instagramReady: igAuthor.ready,
+      instagramNotReadyReason: igAuthor.ready ? undefined : igAuthor.reason,
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
       editionUrl: editionUrlIn.url,
       editionUrlSource: editionUrlIn.source,
       forceNow: flags.has("now"),
-      only: values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null,
+      only: onlyList,
     });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
@@ -563,7 +632,8 @@ async function main(): Promise<number> {
     let outcome: PublishOutcome;
     try {
       if (item.destination === "instagram") {
-        outcome = await publishInstagramReel(deps, igUserId, igToken, igApiVersion, file, item.caption);
+        if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
+        outcome = await publishInstagramReel(deps, igAuthor.igUserId, igAuthor.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
         outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt);

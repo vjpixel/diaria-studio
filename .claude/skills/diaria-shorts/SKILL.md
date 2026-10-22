@@ -1,6 +1,6 @@
 ---
 name: diaria-shorts
-description: Publica o vídeo CURTO (vertical) da edição — o recorte do "diar.ia.br comentada" — como YouTube Shorts e como Reels nas páginas do Facebook (diar.ia.br, VJ Pixel, MemeLab), no Instagram da diar.ia.br e no perfil pessoal do editor, para divulgar o canal @diariabr. Reels de página e Instagram saem pela Graph API (`scripts/publish-shorts.ts`); YouTube Shorts e perfil pessoal são passos guiados no Claude in Chrome, com o editor escolhendo o arquivo. Uso — `/diaria-shorts AAMMDD`.
+description: Publica o vídeo CURTO (vertical) da edição — o recorte do "diar.ia.br comentada" — como YouTube Shorts e como Reels nas páginas do Facebook (diar.ia.br e VJ Pixel), no Instagram pessoal do editor com a diar.ia.br em collab e no perfil pessoal do editor, para divulgar o canal @diariabr. Reels de página e Instagram saem pela Graph API (`scripts/publish-shorts.ts`); YouTube Shorts e perfil pessoal são passos guiados no Claude in Chrome, com o editor escolhendo o arquivo. Uso — `/diaria-shorts AAMMDD`.
 ---
 
 # /diaria-shorts AAMMDD (#10769)
@@ -16,19 +16,19 @@ Invocar a skill é o pedido de publicação: publicar nos destinos abaixo não p
 | Destino | Como | Observação |
 |---|---|---|
 | `youtube_shorts` | guiado (Chrome) | a API trava todo upload em `private` sem a auditoria do GCP (#10659) |
-| `facebook:diaria`, `facebook:vjpixel`, `facebook:memelab` | API | agenda pras 06:00 BRT se faltar mais de 10 min (piso do Facebook); senão, na hora. Até 90 s sobe como Reels (`video_reels`); acima disso, como vídeo da Página (`/videos`), que o Facebook mostra como Reel quando é vertical |
-| `instagram` | API (Reels resumable) | o Instagram não agenda Reels por API: com horário futuro fica pendente até rodar de novo depois das 06:00 (ou `--now`) |
+| `facebook:diaria`, `facebook:vjpixel` | API | agenda pras 06:00 BRT se faltar mais de 10 min (piso do Facebook); senão, na hora. Até 90 s sobe como Reels (`video_reels`); acima disso, como vídeo da Página (`/videos`), que o Facebook mostra como Reel quando é vertical |
+| `instagram` | API (Reels resumable) | autora = conta pessoal do editor (@vjpixel), a conta do Instagram vinculada à página VJ pixel (`instagram_author_page`), publicando com o token dessa página; `diar.ia.br` entra como collab (`instagram_collaborators`) e aceita o convite no app. Sem conta vinculada, o destino é pulado com o passo que destrava, nunca cai na conta da diar.ia.br. O Instagram não agenda Reels por API: com horário futuro fica pendente até rodar de novo depois das 06:00 (ou `--now`) |
 | `facebook_profile` | guiado (Chrome) | a Graph API não publica em perfil pessoal |
 
-Os dois destinos guiados aparecem no plano, mas o script não os executa: são os Passos 4 e 5. Jandig, Teatro vs Game e Criaturas Afetivas ficam **fora** da rotina — só quando o editor pedir.
+Os dois destinos guiados aparecem no plano, mas o script não os executa: são os Passos 4 e 5. MemeLab saiu da rotina em 22/10/2026 (#10790). Jandig, Teatro vs Game e Criaturas Afetivas também ficam **fora** da rotina — só quando o editor pedir.
 
 Página sem token (`[aviso] facebook:{slug}: sem credencial`) não bloqueia as outras. Para gerar o token, o **editor** roda no terminal dele (o token nunca passa pelo chat):
 
 ```bash
-npx tsx scripts/facebook-page-token-setup.ts --pages vjpixel,memelab
+npx tsx scripts/facebook-page-token-setup.ts --pages vjpixel
 ```
 
-O script pede o User Access Token do Graph API Explorer (permissões `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`), lê sem eco na tela e grava id + token de página no `.env` e no Doppler. Nunca pedir nem colar o token aqui.
+O script pede o User Access Token do Graph API Explorer (permissões `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`; para a página `vjpixel`, que também publica o Instagram pessoal, mais `instagram_basic` e `instagram_content_publish`), lê sem eco na tela e grava id + token de página no `.env` e no Doppler. Nunca pedir nem colar o token aqui.
 
 ## Passo 1 — O vídeo
 
