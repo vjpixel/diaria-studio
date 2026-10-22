@@ -25,15 +25,13 @@
  * `scripts/build-hub-divulgacao-box.ts`, Node-side — este módulo é pure, sem
  * I/O, e não conhece `HUB_LOADERS`).
  *
- * **Wiring (#5263):** `scripts/stitch-newsletter.ts` chama
- * `regenerateHubDivulgacaoBoxForEdition()` — que reusa este módulo via
- * `resolveHubDivulgacaoBoxSource`/`renderGeneratedSnippet` de
- * `scripts/build-hub-divulgacao-box.ts` — ANTES de `resolveBoxesForEdition()`,
- * escrevendo `data/snippets/hub-divulgacao-rotativo.md` pra edição corrente
- * a cada rodada do Stage 2 (idempotente, fail-soft — box opcional, nunca
- * aborta o stitch). Não há mais slot pinado pra ele: `boxes_divulgacao_auto`
- * já roda por cliques sobre TODO `.md` de `data/snippets/`, então basta o
- * arquivo existir com dado fresco pra competir no ranking.
+ * **Fora da newsletter desde o #10832:** o stitch deixou de regenerar este
+ * box (antes, #5263, `stitch-newsletter.ts` reescrevia
+ * `data/snippets/hub-divulgacao-rotativo.md` a cada Stage 2 e ele competia no
+ * ranking de boxes). O editor decidiu que o hub não sai como box; a seleção
+ * (`NON_BOX_SNIPPET_FILES` em `scripts/select-boxes-by-clicks.ts`) recusa o
+ * arquivo mesmo que ele exista em disco. O CLI segue disponível pra gerar o
+ * texto à mão.
  */
 import { HUB_DIVULGACAO_BOX_UTM } from "./utm-registry.ts";
 import { DIARIA_ARQUIVO_URL } from "../canonical-urls.ts";

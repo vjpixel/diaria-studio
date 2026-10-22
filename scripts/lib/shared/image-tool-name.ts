@@ -14,9 +14,10 @@
  * As duas saídas derivam do MESMO slug de `image_generator` (ou do sidecar
  * `_internal/04-d{N}-generator.json`, #9095), então não divergem mais.
  *
- * O mensal tem o mapa próprio (`GENERATOR_LABELS` em `mensal/monthly-render.ts`)
- * com rótulos diferentes pra `openai`/`cloudflare`; fica fora do escopo aqui
- * (a diária é o que a issue mediu).
+ * #10826: o mensal passou a ler este mesmo helper — `captionForGenerator`
+ * (`mensal/monthly-render.ts`) delega a `imageCreditCaption`, e o rodapé do
+ * PARA ENCERRAR do mensal passa por `applyImageToolNameToCredits` com o nome
+ * extraído da legenda (`imageToolNameFromCaption`).
  *
  * Genérico, sem import de diaria/ nem mensal/ → `lib/shared/` (#2747).
  */
@@ -39,9 +40,23 @@ export function imageToolName(generator: string | null | undefined): string {
   return IMAGE_TOOL_NAMES[generator.toLowerCase()] ?? GENERIC_IMAGE_TOOL;
 }
 
+const CAPTION_PREFIX = "Criada com ";
+
 /** Legenda do hero: "Criada com {ferramenta}". */
 export function imageCreditCaption(generator: string | null | undefined): string {
-  return `Criada com ${imageToolName(generator)}`;
+  return `${CAPTION_PREFIX}${imageToolName(generator)}`;
+}
+
+/**
+ * #10826: nome da ferramenta a partir de uma legenda "Criada com {ferramenta}"
+ * (o formato de `imageCreditCaption`). `null` quando a legenda está ausente ou
+ * em outro formato — aí o caller não mexe no texto do rodapé. Existe pro
+ * mensal, cujo render recebe só a legenda pronta, não o slug do gerador.
+ */
+export function imageToolNameFromCaption(caption: string | null | undefined): string | null {
+  if (!caption || !caption.startsWith(CAPTION_PREFIX)) return null;
+  const name = caption.slice(CAPTION_PREFIX.length).trim();
+  return name || null;
 }
 
 /** Placeholder aceito no snippet de encerramento (opcional, além do texto legado). */
@@ -67,7 +82,11 @@ const TOOL_BEFORE_PURPOSE_RE = new RegExp(`(^|[\\s,(])(${KNOWN_TOOL_ALTERNATION}
  * ferramenta de imagem sai intacto (idempotente).
  */
 export function applyImageToolToCredits(text: string, generator: string | null | undefined): string {
-  const name = imageToolName(generator);
+  return applyImageToolNameToCredits(text, imageToolName(generator));
+}
+
+/** Mesmo que `applyImageToolToCredits`, recebendo o NOME já resolvido (#10826). */
+export function applyImageToolNameToCredits(text: string, name: string): string {
   return text
     .split(IMAGE_TOOL_PLACEHOLDER).join(name)
     .replace(TOOL_BEFORE_PURPOSE_RE, (_m, pre: string) => `${pre}${name}`);

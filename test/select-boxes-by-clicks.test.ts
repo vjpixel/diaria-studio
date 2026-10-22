@@ -23,6 +23,7 @@ import {
   isSnippetEligibleForDiaria,
   checkFallbackEligibility,
   ROTATION_SLOTS,
+  NON_BOX_SNIPPET_FILES,
   type SnippetEditionClicks,
   type SnippetHistory,
   type RankedBox,
@@ -1063,6 +1064,67 @@ describe("#9217 resolveBoxesForEdition — fallback pode repetir a caixa de onte
       assert.equal(s1.file, "winner.md");
     } finally {
       cleanup();
+    }
+  });
+});
+
+// ── #10832: o box rotativo de hubs nunca sai como box ─────────────────────
+
+describe("#10832 hub-divulgacao-rotativo.md nunca sai como box", () => {
+  const md = (boxTitle: string, url: string) =>
+    `**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody\n\n---\n\n**${boxTitle}**\n\n[Link](${url})\n\n---\n\n**DESTAQUE 2 | 🚀**\n\n[T](https://d2.com)\n\nbody`;
+
+  it("NON_BOX_SNIPPET_FILES contém o hub e isSnippetEligibleForDiaria o recusa", () => {
+    assert.ok(NON_BOX_SNIPPET_FILES.has("hub-divulgacao-rotativo.md"));
+    const hub = parseSnippetContent("hub-divulgacao-rotativo.md", "**A cobertura completa de X: [arquivo.diar.ia.br/temas/x](https://arquivo.diar.ia.br/temas/x)**");
+    assert.equal(isSnippetEligibleForDiaria(hub), false);
+  });
+
+  it("mesmo com o maior nº de cliques, o hub não é escolhido pelo ranking", () => {
+    const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+    try {
+      writeSnippet(snippetsDir, "hub-divulgacao-rotativo.md", "Hub", "https://arquivo.diar.ia.br/temas/deepfake");
+      writeSnippet(snippetsDir, "livros.md", "Livros", "https://livros.diar.ia.br");
+      writeEdition(editionsDir, "261020", md("Hub", "https://arquivo.diar.ia.br/temas/deepfake"));
+      writePost(postsDir, "p1020", "2026-10-20", "https://arquivo.diar.ia.br/temas/deepfake", 99);
+      writeEdition(editionsDir, "261019", md("Livros", "https://livros.diar.ia.br"));
+      writePost(postsDir, "p1019", "2026-10-19", "https://livros.diar.ia.br", 3);
+      writeEdition(editionsDir, "261021", "**DESTAQUE 1 | 🚀**\n\n[T](https://d1.com)\n\nbody");
+      const { effective, selection } = resolveBoxesForEdition({
+        aammdd: "261022",
+        boxesCfg: { slot0: null, slot1: "x.md", slot2: "y.md", slot3: null },
+        autoCfg: { enabled: true, pinnedSlots: new Set(), recentWindow: 3, priorWindow: 3, lastN: 20 },
+        editionsDir,
+        postsDir,
+        snippetsDir,
+      });
+      assert.notEqual(effective.slot1, "hub-divulgacao-rotativo.md");
+      assert.notEqual(effective.slot2, "hub-divulgacao-rotativo.md");
+      assert.ok(selection.every((s) => s.file !== "hub-divulgacao-rotativo.md"));
+      assert.equal(effective.slot1, "livros.md", "o candidato elegível segue sendo escolhido");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("configurado direto num slot (auto ligada ou desligada), o slot sai vazio", () => {
+    for (const enabled of [true, false]) {
+      const { editionsDir, postsDir, snippetsDir, cleanup } = setupEditionsFixture();
+      try {
+        writeSnippet(snippetsDir, "hub-divulgacao-rotativo.md", "Hub", "https://arquivo.diar.ia.br/temas/deepfake");
+        const { effective } = resolveBoxesForEdition({
+          aammdd: "261022",
+          boxesCfg: { slot0: "hub-divulgacao-rotativo.md", slot1: "hub-divulgacao-rotativo.md", slot2: null, slot3: null },
+          autoCfg: { enabled, pinnedSlots: new Set([1]), recentWindow: 3, priorWindow: 3, lastN: 20 },
+          editionsDir,
+          postsDir,
+          snippetsDir,
+        });
+        assert.equal(effective.slot0, null, `slot0 (enabled=${enabled})`);
+        assert.equal(effective.slot1, null, `slot1 (enabled=${enabled})`);
+      } finally {
+        cleanup();
+      }
     }
   });
 });

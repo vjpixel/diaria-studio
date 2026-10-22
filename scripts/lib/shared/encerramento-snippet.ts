@@ -76,6 +76,45 @@ export function isSocialInviteParagraph(text: string): boolean {
   return t.startsWith(SOCIAL_INVITE_PREFIX) || /^agora que chegou/i.test(t);
 }
 
+/** Rótulos dos links de rede no convite social — usados pra reconhecer um
+ * parágrafo que TENTA ser o convite (#10835). */
+const SOCIAL_INVITE_NETWORK_LABELS = ["LinkedIn", "Instagram", "Threads", "Facebook", "X", "YouTube"] as const;
+
+export type SocialInviteDrift =
+  /** Parece o convite (cita a diar.ia.br + ≥2 redes) mas o renderer não o
+   * reconhece: sai SEM a caixa "painel", em silêncio. */
+  | { kind: "unrecognized"; paragraph: string }
+  /** Reconhecido (ganha a caixa), mas o texto difere do `SOCIAL_INVITE`
+   * atual — ex.: costurado antes do YouTube entrar (#10761). */
+  | { kind: "outdated"; paragraph: string };
+
+/**
+ * #10835: acha o parágrafo de convite social do markdown e diz se ele diverge
+ * do `SOCIAL_INVITE` atual. O renderer só põe a caixa quando
+ * `isSocialInviteParagraph` casa; um parágrafo editado à mão ou costurado com
+ * outra redação perdia a borda sem nada avisar. Puro — consumido pelo
+ * invariante `social-invite-drift` do Stage 4. `null` = nada a avisar
+ * (convite idêntico, ou nenhum parágrafo com cara de convite).
+ */
+export function detectSocialInviteDrift(markdown: string): SocialInviteDrift | null {
+  const paragraphs = markdown.replace(/\r\n/g, "\n").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const p = paragraphs[i];
+    if (p === SOCIAL_INVITE) return null;
+    if (isSocialInviteParagraph(p)) {
+      // Redação legada "Agora que chegou…" é aceita pelo renderer de propósito
+      // (#1148) — não reclamar de edição antiga só por isso.
+      if (/^agora que chegou/i.test(p)) return null;
+      return { kind: "outdated", paragraph: p };
+    }
+    const networks = SOCIAL_INVITE_NETWORK_LABELS.filter((l) => p.includes(`[${l}](`)).length;
+    if (/diar\.ia\.br/i.test(p) && /\bsiga\b/i.test(p) && networks >= 2) {
+      return { kind: "unrecognized", paragraph: p };
+    }
+  }
+  return null;
+}
+
 /**
  * Monta `{url}?utm_source=...&utm_medium=...&utm_campaign=...` a partir de um
  * triplo do registry — mesmo padrão TEXTUAL já usado pelos emissores de

@@ -3,9 +3,9 @@
  *
  * Cobre `scripts/lib/shared/hub-divulgacao-box.ts` (rotação + render, pure)
  * e `scripts/build-hub-divulgacao-box.ts` (resolução Node-side + asset
- * gerado). O wiring com `stitchNewsletter`/`boxes_divulgacao`
- * (`regenerateHubDivulgacaoBoxForEdition`) é coberto em
- * `test/stitch-newsletter.test.ts`, não aqui.
+ * gerado). Desde o #10832 o box não sai na newsletter — o stitch não o
+ * regenera e `select-boxes-by-clicks.ts` o recusa (cobertos em
+ * `test/stitch-newsletter.test.ts` e `test/select-boxes-by-clicks.test.ts`).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
