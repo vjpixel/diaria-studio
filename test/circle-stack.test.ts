@@ -125,7 +125,7 @@ describe("renderCircleStackPost", () => {
     assert.doesNotThrow(() => buildStackPostPayload(title, md));
   });
 
-  it("título do destaque literal e abertura default", () => {
+  it("título do destaque vira link para a fonte; abertura default", () => {
     assert.ok(md.includes("### [Gemini vira colega com e-mail & agenda](https://cloud.google.com/blog/x)"));
     assert.ok(md.includes(DEFAULT_CIRCLE_STACK_OPENING));
   });
@@ -166,8 +166,15 @@ describe("renderCircleStackPost", () => {
     assert.ok(r.markdown.trimEnd().endsWith("[Assine a diar.ia.br](https://go.pm3.com.br/x). Chega de segunda a sexta, de graça, no seu e-mail."));
   });
 
-  it("destaque sem edição correspondente sai só com link da fonte", () => {
-    assert.ok(!md.includes("Na edição de 99/10"));
+  it("título do destaque com colchetes, parênteses e barra invertida não quebra o link", () => {
+    const r = renderCircleStackPost({ ...selection, destaques: [item({ title: "Modelo [beta] \\", url: "https://ex.com/a_(b)" })] });
+    assert.ok(r.markdown.includes("### [Modelo (beta) \\\\](https://ex.com/a_%28b%29)"));
+  });
+
+  it("edições da semana ignoram título vazio", () => {
+    const r = renderCircleStackPost({ ...selection, weeklyEditions: [{ editionDate: "261013", url: "https://diar.ia.br/p/g", destaques: ["A", "  ", "B"] }] });
+    assert.ok(r.markdown.includes("- A\n- B"));
+    assert.ok(!/^- $/m.test(r.markdown));
   });
 
   it("edições da semana: data com link em parágrafo próprio e um título por linha", () => {

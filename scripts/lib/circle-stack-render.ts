@@ -19,7 +19,8 @@
  * Regras herdadas da newsletter (context/editorial-rules.md):
  *   - "Por que isso importa:" em parágrafo próprio.
  *   - Nunca seta (→/←) em link ou CTA (#9721).
- *   - Título do item entra literal.
+ *   - Título do item entra literal, exceto colchetes (viram parênteses) e barra
+ *     invertida (escapada), para não quebrar o rótulo do link.
  *
  * UTM do canal: `utm_source=stack&utm_medium=circle&
  * utm_campaign=stack-{cycle}&utm_content=edicao|cta-fim` — só nos links
@@ -109,7 +110,7 @@ export function circleStackTitle(contentWindow: string[]): string {
 
 /** Pure: rótulo de link sem colchetes (quebrariam a sintaxe `[rótulo](url)`). */
 function mdLabel(s: string): string {
-  return s.replace(/\[/g, "(").replace(/\]/g, ")").replace(/\s+/g, " ").trim();
+  return s.replace(/\\/g, "\\\\").replace(/\[/g, "(").replace(/\]/g, ")").replace(/\s+/g, " ").trim();
 }
 
 /** Pure: URL segura dentro de `( )` do Markdown. */
@@ -164,7 +165,8 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     // Um título por linha: a data (link da edição) em parágrafo próprio, os destaques em lista abaixo.
     for (const e of sel.weeklyEditions) {
       blocks.push(`**${link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate))}**`);
-      if (e.destaques.length > 0) blocks.push(e.destaques.map((t) => `- ${t.replace(/\s+/g, " ").trim()}`).join("\n"));
+      const titles = e.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter(Boolean);
+      if (titles.length > 0) blocks.push(titles.map((t) => `- ${t}`).join("\n"));
     }
   }
 
