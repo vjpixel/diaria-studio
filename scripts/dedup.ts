@@ -77,7 +77,7 @@ import { foldCluster, type ClusterArticle } from "./lib/cluster-sources.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
 // #4102 finding 3: checagem por CONTEÚDO do título atual (não por flag) — um
 // newsletter_extracted já enriquecido (título real) deve poder clusterizar.
-import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
+import { isNonDescriptiveTitle } from "./lib/placeholder-title-guard.ts"; // #10929
 import { findSameEvent, minDistanceByTitle, STRONG_CONCEPT_MAX_DISTANCE_DAYS } from "./lib/event-dedup.ts";
 import { extractEditorRejectedItems, type EditorRejectedItem } from "./lib/editor-rejected-items.ts";
 import { dedupComparisonTitle, proxyNote } from "./lib/placeholder-dedup-title.ts"; // #10641
@@ -287,7 +287,7 @@ export function dedup(
     for (const art of afterPass1) {
       const hit =
         rejectedByUrl.get(canonicalize(art.url)) ??
-        (art.title && !isPlaceholderHighlightTitle(art.title)
+        (art.title && !isNonDescriptiveTitle(art.title) // #10929: "Found" não casa por título
           ? editorRejected.find((r) => titleSimilarity(art.title as string, r.title) >= titleThreshold)
           : undefined);
       if (!hit) {
@@ -646,7 +646,8 @@ export function dedup(
     // `!artTitle ||` é redundante em runtime (isPlaceholderHighlightTitle já
     // trata undefined/vazio como placeholder) mas necessário pro TS estreitar
     // artTitle pra `string` no restante do loop (a função não é um type guard).
-    if (!artTitle || isPlaceholderHighlightTitle(artTitle)) {
+    // #10929: stub ambíguo ("Found") também fica fora — ver `isNonDescriptiveTitle`.
+    if (!artTitle || isNonDescriptiveTitle(artTitle)) {
       clusters.push([art]);
       continue;
     }
@@ -654,7 +655,7 @@ export function dedup(
     for (const cluster of clusters) {
       for (const member of cluster) {
         const memberTitle = member.title;
-        if (!memberTitle || isPlaceholderHighlightTitle(memberTitle)) continue;
+        if (!memberTitle || isNonDescriptiveTitle(memberTitle)) continue;
         if (titleSimilarity(artTitle, memberTitle) >= titleThreshold) {
           cluster.push(art);
           placed = true;

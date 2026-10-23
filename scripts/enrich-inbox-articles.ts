@@ -226,6 +226,18 @@ export function isRedirectStubHtml(html: string): boolean {
 }
 
 /**
+ * #10929 item 3: stub de redirect PARA ESTE artigo. Em submissão do inbox
+ * (`isInboxArticle`), a palavra solta "Found"/"Moved"/"Redirect" como título
+ * da página também conta — mesma regra de `hasPlaceholderTitle`. Sem isso, um
+ * body cacheado com `<title>Found</title>` era aceito como cache hit, o
+ * "Found" virava o título e o fallback para o assunto do e-mail era pulado.
+ * Fonte regular segue só com o stub inequívoco (`isRedirectStubHtml`).
+ */
+export function isRedirectStubHtmlForArticle(html: string, article: InboxArticle): boolean {
+  return isRedirectStubHtml(html) || (isInboxArticle(article) && isAmbiguousRedirectStubTitle(rawPageTitle(html)));
+}
+
+/**
  * #10843 (C): destino de `<meta http-equiv="refresh" content="N; url=...">`,
  * resolvido contra `baseUrl`. Só aceita refresh "de redirect" (delay ≤
  * META_REFRESH_MAX_DELAY_S e com url) — refresh periódico de portal
@@ -490,7 +502,8 @@ export async function enrichArticles(
         const cached = loadCachedBody(bodiesDir, job.article.url);
         // #10843: body cacheado que é stub de redirect conta como cache-miss —
         // o fetch de rede segue o redirect até a página real.
-        if (cached !== null && !isRedirectStubHtml(cached)) {
+        // #10929: no inbox, a palavra solta ("Found") também conta como stub.
+        if (cached !== null && !isRedirectStubHtmlForArticle(cached, job.article)) {
           html = cached;
           cacheHit = true;
           stats.cache_hits++;
@@ -552,6 +565,9 @@ export async function enrichArticles(
         continue;
       }
       const meta = extractMetadata(html);
+      // #10929: página (de rede) ainda com título de stub ambíguo numa
+      // submissão do inbox → não é título do artigo; cai no assunto do e-mail.
+      if (isInboxArticle(job.article) && isAmbiguousRedirectStubTitle(meta.title)) meta.title = null;
       if (!meta.title && !meta.summary) {
         // #1641: página acessível mas sem metadata extraível — mesmo fallback.
         const recovered = titleFromSubmittedSubject(job.article);
