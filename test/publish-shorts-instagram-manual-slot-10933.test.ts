@@ -22,17 +22,23 @@ const pages: ResolvedFacebookPage[] = [
 ];
 const shorts = { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] };
 
+/**
+ * Janela do teste de horário FIXADA no próprio teste (hotfix #10933): nunca
+ * depender de `DEFAULT_SHORT_SCHEDULE_RAW` nem do `platform.config.json` vivo —
+ * o #10942 trocou o default (12:00/19:00 desde 261022 → 06:30/08:00/12:00 desde
+ * 261026) e um caso que omitia `schedule` deixou master vermelho. Aqui 261023 é
+ * o 2º dia da rotação (19:00 BRT) e 261110 fica fora dela (default 12:00).
+ */
+const SCHEDULE = { rotation_times: ["12:00", "19:00"], rotation_start: "2026-10-22", rotation_end: "2026-11-04", default_time: "12:00" };
+const config = { publishing: { shorts: { ...shorts, schedule: SCHEDULE } } };
+
 /** Fora da janela do teste de horário (#10831): a grade decide por destino. */
 function planOutside(grid: ScheduledSlot[], extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
   return planShortsPublish({
     aammdd: "261110",
     reviewedMd: reviewed,
     now: new Date("2026-11-09T20:00:00Z"),
-    config: {
-      publishing: {
-        shorts: { ...shorts, schedule: { rotation_times: ["12:00", "19:00"], rotation_start: "2026-10-22", rotation_end: "2026-11-04", default_time: "12:00" } },
-      },
-    },
+    config,
     pages,
     instagramReady: true,
     instagramQueue: { ready: true, account: "vjpixel" },
@@ -81,8 +87,9 @@ describe("#10933 Instagram manual acima do teto entra na grade", () => {
   });
 
   it("durante o teste de horário (#10831) o Instagram manual segue o horário do teste e gera o aviso de grade se colar", () => {
+    // Mesma `config` (com SCHEDULE explícito) — nunca `{ publishing: { shorts } }`
+    // sem `schedule`, que cairia no default de produção (a causa do vermelho).
     const base = {
-      config: { publishing: { shorts } },
       aammdd: "261023",
       now: new Date("2026-10-23T09:00:00Z"),
       published: { aammdd: "261023", entries: [] },
