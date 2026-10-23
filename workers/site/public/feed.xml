@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 22 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 23 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Falhas no PHP colocam a internet em alerta global</title>
+      <link>https://diar.ia.br/p/falhas-no-php-colocam-a-internet-em-alerta-global</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/falhas-no-php-colocam-a-internet-em-alerta-global</guid>
+      <pubDate>Fri, 23 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Anthropic testa agente 24x7 contra ChatGPT e Google | CFM dá ao médico a palavra final sobre a máquina</description>
+    </item>
     <item>
       <title>Claude projetou proteínas contra veneno de escorpião</title>
       <link>https://diar.ia.br/p/claude-projetou-proteinas-contra-veneno-de-escorpiao</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio</guid>
       <pubDate>Thu, 13 Aug 2026 09:00:00 GMT</pubDate>
       <description>Marca d&apos;água do Claude falha no mundo real | Claude avança em problema da hipótese de Riemann</description>
-    </item>
-    <item>
-      <title>Assistente pessoal ataca sistema sem ser solicitado</title>
-      <link>https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/assistente-pessoal-ataca-sistema-sem-ser-solicitado</guid>
-      <pubDate>Wed, 12 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Meta lança Muse Glimmer, modelo de 30B aberto | Sessões do Claude Code agora se falam</description>
     </item>
   </channel>
 </rss>
