@@ -601,29 +601,27 @@ describe("run-nightly-chain — desfecho e rastro do overnight (#10808)", () => 
     assert.match(halt, /preserve o evento de erro.*Depois rode o encerramento/);
   });
 
-  for (const probeExit of [1, 2]) {
-    it(`#10880: relatório mínimo do halt da sonda (exit ${probeExit}) é rastro válido no runner real`, () => {
-      const root = makeRepo();
-      const dir = join(root, "data", "overnight", "261022b");
-      mkdirSync(dir, { recursive: true });
-      const { deps, logs } = harness({ status: 0 }, { status: 0 });
-      const spawn = deps.spawn;
-      deps.spawn = ((command, args, options) => {
-        if (command !== "bash") {
-          writeFileSync(join(dir, "report.md"),
-            `coordinator_model_probe_failed\nTimestamp: ${new Date().toISOString()}\nExit: ${probeExit}\nSonda inválida; fase autônoma não começou.\n`);
-          // Evita depender da resolução de mtime do filesystem.
-          const fresh = new Date(Date.now() + 1000);
-          utimesSync(join(dir, "report.md"), fresh, fresh);
-        }
-        return spawn(command, args, options);
-      }) as typeof deps.spawn;
-      deps.findRoundTrace = findRoundTraceSince;
-      assert.equal(main(root, deps), 0);
-      assert.ok(logs.includes("overnight: rastro 261022b/report.md"));
-      assert.ok(!logs.some((line) => line.startsWith("overnight: SEM RASTRO")));
-    });
-  }
+  it("relatório mínimo em diretório sufixado é rastro válido no runner real", () => {
+    const root = makeRepo();
+    const dir = join(root, "data", "overnight", "261022b");
+    mkdirSync(dir, { recursive: true });
+    const { deps, logs } = harness({ status: 0 }, { status: 0 });
+    const spawn = deps.spawn;
+    deps.spawn = ((command, args, options) => {
+      if (command !== "bash") {
+        writeFileSync(join(dir, "report.md"),
+          `coordinator_model_probe_failed\nTimestamp: ${new Date().toISOString()}\nExit: 1\nSonda inválida; fase autônoma não começou.\n`);
+        // Evita depender da resolução de mtime do filesystem.
+        const fresh = new Date(Date.now() + 1000);
+        utimesSync(join(dir, "report.md"), fresh, fresh);
+      }
+      return spawn(command, args, options);
+    }) as typeof deps.spawn;
+    deps.findRoundTrace = findRoundTraceSince;
+    assert.equal(main(root, deps), 0);
+    assert.ok(logs.includes("overnight: rastro 261022b/report.md"));
+    assert.ok(!logs.some((line) => line.startsWith("overnight: SEM RASTRO")));
+  });
 
   it("evento result com is_error e exit 0 → falha do overnight", () => {
     const { deps } = harness({ status: 0 }, { status: 0, stdout: ev({ type: "result", subtype: "error_during_execution", is_error: true, result: "" }) });

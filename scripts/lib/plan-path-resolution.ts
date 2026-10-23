@@ -45,7 +45,9 @@
  * Tenta, em ordem, os sufixos `""`, `"b"`, `"c"`, ... — pra cada candidato
  * `{baseDir}/{aammdd}{suffix}/plan.json`:
  *
- * 1. **Não existe** → usa este path (é o primeiro slot livre do dia).
+ * 1. **Não existe plano nem `report.md` no diretório** → usa este path
+ *    (é o primeiro slot livre do dia). Relatório sem plano ocupa o slot
+ *    como sessão desconhecida (#10925), nunca como resume.
  * 2. **Existe E `session_id` bate com o desta sessão** → `mode: "resume"`,
  *    mesmo path — é a PRÓPRIA sessão continuando (resume pós-compaction
  *    dentro da mesma conversa, ou um 2º write em diante).
@@ -124,6 +126,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { recoverPlanFromSafeBackupWithWarning } from "./plan-safe-backup.ts";
 
 /** Resultado de sondar um path candidato de `plan.json`. */
@@ -277,7 +280,11 @@ export function resolvePlanPath(
 export function createFsPlanProbe(): PlanPathProbe {
   return (path: string): PlanPathProbeResult => {
     recoverPlanFromSafeBackupWithWarning(path);
-    if (!existsSync(path)) return { exists: false };
+    if (!existsSync(path)) {
+      // Halt da sonda pode produzir só report.md, antes de existir plano.
+      // Sem session_id verificável, preserve o relatório como sessão alheia.
+      return { exists: existsSync(join(dirname(path), "report.md")) };
+    }
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8")) as { session_id?: unknown };
       const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : null;
