@@ -208,9 +208,12 @@ export function buildYouTubeMetadata(input: YouTubeMetadataInput): YouTubeMetada
   if (!Number.isInteger(input.episode) || input.episode < 1) {
     throw new Error(`episódio inválido: ${input.episode}`);
   }
-  if (!input.d1.title.trim()) throw new Error("D1 sem título");
+  const title = buildYouTubeTitle(input.d1.title);
+  // Checa o RESULTADO: um título só de markdown ("** **") vira vazio depois do strip, e sem o sufixo
+  // antigo a API receberia `snippet.title` vazio.
+  if (!title) throw new Error("D1 sem título");
   return {
-    title: buildYouTubeTitle(input.d1.title),
+    title,
     description: buildYouTubeDescription(input),
     tags: buildYouTubeTags(input.d1.category),
   };

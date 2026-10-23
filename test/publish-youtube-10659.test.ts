@@ -69,6 +69,21 @@ describe("metadados do vídeo (#10659 item 2)", () => {
     assert.ok(!/diar\.ia\.br comentada|\|/.test(buildYouTubeTitle(D1.title)));
   });
 
+  it("título que fica vazio depois de tirar o markdown é recusado (sem o sufixo antigo, iria vazio pra API)", () => {
+    assert.equal(buildYouTubeTitle("** **"), "");
+    assert.throws(
+      () => buildYouTubeMetadata({ aammdd: "261022", episode: 2, d1: { ...D1, title: "** **" }, editionUrl: "https://diar.ia.br/p/x" } as never),
+      /D1 sem título/,
+    );
+  });
+
+  it("título de exatamente 100 chars não trunca; 101 trunca com reticências no 100º", () => {
+    assert.equal(buildYouTubeTitle("x".repeat(100)), "x".repeat(100));
+    const t = buildYouTubeTitle("x".repeat(101));
+    assert.equal(Array.from(t).length, 100);
+    assert.ok(t.endsWith("…"));
+  });
+
   it("título longo trunca com reticências e fica ≤ 100 chars", () => {
     const t = buildYouTubeTitle("x".repeat(200));
     assert.ok(Array.from(t).length <= YOUTUBE_TITLE_MAX_CHARS, `len=${t.length}`);
