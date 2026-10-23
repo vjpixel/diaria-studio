@@ -34,7 +34,8 @@ describe("limites da promoção de negativo (#10795)", () => {
     assert.match(block, /mais de 15 pontos abaixo do 3º do trio/);
     assert.match(block, /entra na posição 3/);
     // os casos reais que sustentam a regra
-    assert.ok(block.includes("261013") && block.includes("261005"));
+    assert.ok(block.includes("261013"));
+    for (const text of [select, scorer, rules]) assert.doesNotMatch(text, /panorama (genérico )?de deepfakes/);
   });
 
   it("o bullet de incidente do #9883 aponta para os limites", () => {

@@ -16,6 +16,8 @@
  *                                                           # baixa o vertical do Drive (OAuth do projeto, não o conector)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --mark youtube_shorts=URL
  *                                                           # registra destino GUIADO já feito
+ *   npx tsx scripts/publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]
+ *                                                           # registra o Reels postado no Chrome (lê /media, #10915)
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -35,7 +37,11 @@
  *     `instagram_collaborators` entram como collab (aceitam o convite no app);
  *     depois do publish o script relê os collaborators da mídia e avisa se o
  *     convite foi descartado (#10820). No dry-run confere também se o token da
- *     página tem `instagram_content_publish` (#10820).
+ *     página tem `instagram_content_publish` (#10820). Acima do teto de
+ *     duração DA AUTORA (`instagram_api_max_seconds_by_account`, #10916) vira
+ *     passo guiado no Chrome: o `--publish` gera a versão comprimida em
+ *     `_internal/`, mirando 9,5 MB (abaixo do limite de 10 MB do file_upload;
+ *     `upload` do item, #10915), e o `--confirm-instagram` registra.
  *   - `linkedin_profile` (API, #10772) — vídeo NATIVO no perfil pessoal do
  *     editor pela Videos API (`scripts/lib/linkedin-video.ts`), com o token do
  *     4º post (`LINKEDIN_PERSONAL_*`, nenhum segredo novo). Texto com o vídeo
@@ -89,7 +95,8 @@
 import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -106,16 +113,18 @@ import {
   buildYouTubeShortMetadata,
   facebookDestinationId,
   facebookUploadRoute,
+  INSTAGRAM_ENV_ACCOUNT_KEY,
+  instagramApiMaxSecondsPremise,
   instagramReelsApiFit,
   isDestinationDone,
   knownDestinationIds,
   listShortDestinations,
-  loadInstagramApiMaxSeconds,
   loadShortScheduleConfig,
   loadShortsConfig,
   mp4DurationSeconds,
   parseShortsPublishedFile,
   planShortSlots,
+  resolveInstagramApiMaxSeconds,
   resolveReelsSchedule,
   resolveShortTime,
   buildShortSocialText,
@@ -128,6 +137,7 @@ import {
   type ShortsConfig,
   type ShortsPublishedFile,
   type ShortTime,
+  type WorkerInstagramAccount,
   type YouTubeShortMetadata,
 } from "./lib/diaria/short-video.ts";
 import { stripInlineMarkdown, youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
@@ -140,6 +150,18 @@ import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-s
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
+import {
+  CHROME_UPLOAD_MAX_BYTES,
+  buildChromeUploadFfmpegPasses,
+  chromeUploadBitrate,
+  chromeUploadFileName,
+  chromeUploadReusable,
+  chromeUploadSidecarPath,
+  fitsChromeUpload,
+  type ChromeUploadPlanFile,
+  type ChromeUploadResult,
+  type ChromeUploadSidecar,
+} from "./lib/diaria/instagram-chrome-upload.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const GRAPH = "https://graph.facebook.com";
@@ -167,7 +189,13 @@ export type ShortsPlanItem =
   /** `skip_late` (#10772 F4): o horário do destino passou além do teto de atraso — vira passo manual. */
   | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late"; detail: string }
   /** `at`: horário planejado do passo guiado (repost da página, #10772; Instagram manual acima do teto, slot da grade, #10933). Ausente = `shortTime`. */
-  | { destination: string; mode: "guided"; action: "guided"; caption?: string; detail: string; at?: string }
+  /**
+   * `upload` (#10915): o arquivo a subir no passo guiado — no Instagram acima
+   * do teto, a versão comprimida pro `file_upload` do Chrome (ou o original,
+   * se a compressão falhou), com `fitsChromeUpload` dizendo se ele cabe nos
+   * 10 MB do `file_upload`. Só existe depois do `--publish`.
+   */
+  | { destination: string; mode: "guided"; action: "guided"; caption?: string; detail: string; at?: string; upload?: ChromeUploadPlanFile }
   /**
    * #10772: X via Buffer (MCP, só a skill chama). `scheduledAt` null = postar
    * já. A URL pública do vídeo só existe no `--publish` (sobe pro R2): vem em
@@ -281,8 +309,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const destinations = listShortDestinations(cfg).filter((d) => !only || only.has(d.id));
   // #10893: Reels acima do teto medido da API do Instagram vira passo guiado
   // ANTES do upload, em vez de falhar no rupload depois de subir o arquivo.
-  const igMax = loadInstagramApiMaxSeconds(input.config);
-  const igFit = instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax);
+  // #10916: o teto é POR CONTA (a autora do Reels), não global.
+  const igMaxRes = resolveInstagramApiMaxSeconds(input.config, cfg.instagramAuthorPage);
+  const igMax = igMaxRes.maxSeconds;
+  const igMaxPremise = instagramApiMaxSecondsPremise(igMaxRes);
+  if (igMaxPremise && destinations.some((d) => d.id === "instagram")) premises.push(igMaxPremise);
+  const igAccountLabel = cfg.instagramAuthorPage === null ? "da diar.ia.br (env)" : `vinculada à página ${cfg.instagramAuthorPage}`;
+  const igFit = instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax, igAccountLabel);
   // Sem credencial (ou acima do teto, no Instagram) o destino não sai pela API — não disputa a grade nem gera premissa de horário.
   function publishable(d: ShortDestination): boolean {
     if (d.kind === "facebook_page") return !input.pages.find((p) => p.slug === d.slug)!.missing.length;
@@ -313,7 +346,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   for (const s of slots) {
     if (input.forceNow) continue;
     if (s.destination === "instagram" && !igFit.fits) {
-      premises.push(`instagram: passo manual no app às ${s.hhmm} BRT do dia da edição (acima do teto da API, #10893) — slot reservado na grade (#10933)`);
+      premises.push(`instagram: passo manual (Chrome ou app) às ${s.hhmm} BRT do dia da edição (acima do teto da API, #10893) — slot reservado na grade (#10933)`);
       continue;
     }
     const sch = scheduleFor(s);
@@ -495,9 +528,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       // #10933: o horário vem da grade (o mesmo slot que os outros destinos já enxergaram).
       const slot = slotOf.get(dest.id);
       const hhmm = slot?.hhmm ?? time.hhmm;
+      // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
       const detail =
-        `${igFit.reason} — poste à mão no app do Instagram${collab}, às ${hhmm} BRT do dia da edição, ` +
-        `e registre com --mark instagram=URL`;
+        `${igFit.reason} — poste pelo instagram.com no Chrome (Passo 3b do /diaria-shorts, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
+        `ou no app, como a autora${collab}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
+        `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL`;
       warnings.push(`instagram: ${detail}`);
       let caption: string | undefined;
       try {
@@ -556,8 +591,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
 }
 
-/** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823). */
-export type WorkerInstagramAccount = "diaria" | "vjpixel";
+/** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823) — o tipo mora em short-video.ts (#10916). */
+export type { WorkerInstagramAccount };
 
 /**
  * #10906 — chave idempotente do Reels na fila do Worker: um por edição e conta.
@@ -589,7 +624,7 @@ export function resolveInstagramQueueReadiness(input: {
   workerToken: string;
   r2Missing: string[];
 }): InstagramQueueReadiness {
-  const account: WorkerInstagramAccount | null = input.authorPage === null ? "diaria" : input.authorPage === "vjpixel" ? "vjpixel" : null;
+  const account: WorkerInstagramAccount | null = input.authorPage === null ? INSTAGRAM_ENV_ACCOUNT_KEY : input.authorPage === "vjpixel" ? "vjpixel" : null;
   if (!account) return { ready: false, reason: `o Worker só publica nas contas diaria e vjpixel, não na da página ${input.authorPage}` };
   const missing = [
     ...(input.workerUrl ? [] : ["DIARIA_LINKEDIN_CRON_URL"]),
@@ -919,8 +954,9 @@ export async function publishInstagramReel(
     // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
     if (/ProcessingFailedError/.test(msg)) {
       throw new Error(
-        `${msg} — padrão do teto de duração do Reels pela API (#10893); poste à mão no app e registre com --mark instagram=URL ` +
-          `(ajuste publishing.shorts.instagram_api_max_seconds se o teto mudou)`,
+        `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo 3b do /diaria-shorts) ou no app ` +
+          `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL ` +
+          `(ajuste o teto desta conta em publishing.shorts.instagram_api_max_seconds_by_account se ele mudou, #10916)`,
       );
     }
     throw e;
@@ -976,10 +1012,340 @@ export async function checkInstagramCollaborators(
   } catch (e) {
     return [`não deu pra conferir o convite de collab (${(e as Error).message}) — confira no app`];
   }
-  if (!Array.isArray(json?.data)) return ["resposta de collaborators sem lista — confira o convite de collab no app"];
-  const found = new Set(json.data.map((c: any) => String(c?.username ?? "").toLowerCase()));
-  const missing = expected.filter((u) => !found.has(u.toLowerCase()));
-  return missing.length ? [`convite de collab descartado pelo Instagram: ${missing.map((u) => `@${u}`).join(", ")} — convide à mão no app`] : [];
+  return collabInviteWarnings(json?.data, expected, { reportPending: false });
+}
+
+/**
+ * Pure: avisos sobre os collabs esperados, a partir de `/{media}/collaborators`
+ * (`[{username, invite_status}]`). Ausente = convite descartado. Com
+ * `reportPending` (#10915, conferência do post feito no Chrome), também avisa
+ * `Pending` (a conta ainda não aceitou) e `Declined`. Logo depois do
+ * `media_publish` pela API o convite é sempre `Pending`, por isso lá não avisa.
+ */
+export function collabInviteWarnings(data: unknown, expected: string[], opts: { reportPending: boolean }): string[] {
+  if (!Array.isArray(data)) return ["resposta de collaborators sem lista — confira o convite de collab no app"];
+  const status = new Map(data.map((c: any) => [String(c?.username ?? "").toLowerCase(), String(c?.invite_status ?? "")]));
+  const missing = expected.filter((u) => !status.has(u.toLowerCase()));
+  const out: string[] = [];
+  if (missing.length) out.push(`convite de collab descartado pelo Instagram: ${missing.map((u) => `@${u}`).join(", ")} — convide à mão no app`);
+  if (opts.reportPending) {
+    for (const u of expected) {
+      const st = status.get(u.toLowerCase());
+      if (st && /^pending$/i.test(st)) out.push(`collab @${u} está Pending: a @${u} ainda precisa aceitar o convite no app`);
+      if (st && /^declined$/i.test(st)) out.push(`collab @${u} foi recusado (Declined) — convide de novo no app`);
+    }
+  }
+  return out;
+}
+
+/** Normaliza o `timestamp` do Instagram (`2026-10-22T15:22:00+0000`) pra ISO que o Date.parse aceita. */
+function parseIgTimestamp(ts: unknown): number {
+  if (typeof ts !== "string") return Number.NaN;
+  return Date.parse(ts.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+}
+
+/**
+ * Quantas mídias o `--confirm-instagram` lê de `/{ig-user}/media` (as mais
+ * recentes da autora). A contagem e os candidatos são sempre DENTRO dessa
+ * janela: um Reels mais antigo que as 15 últimas mídias não aparece.
+ */
+export const INSTAGRAM_CONFIRM_MEDIA_LIMIT = 15;
+
+export interface InstagramReelCandidate {
+  id: string;
+  permalink: string | null;
+  timestamp: string;
+  /** A legenda tem o marcador desta edição (`instagramEditionMarkers`). */
+  matchesEdition: boolean;
+}
+
+/**
+ * Pure (#10915): marcadores que identificam o Reels DESTA edição na legenda.
+ * A legenda do Instagram (`buildReelsCaption`) não leva URL nem UTM — manda
+ * pro link da bio —, então o marcador principal é o título do D1, que abre a
+ * legenda. `utm_campaign={AAMMDD}` e a URL da edição entram também, pro caso
+ * de a legenda colada trazer o link.
+ */
+export function instagramEditionMarkers(input: { aammdd: string; d1Title?: string | null; editionUrl?: string | null }): string[] {
+  const out = [`utm_campaign=${input.aammdd}`];
+  if (input.editionUrl) out.push(input.editionUrl.replace(/[?#].*$/, ""));
+  const title = input.d1Title ? stripInlineMarkdown(input.d1Title).replace(/\s+/g, " ").trim() : "";
+  if (title) out.push(title);
+  return out;
+}
+
+function normalizeForMatch(s: string): string {
+  return s.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Pure: a legenda tem algum dos marcadores (sem diferenciar caixa nem espaços)? */
+export function captionMatchesEdition(caption: unknown, markers: string[]): boolean {
+  if (typeof caption !== "string" || !caption) return false;
+  const c = normalizeForMatch(caption);
+  return markers.some((m) => m.trim() && c.includes(normalizeForMatch(m)));
+}
+
+export type InstagramConfirmDecision =
+  /** Já registrado: no-op, nada é escrito. `exitCode` 1 quando o registro não é `published` (ex.: `scheduled` na fila). */
+  | { kind: "already_registered"; entry: ShortPublishedEntry; exitCode: 0 | 1 }
+  /** Nenhum match, mais de 1 match, ou `--media-id` fora da lista: recusa (exit 1) listando os candidatos. */
+  | { kind: "refuse"; reason: string; candidates: InstagramReelCandidate[] }
+  | { kind: "register"; entry: ShortPublishedEntry; candidates: InstagramReelCandidate[] };
+
+/**
+ * Pure (#10915): decide o que o `--confirm-instagram` grava, a partir do
+ * registro atual e da resposta de `/{ig-user}/media` (com `caption`). Só
+ * aceita o Reels cuja legenda tem o marcador da edição — o "mais recente
+ * desde 00:00" gravava qualquer Reels que a autora tivesse postado no dia.
+ * `mediaId` (escolha explícita do editor) dispensa o marcador e o corte de
+ * horário, mas a mídia tem que estar entre as lidas da autora (garante que é
+ * dela).
+ */
+/**
+ * Pure (#10915): o `instagram` já tem registro? Então o `--confirm-instagram`
+ * é no-op (nada é escrito) e sai não-zero quando o registro não é
+ * `published` — um `scheduled` na fila do Worker não é "postado no Chrome".
+ */
+export function instagramAlreadyRegistered(published: ShortsPublishedFile): { entry: ShortPublishedEntry; exitCode: 0 | 1 } | null {
+  const existing = published.entries.find((e) => e.destination === "instagram");
+  return existing ? { entry: existing, exitCode: existing.status === "published" ? 0 : 1 } : null;
+}
+
+export function decideInstagramConfirm(input: {
+  published: ShortsPublishedFile;
+  media?: unknown;
+  sinceIso: string;
+  markers: string[];
+  mediaId?: string | null;
+  nowIso: string;
+}): InstagramConfirmDecision {
+  const already = instagramAlreadyRegistered(input.published);
+  if (already) return { kind: "already_registered", ...already };
+  const since = Date.parse(input.sinceIso);
+  if (Number.isNaN(since)) throw new Error(`--since inválido: ${input.sinceIso}`);
+  const data = (input.media as any)?.data;
+  if (!Array.isArray(data)) throw new Error(`GET /media sem lista: ${JSON.stringify(input.media ?? null).slice(0, 200)}`);
+  const toCandidate = (m: any): InstagramReelCandidate => ({
+    id: m.id,
+    permalink: typeof m.permalink === "string" ? m.permalink : null,
+    timestamp: String(m.timestamp ?? ""),
+    matchesEdition: captionMatchesEdition(m.caption, input.markers),
+  });
+  const valid = data.filter((m: any) => typeof m?.id === "string");
+  const byNewest = (a: InstagramReelCandidate, b: InstagramReelCandidate) => parseIgTimestamp(b.timestamp) - parseIgTimestamp(a.timestamp);
+  const entryFor = (c: InstagramReelCandidate): ShortPublishedEntry => ({
+    destination: "instagram",
+    status: "published",
+    id: c.id,
+    ...(c.permalink ? { url: c.permalink } : {}),
+    scheduled_at: null,
+    at: input.nowIso,
+  });
+  if (input.mediaId) {
+    const all = valid.map(toCandidate).sort(byNewest);
+    const chosen = all.find((c) => c.id === input.mediaId);
+    if (!chosen) {
+      return {
+        kind: "refuse",
+        reason: `--media-id ${input.mediaId} não está entre as ${INSTAGRAM_CONFIRM_MEDIA_LIMIT} mídias mais recentes da autora`,
+        candidates: all,
+      };
+    }
+    return { kind: "register", entry: entryFor(chosen), candidates: all };
+  }
+  const reels: InstagramReelCandidate[] = valid
+    .filter((m: any) => m.media_product_type === "REELS" && parseIgTimestamp(m.timestamp) >= since)
+    .map(toCandidate)
+    .sort(byNewest);
+  const matches = reels.filter((c) => c.matchesEdition);
+  if (matches.length === 1) return { kind: "register", entry: entryFor(matches[0]), candidates: reels };
+  if (!reels.length) {
+    return {
+      kind: "refuse",
+      reason: `nenhum Reels desde ${input.sinceIso} (entre as ${INSTAGRAM_CONFIRM_MEDIA_LIMIT} mídias mais recentes) — o Share terminou? (o processamento leva ~30–60 s)`,
+      candidates: [],
+    };
+  }
+  return {
+    kind: "refuse",
+    reason: matches.length
+      ? `${matches.length} Reels desde ${input.sinceIso} têm o marcador desta edição na legenda — escolha com --media-id`
+      : `nenhum dos ${reels.length} Reels desde ${input.sinceIso} tem o marcador desta edição na legenda (título do D1 ou utm_campaign) — escolha com --media-id`,
+    candidates: matches.length ? matches : reels,
+  };
+}
+
+/**
+ * #10915: lê `/{ig-user}/media` com a legenda, pro `decideInstagramConfirm`.
+ * Só leitura: nunca cria container nem publica.
+ */
+export async function fetchInstagramRecentMedia(
+  deps: Pick<GraphDeps, "fetch">,
+  igUserId: string,
+  token: string,
+  apiVersion: string,
+): Promise<unknown> {
+  return graphGet(
+    deps as GraphDeps,
+    `${igUserId}/media`,
+    { fields: "id,permalink,timestamp,media_product_type,caption", limit: String(INSTAGRAM_CONFIRM_MEDIA_LIMIT), access_token: token },
+    apiVersion,
+  );
+}
+
+/** Lado com I/O do preparo do arquivo pro Chrome (#10915), injetável nos testes. */
+export interface ChromeUploadDeps {
+  runFfmpeg: (args: string[]) => { ok: true } | { ok: false; error: string };
+  stat: (path: string) => { size: number; mtimeMs: number } | null;
+  rename: (from: string, to: string) => void;
+  /** Best-effort (arquivos de log do 2-pass, parcial de uma falha). */
+  remove: (path: string) => void;
+  mkdirp: (dir: string) => void;
+  /** Sidecar do reuso; null = ausente/ilegível. */
+  readText: (path: string) => string | null;
+  writeText: (path: string, text: string) => void;
+  /** `/dev/null` ou `NUL` (Windows). */
+  nullSink: string;
+}
+
+/** Teto de cada passada do ffmpeg: um encode travado não pode segurar o --publish pra sempre. */
+export const CHROME_UPLOAD_FFMPEG_TIMEOUT_MS = 15 * 60_000;
+
+export const defaultChromeUploadDeps: ChromeUploadDeps = {
+  runFfmpeg: (args) => {
+    const r = spawnSync("ffmpeg", args, { encoding: "utf8", timeout: CHROME_UPLOAD_FFMPEG_TIMEOUT_MS });
+    if (r.error) return { ok: false, error: `${r.error.message}${r.signal ? ` (sinal ${r.signal})` : ""}` };
+    if (r.signal) {
+      return { ok: false, error: `ffmpeg encerrado por ${r.signal}${r.signal === "SIGTERM" ? ` (provável timeout de ${CHROME_UPLOAD_FFMPEG_TIMEOUT_MS / 60_000} min)` : ""}` };
+    }
+    if (r.status !== 0) return { ok: false, error: (r.stderr ?? "").trim().slice(-500) || `exit ${r.status}` };
+    return { ok: true };
+  },
+  stat: (p) => {
+    try {
+      const st = statSync(p);
+      return { size: st.size, mtimeMs: st.mtimeMs };
+    } catch {
+      return null;
+    }
+  },
+  rename: (a, b) => renameSync(a, b),
+  remove: (p) => rmSync(p, { force: true }),
+  mkdirp: (d) => mkdirSync(d, { recursive: true }),
+  readText: (p) => {
+    try {
+      return readFileSync(p, "utf8");
+    } catch {
+      return null;
+    }
+  },
+  writeText: (p, t) => writeFileAtomic(p, t),
+  nullSink: process.platform === "win32" ? "NUL" : "/dev/null",
+};
+
+/**
+ * #10915: gera (ou reaproveita) a versão do vertical que cabe no `file_upload`
+ * do Chrome. NUNCA lança: qualquer falha (ffmpeg ausente, encode quebrado,
+ * timeout) volta `ok: false` e o passo guiado segue apontando pro original.
+ * Reaproveita o arquivo já gerado só quando o sidecar `.json` bate exatamente
+ * com a fonte (path, tamanho, mtime), o bitrate e o tamanho do próprio
+ * arquivo, e ele tem de 1 byte a 10 MB.
+ */
+export function prepareInstagramChromeUpload(
+  deps: ChromeUploadDeps,
+  input: { source: string; output: string; durationSeconds: number },
+): ChromeUploadResult {
+  try {
+    const bitrate = chromeUploadBitrate(input.durationSeconds);
+    const src = deps.stat(input.source);
+    if (!src) return { ok: false, error: `vídeo original ausente em ${input.source}` };
+    const sidecarPath = chromeUploadSidecarPath(input.output);
+    const expected = { source: { path: input.source, sizeBytes: src.size, mtimeMs: src.mtimeMs }, videoKbps: bitrate.videoKbps };
+    const prev = deps.stat(input.output);
+    if (prev && chromeUploadReusable(deps.readText(sidecarPath), expected, prev)) {
+      return { ok: true, path: input.output, sizeBytes: prev.size, videoKbps: bitrate.videoKbps, reused: true };
+    }
+    deps.mkdirp(dirname(input.output));
+    const tmp = input.output.replace(/\.mp4$/i, "") + ".part.mp4";
+    const passlog = `${input.output}.2pass`;
+    const cleanup = () => {
+      for (const f of [`${passlog}-0.log`, `${passlog}-0.log.mbtree`]) deps.remove(f);
+    };
+    const passes = buildChromeUploadFfmpegPasses({
+      input: input.source,
+      output: tmp,
+      videoKbps: bitrate.videoKbps,
+      passlogfile: passlog,
+      nullSink: deps.nullSink,
+    });
+    for (const [i, args] of passes.entries()) {
+      const r = deps.runFfmpeg(args);
+      if (!r.ok) {
+        cleanup();
+        deps.remove(tmp);
+        return { ok: false, error: `ffmpeg (passada ${i + 1}) falhou: ${r.error}` };
+      }
+    }
+    cleanup();
+    const out = deps.stat(tmp);
+    if (!out || out.size === 0) {
+      deps.remove(tmp);
+      return { ok: false, error: `ffmpeg terminou sem gerar ${tmp}` };
+    }
+    deps.rename(tmp, input.output);
+    const sidecar: ChromeUploadSidecar = { ...expected, outputSizeBytes: out.size };
+    const warnings: string[] = [];
+    try {
+      deps.writeText(sidecarPath, JSON.stringify(sidecar, null, 2) + "\n");
+    } catch (e) {
+      warnings.push(`sidecar ${sidecarPath} não gravado (${(e as Error).message}) — a próxima rodada refaz o arquivo`);
+    }
+    if (bitrate.warning) warnings.push(bitrate.warning);
+    if (out.size > CHROME_UPLOAD_MAX_BYTES) {
+      warnings.push(`o arquivo saiu com ${(out.size / 1e6).toFixed(1)} MB, acima dos ${CHROME_UPLOAD_MAX_BYTES / 1e6} MB do file_upload do Chrome — o editor escolhe o arquivo`);
+    }
+    return {
+      ok: true,
+      path: input.output,
+      sizeBytes: out.size,
+      videoKbps: bitrate.videoKbps,
+      reused: false,
+      ...(warnings.length ? { warning: warnings.join("; ") } : {}),
+    };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Pure (#10915): põe o arquivo do Chrome no passo guiado do Instagram, com
+ * `upload.fitsChromeUpload` legível pela skill. Falha na compressão → o passo
+ * aponta pro original (`fitsChromeUpload: false`), com aviso.
+ */
+export function attachChromeUploadToPlan(
+  items: ShortsPlanItem[],
+  upload: ChromeUploadResult,
+  original: { path: string; sizeBytes: number | null },
+): { items: ShortsPlanItem[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const next = items.map((i): ShortsPlanItem => {
+    if (i.destination !== "instagram" || i.action !== "guided") return i;
+    if (upload.ok) {
+      if (upload.warning) warnings.push(`instagram: ${upload.warning}`);
+      const fits = fitsChromeUpload(upload.sizeBytes);
+      const mb = (upload.sizeBytes / 1e6).toFixed(1);
+      return {
+        ...i,
+        upload: { path: upload.path, sizeBytes: upload.sizeBytes, fitsChromeUpload: fits },
+        detail:
+          `${i.detail}. Arquivo pro Chrome: ${upload.path} (${mb} MB, ${upload.videoKbps} kbps${upload.reused ? ", reaproveitado" : ""}` +
+          `${fits ? "" : `; passa dos ${CHROME_UPLOAD_MAX_BYTES / 1e6} MB do file_upload — o editor escolhe o arquivo`})`,
+      };
+    }
+    warnings.push(`instagram: versão comprimida não gerada (${upload.error}) — o passo guiado usa o original, e o editor escolhe o arquivo`);
+    return { ...i, upload: { path: original.path, sizeBytes: original.sizeBytes, fitsChromeUpload: false } };
+  });
+  return { items: next, warnings };
 }
 
 export interface InstagramEnqueueDeps {
@@ -1208,7 +1574,8 @@ const USAGE =
   "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL\n" +
-  "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]";
+  "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
+  "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -1239,6 +1606,8 @@ async function main(): Promise<number> {
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
     return 0;
   }
+
+  if (flags.has("confirm-instagram")) return confirmInstagram(aammdd, dir, publishedPath, published, values["since"], values["media-id"], values["edition-url"]);
 
   const reviewedPath = join(dir, "02-reviewed.md");
   if (!existsSync(reviewedPath)) {
@@ -1355,7 +1724,6 @@ async function main(): Promise<number> {
     console.error(`publish-shorts: vídeo curto ausente em ${videoPath}`);
     return 1;
   }
-
   console.error(`[premissa] duração ${duration === null ? "desconhecida" : `${duration.toFixed(1)} s`} → Facebook via ${facebookUploadRoute(duration)}`);
   const deps = defaultGraphDeps;
   const results: Array<{
@@ -1444,6 +1812,26 @@ async function main(): Promise<number> {
     console.error("[aviso] linkedin_page_repost: o vídeo do perfil falhou ou ficou em send_unknown nesta rodada — repost não oferecido");
     plan = { ...plan, items: finalItems };
   }
+  // #10915: Instagram acima do teto vira passo guiado no Chrome. A compressão
+  // só alimenta esse passo, então roda DEPOIS das APIs: um encode lento ou
+  // travado nunca atrasa os Reels/vídeos que saem por API.
+  if (duration !== null && plan.items.some((i) => i.destination === "instagram" && i.action === "guided")) {
+    const upload = prepareInstagramChromeUpload(defaultChromeUploadDeps, {
+      source: videoPath,
+      output: join(dir, "_internal", chromeUploadFileName(aammdd)),
+      durationSeconds: duration,
+    });
+    const attached = attachChromeUploadToPlan(plan.items, upload, { path: videoPath, sizeBytes: file.length });
+    plan = { ...plan, items: attached.items, warnings: [...plan.warnings, ...attached.warnings] };
+    if (upload.ok) {
+      const fits = fitsChromeUpload(upload.sizeBytes);
+      console.error(
+        `${fits ? "[ok]" : "[aviso]"} instagram: arquivo pro Chrome ${upload.reused ? "reaproveitado" : "gerado"} (${(upload.sizeBytes / 1e6).toFixed(1)} MB` +
+          `${fits ? "" : `, acima dos ${CHROME_UPLOAD_MAX_BYTES / 1e6} MB do file_upload`}) → ${upload.path}`,
+      );
+    }
+    for (const w of attached.warnings) console.error(`[aviso] ${w}`);
+  }
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,
     scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,
@@ -1457,6 +1845,79 @@ async function main(): Promise<number> {
   };
   console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
   return summary.failed > 0 ? 1 : 0;
+}
+
+/**
+ * `--confirm-instagram` (#10915): depois do Share no Chrome (ou no app), acha o
+ * Reels pela API (`/{ig-user}/media`, só leitura), grava a entrada `instagram`
+ * e avisa se o collab ficou Pending. A confirmação vem da API, nunca da tela,
+ * e só vale o Reels com o marcador desta edição na legenda
+ * (`decideInstagramConfirm`); ambíguo → recusa e pede `--media-id`.
+ */
+async function confirmInstagram(
+  aammdd: string,
+  dir: string,
+  publishedPath: string,
+  published: ShortsPublishedFile,
+  sinceFlag: string | undefined,
+  mediaIdFlag: string | undefined,
+  editionUrlFlag: string | undefined,
+): Promise<number> {
+  const already = instagramAlreadyRegistered(published);
+  if (already) {
+    const e = already.entry;
+    console.log(JSON.stringify({ confirmed: false, already_registered: true, status: e.status, url: e.url ?? e.id ?? null }));
+    if (already.exitCode !== 0) {
+      console.error(`publish-shorts: o instagram já está registrado como "${e.status}", não "published" — confira na conta antes de relatar; nada foi gravado`);
+    }
+    return already.exitCode;
+  }
+  const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
+  const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
+  const cfg = loadShortsConfig(config);
+  const author = await resolveInstagramAuthor(defaultGraphDeps, cfg.instagramAuthorPage, pages, igApiVersion, {
+    igUserId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
+    token: process.env.INSTAGRAM_ACCESS_TOKEN ?? "",
+  });
+  if (!author.ready) {
+    console.error(`publish-shorts: não deu pra ler a conta do Instagram (${author.reason}) — registre com --mark instagram=URL`);
+    return 1;
+  }
+  // Marcador da edição: o título do D1 abre a legenda do Reels (buildReelsCaption).
+  const reviewedPath = join(dir, "02-reviewed.md");
+  const d1Title = existsSync(reviewedPath) ? (parseDestaques(readFileSync(reviewedPath, "utf8")).find((d) => d.n === 1)?.title ?? null) : null;
+  if (!d1Title && !mediaIdFlag) console.error(`[aviso] instagram: sem título do D1 (${reviewedPath}) — o marcador fica só utm_campaign/URL; se recusar, use --media-id`);
+  const markers = instagramEditionMarkers({ aammdd, d1Title, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
+  // Default: 00:00 BRT do dia da edição (o vertical sai no próprio dia, #10831).
+  const since = sinceFlag ?? resolveEditionScheduledAt(aammdd, "00:00");
+  const media = await fetchInstagramRecentMedia(defaultGraphDeps, author.igUserId, author.token, igApiVersion);
+  const who = author.username ? `@${author.username}` : author.igUserId;
+  const decision = decideInstagramConfirm({ published, media, sinceIso: since, markers, mediaId: mediaIdFlag ?? null, nowIso: new Date().toISOString() });
+  if (decision.kind !== "register") {
+    // already_registered foi tratado acima; aqui só sobra a recusa.
+    const reason = decision.kind === "refuse" ? decision.reason : "já registrado";
+    const candidates = decision.kind === "refuse" ? decision.candidates : [];
+    console.error(`publish-shorts: ${who}: ${reason}. Nada gravado.`);
+    for (const c of candidates) console.error(`  candidato: --media-id ${c.id}  ${c.timestamp}  ${c.permalink ?? "(sem permalink)"}${c.matchesEdition ? "  [marcador da edição]" : ""}`);
+    console.log(JSON.stringify({ confirmed: false, reason, candidates }));
+    return 1;
+  }
+  const entry = decision.entry;
+  const warnings: string[] = [];
+  if (!entry.url) warnings.push(`a mídia ${entry.id} veio sem permalink — o id fica no registro`);
+  if (cfg.instagramCollaborators.length) {
+    try {
+      const collab = await graphGet(defaultGraphDeps, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: author.token }, igApiVersion);
+      warnings.push(...collabInviteWarnings(collab?.data, cfg.instagramCollaborators, { reportPending: true }));
+    } catch (e) {
+      warnings.push(`não deu pra conferir o collab (${(e as Error).message}) — confira no app`);
+    }
+  }
+  writePublished(publishedPath, upsertShortEntry(published, entry));
+  for (const w of warnings) console.error(`[aviso] instagram: ${w}`);
+  console.log(JSON.stringify({ confirmed: true, id: entry.id, url: entry.url ?? null, account: who, warnings }));
+  return 0;
 }
 
 if (isMainModule(import.meta.url)) {

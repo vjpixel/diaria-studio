@@ -96,6 +96,15 @@
  * um corte determinístico por timestamp de evento (truncar `event.ts` no
  * corte) é escopo remanescente do #8238, não implementado aqui.
  *
+ * ## `--apuracao-2608 <run-state.json> [--gasto-fases <json>]` (#8238, Emenda 17/09)
+ *
+ * Anexa a seção "Apuração do teste 2608" (`scripts/lib/teste-2608-emenda.ts`):
+ * coorte recortada pelas fases de veiculação do `run-state.json` (pré-pausa /
+ * pós-retomada), custo por `leitor-v1` por braço e fase, braço com <3 leitores
+ * "sem sinal", razão observada vs. razão mínima detectável (Poisson) e o guard
+ * da fração com >=20 recebidas. Com registro (default), grava também o extrato
+ * `apuracao-{id}-coorte.jsonl` ao lado do `run-state.json`. Exige `--fonte store`.
+ *
  * **Detecção fail-soft, mesmo em `--fonte beehiiv`:** quando a fonte é
  * `beehiiv`, o relatório roda uma checagem adicional (`detectTeste2608BeehiivStoreMismatch`)
  * comparando, só para os canais "(teste 2608)", os cadastros do snapshot
@@ -140,6 +149,13 @@ import {
   type BeehiivBackupSubscriber,
 } from "./lib/beehiiv-backup-snapshots.ts";
 import { readSpendCsv, type SpendRow, type SpendRowError } from "./lib/aquisicao-spend.ts";
+import {
+  computeEmendaSection,
+  formatEmendaSectionMarkdown,
+  parseEmendaGastoPorFase,
+  type EmendaRunStateInput,
+  type EmendaSection,
+} from "./lib/teste-2608-emenda.ts";
 import {
   aggregateMeasuredRowsByCanal,
   buildCacReport,
@@ -759,6 +775,15 @@ export interface CacReportCliArgs {
    *  mesmo motivo do `--no-kit`/`--no-store-leitores`: CLI/testes que
    *  preferem pular a resolução por completo. */
   ltv: boolean;
+  /** `--apuracao-2608 <run-state.json>` (#8238, Emenda 17/09 #8249): anexa a
+   *  seção "Apuração do teste 2608" (coorte por fase, custo por leitor-v1,
+   *  sem-sinal, razão detectável) e grava o extrato da coorte ao lado do
+   *  `run-state.json`. Exige `--fonte store`. `null` = seção desligada. */
+  apuracao2608: string | null;
+  /** `--gasto-fases <json>` (#8238): gasto por braço e fase
+   *  (`{ braço: { idDaFase: BRL } }`) — `spend.csv` é mensal e não divide o
+   *  gasto entre pré-pausa e pós-retomada. Só vale com `--apuracao-2608`. */
+  gastoFases: string | null;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -777,6 +802,8 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     storeDbPath: getStringArg(argv, "store-db") ?? DEFAULT_STORE_DB_PATH,
     fonte: getStringArg(argv, "fonte") ?? "beehiiv",
     ltv: !hasFlag(argv, "no-ltv"),
+    apuracao2608: getStringArg(argv, "apuracao-2608") ?? null,
+    gastoFases: getStringArg(argv, "gasto-fases") ?? null,
   };
 }
 
@@ -1215,6 +1242,17 @@ export async function main(
   }
   const fonte = args.fonte;
 
+  if (args.apuracao2608 && fonte !== "store") {
+    console.error(`[cac-report] --apuracao-2608 exige --fonte store (a coorte do teste 2608 nasce no Kit, #8238).`);
+    process.exitCode = 1;
+    return null;
+  }
+  if (args.gastoFases && !args.apuracao2608) {
+    console.error(`[cac-report] --gasto-fases só vale junto com --apuracao-2608.`);
+    process.exitCode = 1;
+    return null;
+  }
+
   if (args.snapshotDate != null && !isValidSnapshotArg(args.snapshotDate)) {
     console.error(`[cac-report] --snapshot inválido: "${args.snapshotDate}" (esperado AAAA-MM-DD de calendário válido).`);
     process.exitCode = 1;
@@ -1356,20 +1394,50 @@ export async function main(
     ? computeLtvSection(report, args.backupRoot, snapshotDate, rootDir, now, undefined, { storeDbPath: args.storeDbPath })
     : undefined;
 
+  // #8238 (Emenda 17/09, #8249): seção da apuração do teste 2608 — coorte por
+  // fase a partir do `run-state.json`, sobre a MESMA coorte do store já sem
+  // internos/teste que o funil acima usa. Erro de leitura aqui é falha da
+  // apuração (exit 1), nunca seção omitida em silêncio.
+  let emendaSection: EmendaSection | undefined;
+  if (args.apuracao2608) {
+    try {
+      const runState = JSON.parse(readFileSync(args.apuracao2608, "utf8")) as EmendaRunStateInput;
+      const gastoPorFase = args.gastoFases ? parseEmendaGastoPorFase(JSON.parse(readFileSync(args.gastoFases, "utf8"))) : null;
+      emendaSection = computeEmendaSection(
+        subs,
+        spendResult.rows,
+        runState,
+        { runStatePath: args.apuracao2608, corte: snapshotDate },
+        gastoPorFase,
+      );
+    } catch (e) {
+      console.error(`[cac-report] --apuracao-2608: ${(e as Error).message}`);
+      process.exitCode = 1;
+      return null;
+    }
+  }
+  const renderMarkdown = (): string => {
+    const base = formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings, ltvSection);
+    return emendaSection ? `${base}\n\n${formatEmendaSectionMarkdown(emendaSection).join("\n")}\n` : base;
+  };
+
   if (args.json) {
+    const emendaJson = emendaSection
+      ? { ...emendaSection, arms: emendaSection.arms.map(({ membros: _membros, ...rest }) => rest) }
+      : undefined;
     console.log(
       JSON.stringify(
-        { snapshotDate, previousDate, report, budget, apuradoEm, fonte, mismatchWarnings, kitSection, storeSection, ltvSection },
+        { snapshotDate, previousDate, report, budget, apuradoEm, fonte, mismatchWarnings, kitSection, storeSection, ltvSection, emendaSection: emendaJson },
         null,
         2,
       ),
     );
   } else {
-    console.log(formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings, ltvSection));
+    console.log(renderMarkdown());
   }
 
   if (args.register) {
-    const markdown = formatCacReportMarkdown(report, budget, provenance, kitSection, storeSection, mismatchWarnings, ltvSection);
+    const markdown = renderMarkdown();
     const dir = resolve(rootDir, "data", "aquisicao", "cac-reports");
     mkdirSync(dir, { recursive: true });
     // Id inclui a janela quando --desde/--ate foi passado (#5495 — "duas
@@ -1385,6 +1453,15 @@ export async function main(
     const id = cacReportSnapshotId(snapshotDate, fonte, args.desde, args.ate);
     const relPath = cacReportRelPath(id);
     writeFileSync(resolve(rootDir, relPath), markdown, "utf8");
+    if (emendaSection && args.apuracao2608) {
+      // Extrato da coorte (#8238 item 3): o store é mutável — gravar quem
+      // entrou em cada braço/fase, com os agregados lidos, é o que deixa a
+      // leitura reproduzível. Fica ao lado do run-state.json (em data/).
+      const extratoPath = resolve(dirname(resolve(args.apuracao2608)), `apuracao-${id}-coorte.jsonl`);
+      const linhas = emendaSection.arms.flatMap((a) => a.membros).map((m) => JSON.stringify(m));
+      writeFileSync(extratoPath, linhas.length > 0 ? `${linhas.join("\n")}\n` : "", "utf8");
+      console.error(`[cac-report] extrato da coorte do teste 2608: ${extratoPath} (${linhas.length} linha(s)).`);
+    }
     const result = registerReport(rootDir, {
       kind: "cac",
       sessionId: id,

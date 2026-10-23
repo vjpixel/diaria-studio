@@ -140,6 +140,16 @@ export interface FetchOpenIssuesForTriageOptions {
    * a lista (`resolveTriageRepos`).
    */
   repos?: readonly string[];
+  /**
+   * #10935 — `false` varre SÓ `repos` (o default não entra se não estiver
+   * na lista). Sem o default, nenhum repo tem falha fatal sozinho: cada
+   * falha vira `repoErrors`, e só quando TODOS falham o resultado vira
+   * `error`. Existe pro `reconcile-issue-dependencies.ts --repos
+   * vjpixel/diaria-design`: cada repo é reconciliado à parte, então uma falha
+   * do studio não deve impedir reconciliar o design. Ausente/`true` = o
+   * comportamento de sempre.
+   */
+  includeDefault?: boolean;
 }
 
 /** Allowlist de repos da triagem — `platform.config.json → issue_repos` do
@@ -197,22 +207,28 @@ export function fetchOpenIssuesForTriage(
   cwd: string,
   opts?: FetchOpenIssuesForTriageOptions,
 ): FetchOpenIssuesForTriageResult {
-  const repos = [DEFAULT_ISSUE_REPO];
+  const includeDefault = opts?.includeDefault !== false;
+  const repos = includeDefault ? [DEFAULT_ISSUE_REPO] : [];
   for (const r of opts?.repos ?? []) {
     const slug = normalizeRepoSlug(r);
     if (!slug) return { issues: [], error: `repo ilegível na lista de varredura: "${r}" (#10618)` };
     if (!repos.includes(slug)) repos.push(slug);
   }
+  if (repos.length === 0) return { issues: [], error: "lista de repos vazia com includeDefault=false (#10935)" };
   const issues: TriageIssue[] = [];
   const repoErrors: Array<{ repo: string; error: string }> = [];
   for (const repo of repos) {
     const one = fetchOneRepo(cwd, repo, opts);
     if (one.error) {
-      if (isDefaultIssueRepo(repo)) return { issues: [], error: one.error };
+      // Fatal só quando o default foi pedido implicitamente (o de sempre).
+      if (includeDefault && isDefaultIssueRepo(repo)) return { issues: [], error: one.error };
       repoErrors.push({ repo, error: one.error });
       continue;
     }
     issues.push(...one.issues);
+  }
+  if (!includeDefault && repoErrors.length === repos.length) {
+    return { issues: [], error: repoErrors.map((r) => `${r.repo}: ${r.error}`).join("; ") };
   }
   return repoErrors.length > 0 ? { issues, repoErrors } : { issues };
 }

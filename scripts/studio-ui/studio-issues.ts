@@ -700,9 +700,21 @@ interface CacheEntry {
  * repo): um único servidor loopback, um único rootDir na prática. */
 const cacheByRoot = new Map<string, CacheEntry>();
 
+/**
+ * #10901: cache PRÓPRIO dos repos extras de `issue_repos` (hoje o
+ * diaria-design), por `rootDir` + repo, com TTL mais longo que o do painel.
+ * Cada repo extra custa 2 chamadas `gh` (issues + PRs) a cada refresh fora
+ * do cache de 60s; o backlog do design muda pouco, então reaproveitar o
+ * resultado por `extraRepoCacheTtlMs` (default 5 min) corta essas chamadas
+ * sem tocar no frescor do studio. Só resultado COMPLETO entra (os dois
+ * fetches ok) — falha nunca é cacheada, segue virando `repoErrors`.
+ */
+const extraRepoCache = new Map<string, { issues: TriageIssue[]; prs: TriagePr[]; expiresAt: number }>();
+
 /** Limpa o cache — usado só por testes pra isolar casos entre si. */
 export function clearTriageCache(): void {
   cacheByRoot.clear();
+  extraRepoCache.clear();
 }
 
 export interface FetchTriageDataOptions {
@@ -717,6 +729,9 @@ export interface FetchTriageDataOptions {
   forceRefresh?: boolean;
   issueLimit?: number;
   prLimit?: number;
+  /** #10901: TTL (ms) do cache dos repos extras de `issue_repos` (default
+   * 5 min). `forceRefresh` também ignora este cache. */
+  extraRepoCacheTtlMs?: number;
 }
 
 /**
@@ -749,8 +764,16 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
     const extraIssues: TriageIssue[] = [];
     const extraPrs: TriagePr[] = [];
     const repoErrors: string[] = [];
+    const extraTtlMs = opts.extraRepoCacheTtlMs ?? 5 * 60_000;
     for (const repo of loadIssueRepos(rootDir)) {
       if (repo === DEFAULT_ISSUE_REPO) continue;
+      const extraKey = `${rootDir}\u0000${repo}`;
+      const hit = opts.forceRefresh ? undefined : extraRepoCache.get(extraKey);
+      if (hit && hit.expiresAt > nowMs) {
+        extraIssues.push(...hit.issues);
+        extraPrs.push(...hit.prs);
+        continue;
+      }
       try {
         // Os dois fetches antes de anexar: repo que falha em qualquer um fica
         // INTEIRO de fora (o aviso `repoErrors` diz isso), nunca pela metade.
@@ -758,6 +781,7 @@ export function fetchTriageData(rootDir: string, opts: FetchTriageDataOptions = 
         const repoPrs = parsePrs(fetchGhPrs(rootDir, run, opts.prLimit, repo), repo);
         extraIssues.push(...repoIssues);
         extraPrs.push(...repoPrs);
+        extraRepoCache.set(extraKey, { issues: repoIssues, prs: repoPrs, expiresAt: nowMs + extraTtlMs });
       } catch (e) {
         repoErrors.push(`${repo}: ${(e as Error).message}`);
       }

@@ -46,7 +46,12 @@ function fakeBrevo() {
     }
     if (method === "POST" && url.endsWith("/emailCampaigns")) {
       const id = 900 + campaigns.length;
-      campaigns.push({ id, listIds: (body.recipients as { lists: number[] }).lists });
+      // #10870: como a Brevo real, só `listIds` conta na criação.
+      const listIds = (body.recipients as { listIds?: number[] } | undefined)?.listIds;
+      if (!Array.isArray(listIds) || listIds.length === 0) {
+        return json(400, { code: "missing_parameter", message: "Either the listIds or segmentIds are mandatory in recipients" });
+      }
+      campaigns.push({ id, listIds });
       return json(201, { id });
     }
     return json(404, {});

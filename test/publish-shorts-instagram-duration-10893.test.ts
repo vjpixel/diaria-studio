@@ -45,11 +45,11 @@ function plan(extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
 describe("#10893 teto de duração do Reels pela API do Instagram", () => {
   it("o teto default é o medido (40 s) e é configurável; null desliga; lixo lança", () => {
     assert.equal(INSTAGRAM_REELS_API_MAX_SECONDS, 40);
-    assert.equal(loadInstagramApiMaxSeconds({}), 40);
-    assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: 90 } } }), 90);
-    assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: null } } }), null);
+    assert.equal(loadInstagramApiMaxSeconds({}, "vjpixel"), 40);
+    assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: 90 } } }, "vjpixel"), 90);
+    assert.equal(loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: null } } }, "vjpixel"), null);
     for (const bad of [0, -1, "40", Number.NaN]) {
-      assert.throws(() => loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: bad } } }), /instagram_api_max_seconds/);
+      assert.throws(() => loadInstagramApiMaxSeconds({ publishing: { shorts: { instagram_api_max_seconds: bad } } }, "vjpixel"), /instagram_api_max_seconds/);
     }
   });
 

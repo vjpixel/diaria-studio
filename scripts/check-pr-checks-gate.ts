@@ -23,6 +23,12 @@
  * checks` numa versão posterior; achado ao vivo #6225 aplicando o gate ao
  * PR #6212).
  *
+ * #10928: com a condição 1 em `pass`, se o GitHub ainda marca o PR como
+ * `mergeStateStatus: BLOCKED` (threads de review não resolvidas, entrada de
+ * check presa como pendente com o run do mesmo nome já concluído), o CLI
+ * imprime uma 2ª linha `[check-pr-checks-gate] merge-state: ...` com a causa
+ * — informativa, o exit segue 0 (ver `scripts/lib/pr-merge-state.ts`).
+ *
  * Uso:
  *   npx tsx scripts/check-pr-checks-gate.ts --pr 6212
  *   npx tsx scripts/check-pr-checks-gate.ts --pr 23 --issue vjpixel/diaria-design#21   (#10618: repo do PR derivado da issue)
@@ -67,7 +73,8 @@
  */
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { ISSUE_REPOS_CONFIG_ROOT, prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
+import { DEFAULT_ISSUE_REPO, ISSUE_REPOS_CONFIG_ROOT, prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
+import { findStuckCheckEntries, formatMergeStateLine } from "./lib/pr-merge-state.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrChecksGate, type PrChecksGateResult } from "./lib/pr-checks-gate.ts";
 import { CLAUDE_BINARY_ERROR_SIGNATURE, findClaudeBinaryErrorSignature } from "./lib/detect-claude-binary-error.ts";
@@ -276,14 +283,75 @@ export function resolveGateResult(result: GhPrViewSpawnOutcome): CliGateResult {
  * `"claude_binary_error"`, #7189), nunca `"pass"`, e o entrypoint sai com
  * código != 0. Nunca lança.
  */
-function fetchPrChecksGate(prNumber: number, cwd: string, repo?: string): CliGateResult {
+function fetchPrChecksGate(prNumber: number, cwd: string, repo?: string): { result: CliGateResult; stdout: string | null } {
   const result = spawnSync(
     "gh",
     // #10618 (fatia 4): `-R` quando o PR é de outro repo da allowlist.
-    ["pr", "view", String(prNumber), ...(repo ? ["-R", repo] : []), "--json", "statusCheckRollup,mergeable,commits"],
+    // #10928: `mergeStateStatus` só alimenta o diagnóstico de merge-state
+    // (nunca o veredito da condição 1).
+    ["pr", "view", String(prNumber), ...(repo ? ["-R", repo] : []), "--json", "statusCheckRollup,mergeable,commits,mergeStateStatus"],
     { cwd, encoding: "utf8", timeout: 30_000 },
   );
-  return resolveGateResult(result);
+  return { result: resolveGateResult(result), stdout: typeof result.stdout === "string" ? result.stdout : null };
+}
+
+/**
+ * #10928: threads de review não resolvidas do PR, no repo DO PR. `null` =
+ * leitura falhou (nunca vira 0). Só chamada quando o PR está `BLOCKED` com
+ * os checks em `pass` — custo zero no caminho comum.
+ */
+function fetchUnresolvedThreads(prNumber: number, cwd: string, repo: string | undefined): number | null {
+  const [owner, name] = (repo ?? DEFAULT_ISSUE_REPO).split("/");
+  const res = spawnSync(
+    "gh",
+    [
+      "api", "graphql",
+      "-f", `owner=${owner}`,
+      "-f", `name=${name}`,
+      "-F", `pr=${prNumber}`,
+      "-f",
+      "query=query($owner:String!,$name:String!,$pr:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$pr){ reviewThreads(first:100){ nodes{ isResolved } } } } }",
+    ],
+    { cwd, encoding: "utf8", timeout: 30_000 },
+  );
+  if (res.error || res.status !== 0 || !res.stdout) return null;
+  return countUnresolvedThreads(res.stdout);
+}
+
+/** #10928 — conta `isResolved: false` na resposta GraphQL; `null` se o shape não bate. */
+export function countUnresolvedThreads(stdout: string): number | null {
+  try {
+    const parsed = JSON.parse(stdout) as {
+      data?: { repository?: { pullRequest?: { reviewThreads?: { nodes?: unknown } } } };
+    };
+    const nodes = parsed.data?.repository?.pullRequest?.reviewThreads?.nodes;
+    if (!Array.isArray(nodes)) return null;
+    return nodes.filter((n) => (n as { isResolved?: unknown } | null)?.isResolved === false).length;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #10928: linha `merge-state` pra um PR com a condição 1 em `pass` — `null`
+ * quando não há bloqueio a relatar. `readThreads` só é chamado com
+ * `mergeStateStatus === "BLOCKED"`. Nunca lança; stdout ilegível → `null`
+ * (o veredito já saiu de `resolveGateResult`, que trata o payload ruim).
+ */
+export function resolveMergeStateLine(stdout: string | null, readThreads: () => number | null): string | null {
+  if (!stdout) return null;
+  let payload: { statusCheckRollup?: unknown; mergeStateStatus?: unknown };
+  try {
+    payload = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const mergeStateStatus = typeof payload?.mergeStateStatus === "string" ? payload.mergeStateStatus : null;
+  return formatMergeStateLine({
+    mergeStateStatus,
+    unresolvedThreads: mergeStateStatus === "BLOCKED" ? readThreads() : 0,
+    stuckChecks: findStuckCheckEntries(payload?.statusCheckRollup),
+  });
 }
 
 /**
@@ -325,11 +393,18 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
-  const result = fetchPrChecksGate(prNumber, process.cwd(), repoFlag.repo);
+  const { result, stdout } = fetchPrChecksGate(prNumber, process.cwd(), repoFlag.repo);
   const prefix = `[check-pr-checks-gate] ${prLabelInRepo(prNumber, repoFlag.repo)}: verdict=${result.verdict}`;
 
   if (result.verdict === "pass") {
     console.log(`${prefix} — ${result.reason}`);
+    // #10928: checks verdes não bastam pro GitHub (threads, entrada de check
+    // presa). Informativo — o exit continua 0, a condição 2 (threads) segue
+    // sendo checada à parte pelo coordenador.
+    const mergeStateLine = resolveMergeStateLine(stdout, () =>
+      fetchUnresolvedThreads(prNumber, process.cwd(), repoFlag.repo),
+    );
+    if (mergeStateLine) console.log(mergeStateLine);
   } else {
     console.error(`${prefix} — ${result.reason}`);
   }

@@ -460,14 +460,33 @@ _ACTOR_STRICT = (
     r"|inst[âa]ncias?|agentes?|workers?)"
     r"|overnight|develop|interactive|terceir[oa]s?)"
 )
-_OTHERS_CLAIM = re.compile(
-    r"(?P<refs>" + _REF_LIST.pattern + r")"
-    r"[^#]{0,80}?\breivindicad\w*\s+(?:por|pel[oa]s?)\s+"
+# Cauda "reivindicad* por/pelo ACTOR" — compartilhada por `_OTHERS_CLAIM`
+# (com a lista de refs na frente) e `_OTHERS_ATTRIB` (sem refs, #10894).
+_OTHERS_ATTRIB_TAIL = (
+    r"\breivindicad\w*\s+(?:por|pel[oa]s?)\s+"
     r"(?:" + _ACTOR + r"|" + _ACTOR_ADJ
     + r"|(?:\w+\s+){1,4}" + _ACTOR_STRICT
-    + r"|(?:\w+\s+){0,3}" + _ACTOR_NOUN_ADJ + r")\b",
+    + r"|(?:\w+\s+){0,3}" + _ACTOR_NOUN_ADJ + r")\b"
+)
+_OTHERS_CLAIM = re.compile(
+    r"(?P<refs>" + _REF_LIST.pattern + r")"
+    r"[^#]{0,80}?" + _OTHERS_ATTRIB_TAIL,
     re.IGNORECASE,
 )
+# #10894 (22/10/2026): FALSO POSITIVO real — relatório do tick 12:58 BRT:
+# "- #10877 não reivindicada: guard de coerência rejeitou por overlap em
+# `…/dispatch.ts`; issue também está reivindicada pelo overnight da máquina
+# 300." O `;` separa as cláusulas; a 1ª tem o keyword negado ("não
+# reivindicada", descartado), a 2ª não tem ref e herdava a lista que abre a
+# anterior (mecanismo "- #N: descrição. Claim registrada.") — e o
+# `_OTHERS_CLAIM` não excluía o #10877 porque, no segmento concatenado, o ref
+# fica a mais de 80 chars do "reivindicada pelo overnight". Quando o keyword
+# da cláusula sem ref É a própria atribuição a outro ator ("reivindicada
+# pelo overnight"), a cláusula descreve o claim de OUTRA sessão: não herda
+# lista nenhuma. A checagem é ancorada no keyword (`.match` na posição dele),
+# então um claim próprio na mesma cláusula ("Claim registrada") segue
+# herdando normalmente.
+_OTHERS_ATTRIB = re.compile(_OTHERS_ATTRIB_TAIL, re.IGNORECASE)
 # #8974 (28/09/2026): FALSO POSITIVO real — o relatório do tick descreveu
 # corretamente que issues elegíveis recentes já estavam reivindicadas por
 # OUTRA sessão ("...já estavam reivindicadas por uma sessão overnight ativa
@@ -822,7 +841,11 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int | str, bool]:
                     if da is not None and (db is None or da <= db):
                         cand.append(after[0])
                     attached.extend(cand)
-            elif idx > 0:
+            elif idx > 0 and any(
+                # #10894: keyword que é atribuição a outro ator ("está
+                # reivindicada pelo overnight") não herda a lista anterior.
+                not _OTHERS_ATTRIB.match(segment, kw.start()) for kw in kws
+            ):
                 # "- #N: descrição. Claim registrada." — o keyword abre a
                 # cláusula seguinte; liga à lista que ABRE a anterior.
                 prev = segments[idx - 1]

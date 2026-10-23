@@ -57,7 +57,7 @@ describe("#10933 Instagram manual acima do teto entra na grade", () => {
     assert.equal(ig.action, "guided");
     assert.equal(ig.at, slot!.at, "o passo manual sai no slot reservado");
     assert.match(ig.detail, new RegExp(`às ${slot!.hhmm} BRT`));
-    assert.ok(p.premises.some((m) => /instagram: passo manual no app/.test(m) && /#10933/.test(m)));
+    assert.ok(p.premises.some((m) => /instagram: passo manual \(Chrome ou app\)/.test(m) && /#10933/.test(m)));
   });
 
   it("cenário da issue: a grade da conta já tem post às 12:00 → o Instagram manual NÃO cola nele", () => {
