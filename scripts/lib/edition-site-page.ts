@@ -58,6 +58,16 @@ export interface EditionPageInputs {
   subtitle?: string | null;
   /** ISO do envio (agendado ou realizado). */
   publishedAtIso?: string | null;
+  /**
+   * #10924: URL pública da capa ORIGINAL do D1 (`images.cover.url` de
+   * `06-public-images.json`, o `04-d1-2x1.jpg` sem o convite do vídeo). Vira
+   * `thumbnail_url` do post, ou seja `og:image`/`twitter:image` e `image` do
+   * JSON-LD da página. Sem ela, quem derivava a capa era o 1º `<img
+   * class="hero">` do corpo, que desde o #10784 é a cópia com o convite/play
+   * (`04-d1-2x1-play.jpg`) — feita só para o e-mail. Ausente → comportamento
+   * anterior (capa derivada do corpo pelo backfill).
+   */
+  coverImageUrl?: string | null;
 }
 
 export type BuildEditionPostResult =
@@ -128,6 +138,7 @@ export function buildEditionArchivePost(input: EditionPageInputs): BuildEditionP
       status: "confirmed",
       web_url: input.postUrl,
       publish_date: Number.isFinite(ts) ? Math.floor(ts / 1000) : null,
+      ...(input.coverImageUrl ? { thumbnail_url: input.coverImageUrl } : {}), // #10924
       content: { free: { web: wrapFragmentAsDocument(input.html) } },
     },
   };

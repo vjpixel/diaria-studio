@@ -302,9 +302,25 @@ export function extractHeroImage(html: string): string | null {
   for (const tag of imgTags) {
     if (!/\bclass=["']hero["']/i.test(tag)) continue;
     const srcMatch = tag.match(/\bsrc=["']([^"']+)["']/i);
-    if (srcMatch && srcMatch[1]) return sameOriginImageUrl(srcMatch[1]);
+    if (!srcMatch || !srcMatch[1]) continue;
+    // #10924: desde o #10784 o hero do D1 é a cópia com o convite/play do
+    // vídeo, dentro de `<a class="hero-video">` — feita só para o e-mail. A
+    // capa original vem no `og:image` da página (`thumbnail_url`, #10924);
+    // sem ele, segue o hero (comportamento anterior).
+    if (isVideoHeroTag(html, tag)) {
+      const og = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i)?.[1];
+      if (og) return sameOriginImageUrl(og);
+    }
+    return sameOriginImageUrl(srcMatch[1]);
   }
   return null;
+}
+
+/** #10924: a tag `<img>` é o filho direto de um `<a class="hero-video">` (#10784). */
+function isVideoHeroTag(html: string, imgTag: string): boolean {
+  const i = html.indexOf(imgTag);
+  if (i < 0) return false;
+  return /<a\b[^>]*\bclass=["']hero-video["'][^>]*>\s*$/i.test(html.slice(Math.max(0, i - 600), i));
 }
 
 /**
