@@ -6,18 +6,17 @@
  * alunos (`circle-stack-select.ts`, gravada em
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
- * Estrutura: abertura · Destaques da semana (título com link da fonte, corpo,
- * "Por que isso importa:") · Lançamentos · Use melhor · Radar ·
+ * Estrutura: abertura · Destaques da semana (título com link da fonte e corpo,
+ * sem "Por que isso importa" — pedido do editor, 23/10/2026) · Lançamentos · Use melhor · Radar ·
  * Edições da semana · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
  *
  * `stackNote` (opcional, por item): texto escrito para o público da Stack
- * (o ângulo de quem constrói). Quando presente, SUBSTITUI o "por que isso
- * importa" da edição diária no destaque, e SUBSTITUI a descrição (`body`)
- * nos itens de lista. Nunca é gerado aqui — vem preenchido na seleção.
+ * (o ângulo de quem constrói). Nos itens de lista, SUBSTITUI a descrição
+ * (`body`). Nos destaques é ignorado, assim como `why`: o post não tem
+ * "Por que isso importa". Nunca é gerado aqui — vem preenchido na seleção.
  *
  * Regras herdadas da newsletter (context/editorial-rules.md):
- *   - "Por que isso importa:" em parágrafo próprio.
  *   - Nunca seta (→/←) em link ou CTA (#9721).
  *   - Título do item entra literal, exceto colchetes (viram parênteses) e barra
  *     invertida (escapada), para não quebrar o rótulo do link.
@@ -152,8 +151,6 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     // Título com link para a fonte, como na newsletter; sem "Leia na fonte"/"Na edição de" (pedido do editor, 23/10/2026).
     blocks.push(`### ${link(h.url, h.title)}`);
     blocks.push(...paragraphs(h.body));
-    const why = h.stackNote?.trim() || h.why.trim();
-    if (why) blocks.push(`**Por que isso importa:**`, ...paragraphs(why));
   }
 
   blocks.push(...listSection("Lançamentos", sel.lancamentos));
