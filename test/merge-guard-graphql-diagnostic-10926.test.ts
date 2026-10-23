@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+// @ts-expect-error -- hook .mjs sem .d.mts (mesma situação, já na baseline, de block-gh-pr-merge-subagent-hook.test.ts)
 import { buildBlockReason, isGhPrMergeCommand } from '../.claude/hooks/block-gh-pr-merge-subagent.mjs';
 
 const threads = `for n in 42 43; do
