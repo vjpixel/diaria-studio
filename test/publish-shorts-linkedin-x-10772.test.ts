@@ -92,12 +92,18 @@ describe("#10772 config", () => {
 });
 
 describe("#10772 plano", () => {
+  const REAL = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  const PINNED_CONFIG = {
+    ...REAL,
+    publishing: { ...REAL.publishing, shorts: { ...REAL.publishing.shorts, schedule: { rotation_times: ["12:00"], rotation_start: "2026-10-22", rotation_end: "2026-10-22", default_time: "12:00" } } },
+  };
   // 4 posts da página no dia (rotação #10305): 08:00, 10:00, 12:15, 17:15 BRT.
   const pageGrid: ScheduledSlot[] = ["08:00", "10:00", "12:15", "17:15"].map((h) => ({ account: LINKEDIN_PAGE_ACCOUNT, at: brt(h) }));
   const base = {
     aammdd: "261022",
     reviewedMd: REVIEWED,
-    config: {},
+    // Fixa a janela do teste de horário em 261022 (12:00): o plano do #10772 não pode depender da rotação viva do platform.config.json (#10939).
+    config: PINNED_CONFIG,
     pages: [page("diaria"), page("vjpixel")],
     instagramReady: true,
     published: { aammdd: "261022", entries: [] },
