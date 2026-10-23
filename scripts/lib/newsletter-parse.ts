@@ -52,11 +52,12 @@ export interface RenderDestaque extends BaseDestaque {
   /** #9095: backend que de fato gerou o hero (sidecar `_internal/04-d{N}-generator.json`).
    * Ausente → a legenda usa `image_generator` do config (edições pré-#9095). */
   imageGenerator?: string;
-  /** #10784: só no D1 — a imagem vira link pro vídeo do dia (ou pro canal) e a
-   * legenda vira o convite. Ausente → hero sem link, legenda de crédito. */
-  videoLink?: { href: string; caption: string; kind: "video" | "channel" };
+  /** #10784: só no D1 — a imagem (com o convite escrito nela) vira link pro
+   * vídeo do dia (ou pro canal). Ausente → hero sem link. A legenda é sempre o
+   * crédito padrão. */
+  videoLink?: { href: string; kind: "video" | "channel" };
   /** #10784: arquivo do hero quando difere do default `04-d{N}-2x1.jpg`
-   * (cópia com play do D1, `04-d1-2x1-play.jpg`, quando existe no disco). */
+   * (cópia do D1 com o convite escrito, `04-d1-2x1-play.jpg`, quando existe no disco). */
   heroFile?: string;
   // imageFile removed: was inconsistent (D1=2x1, D2/D3=1x1) and unused after
   // #2133/#2141 expanded hero to all destaques. renderDestaque derives heroFile
@@ -2407,19 +2408,22 @@ export function readBoxDivulgacaoRuntimeExcludedForSlot(
 // (todo caller pré-#6447) preserva o comportamento original: ler
 // `02-reviewed.md` do disco e lançar se ausente.
 /**
- * #10784: link + legenda + arquivo do hero do D1. URL do vídeo de
+ * #10784: link + arquivo do hero do D1. URL do vídeo de
  * `_internal/05-video-url.txt` (#10772); ausente ou inválida → canal
  * (nunca link quebrado). Diretório sem AAMMDD no nome (fixture de teste) →
- * sem link: a UTM exige a edição.
+ * sem link: a UTM exige a edição. Sem a cópia com o convite no disco (falha ao
+ * gerar no upload) → sem link também: a imagem pura levando ao YouTube, sem
+ * nenhum aviso, seria link escondido.
  */
 export function d1VideoHeroFields(editionDir: string): Pick<RenderDestaque, "videoLink" | "heroFile"> {
   const aammdd = editionFromDir(editionDir);
   if (!aammdd) return {};
+  if (!existsSync(resolve(editionDir, D1_PLAY_HERO_FILE))) return {};
   const { url, warning } = readD1VideoUrl(editionDir);
   if (warning) console.warn(`[newsletter-parse] warn — ${warning} — a imagem do D1 aponta pro canal (#10784)`);
   return {
     videoLink: buildD1VideoLink(url, aammdd),
-    ...(existsSync(resolve(editionDir, D1_PLAY_HERO_FILE)) ? { heroFile: D1_PLAY_HERO_FILE } : {}),
+    heroFile: D1_PLAY_HERO_FILE,
   };
 }
 

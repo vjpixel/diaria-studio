@@ -297,9 +297,9 @@ export function imageSpecsFor(
   // /prep-twitter-posts.ts.
   const newsletter: ImageSpec[] = [
     { key: "cover", filename: "04-d1-2x1.jpg" },
-    // #10784: cópia do hero do D1 com ícone de play, gerada por
+    // #10784: cópia do hero do D1 com o convite escrito, gerada por
     // `ensureD1PlayImage` logo antes do upload. optional: falha ao gerar cai
-    // no hero sem play (o render só usa a cópia quando ela existe no disco).
+    // no hero sem convite e sem link (o render só usa a cópia quando ela existe).
     { key: D1_PLAY_IMAGE_KEY, filename: D1_PLAY_HERO_FILE, optional: true },
     // #2133/#2141: d2/d3 hero 2x1 entram no email como {{IMG:04-d{N}-2x1.jpg}}.
     // optional=true: não bloqueiam o upload se ausentes (ex: re-run de edição
