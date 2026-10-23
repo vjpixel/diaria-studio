@@ -795,6 +795,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
   let replaced = false;
+  let contentChanged = false; // #11026
   let previousKey: string | null = null;
   const indexName = body.idempotency_key !== undefined ? idempotencyIndexName(uuid) : null;
   if (body.idempotency_key !== undefined && indexName !== null) {
@@ -838,10 +839,41 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
         );
       }
       replaced = true;
+      contentChanged = verdict === "changed";
       console.log(`[enqueue] idempotency_key=${body.idempotency_key} em ${key}: ${verdict === "cancelled" ? "entry cancelada (tombstone)" : "conteúdo mudou"} — regravando e re-armando (#10917)`);
     }
     if (here?.fired) return idempotentConflict("already_fired", key);
     if (here?.inFlight) return idempotentConflict("fire_in_progress", key);
+
+    // #11026 — conteúdo mudou: o container de Reels que o DO guardou (#10922)
+    // é da legenda/vídeo antigos. O `/arm` também o descarta (#11024), mas só
+    // roda DEPOIS do KV put e a falha dele é não fatal: com o `/arm` falhando
+    // (ou o cron rodando entre o put e o `/arm`), o `/claim` devolveria o
+    // container antigo e o cron publicaria o Reels velho. Limpar aqui, antes
+    // de gravar a entry nova; sem conseguir limpar, nada é gravado (503).
+    if (contentChanged) {
+      let clearOk = false;
+      try {
+        const clearRes = await doStub(env, key).fetch("https://do/reels-container", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reels_container: null }),
+        });
+        clearOk = clearRes.ok;
+      } catch (e) {
+        console.warn(`[enqueue] limpeza do container de Reels no DO ${key} falhou: ${(e as Error).message} (#11026)`);
+      }
+      if (!clearOk) {
+        return json(
+          {
+            error: "reels_container_clear_failed",
+            message: "não deu pra descartar o vídeo preparado da versão anterior deste pedido — nada foi alterado; tente de novo.",
+            key,
+          },
+          503,
+        );
+      }
+    }
 
     // #10992 item 2 — mesmo pedido, OUTRO horário: a key nova não tem entry,
     // mas o índice aponta a anterior. Sem isto saíam 2 Reels (um por key/DO).
