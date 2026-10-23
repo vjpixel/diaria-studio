@@ -62,8 +62,8 @@
  *     e grava com `--mark`. Sem comentário fixado: link em comentário de Short
  *     não é clicável (#10831).
  *
- * Horário (#10831): o do vertical, `resolveShortTime` — teste de 2 semanas
- * alternando 12:00/19:00 BRT a partir de 261022 (`publishing.shorts.schedule`),
+ * Horário (#10831): o do vertical, `resolveShortTime` — teste de 15 dias úteis
+ * alternando 06:30/08:00/12:00 BRT a partir de 261026 (`publishing.shorts.schedule`),
  * nunca as 06:00 do horizontal. Com pelo menos 10 min de folga o Facebook
  * agenda (a folga é reconferida antes de cada página); senão publica na hora.
  * O Instagram não agenda Reels pela API — com horário futuro o Reels vai pra

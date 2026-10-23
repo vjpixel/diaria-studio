@@ -46,36 +46,36 @@ function plan(aammdd: string, date: string, grid: ScheduledSlot[], extra: Partia
 }
 
 describe("#10819 durante o teste do #10831: horário do teste tem precedência", () => {
-  it("261023 (19:00 do teste) mantém 19:00 em todos os destinos mesmo com post da diar.ia.br às 19:00", () => {
-    const p = plan("261023", "2026-10-23", daily("2026-10-23"));
+  it("261027 (08:00 do teste) mantém 08:00 em todos os destinos mesmo com post da diar.ia.br por perto", () => {
+    const p = plan("261027", "2026-10-27", daily("2026-10-27"));
     assert.ok(p.slots.length > 0);
     for (const s of p.slots) {
       assert.equal(s.rule, "test-schedule");
-      assert.equal(s.hhmm, "19:00");
+      assert.equal(s.hhmm, "08:00");
     }
     const fb = p.items.find((i) => i.destination === "facebook:diaria") as { scheduledAt: string | null };
-    assert.equal(fb.scheduledAt, at("2026-10-23", "19:00"));
+    assert.equal(fb.scheduledAt, at("2026-10-27", "08:00"));
   });
 
-  it("avisa quando o horário do teste cola num post da MESMA conta (facebook:diaria às 19:00), não nas outras", () => {
-    const p = plan("261023", "2026-10-23", daily("2026-10-23"));
+  it("avisa quando o horário do teste cola num post da MESMA conta (facebook:diaria, 06:30 contra o post das 07:00), não nas outras", () => {
+    const p = plan("261026", "2026-10-26", daily("2026-10-26"));
     const fbWarn = p.warnings.filter((w) => w.startsWith("facebook:diaria:"));
     assert.equal(fbWarn.length, 1);
-    assert.match(fbWarn[0], /19:00 BRT/);
+    assert.match(fbWarn[0], /06:30 BRT/);
     // VJ pixel (página e Instagram autor) não tem post no dia: sem aviso.
     assert.ok(!p.warnings.some((w) => w.startsWith("facebook:vjpixel:") || w.startsWith("instagram:")));
   });
 
   it("grade vazia: sem aviso de grade", () => {
-    const p = plan("261023", "2026-10-23", []);
+    const p = plan("261026", "2026-10-26", []);
     assert.ok(!p.warnings.some((w) => /mesma conta/.test(w)));
   });
 });
 
 describe("#10819 fora do teste: o planner decide por destino", () => {
-  // 261110 fica depois de rotation_end (2026-11-04): default_time 12:00.
+  // 261116 (segunda) fica depois de rotation_end (2026-11-13): default_time 12:00.
   it("página da diar.ia.br espalha entre os próprios posts; VJ pixel e Instagram alinham a post de outra conta", () => {
-    const p = plan("261110", "2026-11-10", daily("2026-11-10"));
+    const p = plan("261116", "2026-11-16", daily("2026-11-16"));
     assert.equal(p.shortTime.source, "default");
     const by = Object.fromEntries(p.slots.map((s) => [s.destination, s]));
     // facebook:diaria tem 07/11/15/19: 09, 13 e 17 empatam em 120 min; 13:00 é o mais perto do 12:00 preferido.
@@ -89,29 +89,29 @@ describe("#10819 fora do teste: o planner decide por destino", () => {
     assert.equal(by["instagram"].hhmm, "11:00");
 
     const fb = p.items.find((i) => i.destination === "facebook:diaria") as { scheduledAt: string | null };
-    assert.equal(fb.scheduledAt, at("2026-11-10", "13:00"));
+    assert.equal(fb.scheduledAt, at("2026-11-16", "13:00"));
     const ig = p.items.find((i) => i.destination === "instagram") as { action: string; detail: string };
     assert.equal(ig.action, "pending_schedule");
     assert.match(ig.detail, /11:00 BRT/);
   });
 
   it("nunca empilha o Reels num post da mesma conta (o bug antigo: todos no horário fixo)", () => {
-    const grid: ScheduledSlot[] = [{ account: "facebook:diaria", at: at("2026-11-10", "12:00") }];
-    const p = plan("261110", "2026-11-10", grid);
+    const grid: ScheduledSlot[] = [{ account: "facebook:diaria", at: at("2026-11-16", "12:00") }];
+    const p = plan("261116", "2026-11-16", grid);
     const fb = p.slots.find((s) => s.destination === "facebook:diaria")!;
-    assert.notEqual(fb.at, at("2026-11-10", "12:00"));
+    assert.notEqual(fb.at, at("2026-11-16", "12:00"));
   });
 
   it("destino já registrado e página sem credencial não disputam a grade", () => {
-    const p = plan("261110", "2026-11-10", [], {
+    const p = plan("261116", "2026-11-16", [], {
       pages: [pages[0], { ...pages[1], missing: ["FACEBOOK_VJPIXEL_PAGE_TOKEN"] }],
-      published: { aammdd: "261110", entries: [{ destination: "facebook:diaria", status: "published", id: "1", at: at("2026-11-10", "12:00") }] },
+      published: { aammdd: "261116", entries: [{ destination: "facebook:diaria", status: "published", id: "1", at: at("2026-11-16", "12:00") }] },
     });
     assert.deepEqual(p.slots.map((s) => s.destination), ["instagram"]);
   });
 
   it("--now ignora o horário planejado (publica na hora)", () => {
-    const p = plan("261110", "2026-11-10", daily("2026-11-10"), { forceNow: true });
+    const p = plan("261116", "2026-11-16", daily("2026-11-16"), { forceNow: true });
     const fb = p.items.find((i) => i.destination === "facebook:diaria") as { action: string; scheduledAt: string | null };
     assert.equal(fb.action, "publish");
     assert.equal(fb.scheduledAt, null);
@@ -126,9 +126,9 @@ describe("#10819 planShortSlots puro", () => {
   ];
   it("destinos guiados ficam fora (seguem shortTime)", () => {
     const slots = planShortSlots({
-      aammdd: "261110",
+      aammdd: "261116",
       time: { hhmm: "12:00", source: "default", reason: "x" },
-      timeAt: at("2026-11-10", "12:00"),
+      timeAt: at("2026-11-16", "12:00"),
       destinations: dests,
       cfg: { instagramAuthorPage: null },
       grid: [],
@@ -143,7 +143,7 @@ describe("#10819 loadScheduledGrid", () => {
   it("junta 06-social-published com o registro do vertical; store social ilegível vira aviso", () => {
     const dir = mkdtempSync(join(tmpdir(), "shorts-grid-10819-"));
     try {
-      const published = { aammdd: "261110", entries: [{ destination: "instagram", status: "published" as const, id: "9", at: at("2026-11-10", "12:00") }] };
+      const published = { aammdd: "261116", entries: [{ destination: "instagram", status: "published" as const, id: "9", at: at("2026-11-16", "12:00") }] };
       const warns: string[] = [];
       // sem store social: só o vertical, Instagram na conta autora
       assert.deepEqual(loadScheduledGrid(dir, published, "vjpixel", (m) => warns.push(m)).map((s) => s.account), ["instagram:vjpixel"]);
@@ -151,7 +151,7 @@ describe("#10819 loadScheduledGrid", () => {
       mkdirSync(join(dir, "_internal"));
       writeFileSync(
         join(dir, "_internal", "06-social-published.json"),
-        JSON.stringify({ posts: [{ platform: "facebook", destaque: "d1", status: "scheduled", scheduled_at: at("2026-11-10", "09:45") }] }),
+        JSON.stringify({ posts: [{ platform: "facebook", destaque: "d1", status: "scheduled", scheduled_at: at("2026-11-16", "09:45") }] }),
       );
       const grid = loadScheduledGrid(dir, published, "vjpixel", (m) => warns.push(m));
       assert.deepEqual(grid.map((s) => s.account).sort(), ["facebook:diaria", "instagram:vjpixel"]);
