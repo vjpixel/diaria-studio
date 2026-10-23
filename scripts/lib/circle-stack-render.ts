@@ -103,10 +103,10 @@ export function ddmm(aammdd: string): string {
   return `${aammdd.slice(4, 6)}/${aammdd.slice(2, 4)}`;
 }
 
-/** Pure: título do post — "Semana de DD/MM a DD/MM" (o espaço já se chama Radar de Notícias Stack; pedido do editor 23/10/2026). */
+/** Pure: título do post — "Semana de DD/MM" (segunda da semana de conteúdo; pedido do editor 23/10/2026). */
 export function circleStackTitle(contentWindow: string[]): string {
   if (contentWindow.length === 0) throw new Error("contentWindow vazio");
-  return `Semana de ${ddmm(contentWindow[0])} a ${ddmm(contentWindow[contentWindow.length - 1])}`;
+  return `Semana de ${ddmm(contentWindow[0])}`;
 }
 
 /** Pure: rótulo de link sem colchetes (quebrariam a sintaxe `[rótulo](url)`). */

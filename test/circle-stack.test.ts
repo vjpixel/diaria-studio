@@ -115,9 +115,9 @@ describe("sendStackPost", () => {
 describe("renderCircleStackPost", () => {
   const { title, markdown: md } = renderCircleStackPost(selection);
 
-  it("título cobre segunda a sexta da semana de conteúdo", () => {
-    assert.equal(title, "Semana de 12/10 a 16/10");
-    assert.equal(circleStackTitle(["261012"]), "Semana de 12/10 a 12/10");
+  it("título é a segunda da semana de conteúdo", () => {
+    assert.equal(title, "Semana de 12/10");
+    assert.equal(circleStackTitle(["261012"]), "Semana de 12/10");
   });
 
   it("sai em Markdown, sem nenhuma tag HTML", () => {
