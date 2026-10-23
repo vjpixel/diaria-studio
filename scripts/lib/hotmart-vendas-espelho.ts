@@ -358,8 +358,83 @@ export interface PerdasDaJanela {
 
 const DIA_DA_CHAVE_RE = /^(\d{4}-\d{2}-\d{2}):/;
 
+// ---------------------------------------------------------------------------
+// Go-live do webhook de vendas (#10991)
+// ---------------------------------------------------------------------------
+
 /**
- * Trechos da janela que podem entrar na cobertura (#10892 review, #10909):
+ * Lê `hotmart.vendas_desde` de `platform.config.json` (já parseado): o 1º dia
+ * em que o webhook de vendas da Hotmart gravava no KV (go-live: 21/10/2026).
+ * Antes dele o KV não tem venda nenhuma, mas a rota responde `[]` igual para
+ * esses dias: sem este piso, ler um dia anterior ao go-live o marcaria como
+ * coberto, e o mês do go-live (ou um mês inteiro anterior) sairia "completo"
+ * com receita subestimada sem rótulo. `null` quando ausente ou inválido — aí
+ * nenhum dia pode ser dado como coberto (`trechosCobertosDaJanela`) e o
+ * ARPU/LTV trata a Hotmart como fonte sem dado. Puro, nunca lança.
+ */
+export function parseVendasDesde(config: unknown): string | null {
+  const o = config && typeof config === "object" && !Array.isArray(config) ? (config as Record<string, unknown>) : null;
+  const h = o?.hotmart && typeof o.hotmart === "object" && !Array.isArray(o.hotmart) ? (o.hotmart as Record<string, unknown>) : null;
+  const v = h?.vendas_desde;
+  return typeof v === "string" && diaExiste(v) ? v : null;
+}
+
+/** Corta da cobertura tudo o que é anterior a `desde` (#10991). Usado na
+ * escrita (estado gravado antes deste fix trazia dias pré-go-live) e na
+ * leitura (`computeHotmartMonthRevenue`), que não confia no estado em disco. */
+export function recortarCoberturaDesde(cobertura: readonly Periodo[], desde: string): Periodo[] {
+  const out: Periodo[] = [];
+  for (const p of fundirCobertura(cobertura)) {
+    if (p.ate < desde) continue;
+    out.push({ de: p.de < desde ? desde : p.de, ate: p.ate });
+  }
+  return out;
+}
+
+/** Tira de `cobertura` os dias de `retirar` (intervalos inclusivos). */
+export function subtrairCobertura(cobertura: readonly Periodo[], retirar: readonly Periodo[]): Periodo[] {
+  let atual = fundirCobertura(cobertura);
+  for (const r of fundirCobertura(retirar)) {
+    const prox: Periodo[] = [];
+    for (const p of atual) {
+      if (r.ate < p.de || r.de > p.ate) {
+        prox.push(p);
+        continue;
+      }
+      if (r.de > p.de) prox.push({ de: p.de, ate: diaDe(diaMs(r.de) - DAY_MS) });
+      if (r.ate < p.ate) prox.push({ de: diaDe(diaMs(r.ate) + DAY_MS), ate: p.ate });
+    }
+    atual = prox;
+  }
+  return atual;
+}
+
+/**
+ * Dias da janela com venda fora do espelho, ou `null` quando a perda não tem
+ * dia conhecido (registro fora do formato, chave sem nome, fora do formato,
+ * com dia inexistente ou fora da janela) e só a janela inteira serve de
+ * limite. Conjunto vazio = nenhuma perda.
+ */
+function diasPerdidosDaJanela(janela: Periodo, perdas: PerdasDaJanela): Set<string> | null {
+  if (perdas.descartados > 0) return null;
+  if (perdas.ignoradosNoKv > perdas.chavesIgnoradas.length) return null;
+  const dias = new Set<string>();
+  for (const chave of perdas.chavesIgnoradas) {
+    const m = chave.startsWith(VENDA_KV_PREFIX) ? DIA_DA_CHAVE_RE.exec(chave.slice(VENDA_KV_PREFIX.length)) : null;
+    const dia = m?.[1];
+    // Dia inexistente (ex.: 2026-02-30, que `Date.parse` aceita) nunca casaria
+    // com um dia do laço de `trechosCobertosDaJanela` e a janela sairia coberta inteira.
+    if (!dia || !diaExiste(dia) || dia < janela.de || dia > janela.ate) return null;
+    dias.add(dia);
+  }
+  return dias;
+}
+
+/**
+ * Trechos da janela que podem entrar na cobertura (#10892 review, #10909, #10991):
+ * - nada antes de `vendasDesde` (go-live do webhook, `parseVendasDesde`): o
+ *   KV não recebia vendas, então "lido sem venda" não quer dizer "sem venda".
+ *   `vendasDesde` `null` (config ausente/inválida) = nada entra;
  * - o dia de HOJE (Brasília) nunca conta como lido por inteiro: a rodada só
  *   viu as vendas até a hora em que rodou. A cobertura para em ONTEM — ex.:
  *   a varredura das 04:30 de sábado 31/10 cobre outubro só até 30/10, e o
@@ -374,26 +449,20 @@ const DIA_DA_CHAVE_RE = /^(\d{4}-\d{2}-\d{2}):/;
  *   sem dado, com motivo) e os outros meses da janela não são penalizados.
  *   Chave sem nome, fora do formato ou com dia fora da janela tira a janela
  *   inteira — sem saber o dia, não dá para isolar a perda.
- * Devolve `[]` quando nada da janela pode ser registrado.
+ * Devolve `[]` quando nada da janela pode ser registrado. O que a perda tira
+ * de uma cobertura JÁ gravada é `diasARetirarDaJanela`.
  */
-export function trechosCobertosDaJanela(janela: Periodo, perdas: PerdasDaJanela, nowMs: number): Periodo[] {
-  if (perdas.descartados > 0) return [];
+export function trechosCobertosDaJanela(janela: Periodo, perdas: PerdasDaJanela, nowMs: number, vendasDesde: string | null): Periodo[] {
+  if (vendasDesde === null) return [];
+  const diasPerdidos = diasPerdidosDaJanela(janela, perdas);
+  if (diasPerdidos === null) return [];
   const ontem = diaDe(diaMs(brtDay(nowMs)) - DAY_MS);
-  if (janela.de > ontem) return [];
+  const ini = janela.de < vendasDesde ? vendasDesde : janela.de;
   const fim = janela.ate < ontem ? janela.ate : ontem;
-  if (perdas.ignoradosNoKv > perdas.chavesIgnoradas.length) return [];
-  const diasPerdidos = new Set<string>();
-  for (const chave of perdas.chavesIgnoradas) {
-    const m = chave.startsWith(VENDA_KV_PREFIX) ? DIA_DA_CHAVE_RE.exec(chave.slice(VENDA_KV_PREFIX.length)) : null;
-    const dia = m?.[1];
-    // Dia inexistente (ex.: 2026-02-30, que `Date.parse` aceita) nunca casaria
-    // com um dia do laço abaixo e a janela sairia coberta inteira.
-    if (!dia || !diaExiste(dia) || dia < janela.de || dia > janela.ate) return [];
-    diasPerdidos.add(dia);
-  }
+  if (ini > fim) return [];
   const trechos: Periodo[] = [];
   let inicio: string | null = null;
-  for (let ms = diaMs(janela.de); ms <= diaMs(fim); ms += DAY_MS) {
+  for (let ms = diaMs(ini); ms <= diaMs(fim); ms += DAY_MS) {
     const dia = diaDe(ms);
     if (diasPerdidos.has(dia)) {
       if (inicio) trechos.push({ de: inicio, ate: diaDe(ms - DAY_MS) });
@@ -406,17 +475,40 @@ export function trechosCobertosDaJanela(janela: Periodo, perdas: PerdasDaJanela,
   return trechos;
 }
 
+/**
+ * Dias que a perda da janela tira da cobertura JÁ gravada (#10991 item 2). A
+ * cobertura é uma união acumulada: sem isto, um evento reenviado com
+ * `creation_date` de um mês já coberto que cai numa chave inválida ficaria
+ * fora do espelho e o mês seguiria "coberto" — a venda some em silêncio. Com
+ * dia conhecido (chave nomeada), só esse dia sai; sem dia conhecido, a janela
+ * inteira sai (mesma regra de `trechosCobertosDaJanela`). Uma chave inválida
+ * persistente tira o dia dela de novo a cada rodada, enquanto o KV a devolver
+ * — é o certo: a venda continua fora do espelho.
+ */
+export function diasARetirarDaJanela(janela: Periodo, perdas: PerdasDaJanela): Periodo[] {
+  const dias = diasPerdidosDaJanela(janela, perdas);
+  if (dias === null) return [{ de: janela.de, ate: janela.ate }];
+  return [...dias].sort().map((d) => ({ de: d, ate: d }));
+}
+
 /** Estado depois de uma janela lida. `trechosCobertos` é o que
- * `trechosCobertosDaJanela` devolveu (`[]` = não amplia a cobertura). */
+ * `trechosCobertosDaJanela` devolveu (`[]` = não amplia a cobertura).
+ * `opts.retirar` (`diasARetirarDaJanela`) sai da cobertura depois da união;
+ * `opts.vendasDesde` corta o que for anterior ao go-live (limpa estado gravado
+ * antes do #10991). */
 export function registrarJanelaNoEstado(
   estado: EstadoSync,
   trechosCobertos: readonly Periodo[],
   chavesInvalidasNovas: readonly string[],
   nowIso: string,
+  opts: { readonly retirar?: readonly Periodo[]; readonly vendasDesde?: string | null } = {},
 ): EstadoSync {
+  let cobertura = fundirCobertura([...estado.cobertura, ...trechosCobertos]);
+  if (opts.retirar && opts.retirar.length > 0) cobertura = subtrairCobertura(cobertura, opts.retirar);
+  if (opts.vendasDesde) cobertura = recortarCoberturaDesde(cobertura, opts.vendasDesde);
   return {
     v: ESTADO_SYNC_VERSION,
-    cobertura: fundirCobertura([...estado.cobertura, ...trechosCobertos]),
+    cobertura,
     chaves_invalidas_conhecidas: [...new Set([...estado.chaves_invalidas_conhecidas, ...chavesInvalidasNovas])].sort(),
     atualizado_em: nowIso,
   };

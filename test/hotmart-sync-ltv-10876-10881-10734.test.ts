@@ -71,6 +71,8 @@ function rec(over: Partial<VendaRecord> = {}): VendaRecord {
 }
 
 const vazia: RespostaVendas = { registros: [], descartados: 0, ignoradosNoKv: 0 };
+/** Go-live antigo: os testes anteriores ao #10991 não dependem do piso. */
+const DESDE_ANTIGO = "2026-01-01";
 const semPerda: PerdasDaJanela = { descartados: 0, ignoradosNoKv: 0, chavesIgnoradas: [] };
 
 // ---------------------------------------------------------------------------
@@ -187,21 +189,21 @@ describe("#10881 item 3: chave inválida conhecida não repete o alarme", () => 
     // Sábado 31/10/2026, 04:30 BRT (07:30Z): a varredura lê outubro até a hora da rodada.
     const sab0430 = Date.parse("2026-10-31T07:30:00Z");
     const outubro = { de: "2026-10-01", ate: "2026-10-31" };
-    assert.deepEqual(trechosCobertosDaJanela(outubro, semPerda, sab0430), [{ de: "2026-10-01", ate: "2026-10-30" }]);
-    const e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, trechosCobertosDaJanela(outubro, semPerda, sab0430), [], "t");
+    assert.deepEqual(trechosCobertosDaJanela(outubro, semPerda, sab0430, DESDE_ANTIGO), [{ de: "2026-10-01", ate: "2026-10-30" }]);
+    const e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, trechosCobertosDaJanela(outubro, semPerda, sab0430, DESDE_ANTIGO), [], "t");
     assert.equal(periodoCoberto(e.cobertura, "2026-10-01", "2026-10-31"), false, "outubro não pode sair coberto no próprio dia 31");
     // A rodada seguinte (01/11) lê o dia 31 inteiro e fecha o mês.
-    const e2 = registrarJanelaNoEstado(e, trechosCobertosDaJanela({ de: "2026-10-03", ate: "2026-11-01" }, semPerda, Date.parse("2026-11-01T07:30:00Z")), [], "t2");
+    const e2 = registrarJanelaNoEstado(e, trechosCobertosDaJanela({ de: "2026-10-03", ate: "2026-11-01" }, semPerda, Date.parse("2026-11-01T07:30:00Z"), DESDE_ANTIGO), [], "t2");
     assert.equal(periodoCoberto(e2.cobertura, "2026-10-01", "2026-10-31"), true);
     // 23:30 BRT do dia 31 = 02:30Z do dia 1: o "hoje" é Brasília, não UTC.
-    assert.deepEqual(trechosCobertosDaJanela(outubro, semPerda, Date.parse("2026-11-01T02:30:00Z")), [{ de: "2026-10-01", ate: "2026-10-30" }]);
+    assert.deepEqual(trechosCobertosDaJanela(outubro, semPerda, Date.parse("2026-11-01T02:30:00Z"), DESDE_ANTIGO), [{ de: "2026-10-01", ate: "2026-10-30" }]);
     // Janela só de hoje: nada a registrar, mas as chaves inválidas seguem acumulando.
-    assert.deepEqual(trechosCobertosDaJanela({ de: "2026-10-31", ate: "2026-10-31" }, semPerda, sab0430), []);
+    assert.deepEqual(trechosCobertosDaJanela({ de: "2026-10-31", ate: "2026-10-31" }, semPerda, sab0430, DESDE_ANTIGO), []);
     const e3 = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, [], ["k"], "t3");
     assert.deepEqual(e3.cobertura, []);
     assert.deepEqual(e3.chaves_invalidas_conhecidas, ["k"]);
     // Janela com registro fora do formato: venda faltando, não conta como coberta.
-    assert.deepEqual(trechosCobertosDaJanela({ de: "2026-09-01", ate: "2026-09-30" }, { ...semPerda, descartados: 1 }, sab0430), []);
+    assert.deepEqual(trechosCobertosDaJanela({ de: "2026-09-01", ate: "2026-09-30" }, { ...semPerda, descartados: 1 }, sab0430, DESDE_ANTIGO), []);
   });
 
   it("#10909: chave inválida no KV, mesmo já conhecida, tira o dia dela da cobertura — o mês sai sem dado, nunca a menos", () => {
@@ -209,34 +211,34 @@ describe("#10881 item 3: chave inválida conhecida não repete o alarme", () => 
     const janela = { de: "2026-08-20", ate: "2026-10-21" };
     const chave = "hotmart:venda:2026-09-15:RUIM:aprovada";
     const perdas: PerdasDaJanela = { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: [chave] };
-    const trechos = trechosCobertosDaJanela(janela, perdas, agora);
+    const trechos = trechosCobertosDaJanela(janela, perdas, agora, DESDE_ANTIGO);
     assert.deepEqual(trechos, [
       { de: "2026-08-20", ate: "2026-09-14" },
       { de: "2026-09-16", ate: "2026-10-21" },
     ]);
     // Cenário da issue: a 2ª rodada já conhece a chave (sem alarme), mas a perda continua.
     let e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, trechos, [chave], "t1");
-    e = registrarJanelaNoEstado(e, trechosCobertosDaJanela(janela, perdas, agora), [], "t2");
+    e = registrarJanelaNoEstado(e, trechosCobertosDaJanela(janela, perdas, agora, DESDE_ANTIGO), [], "t2");
     assert.equal(periodoCoberto(e.cobertura, "2026-09-01", "2026-09-30"), false);
     assert.equal(periodoCoberto(e.cobertura, "2026-10-01", "2026-10-21"), true, "outro mês da janela não é penalizado");
-    const set = computeHotmartMonthRevenue({ registros: [rec()], cobertura: e.cobertura, month: "2026-09" });
+    const set = computeHotmartMonthRevenue({ vendasDesde: DESDE_ANTIGO, registros: [rec()], cobertura: e.cobertura, month: "2026-09" });
     assert.equal(set.valorBrl, null, "setembro não pode sair com receita a menos e motivo null");
     assert.ok(set.motivo);
     // Dia no limite da janela e chaves repetidas.
     assert.deepEqual(
-      trechosCobertosDaJanela({ de: "2026-10-01", ate: "2026-10-03" }, { descartados: 0, ignoradosNoKv: 2, chavesIgnoradas: ["hotmart:venda:2026-10-01:A:aprovada", "hotmart:venda:2026-10-03:B:aprovada"] }, agora),
+      trechosCobertosDaJanela({ de: "2026-10-01", ate: "2026-10-03" }, { descartados: 0, ignoradosNoKv: 2, chavesIgnoradas: ["hotmart:venda:2026-10-01:A:aprovada", "hotmart:venda:2026-10-03:B:aprovada"] }, agora, DESDE_ANTIGO),
       [{ de: "2026-10-02", ate: "2026-10-02" }],
     );
     // Sem saber o dia, a janela inteira fica de fora.
-    assert.deepEqual(trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: [] }, agora), [], "chave sem nome");
-    assert.deepEqual(trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:x"] }, agora), [], "chave fora do formato");
+    assert.deepEqual(trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: [] }, agora, DESDE_ANTIGO), [], "chave sem nome");
+    assert.deepEqual(trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:x"] }, agora, DESDE_ANTIGO), [], "chave fora do formato");
     assert.deepEqual(
-      trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-07-01:A:aprovada"] }, agora),
+      trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-07-01:A:aprovada"] }, agora, DESDE_ANTIGO),
       [],
       "dia fora da janela",
     );
     assert.deepEqual(
-      trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-09-31:A:aprovada"] }, agora),
+      trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-09-31:A:aprovada"] }, agora, DESDE_ANTIGO),
       [],
       "dia inexistente (Date.parse aceita 31/09)",
     );
@@ -298,7 +300,7 @@ describe("CLI sync-hotmart-vendas: gravação por janela e alarme único (#10876
     const dir = mkdtempSync(join(tmpdir(), "hotmart-10876-"));
     const out = join(dir, "vendas.jsonl");
     try {
-      const r = await runSync(["--de", "2026-01-01", "--ate", "2026-05-01", "--out", out], base);
+      const r = await runSync(["--de", "2026-01-01", "--ate", "2026-05-01", "--out", out, "--vendas-desde", DESDE_ANTIGO], base);
       assert.equal(r.code, 1, r.out);
       assert.match(r.out, /falhou depois de 1 janela/);
       assert.match(readFileSync(out, "utf8"), /"transacao":"JAN"/);
@@ -359,14 +361,19 @@ const SETEMBRO = [{ de: "2026-08-20", ate: "2026-10-21" }];
 
 describe("#10734 4b: computeHotmartMonthRevenue", () => {
   it("mês fora da cobertura: null com motivo, nunca 0", () => {
-    const r = computeHotmartMonthRevenue({ registros: [rec()], cobertura: [{ de: "2026-09-05", ate: "2026-10-21" }], month: "2026-09" });
+    const r = computeHotmartMonthRevenue({ vendasDesde: DESDE_ANTIGO, registros: [rec()], cobertura: [{ de: "2026-09-05", ate: "2026-10-21" }], month: "2026-09" });
     assert.equal(r.valorBrl, null);
-    assert.match(r.motivo!, /não cobre 2026-09-01\.\.2026-09-30/);
+    // #10991: cobertura parcial do mês sai rotulada PISO (valor dos dias cobertos fora da soma).
+    assert.match(r.motivo!, /^PISO — espelho Hotmart cobre só 2026-09-05\.\.2026-09-30 de 2026-09-01\.\.2026-09-30/);
+    const nada = computeHotmartMonthRevenue({ vendasDesde: DESDE_ANTIGO, registros: [rec()], cobertura: [{ de: "2026-10-01", ate: "2026-10-21" }], month: "2026-09" });
+    assert.equal(nada.valorBrl, null);
+    assert.equal(nada.pisoBrl, null);
+    assert.match(nada.motivo!, /não cobre 2026-09-01\.\.2026-09-30/);
     assert.equal(periodoCoberto([], "2026-09-01", "2026-09-30"), false);
   });
 
   it("mês coberto sem venda é R$ 0 legítimo", () => {
-    const r = computeHotmartMonthRevenue({ registros: [], cobertura: SETEMBRO, month: "2026-09" });
+    const r = computeHotmartMonthRevenue({ vendasDesde: DESDE_ANTIGO, registros: [], cobertura: SETEMBRO, month: "2026-09" });
     assert.equal(r.valorBrl, 0);
     assert.equal(r.motivo, null);
   });
@@ -383,15 +390,15 @@ describe("#10734 4b: computeHotmartMonthRevenue", () => {
       // Venda de agosto: fora do mês.
       rec({ transacao: "D", evento_id: "d", dia: "2026-08-31" }),
     ];
-    const r = computeHotmartMonthRevenue({ registros, cobertura: SETEMBRO, month: "2026-09" });
+    const r = computeHotmartMonthRevenue({ vendasDesde: DESDE_ANTIGO, registros, cobertura: SETEMBRO, month: "2026-09" });
     assert.equal(r.valorBrl, 100);
     assert.equal(r.aprovadas, 2);
     assert.equal(r.estornos, 1);
   });
 
   it("evento sem valor bruto ou em outra moeda deixa o mês sem dado", () => {
-    assert.equal(computeHotmartMonthRevenue({ registros: [rec({ valor_bruto: null })], cobertura: SETEMBRO, month: "2026-09" }).valorBrl, null);
-    const usd = computeHotmartMonthRevenue({ registros: [rec(), rec({ transacao: "U", moeda_bruto: "USD" })], cobertura: SETEMBRO, month: "2026-09" });
+    assert.equal(computeHotmartMonthRevenue({ vendasDesde: DESDE_ANTIGO, registros: [rec({ valor_bruto: null })], cobertura: SETEMBRO, month: "2026-09" }).valorBrl, null);
+    const usd = computeHotmartMonthRevenue({ vendasDesde: DESDE_ANTIGO, registros: [rec(), rec({ transacao: "U", moeda_bruto: "USD" })], cobertura: SETEMBRO, month: "2026-09" });
     assert.equal(usd.valorBrl, null);
     assert.match(usd.motivo!, /USD/);
   });
@@ -406,6 +413,7 @@ describe("#10734 4b: computeHotmartMonthRevenue", () => {
 function escreverEspelho(root: string, registros: VendaRecord[], cobertura: { de: string; ate: string }[] | null): void {
   const dir = join(root, "data", "hotmart");
   mkdirSync(dir, { recursive: true });
+  writeFileSync(join(root, "platform.config.json"), JSON.stringify({ hotmart: { vendas_desde: DESDE_ANTIGO } }));
   writeFileSync(join(dir, "vendas.jsonl"), registros.map((r) => JSON.stringify(r)).join("\n") + "\n");
   if (cobertura) {
     writeFileSync(join(dir, "vendas.estado.json"), JSON.stringify({ v: 1, cobertura, chaves_invalidas_conhecidas: [], atualizado_em: "x" }));

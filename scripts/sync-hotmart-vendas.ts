@@ -17,7 +17,11 @@
  * (`vendas.estado.json`): cobertura de dias já lidos (o ARPU/LTV só conta a
  * Hotmart de um mês coberto, `ltv.ts`) e as chaves inválidas do KV já
  * avisadas (#10881 item 3). Dia com chave inválida no KV, mesmo já avisada,
- * fica fora da cobertura (#10909): a venda dele não está no espelho.
+ * fica fora da cobertura (#10909): a venda dele não está no espelho — e sai
+ * da cobertura já gravada, se estava nela (#10991 item 2). Nenhum dia antes do
+ * go-live do webhook de vendas (`hotmart.vendas_desde` em
+ * `platform.config.json`, 21/10/2026) entra na cobertura (#10991): o KV não
+ * recebia vendas, e "lido sem venda" ali não quer dizer "sem venda".
  *
  * Janela sem período explícito: 35 dias, e 93 dias na rodada dos dias 1-7 do
  * mês (varredura mensal, #10876 item 1: pega evento reenviado com
@@ -34,6 +38,7 @@
  *   npx tsx scripts/sync-hotmart-vendas.ts --de 2026-01-01       # --ate default = hoje (Brasília)
  *   npx tsx scripts/sync-hotmart-vendas.ts --dry-run             # lê e conta, não grava
  *   npx tsx scripts/sync-hotmart-vendas.ts --out /tmp/vendas.jsonl
+ *   npx tsx scripts/sync-hotmart-vendas.ts --vendas-desde 2026-01-01   # sobrepõe hotmart.vendas_desde (teste)
  *
  * Em falha (exit 1) as janelas concluídas antes dela já ficaram gravadas.
  *
@@ -75,10 +80,12 @@ import { HOTMART_VENDAS_PATH } from "./lib/shared/hotmart-vendas.ts";
 import {
   ESPELHO_REL_PATH,
   SENTINELA_DATA_REL_PATH,
+  diasARetirarDaJanela,
   diasPadraoDoSync,
   estadoPathDoEspelho,
   parseEstadoSync,
   parseRespostaVendas,
+  parseVendasDesde,
   periodoPadrao,
   planejarJanelas,
   registrarJanelaNoEstado,
@@ -89,6 +96,7 @@ import {
   type RespostaVendas,
 } from "./lib/hotmart-vendas-espelho.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { loadHotmartVendasDesde } from "./lib/hotmart-vendas-config.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_BASE_URL = "https://diar.ia.br";
@@ -231,6 +239,24 @@ async function main(): Promise<number> {
   }
   const outPath = outArg ? resolve(outArg) : join(ROOT, "data", ...ESPELHO_REL_PATH.split("/"));
 
+  // #10991: go-live do webhook de vendas. Sem ele, nada entra na cobertura
+  // (o espelho segue sendo gravado; o ARPU/LTV vê a Hotmart sem dado).
+  const vendasDesdeArg = getStringArg(argv, "vendas-desde", { example: "2026-10-21" });
+  let vendasDesde: string | null;
+  if (vendasDesdeArg !== undefined) {
+    vendasDesde = parseVendasDesde({ hotmart: { vendas_desde: vendasDesdeArg } });
+    if (vendasDesde === null) {
+      console.error(`sync-hotmart-vendas: --vendas-desde inválido "${vendasDesdeArg}" (use AAAA-MM-DD).`);
+      return EXIT_CONFIG;
+    }
+  } else {
+    const cfg = loadHotmartVendasDesde(ROOT);
+    vendasDesde = cfg.vendasDesde;
+    if (vendasDesde === null) {
+      console.warn(`sync-hotmart-vendas: AVISO: ${cfg.motivo}; o espelho é gravado, mas nenhum dia entra na cobertura.`);
+    }
+  }
+
   let liberar: (() => void) | null = null;
   if (!dryRun) {
     mkdirSync(dirname(outPath), { recursive: true });
@@ -265,9 +291,12 @@ async function main(): Promise<number> {
               const agora = Date.now();
               estado = registrarJanelaNoEstado(
                 estado,
-                trechosCobertosDaJanela(j.janela, j, agora),
+                trechosCobertosDaJanela(j.janela, j, agora, vendasDesde),
                 j.chavesIgnoradasNovas,
                 new Date(agora).toISOString(),
+                // #10991: a perda tira o dia da cobertura já gravada, e nada
+                // antes do go-live fica nela (limpa estado anterior ao fix).
+                { retirar: diasARetirarDaJanela(j.janela, j), vendasDesde },
               );
               writeFileAtomic(estadoPath, JSON.stringify(estado, null, 2) + "\n");
             },

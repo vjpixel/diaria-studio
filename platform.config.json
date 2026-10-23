@@ -408,5 +408,9 @@
   "meta_ads": {
     "campaign_ids": ["52527432124198"],
     "note": "#9378 — campanhas da conta Meta Ads (act_10151064543294811) cujo gasto/cadastro conta como canal da newsletter (`Meta Ads (teste 2608)`). A conta tambem roda campanhas de outros produtos (ingresso do evento agente-ia desde 24/09/2026); a ingestao (scripts/meta-ads-ingest-spend.ts, painel /ads, aquisicao-conversions-ingest) consulta insights com level=campaign filtrando por estes ids. Lista vazia = conta inteira (level=account), comportamento anterior ao #9378. Campanha nova da newsletter precisa entrar aqui."
+  },
+  "hotmart": {
+    "vendas_desde": "2026-10-21",
+    "note": "#10991 — go-live do webhook de vendas da Hotmart (Worker diaria-site grava no KV CURSOS_SUBSCRIBERS). Nenhum dia anterior conta como coberto no estado do espelho data/hotmart/vendas.estado.json (scripts/sync-hotmart-vendas.ts) nem na receita do mes (computeHotmartMonthRevenue em scripts/lib/ltv.ts): o mes do go-live sai PISO e mes inteiro anterior sai sem dado. Ausente ou invalido = nenhum dia coberto, Hotmart fora do ARPU como fonte sem dado."
   }
 }
