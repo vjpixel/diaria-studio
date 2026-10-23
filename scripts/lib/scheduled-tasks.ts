@@ -903,7 +903,14 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // registro (as demais são domingo/sexta/sábado); nenhuma daily em 07:30
     // (vizinhas: 07:10, 07:20, 07:46) e `interval` só cai em :00.
     schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 7, minute: 30 },
-    issue: "#10904",
+    // #10977: sem `data/` montado o script grava seleção/prévia vazias (ou
+    // falha sem edição nenhuma) e o aviso ao editor sai errado.
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem gerar a previa da Stack.",
+    },
+    issue: "#10904, #10977",
   },
   {
     name: "Diaria-Hub-Drift-Check",

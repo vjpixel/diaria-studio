@@ -297,6 +297,18 @@ export interface CircleStackPublishedLike {
 }
 
 /**
+ * Shape que `publish-circle-stack.ts` GRAVA (#10977: tipo compartilhado entre o
+ * escritor e o leitor). Leitura continua pelo `CircleStackPublishedLike`
+ * (tudo opcional), porque o arquivo pode estar truncado ou editado à mão.
+ */
+export interface CircleStackPublishedState {
+  cycle: string;
+  title: string;
+  attempted_at: string;
+  published_at?: string;
+}
+
+/**
  * Normaliza o estado de publicação de um ciclo no Radar de Notícias Stack
  * (#10904, mesma disciplina do #573). O webhook n8n da Stack publica NA HORA —
  * não existe rascunho nem agendamento do lado de lá, e não há endpoint de

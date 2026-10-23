@@ -26,7 +26,7 @@ mais CTA próprio desde #8025):
 
 ---
 
-1. [Título do headline 1 — LITERAL, só numerado]
+[Título do headline 1 — LITERAL, sem numeração (#11006)]
 [da edição de DD/MM]
 
 [Corpo — 2-4 parágrafos curtos]
@@ -35,7 +35,7 @@ Por que isso importa: [1 frase, se houver]
 
 ---
 
-2. [Título do headline 2 — LITERAL, só numerado]
+[Título do headline 2 — LITERAL]
 [da edição de DD/MM]
 
 [Corpo]
@@ -53,7 +53,7 @@ Por que isso importa: [se houver]
 
 ---
 
-3. [Título do headline 3, se houver — LITERAL, só numerado]
+[Título do headline 3, se houver — LITERAL]
 [da edição de DD/MM]
 
 [Corpo]
@@ -62,10 +62,13 @@ Por que isso importa: [se houver]
 
 ---
 
-Edições da semana
+Outros destaques da semana
 
-- Edição de DD/MM: [destaque 1] · [destaque 2] · [destaque 3]
-- [até 5 edições, uma por dia útil da semana com D1 parseável]
+Edição de DD/MM  (link da edição, parágrafo próprio)
+- [destaque que não apareceu acima]
+- [um título por linha]
+
+[repete por edição; data sem título restante some; nada restante = seção some]
 
 ---
 
@@ -87,8 +90,8 @@ depois do último disponível, se houver só 1 ou 0).
   MELHOR nunca competem por manchete, mesmo com taxa maior: item de seção só
   carrega 1 linha de descrição, sem resumo autoral. Fonte:
   `scripts/lib/weekly-linkedin-select.ts`.
-  - **Título**: sempre literal, cópia exata do bloco de origem — só a
-    numeração ("1.", "2.", "3.") é adicionada. Nunca reescrever, nunca
+  - **Título**: sempre literal, cópia exata do bloco de origem — sem
+    numeração desde o #11006 (23/10/2026). Nunca reescrever, nunca
     linkar (decisão #4456 — "Sem link por destaque": o texto já é o
     conteúdo completo, um link de volta prometeria mais do que existe).
   - **Linha de proveniência** ("da edição de DD/MM", #5109): texto puro, sem
@@ -105,9 +108,12 @@ depois do último disponível, se houver só 1 ou 0).
   título/URL/descrição literais do item + comentário do editor (1-3
   frases, se houver). **Sem CTA de assinatura desde #8025** (decisão do
   editor, reverte o #4456/#4489 de 260803) — o bloco é só curadoria.
-- **Edições da semana**: lista PLANA (nunca `<ul>` aninhada — ver armadilha
-  de paste #1 abaixo), uma linha por edição da janela com D1 parseável, link
-  para a edição + seus até-3 destaques separados por " · " em texto.
+- **Outros destaques da semana** (#11006, era "Edições da semana"): por
+  edição da janela com D1 parseável, a data com link em parágrafo próprio e,
+  logo abaixo, uma lista simples (nunca aninhada — ver armadilha de paste #1
+  abaixo) com um título por linha, só dos destaques que não apareceram acima
+  (manchetes e Use Melhor, por título normalizado). Data sem título restante
+  some; sem nada restante, a seção some.
 - **Abertura/Fecho**: TEXTO PADRÃO fixo desde #8025 (decisão do editor,
   12/09/2026) — mesmo parágrafo usado em 4 edições consecutivas
   (`DEFAULT_OPENING`/`DEFAULT_CLOSING` em `render-linkedin-weekly.ts`), já
@@ -134,7 +140,7 @@ utm_content=mencao-abertura | cta-abertura | lista | cta-fim
 - `cta-abertura`, `cta-fim`: os 2 convites de assinatura restantes (o bloco
   Use Melhor perdeu o seu em #8025) — existem separados de propósito, pra
   saber qual posição converte.
-- `lista`: cada link de "Edições da semana" aponta pra URL derivada do D1
+- `lista`: cada link de data em "Outros destaques da semana" aponta pra URL derivada do D1
   daquela edição (`deriveEditionUrl`), com este `utm_content`.
 
 Sem UTM próprio por posição, não dá pra saber qual CTA (ou qual edição
@@ -163,10 +169,12 @@ dentro do mesmo `<a>`, achado 260823/PR #5987 e reconfirmado no ciclo
 Resumo — detalhes completos e exemplos ao vivo (260803) ficam só em
 `context/publishers/linkedin.md`, não duplicar aqui:
 
-1. **Lista aninhada é achatada, sem separador.** "Edições da semana" precisa
-   ser lista PLANA com separador em TEXTO (" · ") entre os destaques de uma
-   mesma edição — o editor do LinkedIn funde `<ul>` dentro de `<li>` num
-   bloco corrido sem nada entre os itens.
+1. **Lista aninhada é achatada, sem separador.** O editor do LinkedIn funde
+   `<ul>` dentro de `<li>` num bloco corrido sem nada entre os itens. Por
+   isso "Outros destaques da semana" (#11006) usa, por edição, um parágrafo
+   com a data e uma `<ul>` simples logo abaixo — nunca lista dentro de lista.
+   O formato real no editor do LinkedIn ainda precisa ser conferido no 1º
+   paste depois do #11006 (antes era uma linha por edição com " · ").
 2. **Link no ÚLTIMO nó colado perde a âncora.** O render precisa terminar
    com um parágrafo de sentinela depois do último link, nunca com o link
    como nó final do HTML colado.
@@ -192,10 +200,10 @@ diretório quanto como `utm_campaign`.
 
 ## Não fazer
 
-- Não reescrever o título de um headline — literal, só numerado.
+- Não reescrever o título de um headline — literal, sem numeração.
 - Não linkar o corpo de um headline de volta pra edição de origem (regra
   "sem link por destaque", #4456).
 - Não gerar o bloco Use Melhor sem comentário do editor.
-- Não aninhar lista em "Edições da semana".
+- Não aninhar lista em "Outros destaques da semana".
 - Não terminar um rótulo de link no domínio nu.
 - Não pular a linha de proveniência ("da edição de DD/MM") dos headlines.

@@ -1,6 +1,6 @@
 ---
 name: diaria-linkedin-semanal
-description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 destaques (D1/D2/D3) da semana selecionados por clique verificado (#8029, itens de seção não competem mais por manchete; #8817 desempata por diversidade de dia dentro do ruído) com corpo SEMPRE o texto já publicado na edição diária de origem (#8818, reverte o #5108) + bloco Use Melhor sem CTA (#8025) + "Edições da semana" (link + destaques das 5 edições) + abertura/fecho padrão (#8025). Produzida domingo; corpo colado à mão via Claude in Chrome, capa e agendamento ficam com o editor na UI do LinkedIn (#8031, seletor de arquivo nativo não é automatizável). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
+description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 destaques (D1/D2/D3) da semana selecionados por clique verificado (#8029, itens de seção não competem mais por manchete; #8817 desempata por diversidade de dia dentro do ruído) com corpo SEMPRE o texto já publicado na edição diária de origem (#8818, reverte o #5108) + bloco Use Melhor sem CTA (#8025) + "Outros destaques da semana" (#11006: só o que não apareceu acima, um título por linha) + abertura/fecho padrão (#8025). Produzida domingo; corpo colado à mão via Claude in Chrome, capa e agendamento ficam com o editor na UI do LinkedIn (#8031, seletor de arquivo nativo não é automatizável). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
 disable-model-invocation: true
 ---
 
@@ -10,8 +10,9 @@ Monta o artefato colável da newsletter semanal do LinkedIn (issue #4456):
 3 matérias da semana que acabou (segunda a sexta), selecionadas por **taxa
 de clique verificado** — não pela posição na edição de origem — mais o
 bloco **Use Melhor** (comentário do editor opcional, #5970) e a seção
-**Edições da semana** — as 5 edições, cada uma com link + seus até-3
-destaques.
+**Outros destaques da semana** (#11006, era "Edições da semana") — por
+edição, a data com link e, logo abaixo, um título por linha só dos
+destaques que não apareceram acima.
 
 **A spec desta skill mudou várias vezes ao longo do dia 260802 — os
 comentários da issue #4456 têm precedência sobre o corpo original.** Se
@@ -60,10 +61,11 @@ inteira antes — não só o body.
   **removida**. **Exceção textual, não-linkada (#5109):** cada manchete leva
   uma linha "da edição de DD/MM" logo abaixo do título — sinaliza de qual
   das 5 edições da semana ela veio (sem isso o leitor precisava abrir
-  "Edições da semana" e cruzar os 5 links pra achar), mas é TEXTO puro, não
+  a lista final e cruzar os 5 links pra achar), mas é TEXTO puro, não
   `<a href>` — a decisão de não-linkar continua de pé.
-- **Título literal + numeração.** Nunca reescrever o título do bloco de
-  origem — só prefixar "1.", "2.", "3.". Vale independente da história do
+- **Título literal, sem numeração** (#11006, 23/10/2026 — até ali saía
+  "1.", "2.", "3." na frente). Nunca reescrever o título do bloco de
+  origem. Vale independente da história do
   corpo (autoral entre #5108 e #8818, literal antes e depois) — o título
   nunca foi reescrito em nenhuma versão da spec.
 - **Corpo da manchete: SEMPRE o texto já publicado na edição diária de
@@ -102,7 +104,13 @@ inteira antes — não só o body.
 - **Edição #1 não é mais exceção** (260802, último comentário) — cobre a
   janela normal como qualquer outra. Não tratar a primeira invocação
   desta skill como recorte mensal/moldura de estreia.
-- **Seção final chama "Edições da semana", não "Resto da semana"** (260802,
+- **Seção final: "Outros destaques da semana" desde o #11006 (23/10/2026)** —
+  `renderLinkedinWeeklyHtml` tira os títulos que já apareceram acima
+  (manchetes e Use Melhor, título normalizado), põe a data com link em
+  parágrafo próprio e os títulos restantes em lista, um por linha; data sem
+  título restante some, e a seção some se não sobrar nada. A seleção abaixo
+  segue a mesma (todas as edições); o corte é só no render. Histórico:
+- **Seção final chamava "Edições da semana", não "Resto da semana"** (260802,
   decisão do editor) — e não é mais só as edições que perderam a manchete:
   lista as edições da semana com D1 parseável (até 5 — pode ser menos em
   semana curta/feriado), cada uma com link (`deriveEditionUrl` a partir do
@@ -286,7 +294,7 @@ Manchetes selecionadas (por taxa de clique verificado):
 
 Use Melhor: {título ou "nenhum candidato elegível"}
 
-Edições da semana: {N} edições (link + destaques cada)
+Outros destaques da semana: {N} edições na seleção (o render tira o que já apareceu acima)
 
 {warnings, se houver}
 
@@ -505,7 +513,7 @@ populado — é a mesma imagem que o editor sobe manualmente no Passo 9.
 **Diferente de simplesmente colar `ln-{cycle}.html` cru num Artifact, esta
 prévia precisa mostrar o conteúdo EXATO que será colado, RENDERIZADO como
 o artigo vai aparecer** (capa, abertura, as manchetes com corpo/why, bloco
-Use Melhor, lista "Edições da semana", fecho) — nunca o HTML bruto sem
+Use Melhor, "Outros destaques da semana", fecho) — nunca o HTML bruto sem
 estilo. Este passo substitui o antigo "8a. Publicar o artefato de
 referência" (que só publicava o fragmento cru como registro auditável) —
 a auditoria pós-paste real acontece programaticamente no Passo 8c
@@ -520,8 +528,8 @@ Publique via `Artifact`:
    colável do Passo 7) numa página visual — tipografia legível (Georgia ou
    equivalente, mesma família da newsletter), a imagem de capa
    (`coverImagePath`, se não for `null`) no topo, e o corpo tal como sai do
-   render (headlines numeradas, "da edição de DD/MM" sob cada uma, bloco
-   Use Melhor, "Edições da semana", abertura e fecho). Não invente texto
+   render (headlines sem numeração, "da edição de DD/MM" sob cada uma, bloco
+   Use Melhor, "Outros destaques da semana", abertura e fecho). Não invente texto
    novo — é uma RENDERIZAÇÃO do que já existe em `ln-{cycle}.html`, nunca
    uma reescrita.
 2. **Nota do mecanismo, sempre visível no topo da página:** um aviso claro

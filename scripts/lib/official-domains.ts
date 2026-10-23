@@ -505,6 +505,69 @@ export function lancamentoPatterns(): RegExp[] {
 }
 
 /**
+ * #11004: central de ajuda, docs e blog de desenvolvedor OFICIAIS dos
+ * fabricantes — o que conta como "site do fabricante" além do registro de
+ * lançamento acima. Lista SEPARADA de `OFFICIAL_SOURCES` de propósito: entrar
+ * lá faria `categorize.ts` classificar toda página de ajuda como LANÇAMENTO
+ * na diária, e uma página de suporte é tutorial, não anúncio. Consumida só
+ * por `isManufacturerUrl` (seções Lançamentos/Use melhor do post da Stack).
+ *
+ * Hosts explícitos, nunca `docs.*` genérico: `docs.` de qualquer domínio não
+ * prova que a página é do fabricante da ferramenta. Casados contra
+ * `hostname+pathname` sem `www.`, como os `path_patterns` acima.
+ */
+export const MANUFACTURER_DOCS_PATTERNS: readonly RegExp[] = [
+  // Anthropic — central de ajuda (item do Cowork, ciclo 26w43) e docs.
+  /^support\.claude\.com\//,
+  /^support\.anthropic\.com\//,
+  /^docs\.claude\.com\//,
+  /^docs\.anthropic\.com\//,
+  /^code\.claude\.com\/docs\//,
+  // OpenAI — central de ajuda e docs da plataforma.
+  /^help\.openai\.com\//,
+  /^platform\.openai\.com\/docs\//,
+  // Google — central de ajuda, docs da Gemini API e do Workspace.
+  /^support\.google\.com\//,
+  /^ai\.google\.dev\//,
+  /^developers\.google\.com\//,
+  /^workspaceupdates\.googleblog\.com\//,
+  // Microsoft / GitHub.
+  /^learn\.microsoft\.com\//,
+  /^support\.microsoft\.com\//,
+  /^docs\.github\.com\//,
+  /^github\.blog\//,
+  // Ferramentas dos cursos da Stack (#10952): docs inteiras, não só o changelog.
+  /^docs\.lovable\.dev\//,
+  /^docs\.n8n\.io\//,
+  /^docs\.cursor\.com\//,
+  /^cursor\.com\/docs\//,
+  /^docs\.replit\.com\//,
+];
+
+function hostAndPathname(url: string): { host: string; full: string } {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    return { host, full: host + u.pathname };
+  } catch {
+    return { host: "", full: "" };
+  }
+}
+
+/**
+ * Pure (#11004): a URL é do site do fabricante (blog, changelog, docs ou
+ * central de ajuda oficiais)? Une o registro de lançamento (`lancamentoDomains`/
+ * `lancamentoPatterns`, mesma fonte do `validate-lancamentos.ts`, #160) com
+ * `MANUFACTURER_DOCS_PATTERNS`. Imprensa, blog pessoal e agregador → false.
+ */
+export function isManufacturerUrl(url: string): boolean {
+  const { host, full } = hostAndPathname(url);
+  if (!host) return false;
+  if (lancamentoDomains().has(host)) return true;
+  return lancamentoPatterns().some((p) => p.test(full)) || MANUFACTURER_DOCS_PATTERNS.some((p) => p.test(full));
+}
+
+/**
  * Mapa empresa → domínio oficial pra sugestão de fonte primária.
  * Usado por `launch-detect.ts` pra sinalizar candidatos a lançamento.
  */
