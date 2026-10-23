@@ -289,6 +289,38 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#9974",
   },
   {
+    name: "Diaria-Video-D1-Link-Watch",
+    description:
+      "relê o estado do vídeo horizontal no YouTube até 10:00 BRT e, público, grava o link do D1 e aplica o plano nos posts do D1 (#10941)",
+    steps: [{ key: "watch", script: "scripts/video-d1-link-watch.ts" }],
+    logPath: "video-d1-link-watch/.watch.log",
+    // Diária 06:05 BRT, um único disparo que relê a cada 5 min até 10:00
+    // (mesmo molde de `Diaria-Regen-Home-Watchdog`, que reconfere até 07:00):
+    // o registro só expressa intervalos de hora inteira, e um loop interno
+    // para sozinho no 1º `published` em vez de 48 disparos de timer. 06:05 é
+    // logo depois do horário-padrão de publicação do vídeo (06:00 BRT,
+    // `/diaria-youtube`); slot livre (ver grep de `hour: 6, minute:`).
+    //
+    // Só LÊ o estado (`videos.list`) — decisão do editor no briefing 261023
+    // da #10941: sem mudar o escopo do token, sem `videos.update` (403).
+    // Escreve `_internal/05-video-url.txt` e `_internal/05-video-link-apply.json`
+    // na edição de hoje e, no Facebook diar.ia.br, edita/comenta o post do D1
+    // pela Graph API — por isso o `guard` abaixo: sem a junction `data/`
+    // montada não há edição para ler.
+    //
+    // DECLARADA, NÃO ARMADA (subagente overnight de worktree isolado) — o
+    // `enabled: false` também impede o `Diaria-Remediate-Never-Armed-Tasks`
+    // de armá-la sozinho. Arme: `docs/video-d1-link-watch-setup.md`.
+    schedule: { kind: "daily", hour: 6, minute: 5 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do upload.",
+    },
+    enabled: false,
+    issue: "#10941",
+  },
+  {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
     description:
       "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
