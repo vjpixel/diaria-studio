@@ -281,7 +281,17 @@ function readEdition(editionsRootDir: string, date: string): EditionRead | null 
 }
 
 function toItem(c: StackScoredCandidate): CircleStackItem & { score: number; matchedTerms: string[] } {
-  return { editionDate: c.editionDate, url: c.url, title: c.title, body: c.body, why: c.why, score: c.score, matchedTerms: c.matchedTerms };
+  return {
+    editionDate: c.editionDate,
+    url: c.url,
+    title: c.title,
+    body: c.body,
+    why: c.why,
+    // #11003: só destaques carregam a posição; vira a âncora #dN do link da edição.
+    ...(c.kind === "destaque" && c.destaqueN !== undefined ? { destaqueN: c.destaqueN } : {}),
+    score: c.score,
+    matchedTerms: c.matchedTerms,
+  };
 }
 
 /** Lê as edições da semana e monta a seleção (sem gravar). */
@@ -362,6 +372,9 @@ export function parseStoredCircleStackSelection(
         if (typeof rec[f] !== "string") fail(`${section}[${i}].${f} ausente ou não é texto`);
       }
       if (rec.stackNote !== undefined && typeof rec.stackNote !== "string") fail(`${section}[${i}].stackNote não é texto`);
+      if (rec.destaqueN !== undefined && !(Number.isInteger(rec.destaqueN) && (rec.destaqueN as number) >= 1 && (rec.destaqueN as number) <= 3)) {
+        fail(`${section}[${i}].destaqueN precisa ser 1, 2 ou 3`);
+      }
     });
   }
   const warnings = Array.isArray(sel.warnings) ? sel.warnings.filter((w): w is string => typeof w === "string") : [];

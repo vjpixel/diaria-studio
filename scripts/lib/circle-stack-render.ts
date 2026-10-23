@@ -46,6 +46,12 @@ export interface CircleStackItem {
   body: string;
   why: string;
   stackNote?: string;
+  /**
+   * Posição do destaque na edição de origem (1..3). Quando presente, o link
+   * "Na edição de DD/MM" vai direto ao destaque (`/p/{slug}#dN`, #11003) em
+   * vez do topo da página. Ausente (seleção antiga, item de seção) = topo.
+   */
+  destaqueN?: number;
 }
 
 export interface CircleStackEdition {
@@ -89,6 +95,19 @@ export function buildCircleStackUrl(baseUrl: string, cycle: string, content: Cir
   u.searchParams.set("utm_medium", CIRCLE_STACK_UTM_MEDIUM);
   u.searchParams.set("utm_campaign", circleStackCampaign(cycle));
   u.searchParams.set("utm_content", content);
+  return u.toString();
+}
+
+/**
+ * Pure: aponta a URL da edição para o destaque N (`#dN`, âncora gravada por
+ * `site-destaque-anchors.ts`, #11003). Fora de 1..3 devolve a URL intacta —
+ * âncora inexistente só deixaria o leitor no topo, mas não há por que gravar
+ * um fragmento que a página não tem.
+ */
+export function withDestaqueAnchor(url: string, destaqueN: number | undefined): string {
+  if (destaqueN === undefined || !Number.isInteger(destaqueN) || destaqueN < 1 || destaqueN > 3) return url;
+  const u = new URL(url);
+  u.hash = `d${destaqueN}`;
   return u.toString();
 }
 
@@ -153,7 +172,8 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     const editionUrl = editionUrlByDate.get(h.editionDate);
     const links = [link(h.url, "Leia na fonte")];
     if (editionUrl) {
-      links.push(link(buildCircleStackUrl(editionUrl, sel.cycle, "edicao"), `Na edição de ${ddmm(h.editionDate)}`));
+      const editionHref = withDestaqueAnchor(buildCircleStackUrl(editionUrl, sel.cycle, "edicao"), h.destaqueN); // #11003
+      links.push(link(editionHref, `Na edição de ${ddmm(h.editionDate)}`));
     }
     blocks.push(links.join(" | "));
   }
