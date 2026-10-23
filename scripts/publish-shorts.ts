@@ -1058,11 +1058,18 @@ function parseIgTimestamp(ts: unknown): number {
 }
 
 /**
- * Quantas mídias o `--confirm-instagram` lê de `/{ig-user}/media` (as mais
- * recentes da autora). A contagem e os candidatos são sempre DENTRO dessa
- * janela: um Reels mais antigo que as 15 últimas mídias não aparece.
+ * Tamanho de cada página que o `--confirm-instagram` lê de `/{ig-user}/media`
+ * (as mais recentes da autora primeiro). Desde #10978 a leitura pagina
+ * (`paging.next`) até achar o que procura ou bater `INSTAGRAM_CONFIRM_MAX_PAGES`.
  */
 export const INSTAGRAM_CONFIRM_MEDIA_LIMIT = 15;
+
+/**
+ * Teto de páginas do `/media` (#10978): 5 × 15 = as 75 mídias mais recentes.
+ * Os candidatos são sempre DENTRO do que foi lido: um Reels mais antigo que
+ * isso não aparece (e a recusa diz quantas mídias foram lidas).
+ */
+export const INSTAGRAM_CONFIRM_MAX_PAGES = 5;
 
 export interface InstagramReelCandidate {
   id: string;
@@ -1161,7 +1168,7 @@ export function decideInstagramConfirm(input: {
     if (!raw) {
       return {
         kind: "refuse",
-        reason: `--media-id ${input.mediaId} não está entre as ${INSTAGRAM_CONFIRM_MEDIA_LIMIT} mídias mais recentes da autora`,
+        reason: `--media-id ${input.mediaId} não está entre as ${data.length} mídias mais recentes lidas da autora`,
         candidates: all,
       };
     }
@@ -1186,7 +1193,7 @@ export function decideInstagramConfirm(input: {
   if (!reels.length) {
     return {
       kind: "refuse",
-      reason: `nenhum Reels desde ${input.sinceIso} (entre as ${INSTAGRAM_CONFIRM_MEDIA_LIMIT} mídias mais recentes) — o Share terminou? (o processamento leva ~30–60 s)`,
+      reason: `nenhum Reels desde ${input.sinceIso} (entre as ${data.length} mídias mais recentes lidas) — o Share terminou? (o processamento leva ~30–60 s)`,
       candidates: [],
     };
   }
@@ -1200,21 +1207,57 @@ export function decideInstagramConfirm(input: {
 }
 
 /**
+ * Pure (#10978): a leitura do `/media` já tem o que procura? Com `mediaId`,
+ * quando a mídia apareceu. Sem ele, quando a página mais recente lida já
+ * chegou a uma mídia anterior ao `sinceIso` — o `/media` vem do mais novo pro
+ * mais velho, então as páginas seguintes só trazem mídia fora da janela (e a
+ * janela inteira precisa ser lida pra a recusa por ambiguidade valer).
+ */
+export function instagramMediaPagingDone(input: { lastPage: unknown[]; all: unknown[]; sinceIso?: string | null; mediaId?: string | null }): boolean {
+  if (input.mediaId) return input.all.some((m: any) => m?.id === input.mediaId);
+  const since = input.sinceIso ? Date.parse(input.sinceIso) : Number.NaN;
+  if (Number.isNaN(since)) return false;
+  return input.lastPage.some((m: any) => parseIgTimestamp(m?.timestamp) < since);
+}
+
+/**
  * #10915: lê `/{ig-user}/media` com a legenda, pro `decideInstagramConfirm`.
- * Só leitura: nunca cria container nem publica.
+ * Só leitura: nunca cria container nem publica. Desde #10978 segue
+ * `paging.next` (até `maxPages`, default `INSTAGRAM_CONFIRM_MAX_PAGES`) e
+ * para assim que `instagramMediaPagingDone` diz que já achou. Devolve
+ * `{ data }` com todas as páginas lidas, na ordem da API.
  */
 export async function fetchInstagramRecentMedia(
   deps: Pick<GraphDeps, "fetch">,
   igUserId: string,
   token: string,
   apiVersion: string,
-): Promise<unknown> {
-  return graphGet(
+  opts: { sinceIso?: string | null; mediaId?: string | null; maxPages?: number } = {},
+): Promise<{ data: unknown[]; pages: number; more: boolean }> {
+  const maxPages = Math.max(1, opts.maxPages ?? INSTAGRAM_CONFIRM_MAX_PAGES);
+  let page: any = await graphGet(
     deps as GraphDeps,
     `${igUserId}/media`,
     { fields: "id,permalink,timestamp,media_product_type,media_type,caption", limit: String(INSTAGRAM_CONFIRM_MEDIA_LIMIT), access_token: token },
     apiVersion,
   );
+  const all: unknown[] = [];
+  let pages = 0;
+  for (;;) {
+    if (!Array.isArray(page?.data)) throw new Error(`GET ${igUserId}/media sem lista: ${JSON.stringify(page ?? null).slice(0, 200)}`);
+    all.push(...page.data);
+    pages++;
+    const next = typeof page?.paging?.next === "string" ? page.paging.next : null;
+    if (!next) return { data: all, pages, more: false };
+    if (pages >= maxPages || instagramMediaPagingDone({ lastPage: page.data, all, sinceIso: opts.sinceIso, mediaId: opts.mediaId })) {
+      return { data: all, pages, more: true };
+    }
+    // O `next` já traz o access_token: só segue se for o próprio Graph.
+    if (new URL(next).origin !== GRAPH) throw new Error(`GET ${igUserId}/media: paging.next fora do Graph (${new URL(next).origin})`);
+    const res = await deps.fetch(next);
+    page = await readJson(res);
+    if (!res.ok || page?.error) throw new Error(`GET ${igUserId}/media (página ${pages + 1}): ${res.status} ${JSON.stringify(page?.error ?? page)}`);
+  }
 }
 
 /** Lado com I/O do preparo do arquivo pro Chrome (#10915), injetável nos testes. */
@@ -1687,13 +1730,45 @@ const USAGE =
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
 
+/** Flags booleanas do `publish-shorts.ts` (não levam valor). */
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram"] as const;
+
+/**
+ * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
+ * `--confirm-instagram 261022` como `values["confirm-instagram"] = "261022"`
+ * (a data vira valor da flag) e o comando caía no usage. Aqui a data colada
+ * numa flag booleana volta a ser a edição, então as duas ordens valem.
+ * Valor que não é AAMMDD numa flag booleana, ou duas edições diferentes, é
+ * erro de uso (nunca adivinha qual edição gravar).
+ */
+export function parseShortsCliArgs(argv: string[]):
+  | { ok: true; aammdd: string; flags: Set<string>; values: Record<string, string>; positional: string[] }
+  | { ok: false; error: string } {
+  const { flags, values, positional } = parseArgs(argv);
+  const positionalOut = [...positional];
+  for (const f of SHORTS_BOOLEAN_FLAGS) {
+    const v = values[f];
+    if (v === undefined) continue;
+    if (!/^\d{6}$/.test(v)) return { ok: false, error: `--${f} não leva valor (recebeu "${v}")` };
+    delete values[f];
+    flags.add(f);
+    positionalOut.push(v);
+  }
+  const candidates = [...new Set([values["edition"], ...positionalOut].filter((x): x is string => typeof x === "string"))];
+  if (candidates.length > 1) return { ok: false, error: `edição ambígua: ${candidates.join(", ")}` };
+  const aammdd = candidates[0];
+  if (!aammdd || !/^\d{6}$/.test(aammdd)) return { ok: false, error: "AAMMDD ausente ou inválido" };
+  return { ok: true, aammdd, flags, values, positional: positionalOut };
+}
+
 async function main(): Promise<number> {
-  const { flags, values, positional } = parseArgs(process.argv.slice(2));
-  const aammdd = values["edition"] ?? positional[0];
-  if (!aammdd || !/^\d{6}$/.test(aammdd)) {
+  const parsed = parseShortsCliArgs(process.argv.slice(2));
+  if (!parsed.ok) {
+    console.error(`publish-shorts: ${parsed.error}`);
     console.error(USAGE);
     return 2;
   }
+  const { flags, values, aammdd } = parsed;
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   const publishedPath = join(dir, SHORTS_PUBLISHED_FILE);
   let published = readPublished(publishedPath, aammdd);
@@ -2007,7 +2082,7 @@ async function confirmInstagram(
   const markers = instagramEditionMarkers({ aammdd, d1Title, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
   // Default: 00:00 BRT do dia da edição (o vertical sai no próprio dia, #10831).
   const since = sinceFlag ?? resolveEditionScheduledAt(aammdd, "00:00");
-  const media = await fetchInstagramRecentMedia(defaultGraphDeps, author.igUserId, author.token, igApiVersion);
+  const media = await fetchInstagramRecentMedia(defaultGraphDeps, author.igUserId, author.token, igApiVersion, { sinceIso: since, mediaId: mediaIdFlag ?? null });
   const who = author.username ? `@${author.username}` : author.igUserId;
   const decision = decideInstagramConfirm({ published, media, sinceIso: since, markers, mediaId: mediaIdFlag ?? null, nowIso: new Date().toISOString() });
   if (decision.kind !== "register") {
