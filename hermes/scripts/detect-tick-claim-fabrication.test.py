@@ -415,6 +415,40 @@ def test_regressao_8863_nenhuma_e_antes_do_claim():
     print("regressão #8863: 'nenhuma issue reivindicada'/'antes do claim' não vira claim — OK")
 
 
+def test_regressao_11039_claims_inexistentes():
+    """Transcrição real do write_file do tick 20261023_122926 no 300."""
+    mod = _load_module()
+    linha = (
+        "Claims de #11005 e #10957 inexistentes; checks de coerência "
+        "admitiram ambas, mas comentários do editor as reservam para briefing."
+    )
+    assert mod.extract_claimed_issue_refs(linha) == {}
+    chk = mod.check_claimed_issues(
+        linha, set(), True, session_correlated=True,
+        ended_session_in_window=True, ended_claimed_snapshot=set(),
+    )
+    assert chk["status"] == "not_applicable", chk
+    for texto in (
+        "Claim de #11005 inexistente.",
+        "Claims de #11005 e #10957 estão inexistentes.",
+        "Claims de vjpixel/hermes#21 inexistentes.",
+    ):
+        assert mod.extract_claimed_issue_refs(texto) == {}, texto
+    for texto in (
+        "Claims de #11005 e #10957 registradas, arquivo inexistente.",
+        "Claims de #11005 e #10957 não inexistentes.",
+        linha + " Claim registrada para #12000.",
+        linha + "\n#12000 foi reivindicada.",
+    ):
+        refs = mod.extract_claimed_issue_refs(texto)
+        assert refs, texto
+        chk = mod.check_claimed_issues(
+            texto, set(), True, session_correlated=True,
+            ended_session_in_window=True, ended_claimed_snapshot=set(),
+        )
+        assert chk["status"] == "fabrication_suspected", chk
+
+
 def test_regressao_10563_sem_claim_e_liberei():
     """#10563: relatório REAL do tick 16:14 UTC de 19/10/2026 (verbatim, só
     a URL do comentário encurtada). "#10560 permanece sem claim por rejeição
@@ -1464,6 +1498,7 @@ def main() -> int:
         test_regressao_8521_negacao_nao_e_claim()
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
+        test_regressao_11039_claims_inexistentes()
         test_regressao_10563_sem_claim_e_liberei()
         test_regressao_10894_clausula_sem_ref_atribuida_a_outro_ator()
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()

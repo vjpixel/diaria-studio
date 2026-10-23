@@ -607,6 +607,15 @@ _NEGATION_WINDOW = 30
 _ANTES_CLAIM_MARKER = re.compile(r"\bantes d[oa]\s+(?:\w+\s+){0,1}$", re.IGNORECASE)
 _ANTES_CLAIM_WINDOW = 20
 
+# #11039: o relatório real dizia "Claims de #11005 e #10957 inexistentes".
+# Negação APÓS a lista, restrita ao predicado da própria claim: não basta
+# encontrar "inexistente" em algum ponto da cláusula (poderia ser um arquivo).
+_ABSENT_CLAIM = re.compile(
+    r"\bclaims?\s+(?:d[eo]s?\s+)?" + _REF_LIST.pattern
+    + r"\s+(?:(?:s[ãa]o|est[ãa]o)\s+)?inexistentes?\b",
+    re.IGNORECASE,
+)
+
 # #10563: relatório real do tick 16:14 UTC de 19/10/2026 — "#10560
 # permanece sem claim por rejeição do gate de coerência." — "sem claim" é
 # AUSÊNCIA de claim, mas `_NEGATION_MARKER` não cobria "sem" e o #10560
@@ -639,6 +648,8 @@ def _is_negated_claim_keyword(segment: str, keyword_start: int, keyword_text: st
     E (qualquer keyword): nega quando "sem" está colado ao keyword, com no
     máximo 1 palavra no meio (`_SEM_CLAIM_MARKER`) — "permanece sem claim"
     é ausência de claim (#10563)."""
+    if _ABSENT_CLAIM.match(segment, keyword_start):
+        return True
     window_start = max(0, keyword_start - _NEGATION_WINDOW)
     window = segment[window_start:keyword_start]
     if _NEGATION_MARKER.search(window):
