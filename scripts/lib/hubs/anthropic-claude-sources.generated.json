@@ -1040,5 +1040,29 @@
       "https://www.anthropic.com/news/2026-usage-policy-update"
     ],
     "editionTitle": "Claude ganha regra contra quem o maltrata"
+  },
+  {
+    "date": "2026-10-20",
+    "editionSlug": "seu-cargo-de-junior-sobreviveria-na-anthropic",
+    "url": "https://diar.ia.br/p/seu-cargo-de-junior-sobreviveria-na-anthropic",
+    "matchedHeadlines": [
+      "Seu cargo de júnior sobreviveria na Anthropic?"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/research/employment-at-anthropic"
+    ],
+    "editionTitle": "Seu cargo de júnior sobreviveria na Anthropic?"
+  },
+  {
+    "date": "2026-10-22",
+    "editionSlug": "claude-projetou-proteinas-contra-veneno-de-escorpiao",
+    "url": "https://diar.ia.br/p/claude-projetou-proteinas-contra-veneno-de-escorpiao",
+    "matchedHeadlines": [
+      "Claude projetou proteínas contra veneno de escorpião"
+    ],
+    "primarySourceUrls": [
+      "https://www.anthropic.com/research/claude-scorpion-toxin-binder-design"
+    ],
+    "editionTitle": "Claude projetou proteínas contra veneno de escorpião"
   }
 ]

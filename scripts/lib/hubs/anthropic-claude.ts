@@ -201,7 +201,7 @@ const PUBLISHED_DATE = "2026-08-04";
 //    regex moveria essa data pra 21/09 e atribuiria o fato à data errada.
 //  - 24/09 (enzima) e 09/10 (política de uso): fatos isolados, sem seção
 //    própria — mesmo critério conservador das notas anteriores.
-const UPDATED_DATE = "2026-10-18";
+const UPDATED_DATE = "2026-10-23";
 
 /** `matchedHeadlines` vem em NFD (achado original ao vivo: `/anthropic
  * lanç/i` batia 0 das 12 manchetes reais antes da normalização NFC) — ver a
