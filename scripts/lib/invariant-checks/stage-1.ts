@@ -20,7 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
-import { isPlaceholderHighlightItem } from "../placeholder-title-guard.ts"; // #4102, #10908
+import { collectUnresolvedTitleUrls, isPlaceholderHighlightItemWithReserve } from "../placeholder-title-guard.ts"; // #4102, #10908, #10929
 // #6440: backstop — mesma verificação POSITIVA de produto (#1968) usada no
 // gate do Stage 2 (`validate-lancamentos.ts --approved`), rodada aqui como
 // invariante do Stage 1 (bloqueia ANTES do gate). `categorize.ts` já ganhou
@@ -370,10 +370,24 @@ function checkHasNegativeImpactHighlight(editionDir: string): InvariantViolation
  * pipeline, nunca um caso legítimo de "sem candidato melhor" — não há
  * trade-off editorial aqui.
  */
-function isPlaceholderTitleHighlight(h: HighlightLike): boolean {
+function isPlaceholderTitleHighlight(h: HighlightLike, unresolvedUrls: ReadonlySet<string> = new Set()): boolean {
   // #10908: também barra submissão do editor marcada `title_unresolved` pelo
   // categorize (#10796) cujo título ainda é a palavra solta ("Found").
-  return isPlaceholderHighlightItem(h);
+  // #10929: o marcador pode ter sumido do highlight (scorer-select não copiou,
+  // caminho 1q-fallback sem o backstop do assemble-scored) — vale também a
+  // mesma URL marcada em outro ponto do approved ou no tmp-categorized.json.
+  return isPlaceholderHighlightItemWithReserve(h, unresolvedUrls);
+}
+
+/** Lê `_internal/tmp-categorized.json` (quem grava `title_unresolved`); ausente/ilegível → `null`. */
+function readCategorizedForUnresolved(editionDir: string): unknown {
+  const p = resolve(editionDir, "_internal", "tmp-categorized.json");
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolation[] {
@@ -386,7 +400,8 @@ function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolati
     return []; // covered by approved-parseable
   }
   const highlights = Array.isArray(data.highlights) ? data.highlights : [];
-  const offenders = highlights.filter(isPlaceholderTitleHighlight);
+  const unresolvedUrls = collectUnresolvedTitleUrls(data, readCategorizedForUnresolved(editionDir));
+  const offenders = highlights.filter((h) => isPlaceholderTitleHighlight(h, unresolvedUrls));
   if (offenders.length === 0) return [];
   const urls = offenders.map((h) => h.url ?? h.article?.url ?? "(sem url)").join("; ");
   return [

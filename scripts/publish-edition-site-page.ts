@@ -546,6 +546,7 @@ export function readEditionInputs(
       title,
       subtitle,
       publishedAtIso: deriveFallbackPublishedAtIso(editionDir),
+      ...coverField(editionDir), // #10924
     };
   }
 
@@ -598,7 +599,38 @@ export function readEditionInputs(
     title,
     subtitle,
     publishedAtIso: published.published_at ?? published.scheduled_at ?? null,
+    ...coverField(editionDir), // #10924
   };
+}
+
+/**
+ * #10924: URL pública da capa ORIGINAL do D1 (`images.cover.url` de
+ * `06-public-images.json`, upload do `04-d1-2x1.jpg`). Não é a cópia com o
+ * convite/play do #10784 (`d1_play`), que é só do e-mail. Arquivo ausente,
+ * ilegível ou sem a chave → `null` (a página segue com a capa derivada do
+ * corpo, comportamento anterior) — nunca lança: a capa não pode derrubar a
+ * publicação da página.
+ */
+export function readD1CoverPublicUrl(editionDir: string): string | null {
+  const p = join(editionDir, "06-public-images.json");
+  if (!existsSync(p)) return null;
+  try {
+    const data = JSON.parse(readFileSync(p, "utf8")) as { images?: Record<string, { url?: unknown }> };
+    const url = data.images?.cover?.url;
+    return typeof url === "string" && /^https:\/\//.test(url) ? url : null;
+  } catch (e) {
+    process.stderr.write(
+      `[site-page] aviso: 06-public-images.json ilegível (${(e as Error).message}) — og:image da página ` +
+        "fica com a capa derivada do corpo (#10924).\n",
+    );
+    return null;
+  }
+}
+
+/** #10924: campo `coverImageUrl` só quando a capa existe (shape anterior intacto sem ela). */
+function coverField(editionDir: string): { coverImageUrl?: string } {
+  const url = readD1CoverPublicUrl(editionDir);
+  return url ? { coverImageUrl: url } : {};
 }
 
 /** Primeira linha não-vazia após o rótulo — mesmo formato do #916. */

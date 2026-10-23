@@ -146,9 +146,16 @@ export const METRICS_HEALTH_THRESHOLDS: MetricsHealthThresholds = {
   // `serieQuedaSemDiaCorrente` (#10647) e fica com 13 pontos — 1 é o "atual",
   // então a baseline tem no máximo 12. Um piso perto desse teto (ex.: 12)
   // pularia QUALQUER sobreposição com janela paga e neutralizaria a exclusão
-  // do #10647 por quase 2 semanas depois de todo teste. Obs.: o gate de
-  // `MIN_DIAS_SERIE` (`diasComInsumo`) ainda conta o dia corrente — tirá-lo
-  // de lá exigiria baixar esse gate pra 13 nas métricas de aquisição (#10667).
+  // do #10647 por quase 2 semanas depois de todo teste.
+  // #10667: o gate de `MIN_DIAS_SERIE` (`diasComInsumo`) continua contando o
+  // dia corrente DE PROPÓSITO, mesmo com ele fora da série de queda. A linha
+  // `kit-vivo` do `captura-log.jsonl` é por EXECUÇÃO (`captured_at` em BRT):
+  // a de ontem (04:25) só viu os cadastros de ontem até 04:25, e o resto do
+  // dia chega na execução de HOJE. A coleta de hoje é, portanto, a única
+  // prova de que o ponto "atual" (ontem) está completo. Tirá-la do gate (e
+  // baixar o piso pra 13) deixaria uma ingestão falha hoje avaliar um ontem
+  // parcial e alarmar queda falsa — o frescor (`evaluateFrescorFromCapturaLog`)
+  // já acusa a coleta ausente nesse caso.
   MIN_DIAS_BASELINE: 5,
   INDETERMINADO_MAX_FRACAO: 0.3,
 };
