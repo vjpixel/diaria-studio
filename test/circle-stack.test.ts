@@ -141,6 +141,12 @@ describe("renderCircleStackPost", () => {
     assert.ok(md.includes("utm_content=cta-fim"));
   });
 
+  it("última linha: link de assinatura e fecho na mesma linha, no fim do post", () => {
+    const cta = `[Assine a diar.ia.br](${buildCircleStackUrl("https://diar.ia.br", "26w42", "cta-fim")}). Chega de segunda a sexta, de graça, no seu e-mail.`;
+    assert.ok(md.trimEnd().endsWith(cta));
+    assert.ok(!md.includes("Assinar a diar.ia.br"));
+  });
+
   it("destaque sem edição correspondente sai só com link da fonte", () => {
     assert.ok(!md.includes("Na edição de 99/10"));
   });

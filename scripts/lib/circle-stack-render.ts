@@ -8,7 +8,8 @@
  *
  * Estrutura: abertura · Destaques da semana (título, corpo, "Por que isso
  * importa:", links) · Lançamentos e ferramentas · Use melhor · Radar ·
- * Edições da semana · fecho + CTA.
+ * Edições da semana · última linha ("Assine a diar.ia.br. Chega de segunda a
+ * sexta...", link e fecho na mesma linha).
  *
  * `stackNote` (opcional, por item): texto escrito para o público da Stack
  * (o ângulo de quem constrói). Quando presente, SUBSTITUI o "por que isso
@@ -35,9 +36,10 @@ export const DEFAULT_CIRCLE_STACK_OPENING =
   "A edição semanal da diar.ia.br para quem constrói com IA: o que saiu na semana sobre ferramentas, agentes, automação e produto.";
 
 export const DEFAULT_CIRCLE_STACK_CLOSING =
-  "A diar.ia.br sai de segunda a sexta, de graça, no seu e-mail.";
+  "Chega de segunda a sexta, de graça, no seu e-mail.";
 
-const CTA_FIM_LABEL = "Assinar a diar.ia.br";
+/** Rótulo do link de assinatura; abre a última linha: "[Assine a diar.ia.br](url). {closing}". */
+const CTA_FIM_LABEL = "Assine a diar.ia.br";
 
 export interface CircleStackItem {
   editionDate: string;
@@ -171,9 +173,11 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     );
   }
 
-  blocks.push(...paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING));
+  // Última linha única: link de assinatura + 1º parágrafo do fecho (pedido do editor, 23/10/2026).
   const subscribeHref = opts.subscribeUrl?.trim() || buildCircleStackUrl(CIRCLE_STACK_SUBSCRIBE_BASE_URL, sel.cycle, "cta-fim");
-  blocks.push(link(subscribeHref, CTA_FIM_LABEL));
+  const [closingFirst, ...closingRest] = paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING);
+  const cta = link(subscribeHref, CTA_FIM_LABEL);
+  blocks.push(closingFirst ? `${cta}. ${closingFirst}` : cta, ...closingRest);
 
   return { title: circleStackTitle(sel.contentWindow), markdown: blocks.join("\n\n") };
 }
