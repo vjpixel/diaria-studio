@@ -457,3 +457,74 @@ describe("OpenAI developers/community no gate de LANÇAMENTOS (#9788)", () => {
     assert.ok(!d.has("developers.openai.com") && !d.has("community.openai.com"));
   });
 });
+
+/**
+ * #10952: ferramentas dos cursos da Stack (lista de 22/10/2026). Bate direto em
+ * `isOfficialLancamentoUrl` — o gate que `validate-lancamentos.ts` consulta
+ * (#160) — com URLs reais conferidas ao vivo nos feeds cadastrados em
+ * `seed/sources.csv`, e trava o recorte path-restricted (app/pricing/docs
+ * evergreen dos mesmos hosts seguem fora).
+ */
+describe("Ferramentas dos cursos da Stack no gate de LANÇAMENTOS (#10952)", () => {
+  it("blog e changelog oficiais contam (URLs reais dos feeds)", () => {
+    for (const url of [
+      "https://lovable.dev/blog/deploy-on-azure",
+      "https://docs.lovable.dev/changelog#oct-21-2026",
+      "https://cursor.com/changelog/origin-app-marketplace",
+      "https://cursor.com/blog/series-a",
+      "https://www.cursor.com/blog/series-a",
+      "https://code.claude.com/docs/en/changelog#2-1-309",
+      "https://github.com/anthropics/claude-code/releases/tag/v2.1.309",
+      "https://github.com/anthropics/claude-code",
+      "https://blog.n8n.io/some-announcement/",
+      "https://docs.n8n.io/changelog/release-notes",
+      "https://docs.n8n.io/release-notes/",
+      "https://replit.com/blog/replit-agent-4",
+      "https://blog.replit.com/agent",
+      "https://docs.replit.com/updates/2026/10/16/changelog",
+    ]) {
+      assert.equal(isOfficialLancamentoUrl(url), true, url);
+    }
+  });
+
+  it("app, pricing, docs evergreen e imprensa dos mesmos produtos seguem NÃO-oficiais", () => {
+    for (const url of [
+      "https://lovable.dev/pricing",
+      "https://lovable.dev/projects/abc",
+      "https://docs.lovable.dev/introduction",
+      "https://cursor.com/pricing",
+      "https://cursor.com/changelog",
+      "https://code.claude.com/docs/en/overview",
+      "https://github.com/anthropics",
+      "https://github.com/anthropics/claude-code/issues/123",
+      "https://github.com/anthropics/claude-code/releases",
+      "https://github.com/anthropics-fan/claude-code",
+      "https://n8n.io/pricing",
+      "https://docs.n8n.io/integrations/builtin/",
+      "https://replit.com/pricing",
+      "https://docs.replit.com/getting-started/intro",
+      "https://techcrunch.com/2026/10/20/lovable-raises/",
+      "https://lovable.dev.evil.io/blog/x",
+    ]) {
+      assert.equal(isOfficialLancamentoUrl(url), false, url);
+    }
+  });
+
+  it("nenhum host inteiro entrou como any-path", () => {
+    const d = lancamentoDomains();
+    for (const host of ["lovable.dev", "docs.lovable.dev", "cursor.com", "n8n.io", "blog.n8n.io", "replit.com", "code.claude.com"]) {
+      assert.ok(!d.has(host), host);
+    }
+  });
+
+  it("detection_keywords sugerem o domínio oficial; 'cursor' solto não", () => {
+    const c2d = companyToDomain();
+    const domainFor = (text: string) => c2d.find(({ keyword }) => keyword.test(text))?.domain;
+    assert.equal(domainFor("Lovable lança deploy na Azure"), "lovable.dev");
+    assert.equal(domainFor("Cursor AI ganha agentes na nuvem"), "cursor.com");
+    assert.equal(domainFor("Anysphere levanta rodada"), "cursor.com");
+    assert.equal(domainFor("n8n 2.45 traz agentes"), "n8n.io");
+    assert.equal(domainFor("Replit Agent 4 chega"), "replit.com");
+    assert.equal(domainFor("mova o cursor do mouse para o canto"), undefined);
+  });
+});
