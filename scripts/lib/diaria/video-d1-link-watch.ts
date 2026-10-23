@@ -186,17 +186,23 @@ async function graphJson(res: Response): Promise<Record<string, unknown>> {
 
 /** Lê a mensagem atual do post do Facebook (`null` se a Graph API não devolver). */
 export async function fetchFacebookPostMessage(fetch: FetchLike, fb: FacebookTarget, postId: string): Promise<string | null> {
-  const url = `https://graph.facebook.com/${fb.apiVersion}/${encodeURIComponent(postId)}?fields=message&access_token=${encodeURIComponent(fb.token)}`;
-  const json = await graphJson(await fetch(url));
+  // Token no header Authorization: Bearer, nunca na query string (#7893).
+  const url = `https://graph.facebook.com/${fb.apiVersion}/${encodeURIComponent(postId)}?fields=message`;
+  const json = await graphJson(await fetch(url, { headers: { Authorization: `Bearer ${fb.token}` } }));
   return typeof json.message === "string" ? json.message : null;
 }
 
-async function postFacebookForm(fetch: FetchLike, url: string, fields: Record<string, string>): Promise<Record<string, unknown>> {
+async function postFacebookForm(
+  fetch: FetchLike,
+  url: string,
+  token: string,
+  fields: Record<string, string>,
+): Promise<Record<string, unknown>> {
   const body = new URLSearchParams(fields);
   return graphJson(
     await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: `Bearer ${token}` },
       body,
     }),
   );
@@ -267,7 +273,7 @@ async function applyFacebook(
       return { status: "manual", text: step.link_line, detail: "não deu para ler a mensagem atual do post agendado — edite à mão" };
     }
     const text = insertVideoLinkLine(currentText, videoUrl);
-    await postFacebookForm(deps.fetch, base, { message: text, access_token: fb.token });
+    await postFacebookForm(deps.fetch, base, fb.token, { message: text });
     // Releitura (#573): 2xx não prova que a mensagem mudou.
     const reread = await fetchFacebookPostMessage(deps.fetch, fb, postId);
     if (!reread || !textHasVideoLink(reread, videoUrl)) {
@@ -277,7 +283,7 @@ async function applyFacebook(
   }
   // comment_after
   const text = step.text ?? step.link_line;
-  const res = await postFacebookForm(deps.fetch, `${base}/comments`, { message: text, access_token: fb.token });
+  const res = await postFacebookForm(deps.fetch, `${base}/comments`, fb.token, { message: text });
   const commentId = typeof res.id === "string" ? res.id : null;
   if (!commentId) return { status: "failed", text, detail: "a Graph API não devolveu o id do comentário" };
   return { status: "applied", text, detail: `comentário ${commentId} no post ${postId}` };

@@ -54,6 +54,7 @@ interface Call {
   url: string;
   method: string;
   body: string | null;
+  auth: string | null;
 }
 
 /**
@@ -67,7 +68,8 @@ function makeFetch(privacy: string[], fbMessage: string | null = "Texto do D1\n\
   const fetch = async (url: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? "GET";
     const body = init?.body == null ? null : String(init.body);
-    calls.push({ url, method, body });
+    const auth = new Headers(init?.headers).get("authorization");
+    calls.push({ url, method, body, auth });
     const json = (o: unknown, status = 200) =>
       new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json" } });
     if (url.includes("oauth2.googleapis.com/token")) return json({ access_token: "at" });
@@ -186,6 +188,12 @@ describe("#10941 — runVideoD1LinkWatch", () => {
     const edit = calls.find((c) => c.method === "POST" && c.url.includes("graph.facebook.com"));
     assert.ok(edit && !edit.url.endsWith("/comments"), "edição vai no próprio post, não em /comments");
     assert.match(new URLSearchParams(edit!.body ?? "").get("message") ?? "", /Assista no YouTube: https:\/\/youtu\.be\/abcdefghijk/);
+    // #7893: token da Graph API vai no header Bearer, nunca na URL nem no corpo.
+    for (const c of calls.filter((x) => x.url.includes("graph.facebook.com"))) {
+      assert.ok(!c.url.includes("access_token"), `token na URL: ${c.url}`);
+      assert.equal(new URLSearchParams(c.body ?? "").has("access_token"), false);
+      assert.match(c.auth ?? "", /^Bearer \S+/);
+    }
 
     const li = out.results.find((r) => r.destination === "linkedin");
     assert.equal(li?.status, "manual");
