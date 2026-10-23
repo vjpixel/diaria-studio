@@ -22,7 +22,7 @@ import {
   type SkippedPlanIssue,
 } from "./lib/skipped-develop-track.ts";
 import { normalizeIssues } from "./lib/plan-issues-normalize.ts";
-import { loadIssueRepos } from "./lib/issue-repos.ts";
+import { ISSUE_REPOS_CONFIG_ROOT, loadIssueRepos } from "./lib/issue-repos.ts";
 import { issueKeyLabel, issueNumberInRepo, repoOfIssueKey, type IssueKey } from "./lib/issue-key.ts";
 
 if (isMainModule(import.meta.url)) {
@@ -33,7 +33,7 @@ if (isMainModule(import.meta.url)) {
   }
   const plan = JSON.parse(readFileSync(values.plan, "utf8"));
   const { keys, unknownEntries } = planIssueKeysRequiringRouting(plan);
-  const allowlist = new Set(loadIssueRepos(process.cwd()));
+  const allowlist = new Set(loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT));
   const snapshots = new Map<IssueKey, IssueSnapshot>();
   let ghFailures = unknownEntries.length;
   for (const d of unknownEntries) {

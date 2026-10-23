@@ -19,7 +19,7 @@
 
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
-import { DEFAULT_ISSUE_REPO, loadIssueRepos, normalizeRepoSlug } from "./lib/issue-repos.ts";
+import { DEFAULT_ISSUE_REPO, ISSUE_REPOS_CONFIG_ROOT, loadIssueRepos, normalizeRepoSlug } from "./lib/issue-repos.ts";
 import { planLabelSync, requiredIssueLabels, type LabelInfo } from "./lib/issue-label-sync.ts";
 
 export type GhRunner = (args: string[]) => { status: number | null; stdout: string; stderr: string };
@@ -45,14 +45,19 @@ function listLabels(repo: string, run: GhRunner): LabelInfo[] | string {
   }
 }
 
-export function main(argv: string[], cwd: string, run: GhRunner = defaultRunner): number {
+/**
+ * `_cwd` fica na assinatura por compatibilidade, mas a allowlist NÃO sai dele
+ * (#10990): rodado do checkout do diaria-design (sem `platform.config.json`),
+ * ler a allowlist pelo cwd caía no default só-studio e recusava o próprio design.
+ */
+export function main(argv: string[], _cwd: string, run: GhRunner = defaultRunner): number {
   const { values, flags } = parseArgs(argv);
   const repo = normalizeRepoSlug(values.repo);
   if (!repo) {
     console.error("[sync-issue-labels] uso: --repo owner/name [--dry-run | --apply] [--source owner/name]");
     return 2;
   }
-  if (!loadIssueRepos(cwd).includes(repo)) {
+  if (!loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT).includes(repo)) {
     console.error(`[sync-issue-labels] ${repo} está fora de platform.config.json → issue_repos; nada a sincronizar.`);
     return 2;
   }

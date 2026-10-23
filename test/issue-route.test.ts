@@ -671,23 +671,54 @@ describe("routeIssue #6197 3b — preservacao de label de bloqueio preexistente"
 });
 
 describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
-  it("issue CLOSED nunca vira 'develop' — dry-run pre-escrita recusa antes de tocar a issue (#8230)", () => {
-    // Ate o #8230, esta combinacao (state CLOSED + --track develop) so era
-    // pega no Passo 4 (validacao POS-escrita): a label `develop-track` ja
-    // tinha sido gravada na issue antes do erro aparecer. Agora o dry-run
-    // pre-escrita (Passo 0) pega o mesmo conflito ANTES de qualquer
-    // `gh issue edit` — `state: "CLOSED"` vence QUALQUER label na
-    // precedencia de `classifyExecTrackWithRule` (1o passo), entao a
-    // projecao ja devolve "fora-de-rodada" sem precisar escrever nada.
+  it("issue CLOSED: o estado nao vence o roteamento — valida pelas labels e marca issueClosed (#10976, revisa #8230)", () => {
+    // Ate o #10976, `state: "CLOSED"` vencia qualquer label no dry-run
+    // (#8230) e o verbo recusava sem escrever. O estado nao e algo que o
+    // roteamento controla; issue fechada agora valida pelas labels.
     const gh = fakeGh({ labels: [], body: "", state: "CLOSED", comments: [] });
     const result = routeIssue({ issue: 48, track: "develop", cwd: "/tmp", ghRun: gh.run });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.validated, true);
+    assert.equal(result.resolvedTrack, "develop");
+    assert.equal(result.issueClosed, true);
+    assert.ok(gh.state.labels.includes("develop-track"));
+  });
+
+  it("issue OPEN nao carrega issueClosed no resultado (#10976)", () => {
+    const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({ issue: 52, track: "develop", cwd: "/tmp", ghRun: gh.run });
+    assert.equal(result.ok, true);
+    assert.equal("issueClosed" in result, false);
+  });
+
+  it("regressao #10976: issue CLOSED com windows+develop-track roteada pra overnight remove as labels e valida", () => {
+    // Cenario real do gate de saida do Develop (#6271): issues #10904/#10915/
+    // #10916 ja fechadas, `route-issue --track overnight` devolvia
+    // validated:false / fora-de-rodada e nao removia nada.
+    const gh = fakeGh({ labels: ["bug", "P3", "windows", "develop-track"], body: "", state: "CLOSED", comments: [] });
+    const result = routeIssue({
+      issue: 10904,
+      track: "overnight",
+      reason: "terminada no develop",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.validated, true);
+    assert.equal(result.resolvedTrack, "overnight");
+    assert.equal(result.issueClosed, true);
+    assert.deepEqual([...result.labelsRemoved].sort(), ["develop-track", "windows"]);
+    assert.ok(!gh.state.labels.includes("windows"));
+    assert.ok(!gh.state.labels.includes("develop-track"));
+    assert.ok(gh.state.labels.includes("bug") && gh.state.labels.includes("P3"));
+  });
+
+  it("issue CLOSED ainda recusa no dry-run quando uma LABEL de precedencia maior venceria (#10976 nao abre brecha no #8230)", () => {
+    const gh = fakeGh({ labels: ["alarm"], body: "", state: "CLOSED", comments: [] });
+    const result = routeIssue({ issue: 53, track: "overnight", cwd: "/tmp", ghRun: gh.run });
     assert.equal(result.ok, false);
     assert.equal(result.validated, false);
-    assert.equal(result.resolvedTrack, "fora-de-rodada");
     assert.match(result.error ?? "", /dry-run pré-escrita, #8230/);
-    // Nada foi escrito: nem a label pedida, nem qualquer chamada de escrita.
-    assert.deepEqual(result.labelsAdded, []);
-    assert.ok(!gh.state.labels.includes("develop-track"));
     assert.equal(gh.calls.length, 1, "so o fetch inicial (gh issue view) deveria ter rodado");
   });
 
