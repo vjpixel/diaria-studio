@@ -111,7 +111,44 @@ export function assemble(selection: Selection, allScored: AllScoredFile): Assemb
   };
   if (selection.warning_pool_too_small) out.warning_pool_too_small = true;
   if (selection.negative_impact_promoted) out.negative_impact_promoted = selection.negative_impact_promoted;
-  return out;
+  return applyNegativePromotionLimits(out);
+}
+
+/** #10936: compare the promoted negative with the third item by merit,
+ * before its swap. Infer promotion from scores too: LLM metadata is optional.
+ * Only reorder the trio; preserve its membership and the reserves.
+ */
+export function applyNegativePromotionLimits(out: AssembledOutput): AssembledOutput {
+  if (out.highlights.length < 3) return out;
+  const urlOf = (h: Highlight) => h.url ?? h.article?.url;
+  const scoreOf = (h: Highlight) => h.score;
+  const pool = [...out.highlights, ...out.runners_up];
+  const promoted = out.highlights.slice(0, 3).find((h) => {
+    if (h.negative_impact !== true && h.article?.negative_impact !== true) return false;
+    const score = scoreOf(h);
+    if (typeof score !== "number" || !Number.isFinite(score)) return false;
+    const seen = new Set<unknown>([urlOf(h)]);
+    const others = pool.filter((item) => {
+      const url = urlOf(item);
+      if (!url || seen.has(url)) return false;
+      seen.add(url);
+      return typeof item.score === "number" && Number.isFinite(item.score);
+    }).sort((a, b) => b.score! - a.score!);
+    // A documented swap can remove the displaced article from both arrays.
+    const displaced = out.all_scored.find((item) =>
+      item.url === out.negative_impact_promoted?.demoted_url);
+    const scores = others.map((item) => item.score!);
+    if (out.negative_impact_promoted?.promoted_url === urlOf(h) && displaced && !seen.has(displaced.url)) {
+      scores.push(displaced.score);
+      scores.sort((a, b) => b - a);
+    }
+    return scores.length >= 3 && scores[2] - score > 15;
+  });
+  if (!promoted || out.highlights[2] === promoted) return out;
+  const trio = out.highlights.slice(0, 3).filter((h) => h !== promoted);
+  const highlights = [...trio, promoted, ...out.highlights.slice(3)]
+    .map((h, i) => ({ ...h, rank: i + 1 }));
+  return { ...out, highlights };
 }
 
 /**
@@ -454,6 +491,8 @@ export function main(): void {
         "(caminho single-call/1q-fallback) — sem registro em data/exploration-quota.json (#8370)",
     );
   }
+
+  assembled = applyNegativePromotionLimits(assembled);
 
   writeFileSync(resolve(ROOT, outPath), JSON.stringify(assembled, null, 2), "utf8");
 
