@@ -26,6 +26,7 @@ import { escHtml } from "./html-escape.ts";
 import { loadPublishDateOverrides } from "./beehiiv-publish-date.ts";
 import type { UnifiedCachedPost } from "./shared/edition-cache-reader.ts";
 import { editionCtaBlock } from "./edition-page-cta.ts";
+import { injectDestaqueAnchors } from "./site-destaque-anchors.ts"; // #11003
 import { stripArchiveHero } from "./strip-duplicate-hero.ts";
 import { GEO_AUTHOR, type GeoAuthor } from "./shared/geo-faq.ts";
 import { renderSeoMeta } from "./shared/seo-meta.ts";
@@ -645,6 +646,11 @@ export function buildArchivePageHtml(post: ArchivePost, opts: BuildArchivePageHt
   // depende de <body>/<h1>, nunca de <html>/<head>) — feito aqui, ao lado das
   // demais correções estruturais do HTML capturado, por coesão de leitura.
   html = normalizeHeadingHierarchy(html, rawTitle);
+
+  // #11003 — âncoras #d1..#d3 nas manchetes dos destaques (links diretos a um
+  // destaque, ex.: post da Stack). Depois de normalizeHeadingHierarchy porque
+  // o alvo é o <h2> da manchete; página sem manchete reconhecível fica igual.
+  html = injectDestaqueAnchors(html);
 
   // #8353 item 1 — nav prev/next logo após o <h1> (visível ou sr-only, ver
   // normalizeHeadingHierarchy acima). Omitido (post sem nenhum vizinho

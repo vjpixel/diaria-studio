@@ -36,6 +36,8 @@ export interface WeeklyRawCandidate {
   category: string;
   /** Nome da seção normalizado — usado pra achar o pool "USE MELHOR" separadamente. */
   section: "destaque" | "lancamentos" | "radar" | "use_melhor" | "videos" | "outro";
+  /** Posição do destaque na edição (D1/D2/D3) — só destaques têm. Vira a âncora `#dN` da página da edição (#11003). */
+  destaqueN?: 1 | 2 | 3;
 }
 
 function normalizeSectionName(name: string): WeeklyRawCandidate["section"] {
@@ -65,6 +67,7 @@ export function extractWeeklyCandidates(md: string, editionDate: string): Weekly
       kind: "destaque",
       category: d.category,
       section: "destaque",
+      destaqueN: d.n, // #11003
     });
   }
 
