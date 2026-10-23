@@ -309,9 +309,15 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // montada não há edição para ler.
     //
     // ARMA-ELEGÍVEL desde 23/10/2026 (/diaria-develop 261023b, #10941):
-    // dry-run de 261023 conferido com o editor presente (vídeo `published`,
-    // Facebook lido pela Graph API). Só no `300` — ver
-    // `docs/video-d1-link-watch-setup.md`.
+    // dry-run de 261023 conferido com o editor presente — vídeo relido
+    // `published` e a mensagem do post do Facebook LIDA pela Graph API
+    // (o dry-run só lê; o caminho de ESCRITA — editar/comentar — ainda não
+    // rodou ao vivo, a 1ª vez é às 06:05). "Só no `300`" é CONVENÇÃO, não
+    // guard: vale porque o `Diaria-Remediate-Never-Armed-Tasks` só está
+    // armado no `300` (as outras máquinas são Windows, sem systemd) — armar
+    // o Remediate numa 2ª máquina Linux com `data/` montada faria as duas
+    // rodarem às 06:05 (o `05-video-link-apply.json` não protege da corrida
+    // entre máquinas). Ver `docs/video-d1-link-watch-setup.md`.
     schedule: { kind: "daily", hour: 6, minute: 5 },
     guard: {
       requiredFile: "editions",

@@ -8,7 +8,7 @@
  *     deixar LinkedIn/X/Threads como `manual`;
  *   - nunca repetir um destino já aplicado, nunca sobrescrever link de outro
  *     vídeo, e não gravar nada em `--dry-run`;
- *   - estar registrada (desarmada) no inventário de tasks agendadas.
+ *   - estar registrada e arma-elegível no inventário de tasks agendadas.
  * Toda rede é mock — nenhuma chamada real ao YouTube ou à Graph API.
  */
 
@@ -26,7 +26,7 @@ import {
   type VideoD1WatchInput,
 } from "../scripts/lib/diaria/video-d1-link-watch.ts";
 import { D1_VIDEO_URL_FILE } from "../scripts/lib/diaria/d1-video-link.ts";
-import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
+import { getScheduledTaskByName, listDisabledScheduledTaskNames } from "../scripts/lib/scheduled-tasks.ts";
 import { buildNotPublishedAlarm } from "../scripts/video-d1-link-watch.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -321,6 +321,10 @@ describe("#10941 — registro da task", () => {
     assert.deepEqual(task!.schedule, { kind: "daily", hour: 6, minute: 5 });
     assert.equal(task!.steps[0].script, "scripts/video-d1-link-watch.ts");
     assert.notEqual(task!.enabled, false, "arma-elegível desde 23/10 (dry-run conferido com o editor, #10941)");
+    assert.ok(
+      !listDisabledScheduledTaskNames().includes("Diaria-Video-D1-Link-Watch"),
+      "voltou à lista de desarmadas — o Remediate não arma e o link do D1 volta a ser manual (#10941)",
+    );
     assert.ok(existsSync(join(ROOT, "scripts", "video-d1-link-watch.ts")));
   });
 

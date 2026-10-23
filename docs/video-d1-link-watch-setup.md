@@ -34,15 +34,13 @@ Uma leitura só, sem gravar arquivo e sem chamar a Graph API. Mostra o estado re
 
 ## Armar
 
-A task entrou com `enabled: false`, o que também impede o `Diaria-Remediate-Never-Armed-Tasks` (#8153) de armá-la sozinho. Para armar, só no `300` (a junction `data/` é compartilhada; duas máquinas armadas gravariam o mesmo arquivo e comentariam duas vezes):
+A task entrou com `enabled: false` (removido em 23/10/2026, depois do dry-run de 261023): agora o `Diaria-Remediate-Never-Armed-Tasks` (#8153) a arma sozinho no 1º 18:15 BRT. Armar só no `300` (a junction `data/` é compartilhada; duas máquinas armadas gravariam o mesmo arquivo e comentariam duas vezes). Isso é convenção, não guard: vale porque o Remediate só está armado no `300`. O dry-run só LÊ o post do Facebook; editar/comentar roda ao vivo pela 1ª vez às 06:05.
 
-1. ~~Tirar o `enabled: false`~~ feito em 23/10/2026 (/diaria-develop 261023b). Sem o passo 2, o `Diaria-Remediate-Never-Armed-Tasks` (18:15 BRT) arma sozinho.
-2. Depois do merge, na checkout compartilhada do `300`:
+Para armar antes das 18:15, na checkout compartilhada do `300`:
 
 ```bash
 npx tsx scripts/setup-systemd-timers.ts --task Diaria-Video-D1-Link-Watch
-systemctl --user daemon-reload
-systemctl --user enable --now diaria-video-d1-link-watch.timer
+npx tsx scripts/arm-systemd-timers.ts --task Diaria-Video-D1-Link-Watch
 systemctl --user list-timers diaria-video-d1-link-watch.timer
 ```
 
