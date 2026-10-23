@@ -1,6 +1,6 @@
 ---
 name: diaria-linkedin-semanal
-description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 destaques (D1/D2/D3) da semana selecionados por clique verificado (#8029, itens de seção não competem mais por manchete; #8817 desempata por diversidade de dia dentro do ruído) com corpo SEMPRE o texto já publicado na edição diária de origem (#8818, reverte o #5108) + bloco Use Melhor sem CTA (#8025) + "Outros destaques da semana" (#11006: só o que não apareceu acima, um título por linha) + abertura/fecho padrão (#8025). Produzida domingo; corpo colado à mão via Claude in Chrome, capa e agendamento ficam com o editor na UI do LinkedIn (#8031, seletor de arquivo nativo não é automatizável). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
+description: Newsletter semanal do LinkedIn (perfil pessoal, #4456) — 3 destaques (D1/D2/D3) da semana selecionados por clique verificado (#8029, itens de seção não competem mais por manchete; #8817 desempata por diversidade de dia dentro do ruído) com corpo SEMPRE o texto já publicado na edição diária de origem (#8818, reverte o #5108) + bloco Use Melhor sem CTA (#8025) + "Outros destaques da semana" (#11006 — só o que não apareceu acima, um título por linha) + abertura/fecho padrão (#8025). Produzida domingo; corpo colado à mão via Claude in Chrome, capa e agendamento ficam com o editor na UI do LinkedIn (#8031, seletor de arquivo nativo não é automatizável). Uso — `/diaria-linkedin-semanal --publish-monday AAMMDD`.
 disable-model-invocation: true
 ---
 
