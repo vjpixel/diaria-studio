@@ -48,7 +48,7 @@ import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts"; // #8722
-import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts"; // #10440
+import { isNonDescriptiveTitle } from "./lib/placeholder-title-guard.ts"; // #10440, #10929
 import {
   describeEmbeddingError,
   embeddingCauseSentence,
@@ -345,7 +345,8 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
 // inbox que o enrichment não conseguiu substituir).
 function isPlaceholderTitle(title: string): boolean {
   const t = title.trim();
-  return isPlaceholderHighlightTitle(t) || /^\[inbox\]/i.test(t) || /^\(inbox/i.test(t);
+  // #10929: inclui o stub ambíguo ("Found") — ver `isNonDescriptiveTitle`.
+  return isNonDescriptiveTitle(t) || /^\[inbox\]/i.test(t) || /^\(inbox/i.test(t);
 }
 
 // #10440: segmentos de SEÇÃO do caminho (`/blogs/machine-learning/…`,

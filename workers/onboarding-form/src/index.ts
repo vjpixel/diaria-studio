@@ -33,12 +33,20 @@ import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt
 /**
  * `robots.txt` PRÓPRIO de `formulario.diar.ia.br` (#10809, guard #4777): todo
  * Worker com `custom_domain` serve o seu, senão nasce servindo o default da
- * Cloudflare. Mesmo helper dos outros Workers. O formulário só abre com link
- * assinado por pessoa, então não há o que indexar: sem `Sitemap:`, e o envio
- * (`/enviar`) e a API do executor (`/api/`) ficam fora do rastreamento. Não
- * depende de KV nem de secret.
+ * Cloudflare. Mesmo helper dos outros Workers. O envio (`/enviar`) e a API do
+ * executor (`/api/`) ficam fora do rastreamento. Não depende de KV nem de
+ * secret.
+ *
+ * #10871: declara `Sitemap:` apontando pro `/sitemap.xml` PRÓPRIO do host
+ * (nunca o do site principal, regra de `renderCuradoriaRobotsTxt`) — o alarme
+ * `robots-txt-drift-check` exige a linha em todo host descoberto. O formulário
+ * só abre com link assinado por pessoa, então não há página a listar: o
+ * sitemap é um `<urlset>` vazio e válido, honesto sobre isso.
  */
-const ROBOTS_TXT = renderCuradoriaRobotsTxt(undefined, { extraDisallowPaths: ["/enviar", "/api/"] });
+const FORM_SITEMAP_URL = "https://formulario.diar.ia.br/sitemap.xml";
+const ROBOTS_TXT = renderCuradoriaRobotsTxt(FORM_SITEMAP_URL, { extraDisallowPaths: ["/enviar", "/api/"] });
+/** #10871: sitemap sem URLs — o formulário não tem página pública indexável. */
+const SITEMAP_XML = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>\n`;
 
 export interface Env {
   ONBOARDING_FORM?: KVNamespace;
@@ -69,6 +77,12 @@ export default {
     if (request.method === "GET" && url.pathname === "/robots.txt") {
       return new Response(ROBOTS_TXT, {
         headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=3600" },
+      });
+    }
+    // #10871: o sitemap declarado no robots.txt, também antes do check de KV.
+    if (request.method === "GET" && url.pathname === "/sitemap.xml") {
+      return new Response(SITEMAP_XML, {
+        headers: { "content-type": "application/xml; charset=utf-8", "cache-control": "public, max-age=3600" },
       });
     }
     if (!env.ONBOARDING_FORM) return notConfigured("kv ONBOARDING_FORM");

@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import worker, { type Env } from "../workers/onboarding-form/src/index.ts";
 import { robotsTxtAllowsGeneralCrawling } from "../scripts/lib/shared/robots-txt.ts";
+import { evaluateRobotsDrift } from "../scripts/lib/robots-txt-drift-check.ts";
 
 const URL_ROBOTS = "https://formulario.diar.ia.br/robots.txt";
 
@@ -24,8 +25,30 @@ describe("GET /robots.txt no Worker onboarding-form (#10809)", () => {
     assert.ok(robotsTxtAllowsGeneralCrawling(body), body);
     assert.match(body, /Disallow: \/enviar/);
     assert.match(body, /Disallow: \/api\//);
-    // Formulário só abre com link assinado: nada a listar num sitemap.
-    assert.doesNotMatch(body, /Sitemap:/);
+    // #10871: Sitemap: PRÓPRIO do host (nunca o do site principal).
+    assert.match(body, /^Sitemap: https:\/\/formulario\.diar\.ia\.br\/sitemap\.xml$/m);
+  });
+
+  it("#10871: o robots.txt servido passa no alarme robots-txt-drift-check (sem 'sem linha Sitemap')", async () => {
+    const res = await worker.fetch(new Request(URL_ROBOTS), {} as Env);
+    const body = await res.text();
+    const result = evaluateRobotsDrift({
+      host: "formulario.diar.ia.br",
+      url: URL_ROBOTS,
+      robotsTxt: body,
+      httpStatus: res.status,
+      fetchError: null,
+    });
+    assert.equal(result.status, "ok", result.message);
+  });
+
+  it("#10871: GET /sitemap.xml declarado responde 200 com <urlset> vazio, sem KV", async () => {
+    const res = await worker.fetch(new Request("https://formulario.diar.ia.br/sitemap.xml"), {} as Env);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /application\/xml/);
+    const xml = await res.text();
+    assert.match(xml, /<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9"><\/urlset>/);
+    assert.doesNotMatch(xml, /<url>/);
   });
 
   it("não depende do KV nem do secret (responde antes do 503 not_configured)", async () => {

@@ -112,10 +112,68 @@ export function isPlaceholderHighlightTitleOrUnresolved(
   return Boolean(titleUnresolved) && isAmbiguousRedirectStubTitle(title);
 }
 
+/**
+ * #10929 item 1: título que não serve de sinal de "mesma matéria" para
+ * agrupar por título (`dedup.ts` Pass-2b, cluster contra corte do editor,
+ * `topic-cluster.ts`). Placeholder (`isPlaceholderHighlightTitle`) ou a palavra
+ * solta de stub ("Found", "Moved", "Redirect"). Dedup e topic-cluster rodam
+ * antes ou fora do `categorize`, então o marcador `title_unresolved` nem
+ * sempre existe ali; o critério é o conteúdo do título. Mesmo que a palavra
+ * solta seja título real, um título de uma palavra igual em dois links não
+ * prova que eles são a mesma matéria. Só tira o item do agrupamento por
+ * título — nunca descarta nada (o dedup por URL segue valendo).
+ */
+export function isNonDescriptiveTitle(title: string | null | undefined): boolean {
+  return isPlaceholderHighlightTitle(title) || isAmbiguousRedirectStubTitle(title);
+}
+
 /** Lê título e `title_unresolved` de um highlight/finalista (top-level ou `article`). */
 export function isPlaceholderHighlightItem(h: { title?: unknown; article?: Record<string, unknown> }): boolean {
   const marker = h.article?.title_unresolved ?? (h as Record<string, unknown>).title_unresolved;
   return isPlaceholderHighlightTitleOrUnresolved(titleOf(h), marker);
+}
+
+/**
+ * #10929 item 2: URLs que carregam `title_unresolved` em QUALQUER objeto de um
+ * ou mais documentos JSON (`01-approved.json` inteiro — runners_up e buckets
+ * incluídos — e `_internal/tmp-categorized.json`, saída do `categorize`, quem
+ * grava o marcador). Varredura recursiva, sem depender do shape de cada
+ * arquivo: o `article` do highlight vem do `scorer-select` (LLM), que pode não
+ * copiar o marcador, e no caminho `1q-fallback` o backstop do
+ * `assemble-scored` nem roda — o marcador sobrevive nos outros objetos da
+ * mesma URL. Puro.
+ */
+export function collectUnresolvedTitleUrls(...docs: unknown[]): Set<string> {
+  const urls = new Set<string>();
+  const seen = new Set<object>();
+  const walk = (v: unknown): void => {
+    if (v === null || typeof v !== "object" || seen.has(v)) return;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x);
+      return;
+    }
+    const o = v as Record<string, unknown>;
+    if (o.title_unresolved && typeof o.url === "string") urls.add(o.url);
+    for (const x of Object.values(o)) walk(x);
+  };
+  for (const d of docs) walk(d);
+  return urls;
+}
+
+/**
+ * `isPlaceholderHighlightItem` com reserva por URL (#10908/#10929): o item
+ * também é ofensor se a MESMA URL está marcada `title_unresolved` em outro
+ * objeto (`unresolvedUrls`, ver {@link collectUnresolvedTitleUrls}) e o título
+ * dele ainda é a palavra ambígua de stub.
+ */
+export function isPlaceholderHighlightItemWithReserve(
+  h: { url?: string; title?: unknown; article?: Record<string, unknown> },
+  unresolvedUrls: ReadonlySet<string>,
+): boolean {
+  if (isPlaceholderHighlightItem(h)) return true;
+  const u = urlOf(h);
+  return u !== undefined && unresolvedUrls.has(u) && isPlaceholderHighlightTitleOrUnresolved(titleOf(h), true);
 }
 
 /**
@@ -180,12 +238,7 @@ export function demotePlaceholderTitleHighlights<H extends PlaceholderHighlightL
   );
   const offenderIdxs = highlights
     .map((h, i) => ({ h, i }))
-    .filter(({ h }) => {
-      if (isPlaceholderHighlightItem(h)) return true;
-      const u = urlOf(h);
-      return u !== undefined && unresolvedFinalistUrls.has(u) &&
-        isPlaceholderHighlightTitleOrUnresolved(titleOf(h), true);
-    });
+    .filter(({ h }) => isPlaceholderHighlightItemWithReserve(h, unresolvedFinalistUrls));
 
   if (offenderIdxs.length === 0) return { highlights, demotions: [] };
 
