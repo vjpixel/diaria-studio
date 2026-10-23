@@ -115,9 +115,9 @@ describe("sendStackPost", () => {
 describe("renderCircleStackPost", () => {
   const { title, markdown: md } = renderCircleStackPost(selection);
 
-  it("título cobre segunda a sexta da semana de conteúdo", () => {
-    assert.equal(title, "Radar de Notícias Stack — semana de 12/10 a 16/10");
-    assert.equal(circleStackTitle(["261012"]), "Radar de Notícias Stack — semana de 12/10 a 12/10");
+  it("título é a segunda da semana de conteúdo", () => {
+    assert.equal(title, "Semana de 12/10");
+    assert.equal(circleStackTitle(["261012"]), "Semana de 12/10");
   });
 
   it("sai em Markdown, sem nenhuma tag HTML", () => {
@@ -125,24 +125,83 @@ describe("renderCircleStackPost", () => {
     assert.doesNotThrow(() => buildStackPostPayload(title, md));
   });
 
-  it("título do destaque literal e abertura default", () => {
-    assert.ok(md.includes("### Gemini vira colega com e-mail & agenda"));
+  it("título do destaque vira link para a fonte; abertura default", () => {
+    assert.ok(md.includes("### [Gemini vira colega com e-mail & agenda](https://cloud.google.com/blog/x)"));
     assert.ok(md.includes(DEFAULT_CIRCLE_STACK_OPENING));
   });
 
-  it("'Por que isso importa:' em parágrafo próprio, só quando há why", () => {
+  it("'Por que isso importa:' da edição em parágrafo próprio, só quando há why", () => {
     assert.equal((md.match(/Por que isso importa:/g) ?? []).length, 1);
     assert.ok(md.includes("**Por que isso importa:**\n\nPorque sim."));
   });
 
   it("fonte sem UTM; edição e CTA com UTM stack/circle", () => {
-    assert.ok(md.includes("[Leia na fonte](https://cloud.google.com/blog/x)"));
+    assert.ok(md.includes("](https://cloud.google.com/blog/x)"));
+    assert.ok(!md.includes("Leia na fonte"));
+    assert.ok(!md.includes("Na edição de"));
     assert.ok(md.includes(`(${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})`));
     assert.ok(md.includes("utm_content=cta-fim"));
   });
 
-  it("destaque sem edição correspondente sai só com link da fonte", () => {
-    assert.ok(!md.includes("Na edição de 99/10"));
+  it("última linha: link de assinatura e fecho na mesma linha, no fim do post", () => {
+    const cta = `[Assine a diar.ia.br](${buildCircleStackUrl("https://diar.ia.br", "26w42", "cta-fim")}). Chega de segunda a sexta, de graça, no seu e-mail.`;
+    assert.ok(md.trimEnd().endsWith(cta));
+    assert.ok(!md.includes("Assinar a diar.ia.br"));
+  });
+
+  it("fecho de várias linhas: anteriores antes, a última junta ao CTA, que fica no fim", () => {
+    const r = renderCircleStackPost(selection, { closing: "Obrigado por ler.\nVolte toda segunda." });
+    const tail = r.markdown.trimEnd().split("\n\n").slice(-2);
+    assert.equal(tail[0], "Obrigado por ler.");
+    assert.ok(/^\[Assine a diar\.ia\.br\]\([^)]*\)\. Volte toda segunda\.$/.test(tail[1]));
+  });
+
+  it("fecho só com espaços cai no default", () => {
+    const r = renderCircleStackPost(selection, { closing: "   " });
+    assert.ok(r.markdown.trimEnd().endsWith(". Chega de segunda a sexta, de graça, no seu e-mail."));
+  });
+
+  it("subscribeUrl alternativo vai na última linha", () => {
+    const r = renderCircleStackPost(selection, { subscribeUrl: "https://go.pm3.com.br/x" });
+    assert.ok(r.markdown.trimEnd().endsWith("[Assine a diar.ia.br](https://go.pm3.com.br/x). Chega de segunda a sexta, de graça, no seu e-mail."));
+  });
+
+  it("título do destaque com colchetes, parênteses e barra invertida não quebra o link", () => {
+    const r = renderCircleStackPost({ ...selection, destaques: [item({ title: "Modelo [beta] \\", url: "https://ex.com/a_(b)" })] });
+    assert.ok(r.markdown.includes("### [Modelo (beta) \\\\](https://ex.com/a_%28b%29)"));
+  });
+
+  it("edições da semana ignoram título vazio", () => {
+    const r = renderCircleStackPost({ ...selection, weeklyEditions: [{ editionDate: "261013", url: "https://diar.ia.br/p/g", destaques: ["A", "  ", "B"] }] });
+    assert.ok(r.markdown.includes("- A\n- B"));
+    assert.ok(!/^- $/m.test(r.markdown));
+  });
+
+  it("outros destaques da semana: omite título já mostrado acima e data que ficou vazia", () => {
+    const r = renderCircleStackPost({
+      ...selection,
+      weeklyEditions: [
+        { editionDate: "261013", url: "https://diar.ia.br/p/g", destaques: ["Gemini vira colega com e-mail & agenda", "Outro"] },
+        { editionDate: "261014", url: "https://diar.ia.br/p/h", destaques: ["gemini vira colega com e-mail & agenda"] },
+      ],
+    });
+    assert.ok(r.markdown.includes("## Outros destaques da semana"));
+    assert.ok(r.markdown.includes("- Outro"));
+    assert.ok(!r.markdown.includes("- Gemini vira colega"));
+    assert.ok(!r.markdown.includes("[14/10]"));
+  });
+
+  it("sem destaque restante, a seção some", () => {
+    const r = renderCircleStackPost({ ...selection, weeklyEditions: [{ editionDate: "261013", url: "https://diar.ia.br/p/g", destaques: ["Gemini vira colega com e-mail & agenda"] }] });
+    assert.ok(!r.markdown.includes("Outros destaques"));
+  });
+
+  it("outros destaques: data com link em parágrafo próprio e um título por linha", () => {
+    const d = `[13/10](${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})`;
+    assert.ok(md.includes(`${d}\n\n- A\n- B\n- C`));
+    assert.ok(!md.includes(" · "));
+    // Regressão: link dentro de negrito sai como Markdown cru no Circle da Stack.
+    assert.ok(!/\*\*\[[^\]]*\]\([^)]*\)\*\*/.test(md));
   });
 
   it("nunca usa seta (#9721)", () => {
@@ -150,14 +209,14 @@ describe("renderCircleStackPost", () => {
   });
 
   it("stackNote substitui a descrição no item de lista; seção vazia some", () => {
-    assert.ok(md.includes("## Lançamentos e ferramentas\n\n- [Lovable 3](https://ex.com/l): Nota para builders."));
+    assert.ok(md.includes("## Lançamentos\n\n- [Lovable 3](https://ex.com/l): Nota para builders."));
     assert.ok(!md.includes("## Radar"));
   });
 
-  it("stackNote no destaque substitui o por que importa da edição", () => {
+  it("stackNote no destaque é ignorado; vale o por que importa da edição", () => {
     const r = renderCircleStackPost({ ...selection, destaques: [item({ why: "Original.", stackNote: "Para quem constrói." })] });
-    assert.ok(r.markdown.includes("Para quem constrói."));
-    assert.ok(!r.markdown.includes("Original."));
+    assert.ok(!r.markdown.includes("Para quem constrói."));
+    assert.ok(r.markdown.includes("Original."));
   });
 
   it("colchetes no rótulo e parênteses na URL não quebram o link", () => {

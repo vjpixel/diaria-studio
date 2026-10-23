@@ -53,6 +53,8 @@
  *   npx tsx scripts/publish-circle-stack.ts --notify   (task semanal: dry-run + aviso ao editor;
  *                                                       ignorado junto com --publish)
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
+ *   --closing-file: a ÚLTIMA linha do arquivo vira a cauda de "[Assine a diar.ia.br](url). {linha}";
+ *   linhas anteriores saem como parágrafos antes dela.
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
