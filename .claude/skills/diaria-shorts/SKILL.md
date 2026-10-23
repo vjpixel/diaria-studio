@@ -63,6 +63,10 @@ npx tsx scripts/publish-shorts.ts {AAMMDD} --publish
 
 Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois do horário do vertical só para o Instagram (quando ele ficou pendente por falta de fila). Instagram enfileirado é gravado `scheduled` com a key da fila no `id` — re-rodar não enfileira de novo. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
 
+## Passo 3b — Instagram manual (só quando o plano o devolve guiado, #10933)
+
+Quando o vertical passa do teto da API (`[aviso] instagram: … acima do teto`), o item `instagram` vem `guided` com `caption` e `at`. O horário `at` já está reservado na grade do plano (#10819), então os outros destinos foram planejados contando com ele. No horário `at`, **chamar o editor** para postar o Reels no app do Instagram (conta @vjpixel, diar.ia.br em collab) com a `caption` do item, e registrar: `npx tsx scripts/publish-shorts.ts {AAMMDD} --mark instagram={URL do Reels}`. Sem esse registro, toda rodada seguinte continua devolvendo o Instagram como passo manual pendente.
+
 ## Passo 4 — YouTube Shorts (Chrome)
 
 Carregar as ferramentas do Claude in Chrome. Abrir `https://studio.youtube.com/channel/UCSsppeUnBy6q-4a5hsl5u0w/videos/upload?d=ud`.
@@ -101,6 +105,6 @@ Se o vídeo subiu por `publish-youtube.ts --upload`, `--video-url` é opcional (
 
 ## Passo 6 — Relatar
 
-Uma linha por destino, com o estado normalizado da linha `[ok] … (estado …)` (`resolveShortEntryState`): publicado/agendado (com URL), `send_unknown` do LinkedIn (conferir o perfil), X agendado na Buffer (`scheduled` até o `dueAt`, depois `unknown` até conferir), na fila do Worker (Instagram, `scheduled` até a hora, depois `unknown` até confirmar no app — `resolveWorkerQueueState`), pendente (Instagram sem fila, antes do horário do vertical), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
+Uma linha por destino, com o estado normalizado da linha `[ok] … (estado …)` (`resolveShortEntryState`): publicado/agendado (com URL), `send_unknown` do LinkedIn (conferir o perfil), X agendado na Buffer (`scheduled` até o `dueAt`, depois `unknown` até conferir), na fila do Worker (Instagram, `scheduled` até a hora, depois `unknown` até confirmar no app — `resolveWorkerQueueState`), pendente (Instagram sem fila, antes do horário do vertical), Instagram manual acima do teto (pendente até o `--mark instagram=URL` do Passo 3b), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
 
 Teste de 2 semanas a partir de 261022 (#10769): no fim, comparar os visualizadores e as visitas ao canal por destino, e manter só os destinos que trouxerem gente.

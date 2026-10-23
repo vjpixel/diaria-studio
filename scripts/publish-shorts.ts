@@ -73,6 +73,8 @@
  * o teste do #10831 o horário do teste vale pra todos os destinos e a grade só
  * avisa quando ele cola num post da mesma conta; fora do teste, cada destino
  * de API tem o próprio horário (`slots` no plano) pelo `social-slot-planner`.
+ * O Instagram manual acima do teto (#10893) também reserva slot (#10933): é um
+ * post da conta naquele horário, só que feito no app.
  *
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
  * Stage 5) > slug derivado do título do D1 (aviso).
@@ -164,7 +166,7 @@ export type ShortsPlanItem =
   | { destination: string; mode: "api" | "guided"; action: "skip_done" }
   /** `skip_late` (#10772 F4): o horário do destino passou além do teto de atraso — vira passo manual. */
   | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late"; detail: string }
-  /** `at`: horário planejado do passo guiado quando não é o `shortTime` (repost da página, #10772). */
+  /** `at`: horário planejado do passo guiado (repost da página, #10772; Instagram manual acima do teto, slot da grade, #10933). Ausente = `shortTime`. */
   | { destination: string; mode: "guided"; action: "guided"; caption?: string; detail: string; at?: string }
   /**
    * #10772: X via Buffer (MCP, só a skill chama). `scheduledAt` null = postar
@@ -289,13 +291,16 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (d.kind === "x") return input.publicVideo?.ready === true;
     return false;
   }
+  // #10933: Instagram acima do teto vira post MANUAL no app, mas continua sendo
+  // um post da conta naquele horário — reserva o slot na grade como os de API.
+  const manualInstagram = (d: ShortDestination) => d.kind === "instagram" && !igFit.fits;
   // #10819: só os destinos que esta rodada ainda vai publicar disputam a grade;
   // os já registrados entram nela pelo `06-shorts-published.json`.
   const slots = planShortSlots({
     aammdd: input.aammdd,
     time,
     timeAt: shortTime.at,
-    destinations: destinations.filter((d) => !isDestinationDone(input.published, d.id) && publishable(d)),
+    destinations: destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d))),
     cfg,
     grid: input.grid ?? [],
   });
@@ -307,6 +312,10 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const scheduleFor = (s: ShortSlot) => (input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(s.at, input.now));
   for (const s of slots) {
     if (input.forceNow) continue;
+    if (s.destination === "instagram" && !igFit.fits) {
+      premises.push(`instagram: passo manual no app às ${s.hhmm} BRT do dia da edição (acima do teto da API, #10893) — slot reservado na grade (#10933)`);
+      continue;
+    }
     const sch = scheduleFor(s);
     premises.push(
       sch.mode === "scheduled"
@@ -483,8 +492,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // instagram
     if (!igFit.fits) {
       const collab = cfg.instagramCollaborators.length ? ` com ${cfg.instagramCollaborators.map((c) => `@${c}`).join(", ")} em collab` : "";
+      // #10933: o horário vem da grade (o mesmo slot que os outros destinos já enxergaram).
+      const slot = slotOf.get(dest.id);
+      const hhmm = slot?.hhmm ?? time.hhmm;
       const detail =
-        `${igFit.reason} — poste à mão no app do Instagram${collab}, no horário do vertical (${time.hhmm} BRT), ` +
+        `${igFit.reason} — poste à mão no app do Instagram${collab}, às ${hhmm} BRT do dia da edição, ` +
         `e registre com --mark instagram=URL`;
       warnings.push(`instagram: ${detail}`);
       let caption: string | undefined;
@@ -493,7 +505,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       } catch (e) {
         warnings.push(`instagram: ${(e as Error).message}`);
       }
-      return { destination: dest.id, mode: "guided", action: "guided", ...(caption ? { caption } : {}), detail };
+      return { destination: dest.id, mode: "guided", action: "guided", ...(caption ? { caption } : {}), detail, at: slot?.at ?? shortTime.at };
     }
     // Só quando o caller MEDIU e não conseguiu ler (null); ausente = não medido (testes, chamadas antigas).
     if (input.videoDurationSeconds === null && igMax !== null && input.video.exists && input.instagramReady) {
