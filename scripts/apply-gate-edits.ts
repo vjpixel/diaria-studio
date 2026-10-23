@@ -189,6 +189,7 @@ export function resolveDestaques(
     rank?: number;
     url?: string;
     same_fact_demoted?: unknown;
+    negative_promotion_excluded?: unknown;
     article?: { url?: string; same_fact_demoted?: unknown } | null;
   }>,
   onSkip?: (skip: DestaqueSkip) => void,
@@ -215,6 +216,8 @@ export function resolveDestaques(
       // destaque pelo preenchimento automático — só o editor o promove, pondo-o
       // na seção Destaques do MD.
       if (isSameFactDemoted(h)) continue;
+      // #10795: negativo tirado do top-3 por processo/acusação ou tema recente idem.
+      if (h.negative_promotion_excluded != null) continue;
       if (mdBucketUrls.has(url)) {
         destaquesUrls.push(url);
       } else {

@@ -22,7 +22,14 @@
  *     --current-edition 261005 [--editions-dir data/editions] [--window 3] \
  *     [--out-log .../_internal/01-same-fact-demoted.json] [--dry-run]
  *
- * Stdout: JSON `{ demoted, kept, notes[] }`. Fail-soft no histórico: edição
+ * #10795 (decisão do editor, briefing 261023): na mesma passada, depois do
+ * rebaixamento de mesmo fato, `applyNegativePromotionEligibility`
+ * (`scripts/lib/negative-promotion-eligibility.ts`) impede que um destaque
+ * `negative_impact:true` de processo/acusação ou de entidade+tema que já foi
+ * destaque nos últimos 14 dias chegue ao top-3/D1 por PROMOÇÃO (no trio por
+ * mérito ele fica). O log ganha `negative_promotion[]`.
+ *
+ * Stdout: JSON `{ demoted, kept, negative_promotion, notes[] }`. Fail-soft no histórico: edição
  * passada ilegível é pulada.
  */
 
@@ -41,6 +48,12 @@ import {
   type DemotableHighlight,
   type PublishedDestaque,
 } from "./lib/same-fact-demotion.ts";
+import {
+  NEGATIVE_THEME_WINDOW_DAYS,
+  applyNegativePromotionEligibility,
+  formatNegativePolicyNote,
+  withinThemeWindow,
+} from "./lib/negative-promotion-eligibility.ts";
 
 type Rec = Record<string, unknown>;
 
@@ -184,9 +197,31 @@ async function main(): Promise<void> {
   const highlights = (Array.isArray(categorized.highlights) ? categorized.highlights : []) as DemotableHighlight[];
   const past = readRecentPublishedDestaques(editionsDir, window, current);
   const result = demoteSameFactHighlights(highlights, past);
+  // #10795: negativo inelegível (processo/acusação, entidade+tema nos últimos
+  // 14 dias) não chega ao top-3/D1 por promoção. Roda sobre a ordem já
+  // corrigida pelo #9100; uma edição por dia, então 14 edições cobrem 14 dias.
+  const themePast = withinThemeWindow(
+    readRecentPublishedDestaques(editionsDir, NEGATIVE_THEME_WINDOW_DAYS, current),
+    current,
+  );
+  const policy = applyNegativePromotionEligibility(result.highlights, themePast);
+  const finalHighlights = policy.highlights;
+  const finalRank = new Map(
+    finalHighlights.map((h) => [canonicalize(String(h.url ?? h.article?.url ?? "")), h.rank ?? 0]),
+  );
+  const inFinalTop = (url: string) => (finalRank.get(canonicalize(url)) ?? Infinity) <= 3;
+  // Repetido mantido pelo #9100 (cota #3916) que a política tirou do top-3 deixa de ser "kept".
+  const kept = result.kept
+    .filter((k) => inFinalTop(k.url))
+    .map((k) => ({ ...k, rank: finalRank.get(canonicalize(k.url)) ?? k.rank }));
+  const keptOut = result.kept.filter((k) => !inFinalTop(k.url));
 
   const notes = result.demoted.map(formatDemotionNote);
-  for (const k of result.kept) {
+  notes.push(...policy.actions.map(formatNegativePolicyNote));
+  if (policy.no_eligible_negative) {
+    notes.push("⚠️ #10795/#3916 — top-3 sem negativo elegível depois das exclusões; o gate da Etapa 4 avisa (decisão do editor).");
+  }
+  for (const k of kept) {
     notes.push(
       `🚨 MESMO FATO — "${k.title}" (D${k.rank}) repete o D${k.match.matched_destaque} de ${k.match.matched_edition} "${k.match.matched_title}"; ${k.reason}.`,
     );
@@ -198,24 +233,37 @@ async function main(): Promise<void> {
 
   const outLog = args["out-log"];
   if (!dryRun) {
-    if (result.demoted.length > 0) {
+    if (result.demoted.length > 0 || policy.actions.length > 0) {
+      // Pool marcado = não descartável em --no-gates (#9386): rebaixado pelo
+      // #9100, e repetido mantido por ele que a política #10795 tirou do top-3.
+      const toMark = [...result.demoted, ...keptOut];
       const marks = new Map<string, unknown>(
-        result.demoted.map((d) => [
+        toMark.map((d) => [
           canonicalize(d.url),
           { matched_edition: d.match.matched_edition, matched_destaque: d.match.matched_destaque, matched_title: d.match.matched_title, evidence: d.match.evidence },
         ]),
       );
-      const updated = markPoolArticles({ ...categorized, highlights: result.highlights }, marks);
+      const updated = markPoolArticles({ ...categorized, highlights: finalHighlights }, marks);
       writeFileSync(categorizedPath, JSON.stringify(updated, null, 2) + "\n", "utf8");
     }
     // Resume: rodada sem nada novo não apaga o registro de uma rodada anterior
     // (o JSON já reordenado não reproduz o rebaixamento).
-    if (outLog && (result.demoted.length > 0 || result.kept.length > 0 || !existsSync(outLog))) {
-      writeFileSync(outLog, JSON.stringify({ demoted: result.demoted, kept: result.kept }, null, 2) + "\n", "utf8");
+    if (outLog && (result.demoted.length > 0 || kept.length > 0 || policy.actions.length > 0 || !existsSync(outLog))) {
+      writeFileSync(
+        outLog,
+        JSON.stringify({ demoted: result.demoted, kept, negative_promotion: policy.actions }, null, 2) + "\n",
+        "utf8",
+      );
     }
   }
   process.stdout.write(
-    JSON.stringify({ demoted: result.demoted.length, kept: result.kept.length, notes, details: dryRun ? result : undefined }) + "\n",
+    JSON.stringify({
+      demoted: result.demoted.length,
+      kept: kept.length,
+      negative_promotion: policy.actions.length,
+      notes,
+      details: dryRun ? { ...result, highlights: finalHighlights, kept, negative_promotion: policy.actions } : undefined,
+    }) + "\n",
   );
 }
 
