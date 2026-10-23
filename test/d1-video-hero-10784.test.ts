@@ -305,6 +305,10 @@ describe("#10784 — cópia do hero com play", () => {
         ensureD1PlayImage: async () => ({ status: "failed", path: null, reason: "boom" }),
       });
       assert.ok(failed.warnings.some((w) => w.includes("#10784") && w.includes("boom")), JSON.stringify(failed.warnings));
+      // #10995: o aviso diz que o link SOME (d1VideoHeroFields devolve {}), não
+      // que o hero sai "sem o ícone" com o link mantido.
+      assert.ok(failed.warnings.some((w) => w.includes("boom") && w.includes("SEM link")), JSON.stringify(failed.warnings));
+      assert.ok(!failed.warnings.some((w) => w.includes("sem o ícone")), JSON.stringify(failed.warnings));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

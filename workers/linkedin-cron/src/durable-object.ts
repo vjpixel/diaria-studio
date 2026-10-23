@@ -59,6 +59,9 @@ export interface DoStoredPayload {
  * Protocol interno (fetch ao DO):
  *   POST /arm     body: DoStoredPayload + { scheduledAtMs: number }
  *                 → persiste payload, agenda alarm, retorna { armed: true }
+ *                 → 409 { armed: false, fired: true } se o DO já disparou (#10992)
+ *   GET  /idem    → { queue_key: string | null } — só no DO-índice `idem:{uuid}` (#10992)
+ *   POST /idem    body: { queue_key } → grava a queue key atual da chave idempotente
  *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
  *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null } (consultado por fireDueItems)
  *   POST /claim   → check-and-set atômico de `claiming` dentro de
@@ -109,6 +112,16 @@ export class LinkedInScheduler {
 
     if (url.pathname === "/arm" && request.method === "POST") {
       const body = await request.json() as DoStoredPayload & { scheduledAtMs: number };
+      // #10992 item 1: DO que já disparou não re-arma. O alarm novo sairia,
+      // mas `tryClaim()` devolve false com `fired=true` e nada é publicado —
+      // responder 200 aqui fazia o enqueue devolver 202 `alarm_armed: true`
+      // para um post que nunca sai. 409 deixa o caller dizer isso ao cliente.
+      if ((await this.state.storage.get<boolean>("fired")) === true) {
+        return new Response(JSON.stringify({ armed: false, fired: true }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       // Persiste tudo que alarm() precisará — inclusive entry completa + webhook URLs
       const { scheduledAtMs, ...payload } = body;
       await this.state.storage.put("payload", payload satisfies DoStoredPayload);
@@ -219,6 +232,30 @@ export class LinkedInScheduler {
     if (url.pathname === "/release-claim" && request.method === "POST") {
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // GET/POST /idem — #10992 item 2: DO-ÍNDICE da chave idempotente
+    // (`idFromName("idem:{uuid}")`, instância própria, sem alarm). Guarda a
+    // queue key atual daquela chave, que muda quando o mesmo pedido volta com
+    // outro `scheduled_at` (a key da fila leva o horário). Strongly consistent,
+    // ao contrário de um índice no KV.
+    if (url.pathname === "/idem" && request.method === "GET") {
+      const queueKey = (await this.state.storage.get<string>("idem_queue_key")) ?? null;
+      return new Response(JSON.stringify({ queue_key: queueKey }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.pathname === "/idem" && request.method === "POST") {
+      const body = (await request.json()) as { queue_key?: unknown };
+      if (typeof body.queue_key !== "string" || body.queue_key === "") {
+        return new Response(JSON.stringify({ error: "queue_key required" }), { status: 400 });
+      }
+      await this.state.storage.put("idem_queue_key", body.queue_key);
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },

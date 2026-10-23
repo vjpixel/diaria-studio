@@ -322,6 +322,79 @@ export async function idempotentQueueUuid(idempotencyKey: string): Promise<strin
 }
 
 /**
+ * #10992 item 2 — nome do DO-índice de uma chave idempotente. A queue key leva
+ * o horário (`queue:{iso}:{uuid}`), então o mesmo pedido com outro
+ * `scheduled_at` cai em OUTRA key e outro DO; o índice (por uuid, sem horário)
+ * guarda qual key é a atual pra o enqueue achar e substituir a anterior.
+ */
+export function idempotencyIndexName(uuid: string): string {
+  return `idem:${uuid}`;
+}
+
+/** #10992 — estado do DO de uma queue key; `null` = DO inalcançável/ilegível. */
+export interface DoFireState {
+  fired: boolean;
+  /** `claiming` ainda dentro do `CLAIM_TTL_MS` = disparo em andamento. */
+  inFlight: boolean;
+}
+
+function doStub(env: Env, name: string): DurableObjectStub {
+  return env.LINKEDIN_SCHEDULER.get(env.LINKEDIN_SCHEDULER.idFromName(name));
+}
+
+async function readDoFireState(env: Env, queueKey: string): Promise<DoFireState | null> {
+  try {
+    const res = await doStub(env, queueKey).fetch("https://do/status", { method: "GET" });
+    if (!res.ok) return null;
+    const s = (await res.json()) as { fired?: unknown; claiming?: unknown; claimed_at?: unknown };
+    const claimedAt = typeof s.claimed_at === "number" ? s.claimed_at : null;
+    const inFlight = s.claiming === true && (claimedAt === null || Date.now() - claimedAt <= CLAIM_TTL_MS);
+    return { fired: s.fired === true, inFlight };
+  } catch {
+    return null;
+  }
+}
+
+async function readIdempotencyIndex(env: Env, indexName: string): Promise<string | null> {
+  try {
+    const res = await doStub(env, indexName).fetch("https://do/idem", { method: "GET" });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { queue_key?: unknown };
+    return typeof body.queue_key === "string" && body.queue_key.startsWith("queue:") ? body.queue_key : null;
+  } catch (e) {
+    console.warn(`[enqueue] índice idempotente ${indexName} ilegível: ${(e as Error).message} (#10992)`);
+    return null;
+  }
+}
+
+async function writeIdempotencyIndex(env: Env, indexName: string, queueKey: string): Promise<void> {
+  try {
+    const res = await doStub(env, indexName).fetch("https://do/idem", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queue_key: queueKey }),
+    });
+    if (!res.ok) console.warn(`[enqueue] índice idempotente ${indexName} não gravado: HTTP ${res.status} (#10992)`);
+  } catch (e) {
+    console.warn(`[enqueue] índice idempotente ${indexName} não gravado: ${(e as Error).message} (#10992)`);
+  }
+}
+
+/**
+ * #10992 item 1 — resposta de conflito do enqueue idempotente: o pedido não
+ * agenda nada (o DO daquela key já disparou, ou está disparando). Antes, o
+ * Worker respondia 202 `alarm_armed: true` e o cliente registrava "agendado"
+ * para algo que nunca saía.
+ */
+function idempotentConflict(error: "already_fired" | "fire_in_progress", key: string): Response {
+  const message =
+    error === "already_fired"
+      ? "este pedido (idempotency_key) já foi disparado — nada novo foi agendado. Confira a conta antes de publicar de novo."
+      : "este pedido (idempotency_key) está sendo disparado agora — nada foi alterado. Tente de novo em alguns minutos.";
+  return json({ error, message, key }, 409);
+}
+
+/**
  * #10917 — campos que definem O QUE é publicado. Ficam de fora os de estado
  * (`created_at`, `retry_count`, `cancelled`, `last_error`...), que mudam sem
  * que o pedido mude.
@@ -712,7 +785,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
   let replaced = false;
-  if (body.idempotency_key !== undefined) {
+  let previousKey: string | null = null;
+  const indexName = body.idempotency_key !== undefined ? idempotencyIndexName(uuid) : null;
+  if (body.idempotency_key !== undefined && indexName !== null) {
     // Entry já na fila com essa chave e o MESMO conteúdo = repetição do mesmo
     // enqueue (retry depois de resposta perdida). Devolve a key existente sem
     // regravar nem re-armar (a 1ª requisição já armou o DO; se não armou, o
@@ -727,18 +802,68 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     //    ter o conteúdo novo, na MESMA key e no MESMO DO (`/arm` sobrescreve o
     //    payload), então continua saindo um post só. Antes, o conteúdo novo
     //    era descartado em silêncio.
+    //
+    // #10992 item 1 — o DO desta key guarda `fired=true` depois do disparo
+    // (e o cron apaga a entry do KV). Regravar e re-armar ali respondia 202
+    // `alarm_armed: true`, mas `tryClaim()` recusava e nada saía. Com o DO já
+    // disparado (ou disparando), a única resposta honesta é 409 — exceto a
+    // duplicata exata com a entry ainda no KV, que é o retry do cliente de um
+    // pedido que de fato saiu (200 `duplicate`, agora com `fired: true`).
+    const here = await readDoFireState(env, key);
     const existingRaw = await env.LINKEDIN_QUEUE.get(key);
     if (existingRaw !== null) {
       const verdict = classifyIdempotentExisting(existingRaw, entry);
       if (verdict === "duplicate") {
         console.log(`[enqueue] idempotency_key=${body.idempotency_key} já enfileirada em ${key} — duplicata ignorada (#10906)`);
         return json(
-          { queued: true, duplicate: true, key, scheduled_at: body.scheduled_at as string, destaque: body.destaque as string },
+          {
+            queued: true,
+            duplicate: true,
+            key,
+            scheduled_at: body.scheduled_at as string,
+            destaque: body.destaque as string,
+            ...(here?.fired && { fired: true }),
+          },
           200,
         );
       }
       replaced = true;
       console.log(`[enqueue] idempotency_key=${body.idempotency_key} em ${key}: ${verdict === "cancelled" ? "entry cancelada (tombstone)" : "conteúdo mudou"} — regravando e re-armando (#10917)`);
+    }
+    if (here?.fired) return idempotentConflict("already_fired", key);
+    if (here?.inFlight) return idempotentConflict("fire_in_progress", key);
+
+    // #10992 item 2 — mesmo pedido, OUTRO horário: a key nova não tem entry,
+    // mas o índice aponta a anterior. Sem isto saíam 2 Reels (um por key/DO).
+    // A anterior é cancelada e removida antes de gravar a nova; se ela já
+    // disparou ou está disparando, 409 (o Reels já saiu, ou está saindo).
+    const indexedKey = await readIdempotencyIndex(env, indexName);
+    if (indexedKey !== null && indexedKey !== key) {
+      const prev = await readDoFireState(env, indexedKey);
+      if (prev?.fired) return idempotentConflict("already_fired", indexedKey);
+      if (prev?.inFlight) return idempotentConflict("fire_in_progress", indexedKey);
+      let cancelOk = false;
+      try {
+        const cancelRes = await doStub(env, indexedKey).fetch("https://do/cancel", { method: "POST" });
+        cancelOk = cancelRes.ok;
+      } catch (e) {
+        console.warn(`[enqueue] cancel do DO ${indexedKey} falhou: ${(e as Error).message} (#10992)`);
+      }
+      if (!cancelOk) {
+        // Sem cancelar o alarm antigo, gravar a key nova publicaria 2 vezes.
+        return json(
+          {
+            error: "reschedule_cancel_failed",
+            message: "não deu pra cancelar o agendamento anterior deste pedido — nada foi alterado; tente de novo.",
+            key: indexedKey,
+          },
+          503,
+        );
+      }
+      await env.LINKEDIN_QUEUE.delete(indexedKey);
+      previousKey = indexedKey;
+      replaced = true;
+      console.log(`[enqueue] idempotency_key=${body.idempotency_key}: horário mudou, ${indexedKey} cancelada e substituída por ${key} (#10992)`);
     }
   }
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
@@ -800,6 +925,13 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       body: JSON.stringify(armPayload),
     });
     alarmArmed = armRes.ok;
+    if (armRes.status === 409) {
+      // #10992 item 1 — 2ª linha (atômica, dentro do DO): ele já disparou entre
+      // o /status lá em cima e este /arm. A entry gravada não sai (o cron vê
+      // `fired` e só a apaga); dizer isso ao cliente em vez de 202.
+      console.warn(`[enqueue] DO de ${key} já disparou — /arm recusado, nada agendado (#10992)`);
+      return idempotentConflict("already_fired", key);
+    }
     if (!armRes.ok) {
       console.warn(`[enqueue] DO arm failed for key=${key} status=${armRes.status} — cron fallback active`);
     }
@@ -807,6 +939,10 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     // DO indisponível / binding ausente — não bloquear o enqueue
     console.warn(`[enqueue] DO arm exception for key=${key}: ${(e as Error).message} — cron fallback active`);
   }
+
+  // #10992 item 2 — o índice passa a apontar a key atual (fail-soft: sem ele,
+  // só a troca de horário deixa de ser detectada; o resto segue igual).
+  if (indexName !== null) await writeIdempotencyIndex(env, indexName, key);
 
   return json(
     {
@@ -816,6 +952,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       destaque: entry.destaque,
       alarm_armed: alarmArmed,
       ...(replaced && { replaced: true }),
+      ...(previousKey !== null && { previous_key: previousKey }),
     },
     202,
   );

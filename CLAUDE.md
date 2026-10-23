@@ -222,7 +222,7 @@ data/past-editions.md    # gerado (#1847: movido de context/ — regenera todo S
 data/editions/{AAMMDD}/  # outputs por edição (gate-facing no root, pipeline internals em _internal/)
 data/snippets/            # boxes de divulgação/CTA reutilizáveis (#5227, migrado de context/snippets/) — conteúdo editorial, painel Caixas do Studio lê/escreve aqui; spec do formato continua em context/snippets/README.md (git-tracked)
 data/reports/index.jsonl # registry file-based da superfície de Relatórios do Studio (#3714) — aponta pros relatórios já persistidos (edition-report.html, data/overnight|develop/{AAMMDD}/report.md), não os duplica
-platform.config.json     # 30 chaves de topo — newsletter/socials + canais reais (kit, kit_diaria, brevo_diaria, brevo_apoiadores, brevo_monthly, ...), não só o par newsletter/socials
+platform.config.json     # 45 chaves de topo em 23/10/2026 (cresce a cada canal; contar com `node -e` antes de citar) — newsletter/socials + canais reais (kit, kit_diaria, brevo_diaria, brevo_apoiadores, brevo_monthly, ...), não só o par newsletter/socials
 ```
 
 ---

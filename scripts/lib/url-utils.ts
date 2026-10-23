@@ -25,7 +25,36 @@ const TRACKING_PARAM_PREFIXES = ["utm_", "mc_"];
 const TRACKING_PARAMS_EXACT = new Set(["ref", "ref_src", "_bhlid", "fbclid", "gclid"]);
 
 /**
+ * #10973: changelogs que entregam cada entrada como ÂNCORA da mesma página
+ * (`.../changelog#entrada`). Nesses, o fragmento É a identidade do item:
+ * removê-lo funde entradas distintas numa URL só e o dedup barra a 2ª como
+ * "link repetido" por ~30 dias. Lista explícita (domínio + prefixo de path),
+ * nunca regra genérica: em qualquer outra página o fragmento é só rolagem
+ * (`#section`) e precisa continuar sendo removido. O domínio casa o hostname
+ * exato ou qualquer subdomínio (`docs.lovable.dev` casa `lovable.dev`).
+ */
+export const ANCHOR_CHANGELOG_SOURCES: ReadonlyArray<{ domain: string; pathPrefix: string }> = [
+  { domain: "lovable.dev", pathPrefix: "/changelog" },
+];
+
+/**
+ * True quando o fragmento da URL identifica um item (changelog por âncora,
+ * `ANCHOR_CHANGELOG_SOURCES`) e deve sobreviver à normalização. Recebe o
+ * hostname já minúsculo e o pathname sem barra final.
+ */
+export function isAnchorChangelogUrl(hostname: string, pathname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^www\./, "");
+  return ANCHOR_CHANGELOG_SOURCES.some(
+    ({ domain, pathPrefix }) =>
+      (host === domain || host.endsWith(`.${domain}`)) &&
+      (pathname === pathPrefix || pathname.startsWith(`${pathPrefix}/`)),
+  );
+}
+
+/**
  * Remove tracking params, hash e normaliza pathname (trailing slash).
+ * Exceção (#10973): o hash é preservado em changelogs por âncora
+ * (`ANCHOR_CHANGELOG_SOURCES`) — lá ele identifica a entrada.
  * Tambem lowercasa scheme e hostname (case-insensitive por spec RFC 3986),
  * e normaliza URLs do arxiv de /pdf/ para /abs/.
  *
@@ -46,8 +75,6 @@ export function canonicalize(url: string): string {
         u.searchParams.delete(key);
       }
     }
-    // remove fragment
-    u.hash = "";
     // #2581: colapsar double-slash no pathname (ex: /writing//x/ → /writing/x/).
     // Só no pathname — NÃO no scheme (https://) que é normalizado separadamente.
     // Causa: URLs com // no path publicadas em past-editions.md vs re-descobertas
@@ -63,6 +90,12 @@ export function canonicalize(url: string): string {
     // normaliza arxiv: /pdf/ID.pdf para /abs/ID
     if (u.hostname === "arxiv.org" && u.pathname.startsWith("/pdf/")) {
       u.pathname = u.pathname.replace(/^\/pdf\//, "/abs/").replace(/\.pdf$/, "");
+    }
+    // remove fragment — exceto em changelog por âncora (#10973), decidido
+    // depois da normalização do pathname pra `/changelog/` casar igual a
+    // `/changelog`.
+    if (!isAnchorChangelogUrl(u.hostname, u.pathname)) {
+      u.hash = "";
     }
     return u.toString();
   } catch {
