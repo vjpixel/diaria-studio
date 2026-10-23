@@ -64,14 +64,14 @@ Motivo.
 `;
 
 describe("metadados do vídeo (#10659 item 2)", () => {
-  it("título segue `{D1} | diar.ia.br comentada #{N}` (decisão do editor no #1)", () => {
-    assert.equal(buildYouTubeTitle(D1.title, 1), `${D1.title} | diar.ia.br comentada #1`);
+  it("título é só o título do D1, sem sufixo (decisão do editor, 22/10/2026)", () => {
+    assert.equal(buildYouTubeTitle(D1.title), D1.title);
+    assert.ok(!/diar\.ia\.br comentada|\|/.test(buildYouTubeTitle(D1.title)));
   });
 
-  it("título longo trunca só a parte do D1 e fica ≤ 100 chars", () => {
-    const t = buildYouTubeTitle("x".repeat(200), 12);
+  it("título longo trunca com reticências e fica ≤ 100 chars", () => {
+    const t = buildYouTubeTitle("x".repeat(200));
     assert.ok(Array.from(t).length <= YOUTUBE_TITLE_MAX_CHARS, `len=${t.length}`);
-    assert.ok(t.endsWith(" | diar.ia.br comentada #12"));
     assert.ok(t.includes("…"));
   });
 
@@ -270,7 +270,7 @@ describe("planYouTubePublish (dry-run)", () => {
   it("deriva tudo do D1 de 02-reviewed.md e registra premissas de episódio e link", () => {
     const plan = planYouTubePublish(base);
     assert.equal(plan.episode, 2);
-    assert.equal(plan.metadata.title, `${D1.title} | diar.ia.br comentada #2`);
+    assert.equal(plan.metadata.title, D1.title);
     assert.doesNotMatch(plan.request.body.snippet.description, /^Fonte:/m);
     assert.ok(!plan.request.body.snippet.description.includes(D1.url));
     assert.equal(plan.schedule.mode, "scheduled");
