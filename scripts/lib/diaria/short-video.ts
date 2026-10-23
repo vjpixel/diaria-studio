@@ -45,8 +45,10 @@ import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } fr
 import {
   DEFAULT_MIN_GAP_MINUTES,
   brtDayWindow,
+  instagramCollabAccounts,
   planSlot,
   planSlots,
+  slotAccounts,
   socialAccountKey,
   type ScheduledSlot,
   type SlotRule,
@@ -512,6 +514,8 @@ export interface ShortSlot {
   destination: string;
   /** Chave de conta da grade (`socialAccountKey`). */
   account: string;
+  /** Contas em collab (Instagram): o slot também ocupa a grade delas (decisão do editor 261023). */
+  alsoAccounts?: string[];
   /** ISO UTC. */
   at: string;
   /** HH:MM BRT. */
@@ -531,6 +535,20 @@ export function shortDestinationAccount(dest: ShortDestination, cfg: Pick<Shorts
   if (dest.kind === "x") return socialAccountKey("twitter", "diaria");
   // O repost tem regra própria (`planLinkedInRepostSlot`); os outros guiados seguem `shortTime`.
   return null;
+}
+
+/**
+ * Contas em collab de um destino de API do vertical (#10819, decisão do editor
+ * 261023): o Reels do Instagram sai na autora com `instagram_collaborators` em
+ * collab e aparece no feed deles, então conta como post de cada um. Os outros
+ * destinos não têm collab.
+ */
+export function shortDestinationAlsoAccounts(
+  dest: ShortDestination,
+  cfg: Pick<ShortsConfig, "instagramAuthorPage"> & Partial<Pick<ShortsConfig, "instagramCollaborators">>,
+): string[] {
+  if (dest.kind !== "instagram") return [];
+  return instagramCollabAccounts(cfg.instagramCollaborators, socialAccountKey("instagram", cfg.instagramAuthorPage ?? "diaria"));
 }
 
 /** Conta da grade do perfil pessoal do LinkedIn (o 4º post do `publish-linkedin-personal.ts` e o vertical). */
@@ -598,7 +616,10 @@ const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISO
  *     passou cai em "publica na hora" no `resolveReelsSchedule`, como antes).
  *     Cada destino planejado entra na grade antes do seguinte;
  *   - destinos guiados (YouTube Shorts, perfil pessoal) seguem `shortTime`: o
- *     skill lê um horário só pra eles.
+ *     skill lê um horário só pra eles;
+ *   - o Instagram conta também como post dos collabs (`cfg.instagramCollaborators`,
+ *     decisão do editor 261023): o aviso do teste e o espaçamento do planner
+ *     olham os posts da autora E os da @diar.ia.br em collab.
  */
 export function planShortSlots(input: {
   aammdd: string;
@@ -606,22 +627,25 @@ export function planShortSlots(input: {
   /** ISO do `time.hhmm` no dia da edição. */
   timeAt: string;
   destinations: readonly ShortDestination[];
-  cfg: Pick<ShortsConfig, "instagramAuthorPage">;
+  cfg: Pick<ShortsConfig, "instagramAuthorPage"> & Partial<Pick<ShortsConfig, "instagramCollaborators">>;
   grid: readonly ScheduledSlot[];
 }): ShortSlot[] {
   const api = input.destinations
-    .map((d) => ({ dest: d, account: shortDestinationAccount(d, input.cfg) }))
-    .filter((x): x is { dest: ShortDestination; account: string } => x.account !== null);
+    .map((d) => ({ dest: d, account: shortDestinationAccount(d, input.cfg), also: shortDestinationAlsoAccounts(d, input.cfg) }))
+    .filter((x): x is { dest: ShortDestination; account: string; also: string[] } => x.account !== null);
+  const withAlso = (also: string[]) => (also.length ? { alsoAccounts: also } : {});
 
   if (input.time.source === "rotation") {
     const t = Date.parse(input.timeAt);
-    return api.map(({ dest, account }) => {
+    return api.map(({ dest, account, also }) => {
+      const mine = new Set([account, ...also]);
       const close = input.grid
-        .filter((s) => s.account === account && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
+        .filter((s) => slotAccounts(s).some((a) => mine.has(a)) && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
         .map((s) => brtHHMM(s.at));
       const slot: ShortSlot = {
         destination: dest.id,
         account,
+        ...withAlso(also),
         at: new Date(t).toISOString(),
         hhmm: input.time.hhmm,
         rule: "test-schedule",
@@ -629,7 +653,7 @@ export function planShortSlots(input: {
       };
       if (close.length) {
         slot.warning =
-          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta ` +
+          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
           `(${[...new Set(close)].join(", ")} BRT) — mantido por causa do teste; mova à mão se não quiser colado`;
       }
       return slot;
@@ -639,14 +663,15 @@ export function planShortSlots(input: {
   const window = brtDayWindow(input.aammdd);
   const decisions = planSlots(
     input.grid,
-    api.map(({ account }) => ({ account, window, preferredAt: input.timeAt })),
+    api.map(({ account, also }) => ({ account, ...withAlso(also), window, preferredAt: input.timeAt })),
   );
-  return api.map(({ dest, account }, i) => {
+  return api.map(({ dest, account, also }, i) => {
     const d = decisions[i];
     if (!d.at) {
       return {
         destination: dest.id,
         account,
+        ...withAlso(also),
         at: new Date(Date.parse(input.timeAt)).toISOString(),
         hhmm: input.time.hhmm,
         rule: d.rule,
@@ -657,6 +682,7 @@ export function planShortSlots(input: {
     return {
       destination: dest.id,
       account,
+      ...withAlso(also),
       at: d.at,
       hhmm: brtHHMM(d.at),
       rule: d.rule,
