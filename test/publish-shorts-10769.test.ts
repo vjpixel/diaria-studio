@@ -7,6 +7,7 @@
  */
 
 import { describe, it } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -31,6 +32,14 @@ import {
 import { parseMarkArg, planShortsPublish, publishFacebookReel, publishInstagramReel, resolveInstagramAuthor, type GraphDeps } from "../scripts/publish-shorts.ts";
 import { matchPages } from "../scripts/facebook-page-token-setup.ts";
 import { loadFacebookPagesConfig, type ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+
+// #10998: janela do cenário, independente do default e da config de produção.
+const SCHEDULE = {
+  rotation_times: ["12:00", "19:00"],
+  rotation_start: "2026-10-22",
+  rotation_end: "2026-11-04",
+  default_time: "12:00",
+};
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -183,7 +192,7 @@ describe("#10769 plano do publish-shorts", () => {
   const base = {
     aammdd: "261022",
     reviewedMd: REVIEWED,
-    config: {},
+    config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE } } },
     pages: [page("diaria", [], null), page("vjpixel", ["FACEBOOK_VJPIXEL_PAGE_ACCESS_TOKEN"]), page("memelab")],
     instagramReady: true,
     published: { aammdd: "261022", entries: [] },
@@ -223,7 +232,7 @@ describe("#10769 plano do publish-shorts", () => {
 
   it("slug de shorts sem página configurada LANÇA (typo nunca vira 'publica em lugar nenhum')", () => {
     assert.throws(
-      () => planShortsPublish({ ...base, now: new Date(), config: { publishing: { shorts: { facebook_pages: ["diaria", "memlab"], instagram: true } } } }),
+      () => planShortsPublish({ ...base, now: new Date(), config: { publishing: { shorts: { schedule: SCHEDULE, facebook_pages: ["diaria", "memlab"], instagram: true } } } }),
       /memlab/,
     );
   });
