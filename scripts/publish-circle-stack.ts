@@ -36,7 +36,9 @@
  * (≤ hoje): o timer tem `Persistent=true`, e um catch-up numa terça precisa
  * cair no ciclo cuja semana de conteúdo já fechou. Com estado "unknown" o aviso
  * é outro ("estado ambíguo, conferir no Radar antes de --publish"); com
- * `circle_stack.enabled = false` o aviso é pulado (e isso é logado).
+ * `circle_stack.enabled = false` o aviso é pulado (e isso é logado). O mesmo
+ * `--notify` fecha os avisos de ciclos ANTERIORES ainda abertos (#10965):
+ * semana não publicada ("draft") ou já publicada fecha; estado ambíguo fica.
  *
  * `--hello` envia um post curto de teste ("Olá, mundo") — também publicado
  * na hora; combine com a Stack antes, eles acompanham o 1º envio.
@@ -59,10 +61,21 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { currentOrPreviousMondayAAMMDD, resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
+import {
+  currentOrPreviousMondayAAMMDD,
+  isValidWeeklyCycle,
+  resolveWeeklyLinkedinCycle,
+  weeklyLinkedinRelDir,
+} from "./lib/weekly-linkedin-cycle.ts";
 import { resolveCircleStackState, type CircleStackPublishedLike, type PublishState } from "./lib/publish-state.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
-import { defaultAlarmGhRun, findExistingAlarmIssue, type GhRunFn } from "./lib/alarm-issues.ts";
+import {
+  ALARM_LABEL,
+  defaultAlarmGhRun,
+  extractAlarmFingerprintForCheck,
+  findExistingAlarmIssue,
+  type GhRunFn,
+} from "./lib/alarm-issues.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
@@ -415,6 +428,107 @@ export function closeCircleStackNotifyIssues(
   return { closed, failed };
 }
 
+/** Ciclo (`26w42`) a que o fingerprint de um aviso se refere (prévia ou ambíguo). */
+export function circleStackCycleFromFingerprint(fingerprint: string): string | null {
+  const cycle = fingerprint.endsWith("-ambiguo") ? fingerprint.slice(0, -"-ambiguo".length) : fingerprint;
+  return isValidWeeklyCycle(cycle) ? cycle.toLowerCase() : null;
+}
+
+export interface StaleCircleStackNotifyPlan {
+  /** Avisos de ciclos anteriores a fechar, com o motivo. */
+  close: { issueNumber: number; cycle: string; kind: "unpublished" | "published" }[];
+  /** Avisos de ciclos anteriores mantidos abertos (estado ambíguo — exige conferência humana). */
+  keep: { issueNumber: number; cycle: string }[];
+}
+
+/**
+ * Pure (#10965): decide o destino dos avisos abertos de ciclos ANTERIORES ao
+ * `currentCycle`. Sem isso, a semana que o editor pula deixa a issue
+ * `bloqueio-execucao` do ciclo aberta para sempre (só o `--publish` do próprio
+ * ciclo a fechava). Por estado do ciclo antigo:
+ *   - "draft" (nada enviado) → fecha como "semana não publicada";
+ *   - "published" (o close pós-publish falhou) → fecha como publicado;
+ *   - "unknown" → MANTÉM: o post pode ter saído sem confirmação, e só o
+ *     editor confere no Radar (mesmo critério do `--publish`, #573).
+ * Avisos do ciclo atual ou de ciclo posterior (relógio torto, `--publish-monday`
+ * de uma semana antiga) nunca entram no plano.
+ */
+export function planStaleCircleStackNotifyCloses(
+  issues: readonly { number: number; body?: string | null }[],
+  currentCycle: string,
+  stateOfCycle: (cycle: string) => PublishState,
+): StaleCircleStackNotifyPlan {
+  const plan: StaleCircleStackNotifyPlan = { close: [], keep: [] };
+  const current = currentCycle.toLowerCase();
+  for (const issue of issues) {
+    const fp = extractAlarmFingerprintForCheck(issue.body ?? "", CIRCLE_STACK_NOTIFY_CHECK);
+    const cycle = fp === null ? null : circleStackCycleFromFingerprint(fp);
+    if (cycle === null || cycle >= current) continue;
+    const state = stateOfCycle(cycle);
+    if (state === "draft") plan.close.push({ issueNumber: issue.number, cycle, kind: "unpublished" });
+    else if (state === "published") plan.close.push({ issueNumber: issue.number, cycle, kind: "published" });
+    else plan.keep.push({ issueNumber: issue.number, cycle });
+  }
+  return plan;
+}
+
+/**
+ * Fecha os avisos de ciclos anteriores conforme `planStaleCircleStackNotifyCloses`
+ * (#10965). Roda no `--notify` da task semanal. Fail-soft: falha de listagem ou
+ * de fechamento só volta no resultado (a próxima segunda tenta de novo).
+ */
+export function closeStaleCircleStackNotifyIssues(
+  currentCycle: string,
+  stateOfCycle: (cycle: string) => PublishState,
+  cwd: string,
+  run: GhRunFn = defaultAlarmGhRun,
+): { closed: number[]; failed: number[]; kept: number[]; listed: boolean } {
+  const res = run(
+    ["issue", "list", "--label", ALARM_LABEL, "--state", "open", "--json", "number,body", "--limit", "200"],
+    cwd,
+  );
+  if (res.status !== 0) return { closed: [], failed: [], kept: [], listed: false };
+  let issues: { number: number; body?: string | null }[];
+  try {
+    const parsed: unknown = JSON.parse(res.stdout);
+    if (!Array.isArray(parsed)) return { closed: [], failed: [], kept: [], listed: false };
+    issues = parsed as { number: number; body?: string | null }[];
+  } catch {
+    return { closed: [], failed: [], kept: [], listed: false };
+  }
+  const plan = planStaleCircleStackNotifyCloses(issues, currentCycle, stateOfCycle);
+  const closed: number[] = [];
+  const failed: number[] = [];
+  for (const item of plan.close) {
+    const args =
+      item.kind === "unpublished"
+        ? [
+            "issue", "close", String(item.issueNumber),
+            "--comment", `Semana não publicada: o ciclo ${item.cycle} não foi enviado ao Radar de Notícias Stack e a prévia do ciclo ${currentCycle} já substituiu esta (fechada automaticamente, #10965).`,
+            "--reason", "not planned",
+          ]
+        : [
+            "issue", "close", String(item.issueNumber),
+            "--comment", `Ciclo ${item.cycle} consta como publicado no state local — fechada automaticamente pela task do ciclo ${currentCycle} (#10965).`,
+            "--reason", "completed",
+          ];
+    (run(args, cwd).status === 0 ? closed : failed).push(item.issueNumber);
+  }
+  return { closed, failed, kept: plan.keep.map((k) => k.issueNumber), listed: true };
+}
+
+/**
+ * Estado de publicação de um ciclo pelo state local. Diretório do ciclo
+ * ausente vira "unknown" (nunca "draft"): todo ciclo que gerou aviso criou o
+ * diretório, então a ausência indica `data/` não sincronizado nesta máquina —
+ * fechar como "não publicada" seria afirmar algo que não se sabe.
+ */
+export function circleStackCycleStateFromDisk(dataRoot: string, cycle: string): PublishState {
+  const cycleDir = join(dataRoot, weeklyLinkedinRelDir(cycle));
+  if (!existsSync(cycleDir)) return "unknown";
+  return resolveCircleStackState(readCircleStackPublishedState(join(cycleDir, "_internal", "circle-stack-published.json")), cycle);
+}
+
 function readTextArg(argv: string[], key: string): string | undefined {
   const p = getStringArg(argv, key, { example: "caminho/arquivo.txt" });
   return p ? readFileSync(resolve(p), "utf8") : undefined;
@@ -488,6 +602,13 @@ ${rendered.markdown}
     console.log("[dry-run] Passe --publish para enviar (o post sai PUBLICADO na hora).");
     // --notify (task semanal de segunda): avisa o editor conforme o estado do ciclo.
     if (hasFlag(argv, "notify")) {
+      // #10965: avisos de semanas anteriores não publicadas se auto-resolvem aqui
+      // (antes ficavam abertos para sempre). Fail-soft — nunca impede o aviso do ciclo atual.
+      const stale = closeStaleCircleStackNotifyIssues(cycle, (c) => circleStackCycleStateFromDisk(dataRoot, c), ROOT);
+      if (!stale.listed) console.warn("⚠ Não consegui listar os avisos de ciclos anteriores — limpeza adiada para a próxima execução.");
+      if (stale.closed.length > 0) console.log(`[dry-run] Aviso(s) de ciclos anteriores fechado(s): ${stale.closed.map((n) => `#${n}`).join(", ")}`);
+      if (stale.failed.length > 0) console.warn(`⚠ Não consegui fechar o(s) aviso(s) de ciclos anteriores ${stale.failed.map((n) => `#${n}`).join(", ")}.`);
+      if (stale.kept.length > 0) console.log(`[dry-run] Aviso(s) de ciclos anteriores mantido(s) — estado ambíguo, conferir no Radar: ${stale.kept.map((n) => `#${n}`).join(", ")}`);
       const decision = decideCircleStackNotify(publishState, cfg.enabled);
       if (decision === "skip-disabled") {
         console.log("[dry-run] Aviso ao editor pulado: circle_stack.enabled = false no config.");

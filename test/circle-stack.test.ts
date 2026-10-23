@@ -30,12 +30,16 @@ import {
   publishCircleStackCycle,
   parseStoredCircleStackSelection,
   closeCircleStackNotifyIssues,
+  closeStaleCircleStackNotifyIssues,
+  planStaleCircleStackNotifyCloses,
+  circleStackCycleFromFingerprint,
+  circleStackCycleStateFromDisk,
 } from "../scripts/publish-circle-stack.ts";
 import { resolveCircleStackState } from "../scripts/lib/publish-state.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 import { currentOrPreviousMondayAAMMDD } from "../scripts/lib/weekly-linkedin-cycle.ts";
 import { alarmFindingMarker } from "../scripts/lib/alarm-issues.ts";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -420,5 +424,78 @@ describe("closeCircleStackNotifyIssues (#10904)", () => {
         ? { status: 0, stderr: "", stdout: JSON.stringify([{ number: 11, url: "u", state: "OPEN", body: alarmFindingMarker("circle-stack-weekly", "26w42") }]) }
         : { status: 1, stdout: "", stderr: "boom" };
     assert.deepEqual(closeCircleStackNotifyIssues("26w42", "t", "/tmp", run), { closed: [], failed: ["#11"] });
+  });
+});
+
+describe("avisos de ciclos anteriores se auto-resolvem no --notify (#10965)", () => {
+  const issue = (number: number, fp: string, check = "circle-stack-weekly") => ({ number, body: `corpo ${alarmFindingMarker(check, fp)}` });
+
+  it("circleStackCycleFromFingerprint aceita prévia e ambíguo, recusa lixo", () => {
+    assert.equal(circleStackCycleFromFingerprint("26w42"), "26w42");
+    assert.equal(circleStackCycleFromFingerprint("26w42-ambiguo"), "26w42");
+    assert.equal(circleStackCycleFromFingerprint("abc"), null);
+    assert.equal(circleStackCycleFromFingerprint("26w99"), null);
+  });
+
+  it("plano: semana pulada (draft) fecha, publicada fecha, ambígua fica; ciclo atual/posterior e outro check ficam de fora", () => {
+    const states: Record<string, "draft" | "published" | "unknown"> = { "26w40": "draft", "26w41": "published", "26w39": "unknown" };
+    const plan = planStaleCircleStackNotifyCloses(
+      [
+        issue(1, "26w40"),
+        issue(2, "26w41"),
+        issue(3, "26w39-ambiguo"),
+        issue(4, "26w43"), // ciclo atual
+        issue(5, "26w44"), // posterior
+        issue(6, "26w40", "outro-alarme"),
+        { number: 7, body: null },
+      ],
+      "26w43",
+      (c) => states[c] ?? "draft",
+    );
+    assert.deepEqual(plan.close, [
+      { issueNumber: 1, cycle: "26w40", kind: "unpublished" },
+      { issueNumber: 2, cycle: "26w41", kind: "published" },
+    ]);
+    assert.deepEqual(plan.keep, [{ issueNumber: 3, cycle: "26w39" }]);
+  });
+
+  it("cenário da issue: semana pulada fica aberta → o --notify da semana seguinte fecha com \"semana não publicada\"", () => {
+    const calls: string[][] = [];
+    const run = (args: string[]) => {
+      calls.push(args);
+      if (args[1] === "list") return { status: 0, stderr: "", stdout: JSON.stringify([issue(20, "26w42"), issue(21, "26w43")]) };
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    const res = closeStaleCircleStackNotifyIssues("26w43", () => "draft", "/tmp", run);
+    assert.deepEqual(res, { closed: [20], failed: [], kept: [], listed: true });
+    const closes = calls.filter((c) => c[1] === "close");
+    assert.equal(closes.length, 1);
+    assert.equal(closes[0][2], "20");
+    assert.match(closes[0][closes[0].indexOf("--comment") + 1], /Semana não publicada/);
+    assert.equal(closes[0][closes[0].indexOf("--reason") + 1], "not planned");
+  });
+
+  it("fail-soft: listagem falha ou JSON ruim → nada fechado, listed=false; close falho → failed", () => {
+    assert.deepEqual(closeStaleCircleStackNotifyIssues("26w43", () => "draft", "/tmp", () => ({ status: 1, stdout: "", stderr: "x" })), {
+      closed: [], failed: [], kept: [], listed: false,
+    });
+    assert.deepEqual(closeStaleCircleStackNotifyIssues("26w43", () => "draft", "/tmp", () => ({ status: 0, stdout: "{}", stderr: "" })), {
+      closed: [], failed: [], kept: [], listed: false,
+    });
+    const run = (args: string[]) =>
+      args[1] === "list" ? { status: 0, stderr: "", stdout: JSON.stringify([issue(30, "26w41")]) } : { status: 1, stdout: "", stderr: "boom" };
+    assert.deepEqual(closeStaleCircleStackNotifyIssues("26w43", () => "draft", "/tmp", run), { closed: [], failed: [30], kept: [], listed: true });
+  });
+
+  it("estado do ciclo pelo disco: diretório ausente é unknown (data/ não sincronizado), nunca draft", () => {
+    const root = mkdtempSync(join(tmpdir(), "circle-stale-"));
+    assert.equal(circleStackCycleStateFromDisk(root, "26w40"), "unknown");
+    mkdirSync(join(root, "data", "weekly", "26w40", "_internal"), { recursive: true });
+    assert.equal(circleStackCycleStateFromDisk(root, "26w40"), "draft");
+    writeFileSync(
+      join(root, "data", "weekly", "26w40", "_internal", "circle-stack-published.json"),
+      JSON.stringify({ cycle: "26w40", title: "t", attempted_at: "2026-10-05T10:00:00Z", published_at: "2026-10-05T10:00:01Z" }),
+    );
+    assert.equal(circleStackCycleStateFromDisk(root, "26w40"), "published");
   });
 });
