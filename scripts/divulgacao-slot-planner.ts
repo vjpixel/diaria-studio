@@ -5,6 +5,8 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadProjectEnv } from "./lib/env-loader.ts";
+loadProjectEnv();
 import { editionDir } from "./lib/edition-paths.ts";
 import { loadWorkerQueueForGrid } from "./publish-shorts.ts";
 import { gridFromSocialPublished, gridFromShortsPublished, gridFromLinkedInPersonalIntent, gridFromWorkerQueue, mergeGrids, planSlots, type ScheduledSlot } from "./lib/social-slot-planner.ts";
