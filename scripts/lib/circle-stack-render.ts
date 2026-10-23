@@ -6,8 +6,8 @@
  * alunos (`circle-stack-select.ts`, gravada em
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
- * Estrutura: abertura · Destaques da semana (título, corpo, "Por que isso
- * importa:", links) · Lançamentos e ferramentas · Use melhor · Radar ·
+ * Estrutura: abertura · Destaques da semana (título com link da fonte, corpo,
+ * "Por que isso importa:") · Lançamentos · Use melhor · Radar ·
  * Edições da semana · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
  *
@@ -101,10 +101,10 @@ export function ddmm(aammdd: string): string {
   return `${aammdd.slice(4, 6)}/${aammdd.slice(2, 4)}`;
 }
 
-/** Pure: título do post — "Radar de Notícias Stack — semana de DD/MM a DD/MM". */
+/** Pure: título do post — "Radar de Notícias Stack — DD/MM a DD/MM" (sem "semana", pedido do editor 23/10/2026). */
 export function circleStackTitle(contentWindow: string[]): string {
   if (contentWindow.length === 0) throw new Error("contentWindow vazio");
-  return `Radar de Notícias Stack — semana de ${ddmm(contentWindow[0])} a ${ddmm(contentWindow[contentWindow.length - 1])}`;
+  return `Radar de Notícias Stack — ${ddmm(contentWindow[0])} a ${ddmm(contentWindow[contentWindow.length - 1])}`;
 }
 
 /** Pure: rótulo de link sem colchetes (quebrariam a sintaxe `[rótulo](url)`). */
@@ -142,36 +142,30 @@ function listSection(heading: string, items: CircleStackItem[]): string[] {
 export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleStackRenderOptions = {}): CircleStackRendered {
   if (sel.destaques.length === 0) throw new Error(`Seleção ${sel.cycle} sem destaques — nada a publicar`);
 
-  const editionUrlByDate = new Map(sel.weeklyEditions.map((e) => [e.editionDate, e.url]));
   const blocks: string[] = [];
 
   blocks.push(...paragraphs(opts.opening?.trim() || DEFAULT_CIRCLE_STACK_OPENING));
 
   blocks.push(`## Destaques da semana`);
   for (const h of sel.destaques) {
-    blocks.push(`### ${h.title.replace(/\s+/g, " ").trim()}`);
+    // Título com link para a fonte, como na newsletter; sem "Leia na fonte"/"Na edição de" (pedido do editor, 23/10/2026).
+    blocks.push(`### ${link(h.url, h.title)}`);
     blocks.push(...paragraphs(h.body));
     const why = h.stackNote?.trim() || h.why.trim();
     if (why) blocks.push(`**Por que isso importa:**`, ...paragraphs(why));
-    const editionUrl = editionUrlByDate.get(h.editionDate);
-    const links = [link(h.url, "Leia na fonte")];
-    if (editionUrl) {
-      links.push(link(buildCircleStackUrl(editionUrl, sel.cycle, "edicao"), `Na edição de ${ddmm(h.editionDate)}`));
-    }
-    blocks.push(links.join(" | "));
   }
 
-  blocks.push(...listSection("Lançamentos e ferramentas", sel.lancamentos));
+  blocks.push(...listSection("Lançamentos", sel.lancamentos));
   blocks.push(...listSection("Use melhor", sel.useMelhor));
   blocks.push(...listSection("Radar", sel.radar));
 
   if (sel.weeklyEditions.length > 0) {
     blocks.push(`## Edições da semana`);
-    blocks.push(
-      sel.weeklyEditions
-        .map((e) => `- ${link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate))}: ${e.destaques.join(" · ")}`)
-        .join("\n"),
-    );
+    // Um título por linha: a data (link da edição) em parágrafo próprio, os destaques em lista abaixo.
+    for (const e of sel.weeklyEditions) {
+      blocks.push(`**${link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate))}**`);
+      if (e.destaques.length > 0) blocks.push(e.destaques.map((t) => `- ${t.replace(/\s+/g, " ").trim()}`).join("\n"));
+    }
   }
 
   // Última linha do post: link de assinatura + ÚLTIMO parágrafo do fecho (pedido do editor, 23/10/2026).

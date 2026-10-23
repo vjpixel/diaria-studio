@@ -116,8 +116,8 @@ describe("renderCircleStackPost", () => {
   const { title, markdown: md } = renderCircleStackPost(selection);
 
   it("título cobre segunda a sexta da semana de conteúdo", () => {
-    assert.equal(title, "Radar de Notícias Stack — semana de 12/10 a 16/10");
-    assert.equal(circleStackTitle(["261012"]), "Radar de Notícias Stack — semana de 12/10 a 12/10");
+    assert.equal(title, "Radar de Notícias Stack — 12/10 a 16/10");
+    assert.equal(circleStackTitle(["261012"]), "Radar de Notícias Stack — 12/10 a 12/10");
   });
 
   it("sai em Markdown, sem nenhuma tag HTML", () => {
@@ -126,7 +126,7 @@ describe("renderCircleStackPost", () => {
   });
 
   it("título do destaque literal e abertura default", () => {
-    assert.ok(md.includes("### Gemini vira colega com e-mail & agenda"));
+    assert.ok(md.includes("### [Gemini vira colega com e-mail & agenda](https://cloud.google.com/blog/x)"));
     assert.ok(md.includes(DEFAULT_CIRCLE_STACK_OPENING));
   });
 
@@ -136,7 +136,9 @@ describe("renderCircleStackPost", () => {
   });
 
   it("fonte sem UTM; edição e CTA com UTM stack/circle", () => {
-    assert.ok(md.includes("[Leia na fonte](https://cloud.google.com/blog/x)"));
+    assert.ok(md.includes("](https://cloud.google.com/blog/x)"));
+    assert.ok(!md.includes("Leia na fonte"));
+    assert.ok(!md.includes("Na edição de"));
     assert.ok(md.includes(`(${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})`));
     assert.ok(md.includes("utm_content=cta-fim"));
   });
@@ -168,12 +170,18 @@ describe("renderCircleStackPost", () => {
     assert.ok(!md.includes("Na edição de 99/10"));
   });
 
+  it("edições da semana: data com link em parágrafo próprio e um título por linha", () => {
+    const d = `**[13/10](${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})**`;
+    assert.ok(md.includes(`${d}\n\n- A\n- B\n- C`));
+    assert.ok(!md.includes(" · "));
+  });
+
   it("nunca usa seta (#9721)", () => {
     assert.ok(!/[→←]/.test(md));
   });
 
   it("stackNote substitui a descrição no item de lista; seção vazia some", () => {
-    assert.ok(md.includes("## Lançamentos e ferramentas\n\n- [Lovable 3](https://ex.com/l): Nota para builders."));
+    assert.ok(md.includes("## Lançamentos\n\n- [Lovable 3](https://ex.com/l): Nota para builders."));
     assert.ok(!md.includes("## Radar"));
   });
 
