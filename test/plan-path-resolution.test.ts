@@ -12,10 +12,14 @@
  * exatamente o mesmo resultado que `resolvePlanPath` (identidade de
  * contrato pós-refactor).
  */
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   resolvePlanPath,
+  createFsPlanProbe,
   type PlanPathProbeResult,
 } from "../scripts/lib/plan-path-resolution.ts";
 import { resolveDevelopPlanPath } from "../scripts/lib/develop-plan-collision.ts";
@@ -179,5 +183,28 @@ test("wrapper resolveDevelopPlanPath mantém contrato de saída idêntico ao de 
     const viaGeneric = resolvePlanPath(baseDir, aammdd, "session-X", diskA.probe);
     const viaWrapper = resolveDevelopPlanPath(baseDir, aammdd, "session-X", diskB.probe);
     assert.deepEqual(viaWrapper, viaGeneric, `cenário "${label}" divergiu entre wrapper e genérico`);
+  }
+});
+
+// #10925: um halt anterior à criação do plano ainda ocupa o slot do dia.
+test("filesystem: report.md sem plano força sufixo e preserva o relatório do halt", () => {
+  const root = mkdtempSync(join(tmpdir(), "halt-plan-path-"));
+  try {
+    const base = join(root, "data", "overnight");
+    const original = join(base, "261022");
+    mkdirSync(original, { recursive: true });
+    const report = "coordinator_model_probe_failed\nExit: 2\n";
+    writeFileSync(join(original, "report.md"), report);
+    const probe = createFsPlanProbe();
+    const resolved = resolvePlanPath(base, "261022", "new-session", probe);
+    assert.equal(resolved.mode, "derived-after-collision");
+    assert.equal(resolved.path, join(base, "261022b", "plan.json"));
+    mkdirSync(join(base, "261022b"));
+    writeFileSync(resolved.path, JSON.stringify({ session_id: "new-session" }));
+    writeFileSync(join(base, "261022b", "report.md"), "rodada normal");
+    assert.equal(resolvePlanPath(base, "261022", "new-session", probe).mode, "resume");
+    assert.equal(readFileSync(join(original, "report.md"), "utf8"), report);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
