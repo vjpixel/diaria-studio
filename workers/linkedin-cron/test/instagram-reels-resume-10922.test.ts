@@ -45,6 +45,8 @@ interface Graph {
   pollsUntilFinished: number;
   /** Status forçado do container (sobrepõe o processamento). */
   forcedStatus?: string;
+  /** #10954 — HTTP de erro forçado na consulta de status de um container (id → status). */
+  statusHttpError?: Record<string, number>;
   publishFails: boolean;
   containersCreated: number;
   polls: number;
@@ -63,6 +65,11 @@ function mockGraph(over: Partial<Graph> = {}): Graph {
     }
     if (u.includes("status_code")) {
       g.polls++;
+      const id = u.split("/").pop()!.split("?")[0];
+      const httpError = g.statusHttpError?.[id];
+      if (httpError) {
+        return new Response(JSON.stringify({ error: { message: "Unsupported get request. Object does not exist" } }), { status: httpError });
+      }
       const code = g.forcedStatus ?? (g.polls >= g.pollsUntilFinished ? "FINISHED" : "IN_PROGRESS");
       return new Response(JSON.stringify({ status_code: code }), { status: 200 });
     }
@@ -118,6 +125,35 @@ describe("#10922 fireQueueEntry: retoma o container entre voltas", () => {
     assert.equal(out.status, "failed");
     assert.equal((out as { reelsContainer?: unknown }).reelsContainer, undefined);
     assert.equal(g.containersCreated, 0);
+  });
+
+  it("#10954: container retomado que a Graph recusa com 4xx → failed sem container; a volta seguinte cria outro e publica", async () => {
+    const g = mockGraph({ statusHttpError: { "old-container": 400 } });
+    const resumedRef = { id: "old-container", created_at: new Date().toISOString() };
+    const first = await fireQueueEntry(reelsEntry({ reels_container: resumedRef, retry_count: 1 }), config);
+    assert.equal(first.status, "failed", "nunca DLQ: o vídeo ainda serve");
+    assert.equal((first as { reelsContainer?: unknown }).reelsContainer, undefined, "descarta o container recusado");
+    assert.equal(g.containersCreated, 0);
+
+    const second = await fireQueueEntry(reelsEntry({ retry_count: 2 }), config);
+    assert.deepEqual(second, { status: "fired" });
+    assert.equal(g.containersCreated, 1, "a volta seguinte cria um container novo");
+    assert.deepEqual(g.publishedContainers, ["container-1"]);
+  });
+
+  it("#10954: 429 no container retomado segue transitório e mantém o container", async () => {
+    mockGraph({ statusHttpError: { "old-container": 429 } });
+    const resumedRef = { id: "old-container", created_at: new Date().toISOString() };
+    const out = await fireQueueEntry(reelsEntry({ reels_container: resumedRef }), config);
+    assert.equal(out.status, "failed");
+    assert.equal((out as { reelsContainer?: { id: string } }).reelsContainer?.id, "old-container");
+  });
+
+  it("#10954: 4xx num container recém-criado segue transitório (só o retomado é descartado)", async () => {
+    mockGraph({ statusHttpError: { "container-1": 400 } });
+    const out = await fireQueueEntry(reelsEntry(), config);
+    assert.equal(out.status, "failed");
+    assert.equal((out as { reelsContainer?: { id: string } }).reelsContainer?.id, "container-1");
   });
 
   it("container retomado ERROR → DLQ (o arquivo não serve)", async () => {

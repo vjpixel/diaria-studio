@@ -579,7 +579,17 @@ async function pollInstagramContainerStatus(
   // mesma entry e o Reels sairia em dobro. Undefined = sem teto (carrossel,
   // cujo pior caso já cabe no TTL).
   deadlineMs?: number,
-): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean; statusCode?: "ERROR" | "EXPIRED" }> {
+  // #10954 self-review — container RETOMADO de uma volta anterior: a Graph
+  // recusando a consulta com 4xx (exceto 429) N vezes seguidas significa
+  // container desconhecido/inválido, não blip. O poll para e devolve
+  // `unknownContainer: true` pra o caller descartar o container. Undefined =
+  // 4xx segue transitório (container recém-criado, carrossel).
+  abortAfterConsecutiveClientErrors?: number,
+): Promise<
+  | { ok: true }
+  | { ok: false; reason: string; permanent: boolean; statusCode?: "ERROR" | "EXPIRED"; unknownContainer?: true }
+> {
+  let consecutiveClientErrors = 0;
   const deadline = deadlineMs === undefined ? Infinity : Date.now() + deadlineMs;
   const remaining = () => deadline - Date.now();
   const deadlineExceeded = () => ({
@@ -616,12 +626,29 @@ async function pollInstagramContainerStatus(
         continue;
       }
       if (!res.ok || data.error) {
+        const clientError = res.status >= 400 && res.status < 500 && res.status !== 429;
+        consecutiveClientErrors = clientError ? consecutiveClientErrors + 1 : 0;
+        if (
+          clientError &&
+          abortAfterConsecutiveClientErrors !== undefined &&
+          consecutiveClientErrors >= abortAfterConsecutiveClientErrors
+        ) {
+          return {
+            ok: false,
+            permanent: false,
+            unknownContainer: true,
+            reason:
+              `Instagram container recusado pela Graph (HTTP ${res.status} em ${consecutiveClientErrors} consultas seguidas): ` +
+              `${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
+          };
+        }
         console.warn(
           `[instagram-poll] HTTP ${res.status} na tentativa ${attempt}/${maxAttempts} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
         );
         await waitBeforeNext(attempt);
         continue;
       }
+      consecutiveClientErrors = 0;
       if (data.status_code === "FINISHED") return { ok: true };
       if (data.status_code === "ERROR" || data.status_code === "EXPIRED") {
         return {
@@ -658,6 +685,12 @@ async function pollInstagramContainerStatus(
  * do cron. Esgotar NÃO é DLQ: vira `failed` e o retry normal cria um container
  * novo na próxima volta (container não publicado não aparece pra ninguém). */
 export const REELS_POLL_MAX_ATTEMPTS = 36;
+
+/** #10954 self-review — consultas de status do container RETOMADO que a Graph
+ * recusa com 4xx (exceto 429) em sequência antes de o container ser dado como
+ * desconhecido e descartado. 3, e não 1, pra um 400 isolado não jogar fora um
+ * container que ainda processava. */
+export const REELS_RESUMED_CONTAINER_MAX_CLIENT_ERRORS = 3;
 export const REELS_POLL_INTERVAL_MS = 5000;
 /** #10856 self-review — teto TOTAL de tempo de parede do poll do Reels.
  * Somado ao fetch de criação do container e ao de `media_publish` (até
@@ -887,12 +920,18 @@ async function fireInstagramReels(
     REELS_POLL_MAX_ATTEMPTS,
     pollIntervalMs,
     pollDeadlineMs,
+    resumed ? REELS_RESUMED_CONTAINER_MAX_CLIENT_ERRORS : undefined,
   );
   if (!poll.ok) {
     // #10922 — container retomado que expirou não condena o vídeo: a próxima
     // volta cria outro (sem `reelsContainer`). ERROR segue DLQ (o arquivo não serve).
     if (poll.permanent && resumed && poll.statusCode === "EXPIRED") {
       return { status: "failed", reason: `Instagram Reels: container retomado expirou, a próxima volta cria outro — ${poll.reason}` };
+    }
+    // #10954 self-review — container retomado que a Graph não reconhece mais
+    // (4xx seguidos): descartá-lo, senão toda volta insiste nele até a DLQ.
+    if (resumed && poll.unknownContainer) {
+      return { status: "failed", reason: `Instagram Reels: container retomado recusado, a próxima volta cria outro — ${poll.reason}` };
     }
     if (poll.permanent) return { status: "dlq", reason: `Instagram Reels: ${poll.reason}` };
     return fail(`Instagram Reels: ${poll.reason}`);
