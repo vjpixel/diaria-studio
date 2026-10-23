@@ -1560,7 +1560,11 @@ export async function loadWorkerQueueForGrid(
     const json = await Promise.race([
       (async () => {
         const res = await fetchFn(url, { headers: { "X-Diaria-Token": workerToken }, signal: controller.signal });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          // #9991: corpo descartado precisa ser cancelado, senão o socket segura o exit.
+          await res.body?.cancel().catch(() => {});
+          throw new Error(`HTTP ${res.status}`);
+        }
         return (await res.json()) as unknown;
       })(),
       timedOut,

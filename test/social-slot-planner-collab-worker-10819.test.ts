@@ -261,6 +261,20 @@ describe("#10819 fila do Worker como fonte da grade", () => {
       assert.match(warns[2], /rede fora/);
     });
 
+    it("HTTP de erro cancela o corpo descartado (#9991)", async () => {
+      const res = new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+      let cancelled = false;
+      const body = res.body!;
+      const origCancel = body.cancel.bind(body);
+      body.cancel = async (reason?: unknown) => {
+        cancelled = true;
+        return origCancel(reason);
+      };
+      const fn = (async () => res) as unknown as typeof fetch;
+      assert.equal(await loadWorkerQueueForGrid("https://w", "t", fn, () => {}), undefined);
+      assert.equal(cancelled, true);
+    });
+
     // #11001: Worker pendurado não pode prender o script (nem o dry-run).
     describe("timeout do GET /list (#11001)", () => {
       /** Timer injetado: guarda o callback e o prazo; o teste dispara à mão. */
