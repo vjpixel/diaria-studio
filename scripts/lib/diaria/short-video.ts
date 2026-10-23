@@ -760,12 +760,6 @@ export function mp4DurationSeconds(buf: Buffer): number | null {
  */
 export const INSTAGRAM_REELS_API_MAX_SECONDS = 40;
 
-/**
- * Chave da conta do Instagram no mapa de tetos (#10916): o slug de
- * `instagram_author_page`, ou `diaria` quando a autora é `null` (a conta da
- * diar.ia.br, `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN`). Mesma
- * convenção da fila do Worker (`ig_account`, #10823).
- */
 /** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823). */
 export type WorkerInstagramAccount = "diaria" | "vjpixel";
 
@@ -778,6 +772,12 @@ export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
  */
 export type InstagramAccountKey = WorkerInstagramAccount | (string & {});
 
+/**
+ * Chave da conta do Instagram no mapa de tetos (#10916): o slug de
+ * `instagram_author_page`, ou `diaria` quando a autora é `null` (a conta da
+ * diar.ia.br, `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN`). Mesma
+ * convenção da fila do Worker (`ig_account`, #10823).
+ */
 export function instagramAccountKey(authorPage: string | null): InstagramAccountKey {
   return authorPage ?? INSTAGRAM_ENV_ACCOUNT_KEY;
 }

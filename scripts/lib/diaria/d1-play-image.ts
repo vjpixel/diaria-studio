@@ -2,7 +2,9 @@
  * scripts/lib/diaria/d1-play-image.ts (#10784)
  *
  * Gera `04-d1-2x1-play.jpg`: cópia do hero do D1 com o convite escrito
- * (`buildInviteSvg`, sem ícone de play), só para a newsletter. O hero original
+ * (`buildInviteSvg`: "Clique e assista a notícia comentada" com o símbolo de
+ * play ao lado, no canto inferior direito, sem play no centro), só para a
+ * newsletter. O hero original
  * (`04-d1-2x1.jpg`) nunca é tocado — as redes seguem usando ele.
  *
  * Artefato derivado: regera quando o hero muda (md5 carimbado em
@@ -12,8 +14,9 @@
  * Stage 4.
  *
  * Fail-soft: falha ao gerar remove a cópia antiga (arte possivelmente
- * defasada) e devolve o motivo — o render cai no hero sem play, ainda com
- * link (`extractContent` só usa a cópia quando ela existe).
+ * defasada) e devolve o motivo — o render cai no hero original SEM link pro
+ * vídeo/canal (`d1VideoHeroFields` devolve `{}` quando a cópia não existe:
+ * imagem pura levando ao YouTube, sem o convite, seria link escondido).
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

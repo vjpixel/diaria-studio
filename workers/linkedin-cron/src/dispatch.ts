@@ -715,11 +715,42 @@ export const REELS_DEDUP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 /** #10877 — quantas mídias recentes da conta a busca de dedup lê. */
 const REELS_DEDUP_MEDIA_LIMIT = 25;
 
+/** Corpo de `error` da Graph API (só os campos que a classificação usa). */
+export interface GraphErrorBody {
+  message?: string;
+  code?: number;
+  error_subcode?: number;
+  is_transient?: boolean;
+}
+
+/**
+ * #10992 — códigos de limite de taxa da Graph API (doc "Rate Limiting" /
+ * "Error codes" da Meta): 4 (app), 17 (usuário), 32 (página), 613 (limite
+ * customizado) e 80000-80014 (Business Use Case — 80002 é o do Instagram).
+ * Chegam com HTTP 400/403, não 429.
+ */
+export const GRAPH_RATE_LIMIT_CODES: ReadonlySet<number> = new Set([
+  4, 17, 32, 613,
+  ...Array.from({ length: 15 }, (_, i) => 80000 + i),
+]);
+
+/**
+ * #10992 — erro da Graph que passa sozinho: limite de taxa
+ * (`GRAPH_RATE_LIMIT_CODES`) ou `is_transient: true` declarado pela própria
+ * Meta. Independe do status HTTP (os limites vêm como 400/403).
+ */
+export function isGraphTransientError(error: GraphErrorBody | undefined | null): boolean {
+  if (!error || typeof error !== "object") return false;
+  if (error.is_transient === true) return true;
+  return typeof error.code === "number" && GRAPH_RATE_LIMIT_CODES.has(error.code);
+}
+
 export type ReelLookup =
   | { kind: "found"; mediaId: string }
   | { kind: "absent" }
   /** Não deu pra consultar. `transient` = vale tentar de novo na próxima volta
-   * (5xx, timeout, resposta ilegível); `false` = recusa da Graph (4xx). */
+   * (5xx, 429, limite de taxa da Graph em 400/403, timeout, resposta
+   * ilegível — #10992); `false` = recusa definitiva da Graph (demais 4xx). */
   | { kind: "unverifiable"; reason: string; transient: boolean };
 
 /**
@@ -751,7 +782,7 @@ export async function findPublishedReel(
     const text = await res.text();
     let data: {
       data?: Array<{ id?: string; caption?: string; timestamp?: string; media_product_type?: string }>;
-      error?: { message?: string };
+      error?: GraphErrorBody;
     };
     try {
       data = JSON.parse(text);
@@ -761,7 +792,11 @@ export async function findPublishedReel(
     if (!res.ok || data.error) {
       return {
         kind: "unverifiable",
-        transient: res.status >= 500 || res.status === 429,
+        // #10992 item 3: limite de taxa da Graph chega como 400/403 com
+        // `error.code` 4/17/32/613/80000-80014 — é transitório (passa sozinho),
+        // não recusa definitiva; tratar como 4xx fazia publicar SEM a busca
+        // prévia justo na volta de retry, quando o dedup importa.
+        transient: res.status >= 500 || res.status === 429 || isGraphTransientError(data.error),
         reason: `lista de mídias HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
       };
     }

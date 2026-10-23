@@ -587,9 +587,10 @@ export async function uploadPublicImages(
     specs = imageSpecsFor(mode, editionDir, { useMelhorSlots });
   }
 
-  // #10784: a cópia do hero do D1 com play é derivada — (re)gera antes do
-  // upload sempre que o hero mudou. Fail-soft: sem a cópia, a newsletter usa o
-  // hero sem play (ainda com link pro vídeo/canal).
+  // #10784: a cópia do hero do D1 com o convite escrito é derivada — (re)gera
+  // antes do upload sempre que o hero mudou. Fail-soft: sem a cópia, a
+  // newsletter usa o hero original SEM link pro vídeo/canal (#10995 —
+  // `d1VideoHeroFields` devolve `{}`).
   if (mode !== "social" && specs.some((s) => s.key === D1_PLAY_IMAGE_KEY)) {
     const ensure =
       opts.ensureD1PlayImage ??
@@ -603,7 +604,7 @@ export async function uploadPublicImages(
       play = { status: "failed", path: null, reason: (e as Error).message };
     }
     if (play.status === "failed") {
-      const msg = `cópia do hero do D1 com play NÃO gerada (${play.reason}) — a newsletter sai com o hero sem o ícone (#10784)`;
+      const msg = `cópia do hero do D1 com o convite NÃO gerada (${play.reason}) — a newsletter sai com o hero original SEM link pro vídeo/canal (#10784, #10995)`;
       console.error(`upload-images-public: ${msg}`);
       warnings.push(msg);
     } else if (play.status === "generated") {
