@@ -1,8 +1,8 @@
 /**
  * scripts/lib/diaria/d1-play-image.ts (#10784)
  *
- * Gera `04-d1-2x1-play.jpg`: cópia do hero do D1 com o ícone de play
- * desenhado (`buildPlayIconSvg`), só para a newsletter. O hero original
+ * Gera `04-d1-2x1-play.jpg`: cópia do hero do D1 com o convite escrito
+ * (`buildInviteSvg`, sem ícone de play), só para a newsletter. O hero original
  * (`04-d1-2x1.jpg`) nunca é tocado — as redes seguem usando ele.
  *
  * Artefato derivado: regera quando o hero muda (md5 carimbado em
@@ -20,29 +20,55 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import sharp from "sharp";
 import { md5OfFile } from "../shared/file-md5.ts";
-import { D1_HERO_FILE, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, buildPlayIconSvg } from "./d1-video-hero.ts";
+import { D1_HERO_FILE, D1_INVITE_VERSION, D1_PLAY_HERO_FILE, D1_PLAY_STAMP_FILE, D1_INVITE_FONT_FAMILY, D1_INVITE_TEXT, buildInviteSvg, type InviteTextMetrics } from "./d1-video-hero.ts";
 
 export type D1PlayImageResult =
   | { status: "generated" | "fresh"; path: string }
   | { status: "no_hero"; path: null }
   | { status: "failed"; path: null; reason: string };
 
-function readStampMd5(stampPath: string): string | null {
-  if (!existsSync(stampPath)) return null;
+function readStamp(stampPath: string): { md5: string | null; overlay: string | null } {
+  if (!existsSync(stampPath)) return { md5: null, overlay: null };
   try {
-    const raw = JSON.parse(readFileSync(stampPath, "utf8")) as { source_md5?: unknown };
-    return typeof raw.source_md5 === "string" ? raw.source_md5 : null;
+    const raw = JSON.parse(readFileSync(stampPath, "utf8")) as { source_md5?: unknown; overlay?: unknown };
+    return {
+      md5: typeof raw.source_md5 === "string" ? raw.source_md5 : null,
+      overlay: typeof raw.overlay === "string" ? raw.overlay : null,
+    };
   } catch {
-    return null; // carimbo ilegível = regerar
+    return { md5: null, overlay: null }; // carimbo ilegível = regerar
   }
 }
 
-/** Compõe o play sobre o hero e devolve o JPEG. */
+/**
+ * Mede o texto do convite na fonte que o rasterizador (librsvg) realmente usar:
+ * desenha o texto sozinho numa tela maior e corta (`trim`) o espaço vazio. Mede
+ * com o mesmo motor que vai desenhar, então vale para Georgia no Windows e para
+ * a fonte de reserva do servidor Linux.
+ */
+export async function measureInviteText(width: number, fontFamily: string = D1_INVITE_FONT_FAMILY): Promise<InviteTextMetrics> {
+  const fontSize = width * 0.024;
+  const W = Math.ceil(fontSize * 30);
+  const H = Math.ceil(fontSize * 4);
+  const baseline = Math.round(fontSize * 2.5);
+  const x0 = Math.round(fontSize);
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    `<rect width="${W}" height="${H}" fill="#000000"/>` +
+    `<text x="${x0}" y="${baseline}" font-family="${fontFamily}" font-weight="bold" font-size="${fontSize.toFixed(1)}" fill="#FFFFFF">${D1_INVITE_TEXT}</text>` +
+    `</svg>`;
+  const { info } = await sharp(Buffer.from(svg)).trim({ background: "#000000", threshold: 40 }).toBuffer({ resolveWithObject: true });
+  const top = -(info.trimOffsetTop ?? 0);
+  return { textW: info.width, ascent: baseline - top, descent: top + info.height - baseline };
+}
+
+/** Compõe o convite sobre o hero e devolve o JPEG. */
 export async function renderD1PlayImage(heroBytes: Buffer): Promise<Buffer> {
   const img = sharp(heroBytes);
   const meta = await img.metadata();
   if (!meta.width || !meta.height) throw new Error("hero do D1 sem dimensões legíveis");
-  const svg = Buffer.from(buildPlayIconSvg(meta.width, meta.height));
+  const metrics = await measureInviteText(meta.width);
+  const svg = Buffer.from(buildInviteSvg(meta.width, meta.height, metrics));
   return img.composite([{ input: svg, top: 0, left: 0 }]).jpeg({ quality: 88 }).toBuffer();
 }
 
@@ -57,13 +83,16 @@ export async function ensureD1PlayImage(editionDir: string): Promise<D1PlayImage
   }
   try {
     const heroMd5 = md5OfFile(heroPath);
-    if (existsSync(playPath) && readStampMd5(stampPath) === heroMd5) {
+    const stamp = readStamp(stampPath);
+    // Fresca só se o hero E o desenho do convite são os mesmos (#10784: cópia
+    // antiga com ícone de play, sem `overlay`, regera).
+    if (existsSync(playPath) && stamp.md5 === heroMd5 && stamp.overlay === D1_INVITE_VERSION) {
       return { status: "fresh", path: playPath };
     }
     const out = await renderD1PlayImage(readFileSync(heroPath));
     writeFileSync(playPath, out);
     mkdirSync(dirname(stampPath), { recursive: true });
-    writeFileSync(stampPath, `${JSON.stringify({ source: D1_HERO_FILE, source_md5: heroMd5 }, null, 2)}\n`, "utf8");
+    writeFileSync(stampPath, `${JSON.stringify({ source: D1_HERO_FILE, source_md5: heroMd5, overlay: D1_INVITE_VERSION }, null, 2)}\n`, "utf8");
     return { status: "generated", path: playPath };
   } catch (e) {
     rmSync(playPath, { force: true });
