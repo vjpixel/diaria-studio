@@ -430,8 +430,18 @@ export function classifyIdempotentExisting(existingRaw: string, incoming: QueueE
   }
   if (existing === null || typeof existing !== "object") return "changed";
   if (existing.cancelled === true) return "cancelled";
+  return sameQueueContent(existing, incoming) ? "duplicate" : "changed";
+}
+
+/**
+ * #10917/#11024 — duas entries publicam a MESMA coisa (mesmos
+ * `IDEMPOTENT_CONTENT_FIELDS`)? Usado pelo enqueue idempotente e pelo `/arm`
+ * do DO, que só preserva o container de Reels guardado quando o conteúdo
+ * re-armado é o mesmo.
+ */
+export function sameQueueContent(a: QueueEntry, b: QueueEntry): boolean {
   const project = (e: QueueEntry) => JSON.stringify(IDEMPOTENT_CONTENT_FIELDS.map((f) => e[f] ?? null));
-  return project(existing) === project(incoming) ? "duplicate" : "changed";
+  return project(a) === project(b);
 }
 
 /**
