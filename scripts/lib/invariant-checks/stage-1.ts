@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { canonicalize } from "../url-utils.ts"; // #10988
 import { collectUnresolvedTitleUrls, isPlaceholderHighlightItemWithReserve } from "../placeholder-title-guard.ts"; // #4102, #10908, #10929
 // #6440: backstop — mesma verificação POSITIVA de produto (#1968) usada no
 // gate do Stage 2 (`validate-lancamentos.ts --approved`), rodada aqui como
@@ -270,44 +271,91 @@ function isNegativeImpactHighlight(h: HighlightLike): boolean {
   return false;
 }
 
+/**
+ * #10988: marcas de rebaixamento DELIBERADO — item que um passo do Stage 1
+ * tirou do top-3 de propósito (mesmo fato #9100, política de negativo #10795,
+ * penalidade de estudo genérico #9462). Score alto nele não é falha de mérito.
+ */
+const DELIBERATE_DEMOTION_FLAGS = ["same_fact_demoted", "negative_promotion_excluded", "generic_study_demoted"] as const;
+
+function isDeliberatelyDemoted(h: HighlightLike): boolean {
+  return DELIBERATE_DEMOTION_FLAGS.some((flag) => {
+    const v = h[flag] ?? h.article?.[flag];
+    return v !== undefined && v !== null && v !== false;
+  });
+}
+
 /** #10792: aviso pós-seleção; nunca reordena ou muda a seleção do editor. */
 export function checkTop3Merit(editionDir: string): InvariantViolation[] {
   const scoredPath = resolve(editionDir, "_internal", "tmp-scored.json");
   const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  const categorizedPath = resolve(editionDir, "_internal", "01-categorized.json");
   const read = (path: string): ApprovedJson | null => {
     try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
   };
+  const approved = read(approvedPath);
+  const categorized = read(categorizedPath);
   const scored = read(scoredPath);
-  const selected = read(approvedPath) ?? scored;
-  if (!selected || !Array.isArray(selected.highlights)) return [];
-  const top = selected.highlights.slice(0, 3);
+  // #10988: o trio comparado é o que o editor VÊ. Stage 4 (com
+  // `01-approved.json`): o aprovado. Stage 1 (sem approved): o de
+  // `01-categorized.json`, já com os rebaixamentos #9100/#10795/#9462 —
+  // `tmp-scored` tem a ordem anterior a eles e só serve de fallback. O pool
+  // segue incluindo o all_scored do `tmp-scored` (#10792).
+  const sources: Array<{ data: ApprovedJson; path: string }> = [];
+  if (approved) sources.push({ data: approved, path: approvedPath });
+  else if (categorized && Array.isArray(categorized.highlights)) sources.push({ data: categorized, path: categorizedPath });
+  if (scored) sources.push({ data: scored, path: scoredPath });
+  const primary = sources[0];
+  if (!primary || !Array.isArray(primary.data.highlights)) return [];
+  const top = primary.data.highlights!.slice(0, 3);
   const score = (h: HighlightLike): number | undefined =>
     typeof h.score === "number" && Number.isFinite(h.score) ? h.score : undefined;
   const url = (h: HighlightLike) => h.article?.url ?? h.url;
+  const key = (h: HighlightLike): string => {
+    const u = url(h);
+    if (!u) return "";
+    try { return canonicalize(u); } catch { return u; }
+  };
   const scores = top.map(score);
   if (top.length < 2 || scores.some(s => s === undefined)) return [];
   const max = Math.max(...scores as number[]);
-  const urls = new Set(top.map(url).filter(Boolean));
-  const pool: HighlightLike[] = [];
-  for (const data of [selected, scored]) {
-    if (!data) continue;
-    for (const key of ["highlights", "runners_up", "all_scored", "lancamento", "radar"]) {
-      const items = data[key];
-      if (Array.isArray(items)) pool.push(...items);
+  const topKeys = new Set(top.map(key).filter(Boolean));
+  const itemsOf = (data: ApprovedJson | null): HighlightLike[] => {
+    const out: HighlightLike[] = [];
+    if (!data) return out;
+    for (const k of ["highlights", "runners_up", "all_scored", "lancamento", "radar"]) {
+      const items = data[k];
+      if (Array.isArray(items)) out.push(...items);
+    }
+    return out;
+  };
+  const pool = sources.flatMap(({ data }) => itemsOf(data));
+  // Rebaixado em QUALQUER fonte conta: a marca vive no categorized/approved,
+  // a cópia sem marca no all_scored do tmp-scored.
+  const demotedKeys = new Set(
+    [...pool, ...itemsOf(categorized)].filter(isDeliberatelyDemoted).map(key).filter(Boolean),
+  );
+  // Stage 4: item que estava no `01-categorized.json` (pré-gate) e não está no
+  // aprovado foi removido pelo editor no gate 1 — não é falha de mérito.
+  if (approved && categorized) {
+    const approvedKeys = new Set(itemsOf(approved).map(key).filter(Boolean));
+    for (const h of itemsOf(categorized)) {
+      const k = key(h);
+      if (k && !approvedKeys.has(k)) demotedKeys.add(k);
     }
   }
   const seen = new Set<string>();
   const offenders = pool.filter(h => {
-    const key = url(h);
+    const k = key(h);
     const value = score(h);
-    if (!key || urls.has(key) || seen.has(key) || value === undefined || value < max || h.bucket === "use_melhor" || isPlaceholderTitleHighlight(h)) return false;
-    seen.add(key);
+    if (!k || topKeys.has(k) || demotedKeys.has(k) || seen.has(k) || value === undefined || value < max || h.bucket === "use_melhor" || isPlaceholderTitleHighlight(h)) return false;
+    seen.add(k);
     return true;
   });
   if (!offenders.length) return [];
   return [{
     rule: "top3-merit-warning", source_issue: "#10792", severity: "warning",
-    file: existsSync(approvedPath) ? approvedPath : scoredPath,
+    file: primary.path,
     message: `Item fora do top-3 com score ≥ maior score do top-3 (${max}): ` +
       offenders.map(h => `${h.article?.title ?? h.title ?? url(h)} (${h.score})`).join("; ") +
       ". Confira seleção por mérito antes da ordem editorial; a decisão continua com o editor.",
