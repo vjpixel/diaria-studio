@@ -306,6 +306,46 @@ export async function idempotentQueueUuid(idempotencyKey: string): Promise<strin
 }
 
 /**
+ * #10917 — campos que definem O QUE é publicado. Ficam de fora os de estado
+ * (`created_at`, `retry_count`, `cancelled`, `last_error`...), que mudam sem
+ * que o pedido mude.
+ */
+const IDEMPOTENT_CONTENT_FIELDS = [
+  "text",
+  "image_url",
+  "image_urls",
+  "scheduled_at",
+  "destaque",
+  "webhook_target",
+  "action",
+  "parent_destaque",
+  "channel",
+  "media_type",
+  "video_url",
+  "collaborators",
+  "ig_account",
+] as const satisfies readonly (keyof QueueEntry)[];
+
+/**
+ * #10917 — o que fazer quando o POST /queue com `idempotency_key` encontra
+ * uma entry na key: `duplicate` (mesmo conteúdo, entry viva: retry do
+ * cliente), `cancelled` (tombstone do DELETE /queue) ou `changed` (conteúdo
+ * diferente, ou entry ilegível). Só `duplicate` deixa a entry como está.
+ */
+export function classifyIdempotentExisting(existingRaw: string, incoming: QueueEntry): "duplicate" | "cancelled" | "changed" {
+  let existing: QueueEntry;
+  try {
+    existing = JSON.parse(existingRaw) as QueueEntry;
+  } catch {
+    return "changed";
+  }
+  if (existing === null || typeof existing !== "object") return "changed";
+  if (existing.cancelled === true) return "cancelled";
+  const project = (e: QueueEntry) => JSON.stringify(IDEMPOTENT_CONTENT_FIELDS.map((f) => e[f] ?? null));
+  return project(existing) === project(incoming) ? "duplicate" : "changed";
+}
+
+/**
  * Constrói key DLQ a partir da queue key original e scheduled_at (#894 P1-A).
  *
  * Reusa UUID original pra manter rastreabilidade entry-da-fila ↔ entry-no-dlq:
@@ -633,19 +673,6 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // timezone offset (`+00:00`, `-03:00`, etc).
   const normalizedIso = new Date(scheduledMs).toISOString();
   const key = buildQueueKey(normalizedIso, uuid);
-  if (body.idempotency_key !== undefined) {
-    // Entry já na fila com essa chave = repetição do mesmo enqueue. Devolve a
-    // key existente sem regravar nem re-armar (a 1ª requisição já armou o DO;
-    // se não armou, o cron */5 cobre). 200 e não 202: nada novo foi enfileirado.
-    const existing = await env.LINKEDIN_QUEUE.get(key);
-    if (existing !== null) {
-      console.log(`[enqueue] idempotency_key=${body.idempotency_key} já enfileirada em ${key} — duplicata ignorada (#10906)`);
-      return json(
-        { queued: true, duplicate: true, key, scheduled_at: body.scheduled_at as string, destaque: body.destaque as string },
-        200,
-      );
-    }
-  }
   const entry: QueueEntry = {
     text: textValue,
     image_url: (body.image_url as string | null) ?? null,
@@ -668,6 +695,36 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
+  let replaced = false;
+  if (body.idempotency_key !== undefined) {
+    // Entry já na fila com essa chave e o MESMO conteúdo = repetição do mesmo
+    // enqueue (retry depois de resposta perdida). Devolve a key existente sem
+    // regravar nem re-armar (a 1ª requisição já armou o DO; se não armou, o
+    // cron */5 cobre). 200 e não 202: nada novo foi enfileirado.
+    //
+    // #10917 — duas exceções, ambas regravam a entry e re-armam o DO:
+    //  - tombstone (`cancelled:true`, DELETE /queue cujo KV.delete falhou):
+    //    o item foi cancelado; o reenfileiramento é um pedido novo, não
+    //    duplicata. Antes, respondia `duplicate` e o cron apagava o tombstone:
+    //    o Reels reenfileirado nunca saía.
+    //  - conteúdo diferente (ex.: legenda nova no mesmo slot): a entry passa a
+    //    ter o conteúdo novo, na MESMA key e no MESMO DO (`/arm` sobrescreve o
+    //    payload), então continua saindo um post só. Antes, o conteúdo novo
+    //    era descartado em silêncio.
+    const existingRaw = await env.LINKEDIN_QUEUE.get(key);
+    if (existingRaw !== null) {
+      const verdict = classifyIdempotentExisting(existingRaw, entry);
+      if (verdict === "duplicate") {
+        console.log(`[enqueue] idempotency_key=${body.idempotency_key} já enfileirada em ${key} — duplicata ignorada (#10906)`);
+        return json(
+          { queued: true, duplicate: true, key, scheduled_at: body.scheduled_at as string, destaque: body.destaque as string },
+          200,
+        );
+      }
+      replaced = true;
+      console.log(`[enqueue] idempotency_key=${body.idempotency_key} em ${key}: ${verdict === "cancelled" ? "entry cancelada (tombstone)" : "conteúdo mudou"} — regravando e re-armando (#10917)`);
+    }
+  }
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
 
   // #919 verify-after-put: KV.put pode "succeed" sem persistir em casos raros
@@ -742,6 +799,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       scheduled_at: entry.scheduled_at,
       destaque: entry.destaque,
       alarm_armed: alarmArmed,
+      ...(replaced && { replaced: true }),
     },
     202,
   );
