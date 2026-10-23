@@ -28,7 +28,7 @@
  * Slot liberado é preenchido pelo próximo de score mais alto no bucket.
  */
 
-import { curatePool } from "./pool-quality.ts";
+import { curatePool, isEditorPinned } from "./pool-quality.ts";
 import type { PublishedDestaque } from "./same-fact-demotion.ts";
 import { canonicalize } from "./url-utils.ts";
 import { dropMirrorClusterSources, type ClusterSource } from "./cluster-sources.ts";
@@ -669,17 +669,10 @@ function filterRunnersUpByDomainRoom(
   });
 }
 
-/**
- * #9785: item pinado pelo editor — nunca sai pelo teto global. Cobre a
- * submissão por e-mail (`flag: "editor_submitted"`) e o item incluído à mão no
- * gate (`flag: "editor_added"`, `source: "editor: incluído no gate"`, visto na
- * 261007 sem `score`).
- */
-export function isEditorPinned(a: StageArticle): boolean {
-  const flag = typeof a.flag === "string" ? a.flag : "";
-  const source = typeof a.source === "string" ? a.source : "";
-  return flag.startsWith("editor") || /^editor\b/i.test(source);
-}
+// #9785/#10987: `isEditorPinned` mora em `pool-quality.ts` (a curadoria do
+// pool também precisa dele; importar daqui criaria ciclo). Re-exportado pra
+// manter a API pública deste módulo.
+export { isEditorPinned };
 
 type ContentBuckets = Record<DomainLimitRemoval["bucket"], StageArticle[]>;
 

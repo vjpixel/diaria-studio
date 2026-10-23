@@ -122,7 +122,12 @@ export function applyNegativePromotionLimits(out: AssembledOutput): AssembledOut
   if (out.highlights.length < 3) return out;
   const urlOf = (h: Highlight) => h.url ?? h.article?.url;
   const scoreOf = (h: Highlight) => h.score;
-  const pool = [...out.highlights, ...out.runners_up];
+  // #10986: só candidatos que poderiam ser destaque entram na comparação —
+  // USE MELHOR nunca vira destaque (#3436), título placeholder é demovido
+  // (#4102) e item rebaixado por mesmo fato (#9100) também não ocupa vaga.
+  // Sem o filtro, dois `use_melhor` de score alto nos runners_up viravam o
+  // "3º por mérito" e empurravam para D3 um negativo escolhido por mérito.
+  const pool = [...out.highlights, ...out.runners_up].filter(isTrioEligibleCandidate);
   const promoted = out.highlights.slice(0, 3).find((h) => {
     if (h.negative_impact !== true && h.article?.negative_impact !== true) return false;
     const score = scoreOf(h);
@@ -149,6 +154,19 @@ export function applyNegativePromotionLimits(out: AssembledOutput): AssembledOut
   const highlights = [...trio, promoted, ...out.highlights.slice(3)]
     .map((h, i) => ({ ...h, rank: i + 1 }));
   return { ...out, highlights };
+}
+
+/** #10986: item que poderia ocupar uma vaga do trio (pool de comparação do #10936). */
+function isTrioEligibleCandidate(h: Highlight): boolean {
+  const art = h.article ?? {};
+  if ((h.bucket ?? art.bucket) === "use_melhor") return false;
+  const demoted = h.same_fact_demoted ?? art.same_fact_demoted;
+  if (demoted !== undefined && demoted !== null && demoted !== false) return false;
+  // Título ausente não é evidência de placeholder aqui (o backstop #4102 trata
+  // isso nos highlights); só título presente que casa o padrão exclui.
+  const title = art.title ?? h.title;
+  if (typeof title !== "string" || title.trim() === "") return true;
+  return !isPlaceholderHighlightItem(h);
 }
 
 /**

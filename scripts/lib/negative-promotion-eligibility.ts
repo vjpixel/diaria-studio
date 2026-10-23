@@ -196,6 +196,13 @@ export interface NegativePolicyResult<H extends DemotableHighlight> {
   no_eligible_negative: boolean;
 }
 
+/** Rebaixado pelo #9100 — a marca vive no highlight ou no artigo (mesma leitura de `apply-gate-edits.ts`). */
+function isSameFactDemoted(h: DemotableHighlight): boolean {
+  const rec = h as { same_fact_demoted?: unknown; article?: { same_fact_demoted?: unknown } | null };
+  const flag = rec.same_fact_demoted ?? rec.article?.same_fact_demoted;
+  return flag !== undefined && flag !== null && flag !== false;
+}
+
 function urlKey(h: DemotableHighlight): string {
   const u = candidateOf(h).url;
   return u ? canonicalize(u) : "";
@@ -242,10 +249,15 @@ export function applyNegativePromotionEligibility<H extends DemotableHighlight>(
   }
   if (why.size === 0) return { highlights: highlights.slice(), actions, no_eligible_negative: false };
 
-  // Trio por mérito: top-N por score, empate pela ordem atual.
+  // Trio por mérito: top-N por score, empate pela ordem atual — só entre os
+  // ELEGÍVEIS a destaque. Item que o #9100 rebaixou (`same_fact_demoted`)
+  // segue na lista com o score original, mas não pode ser destaque: contá-lo
+  // no trio faria o negativo que subiu para ocupar a vaga dele parecer
+  // "promovido" e ser retirado do top-3 (#10985).
   const meritTrio = new Set(
     ordered
       .map((h, i) => ({ h, i }))
+      .filter(({ h }) => !isSameFactDemoted(h))
       .sort((a, b) => (b.h.score ?? 0) - (a.h.score ?? 0) || a.i - b.i)
       .slice(0, topN)
       .map((x) => x.h),
@@ -262,7 +274,7 @@ export function applyNegativePromotionEligibility<H extends DemotableHighlight>(
     const top = next.slice(0, topN).filter((x) => x !== h);
     const rest = next.slice(topN).filter((x) => x !== h);
     const fillable = rest.filter(
-      (x) => !(x as Record<string, unknown>).same_fact_demoted && !negativePromotionIneligibility(x, pastInWindow),
+      (x) => !isSameFactDemoted(x) && !negativePromotionIneligibility(x, pastInWindow),
     );
     const needsNegative = !top.some((x) => hasNegativeImpactTag(x) && !why.has(x));
     const negFill = needsNegative

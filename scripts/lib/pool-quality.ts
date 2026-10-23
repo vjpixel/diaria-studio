@@ -7,8 +7,21 @@ import type { ApprovedJson, StageArticle } from "./apply-stage2-caps.ts";
 
 export const POOL_PAST_WINDOW = 7;
 
+/**
+ * #9785: item pinado pelo editor — nunca sai do pool por corte automático
+ * (teto global do Stage 2, curadoria #10794). Cobre a submissão por e-mail
+ * (`flag: "editor_submitted"`, `editor_submitted: true`) e o item incluído à
+ * mão no gate (`flag: "editor_added"`, `source: "editor: incluído no gate"`,
+ * visto na 261007 sem `score`). Re-exportado por `apply-stage2-caps.ts`.
+ */
+export function isEditorPinned(a: StageArticle): boolean {
+  const flag = typeof a.flag === "string" ? a.flag : "";
+  const source = typeof a.source === "string" ? a.source : "";
+  return a.editor_submitted === true || flag.startsWith("editor") || /^editor\b/i.test(source);
+}
+
 export function lowSignalFormat(a: StageArticle): string | null {
-  if (a.editor_submitted === true || a.flag === "editor_submitted") return null;
+  if (isEditorPinned(a)) return null;
   try {
     const u = new URL(a.url ?? "");
     const host = u.hostname.toLowerCase().replace(/^www\./, "");
@@ -24,14 +37,19 @@ export function lowSignalFormat(a: StageArticle): string | null {
  */
 export function poolFactAnchors(text: string): Set<string> {
   const t = decodeHtmlEntities(text).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  // #10987: toda alternativa ancorada em \b — sem isso `work` casava
+  // "framework"/"network"/"workspace", `agent` casava "agentes" e `texts?`
+  // casava "context"/"texto", e qualquer item "Gemini … Workspace" fechava a
+  // assinatura sozinho. Prefixos de flexão (golp-, advoga-, restructur-) só
+  // levam o \b inicial.
   const signatures: Array<[string, RegExp, RegExp, RegExp]> = [
-    ["legal-practice", /\benter\b/, /\boab(?:-sp)?\b/, /advoca|advogad|lawyer|process|judici/],
-    ["android-message-scams", /google|circle to search/, /mensage|messages?|texts?/, /golp|scam/],
-    ["public-benefit-shares", /anthropic/, /public benefit|beneficio publico/, /shares|acoes|fundo|fund\b/],
-    ["gemini-work-apps", /gemini/, /work|trabalho|copiloto/, /apps|gmail|workspace|agent/],
-    ["state-child-lawsuit", /openai/, /states|estados|estaduais/, /kids|children|criancas|minors|menores/],
-    ["employment-restructure", /anthropic/, /workforce|employment|forca de trabalho/, /junior|meetings|restructur|hiring|contratac|reorganiz/],
-    ["claude-explainers", /claude/, /explainers|videos explicativos/, /dashboards|motion|dados da.*empresa/],
+    ["legal-practice", /\benter\b/, /\boab(?:-sp)?\b/, /\b(?:advoca|advogad|lawyer|process|judici)/],
+    ["android-message-scams", /\bgoogle\b|\bcircle to search\b/, /\b(?:mensage(?:m|ns)|messages?|texts?)\b/, /\b(?:golp|scam)/],
+    ["public-benefit-shares", /\banthropic\b/, /\b(?:public benefit|beneficio publico)\b/, /\b(?:shares|acoes|fundos?|funds?)\b/],
+    ["gemini-work-apps", /\bgemini\b/, /\b(?:work|trabalho|copiloto)\b/, /\b(?:apps?|gmail|workspace|agents?)\b/],
+    ["state-child-lawsuit", /\bopenai\b/, /\b(?:states|estados|estaduais)\b/, /\b(?:kids|children|criancas|minors|menores)\b/],
+    ["employment-restructure", /\banthropic\b/, /\b(?:workforce|employment|forca de trabalho)\b/, /\b(?:junior|meetings|restructur|hiring|contratac|reorganiz)/],
+    ["claude-explainers", /\bclaude\b/, /\b(?:explainers|videos explicativos)\b/, /\b(?:dashboards|motion)\b|\bdados da\b.*\bempresa\b/],
   ];
   return new Set(signatures.filter(([, entity, detail, other]) => entity.test(t) && detail.test(t) && other.test(t)).map(([key]) => key));
 }
@@ -49,6 +67,13 @@ export function curatePool(approved: ApprovedJson, past: PublishedDestaque[] = [
     if (!approved[bucket]) continue;
     const kept: StageArticle[] = [];
     for (const a of approved[bucket]!) {
+      // #10987: pinado pelo editor nunca vai pra reserva — nem por formato,
+      // nem por mesmo fato/história (#9785). Fica de fora das referências:
+      // escolha do editor não derruba outro item do pool.
+      if (isEditorPinned(a)) {
+        kept.push(a);
+        continue;
+      }
       const format = bucket === "radar" || bucket === "lancamento" ? lowSignalFormat(a) : null;
       const candidate = { url: a.url ?? "", title: a.title ?? "", text: String(a.summary ?? "") };
       const exactHighlight = (approved.highlights ?? []).some(h => {
