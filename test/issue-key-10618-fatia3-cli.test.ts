@@ -324,8 +324,9 @@ afterEach(() => {
 function sandbox(rules: GhRule[], issueRepos: string[] = [STUDIO, DESIGN]) {
   const root = mkdtempSync(join(tmpdir(), "fatia3-cli-"));
   roots.push(root);
-  // Fixture de config no cwd do subprocesso — o loader (`loadIssueRepos`)
-  // lê `{cwd}/platform.config.json`, nunca o do checkout.
+  // Fixture de config no cwd/`--root` do subprocesso. Só vale pra quem lê a
+  // allowlist pela raiz passada (`check-block-staleness`, `--root`); os gates
+  // que usam `ISSUE_REPOS_CONFIG_ROOT` (#10990) leem o config do checkout.
   writeFileSync(join(root, "platform.config.json"), JSON.stringify({ issue_repos: issueRepos }));
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -551,9 +552,12 @@ describe("#10618 fixer — CLI check-pr-terminal-state multi-repo", () => {
     assert.doesNotMatch(r.stdout, /^ok — /m);
   });
 
-  it("repo fora de issue_repos (fixture de config, não o platform.config.json real): nunca consultado, ressalva na linha final", () => {
-    // Fixture só com o studio: o design, que o config real permite, fica fora.
-    const sb = sandbox([studioList([])], [STUDIO]);
+  it("repo fora de issue_repos (allowlist da raiz do módulo, nunca do cwd — #10990): nunca consultado, ressalva na linha final", () => {
+    // Fixture no cwd só com o studio. Desde o #10990 a allowlist sai da raiz
+    // do módulo (`ISSUE_REPOS_CONFIG_ROOT`), não do cwd: a fixture NÃO pode
+    // restringir (o design, que o config real permite, segue consultado) —
+    // e o fork, fora do config real, nunca é consultado.
+    const sb = sandbox([studioList([]), designList([])], [STUDIO]);
     const r = sb.run("check-pr-terminal-state.ts", {
       issues: {
         [`${DESIGN}#21`]: { status: "pendente", pr: 23 },
@@ -561,9 +565,10 @@ describe("#10618 fixer — CLI check-pr-terminal-state multi-repo", () => {
       },
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stdout, /^ok PARCIAL — .*NÃO avaliados: .*vjpixel\/diaria-design \(fora de issue_repos\)/m);
-    assert.match(r.stdout, /fork\/diaria-design \(fora de issue_repos\)/);
-    assert.ok(!sb.calls().some((c) => c.includes("-R")), "nenhuma chamada -R");
+    assert.match(r.stdout, /^ok PARCIAL — .*NÃO avaliados: .*fork\/diaria-design \(fora de issue_repos\)/m);
+    assert.doesNotMatch(r.stdout, /vjpixel\/diaria-design \(/, "o design não fica de fora pela fixture do cwd");
+    assert.ok(sb.calls().some((c) => hasRepoFlag(c, DESIGN)), "o design é consultado (allowlist do módulo)");
+    assert.ok(!sb.calls().some((c) => c.includes("fork/diaria-design")), "o fork nunca é consultado");
   });
 
   it("identidade desconhecida com PR: aviso com índice e ressalva na linha final", () => {

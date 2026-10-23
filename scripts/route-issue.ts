@@ -227,6 +227,10 @@ export interface RouteIssueResult {
   commentAction: CommentAction;
   validated: boolean;
   resolvedTrack?: RouteTrack | "fora-de-rodada" | "overnight" | "bloqueada" | "develop" | "agendada";
+  /** #10976 — `true` quando a issue estava FECHADA: labels/marcador foram
+   * aplicados e `resolvedTrack` é o veredito pelas labels (o que a issue
+   * teria se reaberta); o track efetivo dela segue `fora-de-rodada`. */
+  issueClosed?: boolean;
   error?: string;
 }
 
@@ -446,11 +450,24 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   } else {
     projectedBody = removeWaitUntilMarker(projectedBody);
   }
+  // #10976 — issue FECHADA: `state: "CLOSED"` vence qualquer label na
+  // precedência de `classifyExecTrackWithRule` (1º passo), então dry-run e
+  // validação sempre devolviam `fora-de-rodada` e o verbo recusava SEM
+  // escrever nada — justamente no caso que o gate de saída do Develop
+  // (`check-develop-label-cleared.ts`) manda rodar: limpar `develop-track`/
+  // `windows` de issue já terminada (mergeada = fechada). O estado da issue
+  // não é algo que o roteamento controla; o que ele controla são labels e
+  // marcador. Então, para issue fechada, as duas validações rodam sobre as
+  // labels/corpo como se a issue estivesse aberta — o veredito validado é o
+  // que a issue teria se fosse reaberta — e `issueClosed: true` vai no
+  // resultado pra quem lê não confundir com roteamento de issue viva.
+  const issueClosed = fetchedBefore.data.state === "CLOSED";
+  const classifyState = (state: string): string => (state === "CLOSED" ? "OPEN" : state);
   const dryRunExpectedTrack = vagueDeferralUntilIso ? "agendada" : track;
   const dryRun = classifyExecTrackWithRule({
     labels: projectedLabels,
     body: projectedBody,
-    state: fetchedBefore.data.state,
+    state: classifyState(fetchedBefore.data.state),
     now,
   });
   const dryRunTrack = dryRun.track;
@@ -579,10 +596,13 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       error: `falha ao reler estado da issue ${issueLabel} pra validação: ${fetchedAfter.error}`,
     };
   }
+  // #10976 — mesma regra do dry-run: issue fechada valida pelas labels.
+  // Usa o estado RELIDO (não o inicial): se a issue foi reaberta entre o
+  // fetch e a escrita, valida como aberta de qualquer jeito.
   const resolvedTrack = classifyExecTrack({
     labels: fetchedAfter.data.labels,
     body: fetchedAfter.data.body,
-    state: fetchedAfter.data.state,
+    state: classifyState(fetchedAfter.data.state),
     now,
   });
   // #6272 — deferimento vago com marcador auto-computado resolve `agendada`
@@ -607,7 +627,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
         (vagueDeferralUntilIso ? ` (esperado "${expectedTrack}" por #6272, deferimento vago com marcador)` : "") +
         `, mas classifyExecTrack devolveu "${resolvedTrack}" com o estado final ` +
         `(labels=[${fetchedAfter.data.labels.join(", ")}], state=${fetchedAfter.data.state}). ` +
-        `Isso indica um bloqueio mais forte na precedência (ex: state CLOSED, label de ` +
+        `Isso indica um bloqueio mais forte na precedência (ex: label de ` +
         `BLOCKED_LABELS ainda presente) ou um gap no mapeamento veredito→labels.`,
     };
   }
@@ -620,6 +640,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     commentAction,
     validated: true,
     resolvedTrack,
+    ...(issueClosed ? { issueClosed: true } : {}),
   };
 }
 
