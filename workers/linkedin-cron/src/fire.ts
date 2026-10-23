@@ -1,7 +1,8 @@
-import type { Env, QueueEntry } from "./index";
+import type { Env, QueueEntry, ReelsContainerRef } from "./index";
 import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS } from "./index";
 import {
   fireQueueEntry,
+  pickReelsContainer,
   resolveInstagramCreds,
   resolveInstagramVjpixelCreds,
   resolveThreadsCreds,
@@ -81,6 +82,8 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     // fired=true (crash mid-flight do alarm), o cron detecta via /status e loga
     // error pra o editor investigar (em vez de silenciosamente pular).
     let cronShouldFire = true; // default = fallback (DO indisponível)
+    // #10922 — container de Reels que o alarm do DO deixou em processamento.
+    let doReelsContainer: ReelsContainerRef | null = null;
     try {
       const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
       const doStub = env.LINKEDIN_SCHEDULER.get(doId);
@@ -113,7 +116,8 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       // não disparamos — evita dup cron↔alarm.
       const claimRes = await doStub.fetch("https://do/claim", { method: "POST" });
       if (claimRes.ok) {
-        const claimData = await claimRes.json() as { claimed: boolean };
+        const claimData = await claimRes.json() as { claimed: boolean; reels_container?: ReelsContainerRef };
+        doReelsContainer = claimData.reels_container ?? null;
         if (!claimData.claimed) {
           // Alarm (ou outro cron) ganhou o claim — não postar.
           // Item será limpo na próxima rodada do cron quando fired=true.
@@ -160,6 +164,14 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       threads: resolveThreadsCreds(env),
       linkedin: resolveLinkedInCreds(env), // #8052
     };
+    // #10922 — Reels: retoma o container de uma volta anterior (entry do KV ou DO).
+    const resumeContainer = pickReelsContainer(entry.reels_container, doReelsContainer, Date.now());
+    const hadContainer = Boolean(entry.reels_container || doReelsContainer);
+    if (resumeContainer) entry = { ...entry, reels_container: resumeContainer };
+    else if (entry.reels_container) {
+      const { reels_container: _stale, ...rest } = entry;
+      entry = rest;
+    }
     const outcome = await fireQueueEntry(entry, config);
 
     if (outcome.status === "dlq") {
@@ -255,6 +267,19 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       } catch { /* non-fatal */ }
       failureReason = outcome.reason;
       console.error(`[fire] ${k.name} fire failed: ${outcome.reason}`);
+      // #10922 — o container a retomar vai pra entry (re-write abaixo) e pro DO,
+      // pra o /claim seguinte não devolver um container que este disparo descartou.
+      const { reels_container: _prev, ...withoutContainer } = entry;
+      entry = outcome.reelsContainer ? { ...withoutContainer, reels_container: outcome.reelsContainer } : withoutContainer;
+      if (outcome.reelsContainer || hadContainer) {
+        try {
+          const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+          await env.LINKEDIN_SCHEDULER.get(doId).fetch("https://do/reels-container", {
+            method: "POST",
+            body: JSON.stringify({ reels_container: outcome.reelsContainer ?? null }),
+          });
+        } catch { /* non-fatal — a entry do KV também guarda o container */ }
+      }
     }
 
     if (succeeded) continue;

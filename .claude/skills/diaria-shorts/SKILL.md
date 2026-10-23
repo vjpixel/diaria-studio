@@ -65,7 +65,7 @@ Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. R
 
 ## Passo 3b — Instagram acima do teto (Chrome, #10915)
 
-Só quando o item `instagram` do plano vem `guided` (vertical acima do teto da autora). Roda **só na máquina Windows do editor**, com o Chrome logado no instagram.com como @vjpixel (label `windows`); fora dela, deixar o passo pro editor e seguir.
+Só quando o item `instagram` do plano vem `guided` (vertical acima do teto da autora). O item traz `at`: o horário do slot que o plano já reservou na grade para ele (#10933, #10819), então os outros destinos e o repost do LinkedIn foram planejados contando com esse post — publicar nesse horário, não no `shortTime` cru. Roda **só na máquina Windows do editor**, com o Chrome logado no instagram.com como @vjpixel (label `windows`); fora dela, deixar o passo pro editor e seguir.
 
 O `--publish` do Passo 3, depois de publicar os destinos de API, gera a versão para o `file_upload` do Claude in Chrome: `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`, ffmpeg 2-pass em 720x1280, AAC 64k 48 kHz, `+faststart`, bitrate calculado pela duração mirando 9,5 MB (abaixo do limite de 10 MB do `file_upload`). Vídeos muito longos podem não caber nem no bitrate mínimo (250 kbps de vídeo: acima de ~4 min o arquivo passa dos 10 MB). O item traz `upload: { path, sizeBytes, fitsChromeUpload }` e a legenda pronta em `caption`. Se o ffmpeg falhar (ou passar de 15 min por passada), `upload.path` aponta pro original com `fitsChromeUpload: false` (sai `[aviso]`). Rodar de novo reaproveita o arquivo gerado só quando o sidecar `.json` ao lado dele bate com o vertical atual (caminho, tamanho, mtime) e com o bitrate.
 
@@ -124,6 +124,6 @@ Se o vídeo subiu por `publish-youtube.ts --upload`, `--video-url` é opcional (
 
 ## Passo 6 — Relatar
 
-Uma linha por destino, com o estado normalizado da linha `[ok] … (estado …)` (`resolveShortEntryState`): publicado/agendado (com URL), `send_unknown` do LinkedIn (conferir o perfil), X agendado na Buffer (`scheduled` até o `dueAt`, depois `unknown` até conferir), na fila do Worker (Instagram, `scheduled` até a hora, depois `unknown` até confirmar no app — `resolveWorkerQueueState`), pendente (Instagram sem fila, antes do horário do vertical), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
+Uma linha por destino, com o estado normalizado da linha `[ok] … (estado …)` (`resolveShortEntryState`): publicado/agendado (com URL), `send_unknown` do LinkedIn (conferir o perfil), X agendado na Buffer (`scheduled` até o `dueAt`, depois `unknown` até conferir), na fila do Worker (Instagram, `scheduled` até a hora, depois `unknown` até confirmar no app — `resolveWorkerQueueState`), pendente (Instagram sem fila, antes do horário do vertical), Instagram manual acima do teto (pendente até o `--confirm-instagram` ou `--mark instagram=URL` do Passo 3b), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
 
 Teste de 2 semanas a partir de 261022 (#10769, destinos; o teste de horário do #10831 é outro, ver acima): no fim, comparar os visualizadores e as visitas ao canal por destino, e manter só os destinos que trouxerem gente.
