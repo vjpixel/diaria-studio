@@ -968,11 +968,12 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     });
     alarmArmed = armRes.ok;
     if (armRes.status === 409) {
-      // #10992 item 1 — 2ª linha (atômica, dentro do DO): ele já disparou entre
-      // o /status lá em cima e este /arm. A entry gravada não sai (o cron vê
-      // `fired` e só a apaga); dizer isso ao cliente em vez de 202.
-      console.warn(`[enqueue] DO de ${key} já disparou — /arm recusado, nada agendado (#10992)`);
-      return idempotentConflict("already_fired", key);
+      // #10992/#11035 — o DO disparou ou ganhou o claim entre /status e /arm.
+      // Propagar o conflito correto ao cliente em vez de confirmar o agendamento.
+      const conflict = await armRes.json() as { claiming?: boolean };
+      const reason = conflict.claiming ? "fire_in_progress" : "already_fired";
+      console.warn(`[enqueue] DO de ${key} recusou /arm: ${reason}`);
+      return idempotentConflict(reason, key);
     }
     if (!armRes.ok) {
       console.warn(`[enqueue] DO arm failed for key=${key} status=${armRes.status} — cron fallback active`);
