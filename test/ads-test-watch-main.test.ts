@@ -136,6 +136,7 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
       );
       const callOrder: string[] = [];
       const notifyCalls: NotifyEditorFinding[] = [];
+      const cacRunStatePaths: Array<string | undefined> = [];
 
       await main(
         [],
@@ -145,8 +146,9 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
             callOrder.push("origem");
             return true;
           },
-          runCacReport: async () => {
+          runCacReport: async (_snapshotDate, _bracos, runStatePath) => {
             callOrder.push("cac");
+            cacRunStatePaths.push(runStatePath);
             return { ok: true, zeroCadastrosArms: [] };
           },
           notify: async (f) => (notifyCalls.push(f), fakeNotifyResult()),
@@ -154,6 +156,8 @@ describe("#5845 — ads-test-watch main (I/O): apuração", () => {
       );
 
       assert.deepEqual(callOrder, ["origem", "cac"], "build-origem-map SEMPRE imediatamente antes de cac-report (§7.2)");
+      // #8238 (Emenda): o run-state é repassado ao cac-report (vira --apuracao-2608).
+      assert.deepEqual(cacRunStatePaths, [join(dir, "run-state.json")]);
       assert.equal(notifyCalls.length, 1);
       assert.match(notifyCalls[0].subject, /apuração congelada rodou/);
 

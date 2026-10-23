@@ -422,7 +422,8 @@ export function computeEmendaSection(
   meta: { runStatePath: string; corte: string },
   gastoPorFase: EmendaGastoPorFase | null = null,
 ): EmendaSection {
-  const arms = runState.bracos.map((b) => computeEmendaArm(subs, spendRows, runState, b, gastoPorFase));
+  if (gastoPorFase) validateEmendaGastoPorFaseKeys(gastoPorFase, runState);
+  const arms =runState.bracos.map((b) => computeEmendaArm(subs, spendRows, runState, b, gastoPorFase));
   return { ...meta, arms, verdict: evaluateEmendaVerdict(arms), gastoPorFaseFornecido: gastoPorFase != null };
 }
 
@@ -512,4 +513,30 @@ export function parseEmendaGastoPorFase(raw: unknown): EmendaGastoPorFase {
     }
   }
   return out;
+}
+
+/**
+ * Confere as chaves de `--gasto-fases` contra o `run-state` (braços e ids de
+ * fase de cada braço). Chave digitada errado (`pre_pausa`, braço sem o sufixo)
+ * lança nomeando a chave inválida e as válidas — nunca vira `gastoBrl: null`
+ * em silêncio, que faria o veredito dizer "gasto por fase não fornecido" a
+ * quem acabou de fornecê-lo (#8238, self-review do PR #10956). @pure
+ */
+export function validateEmendaGastoPorFaseKeys(gastoPorFase: EmendaGastoPorFase, runState: EmendaRunStateInput): void {
+  const bracos = runState.bracos;
+  for (const [braco, fases] of Object.entries(gastoPorFase)) {
+    if (!bracos.includes(braco)) {
+      throw new Error(
+        `--gasto-fases: braço desconhecido "${braco}". Braços válidos (run-state): ${bracos.map((b) => `"${b}"`).join(", ")}`,
+      );
+    }
+    const validas = resolveEmendaPhaseWindows(runState, braco).map((w) => w.id);
+    for (const fase of Object.keys(fases)) {
+      if (!validas.includes(fase)) {
+        throw new Error(
+          `--gasto-fases: fase desconhecida "${fase}" no braço "${braco}". Fases válidas: ${validas.map((f) => `"${f}"`).join(", ")}`,
+        );
+      }
+    }
+  }
 }

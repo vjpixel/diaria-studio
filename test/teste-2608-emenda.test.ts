@@ -18,6 +18,7 @@ import {
   formatEmendaSectionMarkdown,
   parseEmendaGastoPorFase,
   resolveEmendaPhaseWindows,
+  validateEmendaGastoPorFaseKeys,
   type EmendaArmResult,
   type EmendaRunStateInput,
 } from "../scripts/lib/teste-2608-emenda.ts";
@@ -210,6 +211,20 @@ describe("parseEmendaGastoPorFase", () => {
     assert.throws(() => parseEmendaGastoPorFase({ [G]: { "pre-pausa": -1 } }));
     assert.throws(() => parseEmendaGastoPorFase({ [G]: { "pre-pausa": "1" } }));
     assert.throws(() => parseEmendaGastoPorFase([]));
+  });
+
+  it("#10956 — chave de fase/braço digitada errado falha alto nomeando a inválida e as válidas (antes virava 'não fornecido' em silêncio)", () => {
+    assert.throws(
+      () => computeEmendaSection([], [], RUN_STATE, { runStatePath: "rs.json", corte: "c" }, { [G]: { pre_pausa: 100 } }),
+      (e: Error) => /fase desconhecida "pre_pausa"/.test(e.message) && /"pre-pausa", "pos-retomada"/.test(e.message),
+    );
+    assert.throws(
+      () => computeEmendaSection([], [], RUN_STATE, { runStatePath: "rs.json", corte: "c" }, { "Google Ads": { "pre-pausa": 100 } }),
+      (e: Error) => /braço desconhecido "Google Ads"/.test(e.message) && e.message.includes(`"${G}"`),
+    );
+    assert.doesNotThrow(() =>
+      validateEmendaGastoPorFaseKeys({ [G]: { "pre-pausa": 1, "pos-retomada": 2 }, [M]: { "pos-retomada": 3 } }, RUN_STATE),
+    );
   });
 });
 
