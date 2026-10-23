@@ -41,7 +41,12 @@
  * semana não publicada ("draft") ou já publicada fecha; estado ambíguo fica.
  *
  * `--hello` envia um post curto de teste ("Olá, mundo") — também publicado
- * na hora; combine com a Stack antes, eles acompanham o 1º envio.
+ * na hora; combine com a Stack antes, eles acompanham o 1º envio. Sai uma vez
+ * só: o marcador `data/weekly/_internal/circle-stack-hello.json` recusa o 2º
+ * envio sem `--force` (#10977). O `--publish` do ciclo pega um lock exclusivo
+ * (`circle-stack-published.json.lock`) antes de ler o estado (#10977), e recusa
+ * seleção com link não oficial em Lançamentos/Use melhor (#11004) ou título em
+ * inglês (#11005) — no dry-run essas linhas saem como avisos.
  *
  * Doppler/.env: `STACK_WEBHOOK_URL` (URL do webhook n8n — fora do repo, que é
  * público) e `STACK_WEBHOOK_KEY` (enviado em `X-Webhook-Key`).
@@ -55,7 +60,7 @@
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -67,7 +72,12 @@ import {
   resolveWeeklyLinkedinCycle,
   weeklyLinkedinRelDir,
 } from "./lib/weekly-linkedin-cycle.ts";
-import { resolveCircleStackState, type CircleStackPublishedLike, type PublishState } from "./lib/publish-state.ts";
+import {
+  resolveCircleStackState,
+  type CircleStackPublishedLike,
+  type CircleStackPublishedState,
+  type PublishState,
+} from "./lib/publish-state.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import {
   ALARM_LABEL,
@@ -89,6 +99,7 @@ import {
   type StackPostPayload,
 } from "./lib/stack-webhook.ts";
 import {
+  circleStackSelectionViolations,
   selectCircleStack,
   parseInterestProfile,
   STACK_INTEREST_PROFILE,
@@ -107,7 +118,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export interface CircleStackConfig {
   enabled: boolean;
   subscribeUrl: string | null;
-  interests: InterestTerm[];
+  interests: readonly InterestTerm[];
 }
 
 /** Pure: lê o bloco `circle_stack` do config. */
@@ -280,11 +291,14 @@ function readEdition(editionsRootDir: string, date: string): EditionRead | null 
   };
 }
 
-function toItem(c: StackScoredCandidate): CircleStackItem & { score: number; matchedTerms: string[] } {
+function toItem(c: StackScoredCandidate): CircleStackItem & { titleOriginal: string; score: number; matchedTerms: string[] } {
+  // `titleOriginal` (#11005): o título como veio da edição, para auditoria — o
+  // editor reescreve `title` em português na seleção quando a fonte é em inglês.
   return {
     editionDate: c.editionDate,
     url: c.url,
     title: c.title,
+    titleOriginal: c.title,
     body: c.body,
     why: c.why,
     // #11003: só destaques carregam a posição; vira a âncora #dN do link da edição.
@@ -298,7 +312,7 @@ function toItem(c: StackScoredCandidate): CircleStackItem & { score: number; mat
 export function buildCircleStackSelection(
   dataRoot: string,
   publishMonday: string,
-  interests: InterestTerm[],
+  interests: readonly InterestTerm[],
 ): CircleStackSelection & { publishMonday: string; editionsFound: string[]; editionsMissing: string[]; warnings: string[]; generatedAt: string } {
   const r = resolveWeeklyLinkedinCycle(publishMonday);
   if (!r) throw new Error(`--publish-monday inválido: ${publishMonday} (esperado AAMMDD)`);
@@ -372,6 +386,7 @@ export function parseStoredCircleStackSelection(
         if (typeof rec[f] !== "string") fail(`${section}[${i}].${f} ausente ou não é texto`);
       }
       if (rec.stackNote !== undefined && typeof rec.stackNote !== "string") fail(`${section}[${i}].stackNote não é texto`);
+      if (rec.titleOriginal !== undefined && typeof rec.titleOriginal !== "string") fail(`${section}[${i}].titleOriginal não é texto`);
       if (rec.destaqueN !== undefined && !(Number.isInteger(rec.destaqueN) && (rec.destaqueN as number) >= 1 && (rec.destaqueN as number) <= 3)) {
         fail(`${section}[${i}].destaqueN precisa ser 1, 2 ou 3`);
       }
@@ -405,16 +420,107 @@ export interface PublishCircleStackCycleInput {
 export async function publishCircleStackCycle(input: PublishCircleStackCycleInput): Promise<{ publishedAt: string; forced: boolean }> {
   const { statePath, cycle, title, payload, force, send } = input;
   const now = input.now ?? (() => new Date());
-  const state = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
-  const blockReason = circleStackPublishBlockReason(state, cycle, statePath);
-  if (blockReason && !force) throw new Error(blockReason);
+  // #10977: o lock vem ANTES da leitura do estado — dois --publish simultâneos
+  // não podem ver "draft" ao mesmo tempo. O estado é lido já com o lock na mão.
+  const release = acquireCircleStackPublishLock(circleStackPublishLockPath(statePath));
+  try {
+    const state = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
+    const blockReason = circleStackPublishBlockReason(state, cycle, statePath);
+    if (blockReason && !force) throw new Error(blockReason);
 
-  const attempt = { cycle, title, attempted_at: now().toISOString() };
-  writeFileAtomic(statePath, JSON.stringify(attempt, null, 2));
-  await send(payload);
-  const publishedAt = now().toISOString();
-  writeFileAtomic(statePath, JSON.stringify({ ...attempt, published_at: publishedAt }, null, 2));
-  return { publishedAt, forced: blockReason !== null };
+    const attempt: CircleStackPublishedState = { cycle, title, attempted_at: now().toISOString() };
+    writeFileAtomic(statePath, JSON.stringify(attempt, null, 2));
+    await send(payload);
+    const publishedAt = now().toISOString();
+    const confirmed: CircleStackPublishedState = { ...attempt, published_at: publishedAt };
+    writeFileAtomic(statePath, JSON.stringify(confirmed, null, 2));
+    return { publishedAt, forced: blockReason !== null };
+  } finally {
+    release();
+  }
+}
+
+/** Lock do `--publish` do ciclo, ao lado do state (#10977). */
+export function circleStackPublishLockPath(statePath: string): string {
+  return `${statePath}.lock`;
+}
+
+/**
+ * Lock exclusivo (`O_CREAT | O_EXCL`, flag `wx`) contra `--publish`
+ * concorrente na mesma máquina (#10977). Devolve a função que o libera.
+ *
+ * Lock já existente recusa SEMPRE — sem tomada automática de lock antigo: dois
+ * processos que achassem o lock velho ao mesmo tempo poderiam apagar um o do
+ * outro. Um lock que sobrou de processo morto só custa apagar o arquivo à mão,
+ * e o state continua protegendo contra duplicata (tentativa sem confirmação →
+ * "unknown"). Limite conhecido: entre máquinas (Windows e `300` pelo
+ * OneDrive) o lock só vale depois que o arquivo replica.
+ */
+export function acquireCircleStackPublishLock(lockPath: string): () => void {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  let fd: number;
+  try {
+    fd = openSync(lockPath, "wx");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    let age = "";
+    try {
+      age = `, criado há ${Math.max(0, Math.round((Date.now() - statSync(lockPath).mtimeMs) / 1000))}s`;
+    } catch {
+      // sumiu entre o open e o stat: outro processo acabou de liberar.
+    }
+    throw new Error(
+      `Outro --publish da Stack está em andamento (lock ${lockPath}${age}). ` +
+        "Se nenhum está rodando (processo morto), confira o Radar e apague o arquivo antes de tentar de novo.",
+    );
+  }
+  try {
+    writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  } finally {
+    closeSync(fd);
+  }
+  return () => rmSync(lockPath, { force: true });
+}
+
+/** Marcador do `--hello` (#10977) — fora dos ciclos, em `data/weekly/_internal/`. */
+export function circleStackHelloMarkerPath(dataRoot: string): string {
+  return join(dataRoot, "data", "weekly", "_internal", "circle-stack-hello.json");
+}
+
+/**
+ * Envia o post de teste "Olá, mundo" uma vez só (#10977). Todo `--hello`
+ * publica na hora numa comunidade de terceiro, então um 2º envio sem querer
+ * vira post duplicado. O marcador é gravado ANTES do envio (`attempted_at`) e
+ * confirmado (`sent_at`) depois — marcador presente, confirmado ou não,
+ * recusa sem `force`.
+ */
+export async function publishCircleStackHello(input: {
+  markerPath: string;
+  force: boolean;
+  send: () => Promise<void>;
+  now?: () => Date;
+}): Promise<{ sentAt: string; forced: boolean }> {
+  const now = input.now ?? (() => new Date());
+  const exists = existsSync(input.markerPath);
+  if (exists && !input.force) {
+    let prev = "";
+    try {
+      prev = ` (${readFileSync(input.markerPath, "utf8").replace(/\s+/g, " ").trim().slice(0, 200)})`;
+    } catch {
+      // ilegível: a recusa vale do mesmo jeito.
+    }
+    throw new Error(
+      `O --hello já foi enviado ou tentado${prev} — marcador ${input.markerPath}. ` +
+        'Ele publica "Olá, mundo" na hora; use --force para enviar de novo.',
+    );
+  }
+  mkdirSync(dirname(input.markerPath), { recursive: true });
+  const attempt = { attempted_at: now().toISOString() };
+  writeFileAtomic(input.markerPath, JSON.stringify(attempt, null, 2));
+  await input.send();
+  const sentAt = now().toISOString();
+  writeFileAtomic(input.markerPath, JSON.stringify({ ...attempt, sent_at: sentAt }, null, 2));
+  return { sentAt, forced: exists };
 }
 
 /**
@@ -557,7 +663,13 @@ async function main(): Promise<void> {
 
   if (hasFlag(argv, "hello")) {
     if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
-    await sendStackPost(webhookUrl, key, buildStackPostPayload(HELLO_POST.titulo, HELLO_POST.corpo));
+    assertStackWebhookConfig(webhookUrl, key);
+    const helloPayload = buildStackPostPayload(HELLO_POST.titulo, HELLO_POST.corpo);
+    await publishCircleStackHello({
+      markerPath: circleStackHelloMarkerPath(resolve(getStringArg(argv, "data-root") ?? ROOT)),
+      force: hasFlag(argv, "force"),
+      send: () => sendStackPost(webhookUrl, key, helloPayload),
+    });
     console.log(`Post de teste publicado no Radar de Notícias Stack: "${HELLO_POST.titulo}"`);
     return;
   }
@@ -589,6 +701,10 @@ async function main(): Promise<void> {
     selection = built;
     warnings = built.warnings;
   }
+  // #11004/#11005: checagem sobre a seleção que vai SAIR (inclusive editada à
+  // mão e reaproveitada). Dry-run avisa; --publish recusa antes de qualquer envio.
+  const violations = circleStackSelectionViolations(selection);
+  warnings = [...warnings, ...violations.filter((v) => !warnings.includes(v))];
   for (const w of warnings) console.warn(`⚠ ${w}`);
 
   const rendered = renderCircleStackPost(selection, {
@@ -644,6 +760,12 @@ ${rendered.markdown}
 
   if (hasFlag(argv, "notify")) console.log("--notify ignorado junto com --publish.");
   if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
+  if (violations.length > 0) {
+    throw new Error(
+      `Seleção ${selectionPath} fora das regras do canal — corrija e rode de novo:\n` +
+        violations.map((v) => `  - ${v}`).join("\n"),
+    );
+  }
   // Config validada ANTES de gravar a tentativa: erro de config nunca chegou à
   // rede e não pode deixar o ciclo em "unknown".
   assertStackWebhookConfig(webhookUrl, key);

@@ -3,7 +3,7 @@
  *
  * Renderização do artefato colável da newsletter semanal do LinkedIn —
  * cobre os pontos exigidos pelo dispatch:
- *   - título literal + numeração (única transformação permitida).
+ *   - título literal, sem numeração (#11006 — antes "1. Título").
  *   - sem link por destaque (nenhum <a href> dentro do bloco da manchete).
  *   - UTMs corretas (source=linkedin, medium=newsletter, campaign=ln-{cycle},
  *     content=lista|cta-fim — item-01/02/03 e cta-usemelhor NÃO existem mais, #8025).
@@ -16,7 +16,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   renderLinkedinWeeklyHtml,
-  numberedTitle,
+  otherWeeklyHighlights,
+  OTHER_HIGHLIGHTS_HEADING,
   buildLinkedinWeeklyUrl,
   linkedinWeeklyCampaign,
   endsInBareDomainLabel,
@@ -41,19 +42,13 @@ const BASE_INPUT: WeeklyLinkedinRenderInput = {
   closing: "É isso que a diar.ia.br cobre todo dia, sem enrolação.",
 };
 
-describe("numberedTitle", () => {
-  it("prefixa o número — única transformação permitida sobre o título literal", () => {
-    assert.equal(numberedTitle(1, "Título original"), "1. Título original");
-    assert.equal(numberedTitle(3, "Outro título"), "3. Outro título");
-  });
-});
-
-describe("renderLinkedinWeeklyHtml — título literal + numeração, sem link por destaque", () => {
+describe("renderLinkedinWeeklyHtml — título literal sem numeração, sem link por destaque", () => {
   const result = renderLinkedinWeeklyHtml(BASE_INPUT);
 
-  it("cada manchete aparece numerada e literal (sem reescrita)", () => {
-    assert.match(result.html, /<h2>1\. Itaú corta 500 vagas com automação<\/h2>/);
-    assert.match(result.html, /<h2>2\. Professor flagra 90% da turma colando com IA<\/h2>/);
+  it("cada manchete aparece literal e SEM o prefixo 'N. ' (#11006)", () => {
+    assert.match(result.html, /<h2>Itaú corta 500 vagas com automação<\/h2>/);
+    assert.match(result.html, /<h2>Professor flagra 90% da turma colando com IA<\/h2>/);
+    assert.ok(!/<h2>\d+\.\s/.test(result.html), "nenhuma manchete numerada");
   });
 
   it("corpo e 'por que importa' aparecem literais", () => {
@@ -94,7 +89,7 @@ describe("renderLinkedinWeeklyHtml — linha 'da edição de DD/MM' sob cada man
       headlines: [{ title: "Título com origem", body: "Corpo.", why: "", editionDate: "260803" }],
     };
     const html = renderLinkedinWeeklyHtml(input).html;
-    const idxTitle = html.indexOf("<h2>1. Título com origem</h2>");
+    const idxTitle = html.indexOf("<h2>Título com origem</h2>");
     const idxOrigin = html.indexOf("da edição de 03/08");
     const idxBody = html.indexOf("<p>Corpo.</p>");
     assert.ok(idxTitle >= 0 && idxOrigin >= 0 && idxBody >= 0);
@@ -103,7 +98,7 @@ describe("renderLinkedinWeeklyHtml — linha 'da edição de DD/MM' sob cada man
 
   it("sem editionDate (fixture antiga/omitido), a linha de proveniência não aparece — sem regressão pro caso sem o campo", () => {
     // Busca o fragmento HTML exato da linha (não texto solto "da edição de"
-    // — "Edições da semana" lista destaques cujo título literal pode
+    // — "Outros destaques da semana" lista destaques cujo título literal pode
     // conter esse texto por coincidência, ex: "Título da edição de terça"
     // em BASE_INPUT, sem relação com esta feature).
     const result = renderLinkedinWeeklyHtml(BASE_INPUT);
@@ -206,11 +201,11 @@ describe("renderLinkedinWeeklyHtml — ordem de montagem restaurada ao template 
   it("com 3 manchetes (caso normal): opening → h1 → h2 → USE MELHOR → h3 → resto da semana → closing", () => {
     const result = renderLinkedinWeeklyHtml(THREE_HEADLINES_INPUT);
     const idxOpening = result.html.indexOf(BASE_INPUT.opening);
-    const idxH1 = result.html.indexOf("<h2>1. Headline 1</h2>");
-    const idxH2 = result.html.indexOf("<h2>2. Headline 2</h2>");
+    const idxH1 = result.html.indexOf("<h2>Headline 1</h2>");
+    const idxH2 = result.html.indexOf("<h2>Headline 2</h2>");
     const idxUseMelhor = result.html.indexOf("Use melhor");
-    const idxH3 = result.html.indexOf("<h2>3. Headline 3</h2>");
-    const idxEdicoes = result.html.indexOf("Edições da semana");
+    const idxH3 = result.html.indexOf("<h2>Headline 3</h2>");
+    const idxEdicoes = result.html.indexOf(OTHER_HIGHLIGHTS_HEADING);
     const idxClosing = result.html.indexOf(BASE_INPUT.closing);
 
     for (const idx of [idxOpening, idxH1, idxH2, idxUseMelhor, idxH3, idxEdicoes, idxClosing]) {
@@ -220,14 +215,14 @@ describe("renderLinkedinWeeklyHtml — ordem de montagem restaurada ao template 
     assert.ok(idxH1 < idxH2, "h1 antes de h2");
     assert.ok(idxH2 < idxUseMelhor, "h2 antes do USE MELHOR — CTA do meio alcança quem lê parcial");
     assert.ok(idxUseMelhor < idxH3, "USE MELHOR antes de h3");
-    assert.ok(idxH3 < idxEdicoes, "h3 antes de Edições da semana");
-    assert.ok(idxEdicoes < idxClosing, "Edições da semana antes do closing");
+    assert.ok(idxH3 < idxEdicoes, "h3 antes de Outros destaques da semana");
+    assert.ok(idxEdicoes < idxClosing, "Outros destaques da semana antes do closing");
   });
 
   it("semana reduzida com 2 manchetes: USE MELHOR entra depois da 2ª (mesma regra — não sobra 3ª manchete)", () => {
     const input: WeeklyLinkedinRenderInput = { ...THREE_HEADLINES_INPUT, headlines: THREE_HEADLINES_INPUT.headlines.slice(0, 2) };
     const result = renderLinkedinWeeklyHtml(input);
-    const idxH2 = result.html.indexOf("<h2>2. Headline 2</h2>");
+    const idxH2 = result.html.indexOf("<h2>Headline 2</h2>");
     const idxUseMelhor = result.html.indexOf("Use melhor");
     assert.ok(idxH2 >= 0 && idxUseMelhor >= 0);
     assert.ok(idxH2 < idxUseMelhor);
@@ -236,63 +231,86 @@ describe("renderLinkedinWeeklyHtml — ordem de montagem restaurada ao template 
   it("semana reduzida com 1 manchete: USE MELHOR entra logo depois dela (equivalente a 'no fim')", () => {
     const input: WeeklyLinkedinRenderInput = { ...THREE_HEADLINES_INPUT, headlines: THREE_HEADLINES_INPUT.headlines.slice(0, 1) };
     const result = renderLinkedinWeeklyHtml(input);
-    const idxH1 = result.html.indexOf("<h2>1. Headline 1</h2>");
+    const idxH1 = result.html.indexOf("<h2>Headline 1</h2>");
     const idxUseMelhor = result.html.indexOf("Use melhor");
     assert.ok(idxH1 >= 0 && idxUseMelhor >= 0);
     assert.ok(idxH1 < idxUseMelhor);
   });
 });
 
-describe("renderLinkedinWeeklyHtml — Edições da semana (#4456, 260802 — era 'Resto da semana')", () => {
-  it("cada edição vira 1 item com link pra edição + seus destaques listados", () => {
+describe("renderLinkedinWeeklyHtml — Outros destaques da semana (#11006; era 'Edições da semana', #4456)", () => {
+  it("cada edição vira data com link (parágrafo próprio, UTM lista) + seus títulos em lista logo abaixo", () => {
     const result = renderLinkedinWeeklyHtml(BASE_INPUT);
-    assert.match(result.html, /Edição de 29\/07/);
-    assert.match(result.html, /Título da edição de terça/);
-    assert.match(result.html, /D2 de terça/);
-    assert.match(result.html, /D3 de terça/);
-    assert.match(result.html, /Edição de 30\/07/);
-    assert.match(result.html, /Título da edição de quarta/);
-    assert.match(result.html, /utm_content=lista/);
+    assert.match(result.html, new RegExp(`<h3>${OTHER_HIGHLIGHTS_HEADING}</h3>`));
+    assert.ok(!/Edições da semana/.test(result.html), "rótulo antigo não pode sobrar");
+    assert.match(result.html, /<p><a href="[^"]*utm_content=lista[^"]*">Edição de 29\/07<\/a><\/p>\n<ul>\n<li>Título da edição de terça<\/li>\n<li>D2 de terça<\/li>\n<li>D3 de terça<\/li>\n<\/ul>/);
+    assert.match(result.html, /Edição de 30\/07<\/a><\/p>\n<ul>\n<li>Título da edição de quarta<\/li>\n<\/ul>/);
   });
 
-  it("a lista é PLANA, com separador de texto entre os destaques (achado ao vivo 260803)", () => {
+  it("um título por linha: nunca o separador ' · ' nem <ul> aninhada", () => {
     const html = renderLinkedinWeeklyHtml(BASE_INPUT).html;
-    const secao = html.slice(html.indexOf("Edições da semana"));
-    const listaFim = secao.indexOf("</ul>") + "</ul>".length;
-    const lista = secao.slice(0, listaFim);
-    // O editor do LinkedIn achata <ul> aninhada e cola os destaques num bloco
-    // corrido, sem separador — por isso a estrutura tem que ser plana na origem.
-    assert.equal((lista.match(/<ul>/g) ?? []).length, 1, `só pode haver 1 <ul>, sem aninhamento: ${lista}`);
-    assert.ok(lista.includes(" · "), "destaques precisam de separador em TEXTO, que sobrevive ao achatamento");
-    // e os títulos continuam todos presentes, na ordem
-    const item = lista.slice(lista.indexOf("Edição de 29/07"));
-    const d2 = item.indexOf("D2 de terça");
-    const d3 = item.indexOf("D3 de terça");
-    assert.ok(d2 > 0 && d3 > d2, "destaques preservados e em ordem dentro do item");
+    const secao = html.slice(html.indexOf(OTHER_HIGHLIGHTS_HEADING));
+    assert.ok(!secao.includes(" · "), secao);
+    for (const ul of secao.split("<hr/>")[0].match(/<ul>[^]*?<\/ul>/g) ?? []) {
+      assert.equal((ul.match(/<ul>/g) ?? []).length, 1, `lista aninhada: ${ul}`);
+    }
   });
 
-  it("edição sem destaque parseável não deixa ': ' órfão depois do link", () => {
+  it("omite o título que já apareceu acima como manchete ou Use Melhor (título normalizado)", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      headlines: [{ title: "Título  da edição de TERÇA", body: "Corpo.", why: "" }],
+      useMelhor: { title: "D2 de terça", url: "https://exemplo.com/um", description: "", editorComment: "" },
+    };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    const secao = html.slice(html.indexOf(OTHER_HIGHLIGHTS_HEADING));
+    assert.ok(!secao.includes("Título da edição de terça"), secao);
+    assert.ok(!secao.includes("<li>D2 de terça</li>"), secao);
+    assert.ok(secao.includes("<li>D3 de terça</li>"), secao);
+  });
+
+  it("data sem nenhum título restante some", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      headlines: [{ title: "Título da edição de quarta", body: "Corpo.", why: "" }],
+    };
+    const html = renderLinkedinWeeklyHtml(input).html;
+    assert.ok(!html.includes("Edição de 30/07"), "edição de quarta ficou sem título e deveria sumir");
+    assert.ok(html.includes("Edição de 29/07"));
+  });
+
+  it("sem nada restante na semana, a seção inteira some", () => {
+    const input: WeeklyLinkedinRenderInput = {
+      ...BASE_INPUT,
+      weeklyEditions: [{ editionDate: "260730", url: "https://diar.ia.br/p/x", destaques: ["Itaú corta 500 vagas com automação"] }],
+    };
+    assert.ok(!renderLinkedinWeeklyHtml(input).html.includes(OTHER_HIGHLIGHTS_HEADING));
+    assert.ok(!renderLinkedinWeeklyHtml({ ...BASE_INPUT, weeklyEditions: [] }).html.includes(OTHER_HIGHLIGHTS_HEADING));
+  });
+
+  it("edição sem destaque parseável não vira data órfã", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       weeklyEditions: [{ editionDate: "260729", url: "https://diar.ia.br/p/x", destaques: [] }],
     };
-    const html = renderLinkedinWeeklyHtml(input).html;
-    assert.ok(!/<\/a>:\s*<\/li>/.test(html), "sem destaques, não pode sobrar dois-pontos solto");
+    assert.ok(!renderLinkedinWeeklyHtml(input).html.includes("Edição de 29/07"));
   });
 
-  it("lista vazia não renderiza a seção 'Edições da semana'", () => {
-    const input: WeeklyLinkedinRenderInput = { ...BASE_INPUT, weeklyEditions: [] };
-    const result = renderLinkedinWeeklyHtml(input);
-    assert.ok(!/Edições da semana/.test(result.html));
+  it("otherWeeklyHighlights é puro e preserva a ordem dos títulos", () => {
+    const out = otherWeeklyHighlights(BASE_INPUT.weeklyEditions, ["d2 DE terça"]);
+    assert.deepEqual(out.map((x) => [x.item.editionDate, x.titles]), [
+      ["260729", ["Título da edição de terça", "D3 de terça"]],
+      ["260730", ["Título da edição de quarta"]],
+    ]);
   });
 
-  it("destaque terminando em domínio nu gera warning (#4489 finding 2 — mesmo guard do Use Melhor, faltava aqui)", () => {
+  it("destaque terminando em domínio nu gera warning (#4489 finding 2 — mesmo guard do Use Melhor)", () => {
     const input: WeeklyLinkedinRenderInput = {
       ...BASE_INPUT,
       weeklyEditions: [{ editionDate: "260729", url: "https://diar.ia.br/p/confira", destaques: ["Confira em exemplo.com.br"] }],
     };
     const result = renderLinkedinWeeklyHtml(input);
-    assert.ok(result.warnings.some((w) => /Edições da semana.*domínio nu/i.test(w)), result.warnings.join(" | "));
+    assert.ok(result.warnings.some((w) => /Outros destaques da semana.*domínio nu/i.test(w)), result.warnings.join(" | "));
     // literal — não reescreve o título mesmo com o warning (mesma regra do Use Melhor).
     assert.match(result.html, /Confira em exemplo\.com\.br/);
   });
@@ -343,7 +361,7 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
   it("a abertura leva um CTA de assinatura logo depois dos parágrafos (decisão do editor 260803)", () => {
     const html = renderLinkedinWeeklyHtml(BASE_INPUT).html;
     const idxCtaAbertura = html.indexOf("utm_content=cta-abertura");
-    const idxPrimeiraManchete = html.indexOf("<h2>1.");
+    const idxPrimeiraManchete = html.indexOf("<h2>");
     assert.ok(idxCtaAbertura >= 0, "CTA da abertura deve existir");
     assert.ok(idxCtaAbertura < idxPrimeiraManchete, "CTA da abertura deve vir ANTES da 1ª manchete");
     // Aprendizado do CTA-01: acima da dobra a âncora é a mais sóbria das três

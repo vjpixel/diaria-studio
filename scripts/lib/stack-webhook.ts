@@ -21,18 +21,38 @@ export const STACK_WEBHOOK_KEY_ENV = "STACK_WEBHOOK_KEY";
 /** URL fora do repo (público): mesmo tratamento do segredo, via Doppler/.env. */
 export const STACK_WEBHOOK_URL_ENV = "STACK_WEBHOOK_URL";
 
-export interface StackPostPayload {
-  titulo: string;
-  corpo: string;
+declare const stackPostPayloadBrand: unique symbol;
+
+/**
+ * Corpo do POST. Marcado (#10977): só `buildStackPostPayload` produz um valor
+ * deste tipo, então nada chega a `sendStackPost` sem passar pela validação e
+ * pelo escape de `<`.
+ */
+export type StackPostPayload = {
+  readonly titulo: string;
+  readonly corpo: string;
+} & { readonly [stackPostPayloadBrand]: true };
+
+/**
+ * Pure (#10977): neutraliza `<` solto no Markdown. O webhook da Stack remove
+ * HTML, então `<tag>` vindo do texto de uma edição sumiria (ou levaria texto
+ * junto). Antes isso lançava erro e derrubava a prévia da semana inteira.
+ *   - autolink `<https://…>` vira a URL nua (o conversor linka URL solta);
+ *   - qualquer outro `<` vira `\<` (escape do Markdown, aparece como `<`).
+ * `<` já escapado (`\<`) fica como está.
+ */
+export function escapeLooseAngleBrackets(md: string): string {
+  return md
+    .replace(/<((?:https?:\/\/|mailto:)[^\s<>]+)>/gi, "$1")
+    .replace(/(?<!\\)</g, "\\<");
 }
 
-/** Pure: valida e monta o corpo do POST. */
+/** Pure: valida e monta o corpo do POST (com `<` solto escapado, #10977). */
 export function buildStackPostPayload(titulo: string, corpo: string): StackPostPayload {
   if (!titulo.trim()) throw new Error("Título do post vazio");
   if (!corpo.trim()) throw new Error("Corpo do post vazio");
-  if (/<\/?[a-z][^>]*>/i.test(corpo)) throw new Error("Corpo contém HTML — o webhook da Stack remove HTML; use Markdown");
   if (/!\[[^\]]*\]\(/.test(corpo)) throw new Error("Corpo contém imagem Markdown — o webhook da Stack não aceita imagens no texto");
-  return { titulo, corpo };
+  return { titulo, corpo: escapeLooseAngleBrackets(corpo) } as StackPostPayload;
 }
 
 type FetchLike = typeof fetch;
