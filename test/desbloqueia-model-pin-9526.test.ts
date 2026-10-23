@@ -56,11 +56,22 @@ describe("#9526 — /diaria-desbloqueia projetada para um único turno (pin não
   /** Whitespace colapsado — quebra de linha no meio da prosa não pode esconder o comando. */
   const flat = content.replace(/\s+/g, " ");
 
-  it("a receita de dispatch usa adhoc-opus-medium e run_in_background: false na MESMA linha", () => {
-    const lines = content.split(/\r?\n/).filter((l) => /subagent_type: "adhoc-opus-medium"/.test(l));
-    assert.ok(lines.length >= 1, "receita de dispatch com subagent_type adhoc-opus-medium ausente");
-    for (const l of lines) assert.match(l, /run_in_background: false/);
+  it("#11032 — coordenador lê o scan sem delegar threads nem usar parâmetro inexistente", () => {
+    assert.match(flat, /coordenador lê corpo \+ TODOS os comentários do output de `desbloqueia-scan.ts`/);
+    assert.match(flat, /sem despachar Agent para ler threads/);
+    assert.doesNotMatch(content, /subagent_type:/);
+    assert.doesNotMatch(content, /run_in_background[`"']?\s*[:=]\s*[`"']?false/i);
   });
+
+  for (const skill of ["diaria-desbloqueia", "diaria-develop", "diaria-overnight"]) {
+    it(`#11032 — ${skill} espera Agent dentro do turno sem prometer foreground`, () => {
+      const text = readFileSync(resolve(ROOT, `.claude/skills/${skill}/SKILL.md`), "utf8").replace(/\s+/g, " ");
+      assert.match(text, /schema não tem parâmetro para forçar foreground/);
+      assert.match(text, /não encerrar o turno.*Agent pendente/);
+      assert.match(text, /aguardar as notificações dentro do turno/);
+      assert.doesNotMatch(text, /run_in_background[`"']?\s*[:=]\s*[`"']?false/i);
+    });
+  }
 
   it("não despacha mais general-purpose nem diz que o effort é herdado do turno", () => {
     assert.doesNotMatch(content, /subagent_type: "general-purpose"/);

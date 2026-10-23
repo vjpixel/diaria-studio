@@ -44,8 +44,11 @@ livre: escolher `/model` antes de invocar.
 
 **A skill é projetada para rodar num único turno (#9526, regra
 obrigatória): nunca encerrar o turno esperando notificação — tudo em
-foreground.** Todo `Agent` despachado pela skill vai com
-`run_in_background: false` (o default do harness é background), e todo
+foreground para Bash e leitura direta pelo coordenador.** O coordenador lê
+corpo + TODOS os comentários do output de `desbloqueia-scan.ts` e faz o
+julgamento sem despachar Agent para ler threads (#11032). O tool Agent é
+assíncrono e seu schema não tem parâmetro para forçar foreground. Regra:
+não encerrar o turno enquanto houver Agent pendente; aguardar as notificações dentro do turno e consumir todos os retornos antes do resumo. Todo
 `Bash` longo roda em foreground com `timeout: 600000` —
 `desbloqueia-scan.ts` e sequências longas de `route-issue.ts` incluídos.
 Timeout nunca é motivo pra trocar por background: se o scan estourar,
@@ -356,13 +359,12 @@ classificada num destes três destinos, e nenhuma fica "não avaliada": (a)
 vira pergunta; (b) não tem ação do editor, e segue com o comentário de
 revisão do Passo 2; (c) resolve por default (#5321) e é roteada.
 
-Se a leitura das threads for delegada a um subagente (pool grande), o
-dispatch é `Agent` com `subagent_type: "adhoc-opus-medium"`, `run_in_background: false`
-— e esperar o retorno no mesmo turno (regra de turno único acima, #9526).
-O agent dedicado fixa `claude-opus-5-5`/`medium` no frontmatter (#8941/#9081:
-o Agent tool não aceita `effort`, então subagente ad-hoc só tem effort
-explícito via agent dedicado). Foi exatamente esta leitura, despachada em
-background, que derrubou o pin na execução de 04/10/2026.
+A leitura das threads fica com o coordenador, diretamente no output completo
+do scan, sem delegar a subagente (#11032). O scan já entrega corpo e
+comentários; um novo Agent duplicaria a leitura e acrescentaria uma espera
+assíncrona que pode atravessar a fronteira de turno. Para pool grande,
+dividir o scan por `--issues N,M`, ler cada lote por completo e só então
+montar a bateria. A sonda do Passo 5 continua obrigatória.
 
 **Vira pedido de ação imediata** quando o que falta é uma ação do editor no
 teclado, agora: reiniciar uma unit caída, recarregar uma conta, colar uma
