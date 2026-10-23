@@ -308,16 +308,16 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // pela Graph API — por isso o `guard` abaixo: sem a junction `data/`
     // montada não há edição para ler.
     //
-    // DECLARADA, NÃO ARMADA (subagente overnight de worktree isolado) — o
-    // `enabled: false` também impede o `Diaria-Remediate-Never-Armed-Tasks`
-    // de armá-la sozinho. Arme: `docs/video-d1-link-watch-setup.md`.
+    // ARMA-ELEGÍVEL desde 23/10/2026 (/diaria-develop 261023b, #10941):
+    // dry-run de 261023 conferido com o editor presente (vídeo `published`,
+    // Facebook lido pela Graph API). Só no `300` — ver
+    // `docs/video-d1-link-watch-setup.md`.
     schedule: { kind: "daily", hour: 6, minute: 5 },
     guard: {
       requiredFile: "editions",
       abortMessage:
         "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do upload.",
     },
-    enabled: false,
     issue: "#10941",
   },
   {

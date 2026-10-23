@@ -316,11 +316,11 @@ describe("#10941 — runVideoD1LinkWatch", () => {
 describe("#10941 — registro da task", () => {
   const task = getScheduledTaskByName("Diaria-Video-D1-Link-Watch");
 
-  it("registrada, diária 06:05, apontando pro script, desarmada", () => {
+  it("registrada, diária 06:05, apontando pro script, arma-elegível", () => {
     assert.ok(task, "task ausente de SCHEDULED_TASKS");
     assert.deepEqual(task!.schedule, { kind: "daily", hour: 6, minute: 5 });
     assert.equal(task!.steps[0].script, "scripts/video-d1-link-watch.ts");
-    assert.equal(task!.enabled, false, "não armar no PR — arme é ação do editor no 300");
+    assert.notEqual(task!.enabled, false, "arma-elegível desde 23/10 (dry-run conferido com o editor, #10941)");
     assert.ok(existsSync(join(ROOT, "scripts", "video-d1-link-watch.ts")));
   });
 

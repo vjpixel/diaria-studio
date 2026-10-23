@@ -32,11 +32,11 @@ npx tsx scripts/video-d1-link-watch.ts --edition AAMMDD --dry-run
 
 Uma leitura só, sem gravar arquivo e sem chamar a Graph API. Mostra o estado relido e o plano por destino.
 
-## Armar (ação do editor, não feita no PR da #10941)
+## Armar
 
 A task entrou com `enabled: false`, o que também impede o `Diaria-Remediate-Never-Armed-Tasks` (#8153) de armá-la sozinho. Para armar, só no `300` (a junction `data/` é compartilhada; duas máquinas armadas gravariam o mesmo arquivo e comentariam duas vezes):
 
-1. Tirar o `enabled: false` da entrada `Diaria-Video-D1-Link-Watch` em `scripts/lib/scheduled-tasks.ts` (PR normal).
+1. ~~Tirar o `enabled: false`~~ feito em 23/10/2026 (/diaria-develop 261023b). Sem o passo 2, o `Diaria-Remediate-Never-Armed-Tasks` (18:15 BRT) arma sozinho.
 2. Depois do merge, na checkout compartilhada do `300`:
 
 ```bash
