@@ -400,8 +400,10 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   (`scripts/overnight-watchdog.ts`) e pra `continuo-cost-summary.ts` (ambos
   filtram por `agent === "continuo"` especificamente).
 - **Reusa a Fase 1.5 de review consolidado** do overnight (1 agente,
-  `pr-review-toolkit:code-reviewer` via `Agent` com `model: "claude-opus-5-5"`
-  explícito — `effort` não é parâmetro do Agent tool e o agente do plugin herda o
+  `pr-review-toolkit:code-reviewer` via `Agent` com `model: "opus"`
+  explícito (alias: o parâmetro `model` do Agent tool só aceita
+  `sonnet`/`opus`/`haiku`/`fable` e devolve `InputValidationError` pra ID
+  pinado como `claude-opus-5-5`, que só vale em frontmatter de agent, #10946) — `effort` não é parâmetro do Agent tool e o agente do plugin herda o
   do turno; plugin ausente → `dev-revisor`, #9081 — sobre o diff acumulado desde `base_sha`) — mesma cadência de
   `findings_depth` (cap 2) documentada lá.
 - **NÃO mergeia PR que toca caminho de publicação/render público** (#6277).
