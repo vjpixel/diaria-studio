@@ -32,6 +32,12 @@
  *     rolagem acontece quase de imediato e o gatilho perde o sentido.
  *   - **Nunca sem JS.** O modal é aprimoramento progressivo puro; o formulário
  *     do rodapé é HTML nativo e funciona sozinho.
+ *   - **Chegada no meio não conta como leitura (#11003).** Link com âncora
+ *     de destaque (`/p/{slug}#d2`, `site-destaque-anchors.ts`) ou rolagem
+ *     restaurada põe a tela além dos 50% antes de a pessoa ler. Nesse caso
+ *     nada conta antes de um gesto de rolagem do leitor (roda, toque, tecla,
+ *     clique), e o gatilho vira a metade do que resta da página a partir do
+ *     ponto de chegada.
  *   - **Fechável de três jeitos** (Esc, botão, clique no fundo) e devolve o
  *     foco para onde estava. Modal que prende o leitor é pior que nenhum.
  *
@@ -240,14 +246,51 @@ export function editionCtaScript(): string {
     return Math.max(d.scrollHeight || 0, b ? b.scrollHeight || 0 : 0);
   }
 
+  function posicaoAtual() {
+    return window.pageYOffset || document.documentElement.scrollTop || 0;
+  }
+
+  // Chegada no meio da página (#11003): link com âncora (/p/{slug}#d2) ou
+  // rolagem restaurada pelo navegador. Os 50% contados do topo já estariam
+  // vencidos na chegada e o modal abriria antes de a pessoa ler uma linha.
+  // Nesse caso: (1) nada conta antes de um gesto de rolagem do PRÓPRIO
+  // leitor, porque o salto até a âncora e o reajuste de layout também
+  // disparam scroll; (2) a medida passa a ser a metade do que resta da
+  // página a partir do ponto em que ele estava quando começou a rolar.
+  var hash = "";
+  try { hash = decodeURIComponent((window.location && window.location.hash) || "").slice(1); } catch (e) {}
+  var chegadaNoMeio = posicaoAtual() > 0 || (!!hash && !!document.getElementById(hash));
+  var gestoDoLeitor = !chegadaNoMeio;
+  var chegada = 0;
+
+  function marcarGesto() {
+    if (gestoDoLeitor) return;
+    gestoDoLeitor = true;
+    chegada = posicaoAtual();
+  }
+  if (chegadaNoMeio) {
+    ["wheel", "touchmove", "keydown", "mousedown"].forEach(function (tipo) {
+      window.addEventListener(tipo, marcarGesto, { passive: true });
+    });
+  }
+
   function verificar() {
     var vh = window.innerHeight || 0;
     var total = alturaRolavel();
     // Página curta: 50% chegaria quase junto com o load, e o modal voltaria a
     // ser o pop-up imediato que o gatilho existe para evitar.
     if (!vh || total < vh * ${MIN_PAGE_VIEWPORTS_FOR_MODAL}) return;
-    var y = window.pageYOffset || document.documentElement.scrollTop || 0;
-    if ((y + vh) / total >= ${MODAL_SCROLL_TRIGGER}) {
+    if (!gestoDoLeitor) return;
+    var y = posicaoAtual();
+    var limiar = ${MODAL_SCROLL_TRIGGER};
+    if (chegada > 0) {
+      // Só conta o que fica ABAIXO da chegada: subir para reler o começo
+      // não aproxima o modal.
+      if (y <= chegada) return;
+      var lidoNaChegada = Math.min(1, (chegada + vh) / total);
+      limiar = Math.max(limiar, lidoNaChegada + ${MODAL_SCROLL_TRIGGER} * (1 - lidoNaChegada));
+    }
+    if ((y + vh) / total >= limiar) {
       abrir();
       window.removeEventListener("scroll", verificar);
     }

@@ -301,6 +301,8 @@ function toItem(c: StackScoredCandidate): CircleStackItem & { titleOriginal: str
     titleOriginal: c.title,
     body: c.body,
     why: c.why,
+    // #11003: só destaques carregam a posição; vira a âncora #dN do link da edição.
+    ...(c.kind === "destaque" && c.destaqueN !== undefined ? { destaqueN: c.destaqueN } : {}),
     score: c.score,
     matchedTerms: c.matchedTerms,
   };
@@ -385,6 +387,9 @@ export function parseStoredCircleStackSelection(
       }
       if (rec.stackNote !== undefined && typeof rec.stackNote !== "string") fail(`${section}[${i}].stackNote não é texto`);
       if (rec.titleOriginal !== undefined && typeof rec.titleOriginal !== "string") fail(`${section}[${i}].titleOriginal não é texto`);
+      if (rec.destaqueN !== undefined && !(Number.isInteger(rec.destaqueN) && (rec.destaqueN as number) >= 1 && (rec.destaqueN as number) <= 3)) {
+        fail(`${section}[${i}].destaqueN precisa ser 1, 2 ou 3`);
+      }
     });
   }
   const warnings = Array.isArray(sel.warnings) ? sel.warnings.filter((w): w is string => typeof w === "string") : [];

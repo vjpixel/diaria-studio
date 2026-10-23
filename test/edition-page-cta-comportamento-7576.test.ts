@@ -82,6 +82,12 @@ interface Cenario {
   store: Map<string, string>;
   rolarAte(fracao: number): void;
   teclar(key: string): void;
+  /** #11003: rola para o pixel `y` (topo da tela), disparando os handlers de scroll. */
+  rolarParaY(y: number): void;
+  /** #11003: gesto de rolagem do leitor (roda, toque, tecla, clique). */
+  gesto(tipo?: string): void;
+  vh: number;
+  total: number;
 }
 
 /**
@@ -90,7 +96,19 @@ interface Cenario {
  * `alturaPagina` em viewports controla a guarda de página curta;
  * `storageLanca` simula janela privada, onde `localStorage` joga exceção.
  */
-function rodar(opts: { alturaPagina?: number; jaDispensado?: boolean; storageLanca?: boolean } = {}): Cenario {
+function rodar(
+  opts: {
+    alturaPagina?: number;
+    jaDispensado?: boolean;
+    storageLanca?: boolean;
+    /** #11003: posição de rolagem no momento em que o script roda. */
+    yInicial?: number;
+    /** #11003: `location.hash` da página (ex.: "#d2"). */
+    hash?: string;
+    /** #11003: ids que existem na página além do modal (alvos de âncora). */
+    idsNaPagina?: string[];
+  } = {},
+): Cenario {
   const vh = 800;
   const total = vh * (opts.alturaPagina ?? 3);
   const store = new Map<string, string>();
@@ -112,7 +130,7 @@ function rodar(opts: { alturaPagina?: number; jaDispensado?: boolean; storageLan
 
   const docHandlers = new Map<string, ((ev: unknown) => void)[]>();
   const winHandlers = new Map<string, ((ev: unknown) => void)[]>();
-  let y = 0;
+  let y = opts.yInicial ?? 0;
   let scrollRemovido = false;
   const observers: { alvo: ElementoFalso; cb: () => void }[] = [];
 
@@ -129,6 +147,7 @@ function rodar(opts: { alturaPagina?: number; jaDispensado?: boolean; storageLan
 
   const window: Record<string, unknown> = {
     localStorage,
+    location: { hash: opts.hash ?? "" },
     innerHeight: vh,
     get pageYOffset() {
       return y;
@@ -151,7 +170,8 @@ function rodar(opts: { alturaPagina?: number; jaDispensado?: boolean; storageLan
 
   const document = {
     activeElement: anterior,
-    getElementById: (id: string) => (id === "diaria-cta-modal" ? modal : id === "diaria-cta-close" ? botao : null),
+    getElementById: (id: string) =>
+      id === "diaria-cta-modal" ? modal : id === "diaria-cta-close" ? botao : (opts.idsNaPagina ?? []).includes(id) ? elemento(id) : null,
     // O script varre `form.signup` para saber se o leitor já assinou pelo
     // RODAPÉ. Devolver [] deixava esse caminho inteiro sem teste — foi assim
     // que o bug do watcher prematuro passou.
@@ -190,6 +210,15 @@ function rodar(opts: { alturaPagina?: number; jaDispensado?: boolean; storageLan
     teclar(key) {
       for (const fn of docHandlers.get("keydown") ?? []) fn({ key });
     },
+    rolarParaY(novoY) {
+      y = novoY;
+      for (const fn of winHandlers.get("scroll") ?? []) fn({});
+    },
+    gesto(tipo = "wheel") {
+      for (const fn of winHandlers.get(tipo) ?? []) fn({});
+    },
+    vh,
+    total,
   };
 }
 
@@ -345,5 +374,83 @@ describe("#7576 — o rodapé só dispensa o modal em SUCESSO, nunca ao clicar e
     assert.equal(c.store.get(MODAL_DISMISSED_KEY), "1");
     c.rolarAte(0.9);
     assert.equal(c.modal.hidden, true, "quem já assinou pelo rodapé não deve ser convidado de novo");
+  });
+});
+
+describe("#11003 — chegada por âncora (#d2/#d3) não abre o modal na chegada", () => {
+  // Página de 3 viewports (2400px), vh 800. O D3 fica perto do fim: a âncora
+  // põe o topo da tela em ~1500px, ou seja (1500+800)/2400 = 96% lido — muito
+  // além dos 50% do gatilho original.
+  const D3_Y = 1500;
+
+  it("REGRESSÃO: o salto até #d3 (scroll sem gesto do leitor) não abre o modal", () => {
+    const c = rodar({ hash: "#d3", idsNaPagina: ["d3"] });
+    assert.equal(c.modal.hidden, true, "no load ainda está no topo");
+    c.rolarParaY(D3_Y); // o navegador salta até a âncora: dispara scroll
+    assert.equal(c.modal.hidden, true, "o salto da âncora não é leitura — o modal abriria antes de uma linha lida");
+    c.rolarParaY(D3_Y + 40); // reajuste de layout (imagens carregando)
+    assert.equal(c.modal.hidden, true, "reajuste de layout também não conta");
+  });
+
+  it("rolagem restaurada (yInicial > 0, sem hash) também espera o gesto do leitor", () => {
+    const c = rodar({ yInicial: D3_Y });
+    assert.equal(c.modal.hidden, true, "o verificar() inicial não pode abrir");
+    c.rolarParaY(D3_Y + 10);
+    assert.equal(c.modal.hidden, true);
+  });
+
+  it("depois do gesto, conta a metade do que resta a partir da chegada", () => {
+    // Chegada no D2, no meio: topo em 800 → (800+800)/2400 = 66,7% lido na
+    // chegada. Resta 33,3%; metade disso = 16,7% → limiar em 83,3%, isto é,
+    // y + vh >= 2000 → y >= 1200.
+    const c = rodar({ hash: "#d2", idsNaPagina: ["d2"] });
+    c.rolarParaY(800);
+    c.gesto("wheel");
+    c.rolarParaY(1100);
+    assert.equal(c.modal.hidden, true, "rolou pouco a partir da chegada: ainda não");
+    c.rolarParaY(1250);
+    assert.equal(c.modal.hidden, false, "passou da metade do que restava: abre");
+    assert.equal(c.win.scrollRemovido, true);
+  });
+
+  it("subir a partir da chegada nunca abre", () => {
+    const c = rodar({ hash: "#d2", idsNaPagina: ["d2"] });
+    c.rolarParaY(800);
+    c.gesto("touchmove");
+    c.rolarParaY(300);
+    c.rolarParaY(0);
+    assert.equal(c.modal.hidden, true);
+  });
+
+  it("todo tipo de gesto destrava (roda, toque, tecla, clique)", () => {
+    for (const tipo of ["wheel", "touchmove", "keydown", "mousedown"]) {
+      const c = rodar({ hash: "#d2", idsNaPagina: ["d2"] });
+      c.rolarParaY(800);
+      c.gesto(tipo);
+      c.rolarParaY(1500);
+      assert.equal(c.modal.hidden, false, `gesto ${tipo} precisa destravar a contagem`);
+    }
+  });
+
+  it("hash que não aponta pra nada na página mantém a regra normal dos 50%", () => {
+    const c = rodar({ hash: "#utm-qualquer" });
+    c.rolarAte(0.49);
+    assert.equal(c.modal.hidden, true);
+    c.rolarAte(0.6);
+    assert.equal(c.modal.hidden, false, "sem âncora real, chegada é no topo e o gatilho é o de sempre");
+  });
+
+  it("chegada no topo continua igual: nenhuma exigência de gesto", () => {
+    const c = rodar();
+    c.rolarAte(0.6);
+    assert.equal(c.modal.hidden, false);
+  });
+
+  it("quem já dispensou não vê o modal nem chegando por âncora", () => {
+    const c = rodar({ hash: "#d2", idsNaPagina: ["d2"], jaDispensado: true });
+    c.rolarParaY(800);
+    c.gesto();
+    c.rolarParaY(1600);
+    assert.equal(c.modal.hidden, true);
   });
 });

@@ -36,6 +36,9 @@
  * (`{ "<braço>": { "<id da fase>": BRL } }`). Sem ele, o custo por fase sai
  * "indisponível" e o veredito "sai X" não é emitido (a condição "mais caro nas
  * duas fases" fica inverificável) — nunca é inventado por rateio de dias.
+ * Gasto 0 explícito numa fase com 0 leitores é "fase sem atividade" (braço
+ * desligado), não gasto ausente: sai da comparação daquela fase e é nomeada
+ * no veredito (#10993).
  *
  * ## Fora deste módulo (escopo remanescente do #8238)
  *
@@ -291,6 +294,9 @@ export interface EmendaVerdict {
   texto: string;
   comSinal: string[];
   semSinal: string[];
+  /** Braços com sinal (>=3 leitores) mas sem linha de gasto na janela —
+   *  fora de `comSinal` e de `semSinal`, nomeados no `texto` (#10993). */
+  semGasto: string[];
   maisCaro: string | null;
   maisBarato: string | null;
   razaoObservada: number | null;
@@ -314,11 +320,20 @@ export function evaluateEmendaVerdict(
   const fracCom20Recebidas = ativos > 0 ? com20 / ativos : null;
 
   const comSinalArms = arms.filter((a) => !a.semSinal && a.custoPorLeitor != null);
+  // #10993: braço com sinal mas sem custo (nenhuma linha de gasto na janela)
+  // sumia da comparação sem ser nomeado — o veredito passa a dizer quem ficou de fora.
+  const semGasto = arms.filter((a) => !a.semSinal && a.custoPorLeitor == null).map((a) => a.braco);
+  const notaSemGasto =
+    semGasto.length > 0
+      ? ` Fora da comparação por não ter gasto na janela (spend.csv), apesar de >=${EMENDA_MIN_LEITORES} leitor-v1: ${semGasto.join(", ")}.`
+      : "";
+  const finish = (v: EmendaVerdict): EmendaVerdict => (notaSemGasto ? { ...v, texto: v.texto + notaSemGasto } : v);
   const base: EmendaVerdict = {
     kind: "indisponivel",
     texto: "",
     comSinal: comSinalArms.map((a) => a.braco),
     semSinal: arms.filter((a) => a.semSinal).map((a) => a.braco),
+    semGasto,
     maisCaro: null,
     maisBarato: null,
     razaoObservada: null,
@@ -329,15 +344,15 @@ export function evaluateEmendaVerdict(
 
   if (fracCom20Recebidas == null || fracCom20Recebidas < minFrac20) {
     const pct = fracCom20Recebidas == null ? "n/a" : `${(fracCom20Recebidas * 100).toFixed(1)}%`;
-    return {
+    return finish({
       ...base,
       texto:
         `Veredito NÃO afirmado: só ${pct} dos ativos da coorte têm >=${LEITOR_MIN_RECEIVED} recebidas ` +
         `(piso ${(minFrac20 * 100).toFixed(0)}%) — leitor-v1 ainda não é mensurável na coorte (guard de pré-execução, Emenda item 5).`,
-    };
+    });
   }
   if (comSinalArms.length < 2) {
-    return { ...base, texto: `Sem comparação: menos de 2 braços com sinal (>=${EMENDA_MIN_LEITORES} leitor-v1).` };
+    return finish({ ...base, texto: `Sem comparação: menos de 2 braços com sinal e gasto (>=${EMENDA_MIN_LEITORES} leitor-v1).` });
   }
 
   const ordenados = [...comSinalArms].sort((a, b) => (b.custoPorLeitor as number) - (a.custoPorLeitor as number));
@@ -355,7 +370,7 @@ export function evaluateEmendaVerdict(
   const fmtR = (r: number) => r.toFixed(2);
 
   if (razaoDetectavel == null || razaoObservada <= razaoDetectavel) {
-    return {
+    return finish({
       ...filled,
       kind: "sem-diferenca",
       texto:
@@ -363,47 +378,66 @@ export function evaluateEmendaVerdict(
         (razaoDetectavel == null
           ? `e razão mínima detectável acima de ${MAX_DETECTABLE_RATIO} com n=${nReferencia}.`
           : `<= razão mínima detectável ${fmtR(razaoDetectavel)} (n=${nReferencia}, alpha ${alpha}, poder ${power}).`),
-    };
+    });
   }
 
   // Razão passa da detectável — falta "X é o mais caro em TODAS as fases".
   const faseIds = maisCaro.fases.map((f) => f.id);
-  const custoFase = (arm: EmendaArmResult, id: string): number | null | "sem-leitor" => {
+  // `null` = gasto da fase NÃO fornecido. #10993: gasto 0 EXPLÍCITO com 0
+  // leitores é "sem-atividade" (braço desligado na fase, ex. Microsoft Ads
+  // pós-#10755) — fornecido, não ausente; antes caía em `null` e o veredito
+  // dizia "gasto por fase não fornecido" a quem acabara de fornecê-lo.
+  const custoFase = (arm: EmendaArmResult, id: string): number | null | "sem-leitor" | "sem-atividade" => {
     const f = arm.fases.find((x) => x.id === id);
     if (!f || f.gastoBrl == null) return null;
-    if (f.leitores === 0) return f.gastoBrl > 0 ? "sem-leitor" : null;
+    if (f.leitores === 0) return f.gastoBrl > 0 ? "sem-leitor" : "sem-atividade";
     return f.gastoBrl / f.leitores;
   };
   const faltaGasto = faseIds.some((id) => comSinalArms.some((a) => custoFase(a, id) == null));
   if (faltaGasto) {
-    return {
+    return finish({
       ...filled,
       kind: "indisponivel",
       texto:
         `Razão observada ${fmtR(razaoObservada)} > detectável ${fmtR(razaoDetectavel)}, mas o gasto por fase não foi fornecido ` +
         `(--gasto-fases) — a condição "${maisCaro.braco} é o mais caro nas duas fases" não é verificável, então nenhum braço sai.`,
-    };
+    });
   }
-  const rank = (c: number | "sem-leitor" | null) => (c === "sem-leitor" ? Number.POSITIVE_INFINITY : (c as number));
-  const caroEmTodas = faseIds.every((id) =>
-    comSinalArms.every((a) => a.braco === maisCaro.braco || rank(custoFase(maisCaro, id)) > rank(custoFase(a, id))),
+  // Premissa declarada (#10993): fase sem atividade não entra na comparação.
+  // Se é do mais caro, aquela fase não conta para ele ("mais caro em todas as
+  // fases em que veiculou"); se é de outro braço, ele não disputa a fase (um
+  // braço desligado não é mais caro que ninguém). Exige ao menos 1 fase ativa.
+  const rank = (c: number | "sem-leitor" | "sem-atividade" | null) =>
+    c === "sem-leitor" ? Number.POSITIVE_INFINITY : c === "sem-atividade" ? Number.NEGATIVE_INFINITY : (c as number);
+  const fasesAtivasMaisCaro = faseIds.filter((id) => custoFase(maisCaro, id) !== "sem-atividade");
+  const caroEmTodas =
+    fasesAtivasMaisCaro.length > 0 &&
+    fasesAtivasMaisCaro.every((id) =>
+      comSinalArms.every((a) => a.braco === maisCaro.braco || rank(custoFase(maisCaro, id)) > rank(custoFase(a, id))),
+    );
+  const semAtividade = comSinalArms.flatMap((a) =>
+    faseIds.filter((id) => custoFase(a, id) === "sem-atividade").map((id) => `${a.braco}/${id}`),
   );
+  const notaSemAtividade =
+    semAtividade.length > 0 ? ` Fases sem atividade (gasto 0 e 0 leitor-v1), fora da comparação: ${semAtividade.join(", ")}.` : "";
   if (!caroEmTodas) {
-    return {
+    return finish({
       ...filled,
       kind: "sem-diferenca",
       texto:
         `Sem diferença detectável: razão ${fmtR(razaoObservada)} > ${fmtR(razaoDetectavel)} no total, ` +
-        `mas ${maisCaro.braco} não é o mais caro em todas as fases.`,
-    };
+        `mas ${maisCaro.braco} não é o mais caro em todas as fases.` +
+        notaSemAtividade,
+    });
   }
-  return {
+  return finish({
     ...filled,
     kind: "sai",
     texto:
       `Sai o braço ${maisCaro.braco}: razão observada ${fmtR(razaoObservada)} > detectável ${fmtR(razaoDetectavel)} ` +
-      `(n=${nReferencia}) e mais caro em todas as fases.`,
-  };
+      `(n=${nReferencia}) e mais caro em todas as fases${semAtividade.length > 0 ? " em que veiculou" : ""}.` +
+      notaSemAtividade,
+  });
 }
 
 export interface EmendaSection {
