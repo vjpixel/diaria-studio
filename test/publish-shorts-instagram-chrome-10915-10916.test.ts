@@ -14,7 +14,17 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { instagramAccountKey, loadInstagramApiMaxSeconds } from "../scripts/lib/diaria/short-video.ts";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  instagramAccountKey,
+  instagramApiMaxSecondsPremise,
+  instagramReelsApiFit,
+  loadInstagramApiMaxSeconds,
+  resolveInstagramApiMaxSeconds,
+  type ShortsPublishedFile,
+} from "../scripts/lib/diaria/short-video.ts";
 import {
   CHROME_UPLOAD_MAX_BYTES,
   CHROME_UPLOAD_MIN_VIDEO_KBPS,
@@ -22,11 +32,15 @@ import {
   buildChromeUploadFfmpegPasses,
   chromeUploadBitrate,
   chromeUploadFileName,
+  chromeUploadSidecarPath,
 } from "../scripts/lib/diaria/instagram-chrome-upload.ts";
 import {
   attachChromeUploadToPlan,
   collabInviteWarnings,
-  findInstagramReelSince,
+  decideInstagramConfirm,
+  fetchInstagramRecentMedia,
+  instagramAlreadyRegistered,
+  instagramEditionMarkers,
   planShortsPublish,
   prepareInstagramChromeUpload,
   type ChromeUploadDeps,
@@ -68,6 +82,42 @@ describe("#10916 teto de duração por conta", () => {
     for (const bad of [0, -1, "55", Number.NaN]) {
       assert.throws(() => loadInstagramApiMaxSeconds(cfgWith({ instagram_api_max_seconds_by_account: { diaria: bad } }), null), /by_account\.diaria/);
     }
+  });
+
+  it("valida o mapa INTEIRO: valor quebrado na conta inativa também lança", () => {
+    const c = cfgWith({ instagram_api_max_seconds_by_account: { vjpixel: 40, diaria: "55" } });
+    assert.throws(() => loadInstagramApiMaxSeconds(c, "vjpixel"), /by_account\.diaria/);
+    const c2 = cfgWith({ instagram_api_max_seconds_by_account: { vjpixel: 40, memelab: 0 } });
+    assert.throws(() => loadInstagramApiMaxSeconds(c2, null), /by_account\.memelab/);
+  });
+
+  it("premissa quando o mapa existe mas não tem a conta: diz o teto e de onde veio", () => {
+    const legacy = resolveInstagramApiMaxSeconds(cfgWith({ instagram_api_max_seconds: 30, instagram_api_max_seconds_by_account: { vjpixel: 40 } }), "memelab");
+    assert.equal(legacy.maxSeconds, 30);
+    assert.match(instagramApiMaxSecondsPremise(legacy) ?? "", /30 s, de publishing\.shorts\.instagram_api_max_seconds \(legado.*"memelab" não está/);
+    const def = resolveInstagramApiMaxSeconds(cfgWith({ instagram_api_max_seconds_by_account: { vjpixel: 40 } }), null);
+    assert.equal(def.maxSeconds, 40);
+    assert.match(instagramApiMaxSecondsPremise(def) ?? "", /default.*"diaria" não está/);
+    // Conta no mapa, ou sem mapa: nada a declarar.
+    assert.equal(instagramApiMaxSecondsPremise(resolveInstagramApiMaxSeconds(cfgWith({ instagram_api_max_seconds_by_account: byAccount }), null)), null);
+    assert.equal(instagramApiMaxSecondsPremise(resolveInstagramApiMaxSeconds(cfgWith({}), null)), null);
+  });
+
+  it("platform.config.json real: o teto da autora configurada resolve sem lançar (40 s da @vjpixel hoje)", () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const config = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
+    const author = config.publishing.shorts.instagram_author_page ?? null;
+    const r = resolveInstagramApiMaxSeconds(config, author);
+    assert.equal(r.source, "by_account", "a autora configurada tem que estar no mapa por conta");
+    assert.equal(r.maxSeconds, 40);
+    // A outra conta do mapa também resolve (validação do mapa inteiro).
+    assert.equal(loadInstagramApiMaxSeconds(config, null), 55);
+  });
+
+  it("motivo do guiado nomeia a conta pelo rótulo legível", () => {
+    const fit = instagramReelsApiFit(50, 40, "x");
+    assert.equal(fit.fits, false);
+    assert.match((fit as { reason: string }).reason, /na conta x/);
   });
 
   const reviewed = "DESTAQUE 1 | X\n\n[Título do D1](https://a.com/x)\n\nCorpo do destaque. Segunda frase.\n";
@@ -159,16 +209,20 @@ describe("#10915 versão ≤ 9,5 MB pro Chrome", () => {
     assert.equal(chromeUploadFileName("261022"), "diaria-comentada-261022-short-instagram-chrome.mp4");
   });
 
-  function fakeDeps(opts: { ffmpegFailsAt?: number; outSize?: number; prev?: { size: number; mtimeMs: number } } = {}) {
+  function fakeDeps(opts: { ffmpegFailsAt?: number; outSize?: number; prev?: { size: number; mtimeMs: number }; sidecar?: string } = {}) {
     const calls: string[][] = [];
     const files = new Map<string, { size: number; mtimeMs: number }>([["src.mp4", { size: 56_000_000, mtimeMs: 1000 }]]);
+    const texts = new Map<string, string>();
     if (opts.prev) files.set("_internal/out.mp4", opts.prev);
+    if (opts.sidecar !== undefined) texts.set(chromeUploadSidecarPath("_internal/out.mp4"), opts.sidecar);
     const removed: string[] = [];
     const deps: ChromeUploadDeps = {
       runFfmpeg: (args) => {
         calls.push(args);
+        // A passada vem do valor depois de "-pass", nunca de um "2" qualquer nos args.
+        const pass = args[args.indexOf("-pass") + 1];
+        if (pass === "2") files.set(args.at(-1)!, { size: opts.outSize ?? 9_400_000, mtimeMs: 2000 });
         if (opts.ffmpegFailsAt === calls.length) return { ok: false, error: "ffmpeg: not found" };
-        if (args.includes("2")) files.set(args.at(-1)!, { size: opts.outSize ?? 9_400_000, mtimeMs: 2000 });
         return { ok: true };
       },
       stat: (p) => files.get(p) ?? null,
@@ -181,52 +235,99 @@ describe("#10915 versão ≤ 9,5 MB pro Chrome", () => {
         files.delete(p);
       },
       mkdirp: () => {},
+      readText: (p) => texts.get(p) ?? null,
+      writeText: (p, t) => {
+        texts.set(p, t);
+      },
       nullSink: "/dev/null",
     };
-    return { deps, calls, files, removed };
+    return { deps, calls, files, removed, texts };
   }
+  const input = { source: "src.mp4", output: "_internal/out.mp4", durationSeconds: 114 };
+  const kbps114 = chromeUploadBitrate(114).videoKbps;
+  const goodSidecar = (outputSizeBytes: number, over: Record<string, unknown> = {}) =>
+    JSON.stringify({ source: { path: "src.mp4", sizeBytes: 56_000_000, mtimeMs: 1000 }, videoKbps: kbps114, outputSizeBytes, ...over });
 
-  it("gera o arquivo: duas passadas, renomeia o parcial e limpa os logs do 2-pass", () => {
+  it("gera o arquivo: duas passadas, renomeia o parcial, limpa os logs do 2-pass e grava o sidecar", () => {
     const f = fakeDeps();
-    const r = prepareInstagramChromeUpload(f.deps, { source: "src.mp4", output: "_internal/out.mp4", durationSeconds: 114 });
+    const r = prepareInstagramChromeUpload(f.deps, input);
     assert.equal(r.ok, true);
     assert.equal(f.calls.length, 2);
     assert.equal(f.calls[1].at(-1), "_internal/out.part.mp4");
     assert.deepEqual(f.files.get("_internal/out.mp4"), { size: 9_400_000, mtimeMs: 2000 });
     assert.ok(f.removed.includes("_internal/out.mp4.2pass-0.log"));
     assert.equal((r as { reused: boolean }).reused, false);
+    assert.deepEqual(JSON.parse(f.texts.get("_internal/out.mp4.json")!), JSON.parse(goodSidecar(9_400_000)));
   });
 
-  it("reaproveita o arquivo já gerado (mais novo que o original e ≤ 10 MB) sem rodar ffmpeg", () => {
-    const f = fakeDeps({ prev: { size: 9_300_000, mtimeMs: 5000 } });
-    const r = prepareInstagramChromeUpload(f.deps, { source: "src.mp4", output: "_internal/out.mp4", durationSeconds: 114 });
+  it("reaproveita só com sidecar batendo exatamente, sem rodar ffmpeg", () => {
+    const f = fakeDeps({ prev: { size: 9_300_000, mtimeMs: 5000 }, sidecar: goodSidecar(9_300_000) });
+    const r = prepareInstagramChromeUpload(f.deps, input);
     assert.equal(r.ok, true);
     assert.equal((r as { reused: boolean }).reused, true);
     assert.equal(f.calls.length, 0);
   });
 
-  it("arquivo antigo (mais velho que o original) é refeito", () => {
-    const f = fakeDeps({ prev: { size: 9_300_000, mtimeMs: 10 } });
-    prepareInstagramChromeUpload(f.deps, { source: "src.mp4", output: "_internal/out.mp4", durationSeconds: 114 });
-    assert.equal(f.calls.length, 2);
+  it("sem sidecar, ou sidecar de outra fonte/bitrate/tamanho, refaz o arquivo (mtime mais novo não basta)", () => {
+    const cases: Array<string | undefined> = [
+      undefined,
+      "{quebrado",
+      goodSidecar(9_300_000, { source: { path: "src.mp4", sizeBytes: 1, mtimeMs: 1000 } }),
+      goodSidecar(9_300_000, { source: { path: "src.mp4", sizeBytes: 56_000_000, mtimeMs: 999 } }),
+      goodSidecar(9_300_000, { source: { path: "outro.mp4", sizeBytes: 56_000_000, mtimeMs: 1000 } }),
+      goodSidecar(9_300_000, { videoKbps: kbps114 + 1 }),
+      goodSidecar(9_299_999),
+    ];
+    for (const sidecar of cases) {
+      const f = fakeDeps({ prev: { size: 9_300_000, mtimeMs: 5000 }, sidecar });
+      prepareInstagramChromeUpload(f.deps, input);
+      assert.equal(f.calls.length, 2, `sidecar ${sidecar}`);
+    }
   });
 
-  it("fail-soft: ffmpeg falhando NUNCA lança — volta ok:false e o passo aponta pro original", () => {
+  it("reuso recusa arquivo acima de 10 MB e de 0 byte, mesmo com sidecar batendo", () => {
+    for (const size of [CHROME_UPLOAD_MAX_BYTES + 1, 0]) {
+      const f = fakeDeps({ prev: { size, mtimeMs: 5000 }, sidecar: goodSidecar(size) });
+      prepareInstagramChromeUpload(f.deps, input);
+      assert.equal(f.calls.length, 2, `size ${size}`);
+    }
+  });
+
+  it("fail-soft: ffmpeg falhando NUNCA lança — volta ok:false e o passo aponta pro original, fitsChromeUpload false", () => {
     const f = fakeDeps({ ffmpegFailsAt: 1 });
-    const r = prepareInstagramChromeUpload(f.deps, { source: "src.mp4", output: "_internal/out.mp4", durationSeconds: 114 });
+    const r = prepareInstagramChromeUpload(f.deps, input);
     assert.equal(r.ok, false);
     assert.match((r as { error: string }).error, /passada 1.*not found/);
     const items: ShortsPlanItem[] = [{ destination: "instagram", mode: "guided", action: "guided", caption: "c", detail: "d" }];
-    const a = attachChromeUploadToPlan(items, r, "/ed/orig.mp4");
-    assert.equal((a.items[0] as { file?: string }).file, "/ed/orig.mp4");
+    const a = attachChromeUploadToPlan(items, r, { path: "/ed/orig.mp4", sizeBytes: 5_000_000 });
+    assert.deepEqual((a.items[0] as { upload?: unknown }).upload, { path: "/ed/orig.mp4", sizeBytes: 5_000_000, fitsChromeUpload: false });
     assert.match(a.warnings[0], /não gerada.*original/);
   });
 
-  it("arquivo que saiu acima de 10 MB é usado, mas com aviso", () => {
+  it("falha na passada 2 limpa o .part.mp4 e os logs do 2-pass, sem renomear nem gravar sidecar", () => {
+    const f = fakeDeps({ ffmpegFailsAt: 2 });
+    const r = prepareInstagramChromeUpload(f.deps, input);
+    assert.equal(r.ok, false);
+    assert.match((r as { error: string }).error, /passada 2/);
+    assert.ok(f.removed.includes("_internal/out.part.mp4"));
+    assert.ok(f.removed.includes("_internal/out.mp4.2pass-0.log"));
+    assert.ok(f.removed.includes("_internal/out.mp4.2pass-0.log.mbtree"));
+    assert.equal(f.files.has("_internal/out.part.mp4"), false);
+    assert.equal(f.files.has("_internal/out.mp4"), false);
+    assert.equal(f.texts.size, 0);
+  });
+
+  it("arquivo que saiu acima de 10 MB é usado, com aviso e fitsChromeUpload false", () => {
     const f = fakeDeps({ outSize: 11_000_000 });
-    const r = prepareInstagramChromeUpload(f.deps, { source: "src.mp4", output: "_internal/out.mp4", durationSeconds: 114 });
+    const r = prepareInstagramChromeUpload(f.deps, input);
     assert.equal(r.ok, true);
     assert.match((r as { warning?: string }).warning ?? "", /11\.0 MB/);
+    const items: ShortsPlanItem[] = [{ destination: "instagram", mode: "guided", action: "guided", caption: "c", detail: "d" }];
+    const a = attachChromeUploadToPlan(items, r, { path: "/ed/orig.mp4", sizeBytes: 56_000_000 });
+    const up = (a.items[0] as { upload?: { fitsChromeUpload: boolean; sizeBytes: number } }).upload!;
+    assert.equal(up.fitsChromeUpload, false);
+    assert.equal(up.sizeBytes, 11_000_000);
+    assert.match((a.items[0] as { detail: string }).detail, /o editor escolhe o arquivo/);
   });
 
   it("o passo guiado do Instagram ganha o arquivo comprimido; os outros itens ficam intactos", () => {
@@ -234,9 +335,9 @@ describe("#10915 versão ≤ 9,5 MB pro Chrome", () => {
       { destination: "instagram", mode: "guided", action: "guided", caption: "legenda", detail: "acima do teto" },
       { destination: "youtube_shorts", mode: "guided", action: "guided", detail: "yt" },
     ];
-    const a = attachChromeUploadToPlan(items, { ok: true, path: "/ed/_internal/x.mp4", sizeBytes: 9_400_000, videoKbps: 582, reused: false }, "/ed/orig.mp4");
-    const ig = a.items[0] as { file?: string; detail: string; caption?: string };
-    assert.equal(ig.file, "/ed/_internal/x.mp4");
+    const a = attachChromeUploadToPlan(items, { ok: true, path: "/ed/_internal/x.mp4", sizeBytes: 9_400_000, videoKbps: 582, reused: false }, { path: "/ed/orig.mp4", sizeBytes: 56_000_000 });
+    const ig = a.items[0] as { upload?: unknown; detail: string; caption?: string };
+    assert.deepEqual(ig.upload, { path: "/ed/_internal/x.mp4", sizeBytes: 9_400_000, fitsChromeUpload: true });
     assert.equal(ig.caption, "legenda");
     assert.match(ig.detail, /9\.4 MB, 582 kbps/);
     assert.equal(a.items[1], items[1]);
@@ -260,27 +361,105 @@ describe("#10915 conferência pela API depois do Share", () => {
     };
   }
 
-  it("acha o Reels mais recente desde o início do dia, ignorando post de imagem e Reels antigo", async () => {
-    const f = fetchSeq([
-      {
-        json: {
-          data: [
-            { id: "old", media_product_type: "REELS", timestamp: "2026-10-21T15:00:00+0000", permalink: "https://www.instagram.com/reel/old/" },
-            { id: "img", media_product_type: "FEED", timestamp: "2026-10-22T16:00:00+0000" },
-            { id: "r1", media_product_type: "REELS", timestamp: "2026-10-22T15:22:00+0000", permalink: "https://www.instagram.com/reel/Dezuxl2q6Xy/" },
-          ],
-        },
-      },
-    ]);
-    const r = await findInstagramReelSince(f.deps, "1784", "tok", "v25.0", "2026-10-22T03:00:00.000Z");
-    assert.deepEqual(r, { id: "r1", permalink: "https://www.instagram.com/reel/Dezuxl2q6Xy/", timestamp: "2026-10-22T15:22:00+0000", countSince: 1 });
+  const markers = instagramEditionMarkers({ aammdd: "261022", d1Title: "**Título** do  D1" });
+  const empty: ShortsPublishedFile = { aammdd: "261022", entries: [] };
+  const since = "2026-10-22T03:00:00.000Z";
+  const now = "2026-10-22T16:00:00.000Z";
+  const caption = "Título do D1\n\nCorpo do destaque.\n\nEdição completa no link da bio.";
+
+  it("marcadores: utm_campaign da edição e o título do D1 sem markdown", () => {
+    assert.deepEqual(markers, ["utm_campaign=261022", "Título do D1"]);
+    assert.deepEqual(instagramEditionMarkers({ aammdd: "261022", editionUrl: "https://diar.ia.br/p/x?utm_source=a" }), ["utm_campaign=261022", "https://diar.ia.br/p/x"]);
+  });
+
+  it("lê /media com a legenda, só leitura", async () => {
+    const f = fetchSeq([{ json: { data: [] } }]);
+    await fetchInstagramRecentMedia(f.deps, "1784", "tok", "v25.0");
     assert.match(f.urls[0], /\/v25\.0\/1784\/media\?/);
+    assert.match(decodeURIComponent(f.urls[0]), /fields=id,permalink,timestamp,media_product_type,caption/);
     assert.ok(!/media_publish/.test(f.urls[0]));
   });
 
-  it("nenhum Reels desde o início do dia → null", async () => {
-    const f = fetchSeq([{ json: { data: [{ id: "old", media_product_type: "REELS", timestamp: "2026-10-21T15:00:00+0000" }] } }]);
-    assert.equal(await findInstagramReelSince(f.deps, "1", "t", "v25.0", "2026-10-22T03:00:00.000Z"), null);
+  it("2 Reels fora de ordem no payload: registra só o que tem o marcador, não o mais recente", () => {
+    const media = {
+      data: [
+        { id: "outro", media_product_type: "REELS", timestamp: "2026-10-22T18:00:00+0000", permalink: "https://www.instagram.com/reel/outro/", caption: "Outro assunto do dia" },
+        { id: "img", media_product_type: "FEED", timestamp: "2026-10-22T16:00:00+0000", caption },
+        { id: "old", media_product_type: "REELS", timestamp: "2026-10-21T15:00:00+0000", caption },
+        { id: "r1", media_product_type: "REELS", timestamp: "2026-10-22T15:22:00+0000", permalink: "https://www.instagram.com/reel/Dezuxl2q6Xy/", caption: caption.replace("Título", "TÍTULO") },
+      ],
+    };
+    const d = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, nowIso: now });
+    assert.equal(d.kind, "register");
+    assert.deepEqual((d as { entry: unknown }).entry, {
+      destination: "instagram",
+      status: "published",
+      id: "r1",
+      url: "https://www.instagram.com/reel/Dezuxl2q6Xy/",
+      scheduled_at: null,
+      at: now,
+    });
+  });
+
+  it("nenhum Reels com o marcador → recusa listando os candidatos (id, horário, permalink)", () => {
+    const media = {
+      data: [
+        { id: "a", media_product_type: "REELS", timestamp: "2026-10-22T15:00:00+0000", permalink: "https://www.instagram.com/reel/a/", caption: "Outra coisa" },
+        { id: "b", media_product_type: "REELS", timestamp: "2026-10-22T17:00:00+0000", caption: "Mais outra" },
+      ],
+    };
+    const d = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, nowIso: now });
+    assert.equal(d.kind, "refuse");
+    assert.match((d as { reason: string }).reason, /nenhum dos 2 Reels.*--media-id/);
+    assert.deepEqual(
+      (d as { candidates: Array<{ id: string; timestamp: string; permalink: string | null }> }).candidates.map((c) => [c.id, c.timestamp, c.permalink]),
+      [
+        ["b", "2026-10-22T17:00:00+0000", null],
+        ["a", "2026-10-22T15:00:00+0000", "https://www.instagram.com/reel/a/"],
+      ],
+    );
+  });
+
+  it("mais de 1 Reels com o marcador → recusa e pede --media-id", () => {
+    const media = {
+      data: [
+        { id: "a", media_product_type: "REELS", timestamp: "2026-10-22T15:00:00+0000", caption },
+        { id: "b", media_product_type: "REELS", timestamp: "2026-10-22T17:00:00+0000", caption },
+      ],
+    };
+    const d = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, nowIso: now });
+    assert.equal(d.kind, "refuse");
+    assert.match((d as { reason: string }).reason, /2 Reels.*têm o marcador/);
+  });
+
+  it("nenhum Reels desde o início do dia → recusa sem candidatos", () => {
+    const media = { data: [{ id: "old", media_product_type: "REELS", timestamp: "2026-10-21T15:00:00+0000", caption }] };
+    const d = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, nowIso: now });
+    assert.equal(d.kind, "refuse");
+    assert.deepEqual((d as { candidates: unknown[] }).candidates, []);
+  });
+
+  it("--media-id escolhe explicitamente (sem marcador); id fora da lista recusa", () => {
+    const media = { data: [{ id: "x", media_product_type: "REELS", timestamp: "2026-10-21T15:00:00+0000", caption: "sem marcador" }] };
+    const ok = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, mediaId: "x", nowIso: now });
+    assert.equal(ok.kind, "register");
+    assert.equal((ok as { entry: { id: string } }).entry.id, "x");
+    const bad = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, mediaId: "y", nowIso: now });
+    assert.equal(bad.kind, "refuse");
+    assert.match((bad as { reason: string }).reason, /--media-id y não está/);
+  });
+
+  it("já registrado → no-op (sem ler a mídia), reporta o status; exit 0 só se published", () => {
+    const pub: ShortsPublishedFile = { aammdd: "261022", entries: [{ destination: "instagram", status: "published", id: "r1", at: now }] };
+    // Sem `media`: prova que nem chega a ler a API.
+    const d = decideInstagramConfirm({ published: pub, sinceIso: since, markers, nowIso: now });
+    assert.equal(d.kind, "already_registered");
+    assert.equal((d as { exitCode: number }).exitCode, 0);
+    const sched: ShortsPublishedFile = { aammdd: "261022", entries: [{ destination: "instagram", status: "scheduled", id: "q", scheduled_at: now, at: now }] };
+    const r = instagramAlreadyRegistered(sched)!;
+    assert.equal(r.entry.status, "scheduled");
+    assert.equal(r.exitCode, 1);
+    assert.equal(instagramAlreadyRegistered(empty), null);
   });
 
   it("collab Pending vira aviso só na conferência; ausente é descartado", () => {

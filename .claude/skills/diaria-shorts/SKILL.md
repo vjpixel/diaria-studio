@@ -67,10 +67,10 @@ Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. R
 
 Só quando o item `instagram` do plano vem `guided` (vertical acima do teto da autora). Roda **só na máquina Windows do editor**, com o Chrome logado no instagram.com como @vjpixel (label `windows`); fora dela, deixar o passo pro editor e seguir.
 
-O `--publish` do Passo 3 gera a versão que cabe no `file_upload` do Claude in Chrome (10 MB por chamada): `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`, ffmpeg 2-pass em 720x1280, AAC 64k 48 kHz, `+faststart`, bitrate calculado pela duração pra ficar em ≤ 9,5 MB. O caminho vem no campo `file` do item, com a legenda pronta em `caption`. Se o ffmpeg falhar, o `file` aponta pro original (sai `[aviso]`) e o editor escolhe o arquivo. Rodar de novo reaproveita o arquivo já gerado.
+O `--publish` do Passo 3, depois de publicar os destinos de API, gera a versão para o `file_upload` do Claude in Chrome: `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`, ffmpeg 2-pass em 720x1280, AAC 64k 48 kHz, `+faststart`, bitrate calculado pela duração mirando 9,5 MB (abaixo do limite de 10 MB do `file_upload`). Vídeos muito longos podem não caber nem no bitrate mínimo (250 kbps de vídeo: acima de ~4 min o arquivo passa dos 10 MB). O item traz `upload: { path, sizeBytes, fitsChromeUpload }` e a legenda pronta em `caption`. Se o ffmpeg falhar (ou passar de 15 min por passada), `upload.path` aponta pro original com `fitsChromeUpload: false` (sai `[aviso]`). Rodar de novo reaproveita o arquivo gerado só quando o sidecar `.json` ao lado dele bate com o vertical atual (caminho, tamanho, mtime) e com o bitrate.
 
 1. Carregar as ferramentas do Claude in Chrome e abrir `https://www.instagram.com/` numa aba nova. Conferir no avatar que a conta é @vjpixel.
-2. **Criar > Post.** Subir o arquivo do `file` pelo `<input type="file">` do diálogo (com `file_upload`; é por isso que o arquivo precisa ter menos de 10 MB).
+2. **Criar > Post.** Conferir `upload.fitsChromeUpload` antes de subir. Se for `true`, subir `upload.path` pelo `<input type="file">` do diálogo com `file_upload`. Se for `false` (arquivo acima de 10 MB ou compressão falhou), **não** chamar `file_upload`: chamar o editor para escolher o arquivo no diálogo.
 3. **Proporção 9:16.** O diálogo abre em 1:1: abrir o seletor de proporção (ícone de recorte no canto inferior esquerdo) e escolher 9:16. O seletor **fecha** ao clicar em "Original"; se isso acontecer, abrir de novo e escolher 9:16.
 4. Avançar **duas vezes** (recorte e depois filtros) até a tela da legenda.
 5. Colar a legenda do `caption` do item.
@@ -82,9 +82,9 @@ O `--publish` do Passo 3 gera a versão que cabe no `file_upload` do Claude in C
    npx tsx scripts/publish-shorts.ts {AAMMDD} --confirm-instagram
    ```
 
-   Ele registra o Reels mais recente da autora desde 00:00 BRT do dia da edição (`--since ISO` muda o corte) e avisa quando o collab ficou `Pending` (a @diar.ia.br ainda precisa aceitar o convite no app) ou foi descartado. "Nenhum Reels desde…" logo depois do Share costuma ser o processamento: esperar um minuto e rodar de novo. Sem acesso à API, registrar à mão com `--mark instagram={URL do Reel}`.
+   Ele lê as 15 mídias mais recentes da autora e registra o único Reels desde 00:00 BRT do dia da edição (`--since ISO` muda o corte) cuja legenda tem o marcador da edição: o título do D1, que abre a legenda (ou `utm_campaign={AAMMDD}`/URL da edição, se a legenda trouxer o link). Sem nenhum match, ou com mais de um, recusa (exit 1) sem gravar e lista os candidatos (id, horário, permalink); aí escolher com `--media-id {id}`. Avisa quando o collab ficou `Pending` (a @diar.ia.br ainda precisa aceitar o convite no app), `Declined` (convidar de novo) ou foi descartado. "Nenhum Reels desde…" logo depois do Share costuma ser o processamento: esperar um minuto e rodar de novo. Se o `instagram` já está registrado, não grava nada e sai não-zero quando o registro não é `published`. Sem acesso à API, registrar à mão com `--mark instagram={URL do Reel}`.
 
-Relatar o Instagram como publicado só depois do `--confirm-instagram` (#573), e com o collab `Pending` dito explicitamente quando for o caso.
+Relatar o Instagram como publicado só depois do `--confirm-instagram` (#573), e com o collab `Pending` ou `Declined` dito explicitamente quando for o caso.
 
 ## Passo 4 — YouTube Shorts (Chrome)
 

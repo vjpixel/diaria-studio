@@ -14,7 +14,7 @@
 
 /** Limite do `file_upload` do Claude in Chrome por chamada (10 MB). */
 export const CHROME_UPLOAD_MAX_BYTES = 10_000_000;
-/** Alvo do arquivo comprimido: 9,5 MB, meio MB de folga sob o limite. */
+/** Alvo do arquivo comprimido: mirando 9,5 MB (abaixo do limite de 10 MB do file_upload). */
 export const CHROME_UPLOAD_TARGET_BYTES = 9_500_000;
 export const CHROME_UPLOAD_AUDIO_KBPS = 64;
 export const CHROME_UPLOAD_AUDIO_RATE = 48_000;
@@ -112,3 +112,58 @@ export function buildChromeUploadFfmpegPasses(opts: {
 export type ChromeUploadResult =
   | { ok: true; path: string; sizeBytes: number; videoKbps: number; reused: boolean; warning?: string }
   | { ok: false; error: string };
+
+/**
+ * O arquivo do passo guiado, legível por máquina (#10915): a skill confere
+ * `fitsChromeUpload` antes de chamar o `file_upload` do Chrome. false = o
+ * editor escolhe o arquivo à mão (compressão falhou e sobrou o original, ou o
+ * encode passou de 10 MB).
+ */
+export interface ChromeUploadPlanFile {
+  path: string;
+  sizeBytes: number | null;
+  fitsChromeUpload: boolean;
+}
+
+/** Cabe no `file_upload` do Chrome? Tamanho desconhecido ou 0 byte = não. */
+export function fitsChromeUpload(sizeBytes: number | null): boolean {
+  return sizeBytes !== null && sizeBytes > 0 && sizeBytes <= CHROME_UPLOAD_MAX_BYTES;
+}
+
+/**
+ * Sidecar `.json` ao lado do arquivo comprimido (#10915): o arquivo só é
+ * reaproveitado quando a fonte (path, tamanho, mtime), o bitrate e o próprio
+ * arquivo gerado batem EXATAMENTE. mtime sozinho deixava passar um vertical
+ * trocado por outro mais velho, ou um arquivo de outro bitrate.
+ */
+export interface ChromeUploadSidecar {
+  source: { path: string; sizeBytes: number; mtimeMs: number };
+  videoKbps: number;
+  outputSizeBytes: number;
+}
+
+export function chromeUploadSidecarPath(output: string): string {
+  return `${output}.json`;
+}
+
+/** Pure: o arquivo já gerado pode ser reaproveitado? */
+export function chromeUploadReusable(
+  sidecarRaw: string | null,
+  expected: { source: { path: string; sizeBytes: number; mtimeMs: number }; videoKbps: number },
+  output: { size: number } | null,
+): boolean {
+  if (!sidecarRaw || !output || !fitsChromeUpload(output.size)) return false;
+  let s: ChromeUploadSidecar;
+  try {
+    s = JSON.parse(sidecarRaw);
+  } catch {
+    return false;
+  }
+  return (
+    s?.source?.path === expected.source.path &&
+    s.source.sizeBytes === expected.source.sizeBytes &&
+    s.source.mtimeMs === expected.source.mtimeMs &&
+    s.videoKbps === expected.videoKbps &&
+    s.outputSizeBytes === output.size
+  );
+}
