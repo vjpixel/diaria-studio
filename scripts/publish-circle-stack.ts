@@ -19,7 +19,16 @@
  *   4. Só com `--publish`: envia ao webhook n8n da Stack
  *      (`scripts/lib/stack-webhook.ts`), que
  *      publica NA HORA — não há rascunho. Idempotente por ciclo via
- *      `_internal/circle-stack-published.json` (`--force` sobrepõe).
+ *      `_internal/circle-stack-published.json`, lido pelo resolver
+ *      determinístico `resolveCircleStackState` (`lib/publish-state.ts`, #573):
+ *      só "draft" (nada enviado) libera; "published"/"unknown" exigem `--force`.
+ *
+ * Task semanal `Diaria-Circle-Stack-Weekly-Preview` (segunda 07:30 BRT,
+ * `scripts/lib/scheduled-tasks.ts`): roda em DRY-RUN com `--notify` — gera a
+ * seleção + prévia do ciclo e abre/reusa uma issue `bloqueio-execucao` avisando
+ * o editor. NUNCA publica sozinha: o post sai publicado na hora numa
+ * comunidade de terceiro, então `--publish` fica manual até o editor decidir
+ * automatizar. Sem `--publish-monday`, assume a segunda de hoje (ou a próxima).
  *
  * `--hello` envia um post curto de teste ("Olá, mundo") — também publicado
  * na hora; combine com a Stack antes, eles acompanham o 1º envio.
@@ -31,6 +40,7 @@
  *   npx tsx scripts/publish-circle-stack.ts --publish-monday 261026
  *   npx tsx scripts/publish-circle-stack.ts --publish-monday 261026 --publish
  *   npx tsx scripts/publish-circle-stack.ts --hello   (post de teste "Olá, mundo")
+ *   npx tsx scripts/publish-circle-stack.ts --notify   (task semanal: dry-run + aviso ao editor)
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
  */
 
@@ -40,7 +50,9 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
+import { nextMondayAAMMDD, resolveWeeklyLinkedinCycle, weeklyLinkedinRelDir } from "./lib/weekly-linkedin-cycle.ts";
+import { resolveCircleStackState, type CircleStackPublishedLike, type PublishState } from "./lib/publish-state.ts";
+import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { extractWeeklyCandidates, type WeeklyRawCandidate } from "./lib/weekly-linkedin-parse.ts";
@@ -75,6 +87,64 @@ export function resolveCircleStackConfig(platformConfig: Record<string, unknown>
     enabled: raw.enabled !== false,
     subscribeUrl: typeof raw.subscribe_url === "string" && raw.subscribe_url ? raw.subscribe_url : null,
     interests: parseInterestProfile(raw.interests) ?? STACK_INTEREST_PROFILE,
+  };
+}
+
+/**
+ * Lê o state local de idempotência do ciclo. `null` = arquivo ausente;
+ * JSON ilegível vira `{}` (o resolver o classifica "unknown", nunca "draft").
+ */
+export function readCircleStackPublishedState(statePath: string): CircleStackPublishedLike | null {
+  if (!existsSync(statePath)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as CircleStackPublishedLike) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Pure: decide se o `--publish` pode enviar, a partir do estado normalizado
+ * (`resolveCircleStackState`, #573). Só "draft" (nada enviado) libera sem
+ * `--force`; "published" e "unknown" bloqueiam — o webhook publica na hora e
+ * não há como apagar um post duplicado pela API.
+ */
+export function circleStackPublishBlockReason(state: PublishState, cycle: string, statePath: string): string | null {
+  if (state === "draft") return null;
+  if (state === "published") {
+    return `Ciclo ${cycle} já publicado na Stack (${statePath}). Use --force para publicar de novo.`;
+  }
+  return `State de publicação do ciclo ${cycle} existe mas não confirma o envio (${statePath}) — ` +
+    "conferir no Radar de Notícias Stack antes; --force publica mesmo assim.";
+}
+
+/** Pure: aviso ao editor de que a prévia semanal está pronta (task de segunda, dry-run). */
+export function buildCircleStackReadyFinding(cycle: string, title: string, mdPath: string, publishMonday: string): NotifyEditorFinding {
+  return {
+    check: "circle-stack-weekly",
+    fingerprint: cycle,
+    severity: "acao",
+    // "estado": a condição ("ciclo ainda não publicado") é re-checável.
+    family: "estado",
+    subject: `Radar de Notícias Stack ${cycle}: prévia pronta para revisar e publicar`,
+    body: [
+      `A task semanal gerou a prévia do post da Stack (dry-run, nada foi enviado): **${title}**.`,
+      "",
+      `- Prévia: \`${mdPath}\``,
+      `- Seleção editável: \`data/weekly/${cycle}/_internal/circle-stack-selection.json\``,
+      "",
+      "Para publicar (sai PUBLICADO na hora, sem rascunho):",
+      "",
+      "```",
+      `npx tsx scripts/publish-circle-stack.ts --publish-monday ${publishMonday} --publish`,
+      "```",
+      "",
+      "Ação manual do editor — publicar é guard de execução, rodadas autônomas não executam.",
+    ].join("\n"),
+    labels: ["bloqueio-execucao"],
+    priority: "P2",
+    legacyResendIntent: "dedupe-new-occurrences-only",
   };
 }
 
@@ -167,8 +237,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const publishMonday = getStringArg(argv, "publish-monday", { example: "261026" });
-  if (!publishMonday) throw new Error("Passe --publish-monday AAMMDD (segunda de publicação)");
+  let publishMonday = getStringArg(argv, "publish-monday", { example: "261026" });
+  if (!publishMonday) {
+    // Default da task semanal de segunda (#10904): a própria segunda, ou a próxima.
+    publishMonday = nextMondayAAMMDD(new Date());
+    console.log(`--publish-monday não informado — assumindo ${publishMonday} (segunda de hoje ou a próxima).`);
+  }
   const resolution = resolveWeeklyLinkedinCycle(publishMonday);
   if (!resolution) throw new Error(`--publish-monday inválido: ${publishMonday}`);
   const cycle = resolution.cycle;
@@ -200,21 +274,31 @@ async function main(): Promise<void> {
 ${rendered.markdown}
 `);
   const payload = buildStackPostPayload(rendered.title, rendered.markdown);
+  const statePath = join(cycleDir, "_internal", "circle-stack-published.json");
+  const publishState = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
 
   if (!hasFlag(argv, "publish")) {
     writeFileAtomic(join(cycleDir, "_internal", "circle-stack-payload.json"), JSON.stringify(payload, null, 2));
     console.log(`[dry-run] ${rendered.title}`);
+    console.log(`[dry-run] Estado do ciclo ${cycle} na Stack: ${publishState}`);
     console.log(`[dry-run] Seleção: ${selectionPath}`);
     console.log(`[dry-run] Prévia: ${mdPath}`);
     console.log("[dry-run] Passe --publish para enviar (o post sai PUBLICADO na hora).");
+    // --notify (task semanal de segunda): avisa o editor só se o ciclo ainda não saiu.
+    if (hasFlag(argv, "notify") && cfg.enabled && publishState !== "published") {
+      const res = await notifyEditor(
+        buildCircleStackReadyFinding(cycle, rendered.title, weeklyLinkedinRelDir(cycle) + `/circle-stack-${cycle}.md`, publishMonday),
+        { cwd: ROOT },
+      );
+      if (res.issue?.action === "failed") throw new Error(`Aviso ao editor falhou: ${res.issue.error ?? "erro desconhecido"}`);
+      console.log(`[dry-run] Editor avisado${res.issue?.url ? `: ${res.issue.url}` : ""}`);
+    }
     return;
   }
 
   if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
-  const statePath = join(cycleDir, "_internal", "circle-stack-published.json");
-  if (existsSync(statePath) && !hasFlag(argv, "force")) {
-    throw new Error(`Ciclo ${cycle} já publicado na Stack (${statePath}). Use --force para publicar de novo.`);
-  }
+  const blockReason = circleStackPublishBlockReason(publishState, cycle, statePath);
+  if (blockReason && !hasFlag(argv, "force")) throw new Error(blockReason);
 
   await sendStackPost(webhookUrl, key, payload);
   writeFileAtomic(statePath, JSON.stringify({ cycle, title: rendered.title, published_at: new Date().toISOString() }, null, 2));

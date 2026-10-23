@@ -6,6 +6,7 @@ import {
   resolveFacebookState,
   resolveThreadsState,
   resolveBrevoCampaignState,
+  resolveCircleStackState,
 } from "../scripts/lib/publish-state.ts";
 
 const NOW = new Date("2026-05-06T22:00:00Z");
@@ -282,5 +283,32 @@ describe("resolveBrevoCampaignState (#7917)", () => {
 
   it("status desconhecido → unknown (defensive)", () => {
     assert.equal(resolveBrevoCampaignState({ status: "algo_novo_nunca_visto" }), "unknown");
+  });
+});
+
+describe("resolveCircleStackState (#10904)", () => {
+  it("state ausente → draft (nada enviado)", () => {
+    assert.equal(resolveCircleStackState(null, "26w42"), "draft");
+    assert.equal(resolveCircleStackState(undefined, "26w42"), "draft");
+  });
+
+  it("ciclo certo + published_at ISO → published", () => {
+    assert.equal(
+      resolveCircleStackState({ cycle: "26w42", published_at: "2026-10-19T10:31:00.000Z" }, "26w42"),
+      "published",
+    );
+  });
+
+  it("ciclo divergente → unknown (nunca published de outro ciclo)", () => {
+    assert.equal(
+      resolveCircleStackState({ cycle: "26w41", published_at: "2026-10-12T10:31:00.000Z" }, "26w42"),
+      "unknown",
+    );
+  });
+
+  it("published_at ausente ou inválido → unknown, nunca draft", () => {
+    assert.equal(resolveCircleStackState({ cycle: "26w42" }, "26w42"), "unknown");
+    assert.equal(resolveCircleStackState({ cycle: "26w42", published_at: "ontem" }, "26w42"), "unknown");
+    assert.equal(resolveCircleStackState({}, "26w42"), "unknown");
   });
 });

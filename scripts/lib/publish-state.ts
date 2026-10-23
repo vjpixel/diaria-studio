@@ -2,7 +2,7 @@
  * publish-state.ts (#782)
  *
  * State machine normalizado pra estado de publicação externa
- * (Beehiiv, LinkedIn, Facebook, Threads, Brevo, YouTube, fila do Worker). Centraliza a lógica de "este post está
+ * (Beehiiv, LinkedIn, Facebook, Threads, Brevo, YouTube, fila do Worker, Circle da Stack). Centraliza a lógica de "este post está
  * agendado ou já saiu?" pra evitar que cada caller re-derive isso (ou
  * pior, deixe pra um subagente Haiku descobrir e errar).
  *
@@ -282,4 +282,39 @@ export function resolveYouTubeState(
     return ms > now.getTime() ? "scheduled" : "unknown";
   }
   return "unknown";
+}
+
+// ─── Circle da Stack (state local de idempotência, #10904) ────────────────────
+
+export interface CircleStackPublishedLike {
+  /** Ciclo `{YY}w{WW}` gravado por `publish-circle-stack.ts` após o 200 `{ok:true}` do webhook. */
+  cycle?: string | null;
+  /** ISO do envio — gravado no mesmo write, depois da confirmação do webhook. */
+  published_at?: string | null;
+}
+
+/**
+ * Normaliza o estado de publicação de um ciclo no Radar de Notícias Stack
+ * (#10904, mesma disciplina do #573). O webhook n8n da Stack publica NA HORA —
+ * não existe rascunho nem agendamento do lado de lá, e não há endpoint de
+ * leitura: a única evidência é o state local
+ * `data/weekly/{cycle}/_internal/circle-stack-published.json`, escrito só
+ * depois do `{"ok": true}`.
+ *
+ *   - state ausente (`null`/`undefined`) → "draft" (nada enviado; a prévia
+ *     `.md` do dry-run é o rascunho);
+ *   - `cycle` igual ao esperado + `published_at` ISO válido → "published";
+ *   - qualquer outra coisa (ciclo divergente, `published_at` ausente ou
+ *     inválido, JSON ilegível que o caller passou como `{}`) → "unknown" — o
+ *     arquivo existe, então algo foi tentado; nunca rebaixar pra "draft" e
+ *     arriscar post duplicado numa comunidade de terceiro.
+ */
+export function resolveCircleStackState(
+  state: CircleStackPublishedLike | null | undefined,
+  expectedCycle: string,
+): PublishState {
+  if (state == null) return "draft";
+  if (state.cycle !== expectedCycle) return "unknown";
+  if (!state.published_at || Number.isNaN(Date.parse(state.published_at))) return "unknown";
+  return "published";
 }

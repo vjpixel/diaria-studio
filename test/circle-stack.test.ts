@@ -19,7 +19,17 @@ import {
 } from "../scripts/lib/circle-stack-render.ts";
 import { scoreCandidate, selectCircleStack, parseInterestProfile } from "../scripts/lib/circle-stack-select.ts";
 import type { WeeklyRawCandidate } from "../scripts/lib/weekly-linkedin-parse.ts";
-import { resolveCircleStackConfig } from "../scripts/publish-circle-stack.ts";
+import {
+  resolveCircleStackConfig,
+  readCircleStackPublishedState,
+  circleStackPublishBlockReason,
+  buildCircleStackReadyFinding,
+} from "../scripts/publish-circle-stack.ts";
+import { resolveCircleStackState } from "../scripts/lib/publish-state.ts";
+import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const item = (over: Partial<CircleStackItem>): CircleStackItem => ({
   editionDate: "261013", url: "https://ex.com/x", title: "T", body: "Corpo.", why: "", ...over,
@@ -194,5 +204,59 @@ describe("selectCircleStack", () => {
     assert.deepEqual(picks.lancamentos.map((c) => c.title), ["Replit Agent"]);
     assert.equal(picks.radar.length, 0);
     assert.equal(picks.destaques[0].title, "n8n 2.0");
+  });
+});
+
+describe("estado de publicação do ciclo via resolver (#10904, #573)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "circle-stack-state-"));
+
+  it("arquivo ausente → draft → --publish liberado", () => {
+    const p = join(dir, "ausente.json");
+    const state = resolveCircleStackState(readCircleStackPublishedState(p), "26w42");
+    assert.equal(state, "draft");
+    assert.equal(circleStackPublishBlockReason(state, "26w42", p), null);
+  });
+
+  it("state válido do ciclo → published → bloqueia sem --force", () => {
+    const p = join(dir, "ok.json");
+    writeFileSync(p, JSON.stringify({ cycle: "26w42", title: "T", published_at: "2026-10-19T10:31:00.000Z" }));
+    const state = resolveCircleStackState(readCircleStackPublishedState(p), "26w42");
+    assert.equal(state, "published");
+    assert.match(circleStackPublishBlockReason(state, "26w42", p) ?? "", /já publicado/);
+  });
+
+  it("JSON ilegível → unknown → bloqueia (nunca rebaixa pra draft e duplica o post)", () => {
+    const p = join(dir, "corrompido.json");
+    writeFileSync(p, "{nao é json");
+    const state = resolveCircleStackState(readCircleStackPublishedState(p), "26w42");
+    assert.equal(state, "unknown");
+    assert.match(circleStackPublishBlockReason(state, "26w42", p) ?? "", /não confirma o envio/);
+  });
+});
+
+describe("aviso semanal ao editor (#10904)", () => {
+  it("issue por ciclo, bloqueio-execucao, com o comando manual de publicação", () => {
+    const f = buildCircleStackReadyFinding("26w42", "Radar Stack", "data/weekly/26w42/circle-stack-26w42.md", "261019");
+    assert.equal(f.fingerprint, "26w42");
+    assert.equal(f.severity, "acao");
+    assert.deepEqual(f.labels, ["bloqueio-execucao"]);
+    assert.match(f.body, /--publish-monday 261019 --publish/);
+    assert.match(f.body, /nada foi enviado/);
+  });
+});
+
+describe("task semanal Diaria-Circle-Stack-Weekly-Preview (#10904)", () => {
+  const task = getScheduledTaskByName("Diaria-Circle-Stack-Weekly-Preview");
+
+  it("segunda 07:30 BRT, rodando o publisher", () => {
+    assert.ok(task);
+    assert.deepEqual(task.schedule, { kind: "weekly", dayOfWeek: "Monday", hour: 7, minute: 30 });
+    assert.equal(task.steps[0].script, "scripts/publish-circle-stack.ts");
+  });
+
+  it("roda em dry-run: nunca --publish, --hello nem --force", () => {
+    const args = task?.steps.flatMap((s) => s.args ?? []) ?? [];
+    assert.ok(args.includes("--notify"));
+    for (const forbidden of ["--publish", "--hello", "--force"]) assert.ok(!args.includes(forbidden), forbidden);
   });
 });

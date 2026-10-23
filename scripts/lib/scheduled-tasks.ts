@@ -852,6 +852,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5111",
   },
   {
+    name: "Diaria-Circle-Stack-Weekly-Preview",
+    description:
+      "prévia semanal do Radar de Notícias Stack (Circle da Stack) em DRY-RUN + aviso ao editor; nunca publica (#10904)",
+    // `--notify` sem `--publish-monday`: o script assume a segunda de hoje
+    // (`nextMondayAAMMDD`), gera seleção editável + prévia `.md` do ciclo e
+    // abre/reusa 1 issue `bloqueio-execucao` por ciclo (fingerprint = ciclo)
+    // só se o ciclo ainda não saiu (`resolveCircleStackState` != published).
+    // NUNCA `--publish` aqui (premissa da sessão develop 261023): o webhook
+    // da Stack publica na hora, sem rascunho, numa comunidade de terceiro —
+    // o envio fica manual até o editor decidir automatizar.
+    steps: [{ key: "preview", script: "scripts/publish-circle-stack.ts", args: ["--notify"] }],
+    logPath: "weekly/.circle-stack-preview.log",
+    // Segunda 07:30 BRT — o ciclo da semana anterior (seg-sex) já fechou e a
+    // edição de segunda já saiu às 06:00. Única weekly de segunda do
+    // registro (as demais são domingo/sexta/sábado); nenhuma daily em 07:30
+    // (vizinhas: 07:10, 07:20, 07:46) e `interval` só cai em :00.
+    schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 7, minute: 30 },
+    issue: "#10904",
+  },
+  {
     name: "Diaria-Hub-Drift-Check",
     description: "smoke-test de drift entre HUB_META e o Worker arquivo publicado",
     steps: [{ key: "check", script: "scripts/hub-drift-check.ts" }],
