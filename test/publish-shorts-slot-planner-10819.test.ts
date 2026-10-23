@@ -62,8 +62,14 @@ describe("#10819 durante o teste do #10831: horário do teste tem precedência",
     const fbWarn = p.warnings.filter((w) => w.startsWith("facebook:diaria:"));
     assert.equal(fbWarn.length, 1);
     assert.match(fbWarn[0], /06:30 BRT/);
-    // VJ pixel (página e Instagram autor) não tem post no dia: sem aviso.
-    assert.ok(!p.warnings.some((w) => w.startsWith("facebook:vjpixel:") || w.startsWith("instagram:")));
+    // Página VJ pixel não tem post no dia: sem aviso.
+    assert.ok(!p.warnings.some((w) => w.startsWith("facebook:vjpixel:")));
+    // O Instagram sai na @vjpixel com a @diar.ia.br em collab, e o collab CONTA
+    // como post da diar.ia.br (decisão do editor 261023): 06:30 cola no post das
+    // 07:00 de instagram:diaria. Antes dessa decisão, a premissa era "não conta".
+    const igWarn = p.warnings.filter((w) => w.startsWith("instagram:"));
+    assert.equal(igWarn.length, 1);
+    assert.match(igWarn[0], /instagram:diaria, em collab/);
   });
 
   it("grade vazia: sem aviso de grade", () => {
@@ -84,15 +90,19 @@ describe("#10819 fora do teste: o planner decide por destino", () => {
     // VJ pixel sem post: alinha ao horário de outra conta mais perto de 12:00 (11:00 e 13:00 empatam → o mais cedo).
     assert.equal(by["facebook:vjpixel"].rule, "align-other-account");
     assert.equal(by["facebook:vjpixel"].hhmm, "11:00");
-    // Instagram autor = conta do editor (instagram:vjpixel), não a da diar.ia.br.
+    // Instagram autor = conta do editor (instagram:vjpixel), com a diar.ia.br em
+    // collab: conta como post da diar.ia.br (decisão do editor 261023), então
+    // espalha entre os posts dela (07/11/15/19) em vez de alinhar às 11:00 dela.
     assert.equal(by["instagram"].account, "instagram:vjpixel");
-    assert.equal(by["instagram"].hhmm, "11:00");
+    assert.deepEqual(by["instagram"].alsoAccounts, ["instagram:diaria"]);
+    assert.equal(by["instagram"].rule, "spread-same-account");
+    assert.equal(by["instagram"].hhmm, "13:00");
 
     const fb = p.items.find((i) => i.destination === "facebook:diaria") as { scheduledAt: string | null };
     assert.equal(fb.scheduledAt, at("2026-11-16", "13:00"));
     const ig = p.items.find((i) => i.destination === "instagram") as { action: string; detail: string };
     assert.equal(ig.action, "pending_schedule");
-    assert.match(ig.detail, /11:00 BRT/);
+    assert.match(ig.detail, /13:00 BRT/);
   });
 
   it("nunca empilha o Reels num post da mesma conta (o bug antigo: todos no horário fixo)", () => {

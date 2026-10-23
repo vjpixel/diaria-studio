@@ -376,7 +376,7 @@ describe("#10915 conferência pela API depois do Share", () => {
     const f = fetchSeq([{ json: { data: [] } }]);
     await fetchInstagramRecentMedia(f.deps, "1784", "tok", "v25.0");
     assert.match(f.urls[0], /\/v25\.0\/1784\/media\?/);
-    assert.match(decodeURIComponent(f.urls[0]), /fields=id,permalink,timestamp,media_product_type,caption/);
+    assert.match(decodeURIComponent(f.urls[0]), /fields=id,permalink,timestamp,media_product_type,media_type,caption/);
     assert.ok(!/media_publish/.test(f.urls[0]));
   });
 

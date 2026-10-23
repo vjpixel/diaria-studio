@@ -80,7 +80,10 @@
  * avisa quando ele cola num post da mesma conta; fora do teste, cada destino
  * de API tem o próprio horário (`slots` no plano) pelo `social-slot-planner`.
  * O Instagram manual acima do teto (#10893) também reserva slot (#10933): é um
- * post da conta naquele horário, só que feito no app.
+ * post da conta naquele horário, só que feito no app. O Reels do Instagram
+ * conta também como post dos collabs (a @diar.ia.br, decisão do editor
+ * 261023), e a grade inclui a fila do Worker (`GET /list`, fail-soft): os
+ * posts que as skills de divulgação agendaram pro mesmo dia.
  *
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
  * Stage 5) > slug derivado do título do D1 (aviso).
@@ -143,7 +146,14 @@ import {
 import { stripInlineMarkdown, youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
-import { gridFromLinkedInPersonalIntent, gridFromShortsPublished, gridFromSocialPublished, type ScheduledSlot } from "./lib/social-slot-planner.ts";
+import {
+  gridFromLinkedInPersonalIntent,
+  gridFromShortsPublished,
+  gridFromSocialPublished,
+  gridFromWorkerQueue,
+  mergeGrids,
+  type ScheduledSlot,
+} from "./lib/social-slot-planner.ts";
 import { loadR2UploadConfig, uploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
@@ -400,7 +410,10 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (profileBlocker) return null;
     const profileEntry = input.published.entries.find((e) => e.destination === "linkedin_profile");
     const profileAt = profileEntry ? (profileEntry.scheduled_at ?? profileEntry.at) : (slotOf.get("linkedin_profile")?.at ?? shortTime.at);
-    const plannedGrid = [...(input.grid ?? []), ...slots.map((s) => ({ account: s.account, at: s.at, label: `shorts ${s.destination}` }))];
+    const plannedGrid = [
+      ...(input.grid ?? []),
+      ...slots.map((s) => ({ account: s.account, at: s.at, label: `shorts ${s.destination}`, ...(s.alsoAccounts ? { alsoAccounts: s.alsoAccounts } : {}) })),
+    ];
     const s = planLinkedInRepostSlot({ aammdd: input.aammdd, profileAt: Number.isNaN(Date.parse(profileAt)) ? shortTime.at : profileAt, grid: plannedGrid });
     premises.push(`linkedin_page_repost: ${s.hhmm} BRT (grade da página #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
@@ -1141,20 +1154,31 @@ export function decideInstagramConfirm(input: {
     scheduled_at: null,
     at: input.nowIso,
   });
+  const isReels = (m: any) => m.media_product_type === "REELS";
   if (input.mediaId) {
     const all = valid.map(toCandidate).sort(byNewest);
-    const chosen = all.find((c) => c.id === input.mediaId);
-    if (!chosen) {
+    const raw = valid.find((m: any) => m.id === input.mediaId);
+    if (!raw) {
       return {
         kind: "refuse",
         reason: `--media-id ${input.mediaId} não está entre as ${INSTAGRAM_CONFIRM_MEDIA_LIMIT} mídias mais recentes da autora`,
         candidates: all,
       };
     }
-    return { kind: "register", entry: entryFor(chosen), candidates: all };
+    // #10966: a escolha explícita também precisa ser um Reels — uma foto ou um
+    // carrossel com o id errado viraria o registro `instagram: published` (#573).
+    if (!isReels(raw)) {
+      const type = typeof raw.media_product_type === "string" ? raw.media_product_type : "sem media_product_type";
+      return {
+        kind: "refuse",
+        reason: `--media-id ${input.mediaId} não é um Reels (media_product_type: ${type}${typeof raw.media_type === "string" ? `, media_type: ${raw.media_type}` : ""}) — escolha um dos Reels listados`,
+        candidates: valid.filter(isReels).map(toCandidate).sort(byNewest),
+      };
+    }
+    return { kind: "register", entry: entryFor(toCandidate(raw)), candidates: all };
   }
   const reels: InstagramReelCandidate[] = valid
-    .filter((m: any) => m.media_product_type === "REELS" && parseIgTimestamp(m.timestamp) >= since)
+    .filter((m: any) => isReels(m) && parseIgTimestamp(m.timestamp) >= since)
     .map(toCandidate)
     .sort(byNewest);
   const matches = reels.filter((c) => c.matchesEdition);
@@ -1188,7 +1212,7 @@ export async function fetchInstagramRecentMedia(
   return graphGet(
     deps as GraphDeps,
     `${igUserId}/media`,
-    { fields: "id,permalink,timestamp,media_product_type,caption", limit: String(INSTAGRAM_CONFIRM_MEDIA_LIMIT), access_token: token },
+    { fields: "id,permalink,timestamp,media_product_type,media_type,caption", limit: String(INSTAGRAM_CONFIRM_MEDIA_LIMIT), access_token: token },
     apiVersion,
   );
 }
@@ -1446,11 +1470,31 @@ function writePublished(path: string, file: ShortsPublishedFile): void {
 
 /**
  * Grade já agendada do dia (#10819): posts sociais da edição + o que o vertical
- * já registrou. Store social ausente = só o do vertical; ilegível = aviso e
- * segue sem ele (a grade só ajusta horário; nunca é motivo pra não publicar).
+ * já registrou + a fila do Worker (`opts.workerQueue`, a resposta de `GET
+ * /list` já lida — `loadWorkerQueueForGrid`). Store social ausente = só o do
+ * vertical; ilegível = aviso e segue sem ele (a grade só ajusta horário; nunca
+ * é motivo pra não publicar). `opts.instagramCollaborators`: o Reels registrado
+ * ocupa também a conta dos collabs (decisão do editor 261023).
  */
-export function loadScheduledGrid(dir: string, published: ShortsPublishedFile, instagramAccount: string | null, warn: (m: string) => void): ScheduledSlot[] {
-  const grid = gridFromShortsPublished(published, instagramAccount ?? "diaria");
+export function loadScheduledGrid(
+  dir: string,
+  published: ShortsPublishedFile,
+  instagramAccount: string | null,
+  warn: (m: string) => void,
+  opts: { instagramCollaborators?: readonly string[]; workerQueue?: unknown } = {},
+): ScheduledSlot[] {
+  const local = loadEditionGrid(dir, published, instagramAccount, warn, opts.instagramCollaborators ?? []);
+  return opts.workerQueue === undefined ? local : mergeGrids(local, gridFromWorkerQueue(opts.workerQueue));
+}
+
+function loadEditionGrid(
+  dir: string,
+  published: ShortsPublishedFile,
+  instagramAccount: string | null,
+  warn: (m: string) => void,
+  instagramCollaborators: readonly string[],
+): ScheduledSlot[] {
+  const grid = gridFromShortsPublished(published, instagramAccount ?? "diaria", instagramCollaborators);
   // #10772: o 4º post no perfil pessoal do LinkedIn (#9568) disputa a mesma conta que o vertical nativo.
   const personal = join(dir, "_internal", PERSONAL_INTENT_FILE);
   if (existsSync(personal)) {
@@ -1467,6 +1511,34 @@ export function loadScheduledGrid(dir: string, published: ShortsPublishedFile, i
   } catch (e) {
     warn(`${p} ilegível (${(e as Error).message}) — grade #10819 sem os posts sociais do dia`);
     return grid;
+  }
+}
+
+/**
+ * Lê a fila do Worker (`GET /list`, só leitura) pra grade do #10819. Fail-soft:
+ * sem URL/token ou com erro, avisa e devolve `undefined` (a grade segue só com
+ * os stores da edição) — a fila só ajusta horário, nunca impede publicar.
+ */
+export async function loadWorkerQueueForGrid(
+  workerUrl: string,
+  workerToken: string,
+  fetchFn: typeof fetch,
+  warn: (m: string) => void,
+): Promise<unknown | undefined> {
+  if (!workerUrl || !workerToken) {
+    warn("grade #10819 sem a fila do Worker (DIARIA_LINKEDIN_CRON_URL/_TOKEN ausente) — posts agendados fora dos stores da edição não entram");
+    return undefined;
+  }
+  const url = workerUrl.replace(/\/+$/, "") + "/list";
+  try {
+    const res = await fetchFn(url, { headers: { "X-Diaria-Token": workerToken } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = (await res.json()) as unknown;
+    if (!Array.isArray((json as { items?: unknown })?.items)) throw new Error("resposta sem items");
+    return json;
+  } catch (e) {
+    warn(`grade #10819 sem a fila do Worker (${(e as Error).message}) — posts agendados fora dos stores da edição não entram`);
+    return undefined;
   }
 }
 
@@ -1684,6 +1756,9 @@ async function main(): Promise<number> {
     workerToken,
     r2Missing: r2.ready ? [] : r2.missing,
   });
+  // #10819: a fila do Worker entra na grade (só leitura, fail-soft).
+  const warnGrid = (m: string) => console.error(`[aviso] ${m}`);
+  const workerQueue = await loadWorkerQueueForGrid(workerUrl, workerToken, fetch, warnGrid);
 
   let plan: ShortsPlan;
   try {
@@ -1707,7 +1782,10 @@ async function main(): Promise<number> {
       editionUrlSource: editionUrlIn.source,
       forceNow: flags.has("now"),
       only: onlyList,
-      grid: loadScheduledGrid(dir, published, shortsCfg.instagramAuthorPage, (m) => console.error(`[aviso] ${m}`)),
+      grid: loadScheduledGrid(dir, published, shortsCfg.instagramAuthorPage, warnGrid, {
+        instagramCollaborators: shortsCfg.instagramCollaborators,
+        workerQueue,
+      }),
     });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
