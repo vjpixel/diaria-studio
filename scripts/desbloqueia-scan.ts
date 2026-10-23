@@ -119,12 +119,13 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
   resolveDesbloqueioEscopo,
   scanDesbloqueioCandidates,
+  type DesbloqueioCandidate,
   type DesbloqueioIssueInput,
   type DesbloqueioScanReport,
 } from "./lib/desbloqueia-scan.ts";
 import { latestExecutionBlockFor } from "./lib/issue-decisions.ts";
 import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
-import { DEFAULT_ISSUE_REPO, ISSUE_REPOS_CONFIG_ROOT, resolveRepoFlag } from "./lib/issue-repos.ts";
+import { DEFAULT_ISSUE_REPO, ISSUE_REPOS_CONFIG_ROOT, formatIssueRef, resolveRepoFlag } from "./lib/issue-repos.ts";
 
 /**
  * Valores de `--track`. `sem-sinal` NÃO é um `ExecTrack` — é o subconjunto de
@@ -300,6 +301,40 @@ export function resolveDependencyStates(
   return out;
 }
 
+/**
+ * #10935: candidata com a referência COMPLETA da issue (`owner/repo#N`).
+ * O playbook passa `ref` a toda ação (`route-issue.ts --issue {ref}`,
+ * comentário com `-R`) — com o número pelado, uma varredura do diaria-design
+ * re-roteava/comentava a issue de MESMO número do diaria-studio.
+ */
+export type DesbloqueioCandidateWithRef = DesbloqueioCandidate & { ref: string };
+
+type CandidateGroups = {
+  [K in keyof DesbloqueioScanReport]-?: DesbloqueioScanReport[K] extends DesbloqueioCandidate[] ? K : never;
+}[keyof DesbloqueioScanReport];
+
+export type DesbloqueioScanReportWithRefs = Omit<DesbloqueioScanReport, CandidateGroups> & {
+  [K in CandidateGroups]: DesbloqueioCandidateWithRef[];
+};
+
+/** #10935 — anexa `ref` (`owner/repo#N` do repo varrido, inclusive o
+ * default) a cada candidata de cada grupo. Puro; não muda mais nada. */
+export function withIssueRefs(report: DesbloqueioScanReport, repo: string): DesbloqueioScanReportWithRefs {
+  const tag = (list: DesbloqueioCandidate[]): DesbloqueioCandidateWithRef[] =>
+    list.map((c) => ({ ...c, ref: formatIssueRef({ repo, number: c.number }) }));
+  return {
+    ...report,
+    jaDestravadas: tag(report.jaDestravadas),
+    bloqueioConfirmado: tag(report.bloqueioConfirmado),
+    precisaPergunta: tag(report.precisaPergunta),
+    bloqueioObsoleto: tag(report.bloqueioObsoleto),
+    semSinalNaoTriadas: tag(report.semSinalNaoTriadas),
+    acaoImediataCandidatas: tag(report.acaoImediataCandidatas),
+    acaoAdiada: tag(report.acaoAdiada),
+    erroLeitura: tag(report.erroLeitura),
+  };
+}
+
 export function runDesbloqueioScan(
   cwd: string,
   opts: {
@@ -314,7 +349,7 @@ export function runDesbloqueioScan(
     /** Injetável só pra teste — ver `GhRunFn`. */
     runGh?: GhRunFn;
   } = {},
-): DesbloqueioScanReport & { repo?: string } {
+): DesbloqueioScanReportWithRefs & { repo?: string } {
   const limit = opts.limit ?? 500;
   const baseRunGh = opts.runGh ?? spawnGhSync;
   // #10901: toda chamada `gh` escopada no repo varrido com `-R` (no default
@@ -401,7 +436,7 @@ export function runDesbloqueioScan(
     .filter(([, estado]) => estado === "missing")
     .map(([n]) => n);
 
-  const report = scanDesbloqueioCandidates(inputs);
+  const report = withIssueRefs(scanDesbloqueioCandidates(inputs), scanRepo);
   return {
     // #10901: só fora do default, pra o JSON de sempre não mudar de forma.
     ...(scanRepo === DEFAULT_ISSUE_REPO ? {} : { repo: scanRepo }),

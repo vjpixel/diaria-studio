@@ -206,7 +206,9 @@ export async function main(argv: string[], deps: ReconcileMainDeps = {}): Promis
 
   // #10618: a lista explícita (só o default sem `--repos`) deixa a restrição
   // à prova de mudança do default do fetch de triagem.
-  const fetched = fetchIssues(cwd, { repos });
+  // #10935: lista explícita sem o studio (`--repos vjpixel/diaria-design`)
+  // varre só ela — uma falha do studio não impede reconciliar o design.
+  const fetched = fetchIssues(cwd, repos.includes(DEFAULT_ISSUE_REPO) ? { repos } : { repos, includeDefault: false });
   if (fetched.error) {
     console.error(`[reconcile-issue-dependencies] busca de issues falhou: ${fetched.error}`);
     console.error("Nenhuma ação tomada — reconciliação requer o backlog completo pra não desarmar por engano.");

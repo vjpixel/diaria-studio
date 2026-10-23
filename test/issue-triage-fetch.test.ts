@@ -350,3 +350,48 @@ describe("resolveTriageRepos (#10618)", () => {
     assert.match(fetchOpenIssuesForTriage(ROOT, { repos: ["nao e slug"] }).error ?? "", /ilegível/);
   });
 });
+
+describe("fetchOpenIssuesForTriage includeDefault=false (#10935)", () => {
+  const FAKE_KEYS = [
+    "PATH", "Path", "NODE_OPTIONS", "GH_FAKE_RESPONSE_FILE", "GH_FAKE_ARGV_FILE", "GH_FAKE_EXIT_CODE",
+    "GH_FAKE_FOREIGN_RESPONSE_FILE", "GH_FAKE_FOREIGN_EXIT_CODE", "GH_FAKE_ARGV_LOG",
+  ];
+  // O módulo chama `spawnSync("gh")` com o env do processo: troca o env só
+  // durante a chamada, pro fake da `setupFakeGh` responder.
+  function withEnv<T>(env: NodeJS.ProcessEnv, fn: () => T): T {
+    const prev = Object.fromEntries(FAKE_KEYS.map((k) => [k, process.env[k]]));
+    for (const k of FAKE_KEYS) process.env[k] = env[k];
+    try {
+      return fn();
+    } finally {
+      for (const k of FAKE_KEYS) {
+        if (prev[k] === undefined) delete process.env[k];
+        else process.env[k] = prev[k];
+      }
+    }
+  }
+  const designItem = { number: 21, title: "t", labels: [], body: "corpo", url: "", updatedAt: null, state: "OPEN" };
+  const DESIGN_ONLY = { repos: ["vjpixel/diaria-design"], includeDefault: false } as const;
+
+  it("só o repo pedido é varrido; o studio fora do ar não derruba o design", () => {
+    const { env, argvLog } = setupFakeGh({ stdout: "", exitCode: 1, foreignStdout: JSON.stringify([designItem]) });
+    const r = withEnv(env, () => fetchOpenIssuesForTriage(ROOT, DESIGN_ONLY));
+    assert.equal(r.error, undefined, r.error);
+    assert.deepEqual(r.issues.map((i) => [i.repo, i.number]), [["vjpixel/diaria-design", 21]]);
+    const calls = readFileSync(argvLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][calls[0].indexOf("-R") + 1], "vjpixel/diaria-design");
+  });
+
+  it("todos os repos pedidos falham → error (nunca lista vazia como se não houvesse issue)", () => {
+    const { env } = setupFakeGh({ stdout: "[]", foreignStdout: "", foreignExitCode: 1 });
+    const r = withEnv(env, () => fetchOpenIssuesForTriage(ROOT, DESIGN_ONLY));
+    assert.match(r.error ?? "", /vjpixel\/diaria-design/);
+  });
+
+  it("includeDefault ausente: falha do studio segue fatal (comportamento de sempre)", () => {
+    const { env } = setupFakeGh({ stdout: "", exitCode: 1, foreignStdout: JSON.stringify([designItem]) });
+    const r = withEnv(env, () => fetchOpenIssuesForTriage(ROOT, { repos: ["vjpixel/diaria-design"] }));
+    assert.ok(r.error);
+  });
+});
