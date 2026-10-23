@@ -75,6 +75,10 @@ Cobre:
       revisão da PR #8864: "antes do/da" só nega o keyword LITERAL
       "claim", nunca "reivindic*"/frases não relacionadas ("antes do
       deploy e reivindiquei #700" preserva o claim).
+  20. `test_regressao_10894_clausula_sem_ref_atribuida_a_outro_ator` —
+      "#N não reivindicada: ...; issue também está reivindicada pelo
+      overnight" (relatório real de 22/10/2026): a cláusula sem ref cujo
+      keyword é atribuição a outro ator não herda a lista da anterior.
 
 Uso: python3 hermes/scripts/detect-tick-claim-fabrication.test.py
 """
@@ -459,6 +463,56 @@ def test_regressao_10563_sem_claim_e_liberei():
     r_delib = mod.extract_claimed_issue_refs("#9300 foi reivindicada; deliberei seguir.")
     assert r_delib.get(9300) is False, f"'deliberei' virou liberação: {r_delib}"
     print("regressão #10563: 'sem claim' não é claim e 'liberei' é liberação — OK")
+
+
+def test_regressao_10894_clausula_sem_ref_atribuida_a_outro_ator():
+    """#10894: relatório REAL do tick 12:58 BRT de 22/10/2026 (verbatim, lido
+    do `write_file` do tick no state.db do Hermes). A 1ª cláusula nega o
+    claim ("não reivindicada"), a 2ª (depois do `;`) não tem ref e diz que a
+    issue "está reivindicada pelo overnight" — e herdava o #10877 da
+    cláusula anterior, longe demais (>80 chars) pro `_OTHERS_CLAIM` excluir.
+    O overnight do 300 de fato tinha o #10877 em `claimed_issues_ever`; o
+    alarme abriu a #10894 acusando fabricação."""
+    mod = _load_module()
+    relatorio = (
+        "## Tick 12:58 BRT\n### Trabalhado\n"
+        "- #10880 implementada e aberta na PR #10882 "
+        "(`continuo/fix-10880-probe-halt-report`, commit `1d3a6c9b`).\n"
+        "### Pendente para próximo tick\n"
+        "- #10877 não reivindicada: guard de coerência rejeitou por overlap em "
+        "`workers/linkedin-cron/src/dispatch.ts`; issue também está "
+        "reivindicada pelo overnight da máquina 300.\n"
+        "### Decisões/bloqueios registrados\n"
+        "- #10877 deixada para resolução após o trabalho concorrente/overlap; "
+        "sem modificar a issue.\n"
+        "- Issue #10880 foi desreivindicada após abrir PR; registro deste tick "
+        "encerrado.\n"
+    )
+    refs = mod.extract_claimed_issue_refs(relatorio)
+    assert 10877 not in refs, f"#10877 (claim do overnight) indevido: {refs}"
+    chk = mod.check_claimed_issues(
+        relatorio, set(), True, session_correlated=True,
+        # snapshot real do 'ended' do tick: o contínuo reivindicou (e soltou)
+        # o #10880; o #10877 era do overnight.
+        ended_session_in_window=True, ended_claimed_snapshot={10880},
+    )
+    assert chk["status"] == "ok", f"falso positivo #10894: {chk}"
+
+    # Variantes de atribuição na cláusula sem ref.
+    for linha in (
+        "- #9400: pulada; já reivindicada pela sessão overnight ativa.",
+        "- #9401 fora deste tick; reivindicada por outra sessão.",
+    ):
+        r = mod.extract_claimed_issue_refs(linha)
+        assert not any(n in r for n in (9400, 9401)), f"atribuição indevida: {linha!r} -> {r}"
+
+    # Controles: herança de claim PRÓPRIO segue funcionando, e uma fabricação
+    # com a mesma forma (cláusula sem ator) continua detectada.
+    r_ctrl = mod.extract_claimed_issue_refs("- #9500: implementada. Claim registrada.")
+    assert 9500 in r_ctrl, f"herança de claim próprio quebrou: {r_ctrl}"
+    r_fab = mod.extract_claimed_issue_refs("- #9501: em andamento; reivindicada neste tick.")
+    assert 9501 in r_fab, f"claim próprio na cláusula sem ref sumiu: {r_fab}"
+    print("regressão #10894: cláusula sem ref atribuída a outro ator não herda a lista — OK")
 
 
 def test_regressao_8863_antes_do_nao_apaga_claim_real():
@@ -1411,6 +1465,7 @@ def main() -> int:
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
         test_regressao_10563_sem_claim_e_liberei()
+        test_regressao_10894_clausula_sem_ref_atribuida_a_outro_ator()
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()
         test_regressao_9026_pela_feminino()
         test_regressao_9210_outros_solto_nao_e_ator()
