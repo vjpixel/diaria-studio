@@ -28,7 +28,8 @@ import {
   planejarJanelas,
   registrarJanelaNoEstado,
   sincronizarEspelho,
-  trechoCobertoDaJanela,
+  trechosCobertosDaJanela,
+  type PerdasDaJanela,
   ESTADO_SYNC_VAZIO,
   SYNC_DIAS_PADRAO,
   SYNC_DIAS_VARREDURA,
@@ -70,6 +71,7 @@ function rec(over: Partial<VendaRecord> = {}): VendaRecord {
 }
 
 const vazia: RespostaVendas = { registros: [], descartados: 0, ignoradosNoKv: 0 };
+const semPerda: PerdasDaJanela = { descartados: 0, ignoradosNoKv: 0, chavesIgnoradas: [] };
 
 // ---------------------------------------------------------------------------
 // #10876 item 1 — varredura mensal de 93 dias
@@ -166,8 +168,8 @@ describe("#10881 item 3: chave inválida conhecida não repete o alarme", () => 
   });
 
   it("estado: funde cobertura contígua, acumula chaves, ilegível lança", () => {
-    let e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, { de: "2026-09-01", ate: "2026-09-30" }, ["b"], "t1");
-    e = registrarJanelaNoEstado(e, { de: "2026-10-01", ate: "2026-10-22" }, ["a", "b"], "t2");
+    let e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, [{ de: "2026-09-01", ate: "2026-09-30" }], ["b"], "t1");
+    e = registrarJanelaNoEstado(e, [{ de: "2026-10-01", ate: "2026-10-22" }], ["a", "b"], "t2");
     assert.deepEqual(e.cobertura, [{ de: "2026-09-01", ate: "2026-10-22" }]);
     assert.deepEqual(e.chaves_invalidas_conhecidas, ["a", "b"]);
     assert.deepEqual(parseEstadoSync(JSON.stringify(e)), e);
@@ -185,21 +187,74 @@ describe("#10881 item 3: chave inválida conhecida não repete o alarme", () => 
     // Sábado 31/10/2026, 04:30 BRT (07:30Z): a varredura lê outubro até a hora da rodada.
     const sab0430 = Date.parse("2026-10-31T07:30:00Z");
     const outubro = { de: "2026-10-01", ate: "2026-10-31" };
-    assert.deepEqual(trechoCobertoDaJanela(outubro, 0, sab0430), { de: "2026-10-01", ate: "2026-10-30" });
-    const e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, trechoCobertoDaJanela(outubro, 0, sab0430), [], "t");
+    assert.deepEqual(trechosCobertosDaJanela(outubro, semPerda, sab0430), [{ de: "2026-10-01", ate: "2026-10-30" }]);
+    const e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, trechosCobertosDaJanela(outubro, semPerda, sab0430), [], "t");
     assert.equal(periodoCoberto(e.cobertura, "2026-10-01", "2026-10-31"), false, "outubro não pode sair coberto no próprio dia 31");
     // A rodada seguinte (01/11) lê o dia 31 inteiro e fecha o mês.
-    const e2 = registrarJanelaNoEstado(e, trechoCobertoDaJanela({ de: "2026-10-03", ate: "2026-11-01" }, 0, Date.parse("2026-11-01T07:30:00Z")), [], "t2");
+    const e2 = registrarJanelaNoEstado(e, trechosCobertosDaJanela({ de: "2026-10-03", ate: "2026-11-01" }, semPerda, Date.parse("2026-11-01T07:30:00Z")), [], "t2");
     assert.equal(periodoCoberto(e2.cobertura, "2026-10-01", "2026-10-31"), true);
     // 23:30 BRT do dia 31 = 02:30Z do dia 1: o "hoje" é Brasília, não UTC.
-    assert.deepEqual(trechoCobertoDaJanela(outubro, 0, Date.parse("2026-11-01T02:30:00Z")), { de: "2026-10-01", ate: "2026-10-30" });
+    assert.deepEqual(trechosCobertosDaJanela(outubro, semPerda, Date.parse("2026-11-01T02:30:00Z")), [{ de: "2026-10-01", ate: "2026-10-30" }]);
     // Janela só de hoje: nada a registrar, mas as chaves inválidas seguem acumulando.
-    assert.equal(trechoCobertoDaJanela({ de: "2026-10-31", ate: "2026-10-31" }, 0, sab0430), null);
-    const e3 = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, null, ["k"], "t3");
+    assert.deepEqual(trechosCobertosDaJanela({ de: "2026-10-31", ate: "2026-10-31" }, semPerda, sab0430), []);
+    const e3 = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, [], ["k"], "t3");
     assert.deepEqual(e3.cobertura, []);
     assert.deepEqual(e3.chaves_invalidas_conhecidas, ["k"]);
     // Janela com registro fora do formato: venda faltando, não conta como coberta.
-    assert.equal(trechoCobertoDaJanela({ de: "2026-09-01", ate: "2026-09-30" }, 1, sab0430), null);
+    assert.deepEqual(trechosCobertosDaJanela({ de: "2026-09-01", ate: "2026-09-30" }, { ...semPerda, descartados: 1 }, sab0430), []);
+  });
+
+  it("#10909: chave inválida no KV, mesmo já conhecida, tira o dia dela da cobertura — o mês sai sem dado, nunca a menos", () => {
+    const agora = Date.parse("2026-10-22T07:30:00Z");
+    const janela = { de: "2026-08-20", ate: "2026-10-21" };
+    const chave = "hotmart:venda:2026-09-15:RUIM:aprovada";
+    const perdas: PerdasDaJanela = { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: [chave] };
+    const trechos = trechosCobertosDaJanela(janela, perdas, agora);
+    assert.deepEqual(trechos, [
+      { de: "2026-08-20", ate: "2026-09-14" },
+      { de: "2026-09-16", ate: "2026-10-21" },
+    ]);
+    // Cenário da issue: a 2ª rodada já conhece a chave (sem alarme), mas a perda continua.
+    let e = registrarJanelaNoEstado(ESTADO_SYNC_VAZIO, trechos, [chave], "t1");
+    e = registrarJanelaNoEstado(e, trechosCobertosDaJanela(janela, perdas, agora), [], "t2");
+    assert.equal(periodoCoberto(e.cobertura, "2026-09-01", "2026-09-30"), false);
+    assert.equal(periodoCoberto(e.cobertura, "2026-10-01", "2026-10-21"), true, "outro mês da janela não é penalizado");
+    const set = computeHotmartMonthRevenue({ registros: [rec()], cobertura: e.cobertura, month: "2026-09" });
+    assert.equal(set.valorBrl, null, "setembro não pode sair com receita a menos e motivo null");
+    assert.ok(set.motivo);
+    // Dia no limite da janela e chaves repetidas.
+    assert.deepEqual(
+      trechosCobertosDaJanela({ de: "2026-10-01", ate: "2026-10-03" }, { descartados: 0, ignoradosNoKv: 2, chavesIgnoradas: ["hotmart:venda:2026-10-01:A:aprovada", "hotmart:venda:2026-10-03:B:aprovada"] }, agora),
+      [{ de: "2026-10-02", ate: "2026-10-02" }],
+    );
+    // Sem saber o dia, a janela inteira fica de fora.
+    assert.deepEqual(trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: [] }, agora), [], "chave sem nome");
+    assert.deepEqual(trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:x"] }, agora), [], "chave fora do formato");
+    assert.deepEqual(
+      trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-07-01:A:aprovada"] }, agora),
+      [],
+      "dia fora da janela",
+    );
+    assert.deepEqual(
+      trechosCobertosDaJanela(janela, { descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-09-31:A:aprovada"] }, agora),
+      [],
+      "dia inexistente (Date.parse aceita 31/09)",
+    );
+  });
+
+  it("#10909: sincronizarEspelho entrega a aoConcluirJanela TODAS as chaves ignoradas da janela, conhecidas inclusive", async () => {
+    const vistas: JanelaConcluida[] = [];
+    await sincronizarEspelho({
+      janelas: planejarJanelas("2026-10-01", "2026-10-02"),
+      textoAtual: "",
+      chavesInvalidasConhecidas: new Set(["hotmart:venda:2026-10-01:VELHA:aprovada"]),
+      buscarJanela: async () => ({ registros: [], descartados: 0, ignoradosNoKv: 1, chavesIgnoradas: ["hotmart:venda:2026-10-01:VELHA:aprovada"] }),
+      aoConcluirJanela: (j) => vistas.push(j),
+    });
+    assert.equal(vistas.length, 1);
+    assert.deepEqual(vistas[0]!.chavesIgnoradasNovas, []);
+    assert.equal(vistas[0]!.ignoradosNoKv, 1);
+    assert.deepEqual(vistas[0]!.chavesIgnoradas, ["hotmart:venda:2026-10-01:VELHA:aprovada"]);
   });
 });
 
@@ -268,6 +323,8 @@ describe("CLI sync-hotmart-vendas: gravação por janela e alarme único (#10876
       const r2 = await runSync(args, base);
       assert.equal(r2.code, 0, r2.out);
       assert.match(r2.out, /já avisada/);
+      // #10909: a chave já avisada não vira alarme, mas o dia dela segue fora da cobertura.
+      assert.deepEqual(parseEstadoSync(readFileSync(estadoPathDoEspelho(out), "utf8")).cobertura, []);
       ignorados = [...ignorados, "hotmart:venda:2026-10-20:OUTRA:aprovada"];
       const r3 = await runSync(args, base);
       assert.equal(r3.code, 3, r3.out);

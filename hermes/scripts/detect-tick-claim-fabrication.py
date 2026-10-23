@@ -276,6 +276,49 @@ _COUNT_PATTERNS = [
 # Regex para issue refs (#NNNN) no relatório.
 _ISSUE_REF = re.compile(r"#(\d+)\b")
 
+# #10900 (resíduo #10618): issue de OUTRO repo é citada e reivindicada como
+# `owner/repo#N` (`claim-issue --issue vjpixel/diaria-design#21`), e o
+# session-registry guarda essa claim em `claimed_foreign_issues` (string), não
+# em `claimed_issues` (int). O número sozinho colide entre repos (o #21 existe
+# nos dois), então a chave de uma ref com prefixo de outro repo é a string
+# `owner/repo#N` (minúscula, mesma forma de `normalizeRepoSlug`); sem prefixo,
+# ou com o prefixo do repo default, segue o `int` de sempre (retrocompatível).
+DEFAULT_ISSUE_REPO = "vjpixel/diaria-studio"
+_REPO_PREFIX = re.compile(r"(?<![\w./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$")
+
+
+def _issue_key_at(text: str, hash_pos: int, number: int) -> int | str:
+    """Chave da ref cujo `#` está em `text[hash_pos]`: `int` (repo default ou
+    sem prefixo) ou `"owner/repo#N"` (prefixo de outro repo colado ao `#`)."""
+    m = _REPO_PREFIX.search(text, max(0, hash_pos - 120), hash_pos)
+    if not m:
+        return number
+    repo = m.group(1).lower()
+    if repo == DEFAULT_ISSUE_REPO:
+        return number
+    return f"{repo}#{number}"
+
+
+def _keys_in_span(text: str, start: int, end: int) -> list[int | str]:
+    """Chaves (ver `_issue_key_at`) de todas as refs `#N` em `text[start:end]`."""
+    return [
+        _issue_key_at(text, m.start(), int(m.group(1)))
+        for m in _ISSUE_REF.finditer(text, start, end)
+    ]
+
+
+def _ref_sort_key(key: int | str) -> tuple:
+    """Ordena chaves mistas sem `TypeError`: números do repo default antes,
+    refs de outro repo depois (por repo e número)."""
+    if isinstance(key, int):
+        return (0, "", key)
+    repo, _, n = key.rpartition("#")
+    return (1, repo, int(n) if n.isdigit() else 0)
+
+
+def _sorted_refs(keys) -> list[int | str]:
+    return sorted(keys, key=_ref_sort_key)
+
 # Palavras que sinalizam "isto é um claim declarado", usadas pra restringir
 # a busca de #NNNN a linhas plausivelmente sobre reivindicação (evita casar
 # qualquer menção solta de "#123" em qualquer contexto).
@@ -337,12 +380,17 @@ _CLAIM_KEYWORDS = re.compile(r"reivindic|reivindiq|(?<![A-Za-zÀ-ÿ])claim", re.
 _LEADING_MAX_GAP = 160
 _CLAUSE_SPLIT = re.compile(r"\. (?=[A-Z#])")
 _REF_SEMI = re.compile(r"(#\d+)\s*;\s*(?=#\d)")
+# #10900: cada item da lista aceita o prefixo `owner/repo` colado ao `#`
+# (`#300 e vjpixel/diaria-design#21`); a chave sai de `_keys_in_span`.
+_OPT_REPO = r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?"
 _REF_LIST = re.compile(
-    r"#\d+\b(?:(?:\s*,\s*e\s+|\s*[,/;&]\s*|\s+(?:e|ou)\s+)#\d+\b)*",
+    _OPT_REPO + r"#\d+\b(?:(?:\s*,\s*e\s+|\s*[,/;&]\s*|\s+(?:e|ou)\s+)" + _OPT_REPO + r"#\d+\b)*",
     re.IGNORECASE,
 )
-_LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=#\d)")
-_PR_REF = re.compile(r"\bPR\s+#(\d+)\b", re.IGNORECASE)
+_LEADING_LIST = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?(?=" + _OPT_REPO + r"#\d)")
+# #10900: "PR vjpixel/diaria-design#5" também é pull request (prefixo de repo
+# opcional colado ao `#`).
+_PR_REF = re.compile(r"\bPR\s+(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#(\d+)\b", re.IGNORECASE)
 # #9923: plural "PRs #A e #B" — a LISTA inteira são pull requests, não
 # issues. `_PR_REF` (singular) só casava "PR #N"; "PRs #9912 e #9922"
 # escapava e os dois números entravam como claim de issue. No singular
@@ -629,14 +677,18 @@ def _parse_iso(value: str | None) -> dt.datetime | None:
         return None
 
 
-def all_continuo_claimed_issues(sessions_dir: Path) -> set[int]:
+def all_continuo_claimed_issues(sessions_dir: Path) -> set[int | str]:
     """União de `claimed_issues` de TODOS os registros `continuo-*.json`
     (vivos ou não — um claim de um tick anterior ainda conta como "o
     mecanismo de claim rodou pra esse número" pro propósito desta
     checagem). Vazio (não None) quando o diretório não existe ou está
     vazio — distinto de "não consegui checar", tratado pelo caller via
-    `sessions_dir.is_dir()` separadamente."""
-    claimed: set[int] = set()
+    `sessions_dir.is_dir()` separadamente.
+
+    #10900: inclui também `claimed_foreign_issues` (refs `owner/repo#N` de
+    outro repo, normalizadas pra minúscula) — mesma chave de
+    `extract_claimed_issue_refs`."""
+    claimed: set[int | str] = set()
     if not sessions_dir.is_dir():
         return claimed
     for f in sessions_dir.glob("continuo-*.json"):
@@ -651,7 +703,25 @@ def all_continuo_claimed_issues(sessions_dir: Path) -> set[int]:
                 claimed.add(int(n))
             except (TypeError, ValueError):
                 pass
+        claimed.update(_foreign_keys(record.get("claimed_foreign_issues")))
     return claimed
+
+
+def _foreign_keys(values) -> set[int | str]:
+    """#10900: refs `owner/repo#N` de `claimed_foreign_issues[_ever]` como
+    chave (ver `_issue_key_at`). Lixo é ignorado; nunca lança."""
+    out: set[int | str] = set()
+    if not isinstance(values, list):
+        return out
+    for v in values:
+        if not isinstance(v, str):
+            continue
+        repo, sep, n = v.strip().rpartition("#")
+        if not sep or not n.isdigit() or "/" not in repo:
+            continue
+        repo = repo.lower()
+        out.add(int(n) if repo == DEFAULT_ISSUE_REPO else f"{repo}#{int(n)}")
+    return out
 
 
 def extract_alleged_count(report_text: str) -> int | None:
@@ -668,7 +738,7 @@ def extract_alleged_count(report_text: str) -> int | None:
     return None
 
 
-def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
+def extract_claimed_issue_refs(report_text: str) -> dict[int | str, bool]:
     """Extrai números de issue (#NNNN) cujo claim este coordenador DECLARA
     no relatório — restringe a busca a contexto plausível de claim
     declarado, em vez de casar QUALQUER #NNNN solto em uma linha que
@@ -696,8 +766,13 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
     deve evitar (#7996). Ver `check_claimed_issues` e a seção (c) do
     docstring do módulo para o porquê disso importar. Se o mesmo número
     aparecer em mais de uma linha, `released` vira `True` assim que
-    QUALQUER uma delas sinalizar liberação (OR, nunca perde o sinal)."""
-    refs: dict[int, bool] = {}
+    QUALQUER uma delas sinalizar liberação (OR, nunca perde o sinal).
+
+    #10900: a chave é `int` para a issue do repo default (sem prefixo ou com
+    `vjpixel/diaria-studio#N`) e a string `owner/repo#N` para a de outro repo
+    (prefixo colado ao `#`, ex: `vjpixel/diaria-design#21`) — ver
+    `_issue_key_at`."""
+    refs: dict[int | str, bool] = {}
     for line in report_text.splitlines():
         line_released = bool(_RELEASE_SIGNAL.search(line))
         # `;` entre dois refs é separador de LISTA, não de cláusula.
@@ -760,22 +835,24 @@ def extract_claimed_issue_refs(report_text: str) -> dict[int, bool]:
             if not attached:
                 continue
             # Exclusões aplicadas SÓ ao número que as justificou (#8377).
-            pr_ref_n = {int(n) for n in _PR_REF.findall(segment)}
+            # #10900: chaves por repo (`_keys_in_span`), mesmas posições.
+            pr_ref_n = {
+                _issue_key_at(segment, pm.start(1) - 1, int(pm.group(1)))
+                for pm in _PR_REF.finditer(segment)
+            }
             for pm in _PRS_LIST_REF.finditer(segment):
-                pr_ref_n.update(int(n) for n in _ISSUE_REF.findall(pm.group("refs")))
-            others_n = set()
+                pr_ref_n.update(_keys_in_span(segment, pm.start("refs"), pm.end("refs")))
+            others_n: set[int | str] = set()
             for om in _OTHERS_CLAIM.finditer(segment):
-                refs_text = om.group("refs")
-                for n_s in _ISSUE_REF.findall(refs_text):
-                    others_n.add(int(n_s))
+                others_n.update(_keys_in_span(segment, om.start("refs"), om.end("refs")))
             for om in _OTHERS_CLAIM_HELD.finditer(segment):
-                refs_text = om.group("refs")
-                for n_s in _ISSUE_REF.findall(refs_text):
-                    others_n.add(int(n_s))
-            covered_n = {int(n) for n in _COVERED_BY.findall(segment)}
+                others_n.update(_keys_in_span(segment, om.start("refs"), om.end("refs")))
+            covered_n = {
+                _issue_key_at(segment, cm.start(1) - 1, int(cm.group(1)))
+                for cm in _COVERED_BY.finditer(segment)
+            }
             for lm in attached:
-                for n_s in _ISSUE_REF.findall(lm.group(0)):
-                    n = int(n_s)
+                for n in _keys_in_span(segment, lm.start(), lm.end()):
                     if n in pr_ref_n or n in others_n or n in covered_n:
                         continue
                     refs[n] = refs.get(n, False) or line_released
@@ -1035,14 +1112,14 @@ def ended_continuo_events_in_window(
     return out
 
 
-def _snapshot_from_events(events: list[dict]) -> set[int] | None:
+def _snapshot_from_events(events: list[dict]) -> set[int | str] | None:
     """#8521: UNIAO do historico de claims (`claimed_issues_ever`, que inclui
     claims liberadas por unclaim antes do `end`) de todos os eventos. Se
     QUALQUER evento e legado (sem o campo) devolve None: nao da pra afirmar
     ausencia -> o chamador cai em indeterminate."""
     if not events:
         return None
-    union: set[int] = set()
+    union: set[int | str] = set()
     for ev in events:
         ever = ev.get("claimed_issues_ever")
         if not isinstance(ever, list):
@@ -1052,16 +1129,20 @@ def _snapshot_from_events(events: list[dict]) -> set[int] | None:
                 union.add(int(n))
             except (TypeError, ValueError):
                 continue
+        # #10900: claims de outro repo (`endSession` grava os dois campos
+        # só quando a sessão teve alguma, shape legado intacto no resto).
+        union.update(_foreign_keys(ev.get("claimed_foreign_issues_ever")))
+        union.update(_foreign_keys(ev.get("claimed_foreign_issues")))
     return union
 
 
 def check_claimed_issues(
     report_text: str | None,
-    claimed_in_registry: set[int],
+    claimed_in_registry: set[int | str],
     sessions_dir_exists: bool,
     session_correlated: bool,
     ended_session_in_window: bool = False,
-    ended_claimed_snapshot: set[int] | None = None,
+    ended_claimed_snapshot: set[int | str] | None = None,
 ) -> dict:
     """Checagem (c): issues citadas como reivindicadas no relatório
     aparecem de fato em algum `claimed_issues` do session-registry.
@@ -1111,16 +1192,16 @@ def check_claimed_issues(
             "check": "claimed_issues",
             "status": "indeterminate",
             "details": (
-                f"relatorio cita {sorted(alleged_claims)} como reivindicadas, mas "
+                f"relatorio cita {_sorted_refs(alleged_claims)} como reivindicadas, mas "
                 "data/sessions/ nao existe para correlacionar."
             ),
         }
-    missing = sorted(n for n in alleged_claims if n not in claimed_in_registry)
+    missing = _sorted_refs(n for n in alleged_claims if n not in claimed_in_registry)
     if not missing:
         return {
             "check": "claimed_issues",
             "status": "ok",
-            "details": f"todas as issues citadas como reivindicadas ({sorted(alleged_claims)}) aparecem no session-registry.",
+            "details": f"todas as issues citadas como reivindicadas ({_sorted_refs(alleged_claims)}) aparecem no session-registry.",
         }
     # #7996: `unclaimIssue` apaga `claimed_issues`/`claimed_issues_at` da
     # issue liberada por design (#6453) — ausencia no registro de uma issue
@@ -1129,8 +1210,8 @@ def check_claimed_issues(
     # docstring do modulo, secao (c), "Excecao — claim liberado no mesmo
     # tick". So a ausencia de uma issue SEM sinal de liberacao continua
     # fabrication_suspected — e o caso real do #7537.
-    missing_released = sorted(n for n in missing if alleged_claims[n])
-    missing_held = sorted(n for n in missing if not alleged_claims[n])
+    missing_released = _sorted_refs(n for n in missing if alleged_claims[n])
+    missing_held = _sorted_refs(n for n in missing if not alleged_claims[n])
     if missing_held and ended_session_in_window and ended_claimed_snapshot is not None:
         # #8521 (residuo): o evento 'ended' carrega o snapshot de
         # HISTORICO de claims (`claimed_issues_ever`, gravado por
@@ -1138,7 +1219,7 @@ def check_claimed_issues(
         # uniao de todos os eventos sobrepostos). Consta -> claim real. Nao
         # consta -> `end` rodou de verdade mas a claim nunca passou por
         # `claimIssueCheckAndSet` = fabricacao especifica.
-        fabricated = sorted(n for n in missing_held if n not in ended_claimed_snapshot)
+        fabricated = _sorted_refs(n for n in missing_held if n not in ended_claimed_snapshot)
         if fabricated:
             return {
                 "check": "claimed_issues",

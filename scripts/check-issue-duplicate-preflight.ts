@@ -31,7 +31,7 @@ import {
   fetchRepoCommitsForIssue,
   type CommitFetchRunner,
 } from "./lib/master-commit-fetch.ts";
-import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
+import { formatIssueRef, ISSUE_REPOS_CONFIG_ROOT, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 
 /**
  * `--issue` aceita `N` (diaria-studio, `origin/master` local, como sempre) ou
@@ -54,7 +54,7 @@ export function main(argv: string[], cwd: string, runner?: CommitFetchRunner): n
   const studioNumber = legacyIssueNumber(ref);
   const issueNumber = ref.number;
   const foreignRef = studioNumber === null ? formatIssueRef(ref) : null;
-  if (foreignRef !== null && !loadIssueRepos(cwd).includes(ref.repo)) {
+  if (foreignRef !== null && !loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT).includes(ref.repo)) {
     console.error(`[check-issue-duplicate-preflight] ${foreignRef}: repo fora de issue_repos, não consultado`);
     return 2;
   }
@@ -67,6 +67,8 @@ export function main(argv: string[], cwd: string, runner?: CommitFetchRunner): n
     console.error(`[check-issue-duplicate-preflight] ${fetchResult.error}`);
     return 2;
   }
+  // #10901: busca incompleta mas não bloqueante — segue como "sem indício".
+  if (fetchResult.warning) console.error(`[check-issue-duplicate-preflight] aviso: ${fetchResult.warning}`);
 
   // Preflight de PROVENIÊNCIA (#7801) — quando o fix pode estar sob outro número.
   const provenanceRaw = values.provenance ? String(values.provenance) : "";

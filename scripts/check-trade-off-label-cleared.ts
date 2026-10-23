@@ -38,7 +38,7 @@ import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { fetchCommentBodiesResult } from "./lib/issue-decisions.ts";
 import { checkTradeOffLabelCleared, TRADE_OFF_LABEL } from "./lib/trade-off-label-gate.ts";
-import { formatIssueRef, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
+import { formatIssueRef, ISSUE_REPOS_CONFIG_ROOT, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 
 interface GhIssueViewLabels {
   labels?: Array<{ name?: string } | string>;
@@ -96,7 +96,7 @@ if (isMainModule(import.meta.url)) {
   const issueNumber = ref.number;
   const cwd = process.cwd();
   const foreign = legacyIssueNumber(ref) === null;
-  if (foreign && !loadIssueRepos(cwd).includes(ref.repo)) {
+  if (foreign && !loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT).includes(ref.repo)) {
     console.error(`[check-trade-off-label-cleared] ${formatIssueRef(ref)}: repo fora de issue_repos, não consultado`);
     process.exit(2);
   }

@@ -32,6 +32,7 @@ import {
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
 import { isSocialInviteParagraph } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo; #10781: detecção por prefixo estável (sobrevive a versões anteriores da constante)
 import { applyImageToolToCredits, imageCreditCaption } from "./shared/image-tool-name.ts"; // #10783
+import { d1HeroAlt } from "./diaria/d1-video-hero.ts"; // #10784
 import { readSnippetFile, readSnippetFileRaw } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded; readSnippetFileRaw #5882 — header cru pra ler titulo:
 import { normalizeNumericArrows, stripCtaArrows, stripUnambiguousCtaArrows } from "./shared/arrow-glyph.ts"; // #9721/#9727: a seta nunca chega ao leitor
 import { readBoxTituloFlag } from "./shared/snippet-header.ts"; // #5882 — titulo:false declarado, substitui detecção por regex de copy (isConviteAmigoBox, aposentada)
@@ -681,10 +682,11 @@ export function renderHeroImageInner(placeholder: string, alt = "", caption = im
   <p style="${captionStyle}">${esc(caption)}</p>`;
   }
   // #10784: imagem do D1 vira link pro vídeo (ou canal). `display:block` no
-  // `<a>` mantém o bloco da imagem; a legenda (convite) leva ao mesmo destino.
+  // `<a>` mantém o bloco da imagem. O convite está escrito na própria imagem;
+  // a legenda abaixo é o crédito padrão e não é link.
   const a = `href="${esc(href)}" target="_blank" rel="noopener noreferrer"`;
   return `<a class="hero-video" ${a} style="display:block;text-decoration:none;">${img}</a>
-  <p style="${captionStyle}"><a ${a} style="color:${TEXT_COLOR};text-decoration:none;">${esc(caption)}</a></p>`;
+  <p style="${captionStyle}">${esc(caption)}</p>`;
 }
 
 /** Parágrafos do corpo: sans 16px line-height 1.62 ink (DS). HTML interno.
@@ -1524,15 +1526,15 @@ export function renderDestaque(d: RenderDestaque, whatsappShareHtml = "", esp: E
   // "04-d{N}-2x1.jpg" gerado pelo Stage 3 (#2133/#2141).
   // #10784: só o D1 vira link pro vídeo — `videoLink`/`heroFile` só são
   // preenchidos pro D1 (`d1VideoHeroFields`); o guard `d.n === 1` impede que
-  // um D2/D3 montado à mão herde o link. Legenda do D1 com link = só o
-  // convite; o crédito da ferramenta fica no rodapé (#10783).
+  // um D2/D3 montado à mão herde o link. O convite fica escrito na
+  // imagem do D1; a legenda volta a ser o crédito padrão, como no D2/D3.
   const video = d.n === 1 ? d.videoLink : undefined;
   const heroFile = (d.n === 1 && d.heroFile) || `04-d${d.n}-2x1.jpg`;
   const pad = d.n === 1 ? PAD_LEAD : PAD_SECTION;
   const inner = [
     renderKicker(d.category),
     renderHeadlineInner(d.title, d.url),
-    renderHeroImageInner(heroFile, d.title, video ? video.caption : imageGeneratorCredit(d.imageGenerator), video?.href), // #9095, #10784
+    renderHeroImageInner(heroFile, video ? d1HeroAlt(d.title) : d.title, imageGeneratorCredit(d.imageGenerator), video?.href), // #9095, #10784
     renderBodyParasInner(d.body, esp), // #5176: pPad/margem condicionais ao ESP
     renderWhyBoxInner(d.why),
     d.n === 1 ? whatsappShareHtml : "", // #5152

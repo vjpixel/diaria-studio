@@ -33,7 +33,7 @@ Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou 
 
 Por que isso importa:
 
-[1 parágrafo — impacto prático para o público diar.ia.br]
+[1 parágrafo — impacto na sociedade: o que a notícia muda para pessoas e serviços públicos; só o que a fonte sustenta]
 
 Aprofunde:
 

@@ -16,7 +16,8 @@
  * descarta as anteriores. Ao lado do espelho fica o estado
  * (`vendas.estado.json`): cobertura de dias já lidos (o ARPU/LTV só conta a
  * Hotmart de um mês coberto, `ltv.ts`) e as chaves inválidas do KV já
- * avisadas (#10881 item 3).
+ * avisadas (#10881 item 3). Dia com chave inválida no KV, mesmo já avisada,
+ * fica fora da cobertura (#10909): a venda dele não está no espelho.
  *
  * Janela sem período explícito: 35 dias, e 93 dias na rodada dos dias 1-7 do
  * mês (varredura mensal, #10876 item 1: pega evento reenviado com
@@ -81,7 +82,7 @@ import {
   periodoPadrao,
   planejarJanelas,
   registrarJanelaNoEstado,
-  trechoCobertoDaJanela,
+  trechosCobertosDaJanela,
   sincronizarEspelho,
   type EstadoSync,
   type Periodo,
@@ -264,7 +265,7 @@ async function main(): Promise<number> {
               const agora = Date.now();
               estado = registrarJanelaNoEstado(
                 estado,
-                trechoCobertoDaJanela(j.janela, j.descartados, agora),
+                trechosCobertosDaJanela(j.janela, j, agora),
                 j.chavesIgnoradasNovas,
                 new Date(agora).toISOString(),
               );
@@ -304,7 +305,8 @@ async function main(): Promise<number> {
     if (invalidasJaConhecidas > 0) {
       console.warn(
         `sync-hotmart-vendas: AVISO: ${invalidasJaConhecidas} chave(s) inválida(s) no KV já avisada(s) numa rodada anterior ` +
-          `(lista em ${estadoPath}); não viram alarme de novo.`,
+          `(lista em ${estadoPath}); não viram alarme de novo, mas o dia de cada uma segue fora da cobertura ` +
+          "(o mês dele sai sem dado da Hotmart no ARPU/LTV, nunca como receita a menos, #10909).",
       );
     }
     if (r.descartados + r.ignoradosNoKvNovos > 0) {

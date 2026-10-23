@@ -31,18 +31,28 @@
  *   npx tsx scripts/check-issue-file-collisions.ts
  *   npx tsx scripts/check-issue-file-collisions.ts --json
  *   npx tsx scripts/check-issue-file-collisions.ts --limit 300
+ *   npx tsx scripts/check-issue-file-collisions.ts --repos all   # #10901: todos de issue_repos
+ *
+ * **Multi-repo (#10901).** Sem `--repos`, só o `vjpixel/diaria-studio` (o de
+ * sempre, agora com `-R` explícito — rodado do checkout do diaria-design, o
+ * `gh` sem `-R` listava as issues do outro repo como se fossem do studio).
+ * `--repos all`/lista varre também os repos de `platform.config.json →
+ * issue_repos`. Colisão só é computada DENTRO de um mesmo repo: o mesmo path
+ * em dois repos é outro arquivo. Repo extra que falha fica de fora com aviso.
  *
  * @see scripts/lib/issue-file-collisions.ts (lógica pura + racional completo)
  * @see scripts/lib/session-registry.ts (`findSessionConflicts` — irmão em tempo-de-execução)
  */
 
-import { spawnSync } from "node:child_process";
-import { isMainModule, parseArgs, hasFlag } from "./lib/cli-args.ts";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import {
   extractFilePathsFromIssueBody,
   computeIssueFileCollisions,
+  type IssueFileCollision,
   type IssueWithPaths,
 } from "./lib/issue-file-collisions.ts";
+import { listOpenIssuesByRepo, resolveReposCliArg, type GhRunFn } from "./lib/open-issues-by-repo.ts";
+import { labelInRepo } from "./lib/plan-issue-ref.ts";
 
 interface GhIssueListItem {
   number: number;
@@ -50,89 +60,96 @@ interface GhIssueListItem {
   body?: string;
 }
 
-interface FetchOpenIssuesResult {
-  issues: GhIssueListItem[];
-  error?: string;
-}
-
 const DEFAULT_ISSUE_LIMIT = 200;
 const LOG_PREFIX = "[check-issue-file-collisions]";
 
-/** Busca issues abertas (número + título + corpo) via `gh issue list` —
- * fail-soft, mesmo padrão de `check-dependency-prose-lint.ts` (#7137 item 4). */
-export function fetchOpenIssues(cwd: string, limit: number): FetchOpenIssuesResult {
-  const result = spawnSync(
-    "gh",
-    ["issue", "list", "--state", "open", "--json", "number,title,body", "--limit", String(limit)],
-    { cwd, encoding: "utf8", timeout: 30_000 },
-  );
-  if (result.error) {
-    return { issues: [], error: `gh não pôde ser executado: ${result.error.message}` };
-  }
-  if (result.status !== 0) {
-    const stderr = (result.stderr ?? "").toString().trim();
-    return { issues: [], error: `gh issue list saiu com status ${result.status}${stderr ? `: ${stderr}` : ""}` };
-  }
-  if (!result.stdout) {
-    return { issues: [], error: "gh issue list retornou stdout vazio" };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.stdout);
-  } catch (e) {
-    return { issues: [], error: `JSON malformado de gh issue list: ${(e as Error).message}` };
-  }
-  if (!Array.isArray(parsed)) {
-    return { issues: [], error: "gh issue list retornou payload que não é um array" };
-  }
-  return { issues: parsed as GhIssueListItem[] };
+/** Colisão + repo (#10901). Os dois lados são sempre do MESMO repo. */
+export interface RepoIssueFileCollision extends IssueFileCollision {
+  repo: string;
 }
 
-if (isMainModule(import.meta.url)) {
-  const { values } = parseArgs(process.argv.slice(2));
-  const limit = values.limit ? Number.parseInt(values.limit, 10) : DEFAULT_ISSUE_LIMIT;
-  const cwd = process.cwd();
-  const asJson = hasFlag(process.argv.slice(2), "json");
+/** Colisões por repo — nunca cruza repos (mesmo path, outro arquivo). Pura. */
+export function computeCollisionsByRepo(
+  issues: ReadonlyArray<{ repo: string; number: number; title?: string; body?: string | null }>,
+): { issuesChecked: number; collisions: RepoIssueFileCollision[] } {
+  const byRepo = new Map<string, IssueWithPaths[]>();
+  for (const i of issues) {
+    const list = byRepo.get(i.repo) ?? [];
+    list.push({ number: i.number, title: i.title, paths: extractFilePathsFromIssueBody(i.body) });
+    byRepo.set(i.repo, list);
+  }
+  const collisions: RepoIssueFileCollision[] = [];
+  for (const [repo, list] of byRepo) {
+    for (const c of computeIssueFileCollisions(list)) collisions.push({ repo, ...c });
+  }
+  return { issuesChecked: issues.length, collisions };
+}
 
-  const fetched = fetchOpenIssues(cwd, limit);
-  if (fetched.error) {
-    console.error(`${LOG_PREFIX} gh indisponível — pulando checagem (fail-soft por desenho, não #738): ${fetched.error}`);
-    process.exit(0);
+export interface CollisionsMainDeps {
+  ghRun?: GhRunFn;
+  cwd?: string;
+  /** Allowlist de `--repos` — injetável pra teste; default `issue_repos`. */
+  allowedRepos?: readonly string[];
+  log?: (line: string) => void;
+  err?: (line: string) => void;
+}
+
+/** Devolve o exit code: 0 sempre (relatório), 2 só em uso inválido de `--repos`. */
+export function main(argv: string[], deps: CollisionsMainDeps = {}): number {
+  const log = deps.log ?? ((l: string) => console.log(l));
+  const err = deps.err ?? ((l: string) => console.error(l));
+  const { values, flags } = parseArgs(argv);
+  const limit = values.limit ? Number.parseInt(values.limit, 10) : DEFAULT_ISSUE_LIMIT;
+  const asJson = flags.has("json");
+  const resolved = resolveReposCliArg(values, flags, deps.allowedRepos);
+  if ("error" in resolved) {
+    err(`${LOG_PREFIX} ${resolved.error}`);
+    return 2;
   }
 
-  if (fetched.issues.length >= limit) {
-    console.error(
-      `${LOG_PREFIX} AVISO: ${fetched.issues.length} issue(s) retornada(s) == --limit (${limit}) — ` +
+  const fetched = listOpenIssuesByRepo<GhIssueListItem>({
+    cwd: deps.cwd ?? process.cwd(),
+    repos: resolved.repos,
+    fields: "number,title,body",
+    limit,
+    ghRun: deps.ghRun,
+  });
+  if (fetched.error) {
+    err(`${LOG_PREFIX} gh indisponível — pulando checagem (fail-soft por desenho, não #738): ${fetched.error}`);
+    return 0;
+  }
+  for (const r of fetched.repoErrors) {
+    err(`${LOG_PREFIX} AVISO: ${r.repo} não respondeu — issues desse repo FORA desta checagem: ${r.error}`);
+  }
+  for (const repo of fetched.truncated) {
+    err(
+      `${LOG_PREFIX} AVISO: ${repo}: issue(s) retornada(s) == --limit (${limit}) — ` +
         `possível truncamento silencioso do backlog real. Rode com --limit maior pra confirmar cobertura total.`,
     );
   }
 
-  const issuesWithPaths: IssueWithPaths[] = fetched.issues.map((i) => ({
-    number: i.number,
-    title: i.title,
-    paths: extractFilePathsFromIssueBody(i.body),
-  }));
-
-  const collisions = computeIssueFileCollisions(issuesWithPaths);
+  const { issuesChecked, collisions } = computeCollisionsByRepo(fetched.issues);
 
   if (asJson) {
-    console.log(JSON.stringify({ issues_checked: issuesWithPaths.length, collisions }, null, 2));
-  } else {
-    console.log(
-      `${LOG_PREFIX} ${issuesWithPaths.length} issue(s) aberta(s) verificada(s), ${collisions.length} colisão(ões) de arquivo encontrada(s).`,
-    );
-    for (const c of collisions) {
-      console.log(
-        `${LOG_PREFIX} #${c.a.number} × #${c.b.number} — ${c.paths.length} path(s) em comum: ${c.paths.join(", ")}`,
-      );
-    }
-    if (collisions.length > 0) {
-      console.log(
-        `${LOG_PREFIX} decisão de serializar/fundir é de quem despacha (ex: worktrees concorrentes de ` +
-          `/diaria-develop, #4319) — este script só reporta, nunca bloqueia.`,
-      );
-    }
+    log(JSON.stringify({ issues_checked: issuesChecked, collisions }, null, 2));
+    return 0;
   }
+  log(`${LOG_PREFIX} ${issuesChecked} issue(s) aberta(s) verificada(s), ${collisions.length} colisão(ões) de arquivo encontrada(s).`);
+  for (const c of collisions) {
+    log(
+      `${LOG_PREFIX} ${labelInRepo(c.repo, c.a.number)} × ${labelInRepo(c.repo, c.b.number)} — ` +
+        `${c.paths.length} path(s) em comum: ${c.paths.join(", ")}`,
+    );
+  }
+  if (collisions.length > 0) {
+    log(
+      `${LOG_PREFIX} decisão de serializar/fundir é de quem despacha (ex: worktrees concorrentes de ` +
+        `/diaria-develop, #4319) — este script só reporta, nunca bloqueia.`,
+    );
+  }
+  return 0;
+}
 
-  process.exit(0);
+if (isMainModule(import.meta.url)) {
+  process.exit(main(process.argv.slice(2)));
 }

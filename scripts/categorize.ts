@@ -231,9 +231,13 @@ export function categorizeArticles(
     if (hasUnresolvedRedirectStubTitle(article)) {
       if (article.flag === "editor_submitted") {
         // Submissão do editor nunca some em silêncio (review #10890): fica no
-        // pool com o título de stub — `isPlaceholderHighlightTitle` já a
-        // barra de virar destaque e o lint de placeholder do Stage 4 avisa —,
-        // marcada com `title_unresolved` e um warn no run-log.
+        // pool com o título de stub, marcada com `title_unresolved` e um warn
+        // no run-log. `isPlaceholderHighlightTitle` sozinho só barra o stub
+        // inequívoco ("302 Found", "Document moved"); a palavra solta
+        // ("Found") é barrada por ler ESTE marcador — o backstop do
+        // `assemble-scored` e o invariante `no-placeholder-title-highlights`
+        // usam `isPlaceholderHighlightItem` (#10908). Não renomear o campo
+        // sem atualizar `placeholder-title-guard.ts`.
         titleUnresolved = true;
         console.warn(
           `[categorize] #10796: editor_submitted kept with unresolved redirect-stub title "${article.title}": ${article.url}`,

@@ -95,6 +95,15 @@
  *   npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal         # sem o bucket ·sem sinal
  *   npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas    # varre também on-hold/wontfix
  *   npx tsx scripts/desbloqueia-scan.ts --limit 50               # teto de issues na passada 1 (default 500)
+ *   npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos
+ *
+ * **Multi-repo (#10901).** Um repo por execução. Sem `--repo`, o
+ * `vjpixel/diaria-studio` (o de sempre, agora com `-R` explícito em toda
+ * chamada `gh` — sem ele o `gh` resolvia pelo cwd). `--repo owner/name` (da
+ * allowlist `platform.config.json → issue_repos`) varre as issues daquele
+ * repo; números do relatório (e de `--issues`, e das dependências
+ * `depends_on`) são DAQUELE repo, e o relatório ganha `repo`. O playbook
+ * re-rotea cada uma com `route-issue.ts --issue owner/repo#N`.
  *
  * `--issues` com qualquer token que não seja um número válido LANÇA
  * (nunca filtra em silêncio pra lista vazia — achado do #6632 review: um
@@ -115,6 +124,7 @@ import {
 } from "./lib/desbloqueia-scan.ts";
 import { latestExecutionBlockFor } from "./lib/issue-decisions.ts";
 import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
+import { DEFAULT_ISSUE_REPO, ISSUE_REPOS_CONFIG_ROOT, resolveRepoFlag } from "./lib/issue-repos.ts";
 
 /**
  * Valores de `--track`. `sem-sinal` NÃO é um `ExecTrack` — é o subconjunto de
@@ -298,12 +308,19 @@ export function runDesbloqueioScan(
     track?: ScopedTrack;
     skipSemSinal?: boolean;
     incluirEngavetadas?: boolean;
+    /** #10901 — repo varrido (`owner/name`, já validado contra a
+     * allowlist). Ausente = o repo default. */
+    repo?: string;
     /** Injetável só pra teste — ver `GhRunFn`. */
     runGh?: GhRunFn;
   } = {},
-): DesbloqueioScanReport {
+): DesbloqueioScanReport & { repo?: string } {
   const limit = opts.limit ?? 500;
-  const runGh = opts.runGh ?? spawnGhSync;
+  const baseRunGh = opts.runGh ?? spawnGhSync;
+  // #10901: toda chamada `gh` escopada no repo varrido com `-R` (no default
+  // também — sem ele o `gh` resolveria pelo cwd).
+  const scanRepo = opts.repo ?? DEFAULT_ISSUE_REPO;
+  const runGh: GhRunFn = (args, cwd) => baseRunGh([...args, "-R", scanRepo], cwd);
   const issues = fetchOpenIssues(cwd, limit, opts.issues ?? null, runGh);
   // `--track sem-sinal` pedindo explicitamente o bucket vence um
   // `--skip-sem-sinal` que tenha vindo junto (pedido explícito > desligamento
@@ -386,6 +403,8 @@ export function runDesbloqueioScan(
 
   const report = scanDesbloqueioCandidates(inputs);
   return {
+    // #10901: só fora do default, pra o JSON de sempre não mudar de forma.
+    ...(scanRepo === DEFAULT_ISSUE_REPO ? {} : { repo: scanRepo }),
     ...report,
     // Une o que a passada 1 rejeitou com o que o miolo rejeitou. Os dois
     // conjuntos são disjuntos por construção (o miolo só vê o que passou),
@@ -422,6 +441,10 @@ async function main() {
   // silêncio de uma flag digitada com `=` e simplesmente ignorada.
   const skipSemSinal = flags.has("skip-sem-sinal") || values["skip-sem-sinal"] === "true";
   const incluirEngavetadas = flags.has("incluir-engavetadas") || values["incluir-engavetadas"] === "true";
+  // #10901: `--repo` validado contra `issue_repos` (pela raiz deste checkout,
+  // nunca pelo cwd); fora da allowlist/ilegível lança — nunca cai no default.
+  const repoFlag = resolveRepoFlag(values, flags, ISSUE_REPOS_CONFIG_ROOT);
+  if ("error" in repoFlag) throw new Error(`[desbloqueia-scan] ${repoFlag.error}`);
 
   const report = runDesbloqueioScan(process.cwd(), {
     limit,
@@ -429,6 +452,7 @@ async function main() {
     track,
     skipSemSinal,
     incluirEngavetadas,
+    repo: repoFlag.repo,
   });
   console.log(JSON.stringify(report, null, 2));
 }

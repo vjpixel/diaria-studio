@@ -2944,7 +2944,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     description:
       "versao de tempo-de-plano de session-registry.ts conflicts --paths -- deriva colisao de arquivo " +
       "entre issues ABERTAS do backlog a partir dos paths que a propria issue ja lista no corpo, #7137 item 3",
-    steps: [{ key: "check", script: "scripts/check-issue-file-collisions.ts" }],
+    // `--repos all` (#10901): também as issues do diaria-design (colisão só
+    // dentro de um mesmo repo).
+    steps: [{ key: "check", script: "scripts/check-issue-file-collisions.ts", args: ["--repos", "all"] }],
     logPath: "issue-file-collisions/.check.log",
     // Domingo 12:15 BRT -- mesma familia de revisao semanal do backlog
     // (Diaria-Guard-Never-Invoked-Weekly-Check 12:00 acima), slot livre

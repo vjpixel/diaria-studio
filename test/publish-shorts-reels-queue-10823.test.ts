@@ -94,7 +94,7 @@ describe("#10823 resolveInstagramQueueReadiness", () => {
 
 describe("#10823 enqueueInstagramReel", () => {
   const now = () => new Date("2026-10-22T03:00:00Z");
-  const item = { caption: "legenda", scheduledAt: "2026-10-22T15:00:00.000Z", igAccount: "vjpixel" as const };
+  const item = { caption: "legenda", scheduledAt: "2026-10-22T15:00:00.000Z", igAccount: "vjpixel" as const, idempotencyKey: "shorts-instagram-261022-vjpixel" };
 
   it("sobe o vídeo, enfileira REELS com video_url/conta/collabs e registra scheduled com a key", async () => {
     let payload: WorkerQueuePayload | undefined;
@@ -120,6 +120,7 @@ describe("#10823 enqueueInstagramReel", () => {
       video_url: "https://v.test/shorts/diaria-comentada-261022-short.mp4",
       collaborators: ["diar.ia.br"],
       ig_account: "vjpixel",
+      idempotency_key: "shorts-instagram-261022-vjpixel",
     });
     assert.equal(out.entry.status, "scheduled", "202 da fila nunca vira published (#573)");
     assert.equal(out.entry.id, "queue:1792681200000:abc");

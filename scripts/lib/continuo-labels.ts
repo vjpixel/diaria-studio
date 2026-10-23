@@ -102,13 +102,15 @@ function isAlreadyExists(output: string): boolean {
  * usa `gh label create` — ele mistura "já existe" com erro de validação num
  * único exit 1, e é isso que os call sites vinham engolindo com `|| true`.
  *
- * `{owner}`/`{repo}` são resolvidos pelo próprio `gh` a partir do remote
- * `origin` do `cwd` (mesmo padrão de `gh-pr-safe-edit.ts`).
+ * Sem `repo`, `{owner}`/`{repo}` são resolvidos pelo próprio `gh` a partir
+ * do remote `origin` do `cwd` (mesmo padrão de `gh-pr-safe-edit.ts`); com
+ * `repo` (`owner/name`, #10901), o label é criado naquele repo.
  */
 export function ensureContinuoLabel(
   spec: ContinuoLabelSpec,
   cwd: string,
   ghRun: GhRunFn = spawnGhSync,
+  repo?: string,
 ): EnsureLabelResult {
   if (spec.description.length > GITHUB_LABEL_DESCRIPTION_MAX) {
     return {
@@ -124,7 +126,7 @@ export function ensureContinuoLabel(
       "api",
       "-X",
       "POST",
-      "repos/{owner}/{repo}/labels",
+      `repos/${repo ?? "{owner}/{repo}"}/labels`,
       "-f",
       `name=${spec.name}`,
       "-f",

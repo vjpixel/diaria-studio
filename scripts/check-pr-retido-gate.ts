@@ -30,7 +30,7 @@
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { evaluatePrRetido } from "./lib/pr-retido-para-editor.ts";
-import { prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
+import { ISSUE_REPOS_CONFIG_ROOT, prLabelInRepo, resolvePrTargetRepo } from "./lib/issue-repos.ts";
 
 function run(): number {
   const { values, flags } = parseArgs(process.argv.slice(2));
@@ -42,7 +42,7 @@ function run(): number {
   }
   // #10618 (fatia 4): PR de outro repo da allowlist (`--repo vjpixel/diaria-design`,
   // ou derivado de `--issue owner/repo#N` — review J: o PR mora no repo da issue).
-  const repoFlag = resolvePrTargetRepo(values, flags, process.cwd());
+  const repoFlag = resolvePrTargetRepo(values, flags, ISSUE_REPOS_CONFIG_ROOT);
   if ("error" in repoFlag) {
     console.error(`[check-pr-retido-gate] ${repoFlag.error}`);
     return 3;

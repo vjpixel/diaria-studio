@@ -194,6 +194,13 @@ export interface QueueEntry {
   collaborators?: string[];
   /** #10823 — conta do Instagram que publica (default "diaria"). Ver InstagramAccount. */
   ig_account?: InstagramAccount;
+  /**
+   * #10906 — chave idempotente do enqueue, quando o caller manda. Define o
+   * segmento final da key (`idempotentQueueUuid`): o mesmo POST repetido cai
+   * na MESMA key e no MESMO Durable Object, nunca numa 2ª entry. Ausente =
+   * uuid aleatório de sempre.
+   */
+  idempotency_key?: string;
   // (#2230 bug 2 fix) Tombstone de cancelamento: setado por handleQueueDelete quando
   // o KV.delete falha após o DO cancel. O cron detecta este flag, pula o item sem
   // postar, e o deleta do KV (cleanup do tombstone).
@@ -273,6 +280,29 @@ function json(data: unknown, status = 200): Response {
  */
 export function buildQueueKey(scheduledAtIso: string, uuid: string): string {
   return `queue:${scheduledAtIso}:${uuid}`;
+}
+
+/**
+ * #10906 — formato aceito em `idempotency_key` no POST /queue. Curto e sem
+ * espaço: vira hash, mas o valor cru fica gravado na entry pra auditoria.
+ */
+export const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/**
+ * #10906 — uuid DETERMINÍSTICO a partir da chave idempotente (SHA-256, 128
+ * bits, no formato 8-4-4-4-12). Formato de uuid de propósito: a key continua
+ * casando `QUEUE_KEY_NEW_RE` (schema novo, não legacy) e `buildDlqKey` segue
+ * extraindo o segmento depois do último `:`.
+ *
+ * Por que a key e não um índice à parte: com a key igual, duas requisições
+ * concorrentes que passem juntas pelo `get` gravam a MESMA entry e armam o
+ * MESMO Durable Object (`idFromName(key)`), cujo claim/`fired` já garante um
+ * disparo só. Um índice `idem:` dependeria da consistência eventual do KV.
+ */
+export async function idempotentQueueUuid(idempotencyKey: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(idempotencyKey));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 /**
@@ -508,6 +538,13 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   const reelsError = validateReelsFields(body, env);
   if (reelsError) return json(reelsError.body, 400);
 
+  // #10906 — chave idempotente (opcional). Validada antes de qualquer escrita.
+  if (body.idempotency_key !== undefined) {
+    if (typeof body.idempotency_key !== "string" || !IDEMPOTENCY_KEY_RE.test(body.idempotency_key)) {
+      return json({ error: "idempotency_key must match [A-Za-z0-9._:-]{1,128}" }, 400);
+    }
+  }
+
   // Instagram Graph API (Content Publishing) exige imagem — sem ela o
   // container nem chega a ser criado. Falhar aqui (enqueue) é melhor que
   // falhar só no disparo, horas/dias depois. #4153 — `image_urls` (não-vazio,
@@ -587,12 +624,28 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  const uuid = crypto.randomUUID();
+  // #10906 — com `idempotency_key`, o uuid sai dela (determinístico): um POST
+  // repetido pelo retry do cliente (resposta perdida depois do commit) cai na
+  // mesma key em vez de criar uma 2ª entry que publicaria o mesmo Reels de novo.
+  const uuid = body.idempotency_key !== undefined ? await idempotentQueueUuid(body.idempotency_key) : crypto.randomUUID();
   // #883 — Normalizar scheduled_at pra ISO UTC (lex-sortable). Isso garante
   // que `queue:{iso}:{uuid}` ordene corretamente mesmo se o caller passou
   // timezone offset (`+00:00`, `-03:00`, etc).
   const normalizedIso = new Date(scheduledMs).toISOString();
   const key = buildQueueKey(normalizedIso, uuid);
+  if (body.idempotency_key !== undefined) {
+    // Entry já na fila com essa chave = repetição do mesmo enqueue. Devolve a
+    // key existente sem regravar nem re-armar (a 1ª requisição já armou o DO;
+    // se não armou, o cron */5 cobre). 200 e não 202: nada novo foi enfileirado.
+    const existing = await env.LINKEDIN_QUEUE.get(key);
+    if (existing !== null) {
+      console.log(`[enqueue] idempotency_key=${body.idempotency_key} já enfileirada em ${key} — duplicata ignorada (#10906)`);
+      return json(
+        { queued: true, duplicate: true, key, scheduled_at: body.scheduled_at as string, destaque: body.destaque as string },
+        200,
+      );
+    }
+  }
   const entry: QueueEntry = {
     text: textValue,
     image_url: (body.image_url as string | null) ?? null,
@@ -613,6 +666,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.video_url !== undefined && { video_url: body.video_url }),
     ...(body.collaborators !== undefined && { collaborators: body.collaborators }),
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
+    ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
 
