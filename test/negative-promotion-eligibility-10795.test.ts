@@ -129,8 +129,11 @@ describe("applyNegativePromotionEligibility — processo/acusação", () => {
 
   it("sem substituto elegível: mantém e registra", () => {
     // único reserva já foi rebaixado por MESMO FATO (#9100): não sobe de volta.
+    // #10985: o rebaixado não conta no trio por mérito — quem deixa o negativo
+    // de 60 fora do trio é o reserva C (75), também inelegível (acusação).
     const reserva = { ...hl("D", 70), same_fact_demoted: { matched_edition: "261020" } };
-    const r = applyNegativePromotionEligibility(ranked(hl("A", 90), hl("B", 88), hl("Empresa é acusada de fraude com IA", 60, true), reserva), []);
+    const outroInelegivel = hl("C é acusada de vazar dados", 75, true);
+    const r = applyNegativePromotionEligibility(ranked(hl("A", 90), hl("B", 88), hl("Empresa é acusada de fraude com IA", 60, true), outroInelegivel, reserva), []);
     assert.equal(r.actions[0].action, "mantido-sem-substituto");
     assert.equal(r.highlights[2].article.title, "Empresa é acusada de fraude com IA");
   });
