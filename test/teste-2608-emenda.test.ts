@@ -198,6 +198,64 @@ describe("evaluateEmendaVerdict", () => {
     assert.match(v.texto, /NÃO afirmado/);
   });
 
+  describe("#10993 — fase com gasto 0 e 0 leitores / braço com sinal sem gasto", () => {
+    // Microsoft desligado na pós-retomada: gasto 0 fornecido, 0 leitores na fase.
+    const msPausado = (preGasto: number) =>
+      arm(MS, 20, preGasto, [{ id: "pre-pausa", leitores: 20, gasto: preGasto }, { id: "pos-retomada", leitores: 0, gasto: 0 }]);
+    const google = arm(G, 60, 600, [{ id: "pre-pausa", leitores: 30, gasto: 300 }, { id: "pos-retomada", leitores: 30, gasto: 300 }]);
+
+    it("REGRESSÃO: gasto 0 fornecido não vira 'gasto por fase não fornecido'", () => {
+      const v = evaluateEmendaVerdict([google, msPausado(2000)]);
+      assert.doesNotMatch(v.texto, /não foi fornecido/);
+      assert.notEqual(v.kind, "indisponivel");
+    });
+
+    it("braço pausado mais caro na fase em que veiculou → sai, com a fase sem atividade nomeada", () => {
+      const v = evaluateEmendaVerdict([google, msPausado(2000)]);
+      assert.equal(v.kind, "sai");
+      assert.equal(v.maisCaro, MS);
+      assert.match(v.texto, /em que veiculou/);
+      assert.ok(v.texto.includes(`fora da comparação: ${MS}/pos-retomada`), v.texto);
+    });
+
+    it("braço pausado que NÃO é o mais caro: o mais caro ganha a fase em que o pausado não disputou", () => {
+      const caro = arm(M, 20, 3000, [{ id: "pre-pausa", leitores: 10, gasto: 1500 }, { id: "pos-retomada", leitores: 10, gasto: 1500 }]);
+      const barato = arm(MS, 60, 120, [{ id: "pre-pausa", leitores: 60, gasto: 120 }, { id: "pos-retomada", leitores: 0, gasto: 0 }]);
+      const v = evaluateEmendaVerdict([caro, barato]);
+      assert.equal(v.kind, "sai");
+      assert.equal(v.maisCaro, M);
+    });
+
+    it("gasto realmente ausente (null) continua indisponível", () => {
+      const ms = arm(MS, 20, 2000, [{ id: "pre-pausa", leitores: 20, gasto: 2000 }, { id: "pos-retomada", leitores: 0, gasto: null }]);
+      const v = evaluateEmendaVerdict([google, ms]);
+      assert.equal(v.kind, "indisponivel");
+      assert.match(v.texto, /não foi fornecido/);
+    });
+
+    it("gasto > 0 com 0 leitores segue 'sem-leitor' (custo infinito, o mais caro na fase)", () => {
+      const ms = arm(MS, 20, 2000, [{ id: "pre-pausa", leitores: 20, gasto: 1900 }, { id: "pos-retomada", leitores: 0, gasto: 100 }]);
+      const v = evaluateEmendaVerdict([google, ms]);
+      assert.equal(v.kind, "sai");
+      assert.doesNotMatch(v.texto, /sem atividade/);
+    });
+
+    it("braço com >=3 leitores mas sem gasto na janela é nomeado no veredito", () => {
+      const semGasto: EmendaArmResult = { ...arm(MS, 10, 0, []), gastoTotalBrl: null, custoPorLeitor: null };
+      const v = evaluateEmendaVerdict([arm(G, 60, 1147.77, []), arm(M, 50, 1435.51, []), semGasto]);
+      assert.deepEqual(v.semGasto, [MS]);
+      assert.ok(!v.comSinal.includes(MS) && !v.semSinal.includes(MS));
+      assert.match(v.texto, /Fora da comparação por não ter gasto/);
+      assert.ok(v.texto.endsWith(`: ${MS}.`), v.texto);
+    });
+
+    it("sem braço sem gasto, nada é acrescentado ao texto", () => {
+      const v = evaluateEmendaVerdict([arm(G, 60, 1147.77, []), arm(M, 50, 1435.51, [])]);
+      assert.deepEqual(v.semGasto, []);
+      assert.doesNotMatch(v.texto, /Fora da comparação/);
+    });
+  });
+
   it("menos de 2 braços com sinal → sem comparação", () => {
     const v = evaluateEmendaVerdict([arm(G, 60, 600, []), arm(MS, 1, 800, [])]);
     assert.equal(v.kind, "indisponivel");

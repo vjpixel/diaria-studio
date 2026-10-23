@@ -429,6 +429,27 @@ export function quedaNaoAvaliadaKeys(
   return keys;
 }
 
+/**
+ * #10994 — métricas wireadas SEM série nenhuma nesta execução (falha de
+ * ingestão: snapshot ausente, DB inacessível) nem chegam a `evaluateQueda`.
+ * Sem esta entrada, `quedaNaoAvaliadaKeys` não as via e a issue `queda:`
+ * aberta delas recebia "não reproduz mais" e fechava — a ausência da série
+ * contada como evidência de que a queda sumiu, a mesma leitura-que-não-
+ * aconteceu do #10662. Devolve uma avaliação com `skipMotivo` ("série
+ * ausente") por métrica sem série, para entrar em `quedaAvaliacoes`.
+ */
+export function quedaAvaliacoesSemSerie(
+  wiredIds: readonly string[],
+  seriesById: ReadonlyMap<string, unknown>,
+): { metricaId: string; skipMotivo: string }[] {
+  return wiredIds
+    .filter((id) => !seriesById.has(id))
+    .map((id) => ({
+      metricaId: id,
+      skipMotivo: `"${id}": série ausente nesta execução — sinal de queda não avaliado (issue aberta congelada, #10994)`,
+    }));
+}
+
 export function toMetricsHealthAlarmFinding(f: MetricsHealthFinding): AlarmFinding {
   const fingerprint = metricsHealthFingerprint(f);
   return {
@@ -776,10 +797,15 @@ async function main(): Promise<void> {
   const { sources: paidSources, avisos: paidAvisos } = loadPaidTestWindowSources();
   skipMotivos.push(...paidAvisos);
   const baselineExcluidaAquisicao = closedPaidAcquisitionWindows(paidSources, hoje);
-  const quedaAvaliacoes: { metricaId: string; skipMotivo: string | null }[] = [];
+  // #10994: métrica sem série também é "queda não avaliada" — congela a issue.
+  const quedaAvaliacoes: { metricaId: string; skipMotivo: string | null }[] = quedaAvaliacoesSemSerie(
+    WIRED_METRIC_IDS,
+    seriesById,
+  );
+  for (const { skipMotivo } of quedaAvaliacoes) if (skipMotivo) skipMotivos.push(skipMotivo);
   for (const id of WIRED_METRIC_IDS) {
     const medicoes = seriesById.get(id);
-    if (!medicoes) continue;
+    if (!medicoes) continue; // já registrada em quedaAvaliacoes por quedaAvaliacoesSemSerie (#10994)
     const def = getMetric(id);
     if (!def) continue;
 
