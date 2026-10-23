@@ -206,13 +206,59 @@ export interface TrainPrInfo {
  * squash do trem (`buildTrainMergeCommitBody` abaixo — que NÃO reusa esta
  * função, e sim recebe os números já resolvidos por PR, porque cada PR
  * pode fechar >1 issue e a lista final é a UNIÃO ordenada de todas).
+ *
+ * **Só marcadores reais (#10989).** Desde o #10878 cada número extraído vira
+ * uma linha `Closes #N` própria no squash do trem — ou seja, um FECHAMENTO
+ * de verdade. Keyword dentro de code span (`` `Closes #10` ``), bloco de
+ * código cercado, citação (`> closes #5`) ou comentário HTML é menção, não
+ * marcador: o corpo da PR #10886 citava "tinha `Closes #10695, #10775`" e
+ * "asserções de `Closes #10, #11, #12`" e cada uma teria fechado a issue
+ * citada. O texto passa por `stripNonMarkerContext` antes da regex.
  */
 export function parseClosesIssues(body: string): number[] {
   const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
   const found = new Set<number>();
+  const text = stripNonMarkerContext(body);
   let m: RegExpExecArray | null;
-  while ((m = re.exec(body))) found.add(Number(m[1]));
+  while ((m = re.exec(text))) found.add(Number(m[1]));
   return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * Remove do corpo de PR tudo que é MENÇÃO e não marcador (#10989): blocos de
+ * código cercados (``` ou ~~~, CommonMark: fecha com cerca do mesmo caractere
+ * e comprimento >= o da abertura; cerca sem fechamento vai até o fim do
+ * texto), comentários HTML, linhas citadas (`>`) e code spans inline (run de
+ * crases de comprimento N fechado por run de mesmo comprimento). Cada trecho
+ * removido vira um espaço/linha vazia — nunca cola duas palavras vizinhas
+ * numa keyword nova.
+ *
+ * Fora de escopo de propósito: bloco de código por indentação (4 espaços) —
+ * indistinguível de continuação de item de lista sem um parser completo, e
+ * nenhum corpo de PR do repo o usa pra citar keyword.
+ */
+export function stripNonMarkerContext(body: string): string {
+  const out: string[] = [];
+  let fence: { ch: string; len: number } | null = null;
+  for (const line of body.replace(/<!--[\s\S]*?-->/g, " ").split(/\r?\n/)) {
+    const fm = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      if (fm && fm[1][0] === fence.ch && fm[1].length >= fence.len && line.trim() === fm[1]) fence = null;
+      out.push("");
+      continue;
+    }
+    if (fm) {
+      fence = { ch: fm[1][0], len: fm[1].length };
+      out.push("");
+      continue;
+    }
+    if (/^\s{0,3}>/.test(line)) {
+      out.push("");
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n").replace(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, " ");
 }
 
 /**
@@ -225,8 +271,9 @@ export function parseClosesIssues(body: string): number[] {
 export function parseRefsIssues(body: string): number[] {
   const re = /\brefs?\b[:\s]+((?:#\d+(?:\s*,\s*(?=#)|\s*))+)/gi;
   const found = new Set<number>();
+  const text = stripNonMarkerContext(body); // #10989: menção em crase/citação não é referência
   let m: RegExpExecArray | null;
-  while ((m = re.exec(body))) {
+  while ((m = re.exec(text))) {
     for (const n of m[1].matchAll(/#(\d+)/g)) found.add(Number(n[1]));
   }
   return [...found].sort((a, b) => a - b);

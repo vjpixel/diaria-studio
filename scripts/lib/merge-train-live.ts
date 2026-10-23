@@ -717,7 +717,12 @@ export interface MergeSoloOptions {
  * direto sob o mesmo merge lock, confirmando via estado real (#573).
  * Reusa a própria mensagem do PR (`gh pr merge --squash` sem
  * `--subject`/`--body` customizado) — diferente de `mergeTrainBatch`, que
- * PRECISA de mensagem custom porque combina >1 PR num commit só. */
+ * PRECISA de mensagem custom porque combina >1 PR num commit só.
+ *
+ * Confia no CI do PR rodado sobre a base em que ele foi aberto — por isso
+ * `runMergeTrain` NUNCA chama esta função pra um PR que esteve num lote
+ * vermelho (#10997): esse PR é revalidado sobre a base atual pelo caminho
+ * do lote (PR-trem de 1). */
 export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSoloOptions): MergeTrainBatchResult {
   const gate = revalidateGate2(runner, prNumber);
   if (!gate.ok) {
@@ -831,7 +836,12 @@ const RECONFIRM_DELAY_MS = 15_000;
  * Orquestrador de topo — fila de lotes começando pelo lote inicial
  * (tipicamente a saída de `composeTrainBatches`, um item por lote). Cada
  * lote de tamanho 1 degrada pro merge solo (piso da bissecção = caminho
- * de hoje). Lote de tamanho ≥2: monta a integração (worktree isolado),
+ * de hoje) — EXCETO o PR que já esteve num lote de CI vermelho/timeout
+ * (#10997): esse lote provou que a base atual + algum dos seus PRs quebra,
+ * então o CI verde do PR sobre a base antiga não vale; o PR sozinho passa
+ * pela integração + PR-trem + CI sobre `origin/{base}` fresco (a
+ * "revalidação da base" do #10927) e, se esse CI reprovar ou não montar,
+ * termina `solo-failed` sem merge. Lote de tamanho ≥2: monta a integração (worktree isolado),
  * abre o PR-trem, espera 1 run de CI; verde → merge de verdade (1 commit
  * squash, `Closes` de todas as issues do lote, com retry bounded se só o
  * lock estiver negado) + fecha as PRs originais; vermelho → RECONFIRMA
@@ -867,12 +877,34 @@ export async function runMergeTrain(
   const outcomes: TrainBatchOutcome[] = [];
   const queue: TrainBatch[] = [initialBatch];
   let seq = 0;
+  // #10997: PRs que estiveram num lote cujo CI voltou VERMELHO (confirmado)
+  // ou estourou o timeout. O lote vermelho é evidência de que a base atual
+  // + algum desses PRs quebra — o CI verde do próprio PR (rodado sobre a
+  // base ANTIGA) já não prova nada. No piso da bissecção, um PR deste
+  // conjunto nunca vai pro `mergeSoloPr` (que confia nesse CI velho):
+  // passa pelo mesmo caminho do lote (branch de integração sobre
+  // `origin/{base}` fresco + PR-trem + CI) e só mergeia com esse CI verde.
+  // Foi o que deixou master vermelha na rodada 261023 (PR #10954).
+  const needsBaseRevalidation = new Set<number>();
+
+  /** Lote que não pode seguir: bissecta (>=2) ou, no piso, vira `solo-failed`
+   * terminal — `bisectBatch` lança em lote de 1, e um PR sozinho que falha
+   * sobre a base atual não tem metade "boa" pra isolar. */
+  const failOrBisect = (batch: TrainBatch, detail: string): void => {
+    if (batch.prs.length === 1) {
+      outcomes.push({ batch, status: "solo-failed", detail: `${detail} — PR sozinho sobre a base atual, sem merge (#10997)` });
+      return;
+    }
+    const [left, right] = bisectBatch(batch);
+    queue.push(left, right);
+    outcomes.push({ batch, status: "abandoned", detail: `${detail}, bissectando` });
+  };
 
   while (queue.length > 0) {
     const batch = queue.shift();
     if (!batch || batch.prs.length === 0) continue; // defensivo — nunca deveria acontecer (bisectBatch nunca produz lote vazio)
 
-    if (batch.prs.length === 1) {
+    if (batch.prs.length === 1 && !needsBaseRevalidation.has(batch.prs[0])) {
       const pr = batch.prs[0];
       const result = mergeSoloPr(runner, pr, opts);
       const soloStatus = result.ok
@@ -895,9 +927,7 @@ export async function runMergeTrain(
       // mas ainda assim é um diretório temp e uma branch local que não
       // devem sobreviver além deste lote.
       cleanupIntegrationBranch(runner, integ.branchName, integ.worktreePath, mainCwd);
-      const [left, right] = bisectBatch(batch);
-      queue.push(left, right);
-      outcomes.push({ batch, status: "abandoned", detail: `integração falhou, bissectando: ${integ.error}` });
+      failOrBisect(batch, `integração falhou (${integ.error})`);
       continue;
     }
 
@@ -906,9 +936,7 @@ export async function runMergeTrain(
       trainPrNumber = openTrainPr(runner, branchName, baseBranch, buildTrainPrTitle(batch), buildTrainPrBody(batch, prInfos));
     } catch (err) {
       cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
-      const [left, right] = bisectBatch(batch);
-      queue.push(left, right);
-      outcomes.push({ batch, status: "abandoned", detail: `abrir PR-trem falhou, bissectando: ${err instanceof Error ? err.message : String(err)}` });
+      failOrBisect(batch, `abrir PR-trem falhou (${err instanceof Error ? err.message : String(err)})`);
       continue;
     }
 
@@ -939,7 +967,14 @@ export async function runMergeTrain(
         runner.exec("gh", ["pr", "close", String(trainPrNumber)]);
       }
       cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
-      if (mergeResult.ok) {
+      if (mergeResult.ok && batch.prs.length === 1) {
+        // #10997: PR sozinho revalidado sobre a base atual (veio de um lote vermelho).
+        outcomes.push({
+          batch,
+          status: "solo-merged",
+          detail: mergeResult.error ?? `revalidado sobre a base atual (PR-trem #${trainPrNumber}, CI verde) e squash-mergeado (#10997)`,
+        });
+      } else if (mergeResult.ok) {
         outcomes.push({ batch, status: "merged", detail: mergeResult.error ?? `PR-trem #${trainPrNumber} squash-mergeado` });
       } else if (mergeResult.retidoPr !== undefined) {
         // #10294: 1 PR do lote ficou retido para o editor DEPOIS da
@@ -1010,12 +1045,12 @@ export async function runMergeTrain(
     }
 
     // Vermelho confirmado nas 2 execuções, ou timeout — descarta o PR-trem
-    // (nunca mergear por engano) e o worktree, bissecta.
+    // (nunca mergear por engano) e o worktree, bissecta. Todo PR do lote
+    // passa a exigir CI sobre a base atual até o merge (#10997).
     runner.exec("gh", ["pr", "close", String(trainPrNumber)]);
     cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
-    const [left, right] = bisectBatch(batch);
-    queue.push(left, right);
-    outcomes.push({ batch, status: "abandoned", detail: `CI do lote: ${finalVerdict}${reconfirmNote} — bissectando` });
+    for (const pr of batch.prs) needsBaseRevalidation.add(pr);
+    failOrBisect(batch, `CI do lote: ${finalVerdict}${reconfirmNote}`);
   }
 
   return outcomes;

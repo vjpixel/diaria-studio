@@ -734,6 +734,107 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
     assert.equal(trainHasRealFailure(outcomes), false);
     assert.equal(trainHasRealFailure(outcomes, true), true);
   });
+
+  // #10997 (regressão #633): rodada 261023, trem 5 — lote vermelho, piso da
+  // bissecção mergeou o PR solo com o CI verde dele (base ANTIGA) e master
+  // ficou vermelha. PR que esteve num lote vermelho só mergeia com CI verde
+  // sobre a base ATUAL (PR-trem de 1 sobre origin/master fresco).
+  describe("#10997 — piso da bissecção depois de lote vermelho exige CI sobre a base atual", () => {
+    const red = () => ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: "FAILURE", status: "COMPLETED" }] }));
+
+    /** PR-trem 9001 = [100,101,102], 9002 = [100,101], 9003 = [102]. */
+    function scenario(trainCi: Record<string, "pass" | "fail">) {
+      const runner = fullRunner();
+      let createCalls = 0;
+      const created: { num: string; head: string }[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", (a) => {
+        createCalls++;
+        const num = `900${createCalls}`;
+        created.push({ num, head: a[a.indexOf("--head") + 1] });
+        return ok(`https://github.com/x/y/pull/${num}\n`);
+      });
+      for (const [num, verdict] of Object.entries(trainCi)) {
+        runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === num && a.includes("statusCheckRollup"), () => (verdict === "fail" ? red() : ok(ciPassJson())));
+      }
+      const merged: string[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+        merged.push(a[2]);
+        return ok();
+      });
+      return { runner, created, merged };
+    }
+
+    it("PR do lote vermelho cujo CI sobre a base atual reprova: 'solo-failed', NUNCA mergeado com o CI velho", async () => {
+      const { runner, created, merged } = scenario({ "9001": "fail", "9003": "fail" });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.ok(!merged.includes("102"), "o PR 102 nunca pode ir pro merge solo direto (CI verde dele é da base antiga)");
+      assert.deepEqual(merged, ["9002"], "só o sub-lote verde sobre a base atual mergeia");
+      assert.equal(created.length, 3, "o PR solo ganha um PR-trem próprio (integração sobre origin/master fresco)");
+      assert.match(created[2].head, /102$/, "o 3º PR-trem é o do PR 102 sozinho");
+      const solo = outcomes.find((o) => o.batch.prs.length === 1 && o.batch.prs[0] === 102);
+      assert.equal(solo?.status, "solo-failed");
+      assert.match(solo?.detail ?? "", /base atual/);
+      assert.equal(trainHasRealFailure(outcomes), true, "PR não mergeado por CI vermelho na base atual é falha real (exit != 0)");
+      assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === "9003"), "PR-trem do solo é fechado");
+      assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === "102"), "o PR original 102 fica aberto pro coordenador");
+    });
+
+    it("PR do lote vermelho cujo CI sobre a base atual passa: 'solo-merged' via PR-trem de 1, PR original fechado", async () => {
+      const { runner, merged } = scenario({ "9001": "fail" });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101, 102] }, prInfos3, { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD, ciPollIntervalMs: 1 });
+
+      assert.deepEqual(merged, ["9002", "9003"], "o 102 entra em master pelo PR-trem 9003, que passou no CI sobre a base atual");
+      const solo = outcomes.find((o) => o.batch.prs.length === 1 && o.batch.prs[0] === 102);
+      assert.equal(solo?.status, "solo-merged");
+      assert.match(solo?.detail ?? "", /revalidado sobre a base atual/);
+      assert.equal(trainHasRealFailure(outcomes), false);
+      const squash = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge" && c.args[2] === "9003");
+      assert.match(squash?.args[squash.args.indexOf("--body") + 1] ?? "", /^Closes #12$/m, "o commit squash fecha a issue do PR 102");
+      assert.ok(runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "close" && c.args[2] === "102"), "PR original fechado com apontamento pro trem");
+    });
+
+    it("timeout do CI do lote também conta como lote vermelho pro piso", async () => {
+      const runner = fullRunner();
+      runner.advanceMs = 10_000;
+      let createCalls = 0;
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "create", () => {
+        createCalls++;
+        return ok(`https://github.com/x/y/pull/900${createCalls}\n`);
+      });
+      const pending = ok(JSON.stringify({ statusCheckRollup: [{ __typename: "CheckRun", name: "test", conclusion: null, status: "IN_PROGRESS" }] }));
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "9001" && a.includes("statusCheckRollup"), () => pending);
+      const merged: string[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+        merged.push(a[2]);
+        return ok();
+      });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, prInfos3.slice(0, 2), {
+        sessionId: "s",
+        kind: "develop",
+        mainCwd: MAIN_CWD,
+        ciTimeoutMs: 30_000,
+        ciPollIntervalMs: 1,
+      });
+      assert.ok(!merged.includes("100") && !merged.includes("101"), "nenhum PR do lote em timeout vai pro merge solo direto");
+      assert.deepEqual(merged, ["9002", "9003"]);
+      assert.deepEqual(outcomes.map((o) => o.status), ["abandoned", "solo-merged", "solo-merged"]);
+    });
+
+    it("lote que só falhou na INTEGRAÇÃO (sem CI vermelho) mantém o merge solo de hoje", async () => {
+      const runner = fullRunner();
+      runner.on("git", (a, cwd) => a[0] === "merge" && !a.includes("--abort") && cwd !== MAIN_CWD, () => fail("CONFLICT"));
+      const merged: string[] = [];
+      runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", (a) => {
+        merged.push(a[2]);
+        return ok();
+      });
+      const outcomes = await runMergeTrain(runner, { prs: [100, 101] }, prInfos3.slice(0, 2), { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
+      assert.deepEqual(merged, ["100", "101"]);
+      assert.ok(!runner.calls.some((c) => c.cmd === "gh" && c.args[1] === "create"));
+      assert.deepEqual(outcomes.map((o) => o.status), ["abandoned", "solo-merged", "solo-merged"]);
+    });
+  });
 });
 
 describe("checkPrRetido / partitionRetidoCandidates (#10294)", () => {
