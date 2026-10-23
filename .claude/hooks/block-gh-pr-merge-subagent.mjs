@@ -122,7 +122,7 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hostname } from "node:os";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { isGhPrMergeCommand, extractGhPrMergeTargetPr } from "./lib/gh-pr-merge-command.mjs";
+import { findGhPrMergeInvocations, isGhPrMergeCommand, extractGhPrMergeTargetPr } from "./lib/gh-pr-merge-command.mjs";
 import {
   DIARIA_STUDIO_REPO,
   loadAllowedForeignRepos,
@@ -1475,6 +1475,20 @@ export function buildRepoHint(targetRepos, complex = false) {
  *     recebido concessão nenhuma.
  */
 export function buildBlockReason(ctx = {}) {
+  // #10926: GraphQL opaco não é prova de `gh pr merge`; não orientar
+  // registro/concessão para quem só está consultando ou resolvendo threads.
+  if (typeof ctx.command === "string") {
+    const invocations = findGhPrMergeInvocations(ctx.command);
+    if (invocations.length > 0 && invocations.every((inv) => inv.via === "api-graphql")) {
+      return "gh api graphql bloqueado pelo guard mecânico (#5716): a query contém uma operação " +
+        "de merge/alteração de refs ou não pode ser inspecionada estaticamente (expansão do shell, " +
+        "arquivo ou flags opacas). Isso não significa que o comando execute gh pr merge. " +
+        "Para consultar ou resolver threads, use query literal entre aspas simples e passe os valores " +
+        "como variáveis GraphQL via -f/-F (ex.: -F n=\"$n\" e -f t=\"$t\"). " +
+        "Não altere a identidade da sessão para liberar uma consulta. Operações reais de merge " +
+        "continuam exclusivas do fluxo da coordenadora.";
+    }
+  }
   const hasScopedGrant = ctx.hasLiveGrant === true && ctx.grantPr !== undefined;
   const grantMissedTarget = hasScopedGrant && ctx.grantPr !== ctx.targetPr;
   let reason = grantMissedTarget ? `${BLOCK_REASON} ${SCOPED_GRANT_HINT}` : BLOCK_REASON;
@@ -1702,7 +1716,10 @@ if (
               permissionDecision: "deny",
               // #10618: os comandos citados acima miram o lock do
               // diaria-studio por padrão — PR de outro repo precisa do --repo.
-              permissionDecisionReason: buildBlockReason({ ...ctx, blockCause }) + buildRepoHint(targetRepos, complex),
+              permissionDecisionReason: buildBlockReason({ ...ctx, blockCause, command }) +
+                (findGhPrMergeInvocations(command).every((inv) => inv.via === "api-graphql")
+                  ? ""
+                  : buildRepoHint(targetRepos, complex)),
             },
           }),
         );

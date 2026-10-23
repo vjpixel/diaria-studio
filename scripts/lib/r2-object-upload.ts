@@ -63,8 +63,21 @@ export function loadR2UploadConfig(env: Record<string, string | undefined>): { r
 function encodePath(path: string): string {
   return path
     .split("/")
-    .map((seg) => encodeURIComponent(seg).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`))
+    .map((seg) => encodeRfc3986(seg))
     .join("/");
+}
+
+/** Valor RFC 3986 (o `encodeURIComponent` deixa `!'()*` sem encode; o SigV4 exige). */
+const encodeRfc3986 = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+
+/** Query canônica do SigV4: pares encodados e ordenados pela chave. */
+function canonicalQuery(query: Record<string, string> | undefined): string {
+  if (!query) return "";
+  return Object.entries(query)
+    .map(([k, v]) => [encodeRfc3986(k), encodeRfc3986(v)] as const)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
 }
 
 const sha256Hex = (data: string | Buffer) => createHash("sha256").update(data).digest("hex");
@@ -75,6 +88,8 @@ export interface SigV4Input {
   host: string;
   /** Path absoluto, sem encode (ex.: `/bucket/shorts/a.mp4`). */
   path: string;
+  /** Query string, sem encode (#10923: ListObjectsV2). Ausente = sem query. */
+  query?: Record<string, string>;
   /** Headers além de host/x-amz-date/x-amz-content-sha256 que entram na assinatura. */
   headers?: Record<string, string>;
   /** Hash hex do corpo, ou `UNSIGNED-PAYLOAD`. */
@@ -105,7 +120,7 @@ export function signS3Request(input: SigV4Input): Record<string, string> {
   const names = Object.keys(all).sort();
   const canonicalHeaders = names.map((n) => `${n}:${all[n]}\n`).join("");
   const signedHeaders = names.join(";");
-  const canonicalRequest = [input.method, encodePath(input.path), "", canonicalHeaders, signedHeaders, input.payloadHash].join("\n");
+  const canonicalRequest = [input.method, encodePath(input.path), canonicalQuery(input.query), canonicalHeaders, signedHeaders, input.payloadHash].join("\n");
   const scope = `${day}/${input.region}/${input.service}/aws4_request`;
   const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256Hex(canonicalRequest)].join("\n");
   const kDate = hmac(`AWS4${input.secretAccessKey}`, day);
@@ -126,12 +141,136 @@ export function r2PublicUrl(config: R2UploadConfig, key: string): string {
 export interface R2UploadDeps {
   fetch: (url: string, init?: RequestInit) => Promise<Response>;
   now: () => Date;
+  /** Aviso não-fatal (limpeza de retenção, #10923). Default: console.warn. */
+  warn?: (msg: string) => void;
+}
+
+/**
+ * #10923 — retenção por prefixo. Os verticais (~275 MB/dia) enchiam os 10 GB
+ * do plano gratuito do R2 em ~36 dias e passavam a custar em silêncio. O
+ * objeto só precisa existir até a Graph API (Reels na fila do Worker) e a
+ * Buffer baixarem o vídeo, o que acontece no horário do vertical, no mesmo
+ * dia ou no seguinte; 7 dias dão folga para um reenfileiramento e mantêm o
+ * bucket perto de 2 GB.
+ *
+ * A limpeza roda no próprio upload, com a mesma chave de API (escrita no
+ * bucket já inclui listar e apagar objetos). Uma regra de lifecycle no bucket
+ * faria o mesmo, mas exige permissão de admin do bucket e um passo manual no
+ * painel; aqui não depende de nada além das env vars que o upload já usa.
+ */
+export const R2_RETENTION_POLICIES: readonly { prefix: string; maxAgeDays: number }[] = [{ prefix: "shorts/", maxAgeDays: 7 }];
+
+function s3Host(config: R2UploadConfig): string {
+  return `${config.accountId}.r2.cloudflarestorage.com`;
+}
+
+async function signedFetch(
+  deps: R2UploadDeps,
+  config: R2UploadConfig,
+  method: string,
+  key: string,
+  query?: Record<string, string>,
+): Promise<Response> {
+  const host = s3Host(config);
+  const path = key ? `/${config.bucket}/${key}` : `/${config.bucket}`;
+  const payloadHash = sha256Hex("");
+  const headers = signS3Request({
+    method,
+    host,
+    path,
+    query,
+    payloadHash,
+    region: "auto",
+    service: "s3",
+    accessKeyId: config.accessKeyId,
+    secretAccessKey: config.secretAccessKey,
+    now: deps.now(),
+  });
+  const qs = canonicalQuery(query);
+  return deps.fetch(`https://${host}${encodePath(path)}${qs ? `?${qs}` : ""}`, { method, headers });
+}
+
+const decodeXml = (s: string) =>
+  s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+
+/** Parse mínimo da resposta do ListObjectsV2 (puro, exportado pro teste). */
+export function parseListObjectsV2(xml: string): { objects: { key: string; lastModified: Date }[]; nextToken: string | null } {
+  const objects: { key: string; lastModified: Date }[] = [];
+  for (const m of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+    const key = /<Key>([\s\S]*?)<\/Key>/.exec(m[1])?.[1];
+    const lm = /<LastModified>([\s\S]*?)<\/LastModified>/.exec(m[1])?.[1];
+    if (key === undefined || lm === undefined) continue;
+    const lastModified = new Date(lm.trim());
+    if (Number.isNaN(lastModified.getTime())) continue;
+    objects.push({ key: decodeXml(key), lastModified });
+  }
+  const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/.test(xml);
+  const token = /<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml)?.[1];
+  return { objects, nextToken: truncated && token ? decodeXml(token) : null };
+}
+
+export interface R2PruneResult {
+  deleted: string[];
+  errors: string[];
+}
+
+/**
+ * #10923 — apaga os objetos de `prefix` com LastModified mais velho que
+ * `maxAgeDays`, exceto os de `keep`. Nunca lança: falha vira `errors` (o
+ * upload que acabou de dar certo não pode cair por causa da limpeza).
+ */
+export async function pruneR2Prefix(
+  deps: R2UploadDeps,
+  config: R2UploadConfig,
+  opts: { prefix: string; maxAgeDays: number; keep?: readonly string[] },
+): Promise<R2PruneResult> {
+  const out: R2PruneResult = { deleted: [], errors: [] };
+  const cutoff = deps.now().getTime() - opts.maxAgeDays * 86_400_000;
+  const keep = new Set(opts.keep ?? []);
+  const stale: string[] = [];
+  try {
+    let token: string | null = null;
+    for (let page = 0; page < 50; page++) {
+      const query: Record<string, string> = { "list-type": "2", prefix: opts.prefix };
+      if (token) query["continuation-token"] = token;
+      const res = await signedFetch(deps, config, "GET", "", query);
+      const body = await res.text().catch(() => "");
+      if (!res.ok) {
+        out.errors.push(`R2 LIST ${opts.prefix}: HTTP ${res.status} ${body.slice(0, 200)}`);
+        return out;
+      }
+      const parsed = parseListObjectsV2(body);
+      for (const o of parsed.objects) {
+        if (o.key.startsWith(opts.prefix) && !keep.has(o.key) && o.lastModified.getTime() < cutoff) stale.push(o.key);
+      }
+      token = parsed.nextToken;
+      if (!token) break;
+    }
+  } catch (e) {
+    out.errors.push(`R2 LIST ${opts.prefix}: ${(e as Error).message}`);
+    return out;
+  }
+  for (const key of stale) {
+    try {
+      const res = await signedFetch(deps, config, "DELETE", key);
+      // S3 responde 204 ao DELETE (inclusive de objeto que já não existe).
+      if (res.ok) out.deleted.push(key);
+      else out.errors.push(`R2 DELETE ${key}: HTTP ${res.status}`);
+    } catch (e) {
+      out.errors.push(`R2 DELETE ${key}: ${(e as Error).message}`);
+    }
+  }
+  return out;
 }
 
 /**
  * PUT do arquivo no bucket e conferência da URL pública (HEAD 200 com o mesmo
  * tamanho). Lança em qualquer falha — o caller não enfileira Reels com URL que
  * a Graph não vai conseguir baixar.
+ *
+ * Se a key cai num prefixo de `R2_RETENTION_POLICIES` (#10923), depois do
+ * upload apaga os objetos velhos do prefixo (nunca o recém-enviado). Falha da
+ * limpeza só avisa.
  */
 export async function uploadToR2(
   deps: R2UploadDeps,
@@ -163,6 +302,14 @@ export async function uploadToR2(
   const len = head.headers.get("content-length");
   if (len !== null && Number(len) !== body.length) {
     throw new Error(`R2: ${url} serve ${len} bytes, o arquivo tem ${body.length} — upload incompleto ou cache velho`);
+  }
+
+  const policy = R2_RETENTION_POLICIES.find((p) => key.startsWith(p.prefix));
+  if (policy) {
+    const warn = deps.warn ?? ((m: string) => console.warn(m));
+    const pruned = await pruneR2Prefix(deps, config, { prefix: policy.prefix, maxAgeDays: policy.maxAgeDays, keep: [key] });
+    if (pruned.deleted.length) warn(`[r2] retenção ${policy.maxAgeDays}d (#10923): apagados ${pruned.deleted.length} objeto(s) de ${policy.prefix}`);
+    for (const e of pruned.errors) warn(`[r2] limpeza de retenção falhou (#10923, não bloqueia o upload): ${e}`);
   }
   return url;
 }
