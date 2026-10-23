@@ -8,7 +8,8 @@
  *
  * Decisões do editor que este módulo codifica (comentários do #10659,
  * 21/10/2026, 1º vídeo https://youtu.be/QRbXMprk9o0):
- *   - título `{título do D1} | diar.ia.br comentada #{N}`;
+ *   - título = título do D1, sem sufixo (decisão do editor, 22/10/2026: o
+ *     `| diar.ia.br comentada #{N}` do 1º vídeo saiu);
  *   - descrição = resumo do D1 + link da edição com UTM + CTA de
  *     assinatura `https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign={AAMMDD}`;
  *   - 6 tags; idioma pt-BR; "não é conteúdo para crianças";
@@ -132,14 +133,11 @@ export function deriveEpisodeNumber(aammdd: string, firstAammdd: string = YOUTUB
   return n;
 }
 
-/** Título `{D1} | diar.ia.br comentada #{N}`, truncando só a parte do D1 se passar de 100. */
-export function buildYouTubeTitle(d1Title: string, episode: number): string {
-  const suffix = ` | diar.ia.br comentada #${episode}`;
+/** Título = título do D1, sem sufixo, truncado com "…" se passar de 100 caracteres. */
+export function buildYouTubeTitle(d1Title: string): string {
   const base = sanitizeForYouTube(stripInlineMarkdown(d1Title).replace(/\s+/g, " ").trim());
-  const room = YOUTUBE_TITLE_MAX_CHARS - suffix.length;
   const chars = Array.from(base);
-  const head = chars.length <= room ? base : `${chars.slice(0, room - 1).join("").trimEnd()}…`;
-  return `${head}${suffix}`;
+  return chars.length <= YOUTUBE_TITLE_MAX_CHARS ? base : `${chars.slice(0, YOUTUBE_TITLE_MAX_CHARS - 1).join("").trimEnd()}…`;
 }
 
 /** Tamanho que a API contabiliza por tag: +2 quando tem espaço (aspas). */
@@ -210,9 +208,12 @@ export function buildYouTubeMetadata(input: YouTubeMetadataInput): YouTubeMetada
   if (!Number.isInteger(input.episode) || input.episode < 1) {
     throw new Error(`episódio inválido: ${input.episode}`);
   }
-  if (!input.d1.title.trim()) throw new Error("D1 sem título");
+  const title = buildYouTubeTitle(input.d1.title);
+  // Checa o RESULTADO: um título só de markdown ("** **") vira vazio depois do strip, e sem o sufixo
+  // antigo a API receberia `snippet.title` vazio.
+  if (!title) throw new Error("D1 sem título");
   return {
-    title: buildYouTubeTitle(input.d1.title, input.episode),
+    title,
     description: buildYouTubeDescription(input),
     tags: buildYouTubeTags(input.d1.category),
   };

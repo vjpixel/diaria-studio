@@ -153,7 +153,7 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
   let episode = input.episode;
   if (episode === undefined) {
     episode = deriveEpisodeNumber(input.aammdd);
-    premises.push(`episódio #${episode} derivado da cadência diária desde 261021 (passe --episode N se algum dia ficou sem vídeo)`);
+    premises.push(`episódio #${episode} derivado da cadência diária desde 261021 (só registro interno, não aparece no título; passe --episode N se algum dia ficou sem vídeo)`);
   }
 
   let editionUrl = input.editionUrl;
