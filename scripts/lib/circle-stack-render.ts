@@ -164,7 +164,9 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     blocks.push(`## Edições da semana`);
     // Um título por linha: a data (link da edição) em parágrafo próprio, os destaques em lista abaixo.
     for (const e of sel.weeklyEditions) {
-      blocks.push(`**${link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate))}**`);
+      // Sem negrito em volta: o conversor do webhook da Stack não reconhece link dentro de **…**
+      // e publica o Markdown cru (achado ao vivo, post de 23/10/2026).
+      blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate)));
       const titles = e.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter(Boolean);
       if (titles.length > 0) blocks.push(titles.map((t) => `- ${t}`).join("\n"));
     }

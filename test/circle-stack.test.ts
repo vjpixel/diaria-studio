@@ -178,9 +178,11 @@ describe("renderCircleStackPost", () => {
   });
 
   it("edições da semana: data com link em parágrafo próprio e um título por linha", () => {
-    const d = `**[13/10](${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})**`;
+    const d = `[13/10](${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})`;
     assert.ok(md.includes(`${d}\n\n- A\n- B\n- C`));
     assert.ok(!md.includes(" · "));
+    // Regressão: link dentro de negrito sai como Markdown cru no Circle da Stack.
+    assert.ok(!/\*\*\[[^\]]*\]\([^)]*\)\*\*/.test(md));
   });
 
   it("nunca usa seta (#9721)", () => {
