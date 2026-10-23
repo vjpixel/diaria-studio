@@ -26,6 +26,9 @@
  * este script exige `social/previsoes-2x1.jpg` (Etapa 6b da SKILL) — sem
  * ela, falha em vez de publicar o post das previsões sem imagem.
  */
+import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts";
+import type { ScheduledSlot } from "./lib/social-slot-planner.ts";
+import { localIsoAt } from "./lib/mensal/retrospectiva-schedule.ts";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
@@ -53,7 +56,8 @@ export function prepAnnualSocial(
   dir: string,
   start: Date,
   time = "09:00",
-): { days: { date: string; keys: string[]; slots: Record<string, string>; dir: string }[] } {
+  grid?: readonly ScheduledSlot[],
+): { days: { date: string; keys: string[]; slots: Record<string, string>; plannedSlots?: Record<string, Record<string, string>>; dir: string }[] } {
   const slug = basename(dir);
   const socialDir = join(dir, "social");
   const texts = parseAnnualSocialMd(readFileSync(join(socialDir, "03-social.md"), "utf8"));
@@ -84,8 +88,17 @@ export function prepAnnualSocial(
   };
 
   const days = planAnnualSocialDays(keys, start, time);
+  for (const day of days) {
+    const dayDir = join(socialDir, day.date);
+    const published = join(dayDir, "_internal", "06-social-published.json");
+    const live = existsSync(published) && JSON.parse(readFileSync(published, "utf8")).posts?.some(
+      (p: { status: string }) => ["scheduled", "published", "draft"].includes(p.status));
+    if (live) throw new Error(`lote ${day.date} já tem posts: preserve o plano existente; não replanejar`);
+  }
+  const plannedGrid = [...(grid ?? [])];
   const out = days.map((day) => {
     const dayDir = join(socialDir, day.date);
+    const plannedSlots: Record<string, Record<string, string>> = {};
     const titles = day.keys.map(titleOf);
     mkdirSync(join(dayDir, "_internal"), { recursive: true });
     writeFileSync(join(dayDir, "02-reviewed.md"), buildDayReviewedMd(titles, category));
@@ -93,6 +106,17 @@ export function prepAnnualSocial(
     writeFileSync(join(dayDir, "_internal", "01-approved-capped.json"), buildDayApprovedStub(titles));
     writeFileSync(join(dayDir, "_internal", "social-cover.json"), buildDayCoverJson(day, serie, texts.social, texts.slides));
     if (pageUrl) writeFileSync(join(dayDir, "_internal", "05-edition-url.txt"), `${pageUrl}\n`);
+    if (grid) {
+      for (const platform of ["linkedin", "instagram", "threads"]) {
+        const decisions = planDivulgacao(plannedGrid, Object.entries(day.slots).map(([key, at]) => ({
+          key, account: `${platform}:diaria`, preferredAt: localIsoAt(at.slice(0, 10), at.slice(11, 16)),
+        })));
+        plannedGrid.push(...decisions);
+        const slots = Object.fromEntries(decisions.map((d) => [d.key, d.at.slice(0, 16)]));
+        plannedSlots[platform] = slots;
+        writeFileSync(join(dayDir, "_internal", `social-slots-${platform}.json`), JSON.stringify({ edition: day.date, slots, decisions }, null, 2));
+      }
+    }
     writeFileSync(
       join(dayDir, "_internal", "social-slots.json"),
       JSON.stringify({ edition: day.date, slots: day.slots }, null, 2),
@@ -102,7 +126,7 @@ export function prepAnnualSocial(
       if (!existsSync(src)) throw new Error(`imagem ausente para ${k}: ${src}`);
       copyFileSync(src, join(dayDir, `04-d${i + 1}-2x1.jpg`));
     });
-    return { date: day.date, keys: day.keys, slots: day.slots, dir: dayDir };
+    return { date: day.date, keys: day.keys, slots: day.slots, ...(grid ? { plannedSlots } : {}), dir: dayDir };
   });
   writeFileSync(join(socialDir, "plan.json"), JSON.stringify({ days: out }, null, 2));
   return { days: out };
@@ -125,7 +149,13 @@ if (isMainModule(import.meta.url)) {
   try {
     const start = args.start ? parseAAMMDD(String(args.start)) : tomorrowBrt();
     const time = args.time ? String(args.time) : "09:00";
-    console.log(JSON.stringify(prepAnnualSocial(resolve("data/annual", slug), start, time), null, 2));
+    const config = JSON.parse(readFileSync(resolve("platform.config.json"), "utf8"));
+    // Load the entire series before writing preparation artifacts.
+    const texts = parseAnnualSocialMd(readFileSync(resolve("data/annual", slug, "social/03-social.md"), "utf8"));
+    const days = planAnnualSocialDays(orderAnnualSocialKeys(Object.keys(texts.social)), start, time);
+    const dates = days.flatMap((d) => Object.values(d.slots).map((at) => at.slice(0, 10)));
+    const grid = await loadDivulgacaoGrid(config, dates);
+    console.log(JSON.stringify(prepAnnualSocial(resolve("data/annual", slug), start, time, grid), null, 2));
   } catch (e) {
     console.error(`prep-annual-social: ${(e as Error).message}`);
     process.exit(1);

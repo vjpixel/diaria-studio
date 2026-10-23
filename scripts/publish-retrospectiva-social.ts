@@ -1,3 +1,4 @@
+import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts";
 /**
  * scripts/publish-retrospectiva-social.ts (#9500, #9508)
  *
@@ -260,7 +261,7 @@ export interface RunRetrospectivaSocialOptions {
   /** Título da história (capa) — do `draft.md`. */
   titles: Partial<Record<RetrospectivaHistoria, string | null>>;
   /** Agenda — resolvida só se algum post tiver trabalho (com tudo `done`, uma `--base-date` antiga não deve abortar). */
-  resolveScheduledAts: () => RetrospectivaPostSchedule;
+  resolveScheduledAts: (active?: readonly RetrospectivaPostKey[]) => RetrospectivaPostSchedule | Promise<RetrospectivaPostSchedule>;
   /** Gera (e fora do dry-run sobe) as imagens das histórias pedidas. Chamado só depois do pré-voo. */
   prepareImages: (historias: RetrospectivaHistoria[]) => Promise<Partial<Record<RetrospectivaHistoria, HistoriaImages>>>;
   /** `facebook:d{N}` = todas as páginas; `facebook@{slug}:d{N}` = só aquela (#10458). */
@@ -470,7 +471,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   let legacyResult: LegacyLinkedinResult = { action: "none" };
   if (active.length === 0) return { results, legacyLinkedin: legacyResult, verifyError: null, stateWriteErrors: [], warnings: [] };
 
-  const schedule = o.resolveScheduledAts();
+  const schedule = await o.resolveScheduledAts(active.map((u) => u.key));
   const clock = o.clock ?? (() => o.now ?? Date.now());
   const now = clock();
   const errors: string[] = [];
@@ -560,7 +561,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   const weekend = [0, 6].includes(new Date(`${day}T12:00:00Z`).getUTCDay());
   const slotsLabel = RETROSPECTIVA_HISTORIAS.map((h) => schedule[h].linkedin_pagina.slice(11, 16)).join("/");
   const daily = o.dailyEditionCheck?.(aammdd) ?? { dirExists: false, livePosts: 0 };
-  if (daily.livePosts > 0) {
+  if (daily.livePosts > 0 && active.some((u) => u.channel === "facebook" || u.channel === "x")) {
     errors.push(
       `dia ${day}: a edição diária ${aammdd} tem ${daily.livePosts} post(s) social(is) agendado(s)/publicado(s) nos mesmos slots ` +
         `(${slotsLabel}) — escolha outro dia (--base-date ou --at; sábado/domingo não têm edição)`,
@@ -959,23 +960,37 @@ async function main(): Promise<void> {
     rule: resolveMonthlySendSchedule(config.monthly_send_schedule),
   });
   let schedule: RetrospectivaPostSchedule | null = null;
-  const resolveScheduledAts = (): RetrospectivaPostSchedule => {
+  const resolveScheduledAts = async (active: readonly RetrospectivaPostKey[] = []): Promise<RetrospectivaPostSchedule> => {
     const s = resolveRetrospectivaPostScheduledAts(config, { at: values["at"], baseDate });
+    const grid = await loadDivulgacaoGrid(config, [s.d1.linkedin_pagina.slice(0, 10)]);
+    const requests = active.flatMap((key) => {
+      const { channel, historia } = splitPostKey(key);
+      const platform = channel === "linkedin_pagina" ? "linkedin" : channel;
+      return ["linkedin", "instagram", "threads"].includes(platform)
+        ? [{ key, account: `${platform}:diaria`, preferredAt: s[historia][channel] }] : [];
+    });
+    for (const d of planDivulgacao(grid, requests)) {
+      const { channel, historia } = splitPostKey(d.key as RetrospectivaPostKey);
+      s[historia][channel] = d.at;
+      console.error(`[planner #10819] ${d.key} ${d.at}: ${d.premise}`);
+    }
     schedule = s;
     let perfil: string;
     try {
       perfil = resolveRetrospectivaScheduledAts(config, { at: values["at"], baseDate }).perfil;
+      const personalGrid = await loadDivulgacaoGrid(config, [perfil.slice(0, 10)]);
+      perfil = planDivulgacao(personalGrid, [{ key: "perfil", account: "linkedin:pessoal", preferredAt: perfil }])[0].at;
     } catch (e) {
       perfil = `(não resolvido: ${(e as Error).message})`;
     }
     console.log(
-      `Agenda (#9508) — dia ${s.d1.linkedin_pagina.slice(0, 10)}, 5 redes no mesmo horário, slots da diária` +
+      `Agenda (#9508) — dia ${s.d1.linkedin_pagina.slice(0, 10)}, LinkedIn/Instagram/Threads pelo planner #10819; Facebook/X nos slots de referência` +
         (values["at"]
           ? " — dia tirado do --at"
           : baseDate
             ? ` — D+1 do envio em ${baseDate}${fromRule ? " (regra do 1º sábado, #9473)" : ""}`
             : " — D+1 de HOJE (regra do 1º sábado indisponível p/ este ciclo; passe --base-date com a data do envio do e-mail)") +
-        `:\n${RETROSPECTIVA_HISTORIAS.map((h) => `  ${h}: ${s[h].linkedin_pagina} (LinkedIn, Facebook, Instagram, Threads, X)`).join("\n")}` +
+        `:\n${RETROSPECTIVA_HISTORIAS.map((h) => `  ${h}: ${s[h].linkedin_pagina} (preferência; veja o scheduled_at por rede no JSON)`).join("\n")}` +
         `\n  linkedin_perfil (manual, 1 post só) = ${perfil}`,
     );
     return s;
