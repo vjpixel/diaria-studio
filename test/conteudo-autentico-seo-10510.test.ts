@@ -76,7 +76,7 @@ test("JSON-LD: parseável, com Course, FAQPage e BreadcrumbList e campos obrigat
   assert.equal(offer["@type"], "Offer");
   assert.match(offer.price, /^\d+\.\d{2}$/);
   assert.equal(offer.priceCurrency, "BRL");
-  assert.match(offer.priceValidUntil, /^\d{4}-\d{2}-\d{2}$/);
+  if (offer.priceValidUntil !== undefined) assert.match(offer.priceValidUntil, /^\d{4}-\d{2}-\d{2}$/);
   assert.match(offer.availability, /^https:\/\/schema\.org\/\w+$/);
 
   const crumbs = node(graph, "BreadcrumbList").itemListElement;
@@ -146,7 +146,7 @@ test("ficha da aula logo após o hero, com formato, liberação, acesso, preço,
   for (const dt of ["Formato", "Liberação", "Acesso", "Preço", "Garantia", "Requisitos"]) {
     assert.ok(block.includes(`<dt>${dt}</dt>`), `ficha sem ${dt}`);
   }
-  assert.ok(block.includes("22 de outubro de 2026"));
+  assert.ok(block.includes("Logo depois da compra"));
 });
 
 test("autor linka o LinkedIn e a página linka a home e a newsletter", () => {

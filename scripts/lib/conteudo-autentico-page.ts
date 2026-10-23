@@ -35,16 +35,15 @@ export const JSONLD_END = "<!-- #10510 jsonld:end -->";
 
 /** Oferta vigente. Preço vem da página (`extractVisiblePrice`); o resto é
  * constante porque a página não expõe em formato legível por máquina.
- * `availability` PreOrder: a aula em vídeo é liberada em 22/10/2026 e a
- * página vende em pré-venda até essa data (os materiais já saem na compra).
- * Trocar junto com o #10504. */
-export const OFFER = {
+ * `availability` InStock desde o fim da pré-venda (#10504): a aula em vídeo
+ * saiu em 22/10/2026 e tudo é liberado na compra. Sem `priceValidUntil`,
+ * porque o preço cheio não tem data para acabar. */
+export const OFFER: { priceCurrency: string; availability: string; priceValidUntil?: string } = {
   priceCurrency: "BRL",
-  priceValidUntil: "2026-10-22",
-  availability: "https://schema.org/PreOrder",
-} as const;
+  availability: "https://schema.org/InStock",
+};
 
-/** Liberação da aula em vídeo (ficha da aula e FAQ "Quando eu recebo o acesso?"). */
+/** Lançamento da aula em vídeo (`hasCourseInstance.startDate`). */
 export const COURSE_START_DATE = "2026-10-22";
 
 /** Nome completo usado na página ("Quem ensina"). `GEO_AUTHOR.name` ("Pixel")
@@ -128,7 +127,7 @@ export function buildConteudoAutenticoGraph(html: string): Record<string, unknow
         category: "Paid",
         price: extractVisiblePrice(html),
         priceCurrency: OFFER.priceCurrency,
-        priceValidUntil: OFFER.priceValidUntil,
+        ...(OFFER.priceValidUntil ? { priceValidUntil: OFFER.priceValidUntil } : {}),
         availability: OFFER.availability,
         url: PAGE_URL,
       },

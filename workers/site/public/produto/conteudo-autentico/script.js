@@ -3,8 +3,7 @@
 // os parâmetros da visita seguem para o checkout da Hotmart (src/sck mostram a
 // origem da venda; fbclid deixa o pixel do checkout reconhecer o clique no anúncio).
 
-// Pré-venda até 22/10: oferta ki06878w (R$ 39,90). Depois, volta para a lhwtb1jf (R$ 57).
-const CHECKOUT_URL = "https://pay.hotmart.com/U107768057V?off=ki06878w";
+const CHECKOUT_URL = "https://pay.hotmart.com/U107768057V?off=lhwtb1jf";
 
 // #10080: modo interno (?interno=1). O bootstrap inline do <head> define
 // window.__DIA_INTERNO__ antes do pixel e do GTM, que então nem carregam.
