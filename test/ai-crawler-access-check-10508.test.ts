@@ -187,6 +187,39 @@ describe("403 reais via GraphQL", () => {
     assert.equal(findings[0].contentSignature, "cursos.diar.ia.br:GPTBot,diar.ia.br:GPTBot,diar.ia.br:meta-externalagent");
   });
 
+  it("#10530: só 403 do formulário sem assinatura não gera issue nem e-mail", () => {
+    const s = summarizeAiCrawler403([
+      { count: 1, host: "formulario.diar.ia.br", userAgent: "GPTBot/1.1" },
+      { count: 1, host: "formulario.diar.ia.br", userAgent: "ClaudeBot/1.0" },
+    ]);
+    assert.equal(s.total, 0);
+    assert.deepEqual(s.byHostBot, []);
+    assert.equal(aiCrawler403ContentSignature(s), "");
+    assert.equal(hasPendingAiCrawlerFindings([], s), false);
+    assert.deepEqual(toAiCrawlerAlarmFindings([], s), []);
+    assert.deepEqual(buildAiCrawlerAlarmEmailLines([], s), []);
+  });
+
+  it("#10530: excluir formulário preserva 403 reais de outros hosts", () => {
+    const rows = [
+      { count: 2, host: "eia.diar.ia.br", userAgent: "GPTBot/1.1" },
+      { count: 3, host: "outro.diar.ia.br", userAgent: "ClaudeBot/1.0" },
+      { count: 4, host: "sub.formulario.diar.ia.br", userAgent: "GPTBot/1.1" },
+      { count: 50, host: "diar.ia.br", userAgent: "Amazonbot/0.1" },
+    ];
+    const expected = summarizeAiCrawler403(rows);
+    const actual = summarizeAiCrawler403([
+      ...rows,
+      { count: 10, host: "FORMULARIO.DIAR.IA.BR", userAgent: "ClaudeBot/1.0" },
+    ]);
+    assert.deepEqual(actual, expected);
+    assert.equal(actual.total, 9);
+    assert.equal(actual.intentionallyBlocked, 50);
+    assert.equal(hasPendingAiCrawlerFindings([], actual), true);
+    assert.deepEqual(toAiCrawlerAlarmFindings([], actual), toAiCrawlerAlarmFindings([], expected));
+    assert.deepEqual(buildAiCrawlerAlarmEmailLines([], actual), buildAiCrawlerAlarmEmailLines([], expected));
+  });
+
   it("só Amazonbot com 403 NÃO alarma (bloqueio intencional)", () => {
     const s = summarizeAiCrawler403([{ count: 80, host: "diar.ia.br", userAgent: "Amazonbot/0.1" }]);
     assert.equal(s.total, 0);
