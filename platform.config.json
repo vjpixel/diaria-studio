@@ -273,6 +273,11 @@
       "instagram": true,
       "instagram_author_page": "vjpixel",
       "instagram_collaborators": ["diar.ia.br"],
+      "instagram_api_max_seconds_by_account": {
+        "vjpixel": 40,
+        "diaria": 55
+      },
+      "instagram_api_max_seconds_note": "#10893/#10916: teto de duracao do Reels pela Content Publishing API, POR CONTA (a chave e o slug de instagram_author_page; diaria = autora null, a conta da diar.ia.br do env). Medido: @vjpixel aceita 40 s e recusa 42 s (22/10/2026); @diar.ia.br aceita 55 s e recusa 58 s (23/10/2026), sempre por duracao, nao por tamanho. Acima do teto o Instagram vira passo guiado no Chrome com a versao <=10 MB (#10915). Conta fora do mapa cai em instagram_api_max_seconds (legado, global) e depois em 40; null desliga o teto daquela conta. Lido por scripts/lib/diaria/short-video.ts (loadInstagramApiMaxSeconds).",
       "linkedin_profile": true,
       "linkedin_page_repost": true,
       "x": true,
