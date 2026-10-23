@@ -1,4 +1,4 @@
-import type { Env, QueueEntry, WebhookTarget, QueueAction } from "./index";
+import type { Env, QueueEntry, WebhookTarget, QueueAction, ReelsContainerRef } from "./index";
 import { FETCH_TIMEOUT_MS, CAROUSEL_MAX_ITEMS } from "./index";
 import { isUnsupportedCommentTarget } from "./guards";
 
@@ -78,7 +78,10 @@ export type FireOutcome =
   | { status: "fired" }
   /** Falha transitória — caller deve incrementar retry_count (ou, no caso do
    *  DO, apenas liberar o claim pro cron tentar de novo). */
-  | { status: "failed"; reason: string }
+  /** `reelsContainer` (#10922): container de Reels a retomar na próxima volta
+   *  — o caller grava na entry (`reels_container`). Ausente numa falha de Reels
+   *  = não há container retomável (a próxima volta cria outro). */
+  | { status: "failed"; reason: string; reelsContainer?: ReelsContainerRef }
   /** Falha de configuração/guard — não adianta re-tentar. Caller escreve DLQ
    *  direto (fire.ts) ou libera o claim sem postar (durable-object.ts, que
    *  não tem acesso a KV — o cron aplica o MESMO guard puro na próxima volta
@@ -576,7 +579,17 @@ async function pollInstagramContainerStatus(
   // mesma entry e o Reels sairia em dobro. Undefined = sem teto (carrossel,
   // cujo pior caso já cabe no TTL).
   deadlineMs?: number,
-): Promise<{ ok: true } | { ok: false; reason: string; permanent: boolean }> {
+  // #10954 self-review — container RETOMADO de uma volta anterior: a Graph
+  // recusando a consulta com 4xx (exceto 429) N vezes seguidas significa
+  // container desconhecido/inválido, não blip. O poll para e devolve
+  // `unknownContainer: true` pra o caller descartar o container. Undefined =
+  // 4xx segue transitório (container recém-criado, carrossel).
+  abortAfterConsecutiveClientErrors?: number,
+): Promise<
+  | { ok: true }
+  | { ok: false; reason: string; permanent: boolean; statusCode?: "ERROR" | "EXPIRED"; unknownContainer?: true }
+> {
+  let consecutiveClientErrors = 0;
   const deadline = deadlineMs === undefined ? Infinity : Date.now() + deadlineMs;
   const remaining = () => deadline - Date.now();
   const deadlineExceeded = () => ({
@@ -613,17 +626,35 @@ async function pollInstagramContainerStatus(
         continue;
       }
       if (!res.ok || data.error) {
+        const clientError = res.status >= 400 && res.status < 500 && res.status !== 429;
+        consecutiveClientErrors = clientError ? consecutiveClientErrors + 1 : 0;
+        if (
+          clientError &&
+          abortAfterConsecutiveClientErrors !== undefined &&
+          consecutiveClientErrors >= abortAfterConsecutiveClientErrors
+        ) {
+          return {
+            ok: false,
+            permanent: false,
+            unknownContainer: true,
+            reason:
+              `Instagram container recusado pela Graph (HTTP ${res.status} em ${consecutiveClientErrors} consultas seguidas): ` +
+              `${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
+          };
+        }
         console.warn(
           `[instagram-poll] HTTP ${res.status} na tentativa ${attempt}/${maxAttempts} (container_id=${containerId}): ${data.error?.message ?? text.slice(0, 200)} — tratado como transitório, tentando de novo.`,
         );
         await waitBeforeNext(attempt);
         continue;
       }
+      consecutiveClientErrors = 0;
       if (data.status_code === "FINISHED") return { ok: true };
       if (data.status_code === "ERROR" || data.status_code === "EXPIRED") {
         return {
           ok: false,
           permanent: true,
+          statusCode: data.status_code,
           reason: `Instagram container status_code=${data.status_code} (container_id=${containerId})`,
         };
       }
@@ -654,6 +685,12 @@ async function pollInstagramContainerStatus(
  * do cron. Esgotar NÃO é DLQ: vira `failed` e o retry normal cria um container
  * novo na próxima volta (container não publicado não aparece pra ninguém). */
 export const REELS_POLL_MAX_ATTEMPTS = 36;
+
+/** #10954 self-review — consultas de status do container RETOMADO que a Graph
+ * recusa com 4xx (exceto 429) em sequência antes de o container ser dado como
+ * desconhecido e descartado. 3, e não 1, pra um 400 isolado não jogar fora um
+ * container que ainda processava. */
+export const REELS_RESUMED_CONTAINER_MAX_CLIENT_ERRORS = 3;
 export const REELS_POLL_INTERVAL_MS = 5000;
 /** #10856 self-review — teto TOTAL de tempo de parede do poll do Reels.
  * Somado ao fetch de criação do container e ao de `media_publish` (até
@@ -792,6 +829,12 @@ async function fireInstagramReels(
     return { status: "dlq", reason: "Instagram Reels: video_url ausente" };
   }
   const base = `https://graph.facebook.com/${creds.apiVersion}`;
+  // #10922 — container de uma volta anterior que ainda serve: a volta retoma o
+  // processamento dele em vez de criar outro. Toda falha desta volta devolve o
+  // container em uso (`reelsContainer`) pra próxima volta seguir dele.
+  let container: ReelsContainerRef | null = resumableReelsContainer(entry.reels_container, Date.now());
+  const fail = (reason: string): FireOutcome =>
+    container ? { status: "failed", reason, reelsContainer: container } : { status: "failed", reason };
 
   // #10877 — antes de criar container novo, confere se uma volta anterior já
   // publicou este Reels (media_publish que estourou o tempo mas saiu). Roda em
@@ -815,7 +858,7 @@ async function fireInstagramReels(
     if (prior.transient) {
       // Sem saber se já saiu, não publica: falha transitória na consulta vira
       // retry normal (custa uma volta do cron; o Reels em dobro não tem desfazer).
-      return { status: "failed", reason: `Instagram Reels: dedup inconclusivo, não publica nesta volta — ${prior.reason}` };
+      return fail(`Instagram Reels: dedup inconclusivo, não publica nesta volta — ${prior.reason}`);
     }
     // Recusa da Graph (4xx, ex.: token sem permissão de leitura): repetir dá o
     // mesmo erro e travaria todo Reels na DLQ. Segue sem a 1ª rede; a conferência
@@ -823,45 +866,52 @@ async function fireInstagramReels(
     console.warn(`[instagram-reels] dedup indisponível (${prior.reason}) — publicando sem a busca prévia (#10877).`);
   }
 
-  let containerId: string;
-  try {
-    const params = new URLSearchParams({
-      media_type: "REELS",
-      video_url: entry.video_url,
-      caption: entry.text,
-      share_to_feed: "true",
-      access_token: creds.accessToken,
-    });
-    if (entry.collaborators && entry.collaborators.length > 0) {
-      params.set("collaborators", JSON.stringify(entry.collaborators));
-    }
-    const res = await fetch(`${base}/${creds.igUserId}/media`, {
-      method: "POST",
-      body: params,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let data: { id?: string; error?: { message?: string } };
+  const resumed = container !== null;
+  if (container) {
+    console.log(
+      `[instagram-reels] retomando o container ${container.id} criado em ${container.created_at}, sem criar outro (#10922).`,
+    );
+  } else {
     try {
-      data = JSON.parse(text);
-    } catch {
-      return { status: "failed", reason: `Instagram Reels /media resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+      const params = new URLSearchParams({
+        media_type: "REELS",
+        video_url: entry.video_url,
+        caption: entry.text,
+        share_to_feed: "true",
+        access_token: creds.accessToken,
+      });
+      if (entry.collaborators && entry.collaborators.length > 0) {
+        params.set("collaborators", JSON.stringify(entry.collaborators));
+      }
+      const res = await fetch(`${base}/${creds.igUserId}/media`, {
+        method: "POST",
+        body: params,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      const text = await res.text();
+      let data: { id?: string; error?: { message?: string } };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return { status: "failed", reason: `Instagram Reels /media resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+      }
+      if (!res.ok || data.error) {
+        return {
+          status: "failed",
+          reason: `Instagram Reels /media HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
+        };
+      }
+      if (!data.id) {
+        return { status: "failed", reason: `Instagram Reels /media sem id: ${text.slice(0, 200)}` };
+      }
+      container = { id: data.id, created_at: new Date().toISOString() };
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      return { status: "failed", reason: `Instagram Reels /media fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
     }
-    if (!res.ok || data.error) {
-      return {
-        status: "failed",
-        reason: `Instagram Reels /media HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
-      };
-    }
-    if (!data.id) {
-      return { status: "failed", reason: `Instagram Reels /media sem id: ${text.slice(0, 200)}` };
-    }
-    containerId = data.id;
-  } catch (e) {
-    const err = e as Error;
-    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return { status: "failed", reason: `Instagram Reels /media fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
   }
+  const containerId = container.id;
 
   const poll = await pollInstagramContainerStatus(
     base,
@@ -870,9 +920,29 @@ async function fireInstagramReels(
     REELS_POLL_MAX_ATTEMPTS,
     pollIntervalMs,
     pollDeadlineMs,
+    resumed ? REELS_RESUMED_CONTAINER_MAX_CLIENT_ERRORS : undefined,
   );
   if (!poll.ok) {
-    return { status: poll.permanent ? "dlq" : "failed", reason: `Instagram Reels: ${poll.reason}` };
+    // #10922 — container retomado que expirou não condena o vídeo: a próxima
+    // volta cria outro (sem `reelsContainer`). ERROR segue DLQ (o arquivo não serve).
+    if (poll.permanent && resumed && poll.statusCode === "EXPIRED") {
+      return { status: "failed", reason: `Instagram Reels: container retomado expirou, a próxima volta cria outro — ${poll.reason}` };
+    }
+    // #10954 self-review — container retomado que a Graph não reconhece mais
+    // (4xx seguidos): descartá-lo, senão toda volta insiste nele até a DLQ.
+    if (resumed && poll.unknownContainer) {
+      return { status: "failed", reason: `Instagram Reels: container retomado recusado, a próxima volta cria outro — ${poll.reason}` };
+    }
+    if (poll.permanent) return { status: "dlq", reason: `Instagram Reels: ${poll.reason}` };
+    return fail(`Instagram Reels: ${poll.reason}`);
+  }
+  // #10922 — medição do tempo real de processamento da Meta (`wrangler tail`).
+  const processedMs = Date.now() - Date.parse(container.created_at);
+  if (!Number.isNaN(processedMs)) {
+    console.log(
+      `[instagram-reels] container ${containerId} FINISHED ${Math.round(processedMs / 1000)} s depois de criado` +
+        `${resumed ? " (retomado de volta anterior)" : ""} (#10922).`,
+    );
   }
 
   const publishFailure = await publishReelsContainer(base, creds, containerId);
@@ -886,7 +956,41 @@ async function fireInstagramReels(
     );
     return { status: "fired" };
   }
-  return { status: "failed", reason: `Instagram Reels /media_publish ${publishFailure} (container_id=${containerId})` };
+  // #10922 — o container FINISHED segue valendo: a próxima volta só publica.
+  return fail(`Instagram Reels /media_publish ${publishFailure} (container_id=${containerId})`);
+}
+
+/** #10922 — idade máxima do container retomado. A Graph expira o container em
+ * 24 h; com 1 h de folga a volta nunca aposta num container prestes a expirar. */
+export const REELS_CONTAINER_RESUME_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+
+/**
+ * #10922 — o container gravado na entry ainda pode ser retomado? Formato
+ * inválido, data ilegível, no futuro (relógio) ou mais velho que
+ * `REELS_CONTAINER_RESUME_MAX_AGE_MS` → `null` (a volta cria outro).
+ */
+export function resumableReelsContainer(ref: unknown, nowMs: number): ReelsContainerRef | null {
+  if (!ref || typeof ref !== "object") return null;
+  const { id, created_at } = ref as Partial<ReelsContainerRef>;
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id) || typeof created_at !== "string") return null;
+  const t = Date.parse(created_at);
+  if (Number.isNaN(t)) return null;
+  const age = nowMs - t;
+  if (age < -5 * 60_000 || age > REELS_CONTAINER_RESUME_MAX_AGE_MS) return null;
+  return { id, created_at };
+}
+
+/**
+ * #10922 — junta o container da entry do KV com o guardado no DO (o alarm
+ * grava lá; o cron lê a entry do KV). O mais recente vence: depois de um
+ * container expirado o cron cria outro e o do DO fica para trás.
+ */
+export function pickReelsContainer(a: unknown, b: unknown, nowMs: number): ReelsContainerRef | null {
+  const ra = resumableReelsContainer(a, nowMs);
+  const rb = resumableReelsContainer(b, nowMs);
+  if (!ra) return rb;
+  if (!rb) return ra;
+  return Date.parse(rb.created_at) > Date.parse(ra.created_at) ? rb : ra;
 }
 
 /** POST /media_publish do container de Reels. `null` = publicado (com id);
