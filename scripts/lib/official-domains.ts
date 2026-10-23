@@ -78,6 +78,15 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
       // .../claude-now-works-in-google-docs-sheets-and-slides). Só /articles/
       // — /resources/ solto, /product/*, /news e /release-notes seguem fora.
       /^claude\.com\/resources\/articles\//,
+      // #10952 (ferramentas dos cursos da Stack): changelog oficial do Claude
+      // Code. Só a página do changelog — o resto de code.claude.com/docs é
+      // documentação evergreen, não lançamento.
+      /^code\.claude\.com\/docs\/[a-z-]+\/changelog\/?$/,
+      // #10952: repo da org oficial no GitHub (raiz ou página de UMA release de
+      // tag estável) — é o link que o feed `Claude Code Releases`
+      // (github.com/anthropics/claude-code/releases.atom) traz. Mesmo recorte
+      // de Qwen/DeepSeek/xAI (#9424): issues/PRs/blobs não contam.
+      githubOrgRepoPattern("anthropics"),
     ],
     detection_keywords: /\b(anthropic|claude)\b/i,
     primary_domain: "anthropic.com",
@@ -162,6 +171,50 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     path_patterns: [/^(www\.)?langchain\.com\/blog\//],
     detection_keywords: /\b(langchain|langgraph|langsmith)\b/i,
     primary_domain: "langchain.com",
+  },
+  // #10952: ferramentas ensinadas nos cursos da Stack (stack.com.br/#cursos,
+  // lista conferida em 22/10/2026 — Lovable, Cursor, Claude Code, n8n,
+  // Replit; Claude Code está na entry da Anthropic acima). Os cursos mudam:
+  // reconferir a página e manter esta lista em par com `seed/sources.csv`.
+  // Todas path-restricted: os hosts têm app, pricing, login e docs
+  // evergreen, então só blog e changelog contam como lançamento.
+  {
+    company: "Lovable",
+    path_patterns: [
+      /^lovable\.dev\/blog\//,
+      /^docs\.lovable\.dev\/changelog\/?$/,
+    ],
+    detection_keywords: /\blovable\b/i,
+    primary_domain: "lovable.dev",
+  },
+  {
+    company: "Cursor (Anysphere)",
+    path_patterns: [/^cursor\.com\/(blog|changelog)\//],
+    // "cursor" sozinho é palavra comum (cursor do mouse, cursor de banco):
+    // só a marca qualificada ou a empresa.
+    detection_keywords: /\b(cursor (ai|ide|editor)|anysphere)\b/i,
+    primary_domain: "cursor.com",
+  },
+  {
+    company: "n8n",
+    path_patterns: [
+      /^blog\.n8n\.io\//,
+      /^docs\.n8n\.io\/(changelog\/)?release-notes\/?$/,
+    ],
+    detection_keywords: /\bn8n\b/i,
+    primary_domain: "n8n.io",
+  },
+  {
+    company: "Replit",
+    path_patterns: [
+      /^replit\.com\/blog\//,
+      // blog.replit.com redireciona pra replit.com/blog, mas links antigos
+      // e coberturas de imprensa ainda usam o host antigo.
+      /^blog\.replit\.com\//,
+      /^docs\.replit\.com\/updates\//,
+    ],
+    detection_keywords: /\breplit\b/i,
+    primary_domain: "replit.com",
   },
 
   // -----------------------------------------------------------------------

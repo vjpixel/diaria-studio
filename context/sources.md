@@ -1,6 +1,6 @@
 # Fontes cadastradas — diar.ia.br
 
-**Total:** 54 fontes (15 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 62 fontes (15 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -112,6 +112,45 @@
 ### Anthropic
 - URL: https://www.anthropic.com/news/
 - Site query: `site:anthropic.com/news`
+
+### Claude Code Releases
+- URL: https://code.claude.com/docs/en/changelog
+- Site query: `site:code.claude.com`
+- RSS: https://github.com/anthropics/claude-code/releases.atom
+- Topic filter: Added
+
+### Lovable Blog
+- URL: https://lovable.dev/blog
+- Site query: `site:lovable.dev`
+- RSS: https://lovable.dev/blog/rss.xml
+
+### Lovable Changelog
+- URL: https://docs.lovable.dev/changelog
+- Site query: `site:docs.lovable.dev`
+- RSS: https://docs.lovable.dev/changelog/rss.xml
+
+### Cursor Blog
+- URL: https://cursor.com/blog
+- Site query: `site:cursor.com/blog`
+
+### Cursor Changelog
+- URL: https://cursor.com/changelog
+- Site query: `site:cursor.com/changelog`
+- RSS: https://cursor.com/changelog/rss.xml
+
+### n8n Blog
+- URL: https://blog.n8n.io/
+- Site query: `site:blog.n8n.io`
+- RSS: https://blog.n8n.io/rss/
+
+### Replit Blog
+- URL: https://replit.com/blog
+- Site query: `site:replit.com`
+- RSS: https://replit.com/blog/feed.xml
+
+### Replit Changelog
+- URL: https://docs.replit.com/updates
+- Site query: `site:docs.replit.com`
 
 ### Flavio Macknight Pies
 - URL: https://flaviomacknightpies.substack.com

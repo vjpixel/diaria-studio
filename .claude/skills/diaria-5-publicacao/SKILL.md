@@ -130,6 +130,20 @@ ao ar. Pra excluir um canal desta edição, rode de novo com
 threads, twitter, brevo, kit).
 ```
 
+## Passo 0b — Aviso de vídeo do D1 (#10943, aviso, não gate)
+
+Fluxo ideal desde 22/10/2026: `/diaria-edicao` → `/diaria-youtube` → `/diaria-shorts` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). Antes do dispatch, conferir se o vídeo do dia já passou pelo `/diaria-youtube`:
+
+```bash
+npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DIR}
+```
+
+- `status: "link-ready"` → `_internal/05-video-url.txt` existe; o Stage 5 põe o link no D1 de X, Threads e Facebook. Seguir.
+- `status: "no-video"` ou `"video-without-link"` → mostrar ao editor a linha `[aviso]` do stderr (o D1 sairá **sem** o link do vídeo; no 2º caso, o comando `link-video-d1.ts` que libera o link) e **seguir com o dispatch sem esperar resposta**. Não é gate: o vídeo pode ainda não existir, e a Etapa 5 nunca para por isso.
+- Exit != 0 (uso inválido, erro inesperado) → logar warn e seguir.
+
+Não rodar `/diaria-youtube` nem `/diaria-shorts` daqui — são skills standalone que o editor invoca.
+
 ## O que faz
 
 Você (top-level Claude Code) **lê `.claude/agents/orchestrator-stage-5.md` como playbook e executa diretamente**.

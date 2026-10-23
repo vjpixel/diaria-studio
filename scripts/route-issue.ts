@@ -44,6 +44,11 @@
  * as duas issues corrigiram); opcional pros demais tracks. `--until` só é
  * aceito (e exigido) com `--track agendada`.
  *
+ * `--until AAAA-MM-DD` é um dia do calendário de Brasília (America/Sao_Paulo,
+ * #10947): a issue volta à fila à meia-noite BRT desse dia. Às 22:30 BRT de
+ * 22/10, `--until 2026-10-23` agenda pra "amanhã cedo" (antes do #10947 a
+ * data era UTC e já tinha começado). Data que já começou em BRT é recusada.
+ *
  * ## `--track bloqueada` grava o marcador `bloqueio-execucao` (#7270)
  *
  * Toda vez que `--track bloqueada` roteia com sucesso, o comentário
@@ -146,7 +151,13 @@ import {
   type RouteMotivo,
   type RouteTrack,
 } from "./lib/issue-route.ts";
-import { classifyExecTrack } from "./lib/issue-exec-track.ts";
+import {
+  classifyExecTrack,
+  classifyExecTrackWithRule,
+  WAIT_UNTIL_TIMEZONE,
+  waitUntilDayStartMs,
+  waitUntilYmdAt,
+} from "./lib/issue-exec-track.ts";
 import {
   clearWaitUntilMarkerOnIssue,
   computeWaitUntilMarkerDate,
@@ -362,6 +373,15 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     }
   }
 
+  // #10947 — `--until` é um dia do calendário de Brasília: o marcador desarma
+  // à meia-noite BRT dessa data (`parseWaitUntil`). Data inválida ou que já
+  // começou em BRT é recusada aqui, com a causa real, em vez de cair no
+  // dry-run abaixo com a mensagem genérica de "outra label tem precedência".
+  if (track === "agendada") {
+    const untilError = validateUntilForAgendada(until as string, now);
+    if (untilError) return failResult(untilError);
+  }
+
   const fetchedBefore = fetchIssueState(issue, cwd, ghRun);
   if (!fetchedBefore.ok) {
     return failResult(`falha ao ler estado da issue ${issueLabel}: ${fetchedBefore.error}`);
@@ -427,12 +447,13 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     projectedBody = removeWaitUntilMarker(projectedBody);
   }
   const dryRunExpectedTrack = vagueDeferralUntilIso ? "agendada" : track;
-  const dryRunTrack = classifyExecTrack({
+  const dryRun = classifyExecTrackWithRule({
     labels: projectedLabels,
     body: projectedBody,
     state: fetchedBefore.data.state,
     now,
   });
+  const dryRunTrack = dryRun.track;
   if (dryRunTrack !== dryRunExpectedTrack) {
     return {
       ok: false,
@@ -445,7 +466,7 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
       error:
         `recusado (dry-run pré-escrita, #8230): aplicar --track ${track} na issue ${issueLabel} resultaria em ` +
         `classifyExecTrack devolvendo "${dryRunTrack}" ≠ "${dryRunExpectedTrack}" — nenhuma label, marcador ou ` +
-        `comentário foi escrito. Causa provável: outra label já presente na issue tem precedência mais alta ` +
+        `comentário foi escrito. Regra que venceu: ${describeMatchedRule(dryRun.matched)} — tem precedência ` +
         `sobre "${track}" (ver a docstring de precedência de classifyExecTrackWithRule em issue-exec-track.ts). ` +
         `Remova/ajuste essa label primeiro, ou roteie pro track que classifyExecTrack de fato produziria.`,
     };
@@ -491,7 +512,9 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   }
 
   // Passo 3 — comentário com dedup.
-  const autoDeferUntilYmd = vagueDeferralUntilIso ? vagueDeferralUntilIso.slice(0, 10) : undefined;
+  // Mesma data que o marcador recebeu (dia BRT arredondado pra cima, #10947)
+  // — o `slice` do ISO UTC podia citar no comentário um dia diferente.
+  const autoDeferUntilYmd = vagueDeferralUntilIso ? computeWaitUntilMarkerDate(vagueDeferralUntilIso) : undefined;
   // #7270 — `track === "bloqueada"` sempre embute o marcador
   // `bloqueio-execucao` (motivo + condição de desbloqueio) no MESMO
   // comentário do roteamento — ver docstring de `buildCommentBody`.
@@ -598,6 +621,39 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     validated: true,
     resolvedTrack,
   };
+}
+
+/**
+ * #10947 — valida `--until` de `--track agendada` contra `now` no calendário
+ * de Brasília. Devolve a mensagem de erro, ou `null` se a data serve.
+ * Exportada pra teste.
+ */
+export function validateUntilForAgendada(until: string, now: Date): string | null {
+  let ymd: string;
+  try {
+    ymd = computeWaitUntilMarkerDate(until);
+  } catch (err) {
+    return `--until inválido: ${(err as Error).message}`;
+  }
+  const disarmMs = waitUntilDayStartMs(ymd);
+  if (disarmMs === null) return `--until inválido: ${JSON.stringify(until)}`;
+  if (disarmMs <= now.getTime()) {
+    return (
+      `--until ${until} recusado: o marcador desarma à meia-noite de Brasília (${WAIT_UNTIL_TIMEZONE}) de ${ymd}, ` +
+      `e esse dia já começou em BRT (hoje é ${waitUntilYmdAt(now.getTime())}) — a issue nunca ficaria agendada. ` +
+      `Use uma data posterior.`
+    );
+  }
+  return null;
+}
+
+/** `matched` de `classifyExecTrackWithRule` em texto pra mensagem de recusa
+ * (#10947: a recusa não dizia qual label venceu). */
+function describeMatchedRule(matched: string): string {
+  if (matched.startsWith("label:")) return `label \`${matched.slice("label:".length)}\``;
+  if (matched === "marker:aguardando-ate") return "marcador `aguardando-ate:` com data futura";
+  if (matched === "state:closed") return "issue fechada";
+  return `regra \`${matched}\``;
 }
 
 function failResult(error: string): RouteIssueResult {

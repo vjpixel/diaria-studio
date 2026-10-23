@@ -555,9 +555,16 @@ const DEVELOP_HUMAN_BLOCK_LABEL = "develop-track";
  *
  * Diferente das labels de deferimento vago, este **desarma sozinho** — passada
  * a data, a issue volta ao fluxo normal sem ninguém precisar remover label.
- * Data-só (sem hora) é intencional: a granularidade útil aqui é o dia, e
- * comparar em UTC evita que a issue reapareça/desapareça conforme o fuso de
- * quem abriu a Triagem.
+ * Data-só (sem hora) é intencional: a granularidade útil aqui é o dia.
+ *
+ * **A data é um dia do calendário de Brasília (America/Sao_Paulo), não de
+ * UTC (#10947).** O marcador desarma à meia-noite BRT do dia informado
+ * (`03:00Z` com o UTC-3 atual). Até o #10947 era meia-noite UTC — 21:00 BRT
+ * da véspera —, então a partir das 21:00 BRT "amanhã" já era "hoje" em UTC e
+ * `route-issue.ts --track agendada --until {amanhã}` era recusado: não dava
+ * para agendar à noite uma checagem de "amanhã cedo". O fuso é fixo no
+ * código (nunca o do processo), então a issue não reaparece/desaparece
+ * conforme a máquina de quem abriu a Triagem.
  *
  * Mecanismo exclusivo de `agendada` (#5682) — não existe outro sinal de
  * entrada. Uma data futura aqui vence deferimento vago (`not-this-week`,
@@ -616,17 +623,58 @@ export interface ExecTrackInput {
 export function parseWaitUntil(body: string | null | undefined): Date | null {
   const m = WAIT_UNTIL_RE.exec(body ?? "");
   if (!m) return null;
-  const ymd = m[1];
-  const parsed = new Date(`${ymd}T00:00:00Z`);
-  if (Number.isNaN(parsed.getTime())) return null;
+  const startMs = waitUntilDayStartMs(m[1]);
+  return startMs === null ? null : new Date(startMs);
+}
+
+/** Fuso do calendário do marcador `aguardando-ate:` (#10947). */
+export const WAIT_UNTIL_TIMEZONE = "America/Sao_Paulo";
+
+/** Offset (ms) do fuso do marcador no instante dado: hora local − UTC. */
+function waitUntilTzOffsetMs(instantMs: number): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: WAIT_UNTIL_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(instantMs));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+  const localAsUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return localAsUtc - Math.floor(instantMs / 1000) * 1000;
+}
+
+/**
+ * Instante (ms) em que começa o dia `AAAA-MM-DD` no fuso do marcador
+ * (meia-noite BRT), ou `null` se a string não for uma data de calendário
+ * real. Fonte única do instante de desarme — `parseWaitUntil` (leitura) e
+ * `computeWaitUntilMarkerDate`/`route-issue.ts` (escrita) usam esta mesma
+ * conversão (#10947).
+ */
+export function waitUntilDayStartMs(ymd: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const utcMidnight = Date.parse(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(utcMidnight)) return null;
   // `Number.isNaN` sozinho NÃO basta: a regex aceita dia 01-31 em qualquer
   // mês, e o `Date` do V8 não rejeita dia inexistente — faz rollover mudo
   // (`2026-02-30` → 2026-03-02, `2026-04-31` → 2026-05-01). Sem esta
   // checagem, o editor escreve uma data pensando "até o fim de fevereiro" e o
   // sistema usa outra, 1-2 dias à frente, sem erro em lugar nenhum. Bater o
   // valor parseado de volta contra o texto pega exatamente esse caso.
-  if (parsed.toISOString().slice(0, 10) !== ymd) return null;
-  return parsed;
+  if (new Date(utcMidnight).toISOString().slice(0, 10) !== ymd) return null;
+  // Meia-noite local = meia-noite UTC − offset. O offset é medido perto do
+  // resultado (não na meia-noite UTC, que em BRT ainda é a véspera) pra ficar
+  // certo também se o fuso voltar a ter horário de verão.
+  const guess = utcMidnight - waitUntilTzOffsetMs(utcMidnight);
+  return utcMidnight - waitUntilTzOffsetMs(guess);
+}
+
+/** Dia do calendário (`AAAA-MM-DD`) do fuso do marcador para um instante. */
+export function waitUntilYmdAt(instantMs: number): string {
+  return new Date(instantMs + waitUntilTzOffsetMs(instantMs)).toISOString().slice(0, 10);
 }
 
 /**

@@ -75,7 +75,7 @@ describe("computeWaitUntilMarkerDate — nunca arredonda pra antes do until real
     assert.equal(computeWaitUntilMarkerDate("2026-08-21T00:00:00.000Z"), "2026-08-21");
   });
 
-  it("propriedade: Date(marker + T00:00:00Z) nunca é anterior ao until real", () => {
+  it("propriedade: a meia-noite BRT do marcador (parseWaitUntil) nunca é anterior ao until real", () => {
     const samples = [
       "2026-08-21T09:00:00.000Z",
       "2026-01-01T00:00:00.001Z",
@@ -84,7 +84,8 @@ describe("computeWaitUntilMarkerDate — nunca arredonda pra antes do until real
     ];
     for (const iso of samples) {
       const ymd = computeWaitUntilMarkerDate(iso);
-      const markerMs = Date.parse(`${ymd}T00:00:00Z`);
+      // Instante em que `classifyExecTrack` desarma o marcador (#10947).
+      const markerMs = parseWaitUntil(`<!-- aguardando-ate: ${ymd} -->`)?.getTime() ?? Number.NaN;
       assert.ok(
         markerMs >= Date.parse(iso),
         `marcador ${ymd} (${markerMs}) ficou ANTES do until real ${iso} (${Date.parse(iso)})`,
