@@ -559,7 +559,7 @@ describe("#10618 fatia 4 (review J/L) — repo do PR nos gates de merge", () => 
   it("check-pr-checks-gate --repo design (caminho válido): gh pr view com -R do design → pass", () => {
     const root = tmpRepoRoot();
     const { env, calls } = fakeGh(root, {
-      [`pr_view_${DESIGN}_23_statusCheckRollup,mergeable,commits`]: PASS_PAYLOAD,
+      [`pr_view_${DESIGN}_23_statusCheckRollup,mergeable,commits,mergeStateStatus`]: PASS_PAYLOAD,
     });
     const r = runCli(root, env, "check-pr-checks-gate.ts", ["--pr", "23", "--repo", DESIGN]);
     assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -569,10 +569,27 @@ describe("#10618 fatia 4 (review J/L) — repo do PR nos gates de merge", () => 
     assert.deepEqual(c.slice(c.indexOf("-R"), c.indexOf("-R") + 2), ["-R", DESIGN]);
   });
 
+  it("check-pr-checks-gate (#10928): pass com BLOCKED → linha merge-state com as threads lidas no repo DO PR, exit 0", () => {
+    const root = tmpRepoRoot();
+    const { env, calls } = fakeGh(root, {
+      [`pr_view_${DESIGN}_23_statusCheckRollup,mergeable,commits,mergeStateStatus`]: { ...PASS_PAYLOAD, mergeStateStatus: "BLOCKED" },
+      api_graphql_default_list_: {
+        data: { repository: { pullRequest: { reviewThreads: { nodes: [{ isResolved: false }, { isResolved: true }] } } } },
+      },
+    });
+    const r = runCli(root, env, "check-pr-checks-gate.ts", ["--pr", "23", "--repo", DESIGN]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.stdout, /verdict=pass/);
+    assert.match(r.stdout, /merge-state: mergeStateStatus=BLOCKED.*1 thread\(s\) de review não resolvida\(s\)/);
+    const gql = calls().find((c) => c[0] === "api");
+    assert.ok(gql, "consultou as threads");
+    assert.ok(gql.includes("owner=vjpixel") && gql.includes("name=diaria-design") && gql.includes("pr=23"), JSON.stringify(gql));
+  });
+
   it("check-pr-checks-gate --issue design#21: repo do PR derivado da issue (sem --repo)", () => {
     const root = tmpRepoRoot();
     const { env, calls } = fakeGh(root, {
-      [`pr_view_${DESIGN}_23_statusCheckRollup,mergeable,commits`]: PASS_PAYLOAD,
+      [`pr_view_${DESIGN}_23_statusCheckRollup,mergeable,commits,mergeStateStatus`]: PASS_PAYLOAD,
     });
     const r = runCli(root, env, "check-pr-checks-gate.ts", ["--pr", "23", "--issue", `${DESIGN}#21`]);
     assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -1057,6 +1074,41 @@ describe("#10618 fatia 4 — painel /triagem lê todos os repos de issue_repos",
       data.issues.map((i) => [i.ref ?? `#${i.number}`, i.title]),
       [["#21", "studio"], [`${DESIGN}#21`, "design"]],
     );
+  });
+
+  it("#10901: repo extra fica no cache próprio (TTL 5 min) — refresh do painel não repete as 2 chamadas do design", () => {
+    clearTriageCache();
+    const root = tmpRepoRoot();
+    const seen: string[][] = [];
+    let designFails = false;
+    const run: GhRunFn = (args) => {
+      seen.push(args);
+      const isDesign = args.includes("-R");
+      if (isDesign && designFails) return { status: 1, stdout: "", stderr: "boom" };
+      if (args[0] === "issue") {
+        return {
+          status: 0,
+          stdout: JSON.stringify([{ number: 21, title: isDesign ? "design" : "studio", url: "u", state: "OPEN", labels: [], body: "" }]),
+          stderr: "",
+        };
+      }
+      return { status: 0, stdout: "[]", stderr: "" };
+    };
+    const designCalls = () => seen.filter((a) => a.includes("-R")).length;
+    fetchTriageData(root, { run, now: () => 1000 });
+    assert.equal(designCalls(), 2);
+    // Painel expirou (TTL 60s), o design não (5 min): só o studio é rebuscado.
+    const second = fetchTriageData(root, { run, now: () => 1000 + 61_000 });
+    assert.equal(designCalls(), 2, "design servido do cache próprio");
+    assert.ok(second.issues.some((i) => i.ref === `${DESIGN}#21`), "issue do design continua no painel");
+    // Passados 5 min, o design volta a ser buscado; falha nunca é cacheada.
+    designFails = true;
+    const third = fetchTriageData(root, { run, now: () => 1000 + 5 * 60_000 + 1 });
+    assert.equal(designCalls(), 3);
+    assert.equal(third.repoErrors?.length, 1);
+    designFails = false;
+    fetchTriageData(root, { run, now: () => 1000 + 5 * 60_000 + 62_000 });
+    assert.equal(designCalls(), 5, "falha não cacheada: rebusca no refresh seguinte");
   });
 
   it("attachClaims: claim do design (claimed_foreign_issues) cai na design#21, nunca na studio#21", () => {

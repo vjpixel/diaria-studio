@@ -138,6 +138,22 @@ npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas  # varre também on-ho
 npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos (números DAQUELE repo; re-rotear com route-issue.ts --issue owner/repo#N)
 ```
 
+**Toda ação sobre uma issue usa o `ref` que o scan devolve, nunca o número
+pelado (#10935).** Cada candidata do relatório traz `ref` (`owner/repo#N`,
+inclusive no studio). O `#N` de uma varredura `--repo vjpixel/diaria-design`
+é o número DO DESIGN: `route-issue.ts --issue N` com o número pelado age no
+#N do diaria-studio, re-roteia e comenta a issue errada sem erro nenhum.
+Por isso, em todos os passos abaixo:
+
+- re-roteamento: `npx tsx scripts/route-issue.ts --issue {ref} ...` (o
+  `{ref}` da candidata, copiado do JSON);
+- comentário direto (o "Revisado por /diaria-desbloqueia" do Passo 2, os
+  marcadores `decisao-editor`/`acao-adiada` do Passo 4): `gh issue comment
+  {N} -R {owner/repo do ref} --body-file {arquivo}`, nunca sem `-R`;
+- `check-decision-state-drift.ts` só lê issues do studio (os toggles que ele
+  confere são do studio): numa varredura de outro repo, não rodá-lo — ler o
+  estado à mão, como no caso de decisão sem `estado_esperado`.
+
 O bucket `·sem sinal` entra **por default** — é o motivo de a #7694 existir,
 e flag de opt-in que ninguém lembra de passar não corrige nada. O custo é
 real (medição de 08/09/2026: 26 issues sem sinal contra 9 do escopo antigo,
@@ -165,7 +181,7 @@ ainda exige julgamento/máquina do editor) ou `overnight` (se, resolvido o
 trade-off, o resto é mecânico). Rotear:
 
 ```bash
-npx tsx scripts/route-issue.ts --issue N --track {develop|overnight} \
+npx tsx scripts/route-issue.ts --issue {ref} --track {develop|overnight} \
   --reason "decisão já registrada em comentário anterior — reclassificando sem nova pergunta (#6628)"
 ```
 
@@ -220,7 +236,7 @@ classificada `overnight` e o `300` ia tentar executá-la e falhar.
 Comentar não basta: rotear.
 
 ```bash
-npx tsx scripts/route-issue.ts --issue N --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
+npx tsx scripts/route-issue.ts --issue {ref} --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
 ```
 
 Se `dependenciasNaoResolvidas` no relatório não estiver vazio, o estado das
@@ -432,7 +448,8 @@ estourou".
   e comentar o RESULTADO do probe, nunca o valor.
 - Em todos os casos, depois de comentar a decisão (ou como único passo,
   pro caso de bloqueio de execução): `npx tsx scripts/route-issue.ts
-  --issue N --track {track} --reason "..."` (`--track bloqueada` exige
+  --issue {ref} --track {track} --reason "..."` (`{ref}` = o `ref` da
+  candidata no scan, #10935) (`--track bloqueada` exige
   `--reason` não-vazio desde #7270; `--sessao develop` opcional) — nunca
   `gh issue edit --add-label` cru (mesma disciplina do #5969, ver
   docstring de `route-issue.ts`).

@@ -226,6 +226,17 @@ describe("#10901 — reconcile-issue-dependencies --repos", () => {
     assert.equal(bad.calls.length, 0);
   });
 
+  it("#10935: --repos só do design → fetch sem o studio (includeDefault=false), label no design", async () => {
+    const { calls, fetchOpts } = await run(
+      ["--apply", "--repos", DESIGN],
+      [{ repo: DESIGN, number: 21, labels: [], body: "<!-- depends-on: #22 -->" }],
+      { [`${DESIGN}#22`]: "OPEN" },
+    );
+    assert.deepEqual(fetchOpts, { repos: [DESIGN], includeDefault: false });
+    const edit = calls.find((c) => c[1] === "edit");
+    assert.ok(edit && repoOf(edit) === DESIGN, JSON.stringify(calls));
+  });
+
   it("buildReconcileReport carimba o repo (default = studio)", () => {
     const issues = [{ number: 1, labels: [], body: "<!-- depends-on: #2 -->" }];
     assert.equal(buildReconcileReport(issues, {})[0]?.repo, STUDIO);
@@ -256,6 +267,20 @@ describe("#10901 — desbloqueia-scan --repo", () => {
     assert.ok(calls.length >= 2);
     for (const c of calls) assert.equal(repoOf(c), DESIGN, c.join(" "));
     assert.equal(report.repo, DESIGN);
+  });
+
+  it("#10935: cada candidata traz ref owner/repo#N do repo varrido (o playbook re-rotea por ela)", () => {
+    type R = ReturnType<typeof runDesbloqueioScan>;
+    const candidates = (r: R) => [
+      ...r.jaDestravadas, ...r.bloqueioConfirmado, ...r.precisaPergunta, ...r.bloqueioObsoleto,
+      ...r.semSinalNaoTriadas, ...r.acaoImediataCandidatas, ...r.acaoAdiada, ...r.erroLeitura,
+    ];
+    const design = candidates(runDesbloqueioScan(".", { runGh: gh([]), repo: DESIGN }));
+    assert.ok(design.length >= 1);
+    for (const c of design) assert.equal(c.ref, `${DESIGN}#${c.number}`);
+    const studio = candidates(runDesbloqueioScan(".", { runGh: gh([]) }));
+    assert.ok(studio.length >= 1);
+    for (const c of studio) assert.equal(c.ref, `${STUDIO}#${c.number}`);
   });
 
   it("sem repo: -R studio e o JSON sem a chave repo (forma de sempre)", () => {
@@ -360,5 +385,20 @@ describe("#10901 — check-continuo-escalate-label --repo (CLI com gh falso)", (
       assert.equal(run(["--pr", "12", "--repo", "fork/x"], dir, log).status, 2);
       assert.equal(readCalls(log).length, 0);
     });
+  });
+});
+
+describe("#10935 — playbook do /diaria-desbloqueia re-rotea pela referência completa", () => {
+  const SKILL = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", ".claude/skills/diaria-desbloqueia/SKILL.md"), "utf8");
+
+  it("nenhum comando route-issue.ts com --issue N pelado; todos com {ref}", () => {
+    const cmds = SKILL.match(/route-issue\.ts\s+--issue\s+\S+/g) ?? [];
+    assert.ok(cmds.length >= 3, `esperava os comandos de re-roteamento, achei ${cmds.length}`);
+    // Exceções: a prosa que EXPLICA o erro (`--issue N` entre crases) e o
+    // exemplo qualificado `owner/repo#N`.
+    const bare = cmds.filter((c) => !/--issue\s+(\{ref\}|owner\/repo#N)/.test(c) && !/--issue\s+N`/.test(c));
+    assert.deepEqual(bare, []);
+    assert.match(SKILL, /`ref` que o scan devolve/);
+    assert.match(SKILL, /gh issue comment\s+\{N\} -R/);
   });
 });
