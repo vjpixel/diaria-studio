@@ -728,39 +728,123 @@ export function mp4DurationSeconds(buf: Buffer): number | null {
  * rupload (`400 ProcessingFailedError`), e a rota `video_url` deu container
  * `ERROR` 2207076 com o vertical de 113,9 s — apesar da doc pública falar em
  * 3 s–15 min. A causa do lado da Meta segue em aberto; o teto é configurável
- * (`publishing.shorts.instagram_api_max_seconds`, `null` desliga) pra sumir
- * sem deploy quando a Meta liberar.
+ * por conta (`publishing.shorts.instagram_api_max_seconds_by_account`, #10916)
+ * e `null` desliga, pra sumir sem deploy quando a Meta liberar. Este é o
+ * fallback quando o config não diz nada.
  */
 export const INSTAGRAM_REELS_API_MAX_SECONDS = 40;
 
 /**
- * Lê `publishing.shorts.instagram_api_max_seconds` (#10893). Ausente → o teto
- * medido; `null` → sem teto (a API decide); número positivo → esse teto.
- * Qualquer outra coisa LANÇA: um teto quebrado mandaria o Reels pro rupload
- * que já sabemos que falha, ou tiraria da API um vídeo que caberia.
+ * Chave da conta do Instagram no mapa de tetos (#10916): o slug de
+ * `instagram_author_page`, ou `diaria` quando a autora é `null` (a conta da
+ * diar.ia.br, `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN`). Mesma
+ * convenção da fila do Worker (`ig_account`, #10823).
  */
-export function loadInstagramApiMaxSeconds(config: unknown): number | null {
-  const shorts = (config as any)?.publishing?.shorts;
-  if (!shorts || typeof shorts !== "object" || !("instagram_api_max_seconds" in shorts)) return INSTAGRAM_REELS_API_MAX_SECONDS;
-  const v = shorts.instagram_api_max_seconds;
+/** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823). */
+export type WorkerInstagramAccount = "diaria" | "vjpixel";
+
+export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
+
+/**
+ * Qualquer slug de página pode ser autora; as contas que o Worker conhece
+ * (`WorkerInstagramAccount`) são o caso que importa. `string & {}` mantém o
+ * autocomplete das duas sem fechar o tipo.
+ */
+export type InstagramAccountKey = WorkerInstagramAccount | (string & {});
+
+export function instagramAccountKey(authorPage: string | null): InstagramAccountKey {
+  return authorPage ?? INSTAGRAM_ENV_ACCOUNT_KEY;
+}
+
+function validMaxSeconds(v: unknown, field: string): number | null {
   if (v === null) return null;
   if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
-    throw new Error("[shorts] publishing.shorts.instagram_api_max_seconds precisa ser um número de segundos > 0 ou null (#10893).");
+    throw new Error(`[shorts] publishing.shorts.${field} precisa ser um número de segundos > 0 ou null (#10893/#10916).`);
   }
   return v;
+}
+
+/**
+ * Teto de duração do Reels pela API para a conta que publica (#10916). O teto
+ * é POR CONTA: medido em 22-23/10/2026, a @vjpixel aceita 40 s e recusa 42 s
+ * (#10893) e a @diar.ia.br aceita 55 s e recusa 58 s (#10916), sempre por
+ * duração, nunca por tamanho. Ordem:
+ *   1. `publishing.shorts.instagram_api_max_seconds_by_account[chave]`, com a
+ *      chave de `instagramAccountKey(authorPage)`;
+ *   2. `publishing.shorts.instagram_api_max_seconds` (legado, vale pra
+ *      qualquer conta);
+ *   3. `INSTAGRAM_REELS_API_MAX_SECONDS` (40 s).
+ * Em 1 e 2, `null` desliga o teto (a API decide). Valor inválido LANÇA, em
+ * QUALQUER entrada do mapa (não só na da conta ativa): um teto quebrado
+ * mandaria o Reels pro rupload que já sabemos que falha, ou tiraria da API um
+ * vídeo que caberia — e um typo na conta inativa não pode esperar a troca de
+ * autora pra aparecer.
+ */
+export function loadInstagramApiMaxSeconds(config: unknown, authorPage: string | null): number | null {
+  return resolveInstagramApiMaxSeconds(config, authorPage).maxSeconds;
+}
+
+/** De onde veio o teto (#10916): pra premissa quando o mapa existe e não tem a conta. */
+export interface InstagramApiMaxSecondsResolution {
+  maxSeconds: number | null;
+  key: InstagramAccountKey;
+  source: "by_account" | "legacy" | "default";
+  /** O mapa por conta existe (mesmo que sem esta conta). */
+  hasMap: boolean;
+}
+
+export function resolveInstagramApiMaxSeconds(config: unknown, authorPage: string | null): InstagramApiMaxSecondsResolution {
+  const key = instagramAccountKey(authorPage);
+  const shorts = (config as any)?.publishing?.shorts;
+  if (!shorts || typeof shorts !== "object") return { maxSeconds: INSTAGRAM_REELS_API_MAX_SECONDS, key, source: "default", hasMap: false };
+  const map = shorts.instagram_api_max_seconds_by_account;
+  const hasMap = map !== undefined;
+  if (hasMap) {
+    if (map === null || typeof map !== "object" || Array.isArray(map)) {
+      throw new Error("[shorts] publishing.shorts.instagram_api_max_seconds_by_account precisa ser um objeto {conta: segundos} (#10916).");
+    }
+    for (const [k, v] of Object.entries(map)) validMaxSeconds(v, `instagram_api_max_seconds_by_account.${k}`);
+    if (Object.prototype.hasOwnProperty.call(map, key)) {
+      return { maxSeconds: validMaxSeconds(map[key], `instagram_api_max_seconds_by_account.${key}`), key, source: "by_account", hasMap };
+    }
+  }
+  if ("instagram_api_max_seconds" in shorts) {
+    return { maxSeconds: validMaxSeconds(shorts.instagram_api_max_seconds, "instagram_api_max_seconds"), key, source: "legacy", hasMap };
+  }
+  return { maxSeconds: INSTAGRAM_REELS_API_MAX_SECONDS, key, source: "default", hasMap };
+}
+
+/**
+ * Pure (#10916): premissa quando o mapa por conta existe mas não tem a chave
+ * da autora — o teto que valeu veio do legado ou do default, e isso tem que
+ * aparecer no log em vez de passar calado. null = nada a declarar.
+ */
+export function instagramApiMaxSecondsPremise(r: InstagramApiMaxSecondsResolution): string | null {
+  if (!r.hasMap || r.source === "by_account") return null;
+  const value = r.maxSeconds === null ? "sem teto" : `${r.maxSeconds} s`;
+  const from =
+    r.source === "legacy"
+      ? "publishing.shorts.instagram_api_max_seconds (legado, global)"
+      : `o default INSTAGRAM_REELS_API_MAX_SECONDS (${INSTAGRAM_REELS_API_MAX_SECONDS} s)`;
+  return `teto do Reels pela API: ${value}, de ${from} — a conta "${r.key}" não está em publishing.shorts.instagram_api_max_seconds_by_account (#10916)`;
 }
 
 /**
  * Pure (#10893): o vertical cabe no Reels pela API do Instagram? Duração
  * desconhecida (`mp4DurationSeconds` null) segue pela API — o teto é medido,
  * não documentado, e travar o destino por falta de leitura seria pior; o
- * caller avisa. Acima do teto o Instagram vira passo GUIADO (postar no app),
- * nunca um corte automático do vídeo: recortar uma versão ≤ teto muda o
- * conteúdo e é decisão editorial (corpo da #10893).
+ * caller avisa. Acima do teto o Instagram vira passo GUIADO — pelo
+ * instagram.com no Claude in Chrome (Passo 3b do /diaria-shorts, com a versão
+ * comprimida que o `--publish` gera, #10915) ou no app — registrado com
+ * `--confirm-instagram` (lê a mídia pela API) ou `--mark instagram=URL`. Nunca
+ * um corte automático do vídeo: recortar uma versão ≤ teto muda o conteúdo e
+ * é decisão editorial (corpo da #10893).
  */
 export function instagramReelsApiFit(
   durationSeconds: number | null,
   maxSeconds: number | null,
+  /** Rótulo legível da conta que publica (#10916), só pro texto do motivo; ausente = "nesta conta". */
+  accountLabel?: string,
 ): { fits: true; unknown: boolean } | { fits: false; reason: string } {
   if (maxSeconds === null) return { fits: true, unknown: durationSeconds === null };
   if (durationSeconds === null) return { fits: true, unknown: true };
@@ -768,8 +852,8 @@ export function instagramReelsApiFit(
   return {
     fits: false,
     reason:
-      `o vertical tem ${durationSeconds.toFixed(1)} s e a API do Instagram recusa Reels acima de ~${maxSeconds} s nesta conta ` +
-      `(rupload 400 ProcessingFailedError / 2207076, #10893)`,
+      `o vertical tem ${durationSeconds.toFixed(1)} s e a API do Instagram recusa Reels acima de ~${maxSeconds} s ${accountLabel ? `na conta ${accountLabel}` : "nesta conta"} ` +
+      `(rupload 400 ProcessingFailedError / 2207076, #10893; teto por conta em publishing.shorts.instagram_api_max_seconds_by_account, #10916)`,
   };
 }
 
