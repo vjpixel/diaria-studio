@@ -1,11 +1,11 @@
 ---
 name: diaria-youtube
-description: Prepara o vídeo diário "diar.ia.br comentada" (Pixel comentando o D1) para o canal @diariabr no YouTube — metadados derivados da edição (título do D1, descrição com resumo + link da edição com UTM + CTA com UTM youtube, 6 tags), capa e agendamento 06:00 BRT (ou na hora, se já passou). Roda fora da pipeline, para o caso do vídeo ficar pronto depois do Stage 5. Default dry-run; `--upload` sobe de verdade pela YouTube Data API (#10659) — sem a auditoria do YouTube API Services o vídeo pode sair privado. Uso — `/diaria-youtube AAMMDD`.
+description: Prepara o vídeo diário "diar.ia.br comentada" (Pixel comentando o D1) para o canal @diariabr no YouTube — metadados derivados da edição (título do D1, descrição com resumo + link da edição com UTM + CTA com UTM youtube, 6 tags), capa e agendamento 06:00 BRT (ou na hora, se já passou). Roda depois do gate da Etapa 4 e antes do `/diaria-5-publicacao` (#10943), standalone, sem encadear. Default dry-run; `--upload` sobe de verdade pela YouTube Data API (#10659) — sem a auditoria do YouTube API Services o vídeo pode sair privado. Uso — `/diaria-youtube AAMMDD`.
 ---
 
 # /diaria-youtube AAMMDD (#10659)
 
-Vídeo diário no YouTube (`@diariabr`) com o Pixel comentando o D1 da edição, decisão do editor de 21/10/2026 (1º vídeo: edição 261021, https://youtu.be/QRbXMprk9o0). Esta skill cobre só esse vídeo, fora da pipeline: o caso em que o vídeo fica pronto depois do Stage 5. O publisher é o mesmo que o passo futuro do Stage 5 vai usar (`scripts/publish-youtube.ts`).
+Vídeo diário no YouTube (`@diariabr`) com o Pixel comentando o D1 da edição, decisão do editor de 21/10/2026 (1º vídeo: edição 261021, https://youtu.be/QRbXMprk9o0). Esta skill cobre só esse vídeo, fora da pipeline: roda depois do gate da Etapa 4 e, no fluxo ideal (#10943), antes do `/diaria-5-publicacao`, para o link do vídeo entrar no D1 já na criação dos posts. Também serve para o caso em que o vídeo fica pronto depois do Stage 5. O publisher é o mesmo que o passo futuro do Stage 5 vai usar (`scripts/publish-youtube.ts`).
 
 **Data:** `AAMMDD` é obrigatório. Se não for passado, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`), nunca perguntar.
 
@@ -21,6 +21,19 @@ O token vem do OAuth do canal (`scripts/youtube-oauth-setup.ts`, PR #10757): `YO
 **Sem a auditoria do YouTube API Services, o upload via API pode sair `private`**, mesmo pedindo `public` ou `publishAt`. É a restrição de 2020 do histórico da API; a página atual de `videos.insert` diz o contrário, e o 1º upload real confirma pela releitura. A releitura mostra `draft` ou `scheduled`. Se o vídeo ficar privado, ele precisa ser publicado (ou agendado) à mão no Studio.
 
 Ainda fora daqui: o download do vídeo pelo Drive e o passo no Stage 5 (a convenção de nome do arquivo não foi confirmada). Não contornar com o Claude in Chrome: upload de arquivo é bloqueado lá, e o projeto prefere API oficial.
+
+## Passo 0 — Pré-condição: Stage 4 aprovado (#10943)
+
+Fluxo do dia (decisão do editor, 22/10/2026): `/diaria-edicao` → `/diaria-youtube` → `/diaria-shorts` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). O vídeo comenta o D1, e o D1 só está final depois do gate da Etapa 4, então esta skill só roda com o sentinel do Stage 4:
+
+```bash
+npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
+```
+
+- exit 0 → seguir.
+- exit 1 → **parar**: "Etapa 4 (Revisão) da edição {AAMMDD} não aprovada (`_internal/.step-4-done.json` ausente). O D1 ainda pode mudar; aprove o gate (`/diaria-4-revisao {AAMMDD}` ou `/diaria-edicao {AAMMDD}`) e rode `/diaria-youtube` depois." Vale para `--dry-run` e `--upload`.
+
+Ao terminar, sugerir o próximo comando (`/diaria-shorts {AAMMDD}`) sem rodá-lo.
 
 ## Passo 1 — Conferir os insumos
 
