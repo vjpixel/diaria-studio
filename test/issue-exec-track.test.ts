@@ -685,7 +685,8 @@ describe("classifyExecTrack — precedência", () => {
   it("marcador com a data de HOJE não bloqueia — a espera terminou", () => {
     // Comparação é estrita (`>`), então `waitUntil === now` libera. Um
     // marcador "até hoje" significa que hoje já é o dia de voltar à fila.
-    const hoje = new Date("2026-08-16T00:00:00Z");
+    // "Hoje" é o dia de Brasília (#10947): começa às 03:00Z.
+    const hoje = new Date("2026-08-16T03:00:00Z");
     assert.equal(
       classifyExecTrack({ labels: [], body: "<!-- aguardando-ate: 2026-08-16 -->", now: hoje }),
       "overnight",
@@ -694,9 +695,9 @@ describe("classifyExecTrack — precedência", () => {
 });
 
 describe("parseWaitUntil", () => {
-  it("extrai a data em UTC", () => {
+  it("extrai a meia-noite de Brasília da data (#10947 — era meia-noite UTC)", () => {
     const d = parseWaitUntil("<!-- aguardando-ate: 2026-09-01 -->");
-    assert.equal(d?.toISOString(), "2026-09-01T00:00:00.000Z");
+    assert.equal(d?.toISOString(), "2026-09-01T03:00:00.000Z");
   });
 
   it("tolera espaçamento variável e caixa alta", () => {

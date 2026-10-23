@@ -16,16 +16,20 @@
  *
  * `until` é ISO com hora (`2026-08-21T09:00:00.000Z`); o marcador só aceita
  * `AAAA-MM-DD` (`WAIT_UNTIL_RE` em `issue-exec-track.ts`), e
- * `parseWaitUntil` interpreta essa data como `{data}T00:00:00Z` — meia-noite
- * UTC do dia informado. Arredondar pro dia CORRENTE do `until` (`2026-08-21`
- * no exemplo acima) faria o marcador expirar às 00:00Z do dia 21, ANTES das
- * 09:00Z reais do override — reabrindo a issue como elegível por ~9h antes
- * do prazo de verdade. `computeWaitUntilMarkerDate` sobe pro dia SEGUINTE
- * sempre que `until` tiver qualquer componente de hora não-zero, garantindo
- * que a meia-noite UTC do marcador nunca fique ANTES do instante real de
- * expiração — o preço é o marcador ficar "agendada" por até ~24h a mais do
- * que o override cobre de fato, que é o lado seguro de errar (a issue
- * reaparece tarde demais, nunca cedo demais).
+ * `parseWaitUntil` interpreta essa data como a meia-noite de Brasília
+ * (America/Sao_Paulo, #10947 — era meia-noite UTC até então) do dia
+ * informado. Arredondar pro dia CORRENTE do `until` (`2026-08-21` no exemplo
+ * acima) faria o marcador expirar à meia-noite BRT do dia 21 (03:00Z), ANTES
+ * das 09:00Z reais do override — reabrindo a issue como elegível por ~6h
+ * antes do prazo de verdade. `computeWaitUntilMarkerDate` sobe pro dia BRT
+ * SEGUINTE sempre que `until` cair depois da meia-noite BRT do seu dia,
+ * garantindo que o instante de desarme do marcador nunca fique ANTES do
+ * instante real de expiração — o preço é o marcador ficar "agendada" por
+ * até ~24h a mais do que o override cobre de fato, que é o lado seguro de
+ * errar (a issue reaparece tarde demais, nunca cedo demais).
+ *
+ * `until` só-data (`AAAA-MM-DD`, a forma de `route-issue.ts --until`) é um
+ * dia de calendário BRT e vira o marcador sem conversão nenhuma (#10947).
  *
  * ─── Idempotência ────────────────────────────────────────────────────────
  *
@@ -48,7 +52,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnGhSync, type GhSpawnResult } from "./shared/gh-run.ts";
-import { WAIT_UNTIL_RE } from "./issue-exec-track.ts";
+import { WAIT_UNTIL_RE, waitUntilDayStartMs, waitUntilYmdAt } from "./issue-exec-track.ts";
 
 export type GhRunFn = (args: string[], cwd: string) => GhSpawnResult;
 
@@ -60,20 +64,32 @@ export interface WaitUntilSyncResult {
 
 /**
  * Data do marcador (`AAAA-MM-DD`) pra um `until` ISO com hora, arredondada
- * pra cima o suficiente pra que `{data}T00:00:00Z` nunca fique ANTES do
- * instante real de `until` — ver docstring do módulo. Lança se `until` não
+ * pra cima o suficiente pra que a meia-noite BRT do marcador nunca fique
+ * ANTES do instante real de `until` — ver docstring do módulo. Lança se `until` não
  * for parseável (mesmo contrato de `setClariceEnvioOverride`, que já valida
  * isso antes de chamar este módulo).
  */
 export function computeWaitUntilMarkerDate(untilIso: string): string {
+  // Só-data: já é o dia de calendário BRT pedido (#10947). Validado pela
+  // mesma função que a leitura usa — data inexistente (`2026-02-30`) lança
+  // em vez de virar um marcador que `parseWaitUntil` ignoraria em silêncio.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(untilIso)) {
+    if (waitUntilDayStartMs(untilIso) === null) {
+      throw new Error(`until inválido (data inexistente): ${JSON.stringify(untilIso)}`);
+    }
+    return untilIso;
+  }
   const untilMs = Date.parse(untilIso);
   if (Number.isNaN(untilMs)) {
     throw new Error(`until inválido (não-parseável): ${JSON.stringify(untilIso)}`);
   }
-  const d = new Date(untilMs);
-  const dayStartMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  const markerMs = untilMs > dayStartMs ? dayStartMs + 24 * 60 * 60 * 1000 : dayStartMs;
-  return new Date(markerMs).toISOString().slice(0, 10);
+  const sameDay = waitUntilYmdAt(untilMs);
+  const sameDayStartMs = waitUntilDayStartMs(sameDay) as number;
+  if (untilMs <= sameDayStartMs) return sameDay;
+  // Dia BRT seguinte: +36h a partir do início do dia cai com folga no dia
+  // seguinte mesmo num dia de 23h/25h (horário de verão), sem aritmética de
+  // calendário à mão.
+  return waitUntilYmdAt(sameDayStartMs + 36 * 60 * 60 * 1000);
 }
 
 /** Insere (se ausente) ou substitui (se já presente) o marcador no TOPO do
