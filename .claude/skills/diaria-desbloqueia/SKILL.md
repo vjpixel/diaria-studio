@@ -46,10 +46,14 @@ livre: escolher `/model` antes de invocar.
 obrigatória): nunca encerrar o turno esperando notificação — tudo em
 foreground para Bash e leitura direta pelo coordenador.** O coordenador lê
 corpo + TODOS os comentários do output de `desbloqueia-scan.ts` e faz o
-julgamento sem despachar Agent para ler threads (#11032). O tool Agent é
-assíncrono e seu schema não tem parâmetro para forçar foreground. Regra:
-não encerrar o turno enquanto houver Agent pendente; aguardar as notificações dentro do turno e consumir todos os retornos antes do resumo. Todo
-`Bash` longo roda em foreground com `timeout: 600000` —
+julgamento sem despachar Agent para ler threads (#11032). No modo interativo com fork-mode ligado (contexto de uso de desbloqueia/develop), o schema do Agent remove `run_in_background` e os subagentes rodam em background; em non-interactive `-p` ou fork-mode-off o parâmetro pode existir: se exposto e o próximo passo depende do resultado, usar o booleano `run_in_background: false` e conferir o retorno real. Não aplicar essa receita ao modo interativo com fork. Referência: https://code.claude.com/docs/en/sub-agents#run-subagents-in-foreground-or-background (consultada em 23/10/2026).
+
+Evidência do harness reportado na #11032 (sessão `576bee41`, 23/10/2026): `run_in_background: "false"` retornou `Async agent launched successfully`. A string enviada não valida o booleano `false` em outros modos; nesse harness a chamada foi assíncrona. A sonda registrou `ok:true`, tally `{claude-opus-5-5/medium: 26}`; é uma observação daquela sessão, não garantia geral sobre notificações/pin.
+
+Regra adicional:
+não encerrar o turno enquanto houver Agent pendente; aguardar as notificações dentro do turno e consumir todos os retornos antes do resumo.
+
+Todo `Bash` longo roda em foreground com `timeout: 600000` —
 `desbloqueia-scan.ts` e sequências longas de `route-issue.ts` incluídos.
 Timeout nunca é motivo pra trocar por background: se o scan estourar,
 dividir por `--issues N,M` e rodar de novo, e **nunca perguntar nada a
@@ -364,7 +368,7 @@ do scan, sem delegar a subagente (#11032). O scan já entrega corpo e
 comentários; um novo Agent duplicaria a leitura e acrescentaria uma espera
 assíncrona que pode atravessar a fronteira de turno. Para pool grande,
 dividir o scan por `--issues N,M`, ler cada lote por completo e só então
-montar a bateria. A sonda do Passo 5 continua obrigatória.
+montar a bateria. É um trade-off de contexto: o coordenador absorve as threads para evitar dispatch assíncrono neste modo; não há medição de custo comparativa. A sonda do Passo 5 continua obrigatória.
 
 **Vira pedido de ação imediata** quando o que falta é uma ação do editor no
 teclado, agora: reiniciar uma unit caída, recarregar uma conta, colar uma

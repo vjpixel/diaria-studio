@@ -56,20 +56,26 @@ describe("#9526 — /diaria-desbloqueia projetada para um único turno (pin não
   /** Whitespace colapsado — quebra de linha no meio da prosa não pode esconder o comando. */
   const flat = content.replace(/\s+/g, " ");
 
-  it("#11032 — coordenador lê o scan sem delegar threads nem usar parâmetro inexistente", () => {
+  it("#11032 — coordenador lê o scan sem delegar threads no harness reportado", () => {
     assert.match(flat, /coordenador lê corpo \+ TODOS os comentários do output de `desbloqueia-scan.ts`/);
     assert.match(flat, /sem despachar Agent para ler threads/);
     assert.doesNotMatch(content, /subagent_type:/);
-    assert.doesNotMatch(content, /run_in_background[`"']?\s*[:=]\s*[`"']?false/i);
+    assert.match(flat, /576bee41/);
+    assert.match(flat, /run_in_background: "false".*Async agent launched successfully/);
+    assert.match(flat, /string enviada não valida o booleano `false` em outros modos/);
+    assert.match(flat, /claude-opus-5-5\/medium: 26/);
   });
 
   for (const skill of ["diaria-desbloqueia", "diaria-develop", "diaria-overnight"]) {
-    it(`#11032 — ${skill} espera Agent dentro do turno sem prometer foreground`, () => {
+    it(`#11032 — ${skill} distingue modos e mantém espera no turno`, () => {
       const text = readFileSync(resolve(ROOT, `.claude/skills/${skill}/SKILL.md`), "utf8").replace(/\s+/g, " ");
-      assert.match(text, /schema não tem parâmetro para forçar foreground/);
+      assert.match(text, /modo interativo com fork-mode ligado.*schema do Agent remove `run_in_background`/);
+      assert.match(text, /non-interactive `-p` ou fork-mode-off.*booleano `run_in_background: false`/);
+      assert.match(text, /conferir o retorno real/);
+      assert.match(text, /Não aplicar essa receita ao modo interativo com fork/);
       assert.match(text, /não encerrar o turno.*Agent pendente/);
       assert.match(text, /aguardar as notificações dentro do turno/);
-      assert.doesNotMatch(text, /run_in_background[`"']?\s*[:=]\s*[`"']?false/i);
+      assert.doesNotMatch(text, /schema não tem parâmetro para forçar foreground/);
     });
   }
 
