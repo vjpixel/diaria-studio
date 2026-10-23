@@ -68,6 +68,7 @@ import {
   buildTrainPrBody,
   buildTrainMergeCommitTitle,
   buildTrainMergeCommitBody,
+  computeTrainGateLabels,
   type TrainBatch,
   type TrainPrInfo,
 } from "./merge-train.ts";
@@ -223,13 +224,13 @@ export function screenTrainPrs(runner: TrainRunner, prNumbers: number[], discove
  * ele fecha do próprio corpo (`parseClosesIssues`, mesmo parser que
  * `buildTrainPrBody`/`buildTrainMergeCommitBody` consomem via `TrainPrInfo`). */
 export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPrInfo {
-  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body"]);
+  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body,labels,files,changedFiles"]);
   if (!res.ok) throw new Error(`fetchTrainPrInfo: gh pr view falhou pro PR #${prNumber}: ${res.stderr}`);
   const parsed: unknown = JSON.parse(res.stdout);
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(`fetchTrainPrInfo: PR #${prNumber} — JSON inesperado de gh pr view`);
   }
-  const p = parsed as { number: number; headRefName: string; title: string; body: string };
+  const p = parsed as { number: number; headRefName: string; title: string; body: string; labels?: unknown; files?: unknown; changedFiles?: unknown };
   return {
     pr: p.number,
     headRefName: p.headRefName,
@@ -237,7 +238,54 @@ export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPr
     issueNumbers: parseClosesIssues(p.body ?? ""),
     refsIssueNumbers: parseRefsIssues(p.body ?? ""),
     removalDeclaration: extractRemovalDeclaration(p.body ?? ""),
+    labels: parseLabelNames(p.labels),
+    changedFiles: parseChangedFiles(p.files, p.changedFiles),
   };
+}
+
+/** `labels` de `gh pr view --json labels` → nomes; shape inesperado = não lidas (#11019). */
+function parseLabelNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const names = raw.map((l) => (typeof l === "object" && l !== null ? (l as { name?: unknown }).name : undefined));
+  return names.every((n): n is string => typeof n === "string") ? names : undefined;
+}
+
+/**
+ * `files` de `gh pr view --json files` → paths (#11019). O `gh` traz no máximo
+ * 100 arquivos: com menos itens que `changedFiles` a lista é incompleta e
+ * vira `null`, que `computeTrainGateLabels` trata como "precisa da label".
+ */
+function parseChangedFiles(raw: unknown, total: unknown): string[] | null | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const paths = raw.map((f) => (typeof f === "object" && f !== null ? (f as { path?: unknown }).path : undefined));
+  if (!paths.every((x): x is string => typeof x === "string")) return null;
+  if (typeof total !== "number" || paths.length < total) return null;
+  return paths;
+}
+
+/**
+ * Aplica ao PR-trem as labels de gate herdadas do lote (#11019,
+ * `computeTrainGateLabels`). Via `gh-pr-safe-edit.ts --add-label` (REST +
+ * releitura), nunca `gh pr edit --add-label`, que não aplica label (#10429).
+ * Chamada logo depois do `gh pr create`: os workflows dos gates rodam também
+ * em `labeled`, e a run nova cancela a do `opened` (o rollup descarta a
+ * `CANCELLED` substituída, `pr-checks-gate.ts`). Falha não é fatal: o
+ * PR-trem só reprova como reprovaria antes, e o aviso fica no log.
+ */
+export function applyTrainGateLabels(
+  runner: TrainRunner,
+  trainPrNumber: number,
+  batch: TrainBatch,
+  prInfos: readonly TrainPrInfo[],
+): readonly string[] {
+  const { labels } = computeTrainGateLabels(batch, prInfos);
+  if (labels.length === 0) return [];
+  const res = runner.exec("npx", ["tsx", "scripts/lib/gh-pr-safe-edit.ts", "--pr", String(trainPrNumber), "--add-label", labels.join(",")]);
+  if (!res.ok) {
+    runner.warn(`não consegui aplicar ${labels.join(", ")} ao PR-trem #${trainPrNumber} (#11019) — o gate pode reprovar o lote: ${res.stderr.trim() || res.stdout.trim() || "sem saída"}`);
+    return [];
+  }
+  return labels;
 }
 
 /**
@@ -939,6 +987,7 @@ export async function runMergeTrain(
       failOrBisect(batch, `abrir PR-trem falhou (${err instanceof Error ? err.message : String(err)})`);
       continue;
     }
+    applyTrainGateLabels(runner, trainPrNumber, batch, prInfos); // #11019
 
     const verdict = await pollTrainCi(runner, trainPrNumber, { timeoutMs: ciTimeoutMs, intervalMs: ciPollIntervalMs });
 
