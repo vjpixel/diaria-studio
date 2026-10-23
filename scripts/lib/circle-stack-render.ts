@@ -8,7 +8,7 @@
  *
  * Estrutura: abertura · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
- * Edições da semana · última linha ("Assine a diar.ia.br. Chega de segunda a
+ * Outros destaques da semana (só o que não apareceu acima) · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
  *
  * `stackNote` (opcional, por item): texto escrito para o público da Stack
@@ -160,17 +160,23 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   blocks.push(...listSection("Use melhor", sel.useMelhor));
   blocks.push(...listSection("Radar", sel.radar));
 
-  if (sel.weeklyEditions.length > 0) {
-    blocks.push(`## Edições da semana`);
-    // Um título por linha: a data (link da edição) em parágrafo próprio, os destaques em lista abaixo.
-    for (const e of sel.weeklyEditions) {
+  // "Outros destaques da semana" (pedido do editor, 23/10/2026): só os destaques das edições
+  // que NÃO apareceram acima (comparação por título normalizado). Data sem título restante some.
+  const norm = (t: string) => String(t).replace(/\s+/g, " ").trim().toLowerCase();
+  const shown = new Set([...sel.destaques, ...sel.lancamentos, ...sel.useMelhor, ...sel.radar].map((it) => norm(it.title)));
+  const others = sel.weeklyEditions
+    .map((e) => ({ e, titles: e.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter((t) => t && !shown.has(norm(t))) }))
+    .filter((x) => x.titles.length > 0);
+  if (others.length > 0) {
+    blocks.push(`## Outros destaques da semana`);
+    for (const { e, titles } of others) {
       // Sem negrito em volta: o conversor do webhook da Stack não reconhece link dentro de **…**
       // e publica o Markdown cru (achado ao vivo, post de 23/10/2026).
       blocks.push(link(buildCircleStackUrl(e.url, sel.cycle, "edicao"), ddmm(e.editionDate)));
-      const titles = e.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter(Boolean);
-      if (titles.length > 0) blocks.push(titles.map((t) => `- ${t}`).join("\n"));
+      blocks.push(titles.map((t) => `- ${t}`).join("\n"));
     }
   }
+
 
   // Última linha do post: link de assinatura + ÚLTIMO parágrafo do fecho (pedido do editor, 23/10/2026).
   // Parágrafos anteriores do fecho (só com --closing-file de várias linhas) vêm antes, para o CTA

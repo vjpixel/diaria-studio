@@ -177,7 +177,26 @@ describe("renderCircleStackPost", () => {
     assert.ok(!/^- $/m.test(r.markdown));
   });
 
-  it("edições da semana: data com link em parágrafo próprio e um título por linha", () => {
+  it("outros destaques da semana: omite título já mostrado acima e data que ficou vazia", () => {
+    const r = renderCircleStackPost({
+      ...selection,
+      weeklyEditions: [
+        { editionDate: "261013", url: "https://diar.ia.br/p/g", destaques: ["Gemini vira colega com e-mail & agenda", "Outro"] },
+        { editionDate: "261014", url: "https://diar.ia.br/p/h", destaques: ["gemini vira colega com e-mail & agenda"] },
+      ],
+    });
+    assert.ok(r.markdown.includes("## Outros destaques da semana"));
+    assert.ok(r.markdown.includes("- Outro"));
+    assert.ok(!r.markdown.includes("- Gemini vira colega"));
+    assert.ok(!r.markdown.includes("[14/10]"));
+  });
+
+  it("sem destaque restante, a seção some", () => {
+    const r = renderCircleStackPost({ ...selection, weeklyEditions: [{ editionDate: "261013", url: "https://diar.ia.br/p/g", destaques: ["Gemini vira colega com e-mail & agenda"] }] });
+    assert.ok(!r.markdown.includes("Outros destaques"));
+  });
+
+  it("outros destaques: data com link em parágrafo próprio e um título por linha", () => {
     const d = `[13/10](${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")})`;
     assert.ok(md.includes(`${d}\n\n- A\n- B\n- C`));
     assert.ok(!md.includes(" · "));
