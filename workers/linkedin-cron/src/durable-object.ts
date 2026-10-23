@@ -1,5 +1,5 @@
 import type { QueueEntry, ReelsContainerRef } from "./index";
-import { CLAIM_TTL_MS } from "./index";
+import { CLAIM_TTL_MS, sameQueueContent } from "./index";
 import { fireQueueEntry, pickReelsContainer, type InstagramCreds, type ThreadsCreds, type LinkedInCreds } from "./dispatch";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
@@ -60,6 +60,7 @@ export interface DoStoredPayload {
  *   POST /arm     body: DoStoredPayload + { scheduledAtMs: number }
  *                 → persiste payload, agenda alarm, retorna { armed: true }
  *                 → 409 { armed: false, fired: true } se o DO já disparou (#10992)
+ *                 → apaga `reels_container` se o conteúdo mudou (#11024)
  *   GET  /idem    → { queue_key: string | null } — só no DO-índice `idem:{uuid}` (#10992)
  *   POST /idem    body: { queue_key } → grava a queue key atual da chave idempotente
  *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
@@ -124,6 +125,15 @@ export class LinkedInScheduler {
       }
       // Persiste tudo que alarm() precisará — inclusive entry completa + webhook URLs
       const { scheduledAtMs, ...payload } = body;
+      // #11024 — o container de Reels guardado (#10922) pertence ao conteúdo
+      // da tentativa anterior. Re-armar com conteúdo DIFERENTE (enqueue
+      // idempotente `replaced`, #10917) e retomá-lo publicaria a legenda/vídeo
+      // velhos — no alarm e no cron, que o recebe do /claim. Só sobrevive se o
+      // payload anterior existe e publica a mesma coisa (re-arm do mesmo item).
+      const previous = await this.state.storage.get<DoStoredPayload>("payload");
+      if (!previous || !sameQueueContent(previous.entry, payload.entry)) {
+        await this.state.storage.delete("reels_container");
+      }
       await this.state.storage.put("payload", payload satisfies DoStoredPayload);
       // setAlarm sobrescreve alarm anterior — idempotente pra re-arm
       await this.state.storage.setAlarm(scheduledAtMs);
