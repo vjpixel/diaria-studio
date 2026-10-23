@@ -1,6 +1,6 @@
-import type { QueueEntry } from "./index";
+import type { QueueEntry, ReelsContainerRef } from "./index";
 import { CLAIM_TTL_MS } from "./index";
-import { fireQueueEntry, type InstagramCreds, type ThreadsCreds, type LinkedInCreds } from "./dispatch";
+import { fireQueueEntry, pickReelsContainer, type InstagramCreds, type ThreadsCreds, type LinkedInCreds } from "./dispatch";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
 
@@ -173,7 +173,24 @@ export class LinkedInScheduler {
         await this.state.storage.put("claimed_at", Date.now());
         return true;
       });
-      return new Response(JSON.stringify({ claimed }), {
+      // #10922 — quem ganhou o claim recebe o container de Reels que o alarm
+      // deixou em processamento (o cron lê a entry do KV, que não o tem).
+      const reelsContainer = claimed ? (await this.state.storage.get<ReelsContainerRef>("reels_container")) ?? null : null;
+      return new Response(JSON.stringify(reelsContainer ? { claimed, reels_container: reelsContainer } : { claimed }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // POST /reels-container — #10922: o cron sincroniza o container de Reels
+    // depois de uma falha (body `{ reels_container: ReelsContainerRef | null }`;
+    // null apaga). Sem isso o DO devolveria no próximo /claim um container que
+    // o cron já descartou (expirado).
+    if (url.pathname === "/reels-container" && request.method === "POST") {
+      const body = (await request.json()) as { reels_container?: ReelsContainerRef | null };
+      if (body.reels_container) await this.state.storage.put("reels_container", body.reels_container);
+      else await this.state.storage.delete("reels_container");
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -188,6 +205,7 @@ export class LinkedInScheduler {
     if (url.pathname === "/status-set-fired" && request.method === "POST") {
       await this.state.storage.put("fired", true);
       await this.state.storage.delete("payload");  // (#2230 bug 1 fix) payload limpo
+      await this.state.storage.delete("reels_container"); // #10922
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
       return new Response(JSON.stringify({ ok: true }), {
@@ -235,7 +253,11 @@ export class LinkedInScheduler {
       return;
     }
 
-    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram, instagramVjpixel, threads, linkedin } = payload;
+    const { key, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram, instagramVjpixel, threads, linkedin } = payload;
+    // #10922 — Reels: retoma o container de uma volta anterior, se houver.
+    const storedContainer = await this.state.storage.get<ReelsContainerRef>("reels_container");
+    const resumeContainer = pickReelsContainer(payload.entry.reels_container, storedContainer, Date.now());
+    const entry: QueueEntry = resumeContainer ? { ...payload.entry, reels_container: resumeContainer } : payload.entry;
     const channel = entry.channel ?? "linkedin";
 
     // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
@@ -306,6 +328,7 @@ export class LinkedInScheduler {
         try {
           await this.state.storage.put("fired", true);
           await this.state.storage.delete("payload");   // payload limpo — alarm re-entry posta nada
+          await this.state.storage.delete("reels_container"); // #10922
           await this.state.storage.delete("claiming");
           await this.state.storage.delete("claimed_at");
           firedPersisted = true;
@@ -328,6 +351,10 @@ export class LinkedInScheduler {
       // Trade-off: item pode aparecer em /list por até 5min após fire. Aceitável.
     } else {
       // outcome.status === "failed" — libera o claim pra cron fallback tentar via retry normal.
+      // #10922 — guarda (ou descarta) o container de Reels ANTES de liberar o
+      // claim: o cron recebe ele no /claim e retoma em vez de criar outro.
+      if (outcome.reelsContainer) await this.state.storage.put("reels_container", outcome.reelsContainer);
+      else if (entry.reels_container) await this.state.storage.delete("reels_container");
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
       console.error(`[DO alarm] fire failed key=${key} channel=${channel}: ${outcome.reason}`);

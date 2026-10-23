@@ -163,6 +163,13 @@ export const MAX_COLLABORATORS = 3;
 /** #10823 — username do Instagram: letras, dígitos, `.` e `_`, até 30. */
 export const IG_USERNAME_RE = /^[A-Za-z0-9._]{1,30}$/;
 
+/** #10922 — container de Reels em processamento, retomável entre voltas. */
+export interface ReelsContainerRef {
+  id: string;
+  /** ISO 8601 — o container expira 24 h depois de criado. */
+  created_at: string;
+}
+
 export interface QueueEntry {
   text: string;
   image_url: string | null;
@@ -201,6 +208,15 @@ export interface QueueEntry {
    * uuid aleatório de sempre.
    */
   idempotency_key?: string;
+  /**
+   * #10922 — container de Reels criado numa volta anterior que não chegou a
+   * publicar (não ficou FINISHED dentro do teto do poll, ou o `media_publish`
+   * falhou). A volta seguinte retoma ESTE container em vez de criar outro, então
+   * o tempo de processamento da Meta soma entre as voltas em vez de recomeçar do
+   * zero (vertical de 275 MB em 261022). Gravado só pelo Worker, nunca aceito
+   * no POST /queue.
+   */
+  reels_container?: ReelsContainerRef;
   // (#2230 bug 2 fix) Tombstone de cancelamento: setado por handleQueueDelete quando
   // o KV.delete falha após o DO cancel. O cron detecta este flag, pula o item sem
   // postar, e o deleta do KV (cleanup do tombstone).
