@@ -30,7 +30,7 @@ import {
   type ScheduledSlot,
 } from "../scripts/lib/social-slot-planner.ts";
 import { planShortSlots, shortDestinationAlsoAccounts, type ShortDestination } from "../scripts/lib/diaria/short-video.ts";
-import { loadScheduledGrid, loadWorkerQueueForGrid } from "../scripts/publish-shorts.ts";
+import { loadScheduledGrid, loadWorkerQueueForGrid, WORKER_QUEUE_LIST_TIMEOUT_MS } from "../scripts/publish-shorts.ts";
 
 const at = (date: string, hhmm: string) => new Date(`${date}T${hhmm}:00-03:00`).toISOString();
 const hhmm = (iso: string | null) => (iso ? new Date(Date.parse(iso) - 3 * 3_600_000).toISOString().slice(11, 16) : null);
@@ -259,6 +259,78 @@ describe("#10819 fila do Worker como fonte da grade", () => {
       assert.match(warns[0], /HTTP 401/);
       assert.match(warns[1], /sem items/);
       assert.match(warns[2], /rede fora/);
+    });
+
+    // #11001: Worker pendurado não pode prender o script (nem o dry-run).
+    describe("timeout do GET /list (#11001)", () => {
+      /** Timer injetado: guarda o callback e o prazo; o teste dispara à mão. */
+      const manualTimer = () => {
+        const state: { fire?: () => void; ms?: number; cleared: number } = { cleared: 0 };
+        return {
+          state,
+          setTimer: (fn: () => void, ms: number) => {
+            state.fire = fn;
+            state.ms = ms;
+            return 1;
+          },
+          clearTimer: () => {
+            state.cleared++;
+          },
+        };
+      };
+
+      it("teto padrão é a constante nomeada de 10 s", () => {
+        assert.equal(WORKER_QUEUE_LIST_TIMEOUT_MS, 10_000);
+      });
+
+      it("fetch que nunca resolve E ignora o abort: o timer vence, aviso e undefined", async () => {
+        const t = manualTimer();
+        let signal: AbortSignal | undefined;
+        const hang = ((_url: string, init?: RequestInit) => {
+          signal = init?.signal ?? undefined;
+          return new Promise<Response>(() => {});
+        }) as unknown as typeof fetch;
+        const warns: string[] = [];
+        const pending = loadWorkerQueueForGrid("https://w", "t", hang, (m) => warns.push(m), t);
+        assert.equal(t.state.ms, WORKER_QUEUE_LIST_TIMEOUT_MS);
+        t.state.fire!();
+        assert.equal(await pending, undefined);
+        assert.equal(signal?.aborted, true);
+        assert.equal(warns.length, 1);
+        assert.match(warns[0], /timeout de 10000 ms/);
+      });
+
+      it("fetch que respeita o abort: rejeita no abort, aviso e undefined", async () => {
+        const t = manualTimer();
+        const abortable = ((_url: string, init?: RequestInit) =>
+          new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted pelo signal")));
+          })) as unknown as typeof fetch;
+        const warns: string[] = [];
+        const pending = loadWorkerQueueForGrid("https://w", "t", abortable, (m) => warns.push(m), { ...t, timeoutMs: 50 });
+        assert.equal(t.state.ms, 50);
+        t.state.fire!();
+        assert.equal(await pending, undefined);
+        assert.equal(warns.length, 1);
+        assert.match(warns[0], /sem a fila do Worker/);
+      });
+
+      it("resposta a tempo: limpa o timer e não avisa", async () => {
+        const t = manualTimer();
+        const warns: string[] = [];
+        assert.deepEqual(await loadWorkerQueueForGrid("https://w", "t", okFetch(queue).fn, (m) => warns.push(m), t), queue);
+        assert.equal(t.state.cleared, 1);
+        assert.deepEqual(warns, []);
+      });
+
+      it("timer real: um fetch pendurado retorna dentro do timeoutMs curto", async () => {
+        const hang = (() => new Promise<Response>(() => {})) as unknown as typeof fetch;
+        const warns: string[] = [];
+        const t0 = Date.now();
+        assert.equal(await loadWorkerQueueForGrid("https://w", "t", hang, (m) => warns.push(m), { timeoutMs: 20 }), undefined);
+        assert.ok(Date.now() - t0 < 2_000);
+        assert.match(warns[0], /timeout/);
+      });
     });
   });
 });

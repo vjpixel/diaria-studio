@@ -1515,30 +1515,64 @@ function loadEditionGrid(
 }
 
 /**
+ * #11001: teto da leitura da fila do Worker. A fila só ajusta horário, então um
+ * Worker lento/pendurado nunca pode prender o script (nem o dry-run): estourou,
+ * aborta e segue sem a fila, como em qualquer outra falha do Worker.
+ */
+export const WORKER_QUEUE_LIST_TIMEOUT_MS = 10_000;
+
+/**
  * Lê a fila do Worker (`GET /list`, só leitura) pra grade do #10819. Fail-soft:
- * sem URL/token ou com erro, avisa e devolve `undefined` (a grade segue só com
- * os stores da edição) — a fila só ajusta horário, nunca impede publicar.
+ * sem URL/token, com erro ou passado `timeoutMs` (#11001), avisa e devolve
+ * `undefined` (a grade segue só com os stores da edição) — a fila só ajusta
+ * horário, nunca impede publicar.
  */
 export async function loadWorkerQueueForGrid(
   workerUrl: string,
   workerToken: string,
   fetchFn: typeof fetch,
   warn: (m: string) => void,
+  opts: {
+    timeoutMs?: number;
+    setTimer?: (fn: () => void, ms: number) => unknown;
+    clearTimer?: (handle: unknown) => void;
+  } = {},
 ): Promise<unknown | undefined> {
   if (!workerUrl || !workerToken) {
     warn("grade #10819 sem a fila do Worker (DIARIA_LINKEDIN_CRON_URL/_TOKEN ausente) — posts agendados fora dos stores da edição não entram");
     return undefined;
   }
   const url = workerUrl.replace(/\/+$/, "") + "/list";
+  const timeoutMs = opts.timeoutMs ?? WORKER_QUEUE_LIST_TIMEOUT_MS;
+  const setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+  const clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+  const controller = new AbortController();
+  // A corrida contra o timer garante o teto mesmo com um fetch que ignore o
+  // `signal`; o abort libera o socket quando o fetch o respeita.
+  let timer: unknown;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimer(() => {
+      controller.abort();
+      reject(new Error(`timeout de ${timeoutMs} ms no GET /list`));
+    }, timeoutMs);
+  });
   try {
-    const res = await fetchFn(url, { headers: { "X-Diaria-Token": workerToken } });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = (await res.json()) as unknown;
+    const json = await Promise.race([
+      (async () => {
+        const res = await fetchFn(url, { headers: { "X-Diaria-Token": workerToken }, signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return (await res.json()) as unknown;
+      })(),
+      timedOut,
+    ]);
     if (!Array.isArray((json as { items?: unknown })?.items)) throw new Error("resposta sem items");
     return json;
   } catch (e) {
     warn(`grade #10819 sem a fila do Worker (${(e as Error).message}) — posts agendados fora dos stores da edição não entram`);
     return undefined;
+  } finally {
+    clearTimer(timer);
+    timedOut.catch(() => {});
   }
 }
 

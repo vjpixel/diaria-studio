@@ -29,12 +29,26 @@ function daily(date: string, accounts = ["facebook:diaria", "instagram:diaria", 
   return accounts.flatMap((account) => ["07:00", "11:00", "15:00", "19:00"].map((h) => ({ account, at: at(date, h) })));
 }
 
+/**
+ * Janela do teste de horário FIXADA aqui (mesma lição do hotfix #10996/#10933):
+ * nunca depender de `DEFAULT_SHORT_SCHEDULE_RAW` nem do `platform.config.json`
+ * vivo — trocar o default de produção não pode quebrar estes casos sem bug real.
+ * 261026 = 1º dia da rotação (06:30), 261027 = 2º (08:00); 261116 fica depois
+ * de `rotation_end`, então vale `default_time` (12:00).
+ */
+const SCHEDULE = { rotation_times: ["06:30", "08:00", "12:00"], rotation_start: "2026-10-26", rotation_end: "2026-11-13", default_time: "12:00" };
+const config = {
+  publishing: {
+    shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE },
+  },
+};
+
 function plan(aammdd: string, date: string, grid: ScheduledSlot[], extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
   return planShortsPublish({
     aammdd,
     reviewedMd: reviewed,
     now: new Date(`${date}T03:00:00Z`),
-    config: {},
+    config,
     pages,
     instagramReady: true,
     published: { aammdd, entries: [] },
@@ -79,7 +93,7 @@ describe("#10819 durante o teste do #10831: horário do teste tem precedência",
 });
 
 describe("#10819 fora do teste: o planner decide por destino", () => {
-  // 261116 (segunda) fica depois de rotation_end (2026-11-13): default_time 12:00.
+  // 261116 (segunda) fica depois de SCHEDULE.rotation_end (2026-11-13): default_time 12:00.
   it("página da diar.ia.br espalha entre os próprios posts; VJ pixel e Instagram alinham a post de outra conta", () => {
     const p = plan("261116", "2026-11-16", daily("2026-11-16"));
     assert.equal(p.shortTime.source, "default");
