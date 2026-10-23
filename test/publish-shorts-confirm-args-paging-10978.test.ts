@@ -15,6 +15,7 @@ import {
   instagramMediaPagingDone,
   INSTAGRAM_CONFIRM_MAX_PAGES,
   parseShortsCliArgs,
+  readAndDecideInstagramConfirm,
 } from "../scripts/publish-shorts.ts";
 import type { ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
 
@@ -71,6 +72,27 @@ describe("#10978 item 3: ordem dos argumentos do --confirm-instagram", () => {
 
   it("sem edição: erro de uso", () => {
     assert.equal(parseShortsCliArgs(["--confirm-instagram"]).ok, false);
+  });
+
+  for (const argv of [
+    ["--now", "261022"],
+    ["261022", "--publish"],
+  ]) {
+    it(`${argv.join(" ")} vale como edição 261022`, () => {
+      const r = parseShortsCliArgs(argv);
+      assert.equal(r.ok, true, JSON.stringify(r));
+      const ok = r as Extract<typeof r, { ok: true }>;
+      assert.equal(ok.aammdd, "261022");
+      assert.ok(ok.flags.has(argv.includes("--now") ? "now" : "publish"));
+    });
+  }
+
+  it("posicional que não é data: argumento não reconhecido, nunca 'edição ambígua'", () => {
+    const r = parseShortsCliArgs(["261022", "publish"]);
+    assert.equal(r.ok, false);
+    const err = (r as { error: string }).error;
+    assert.match(err, /argumento não reconhecido: publish/);
+    assert.doesNotMatch(err, /ambígua/);
   });
 
   it("--edition continua valendo", () => {
@@ -197,6 +219,80 @@ describe("#10978 item 4: paginação do /media", () => {
       },
     };
     await assert.rejects(fetchInstagramRecentMedia(deps, "1784", "tok", "v25.0", { sinceIso: "2026-10-01T00:00:00Z" }), /página 2.*rate limit/);
+  });
+
+  it("paging.next com outra versão da API no graph.facebook.com é seguido", async () => {
+    const other = "https://graph.facebook.com/v26.0/1784/media?after=c1&access_token=tok&limit=15";
+    const f = fetchPages([
+      { data: filler("f", "2026-10-23T15:00:00Z", 15), paging: { next: other } },
+      { data: [reel, ...filler("g", "2026-10-21T10:00:00Z", 2)] },
+    ]);
+    const media = await fetchInstagramRecentMedia(f.deps, "1784", "tok", "v25.0", { sinceIso: "2026-10-22T03:00:00Z" });
+    assert.equal(f.urls.length, 2);
+    assert.equal(f.urls[1], other);
+    assert.equal(media.windowCovered, true);
+  });
+
+  it("maxPages NaN cai no teto padrão (nunca sem limite)", async () => {
+    const pages = Array.from({ length: INSTAGRAM_CONFIRM_MAX_PAGES + 2 }, (_, i) => ({
+      data: filler(`p${i}-`, "2026-10-23T15:00:00Z", 15),
+      paging: { next: NEXT(i + 1) },
+    }));
+    const f = fetchPages(pages);
+    await fetchInstagramRecentMedia(f.deps, "1784", "tok", "v25.0", { sinceIso: "2026-10-01T00:00:00Z", maxPages: Number.NaN });
+    assert.equal(f.urls.length, INSTAGRAM_CONFIRM_MAX_PAGES);
+  });
+
+  it("teto de páginas sem cobrir o --since: match único NÃO registra, pede --media-id", async () => {
+    // O Reels da edição está na 1ª página, mas a janela continua além do teto.
+    const pages = [
+      { data: [{ ...reel, timestamp: "2026-10-23T15:30:00+0000" }, ...filler("f", "2026-10-23T15:00:00Z", 14)], paging: { next: NEXT(1) } },
+      { data: filler("g", "2026-10-23T12:00:00Z", 15), paging: { next: NEXT(2) } },
+    ];
+    const f = fetchPages(pages);
+    const since = "2026-10-01T00:00:00Z";
+    const media = await fetchInstagramRecentMedia(f.deps, "1784", "tok", "v25.0", { sinceIso: since, maxPages: 2 });
+    assert.equal(media.windowCovered, false);
+    const d = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, nowIso: now });
+    assert.equal(d.kind, "refuse", JSON.stringify(d));
+    assert.match((d as { reason: string }).reason, /teto de páginas.*--media-id/);
+    // Com a janela coberta, o mesmo dado registraria.
+    const ok = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, nowIso: now, windowCovered: true });
+    assert.equal(ok.kind, "register");
+    // --media-id explícito continua valendo mesmo sem cobrir a janela.
+    const byId = decideInstagramConfirm({ published: empty, media, sinceIso: since, markers, mediaId: "reel-p2", nowIso: now });
+    assert.equal(byId.kind, "register");
+  });
+
+  it("readAndDecideInstagramConfirm repassa { sinceIso, mediaId } ao fetch e decide", async () => {
+    const p1 = { data: filler("f", "2026-10-23T15:00:00Z", 15), paging: { next: NEXT(1) } };
+    const p2 = { data: [reel], paging: { next: NEXT(2) } };
+    const f = fetchPages([p1, p2]);
+    const d = await readAndDecideInstagramConfirm(f.deps, {
+      igUserId: "1784", token: "tok", apiVersion: "v25.0", published: empty,
+      sinceIso: "2026-10-23T03:00:00Z", markers, mediaId: "reel-p2", nowIso: now,
+    });
+    // mediaId repassado: parou na página em que achou (sem ele, o corte de
+    // 03:00 de hoje só pararia na 2ª também, mas o since sozinho não acharia o Reels de ontem).
+    assert.equal(f.urls.length, 2);
+    assert.equal(d.kind, "register");
+    const f2 = fetchPages([{ data: [reel, ...filler("g", "2026-10-21T10:00:00Z", 2)], paging: { next: NEXT(1) } }]);
+    const d2 = await readAndDecideInstagramConfirm(f2.deps, {
+      igUserId: "1784", token: "tok", apiVersion: "v25.0", published: empty,
+      sinceIso: "2026-10-22T03:00:00Z", markers, nowIso: now,
+    });
+    // sinceIso repassado: a 1ª página já passa do corte, então não pede a 2ª.
+    assert.equal(f2.urls.length, 1);
+    assert.equal(d2.kind, "register");
+  });
+
+  it("readAndDecideInstagramConfirm: --since inválido falha ANTES de qualquer fetch", async () => {
+    const f = fetchPages([]);
+    await assert.rejects(
+      readAndDecideInstagramConfirm(f.deps, { igUserId: "1784", token: "tok", apiVersion: "v25.0", published: empty, sinceIso: "ontem", markers, nowIso: now }),
+      /--since inválido/,
+    );
+    assert.equal(f.urls.length, 0);
   });
 
   it("instagramMediaPagingDone: com mediaId só para quando acha; sem corte válido nunca para", () => {

@@ -1138,6 +1138,13 @@ export function decideInstagramConfirm(input: {
   markers: string[];
   mediaId?: string | null;
   nowIso: string;
+  /**
+   * #10978: a leitura do `/media` chegou ao `sinceIso` (ou acabou)? Default:
+   * o `windowCovered` que `fetchInstagramRecentMedia` devolve junto de `data`,
+   * senão `true`. `false` (parou no teto de páginas) recusa o match automático
+   * — pode haver outro Reels da edição não lido — e exige `--media-id`.
+   */
+  windowCovered?: boolean;
 }): InstagramConfirmDecision {
   const already = instagramAlreadyRegistered(input.published);
   if (already) return { kind: "already_registered", ...already };
@@ -1189,6 +1196,14 @@ export function decideInstagramConfirm(input: {
     .map(toCandidate)
     .sort(byNewest);
   const matches = reels.filter((c) => c.matchesEdition);
+  const windowCovered = input.windowCovered ?? (input.media as any)?.windowCovered !== false;
+  if (!windowCovered) {
+    return {
+      kind: "refuse",
+      reason: `a leitura parou no teto de páginas (${data.length} mídias) sem chegar a ${input.sinceIso} — pode haver Reels da edição não lido; escolha com --media-id`,
+      candidates: matches.length ? matches : reels,
+    };
+  }
   if (matches.length === 1) return { kind: "register", entry: entryFor(matches[0]), candidates: reels };
   if (!reels.length) {
     return {
@@ -1225,7 +1240,8 @@ export function instagramMediaPagingDone(input: { lastPage: unknown[]; all: unkn
  * Só leitura: nunca cria container nem publica. Desde #10978 segue
  * `paging.next` (até `maxPages`, default `INSTAGRAM_CONFIRM_MAX_PAGES`) e
  * para assim que `instagramMediaPagingDone` diz que já achou. Devolve
- * `{ data }` com todas as páginas lidas, na ordem da API.
+ * `{ data }` com todas as páginas lidas, na ordem da API, e `windowCovered`:
+ * `false` quando parou no teto sem chegar ao `sinceIso` (a decisão recusa).
  */
 export async function fetchInstagramRecentMedia(
   deps: Pick<GraphDeps, "fetch">,
@@ -1233,8 +1249,9 @@ export async function fetchInstagramRecentMedia(
   token: string,
   apiVersion: string,
   opts: { sinceIso?: string | null; mediaId?: string | null; maxPages?: number } = {},
-): Promise<{ data: unknown[]; pages: number; more: boolean }> {
-  const maxPages = Math.max(1, opts.maxPages ?? INSTAGRAM_CONFIRM_MAX_PAGES);
+): Promise<{ data: unknown[]; pages: number; more: boolean; windowCovered: boolean }> {
+  // NaN/Infinity/undefined caem no teto padrão — nunca "sem limite".
+  const maxPages = typeof opts.maxPages === "number" && Number.isFinite(opts.maxPages) ? Math.max(1, Math.floor(opts.maxPages)) : INSTAGRAM_CONFIRM_MAX_PAGES;
   let page: any = await graphGet(
     deps as GraphDeps,
     `${igUserId}/media`,
@@ -1248,16 +1265,54 @@ export async function fetchInstagramRecentMedia(
     all.push(...page.data);
     pages++;
     const next = typeof page?.paging?.next === "string" ? page.paging.next : null;
-    if (!next) return { data: all, pages, more: false };
-    if (pages >= maxPages || instagramMediaPagingDone({ lastPage: page.data, all, sinceIso: opts.sinceIso, mediaId: opts.mediaId })) {
-      return { data: all, pages, more: true };
+    if (!next) return { data: all, pages, more: false, windowCovered: true };
+    if (instagramMediaPagingDone({ lastPage: page.data, all, sinceIso: opts.sinceIso, mediaId: opts.mediaId })) {
+      return { data: all, pages, more: true, windowCovered: true };
     }
+    // Bateu o teto sem chegar ao corte: a janela pode ter mais Reels não lidos.
+    if (pages >= maxPages) return { data: all, pages, more: true, windowCovered: false };
     // O `next` já traz o access_token: só segue se for o próprio Graph.
     if (new URL(next).origin !== GRAPH) throw new Error(`GET ${igUserId}/media: paging.next fora do Graph (${new URL(next).origin})`);
     const res = await deps.fetch(next);
     page = await readJson(res);
     if (!res.ok || page?.error) throw new Error(`GET ${igUserId}/media (página ${pages + 1}): ${res.status} ${JSON.stringify(page?.error ?? page)}`);
   }
+}
+
+/**
+ * #10978: miolo do `--confirm-instagram` com I/O injetável — valida o
+ * `--since` ANTES de qualquer leitura (um corte inválido não gasta 5 páginas
+ * pra só então falhar), lê o `/media` com o corte e o `--media-id`, e decide.
+ */
+export async function readAndDecideInstagramConfirm(
+  deps: Pick<GraphDeps, "fetch">,
+  input: {
+    igUserId: string;
+    token: string;
+    apiVersion: string;
+    published: ShortsPublishedFile;
+    sinceIso: string;
+    markers: string[];
+    mediaId?: string | null;
+    nowIso: string;
+    maxPages?: number;
+  },
+): Promise<InstagramConfirmDecision> {
+  if (Number.isNaN(Date.parse(input.sinceIso))) throw new Error(`--since inválido: ${input.sinceIso}`);
+  const media = await fetchInstagramRecentMedia(deps, input.igUserId, input.token, input.apiVersion, {
+    sinceIso: input.sinceIso,
+    mediaId: input.mediaId ?? null,
+    maxPages: input.maxPages,
+  });
+  return decideInstagramConfirm({
+    published: input.published,
+    media,
+    sinceIso: input.sinceIso,
+    markers: input.markers,
+    mediaId: input.mediaId ?? null,
+    nowIso: input.nowIso,
+    windowCovered: media.windowCovered,
+  });
 }
 
 /** Lado com I/O do preparo do arquivo pro Chrome (#10915), injetável nos testes. */
@@ -1746,6 +1801,10 @@ export function parseShortsCliArgs(argv: string[]):
   | { ok: false; error: string } {
   const { flags, values, positional } = parseArgs(argv);
   const positionalOut = [...positional];
+  // Só AAMMDD é posicional: o resto (ex.: um `publish` sem `--`) é erro de uso,
+  // nunca candidato a edição ("edição ambígua: 261022, publish" enganava).
+  const unknown = positionalOut.find((p) => !/^\d{6}$/.test(p));
+  if (unknown !== undefined) return { ok: false, error: `argumento não reconhecido: ${unknown}` };
   for (const f of SHORTS_BOOLEAN_FLAGS) {
     const v = values[f];
     if (v === undefined) continue;
@@ -2063,6 +2122,11 @@ async function confirmInstagram(
     }
     return already.exitCode;
   }
+  // #10978: --since inválido falha antes de qualquer chamada à API.
+  if (sinceFlag !== undefined && Number.isNaN(Date.parse(sinceFlag))) {
+    console.error(`publish-shorts: --since inválido: ${sinceFlag}`);
+    return 2;
+  }
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
   const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
@@ -2082,9 +2146,17 @@ async function confirmInstagram(
   const markers = instagramEditionMarkers({ aammdd, d1Title, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
   // Default: 00:00 BRT do dia da edição (o vertical sai no próprio dia, #10831).
   const since = sinceFlag ?? resolveEditionScheduledAt(aammdd, "00:00");
-  const media = await fetchInstagramRecentMedia(defaultGraphDeps, author.igUserId, author.token, igApiVersion, { sinceIso: since, mediaId: mediaIdFlag ?? null });
+  const decision = await readAndDecideInstagramConfirm(defaultGraphDeps, {
+    igUserId: author.igUserId,
+    token: author.token,
+    apiVersion: igApiVersion,
+    published,
+    sinceIso: since,
+    markers,
+    mediaId: mediaIdFlag ?? null,
+    nowIso: new Date().toISOString(),
+  });
   const who = author.username ? `@${author.username}` : author.igUserId;
-  const decision = decideInstagramConfirm({ published, media, sinceIso: since, markers, mediaId: mediaIdFlag ?? null, nowIso: new Date().toISOString() });
   if (decision.kind !== "register") {
     // already_registered foi tratado acima; aqui só sobra a recusa.
     const reason = decision.kind === "refuse" ? decision.reason : "já registrado";
