@@ -13,6 +13,7 @@
  */
 
 import { describe, it } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -47,6 +48,14 @@ import {
   type ShortsPlanItem,
 } from "../scripts/publish-shorts.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+
+// #10998: janela do cenário, independente do default e da config de produção.
+const SCHEDULE = {
+  rotation_times: ["12:00", "19:00"],
+  rotation_start: "2026-10-22",
+  rotation_end: "2026-11-04",
+  default_time: "12:00",
+};
 
 const byAccount = { vjpixel: 40, diaria: 55 };
 const cfgWith = (shorts: Record<string, unknown>) => ({ publishing: { shorts } });
@@ -131,6 +140,7 @@ describe("#10916 teto de duração por conta", () => {
       reviewedMd: reviewed,
       now: new Date("2026-10-22T09:00:00Z"),
       config: cfgWith({
+        schedule: SCHEDULE,
         facebook_pages: ["diaria"],
         instagram: true,
         instagram_author_page: author,

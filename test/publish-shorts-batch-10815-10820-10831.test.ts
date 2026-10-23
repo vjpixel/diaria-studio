@@ -7,6 +7,7 @@
  */
 
 import { describe, it } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -27,6 +28,14 @@ import {
   type GraphDeps,
 } from "../scripts/publish-shorts.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+
+// #10998: janela do cenário, independente do default e da config de produção.
+const SCHEDULE = {
+  rotation_times: ["06:30", "08:00", "12:00"],
+  rotation_start: "2026-10-26",
+  rotation_end: "2026-11-13",
+  default_time: "12:00",
+};
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -194,7 +203,7 @@ describe("#10820 Instagram com autora pessoal", () => {
       aammdd: "261022",
       reviewedMd: reviewed,
       now: new Date("2026-10-22T20:00:00Z"),
-      config: {},
+      config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE } } },
       pages: [{ ...page, slug: "diaria" }, page],
       instagramReady: true,
       instagramWarnings: ["não deu pra conferir o escopo"],
@@ -230,7 +239,7 @@ describe("#10820 Instagram com autora pessoal", () => {
       video: { path: "v.mp4", exists: true, sizeBytes: 1 },
       editionUrl: "https://diar.ia.br/p/x",
     };
-    const cfg = (instagram: boolean) => ({ publishing: { shorts: { facebook_pages: ["diaria"], instagram, instagram_author_page: "vjpixl" } } });
+    const cfg = (instagram: boolean) => ({ publishing: { shorts: { schedule: SCHEDULE, facebook_pages: ["diaria"], instagram, instagram_author_page: "vjpixl" } } });
     assert.throws(() => planShortsPublish({ ...base, config: cfg(true) }), /instagram_author_page: página "vjpixl"/);
     assert.doesNotThrow(() => planShortsPublish({ ...base, config: cfg(false) }));
   });
@@ -270,7 +279,7 @@ describe("#10820 Instagram com autora pessoal", () => {
 });
 
 describe("#10831 horário próprio do vertical", () => {
-  const sched = loadShortScheduleConfig({});
+  const sched = loadShortScheduleConfig({ publishing: { shorts: { schedule: SCHEDULE } } });
 
   it("alterna 06:30/08:00/12:00 por dia corrido a partir de 261026 (segunda); fora da janela, default", () => {
     assert.equal(resolveShortTime(sched, "261026").hhmm, "06:30");
@@ -307,11 +316,18 @@ describe("#10831 horário próprio do vertical", () => {
     for (let d = 1; d <= 13; d++) assert.notEqual(resolveShortTime(sched, `2611${String(d).padStart(2, "0")}`).hhmm, "06:00");
   });
 
-  it("config real bate com o default e é válido", () => {
+  it("config real é válida sem exigir um horário editorial específico", () => {
     const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const real = loadShortScheduleConfig(config);
-    assert.deepEqual(real, loadShortScheduleConfig({ publishing: { shorts: { schedule: DEFAULT_SHORT_SCHEDULE_RAW } } }));
-    assert.deepEqual(real.rotationTimes, ["06:30", "08:00", "12:00"]);
+    assert.ok(real.rotationTimes.length > 0);
+  });
+
+  it("#10998: horário vencedor fora da rotação vem da config injetada", () => {
+    const config = { publishing: { shorts: { schedule: { ...SCHEDULE, default_time: "09:45" } } } };
+    const pinned = loadShortScheduleConfig(config);
+    assert.equal(resolveShortTime(pinned, "261116").hhmm, "09:45");
+    assert.equal(resolveShortTime(sched, "261116").hhmm, "12:00");
+    assert.equal(resolveShortTime(pinned, "261027").hhmm, "08:00");
   });
 
   it("config malformado LANÇA (estragaria o teste em silêncio)", () => {
@@ -331,7 +347,7 @@ describe("#10831 horário próprio do vertical", () => {
       aammdd: "261027",
       reviewedMd: reviewed,
       now: new Date("2026-10-27T08:00:00Z"),
-      config: {},
+      config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE } } },
       pages: [{ ...page, slug: "diaria" }, page],
       instagramReady: true,
       published: { aammdd: "261027", entries: [] },
