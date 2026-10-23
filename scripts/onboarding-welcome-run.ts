@@ -730,15 +730,39 @@ export async function ensureD10List(opts: {
   if (status === 200) {
     const lists = (body as { lists?: { id: number; name: string }[] }).lists ?? [];
     const found = lists.find((l) => l.name === opts.listName);
-    if (found) return found.id;
+    if (found) return assertBrevoListId(found.id, `GET /contacts/lists ("${opts.listName}")`);
   }
   // #10603: a Brevo recusa POST /contacts/lists sem `folderId` ("Folder id is missing").
   const folderId =
     opts.folderId ?? (await resolveOrCreateBrevoFolder(opts.apiKey, opts.folderName ?? "Onboarding"));
   const created = (await brevoPost(opts.apiKey, "/contacts/lists", { name: opts.listName, folderId })) as {
-    id: number;
+    id?: unknown;
   };
-  return created.id;
+  // #10870: id ausente/inválido na resposta vira erro AQUI, nomeando a lista —
+  // nunca segue adiante como `undefined` até a campanha.
+  return assertBrevoListId(created?.id, `POST /contacts/lists ("${opts.listName}")`);
+}
+
+/**
+ * #10870: valida um id de lista Brevo (inteiro positivo). Lança com a origem
+ * do id quando não é — a falha de resolução do destinatário fica explícita em
+ * vez de virar uma campanha sem lista.
+ */
+export function assertBrevoListId(id: unknown, origem: string): number {
+  if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) {
+    throw new Error(`e-mail 3: lista D+10 não resolvida — ${origem} devolveu id inválido (${JSON.stringify(id)})`);
+  }
+  return id;
+}
+
+/**
+ * #10870: `recipients` do POST /emailCampaigns do e-mail 3. A Brevo exige
+ * `listIds` (ou `segmentIds`) na CRIAÇÃO — `lists` é o nome do campo na
+ * LEITURA (GET /emailCampaigns/{id}) e na criação é ignorado, gerando o 400
+ * `Either the listIds or segmentIds are mandatory in recipients`.
+ */
+export function buildEmail3Recipients(listId: number): { listIds: number[] } {
+  return { listIds: [assertBrevoListId(listId, "recipients do e-mail 3")] };
 }
 
 /**
@@ -771,6 +795,8 @@ export async function scheduleEmail3Campaign(opts: {
   isoNow: string;
 }): Promise<{ campaignId: number; listId: number }> {
   const { apiKey, cfg, entries } = opts;
+  // #10870: cohort vazio criaria lista vazia e uma campanha sem ninguém.
+  if (entries.length === 0) throw new Error("e-mail 3: cohort vazio — nenhuma campanha criada");
   const listId = await ensureD10List({
     apiKey,
     listName: d10ListNameFor(cfg.d10_list_name, opts.nowSec),
@@ -787,7 +813,7 @@ export async function scheduleEmail3Campaign(opts: {
     sender: opts.sender,
     ...(cfg.reply_to ? { replyTo: cfg.reply_to } : {}),
     htmlContent: opts.snippet.body,
-    recipients: { lists: [listId] },
+    recipients: buildEmail3Recipients(listId),
     // #10603: decisão do editor (20/10/2026) — e-mail 3 sai automático,
     // sem aprovação manual por lote. Mesmo lead mínimo do transacional.
     scheduledAt: computeMinScheduledAt(),

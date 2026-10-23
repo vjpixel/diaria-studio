@@ -277,7 +277,8 @@ export function classifyHighlight(h: GenericStudyHighlight): GenericStudyVerdict
  *    genérico negativo fica (só aviso, `kept`).
  *  - Com menos de 3 não-genéricos, os genéricos completam o top-3 (`kept`) —
  *    a edição nunca fica com menos destaques por causa da penalidade.
- *  - Item com `same_fact_demoted` (#9100) nunca é promovido por este passo.
+ *  - Item com `same_fact_demoted` (#9100) ou `negative_promotion_excluded`
+ *    (#10795) nunca é promovido por este passo.
  *  - Domínio (≤2 URLs/domínio, #5735): só reordena itens que JÁ estão na
  *    edição (nenhuma URL entra nem sai), então a contagem não muda.
  *
@@ -298,10 +299,13 @@ export function demoteGenericStudyHighlights<H extends GenericStudyHighlight>(
     return { highlights: highlights.slice(), demoted: [], kept: [] };
   }
 
-  // Item já rebaixado por MESMO FATO (#9100, passo anterior) nunca sobe de
-  // volta ao top-3 por causa desta penalidade: vai para o fim, atrás dos
-  // genéricos.
-  const blocked = (h: H) => h.same_fact_demoted !== undefined && h.same_fact_demoted !== null;
+  // Item já rebaixado por MESMO FATO (#9100, passo anterior) — ou tirado do
+  // top-3 pela política de promoção de negativo (#10795, mesmo passo) — nunca
+  // sobe de volta ao top-3 por causa desta penalidade: vai para o fim, atrás
+  // dos genéricos.
+  const blocked = (h: H) =>
+    (h.same_fact_demoted !== undefined && h.same_fact_demoted !== null) ||
+    (h.negative_promotion_excluded !== undefined && h.negative_promotion_excluded !== null);
   const clean = ordered.filter((h) => !verdicts.has(h) && !blocked(h));
   const generic = ordered.filter((h) => verdicts.has(h) && !blocked(h));
   const tail = ordered.filter((h) => blocked(h));

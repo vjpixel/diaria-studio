@@ -150,8 +150,12 @@ export interface AdsTestWatchDeps {
    *  `evaluateApuracaoCohortGuard`: braço zerado no relatório com cadastro
    *  no store, ou cobertura de entrega da coorte abaixo do piso. Qualquer
    *  `cohortProblems` não-vazio impede marcar a apuração como concluída.
-   *  Opcionais só pra teste — `realCacReport` sempre preenche. */
-  runCacReport: (snapshotDate: string, bracos: readonly string[]) => Promise<CacReportRunResult>;
+   *  Opcionais só pra teste — `realCacReport` sempre preenche.
+   *
+   *  `runStatePath` (#8238, Emenda 17/09): repassado como `--apuracao-2608`,
+   *  anexa ao relatório congelado a seção da Emenda (coorte por fase, custo
+   *  por leitor-v1, sem-sinal, razão detectável) e grava o extrato da coorte. */
+  runCacReport: (snapshotDate: string, bracos: readonly string[], runStatePath?: string) => Promise<CacReportRunResult>;
   /** #8238 — gate de usabilidade da apuração: frescor do STORE (de onde a
    *  coorte é lida), não mais o snapshot Beehiiv. Produção:
    *  `realIsStoreFresh` (última ingestão Kit em `subscription.updated_at`). */
@@ -234,10 +238,15 @@ function realBuildOrigemMap(): boolean {
  * `--fonte store` (#8238): a coorte do teste 2608 nasce no Kit, nunca no
  * snapshot Beehiiv — ver docstring de `AdsTestWatchDeps.runCacReport`.
  */
-async function realCacReport(snapshotDate: string, bracos: readonly string[]): Promise<CacReportRunResult> {
+async function realCacReport(snapshotDate: string, bracos: readonly string[], runStatePath?: string): Promise<CacReportRunResult> {
   const priorExitCode = process.exitCode;
   process.exitCode = undefined;
-  const report = await cacReportMain(["--snapshot", snapshotDate, "--fonte", "store"]);
+  // #8238 (Emenda 17/09): com o run-state, o relatório congelado ganha a seção
+  // da apuração (coorte por fase, custo por leitor-v1, razão detectável).
+  const report = await cacReportMain([
+    "--snapshot", snapshotDate, "--fonte", "store",
+    ...(runStatePath ? ["--apuracao-2608", runStatePath] : []),
+  ]);
   const failed = process.exitCode !== undefined && process.exitCode !== 0;
   process.exitCode = priorExitCode;
   // `!report` sem exitCode != 0 não deveria acontecer (todo `return null` de
@@ -598,7 +607,7 @@ export async function main(argv: string[] = process.argv.slice(2), depsOverride:
       if (!origemOk) {
         console.error(`${LOG_PREFIX} build-origem-map.ts falhou — apuração abortada, cac-report.ts NÃO rodou.`);
       } else {
-        const cacResult = await deps.runCacReport(runState.apuracao_snapshot, runState.bracos);
+        const cacResult = await deps.runCacReport(runState.apuracao_snapshot, runState.bracos, deps.runStatePath);
         if (!cacResult.ok) {
           console.error(`${LOG_PREFIX} cac-report.ts falhou para snapshot ${runState.apuracao_snapshot}.`);
         } else if (cacResult.zeroCadastrosArms.length === runState.bracos.length) {
