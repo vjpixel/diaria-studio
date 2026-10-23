@@ -20,8 +20,8 @@
  *     único caminho clicável é o vídeo relacionado, vinculado depois que o
  *     horizontal publica (#10811);
  *   - horário próprio do vertical (#10831): o horizontal sai às 06:00 junto da
- *     newsletter; o vertical sai num teste de 2 semanas alternando 12:00 e
- *     19:00 BRT (`resolveShortTime`, config `publishing.shorts.schedule`).
+ *     newsletter; o vertical sai num teste de 15 dias úteis alternando 06:30, 08:00 e
+ *     12:00 BRT (`resolveShortTime`, config `publishing.shorts.schedule`).
  *
  * Por que YouTube Shorts e o perfil pessoal são passos GUIADOS (Chrome, com o
  * editor escolhendo o arquivo) e não API:
@@ -424,7 +424,7 @@ export function parseShortsPublishedFile(raw: string, aammdd: string, where = SH
 
 /**
  * Horário do vertical (#10831). O horizontal sai às 06:00 BRT junto da
- * newsletter; o vertical sai em horário PRÓPRIO, num teste de 2 semanas que
+ * newsletter; o vertical sai em horário PRÓPRIO, num teste de 15 dias úteis que
  * alterna `rotation_times` dia a dia a partir de `rotation_start` (261022 saiu
  * às 12:00, à mão), comparando as visualizações nas primeiras 24 h. Fora da
  * janela `[rotation_start, rotation_end]` vale `default_time`.
@@ -451,11 +451,11 @@ export interface ShortScheduleConfig {
 
 const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
-/** Decisão do editor de 22/10/2026 (#10831): 2 semanas alternando 12:00/19:00 a partir de 261022. */
+/** Decisão do editor de 22/10/2026 (#10831, #10939): 15 dias úteis alternando 06:30/08:00/12:00, de 261026 a 261113 (só há edição de segunda a sexta). */
 export const DEFAULT_SHORT_SCHEDULE_RAW = Object.freeze({
-  rotation_times: Object.freeze(["12:00", "19:00"]),
-  rotation_start: "2026-10-22",
-  rotation_end: "2026-11-04",
+  rotation_times: Object.freeze(["06:30", "08:00", "12:00"]),
+  rotation_start: "2026-10-26",
+  rotation_end: "2026-11-13",
   default_time: "12:00",
 });
 
@@ -589,7 +589,7 @@ const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISO
  * coordenador da rodada, o resto não veio do editor):
  *   - DURANTE o teste de horário do #10831 (`time.source === "rotation"`) o
  *     horário do teste vale pra todos os destinos: mover um destino tiraria
- *     aquele dia da comparação 12:00 × 19:00. A grade só gera AVISO quando o
+ *     aquele dia da comparação entre horários. A grade só gera AVISO quando o
  *     horário do teste cai a menos de `DEFAULT_MIN_GAP_MINUTES` de um post da
  *     MESMA conta (colado/empilhado), pro editor decidir à mão;
  *   - FORA do teste (`default_time`), `planSlots` decide por destino com

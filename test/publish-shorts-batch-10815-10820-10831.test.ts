@@ -272,26 +272,46 @@ describe("#10820 Instagram com autora pessoal", () => {
 describe("#10831 horário próprio do vertical", () => {
   const sched = loadShortScheduleConfig({});
 
-  it("alterna 12:00/19:00 por dia corrido a partir de 261022; fora da janela, default", () => {
-    assert.equal(resolveShortTime(sched, "261022").hhmm, "12:00");
-    assert.equal(resolveShortTime(sched, "261023").hhmm, "19:00");
-    assert.equal(resolveShortTime(sched, "261024").hhmm, "12:00");
-    assert.equal(resolveShortTime(sched, "261104").hhmm, "19:00");
-    assert.equal(resolveShortTime(sched, "261104").source, "rotation");
-    assert.deepEqual([resolveShortTime(sched, "261105").source, resolveShortTime(sched, "261105").hhmm], ["default", "12:00"]);
+  it("alterna 06:30/08:00/12:00 por dia corrido a partir de 261026 (segunda); fora da janela, default", () => {
+    assert.equal(resolveShortTime(sched, "261026").hhmm, "06:30");
+    assert.equal(resolveShortTime(sched, "261026").source, "rotation");
+    assert.equal(resolveShortTime(sched, "261027").hhmm, "08:00");
+    assert.equal(resolveShortTime(sched, "261028").hhmm, "12:00");
+    assert.equal(resolveShortTime(sched, "261029").hhmm, "06:30");
+    assert.equal(resolveShortTime(sched, "261102").hhmm, "08:00");
+    assert.equal(resolveShortTime(sched, "261113").hhmm, "06:30");
+    assert.equal(resolveShortTime(sched, "261113").source, "rotation");
+    assert.deepEqual([resolveShortTime(sched, "261114").source, resolveShortTime(sched, "261114").hhmm], ["default", "12:00"]);
+    // 261022 e 261023 (teste antigo 12:00/19:00) e 261021 ficam fora da janela nova
+    assert.deepEqual([resolveShortTime(sched, "261023").source, resolveShortTime(sched, "261023").hhmm], ["default", "12:00"]);
     assert.equal(resolveShortTime(sched, "261021").source, "default");
   });
 
+  it("15 dias úteis (261026 a 261113): cada horário sai 5 vezes e cai uma vez em cada dia da semana", () => {
+    const porHorario: Record<string, number[]> = {};
+    for (let d = new Date("2026-10-26T12:00:00Z"); d <= new Date("2026-11-13T12:00:00Z"); d.setUTCDate(d.getUTCDate() + 1)) {
+      const dow = d.getUTCDay();
+      if (dow === 0 || dow === 6) continue; // só há edição de segunda a sexta
+      const aammdd = d.toISOString().slice(2, 10).replace(/-/g, "");
+      (porHorario[resolveShortTime(sched, aammdd).hhmm] ??= []).push(dow);
+    }
+    assert.deepEqual(Object.keys(porHorario).sort(), ["06:30", "08:00", "12:00"]);
+    for (const dias of Object.values(porHorario)) {
+      assert.equal(dias.length, 5);
+      assert.deepEqual([...dias].sort(), [1, 2, 3, 4, 5]);
+    }
+  });
+
   it("nunca 06:00 (o horário do horizontal) em toda a janela do teste", () => {
-    for (let d = 22; d <= 31; d++) assert.notEqual(resolveShortTime(sched, `2610${d}`).hhmm, "06:00");
-    for (let d = 1; d <= 4; d++) assert.notEqual(resolveShortTime(sched, `26110${d}`).hhmm, "06:00");
+    for (let d = 26; d <= 31; d++) assert.notEqual(resolveShortTime(sched, `2610${d}`).hhmm, "06:00");
+    for (let d = 1; d <= 13; d++) assert.notEqual(resolveShortTime(sched, `2611${String(d).padStart(2, "0")}`).hhmm, "06:00");
   });
 
   it("config real bate com o default e é válido", () => {
     const config = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const real = loadShortScheduleConfig(config);
     assert.deepEqual(real, loadShortScheduleConfig({ publishing: { shorts: { schedule: DEFAULT_SHORT_SCHEDULE_RAW } } }));
-    assert.deepEqual(real.rotationTimes, ["12:00", "19:00"]);
+    assert.deepEqual(real.rotationTimes, ["06:30", "08:00", "12:00"]);
   });
 
   it("config malformado LANÇA (estragaria o teste em silêncio)", () => {
@@ -305,26 +325,26 @@ describe("#10831 horário próprio do vertical", () => {
     assert.equal(loadShortScheduleConfig(mk({ ...DEFAULT_SHORT_SCHEDULE_RAW, rotation_end: null })).rotationEnd, null);
   });
 
-  it("plano agenda o Facebook no horário do vertical (261023 → 19:00 BRT = 22:00Z) e expõe shortTime pro passo guiado", () => {
+  it("plano agenda o Facebook no horário do vertical (261027 → 08:00 BRT = 11:00Z) e expõe shortTime pro passo guiado", () => {
     const reviewed = "DESTAQUE 1 | X\n\n[Título](https://a.com/x)\n\nCorpo.\n";
     const plan = planShortsPublish({
-      aammdd: "261023",
+      aammdd: "261027",
       reviewedMd: reviewed,
-      now: new Date("2026-10-23T10:00:00Z"),
+      now: new Date("2026-10-27T08:00:00Z"),
       config: {},
       pages: [{ ...page, slug: "diaria" }, page],
       instagramReady: true,
-      published: { aammdd: "261023", entries: [] },
+      published: { aammdd: "261027", entries: [] },
       video: { path: "v.mp4", exists: true, sizeBytes: 1 },
       editionUrl: "https://diar.ia.br/p/x",
     });
-    assert.equal(plan.shortTime.hhmm, "19:00");
-    assert.equal(plan.shortTime.at, "2026-10-23T22:00:00.000Z");
+    assert.equal(plan.shortTime.hhmm, "08:00");
+    assert.equal(plan.shortTime.at, "2026-10-27T11:00:00.000Z");
     const fb = plan.items.find((i) => i.destination === "facebook:diaria") as { scheduledAt: string | null };
-    assert.equal(fb.scheduledAt, "2026-10-23T22:00:00.000Z");
+    assert.equal(fb.scheduledAt, "2026-10-27T11:00:00.000Z");
     const ig = plan.items.find((i) => i.destination === "instagram") as { action: string; detail: string };
     assert.equal(ig.action, "pending_schedule");
-    assert.match(ig.detail, /19:00 BRT/);
+    assert.match(ig.detail, /08:00 BRT/);
     assert.ok(!("pinnedComment" in plan.youtube), "sem comentário fixado (#10831)");
   });
 });

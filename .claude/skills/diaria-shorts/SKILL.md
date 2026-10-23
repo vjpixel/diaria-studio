@@ -103,4 +103,4 @@ Se o vídeo subiu por `publish-youtube.ts --upload`, `--video-url` é opcional (
 
 Uma linha por destino, com o estado normalizado da linha `[ok] … (estado …)` (`resolveShortEntryState`): publicado/agendado (com URL), `send_unknown` do LinkedIn (conferir o perfil), X agendado na Buffer (`scheduled` até o `dueAt`, depois `unknown` até conferir), na fila do Worker (Instagram, `scheduled` até a hora, depois `unknown` até confirmar no app — `resolveWorkerQueueState`), pendente (Instagram sem fila, antes do horário do vertical), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
 
-Teste de 15 dias úteis a partir de 261026 (#10769, #10831): no fim, comparar os visualizadores e as visitas ao canal por destino, e manter só os destinos que trouxerem gente.
+Teste de 2 semanas a partir de 261022 (#10769, destinos; o teste de horário do #10831 é outro, ver acima): no fim, comparar os visualizadores e as visitas ao canal por destino, e manter só os destinos que trouxerem gente.
