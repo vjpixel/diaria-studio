@@ -147,6 +147,23 @@ describe("renderCircleStackPost", () => {
     assert.ok(!md.includes("Assinar a diar.ia.br"));
   });
 
+  it("fecho de várias linhas: anteriores antes, a última junta ao CTA, que fica no fim", () => {
+    const r = renderCircleStackPost(selection, { closing: "Obrigado por ler.\nVolte toda segunda." });
+    const tail = r.markdown.trimEnd().split("\n\n").slice(-2);
+    assert.equal(tail[0], "Obrigado por ler.");
+    assert.ok(/^\[Assine a diar\.ia\.br\]\([^)]*\)\. Volte toda segunda\.$/.test(tail[1]));
+  });
+
+  it("fecho só com espaços cai no default", () => {
+    const r = renderCircleStackPost(selection, { closing: "   " });
+    assert.ok(r.markdown.trimEnd().endsWith(". Chega de segunda a sexta, de graça, no seu e-mail."));
+  });
+
+  it("subscribeUrl alternativo vai na última linha", () => {
+    const r = renderCircleStackPost(selection, { subscribeUrl: "https://go.pm3.com.br/x" });
+    assert.ok(r.markdown.trimEnd().endsWith("[Assine a diar.ia.br](https://go.pm3.com.br/x). Chega de segunda a sexta, de graça, no seu e-mail."));
+  });
+
   it("destaque sem edição correspondente sai só com link da fonte", () => {
     assert.ok(!md.includes("Na edição de 99/10"));
   });

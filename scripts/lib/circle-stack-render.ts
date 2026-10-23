@@ -35,6 +35,7 @@ export type CircleStackUtmContent = "edicao" | "cta-fim";
 export const DEFAULT_CIRCLE_STACK_OPENING =
   "A edição semanal da diar.ia.br para quem constrói com IA: o que saiu na semana sobre ferramentas, agentes, automação e produto.";
 
+/** Cauda da última linha, logo depois de "[Assine a diar.ia.br](url). " — não é parágrafo solto. */
 export const DEFAULT_CIRCLE_STACK_CLOSING =
   "Chega de segunda a sexta, de graça, no seu e-mail.";
 
@@ -173,11 +174,13 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     );
   }
 
-  // Última linha única: link de assinatura + 1º parágrafo do fecho (pedido do editor, 23/10/2026).
+  // Última linha do post: link de assinatura + ÚLTIMO parágrafo do fecho (pedido do editor, 23/10/2026).
+  // Parágrafos anteriores do fecho (só com --closing-file de várias linhas) vêm antes, para o CTA
+  // continuar sendo a última linha. `paragraphs()` nunca devolve vazio aqui (o default cobre fecho vazio).
   const subscribeHref = opts.subscribeUrl?.trim() || buildCircleStackUrl(CIRCLE_STACK_SUBSCRIBE_BASE_URL, sel.cycle, "cta-fim");
-  const [closingFirst, ...closingRest] = paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING);
-  const cta = link(subscribeHref, CTA_FIM_LABEL);
-  blocks.push(closingFirst ? `${cta}. ${closingFirst}` : cta, ...closingRest);
+  const closingParas = paragraphs(opts.closing?.trim() || DEFAULT_CIRCLE_STACK_CLOSING);
+  const closingLast = closingParas.pop() as string;
+  blocks.push(...closingParas, `${link(subscribeHref, CTA_FIM_LABEL)}. ${closingLast}`);
 
   return { title: circleStackTitle(sel.contentWindow), markdown: blocks.join("\n\n") };
 }
