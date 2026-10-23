@@ -7,6 +7,7 @@
  */
 
 import { describe, it } from "node:test";
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -34,6 +35,14 @@ import { gridFromLinkedInPersonalIntent, gridFromShortsPublished, type Scheduled
 import { computeTwitterWeightedLength } from "../scripts/lib/twitter-weight.ts";
 import { resolveShortEntryState } from "../scripts/lib/publish-state.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
+
+// #10998: janela do cenário, independente do default e da config de produção.
+const SCHEDULE = {
+  rotation_times: ["12:00", "19:00"],
+  rotation_start: "2026-10-22",
+  rotation_end: "2026-11-04",
+  default_time: "12:00",
+};
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -92,10 +101,13 @@ describe("#10772 config", () => {
 });
 
 describe("#10772 plano", () => {
-  const REAL = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const PINNED_CONFIG = {
-    ...REAL,
-    publishing: { ...REAL.publishing, shorts: { ...REAL.publishing.shorts, schedule: { rotation_times: ["12:00"], rotation_start: "2026-10-22", rotation_end: "2026-10-22", default_time: "12:00" } } },
+    publishing: { shorts: {
+      facebook_pages: ["diaria", "vjpixel"], instagram: true,
+      instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"],
+      linkedin_profile: true, linkedin_page_repost: true, x: true,
+      schedule: SCHEDULE,
+    } },
   };
   // 4 posts da página no dia (rotação #10305): 08:00, 10:00, 12:15, 17:15 BRT.
   const pageGrid: ScheduledSlot[] = ["08:00", "10:00", "12:15", "17:15"].map((h) => ({ account: LINKEDIN_PAGE_ACCOUNT, at: brt(h) }));
