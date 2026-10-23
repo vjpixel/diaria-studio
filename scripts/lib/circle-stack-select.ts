@@ -116,11 +116,14 @@ function byScore(a: StackScoredCandidate, b: StackScoredCandidate): number {
 /**
  * Pure: escolhe as seções do post.
  *
- * - destaques: os N destaques diários mais aderentes. Sempre preenche N
- *   (se faltar aderência, completa com os de maior score mesmo zerado) —
- *   a edição semanal nunca sai sem manchete.
- * - lançamentos / use melhor / radar: só itens com score > 0 (aderência
- *   mínima); radar também recebe destaques que não entraram no topo.
+ * - destaques: os destaques diários mais aderentes, preenchendo até N (se
+ *   faltar aderência, completa com os de maior score mesmo zerado; só fica
+ *   abaixo de N se a semana tiver menos destaques que isso) — a edição
+ *   semanal nunca sai sem manchete.
+ * - lançamentos / use melhor: só itens com score ACIMA do bônus da própria
+ *   seção (`SECTION_BONUS`) — ou seja, que casaram pelo menos 1 termo de
+ *   interesse; o bônus sozinho não basta.
+ * - radar: itens com score > 0; também recebe destaques que não entraram no topo.
  * - URL nunca repete entre seções.
  */
 export function selectCircleStack(

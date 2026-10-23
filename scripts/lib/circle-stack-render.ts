@@ -11,9 +11,9 @@
  * Edições da semana · fecho + CTA.
  *
  * `stackNote` (opcional, por item): texto escrito para o público da Stack
- * (o ângulo de quem constrói). Quando presente, substitui o "por que isso
- * importa" da edição diária no destaque, ou entra como 2ª linha nos itens
- * de lista. Nunca é gerado aqui — vem preenchido na seleção.
+ * (o ângulo de quem constrói). Quando presente, SUBSTITUI o "por que isso
+ * importa" da edição diária no destaque, e SUBSTITUI a descrição (`body`)
+ * nos itens de lista. Nunca é gerado aqui — vem preenchido na seleção.
  *
  * Regras herdadas da newsletter (context/editorial-rules.md):
  *   - "Por que isso importa:" em parágrafo próprio.

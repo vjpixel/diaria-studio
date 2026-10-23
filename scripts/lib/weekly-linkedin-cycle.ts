@@ -93,6 +93,19 @@ export function nextMondayAAMMDD(from: Date = new Date()): string {
   return formatAAMMDD(d);
 }
 
+/**
+ * Pure: AAMMDD da segunda-feira de `from` ou da anterior (sempre ≤ `from`) —
+ * se `from` já for segunda, retorna a própria data. Default de task
+ * semanal com `Persistent=true` (#10904): um catch-up que dispara numa terça
+ * precisa cair no ciclo cuja semana de conteúdo já fechou, nunca na segunda
+ * seguinte (semana ainda incompleta).
+ */
+export function currentOrPreviousMondayAAMMDD(from: Date = new Date()): string {
+  const dayNum = (from.getDay() + 6) % 7; // segunda=0 .. domingo=6
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate() - dayNum);
+  return formatAAMMDD(d);
+}
+
 /** Pure: parseia `AAMMDD` pra `Date` local (meia-noite). `null` se inválido. */
 export function parseAAMMDD(s: string): Date | null {
   if (!isValidYymm(s.slice(0, 4)) || !/^\d{6}$/.test(s)) return null;

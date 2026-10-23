@@ -287,9 +287,12 @@ export function resolveYouTubeState(
 // ─── Circle da Stack (state local de idempotência, #10904) ────────────────────
 
 export interface CircleStackPublishedLike {
-  /** Ciclo `{YY}w{WW}` gravado por `publish-circle-stack.ts` após o 200 `{ok:true}` do webhook. */
+  /** Ciclo `{YY}w{WW}` — gravado por `publish-circle-stack.ts` ANTES do envio (tentativa). */
   cycle?: string | null;
-  /** ISO do envio — gravado no mesmo write, depois da confirmação do webhook. */
+  /** ISO da tentativa — gravado antes de chamar o webhook (`attempted_at` sem
+   * `published_at` = envio que pode ter saído sem confirmação → "unknown"). */
+  attempted_at?: string | null;
+  /** ISO da confirmação — regravado só depois do 200 `{ok:true}` do webhook. */
   published_at?: string | null;
 }
 
@@ -298,13 +301,15 @@ export interface CircleStackPublishedLike {
  * (#10904, mesma disciplina do #573). O webhook n8n da Stack publica NA HORA —
  * não existe rascunho nem agendamento do lado de lá, e não há endpoint de
  * leitura: a única evidência é o state local
- * `data/weekly/{cycle}/_internal/circle-stack-published.json`, escrito só
- * depois do `{"ok": true}`.
+ * `data/weekly/{cycle}/_internal/circle-stack-published.json`, gravado em
+ * dois tempos — `{cycle, title, attempted_at}` ANTES do envio e
+ * `published_at` acrescentado só depois do `{"ok": true}`.
  *
  *   - state ausente (`null`/`undefined`) → "draft" (nada enviado; a prévia
  *     `.md` do dry-run é o rascunho);
  *   - `cycle` igual ao esperado + `published_at` ISO válido → "published";
- *   - qualquer outra coisa (ciclo divergente, `published_at` ausente ou
+ *   - qualquer outra coisa (ciclo divergente, `published_at` ausente — ex.:
+ *     tentativa gravada e envio que rejeitou/estourou o timeout — ou
  *     inválido, JSON ilegível que o caller passou como `{}`) → "unknown" — o
  *     arquivo existe, então algo foi tentado; nunca rebaixar pra "draft" e
  *     arriscar post duplicado numa comunidade de terceiro.

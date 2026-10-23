@@ -1,9 +1,10 @@
 /**
  * test/circle-stack.test.ts (#10904)
  *
- * Publicador semanal no Circle da Stack: payload da Admin API v2, fallback
- * de esquema de auth (Token → Bearer só em 401), render do post a partir da
- * seleção semanal e resolução de config/ciclo.
+ * Publicador semanal no Circle da Stack via webhook n8n da Stack: payload
+ * `{titulo, corpo}` em Markdown, confirmação `{ok:true}` + timeout, seleção
+ * por interesse, render do post, idempotência em dois tempos por ciclo,
+ * decisão/conteúdo do aviso ao editor e resolução de config/ciclo.
  */
 
 import { describe, it } from "node:test";
@@ -24,10 +25,17 @@ import {
   readCircleStackPublishedState,
   circleStackPublishBlockReason,
   buildCircleStackReadyFinding,
+  buildCircleStackAmbiguousFinding,
+  decideCircleStackNotify,
+  publishCircleStackCycle,
+  parseStoredCircleStackSelection,
+  closeCircleStackNotifyIssues,
 } from "../scripts/publish-circle-stack.ts";
 import { resolveCircleStackState } from "../scripts/lib/publish-state.ts";
 import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { currentOrPreviousMondayAAMMDD } from "../scripts/lib/weekly-linkedin-cycle.ts";
+import { alarmFindingMarker } from "../scripts/lib/alarm-issues.ts";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -89,6 +97,14 @@ describe("sendStackPost", () => {
     await assert.rejects(sendStackPost("http://x", "k", payload, fake(200, '{"ok":true}', seen)), /https/);
     await assert.rejects(sendStackPost(url, "", payload, fake(200, '{"ok":true}', seen)), /STACK_WEBHOOK_KEY/);
     assert.equal(seen.length, 0);
+  });
+  it("manda AbortSignal e rejeita quando o webhook não responde no prazo", async () => {
+    const hanging = ((_u: string, init: RequestInit) =>
+      new Promise<Response>((_res, rej) => {
+        assert.ok(init.signal, "fetch sem signal");
+        init.signal.addEventListener("abort", () => rej(init.signal?.reason));
+      })) as unknown as typeof fetch;
+    await assert.rejects(sendStackPost(url, "k", payload, hanging, 20), /timeout|abort/i);
   });
 });
 
@@ -258,5 +274,151 @@ describe("task semanal Diaria-Circle-Stack-Weekly-Preview (#10904)", () => {
     const args = task?.steps.flatMap((s) => s.args ?? []) ?? [];
     assert.ok(args.includes("--notify"));
     for (const forbidden of ["--publish", "--hello", "--force"]) assert.ok(!args.includes(forbidden), forbidden);
+  });
+});
+
+describe("publishCircleStackCycle — idempotência em dois tempos (#10904)", () => {
+  const payload = { titulo: "Radar Stack", corpo: "corpo" };
+  const fixedNow = () => new Date("2026-10-26T10:30:00.000Z");
+  const fresh = () => join(mkdtempSync(join(tmpdir(), "circle-stack-pub-")), "circle-stack-published.json");
+  const base = (statePath: string, send: (p: typeof payload) => Promise<void>, force = false) => ({
+    statePath, cycle: "26w43", title: "Radar Stack", payload, force, send, now: fixedNow,
+  });
+
+  it("draft → envia 1x e o estado vira published, com tentativa gravada ANTES do envio", async () => {
+    const statePath = fresh();
+    const seenAtSend: unknown[] = [];
+    let calls = 0;
+    await publishCircleStackCycle(base(statePath, async () => {
+      calls++;
+      seenAtSend.push(JSON.parse(readFileSync(statePath, "utf8")));
+    }));
+    assert.equal(calls, 1);
+    // No momento do envio a tentativa já estava no disco, sem published_at.
+    assert.deepEqual(seenAtSend[0], { cycle: "26w43", title: "Radar Stack", attempted_at: "2026-10-26T10:30:00.000Z" });
+    assert.equal(resolveCircleStackState(readCircleStackPublishedState(statePath), "26w43"), "published");
+  });
+
+  it("send rejeita → estado unknown, e a próxima tentativa bloqueia sem --force", async () => {
+    const statePath = fresh();
+    await assert.rejects(publishCircleStackCycle(base(statePath, async () => { throw new Error("timeout"); })), /timeout/);
+    assert.equal(resolveCircleStackState(readCircleStackPublishedState(statePath), "26w43"), "unknown");
+    let calls = 0;
+    await assert.rejects(publishCircleStackCycle(base(statePath, async () => { calls++; })), /não confirma o envio/);
+    assert.equal(calls, 0);
+  });
+
+  it("2ª execução no mesmo ciclo bloqueia sem chamar send", async () => {
+    const statePath = fresh();
+    await publishCircleStackCycle(base(statePath, async () => {}));
+    let calls = 0;
+    await assert.rejects(publishCircleStackCycle(base(statePath, async () => { calls++; })), /já publicado/);
+    assert.equal(calls, 0);
+  });
+
+  it("unknown + force envia e confirma", async () => {
+    const statePath = fresh();
+    writeFileSync(statePath, JSON.stringify({ cycle: "26w43", title: "Radar Stack", attempted_at: "2026-10-26T10:00:00.000Z" }));
+    let calls = 0;
+    const res = await publishCircleStackCycle(base(statePath, async () => { calls++; }, true));
+    assert.equal(calls, 1);
+    assert.equal(res.forced, true);
+    assert.equal(resolveCircleStackState(readCircleStackPublishedState(statePath), "26w43"), "published");
+  });
+});
+
+describe("decideCircleStackNotify (#10904)", () => {
+  it("draft → prévia pronta; unknown → ambíguo; published → pula", () => {
+    assert.equal(decideCircleStackNotify("draft", true), "ready");
+    assert.equal(decideCircleStackNotify("unknown", true), "ambiguous");
+    assert.equal(decideCircleStackNotify("published", true), "skip-published");
+  });
+  it("enabled=false pula em qualquer estado", () => {
+    for (const s of ["draft", "unknown", "published"] as const) assert.equal(decideCircleStackNotify(s, false), "skip-disabled");
+  });
+  it("aviso ambíguo é distinto do 'prévia pronta' e manda conferir antes de --publish --force", () => {
+    const amb = buildCircleStackAmbiguousFinding("26w42", "Radar Stack", "data/weekly/26w42/_internal/circle-stack-published.json", "261019");
+    const ready = buildCircleStackReadyFinding("26w42", "Radar Stack", "x.md", "261019");
+    assert.notEqual(amb.fingerprint, ready.fingerprint);
+    assert.match(amb.subject, /estado ambíguo, conferir no Radar antes de --publish/);
+    assert.doesNotMatch(amb.subject, /prévia pronta/);
+    assert.match(amb.body, /--publish-monday 261019 --publish --force/);
+  });
+  it("avisos da seleção entram no corpo da issue", () => {
+    const w = ["Edições sem 02-reviewed.md: 261016", "1 destaque(s) sem nenhum termo de interesse da Stack — revisar a seleção"];
+    for (const f of [
+      buildCircleStackReadyFinding("26w42", "T", "x.md", "261019", w),
+      buildCircleStackAmbiguousFinding("26w42", "T", "s.json", "261019", w),
+    ]) {
+      assert.match(f.body, /- Edições sem 02-reviewed\.md: 261016/);
+      assert.match(f.body, /sem nenhum termo de interesse/);
+    }
+    assert.doesNotMatch(buildCircleStackReadyFinding("26w42", "T", "x.md", "261019").body, /Avisos da seleção/);
+  });
+});
+
+describe("currentOrPreviousMondayAAMMDD (#10904 — catch-up do Persistent=true)", () => {
+  it("segunda → ela mesma", () => {
+    assert.equal(currentOrPreviousMondayAAMMDD(new Date(2026, 9, 26, 7, 30)), "261026");
+  });
+  it("terça → a segunda anterior (nunca a seguinte)", () => {
+    assert.equal(currentOrPreviousMondayAAMMDD(new Date(2026, 9, 27, 9, 0)), "261026");
+  });
+  it("domingo → a segunda 6 dias antes; atravessa mês", () => {
+    assert.equal(currentOrPreviousMondayAAMMDD(new Date(2026, 10, 1, 12, 0)), "261026");
+  });
+});
+
+describe("parseStoredCircleStackSelection (#10904)", () => {
+  const p = "data/weekly/26w42/_internal/circle-stack-selection.json";
+  it("aceita a seleção válida e devolve os warnings gravados", () => {
+    const r = parseStoredCircleStackSelection(JSON.stringify({ ...selection, warnings: ["aviso X"] }), p, "26w42");
+    assert.equal(r.selection.destaques.length, 2);
+    assert.deepEqual(r.warnings, ["aviso X"]);
+  });
+  it("JSON ilegível cita o caminho e --reselect", () => {
+    assert.throws(() => parseStoredCircleStackSelection("{quebrado", p, "26w42"), (e: Error) => e.message.includes(p) && e.message.includes("--reselect"));
+  });
+  it("ciclo divergente é recusado", () => {
+    assert.throws(() => parseStoredCircleStackSelection(JSON.stringify(selection), p, "26w43"), /diferente do esperado 26w43/);
+  });
+  it("item sem campo obrigatório é recusado com a posição", () => {
+    const broken = { ...selection, radar: [{ url: "https://ex.com", title: "T" }] };
+    assert.throws(() => parseStoredCircleStackSelection(JSON.stringify(broken), p, "26w42"), /radar\[0\]\.editionDate/);
+    const noSection = { ...selection } as Record<string, unknown>;
+    delete noSection.useMelhor;
+    assert.throws(() => parseStoredCircleStackSelection(JSON.stringify(noSection), p, "26w42"), /seção useMelhor ausente/);
+  });
+});
+
+describe("closeCircleStackNotifyIssues (#10904)", () => {
+  it("fecha as issues abertas do ciclo (prévia + ambíguo) e ignora as fechadas", () => {
+    const calls: string[][] = [];
+    const run = (args: string[]) => {
+      calls.push(args);
+      if (args[1] === "list") {
+        return {
+          status: 0,
+          stderr: "",
+          stdout: JSON.stringify([
+            { number: 11, url: "u11", state: "OPEN", body: `x ${alarmFindingMarker("circle-stack-weekly", "26w42")}` },
+            { number: 12, url: "u12", state: "CLOSED", body: `x ${alarmFindingMarker("circle-stack-weekly", "26w42-ambiguo")}` },
+          ]),
+        };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    const res = closeCircleStackNotifyIssues("26w42", "2026-10-26T10:30:00.000Z", "/tmp", run);
+    assert.deepEqual(res, { closed: [11], failed: [] });
+    const closes = calls.filter((c) => c[1] === "close");
+    assert.equal(closes.length, 1);
+    assert.equal(closes[0][2], "11");
+  });
+  it("falha do gh no close vira failed, sem lançar", () => {
+    const run = (args: string[]) =>
+      args[1] === "list"
+        ? { status: 0, stderr: "", stdout: JSON.stringify([{ number: 11, url: "u", state: "OPEN", body: alarmFindingMarker("circle-stack-weekly", "26w42") }]) }
+        : { status: 1, stdout: "", stderr: "boom" };
+    assert.deepEqual(closeCircleStackNotifyIssues("26w42", "t", "/tmp", run), { closed: [], failed: ["#11"] });
   });
 });

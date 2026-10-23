@@ -855,10 +855,12 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     name: "Diaria-Circle-Stack-Weekly-Preview",
     description:
       "prévia semanal do Radar de Notícias Stack (Circle da Stack) em DRY-RUN + aviso ao editor; nunca publica (#10904)",
-    // `--notify` sem `--publish-monday`: o script assume a segunda de hoje
-    // (`nextMondayAAMMDD`), gera seleção editável + prévia `.md` do ciclo e
-    // abre/reusa 1 issue `bloqueio-execucao` por ciclo (fingerprint = ciclo)
-    // só se o ciclo ainda não saiu (`resolveCircleStackState` != published).
+    // `--notify` sem `--publish-monday`: o script assume a segunda de hoje ou
+    // a anterior (`currentOrPreviousMondayAAMMDD` — catch-up do
+    // Persistent=true numa terça cai no ciclo já fechado, nunca no seguinte),
+    // gera seleção editável + prévia `.md` do ciclo e abre/reusa 1 issue
+    // `bloqueio-execucao` por ciclo: "prévia pronta" se `draft`, "estado
+    // ambíguo" se `unknown`, nada se `published` (`resolveCircleStackState`).
     // NUNCA `--publish` aqui (premissa da sessão develop 261023): o webhook
     // da Stack publica na hora, sem rascunho, numa comunidade de terceiro —
     // o envio fica manual até o editor decidir automatizar.

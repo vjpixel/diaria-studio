@@ -37,24 +37,43 @@ export function buildStackPostPayload(titulo: string, corpo: string): StackPostP
 
 type FetchLike = typeof fetch;
 
+/** Teto de espera pela resposta do webhook (n8n → Circle). Sem ele, um
+ * webhook pendurado travava a task/sessão indefinidamente. */
+export const STACK_WEBHOOK_TIMEOUT_MS = 30_000;
+
+/**
+ * Valida URL e chave ANTES de qualquer envio. Separado de `sendStackPost` para
+ * o publisher checar a configuração antes de gravar a tentativa no state de
+ * idempotência — erro de config nunca chegou à rede e não pode deixar o ciclo
+ * em "unknown".
+ */
+export function assertStackWebhookConfig(webhookUrl: string, key: string): void {
+  if (!webhookUrl) throw new Error(`${STACK_WEBHOOK_URL_ENV} ausente (Doppler/.env)`);
+  if (!/^https:\/\//.test(webhookUrl)) throw new Error(`${STACK_WEBHOOK_URL_ENV} precisa ser https`);
+  if (!key) throw new Error(`${STACK_WEBHOOK_KEY_ENV} ausente (Doppler/.env)`);
+}
+
 /**
  * Envia o post. Só considera sucesso 200 com `{"ok": true}` — 2xx com outro
  * corpo é tratado como falha, porque o post é publicado direto e um "parece
- * que foi" sem confirmação não pode virar estado de "publicado".
+ * que foi" sem confirmação não pode virar estado de "publicado". Timeout de
+ * `timeoutMs` (default `STACK_WEBHOOK_TIMEOUT_MS`) rejeita — o post pode ter
+ * saído mesmo assim, por isso o caller trata qualquer rejeição como estado
+ * ambíguo, não como "nada enviado".
  */
 export async function sendStackPost(
   webhookUrl: string,
   key: string,
   payload: StackPostPayload,
   fetchImpl: FetchLike = fetch,
+  timeoutMs: number = STACK_WEBHOOK_TIMEOUT_MS,
 ): Promise<void> {
-  if (!webhookUrl) throw new Error(`${STACK_WEBHOOK_URL_ENV} ausente (Doppler/.env)`);
-  if (!/^https:\/\//.test(webhookUrl)) throw new Error(`${STACK_WEBHOOK_URL_ENV} precisa ser https`);
-  if (!key) throw new Error(`${STACK_WEBHOOK_KEY_ENV} ausente (Doppler/.env)`);
+  assertStackWebhookConfig(webhookUrl, key);
   const res = await fetchImpl(webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Webhook-Key": key },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
   if (res.status === 502) throw new Error(`Webhook da Stack: o Circle recusou ou falhou (502). Avisar a Stack. ${text.slice(0, 300)}`);
