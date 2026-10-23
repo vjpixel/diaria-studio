@@ -130,9 +130,9 @@ describe("renderCircleStackPost", () => {
     assert.ok(md.includes(DEFAULT_CIRCLE_STACK_OPENING));
   });
 
-  it("destaque sem 'Por que isso importa' (nem why nem stackNote entram)", () => {
-    assert.ok(!md.includes("Por que isso importa"));
-    assert.ok(!md.includes("Porque sim."));
+  it("'Por que isso importa:' da edição em parágrafo próprio, só quando há why", () => {
+    assert.equal((md.match(/Por que isso importa:/g) ?? []).length, 1);
+    assert.ok(md.includes("**Por que isso importa:**\n\nPorque sim."));
   });
 
   it("fonte sem UTM; edição e CTA com UTM stack/circle", () => {
@@ -194,10 +194,10 @@ describe("renderCircleStackPost", () => {
     assert.ok(!md.includes("## Radar"));
   });
 
-  it("stackNote no destaque é ignorado", () => {
+  it("stackNote no destaque é ignorado; vale o por que importa da edição", () => {
     const r = renderCircleStackPost({ ...selection, destaques: [item({ why: "Original.", stackNote: "Para quem constrói." })] });
     assert.ok(!r.markdown.includes("Para quem constrói."));
-    assert.ok(!r.markdown.includes("Original."));
+    assert.ok(r.markdown.includes("Original."));
   });
 
   it("colchetes no rótulo e parênteses na URL não quebram o link", () => {
