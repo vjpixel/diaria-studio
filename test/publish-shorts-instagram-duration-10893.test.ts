@@ -74,8 +74,8 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
     assert.match(g.detail, /--mark instagram=URL/);
     assert.match(g.detail, /@diar\.ia\.br em collab/);
     assert.match(g.caption ?? "", /link da bio/);
-    // Fora da grade: só os destinos que saem pela API disputam horário.
-    assert.ok(!p.slots.some((s) => s.destination === "instagram"));
+    // #10933: o post manual também ocupa o horário da conta — reserva o slot na grade.
+    assert.ok(p.slots.some((s) => s.destination === "instagram"));
     assert.ok(p.warnings.some((w) => w.startsWith("instagram:") && /#10893/.test(w)));
     // O Facebook não é afetado pelo teto do Instagram.
     assert.equal(p.items.find((i) => i.destination === "facebook:diaria")!.action, "publish");
