@@ -60,6 +60,7 @@ export interface DoStoredPayload {
  *   POST /arm     body: DoStoredPayload + { scheduledAtMs: number }
  *                 → persiste payload, agenda alarm, retorna { armed: true }
  *                 → 409 { armed: false, fired: true } se o DO já disparou (#10992)
+ *                 → 409 { armed: false, claiming: true } durante claim ativo (#11035)
  *                 → apaga `reels_container` se o conteúdo mudou (#11024)
  *   GET  /idem    → { queue_key: string | null } — só no DO-índice `idem:{uuid}` (#10992)
  *   POST /idem    body: { queue_key } → grava a queue key atual da chave idempotente
@@ -113,34 +114,46 @@ export class LinkedInScheduler {
 
     if (url.pathname === "/arm" && request.method === "POST") {
       const body = await request.json() as DoStoredPayload & { scheduledAtMs: number };
-      // #10992 item 1: DO que já disparou não re-arma. O alarm novo sairia,
-      // mas `tryClaim()` devolve false com `fired=true` e nada é publicado —
-      // responder 200 aqui fazia o enqueue devolver 202 `alarm_armed: true`
-      // para um post que nunca sai. 409 deixa o caller dizer isso ao cliente.
-      if ((await this.state.storage.get<boolean>("fired")) === true) {
-        return new Response(JSON.stringify({ armed: false, fired: true }), {
-          status: 409,
+      return this.state.blockConcurrencyWhile(async () => {
+        // #10992 item 1: DO que já disparou não re-arma. O alarm novo sairia,
+        // mas `tryClaim()` devolve false com `fired=true` e nada é publicado —
+        // responder 200 aqui fazia o enqueue devolver 202 `alarm_armed: true`
+        // para um post que nunca sai. 409 deixa o caller dizer isso ao cliente.
+        if ((await this.state.storage.get<boolean>("fired")) === true) {
+          return new Response(JSON.stringify({ armed: false, fired: true }), {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // #11035 — não alterar payload/container enquanto alarm ou cron dispara.
+        // Mesmo TTL do claim: permite recuperar um processo interrompido.
+        const claiming = await this.state.storage.get<boolean>("claiming");
+        const claimedAt = await this.state.storage.get<number>("claimed_at");
+        if (claiming && (claimedAt === undefined || Date.now() - claimedAt <= CLAIM_TTL_MS)) {
+          return new Response(JSON.stringify({ armed: false, claiming: true }), {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Persiste tudo que alarm() precisará — inclusive entry completa + webhook URLs
+        const { scheduledAtMs, ...payload } = body;
+        // #11024 — o container de Reels guardado (#10922) pertence ao conteúdo
+        // da tentativa anterior. Re-armar com conteúdo DIFERENTE (enqueue
+        // idempotente `replaced`, #10917) e retomá-lo publicaria a legenda/vídeo
+        // velhos — no alarm e no cron, que o recebe do /claim. Só sobrevive se o
+        // payload anterior existe e publica a mesma coisa (re-arm do mesmo item).
+        const previous = await this.state.storage.get<DoStoredPayload>("payload");
+        if (!previous || !sameQueueContent(previous.entry, payload.entry)) {
+          await this.state.storage.delete("reels_container");
+        }
+        await this.state.storage.put("payload", payload satisfies DoStoredPayload);
+        // setAlarm sobrescreve alarm anterior — idempotente pra re-arm
+        await this.state.storage.setAlarm(scheduledAtMs);
+
+        return new Response(JSON.stringify({ armed: true, scheduledAtMs }), {
+          status: 200,
           headers: { "Content-Type": "application/json" },
         });
-      }
-      // Persiste tudo que alarm() precisará — inclusive entry completa + webhook URLs
-      const { scheduledAtMs, ...payload } = body;
-      // #11024 — o container de Reels guardado (#10922) pertence ao conteúdo
-      // da tentativa anterior. Re-armar com conteúdo DIFERENTE (enqueue
-      // idempotente `replaced`, #10917) e retomá-lo publicaria a legenda/vídeo
-      // velhos — no alarm e no cron, que o recebe do /claim. Só sobrevive se o
-      // payload anterior existe e publica a mesma coisa (re-arm do mesmo item).
-      const previous = await this.state.storage.get<DoStoredPayload>("payload");
-      if (!previous || !sameQueueContent(previous.entry, payload.entry)) {
-        await this.state.storage.delete("reels_container");
-      }
-      await this.state.storage.put("payload", payload satisfies DoStoredPayload);
-      // setAlarm sobrescreve alarm anterior — idempotente pra re-arm
-      await this.state.storage.setAlarm(scheduledAtMs);
-
-      return new Response(JSON.stringify({ armed: true, scheduledAtMs }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
       });
     }
 
