@@ -47,6 +47,7 @@ interface Graph {
   forcedStatus?: string;
   /** #10954 — HTTP de erro forçado na consulta de status de um container (id → status). */
   statusHttpError?: Record<string, number>;
+  statusGraphError?: { code?: number; is_transient?: boolean };
   publishFails: boolean;
   containersCreated: number;
   polls: number;
@@ -68,7 +69,7 @@ function mockGraph(over: Partial<Graph> = {}): Graph {
       const id = u.split("/").pop()!.split("?")[0];
       const httpError = g.statusHttpError?.[id];
       if (httpError) {
-        return new Response(JSON.stringify({ error: { message: "Unsupported get request. Object does not exist" } }), { status: httpError });
+        return new Response(JSON.stringify({ error: { message: "Unsupported get request. Object does not exist", ...g.statusGraphError } }), { status: httpError });
       }
       const code = g.forcedStatus ?? (g.polls >= g.pollsUntilFinished ? "FINISHED" : "IN_PROGRESS");
       return new Response(JSON.stringify({ status_code: code }), { status: 200 });
@@ -140,6 +141,26 @@ describe("#10922 fireQueueEntry: retoma o container entre voltas", () => {
     assert.equal(g.containersCreated, 1, "a volta seguinte cria um container novo");
     assert.deepEqual(g.publishedContainers, ["container-1"]);
   });
+
+  for (const [httpStatus, error] of [
+    [400, { code: 4 }],
+    [403, { code: 17 }],
+    [400, { code: 80002 }],
+    [403, { is_transient: true }],
+  ] as const) {
+    it(`#11046: HTTP ${httpStatus} ${JSON.stringify(error)} preserva o container retomado após três recusas`, async () => {
+      const g = mockGraph({ statusHttpError: { "old-container": httpStatus }, statusGraphError: error });
+      const resumedRef = { id: "old-container", created_at: new Date().toISOString() };
+      const out = await fireQueueEntry(reelsEntry({ reels_container: resumedRef }), {
+        ...config, reelsPollDeadlineMs: 1000,
+      });
+      assert.equal(out.status, "failed");
+      assert.ok(g.polls >= 3, "exercita o limiar de descarte do container");
+      assert.deepEqual((out as { reelsContainer?: unknown }).reelsContainer, resumedRef);
+      assert.equal(g.containersCreated, 0);
+      assert.deepEqual(g.publishedContainers, []);
+    });
+  }
 
   it("#10954: 429 no container retomado segue transitório e mantém o container", async () => {
     mockGraph({ statusHttpError: { "old-container": 429 } });

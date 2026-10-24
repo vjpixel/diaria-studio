@@ -580,7 +580,7 @@ async function pollInstagramContainerStatus(
   // cujo pior caso já cabe no TTL).
   deadlineMs?: number,
   // #10954 self-review — container RETOMADO de uma volta anterior: a Graph
-  // recusando a consulta com 4xx (exceto 429) N vezes seguidas significa
+  // recusando a consulta com 4xx não transitório N vezes seguidas significa
   // container desconhecido/inválido, não blip. O poll para e devolve
   // `unknownContainer: true` pra o caller descartar o container. Undefined =
   // 4xx segue transitório (container recém-criado, carrossel).
@@ -615,7 +615,7 @@ async function pollInstagramContainerStatus(
         signal: AbortSignal.timeout(Math.max(1, Math.min(FETCH_TIMEOUT_MS, remaining()))),
       });
       const text = await res.text();
-      let data: { status_code?: string; error?: { message?: string } };
+      let data: { status_code?: string; error?: GraphErrorBody };
       try {
         data = JSON.parse(text);
       } catch {
@@ -626,7 +626,8 @@ async function pollInstagramContainerStatus(
         continue;
       }
       if (!res.ok || data.error) {
-        const clientError = res.status >= 400 && res.status < 500 && res.status !== 429;
+        const clientError = res.status >= 400 && res.status < 500 && res.status !== 429
+          && !isGraphTransientError(data.error);
         consecutiveClientErrors = clientError ? consecutiveClientErrors + 1 : 0;
         if (
           clientError &&
