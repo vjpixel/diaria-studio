@@ -215,6 +215,51 @@ describe("#10992 item 1 — re-POST depois do disparo não responde 202 sem efei
     assert.equal(((await again.json()) as { error: string }).error, "fire_in_progress");
   });
 
+  for (const claiming of [true, false]) {
+    it(`#11044 — /arm 409 (claiming=${claiming}) restaura KV e retry não é duplicate`, async () => {
+      const { env, kv, getOrCreate } = mkEnv();
+      const first = await enqueue(env, reels({ scheduled_at: LATER_1 }));
+      const { key } = await first.json() as { key: string };
+      const previousRaw = kv.store.get(key);
+      const scheduler = getOrCreate(key).scheduler;
+      const original = scheduler.fetch.bind(scheduler);
+      scheduler.fetch = async (request: Request) => {
+        if (new URL(request.url).pathname === "/arm") {
+          assert.equal(JSON.parse(kv.store.get(key)!).text, "Legenda corrigida");
+          await getOrCreate(key).state.storage.put(claiming ? "claiming" : "fired", true);
+          if (claiming) await getOrCreate(key).state.storage.put("claimed_at", Date.now());
+          return new Response(JSON.stringify({ claiming }), { status: 409 });
+        }
+        return original(request);
+      };
+      const changed = reels({ scheduled_at: LATER_1, text: "Legenda corrigida" });
+      const conflict = await enqueue(env, changed);
+      assert.equal(conflict.status, 409);
+      assert.equal((await conflict.json() as { error: string }).error, claiming ? "fire_in_progress" : "already_fired");
+      assert.equal(kv.store.get(key), previousRaw);
+      const retry = await enqueue(env, changed);
+      assert.equal(retry.status, 409);
+      assert.equal((await retry.json() as { duplicate?: boolean }).duplicate, undefined);
+      assert.equal(kv.store.get(key), previousRaw);
+    });
+  }
+
+  it("#11044 — /arm 409 sem entry anterior remove o put rejeitado", async () => {
+    const { env, kv } = mkEnv();
+    env.LINKEDIN_SCHEDULER = {
+      idFromName: (name: string) => ({ name }),
+      get: () => ({
+        fetch: async (url: string) => new Response(
+          JSON.stringify(url.endsWith("/arm") ? { claiming: true } : {}),
+          { status: url.endsWith("/arm") ? 409 : 200 },
+        ),
+      }),
+    } as unknown as DurableObjectNamespace;
+    const response = await enqueue(env, reels({ scheduled_at: LATER_1 }));
+    assert.equal(response.status, 409);
+    assert.equal([...kv.store.keys()].filter((key) => key.startsWith("queue:")).length, 0);
+  });
+
   it("DO: /arm em DO já disparado devolve 409 e não re-arma (2ª linha, atômica)", async () => {
     const state = new MockDOState();
     const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
