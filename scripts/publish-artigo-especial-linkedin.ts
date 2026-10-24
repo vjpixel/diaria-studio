@@ -1,3 +1,4 @@
+import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts";
 /**
  * publish-artigo-especial-linkedin.ts (#5979)
  *
@@ -545,9 +546,16 @@ async function main(): Promise<void> {
       typeof resolveArtigoEspecialScheduledAts
     >[0];
     const ats = resolveArtigoEspecialScheduledAts(fullConfig);
-    scheduledAt = ats.pagina;
-    scheduledAtPerfil = ats.perfil;
-    console.log(`Agenda default (#6014): pagina=${ats.pagina} perfil=${ats.perfil}`);
+    const grid = await loadDivulgacaoGrid(fullConfig, [ats.pagina.slice(0, 10), ats.perfil.slice(0, 10)]);
+    const state = readArtigoEspecialState(artigoEspecialStatePath(resolve(ROOT, "data"), ano, slug), ano, slug);
+    const targets: LinkedinTarget[] = [...new Set([...only, "perfil" as const])];
+    const requests = targets.filter((target) => decideChannelAction(state, TARGET_TO_CHANNEL[target], force).action !== "skip")
+      .map((target) => ({ key: target, account: target === "pagina" ? "linkedin:diaria" : "linkedin:pessoal", preferredAt: ats[target] }));
+    const decisions = planDivulgacao(grid, requests);
+    scheduledAt = decisions.find((d) => d.key === "pagina")?.at ?? ats.pagina;
+    scheduledAtPerfil = decisions.find((d) => d.key === "perfil")?.at ?? ats.perfil;
+    for (const d of decisions) console.error(`[planner #10819] ${d.key} ${d.at}: ${d.premise}`);
+    console.log(`Agenda planejada (#10819): pagina=${scheduledAt} perfil=${scheduledAtPerfil}`);
   }
 
   const linkedinPublishedPath = resolve(artigoDir, "linkedin-published.json");

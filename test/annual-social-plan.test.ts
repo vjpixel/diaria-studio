@@ -160,6 +160,21 @@ describe("prepAnnualSocial — o diretório do dia satisfaz os scripts da diári
     }
   });
 
+  it("#10819: gera slots por rede e preserva Facebook/X; recusa replanejar lote vivo", () => {
+    const grid = [{ account: "linkedin:diaria", at: "2099-09-12T09:00:00-03:00" }];
+    const out = prepAnnualSocial(dir, parseAAMMDD("990912"), "09:00", grid);
+    const first = out.days[0];
+    const li = JSON.parse(readFileSync(join(first.dir, "_internal/social-slots-linkedin.json"), "utf8"));
+    assert.notEqual(li.slots.d1, "2099-09-12T09:00");
+    assert.equal(first.plannedSlots?.linkedin.d1, li.slots.d1);
+    assert.equal(first.slots.d1, "2099-09-12T09:00");
+    const path = join(first.dir, "_internal/06-social-published.json");
+    writeFileSync(path, JSON.stringify({ posts: [{ status: "scheduled" }] }));
+    const before = readFileSync(join(first.dir, "_internal/social-slots-linkedin.json"), "utf8");
+    assert.throws(() => prepAnnualSocial(dir, parseAAMMDD("990912"), "10:00", grid), /já tem posts/);
+    assert.equal(readFileSync(join(first.dir, "_internal/social-slots-linkedin.json"), "utf8"), before);
+  });
+
   it("rodada de janeiro não usa o enquadramento de aniversário", () => {
     assert.equal(socialCardCategory("janeiro", "2026"), "RETROSPECTIVA 2026");
   });

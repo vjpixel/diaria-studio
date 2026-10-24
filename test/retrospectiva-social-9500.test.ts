@@ -752,6 +752,22 @@ describe("adaptador publish-retrospectiva-social", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("#10819: agenda assíncrona recebe só posts ativos e libera canais planejados com diária no dia", async () => {
+    let requested: readonly RetrospectivaPostKey[] = [];
+    const { o, calls } = opts({
+      posts: ["linkedin_pagina:d1", "threads:d1"],
+      dailyEditionCheck: () => ({ dirExists: true, livePosts: 4 }),
+      resolveScheduledAts: async (active) => {
+        requested = active ?? [];
+        return { ...SCHEDULE, d1: { ...SCHEDULE.d1, linkedin_pagina: "2026-10-11T14:00:00-03:00", threads: "2026-10-11T14:00:00-03:00" } };
+      },
+    });
+    await runRetrospectivaSocialDispatch(o);
+    assert.deepEqual(requested, ["linkedin_pagina:d1", "threads:d1"]);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((c) => c.input.scheduledAt === "2026-10-11T14:00:00-03:00"));
+  });
+
   it("edição diária com posts agendados no dia alvo (mesmos slots) recusa o pré-voo; pasta sem posts ou dia útil só avisam", async () => {
     const seen: string[] = [];
     const conflito = opts({
