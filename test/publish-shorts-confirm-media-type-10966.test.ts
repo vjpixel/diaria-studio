@@ -71,7 +71,7 @@ describe("#10966 --media-id só registra Reels", () => {
     const fetched = await fetchInstagramRecentMedia(f.deps, "1784", "tok", "v25.0");
     const d = decideInstagramConfirm({ published: empty, media: fetched, sinceIso: since, markers, mediaId: "reel-velho", nowIso: now });
     assert.equal(d.kind, "register");
-    assert.deepEqual((d as { entry: unknown }).entry, { destination: "instagram", status: "published", id: "reel-velho", scheduled_at: null, at: now });
+    assert.deepEqual((d as { entry: unknown }).entry, { destination: "instagram", status: "published", id: "reel-velho", scheduled_at: null, at: "2026-10-21T15:00:00.000Z" });
     const ok = decideInstagramConfirm({ published: empty, media: fetched, sinceIso: since, markers, mediaId: "reel", nowIso: now });
     assert.equal((ok as { entry: { url?: string } }).entry.url, "https://www.instagram.com/reel/r/");
   });

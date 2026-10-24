@@ -1160,14 +1160,17 @@ export function decideInstagramConfirm(input: {
   });
   const valid = data.filter((m: any) => typeof m?.id === "string");
   const byNewest = (a: InstagramReelCandidate, b: InstagramReelCandidate) => parseIgTimestamp(b.timestamp) - parseIgTimestamp(a.timestamp);
-  const entryFor = (c: InstagramReelCandidate): ShortPublishedEntry => ({
-    destination: "instagram",
-    status: "published",
-    id: c.id,
-    ...(c.permalink ? { url: c.permalink } : {}),
-    scheduled_at: null,
-    at: input.nowIso,
-  });
+  const entryFor = (c: InstagramReelCandidate): ShortPublishedEntry => {
+    const timestamp = parseIgTimestamp(c.timestamp);
+    return {
+      destination: "instagram",
+      status: "published",
+      id: c.id,
+      ...(c.permalink ? { url: c.permalink } : {}),
+      scheduled_at: null,
+      at: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : input.nowIso,
+    };
+  };
   const isReels = (m: any) => m.media_product_type === "REELS";
   if (input.mediaId) {
     const all = valid.map(toCandidate).sort(byNewest);
