@@ -794,6 +794,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
+  let previousRaw: string | null = null;
   let replaced = false;
   let contentChanged = false; // #11026
   let previousKey: string | null = null;
@@ -822,6 +823,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     // pedido que de fato saiu (200 `duplicate`, agora com `fired: true`).
     const here = await readDoFireState(env, key);
     const existingRaw = await env.LINKEDIN_QUEUE.get(key);
+    previousRaw = existingRaw;
     if (existingRaw !== null) {
       const verdict = classifyIdempotentExisting(existingRaw, entry);
       if (verdict === "duplicate") {
@@ -938,6 +940,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // Isso é importante pra compat: se LINKEDIN_SCHEDULER não estiver configurado
   // (deploy antigo / env sem binding), cron continua funcionando normalmente.
   let alarmArmed = false;
+  let armConflict: "fire_in_progress" | "already_fired" | null = null;
   try {
     const doId = env.LINKEDIN_SCHEDULER.idFromName(key);
     const doStub = env.LINKEDIN_SCHEDULER.get(doId);
@@ -973,14 +976,22 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       const conflict = await armRes.json() as { claiming?: boolean };
       const reason = conflict.claiming ? "fire_in_progress" : "already_fired";
       console.warn(`[enqueue] DO de ${key} recusou /arm: ${reason}`);
-      return idempotentConflict(reason, key);
+      armConflict = reason;
     }
-    if (!armRes.ok) {
+    else if (!armRes.ok) {
       console.warn(`[enqueue] DO arm failed for key=${key} status=${armRes.status} — cron fallback active`);
     }
   } catch (e) {
     // DO indisponível / binding ausente — não bloquear o enqueue
     console.warn(`[enqueue] DO arm exception for key=${key}: ${(e as Error).message} — cron fallback active`);
+  }
+
+  // #11044 — /arm pode perder a corrida para o claim depois do KV put.
+  // Restaurar fora do catch fail-soft: falha no rollback nunca confirma 202.
+  if (armConflict !== null) {
+    if (previousRaw === null) await env.LINKEDIN_QUEUE.delete(key);
+    else await env.LINKEDIN_QUEUE.put(key, previousRaw);
+    return idempotentConflict(armConflict, key);
   }
 
   // #10992 item 2 — o índice passa a apontar a key atual (fail-soft: sem ele,
