@@ -108,6 +108,7 @@ import {
   fetchThreadsPermalink as fetchPermalink,
   publishThreadsContainer as publishContainer,
   waitForThreadsContainer,
+  ThreadsApiError,
 } from "./lib/threads-api.ts"; // #10772 — cliente compartilhado com o vertical do perfil pessoal
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -329,6 +330,52 @@ async function publishThreadsContainer(
 }
 
 /**
+ * #11076 — o `threads_publish` terminou sem resposta conclusiva (rede/timeout,
+ * 5xx, 2xx sem `id` usável): a Meta pode já ter publicado. Quem recebe isto
+ * NÃO deve refazer o envio — refazer duplica o post público.
+ */
+export class ThreadsAmbiguousSendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ThreadsAmbiguousSendError";
+  }
+}
+
+export type ThreadsTextPublishOutcome =
+  | { kind: "published"; rootMediaId: string; attempts: number }
+  | { kind: "send_unknown"; reason: string; attempts: number }
+  | { kind: "failed"; reason: string; attempts: number };
+
+/**
+ * #11076 — retry do post de texto. Falha definitiva (4xx, container
+ * ERROR/EXPIRED, timeout do processamento — nada saiu) segue com backoff até
+ * `maxAttempts`; envio ambíguo (`ThreadsAmbiguousSendError`) PARA na hora e vira
+ * `send_unknown`. Multi-chunk nunca refaz (o chunk 1 pode estar no ar).
+ */
+export async function publishTextWithRetry(
+  publishFn: () => Promise<string>,
+  opts: { multiChunk: boolean; sleep?: (ms: number) => Promise<void>; log?: (m: string) => void },
+): Promise<ThreadsTextPublishOutcome> {
+  const maxAttempts = opts.multiChunk ? 1 : 3;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const log = opts.log ?? (() => {});
+  let lastError = "";
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return { kind: "published", rootMediaId: await publishFn(), attempts: attempt };
+    } catch (e: any) {
+      lastError = e?.message ?? String(e);
+      log(`Attempt ${attempt}/${maxAttempts} failed: ${lastError}`);
+      if (e instanceof ThreadsAmbiguousSendError) {
+        return { kind: "send_unknown", reason: lastError, attempts: attempt };
+      }
+      if (attempt < maxAttempts) await sleep(Math.pow(2, attempt - 1) * 1000); // 1s, 2s
+    }
+  }
+  return { kind: "failed", reason: lastError, attempts: maxAttempts };
+}
+
+/**
  * Publica um post (possivelmente encadeado) no Threads.
  * Se `chunks.length > 1`, publica o primeiro post e encadeia os restantes
  * via reply_to_id do post publicado anterior.
@@ -353,7 +400,14 @@ async function publishThread(
       apiVersion,
     );
     await waitForContainerReady(containerId, accessToken, apiVersion); // #3995
-    const mediaId = await publishThreadsContainer(userId, accessToken, containerId, apiVersion);
+    let mediaId: string;
+    try {
+      mediaId = await publishThreadsContainer(userId, accessToken, containerId, apiVersion);
+    } catch (e) {
+      // #11076 — só o threads_publish é ambíguo: criar container/poll não publica nada.
+      if (e instanceof ThreadsApiError && e.sendMayHaveSucceeded) throw new ThreadsAmbiguousSendError(e.message);
+      throw e;
+    }
 
     if (i === 0) {
       rootMediaId = mediaId;
@@ -596,7 +650,7 @@ async function main(): Promise<number | void> {
         (p) =>
           p.platform === "threads" &&
           p.destaque === d &&
-          (p.status === "draft" || p.status === "scheduled" || p.status === "published"),
+          (p.status === "draft" || p.status === "scheduled" || p.status === "published" || p.status === "send_unknown"), // #11076
       );
       if (existing) {
         console.log(`SKIP threads/${d} — already ${existing.status}`);
@@ -797,60 +851,58 @@ async function main(): Promise<number | void> {
     // raiz independente (post órfão). Para evitar isso, não fazemos retry em
     // falhas de multi-chunk: a primeira exceção é registrada como "failed" e
     // o editor resolve manualmente.
+    //
+    // #11076 — envio AMBÍGUO no threads_publish (rede, 5xx, 2xx sem id): a Meta
+    // pode ter publicado; refazer duplica o post. Registra `send_unknown` e para.
     const isMultiChunk = chunks.length > 1;
-    let lastError = "";
-    let success = false;
-
-    const maxAttempts = isMultiChunk ? 1 : 3;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        console.log(`Publishing threads/${d} (attempt ${attempt}/${maxAttempts}, ${chunks.length} chunk(s))...`);
-
+    const outcome = await publishTextWithRetry(
+      async () => {
         const rootMediaId = await publishThread(threadsUserId, accessToken, chunks, apiVersion);
         console.log(`  Publicado: ${rootMediaId}`);
+        return rootMediaId;
+      },
+      {
+        multiChunk: isMultiChunk,
+        sleep: isTest ? async () => {} : undefined,
+        log: (m) => console.error(`${m} (threads/${d}, ${chunks.length} chunk(s))`),
+      },
+    );
 
-        // Buscar permalink real (best-effort)
-        const postUrl = await fetchThreadsPermalink(rootMediaId, accessToken, apiVersion);
-        const entry: PostEntry = {
-          platform: "threads",
-          destaque: d,
-          url: postUrl,
-          status: "published",
-          scheduled_at: null,
-          threads_media_id: rootMediaId,
-          threads_chunks: chunks.length,
-        };
-
-        tagAndAppend(entry);
-        results.push(entry);
-        console.log(`OK threads/${d} — published — ${postUrl ?? `(media_id ${rootMediaId})`}`);
-        success = true;
-        break;
-      } catch (e: any) {
-        lastError = e.message;
-        console.error(`Attempt ${attempt}/${maxAttempts} failed for threads/${d}: ${lastError}`);
-        if (isMultiChunk) {
-          console.warn(
-            `threads/${d}: post multi-chunk — sem retry para evitar posts órfãos. ` +
-            `Chunk 1 pode ter sido publicado. Verificar manualmente no Threads.`,
-          );
-        } else if (attempt < maxAttempts) {
-          const delaySec = Math.pow(2, attempt - 1); // 1s, 2s
-          if (!isTest) {
-            await new Promise((r) => setTimeout(r, delaySec * 1000));
-          }
-        }
+    if (outcome.kind === "published") {
+      // Buscar permalink real (best-effort)
+      const postUrl = await fetchThreadsPermalink(outcome.rootMediaId, accessToken, apiVersion);
+      const entry: PostEntry = {
+        platform: "threads",
+        destaque: d,
+        url: postUrl,
+        status: "published",
+        scheduled_at: null,
+        threads_media_id: outcome.rootMediaId,
+        threads_chunks: chunks.length,
+      };
+      tagAndAppend(entry);
+      results.push(entry);
+      console.log(`OK threads/${d} — published — ${postUrl ?? `(media_id ${outcome.rootMediaId})`}`);
+    } else {
+      if (isMultiChunk) {
+        console.warn(
+          `threads/${d}: post multi-chunk — sem retry para evitar posts órfãos. ` +
+          `Chunk 1 pode ter sido publicado. Verificar manualmente no Threads.`,
+        );
       }
-    }
-
-    if (!success) {
+      if (outcome.kind === "send_unknown") {
+        console.warn(
+          `threads/${d}: envio ambíguo no threads_publish — NÃO refeito (risco de post duplicado). ` +
+          `Conferir o perfil do Threads; se o post não saiu, rodar com --no-skip-existing.`,
+        );
+      }
       const entry: PostEntry = {
         platform: "threads",
         destaque: d,
         url: null,
-        status: "failed",
+        status: outcome.kind === "send_unknown" ? "send_unknown" : "failed",
         scheduled_at: null,
-        reason: lastError,
+        reason: outcome.reason,
       };
       tagAndAppend(entry);
       results.push(entry);
