@@ -27,6 +27,11 @@ export interface PublishConsent {
   /** #6162 — canal Kit PARALELO (#6126/#6048). Gate duplo: além deste
    *  consent, só roda se `kit_diaria.enabled === true` em platform.config. */
   kit: Mode;
+  /** #10659 — vídeo horizontal do dia (Drive → YouTube, §5b-youtube do Stage 5).
+   *  Opcional só pela leitura de consent gravado antes do #10659: ausente = "auto".
+   *  Fora de `hasAnyAutoChannel`/`allChannelsSkipped` (não depende de imagem
+   *  pública nem encerra a Etapa 5 sozinho). */
+  youtube?: Mode;
   /** Origem da decisão pra rastreabilidade no run-log. */
   source: string;
 }
@@ -45,6 +50,7 @@ export function autoApproveConsent(): PublishConsent {
     twitter: "auto",
     brevo: "auto",
       kit: "auto",
+    youtube: "auto",
     source: "auto_approve_default",
   };
 }
@@ -64,6 +70,7 @@ export function defaultAutoConsent(): PublishConsent {
     twitter: "auto",
     brevo: "auto",
       kit: "auto",
+    youtube: "auto",
     source: "default_auto",
   };
 }
@@ -83,6 +90,7 @@ export function defaultManualConsent(): PublishConsent {
     twitter: "manual",
     brevo: "manual",
       kit: "manual",
+    youtube: "manual",
     source: "default_manual",
   };
 }
@@ -104,7 +112,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
   if (!trimmed) {
     return { ...defaultAutoConsent(), source: "skip_flag_empty" };
   }
-  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo", "kit"]);
+  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo", "kit", "youtube"]);
   const tokens = trimmed
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -119,6 +127,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
     twitter: skipped.has("twitter") ? "manual" : "auto",
     brevo: skipped.has("brevo") ? "manual" : "auto",
     kit: skipped.has("kit") ? "manual" : "auto",
+    youtube: skipped.has("youtube") ? "manual" : "auto",
     source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
 }
@@ -155,6 +164,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       twitter: "auto",
       brevo: "auto",
       kit: "auto",
+      youtube: "auto",
       source: "editor_response_all",
     };
   }
@@ -168,6 +178,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       twitter: "skipped",
       brevo: "skipped",
       kit: "skipped",
+      youtube: "skipped",
       source: "editor_response_none",
     };
   }
@@ -196,6 +207,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     twitter: "manual",
     brevo: "manual",
       kit: "manual",
+    youtube: "manual",
     source: `editor_response_${nums.join("_")}`,
   };
   for (const n of nums) {

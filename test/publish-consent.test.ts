@@ -468,3 +468,28 @@ describe("canal Kit (#6162/#6179)", () => {
     assert.equal(allChannelsSkipped(c), true);
   });
 });
+
+describe("canal YouTube (#10659, §5b-youtube)", () => {
+  it("'youtube' é canal válido em --skip e só ele vira manual", () => {
+    const c = parseSkipFlag("youtube");
+    assert.ok(c, "youtube deve ser um canal válido em --skip");
+    assert.equal(c.youtube, "manual");
+    assert.equal(c.newsletter, "auto");
+    assert.equal(c.kit, "auto");
+    assert.equal(parseSkipFlag("linkedin")?.youtube, "auto");
+  });
+
+  it("defaults: auto nos automáticos, manual no legado; 'all'/'none' do gate", () => {
+    assert.equal(autoApproveConsent().youtube, "auto");
+    assert.equal(defaultAutoConsent().youtube, "auto");
+    assert.equal(defaultManualConsent().youtube, "manual");
+    assert.equal(parseEditorResponse("all")?.youtube, "auto");
+    assert.equal(parseEditorResponse("none")?.youtube, "skipped");
+  });
+
+  it("youtube fica fora de hasAnyAutoChannel/allChannelsSkipped (não pede imagem pública nem encerra a Etapa 5)", () => {
+    const none = parseEditorResponse("none")!;
+    assert.equal(hasAnyAutoChannel({ ...none, youtube: "auto" }), false);
+    assert.equal(allChannelsSkipped({ ...none, youtube: "auto" }), true);
+  });
+});
