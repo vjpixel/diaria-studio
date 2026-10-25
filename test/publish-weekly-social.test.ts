@@ -463,7 +463,7 @@ describe("integração: semana sem candidatos válidos — nenhum publisher é c
           "260801",
           "--editions-root",
           editionsRoot,
-          "--schedule", // mesmo com --schedule, não deve tentar publicar nada
+          "--schedule", "--allow-why-fallback", // mesmo com --schedule, não deve tentar publicar nada
         ],
         {
           cwd: __ROOT,
@@ -892,7 +892,7 @@ describe("main(): dispatch mockado", () => {
       const saturdayStr = aammddOf(saturday);
       await expectMockedExit(
         () =>
-          main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--images-only", "--schedule"], {
+          main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--images-only", "--schedule", "--allow-why-fallback"], {
             dataRoot,
             flatCardGenerator: fakeFlatCardGenerator,
             newsCardGenerator: fakeNewsCardGenerator,
@@ -1006,7 +1006,7 @@ describe("main(): dispatch mockado", () => {
         });
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1089,7 +1089,7 @@ describe("main(): dispatch mockado", () => {
 
       try {
         await main(
-          ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+          ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
           { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
         );
       } finally {
@@ -1155,7 +1155,7 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         [
-          "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week",
+          "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week",
           "--force-urls", "https://exemplo.com/d2-baixo,https://exemplo.com/d1-alto",
         ],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
@@ -1186,7 +1186,7 @@ describe("main(): dispatch mockado", () => {
           // --force-urls é o ÚLTIMO token — parseArgs não tem valor seguinte
           // pra atribuir, então cai em `flags`, não em `values`.
           () => main(
-            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-urls"],
+            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-urls"],
             { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
           ),
           1,
@@ -1215,7 +1215,7 @@ describe("main(): dispatch mockado", () => {
         await expectMockedExit(
           () => main(
             [
-              "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week",
+              "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week",
               "--force-urls", "https://exemplo.com/normal,https://www.amazon.com.br/produto-x",
             ],
             { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
@@ -1244,7 +1244,7 @@ describe("main(): dispatch mockado", () => {
         await expectMockedExit(
           () => main(
             [
-              "--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule",
+              "--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback",
               "--force-urls", "https://exemplo.com/unico",
             ],
             { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
@@ -1276,7 +1276,7 @@ describe("main(): dispatch mockado", () => {
         await expectMockedExit(
           () => main(
             [
-              "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week",
+              "--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week",
               "--force-urls", "https://exemplo.com/url-que-nao-existe",
             ],
             { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
@@ -1310,7 +1310,7 @@ describe("main(): dispatch mockado", () => {
           // (mesmo achado do #5905 pra --force-urls, replicado aqui pelo
           // review do PR #7573 — 3 agentes independentes flagaram).
           () => main(
-            ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-font-size"],
+            ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-font-size"],
             { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
           ),
           1,
@@ -1336,7 +1336,7 @@ describe("main(): dispatch mockado", () => {
         try {
           await expectMockedExit(
             () => main(
-              ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-font-size", bad],
+              ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-font-size", bad],
               { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
             ),
             1,
@@ -1367,7 +1367,7 @@ describe("main(): dispatch mockado", () => {
         });
 
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-font-size", "99"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-font-size", "99"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1403,7 +1403,7 @@ describe("main(): dispatch mockado", () => {
         });
 
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1454,11 +1454,11 @@ describe("main(): dispatch mockado", () => {
         .times(6);
 
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
       await main(
-        ["--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "clicked", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1516,7 +1516,7 @@ describe("main(): dispatch mockado", () => {
       // pro que este teste verifica (skip-existing do Threads).
 
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1600,7 +1600,7 @@ describe("main(): dispatch mockado", () => {
         });
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, sectionCardGenerator: fakeGenerator, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1638,7 +1638,7 @@ describe("main(): dispatch mockado", () => {
           // exercitar isoladamente — `--force-incomplete-click-data` passa
           // por aquele gate (banner ainda impresso, sem exit) pra chegar no
           // gate de contagem sem `--force-incomplete-week`.
-          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-click-data"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator }),
+          () => main(["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-click-data"], { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator }),
           1,
         );
       } finally {
@@ -1665,7 +1665,7 @@ describe("main(): dispatch mockado", () => {
         // #4511: sem cache Beehiiv pra 271220 → também precisa de
         // --force-incomplete-click-data (teste foca no gate de MIN_ITEMS,
         // não no de dado de clique).
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1694,7 +1694,7 @@ describe("main(): dispatch mockado", () => {
       await main(
         // #4511: sem cache Beehiiv pra nenhuma das 2 edições → precisa de
         // --force-incomplete-click-data pra chegar na checagem de imagem.
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: failingForSecondEdition },
       );
 
@@ -1726,7 +1726,7 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1750,7 +1750,7 @@ describe("main(): dispatch mockado", () => {
           main(
             // #4511: sem cache Beehiiv pra 191230 → precisa de --force-incomplete-click-data
             // pra chegar na validação de scheduled_at, que é o que este teste cobre.
-            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
             { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
           ),
         1,
@@ -1773,7 +1773,7 @@ describe("main(): dispatch mockado", () => {
 
       await main(
         // #4511: sem cache Beehiiv pra 271220 → precisa de --force-incomplete-click-data.
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -1806,7 +1806,7 @@ describe("main(): dispatch mockado", () => {
         await expectMockedExit(
           () =>
             main(
-              ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+              ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
               { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
             ),
           1,
@@ -1844,7 +1844,7 @@ describe("main(): dispatch mockado", () => {
       await expectMockedExit(
         () =>
           main(
-            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+            ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
             { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
           ),
         1,
@@ -1876,7 +1876,7 @@ describe("main(): dispatch mockado", () => {
           saturdayStr,
           "--editions-root",
           editionsRoot,
-          "--schedule",
+          "--schedule", "--allow-why-fallback",
           "--force-incomplete-week",
           "--force-incomplete-click-data",
         ],
@@ -1936,7 +1936,7 @@ describe("main(): dispatch mockado", () => {
         await assert.rejects(
           () =>
             main(
-              ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--no-skip-existing", "--force-incomplete-week"],
+              ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--no-skip-existing", "--force-incomplete-week"],
               { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
             ),
           /EISDIR/,
@@ -1967,7 +1967,7 @@ describe("main(): dispatch mockado", () => {
       // não-interceptada), confirmando que a falha do flat card ABORTA antes
       // de qualquer chamada de rede pro /queue.
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: throwingGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2000,7 +2000,7 @@ describe("main(): dispatch mockado", () => {
       });
 
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: layoutCapturingFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2034,7 +2034,7 @@ describe("main(): dispatch mockado", () => {
         });
 
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2056,7 +2056,7 @@ describe("main(): dispatch mockado", () => {
       // request não-interceptada), confirmando que o overflow ABORTA antes
       // de qualquer chamada de rede pro /queue.
       await main(
-        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+        ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2107,7 +2107,7 @@ describe("main(): dispatch mockado", () => {
         });
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2160,7 +2160,7 @@ describe("main(): dispatch mockado", () => {
       // chamar mesmo assim, disableNetConnect() derrubaria o teste.
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2195,7 +2195,7 @@ describe("main(): dispatch mockado", () => {
       // uma tentativa indevida.
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2276,7 +2276,7 @@ describe("main(): dispatch mockado", () => {
       // disableNetConnect() derrubaria o teste.
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator, facebookPagesConfig },
       );
 
@@ -2318,7 +2318,7 @@ describe("main(): dispatch mockado", () => {
         .times(3); // instagram + threads + linkedin
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2358,7 +2358,7 @@ describe("main(): dispatch mockado", () => {
       // (Instagram/Threads/LinkedIn), disableNetConnect() derrubaria o teste.
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2408,7 +2408,7 @@ describe("main(): dispatch mockado", () => {
         .times(4); // instagram + threads + linkedin carrossel (400, sem retry) + linkedin capa única (fallback)
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2478,7 +2478,7 @@ describe("main(): dispatch mockado", () => {
         .reply(200, { id: "999_post123" });
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2555,7 +2555,7 @@ describe("main(): dispatch mockado", () => {
         .times(2);
 
       await main(
-        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week", "--force-incomplete-click-data"],
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week", "--force-incomplete-click-data"],
         { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
@@ -2566,6 +2566,78 @@ describe("main(): dispatch mockado", () => {
       const liEntries = out.posts.filter((p: any) => p.platform === "linkedin" && p.destaque === "weekly-clicked");
       assert.equal(liEntries.length, 1, "a entry LinkedIn pré-existente não deveria ser duplicada nem re-tentada");
       assert.equal(liEntries[0].worker_queue_key, "queue:linkedin:pre-existing");
+    });
+  });
+
+  describe("#11062: resumo por item escrito pelo weekly-summary-writer", () => {
+    const saturday = new Date(2027, 11, 25);
+    const saturdayStr = aammddOf(saturday);
+    const TITLE = "Óculos gravaram sem comando";
+    const URL = "https://exemplo.com/oculos";
+
+    function writeSummaries(summary: string): void {
+      const dir = resolve(dataRoot, "weekly", `${saturdayStr}-highlights`, "_internal");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, "06-summaries.json"), JSON.stringify({ items: [{ url: URL, title: TITLE, summary }] }), "utf8");
+    }
+    function setup(): void {
+      const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: TITLE, url: URL }]);
+      addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+    }
+    const baseArgs = () => ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--force-incomplete-week"];
+    const opts = () => ({ dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator });
+
+    it("--summary-manifest emite título, corpo e why de cada item e o caminho do arquivo de resumos, sem rede", async () => {
+      setup();
+      let captured = "";
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => {
+        captured += args.map(String).join(" ") + "\n";
+      };
+      try {
+        await main([...baseArgs(), "--summary-manifest"], opts());
+      } finally {
+        console.log = originalLog;
+      }
+      const json = JSON.parse(captured.slice(captured.indexOf("{")));
+      assert.equal(json.mode, "highlights");
+      assert.match(json.summariesPath, /weekly\/271225-highlights\/_internal\/06-summaries\.json$/);
+      assert.equal(json.items.length, 1);
+      assert.equal(json.items[0].title, TITLE);
+      assert.equal(json.items[0].url, URL);
+      assert.match(json.items[0].body, /Corpo do D1/);
+      assert.match(json.items[0].why, /Explicação D1/);
+    });
+
+    it("--schedule SEM resumo aborta antes de qualquer chamada de rede (regressão: legenda saía com o 'Por que isso importa' cru)", async () => {
+      setup();
+      await expectMockedExit(() => main([...baseArgs(), "--schedule"], opts()), 1);
+      assert.equal(existsSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json")), false);
+    });
+
+    it("--schedule com resumo que repete o título aborta", async () => {
+      setup();
+      writeSummaries("Os óculos gravaram tudo sem nenhum comando do usuário.");
+      await expectMockedExit(() => main([...baseArgs(), "--schedule"], opts()), 1);
+    });
+
+    it("--schedule com resumo válido usa o resumo na legenda, no lugar do why", async () => {
+      setup();
+      writeSummaries("Revisores contratados viram usuários em situações íntimas.");
+      let capturedBody: any = null;
+      mockAgent
+        .get("https://worker.test")
+        .intercept({ path: "/queue", method: "POST" })
+        .reply((o) => {
+          const b = JSON.parse(o.body as string);
+          if (b.channel === "instagram") capturedBody = b;
+          return { statusCode: 200, data: { queued: true, key: `queue:${b.channel}:1`, scheduled_at: b.scheduled_at, destaque: b.destaque } };
+        })
+        .persist();
+      await main([...baseArgs(), "--schedule"], opts());
+      assert.ok(capturedBody, "Instagram deveria ter sido enfileirado");
+      assert.match(capturedBody.text, /1\. Óculos gravaram sem comando\nRevisores contratados viram usuários em situações íntimas\./);
+      assert.doesNotMatch(capturedBody.text, /Explicação D1/);
     });
   });
 
@@ -2653,7 +2725,7 @@ describe("main(): dispatch mockado", () => {
       };
       try {
         await main(
-          ["--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+          ["--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
           { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
         );
       } finally {
@@ -2706,7 +2778,7 @@ describe("main(): dispatch mockado", () => {
         await expectMockedExit(
           () =>
             main(
-              ["--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule", "--force-incomplete-week"],
+              ["--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--schedule", "--allow-why-fallback", "--force-incomplete-week"],
               { dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
             ),
           1,

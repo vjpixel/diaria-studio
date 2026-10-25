@@ -144,6 +144,12 @@ export interface InstagramWeeklyItem {
   why?: string;
   /** Corpo do destaque OU descrição de 1 linha de RADAR (`InstagramRawCandidate.body`) — usado como contexto quando `why` está vazio. */
   body?: string;
+  /**
+   * #11062: resumo escrito pro post semanal (`weekly-summary-writer`, já
+   * validado por `lib/weekly-summaries.ts`). Quando presente, é a linha de
+   * contexto, inteira, no lugar do `why`/`body`.
+   */
+  summary?: string;
 }
 
 /**
@@ -162,6 +168,7 @@ export interface InstagramWeeklyItem {
  * folgado dentro do limite mesmo sem cap por linha.
  */
 function contextLine(item: InstagramWeeklyItem): string {
+  if (item.summary?.trim()) return item.summary.trim();
   const source = (item.why || item.body || "").trim();
   if (!source) return "";
   return source.split(/(?<=[.!?])\s/)[0] ?? source;

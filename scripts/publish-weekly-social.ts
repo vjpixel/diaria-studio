@@ -197,6 +197,7 @@ import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/week
 import { WEEKLY_CAROUSEL_NEWS_CARD_SIZE } from "./lib/weekly-carousel-font-size.ts";
 import { WEEKLY_OVERLAY_WRAP, overlayTitleOverflows } from "./gen-social-card-4x5.ts";
 import { formatInstagramWeekly, formatFacebookWeekly, formatThreadsWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
+import { readWeeklySummaries, resolveWeeklySummaries, weeklySummariesPath } from "./lib/weekly-summaries.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
@@ -719,6 +720,13 @@ export async function main(
       process.exit(1);
       return;
     }
+    // #11062: --summary-manifest também imprime 1 objeto JSON por modo.
+    if (flags.has("summary-manifest")) {
+      console.error(
+        "ERRO: --summary-manifest não é compatível com --mode both (emitiria 2 JSONs em sequência). Rode cada modo separadamente (--mode clicked --summary-manifest / --mode highlights --summary-manifest).",
+      );
+      return 1;
+    }
     // #8385: mesmo motivo do --manifest-only acima — --images-only imprime 1
     // objeto JSON puro no stdout, "both" emitiria 2 em sequência quebrando o
     // parse do caller. Rode cada modo separadamente.
@@ -1183,15 +1191,63 @@ async function runOneMode(
   // neutra nesse caso;
   // `undefined` preserva a intro de sempre pro caminho algorítmico.
   const introOverride = manualOverride ? "Os destaques da semana na diar.ia.br:" : undefined;
-  const caption = formatInstagramWeekly(items, mode, introOverride);
+  // #11062: resumo por item escrito pelo `weekly-summary-writer` (skill,
+  // Passo 2) no lugar do "Por que isso importa" cru. `--summary-manifest`
+  // emite o insumo do agente e para; nos demais caminhos, o arquivo
+  // `06-summaries.json` é lido e validado aqui.
+  const summariesPath = weeklySummariesPath(dataRoot, `${saturday}-${mode}`);
+  if (flags.has("summary-manifest")) {
+    console.log(
+      JSON.stringify(
+        {
+          saturday,
+          mode,
+          carouselKey: `${saturday}-${mode}`,
+          summariesPath,
+          items: items.map((item, i) => ({
+            index: i + 1,
+            url: item.url,
+            title: item.title,
+            editionDate: item.editionDate,
+            body: item.body,
+            why: item.why,
+          })),
+        },
+        null,
+        2,
+      ),
+    );
+    return true;
+  }
+  const summaryResolution = resolveWeeklySummaries(items, readWeeklySummaries(summariesPath));
+  const summaryProblems = [
+    ...summaryResolution.missing.map((t) => `sem resumo: "${t}"`),
+    ...summaryResolution.invalid.map((x) => `resumo inválido em "${x.title}": ${x.problems.join("; ")}`),
+  ];
+  if (summaryProblems.length > 0) {
+    const fallback = flags.has("allow-why-fallback");
+    console.error(
+      `\n[publish-weekly-social] resumos (#11062, ${summariesPath}):\n  - ${summaryProblems.join("\n  - ")}\n` +
+        (fallback
+          ? "  --allow-why-fallback: esses itens usam o \"Por que isso importa\" cru na legenda."
+          : "  Rode --summary-manifest, dispatche o agente weekly-summary-writer (Passo 2 do SKILL.md) e re-rode. " +
+            "Sem resumo válido para todos os itens, --schedule aborta (--allow-why-fallback aceita o texto antigo)."),
+    );
+    if (doSchedule && !fallback) return false;
+  }
+  for (const w of summaryResolution.warnings) {
+    console.error(`[publish-weekly-social] aviso de resumo em "${w.title}": ${w.warnings.join("; ")}`);
+  }
+  const captionItems = items.map((item) => ({ ...item, summary: summaryResolution.ok.get(item.url) }));
+  const caption = formatInstagramWeekly(captionItems, mode, introOverride);
   // #5348: MESMO carrossel/itens/ordem — só a linha final de CTA difere
   // (Facebook aceita link clicável no corpo, Instagram não). Mesmo
   // `scheduledAt`/`carouselImageUrls` que o Instagram — ver dispatch abaixo.
-  const fbCaption = formatFacebookWeekly(items, mode, introOverride);
+  const fbCaption = formatFacebookWeekly(captionItems, mode, introOverride);
   // #5348 (unidade Threads): MESMO carrossel/itens/ordem, caption compacta
   // (orçamento de 500 chars da Threads API, ver format-weekly-social.ts) —
   // mesmo `scheduledAt`/`carouselImageUrls` dos outros 2 canais.
-  const threadsCaption = formatThreadsWeekly(items, mode, introOverride);
+  const threadsCaption = formatThreadsWeekly(captionItems, mode, introOverride);
   // Chave do carrossel (#5330) — "highlights" e "clicked" do MESMO sábado
   // nunca colidem em cache de card sem foto, persisted store, nem
   // skip-existing (destaqueKey abaixo).

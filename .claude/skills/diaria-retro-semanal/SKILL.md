@@ -211,6 +211,12 @@ atual:
   elegível completo + os excluídos. Os grupos de empate saem sempre, sem
   esta flag.
 - `--check-slot` (#10389) — ver Passo 0.
+- `--summary-manifest` (#11062) — imprime o insumo do agente
+  `weekly-summary-writer` (título, corpo e "Por que isso importa" de cada
+  item selecionado + o caminho de `06-summaries.json`) e para. Ver Passo 2c.
+- `--allow-why-fallback` (#11062) — aceita agendar sem resumo válido pra
+  algum item; esses itens voltam a usar o "Por que isso importa" cru na
+  legenda. Sem a flag, `--schedule` aborta. Só com confirmação do editor.
 
 ## Pré-requisitos
 
@@ -404,6 +410,34 @@ Se **nenhum candidato** (nenhum DESTAQUE 1/2/3 com URL em nenhuma edição da
 semana) foi encontrado, o script já encerra aqui — nenhum publisher é
 chamado, nada é agendado, e a skill deve reportar isso ao editor sem tentar
 prosseguir.
+
+## Passo 2c — Resumo de cada item (#11062, obrigatório antes do Passo 2b)
+
+A linha embaixo de cada título na legenda (Instagram, Facebook, LinkedIn; o
+Threads só tem títulos) é escrita pelo agente `weekly-summary-writer`, não
+copiada do "Por que isso importa" da newsletter, que fora da matéria conta a
+consequência sem dizer o que aconteceu. Regras do editor (25/10/2026): não
+repetir o título, fato concreto primeiro, se ler sozinho, 1 frase (no máximo
+2 curtas). Pra cada modo rodado:
+
+```bash
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {clicked|highlights} --summary-manifest > {scratchpad}/summary-manifest-{modo}.json
+```
+
+```
+Agent(subagent_type="weekly-summary-writer", prompt="Manifest: {scratchpad}/summary-manifest-{modo}.json")
+```
+
+O agente grava `data/weekly/{sábado}-{modo}/_internal/06-summaries.json`
+(chave = URL do item). Re-rode o preview do Passo 2: a legenda já sai com os
+resumos, e o stderr lista resumo ausente, inválido (passa de 200 caracteres,
+mais de 2 frases, repete o título — esses barram o `--schedule`) ou com aviso
+(começa com referência solta, só aviso). Resumo inválido: peça ao agente pra
+reescrever aquele item (SendMessage) ou ajuste à mão no JSON, e re-rode.
+Mudou a seleção (`--force-urls`, outro horário que mude o pool)? Rode o
+manifest e o agente de novo: item sem resumo barra o agendamento. Os resumos
+entram no Artifact do Passo 2b e no gate do Passo 3, onde o editor pode
+pedir ajuste.
 
 ## Passo 2b — Publicar a prévia visual do artefato (#8022, obrigatório antes do Passo 3)
 
