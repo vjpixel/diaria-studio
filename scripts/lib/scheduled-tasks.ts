@@ -1129,6 +1129,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#9568",
   },
   {
+    name: "Diaria-Threads-Personal-Token",
+    description:
+      "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",
+    steps: [{ key: "refresh", script: "scripts/threads-personal-token-refresh.ts" }],
+    logPath: "threads-personal/.token-refresh.log",
+    // Diária (#10772): só chama a API quando faltam ≤30 dias para vencer (ou o
+    // vencimento é desconhecido), então o custo é 0 requisições na maioria dos
+    // dias. Mesmas regras do refresh do token da diar.ia.br no Worker (#9618),
+    // fora dele porque o consumidor previsto (`publish-shorts.ts`, quando a
+    // integração do destino `threads_profile` entrar) é local e lê o Doppler.
+    // Sem token e sem `THREADS_PERSONAL_USER_ID` sai 0 sem fazer nada.
+    // DECLARADA, NÃO ARMADA — enabled:false DE PROPÓSITO: o 300 (onde as tasks
+    // rodam) não tem o Doppler CLI, então a task ficaria em skip para sempre
+    // ou renovaria um token que nunca chega ao Doppler. Pré-requisito para
+    // armar: o 300 escrever no Doppler (CLI autenticado ou API HTTP com
+    // service token de escrita), #11077. Até lá, refresh manual na máquina
+    // do editor. Sem o enabled:false o Remediate-Never-Armed-Tasks (#8153) a
+    // auto-armaria no 300.
+    enabled: false,
+    schedule: { kind: "daily", hour: 4, minute: 20 },
+    issue: "#10772",
+  },
+  {
     name: "Diaria-Hub-Staleness-Check",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot + alarma se >= 1 dia)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts", args: ["--threshold-days", "1"] }],

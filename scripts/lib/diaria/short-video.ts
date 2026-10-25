@@ -41,6 +41,7 @@
 
 import { BEEHIIV_BASE_URL } from "../edition-url.ts";
 import { TWITTER_CHAR_LIMIT, computeTwitterWeightedLength } from "../twitter-weight.ts";
+import { THREADS_TEXT_MAX_CHARS } from "../threads-api.ts"; // #10772
 import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } from "../social-schedule-rotation.ts";
 import {
   DEFAULT_MIN_GAP_MINUTES,
@@ -101,7 +102,7 @@ export function firstSentence(body: string, maxChars = 220): string {
 export function withShortUtm(
   url: string,
   utm: {
-    source: "youtube" | "facebook" | "instagram" | "linkedin" | "twitter";
+    source: "youtube" | "facebook" | "instagram" | "linkedin" | "twitter" | "threads";
     medium: "shorts" | "reels" | "video";
     campaign: string;
     content?: string | null;
@@ -186,7 +187,7 @@ export function buildReelsCaption(input: {
 }
 
 /** Plataformas do vertical NATIVO com link clicável no texto (#10772). */
-export type ShortLinkPlatform = "linkedin" | "x";
+export type ShortLinkPlatform = "linkedin" | "x" | "threads";
 
 /** Teto do texto do post no LinkedIn (`commentary` da Posts API). */
 export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
@@ -201,6 +202,8 @@ export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
  * X: título + vídeo + edição, sem o gancho; título longo é cortado até caber
  * em 280 com URL pesando 23 (`computeTwitterWeightedLength`). Lança se nem o
  * título mínimo couber (não acontece com URL de 23).
+ *
+ * Threads (perfil pessoal, #10772): `utm_source=threads`; ver `buildThreadsShortText`.
  */
 export function buildShortSocialText(input: {
   platform: ShortLinkPlatform;
@@ -213,7 +216,7 @@ export function buildShortSocialText(input: {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const video = input.videoUrl ?? DIARIA_YOUTUBE_CHANNEL_URL;
-  const source = input.platform === "x" ? "twitter" : "linkedin";
+  const source = input.platform === "x" ? "twitter" : input.platform;
   const edition = withShortUtm(input.editionUrl, { source, medium: "video", campaign: input.aammdd });
   if (input.platform === "linkedin") {
     const text = [title, firstSentence(input.d1.body), `Vídeo completo no YouTube: ${video}`, `Edição completa: ${edition}`, SHORTS_HASHTAGS.join(" ")]
@@ -222,6 +225,7 @@ export function buildShortSocialText(input: {
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
+  if (input.platform === "threads") return buildThreadsShortText(title, input.d1.body, video, edition);
   const tail = `\n\nVídeo completo: ${video}\nEdição: ${edition}`;
   const chars = Array.from(title);
   for (let n = chars.length; n >= 10; n--) {
@@ -230,6 +234,42 @@ export function buildShortSocialText(input: {
     if (computeTwitterWeightedLength(text) <= TWITTER_CHAR_LIMIT) return text;
   }
   throw new Error(`texto do X não cabe em ${TWITTER_CHAR_LIMIT} caracteres`);
+}
+
+const UTF8 = new TextEncoder();
+/** Emoji e os modificadores que o compõem (ZWJ, seletor de variação, tom de pele, keycap). */
+const EMOJI_PART_RE = /[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}‍️⃣]/u;
+
+/**
+ * Tamanho do texto como o Threads conta (#10772): 1 por caractere (code point),
+ * exceto emoji, que pesa o tamanho em bytes UTF-8 (doc da Meta, posts: "emojis
+ * count as their UTF-8 byte length"). Ex.: "🤖" pesa 4.
+ */
+export function threadsTextLength(text: string): number {
+  let n = 0;
+  for (const ch of text) n += EMOJI_PART_RE.test(ch) ? UTF8.encode(ch).length : 1;
+  return n;
+}
+
+/**
+ * Texto do vertical no Threads (#10772): título, gancho (1ª frase do D1), vídeo
+ * completo e edição, em até 500 caracteres (o Threads conta caractere, URL
+ * inteira — mas emoji conta pelo tamanho em BYTES UTF-8, ver `threadsTextLength`).
+ * Sem hashtags: no Threads só a 1ª vira tag de tópico. Não cabe →
+ * tira o gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
+ */
+function buildThreadsShortText(title: string, body: string, video: string, edition: string): string {
+  const tail = `\n\nVídeo completo no YouTube: ${video}\nEdição completa: ${edition}`;
+  const hook = firstSentence(body);
+  const withHook = hook ? `${title}\n\n${hook}${tail}` : `${title}${tail}`;
+  if (threadsTextLength(withHook) <= THREADS_TEXT_MAX_CHARS) return withHook;
+  const chars = Array.from(title);
+  for (let n = chars.length; n >= 10; n--) {
+    const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
+    const text = head + tail;
+    if (threadsTextLength(text) <= THREADS_TEXT_MAX_CHARS) return text;
+  }
+  throw new Error(`texto do Threads não cabe em ${THREADS_TEXT_MAX_CHARS} caracteres`);
 }
 
 /** Configuração `publishing.shorts` em `platform.config.json`. */
