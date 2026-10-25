@@ -32,3 +32,14 @@ test("#11073: rótulo com texto na mesma linha e corpo ignorado", () => {
     true,
   );
 });
+
+test("#11073: cada marcador isolado casa (inclui acentuados)", () => {
+  const cases = [
+    "À medida que a adoção cresce, o preço cai.",
+    "O preço cai, à medida que a adoção cresce.",
+    "Você perde acesso ao extrato.",
+    "O custo tende a subir.",
+    "Quem usa o serviço fica exposto.",
+  ];
+  for (const c of cases) assert.equal(checkPorqueImportaReaderImpact(wrap(c)).ok, true, c);
+});

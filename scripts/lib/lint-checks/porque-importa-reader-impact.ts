@@ -8,13 +8,13 @@
  *
  * Heurística deliberadamente larga (aviso, nunca bloqueia): o parágrafo passa
  * se contiver QUALQUER marcador de efeito sobre o leitor ou de tendência:
- * "tende(m) a", "à medida que", "quem", "você/seu/sua", "leitor", "passa a",
+ * "tende(m) a", "à medida que", "quem", "você", "leitor", "passa a",
  * "deixou de", "pode(m)", "vai/vão", "ainda não está claro". Os 3 exemplos
  * aprovados pelo editor (D1/D2/D3) passam.
  */
 
 export const READER_IMPACT_MARKER =
-  /\b(?:tende(?:m)? a|[àa] medida que|quem|voc[êe]|seus?|suas?|leitor(?:es)?|passa(?:m)? a|deixou de|deixaram de|pode(?:m)?|v[aã]o|vai|ainda n[ãa]o est[áa] claro)\b/i;
+  /(?<![\p{L}\p{N}_])(?:tende(?:m)? a|[àa] medida que|quem|voc[êe]|leitor(?:es)?|passa(?:m)? a|deixou de|deixaram de|pode(?:m)?|v[aã]o|vai|ainda n[ãa]o est[áa] claro)(?![\p{L}\p{N}_])/iu;
 
 export interface ReaderImpactWarning {
   /** Linha (1-based) do parágrafo. */
