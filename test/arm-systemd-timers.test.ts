@@ -452,6 +452,34 @@ describe("main() — validação de argumentos (nunca chega a chamar systemctl r
     }
   });
 
+  it("--help e -h -> exit 0 e nunca tocam systemctl (#11058)", () => {
+    const calls: string[] = [];
+    const exec = ((cmd: string) => { calls.push(cmd); return ""; }) as unknown as typeof execFileSync;
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+      assert.equal(armSystemdTimersMain(["--help"], "/repo/abs", exec), 0);
+      assert.equal(armSystemdTimersMain(["-h"], "/repo/abs", exec), 0);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.deepEqual(calls, []);
+  });
+
+  it("flag desconhecida (typo --taks X) -> exit 2, nunca arma tudo nem chama systemctl (#11058)", () => {
+    const calls: string[] = [];
+    const exec = ((cmd: string) => { calls.push(cmd); return ""; }) as unknown as typeof execFileSync;
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      assert.equal(armSystemdTimersMain(["--taks", "Diaria-Apoios-Diff-Alarm"], "/repo/abs", exec), 2);
+      assert.equal(armSystemdTimersMain(["--verify", "--bogus"], "/repo/abs", exec), 2);
+    } finally {
+      console.error = originalError;
+    }
+    assert.deepEqual(calls, []);
+  });
+
   it("--task sem valor -> retorna 1 (getStringArg lança)", () => {
     const originalError = console.error;
     console.error = () => {};
