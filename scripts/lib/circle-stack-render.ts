@@ -43,6 +43,8 @@ export interface CircleStackItem {
   editionDate: string;
   url: string;
   title: string;
+  /** Título como veio da edição (#11005), para auditoria quando `title` foi traduzido. */
+  titleOriginal?: string;
   body: string;
   why: string;
   stackNote?: string;

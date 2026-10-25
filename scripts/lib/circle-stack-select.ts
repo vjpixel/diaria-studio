@@ -224,6 +224,17 @@ export function looksEnglishTitle(title: string): boolean {
   return ENGLISH_FUNCTION_WORDS.test(t) && !PORTUGUESE_FUNCTION_WORDS.test(t);
 }
 
+/**
+ * Pure (#11005): o título tem sinal positivo de português (acento ou palavra
+ * funcional do português)? Usado para decidir o que vai à tradução: o que NÃO
+ * tem sinal nenhum ("Mercury 3 Launch Notes", "Introducing Codex") vai ao
+ * agente, mesmo sem palavra funcional do inglês que `looksEnglishTitle` pegaria.
+ */
+export function hasPortugueseSignal(title: string): boolean {
+  const t = title.replace(/\s+/g, " ").trim();
+  return ACCENTED.test(t) || PORTUGUESE_FUNCTION_WORDS.test(t);
+}
+
 const SECTION_LABEL: Record<"destaques" | "lancamentos" | "useMelhor" | "radar", string> = {
   destaques: "Destaques",
   lancamentos: "Lançamentos",
