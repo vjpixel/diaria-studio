@@ -1129,6 +1129,20 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#9568",
   },
   {
+    name: "Diaria-Threads-Personal-Token",
+    description:
+      "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",
+    steps: [{ key: "refresh", script: "scripts/threads-personal-token-refresh.ts" }],
+    logPath: "threads-personal/.token-refresh.log",
+    // Diária (#10772): só chama a API quando faltam ≤30 dias para vencer (ou o
+    // vencimento é desconhecido), então o custo é 0 requisições na maioria dos
+    // dias. Mesmas regras do refresh do token da diar.ia.br no Worker (#9618),
+    // fora dele porque o consumidor (`publish-shorts.ts`) é local e lê o Doppler.
+    // Sem `THREADS_PERSONAL_ACCESS_TOKEN` sai 0 sem fazer nada.
+    schedule: { kind: "daily", hour: 4, minute: 20 },
+    issue: "#10772",
+  },
+  {
     name: "Diaria-Hub-Staleness-Check",
     description: "detecta edições publicadas que casam HUB_KEYWORD_PATTERNS mas não estão no dataset commitado do hub (persiste snapshot + alarma se >= 1 dia)",
     steps: [{ key: "check", script: "scripts/hub-staleness-check.ts", args: ["--threshold-days", "1"] }],

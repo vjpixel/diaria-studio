@@ -101,14 +101,21 @@ import {
 } from "./lib/use-melhor-dispatch.ts"; // #9568 — 4º post (USE MELHOR)
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import {
+  THREADS_API_VERSION,
+  THREADS_TEXT_MAX_CHARS,
+  createThreadsContainer as createContainer,
+  fetchThreadsPermalink as fetchPermalink,
+  publishThreadsContainer as publishContainer,
+  waitForThreadsContainer,
+} from "./lib/threads-api.ts"; // #10772 — cliente compartilhado com o vertical do perfil pessoal
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const THREADS_API_BASE = "https://graph.threads.net";
-const THREADS_API_VERSION = "v1.0";
+// Threads API (graph.threads.net): cliente compartilhado em scripts/lib/threads-api.ts (#10772).
 
 /** Limite de caracteres por post no Threads. */
-export const THREADS_CHAR_LIMIT = 500;
+export const THREADS_CHAR_LIMIT = THREADS_TEXT_MAX_CHARS;
 
 function loadPublished(path: string): SocialPublished {
   if (existsSync(path)) {
@@ -262,11 +269,9 @@ export function splitIntoThreadChunks(text: string, maxLen = THREADS_CHAR_LIMIT)
 }
 
 /**
- * Passo 1: cria media container no Threads.
- * Retorna o container_id para uso no passo 2 (threads_publish).
- *
- * Suporta post de texto puro (sem imagem — Threads API aceita media_type TEXT).
- * Para posts com imagem: adicionar image_url + media_type=IMAGE.
+ * Passo 1: cria media container de TEXTO no Threads (`media_type=TEXT`,
+ * `reply_to_id` opcional pro encadeamento). Cliente em `scripts/lib/threads-api.ts`
+ * (#10772), compartilhado com o vertical do perfil pessoal.
  */
 async function createThreadsContainer(
   userId: string,
@@ -275,28 +280,7 @@ async function createThreadsContainer(
   replyToId: string | null,
   apiVersion: string,
 ): Promise<string> {
-  const url = `${THREADS_API_BASE}/${apiVersion}/${userId}/threads`;
-  const params = new URLSearchParams();
-  params.append("media_type", "TEXT");
-  params.append("text", text);
-  params.append("access_token", accessToken);
-  if (replyToId) {
-    params.append("reply_to_id", replyToId);
-  }
-
-  const res = await fetch(url, { method: "POST", body: params });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Threads /threads HTTP ${res.status}: ${body.slice(0, 300)}`);
-  }
-  const data = (await res.json()) as { id?: string; error?: unknown };
-  if (data.error) {
-    throw new Error(`Threads /threads API error: ${JSON.stringify(data.error)}`);
-  }
-  if (!data.id) {
-    throw new Error(`Threads /threads response sem id: ${JSON.stringify(data)}`);
-  }
-  return data.id;
+  return createContainer(userId, accessToken, { mediaType: "TEXT", text, replyToId }, apiVersion);
 }
 
 /** Intervalo entre polls de status do container, em ms (#3995). */
@@ -309,19 +293,12 @@ export const CONTAINER_POLL_MAX_ATTEMPTS = 10;
  * (#3995). Achado na investigação: em 260724, 2 de 3 destaques falharam com
  * `HTTP 400 code=24 subcode=4279009 "Media not found"` no `/threads_publish`
  * chamado LOGO APÓS `createThreadsContainer` retornar um `container_id` —
- * um teste manual mais tarde (mesmo container, mesmo texto) publicou com
- * sucesso, indicando propagação assíncrona do lado da Meta (o container
- * existe mas ainda não está pronto pra ser referenciado por
- * `threads_publish`), não problema de token/permissão.
+ * propagação assíncrona do lado da Meta, não problema de token/permissão.
  *
- * Poll `GET /{container-id}?fields=status,error_message`, mesmo padrão
- * documentado pra containers de mídia da Graph API (Instagram). Timeout
- * limitado ({@link CONTAINER_POLL_MAX_ATTEMPTS} × {@link CONTAINER_POLL_INTERVAL_MS}
+ * Timeout limitado ({@link CONTAINER_POLL_MAX_ATTEMPTS} × {@link CONTAINER_POLL_INTERVAL_MS}
  * ≈ 10s) — se esgotar sem `FINISHED`, segue pra `publishThreadsContainer`
- * mesmo assim (best-effort: não é garantido que o polling cubra 100% dos
- * casos, e a chamada de publish já tem sua própria mensagem de erro clara
- * se ainda não estiver pronta). `status: ERROR` aborta cedo com a mensagem
- * da API, sem gastar as tentativas restantes.
+ * mesmo assim (best-effort). `status: ERROR` aborta cedo com a mensagem da API.
+ * Token no header Authorization, nunca na query string (#7779).
  */
 export async function waitForContainerReady(
   containerId: string,
@@ -329,35 +306,16 @@ export async function waitForContainerReady(
   apiVersion: string,
   sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<void> {
-  // Token vai no header Authorization, nunca na query string (#7779) — ver
-  // motivação em scripts/publish-instagram.ts::fetchPermalink.
-  const url = `${THREADS_API_BASE}/${apiVersion}/${containerId}?fields=status,error_message`;
-  for (let attempt = 1; attempt <= CONTAINER_POLL_MAX_ATTEMPTS; attempt++) {
-    let status: string | undefined;
-    let errorMessage: string | undefined;
-    try {
-      const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
-      if (res.ok) {
-        const data = (await res.json()) as { status?: string; error_message?: string };
-        status = data.status;
-        errorMessage = data.error_message;
-      }
-    } catch {
-      // Falha de rede no polling — best-effort, tenta de novo até esgotar.
-    }
-    if (status === "FINISHED") return;
-    if (status === "ERROR") {
-      throw new Error(`Threads container ${containerId} status=ERROR: ${errorMessage ?? "sem detalhe"}`);
-    }
-    if (attempt < CONTAINER_POLL_MAX_ATTEMPTS) {
-      await sleepFn(CONTAINER_POLL_INTERVAL_MS);
-    }
-  }
-  // Timeout do polling — segue pro publish mesmo assim (best-effort, ver docstring).
+  await waitForThreadsContainer(containerId, accessToken, apiVersion, {
+    maxAttempts: CONTAINER_POLL_MAX_ATTEMPTS,
+    intervalMs: CONTAINER_POLL_INTERVAL_MS,
+    onTimeout: "continue",
+    sleep: sleepFn,
+  });
 }
 
 /**
- * Passo 2: publica o container criado no passo 1.
+ * Passo 2: publica o container criado no passo 1 (`creation_id`).
  * Retorna o media_id do post publicado.
  */
 async function publishThreadsContainer(
@@ -366,24 +324,7 @@ async function publishThreadsContainer(
   containerId: string,
   apiVersion: string,
 ): Promise<string> {
-  const url = `${THREADS_API_BASE}/${apiVersion}/${userId}/threads_publish`;
-  const params = new URLSearchParams();
-  params.append("creation_id", containerId);
-  params.append("access_token", accessToken);
-
-  const res = await fetch(url, { method: "POST", body: params });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Threads /threads_publish HTTP ${res.status}: ${body.slice(0, 300)}`);
-  }
-  const data = (await res.json()) as { id?: string; error?: unknown };
-  if (data.error) {
-    throw new Error(`Threads /threads_publish API error: ${JSON.stringify(data.error)}`);
-  }
-  if (!data.id) {
-    throw new Error(`Threads /threads_publish response sem id: ${JSON.stringify(data)}`);
-  }
-  return data.id;
+  return publishContainer(userId, accessToken, containerId, apiVersion);
 }
 
 /**
@@ -430,28 +371,14 @@ async function publishThread(
 /**
  * Busca o permalink público do post recém-publicado no Threads.
  * Best-effort: se falhar, retorna null (o post foi publicado com sucesso,
- * só não temos o link canônico).
+ * só não temos o link canônico). Implementação em `scripts/lib/threads-api.ts`.
  */
 export async function fetchThreadsPermalink(
   mediaId: string,
   accessToken: string,
   apiVersion: string,
 ): Promise<string | null> {
-  try {
-    // Token vai no header Authorization, nunca na query string (#7779).
-    const url = `${THREADS_API_BASE}/${apiVersion}/${mediaId}?fields=permalink`;
-    const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!res.ok) {
-      // #9991: corpo não lido segura o socket e a saída via exitCode.
-      await res.body?.cancel().catch(() => {});
-      return null;
-    }
-    const data = (await res.json()) as { permalink?: string; error?: unknown };
-    if (data.error || !data.permalink) return null;
-    return data.permalink;
-  } catch {
-    return null;
-  }
+  return fetchPermalink(mediaId, accessToken, apiVersion);
 }
 
 /**
