@@ -36,11 +36,35 @@ export const WEEKLY_SUMMARY_MAX_SENTENCES = 2;
 export interface WeeklySummaryEntry {
   url: string;
   title?: string;
+  /** Texto FINAL — o que vai pra legenda (pós-Humanizador e pós-Clarice, #11065). */
   summary: string;
+  /** #11065: versão do agente `weekly-summary-writer`, antes dos 2 passes. */
+  summary_raw?: string;
+  /** #11065: versão pós-Humanizador, antes da Clarice. */
+  summary_humanized?: string;
+}
+
+/**
+ * #11065: estado dos passes de texto sobre os resumos (Passo 2c). Ausente =
+ * o agente acabou de gravar e nenhum passe rodou. A ordem é a da diária:
+ * Humanizador, depois Clarice. `clarice: "falhou"` = MCP e REST fora; o
+ * texto humanizado segue e o preview avisa (decisão da implementação: o
+ * texto é curto e o editor revisa no gate do Passo 3, sem halt).
+ */
+export interface WeeklySummaryPasses {
+  humanizador?: "ok";
+  clarice?: "ok" | "falhou";
+  /** Por onde a Clarice rodou. */
+  clarice_via?: "mcp" | "rest";
+  /** Motivo quando `clarice: "falhou"`. */
+  clarice_error?: string;
+  /** Sugestões da Clarice que não puderam ser aplicadas (âncora ambígua/ausente). */
+  clarice_skipped?: number;
 }
 
 export interface WeeklySummariesFile {
   carouselKey?: string;
+  passes?: WeeklySummaryPasses;
   items: WeeklySummaryEntry[];
 }
 
@@ -229,4 +253,40 @@ export function resolveWeeklySummaries(
   const selected = new Set(items.map((it) => it.url));
   const orphans = summaries ? [...summaries.keys()].filter((u) => !selected.has(u)) : [];
   return { ok, missing, invalid, warnings, orphans };
+}
+
+/**
+ * #11065: lê só o bloco `passes` do arquivo. null se o arquivo não existe ou
+ * não é JSON válido — os erros de forma já são reportados por
+ * `readWeeklySummaries`, que roda antes no mesmo fluxo.
+ */
+export function readWeeklySummaryPasses(path: string): WeeklySummaryPasses | null {
+  if (!existsSync(path)) return null;
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8")) as WeeklySummariesFile;
+    return data && typeof data === "object" && data.passes && typeof data.passes === "object" ? data.passes : {};
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #11065: avisos (não barram) sobre os passes de Humanizador e Clarice. O
+ * preview do Passo 2 imprime estes avisos; o editor decide no gate.
+ */
+export function weeklySummaryPassWarnings(passes: WeeklySummaryPasses | null): string[] {
+  if (passes === null) return [];
+  const out: string[] = [];
+  if (passes.humanizador !== "ok") {
+    out.push("resumos NÃO passaram pelo Humanizador (Passo 2c, #11065) — texto ainda é o do agente");
+  }
+  if (passes.clarice === "falhou") {
+    out.push(`Clarice falhou (${passes.clarice_error ?? "sem detalhe"}) — legenda usa o texto humanizado, sem revisão da Clarice`);
+  } else if (passes.clarice !== "ok") {
+    out.push("resumos NÃO passaram pela Clarice (Passo 2c, #11065)");
+  }
+  if (passes.clarice === "ok" && (passes.clarice_skipped ?? 0) > 0) {
+    out.push(`${passes.clarice_skipped} sugestão(ões) da Clarice não aplicada(s) (âncora ambígua ou ausente) — confira os resumos`);
+  }
+  return out;
 }

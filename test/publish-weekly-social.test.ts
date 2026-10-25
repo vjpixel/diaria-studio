@@ -2710,6 +2710,21 @@ describe("main(): dispatch mockado", () => {
       assert.match(out, /── resumos \(highlights\) ──\n1\. Óculos gravaram sem comando — SEM RESUMO VÁLIDO/);
     });
 
+    it("#11065: preview avisa quando os resumos não passaram por Humanizador/Clarice, e cala quando passaram", async () => {
+      setup();
+      writeSummaries([{ url: URL, summary: GOOD }]);
+      const before = await capture(() => main(baseArgs(), opts()));
+      assert.match(before.out, /aviso: resumos NÃO passaram pelo Humanizador/);
+      assert.match(before.out, /aviso: resumos NÃO passaram pela Clarice/);
+      writeSummaries([{ url: URL, summary: GOOD }], { passes: { humanizador: "ok", clarice: "falhou", clarice_error: "MCP e REST fora" } });
+      const failed = await capture(() => main(baseArgs(), opts()));
+      assert.match(failed.out, /aviso: Clarice falhou \(MCP e REST fora\)/);
+      assert.doesNotMatch(failed.out, /NÃO passaram pelo Humanizador/);
+      writeSummaries([{ url: URL, summary: GOOD }], { passes: { humanizador: "ok", clarice: "ok", clarice_via: "mcp", clarice_skipped: 0 } });
+      const done = await capture(() => main(baseArgs(), opts()));
+      assert.doesNotMatch(done.out, /aviso: (resumos NÃO|Clarice falhou)/);
+    });
+
     it("--schedule com resumo válido: Instagram e LinkedIn usam o resumo no lugar do why", async () => {
       setup();
       writeSummaries([{ url: URL, summary: GOOD }]);
