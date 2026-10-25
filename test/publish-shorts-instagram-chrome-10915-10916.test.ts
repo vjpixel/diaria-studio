@@ -407,7 +407,7 @@ describe("#10915 conferência pela API depois do Share", () => {
       id: "r1",
       url: "https://www.instagram.com/reel/Dezuxl2q6Xy/",
       scheduled_at: null,
-      at: now,
+      at: "2026-10-22T15:22:00.000Z",
     });
   });
 
