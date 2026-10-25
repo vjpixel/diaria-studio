@@ -341,7 +341,15 @@ export function stripNonMarkerContext(body: string): string {
     }
     out.push(line);
   }
-  return out.join("\n").replace(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, " ");
+  // #11049: code span não cruza fronteira de parágrafo (CommonMark) — remover
+  // por parágrafo, senão uma crase solta casa com a crase de um span legítimo
+  // parágrafos adiante e apaga o `Closes #N` que está no meio. O split com
+  // grupo de captura preserva os separadores (e o número de linhas).
+  return out
+    .join("\n")
+    .split(/(\n[ \t]*\n)/)
+    .map((chunk, i) => (i % 2 === 1 ? chunk : chunk.replace(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, " ")))
+    .join("");
 }
 
 /**
