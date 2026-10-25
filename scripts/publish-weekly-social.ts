@@ -725,7 +725,8 @@ export async function main(
       console.error(
         "ERRO: --summary-manifest não é compatível com --mode both (emitiria 2 JSONs em sequência). Rode cada modo separadamente (--mode clicked --summary-manifest / --mode highlights --summary-manifest).",
       );
-      return 1;
+      process.exit(1);
+      return;
     }
     // #8385: mesmo motivo do --manifest-only acima — --images-only imprime 1
     // objeto JSON puro no stdout, "both" emitiria 2 em sequência quebrando o
@@ -750,11 +751,38 @@ export async function main(
   }
 
   const mode = modeArg as WeeklyInstagramMode;
+  // #11062: --summary-manifest só emite o insumo do agente — nunca agenda,
+  // nem resolve imagens, nem é o manifest de cliques. Combinar calaria uma
+  // das duas coisas sem aviso; recusa explícita.
+  if (flags.has("summary-manifest")) {
+    const clash = ["schedule", "images-only", "manifest-only"].filter((f) => flags.has(f));
+    if (clash.length > 0) {
+      console.error(`ERRO: --summary-manifest não combina com ${clash.map((f) => `--${f}`).join(", ")} (rode cada passo separado).`);
+      process.exit(1);
+      return;
+    }
+    // stdout só com o JSON (o Passo 2c redireciona pra arquivo): o log
+    // narrativo da seleção vai pro stderr enquanto este modo roda.
+    const originalLog = console.log;
+    emitJson = (text) => originalLog(text);
+    console.log = (...args: unknown[]) => console.error(...args);
+    try {
+      const okManifest = await runOneMode(mode, saturday, flags, values, dataRoot, opts);
+      if (!okManifest) process.exit(1);
+    } finally {
+      console.log = originalLog;
+      emitJson = (text) => console.log(text);
+    }
+    return;
+  }
   const ok = await runOneMode(mode, saturday, flags, values, dataRoot, opts);
   if (!ok) {
     process.exit(1);
   }
 }
+
+/** Saída de JSON puro no stdout em `--summary-manifest` (#11062) — o resto do log vai pro stderr nesse modo. */
+let emitJson: (text: string) => void = (text) => console.log(text);
 
 /** `platform.config.json` — leitura apenas, nunca escrito por este script. */
 function readPlatformConfig(): any {
@@ -931,6 +959,10 @@ async function runOneMode(
   });
 
   if (rawCandidates.length === 0) {
+    if (flags.has("summary-manifest")) {
+      const carouselKey = `${saturday}-${mode}`;
+      emitJson(JSON.stringify({ saturday, mode, carouselKey, summariesPath: weeklySummariesPath(dataRoot, carouselKey), items: [] }, null, 2));
+    }
     console.log(
       `[publish-weekly-social] Nenhum candidato (DESTAQUE 1/2/3 com URL) na semana anterior a ${saturday} — ` +
         `post semanal NÃO será publicado (nenhum publisher chamado).`,
@@ -1197,7 +1229,7 @@ async function runOneMode(
   // `06-summaries.json` é lido e validado aqui.
   const summariesPath = weeklySummariesPath(dataRoot, `${saturday}-${mode}`);
   if (flags.has("summary-manifest")) {
-    console.log(
+    emitJson(
       JSON.stringify(
         {
           saturday,
@@ -1219,24 +1251,35 @@ async function runOneMode(
     );
     return true;
   }
-  const summaryResolution = resolveWeeklySummaries(items, readWeeklySummaries(summariesPath));
+  let summaryResolution: ReturnType<typeof resolveWeeklySummaries>;
+  try {
+    summaryResolution = resolveWeeklySummaries(items, readWeeklySummaries(summariesPath, `${saturday}-${mode}`));
+  } catch (e: any) {
+    // Arquivo corrompido/malformado nunca vira "sem resumo" em silêncio, mas
+    // também não derruba o outro modo de um --mode both (falha só este).
+    console.error(`ERRO ${mode}: ${e.message} — corrija ou apague o arquivo e rode o Passo 2c de novo.`);
+    return false;
+  }
   const summaryProblems = [
-    ...summaryResolution.missing.map((t) => `sem resumo: "${t}"`),
+    ...summaryResolution.missing.map((x) => `sem resumo: "${x.title}"`),
     ...summaryResolution.invalid.map((x) => `resumo inválido em "${x.title}": ${x.problems.join("; ")}`),
   ];
+  const allowWhyFallback = flags.has("allow-why-fallback");
   if (summaryProblems.length > 0) {
-    const fallback = flags.has("allow-why-fallback");
     console.error(
       `\n[publish-weekly-social] resumos (#11062, ${summariesPath}):\n  - ${summaryProblems.join("\n  - ")}\n` +
-        (fallback
+        (allowWhyFallback
           ? "  --allow-why-fallback: esses itens usam o \"Por que isso importa\" cru na legenda."
-          : "  Rode --summary-manifest, dispatche o agente weekly-summary-writer (Passo 2 do SKILL.md) e re-rode. " +
-            "Sem resumo válido para todos os itens, --schedule aborta (--allow-why-fallback aceita o texto antigo)."),
+          : "  Na legenda abaixo, esses itens aparecem com o \"Por que isso importa\" cru. Rode --summary-manifest, dispatche o agente " +
+            "weekly-summary-writer (Passo 2c do SKILL.md) e re-rode. Sem resumo válido para todos os itens, --schedule aborta " +
+            "(--allow-why-fallback aceita o texto antigo)."),
     );
-    if (doSchedule && !fallback) return false;
   }
   for (const w of summaryResolution.warnings) {
     console.error(`[publish-weekly-social] aviso de resumo em "${w.title}": ${w.warnings.join("; ")}`);
+  }
+  for (const o of summaryResolution.orphans) {
+    console.error(`[publish-weekly-social] aviso: 06-summaries.json tem resumo para URL fora da seleção atual (${o}) — seleção mudou desde o Passo 2c?`);
   }
   const captionItems = items.map((item) => ({ ...item, summary: summaryResolution.ok.get(item.url) }));
   const caption = formatInstagramWeekly(captionItems, mode, introOverride);
@@ -1264,6 +1307,14 @@ async function runOneMode(
     // #8052: LinkedIn reusa fbCaption (mesmo texto, sem formatter dedicado) —
     // ver nota no cabeçalho do arquivo.
     console.log(`── linkedin (${mode}) ──\n${fbCaption}\n`);
+    // #11062: status de cada resumo no stdout também (o Artifact do Passo 2b
+    // é montado daqui) — item sem resumo válido sai marcado.
+    console.log(`── resumos (${mode}) ──`);
+    items.forEach((it, i) => {
+      const status = summaryResolution.ok.has(it.url) ? "ok" : "SEM RESUMO VÁLIDO (legenda usa o \"Por que isso importa\" cru)";
+      console.log(`${i + 1}. ${it.title} — ${status}`);
+    });
+    console.log("");
     return true;
   }
 
@@ -1334,6 +1385,13 @@ async function runOneMode(
     }
   };
   if (skipExisting && !imagesOnly && skipInstagram && skipFacebook && skipThreads && skipLinkedIn) return true;
+  // #11062: trava dos resumos DEPOIS do skip-existing — re-run sem nada
+  // pendente (ou só o Threads, cuja legenda não usa resumo) não é barrado.
+  const captionChannelsPending = !skipInstagram || !skipFacebook || !skipLinkedIn;
+  if (doSchedule && !allowWhyFallback && summaryProblems.length > 0 && captionChannelsPending) {
+    console.error(`ERRO ${mode}: agendamento abortado — resumo ausente ou inválido em ${summaryProblems.length} item(ns) (ver acima).`);
+    return false;
+  }
 
   // #4101 self-review finding 10: valida scheduled_at ANTES de qualquer
   // chamada de rede — agendar pro passado falharia mais adiante no

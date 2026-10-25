@@ -18,7 +18,8 @@
  *   3. Ler sozinho — sem anáfora pro corpo ("o modelo", "esse avanço").
  *   4. Curto — 1 frase, no máximo 2 curtas.
  *
- * As regras 1 e 4 BARRAM o agendamento (`validateWeeklySummary`). A regra 3
+ * As regras 1 e 4 BARRAM o agendamento (`validateWeeklySummary`, que também
+ * barra resumo vazio e markdown/seta). Resumo ausente também barra. A regra 3
  * vira aviso (`weeklySummaryWarnings`) — a mesma forma aparece em resumo bom
  * e ruim. A regra 2 fica no prompt do agente: não há regex honesta pra
  * "consequência abstrata". O juiz final é o editor no gate do Passo 3.
@@ -27,7 +28,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-/** Teto de caracteres do resumo (regra 4). Os 8 aprovados em 261024 ficaram entre 82 e 156. */
+/** Teto de caracteres do resumo (regra 4). Os aprovados em 261024 ficaram bem abaixo (o maior, ~160). */
 export const WEEKLY_SUMMARY_MAX_CHARS = 200;
 /** Máximo de frases (regra 4). */
 export const WEEKLY_SUMMARY_MAX_SENTENCES = 2;
@@ -47,8 +48,14 @@ export function weeklySummariesPath(dataRoot: string, carouselKey: string): stri
   return resolve(dataRoot, "weekly", carouselKey, "_internal", "06-summaries.json");
 }
 
-/** null se o arquivo não existe; lança se existe mas está corrompido (nunca trata corrompido como "sem resumo"). */
-export function readWeeklySummaries(path: string): Map<string, string> | null {
+/**
+ * null se o arquivo não existe. Lança se existe mas está corrompido,
+ * malformado (entrada sem `url`/`summary` string), com URL duplicada, ou de
+ * outro carrossel (`carouselKey` diferente de `expectedKey`) — nunca trata
+ * nenhum desses casos como "sem resumo", que mandaria o editor rodar o agente
+ * de novo em vez de olhar o arquivo.
+ */
+export function readWeeklySummaries(path: string, expectedKey?: string): Map<string, string> | null {
   if (!existsSync(path)) return null;
   let data: WeeklySummariesFile;
   try {
@@ -59,10 +66,17 @@ export function readWeeklySummaries(path: string): Map<string, string> | null {
   if (!data || !Array.isArray(data.items)) {
     throw new Error(`06-summaries.json sem "items" (${path})`);
   }
-  const map = new Map<string, string>();
-  for (const it of data.items) {
-    if (it && typeof it.url === "string" && typeof it.summary === "string") map.set(it.url, it.summary.trim());
+  if (expectedKey && data.carouselKey && data.carouselKey !== expectedKey) {
+    throw new Error(`06-summaries.json é do carrossel ${data.carouselKey}, não de ${expectedKey} (${path})`);
   }
+  const map = new Map<string, string>();
+  data.items.forEach((it, i) => {
+    if (!it || typeof it.url !== "string" || typeof it.summary !== "string") {
+      throw new Error(`06-summaries.json: entrada ${i + 1} sem "url"/"summary" em texto (${path})`);
+    }
+    if (map.has(it.url)) throw new Error(`06-summaries.json: URL repetida (${it.url}) (${path})`);
+    map.set(it.url, it.summary.trim());
+  });
   return map;
 }
 
@@ -82,6 +96,24 @@ export function significantWords(text: string): string[] {
 }
 
 /**
+ * Nomes próprios: palavra com maiúscula que NÃO abre frase ("Mistral",
+ * "ElevenLabs" em "A Mistral cobra... a ElevenLabs"). Nomear de novo o ator
+ * do título não é repetir o título — o review da PR #11064 mostrou que contar
+ * isso barrava resumos bons ("Mistral desafia ElevenLabs" / "A Mistral
+ * cobra US$ 0,04 o minuto, um décimo do que a ElevenLabs pede.").
+ */
+export function properNouns(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const sentence of splitSentences(text)) {
+    const words = sentence.match(/[\p{L}\p{N}]+/gu) ?? [];
+    words.slice(1).forEach((w) => {
+      if (/^\p{Lu}/u.test(w)) out.add(normalizeWord(w));
+    });
+  }
+  return out;
+}
+
+/**
  * Anáforas soltas que só fazem sentido com o corpo da matéria antes (regra 3).
  * Casos reais do `why` cru que motivaram a regra: "O modelo questionou...",
  * "Avanços como esse...", "São dados internos de uma das empresas...".
@@ -93,10 +125,32 @@ const LOOSE_ANAPHORA = [
   /^s[ãa]o\s+dados\b/i,
 ];
 
+const ABBREVIATIONS = /(?:^|\s)(?:dr|dra|sr|sra|srta|prof|profa|eng|av|art|inc|ltda|vs|etc)\.$/i;
+
+/**
+ * Frases: quebra em `.`/`!`/`?` seguido de espaço e maiúscula, dígito ou
+ * aspas ("Caiu 30%. 17 ficaram."), menos depois de abreviação ("O Dr. Silva").
+ * "US$ 0,04" não quebra (vírgula, sem espaço).
+ */
+export function splitSentences(text: string): string[] {
+  const t = text.trim();
+  if (!t) return [];
+  const out: string[] = [];
+  let start = 0;
+  const re = /[.!?]\s+(?=[\p{Lu}\p{N}"“'‘«])/gu;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    const head = t.slice(start, m.index + 1);
+    if (ABBREVIATIONS.test(head)) continue;
+    out.push(head.trim());
+    start = m.index + m[0].length;
+  }
+  out.push(t.slice(start).trim());
+  return out.filter((x) => x.length > 0);
+}
+
 function countSentences(text: string): number {
-  // "US$ 0,04" e abreviações curtas não quebram frase: só conta ponto final seguido de espaço+maiúscula, ou fim.
-  const parts = text.trim().split(/(?<=[.!?])\s+(?=\p{Lu})/u).filter((s) => s.trim().length > 0);
-  return parts.length;
+  return splitSentences(text).length;
 }
 
 /**
@@ -112,7 +166,9 @@ export function validateWeeklySummary(title: string, summary: string): string[] 
   if (s.length > WEEKLY_SUMMARY_MAX_CHARS) problems.push(`passa de ${WEEKLY_SUMMARY_MAX_CHARS} caracteres (${s.length})`);
   const sentences = countSentences(s);
   if (sentences > WEEKLY_SUMMARY_MAX_SENTENCES) problems.push(`tem ${sentences} frases (máximo ${WEEKLY_SUMMARY_MAX_SENTENCES})`);
-  const titleWords = significantWords(title);
+  // Nomes próprios (do título ou do resumo) não contam: renomear o ator não é repetir o título.
+  const names = new Set([...properNouns(title), ...properNouns(s)]);
+  const titleWords = significantWords(title).filter((w) => !names.has(w));
   const summaryWords = new Set(significantWords(s));
   const repeated = titleWords.filter((w) => summaryWords.has(w));
   if (titleWords.length > 0 && repeated.length >= 2 && repeated.length / titleWords.length >= 0.5) {
@@ -138,12 +194,14 @@ export function weeklySummaryWarnings(summary: string): string[] {
 export interface SummaryResolution {
   /** url → resumo válido. */
   ok: Map<string, string>;
-  /** Itens sem resumo no arquivo (ou arquivo ausente). */
-  missing: string[];
+  /** Itens sem entrada no arquivo (ou arquivo ausente). Entrada vazia é `invalid` ("resumo vazio"). */
+  missing: { url: string; title: string }[];
   /** Itens com resumo que não passou na validação: título + problemas. */
   invalid: { url: string; title: string; problems: string[] }[];
   /** Avisos não bloqueantes (`weeklySummaryWarnings`) dos resumos válidos. */
   warnings: { url: string; title: string; warnings: string[] }[];
+  /** URLs com resumo no arquivo que não estão na seleção (seleção mudou depois do Passo 2c). */
+  orphans: string[];
 }
 
 export function resolveWeeklySummaries(
@@ -151,15 +209,15 @@ export function resolveWeeklySummaries(
   summaries: Map<string, string> | null,
 ): SummaryResolution {
   const ok = new Map<string, string>();
-  const missing: string[] = [];
+  const missing: SummaryResolution["missing"] = [];
   const invalid: SummaryResolution["invalid"] = [];
   const warnings: SummaryResolution["warnings"] = [];
   for (const it of items) {
-    const s = summaries?.get(it.url);
-    if (!s) {
-      missing.push(it.title);
+    if (!summaries?.has(it.url)) {
+      missing.push({ url: it.url, title: it.title });
       continue;
     }
+    const s = summaries.get(it.url) ?? "";
     const problems = validateWeeklySummary(it.title, s);
     if (problems.length > 0) invalid.push({ url: it.url, title: it.title, problems });
     else {
@@ -168,5 +226,7 @@ export function resolveWeeklySummaries(
       if (w.length > 0) warnings.push({ url: it.url, title: it.title, warnings: w });
     }
   }
-  return { ok, missing, invalid, warnings };
+  const selected = new Set(items.map((it) => it.url));
+  const orphans = summaries ? [...summaries.keys()].filter((u) => !selected.has(u)) : [];
+  return { ok, missing, invalid, warnings, orphans };
 }

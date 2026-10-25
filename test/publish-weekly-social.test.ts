@@ -2574,70 +2574,162 @@ describe("main(): dispatch mockado", () => {
     const saturdayStr = aammddOf(saturday);
     const TITLE = "Óculos gravaram sem comando";
     const URL = "https://exemplo.com/oculos";
+    const TITLE2 = "Banco põe assistente na conta";
+    const URL2 = "https://exemplo.com/banco";
+    const GOOD = "Revisores contratados viram usuários em situações íntimas.";
 
-    function writeSummaries(summary: string): void {
+    function writeSummaries(items: { url: string; summary: string }[], extra: Record<string, unknown> = {}): void {
       const dir = resolve(dataRoot, "weekly", `${saturdayStr}-highlights`, "_internal");
       mkdirSync(dir, { recursive: true });
-      writeFileSync(resolve(dir, "06-summaries.json"), JSON.stringify({ items: [{ url: URL, title: TITLE, summary }] }), "utf8");
+      writeFileSync(resolve(dir, "06-summaries.json"), JSON.stringify({ ...extra, items }), "utf8");
     }
-    function setup(): void {
+    function setup(two = false): void {
       const dir = setupEdition(editionsRoot, "271220", [{ n: 1, title: TITLE, url: URL }]);
       addImageFixture(dir, 1, "https://cdn.example.com/271220-d1.jpg");
+      if (two) {
+        const dir2 = setupEdition(editionsRoot, "271221", [{ n: 1, title: TITLE2, url: URL2 }]);
+        addImageFixture(dir2, 1, "https://cdn.example.com/271221-d1.jpg");
+      }
     }
     const baseArgs = () => ["--saturday", saturdayStr, "--mode", "highlights", "--editions-root", editionsRoot, "--force-incomplete-week"];
     const opts = () => ({ dataRoot, flatCardGenerator: fakeFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator });
-
-    it("--summary-manifest emite título, corpo e why de cada item e o caminho do arquivo de resumos, sem rede", async () => {
-      setup();
-      let captured = "";
-      const originalLog = console.log;
-      console.log = (...args: unknown[]) => {
-        captured += args.map(String).join(" ") + "\n";
+    async function capture(fn: () => Promise<void>): Promise<{ out: string; err: string }> {
+      let out = "";
+      let err = "";
+      const ol = console.log;
+      const oe = console.error;
+      console.log = (...a: unknown[]) => {
+        out += a.map(String).join(" ") + "\n";
+      };
+      console.error = (...a: unknown[]) => {
+        err += a.map(String).join(" ") + "\n";
       };
       try {
-        await main([...baseArgs(), "--summary-manifest"], opts());
+        await fn();
       } finally {
-        console.log = originalLog;
+        console.log = ol;
+        console.error = oe;
       }
-      const json = JSON.parse(captured.slice(captured.indexOf("{")));
-      assert.equal(json.mode, "highlights");
-      assert.match(json.summariesPath, /weekly\/271225-highlights\/_internal\/06-summaries\.json$/);
-      assert.equal(json.items.length, 1);
-      assert.equal(json.items[0].title, TITLE);
-      assert.equal(json.items[0].url, URL);
-      assert.match(json.items[0].body, /Corpo do D1/);
-      assert.match(json.items[0].why, /Explicação D1/);
-    });
-
-    it("--schedule SEM resumo aborta antes de qualquer chamada de rede (regressão: legenda saía com o 'Por que isso importa' cru)", async () => {
-      setup();
-      await expectMockedExit(() => main([...baseArgs(), "--schedule"], opts()), 1);
-      assert.equal(existsSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json")), false);
-    });
-
-    it("--schedule com resumo que repete o título aborta", async () => {
-      setup();
-      writeSummaries("Os óculos gravaram tudo sem nenhum comando do usuário.");
-      await expectMockedExit(() => main([...baseArgs(), "--schedule"], opts()), 1);
-    });
-
-    it("--schedule com resumo válido usa o resumo na legenda, no lugar do why", async () => {
-      setup();
-      writeSummaries("Revisores contratados viram usuários em situações íntimas.");
-      let capturedBody: any = null;
+      return { out, err };
+    }
+    function captureQueue(): Record<string, any> {
+      const bodies: Record<string, any> = {};
       mockAgent
         .get("https://worker.test")
         .intercept({ path: "/queue", method: "POST" })
         .reply((o) => {
           const b = JSON.parse(o.body as string);
-          if (b.channel === "instagram") capturedBody = b;
+          bodies[b.channel] = b;
           return { statusCode: 200, data: { queued: true, key: `queue:${b.channel}:1`, scheduled_at: b.scheduled_at, destaque: b.destaque } };
         })
         .persist();
+      return bodies;
+    }
+
+    it("--summary-manifest: stdout é JSON puro (log narrativo vai pro stderr) com título, corpo e why", async () => {
+      setup();
+      const { out } = await capture(() => main([...baseArgs(), "--summary-manifest"], opts()));
+      const json = JSON.parse(out);
+      assert.equal(json.mode, "highlights");
+      assert.equal(json.carouselKey, "271225-highlights");
+      assert.match(json.summariesPath, /weekly\/271225-highlights\/_internal\/06-summaries\.json$/);
+      assert.equal(json.items.length, 1);
+      assert.deepEqual([json.items[0].title, json.items[0].url], [TITLE, URL]);
+      assert.match(json.items[0].body, /Corpo do D1/);
+      assert.match(json.items[0].why, /Explicação D1/);
+    });
+
+    it("--summary-manifest sem candidato na semana: JSON com items vazio", async () => {
+      const { out } = await capture(() => main([...baseArgs(), "--summary-manifest"], opts()));
+      assert.deepEqual(JSON.parse(out).items, []);
+    });
+
+    it("--summary-manifest com --mode both sai com código 1", async () => {
+      await expectMockedExit(() => main(["--saturday", saturdayStr, "--mode", "both", "--editions-root", editionsRoot, "--summary-manifest"], opts()), 1);
+    });
+
+    it("--summary-manifest com --schedule é recusado (código 1)", async () => {
+      setup();
+      await expectMockedExit(() => main([...baseArgs(), "--summary-manifest", "--schedule"], opts()), 1);
+    });
+
+    it("--schedule SEM resumo aborta pelo motivo certo, sem chamar a fila (regressão: legenda saía com o 'Por que isso importa' cru)", async () => {
+      setup();
+      let err = "";
+      const oe = console.error;
+      console.error = (...a: unknown[]) => {
+        err += a.map(String).join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(() => main([...baseArgs(), "--schedule"], opts()), 1);
+      } finally {
+        console.error = oe;
+      }
+      assert.match(err, /sem resumo: "Óculos gravaram sem comando"/);
+      assert.match(err, /agendamento abortado/);
+      assert.equal(existsSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json")), false);
+    });
+
+    it("--schedule com resumo que repete o título aborta pelo motivo certo", async () => {
+      setup();
+      writeSummaries([{ url: URL, summary: "Os óculos gravaram tudo sem nenhum comando do usuário." }]);
+      let err = "";
+      const oe = console.error;
+      console.error = (...a: unknown[]) => {
+        err += a.map(String).join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(() => main([...baseArgs(), "--schedule"], opts()), 1);
+      } finally {
+        console.error = oe;
+      }
+      assert.match(err, /resumo inválido em "Óculos gravaram sem comando": repete o título/);
+    });
+
+    it("06-summaries.json corrompido: falha o modo com a causa", async () => {
+      setup();
+      const dir = resolve(dataRoot, "weekly", `${saturdayStr}-highlights`, "_internal");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, "06-summaries.json"), "{ quebrado", "utf8");
+      let err = "";
+      const oe = console.error;
+      console.error = (...a: unknown[]) => {
+        err += a.map(String).join(" ") + "\n";
+      };
+      try {
+        await expectMockedExit(() => main([...baseArgs(), "--schedule", "--allow-why-fallback"], opts()), 1);
+      } finally {
+        console.error = oe;
+      }
+      assert.match(err, /06-summaries\.json corrompido/);
+    });
+
+    it("preview sem resumo NÃO aborta e marca o item no bloco de resumos", async () => {
+      setup();
+      const { out } = await capture(() => main(baseArgs(), opts()));
+      assert.match(out, /── resumos \(highlights\) ──\n1\. Óculos gravaram sem comando — SEM RESUMO VÁLIDO/);
+    });
+
+    it("--schedule com resumo válido: Instagram e LinkedIn usam o resumo no lugar do why", async () => {
+      setup();
+      writeSummaries([{ url: URL, summary: GOOD }]);
+      const bodies = captureQueue();
       await main([...baseArgs(), "--schedule"], opts());
-      assert.ok(capturedBody, "Instagram deveria ter sido enfileirado");
-      assert.match(capturedBody.text, /1\. Óculos gravaram sem comando\nRevisores contratados viram usuários em situações íntimas\./);
-      assert.doesNotMatch(capturedBody.text, /Explicação D1/);
+      for (const ch of ["instagram", "linkedin"]) {
+        assert.ok(bodies[ch], `${ch} deveria ter sido enfileirado`);
+        assert.match(bodies[ch].text, /1\. Óculos gravaram sem comando\nRevisores contratados viram usuários em situações íntimas\./, ch);
+        assert.doesNotMatch(bodies[ch].text, /Explicação D1/, ch);
+      }
+    });
+
+    it("--allow-why-fallback com seleção mista: item com resumo usa o resumo, o outro cai no why", async () => {
+      setup(true);
+      writeSummaries([{ url: URL, summary: GOOD }]);
+      const bodies = captureQueue();
+      await main([...baseArgs(), "--schedule", "--allow-why-fallback"], opts());
+      const text = bodies.instagram.text as string;
+      assert.match(text, /Óculos gravaram sem comando\nRevisores contratados/);
+      assert.match(text, /Banco põe assistente na conta\nExplicação D1\./);
     });
   });
 

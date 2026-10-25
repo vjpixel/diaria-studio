@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import {
   validateWeeklySummary,
   weeklySummaryWarnings,
+  splitSentences,
   resolveWeeklySummaries,
   readWeeklySummaries,
   significantWords,
@@ -64,6 +65,34 @@ describe("validateWeeklySummary (#11062)", () => {
     assert.ok(p.some((x) => /200 caracteres/.test(x)));
   });
 
+  it("limites exatos: 200 caracteres passa, 201 não; 2 frases passa, 3 não", () => {
+    const at = (n: number) => "a".repeat(n - 1) + ".";
+    assert.deepEqual(validateWeeklySummary("Título", at(200)), []);
+    assert.ok(validateWeeklySummary("Título", at(201)).some((x) => /201/.test(x)));
+    assert.deepEqual(validateWeeklySummary("Título", "Uma frase. Outra frase."), []);
+  });
+
+  it("markdown e setas são barrados", () => {
+    for (const bad of ["Tem **negrito** aqui.", "Veja [isto](https://x.com).", "Clique aqui → agora."]) {
+      assert.ok(validateWeeklySummary("Título", bad).some((x) => /markdown ou seta/.test(x)), bad);
+    }
+  });
+
+  it("renomear as empresas do título não conta como repetir (review PR #11064)", () => {
+    assert.deepEqual(
+      validateWeeklySummary("Mistral desafia ElevenLabs com voz mais barata", "A Mistral cobra US$ 0,04 o minuto, um décimo do que a ElevenLabs pede."),
+      [],
+    );
+    assert.deepEqual(validateWeeklySummary("Google processa OpenAI", "O Google pede US$ 2 bilhões e diz que a OpenAI copiou o Gemini."), []);
+  });
+
+  it("splitSentences: abreviação não quebra; dígito e aspas abrem frase nova", () => {
+    assert.equal(splitSentences("O Dr. Silva testou. Deu certo.").length, 2);
+    assert.equal(splitSentences("Caiu 30%. 17 ficaram. 5 saíram.").length, 3);
+    assert.equal(splitSentences("Custa US$ 0,04 o minuto.").length, 1);
+    assert.equal(splitSentences('Ele disse. "Não volta."').length, 2);
+  });
+
   it("vazio é barrado", () => {
     assert.deepEqual(validateWeeklySummary("Título", "  "), ["resumo vazio"]);
   });
@@ -84,6 +113,7 @@ describe("resolveWeeklySummaries / readWeeklySummaries (#11062)", () => {
       { url: "b", title: "Falhas no PHP colocam a internet em alerta global" },
       { url: "c", title: "Título sem resumo" },
       { url: "d", title: "Mistral desafia ElevenLabs com voz mais barata" },
+      { url: "e", title: "Item que o agente esqueceu" },
     ];
     const r = resolveWeeklySummaries(
       items,
@@ -92,13 +122,33 @@ describe("resolveWeeklySummaries / readWeeklySummaries (#11062)", () => {
         ["b", "Esse problema é grave."],
         ["c", ""],
         ["d", "A Mistral desafia a ElevenLabs com uma voz bem mais barata."],
+        ["z", "Resumo de um item que saiu da seleção."],
       ]),
     );
     assert.deepEqual([...r.ok.keys()], ["a", "b"]);
-    assert.deepEqual(r.missing, ["Título sem resumo"]);
-    assert.equal(r.invalid.length, 1);
-    assert.equal(r.invalid[0].url, "d");
+    assert.deepEqual(r.missing, [{ url: "e", title: "Item que o agente esqueceu" }]);
+    assert.deepEqual(r.invalid.map((x) => x.url), ["c", "d"]);
+    assert.deepEqual(r.invalid[0].problems, ["resumo vazio"], "entrada vazia é inválida, não ausente");
+    assert.match(r.invalid[1].problems.join(), /repete o título \(desafia, barata\)/);
+    assert.deepEqual(r.orphans, ["z"]);
     assert.equal(r.warnings[0].url, "b", "anáfora solta é aviso, não invalida");
+  });
+
+  it("entrada malformada, URL repetida e carrossel errado lançam (nunca viram 'sem resumo')", () => {
+    const dir = mkdtempSync(join(tmpdir(), "weekly-summaries-"));
+    try {
+      const f = join(dir, "s.json");
+      writeFileSync(f, JSON.stringify({ items: [{ url: "a", resumo: "chave errada" }] }));
+      assert.throws(() => readWeeklySummaries(f), /entrada 1 sem "url"\/"summary"/);
+      writeFileSync(f, JSON.stringify({ items: [{ url: "a", summary: "x" }, { url: "a", summary: "y" }] }));
+      assert.throws(() => readWeeklySummaries(f), /URL repetida/);
+      writeFileSync(f, JSON.stringify({ carouselKey: "261017-clicked", items: [] }));
+      assert.throws(() => readWeeklySummaries(f, "261024-clicked"), /261017-clicked, não de 261024-clicked/);
+      writeFileSync(f, JSON.stringify({ items: "nao" }));
+      assert.throws(() => readWeeklySummaries(f), /sem "items"/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("arquivo ausente → null; corrompido → lança (nunca vira 'sem resumo' em silêncio)", () => {

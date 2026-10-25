@@ -57,4 +57,4 @@ Grave em `summariesPath` (do manifest), um item por entrada do manifest, na mesm
 { "carouselKey": "261024-clicked", "items": [ { "url": "…", "title": "…", "summary": "…" } ] }
 ```
 
-`url` idêntica à do manifest (é a chave). Depois, responda em uma linha com quantos resumos gravou e o caminho. O script valida cada resumo (tamanho, número de frases, repetição do título) e recusa o agendamento se algum falhar; o editor revisa todos no gate.
+`url` idêntica à do manifest (é a chave), sem URL repetida, e `carouselKey` igual ao do manifest. Depois, responda em uma linha com quantos resumos gravou e o caminho. O script recusa o agendamento se algum resumo faltar, estiver vazio, passar de 200 caracteres, tiver mais de 2 frases, repetir as palavras do título (renomear a empresa ou pessoa do título não conta) ou tiver markdown/seta; o editor revisa todos no gate.

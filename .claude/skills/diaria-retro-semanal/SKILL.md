@@ -386,8 +386,9 @@ Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
 - Slot de agendamento vencido (#10389): mesmo aviso do Passo 0, no stderr,
   sem abortar o preview.
 - A caption formatada do Instagram, Facebook E Threads (#5348) — MESMOS
-  títulos numerados; Instagram/Facebook incluem 1 linha de contexto (`why`
-  do destaque, ou a 1ª frase de `body` pra RADAR), Threads NÃO (orçamento
+  títulos numerados; Instagram/Facebook incluem 1 linha de contexto (o
+  resumo escrito no Passo 2c, #11062; sem ele, o `why` do destaque ou a 1ª
+  frase de `body` pra RADAR, marcado no bloco `── resumos ──`), Threads NÃO (orçamento
   de 500 chars do canal não sobra pra isso com 5 itens, ver
   `format-weekly-social.ts`). A CTA final também diverge por canal:
   Instagram "link na bio"; Facebook/Threads link clicável direto no corpo.
@@ -430,9 +431,13 @@ Agent(subagent_type="weekly-summary-writer", prompt="Manifest: {scratchpad}/summ
 
 O agente grava `data/weekly/{sábado}-{modo}/_internal/06-summaries.json`
 (chave = URL do item). Re-rode o preview do Passo 2: a legenda já sai com os
-resumos, e o stderr lista resumo ausente, inválido (passa de 200 caracteres,
-mais de 2 frases, repete o título — esses barram o `--schedule`) ou com aviso
-(começa com referência solta, só aviso). Resumo inválido: peça ao agente pra
+resumos, e o bloco `── resumos ──` marca item sem resumo válido. Barram o
+`--schedule`: resumo ausente, vazio, com mais de 200 caracteres, com mais de
+2 frases, que repete o título, ou com markdown/seta. Só aviso no stderr:
+começa com referência solta, ou o arquivo tem resumo de URL fora da
+seleção. Arquivo corrompido, de outro carrossel ou com entrada malformada
+falha o modo inteiro com a causa. O stdout do `--summary-manifest` é só o
+JSON (o log vai pro stderr). Resumo inválido: peça ao agente pra
 reescrever aquele item (SendMessage) ou ajuste à mão no JSON, e re-rode.
 Mudou a seleção (`--force-urls`, outro horário que mude o pool)? Rode o
 manifest e o agente de novo: item sem resumo barra o agendamento. Os resumos
