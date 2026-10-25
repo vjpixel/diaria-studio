@@ -682,3 +682,35 @@ describe("matchesIntentionalError (#10575) — reply cita só a palavra errada d
     assert.equal(matchesIntentionalError("amerika?", e), false);
   });
 });
+
+describe("matchesIntentionalError (#11056) — reply terse com wrong_value de palavra única minúscula", () => {
+  const error = {
+    category: "ortografico",
+    location: "destaque 1",
+    description: "nome da empresa grafado errado",
+    correct_value: "Amazon",
+    wrong_value: "Amazom",
+  };
+
+  it("caso real 261026: corpo exato 'Amazom' → acerto", () => {
+    assert.equal(matchesIntentionalError("Amazom", error), true);
+  });
+
+  it("corpo curto com o token em frase ('o erro é Amazom') → acerto", () => {
+    assert.equal(matchesIntentionalError("o erro é Amazom!", error), true);
+  });
+
+  it("corpo longo que só menciona a palavra no meio não ganha pelo caminho terse", () => {
+    const body = "Gostei muito da edição de hoje, principalmente da parte sobre agentes e o texto final. Amazom apareceu de novo no radar.";
+    assert.equal(matchesIntentionalError(body, { ...error, description: "x", location: "y", correct_value: "Amazon" }), false);
+  });
+
+  it("palavras distintas (numero vs valor) seguem exigindo contexto", () => {
+    const e = { description: "valor errado", location: "radar", correct_value: "valor", wrong_value: "numero" };
+    assert.equal(matchesIntentionalError("numero", e), false);
+  });
+
+  it("reply 'Obrigado!' não ganha número", () => {
+    assert.equal(matchesIntentionalError("Obrigado!", error), false);
+  });
+});
