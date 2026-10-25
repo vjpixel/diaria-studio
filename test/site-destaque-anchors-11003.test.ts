@@ -166,6 +166,20 @@ describe("#11003 — backfill das páginas já publicadas", () => {
   });
 });
 
+describe("#11033 — o acervo publicado já está com as âncoras", () => {
+  // O backfill da #11033 rodou sobre workers/site/public/p. Página com
+  // manchete reconhecível que volte sem âncora (republicação por um caminho
+  // antigo, merge que traga a versão anterior) aparece aqui como pendente.
+  it("nenhuma página publicada com manchetes ficou pendente de âncora", () => {
+    const dir = join(import.meta.dirname, "..", "workers", "site", "public", "p");
+    const results = backfillDestaqueAnchorsDir(dir, true);
+    assert.ok(results.length > 0, "diretório das páginas /p/ não encontrado ou vazio");
+    const pendentes = results.filter((r) => r.outcome === "backfilled" || r.outcome === "sem-script-do-modal");
+    assert.deepEqual(pendentes.map((r) => `${r.slug}: ${r.outcome}`), []);
+    assert.ok(results.some((r) => r.outcome === "ja-atualizada"), "nenhuma página com âncora: o acervo Kit sumiu?");
+  });
+});
+
 describe("#11003 — o post da Stack aponta para o destaque", () => {
   const selection: CircleStackSelection = {
     cycle: "26w42",
