@@ -201,6 +201,7 @@ function deps(rereadStatus: Record<string, unknown>): YouTubeUploadDeps {
     fetch: async (url, init) => {
       if (url === "https://oauth2.googleapis.com/token") return json(200, { access_token: "at" });
       if (url.includes("/youtube/v3/channels")) return json(200, { items: [{ id: SECRETS.YOUTUBE_CHANNEL_ID }] });
+      if (url.includes("/youtube/v3/playlistItems")) return json(200, { items: [] }); // #11080: canal sem vídeo da edição
       if (url.includes("uploadType=resumable")) return new Response(null, { status: 200, headers: { Location: SESSION_URL } });
       if (url === SESSION_URL && init?.method === "PUT") return json(200, { id: VIDEO_ID, status: rereadStatus });
       if (url.includes("/thumbnails/set")) return json(200, {});
