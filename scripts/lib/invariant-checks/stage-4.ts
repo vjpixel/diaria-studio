@@ -1932,7 +1932,7 @@ export function checkFactRecurrence(editionDir: string, pastMd?: string): Invari
   const md = readFileSync(file, "utf8");
   // Each editorial paragraph carries its own link and context, across all sections.
   const items = md.split(/\n\s*\n/).flatMap(title =>
-    [...title.matchAll(/\[[^\]]+\]\((https?:\/\/[^\s)]+)\)/g)].map(m => ({ title, url: m[1] })));
+    extractUrlsWithLines(title).map(({ url }) => ({ title, url })));
   return findFactRecurrences(items, pastMd ?? readPastEditionsMd(resolve(ROOT, "data/past-editions.md")), basename(editionDir))
     .map(w => ({ rule: "fact-recurrence", source_issue: "#11083", severity: "warning" as const, file,
       message: `Possível mesmo fato: ${w.item_title} (${w.item_url}) vs ${w.matched_edition} “${w.matched_title}”; score=${w.score}, entidades=${w.shared_entities.join(", ")}. ${w.possible_new_fact} Heurístico: o editor confirma a novidade.` }));
