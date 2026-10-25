@@ -8,6 +8,7 @@ import {
   parseSkipFlag,
   hasAnyAutoChannel,
   allChannelsSkipped,
+  youtubeUploadEnabled,
 } from "../scripts/lib/publish-consent.ts";
 
 describe("autoApproveConsent (#1238)", () => {
@@ -491,5 +492,16 @@ describe("canal YouTube (#10659, §5b-youtube)", () => {
     const none = parseEditorResponse("none")!;
     assert.equal(hasAnyAutoChannel({ ...none, youtube: "auto" }), false);
     assert.equal(allChannelsSkipped({ ...none, youtube: "auto" }), true);
+  });
+
+  it("youtubeUploadEnabled: só auto ou ausente; manual e skipped desligam (regressão: 'none' subia o vídeo)", () => {
+    assert.equal(youtubeUploadEnabled(parseEditorResponse("none")!), false);
+    assert.equal(youtubeUploadEnabled(parseSkipFlag("youtube")!), false);
+    assert.equal(youtubeUploadEnabled(parseEditorResponse("all")!), true);
+    assert.equal(youtubeUploadEnabled(parseEditorResponse("1,3")!), false);
+    assert.equal(youtubeUploadEnabled(defaultManualConsent()), false);
+    const legacy = { ...defaultAutoConsent() };
+    delete legacy.youtube;
+    assert.equal(youtubeUploadEnabled(legacy), true);
   });
 });
