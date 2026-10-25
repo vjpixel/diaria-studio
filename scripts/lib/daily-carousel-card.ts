@@ -373,11 +373,22 @@ export function buildCarouselSlideTexts(
     // #7676: título também passa por splitParagraphIntoTwoBlocks — antes ia
     // cru, e as 2 frases de INSTAGRAM_CTA_LINE saíam coladas num bloco só,
     // com o wrap quebrando a 2ª frase no meio sem respiro nenhum entre elas.
-    cta: {
-      kicker: ctaOverride?.kicker ?? DAILY_CAROUSEL_CTA_KICKER,
-      title: splitParagraphIntoTwoBlocks(ctaOverride?.title ?? INSTAGRAM_CTA_LINE),
-      footer: "diar.ia.br",
-    },
+    cta: buildDailyCarouselCtaText(ctaOverride),
+  };
+}
+
+/**
+ * Pure: texto do slide de CTA final do carrossel diário. Exportado à parte
+ * porque o carrossel SEMANAL (`publish-weekly-social.ts`, retro) usa o MESMO
+ * card de CTA desde 25/10/2026 (pedido do editor: "deixe o último card dos
+ * posts de retro iguais aos dos diários") — fonte única, pra os dois nunca
+ * divergirem de novo.
+ */
+export function buildDailyCarouselCtaText(ctaOverride?: CarouselCtaOverride | null): FlatCardText {
+  return {
+    kicker: ctaOverride?.kicker ?? DAILY_CAROUSEL_CTA_KICKER,
+    title: splitParagraphIntoTwoBlocks(ctaOverride?.title ?? INSTAGRAM_CTA_LINE),
+    footer: "diar.ia.br",
   };
 }
 

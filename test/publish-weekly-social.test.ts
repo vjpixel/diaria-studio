@@ -58,6 +58,7 @@ import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-s
 import { sectionCardCacheKey, type SectionCardGenerator } from "../scripts/lib/weekly-instagram-ondemand-card.ts";
 import type { FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
 import type { NewsCardGenerator } from "../scripts/lib/weekly-carousel-news-card.ts";
+import { buildDailyCarouselCtaText, DAILY_CAROUSEL_LAYOUT } from "../scripts/lib/daily-carousel-card.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -184,13 +185,13 @@ describe("buildFlatCardTexts (#5330 — textos dos slides sem foto, por modo)", 
     assert.deepEqual(highlights.cta, clicked.cta);
   });
 
-  it("#8055 — CTA manda pro endereço, nunca pro 'link da bio': o card é o MESMO nos 4 canais", () => {
-    // O JPEG do CTA é compartilhado por Instagram, Threads, LinkedIn e
-    // Facebook (`carouselImageUrls`), e em 3 deles não existe bio com link.
-    // A legenda continua podendo ser específica por canal — a ARTE, não.
+  it("CTA final da retro é o MESMO card do carrossel diário (pedido do editor 25/10/2026)", () => {
+    // Regressão: a retro tinha texto próprio ("A edição completa chega no seu
+    // e-mail. Assine em diar.ia.br.", kicker "Grátis, toda manhã") e divergia
+    // do último slide dos carrosséis diários.
     const { cta } = buildFlatCardTexts("highlights", ["260810"]);
-    assert.match(cta.title, /Assine em diar\.ia\.br\./);
-    assert.doesNotMatch(cta.title, /link da bio/i);
+    assert.deepEqual(cta, buildDailyCarouselCtaText());
+    assert.equal(cta.kicker, "Assine grátis, direto no seu e-mail");
   });
 });
 
@@ -1978,8 +1979,8 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
-  describe("#8480 (260919): capa/CTA sempre 84px, cards internos sempre 62px — overflow ABORTA em vez de encolher", () => {
-    it("capa/CTA: card sem foto sempre renderiza fixo em 84px, mesmo com título curto que ANTES encolheria/cresceria via fill", async () => {
+  describe("#8480 (260919): capa sempre 84px (CTA = layout do diário), cards internos sempre 62px — overflow ABORTA em vez de encolher", () => {
+    it("capa: card sem foto sempre renderiza fixo em 84px (CTA no layout do diário), mesmo com título curto que ANTES encolheria/cresceria via fill", async () => {
       const saturday = new Date(2027, 11, 25);
       const saturdayStr = aammddOf(saturday);
       const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 curto", url: "https://exemplo.com/d1" }]);
@@ -2003,12 +2004,12 @@ describe("main(): dispatch mockado", () => {
         { dataRoot, flatCardGenerator: layoutCapturingFlatCardGenerator, newsCardGenerator: fakeNewsCardGenerator },
       );
 
-      // 2 chamadas: cover + cta, ambas com o MESMO layout fixo 84px (nunca
-      // `{ mode: "fill" }`, que era o default pré-#8480).
+      // 2 chamadas: cover em layout fixo 84px (nunca `{ mode: "fill" }`, o
+      // default pré-#8480) e cta no MESMO layout do carrossel diário (62px,
+      // pedido do editor 25/10/2026 — o card final é idêntico ao do diário).
       assert.equal(receivedLayouts.length, 2);
-      for (const layout of receivedLayouts) {
-        assert.deepEqual(layout, { mode: "fixed", size: 84, charWidthRatio: 0.62 });
-      }
+      assert.deepEqual(receivedLayouts[0], { mode: "fixed", size: 84, charWidthRatio: 0.62 });
+      assert.deepEqual(receivedLayouts[1], DAILY_CAROUSEL_LAYOUT);
     });
 
     it("cards internos (com foto): SEMPRE fontSize=62 embutido na URL do card de notícia, mesmo com títulos curtos que ANTES subiriam pra até 88px", async () => {

@@ -65,7 +65,10 @@ FIXO 84px (`WEEKLY_FLAT_CARD_LAYOUT`, #8480, 260919)** — antes era auto-size
 que crescia até preencher o card (`fillingFontSize`, 46-148px); texto que não
 coubesse a 84px encolhia sozinho, e a política do editor virou a mesma do
 carrossel diário (#6078): ABORTAR e pedir reescrita, nunca encolher. Ver
-`scripts/lib/weekly-flat-card.ts`.
+`scripts/lib/weekly-flat-card.ts`. **O CTA final é o MESMO card do carrossel
+diário desde 25/10/2026** (pedido do editor): texto, kicker e tamanho (62px,
+`DAILY_CAROUSEL_LAYOUT`) vêm de `buildDailyCarouselCtaText` em
+`scripts/lib/daily-carousel-card.ts`, fonte única. Os 84px valem só pra capa.
 
 **Os 5 slides do meio são RECOMPOSTOS, não reusados como estão (#5345).**
 Antes do #5345, cada card de notícia usava o clamp dinâmico de
@@ -511,8 +514,8 @@ acima), nunca reusado no tamanho publicado originalmente no feed diário. Item
 de RADAR sem card pré-existente tem o card gerado SOB DEMANDA nesse momento
 (#4513), recebendo o MESMO `carouselFontSize` da rodada via
 `fontSizeOverride` — o que muda é só o mecanismo de geração/cache, não o
-tamanho de fonte aplicado. Capa/CTA (paleta clara, tamanho fixo 84px — ver
-seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
+tamanho de fonte aplicado. Capa/CTA (paleta clara; capa 84px, CTA igual ao
+do carrossel diário — ver seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
 depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json` — ver
 `scripts/lib/weekly-flat-card.ts`). Se QUALQUER item de notícia não resolver
 imagem (falha de leitura, recomposição OU geração sob demanda), o post
