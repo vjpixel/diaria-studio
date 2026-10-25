@@ -211,6 +211,12 @@ atual:
   elegível completo + os excluídos. Os grupos de empate saem sempre, sem
   esta flag.
 - `--check-slot` (#10389) — ver Passo 0.
+- `--summary-manifest` (#11062) — imprime o insumo do agente
+  `weekly-summary-writer` (título, corpo e "Por que isso importa" de cada
+  item selecionado + o caminho de `06-summaries.json`) e para. Ver Passo 2c.
+- `--allow-why-fallback` (#11062) — aceita agendar sem resumo válido pra
+  algum item; esses itens voltam a usar o "Por que isso importa" cru na
+  legenda. Sem a flag, `--schedule` aborta. Só com confirmação do editor.
 
 ## Pré-requisitos
 
@@ -380,8 +386,9 @@ Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
 - Slot de agendamento vencido (#10389): mesmo aviso do Passo 0, no stderr,
   sem abortar o preview.
 - A caption formatada do Instagram, Facebook E Threads (#5348) — MESMOS
-  títulos numerados; Instagram/Facebook incluem 1 linha de contexto (`why`
-  do destaque, ou a 1ª frase de `body` pra RADAR), Threads NÃO (orçamento
+  títulos numerados; Instagram/Facebook incluem 1 linha de contexto (o
+  resumo escrito no Passo 2c, #11062; sem ele, o `why` do destaque ou a 1ª
+  frase de `body` pra RADAR, marcado no bloco `── resumos ──`), Threads NÃO (orçamento
   de 500 chars do canal não sobra pra isso com 5 itens, ver
   `format-weekly-social.ts`). A CTA final também diverge por canal:
   Instagram "link na bio"; Facebook/Threads link clicável direto no corpo.
@@ -404,6 +411,38 @@ Se **nenhum candidato** (nenhum DESTAQUE 1/2/3 com URL em nenhuma edição da
 semana) foi encontrado, o script já encerra aqui — nenhum publisher é
 chamado, nada é agendado, e a skill deve reportar isso ao editor sem tentar
 prosseguir.
+
+## Passo 2c — Resumo de cada item (#11062, obrigatório antes do Passo 2b)
+
+A linha embaixo de cada título na legenda (Instagram, Facebook, LinkedIn; o
+Threads só tem títulos) é escrita pelo agente `weekly-summary-writer`, não
+copiada do "Por que isso importa" da newsletter, que fora da matéria conta a
+consequência sem dizer o que aconteceu. Regras do editor (25/10/2026): não
+repetir o título, fato concreto primeiro, se ler sozinho, 1 frase (no máximo
+2 curtas). Pra cada modo rodado:
+
+```bash
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {clicked|highlights} --summary-manifest > {scratchpad}/summary-manifest-{modo}.json
+```
+
+```
+Agent(subagent_type="weekly-summary-writer", prompt="Manifest: {scratchpad}/summary-manifest-{modo}.json")
+```
+
+O agente grava `data/weekly/{sábado}-{modo}/_internal/06-summaries.json`
+(chave = URL do item). Re-rode o preview do Passo 2: a legenda já sai com os
+resumos, e o bloco `── resumos ──` marca item sem resumo válido. Barram o
+`--schedule`: resumo ausente, vazio, com mais de 200 caracteres, com mais de
+2 frases, que repete o título, ou com markdown/seta. Só aviso no stderr:
+começa com referência solta, ou o arquivo tem resumo de URL fora da
+seleção. Arquivo corrompido, de outro carrossel ou com entrada malformada
+falha o modo inteiro com a causa. O stdout do `--summary-manifest` é só o
+JSON (o log vai pro stderr). Resumo inválido: peça ao agente pra
+reescrever aquele item (SendMessage) ou ajuste à mão no JSON, e re-rode.
+Mudou a seleção (`--force-urls`, outro horário que mude o pool)? Rode o
+manifest e o agente de novo: item sem resumo barra o agendamento. Os resumos
+entram no Artifact do Passo 2b e no gate do Passo 3, onde o editor pode
+pedir ajuste.
 
 ## Passo 2b — Publicar a prévia visual do artefato (#8022, obrigatório antes do Passo 3)
 

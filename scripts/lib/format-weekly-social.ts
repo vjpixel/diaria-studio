@@ -144,11 +144,20 @@ export interface InstagramWeeklyItem {
   why?: string;
   /** Corpo do destaque OU descrição de 1 linha de RADAR (`InstagramRawCandidate.body`) — usado como contexto quando `why` está vazio. */
   body?: string;
+  /**
+   * #11062: resumo escrito pro post semanal (`weekly-summary-writer`).
+   * Quando presente, é a linha de contexto, inteira, no lugar do
+   * `why`/`body`. Este formatter NÃO valida: o chamador é a fronteira
+   * (`publish-weekly-social.ts` só passa resumos aprovados por
+   * `lib/weekly-summaries.ts`).
+   */
+  summary?: string;
 }
 
 /**
- * Extrai 1 frase de contexto por item pra caption — `why` (destaques) ou a
- * 1ª frase de `body` (RADAR, sem `why`). "" se não houver nada de contexto
+ * Extrai a linha de contexto de cada item da caption: o `summary` escrito pro
+ * post semanal (#11062), inteiro; sem ele (só com --allow-why-fallback no
+ * publisher), a 1ª frase do `why` (destaques) ou do `body` (RADAR, sem `why`). "" se não houver nada de contexto
  * (nunca deveria acontecer pro shape real produzido por
  * `weekly-instagram-select.ts`, mas a função é defensiva pra qualquer
  * chamador com `InstagramWeeklyItem` mínimo).
@@ -162,6 +171,7 @@ export interface InstagramWeeklyItem {
  * folgado dentro do limite mesmo sem cap por linha.
  */
 function contextLine(item: InstagramWeeklyItem): string {
+  if (item.summary?.trim()) return item.summary.trim();
   const source = (item.why || item.body || "").trim();
   if (!source) return "";
   return source.split(/(?<=[.!?])\s/)[0] ?? source;
