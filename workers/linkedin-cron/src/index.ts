@@ -847,29 +847,28 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     if (here?.fired) return idempotentConflict("already_fired", key);
     if (here?.inFlight) return idempotentConflict("fire_in_progress", key);
 
-    // #11026 — conteúdo mudou: o container de Reels que o DO guardou (#10922)
-    // é da legenda/vídeo antigos. O `/arm` também o descarta (#11024), mas só
-    // roda DEPOIS do KV put e a falha dele é não fatal: com o `/arm` falhando
-    // (ou o cron rodando entre o put e o `/arm`), o `/claim` devolveria o
-    // container antigo e o cron publicaria o Reels velho. Limpar aqui, antes
-    // de gravar a entry nova; sem conseguir limpar, nada é gravado (503).
+    // #11026/#11029 — conteúdo mudou: o DO desta key ainda guarda o container
+    // de Reels (#10922) E o payload/alarm da versão antiga. O `/arm` os
+    // sobrescreve, mas só roda DEPOIS do KV put e a falha dele é não fatal: com
+    // o `/arm` falhando (ou o cron rodando entre o put e o `/arm`), o `/claim`
+    // devolveria o container antigo, ou o alarm (mesmo `scheduledAtMs`, mesma
+    // key) publicaria o payload antigo. `/cancel` limpa payload, container e
+    // alarm de uma vez (`fired`/`inFlight` já foram checados acima); se o
+    // `/arm` falhar depois, o cron publica o conteúdo novo a partir do KV. Sem
+    // conseguir cancelar, nada é gravado (503).
     if (contentChanged) {
       let clearOk = false;
       try {
-        const clearRes = await doStub(env, key).fetch("https://do/reels-container", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reels_container: null }),
-        });
+        const clearRes = await doStub(env, key).fetch("https://do/cancel", { method: "POST" });
         clearOk = clearRes.ok;
       } catch (e) {
-        console.warn(`[enqueue] limpeza do container de Reels no DO ${key} falhou: ${(e as Error).message} (#11026)`);
+        console.warn(`[enqueue] cancel do DO ${key} (conteúdo mudado) falhou: ${(e as Error).message} (#11029)`);
       }
       if (!clearOk) {
         return json(
           {
             error: "reels_container_clear_failed",
-            message: "não deu pra descartar o vídeo preparado da versão anterior deste pedido — nada foi alterado; tente de novo.",
+            message: "não deu pra descartar o agendamento e o vídeo preparado da versão anterior deste pedido — nada foi alterado; tente de novo.",
             key,
           },
           503,

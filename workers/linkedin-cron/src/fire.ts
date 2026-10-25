@@ -191,6 +191,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     }
 
     let succeeded = false;
+    let releaseAfterWrites = false; // #11045
     // (#7626) Capturado fora do narrowing de `outcome.status` porque o uso
     // mais abaixo (DLQ por retry esgotado) acontece após o `if/else` que
     // discrimina fired/failed — nesse ponto TS já não sabe mais que
@@ -259,12 +260,12 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       fired++;
       succeeded = true;
     } else {
-      // outcome.status === "failed" — liberar claim no DO pra próximo retry do cron poder tentar de novo.
-      try {
-        const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
-        const doStub = env.LINKEDIN_SCHEDULER.get(doId);
-        await doStub.fetch("https://do/release-claim", { method: "POST" });
-      } catch { /* non-fatal */ }
+      // outcome.status === "failed" — o claim só é liberado DEPOIS do write-back
+      // do container (DO) e do re-put/DLQ da entry (KV) (#11045). Liberar antes
+      // abria uma janela em que um enqueue com conteúdo mudado (que o claim
+      // segurado recusa com 409 em /status e /arm) rodava inteiro, e o write-back
+      // do cron devolvia o container e a entry ANTIGOS por cima do conteúdo novo.
+      releaseAfterWrites = true;
       failureReason = outcome.reason;
       console.error(`[fire] ${k.name} fire failed: ${outcome.reason}`);
       // #10922 — o container a retomar vai pra entry (re-write abaixo) e pro DO,
@@ -284,40 +285,44 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
 
     if (succeeded) continue;
 
-    // #880 — incrementar retry_count e mover pra dlq se esgotou
-    const currentRetry = entry.retry_count ?? 0;
-    const nextRetry = currentRetry + 1;
+    try {
+      // #880 — incrementar retry_count e mover pra dlq se esgotou
+      const currentRetry = entry.retry_count ?? 0;
+      const nextRetry = currentRetry + 1;
 
-    if (nextRetry >= MAX_RETRIES) {
-      // #894 P1-A — Move pra DLQ com ordem atômica: PUT dlq primeiro, delete
-      // queue depois. Se Worker crashar entre as 2 ops, o item permanece em
-      // ambos: o cron seguinte vai re-processar a queue entry (e potencialmente
-      // re-mover pra DLQ, gerando duplicata). Trade-off: duplicata é benigna
-      // (DLQ é só auditoria, não dispara ação) e o TTL (#894 P1-B) garante que
-      // entries antigas evaporam. Inverter a ordem (delete primeiro, put
-      // depois) seria pior: crash entre as ops perde o item silenciosamente.
-      //
-      // Reusa o UUID original pra rastreabilidade (`queue:<ts>:<uuid>` →
-      // `dlq:<ts>:<uuid>`). Pra schema legacy (`queue:<uuid>`), usa o uuid
-      // direto. Mantém vínculo entre entry da fila e entry no DLQ.
-      const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
-      const dlqEntry: QueueEntry = { ...entry, retry_count: nextRetry, last_error: failureReason };
-      await env.LINKEDIN_QUEUE.put(dlqKey, JSON.stringify(dlqEntry), {
-        expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
-      });
-      await env.LINKEDIN_QUEUE.delete(k.name);
-      console.error(
-        `[fire] ${k.name} moved to dlq after ${nextRetry} retries (destaque=${entry.destaque}, scheduled=${entry.scheduled_at}, dlq_key=${dlqKey})`,
-      );
-      dlq++;
-    } else {
-      // Re-write com retry_count incrementado
-      const updated: QueueEntry = { ...entry, retry_count: nextRetry };
-      await env.LINKEDIN_QUEUE.put(k.name, JSON.stringify(updated));
-      console.error(
-        `[fire] ${k.name} retry ${nextRetry}/${MAX_RETRIES} (destaque=${entry.destaque})`,
-      );
-      errors++;
+      if (nextRetry >= MAX_RETRIES) {
+        // #894 P1-A — Move pra DLQ com ordem atômica: PUT dlq primeiro, delete
+        // queue depois. Se Worker crashar entre as 2 ops, o item permanece em
+        // ambos: o cron seguinte vai re-processar a queue entry (e potencialmente
+        // re-mover pra DLQ, gerando duplicata). Trade-off: duplicata é benigna
+        // (DLQ é só auditoria, não dispara ação) e o TTL (#894 P1-B) garante que
+        // entries antigas evaporam. Inverter a ordem (delete primeiro, put
+        // depois) seria pior: crash entre as ops perde o item silenciosamente.
+        //
+        // Reusa o UUID original pra rastreabilidade (`queue:<ts>:<uuid>` →
+        // `dlq:<ts>:<uuid>`). Pra schema legacy (`queue:<uuid>`), usa o uuid
+        // direto. Mantém vínculo entre entry da fila e entry no DLQ.
+        const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
+        const dlqEntry: QueueEntry = { ...entry, retry_count: nextRetry, last_error: failureReason };
+        await env.LINKEDIN_QUEUE.put(dlqKey, JSON.stringify(dlqEntry), {
+          expirationTtl: DLQ_TTL_SECONDS, // #894 P1-B
+        });
+        await env.LINKEDIN_QUEUE.delete(k.name);
+        console.error(
+          `[fire] ${k.name} moved to dlq after ${nextRetry} retries (destaque=${entry.destaque}, scheduled=${entry.scheduled_at}, dlq_key=${dlqKey})`,
+        );
+        dlq++;
+      } else {
+        // Re-write com retry_count incrementado
+        const updated: QueueEntry = { ...entry, retry_count: nextRetry };
+        await env.LINKEDIN_QUEUE.put(k.name, JSON.stringify(updated));
+        console.error(
+          `[fire] ${k.name} retry ${nextRetry}/${MAX_RETRIES} (destaque=${entry.destaque})`,
+        );
+        errors++;
+      }
+    } finally {
+      if (releaseAfterWrites) await releaseCronClaim();
     }
   }
 
