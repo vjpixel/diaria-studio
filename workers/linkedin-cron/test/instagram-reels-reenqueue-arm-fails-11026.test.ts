@@ -5,7 +5,7 @@
  * falhando, o container antigo ficava no DO e o cron o recebia do `/claim`,
  * publicando o Reels com o vídeo/legenda velhos.
  *
- * O fix limpa o container no DO (`POST /reels-container {reels_container:null}`)
+ * O fix limpa o DO (#11029, `POST /cancel`: container, payload e alarm)
  * antes do KV put, no caminho `replaced` com conteúdo mudado; se a limpeza
  * falha, o enqueue responde 503 sem gravar nada.
  *
@@ -215,7 +215,7 @@ describe("#11026 legenda nova com o /arm falhando: o cron não retoma o containe
     calls.length = 0;
     const again = await enqueue(env, reels({ text: "Legenda nova" }));
     assert.equal(again.status, 202);
-    const clear = calls.indexOf("/reels-container");
+    const clear = calls.indexOf("/cancel");
     const put = calls.indexOf(`kv.put:${key}`);
     assert.ok(clear >= 0 && put >= 0, `chamadas: ${calls.join(", ")}`);
     assert.ok(clear < put, "limpeza antes do put");
@@ -225,10 +225,10 @@ describe("#11026 legenda nova com o /arm falhando: o cron não retoma o containe
 
 describe("#11026 a limpeza falha → 503 sem gravar a entry nova", () => {
   for (const mode of ["status", "throw"] as const) {
-    it(`/reels-container falha (${mode}) → 503 reels_container_clear_failed; KV mantém a entry anterior e o /arm não roda`, async () => {
+    it(`/cancel falha (${mode}) → 503 reels_container_clear_failed; KV mantém a entry anterior e o /arm não roda`, async () => {
       const { env, kv, key, state, failing, calls } = await failWithStoredContainer();
       const before = kv.store.get(key);
-      failing.set("/reels-container", mode);
+      failing.set("/cancel", mode);
       calls.length = 0;
       kv.puts.length = 0;
 
@@ -247,20 +247,20 @@ describe("#11026 a limpeza falha → 503 sem gravar a entry nova", () => {
 });
 
 describe("#11026 não toca o container fora do caminho de conteúdo mudado", () => {
-  it("re-enqueue idêntico (duplicata) não chama /reels-container e preserva o container (#10922)", async () => {
+  it("re-enqueue idêntico (duplicata) não chama /cancel e preserva o container (#10922)", async () => {
     const { env, state, calls } = await failWithStoredContainer();
     calls.length = 0;
     const again = await enqueue(env, reels());
     assert.equal(again.status, 200);
-    assert.ok(!calls.includes("/reels-container"));
+    assert.ok(!calls.includes("/cancel"));
     assert.equal((state.storage.store.get("reels_container") as { id: string }).id, "container-1");
   });
 
-  it("1º enqueue (sem entry anterior) não chama /reels-container", async () => {
+  it("1º enqueue (sem entry anterior) não chama /cancel", async () => {
     const { env, calls } = mkEnv();
     mockGraph("FINISHED");
     const res = await enqueue(env, reels());
     assert.equal(res.status, 202);
-    assert.ok(!calls.includes("/reels-container"));
+    assert.ok(!calls.includes("/cancel"));
   });
 });
