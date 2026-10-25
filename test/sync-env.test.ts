@@ -450,6 +450,11 @@ describe("entrypoint guard (#5679)", () => {
 });
 
 describe("defaultDopplerRunner fallback (#8795)", () => {
+  const posixFakeOnly = {
+    skip: process.platform === "win32"
+      ? "#11081: fake executável usa #!/bin/sh e chmod; execFileSync no Windows não executa esse script POSIX"
+      : false,
+  };
   /**
    * Roda `defaultDopplerRunner` num subprocesso isolado (nunca no processo
    * do test runner) com `HOME`/`PATH`/`DOPPLER_BIN` controlados — cada
@@ -482,7 +487,7 @@ describe("defaultDopplerRunner fallback (#8795)", () => {
     return scriptPath;
   }
 
-  it("cai para ~/.local/bin/doppler quando `doppler` não está no PATH (ENOENT)", () => {
+  it("cai para ~/.local/bin/doppler quando `doppler` não está no PATH (ENOENT)", posixFakeOnly, () => {
     // Exercita o MECANISMO real de fallback (resolve(homedir(), ".local/bin/doppler")),
     // não um substituto injetado — HOME aponta pra um diretório fake com o
     // binário fallback presente, PATH não tem `doppler`, sem DOPPLER_BIN.
@@ -513,7 +518,7 @@ describe("defaultDopplerRunner fallback (#8795)", () => {
     }
   });
 
-  it("usa DOPPLER_BIN direto quando definida, pulando PATH e o fallback fixo", () => {
+  it("usa DOPPLER_BIN direto quando definida, pulando PATH e o fallback fixo", posixFakeOnly, () => {
     // HOME não tem fallback nenhum e PATH não tem doppler — se DOPPLER_BIN
     // não fosse consumida (achado do review do PR #8800: a env var era
     // testada mas nunca lida por scripts/sync-env.ts), este cenário
