@@ -33,9 +33,8 @@
  * guarda o registro anterior em `previous_uploads`.
  *
  * Com o vídeo enviado, grava também `_internal/05-video-url.txt` (link do
- * vídeo no D1, #10772) — só se o estado relido for `published`, ou
- * `scheduled` com `publishAt` até o post do D1 (#10858); vídeo `private`
- * nunca vira link no D1.
+ * vídeo no D1, #10772), inclusive privado/sem auditoria (#10960).
+ * A disponibilidade pública gera aviso, sem impedir a gravação do link.
  *
  * Antes do PUT dos bytes o mesmo arquivo recebe um marcador
  * `{ status: "in_progress" }`; se o upload falhar dali em diante (5xx, rede
@@ -108,7 +107,7 @@ import {
   type YouTubeUploadResult,
 } from "./lib/diaria/youtube-upload.ts";
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
-import { d1SocialSlotAt, videoLinkEligibility, videoLinkRemedy } from "./lib/diaria/youtube-video-link-gate.ts";
+import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -281,8 +280,8 @@ export interface RunUploadOutcome {
 
 /**
  * Depois do upload, grava `_internal/05-video-url.txt` (o link do vídeo no D1,
- * #10772) só quando o estado RELIDO deixa o leitor abrir o vídeo — nunca com o
- * vídeo `private` (#10858). Não sobrescreve uma URL diferente já gravada à mão.
+ * #10772), inclusive privado (#10960). O estado relido serve só de aviso.
+ * Não sobrescreve uma URL diferente já gravada à mão.
  * Nunca lança: o vídeo já subiu, falha aqui vira aviso.
  */
 export function writeD1VideoUrlAfterUpload(
@@ -290,7 +289,7 @@ export function writeD1VideoUrlAfterUpload(
   record: Pick<YouTubePublishedRecord, "aammdd" | "url" | "state" | "rereadStatus"> & Partial<Pick<YouTubePublishedRecord, "previous_uploads">>,
   d1SlotAt: Date | null,
   log: (line: string) => void,
-  /** Default `YOUTUBE_API_PROJECT_AUDITED`; sem auditoria, `scheduled` não grava (#10865). */
+  /** Default `YOUTUBE_API_PROJECT_AUDITED`; usado somente para o aviso. */
   projectAudited: boolean = YOUTUBE_API_PROJECT_AUDITED,
 ): boolean {
   const verdict = videoLinkEligibility({
@@ -300,11 +299,8 @@ export function writeD1VideoUrlAfterUpload(
     projectAudited,
   });
   const urlFile = join(editionDir, D1_VIDEO_URL_FILE);
-  // #10881 item 2: depois de `--upload --force`, o arquivo pode apontar para
-  // o vídeo SUBSTITUÍDO (gravado pelo upload anterior). Esse link não serve
-  // mais: é trocado pelo novo quando o novo passa no portão, e MANTIDO (com
-  // aviso) quando não passa — decisão do editor no review do #10892. URL que não veio de upload nosso (o editor gravou com
-  // link-video-d1) segue intocada.
+  // Upload forçado troca o link de um upload anterior, inclusive privado
+  // (#10960). URLs inseridas manualmente pelo editor seguem preservadas.
   const previousUrls = new Set(
     (record.previous_uploads ?? [])
       .map((p) => ("url" in p && typeof p.url === "string" ? p.url : null))
@@ -318,19 +314,7 @@ export function writeD1VideoUrlAfterUpload(
   }
   const staleFromPreviousUpload = currentRaw !== "" && previousUrls.has(currentRaw);
   if (!verdict.ok) {
-    if (staleFromPreviousUpload) {
-      // Decisão do editor (#10892 review): o link do vídeo substituído é
-      // MANTIDO enquanto o novo não abre — tirar o link de um vídeo que ainda
-      // funciona deixaria o D1 sem vídeo. Só avisa; quando o novo passar no
-      // portão, a gravação abaixo troca o link.
-      log(`[aviso] ${urlFile} segue apontando para o vídeo substituído (${currentRaw}) — mantido até o novo abrir; confira se o antigo ainda está público.`);
-    }
-    // Mensagem já dirigida pela premissa de auditoria (#10866: sem ela, agendar não resolve).
-    log(
-      `[aviso] link do vídeo NÃO gravado em ${urlFile}: ${verdict.reason}. ${videoLinkRemedy(projectAudited)} ` +
-        `e rode \`npx tsx scripts/link-video-d1.ts ${record.aammdd} --save --assume-public\` (#10858).`,
-    );
-    return false;
+    log(`[aviso] vídeo ainda pode não abrir para o leitor: ${verdict.reason}. O link será incluído no D1 mesmo assim (#10960).`);
   }
   try {
     if (existsSync(urlFile)) {

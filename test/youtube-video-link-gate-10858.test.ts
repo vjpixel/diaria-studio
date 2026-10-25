@@ -1,9 +1,8 @@
 /**
  * test/youtube-video-link-gate-10858.test.ts (#10858)
  *
- * Regressão: vídeo `private` nunca vira link no D1.
- *   - `publish-youtube.ts --upload` grava `_internal/05-video-url.txt` só com
- *     o estado RELIDO público, ou agendado antes do post do D1;
+ * Regressão: upload grava o link mesmo privado (#10960), com aviso.
+ *   - A elegibilidade pública continua disponível para diagnóstico;
  *   - `link-video-d1.ts` lê `_internal/05-youtube-published.json` e recusa o
  *     vídeo privado (exit 1, nada gravado), salvo `--assume-public`.
  * Nenhum teste toca rede: o upload usa `fetch` mockado.
@@ -22,6 +21,7 @@ import {
   readYouTubeRecordSummary,
   videoLinkEligibility,
 } from "../scripts/lib/diaria/youtube-video-link-gate.ts";
+import { readD1VideoUrl } from "../scripts/lib/diaria/d1-video-link-file.ts";
 import { D1_VIDEO_URL_FILE } from "../scripts/lib/diaria/d1-video-link.ts";
 import { YOUTUBE_PUBLISHED_FILE, type YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 import { YOUTUBE_API_PROJECT_AUDITED } from "../scripts/lib/diaria/youtube-video.ts";
@@ -143,12 +143,12 @@ describe("gateVideoLink (#10858)", () => {
 
 describe("writeD1VideoUrlAfterUpload (#10858)", () => {
   const base = { aammdd: "261022", url: VIDEO_URL };
-  it("vídeo private NÃO grava o 05-video-url.txt", () => {
+  it("vídeo private grava o link com aviso (#10960)", () => {
     const logs: string[] = [];
     const ok = writeD1VideoUrlAfterUpload(dir, { ...base, state: "draft", rereadStatus: { privacyStatus: "private" } }, D1_SLOT, (l) => logs.push(l));
-    assert.equal(ok, false);
-    assert.equal(existsSync(urlFile()), false);
-    assert.match(logs.join("\n"), /NÃO gravado.*--assume-public/s);
+    assert.equal(ok, true);
+    assert.equal(readFileSync(urlFile(), "utf8").trim(), VIDEO_URL);
+    assert.match(logs.join("\n"), /aviso.*mesmo assim.*10960/s);
   });
   it("público grava; agendado antes do D1 grava", () => {
     assert.equal(writeD1VideoUrlAfterUpload(dir, { ...base, state: "published", rereadStatus: { privacyStatus: "public" } }, null, () => {}), true);
@@ -157,12 +157,12 @@ describe("writeD1VideoUrlAfterUpload (#10858)", () => {
     const sched = { ...base, state: "scheduled" as const, rereadStatus: { privacyStatus: "private", publishAt: PUBLISH_AT } };
     assert.equal(writeD1VideoUrlAfterUpload(dir, sched, D1_SLOT, () => {}, true), true);
   });
-  it("agendado antes do D1 com projeto NÃO auditado não grava (#10865)", () => {
+  it("agendado sem auditoria grava com aviso (#10960)", () => {
     const logs: string[] = [];
     const sched = { ...base, state: "scheduled" as const, rereadStatus: { privacyStatus: "private", publishAt: PUBLISH_AT } };
-    assert.equal(writeD1VideoUrlAfterUpload(dir, sched, D1_SLOT, (l) => logs.push(l), false), false);
-    assert.equal(existsSync(urlFile()), false);
-    assert.match(logs.join("\n"), /auditoria.*--assume-public/s);
+    assert.equal(writeD1VideoUrlAfterUpload(dir, sched, D1_SLOT, (l) => logs.push(l), false), true);
+    assert.equal(readFileSync(urlFile(), "utf8").trim(), VIDEO_URL);
+    assert.match(logs.join("\n"), /aviso.*auditoria/s);
   });
   it("não sobrescreve outra URL já gravada", () => {
     mkdirSync(dirname(urlFile()), { recursive: true });
@@ -237,12 +237,14 @@ async function upload(rereadStatus: Record<string, unknown>, projectAudited?: bo
 }
 
 describe("publish-youtube --upload → 05-video-url.txt (#10858)", () => {
-  it("upload que sai private (sem auditoria) não alimenta o link do D1", async () => {
+  it("upload privado sem auditoria alimenta o link do D1 (#10960)", async () => {
     const { outcome, logs } = await upload({ uploadStatus: "uploaded", privacyStatus: "private" });
     assert.equal(outcome.exitCode, 0, logs.join("\n"));
     assert.equal(outcome.record?.state, "draft");
-    assert.equal(outcome.videoUrlWritten, false);
-    assert.equal(existsSync(urlFile()), false);
+    assert.deepEqual(readD1VideoUrl(dir), { url: VIDEO_URL, warning: null });
+    assert.equal(outcome.videoUrlWritten, true);
+    assert.equal(readFileSync(urlFile(), "utf8").trim(), VIDEO_URL);
+    assert.match(logs.join("\n"), /aviso.*10960/s);
   });
   it("projeto auditado: upload agendado para 06:00 BRT (antes do D1) grava o link", async () => {
     const { outcome, logs } = await upload({ uploadStatus: "uploaded", privacyStatus: "private", publishAt: PUBLISH_AT }, true);
@@ -250,12 +252,13 @@ describe("publish-youtube --upload → 05-video-url.txt (#10858)", () => {
     assert.equal(outcome.videoUrlWritten, true);
     assert.equal(readFileSync(urlFile(), "utf8").trim(), VIDEO_URL);
   });
-  it("projeto NÃO auditado: upload relido como agendado antes do D1 não grava o link (#10865)", async () => {
+  it("projeto NÃO auditado: upload agendado grava o link (#10960)", async () => {
     const { outcome, logs } = await upload({ uploadStatus: "uploaded", privacyStatus: "private", publishAt: PUBLISH_AT }, false);
     assert.equal(outcome.exitCode, 0, logs.join("\n"));
     assert.equal(outcome.record?.state, "scheduled");
-    assert.equal(outcome.videoUrlWritten, false);
-    assert.equal(existsSync(urlFile()), false);
+    assert.equal(outcome.videoUrlWritten, true);
+    assert.equal(readFileSync(urlFile(), "utf8").trim(), VIDEO_URL);
+    assert.match(logs.join("\n"), /aviso.*10960/s);
   });
 });
 
