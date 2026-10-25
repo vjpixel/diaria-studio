@@ -35,6 +35,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
+import { runCli } from "./lib/cli-exit.ts";
 import { resolveWeeklyPublishedPath } from "./lib/weekly-worker-dispatch.ts";
 import { fetchWorkerList, resolveLinkedinWorkerUrl, type FetchJsonFn } from "./verify-social-worker-dispatch.ts";
 import {
@@ -227,8 +228,6 @@ async function main(): Promise<void> {
 }
 
 if (isMainModule(import.meta.url)) {
-  main().catch((e) => {
-    console.error(`${LOG_PREFIX} erro:`, e);
-    process.exit(1);
-  });
+  // #9911: process.exitCode (via runCli), nunca process.exit() depois de fetch.
+  void runCli(main, { onError: (e) => console.error(`${LOG_PREFIX} erro:`, e) });
 }
