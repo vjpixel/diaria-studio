@@ -3,6 +3,25 @@ name: diaria-artigo-especial
 description: Produz e divulga um Artigo Especial (`especial.diar.ia.br/{ano}/{slug}/`). Produção (#9099, Etapas A-E, gate humano entre elas) — tema da votação dos apoiadores, briefing (fontes, estrutura, tese), rascunho em `data/artigo-especial/{ano}-{slug}/draft.md` iterado no chat com passada do humanizador, HTML no template dos artigos (`articles-src/{slug}.html` + registros), PR, deploy pelo `deploy-artigos.yml` e probe da URL. Divulgação (Passos 0-6) — post teaser no apoia.se, posts agendados no LinkedIn (página diar.ia.br D+1 09:00 BRT + perfil pessoal D+2 09:30 BRT — #6014), atualização + pin do box "Artigo Especial" (slot 2, desde #6748 — era slot 3, eliminado) da diária, e e-mail pros apoiadores R$10+ via Kit (#7659). Resumível pelo state file. A divulgação requer a máquina do editor (Claude in Chrome logado) — não roda no `300`. Uso — `/diaria-artigo-especial --slug {slug} [--ano AAAA] [--ciclo AAMM | --tema "..."] [--so-divulgacao] [--at ISO] [--skip apoiase,linkedin,box,email] [--dry-run] [--unpin]`.
 ---
 
+## Agenda de divulgação ciente da grade (#10819)
+
+Esta regra substitui as menções abaixo a horários fixos de divulgação: os
+horários antigos são preferências para posts NOVOS. Reusar o planner de
+`scripts/divulgacao-slot-planner.ts` (2h entre posts da mesma conta, picos
+07–09/12–14/18–21 BRT como palpite geral, sem dados por conta; janela 06–22).
+A grade lê os stores diários (incluindo Reels/Shorts e collab do Instagram)
+e GET /list do Worker (timeout 10s, fail-soft com aviso). Stage 5 segue
+fixo conforme #10305. Facebook direto e X/Buffer ficam fora desta grade e
+mantêm os horários de referência. Não reagendar posts já registrados.
+Mostrar os horários efetivos por conta e as premissas no gate; respeitar
+avisos de grade incompleta. Não afirmar que todas as redes saem juntas.
+
+`publish-artigo-especial-linkedin.ts --dry-run` já planeja os defaults da
+página e do perfil. `--at` explícito preserva o override humano; não o use
+para copiar o antigo default e assim contornar o planner. Mostrar o horário
+planejado do perfil para o agendamento manual também.
+
+
 # /diaria-artigo-especial
 
 Cobre o ciclo inteiro de um Artigo Especial: a **produção** (Etapas A-E,
@@ -515,12 +534,12 @@ npx tsx scripts/publish-artigo-especial-linkedin.ts \
   [--at {ISO}] [--force]
 ```
 
-   `--at` omitido = default do canal página (D+1 09:00 BRT, resolvido dentro
-   do próprio script via `resolveArtigoEspecialScheduledAts` — banner no log).
+   `--at` omitido = horário planejado da página (#10819), usando D+1
+   09:00 BRT como preferência; mostrar o banner e as premissas no gate.
 
 2. **Perfil (manual, composer do LinkedIn):** agendar o texto de
-   `data/artigo-especial/{ano}-{slug}/linkedin-perfil.md` para **D+2 09:30
-   BRT** no composer nativo (funcionou bem na 1ª execução, 23/08). Depois,
+   `data/artigo-especial/{ano}-{slug}/linkedin-perfil.md` para **o horário do perfil calculado pelo planner
+   no dry-run** (preferência D+2 09:30 BRT) no composer nativo (funcionou bem na 1ª execução, 23/08). Depois,
    marcar o canal como feito:
    `npx tsx scripts/mark-artigo-especial-channel.ts --ano {ano} --slug {slug}
    --channel linkedin_perfil` (ou equivalente do state file).
