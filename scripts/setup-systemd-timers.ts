@@ -23,7 +23,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getStringArg, isMainModule } from "./lib/cli-args.ts";
+import { findUnknownFlags, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { getScheduledTaskByName, SCHEDULED_TASKS, type ScheduledTaskDefinition } from "./lib/scheduled-tasks.ts";
 import { buildSystemdUnitFiles } from "./lib/systemd-units.ts";
 
@@ -98,7 +98,20 @@ export function buildArmInstructions(): string {
   );
 }
 
+const SETUP_USAGE = "Uso: npx tsx scripts/setup-systemd-timers.ts [--task <Nome>] [--out-dir <dir>] [--help]";
+
 export function main(argv: string[], repoRootAbs: string): number {
+  // #11058: --help sai 0; flag desconhecida é erro exit 2 (nunca default silencioso).
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(SETUP_USAGE);
+    return 0;
+  }
+  const unknownFlags = findUnknownFlags(argv, ["task", "out-dir", "help", "h"]);
+  if (unknownFlags.length > 0) {
+    console.error(`Flag(s) desconhecida(s): ${unknownFlags.join(", ")}.
+${SETUP_USAGE}`);
+    return 2;
+  }
   let taskName: string | undefined;
   let outDirArg: string | undefined;
   try {

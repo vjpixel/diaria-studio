@@ -100,7 +100,7 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { findUnknownFlags, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import {
   getScheduledTaskByName,
   listDisabledScheduledTaskNames,
@@ -422,6 +422,14 @@ export function reportVerifyOutcome(outcome: VerifyOutcome): number {
  * incompatível em silêncio). */
 const VERIFY_INCOMPATIBLE_FLAGS = ["task", "rearm-stopped", "units-dir", "target-dir"] as const;
 
+/** Flags aceitas por `main` (sem hífens) — qualquer outra é recusada (#11058). */
+const KNOWN_FLAGS = ["task", "rearm-stopped", "units-dir", "target-dir", "verify", "help", "h"] as const;
+
+const USAGE =
+  "Uso: npx tsx scripts/arm-systemd-timers.ts [--task <Nome>] [--rearm-stopped] [--units-dir <dir>] [--target-dir <dir>]\n" +
+  "     npx tsx scripts/arm-systemd-timers.ts --verify\n" +
+  "     npx tsx scripts/arm-systemd-timers.ts --help";
+
 export function main(
   argv: string[],
   repoRootAbs: string,
@@ -434,6 +442,19 @@ export function main(
    * Linux vs. Windows no #7037). */
   exec: typeof execFileSync = execFileSync,
 ): number {
+  // #11058: --help/-h imprime uso e sai 0 sem tocar em systemd; flag desconhecida
+  // (typo como `--taks X`) é erro exit 2 — nunca cai no default "arma TODAS".
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(USAGE);
+    return 0;
+  }
+  const unknownFlags = findUnknownFlags(argv, KNOWN_FLAGS);
+  if (unknownFlags.length > 0) {
+    console.error(`Flag(s) desconhecida(s): ${unknownFlags.join(", ")}.
+${USAGE}`);
+    return 2;
+  }
+
   if (hasFlag(argv, "verify")) {
     const conflicting = VERIFY_INCOMPATIBLE_FLAGS.filter((f) => argv.some((a) => a === `--${f}` || a.startsWith(`--${f}=`)));
     if (conflicting.length > 0) {

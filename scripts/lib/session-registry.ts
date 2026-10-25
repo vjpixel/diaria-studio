@@ -3281,6 +3281,38 @@ export interface HeartbeatAutoRegisterResult {
   autoRegisterMode?: "fresh" | "recovered-from-orphan-backups";
   recoveredClaims?: number[];
   recoveredFromFiles?: number;
+  /** #11059 — `true` quando o heartbeat foi RECUSADO por a sessão já ter
+   * chamado `end` (evento `"ended"` no log de lifecycle). `ok` fica `false`,
+   * mas é no-op benigno (o CLI sai 0), não falha: reativar a sessão encerrada
+   * a deixava aparecendo como "outra sessão ativa" até expirar. */
+  alreadyEnded?: boolean;
+}
+
+/** #11059 — `true` se o log de lifecycle tem um evento `"ended"` pra esta
+ * identidade (kind + tag + sessionId). Best-effort, nunca lança: log ausente
+ * (`data/` ausente) ou ilegível => `false` (comportamento pré-#11059). */
+export function sessionHasEndedEvent(
+  repoRoot: string,
+  kind: SessionKind,
+  sessionId: string,
+  tag: string = machineTag(),
+): boolean {
+  try {
+    const logPath = sessionLifecycleLogPath(repoRoot);
+    if (!existsSync(logPath)) return false;
+    for (const line of readFileSync(logPath, "utf8").split("\n")) {
+      if (!line.includes(sessionId)) continue;
+      try {
+        const ev = JSON.parse(line) as Partial<SessionLifecycleEvent>;
+        if (ev.event === "ended" && ev.kind === kind && ev.sessionId === sessionId && ev.machineTag === tag) return true;
+      } catch {
+        // linha corrompida — ignora.
+      }
+    }
+  } catch {
+    // best-effort.
+  }
+  return false;
 }
 
 /**
@@ -3341,6 +3373,12 @@ export function heartbeatAutoRegistering(
         : {}),
       recoveredFromFiles: recovered.files.length,
     };
+  }
+  // #11059: sessão que já chamou `end` NÃO é "sessão nunca registrada" — um
+  // heartbeat de fechamento depois do `end` (Fase 2 do /diaria-develop) a
+  // ressuscitava como ativa. Recusa como no-op benigno.
+  if (sessionHasEndedEvent(repoRoot, kind, sessionId, tag)) {
+    return { ok: false, autoRegistered: false, alreadyEnded: true };
   }
   registerSession(repoRoot, kind, sessionId, { tag, startedAt: now });
   const retried = heartbeat(repoRoot, kind, sessionId, patch, tag, now);
@@ -6767,6 +6805,12 @@ function main(): void {
               `${recoveredClaimLabels(result).length > 0 ? `: ${recoveredClaimLabels(result).join(", ")}` : ""}` +
               ". Isto é escrita concorrente, não sessão nova — ver #7002/#7003]"
             : " [ATENÇÃO: sessão não tinha registro prévio — auto-registrada agora antes do heartbeat, ver #8443]";
+        if (result.alreadyEnded) {
+          process.stdout.write(
+            "session-registry: heartbeat no-op (sessão já encerrada via end — não reativada, ver #11059)\n",
+          );
+          break;
+        }
         process.stdout.write(
           `session-registry: heartbeat ${result.ok ? "ok" : "no-op (sessão inexistente mesmo após tentativa de auto-registro)"}${autoRegisterSuffix}\n`,
         );
