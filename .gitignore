@@ -67,6 +67,7 @@ test/_tmp_*/
 # de runtime com e-mail de 100 assinantes pro repo PÚBLICO (#6691).
 scripts/_tmp_*/
 __pycache__/
+/.venv-rembg/
 # #7130: scratch da daily-review do contínuo — corpos de finding/review
 # escritos na RAIZ do checkout (`.dr-body.md`, `.dr-review-{pr}.md`,
 # `.dr-steps.txt`) só para alimentar `gh issue create --body-file` /
