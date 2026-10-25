@@ -8,7 +8,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   applyStackTitleTranslations,
@@ -17,11 +18,17 @@ import {
   stackTitleTranslationCandidates,
   translateCircleStackTitles,
   STACK_TITLE_TRANSLATOR_AGENT,
+  STACK_TITLE_TIMEOUT_MS,
 } from "../scripts/lib/circle-stack-translate.ts";
+import { callClaudeCli, ClaudeCliError } from "../scripts/lib/claude-cli-subprocess.ts";
 import { circleStackSelectionViolations, hasPortugueseSignal } from "../scripts/lib/circle-stack-select.ts";
 import { parseAgentModelSpec } from "../scripts/lib/prompt-regression-eval.ts";
 import type { CircleStackItem, CircleStackSelection } from "../scripts/lib/circle-stack-render.ts";
-import { circleStackFreshTranslationBlockReason } from "../scripts/publish-circle-stack.ts";
+import {
+  circleStackFreshTranslationBlockReason,
+  runCircleStack,
+  type RunCircleStackDeps,
+} from "../scripts/publish-circle-stack.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -197,5 +204,166 @@ describe("#11005 — gate de revisão e agente", () => {
     const p = buildStackTitlePrompt("Instrução.", [{ url: "u", title: "t", body: "b" }]);
     assert.match(p, /^Instrução\./);
     assert.match(p, /"url": "u"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fixer do self-review (#11095): timeout da chamada + integração do main().
+// ---------------------------------------------------------------------------
+
+describe("#11005 — timeout da chamada ao agente", () => {
+  it("callClaudeCli repassa o timeout ao execFn e marca timedOut quando estoura", () => {
+    let seenTimeout: unknown;
+    const execFn = ((_bin: string, _args: string[], o: { timeout?: number }) => {
+      seenTimeout = o.timeout;
+      throw Object.assign(new Error("spawnSync claude ETIMEDOUT"), { code: "ETIMEDOUT", status: null, signal: "SIGTERM", stdout: "", stderr: "" });
+    }) as unknown as NonNullable<Parameters<typeof callClaudeCli>[1]["execFn"]>;
+    assert.throws(
+      () => callClaudeCli("p", { cwd: ROOT, timeoutMs: 1234, execFn, resolveClaudeBinFn: () => "claude" }),
+      (err: unknown) => err instanceof ClaudeCliError && err.timedOut && /timeout de 1234ms/.test(err.message),
+    );
+    assert.equal(seenTimeout, 1234);
+  });
+
+  it("translateCircleStackTitles passa o teto default e timeout vira aviso com os originais mantidos", () => {
+    let seen: number | undefined;
+    const r = translateCircleStackTitles(sel(), {
+      rootDir: ROOT,
+      call: (_p, o) => {
+        seen = o.timeoutMs;
+        throw new ClaudeCliError("claude CLI excedeu o timeout de 180000ms: claude --print", {
+          status: null,
+          stdout: "",
+          stderr: "",
+          command: "claude",
+          timedOut: true,
+        });
+      },
+    });
+    assert.equal(seen, STACK_TITLE_TIMEOUT_MS);
+    assert.equal(r.failed, true);
+    assert.match(r.warnings[0], /timeout/);
+    assert.equal(r.selection.lancamentos[0].title, MERCURY.title);
+    assert.equal(r.selection.radar[0].title, NOTES.title);
+  });
+});
+
+describe("#11005 — runCircleStack (caminho do main, LLM e webhook mockados)", () => {
+  const CODEX_URL = "https://openai.com/index/codex-launch-notes";
+  const EDITION_MD = [
+    "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    "",
+    "**[Cursor lança agentes em segundo plano para programação](https://cursor.com/blog/background-agents)**",
+    "",
+    "O Cursor passou a rodar agentes de programação em segundo plano.",
+    "",
+    "Por que isso importa:",
+    "",
+    "Quem constrói produto ganha um agente que trabalha sozinho.",
+    "",
+    "---",
+    "",
+    "**🚀 LANÇAMENTOS**",
+    "",
+    `**[Codex Launch Notes](${CODEX_URL})**`,
+    "A OpenAI publicou as notas do Codex com agentes de programação na nuvem.",
+    "",
+  ].join("\n");
+
+  function setup() {
+    const dataRoot = mkdtempSync(join(tmpdir(), "circle-stack-11005-"));
+    const dir = join(dataRoot, "data", "editions", "261020");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "02-reviewed.md"), EDITION_MD, "utf8");
+    const selectionPath = join(dataRoot, "data", "weekly", "26w43", "_internal", "circle-stack-selection.json");
+    const sent: string[] = [];
+    const deps = (translateCall: RunCircleStackDeps["translateCall"]): RunCircleStackDeps => ({
+      rootDir: ROOT,
+      platformConfig: { circle_stack: { enabled: true } },
+      env: { STACK_WEBHOOK_URL: "https://webhook.example.test/stack", STACK_WEBHOOK_KEY: "chave-de-teste" },
+      translateCall,
+      send: async (_u, _k, payload) => {
+        sent.push(JSON.stringify(payload));
+      },
+      ghRun: () => ({ status: 0, stdout: "[]", stderr: "" }),
+    });
+    const base = ["--publish-monday", "261026", "--data-root", dataRoot];
+    return { selectionPath, sent, deps, base };
+  }
+
+  const fail: RunCircleStackDeps["translateCall"] = () => {
+    throw new Error("claude CLI excedeu o timeout de 180000ms");
+  };
+
+  it("--publish sem seleção prévia e tradução falha: recusa e não envia nada", async () => {
+    const t = setup();
+    await assert.rejects(runCircleStack([...t.base, "--publish"], t.deps(fail)), /ainda não foram revisados/);
+    assert.deepEqual(t.sent, []);
+    const stored = JSON.parse(readFileSync(t.selectionPath, "utf8"));
+    assert.equal(stored.lancamentos[0].title, "Codex Launch Notes");
+    assert.ok(stored.warnings.some((w: string) => /falhou/.test(w)));
+  });
+
+  it("--publish sem seleção prévia com --no-translate também recusa (inglês sem palavra funcional)", async () => {
+    const t = setup();
+    let called = false;
+    const spy: RunCircleStackDeps["translateCall"] = () => {
+      called = true;
+      return "";
+    };
+    await assert.rejects(runCircleStack([...t.base, "--publish", "--no-translate"], t.deps(spy)), /ainda não foram revisados/);
+    assert.equal(called, false);
+    assert.deepEqual(t.sent, []);
+  });
+
+  it("prévia traduz e grava; o --publish seguinte (seleção revisada) envia o título em português", async () => {
+    const t = setup();
+    const translate: RunCircleStackDeps["translateCall"] = (prompt) => {
+      assert.match(prompt, /Codex Launch Notes/);
+      return JSON.stringify({ items: [{ url: CODEX_URL, titlePt: "OpenAI publica as notas de lançamento do Codex" }] });
+    };
+    await runCircleStack(t.base, t.deps(translate));
+    const stored = JSON.parse(readFileSync(t.selectionPath, "utf8"));
+    assert.equal(stored.lancamentos[0].title, "OpenAI publica as notas de lançamento do Codex");
+    assert.equal(stored.lancamentos[0].titleOriginal, "Codex Launch Notes");
+    assert.ok(stored.warnings.some((w: string) => /revisar/.test(w)));
+    assert.deepEqual(t.sent, []);
+
+    await runCircleStack([...t.base, "--publish"], t.deps(fail));
+    assert.equal(t.sent.length, 1);
+    assert.match(t.sent[0], /OpenAI publica as notas de lançamento do Codex/);
+    assert.doesNotMatch(t.sent[0], /Codex Launch Notes/);
+  });
+
+  it("seleção gravada com título em inglês ainda é barrada pelo guard no --publish", async () => {
+    const t = setup();
+    await runCircleStack([...t.base, "--no-translate"], t.deps(fail));
+    const stored = JSON.parse(readFileSync(t.selectionPath, "utf8"));
+    stored.lancamentos[0].title = "Introducing the new Codex";
+    writeFileSync(t.selectionPath, JSON.stringify(stored));
+    await assert.rejects(runCircleStack([...t.base, "--publish"], t.deps(fail)), /título em inglês/);
+    assert.deepEqual(t.sent, []);
+  });
+
+  it("--translate-titles junto com --publish: avisa e não traduz", async () => {
+    const t = setup();
+    await runCircleStack([...t.base, "--no-translate"], t.deps(fail));
+    let called = false;
+    const spy: RunCircleStackDeps["translateCall"] = () => {
+      called = true;
+      return "";
+    };
+    const warns: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...a: unknown[]) => {
+      warns.push(a.join(" "));
+    };
+    try {
+      await runCircleStack([...t.base, "--translate-titles", "--publish"], t.deps(spy)).catch(() => undefined);
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.equal(called, false);
+    assert.ok(warns.some((w) => /--translate-titles ignorado junto com --publish/.test(w)));
   });
 });

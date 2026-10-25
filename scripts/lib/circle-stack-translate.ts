@@ -34,6 +34,8 @@ import type { CircleStackItem, CircleStackSelection } from "./circle-stack-rende
 
 export const STACK_TITLE_TRANSLATOR_AGENT = "stack-title-translator";
 export const STACK_TITLE_MAX_CHARS = 120;
+/** Teto da chamada ao agente (#11005): ~15 títulos levam segundos; travou, a task semanal segue sem tradução. */
+export const STACK_TITLE_TIMEOUT_MS = 180_000;
 
 const SECTIONS = ["destaques", "lancamentos", "useMelhor", "radar"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -148,6 +150,8 @@ export interface TranslateStackTitlesOptions {
   call?: (prompt: string, opts: ClaudeCliCallOptions) => string;
   /** Corpo do agente injetável (testes); default lê `.claude/agents/stack-title-translator.md`. */
   agentMarkdown?: string;
+  /** Teto da chamada em ms; default `STACK_TITLE_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }
 
 export interface TranslateStackTitlesResult<T> {
@@ -160,7 +164,7 @@ export interface TranslateStackTitlesResult<T> {
 
 /**
  * Traduz os títulos da seleção pelo agente. Sem candidato, não chama nada.
- * Falha (CLI, resposta inválida) mantém os títulos originais e vira aviso.
+ * Falha (CLI, timeout, resposta inválida) mantém os títulos originais e vira aviso.
  */
 export function translateCircleStackTitles<T extends SelectionSections>(
   sel: T,
@@ -178,6 +182,7 @@ export function translateCircleStackTitles<T extends SelectionSections>(
       model: spec.model,
       effort: spec.effort,
       maxTurns: 3,
+      timeoutMs: opts.timeoutMs ?? STACK_TITLE_TIMEOUT_MS,
     });
     const translations = parseStackTitleResponse(text, items);
     const { selection, changed } = applyStackTitleTranslations(sel, translations);
