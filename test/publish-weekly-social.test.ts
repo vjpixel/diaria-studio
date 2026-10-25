@@ -34,7 +34,6 @@
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
-import { buildDailyCarouselCtaText, DAILY_CAROUSEL_LAYOUT } from "../scripts/lib/daily-carousel-card.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
@@ -59,6 +58,7 @@ import type { InstagramRankedCandidate } from "../scripts/lib/weekly-instagram-s
 import { sectionCardCacheKey, type SectionCardGenerator } from "../scripts/lib/weekly-instagram-ondemand-card.ts";
 import type { FlatCardGenerator } from "../scripts/lib/weekly-flat-card.ts";
 import type { NewsCardGenerator } from "../scripts/lib/weekly-carousel-news-card.ts";
+import { buildDailyCarouselCtaText, DAILY_CAROUSEL_LAYOUT } from "../scripts/lib/daily-carousel-card.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -192,7 +192,6 @@ describe("buildFlatCardTexts (#5330 — textos dos slides sem foto, por modo)", 
     const { cta } = buildFlatCardTexts("highlights", ["260810"]);
     assert.deepEqual(cta, buildDailyCarouselCtaText());
     assert.equal(cta.kicker, "Assine grátis, direto no seu e-mail");
-    assert.doesNotMatch(cta.title, /Assine em diar\.ia\.br/);
   });
 });
 
@@ -1980,8 +1979,8 @@ describe("main(): dispatch mockado", () => {
     });
   });
 
-  describe("#8480 (260919): capa/CTA sempre 84px, cards internos sempre 62px — overflow ABORTA em vez de encolher", () => {
-    it("capa/CTA: card sem foto sempre renderiza fixo em 84px, mesmo com título curto que ANTES encolheria/cresceria via fill", async () => {
+  describe("#8480 (260919): capa sempre 84px (CTA = layout do diário), cards internos sempre 62px — overflow ABORTA em vez de encolher", () => {
+    it("capa: card sem foto sempre renderiza fixo em 84px (CTA no layout do diário), mesmo com título curto que ANTES encolheria/cresceria via fill", async () => {
       const saturday = new Date(2027, 11, 25);
       const saturdayStr = aammddOf(saturday);
       const dirA = setupEdition(editionsRoot, "271220", [{ n: 1, title: "D1 curto", url: "https://exemplo.com/d1" }]);

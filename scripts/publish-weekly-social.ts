@@ -375,6 +375,8 @@ export function buildFlatCardTexts(
     // chega no seu e-mail. Assine em diar.ia.br.", 84px), que evitava "link da
     // bio" porque o JPEG vai pros 4 canais; o carrossel diário já tem a mesma
     // característica, e o editor preferiu a consistência entre os dois.
+    // Sem override: o teste A/B do CTA diário (#8681, `instagram-test.json`) é
+    // por edição e não se aplica à retro — ela usa sempre o CTA padrão.
     cta: buildDailyCarouselCtaText(),
   };
 }

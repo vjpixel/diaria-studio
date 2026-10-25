@@ -25,6 +25,7 @@
  * nunca colidem mesmo publicados no mesmo sábado.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -267,7 +268,8 @@ export type FlatCardLayout = { mode: "fill" } | { mode: "fixed"; size: number; c
 export const DEFAULT_FLAT_CARD_LAYOUT: FlatCardLayout = { mode: "fill" };
 
 /**
- * Tamanho FIXO da capa/CTA (sem foto) do carrossel SEMANAL (#8480, 260919) —
+ * Tamanho FIXO da capa (sem foto) do carrossel SEMANAL (#8480, 260919; o CTA
+ * usa o layout do carrossel diário desde 25/10/2026) —
  * decisão do editor: parar de auto-crescer (`fill`, teto `TITLE_SIZE_MAX`)
  * até preencher o card e usar sempre o mesmo tamanho, igual ao corpo fixo do
  * carrossel diário — texto que não coubesse a 84px é REESCRITO, nunca
@@ -372,7 +374,7 @@ function layoutCardBody(
     lines = wrapBody(title, maxCharsPerLine);
   }
   const blockHeight = lines.length * Math.round(size * 1.18);
-  // Regressão #8515: overflow horizontal no fixed (capa/CTA semanal 84px); guard só media altura
+  // Regressão #8515: overflow horizontal no fixed (capa semanal 84px); guard só media altura
   const overflowsWidth = lines.some((ln) => ln.text.length * size * ratio > availableWidth);
   return { size, lines, blockHeight, availableHeight, overflows: blockHeight > availableHeight || overflowsWidth };
 }
@@ -557,22 +559,35 @@ function flatCardsCachePath(dataRoot: string, key: string): string {
   return resolve(dataRoot, "weekly", key, "_internal", "06-flat-cards.json");
 }
 
-function readFlatCardUrl(dataRoot: string, key: string, slot: FlatCardSlot): string | null {
+/**
+ * Carimbo do que foi renderizado (texto + layout). Sem ele, o cache era
+ * keyed só por `{saturday}-{mode}` + slot: mudar o texto/layout do card (ex:
+ * CTA da retro igualado ao diário, 25/10/2026) nunca chegava num carrossel
+ * já cacheado — re-run reusava a arte velha em silêncio. Entrada sem carimbo
+ * (anterior a esta mudança) conta como MISS: regera uma vez e grava o carimbo.
+ */
+export function flatCardStamp(text: FlatCardText, layout: FlatCardLayout): string {
+  return createHash("sha256").update(JSON.stringify({ text, layout })).digest("hex").slice(0, 16);
+}
+
+function readFlatCardUrl(dataRoot: string, key: string, slot: FlatCardSlot, stamp: string): string | null {
   const p = flatCardsCachePath(dataRoot, key);
   if (!existsSync(p)) return null;
   try {
-    const data = JSON.parse(readFileSync(p, "utf8")) as Record<string, { url?: string }>;
-    return data[slot]?.url ?? null;
+    const data = JSON.parse(readFileSync(p, "utf8")) as Record<string, { url?: string; stamp?: string }>;
+    const entry = data[slot];
+    if (!entry?.url || entry.stamp !== stamp) return null;
+    return entry.url;
   } catch {
     return null;
   }
 }
 
-function writeFlatCardUrl(dataRoot: string, key: string, slot: FlatCardSlot, url: string): void {
+function writeFlatCardUrl(dataRoot: string, key: string, slot: FlatCardSlot, url: string, stamp: string): void {
   const p = flatCardsCachePath(dataRoot, key);
   mkdirSync(resolve(dataRoot, "weekly", key, "_internal"), { recursive: true });
   const existing = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : {};
-  existing[slot] = { url };
+  existing[slot] = { url, stamp };
   writeFileSync(p, JSON.stringify(existing, null, 2) + "\n", "utf8");
 }
 
@@ -629,7 +644,8 @@ export async function resolveOrGenerateFlatCardUrl(
   generator: FlatCardGenerator = defaultFlatCardGenerator,
   layout: FlatCardLayout = DEFAULT_FLAT_CARD_LAYOUT,
 ): Promise<string> {
-  const cached = readFlatCardUrl(dataRoot, key, slot);
+  const stamp = flatCardStamp(text, layout);
+  const cached = readFlatCardUrl(dataRoot, key, slot, stamp);
   if (cached) return cached;
 
   if (layout.mode === "fixed") {
@@ -660,6 +676,6 @@ export async function resolveOrGenerateFlatCardUrl(
   const kvKey = cloudflareKvKey(key, `weekly-${key}-${slot}-4x5.jpg`);
 
   const { url } = await generator({ text, outPath, kvKey, layout });
-  writeFlatCardUrl(dataRoot, key, slot, url);
+  writeFlatCardUrl(dataRoot, key, slot, url, stamp);
   return url;
 }
