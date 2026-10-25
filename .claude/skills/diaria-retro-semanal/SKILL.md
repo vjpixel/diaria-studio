@@ -430,12 +430,52 @@ Agent(subagent_type="weekly-summary-writer", prompt="Manifest: {scratchpad}/summ
 ```
 
 O agente grava `data/weekly/{sábado}-{modo}/_internal/06-summaries.json`
-(chave = URL do item). Re-rode o preview do Passo 2: a legenda já sai com os
+(chave = URL do item).
+
+**Humanizador e Clarice sobre os resumos (#11065), na ordem da diária.** Os
+títulos não passam (já vieram da newsletter humanizada e corrigida no Stage
+2). Os dois modos podem ir juntos num passe só. `{P}` = o `06-summaries.json`
+de cada modo:
+
+1. Snapshot da versão do agente (`summary_raw`, idempotente):
+   `npx tsx scripts/weekly-summaries-passes.ts snapshot --path {P}`
+2. Humanizador, passe completo, sobre os campos `summary` de todos os modos:
+   ```
+   Skill("humanizador", "Leia {P-clicked} e {P-highlights}, humanize SÓ o campo summary de cada item (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar url, title, summary_raw nem carouselKey. Teto: 200 caracteres e 2 frases por resumo.")
+   ```
+   Depois: `npx tsx scripts/weekly-summaries-passes.ts humanized --path {P}`
+   (grava `summary_humanized` e revalida o texto).
+3. Clarice: pra cada resumo, `mcp__clarice__correct_text` com o
+   `summary_humanized`, uma chamada por vez (serial, #4952). Grave as
+   sugestões em `{scratchpad}/clarice-{modo}.json` no formato
+   `{ "<url>": [ {from, to, ...}, ... ] }` (lista vazia quando não houver
+   sugestão) e aplique todas (regra do projeto: sempre aceitar):
+   `npx tsx scripts/weekly-summaries-passes.ts clarice --path {P} --suggestions {scratchpad}/clarice-{modo}.json`
+   MCP fora: `... clarice --path {P} --rest` (fallback REST, `CLARICE_API_KEY`,
+   #1329). REST fora também: o script registra `passes.clarice = "falhou"`,
+   mantém o texto humanizado e segue (sem halt: o texto é curto e o editor
+   revisa no gate); sem chave, `--failed "motivo"` faz o mesmo registro.
+
+Rastro no próprio JSON: `summary_raw` (agente), `summary_humanized`
+(pós-Humanizador) e `summary` (final, o que vai pra legenda). `humanized` e
+`clarice` revalidam o texto FINAL com as regras abaixo e saem com exit 1
+listando o item que estourou. Recuperação: encurte o `summary` à mão, rode
+`humanized` de novo (o texto editado vira a nova base em `summary_humanized`)
+e só então `clarice`. Nunca reaplique `clarice` direto sobre um `summary`
+ajustado à mão: a Clarice parte de `summary_humanized` e descartaria o ajuste.
+Por isso o `clarice` aborta (exit 2, "ajuste manual detectado") quando o
+`summary` diverge da saída do último passe. Ajuste à mão depois da Clarice,
+já perto do gate, pode ficar como está; ele só precisa de `humanized` +
+`clarice` se você quiser que a Clarice revise o texto novo. Re-rodar o
+agente zera o rastro e os passes (comece do snapshot).
+
+Re-rode o preview do Passo 2: a legenda já sai com os
 resumos, e o bloco `── resumos ──` marca item sem resumo válido. Barram o
 `--schedule`: resumo ausente, vazio, com mais de 200 caracteres, com mais de
 2 frases, que repete o título, ou com markdown/seta. Só aviso no stderr:
-começa com referência solta, ou o arquivo tem resumo de URL fora da
-seleção. Arquivo corrompido, de outro carrossel ou com entrada malformada
+começa com referência solta, o arquivo tem resumo de URL fora da
+seleção, ou os resumos não passaram pelo Humanizador/Clarice (ou a Clarice
+falhou), avisado também no bloco `── resumos ──` (#11065). Arquivo corrompido, de outro carrossel ou com entrada malformada
 falha o modo inteiro com a causa. O stdout do `--summary-manifest` é só o
 JSON (o log vai pro stderr). Resumo inválido: peça ao agente pra
 reescrever aquele item (SendMessage) ou ajuste à mão no JSON, e re-rode.
