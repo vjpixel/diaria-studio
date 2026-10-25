@@ -437,6 +437,19 @@ describe("finding 3 — o agendamento grava o registro sozinho (idempotente)", (
 });
 
 describe("#10427 — registro não conta o Use Melhor que não foi agendado", () => {
+  const editionPathPattern = /2610[\\/]261020/;
+
+  it("#11081: assert do aviso aceita separadores POSIX, Windows e misturados", () => {
+    for (const path of [
+      "data/editions/2610/261020/_internal/06-social-published.json",
+      "data\\editions\\2610\\261020\\_internal\\06-social-published.json",
+      "data\\editions\\2610\\261020/_internal/06-social-published.json",
+    ]) {
+      assert.match(path, editionPathPattern);
+    }
+    assert.doesNotMatch("data/editions/2610/261021", editionPathPattern);
+  });
+
   it("buildRotationPlan pula `um` sem use_melhor_time (o 4º post desligado nunca é agendado)", () => {
     const semUm = { ...social(), use_melhor_time: undefined };
     const rows = buildRotationPlan(rot, baseTimesFromSocial(semUm), d("2026-10-20"), d("2026-11-20"));
@@ -492,7 +505,7 @@ describe("#10427 — registro não conta o Use Melhor que não foi agendado", ()
     assert.deepEqual(types(run(null)), ["d1", "d2", "d3"]);
     assert.equal(warns.length, 1);
     assert.match(warns[0], /06-social-published\.json ausente/);
-    assert.match(warns[0], /2610\/261020/);
+    assert.match(warns[0], editionPathPattern);
     assert.deepEqual(asked, ["261020"]);
     // arquivo presente sem o `um` agendado (falhou / só destaques)
     // (#10541: o `d3` agendado entra na fixture — sem ele a linha d3 também sai)
