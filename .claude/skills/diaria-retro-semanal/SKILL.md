@@ -459,8 +459,15 @@ de cada modo:
 Rastro no próprio JSON: `summary_raw` (agente), `summary_humanized`
 (pós-Humanizador) e `summary` (final, o que vai pra legenda). `humanized` e
 `clarice` revalidam o texto FINAL com as regras abaixo e saem com exit 1
-listando o item que estourou: encurte o `summary` à mão e rode o passo de
-novo. Re-rodar o agente zera o rastro e os passes (comece do snapshot).
+listando o item que estourou. Recuperação: encurte o `summary` à mão, rode
+`humanized` de novo (o texto editado vira a nova base em `summary_humanized`)
+e só então `clarice`. Nunca reaplique `clarice` direto sobre um `summary`
+ajustado à mão: a Clarice parte de `summary_humanized` e descartaria o ajuste.
+Por isso o `clarice` aborta (exit 2, "ajuste manual detectado") quando o
+`summary` diverge da saída do último passe. Ajuste à mão depois da Clarice,
+já perto do gate, pode ficar como está; ele só precisa de `humanized` +
+`clarice` se você quiser que a Clarice revise o texto novo. Re-rodar o
+agente zera o rastro e os passes (comece do snapshot).
 
 Re-rode o preview do Passo 2: a legenda já sai com os
 resumos, e o bloco `── resumos ──` marca item sem resumo válido. Barram o

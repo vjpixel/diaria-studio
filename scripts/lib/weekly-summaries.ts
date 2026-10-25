@@ -42,6 +42,8 @@ export interface WeeklySummaryEntry {
   summary_raw?: string;
   /** #11065: versão pós-Humanizador, antes da Clarice. */
   summary_humanized?: string;
+  /** #11065: saída do último passe da Clarice — base pra detectar ajuste manual posterior em `summary`. */
+  summary_clarice?: string;
 }
 
 /**

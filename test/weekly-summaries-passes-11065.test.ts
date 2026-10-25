@@ -12,6 +12,7 @@ import {
   markClariceFailed,
   runClariceRest,
   revalidate,
+  manuallyEdited,
 } from "../scripts/weekly-summaries-passes.ts";
 import { weeklySummaryPassWarnings, type WeeklySummariesFile } from "../scripts/lib/weekly-summaries.ts";
 
@@ -107,6 +108,48 @@ describe("weekly-summaries-passes (#11065)", () => {
   it("arquivo sem passes avisa Humanizador e Clarice ausentes", () => {
     assert.equal(weeklySummaryPassWarnings({}).length, 2);
     assert.deepEqual(weeklySummaryPassWarnings(null), []);
+  });
+
+  it("ajuste manual depois do Humanizador: clarice aborta em vez de descartar o ajuste", () => {
+    const d = fixture();
+    snapshotRaw(d);
+    markHumanized(d);
+    d.items[0].summary = "O Voxtral 3 cobra US$ 0,04 o minuto.";
+    assert.equal(manuallyEdited(d).length, 1);
+    assert.throws(() => applyClarice(d, { [URL_A]: [], [URL_B]: [] }, "mcp"), /ajuste manual detectado/);
+    assert.throws(() => markClariceFailed(d, "x"), /ajuste manual detectado/);
+    assert.equal(d.items[0].summary, "O Voxtral 3 cobra US$ 0,04 o minuto.", "o ajuste continua no arquivo");
+  });
+
+  it("ajuste manual depois da Clarice: reaplicar aborta; humanized de novo vira a nova base", () => {
+    const d = fixture();
+    snapshotRaw(d);
+    markHumanized(d);
+    applyClarice(d, { [URL_A]: [{ from: "portugues", to: "português" }], [URL_B]: [] }, "mcp");
+    // reaplicar sem ajuste é idempotente
+    applyClarice(d, { [URL_A]: [{ from: "portugues", to: "português" }], [URL_B]: [] }, "mcp");
+    assert.deepEqual(manuallyEdited(d), []);
+    d.items[1].summary = "Dois em cada três médicos já usam IA no consultório.";
+    assert.throws(() => applyClarice(d, { [URL_A]: [], [URL_B]: [] }, "mcp"), /rode "humanized" de novo/);
+    markHumanized(d);
+    assert.equal(d.items[1].summary_humanized, "Dois em cada três médicos já usam IA no consultório.");
+    applyClarice(d, { [URL_A]: [], [URL_B]: [] }, "mcp");
+    assert.equal(d.items[1].summary, "Dois em cada três médicos já usam IA no consultório.", "ajuste preservado");
+    assert.equal(d.items[0].summary_raw, fixture().items[0].summary, "rastro do agente intacto");
+  });
+
+  it("REST com ajuste manual também aborta antes de chamar a API", async () => {
+    const d = fixture();
+    snapshotRaw(d);
+    markHumanized(d);
+    d.items[0].summary = "editado";
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return new Response("[]", { status: 200 });
+    }) as unknown as typeof fetch;
+    await assert.rejects(() => runClariceRest(d, { apiKey: "t", fetchImpl }), /ajuste manual detectado/);
+    assert.equal(calls, 0);
   });
 
   it("REST mockado: aplica sugestões, 1 chamada por resumo", async () => {

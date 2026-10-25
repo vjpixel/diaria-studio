@@ -23,6 +23,9 @@
  *                                      mantém o texto humanizado (sem halt — o
  *                                      texto é curto e o editor revisa no gate).
  *              --rest que falha também cai no registro de falha, sem abortar.
+ *              Aborta (exit 2) se `summary` divergir da saída do último passe
+ *              (ajuste manual): reaplicar sobre `summary_humanized` descartaria
+ *              o ajuste. Recuperação: rodar `humanized` de novo, depois `clarice`.
  *
  * Revalidação: depois de `humanized` e de `clarice`, o texto FINAL passa de novo
  * por `validateWeeklySummary` — o Humanizador pode alongar e a Clarice mexe em
@@ -76,6 +79,7 @@ export function snapshotRaw(data: WeeklySummariesFile): { snapshotted: number } 
     if (typeof it.summary_raw !== "string") {
       it.summary_raw = it.summary;
       delete it.summary_humanized;
+      delete it.summary_clarice;
       snapshotted++;
     }
   }
@@ -91,7 +95,10 @@ export function markHumanized(data: WeeklySummariesFile): void {
       `${missing.length} resumo(s) sem summary_raw — rode "snapshot" antes do Humanizador (ou o Humanizador reescreveu a estrutura do JSON)`,
     );
   }
-  for (const it of data.items) it.summary_humanized = it.summary.trim();
+  for (const it of data.items) {
+    it.summary_humanized = it.summary.trim();
+    delete it.summary_clarice;
+  }
   data.passes = { humanizador: "ok" };
 }
 
@@ -99,6 +106,27 @@ function requireHumanized(data: WeeklySummariesFile): void {
   if (data.passes?.humanizador !== "ok" || data.items.some((it) => typeof it.summary_humanized !== "string")) {
     throw new Error('Humanizador não registrado — rode "humanized" antes da Clarice (a ordem é a da diária)');
   }
+  const edited = manuallyEdited(data);
+  if (edited.length > 0) {
+    throw new Error(
+      `ajuste manual detectado em ${edited.length} resumo(s) (${edited.map((it) => it.title ?? it.url).join("; ")}): ` +
+        '"summary" mudou depois do último passe. A Clarice parte de "summary_humanized" e descartaria o ajuste — ' +
+        'rode "humanized" de novo (o texto editado vira a nova base) e só então "clarice".',
+    );
+  }
+}
+
+/**
+ * Itens cujo `summary` não bate com a saída do último passe registrado
+ * (Clarice ok → `summary_clarice`; senão → `summary_humanized`): sinal de
+ * edição à mão depois do passe. Reaplicar a Clarice sobre `summary_humanized`
+ * jogaria esse ajuste fora em silêncio.
+ */
+export function manuallyEdited(data: WeeklySummariesFile): WeeklySummariesFile["items"] {
+  return data.items.filter((it) => {
+    const expected = data.passes?.clarice === "ok" ? it.summary_clarice : it.summary_humanized;
+    return typeof expected === "string" && it.summary.trim() !== expected.trim();
+  });
 }
 
 /** Aplica sugestões (por URL) sobre `summary_humanized`; o resultado vira `summary`. */
@@ -115,6 +143,7 @@ export function applyClarice(
     const suggestions = byUrl[it.url] ?? [];
     const r = applyClariceSuggestions(base, suggestions);
     it.summary = r.patched.trim();
+    it.summary_clarice = it.summary;
     applied += r.applied.length;
     skipped += r.skipped.length;
   }
@@ -126,7 +155,10 @@ export function applyClarice(
 /** MCP e REST fora: o texto final é o humanizado, e a falha fica registrada pro preview avisar. */
 export function markClariceFailed(data: WeeklySummariesFile, reason: string): void {
   requireHumanized(data);
-  for (const it of data.items) it.summary = it.summary_humanized as string;
+  for (const it of data.items) {
+    it.summary = it.summary_humanized as string;
+    delete it.summary_clarice;
+  }
   data.passes = { humanizador: "ok", clarice: "falhou", clarice_error: reason || "sem detalhe" };
 }
 
