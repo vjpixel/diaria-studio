@@ -236,22 +236,38 @@ export function buildShortSocialText(input: {
   throw new Error(`texto do X não cabe em ${TWITTER_CHAR_LIMIT} caracteres`);
 }
 
+const UTF8 = new TextEncoder();
+/** Emoji e os modificadores que o compõem (ZWJ, seletor de variação, tom de pele, keycap). */
+const EMOJI_PART_RE = /[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}‍️⃣]/u;
+
+/**
+ * Tamanho do texto como o Threads conta (#10772): 1 por caractere (code point),
+ * exceto emoji, que pesa o tamanho em bytes UTF-8 (doc da Meta, posts: "emojis
+ * count as their UTF-8 byte length"). Ex.: "🤖" pesa 4.
+ */
+export function threadsTextLength(text: string): number {
+  let n = 0;
+  for (const ch of text) n += EMOJI_PART_RE.test(ch) ? UTF8.encode(ch).length : 1;
+  return n;
+}
+
 /**
  * Texto do vertical no Threads (#10772): título, gancho (1ª frase do D1), vídeo
  * completo e edição, em até 500 caracteres (o Threads conta caractere, URL
- * inteira). Sem hashtags: no Threads só a 1ª vira tag de tópico. Não cabe →
+ * inteira — mas emoji conta pelo tamanho em BYTES UTF-8, ver `threadsTextLength`).
+ * Sem hashtags: no Threads só a 1ª vira tag de tópico. Não cabe →
  * tira o gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
  */
 function buildThreadsShortText(title: string, body: string, video: string, edition: string): string {
   const tail = `\n\nVídeo completo no YouTube: ${video}\nEdição completa: ${edition}`;
   const hook = firstSentence(body);
   const withHook = hook ? `${title}\n\n${hook}${tail}` : `${title}${tail}`;
-  if (Array.from(withHook).length <= THREADS_TEXT_MAX_CHARS) return withHook;
+  if (threadsTextLength(withHook) <= THREADS_TEXT_MAX_CHARS) return withHook;
   const chars = Array.from(title);
   for (let n = chars.length; n >= 10; n--) {
     const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
     const text = head + tail;
-    if (Array.from(text).length <= THREADS_TEXT_MAX_CHARS) return text;
+    if (threadsTextLength(text) <= THREADS_TEXT_MAX_CHARS) return text;
   }
   throw new Error(`texto do Threads não cabe em ${THREADS_TEXT_MAX_CHARS} caracteres`);
 }

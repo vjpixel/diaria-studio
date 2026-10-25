@@ -297,7 +297,8 @@ export const CONTAINER_POLL_MAX_ATTEMPTS = 10;
  *
  * Timeout limitado ({@link CONTAINER_POLL_MAX_ATTEMPTS} × {@link CONTAINER_POLL_INTERVAL_MS}
  * ≈ 10s) — se esgotar sem `FINISHED`, segue pra `publishThreadsContainer`
- * mesmo assim (best-effort). `status: ERROR` aborta cedo com a mensagem da API.
+ * mesmo assim (best-effort). `status: ERROR`/`EXPIRED` abortam cedo com a
+ * mensagem da API; 401 (ou 400 com code 190, token inválido) num poll também.
  * Token no header Authorization, nunca na query string (#7779).
  */
 export async function waitForContainerReady(

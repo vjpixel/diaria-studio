@@ -4,9 +4,14 @@
  *
  * Fluxo oficial da Threads API (https://developers.facebook.com/docs/threads/posts):
  *   1. `POST /{threads-user-id}/threads` com `media_type=VIDEO`, `video_url`
- *      PÚBLICO (o mesmo `-short.mp4` que o `publish-shorts.ts` sobe pro R2) e `text`;
- *   2. espera o container sair de `IN_PROGRESS` (`GET /{container-id}?fields=status,error_message`;
- *      a Meta recomenda ~30 s e consultar 1x/min por até 5 min);
+ *      PÚBLICO (quando a integração entrar, o mesmo `-short.mp4` que o
+ *      `publish-shorts.ts` sobe pro R2) e `text`;
+ *   2. espera o container sair de `IN_PROGRESS` (`GET /{container-id}?fields=status,error_message`).
+ *      A Meta recomenda ~30 s de espera e 1 consulta/min por até 5 min; aqui
+ *      são 30 s de espera e 1 consulta a cada 30 s (o DOBRO da cadência
+ *      recomendada, 10 GETs no total, ainda dentro dos 5 min). Volume baixo
+ *      (1 vídeo/dia) e sem rate limit documentado para o GET de status —
+ *      escolha consciente pra publicar mais cedo quando o processamento é rápido;
  *   3. `POST /{threads-user-id}/threads_publish` com `creation_id`.
  * Cliente HTTP compartilhado com os posts da diar.ia.br: `scripts/lib/threads-api.ts`.
  *
@@ -19,7 +24,8 @@
  * documenta repost; segue manual (passo guiado).
  *
  * Ainda SEM validação real: o token pessoal não existe (comentários de 23/10 e
- * 25/10/2026 na #10772). Integração em `publish-shorts.ts` fica para quando ele existir.
+ * 25/10/2026 na #10772). Ainda não há consumidor: a integração em
+ * `publish-shorts.ts` (destino `threads_profile`) entra depois da PR #11055 e do token.
  */
 
 import { THREADS_API_VERSION, ThreadsApiError, createThreadsContainer, fetchThreadsPermalink, publishThreadsContainer, waitForThreadsContainer, type ThreadsFetch } from "./threads-api.ts";
@@ -36,9 +42,9 @@ export const THREADS_PERSONAL_ENV = {
 
 /** Espera inicial antes do 1º poll (recomendação da Meta: ~30 s em média). */
 export const THREADS_VIDEO_INITIAL_WAIT_MS = 30_000;
-/** Intervalo entre polls do container de vídeo. */
+/** Intervalo entre polls do container de vídeo (2× a cadência de 1/min da Meta; ver docblock). */
 export const THREADS_VIDEO_POLL_INTERVAL_MS = 30_000;
-/** Polls do container de vídeo: 10 × 30 s = 5 min, o teto que a Meta recomenda. */
+/** Polls do container de vídeo: 30 s de espera + 9 intervalos de 30 s = 5 min, o teto que a Meta recomenda. */
 export const THREADS_VIDEO_POLL_ATTEMPTS = 10;
 
 export interface ThreadsPersonalCreds {
@@ -79,9 +85,12 @@ export interface ThreadsVideoOutcome {
 /**
  * Publica o vertical no Threads pessoal. Falha ANTES do publish (container,
  * processamento `ERROR`/`EXPIRED`/timeout, 4xx no publish) lança: nada saiu no
- * perfil e dá pra tentar de novo. Envio AMBÍGUO no `threads_publish` (rede/timeout
- * ou 5xx — a Meta pode ter publicado) volta como `send_unknown`, mesmo contrato
- * do `linkedin_profile`: conta como feito e a rodada seguinte não re-posta.
+ * perfil e dá pra tentar de novo. Envio AMBÍGUO no `threads_publish`
+ * (`ThreadsApiError.sendMayHaveSucceeded`: rede/timeout, 5xx, ou 2xx sem `id`
+ * usável — a Meta pode ter publicado) volta como `send_unknown`, mesmo contrato
+ * do `linkedin_profile`: conta como feito e a rodada seguinte não re-posta. Um
+ * container que o poll já vê `PUBLISHED` também vira `send_unknown` (o post
+ * existe, mas não temos o media id).
  */
 export async function publishThreadsProfileVideo(args: {
   creds: ThreadsPersonalCreds;
@@ -94,31 +103,41 @@ export async function publishThreadsProfileVideo(args: {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const containerId = await createThreadsContainer(creds.userId, creds.accessToken, { mediaType: "VIDEO", text, videoUrl }, creds.apiVersion, deps.fetch);
   await sleep(THREADS_VIDEO_INITIAL_WAIT_MS);
-  await waitForThreadsContainer(containerId, creds.accessToken, creds.apiVersion, {
+  const ready = await waitForThreadsContainer(containerId, creds.accessToken, creds.apiVersion, {
     maxAttempts: THREADS_VIDEO_POLL_ATTEMPTS,
     intervalMs: THREADS_VIDEO_POLL_INTERVAL_MS,
     onTimeout: "throw",
     sleep,
     fetchFn: deps.fetch,
   });
+  if (ready === "published") return sendUnknown(deps, `o container ${containerId} já está PUBLISHED`);
   let mediaId: string;
   try {
     mediaId = await publishThreadsContainer(creds.userId, creds.accessToken, containerId, creds.apiVersion, deps.fetch);
   } catch (e) {
-    const ambiguous = e instanceof ThreadsApiError && (e.status === null || e.status >= 500);
-    if (!ambiguous) throw e;
-    const at = deps.now().toISOString();
-    return {
-      entry: { destination: THREADS_PROFILE_DESTINATION, status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at },
-      warnings: [
-        `envio ambíguo no threads_publish (${e.message}; container ${containerId}) — confira o perfil antes de qualquer nova tentativa e registre com --mark ${THREADS_PROFILE_DESTINATION}=URL`,
-      ],
-    };
+    if (!(e instanceof ThreadsApiError) || !e.sendMayHaveSucceeded) throw e;
+    return sendUnknown(deps, `envio ambíguo no threads_publish (${e.message}; container ${containerId})`);
   }
   const url = await fetchThreadsPermalink(mediaId, creds.accessToken, creds.apiVersion, deps.fetch);
   const at = deps.now().toISOString();
   return {
     entry: { destination: THREADS_PROFILE_DESTINATION, status: "published", id: mediaId, ...(url ? { url } : {}), scheduled_at: null, at },
     ...(url ? {} : { warnings: ["o Threads publicou mas não devolveu o permalink — confira o perfil"] }),
+  };
+}
+
+/**
+ * Registro `send_unknown`. O aviso NÃO manda rodar `--mark threads_profile=URL`:
+ * o allowlist de `publish-shorts.ts` (`MARKABLE_DESTINATIONS`) ainda não aceita
+ * esse destino — fica para a integração (PR #11055).
+ */
+function sendUnknown(deps: ThreadsVideoDeps, detail: string): ThreadsVideoOutcome {
+  const at = deps.now().toISOString();
+  return {
+    entry: { destination: THREADS_PROFILE_DESTINATION, status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at },
+    warnings: [
+      `${detail} — não tente de novo antes de conferir no perfil do Threads se o vídeo saiu; ` +
+        `registre o resultado à mão em _internal/06-shorts-published.json até a integração com o publish-shorts entrar`,
+    ],
   };
 }

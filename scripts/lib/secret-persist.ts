@@ -9,24 +9,62 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { upsertEnvVar } from "./google-ads-credentials.ts";
 
 export type DopplerSet = (name: string, value: string) => { ok: boolean; error?: string };
 
-/** `doppler secrets set NAME --silent` com o valor pelo stdin (nunca na linha de comando). */
-export const defaultDopplerSet: DopplerSet = (name, value) => {
-  const r = spawnSync("doppler", ["secrets", "set", name, "--silent"], {
-    input: value,
-    encoding: "utf8",
-    shell: process.platform === "win32",
-  });
-  if (r.error || r.status !== 0) {
-    // stderr do Doppler (sem o valor — ele foi pelo stdin) explica a causa:
-    // `doppler login` vencido, ou diretório sem `doppler setup` (projeto/config).
-    return { ok: false, error: (r.error?.message ?? (r.stderr || "").trim()) || `exit ${r.status}` };
-  }
-  return { ok: true };
+export type DopplerSpawn = (
+  bin: string,
+  args: string[],
+  opts: { input: string; shell: boolean },
+) => { error?: (Error & { code?: string }) | undefined; status: number | null; stderr: string };
+
+const realSpawn: DopplerSpawn = (bin, args, opts) => {
+  const r = spawnSync(bin, args, { input: opts.input, encoding: "utf8", shell: opts.shell });
+  return { error: r.error as (Error & { code?: string }) | undefined, status: r.status, stderr: r.stderr ?? "" };
 };
+
+/**
+ * Monta o `DopplerSet` com a mesma resolução de binário de `scripts/sync-env.ts`
+ * (#8795, `defaultDopplerRunner`): `DOPPLER_BIN` quando setada (só ela);
+ * senão `doppler` do PATH e, se ele não existir (ENOENT — shell não-login de
+ * systemd/SSH não lê `~/.profile`), `~/.local/bin/doppler`. Injetável para teste.
+ */
+export function makeDopplerSet(deps: {
+  spawn?: DopplerSpawn;
+  env?: Record<string, string | undefined>;
+  fallbackPath?: string;
+  exists?: (p: string) => boolean;
+  platform?: NodeJS.Platform;
+} = {}): DopplerSet {
+  const spawn = deps.spawn ?? realSpawn;
+  const env = deps.env ?? process.env;
+  const fallbackPath = deps.fallbackPath ?? resolve(homedir(), ".local", "bin", "doppler");
+  const exists = deps.exists ?? existsSync;
+  const platform = deps.platform ?? process.platform;
+  return (name, value) => {
+    const args = ["secrets", "set", name, "--silent"];
+    const override = env.DOPPLER_BIN?.trim();
+    let r = override
+      ? spawn(override, args, { input: value, shell: false })
+      : spawn("doppler", args, { input: value, shell: platform === "win32" });
+    if (!override && r.error?.code === "ENOENT" && exists(fallbackPath)) {
+      r = spawn(fallbackPath, args, { input: value, shell: false });
+    }
+    if (r.error || r.status !== 0) {
+      // stderr do Doppler (sem o valor — ele foi pelo stdin) explica a causa:
+      // `doppler login` vencido, ou diretório sem `doppler setup` (projeto/config).
+      return { ok: false, error: (r.error?.message ?? (r.stderr || "").trim()) || `exit ${r.status}` };
+    }
+    return { ok: true };
+  };
+}
+
+/** `doppler secrets set NAME --silent` com o valor pelo stdin (nunca na linha de comando). */
+export const defaultDopplerSet: DopplerSet = makeDopplerSet();
 
 export type PersistResult = { doppler: string[]; dopplerFailed: string[]; dopplerErrors: string[]; envWritten: boolean };
 
