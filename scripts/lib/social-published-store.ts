@@ -46,7 +46,10 @@ export interface PostEntry {
   // que o store afirme "scheduled" pra algo que o Worker rejeitou no
   // enqueue, e evita rotular como "failed" algo que não é erro transitório
   // (retry não ajudaria).
-  status: "draft" | "scheduled" | "failed" | "published" | "deleted" | "skipped";
+  // #11076 — "send_unknown": o envio (threads_publish) foi AMBÍGUO (rede/5xx/2xx
+  // sem id) — a Meta pode ter publicado. Terminal: nunca re-tentar sem conferir
+  // o perfil. Hoje só o publish-threads grava.
+  status: "draft" | "scheduled" | "failed" | "published" | "deleted" | "skipped" | "send_unknown";
   scheduled_at: string | null;
   reason?: string;
   /** Campos platform-specific (fb_post_id, make_request_id, published_at,
