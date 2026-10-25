@@ -57,6 +57,7 @@ Regra do editor: **a única imagem realista é o editor.** Todo o resto é pintu
 
 1. **Gancho:** 2 ou 3 palavras derivadas do D1, pergunta ou tensão (ex.: "IA ladra?", "IA antiveneno?"). Propor e seguir com ele; o editor aprova vendo a capa no passo 5.
 2. **Retrato:** Codex CLI pela assinatura ChatGPT (`codex exec -i frame1.png -i frame2.png`, mesmo guard de env do `scripts/codex-image.js`), a partir de 2 frames do vídeo do dia (`ffmpeg -ss {t} -i {vídeo} -frames:v 1 frameN.png`). Prompt: o mesmo homem, do peito pra cima, olhando pra câmera, sorriso leve, bem iluminado, camiseta cinza como no vídeo, fundo escuro liso. Recortar com `rembg` modelo `birefnet-portrait` (só a pessoa, PNG com transparência).
+   No **Neo (Windows do editor)**, usar o ambiente de `docs/setup.md` (#11071): `.venv-rembg/Scripts/python.exe scripts/setup-rembg.py --input retrato-original.png --output retrato.png`. Se ausente/inválido, parar com a instrução `py -3.11 scripts/setup-rembg.py`; nunca instalar improvisado ou substituir o recorte silenciosamente.
 3. **Fundo:** outpaint da `04-d1-2x1.jpg` pelo Codex para 16:9, com o objeto do D1 menor e inteiro à direita e o terço esquerdo livre, em pintura impasto nítida. Nunca desfoque.
 4. **Composição** (determinística):
 

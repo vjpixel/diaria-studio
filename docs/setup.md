@@ -1,4 +1,37 @@
 # Setup completo (1x por máquina)
+
+## rembg para capas de vídeo (#11071)
+
+Premissa: **Neo, Windows x64 do editor**, é a máquina de mídia/capas.
+O 300 não precisa deste ambiente. Este patch só versiona o setup; não instala
+dependências no host que implementa a issue. A instalação no Neo fica pendente
+até executar os comandos abaixo.
+
+Instalar CPython **3.11.9 x64** (python.org). Na raiz do checkout no Neo:
+
+```powershell
+py -3.11 scripts/setup-rembg.py
+.\.venv-rembg\Scripts\python.exe scripts/setup-rembg.py --check
+.\.venv-rembg\Scripts\python.exe scripts/setup-rembg.py --input retrato-original.png --output retrato.png
+```
+
+O setup exige essa versão exata, cria `.venv-rembg/` na raiz deste checkout
+(ignorado pelo git, fora de `data/`/OneDrive), fixa pip 25.0.1 e instala
+`scripts/rembg-requirements.txt` (rembg 2.0.67, ONNX Runtime CPU 1.20.1 e
+dependências transitivas pinadas). É repetível; não ativa venv nem depende
+de `rembg` no PATH. Para recriar, apagar apenas `.venv-rembg/` e repetir.
+O recorte usa `birefnet-portrait`, CPU, e cache `.venv-rembg/models/`;
+a primeira execução baixa o modelo e requer rede. Falha de download/importação
+ou versão divergente aborta com erro, sem substituição de modelo ou imagem.
+
+`gen-youtube-thumb.ts` valida esse ambiente antes da capa horizontal e
+recusa retrato sem transparência. O Short usa um frame via ffmpeg, sem rembg;
+seu fluxo permanece independente. Composição/testes unitários não requerem
+instalar Python ou baixar modelos. A validação real de DLLs/modelo e um recorte
+de ponta a ponta devem ser feitos no Neo após o setup.
+
+## Demais dependências
+
 > Gerador de imagens via assinatura ChatGPT (Codex CLI, sem custo por uso): ver `docs/codex-image-setup.md` (#9088).
 
 Movido do `CLAUDE.md` na rodada de enxugamento do #8228 — conteúdo de
