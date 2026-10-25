@@ -191,7 +191,8 @@ import {
   defaultSectionCardGenerator,
   type SectionCardGenerator,
 } from "./lib/weekly-instagram-ondemand-card.ts";
-import { resolveOrGenerateFlatCardUrl, WEEKLY_FLAT_CARD_LAYOUT, type FlatCardGenerator } from "./lib/weekly-flat-card.ts";
+import { resolveOrGenerateFlatCardUrl, WEEKLY_FLAT_CARD_LAYOUT, type FlatCardGenerator, type FlatCardText } from "./lib/weekly-flat-card.ts";
+import { buildDailyCarouselCtaText, DAILY_CAROUSEL_LAYOUT } from "./lib/daily-carousel-card.ts";
 import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/weekly-carousel-news-card.ts";
 import { WEEKLY_CAROUSEL_NEWS_CARD_SIZE } from "./lib/weekly-carousel-font-size.ts";
 import { WEEKLY_OVERLAY_WRAP, overlayTitleOverflows } from "./gen-social-card-4x5.ts";
@@ -356,7 +357,7 @@ export function weekRangeLabel(contentWindow: string[]): string {
 export function buildFlatCardTexts(
   mode: WeeklyInstagramMode,
   contentWindow: string[],
-): { cover: { kicker: string; title: string; footer: string }; cta: { kicker: string; title: string; footer: string } } {
+): { cover: { kicker: string; title: string; footer: string }; cta: FlatCardText } {
   const range = weekRangeLabel(contentWindow);
   // #7571: "Os mais clicados da semana" nomeava a metodologia (clique) em vez
   // do resultado — pouco convidativo pra quem não conhece a diar.ia.br e não
@@ -368,20 +369,13 @@ export function buildFlatCardTexts(
   const coverTitle = mode === "highlights" ? "Os principais destaques de IA da semana" : "As notícias de IA mais lidas da semana";
   return {
     cover: { kicker: "Resumo semanal", title: coverTitle, footer: range ? `${range} · diar.ia.br` : "diar.ia.br" },
-    cta: {
-      kicker: "Grátis, toda manhã",
-      // #8055: era "Assine no link da bio". "Link da bio" é idioma de
-      // Instagram, e ESTE card não é do Instagram — o mesmo JPEG vai pros 4
-      // canais (`carouselImageUrls` é compartilhado por Instagram, Threads,
-      // LinkedIn e Facebook), onde não existe bio com link. O projeto já
-      // trata essa diferença na LEGENDA (`format-weekly-social.ts`: Facebook
-      // leva link direto, Instagram leva "link da bio" — travado em
-      // `test/format-weekly-social.test.ts`); a arte era o ponto que ficara
-      // para trás, dizendo a mesma frase de Instagram em toda parte.
-      // Endereço explícito funciona nos 4.
-      title: "A edição completa chega no seu e-mail. Assine em diar.ia.br.",
-      footer: "diar.ia.br",
-    },
+    // 25/10/2026, pedido do editor: o CTA final da retro é o MESMO card do
+    // carrossel diário (texto, kicker e tamanho 62px) — `buildDailyCarouselCtaText`
+    // é a fonte única. Substitui o texto próprio do #8055 ("A edição completa
+    // chega no seu e-mail. Assine em diar.ia.br.", 84px), que evitava "link da
+    // bio" porque o JPEG vai pros 4 canais; o carrossel diário já tem a mesma
+    // característica, e o editor preferiu a consistência entre os dois.
+    cta: buildDailyCarouselCtaText(),
   };
 }
 
@@ -1471,7 +1465,7 @@ async function runOneMode(
   let ctaUrl: string;
   try {
     coverUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cover", flatTexts.cover, opts.flatCardGenerator, WEEKLY_FLAT_CARD_LAYOUT);
-    ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator, WEEKLY_FLAT_CARD_LAYOUT);
+    ctaUrl = await resolveOrGenerateFlatCardUrl(dataRoot, carouselKey, "cta", flatTexts.cta, opts.flatCardGenerator, DAILY_CAROUSEL_LAYOUT);
   } catch (e: any) {
     console.error(
       `ERRO ${destaqueKey}: geração do card sem foto (capa/CTA) falhou: ${e.message} — ` +
