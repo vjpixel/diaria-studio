@@ -38,7 +38,7 @@ export function runCli(args: Record<string, string>, root: string): void {
       );
     }
     console.error(
-      `\nFix: re-disparar writer-destaque do(s) destaque(s) afetado(s) pra reescrever "Por que isso importa" dentro de 180-300 chars (2 frases curtas cabem nessa janela — frase 1: impacto direto; frase 2: implicação concreta).`,
+      `\nFix: re-disparar writer-destaque do(s) destaque(s) afetado(s) pra reescrever "Por que isso importa" dentro de 180-300 chars (2 frases curtas cabem nessa janela — frase 1: efeito sobre o leitor; frase 2: tendência ou implicação concreta).`,
     );
     process.exit(1);
   }

@@ -33,7 +33,7 @@ Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou 
 
 Por que isso importa:
 
-[1 parágrafo — impacto na sociedade: o que a notícia muda para pessoas e serviços públicos; só o que a fonte sustenta]
+[1 parágrafo, 2-3 frases — impacto atual ou futuro na vida do leitor (abrir pelo efeito sobre ele, não pelo achado); previsão da fonte ausente só com "tende a"/"à medida que"]
 
 Aprofunde:
 
