@@ -62,10 +62,11 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
 }
 
 /** Rotas default de um upload bem-sucedido; `overrides` trocam uma etapa. */
-function happyRoutes(overrides: Partial<Record<"token" | "channel" | "insert" | "put" | "thumb" | "reread", Route>> = {}): Route[] {
+function happyRoutes(overrides: Partial<Record<"token" | "channel" | "existing" | "insert" | "put" | "thumb" | "reread", Route>> = {}): Route[] {
   const r: Record<string, Route> = {
     token: (c) => (c.url === "https://oauth2.googleapis.com/token" ? json(200, { access_token: ACCESS, expires_in: 3599 }) : undefined),
     channel: (c) => (c.url.includes("/youtube/v3/channels") ? json(200, { items: [{ id: SECRETS.YOUTUBE_CHANNEL_ID }] }) : undefined),
+    existing: (c) => (c.url.includes("/youtube/v3/playlistItems") ? json(200, { items: [] }) : undefined),
     insert: (c) =>
       c.url.startsWith("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable")
         ? new Response(null, { status: 200, headers: { Location: SESSION_URL } })
@@ -81,7 +82,7 @@ function happyRoutes(overrides: Partial<Record<"token" | "channel" | "insert" | 
         : undefined,
   };
   for (const [k, v] of Object.entries(overrides)) r[k] = v as Route;
-  return [r.token, r.channel, r.insert, r.put, r.thumb, r.reread];
+  return [r.token, r.channel, r.existing, r.insert, r.put, r.thumb, r.reread];
 }
 
 function mockDeps(routes: Route[]): { deps: YouTubeUploadDeps; calls: Call[] } {
@@ -159,6 +160,7 @@ describe("upload real — sucesso (#10659)", () => {
       [
         "POST /token",
         "GET /youtube/v3/channels",
+        "GET /youtube/v3/playlistItems",
         "POST /upload/youtube/v3/videos",
         "PUT /upload/youtube/v3/videos",
         "POST /upload/youtube/v3/thumbnails/set",
@@ -169,12 +171,12 @@ describe("upload real — sucesso (#10659)", () => {
     assert.match(String(calls[0].body), /grant_type=refresh_token/);
     for (const c of calls.slice(1)) assert.equal(c.headers.Authorization, `Bearer ${ACCESS}`);
     // O insert leva privacyStatus + publishAt do plano (06:00 BRT).
-    const insertBody = JSON.parse(String(calls[2].body));
+    const insertBody = JSON.parse(String(calls[3].body));
     assert.equal(insertBody.status.privacyStatus, "private");
     assert.equal(insertBody.status.publishAt, PUBLISH_AT);
     assert.equal(insertBody.snippet.title, plan.metadata.title);
-    assert.equal(calls[2].headers["X-Upload-Content-Type"], "video/mp4");
-    assert.ok(calls[4].url.endsWith(`?videoId=${VIDEO_ID}`));
+    assert.equal(calls[3].headers["X-Upload-Content-Type"], "video/mp4");
+    assert.ok(calls[5].url.endsWith(`?videoId=${VIDEO_ID}`));
 
     const rec = outcome.record!;
     assert.equal(rec.videoId, VIDEO_ID);
