@@ -139,7 +139,7 @@ npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DI
 ```
 
 - `status: "link-ready"` → `_internal/05-video-url.txt` existe; o Stage 5 põe o link no D1 de X, Threads e Facebook. Seguir.
-- `status: "no-video"` ou `"video-without-link"` → mostrar ao editor a linha `[aviso]` do stderr (o D1 sairá **sem** o link do vídeo; no 2º caso, o comando `link-video-d1.ts` que libera o link) e **seguir com o dispatch sem esperar resposta**. Não é gate: o vídeo pode ainda não existir, e a Etapa 5 nunca para por isso.
+- `status: "no-video"` ou `"video-without-link"` → mostrar ao editor a linha `[aviso]` do stderr (o D1 sairá **sem** o link do vídeo; no 2º caso, o comando `link-video-d1.ts` que libera o link) e **seguir com o dispatch sem esperar resposta**. Não é gate: o vídeo pode ainda não existir, e a Etapa 5 nunca para por isso. Com `"no-video"`, o §5b-youtube do playbook ainda tenta baixar do Drive o horizontal com "final" no nome e subi-lo agendado (#10659, fail-soft), antes do dispatch social.
 - Exit != 0 (uso inválido, erro inesperado) → logar warn e seguir.
 
 Não rodar `/diaria-youtube` nem `/diaria-shorts` daqui — são skills standalone que o editor invoca.

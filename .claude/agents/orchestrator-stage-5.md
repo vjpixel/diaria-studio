@@ -165,6 +165,17 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator -
 ```
 O script grava em `_internal/site-page-published.json` o registro que o Stage 6 le: `prNumber`, `prUrl`, `status` (`open` | `merged` | `none`), `published`, `code`. **Nada aqui espera o merge e nenhum exit para a Etapa 5** (tabela de exits em `orchestrator-stage-6.md` §6b-site) — falha vira warn e segue; o Stage 6 re-roda a publicacao como fallback e TRAVA o fim da Etapa 6 no merge (§6c-site + invariante `site-page-pr-merged`).
 
+### 5b-youtube. Video horizontal do dia: Drive para YouTube, fail-soft (#10659)
+
+**Antes do dispatch social (5c-3)**: o `--upload` grava `_internal/05-video-url.txt`, o link do video que os publicadores poem no D1 de X, Threads e Facebook. Independe de `--skip` e **nunca para a Etapa 5** (falha vira warn e o dispatch segue). Video ja registrado em `_internal/05-youtube-published.json` (o editor rodou `/diaria-youtube`) → `publish-youtube.ts` sai exit 0 com `skipped: true`.
+```bash
+npx tsx scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal --edition-dir {EDITION_DIR}
+npx tsx scripts/publish-youtube.ts {AAMMDD} --upload --edition-dir {EDITION_DIR}   # so se o fetch deu downloaded/exists
+```
+- **fetch** (criterio do editor 25/10/2026: `.mp4` com "final" no nome, proporcao horizontal, pasta `publishing.youtube.drive_folder_id`, subpasta `{AAMMDD}/` sem janela ou solto na raiz nas ultimas 36h): exit 0 `downloaded`/`exists` → upload; exit 0 `none` → sem upload, resumo "YouTube: sem video no Drive, rodar `/diaria-youtube {AAMMDD}` quando subir"; exit 3 (2+ "final", ou "final" sem proporcao) → **nao escolher**, sem upload, levar ao resumo os nomes de `candidates`/`files`; exit 1/2 (rede, OAuth `oauth-setup.ts`, config) → sem upload, warn.
+- **upload**: agenda 06:00 BRT (ja passou → publica na hora, com `[premissa]`). Sem `04-youtube-thumb.jpg` (capa aprovada no `/diaria-youtube` Passo 1b) sai com a capa automatica do YouTube: dizer no resumo. Exit 1 → warn com a mensagem do script; nunca `--force` daqui (pode duplicar o video no canal).
+- Logar `log-event.ts --stage 5 --agent orchestrator --message "youtube: fetch {action}, upload exit {code}"` e pôr no resumo a `url` + o `state` RELIDO do JSON do `--upload` (#573). O vertical segue no `/diaria-shorts`; `fetch-drive-video.ts --orientation vertical` so imprime o `next_command` (`publish-shorts.ts {AAMMDD} --from-drive {FILE_ID}`) para o resumo, sem baixar.
+
 ### 5c-pre. Upload de imagens publicas (#999 fix — pre-requisito do dispatch)
 
 **ANTES** do dispatch paralelo, se LinkedIn ou Facebook automatico foram autorizados em 5b, rodar upload-images-public.ts pra popular o cache `06-public-images.json` com URLs Cloudflare KV (d1/d2/d3 vao pro KV desde #2147):

@@ -307,7 +307,10 @@ describe("orchestrator-prompt (#634)", () => {
       // vira a 1ª ação do dispatch, sem esperar o merge): comando + o
       // registro que o Stage 6 lê + linha no resumo. É passo EXECUTADO
       // (antes vivia em §6b-site), não referência. Teto 525→540.
-      "orchestrator-stage-5.md": 540,
+      // #10659 (25/10): +11 linhas — §5b-youtube nova (baixa do Drive o
+      // horizontal com "final" no nome e sobe agendado, fail-soft, antes do
+      // dispatch social). Passo EXECUTADO. Teto 540→555.
+      "orchestrator-stage-5.md": 555,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
       // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +

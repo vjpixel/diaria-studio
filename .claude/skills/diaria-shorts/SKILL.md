@@ -39,13 +39,13 @@ O script pede o User Access Token do Graph API Explorer (permissões `pages_show
 
 Convenção: `data/editions/{AAMM}/{AAMMDD}/diaria-comentada-{AAMMDD}-short.mp4`.
 
-Se não estiver lá, achar o id no Drive pelo conector do Google Drive (`search_files`, `mimeType contains 'video/'`, `modifiedTime` recente, título com `Vertical`) e baixar pelo id. O download usa o OAuth do próprio projeto (`data/.credentials.json`), não o conector: se falhar por token, renovar com `oauth-setup.ts`. O script exige `02-reviewed.md` antes de baixar.
+Se não estiver lá, achar o id no Drive (#10659): `npx tsx scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation vertical` escolhe o vertical do dia ("final" no nome, proporção vertical, subpasta `{AAMMDD}/` da pasta `Mentoria Fluxo/VTSD/YouTube` ou solto na raiz nas últimas 36h) e imprime em `next_command` o comando abaixo com o `FILE_ID` pronto. Ele não baixa nada sozinho. Exit 3 = 2+ candidatos ou "final" sem proporção no Drive (mostrar os nomes ao editor); `action: "none"` = ainda não subiu. Para conferir, o conector do Google Drive também serve (`search_files`, `mimeType contains 'video/'`, `modifiedTime` recente). Baixar pelo id. O download usa o OAuth do próprio projeto (`data/.credentials.json`), não o conector: se falhar por token, renovar com `oauth-setup.ts`. O script exige `02-reviewed.md` antes de baixar.
 
 ```bash
 npx tsx scripts/publish-shorts.ts {AAMMDD} --from-drive {FILE_ID}
 ```
 
-Mais de um candidato (V1, V2, V3…): usar a versão mais alta. Se a escolha não for óbvia, mostrar os nomes ao editor.
+Mais de um candidato (V1, V2, V3…): vale o que tem "final" no nome (decisão do editor, 25/10/2026). Dois "final", ou nenhum: mostrar os nomes ao editor, nunca escolher sozinho.
 
 ## Passo 2 — Plano
 
