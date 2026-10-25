@@ -39,13 +39,16 @@ O script pede o User Access Token do Graph API Explorer (permissões `pages_show
 
 Convenção: `data/editions/{AAMM}/{AAMMDD}/diaria-comentada-{AAMMDD}-short.mp4`.
 
-Se não estiver lá, achar o id no Drive pelo conector do Google Drive (`search_files`, `mimeType contains 'video/'`, `modifiedTime` recente, título com `Vertical`) e baixar pelo id. O download usa o OAuth do próprio projeto (`data/.credentials.json`), não o conector: se falhar por token, renovar com `oauth-setup.ts`. O script exige `02-reviewed.md` antes de baixar.
+Se não estiver lá, achar o id no Drive (#10659): `npx tsx scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation vertical` escolhe o vertical do dia (`.mp4` com "final" como palavra no nome — "pré-final", "não final" e "finalizando" não contam —, proporção vertical; se a subpasta `{AAMMDD}/` da pasta `Mentoria Fluxo/VTSD/YouTube` existe, só ela conta, senão vale o solto na raiz nas últimas 36h) e imprime em `next_command` o comando abaixo com o `FILE_ID` pronto. Ele não baixa nada sozinho; com o short já no disco, `next_command` é o plano do `publish-shorts.ts` sobre ele. Casos:
+  - **exit 3 `needs-editor`** — dois ou mais "final" verticais (`candidates`), um "final" sem proporção no Drive (`files`) ou duas subpastas `{AAMMDD}` (`folders`): mostrar ao editor id, nome e `modifiedTime` de cada um (o Drive aceita nomes repetidos, o id é o que distingue) e esperar ele dizer qual; nunca escolher sozinho;
+  - **exit 0 `action: "none"`** — nenhum vertical "final" ainda: o vídeo não subiu, seguir sem Short ou esperar;
+  - **exit 1** — pasta inacessível pela conta OAuth do projeto, rede ou token (`oauth-setup.ts`). Para conferir, o conector do Google Drive também serve (`search_files`, `mimeType contains 'video/'`, `modifiedTime` recente). Baixar pelo id. O download usa o OAuth do próprio projeto (`data/.credentials.json`), não o conector: se falhar por token, renovar com `oauth-setup.ts`. O script exige `02-reviewed.md` antes de baixar.
 
 ```bash
 npx tsx scripts/publish-shorts.ts {AAMMDD} --from-drive {FILE_ID}
 ```
 
-Mais de um candidato (V1, V2, V3…): usar a versão mais alta. Se a escolha não for óbvia, mostrar os nomes ao editor.
+Mais de um candidato (V1, V2, V3…): vale o que tem "final" no nome (decisão do editor, 25/10/2026). Dois "final" é exit 3 (escolha do editor, pelos ids); nenhum é `none` (ainda não subiu).
 
 ## Passo 2 — Plano
 

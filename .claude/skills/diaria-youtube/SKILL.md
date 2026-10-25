@@ -5,7 +5,7 @@ description: Prepara o vídeo diário "diar.ia.br comentada" (Pixel comentando o
 
 # /diaria-youtube AAMMDD (#10659)
 
-Vídeo diário no YouTube (`@diariabr`) com o Pixel comentando o D1 da edição, decisão do editor de 21/10/2026 (1º vídeo: edição 261021, https://youtu.be/QRbXMprk9o0). Esta skill cobre só esse vídeo, fora da pipeline: roda depois do gate da Etapa 4 e, no fluxo ideal (#10943), antes do `/diaria-5-publicacao`, para o link do vídeo entrar no D1 já na criação dos posts. Também serve para o caso em que o vídeo fica pronto depois do Stage 5. O publisher é o mesmo que o passo futuro do Stage 5 vai usar (`scripts/publish-youtube.ts`).
+Vídeo diário no YouTube (`@diariabr`) com o Pixel comentando o D1 da edição, decisão do editor de 21/10/2026 (1º vídeo: edição 261021, https://youtu.be/QRbXMprk9o0). Esta skill cobre só esse vídeo, fora da pipeline: roda depois do gate da Etapa 4 e, no fluxo ideal (#10943), antes do `/diaria-5-publicacao`, para o link do vídeo entrar no D1 já na criação dos posts. Também serve para o caso em que o vídeo fica pronto depois do Stage 5. O publisher é o mesmo do passo do Stage 5 (`scripts/publish-youtube.ts`, §5b-youtube do `orchestrator-stage-5.md`).
 
 **Data:** `AAMMDD` é obrigatório. Se não for passado, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`), nunca perguntar.
 
@@ -20,7 +20,7 @@ O token vem do OAuth do canal (`scripts/youtube-oauth-setup.ts`, PR #10757): `YO
 
 **Sem a auditoria do YouTube API Services, o upload via API pode sair `private`**, mesmo pedindo `public` ou `publishAt`. É a restrição de 2020 do histórico da API; a página atual de `videos.insert` diz o contrário, e o 1º upload real confirma pela releitura. A releitura mostra `draft` ou `scheduled`. Se o vídeo ficar privado, ele precisa ser publicado (ou agendado) à mão no Studio.
 
-Ainda fora daqui: o download do vídeo pelo Drive e o passo no Stage 5 (a convenção de nome do arquivo não foi confirmada). Não contornar com o Claude in Chrome: upload de arquivo é bloqueado lá, e o projeto prefere API oficial.
+O vídeo vem do Drive (pasta `Mentoria Fluxo/VTSD/YouTube`, `publishing.youtube.drive_folder_id`) por `scripts/fetch-drive-video.ts` (Passo 1), e o Stage 5 faz o mesmo download + upload sozinho, fail-soft (§5b-youtube). Não contornar com o Claude in Chrome: upload de arquivo é bloqueado lá, e o projeto prefere API oficial.
 
 ## Passo 0 — Pré-condição: Stage 4 aprovado (#10943)
 
@@ -40,7 +40,13 @@ Ao terminar, sugerir o próximo comando (`/diaria-shorts {AAMMDD}`) sem rodá-lo
 Na pasta da edição (`data/editions/{AAMM}/{AAMMDD}/`):
 
 - `02-reviewed.md` — obrigatório (é de onde sai o D1);
-- `diaria-comentada-{AAMMDD}.mp4` — o vídeo (convenção de nome; outro caminho via `--video`). Ausente vira aviso, não erro;
+- `diaria-comentada-{AAMMDD}.mp4` — o vídeo (convenção de nome; outro caminho via `--video`). Ausente vira aviso, não erro. **Sem o arquivo local, tentar o Drive antes** (passo opcional, #10659):
+
+  ```bash
+  npx tsx scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal
+  ```
+
+  Critério do editor (25/10/2026): `.mp4` (extensão ou `video/mp4`; `.mov`/`.webm` não) com "final" como palavra no nome, sem diferenciar maiúsculas ("pré-final", "não final" e "finalizando" não contam), horizontal pela proporção que o Drive informa. Se a subpasta `{AAMMDD}/` existe, só ela conta (sem janela; a raiz é ignorada); senão, solto na raiz nas últimas 36h. Grava no caminho acima; arquivo já presente, ou vídeo já registrado em `_internal/05-youtube-published.json`, é no-op (`--force` troca o arquivo local). Exit 0 com `action: "none"` = nada no Drive ainda (seguir sem vídeo); exit 3 `needs-editor` = 2+ "final" horizontais (`candidates`), "final" sem proporção no Drive (`files`) ou 2+ subpastas `{AAMMDD}` (`folders`) — mostrar id, nome e `modifiedTime` de cada um ao editor, que escolhe; nunca escolher sozinho; exit 1 = pasta inacessível pela conta OAuth do projeto, rede ou token (renovar com `oauth-setup.ts`). `--dry-run` só mostra a escolha;
 - `04-youtube-thumb.jpg` — capa 1280x720 aprovada (opcional; sem ela o YouTube gera a dele, que já veio com contorno neon no #1). Ausente: gerar no Passo 1b.
 
 ## Passo 1b — Capas no padrão diar.ia.br (#10800)
