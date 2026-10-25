@@ -251,6 +251,17 @@ export function hasAnyAutoChannel(consent: PublishConsent): boolean {
 }
 
 /**
+ * Gate do §5b-youtube do Stage 5 (#10659). Roda só com `auto` explícito ou
+ * com a chave AUSENTE (consent gravado antes do #10659 = auto). `manual`
+ * (`--skip youtube`) e `skipped` (`--editor-response none`) desligam o upload.
+ * Mesmo critério `=== "auto"` dos demais canais. Um gate `!== "manual"`
+ * deixava passar `skipped` e subia o vídeo com tudo desligado.
+ */
+export function youtubeUploadEnabled(consent: PublishConsent): boolean {
+  return consent.youtube === undefined || consent.youtube === "auto";
+}
+
+/**
  * True se TODOS canais skipped — orchestrator encerra Stage 4 sem
  * dispatch, grava `05-published.json` com `status: "skipped_by_editor"`.
  */

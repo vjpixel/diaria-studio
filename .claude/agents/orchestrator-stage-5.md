@@ -167,7 +167,7 @@ O script grava em `_internal/site-page-published.json` o registro que o Stage 6 
 
 ### 5b-youtube. Video horizontal do dia: Drive para YouTube, fail-soft (#10659)
 
-**Antes do dispatch social (5c-3)**, em TODA execucao da Etapa 5 (no-op barato quando o video ja subiu). **Gate:** so com escopo `all` (default) ou `social` — nunca em `/diaria-5-publicacao newsletter` — E `consent.youtube !== "manual"` em `_internal/05-publish-consent.json` (`--skip youtube` desliga; ausente = auto). **Nunca para a Etapa 5**: qualquer falha vira warn e o dispatch segue.
+**Antes do dispatch social (5c-3)**, em TODA execucao da Etapa 5 (no-op barato quando o video ja subiu). **Gate:** so com escopo `all` (default) ou `social` — nunca em `/diaria-5-publicacao newsletter` — E `consent.youtube` em `_internal/05-publish-consent.json` igual a `"auto"` ou ausente (ausente = auto). `"manual"` (`--skip youtube`) e `"skipped"` (`none`) desligam. Mesma regra de `youtubeUploadEnabled` em `scripts/lib/publish-consent.ts`. **Nunca para a Etapa 5**: qualquer falha vira warn e o dispatch segue.
 - **Ja publicado** (`_internal/05-youtube-published.json` existe com `videoId`, o editor rodou `/diaria-youtube` ou um resume): pular os dois comandos; o fetch tambem detecta sozinho (`action: "already-published"`, sem tocar no Drive).
 ```bash
 npx tsx scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal --edition-dir {EDITION_DIR}   # Bash timeout: 600000
