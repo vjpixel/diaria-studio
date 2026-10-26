@@ -343,6 +343,22 @@ export async function lerVendas(kv: VendaKvReader, dias: string[]): Promise<Vend
   return { registros, ignorados, duplicados: todos.length - registros.length };
 }
 
+/**
+ * Evento de TESTE da Hotmart (#10734 item 3): o botão "Enviar teste" da
+ * configuração de webhook manda o payload de exemplo da documentação, com
+ * `data.product.id = 0` (oferta `test`, transação `HP16015479281022`). Nenhum
+ * produto real tem id 0. O Worker grava o evento (mostra que a rota funciona),
+ * mas ele não é venda: fica fora do saldo (`saldoReceita`), do cruzamento
+ * com o store e da conferência da premissa do reembolso. Medido no espelho
+ * em 26/10/2026: os 4 eventos de 21/10 (aprovada, cancelada, reembolsada e
+ * chargeback, R$ 1.500 bruto) eram esse payload. O saldo do mês fechava em
+ * zero por coincidência (aprovação e reembolso se anulam), mas um teste só de
+ * compra aprovada somaria R$ 1.500 de receita inexistente.
+ */
+export function isVendaDeTeste(r: Pick<VendaRecord, "produto_id">): boolean {
+  return r.produto_id === 0;
+}
+
 /** Sinal de cada evento no saldo de receita: aprovada soma; reembolso e
  * chargeback subtraem; cancelada não mexe (premissa: `PURCHASE_CANCELED` é
  * compra que não chegou a ser paga, como boleto vencido ou cartão recusado;
@@ -415,8 +431,11 @@ export function saldoLiquido(registros: readonly VendaRecord[]): SaldoVendas {
 
 /** Mesmo saldo de `saldoLiquido`, sobre o valor de `base`. Com `"bruto"`,
  * `porMoeda[].liquido` é o saldo BRUTO e `semValorLiquido` conta os eventos
- * sem valor bruto (o nome dos campos fica pelo contrato de `saldoLiquido`). */
-export function saldoReceita(registros: readonly VendaRecord[], base: BaseReceita): SaldoVendas {
+ * sem valor bruto (o nome dos campos fica pelo contrato de `saldoLiquido`).
+ * Nas duas bases, evento de teste da Hotmart (`isVendaDeTeste`) não entra. */
+export function saldoReceita(todos: readonly VendaRecord[], base: BaseReceita): SaldoVendas {
+  // #10734 item 3: evento de teste da Hotmart não é venda (`isVendaDeTeste`).
+  const registros = todos.filter((r) => !isVendaDeTeste(r));
   const acc = new Map<string, { liquido: number; aprovadas: number; estornos: number }>();
   let semValorLiquido = 0;
   const reversoes = reversoesContadas(registros, base);
