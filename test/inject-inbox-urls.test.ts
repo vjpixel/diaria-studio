@@ -707,6 +707,23 @@ describe("marker capture_failed propagation (#2878)", () => {
     assert.match(marker.details.capture_error, /invalid_client/);
   });
 
+  it("#11093 grava 14 remetentes para 45 threads sem e-mails do editor", () => {
+    const internalDir = editionInternalDir();
+    const inboxPath = resolve(TMP_DIR, "inbox.md");
+    writeFileSync(inboxPath, "# Inbox vazio\n");
+    const capPath = resolve(internalDir, "captured-articles.json");
+    writeFileSync(capPath, "[]");
+    writeFileSync(resolve(internalDir, "captured-newsletters.json"), JSON.stringify(
+      Array.from({ length: 45 }, (_, i) => ({ sender: `Nome ${i} <NEWS${i % 14}@example.com>` })),
+    ));
+    execSync(`npx tsx scripts/inject-inbox-urls.ts --inbox-md "${inboxPath}" --out "${resolve(internalDir, "pool.json")}" --captured-articles "${capPath}"`,
+      { cwd: ROOT, encoding: "utf8" });
+    const marker = JSON.parse(readFileSync(resolve(internalDir, ".marker-inject-inbox-urls.json"), "utf8")).details;
+    assert.equal(marker.captured_newsletter_count, 45);
+    assert.equal(marker.distinct_newsletter_senders, 14);
+    assert.equal(marker.editor_blocks, 0);
+  });
+
   it("NÃO grava capture_failed quando o sentinel de falha está ausente (0b-bis rodou ok)", () => {
     const internalDir = editionInternalDir();
     const inboxPath = resolve(TMP_DIR, "inbox.md");

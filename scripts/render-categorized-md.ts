@@ -31,7 +31,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
 import { computeTotalConsidered as computeTotalConsideredLib } from "./lib/categorized-stats.ts";
 import {
-  countEditorSubmissions,
+  getTotalEditorSubmissions,
+  computeDiariaDiscovered,
+  readInjectPoolSizeFromMarker,
+  readInboxLinkCountFromMarker,
   formatCoverageLine,
   resolveEditorEmail,
   readCaptureFailedFromMarker,
@@ -776,10 +779,12 @@ function main() {
       const inboxMdPath = cli.inboxMd ?? resolve(ROOT, "data/inbox.md");
       const platformConfigPath = resolve(ROOT, "platform.config.json");
       const editorEmail = resolveEditorEmail(platformConfigPath);
-      const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail);
-      const diariaDiscovered = totalConsidered !== null
-        ? Math.max(0, totalConsidered - editorSubmissions)
-        : null;
+      const editorSubmissions = getTotalEditorSubmissions(inboxMdPath, inboxMarkerDir, editorEmail);
+      const diariaDiscovered = computeDiariaDiscovered({
+        rawPoolSize: readInjectPoolSizeFromMarker(inboxMarkerDir),
+        inboxLinks: readInboxLinkCountFromMarker(inboxMarkerDir),
+        totalConsidered, editorSubmissions,
+      });
       return diariaDiscovered !== null
         ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected })
         : formatCoverageLineUnknownTotal(editorSubmissions, totalSelected);

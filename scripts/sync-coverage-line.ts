@@ -43,8 +43,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { parseInboxMd, filterEditorBlocks } from "./inject-inbox-urls.ts";
-import { resolveEditorEmail, readInboxLinkCountFromMarker } from "./lib/inbox-stats.ts";
+import { resolveEditorEmail, readInboxLinkCountFromMarker, readSubmissionCountFromMarker, getTotalEditorSubmissions, countEditorSubmissions } from "./lib/inbox-stats.ts";
 import { countSelectedItems as sharedCountSelectedItems } from "./lib/newsletter-count.ts";
 import { pluralPtBr, coverageSelPhrase } from "./lib/coverage-words.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
@@ -107,7 +106,7 @@ export function parsePoolArticles(raw: unknown): RawArticle[] | null {
 
 /**
  * Helper: conta e-mails distintos do editor lendo `data/inbox.md`.
- * Cada bloco do inbox com `from: editor` conta como 1 submission.
+ * Newsletters contam por remetente; e-mails do editor por identidade.
  *
  * Retorna 0 se inbox.md não existir ou parse falhar (defensive — pipeline
  * continua sem coverage line precisa).
@@ -118,76 +117,15 @@ export function countForwardedEmailsFromInbox(
 ): number {
   if (!existsSync(inboxMdPath)) return 0;
   try {
-    const text = readFileSync(inboxMdPath, "utf8");
-    const blocks = parseInboxMd(text);
-    const editorBlocks = filterEditorBlocks(blocks, editorEmail);
-    return editorBlocks.length;
+    return countEditorSubmissions(inboxMdPath, editorEmail);
   } catch {
     return 0;
   }
 }
 
-/**
- * #1368, refined em #1414: lê total de submissões do marker
- * `.marker-inject-inbox-urls.json`. Submissão = 1 email recebido em
- * `diariaeditor@gmail.com` — independente do `From:` ser o editor diretamente
- * (`editor_blocks`) ou um forward de newsletter preservando o sender original
- * (`newsletter_blocks`). Ambos são atos editoriais de envio.
- *
- * Caso real 260520: editor enviou 9 emails diretos + 4 forwards de newsletters
- * (Cyberman/Superhuman/AlphaSignal/etc) = 13 blocos no inbox archive. Antes
- * de #1414 o script retornava só 9 (editor_blocks), undercounting as
- * submissões pra leitor.
- *
- * Caso real 260519 (#1368): sync-coverage-line.ts lia `data/inbox.md` que já
- * tinha sido arquivado → forwardedEmails = 0 → intro saía "0 submissões"
- * mesmo o editor tendo enviado 4.
- *
- * Retorna null se marker ausente OU sem `editor_blocks` (caller faz fallback
- * pro archive ou inbox.md). `newsletter_blocks` ausente conta como 0
- * (markers pre-#1095 não tinham o campo).
- */
+/** #11093: shared Stage 1/4 count from the inject marker (including legacy fallbacks). */
 export function readSubmissionsCountFromMarker(editionDir: string): number | null {
-  const markerPath = join(editionDir, "_internal", ".marker-inject-inbox-urls.json");
-  if (!existsSync(markerPath)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(markerPath, "utf8")) as {
-      editor_blocks?: number;
-      newsletter_blocks?: number;
-      newsletter_source?: string;
-      captured_newsletter_count?: number;
-      capture_failed?: boolean;
-      capture_error?: string;
-      details?: {
-        editor_blocks?: number;
-        newsletter_blocks?: number;
-        newsletter_source?: string;
-        captured_newsletter_count?: number;
-        capture_failed?: boolean;
-        capture_error?: string;
-      };
-    };
-    // #1476: marker pode ter campos no top-level (legado) ou em details (atual)
-    const data = raw.details ?? raw;
-    if (typeof data.editor_blocks !== "number") return null;
-
-    let newsletterCount: number;
-    if (data.newsletter_source === "captured-articles") {
-      // #1541: when newsletters came from captured-articles path, newsletter_blocks
-      // is 0 (no inbox blocks were parsed). Use captured_newsletter_count from
-      // marker, or fall back to reading captured-newsletters.json directly.
-      if (typeof data.captured_newsletter_count === "number") {
-        newsletterCount = data.captured_newsletter_count;
-      } else {
-        newsletterCount = readCapturedNewsletterCount(editionDir);
-      }
-    } else {
-      newsletterCount = typeof data.newsletter_blocks === "number" ? data.newsletter_blocks : 0;
-    }
-    return data.editor_blocks + newsletterCount;
-  } catch {
-    return null;
-  }
+  return readSubmissionCountFromMarker(join(editionDir, "_internal"));
 }
 
 /**
@@ -276,9 +214,7 @@ export function countSubmissionsFromArchive(
   const archivePath = join(archiveRoot, `${iso}.md`);
   if (!existsSync(archivePath)) return null;
   try {
-    const text = readFileSync(archivePath, "utf8");
-    const matches = text.match(/^## /gm);
-    return matches ? matches.length : 0;
+    return getTotalEditorSubmissions(archivePath, join(editionDir, "_internal"));
   } catch {
     return null;
   }
@@ -504,7 +440,7 @@ function main(): void {
   if (forwardedEmails === null) {
     const editorEmail = process.env.EDITOR_EMAIL ?? resolveEditorEmail(resolve(process.cwd(), "platform.config.json"));
     const inboxMdPath = resolve(process.cwd(), args["inbox-md"] ?? "data/inbox.md");
-    forwardedEmails = countForwardedEmailsFromInbox(inboxMdPath, editorEmail);
+    forwardedEmails = getTotalEditorSubmissions(inboxMdPath, join(root, "_internal"), editorEmail);
     source = "inbox_md";
   }
   // #1864: nº de LINKS do canal do editor (forwards + newsletters), do marker —
