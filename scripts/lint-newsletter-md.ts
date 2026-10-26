@@ -131,6 +131,7 @@ import {
   type NoXmlArtifactsReport,
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
 import { checkPorqueImportaGenericAdvice } from "./lib/lint-checks/porque-importa-generic-advice.ts"; // #9382
+import { checkPorqueImportaReaderImpact } from "./lib/lint-checks/porque-importa-reader-impact.ts"; // #11073
 import {
   checkBannedLexicon,
   type BannedLexiconError,
@@ -648,6 +649,10 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
     runCheckSafely(push, "porque-importa-generic-advice", "#9382", "warn-only", () =>
       checkPorqueImportaGenericAdvice(md),
     );
+    // #11073: "Por que isso importa" sem referência ao leitor/impacto. WARN-ONLY.
+    runCheckSafely(push, "porque-importa-reader-impact", "#11073", "warn-only", () =>
+      checkPorqueImportaReaderImpact(md),
+    );
 
     runCheckSafely(push, "snippet-staleness", "#4076", "warn-only", () =>
       runSnippetStalenessCheck(mdPath, root),
@@ -775,6 +780,11 @@ export function runStage2LintReport(editionDir: string, root: string): StageLint
   // #9382: WARN-ONLY — não dispara retry do writer, só registra a frequência.
   runCheckSafely(push, "porque-importa-generic-advice", "#9382", "warn-only", () =>
     checkPorqueImportaGenericAdvice(md),
+  );
+
+  // #11073: WARN-ONLY.
+  runCheckSafely(push, "porque-importa-reader-impact", "#11073", "warn-only", () =>
+    checkPorqueImportaReaderImpact(md),
   );
 
   const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);

@@ -78,6 +78,8 @@ b. **Texto bruto primeiro (#8595).** `scripts/run-fact-checker.ts` pré-baixa o 
    - **SOURCE_UNREACHABLE**: URL não respondeu; incluir mas marcar como não verificado
    - **INFERRED**: claim parece ser inferência/arredondamento de valor da fonte (ex: fonte diz "a partir de R$ 25", texto diz "R$ 25/mês") — marcar como INFERRED com nota
 
+   **Previsão editorial (#11073, só "Por que isso importa" dos destaques)**: frase de previsão marcada com "tende a" ou "à medida que" é inferência editorial permitida pelo editor, não claim a sustentar na fonte — (vale só para esse parágrafo, não para o corpo nem para social) não classificar como DIVERGENT nem NOT_FOUND_IN_SOURCE por a fonte não prever; extrair apenas os fatos verificáveis ao redor (cifras, datas, nomes). Previsão SEM esse marcador continua sujeita às regras normais.
+
    **Para superlativos/ineditismo**: classificar como SUSTAINED só se a fonte primária usa a mesma linguagem explicitamente. Se a fonte não suporta o claim de ineditismo, classificar como NOT_FOUND_IN_SOURCE com nota `"superlativo sem suporte explícito na fonte"`.
 
 c. Se fetch falhar ou URL indisponível, tentar o `article.summary` do `approved_json` como fonte secundária. **Modo mensal**: não há `article.summary` — se todas as URLs candidatas falharem o fetch, classificar como `SOURCE_UNREACHABLE` diretamente (sem fallback).
