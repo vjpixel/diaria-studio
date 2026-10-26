@@ -434,6 +434,7 @@ export async function fetchVideoStatus(
 
 /** Critérios para reconhecer um vídeo da MESMA edição já no canal. */
 export interface EditionVideoCriteria {
+  acceptedPeriodVideoId?: string;
   aammdd: string;
   /** Título que o upload usaria (o do D1). */
   title: string;
@@ -455,6 +456,8 @@ export interface ExistingEditionVideo {
   matchedBy: EditionVideoMatch;
   publishedAt: string | null;
   status: UploadedVideoResource["status"] | null;
+  /** Todos os candidatos fracos, para seleção explícita pelo editor (#11147). */
+  periodCandidates?: ExistingEditionVideo[];
 }
 
 /** Quantos uploads recentes o canal é varrido (1 unidade de quota por página). */
@@ -554,7 +557,10 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
   }
   const rank: Record<EditionVideoMatch, number> = { "edition-tag": 0, title: 1, period: 2 };
   found.sort((a, b) => rank[a.matchedBy] - rank[b.matchedBy]);
-  return found[0] ?? null;
+  const best = found[0];
+  return best?.matchedBy === "period"
+    ? { ...best, periodCandidates: found.filter((v) => v.matchedBy === "period") }
+    : best ?? null;
 }
 
 /**
@@ -663,6 +669,9 @@ export async function uploadYouTubeVideo(deps: YouTubeUploadDeps, input: YouTube
   if (input.existingVideoCheck) {
     const existing = await findExistingEditionVideo(deps, token, input.creds.channelId, input.existingVideoCheck);
     if (existing) throw new ExistingEditionVideoError(existing);
+    if (input.existingVideoCheck.acceptedPeriodVideoId) {
+      throw new YouTubeUploadError("VIDEO_ID aceito não é candidato por período — nada foi enviado", "channel");
+    }
   }
   const sessionUrl = await startResumableUpload(deps, token, input.request);
   if (input.beforeVideoBytes) {
