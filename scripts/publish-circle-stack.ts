@@ -21,6 +21,9 @@
  *      revisar. `--no-translate` pula; `--translate-titles` roda sobre uma
  *      seleção já gravada. `--publish` que montou a seleção agora com título
  *      sem sinal de português (traduzido ou não) recusa até o editor revisar.
+ *      Seleção já gravada também recusa título sem sinal de português (tradução
+ *      que falhou na prévia, `--no-translate`) até o editor reescrever, rodar
+ *      `--translate-titles` ou marcar `"titleReviewed": true` no item (#11161).
  *   3. Renderiza a prévia em Markdown `data/weekly/{cycle}/circle-stack-{cycle}.md`.
  *   4. Só com `--publish`: envia ao webhook n8n da Stack
  *      (`scripts/lib/stack-webhook.ts`), que
@@ -106,6 +109,7 @@ import {
 } from "./lib/stack-webhook.ts";
 import {
   circleStackSelectionViolations,
+  circleStackUnreviewedTitles,
   selectCircleStack,
   parseInterestProfile,
   STACK_INTEREST_PROFILE,
@@ -181,8 +185,9 @@ export function circleStackPublishBlockReason(state: PublishState, cycle: string
  * título sem sinal de português — traduzido pela LLM agora, ou deixado como na
  * fonte porque a tradução falhou/foi pulada. Nos dois casos o editor ainda não
  * revisou (decisão do briefing 261025b), e o guard de inglês sozinho não pega
- * título sem palavra funcional ("Codex Launch Notes"). Seleção já gravada
- * (prévia da task, revisada pelo editor) segue normal.
+ * título sem palavra funcional ("Codex Launch Notes"). Na seleção já gravada
+ * (prévia da task), o título traduzido conta como revisado; o que segue sem
+ * sinal de português é barrado por `circleStackUnreviewedTitles` (#11161).
  */
 export function circleStackFreshTranslationBlockReason(pendingReview: number, selectionPath: string): string | null {
   if (pendingReview <= 0) return null;
@@ -414,6 +419,7 @@ export function parseStoredCircleStackSelection(
       }
       if (rec.stackNote !== undefined && typeof rec.stackNote !== "string") fail(`${section}[${i}].stackNote não é texto`);
       if (rec.titleOriginal !== undefined && typeof rec.titleOriginal !== "string") fail(`${section}[${i}].titleOriginal não é texto`);
+      if (rec.titleReviewed !== undefined && typeof rec.titleReviewed !== "boolean") fail(`${section}[${i}].titleReviewed precisa ser true ou false`);
       if (rec.destaqueN !== undefined && !(Number.isInteger(rec.destaqueN) && (rec.destaqueN as number) >= 1 && (rec.destaqueN as number) <= 3)) {
         fail(`${section}[${i}].destaqueN precisa ser 1, 2 ou 3`);
       }
@@ -771,7 +777,11 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
   // #11004/#11005: checagem sobre a seleção que vai SAIR (inclusive editada à
   // mão e reaproveitada). Dry-run avisa; --publish recusa antes de qualquer envio.
   const violations = circleStackSelectionViolations(selection);
-  warnings = [...warnings, ...violations.filter((v) => !warnings.includes(v))];
+  // #11161: título sem sinal de português e sem `titleReviewed` — vale também
+  // para a seleção já gravada (tradução que falhou, --no-translate), que o
+  // `looksEnglishTitle` acima não pega quando não há palavra funcional do inglês.
+  const unreviewedTitles = circleStackUnreviewedTitles(selection);
+  warnings = [...warnings, ...[...violations, ...unreviewedTitles].filter((v) => !warnings.includes(v))];
   for (const w of warnings) console.warn(`⚠ ${w}`);
 
   const rendered = renderCircleStackPost(selection, {
@@ -835,6 +845,12 @@ ${rendered.markdown}
   }
   const reviewBlock = circleStackFreshTranslationBlockReason(pendingReviewThisRun, selectionPath);
   if (reviewBlock) throw new Error(reviewBlock);
+  if (unreviewedTitles.length > 0) {
+    throw new Error(
+      `Seleção ${selectionPath} com título(s) sem sinal de português ainda não revisado(s) — corrija e rode de novo:\n` +
+        unreviewedTitles.map((v) => `  - ${v}`).join("\n"),
+    );
+  }
   // Config validada ANTES de gravar a tentativa: erro de config nunca chegou à
   // rede e não pode deixar o ciclo em "unknown".
   assertStackWebhookConfig(webhookUrl, key);
