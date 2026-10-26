@@ -122,7 +122,7 @@ export function renderVotoTemaEmailHtml(ciclo: string, ballot: BallotTema): stri
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:${LAYOUT.containerWidth}px;margin:0 auto;"><tr><td>
 ${kicker("Artigo Especial · Votação")}
 <h1 style="margin:0 0 16px;${serif}font-size:26px;line-height:32px;font-weight:700;${ink}">${htmlEscapeVotoTema(ballot.titulo)}</h1>
-<p style="margin:0 0 20px;${sans}font-size:16px;line-height:24px;${ink}">Você escolhe o tema do próximo Artigo Especial. Basta um clique no botão da opção que preferir. Mudou de ideia? Clique em outra opção: vale o último voto.</p>${prazoBox}
+<p style="margin:0 0 20px;${sans}font-size:16px;line-height:24px;${ink}">Você escolhe o tema do próximo Artigo Especial. É só clicar no botão da opção que preferir. Se mudar de ideia, clique em outra: vale o último voto.</p>${prazoBox}
 ${cards}
 <p style="margin:12px 0 0;${sans}font-size:16px;line-height:24px;${ink}">Quer acompanhar? <a href="${ARTIGOS_BASE_URL}/votacao/${ciclo}" style="color:${COLORS.brand};font-weight:600;">Ver placar parcial</a></p>
 </td></tr></table>`;
