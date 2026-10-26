@@ -57,6 +57,14 @@
  *     O plano traz texto (≤280 ponderado) e `dueAt`; o `--publish` sobe o
  *     vertical pro R2 e devolve `results[].buffer.videoUrl`. Registro com
  *     `--mark x=buffer:{id} --scheduled-at {dueAt}`.
+ *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
+ *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
+ *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
+ *     (`platform: "threads"`). Sem token, ou sem R2, é pulado com aviso
+ *     (fail-soft). A API não agenda: mesmo `pending_schedule`/teto de atraso do
+ *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
+ *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
+ *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
  *   - `youtube_shorts` e `facebook_profile` (guiados) — o JSON traz título,
  *     descrição, horário e legenda; o skill `/diaria-shorts` executa no Chrome
  *     e grava com `--mark`. Sem comentário fixado: link em comentário de Short
@@ -148,7 +156,7 @@ import {
 } from "./lib/diaria/short-video.ts";
 import { stripInlineMarkdown, youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
-import { DRIVE_API } from "./lib/drive-constants.ts";
+import { DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS, downloadDriveFileById } from "./lib/drive-download.ts";
 import {
   gridFromLinkedInPersonalIntent,
   gridFromShortsPublished,
@@ -163,6 +171,7 @@ import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-s
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
+import { THREADS_PROFILE_DESTINATION, publishThreadsProfileVideo, readThreadsPersonalCreds } from "./lib/threads-personal-video.ts";
 import {
   CHROME_UPLOAD_MAX_BYTES,
   buildChromeUploadFfmpegPasses,
@@ -187,9 +196,11 @@ export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile"
 /**
  * Destinos que `--mark` aceita: os guiados + o `instagram`, que vira passo
  * guiado quando o vertical passa do teto de duração da API (#10893) — o editor
- * posta no app e registra, e a próxima rodada não tenta o rupload de novo.
+ * posta no app e registra, e a próxima rodada não tenta o rupload de novo — e
+ * os dois perfis pessoais de API (`linkedin_profile`, `threads_profile`,
+ * #11122), pra registrar a URL depois de conferir um `send_unknown`.
  */
-export const MARKABLE_DESTINATIONS = new Set([...GUIDED_DESTINATIONS, "instagram", "linkedin_profile"]);
+export const MARKABLE_DESTINATIONS = new Set([...GUIDED_DESTINATIONS, "instagram", "linkedin_profile", THREADS_PROFILE_DESTINATION]);
 
 export type ShortsPlanItem =
   /** `title`: título da mídia (vídeo do LinkedIn pessoal, #10772). */
@@ -253,6 +264,11 @@ export interface ShortsPlanInput {
    * Ausente = não conferida → o destino é pulado com aviso.
    */
   linkedinPersonal?: { ready: true } | { ready: false; reason: string };
+  /**
+   * #11122: credencial do Threads pessoal (`readThreadsPersonalCreds`).
+   * Ausente = não conferida → o destino é pulado com aviso.
+   */
+  threadsPersonal?: { ready: true } | { ready: false; reason: string };
   /**
    * #10772: dá pra servir o vertical por URL pública (R2)? O X (Buffer) só
    * recebe vídeo por URL. Ausente = não → X pulado com aviso.
@@ -351,6 +367,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (d.kind === "instagram") return input.instagramReady && igFit.fits;
     if (d.kind === "linkedin_profile") return input.linkedinPersonal?.ready === true;
     if (d.kind === "x") return input.publicVideo?.ready === true;
+    if (d.kind === "threads_profile") return input.threadsPersonal?.ready === true && input.publicVideo?.ready === true;
     return false;
   }
   // #10933: Instagram acima do teto vira post MANUAL no app, mas continua sendo
@@ -386,20 +403,22 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     );
   }
 
-  const socialText = (platform: "linkedin" | "x") =>
+  const socialText = (platform: "linkedin" | "x" | "threads") =>
     buildShortSocialText({ platform, aammdd: input.aammdd, d1: d1In, editionUrl, videoUrl: input.youtubeVideoUrl ?? null });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
   // roda. Sem teto, uma rodada horas depois (ou no dia seguinte) publicaria fora
   // do horário do teste (#10831). Mesmo teto do `--fire-due` do 4º post; `--now`
   // é a exceção explícita.
-  const profileLate = ((): string | null => {
-    const slot = slotOf.get("linkedin_profile");
+  // #11122: a Threads API também não agenda — mesmo teto pro Threads pessoal.
+  const lateFor = (destination: string): string | null => {
+    const slot = slotOf.get(destination);
     if (!slot || input.forceNow) return null;
     const lateMs = input.now.getTime() - Date.parse(slot.at);
     if (!(lateMs > MAX_FIRE_LATENESS_MS)) return null;
     return `${slot.hhmm} BRT passou há ${Math.round(lateMs / 60_000)} min (teto ${MAX_FIRE_LATENESS_MS / 3_600_000} h)`;
-  })();
+  };
+  const profileLate = lateFor("linkedin_profile");
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -438,8 +457,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (s.warning) warnings.push(s.warning);
     return s;
   })();
-  if (destinations.some((d) => d.kind === "linkedin_profile" || d.kind === "x") && !input.youtubeVideoUrl) {
-    premises.push("LinkedIn/X: sem _internal/05-video-url.txt — o texto aponta pro canal do YouTube em vez do vídeo completo");
+  if (destinations.some((d) => d.kind === "linkedin_profile" || d.kind === "x" || d.kind === "threads_profile") && !input.youtubeVideoUrl) {
+    premises.push("LinkedIn/X/Threads: sem _internal/05-video-url.txt — o texto aponta pro canal do YouTube em vez do vídeo completo");
   }
 
   const items: ShortsPlanItem[] = destinations.map((dest) => planDestination(dest));
@@ -529,6 +548,49 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           "Buffer create_post no canal @diariabr com o vídeo de results[].buffer.videoUrl (o --publish sobe o vertical pro R2); " +
           "registre com --mark x=buffer:{id do post} --scheduled-at {dueAt}",
       };
+    }
+    if (dest.kind === "threads_profile") {
+      // #11122: vertical no Threads pessoal. Mesmo contrato do linkedin_profile:
+      // sem credencial é fail-soft, a API não agenda (pending antes do horário,
+      // skip_late depois do teto), `send_unknown` conta como feito.
+      if (input.threadsPersonal?.ready !== true) {
+        const reason = input.threadsPersonal?.ready === false ? input.threadsPersonal.reason : "credencial THREADS_PERSONAL_* não conferida";
+        warnings.push(`threads_profile: ${reason}`);
+        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
+      }
+      if (input.publicVideo?.ready !== true) {
+        const reason = `o Threads recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        warnings.push(`threads_profile: ${reason}`);
+        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
+      }
+      const late = lateFor(dest.id);
+      if (late) {
+        const detail =
+          `${late} — fora do horário do teste (#10831), não publica sozinho. ` +
+          `Publique à mão no perfil e registre com --mark threads_profile=URL, ou rode com --now para publicar mesmo assim`;
+        warnings.push(`threads_profile: ${detail}`);
+        return { destination: dest.id, mode: "api", action: "skip_late", detail };
+      }
+      let text: string;
+      try {
+        text = socialText("threads");
+      } catch (e) {
+        warnings.push(`threads_profile: ${(e as Error).message}`);
+        return { destination: dest.id, mode: "api", action: "skip_invalid", detail: (e as Error).message };
+      }
+      const slot = slotOf.get(dest.id)!;
+      const schedule = scheduleFor(slot);
+      if (schedule.mode === "scheduled") {
+        return {
+          destination: dest.id,
+          mode: "api",
+          action: "pending_schedule",
+          caption: text,
+          scheduledAt: schedule.at,
+          detail: `a Threads API não agenda — rode de novo depois das ${slot.hhmm} BRT (ou use --now)`,
+        };
+      }
+      return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null };
     }
     if (dest.kind === "facebook_profile") {
       return {
@@ -1803,7 +1865,7 @@ function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: 
 const USAGE =
   "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
-  "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL\n" +
+  "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
 
@@ -1887,23 +1949,22 @@ async function main(): Promise<number> {
       console.error(`--from-drive espera o id do arquivo no Drive, recebido ${JSON.stringify(id)}`);
       return 2;
     }
-    const res = await gFetchRetry(`${DRIVE_API}/files/${id}?alt=media&supportsAllDrives=true`);
-    if (!res.ok) {
-      console.error(`publish-shorts: download do Drive falhou (${res.status}): ${(await res.text()).slice(0, 300)}`);
-      return 1;
-    }
-    const type = res.headers.get("content-type") ?? "";
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (!type.startsWith("video/") || buf.length === 0) {
-      console.error(`publish-shorts: o arquivo ${id} do Drive não é vídeo (content-type "${type}", ${buf.length} bytes) — nada gravado`);
-      return 1;
-    }
     if (existsSync(videoPath)) console.error(`[aviso] substituindo ${videoPath} pelo arquivo do Drive`);
-    mkdirSync(dirname(videoPath), { recursive: true });
-    const tmp = `${videoPath}.part`;
-    writeFileAtomic(tmp, buf);
-    renameSync(tmp, videoPath);
-    console.error(`[ok] vídeo curto baixado do Drive (${(buf.length / 1e6).toFixed(1)} MB) → ${videoPath}`);
+    // #11082: mesmo download protegido do fetch-drive-video.ts (.part, teto de 20 min,
+    // 60 s sem bytes aborta, tamanho conferido contra o metadado, só .mp4).
+    try {
+      const { bytes } = await downloadDriveFileById(
+        { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) },
+        id,
+        videoPath,
+        DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS,
+        (line) => console.error(line),
+      );
+      console.error(`[ok] vídeo curto baixado do Drive (${(bytes / 1e6).toFixed(1)} MB) → ${videoPath}`);
+    } catch (e) {
+      console.error(`publish-shorts: ${(e as Error).message}`);
+      return 1;
+    }
   }
   const videoExists = existsSync(videoPath);
   // #10893: a duração decide já no plano (dry-run incluso) se o Instagram vai pela API ou vira passo guiado.
@@ -1942,6 +2003,8 @@ async function main(): Promise<number> {
   // #10772: LinkedIn pessoal (mesmo token do 4º post) e o vídeo completo do YouTube pro texto.
   const liCreds = readPersonalCreds(process.env, new Date());
   const liApiVersion = process.env[LINKEDIN_PERSONAL_ENV.apiVersion]?.trim() || defaultLinkedInApiVersion(new Date());
+  // #11122: Threads pessoal (fail-soft até o token existir, #10772/#11077).
+  const threadsCreds = readThreadsPersonalCreds(process.env);
   const ytVideo = readD1VideoUrl(dir);
   if (ytVideo.warning) console.error(`[aviso] ${ytVideo.warning}`);
   const instagramQueue = resolveInstagramQueueReadiness({
@@ -1967,6 +2030,7 @@ async function main(): Promise<number> {
       instagramWarnings: igAuthor.ready ? igAuthor.warnings : undefined,
       instagramQueue,
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
+      threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
       publicVideo: r2.ready ? { ready: true } : { ready: false, reason: `falta ${r2.missing.join(", ")}` },
       youtubeVideoUrl: ytVideo.url,
       published,
@@ -2008,7 +2072,7 @@ async function main(): Promise<number> {
     /** #10772: o que a skill passa pra Buffer `create_post` (nada é registrado até o `--mark`). */
     buffer?: { text: string; dueAt: string | null; videoUrl: string };
   }> = [];
-  // Sobe o vertical no máximo uma vez por rodada (só o Instagram agendado usa).
+  // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
   let uploaded: Promise<string> | null = null;
   const uploadVideo = () => {
     if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
@@ -2046,6 +2110,14 @@ async function main(): Promise<number> {
           item.caption,
           item.title ?? plan.youtube.title,
         );
+      } else if (item.destination === THREADS_PROFILE_DESTINATION) {
+        if (!threadsCreds.ready) throw new Error(threadsCreds.reason); // o plano não marca publish sem credencial
+        outcome = await publishThreadsProfileVideo({
+          creds: threadsCreds.creds,
+          videoUrl: await uploadVideo(),
+          text: item.caption,
+          deps: { now: () => new Date() },
+        });
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         outcome = await publishInstagramReel(deps, igAuthor.igUserId, igAuthor.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);

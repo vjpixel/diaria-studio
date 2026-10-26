@@ -353,13 +353,14 @@ export function gridFromShortsPublished(data: unknown, instagramAccount = "diari
 
 /**
  * Destinos do vertical cujo id não é chave de conta (#10772): o vídeo do perfil
- * pessoal do LinkedIn, o repost dele pela página e o X @diariabr (que nos
- * stores diários é `platform: "twitter"`).
+ * pessoal do LinkedIn, o repost dele pela página, o X @diariabr (que nos
+ * stores diários é `platform: "twitter"`) e o Threads pessoal (#11122).
  */
 const SHORTS_DESTINATION_ACCOUNTS: Readonly<Record<string, string>> = Object.freeze({
   linkedin_profile: socialAccountKey("linkedin", "pessoal"),
   linkedin_page_repost: socialAccountKey("linkedin", "diaria"),
   x: socialAccountKey("twitter", "diaria"),
+  threads_profile: socialAccountKey("threads", "pessoal"),
 });
 
 /**

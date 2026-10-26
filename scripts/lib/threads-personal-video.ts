@@ -4,8 +4,7 @@
  *
  * Fluxo oficial da Threads API (https://developers.facebook.com/docs/threads/posts):
  *   1. `POST /{threads-user-id}/threads` com `media_type=VIDEO`, `video_url`
- *      PÚBLICO (quando a integração entrar, o mesmo `-short.mp4` que o
- *      `publish-shorts.ts` sobe pro R2) e `text`;
+ *      PÚBLICO (o mesmo `-short.mp4` que o `publish-shorts.ts` sobe pro R2) e `text`;
  *   2. espera o container sair de `IN_PROGRESS` (`GET /{container-id}?fields=status,error_message`).
  *      A Meta recomenda ~30 s de espera e 1 consulta/min por até 5 min; aqui
  *      são 30 s de espera e 1 consulta a cada 30 s (o DOBRO da cadência
@@ -24,8 +23,9 @@
  * documenta repost; segue manual (passo guiado).
  *
  * Ainda SEM validação real: o token pessoal não existe (comentários de 23/10 e
- * 25/10/2026 na #10772). Ainda não há consumidor: a integração em
- * `publish-shorts.ts` (destino `threads_profile`) entra depois da PR #11055 e do token.
+ * 25/10/2026 na #10772). Consumidor: `publish-shorts.ts`, destino
+ * `threads_profile` (#11122) — fail-soft (pulado com aviso) até o token existir;
+ * `--mark threads_profile=URL` registra o resultado de um `send_unknown`.
  */
 
 import { THREADS_API_VERSION, ThreadsApiError, createThreadsContainer, fetchThreadsPermalink, publishThreadsContainer, waitForThreadsContainer, type ThreadsFetch } from "./threads-api.ts";
@@ -127,9 +127,9 @@ export async function publishThreadsProfileVideo(args: {
 }
 
 /**
- * Registro `send_unknown`. O aviso NÃO manda rodar `--mark threads_profile=URL`:
- * o allowlist de `publish-shorts.ts` (`MARKABLE_DESTINATIONS`) ainda não aceita
- * esse destino — fica para a integração (PR #11055).
+ * Registro `send_unknown`. Conta como feito (a rodada seguinte não re-posta);
+ * o editor confere o perfil e registra a URL com `--mark threads_profile=URL`
+ * (`MARKABLE_DESTINATIONS` do `publish-shorts.ts`, #11122).
  */
 function sendUnknown(deps: ThreadsVideoDeps, detail: string): ThreadsVideoOutcome {
   const at = deps.now().toISOString();
@@ -137,7 +137,7 @@ function sendUnknown(deps: ThreadsVideoDeps, detail: string): ThreadsVideoOutcom
     entry: { destination: THREADS_PROFILE_DESTINATION, status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at },
     warnings: [
       `${detail} — não tente de novo antes de conferir no perfil do Threads se o vídeo saiu; ` +
-        `registre o resultado à mão em _internal/06-shorts-published.json até a integração com o publish-shorts entrar`,
+        `se saiu, registre com publish-shorts.ts {AAMMDD} --mark threads_profile=URL`,
     ],
   };
 }

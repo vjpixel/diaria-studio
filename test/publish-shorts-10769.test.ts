@@ -145,7 +145,7 @@ describe("#10769 config e destinos", () => {
 
   it("páginas fora da rotina (Jandig, Teatro vs Game, Criaturas Afetivas) não entram no default", () => {
     const ids = listShortDestinations(DEFAULT_SHORTS_CONFIG).map((d) => d.id);
-    assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook:vjpixel", "instagram", "linkedin_profile", "linkedin_page_repost", "x", "facebook_profile"]);
+    assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook:vjpixel", "instagram", "linkedin_profile", "linkedin_page_repost", "x", "threads_profile", "facebook_profile"]);
   });
 
   it("idempotência: destino registrado conta como feito; upsert mantém 1 entrada por destino", () => {
@@ -176,7 +176,7 @@ describe("#10769 config e destinos", () => {
   });
 
   it("instagram: false tira o Instagram dos destinos", () => {
-    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false, instagramAuthorPage: null, instagramCollaborators: [], linkedinProfile: false, linkedinPageRepost: false, x: false }).map((d) => d.id);
+    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false, instagramAuthorPage: null, instagramCollaborators: [], linkedinProfile: false, linkedinPageRepost: false, x: false, threadsProfile: false }).map((d) => d.id);
     assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook_profile"]);
   });
 

@@ -292,6 +292,12 @@ export interface ShortsConfig {
   linkedinPageRepost: boolean;
   /** #10772: vídeo no X @diariabr via Buffer (MCP, passo da skill), com o vertical por URL pública (R2). */
   x: boolean;
+  /**
+   * #10772/#11122: vertical no Threads PESSOAL do editor (`threads_profile`,
+   * `scripts/lib/threads-personal-video.ts`), com o vídeo por URL pública (R2).
+   * Sem `THREADS_PERSONAL_*` o destino é pulado com aviso (fail-soft).
+   */
+  threadsProfile: boolean;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -307,6 +313,8 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   linkedinProfile: true,
   linkedinPageRepost: true,
   x: true,
+  // #11122: código pronto e fail-soft até o token do Threads pessoal existir (#10772/#11077).
+  threadsProfile: true,
 });
 
 function defaultShortsConfig(): ShortsConfig {
@@ -318,6 +326,7 @@ function defaultShortsConfig(): ShortsConfig {
     linkedinProfile: DEFAULT_SHORTS_CONFIG.linkedinProfile,
     linkedinPageRepost: DEFAULT_SHORTS_CONFIG.linkedinPageRepost,
     x: DEFAULT_SHORTS_CONFIG.x,
+    threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
   };
 }
 
@@ -366,6 +375,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     linkedinProfile,
     linkedinPageRepost,
     x: optionalBool(raw, "x", DEFAULT_SHORTS_CONFIG.x),
+    threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
   };
 }
 
@@ -380,7 +390,9 @@ export type ShortDestination =
   /** #10772: repost do vídeo do perfil pela página (sem token de organização local — Chrome). */
   | { id: "linkedin_page_repost"; kind: "linkedin_page_repost"; mode: "guided" }
   /** #10772: Buffer só é alcançável pela skill (MCP); o script prepara texto, horário e URL do vídeo. */
-  | { id: "x"; kind: "x"; mode: "guided" };
+  | { id: "x"; kind: "x"; mode: "guided" }
+  /** #11122: Threads API no perfil pessoal (não agenda — publica na hora, como o LinkedIn). */
+  | { id: "threads_profile"; kind: "threads_profile"; mode: "api" };
 
 export type FacebookDestinationId = `facebook:${string}`;
 
@@ -396,6 +408,7 @@ export function listShortDestinations(cfg: ShortsConfig): ShortDestination[] {
   if (cfg.linkedinProfile) out.push({ id: "linkedin_profile", kind: "linkedin_profile", mode: "api" });
   if (cfg.linkedinProfile && cfg.linkedinPageRepost) out.push({ id: "linkedin_page_repost", kind: "linkedin_page_repost", mode: "guided" });
   if (cfg.x) out.push({ id: "x", kind: "x", mode: "guided" });
+  if (cfg.threadsProfile) out.push({ id: "threads_profile", kind: "threads_profile", mode: "api" });
   out.push({ id: "facebook_profile", kind: "facebook_profile", mode: "guided" });
   return out;
 }
@@ -410,7 +423,7 @@ export interface ShortPublishedEntry {
   destination: string;
   /**
    * `send_unknown` (#10772): o envio pode ter sido aceito (timeout/5xx na
-   * criação do post do LinkedIn). Conta como feito — re-tentar arriscaria
+   * criação do post do LinkedIn, ou no `threads_publish` do Threads, #11122). Conta como feito — re-tentar arriscaria
    * vídeo duplicado no perfil; o editor confere e registra com `--mark`.
    */
   status: "published" | "scheduled" | "send_unknown";
@@ -573,6 +586,7 @@ export function shortDestinationAccount(dest: ShortDestination, cfg: Pick<Shorts
   if (dest.kind === "linkedin_profile") return LINKEDIN_PERSONAL_ACCOUNT;
   // X sai pela skill (Buffer), mas o horário (`dueAt`) vem da grade como os destinos de API.
   if (dest.kind === "x") return socialAccountKey("twitter", "diaria");
+  if (dest.kind === "threads_profile") return THREADS_PERSONAL_ACCOUNT;
   // O repost tem regra própria (`planLinkedInRepostSlot`); os outros guiados seguem `shortTime`.
   return null;
 }
@@ -593,6 +607,8 @@ export function shortDestinationAlsoAccounts(
 
 /** Conta da grade do perfil pessoal do LinkedIn (o 4º post do `publish-linkedin-personal.ts` e o vertical). */
 export const LINKEDIN_PERSONAL_ACCOUNT = socialAccountKey("linkedin", "pessoal");
+/** Conta da grade do perfil pessoal do Threads (vertical, #11122). */
+export const THREADS_PERSONAL_ACCOUNT = socialAccountKey("threads", "pessoal");
 /** Conta da grade da página diar.ia.br no LinkedIn (os posts diários da rotação #10305). */
 export const LINKEDIN_PAGE_ACCOUNT = socialAccountKey("linkedin", "diaria");
 /** Folga mínima entre o vídeo no perfil e o repost da página. */
