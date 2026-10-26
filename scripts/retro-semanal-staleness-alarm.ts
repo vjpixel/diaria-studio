@@ -160,10 +160,11 @@ async function main(): Promise<void> {
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
   const saturdayArg = getArg(argv, "saturday");
-  if (saturdayArg !== undefined && !/^\d{6}$/.test(saturdayArg)) {
-    throw new Error(`--saturday precisa ser AAMMDD (recebido: ${saturdayArg})`);
+  // Ternário truthy (#6149): `--saturday ""` cai no default, não no erro.
+  const saturday = saturdayArg ? saturdayArg : toAAMMDD(mostRecentSaturday(new Date()));
+  if (!/^\d{6}$/.test(saturday)) {
+    throw new Error(`--saturday precisa ser AAMMDD (recebido: ${saturday})`);
   }
-  const saturday = saturdayArg ?? toAAMMDD(mostRecentSaturday(new Date()));
 
   const store = readWeeklyStore(saturday);
   const worker = needsWorkerLookup(store) ? await lookupWorkerQueue(ROOT) : null;
