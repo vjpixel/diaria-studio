@@ -187,6 +187,8 @@ export async function loadDivulgacaoGrid(rawConfig: unknown, dates: readonly str
     return mergeGrids(
       gridFromSocialPublished(read(join(dir, "06-social-published.json"))),
       gridFromShortsPublished(read(join(dir, "06-shorts-published.json")), shorts?.instagram_author_page ?? "diaria", shorts?.instagram_collaborators ?? []),
+      // #11157: o vídeo do perfil que o timer do 300 publica fica no registro próprio dele.
+      gridFromShortsPublished(read(join(dir, "06-shorts-published.linkedin-timer.json")), shorts?.instagram_author_page ?? "diaria", shorts?.instagram_collaborators ?? []),
       gridFromLinkedInPersonalIntent(read(join(dir, "06-linkedin-personal.json"))),
     );
   });

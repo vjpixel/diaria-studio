@@ -112,6 +112,11 @@
  *
  * Registro por destino em `{edição}/_internal/06-shorts-published.json`
  * (escrita atômica, logo após cada destino). Destino registrado é pulado.
+ * #11157: a rodada `--linkedin-timer` grava no registro próprio do timer
+ * (`06-shorts-published.linkedin-timer.json`); a leitura une os dois (e as
+ * cópias de conflito do OneDrive), cada gravação relê do disco e troca só a
+ * própria entrada sob lock, e cada destino é reconferido no disco logo antes
+ * de publicar (`scripts/lib/diaria/shorts-published-store.ts`).
  * Registro ilegível ABORTA (nunca vira "nada publicado", o que duplicaria
  * Reels públicos). Se a plataforma aceitar e a gravação falhar, o erro mostra
  * o id/URL e o comando `--mark` pra registrar à mão.
@@ -133,7 +138,6 @@ import { deriveEditionUrl } from "./lib/edition-url.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/facebook-pages.ts";
 import {
-  SHORTS_PUBLISHED_FILE,
   buildReelsCaption,
   buildYouTubeShortMetadata,
   facebookDestinationId,
@@ -147,7 +151,6 @@ import {
   loadShortScheduleConfig,
   loadShortsConfig,
   mp4DurationSeconds,
-  parseShortsPublishedFile,
   planShortSlots,
   resolveInstagramApiMaxSeconds,
   resolveReelsSchedule,
@@ -155,7 +158,6 @@ import {
   buildShortSocialText,
   planLinkedInRepostSlot,
   shortVideoFileName,
-  upsertShortEntry,
   type ShortDestination,
   type ShortPublishedEntry,
   type ShortSlot,
@@ -165,6 +167,7 @@ import {
   type WorkerInstagramAccount,
   type YouTubeShortMetadata,
 } from "./lib/diaria/short-video.ts";
+import { persistShortEntry, readShortsRegistry, shortsRegistryPath, shortsRegistryWriterFor } from "./lib/diaria/shorts-published-store.ts";
 import {
   buildYouTubeInsertRequest,
   buildYouTubeTags,
@@ -1810,14 +1813,14 @@ export async function publishYouTubeShort(input: {
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
-function readPublished(path: string, aammdd: string): ShortsPublishedFile {
-  if (!existsSync(path)) return { aammdd, entries: [] };
-  return parseShortsPublishedFile(readFileSync(path, "utf8"), aammdd, path);
-}
-
-function writePublished(path: string, file: ShortsPublishedFile): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileAtomic(path, JSON.stringify(file, null, 2) + "\n");
+/**
+ * #11157: destino que outro processo (o timer do 300, um `--mark` no neo)
+ * registrou DEPOIS que esta rodada leu o registro. Relido do disco logo antes
+ * de publicar: o plano foi montado com a leitura do início da rodada, e
+ * publicar por cima de uma entrada nova duplicaria o post. Puro.
+ */
+export function registeredSinceRead(fresh: ShortsPublishedFile, destination: string): ShortPublishedEntry | null {
+  return fresh.entries.find((e) => e.destination === destination) ?? null;
 }
 
 /**
@@ -2084,8 +2087,12 @@ async function main(): Promise<number> {
   }
   const { flags, values, aammdd } = parsed;
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
-  const publishedPath = join(dir, SHORTS_PUBLISHED_FILE);
-  let published = readPublished(publishedPath, aammdd);
+  // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
+  // toda gravação relê do disco e troca só a própria entrada, sob lock.
+  const writer = shortsRegistryWriterFor(flags.has("linkedin-timer"));
+  const publishedPath = shortsRegistryPath(dir, writer);
+  let published = readShortsRegistry(dir, aammdd);
+  const persist = (entry: ShortPublishedEntry): ShortsPublishedFile => persistShortEntry(dir, aammdd, writer, entry);
 
   if (values["mark"]) {
     let mark: ReturnType<typeof parseMarkArg>;
@@ -2100,13 +2107,12 @@ async function main(): Promise<number> {
       console.error(built.error);
       return 2;
     }
-    published = upsertShortEntry(published, built.entry);
-    writePublished(publishedPath, published);
+    published = persist(built.entry);
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
     return 0;
   }
 
-  if (flags.has("confirm-instagram")) return confirmInstagram(aammdd, dir, publishedPath, published, values["since"], values["media-id"], values["edition-url"]);
+  if (flags.has("confirm-instagram")) return confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"]);
 
   const reviewedPath = join(dir, "02-reviewed.md");
   if (!existsSync(reviewedPath)) {
@@ -2244,6 +2250,8 @@ async function main(): Promise<number> {
     unconfirmed?: boolean;
     warnings?: string[];
     error?: string;
+    /** #11157: outro processo registrou o destino durante a rodada; nada foi enviado. */
+    alreadyRegistered?: boolean;
     /** #10772: o que a skill passa pra Buffer `create_post` (nada é registrado até o `--mark`). */
     buffer?: { text: string; dueAt: string | null; videoUrl: string };
   }> = [];
@@ -2255,6 +2263,26 @@ async function main(): Promise<number> {
     return uploaded;
   };
   for (const item of plan.items) {
+    if (item.action === "buffer" || item.action === "publish" || item.action === "enqueue") {
+      // #11157: reconfere no disco antes de publicar — outro escritor pode ter
+      // registrado o destino depois da leitura do início da rodada.
+      let fresh: ShortsPublishedFile;
+      try {
+        fresh = readShortsRegistry(dir, aammdd);
+      } catch (e) {
+        const msg = `registro ilegível na reconferência, não publica: ${(e as Error).message}`;
+        results.push({ destination: item.destination, ok: false, error: msg });
+        console.error(`[erro] ${item.destination}: ${msg}`);
+        continue;
+      }
+      const already = registeredSinceRead(fresh, item.destination);
+      if (already) {
+        published = fresh;
+        results.push({ destination: item.destination, ok: true, entry: already, alreadyRegistered: true });
+        console.error(`[aviso] ${item.destination}: registrado por outro processo durante esta rodada (${already.status}${already.url ? `, ${already.url}` : ""}) — não publica de novo`);
+        continue;
+      }
+    }
     if (item.action === "buffer") {
       // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
       const r = await prepareBufferItem(item, uploadVideo);
@@ -2297,8 +2325,7 @@ async function main(): Promise<number> {
           force: flags.has("force-youtube"),
           // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
           onBeforeBytes: (marker) => {
-            published = upsertShortEntry(published, marker);
-            writePublished(publishedPath, published);
+            published = persist(marker);
           },
         });
       } else if (item.destination === THREADS_PROFILE_DESTINATION) {
@@ -2326,8 +2353,7 @@ async function main(): Promise<number> {
     // #573: o status do registro é o que o script fez; o estado normalizado é o que se relata.
     const state = resolveShortEntryState(entry, new Date());
     try {
-      published = upsertShortEntry(published, entry);
-      writePublished(publishedPath, published); // grava a cada destino — reduz a janela de duplicação num crash
+      published = persist(entry); // grava a cada destino — reduz a janela de duplicação num crash
     } catch (e) {
       // A plataforma JÁ aceitou: não pode virar "falhou" (a próxima rodada duplicaria).
       console.error(
@@ -2392,7 +2418,7 @@ async function main(): Promise<number> {
 async function confirmInstagram(
   aammdd: string,
   dir: string,
-  publishedPath: string,
+  persist: (entry: ShortPublishedEntry) => ShortsPublishedFile,
   published: ShortsPublishedFile,
   sinceFlag: string | undefined,
   mediaIdFlag: string | undefined,
@@ -2462,7 +2488,7 @@ async function confirmInstagram(
       warnings.push(`não deu pra conferir o collab (${(e as Error).message}) — confira no app`);
     }
   }
-  writePublished(publishedPath, upsertShortEntry(published, entry));
+  persist(entry);
   for (const w of warnings) console.error(`[aviso] instagram: ${w}`);
   console.log(JSON.stringify({ confirmed: true, id: entry.id, url: entry.url ?? null, account: who, warnings }));
   return 0;
