@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
 import { readImageGeneratorSidecar } from "./shared/image-generator-sidecar.ts"; // #9095
 import { buildD1VideoLink, D1_PLAY_HERO_FILE, editionFromDir } from "./diaria/d1-video-hero.ts"; // #10784
+import { isNoVideoEdition } from "./diaria/d1-no-video.ts"; // #11125
 import { readD1VideoUrl } from "./diaria/d1-video-link-file.ts"; // #10784 (fonte da URL: #10772)
 import { readSnippetFile } from "./shared/snippet-loader.ts"; // #8756 — casamento por conteúdo em box-selection.json
 import { parseBoxHeaderField, isRuntimeExcluded, readBoxTituloFlag } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet; isRuntimeExcluded #4504 — invariant de runtime:false no render path; readBoxTituloFlag #5882 — titulo:false declarado
@@ -2413,11 +2414,15 @@ export function readBoxDivulgacaoRuntimeExcludedForSlot(
  * (nunca link quebrado). Diretório sem AAMMDD no nome (fixture de teste) →
  * sem link: a UTM exige a edição. Sem a cópia com o convite no disco (falha ao
  * gerar no upload) → sem link também: a imagem pura levando ao YouTube, sem
- * nenhum aviso, seria link escondido.
+ * nenhum aviso, seria link escondido. Edição marcada sem vídeo
+ * (`_internal/no-video.json`, #11125) → sem link e sem a cópia.
  */
 export function d1VideoHeroFields(editionDir: string): Pick<RenderDestaque, "videoLink" | "heroFile"> {
   const aammdd = editionFromDir(editionDir);
   if (!aammdd) return {};
+  // #11125: edição marcada sem vídeo → hero puro, sem link, mesmo com a cópia
+  // ainda no disco (upload ainda não rodou depois do marcador).
+  if (isNoVideoEdition(editionDir)) return {};
   if (!existsSync(resolve(editionDir, D1_PLAY_HERO_FILE))) return {};
   const { url, warning } = readD1VideoUrl(editionDir);
   if (warning) console.warn(`[newsletter-parse] warn — ${warning} — a imagem do D1 aponta pro canal (#10784)`);
