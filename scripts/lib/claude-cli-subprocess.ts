@@ -165,6 +165,16 @@ export interface ClaudeCliCallOptions {
    * processo é morto e `callClaudeCli` lança `ClaudeCliError` com `timedOut: true`.
    */
   timeoutMs?: number;
+  /**
+   * Ferramentas built-in disponíveis ao modelo (`--tools`, #11134). Ausente =
+   * comportamento anterior (default do CLI). `[]` vira `--tools ""`: nenhuma
+   * ferramenta — para prompt que carrega texto externo não confiável (ex.:
+   * título de fonte na tradução da Stack), onde uma instrução embutida no dado
+   * não pode virar Bash/Edit numa task headless.
+   */
+  tools?: readonly string[];
+  /** `--strict-mcp-config` sem `--mcp-config` (#11134): nenhum servidor MCP carregado. */
+  strictMcpConfig?: boolean;
   execFn?: typeof execFileSync;
   resolveClaudeBinFn?: typeof resolveClaudeBin;
 }
@@ -188,6 +198,8 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
   const args = ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", opts.outputFormat ?? "text", "--no-session-persistence"];
   if (opts.model) args.push("--model", opts.model);
   if (opts.effort) args.push("--effort", opts.effort);
+  if (opts.tools) args.push("--tools", opts.tools.join(","));
+  if (opts.strictMcpConfig) args.push("--strict-mcp-config");
   // #9577: `--` encerra as opções — prompt que começa com `---` (frontmatter de agente no replay do eval) não vira flag.
   args.push("--", prompt);
 
