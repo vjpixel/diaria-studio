@@ -130,7 +130,7 @@ export function renderEmailForm(cycle: string): string {
   const action = `/${encodeURIComponent(cycle)}`;
   const body = `
     <h1>Artigo exclusivo para apoiadores</h1>
-    <p>A Retrospectiva do Mês faz parte dos benefícios de quem apoia a diar.ia.br como Mantenedor, a partir de R$25/mês. Digite o e-mail que você usa para apoiar:</p>
+    <p>A Retrospectiva do Mês faz parte dos benefícios de quem apoia a diar.ia.br no Conselho, a partir de R$25/mês. Digite o e-mail que você usa para apoiar:</p>
     <form method="GET" action="${escHtml(action)}">
       <input type="email" name="email" placeholder="seu@email.com" required />
       <button class="button" type="submit">Acessar artigo</button>
@@ -154,7 +154,7 @@ export function renderEmailForm(cycle: string): string {
 export function renderPaywall(path: string): string {
   const body = `
     <h1>Este artigo é exclusivo para apoiadores da diar.ia.br</h1>
-    <p>A Retrospectiva do Mês faz parte da recompensa de Mantenedor, a partir de R$25/mês — não encontramos um apoio ativo nesse nível para esse e-mail neste mês.</p>
+    <p>A Retrospectiva do Mês faz parte da recompensa do Conselho, a partir de R$25/mês — não encontramos um apoio ativo nesse nível para esse e-mail neste mês.</p>
     <p><a class="button" href="${escHtml(apoiaseUrlComUtm(path))}">Apoiar a diar.ia.br</a></p>
     <p class="muted">Já apoia e acha que isso é um erro? <a href="?entrar=1">Entre com seu e-mail</a>.</p>
   `;
@@ -282,7 +282,7 @@ ${teaserBlockMobileCss("retrospectiva-paywall")}
       O resto deste artigo é para quem apoia a diar.ia.br
     </h2>
     <p style="font-size:16px;line-height:1.6;margin:0 0 20px;color:${INK};opacity:.85;">
-      Mantenedores, a partir de R$&nbsp;25/mês, leem a Retrospectiva do Mês completa — os outros dois
+      Quem apoia a partir de R$&nbsp;25/mês (Conselho e Núcleo) lê a Retrospectiva do Mês completa — os outros dois
       destaques, as recomendações e o fechamento.
     </p>
     <p style="margin:0 0 20px;">

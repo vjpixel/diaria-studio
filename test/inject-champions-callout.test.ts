@@ -45,7 +45,7 @@ Corpo.
 // #9236: o callout de intro carrega só o Sorteio (campeões migraram pro box do É IA?).
 const CALLOUT_INNER = `🎉 Sorteio
 
-O sorteio entre quem achou o erro intencional será ao vivo no dia 2 de julho, das 13h30 às 14h, no [Google Meet](https://meet.google.com/nbs-jcut-ojj). Será uma caneca entre quem encontrou o erro intencional e outra entre os Patronos. Apareça para ver quem vai ganhar caneca e bater um papo sobre IA.`;
+O sorteio entre quem achou o erro intencional será ao vivo no dia 2 de julho, das 13h30 às 14h, no [Google Meet](https://meet.google.com/nbs-jcut-ojj). Será uma caneca entre quem encontrou o erro intencional e outra entre quem apoia no Núcleo. Apareça para ver quem vai ganhar caneca e bater um papo sobre IA.`;
 
 describe("insertChampionsCallout (#2725)", () => {
   it("injeta o box entre a coverage line e o separador antes de DESTAQUE 1", () => {

@@ -174,7 +174,7 @@ export async function handleVotacaoOpcaoGet(
   if (!authorized) {
     return html(
       renderErroPage(
-        "Este link não pertence ao eleitorado desta votação (Mantenedor/Patrono, R$25+/mês) — recusando registrar.",
+        "Este link não pertence ao eleitorado desta votação (Conselho/Núcleo, R$25+/mês) — recusando registrar.",
       ),
       403,
     );
@@ -214,7 +214,7 @@ export async function handleVotoPost(request: Request, env: VotoTemaEnv, ciclo: 
   if (!authorized) {
     return html(
       renderErroPage(
-        "Este link não pertence ao eleitorado desta votação (Mantenedor/Patrono, R$25+/mês) — recusando registrar.",
+        "Este link não pertence ao eleitorado desta votação (Conselho/Núcleo, R$25+/mês) — recusando registrar.",
       ),
       403,
     );

@@ -31,33 +31,33 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const apoiosJs = readFileSync(resolve(ROOT, "scripts", "studio-ui", "public", "apoios.js"), "utf8");
 
 describe("apoios.js REWARD_GROUP_LABEL vs REWARD_TIER_*_MIN (guard de drift)", () => {
-  it("Patrono cita o piso atual sem teto (nível mais alto)", () => {
+  it("Núcleo (patrono) cita o piso atual sem teto (nível mais alto)", () => {
     assert.ok(
-      apoiosJs.includes(`patrono: "Patrono (R$${REWARD_TIER_PATRONO_MIN}+)"`),
+      apoiosJs.includes(`patrono: "Núcleo (R$${REWARD_TIER_PATRONO_MIN}+)"`),
       `label de Patrono deveria citar R$${REWARD_TIER_PATRONO_MIN}+ (REWARD_TIER_PATRONO_MIN atual)`,
     );
   });
 
-  it("Mantenedor cita o intervalo [MANTENEDOR_MIN, PATRONO_MIN - 1]", () => {
+  it("Conselho (mantenedor) cita o intervalo [MANTENEDOR_MIN, PATRONO_MIN - 1]", () => {
     const faixa = `R$${REWARD_TIER_MANTENEDOR_MIN}–${REWARD_TIER_PATRONO_MIN - 1}`;
     assert.ok(
-      apoiosJs.includes(`mantenedor: "Mantenedor (${faixa})"`),
+      apoiosJs.includes(`mantenedor: "Conselho (${faixa})"`),
       `label de Mantenedor deveria citar ${faixa} (REWARD_TIER_MANTENEDOR_MIN/PATRONO_MIN atuais)`,
     );
   });
 
-  it("Apoiador cita o intervalo [APOIADOR_MIN, MANTENEDOR_MIN - 1]", () => {
+  it("Clube (apoiador) cita o intervalo [APOIADOR_MIN, MANTENEDOR_MIN - 1]", () => {
     const faixa = `R$${REWARD_TIER_APOIADOR_MIN}–${REWARD_TIER_MANTENEDOR_MIN - 1}`;
     assert.ok(
-      apoiosJs.includes(`apoiador: "Apoiador (${faixa})"`),
+      apoiosJs.includes(`apoiador: "Clube (${faixa})"`),
       `label de Apoiador deveria citar ${faixa} (REWARD_TIER_APOIADOR_MIN/MANTENEDOR_MIN atuais)`,
     );
   });
 
-  it("Amigo cita o intervalo [AMIGO_MIN, APOIADOR_MIN - 1]", () => {
+  it("Comunidade (amigo) cita o intervalo [AMIGO_MIN, APOIADOR_MIN - 1]", () => {
     const faixa = `R$${REWARD_TIER_AMIGO_MIN}–${REWARD_TIER_APOIADOR_MIN - 1}`;
     assert.ok(
-      apoiosJs.includes(`amigo: "Amigo (${faixa})"`),
+      apoiosJs.includes(`amigo: "Comunidade (${faixa})"`),
       `label de Amigo deveria citar ${faixa} (REWARD_TIER_AMIGO_MIN/APOIADOR_MIN atuais)`,
     );
   });

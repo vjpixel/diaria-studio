@@ -76,7 +76,7 @@ const SUPERFICIES: Array<[string, () => string]> = [
 ];
 
 describe("#7690 — a copy do gate cita o limiar REAL, nas 3 superfícies", () => {
-  it("o piso derivado da constante é R$25 hoje (Mantenedor)", () => {
+  it("o piso derivado da constante é R$25 hoje (Conselho)", () => {
     assert.equal(PISO, 25);
   });
 

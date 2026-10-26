@@ -45,7 +45,7 @@ confirmada; se a UI mudar, atualizar este arquivo na mesma sessão.
 
 1. **Não existe painel separado.** O criador logado opera a partir da própria
    página pública `apoia.se/diaria`, que ganha abas extras: `Sobre`,
-   `Posts no Mural (N)`, `Rascunhos`, `Apoiadores(as)`. Nenhuma URL de
+   `Posts no Mural (N)`, `Rascunhos`, `Quem apoia` (antes `Apoiadores(as)`, #11203). Nenhuma URL de
    dashboard/admin envolvida.
 2. **Abrir a aba `Posts no Mural`: esperar a página terminar de carregar e
    clicar por COORDENADA no texto da aba** (30/09/2026). Logo após o
@@ -107,7 +107,7 @@ Mesmo fluxo de UI acima (passos 1-7 e a armadilha do post manual), com 3
 diferenças — tudo o mais vale igual:
 
 - **`Quem pode ver?` = `25`** (`R$ 25 ou +`). A Retrospectiva é recompensa de
-  Mantenedor/Patrono (R$25+); `10` entregaria o anúncio a quem não recebe a
+  Conselho/Núcleo (R$25+; ids internos mantenedor/patrono, #11203); `10` entregaria o anúncio a quem não recebe a
   edição — e o gate da página (`retrospectiva.diar.ia.br/{AAMM}`) negaria o
   acesso a essa mesma pessoa. Nunca cair pra público em silêncio.
 - **`Link externo` = URL da retrospectiva do ciclo**
