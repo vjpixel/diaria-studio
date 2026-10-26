@@ -481,13 +481,13 @@ export function decideThreadsDispatch(
 }
 
 /** #11105 — resumo do JSON de saída; `send_unknown` tem contador próprio (antes sumia: `published: 0, failed: 0`). */
-export function summarizeThreadsResults(results: PostEntry[], skipped: number) {
+export function summarizeThreadsResults(results: PostEntry[], skippedCount: number) {
   return {
     total: results.length,
     published: results.filter((r) => r.status === "published").length,
     failed: results.filter((r) => r.status === "failed").length,
     send_unknown: results.filter((r) => r.status === "send_unknown").length,
-    skipped,
+    skipped: skippedCount, // contador dedicado (não tautologia de results)
   };
 }
 
