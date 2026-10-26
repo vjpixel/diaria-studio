@@ -258,6 +258,55 @@ async function envWithBallot(eleitoresEmails: string[]) {
   return { env: { POLL } as VotoTemaEnv, POLL, ballot };
 }
 
+describe("convite para apoiar fora do eleitorado (#11201)", () => {
+  for (const method of ["GET", "POST"]) {
+    const handler = method === "GET" ? handleVotacaoOpcaoGet : handleVotoPost;
+    it(`${method}: mostra temas e placar público, sem registrar voto nem expor identidade`, async () => {
+      const { env, POLL, ballot } = await envWithBallot(["mantenedor@example.com"]);
+      const token = "b".repeat(24);
+      await POLL.put(pollTokenKvKeyMirror(token), "leitor@example.com");
+      await POLL.put(voteKey("2610", "mantenedor@example.com"), JSON.stringify({ opcao: 2, ts: "t1" }));
+      ballot.opcoes = ballot.opcoes.map((o) => ({ ...o }));
+      ballot.opcoes[0].descricao = '<script>alert("tema")</script>';
+      await POLL.put(ballotKey("2610"), JSON.stringify(ballot));
+      const before = [...POLL.store];
+
+      const res = await handler(new Request(`https://x/votacao/2610/1?t=${token}`, { method }), env, "2610", 1);
+      const body = await res.text();
+      assert.equal(res.status, 403);
+      assert.match(res.headers.get("Content-Type") ?? "", /text\/html/);
+      assert.match(body, /Esta votação é exclusiva para apoiadores\./);
+      assert.match(body, /R\$25\/mês escolhe o tema dos Artigos Especiais/);
+      assert.match(body, /href="https:\/\/apoia.se\/diaria\?utm_source=voto-tema"/);
+      assert.match(body, /Temas em disputa/);
+      assert.match(body, /Placar parcial/);
+      for (const opcao of OPCOES) assert.ok(body.includes(opcao.titulo));
+      assert.match(body, /Tema B<\/strong>[\s\S]*?1 voto\(s\)/);
+      assert.match(body, /Tema A<\/strong>[\s\S]*?0 voto\(s\)/);
+      assert.match(body, /&lt;script&gt;/);
+      assert.doesNotMatch(body, /<script|<form|recusando registrar|Não foi possível registrar|—|→|leitor@example|mantenedor@example/);
+      assert.ok(!body.includes(token));
+      assert.deepEqual([...POLL.store], before);
+    });
+
+    it(`${method}: tag não resolvida e token desconhecido continuam diagnósticos separados`, async () => {
+      const { env, POLL } = await envWithBallot([]);
+      const before = [...POLL.store];
+      for (const [token, status, message] of [
+        ["{{ subscriber.voto_token }}", 400, /tag de e-mail não resolvida/],
+        ["c".repeat(24), 403, /Link de voto inválido/],
+      ] as const) {
+        const res = await handler(new Request(`https://x/votacao/2610/1?t=${encodeURIComponent(token)}`, { method }), env, "2610", 1);
+        assert.equal(res.status, status);
+        const body = await res.text();
+        assert.match(body, message);
+        assert.doesNotMatch(body, /utm_source=voto-tema|Placar parcial/);
+      }
+      assert.deepEqual([...POLL.store], before);
+    });
+  }
+});
+
 describe("handlers — voto só é gravado por POST, nunca por GET (#8371)", () => {
   it("GET /votacao/{ciclo}/{n}?t=token NÃO grava voto (defesa contra scanner de link)", async () => {
     const { env, POLL } = await envWithBallot(["mantenedor@example.com"]);
