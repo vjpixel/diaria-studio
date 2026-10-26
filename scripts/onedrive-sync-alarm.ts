@@ -31,6 +31,17 @@
  *   npx tsx scripts/onedrive-sync-alarm.ts --dry-run           # avalia + imprime, NÃO envia nem persiste
  *   npx tsx scripts/onedrive-sync-alarm.ts --to email@x        # override do destinatário
  *   npx tsx scripts/onedrive-sync-alarm.ts --tolerance-hours 6 # override da tolerância do canário (default 6h)
+ *   npx tsx scripts/onedrive-sync-alarm.ts --quota-gb 5        # orçamento de cota (default 5, #10957)
+ *   npx tsx scripts/onedrive-sync-alarm.ts --quota-warn-pct 80 # aviso de cota a partir de N% (default 80)
+ *   npx tsx scripts/onedrive-sync-alarm.ts --onedrive-config P # config do cliente (default ~/.config/onedrive/config)
+ *
+ * **Sinal de COTA (#10957):** além do serviço e do canário, lê (só leitura)
+ * o log do daemon (`journalctl --user -u onedrive`) atrás de recusa de
+ * upload por falta de espaço, e mede o que `data/` sincroniza (descontando
+ * o `skip_file` efetivo) contra o orçamento `--quota-gb`. Achado próprio
+ * (`check: "onedrive-quota"`, fingerprints `quota-full`/`quota-near`), com
+ * a causa no texto: maiores diretórios e arquivos, e quanto é `.mp4`.
+ * Lógica pura em `scripts/lib/onedrive-quota.ts`.
  *
  * Env: `data/.credentials.json` com o scope `gmail.send` — só necessário pra
  * ENVIAR o alarme (mesmo requisito dos outros alarmes locais deste repo).
@@ -55,11 +66,11 @@
  */
 import { existsSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { hostname } from "node:os";
+import { hostname, homedir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { hasFlag, getArg, getIntArg, isMainModule } from "./lib/cli-args.ts";
+import { hasFlag, getArg, getIntArg, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   parseSystemctlIsActiveOutput,
@@ -70,15 +81,31 @@ import {
   isAlarmingVerdict,
   type OnedriveServiceState,
   type OnedriveSyncAlarmVerdict,
+  type OnedriveSyncAlarmEvaluation,
 } from "./lib/onedrive-sync-alarm.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
+import {
+  scanOnedriveLogForQuotaFull,
+  summarizeDataUsage,
+  evaluateOnedriveQuota,
+  isAlarmingQuotaVerdict,
+  buildQuotaCauseText,
+  DEFAULT_QUOTA_GB,
+  DEFAULT_QUOTA_WARN_PCT,
+  type OnedriveQuotaEvaluation,
+  type QuotaLogScan,
+} from "./lib/onedrive-quota.ts";
+import { readSkipFilePatterns, buildSkipFileMatcher, ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE } from "./lib/onedrive-skip-file.ts";
+import { walkFileSizes } from "./lib/walk-file-sizes.ts";
 import {
   planAlarmReconciliation,
   applyAlarmReconciliation,
   emptyAlarmIssuesState,
   saveAlarmIssuesState,
+  alarmIssueStateKey,
   ALARM_ACTION_LABEL,
   type AlarmFinding,
+  type AlarmFindingOutcome,
   type AlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 
@@ -132,6 +159,96 @@ function writeCanary(now: Date): void {
   mkdirSync(DATA_DIR, { recursive: true });
   const canary = buildOnedriveSyncCanary(now, hostname());
   writeFileAtomic(CANARY_PATH, JSON.stringify(canary, null, 2) + "\n");
+}
+
+// ─── Sinal 3: cota (#10957, SÓ LEITURA) ────────────────────────────────────
+
+export const QUOTA_CHECK = "onedrive-quota";
+
+/** Linhas do log do daemon nas últimas `sinceHours`. `null` = journal
+ * indisponível (sem systemd, sem permissão) — o sinal de log fica sem
+ * medida, nunca vira "sem recusa". */
+export function readOnedriveJournalLines(sinceHours: number, execFn: typeof execFileSync = execFileSync): string[] | null {
+  try {
+    const out = execFn(
+      "journalctl",
+      ["--user", "-u", "onedrive", "--since", `-${sinceHours}h`, "--no-pager", "-o", "cat"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 },
+    ) as unknown as string;
+    return String(out ?? "").split(/\r?\n/);
+  } catch {
+    return null;
+  }
+}
+
+/** Padrões efetivos do skip_file + se `*.mp4` está entre eles. Config
+ * ausente = default do cliente (mp4 sincroniza); ilegível = `null` em
+ * `mp4Excluded` e default do cliente nos padrões (conservador: conta tudo
+ * que o cliente sobe por padrão). */
+export function readEffectiveSkipFile(configPath: string): { patterns: string[]; mp4Excluded: boolean | null } {
+  if (!existsSync(configPath)) {
+    return { patterns: [...ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE], mp4Excluded: false };
+  }
+  try {
+    const patterns = readSkipFilePatterns(readFileSync(configPath, "utf8")) ?? [...ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE];
+    const matcher = buildSkipFileMatcher(patterns);
+    return { patterns, mp4Excluded: matcher("diaria-comentada-000000.mp4") };
+  } catch {
+    return { patterns: [...ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE], mp4Excluded: null };
+  }
+}
+
+export function toQuotaAlarmFinding(ev: OnedriveQuotaEvaluation): AlarmFinding {
+  return {
+    check: QUOTA_CHECK,
+    fingerprint: ev.verdict,
+    title: `[diar.ia.br] OneDrive cota: ${ev.verdict}`,
+    body: [
+      "Achado automático do alarme `Diaria-OneDrive-Sync-Alarm`",
+      "(`scripts/onedrive-sync-alarm.ts`, sinal de cota do #10957).",
+      "",
+      buildQuotaCauseText(ev),
+      "",
+      "Esta issue é criada automaticamente pelo alarme e será",
+      "comentada/fechada sozinha quando o achado deixar de reproduzir por",
+      `${CLOSE_ALARM_ISSUE_AFTER_RUNS} execuções consecutivas (mesmo padrão de #5112).`,
+    ].join("\n"),
+    // Cota só normaliza por AÇÃO do editor (liberar espaço, aplicar o
+    // skip_file, esvaziar a lixeira) — mesmo raciocínio do #7701.
+    labels: ["bug", ALARM_ACTION_LABEL],
+    priority: ev.verdict === "quota-full" ? "P1" : "P2",
+    family: "estado",
+  };
+}
+
+function issueLineFor(outcome: AlarmFindingOutcome): string {
+  return outcome.action === "failed"
+    ? `\n\nIssue: falha ao criar/reusar (${outcome.error})`
+    : `\n\nIssue: #${outcome.issueNumber} (${outcome.url})`;
+}
+
+/** E-mail único pros achados qualificados desta execução — sync e/ou cota.
+ * Só o de sync existia antes do #10957; com os dois, o assunto cita ambos. */
+export function buildCombinedAlarmEmail(
+  qualifying: readonly AlarmFindingOutcome[],
+  syncEvaluation: OnedriveSyncAlarmEvaluation,
+  quota: OnedriveQuotaEvaluation,
+): { subject: string; body: string } {
+  const sync = qualifying.find((o) => o.check !== QUOTA_CHECK);
+  const quotaOutcome = qualifying.find((o) => o.check === QUOTA_CHECK);
+  const parts: string[] = [];
+  const subjects: string[] = [];
+  if (sync) {
+    parts.push(buildOnedriveSyncAlarmEmail(syncEvaluation, issueLineFor(sync)).body);
+    subjects.push(syncEvaluation.verdict);
+  }
+  if (quotaOutcome) {
+    parts.push(
+      `${buildQuotaCauseText(quota)}\n\nAchado automático de \`Diaria-OneDrive-Sync-Alarm\` (sinal de cota, #10957).${issueLineFor(quotaOutcome)}`,
+    );
+    subjects.push(`cota ${quota.verdict}`);
+  }
+  return { subject: `⚠️ OneDrive: ${subjects.join(" + ")}`, body: parts.join("\n\n---\n\n") };
 }
 
 // ─── Estado (dedup/reconciliação de ISSUE por achado — alarm-issues.ts) ────
@@ -190,6 +307,15 @@ export function toAlarmFinding(verdict: OnedriveSyncAlarmVerdict, serviceState: 
   };
 }
 
+/** Cota não medida (sem data/ e sem journal) não é evidência de que
+ * normalizou — congela as issues de cota em vez de contar streak (#10520).
+ * Só as chaves de cota; as de sync seguem o fluxo normal. */
+export function quotaAbsenceUnmeasured(verdict: OnedriveQuotaEvaluation["verdict"]): (key: string) => boolean {
+  if (verdict !== "unmeasured") return () => false;
+  const keys = new Set([alarmIssueStateKey(QUOTA_CHECK, "quota-full"), alarmIssueStateKey(QUOTA_CHECK, "quota-near")]);
+  return (key) => keys.has(key);
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
@@ -197,6 +323,11 @@ async function main(): Promise<void> {
   const toOverride = getArg(argv, "to");
   const toleranceHours = getIntArg(argv, "tolerance-hours", { min: 1 }) ?? DEFAULT_TOLERANCE_HOURS;
   const toleranceMs = toleranceHours * 60 * 60 * 1000;
+  const quotaGb = getIntArg(argv, "quota-gb", { min: 1 }) ?? DEFAULT_QUOTA_GB;
+  const quotaWarnPct = getIntArg(argv, "quota-warn-pct", { min: 1, max: 100 }) ?? DEFAULT_QUOTA_WARN_PCT;
+  const onedriveConfigPath =
+    getStringArg(argv, "onedrive-config", { example: "~/.config/onedrive/config" }) ??
+    join(homedir(), ".config", "onedrive", "config");
 
   const now = new Date();
   const serviceState = readOnedriveServiceState();
@@ -210,6 +341,29 @@ async function main(): Promise<void> {
     `${LOG_PREFIX} service=${serviceState} canary=${canaryFreshness} verdict=${evaluation.verdict} tolerance=${toleranceHours}h`,
   );
 
+  // Sinal 3 (cota, #10957). A varredura de data/ e o journal são só leitura.
+  const skip = readEffectiveSkipFile(onedriveConfigPath);
+  const journal = readOnedriveJournalLines(toleranceHours);
+  const quotaLog: QuotaLogScan | null = journal ? scanOnedriveLogForQuotaFull(journal) : null;
+  const usage = dataDirExists
+    ? summarizeDataUsage(
+        walkFileSizes(DATA_DIR, (rel, err) => console.error(`${LOG_PREFIX} varredura: pulei ${rel || "."}: ${err.message}`)),
+        buildSkipFileMatcher(skip.patterns),
+      )
+    : null;
+  const quota = evaluateOnedriveQuota({
+    log: quotaLog,
+    usage,
+    quotaBytes: quotaGb * 1024 ** 3,
+    warnPct: quotaWarnPct,
+    mp4Excluded: skip.mp4Excluded,
+  });
+  console.log(
+    `${LOG_PREFIX} cota: verdict=${quota.verdict} quota=${quotaGb}GB warn=${quotaWarnPct}% ` +
+      `log=${quotaLog ? `${quotaLog.matchCount} recusa(s)` : "indisponível"} ` +
+      `synced=${usage ? usage.syncedBytes : "n/a"}B mp4Excluded=${skip.mp4Excluded}`,
+  );
+
   if (!dataDirExists) {
     console.log(`${LOG_PREFIX} data/ ausente nesta máquina (sessão cloud/clone fresco) — canário pulado.`);
   } else if (!isDryRun) {
@@ -221,10 +375,12 @@ async function main(): Promise<void> {
   const alarmFindings: AlarmFinding[] = isAlarmingVerdict(evaluation.verdict)
     ? [toAlarmFinding(evaluation.verdict, serviceState)]
     : [];
+  if (isAlarmingQuotaVerdict(quota.verdict)) alarmFindings.push(toQuotaAlarmFinding(quota));
   const alarmState = loadAlarmIssuesState();
+  const isAbsenceUnmeasured = quotaAbsenceUnmeasured(quota.verdict);
 
   if (isDryRun) {
-    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS);
+    const actions = planAlarmReconciliation(alarmFindings, alarmState, CLOSE_ALARM_ISSUE_AFTER_RUNS, [], isAbsenceUnmeasured);
     console.log(
       `${LOG_PREFIX} --dry-run: ${actions.length} ação(ões) de issue seriam tomadas ` +
         `(${actions.map((a) => a.kind).join(", ") || "nenhuma"}) — gh NÃO foi chamado, canário NÃO gravado, e-mail NÃO avaliado.`,
@@ -235,6 +391,7 @@ async function main(): Promise<void> {
   const { nextState, findingOutcomes } = applyAlarmReconciliation(alarmFindings, alarmState, {
     cwd: ROOT,
     closeAfterRuns: CLOSE_ALARM_ISSUE_AFTER_RUNS,
+    isAbsenceUnmeasured,
   });
   saveAlarmIssuesState(nextState, ALARM_ISSUES_STATE_PATH);
   for (const outcome of findingOutcomes) {
@@ -253,14 +410,7 @@ async function main(): Promise<void> {
   const result = await notifyEditorForOutcomes(
     findingOutcomes,
     "acao",
-    (qualifying) => {
-      const outcome = qualifying[0];
-      const issueLine =
-        outcome.action === "failed"
-          ? `\n\nIssue: falha ao criar/reusar (${outcome.error})`
-          : `\n\nIssue: #${outcome.issueNumber} (${outcome.url})`;
-      return buildOnedriveSyncAlarmEmail(evaluation, issueLine);
-    },
+    (qualifying) => buildCombinedAlarmEmail(qualifying, evaluation, quota),
     {
       cwd: ROOT,
       platformConfigPath: PLATFORM_CONFIG_PATH,

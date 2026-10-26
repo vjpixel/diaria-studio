@@ -29,8 +29,10 @@ skip_file = "~*|.~*|*.tmp|*.swp|*.partial"
 Adicionar os padrões de arquivo transitório/append-only que causaram o loop de integrity failure:
 
 ```
-skip_file = "~*|.~*|*.tmp|*.swp|*.partial|*.db-shm|*.db-wal|*.sqlite3-shm|*.sqlite3-wal|run-log.jsonl"
+skip_file = "~*|.~*|*.tmp|*.swp|*.partial|*.db-shm|*.db-wal|*.sqlite3-shm|*.sqlite3-wal|run-log.jsonl|*.mp4"
 ```
+
+`*.mp4` entrou com o #10957 (item 6). A linha não precisa ser escrita à mão: `npx tsx scripts/onedrive-skip-file-config.ts --apply` faz isso sem duplicar o que já existe.
 
 Padrão a padrão:
 
@@ -150,6 +152,51 @@ Quem investiga "o sync estava fora naquela hora?" precisa olhar duas fontes. Ela
 **Nenhum dos dois é "o certo", e silêncio de qualquer um deles nunca é evidência de que o sync está saudável.** Ao reconstruir uma janela de incidente, cheque as duas — e, se elas divergirem, a divergência em si já localiza o intervalo.
 
 Por que não fundir: um é sensível e local à decisão de merge, o outro é lento e vale mesmo sem ninguém trabalhando. Unificar limiar ou mecanismo pioraria os dois.
+
+## Item 6 — Cota: vídeo fora do sync, retenção e alarme (#10957)
+
+Em 23/10/2026 a conta do OneDrive ficou sem espaço e o sync de `data/` parou. A causa era vídeo: `data/` tinha 4,8 GB, `data/editions/2610` sozinho 2,0 GB, quase todo `.mp4` (edição com vídeo 0,4 a 0,7 GB contra ~0,1 GB sem). O vídeo já tem cópia fora do disco (YouTube, R2 pros verticais, a fonte no Drive, que `fetch-drive-video.ts` baixa de novo). Decisão do editor (briefing do overnight 261026b): tirar `*.mp4` do sync, retenção por data, e alarme de cota que diga a causa.
+
+### Peças
+
+- `scripts/onedrive-skip-file-config.ts` — põe `*.mp4` (e os padrões do item 2) no `skip_file` de `~/.config/onedrive/config`. Idempotente, dry-run por padrão, `--apply` grava com backup `.bak-{timestamp}` ao lado. Não reinicia o daemon nem chama o binário `onedrive`. `--print` mostra a linha recomendada inteira. Lógica em `scripts/lib/onedrive-skip-file.ts`.
+- `scripts/prune-edition-videos.ts` — retenção dos `.mp4` de `data/editions/` pela data da EDIÇÃO (diretório `AAMMDD`, não o mtime). Dry-run por padrão, mantém 14 dias (`--keep-days`), `--apply` apaga. `.mp4` sem diretório de edição no caminho nunca é tocado. Não está agendado: armar a retenção automática fica pra depois de o editor ver o dry-run. Lógica em `scripts/lib/edition-video-retention.ts`.
+- Sinal de cota no `scripts/onedrive-sync-alarm.ts` — lê (só leitura) o log do daemon (`journalctl --user -u onedrive`, janela de `--tolerance-hours`) atrás de recusa de upload por falta de espaço, e mede o que `data/` sincroniza descontando o `skip_file` efetivo, contra o orçamento `--quota-gb` (default 5, aviso a partir de `--quota-warn-pct` 80). Achado próprio, `check: "onedrive-quota"`: `quota-full` (P1, recusa no log ou uso ≥ cota) e `quota-near` (P2). O texto da issue e do e-mail traz a causa: total, quanto é `.mp4` e quanto dele ainda sincroniza, os maiores diretórios (`editions/{AAMM}` separado) e arquivos, e o passo que resolve. Sem `data/` e sem recusa no log, o veredito é `unmeasured` e as issues de cota ficam congeladas (não fecham por falta de medida). Lógica em `scripts/lib/onedrive-quota.ts`.
+
+**Premissa do orçamento:** 5 GB é inferido, não medido — `data/` com 4,8 GB encheu a conta, o que fecha com o plano gratuito. `onedrive --display-quota` recusa rodar com o daemon ativo, e o alarme não usa o token do cliente pra consultar a Graph por fora (poderia rotacionar o refresh token dele). Se a cota real for outra, passar `--quota-gb` no registro da task.
+
+**O uso local subestima a cota.** `skip_file` não apaga a cópia que já subiu, e apagar no OneDrive manda pra lixeira, que também conta. Por isso a recusa no log vence a medida local.
+
+### Como aplicar no `300` (manual, nesta ordem)
+
+```bash
+# 1. Ver o plano e gravar o skip_file (backup automático ao lado):
+npx tsx scripts/onedrive-skip-file-config.ts
+npx tsx scripts/onedrive-skip-file-config.ts --apply
+# 2. Reiniciar o daemon pra pegar a config nova:
+systemctl --user restart onedrive
+journalctl --user -u onedrive -n 50 --no-pager
+```
+
+Se o log pedir `--resync` por mudança de config (algumas versões do cliente exigem isso quando `skip_file` muda), parar o serviço antes (`systemctl --user stop onedrive`), rodar `onedrive --resync` uma vez, e religar. Isso relista a conta inteira: fazer com tempo.
+
+```bash
+# 3. Liberar a cota: os .mp4 que já subiram seguem ocupando espaço online.
+#    Apagar pelo OneDrive web (pasta Documentos/diaria-studio-data/editions,
+#    filtrar por .mp4) e esvaziar a lixeira (Lixeira → Esvaziar e, depois,
+#    "Lixeira de segundo estágio" no painel). Com *.mp4 no skip_file, apagar
+#    online não apaga a cópia local.
+# 4. Retenção local (opcional, depois de olhar o dry-run):
+npx tsx scripts/prune-edition-videos.ts
+npx tsx scripts/prune-edition-videos.ts --apply
+# 5. Conferir o alarme (dry-run não grava canário nem cria issue):
+npx tsx scripts/onedrive-sync-alarm.ts --dry-run
+```
+
+### Efeitos colaterais a conferir
+
+- **Vídeo deixa de atravessar máquinas.** Com `*.mp4` fora do sync no `300`, um vídeo baixado ou gerado lá não aparece no Windows do editor, e vice-versa. O caso conhecido é o passo guiado do Instagram no Chrome (`/diaria-shorts`, Passo 3b, roda só no Windows) usando `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`: se o `--publish` que gera esse arquivo rodou no `300`, ele precisa ser gerado de novo no Windows (ou o vertical baixado do Drive lá).
+- **O Windows não lê `skip_file`.** O cliente oficial do Windows não tem essa chave; o equivalente é a política "Excluir tipos específicos de arquivo do upload" (`EnableODIgnoreListFromGPO`, registro `HKLM\SOFTWARE\Policies\Microsoft\OneDrive\EnableODIgnoreListFromGPO` com um valor `*.mp4`). Sem isso, um `.mp4` salvo em `data/` no Windows continua subindo.
 
 ## Relacionadas
 
