@@ -1,7 +1,7 @@
 ---
 name: hermes-diaria-continuo
 description: Mantém continuamente a fila técnica da Diária delegando execução ao harness do Claude Code (modelos OpenRouter) e classificação ao código real do repo.
-version: 0.5.18
+version: 0.5.19
 author: Pixel, Hermes Agent
 license: MIT
 platforms: [linux]
@@ -477,9 +477,13 @@ delegação no meio. Com `Exceeded USD budget`, o valor a mexer é para CIMA
      prompt que o worktree JÁ está na branch `continuo/fix-N-slug` (criada
      pelo `worktree add -b`): pular o `git switch -c` do bloco e passar
      `--base main` explícito no `gh pr create`.
-   - O merge dessa PR NÃO é automático: `continuo-pr-review.sh` e o pickup
-     do overnight são só-studio. Registrar no relatório "PR do design
-     aguardando merge humano: vjpixel/diaria-design#P".
+   - O merge dessa PR é o do `continuo-pr-review.sh` (#10900, decisão
+     261023b): o mesmo gate do studio (review independente + CI verde +
+     portões do `check-continuo-merge-gate.ts`), com o lock do design
+     (`merge-lock-acquire --repo vjpixel/diaria-design`). O tick NUNCA
+     mergeia; o pickup do overnight segue só-studio. Registrar no relatório
+     "PR do design aberta: vjpixel/diaria-design#P (merge pelo
+     continuo-pr-review)".
 3. **Antes** de entrar na fila (próximo item): `npx tsx
    scripts/check-branch-issue-consistency.ts --pr N`. **Rastreabilidade
    (#6804)**, achado ao limpar 61 branches `continuo/`: branch nomeada
