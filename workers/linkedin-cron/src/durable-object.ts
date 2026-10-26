@@ -65,9 +65,11 @@ export interface DoStoredPayload {
  *   GET  /idem    → { queue_key: string | null } — só no DO-índice `idem:{uuid}` (#10992)
  *   POST /idem    body: { queue_key } → grava a queue key atual da chave idempotente
  *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
- *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null } (consultado por fireDueItems)
+ *                 → body { if_not_claiming: true }: 409 { cancelled: false, claiming: true } durante claim ativo (#11107)
+ *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown: string | null } (consultado por fireDueItems; send_unknown #11106)
  *   POST /claim   → check-and-set atômico de `claiming` dentro de
- *                   blockConcurrencyWhile. Retorna { claimed: boolean }.
+ *                   blockConcurrencyWhile. Retorna { claimed: boolean; entry?: QueueEntry }
+ *                   (`entry` = payload armado, só com claimed=true, #11107).
  *                   `true` significa "este caller ganhou o claim e pode postar".
  *                   `false` significa "outro caller já está processando" — não postar.
  *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
@@ -158,14 +160,39 @@ export class LinkedInScheduler {
     }
 
     if (url.pathname === "/cancel" && request.method === "POST") {
-      // deleteAll limpa payload + fired + claiming; deleteAlarm cancela o alarm.
-      // Ordem: deleteAlarm primeiro pra evitar janela onde o alarm dispara mas
-      // o storage ainda tem payload (risco baixo mas defensivo).
-      await this.state.storage.deleteAlarm();
-      await this.state.storage.deleteAll();
-      return new Response(JSON.stringify({ cancelled: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+      // #11107 — body opcional `{ if_not_claiming: true }`: recusa com 409
+      // (mesmo critério do `/arm`, #11035) se um disparo está em andamento. O
+      // enqueue de conteúdo mudado usa esse modo: checar `/status` e só depois
+      // cancelar deixava o alarm/cron ganhar o `/claim` no meio, e o
+      // `deleteAll` apagava o `claiming` dele — o `/arm` seguinte armava o
+      // payload novo enquanto o disparo em curso publicava o velho. Sem o body
+      // (DELETE /queue, limpeza de tombstone e fallback do `/status-set-fired`
+      // no cron, que já segura o claim), o cancel segue incondicional.
+      let ifNotClaiming = false;
+      try {
+        const body = (await request.json()) as { if_not_claiming?: unknown } | null;
+        ifNotClaiming = body?.if_not_claiming === true;
+      } catch { /* sem body = cancel incondicional */ }
+      return this.state.blockConcurrencyWhile(async () => {
+        if (ifNotClaiming) {
+          const claiming = await this.state.storage.get<boolean>("claiming");
+          const claimedAt = await this.state.storage.get<number>("claimed_at");
+          if (claiming && (claimedAt === undefined || Date.now() - claimedAt <= CLAIM_TTL_MS)) {
+            return new Response(JSON.stringify({ cancelled: false, claiming: true }), {
+              status: 409,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        // deleteAll limpa payload + fired + claiming; deleteAlarm cancela o alarm.
+        // Ordem: deleteAlarm primeiro pra evitar janela onde o alarm dispara mas
+        // o storage ainda tem payload (risco baixo mas defensivo).
+        await this.state.storage.deleteAlarm();
+        await this.state.storage.deleteAll();
+        return new Response(JSON.stringify({ cancelled: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       });
     }
 
@@ -176,7 +203,10 @@ export class LinkedInScheduler {
       // travou no meio — logar DLQ-style error pra investigação do editor.
       const claiming = (await this.state.storage.get<boolean>("claiming")) ?? false;
       const claimedAt = await this.state.storage.get<number>("claimed_at");
-      return new Response(JSON.stringify({ fired, claiming, claimed_at: claimedAt ?? null }), {
+      // #11106 — motivo do envio ambíguo gravado pelo alarm (o DO não escreve
+      // no KV): o cron move a entry pra DLQ com esse `last_error`.
+      const sendUnknown = (await this.state.storage.get<string>("send_unknown")) ?? null;
+      return new Response(JSON.stringify({ fired, claiming, claimed_at: claimedAt ?? null, send_unknown: sendUnknown }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -212,7 +242,15 @@ export class LinkedInScheduler {
       // #10922 — quem ganhou o claim recebe o container de Reels que o alarm
       // deixou em processamento (o cron lê a entry do KV, que não o tem).
       const reelsContainer = claimed ? (await this.state.storage.get<ReelsContainerRef>("reels_container")) ?? null : null;
-      return new Response(JSON.stringify(reelsContainer ? { claimed, reels_container: reelsContainer } : { claimed }), {
+      // #11107 — e a entry do payload armado (strongly consistent, ao contrário
+      // do KV): o cron compara com a cópia do KV que leu ANTES do claim e não
+      // dispara se um re-enqueue trocou o conteúdo nesse meio-tempo.
+      const armedEntry = claimed ? (await this.state.storage.get<DoStoredPayload>("payload"))?.entry ?? null : null;
+      return new Response(JSON.stringify({
+        claimed,
+        ...(reelsContainer && { reels_container: reelsContainer }),
+        ...(armedEntry && { entry: armedEntry }),
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -341,6 +379,21 @@ export class LinkedInScheduler {
       threads,
       linkedin,
     });
+
+    if (outcome.status === "send_unknown") {
+      // #11106 — a Meta pode ter publicado. Liberar o claim (como no `failed`)
+      // deixava o cron refazer container + publish e duplicar o post. Marca o
+      // DO como disparado (tryClaim/`/arm` recusam, payload apagado) e guarda o
+      // motivo; o cron vê `send_unknown` no `/status` e move a entry pra DLQ.
+      await this.state.storage.put("send_unknown", outcome.reason);
+      await this.state.storage.put("fired", true);
+      await this.state.storage.delete("payload");
+      await this.state.storage.delete("reels_container");
+      await this.state.storage.delete("claiming");
+      await this.state.storage.delete("claimed_at");
+      console.error(`[DO alarm] ${key} envio ambíguo, não refeito: ${outcome.reason} — cron move pra DLQ`);
+      return;
+    }
 
     if (outcome.status === "dlq") {
       await this.state.storage.delete("claiming");

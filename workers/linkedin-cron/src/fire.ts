@@ -1,5 +1,5 @@
 import type { Env, QueueEntry, ReelsContainerRef } from "./index";
-import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS } from "./index";
+import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS, sameQueueContent } from "./index";
 import {
   fireQueueEntry,
   pickReelsContainer,
@@ -96,7 +96,16 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
         // Fix #F3 (confirmed bug): include `claiming` in the type — previously the cast
         // `as { fired: boolean }` dropped `claiming` from the parsed object, making the
         // crash-detection logic (claiming=true + fired=false) permanently unreachable.
-        const status = await statusRes.json() as { fired: boolean; claiming: boolean; claimed_at: number | null };
+        const status = await statusRes.json() as { fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown?: string | null };
+        if (typeof status.send_unknown === "string" && status.send_unknown !== "") {
+          // #11106 — o alarm teve resposta ambígua no publish e não refez; só
+          // ele sabe disso (o DO não escreve no KV). DLQ com o motivo, sem
+          // re-disparar — o editor confere o perfil.
+          await moveToDlq(env, k.name, entry, status.send_unknown);
+          console.error(`[fire] ${k.name} envio ambíguo no alarm — dlq sem refazer: ${status.send_unknown}`);
+          dlq++;
+          continue;
+        }
         if (status.fired) {
           // DO já disparou — apenas limpar KV entry sem re-fire
           await env.LINKEDIN_QUEUE.delete(k.name);
@@ -116,15 +125,34 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       // não disparamos — evita dup cron↔alarm.
       const claimRes = await doStub.fetch("https://do/claim", { method: "POST" });
       if (claimRes.ok) {
-        const claimData = await claimRes.json() as { claimed: boolean; reels_container?: ReelsContainerRef };
+        const claimData = await claimRes.json() as { claimed: boolean; reels_container?: ReelsContainerRef; entry?: QueueEntry };
         doReelsContainer = claimData.reels_container ?? null;
         if (!claimData.claimed) {
           // Alarm (ou outro cron) ganhou o claim — não postar.
           // Item será limpo na próxima rodada do cron quando fired=true.
           console.log(`[fire] ${k.name} claim lost — alarm or peer cron already claimed, skipping`);
           cronShouldFire = false;
+        } else {
+          // #11107 — a entry acima foi lida do KV ANTES do /status + /claim. Um
+          // re-enqueue completo nessa janela (cancel → put → arm) trocou o
+          // conteúdo; disparar a cópia velha publicava o texto antigo e, no
+          // sucesso, apagava a key que já tinha o novo. Confere contra o payload
+          // armado no DO (strongly consistent) e contra uma releitura do KV; se
+          // divergir, libera o claim e deixa a próxima volta disparar o atual.
+          const freshRaw = await env.LINKEDIN_QUEUE.get(k.name);
+          let fresh: QueueEntry | null = null;
+          try { fresh = freshRaw === null ? null : (JSON.parse(freshRaw) as QueueEntry); } catch { fresh = null; }
+          const changedInDo = claimData.entry !== undefined && !sameQueueContent(claimData.entry, entry);
+          const changedInKv = fresh === null || fresh.cancelled === true || !sameQueueContent(fresh, entry);
+          if (changedInDo || changedInKv) {
+            try { await doStub.fetch("https://do/release-claim", { method: "POST" }); } catch { /* TTL do claim libera */ }
+            console.warn(
+              `[fire] ${k.name} conteúdo mudou entre a leitura do KV e o claim (${changedInDo ? "payload do DO" : "KV"}) — não dispara a cópia velha; próxima volta usa o atual (#11107)`,
+            );
+            cronShouldFire = false;
+          }
         }
-        // Se claimed=true: cronShouldFire permanece true, cron dispara normalmente.
+        // Se claimed=true e o conteúdo bate: cronShouldFire permanece true, cron dispara normalmente.
       }
       // Se claimRes não ok: fallback — cron dispara normalmente
     } catch {
@@ -174,17 +202,23 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     }
     const outcome = await fireQueueEntry(entry, config);
 
+    if (outcome.status === "send_unknown") {
+      // #11106 — resposta ambígua do publish: a Meta pode ter publicado. Antes
+      // isto era `failed` → retry_count → o cron seguinte refazia container +
+      // publish e duplicava o post. Marca o DO como disparado (o alarm não
+      // refaz; payload apagado) e vai pra DLQ sem nova tentativa.
+      await markDoFired(env, k.name);
+      const dlqKey = await moveToDlq(env, k.name, entry, outcome.reason);
+      console.error(`[fire] ${k.name} envio ambíguo, não refeito — dlq: ${outcome.reason} (dlq_key=${dlqKey})`);
+      dlq++;
+      continue;
+    }
+
     if (outcome.status === "dlq") {
       // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
       // fica com claiming=true permanente e o alarm fica travado até eviction.
       await releaseCronClaim();
-      const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
-      await env.LINKEDIN_QUEUE.put(
-        dlqKey,
-        JSON.stringify({ ...entry, retry_count: MAX_RETRIES, last_error: outcome.reason }),
-        { expirationTtl: DLQ_TTL_SECONDS },
-      );
-      await env.LINKEDIN_QUEUE.delete(k.name);
+      const dlqKey = await moveToDlq(env, k.name, entry, outcome.reason);
       console.error(`[fire] ${k.name} dropped to dlq: ${outcome.reason} (dlq_key=${dlqKey})`);
       dlq++;
       continue;
@@ -199,61 +233,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     let failureReason: string | undefined;
     if (outcome.status === "fired") {
       await env.LINKEDIN_QUEUE.delete(k.name);
-      // (#2235 fix) Transicionar DO para fired=true + limpar payload com retry robusto.
-      // CRÍTICO: alarm() lê o PAYLOAD do DO storage, NÃO do KV. Sem fired=true E sem
-      // payload no DO, o alarm não tem o quê postar mesmo se re-disparar via TTL expiry.
-      // Dupla proteção (espelhando o alarm path em alarm()):
-      //   1. fired=true: tryClaim() retorna false imediatamente.
-      //   2. payload deletado por /status-set-fired: alarm re-entry aborta cedo (payload missing).
-      // Sem retry aqui, uma falha silenciosa deixa o DO em claiming=true+fired=false+payload
-      // presente → cron pode re-clamar via TTL e re-postar (double-post).
-      //
-      // (#2235 fix F8) DO stub içado pra fora do loop: idFromName()+get() é O(1) mas
-      // chamado 3× no loop original sem necessidade — içar evita redundância e simplifica.
-      let firedSetOk = false;
-      let sfDoStub: { fetch: (url: string, init?: RequestInit) => Promise<Response> } | null = null;
-      try {
-        const sfDoId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
-        sfDoStub = env.LINKEDIN_SCHEDULER.get(sfDoId);
-      } catch { /* binding ausente — sfDoStub permanece null */ }
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (!sfDoStub) break;
-        try {
-          const sfRes = await sfDoStub.fetch("https://do/status-set-fired", { method: "POST" });
-          if (sfRes.ok) {
-            firedSetOk = true;
-            break;
-          }
-          console.warn(`[fire] /status-set-fired attempt ${attempt + 1} returned ${sfRes.status} for key=${k.name}`);
-        } catch (sfErr) {
-          // (#2235 fix F9) String(sfErr) em vez de (sfErr as Error).message — undefined pra não-Error
-          console.warn(`[fire] /status-set-fired attempt ${attempt + 1} failed for key=${k.name}: ${String(sfErr)}`);
-        }
-        if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
-      }
-      if (!firedSetOk) {
-        // Falha persistente: KV já deletado, mas DO ainda tem payload + claiming=true.
-        // (#2235 fix F1) Chamar /cancel best-effort: sem payload, alarm re-entry não tem o quê
-        // postar mesmo que re-claime via TTL. Invariante: payload limpo ⇒ sem re-post.
-        // Se /cancel também falhar, NÃO há mais o que fazer (KV já deletado) — logar crítico.
-        let cancelledViaCancel = false;
-        if (sfDoStub) {
-          try {
-            const cancelRes = await sfDoStub.fetch("https://do/cancel", { method: "POST" });
-            cancelledViaCancel = cancelRes.ok;
-            if (cancelRes.ok) {
-              console.warn(`[fire] /status-set-fired failed after 3 attempts for key=${k.name} — called /cancel to clear payload (double-post prevention)`);
-            } else {
-              console.error(`[fire] CRITICAL: /status-set-fired AND /cancel failed for key=${k.name} status=${cancelRes.status} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
-            }
-          } catch (cancelErr) {
-            console.error(`[fire] CRITICAL: /status-set-fired AND /cancel threw for key=${k.name}: ${String(cancelErr)} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
-          }
-        } else {
-          console.error(`[fire] CRITICAL: /status-set-fired skipped (DO binding absent) for key=${k.name} — double-post risk if alarm re-fires via TTL`);
-        }
-        void cancelledViaCancel; // loggado acima
-      }
+      await markDoFired(env, k.name);
       console.log(
         `[fire] ${k.name} fired (channel=${entry.channel ?? "linkedin"} destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
       );
@@ -327,4 +307,80 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
   }
 
   return { fired, errors, dlq };
+}
+
+/**
+ * Marca o DO como disparado (`fired=true`, payload apagado), com retry e
+ * `/cancel` de fallback. Usado depois de um disparo bem-sucedido do cron e,
+ * desde o #11106, depois de um envio ambíguo (`send_unknown`): nos dois casos o
+ * alarm não pode refazer o post.
+ */
+async function markDoFired(env: Env, key: string): Promise<void> {
+  // (#2235 fix) Transicionar DO para fired=true + limpar payload com retry robusto.
+  // CRÍTICO: alarm() lê o PAYLOAD do DO storage, NÃO do KV. Sem fired=true E sem
+  // payload no DO, o alarm não tem o quê postar mesmo se re-disparar via TTL expiry.
+  // Dupla proteção (espelhando o alarm path em alarm()):
+  //   1. fired=true: tryClaim() retorna false imediatamente.
+  //   2. payload deletado por /status-set-fired: alarm re-entry aborta cedo (payload missing).
+  // Sem retry aqui, uma falha silenciosa deixa o DO em claiming=true+fired=false+payload
+  // presente → cron pode re-clamar via TTL e re-postar (double-post).
+  //
+  // (#2235 fix F8) DO stub içado pra fora do loop: idFromName()+get() é O(1) mas
+  // chamado 3× no loop original sem necessidade — içar evita redundância e simplifica.
+  let firedSetOk = false;
+  let sfDoStub: { fetch: (url: string, init?: RequestInit) => Promise<Response> } | null = null;
+  try {
+    const sfDoId = env.LINKEDIN_SCHEDULER.idFromName(key);
+    sfDoStub = env.LINKEDIN_SCHEDULER.get(sfDoId);
+  } catch { /* binding ausente — sfDoStub permanece null */ }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!sfDoStub) break;
+    try {
+      const sfRes = await sfDoStub.fetch("https://do/status-set-fired", { method: "POST" });
+      if (sfRes.ok) {
+        firedSetOk = true;
+        break;
+      }
+      console.warn(`[fire] /status-set-fired attempt ${attempt + 1} returned ${sfRes.status} for key=${key}`);
+    } catch (sfErr) {
+      // (#2235 fix F9) String(sfErr) em vez de (sfErr as Error).message — undefined pra não-Error
+      console.warn(`[fire] /status-set-fired attempt ${attempt + 1} failed for key=${key}: ${String(sfErr)}`);
+    }
+    if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+  }
+  if (!firedSetOk) {
+    // Falha persistente: KV já deletado, mas DO ainda tem payload + claiming=true.
+    // (#2235 fix F1) Chamar /cancel best-effort: sem payload, alarm re-entry não tem o quê
+    // postar mesmo que re-claime via TTL. Invariante: payload limpo ⇒ sem re-post.
+    // Se /cancel também falhar, NÃO há mais o que fazer (KV já deletado) — logar crítico.
+    let cancelledViaCancel = false;
+    if (sfDoStub) {
+      try {
+        const cancelRes = await sfDoStub.fetch("https://do/cancel", { method: "POST" });
+        cancelledViaCancel = cancelRes.ok;
+        if (cancelRes.ok) {
+          console.warn(`[fire] /status-set-fired failed after 3 attempts for key=${key} — called /cancel to clear payload (double-post prevention)`);
+        } else {
+          console.error(`[fire] CRITICAL: /status-set-fired AND /cancel failed for key=${key} status=${cancelRes.status} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
+        }
+      } catch (cancelErr) {
+        console.error(`[fire] CRITICAL: /status-set-fired AND /cancel threw for key=${key}: ${String(cancelErr)} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
+      }
+    } else {
+      console.error(`[fire] CRITICAL: /status-set-fired skipped (DO binding absent) for key=${key} — double-post risk if alarm re-fires via TTL`);
+    }
+    void cancelledViaCancel; // loggado acima
+  }
+}
+
+/** Move a entry pra `dlq:` (PUT antes do delete, #894 P1-A) e devolve a key da DLQ. */
+async function moveToDlq(env: Env, key: string, entry: QueueEntry, lastError: string): Promise<string> {
+  const dlqKey = buildDlqKey(key, entry.scheduled_at);
+  await env.LINKEDIN_QUEUE.put(
+    dlqKey,
+    JSON.stringify({ ...entry, retry_count: MAX_RETRIES, last_error: lastError }),
+    { expirationTtl: DLQ_TTL_SECONDS },
+  );
+  await env.LINKEDIN_QUEUE.delete(key);
+  return dlqKey;
 }
