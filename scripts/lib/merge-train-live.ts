@@ -763,9 +763,9 @@ export interface MergeSoloOptions {
 /** Piso da bissecção = caminho de HOJE, sem trem: revalida o Gate 2 do PR
  * (mesma revalidação que `mergeTrainBatch` faz por PR do lote) e mergeia
  * direto sob o mesmo merge lock, confirmando via estado real (#573).
- * Reusa a própria mensagem do PR (`gh pr merge --squash` sem
- * `--subject`/`--body` customizado) — diferente de `mergeTrainBatch`, que
- * PRECISA de mensagem custom porque combina >1 PR num commit só.
+ * #11190: usa título e body atuais da PR como mensagem explícita do squash.
+ * Sem isso, o GitHub pode herdar Closes de um commit mesmo após o body
+ * ter sido alterado para REFS (escopo parcial).
  *
  * Confia no CI do PR rodado sobre a base em que ele foi aberto — por isso
  * `runMergeTrain` NUNCA chama esta função pra um PR que esteve num lote
@@ -795,7 +795,21 @@ export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSo
     };
   }
   try {
-    const merge = runner.exec("gh", ["pr", "merge", String(prNumber), "--squash"]);
+    const message = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "title,body"]);
+    if (!message.ok) return { ok: false, error: `mensagem da PR #${prNumber} ilegível: ${message.stderr}` };
+    let title: string;
+    let body: string;
+    try {
+      const data = JSON.parse(message.stdout);
+      if (typeof data.title !== "string" || !data.title.trim() || typeof data.body !== "string") {
+        throw new Error("title/body inválidos");
+      }
+      title = data.title;
+      body = data.body;
+    } catch (err) {
+      return { ok: false, error: `mensagem da PR #${prNumber} ilegível: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    const merge = runner.exec("gh", ["pr", "merge", String(prNumber), "--squash", "--subject", title, "--body", body]);
     const mergeOk = merge.ok || confirmMerged(runner, prNumber);
     if (!mergeOk) return { ok: false, error: `gh pr merge --squash falhou (confirmado via gh pr view --json state,mergedAt): ${merge.stderr}` };
     const pull = runner.exec("git", ["pull"]);
