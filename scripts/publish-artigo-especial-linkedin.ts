@@ -487,6 +487,41 @@ export async function runArtigoEspecialLinkedinDispatch(
   return { results, failedCount };
 }
 
+/**
+ * Planeja os horários da página e do perfil sem `--at` (#10819, #11108).
+ *
+ * Só os alvos de `only` entram no planner (#11108 item 2): antes o perfil era
+ * sempre incluído, e com `--only pagina` um D+2 sem slot seguro fazia
+ * `planDivulgacao` lançar "sem slot seguro para perfil", abortando o único
+ * dispatch pedido. `scheduledAtPerfil` fica `undefined` quando o perfil não
+ * está no `only`. Canal já concluído (`decideChannelAction` → skip) também
+ * não é planejado e cai no default de `ats`, que o runner nem usa (pula).
+ */
+export function planArtigoEspecialLinkedinSchedule(params: {
+  ats: Record<LinkedinTarget, string>;
+  grid: Parameters<typeof planDivulgacao>[0];
+  state: ReturnType<typeof readArtigoEspecialState>;
+  only: readonly LinkedinTarget[];
+  force: boolean;
+  now?: number;
+}): { scheduledAt: string; scheduledAtPerfil: string | undefined; decisions: ReturnType<typeof planDivulgacao> } {
+  const { ats, grid, state, only, force, now } = params;
+  const targets: LinkedinTarget[] = [...new Set(only)];
+  const requests = targets
+    .filter((target) => decideChannelAction(state, TARGET_TO_CHANNEL[target], force).action !== "skip")
+    .map((target) => ({
+      key: target,
+      account: target === "pagina" ? "linkedin:diaria" : "linkedin:pessoal",
+      preferredAt: ats[target],
+    }));
+  const decisions = planDivulgacao(grid, requests, now);
+  const scheduledAt = decisions.find((d) => d.key === "pagina")?.at ?? ats.pagina;
+  const scheduledAtPerfil = targets.includes("perfil")
+    ? (decisions.find((d) => d.key === "perfil")?.at ?? ats.perfil)
+    : undefined;
+  return { scheduledAt, scheduledAtPerfil, decisions };
+}
+
 async function main(): Promise<void> {
   const parsed = parseCliArgs(process.argv.slice(2));
   if ("error" in parsed) {
@@ -548,14 +583,11 @@ async function main(): Promise<void> {
     const ats = resolveArtigoEspecialScheduledAts(fullConfig);
     const grid = await loadDivulgacaoGrid(fullConfig, [ats.pagina.slice(0, 10), ats.perfil.slice(0, 10)]);
     const state = readArtigoEspecialState(artigoEspecialStatePath(resolve(ROOT, "data"), ano, slug), ano, slug);
-    const targets: LinkedinTarget[] = [...new Set([...only, "perfil" as const])];
-    const requests = targets.filter((target) => decideChannelAction(state, TARGET_TO_CHANNEL[target], force).action !== "skip")
-      .map((target) => ({ key: target, account: target === "pagina" ? "linkedin:diaria" : "linkedin:pessoal", preferredAt: ats[target] }));
-    const decisions = planDivulgacao(grid, requests);
-    scheduledAt = decisions.find((d) => d.key === "pagina")?.at ?? ats.pagina;
-    scheduledAtPerfil = decisions.find((d) => d.key === "perfil")?.at ?? ats.perfil;
-    for (const d of decisions) console.error(`[planner #10819] ${d.key} ${d.at}: ${d.premise}`);
-    console.log(`Agenda planejada (#10819): pagina=${scheduledAt} perfil=${scheduledAtPerfil}`);
+    const plan = planArtigoEspecialLinkedinSchedule({ ats, grid, state, only, force });
+    scheduledAt = plan.scheduledAt;
+    scheduledAtPerfil = plan.scheduledAtPerfil;
+    for (const d of plan.decisions) console.error(`[planner #10819] ${d.key} ${d.at}: ${d.premise}`);
+    console.log(`Agenda planejada (#10819): pagina=${scheduledAt} perfil=${scheduledAtPerfil ?? "(fora do --only)"}`);
   }
 
   const linkedinPublishedPath = resolve(artigoDir, "linkedin-published.json");
@@ -579,6 +611,9 @@ async function main(): Promise<void> {
     slug,
     imageUrl,
     scheduledAt,
+    // #11108: sem isto o perfil caía em `scheduledAtPerfil ?? scheduledAt` no
+    // runner e saía em D+1 no horário da página, em vez de D+2 09:30 (#6014).
+    scheduledAtPerfil,
     only,
     force,
     dryRun,
