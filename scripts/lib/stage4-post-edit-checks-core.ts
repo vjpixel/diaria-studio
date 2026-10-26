@@ -65,10 +65,19 @@ export const HUMANIZER_SEAL_RULE_ID = "social-humanizer-seal-fresh";
  */
 export const HTML_FRESHNESS_RULE_ID = "newsletter-html-not-behind-reviewed";
 
+/**
+ * #11124: invariante do peso X do `# Curto` — o item 2 do sweep
+ * (`lint-social:stage-4`) já reporta o mesmo cálculo como `curto-x-weight`
+ * (#10180); rodar a invariante também duplicaria o achado. A invariante segue
+ * no `check-invariants --stage 4` e no `pipeline-sentinel.ts write --step 4`.
+ */
+export const CURTO_X_WEIGHT_RULE_ID = "curto-x-weight";
+
 /** Regras do registry do Stage 4 que o item 5 do sweep não roda (ver docs acima). */
 export const SWEEP_SKIPPED_RULE_IDS: ReadonlySet<string> = new Set([
   HUMANIZER_SEAL_RULE_ID,
   HTML_FRESHNESS_RULE_ID,
+  CURTO_X_WEIGHT_RULE_ID,
 ]);
 
 export interface Stage4Finding {

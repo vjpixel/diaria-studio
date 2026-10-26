@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 121 invariants.
+**Total**: 122 invariants.
 
 ## Static (estrutura do repo)
 
@@ -88,6 +88,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078) | #6078 |
 | `carousel-upload-incomplete` | slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only) | #6064 |
 | `carousel-upload-stale` | arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068) | #6068 |
+| `curto-x-weight` | post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180) | #11124 |
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
 | `fact-recurrence` | Possível mesmo fato em todas as seções (heurístico, warning-only) | #11083 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |

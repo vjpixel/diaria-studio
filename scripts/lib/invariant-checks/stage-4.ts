@@ -20,6 +20,7 @@ import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repea
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock } from "../extract-section.ts"; // #6064
+import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
@@ -2654,6 +2655,33 @@ function checkCarouselTextOverflow(
 }
 
 /**
+ * (#11124) Cada post do `# Curto` de `03-social.md` cabe nos 280 do X, pelo
+ * MESMO peso do Stage 5 (`checkCurtoXWeight` → `computeTwitterWeightedLength`,
+ * URL e `{edition_url}` = 23). O lint `curto-x-weight` (#10180) já roda em
+ * §4c.2b, ANTES do gate; uma reescrita feita DENTRO do gate (loop `ajustar`,
+ * edição puxada do doc, fast-path do painel do Studio) ficava fora dele. Caso
+ * real 261026: o D1 foi reescrito no gate, o `# Curto` do X ficou com 287 e só
+ * o `prep-twitter-posts.ts` do Stage 5 acusou, com o gate já aprovado. Como
+ * invariante, roda no `check-invariants --stage 4` e no
+ * `pipeline-sentinel.ts write --step 4`, que recusa o sentinel com o post
+ * estourado, qualquer que tenha sido o caminho da edição.
+ */
+function checkCurtoXWeightInvariant(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+  const report = checkCurtoXWeight(readFileSync(socialPath, "utf8"));
+  return report.errors.map((e) => ({
+    rule: "curto-x-weight",
+    message:
+      `${e.message} Encurtar só esse post em 03-social.md (edição cirúrgica, #495) e regravar o ` +
+      `selo do humanizador (check-humanizer-social.ts --write) antes de aprovar.`,
+    source_issue: "#11124",
+    severity: "error",
+    file: socialPath,
+  }));
+}
+
+/**
  * (#9568) Mesma checagem de overflow, pro carrossel de N slides do 4º post
  * (`## um`). Inerte enquanto `publishing.social.use_melhor_time` não estiver
  * definido. Severity "warning", nunca "error": o 4º post é fail-soft por
@@ -3874,6 +3902,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: (editionDir) => checkCarouselTextOverflow(editionDir),
   },
   {
+    id: "curto-x-weight",
+    description: "post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180)",
+    source_issue: "#11124",
+    stage: 4,
+    run: checkCurtoXWeightInvariant,
+  },
+  {
     id: "use-melhor-post-item-rendered",
     description: "item do 4º post (USE MELHOR) gravado em _internal/use-melhor-post.json saiu do USE MELHOR final — o 4º post seria pulado no Stage 5 (#9592, warning-only)",
     source_issue: "#9592",
@@ -3987,6 +4022,7 @@ export {
   checkCarouselUploadIncomplete,
   checkCarouselUploadStale,
   checkCarouselTextOverflow,
+  checkCurtoXWeightInvariant,
   checkUseMelhorPostItemRendered,
   checkUseMelhorPublicImageKeysHaveFiles,
   checkUseMelhorCarouselStaleAtGate,

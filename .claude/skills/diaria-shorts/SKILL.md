@@ -56,7 +56,7 @@ Mais de um candidato (V1, V2, V3…): vale o que tem "final" no nome (decisão d
 npx tsx scripts/publish-shorts.ts {AAMMDD}
 ```
 
-Dry-run: imprime título/descrição e horário do Shorts, a legenda de cada Reels, o horário e o que será pulado (já publicado, sem credencial, pendente). Link da edição: `--edition-url` > `_internal/05-edition-url.txt` > slug derivado do título (vira `[aviso]` — conferir antes de publicar).
+Dry-run: imprime título/descrição e horário do Shorts, a legenda de cada Reels, o horário e o que será pulado (já publicado, sem credencial, pendente). Link da edição: `--edition-url` > `_internal/05-edition-url.txt` > slug derivado do título do D1. No fluxo do dia (#10943: `/diaria-youtube` → `/diaria-shorts` → `/diaria-5-publicacao`) o vertical sai **antes** da Etapa 5, então `05-edition-url.txt` ainda não existe: com `publishing.newsletter.backend` = `"kit"` (o atual) o link derivado é **premissa**, não aviso, porque é a mesma regra com que o Stage 5 grava o arquivo (`publish-newsletter-kit.ts`, #7420). Com `"beehiiv"` continua `[aviso]` — o wizard da Beehiiv pode mudar o slug; conferir antes de publicar ou passar `--edition-url`.
 
 ## Passo 3 — Reels por API
 
