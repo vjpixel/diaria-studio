@@ -120,6 +120,11 @@ describe("renderCircleStackPost", () => {
     assert.equal(circleStackTitle(["261012"], "  Título   do D1 "), "Título do D1");
   });
 
+  it("o título segue o 1º destaque da seleção, não o 2º", () => {
+    const reordered = { ...selection, destaques: [...selection.destaques].reverse() };
+    assert.equal(renderCircleStackPost(reordered).title, "Sem edição");
+  });
+
   it("sem D1, o título cai em 'Semana de DD/MM' da segunda da semana de conteúdo", () => {
     assert.equal(circleStackTitle(["261012"]), "Semana de 12/10");
     assert.equal(circleStackTitle(["261012"], "   "), "Semana de 12/10");

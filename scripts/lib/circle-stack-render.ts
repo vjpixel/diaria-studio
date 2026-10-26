@@ -151,13 +151,14 @@ export function ddmm(aammdd: string): string {
 }
 
 /**
- * Pure: título do post — repete o título do D1 (pedido do editor 26/10/2026, antes era "Semana de DD/MM").
- * Sem D1 (seleção sem destaques ou título vazio) cai no "Semana de DD/MM" da segunda da semana de conteúdo.
+ * Pure: título do post — repete o título do 1º destaque do post (`sel.destaques[0]`, ordem da seleção;
+ * não é o `destaqueN === 1` da diária). Pedido do editor 26/10/2026, antes era "Semana de DD/MM".
+ * Título vazio cai no "Semana de DD/MM" da segunda da semana de conteúdo.
  */
 export function circleStackTitle(contentWindow: string[], d1Title?: string): string {
+  if (contentWindow.length === 0) throw new Error("contentWindow vazio");
   const d1 = d1Title?.replace(/\s+/g, " ").trim();
   if (d1) return d1;
-  if (contentWindow.length === 0) throw new Error("contentWindow vazio");
   return `Semana de ${ddmm(contentWindow[0])}`;
 }
 
