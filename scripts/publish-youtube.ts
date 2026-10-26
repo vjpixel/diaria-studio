@@ -10,7 +10,7 @@
  *   npx tsx scripts/publish-youtube.ts AAMMDD --dry-run
  *     [--edition-dir DIR] [--video PATH] [--episode N]
  *     [--edition-url URL] [--publish-at ISO]
- *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force | --accept-period-match]
  *
  * ## `--dry-run` (default seguro)
  *
@@ -67,6 +67,15 @@
  * Stage 5 será fail-soft quando o vídeo ainda não existir); com `--upload`,
  * exit 1 sem enviar nada.
  * Capa: `{editionDir}/04-youtube-thumb.jpg` (1280x720), opcional.
+ *
+ * Vídeo da edição já no canal (#11080): sem `--force`, o `--upload` confere
+ * os uploads recentes antes de enviar. Reconhecido por AAMMDD/`utm_campaign`
+ * ou pelo título do D1 → não envia, grava o registro e o link do D1 (exit 0).
+ * Reconhecido SÓ pelo período (vídeo qualquer no dia BRT da edição, #11132) →
+ * exit 1 sem enviar e sem gravar nada: pode ser uma live ou um vídeo avulso, e
+ * o link iria para o D1 público. O editor confere no Studio e roda de novo com
+ * `--accept-period-match` (é o vídeo da edição: registra e linka) ou
+ * `--force` (não é: sobe o vídeo da edição).
  */
 
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
@@ -237,6 +246,8 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   source?: "already-on-channel";
   /** Sinal que reconheceu o vídeo existente (só com `source`). */
   matched_by?: string;
+  /** `matched_by: "period"` aceito pelo editor via `--accept-period-match` (#11132). */
+  period_match_accepted?: boolean;
 }
 
 /**
@@ -270,6 +281,12 @@ export interface RunUploadInput {
   editionDir: string;
   env: Record<string, string | undefined>;
   force: boolean;
+  /**
+   * #11132: aceita um vídeo reconhecido só pelo período (`matchedBy: "period"`)
+   * como o desta edição. Sem isso o `--upload` sai exit 1 sem enviar nem gravar.
+   * Só o editor passa (`--accept-period-match`); o Stage 5 nunca.
+   */
+  acceptPeriodMatch?: boolean;
   readFile: (p: string) => Buffer;
   log: (line: string) => void;
   /**
@@ -387,6 +404,7 @@ function historyFrom(read: PublishedRecordRead): PreviousUploadEntry[] {
  * como publicado — e põe o link no D1 como num upload normal. Exit 0.
  * Vídeo com `uploadStatus` falho nunca chega aqui: `matchEditionVideo` o
  * descarta e o upload normal segue (#11103).
+ * #11132: só com `period` aceito pelo editor — ver `unconfirmedPeriodMatch`.
  */
 function recordExistingVideo(
   e: ExistingEditionVideoError,
@@ -417,6 +435,7 @@ function recordExistingVideo(
     rereadAt: now.toISOString(),
     source: "already-on-channel",
     matched_by: v.matchedBy,
+    ...(v.matchedBy === "period" ? { period_match_accepted: true } : {}),
     ...(history.length > 0 ? { previous_uploads: history } : {}),
   };
   input.log(
@@ -432,6 +451,24 @@ function recordExistingVideo(
   }
   const videoUrlWritten = writeD1VideoUrlAfterUpload(input.editionDir, record, input.d1SlotAt ?? null, input.log, !plan.effective.auditBlocked);
   return { exitCode: 0, record, skipped: true, videoUrlWritten };
+}
+
+/**
+ * #11132: o único sinal foi o período (vídeo no dia BRT da edição, sem AAMMDD,
+ * `utm_campaign` nem o título do D1). Pode ser uma live ou um vídeo avulso:
+ * gravar o registro poria esse link no D1 de X, Threads e Facebook, e subir por
+ * cima poderia duplicar um upload manual. Não envia, não grava registro nem
+ * link; exit 1 com as duas saídas para o editor.
+ */
+function unconfirmedPeriodMatch(e: ExistingEditionVideoError, input: RunUploadInput, plan: YouTubePublishPlan): RunUploadOutcome {
+  const v = e.video;
+  input.log(
+    `[erro] há um vídeo no canal no dia da edição ${plan.aammdd} que não traz a marca dela (${v.url}, "${v.title || "sem título"}", ` +
+      `publicado/agendado ${v.status?.publishAt ?? v.publishedAt ?? "sem data"}) — reconhecido só pelo período, sem AAMMDD, utm_campaign nem o título do D1. ` +
+      "Nada foi enviado nem gravado (o link não vai para o D1). Confira no YouTube Studio: se for o vídeo desta edição, rode de novo com " +
+      "--accept-period-match (registra e põe o link no D1); se não for, rode com --force (sobe o vídeo da edição).",
+  );
+  return { exitCode: 1, record: null, skipped: false };
 }
 
 /**
@@ -520,7 +557,10 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
     });
   } catch (e) {
-    if (e instanceof ExistingEditionVideoError) return recordExistingVideo(e, input, plan, recordPath, history, deps.now());
+    if (e instanceof ExistingEditionVideoError) {
+      if (e.video.matchedBy === "period" && !input.acceptPeriodMatch) return unconfirmedPeriodMatch(e, input, plan);
+      return recordExistingVideo(e, input, plan, recordPath, history, deps.now());
+    }
     const step = e instanceof YouTubeUploadError ? e.step : "desconhecida";
     const msg = `${(e as Error).message} (etapa ${step})`;
     if (!isIndeterminateUploadFailure(e)) {
@@ -601,7 +641,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -618,6 +658,11 @@ async function main(): Promise<number> {
         ? "publish-youtube: --dry-run e --upload são exclusivos."
         : "publish-youtube: escolha o modo — --dry-run (só o plano) ou --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659).",
     );
+    console.error(USAGE);
+    return 2;
+  }
+  if (flags.has("accept-period-match") && (!upload || flags.has("force"))) {
+    console.error("publish-youtube: --accept-period-match só vale com --upload e sem --force (o --force pula a conferência do canal).");
     console.error(USAGE);
     return 2;
   }
@@ -657,6 +702,7 @@ async function main(): Promise<number> {
     editionDir: dir,
     env: process.env,
     force: flags.has("force"),
+    acceptPeriodMatch: flags.has("accept-period-match"),
     readFile: (p) => readFileSync(p),
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),
