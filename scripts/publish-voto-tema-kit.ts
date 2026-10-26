@@ -63,6 +63,8 @@ import { updateSubscriberFields } from "./lib/kit-subscribers.ts";
 import { computePollToken } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { APOIO_EXCLUSIVE_PREVIEW_TEXT } from "./lib/shared/apoio-preview-text.ts";
+import { BOX, COLORS, FONTS, LAYOUT } from "./lib/shared/design-tokens.ts";
+import { tealDot } from "./lib/shared/email-components.ts";
 import { parseCicloVotacao, htmlEscapeVotoTema, formatPrazo, pollTokenKvKeyMirror, type BallotTema } from "../workers/artigos/src/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
@@ -82,25 +84,48 @@ export function publishedStatePath(dataDir: string, ciclo: string, audience: "el
   return resolve(dataDir, "artigo-especial", "votacao", ciclo, `published-${audience}.json`);
 }
 
-/** Pura — corpo HTML do e-mail: título + 1 botão por opção da cédula, cada
- *  link levando `?t={{ subscriber.voto_token }}`. @pure */
+/** Pura — corpo HTML do e-mail: kicker + título + prazo (painel bege) + 1
+ *  card contorno por opção da cédula, cada botão levando
+ *  `?t={{ subscriber.voto_token }}`. Tabelas com estilo inline e tokens do DS
+ *  (teal só como texto: ponto do kicker + link do placar; botão cheio em ink
+ *  numa célula de tabela, pro Outlook manter padding; font-size ∈ {12,16,22,26}). @pure */
 export function renderVotoTemaEmailHtml(ciclo: string, ballot: BallotTema): string {
-  const links = ballot.opcoes
+  const sans = `font-family:${FONTS.sans};`;
+  const serif = `font-family:${FONTS.serif};`;
+  const ink = `color:${COLORS.ink};`;
+  const kicker = (txt: string) =>
+    `<p style="margin:0 0 8px;${sans}font-size:12px;line-height:16px;font-weight:700;letter-spacing:1px;text-transform:uppercase;${ink}">${tealDot()} ${txt}</p>`;
+  const cards = ballot.opcoes
     .map(
       (o) =>
-        `<p><a href="${ARTIGOS_BASE_URL}/votacao/${ciclo}/${o.n}?t={{ subscriber.voto_token }}" ` +
-        `style="display:inline-block;background:#00A0A0;color:#fff;padding:10px 18px;border-radius:8px;` +
-        `text-decoration:none;font-weight:600">Votar em "${htmlEscapeVotoTema(o.titulo)}"</a> ` +
-        `— ${htmlEscapeVotoTema(o.descricao)}${o.proponente ? ` (sugestão de ${htmlEscapeVotoTema(o.proponente)})` : ""}</p>`,
+        `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;margin:0 0 16px;border:1px solid ${BOX.contornoBorder};border-radius:8px;background:${COLORS.paperEmail};">` +
+        `<tr><td style="padding:24px;">` +
+        kicker(`Opção ${o.n}`) +
+        `<p style="margin:0 0 8px;${serif}font-size:22px;line-height:28px;font-weight:700;${ink}">${htmlEscapeVotoTema(o.titulo)}</p>` +
+        `<p style="margin:0 0 20px;${sans}font-size:16px;line-height:24px;${ink}">${htmlEscapeVotoTema(o.descricao)}` +
+        `${o.proponente ? ` <em>Sugestão de ${htmlEscapeVotoTema(o.proponente)}.</em>` : ""}</p>` +
+        `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>` +
+        `<td bgcolor="${COLORS.ink}" style="background:${COLORS.ink};border-radius:8px;padding:14px 24px;">` +
+        `<a href="${ARTIGOS_BASE_URL}/votacao/${ciclo}/${o.n}?t={{ subscriber.voto_token }}" ` +
+        `aria-label="Votar em ${htmlEscapeVotoTema(o.titulo)}" ` +
+        `style="color:${COLORS.onInk};${sans}font-size:16px;line-height:16px;font-weight:600;text-decoration:none;">Votar neste tema</a>` +
+        `</td></tr></table>` +
+        `</td></tr></table>`,
     )
     .join("\n");
   // #9260: prazo no e-mail — no ciclo 2609 ele ficou de fora e ninguém sabia até quando votar.
   const prazoFmt = formatPrazo(ballot.prazo);
-  const prazoP = prazoFmt ? `\n<p><strong>Prazo para votar: ${htmlEscapeVotoTema(prazoFmt)}.</strong></p>` : "";
-  return `<h1>${htmlEscapeVotoTema(ballot.titulo)}</h1>
-<p>Você tem voz no tema do próximo Artigo Especial — escolha uma opção abaixo. Pode trocar seu voto depois, o último clique vale.</p>${prazoP}
-${links}
-<p><a href="${ARTIGOS_BASE_URL}/votacao/${ciclo}">Ver placar parcial</a></p>`;
+  const prazoBox = prazoFmt
+    ? `\n<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 28px;background:${BOX.painelBg};border-radius:8px;">` +
+      `<tr><td style="padding:12px 16px;${sans}font-size:16px;line-height:24px;${ink}"><strong>Prazo para votar: ${htmlEscapeVotoTema(prazoFmt)}.</strong></td></tr></table>`
+    : "";
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:${LAYOUT.containerWidth}px;margin:0 auto;"><tr><td>
+${kicker("Artigo Especial · Votação")}
+<h1 style="margin:0 0 16px;${serif}font-size:26px;line-height:32px;font-weight:700;${ink}">${htmlEscapeVotoTema(ballot.titulo)}</h1>
+<p style="margin:0 0 20px;${sans}font-size:16px;line-height:24px;${ink}">Você escolhe o tema do próximo Artigo Especial. É só clicar no botão da opção que preferir. Se mudar de ideia, clique em outra: vale o último voto.</p>${prazoBox}
+${cards}
+<p style="margin:12px 0 0;${sans}font-size:16px;line-height:24px;${ink}">Quer acompanhar? <a href="${ARTIGOS_BASE_URL}/votacao/${ciclo}" style="color:${COLORS.brand};font-weight:600;">Ver placar parcial</a></p>
+</td></tr></table>`;
 }
 
 /** Atraso do envio agendado do `--test-send` — curto o bastante pra conferir
