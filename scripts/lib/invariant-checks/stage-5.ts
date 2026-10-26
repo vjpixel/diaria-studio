@@ -1234,6 +1234,40 @@ function checkKitDiariaExclusiveAudienceDispatched(
   return [];
 }
 
+/**
+ * #10659: o §5b-youtube rodou? Na 261026 o passo (então dois comandos e um
+ * `log-event` em prosa) não rodou e nada acusou. Desde então ele é um comando
+ * só (`scripts/stage5-youtube.ts`), que SEMPRE grava `05-youtube-step.json` —
+ * inclusive com o consent desligado ou sem vídeo no Drive. Sem esse registro e
+ * sem `05-youtube-published.json` (upload pelo `/diaria-youtube`), o passo foi
+ * pulado. Warning: o vídeo é fail-soft, nunca trava o Stage 6. Sem
+ * `05-publish-consent.json` (edição antiga, ou Stage 5 sem 5b) não acusa.
+ */
+export function checkYouTubeStepRan(editionDir: string): InvariantViolation[] {
+  const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
+  if (!existsSync(consentPath)) return [];
+  try {
+    const consent = JSON.parse(readFileSync(consentPath, "utf8")) as { youtube?: unknown };
+    if (consent.youtube !== undefined && consent.youtube !== "auto") return [];
+  } catch {
+    return [];
+  }
+  const step = resolve(editionDir, "_internal", "05-youtube-step.json");
+  const published = resolve(editionDir, "_internal", "05-youtube-published.json");
+  if (existsSync(step) || existsSync(published)) return [];
+  return [
+    {
+      rule: "youtube-step-ran",
+      message:
+        "§5b-youtube não rodou: consent youtube auto, mas sem _internal/05-youtube-step.json nem 05-youtube-published.json — " +
+        "rode `npx tsx scripts/stage5-youtube.ts {AAMMDD} --edition-dir {EDITION_DIR}` (ou /diaria-youtube)",
+      source_issue: "#10659",
+      severity: "warning",
+      file: step,
+    },
+  ];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "sync-code-ran",
@@ -1259,6 +1293,15 @@ export const STAGE_5_RULES: InvariantRule[] = [
     // checado em §5a (pre-dispatch), antes de qualquer publicação acontecer.
     postDispatchOnly: true,
     run: checkSocialPublishedComplete,
+  },
+  {
+    id: "youtube-step-ran",
+    description: "§5b-youtube rodou: 05-youtube-step.json ou 05-youtube-published.json com consent youtube auto (#10659)",
+    source_issue: "#10659",
+    stage: 5,
+    // Roda no 5b-youtube, depois do 5a (pre-dispatch).
+    postDispatchOnly: true,
+    run: checkYouTubeStepRan,
   },
   {
     id: "stage-5-review-loop-enforced",

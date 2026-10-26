@@ -298,6 +298,20 @@ export interface ShortsConfig {
    * Sem `THREADS_PERSONAL_*` o destino é pulado com aviso (fail-soft).
    */
   threadsProfile: boolean;
+  /**
+   * #11070: Short pela YouTube Data API (`videos.insert` com `publishAt`, o
+   * mesmo publisher do horizontal). Sem `YOUTUBE_*` no ambiente o destino
+   * volta a ser o passo guiado no Studio (fail-soft). `false` força o guiado.
+   */
+  youtubeShortsApi: boolean;
+  /**
+   * #10982: o vídeo do perfil pessoal do LinkedIn sai pelo timer do `300`
+   * (`scripts/shorts-linkedin-profile-timer.ts`), não pela rodada do
+   * `/diaria-shorts`. Com `true`, uma rodada sem `--linkedin-timer` pula o
+   * `linkedin_profile` (`skip_delegated`): duas máquinas publicando o mesmo
+   * vídeo, com o registro ainda não sincronizado, duplicariam o post.
+   */
+  linkedinProfileViaTimer: boolean;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -315,6 +329,10 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   x: true,
   // #11122: código pronto e fail-soft até o token do Threads pessoal existir (#10772/#11077).
   threadsProfile: true,
+  // #11070: o publishAt publica sozinho mesmo sem a auditoria (medido em 23/10/2026).
+  youtubeShortsApi: true,
+  // #10982: desligado no código; o platform.config.json liga junto com o timer.
+  linkedinProfileViaTimer: false,
 });
 
 function defaultShortsConfig(): ShortsConfig {
@@ -327,6 +345,8 @@ function defaultShortsConfig(): ShortsConfig {
     linkedinPageRepost: DEFAULT_SHORTS_CONFIG.linkedinPageRepost,
     x: DEFAULT_SHORTS_CONFIG.x,
     threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
+    youtubeShortsApi: DEFAULT_SHORTS_CONFIG.youtubeShortsApi,
+    linkedinProfileViaTimer: DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer,
   };
 }
 
@@ -376,6 +396,8 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     linkedinPageRepost,
     x: optionalBool(raw, "x", DEFAULT_SHORTS_CONFIG.x),
     threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
+    youtubeShortsApi: optionalBool(raw, "youtube_shorts_api", DEFAULT_SHORTS_CONFIG.youtubeShortsApi),
+    linkedinProfileViaTimer: optionalBool(raw, "linkedin_profile_via_timer", DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer),
   };
 }
 

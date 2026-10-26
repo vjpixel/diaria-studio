@@ -1152,6 +1152,34 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#9568",
   },
   {
+    name: "Diaria-Shorts-LinkedIn-Profile",
+    description:
+      "publica o vertical da edição do dia no LinkedIn PESSOAL do editor, baixando do Drive quando ainda não está no 300 (#10982)",
+    steps: [{ key: "post", script: "scripts/shorts-linkedin-profile-timer.ts" }],
+    logPath: "shorts/.linkedin-profile-timer.log",
+    // Diária 06:31 BRT (#10982): 1 minuto depois do 1º horário do teste do
+    // vertical (#10831, `publishing.shorts.schedule.rotation_times`). Os
+    // horários em hora cheia (08:00, 12:00, e o `default_time` 12:00) caem na
+    // execução de hora em hora abaixo, no minuto 0. O script só publica depois
+    // do horário do vertical do dia (até 3 h de atraso), então rodar antes é
+    // no-op; o lock O_EXCL resolve a concorrência entre as duas. Mudou um
+    // horário do teste para fora da hora cheia? Ajustar aqui —
+    // `test/shorts-linkedin-profile-timer-10982.test.ts` trava o par.
+    // Sem `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153)
+    // arma no 300 depois do merge, que é o que tira o passo manual (#10982).
+    schedule: { kind: "daily", hour: 6, minute: 31 },
+    issue: "#10982",
+  },
+  {
+    name: "Diaria-Shorts-LinkedIn-Profile-Catchup",
+    description:
+      "de hora em hora: publica o vertical no LinkedIn PESSOAL quando o horário do dia é hora cheia (08:00/12:00) e baixa o vertical do Drive assim que ele aparece (#10982)",
+    steps: [{ key: "post", script: "scripts/shorts-linkedin-profile-timer.ts" }],
+    logPath: "shorts/.linkedin-profile-timer-catchup.log",
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#10982",
+  },
+  {
     name: "Diaria-Threads-Personal-Token",
     description:
       "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",

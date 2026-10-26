@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 122 invariants.
+**Total**: 123 invariants.
 
 ## Static (estrutura do repo)
 
@@ -152,6 +152,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `sync-code-ran` | Passo -3 (sync-code.ts --edition-dir) rodou e o código não ficou defasado (#8690) | #8690 |
 | `threads-creds-set` | THREADS_USER_ID + THREADS_ACCESS_TOKEN presentes — ausente pula Threads (#2479) | #2479 |
 | `twitter-creds-set` | publishing.social.twitter.buffer_channel_id presente em platform.config.json — ausente pula Twitter/X (#3994, via Buffer MCP) | #3994 |
+| `youtube-step-ran` | §5b-youtube rodou: 05-youtube-step.json ou 05-youtube-published.json com consent youtube auto (#10659) | #10659 |
 
 ## Stage 6 — Agendamento
 
