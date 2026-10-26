@@ -10,9 +10,10 @@ horários antigos são preferências para posts NOVOS. Reusar o planner de
 `scripts/divulgacao-slot-planner.ts` (2h entre posts da mesma conta, picos
 07–09/12–14/18–21 BRT como palpite geral, sem dados por conta; janela 06–22).
 A grade lê os stores diários (incluindo Reels/Shorts e collab do Instagram)
-e GET /list do Worker (timeout 10s, fail-soft com aviso). Stage 5 segue
-fixo conforme #10305. Facebook direto e X/Buffer ficam fora desta grade e
-mantêm os horários de referência. Não reagendar posts já registrados.
+e GET /list do Worker, os agendados direto no Facebook (Graph API
+`scheduled_posts`, por página habilitada) e a fila do X no Buffer
+(`BUFFER_ACCESS_TOKEN`); cada fonte tem timeout de 10s e é fail-soft com
+aviso. Stage 5 segue fixo conforme #10305. Não reagendar posts já registrados.
 Mostrar os horários efetivos por conta e as premissas no gate; respeitar
 avisos de grade incompleta. Não afirmar que todas as redes saem juntas.
 

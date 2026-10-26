@@ -135,7 +135,9 @@
  * indisponíveis. Com o store unificado presente e com ativo Kit, ARPU e
  * churn saem do ciclo de vida das assinaturas Kit (`computeKitLifetimeChurn`);
  * o diff de snapshots Beehiiv fica como fallback pra quando não há store.
- * Hotmart não tem fonte no repo e aparece como fonte sem dado (ARPU = PISO).
+ * Hotmart (#10734 4b): receita bruta do espelho `data/hotmart/vendas.jsonl`
+ * (`hotmart-revenue-source.ts`) quando ele cobre o mês inteiro; fora disso,
+ * fonte sem dado (ARPU = PISO).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
