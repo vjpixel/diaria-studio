@@ -101,6 +101,22 @@ export function renderPlacarPage(opts: PlacarPageOptions): string {
   );
 }
 
+/** #11201: convite sem formulário de voto nem identidade do visitante. */
+export function renderConviteApoioPage(ballot: BallotTema, apuracao: Apuracao): string {
+  const temas = ballot.opcoes.map((o) =>
+    `<div class="opcao"><strong>${htmlEscape(o.titulo)}</strong><p>${htmlEscape(o.descricao)}</p></div>`,
+  ).join("\n");
+  const barras = apuracao.opcoes.map((o) => barraHtml(o, apuracao.total, null)).join("\n");
+  return shell("Escolha os próximos temas", `<h1>Escolha os próximos temas</h1>
+    <p>Esta votação é exclusiva para apoiadores.</p>
+    <p>Seu voto não foi registrado. Quem apoia a partir de R$25/mês escolhe o tema dos Artigos Especiais.</p>
+    <p><a class="cta" href="https://apoia.se/diaria?utm_source=voto-tema">Apoiar no apoia.se</a></p>
+    <h2>Temas em disputa</h2>
+    ${temas}
+    <h2>Placar parcial</h2>
+    ${barras}`);
+}
+
 export interface VotoOpcaoPageOptions {
   ciclo: string;
   ballot: BallotTema;

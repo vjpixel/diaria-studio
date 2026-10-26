@@ -32,7 +32,7 @@ import {
   type VotoListado,
   type VotoRegistrado,
 } from "./voto-tema-core.ts";
-import { renderErroPage, renderPlacarPage, renderVotoOpcaoPage } from "./voto-tema-page.ts";
+import { renderConviteApoioPage, renderErroPage, renderPlacarPage, renderVotoOpcaoPage } from "./voto-tema-page.ts";
 
 export interface VotoTemaEnv {
   POLL: KVNamespace;
@@ -173,9 +173,7 @@ export async function handleVotacaoOpcaoGet(
   const authorized = await autorizarEleitor(email, ballot.eleitores);
   if (!authorized) {
     return html(
-      renderErroPage(
-        "Este link não pertence ao eleitorado desta votação (Conselho/Núcleo, R$25+/mês) — recusando registrar.",
-      ),
+      renderConviteApoioPage(ballot, apurar(ballot, await listVotos(env, ciclo))),
       403,
     );
   }
@@ -213,9 +211,7 @@ export async function handleVotoPost(request: Request, env: VotoTemaEnv, ciclo: 
   const authorized = await autorizarEleitor(email, ballot.eleitores);
   if (!authorized) {
     return html(
-      renderErroPage(
-        "Este link não pertence ao eleitorado desta votação (Conselho/Núcleo, R$25+/mês) — recusando registrar.",
-      ),
+      renderConviteApoioPage(ballot, apurar(ballot, await listVotos(env, ciclo))),
       403,
     );
   }
