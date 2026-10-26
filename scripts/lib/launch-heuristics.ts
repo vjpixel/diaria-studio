@@ -1920,17 +1920,32 @@ const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
   // science" (openai.com/index). Conservador: exige a frase completa "the
   // next era of" — não pega "a new era" nem "next generation" isolados.
   /\bthe\s+next\s+era\s+of\b/i,
-  // #11119: divulgação de incidente/vulnerabilidade de segurança em domínio
-  // oficial é notícia, não produto que o leitor usa. Casos reais movidos pelo
-  // editor LANÇAMENTOS → RADAR: "Patch the Planet: global response
-  // coordination as agents uncover critical vulnerabilities" (openai.com,
-  // 261022, decidido pelo tie-breaker) e "Security incident disclosure — July
-  // 2026" (huggingface.co, 260720). Lançamento de ferramenta de segurança
-  // ("Introducing X, …vulnerabilities") segue protegido pelo
-  // LAUNCH_VERB_TITLE_RE em isNonProductOfficialPost. Corpus: nenhum item com
-  // estes termos mantido em LANÇAMENTOS pelo editor.
-  /\b(?:security\s+incident|(?:coordinated\s+)?disclosure|vulnerabilit(?:y|ies))\b/i,
+  // #11119/#11183: o padrão de divulgação de segurança NÃO mora aqui — ver
+  // isSecurityDisclosureTitle abaixo (roda depois do short-circuit de type_hint).
 ];
+
+// #11119: divulgação de incidente/vulnerabilidade de segurança em domínio
+// oficial é notícia, não produto que o leitor usa. Casos reais movidos pelo
+// editor LANÇAMENTOS → RADAR: "Patch the Planet: global response coordination
+// as agents uncover critical vulnerabilities" (openai.com, 261022, decidido
+// pelo tie-breaker) e "Security incident disclosure — July 2026"
+// (huggingface.co, 260720) — nos dois o agent pesquisador marcou
+// type_hint ausente/"noticia", nunca "lancamento".
+//
+// #11183: fora de NON_PRODUCT_OFFICIAL_PATTERNS de propósito. Aquele array roda
+// ANTES do short-circuit `type_hint === "lancamento"`, e "vulnerabilities" é
+// genérico o bastante para aparecer no título de uma ferramenta de segurança
+// sem verbo de anúncio ("Automated security reviews in Claude Code: catch
+// vulnerabilities before you ship") — o agent confirmando lançamento tem que
+// vencer. Mesma posição de isHowCollectiveReportTitle. O guard de verbo de
+// anúncio (LAUNCH_VERB_TITLE_RE) continua valendo para o caso sem type_hint.
+const SECURITY_DISCLOSURE_TITLE_RE = /\b(?:security\s+incident|(?:coordinated\s+)?disclosure|vulnerabilit(?:y|ies))\b/i;
+export function isSecurityDisclosureTitle(article: Article): boolean {
+  const title = article.title ?? "";
+  if (!title) return false;
+  if (LAUNCH_VERB_TITLE_RE.test(title)) return false;
+  return SECURITY_DISCLOSURE_TITLE_RE.test(title);
+}
 
 // #5995 (260828, achado do review independente do PR #6556): "How {sujeito
 // coletivo} {verbo}..." — manchete de relatório/análise sobre adoção de IA em
@@ -2246,6 +2261,10 @@ export function categorizeWithRule(article: Article): CategorizationResult {
     // acima pro porquê de rodar aqui (pós-short-circuit type_hint) e não
     // dentro de isNonProductOfficialPost.
     if (isHowCollectiveReportTitle(article)) return { category: "noticias", rule: "lancamento-how-collective" };
+
+    // #11183: divulgação de incidente/vulnerabilidade — ver
+    // isSecurityDisclosureTitle pro porquê de rodar depois do type_hint.
+    if (isSecurityDisclosureTitle(article)) return { category: "noticias", rule: "lancamento-non-product-official" };
 
     if (isBusinessDeal(article)) return { category: "noticias", rule: "lancamento-business-deal" };
     if (isNonProductAnnouncement(article)) return { category: "noticias", rule: "lancamento-non-product-announcement" };

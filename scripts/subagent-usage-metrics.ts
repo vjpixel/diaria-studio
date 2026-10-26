@@ -370,10 +370,19 @@ function asIssueList(details: Record<string, unknown>): number[] {
 /**
  * Pure: indexa o que já está no run-log para não duplicar. Linha malformada é ignorada.
  *
- * `sessionId` (#11164): `presentInEdition` só considera eventos sem
- * `details.session_id` (legado/à mão) ou da MESMA sessão — outra rodada na
- * mesma edição (300 + Zenbook no mesmo dia) não pode suprimir o marcador
- * vazio desta, senão o check filtrado por sessão acusa "esqueceu".
+ * `sessionId` (#11164): `presentInEdition` só considera eventos da MESMA
+ * sessão — outra rodada na mesma edição (300 + Zenbook no mesmo dia) não pode
+ * suprimir o marcador vazio desta, senão o check filtrado por sessão acusa
+ * "esqueceu".
+ *
+ * Evento SEM `details.session_id` (legado, gravado antes do #11164, ou de
+ * outra máquina com código defasado) também não suprime o marcador quando há
+ * `sessionId` (#11182): é a mesma regra de `eventMatchesSession` em
+ * `check-overnight-token-instrumentation.ts`, que com `--plan` descarta esse
+ * evento. Tolerar aqui e descartar lá fazia a rodada sem dispatch não gravar
+ * o marcador e o check imprimir "coordenador esqueceu". A tolerância a evento
+ * sem o campo fica só na dedup por `agentIds` (e nos índices manuais), que
+ * evita regravar o MESMO subagente e não decide marcador nenhum.
  */
 export function indexExistingEvents(lines: string[], edition: string, sessionId?: string | null): ExistingEventIndex {
   const idx: ExistingEventIndex = {
@@ -395,7 +404,7 @@ export function indexExistingEvents(lines: string[], edition: string, sessionId?
     if (typeof rec !== "object" || rec === null) continue;
     const msg = rec.message;
     const details = (typeof rec.details === "object" && rec.details !== null ? rec.details : {}) as Record<string, unknown>;
-    const sameSession = !sessionId || details.session_id === undefined || details.session_id === sessionId;
+    const sameSession = !sessionId || details.session_id === sessionId;
     if (msg === TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) {
       if (rec.edition === edition && sameSession && typeof details.tipo === "string") idx.presentInEdition.add(details.tipo);
       continue;

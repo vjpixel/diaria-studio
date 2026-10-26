@@ -81,6 +81,35 @@ describe("#11119 (261022): divulgação de vulnerabilidade em domínio oficial �
     });
     assert.equal(r.category, "lancamento");
   });
+
+  it("'Security incident disclosure — July 2026' (huggingface.co, type_hint noticia) vira noticias", () => {
+    const r = cat({
+      url: "https://huggingface.co/blog/security-incident-july-2026",
+      title: "Security incident disclosure — July 2026",
+      type_hint: "noticia",
+    });
+    assert.equal(r.category, "noticias");
+    assert.equal(r.rule, "lancamento-non-product-official");
+  });
+});
+
+describe("#11183: ferramenta de segurança confirmada pelo agent não sai de LANÇAMENTO", () => {
+  const tool = {
+    url: "https://www.anthropic.com/news/automated-security-reviews-claude-code",
+    title: "Automated security reviews in Claude Code: catch vulnerabilities before you ship",
+  };
+
+  it("type_hint=lancamento vence o padrão de vulnerabilidade (sem verbo de anúncio no título)", () => {
+    const r = cat({ ...tool, type_hint: "lancamento" });
+    assert.equal(r.category, "lancamento");
+    assert.equal(r.rule, "lancamento-type-hint");
+  });
+
+  it("sem type_hint, o mesmo título segue demovido (comportamento do #11119 preservado)", () => {
+    const r = cat(tool);
+    assert.equal(r.category, "noticias");
+    assert.equal(r.rule, "lancamento-non-product-official");
+  });
 });
 
 describe("#11116 (261026): duas releases do mesmo repo GitHub → só a mais nova", () => {

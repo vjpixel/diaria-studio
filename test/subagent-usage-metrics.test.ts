@@ -384,6 +384,63 @@ describe("collectSubagentMetrics — cenário real da 261018d (#10476)", () => {
     assert.deepEqual(again.status === "ok" ? again.markers : null, []);
   });
 
+  // #11182: evento legado (sem session_id) da mesma edição não pode suprimir o
+  // marcador desta sessão — o check com --plan o descarta, e a divergência
+  // virava "coordenador esqueceu" numa rodada sem dispatch.
+  it("#11182: subagent_metrics legado sem session_id não suprime o marcador; check com sessão não acusa esquecimento", () => {
+    const root = mkdtempSync(join(tmpdir(), "subagent-usage-metrics-11182-"));
+    const home = join(root, ".home");
+    const dir = join(home, ".claude", "projects", encodeProjectDirName(root));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${SESSION}.jsonl`), "\n");
+    // Gravado antes do #11171 (sessão anterior / outra máquina com código defasado).
+    logEvent(
+      {
+        edition: "261026",
+        stage: null,
+        agent: "overnight",
+        level: "info",
+        message: SUBAGENT_METRICS_MESSAGE,
+        details: { agent_id: "antigo", papel: "dev-implementador", subagent_tokens: 10 },
+      },
+      root,
+    );
+    const outcome = collectSubagentMetrics({ edition: "261026", sessionId: SESSION, rootDir: root, homeDir: home, nowMs: NOW });
+    assert.equal(outcome.status, "ok");
+    if (outcome.status !== "ok") return;
+    assert.deepEqual(
+      outcome.markers.map((m) => [m.details.tipo, m.details.session_id]),
+      [
+        [SUBAGENT_METRICS_MESSAGE, SESSION],
+        [REVIEW_METRICS_MESSAGE, SESSION],
+      ],
+    );
+    for (const ev of outcome.markers) {
+      logEvent({ edition: "261026", stage: null, agent: "overnight", level: "info", message: ev.message, details: ev.details }, root);
+    }
+    logEvent(
+      {
+        edition: "261026",
+        stage: null,
+        agent: "overnight",
+        level: "info",
+        message: "coordinator_tokens_estimate",
+        details: { session_id: SESSION },
+      },
+      root,
+    );
+    const check = checkOvernightTokenInstrumentation("261026", root, { sessionId: SESSION });
+    assert.equal(check.verdict.status, "ok");
+    assert.doesNotMatch(check.section, /esqueceu/);
+    assert.match(check.section, /Sem subagente despachado/);
+  });
+
+  it("#11182: sem sessionId, evento legado sem session_id continua suprimindo o marcador", () => {
+    const existing = [JSON.stringify({ edition: "261026", message: "review_metrics", details: { depth: 0 } })];
+    const { markers } = planEvents([record("a", "dev-implementador", "Implementar #1", 1)], existing, "261026", undefined, NOW);
+    assert.deepEqual(markers, []);
+  });
+
   it("marcador do checador e do script usam o mesmo literal", () => {
     assert.equal(CHECK_EMPTY_MESSAGE, TOKEN_INSTRUMENTATION_EMPTY_MESSAGE);
   });
