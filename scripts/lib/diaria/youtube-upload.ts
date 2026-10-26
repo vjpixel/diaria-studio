@@ -483,6 +483,10 @@ function normalizeTitle(s: string): string {
  * valer (ex.: o vídeo de ontem que virou público hoje); (b) vídeo com
  * `uploadStatus` falho (`failedUploadStatus`) nunca é reconhecido — não vai
  * ao ar, então o upload normal segue em vez de gravar um link morto no D1.
+ *
+ * #11132: `period` é o sinal fraco — qualquer vídeo não-Short do dia (live,
+ * avulso) casa. O chamador (`publish-youtube.ts`) não o trata como prova: sem
+ * confirmação do editor (`--accept-period-match`) não envia nem grava o link.
  * Puro: sem rede.
  */
 export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVideoCriteria): ExistingEditionVideo | null {

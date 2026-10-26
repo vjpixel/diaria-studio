@@ -106,7 +106,8 @@ describe("resumo e mensagem (#11105)", () => {
     const src = readFileSync(resolve(ROOT, "scripts/publish-threads.ts"), "utf8");
     assert.match(src, /sendUnknownRecoveryHint\(d\)/);
     assert.doesNotMatch(src, /se o post não saiu, rodar com --no-skip-existing/);
-    assert.match(src, /decideThreadsDispatch\(d, existingPost, \{ skipExisting, retryIds \}\)/);
+    // #11131 acrescentou `partialRootDeleted` às opções.
+    assert.match(src, /decideThreadsDispatch\(d, existingPost, \{ skipExisting, retryIds(, partialRootDeleted)? \}\)/);
   });
 });
 

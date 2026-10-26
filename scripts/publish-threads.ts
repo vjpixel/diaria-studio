@@ -57,6 +57,7 @@
  *     [--skip-existing]     # pula posts já em 06-social-published.json (default: true)
  *     [--no-skip-existing]  # força re-publicação de TODOS (global)
  *     [--retry d2[,um]]     # re-tenta SÓ esses posts (failed/send_unknown; recusa os já publicados/agendados) — #11105
+ *     [--partial-root-deleted] # com --retry: libera thread multi-chunk parcial cuja raiz o editor apagou — #11131
  *
  * `--schedule` requer o MESMO Worker já usado pelo LinkedIn/Instagram:
  *   DIARIA_LINKEDIN_CRON_URL / DIARIA_LINKEDIN_CRON_TOKEN no env, OU
@@ -336,16 +337,44 @@ async function publishThreadsContainer(
  * NÃO deve refazer o envio — refazer duplica o post público.
  */
 export class ThreadsAmbiguousSendError extends Error {
-  constructor(message: string) {
+  /** #11131 — a raiz já estava no ar quando um chunk seguinte ficou ambíguo. */
+  readonly partial?: ThreadPartialPublish;
+  constructor(message: string, partial?: ThreadPartialPublish) {
     super(message);
     this.name = "ThreadsAmbiguousSendError";
+    if (partial) this.partial = partial;
+  }
+}
+
+/**
+ * #11131 — thread multi-chunk que parou no meio: a raiz (chunk 1) e as
+ * respostas até `chunksPublished` estão confirmadas no ar. Refazer a thread
+ * inteira duplicaria a raiz, então o id vai pro store e o `--retry` recusa.
+ */
+export interface ThreadPartialPublish {
+  rootMediaId: string;
+  /** Chunks com `threads_publish` confirmado (>= 1: a raiz). */
+  chunksPublished: number;
+}
+
+/** #11131 — falha DEFINITIVA num chunk >= 2: a raiz já está no ar. */
+export class ThreadsPartialThreadError extends Error {
+  readonly partial: ThreadPartialPublish;
+  constructor(message: string, partial: ThreadPartialPublish) {
+    super(message);
+    this.name = "ThreadsPartialThreadError";
+    this.partial = partial;
   }
 }
 
 export type ThreadsTextPublishOutcome =
   | { kind: "published"; rootMediaId: string; attempts: number }
-  | { kind: "send_unknown"; reason: string; attempts: number }
-  | { kind: "failed"; reason: string; attempts: number };
+  | { kind: "send_unknown"; reason: string; attempts: number; partial?: ThreadPartialPublish }
+  | { kind: "failed"; reason: string; attempts: number; partial?: ThreadPartialPublish };
+
+function partialOf(e: unknown): ThreadPartialPublish | undefined {
+  return e instanceof ThreadsAmbiguousSendError || e instanceof ThreadsPartialThreadError ? e.partial : undefined;
+}
 
 /**
  * #11076 — retry do post de texto. Falha definitiva (4xx, container
@@ -367,54 +396,50 @@ export async function publishTextWithRetry(
     } catch (e: any) {
       lastError = e?.message ?? String(e);
       log(`Attempt ${attempt}/${maxAttempts} failed: ${lastError}`);
+      const partial = partialOf(e);
       if (e instanceof ThreadsAmbiguousSendError) {
-        return { kind: "send_unknown", reason: lastError, attempts: attempt };
+        return { kind: "send_unknown", reason: lastError, attempts: attempt, ...(partial && { partial }) };
       }
+      // #11131 — raiz no ar: nunca refazer, nem com maxAttempts > 1.
+      if (partial) return { kind: "failed", reason: lastError, attempts: attempt, partial };
       if (attempt < maxAttempts) await sleep(Math.pow(2, attempt - 1) * 1000); // 1s, 2s
     }
   }
   return { kind: "failed", reason: lastError, attempts: maxAttempts };
 }
 
+/** #11131 — passos de rede de um chunk, injetáveis pra testar o encadeamento sem fetch. */
+export interface ThreadChunkSteps {
+  createContainer: (text: string, replyToId: string | null) => Promise<string>;
+  waitReady: (containerId: string) => Promise<void>;
+  publishContainer: (containerId: string) => Promise<string>;
+}
+
 /**
- * Publica um post (possivelmente encadeado) no Threads.
- * Se `chunks.length > 1`, publica o primeiro post e encadeia os restantes
- * via reply_to_id do post publicado anterior.
+ * Encadeia os chunks: publica o primeiro e responde cada seguinte ao anterior
+ * (`reply_to_id`). Retorna o media_id da raiz.
  *
- * Retorna o media_id do primeiro post (root da thread).
+ * #11131 — falha num chunk >= 2 sai com a raiz já no ar: o erro carrega
+ * `partial` (id da raiz + chunks confirmados) — `ThreadsAmbiguousSendError` se
+ * o `threads_publish` ficou ambíguo, `ThreadsPartialThreadError` se falhou de vez.
  */
-async function publishThread(
-  userId: string,
-  accessToken: string,
-  chunks: string[],
-  apiVersion: string,
-): Promise<string> {
+export async function publishThreadChunks(chunks: string[], steps: ThreadChunkSteps): Promise<string> {
   let rootMediaId: string | null = null;
   let replyToId: string | null = null;
 
   for (let i = 0; i < chunks.length; i++) {
-    const containerId = await createThreadsContainer(
-      userId,
-      accessToken,
-      chunks[i],
-      replyToId,
-      apiVersion,
-    );
-    await waitForContainerReady(containerId, accessToken, apiVersion); // #3995
-    let mediaId: string;
     try {
-      mediaId = await publishThreadsContainer(userId, accessToken, containerId, apiVersion);
-    } catch (e) {
-      // #11076 — só o threads_publish é ambíguo: criar container/poll não publica nada.
-      if (e instanceof ThreadsApiError && e.sendMayHaveSucceeded) throw new ThreadsAmbiguousSendError(e.message);
-      throw e;
-    }
-
-    if (i === 0) {
-      rootMediaId = mediaId;
+      const containerId = await steps.createContainer(chunks[i], replyToId);
+      await steps.waitReady(containerId); // #3995
+      const mediaId = await steps.publishContainer(containerId);
+      if (i === 0) rootMediaId = mediaId;
       replyToId = mediaId; // próximo post encadeia a partir deste
-    } else {
-      replyToId = mediaId;
+    } catch (e: any) {
+      if (rootMediaId === null) throw e;
+      const partial: ThreadPartialPublish = { rootMediaId, chunksPublished: i };
+      const msg = `chunk ${i + 1}/${chunks.length}: ${e?.message ?? String(e)}`;
+      if (e instanceof ThreadsAmbiguousSendError) throw new ThreadsAmbiguousSendError(msg, partial);
+      throw new ThreadsPartialThreadError(msg, partial);
     }
   }
 
@@ -422,6 +447,28 @@ async function publishThread(
     throw new Error("publishThread: chunks array vazio — texto do post não pode ser vazio");
   }
   return rootMediaId;
+}
+
+/** Publica um post (possivelmente encadeado) no Threads. Retorna o media_id da raiz. */
+async function publishThread(
+  userId: string,
+  accessToken: string,
+  chunks: string[],
+  apiVersion: string,
+): Promise<string> {
+  return publishThreadChunks(chunks, {
+    createContainer: (text, replyToId) => createThreadsContainer(userId, accessToken, text, replyToId, apiVersion),
+    waitReady: (containerId) => waitForContainerReady(containerId, accessToken, apiVersion),
+    publishContainer: async (containerId) => {
+      try {
+        return await publishThreadsContainer(userId, accessToken, containerId, apiVersion);
+      } catch (e) {
+        // #11076 — só o threads_publish é ambíguo: criar container/poll não publica nada.
+        if (e instanceof ThreadsApiError && e.sendMayHaveSucceeded) throw new ThreadsAmbiguousSendError(e.message);
+        throw e;
+      }
+    },
+  });
 }
 
 /** #11105 — ids aceitos por `--retry` (destaques + 4º post USE MELHOR). */
@@ -457,23 +504,43 @@ export type ThreadsDispatchDecision =
   /** Fora do `--retry`: não é tocado nesta execução. */
   | { action: "not-selected" }
   /** Pedido em `--retry`, mas o post já saiu/está agendado: refazer duplicaria. */
-  | { action: "retry-refused"; existing: PostEntry };
+  | { action: "retry-refused"; existing: PostEntry }
+  /** #11131 — thread multi-chunk parcial (raiz no ar): refazer duplicaria a raiz. */
+  | { action: "retry-refused-partial"; existing: PostEntry; rootMediaId: string }
+  /**
+   * #11131 — resume (sem `--retry`) diante de thread parcial: pula SEMPRE,
+   * qualquer status e mesmo com `--no-skip-existing` — re-despachar duplicaria a raiz.
+   */
+  | { action: "skip-partial"; existing: PostEntry; rootMediaId: string };
+
+/** #11131 — id da raiz já no ar, gravado numa entrada `failed`/`send_unknown` multi-chunk. */
+export function partialRootMediaId(entry: PostEntry | undefined): string | null {
+  const id = entry?.threads_partial_root_media_id;
+  return typeof id === "string" && id ? id : null;
+}
 
 /**
  * #11105 — decide se um post entra nesta execução. Puro (testável sem rede).
  * `--retry` restringe aos ids pedidos e só refaz `failed`/`send_unknown`;
- * fora dele, o resume de sempre (`--no-skip-existing` continua global).
+ * fora dele, o resume de sempre (`--no-skip-existing` continua global), exceto
+ * thread parcial com a raiz no ar, que é sempre pulada (#11131).
  */
 export function decideThreadsDispatch(
   d: string,
   existing: PostEntry | undefined,
-  opts: { skipExisting: boolean; retryIds: Set<string> | null },
+  opts: { skipExisting: boolean; retryIds: Set<string> | null; partialRootDeleted?: boolean },
 ): ThreadsDispatchDecision {
   if (opts.retryIds) {
     if (!opts.retryIds.has(d)) return { action: "not-selected" };
     if (existing && !RETRYABLE_STATUSES.has(existing.status)) return { action: "retry-refused", existing };
+    // #11131 — raiz da thread no ar: só refaz com o editor declarando que a apagou.
+    const root = partialRootMediaId(existing);
+    if (existing && root && !opts.partialRootDeleted) return { action: "retry-refused-partial", existing, rootMediaId: root };
     return { action: "dispatch" };
   }
+  // #11131 — `failed` parcial não está em RESUME_SKIP_STATUSES: sem este guard o resume refazia a thread.
+  const partialRoot = partialRootMediaId(existing);
+  if (existing && partialRoot) return { action: "skip-partial", existing, rootMediaId: partialRoot };
   if (opts.skipExisting && existing && RESUME_SKIP_STATUSES.has(existing.status)) {
     return { action: "skip-existing", existing };
   }
@@ -494,6 +561,18 @@ export function summarizeThreadsResults(results: PostEntry[], skippedCount: numb
 /** #11105 — instrução de recuperação de um `send_unknown`: re-tenta só aquele post. */
 export function sendUnknownRecoveryHint(d: string): string {
   return `Conferir o perfil do Threads; se o post não saiu, rodar com --retry ${d} (re-tenta só este post).`;
+}
+
+/**
+ * #11131 — instrução de recuperação de uma thread parcial: a raiz está no ar,
+ * então `--retry` puro duplicaria. Completar à mão ou apagar a raiz antes.
+ */
+export function partialThreadRecoveryHint(d: string, partial: ThreadPartialPublish, totalChunks: number): string {
+  return (
+    `A raiz da thread (media_id ${partial.rootMediaId}) já está no ar com ${partial.chunksPublished} de ${totalChunks} chunk(s) confirmados. ` +
+    `NÃO rodar --retry ${d} sozinho (duplicaria a raiz): completar a thread respondendo à raiz no Threads, ` +
+    `ou apagar a raiz e rodar --retry ${d} --partial-root-deleted.`
+  );
 }
 
 /**
@@ -559,6 +638,11 @@ async function main(): Promise<number | void> {
     return 1;
   }
   const retryIds = retryParsed.ids;
+  // #11131 — o editor apagou a raiz de uma thread parcial: libera o --retry dela.
+  const partialRootDeleted = flags.has("partial-root-deleted");
+  if (partialRootDeleted && !retryIds) {
+    console.warn("AVISO: --partial-root-deleted só tem efeito junto com --retry dN — ignorado nesta execução (#11131).");
+  }
   const isTest = flags.has("test-mode");
   const isDryRun = flags.has("dry-run");
   const doSchedule = flags.has("schedule"); // #3944 Parte B
@@ -728,7 +812,7 @@ async function main(): Promise<number | void> {
     // #11076 resume (send_unknown não é refeito) + #11105 `--retry`.
     // Só a entry `main` (a que este script grava; o upsert do store é por subtype).
     const existingPost = published.posts.find((p) => p.platform === "threads" && p.destaque === d && resolveSubtype(p) === "main");
-    const decision = decideThreadsDispatch(d, existingPost, { skipExisting, retryIds });
+    const decision = decideThreadsDispatch(d, existingPost, { skipExisting, retryIds, partialRootDeleted });
     if (decision.action === "not-selected") continue;
     if (decision.action === "skip-existing") {
       console.log(`SKIP threads/${d} — already ${decision.existing.status}`);
@@ -740,6 +824,16 @@ async function main(): Promise<number | void> {
       console.error(
         `SKIP threads/${d}: --retry recusado — o post já está ${decision.existing.status}; refazer duplicaria. ` +
           `--retry só refaz posts failed/send_unknown.`,
+      );
+      results.push(decision.existing);
+      skippedCount += 1;
+      continue;
+    }
+    if (decision.action === "retry-refused-partial" || decision.action === "skip-partial") {
+      const what = decision.action === "skip-partial" ? `thread parcial (${decision.existing.status})` : "--retry recusado";
+      console.error(
+        `SKIP threads/${d}: ${what} — a raiz da thread (media_id ${decision.rootMediaId}) já está no ar; ` +
+          `refazer duplicaria a raiz (#11131). Apague a raiz no Threads e rode --retry ${d} --partial-root-deleted.`,
       );
       results.push(decision.existing);
       skippedCount += 1;
@@ -976,7 +1070,9 @@ async function main(): Promise<number | void> {
           `Chunk 1 pode ter sido publicado. Verificar manualmente no Threads.`,
         );
       }
-      if (outcome.kind === "send_unknown") {
+      if (outcome.partial) {
+        console.warn(`threads/${d}: thread parcial. ${partialThreadRecoveryHint(d, outcome.partial, chunks.length)}`);
+      } else if (outcome.kind === "send_unknown") {
         console.warn(
           `threads/${d}: envio ambíguo no threads_publish — NÃO refeito (risco de post duplicado). ` +
           sendUnknownRecoveryHint(d),
@@ -989,6 +1085,12 @@ async function main(): Promise<number | void> {
         status: outcome.kind === "send_unknown" ? "send_unknown" : "failed",
         scheduled_at: null,
         reason: outcome.reason,
+        // #11131 — raiz no ar: o --retry lê este campo e recusa refazer.
+        ...(outcome.partial && {
+          threads_partial_root_media_id: outcome.partial.rootMediaId,
+          threads_chunks_published: outcome.partial.chunksPublished,
+          threads_chunks: chunks.length,
+        }),
       };
       tagAndAppend(entry);
       results.push(entry);
@@ -996,11 +1098,19 @@ async function main(): Promise<number | void> {
   }
 
   const summary = summarizeThreadsResults(results, skippedCount);
-  if (summary.send_unknown > 0) {
-    const ids = results.filter((r) => r.status === "send_unknown").map((r) => r.destaque);
+  // #11131 — thread parcial (raiz no ar) nunca entra na sugestão de --retry puro.
+  const sendUnknownIds = results.filter((r) => r.status === "send_unknown" && !partialRootMediaId(r)).map((r) => r.destaque);
+  if (sendUnknownIds.length > 0) {
     console.warn(
-      `ATENÇÃO threads: ${summary.send_unknown} post(s) com envio ambíguo (${ids.join(", ")}) — ` +
-        `conferir o perfil do Threads; o que não saiu se refaz com --retry ${ids.join(",")}.`,
+      `ATENÇÃO threads: ${sendUnknownIds.length} post(s) com envio ambíguo (${sendUnknownIds.join(", ")}) — ` +
+        `conferir o perfil do Threads; o que não saiu se refaz com --retry ${sendUnknownIds.join(",")}.`,
+    );
+  }
+  const partialIds = results.filter((r) => partialRootMediaId(r)).map((r) => r.destaque);
+  if (partialIds.length > 0) {
+    console.warn(
+      `ATENÇÃO threads: thread(s) parcial(is) com a raiz no ar (${partialIds.join(", ")}) — completar à mão ` +
+        `ou apagar a raiz e rodar --retry ${partialIds.join(",")} --partial-root-deleted (#11131).`,
     );
   }
 

@@ -46,20 +46,17 @@
  *       edição (`duplicate-edition-folder`), com os ids.
  */
 
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
 import { escapeDriveQueryString, gFetchRetry } from "./lib/drive-helpers.ts";
+import { downloadDriveFile } from "./lib/drive-download.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import {
   DRIVE_VIDEO_WINDOW_HOURS,
-  isAcceptableDownloadContentType,
   selectDriveVideo,
   type DriveVideoFile,
   type DriveVideoSelection,
@@ -221,74 +218,12 @@ export async function listDriveChildren(
 }
 
 /**
- * Baixa `alt=media` em `{dest}.part` (streaming) e renomeia no fim. Lança em
- * falha, sem deixar `.part` (falha ao apagá-lo vai pro `log`).
+ * Download protegido (`.part`, teto total, watchdog de ociosidade, tamanho,
+ * content-type) — mora em `lib/drive-download.ts` desde o #11082, compartilhado
+ * com o `publish-shorts.ts --from-drive`. Re-exportado aqui pelos chamadores
+ * e testes que já o importavam deste módulo.
  */
-export async function downloadDriveFile(
-  deps: FetchDriveVideoDeps,
-  file: DriveVideoFile,
-  dest: string,
-  timeouts: Pick<FetchDriveVideoTimeouts, "downloadMs" | "idleMs"> = DEFAULT_FETCH_DRIVE_VIDEO_TIMEOUTS,
-  log: (line: string) => void = () => {},
-): Promise<number> {
-  const idle = new AbortController();
-  const signal = AbortSignal.any([AbortSignal.timeout(timeouts.downloadMs), idle.signal]);
-  let idleTimer: NodeJS.Timeout | undefined;
-  let idleFired = false;
-  const armIdle = () => {
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      idleFired = true;
-      idle.abort(new Error(`download ocioso: ${timeouts.idleMs / 1000}s sem receber bytes`));
-    }, timeouts.idleMs);
-  };
-  const tmp = `${dest}.part`;
-  try {
-    armIdle();
-    const res = await deps.driveFetch(
-      `${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`,
-      { signal },
-    );
-    if (!res.ok) throw new Error(`download do Drive falhou (${res.status}): ${(await res.text()).slice(0, 300)}`);
-    const type = res.headers.get("content-type") ?? "";
-    if (!isAcceptableDownloadContentType(type, file.name)) {
-      throw new Error(`o arquivo ${file.id} do Drive não é .mp4 (content-type "${type}") — nada gravado`);
-    }
-    if (!res.body) throw new Error(`download do Drive sem corpo (${file.id}) — nada gravado`);
-    mkdirSync(dirname(dest), { recursive: true });
-    const watchdog = new Transform({
-      transform(chunk, _enc, cb) {
-        armIdle();
-        cb(null, chunk);
-      },
-    });
-    await pipeline(
-      Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>),
-      watchdog,
-      createWriteStream(tmp),
-      { signal },
-    );
-    const bytes = statSync(tmp).size;
-    const expected = file.size !== undefined ? Number(file.size) : null;
-    if (bytes === 0) throw new Error(`download do Drive veio vazio (${file.id}) — nada gravado`);
-    if (expected !== null && Number.isFinite(expected) && expected !== bytes) {
-      throw new Error(`download incompleto (${bytes} de ${expected} bytes, ${file.id}) — nada gravado`);
-    }
-    renameSync(tmp, dest);
-    return bytes;
-  } catch (e) {
-    try {
-      if (existsSync(tmp)) unlinkSync(tmp);
-    } catch (unlinkErr) {
-      log(`[aviso] não consegui apagar ${tmp}: ${(unlinkErr as Error).message} — apague à mão antes de rodar de novo`);
-    }
-    if (idleFired) throw new Error(`download do Drive ocioso por ${timeouts.idleMs / 1000}s (${file.id}) — nada gravado`);
-    if (signal.aborted) throw new Error(`download do Drive passou de ${timeouts.downloadMs / 1000}s (${file.id}) — nada gravado`);
-    throw e;
-  } finally {
-    clearTimeout(idleTimer);
-  }
-}
+export { downloadDriveFile };
 
 function describeFile(f: DriveVideoFile): DescribedDriveFile {
   return {

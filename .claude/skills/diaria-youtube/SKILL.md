@@ -35,6 +35,8 @@ npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
 
 Ao terminar, sugerir o próximo comando (`/diaria-shorts {AAMMDD}`) sem rodá-lo.
 
+**Edição sem vídeo (#11125).** Se o editor disser que não vai gravar o vídeo do dia, marcar a edição com `npx tsx scripts/set-d1-no-video.ts {AAMMDD}`: grava `_internal/no-video.json`, apaga a cópia `04-d1-2x1-play.jpg` com o convite "Clique e assista a notícia comentada" e faz o upload (`upload-images-public.ts --mode newsletter`) e o render pararem de usá-la — o D1 sai com o hero puro, sem link. Depois rodar o upload em modo newsletter (tira `d1_play` de `06-public-images.json`) e re-renderizar o HTML. O marcador vence a URL do vídeo; para religar, `--clear` e rodar o upload de novo.
+
 ## Passo 1 — Conferir os insumos
 
 Na pasta da edição (`data/editions/{AAMM}/{AAMMDD}/`):
@@ -101,6 +103,8 @@ Mesmas flags do dry-run. Saída:
   - falha a partir do envio dos bytes (5xx, rede caindo, resposta sem id). O registro vira `status: upload_indeterminado`, e o próximo `--upload` recusa até `--force`. Antes do `--force`, conferir no Studio se o vídeo subiu;
   - o YouTube marcou o vídeo como `failed`/`rejected`/`deleted` na releitura. O registro fica gravado, e a mensagem traz o motivo;
   - vídeo enviado sem conseguir gravar o registro.
+
+  E um caso em que nada foi enviado mas o editor decide (#11132): o canal tem um vídeo no dia BRT da edição sem a marca dela (sem AAMMDD, `utm_campaign` nem o título do D1 — pode ser uma live ou um vídeo avulso). O log traz o link e o título; nada é gravado e o link não vai para o D1. Mostrar ao editor e, conforme a resposta, rodar de novo com `--accept-period-match` (é o vídeo desta edição: registra com `source: "already-on-channel"` e põe o link no D1) ou com `--force` (não é: sobe o vídeo da edição).
 
 Com `--force`, o registro anterior vai para `previous_uploads` no novo.
 

@@ -78,13 +78,14 @@ function plan() {
   });
 }
 
-async function run(deps: YouTubeUploadDeps, p = plan(), force = false) {
+async function run(deps: YouTubeUploadDeps, p = plan(), force = false, acceptPeriodMatch = false) {
   const logs: string[] = [];
   const outcome = await runYouTubeUpload(deps, {
     plan: p,
     editionDir: dir,
     env: ENV,
     force,
+    acceptPeriodMatch,
     readFile: (f) => readFileSync(f),
     log: (l) => logs.push(l),
   });
@@ -99,14 +100,15 @@ const manualVideo = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("--upload com o vídeo da edição já no canal (#11080)", () => {
-  it("vídeo manual agendado para o dia da edição: não sobe, reconhece e grava o registro", async () => {
+  it("vídeo manual agendado para o dia da edição, aceito pelo editor (--accept-period-match): não sobe, reconhece e grava o registro", async () => {
     const { deps, calls } = channelDeps([manualVideo()]);
-    const { outcome, logs } = await run(deps);
+    const { outcome, logs } = await run(deps, plan(), false, true);
     assert.equal(outcome.exitCode, 0, logs.join("\n"));
     assert.equal(outcome.skipped, true);
     assert.equal(outcome.record?.videoId, MANUAL_ID);
     assert.equal(outcome.record?.source, "already-on-channel");
     assert.equal(outcome.record?.matched_by, "period");
+    assert.equal(outcome.record?.period_match_accepted, true);
     assert.equal(outcome.record?.state, "scheduled");
     assert.ok(logs.some((l) => l.includes("already-on-channel")));
     // Nenhum byte enviado: nem sessão resumable nem PUT.
@@ -120,12 +122,42 @@ describe("--upload com o vídeo da edição já no canal (#11080)", () => {
 
   it("segunda rodada: o registro gravado faz o --upload recusar sem nem chamar a API", async () => {
     const first = channelDeps([manualVideo()]);
-    await run(first.deps);
+    await run(first.deps, plan(), false, true);
     const second = channelDeps([manualVideo()]);
     const { outcome } = await run(second.deps);
     assert.equal(outcome.exitCode, 0);
     assert.equal(outcome.skipped, true);
     assert.equal(second.calls.length, 0);
+  });
+
+  it("#11132: vídeo não relacionado no dia da edição (só período): exit 1, nada enviado, sem registro nem link no D1", async () => {
+    const live = manualVideo({
+      snippet: { title: "Live de domingo: perguntas e respostas", description: "ao vivo", tags: [], publishedAt: "2026-10-22T15:00:00Z" },
+      status: { uploadStatus: "processed", privacyStatus: "public" },
+    });
+    const { deps, calls } = channelDeps([live]);
+    const { outcome, logs } = await run(deps);
+    assert.equal(outcome.exitCode, 1, logs.join("\n"));
+    assert.equal(outcome.skipped, false);
+    assert.equal(outcome.record, null);
+    assert.equal(calls.some((c) => c.includes("uploadType=resumable") || c.startsWith("PUT")), false);
+    assert.equal(existsSync(join(dir, YOUTUBE_PUBLISHED_FILE)), false);
+    assert.equal(existsSync(join(dir, "_internal/05-video-url.txt")), false);
+    const text = logs.join("\n");
+    assert.ok(text.includes(`https://youtu.be/${MANUAL_ID}`), text);
+    assert.ok(text.includes("--accept-period-match") && text.includes("--force"), text);
+  });
+
+  it("#11132: título do D1 continua valendo sem confirmação (só o período exige)", async () => {
+    const byTitle = manualVideo({
+      snippet: { title: "IA ladra? O cofre que o modelo abriu", description: "", tags: [], publishedAt: "2026-10-21T20:00:00Z" },
+    });
+    const { deps } = channelDeps([byTitle]);
+    const { outcome, logs } = await run(deps);
+    assert.equal(outcome.exitCode, 0, logs.join("\n"));
+    assert.equal(outcome.record?.matched_by, "title");
+    assert.equal(outcome.record?.period_match_accepted, undefined);
+    assert.equal(readFileSync(join(dir, "_internal/05-video-url.txt"), "utf8").trim(), `https://youtu.be/${MANUAL_ID}`);
   });
 
   it("canal sem vídeo da edição: sobe normalmente", async () => {

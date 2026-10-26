@@ -364,6 +364,9 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
       parts.push(`<p><em>${escapeHtml(headlineOriginLabel(h.editionDate))}</em></p>`);
     }
     parts.push(paragraphsHtml(h.body));
+    // #11068 (decisão do editor, 26/10/2026): `why` cru de propósito. Aparece
+    // ROTULADO, e o padrão de resumo da #11062 só vale onde o texto aparece
+    // sem rótulo (legenda da retro semanal, format-weekly-social.ts).
     if (h.why.trim()) {
       parts.push(`<p><strong>Por que isso importa:</strong> ${escapeHtml(h.why.trim())}</p>`);
     }

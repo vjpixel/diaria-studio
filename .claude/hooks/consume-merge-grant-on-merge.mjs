@@ -122,6 +122,13 @@ import { execFileSync } from "node:child_process";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
 import { extractGhPrMergeTargetPr, isGhPrMergeCommand } from "./lib/gh-pr-merge-command.mjs";
 import { DIARIA_STUDIO_REPO, normalizeRepoSlug, resolveMergeTargets } from "./lib/gh-target-repo.mjs";
+import { hostname } from "node:os";
+import {
+  ledgerConsumedAt,
+  readMergeGrantConsumptions,
+  recordMergeGrantConsumption,
+  sessionFileIsLocal,
+} from "./lib/merge-grant-ledger.mjs";
 
 /** Duplicado de `MERGE_GRANT_TTL_MS` — ver session-registry.ts e
  * block-gh-pr-merge-subagent.mjs pro racional (10min: cobre a janela da
@@ -369,6 +376,7 @@ export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), in
   } catch {
     return null;
   }
+  const ledger = readMergeGrantConsumptions(repoRoot); // #11113
   for (const name of entries) {
     if (!name.endsWith(".json") || name.startsWith(".")) continue;
     // #6952: as cópias de conflito do OneDrive entram só quando quem chama
@@ -387,6 +395,7 @@ export function findLiveMergeGrantFile(repoRoot, sessionId, now = Date.now(), in
     if (!grant || grant.grantedTo !== sessionId) continue;
     if (repo !== undefined && !grantMatchesRepo(grant, repo)) continue; // #10618: só o repo do merge
     if (grant.consumedAt) continue; // já consumida — uso único
+    if (ledgerConsumedAt(ledger, grant)) continue; // #11113: consumida no registro da beneficiária
     if (grant.grantedTo === grant.grantedBy) continue; // auto-concessão nunca vale
     // #8188: concessão escopada a OUTRO PR nunca é a candidata deste merge.
     if (grant.pr !== undefined && targetPr !== undefined && grant.pr !== targetPr) continue;
@@ -515,8 +524,31 @@ export function consumeGrantUnderLock(
     // #10618: `opts.repo` restringe ao repo do merge (ausente = qualquer, comportamento anterior).
     const initial = findLiveMergeGrantFile(repoRoot, sessionId, Date.now(), true, targetPr, opts.repo);
     if (!initial) return consumedAny;
+    // #11113: arquivo de OUTRA máquina nunca é escrito daqui. O write
+    // concorria (via OneDrive) com o heartbeat/`grant-merge` da coordenadora,
+    // virava cópia de conflito a cada merge e deixava a cópia local sem as
+    // concessões seguintes. O consumo vai pro registro da própria
+    // beneficiária, que todos os leitores consultam.
+    const localTag = opts.localTag ?? machineTag();
+    if (!sessionFileIsLocal(basename(initial.path), initial.record.kind, localTag)) {
+      if (!recordMergeGrantConsumption(repoRoot, initial.grant, nowIso)) {
+        logGrantNotConsumed(repoRoot, Object.assign(new Error("ledger write failed"), { code: "LEDGER_WRITE_FAILED" }), initial.path, 1);
+        return consumedAny;
+      }
+      consumedAny = true;
+      continue;
+    }
     if (!consumeOneUnderLock(initial, nowIso, attempts, lockTimeoutMs, repoRoot, opts)) return consumedAny;
     consumedAny = true;
+  }
+}
+
+/** Espelho de `machineTag()` de session-registry.ts / block-gh-pr-merge-subagent.mjs. */
+export function machineTag() {
+  try {
+    return (hostname() || "unknown").replace(/[^a-zA-Z0-9_-]/g, "_");
+  } catch {
+    return "unknown";
   }
 }
 

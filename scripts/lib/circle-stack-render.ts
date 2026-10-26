@@ -169,6 +169,10 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   for (const h of sel.destaques) {
     blocks.push(`### ${h.title.replace(/\s+/g, " ").trim()}`);
     blocks.push(...paragraphs(h.body));
+    // #11068 (decisão do editor, 26/10/2026): aqui o `why` vai cru de propósito.
+    // Ele aparece ROTULADO ("Por que isso importa:"), e o padrão de resumo da
+    // #11062 (weekly-summary-writer) só vale onde o texto aparece sem rótulo,
+    // como a legenda da retro semanal (format-weekly-social.ts).
     const why = h.stackNote?.trim() || h.why.trim();
     if (why) blocks.push(`**Por que isso importa:**`, ...paragraphs(why));
     const editionUrl = editionUrlByDate.get(h.editionDate);
