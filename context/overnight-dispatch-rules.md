@@ -1143,23 +1143,28 @@ e o `.git` não está quebrado. Não tentar reparar o checkout compartilhado.
    coordenador antes do dispatch:
    - **Caminho curto e fora do scratchpad.** O scratchpad do Windows fica
      fundo em `%TEMP%` e o `git clone` estoura `Filename too long` em alguns
-     arquivos do repo. Use algo como `C:\dw\{N}` no Windows ou `~/dw/{N}` no
-     Unix, com `{N}` = issue da unidade (lote: a menor).
+     arquivos do repo. Use algo como `C:/dw/{N}` no Windows ou `~/dw/{N}` no
+     Unix, com `{N}` = issue da unidade (lote: a menor). Nos comandos de
+     shell (Git Bash, o shell do Claude Code no Windows) o caminho vai com
+     barra normal: sem aspas, `C:\dw\123` vira `C:dw123`. Barra invertida
+     só dentro dos comandos de `cmd` (`mklink`/`rmdir`, abaixo).
    - **`core.longpaths` já no clone:** `git clone -c core.longpaths=true
-     https://github.com/vjpixel/diaria-studio.git C:\dw\{N}`. Clonar do
+     https://github.com/vjpixel/diaria-studio.git C:/dw/{N}`. Clonar do
      GitHub, não do checkout local: um clone do caminho local deixa `origin`
      apontando para o checkout compartilhado, e o `git push` do subagente
      iria para lá em vez do GitHub. Se clonar do local para poupar banda,
-     rodar logo depois `git -C C:\dw\{N} remote set-url origin
+     rodar logo depois `git -C C:/dw/{N} remote set-url origin
      https://github.com/vjpixel/diaria-studio.git` e conferir com `git
      remote -v`.
-   - **Branch:** `git -C C:\dw\{N} checkout -b {branch} origin/master`, com a
+   - **Branch:** `git -C C:/dw/{N} checkout -b {branch} origin/master`, com a
      convenção do item 2.
    - **`node_modules`:** `npm ci` dentro do clone, como no item 3. Nunca
      symlink/junction de `node_modules` para o checkout principal.
    - **`data/` só quando a unidade roda eval de agent (#8144)** ou outro
      script que leia `data/` de verdade: junction para o `data/` real
-     (`mklink /J C:\dw\{N}\data {data real}` no Windows, `ln -s` no Unix).
+     (`cmd //c "mklink /J C:\dw\{N}\data {data real}"` a partir do Git
+     Bash no Windows, `ln -s` no Unix). `mklink` é comando interno do
+     `cmd`: chamado direto no bash dá `command not found`.
      Sem eval, sem junction: menos superfície para um `rm` errado alcançar
      dado de produção.
 3. Dispatch sem `isolation`, com o caminho do clone como cwd explícito de
@@ -1168,10 +1173,13 @@ e o `.git` não está quebrado. Não tentar reparar o checkout compartilhado.
    clone.
 
 **`gh pr create` recusado pelo hook de typecheck no clone recém-instalado:**
-o 1º `tsc` frio pode não terminar a tempo
-(`.claude/hooks/block-pr-create-tsc-failure.mjs`, observado na 261025b).
-Rodar `npx tsc --noEmit` uma vez antes do `gh pr create` aquece o cache; se
-a recusa por tempo se repetir, repetir o `gh pr create` resolve. Recusa com
+observado na 261025b, causa não confirmada. O próprio
+`.claude/hooks/block-pr-create-tsc-failure.mjs` trata timeout do `tsc` (60s)
+como infra e não bloqueia; a recusa provavelmente veio do timeout do hook em
+`.claude/settings.json` (90s), com o 1º `tsc` frio, ou de outro caminho. O
+remédio vale nos dois casos: rodar `npx tsc --noEmit` uma vez antes do `gh
+pr create` aquece o cache; se a recusa sem erro de tipo se repetir, repetir
+o `gh pr create` resolve. Recusa com
 erro de tipo de verdade não é esse caso: corrigir o erro.
 
 **Limpeza é do coordenador, nunca do subagente.** Na 261025b o `rm -rf`
@@ -1181,10 +1189,11 @@ worktrees deste repo), então o coordenador anota no `plan.json` o caminho do
 clone de cada unidade (nota da issue) e limpa depois que a PR da unidade foi
 mergeada ou fechada:
 1. **Primeiro desfazer a junction de `data/`, se houver**, sem seguir o
-   alvo: `rmdir C:\dw\{N}\data` no `cmd` (remove só a junction) ou `rm
+   alvo: `cmd //c "rmdir C:\dw\{N}\data"` a partir do Git Bash (remove só
+   a junction) ou `rm
    ~/dw/{N}/data` no Unix (sem `-r`, remove só o symlink). Um `rm -rf` no
    clone com a junction ainda lá pode descer nela e apagar o `data/` real.
-2. Conferir que a junction sumiu (`dir C:\dw\{N}` / `ls -la ~/dw/{N}`).
+2. Conferir que a junction sumiu (`ls -la C:/dw/{N}` / `ls -la ~/dw/{N}`).
 3. Só então remover o diretório do clone.
 
 Clone de PR ainda aberta no fim da rodada fica em disco e entra no relatório
