@@ -351,7 +351,10 @@ export function main(rootDirOverride?: string) {
     );
   }
 
-  warnings.push(...headlineResult.warnings);
+  // --picks já resolveu o empate; preservar só os avisos ainda aplicáveis.
+  warnings.push(...headlineResult.warnings.filter(
+    (warning) => pendingGroupForOutput !== null || !warning.includes("escolha manual necessária no gate"),
+  ));
 
   const manifest = identifyWeeklyPostsNeedingClicks(windowPosts);
   if (manifest.length > 0) {
