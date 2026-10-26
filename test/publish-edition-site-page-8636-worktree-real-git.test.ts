@@ -35,10 +35,10 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { commitAndPushSitePage, homePageRelPathFromSitemap } from "../scripts/publish-edition-site-page.ts";
+import { commitAndPushSitePage, homePageRelPathFromSitemap, productionDeps, publishEditionSitePage } from "../scripts/publish-edition-site-page.ts";
 import type { GhRunner, LockRunner, SleepFn } from "../scripts/publish-edition-site-page.ts";
 
 function git(args: string[], cwd: string): string {
@@ -336,4 +336,61 @@ describe("#8665 — archive/ (backfillAndReindexArchive, #8645) chega ao commit 
     const tree = git(["ls-tree", "-r", "--name-only", ref], rootDir);
     assert.ok(!tree.includes("archive/2/index.html"), `página podada não deveria sobreviver:\n${tree}`);
   });
+});
+
+
+describe("#11126 — regen do índice isolado do checkout compartilhado", () => {
+  for (const existingArchive of [true, false]) {
+    it(`publica índice novo e poda só no worktree (archive existente: ${existingArchive})`, () => {
+      const { rootDir } = setupRealRepo();
+      const sitemap = "workers/site/public/sitemap.xml";
+      const archive = "workers/site/public/archive";
+      if (existingArchive) {
+        for (const suffix of ["index.html", "2/index.html"]) {
+          const path = join(rootDir, archive, suffix);
+          mkdirSync(join(path, ".."), { recursive: true });
+          writeFileSync(path, "ARCHIVE_ORIGINAL\n");
+        }
+        git(["add", "--", archive], rootDir);
+        git(["commit", "-m", "archive fixture"], rootDir);
+        git(["push", "origin", "master"], rootDir);
+      }
+      writeFileSync(join(rootDir, sitemap), `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${existingArchive ? "<url><loc>https://diar.ia.br/archive/2</loc></url>" : ""}</urlset>`);
+      const before = git(["status", "--porcelain", "--", archive], rootDir);
+      const worktreeDir = join(mkdtempSync(join(tmpdir(), "diaria-11126-")), "wt");
+      cleanupDirs.push(join(worktreeDir, ".."));
+      const slug = "edicao-11126";
+      const gh: GhRunner = (args) => {
+        assert.notEqual(args.slice(0, 2).join(" "), "pr merge");
+        if (args[0] === "pr" && args[1] === "checks") return "[]";
+        return makeGh()(args);
+      };
+      const deps = productionDeps(rootDir, git, gh, noopLock, noopSleep, worktreeDir, () => ({}), 0);
+      const result = publishEditionSitePage(rootDir, {
+        ...deps,
+        readEditionInputs: () => ({
+          html: "<p>Conteúdo da edição de regressão</p>",
+          postUrl: `https://diar.ia.br/p/${slug}`,
+          title: "Edição de regressão 11126",
+          subtitle: "Teste do índice isolado",
+          publishedAtIso: "2026-10-26T09:00:00Z",
+        }),
+      }, { sitemap, slug });
+      assert.equal(result.code, 0, JSON.stringify(result));
+      assert.equal("published" in result && result.published, true);
+      assert.equal(git(["status", "--porcelain", "--", archive], rootDir), before);
+      if (existingArchive) {
+        assert.equal(readFileSync(join(rootDir, archive, "index.html"), "utf8"), "ARCHIVE_ORIGINAL\n");
+        assert.equal(readFileSync(join(rootDir, archive, "2/index.html"), "utf8"), "ARCHIVE_ORIGINAL\n");
+      } else {
+        assert.equal(existsSync(join(rootDir, archive)), false);
+      }
+      const ref = `site-publish/${slug}`;
+      assert.match(git(["show", `${ref}:${archive}/index.html`], rootDir), /edicao-11126/);
+      assert.match(git(["show", `${ref}:${sitemap}`], rootDir), /https:\/\/diar\.ia\.br\/archive/);
+      assert.doesNotMatch(git(["show", `${ref}:${sitemap}`], rootDir), /https:\/\/diar\.ia\.br\/archive\/2/);
+      assert.ok(!git(["ls-tree", "-r", "--name-only", ref], rootDir).includes(`${archive}/2/index.html`));
+      assert.equal(existsSync(worktreeDir), false);
+    });
+  }
 });
