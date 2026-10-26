@@ -117,6 +117,7 @@
 // bloquear; nenhuma saída pra permitir (equivalente a "defer").
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { ledgerConsumedAt, readMergeGrantConsumptions } from "./lib/merge-grant-ledger.mjs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -363,6 +364,9 @@ export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now(), rep
   } catch {
     return null;
   }
+  // #11113: consumo cross-máquina vive no registro da beneficiária, não no
+  // arquivo da coordenadora — ver `.claude/hooks/lib/merge-grant-ledger.mjs`.
+  const ledger = readMergeGrantConsumptions(repoRoot);
   for (const name of entries) {
     if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
     try {
@@ -374,6 +378,7 @@ export function readLiveMergeGrantFor(repoRoot, sessionId, now = Date.now(), rep
       if (!grant || grant.grantedTo !== sessionId) continue;
       if (repo !== undefined && !grantMatchesRepo(grant, repo)) continue; // #10618: só o repo do merge
       if (grant.consumedAt) continue;
+      if (ledgerConsumedAt(ledger, grant)) continue; // #11113: consumida do outro lado
       if (grant.grantedTo === grant.grantedBy) continue;
       const grantedMs = Date.parse(grant.grantedAt);
       if (!Number.isFinite(grantedMs)) continue;
@@ -418,6 +423,7 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now(), repo
   } catch {
     return null;
   }
+  const ledger = readMergeGrantConsumptions(repoRoot); // #11113
   for (const name of entries) {
     if (!name.endsWith(".json") || name.startsWith(".") || name.includes("-safeBackup-")) continue;
     try {
@@ -425,10 +431,13 @@ export function readConsumedGrantFor(repoRoot, sessionId, now = Date.now(), repo
       if (!record || !COORDINATOR_KINDS.has(record.kind)) continue;
       const grantorHeartbeatMs = Date.parse(record.lastHeartbeat ?? record.startedAt ?? "");
       if (Number.isFinite(grantorHeartbeatMs) && now - grantorHeartbeatMs > SOFT_STALE_MS) continue;
-      const grant = record.merge_grant;
-      if (!grant || grant.grantedTo !== sessionId) continue;
-      if (repo !== undefined && !grantMatchesRepo(grant, repo)) continue; // #10618: só o repo do merge
-      if (!grant.consumedAt) continue; // aqui é o OPOSTO de readLiveMergeGrantFor
+      const rawGrant = record.merge_grant;
+      if (!rawGrant || rawGrant.grantedTo !== sessionId) continue;
+      if (repo !== undefined && !grantMatchesRepo(rawGrant, repo)) continue; // #10618: só o repo do merge
+      // #11113: consumo gravado no registro da beneficiária conta igual.
+      const consumedAt = rawGrant.consumedAt ?? ledgerConsumedAt(ledger, rawGrant);
+      if (!consumedAt) continue; // aqui é o OPOSTO de readLiveMergeGrantFor
+      const grant = { ...rawGrant, consumedAt };
       if (grant.grantedTo === grant.grantedBy) continue;
       const grantedMs = Date.parse(grant.grantedAt);
       if (!Number.isFinite(grantedMs)) continue;

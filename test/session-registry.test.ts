@@ -3850,7 +3850,8 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
     assert.ok(findLiveMergeGrant(root, "benef-6952", now), "sanity: a leitura acha o grant");
 
     assert.equal(
-      consumeMergeGrant(root, "benef-6952", now),
+      // #11113: o cenário é de cópias de conflito na MESMA máquina da coordenadora.
+      consumeMergeGrant(root, "benef-6952", now, { localTag: "300" }),
       true,
       "consumir devolveu false para um grant que a leitura acha — encontrável e inconsumível",
     );
@@ -3884,7 +3885,7 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
       );
     }
 
-    assert.equal(consumeMergeGrant(root, "benef-6952", now), true);
+    assert.equal(consumeMergeGrant(root, "benef-6952", now, { localTag: "300" }), true); // #11113: mesma máquina
     for (const name of readdirSync(sessionsDir)) {
       const rec = JSON.parse(readFileSync(join(sessionsDir, name), "utf8"));
       assert.ok(
