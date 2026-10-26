@@ -12,7 +12,7 @@ const items = [
 test('261026 Terra e Guardian repetem o incidente PHP de 261023 apesar das URLs e títulos diferentes', () => {
   const warnings = findFactRecurrences(items, past, '261026');
   assert.equal(warnings.length, 2);
-  assert.ok(warnings.every(w => w.matched_edition === '261023' && w.score === 0.8));
+  assert.ok(warnings.every(w => w.matched_edition === '261023' && w.score === 1 && w.shared_entities.includes('php')));
   assert.match(warnings[0].possible_new_fact, /tribunais e a Anatel/);
 });
 test('todos os buckets, janela de 30 dias, sem self-match ou futuro', () => {
@@ -50,4 +50,27 @@ test('Stage 4 registrado como warning e verifica o conteúdo atual do markdown',
     writeFileSync(file, '[Mistral lança Voxtral 3](https://mistral.ai/voxtral)');
     assert.deepEqual(checkFactRecurrence(editionDir, past), []);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#11109: 1 entidade comum (não sigla) não basta, nem palavra que abre frase', () => {
+  const pastMs = '## 2026-10-21 — "Microsoft sofre ataque de ransomware"\nTemas cobertos:\n- Microsoft\n';
+  // Cenário da issue: fatos diferentes, só "Microsoft" em comum (e abrindo a frase).
+  assert.deepEqual(findFactRecurrences([{ title: 'Microsoft corrige falha no Teams', url: 'https://ms.com/teams' }], pastMs, '261026'), []);
+  // Microsoft no meio da frase ainda é 1 entidade comum só: peso 1 < 2.
+  assert.deepEqual(findFactRecurrences([{ title: 'Usuários relatam que a Microsoft corrigiu falha no Teams', url: 'https://ms.com/t2' }], pastMs, '261026'), []);
+  // Parágrafo inteiro (Stage 4): inícios de frase não viram entidade.
+  const pastPesq = '## 2026-10-21 — "Pesquisadores acham falha em Copilot da Microsoft"\n';
+  const para = 'Segundo relatório, ataque atingiu bancos. Pesquisadores alertam. Estudo aponta falha [link](https://x.com/a).';
+  assert.deepEqual(findFactRecurrences([{ title: para, url: 'https://x.com/a' }], pastPesq, '261026'), []);
+});
+
+test('#11109: 2 entidades comuns ou sigla/termo com dígito ainda avisam', () => {
+  const pastMs = '## 2026-10-21 — "Microsoft sofre ataque de ransomware no Azure"\n';
+  const two = findFactRecurrences([{ title: 'Ransomware: ataque contra a Microsoft derruba o Azure de novo', url: 'https://ms.com/azure' }], pastMs, '261026');
+  assert.equal(two.length, 1);
+  assert.deepEqual(two[0].shared_entities.sort(), ['azure', 'microsoft']);
+  assert.equal(two[0].score, 1);
+  // Sigla abrindo a frase é forte e não é descartada.
+  const pastCve = '## 2026-10-21 — "Falha CVE-2026-1234 expõe servidores"\n';
+  assert.equal(findFactRecurrences([{ title: 'CVE-2026-1234 volta a ser explorada em ataque', url: 'https://x.com/cve' }], pastCve, '261026').length, 1);
 });
