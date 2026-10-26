@@ -19,13 +19,11 @@
  *
  * ## Como o destaque é reconhecido
  *
- * Pela manchete que `renderHeadlineInner` grava desde o #5176:
- * `<a class="headline" ...><h2 ...>`. Os destaques saem na ordem D1, D2, D3,
- * então a N-ésima manchete é o destaque N. Os comentários `<!-- Destaque N -->`
- * do render não servem: o HTML servido pelo Kit chega sem comentários
- * (medido em 23/10/2026 nas 294 páginas de `workers/site/public/p/`: nenhuma
- * tem o comentário; 49 têm exatamente 3 manchetes `headline`; 245 páginas do
- * acervo Beehiiv não têm nenhuma).
+ * Pela manchete `<a class="headline" ...>`, com título direto no link ou
+ * dentro de `<h2 ...>` (render atual). Os destaques saem na ordem D1, D2,
+ * D3, então a N-ésima manchete é o destaque N. Os comentários do render
+ * não servem: o HTML servido pelo Kit chega sem comentários. O acervo
+ * também contém páginas sem a classe `headline`, que não são reconhecidas.
  *
  * Fora do formato reconhecido a página fica intocada, nunca com âncora
  * chutada: zero manchetes (acervo Beehiiv, formato antigo) ou mais de 3 (algo
@@ -60,8 +58,8 @@ export function destaqueAnchorId(n: number): string {
   return `d${n}`;
 }
 
-/** Manchete de destaque: `<a class="headline" ...>` seguido do `<h2 ...>`. */
-const HEADLINE_H2_RE = /(<a\b[^>]*\bclass="headline"[^>]*>\s*)<h2\b([^>]*)>/gi;
+/** Manchete com h2 opcional: preserva o alvo h2 do render atual. */
+const HEADLINE_RE = /<a\b([^>]*\bclass="headline"[^>]*)>(\s*)(?:<h2\b([^>]*)>)?/gi;
 
 /** Qualquer elemento que já use um dos ids das âncoras. */
 const ANCHOR_ID_PRESENT_RE = /\bid\s*=\s*["']d[1-3]["']/i;
@@ -72,25 +70,28 @@ export function hasDestaqueAnchors(html: string): boolean {
 }
 
 /**
- * Pure: põe `id="dN"` (e a folga de rolagem) no `<h2>` de cada manchete de
- * destaque. Idempotente: página que já tem qualquer `id="d1|d2|d3"` volta
+ * Pure: põe `id="dN"` (e a folga de rolagem) no `<h2>` de cada manchete,
+ * ou no próprio `<a>` quando não há h2. Idempotente: página que já tem qualquer `id="d1|d2|d3"` volta
  * igual — nunca duplica id. Formato não reconhecido (0 ou mais de 3
  * manchetes) também volta igual.
  */
 export function injectDestaqueAnchors(html: string): string {
   if (hasDestaqueAnchors(html)) return html;
-  const count = [...html.matchAll(HEADLINE_H2_RE)].length;
+  const count = [...html.matchAll(HEADLINE_RE)].length;
   if (count === 0 || count > MAX_DESTAQUES) return html;
 
   let n = 0;
-  return html.replace(HEADLINE_H2_RE, (_full, aOpen: string, attrs: string) => {
+  return html.replace(HEADLINE_RE, (_full, aAttrs: string, whitespace: string, h2Attrs: string | undefined) => {
+    const attrs = h2Attrs ?? aAttrs;
     n += 1;
     const margin = `scroll-margin-top:${DESTAQUE_ANCHOR_SCROLL_MARGIN_PX}px;`;
     const styleRe = /\bstyle\s*=\s*"([^"]*)"/i;
     const withStyle = styleRe.test(attrs)
       ? attrs.replace(styleRe, (_m, css: string) => `style="${margin}${css}"`)
       : `${attrs} style="${margin}"`;
-    return `${aOpen}<h2 id="${destaqueAnchorId(n)}"${withStyle}>`;
+    return h2Attrs !== undefined
+      ? `<a${aAttrs}>${whitespace}<h2 id="${destaqueAnchorId(n)}"${withStyle}>`
+      : `<a id="${destaqueAnchorId(n)}"${withStyle}>${whitespace}`;
   });
 }
 

@@ -51,6 +51,24 @@ describe("#11003 — injectDestaqueAnchors", () => {
     assert.deepEqual(headlineIds(out), ["d1", "d2", "d3"]);
   });
 
+  it("#11051: título direto em a.headline ganha âncora e preserva conteúdo e estilo", () => {
+    const html = '<a class="headline" href="https://example.com" style="color:red">Título</a>';
+    const out = injectDestaqueAnchors(html);
+    assert.equal(out, `<a id="d1" class="headline" href="https://example.com" style="scroll-margin-top:${DESTAQUE_ANCHOR_SCROLL_MARGIN_PX}px;color:red">Título</a>`);
+    assert.equal(injectDestaqueAnchors(out), out);
+  });
+
+  it("#11051: numera formatos mistos na ordem e recusa mais de três", () => {
+    const direct = '<a class="headline">Título</a>';
+    const out = injectDestaqueAnchors(direct + bodyWithHeadlines(1) + direct);
+    assert.deepEqual([...out.matchAll(/id="(d[1-3])"/g)].map((m) => m[1]), ["d1", "d2", "d3"]);
+    assert.equal(injectDestaqueAnchors(direct.repeat(4)), direct.repeat(4));
+    const result = backfillDestaqueAnchors(direct.repeat(3) + editionCtaScript());
+    assert.equal(result.changed, true);
+    assert.equal(backfillDestaqueAnchors(result.html).changed, false);
+    assert.equal(backfillDestaqueAnchors(direct).skipped, "sem-script-do-modal");
+  });
+
   it("edição de 2 destaques ganha d1 e d2", () => {
     assert.deepEqual(headlineIds(injectDestaqueAnchors(bodyWithHeadlines(2))), ["d1", "d2"]);
   });
