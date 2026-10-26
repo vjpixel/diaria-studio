@@ -25,6 +25,8 @@
  *      que falhou na prévia, `--no-translate`) até o editor reescrever, rodar
  *      `--translate-titles` ou marcar `"titleReviewed": true` no item (#11161).
  *   3. Renderiza a prévia em Markdown `data/weekly/{cycle}/circle-stack-{cycle}.md`.
+ *      Abertura (#11186): `--opening-file` > campo `opening` da seleção (escrito
+ *      à mão) > resumo automático com a 1ª frase de cada destaque.
  *   4. Só com `--publish`: envia ao webhook n8n da Stack
  *      (`scripts/lib/stack-webhook.ts`), que
  *      publica NA HORA — não há rascunho. Idempotente por ciclo via
@@ -410,6 +412,7 @@ export function parseStoredCircleStackSelection(
   if (sel.cycle !== cycle) return fail(`ciclo ${JSON.stringify(sel.cycle)} diferente do esperado ${cycle}`);
   if (!Array.isArray(sel.contentWindow)) return fail("campo contentWindow ausente");
   if (!Array.isArray(sel.weeklyEditions)) return fail("campo weeklyEditions ausente");
+  if (sel.opening !== undefined && typeof sel.opening !== "string") return fail("campo opening não é texto");
   for (const section of ITEM_SECTIONS) {
     const items = sel[section];
     if (!Array.isArray(items)) return fail(`seção ${section} ausente (esperada uma lista)`);
