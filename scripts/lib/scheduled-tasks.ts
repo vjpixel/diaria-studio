@@ -890,6 +890,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5111",
   },
   {
+    name: "Diaria-Retro-Semanal-Staleness-Alarm",
+    description: "alarme de staleness da retro semanal (carrossel highlights do sabado nao agendado)",
+    // #11069, irmão do Diaria-LinkedIn-Weekly-Staleness-Alarm acima: checa
+    // `data/weekly/{sábado}/06-weekly-published.json` e, se ele não provar,
+    // a fila do Worker (`GET /list`, leitura) — store replicado por OneDrive
+    // pode atrasar (item 23 de context/overnight-dispatch-rules.md).
+    steps: [{ key: "alarm", script: "scripts/retro-semanal-staleness-alarm.ts" }],
+    logPath: "weekly/.retro-semanal-staleness-alarm.log",
+    // Sábado 07:00 BRT, não 09:00 como a issue sugeria de exemplo: durante o
+    // teste rotativo (#10305) o carrossel de sábado pode cair em 08:00
+    // (`publishing.social.rotation.weekend_candidates`), e 09:00 avisaria
+    // depois do slot. 07:00 deixa 1h antes do candidato mais cedo e 4h antes
+    // do 11:00 padrão. Slot livre no sábado (04:30 Hotmart-Vendas-Sync,
+    // 03:40 Gc-Data-Dir-Weekly — nada às 07:00).
+    schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 7, minute: 0 },
+    // Sem guard de `requiredFile`: store ausente é justamente o achado; o
+    // falso positivo de replicação é coberto pela consulta ao Worker.
+    // Registrada depois do cutover systemd (#4798), sem contraparte Windows
+    // (#5074). DECLARADA, NÃO ARMADA nesta unidade (subagente em clone
+    // isolado) — arme em `300`: docs/retro-semanal-staleness-alarm-setup.md.
+    issue: "#11069",
+  },
+  {
     name: "Diaria-Circle-Stack-Weekly-Preview",
     description:
       "prévia semanal do Radar de Notícias Stack (Circle da Stack) em DRY-RUN + aviso ao editor; nunca publica (#10904)",
