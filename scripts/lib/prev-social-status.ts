@@ -78,7 +78,7 @@ export interface PrevSocialFinding {
   destaque: string;
   status: string;
   scheduled_at: string | null;
-  reason: "failed" | "overdue-pollable";
+  reason: "failed" | "overdue-pollable" | "send-unknown";
 }
 
 export interface PrevSocialReport {
@@ -114,6 +114,13 @@ export function analyzePrevSocial(posts: SocialPostLike[], now: Date): PrevSocia
       continue;
     }
 
+    // #11129: envio ambíguo (local, #11105, ou reconciliado da DLQ do Worker
+    // pelo check 0k) — o post pode ter saído; o editor confere o perfil.
+    if (status === "send_unknown") {
+      findings.push({ platform, destaque, status, scheduled_at: scheduledAt, reason: "send-unknown" });
+      continue;
+    }
+
     if (status !== "scheduled") continue;
 
     if (FIRE_AND_FORGET_PLATFORMS.has(platform)) {
@@ -137,6 +144,7 @@ export function analyzePrevSocial(posts: SocialPostLike[], now: Date): PrevSocia
 const REASON_LABEL: Record<PrevSocialFinding["reason"], string> = {
   failed: "dispatch falhou",
   "overdue-pollable": "agendado e não publicado",
+  "send-unknown": "envio ambíguo, conferir o perfil antes de refazer",
 };
 
 /** Resumo de uma linha para o log/terminal. `null` quando não há o que dizer. */

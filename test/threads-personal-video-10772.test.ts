@@ -156,8 +156,8 @@ describe("publishThreadsProfileVideo (#10772)", () => {
       const out = await publishThreadsProfileVideo({ creds: CREDS, videoUrl: VIDEO, text: "x", deps: deps(f.fn) });
       assert.equal(out.entry.status, "send_unknown");
       assert.equal(out.entry.destination, THREADS_PROFILE_DESTINATION);
-      // #10772 fleet review: o allowlist de publish-shorts ainda não aceita threads_profile — o aviso não manda usar --mark.
-      assert.ok(!/--mark/.test(out.warnings?.[0] ?? ""), out.warnings?.[0]);
+      // #11122: o allowlist de publish-shorts aceita threads_profile — o aviso aponta o --mark.
+      assert.match(out.warnings?.[0] ?? "", /--mark threads_profile=URL/);
       assert.match(out.warnings?.[0] ?? "", /confer\w+ no perfil/);
     }
   });
