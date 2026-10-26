@@ -142,6 +142,35 @@ describe("--retry recusa thread parcial (#11131)", () => {
     assert.equal(decision.action, "dispatch");
   });
 
+  it("resume SEM --retry não re-despacha parcial failed nem send_unknown (raiz duplicaria)", () => {
+    for (const status of ["failed", "send_unknown"] as const) {
+      for (const skipExisting of [true, false]) {
+        const decision = decideThreadsDispatch("d2", partialEntry(status), { skipExisting, retryIds: null });
+        assert.equal(decision.action, "skip-partial", `${status} skipExisting=${skipExisting}`);
+        assert.equal(decision.action === "skip-partial" && decision.rootMediaId, "r1");
+      }
+    }
+    // --partial-root-deleted sem --retry não libera (só tem efeito com --retry).
+    assert.equal(
+      decideThreadsDispatch("d2", partialEntry("failed"), { skipExisting: true, retryIds: null, partialRootDeleted: true }).action,
+      "skip-partial",
+    );
+  });
+
+  it("parcial failed: --retry + --partial-root-deleted re-despacha", () => {
+    const decision = decideThreadsDispatch("d2", partialEntry("failed"), {
+      skipExisting: true,
+      retryIds: new Set(["d2"]),
+      partialRootDeleted: true,
+    });
+    assert.equal(decision.action, "dispatch");
+  });
+
+  it("failed sem raiz gravada segue re-despachado pelo resume (comportamento de sempre)", () => {
+    const e: PostEntry = { platform: "threads", destaque: "d2", url: null, status: "failed", scheduled_at: null };
+    assert.equal(decideThreadsDispatch("d2", e, { skipExisting: true, retryIds: null }).action, "dispatch");
+  });
+
   it("send_unknown sem raiz gravada segue retentável (#11105 intacto)", () => {
     const e: PostEntry = { platform: "threads", destaque: "d2", url: null, status: "send_unknown", scheduled_at: null };
     assert.equal(partialRootMediaId(e), null);
@@ -164,7 +193,10 @@ describe("fiação em publish-threads.ts (#11131)", () => {
   });
   it("main passa --partial-root-deleted pro decideThreadsDispatch e trata retry-refused-partial", () => {
     assert.match(SRC, /decideThreadsDispatch\(d, existingPost, \{ skipExisting, retryIds, partialRootDeleted \}\)/);
-    assert.match(SRC, /decision\.action === "retry-refused-partial"/);
+    assert.match(SRC, /decision\.action === "retry-refused-partial" \|\| decision\.action === "skip-partial"/);
+  });
+  it("avisa quando --partial-root-deleted vem sem --retry", () => {
+    assert.match(SRC, /if \(partialRootDeleted && !retryIds\) \{\s*console\.warn\([^)]*--partial-root-deleted só tem efeito junto com --retry/);
   });
   it("publishThread encadeia via publishThreadChunks", () => {
     assert.match(SRC, /return publishThreadChunks\(chunks, \{/);

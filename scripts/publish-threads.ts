@@ -506,7 +506,12 @@ export type ThreadsDispatchDecision =
   /** Pedido em `--retry`, mas o post já saiu/está agendado: refazer duplicaria. */
   | { action: "retry-refused"; existing: PostEntry }
   /** #11131 — thread multi-chunk parcial (raiz no ar): refazer duplicaria a raiz. */
-  | { action: "retry-refused-partial"; existing: PostEntry; rootMediaId: string };
+  | { action: "retry-refused-partial"; existing: PostEntry; rootMediaId: string }
+  /**
+   * #11131 — resume (sem `--retry`) diante de thread parcial: pula SEMPRE,
+   * qualquer status e mesmo com `--no-skip-existing` — re-despachar duplicaria a raiz.
+   */
+  | { action: "skip-partial"; existing: PostEntry; rootMediaId: string };
 
 /** #11131 — id da raiz já no ar, gravado numa entrada `failed`/`send_unknown` multi-chunk. */
 export function partialRootMediaId(entry: PostEntry | undefined): string | null {
@@ -517,7 +522,8 @@ export function partialRootMediaId(entry: PostEntry | undefined): string | null 
 /**
  * #11105 — decide se um post entra nesta execução. Puro (testável sem rede).
  * `--retry` restringe aos ids pedidos e só refaz `failed`/`send_unknown`;
- * fora dele, o resume de sempre (`--no-skip-existing` continua global).
+ * fora dele, o resume de sempre (`--no-skip-existing` continua global), exceto
+ * thread parcial com a raiz no ar, que é sempre pulada (#11131).
  */
 export function decideThreadsDispatch(
   d: string,
@@ -532,6 +538,9 @@ export function decideThreadsDispatch(
     if (existing && root && !opts.partialRootDeleted) return { action: "retry-refused-partial", existing, rootMediaId: root };
     return { action: "dispatch" };
   }
+  // #11131 — `failed` parcial não está em RESUME_SKIP_STATUSES: sem este guard o resume refazia a thread.
+  const partialRoot = partialRootMediaId(existing);
+  if (existing && partialRoot) return { action: "skip-partial", existing, rootMediaId: partialRoot };
   if (opts.skipExisting && existing && RESUME_SKIP_STATUSES.has(existing.status)) {
     return { action: "skip-existing", existing };
   }
@@ -631,6 +640,9 @@ async function main(): Promise<number | void> {
   const retryIds = retryParsed.ids;
   // #11131 — o editor apagou a raiz de uma thread parcial: libera o --retry dela.
   const partialRootDeleted = flags.has("partial-root-deleted");
+  if (partialRootDeleted && !retryIds) {
+    console.warn("AVISO: --partial-root-deleted só tem efeito junto com --retry dN — ignorado nesta execução (#11131).");
+  }
   const isTest = flags.has("test-mode");
   const isDryRun = flags.has("dry-run");
   const doSchedule = flags.has("schedule"); // #3944 Parte B
@@ -817,9 +829,10 @@ async function main(): Promise<number | void> {
       skippedCount += 1;
       continue;
     }
-    if (decision.action === "retry-refused-partial") {
+    if (decision.action === "retry-refused-partial" || decision.action === "skip-partial") {
+      const what = decision.action === "skip-partial" ? `thread parcial (${decision.existing.status})` : "--retry recusado";
       console.error(
-        `SKIP threads/${d}: --retry recusado — a raiz da thread (media_id ${decision.rootMediaId}) já está no ar; ` +
+        `SKIP threads/${d}: ${what} — a raiz da thread (media_id ${decision.rootMediaId}) já está no ar; ` +
           `refazer duplicaria a raiz (#11131). Apague a raiz no Threads e rode --retry ${d} --partial-root-deleted.`,
       );
       results.push(decision.existing);
