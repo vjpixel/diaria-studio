@@ -168,13 +168,10 @@
 * Ambos fail-soft: uma falha aqui vira aviso em stderr, nunca reverte a
 * publicação da página em si.
 *
-* **Worktree do #8636 (resolvido, #8665).** `backfillAndReindexArchive`
-* escreve em `rootDir`, não em `worktreeDir` — e o `git add` roda DENTRO do
-* worktree. Isso NÃO commita conteúdo velho: `commitAndPushSitePage` copia
-* de `rootDir` pro worktree cada path de `pathsToStage` (inclusive
-* `archive/`, com `rmSync` antes do `cpSync` pra que página podada também
-* saia) antes do `git add`. Travado com git real em
-* `test/publish-edition-site-page-8636-worktree-real-git.test.ts` (#8665).
+* **Worktree (#11126).** O backfill da página continua em `rootDir`.
+* A regeneração do índice paginado roda só no worktree, após copiar a página
+* e o sitemap atualizados e antes do staging. Assim a poda e a limpeza do
+* sitemap entram no PR sem modificar `archive/` no checkout compartilhado.
 *
 * ## Mecanismo de publicação: branch dedicada + PR, nunca push direto em `master` (#6598)
  *
@@ -451,7 +448,7 @@ export interface PublishPageDeps {
   backfillAndReindexArchive?(
     slug: string,
     sitemapRelPath: string,
-  ): { seoImageAdded: boolean; archiveIndexRegenerated: boolean };
+  ): { seoImageAdded: boolean; archiveIndexRegenerated: boolean; archiveIndexDeferred?: boolean };
   /** Commit + push. Nunca é `wrangler deploy` — ver docstring do módulo.
    * `editionDir` (#9593) só serve pro waiter em background saber qual state
    * file atualizar quando o CI não fecha dentro da espera síncrona. */
@@ -1948,6 +1945,7 @@ export function commitAndPushSitePage(
   // aplicado SOBRE a cópia do `gitCwd` — nunca copiado do checkout compartilhado.
   // #10265: `priorSlugs` reaplica as regras de TODOS os slugs anteriores.
   redirect?: SlugRedirect,
+  prepareWorktree?: (dir: string) => void,
 ): { committed: boolean; pushed: boolean; prUrl?: string; prNumber?: number; prCreated: boolean; fetchStale: boolean } {
   // #8636: no caminho legado, salva o branch original pra voltar depois.
   let originalBranch = "";
@@ -2128,6 +2126,9 @@ export function commitAndPushSitePage(
       }
     }
 
+    // #11126: regenerar só depois de copiar a página e o sitemap atualizados.
+    if (worktreeDir) prepareWorktree?.(worktreeDir);
+
     // #8645 REGRESSÃO (achado ao vivo, 21/09/2026, integração com #8636 no
     // merge dos dois): o `git commit -- <pathspec>` mais abaixo usava
     // `pathsToStage` inteiro, sem filtrar os paths que o guard logo acima
@@ -2155,13 +2156,8 @@ export function commitAndPushSitePage(
       // sucesso, é reportada como falha de publicação. `relPageDir` nunca
       // passa por este guard — é sempre staged incondicionalmente, como
       // antes (é a própria página, `writePage` já rodou por definição).
-      // #8636 (corrigido 21/09/2026): a existência é sempre checada em
-      // `rootDir` (a fonte da verdade do que foi escrito) — no caminho do
-      // worktree, o bloco de cópia acima já replicou pro `worktreeDir`
-      // qualquer path que exista em `rootDir`, então o `git add` abaixo
-      // (que roda em `gitCwd`) sempre encontra o que este guard deixar
-      // passar.
-      if (optionalPaths.has(p) && !existsSync(resolve(rootDir, p))) {
+      // #11126: o índice pode ter sido criado só no worktree após a cópia.
+      if (optionalPaths.has(p) && !existsSync(resolve(gitCwd, p))) {
         continue;
       }
       git(["add", "--", p], gitCwd);
@@ -2351,6 +2347,45 @@ export function commitAndPushSitePage(
   return { committed, pushed, prUrl, prNumber, prCreated, fetchStale };
 }
 
+/** Regenera no checkout que será staged, com a mesma política fail-soft. */
+function regenerateArchiveIndex(rootDir: string, sitemapRelPath: string): boolean {
+  const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
+  const pagesDirAbs = resolve(rootDir, "workers", "site", "public", "p");
+  const outDirAbs = resolve(rootDir, dirname(sitemapRelPath));
+  let archiveIndexRegenerated = false;
+  try {
+    // Regenera o índice paginado inteiro (`archive/{n}`) a partir do
+    // MESMO sitemap.xml/pages-dir já atualizados acima — barato (~9
+    // páginas com `ARCHIVE_INDEX_PAGE_SIZE=30`), mesmo custo que o cron
+    // `regen-home.yml` diário já paga. Sem `--no-sitemap`: poda de
+    // páginas órfãs e limpeza do sitemap acontecem na MESMA execução
+    // (ver docstring de `gen-archive-index.ts`) — este publish já É o
+    // commit que vai levar essa mudança.
+    const code = genArchiveIndexMain([
+      "--sitemap",
+      sitemapAbsPath,
+      "--pages-dir",
+      pagesDirAbs,
+      "--out-dir",
+      outDirAbs,
+    ]);
+    archiveIndexRegenerated = code === 0;
+    if (code !== 0) {
+      process.stderr.write(
+        `[site-page] aviso: gen-archive-index (#8645) saiu com code ${code} — índice paginado do acervo ` +
+          "pode estar sem a página nova.\n",
+      );
+    }
+  } catch (e) {
+    process.stderr.write(
+      `[site-page] aviso: gen-archive-index (#8645) falhou (${(e as Error).message}) — índice paginado ` +
+        "do acervo pode estar sem a página nova.\n",
+    );
+  }
+
+  return archiveIndexRegenerated;
+}
+
 /**
  * @param git Injetável (#6202 review, problema P2-G) — permite exercitar a
  *   amarração de `publish` com um `GitRunner` controlado, sem depender de um
@@ -2450,7 +2485,6 @@ export function productionDeps(
     backfillAndReindexArchive: (slug, sitemapRelPath) => {
       const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
       const pagesDirAbs = resolve(rootDir, "workers", "site", "public", "p");
-      const outDirAbs = resolve(rootDir, dirname(sitemapRelPath));
 
       let seoImageAdded = false;
       try {
@@ -2467,38 +2501,10 @@ export function productionDeps(
         );
       }
 
-      let archiveIndexRegenerated = false;
-      try {
-        // Regenera o índice paginado inteiro (`archive/{n}`) a partir do
-        // MESMO sitemap.xml/pages-dir já atualizados acima — barato (~9
-        // páginas com `ARCHIVE_INDEX_PAGE_SIZE=30`), mesmo custo que o cron
-        // `regen-home.yml` diário já paga. Sem `--no-sitemap`: poda de
-        // páginas órfãs e limpeza do sitemap acontecem na MESMA execução
-        // (ver docstring de `gen-archive-index.ts`) — este publish já É o
-        // commit que vai levar essa mudança.
-        const code = genArchiveIndexMain([
-          "--sitemap",
-          sitemapAbsPath,
-          "--pages-dir",
-          pagesDirAbs,
-          "--out-dir",
-          outDirAbs,
-        ]);
-        archiveIndexRegenerated = code === 0;
-        if (code !== 0) {
-          process.stderr.write(
-            `[site-page] aviso: gen-archive-index (#8645) saiu com code ${code} — índice paginado do acervo ` +
-              "pode estar sem a página nova.\n",
-          );
-        }
-      } catch (e) {
-        process.stderr.write(
-          `[site-page] aviso: gen-archive-index (#8645) falhou (${(e as Error).message}) — índice paginado ` +
-            "do acervo pode estar sem a página nova.\n",
-        );
-      }
+      // #11126: no modo isolado, o índice só é escrito após criar o worktree.
+      const archiveIndexRegenerated = !worktreeDir && regenerateArchiveIndex(rootDir, sitemapRelPath);
 
-      return { seoImageAdded, archiveIndexRegenerated };
+      return { seoImageAdded, archiveIndexRegenerated, archiveIndexDeferred: !!worktreeDir };
     },
     supersedePrevious: (args) => supersedePreviousSitePage(rootDir, gh, args, git),
     publish: (slug, sitemapPath?: string, editionDir?: string, removedPaths?: string[], redirect?: { oldSlug: string; newSlug: string }) => {
@@ -2513,6 +2519,7 @@ export function productionDeps(
         worktreeDir,
         removedPaths,
         redirect,
+        sitemapPath ? (dir) => { regenerateArchiveIndex(dir, sitemapPath); } : undefined,
       );
       // #8158 (revoga #6598): só tenta mergear quando há um PR de verdade
       // pra checar — `prNumber` ausente (gh pr create/list não devolveu URL
@@ -2719,13 +2726,13 @@ export function publishEditionSitePage(
     // publicação da página em si, que já aconteceu.
     if (deps.backfillAndReindexArchive) {
       try {
-        const { seoImageAdded, archiveIndexRegenerated } = deps.backfillAndReindexArchive(
+        const { seoImageAdded, archiveIndexRegenerated, archiveIndexDeferred } = deps.backfillAndReindexArchive(
           built.post.slug,
           sitemapRelPath,
         );
         deps.log(
           `backfill/reindex do acervo (#8645): ${seoImageAdded ? "image adicionada ao JSON-LD" : "JSON-LD já tinha image (ou página sem hero)"}; ` +
-            `${archiveIndexRegenerated ? "índice paginado regenerado" : "índice paginado NÃO regenerado (ver aviso acima)"}`,
+            `${archiveIndexDeferred ? "índice paginado será regenerado no worktree antes do commit" : archiveIndexRegenerated ? "índice paginado regenerado" : "índice paginado NÃO regenerado (ver aviso acima)"}`,
         );
       } catch (e) {
         deps.log(
