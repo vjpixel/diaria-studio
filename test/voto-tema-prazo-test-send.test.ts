@@ -142,6 +142,33 @@ describe("e-mail da votação exibe o prazo (#9260)", () => {
   });
 });
 
+describe("e-mail da votação — 1 link por opção, escape e paleta (#11198)", () => {
+  const ballot = {
+    titulo: "Qual tema?",
+    opcoes: [
+      { n: 1, titulo: "A <b>&</b>", descricao: "desc <script>", proponente: "Ana \"X\"" },
+      { n: 2, titulo: "B", descricao: "desc B" },
+    ],
+  } as Parameters<typeof renderVotoTemaEmailHtml>[1];
+  const html = renderVotoTemaEmailHtml("2611", ballot);
+
+  it("cada opção tem seu href com a merge tag do token", () => {
+    for (const n of [1, 2]) {
+      const re = new RegExp(`/votacao/2611/${n}\\?t=\\{\\{ subscriber\\.voto_token \\}\\}`, "g");
+      assert.equal(html.match(re)?.length, 1);
+    }
+  });
+  it("escapa título, descrição e proponente", () => {
+    assert.doesNotMatch(html, /<b>&<\/b>|<script>/);
+    assert.match(html, /A &lt;b&gt;&amp;&lt;\/b&gt;/);
+    assert.match(html, /Sugestão de Ana &quot;X&quot;/);
+  });
+  it("font-size só em {12,16,22,26}px e teal nunca como fundo/borda", () => {
+    for (const m of html.matchAll(/font-size:(\d+)px/g)) assert.ok(["12", "16", "22", "26"].includes(m[1]), m[0]);
+    assert.doesNotMatch(html, /(background|border)[^;"]*#00A0A0/i);
+  });
+});
+
 describe("runTestSend — test-send da merge tag voto_token (#9261)", () => {
   const TAG_ID = 77;
   function mkDeps(over: Partial<TestSendDeps> = {}) {

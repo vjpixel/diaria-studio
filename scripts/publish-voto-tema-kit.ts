@@ -87,7 +87,8 @@ export function publishedStatePath(dataDir: string, ciclo: string, audience: "el
 /** Pura — corpo HTML do e-mail: kicker + título + prazo (painel bege) + 1
  *  card contorno por opção da cédula, cada botão levando
  *  `?t={{ subscriber.voto_token }}`. Tabelas com estilo inline e tokens do DS
- *  (teal só no ponto do kicker, botão cheio em ink, font-size ∈ {12,16,22,26}). @pure */
+ *  (teal só como texto: ponto do kicker + link do placar; botão cheio em ink
+ *  numa célula de tabela, pro Outlook manter padding; font-size ∈ {12,16,22,26}). @pure */
 export function renderVotoTemaEmailHtml(ciclo: string, ballot: BallotTema): string {
   const sans = `font-family:${FONTS.sans};`;
   const serif = `font-family:${FONTS.serif};`;
@@ -103,9 +104,12 @@ export function renderVotoTemaEmailHtml(ciclo: string, ballot: BallotTema): stri
         `<p style="margin:0 0 8px;${serif}font-size:22px;line-height:28px;font-weight:700;${ink}">${htmlEscapeVotoTema(o.titulo)}</p>` +
         `<p style="margin:0 0 20px;${sans}font-size:16px;line-height:24px;${ink}">${htmlEscapeVotoTema(o.descricao)}` +
         `${o.proponente ? ` <em>Sugestão de ${htmlEscapeVotoTema(o.proponente)}.</em>` : ""}</p>` +
+        `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>` +
+        `<td bgcolor="${COLORS.ink}" style="background:${COLORS.ink};border-radius:8px;padding:14px 24px;">` +
         `<a href="${ARTIGOS_BASE_URL}/votacao/${ciclo}/${o.n}?t={{ subscriber.voto_token }}" ` +
-        `style="display:inline-block;background:${COLORS.ink};color:${COLORS.onInk};${sans}font-size:16px;line-height:16px;font-weight:600;` +
-        `padding:14px 24px;border-radius:8px;text-decoration:none;">Votar neste tema</a>` +
+        `aria-label="Votar em ${htmlEscapeVotoTema(o.titulo)}" ` +
+        `style="color:${COLORS.onInk};${sans}font-size:16px;line-height:16px;font-weight:600;text-decoration:none;">Votar neste tema</a>` +
+        `</td></tr></table>` +
         `</td></tr></table>`,
     )
     .join("\n");
