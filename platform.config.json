@@ -286,7 +286,8 @@
       "linkedin_profile": true,
       "linkedin_page_repost": true,
       "x": true,
-      "linkedin_x_note": "#10772 (tabela confirmada no briefing 261022b): vertical NATIVO no perfil pessoal do LinkedIn (Videos API, token LINKEDIN_PERSONAL_* do 4o post) + repost pela pagina diar.ia.br (passo guiado, horario da grade da pagina, longe dos 4 posts da rotacao #10305) + X @diariabr via Buffer (skill, video por URL publica do R2). O horizontal fica so no YouTube. Threads (conta pessoal + repost) ainda nao: falta o token da conta pessoal.",
+      "threads_profile": true,
+      "linkedin_x_note": "#10772 (tabela confirmada no briefing 261022b): vertical NATIVO no perfil pessoal do LinkedIn (Videos API, token LINKEDIN_PERSONAL_* do 4o post) + repost pela pagina diar.ia.br (passo guiado, horario da grade da pagina, longe dos 4 posts da rotacao #10305) + X @diariabr via Buffer (skill, video por URL publica do R2). O horizontal fica so no YouTube. threads_profile (#11122): vertical no Threads PESSOAL (THREADS_PERSONAL_*, video por URL publica do R2) — integrado e fail-soft (pulado com aviso) ate o token da conta pessoal existir (#10772/#11077); o repost pela diar.ia.br segue manual (a Threads API nao documenta repost).",
       "schedule": {
         "rotation_times": ["06:30", "08:00", "12:00"],
         "rotation_start": "2026-10-26",

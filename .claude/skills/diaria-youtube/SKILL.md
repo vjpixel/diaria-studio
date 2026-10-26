@@ -35,6 +35,8 @@ npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
 
 Ao terminar, sugerir o próximo comando (`/diaria-shorts {AAMMDD}`) sem rodá-lo.
 
+**Edição sem vídeo (#11125).** Se o editor disser que não vai gravar o vídeo do dia, marcar a edição com `npx tsx scripts/set-d1-no-video.ts {AAMMDD}`: grava `_internal/no-video.json`, apaga a cópia `04-d1-2x1-play.jpg` com o convite "Clique e assista a notícia comentada" e faz o upload (`upload-images-public.ts --mode newsletter`) e o render pararem de usá-la — o D1 sai com o hero puro, sem link. Depois rodar o upload em modo newsletter (tira `d1_play` de `06-public-images.json`) e re-renderizar o HTML. O marcador vence a URL do vídeo; para religar, `--clear` e rodar o upload de novo.
+
 ## Passo 1 — Conferir os insumos
 
 Na pasta da edição (`data/editions/{AAMM}/{AAMMDD}/`):
