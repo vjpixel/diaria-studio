@@ -12,6 +12,11 @@
  * lugar nenhum e não imprime e-mail nem hash (abrir o store roda as migrações
  * idempotentes de esquema de `openDiariaSubscribersDb`, como qualquer leitor).
  *
+ * Eventos de teste da Hotmart (produto id 0, `isVendaDeTeste`) ficam fora do
+ * cruzamento. No fim sai a conferência do item 3 da #10734 (a reversão traz a
+ * comissão do produtor da aprovação?), sobre o espelho inteiro, sem filtro de
+ * período: é o comando a rodar quando chegar o 1º reembolso real.
+ *
  * Uso:
  *   npx tsx scripts/hotmart-vendas-cruzamento.ts
  *   npx tsx scripts/hotmart-vendas-cruzamento.ts --de 2026-10-01 --ate 2026-10-31
@@ -40,9 +45,11 @@ import {
 import { ESPELHO_REL_PATH, lerEspelho } from "./lib/hotmart-vendas-espelho.ts";
 import {
   assinantesDoStore,
+  conferirPremissaReembolso,
   cruzarVendas,
   indexarAssinantesPorHash,
   type AssinanteStore,
+  type ConferenciaReembolso,
   type RelatorioCruzamento,
 } from "./lib/hotmart-vendas-cruzamento.ts";
 
@@ -50,8 +57,24 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const LARGURA = 29;
 
+const VEREDITO_TXT: Record<ConferenciaReembolso["veredito"], string> = {
+  aguardando: "aguardando o 1º reembolso/chargeback real (os de teste não contam)",
+  confirmada: "confirmada: toda reversão real traz a mesma comissão do produtor da aprovação",
+  conferir: "CONFERIR: alguma reversão real veio sem comissão, com comissão diferente ou sem a aprovação no espelho — o saldo líquido pode estar errado (o ARPU/LTV usa o bruto e não muda)",
+};
+
+/** Seção do item 3 da #10734, sobre o espelho inteiro (não só o período). */
+export function formatarConferencia(c: ConferenciaReembolso): string {
+  const linhas = [`Premissa do reembolso (#10734 item 3), espelho inteiro: ${VEREDITO_TXT[c.veredito]}`];
+  if (c.reversoes > 0) {
+    for (const [s, n] of Object.entries(c.porSituacao)) if (n > 0) linhas.push(`  ${s.padEnd(LARGURA)} ${n} reversão(ões)`);
+  }
+  return linhas.join("\n");
+}
+
 function formatarRelatorio(r: RelatorioCruzamento, periodo: string): string {
   const linhas = [`Vendas Hotmart × store de assinantes (${periodo}): ${r.totalEventos} evento(s)`, ""];
+  if (r.testesIgnorados > 0) linhas.splice(1, 0, `(${r.testesIgnorados} evento(s) de teste da Hotmart, produto id 0, fora do cruzamento)`);
   linhas.push("Compras aprovadas, por situação do comprador no momento da compra:");
   for (const [s, v] of Object.entries(r.aprovadas)) linhas.push(`  ${s.padEnd(LARGURA)} ${v.eventos} compra(s), ${v.compradores} comprador(es)`);
   linhas.push("", "Todos os eventos (aprovada, cancelada, reembolsada, chargeback):");
@@ -101,17 +124,26 @@ async function main(): Promise<number> {
   const { registros, invalidas, duplicadas } = lerEspelho(readFileSync(espelhoPath, "utf8"));
   const filtrados = registros.filter((r) => (!de || r.dia >= de) && (!ate || r.dia <= ate));
   const relatorio = cruzarVendas(filtrados, await indexarAssinantesPorHash(assinantes));
+  const conferencia = conferirPremissaReembolso(registros);
 
   if (hasFlag(argv, "json")) {
     console.log(
       JSON.stringify(
-        { de: de ?? null, ate: ate ?? null, linhas_invalidas_no_espelho: invalidas, linhas_duplicadas_no_espelho: duplicadas, ...relatorio },
+        {
+          de: de ?? null,
+          ate: ate ?? null,
+          linhas_invalidas_no_espelho: invalidas,
+          linhas_duplicadas_no_espelho: duplicadas,
+          ...relatorio,
+          conferencia_reembolso: conferencia,
+        },
         null,
         2,
       ),
     );
   } else {
     console.log(formatarRelatorio(relatorio, `${de ?? "início"} a ${ate ?? "hoje"}`));
+    console.log("\n" + formatarConferencia(conferencia));
   }
   if (invalidas) console.error(`hotmart-vendas-cruzamento: AVISO: ${invalidas} linha(s) inválida(s) no espelho, ignoradas.`);
   if (duplicadas) console.error(`hotmart-vendas-cruzamento: AVISO: ${duplicadas} linha(s) com chave repetida no espelho, contadas uma vez.`);
