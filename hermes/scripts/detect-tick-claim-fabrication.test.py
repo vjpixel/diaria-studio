@@ -449,6 +449,58 @@ def test_regressao_11039_claims_inexistentes():
         assert chk["status"] == "fabrication_suspected", chk
 
 
+def test_regressao_11177_contagem_de_track_nao_e_total():
+    """Relatório real do tick 16:41 BRT de 26/10/2026 (`last-tick-report.md`
+    no 300): "7 issues overnight abertas" é o subconjunto do track overnight,
+    conferido contra `fetch-open-issues-for-triage.ts` (eram essas 7 entre 50
+    abertas). Não pode virar fabricação comparado com o total."""
+    mod = _load_module()
+    relatorio = (
+        "## Tick 16:41 BRT\n### Pendente para próximo tick\n"
+        "Reclassificação final pelo código real: 7 issues overnight abertas "
+        "(#11173, #11170, #11164, #11119, #11116, #8548, #5862). #11173 "
+        "aguarda decisão editorial; #11170 aguarda review/checks da PR #11176.\n"
+    )
+    assert mod.extract_alleged_count(relatorio) is None
+    total, subsets = mod.extract_alleged_counts(relatorio)
+    assert total is None and subsets == [(7, "overnight")], (total, subsets)
+    chk = mod.check_classification_count(relatorio, 50, session_correlated=True)
+    assert chk["status"] == "not_applicable", chk
+
+    for texto, n, track in (
+        ("classificação executada com n=7 issues do track develop", 7, "develop"),
+        ("classificação: 3 issues (bloqueadas)", 3, "bloqueadas"),
+        ("5 issues analisadas", None, None),
+    ):
+        total, subsets = mod.extract_alleged_counts(texto)
+        if n is None:
+            assert total == 5 and subsets == [], (texto, total, subsets)
+        else:
+            assert total is None and subsets == [(n, track)], (texto, total, subsets)
+
+    # Controle — o caso do #7537 (sem qualificador) continua fabricação.
+    chk = mod.check_classification_count(
+        "classificacao executada com n=4 issues\n", 41, session_correlated=True,
+    )
+    assert chk["status"] == "fabrication_suspected", chk
+    # Contagem total junto de contagem de track: a total é a comparada.
+    chk = mod.check_classification_count(
+        "Classificação: 4 issues classificadas. Reclassificação: 2 issues overnight.\n",
+        41, session_correlated=True,
+    )
+    assert chk["status"] == "fabrication_suspected", chk
+    # Subconjunto maior que o todo é impossível -> fabricação.
+    chk = mod.check_classification_count(
+        "Reclassificação: 90 issues overnight abertas\n", 50, session_correlated=True,
+    )
+    assert chk["status"] == "fabrication_suspected", chk
+    # ...e sem sessão correlacionada, cannot-verify (#8739).
+    chk = mod.check_classification_count(
+        "Reclassificação: 90 issues overnight abertas\n", 50, session_correlated=False,
+    )
+    assert chk["status"] == "indeterminate", chk
+
+
 def test_regressao_10563_sem_claim_e_liberei():
     """#10563: relatório REAL do tick 16:14 UTC de 19/10/2026 (verbatim, só
     a URL do comentário encurtada). "#10560 permanece sem claim por rejeição
@@ -1499,6 +1551,7 @@ def main() -> int:
         test_regressao_8863_nenhuma_e_antes_do_claim()
         test_regressao_8863_antes_do_nao_apaga_claim_real()
         test_regressao_11039_claims_inexistentes()
+        test_regressao_11177_contagem_de_track_nao_e_total()
         test_regressao_10563_sem_claim_e_liberei()
         test_regressao_10894_clausula_sem_ref_atribuida_a_outro_ator()
         test_regressao_8974_claim_atribuido_a_outra_sessao_nao_e_fabricacao()

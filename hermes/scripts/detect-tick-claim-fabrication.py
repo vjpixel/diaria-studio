@@ -71,7 +71,12 @@ FAIL-SOFT/graduada — uma checagem indeterminada não derruba as outras:
       solto que pode ou não aparecer no relatório persistido.** Quando o
       relatório não contém nenhuma contagem explícita, esta checagem é
       `not_applicable`, nunca um "ok" silencioso — não inventamos um campo
-      estruturado que a issue não pediu.
+      estruturado que a issue não pediu. **Contagem qualificada por track
+      (#11177)** — "7 issues overnight abertas" — é um SUBCONJUNTO (o
+      contínuo só trabalha o track overnight) e não se compara ao total:
+      vira `not_applicable`, salvo se passar do total (subconjunto maior que
+      o todo → `fabrication_suspected`). Limitação aceita: uma fabricação
+      redigida como contagem de track escapa da comparação com o total.
 
   (c) CLAIMS DECLARADOS — números de issue citados no relatório em contexto
       de "reivindicad_"/"claim" (`#NNNN`) são cruzados contra
@@ -272,6 +277,35 @@ _COUNT_PATTERNS = [
     re.compile(r"classifica\w*[^\d]{0,25}(\d+)\s*issues?\b", re.IGNORECASE),
     re.compile(r"(\d+)\s*issues?\s*(?:classificad\w*|analisad\w*)\b", re.IGNORECASE),
 ]
+
+# #11177 (26/10/2026): FALSO POSITIVO real — relatório do tick 16:41 BRT:
+# "Reclassificação final pelo código real: 7 issues overnight abertas
+# (#11173, #11170, #11164, #11119, #11116, #8548, #5862)." O "7" é o
+# SUBCONJUNTO de track `overnight` (o único que o contínuo trabalha, SKILL.md
+# passo 2), não o total classificado — e estava certo: conferido contra
+# `fetch-open-issues-for-triage.ts`, eram exatamente essas 7 entre 50 abertas.
+# O detector comparava esse 7 com as 50 abertas e acusava fabricação.
+# Contagem qualificada por um track (o nome dele logo depois de "issues")
+# não é comparável ao total de `gh issue list`; só o teto vale (um
+# subconjunto nunca é maior que o todo). Contagem sem qualificador — o caso
+# do #7537, "classificação executada com n=4 issues" — segue comparada com o
+# total, como sempre.
+_TRACK_QUALIFIER = re.compile(
+    r"\s*(?:\(\s*)?(?:(?:d[eoa]s?|n[oa]s?|com|em)\s+)?(?:(?:track|trilha)\s*[=:]?\s*)?"
+    r"(?P<track>overnight|develop|bloquead[oa]s?|agendad[oa]s?|[ée]pic[oa]s?"
+    r"|fora[- ]de[- ]rodada|eleg[íi]ve(?:l|is))\b",
+    re.IGNORECASE,
+)
+
+
+def _count_track_qualifier(report_text: str, count_end: int) -> str | None:
+    """Track que qualifica a contagem cujo match termina em `count_end`
+    ("7 issues overnight", "n=7 issues do track develop"), ou None quando a
+    contagem não traz qualificador de track logo depois (#11177)."""
+    m = _TRACK_QUALIFIER.match(report_text, count_end)
+    if not m:
+        return None
+    return m.group("track").lower()
 
 # Regex para issue refs (#NNNN) no relatório.
 _ISSUE_REF = re.compile(r"#(\d+)\b")
@@ -754,18 +788,36 @@ def _foreign_keys(values) -> set[int | str]:
     return out
 
 
-def extract_alleged_count(report_text: str) -> int | None:
-    """Extrai a 1ª alegação numérica de contagem de issues do relatório.
-    Best-effort (ver limitação no docstring do módulo) — None quando o
-    relatório não contém nenhuma alegação reconhecível."""
+def extract_alleged_counts(report_text: str) -> tuple[int | None, list[tuple[int, str]]]:
+    """Separa as alegações numéricas de contagem do relatório em
+    `(total, subconjuntos)`: `total` é a 1ª contagem SEM qualificador de
+    track (a comparável a `gh issue list`, caso do #7537) ou None;
+    `subconjuntos` lista `(n, qualificador)` das contagens qualificadas por
+    track ("7 issues overnight", #11177). Best-effort (ver limitação no
+    docstring do módulo)."""
+    subsets: list[tuple[int, str]] = []
+    seen: set[int] = set()  # posição do número — 2 padrões casam o mesmo
     for pattern in _COUNT_PATTERNS:
-        m = pattern.search(report_text)
-        if m:
+        for m in pattern.finditer(report_text):
+            if m.start(1) in seen:
+                continue
+            seen.add(m.start(1))
             try:
-                return int(m.group(1))
+                n = int(m.group(1))
             except ValueError:
                 continue
-    return None
+            qualifier = _count_track_qualifier(report_text, m.end())
+            if qualifier is None:
+                return n, subsets
+            subsets.append((n, qualifier))
+    return None, subsets
+
+
+def extract_alleged_count(report_text: str) -> int | None:
+    """Extrai a 1ª alegação numérica de contagem TOTAL de issues do
+    relatório — contagem qualificada por track (#11177) não conta. None
+    quando o relatório não contém nenhuma alegação total reconhecível."""
+    return extract_alleged_counts(report_text)[0]
 
 
 def extract_claimed_issue_refs(report_text: str) -> dict[int | str, bool]:
@@ -1062,7 +1114,36 @@ def check_classification_count(
             "status": "not_applicable",
             "details": "relatorio indisponivel — checagem nao pode rodar.",
         }
-    alleged = extract_alleged_count(report_text)
+    alleged, subsets = extract_alleged_counts(report_text)
+    if alleged is None and subsets:
+        # #11177: só há contagem de SUBCONJUNTO (track). Não é comparável ao
+        # total; o único teto verificável é "subconjunto <= total".
+        subset_n, qualifier = max(subsets)
+        if open_issue_count is not None:
+            tolerance = max(COUNT_TOLERANCE_ABS, round(open_issue_count * COUNT_TOLERANCE_FRAC))
+            if subset_n > open_issue_count + tolerance:
+                status = "fabrication_suspected" if session_correlated else "indeterminate"
+                return {
+                    "check": "classification_count",
+                    "status": status,
+                    "details": (
+                        f"relatorio alega n={subset_n} issues '{qualifier}', mais que as "
+                        f"{open_issue_count} issues abertas (gh issue list) mesmo com "
+                        f"tolerancia ({tolerance}) — subconjunto maior que o todo."
+                        + ("" if session_correlated else
+                           " Nenhuma sessao continuo correlaciona com a janela (#8739): "
+                           "cannot-verify.")
+                    ),
+                }
+        return {
+            "check": "classification_count",
+            "status": "not_applicable",
+            "details": (
+                f"relatorio so alega contagem de subconjunto (n={subset_n} issues "
+                f"'{qualifier}'), nao o total classificado — nao comparavel com "
+                "gh issue list (#11177)."
+            ),
+        }
     if alleged is None:
         return {
             "check": "classification_count",
