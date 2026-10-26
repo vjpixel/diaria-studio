@@ -107,9 +107,11 @@ export function prepAnnualSocial(
     writeFileSync(join(dayDir, "_internal", "social-cover.json"), buildDayCoverJson(day, serie, texts.social, texts.slides));
     if (pageUrl) writeFileSync(join(dayDir, "_internal", "05-edition-url.txt"), `${pageUrl}\n`);
     if (grid) {
-      for (const platform of ["linkedin", "instagram", "threads"]) {
+      // #10819: as 5 redes; o X é `twitter:diaria` na grade (nome dos stores diários).
+      for (const platform of ["linkedin", "instagram", "threads", "facebook", "x"]) {
+        const account = platform === "x" ? "twitter:diaria" : `${platform}:diaria`;
         const decisions = planDivulgacao(plannedGrid, Object.entries(day.slots).map(([key, at]) => ({
-          key, account: `${platform}:diaria`, preferredAt: localIsoAt(at.slice(0, 10), at.slice(11, 16)),
+          key, account, preferredAt: localIsoAt(at.slice(0, 10), at.slice(11, 16)),
         })));
         plannedGrid.push(...decisions);
         const slots = Object.fromEntries(decisions.map((d) => [d.key, d.at.slice(0, 16)]));
