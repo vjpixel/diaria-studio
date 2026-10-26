@@ -57,6 +57,7 @@
  *     [--skip-existing]     # pula posts já em 06-social-published.json (default: true)
  *     [--no-skip-existing]  # força re-publicação de TODOS (global)
  *     [--retry d2[,um]]     # re-tenta SÓ esses posts (failed/send_unknown; recusa os já publicados/agendados) — #11105
+ *     [--partial-root-completed dN] # registra conclusão manual, sem publicar nem agendar (#11146)
  *     [--partial-root-deleted] # com --retry: libera thread multi-chunk parcial cuja raiz o editor apagou — #11131
  *
  * `--schedule` requer o MESMO Worker já usado pelo LinkedIn/Instagram:
@@ -519,6 +520,19 @@ export function partialRootMediaId(entry: PostEntry | undefined): string | null 
   return typeof id === "string" && id ? id : null;
 }
 
+/** #11146 — registra a conclusão manual sem perder a identidade da raiz. */
+export function completePartialThread(entry: PostEntry | undefined): PostEntry {
+  const root = partialRootMediaId(entry);
+  if (!entry || entry.platform !== "threads" || resolveSubtype(entry) !== "main" ||
+      !RETRYABLE_STATUSES.has(entry.status) || !root?.trim()) {
+    throw new Error("--partial-root-completed exige uma entrada Threads principal failed/send_unknown com threads_partial_root_media_id válido.");
+  }
+  const completed: PostEntry = { ...entry, status: "published", threads_media_id: root };
+  delete completed.threads_partial_root_media_id;
+  delete completed.reason;
+  return completed;
+}
+
 /**
  * #11105 — decide se um post entra nesta execução. Puro (testável sem rede).
  * `--retry` restringe aos ids pedidos e só refaz `failed`/`send_unknown`;
@@ -565,13 +579,13 @@ export function sendUnknownRecoveryHint(d: string): string {
 
 /**
  * #11131 — instrução de recuperação de uma thread parcial: a raiz está no ar,
- * então `--retry` puro duplicaria. Completar à mão ou apagar a raiz antes.
+ * então `--retry` puro duplicaria. Registrar conclusão manual ou remover todos os chunks antes.
  */
 export function partialThreadRecoveryHint(d: string, partial: ThreadPartialPublish, totalChunks: number): string {
   return (
     `A raiz da thread (media_id ${partial.rootMediaId}) já está no ar com ${partial.chunksPublished} de ${totalChunks} chunk(s) confirmados. ` +
-    `NÃO rodar --retry ${d} sozinho (duplicaria a raiz): completar a thread respondendo à raiz no Threads, ` +
-    `ou apagar a raiz e rodar --retry ${d} --partial-root-deleted.`
+    `NÃO rodar --retry ${d} sozinho (duplicaria a raiz): completar a thread respondendo à raiz no Threads e registrar com --partial-root-completed ${d}, ` +
+    `ou conferir e apagar também as respostas dos chunks (apagar só a raiz pode deixar respostas órfãs e visíveis), apagar a raiz e rodar --retry ${d} --partial-root-deleted.`
   );
 }
 
@@ -630,6 +644,32 @@ async function main(): Promise<number | void> {
     return 1;
   }
   const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427
+  // Operação apenas local: não depende de texto, credenciais ou canal habilitado.
+  if (values["partial-root-completed"] !== undefined || flags.has("partial-root-completed")) {
+    const id = values["partial-root-completed"];
+    if (!id || !/^(d[123]|um)$/.test(id)) {
+      console.error("ERRO: --partial-root-completed exige um único id: d1, d2, d3 ou um.");
+      return 1;
+    }
+    if (["retry", "partial-root-deleted", "no-skip-existing", "schedule", "dry-run", "test-mode"].some(
+      (key) => flags.has(key) || values[key] !== undefined,
+    )) {
+      console.error("ERRO: --partial-root-completed não pode ser combinado com opções de dispatch, retry ou simulação.");
+      return 1;
+    }
+    const publishedPath = resolve(editionDir, "_internal/06-social-published.json");
+    try {
+      const state = loadPublished(publishedPath);
+      const entries = state.posts.filter((p) => p.platform === "threads" && p.destaque === id && resolveSubtype(p) === "main");
+      if (entries.length !== 1) throw new Error("Exige exatamente uma entrada Threads principal existente para o id informado.");
+      appendSocialPosts(publishedPath, [completePartialThread(entries[0])]);
+      console.log(`Threads ${id}: conclusão manual registrada como published, preservando o id da raiz.`);
+      return 0;
+    } catch (error) {
+      console.error(`ERRO: ${(error as Error).message}`);
+      return 1;
+    }
+  }
   const skipExisting = !flags.has("no-skip-existing");
   // #11105 — `--retry d2[,d3]`: re-tenta só esses posts (recuperação de send_unknown).
   const retryParsed = parseRetryIds(values["retry"], flags.has("retry"));
@@ -833,7 +873,7 @@ async function main(): Promise<number | void> {
       const what = decision.action === "skip-partial" ? `thread parcial (${decision.existing.status})` : "--retry recusado";
       console.error(
         `SKIP threads/${d}: ${what} — a raiz da thread (media_id ${decision.rootMediaId}) já está no ar; ` +
-          `refazer duplicaria a raiz (#11131). Apague a raiz no Threads e rode --retry ${d} --partial-root-deleted.`,
+          `refazer duplicaria a raiz (#11131). Se completou à mão, registre com --partial-root-completed ${d}. Para refazer, confira e apague também as respostas dos chunks (apagar só a raiz pode deixar respostas órfãs e visíveis), apague a raiz no Threads e rode --retry ${d} --partial-root-deleted.`,
       );
       results.push(decision.existing);
       skippedCount += 1;
@@ -1109,8 +1149,8 @@ async function main(): Promise<number | void> {
   const partialIds = results.filter((r) => partialRootMediaId(r)).map((r) => r.destaque);
   if (partialIds.length > 0) {
     console.warn(
-      `ATENÇÃO threads: thread(s) parcial(is) com a raiz no ar (${partialIds.join(", ")}) — completar à mão ` +
-        `ou apagar a raiz e rodar --retry ${partialIds.join(",")} --partial-root-deleted (#11131).`,
+      `ATENÇÃO threads: thread(s) parcial(is) com a raiz no ar (${partialIds.join(", ")}) — completar à mão e registrar cada post com --partial-root-completed dN; ` +
+        `ou conferir e apagar também as respostas dos chunks (apagar só a raiz pode deixar respostas órfãs e visíveis), apagar a raiz e rodar --retry ${partialIds.join(",")} --partial-root-deleted (#11131).`,
     );
   }
 
