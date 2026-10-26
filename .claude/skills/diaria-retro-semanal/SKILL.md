@@ -441,12 +441,13 @@ de cada modo:
    `npx tsx scripts/weekly-summaries-passes.ts snapshot --path {P}`
 2. Humanizador, passe completo, sobre os campos `summary` de todos os modos:
    ```
-   Skill("humanizador", "Leia {P-clicked} e {P-highlights}, humanize SÓ o campo summary de cada item (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar url, title, summary_raw nem carouselKey. Teto: 200 caracteres e 2 frases por resumo.")
+   Skill("humanizador", "Leia {P-clicked} e {P-highlights}, humanize SÓ o campo summary de cada item que ainda não tem summary_clarice (passe completo; item com summary_clarice já passou numa rodada anterior e fica como está), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar url, title, summary_raw nem carouselKey. Teto: 200 caracteres e 2 frases por resumo.")
    ```
    Depois: `npx tsx scripts/weekly-summaries-passes.ts humanized --path {P}`
    (grava `summary_humanized` e revalida o texto).
-3. Clarice: pra cada resumo, `mcp__clarice__correct_text` com o
-   `summary_humanized`, uma chamada por vez (serial, #4952). Grave as
+3. Clarice: pra cada resumo ainda sem `summary_clarice`, `mcp__clarice__correct_text` com o
+   `summary_humanized`, uma chamada por vez (serial, #4952; item já corrigido
+   numa rodada anterior não precisa de entrada no JSON de sugestões, #11110). Grave as
    sugestões em `{scratchpad}/clarice-{modo}.json` no formato
    `{ "<url>": [ {from, to, ...}, ... ] }` (lista vazia quando não houver
    sugestão) e aplique todas (regra do projeto: sempre aceitar):
@@ -467,7 +468,13 @@ Por isso o `clarice` aborta (exit 2, "ajuste manual detectado") quando o
 `summary` diverge da saída do último passe. Ajuste à mão depois da Clarice,
 já perto do gate, pode ficar como está; ele só precisa de `humanized` +
 `clarice` se você quiser que a Clarice revise o texto novo. Re-rodar o
-agente zera o rastro e os passes (comece do snapshot).
+agente (inteiro ou só um item via SendMessage) zera os passes (comece do
+snapshot), mas não o rastro dos itens que ele não mudou (#11110): o agente
+regrava o arquivo sem `summary_raw`/`summary_humanized`/`summary_clarice`, e
+o `snapshot` os recupera de `_internal/06-summaries.trail.json` (cópia que o
+script grava a cada passo) pra todo item cujo `summary` bate com o final de
+lá. Esses itens passam direto pelo `humanized` e pela `clarice`; só o item
+reescrito refaz o caminho.
 
 Re-rode o preview do Passo 2: a legenda já sai com os
 resumos, e o bloco `── resumos ──` marca item sem resumo válido. Barram o

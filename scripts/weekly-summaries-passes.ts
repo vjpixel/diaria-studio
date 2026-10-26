@@ -27,6 +27,17 @@
  *              (ajuste manual): reaplicar sobre `summary_humanized` descartaria
  *              o ajuste. Recuperação: rodar `humanized` de novo, depois `clarice`.
  *
+ * Rastro preservado em reescrita parcial (#11110): o agente regrava o
+ * `06-summaries.json` inteiro só com `{url,title,summary}` — inclusive quando
+ * o SKILL pede (SendMessage) pra reescrever UM item. Pra não perder o rastro
+ * dos outros, todo save deste script grava também `06-summaries.trail.json`
+ * ao lado (`trailPath`). O `snapshot` seguinte restaura `summary_raw`,
+ * `summary_humanized` e `summary_clarice` de cada item cujo `summary` bate
+ * com o final registrado no trail (mesma URL); só item novo/reescrito recebe
+ * snapshot fresco. Item com rastro completo (`summary` === `summary_clarice`)
+ * passa direto pelo `humanized` e pela `clarice` — sem retrabalho nem
+ * crédito de API pra ele.
+ *
  * Revalidação: depois de `humanized` e de `clarice`, o texto FINAL passa de novo
  * por `validateWeeklySummary` — o Humanizador pode alongar e a Clarice mexe em
  * pontuação, então teto de 200 caracteres, 2 frases e repetição do título valem
@@ -68,23 +79,81 @@ export function loadSummariesFile(path: string): WeeklySummariesFile {
   return data;
 }
 
-function save(path: string, data: WeeklySummariesFile): void {
-  writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
+/** #11110: sidecar com o rastro da última gravação deste script (o agente não o toca). */
+export function trailPath(path: string): string {
+  return path.replace(/\.json$/i, "") + ".trail.json";
 }
 
-/** Guarda a versão do agente em `summary_raw` onde ainda não existe. Zera `passes` só quando há resumo novo. */
-export function snapshotRaw(data: WeeklySummariesFile): { snapshotted: number } {
-  let snapshotted = 0;
-  for (const it of data.items) {
-    if (typeof it.summary_raw !== "string") {
-      it.summary_raw = it.summary;
-      delete it.summary_humanized;
-      delete it.summary_clarice;
-      snapshotted++;
+function save(path: string, data: WeeklySummariesFile): void {
+  const text = JSON.stringify(data, null, 2) + "\n";
+  writeFileSync(path, text, "utf8");
+  writeFileSync(trailPath(path), text, "utf8");
+}
+
+/** #11110: lê o trail; ausente/ilegível = null (snapshot cai no comportamento sem trail, com aviso). */
+export function loadTrail(path: string): WeeklySummariesFile | null {
+  const tp = trailPath(path);
+  if (!existsSync(tp)) return null;
+  try {
+    const t = JSON.parse(readFileSync(tp, "utf8")) as WeeklySummariesFile;
+    if (!t || !Array.isArray(t.items)) {
+      console.error(`[weekly-summaries-passes] aviso: trail sem "items" (${tp}) — ignorado, snapshot fresco em todos`);
+      return null;
     }
+    return t;
+  } catch (e) {
+    console.error(`[weekly-summaries-passes] aviso: trail ilegível (${tp}): ${(e as Error).message} — ignorado, snapshot fresco em todos`);
+    return null;
+  }
+}
+
+/** #11110: item com rastro completo e intocado desde a Clarice — já é texto final. */
+function isFinalized(it: WeeklySummariesFile["items"][number]): boolean {
+  return (
+    typeof it.summary_clarice === "string" &&
+    typeof it.summary_humanized === "string" &&
+    it.summary.trim() === it.summary_clarice.trim()
+  );
+}
+
+/**
+ * Guarda a versão do agente em `summary_raw` onde ainda não existe. Zera `passes` só quando há resumo novo.
+ *
+ * #11110: com `trail` (gravação anterior deste script), item sem rastro cujo
+ * `summary` bate com o final do trail (mesma URL) recupera o rastro dele em vez
+ * de virar "versão do agente" — o agente regravou o arquivo inteiro pra
+ * reescrever outro item. Se nenhum item é novo, os `passes` do trail voltam também.
+ */
+export function snapshotRaw(
+  data: WeeklySummariesFile,
+  trail: WeeklySummariesFile | null = null,
+): { snapshotted: number; restored: number } {
+  const prev = new Map<string, WeeklySummariesFile["items"][number]>();
+  if (trail && (trail.carouselKey === undefined || data.carouselKey === undefined || trail.carouselKey === data.carouselKey)) {
+    for (const t of trail.items) if (t && typeof t.url === "string" && typeof t.summary === "string") prev.set(t.url, t);
+  }
+  let snapshotted = 0;
+  let restored = 0;
+  for (const it of data.items) {
+    if (typeof it.summary_raw === "string") continue;
+    const t = prev.get(it.url);
+    if (t && typeof t.summary_raw === "string" && t.summary.trim() === it.summary.trim()) {
+      it.summary_raw = t.summary_raw;
+      if (typeof t.summary_humanized === "string") it.summary_humanized = t.summary_humanized;
+      else delete it.summary_humanized;
+      if (typeof t.summary_clarice === "string") it.summary_clarice = t.summary_clarice;
+      else delete it.summary_clarice;
+      restored++;
+      continue;
+    }
+    it.summary_raw = it.summary;
+    delete it.summary_humanized;
+    delete it.summary_clarice;
+    snapshotted++;
   }
   if (snapshotted > 0) delete data.passes;
-  return { snapshotted };
+  else if (restored > 0 && data.passes === undefined && trail?.passes) data.passes = { ...trail.passes };
+  return { snapshotted, restored };
 }
 
 /** Fim do Humanizador. Lança se o snapshot não rodou (sem ele não há rastro da versão do agente). */
@@ -96,9 +165,12 @@ export function markHumanized(data: WeeklySummariesFile): void {
     );
   }
   for (const it of data.items) {
+    if (isFinalized(it)) continue; // #11110: rastro completo de rodada anterior — fica como está
     it.summary_humanized = it.summary.trim();
     delete it.summary_clarice;
   }
+  // #11110: tudo já finalizado (re-run sem item novo) mantém o registro da Clarice.
+  if (data.items.every(isFinalized) && data.passes?.humanizador === "ok") return;
   data.passes = { humanizador: "ok" };
 }
 
@@ -124,7 +196,8 @@ function requireHumanized(data: WeeklySummariesFile): void {
  */
 export function manuallyEdited(data: WeeklySummariesFile): WeeklySummariesFile["items"] {
   return data.items.filter((it) => {
-    const expected = data.passes?.clarice === "ok" ? it.summary_clarice : it.summary_humanized;
+    // Por item (#11110): quem tem `summary_clarice` passou pela Clarice (nesta rodada ou numa anterior).
+    const expected = typeof it.summary_clarice === "string" ? it.summary_clarice : it.summary_humanized;
     return typeof expected === "string" && it.summary.trim() !== expected.trim();
   });
 }
@@ -139,6 +212,7 @@ export function applyClarice(
   let applied = 0;
   let skipped = 0;
   for (const it of data.items) {
+    if (isFinalized(it)) continue; // #11110: já corrigido numa rodada anterior
     const base = it.summary_humanized as string;
     const suggestions = byUrl[it.url] ?? [];
     const r = applyClariceSuggestions(base, suggestions);
@@ -156,6 +230,7 @@ export function applyClarice(
 export function markClariceFailed(data: WeeklySummariesFile, reason: string): void {
   requireHumanized(data);
   for (const it of data.items) {
+    if (isFinalized(it)) continue; // #11110: corrigido numa rodada anterior — não descarta a correção
     it.summary = it.summary_humanized as string;
     delete it.summary_clarice;
   }
@@ -175,6 +250,7 @@ export async function runClariceRest(
   const byUrl: Record<string, ClariceSuggestion[]> = {};
   try {
     for (const it of data.items) {
+      if (isFinalized(it)) continue; // #11110: sem crédito de API pra item já corrigido
       const r = await withClariceRetry(
         { apiKey: opts.apiKey, text: it.summary_humanized as string, fetchImpl: opts.fetchImpl },
         opts.policy ?? DEFAULT_RETRY_POLICY,
@@ -226,9 +302,11 @@ async function main(): Promise<number> {
   }
   try {
     if (cmd === "snapshot") {
-      const { snapshotted } = snapshotRaw(data);
+      const { snapshotted, restored } = snapshotRaw(data, loadTrail(path));
       save(path, data);
-      console.log(`snapshot: ${snapshotted} resumo(s) do agente guardado(s) em summary_raw (${path})`);
+      console.log(
+        `snapshot: ${snapshotted} resumo(s) do agente guardado(s) em summary_raw, ${restored} com rastro recuperado do trail (${path})`,
+      );
       return 0;
     }
     if (cmd === "humanized") {
@@ -256,7 +334,7 @@ async function main(): Promise<number> {
         console.error('ERRO: --suggestions espera { "<url>": [ {from,to}, ... ] } (1 entrada por resumo)');
         return 2;
       }
-      const missing = data.items.filter((it) => !Array.isArray(byUrl[it.url])).map((it) => it.url);
+      const missing = data.items.filter((it) => !isFinalized(it) && !Array.isArray(byUrl[it.url])).map((it) => it.url);
       if (missing.length > 0) {
         console.error(`ERRO: sem sugestões (nem lista vazia) para ${missing.length} resumo(s): ${missing.join(", ")} — a Clarice rodou em todos?`);
         return 2;
