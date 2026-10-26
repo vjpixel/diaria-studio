@@ -392,7 +392,7 @@ function checkCloudflareTokenSet(): InvariantViolation[] {
 }
 
 interface SocialPublishedJson {
-  posts?: Array<{ platform?: string; status?: string }>;
+  posts?: Array<{ platform?: string; status?: string; destaque?: string }>;
 }
 
 /**
@@ -472,6 +472,21 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
       rule: "social-published-no-failed",
       message: `06-social-published.json tem ${failed.length} post(s) com status=failed`,
       source_issue: "#272",
+      severity: "warning",
+      file: path,
+    });
+  }
+  // #11105 — envio ambíguo (#11076): o post PODE ter saído. Não é "failed" (não
+  // se refaz às cegas) e sumia de todo aviso — `published: 0, failed: 0`.
+  const sendUnknown = posts.filter((p) => p.status === "send_unknown");
+  if (sendUnknown.length > 0) {
+    const ids = sendUnknown.map((p) => `${p.platform ?? "?"}/${p.destaque ?? "?"}`).join(", ");
+    violations.push({
+      rule: "social-published-send-unknown",
+      message:
+        `06-social-published.json tem ${sendUnknown.length} post(s) com envio ambíguo (status=send_unknown: ${ids}) — ` +
+        `conferir o perfil na rede; o que não saiu se refaz só daquele post (Threads: publish-threads.ts --retry {d}).`,
+      source_issue: "#11105",
       severity: "warning",
       file: path,
     });
@@ -899,8 +914,9 @@ function checkConsentBinding(editionDir: string, backendOverride?: string): Inva
           // truthy != pending_manual → tratado como dispatched. Agora: viola se
           // QUALQUER post não tem status de dispatch reconhecido. `failed` fica no
           // allowlist (foi tentado; o sibling social-published-no-failed em stage-5
-          // cobre a falha).
-          const DISPATCH_STATUSES = new Set(["scheduled", "draft", "published", "failed"]);
+          // cobre a falha). `send_unknown` (#11076/#11105) também foi tentado — o
+          // sibling social-published-send-unknown dá o aviso próprio (conferir o perfil).
+          const DISPATCH_STATUSES = new Set(["scheduled", "draft", "published", "failed", "send_unknown"]);
           const notFullyDispatched = !platformPosts.every(
             (p) => p.status != null && DISPATCH_STATUSES.has(p.status),
           );
@@ -909,7 +925,7 @@ function checkConsentBinding(editionDir: string, backendOverride?: string): Inva
               rule: `consent-binding-${platform}`,
               message:
                 `consent.${platform}="auto" mas nem todos os posts[platform="${platform}"] ` +
-                `têm status de dispatch (scheduled/draft/published/failed) — ` +
+                `têm status de dispatch (scheduled/draft/published/failed/send_unknown) — ` +
                 `dispatch automático parcial ou ausente (status: ${platformPosts.map((p) => p.status ?? "ausente").join(", ")}).`,
               source_issue: "#1575",
               // #2486: best-effort (ex: Instagram) → warning; canais com creds obrigatórias → error

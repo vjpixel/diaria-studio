@@ -55,7 +55,8 @@
  *     --edition-dir data/editions/260624/ \
  *     [--schedule]          # enfileira no Worker em vez de publicar imediato (#3944 Parte B)
  *     [--skip-existing]     # pula posts já em 06-social-published.json (default: true)
- *     [--no-skip-existing]  # força re-publicação
+ *     [--no-skip-existing]  # força re-publicação de TODOS (global)
+ *     [--retry d2[,um]]     # re-tenta SÓ esses posts (failed/send_unknown; recusa os já publicados/agendados) — #11105
  *
  * `--schedule` requer o MESMO Worker já usado pelo LinkedIn/Instagram:
  *   DIARIA_LINKEDIN_CRON_URL / DIARIA_LINKEDIN_CRON_TOKEN no env, OU
@@ -74,7 +75,7 @@ loadProjectEnv(); // carrega .env antes de process.env access
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
+import { appendSocialPosts, PostEntry, SocialPublished, resolveSubtype } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Threads não renderiza markdown; #10441 ponto único do texto de post
@@ -423,6 +424,78 @@ async function publishThread(
   return rootMediaId;
 }
 
+/** #11105 — ids aceitos por `--retry` (destaques + 4º post USE MELHOR). */
+export const THREADS_RETRY_IDS = ["d1", "d2", "d3", "um"] as const;
+
+/**
+ * #11105 — `--retry d2[,d3]`: re-tenta SÓ esses posts. Antes, a única saída
+ * de um `send_unknown` era `--no-skip-existing`, que é global e republicava
+ * todos os destaques já `published`. `null` = flag ausente (comportamento de
+ * sempre). Flag sem valor ou id fora de `THREADS_RETRY_IDS` = erro.
+ */
+export function parseRetryIds(
+  raw: string | undefined,
+  flagWithoutValue: boolean,
+): { ok: true; ids: Set<string> | null } | { ok: false; error: string } {
+  if (raw === undefined && !flagWithoutValue) return { ok: true, ids: null };
+  const ids = (raw ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (ids.length === 0) return { ok: false, error: `--retry exige os posts a re-tentar (ex: --retry d2 ou --retry d2,um; aceitos: ${THREADS_RETRY_IDS.join(", ")})` };
+  const invalid = ids.filter((id) => !(THREADS_RETRY_IDS as readonly string[]).includes(id));
+  if (invalid.length > 0) return { ok: false, error: `--retry: id(s) inválido(s) ${invalid.join(", ")} (aceitos: ${THREADS_RETRY_IDS.join(", ")})` };
+  return { ok: true, ids: new Set(ids) };
+}
+
+/** Status que o resume trata como "já tentado, não refazer" (#11076). */
+const RESUME_SKIP_STATUSES = new Set<PostEntry["status"]>(["draft", "scheduled", "published", "send_unknown"]);
+/** #11105 — o que `--retry` aceita refazer: nada saiu (`failed`) ou o editor conferiu que não saiu (`send_unknown`). */
+const RETRYABLE_STATUSES = new Set<PostEntry["status"]>(["failed", "send_unknown"]);
+
+export type ThreadsDispatchDecision =
+  | { action: "dispatch" }
+  /** Pula e reporta o post existente (resume normal). */
+  | { action: "skip-existing"; existing: PostEntry }
+  /** Fora do `--retry`: não é tocado nesta execução. */
+  | { action: "not-selected" }
+  /** Pedido em `--retry`, mas o post já saiu/está agendado: refazer duplicaria. */
+  | { action: "retry-refused"; existing: PostEntry };
+
+/**
+ * #11105 — decide se um post entra nesta execução. Puro (testável sem rede).
+ * `--retry` restringe aos ids pedidos e só refaz `failed`/`send_unknown`;
+ * fora dele, o resume de sempre (`--no-skip-existing` continua global).
+ */
+export function decideThreadsDispatch(
+  d: string,
+  existing: PostEntry | undefined,
+  opts: { skipExisting: boolean; retryIds: Set<string> | null },
+): ThreadsDispatchDecision {
+  if (opts.retryIds) {
+    if (!opts.retryIds.has(d)) return { action: "not-selected" };
+    if (existing && !RETRYABLE_STATUSES.has(existing.status)) return { action: "retry-refused", existing };
+    return { action: "dispatch" };
+  }
+  if (opts.skipExisting && existing && RESUME_SKIP_STATUSES.has(existing.status)) {
+    return { action: "skip-existing", existing };
+  }
+  return { action: "dispatch" };
+}
+
+/** #11105 — resumo do JSON de saída; `send_unknown` tem contador próprio (antes sumia: `published: 0, failed: 0`). */
+export function summarizeThreadsResults(results: PostEntry[], skippedCount: number) {
+  return {
+    total: results.length,
+    published: results.filter((r) => r.status === "published").length,
+    failed: results.filter((r) => r.status === "failed").length,
+    send_unknown: results.filter((r) => r.status === "send_unknown").length,
+    skipped: skippedCount, // contador dedicado (não tautologia de results)
+  };
+}
+
+/** #11105 — instrução de recuperação de um `send_unknown`: re-tenta só aquele post. */
+export function sendUnknownRecoveryHint(d: string): string {
+  return `Conferir o perfil do Threads; se o post não saiu, rodar com --retry ${d} (re-tenta só este post).`;
+}
+
 /**
  * Busca o permalink público do post recém-publicado no Threads.
  * Best-effort: se falhar, retorna null (o post foi publicado com sucesso,
@@ -479,6 +552,13 @@ async function main(): Promise<number | void> {
   }
   const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: ROOT }); // #9427
   const skipExisting = !flags.has("no-skip-existing");
+  // #11105 — `--retry d2[,d3]`: re-tenta só esses posts (recuperação de send_unknown).
+  const retryParsed = parseRetryIds(values["retry"], flags.has("retry"));
+  if (!retryParsed.ok) {
+    console.error(`ERRO: ${retryParsed.error}`);
+    return 1;
+  }
+  const retryIds = retryParsed.ids;
   const isTest = flags.has("test-mode");
   const isDryRun = flags.has("dry-run");
   const doSchedule = flags.has("schedule"); // #3944 Parte B
@@ -645,19 +725,25 @@ async function main(): Promise<number | void> {
     // Releitura a cada iteração para detectar entradas concorrentes
     const published = loadPublished(publishedPath);
 
-    if (skipExisting) {
-      const existing = published.posts.find(
-        (p) =>
-          p.platform === "threads" &&
-          p.destaque === d &&
-          (p.status === "draft" || p.status === "scheduled" || p.status === "published" || p.status === "send_unknown"), // #11076
+    // #11076 resume (send_unknown não é refeito) + #11105 `--retry`.
+    // Só a entry `main` (a que este script grava; o upsert do store é por subtype).
+    const existingPost = published.posts.find((p) => p.platform === "threads" && p.destaque === d && resolveSubtype(p) === "main");
+    const decision = decideThreadsDispatch(d, existingPost, { skipExisting, retryIds });
+    if (decision.action === "not-selected") continue;
+    if (decision.action === "skip-existing") {
+      console.log(`SKIP threads/${d} — already ${decision.existing.status}`);
+      results.push(decision.existing);
+      skippedCount += 1;
+      continue;
+    }
+    if (decision.action === "retry-refused") {
+      console.error(
+        `SKIP threads/${d}: --retry recusado — o post já está ${decision.existing.status}; refazer duplicaria. ` +
+          `--retry só refaz posts failed/send_unknown.`,
       );
-      if (existing) {
-        console.log(`SKIP threads/${d} — already ${existing.status}`);
-        results.push(existing);
-        skippedCount += 1;
-        continue;
-      }
+      results.push(decision.existing);
+      skippedCount += 1;
+      continue;
     }
 
     // Extrair texto do post — SÓ a seção '# Curto' (#4294, mesmo contrato de
@@ -893,7 +979,7 @@ async function main(): Promise<number | void> {
       if (outcome.kind === "send_unknown") {
         console.warn(
           `threads/${d}: envio ambíguo no threads_publish — NÃO refeito (risco de post duplicado). ` +
-          `Conferir o perfil do Threads; se o post não saiu, rodar com --no-skip-existing.`,
+          sendUnknownRecoveryHint(d),
         );
       }
       const entry: PostEntry = {
@@ -909,12 +995,14 @@ async function main(): Promise<number | void> {
     }
   }
 
-  const summary = {
-    total: results.length,
-    published: results.filter((r) => r.status === "published").length,
-    failed: results.filter((r) => r.status === "failed").length,
-    skipped: skippedCount,
-  };
+  const summary = summarizeThreadsResults(results, skippedCount);
+  if (summary.send_unknown > 0) {
+    const ids = results.filter((r) => r.status === "send_unknown").map((r) => r.destaque);
+    console.warn(
+      `ATENÇÃO threads: ${summary.send_unknown} post(s) com envio ambíguo (${ids.join(", ")}) — ` +
+        `conferir o perfil do Threads; o que não saiu se refaz com --retry ${ids.join(",")}.`,
+    );
+  }
 
   // #10305 (self-review #10417 finding 3): registro do teste rotativo gravado pelo próprio
   // agendamento, não só pelo passo 5c-3d do playbook. Idempotente entre os 4 publicadores; nunca lança.

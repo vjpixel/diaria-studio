@@ -222,8 +222,9 @@ export interface QueueEntry {
   // postar, e o deleta do KV (cleanup do tombstone).
   cancelled?: boolean;
   // (#7626) Motivo da última falha — gravado SÓ ao mover pra dlq: (fire.ts,
-  // nos 2 pontos que escrevem lá: outcome.status="dlq" instantâneo e retry
-  // esgotado). Antes deste campo, o motivo só existia em console.error
+  // nos pontos que escrevem lá: outcome.status="dlq" instantâneo, retry
+  // esgotado e envio ambíguo — `last_error` começando por `send_unknown:`,
+  // post que pode ter saído e não foi refeito, #11106). Antes deste campo, o motivo só existia em console.error
   // efêmero do Worker — sem acesso a `wrangler tail` em tempo real no
   // momento exato da falha, uma entry em DLQ virava um "post sumiu" sem
   // diagnóstico possível (achado ao vivo: 2 posts semanais de Instagram
@@ -337,6 +338,13 @@ export interface DoFireState {
   /** `claiming` ainda dentro do `CLAIM_TTL_MS` = disparo em andamento. */
   inFlight: boolean;
 }
+
+/** #11107 — `/cancel` que o DO recusa (409) se um disparo estiver em andamento. */
+const CANCEL_IF_NOT_CLAIMING: RequestInit = {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ if_not_claiming: true }),
+};
 
 function doStub(env: Env, name: string): DurableObjectStub {
   return env.LINKEDIN_SCHEDULER.get(env.LINKEDIN_SCHEDULER.idFromName(name));
@@ -859,7 +867,11 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     if (contentChanged) {
       let clearOk = false;
       try {
-        const clearRes = await doStub(env, key).fetch("https://do/cancel", { method: "POST" });
+        // #11107 — o alarm/cron pode ganhar o /claim entre o /status acima e
+        // este cancel; `if_not_claiming` faz o DO recusar (409) em vez de
+        // apagar o `claiming` de um disparo em curso.
+        const clearRes = await doStub(env, key).fetch("https://do/cancel", CANCEL_IF_NOT_CLAIMING);
+        if (clearRes.status === 409) return idempotentConflict("fire_in_progress", key);
         clearOk = clearRes.ok;
       } catch (e) {
         console.warn(`[enqueue] cancel do DO ${key} (conteúdo mudado) falhou: ${(e as Error).message} (#11029)`);
@@ -887,7 +899,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       if (prev?.inFlight) return idempotentConflict("fire_in_progress", indexedKey);
       let cancelOk = false;
       try {
-        const cancelRes = await doStub(env, indexedKey).fetch("https://do/cancel", { method: "POST" });
+        const cancelRes = await doStub(env, indexedKey).fetch("https://do/cancel", CANCEL_IF_NOT_CLAIMING); // #11107
+        if (cancelRes.status === 409) return idempotentConflict("fire_in_progress", indexedKey);
         cancelOk = cancelRes.ok;
       } catch (e) {
         console.warn(`[enqueue] cancel do DO ${indexedKey} falhou: ${(e as Error).message} (#10992)`);
