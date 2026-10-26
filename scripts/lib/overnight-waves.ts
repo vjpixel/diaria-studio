@@ -15,9 +15,10 @@
  * quase sempre `false` significa que a fila nunca tinha unidades
  * independentes suficientes e o teto não era o limite real.
  *
- * O teto sobe de 3 para 6 (decisão do editor, 19/09/2026) junto com este
+ * O teto subiu de 3 para 6 (decisão do editor, 19/09/2026) junto com este
  * registro, de modo que a leitura A/B (rondas com pico ≤3 unidades vs. as
- * seguintes) tenha os dois lados medidos com o mesmo instrumento.
+ * seguintes) tenha os dois lados medidos com o mesmo instrumento. Valor
+ * vigente: `OVERNIGHT_WAVE_CAP` abaixo (10 desde o #10821).
  *
  * Puro (sem I/O). CLI: `scripts/record-overnight-wave.ts`.
  */
