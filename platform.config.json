@@ -268,6 +268,11 @@
       "subscriber_backend": "kit",
       "subscriber_backend_note": "#6051 — chave PROPRIA pra leitura de ASSINANTE (contagem/agregacao por UTM em scripts/count-subscriptions-by-utm.ts, consumido por studio-ui/studio-utms.ts), via scripts/lib/shared/newsletter-subscriber-source.ts. Nao reacoplar com \"backend\"/\"read_backend\" acima — as tres prontidoes sao independentes. VIROU \"kit\" em 04/09/2026 (#7395), na sequência do #7388: a correção #7359 (03/09/2026) já tinha derrubado o bloqueio técnico (a atribuicao real vive nos custom fields utm_source/utm_campaign gravados por subscribeToKit, e fetchAndAggregateKit ja le essa fonte primeiro desde o #7359 — atribuicao nativa do Kit virou so fallback) e deixou só o acoplamento a `backend`/`read_backend` como razão de não trocar ainda (\"reavaliar... quando o editor decidir trocar backend/read_backend juntos\"). Com `backend` já em \"kit\" (#7388) e a Beehiiv zerada (0 ativos, #7386), manter esta chave em \"beehiiv\" media a base ERRADA: `count-subscriptions-by-utm.ts` reportava TOTAL 1497 (base Beehiiv inteira, todos os status, 0 ativos) em vez dos 626 ativos reais do Kit — cadastro vindo de anúncio nascia no Kit e nunca aparecia na contagem por UTM, medido ao vivo horas antes da rodada paga acender (#7395). `read_backend` continua independente e NÃO migrou junto — motivo próprio (leitura de POSTS/newsletter sem histórico real public:true no Kit), consumidores distintos."
     },
+    "youtube": {
+      "drive_folder_id": "1GmQ5M1bPMYoxqyJfHCHAyFyXiGyVZ0k3",
+      "drive_window_hours": 36,
+      "note": "#10659: origem do video do dia no Drive (scripts/fetch-drive-video.ts, Stage 5 e /diaria-youtube). drive_folder_id = pasta Mentoria Fluxo/VTSD/YouTube (id lido pelo conector do Drive em 25/10/2026; para trocar: abrir a pasta no Drive, o id e o trecho depois de /folders/ na URL). Dentro dela ha uma subpasta por edicao (AAMMDD/). Criterio (decisao do editor 25/10/2026): .mp4 (extensao ou video/mp4) com 'final' como PALAVRA no nome (sem diferenciar maiusculas; 'pre-final', 'nao final', 'finalizando' nao contam), horizontal = YouTube, vertical = Short; subpasta da edicao presente = so ela, sem janela (a raiz e ignorada); sem subpasta, arquivo solto na raiz so dentro de drive_window_hours. Exit 3 (precisa do editor, lista id/nome/data): 2+ candidatos da mesma proporcao ou 'final' sem proporcao; ou 2+ subpastas com o nome da edicao. Sem drive_folder_id (nem --folder-id), o script sai exit 2: a pasta-mae se chama literalmente 'Mentoria Fluxo/VTSD' (uma pasta so, com barra no nome), entao resolver por caminho seria fragil."
+    },
     "shorts": {
       "facebook_pages": ["diaria", "vjpixel"],
       "instagram": true,
@@ -281,7 +286,11 @@
       "linkedin_profile": true,
       "linkedin_page_repost": true,
       "x": true,
-      "linkedin_x_note": "#10772 (tabela confirmada no briefing 261022b): vertical NATIVO no perfil pessoal do LinkedIn (Videos API, token LINKEDIN_PERSONAL_* do 4o post) + repost pela pagina diar.ia.br (passo guiado, horario da grade da pagina, longe dos 4 posts da rotacao #10305) + X @diariabr via Buffer (skill, video por URL publica do R2). O horizontal fica so no YouTube. Threads (conta pessoal + repost) ainda nao: falta o token da conta pessoal.",
+      "threads_profile": true,
+      "youtube_shorts_api": true,
+      "linkedin_profile_via_timer": true,
+      "youtube_linkedin_timer_note": "#11070: youtube_shorts_api sobe o Short pela YouTube Data API (videos.insert private + publishAt no horario do vertical; o agendado vira publico sem a auditoria, medido em 23/10/2026); sem YOUTUBE_* no ambiente volta ao passo guiado no Studio. #10982: linkedin_profile_via_timer = o video do perfil pessoal do LinkedIn sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, scripts/shorts-linkedin-profile-timer.ts), e o /diaria-shorts o pula (skip_delegated) para nao duplicar o post entre maquinas.",
+      "linkedin_x_note": "#10772 (tabela confirmada no briefing 261022b): vertical NATIVO no perfil pessoal do LinkedIn (Videos API, token LINKEDIN_PERSONAL_* do 4o post) + repost pela pagina diar.ia.br (passo guiado, horario da grade da pagina, longe dos 4 posts da rotacao #10305) + X @diariabr via Buffer (skill, video por URL publica do R2). O horizontal fica so no YouTube. threads_profile (#11122): vertical no Threads PESSOAL (THREADS_PERSONAL_*, video por URL publica do R2) — integrado e fail-soft (pulado com aviso) ate o token da conta pessoal existir (#10772/#11077); o repost pela diar.ia.br segue manual (a Threads API nao documenta repost).",
       "schedule": {
         "rotation_times": ["06:30", "08:00", "12:00"],
         "rotation_start": "2026-10-26",
@@ -289,7 +298,7 @@
         "default_time": "12:00",
         "note": "#10831 (revisto em 22/10/2026, #10939): horario proprio do vertical (o horizontal sai 06:00 com a newsletter). Teste de 15 dias uteis (2026-10-26, segunda, a 2026-11-13, sexta; so ha edicao de segunda a sexta) alternando rotation_times dia a dia a partir de rotation_start: como 7 dias corridos deixam resto 1 na divisao por 3, cada horario sai 5 vezes e cai uma vez em cada dia da semana (se uma segunda-feira de feriado, como 02/11, ficar sem edicao, o 08:00 perde 1 amostra), comparando as visualizacoes nas primeiras 24 h. O teste anterior 12:00/19:00 (so 261022 e 261023) foi encerrado: cliques da newsletter dos ultimos 90 dias concentram 59% entre 06h e 10h BRT e so 2% as 19h. Fora da janela vale default_time (12:00) ate o editor escolher o vencedor. Lido por scripts/lib/diaria/short-video.ts (resolveShortTime)."
       },
-      "note": "#10769: video curto (vertical) de cada edicao como Reels — scripts/publish-shorts.ts, skill /diaria-shorts. Decisao do editor 21/10/2026, revista em 22/10 (#10790): Reels todo dia nas paginas diar.ia.br e VJ Pixel (MemeLab saiu) (slugs de social.facebook.pages — o enabled de la e dos posts diarios e NAO vale aqui) + Instagram na conta pessoal do editor (@vjpixel, vinculada a pagina VJ pixel — instagram_author_page) com a diar.ia.br em collab (instagram_collaborators). Perfil pessoal e YouTube Shorts sao destinos guiados fixos no codigo (listShortDestinations), nao configuraveis aqui: a Graph API nao publica em perfil e o YouTube trava em private sem a auditoria do GCP (#10659). Jandig, Teatro vs Game e Criaturas Afetivas ficam fora da rotina, so quando o editor pedir. Teste de 2 semanas a partir de 261022: manter so os destinos que trouxerem gente pro canal."
+      "note": "#10769: video curto (vertical) de cada edicao como Reels — scripts/publish-shorts.ts, skill /diaria-shorts. Decisao do editor 21/10/2026, revista em 22/10 (#10790): Reels todo dia nas paginas diar.ia.br e VJ Pixel (MemeLab saiu) (slugs de social.facebook.pages — o enabled de la e dos posts diarios e NAO vale aqui) + Instagram na conta pessoal do editor (@vjpixel, vinculada a pagina VJ pixel — instagram_author_page) com a diar.ia.br em collab (instagram_collaborators). Perfil pessoal do Facebook e destino guiado fixo no codigo (listShortDestinations): a Graph API nao publica em perfil. YouTube Shorts sai pela Data API desde #11070 (youtube_shorts_api). Jandig, Teatro vs Game e Criaturas Afetivas ficam fora da rotina, so quando o editor pedir. Teste de 2 semanas a partir de 261022: manter so os destinos que trouxerem gente pro canal."
     },
     "social": {
       "mode": "draft_or_schedule",
@@ -408,5 +417,9 @@
   "meta_ads": {
     "campaign_ids": ["52527432124198"],
     "note": "#9378 — campanhas da conta Meta Ads (act_10151064543294811) cujo gasto/cadastro conta como canal da newsletter (`Meta Ads (teste 2608)`). A conta tambem roda campanhas de outros produtos (ingresso do evento agente-ia desde 24/09/2026); a ingestao (scripts/meta-ads-ingest-spend.ts, painel /ads, aquisicao-conversions-ingest) consulta insights com level=campaign filtrando por estes ids. Lista vazia = conta inteira (level=account), comportamento anterior ao #9378. Campanha nova da newsletter precisa entrar aqui."
+  },
+  "hotmart": {
+    "vendas_desde": "2026-10-21",
+    "note": "#10991 — go-live do webhook de vendas da Hotmart (Worker diaria-site grava no KV CURSOS_SUBSCRIBERS). Nenhum dia anterior conta como coberto no estado do espelho data/hotmart/vendas.estado.json (scripts/sync-hotmart-vendas.ts) nem na receita do mes (computeHotmartMonthRevenue em scripts/lib/ltv.ts): o mes do go-live sai PISO e mes inteiro anterior sai sem dado. Ausente ou invalido = nenhum dia coberto, Hotmart fora do ARPU como fonte sem dado."
   }
 }

@@ -78,6 +78,15 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
       // .../claude-now-works-in-google-docs-sheets-and-slides). Só /articles/
       // — /resources/ solto, /product/*, /news e /release-notes seguem fora.
       /^claude\.com\/resources\/articles\//,
+      // #10952 (ferramentas dos cursos da Stack): changelog oficial do Claude
+      // Code. Só a página do changelog — o resto de code.claude.com/docs é
+      // documentação evergreen, não lançamento.
+      /^code\.claude\.com\/docs\/[a-z-]+\/changelog\/?$/,
+      // #10952: repo da org oficial no GitHub (raiz ou página de UMA release de
+      // tag estável) — é o link que o feed `Claude Code Releases`
+      // (github.com/anthropics/claude-code/releases.atom) traz. Mesmo recorte
+      // de Qwen/DeepSeek/xAI (#9424): issues/PRs/blobs não contam.
+      githubOrgRepoPattern("anthropics"),
     ],
     detection_keywords: /\b(anthropic|claude)\b/i,
     primary_domain: "anthropic.com",
@@ -162,6 +171,50 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     path_patterns: [/^(www\.)?langchain\.com\/blog\//],
     detection_keywords: /\b(langchain|langgraph|langsmith)\b/i,
     primary_domain: "langchain.com",
+  },
+  // #10952: ferramentas ensinadas nos cursos da Stack (stack.com.br/#cursos,
+  // lista conferida em 22/10/2026 — Lovable, Cursor, Claude Code, n8n,
+  // Replit; Claude Code está na entry da Anthropic acima). Os cursos mudam:
+  // reconferir a página e manter esta lista em par com `seed/sources.csv`.
+  // Todas path-restricted: os hosts têm app, pricing, login e docs
+  // evergreen, então só blog e changelog contam como lançamento.
+  {
+    company: "Lovable",
+    path_patterns: [
+      /^lovable\.dev\/blog\//,
+      /^docs\.lovable\.dev\/changelog\/?$/,
+    ],
+    detection_keywords: /\blovable\b/i,
+    primary_domain: "lovable.dev",
+  },
+  {
+    company: "Cursor (Anysphere)",
+    path_patterns: [/^cursor\.com\/(blog|changelog)\//],
+    // "cursor" sozinho é palavra comum (cursor do mouse, cursor de banco):
+    // só a marca qualificada ou a empresa.
+    detection_keywords: /\b(cursor (ai|ide|editor)|anysphere)\b/i,
+    primary_domain: "cursor.com",
+  },
+  {
+    company: "n8n",
+    path_patterns: [
+      /^blog\.n8n\.io\//,
+      /^docs\.n8n\.io\/(changelog\/)?release-notes\/?$/,
+    ],
+    detection_keywords: /\bn8n\b/i,
+    primary_domain: "n8n.io",
+  },
+  {
+    company: "Replit",
+    path_patterns: [
+      /^replit\.com\/blog\//,
+      // blog.replit.com redireciona pra replit.com/blog, mas links antigos
+      // e coberturas de imprensa ainda usam o host antigo.
+      /^blog\.replit\.com\//,
+      /^docs\.replit\.com\/updates\//,
+    ],
+    detection_keywords: /\breplit\b/i,
+    primary_domain: "replit.com",
   },
 
   // -----------------------------------------------------------------------
@@ -449,6 +502,69 @@ export function lancamentoPatterns(): RegExp[] {
     }
   }
   return out;
+}
+
+/**
+ * #11004: central de ajuda, docs e blog de desenvolvedor OFICIAIS dos
+ * fabricantes — o que conta como "site do fabricante" além do registro de
+ * lançamento acima. Lista SEPARADA de `OFFICIAL_SOURCES` de propósito: entrar
+ * lá faria `categorize.ts` classificar toda página de ajuda como LANÇAMENTO
+ * na diária, e uma página de suporte é tutorial, não anúncio. Consumida só
+ * por `isManufacturerUrl` (seções Lançamentos/Use melhor do post da Stack).
+ *
+ * Hosts explícitos, nunca `docs.*` genérico: `docs.` de qualquer domínio não
+ * prova que a página é do fabricante da ferramenta. Casados contra
+ * `hostname+pathname` sem `www.`, como os `path_patterns` acima.
+ */
+export const MANUFACTURER_DOCS_PATTERNS: readonly RegExp[] = [
+  // Anthropic — central de ajuda (item do Cowork, ciclo 26w43) e docs.
+  /^support\.claude\.com\//,
+  /^support\.anthropic\.com\//,
+  /^docs\.claude\.com\//,
+  /^docs\.anthropic\.com\//,
+  /^code\.claude\.com\/docs\//,
+  // OpenAI — central de ajuda e docs da plataforma.
+  /^help\.openai\.com\//,
+  /^platform\.openai\.com\/docs\//,
+  // Google — central de ajuda, docs da Gemini API e do Workspace.
+  /^support\.google\.com\//,
+  /^ai\.google\.dev\//,
+  /^developers\.google\.com\//,
+  /^workspaceupdates\.googleblog\.com\//,
+  // Microsoft / GitHub.
+  /^learn\.microsoft\.com\//,
+  /^support\.microsoft\.com\//,
+  /^docs\.github\.com\//,
+  /^github\.blog\//,
+  // Ferramentas dos cursos da Stack (#10952): docs inteiras, não só o changelog.
+  /^docs\.lovable\.dev\//,
+  /^docs\.n8n\.io\//,
+  /^docs\.cursor\.com\//,
+  /^cursor\.com\/docs\//,
+  /^docs\.replit\.com\//,
+];
+
+function hostAndPathname(url: string): { host: string; full: string } {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    return { host, full: host + u.pathname };
+  } catch {
+    return { host: "", full: "" };
+  }
+}
+
+/**
+ * Pure (#11004): a URL é do site do fabricante (blog, changelog, docs ou
+ * central de ajuda oficiais)? Une o registro de lançamento (`lancamentoDomains`/
+ * `lancamentoPatterns`, mesma fonte do `validate-lancamentos.ts`, #160) com
+ * `MANUFACTURER_DOCS_PATTERNS`. Imprensa, blog pessoal e agregador → false.
+ */
+export function isManufacturerUrl(url: string): boolean {
+  const { host, full } = hostAndPathname(url);
+  if (!host) return false;
+  if (lancamentoDomains().has(host)) return true;
+  return lancamentoPatterns().some((p) => p.test(full)) || MANUFACTURER_DOCS_PATTERNS.some((p) => p.test(full));
 }
 
 /**

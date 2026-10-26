@@ -429,6 +429,53 @@ export function quedaNaoAvaliadaKeys(
   return keys;
 }
 
+/**
+ * #10994 — métricas wireadas SEM série nenhuma nesta execução (falha de
+ * ingestão: snapshot ausente, DB inacessível) nem chegam a `evaluateQueda`.
+ * Sem esta entrada, `quedaNaoAvaliadaKeys` não as via e a issue `queda:`
+ * aberta delas recebia "não reproduz mais" e fechava — a ausência da série
+ * contada como evidência de que a queda sumiu, a mesma leitura-que-não-
+ * aconteceu do #10662. Devolve uma avaliação com `skipMotivo` ("série
+ * ausente") por métrica sem série, para entrar em `quedaAvaliacoes`.
+ */
+export function quedaAvaliacoesSemSerie(
+  wiredIds: readonly string[],
+  seriesById: ReadonlyMap<string, unknown>,
+): { metricaId: string; skipMotivo: string }[] {
+  return wiredIds
+    .filter((id) => !seriesById.has(id))
+    .map((id) => ({
+      metricaId: id,
+      skipMotivo: `"${id}": série ausente nesta execução — sinal de queda não avaliado (issue aberta congelada, #10994)`,
+    }));
+}
+
+/**
+ * #11048 — o congelamento do #10994 cobria só `queda:`. Métrica sem série
+ * nesta execução também não avalia `frescor:` (o laço faz `continue` antes de
+ * `evaluateFrescorFromResult`) nem as metas dela (`meta-nao-atingida:` e
+ * `indeterminado-alto:`, que fazem `continue` no laço de metas). Ausência de
+ * achado aí é leitura que não aconteceu: sem congelar, a issue `frescor:X`
+ * (que sinaliza justamente dado velho) fechava com o dado ainda mais velho.
+ * Devolve as chaves de estado desses sinais para toda métrica sem série.
+ */
+export function serieAusenteNaoAvaliadaKeys(
+  wiredIds: readonly string[],
+  seriesById: ReadonlyMap<string, unknown>,
+  metas: readonly { metrica_id: string }[],
+): Set<string> {
+  const keys = new Set<string>();
+  const add = (sinal: MetricsHealthFinding["sinal"], metrica_id: string) =>
+    keys.add(alarmIssueStateKey(METRICS_HEALTH_CHECK, metricsHealthFingerprint({ sinal, metrica_id })));
+  for (const id of wiredIds) if (!seriesById.has(id)) add("frescor", id);
+  for (const meta of metas) {
+    if (seriesById.has(meta.metrica_id)) continue;
+    add("meta-nao-atingida", meta.metrica_id);
+    add("indeterminado-alto", meta.metrica_id);
+  }
+  return keys;
+}
+
 export function toMetricsHealthAlarmFinding(f: MetricsHealthFinding): AlarmFinding {
   const fingerprint = metricsHealthFingerprint(f);
   return {
@@ -776,10 +823,15 @@ async function main(): Promise<void> {
   const { sources: paidSources, avisos: paidAvisos } = loadPaidTestWindowSources();
   skipMotivos.push(...paidAvisos);
   const baselineExcluidaAquisicao = closedPaidAcquisitionWindows(paidSources, hoje);
-  const quedaAvaliacoes: { metricaId: string; skipMotivo: string | null }[] = [];
+  // #10994: métrica sem série também é "queda não avaliada" — congela a issue.
+  const quedaAvaliacoes: { metricaId: string; skipMotivo: string | null }[] = quedaAvaliacoesSemSerie(
+    WIRED_METRIC_IDS,
+    seriesById,
+  );
+  for (const { skipMotivo } of quedaAvaliacoes) if (skipMotivo) skipMotivos.push(skipMotivo);
   for (const id of WIRED_METRIC_IDS) {
     const medicoes = seriesById.get(id);
-    if (!medicoes) continue;
+    if (!medicoes) continue; // já registrada em quedaAvaliacoes por quedaAvaliacoesSemSerie (#10994)
     const def = getMetric(id);
     if (!def) continue;
 
@@ -854,9 +906,11 @@ async function main(): Promise<void> {
 
   // #10662: queda pulada nesta execução congela a issue aberta, nunca a fecha.
   const quedaNaoAvaliadas = quedaNaoAvaliadaKeys(quedaAvaliacoes);
-  const isAbsenceUnmeasured = (key: string) => quedaNaoAvaliadas.has(key);
+  // #11048: frescor e metas da métrica sem série também ficam congelados.
+  const serieAusenteKeys = serieAusenteNaoAvaliadaKeys(WIRED_METRIC_IDS, seriesById, metas as Meta[]);
+  const isAbsenceUnmeasured = (key: string) => quedaNaoAvaliadas.has(key) || serieAusenteKeys.has(key);
   for (const { key, issueNumber } of listFrozenUnmeasuredKeys(alarmFindings, alarmState, isAbsenceUnmeasured)) {
-    console.log(`${LOG_PREFIX} issue #${issueNumber} (${key}) congelada: queda não avaliada nesta execução — nem comenta nem fecha.`);
+    console.log(`${LOG_PREFIX} issue #${issueNumber} (${key}) congelada: sinal não avaliado nesta execução — nem comenta nem fecha.`);
   }
 
   if (isDryRun) {

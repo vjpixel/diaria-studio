@@ -41,12 +41,15 @@
 
 import { BEEHIIV_BASE_URL } from "../edition-url.ts";
 import { TWITTER_CHAR_LIMIT, computeTwitterWeightedLength } from "../twitter-weight.ts";
+import { THREADS_TEXT_MAX_CHARS } from "../threads-api.ts"; // #10772
 import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } from "../social-schedule-rotation.ts";
 import {
   DEFAULT_MIN_GAP_MINUTES,
   brtDayWindow,
+  instagramCollabAccounts,
   planSlot,
   planSlots,
+  slotAccounts,
   socialAccountKey,
   type ScheduledSlot,
   type SlotRule,
@@ -99,7 +102,7 @@ export function firstSentence(body: string, maxChars = 220): string {
 export function withShortUtm(
   url: string,
   utm: {
-    source: "youtube" | "facebook" | "instagram" | "linkedin" | "twitter";
+    source: "youtube" | "facebook" | "instagram" | "linkedin" | "twitter" | "threads";
     medium: "shorts" | "reels" | "video";
     campaign: string;
     content?: string | null;
@@ -184,7 +187,7 @@ export function buildReelsCaption(input: {
 }
 
 /** Plataformas do vertical NATIVO com link clicável no texto (#10772). */
-export type ShortLinkPlatform = "linkedin" | "x";
+export type ShortLinkPlatform = "linkedin" | "x" | "threads";
 
 /** Teto do texto do post no LinkedIn (`commentary` da Posts API). */
 export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
@@ -199,6 +202,8 @@ export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
  * X: título + vídeo + edição, sem o gancho; título longo é cortado até caber
  * em 280 com URL pesando 23 (`computeTwitterWeightedLength`). Lança se nem o
  * título mínimo couber (não acontece com URL de 23).
+ *
+ * Threads (perfil pessoal, #10772): `utm_source=threads`; ver `buildThreadsShortText`.
  */
 export function buildShortSocialText(input: {
   platform: ShortLinkPlatform;
@@ -211,7 +216,7 @@ export function buildShortSocialText(input: {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const video = input.videoUrl ?? DIARIA_YOUTUBE_CHANNEL_URL;
-  const source = input.platform === "x" ? "twitter" : "linkedin";
+  const source = input.platform === "x" ? "twitter" : input.platform;
   const edition = withShortUtm(input.editionUrl, { source, medium: "video", campaign: input.aammdd });
   if (input.platform === "linkedin") {
     const text = [title, firstSentence(input.d1.body), `Vídeo completo no YouTube: ${video}`, `Edição completa: ${edition}`, SHORTS_HASHTAGS.join(" ")]
@@ -220,6 +225,7 @@ export function buildShortSocialText(input: {
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
+  if (input.platform === "threads") return buildThreadsShortText(title, input.d1.body, video, edition);
   const tail = `\n\nVídeo completo: ${video}\nEdição: ${edition}`;
   const chars = Array.from(title);
   for (let n = chars.length; n >= 10; n--) {
@@ -228,6 +234,42 @@ export function buildShortSocialText(input: {
     if (computeTwitterWeightedLength(text) <= TWITTER_CHAR_LIMIT) return text;
   }
   throw new Error(`texto do X não cabe em ${TWITTER_CHAR_LIMIT} caracteres`);
+}
+
+const UTF8 = new TextEncoder();
+/** Emoji e os modificadores que o compõem (ZWJ, seletor de variação, tom de pele, keycap). */
+const EMOJI_PART_RE = /[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}‍️⃣]/u;
+
+/**
+ * Tamanho do texto como o Threads conta (#10772): 1 por caractere (code point),
+ * exceto emoji, que pesa o tamanho em bytes UTF-8 (doc da Meta, posts: "emojis
+ * count as their UTF-8 byte length"). Ex.: "🤖" pesa 4.
+ */
+export function threadsTextLength(text: string): number {
+  let n = 0;
+  for (const ch of text) n += EMOJI_PART_RE.test(ch) ? UTF8.encode(ch).length : 1;
+  return n;
+}
+
+/**
+ * Texto do vertical no Threads (#10772): título, gancho (1ª frase do D1), vídeo
+ * completo e edição, em até 500 caracteres (o Threads conta caractere, URL
+ * inteira — mas emoji conta pelo tamanho em BYTES UTF-8, ver `threadsTextLength`).
+ * Sem hashtags: no Threads só a 1ª vira tag de tópico. Não cabe →
+ * tira o gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
+ */
+function buildThreadsShortText(title: string, body: string, video: string, edition: string): string {
+  const tail = `\n\nVídeo completo no YouTube: ${video}\nEdição completa: ${edition}`;
+  const hook = firstSentence(body);
+  const withHook = hook ? `${title}\n\n${hook}${tail}` : `${title}${tail}`;
+  if (threadsTextLength(withHook) <= THREADS_TEXT_MAX_CHARS) return withHook;
+  const chars = Array.from(title);
+  for (let n = chars.length; n >= 10; n--) {
+    const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
+    const text = head + tail;
+    if (threadsTextLength(text) <= THREADS_TEXT_MAX_CHARS) return text;
+  }
+  throw new Error(`texto do Threads não cabe em ${THREADS_TEXT_MAX_CHARS} caracteres`);
 }
 
 /** Configuração `publishing.shorts` em `platform.config.json`. */
@@ -250,6 +292,26 @@ export interface ShortsConfig {
   linkedinPageRepost: boolean;
   /** #10772: vídeo no X @diariabr via Buffer (MCP, passo da skill), com o vertical por URL pública (R2). */
   x: boolean;
+  /**
+   * #10772/#11122: vertical no Threads PESSOAL do editor (`threads_profile`,
+   * `scripts/lib/threads-personal-video.ts`), com o vídeo por URL pública (R2).
+   * Sem `THREADS_PERSONAL_*` o destino é pulado com aviso (fail-soft).
+   */
+  threadsProfile: boolean;
+  /**
+   * #11070: Short pela YouTube Data API (`videos.insert` com `publishAt`, o
+   * mesmo publisher do horizontal). Sem `YOUTUBE_*` no ambiente o destino
+   * volta a ser o passo guiado no Studio (fail-soft). `false` força o guiado.
+   */
+  youtubeShortsApi: boolean;
+  /**
+   * #10982: o vídeo do perfil pessoal do LinkedIn sai pelo timer do `300`
+   * (`scripts/shorts-linkedin-profile-timer.ts`), não pela rodada do
+   * `/diaria-shorts`. Com `true`, uma rodada sem `--linkedin-timer` pula o
+   * `linkedin_profile` (`skip_delegated`): duas máquinas publicando o mesmo
+   * vídeo, com o registro ainda não sincronizado, duplicariam o post.
+   */
+  linkedinProfileViaTimer: boolean;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -265,6 +327,12 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   linkedinProfile: true,
   linkedinPageRepost: true,
   x: true,
+  // #11122: código pronto e fail-soft até o token do Threads pessoal existir (#10772/#11077).
+  threadsProfile: true,
+  // #11070: o publishAt publica sozinho mesmo sem a auditoria (medido em 23/10/2026).
+  youtubeShortsApi: true,
+  // #10982: desligado no código; o platform.config.json liga junto com o timer.
+  linkedinProfileViaTimer: false,
 });
 
 function defaultShortsConfig(): ShortsConfig {
@@ -276,6 +344,9 @@ function defaultShortsConfig(): ShortsConfig {
     linkedinProfile: DEFAULT_SHORTS_CONFIG.linkedinProfile,
     linkedinPageRepost: DEFAULT_SHORTS_CONFIG.linkedinPageRepost,
     x: DEFAULT_SHORTS_CONFIG.x,
+    threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
+    youtubeShortsApi: DEFAULT_SHORTS_CONFIG.youtubeShortsApi,
+    linkedinProfileViaTimer: DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer,
   };
 }
 
@@ -324,6 +395,9 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     linkedinProfile,
     linkedinPageRepost,
     x: optionalBool(raw, "x", DEFAULT_SHORTS_CONFIG.x),
+    threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
+    youtubeShortsApi: optionalBool(raw, "youtube_shorts_api", DEFAULT_SHORTS_CONFIG.youtubeShortsApi),
+    linkedinProfileViaTimer: optionalBool(raw, "linkedin_profile_via_timer", DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer),
   };
 }
 
@@ -338,7 +412,9 @@ export type ShortDestination =
   /** #10772: repost do vídeo do perfil pela página (sem token de organização local — Chrome). */
   | { id: "linkedin_page_repost"; kind: "linkedin_page_repost"; mode: "guided" }
   /** #10772: Buffer só é alcançável pela skill (MCP); o script prepara texto, horário e URL do vídeo. */
-  | { id: "x"; kind: "x"; mode: "guided" };
+  | { id: "x"; kind: "x"; mode: "guided" }
+  /** #11122: Threads API no perfil pessoal (não agenda — publica na hora, como o LinkedIn). */
+  | { id: "threads_profile"; kind: "threads_profile"; mode: "api" };
 
 export type FacebookDestinationId = `facebook:${string}`;
 
@@ -354,6 +430,7 @@ export function listShortDestinations(cfg: ShortsConfig): ShortDestination[] {
   if (cfg.linkedinProfile) out.push({ id: "linkedin_profile", kind: "linkedin_profile", mode: "api" });
   if (cfg.linkedinProfile && cfg.linkedinPageRepost) out.push({ id: "linkedin_page_repost", kind: "linkedin_page_repost", mode: "guided" });
   if (cfg.x) out.push({ id: "x", kind: "x", mode: "guided" });
+  if (cfg.threadsProfile) out.push({ id: "threads_profile", kind: "threads_profile", mode: "api" });
   out.push({ id: "facebook_profile", kind: "facebook_profile", mode: "guided" });
   return out;
 }
@@ -368,7 +445,7 @@ export interface ShortPublishedEntry {
   destination: string;
   /**
    * `send_unknown` (#10772): o envio pode ter sido aceito (timeout/5xx na
-   * criação do post do LinkedIn). Conta como feito — re-tentar arriscaria
+   * criação do post do LinkedIn, ou no `threads_publish` do Threads, #11122). Conta como feito — re-tentar arriscaria
    * vídeo duplicado no perfil; o editor confere e registra com `--mark`.
    */
   status: "published" | "scheduled" | "send_unknown";
@@ -512,6 +589,8 @@ export interface ShortSlot {
   destination: string;
   /** Chave de conta da grade (`socialAccountKey`). */
   account: string;
+  /** Contas em collab (Instagram): o slot também ocupa a grade delas (decisão do editor 261023). */
+  alsoAccounts?: string[];
   /** ISO UTC. */
   at: string;
   /** HH:MM BRT. */
@@ -529,12 +608,29 @@ export function shortDestinationAccount(dest: ShortDestination, cfg: Pick<Shorts
   if (dest.kind === "linkedin_profile") return LINKEDIN_PERSONAL_ACCOUNT;
   // X sai pela skill (Buffer), mas o horário (`dueAt`) vem da grade como os destinos de API.
   if (dest.kind === "x") return socialAccountKey("twitter", "diaria");
+  if (dest.kind === "threads_profile") return THREADS_PERSONAL_ACCOUNT;
   // O repost tem regra própria (`planLinkedInRepostSlot`); os outros guiados seguem `shortTime`.
   return null;
 }
 
+/**
+ * Contas em collab de um destino de API do vertical (#10819, decisão do editor
+ * 261023): o Reels do Instagram sai na autora com `instagram_collaborators` em
+ * collab e aparece no feed deles, então conta como post de cada um. Os outros
+ * destinos não têm collab.
+ */
+export function shortDestinationAlsoAccounts(
+  dest: ShortDestination,
+  cfg: Pick<ShortsConfig, "instagramAuthorPage"> & Partial<Pick<ShortsConfig, "instagramCollaborators">>,
+): string[] {
+  if (dest.kind !== "instagram") return [];
+  return instagramCollabAccounts(cfg.instagramCollaborators, socialAccountKey("instagram", cfg.instagramAuthorPage ?? "diaria"));
+}
+
 /** Conta da grade do perfil pessoal do LinkedIn (o 4º post do `publish-linkedin-personal.ts` e o vertical). */
 export const LINKEDIN_PERSONAL_ACCOUNT = socialAccountKey("linkedin", "pessoal");
+/** Conta da grade do perfil pessoal do Threads (vertical, #11122). */
+export const THREADS_PERSONAL_ACCOUNT = socialAccountKey("threads", "pessoal");
 /** Conta da grade da página diar.ia.br no LinkedIn (os posts diários da rotação #10305). */
 export const LINKEDIN_PAGE_ACCOUNT = socialAccountKey("linkedin", "diaria");
 /** Folga mínima entre o vídeo no perfil e o repost da página. */
@@ -598,7 +694,10 @@ const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISO
  *     passou cai em "publica na hora" no `resolveReelsSchedule`, como antes).
  *     Cada destino planejado entra na grade antes do seguinte;
  *   - destinos guiados (YouTube Shorts, perfil pessoal) seguem `shortTime`: o
- *     skill lê um horário só pra eles.
+ *     skill lê um horário só pra eles;
+ *   - o Instagram conta também como post dos collabs (`cfg.instagramCollaborators`,
+ *     decisão do editor 261023): o aviso do teste e o espaçamento do planner
+ *     olham os posts da autora E os da @diar.ia.br em collab.
  */
 export function planShortSlots(input: {
   aammdd: string;
@@ -606,22 +705,25 @@ export function planShortSlots(input: {
   /** ISO do `time.hhmm` no dia da edição. */
   timeAt: string;
   destinations: readonly ShortDestination[];
-  cfg: Pick<ShortsConfig, "instagramAuthorPage">;
+  cfg: Pick<ShortsConfig, "instagramAuthorPage"> & Partial<Pick<ShortsConfig, "instagramCollaborators">>;
   grid: readonly ScheduledSlot[];
 }): ShortSlot[] {
   const api = input.destinations
-    .map((d) => ({ dest: d, account: shortDestinationAccount(d, input.cfg) }))
-    .filter((x): x is { dest: ShortDestination; account: string } => x.account !== null);
+    .map((d) => ({ dest: d, account: shortDestinationAccount(d, input.cfg), also: shortDestinationAlsoAccounts(d, input.cfg) }))
+    .filter((x): x is { dest: ShortDestination; account: string; also: string[] } => x.account !== null);
+  const withAlso = (also: string[]) => (also.length ? { alsoAccounts: also } : {});
 
   if (input.time.source === "rotation") {
     const t = Date.parse(input.timeAt);
-    return api.map(({ dest, account }) => {
+    return api.map(({ dest, account, also }) => {
+      const mine = new Set([account, ...also]);
       const close = input.grid
-        .filter((s) => s.account === account && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
+        .filter((s) => slotAccounts(s).some((a) => mine.has(a)) && Math.abs(Date.parse(s.at) - t) < DEFAULT_MIN_GAP_MINUTES * 60_000)
         .map((s) => brtHHMM(s.at));
       const slot: ShortSlot = {
         destination: dest.id,
         account,
+        ...withAlso(also),
         at: new Date(t).toISOString(),
         hhmm: input.time.hhmm,
         rule: "test-schedule",
@@ -629,7 +731,7 @@ export function planShortSlots(input: {
       };
       if (close.length) {
         slot.warning =
-          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta ` +
+          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
           `(${[...new Set(close)].join(", ")} BRT) — mantido por causa do teste; mova à mão se não quiser colado`;
       }
       return slot;
@@ -639,14 +741,15 @@ export function planShortSlots(input: {
   const window = brtDayWindow(input.aammdd);
   const decisions = planSlots(
     input.grid,
-    api.map(({ account }) => ({ account, window, preferredAt: input.timeAt })),
+    api.map(({ account, also }) => ({ account, ...withAlso(also), window, preferredAt: input.timeAt })),
   );
-  return api.map(({ dest, account }, i) => {
+  return api.map(({ dest, account, also }, i) => {
     const d = decisions[i];
     if (!d.at) {
       return {
         destination: dest.id,
         account,
+        ...withAlso(also),
         at: new Date(Date.parse(input.timeAt)).toISOString(),
         hhmm: input.time.hhmm,
         rule: d.rule,
@@ -657,6 +760,7 @@ export function planShortSlots(input: {
     return {
       destination: dest.id,
       account,
+      ...withAlso(also),
       at: d.at,
       hhmm: brtHHMM(d.at),
       rule: d.rule,
@@ -734,12 +838,6 @@ export function mp4DurationSeconds(buf: Buffer): number | null {
  */
 export const INSTAGRAM_REELS_API_MAX_SECONDS = 40;
 
-/**
- * Chave da conta do Instagram no mapa de tetos (#10916): o slug de
- * `instagram_author_page`, ou `diaria` quando a autora é `null` (a conta da
- * diar.ia.br, `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN`). Mesma
- * convenção da fila do Worker (`ig_account`, #10823).
- */
 /** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823). */
 export type WorkerInstagramAccount = "diaria" | "vjpixel";
 
@@ -752,6 +850,12 @@ export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
  */
 export type InstagramAccountKey = WorkerInstagramAccount | (string & {});
 
+/**
+ * Chave da conta do Instagram no mapa de tetos (#10916): o slug de
+ * `instagram_author_page`, ou `diaria` quando a autora é `null` (a conta da
+ * diar.ia.br, `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN`). Mesma
+ * convenção da fila do Worker (`ig_account`, #10823).
+ */
 export function instagramAccountKey(authorPage: string | null): InstagramAccountKey {
   return authorPage ?? INSTAGRAM_ENV_ACCOUNT_KEY;
 }

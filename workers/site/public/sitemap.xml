@@ -1217,25 +1217,21 @@
   <url>
     <loc>https://diar.ia.br/p/claude-projetou-proteinas-contra-veneno-de-escorpiao</loc>
     <lastmod>2026-10-22</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-22T00:00:00.000Z</news:publication_date>
-      <news:title>Claude projetou proteínas contra veneno de escorpião</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/falhas-no-php-colocam-a-internet-em-alerta-global</loc>
     <lastmod>2026-10-23</lastmod>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos</loc>
+    <lastmod>2026-10-26</lastmod>
     <news:news>
       <news:publication>
         <news:name>diar.ia.br</news:name>
         <news:language>pt</news:language>
       </news:publication>
-      <news:publication_date>2026-10-23T00:00:00.000Z</news:publication_date>
-      <news:title>Falhas no PHP colocam a internet em alerta global</news:title>
+      <news:publication_date>2026-10-26T00:00:00.000Z</news:publication_date>
+      <news:title>Hackers usam Claude e Grok contra bancos</news:title>
     </news:news>
   </url>
 </urlset>

@@ -10,7 +10,7 @@
  *   npx tsx scripts/publish-youtube.ts AAMMDD --dry-run
  *     [--edition-dir DIR] [--video PATH] [--episode N]
  *     [--edition-url URL] [--publish-at ISO]
- *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force | --accept-period-match]
  *
  * ## `--dry-run` (default seguro)
  *
@@ -33,9 +33,8 @@
  * guarda o registro anterior em `previous_uploads`.
  *
  * Com o vídeo enviado, grava também `_internal/05-video-url.txt` (link do
- * vídeo no D1, #10772) — só se o estado relido for `published`, ou
- * `scheduled` com `publishAt` até o post do D1 (#10858); vídeo `private`
- * nunca vira link no D1.
+ * vídeo no D1, #10772), inclusive privado/sem auditoria (#10960).
+ * A disponibilidade pública gera aviso, sem impedir a gravação do link.
  *
  * Antes do PUT dos bytes o mesmo arquivo recebe um marcador
  * `{ status: "in_progress" }`; se o upload falhar dali em diante (5xx, rede
@@ -68,11 +67,21 @@
  * Stage 5 será fail-soft quando o vídeo ainda não existir); com `--upload`,
  * exit 1 sem enviar nada.
  * Capa: `{editionDir}/04-youtube-thumb.jpg` (1280x720), opcional.
+ *
+ * Vídeo da edição já no canal (#11080): sem `--force`, o `--upload` confere
+ * os uploads recentes antes de enviar. Reconhecido por AAMMDD/`utm_campaign`
+ * ou pelo título do D1 → não envia, grava o registro e o link do D1 (exit 0).
+ * Reconhecido SÓ pelo período (vídeo qualquer no dia BRT da edição, #11132) →
+ * exit 1 sem enviar e sem gravar nada: pode ser uma live ou um vídeo avulso, e
+ * o link iria para o D1 público. O editor confere no Studio e roda de novo com
+ * `--accept-period-match` (é o vídeo da edição: registra e linka) ou
+ * `--force` (não é: sobe o vídeo da edição).
  */
 
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveYouTubeState } from "./lib/publish-state.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -96,6 +105,7 @@ import {
   type YouTubeScheduleDecision,
 } from "./lib/diaria/youtube-video.ts";
 import {
+  ExistingEditionVideoError,
   YOUTUBE_PUBLISHED_FILE,
   YouTubeUploadError,
   defaultYouTubeUploadDeps,
@@ -108,7 +118,7 @@ import {
   type YouTubeUploadResult,
 } from "./lib/diaria/youtube-upload.ts";
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
-import { d1SocialSlotAt, videoLinkEligibility, videoLinkRemedy } from "./lib/diaria/youtube-video-link-gate.ts";
+import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -229,6 +239,15 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   audit_blocked: boolean;
   /** Registros substituídos por `--force` (mais antigo primeiro). */
   previous_uploads?: PreviousUploadEntry[];
+  /**
+   * `already-on-channel` (#11080): o vídeo NÃO foi enviado por este script — já
+   * estava no canal (upload manual no Studio) e o registro só o reconhece.
+   */
+  source?: "already-on-channel";
+  /** Sinal que reconheceu o vídeo existente (só com `source`). */
+  matched_by?: string;
+  /** `matched_by: "period"` aceito pelo editor via `--accept-period-match` (#11132). */
+  period_match_accepted?: boolean;
 }
 
 /**
@@ -262,6 +281,12 @@ export interface RunUploadInput {
   editionDir: string;
   env: Record<string, string | undefined>;
   force: boolean;
+  /**
+   * #11132: aceita um vídeo reconhecido só pelo período (`matchedBy: "period"`)
+   * como o desta edição. Sem isso o `--upload` sai exit 1 sem enviar nem gravar.
+   * Só o editor passa (`--accept-period-match`); o Stage 5 nunca.
+   */
+  acceptPeriodMatch?: boolean;
   readFile: (p: string) => Buffer;
   log: (line: string) => void;
   /**
@@ -281,8 +306,8 @@ export interface RunUploadOutcome {
 
 /**
  * Depois do upload, grava `_internal/05-video-url.txt` (o link do vídeo no D1,
- * #10772) só quando o estado RELIDO deixa o leitor abrir o vídeo — nunca com o
- * vídeo `private` (#10858). Não sobrescreve uma URL diferente já gravada à mão.
+ * #10772), inclusive privado (#10960). O estado relido serve só de aviso.
+ * Não sobrescreve uma URL diferente já gravada à mão.
  * Nunca lança: o vídeo já subiu, falha aqui vira aviso.
  */
 export function writeD1VideoUrlAfterUpload(
@@ -290,7 +315,7 @@ export function writeD1VideoUrlAfterUpload(
   record: Pick<YouTubePublishedRecord, "aammdd" | "url" | "state" | "rereadStatus"> & Partial<Pick<YouTubePublishedRecord, "previous_uploads">>,
   d1SlotAt: Date | null,
   log: (line: string) => void,
-  /** Default `YOUTUBE_API_PROJECT_AUDITED`; sem auditoria, `scheduled` não grava (#10865). */
+  /** Default `YOUTUBE_API_PROJECT_AUDITED`; usado somente para o aviso. */
   projectAudited: boolean = YOUTUBE_API_PROJECT_AUDITED,
 ): boolean {
   const verdict = videoLinkEligibility({
@@ -300,11 +325,8 @@ export function writeD1VideoUrlAfterUpload(
     projectAudited,
   });
   const urlFile = join(editionDir, D1_VIDEO_URL_FILE);
-  // #10881 item 2: depois de `--upload --force`, o arquivo pode apontar para
-  // o vídeo SUBSTITUÍDO (gravado pelo upload anterior). Esse link não serve
-  // mais: é trocado pelo novo quando o novo passa no portão, e MANTIDO (com
-  // aviso) quando não passa — decisão do editor no review do #10892. URL que não veio de upload nosso (o editor gravou com
-  // link-video-d1) segue intocada.
+  // Upload forçado troca o link de um upload anterior, inclusive privado
+  // (#10960). URLs inseridas manualmente pelo editor seguem preservadas.
   const previousUrls = new Set(
     (record.previous_uploads ?? [])
       .map((p) => ("url" in p && typeof p.url === "string" ? p.url : null))
@@ -318,19 +340,7 @@ export function writeD1VideoUrlAfterUpload(
   }
   const staleFromPreviousUpload = currentRaw !== "" && previousUrls.has(currentRaw);
   if (!verdict.ok) {
-    if (staleFromPreviousUpload) {
-      // Decisão do editor (#10892 review): o link do vídeo substituído é
-      // MANTIDO enquanto o novo não abre — tirar o link de um vídeo que ainda
-      // funciona deixaria o D1 sem vídeo. Só avisa; quando o novo passar no
-      // portão, a gravação abaixo troca o link.
-      log(`[aviso] ${urlFile} segue apontando para o vídeo substituído (${currentRaw}) — mantido até o novo abrir; confira se o antigo ainda está público.`);
-    }
-    // Mensagem já dirigida pela premissa de auditoria (#10866: sem ela, agendar não resolve).
-    log(
-      `[aviso] link do vídeo NÃO gravado em ${urlFile}: ${verdict.reason}. ${videoLinkRemedy(projectAudited)} ` +
-        `e rode \`npx tsx scripts/link-video-d1.ts ${record.aammdd} --save --assume-public\` (#10858).`,
-    );
-    return false;
+    log(`[aviso] vídeo ainda pode não abrir para o leitor: ${verdict.reason}. O link será incluído no D1 mesmo assim (#10960).`);
   }
   try {
     if (existsSync(urlFile)) {
@@ -385,6 +395,80 @@ function historyFrom(read: PublishedRecordRead): PreviousUploadEntry[] {
   const prev = read.kind === "done" ? read.record : read.sentinel;
   const { previous_uploads, ...rest } = prev;
   return [...(previous_uploads ?? []), rest];
+}
+
+/**
+ * #11080: a edição já tem vídeo no canal (subido à mão). Nada foi enviado; grava
+ * o registro com `source: "already-on-channel"` — assim as próximas rodadas e os
+ * consumidores de `05-youtube-published.json` (fetch, gate do link no D1) tratam
+ * como publicado — e põe o link no D1 como num upload normal. Exit 0.
+ * Vídeo com `uploadStatus` falho nunca chega aqui: `matchEditionVideo` o
+ * descarta e o upload normal segue (#11103).
+ * #11132: só com `period` aceito pelo editor — ver `unconfirmedPeriodMatch`.
+ */
+function recordExistingVideo(
+  e: ExistingEditionVideoError,
+  input: RunUploadInput,
+  plan: YouTubePublishPlan,
+  recordPath: string,
+  history: PreviousUploadEntry[],
+  now: Date,
+): RunUploadOutcome {
+  const v = e.video;
+  const state = v.status ? resolveYouTubeState({ status: v.status }, now) : "unknown";
+  const record: YouTubePublishedRecord = {
+    aammdd: plan.aammdd,
+    episode: plan.episode,
+    title: v.title || plan.metadata.title,
+    video_path: plan.video.path,
+    thumbnail_path: null,
+    audit_blocked: plan.effective.auditBlocked,
+    videoId: v.videoId,
+    url: v.url,
+    channelId: null,
+    requested: { privacyStatus: v.status?.privacyStatus ?? "", publishAt: v.status?.publishAt ?? null },
+    thumbnail: { attempted: false, ok: false, error: null },
+    state,
+    rereadStatus: v.status,
+    rereadError: null,
+    uploadedAt: v.publishedAt ?? now.toISOString(),
+    rereadAt: now.toISOString(),
+    source: "already-on-channel",
+    matched_by: v.matchedBy,
+    ...(v.matchedBy === "period" ? { period_match_accepted: true } : {}),
+    ...(history.length > 0 ? { previous_uploads: history } : {}),
+  };
+  input.log(
+    `[ok] already-on-channel: ${v.url} (${v.title || "sem título"}) já está no canal, reconhecido por ${v.matchedBy}, estado ${state} — nada enviado. ` +
+      "Se não for o vídeo desta edição, rode de novo com --force (cria OUTRO vídeo no canal).",
+  );
+  try {
+    mkdirSync(dirname(recordPath), { recursive: true });
+    writeFileAtomic(recordPath, JSON.stringify(record, null, 2) + "\n");
+  } catch (we) {
+    input.log(`[aviso] registro do vídeo existente não gravado em ${recordPath}: ${(we as Error).message}`);
+    return { exitCode: 0, record, skipped: true };
+  }
+  const videoUrlWritten = writeD1VideoUrlAfterUpload(input.editionDir, record, input.d1SlotAt ?? null, input.log, !plan.effective.auditBlocked);
+  return { exitCode: 0, record, skipped: true, videoUrlWritten };
+}
+
+/**
+ * #11132: o único sinal foi o período (vídeo no dia BRT da edição, sem AAMMDD,
+ * `utm_campaign` nem o título do D1). Pode ser uma live ou um vídeo avulso:
+ * gravar o registro poria esse link no D1 de X, Threads e Facebook, e subir por
+ * cima poderia duplicar um upload manual. Não envia, não grava registro nem
+ * link; exit 1 com as duas saídas para o editor.
+ */
+function unconfirmedPeriodMatch(e: ExistingEditionVideoError, input: RunUploadInput, plan: YouTubePublishPlan): RunUploadOutcome {
+  const v = e.video;
+  input.log(
+    `[erro] há um vídeo no canal no dia da edição ${plan.aammdd} que não traz a marca dela (${v.url}, "${v.title || "sem título"}", ` +
+      `publicado/agendado ${v.status?.publishAt ?? v.publishedAt ?? "sem data"}) — reconhecido só pelo período, sem AAMMDD, utm_campaign nem o título do D1. ` +
+      "Nada foi enviado nem gravado (o link não vai para o D1). Confira no YouTube Studio: se for o vídeo desta edição, rode de novo com " +
+      "--accept-period-match (registra e põe o link no D1); se não for, rode com --force (sobe o vídeo da edição).",
+  );
+  return { exitCode: 1, record: null, skipped: false };
 }
 
 /**
@@ -468,9 +552,15 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
       video,
       contentType: "video/mp4",
       thumbnail,
+      // #11080: --force sobe de novo de propósito; sem ele, confere o canal antes.
+      ...(input.force ? {} : { existingVideoCheck: { aammdd: plan.aammdd, title: plan.metadata.title } }),
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
     });
   } catch (e) {
+    if (e instanceof ExistingEditionVideoError) {
+      if (e.video.matchedBy === "period" && !input.acceptPeriodMatch) return unconfirmedPeriodMatch(e, input, plan);
+      return recordExistingVideo(e, input, plan, recordPath, history, deps.now());
+    }
     const step = e instanceof YouTubeUploadError ? e.step : "desconhecida";
     const msg = `${(e as Error).message} (etapa ${step})`;
     if (!isIndeterminateUploadFailure(e)) {
@@ -551,7 +641,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -568,6 +658,11 @@ async function main(): Promise<number> {
         ? "publish-youtube: --dry-run e --upload são exclusivos."
         : "publish-youtube: escolha o modo — --dry-run (só o plano) ou --upload (envio real; sem a auditoria do YouTube API Services o vídeo sai private, #10659).",
     );
+    console.error(USAGE);
+    return 2;
+  }
+  if (flags.has("accept-period-match") && (!upload || flags.has("force"))) {
+    console.error("publish-youtube: --accept-period-match só vale com --upload e sem --force (o --force pula a conferência do canal).");
     console.error(USAGE);
     return 2;
   }
@@ -607,6 +702,7 @@ async function main(): Promise<number> {
     editionDir: dir,
     env: process.env,
     force: flags.has("force"),
+    acceptPeriodMatch: flags.has("accept-period-match"),
     readFile: (p) => readFileSync(p),
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),

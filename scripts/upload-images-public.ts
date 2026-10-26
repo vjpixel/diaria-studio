@@ -46,7 +46,8 @@ import {
 } from "./lib/use-melhor-slide-files.ts"; // #9568 — slides do 4º post (módulo folha: use-melhor-carousel.ts fecharia ciclo via weekly-flat-card.ts)
 // #10834: só o TIPO (apagado na compilação) — o valor vem por import dinâmico em `uploadPublicImages`.
 import type { UseMelhorCarouselRefresh } from "./gen-carousel-cards.ts";
-import { D1_PLAY_HERO_FILE, D1_PLAY_IMAGE_KEY } from "./lib/diaria/d1-video-hero.ts"; // #10784
+import { D1_PLAY_HERO_FILE, D1_PLAY_IMAGE_KEY, D1_PLAY_STAMP_FILE } from "./lib/diaria/d1-video-hero.ts"; // #10784
+import { D1_NO_VIDEO_MARKER_FILE, isNoVideoEdition } from "./lib/diaria/d1-no-video.ts"; // #11125
 import type { D1PlayImageResult } from "./lib/diaria/d1-play-image.ts"; // #10784 (sharp só carrega via import dinâmico)
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -587,9 +588,24 @@ export async function uploadPublicImages(
     specs = imageSpecsFor(mode, editionDir, { useMelhorSlots });
   }
 
-  // #10784: a cópia do hero do D1 com play é derivada — (re)gera antes do
-  // upload sempre que o hero mudou. Fail-soft: sem a cópia, a newsletter usa o
-  // hero sem play (ainda com link pro vídeo/canal).
+  // #11125: edição marcada como sem vídeo (`_internal/no-video.json`) — a
+  // cópia com o convite não é gerada nem sobe, e a que sobrou de uma rodada
+  // anterior (com o carimbo) sai do disco; a chave `d1_play` sai do cache logo
+  // abaixo. Sem isso, cada upload em modo newsletter regerava o convite.
+  const noVideo = mode !== "social" && isNoVideoEdition(editionDir);
+  if (noVideo) {
+    specs = specs.filter((s) => s.key !== D1_PLAY_IMAGE_KEY);
+    rmSync(resolve(editionDir, D1_PLAY_HERO_FILE), { force: true });
+    rmSync(resolve(editionDir, D1_PLAY_STAMP_FILE), { force: true });
+    console.error(
+      `upload-images-public: edição sem vídeo (${D1_NO_VIDEO_MARKER_FILE}) — D1 sai com o hero puro, sem convite nem link (#11125).`,
+    );
+  }
+
+  // #10784: a cópia do hero do D1 com o convite escrito é derivada — (re)gera
+  // antes do upload sempre que o hero mudou. Fail-soft: sem a cópia, a
+  // newsletter usa o hero original SEM link pro vídeo/canal (#10995 —
+  // `d1VideoHeroFields` devolve `{}`).
   if (mode !== "social" && specs.some((s) => s.key === D1_PLAY_IMAGE_KEY)) {
     const ensure =
       opts.ensureD1PlayImage ??
@@ -603,7 +619,7 @@ export async function uploadPublicImages(
       play = { status: "failed", path: null, reason: (e as Error).message };
     }
     if (play.status === "failed") {
-      const msg = `cópia do hero do D1 com play NÃO gerada (${play.reason}) — a newsletter sai com o hero sem o ícone (#10784)`;
+      const msg = `cópia do hero do D1 com o convite NÃO gerada (${play.reason}) — a newsletter sai com o hero original SEM link pro vídeo/canal (#10784, #10995)`;
       console.error(`upload-images-public: ${msg}`);
       warnings.push(msg);
     } else if (play.status === "generated") {
@@ -622,6 +638,8 @@ export async function uploadPublicImages(
   // sumiam e a newsletter quase saiu sem capa (260605).
   const existing = mergeBaseFromCache(cachePath); // snapshot imutável (reuse + cloudflare_url lookup)
   const images: Record<string, PublicImage> = { ...existing }; // base mutável do merge
+  // #11125: sem vídeo, a URL da cópia com o convite não pode sobrar no cache.
+  if (noVideo) delete images[D1_PLAY_IMAGE_KEY];
 
   // #1865: uploaders injetáveis (default = reais). Testes stubbam pra exercitar
   // o merge sem rede.

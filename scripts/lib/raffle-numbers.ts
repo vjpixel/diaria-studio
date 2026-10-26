@@ -280,6 +280,59 @@ function differingWrongTokens(
   );
 }
 
+/** (#11056) Distância de Levenshtein simples (strings curtas: tokens de typo). */
+function editDistance(a: string, b: string): number {
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j]!;
+      prev[j] = Math.min(prev[j]! + 1, prev[j - 1]! + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length]!;
+}
+
+/** (#11056) Teto de tokens do corpo limpo pra valer o match "reply terse". */
+const TERSE_REPLY_MAX_TOKENS = 8;
+
+/**
+ * (#11056) wrong_value de PALAVRA ÚNICA em minúscula pura ("Amazom") — não passa
+ * no check de token distintivo (#8877). Aceita quando (1) o corpo limpo (sem
+ * citação/assinatura) é curto (reply terse), (2) o token aparece nele como
+ * palavra inteira e (3) o token é um TYPO plantado: >=5 chars, só letras, não
+ * stopword e a 1-2 edições de algum token CAPITALIZADO do correct_value (nome
+ * próprio/marca; sem ser igual a ele). Palavra comum que o editor trocou por outra (distância grande) segue
+ * exigindo contexto — evita o falso positivo que o #8877 queria evitar.
+ */
+function isTerseSingleWordTypoHit(
+  error: IntentionalErrorForMatch,
+  bodyNorm: string,
+): boolean {
+  if (!error.wrong_value || !error.correct_value) return false;
+  const wrongTokens = normalizePhrase(error.wrong_value).split(" ").filter(Boolean);
+  if (wrongTokens.length !== 1) return false;
+  const wrong = wrongTokens[0]!;
+  if (wrong.length < 5 || !/^[a-z]+$/.test(wrong) || STOPWORDS.has(wrong)) return false;
+  const bodyTokens = bodyNorm.split(/[^a-z0-9]+/).filter(Boolean);
+  if (bodyTokens.length === 0 || bodyTokens.length > TERSE_REPLY_MAX_TOKENS) return false;
+  if (!bodyTokens.includes(wrong)) return false;
+  // Só nome próprio/marca (token do correct_value com inicial MAIÚSCULA no
+  // original): "Amazom" vs "Amazon" é typo plantado; "milhões" vs "bilhões" são
+  // duas palavras reais a 1 edição — sem dicionário, a inicial maiúscula é o
+  // que separa os dois casos (guard do #9792 "só um dos dois, sem contexto").
+  return error.correct_value
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => /^\p{Lu}/u.test(t))
+    .map((t) => normalizePhrase(t))
+    .some((c) => {
+      const d = editDistance(wrong, c);
+      return d >= 1 && d <= 2;
+    });
+}
+
 export function matchesIntentionalError(
   replyBody: string,
   error: IntentionalErrorForMatch,
@@ -320,6 +373,10 @@ export function matchesIntentionalError(
   // ele aparece como palavra inteira na reply (fora da citação), é acerto — a
   // reply está citando exatamente o texto errado que o editor plantou.
   if (hasDistinctiveCorrectMatch(error.wrong_value, bodyNorm)) return true;
+
+  // #11056: reply terse com wrong_value de palavra única que é typo do
+  // correct_value ("Amazom" -> "Amazon"), mesmo sem token distintivo.
+  if (isTerseSingleWordTypoHit(error, bodyNorm)) return true;
 
   // #9792: wrong_value de VÁRIAS palavras citado inteiro ("Hugging Race") é
   // prova de acerto mesmo sem token distintivo — a sequência exata plantada

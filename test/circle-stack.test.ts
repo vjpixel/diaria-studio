@@ -64,9 +64,9 @@ describe("buildStackPostPayload", () => {
   it("monta titulo/corpo", () => {
     assert.deepEqual(buildStackPostPayload("T", "**x**"), { titulo: "T", corpo: "**x**" });
   });
-  it("recusa vazio, HTML e imagem (o webhook remove/recusa)", () => {
+  it("recusa vazio e imagem; `<` solto é escapado, não derruba a prévia (#10977)", () => {
     assert.throws(() => buildStackPostPayload(" ", "x"), /Título/);
-    assert.throws(() => buildStackPostPayload("T", "<p>x</p>"), /HTML/);
+    assert.equal(buildStackPostPayload("T", "<p>x</p>").corpo, "\\<p>x\\</p>");
     assert.throws(() => buildStackPostPayload("T", "![a](https://x/a.png)"), /imagem/);
   });
 });
@@ -79,7 +79,7 @@ describe("sendStackPost", () => {
       return new Response(body, { status });
     }) as unknown as typeof fetch;
   }
-  const payload = { titulo: "T", corpo: "c" };
+  const payload = buildStackPostPayload("T", "c");
 
   it("200 com ok:true é sucesso e manda a chave no header", async () => {
     const seen: RequestInit[] = [];
@@ -277,7 +277,7 @@ describe("selectCircleStack", () => {
       cand({ url: "https://a.com/1", kind: "destaque", section: "destaque", title: "n8n 2.0" }),
       cand({ url: "https://a.com/1", section: "radar", title: "n8n 2.0" }),
       cand({ section: "lancamentos", title: "Modelo de imagem" }),
-      cand({ section: "lancamentos", title: "Replit Agent" }),
+      cand({ url: "https://blog.replit.com/agent", section: "lancamentos", title: "Replit Agent" }),
       cand({ url: "https://diar.ia.br/p/x", section: "radar", title: "Claude Code" }),
     ]);
     assert.deepEqual(picks.lancamentos.map((c) => c.title), ["Replit Agent"]);
@@ -341,7 +341,7 @@ describe("task semanal Diaria-Circle-Stack-Weekly-Preview (#10904)", () => {
 });
 
 describe("publishCircleStackCycle — idempotência em dois tempos (#10904)", () => {
-  const payload = { titulo: "Radar Stack", corpo: "corpo" };
+  const payload = buildStackPostPayload("Radar Stack", "corpo");
   const fixedNow = () => new Date("2026-10-26T10:30:00.000Z");
   const fresh = () => join(mkdtempSync(join(tmpdir(), "circle-stack-pub-")), "circle-stack-published.json");
   const base = (statePath: string, send: (p: typeof payload) => Promise<void>, force = false) => ({

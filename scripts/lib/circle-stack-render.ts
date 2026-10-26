@@ -48,9 +48,17 @@ export interface CircleStackItem {
   editionDate: string;
   url: string;
   title: string;
+  /** Título como veio da edição (#11005), para auditoria quando `title` foi traduzido. */
+  titleOriginal?: string;
   body: string;
   why: string;
   stackNote?: string;
+  /**
+   * Posição do destaque na edição de origem (1..3). Quando presente, o link
+   * "Na edição de DD/MM" vai direto ao destaque (`/p/{slug}#dN`, #11003) em
+   * vez do topo da página. Ausente (seleção antiga, item de seção) = topo.
+   */
+  destaqueN?: number;
 }
 
 export interface CircleStackEdition {
@@ -94,6 +102,19 @@ export function buildCircleStackUrl(baseUrl: string, cycle: string, content: Cir
   u.searchParams.set("utm_medium", CIRCLE_STACK_UTM_MEDIUM);
   u.searchParams.set("utm_campaign", circleStackCampaign(cycle));
   u.searchParams.set("utm_content", content);
+  return u.toString();
+}
+
+/**
+ * Pure: aponta a URL da edição para o destaque N (`#dN`, âncora gravada por
+ * `site-destaque-anchors.ts`, #11003). Fora de 1..3 devolve a URL intacta —
+ * âncora inexistente só deixaria o leitor no topo, mas não há por que gravar
+ * um fragmento que a página não tem.
+ */
+export function withDestaqueAnchor(url: string, destaqueN: number | undefined): string {
+  if (destaqueN === undefined || !Number.isInteger(destaqueN) || destaqueN < 1 || destaqueN > 3) return url;
+  const u = new URL(url);
+  u.hash = `d${destaqueN}`;
   return u.toString();
 }
 
@@ -153,6 +174,10 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
     // Título com link para a fonte, como na newsletter; sem "Leia na fonte"/"Na edição de" (pedido do editor, 23/10/2026).
     blocks.push(`### ${link(h.url, h.title)}`);
     blocks.push(...paragraphs(h.body));
+    // #11068 (decisão do editor, 26/10/2026): aqui o `why` vai cru de propósito.
+    // Ele aparece ROTULADO ("Por que isso importa:"), e o padrão de resumo da
+    // #11062 (weekly-summary-writer) só vale onde o texto aparece sem rótulo,
+    // como a legenda da retro semanal (format-weekly-social.ts).
     if (h.why.trim()) blocks.push(`**Por que isso importa:**`, ...paragraphs(h.why));
   }
 

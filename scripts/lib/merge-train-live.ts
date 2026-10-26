@@ -68,6 +68,7 @@ import {
   buildTrainPrBody,
   buildTrainMergeCommitTitle,
   buildTrainMergeCommitBody,
+  computeTrainGateLabels,
   type TrainBatch,
   type TrainPrInfo,
 } from "./merge-train.ts";
@@ -223,13 +224,13 @@ export function screenTrainPrs(runner: TrainRunner, prNumbers: number[], discove
  * ele fecha do próprio corpo (`parseClosesIssues`, mesmo parser que
  * `buildTrainPrBody`/`buildTrainMergeCommitBody` consomem via `TrainPrInfo`). */
 export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPrInfo {
-  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body"]);
+  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body,labels,files,changedFiles"]);
   if (!res.ok) throw new Error(`fetchTrainPrInfo: gh pr view falhou pro PR #${prNumber}: ${res.stderr}`);
   const parsed: unknown = JSON.parse(res.stdout);
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(`fetchTrainPrInfo: PR #${prNumber} — JSON inesperado de gh pr view`);
   }
-  const p = parsed as { number: number; headRefName: string; title: string; body: string };
+  const p = parsed as { number: number; headRefName: string; title: string; body: string; labels?: unknown; files?: unknown; changedFiles?: unknown };
   return {
     pr: p.number,
     headRefName: p.headRefName,
@@ -237,7 +238,54 @@ export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPr
     issueNumbers: parseClosesIssues(p.body ?? ""),
     refsIssueNumbers: parseRefsIssues(p.body ?? ""),
     removalDeclaration: extractRemovalDeclaration(p.body ?? ""),
+    labels: parseLabelNames(p.labels),
+    changedFiles: parseChangedFiles(p.files, p.changedFiles),
   };
+}
+
+/** `labels` de `gh pr view --json labels` → nomes; shape inesperado = não lidas (#11019). */
+function parseLabelNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const names = raw.map((l) => (typeof l === "object" && l !== null ? (l as { name?: unknown }).name : undefined));
+  return names.every((n): n is string => typeof n === "string") ? names : undefined;
+}
+
+/**
+ * `files` de `gh pr view --json files` → paths (#11019). O `gh` traz no máximo
+ * 100 arquivos: com menos itens que `changedFiles` a lista é incompleta e
+ * vira `null`, que `computeTrainGateLabels` trata como "precisa da label".
+ */
+function parseChangedFiles(raw: unknown, total: unknown): string[] | null | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const paths = raw.map((f) => (typeof f === "object" && f !== null ? (f as { path?: unknown }).path : undefined));
+  if (!paths.every((x): x is string => typeof x === "string")) return null;
+  if (typeof total !== "number" || paths.length < total) return null;
+  return paths;
+}
+
+/**
+ * Aplica ao PR-trem as labels de gate herdadas do lote (#11019,
+ * `computeTrainGateLabels`). Via `gh-pr-safe-edit.ts --add-label` (REST +
+ * releitura), nunca `gh pr edit --add-label`, que não aplica label (#10429).
+ * Chamada logo depois do `gh pr create`: os workflows dos gates rodam também
+ * em `labeled`, e a run nova cancela a do `opened` (o rollup descarta a
+ * `CANCELLED` substituída, `pr-checks-gate.ts`). Falha não é fatal: o
+ * PR-trem só reprova como reprovaria antes, e o aviso fica no log.
+ */
+export function applyTrainGateLabels(
+  runner: TrainRunner,
+  trainPrNumber: number,
+  batch: TrainBatch,
+  prInfos: readonly TrainPrInfo[],
+): readonly string[] {
+  const { labels } = computeTrainGateLabels(batch, prInfos);
+  if (labels.length === 0) return [];
+  const res = runner.exec("npx", ["tsx", "scripts/lib/gh-pr-safe-edit.ts", "--pr", String(trainPrNumber), "--add-label", labels.join(",")]);
+  if (!res.ok) {
+    runner.warn(`não consegui aplicar ${labels.join(", ")} ao PR-trem #${trainPrNumber} (#11019) — o gate pode reprovar o lote: ${res.stderr.trim() || res.stdout.trim() || "sem saída"}`);
+    return [];
+  }
+  return labels;
 }
 
 /**
@@ -717,7 +765,12 @@ export interface MergeSoloOptions {
  * direto sob o mesmo merge lock, confirmando via estado real (#573).
  * Reusa a própria mensagem do PR (`gh pr merge --squash` sem
  * `--subject`/`--body` customizado) — diferente de `mergeTrainBatch`, que
- * PRECISA de mensagem custom porque combina >1 PR num commit só. */
+ * PRECISA de mensagem custom porque combina >1 PR num commit só.
+ *
+ * Confia no CI do PR rodado sobre a base em que ele foi aberto — por isso
+ * `runMergeTrain` NUNCA chama esta função pra um PR que esteve num lote
+ * vermelho (#10997): esse PR é revalidado sobre a base atual pelo caminho
+ * do lote (PR-trem de 1). */
 export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSoloOptions): MergeTrainBatchResult {
   const gate = revalidateGate2(runner, prNumber);
   if (!gate.ok) {
@@ -831,7 +884,12 @@ const RECONFIRM_DELAY_MS = 15_000;
  * Orquestrador de topo — fila de lotes começando pelo lote inicial
  * (tipicamente a saída de `composeTrainBatches`, um item por lote). Cada
  * lote de tamanho 1 degrada pro merge solo (piso da bissecção = caminho
- * de hoje). Lote de tamanho ≥2: monta a integração (worktree isolado),
+ * de hoje) — EXCETO o PR que já esteve num lote de CI vermelho/timeout
+ * (#10997): esse lote provou que a base atual + algum dos seus PRs quebra,
+ * então o CI verde do PR sobre a base antiga não vale; o PR sozinho passa
+ * pela integração + PR-trem + CI sobre `origin/{base}` fresco (a
+ * "revalidação da base" do #10927) e, se esse CI reprovar ou não montar,
+ * termina `solo-failed` sem merge. Lote de tamanho ≥2: monta a integração (worktree isolado),
  * abre o PR-trem, espera 1 run de CI; verde → merge de verdade (1 commit
  * squash, `Closes` de todas as issues do lote, com retry bounded se só o
  * lock estiver negado) + fecha as PRs originais; vermelho → RECONFIRMA
@@ -867,12 +925,34 @@ export async function runMergeTrain(
   const outcomes: TrainBatchOutcome[] = [];
   const queue: TrainBatch[] = [initialBatch];
   let seq = 0;
+  // #10997: PRs que estiveram num lote cujo CI voltou VERMELHO (confirmado)
+  // ou estourou o timeout. O lote vermelho é evidência de que a base atual
+  // + algum desses PRs quebra — o CI verde do próprio PR (rodado sobre a
+  // base ANTIGA) já não prova nada. No piso da bissecção, um PR deste
+  // conjunto nunca vai pro `mergeSoloPr` (que confia nesse CI velho):
+  // passa pelo mesmo caminho do lote (branch de integração sobre
+  // `origin/{base}` fresco + PR-trem + CI) e só mergeia com esse CI verde.
+  // Foi o que deixou master vermelha na rodada 261023 (PR #10954).
+  const needsBaseRevalidation = new Set<number>();
+
+  /** Lote que não pode seguir: bissecta (>=2) ou, no piso, vira `solo-failed`
+   * terminal — `bisectBatch` lança em lote de 1, e um PR sozinho que falha
+   * sobre a base atual não tem metade "boa" pra isolar. */
+  const failOrBisect = (batch: TrainBatch, detail: string): void => {
+    if (batch.prs.length === 1) {
+      outcomes.push({ batch, status: "solo-failed", detail: `${detail} — PR sozinho sobre a base atual, sem merge (#10997)` });
+      return;
+    }
+    const [left, right] = bisectBatch(batch);
+    queue.push(left, right);
+    outcomes.push({ batch, status: "abandoned", detail: `${detail}, bissectando` });
+  };
 
   while (queue.length > 0) {
     const batch = queue.shift();
     if (!batch || batch.prs.length === 0) continue; // defensivo — nunca deveria acontecer (bisectBatch nunca produz lote vazio)
 
-    if (batch.prs.length === 1) {
+    if (batch.prs.length === 1 && !needsBaseRevalidation.has(batch.prs[0])) {
       const pr = batch.prs[0];
       const result = mergeSoloPr(runner, pr, opts);
       const soloStatus = result.ok
@@ -895,9 +975,7 @@ export async function runMergeTrain(
       // mas ainda assim é um diretório temp e uma branch local que não
       // devem sobreviver além deste lote.
       cleanupIntegrationBranch(runner, integ.branchName, integ.worktreePath, mainCwd);
-      const [left, right] = bisectBatch(batch);
-      queue.push(left, right);
-      outcomes.push({ batch, status: "abandoned", detail: `integração falhou, bissectando: ${integ.error}` });
+      failOrBisect(batch, `integração falhou (${integ.error})`);
       continue;
     }
 
@@ -906,11 +984,10 @@ export async function runMergeTrain(
       trainPrNumber = openTrainPr(runner, branchName, baseBranch, buildTrainPrTitle(batch), buildTrainPrBody(batch, prInfos));
     } catch (err) {
       cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
-      const [left, right] = bisectBatch(batch);
-      queue.push(left, right);
-      outcomes.push({ batch, status: "abandoned", detail: `abrir PR-trem falhou, bissectando: ${err instanceof Error ? err.message : String(err)}` });
+      failOrBisect(batch, `abrir PR-trem falhou (${err instanceof Error ? err.message : String(err)})`);
       continue;
     }
+    applyTrainGateLabels(runner, trainPrNumber, batch, prInfos); // #11019
 
     const verdict = await pollTrainCi(runner, trainPrNumber, { timeoutMs: ciTimeoutMs, intervalMs: ciPollIntervalMs });
 
@@ -939,7 +1016,14 @@ export async function runMergeTrain(
         runner.exec("gh", ["pr", "close", String(trainPrNumber)]);
       }
       cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
-      if (mergeResult.ok) {
+      if (mergeResult.ok && batch.prs.length === 1) {
+        // #10997: PR sozinho revalidado sobre a base atual (veio de um lote vermelho).
+        outcomes.push({
+          batch,
+          status: "solo-merged",
+          detail: mergeResult.error ?? `revalidado sobre a base atual (PR-trem #${trainPrNumber}, CI verde) e squash-mergeado (#10997)`,
+        });
+      } else if (mergeResult.ok) {
         outcomes.push({ batch, status: "merged", detail: mergeResult.error ?? `PR-trem #${trainPrNumber} squash-mergeado` });
       } else if (mergeResult.retidoPr !== undefined) {
         // #10294: 1 PR do lote ficou retido para o editor DEPOIS da
@@ -1010,12 +1094,12 @@ export async function runMergeTrain(
     }
 
     // Vermelho confirmado nas 2 execuções, ou timeout — descarta o PR-trem
-    // (nunca mergear por engano) e o worktree, bissecta.
+    // (nunca mergear por engano) e o worktree, bissecta. Todo PR do lote
+    // passa a exigir CI sobre a base atual até o merge (#10997).
     runner.exec("gh", ["pr", "close", String(trainPrNumber)]);
     cleanupIntegrationBranch(runner, branchName, integ.worktreePath, mainCwd);
-    const [left, right] = bisectBatch(batch);
-    queue.push(left, right);
-    outcomes.push({ batch, status: "abandoned", detail: `CI do lote: ${finalVerdict}${reconfirmNote} — bissectando` });
+    for (const pr of batch.prs) needsBaseRevalidation.add(pr);
+    failOrBisect(batch, `CI do lote: ${finalVerdict}${reconfirmNote}`);
   }
 
   return outcomes;

@@ -16,6 +16,8 @@ import {
   bisectBatch,
   worstCaseCiRuns,
   parseClosesIssues,
+  parseRefsIssues,
+  stripNonMarkerContext,
   buildTrainPrTitle,
   buildTrainPrBody,
   buildTrainMergeCommitTitle,
@@ -383,5 +385,69 @@ describe("summarizeTrainCiRuns — antes/depois de runs de CI (#6300, último cr
     assert.equal(s.ciRunsUsed, 1);
     assert.equal(s.prsInvolvedInBatches, 2);
     assert.equal(s.issuesInvolvedInBatches, 1); // só a issue 10, do PR 1 — PR 999 não tem info
+  });
+});
+
+describe("parseClosesIssues — só marcador real fecha, menção em crase/bloco/citação não (#10989, regressão #633)", () => {
+  it("cenário real da PR #10886: keyword dentro de code span não vira fechamento", () => {
+    const body = [
+      "Corrige o squash do trem: antes o commit tinha `Closes #10695, #10775, #10799` numa linha só.",
+      "O teste novo cobre asserções de `Closes #10, #11, #12`.",
+      "",
+      "Closes #10878",
+    ].join("\n");
+    assert.deepEqual(parseClosesIssues(body), [10878]);
+  });
+
+  it("o commit squash do trem montado a partir desse corpo só fecha a issue de verdade", () => {
+    const body = "Antes saía `Closes #10695, #10775`.\n\nCloses #10878";
+    const info: TrainPrInfo = { pr: 1, headRefName: "a", title: "a", issueNumbers: parseClosesIssues(body) };
+    const commit = buildTrainMergeCommitBody({ prs: [1] }, [info]);
+    assert.deepEqual(parseClosesIssues(commit), [10878]);
+    assert.doesNotMatch(commit, /#10695|#10775/);
+  });
+
+  it("bloco de código cercado (``` e ~~~) é ignorado, inclusive cerca sem fechamento", () => {
+    assert.deepEqual(parseClosesIssues("```\nCloses #1\n```\nCloses #2"), [2]);
+    assert.deepEqual(parseClosesIssues("~~~md\nfixes #3\n~~~\nresolves #4"), [4]);
+    assert.deepEqual(parseClosesIssues("Closes #5\n````\n```\nCloses #6\n````\nCloses #7"), [5, 7]);
+    assert.deepEqual(parseClosesIssues("Closes #8\n```\nCloses #9"), [8]);
+  });
+
+  it("code span com crase dupla e linha citada (>) são ignorados", () => {
+    assert.deepEqual(parseClosesIssues("``a `Closes #1` b`` e Closes #2"), [2]);
+    assert.deepEqual(parseClosesIssues("> Closes #3\nCloses #4"), [4]);
+  });
+
+  it("comentário HTML é ignorado", () => {
+    assert.deepEqual(parseClosesIssues("<!-- Closes #1 -->\nCloses #2"), [2]);
+  });
+
+  it("marcador real em prosa e várias linhas de keyword continuam valendo", () => {
+    assert.deepEqual(parseClosesIssues("Closes #10\ncloses #11\nEste PR fixes #12 também."), [10, 11, 12]);
+    assert.deepEqual(parseClosesIssues("- Closes #20\n- Closes #21"), [20, 21]);
+  });
+
+  it("crase solta sem par não esconde o marcador que vem depois", () => {
+    assert.deepEqual(parseClosesIssues("um ` solto\nCloses #30"), [30]);
+  });
+
+  it("#11049: crase solta num parágrafo não forma span com crase de outro parágrafo e apaga o Closes", () => {
+    const body = "Ajusta o `foo\n\nCloses #123\n\nUsa `bar` aqui";
+    assert.deepEqual(parseClosesIssues(body), [123]);
+    assert.equal(stripNonMarkerContext(body).split("\n").length, body.split("\n").length);
+  });
+
+  it("#11049: code span dentro do MESMO parágrafo (inclusive multilinha) continua sendo removido", () => {
+    assert.deepEqual(parseClosesIssues("veja `Closes #1\nCloses #2` e pronto\n\nCloses #3"), [3]);
+  });
+
+  it("parseRefsIssues também ignora menção dentro de crase", () => {
+    assert.deepEqual(parseRefsIssues("Exemplo: `REFS #1, NÃO CLOSES`.\nREFS #2, NÃO CLOSES (parcial)"), [2]);
+  });
+
+  it("stripNonMarkerContext preserva o número de linhas", () => {
+    const body = "a\n```\nb\n```\n> c\nd";
+    assert.equal(stripNonMarkerContext(body).split("\n").length, body.split("\n").length);
   });
 });

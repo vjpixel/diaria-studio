@@ -34,6 +34,13 @@
  * e `scripts/run-merge-train.ts` (CLI executável) pra implementação.
  */
 
+// #11019: as regras de QUEM precisa de cada label de gate vêm dos próprios
+// gates (sem duplicar a lógica). Os dois módulos guardam o `main()` atrás de
+// `isMainModule`, então importar daqui não executa nada.
+import { AGENT_EVAL_LABEL } from "../check-agent-eval-required.ts";
+import { hasNewOrModifiedTest, isBugfixPr } from "../check-pr-bugfix.ts";
+import { AGENT_FILE_RE, classifyAgentEvalEligibility } from "./agent-eval-trigger-allowlist.ts";
+
 export interface TrainCandidate {
   /** Número do PR — só usado como identidade/ordem, nunca interpretado. Único dentro de um mesmo `candidates[]` (ver guard em `composeTrainBatches`). */
   pr: number;
@@ -195,6 +202,82 @@ export interface TrainPrInfo {
    * quando cada PR sozinha passou.
    */
   readonly removalDeclaration?: string | null;
+  /**
+   * Labels do PR original (#11019). Ausente = não lidas — tratado como "não
+   * tem nenhuma label de gate" (nunca herda o que não foi visto).
+   */
+  readonly labels?: readonly string[];
+  /**
+   * Arquivos tocados pelo PR original (#11019). `null` = lista incompleta
+   * (`gh pr view --json files` corta em 100) e ausente = não lida: nos dois
+   * casos o PR conta como "precisa da label de gate", o lado conservador.
+   */
+  readonly changedFiles?: readonly string[] | null;
+}
+
+/** Label de exceção do gate de regressão (#633) — mesma string de `hasExceptionLabel` em `check-pr-bugfix.ts`. */
+export const NO_REGRESSION_TEST_LABEL = "no-regression-test";
+
+export interface TrainGateLabelDecision {
+  /** Labels de gate que o PR-trem herda (subconjunto de `agent-eval:passed`, `no-regression-test`). */
+  readonly labels: readonly string[];
+  /** PRs do lote que precisam de `no-regression-test` — citados na justificativa do corpo do PR-trem. */
+  readonly noRegressionTestPrs: readonly number[];
+}
+
+/**
+ * Labels de gate que o PR-trem herda dos PRs do lote (#11019). Sem isso, um
+ * lote com um PR `agent-eval:passed` abria um PR-trem sem a label, o
+ * `Check agent-eval gate` reprovava a COMBINAÇÃO e o trem bissectava até o
+ * piso (PR-trem #11017, rodada 261023) — 2 runs de CI à toa.
+ *
+ * Regra conservadora, por label: o PR-trem só a herda quando pelo menos um
+ * PR do lote precisa dela E TODOS os que precisam a têm. Um único PR que
+ * precisaria e não tem barra a herança — o PR-trem reprova como antes, nunca
+ * passa um gate que um PR do lote não passaria sozinho.
+ *
+ * Quem "precisa":
+ * - `agent-eval:passed`: o PR toca um agent MAPEADO (`AGENT_FILE_RE` +
+ *   `classifyAgentEvalEligibility`, as mesmas peças de
+ *   `check-agent-eval-required.ts`). É mais largo que o gate real (que só
+ *   dispara se mudar corpo ou `model:`): um PR que mexeu só no frontmatter
+ *   sem a label barra a herança — erra pro lado de reprovar, nunca de passar.
+ * - `no-regression-test`: o PR é bugfix (`isBugfixPr`) e não traz teste
+ *   novo/modificado (`hasNewOrModifiedTest`), as funções do
+ *   `check-pr-bugfix.ts`.
+ * Arquivos ou labels não lidos contam como "precisa".
+ */
+export function computeTrainGateLabels(batch: TrainBatch, prInfos: readonly TrainPrInfo[]): TrainGateLabelDecision {
+  const byNumber = new Map(prInfos.map((p) => [p.pr, p]));
+  const evalNeedy: { pr: number; has: boolean }[] = [];
+  const regressionNeedy: { pr: number; has: boolean }[] = [];
+
+  for (const pr of batch.prs) {
+    const info = byNumber.get(pr);
+    const labels = info?.labels;
+    const files = info?.changedFiles;
+    const filesKnown = files !== undefined && files !== null;
+    const has = (label: string): boolean => labels?.includes(label) ?? false;
+
+    const touchesMappedAgent =
+      !filesKnown ||
+      files.some((f) => {
+        const m = AGENT_FILE_RE.exec(f);
+        return m !== null && classifyAgentEvalEligibility(m[1]).status === "mapped";
+      });
+    if (touchesMappedAgent) evalNeedy.push({ pr, has: has(AGENT_EVAL_LABEL) });
+
+    const hasTest = filesKnown && hasNewOrModifiedTest([...files]);
+    const isBugfix = labels === undefined || isBugfixPr(info?.title ?? "", "", [...labels]);
+    if (!hasTest && isBugfix) regressionNeedy.push({ pr, has: has(NO_REGRESSION_TEST_LABEL) });
+  }
+
+  const inherits = (needy: readonly { has: boolean }[]): boolean => needy.length > 0 && needy.every((n) => n.has);
+  const out: string[] = [];
+  if (inherits(evalNeedy)) out.push(AGENT_EVAL_LABEL);
+  const regression = inherits(regressionNeedy);
+  if (regression) out.push(NO_REGRESSION_TEST_LABEL);
+  return { labels: out, noRegressionTestPrs: regression ? regressionNeedy.map((n) => n.pr) : [] };
 }
 
 /**
@@ -206,13 +289,67 @@ export interface TrainPrInfo {
  * squash do trem (`buildTrainMergeCommitBody` abaixo — que NÃO reusa esta
  * função, e sim recebe os números já resolvidos por PR, porque cada PR
  * pode fechar >1 issue e a lista final é a UNIÃO ordenada de todas).
+ *
+ * **Só marcadores reais (#10989).** Desde o #10878 cada número extraído vira
+ * uma linha `Closes #N` própria no squash do trem — ou seja, um FECHAMENTO
+ * de verdade. Keyword dentro de code span (`` `Closes #10` ``), bloco de
+ * código cercado, citação (`> closes #5`) ou comentário HTML é menção, não
+ * marcador: o corpo da PR #10886 citava "tinha `Closes #10695, #10775`" e
+ * "asserções de `Closes #10, #11, #12`" e cada uma teria fechado a issue
+ * citada. O texto passa por `stripNonMarkerContext` antes da regex.
  */
 export function parseClosesIssues(body: string): number[] {
   const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
   const found = new Set<number>();
+  const text = stripNonMarkerContext(body);
   let m: RegExpExecArray | null;
-  while ((m = re.exec(body))) found.add(Number(m[1]));
+  while ((m = re.exec(text))) found.add(Number(m[1]));
   return [...found].sort((a, b) => a - b);
+}
+
+/**
+ * Remove do corpo de PR tudo que é MENÇÃO e não marcador (#10989): blocos de
+ * código cercados (``` ou ~~~, CommonMark: fecha com cerca do mesmo caractere
+ * e comprimento >= o da abertura; cerca sem fechamento vai até o fim do
+ * texto), comentários HTML, linhas citadas (`>`) e code spans inline (run de
+ * crases de comprimento N fechado por run de mesmo comprimento). Cada trecho
+ * removido vira um espaço/linha vazia — nunca cola duas palavras vizinhas
+ * numa keyword nova.
+ *
+ * Fora de escopo de propósito: bloco de código por indentação (4 espaços) —
+ * indistinguível de continuação de item de lista sem um parser completo, e
+ * nenhum corpo de PR do repo o usa pra citar keyword.
+ */
+export function stripNonMarkerContext(body: string): string {
+  const out: string[] = [];
+  let fence: { ch: string; len: number } | null = null;
+  for (const line of body.replace(/<!--[\s\S]*?-->/g, " ").split(/\r?\n/)) {
+    const fm = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fence) {
+      if (fm && fm[1][0] === fence.ch && fm[1].length >= fence.len && line.trim() === fm[1]) fence = null;
+      out.push("");
+      continue;
+    }
+    if (fm) {
+      fence = { ch: fm[1][0], len: fm[1].length };
+      out.push("");
+      continue;
+    }
+    if (/^\s{0,3}>/.test(line)) {
+      out.push("");
+      continue;
+    }
+    out.push(line);
+  }
+  // #11049: code span não cruza fronteira de parágrafo (CommonMark) — remover
+  // por parágrafo, senão uma crase solta casa com a crase de um span legítimo
+  // parágrafos adiante e apaga o `Closes #N` que está no meio. O split com
+  // grupo de captura preserva os separadores (e o número de linhas).
+  return out
+    .join("\n")
+    .split(/(\n[ \t]*\n)/)
+    .map((chunk, i) => (i % 2 === 1 ? chunk : chunk.replace(/(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, " ")))
+    .join("");
 }
 
 /**
@@ -225,8 +362,9 @@ export function parseClosesIssues(body: string): number[] {
 export function parseRefsIssues(body: string): number[] {
   const re = /\brefs?\b[:\s]+((?:#\d+(?:\s*,\s*(?=#)|\s*))+)/gi;
   const found = new Set<number>();
+  const text = stripNonMarkerContext(body); // #10989: menção em crase/citação não é referência
   let m: RegExpExecArray | null;
-  while ((m = re.exec(body))) {
+  while ((m = re.exec(text))) {
     for (const n of m[1].matchAll(/#(\d+)/g)) found.add(Number(n[1]));
   }
   return [...found].sort((a, b) => a - b);
@@ -256,7 +394,23 @@ export function buildTrainPrBody(batch: TrainBatch, prInfos: readonly TrainPrInf
     `${lines.join("\n")}\n\n` +
     `Refs ${batch.prs.map((n) => `#${n}`).join(", ")} — NÃO CLOSES (fechamento acontece no squash-merge deste PR-trem, não aqui).\n\n` +
     `${buildTrainRemovalDeclaration(batch, prInfos)}\n\n` +
+    buildTrainNoRegressionTestLine(batch, prInfos) +
     `Nunca mergear este PR isoladamente por engano — ele É o merge, mas o commit squash usa uma mensagem própria com \`Closes\` pras issues.`
+  );
+}
+
+/**
+ * Justificativa `no-regression-test:` do PR-trem (#11019), presente só quando
+ * ele herda a label (`computeTrainGateLabels`): o gate do #633 exige label E
+ * justificativa no corpo (`justificationInBody`), então herdar só a label
+ * reprovaria do mesmo jeito. Termina em `\n\n` quando presente; vazia senão.
+ */
+export function buildTrainNoRegressionTestLine(batch: TrainBatch, prInfos: readonly TrainPrInfo[]): string {
+  const { noRegressionTestPrs } = computeTrainGateLabels(batch, prInfos);
+  if (noRegressionTestPrs.length === 0) return "";
+  return (
+    `no-regression-test: herdado do lote (#11019) — ${noRegressionTestPrs.map((n) => `#${n}`).join(", ")} ` +
+    `já carregam a label com a justificativa no próprio corpo\n\n`
   );
 }
 

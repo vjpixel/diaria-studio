@@ -1,3 +1,4 @@
+import { findFactRecurrences } from "../fact-recurrence.ts";
 /**
  * Invariants de Stage 4 — Publicação (#1007 Fase 1).
  *
@@ -19,6 +20,7 @@ import { checkIntentionalErrorNotRecentRepeat } from "../intentional-error-repea
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { extractSection, extractDestaqueBlock } from "../extract-section.ts"; // #6064
+import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
@@ -1899,32 +1901,26 @@ function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * #8993: URL editorial de `02-reviewed.md` já apareceu numa edição publicada
- * nos últimos `DEDUP_URL_WINDOW_DAYS` (30) dias (`data/past-editions.md`) —
- * violação da regra invariável "sem links repetidos dos últimos ~30 dias"
- * (context/editorial-rules.md; janela ampliada de 3 edições no #9955). Achado real (edição 260929): o editor
- * inseriu/promoveu um D1 com link que já tinha saído no RADAR da edição
- * anterior durante o gate do Stage 4 — o dedup por URL só roda no Stage 1
- * (`dedup.ts`), então um item que entra ou é promovido DEPOIS desse ponto
- * (edição manual do editor, swap no gate) nunca passa por ele.
- *
- * Reusa `extractUrlsWithLines`/`isNonEditorialHost` (mesmo par que
- * `validate-domain-diversity.ts` usa pra extrair só links EDITORIAIS — exclui
- * rodapé/crédito de imagem/link de casa, ex: *.diar.ia.br, linkedin.com,
- * apoia.se) e `canonicalize`/`extractPastUrlsWithOriginWithinDays` (mesmos helpers do
- * dedup de Stage 1, `scripts/dedup.ts`), pra ficar consistente com o que já
- * é considerado "mesmo link" em todo o resto do pipeline.
- *
- * **Severity "warning" — nunca bloqueia** (mesmo padrão de
- * `has-negative-impact-highlight`/`image-crop-warn` acima): CLAUDE.md proíbe
- * reverter uma escolha editorial pra satisfazer um lint mecânico sem
- * primeiro perguntar/investigar (#7401) — um check gate-blocking aqui
- * forçaria a decisão errada (reverter automaticamente ou travar o Stage 4)
- * justamente no caso em que o editor decidiu deliberadamente repetir o link
- * (ex: atualização de uma história em andamento). O warning aparece no
- * resumo consolidado do gate citando a edição de origem — o editor decide:
- * mantém (override implícito, aprovando o gate normalmente) ou troca o item.
+ * #11083: parágrafo editorial de `02-reviewed.md` (qualquer seção) que parece
+ * repetir um INCIDENTE já coberto nos últimos 30 dias de
+ * `data/past-editions.md`, mesmo com URL e título diferentes. Cada parágrafo
+ * com link vira um item; a heurística (`findFactRecurrences`) exige termo de
+ * incidente nos dois lados e peso de entidades compartilhadas >= 2, ignorando a
+ * palavra que abre cada frase do parágrafo (#11109). Severity "warning": o
+ * editor confirma se é fato novo.
  */
+export function checkFactRecurrence(editionDir: string, pastMd?: string): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const md = readFileSync(file, "utf8");
+  // Each editorial paragraph carries its own link and context, across all sections.
+  const items = md.split(/\n\s*\n/).flatMap(title =>
+    extractUrlsWithLines(title).map(({ url }) => ({ title, url })));
+  return findFactRecurrences(items, pastMd ?? readPastEditionsMd(resolve(ROOT, "data/past-editions.md")), basename(editionDir))
+    .map(w => ({ rule: "fact-recurrence", source_issue: "#11083", severity: "warning" as const, file,
+      message: `Possível mesmo fato: ${w.item_title} (${w.item_url}) vs ${w.matched_edition} “${w.matched_title}”; score=${w.score}, entidades=${w.shared_entities.join(", ")}. ${w.possible_new_fact} Heurístico: o editor confirma a novidade.` }));
+}
+
 export interface DuplicateUrlMatch {
   url: string;
   line: number;
@@ -1964,6 +1960,33 @@ export function findDuplicateUrlsAgainstPastEditions(
   return matches;
 }
 
+/**
+ * #8993: URL editorial de `02-reviewed.md` já apareceu numa edição publicada
+ * nos últimos `DEDUP_URL_WINDOW_DAYS` (30) dias (`data/past-editions.md`) —
+ * violação da regra invariável "sem links repetidos dos últimos ~30 dias"
+ * (context/editorial-rules.md; janela ampliada de 3 edições no #9955). Achado real (edição 260929): o editor
+ * inseriu/promoveu um D1 com link que já tinha saído no RADAR da edição
+ * anterior durante o gate do Stage 4 — o dedup por URL só roda no Stage 1
+ * (`dedup.ts`), então um item que entra ou é promovido DEPOIS desse ponto
+ * (edição manual do editor, swap no gate) nunca passa por ele.
+ *
+ * Reusa `extractUrlsWithLines`/`isNonEditorialHost` (mesmo par que
+ * `validate-domain-diversity.ts` usa pra extrair só links EDITORIAIS — exclui
+ * rodapé/crédito de imagem/link de casa, ex: *.diar.ia.br, linkedin.com,
+ * apoia.se) e `canonicalize`/`extractPastUrlsWithOriginWithinDays` (mesmos helpers do
+ * dedup de Stage 1, `scripts/dedup.ts`), pra ficar consistente com o que já
+ * é considerado "mesmo link" em todo o resto do pipeline.
+ *
+ * **Severity "warning" — nunca bloqueia** (mesmo padrão de
+ * `has-negative-impact-highlight`/`image-crop-warn` acima): CLAUDE.md proíbe
+ * reverter uma escolha editorial pra satisfazer um lint mecânico sem
+ * primeiro perguntar/investigar (#7401) — um check gate-blocking aqui
+ * forçaria a decisão errada (reverter automaticamente ou travar o Stage 4)
+ * justamente no caso em que o editor decidiu deliberadamente repetir o link
+ * (ex: atualização de uma história em andamento). O warning aparece no
+ * resumo consolidado do gate citando a edição de origem — o editor decide:
+ * mantém (override implícito, aprovando o gate normalmente) ou troca o item.
+ */
 function checkNoDuplicateUrlsAgainstPastEditions(editionDir: string): InvariantViolation[] {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   if (!existsSync(reviewedPath)) return [];
@@ -2629,6 +2652,33 @@ function checkCarouselTextOverflow(
   }
   violations.push(...checkUseMelhorCarouselOverflow(editionDir, section, socialPath, useMelhorConfig, ctaOverride));
   return violations;
+}
+
+/**
+ * (#11124) Cada post do `# Curto` de `03-social.md` cabe nos 280 do X, pelo
+ * MESMO peso do Stage 5 (`checkCurtoXWeight` → `computeTwitterWeightedLength`,
+ * URL e `{edition_url}` = 23). O lint `curto-x-weight` (#10180) já roda em
+ * §4c.2b, ANTES do gate; uma reescrita feita DENTRO do gate (loop `ajustar`,
+ * edição puxada do doc, fast-path do painel do Studio) ficava fora dele. Caso
+ * real 261026: o D1 foi reescrito no gate, o `# Curto` do X ficou com 287 e só
+ * o `prep-twitter-posts.ts` do Stage 5 acusou, com o gate já aprovado. Como
+ * invariante, roda no `check-invariants --stage 4` e no
+ * `pipeline-sentinel.ts write --step 4`, que recusa o sentinel com o post
+ * estourado, qualquer que tenha sido o caminho da edição.
+ */
+function checkCurtoXWeightInvariant(editionDir: string): InvariantViolation[] {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+  const report = checkCurtoXWeight(readFileSync(socialPath, "utf8"));
+  return report.errors.map((e) => ({
+    rule: "curto-x-weight",
+    message:
+      `${e.message} Encurtar só esse post em 03-social.md (edição cirúrgica, #495) e regravar o ` +
+      `selo do humanizador (check-humanizer-social.ts --write) antes de aprovar.`,
+    source_issue: "#11124",
+    severity: "error",
+    file: socialPath,
+  }));
 }
 
 /**
@@ -3755,6 +3805,10 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkHasNegativeImpactHighlight,
   },
   {
+    id: "fact-recurrence", description: "Possível mesmo fato em todas as seções (heurístico, warning-only)",
+    source_issue: "#11083", stage: 4, run: checkFactRecurrence,
+  },
+  {
     id: "no-duplicate-urls-vs-past-editions",
     description:
       "URL editorial de 02-reviewed.md repetida contra os últimos ~30 dias de edições (past-editions.md, #9955) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only)",
@@ -3846,6 +3900,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#6078",
     stage: 4,
     run: (editionDir) => checkCarouselTextOverflow(editionDir),
+  },
+  {
+    id: "curto-x-weight",
+    description: "post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180)",
+    source_issue: "#11124",
+    stage: 4,
+    run: checkCurtoXWeightInvariant,
   },
   {
     id: "use-melhor-post-item-rendered",
@@ -3961,6 +4022,7 @@ export {
   checkCarouselUploadIncomplete,
   checkCarouselUploadStale,
   checkCarouselTextOverflow,
+  checkCurtoXWeightInvariant,
   checkUseMelhorPostItemRendered,
   checkUseMelhorPublicImageKeysHaveFiles,
   checkUseMelhorCarouselStaleAtGate,

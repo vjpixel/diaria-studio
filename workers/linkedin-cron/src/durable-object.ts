@@ -1,5 +1,5 @@
 import type { QueueEntry, ReelsContainerRef } from "./index";
-import { CLAIM_TTL_MS } from "./index";
+import { CLAIM_TTL_MS, sameQueueContent } from "./index";
 import { fireQueueEntry, pickReelsContainer, type InstagramCreds, type ThreadsCreds, type LinkedInCreds } from "./dispatch";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
@@ -59,10 +59,19 @@ export interface DoStoredPayload {
  * Protocol interno (fetch ao DO):
  *   POST /arm     body: DoStoredPayload + { scheduledAtMs: number }
  *                 → persiste payload, agenda alarm, retorna { armed: true }
+ *                 → 409 { armed: false, fired: true } se o DO já disparou (#10992)
+ *                 → 409 { armed: false, claiming: true } durante claim ativo (#11035)
+ *                 → apaga `reels_container` se o conteúdo mudou (#11024)
+ *   GET  /idem    → { queue_key: string | null } — só no DO-índice `idem:{uuid}` (#10992)
+ *   POST /idem    body: { queue_key } → grava a queue key atual da chave idempotente
  *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
- *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null } (consultado por fireDueItems)
+ *                 → body { if_not_claiming: true }: 409 { cancelled: false, claiming: true } durante claim ativo (#11107)
+ *                 → com replacement_token + replacement_entry, reserva claiming até /arm do dono ou /release-replacement (#11133)
+ *   POST /release-replacement body: { replacement_token } → libera apenas a reserva correspondente
+ *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown: string | null } (consultado por fireDueItems; send_unknown #11106)
  *   POST /claim   → check-and-set atômico de `claiming` dentro de
- *                   blockConcurrencyWhile. Retorna { claimed: boolean }.
+ *                   blockConcurrencyWhile. Retorna { claimed: boolean; entry?: QueueEntry }
+ *                   (`entry` = payload armado, só com claimed=true, #11107).
  *                   `true` significa "este caller ganhou o claim e pode postar".
  *                   `false` significa "outro caller já está processando" — não postar.
  *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
@@ -98,6 +107,7 @@ export class LinkedInScheduler {
         // Claim expirado — logar e re-clamar
         console.warn(`[DO tryClaim] claim expired after ${Date.now() - (claimedAt ?? 0)}ms — re-claiming (crash recovery)`);
       }
+      await this.state.storage.delete("replacement_token");
       await this.state.storage.put("claiming", true);
       await this.state.storage.put("claimed_at", Date.now());
       return true;
@@ -108,28 +118,119 @@ export class LinkedInScheduler {
     const url = new URL(request.url);
 
     if (url.pathname === "/arm" && request.method === "POST") {
-      const body = await request.json() as DoStoredPayload & { scheduledAtMs: number };
-      // Persiste tudo que alarm() precisará — inclusive entry completa + webhook URLs
-      const { scheduledAtMs, ...payload } = body;
-      await this.state.storage.put("payload", payload satisfies DoStoredPayload);
-      // setAlarm sobrescreve alarm anterior — idempotente pra re-arm
-      await this.state.storage.setAlarm(scheduledAtMs);
+      const body = await request.json() as DoStoredPayload & { scheduledAtMs: number; replacement_token?: string };
+      return this.state.blockConcurrencyWhile(async () => {
+        // #10992 item 1: DO que já disparou não re-arma. O alarm novo sairia,
+        // mas `tryClaim()` devolve false com `fired=true` e nada é publicado —
+        // responder 200 aqui fazia o enqueue devolver 202 `alarm_armed: true`
+        // para um post que nunca sai. 409 deixa o caller dizer isso ao cliente.
+        if ((await this.state.storage.get<boolean>("fired")) === true) {
+          return new Response(JSON.stringify({ armed: false, fired: true }), {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // #11035 — não alterar payload/container enquanto alarm ou cron dispara.
+        // Mesmo TTL do claim: permite recuperar um processo interrompido.
+        const claiming = await this.state.storage.get<boolean>("claiming");
+        const claimedAt = await this.state.storage.get<number>("claimed_at");
+        const ownsReplacement = body.replacement_token !== undefined &&
+          body.replacement_token === await this.state.storage.get<string>("replacement_token");
+        if (claiming && !ownsReplacement && (claimedAt === undefined || Date.now() - claimedAt <= CLAIM_TTL_MS)) {
+          return new Response(JSON.stringify({ armed: false, claiming: true }), {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Persiste tudo que alarm() precisará — inclusive entry completa + webhook URLs
+        const { scheduledAtMs, replacement_token: _token, ...payload } = body;
+        // #11024 — o container de Reels guardado (#10922) pertence ao conteúdo
+        // da tentativa anterior. Re-armar com conteúdo DIFERENTE (enqueue
+        // idempotente `replaced`, #10917) e retomá-lo publicaria a legenda/vídeo
+        // velhos — no alarm e no cron, que o recebe do /claim. Só sobrevive se o
+        // payload anterior existe e publica a mesma coisa (re-arm do mesmo item).
+        const previous = await this.state.storage.get<DoStoredPayload>("payload");
+        if (!previous || !sameQueueContent(previous.entry, payload.entry)) {
+          await this.state.storage.delete("reels_container");
+        }
+        await this.state.storage.put("payload", payload satisfies DoStoredPayload);
+        await this.state.storage.delete("replacement_entry");
+        // setAlarm sobrescreve alarm anterior — idempotente pra re-arm
+        await this.state.storage.setAlarm(scheduledAtMs);
+        if (ownsReplacement) {
+          await this.state.storage.delete("replacement_token");
+          await this.state.storage.delete("claiming");
+          await this.state.storage.delete("claimed_at");
+        }
 
-      return new Response(JSON.stringify({ armed: true, scheduledAtMs }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+        return new Response(JSON.stringify({ armed: true, scheduledAtMs }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       });
     }
 
     if (url.pathname === "/cancel" && request.method === "POST") {
-      // deleteAll limpa payload + fired + claiming; deleteAlarm cancela o alarm.
-      // Ordem: deleteAlarm primeiro pra evitar janela onde o alarm dispara mas
-      // o storage ainda tem payload (risco baixo mas defensivo).
-      await this.state.storage.deleteAlarm();
-      await this.state.storage.deleteAll();
-      return new Response(JSON.stringify({ cancelled: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
+      // #11107 — body opcional `{ if_not_claiming: true }`: recusa com 409
+      // (mesmo critério do `/arm`, #11035) se um disparo está em andamento. O
+      // enqueue de conteúdo mudado usa esse modo: checar `/status` e só depois
+      // cancelar deixava o alarm/cron ganhar o `/claim` no meio, e o
+      // `deleteAll` apagava o `claiming` dele — o `/arm` seguinte armava o
+      // payload novo enquanto o disparo em curso publicava o velho. Sem o body
+      // (DELETE /queue, limpeza de tombstone e fallback do `/status-set-fired`
+      // no cron, que já segura o claim), o cancel segue incondicional.
+      let ifNotClaiming = false;
+      let replacementToken: string | undefined;
+      let replacementEntry: QueueEntry | undefined;
+      try {
+        const body = (await request.json()) as { if_not_claiming?: unknown; replacement_token?: unknown; replacement_entry?: QueueEntry } | null;
+        ifNotClaiming = body?.if_not_claiming === true;
+        if (ifNotClaiming && typeof body?.replacement_token === "string" && body.replacement_entry) {
+          replacementToken = body.replacement_token;
+          replacementEntry = body.replacement_entry;
+        }
+      } catch { /* sem body = cancel incondicional */ }
+      return this.state.blockConcurrencyWhile(async () => {
+        if (ifNotClaiming) {
+          const claiming = await this.state.storage.get<boolean>("claiming");
+          const claimedAt = await this.state.storage.get<number>("claimed_at");
+          if (claiming && (claimedAt === undefined || Date.now() - claimedAt <= CLAIM_TTL_MS)) {
+            return new Response(JSON.stringify({ cancelled: false, claiming: true }), {
+              status: 409,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+        }
+        // deleteAll limpa payload + fired + claiming; deleteAlarm cancela o alarm.
+        // Ordem: deleteAlarm primeiro pra evitar janela onde o alarm dispara mas
+        // o storage ainda tem payload (risco baixo mas defensivo).
+        await this.state.storage.deleteAlarm();
+        await this.state.storage.deleteAll();
+        // #11133 — reserva atômica: cron/alarm não podem reivindicar o KV velho
+        // entre cancel e put/arm. TTL permite recuperar um enqueue interrompido.
+        if (replacementToken !== undefined) {
+          await this.state.storage.put("replacement_token", replacementToken);
+          await this.state.storage.put("replacement_entry", replacementEntry);
+          await this.state.storage.put("claiming", true);
+          await this.state.storage.put("claimed_at", Date.now());
+        }
+        return new Response(JSON.stringify({ cancelled: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+    }
+
+    // Só o dono pode liberar a reserva; não libera um claim de cron/alarm.
+    if (url.pathname === "/release-replacement" && request.method === "POST") {
+      const body = await request.json() as { replacement_token?: string };
+      return this.state.blockConcurrencyWhile(async () => {
+        if (body.replacement_token !== undefined && body.replacement_token === await this.state.storage.get<string>("replacement_token")) {
+          await this.state.storage.delete("replacement_token");
+          await this.state.storage.delete("claiming");
+          await this.state.storage.delete("claimed_at");
+        }
+        return new Response("{}", { status: 200 });
       });
     }
 
@@ -140,7 +241,10 @@ export class LinkedInScheduler {
       // travou no meio — logar DLQ-style error pra investigação do editor.
       const claiming = (await this.state.storage.get<boolean>("claiming")) ?? false;
       const claimedAt = await this.state.storage.get<number>("claimed_at");
-      return new Response(JSON.stringify({ fired, claiming, claimed_at: claimedAt ?? null }), {
+      // #11106 — motivo do envio ambíguo gravado pelo alarm (o DO não escreve
+      // no KV): o cron move a entry pra DLQ com esse `last_error`.
+      const sendUnknown = (await this.state.storage.get<string>("send_unknown")) ?? null;
+      return new Response(JSON.stringify({ fired, claiming, claimed_at: claimedAt ?? null, send_unknown: sendUnknown }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -169,6 +273,7 @@ export class LinkedInScheduler {
           // Claim expirado — logar e re-clamar
           console.warn(`[DO claim] claim expired after ${Date.now() - (claimedAt ?? 0)}ms — re-claiming (crash recovery)`);
         }
+        await this.state.storage.delete("replacement_token");
         await this.state.storage.put("claiming", true);
         await this.state.storage.put("claimed_at", Date.now());
         return true;
@@ -176,7 +281,18 @@ export class LinkedInScheduler {
       // #10922 — quem ganhou o claim recebe o container de Reels que o alarm
       // deixou em processamento (o cron lê a entry do KV, que não o tem).
       const reelsContainer = claimed ? (await this.state.storage.get<ReelsContainerRef>("reels_container")) ?? null : null;
-      return new Response(JSON.stringify(reelsContainer ? { claimed, reels_container: reelsContainer } : { claimed }), {
+      // #11107 — e a entry do payload armado (strongly consistent, ao contrário
+      // do KV): o cron compara com a cópia do KV que leu ANTES do claim e não
+      // dispara se um re-enqueue trocou o conteúdo nesse meio-tempo.
+      // #11133 — após TTL/crash ou falha do /arm, a entry da substituição
+      // continua sendo a referência forte: KV velho nunca pode ser disparado.
+      const armedEntry = claimed ? (await this.state.storage.get<DoStoredPayload>("payload"))?.entry
+        ?? (await this.state.storage.get<QueueEntry>("replacement_entry")) ?? null : null;
+      return new Response(JSON.stringify({
+        claimed,
+        ...(reelsContainer && { reels_container: reelsContainer }),
+        ...(armedEntry && { entry: armedEntry }),
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -205,6 +321,7 @@ export class LinkedInScheduler {
     if (url.pathname === "/status-set-fired" && request.method === "POST") {
       await this.state.storage.put("fired", true);
       await this.state.storage.delete("payload");  // (#2230 bug 1 fix) payload limpo
+      await this.state.storage.delete("replacement_entry"); // #11133
       await this.state.storage.delete("reels_container"); // #10922
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
@@ -219,6 +336,30 @@ export class LinkedInScheduler {
     if (url.pathname === "/release-claim" && request.method === "POST") {
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // GET/POST /idem — #10992 item 2: DO-ÍNDICE da chave idempotente
+    // (`idFromName("idem:{uuid}")`, instância própria, sem alarm). Guarda a
+    // queue key atual daquela chave, que muda quando o mesmo pedido volta com
+    // outro `scheduled_at` (a key da fila leva o horário). Strongly consistent,
+    // ao contrário de um índice no KV.
+    if (url.pathname === "/idem" && request.method === "GET") {
+      const queueKey = (await this.state.storage.get<string>("idem_queue_key")) ?? null;
+      return new Response(JSON.stringify({ queue_key: queueKey }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.pathname === "/idem" && request.method === "POST") {
+      const body = (await request.json()) as { queue_key?: unknown };
+      if (typeof body.queue_key !== "string" || body.queue_key === "") {
+        return new Response(JSON.stringify({ error: "queue_key required" }), { status: 400 });
+      }
+      await this.state.storage.put("idem_queue_key", body.queue_key);
       return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -281,6 +422,21 @@ export class LinkedInScheduler {
       threads,
       linkedin,
     });
+
+    if (outcome.status === "send_unknown") {
+      // #11106 — a Meta pode ter publicado. Liberar o claim (como no `failed`)
+      // deixava o cron refazer container + publish e duplicar o post. Marca o
+      // DO como disparado (tryClaim/`/arm` recusam, payload apagado) e guarda o
+      // motivo; o cron vê `send_unknown` no `/status` e move a entry pra DLQ.
+      await this.state.storage.put("send_unknown", outcome.reason);
+      await this.state.storage.put("fired", true);
+      await this.state.storage.delete("payload");
+      await this.state.storage.delete("reels_container");
+      await this.state.storage.delete("claiming");
+      await this.state.storage.delete("claimed_at");
+      console.error(`[DO alarm] ${key} envio ambíguo, não refeito: ${outcome.reason} — cron move pra DLQ`);
+      return;
+    }
 
     if (outcome.status === "dlq") {
       await this.state.storage.delete("claiming");

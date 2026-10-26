@@ -12,7 +12,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -342,6 +342,49 @@ describe("resolveOrGenerateFlatCardUrl (cache + geração sob demanda)", () => {
       const url2 = await resolveOrGenerateFlatCardUrl(dataRoot, "260815-clicked", "cta", text, generator);
       assert.equal(calls, 1, "2ª chamada deveria ser cache hit — generator só roda 1x");
       assert.equal(url1, url2);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("cache com texto/layout DIFERENTE do pedido é MISS: regera e grava o carimbo novo (regressão CTA retro 25/10/2026)", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
+    try {
+      let calls = 0;
+      const generator: FlatCardGenerator = async ({ kvKey }) => {
+        calls++;
+        return { url: `https://cdn.example.com/${kvKey}?v=${calls}` };
+      };
+      const old = { kicker: "Grátis, toda manhã", title: "Texto antigo", footer: "diar.ia.br" };
+      const novo = { kicker: "Assine grátis, direto no seu e-mail", title: "Texto novo", footer: "diar.ia.br" };
+      await resolveOrGenerateFlatCardUrl(dataRoot, "260815-clicked", "cta", old, generator);
+      const url2 = await resolveOrGenerateFlatCardUrl(dataRoot, "260815-clicked", "cta", novo, generator);
+      assert.equal(calls, 2, "texto mudou: deveria regerar");
+      assert.match(url2, /v=2$/);
+      const url3 = await resolveOrGenerateFlatCardUrl(dataRoot, "260815-clicked", "cta", novo, generator, { mode: "fixed", size: 62 });
+      assert.equal(calls, 3, "layout mudou: deveria regerar");
+      await resolveOrGenerateFlatCardUrl(dataRoot, "260815-clicked", "cta", novo, generator, { mode: "fixed", size: 62 });
+      assert.equal(calls, 3, "mesmo texto+layout: cache hit");
+      assert.match(url3, /v=3$/);
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("entrada de cache SEM carimbo (anterior ao carimbo) é MISS", async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), "diaria-flatcard-"));
+    try {
+      const dir = join(dataRoot, "weekly", "260815-clicked", "_internal");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "06-flat-cards.json"), JSON.stringify({ cta: { url: "https://cdn.example.com/legado.jpg" } }));
+      let calls = 0;
+      const generator: FlatCardGenerator = async ({ kvKey }) => {
+        calls++;
+        return { url: `https://cdn.example.com/${kvKey}` };
+      };
+      const url = await resolveOrGenerateFlatCardUrl(dataRoot, "260815-clicked", "cta", { kicker: "k", title: "t", footer: "f" }, generator);
+      assert.equal(calls, 1);
+      assert.notEqual(url, "https://cdn.example.com/legado.jpg");
     } finally {
       rmSync(dataRoot, { recursive: true, force: true });
     }

@@ -43,15 +43,19 @@
  *   via este Worker. `FIRE_AND_FORGET_PLATFORMS` em `lib/prev-social-status.ts`
  *   não trata mais `twitter` como terminal-by-design desde o #6152.
  *
- * ## Limitação conhecida do DLQ
+ * ## Motivo da DLQ e envio ambíguo (#7626, #11106, #11129)
  *
- * As entries em `dlq:*` no KV não persistem o motivo da falha (só
- * `retry_count`) — o motivo detalhado só existe nos logs do Cloudflare Worker
- * (`console.error`), que este script não tem como ler. `failure_reason`
- * gravado aqui é sempre um texto genérico apontando pra essa limitação; o
- * editor precisa consultar `wrangler tail`/dashboard Cloudflare pra motivo
- * fino. Ver #5766 se isso virar dor recorrente — persistir o motivo na
- * própria entry DLQ resolveria (mudança no Worker, fora de escopo aqui).
+ * Desde o #7626 o Worker grava `last_error` na entry ao mover pra DLQ, e desde
+ * o #11106 um envio ambíguo (resposta do publish sem prova de sucesso nem de
+ * falha) vai pra DLQ com `last_error` começando por `send_unknown:`, sem
+ * refazer. A reconciliação usa os dois: `send_unknown:` vira
+ * `status: "send_unknown"` (o post pode ter saído — a invariante
+ * `social-published-send-unknown` e o check 0l avisam), o resto vira `failed`
+ * com o `last_error` em `failure_reason`. Entry de DLQ antiga, sem
+ * `last_error`, cai no texto genérico `DLQ_REASON_PLACEHOLDER`.
+ *
+ * A DLQ não reusa a key da fila (`buildDlqKey`: `queue:{iso}:{uuid}` →
+ * `dlq:{scheduled_at}:{uuid}`): o casamento é pelo uuid (`workerKeyId`).
  *
  * Uso:
  *   npx tsx scripts/verify-social-worker-dispatch.ts --edition-dir data/editions/260423/
@@ -168,6 +172,50 @@ export const DLQ_REASON_PLACEHOLDER =
   "Worker (console.error). Consultar `wrangler tail`/dashboard Cloudflare pra " +
   "diagnóstico fino (ver #5766).";
 
+/** Prefixo que o Worker grava em `last_error` num envio ambíguo (`SEND_UNKNOWN_PREFIX` de `workers/linkedin-cron/src/dispatch.ts`, #11106). */
+export const WORKER_SEND_UNKNOWN_PREFIX = "send_unknown:";
+
+/** O que o reconciliador precisa de uma entry do `GET /dlq`. */
+export interface DlqItemInfo {
+  key: string;
+  /** Motivo gravado pelo Worker ao mover pra DLQ (#7626); `send_unknown:` = envio ambíguo (#11106). */
+  last_error?: string;
+}
+
+/** DLQ indexado pelo id da entry (o uuid depois do último `:`), ver `workerKeyId`. */
+export type DlqIndex = ReadonlyMap<string, DlqItemInfo>;
+
+/**
+ * #11129 — id estável de uma key do Worker: o trecho depois do último `:`.
+ * O Worker NÃO reusa a key da fila no DLQ: `buildDlqKey` troca
+ * `queue:{iso}:{uuid}` por `dlq:{scheduled_at}:{uuid}` (e o legacy
+ * `queue:{uuid}` por `dlq:{scheduled_at}:{uuid}`). Comparar a key inteira
+ * nunca casava — a entry que caiu na DLQ sumia da fila E "do DLQ" e era
+ * promovida a `published` com alta confiança. O uuid é o que as duas keys
+ * têm em comum.
+ */
+export function workerKeyId(key: string): string {
+  const i = key.lastIndexOf(":");
+  return i >= 0 ? key.slice(i + 1) : key;
+}
+
+/** Indexa os itens do `GET /dlq` por `workerKeyId`. */
+export function buildDlqIndex(items: ReadonlyArray<{ key: string; last_error?: unknown }>): DlqIndex {
+  const out = new Map<string, DlqItemInfo>();
+  for (const it of items) {
+    if (typeof it.key !== "string" || !it.key) continue;
+    out.set(workerKeyId(it.key), {
+      key: it.key,
+      ...(typeof it.last_error === "string" && it.last_error ? { last_error: it.last_error } : {}),
+    });
+  }
+  return out;
+}
+
+function toDlqIndex(dlq: Set<string> | DlqIndex): DlqIndex {
+  return dlq instanceof Set ? buildDlqIndex([...dlq].map((key) => ({ key }))) : dlq;
+}
+
 /**
  * Reconciliação pura de UMA entry contra os key-sets da fila ativa e do DLQ.
  * Testável sem network.
@@ -176,11 +224,18 @@ export const DLQ_REASON_PLACEHOLDER =
  * que ainda estão `status: "scheduled"` E têm `worker_queue_key` (entries sem
  * a key — legacy, ou `fallback_used` do LinkedIn que nunca passou pela fila —
  * não têm como ser confrontadas, ficam intocadas).
+ *
+ * DLQ (#11129): casa pelo id da key (`workerKeyId`), não pela key inteira. Com
+ * `last_error` começando por `send_unknown:` (envio ambíguo, #11106) a entry
+ * vira `send_unknown` — o post pode ter saído, então não é `failed` (que se
+ * refaz) — e a invariante `social-published-send-unknown` e o check 0l passam
+ * a enxergar o caso. Os demais itens da DLQ viram `failed`, com o `last_error`
+ * do Worker quando houver.
  */
 export function reconcileWorkerEntry(
   entry: PostEntry,
   queueKeys: Set<string>,
-  dlqKeys: Set<string>,
+  dlq: Set<string> | DlqIndex,
   now: Date = new Date(),
 ): { updated: PostEntry; changed: boolean } {
   if (!WORKER_RECONCILABLE_PLATFORMS.has(entry.platform)) {
@@ -194,12 +249,29 @@ export function reconcileWorkerEntry(
     return { updated: entry, changed: false };
   }
 
-  if (dlqKeys.has(key)) {
+  const dead = toDlqIndex(dlq).get(workerKeyId(key));
+  if (dead) {
+    const lastError = dead.last_error;
+    if (lastError?.startsWith(WORKER_SEND_UNKNOWN_PREFIX)) {
+      return {
+        updated: {
+          ...entry,
+          status: "send_unknown",
+          failure_reason: lastError,
+          worker_dlq_key: dead.key,
+          verification_note:
+            "worker_send_unknown: o Worker recebeu resposta ambígua do publish (timeout, 5xx ou 2xx sem id) " +
+            "e moveu o item pra DLQ sem refazer — o post PODE ter saído. Conferir o perfil na rede antes de qualquer nova tentativa (#11129).",
+        },
+        changed: true,
+      };
+    }
     return {
       updated: {
         ...entry,
         status: "failed",
-        failure_reason: DLQ_REASON_PLACEHOLDER,
+        failure_reason: lastError ? `worker_dlq: ${lastError}` : DLQ_REASON_PLACEHOLDER,
+        worker_dlq_key: dead.key,
         verification_note: undefined,
       },
       changed: true,
@@ -277,14 +349,14 @@ async function defaultSleep(ms: number): Promise<void> {
 
 /** Pura: keys de entries `scheduled` com `worker_queue_key` ausentes dos dois
  *  key-sets — candidatas à ambiguidade "ainda não propagou × nunca entrou". */
-function pendingQueueKeys(posts: PostEntry[], queueKeys: Set<string>, dlqKeys: Set<string>): string[] {
+function pendingQueueKeys(posts: PostEntry[], queueKeys: Set<string>, dlq: DlqIndex): string[] {
   const out: string[] = [];
   for (const entry of posts) {
     if (!WORKER_RECONCILABLE_PLATFORMS.has(entry.platform)) continue;
     if (entry.status !== "scheduled") continue;
     const key = entry.worker_queue_key as string | undefined;
     if (typeof key !== "string" || key.length === 0) continue;
-    if (!queueKeys.has(key) && !dlqKeys.has(key)) out.push(key);
+    if (!queueKeys.has(key) && !dlq.has(workerKeyId(key))) out.push(key);
   }
   return out;
 }
@@ -313,8 +385,7 @@ export async function verifyWorkerDispatch(
       fetchWorkerDlq(workerUrl, token, fetchJson),
     ]);
     const queueKeys = new Set(listResp.items.map((i) => i.key));
-    const dlqKeys = new Set(dlqResp.items.map((i) => i.key));
-    const pending = pendingQueueKeys(published.posts, queueKeys, dlqKeys);
+    const pending = pendingQueueKeys(published.posts, queueKeys, buildDlqIndex(dlqResp.items));
     if (pending.length === 0) break;
     if (attempt < maxAttempts) {
       console.warn(
@@ -326,8 +397,8 @@ export async function verifyWorkerDispatch(
     }
   }
   const queueKeys2 = new Set(listResp!.items.map((i) => i.key));
-  const dlqKeys2 = new Set(dlqResp!.items.map((i) => i.key));
-  const stillPending = pendingQueueKeys(published.posts, queueKeys2, dlqKeys2);
+  const dlqIndex = buildDlqIndex(dlqResp!.items);
+  const stillPending = pendingQueueKeys(published.posts, queueKeys2, dlqIndex);
   if (stillPending.length > 0) {
     console.warn(
       `[verify-social-worker] AVISO (#6016): ${stillPending.length} entry(s) continuam ausente(s) da fila ` +
@@ -338,7 +409,7 @@ export async function verifyWorkerDispatch(
 
   let changes = 0;
   const updatedPosts: PostEntry[] = published.posts.map((entry) => {
-    const { updated, changed } = reconcileWorkerEntry(entry, queueKeys2, dlqKeys2, now);
+    const { updated, changed } = reconcileWorkerEntry(entry, queueKeys2, dlqIndex, now);
     if (changed) changes++;
     return updated;
   });
@@ -397,6 +468,10 @@ async function main(): Promise<number | void> {
     if (changes > 0) {
       writeFileSync(publishedPath, JSON.stringify(updated, null, 2) + "\n", "utf8");
       console.log(`[verify-social-worker] ${changes} post(s) atualizados em ${publishedPath}`);
+      // #11129: envio ambíguo no Worker — o post pode ter saído; o editor confere antes de refazer.
+      for (const p of updated.posts.filter((x) => x.status === "send_unknown" && typeof x.worker_dlq_key === "string")) {
+        console.warn(`[verify-social-worker] AVISO: ${p.platform}/${p.destaque ?? "?"} em envio ambíguo no Worker (${p.failure_reason ?? "send_unknown"}) — confira o perfil antes de refazer.`);
+      }
     } else {
       console.log("[verify-social-worker] nenhuma mudança de status detectada.");
     }

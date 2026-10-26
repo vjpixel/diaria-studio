@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import { stripUrlTrailingPunct, URL_REGEX_RAW, canonicalize } from "./lib/url-utils.ts";
 import { canonicalizeGmail } from "./lib/canonicalize-gmail.ts";
 import { writeMarker } from "./lib/pipeline-state.ts";
-import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { resolveEditorEmail, countSubmissionSources } from "./lib/inbox-stats.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { readCaptureFailedSentinel } from "./lib/newsletter-capture-failure.ts";
 import { unionNewsletterMentions } from "./lib/newsletter-mention-bonus.ts"; // #9365
@@ -492,6 +492,7 @@ async function main(): Promise<void> {
   let newsletterBlocks: InboxBlock[] = [];
   let newsletterSource: "captured-articles" | "inbox-md" | "none" = "none";
   let capturedNewsletterCount = 0;
+  let capturedNewsletters: Array<{ sender?: string; thread_id?: string }> = [];
 
   if (capturedArticlesPath) {
     const absCapPath = resolve(ROOT, capturedArticlesPath);
@@ -500,12 +501,13 @@ async function main(): Promise<void> {
       newsletterSource = "captured-articles";
       // #1541: count distinct newsletter threads (not URLs) for the marker.
       // captured-newsletters.json has 1 entry per thread — that's the editorial
-      // submission count. Derive path from captured-articles sibling.
+      // diagnostic thread count. Derive path from captured-articles sibling.
       const capNewslettersPath = resolve(dirname(absCapPath), "captured-newsletters.json");
       if (existsSync(capNewslettersPath)) {
         try {
           const capNewsletters = JSON.parse(readFileSync(capNewslettersPath, "utf8"));
-          capturedNewsletterCount = Array.isArray(capNewsletters) ? capNewsletters.length : 0;
+          capturedNewsletters = Array.isArray(capNewsletters) ? capNewsletters : [];
+          capturedNewsletterCount = capturedNewsletters.length;
         } catch { /* non-critical */ }
       }
       console.error(`[inject-inbox-urls] loaded ${injectedFromNewsletters.length} articles from ${capturedNewsletterCount} captured newsletters`);
@@ -521,6 +523,7 @@ async function main(): Promise<void> {
     newsletterSource = "inbox-md";
   }
 
+  const submissionCounts = countSubmissionSources(allBlocks, capturedNewsletters, editorEmail);
   const injected = [...injectedFromEditor, ...injectedFromNewsletters];
 
   // Merge com pool existente se passado
@@ -568,12 +571,14 @@ async function main(): Promise<void> {
         // #1368: contagem de emails distintos do editor (1 por thread/forward).
         // sync-coverage-line lê isso pra X em "enviei X submissões". Antes lia
         // de data/inbox.md, mas Stage 1 §1y arquivava inbox.md → contagem zerava.
-        editor_blocks: editorBlocks.length,
+        editor_blocks: submissionCounts.editorEmails,
         newsletter_blocks: newsletterBlocks.length,
         newsletter_source: newsletterSource, // #1520
         // #1541: distinct newsletter thread count (1 per thread, not per URL).
         // When newsletter_source is "captured-articles", newsletter_blocks is 0
         // (no inbox parsing) — this field carries the real count.
+        // #11093: union of captured senders and preserved inbox forwards.
+        distinct_newsletter_senders: submissionCounts.newsletterSenders,
         captured_newsletter_count: capturedNewsletterCount,
         ...(captureFailure && {
           capture_failed: true,
@@ -608,8 +613,9 @@ async function main(): Promise<void> {
       total_editor_urls: injectedFromEditor.length,
       total_newsletter_urls: injectedFromNewsletters.length, // #1095
       total_pool_size: merged.length,
-      editor_blocks: editorBlocks.length,
+      editor_blocks: submissionCounts.editorEmails,
       newsletter_blocks: newsletterBlocks.length, // #1095
+      distinct_newsletter_senders: submissionCounts.newsletterSenders,
       captured_newsletter_count: capturedNewsletterCount, // #1541
       total_inbox_blocks: allBlocks.length,
       newsletter_source: newsletterSource, // #1520

@@ -64,7 +64,7 @@ import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 import { INTERNAL_EMAILS, isTestAccount } from "./cohorts.ts";
 // Miolos puros (sem fs/rede/dotenv) das vendas Hotmart (#10734 4b).
 import { saldoReceita, type VendaRecord } from "./shared/hotmart-vendas.ts";
-import { periodoCoberto, type Periodo } from "./hotmart-vendas-espelho.ts";
+import { periodoCoberto, recortarCoberturaDesde, type Periodo } from "./hotmart-vendas-espelho.ts";
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -812,8 +812,15 @@ export const LTV_FONTE_HOTMART = "hotmart";
 
 export interface HotmartMonthRevenue {
   /** Saldo BRUTO em BRL do mês (aprovadas − uma reversão por transação),
-   *  ou `null` quando o mês não pode ser medido — nunca `0` por ausência. */
+   *  ou `null` quando o mês não pode ser medido por inteiro — nunca `0` por
+   *  ausência. `null` faz a Hotmart entrar no ARPU como fonte SEM dado, e o
+   *  ARPU sai rotulado PISO. */
   valorBrl: number | null;
+  /** Mês coberto só em parte (#10991 — mês do go-live do webhook, ou buraco
+   *  na cobertura): saldo dos dias cobertos, só informativo (vai no `motivo`).
+   *  Fica FORA da soma do ARPU (`valorBrl` segue `null`), para o número
+   *  parcial nunca ser lido como o mês inteiro. `null` em qualquer outro caso. */
+  pisoBrl: number | null;
   aprovadas: number;
   estornos: number;
   motivo: string | null;
@@ -823,6 +830,29 @@ function ultimoDiaDoMes(month: string): string {
   const [y, m] = month.split("-").map(Number);
   const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
   return `${month}-${String(last).padStart(2, "0")}`;
+}
+
+type SaldoHotmart = { ok: true; valor: number; aprovadas: number; estornos: number } | { ok: false; problema: string };
+
+/** Saldo bruto em BRL de `registros`; falha quando algum evento mexe na
+ *  receita sem valor bruto ou em outra moeda (somar só o resto seria piso
+ *  sem rótulo). */
+function saldoHotmartBrl(registros: readonly VendaRecord[]): SaldoHotmart {
+  const saldo = saldoReceita(registros, "bruto");
+  const outras = saldo.porMoeda.filter((p) => p.moeda !== "BRL");
+  if (saldo.semValorLiquido > 0 || outras.length > 0) {
+    const partes = [
+      saldo.semValorLiquido > 0 ? `${saldo.semValorLiquido} evento(s) sem valor bruto` : null,
+      outras.length > 0 ? `evento(s) em ${outras.map((p) => p.moeda).join(", ")}` : null,
+    ].filter(Boolean);
+    return { ok: false, problema: partes.join(" e ") };
+  }
+  const brl = saldo.porMoeda.find((p) => p.moeda === "BRL");
+  return { ok: true, valor: brl?.liquido ?? 0, aprovadas: brl?.aprovadas ?? 0, estornos: brl?.estornos ?? 0 };
+}
+
+function fmtBrlCurto(v: number): string {
+  return `R$ ${v.toFixed(2).replace(".", ",")}`;
 }
 
 /**
@@ -839,6 +869,14 @@ function ultimoDiaDoMes(month: string): string {
  * - Só conta com o mês INTEIRO dentro de um intervalo de `cobertura` (estado
  *   do sync, `hotmart-vendas-espelho.ts`). Fora disso, `null`: espelho
  *   parcial viraria receita subestimada sem rótulo.
+ * - `vendasDesde` (#10991, `hotmart.vendas_desde` em `platform.config.json`):
+ *   go-live do webhook de vendas. A cobertura é recortada nele antes de tudo
+ *   (estado gravado antes do fix trazia dias anteriores como cobertos), então
+ *   o mês do go-live nunca fecha (sai PISO, abaixo) e mês inteiro anterior
+ *   sai sem dado. `null` (config ausente/inválida) = sem dado.
+ * - Mês coberto só em parte: `valorBrl` `null` (a fonte entra sem dado e o
+ *   ARPU sai PISO) e `pisoBrl` com o saldo dos dias cobertos, com motivo
+ *   começando por "PISO".
  * - Evento que mexe na receita sem valor bruto, ou em moeda que não BRL, deixa
  *   o mês `null` com motivo (somar só o resto seria um piso sem rótulo).
  *
@@ -849,35 +887,50 @@ export function computeHotmartMonthRevenue(input: {
   registros: readonly VendaRecord[];
   cobertura: readonly Periodo[];
   month: string;
+  vendasDesde: string | null;
 }): HotmartMonthRevenue {
   const de = `${input.month}-01`;
   const ate = ultimoDiaDoMes(input.month);
-  if (!periodoCoberto(input.cobertura, de, ate)) {
-    const cob = input.cobertura.map((p) => `${p.de}..${p.ate}`).join(", ") || "nenhuma";
+  const semDado = (motivo: string): HotmartMonthRevenue => ({ valorBrl: null, pisoBrl: null, aprovadas: 0, estornos: 0, motivo });
+  const { vendasDesde } = input;
+  if (vendasDesde === null) {
+    return semDado(
+      `Hotmart ${input.month}: go-live do webhook de vendas desconhecido (hotmart.vendas_desde em platform.config.json ausente ou inválido) — cobertura do espelho não é confiável`,
+    );
+  }
+  if (ate < vendasDesde) {
+    return semDado(
+      `Hotmart ${input.month}: mês inteiro antes do go-live do webhook de vendas (${vendasDesde}) — as vendas desse mês não passam pelo espelho`,
+    );
+  }
+  const cobertura = recortarCoberturaDesde(input.cobertura, vendasDesde);
+  if (!periodoCoberto(cobertura, de, ate)) {
+    const trechos = cobertura
+      .filter((p) => p.ate >= de && p.de <= ate)
+      .map((p) => ({ de: p.de < de ? de : p.de, ate: p.ate > ate ? ate : p.ate }));
+    if (trechos.length === 0) {
+      const cob = cobertura.map((p) => `${p.de}..${p.ate}`).join(", ") || "nenhuma";
+      return semDado(`espelho Hotmart não cobre ${de}..${ate} inteiro (cobertura: ${cob}) — rode scripts/sync-hotmart-vendas.ts`);
+    }
+    const cobTxt = trechos.map((p) => `${p.de}..${p.ate}`).join(", ");
+    const golive = de < vendasDesde ? ` (webhook de vendas no ar desde ${vendasDesde}; vendas anteriores não passam pelo espelho)` : "";
+    const saldo = saldoHotmartBrl(input.registros.filter((r) => trechos.some((p) => r.dia >= p.de && r.dia <= p.ate)));
+    if (!saldo.ok) {
+      return semDado(`PISO — espelho Hotmart cobre só ${cobTxt} de ${de}..${ate}${golive}; dias cobertos com ${saldo.problema}, sem valor de piso`);
+    }
     return {
       valorBrl: null,
-      aprovadas: 0,
-      estornos: 0,
-      motivo: `espelho Hotmart não cobre ${de}..${ate} inteiro (cobertura: ${cob}) — rode scripts/sync-hotmart-vendas.ts`,
+      pisoBrl: saldo.valor,
+      aprovadas: saldo.aprovadas,
+      estornos: saldo.estornos,
+      motivo: `PISO — espelho Hotmart cobre só ${cobTxt} de ${de}..${ate}${golive}: ${fmtBrlCurto(saldo.valor)} nos dias cobertos, fora da soma (fonte sem dado no mês)`,
     };
   }
-  const doMes = input.registros.filter((r) => r.dia >= de && r.dia <= ate);
-  const saldo = saldoReceita(doMes, "bruto");
-  const outras = saldo.porMoeda.filter((p) => p.moeda !== "BRL");
-  if (saldo.semValorLiquido > 0 || outras.length > 0) {
-    const partes = [
-      saldo.semValorLiquido > 0 ? `${saldo.semValorLiquido} evento(s) sem valor bruto` : null,
-      outras.length > 0 ? `evento(s) em ${outras.map((p) => p.moeda).join(", ")}` : null,
-    ].filter(Boolean);
-    return {
-      valorBrl: null,
-      aprovadas: 0,
-      estornos: 0,
-      motivo: `Hotmart ${input.month}: ${partes.join(" e ")} — fora do ARPU para não somar só parte do mês`,
-    };
+  const saldo = saldoHotmartBrl(input.registros.filter((r) => r.dia >= de && r.dia <= ate));
+  if (!saldo.ok) {
+    return semDado(`Hotmart ${input.month}: ${saldo.problema} — fora do ARPU para não somar só parte do mês`);
   }
-  const brl = saldo.porMoeda.find((p) => p.moeda === "BRL");
-  return { valorBrl: brl?.liquido ?? 0, aprovadas: brl?.aprovadas ?? 0, estornos: brl?.estornos ?? 0, motivo: null };
+  return { valorBrl: saldo.valor, pisoBrl: null, aprovadas: saldo.aprovadas, estornos: saldo.estornos, motivo: null };
 }
 
 /**

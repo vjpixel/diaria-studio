@@ -472,6 +472,37 @@ describe("registerSession / heartbeat / endSession", () => {
   });
 });
 
+// ─── #11059 — heartbeat depois de `end` não reativa a sessão encerrada ─────
+describe("heartbeatAutoRegistering — sessão já encerrada não é ressuscitada (#11059)", () => {
+  it("sequência da Fase 2 do develop: register -> end -> heartbeat deixa a sessão FORA de listActiveSessions", () => {
+    const root = freshRoot();
+    const now = new Date().toISOString();
+    registerSession(root, "develop", "sess-11059", { tag: "host-a", startedAt: now });
+    assert.equal(endSession(root, "develop", "sess-11059", "host-a"), true);
+
+    const result = heartbeatAutoRegistering(root, "develop", "sess-11059", { active_worktrees: 0 }, "host-a", now);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.autoRegistered, false);
+    assert.equal(result.alreadyEnded, true);
+    assert.equal(existsSync(sessionFilePath(root, "develop", "host-a", "sess-11059")), false);
+    assert.equal(
+      listActiveSessions(root).some((r) => r.sessionId === "sess-11059"),
+      false,
+    );
+  });
+
+  it("sessão que nunca chamou end continua sendo auto-registrada (#8443 preservado)", () => {
+    const root = freshRoot();
+    const now = new Date().toISOString();
+    registerSession(root, "develop", "sess-outra", { tag: "host-a", startedAt: now });
+    endSession(root, "develop", "sess-outra", "host-a");
+    const result = heartbeatAutoRegistering(root, "continuo", "sess-nova-11059", {}, "host-a", now);
+    assert.equal(result.ok, true);
+    assert.equal(result.autoRegistered, true);
+  });
+});
+
 // ─── #6624 — instrumentação do ciclo de vida de sessão coordenadora ────────
 // Investigação: "sessões coordenadoras terminam sem chamar `end` com que
 // frequência?". `endSession`/`garbageCollectSessions` gravam eventos em
@@ -3819,7 +3850,8 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
     assert.ok(findLiveMergeGrant(root, "benef-6952", now), "sanity: a leitura acha o grant");
 
     assert.equal(
-      consumeMergeGrant(root, "benef-6952", now),
+      // #11113: o cenário é de cópias de conflito na MESMA máquina da coordenadora.
+      consumeMergeGrant(root, "benef-6952", now, { localTag: "300" }),
       true,
       "consumir devolveu false para um grant que a leitura acha — encontrável e inconsumível",
     );
@@ -3853,7 +3885,7 @@ describe("#6952 (2ª metade) — merge_grant sobrevive à união de cópias de c
       );
     }
 
-    assert.equal(consumeMergeGrant(root, "benef-6952", now), true);
+    assert.equal(consumeMergeGrant(root, "benef-6952", now, { localTag: "300" }), true); // #11113: mesma máquina
     for (const name of readdirSync(sessionsDir)) {
       const rec = JSON.parse(readFileSync(join(sessionsDir, name), "utf8"));
       assert.ok(

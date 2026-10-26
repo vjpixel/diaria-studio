@@ -51,7 +51,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
 import { listActiveSessions } from "./lib/session-registry.ts";
-import { DEFAULT_ISSUE_REPO, loadIssueRepos } from "./lib/issue-repos.ts";
+import { DEFAULT_ISSUE_REPO, ISSUE_REPOS_CONFIG_ROOT, loadIssueRepos } from "./lib/issue-repos.ts";
 import {
   describeUnknownPlanEntry,
   issueKeyOfPlanEntry,
@@ -159,7 +159,7 @@ if (isMainModule(import.meta.url)) {
   // `develop/fix-N-*` do design só vira candidato se o repo for consultado).
   // Só repos da allowlist `issue_repos`. Repo não consultado (fora dela, ou
   // `gh` falhou) e identidade desconhecida entram na ressalva da linha final.
-  const allowlist = new Set(loadIssueRepos(process.cwd()));
+  const allowlist = new Set(loadIssueRepos(ISSUE_REPOS_CONFIG_ROOT));
   const extraRepos = new Set<string>();
   /** repo → motivo de não ter sido consultado. */
   const unevaluated = new Map<string, string>();

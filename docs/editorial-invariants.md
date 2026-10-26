@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 120 invariants.
+**Total**: 123 invariants.
 
 ## Static (estrutura do repo)
 
@@ -88,7 +88,9 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078) | #6078 |
 | `carousel-upload-incomplete` | slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only) | #6064 |
 | `carousel-upload-stale` | arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068) | #6068 |
+| `curto-x-weight` | post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180) | #11124 |
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
+| `fact-recurrence` | Possível mesmo fato em todas as seções (heurístico, warning-only) | #11083 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `image-crop-warn` | revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only) | #3951 |
@@ -150,6 +152,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `sync-code-ran` | Passo -3 (sync-code.ts --edition-dir) rodou e o código não ficou defasado (#8690) | #8690 |
 | `threads-creds-set` | THREADS_USER_ID + THREADS_ACCESS_TOKEN presentes — ausente pula Threads (#2479) | #2479 |
 | `twitter-creds-set` | publishing.social.twitter.buffer_channel_id presente em platform.config.json — ausente pula Twitter/X (#3994, via Buffer MCP) | #3994 |
+| `youtube-step-ran` | §5b-youtube rodou: 05-youtube-step.json ou 05-youtube-published.json com consent youtube auto (#10659) | #10659 |
 
 ## Stage 6 — Agendamento
 

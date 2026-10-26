@@ -299,7 +299,7 @@ export async function fetchAiCrawler403Rows(
 }
 
 export interface AiCrawler403Summary {
-  /** Soma dos 403, EXCLUINDO os bots bloqueados de propósito. */
+  /** Soma dos 403, excluindo bots bloqueados de propósito e o host do formulário. */
   total: number;
   /** 403 de bots bloqueados de propósito (Amazonbot) — só informativo. */
   intentionallyBlocked: number;
@@ -318,6 +318,9 @@ export function summarizeAiCrawler403(
   let total = 0;
   let intentionallyBlocked = 0;
   for (const r of rows) {
+    // #10530: onboarding-form recusa links sem assinatura com 403 de
+    // propósito. Nesse host privado, o status não prova bloqueio da zona.
+    if (r.host.toLowerCase() === "formulario.diar.ia.br") continue;
     const bot = aiBotLabelFromUserAgent(r.userAgent);
     if (intentional.has(bot.toLowerCase())) {
       intentionallyBlocked += r.count;

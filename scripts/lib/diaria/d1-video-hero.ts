@@ -15,13 +15,15 @@
  *     (`04-d1-2x1-play.jpg`, nome mantido), só para a newsletter — o hero
  *     original segue intacto para as redes;
  *   - vídeo ainda sem URL quando a newsletter é montada → a imagem aponta pro
- *     canal @diariabr. Nunca link quebrado, nunca imagem sem link.
+ *     canal @diariabr. Nunca link quebrado;
+ *   - sem a cópia com o convite (falha ao gerar) → o hero sai SEM link
+ *     (`d1VideoHeroFields` devolve `{}`): imagem pura levando ao YouTube, sem
+ *     o convite escrito, seria link escondido.
  *
  * Fonte da URL do vídeo: `_internal/05-video-url.txt` (`D1_VIDEO_URL_FILE`,
- * #10772), gravado por `scripts/link-video-d1.ts --save` — o mesmo arquivo que
- * põe o link no post do D1 nas redes, já atrás do portão de vídeo público do
- * #10858. Este módulo não relê o registro do upload: quem grava o arquivo já
- * passou pelo portão.
+ * #10772), gravado pelo upload ou por `scripts/link-video-d1.ts --save`.
+ * O Stage 5 usa esse link inclusive com vídeo privado (#10960), sem reler
+ * a privacidade do registro do upload.
  */
 
 import { DIARIA_YOUTUBE_URL } from "../canonical-urls.ts";

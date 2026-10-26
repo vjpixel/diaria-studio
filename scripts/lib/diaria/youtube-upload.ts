@@ -430,8 +430,198 @@ export async function fetchVideoStatus(
   return item?.status ?? null;
 }
 
+// ─── Vídeo da edição já no canal (#11080) ────────────────────────────────────
+
+/** Critérios para reconhecer um vídeo da MESMA edição já no canal. */
+export interface EditionVideoCriteria {
+  aammdd: string;
+  /** Título que o upload usaria (o do D1). */
+  title: string;
+  /**
+   * #11070: `short` procura o Short (vertical) da edição, não o horizontal: só
+   * vídeos marcados `#Shorts` contam, e o `utm_campaign` da descrição deixa de
+   * valer como marca (o horizontal da MESMA edição o carrega). Default `long`.
+   */
+  kind?: "long" | "short";
+}
+
+/** Como o vídeo existente foi reconhecido (do sinal mais forte ao mais fraco). */
+export type EditionVideoMatch = "edition-tag" | "title" | "period";
+
+export interface ExistingEditionVideo {
+  videoId: string;
+  url: string;
+  title: string;
+  matchedBy: EditionVideoMatch;
+  publishedAt: string | null;
+  status: UploadedVideoResource["status"] | null;
+}
+
+/** Quantos uploads recentes o canal é varrido (1 unidade de quota por página). */
+export const EXISTING_VIDEO_SCAN_SIZE = 25;
+
+/** Janela [início, fim) do dia da edição em BRT (UTC-3), em ms. */
+export function editionDayWindowMs(aammdd: string): { startMs: number; endMs: number } {
+  if (!/^\d{6}$/.test(aammdd)) throw new Error(`AAMMDD inválido: ${JSON.stringify(aammdd)}`);
+  const startMs = Date.UTC(2000 + Number(aammdd.slice(0, 2)), Number(aammdd.slice(2, 4)) - 1, Number(aammdd.slice(4, 6)), 3);
+  return { startMs, endMs: startMs + 86_400_000 };
+}
+
+interface VideoListItem {
+  id?: string;
+  snippet?: { title?: string; description?: string; tags?: string[]; publishedAt?: string };
+  status?: UploadedVideoResource["status"];
+}
+
+function normalizeTitle(s: string): string {
+  return s.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Decide se algum dos vídeos é o desta edição. Sinais, do mais forte ao mais
+ * fraco: (1) AAMMDD — `utm_campaign=AAMMDD` na descrição (nosso upload) ou
+ * AAMMDD como token no título/tags; (2) título igual ao do D1; (3) período —
+ * `publishAt` ou `publishedAt` dentro do dia BRT da edição. Shorts (vertical,
+ * `/diaria-shorts`) ficam de fora do sinal de período: são OUTRO vídeo.
+ *
+ * #11103: (a) descrição com `utm_campaign=` de OUTRA edição (e nenhum da
+ * nossa) prova que o vídeo é daquela edição — título e período deixam de
+ * valer (ex.: o vídeo de ontem que virou público hoje); (b) vídeo com
+ * `uploadStatus` falho (`failedUploadStatus`) nunca é reconhecido — não vai
+ * ao ar, então o upload normal segue em vez de gravar um link morto no D1.
+ *
+ * #11132: `period` é o sinal fraco — qualquer vídeo não-Short do dia (live,
+ * avulso) casa. O chamador (`publish-youtube.ts`) não o trata como prova: sem
+ * confirmação do editor (`--accept-period-match`) não envia nem grava o link.
+ *
+ * #11070: com `kind: "short"` a busca é pelo Short (só vídeos `#Shorts`), com
+ * os mesmos três sinais, menos o `utm_campaign` (é a marca do horizontal).
+ * Puro: sem rede.
+ */
+export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVideoCriteria): ExistingEditionVideo | null {
+  const { aammdd } = criteria;
+  const token = new RegExp(`(?<!\\d)${aammdd}(?!\\d)`);
+  const campaignRe = /utm_campaign=(\d{6})(?!\d)/g;
+  const want = normalizeTitle(criteria.title);
+  const { startMs, endMs } = editionDayWindowMs(aammdd);
+  const inDay = (iso?: string | null): boolean => {
+    if (!iso) return false;
+    const ms = Date.parse(iso);
+    return !Number.isNaN(ms) && ms >= startMs && ms < endMs;
+  };
+  const found: ExistingEditionVideo[] = [];
+  for (const v of videos) {
+    if (!v.id) continue;
+    if (failedUploadStatus(v.status ?? null)) continue;
+    const title = v.snippet?.title ?? "";
+    const description = v.snippet?.description ?? "";
+    const tags = v.snippet?.tags ?? [];
+    const isShort = /#shorts?\b/i.test(`${title} ${description}`) || tags.some((t) => /^#?shorts?$/i.test(t));
+    if (criteria.kind === "short") {
+      // #11070: só o Short conta; utm_campaign é do horizontal, não marca o Short.
+      if (!isShort) continue;
+      let matchedBy: EditionVideoMatch | null = null;
+      if (token.test(title) || tags.some((t) => token.test(t))) matchedBy = "edition-tag";
+      else if (want && normalizeTitle(title) === want) matchedBy = "title";
+      else if (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt)) matchedBy = "period";
+      if (matchedBy) {
+        found.push({ videoId: v.id, url: `https://youtu.be/${v.id}`, title, matchedBy, publishedAt: v.snippet?.publishedAt ?? null, status: v.status ?? null });
+      }
+      continue;
+    }
+    const campaigns = [...description.matchAll(campaignRe)].map((m) => m[1]);
+    const otherEdition = campaigns.length > 0 && !campaigns.includes(aammdd);
+    let matchedBy: EditionVideoMatch | null = null;
+    if (campaigns.includes(aammdd) || token.test(title) || tags.some((t) => token.test(t))) {
+      matchedBy = "edition-tag";
+    } else if (otherEdition) {
+      matchedBy = null;
+    } else if (want && normalizeTitle(title) === want) {
+      matchedBy = "title";
+    } else if (!isShort && (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt))) {
+      matchedBy = "period";
+    }
+    if (matchedBy) {
+      found.push({
+        videoId: v.id,
+        url: `https://youtu.be/${v.id}`,
+        title,
+        matchedBy,
+        publishedAt: v.snippet?.publishedAt ?? null,
+        status: v.status ?? null,
+      });
+    }
+  }
+  const rank: Record<EditionVideoMatch, number> = { "edition-tag": 0, title: 1, period: 2 };
+  found.sort((a, b) => rank[a.matchedBy] - rank[b.matchedBy]);
+  return found[0] ?? null;
+}
+
+/**
+ * Lista os uploads recentes do canal (playlist de uploads: 1 unidade por
+ * chamada, ao contrário de `search.list`, 100) e devolve o vídeo desta
+ * edição, se houver. Com o token do dono a playlist inclui privados e
+ * agendados. Falha de API lança `YouTubeUploadError` na etapa `channel`
+ * (nada foi enviado): sem a checagem não dá para afirmar que não duplica.
+ */
+export async function findExistingEditionVideo(
+  deps: YouTubeUploadDeps,
+  token: string,
+  channelId: string,
+  criteria: EditionVideoCriteria,
+): Promise<ExistingEditionVideo | null> {
+  if (!/^UC/.test(channelId)) {
+    throw new YouTubeUploadError(`YOUTUBE_CHANNEL_ID inesperado (${channelId}) — não dá para achar a playlist de uploads; nada foi enviado`, "channel");
+  }
+  const get = async (url: string, what: string): Promise<{ items?: unknown[] }> => {
+    let res: Response;
+    try {
+      res = await deps.fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    } catch (e) {
+      throw new YouTubeUploadError(`sem rede para conferir se o vídeo já está no canal (${what}): ${(e as Error).message} — nada foi enviado`, "channel");
+    }
+    if (!res.ok) {
+      throw new YouTubeUploadError(
+        `não deu para conferir se o vídeo já está no canal (${what}): ${explainYouTubeUploadError(res.status, await errorSnippet(res), "channel")} — nada foi enviado (--force pula a conferência)`,
+        "channel",
+      );
+    }
+    const json = (await readJson(res)) as { items?: unknown[] } | null | undefined;
+    if (json === undefined) {
+      throw new YouTubeUploadError(`${what} devolveu corpo não-JSON (HTTP ${res.status}) — nada foi enviado`, "channel");
+    }
+    return json ?? {};
+  };
+
+  const uploads = `UU${channelId.slice(2)}`;
+  const list = await get(
+    `${YOUTUBE_API_BASE}/playlistItems?part=contentDetails&maxResults=${EXISTING_VIDEO_SCAN_SIZE}&playlistId=${encodeURIComponent(uploads)}`,
+    "playlistItems.list",
+  );
+  const ids = ((list.items ?? []) as Array<{ contentDetails?: { videoId?: unknown } }>)
+    .map((i) => i.contentDetails?.videoId)
+    .filter((id): id is string => typeof id === "string" && id !== "");
+  if (ids.length === 0) return null;
+  const details = await get(`${YOUTUBE_API_BASE}/videos?part=snippet,status&id=${ids.map(encodeURIComponent).join(",")}`, "videos.list");
+  return matchEditionVideo((details.items ?? []) as VideoListItem[], criteria);
+}
+
+/** Lançada quando a conferência acha o vídeo da edição no canal — nada foi enviado. */
+export class ExistingEditionVideoError extends Error {
+  constructor(readonly video: ExistingEditionVideo) {
+    super(`o vídeo desta edição já está no canal (${video.url}, reconhecido por ${video.matchedBy}) — nada foi enviado`);
+    this.name = "ExistingEditionVideoError";
+  }
+}
+
 export interface YouTubeUploadInput {
   creds: YouTubeCredentials;
+  /**
+   * Quando presente, confere o canal ANTES de abrir a sessão de upload e lança
+   * `ExistingEditionVideoError` se a edição já tem vídeo lá (#11080) — o editor
+   * pode ter subido à mão, sem `05-youtube-published.json`.
+   */
+  existingVideoCheck?: EditionVideoCriteria;
   request: YouTubeInsertRequest;
   video: Buffer;
   contentType?: string;
@@ -470,6 +660,10 @@ export interface YouTubeUploadResult {
 export async function uploadYouTubeVideo(deps: YouTubeUploadDeps, input: YouTubeUploadInput): Promise<YouTubeUploadResult> {
   const token = await refreshYouTubeAccessToken(deps, input.creds);
   await assertExpectedChannel(deps, token, input.creds.channelId);
+  if (input.existingVideoCheck) {
+    const existing = await findExistingEditionVideo(deps, token, input.creds.channelId, input.existingVideoCheck);
+    if (existing) throw new ExistingEditionVideoError(existing);
+  }
   const sessionUrl = await startResumableUpload(deps, token, input.request);
   if (input.beforeVideoBytes) {
     try {

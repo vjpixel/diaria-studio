@@ -86,7 +86,17 @@ export type FireOutcome =
    *  direto (fire.ts) ou libera o claim sem postar (durable-object.ts, que
    *  não tem acesso a KV — o cron aplica o MESMO guard puro na próxima volta
    *  e escreve o DLQ). */
-  | { status: "dlq"; reason: string };
+  | { status: "dlq"; reason: string }
+  /** #11106 — resposta AMBÍGUA do passo que publica (`threads_publish`:
+   *  timeout/rede, 5xx, 2xx sem `id` ou com corpo ilegível): a Meta pode ter
+   *  publicado. Nunca volta à fila — nem pelo `retry_count` do cron, nem pelo
+   *  release do claim do alarm (que deixaria o cron refazer). Os dois caminhos
+   *  marcam o DO como disparado (o alarm não refaz) e a entry vai pra DLQ com
+   *  `last_error` começando por `send_unknown:` — o editor confere o perfil. */
+  | { status: "send_unknown"; reason: string };
+
+/** #11106 — prefixo do `last_error` na DLQ para envio ambíguo. */
+export const SEND_UNKNOWN_PREFIX = "send_unknown:";
 
 /**
  * Resolve o `Env` do Worker pras credenciais Instagram, com default de
@@ -580,7 +590,7 @@ async function pollInstagramContainerStatus(
   // cujo pior caso já cabe no TTL).
   deadlineMs?: number,
   // #10954 self-review — container RETOMADO de uma volta anterior: a Graph
-  // recusando a consulta com 4xx (exceto 429) N vezes seguidas significa
+  // recusando a consulta com 4xx não transitório N vezes seguidas significa
   // container desconhecido/inválido, não blip. O poll para e devolve
   // `unknownContainer: true` pra o caller descartar o container. Undefined =
   // 4xx segue transitório (container recém-criado, carrossel).
@@ -615,7 +625,7 @@ async function pollInstagramContainerStatus(
         signal: AbortSignal.timeout(Math.max(1, Math.min(FETCH_TIMEOUT_MS, remaining()))),
       });
       const text = await res.text();
-      let data: { status_code?: string; error?: { message?: string } };
+      let data: { status_code?: string; error?: GraphErrorBody };
       try {
         data = JSON.parse(text);
       } catch {
@@ -626,7 +636,8 @@ async function pollInstagramContainerStatus(
         continue;
       }
       if (!res.ok || data.error) {
-        const clientError = res.status >= 400 && res.status < 500 && res.status !== 429;
+        const clientError = res.status >= 400 && res.status < 500 && res.status !== 429
+          && !isGraphTransientError(data.error);
         consecutiveClientErrors = clientError ? consecutiveClientErrors + 1 : 0;
         if (
           clientError &&
@@ -715,11 +726,42 @@ export const REELS_DEDUP_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 /** #10877 — quantas mídias recentes da conta a busca de dedup lê. */
 const REELS_DEDUP_MEDIA_LIMIT = 25;
 
+/** Corpo de `error` da Graph API (só os campos que a classificação usa). */
+export interface GraphErrorBody {
+  message?: string;
+  code?: number;
+  error_subcode?: number;
+  is_transient?: boolean;
+}
+
+/**
+ * #10992 — códigos de limite de taxa da Graph API (doc "Rate Limiting" /
+ * "Error codes" da Meta): 4 (app), 17 (usuário), 32 (página), 613 (limite
+ * customizado) e 80000-80014 (Business Use Case — 80002 é o do Instagram).
+ * Chegam com HTTP 400/403, não 429.
+ */
+export const GRAPH_RATE_LIMIT_CODES: ReadonlySet<number> = new Set([
+  4, 17, 32, 613,
+  ...Array.from({ length: 15 }, (_, i) => 80000 + i),
+]);
+
+/**
+ * #10992 — erro da Graph que passa sozinho: limite de taxa
+ * (`GRAPH_RATE_LIMIT_CODES`) ou `is_transient: true` declarado pela própria
+ * Meta. Independe do status HTTP (os limites vêm como 400/403).
+ */
+export function isGraphTransientError(error: GraphErrorBody | undefined | null): boolean {
+  if (!error || typeof error !== "object") return false;
+  if (error.is_transient === true) return true;
+  return typeof error.code === "number" && GRAPH_RATE_LIMIT_CODES.has(error.code);
+}
+
 export type ReelLookup =
   | { kind: "found"; mediaId: string }
   | { kind: "absent" }
   /** Não deu pra consultar. `transient` = vale tentar de novo na próxima volta
-   * (5xx, timeout, resposta ilegível); `false` = recusa da Graph (4xx). */
+   * (5xx, 429, limite de taxa da Graph em 400/403, timeout, resposta
+   * ilegível — #10992); `false` = recusa definitiva da Graph (demais 4xx). */
   | { kind: "unverifiable"; reason: string; transient: boolean };
 
 /**
@@ -751,7 +793,7 @@ export async function findPublishedReel(
     const text = await res.text();
     let data: {
       data?: Array<{ id?: string; caption?: string; timestamp?: string; media_product_type?: string }>;
-      error?: { message?: string };
+      error?: GraphErrorBody;
     };
     try {
       data = JSON.parse(text);
@@ -761,7 +803,11 @@ export async function findPublishedReel(
     if (!res.ok || data.error) {
       return {
         kind: "unverifiable",
-        transient: res.status >= 500 || res.status === 429,
+        // #10992 item 3: limite de taxa da Graph chega como 400/403 com
+        // `error.code` 4/17/32/613/80000-80014 — é transitório (passa sozinho),
+        // não recusa definitiva; tratar como 4xx fazia publicar SEM a busca
+        // prévia justo na volta de retry, quando o dedup importa.
+        transient: res.status >= 500 || res.status === 429 || isGraphTransientError(data.error),
         reason: `lista de mídias HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
       };
     }
@@ -1309,44 +1355,62 @@ async function fireThreadsText(text: string, creds: ThreadsCreds): Promise<FireO
   }
 
   // Passo 2: publicar o container
+  return publishThreadsCreation(base, creds, containerId, {
+    label: "Threads /threads_publish",
+    idSuffix: `(container_id=${containerId})`,
+    definiteFailure: "failed",
+  });
+}
+
+/**
+ * #11106 — passo `threads_publish`, compartilhado pelos 3 caminhos Threads
+ * (texto, imagem única, carrossel). Mesma classificação do modo imediato do
+ * `scripts/publish-threads.ts` (#11076, `publishThreadsContainer`):
+ *
+ * - **Ambíguo → `send_unknown`** (a Meta pode ter publicado, refazer duplica o
+ *   post): fetch lançou (timeout/rede), HTTP 5xx, 2xx sem `id`, 2xx com corpo
+ *   ilegível.
+ * - **Falha definitiva → `definiteFailure`**: HTTP 4xx (ou `error` no corpo de
+ *   um 2xx), resposta 4xx ilegível. Nada saiu; texto e imagem única seguem
+ *   retriable (`failed`), o carrossel segue `dlq` como antes.
+ */
+async function publishThreadsCreation(
+  base: string,
+  creds: ThreadsCreds,
+  creationId: string,
+  opts: { label: string; idSuffix: string; definiteFailure: "failed" | "dlq" },
+): Promise<FireOutcome> {
+  const { label, idSuffix, definiteFailure } = opts;
+  const ambiguous = (reason: string): FireOutcome => ({ status: "send_unknown", reason: `${SEND_UNKNOWN_PREFIX} ${reason}` });
+  let res: Response;
+  let text: string;
   try {
-    const params = new URLSearchParams({
-      creation_id: containerId,
-      access_token: creds.accessToken,
-    });
-    const res = await fetch(`${base}/${creds.userId}/threads_publish`, {
+    const params = new URLSearchParams({ creation_id: creationId, access_token: creds.accessToken });
+    res = await fetch(`${base}/${creds.userId}/threads_publish`, {
       method: "POST",
       body: params,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-    const resText = await res.text();
-    let data: { id?: string; error?: { message?: string } };
-    try {
-      data = JSON.parse(resText);
-    } catch {
-      return {
-        status: "failed",
-        reason: `Threads /threads_publish resposta não-JSON: HTTP ${res.status}: ${resText.slice(0, 200)} (container_id=${containerId})`,
-      };
-    }
-    if (!res.ok || data.error) {
-      return {
-        status: "failed",
-        reason: `Threads /threads_publish HTTP ${res.status}: ${data.error?.message ?? resText.slice(0, 200)} (container_id=${containerId})`,
-      };
-    }
-    if (!data.id) {
-      return { status: "failed", reason: `Threads /threads_publish sem id: ${resText.slice(0, 200)} (container_id=${containerId})` };
-    }
-    return { status: "fired" };
+    text = await res.text();
   } catch (e) {
     const err = e as Error;
     const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return {
-      status: "failed",
-      reason: `Threads /threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
-    };
+    return ambiguous(`${label} fetch ${timeout ? "timeout" : "failed"}: ${err.message} ${idSuffix}`);
   }
+  const serverError = res.status >= 500;
+  let data: { id?: string; error?: { message?: string } };
+  try {
+    data = JSON.parse(text);
+  } catch {
+    const reason = `${label} resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} ${idSuffix}`;
+    return res.ok || serverError ? ambiguous(reason) : { status: definiteFailure, reason };
+  }
+  if (!res.ok || data.error) {
+    const reason = `${label} HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} ${idSuffix}`;
+    return serverError ? ambiguous(reason) : { status: definiteFailure, reason };
+  }
+  if (!data.id) return ambiguous(`${label} sem id: ${text.slice(0, 200)} ${idSuffix}`);
+  return { status: "fired" };
 }
 
 /** Nº máximo de tentativas de poll do status de um container Threads antes
@@ -1463,9 +1527,11 @@ async function pollThreadsContainerStatus(
  * uma chamada ISOLADA de 2-3 passos, o mesmo formato de `fireInstagramSingle`
  * (que usa `status:"failed"`/retriable pro passo 1 E pro passo 2 — nunca
  * `dlq`). Falha na CRIAÇÃO do container (antes de qualquer efeito colateral
- * publicado) e falha no PUBLISH (retry só refaz a mesma chamada idempotente,
- * nunca duplica um post — `threads_publish` só publica quando bem-sucedido)
- * são `"failed"`, retriable via `retry_count` normal, igual ao Instagram.
+ * publicado) e falha DEFINITIVA no PUBLISH (4xx) são `"failed"`, retriable via
+ * `retry_count` normal, igual ao Instagram. Resposta AMBÍGUA do publish
+ * (timeout, 5xx, 2xx sem id) é `send_unknown`, nunca refeita (#11106 — a
+ * premissa antiga "`threads_publish` só publica quando bem-sucedido" não vale
+ * quando a resposta se perde: a Meta pode ter publicado).
  * Só a falha do POLL usa `poll.permanent` pra decidir: `ERROR`/`EXPIRED`
  * (container genuinamente quebrado, re-tentar não muda o resultado) vira
  * `dlq`; timeout de tentativas esgotadas (`permanent:false` — pode ter sido
@@ -1510,41 +1576,11 @@ async function fireThreadsSingleImage(imageUrl: string, caption: string, creds: 
   const poll = await pollThreadsContainerStatus(base, containerId, creds.accessToken);
   if (!poll.ok) return { status: poll.permanent ? "dlq" : "failed", reason: poll.reason };
 
-  try {
-    const params = new URLSearchParams({ creation_id: containerId, access_token: creds.accessToken });
-    const res = await fetch(`${base}/${creds.userId}/threads_publish`, {
-      method: "POST",
-      body: params,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let data: { id?: string; error?: { message?: string } };
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return {
-        status: "failed",
-        reason: `Threads /threads_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (container_id=${containerId})`,
-      };
-    }
-    if (!res.ok || data.error) {
-      return {
-        status: "failed",
-        reason: `Threads /threads_publish HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
-      };
-    }
-    if (!data.id) {
-      return { status: "failed", reason: `Threads /threads_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
-    }
-    return { status: "fired" };
-  } catch (e) {
-    const err = e as Error;
-    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return {
-      status: "failed",
-      reason: `Threads /threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
-    };
-  }
+  return publishThreadsCreation(base, creds, containerId, {
+    label: "Threads /threads_publish",
+    idSuffix: `(container_id=${containerId})`,
+    definiteFailure: "failed",
+  });
 }
 
 /**
@@ -1692,45 +1728,12 @@ async function fireThreadsCarousel(imageUrls: string[], caption: string, creds: 
     return { status: "dlq", reason: `Threads carrossel: container pai (id=${parentId}) — ${parentPoll.reason}` };
   }
 
-  // Passo 3: publicar o container pai.
-  try {
-    const params = new URLSearchParams({ creation_id: parentId, access_token: creds.accessToken });
-    const res = await fetch(`${base}/${creds.userId}/threads_publish`, {
-      method: "POST",
-      body: params,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let data: { id?: string; error?: { message?: string } };
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return {
-        status: "dlq",
-        reason: `Threads carrossel: threads_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (parent_id=${parentId})`,
-      };
-    }
-    if (!res.ok || data.error) {
-      return {
-        status: "dlq",
-        reason: `Threads carrossel: threads_publish falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (parent_id=${parentId})`,
-      };
-    }
-    if (!data.id) {
-      return {
-        status: "dlq",
-        reason: `Threads carrossel: threads_publish sem id: ${text.slice(0, 200)} (parent_id=${parentId})`,
-      };
-    }
-    return { status: "fired" };
-  } catch (e) {
-    const err = e as Error;
-    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
-    return {
-      status: "dlq",
-      reason: `Threads carrossel: threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (parent_id=${parentId})`,
-    };
-  }
+  // Passo 3: publicar o container pai (#11106: resposta ambígua vira send_unknown).
+  return publishThreadsCreation(base, creds, parentId, {
+    label: "Threads carrossel: threads_publish",
+    idSuffix: `(parent_id=${parentId})`,
+    definiteFailure: "dlq",
+  });
 }
 
 /**

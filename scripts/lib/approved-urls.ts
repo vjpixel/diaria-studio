@@ -11,6 +11,7 @@
  */
 
 import { isNonEditorialHost } from "./ctr-utils.ts"; // #9899
+import { isAnchorChangelogUrl } from "./url-utils.ts"; // #10973
 
 export interface ApprovedUrlEntry {
   url?: string;
@@ -87,15 +88,18 @@ export function extractUrlsFromBuckets(
 /**
  * #9867: chave de comparação entre a URL do approved.json e a do markdown
  * final — host minúsculo sem `www.`, sem fragmento, sem `utm_*`, sem barra
- * final. URL que não parseia volta aparada (comparação literal).
+ * final. URL que não parseia volta aparada (comparação literal). Exceção
+ * (#10973): em changelog por âncora o fragmento identifica a entrada e fica
+ * na chave (`isAnchorChangelogUrl`).
  */
 export function usedUrlKey(raw: string): string {
   try {
     const u = new URL(raw.trim());
-    u.hash = "";
+    const path = u.pathname.replace(/\/+$/, "");
+    const hash = isAnchorChangelogUrl(u.hostname, path) ? u.hash : "";
     for (const k of [...u.searchParams.keys()]) if (/^utm_/i.test(k)) u.searchParams.delete(k);
     const qs = u.searchParams.toString();
-    return `${u.hostname.toLowerCase().replace(/^www\./, "")}${u.pathname.replace(/\/+$/, "")}${qs ? `?${qs}` : ""}`;
+    return `${u.hostname.toLowerCase().replace(/^www\./, "")}${path}${qs ? `?${qs}` : ""}${hash}`;
   } catch {
     return raw.trim().replace(/\/+$/, "");
   }

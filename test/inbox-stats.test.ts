@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   countEditorSubmissions,
+  countSubmissionSources,
   formatCoverageLine,
   resolveEditorEmail,
   readInboxLinkCountFromMarker,
@@ -155,10 +156,10 @@ describe("countEditorSubmissions (#592, #609, #1486)", () => {
     }
   });
 
-  it("#1486: _editorEmail é ignorado (backwards compat)", () => {
+  it("#11093: editorEmail identifica e-mails individuais do editor", () => {
     const { path, cleanup } = withArchive(sampleArchive);
     try {
-      assert.equal(countEditorSubmissions(path, "ninguem@example.com"), 4);
+      assert.equal(countEditorSubmissions(path, "ninguem@example.com"), 3);
     } finally {
       cleanup();
     }
@@ -617,5 +618,42 @@ DESTAQUE 1 | NOTÍCIA
       ].join("\n");
       assert.equal(checkCoverageLine(md).ok, true);
     });
+  });
+});
+
+
+describe("#11093 cobertura por remetente", () => {
+  it("45 threads / 14 remetentes / 0 editor => X=14, Y=435 e total=449 nos dois stages", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sender-coverage-"));
+    const captured = Array.from({ length: 45 }, (_, i) => ({
+      thread_id: `thread-${i}`, sender: `Nome ${i} <NEWS${i % 14}@example.com>`,
+    }));
+    try {
+      writeFileSync(join(dir, "captured-newsletters.json"), JSON.stringify(captured));
+      writeFileSync(join(dir, ".marker-inject-inbox-urls.json"), JSON.stringify({ details: {
+        editor_blocks: 0, newsletter_source: "captured-articles", captured_newsletter_count: 45,
+        total_pool_size: 480, total_editor_urls: 0, total_newsletter_urls: 45,
+      } }));
+      const x = getTotalEditorSubmissions(join(dir, "missing.md"), dir);
+      const y = computeDiariaDiscovered({ rawPoolSize: readInjectPoolSizeFromMarker(dir),
+        inboxLinks: readInboxLinkCountFromMarker(dir), totalConsidered: 480, editorSubmissions: x });
+      assert.equal(x, 14);
+      assert.equal(y, 435);
+      const line = formatCoverageLine({ editorSubmissions: x, diariaDiscovered: y!, selected: 12 });
+      assert.match(line, /analisou 449 conteúdos \(14 enviados por mim e 435 encontrados automaticamente\)/);
+      assert.equal(checkCoverageLine(line).ok, true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("une forwards preservados à captura, normaliza nomes/case e mantém subdomínios separados", () => {
+    const blocks = [
+      { from: "Outro nome <NEWS@example.com>", iso: "1", subject: "forward" },
+      { from: "news@mail.example.com", iso: "2", subject: "outra newsletter" },
+      { from: "Pixel <vjpixel@gmail.com>", iso: "3", subject: "links" },
+      { from: "Pixel <vjpixel@gmail.com>", iso: "3", subject: "links" },
+      { from: "vjpixel@gmail.com", iso: "4", subject: "links" },
+    ];
+    assert.deepEqual(countSubmissionSources(blocks, [{ sender: "News <news@example.com>" }]),
+      { editorEmails: 2, newsletterSenders: 2 });
   });
 });

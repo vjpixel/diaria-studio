@@ -131,6 +131,14 @@ export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
     ["adhoc-opus-low", "adhoc-opus-medium"],
     "agent genérico só pra fixar model/effort de dispatches ad-hoc (#9081/#9526) — sem prompt próprio; a tarefa vem inteira do dispatch, não há comportamento do agent a avaliar por replay.",
   ),
+  ...excludedGroup(
+    ["weekly-summary-writer"],
+    "resumo de 1 linha por item da retro semanal (#11062) — saída validada mecanicamente por lib/weekly-summaries.ts (tamanho, frases, repetição do título) e revisada pelo editor no gate do Passo 3; sem fixture de replay ainda.",
+  ),
+  ...excludedGroup(
+    ["stack-title-translator"],
+    "tradução de títulos do post semanal da Stack (#11005) — saída validada mecanicamente por lib/circle-stack-translate.ts (JSON completo, tamanho, sem markdown, sem cara de inglês) e revisada pelo editor na seleção antes do --publish; sem fixture de replay ainda.",
+  ),
   ...excludedGroup(["title-picker"], "fallback de escolha entre títulos JÁ escritos por writer-destaque — não gera texto novo, os graders de texto não discriminam nada aqui."),
 ];
 

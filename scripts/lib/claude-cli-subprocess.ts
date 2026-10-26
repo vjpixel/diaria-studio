@@ -62,6 +62,8 @@ export class ClaudeCliError extends Error {
   readonly maxTurnsExhausted: boolean;
   readonly stopReason: string | null;
   readonly subtype: string | null;
+  /** `true` quando o subprocesso foi morto pelo `timeoutMs` (#11005). */
+  readonly timedOut: boolean;
 
   constructor(
     message: string,
@@ -73,6 +75,7 @@ export class ClaudeCliError extends Error {
       maxTurnsExhausted?: boolean;
       stopReason?: string | null;
       subtype?: string | null;
+      timedOut?: boolean;
     },
   ) {
     super(message);
@@ -84,6 +87,7 @@ export class ClaudeCliError extends Error {
     this.maxTurnsExhausted = opts.maxTurnsExhausted ?? false;
     this.stopReason = opts.stopReason ?? null;
     this.subtype = opts.subtype ?? null;
+    this.timedOut = opts.timedOut ?? false;
     Object.setPrototypeOf(this, ClaudeCliError.prototype);
   }
 }
@@ -155,6 +159,22 @@ export interface ClaudeCliCallOptions {
    * `JSON.parse`.
    */
   outputFormat?: "text" | "json";
+  /**
+   * Teto de tempo do subprocesso em ms (#11005). Sem isto, um `claude --print`
+   * travado pendura quem chamou (ex.: task semanal headless). Estourou: o
+   * processo é morto e `callClaudeCli` lança `ClaudeCliError` com `timedOut: true`.
+   */
+  timeoutMs?: number;
+  /**
+   * Ferramentas built-in disponíveis ao modelo (`--tools`, #11134). Ausente =
+   * comportamento anterior (default do CLI). `[]` vira `--tools ""`: nenhuma
+   * ferramenta — para prompt que carrega texto externo não confiável (ex.:
+   * título de fonte na tradução da Stack), onde uma instrução embutida no dado
+   * não pode virar Bash/Edit numa task headless.
+   */
+  tools?: readonly string[];
+  /** `--strict-mcp-config` sem `--mcp-config` (#11134): nenhum servidor MCP carregado. */
+  strictMcpConfig?: boolean;
   execFn?: typeof execFileSync;
   resolveClaudeBinFn?: typeof resolveClaudeBin;
 }
@@ -178,6 +198,8 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
   const args = ["--print", "--permission-mode", "acceptEdits", "--max-turns", String(maxTurns), "--output-format", opts.outputFormat ?? "text", "--no-session-persistence"];
   if (opts.model) args.push("--model", opts.model);
   if (opts.effort) args.push("--effort", opts.effort);
+  if (opts.tools) args.push("--tools", opts.tools.join(","));
+  if (opts.strictMcpConfig) args.push("--strict-mcp-config");
   // #9577: `--` encerra as opções — prompt que começa com `---` (frontmatter de agente no replay do eval) não vira flag.
   args.push("--", prompt);
 
@@ -189,6 +211,7 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       env: filteredEnv,
+      ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     });
   } catch (err) {
     // #8405: `execFileSync` joga um Error cujo `.message` é `Command failed: <cmd + argv inteiro>`
@@ -224,9 +247,13 @@ export function callClaudeCli(prompt: string, opts: ClaudeCliCallOptions): strin
     // (ex: lançado manualmente com a string inteira), o prompt nunca entra
     // na mensagem: o inteiro só vive em `err.stderr`/`err.stdout`, que o
     // chamador lê sob demanda.
-    const message = maxTurnsExhausted
-      ? `${formatMaxTurnsExhaustedMessage({ maxTurns, status, subtype, stopReason })} ${command}`
-      : `claude CLI falhou (status ${status ?? "sinal"}): ${command}`;
-    throw new ClaudeCliError(message, { status, stdout, stderr, command, maxTurnsExhausted, stopReason, subtype });
+    // #11005: `execFileSync` com `timeout` mata o processo e joga `code: "ETIMEDOUT"`.
+    const timedOut = (err as { code?: string }).code === "ETIMEDOUT";
+    const message = timedOut
+      ? `claude CLI excedeu o timeout de ${opts.timeoutMs}ms: ${command}`
+      : maxTurnsExhausted
+        ? `${formatMaxTurnsExhaustedMessage({ maxTurns, status, subtype, stopReason })} ${command}`
+        : `claude CLI falhou (status ${status ?? "sinal"}): ${command}`;
+    throw new ClaudeCliError(message, { status, stdout, stderr, command, maxTurnsExhausted, stopReason, subtype, timedOut });
   }
 }

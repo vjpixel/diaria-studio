@@ -39,3 +39,18 @@ test("#10619 geradores/doc não recomendam mais 'touch antes do start' solto", (
   }
   assert.ok(!/saída 3/.test(readFileSync("docs/on-hold-vencimento-alarm-setup.md", "utf8")));
 });
+
+test("#11058 setup-systemd-timers: --help sai 0 e flag desconhecida sai 2 sem gerar nada", async () => {
+  const { main } = await import("../scripts/setup-systemd-timers.ts");
+  const log = console.log;
+  const err = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  try {
+    assert.equal(main(["--help"], "/repo/inexistente"), 0);
+    assert.equal(main(["--taks", "X"], "/repo/inexistente"), 2);
+  } finally {
+    console.log = log;
+    console.error = err;
+  }
+});

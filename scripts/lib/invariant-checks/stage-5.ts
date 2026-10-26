@@ -392,7 +392,7 @@ function checkCloudflareTokenSet(): InvariantViolation[] {
 }
 
 interface SocialPublishedJson {
-  posts?: Array<{ platform?: string; status?: string }>;
+  posts?: Array<{ platform?: string; status?: string; destaque?: string }>;
 }
 
 /**
@@ -472,6 +472,21 @@ function checkSocialPublishedComplete(editionDir: string): InvariantViolation[] 
       rule: "social-published-no-failed",
       message: `06-social-published.json tem ${failed.length} post(s) com status=failed`,
       source_issue: "#272",
+      severity: "warning",
+      file: path,
+    });
+  }
+  // #11105 — envio ambíguo (#11076): o post PODE ter saído. Não é "failed" (não
+  // se refaz às cegas) e sumia de todo aviso — `published: 0, failed: 0`.
+  const sendUnknown = posts.filter((p) => p.status === "send_unknown");
+  if (sendUnknown.length > 0) {
+    const ids = sendUnknown.map((p) => `${p.platform ?? "?"}/${p.destaque ?? "?"}`).join(", ");
+    violations.push({
+      rule: "social-published-send-unknown",
+      message:
+        `06-social-published.json tem ${sendUnknown.length} post(s) com envio ambíguo (status=send_unknown: ${ids}) — ` +
+        `conferir o perfil na rede; o que não saiu se refaz só daquele post (Threads: publish-threads.ts --retry {d}).`,
+      source_issue: "#11105",
       severity: "warning",
       file: path,
     });
@@ -899,8 +914,9 @@ function checkConsentBinding(editionDir: string, backendOverride?: string): Inva
           // truthy != pending_manual → tratado como dispatched. Agora: viola se
           // QUALQUER post não tem status de dispatch reconhecido. `failed` fica no
           // allowlist (foi tentado; o sibling social-published-no-failed em stage-5
-          // cobre a falha).
-          const DISPATCH_STATUSES = new Set(["scheduled", "draft", "published", "failed"]);
+          // cobre a falha). `send_unknown` (#11076/#11105) também foi tentado — o
+          // sibling social-published-send-unknown dá o aviso próprio (conferir o perfil).
+          const DISPATCH_STATUSES = new Set(["scheduled", "draft", "published", "failed", "send_unknown"]);
           const notFullyDispatched = !platformPosts.every(
             (p) => p.status != null && DISPATCH_STATUSES.has(p.status),
           );
@@ -909,7 +925,7 @@ function checkConsentBinding(editionDir: string, backendOverride?: string): Inva
               rule: `consent-binding-${platform}`,
               message:
                 `consent.${platform}="auto" mas nem todos os posts[platform="${platform}"] ` +
-                `têm status de dispatch (scheduled/draft/published/failed) — ` +
+                `têm status de dispatch (scheduled/draft/published/failed/send_unknown) — ` +
                 `dispatch automático parcial ou ausente (status: ${platformPosts.map((p) => p.status ?? "ausente").join(", ")}).`,
               source_issue: "#1575",
               // #2486: best-effort (ex: Instagram) → warning; canais com creds obrigatórias → error
@@ -1218,6 +1234,40 @@ function checkKitDiariaExclusiveAudienceDispatched(
   return [];
 }
 
+/**
+ * #10659: o §5b-youtube rodou? Na 261026 o passo (então dois comandos e um
+ * `log-event` em prosa) não rodou e nada acusou. Desde então ele é um comando
+ * só (`scripts/stage5-youtube.ts`), que SEMPRE grava `05-youtube-step.json` —
+ * inclusive com o consent desligado ou sem vídeo no Drive. Sem esse registro e
+ * sem `05-youtube-published.json` (upload pelo `/diaria-youtube`), o passo foi
+ * pulado. Warning: o vídeo é fail-soft, nunca trava o Stage 6. Sem
+ * `05-publish-consent.json` (edição antiga, ou Stage 5 sem 5b) não acusa.
+ */
+export function checkYouTubeStepRan(editionDir: string): InvariantViolation[] {
+  const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
+  if (!existsSync(consentPath)) return [];
+  try {
+    const consent = JSON.parse(readFileSync(consentPath, "utf8")) as { youtube?: unknown };
+    if (consent.youtube !== undefined && consent.youtube !== "auto") return [];
+  } catch {
+    return [];
+  }
+  const step = resolve(editionDir, "_internal", "05-youtube-step.json");
+  const published = resolve(editionDir, "_internal", "05-youtube-published.json");
+  if (existsSync(step) || existsSync(published)) return [];
+  return [
+    {
+      rule: "youtube-step-ran",
+      message:
+        "§5b-youtube não rodou: consent youtube auto, mas sem _internal/05-youtube-step.json nem 05-youtube-published.json — " +
+        "rode `npx tsx scripts/stage5-youtube.ts {AAMMDD} --edition-dir {EDITION_DIR}` (ou /diaria-youtube)",
+      source_issue: "#10659",
+      severity: "warning",
+      file: step,
+    },
+  ];
+}
+
 export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "sync-code-ran",
@@ -1243,6 +1293,15 @@ export const STAGE_5_RULES: InvariantRule[] = [
     // checado em §5a (pre-dispatch), antes de qualquer publicação acontecer.
     postDispatchOnly: true,
     run: checkSocialPublishedComplete,
+  },
+  {
+    id: "youtube-step-ran",
+    description: "§5b-youtube rodou: 05-youtube-step.json ou 05-youtube-published.json com consent youtube auto (#10659)",
+    source_issue: "#10659",
+    stage: 5,
+    // Roda no 5b-youtube, depois do 5a (pre-dispatch).
+    postDispatchOnly: true,
+    run: checkYouTubeStepRan,
   },
   {
     id: "stage-5-review-loop-enforced",

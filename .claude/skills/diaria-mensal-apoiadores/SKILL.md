@@ -3,6 +3,29 @@ name: diaria-mensal-apoiadores
 description: Fecha o loop de divulgação da Retrospectiva do Mês (data/monthly/{ciclo}/draft.md) — página no ar (retrospectiva.diar.ia.br/{AAMM}), e-mail Kit pros apoiadores Mantenedor/Patrono, post restrito no apoia.se, posts públicos de chamada (CTA pro apoia.se) — 3 por rede, um por história D1/D2/D3, no formato dos destaques diários, em LinkedIn página, Facebook, Instagram, Threads e X (D+1 nos slots da diária, `publishing.social.fallback_schedule`, hoje 09:45/12:15/17:15 BRT, as 5 redes juntas, #9508) + 1 no perfil LinkedIn (D+2 09:30, manual) — e box no slot 2 da diária (alternando com o Artigo Especial) — com gate humano único e state por canal (#9474, espelho de /diaria-artigo-especial). Skill manual e separada do fluxo 0-5 de /diaria-mensal. Requer a máquina do editor (Claude in Chrome logado) pro apoia.se. Uso — `/diaria-mensal-apoiadores --cycle YYMM-MM [--skip pagina,apoiase,linkedin,facebook,instagram,threads,x,box,email,{rede}:dN] [--dry-run] [--force canal[:dN][,canal]] [--replace-linkedin-single] [--schedule "AAAA-MM-DDTHH:mm" | --draft] [--base-date AAAA-MM-DD] [--at ISO] [--unpin] [--mark-sent]`.
 ---
 
+## Agenda de divulgação ciente da grade (#10819)
+
+Esta regra substitui as menções abaixo a horários fixos de divulgação: os
+horários antigos são preferências para posts NOVOS. Reusar o planner de
+`scripts/divulgacao-slot-planner.ts` (2h entre posts da mesma conta, picos
+07–09/12–14/18–21 BRT como palpite geral, sem dados por conta; janela 06–22).
+A grade lê os stores diários (incluindo Reels/Shorts e collab do Instagram)
+e GET /list do Worker, os agendados direto no Facebook (Graph API
+`scheduled_posts`, por página habilitada) e a fila do X no Buffer
+(`BUFFER_ACCESS_TOKEN`); cada fonte tem timeout de 10s e é fail-soft com
+aviso. Stage 5 segue fixo conforme #10305. Não reagendar posts já registrados.
+Mostrar os horários efetivos por conta e as premissas no gate; respeitar
+avisos de grade incompleta. Não afirmar que todas as redes saem juntas.
+
+`publish-retrospectiva-social.ts --dry-run` já calcula os slots das unidades
+ativas nas 5 redes (LinkedIn página, Facebook, Instagram, Threads e X, cada
+uma com o seu horário); a execução usa o mesmo planner. No Facebook, o horário
+vale para todas as páginas habilitadas e respeita a grade de cada uma. O
+`dueAt` do payload do X já sai planejado. O horário do perfil manual também é
+planejado e impresso. Como as 5 redes passam pelo planner (que enxerga o store
+da diária), a edição diária agendada no mesmo dia não barra mais o pré-voo.
+
+
 # /diaria-mensal-apoiadores
 
 Fecha o loop de divulgação da **Retrospectiva do Mês** — a recompensa

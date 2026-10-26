@@ -752,6 +752,38 @@ describe("adaptador publish-retrospectiva-social", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("#10819: agenda assíncrona recebe só posts ativos e libera canais planejados com diária no dia", async () => {
+    let requested: readonly RetrospectivaPostKey[] = [];
+    const { o, calls } = opts({
+      posts: ["linkedin_pagina:d1", "threads:d1"],
+      dailyEditionCheck: () => ({ dirExists: true, livePosts: 4 }),
+      resolveScheduledAts: async (active) => {
+        requested = active ?? [];
+        return { ...SCHEDULE, d1: { ...SCHEDULE.d1, linkedin_pagina: "2026-10-11T14:00:00-03:00", threads: "2026-10-11T14:00:00-03:00" } };
+      },
+    });
+    await runRetrospectivaSocialDispatch(o);
+    assert.deepEqual(requested, ["linkedin_pagina:d1", "threads:d1"]);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every((c) => c.input.scheduledAt === "2026-10-11T14:00:00-03:00"));
+  });
+
+  it("#10819: Facebook/X planejados pela grade (plannedChannels) não são barrados pela diária no dia", async () => {
+    const { o, calls } = opts({
+      posts: ["facebook:d1", "x:d1"],
+      dailyEditionCheck: () => ({ dirExists: true, livePosts: 4 }),
+      plannedChannels: new Set(["linkedin_pagina", "facebook", "instagram", "threads", "x"]),
+    });
+    const r = await runRetrospectivaSocialDispatch(o);
+    assert.ok(r.results.some((x) => x.action === "x-payload"));
+    assert.equal(calls.length, 1);
+    // Sem plannedChannels (caller que não planeja Facebook/X) a recusa continua.
+    rmSync(tmp, { recursive: true, force: true });
+    mkdirSync(tmp, { recursive: true });
+    const legado = opts({ posts: ["facebook:d1"], dailyEditionCheck: () => ({ dirExists: true, livePosts: 4 }) });
+    await assert.rejects(runRetrospectivaSocialDispatch(legado.o), /a edição diária 261011 tem 4 post/);
+  });
+
   it("edição diária com posts agendados no dia alvo (mesmos slots) recusa o pré-voo; pasta sem posts ou dia útil só avisam", async () => {
     const seen: string[] = [];
     const conflito = opts({

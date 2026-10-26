@@ -8,9 +8,9 @@
  * ver `.claude/skills/diaria-linkedin-semanal/SKILL.md`).
  *
  * Regras do comentário 260802 (3º) do #4456, todas aplicadas aqui:
- *   - Título do destaque entra LITERAL — só a numeração ("1.", "2.", "3.")
- *     é adicionada. Nunca reescrito, nunca linkado (ver "Cai o link por
- *     destaque").
+ *   - Título do destaque entra LITERAL — sem numeração desde o #11006
+ *     (23/10/2026, decisão do editor; antes saía "1. Título"). Nunca reescrito,
+ *     nunca linkado (ver "Cai o link por destaque").
  *   - Bloco USE MELHOR renderiza sempre que há candidato elegível (`useMelhor`
  *     presente) — comentário do editor é OPCIONAL desde o #5970 (reverte a
  *     regra anterior "sem comentário, sai a edição"): presente vira um
@@ -69,11 +69,11 @@ export function endsInBareDomainLabel(label: string): boolean {
 }
 
 /**
- * Separador entre os destaques de uma mesma edição na lista "Edições da semana".
- * Precisa ser TEXTO (não estrutura HTML) porque o editor de artigo do LinkedIn
- * achata `<ul>` aninhada — ver comentário no laço de `weeklyEditions`.
+ * Rótulo da seção final desde o #11006 (era "Edições da semana"): só os
+ * destaques das edições que NÃO apareceram acima, um título por linha — mesmo
+ * formato do bloco equivalente do post da Stack (`circle-stack-render.ts`).
  */
-export const DESTAQUE_SEPARATOR = " · ";
+export const OTHER_HIGHLIGHTS_HEADING = "Outros destaques da semana";
 
 /**
  * Âncora do CTA que fecha a ABERTURA (decisão do editor 260803, #4456). Quem
@@ -162,7 +162,7 @@ export interface WeeklyLinkedinRenderInput {
   /** 1-3 manchetes, na ordem de seleção. */
   headlines: WeeklyLinkedinHeadlineInput[];
   useMelhor?: WeeklyLinkedinUseMelhorInput;
-  /** Edições da semana com D1 parseável (até 5) — link + destaques de cada uma ("Edições da semana", #4456). */
+  /** Edições da semana com D1 parseável (até 5) — base de "Outros destaques da semana" (#4456, #11006: o render tira o que já apareceu acima). */
   weeklyEditions: WeeklyLinkedinEditionItem[];
   /** Abertura — prosa nova, já humanizada/corrigida pela skill (Skill("humanizador") + Clarice). */
   opening: string;
@@ -263,12 +263,36 @@ export function linkifyWordmark(paragraphsHtmlOut: string, cycle: string): Linki
   };
 }
 
-/** Pure: título numerado — única transformação permitida sobre o título literal (#4456). */
-export function numberedTitle(n: number, title: string): string {
-  return `${n}. ${title}`;
+/** Pure: título normalizado para comparar "já apareceu acima" (#11006). */
+export function normalizeHighlightTitle(title: string): string {
+  return String(title).replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-/** Pure: `AAMMDD` → "Edição de DD/MM" — rótulo de link pra "Edições da semana", nunca termina em domínio nu. */
+/**
+ * Pure (#11006): por edição, os destaques que ainda não apareceram no artigo
+ * (manchetes e Use Melhor), comparados por título normalizado. Edição sem
+ * título restante sai da lista; lista vazia = seção some.
+ *
+ * Limite conhecido: manchete com título diferente do da edição (reescrito) não
+ * casa — `weeklyEditions` não carrega as URLs dos destaques para casar por link.
+ * Hoje a manchete entra literal (#4456), então o título bate.
+ */
+export function otherWeeklyHighlights(
+  weeklyEditions: readonly WeeklyLinkedinEditionItem[],
+  shownTitles: readonly string[],
+): { item: WeeklyLinkedinEditionItem; titles: string[] }[] {
+  const shown = new Set(shownTitles.map(normalizeHighlightTitle));
+  return weeklyEditions
+    .map((item) => ({
+      item,
+      titles: item.destaques
+        .map((t) => String(t).replace(/\s+/g, " ").trim())
+        .filter((t) => t && !shown.has(normalizeHighlightTitle(t))),
+    }))
+    .filter((x) => x.titles.length > 0);
+}
+
+/** Pure: `AAMMDD` → "Edição de DD/MM" — rótulo do link de cada edição em "Outros destaques da semana", nunca termina em domínio nu. */
 export function editionLabel(aammdd: string): string {
   const dd = aammdd.slice(4, 6);
   const mm = aammdd.slice(2, 4);
@@ -300,7 +324,7 @@ export interface WeeklyLinkedinRenderResult {
  * corrigidos (responsabilidade da skill, não deste módulo).
  *
  * Ordem de montagem (opening → headline 1 → headline 2 → Use Melhor →
- * headline 3 → Edições da semana → closing) restaura o template original da
+ * headline 3 → Outros destaques da semana → closing) restaura o template original da
  * issue #4456 — decisão do editor (#4489): o CTA de assinatura que fecha o
  * bloco Use Melhor é o primeiro convite da edição, e cair no meio (depois de
  * 2 dos 3 headlines) alcança o leitor engajado que não necessariamente lê a
@@ -333,12 +357,16 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     parts.push(`<p><a href="${escapeHtml(ctaAberturaUrl)}">${escapeHtml(CTA_ABERTURA_LABEL)}</a></p>`);
   }
 
-  function pushHeadline(h: WeeklyLinkedinHeadlineInput, n: number): void {
-    parts.push(`<h2>${escapeHtml(numberedTitle(n, h.title))}</h2>`);
+  function pushHeadline(h: WeeklyLinkedinHeadlineInput): void {
+    // #11006: título sem "N. " na frente (decisão do editor, 23/10/2026).
+    parts.push(`<h2>${escapeHtml(h.title)}</h2>`);
     if (h.editionDate) {
       parts.push(`<p><em>${escapeHtml(headlineOriginLabel(h.editionDate))}</em></p>`);
     }
     parts.push(paragraphsHtml(h.body));
+    // #11068 (decisão do editor, 26/10/2026): `why` cru de propósito. Aparece
+    // ROTULADO, e o padrão de resumo da #11062 só vale onde o texto aparece
+    // sem rótulo (legenda da retro semanal, format-weekly-social.ts).
     if (h.why.trim()) {
       parts.push(`<p><strong>Por que isso importa:</strong> ${escapeHtml(h.why.trim())}</p>`);
     }
@@ -350,7 +378,7 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
   // "depois do 2º disponível"); com 1, entra logo depois dele (equivalente a
   // "no fim", já que não sobra headline 3); com 0, entra logo após a abertura.
   const useMelhorSplitIndex = Math.min(2, input.headlines.length);
-  input.headlines.slice(0, useMelhorSplitIndex).forEach((h, i) => pushHeadline(h, i + 1));
+  input.headlines.slice(0, useMelhorSplitIndex).forEach((h) => pushHeadline(h));
 
   let useMelhorRendered = false;
   if (input.useMelhor) {
@@ -379,35 +407,33 @@ export function renderLinkedinWeeklyHtml(input: WeeklyLinkedinRenderInput): Week
     useMelhorRendered = true;
   }
 
-  input.headlines.slice(useMelhorSplitIndex).forEach((h, i) => pushHeadline(h, useMelhorSplitIndex + i + 1));
+  input.headlines.slice(useMelhorSplitIndex).forEach((h) => pushHeadline(h));
 
-  if (input.weeklyEditions.length > 0) {
-    parts.push(`<h3>Edições da semana</h3>`);
-    parts.push("<ul>");
-    for (const item of input.weeklyEditions) {
-      // #4489 finding 2 (mesmo guard do bloco Use Melhor — endsInBareDomainLabel
-      // sobre um.title, acima): destaque em texto puro (não linkado) ainda
-      // arrisca auto-linkagem do LinkedIn se terminar em domínio nu —
+  // #11006 (23/10/2026, decisão do editor): "Outros destaques da semana" — só os
+  // títulos que não apareceram acima, um por linha. A data (link da edição com a
+  // UTM `lista`) fica em parágrafo próprio e os títulos vão numa <ul> logo abaixo.
+  // Uma <ul> por edição, nunca aninhada: o editor de artigo do LinkedIn achata
+  // <ul> aninhada (achado ao vivo 260803), mas lista simples sob parágrafo é
+  // estrutura que ele suporta.
+  const shownTitles = [...input.headlines.map((h) => h.title), ...(input.useMelhor ? [input.useMelhor.title] : [])];
+  const others = otherWeeklyHighlights(input.weeklyEditions, shownTitles);
+  if (others.length > 0) {
+    parts.push(`<h3>${escapeHtml(OTHER_HIGHLIGHTS_HEADING)}</h3>`);
+    for (const { item, titles } of others) {
+      // #4489 finding 2 (mesmo guard do bloco Use Melhor): título em texto puro
+      // ainda arrisca auto-linkagem do LinkedIn se terminar em domínio nu —
       // warn-only, título é literal.
-      for (const destaque of item.destaques) {
-        if (endsInBareDomainLabel(destaque)) {
+      for (const t of titles) {
+        if (endsInBareDomainLabel(t)) {
           warnings.push(
-            `Edições da semana: destaque "${destaque}" (${item.editionDate}) termina em domínio nu — risco de auto-linkagem partir o link no paste do LinkedIn.`,
+            `${OTHER_HIGHLIGHTS_HEADING}: destaque "${t}" (${item.editionDate}) termina em domínio nu — risco de auto-linkagem partir o link no paste do LinkedIn.`,
           );
         }
       }
       const listUrl = buildLinkedinWeeklyUrl(item.url, input.cycle, "lista");
-      // Lista PLANA com separador visível, nunca <ul> aninhada (achado ao vivo
-      // 260803, colando a edição #1): o editor de artigo do LinkedIn não suporta
-      // aninhamento e ACHATA o <ul> interno, colando os 3 destaques num bloco
-      // corrido sem separador nenhum ("...Claude Opus 5 EUA fiscalizam GPT-5.6..."),
-      // onde não dá pra ver onde um título acaba e o outro começa. O separador
-      // sobrevive ao achatamento porque é texto, não estrutura.
-      const destaques = item.destaques.map(escapeHtml).join(DESTAQUE_SEPARATOR);
-      const suffix = destaques ? `: ${destaques}` : "";
-      parts.push(`<li><a href="${escapeHtml(listUrl)}">${escapeHtml(editionLabel(item.editionDate))}</a>${suffix}</li>`);
+      parts.push(`<p><a href="${escapeHtml(listUrl)}">${escapeHtml(editionLabel(item.editionDate))}</a></p>`);
+      parts.push(`<ul>\n${titles.map((t) => `<li>${escapeHtml(t)}</li>`).join("\n")}\n</ul>`);
     }
-    parts.push("</ul>");
     parts.push("<hr/>");
   }
 

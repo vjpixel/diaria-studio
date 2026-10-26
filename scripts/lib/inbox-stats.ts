@@ -8,13 +8,13 @@
  *    encontrou outros {Y} artigos. Selecionamos os {Z} mais relevantes
  *    para as pessoas que assinam a newsletter."
  *
- * #609: usa "submissões" (não "artigos enviados") — cada bloco de inbox
- * conta como 1 submissão, independente de quantas URLs venham dentro
- * (forwards de newsletter podem ter dezenas de URLs mas representam 1
- * ação editorial de envio).
+ * #11093: X conta remetentes distintos de newsletters + e-mails distintos
+ * do editor; forwards com From original entram no conjunto de remetentes.
+ * Total analisado = X + Y. Y permanece a contagem de links automáticos.
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { canonicalizeGmail, extractEmail } from "./canonicalize-gmail.ts";
 import { join } from "node:path";
 import { CLARICE_SEED_EMAIL } from "./clarice-seed.ts";
 import { pluralPtBr, coverageSelPhrase } from "./coverage-words.ts";
@@ -47,6 +47,9 @@ interface InjectMarkerFields {
   total_pool_size?: number;
   newsletter_source?: string;
   captured_newsletter_count?: number;
+  distinct_newsletter_senders?: number;
+  editor_blocks?: number;
+  newsletter_blocks?: number;
   capture_failed?: boolean;
   capture_error?: string;
 }
@@ -112,93 +115,83 @@ export function computeDiariaDiscovered(opts: {
   return null;
 }
 
-/**
- * Conta TODOS os blocos no archive como submissões do editor (#1486).
- *
- * Antes (#592), filtrava por `from:` === editorEmail, mas forwards de
- * newsletters (7min.ai, AlphaSignal, etc.) chegam com `from:` do sender
- * original — o editor apenas fez forward. Todos os blocos existem porque
- * o editor os enviou, então contamos todos.
- *
- * `_editorEmail` mantido para backwards compat mas não é mais usado.
- *
- * Retorna 0 se arquivo ausente, malformado, ou vazio.
- */
-export function countEditorSubmissions(
-  inboxArchivePath: string,
-  _editorEmail?: string,
-): number {
-  if (!existsSync(inboxArchivePath)) return 0;
-  let text: string;
-  try {
-    text = readFileSync(inboxArchivePath, "utf8");
-  } catch {
-    return 0;
+/** #11093: newsletters contam por endereço; e-mails do editor por identidade. */
+export function countSubmissionSources(
+  blocks: Array<{ from: string; iso: string; subject: string }>,
+  captured: Array<{ sender?: string; thread_id?: string }> = [],
+  editorEmail = DEFAULT_EDITOR_EMAIL,
+): { editorEmails: number; newsletterSenders: number } {
+  const senders = new Set<string>();
+  const emails = new Set<string>();
+  for (const [i, entry] of captured.entries()) {
+    senders.add(entry.sender ? extractEmail(entry.sender).toLowerCase() : `legacy:${entry.thread_id ?? i}`);
   }
-  const blocks = text.split(/^## /m).slice(1);
-  return blocks.length;
+  for (const block of blocks) {
+    if (!block.from || canonicalizeGmail(block.from) === canonicalizeGmail(editorEmail)) {
+      emails.add(`${block.iso}\n${block.subject}`);
+    } else {
+      // Forward com From original preservado participa do mesmo conjunto da captura.
+      senders.add(extractEmail(block.from).toLowerCase());
+    }
+  }
+  return { editorEmails: emails.size, newsletterSenders: senders.size };
 }
 
-/**
- * #1541: conta entradas em `{internalDir}/captured-newsletters.json` — 1 por
- * newsletter thread capturada (não por URL extraída). Duplica
- * `readCapturedNewsletterCount` de `sync-coverage-line.ts` (mesmo arquivo,
- * mesma semântica) — mantido aqui pra `getTotalEditorSubmissions` não
- * importar de `scripts/sync-coverage-line.ts` (script top-level, não lib).
- */
-function readCapturedNewsletterCountFile(internalDir: string): number {
-  const capPath = join(internalDir, "captured-newsletters.json");
-  if (!existsSync(capPath)) return 0;
+function readSubmissionBlocks(path: string): Array<{ from: string; iso: string; subject: string }> {
   try {
-    const data = JSON.parse(readFileSync(capPath, "utf8"));
-    return Array.isArray(data) ? data.length : 0;
-  } catch {
-    return 0;
-  }
+    return readFileSync(path, "utf8").split(/^## /m).slice(1).map((segment) => ({
+      iso: segment.split("\n")[0].trim(),
+      from: segment.match(/^-\s*\*\*from:\*\*\s*(.+)$/m)?.[1].trim() ?? "",
+      subject: segment.match(/^-\s*\*\*subject:\*\*\s*(.+)$/m)?.[1].trim() ?? "",
+    }));
+  } catch { return []; }
 }
 
-/**
- * #3696: X real de "enviados por mim" = blocos do inbox archive
- * (`countEditorSubmissions`) + newsletters capturadas fora do inbox.md
- * quando o marker sinaliza `newsletter_source: "captured-articles"`
- * (`fetch-newsletter-threads.ts` → `capture-newsletter-urls.ts`, Stage 0
- * §0b-bis — Cyberman/Superhuman/TLDR/Lenny's/Marktechpost/7min.ai).
- *
- * Bug raiz (#3696): quando as newsletters vêm pelo caminho "captured-articles"
- * (refatoração #1520, "no inbox.md intermediary"), elas NUNCA criam bloco em
- * `inbox.md` — `countEditorSubmissions` sozinha não tem visibilidade sobre
- * elas, subcontando X. Caso real 260720: `countEditorSubmissions` = 3
- * (editor_blocks), mas `captured_newsletter_count` = 9 — X correto = 12.
- *
- * Quando `newsletter_source` é `"inbox-md"` (newsletters forwardadas
- * preservando o sender original, sem o caminho de captura), os blocos JÁ
- * estão no inbox.md e `countEditorSubmissions` (que conta TODOS os blocos,
- * #1486) já os inclui — somar `captured_newsletter_count` aqui duplicaria.
- * Só soma quando `newsletter_source === "captured-articles"` (0 blocos
- * gravados nesse caminho, #1520).
- *
- * Marker ausente/incompleto → apenas `countEditorSubmissions` (comportamento
- * anterior, sem dado extra disponível pra somar).
- *
- * Mesma lógica de composição que `sync-coverage-line.ts:readSubmissionsCountFromMarker`
- * já implementa (via `editor_blocks + captured_newsletter_count`) — aqui
- * reescrita sobre a contagem de blocos do ARCHIVE (não o `editor_blocks` do
- * marker), que é o dado disponível em `apply-gate-edits.ts` (Stage 1, roda
- * antes do inbox.md ser arquivado — #680).
- */
+export function countEditorSubmissions(inboxArchivePath: string, editorEmail?: string): number {
+  const counts = countSubmissionSources(readSubmissionBlocks(inboxArchivePath), [], editorEmail);
+  return counts.editorEmails + counts.newsletterSenders;
+}
+
+function readCapturedNewsletters(internalDir: string): Array<{ sender?: string; thread_id?: string }> | null {
+  try {
+    const data = JSON.parse(readFileSync(join(internalDir, "captured-newsletters.json"), "utf8"));
+    return Array.isArray(data) ? data : null;
+  } catch { return null; }
+}
+
+/** Shared by Stage 1 and Stage 4. Old markers use sender data when available. */
+export function readSubmissionCountFromMarker(internalDir: string): number | null {
+  const marker = readInjectMarker(internalDir);
+  if (!marker || typeof marker.editor_blocks !== "number") return null;
+  const captured = readCapturedNewsletters(internalDir);
+  const newsletters = marker.distinct_newsletter_senders ?? (
+    marker.newsletter_source === "captured-articles"
+      ? (captured !== null
+        ? countSubmissionSources([], captured).newsletterSenders
+        : marker.captured_newsletter_count ?? 0)
+      : marker.newsletter_blocks ?? 0
+  );
+  return marker.editor_blocks + (typeof newsletters === "number" ? newsletters : 0);
+}
+
 export function getTotalEditorSubmissions(
   inboxArchivePath: string,
   internalDir: string,
   editorEmail?: string,
 ): number {
-  const directBlocks = countEditorSubmissions(inboxArchivePath, editorEmail);
   const marker = readInjectMarker(internalDir);
-  if (!marker || marker.newsletter_source !== "captured-articles") return directBlocks;
-  const captured =
-    typeof marker.captured_newsletter_count === "number"
-      ? marker.captured_newsletter_count
-      : readCapturedNewsletterCountFile(internalDir);
-  return directBlocks + captured;
+  if (typeof marker?.distinct_newsletter_senders === "number") {
+    const count = readSubmissionCountFromMarker(internalDir);
+    if (count !== null) return count;
+  }
+  const captured = readCapturedNewsletters(internalDir);
+  if (captured !== null) {
+    const counts = countSubmissionSources(readSubmissionBlocks(inboxArchivePath), captured, editorEmail);
+    return counts.editorEmails + counts.newsletterSenders;
+  }
+  return countEditorSubmissions(inboxArchivePath, editorEmail) + (
+    marker?.newsletter_source === "captured-articles" ? marker.captured_newsletter_count ?? 0 : 0
+  );
 }
 
 /**

@@ -308,16 +308,22 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // pela Graph API — por isso o `guard` abaixo: sem a junction `data/`
     // montada não há edição para ler.
     //
-    // DECLARADA, NÃO ARMADA (subagente overnight de worktree isolado) — o
-    // `enabled: false` também impede o `Diaria-Remediate-Never-Armed-Tasks`
-    // de armá-la sozinho. Arme: `docs/video-d1-link-watch-setup.md`.
+    // ARMA-ELEGÍVEL desde 23/10/2026 (/diaria-develop 261023b, #10941):
+    // dry-run de 261023 conferido com o editor presente — vídeo relido
+    // `published` e a mensagem do post do Facebook LIDA pela Graph API
+    // (o dry-run só lê; o caminho de ESCRITA — editar/comentar — ainda não
+    // rodou ao vivo, a 1ª vez é às 06:05). "Só no `300`" é CONVENÇÃO, não
+    // guard: vale porque o `Diaria-Remediate-Never-Armed-Tasks` só está
+    // armado no `300` (as outras máquinas são Windows, sem systemd) — armar
+    // o Remediate numa 2ª máquina Linux com `data/` montada faria as duas
+    // rodarem às 06:05 (o `05-video-link-apply.json` não protege da corrida
+    // entre máquinas). Ver `docs/video-d1-link-watch-setup.md`.
     schedule: { kind: "daily", hour: 6, minute: 5 },
     guard: {
       requiredFile: "editions",
       abortMessage:
         "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do upload.",
     },
-    enabled: false,
     issue: "#10941",
   },
   {
@@ -884,6 +890,29 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#5111",
   },
   {
+    name: "Diaria-Retro-Semanal-Staleness-Alarm",
+    description: "alarme de staleness da retro semanal (carrossel highlights do sabado nao agendado)",
+    // #11069, irmão do Diaria-LinkedIn-Weekly-Staleness-Alarm acima: checa
+    // `data/weekly/{sábado}/06-weekly-published.json` e, se ele não provar,
+    // a fila do Worker (`GET /list`, leitura) — store replicado por OneDrive
+    // pode atrasar (item 23 de context/overnight-dispatch-rules.md).
+    steps: [{ key: "alarm", script: "scripts/retro-semanal-staleness-alarm.ts" }],
+    logPath: "weekly/.retro-semanal-staleness-alarm.log",
+    // Sábado 07:00 BRT, não 09:00 como a issue sugeria de exemplo: durante o
+    // teste rotativo (#10305) o carrossel de sábado pode cair em 08:00
+    // (`publishing.social.rotation.weekend_candidates`), e 09:00 avisaria
+    // depois do slot. 07:00 deixa 1h antes do candidato mais cedo e 4h antes
+    // do 11:00 padrão. Slot livre no sábado (04:30 Hotmart-Vendas-Sync,
+    // 03:40 Gc-Data-Dir-Weekly — nada às 07:00).
+    schedule: { kind: "weekly", dayOfWeek: "Saturday", hour: 7, minute: 0 },
+    // Sem guard de `requiredFile`: store ausente é justamente o achado; o
+    // falso positivo de replicação é coberto pela consulta ao Worker.
+    // Registrada depois do cutover systemd (#4798), sem contraparte Windows
+    // (#5074). DECLARADA, NÃO ARMADA nesta unidade (subagente em clone
+    // isolado) — arme em `300`: docs/retro-semanal-staleness-alarm-setup.md.
+    issue: "#11069",
+  },
+  {
     name: "Diaria-Circle-Stack-Weekly-Preview",
     description:
       "prévia semanal do Radar de Notícias Stack (Circle da Stack) em DRY-RUN + aviso ao editor; nunca publica (#10904)",
@@ -903,7 +932,14 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // registro (as demais são domingo/sexta/sábado); nenhuma daily em 07:30
     // (vizinhas: 07:10, 07:20, 07:46) e `interval` só cai em :00.
     schedule: { kind: "weekly", dayOfWeek: "Monday", hour: 7, minute: 30 },
-    issue: "#10904",
+    // #10977: sem `data/` montado o script grava seleção/prévia vazias (ou
+    // falha sem edição nenhuma) e o aviso ao editor sai errado.
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem gerar a previa da Stack.",
+    },
+    issue: "#10904, #10977",
   },
   {
     name: "Diaria-Hub-Drift-Check",
@@ -1114,6 +1150,57 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // `test/linkedin-personal.test.ts`.
     schedule: { kind: "interval", hours: 1 },
     issue: "#9568",
+  },
+  {
+    name: "Diaria-Shorts-LinkedIn-Profile",
+    description:
+      "publica o vertical da edição do dia no LinkedIn PESSOAL do editor, baixando do Drive quando ainda não está no 300 (#10982)",
+    steps: [{ key: "post", script: "scripts/shorts-linkedin-profile-timer.ts" }],
+    logPath: "shorts/.linkedin-profile-timer.log",
+    // Diária 06:31 BRT (#10982): 1 minuto depois do 1º horário do teste do
+    // vertical (#10831, `publishing.shorts.schedule.rotation_times`). Os
+    // horários em hora cheia (08:00, 12:00, e o `default_time` 12:00) caem na
+    // execução de hora em hora abaixo, no minuto 0. O script só publica depois
+    // do horário do vertical do dia (até 3 h de atraso), então rodar antes é
+    // no-op; o lock O_EXCL resolve a concorrência entre as duas. Mudou um
+    // horário do teste para fora da hora cheia? Ajustar aqui —
+    // `test/shorts-linkedin-profile-timer-10982.test.ts` trava o par.
+    // Sem `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153)
+    // arma no 300 depois do merge, que é o que tira o passo manual (#10982).
+    schedule: { kind: "daily", hour: 6, minute: 31 },
+    issue: "#10982",
+  },
+  {
+    name: "Diaria-Shorts-LinkedIn-Profile-Catchup",
+    description:
+      "de hora em hora: publica o vertical no LinkedIn PESSOAL quando o horário do dia é hora cheia (08:00/12:00) e baixa o vertical do Drive assim que ele aparece (#10982)",
+    steps: [{ key: "post", script: "scripts/shorts-linkedin-profile-timer.ts" }],
+    logPath: "shorts/.linkedin-profile-timer-catchup.log",
+    schedule: { kind: "interval", hours: 1 },
+    issue: "#10982",
+  },
+  {
+    name: "Diaria-Threads-Personal-Token",
+    description:
+      "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",
+    steps: [{ key: "refresh", script: "scripts/threads-personal-token-refresh.ts" }],
+    logPath: "threads-personal/.token-refresh.log",
+    // Diária (#10772): só chama a API quando faltam ≤30 dias para vencer (ou o
+    // vencimento é desconhecido), então o custo é 0 requisições na maioria dos
+    // dias. Mesmas regras do refresh do token da diar.ia.br no Worker (#9618),
+    // fora dele porque o consumidor previsto (`publish-shorts.ts`, quando a
+    // integração do destino `threads_profile` entrar) é local e lê o Doppler.
+    // Sem token e sem `THREADS_PERSONAL_USER_ID` sai 0 sem fazer nada.
+    // DECLARADA, NÃO ARMADA — enabled:false DE PROPÓSITO: o 300 (onde as tasks
+    // rodam) não tem o Doppler CLI, então a task ficaria em skip para sempre
+    // ou renovaria um token que nunca chega ao Doppler. Pré-requisito para
+    // armar: o 300 escrever no Doppler (CLI autenticado ou API HTTP com
+    // service token de escrita), #11077. Até lá, refresh manual na máquina
+    // do editor. Sem o enabled:false o Remediate-Never-Armed-Tasks (#8153) a
+    // auto-armaria no 300.
+    enabled: false,
+    schedule: { kind: "daily", hour: 4, minute: 20 },
+    issue: "#10772",
   },
   {
     name: "Diaria-Hub-Staleness-Check",

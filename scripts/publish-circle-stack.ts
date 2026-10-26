@@ -14,7 +14,13 @@
  *   2. Seleciona por interesse (`circle-stack-select.ts`) e grava
  *      `data/weekly/{cycle}/_internal/circle-stack-selection.json`. Se o
  *      arquivo já existe, é REUSADO (preserva ajustes manuais e `stackNote`
- *      escritos depois) — `--reselect` refaz do zero.
+ *      escritos depois) — `--reselect` refaz do zero. Seleção nova passa pelo
+ *      agente `stack-title-translator` (#11005, `lib/circle-stack-translate.ts`):
+ *      título sem sinal de português é traduzido e gravado em `title`, o da
+ *      fonte fica em `titleOriginal`, e cada tradução vira aviso para o editor
+ *      revisar. `--no-translate` pula; `--translate-titles` roda sobre uma
+ *      seleção já gravada. `--publish` que montou a seleção agora com título
+ *      sem sinal de português (traduzido ou não) recusa até o editor revisar.
  *   3. Renderiza a prévia em Markdown `data/weekly/{cycle}/circle-stack-{cycle}.md`.
  *   4. Só com `--publish`: envia ao webhook n8n da Stack
  *      (`scripts/lib/stack-webhook.ts`), que
@@ -41,7 +47,12 @@
  * semana não publicada ("draft") ou já publicada fecha; estado ambíguo fica.
  *
  * `--hello` envia um post curto de teste ("Olá, mundo") — também publicado
- * na hora; combine com a Stack antes, eles acompanham o 1º envio.
+ * na hora; combine com a Stack antes, eles acompanham o 1º envio. Sai uma vez
+ * só: o marcador `data/weekly/_internal/circle-stack-hello.json` recusa o 2º
+ * envio sem `--force` (#10977). O `--publish` do ciclo pega um lock exclusivo
+ * (`circle-stack-published.json.lock`) antes de ler o estado (#10977), e recusa
+ * seleção com link não oficial em Lançamentos/Use melhor (#11004) ou título em
+ * inglês (#11005) — no dry-run essas linhas saem como avisos.
  *
  * Doppler/.env: `STACK_WEBHOOK_URL` (URL do webhook n8n — fora do repo, que é
  * público) e `STACK_WEBHOOK_KEY` (enviado em `X-Webhook-Key`).
@@ -57,7 +68,7 @@
  *   linhas anteriores saem como parágrafos antes dela.
  */
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -69,7 +80,12 @@ import {
   resolveWeeklyLinkedinCycle,
   weeklyLinkedinRelDir,
 } from "./lib/weekly-linkedin-cycle.ts";
-import { resolveCircleStackState, type CircleStackPublishedLike, type PublishState } from "./lib/publish-state.ts";
+import {
+  resolveCircleStackState,
+  type CircleStackPublishedLike,
+  type CircleStackPublishedState,
+  type PublishState,
+} from "./lib/publish-state.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
 import {
   ALARM_LABEL,
@@ -91,6 +107,7 @@ import {
   type StackPostPayload,
 } from "./lib/stack-webhook.ts";
 import {
+  circleStackSelectionViolations,
   selectCircleStack,
   parseInterestProfile,
   STACK_INTEREST_PROFILE,
@@ -103,13 +120,18 @@ import {
   type CircleStackItem,
   type CircleStackSelection,
 } from "./lib/circle-stack-render.ts";
+import {
+  stackTitleTranslationCandidates,
+  translateCircleStackTitles,
+  type TranslateStackTitlesOptions,
+} from "./lib/circle-stack-translate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface CircleStackConfig {
   enabled: boolean;
   subscribeUrl: string | null;
-  interests: InterestTerm[];
+  interests: readonly InterestTerm[];
 }
 
 /** Pure: lê o bloco `circle_stack` do config. */
@@ -154,6 +176,22 @@ export function circleStackPublishBlockReason(state: PublishState, cycle: string
   }
   return `State de publicação do ciclo ${cycle} existe mas não confirma o envio (${statePath}) — ` +
     "conferir no Radar de Notícias Stack antes; --force publica mesmo assim.";
+}
+
+/**
+ * Pure (#11005): `--publish` que acabou de montar a seleção não envia se ela tem
+ * título sem sinal de português — traduzido pela LLM agora, ou deixado como na
+ * fonte porque a tradução falhou/foi pulada. Nos dois casos o editor ainda não
+ * revisou (decisão do briefing 261025b), e o guard de inglês sozinho não pega
+ * título sem palavra funcional ("Codex Launch Notes"). Seleção já gravada
+ * (prévia da task, revisada pelo editor) segue normal.
+ */
+export function circleStackFreshTranslationBlockReason(pendingReview: number, selectionPath: string): string | null {
+  if (pendingReview <= 0) return null;
+  return (
+    `${pendingReview} título(s) sem sinal de português entraram numa seleção montada agora e ainda não foram revisados — ` +
+    `confira o campo title em ${selectionPath} (original em titleOriginal) e rode o --publish de novo.`
+  );
 }
 
 export const CIRCLE_STACK_NOTIFY_CHECK = "circle-stack-weekly";
@@ -282,15 +320,28 @@ function readEdition(editionsRootDir: string, date: string): EditionRead | null 
   };
 }
 
-function toItem(c: StackScoredCandidate): CircleStackItem & { score: number; matchedTerms: string[] } {
-  return { editionDate: c.editionDate, url: c.url, title: c.title, body: c.body, why: c.why, score: c.score, matchedTerms: c.matchedTerms };
+function toItem(c: StackScoredCandidate): CircleStackItem & { titleOriginal: string; score: number; matchedTerms: string[] } {
+  // `titleOriginal` (#11005): o título como veio da edição, para auditoria — o
+  // editor reescreve `title` em português na seleção quando a fonte é em inglês.
+  return {
+    editionDate: c.editionDate,
+    url: c.url,
+    title: c.title,
+    titleOriginal: c.title,
+    body: c.body,
+    why: c.why,
+    // #11003: só destaques carregam a posição; vira a âncora #dN do link da edição.
+    ...(c.kind === "destaque" && c.destaqueN !== undefined ? { destaqueN: c.destaqueN } : {}),
+    score: c.score,
+    matchedTerms: c.matchedTerms,
+  };
 }
 
 /** Lê as edições da semana e monta a seleção (sem gravar). */
 export function buildCircleStackSelection(
   dataRoot: string,
   publishMonday: string,
-  interests: InterestTerm[],
+  interests: readonly InterestTerm[],
 ): CircleStackSelection & { publishMonday: string; editionsFound: string[]; editionsMissing: string[]; warnings: string[]; generatedAt: string } {
   const r = resolveWeeklyLinkedinCycle(publishMonday);
   if (!r) throw new Error(`--publish-monday inválido: ${publishMonday} (esperado AAMMDD)`);
@@ -364,6 +415,10 @@ export function parseStoredCircleStackSelection(
         if (typeof rec[f] !== "string") fail(`${section}[${i}].${f} ausente ou não é texto`);
       }
       if (rec.stackNote !== undefined && typeof rec.stackNote !== "string") fail(`${section}[${i}].stackNote não é texto`);
+      if (rec.titleOriginal !== undefined && typeof rec.titleOriginal !== "string") fail(`${section}[${i}].titleOriginal não é texto`);
+      if (rec.destaqueN !== undefined && !(Number.isInteger(rec.destaqueN) && (rec.destaqueN as number) >= 1 && (rec.destaqueN as number) <= 3)) {
+        fail(`${section}[${i}].destaqueN precisa ser 1, 2 ou 3`);
+      }
     });
   }
   const warnings = Array.isArray(sel.warnings) ? sel.warnings.filter((w): w is string => typeof w === "string") : [];
@@ -394,16 +449,107 @@ export interface PublishCircleStackCycleInput {
 export async function publishCircleStackCycle(input: PublishCircleStackCycleInput): Promise<{ publishedAt: string; forced: boolean }> {
   const { statePath, cycle, title, payload, force, send } = input;
   const now = input.now ?? (() => new Date());
-  const state = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
-  const blockReason = circleStackPublishBlockReason(state, cycle, statePath);
-  if (blockReason && !force) throw new Error(blockReason);
+  // #10977: o lock vem ANTES da leitura do estado — dois --publish simultâneos
+  // não podem ver "draft" ao mesmo tempo. O estado é lido já com o lock na mão.
+  const release = acquireCircleStackPublishLock(circleStackPublishLockPath(statePath));
+  try {
+    const state = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
+    const blockReason = circleStackPublishBlockReason(state, cycle, statePath);
+    if (blockReason && !force) throw new Error(blockReason);
 
-  const attempt = { cycle, title, attempted_at: now().toISOString() };
-  writeFileAtomic(statePath, JSON.stringify(attempt, null, 2));
-  await send(payload);
-  const publishedAt = now().toISOString();
-  writeFileAtomic(statePath, JSON.stringify({ ...attempt, published_at: publishedAt }, null, 2));
-  return { publishedAt, forced: blockReason !== null };
+    const attempt: CircleStackPublishedState = { cycle, title, attempted_at: now().toISOString() };
+    writeFileAtomic(statePath, JSON.stringify(attempt, null, 2));
+    await send(payload);
+    const publishedAt = now().toISOString();
+    const confirmed: CircleStackPublishedState = { ...attempt, published_at: publishedAt };
+    writeFileAtomic(statePath, JSON.stringify(confirmed, null, 2));
+    return { publishedAt, forced: blockReason !== null };
+  } finally {
+    release();
+  }
+}
+
+/** Lock do `--publish` do ciclo, ao lado do state (#10977). */
+export function circleStackPublishLockPath(statePath: string): string {
+  return `${statePath}.lock`;
+}
+
+/**
+ * Lock exclusivo (`O_CREAT | O_EXCL`, flag `wx`) contra `--publish`
+ * concorrente na mesma máquina (#10977). Devolve a função que o libera.
+ *
+ * Lock já existente recusa SEMPRE — sem tomada automática de lock antigo: dois
+ * processos que achassem o lock velho ao mesmo tempo poderiam apagar um o do
+ * outro. Um lock que sobrou de processo morto só custa apagar o arquivo à mão,
+ * e o state continua protegendo contra duplicata (tentativa sem confirmação →
+ * "unknown"). Limite conhecido: entre máquinas (Windows e `300` pelo
+ * OneDrive) o lock só vale depois que o arquivo replica.
+ */
+export function acquireCircleStackPublishLock(lockPath: string): () => void {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  let fd: number;
+  try {
+    fd = openSync(lockPath, "wx");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    let age = "";
+    try {
+      age = `, criado há ${Math.max(0, Math.round((Date.now() - statSync(lockPath).mtimeMs) / 1000))}s`;
+    } catch {
+      // sumiu entre o open e o stat: outro processo acabou de liberar.
+    }
+    throw new Error(
+      `Outro --publish da Stack está em andamento (lock ${lockPath}${age}). ` +
+        "Se nenhum está rodando (processo morto), confira o Radar e apague o arquivo antes de tentar de novo.",
+    );
+  }
+  try {
+    writeSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
+  } finally {
+    closeSync(fd);
+  }
+  return () => rmSync(lockPath, { force: true });
+}
+
+/** Marcador do `--hello` (#10977) — fora dos ciclos, em `data/weekly/_internal/`. */
+export function circleStackHelloMarkerPath(dataRoot: string): string {
+  return join(dataRoot, "data", "weekly", "_internal", "circle-stack-hello.json");
+}
+
+/**
+ * Envia o post de teste "Olá, mundo" uma vez só (#10977). Todo `--hello`
+ * publica na hora numa comunidade de terceiro, então um 2º envio sem querer
+ * vira post duplicado. O marcador é gravado ANTES do envio (`attempted_at`) e
+ * confirmado (`sent_at`) depois — marcador presente, confirmado ou não,
+ * recusa sem `force`.
+ */
+export async function publishCircleStackHello(input: {
+  markerPath: string;
+  force: boolean;
+  send: () => Promise<void>;
+  now?: () => Date;
+}): Promise<{ sentAt: string; forced: boolean }> {
+  const now = input.now ?? (() => new Date());
+  const exists = existsSync(input.markerPath);
+  if (exists && !input.force) {
+    let prev = "";
+    try {
+      prev = ` (${readFileSync(input.markerPath, "utf8").replace(/\s+/g, " ").trim().slice(0, 200)})`;
+    } catch {
+      // ilegível: a recusa vale do mesmo jeito.
+    }
+    throw new Error(
+      `O --hello já foi enviado ou tentado${prev} — marcador ${input.markerPath}. ` +
+        'Ele publica "Olá, mundo" na hora; use --force para enviar de novo.',
+    );
+  }
+  mkdirSync(dirname(input.markerPath), { recursive: true });
+  const attempt = { attempted_at: now().toISOString() };
+  writeFileAtomic(input.markerPath, JSON.stringify(attempt, null, 2));
+  await input.send();
+  const sentAt = now().toISOString();
+  writeFileAtomic(input.markerPath, JSON.stringify({ ...attempt, sent_at: sentAt }, null, 2));
+  return { sentAt, forced: exists };
 }
 
 /**
@@ -536,17 +682,38 @@ function readTextArg(argv: string[], key: string): string | undefined {
   return p ? readFileSync(resolve(p), "utf8") : undefined;
 }
 
-async function main(): Promise<void> {
-  loadProjectEnv(ROOT);
-  const argv = process.argv.slice(2);
-  const platformConfig = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
-  const cfg = resolveCircleStackConfig(platformConfig);
-  const key = process.env[STACK_WEBHOOK_KEY_ENV] ?? "";
-  const webhookUrl = process.env[STACK_WEBHOOK_URL_ENV] ?? "";
+export interface RunCircleStackDeps {
+  /** Raiz do repo: `.claude/agents/`, cwd do `gh`/`claude`, e data-root default. */
+  rootDir: string;
+  platformConfig: Record<string, unknown>;
+  env: NodeJS.ProcessEnv;
+  /** Chamada da tradução (#11005); default `callClaudeCli`. */
+  translateCall?: TranslateStackTitlesOptions["call"];
+  /** Envio ao webhook; default `sendStackPost`. */
+  send?: (webhookUrl: string, key: string, payload: StackPostPayload) => Promise<void>;
+  /** `gh` injetável (fechamento de avisos); default `defaultAlarmGhRun`. */
+  ghRun?: GhRunFn;
+}
+
+/** CLI inteira com dependências injetáveis (#11005: teste de integração do caminho de `main()`). */
+export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): Promise<void> {
+  const ROOT = deps.rootDir;
+  const sendPost = deps.send ?? sendStackPost;
+  const ghRun = deps.ghRun ?? defaultAlarmGhRun;
+  const translateOpts: TranslateStackTitlesOptions = { rootDir: ROOT, call: deps.translateCall };
+  const cfg = resolveCircleStackConfig(deps.platformConfig);
+  const key = deps.env[STACK_WEBHOOK_KEY_ENV] ?? "";
+  const webhookUrl = deps.env[STACK_WEBHOOK_URL_ENV] ?? "";
 
   if (hasFlag(argv, "hello")) {
     if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
-    await sendStackPost(webhookUrl, key, buildStackPostPayload(HELLO_POST.titulo, HELLO_POST.corpo));
+    assertStackWebhookConfig(webhookUrl, key);
+    const helloPayload = buildStackPostPayload(HELLO_POST.titulo, HELLO_POST.corpo);
+    await publishCircleStackHello({
+      markerPath: circleStackHelloMarkerPath(resolve(getStringArg(argv, "data-root") ?? ROOT)),
+      force: hasFlag(argv, "force"),
+      send: () => sendPost(webhookUrl, key, helloPayload),
+    });
     console.log(`Post de teste publicado no Radar de Notícias Stack: "${HELLO_POST.titulo}"`);
     return;
   }
@@ -569,15 +736,44 @@ async function main(): Promise<void> {
   const selectionPath = join(cycleDir, "_internal", "circle-stack-selection.json");
   let selection: CircleStackSelection;
   let warnings: string[];
+  // Títulos sem sinal de português em seleção montada NESTA execução (#11005).
+  let pendingReviewThisRun = 0;
   if (existsSync(selectionPath) && !hasFlag(argv, "reselect")) {
     ({ selection, warnings } = parseStoredCircleStackSelection(readFileSync(selectionPath, "utf8"), selectionPath, cycle));
     console.log(`Reusando seleção existente: ${selectionPath} (--reselect refaz)`);
+    // #11005: --translate-titles traduz numa seleção já gravada (só o que segue sem
+    // sinal de português; título reescrito à mão fica) e regrava o arquivo.
+    if (hasFlag(argv, "translate-titles") && hasFlag(argv, "publish")) {
+      console.warn("⚠ --translate-titles ignorado junto com --publish: a tradução precisa da revisão do editor antes do envio — rode sem --publish primeiro.");
+    } else if (hasFlag(argv, "translate-titles")) {
+      const stored = JSON.parse(readFileSync(selectionPath, "utf8")) as CircleStackSelection & { warnings?: string[] };
+      const tr = translateCircleStackTitles(stored, translateOpts);
+      const merged = [...warnings, ...tr.warnings.filter((w) => !warnings.includes(w))];
+      writeFileAtomic(selectionPath, JSON.stringify({ ...tr.selection, warnings: merged }, null, 2));
+      selection = tr.selection;
+      warnings = merged;
+      console.log(`Títulos traduzidos: ${tr.translated}${tr.failed ? " (tradução falhou — ver avisos)" : ""}`);
+    }
   } else {
-    const built = buildCircleStackSelection(dataRoot, publishMonday, cfg.interests);
+    let built = buildCircleStackSelection(dataRoot, publishMonday, cfg.interests);
+    // Títulos sem sinal de português montados agora ainda não passaram pela revisão
+    // do editor — traduzidos ou não (tradução falha, --no-translate).
+    pendingReviewThisRun = stackTitleTranslationCandidates(built).length;
+    // #11005 (decisão do editor, 261025b): o agente traduz os títulos e grava na
+    // seleção; o editor revisa (os traduzidos entram nos avisos). --no-translate pula.
+    if (!hasFlag(argv, "no-translate")) {
+      const tr = translateCircleStackTitles(built, translateOpts);
+      built = { ...tr.selection, warnings: [...tr.selection.warnings, ...tr.warnings] };
+      console.log(`Títulos traduzidos: ${tr.translated}${tr.failed ? " (tradução falhou — ver avisos)" : ""}`);
+    }
     writeFileAtomic(selectionPath, JSON.stringify(built, null, 2));
     selection = built;
     warnings = built.warnings;
   }
+  // #11004/#11005: checagem sobre a seleção que vai SAIR (inclusive editada à
+  // mão e reaproveitada). Dry-run avisa; --publish recusa antes de qualquer envio.
+  const violations = circleStackSelectionViolations(selection);
+  warnings = [...warnings, ...violations.filter((v) => !warnings.includes(v))];
   for (const w of warnings) console.warn(`⚠ ${w}`);
 
   const rendered = renderCircleStackPost(selection, {
@@ -606,7 +802,7 @@ ${rendered.markdown}
     if (hasFlag(argv, "notify")) {
       // #10965: avisos de semanas anteriores não publicadas se auto-resolvem aqui
       // (antes ficavam abertos para sempre). Fail-soft — nunca impede o aviso do ciclo atual.
-      const stale = closeStaleCircleStackNotifyIssues(cycle, (c) => circleStackCycleStateFromDisk(dataRoot, c), ROOT);
+      const stale = closeStaleCircleStackNotifyIssues(cycle, (c) => circleStackCycleStateFromDisk(dataRoot, c), ROOT, ghRun);
       if (!stale.listed) console.warn("⚠ Não consegui listar os avisos de ciclos anteriores — limpeza adiada para a próxima execução.");
       if (stale.closed.length > 0) console.log(`[dry-run] Aviso(s) de ciclos anteriores fechado(s): ${stale.closed.map((n) => `#${n}`).join(", ")}`);
       if (stale.failed.length > 0) console.warn(`⚠ Não consegui fechar o(s) aviso(s) de ciclos anteriores ${stale.failed.map((n) => `#${n}`).join(", ")}.`);
@@ -633,6 +829,14 @@ ${rendered.markdown}
 
   if (hasFlag(argv, "notify")) console.log("--notify ignorado junto com --publish.");
   if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
+  if (violations.length > 0) {
+    throw new Error(
+      `Seleção ${selectionPath} fora das regras do canal — corrija e rode de novo:\n` +
+        violations.map((v) => `  - ${v}`).join("\n"),
+    );
+  }
+  const reviewBlock = circleStackFreshTranslationBlockReason(pendingReviewThisRun, selectionPath);
+  if (reviewBlock) throw new Error(reviewBlock);
   // Config validada ANTES de gravar a tentativa: erro de config nunca chegou à
   // rede e não pode deixar o ciclo em "unknown".
   assertStackWebhookConfig(webhookUrl, key);
@@ -643,13 +847,22 @@ ${rendered.markdown}
     title: rendered.title,
     payload,
     force: hasFlag(argv, "force"),
-    send: (p) => sendStackPost(webhookUrl, key, p),
+    send: (p) => sendPost(webhookUrl, key, p),
   });
   console.log(`Publicado no Radar de Notícias Stack: ${rendered.title}`);
 
-  const closeRes = closeCircleStackNotifyIssues(cycle, publishedAt, ROOT);
+  const closeRes = closeCircleStackNotifyIssues(cycle, publishedAt, ROOT, ghRun);
   if (closeRes.closed.length > 0) console.log(`Issue(s) de aviso do ciclo fechada(s): ${closeRes.closed.map((n) => `#${n}`).join(", ")}`);
   if (closeRes.failed.length > 0) console.warn(`⚠ Não consegui fechar a(s) issue(s) de aviso ${closeRes.failed.join(", ")} — fechar à mão.`);
+}
+
+async function main(): Promise<void> {
+  loadProjectEnv(ROOT);
+  await runCircleStack(process.argv.slice(2), {
+    rootDir: ROOT,
+    platformConfig: JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")),
+    env: process.env,
+  });
 }
 
 if (isMainModule(import.meta.url)) {

@@ -36,6 +36,8 @@ const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Leitura da source estática — reutilizada por múltiplos testes estáticos
 const SRC = readFileSync(resolve(__ROOT, "scripts/publish-threads.ts"), "utf8");
+// #10772: o cliente HTTP da Threads API saiu do script para scripts/lib/threads-api.ts.
+const CLIENT_SRC = readFileSync(resolve(__ROOT, "scripts/lib/threads-api.ts"), "utf8");
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -353,17 +355,20 @@ describe("splitIntoThreadChunks", () => {
 
 describe("Fluxo Threads 2 passos (verificação estática do script)", () => {
   it("passo 1: envia text + media_type=TEXT para /{threads-user-id}/threads", () => {
-    assert.match(SRC, /TEXT/, "deve usar media_type TEXT");
-    assert.match(SRC, /\/threads`/, "deve chamar endpoint /threads via template string");
+    assert.match(SRC, /mediaType: "TEXT"/, "deve usar media_type TEXT");
+    assert.match(SRC, /from "\.\/lib\/threads-api\.ts"/, "deve usar o cliente compartilhado (#10772)");
+    assert.match(CLIENT_SRC, /"media_type"/, "cliente envia media_type");
+    assert.match(CLIENT_SRC, /\/threads`/, "deve chamar endpoint /threads via template string");
   });
 
   it("passo 2: envia creation_id para /{threads-user-id}/threads_publish", () => {
-    assert.match(SRC, /creation_id/, "deve enviar creation_id para /threads_publish");
-    assert.match(SRC, /\/threads_publish`/, "deve chamar endpoint /threads_publish via template string");
+    assert.match(CLIENT_SRC, /creation_id/, "deve enviar creation_id para /threads_publish");
+    assert.match(CLIENT_SRC, /\/threads_publish`/, "deve chamar endpoint /threads_publish via template string");
   });
 
   it("fluxo encadeado: reply_to_id passado ao segundo post da thread", () => {
-    assert.match(SRC, /reply_to_id/, "deve suportar reply_to_id para encadeamento de posts");
+    assert.match(SRC, /replyToId/, "script repassa o id do post anterior");
+    assert.match(CLIENT_SRC, /reply_to_id/, "deve suportar reply_to_id para encadeamento de posts");
   });
 
   it("retorna status 'published' após fluxo bem-sucedido (não 'scheduled')", () => {
@@ -380,11 +385,11 @@ describe("Fluxo Threads 2 passos (verificação estática do script)", () => {
 
   it("busca permalink real via /fields=permalink (não constrói URL manual)", () => {
     assert.match(SRC, /fetchThreadsPermalink/, "deve ter helper fetchThreadsPermalink");
-    assert.match(SRC, /fields=permalink/, "deve buscar campo permalink da Threads API");
+    assert.match(CLIENT_SRC, /fields=permalink/, "deve buscar campo permalink da Threads API");
   });
 
   it("THREADS_API_BASE usa graph.threads.net", () => {
-    assert.match(SRC, /graph\.threads\.net/, "deve usar a Threads API base correta");
+    assert.match(CLIENT_SRC, /graph\.threads\.net/, "deve usar a Threads API base correta");
   });
 });
 
@@ -537,7 +542,7 @@ describe("Resume-aware skip posts já publicados", () => {
 
 describe("Retry com backoff exponencial", () => {
   it("script define maxAttempts=3 para posts de chunk único (sem retry em multi-chunk para evitar posts órfãos)", () => {
-    assert.match(SRC, /maxAttempts = isMultiChunk \? 1 : 3/, "maxAttempts condicional: 1 pra multi-chunk (sem retry), 3 pra single-chunk");
+    assert.match(SRC, /maxAttempts = opts\.multiChunk \? 1 : 3/, "maxAttempts condicional: 1 pra multi-chunk (sem retry), 3 pra single-chunk");
   });
 
   it("script usa backoff exponencial entre tentativas", () => {

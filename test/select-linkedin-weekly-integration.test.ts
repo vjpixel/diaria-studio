@@ -298,7 +298,7 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     );
   });
 
-  it("render: JSON boundary sobrevive ao roundtrip real (finding 4) — HTML final contém as 2 manchetes numeradas, Use Melhor e a lista de Edições da semana", () => {
+  it("render: JSON boundary sobrevive ao roundtrip real (finding 4) — HTML final contém as 2 manchetes (sem numeração, #11006), Use Melhor e Outros destaques da semana", () => {
     process.argv = [
       "node",
       "render-linkedin-weekly.ts",
@@ -317,11 +317,11 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     assert.ok(existsSync(htmlPath));
     const html = readFileSync(htmlPath, "utf8");
 
-    assert.match(html, /<h2>1\. Matéria A: empregos e automação<\/h2>/);
+    assert.match(html, /<h2>Matéria A: empregos e automação<\/h2>/);
     // #5109: linha de proveniência "da edição de DD/MM" sobrevive ao
     // roundtrip real select→render (editionDate vem de ln-selection.json).
     assert.match(html, /<em>da edição de 27\/07<\/em>/);
-    assert.match(html, /<h2>2\. Matéria A2: regulação de IA<\/h2>/);
+    assert.match(html, /<h2>Matéria A2: regulação de IA<\/h2>/);
     // #8029: o item de RADAR (taxa maior que a manchete 2) nunca aparece no
     // HTML final — nem como manchete, nem em nenhum outro bloco.
     assert.ok(!html.includes("Matéria A Radar"));
@@ -329,7 +329,12 @@ describe("select→render end-to-end (#4489 finding 4) + gap de cache de clique 
     assert.match(html, /Tutorial X: como usar melhor o Claude Code/);
     assert.match(html, /Testei essa semana e cortou tempo de setup\./);
     assert.match(html, /Matéria B: lançamento de modelo novo/);
-    assert.match(html, /Edições da semana/);
+    assert.match(html, /Outros destaques da semana/);
+    // #11006: manchete já mostrada acima não se repete na lista final; o que não
+    // virou manchete (A3, B) continua lá.
+    const outros = html.slice(html.indexOf("Outros destaques da semana"));
+    assert.ok(!outros.includes("<li>Matéria A: empregos e automação</li>"), outros);
+    assert.ok(outros.includes("<li>Matéria A3: lançamento de feature</li>"), outros);
     assert.match(html, /Essa semana teve empregos, automação e um tutorial novo\./);
     assert.match(html, /É isso que a diar\.ia\.br cobre todo dia, sem enrolação\./);
 

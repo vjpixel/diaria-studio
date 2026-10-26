@@ -65,7 +65,10 @@ FIXO 84px (`WEEKLY_FLAT_CARD_LAYOUT`, #8480, 260919)** — antes era auto-size
 que crescia até preencher o card (`fillingFontSize`, 46-148px); texto que não
 coubesse a 84px encolhia sozinho, e a política do editor virou a mesma do
 carrossel diário (#6078): ABORTAR e pedir reescrita, nunca encolher. Ver
-`scripts/lib/weekly-flat-card.ts`.
+`scripts/lib/weekly-flat-card.ts`. **O CTA final é o MESMO card do carrossel
+diário desde 25/10/2026** (pedido do editor): texto, kicker e tamanho (62px,
+`DAILY_CAROUSEL_LAYOUT`) vêm de `buildDailyCarouselCtaText` em
+`scripts/lib/daily-carousel-card.ts`, fonte única. Os 84px valem só pra capa.
 
 **Os 5 slides do meio são RECOMPOSTOS, não reusados como estão (#5345).**
 Antes do #5345, cada card de notícia usava o clamp dinâmico de
@@ -208,6 +211,12 @@ atual:
   elegível completo + os excluídos. Os grupos de empate saem sempre, sem
   esta flag.
 - `--check-slot` (#10389) — ver Passo 0.
+- `--summary-manifest` (#11062) — imprime o insumo do agente
+  `weekly-summary-writer` (título, corpo e "Por que isso importa" de cada
+  item selecionado + o caminho de `06-summaries.json`) e para. Ver Passo 2c.
+- `--allow-why-fallback` (#11062) — aceita agendar sem resumo válido pra
+  algum item; esses itens voltam a usar o "Por que isso importa" cru na
+  legenda. Sem a flag, `--schedule` aborta. Só com confirmação do editor.
 
 ## Pré-requisitos
 
@@ -377,8 +386,9 @@ Sem `--schedule`, o script nunca faz chamada de rede — só imprime:
 - Slot de agendamento vencido (#10389): mesmo aviso do Passo 0, no stderr,
   sem abortar o preview.
 - A caption formatada do Instagram, Facebook E Threads (#5348) — MESMOS
-  títulos numerados; Instagram/Facebook incluem 1 linha de contexto (`why`
-  do destaque, ou a 1ª frase de `body` pra RADAR), Threads NÃO (orçamento
+  títulos numerados; Instagram/Facebook incluem 1 linha de contexto (o
+  resumo escrito no Passo 2c, #11062; sem ele, o `why` do destaque ou a 1ª
+  frase de `body` pra RADAR, marcado no bloco `── resumos ──`), Threads NÃO (orçamento
   de 500 chars do canal não sobra pra isso com 5 itens, ver
   `format-weekly-social.ts`). A CTA final também diverge por canal:
   Instagram "link na bio"; Facebook/Threads link clicável direto no corpo.
@@ -401,6 +411,85 @@ Se **nenhum candidato** (nenhum DESTAQUE 1/2/3 com URL em nenhuma edição da
 semana) foi encontrado, o script já encerra aqui — nenhum publisher é
 chamado, nada é agendado, e a skill deve reportar isso ao editor sem tentar
 prosseguir.
+
+## Passo 2c — Resumo de cada item (#11062, obrigatório antes do Passo 2b)
+
+A linha embaixo de cada título na legenda (Instagram, Facebook, LinkedIn; o
+Threads só tem títulos) é escrita pelo agente `weekly-summary-writer`, não
+copiada do "Por que isso importa" da newsletter, que fora da matéria conta a
+consequência sem dizer o que aconteceu. Regras do editor (25/10/2026): não
+repetir o título, fato concreto primeiro, se ler sozinho, 1 frase (no máximo
+2 curtas). Pra cada modo rodado:
+
+```bash
+npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode {clicked|highlights} --summary-manifest > {scratchpad}/summary-manifest-{modo}.json
+```
+
+```
+Agent(subagent_type="weekly-summary-writer", prompt="Manifest: {scratchpad}/summary-manifest-{modo}.json")
+```
+
+O agente grava `data/weekly/{sábado}-{modo}/_internal/06-summaries.json`
+(chave = URL do item).
+
+**Humanizador e Clarice sobre os resumos (#11065), na ordem da diária.** Os
+títulos não passam (já vieram da newsletter humanizada e corrigida no Stage
+2). Os dois modos podem ir juntos num passe só. `{P}` = o `06-summaries.json`
+de cada modo:
+
+1. Snapshot da versão do agente (`summary_raw`, idempotente):
+   `npx tsx scripts/weekly-summaries-passes.ts snapshot --path {P}`
+2. Humanizador, passe completo, sobre os campos `summary` de todos os modos:
+   ```
+   Skill("humanizador", "Leia {P-clicked} e {P-highlights}, humanize SÓ o campo summary de cada item que ainda não tem summary_clarice (passe completo; item com summary_clarice já passou numa rodada anterior e fica como está), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar url, title, summary_raw nem carouselKey. Teto: 200 caracteres e 2 frases por resumo.")
+   ```
+   Depois: `npx tsx scripts/weekly-summaries-passes.ts humanized --path {P}`
+   (grava `summary_humanized` e revalida o texto).
+3. Clarice: pra cada resumo ainda sem `summary_clarice`, `mcp__clarice__correct_text` com o
+   `summary_humanized`, uma chamada por vez (serial, #4952; item já corrigido
+   numa rodada anterior não precisa de entrada no JSON de sugestões, #11110). Grave as
+   sugestões em `{scratchpad}/clarice-{modo}.json` no formato
+   `{ "<url>": [ {from, to, ...}, ... ] }` (lista vazia quando não houver
+   sugestão) e aplique todas (regra do projeto: sempre aceitar):
+   `npx tsx scripts/weekly-summaries-passes.ts clarice --path {P} --suggestions {scratchpad}/clarice-{modo}.json`
+   MCP fora: `... clarice --path {P} --rest` (fallback REST, `CLARICE_API_KEY`,
+   #1329). REST fora também: o script registra `passes.clarice = "falhou"`,
+   mantém o texto humanizado e segue (sem halt: o texto é curto e o editor
+   revisa no gate); sem chave, `--failed "motivo"` faz o mesmo registro.
+
+Rastro no próprio JSON: `summary_raw` (agente), `summary_humanized`
+(pós-Humanizador) e `summary` (final, o que vai pra legenda). `humanized` e
+`clarice` revalidam o texto FINAL com as regras abaixo e saem com exit 1
+listando o item que estourou. Recuperação: encurte o `summary` à mão, rode
+`humanized` de novo (o texto editado vira a nova base em `summary_humanized`)
+e só então `clarice`. Nunca reaplique `clarice` direto sobre um `summary`
+ajustado à mão: a Clarice parte de `summary_humanized` e descartaria o ajuste.
+Por isso o `clarice` aborta (exit 2, "ajuste manual detectado") quando o
+`summary` diverge da saída do último passe. Ajuste à mão depois da Clarice,
+já perto do gate, pode ficar como está; ele só precisa de `humanized` +
+`clarice` se você quiser que a Clarice revise o texto novo. Re-rodar o
+agente (inteiro ou só um item via SendMessage) zera os passes (comece do
+snapshot), mas não o rastro dos itens que ele não mudou (#11110): o agente
+regrava o arquivo sem `summary_raw`/`summary_humanized`/`summary_clarice`, e
+o `snapshot` os recupera de `_internal/06-summaries.trail.json` (cópia que o
+script grava a cada passo) pra todo item cujo `summary` bate com o final de
+lá. Esses itens passam direto pelo `humanized` e pela `clarice`; só o item
+reescrito refaz o caminho.
+
+Re-rode o preview do Passo 2: a legenda já sai com os
+resumos, e o bloco `── resumos ──` marca item sem resumo válido. Barram o
+`--schedule`: resumo ausente, vazio, com mais de 200 caracteres, com mais de
+2 frases, que repete o título, ou com markdown/seta. Só aviso no stderr:
+começa com referência solta, o arquivo tem resumo de URL fora da
+seleção, ou os resumos não passaram pelo Humanizador/Clarice (ou a Clarice
+falhou), avisado também no bloco `── resumos ──` (#11065). Arquivo corrompido, de outro carrossel ou com entrada malformada
+falha o modo inteiro com a causa. O stdout do `--summary-manifest` é só o
+JSON (o log vai pro stderr). Resumo inválido: peça ao agente pra
+reescrever aquele item (SendMessage) ou ajuste à mão no JSON, e re-rode.
+Mudou a seleção (`--force-urls`, outro horário que mude o pool)? Rode o
+manifest e o agente de novo: item sem resumo barra o agendamento. Os resumos
+entram no Artifact do Passo 2b e no gate do Passo 3, onde o editor pode
+pedir ajuste.
 
 ## Passo 2b — Publicar a prévia visual do artefato (#8022, obrigatório antes do Passo 3)
 
@@ -511,8 +600,8 @@ acima), nunca reusado no tamanho publicado originalmente no feed diário. Item
 de RADAR sem card pré-existente tem o card gerado SOB DEMANDA nesse momento
 (#4513), recebendo o MESMO `carouselFontSize` da rodada via
 `fontSizeOverride` — o que muda é só o mecanismo de geração/cache, não o
-tamanho de fonte aplicado. Capa/CTA (paleta clara, tamanho fixo 84px — ver
-seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
+tamanho de fonte aplicado. Capa/CTA (paleta clara; capa 84px, CTA igual ao
+do carrossel diário — ver seção acima) são gerados/upados sob demanda na 1ª execução e cacheados
 depois (`data/weekly/{saturday}-{mode}/_internal/06-flat-cards.json` — ver
 `scripts/lib/weekly-flat-card.ts`). Se QUALQUER item de notícia não resolver
 imagem (falha de leitura, recomposição OU geração sob demanda), o post

@@ -42,7 +42,7 @@ Stage 5 dispatcha, hoje, **8 canais** — lista completa em `.claude/agents/orch
 - `/diaria-5-publicacao newsletter AAMMDD` — re-dispara só a newsletter (Beehiiv ou Kit, conforme backend); útil pra fix isolado após template errado
 - `/diaria-5-publicacao social AAMMDD` — re-dispara só os canais sociais (LinkedIn, Facebook, Instagram, Threads, Twitter/X); útil pra retry de social falhado sem regerar a newsletter
 
-**Opt-out por canal (#1326):** flag `--skip {canal[,canal...]}` (CSV) ignora dispatch dos canais listados. Canais válidos: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo`, `kit` (ver `VALID` em `scripts/lib/publish-consent.ts`). Default = tudo auto. Exemplos:
+**Opt-out por canal (#1326):** flag `--skip {canal[,canal...]}` (CSV) ignora dispatch dos canais listados. Canais válidos: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo`, `kit`, `youtube` (#10659, §5b-youtube; ver `VALID` em `scripts/lib/publish-consent.ts`). Default = tudo auto. Exemplos:
 - `/diaria-5-publicacao AAMMDD --skip newsletter` — só canais sociais/Brevo/Kit automáticos, newsletter manual
 - `/diaria-5-publicacao AAMMDD --skip linkedin,facebook,instagram,threads,twitter` — só newsletter (+Brevo/Kit) automático
 - `/diaria-5-publicacao AAMMDD --skip brevo,kit` — pula os canais de reativação/parceiro nesta edição
@@ -127,8 +127,22 @@ Threads e X saem agendados 24h+ à frente; Brevo diária e Kit diária saem
 como rascunho — tudo reversível no dashboard de cada plataforma antes de ir
 ao ar. Pra excluir um canal desta edição, rode de novo com
 --skip {canal[,canal...]} (newsletter, linkedin, facebook, instagram,
-threads, twitter, brevo, kit).
+threads, twitter, brevo, kit, youtube).
 ```
+
+## Passo 0b — Aviso de vídeo do D1 (#10943, aviso, não gate)
+
+Fluxo ideal desde 22/10/2026: `/diaria-edicao` → `/diaria-youtube` → `/diaria-shorts` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). Antes do dispatch, conferir se o vídeo do dia já passou pelo `/diaria-youtube`:
+
+```bash
+npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DIR}
+```
+
+- `status: "link-ready"` → `_internal/05-video-url.txt` existe; o Stage 5 põe o link no D1 de X, Threads e Facebook. Seguir.
+- `status: "no-video"` ou `"video-without-link"` → mostrar ao editor a linha `[aviso]` do stderr (o D1 sairá **sem** o link do vídeo; no 2º caso, o comando `link-video-d1.ts` que libera o link) e **seguir com o dispatch sem esperar resposta**. Não é gate: o vídeo pode ainda não existir, e a Etapa 5 nunca para por isso. Este aviso é uma foto de ANTES do dispatch: o §5b-youtube do playbook (#10659) roda em todo caso com escopo `all`/`social` (pulado em `newsletter`, com `--skip youtube` e com `none`/consent `"skipped"` — `youtubeUploadEnabled`; no-op se `05-youtube-published.json` já registra o vídeo), baixa do Drive o `.mp4` horizontal com "final" como palavra no nome e o sobe com `publishAt` 06:00 BRT, fail-soft, antes do dispatch social. Enquanto `YOUTUBE_API_PROJECT_AUDITED` for `false`, vídeo agendado **não** grava `05-video-url.txt` (#10865): o D1 sai sem o link e o resumo aponta `link-video-d1.ts` (o caso agendado/privado no D1 é da PR #10975). **O resumo final da Etapa 5 é a autoridade** sobre o link do D1, não este aviso.
+- Exit != 0 (uso inválido, erro inesperado) → logar warn e seguir.
+
+Não rodar `/diaria-youtube` nem `/diaria-shorts` daqui — são skills standalone que o editor invoca.
 
 ## O que faz
 
