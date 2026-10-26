@@ -152,10 +152,9 @@ export function markBeehiivBackupStalenessAlarmed(
 export const BEEHIIV_BACKUP_COVERAGE_START_MONTH = "2026-08";
 
 /** Meses cuja perda o editor já reconheceu como definitiva (ex: a Lixeira do
- *  OneDrive expirou sem restauração). Mês listado aqui sai do alarme. Vazio
- *  de propósito em 21/10/2026: agosto e setembro de 2026 ainda podem voltar
- *  da Lixeira online do OneDrive (retenção ~30 dias a partir de 14/10). */
-export const BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS: readonly string[] = [];
+ *  OneDrive expirou sem restauração). Mês listado aqui sai do alarme.
+ *  Agosto e setembro de 2026 reconhecidos como perdidos pelo editor (#11067). */
+export const BEEHIIV_BACKUP_ACKNOWLEDGED_LOST_MONTHS: readonly string[] = ["2026-08", "2026-09"];
 
 function monthOf(date: string): string {
   return date.slice(0, 7);
