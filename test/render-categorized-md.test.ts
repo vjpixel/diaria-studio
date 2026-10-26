@@ -1083,6 +1083,26 @@ describe("render-categorized-md CLI --in 01-categorized.json — guard de captur
     }
   });
 
+  it("#11093 pré-gate mostra X=14 para 45 threads e mantém Y=435", () => {
+    const dir = mkdtempSync(join(tmpdir(), "render-senders-11093-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir);
+      const jsonPath = join(internalDir, "01-categorized.json");
+      const mdPath = join(dir, "01-categorized.md");
+      writeFileSync(jsonPath, JSON.stringify(makeMinimalCategorized()));
+      writeFileSync(join(internalDir, ".marker-inject-inbox-urls.json"), JSON.stringify({ details: {
+        editor_blocks: 0, newsletter_source: "captured-articles", captured_newsletter_count: 45,
+        distinct_newsletter_senders: 14, total_pool_size: 480,
+        total_editor_urls: 0, total_newsletter_urls: 45,
+      } }));
+      const r = runCli(["--in", jsonPath, "--out", mdPath, "--edition", "261026",
+        "--inbox-md", join(dir, "missing.md")]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(readFileSync(mdPath, "utf8"), /analisou 449 conteúdos \(14 enviados por mim e 435 encontrados automaticamente\)/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("marker sem capture_failed → 01-categorized.md segue com a linha de cobertura normal (regressão: caminho feliz preservado)", () => {
     const dir = mkdtempSync(join(tmpdir(), "render-categorized-capture-ok-"));
     try {
