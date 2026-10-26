@@ -212,10 +212,14 @@ describe("#11003 — o post da Stack aponta para o destaque", () => {
     weeklyEditions: [{ editionDate: "261013", url: "https://diar.ia.br/p/gemini", destaques: ["X", "A", "Y"] }],
   };
 
-  it("destaque com posição leva ao #dN, depois das UTMs", () => {
+  // #10999 (pedido do editor, 23/10/2026): o destaque no post da Stack não tem
+  // mais a linha "Leia na fonte | Na edição de"; o título linka a fonte. Sem
+  // link por destaque para a edição, a âncora #dN não tem onde entrar.
+  it("destaque linka só a fonte, sem link por destaque para a edição (#10999)", () => {
     const md = renderCircleStackPost(selection).markdown;
-    const esperado = `${buildCircleStackUrl("https://diar.ia.br/p/gemini", "26w42", "edicao")}#d2`;
-    assert.ok(md.includes(`(${esperado})`), md);
+    assert.ok(md.includes("### [A](https://fonte.example/a)"), md);
+    assert.ok(!md.includes("Na edição de"), md);
+    assert.ok(!/#d\d/.test(md), md);
   });
 
   it("destaque sem posição (seleção antiga) segue no topo da edição", () => {
