@@ -18,6 +18,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { editionDir } from "./edition-paths.ts";
 import {
+  HHMM_RE,
   type RotationPlanRow,
   baseTimesFromSocial,
   buildRotationPlan,
@@ -65,6 +66,56 @@ export function recordRotationRows(logPath: string, rows: RotationPlanRow[], rec
     appendFileSync(logPath, fresh.map((r) => JSON.stringify({ ...r, recorded_at: recordedAt })).join("\n") + "\n");
   }
   return fresh.length;
+}
+
+/**
+ * Linha do registro com o horário REAL informado à mão (#11180): `time` passa a
+ * ser o real (é o campo que a medição cruza com os cliques) e `planned_time`
+ * guarda o que o plano mandava, com `time_differs_from_plan: true` como marca.
+ * Linha publicada no horário planejado não leva nenhum dos dois campos.
+ */
+export type RecordedRotationRow = RotationPlanRow & { planned_time?: string; time_differs_from_plan?: true };
+
+/**
+ * Pure (#11180): aplica o `--time HH:MM` da CLI `--record`. Exige exatamente 1
+ * linha (o horário real é de UM post; num dia útil sem `--kind` há 3-4 linhas e
+ * não dá pra saber a qual ele se refere). Horário igual ao planejado devolve a
+ * linha intacta, idêntica a um `--record` sem `--time`. Lança com HH:MM
+ * inválido ou contagem de linhas diferente de 1.
+ */
+export function applyActualTime(rows: RotationPlanRow[], actual: string): RecordedRotationRow[] {
+  const t = actual.trim();
+  if (!HHMM_RE.test(t)) throw new Error(`--time inválido: '${actual}' (esperado HH:MM entre 00:00 e 23:59).`);
+  if (rows.length !== 1) {
+    const keys = rows.map(rowKey).join(", ") || "nenhuma";
+    throw new Error(
+      `--time exige exatamente 1 linha no --record; o filtro deixou ${rows.length} (${keys}). Isole o post com --kind (ex.: --kind linkedin_article).`,
+    );
+  }
+  const [r] = rows;
+  if (r.time === t) return [r];
+  return [{ ...r, time: t, planned_time: r.time, time_differs_from_plan: true }];
+}
+
+/**
+ * Pure (#11180): horário já gravado no JSONL pra mesma chave de `row`, quando
+ * DIFERE de `row.time` — `null` se a chave não foi gravada ou se o horário bate.
+ * O registro é append-only e não sobrescreve (`newRowsToRecord`), então um
+ * `--time` depois de um `--record` sem ele seria descartado em silêncio; a CLI
+ * usa isto pra falhar alto nesse caso.
+ */
+export function recordedTimeConflict(existing: string, row: RotationPlanRow): string | null {
+  const key = rowKey(row);
+  for (const line of existing.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const rec = JSON.parse(line) as RotationPlanRow;
+      if (rowKey(rec) === key) return rec.time === row.time ? null : rec.time;
+    } catch {
+      // linha corrompida: ignorar (mesma regra de newRowsToRecord)
+    }
+  }
+  return null;
 }
 
 /**

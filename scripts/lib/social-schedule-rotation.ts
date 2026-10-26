@@ -65,7 +65,7 @@ export const DEFAULT_LINKEDIN_WEEKLY_ARTICLE_TIME = "09:30";
 export const ROTATION_POST_TYPES = ["um", "d1", "d2", "d3"] as const;
 export type RotationPostType = (typeof ROTATION_POST_TYPES)[number];
 
-const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+export const HHMM_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MS_PER_DAY = 86_400_000;
 

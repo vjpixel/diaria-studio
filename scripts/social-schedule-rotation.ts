@@ -26,11 +26,16 @@
  *   # grava as linhas do dia em data/social-schedule-rotation.jsonl (idempotente)
  *   npx tsx scripts/social-schedule-rotation.ts --record --date 261020 [--kind weekday|weekend|linkedin_article] [--log path]
  *
+ *   # #11180: post publicado FORA do horário planejado — grava o real. Exige que
+ *   # o filtro deixe 1 linha só; se diferir do plano, `time` vira o real e a
+ *   # linha leva `planned_time` + `time_differs_from_plan: true`
+ *   npx tsx scripts/social-schedule-rotation.ts --record --date 261026 --kind linkedin_article --time 14:25
+ *
  * Nunca publica nem agenda nada — só lê o config e (com `--record`) escreve
  * um arquivo local.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import {
@@ -49,10 +54,13 @@ import {
 } from "./lib/social-schedule-rotation.ts";
 import {
   DEFAULT_ROTATION_LOG,
+  type RecordedRotationRow,
+  applyActualTime,
   filterUseMelhorRowsByPublished,
   formatRecordSummary,
   newRowsToRecord,
   recordRotationRows,
+  recordedTimeConflict,
   rowKey,
 } from "./lib/social-schedule-rotation-record.ts";
 
@@ -140,10 +148,24 @@ function main(): void {
   const kind = get("--kind");
   if (kind) rows = rows.filter((r) => r.kind === kind);
 
+  if (has("--time") && !has("--record")) throw new Error("--time só vale com --record (é o horário REAL de publicação a gravar).");
+
   if (has("--record")) {
     const logPath = resolve(ROOT, get("--log") ?? DEFAULT_ROTATION_LOG);
     // #10427 (review #10432): a linha `um` só é gravada se o post existiu.
-    const toRecord = filterUseMelhorRowsByPublished(rows, social, ROOT);
+    let toRecord: RotationPlanRow[] = filterUseMelhorRowsByPublished(rows, social, ROOT);
+    if (has("--time")) {
+      // #11180: horário real informado à mão (post publicado fora do planejado).
+      toRecord = applyActualTime(toRecord, get("--time") ?? "");
+      const prior = recordedTimeConflict(existsSync(logPath) ? readFileSync(logPath, "utf8") : "", toRecord[0]);
+      if (prior !== null) {
+        throw new Error(
+          `${rowKey(toRecord[0])} já está gravada em ${logPath} com ${prior}; o registro não sobrescreve. Corrija essa linha à mão para ${toRecord[0].time}.`,
+        );
+      }
+      const r = toRecord[0] as RecordedRotationRow;
+      if (r.time_differs_from_plan) console.error(`[social-schedule-rotation] horário real ${r.time} difere do planejado ${r.planned_time} — gravado com a marca time_differs_from_plan.`);
+    }
     const n = recordRotationRows(logPath, toRecord);
     // #10438: "já gravada(s)" sobre o array FILTRADO, não sobre `rows`.
     console.log(formatRecordSummary(logPath, n, toRecord.length, rows.length - toRecord.length));
