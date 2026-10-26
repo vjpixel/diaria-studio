@@ -159,7 +159,7 @@
   },
   "boxes_divulgacao": {
     "slot0": "",
-    "slot1": "amazon-loja-divulgacao.md",
+    "slot1": "voto-tema-divulgacao.md",
     "slot2": "livros-divulgacao.md",
     "slot3": null,
     "note_slot3": "#6748 (29/08/2026) — slot 3 eliminado; a edição sai com no máximo 2 caixas (slot1+slot2). Chave mantida (não removida do schema, decisão documentada no PR #6748) por back-compat/reversibilidade, mas ignorada em todo o pipeline (stitch-newsletter.ts nunca renderiza, select-boxes-by-clicks.ts nunca ranqueia/seleciona). apoio-divulgacao.md, que ocupava este slot, SAIU da rotação (não migrado pro slot2, que já tem amazon-loja-divulgacao.md ativo) — reintroduzir exige decisão editorial nova, não é automático."
@@ -172,7 +172,7 @@
   },
   "boxes_divulgacao_auto": {
     "enabled": true,
-    "pinned_slots": [],
+    "pinned_slots": [1],
     "note_10303": "#10303 (15/10/2026, decisão do editor) — slot 2 despinado: com [1, 2] o slot 2 ficava fora do ranking E da anti-repetição e repetiu livros-divulgacao.md em 261014/261015/261016. Só o slot 1 (evento) fica pinado; o slot 2 volta à seleção por cliques com anti-repetição. Pins temporários do Artigo Especial/Retrospectiva (box-slot-pin.ts, #9474) seguem adicionando 2 aqui enquanto vigoram.",
     "note_8895": "#8895 (16/10/2026) — a imersão agente-ia (17/10) passou: a caixa do evento (agente-ia-um-mes-em-uma-hora.md) saiu do slot 1 e foi arquivada em data/snippets/_arquivo/. Sem evento em curso, o slot 1 também foi despinado (pin de caixa permanente repete a mesma caixa toda edição, o bug do #10303) e volta à seleção por cliques; amazon-loja-divulgacao.md é só o fallback quando não há candidato. Próximo evento pina o slot 1 de novo (1 aqui + a caixa no slot1).",
     "note": "#4626 — seleção automática dos slots 1/2 de boxes_divulgacao por cliques (últimas last_n edições) + tendência de queda (recent_window vs prior_window aparições) + anti-repetição vs. edição imediatamente anterior. pinned_slots: lista de slots (1/2) que ficam MANUAIS — o valor em boxes_divulgacao.slotN acima vale como está, sem entrar no ranking/anti-repetição (editor pina um slot escrevendo o número aqui). Slot 0 nunca participa (fora de escopo — #4274); slot 3 nunca participa desde o #6748 (eliminado, ver boxes_divulgacao.note_slot3). Sem candidato elegível (histórico insuficiente/tudo excluído) cede pro valor já configurado em boxes_divulgacao, nunca quebra. Resultado registrado em _internal/box-selection.json por edição, mostrado no resumo do Stage 4 (informativo, sem gate). enabled:false volta ao comportamento 100% manual pré-#4626. Ver scripts/select-boxes-by-clicks.ts."
