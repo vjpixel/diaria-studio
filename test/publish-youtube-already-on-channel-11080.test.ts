@@ -145,6 +145,38 @@ describe("--upload com o vídeo da edição já no canal (#11080)", () => {
     assert.equal(calls.some((c) => c.includes("playlistItems")), false);
   });
 
+  it("#11103: vídeo de OUTRA edição (utm_campaign) público no dia desta: não pula, sobe o desta", async () => {
+    const yesterday = manualVideo({
+      snippet: { title: "Vídeo de ontem", description: "edição: https://diar.ia.br/?utm_source=youtube&utm_medium=video&utm_campaign=261021", tags: [], publishedAt: "2026-10-22T12:00:00Z" },
+      status: { uploadStatus: "processed", privacyStatus: "public" },
+    });
+    const { deps, calls } = channelDeps([yesterday]);
+    const { outcome, logs } = await run(deps);
+    assert.equal(outcome.exitCode, 0, logs.join("\n"));
+    assert.equal(outcome.skipped, false);
+    assert.equal(outcome.record?.videoId, "newVid");
+    assert.equal(outcome.record?.source, undefined);
+    assert.ok(calls.some((c) => c.includes("uploadType=resumable")));
+    assert.notEqual(readFileSync(join(dir, "_internal/05-video-url.txt"), "utf8").trim(), `https://youtu.be/${MANUAL_ID}`);
+  });
+
+  it("#11103: upload manual com uploadStatus failed/rejected não conta como já no canal", async () => {
+    for (const uploadStatus of ["failed", "rejected"]) {
+      rmSync(join(dir, YOUTUBE_PUBLISHED_FILE), { force: true });
+      rmSync(join(dir, "_internal/05-video-url.txt"), { force: true });
+      const broken = manualVideo({
+        snippet: { title: "IA ladra? O cofre que o modelo abriu", description: "", tags: [], publishedAt: "2026-10-21T20:00:00Z" },
+        status: { uploadStatus, privacyStatus: "private", publishAt: "2026-10-22T09:00:00.000Z" },
+      });
+      const { deps, calls } = channelDeps([broken]);
+      const { outcome, logs } = await run(deps);
+      assert.equal(outcome.skipped, false, `${uploadStatus}: ${logs.join("\n")}`);
+      assert.equal(outcome.record?.videoId, "newVid", uploadStatus);
+      assert.notEqual(outcome.record?.source, "already-on-channel", uploadStatus);
+      assert.ok(calls.some((c) => c.includes("uploadType=resumable")), uploadStatus);
+    }
+  });
+
   it("falha ao conferir o canal: exit 1, nada enviado, sem registro", async () => {
     const { deps, calls } = channelDeps([], { playlistStatus: 500 });
     const { outcome, logs } = await run(deps);
@@ -187,6 +219,28 @@ describe("matchEditionVideo (#11080)", () => {
     const after = v("c", "z", "", { status: { privacyStatus: "private", publishAt: new Date(endMs).toISOString() } });
     assert.equal(matchEditionVideo([inside], crit)?.matchedBy, "period");
     assert.equal(matchEditionVideo([before, after], crit), null);
+  });
+
+  it("#11103: utm_campaign de outra edição anula título e período; a nossa continua valendo", () => {
+    const inDay = { status: { privacyStatus: "public", publishAt: "2026-10-22T09:00:00Z" } };
+    assert.equal(matchEditionVideo([v("a", "z", "?utm_campaign=261021", inDay)], crit), null);
+    assert.equal(matchEditionVideo([v("a", crit.title, "?utm_campaign=261021")], crit), null);
+    // Descrição citando as duas edições: a nossa vence.
+    assert.equal(matchEditionVideo([v("a", "z", "?utm_campaign=261021 e ?utm_campaign=261022")], crit)?.matchedBy, "edition-tag");
+    // Dígito extra não é a nossa edição.
+    assert.equal(matchEditionVideo([v("a", "z", "?utm_campaign=2610221")], crit), null);
+    // utm_campaign não numérico (ex.: video-d1-AAMMDD) não é prova de outra edição.
+    assert.equal(matchEditionVideo([v("a", crit.title, "?utm_campaign=video-d1-261021")], crit)?.matchedBy, "title");
+  });
+
+  it("#11103: uploadStatus failed/rejected/deleted nunca casa, nem por utm_campaign", () => {
+    for (const uploadStatus of ["failed", "rejected", "deleted"]) {
+      const bad = v("a", crit.title, "?utm_campaign=261022", { status: { privacyStatus: "private", uploadStatus } });
+      assert.equal(matchEditionVideo([bad], crit), null, uploadStatus);
+    }
+    const ok = v("b", crit.title, "", { status: { privacyStatus: "private", uploadStatus: "processed" } });
+    const bad = v("a", crit.title, "?utm_campaign=261022", { status: { privacyStatus: "private", uploadStatus: "failed" } });
+    assert.equal(matchEditionVideo([bad, ok], crit)?.videoId, "b");
   });
 
   it("Short do mesmo dia não conta pelo período", () => {

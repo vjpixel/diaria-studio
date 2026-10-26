@@ -104,7 +104,7 @@ Mesmas flags do dry-run. Saída:
 
 Com `--force`, o registro anterior vai para `previous_uploads` no novo.
 
-**Link do vídeo no D1 (#10772, #10858).** Depois do upload, o próprio `--upload` grava `_internal/05-video-url.txt` — o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook — **só** quando o estado relido deixa o leitor abrir o vídeo: `published`, ou `scheduled` com `publishAt` até o horário do post do D1 do dia (rotação do #10305 incluída). Com `draft` (privado, a trava da auditoria) ou `unknown`, o arquivo não é gravado e o log diz por quê; uma URL diferente já gravada à mão nunca é sobrescrita. Depois de publicar (ou agendar antes do D1) no Studio, o editor libera o link com:
+**Link do vídeo no D1 (#10772, #10858, #10960).** Depois do upload, o próprio `--upload` grava `_internal/05-video-url.txt` — o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook — **sempre** que o YouTube aceitou o vídeo, inclusive quando o estado relido ainda não deixa o leitor abrir: `draft` (privado, a trava da auditoria), `unknown`, ou `scheduled` com `publishAt` depois do horário do post do D1 do dia (rotação do #10305 incluída). Nesses casos o log traz `[aviso] vídeo ainda pode não abrir para o leitor: … O link será incluído no D1 mesmo assim` — o link já está no D1, e o editor precisa publicar (ou agendar antes do D1) o vídeo no Studio antes do horário do D1. Não grava só com `uploadStatus` `failed`/`rejected`/`deleted` (exit 1); uma URL diferente já gravada à mão nunca é sobrescrita. Para gravar o link à mão (arquivo ausente, ou outra URL), o editor usa:
 
 ```bash
 npx tsx scripts/link-video-d1.ts {AAMMDD} --save --assume-public

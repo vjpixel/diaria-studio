@@ -385,6 +385,8 @@ function historyFrom(read: PublishedRecordRead): PreviousUploadEntry[] {
  * o registro com `source: "already-on-channel"` — assim as próximas rodadas e os
  * consumidores de `05-youtube-published.json` (fetch, gate do link no D1) tratam
  * como publicado — e põe o link no D1 como num upload normal. Exit 0.
+ * Vídeo com `uploadStatus` falho nunca chega aqui: `matchEditionVideo` o
+ * descarta e o upload normal segue (#11103).
  */
 function recordExistingVideo(
   e: ExistingEditionVideoError,
