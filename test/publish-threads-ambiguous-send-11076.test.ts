@@ -78,6 +78,8 @@ describe("fiação em publish-threads.ts (#11076)", () => {
   });
   it("send_unknown é gravado e pulado no resume", () => {
     assert.match(SRC, /"send_unknown" : "failed"/);
-    assert.match(SRC, /p\.status === "send_unknown"/);
+    // #11105: o resume virou `decideThreadsDispatch` (testado por comportamento
+    // em publish-threads-retry-send-unknown-11105.test.ts).
+    assert.match(SRC, /RESUME_SKIP_STATUSES = new Set<PostEntry\["status"\]>\(\[[^\]]*"send_unknown"/);
   });
 });
