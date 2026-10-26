@@ -1,3 +1,4 @@
+import { facebookCheckpointDiagnostic } from "../facebook-checkpoint.ts";
 /**
  * scripts/lib/diaria/video-d1-link-watch.ts (#10941, item 1)
  *
@@ -178,6 +179,8 @@ async function graphJson(res: Response): Promise<Record<string, unknown>> {
   }
   const obj = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
   if (!res.ok || obj.error) {
+    const checkpoint = facebookCheckpointDiagnostic(obj);
+    if (checkpoint) throw new Error(checkpoint);
     const err = obj.error ? JSON.stringify(obj.error).slice(0, 200) : "";
     throw new Error(`Graph API HTTP ${res.status}${err ? `: ${err}` : ""}`);
   }

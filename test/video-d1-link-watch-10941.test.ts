@@ -292,6 +292,21 @@ describe("#10941 — runVideoD1LinkWatch", () => {
     assert.equal(readFileSync(join(dir, D1_VIDEO_URL_FILE), "utf8"), "https://youtu.be/zzzzzzzzzzz\n");
   });
 
+  it("#11036: checkpoint na leitura do dry-run orienta o editor", async () => {
+    const dir = makeEdition({ social: [fbScheduled("2026-10-23T15:15:00.000Z")] });
+    const base = makeFetch(["public"]);
+    const fetch: VideoD1WatchDeps["fetch"] = async (url, init) => {
+      if (url.includes("graph.facebook.com")) return new Response(JSON.stringify({
+        error: { message: "x".repeat(300), code: 190, error_data: { checkpoint_url: "https://www.facebook.com/checkpoint/" } },
+      }), { status: 401 });
+      return base.fetch(url, init);
+    };
+    const { deps, logs } = makeDeps(fetch);
+    await runVideoD1LinkWatch(deps, input(dir, { dryRun: true }));
+    assert.match(logs.join("\n"), /checkpoint de segurança.*Ação do editor: entrar em https:\/\/www.facebook.com.*seguir as instruções/);
+    assert.equal(existsSync(join(dir, VIDEO_LINK_APPLY_FILE)), false);
+  });
+
   it("--dry-run: relê, mas não grava arquivo nem chama a Graph API para escrever", async () => {
     const dir = makeEdition({ social: [fbScheduled("2026-10-23T15:15:00.000Z")] });
     const { fetch, calls } = makeFetch(["public"]);
