@@ -130,7 +130,7 @@ export function renderEmailForm(cycle: string): string {
   const action = `/${encodeURIComponent(cycle)}`;
   const body = `
     <h1>Artigo exclusivo para apoiadores</h1>
-    <p>A Retrospectiva do Mês faz parte dos benefícios de quem apoia a diar.ia.br como Conselho, a partir de R$25/mês. Digite o e-mail que você usa para apoiar:</p>
+    <p>A Retrospectiva do Mês faz parte dos benefícios de quem apoia a diar.ia.br no Conselho, a partir de R$25/mês. Digite o e-mail que você usa para apoiar:</p>
     <form method="GET" action="${escHtml(action)}">
       <input type="email" name="email" placeholder="seu@email.com" required />
       <button class="button" type="submit">Acessar artigo</button>
