@@ -10,17 +10,20 @@ horários antigos são preferências para posts NOVOS. Reusar o planner de
 `scripts/divulgacao-slot-planner.ts` (2h entre posts da mesma conta, picos
 07–09/12–14/18–21 BRT como palpite geral, sem dados por conta; janela 06–22).
 A grade lê os stores diários (incluindo Reels/Shorts e collab do Instagram)
-e GET /list do Worker (timeout 10s, fail-soft com aviso). Stage 5 segue
-fixo conforme #10305. Facebook direto e X/Buffer ficam fora desta grade e
-mantêm os horários de referência. Não reagendar posts já registrados.
+e GET /list do Worker, os agendados direto no Facebook (Graph API
+`scheduled_posts`, por página habilitada) e a fila do X no Buffer
+(`BUFFER_ACCESS_TOKEN`); cada fonte tem timeout de 10s e é fail-soft com
+aviso. Stage 5 segue fixo conforme #10305. Não reagendar posts já registrados.
 Mostrar os horários efetivos por conta e as premissas no gate; respeitar
 avisos de grade incompleta. Não afirmar que todas as redes saem juntas.
 
 `publish-retrospectiva-social.ts --dry-run` já calcula os slots das unidades
-ativas para LinkedIn página, Instagram e Threads; a execução usa o mesmo
-planner. O horário do perfil manual também é planejado e impresso. O guard
-que recusa dia com edição agendada continua para Facebook/X, que não passam
-pelo planner. Se só houver canais do Worker, os slots se distribuem pela grade.
+ativas nas 5 redes (LinkedIn página, Facebook, Instagram, Threads e X, cada
+uma com o seu horário); a execução usa o mesmo planner. No Facebook, o horário
+vale para todas as páginas habilitadas e respeita a grade de cada uma. O
+`dueAt` do payload do X já sai planejado. O horário do perfil manual também é
+planejado e impresso. Como as 5 redes passam pelo planner (que enxerga o store
+da diária), a edição diária agendada no mesmo dia não barra mais o pré-voo.
 
 
 # /diaria-mensal-apoiadores

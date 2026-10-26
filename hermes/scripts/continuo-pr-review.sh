@@ -31,6 +31,26 @@
 # portão de merge. Aceito: custo de 1 review a mais é menor que o de uma PR
 # verde parada por dias.
 #
+# ## Também as PRs do `vjpixel/diaria-design` (#10900, decisão 261023b)
+#
+# Decisão do editor (/diaria-develop 261023b, comentário na #10900): o mesmo
+# gate do studio revisa e mergeia as PRs abertas do `vjpixel/diaria-design`
+# (o contínuo passou a abrir PR lá, item 32 de `context/overnight-dispatch-
+# rules.md`). Mecanismo: depois das PRs do studio, o laço percorre as do
+# design com `GH_REPO=vjpixel/diaria-design` EXPORTADO só durante a vez dela
+# (`select_review_repo`) — todo `gh` do bash e dos scripts `check-*` chamados
+# daqui (incluindo os placeholders `{owner}/{repo}` do `gh api`, medido no
+# gh 2.46 do `300` em 26/10/2026) passa a mirar o design sem cada script
+# precisar de `--repo`. O que muda por repo, explícito: o lock é o do design
+# (`merge-lock-* --repo`, por repo desde o #10618, não serializa com o
+# studio), a sessão de review roda com cwd no checkout do design (o diff
+# precisa dos commits dele, buscados com fetch no início) e o pull
+# pós-merge só roda no studio (o checkout do design é base de worktrees que
+# partem de `origin/main`, ninguém roda nada direto nele). O resolvedor de PRs
+# travadas (#8767) segue só no studio. Checkout do design ausente ou fetch
+# falhando = erro de infra visível na entrega, e as PRs do design ficam pro
+# próximo tick (nunca revisadas contra o checkout do studio).
+#
 # ## Por que existe
 #
 # O `opus-daily-diff-review.sh` roda 1x/dia; o contínuo (`hermes-diaria-
@@ -157,6 +177,33 @@ REPO="/home/vjpixel/diaria-studio"
 cd "$REPO"
 git fetch origin -q
 
+# #10900: 2º repo revisado por este script (ver docblock do topo).
+DESIGN_REPO="vjpixel/diaria-design"
+DESIGN_DIR="${CONTINUO_DESIGN_DIR:-/home/vjpixel/diaria-design}"
+# Repo da PR da vez: vazio = studio (cwd), senão `owner/name`. Lido por
+# `try_merge_gate`/`acquire_merge_lock_with_retry`/`release_merge_lock`/
+# `log_infra_error` com default (`${TARGET_REPO:-}`), porque os testes as
+# extraem e rodam soltas.
+TARGET_REPO=""
+REVIEW_CWD="$REPO"
+REVIEW_REPO_NAME="diaria-studio"
+# Troca o repo da vez. `GH_REPO` exportado SÓ na vez do design e removido na
+# volta pro studio — nunca fica vazando pro resto do tick.
+select_review_repo() {
+  if [ "$1" = "design" ]; then
+    TARGET_REPO="$DESIGN_REPO"
+    REVIEW_CWD="$DESIGN_DIR"
+    REVIEW_REPO_NAME="diaria-design"
+    export GH_REPO="$DESIGN_REPO"
+  else
+    TARGET_REPO=""
+    REVIEW_CWD="$REPO"
+    REVIEW_REPO_NAME="diaria-studio"
+    unset GH_REPO
+  fi
+}
+select_review_repo studio
+
 # #7446 item 2 / #7567: `escalate` e `reject` não tinham dono nem sinal — a
 # PR ficava implicitamente esperando o pickup do `/diaria-overnight` (sem
 # agendador, só roda quando o editor inicia uma rodada), invisível até
@@ -230,7 +277,43 @@ fi
 PR_NUMBERS=$(gh pr list --state open --json number,headRefName \
   --jq '.[] | select(.headRefName | startswith("bot/") | not) | .number')
 
-if [ -z "$PR_NUMBERS" ]; then
+# #10900: as PRs abertas do diaria-design, mesmo filtro (`bot/*` fora — o
+# `--jq` é cópia literal do de cima, travada igual por
+# `test/continuo-pr-review-design-repo-10900.test.ts`). Checkout ausente,
+# fetch ou listagem falhando: o design fica pra o próximo tick e o motivo vai
+# como erro de infra no resumo (`DESIGN_SCAN_ERROR`, contado mais abaixo,
+# depois de os contadores existirem) — nunca aborta o studio.
+DESIGN_PR_NUMBERS=""
+DESIGN_SCAN_ERROR=""
+if [ ! -d "$DESIGN_DIR/.git" ]; then
+  DESIGN_SCAN_ERROR="checkout do $DESIGN_REPO ausente em $DESIGN_DIR — PRs do design não revisadas (gh repo clone $DESIGN_REPO $DESIGN_DIR)"
+else
+  set +e
+  DESIGN_FETCH_OUT=$(git -C "$DESIGN_DIR" fetch origin -q 2>&1)
+  DESIGN_FETCH_RC=$?
+  DESIGN_LIST_RC=0
+  DESIGN_LIST_STDERR_TMP="$(mktemp)"
+  if [ "$DESIGN_FETCH_RC" -eq 0 ]; then
+    # stderr à parte: aviso do `gh` misturado à lista viraria "número de PR".
+    DESIGN_PR_NUMBERS=$(GH_REPO="$DESIGN_REPO" gh pr list --state open --json number,headRefName \
+      --jq '.[] | select(.headRefName | startswith("bot/") | not) | .number' 2>"$DESIGN_LIST_STDERR_TMP")
+    DESIGN_LIST_RC=$?
+  fi
+  DESIGN_LIST_STDERR=$(cat "$DESIGN_LIST_STDERR_TMP" 2>/dev/null || true)
+  rm -f "$DESIGN_LIST_STDERR_TMP"
+  set -e
+  if [ "$DESIGN_FETCH_RC" -ne 0 ]; then
+    DESIGN_SCAN_ERROR="fetch do checkout do $DESIGN_REPO falhou (rc=$DESIGN_FETCH_RC): $DESIGN_FETCH_OUT"
+  elif [ "$DESIGN_LIST_RC" -ne 0 ]; then
+    DESIGN_SCAN_ERROR="gh pr list do $DESIGN_REPO falhou (rc=$DESIGN_LIST_RC): $DESIGN_LIST_STDERR"
+    DESIGN_PR_NUMBERS=""
+  fi
+fi
+if [ -n "$DESIGN_SCAN_ERROR" ]; then
+  echo "[continuo-pr-review] $DESIGN_SCAN_ERROR" >&2
+fi
+
+if [ -z "$PR_NUMBERS$DESIGN_PR_NUMBERS" ] && [ -z "$DESIGN_SCAN_ERROR" ]; then
   echo "[continuo-pr-review] nenhuma PR elegível aberta (exceto bot/*) — noop" >&2
   if [ "$STUCK_CLOSED" -gt 0 ] 2>/dev/null; then
     echo "[continuo-pr-review] resolvedor de PRs travadas (#8767): $STUCK_CLOSED fechada(s) — detalhes nos comentários de cada PR"
@@ -286,9 +369,11 @@ log_infra_error() {
   # jq -cn (compact, null-input) monta o JSON com escaping seguro — $reason
   # pode conter aspas, quebras de linha (stderr multi-linha do gh/tsx), etc.
   local jq_err
+  # #10900: `repo` só nas linhas de PR do diaria-design (o número colide
+  # entre os repos); linha sem `repo` = studio, como sempre.
   jq_err=$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pr "$pr" \
-    --arg code "$code" --arg reason "$reason" \
-    '{ts: $ts, pr: ($pr | tonumber), exit_code: $code, reason: $reason}' \
+    --arg code "$code" --arg reason "$reason" --arg repo "${TARGET_REPO:-}" \
+    '{ts: $ts, pr: ($pr | tonumber), exit_code: $code, reason: $reason} + (if $repo == "" then {} else {repo: $repo} end)' \
     2>&1 >> "$INFRA_ERROR_LOG")
   if [ -n "$jq_err" ]; then
     # Review do #6910 (P2): silenciar a falha do próprio logger de infra
@@ -298,7 +383,7 @@ log_infra_error() {
     echo "[continuo-pr-review] log_infra_error: falha ao escrever em $INFRA_ERROR_LOG: $jq_err" >&2
   fi
   local truncated="${reason:0:200}"
-  INFRA_ERROR_SUMMARY="${INFRA_ERROR_SUMMARY}PR #$pr ($code): $truncated"$'\n'
+  INFRA_ERROR_SUMMARY="${INFRA_ERROR_SUMMARY}PR ${TARGET_REPO:+$TARGET_REPO}#$pr ($code): $truncated"$'\n'
 }
 
 # #6934: adquire o merge-lock cross-sessão com um número pequeno e FIXO de
@@ -329,7 +414,7 @@ acquire_merge_lock_with_retry() {
   local out
   while :; do
     if out=$(npx tsx scripts/lib/session-registry.ts merge-lock-acquire \
-      --kind continuo-review --session-id "$SESSION_ID" 2>&1); then
+      --kind continuo-review --session-id "$SESSION_ID" ${TARGET_REPO:+--repo "$TARGET_REPO"} 2>&1); then
       return 0
     fi
     LOCK_ACQUIRE_LAST_OUTPUT="$out"
@@ -359,7 +444,7 @@ acquire_merge_lock_with_retry() {
 release_merge_lock() {
   local out
   if ! out=$(npx tsx scripts/lib/session-registry.ts merge-lock-release \
-    --kind continuo-review --session-id "$SESSION_ID" 2>&1); then
+    --kind continuo-review --session-id "$SESSION_ID" ${TARGET_REPO:+--repo "$TARGET_REPO"} 2>&1); then
     echo "[continuo-pr-review] release_merge_lock: saída não-zero (motivo pode ser lock alheio, idempotência, ou erro de infra) — $out" >&2
   fi
 }
@@ -503,7 +588,9 @@ try_merge_gate() {
       # merge commit e sair exit 0, escapando de $PULL_RC e do log
       # inteiramente (sucesso com efeito colateral, o único caminho que
       # escaparia da rede de logging desta PR).
-      if [ "$MERGE_CONFIRMED" -eq 1 ]; then
+      # #10900: só no studio — o merge do design não muda este checkout, e o
+      # do design (`$DESIGN_DIR`) não é usado direto por ninguém.
+      if [ "$MERGE_CONFIRMED" -eq 1 ] && [ -z "${TARGET_REPO:-}" ]; then
         set +e
         git pull --ff-only >&2
         PULL_RC=$?
@@ -734,9 +821,25 @@ try_merge_gate() {
   esac
 }
 
-for PR in $PR_NUMBERS; do
+# #10900: falha ao varrer o design conta como erro de infra (vai na entrega).
+if [ -n "$DESIGN_SCAN_ERROR" ]; then
+  INFRA_ERRORS=$((INFRA_ERRORS + 1))
+  select_review_repo design
+  log_infra_error 0 "design_scan" "$DESIGN_SCAN_ERROR"
+  select_review_repo studio
+fi
+
+# #10900: studio primeiro, depois o design; cada item é `repo:numero` e o
+# corpo do laço (inalterado) roda com `select_review_repo` já aplicado.
+PR_ITEMS=""
+for n in $PR_NUMBERS; do PR_ITEMS="$PR_ITEMS studio:$n"; done
+for n in $DESIGN_PR_NUMBERS; do PR_ITEMS="$PR_ITEMS design:$n"; done
+
+for PR_ITEM in $PR_ITEMS; do
+  PR="${PR_ITEM#*:}"
+  select_review_repo "${PR_ITEM%%:*}"
   set +e
-  AUTH_OUT=$(npx tsx scripts/check-pr-review-authenticity.ts --pr "$PR" 2>&1)
+  AUTH_OUT=$(npx tsx scripts/check-pr-review-authenticity.ts --pr "$PR" ${TARGET_REPO:+--repo "$TARGET_REPO"} 2>&1)
   AUTH_RC=$?
   set -e
 
@@ -843,7 +946,7 @@ for PR in $PR_NUMBERS; do
   MARKER_PREFIX="<!-- continuo-review: run=${RUN_ID} at=${AT} verdict="
   MARKER_SUFFIX=" head=${HEAD_SHA} -->"
 
-  PROMPT="Você é o review externo do contínuo do diaria-studio — uma sessão SEPARADA da que abriu esta PR (a delegação do contínuo não tem ferramenta Agent, #6712; você tem assinatura claude.ai e está revisando de verdade). Revise a PR #$PR (\`$PR_TITLE\`), diff \`git diff $BASE_SHA...$HEAD_SHA\` (TRÊS pontos — contra o merge-base, igual ao \`gh pr diff $PR\`), commits \`git log --oneline $BASE_SHA..$HEAD_SHA\`. Nunca use \`git diff $BASE_SHA..$HEAD_SHA\` (dois pontos): se a branch forkou antes de commits que já entraram no master, esse diff mostra o INVERSO deles e parece que a PR reverte fixes que ela nunca tocou (#8766).
+  PROMPT="Você é o review externo do contínuo do $REVIEW_REPO_NAME — uma sessão SEPARADA da que abriu esta PR (a delegação do contínuo não tem ferramenta Agent, #6712; você tem assinatura claude.ai e está revisando de verdade). Revise a PR #$PR (\`$PR_TITLE\`), diff \`git diff $BASE_SHA...$HEAD_SHA\` (TRÊS pontos — contra o merge-base, igual ao \`gh pr diff $PR\`), commits \`git log --oneline $BASE_SHA..$HEAD_SHA\`. Nunca use \`git diff $BASE_SHA..$HEAD_SHA\` (dois pontos): se a branch forkou antes de commits que já entraram no master, esse diff mostra o INVERSO deles e parece que a PR reverte fixes que ela nunca tocou (#8766).
 
 Procure, nesta ordem de prioridade:
 1. Bugs de correção (lógica errada, edge case quebrado, regressão de comportamento).
@@ -872,11 +975,14 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   # ANTHROPIC_API_KEY legítima ali pra scripts de API direta) ou um export
   # persistente de gateway (#6714), e qualquer uma delas faz o CLI trocar a
   # assinatura claude.ai pela API paga e perder os conectores (#5608).
-  echo "$PROMPT" | env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
+  # #10900: cwd no checkout do repo da PR (`REVIEW_CWD`) — o diff do prompt
+  # precisa dos commits dela; `GH_REPO` (exportado na vez do design) faz o
+  # `gh pr comment`/`gh pr view` da sessão mirar o mesmo repo.
+  (cd "$REVIEW_CWD" && echo "$PROMPT" | env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
     -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX \
     timeout 1800 claude -p \
     --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)" \
-    --model claude-opus-5-5 --effort low 1>&2
+    --model claude-opus-5-5 --effort low 1>&2)
   CLAUDE_RC=$?
   set -e
   echo "[continuo-pr-review] PR #$PR: revisada — veredito/comentário na PR no GitHub" >&2
@@ -897,6 +1003,7 @@ VOCÊ NUNCA MERGEIA NADA. Não tente \`gh pr merge\` — não está nas ferramen
   # (corrida do #5716).
   try_merge_gate "$PR"
 done
+select_review_repo studio
 
 # Entrega SÓ QUANDO HÁ PROBLEMA (editor, 19/09/2026) ─────────────────────────
 # Antes, toda rodada despejava no Telegram o progresso PR a PR (mais o output
