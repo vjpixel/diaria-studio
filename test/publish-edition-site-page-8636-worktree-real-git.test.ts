@@ -360,10 +360,10 @@ describe("#11126 — regen do índice isolado do checkout compartilhado", () => 
       const worktreeDir = join(mkdtempSync(join(tmpdir(), "diaria-11126-")), "wt");
       cleanupDirs.push(join(worktreeDir, ".."));
       const slug = "edicao-11126";
-      const gh: GhRunner = (args) => {
+      const gh: GhRunner = (args, cwd) => {
         assert.notEqual(args.slice(0, 2).join(" "), "pr merge");
         if (args[0] === "pr" && args[1] === "checks") return "[]";
-        return makeGh()(args);
+        return makeGh()(args, cwd);
       };
       const deps = productionDeps(rootDir, git, gh, noopLock, noopSleep, worktreeDir, () => ({}), 0);
       const result = publishEditionSitePage(rootDir, {
