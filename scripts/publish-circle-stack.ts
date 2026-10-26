@@ -14,7 +14,13 @@
  *   2. Seleciona por interesse (`circle-stack-select.ts`) e grava
  *      `data/weekly/{cycle}/_internal/circle-stack-selection.json`. Se o
  *      arquivo já existe, é REUSADO (preserva ajustes manuais e `stackNote`
- *      escritos depois) — `--reselect` refaz do zero.
+ *      escritos depois) — `--reselect` refaz do zero. Seleção nova passa pelo
+ *      agente `stack-title-translator` (#11005, `lib/circle-stack-translate.ts`):
+ *      título sem sinal de português é traduzido e gravado em `title`, o da
+ *      fonte fica em `titleOriginal`, e cada tradução vira aviso para o editor
+ *      revisar. `--no-translate` pula; `--translate-titles` roda sobre uma
+ *      seleção já gravada. `--publish` que montou a seleção agora com título
+ *      sem sinal de português (traduzido ou não) recusa até o editor revisar.
  *   3. Renderiza a prévia em Markdown `data/weekly/{cycle}/circle-stack-{cycle}.md`.
  *   4. Só com `--publish`: envia ao webhook n8n da Stack
  *      (`scripts/lib/stack-webhook.ts`), que
@@ -112,6 +118,11 @@ import {
   type CircleStackItem,
   type CircleStackSelection,
 } from "./lib/circle-stack-render.ts";
+import {
+  stackTitleTranslationCandidates,
+  translateCircleStackTitles,
+  type TranslateStackTitlesOptions,
+} from "./lib/circle-stack-translate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -163,6 +174,22 @@ export function circleStackPublishBlockReason(state: PublishState, cycle: string
   }
   return `State de publicação do ciclo ${cycle} existe mas não confirma o envio (${statePath}) — ` +
     "conferir no Radar de Notícias Stack antes; --force publica mesmo assim.";
+}
+
+/**
+ * Pure (#11005): `--publish` que acabou de montar a seleção não envia se ela tem
+ * título sem sinal de português — traduzido pela LLM agora, ou deixado como na
+ * fonte porque a tradução falhou/foi pulada. Nos dois casos o editor ainda não
+ * revisou (decisão do briefing 261025b), e o guard de inglês sozinho não pega
+ * título sem palavra funcional ("Codex Launch Notes"). Seleção já gravada
+ * (prévia da task, revisada pelo editor) segue normal.
+ */
+export function circleStackFreshTranslationBlockReason(pendingReview: number, selectionPath: string): string | null {
+  if (pendingReview <= 0) return null;
+  return (
+    `${pendingReview} título(s) sem sinal de português entraram numa seleção montada agora e ainda não foram revisados — ` +
+    `confira o campo title em ${selectionPath} (original em titleOriginal) e rode o --publish de novo.`
+  );
 }
 
 export const CIRCLE_STACK_NOTIFY_CHECK = "circle-stack-weekly";
@@ -653,13 +680,28 @@ function readTextArg(argv: string[], key: string): string | undefined {
   return p ? readFileSync(resolve(p), "utf8") : undefined;
 }
 
-async function main(): Promise<void> {
-  loadProjectEnv(ROOT);
-  const argv = process.argv.slice(2);
-  const platformConfig = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
-  const cfg = resolveCircleStackConfig(platformConfig);
-  const key = process.env[STACK_WEBHOOK_KEY_ENV] ?? "";
-  const webhookUrl = process.env[STACK_WEBHOOK_URL_ENV] ?? "";
+export interface RunCircleStackDeps {
+  /** Raiz do repo: `.claude/agents/`, cwd do `gh`/`claude`, e data-root default. */
+  rootDir: string;
+  platformConfig: Record<string, unknown>;
+  env: NodeJS.ProcessEnv;
+  /** Chamada da tradução (#11005); default `callClaudeCli`. */
+  translateCall?: TranslateStackTitlesOptions["call"];
+  /** Envio ao webhook; default `sendStackPost`. */
+  send?: (webhookUrl: string, key: string, payload: StackPostPayload) => Promise<void>;
+  /** `gh` injetável (fechamento de avisos); default `defaultAlarmGhRun`. */
+  ghRun?: GhRunFn;
+}
+
+/** CLI inteira com dependências injetáveis (#11005: teste de integração do caminho de `main()`). */
+export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): Promise<void> {
+  const ROOT = deps.rootDir;
+  const sendPost = deps.send ?? sendStackPost;
+  const ghRun = deps.ghRun ?? defaultAlarmGhRun;
+  const translateOpts: TranslateStackTitlesOptions = { rootDir: ROOT, call: deps.translateCall };
+  const cfg = resolveCircleStackConfig(deps.platformConfig);
+  const key = deps.env[STACK_WEBHOOK_KEY_ENV] ?? "";
+  const webhookUrl = deps.env[STACK_WEBHOOK_URL_ENV] ?? "";
 
   if (hasFlag(argv, "hello")) {
     if (!cfg.enabled) throw new Error("circle_stack.enabled = false — publicação desligada no config");
@@ -668,7 +710,7 @@ async function main(): Promise<void> {
     await publishCircleStackHello({
       markerPath: circleStackHelloMarkerPath(resolve(getStringArg(argv, "data-root") ?? ROOT)),
       force: hasFlag(argv, "force"),
-      send: () => sendStackPost(webhookUrl, key, helloPayload),
+      send: () => sendPost(webhookUrl, key, helloPayload),
     });
     console.log(`Post de teste publicado no Radar de Notícias Stack: "${HELLO_POST.titulo}"`);
     return;
@@ -692,11 +734,36 @@ async function main(): Promise<void> {
   const selectionPath = join(cycleDir, "_internal", "circle-stack-selection.json");
   let selection: CircleStackSelection;
   let warnings: string[];
+  // Títulos sem sinal de português em seleção montada NESTA execução (#11005).
+  let pendingReviewThisRun = 0;
   if (existsSync(selectionPath) && !hasFlag(argv, "reselect")) {
     ({ selection, warnings } = parseStoredCircleStackSelection(readFileSync(selectionPath, "utf8"), selectionPath, cycle));
     console.log(`Reusando seleção existente: ${selectionPath} (--reselect refaz)`);
+    // #11005: --translate-titles traduz numa seleção já gravada (só o que segue sem
+    // sinal de português; título reescrito à mão fica) e regrava o arquivo.
+    if (hasFlag(argv, "translate-titles") && hasFlag(argv, "publish")) {
+      console.warn("⚠ --translate-titles ignorado junto com --publish: a tradução precisa da revisão do editor antes do envio — rode sem --publish primeiro.");
+    } else if (hasFlag(argv, "translate-titles")) {
+      const stored = JSON.parse(readFileSync(selectionPath, "utf8")) as CircleStackSelection & { warnings?: string[] };
+      const tr = translateCircleStackTitles(stored, translateOpts);
+      const merged = [...warnings, ...tr.warnings.filter((w) => !warnings.includes(w))];
+      writeFileAtomic(selectionPath, JSON.stringify({ ...tr.selection, warnings: merged }, null, 2));
+      selection = tr.selection;
+      warnings = merged;
+      console.log(`Títulos traduzidos: ${tr.translated}${tr.failed ? " (tradução falhou — ver avisos)" : ""}`);
+    }
   } else {
-    const built = buildCircleStackSelection(dataRoot, publishMonday, cfg.interests);
+    let built = buildCircleStackSelection(dataRoot, publishMonday, cfg.interests);
+    // Títulos sem sinal de português montados agora ainda não passaram pela revisão
+    // do editor — traduzidos ou não (tradução falha, --no-translate).
+    pendingReviewThisRun = stackTitleTranslationCandidates(built).length;
+    // #11005 (decisão do editor, 261025b): o agente traduz os títulos e grava na
+    // seleção; o editor revisa (os traduzidos entram nos avisos). --no-translate pula.
+    if (!hasFlag(argv, "no-translate")) {
+      const tr = translateCircleStackTitles(built, translateOpts);
+      built = { ...tr.selection, warnings: [...tr.selection.warnings, ...tr.warnings] };
+      console.log(`Títulos traduzidos: ${tr.translated}${tr.failed ? " (tradução falhou — ver avisos)" : ""}`);
+    }
     writeFileAtomic(selectionPath, JSON.stringify(built, null, 2));
     selection = built;
     warnings = built.warnings;
@@ -733,7 +800,7 @@ ${rendered.markdown}
     if (hasFlag(argv, "notify")) {
       // #10965: avisos de semanas anteriores não publicadas se auto-resolvem aqui
       // (antes ficavam abertos para sempre). Fail-soft — nunca impede o aviso do ciclo atual.
-      const stale = closeStaleCircleStackNotifyIssues(cycle, (c) => circleStackCycleStateFromDisk(dataRoot, c), ROOT);
+      const stale = closeStaleCircleStackNotifyIssues(cycle, (c) => circleStackCycleStateFromDisk(dataRoot, c), ROOT, ghRun);
       if (!stale.listed) console.warn("⚠ Não consegui listar os avisos de ciclos anteriores — limpeza adiada para a próxima execução.");
       if (stale.closed.length > 0) console.log(`[dry-run] Aviso(s) de ciclos anteriores fechado(s): ${stale.closed.map((n) => `#${n}`).join(", ")}`);
       if (stale.failed.length > 0) console.warn(`⚠ Não consegui fechar o(s) aviso(s) de ciclos anteriores ${stale.failed.map((n) => `#${n}`).join(", ")}.`);
@@ -766,6 +833,8 @@ ${rendered.markdown}
         violations.map((v) => `  - ${v}`).join("\n"),
     );
   }
+  const reviewBlock = circleStackFreshTranslationBlockReason(pendingReviewThisRun, selectionPath);
+  if (reviewBlock) throw new Error(reviewBlock);
   // Config validada ANTES de gravar a tentativa: erro de config nunca chegou à
   // rede e não pode deixar o ciclo em "unknown".
   assertStackWebhookConfig(webhookUrl, key);
@@ -776,13 +845,22 @@ ${rendered.markdown}
     title: rendered.title,
     payload,
     force: hasFlag(argv, "force"),
-    send: (p) => sendStackPost(webhookUrl, key, p),
+    send: (p) => sendPost(webhookUrl, key, p),
   });
   console.log(`Publicado no Radar de Notícias Stack: ${rendered.title}`);
 
-  const closeRes = closeCircleStackNotifyIssues(cycle, publishedAt, ROOT);
+  const closeRes = closeCircleStackNotifyIssues(cycle, publishedAt, ROOT, ghRun);
   if (closeRes.closed.length > 0) console.log(`Issue(s) de aviso do ciclo fechada(s): ${closeRes.closed.map((n) => `#${n}`).join(", ")}`);
   if (closeRes.failed.length > 0) console.warn(`⚠ Não consegui fechar a(s) issue(s) de aviso ${closeRes.failed.join(", ")} — fechar à mão.`);
+}
+
+async function main(): Promise<void> {
+  loadProjectEnv(ROOT);
+  await runCircleStack(process.argv.slice(2), {
+    rootDir: ROOT,
+    platformConfig: JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")),
+    env: process.env,
+  });
 }
 
 if (isMainModule(import.meta.url)) {
