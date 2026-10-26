@@ -14,11 +14,18 @@
  * Corte natural pra 1ª leitura (ver #8496): rondas a partir de 260920
  * (primeiras com `waves`) — `--since 260920`.
  *
+ * **Resumo de UMA rodada: `--plan` (#11164).** `--since AAMMDD` é corte
+ * inferior, não igualdade — pega toda rodada daquele dia em diante, inclusive
+ * a de outra máquina no mesmo dia (300 `261025` + Zenbook `261025b` saíram
+ * somadas, "Rondas: 4"). O relatório da Fase 2 lê só o `plan.json` da própria
+ * sessão via `--plan`; `--since` fica para a leitura agregada de N rodadas.
+ *
  * Uso:
+ *   npx tsx scripts/report-overnight-waves.ts --plan data/overnight/{AAMMDD}/plan.json [--json]
  *   npx tsx scripts/report-overnight-waves.ts [--dir data/overnight] [--since AAMMDD] [--json]
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues } from "./lib/plan-issues-normalize.ts";
 import { aggregateWaveRounds, renderWavesReportMarkdown } from "./lib/overnight-waves-report.ts";
@@ -52,33 +59,60 @@ export function scanOvernightRounds(overnightDataDir: string, since?: string): S
 
   const rounds: ScannedRound[] = [];
   for (const dir of dirs) {
-    const planPath = join(overnightDataDir, dir, "plan.json");
-    if (!existsSync(planPath)) continue;
-    try {
-      const plan = JSON.parse(readFileSync(planPath, "utf8"));
-      if (plan === null || typeof plan !== "object") continue;
-      rounds.push({
-        dir,
-        waves: Array.isArray(plan.waves) ? plan.waves : undefined,
-        issues: normalizeIssues(plan),
-      });
-    } catch {
-      continue; // plan.json corrompido — pula, não trava o agregador
-    }
+    const round = readRoundPlan(join(overnightDataDir, dir, "plan.json"), dir);
+    if (round) rounds.push(round);
   }
   return rounds;
 }
 
+/**
+ * Lê UM `plan.json` como rodada. Ausente, ilegível ou não-objeto → `null`
+ * (fail-soft, mesma regra do scan). `dir` default = nome do diretório do plano.
+ */
+export function readRoundPlan(planPath: string, dir: string = basename(dirname(planPath))): ScannedRound | null {
+  if (!existsSync(planPath)) return null;
+  try {
+    const plan = JSON.parse(readFileSync(planPath, "utf8"));
+    if (plan === null || typeof plan !== "object") return null;
+    return {
+      dir,
+      waves: Array.isArray(plan.waves) ? plan.waves : undefined,
+      issues: normalizeIssues(plan),
+    };
+  } catch {
+    return null; // plan.json corrompido — pula, não trava o agregador
+  }
+}
+
+/**
+ * Rodadas a agregar a partir dos args (#11164): `--plan` = só aquela rodada
+ * (plano ausente/ilegível → lista vazia, o render já imprime a nota de
+ * "nenhuma onda"); senão o scan de `--dir` com `--since` opcional.
+ */
+export function selectRounds(values: Record<string, string>): ScannedRound[] {
+  if (values.plan) {
+    const round = readRoundPlan(values.plan);
+    return round ? [round] : [];
+  }
+  return scanOvernightRounds(values.dir ?? "data/overnight", values.since);
+}
+
 if (isMainModule(import.meta.url)) {
   const { values, flags } = parseArgs(process.argv.slice(2));
-  const dir = values.dir ?? "data/overnight";
   const since = values.since;
   if (since && !/^\d{6}$/.test(since)) {
     console.error(`[report-overnight-waves] --since exige AAMMDD (recebido: ${JSON.stringify(since)})`);
     process.exit(2);
   }
+  if (values.plan && (since || values.dir)) {
+    console.error("[report-overnight-waves] --plan resume UMA rodada; não combina com --dir/--since");
+    process.exit(2);
+  }
+  if (values.plan && !existsSync(values.plan)) {
+    console.error(`[report-overnight-waves] aviso: plan.json não encontrado em ${values.plan}`);
+  }
 
-  const rounds = scanOvernightRounds(dir, since);
+  const rounds = selectRounds(values);
   const report = aggregateWaveRounds(rounds);
 
   if (flags.has("json")) {

@@ -423,4 +423,25 @@ describe("subagente em voo (#10483 finding 1)", () => {
     const { markers } = planEvents([record("a", "dev-implementador", "Implementar #1", 1)], existing, "261019", undefined, NOW);
     assert.deepEqual(markers, []);
   });
+
+  it("#11164: grava session_id em eventos e marcadores; review de OUTRA sessão não suprime o marcador desta", () => {
+    const existing = [
+      JSON.stringify({ edition: "261025", message: "review_metrics", details: { depth: 0, session_id: "sessao-300" } }),
+    ];
+    const { events, markers } = planEvents(
+      [record("z1", "dev-implementador", "Implementar #1", 5)],
+      existing,
+      "261025",
+      undefined,
+      NOW,
+      "sessao-zenbook",
+    );
+    assert.deepEqual(events.map((e) => e.details.session_id), ["sessao-zenbook"]);
+    assert.deepEqual(markers.map((m) => [m.details.tipo, m.details.session_id]), [
+      [REVIEW_METRICS_MESSAGE, "sessao-zenbook"],
+    ]);
+    // Mesma sessão (ou evento legado sem session_id) continua suprimindo.
+    const same = planEvents([record("z2", "dev-implementador", "Implementar #2", 5)], existing, "261025", undefined, NOW, "sessao-300");
+    assert.deepEqual(same.markers, []);
+  });
 });

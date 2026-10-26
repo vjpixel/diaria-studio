@@ -22,6 +22,8 @@ import {
   formatPapelBreakdown,
   SUBAGENT_METRICS_PAPEIS,
   SEM_PAPEL,
+  resolveSessionScopeFromArgs,
+  eventMatchesSession,
 } from "../scripts/check-overnight-token-instrumentation.ts";
 
 let root: string | null = null;
@@ -297,5 +299,91 @@ describe("subagent_metrics por papel (#9875)", () => {
     const result = checkOvernightTokenInstrumentation("260811", rootDir);
     assert.deepEqual(result.papelBreakdown, {});
     assert.doesNotMatch(result.section, /por papel/);
+  });
+});
+
+describe("filtro por sessão — duas rodadas da mesma edição no mesmo dia (#11164)", () => {
+  const S300 = "aaaaaaaa-0000-0000-0000-000000000300";
+  const ZEN = "bbbbbbbb-0000-0000-0000-00000000zen0";
+  const ofSession = (edition: string, message: string, sessionId: string, extra: Record<string, unknown> = {}) =>
+    evt(edition, message, { details: { session_id: sessionId, ...extra } });
+
+  // Cenário real da 261025: a rodada da 300 emitiu os 3 tipos; a da Zenbook
+  // (261025b, mesma edição 261025) não emitiu nenhum.
+  const lines = [
+    ofSession("261025", "subagent_metrics", S300, { papel: "dev-implementador", subagent_tokens: 1000 }),
+    ofSession("261025", "coordinator_tokens_estimate", S300),
+    ofSession("261025", "review_metrics", S300),
+  ];
+
+  it("reproduz o bug: só por edição, a sessão da Zenbook herda os eventos da 300 e sai OK", () => {
+    const rootDir = makeRoot();
+    writeRunLog(rootDir, lines);
+    const unscoped = checkOvernightTokenInstrumentation("261025", rootDir);
+    assert.equal(unscoped.verdict.status, "ok"); // o comportamento legado, que escondia a lacuna
+  });
+
+  it("com o session_id da Zenbook, os 3 tipos aparecem ausentes (lacuna visível)", () => {
+    const rootDir = makeRoot();
+    writeRunLog(rootDir, lines);
+    const result = checkOvernightTokenInstrumentation("261025", rootDir, { sessionId: ZEN });
+    assert.equal(result.verdict.status, "warning");
+    assert.deepEqual(
+      (result.verdict as { status: "warning"; missing: string[] }).missing.slice().sort(),
+      [...TRACKED_TOKEN_INSTRUMENTATION_MESSAGES].sort(),
+    );
+    assert.deepEqual(result.papelBreakdown, {});
+    assert.equal(result.sessionId, ZEN);
+    assert.match(result.section, new RegExp(`sessão ${ZEN}`));
+  });
+
+  it("com o session_id da 300, conta só os dela (OK)", () => {
+    const rootDir = makeRoot();
+    writeRunLog(rootDir, [...lines, ofSession("261025", "subagent_metrics", ZEN, { papel: "dev-fixer", subagent_tokens: 7 })]);
+    const result = checkOvernightTokenInstrumentation("261025", rootDir, { sessionId: S300 });
+    assert.equal(result.verdict.status, "ok");
+    assert.equal(result.counts.subagent_metrics, 1);
+    assert.deepEqual(result.papelBreakdown, { "dev-implementador": { events: 1, tokens: 1000 } });
+  });
+
+  it("marcador vazio de outra sessão não conta para esta", () => {
+    const rootDir = makeRoot();
+    writeRunLog(rootDir, [
+      ofSession("261025", "subagent_metrics", ZEN),
+      ofSession("261025", "coordinator_tokens_estimate", ZEN),
+      ofSession("261025", "token_instrumentation_empty", S300, { tipo: "review_metrics" }),
+    ]);
+    const result = checkOvernightTokenInstrumentation("261025", rootDir, { sessionId: ZEN });
+    assert.deepEqual(result.verdict, { status: "warning", missing: ["review_metrics"] });
+  });
+
+  it("evento legado sem session_id não conta quando há filtro", () => {
+    assert.equal(eventMatchesSession({ details: null }, ZEN), false);
+    assert.equal(eventMatchesSession({ details: { session_id: ZEN } }, ZEN), true);
+    assert.equal(eventMatchesSession({ details: null }, null), true);
+  });
+
+  it("--plan lê o session_id da raiz do plan.json; --session-id explícito vence", () => {
+    const plan = JSON.stringify({ session_id: ZEN, issues: [] });
+    assert.deepEqual(resolveSessionScopeFromArgs({ plan: "p.json" }, () => plan), { sessionId: ZEN });
+    assert.deepEqual(resolveSessionScopeFromArgs({ plan: "p.json", "session-id": S300 }, () => plan), {
+      sessionId: S300,
+    });
+    assert.deepEqual(resolveSessionScopeFromArgs({}, () => plan), {});
+  });
+
+  it("plan.json legado sem session_id (ou ilegível) -> sem filtro, com a ressalva no texto", () => {
+    const legacy = resolveSessionScopeFromArgs({ plan: "p.json" }, () => JSON.stringify({ issues: [] }));
+    assert.equal(legacy.sessionId, undefined);
+    assert.match(legacy.unscopedReason ?? "", /sem session_id/);
+    const broken = resolveSessionScopeFromArgs({ plan: "p.json" }, () => {
+      throw new Error("ENOENT");
+    });
+    assert.match(broken.unscopedReason ?? "", /ilegível/);
+
+    const rootDir = makeRoot();
+    writeRunLog(rootDir, lines);
+    const result = checkOvernightTokenInstrumentation("261025", rootDir, legacy);
+    assert.match(result.section, /Sem filtro de sessão/);
   });
 });

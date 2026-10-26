@@ -904,8 +904,9 @@ Com `--bugs` (#3375) ativo, abrir o digest com `Modo: --bugs (só issues com lab
 npx tsx scripts/subagent-usage-metrics.ts --edition {AAMMDD} --agent develop
 ```
 ```bash
-npx tsx scripts/check-overnight-token-instrumentation.ts --edition {AAMMDD}
+npx tsx scripts/check-overnight-token-instrumentation.ts --edition {AAMMDD} --plan data/develop/{AAMMDD}/plan.json
 ```
+`--plan` (#11164) restringe a contagem aos eventos desta sessão (`session_id` da raiz do `plan.json`, gravado pelos dois emissores) — sem ele, outra rodada que grave a mesma edição no mesmo dia faz a checagem dizer "OK" para uma sessão que não emitiu nada. Se o plano estiver em path sufixado (`derived-after-collision`), passar esse path.
 1. **Implementação** — tabela `unidade | subagent_tokens | tool_uses | duração` a partir dos eventos `subagent_metrics` (um por invocação de `Agent`, ver Fase 1 passo 5) + total da sessão. Sessão sem nenhuma unidade despachada (ex: `--dry-run`, `--no-implement`) → tabela com a nota "nenhuma unidade".
 2. **Fleet review pré-merge** — tabela SEPARADA da anterior (`unidade | fleet_tokens | tool_uses`, a partir dos eventos `fleet_review_metrics`, ver Gates "REVIEW DE FLEET PRÉ-MERGE") + total. A separação em relação à Implementação é o que torna visível o rateio entre as duas categorias (#4815 item 2, foi essa separação em 260808 que revelou o rateio 66/34) — nunca agregar as duas na mesma linha/tabela.
 3. **Coordenador** — linha `Coordenador (tokens estimados): ~N (fonte: {harness_usage | context_size_proxy})` a partir de `coordinator_tokens_estimate`; se todos os eventos dessa categoria vierem `unavailable` (ou não existirem na sessão — histórico até aqui: `coordinator_tokens_estimate` nunca foi medido em nenhuma sessão real, #4815), a linha vira `Coordenador (tokens): unavailable` — nunca omitida.
