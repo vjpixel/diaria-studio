@@ -24,6 +24,10 @@
  *     submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z
  *     mais relevantes para as pessoas que assinam a newsletter."
  *
+ * #11093: X = remetentes distintos de newsletters + e-mails distintos do editor.
+ * Total = X + Y; Y continua contando links descobertos automaticamente.
+ * A unidade de X não altera o formato textual aceito.
+ *
  * Aceita variação com `???` no Y (fallback quando totalConsidered ausente).
  *
  * #701: aceita também forma singular ("1 submissão", "1 artigo",

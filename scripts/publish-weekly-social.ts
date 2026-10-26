@@ -197,7 +197,13 @@ import { resolveOrGenerateNewsCardUrl, type NewsCardGenerator } from "./lib/week
 import { WEEKLY_CAROUSEL_NEWS_CARD_SIZE } from "./lib/weekly-carousel-font-size.ts";
 import { WEEKLY_OVERLAY_WRAP, overlayTitleOverflows } from "./gen-social-card-4x5.ts";
 import { formatInstagramWeekly, formatFacebookWeekly, formatThreadsWeekly, type WeeklyInstagramMode } from "./lib/format-weekly-social.ts";
-import { readWeeklySummaries, resolveWeeklySummaries, weeklySummariesPath } from "./lib/weekly-summaries.ts";
+import {
+  readWeeklySummaries,
+  readWeeklySummaryPasses,
+  resolveWeeklySummaries,
+  weeklySummariesPath,
+  weeklySummaryPassWarnings,
+} from "./lib/weekly-summaries.ts";
 import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-published-store.ts";
 import { postToWorkerQueue, WorkerQueueError } from "./lib/worker-queue-client.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
@@ -1278,6 +1284,10 @@ async function runOneMode(
   for (const w of summaryResolution.warnings) {
     console.error(`[publish-weekly-social] aviso de resumo em "${w.title}": ${w.warnings.join("; ")}`);
   }
+  // #11065: Humanizador + Clarice sobre os resumos (Passo 2c). Aviso, nunca
+  // barra: com a Clarice fora segue o texto humanizado e o editor decide no gate.
+  const passWarnings = weeklySummaryPassWarnings(readWeeklySummaryPasses(summariesPath));
+  for (const w of passWarnings) console.error(`[publish-weekly-social] aviso: ${w}`);
   for (const o of summaryResolution.orphans) {
     console.error(`[publish-weekly-social] aviso: 06-summaries.json tem resumo para URL fora da seleção atual (${o}) — seleção mudou desde o Passo 2c?`);
   }
@@ -1314,6 +1324,7 @@ async function runOneMode(
       const status = summaryResolution.ok.has(it.url) ? "ok" : "SEM RESUMO VÁLIDO (legenda usa o \"Por que isso importa\" cru)";
       console.log(`${i + 1}. ${it.title} — ${status}`);
     });
+    for (const w of passWarnings) console.log(`aviso: ${w}`);
     console.log("");
     return true;
   }

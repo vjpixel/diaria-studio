@@ -432,6 +432,16 @@ describe("parseClosesIssues — só marcador real fecha, menção em crase/bloco
     assert.deepEqual(parseClosesIssues("um ` solto\nCloses #30"), [30]);
   });
 
+  it("#11049: crase solta num parágrafo não forma span com crase de outro parágrafo e apaga o Closes", () => {
+    const body = "Ajusta o `foo\n\nCloses #123\n\nUsa `bar` aqui";
+    assert.deepEqual(parseClosesIssues(body), [123]);
+    assert.equal(stripNonMarkerContext(body).split("\n").length, body.split("\n").length);
+  });
+
+  it("#11049: code span dentro do MESMO parágrafo (inclusive multilinha) continua sendo removido", () => {
+    assert.deepEqual(parseClosesIssues("veja `Closes #1\nCloses #2` e pronto\n\nCloses #3"), [3]);
+  });
+
   it("parseRefsIssues também ignora menção dentro de crase", () => {
     assert.deepEqual(parseRefsIssues("Exemplo: `REFS #1, NÃO CLOSES`.\nREFS #2, NÃO CLOSES (parcial)"), [2]);
   });

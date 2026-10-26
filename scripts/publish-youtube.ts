@@ -72,6 +72,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveYouTubeState } from "./lib/publish-state.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -95,6 +96,7 @@ import {
   type YouTubeScheduleDecision,
 } from "./lib/diaria/youtube-video.ts";
 import {
+  ExistingEditionVideoError,
   YOUTUBE_PUBLISHED_FILE,
   YouTubeUploadError,
   defaultYouTubeUploadDeps,
@@ -228,6 +230,13 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   audit_blocked: boolean;
   /** Registros substituídos por `--force` (mais antigo primeiro). */
   previous_uploads?: PreviousUploadEntry[];
+  /**
+   * `already-on-channel` (#11080): o vídeo NÃO foi enviado por este script — já
+   * estava no canal (upload manual no Studio) e o registro só o reconhece.
+   */
+  source?: "already-on-channel";
+  /** Sinal que reconheceu o vídeo existente (só com `source`). */
+  matched_by?: string;
 }
 
 /**
@@ -372,6 +381,58 @@ function historyFrom(read: PublishedRecordRead): PreviousUploadEntry[] {
 }
 
 /**
+ * #11080: a edição já tem vídeo no canal (subido à mão). Nada foi enviado; grava
+ * o registro com `source: "already-on-channel"` — assim as próximas rodadas e os
+ * consumidores de `05-youtube-published.json` (fetch, gate do link no D1) tratam
+ * como publicado — e põe o link no D1 como num upload normal. Exit 0.
+ */
+function recordExistingVideo(
+  e: ExistingEditionVideoError,
+  input: RunUploadInput,
+  plan: YouTubePublishPlan,
+  recordPath: string,
+  history: PreviousUploadEntry[],
+  now: Date,
+): RunUploadOutcome {
+  const v = e.video;
+  const state = v.status ? resolveYouTubeState({ status: v.status }, now) : "unknown";
+  const record: YouTubePublishedRecord = {
+    aammdd: plan.aammdd,
+    episode: plan.episode,
+    title: v.title || plan.metadata.title,
+    video_path: plan.video.path,
+    thumbnail_path: null,
+    audit_blocked: plan.effective.auditBlocked,
+    videoId: v.videoId,
+    url: v.url,
+    channelId: null,
+    requested: { privacyStatus: v.status?.privacyStatus ?? "", publishAt: v.status?.publishAt ?? null },
+    thumbnail: { attempted: false, ok: false, error: null },
+    state,
+    rereadStatus: v.status,
+    rereadError: null,
+    uploadedAt: v.publishedAt ?? now.toISOString(),
+    rereadAt: now.toISOString(),
+    source: "already-on-channel",
+    matched_by: v.matchedBy,
+    ...(history.length > 0 ? { previous_uploads: history } : {}),
+  };
+  input.log(
+    `[ok] already-on-channel: ${v.url} (${v.title || "sem título"}) já está no canal, reconhecido por ${v.matchedBy}, estado ${state} — nada enviado. ` +
+      "Se não for o vídeo desta edição, rode de novo com --force (cria OUTRO vídeo no canal).",
+  );
+  try {
+    mkdirSync(dirname(recordPath), { recursive: true });
+    writeFileAtomic(recordPath, JSON.stringify(record, null, 2) + "\n");
+  } catch (we) {
+    input.log(`[aviso] registro do vídeo existente não gravado em ${recordPath}: ${(we as Error).message}`);
+    return { exitCode: 0, record, skipped: true };
+  }
+  const videoUrlWritten = writeD1VideoUrlAfterUpload(input.editionDir, record, input.d1SlotAt ?? null, input.log, !plan.effective.auditBlocked);
+  return { exitCode: 0, record, skipped: true, videoUrlWritten };
+}
+
+/**
  * `--upload`: envia o plano de verdade e grava o registro. Separado do `main`
  * pra o teste injetar `deps.fetch` e o ambiente sem tocar a rede nem o `.env`.
  */
@@ -452,9 +513,12 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
       video,
       contentType: "video/mp4",
       thumbnail,
+      // #11080: --force sobe de novo de propósito; sem ele, confere o canal antes.
+      ...(input.force ? {} : { existingVideoCheck: { aammdd: plan.aammdd, title: plan.metadata.title } }),
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
     });
   } catch (e) {
+    if (e instanceof ExistingEditionVideoError) return recordExistingVideo(e, input, plan, recordPath, history, deps.now());
     const step = e instanceof YouTubeUploadError ? e.step : "desconhecida";
     const msg = `${(e as Error).message} (etapa ${step})`;
     if (!isIndeterminateUploadFailure(e)) {

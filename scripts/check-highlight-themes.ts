@@ -1,3 +1,4 @@
+import { findFactRecurrences } from "./lib/fact-recurrence.ts";
 /**
  * check-highlight-themes.ts (#2073, #2652)
  *
@@ -1610,6 +1611,10 @@ async function main(): Promise<void> {
     warnings: highlightResult.warnings,
     // #9100: sinal de alta precisão — apresentar ANTES dos demais no gate.
     same_fact_warnings: sameFactWarnings,
+    fact_recurrence_warnings: findFactRecurrences([
+      ...candidates.map(c => ({ ...c, kind: "highlight" })),
+      ...secondaryItems.map(s => ({ ...s, kind: s.bucket })),
+    ], pastMd, currentEdition ?? ""),
     secondary_warnings: secondaryResult.secondary_warnings,
     full_body_warnings: fullBodyResult.full_body_warnings,
     checked: highlightResult.checked,

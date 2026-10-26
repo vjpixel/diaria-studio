@@ -450,6 +450,32 @@ export function quedaAvaliacoesSemSerie(
     }));
 }
 
+/**
+ * #11048 — o congelamento do #10994 cobria só `queda:`. Métrica sem série
+ * nesta execução também não avalia `frescor:` (o laço faz `continue` antes de
+ * `evaluateFrescorFromResult`) nem as metas dela (`meta-nao-atingida:` e
+ * `indeterminado-alto:`, que fazem `continue` no laço de metas). Ausência de
+ * achado aí é leitura que não aconteceu: sem congelar, a issue `frescor:X`
+ * (que sinaliza justamente dado velho) fechava com o dado ainda mais velho.
+ * Devolve as chaves de estado desses sinais para toda métrica sem série.
+ */
+export function serieAusenteNaoAvaliadaKeys(
+  wiredIds: readonly string[],
+  seriesById: ReadonlyMap<string, unknown>,
+  metas: readonly { metrica_id: string }[],
+): Set<string> {
+  const keys = new Set<string>();
+  const add = (sinal: MetricsHealthFinding["sinal"], metrica_id: string) =>
+    keys.add(alarmIssueStateKey(METRICS_HEALTH_CHECK, metricsHealthFingerprint({ sinal, metrica_id })));
+  for (const id of wiredIds) if (!seriesById.has(id)) add("frescor", id);
+  for (const meta of metas) {
+    if (seriesById.has(meta.metrica_id)) continue;
+    add("meta-nao-atingida", meta.metrica_id);
+    add("indeterminado-alto", meta.metrica_id);
+  }
+  return keys;
+}
+
 export function toMetricsHealthAlarmFinding(f: MetricsHealthFinding): AlarmFinding {
   const fingerprint = metricsHealthFingerprint(f);
   return {
@@ -880,9 +906,11 @@ async function main(): Promise<void> {
 
   // #10662: queda pulada nesta execução congela a issue aberta, nunca a fecha.
   const quedaNaoAvaliadas = quedaNaoAvaliadaKeys(quedaAvaliacoes);
-  const isAbsenceUnmeasured = (key: string) => quedaNaoAvaliadas.has(key);
+  // #11048: frescor e metas da métrica sem série também ficam congelados.
+  const serieAusenteKeys = serieAusenteNaoAvaliadaKeys(WIRED_METRIC_IDS, seriesById, metas as Meta[]);
+  const isAbsenceUnmeasured = (key: string) => quedaNaoAvaliadas.has(key) || serieAusenteKeys.has(key);
   for (const { key, issueNumber } of listFrozenUnmeasuredKeys(alarmFindings, alarmState, isAbsenceUnmeasured)) {
-    console.log(`${LOG_PREFIX} issue #${issueNumber} (${key}) congelada: queda não avaliada nesta execução — nem comenta nem fecha.`);
+    console.log(`${LOG_PREFIX} issue #${issueNumber} (${key}) congelada: sinal não avaliado nesta execução — nem comenta nem fecha.`);
   }
 
   if (isDryRun) {

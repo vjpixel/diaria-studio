@@ -88,6 +88,25 @@ export function hasFlag(argv: string[], flag: string): boolean {
 }
 
 /**
+ * Retorna os tokens do argv que parecem flag (começam com `-`) mas não estão na
+ * lista `known` (nomes SEM os hífens, ex: `["task", "verify"]`). Aceita
+ * `--nome` e `--nome=valor`; `-h` só se `"h"` estiver em `known`. Serve pra
+ * scripts com efeito colateral real (armar timers) recusarem typo de flag em
+ * vez de cair em silêncio no default (#11058). Tokens que não começam com `-`
+ * (valores de `--flag valor`) são ignorados.
+ */
+export function findUnknownFlags(argv: string[], known: readonly string[]): string[] {
+  const knownSet = new Set(known);
+  const unknown: string[] = [];
+  for (const a of argv) {
+    if (!a.startsWith("-") || a === "-" || a === "--") continue;
+    const name = a.replace(/^-{1,2}/, "").split("=")[0];
+    if (!knownSet.has(name)) unknown.push(a);
+  }
+  return unknown;
+}
+
+/**
  * Atalho tipado — retorna `--key` como inteiro, ou `undefined` quando a flag
  * está genuinamente AUSENTE. Diferente de `getArg` (que colapsa
  * ausente/inválido/zero no mesmo sentinela `""`, por design — ver docstring

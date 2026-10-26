@@ -542,7 +542,7 @@ describe("Resume-aware skip posts já publicados", () => {
 
 describe("Retry com backoff exponencial", () => {
   it("script define maxAttempts=3 para posts de chunk único (sem retry em multi-chunk para evitar posts órfãos)", () => {
-    assert.match(SRC, /maxAttempts = isMultiChunk \? 1 : 3/, "maxAttempts condicional: 1 pra multi-chunk (sem retry), 3 pra single-chunk");
+    assert.match(SRC, /maxAttempts = opts\.multiChunk \? 1 : 3/, "maxAttempts condicional: 1 pra multi-chunk (sem retry), 3 pra single-chunk");
   });
 
   it("script usa backoff exponencial entre tentativas", () => {

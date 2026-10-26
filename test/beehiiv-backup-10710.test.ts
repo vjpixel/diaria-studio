@@ -81,6 +81,11 @@ describe("#10710 — planBeehiivSnapshotReport poupa o mais antigo de cada mês"
 });
 
 describe("#10710 — findMonthsWithoutSnapshot (cobertura mensal)", () => {
+  it("#11067: perda reconhecida de agosto/setembro não alarma; outubro ausente continua alarmando", () => {
+    assert.deepEqual(findMonthsWithoutSnapshot(["2026-10-04"], "2026-10-26"), []);
+    assert.deepEqual(findMonthsWithoutSnapshot([], "2026-11-01"), ["2026-10"]);
+  });
+
   it("estado real de 21/10/2026: só restam 04, 11 e 18/10 → acusa agosto e setembro", () => {
     const missing = findMonthsWithoutSnapshot(["2026-10-04", "2026-10-11", "2026-10-18"], "2026-10-21", "2026-08", []);
     assert.deepEqual(missing, ["2026-08", "2026-09"]);
@@ -158,7 +163,7 @@ describe("#10710 — Stage 0 pede o dispatch do beehiiv-exit-history-drain (0h.4
 });
 
 describe("#10710 — beehiiv-backup-staleness-alarm.ts --dry-run cobre os 2 checks novos", () => {
-  it("snapshots só de outubro + exit-history ausente → registra os 2 alarmes extras, sem gravar estado", async () => {
+  it("snapshot do mês corrente + exit-history ausente → respeita perdas reconhecidas, sem gravar estado", async () => {
     const root = mkdtempSync(join(tmpdir(), "bh-10710-"));
     const logs: string[] = [];
     const origLog = console.log;
@@ -173,8 +178,10 @@ describe("#10710 — beehiiv-backup-staleness-alarm.ts --dry-run cobre os 2 chec
       const out = logs.join("\n");
       assert.match(out, /exit-history: missing/);
       assert.match(out, /registraria alarme \(beehiiv-exit-history\)/);
-      assert.match(out, /cobertura mensal: faltando 2026-08/);
-      assert.match(out, /registraria alarme \(beehiiv-backup-monthly-coverage\)/);
+      const missing = findMonthsWithoutSnapshot([`${cur}-01`], today.toISOString());
+      assert.ok(!missing.includes("2026-08") && !missing.includes("2026-09"));
+      assert.ok(out.includes(`cobertura mensal: ${missing.length ? `faltando ${missing.join(", ")}` : "ok"}`));
+      assert.equal(out.includes("registraria alarme (beehiiv-backup-monthly-coverage)"), missing.length > 0);
       assert.match(out, /estado NÃO gravado/);
     } finally {
       console.log = origLog;

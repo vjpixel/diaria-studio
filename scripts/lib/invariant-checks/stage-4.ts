@@ -1,3 +1,4 @@
+import { findFactRecurrences } from "../fact-recurrence.ts";
 /**
  * Invariants de Stage 4 — Publicação (#1007 Fase 1).
  *
@@ -1925,6 +1926,18 @@ function checkStarryNightDetected(editionDir: string): InvariantViolation[] {
  * resumo consolidado do gate citando a edição de origem — o editor decide:
  * mantém (override implícito, aprovando o gate normalmente) ou troca o item.
  */
+export function checkFactRecurrence(editionDir: string, pastMd?: string): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const md = readFileSync(file, "utf8");
+  // Each editorial paragraph carries its own link and context, across all sections.
+  const items = md.split(/\n\s*\n/).flatMap(title =>
+    extractUrlsWithLines(title).map(({ url }) => ({ title, url })));
+  return findFactRecurrences(items, pastMd ?? readPastEditionsMd(resolve(ROOT, "data/past-editions.md")), basename(editionDir))
+    .map(w => ({ rule: "fact-recurrence", source_issue: "#11083", severity: "warning" as const, file,
+      message: `Possível mesmo fato: ${w.item_title} (${w.item_url}) vs ${w.matched_edition} “${w.matched_title}”; score=${w.score}, entidades=${w.shared_entities.join(", ")}. ${w.possible_new_fact} Heurístico: o editor confirma a novidade.` }));
+}
+
 export interface DuplicateUrlMatch {
   url: string;
   line: number;
@@ -3753,6 +3766,10 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#3916",
     stage: 4,
     run: checkHasNegativeImpactHighlight,
+  },
+  {
+    id: "fact-recurrence", description: "Possível mesmo fato em todas as seções (heurístico, warning-only)",
+    source_issue: "#11083", stage: 4, run: checkFactRecurrence,
   },
   {
     id: "no-duplicate-urls-vs-past-editions",

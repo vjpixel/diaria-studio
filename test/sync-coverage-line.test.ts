@@ -167,7 +167,7 @@ http://example.com/3
     });
   });
 
-  it("ignora emails de outros senders (newsletters subscribed)", () => {
+  it("conta newsletters por remetente junto com e-mails do editor (#11093)", () => {
     const content = `## 2026-05-15T10:00:00Z
 - **from:** pixel@example.com
 - **subject:** Forward direto
@@ -181,8 +181,8 @@ http://example.com/1
 http://item1.com http://item2.com http://item3.com
 `;
     withTmpInbox(content, (path) => {
-      // 1 forward + 1 newsletter de outro sender → conta só 1 (do editor)
-      assert.equal(countForwardedEmailsFromInbox(path, "pixel@example.com"), 1);
+      // 1 e-mail do editor + 1 remetente de newsletter.
+      assert.equal(countForwardedEmailsFromInbox(path, "pixel@example.com"), 2);
     });
   });
 
@@ -1189,4 +1189,25 @@ Resto.`;
     assert.doesNotMatch(md, /contagem de submissões indisponível/);
     rmSync(dir, { recursive: true, force: true });
   });
+});
+
+
+it("#11093 Stage 4 prefere distinct_newsletter_senders (14) a 45 threads, incluindo zero", () => {
+  const dir = mkdtempSync(join(tmpdir(), "coverage-11093-"));
+  mkdirSync(join(dir, "_internal"));
+  try {
+    for (const wrapped of [false, true]) {
+      for (const distinct of [14, 0]) {
+        const marker = { editor_blocks: 0, newsletter_source: "captured-articles",
+          captured_newsletter_count: 45, distinct_newsletter_senders: distinct };
+        writeFileSync(join(dir, "_internal", ".marker-inject-inbox-urls.json"),
+          JSON.stringify(wrapped ? { details: marker } : marker));
+        assert.equal(readSubmissionsCountFromMarker(dir), distinct);
+        const result = rewriteCoverageLine(
+          "Nesta edição, a IA analisou 480 conteúdos (45 enviados por mim e 435 encontrados automaticamente) e selecionei os 12 mais relevantes.",
+          distinct, 435, 12);
+        assert.match(result.md, new RegExp(`analisou ${distinct + 435} conteúdos`));
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
