@@ -33,7 +33,7 @@ Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou 
 
 Por que isso importa:
 
-[1 parágrafo, 2-3 frases — impacto atual ou futuro na vida do leitor (abrir pelo efeito sobre ele, não pelo achado); previsão da fonte ausente só com "tende a"/"à medida que"]
+[1 parágrafo, 2-3 frases — impacto atual ou futuro na vida do leitor (abrir pelo efeito sobre ele, não pelo achado); previsão da fonte ausente só com "tende a"/"à medida que", no máximo uma por edição]
 
 Aprofunde:
 

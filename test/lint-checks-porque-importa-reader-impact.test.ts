@@ -13,12 +13,31 @@ test("#11073: exemplos aprovados pelo editor (D1/D2/D3) passam", () => {
   for (const c of ok) assert.equal(checkPorqueImportaReaderImpact(wrap(c)).ok, true, c);
 });
 
+test("#11084 ajuste 1: no máximo uma previsão marcada por edição", () => {
+  const prev1 = "Quem usa banco tende a ver mais golpes, porque o ataque ficou barato.";
+  const prev2 = "À medida que agentes mexem em dados reais, empresas vão depender de monitores.";
+  const semPrev = "Quem tem dinheiro parado recebe de graça uma avaliação da carteira.";
+  const edicao = (...ps: string[]) => ps.map(wrap).join("\n");
+
+  assert.equal(checkPorqueImportaReaderImpact(edicao(prev1, semPrev, semPrev)).ok, true);
+  assert.equal(checkPorqueImportaReaderImpact(edicao(semPrev, semPrev, semPrev)).ok, true);
+
+  const r = checkPorqueImportaReaderImpact(edicao(prev1, semPrev, prev2));
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.warnings.map((w) => w.reason), ["forecast-repeated"]);
+  assert.ok(r.warnings[0].excerpt.startsWith("À medida que"));
+
+  const tres = checkPorqueImportaReaderImpact(edicao(prev1, prev1, prev2));
+  assert.equal(tres.warnings.filter((w) => w.reason === "forecast-repeated").length, 2);
+});
+
 test("#11073: estilo antigo (só descreve o risco) é sinalizado", () => {
   const r = checkPorqueImportaReaderImpact(
     wrap("O monitor é o que deveria flagrar sabotagem de agentes, e o relatório mostra brechas no da OpenAI."),
   );
   assert.equal(r.ok, false);
   assert.equal(r.warnings.length, 1);
+  assert.equal(r.warnings[0].reason, "no-reader-impact");
   assert.equal(r.warnings[0].line, 7);
 });
 
