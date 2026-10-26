@@ -50,6 +50,12 @@ export interface CircleStackItem {
   title: string;
   /** Título como veio da edição (#11005), para auditoria quando `title` foi traduzido. */
   titleOriginal?: string;
+  /**
+   * O editor confirmou o `title` como está mesmo sem sinal de português (nome
+   * de produto, #11161). Sem isso, o `--publish` recusa título sem acento nem
+   * palavra funcional do português ("Codex Launch Notes").
+   */
+  titleReviewed?: boolean;
   body: string;
   why: string;
   stackNote?: string;
