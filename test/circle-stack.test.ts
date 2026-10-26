@@ -115,9 +115,15 @@ describe("sendStackPost", () => {
 describe("renderCircleStackPost", () => {
   const { title, markdown: md } = renderCircleStackPost(selection);
 
-  it("título é a segunda da semana de conteúdo", () => {
-    assert.equal(title, "Semana de 12/10");
+  it("título repete o título do D1", () => {
+    assert.equal(title, "Gemini vira colega com e-mail & agenda");
+    assert.equal(circleStackTitle(["261012"], "  Título   do D1 "), "Título do D1");
+  });
+
+  it("sem D1, o título cai em 'Semana de DD/MM' da segunda da semana de conteúdo", () => {
     assert.equal(circleStackTitle(["261012"]), "Semana de 12/10");
+    assert.equal(circleStackTitle(["261012"], "   "), "Semana de 12/10");
+    assert.equal(renderCircleStackPost({ ...selection, destaques: [item({ title: "  " })] }).title, "Semana de 12/10");
   });
 
   it("sai em Markdown, sem nenhuma tag HTML", () => {

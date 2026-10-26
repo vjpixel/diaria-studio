@@ -6,7 +6,7 @@
  * alunos (`circle-stack-select.ts`, gravada em
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
- * Estrutura (#11186): título "Semana de DD/MM" · abertura (resumo da semana com
+ * Estrutura (#11186): título = título do D1 · abertura (resumo da semana com
  * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
  * Outros destaques da semana (só o que não apareceu acima) · última linha ("Assine a diar.ia.br. Chega de segunda a
@@ -150,8 +150,13 @@ export function ddmm(aammdd: string): string {
   return `${aammdd.slice(4, 6)}/${aammdd.slice(2, 4)}`;
 }
 
-/** Pure: título do post — "Semana de DD/MM" (segunda da semana de conteúdo; pedido do editor 23/10/2026). */
-export function circleStackTitle(contentWindow: string[]): string {
+/**
+ * Pure: título do post — repete o título do D1 (pedido do editor 26/10/2026, antes era "Semana de DD/MM").
+ * Sem D1 (seleção sem destaques ou título vazio) cai no "Semana de DD/MM" da segunda da semana de conteúdo.
+ */
+export function circleStackTitle(contentWindow: string[], d1Title?: string): string {
+  const d1 = d1Title?.replace(/\s+/g, " ").trim();
+  if (d1) return d1;
   if (contentWindow.length === 0) throw new Error("contentWindow vazio");
   return `Semana de ${ddmm(contentWindow[0])}`;
 }
@@ -286,5 +291,5 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   const closingLast = closingParas.pop() as string;
   blocks.push(...closingParas, `${link(subscribeHref, CTA_FIM_LABEL)}. ${closingLast}`);
 
-  return { title: circleStackTitle(sel.contentWindow), markdown: blocks.join("\n\n") };
+  return { title: circleStackTitle(sel.contentWindow, sel.destaques[0]?.title), markdown: blocks.join("\n\n") };
 }
