@@ -474,6 +474,7 @@ describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
     assert.equal(selectionJson.headlines.length, 0);
     assert.equal(selectionJson.pendingGroup?.length, 2);
     assert.equal(selectionJson.pendingSlots, 1);
+    assert.ok(selectionJson.warnings.some((w: string) => w.includes("escolha manual necessária no gate")));
     // dica de desempate editorial calculada pro caller exibir — nunca decide.
     assert.ok(
       (selectionJson.pendingGroup as Array<{ editorialTiebreakHint: number }>).every(
@@ -498,6 +499,25 @@ describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
     assert.equal(selectionJson.headlines[0].title, "Matéria complementar");
     assert.equal(selectionJson.pendingGroup, null);
     assert.equal(selectionJson.pendingSlots, 0);
+    assert.ok(!selectionJson.warnings.some((w: string) => w.includes("escolha manual necessária no gate")));
+    assert.ok(selectionJson.warnings.some((w: string) => w.includes("reduzindo pra 1 manchete")));
+  });
+
+  it("#11181: reexecutar --picks com outra escolha não imprime nem persiste aviso de empate pendente", () => {
+    const originalLog = console.log;
+    const output: string[] = [];
+    console.log = (...args: unknown[]) => { output.push(args.join(" ")); };
+    try {
+      process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260907", "--picks", "https://exemplo.com/materia-mercado"];
+      selectMain(root);
+    } finally {
+      console.log = originalLog;
+    }
+    const selectionJson = JSON.parse(readFileSync(join(root, "data/weekly/26w36/_internal/ln-selection.json"), "utf8"));
+    assert.equal(selectionJson.headlines[0].title, "Matéria de mercado");
+    assert.equal(selectionJson.pendingGroup, null);
+    assert.ok(!selectionJson.warnings.some((w: string) => w.includes("escolha manual necessária no gate")));
+    assert.ok(!output.join("\n").includes("escolha manual necessária no gate"));
   });
 
   it("--picks com contagem errada aborta com exit 2 ANTES de escrever — output em disco fica intacto (a resolução anterior de 1 headline)", () => {
