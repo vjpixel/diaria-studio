@@ -216,11 +216,10 @@ describe("#10992 item 1 — re-POST depois do disparo não responde 202 sem efei
   });
 
   for (const claiming of [true, false]) {
-    it(`#11044 — /arm 409 (claiming=${claiming}) restaura KV e retry não é duplicate`, async () => {
+    it(`#11133 — /arm 409 após reserva (claiming=${claiming}) preserva conteúdo novo`, async () => {
       const { env, kv, getOrCreate } = mkEnv();
       const first = await enqueue(env, reels({ scheduled_at: LATER_1 }));
       const { key } = await first.json() as { key: string };
-      const previousRaw = kv.store.get(key);
       const scheduler = getOrCreate(key).scheduler;
       const original = scheduler.fetch.bind(scheduler);
       scheduler.fetch = async (request: Request) => {
@@ -236,11 +235,13 @@ describe("#10992 item 1 — re-POST depois do disparo não responde 202 sem efei
       const conflict = await enqueue(env, changed);
       assert.equal(conflict.status, 409);
       assert.equal((await conflict.json() as { error: string }).error, claiming ? "fire_in_progress" : "already_fired");
-      assert.equal(kv.store.get(key), previousRaw);
+      // A reserva vincula qualquer claim após TTL ao conteúdo novo. Restaurar
+      // o velho aqui sobrescreveria a versão que esse claim pode estar enviando.
+      assert.equal(JSON.parse(kv.store.get(key)!).text, "Legenda corrigida");
       const retry = await enqueue(env, changed);
-      assert.equal(retry.status, 409);
-      assert.equal((await retry.json() as { duplicate?: boolean }).duplicate, undefined);
-      assert.equal(kv.store.get(key), previousRaw);
+      assert.equal(retry.status, 200);
+      assert.equal((await retry.json() as { duplicate?: boolean }).duplicate, true);
+      assert.equal(JSON.parse(kv.store.get(key)!).text, "Legenda corrigida");
     });
   }
 
