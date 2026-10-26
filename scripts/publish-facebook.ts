@@ -1,3 +1,4 @@
+import { facebookCheckpointDiagnostic } from "./lib/facebook-checkpoint.ts";
 /**
  * publish-facebook.ts
  *
@@ -380,11 +381,11 @@ async function deleteFacebookPost(
   const res = await fetch(url, { method: "DELETE", body: formData });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Facebook DELETE HTTP ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`Facebook DELETE HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`);
   }
   const data = await res.json() as { error?: unknown };
   if (data.error) {
-    throw new Error(`Facebook DELETE error: ${JSON.stringify(data.error)}`);
+    throw new Error(`Facebook DELETE error: ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`);
   }
 }
 
@@ -416,12 +417,12 @@ async function publishPhoto(
   const res = await fetch(url, { method: "POST", body: formData });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Facebook POST HTTP ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`Facebook POST HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`);
   }
   const data = await res.json() as { id?: string; post_id?: string; error?: unknown };
 
   if (data.error) {
-    throw new Error(`Facebook API error: ${JSON.stringify(data.error)}`);
+    throw new Error(`Facebook API error: ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`);
   }
 
   return data as { id: string; post_id?: string };
@@ -495,11 +496,11 @@ export async function publishFacebookCarouselByUrl(
     const res = await fetch(`${base}/${pageId}/photos`, { method: "POST", body: formData });
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`Facebook POST /photos (unpublished, url=${imageUrl}) HTTP ${res.status}: ${body.slice(0, 200)}`);
+      throw new Error(`Facebook POST /photos (unpublished, url=${imageUrl}) HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`);
     }
     const data = (await res.json()) as { id?: string; error?: unknown };
     if (data.error) {
-      throw new Error(`Facebook /photos error (url=${imageUrl}): ${JSON.stringify(data.error)}`);
+      throw new Error(`Facebook /photos error (url=${imageUrl}): ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`);
     }
     if (!data.id) {
       throw new Error(`Facebook /photos sem id (url=${imageUrl})`);
@@ -524,11 +525,11 @@ export async function publishFacebookCarouselByUrl(
   const res = await fetch(`${base}/${pageId}/feed`, { method: "POST", body: formData });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Facebook POST /feed (carrossel, ${photoIds.length} fotos) HTTP ${res.status}: ${body.slice(0, 200)}`);
+    throw new Error(`Facebook POST /feed (carrossel, ${photoIds.length} fotos) HTTP ${res.status}: ${facebookCheckpointDiagnostic(body) ?? body.slice(0, 200)}`);
   }
   const data = (await res.json()) as { id?: string; post_id?: string; error?: unknown };
   if (data.error) {
-    throw new Error(`Facebook /feed error: ${JSON.stringify(data.error)}`);
+    throw new Error(`Facebook /feed error: ${facebookCheckpointDiagnostic(data) ?? JSON.stringify(data.error)}`);
   }
   if (!data.id) {
     throw new Error(`Facebook /feed sem id (carrossel, ${photoIds.length} fotos)`);
