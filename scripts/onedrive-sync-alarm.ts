@@ -92,7 +92,9 @@ import {
   buildQuotaCauseText,
   DEFAULT_QUOTA_GB,
   DEFAULT_QUOTA_WARN_PCT,
+  parseQuotaFullLatch,
   type OnedriveQuotaEvaluation,
+  type QuotaFullLatch,
   type QuotaLogScan,
 } from "./lib/onedrive-quota.ts";
 import { readSkipFilePatterns, buildSkipFileMatcher, ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE } from "./lib/onedrive-skip-file.ts";
@@ -113,6 +115,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = resolve(ROOT, "data");
 const CANARY_PATH = join(DATA_DIR, ".onedrive-sync-canary.json");
 const ALARM_ISSUES_STATE_PATH = join(DATA_DIR, ".onedrive-sync-alarm-issues.json");
+/** Trava de `quota-full` entre execuções (review do PR #11139): o journal
+ * só cobre a janela `--tolerance-hours`, então a recusa precisa sobreviver
+ * a uma janela muda. Ver `QuotaFullLatch` em lib/onedrive-quota.ts. */
+const QUOTA_LATCH_PATH = join(DATA_DIR, ".onedrive-quota-latch.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const LOG_PREFIX = "[onedrive-sync-alarm]";
 const DEFAULT_TOLERANCE_HOURS = 6;
@@ -185,6 +191,8 @@ export function readOnedriveJournalLines(sinceHours: number, execFn: typeof exec
  * ausente = default do cliente (mp4 sincroniza); ilegível = `null` em
  * `mp4Excluded` e default do cliente nos padrões (conservador: conta tudo
  * que o cliente sobe por padrão). */
+const MP4_PROBE_NAMES = ["diaria-comentada-000000.mp4", "x.MP4"] as const;
+
 export function readEffectiveSkipFile(configPath: string): { patterns: string[]; mp4Excluded: boolean | null } {
   if (!existsSync(configPath)) {
     return { patterns: [...ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE], mp4Excluded: false };
@@ -192,10 +200,33 @@ export function readEffectiveSkipFile(configPath: string): { patterns: string[];
   try {
     const patterns = readSkipFilePatterns(readFileSync(configPath, "utf8")) ?? [...ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE];
     const matcher = buildSkipFileMatcher(patterns);
-    return { patterns, mp4Excluded: matcher("diaria-comentada-000000.mp4") };
+    // Dois nomes sem nada em comum além da extensão: um padrão estreito
+    // (`diaria-*.mp4`) não conta como "*.mp4 fora do sync".
+    return { patterns, mp4Excluded: MP4_PROBE_NAMES.every((n) => matcher(n)) };
   } catch {
     return { patterns: [...ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE], mp4Excluded: null };
   }
+}
+
+/** Lê a trava persistida. Ausente = solta. Ilegível/inválida = solta, mas
+ * avisa no stderr (mesmo tratamento do estado de alarm-issues). */
+export function loadQuotaFullLatch(path: string): QuotaFullLatch | null {
+  if (!existsSync(path)) return null;
+  try {
+    const { latch, invalid } = parseQuotaFullLatch(JSON.parse(readFileSync(path, "utf8")));
+    if (invalid) console.error(`${LOG_PREFIX} trava de cota inválida em ${path} — tratando como solta.`);
+    return latch;
+  } catch (e) {
+    console.error(`${LOG_PREFIX} trava de cota ilegível em ${path} — tratando como solta: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** Grava a trava (`null` grava `null`, que é "solta" e deixa rastro de que
+ * a trava existiu e foi solta). */
+export function saveQuotaFullLatch(path: string, latch: QuotaFullLatch | null): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileAtomic(path, JSON.stringify(latch, null, 2) + "\n");
 }
 
 export function toQuotaAlarmFinding(ev: OnedriveQuotaEvaluation): AlarmFinding {
@@ -351,16 +382,23 @@ async function main(): Promise<void> {
         buildSkipFileMatcher(skip.patterns),
       )
     : null;
+  const prevLatch = loadQuotaFullLatch(QUOTA_LATCH_PATH);
   const quota = evaluateOnedriveQuota({
     log: quotaLog,
     usage,
     quotaBytes: quotaGb * 1024 ** 3,
     warnPct: quotaWarnPct,
     mp4Excluded: skip.mp4Excluded,
+    latch: prevLatch,
+    now,
   });
+  if (!isDryRun && dataDirExists && (prevLatch !== null || quota.latch !== null)) {
+    saveQuotaFullLatch(QUOTA_LATCH_PATH, quota.latch);
+  }
   console.log(
     `${LOG_PREFIX} cota: verdict=${quota.verdict} quota=${quotaGb}GB warn=${quotaWarnPct}% ` +
-      `log=${quotaLog ? `${quotaLog.matchCount} recusa(s)` : "indisponível"} ` +
+      `log=${quotaLog ? `${quotaLog.matchCount} recusa(s)/${quotaLog.uploadSuccessCount} upload(s)` : "indisponível"} ` +
+      `latch=${quota.latch ? `armada desde ${quota.latch.since}` : prevLatch ? "solta agora" : "solta"} ` +
       `synced=${usage ? usage.syncedBytes : "n/a"}B mp4Excluded=${skip.mp4Excluded}`,
   );
 

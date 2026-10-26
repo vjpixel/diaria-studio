@@ -40,7 +40,9 @@ export const REQUIRED_SKIP_FILE_PATTERNS: readonly string[] = [
   "*.mp4",
 ];
 
-const SKIP_FILE_LINE = /^(\s*)skip_file\s*=\s*"([^"]*)"\s*$/;
+/** Valor entre aspas duplas (formato da doc do cliente) ou simples — o
+ * parser de config do cliente aceita as duas. Grupo 3 = valor. */
+const SKIP_FILE_LINE = /^(\s*)skip_file\s*=\s*(["'])((?:(?!\2).)*)\2\s*$/;
 
 /** Divide o valor de `skip_file` em padrões (sem vazios, sem espaços). */
 export function splitSkipFileValue(value: string): string[] {
@@ -62,7 +64,7 @@ export function readSkipFilePatterns(configText: string): string[] | null {
     const m = SKIP_FILE_LINE.exec(line);
     if (!m) continue;
     found = true;
-    for (const p of splitSkipFileValue(m[2])) if (!out.includes(p)) out.push(p);
+    for (const p of splitSkipFileValue(m[3])) if (!out.includes(p)) out.push(p);
   }
   return found ? out : null;
 }
@@ -114,7 +116,7 @@ export function planSkipFileConfig(configText: string, required: readonly string
   const raw = lines[lastIdx];
   const eol = raw.match(/\r?\n$/)?.[0] ?? "";
   const m = SKIP_FILE_LINE.exec(raw.replace(/\r?\n$/, ""))!;
-  const merged = [...splitSkipFileValue(m[2]), ...added];
+  const merged = [...splitSkipFileValue(m[3]), ...added];
   lines[lastIdx] = `${m[1]}skip_file = "${merged.join("|")}"${eol}`;
   return { text: lines.join(""), changed: true, added, effective: [...current, ...added] };
 }

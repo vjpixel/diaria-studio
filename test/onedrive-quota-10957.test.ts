@@ -30,6 +30,9 @@ import {
   evaluateOnedriveQuota,
   buildQuotaCauseText,
   isAlarmingQuotaVerdict,
+  nextQuotaFullLatch,
+  logShowsSpaceFreed,
+  parseQuotaFullLatch,
 } from "../scripts/lib/onedrive-quota.ts";
 import { pruneEditionVideos } from "../scripts/prune-edition-videos.ts";
 import {
@@ -38,6 +41,8 @@ import {
   quotaAbsenceUnmeasured,
   readEffectiveSkipFile,
   readOnedriveJournalLines,
+  loadQuotaFullLatch,
+  saveQuotaFullLatch,
   QUOTA_CHECK,
 } from "../scripts/onedrive-sync-alarm.ts";
 import { evaluateOnedriveSyncAlarm } from "../scripts/lib/onedrive-sync-alarm.ts";
@@ -196,7 +201,7 @@ describe("alarme de cota com a causa no texto (#10957)", () => {
     assert.equal(usage.mp4SyncedBytes, 1166 * MB);
     assert.equal(usage.skippedBytes, 200 * MB);
     assert.equal(usage.topDirs[0].path, "editions/2610");
-    const ev = evaluateOnedriveQuota({ log: { matched: false, matchCount: 0, sample: null }, usage, quotaBytes: 3 * GB, mp4Excluded: false });
+    const ev = evaluateOnedriveQuota({ log: { matched: false, matchCount: 0, sample: null, uploadSuccessCount: 0 }, usage, quotaBytes: 3 * GB, mp4Excluded: false });
     assert.equal(ev.verdict, "quota-near");
     const text = buildQuotaCauseText(ev);
     assert.match(text, /Vídeo \(\.mp4\)/);
@@ -266,6 +271,94 @@ describe("alarme de cota com a causa no texto (#10957)", () => {
     assert.match(email.body, /#2 \(u2\)/);
     const onlyQuota = buildCombinedAlarmEmail([outcomes[1]], sync, quota);
     assert.doesNotMatch(onlyQuota.subject, /alarm-service-down/);
+  });
+
+  it("trava (review PR #11139): janela muda depois da recusa NÃO fecha quota-full, mesmo com data/ pequeno", () => {
+    // Cenário do review: recusa vista; depois do skip_file a medida local
+    // cai (subestima a cota), e o journal de 6h fica sem linha nenhuma
+    // porque o daemon não tentou subir nada. Antes do fix, isso virava `ok`
+    // e a issue fechava por streak com a conta ainda cheia.
+    const small = summarizeDataUsage([{ relPath: "a.md", sizeBytes: 10 * MB }], () => false);
+    const t0 = new Date("2026-10-26T00:00:00Z");
+    const refused = evaluateOnedriveQuota({
+      log: scanOnedriveLogForQuotaFull(["Skipping uploading this new file as it exceeds the available free space on Microsoft OneDrive: x.mp4"]),
+      usage: small, quotaBytes: 5 * GB, mp4Excluded: true, latch: null, now: t0,
+    });
+    assert.equal(refused.verdict, "quota-full");
+    assert.ok(refused.latch);
+    assert.equal(refused.latch.since, t0.toISOString());
+
+    for (const log of [scanOnedriveLogForQuotaFull([]), scanOnedriveLogForQuotaFull(["Sync with Microsoft OneDrive is complete"]), null]) {
+      const ev = evaluateOnedriveQuota({ log, usage: small, quotaBytes: 5 * GB, mp4Excluded: true, latch: refused.latch, now: new Date("2026-10-26T04:00:00Z") });
+      assert.equal(ev.verdict, "quota-full", "janela sem upload concluído (ou journal ilegível) mantém a trava");
+      assert.deepEqual(ev.latch, refused.latch);
+      assert.match(buildQuotaCauseText(ev), /janela sem recusa não prova que liberou/);
+    }
+  });
+
+  it("trava solta só com evidência positiva: upload concluído e nenhuma recusa na janela", () => {
+    const small = summarizeDataUsage([{ relPath: "a.md", sizeBytes: 10 * MB }], () => false);
+    const latch = nextQuotaFullLatch(null, scanOnedriveLogForQuotaFull(["quotaLimitReached"]), new Date("2026-10-26T00:00:00Z"));
+    assert.ok(latch);
+    // Upload e recusa na mesma janela: continua cheia, trava renovada.
+    const mixed = evaluateOnedriveQuota({
+      log: scanOnedriveLogForQuotaFull(["Uploading new file: a.md ... done.", "quota exceeded"]),
+      usage: small, quotaBytes: 5 * GB, mp4Excluded: true, latch, now: new Date("2026-10-26T04:00:00Z"),
+    });
+    assert.equal(mixed.verdict, "quota-full");
+    assert.equal(mixed.latch?.since, latch.since);
+    assert.equal(mixed.latch?.lastRefusalAt, "2026-10-26T04:00:00.000Z");
+    // Só upload: solta, e o veredito volta a vir da medida local.
+    const freed = evaluateOnedriveQuota({
+      log: scanOnedriveLogForQuotaFull(["Uploading modified file .onedrive-sync-canary.json ... done"]),
+      usage: small, quotaBytes: 5 * GB, mp4Excluded: true, latch, now: new Date("2026-10-26T08:00:00Z"),
+    });
+    assert.equal(freed.latch, null);
+    assert.equal(freed.verdict, "ok");
+    assert.equal(logShowsSpaceFreed(null), false);
+    // Linha de recusa nunca conta como upload concluído.
+    assert.equal(scanOnedriveLogForQuotaFull(["Uploading new file x.mp4 ... failed: quota exceeded"]).uploadSuccessCount, 0);
+  });
+
+  it("trava persistida: load/save ida e volta; ausente e corrompida viram solta", () => {
+    const dir = mkdtempSync(join(tmpdir(), "quota-latch-"));
+    try {
+      const path = join(dir, "sub", ".onedrive-quota-latch.json");
+      assert.equal(loadQuotaFullLatch(path), null);
+      const latch = { since: "2026-10-26T00:00:00.000Z", lastRefusalAt: "2026-10-26T04:00:00.000Z", lastRefusalSample: "quota exceeded" };
+      saveQuotaFullLatch(path, latch);
+      assert.deepEqual(loadQuotaFullLatch(path), latch);
+      saveQuotaFullLatch(path, null);
+      assert.equal(loadQuotaFullLatch(path), null);
+      writeFileSync(path, "{nao json");
+      assert.equal(loadQuotaFullLatch(path), null);
+      assert.deepEqual(parseQuotaFullLatch({ since: 1 }), { latch: null, invalid: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skip_file entre aspas simples é lido e completado na própria linha (sem duplicar)", () => {
+    const text = "skip_file = '*.tmp|run-log.jsonl'\n";
+    assert.deepEqual(readSkipFilePatterns(text), ["*.tmp", "run-log.jsonl"]);
+    const plan = planSkipFileConfig(text, ["run-log.jsonl", "*.mp4"]);
+    assert.deepEqual(plan.added, ["*.mp4"]);
+    assert.equal(plan.text.match(/skip_file/g)?.length, 1);
+    assert.deepEqual(readSkipFilePatterns(plan.text), ["*.tmp", "run-log.jsonl", "*.mp4"]);
+  });
+
+  it("mp4Excluded exige padrão amplo: diaria-*.mp4 não conta como *.mp4 fora do sync", () => {
+    const dir = mkdtempSync(join(tmpdir(), "skip-mp4-"));
+    try {
+      const narrow = join(dir, "narrow");
+      writeFileSync(narrow, 'skip_file = "diaria-*.mp4"\n');
+      assert.equal(readEffectiveSkipFile(narrow).mp4Excluded, false);
+      const wide = join(dir, "wide");
+      writeFileSync(wide, 'skip_file = "*.mp4"\n');
+      assert.equal(readEffectiveSkipFile(wide).mp4Excluded, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("readOnedriveJournalLines: journal indisponível vira null (sem medida), nunca lista vazia", () => {

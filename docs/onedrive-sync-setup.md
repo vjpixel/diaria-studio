@@ -167,6 +167,8 @@ Em 23/10/2026 a conta do OneDrive ficou sem espaço e o sync de `data/` parou. A
 
 **O uso local subestima a cota.** `skip_file` não apaga a cópia que já subiu, e apagar no OneDrive manda pra lixeira, que também conta. Por isso a recusa no log vence a medida local.
 
+**A recusa arma uma trava (`data/.onedrive-quota-latch.json`).** O journal só é lido na janela de `--tolerance-hours`, e o daemon só registra recusa quando tenta subir algo, então uma janela sem recusa não prova que a cota liberou. Depois de uma recusa, `quota-full` se mantém até a janela mostrar pelo menos um upload concluído (`Uploading ... done`) e nenhuma recusa. Journal ilegível ou janela sem upload mantêm a trava. Só com a trava solta o veredito volta a vir da medida local, e só então a issue `quota-full` pode fechar por streak.
+
 ### Como aplicar no `300` (manual, nesta ordem)
 
 ```bash

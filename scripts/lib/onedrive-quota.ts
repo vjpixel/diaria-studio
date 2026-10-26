@@ -26,6 +26,15 @@
  * Limitação honesta: o uso local subestima a cota quando arquivos já
  * enviados saem do sync (o `skip_file` não apaga a cópia online, e apagar
  * manda pra lixeira, que conta na cota). Por isso o sinal 1 vence o 2.
+ *
+ * **Trava persistente (review do PR #11139):** o journal só é lido numa
+ * janela curta, e o daemon só registra a recusa quando TENTA subir algo.
+ * Janela sem recusa NÃO prova que a cota liberou. Por isso uma recusa vista
+ * arma uma trava (`QuotaFullLatch`, persistida pelo caller) que mantém
+ * `quota-full` até haver evidência positiva de espaço: na mesma janela, pelo
+ * menos um upload concluído e nenhuma recusa. Journal ilegível ou janela sem
+ * upload mantêm a trava. Só depois de solta a trava o veredito volta a vir
+ * da medida local, que sozinha nunca solta um `quota-full` vindo do log.
  */
 
 export const DEFAULT_QUOTA_WARN_PCT = 80;
@@ -49,23 +58,85 @@ export const QUOTA_FULL_LOG_PATTERNS: readonly RegExp[] = [
   /\b507\b.*insufficient storage/i,
 ];
 
+/** Linha de upload CONCLUÍDO do cliente (`Uploading new file: x ... done.`,
+ * `Uploading modified file x ... done`). É a evidência positiva de que a
+ * conta aceitou bytes — o que solta a trava de `quota-full`. */
+export const UPLOAD_SUCCESS_LOG_PATTERN = /\buploading\b.*\.\.\.\s*done\.?\s*$/i;
+
 export interface QuotaLogScan {
   matched: boolean;
   matchCount: number;
   /** Última linha que casou (a mais recente), pra citar no texto. */
   sample: string | null;
+  /** Uploads concluídos na janela (linha que casa a recusa nunca conta). */
+  uploadSuccessCount: number;
 }
 
 export function scanOnedriveLogForQuotaFull(lines: readonly string[]): QuotaLogScan {
   let matchCount = 0;
+  let uploadSuccessCount = 0;
   let sample: string | null = null;
   for (const line of lines) {
     if (QUOTA_FULL_LOG_PATTERNS.some((re) => re.test(line))) {
       matchCount++;
       sample = line.trim();
+    } else if (UPLOAD_SUCCESS_LOG_PATTERN.test(line)) {
+      uploadSuccessCount++;
     }
   }
-  return { matched: matchCount > 0, matchCount, sample };
+  return { matched: matchCount > 0, matchCount, sample, uploadSuccessCount };
+}
+
+/** Trava persistida entre execuções (o caller grava em `data/`). `null` =
+ * solta. */
+export interface QuotaFullLatch {
+  /** Quando a trava armou (1ª recusa vista). */
+  since: string;
+  /** Última vez que uma recusa foi vista no log. */
+  lastRefusalAt: string;
+  lastRefusalSample: string | null;
+}
+
+/** A janela tem a evidência positiva que solta a trava: upload concluído e
+ * nenhuma recusa. Journal ilegível (`null`) nunca solta. */
+export function logShowsSpaceFreed(log: QuotaLogScan | null): boolean {
+  return log !== null && !log.matched && log.uploadSuccessCount > 0;
+}
+
+/** Pura. Recusa no log arma/renova; evidência de espaço solta; qualquer
+ * outra coisa (janela muda, journal ilegível) mantém o que estava. */
+export function nextQuotaFullLatch(
+  prev: QuotaFullLatch | null,
+  log: QuotaLogScan | null,
+  now: Date,
+): QuotaFullLatch | null {
+  if (log?.matched) {
+    return {
+      since: prev?.since ?? now.toISOString(),
+      lastRefusalAt: now.toISOString(),
+      lastRefusalSample: log.sample,
+    };
+  }
+  if (prev && logShowsSpaceFreed(log)) return null;
+  return prev;
+}
+
+/** Lê o JSON da trava; qualquer forma inválida vira `null` + `invalid: true`
+ * (o caller loga — trava corrompida não deve sumir em silêncio). */
+export function parseQuotaFullLatch(raw: unknown): { latch: QuotaFullLatch | null; invalid: boolean } {
+  if (raw === null) return { latch: null, invalid: false };
+  const r = raw as Partial<QuotaFullLatch> | undefined;
+  if (r && typeof r === "object" && typeof r.since === "string" && typeof r.lastRefusalAt === "string") {
+    return {
+      latch: {
+        since: r.since,
+        lastRefusalAt: r.lastRefusalAt,
+        lastRefusalSample: typeof r.lastRefusalSample === "string" ? r.lastRefusalSample : null,
+      },
+      invalid: false,
+    };
+  }
+  return { latch: null, invalid: true };
 }
 
 export interface DataUsageFile {
@@ -145,12 +216,19 @@ export interface OnedriveQuotaEvaluation {
   log: QuotaLogScan | null;
   /** `*.mp4` está no skip_file efetivo? `null` = config não lida. */
   mp4Excluded: boolean | null;
+  /** Trava de `quota-full` depois desta execução (`null` = solta). */
+  latch: QuotaFullLatch | null;
 }
 
 /**
  * Pura. Ordem: recusa por espaço no log → `quota-full` (mesmo sem medir
- * `data/`); sem uso medido → `unmeasured`; uso sincronizado ≥ cota →
- * `quota-full`; ≥ `warnPct`% → `quota-near`; senão `ok`.
+ * `data/`); trava armada sem evidência de espaço liberado → `quota-full`;
+ * sem uso medido → `unmeasured`; uso sincronizado ≥ cota → `quota-full`;
+ * ≥ `warnPct`% → `quota-near`; senão `ok`.
+ *
+ * `latch` é a trava da execução ANTERIOR; a da próxima sai em
+ * `result.latch` e o caller persiste. Sem `latch`/`now` (testes antigos),
+ * vale `null`/agora.
  */
 export function evaluateOnedriveQuota(input: {
   log: QuotaLogScan | null;
@@ -158,10 +236,14 @@ export function evaluateOnedriveQuota(input: {
   quotaBytes: number;
   warnPct?: number;
   mp4Excluded: boolean | null;
+  latch?: QuotaFullLatch | null;
+  now?: Date;
 }): OnedriveQuotaEvaluation {
   const warnPct = input.warnPct ?? DEFAULT_QUOTA_WARN_PCT;
-  const base = { quotaBytes: input.quotaBytes, warnPct, usage: input.usage, log: input.log, mp4Excluded: input.mp4Excluded };
+  const latch = nextQuotaFullLatch(input.latch ?? null, input.log, input.now ?? new Date());
+  const base = { quotaBytes: input.quotaBytes, warnPct, usage: input.usage, log: input.log, mp4Excluded: input.mp4Excluded, latch };
   if (input.log?.matched) return { verdict: "quota-full", ...base };
+  if (latch) return { verdict: "quota-full", ...base };
   if (!input.usage) return { verdict: "unmeasured", ...base };
   if (input.usage.syncedBytes >= input.quotaBytes) return { verdict: "quota-full", ...base };
   if (input.usage.syncedBytes >= (input.quotaBytes * warnPct) / 100) return { verdict: "quota-near", ...base };
@@ -189,7 +271,9 @@ export function buildQuotaCauseText(ev: OnedriveQuotaEvaluation): string {
     out.push(
       ev.log?.matched
         ? `O cliente do OneDrive está recusando upload por falta de espaço na conta (${ev.log.matchCount} linha(s) no log; última: "${ev.log.sample}"). O sync de data/ parou de propagar.`
-        : `data/ sincroniza ${formatBytes(ev.usage?.syncedBytes ?? 0)}, acima do orçamento de cota de ${formatBytes(ev.quotaBytes)}. O sync vai parar (ou já parou).`,
+        : ev.latch
+          ? `O cliente do OneDrive recusou upload por falta de espaço (última recusa vista em ${ev.latch.lastRefusalAt}: "${ev.latch.lastRefusalSample ?? "?"}") e desde então o log não mostrou nenhum upload concluído. Sem essa evidência a cota segue tratada como cheia — janela sem recusa não prova que liberou.`
+          : `data/ sincroniza ${formatBytes(ev.usage?.syncedBytes ?? 0)}, acima do orçamento de cota de ${formatBytes(ev.quotaBytes)}. O sync vai parar (ou já parou).`,
     );
   } else if (ev.verdict === "quota-near") {
     out.push(
