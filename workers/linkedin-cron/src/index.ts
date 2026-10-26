@@ -802,6 +802,10 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
+  // #11133 — a reserva cobre cancel → KV put → arm; finally libera o
+  // fallback também nas saídas de erro. O token impede liberar claim alheio.
+  let replacementToken: string | undefined;
+  try {
   let previousRaw: string | null = null;
   let replaced = false;
   let contentChanged = false; // #11026
@@ -870,7 +874,11 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
         // #11107 — o alarm/cron pode ganhar o /claim entre o /status acima e
         // este cancel; `if_not_claiming` faz o DO recusar (409) em vez de
         // apagar o `claiming` de um disparo em curso.
-        const clearRes = await doStub(env, key).fetch("https://do/cancel", CANCEL_IF_NOT_CLAIMING);
+        replacementToken = crypto.randomUUID();
+        const clearRes = await doStub(env, key).fetch("https://do/cancel", {
+          ...CANCEL_IF_NOT_CLAIMING,
+          body: JSON.stringify({ if_not_claiming: true, replacement_token: replacementToken, replacement_entry: entry }),
+        });
         if (clearRes.status === 409) return idempotentConflict("fire_in_progress", key);
         clearOk = clearRes.ok;
       } catch (e) {
@@ -964,7 +972,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     const igVjpixelCreds = resolveInstagramVjpixelCreds(env); // #10823
     const threadsCreds = resolveThreadsCreds(env);
     const linkedinCreds = resolveLinkedInCreds(env); // #8052
-    const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
+    const armPayload: DoStoredPayload & { scheduledAtMs: number; replacement_token?: string } = {
+      ...(replacementToken !== undefined && { replacement_token: replacementToken }),
       scheduledAtMs: scheduledMs,
       key,
       entry,
@@ -1001,8 +1010,12 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // #11044 — /arm pode perder a corrida para o claim depois do KV put.
   // Restaurar fora do catch fail-soft: falha no rollback nunca confirma 202.
   if (armConflict !== null) {
-    if (previousRaw === null) await env.LINKEDIN_QUEUE.delete(key);
-    else await env.LINKEDIN_QUEUE.put(key, previousRaw);
+    // #11133 — com reserva, um claim após TTL só pode disparar a entry nova
+    // (replacement_entry no DO). Não devolver a antiga por cima desse disparo.
+    if (replacementToken === undefined) {
+      if (previousRaw === null) await env.LINKEDIN_QUEUE.delete(key);
+      else await env.LINKEDIN_QUEUE.put(key, previousRaw);
+    }
     return idempotentConflict(armConflict, key);
   }
 
@@ -1022,6 +1035,18 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     },
     202,
   );
+  } finally {
+    // #11133 — put/arm terminou (inclusive falha): libera fallback sem abrir
+    // a janela em que o cron reivindicava o conteúdo anterior ao KV put.
+    if (replacementToken !== undefined) {
+      try {
+        await doStub(env, key).fetch("https://do/release-replacement", {
+          method: "POST",
+          body: JSON.stringify({ replacement_token: replacementToken }),
+        });
+      } catch { /* TTL recupera reserva se o DO estiver indisponível */ }
+    }
+  }
 }
 
 // ── GET /health — quantos items + próximo a firar ──────────────────────────

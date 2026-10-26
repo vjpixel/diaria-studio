@@ -321,3 +321,73 @@ describe("#11107 cron não dispara a cópia do KV lida antes do claim", () => {
     assert.equal(store.has(key), false);
   });
 });
+
+
+describe("#11133 reserva do enqueue entre cancel e KV put", () => {
+  it("claim após TTL antes do arm preserva o novo, sem rollback para o antigo", async () => {
+    const g = mockThreads();
+    const ctx = mkEnv();
+    const { key } = await (await enqueue(ctx.env, post())).json() as { key: string };
+    const originalPut = ctx.env.LINKEDIN_QUEUE.put.bind(ctx.env.LINKEDIN_QUEUE);
+    let race = true;
+    ctx.env.LINKEDIN_QUEUE.put = (async (k: string, value: string) => {
+      await originalPut(k, value);
+      if (race && k === key) {
+        race = false;
+        ctx.get(key).state.storage.store.set("claimed_at", 0);
+        // O claim substitui a reserva vencida; a liberação atrasada do dono
+        // não pode liberar este claim de publicação.
+        const token = ctx.get(key).state.storage.store.get("replacement_token");
+        const claim = await ctx.get(key).scheduler.fetch(new Request("https://do/claim", { method: "POST" }));
+        assert.equal((await claim.json() as { claimed: boolean }).claimed, true);
+        await ctx.get(key).scheduler.fetch(new Request("https://do/release-replacement", {
+          method: "POST", body: JSON.stringify({ replacement_token: token }),
+        }));
+        assert.equal(ctx.get(key).state.storage.store.get("claiming"), true);
+      }
+    }) as KVNamespace["put"];
+    const res = await enqueue(ctx.env, post({ text: "Texto novo" }));
+    assert.equal(res.status, 409);
+    assert.equal((JSON.parse(ctx.store.get(key)!) as QueueEntry).text, "Texto novo");
+    await ctx.get(key).scheduler.fetch(new Request("https://do/release-claim", { method: "POST" }));
+    await __test__.fireDueItems(ctx.env);
+    assert.deepEqual(g.containers, ["Texto novo"]);
+  });
+
+  for (const armFails of [false, true]) {
+    for (const expired of [false, true]) {
+    it(`cron entre cancel e put não dispara nem apaga conteúdo novo (armFails=${armFails}, expired=${expired})`, async () => {
+      const g = mockThreads();
+      const ctx = mkEnv();
+      const { key } = await (await enqueue(ctx.env, post())).json() as { key: string };
+      const originalPut = ctx.env.LINKEDIN_QUEUE.put.bind(ctx.env.LINKEDIN_QUEUE);
+      let race = true;
+      ctx.env.LINKEDIN_QUEUE.put = (async (k: string, value: string) => {
+        if (race && k === key) {
+          race = false;
+          // /cancel já completou; o KV ainda contém a entry velha vencida.
+          if (expired) ctx.get(key).state.storage.store.set("claimed_at", 0);
+          const r = await __test__.fireDueItems(ctx.env);
+          assert.equal(r.fired, 0);
+          await ctx.get(key).scheduler.alarm();
+          assert.deepEqual(g.containers, []);
+        }
+        await originalPut(k, value);
+      }) as KVNamespace["put"];
+      if (armFails) {
+        const scheduler = ctx.get(key).scheduler;
+        const originalFetch = scheduler.fetch.bind(scheduler);
+        scheduler.fetch = async (req: Request) => new URL(req.url).pathname === "/arm"
+          ? new Response("unavailable", { status: 503 }) : originalFetch(req);
+      }
+      const res = await enqueue(ctx.env, post({ text: "Texto novo" }));
+      assert.equal(res.status, 202);
+      assert.equal((JSON.parse(ctx.store.get(key)!) as QueueEntry).text, "Texto novo");
+      assert.equal(ctx.get(key).state.storage.store.has("claiming"), false);
+      await __test__.fireDueItems(ctx.env);
+      assert.deepEqual(g.containers, ["Texto novo"]);
+      assert.equal(ctx.store.has(key), false);
+    });
+  }
+  }
+});
