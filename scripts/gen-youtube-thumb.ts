@@ -26,7 +26,6 @@
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
@@ -89,13 +88,11 @@ async function main(): Promise<number> {
     return 2;
   }
   const backgroundPath = resolve(values["background"] ?? join(dir, "04-d1-2x1.jpg"));
-  const root = fileURLToPath(new URL("../", import.meta.url));
-  const rembg = spawnSync(join(root, ".venv-rembg", "Scripts", "python.exe"),
-    [join(root, "scripts", "setup-rembg.py"), "--check"], { encoding: "utf8", timeout: 60_000 });
-  if (rembg.error || rembg.status !== 0) {
-    console.error(`gen-youtube-thumb: rembg ausente ou inválido. No Neo (Windows x64), execute: py -3.11 scripts/setup-rembg.py. Veja docs/setup.md. ${rembg.error?.message ?? rembg.stderr?.trim()}`);
-    return 1;
-  }
+  // #11162: sem checagem do venv do rembg aqui. Este script só consome o
+  // --portrait JÁ recortado; quem exige o ambiente é o passo de recorte
+  // (`setup-rembg.py --input/--output` chama `check()` antes de recortar).
+  // A garantia de que o recorte rodou é a recusa de retrato sem transparência
+  // em `composeYouTubeThumb`, que vale em qualquer máquina.
   for (const p of [resolve(portraitPath), backgroundPath]) {
     if (!existsSync(p)) {
       console.error(`gen-youtube-thumb: ${p} não existe`);
