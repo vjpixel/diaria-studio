@@ -1669,6 +1669,11 @@ export interface SubscriberEventRow {
   type: string;
   edicao: string | null;
   external_event_id: string;
+  /** `event.ts` (#8238): opcional no TIPO só pra não obrigar fixtures
+   *  antigas a preencher — `getAllEventsBySubscriber` sempre devolve (a
+   *  coluna é NOT NULL). Lido pelo corte determinístico por evento e pela
+   *  ordem de entrega do K10 (`leitor-store.ts`). */
+  ts?: string;
 }
 
 /**
@@ -1688,7 +1693,7 @@ export function getAllEventsBySubscriber(
 ): Map<number, SubscriberEventRow[]> {
   const rows = db
     .prepare(
-      `SELECT subscriber_id, platform, type, edicao, external_event_id
+      `SELECT subscriber_id, platform, type, edicao, external_event_id, ts
        FROM event WHERE subscriber_id IS NOT NULL`,
     )
     .all() as unknown as Array<SubscriberEventRow & { subscriber_id: number }>;

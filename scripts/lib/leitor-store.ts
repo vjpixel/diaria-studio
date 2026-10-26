@@ -519,6 +519,134 @@ export function computeStoreLeitorResult(
 }
 
 // ---------------------------------------------------------------------------
+// Corte determinístico por `event.ts` e K10 (#8238, resíduo da Emenda 17/09)
+// ---------------------------------------------------------------------------
+
+/**
+ * Corte determinístico da leitura do store (#8238). O store é mutável — sem
+ * corte, rodar a mesma apuração uma semana depois conta as entregas das
+ * edições novas. Com `eventsBeforeMs`, só entram eventos com `ts` ANTES desse
+ * instante e só subscribers com cadastro antes dele.
+ *
+ * **Limite declarado (não resolvível com a fonte atual):** o Kit grava o `ts`
+ * de `delivered` E de `click` como o horário de envio do BROADCAST
+ * (`kit-subscribers-ingest.ts`), não o do clique. Clique tardio, feito depois
+ * do corte num broadcast enviado antes dele, continua dentro. O corte
+ * congela as ENTREGAS (o que move `total_received` e o piso de 20 recebidas
+ * do leitor-v1), não o instante de cada clique. O status também é o atual
+ * (o store não guarda histórico de status).
+ */
+export interface StoreEventCutoffOptions {
+  /** Instante (epoch ms) exclusivo do corte. `undefined` = sem corte. */
+  eventsBeforeMs?: number;
+}
+
+/** Evento sem `ts` legível nunca passa num corte (não dá pra afirmar que é
+ *  anterior a ele). Sem corte, devolve a mesma lista. @pure */
+export function applyEventCutoff<T extends { ts?: string }>(events: readonly T[], cutoffMs: number | null): T[] {
+  if (cutoffMs == null) return [...events];
+  return events.filter((e) => {
+    const ms = e.ts != null ? Date.parse(e.ts) : Number.NaN;
+    return Number.isFinite(ms) && ms < cutoffMs;
+  });
+}
+
+/** Primeiras N edições recebidas que contam para o K10 (#8249, Emenda 17/09). */
+export const K10_PRIMEIRAS_RECEBIDAS = 10;
+
+export interface K10Result {
+  /** Clicou em >=1 das primeiras {@link K10_PRIMEIRAS_RECEBIDAS} edições recebidas. */
+  k10: boolean;
+  /** Quantas edições recebidas entraram na janela do K10 (`min(N, recebidas)`).
+   *  Abaixo de N, o K10 ainda pode virar `true` em edições futuras. */
+  recebidasConsideradas: number;
+}
+
+/**
+ * K10 de 1 subscriber a partir dos eventos já carregados (#8238). Mesmas
+ * regras de "recebida" e "clicada" do leitor-v1 deste módulo (`delivered`
+ * quando a plataforma expõe, senão `sent − bounce`; chave = edição canônica,
+ * a mesma edição por 2 plataformas conta 1). A ORDEM de entrega é o menor
+ * `ts` entre os eventos de recebimento de cada edição; empate pela chave,
+ * para duas contagens independentes chegarem ao mesmo n. Recebimento sem `ts`
+ * legível vai para o fim. @pure
+ */
+export function computeK10FromEvents(
+  events: readonly SubscriberEventRow[],
+  aliases: readonly SubscriberAlias[],
+  caps: PlatformCapabilities,
+  canonicalMap: Map<string, string>,
+  platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+  n: number = K10_PRIMEIRAS_RECEBIDAS,
+): K10Result {
+  const present = new Set(aliases.map((a) => a.platform));
+  const firstTs = new Map<string, number>();
+  const clicked = new Set<string>();
+  for (const platform of platforms) {
+    if (!present.has(platform)) continue;
+    const doPlat = events.filter((e) => e.platform === platform);
+    const key = (e: SubscriberEventRow) =>
+      canonicalKeyOf({ platform, edicao: e.edicao, externalEventId: e.external_event_id }, canonicalMap);
+    const tsOf = (e: SubscriberEventRow) => {
+      const ms = e.ts != null ? Date.parse(e.ts) : Number.NaN;
+      return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
+    };
+    let recebidos: SubscriberEventRow[];
+    if (caps.platformsWithDelivered.has(platform)) {
+      recebidos = doPlat.filter((e) => e.type === "delivered");
+    } else {
+      const bounced = new Set(doPlat.filter((e) => e.type === "bounce").map(key));
+      recebidos = doPlat.filter((e) => e.type === "sent" && !bounced.has(key(e)));
+    }
+    for (const e of recebidos) {
+      const k = key(e);
+      const t = tsOf(e);
+      const prev = firstTs.get(k);
+      if (prev == null || t < prev) firstTs.set(k, t);
+    }
+    for (const e of doPlat) if (e.type === "click") clicked.add(key(e));
+  }
+  const primeiras = [...firstTs.entries()]
+    .sort((a, b) => (a[1] !== b[1] ? a[1] - b[1] : a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, n)
+    .map(([k]) => k);
+  return { k10: primeiras.some((k) => clicked.has(k)), recebidasConsideradas: primeiras.length };
+}
+
+/** Chave de e-mail usada para casar o K10 com a coorte do relatório. @pure */
+export function k10EmailKey(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/**
+ * K10 de todo subscriber do store com alias numa plataforma coberta, por
+ * e-mail (mesmo e-mail que `buildCacCompatibleSubscribersFromStore` escolhe,
+ * normalizado por {@link k10EmailKey}). Aceita o mesmo corte por `event.ts`.
+ * Só leitura; 1 scan por tabela, como o adaptador abaixo.
+ */
+export function loadK10ByEmailFromStore(
+  db: DatabaseSync,
+  platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+  opts: StoreEventCutoffOptions = {},
+): Map<string, K10Result> {
+  const cutoff = opts.eventsBeforeMs ?? null;
+  const caps = detectPlatformCapabilities(db, platforms);
+  const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
+  const aliasesBySubscriber = getAllAliasesBySubscriber(db);
+  const eventsBySubscriber = getAllEventsBySubscriber(db);
+  const out = new Map<string, K10Result>();
+  for (const [subscriberId, platformSet] of getAllSubscriberPlatforms(db)) {
+    if (!platforms.some((p) => platformSet.has(p))) continue;
+    const aliases = aliasesBySubscriber.get(subscriberId) ?? [];
+    const email = aliases.find((a) => a.email)?.email;
+    if (!email) continue;
+    const events = applyEventCutoff(eventsBySubscriber.get(subscriberId) ?? [], cutoff);
+    out.set(k10EmailKey(email), computeK10FromEvents(events, aliases, caps, canonicalMap, platforms));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Adaptador pro shape `BeehiivBackupSubscriber` (#8210 Bug 2) — reusa TODO
 // o núcleo de `scripts/lib/cac.ts` (agrupamento por canal, CTR/leitor-v1,
 // janela, degradação) sem reescrever nada dele: só troca a FONTE dos
@@ -563,6 +691,9 @@ export function computeStoreLeitorResult(
  * identidade, e inventar um placeholder poluiria a base com uma linha
  * incorreta em vez de simplesmente faltar 1 registro.
  *
+ * `opts.eventsBeforeMs` (#8238): corte determinístico por `event.ts` — ver
+ * {@link StoreEventCutoffOptions} (e o limite declarado do `ts` do Kit).
+ *
  * Custo: 1 varredura completa (`getAllSubscriberPlatforms`/
  * `getAllSubscriptionsBySubscriber`/`getAllAliasesBySubscriber`, cada 1
  * scan) + N chamadas a `computeStoreLeitorInputCanonicalDedup` (1 por
@@ -573,7 +704,9 @@ export function computeStoreLeitorResult(
 export function buildCacCompatibleSubscribersFromStore(
   db: DatabaseSync,
   platforms: readonly Platform[] = LEITOR_DIARIA_PLATFORMS,
+  opts: StoreEventCutoffOptions = {},
 ): BeehiivBackupSubscriber[] {
+  const cutoff = opts.eventsBeforeMs ?? null;
   const caps = detectPlatformCapabilities(db, platforms);
   const canonicalMap = buildCanonicalEdicaoMapFromEvents(db);
   const allPlatforms = getAllSubscriberPlatforms(db);
@@ -601,8 +734,10 @@ export function buildCacCompatibleSubscribersFromStore(
       .map((v) => Date.parse(v))
       .filter((ms) => Number.isFinite(ms));
     const created = enteredMs.length > 0 ? Math.floor(Math.min(...enteredMs) / 1000) : 0;
+    // #8238: cadastro depois do corte não existia na data de corte.
+    if (cutoff != null && created * 1000 >= cutoff) continue;
 
-    const events = eventsBySubscriber.get(subscriberId) ?? [];
+    const events = applyEventCutoff(eventsBySubscriber.get(subscriberId) ?? [], cutoff);
     const input = computeStoreLeitorInputCanonicalDedupBatched(
       events,
       aliases,

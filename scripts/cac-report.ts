@@ -92,9 +92,19 @@
  * (rótulo/corte do relatório — não existe "snapshot mais recente" no store,
  * que é mutável) e não tem snapshot ANTERIOR conhecido, então a linha "vs.
  * base" (sinal de degradação) não é calculada neste modo. Reproduzir a
- * mesma leitura mais tarde ainda depende do store não ter mudado — congelar
- * um corte determinístico por timestamp de evento (truncar `event.ts` no
- * corte) é escopo remanescente do #8238, não implementado aqui.
+ * mesma leitura mais tarde ainda depende do store não ter mudado, a menos
+ * que se passe `--corte` (abaixo).
+ *
+ * ## `--corte AAAA-MM-DD` (#8238) — corte determinístico por `event.ts`
+ *
+ * Só com `--fonte store`. A leitura do store passa a considerar só eventos
+ * com `ts` até 23h59 BRT do dia de corte, e só cadastros anteriores a esse
+ * instante: as entregas de edições posteriores (o que mexe em
+ * `total_received` e no piso de 20 recebidas do leitor-v1) ficam fora, e
+ * rodar a mesma apuração dias depois dá o mesmo número. Limite declarado: o
+ * Kit grava o `ts` do clique como o envio do broadcast, então clique tardio
+ * num broadcast anterior ao corte continua dentro; o status é o atual. Ver
+ * `StoreEventCutoffOptions` em `scripts/lib/leitor-store.ts`.
  *
  * ## `--apuracao-2608 <run-state.json> [--gasto-fases <json>]` (#8238, Emenda 17/09)
  *
@@ -104,6 +114,8 @@
  * "sem sinal", razão observada vs. razão mínima detectável (Poisson) e o guard
  * da fração com >=20 recebidas. Com registro (default), grava também o extrato
  * `apuracao-{id}-coorte.jsonl` ao lado do `run-state.json`. Exige `--fonte store`.
+ * Inclui, só como informação, o custo por K10 (clique em >=1 das 10
+ * primeiras recebidas, `loadK10ByEmailFromStore`), com o mesmo `--corte`.
  *
  * **Detecção fail-soft, mesmo em `--fonte beehiiv`:** quando a fonte é
  * `beehiiv`, o relatório roda uma checagem adicional (`detectTeste2608BeehiivStoreMismatch`)
@@ -187,6 +199,8 @@ import { DEFAULT_DB_PATH as DEFAULT_STORE_DB_PATH, openDiariaSubscribersDbSafe }
 import {
   summarizeStoreLeitoresCanonicalDedup,
   buildCacCompatibleSubscribersFromStore,
+  loadK10ByEmailFromStore,
+  type K10Result,
   type StoreLeitorSummary,
 } from "./lib/leitor-store.ts";
 import { readMonthCacheDetailed } from "./lib/apoia-se.ts";
@@ -786,6 +800,9 @@ export interface CacReportCliArgs {
    *  (`{ braço: { idDaFase: BRL } }`) — `spend.csv` é mensal e não divide o
    *  gasto entre pré-pausa e pós-retomada. Só vale com `--apuracao-2608`. */
   gastoFases: string | null;
+  /** `--corte AAAA-MM-DD` (#8238): corte determinístico por `event.ts` na
+   *  leitura do store (fim do dia em BRT). Só com `--fonte store`. */
+  corte: string | null;
 }
 
 export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
@@ -806,7 +823,16 @@ export function parseCacReportArgs(argv: string[]): CacReportCliArgs {
     ltv: !hasFlag(argv, "no-ltv"),
     apuracao2608: getStringArg(argv, "apuracao-2608") ?? null,
     gastoFases: getStringArg(argv, "gasto-fases") ?? null,
+    corte: getStringArg(argv, "corte") ?? null,
   };
+}
+
+/** Instante exclusivo do corte `--corte AAAA-MM-DD`: 00h00 BRT do dia
+ *  seguinte (o dia de corte inteiro, em BRT, fica dentro). @pure */
+export function cacReportCorteExclusiveMs(corte: string): number {
+  const ms = Date.parse(`${corte}T00:00:00-03:00`);
+  if (Number.isNaN(ms)) throw new Error(`[cac-report] --corte inválido: "${corte}"`);
+  return ms + 86_400_000;
 }
 
 /** Valores aceitos por `--fonte` (#8238). @pure */
@@ -915,6 +941,8 @@ export interface CacReportProvenance {
    *  principal. `undefined` só em chamadas antigas de teste que não passam
    *  provenance completo; tratado como `"beehiiv"` pra rótulo. */
   fonte?: CacReportFonteLabel;
+  /** `--corte` (#8238): dia de corte por `event.ts` em `--fonte store`. */
+  corteEventos?: string;
 }
 
 /** Só pra rótulo no markdown — não reimporta o tipo de `parseCacReportArgs`
@@ -941,6 +969,12 @@ export function formatCacReportMarkdown(
       provenance.fonte === "store"
         ? `Rótulo/corte (store unificado): ${provenance.snapshotDate}.`
         : `Snapshot Beehiiv usado: ${provenance.snapshotDate}.`,
+    );
+  }
+  if (provenance.corteEventos) {
+    lines.push(
+      `Corte por evento: só eventos com \`ts\` até ${provenance.corteEventos} 23h59 BRT e cadastros anteriores a isso ` +
+        `(clique tardio num broadcast do Kit anterior ao corte continua dentro: o \`ts\` do clique é o do envio).`,
     );
   }
   if (mismatchWarnings.length > 0) {
@@ -1249,6 +1283,17 @@ export async function main(
     process.exitCode = 1;
     return null;
   }
+  if (args.corte != null && fonte !== "store") {
+    console.error(`[cac-report] --corte só vale com --fonte store (o snapshot Beehiiv já é datado, #8238).`);
+    process.exitCode = 1;
+    return null;
+  }
+  if (args.corte != null && !isValidSnapshotArg(args.corte)) {
+    console.error(`[cac-report] --corte inválido: "${args.corte}" (esperado AAAA-MM-DD de calendário válido).`);
+    process.exitCode = 1;
+    return null;
+  }
+  const eventsBeforeMs = args.corte != null ? cacReportCorteExclusiveMs(args.corte) : undefined;
   if (args.gastoFases && !args.apuracao2608) {
     console.error(`[cac-report] --gasto-fases só vale junto com --apuracao-2608.`);
     process.exitCode = 1;
@@ -1294,6 +1339,8 @@ export async function main(
   // Só populado no ramo `beehiiv` (sinal de degradação vs. o snapshot
   // anterior) — `null` em `--fonte store`, onde não existe "anterior".
   let previousDate: string | null = null;
+  // #8238: K10 informativo da apuração 2608 — lido do MESMO store aberto, com o mesmo corte.
+  let k10ByEmail: Map<string, K10Result> | null = null;
 
   if (fonte === "store") {
     // #8238: coorte inteira vem do store unificado (Kit + Beehiiv + Brevo
@@ -1315,7 +1362,8 @@ export async function main(
     }
     let rawStoreSubs: BeehiivBackupSubscriber[];
     try {
-      rawStoreSubs = buildCacCompatibleSubscribersFromStore(db);
+      rawStoreSubs = buildCacCompatibleSubscribersFromStore(db, undefined, { eventsBeforeMs });
+      if (args.apuracao2608) k10ByEmail = loadK10ByEmailFromStore(db, undefined, { eventsBeforeMs });
     } finally {
       db.close();
     }
@@ -1364,7 +1412,7 @@ export async function main(
   const monthKey = snapshotDate.slice(0, 7); // "YYYY-MM-DD" -> "YYYY-MM"
   const budget = computeMonthBudgetUsage(spendResult.rows, monthKey, MONTHLY_BUDGET_FLOOR_BRL);
   const apuradoEm = now().toISOString();
-  const provenance: CacReportProvenance = { apuradoEm, snapshotDate, fonte };
+  const provenance: CacReportProvenance = { apuradoEm, snapshotDate, fonte, ...(args.corte ? { corteEventos: args.corte } : {}) };
 
   // #8238: fail-soft, só quando a fonte É o snapshot Beehiiv — compara os
   // canais "(teste 2608)" contra o store pra detectar coorte perdida (ver
@@ -1409,8 +1457,9 @@ export async function main(
         subs,
         spendResult.rows,
         runState,
-        { runStatePath: args.apuracao2608, corte: snapshotDate },
+        { runStatePath: args.apuracao2608, corte: args.corte ?? snapshotDate, corteEventos: args.corte != null },
         gastoPorFase,
+        k10ByEmail,
       );
     } catch (e) {
       console.error(`[cac-report] --apuracao-2608: ${(e as Error).message}`);
