@@ -1,4 +1,4 @@
-import { findFactRecurrences } from "../fact-recurrence.ts";
+import { findFactRecurrences, findIntraEditionFactRecurrences, type IntraEditionItem } from "../fact-recurrence.ts";
 /**
  * Invariants de Stage 4 — Publicação (#1007 Fase 1).
  *
@@ -81,6 +81,7 @@ import {
   pickErroIntencionalReveal, // #6734 — MESMA função que o renderer/check-stage2-invariants usam
   readBoxSelectionFileForSlot, // #5457/#8756/#9172 — MESMA leitura do render (antes duplicada aqui)
   BOX_SLOT_EMPTIED, // #9172
+  parseSections, // #11173
 } from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import { detectRemovedApprovedItems } from "../lint-checks/approved-item-removal.ts"; // #8121
@@ -1919,6 +1920,54 @@ export function checkFactRecurrence(editionDir: string, pastMd?: string): Invari
   return findFactRecurrences(items, pastMd ?? readPastEditionsMd(resolve(ROOT, "data/past-editions.md")), basename(editionDir))
     .map(w => ({ rule: "fact-recurrence", source_issue: "#11083", severity: "warning" as const, file,
       message: `Possível mesmo fato: ${w.item_title} (${w.item_url}) vs ${w.matched_edition} “${w.matched_title}”; score=${w.score}, entidades=${w.shared_entities.join(", ")}. ${w.possible_new_fact} Heurístico: o editor confirma a novidade.` }));
+}
+
+/**
+ * #11173: lê `02-reviewed.md` e separa os DESTAQUES (bloco `**DESTAQUE N …**`
+ * até o `---`: manchete = texto do 1º link, resumo = resto do bloco sem o rótulo
+ * e sem "Por que isso importa:") dos itens do pool (LANÇAMENTOS/USE MELHOR/
+ * RADAR…, via `parseSections`, o mesmo parser do render). Exportada para teste.
+ */
+export function readIntraEditionItems(md: string): { highlights: IntraEditionItem[]; pool: IntraEditionItem[] } {
+  const highlights: IntraEditionItem[] = [];
+  for (const block of md.split(/^---$/m)) {
+    const head = block.match(/^\s*\*\*DESTAQUE\s+(\d)[^\n]*$/m);
+    if (!head) continue;
+    const link = block.match(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/);
+    if (!link) continue;
+    const body = block
+      .replace(head[0], "")
+      .replace(/^\s*Por que isso importa:?\s*$/gim, "")
+      .replace(/\*\*/g, "");
+    highlights.push({ label: `D${head[1]}`, title: link[1].replace(/\*\*/g, ""), summary: body, url: link[2] });
+  }
+  const pool = parseSections(md).flatMap(s =>
+    s.items.map(it => ({ label: s.name, title: it.title.replace(/\*\*/g, ""), summary: it.description, url: it.url })));
+  return { highlights, pool };
+}
+
+/**
+ * #11173: item do pool que conta a MESMA HISTÓRIA de um destaque da própria
+ * edição, ou de outro item do pool (casos reais 261023 — Canaltech e G1 sobre
+ * a falha no PHP × D1 da Wiz — e 261016 — Android × Circle to Search). Mesma
+ * heurística do `fact-recurrence` (#11083), aplicada dentro da edição
+ * (`findIntraEditionFactRecurrences`). Severity "warning": o editor decide se
+ * é desdobramento ou corte.
+ */
+export function checkIntraEditionFactRecurrence(editionDir: string): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const { highlights, pool } = readIntraEditionItems(readFileSync(file, "utf8"));
+  return findIntraEditionFactRecurrences(highlights, pool).map(w => {
+    const why = [
+      ...w.shared_entities,
+      ...w.url_entities.map(e => `${e} (na URL)`),
+    ].join(", ");
+    return {
+      rule: "intra-edition-fact-recurrence", source_issue: "#11173", severity: "warning" as const, file,
+      message: `Possível mesma história na edição: [${w.item_label}] “${w.item_title}” (${w.item_url}) repete ${w.matched_label} “${w.matched_title}” (${why}). Heurístico: cortar no gate se não for desdobramento.`,
+    };
+  });
 }
 
 export interface DuplicateUrlMatch {
@@ -3807,6 +3856,10 @@ export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "fact-recurrence", description: "Possível mesmo fato em todas as seções (heurístico, warning-only)",
     source_issue: "#11083", stage: 4, run: checkFactRecurrence,
+  },
+  {
+    id: "intra-edition-fact-recurrence", description: "Item do pool com a mesma história de um destaque ou de outro item da edição (heurístico, warning-only)",
+    source_issue: "#11173", stage: 4, run: checkIntraEditionFactRecurrence,
   },
   {
     id: "no-duplicate-urls-vs-past-editions",

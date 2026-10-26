@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 123 invariants.
+**Total**: 124 invariants.
 
 ## Static (estrutura do repo)
 
@@ -98,6 +98,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `instagram-comment-delivery-promise` | override de teste do Instagram (_internal/instagram-test.json) promete entregar link/edição/material a quem comentar — o repo não responde comentários (#8681, warning-only desde #8848: heurística de regex, editor decide) | #8681 |
 | `intentional-error-not-recent-repeat-final` | erro intencional declarado até o pré-gate (inclusive o do proposer) não reusa wrong_value/correct_value de edição dos últimos 30 dias (#9101) | #9101 |
 | `intentional-error-present-in-final` | item que carrega o erro intencional (wrong_value) ainda está em 02-reviewed.md — detecta poda silenciosa no gate (#7243) | #7243 |
+| `intra-edition-fact-recurrence` | Item do pool com a mesma história de um destaque ou de outro item da edição (heurístico, warning-only) | #11173 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `kit-fixture-audit` | assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336) | #6336 |
 | `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá) | #6506 |
