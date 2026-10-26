@@ -13,6 +13,7 @@
  * costuma começar justamente pela entidade principal.
  */
 import { editionDaysBefore } from './event-dedup.ts';
+import { canonicalize } from './url-utils.ts';
 export const FACT_RECURRENCE_MIN_WEIGHT = 2;
 /** score = min(1, 0.5 + 0.25 * peso); peso 2 => 1.0, peso 1 => 0.75. */
 export const FACT_RECURRENCE_THRESHOLD = 1;
@@ -38,7 +39,7 @@ const ENTITY_RE = /\b[A-Z][A-Za-z0-9-]{2,}\b/g;
 function isStrong(raw: string): boolean {
   return /\d/.test(raw) || raw === raw.toUpperCase();
 }
-function entities(s: string, skipSentenceStart = false): Map<string, boolean> {
+function entities(s: string, skipSentenceStart = false, stop: Set<string> = STOP): Map<string, boolean> {
   const out = new Map<string, boolean>();
   const segments = skipSentenceStart ? s.split(/(?<=[.!?:;])\s+|\n+/) : [s];
   for (const seg of segments) {
@@ -48,7 +49,7 @@ function entities(s: string, skipSentenceStart = false): Map<string, boolean> {
       const raw = m[0];
       if (m.index === start && !isStrong(raw)) continue;
       const key = normalize(raw);
-      if (STOP.has(key) || GENERIC_ACRONYMS.has(key) || incident(key)) continue;
+      if (stop.has(key) || GENERIC_ACRONYMS.has(key) || incident(key)) continue;
       out.set(key, (out.get(key) ?? false) || isStrong(raw));
     }
   }
@@ -86,6 +87,171 @@ export function findFactRecurrences(items: FactItem[], pastMd: string, edition: 
       warnings.push({ item_title: item.title, item_url: item.url, kind: item.kind, matched_edition: previous, matched_title: match.title, score, shared_entities: match.shared,
         possible_new_fact: item.summary ? `Resumo a conferir como possível fato novo: ${item.summary}` : 'Fato novo não demonstrado no título; conferir a fonte.' });
       break;
+    }
+  }
+  return warnings;
+}
+
+// ---------------------------------------------------------------------------
+// #11173: MESMA HISTÓRIA dentro da própria edição (pool × destaque, pool × pool)
+// ---------------------------------------------------------------------------
+
+/**
+ * Item da edição corrente para a comparação intra-edição. `title` é a manchete
+ * (entidades contadas sem o filtro de início de frase: a manchete costuma abrir
+ * pela entidade principal, "Android ganha..."); `summary` é o resto do texto
+ * (resumo do pool, ou corpo do destaque), com o filtro de início de frase do
+ * #11109. `label` nomeia o item na mensagem (ex. "D1", "RADAR").
+ */
+export interface IntraEditionItem { title: string; summary?: string; url: string; label: string }
+
+export interface IntraEditionWarning {
+  item_label: string;
+  item_title: string;
+  item_url: string;
+  matched_label: string;
+  matched_title: string;
+  matched_url: string;
+  /** Entidades em comum no TEXTO dos dois lados (normalizadas). */
+  shared_entities: string[];
+  /** Entidade de um lado que só aparece no slug da URL do outro (#11173, caso Android × Circle to Search). */
+  url_entities: string[];
+  weight: number;
+}
+
+/**
+ * Peso mínimo intra-edição. Mesmo valor do aviso entre edições (#11109): uma
+ * sigla/termo com dígito em comum (PHP, PHP2Shell, CVE-…), ou 2 entidades
+ * comuns. A entidade que só aparece no slug da URL do outro lado vale 1.
+ */
+export const INTRA_EDITION_MIN_WEIGHT = 2;
+
+/**
+ * Termos de golpe/fraude: no mesmo dia, "Android barra mensagens falsas e
+ * golpes" e "Circle to Search checa se o SMS é scam" são a mesma rodada de
+ * anúncios do Google. Só valem intra-edição — o aviso entre edições (#11083)
+ * segue restrito a incidente de segurança, porque "golpe" sozinho atravessa
+ * 30 dias de pauta sem identificar um fato.
+ */
+function scam(s: string): boolean {
+  return /\b(golpe\w*|golpista\w*|scam\w*|fraud\w*|phishing|mensagens? falsas?|chamadas? falsas?)\b/.test(normalize(s));
+}
+const intraIncident = (s: string) => incident(s) || scam(s);
+
+/**
+ * Stop list intra-edição. Diferente do `STOP` entre edições em dois pontos:
+ * (1) as big techs (Google, OpenAI, Meta…) CONTAM como entidade comum (peso 1) —
+ * no mesmo dia, "Google" + outra entidade em comum + incidente é a mesma rodada
+ * de anúncios, enquanto em 30 dias de pauta "Google" não identifica nada;
+ * (2) palavras funcionais EN/PT, que manchete em Title Case ("What It Means For
+ * You") faz parecer entidade.
+ */
+const INTRA_STOP = new Set([
+  'ia', 'ai', 'the', 'uma', 'para', 'como', 'com', 'new', 'novo', 'nova', 'eua', 'usa',
+  'and', 'for', 'what', 'that', 'this', 'with', 'from', 'how', 'why', 'who', 'you', 'your', 'its', 'are', 'was',
+  'has', 'have', 'will', 'not', 'but', 'our', 'can', 'all', 'now', 'get', 'out', 'into', 'over', 'after', 'about',
+  'apos', 'sobre', 'mais', 'entre', 'pela', 'pelo', 'isso', 'este', 'esta', 'veja', 'entenda', 'saiba',
+  // "Inteligência Artificial" capitalizado e o país da própria newsletter não identificam história.
+  'inteligencia', 'artificial', 'intelligence', 'brasil', 'brazil',
+]);
+
+/** Tokens do slug da URL (path), normalizados, ≥3 letras. */
+function urlTokens(url: string): Set<string> {
+  let path = url;
+  try { path = new URL(url).pathname; } catch { /* URL relativa ou inválida: usa a string inteira */ }
+  return new Set(normalize(path).split(/[^a-z0-9]+/).filter(t => t.length >= 3));
+}
+
+/**
+ * Manchete em Title Case (padrão de veículo em inglês: "AI Breaches Are
+ * Exploding"): ≥60% das palavras de 3+ letras com inicial maiúscula. Nesse caso
+ * a maiúscula não indica nome próprio.
+ */
+function isTitleCase(title: string): boolean {
+  const words = title.match(/\p{L}{3,}/gu) ?? [];
+  if (words.length < 3) return false;
+  return words.filter(w => /^\p{Lu}/u.test(w)).length / words.length >= 0.6;
+}
+
+function itemEntities(it: IntraEditionItem): Map<string, boolean> {
+  const fromSummary = entities(it.summary ?? '', true, INTRA_STOP);
+  const fromTitle = entities(it.title, false, INTRA_STOP);
+  const out = new Map(fromSummary);
+  const titleCase = isTitleCase(it.title);
+  for (const [k, strong] of fromTitle) {
+    // Title Case: só vale a sigla/termo com dígito, ou a palavra que o resumo também trata como nome.
+    if (titleCase && !strong && !fromSummary.has(k)) continue;
+    out.set(k, (out.get(k) ?? false) || strong);
+  }
+  return out;
+}
+
+/**
+ * #11173: item do pool (LANÇAMENTOS/USE MELHOR/RADAR) que conta a mesma
+ * história de um destaque DA MESMA edição, ou de outro item do pool anterior a
+ * ele. Casos reais: 261023 (Canaltech e G1 sobre a falha no PHP no pool, com o
+ * D1 da Wiz sobre o PHP2Shell) e 261016 (Canaltech "Android ganha
+ * superproteção… barra mensagens falsas" × "Check if a text message is a scam
+ * using Circle to Search" do blog do Google). O dedup intra-edição
+ * (`dedup-intra-edition.ts`) não junta os pares porque o vocabulário EN×PT é
+ * quase disjunto e ignora entidades de 3 letras ("PHP"); o MESMO FATO
+ * (`same-fact-check.ts`) exige produto com versão.
+ *
+ * Regra: os dois lados com termo de incidente/golpe, e peso de entidades em
+ * comum ≥ `INTRA_EDITION_MIN_WEIGHT` (sigla/termo com dígito = 2, entidade
+ * comum = 1, entidade presente só no slug da URL do outro lado = 1). Mesma URL
+ * canônica é pulada (espelho do destaque no pool não é história repetida, é
+ * trabalho do dedup por URL). 1 aviso por item do pool: destaque antes de pool.
+ *
+ * Só aviso, nunca remove: corte no gate 4 é barato, inclusão errada não é
+ * (meta de 10 itens), e a régua do corpus mostra desdobramentos legítimos com a
+ * mesma entidade (Guardian analisando a "nova era" de ataques após o PHP).
+ */
+export function findIntraEditionFactRecurrences(highlights: IntraEditionItem[], pool: IntraEditionItem[]): IntraEditionWarning[] {
+  type Prepared = { it: IntraEditionItem; incident: boolean; names: Map<string, boolean>; slug: Set<string>; url: string };
+  const prep = (it: IntraEditionItem): Prepared => ({
+    it,
+    incident: intraIncident(`${it.title}\n${it.summary ?? ''}`),
+    names: itemEntities(it),
+    slug: urlTokens(it.url),
+    url: canonicalize(it.url),
+  });
+  const compare = (a: Prepared, b: Prepared) => {
+    const shared = [...a.names.keys()].filter(x => b.names.has(x));
+    const viaUrl = [
+      ...[...a.names.keys()].filter(x => !b.names.has(x) && b.slug.has(x)),
+      ...[...b.names.keys()].filter(x => !a.names.has(x) && a.slug.has(x)),
+    ];
+    const weight = shared.reduce((sum, x) => sum + (a.names.get(x) || b.names.get(x) ? 2 : 1), 0) + viaUrl.length;
+    return { shared, viaUrl: [...new Set(viaUrl)], weight };
+  };
+  // Espelho do destaque no pool (mesma URL canônica — no 01-approved.json o D1
+  // de 261023 traz a manchete em PT sem "PHP", e o espelho no RADAR traz a
+  // manchete original da Wiz, "PHP2Shell: …"): o texto do espelho soma ao do
+  // destaque, e o espelho em si não é comparado.
+  const hlUrls = new Set(highlights.map(h => canonicalize(h.url)));
+  const hs = highlights.map(h => {
+    const mirrors = pool.filter(p => canonicalize(p.url) === canonicalize(h.url));
+    return prep({ ...h, summary: [h.summary ?? '', ...mirrors.map(m => `${m.title}. ${m.summary ?? ''}`)].join('\n') });
+  }).filter(h => h.incident);
+  const seenPool: Prepared[] = [];
+  const warnings: IntraEditionWarning[] = [];
+  for (const raw of pool) {
+    if (hlUrls.has(canonicalize(raw.url))) continue;
+    const p = prep(raw);
+    if (p.incident) {
+      for (const other of [...hs, ...seenPool]) {
+        if (other.url === p.url) continue;
+        const { shared, viaUrl, weight } = compare(p, other);
+        if (weight < INTRA_EDITION_MIN_WEIGHT) continue;
+        warnings.push({
+          item_label: raw.label, item_title: raw.title, item_url: raw.url,
+          matched_label: other.it.label, matched_title: other.it.title, matched_url: other.it.url,
+          shared_entities: shared.sort(), url_entities: viaUrl.sort(), weight,
+        });
+        break;
+      }
+      seenPool.push(p);
     }
   }
   return warnings;
