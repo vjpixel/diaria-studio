@@ -230,6 +230,15 @@ function realBuildOrigemMap(): boolean {
   return !failed;
 }
 
+/** argv do `cac-report` da apuração (#8238). Com o run-state, a leitura do
+ *  store é cortada no próprio `apuracao_snapshot` (`--corte`). @pure */
+export function buildApuracaoCacReportArgv(snapshotDate: string, runStatePath?: string): string[] {
+  return [
+    "--snapshot", snapshotDate, "--fonte", "store",
+    ...(runStatePath ? ["--apuracao-2608", runStatePath, "--corte", snapshotDate] : []),
+  ];
+}
+
 /**
  * #8238: `cacReportMain` é `async` — este wrapper agora `await`a a Promise
  * ANTES de decidir sucesso (o bug original: `cacReportMain([...])` era
@@ -242,11 +251,9 @@ async function realCacReport(snapshotDate: string, bracos: readonly string[], ru
   const priorExitCode = process.exitCode;
   process.exitCode = undefined;
   // #8238 (Emenda 17/09): com o run-state, o relatório congelado ganha a seção
-  // da apuração (coorte por fase, custo por leitor-v1, razão detectável).
-  const report = await cacReportMain([
-    "--snapshot", snapshotDate, "--fonte", "store",
-    ...(runStatePath ? ["--apuracao-2608", runStatePath] : []),
-  ]);
+  // da apuração (coorte por fase, custo por leitor-v1, razão detectável) e
+  // o corte por `event.ts` no mesmo dia (#8238: rodar de novo dá o mesmo número).
+  const report = await cacReportMain(buildApuracaoCacReportArgv(snapshotDate, runStatePath));
   const failed = process.exitCode !== undefined && process.exitCode !== 0;
   process.exitCode = priorExitCode;
   // `!report` sem exitCode != 0 não deveria acontecer (todo `return null` de

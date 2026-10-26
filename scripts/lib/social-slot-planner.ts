@@ -51,7 +51,9 @@
  * Fontes da grade: os stores da edição (`gridFromSocialPublished`,
  * `gridFromShortsPublished`, `gridFromLinkedInPersonalIntent`) e a fila do
  * Worker (`gridFromWorkerQueue`, `GET /list`), que também traz o que as skills
- * de divulgação agendaram e nenhum store da edição registra. `mergeGrids`
+ * de divulgação agendaram e nenhum store da edição registra, mais o Facebook
+ * agendado direto na Graph API (`gridFromFacebookScheduledPosts`) e a fila do
+ * X no Buffer (`gridFromBufferPosts`). `mergeGrids`
  * junta as fontes sem duplicar o post que aparece em duas delas.
  *
  * Puro: sem I/O. Os adaptadores `gridFrom*` convertem os stores de edição
@@ -414,6 +416,48 @@ export function gridFromWorkerQueue(data: unknown): ScheduledSlot[] {
     }
     const label = `fila ${channel}${typeof raw.destaque === "string" ? ` ${raw.destaque}` : ""}`;
     out.push({ account, at, label, ...(also.length ? { alsoAccounts: also } : {}) });
+  }
+  return out;
+}
+
+/**
+ * Graph API `GET /{page_id}/scheduled_posts` (`{ data: [{ id,
+ * scheduled_publish_time }] }`, segundos Unix) → grade da página
+ * `facebook:{pageSlug}` (#10819). Traz o que foi agendado direto no Facebook e
+ * nenhum store da edição registra (divulgação mensal, anual, à mão na Meta).
+ * Entrada sem `scheduled_publish_time` numérico é ignorada; resposta sem `data`
+ * = grade vazia (o caller decide se avisa).
+ */
+export function gridFromFacebookScheduledPosts(data: unknown, pageSlug = "diaria"): ScheduledSlot[] {
+  const items = (data as { data?: unknown })?.data;
+  if (!Array.isArray(items)) return [];
+  const out: ScheduledSlot[] = [];
+  for (const raw of items as Array<Record<string, unknown>>) {
+    const t = raw?.scheduled_publish_time;
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0) continue;
+    out.push({ account: socialAccountKey("facebook", pageSlug), at: new Date(t * 1000).toISOString(), label: "facebook agendado" });
+  }
+  return out;
+}
+
+/**
+ * Buffer GraphQL `posts` (`{ data: { posts: { edges: [{ node: { dueAt,
+ * status, channelService } }] } } }`) → grade do X `twitter:diaria` (#10819).
+ * Só `scheduled`/`sending` com `dueAt` ocupam slot (o que já saiu está nos
+ * stores da edição, e `draft`/`error` não vão ao ar). Só `channelService:
+ * twitter`: o Buffer do projeto tem só o X conectado, mas um canal novo não
+ * pode virar post do X por engano.
+ */
+export function gridFromBufferPosts(data: unknown): ScheduledSlot[] {
+  const edges = (data as { data?: { posts?: { edges?: unknown } } })?.data?.posts?.edges;
+  if (!Array.isArray(edges)) return [];
+  const out: ScheduledSlot[] = [];
+  for (const e of edges as Array<{ node?: Record<string, unknown> }>) {
+    const n = e?.node;
+    if (!n || n.channelService !== "twitter") continue;
+    if (n.status !== "scheduled" && n.status !== "sending") continue;
+    if (typeof n.dueAt !== "string" || Number.isNaN(Date.parse(n.dueAt))) continue;
+    out.push({ account: socialAccountKey("twitter", "diaria"), at: n.dueAt, label: "buffer x" });
   }
   return out;
 }

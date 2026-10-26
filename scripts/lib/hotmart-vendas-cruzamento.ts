@@ -34,7 +34,7 @@
  */
 
 import { resolveSubscriberAttribution, type SubscriptionRecord } from "./diaria-subscribers-db.ts";
-import { normalizeBuyerEmail, type VendaEvento, type VendaRecord } from "./shared/hotmart-vendas.ts";
+import { isVendaDeTeste, normalizeBuyerEmail, type VendaEvento, type VendaRecord } from "./shared/hotmart-vendas.ts";
 import { sha256Hex } from "./shared/subscriber-verify.ts";
 
 /** O hash que o Worker grava em `email_hash` para este e-mail, ou `null` se
@@ -152,7 +152,10 @@ export interface ResumoSituacao {
 }
 
 export interface RelatorioCruzamento {
+  /** Eventos cruzados (os de teste da Hotmart, `isVendaDeTeste`, já fora). */
   readonly totalEventos: number;
+  /** Eventos de teste da Hotmart deixados fora do cruzamento (#10734 item 3). */
+  readonly testesIgnorados: number;
   /** Só eventos `aprovada`: é a pergunta de aquisição (quem comprou). */
   readonly aprovadas: Readonly<Record<SituacaoComprador, ResumoSituacao>>;
   /** Todos os eventos, por situação. */
@@ -222,7 +225,8 @@ function resumir(itens: readonly VendaComHash[]): Record<SituacaoComprador, Resu
 }
 
 /** Cruza cada evento de venda com o índice do store. Puro. */
-export function cruzarVendas(registros: readonly VendaRecord[], indice: IndiceHash): RelatorioCruzamento {
+export function cruzarVendas(todos: readonly VendaRecord[], indice: IndiceHash): RelatorioCruzamento {
+  const registros = todos.filter((r) => !isVendaDeTeste(r));
   const itens: VendaComHash[] = registros.map((r) => {
     const casados = r.email_hash ? indice.get(r.email_hash) : undefined;
     const ordenados = casados ? [...casados].sort((x, y) => x.subscriberId - y.subscriberId) : [];
@@ -252,6 +256,7 @@ export function cruzarVendas(registros: readonly VendaRecord[], indice: IndiceHa
 
   return {
     totalEventos: itens.length,
+    testesIgnorados: todos.length - registros.length,
     aprovadas: resumir(aprovadas),
     todos: resumir(itens),
     aprovadasPorOrigem: [...porOrigem.entries()]
@@ -259,4 +264,65 @@ export function cruzarVendas(registros: readonly VendaRecord[], indice: IndiceHa
       .map(([origem, eventos]) => ({ origem, eventos })),
     vendas: itens.map((i) => i.venda),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Conferência da premissa do reembolso (#10734 item 3)
+// ---------------------------------------------------------------------------
+
+/** Como uma reversão (reembolso ou chargeback) se compara com a aprovação da
+ * mesma transação, no valor LÍQUIDO (comissão do produtor). */
+export type ReversaoConferida =
+  | "liquido-igual-aprovada"
+  | "liquido-difere-aprovada"
+  | "sem-liquido"
+  | "sem-aprovada-no-espelho";
+
+export interface ConferenciaReembolso {
+  /** `aguardando`: nenhuma reversão real no espelho ainda (as de teste não
+   * contam). `confirmada`: toda reversão real traz a mesma comissão da
+   * aprovação, e o saldo líquido subtrai o valor certo. `conferir`: alguma
+   * veio sem comissão, com comissão diferente ou sem a aprovação no espelho. */
+  readonly veredito: "aguardando" | "confirmada" | "conferir";
+  readonly reversoes: number;
+  readonly porSituacao: Readonly<Record<ReversaoConferida, number>>;
+  readonly testesIgnorados: number;
+}
+
+/**
+ * Item 3 da #10734: a Hotmart manda a comissão do produtor no evento de
+ * reembolso/chargeback? O saldo LÍQUIDO (`saldoLiquido`, rota `GET
+ * /hotmart/vendas`) subtrai o `valor_liquido` da reversão; se ele vier
+ * diferente da comissão da aprovação, o líquido sai errado. O ARPU/LTV usa o
+ * BRUTO (`computeHotmartMonthRevenue`) e não depende disto. Os eventos de
+ * teste (`isVendaDeTeste`) ficam fora: o payload de exemplo da Hotmart traz
+ * comissão em todo evento e "confirmaria" a premissa sem venda real nenhuma.
+ * Puro; não expõe e-mail nem hash.
+ */
+export function conferirPremissaReembolso(todos: readonly VendaRecord[]): ConferenciaReembolso {
+  const registros = todos.filter((r) => !isVendaDeTeste(r));
+  const aprovadaPorTransacao = new Map<string, VendaRecord>();
+  for (const r of registros) {
+    if (r.evento === "aprovada" && !aprovadaPorTransacao.has(r.transacao)) aprovadaPorTransacao.set(r.transacao, r);
+  }
+  const porSituacao: Record<ReversaoConferida, number> = {
+    "liquido-igual-aprovada": 0,
+    "liquido-difere-aprovada": 0,
+    "sem-liquido": 0,
+    "sem-aprovada-no-espelho": 0,
+  };
+  let reversoes = 0;
+  for (const r of registros) {
+    if (r.evento !== "reembolsada" && r.evento !== "chargeback") continue;
+    reversoes++;
+    const aprovada = aprovadaPorTransacao.get(r.transacao);
+    let s: ReversaoConferida;
+    if (r.valor_liquido === null || r.moeda_liquido === null) s = "sem-liquido";
+    else if (!aprovada || aprovada.valor_liquido === null) s = "sem-aprovada-no-espelho";
+    else if (aprovada.valor_liquido === r.valor_liquido && aprovada.moeda_liquido === r.moeda_liquido) s = "liquido-igual-aprovada";
+    else s = "liquido-difere-aprovada";
+    porSituacao[s]++;
+  }
+  const veredito = reversoes === 0 ? "aguardando" : porSituacao["liquido-igual-aprovada"] === reversoes ? "confirmada" : "conferir";
+  return { veredito, reversoes, porSituacao, testesIgnorados: todos.length - registros.length };
 }

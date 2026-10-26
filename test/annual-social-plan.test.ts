@@ -168,6 +168,12 @@ describe("prepAnnualSocial — o diretório do dia satisfaz os scripts da diári
     assert.notEqual(li.slots.d1, "2099-09-12T09:00");
     assert.equal(first.plannedSlots?.linkedin.d1, li.slots.d1);
     assert.equal(first.slots.d1, "2099-09-12T09:00");
+    // Facebook e X também saem pelo planner, cada um com o seu arquivo (#10819).
+    for (const platform of ["facebook", "x"]) {
+      const f = JSON.parse(readFileSync(join(first.dir, `_internal/social-slots-${platform}.json`), "utf8"));
+      assert.equal(first.plannedSlots?.[platform].d1, f.slots.d1);
+      assert.equal(f.decisions[0].account, platform === "x" ? "twitter:diaria" : "facebook:diaria");
+    }
     const path = join(first.dir, "_internal/06-social-published.json");
     writeFileSync(path, JSON.stringify({ posts: [{ status: "scheduled" }] }));
     const before = readFileSync(join(first.dir, "_internal/social-slots-linkedin.json"), "utf8");

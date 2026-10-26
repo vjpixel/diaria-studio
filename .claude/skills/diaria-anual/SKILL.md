@@ -10,15 +10,17 @@ horários antigos são preferências para posts NOVOS. Reusar o planner de
 `scripts/divulgacao-slot-planner.ts` (2h entre posts da mesma conta, picos
 07–09/12–14/18–21 BRT como palpite geral, sem dados por conta; janela 06–22).
 A grade lê os stores diários (incluindo Reels/Shorts e collab do Instagram)
-e GET /list do Worker (timeout 10s, fail-soft com aviso). Stage 5 segue
-fixo conforme #10305. Facebook direto e X/Buffer ficam fora desta grade e
-mantêm os horários de referência. Não reagendar posts já registrados.
+e GET /list do Worker, os agendados direto no Facebook (Graph API
+`scheduled_posts`, por página habilitada) e a fila do X no Buffer
+(`BUFFER_ACCESS_TOKEN`); cada fonte tem timeout de 10s e é fail-soft com
+aviso. Stage 5 segue fixo conforme #10305. Não reagendar posts já registrados.
 Mostrar os horários efetivos por conta e as premissas no gate; respeitar
 avisos de grade incompleta. Não afirmar que todas as redes saem juntas.
 
 `prep-annual-social.ts` gera `social-slots-linkedin.json`,
-`social-slots-instagram.json` e `social-slots-threads.json` em `_internal/`
-de cada lote, além do arquivo comum usado por Facebook/X. O `plan.json`
+`social-slots-instagram.json`, `social-slots-threads.json`,
+`social-slots-facebook.json` e `social-slots-x.json` em `_internal/` de cada
+lote, além do arquivo comum `social-slots.json` (horário de referência). O `plan.json`
 contém `plannedSlots` por rede; conferir o store contra esses horários.
 O preparo recusa lote que já tenha publicação/agendamento: retomar pelos
 arquivos existentes, sem refazer o plano. Os dias e a ordem da série continuam
@@ -330,13 +332,12 @@ Para cada lote do plano, na ordem — **cada publicador com `DIARIA_SOCIAL_SLOTS
 
 ```bash
 D=data/annual/$SLUG/social/$LOTE
-S=$D/_internal/social-slots.json
 npx tsx scripts/upload-images-public.ts --edition-dir $D/ --mode social
 DIARIA_SOCIAL_SLOTS_FILE=$D/_internal/social-slots-linkedin.json npx tsx scripts/publish-linkedin.ts  --edition-dir $D --schedule
-DIARIA_SOCIAL_SLOTS_FILE=$S npx tsx scripts/publish-facebook.ts  --edition-dir $D --schedule
+DIARIA_SOCIAL_SLOTS_FILE=$D/_internal/social-slots-facebook.json npx tsx scripts/publish-facebook.ts  --edition-dir $D --schedule
 DIARIA_SOCIAL_SLOTS_FILE=$D/_internal/social-slots-instagram.json npx tsx scripts/publish-instagram.ts --edition-dir $D --schedule
 DIARIA_SOCIAL_SLOTS_FILE=$D/_internal/social-slots-threads.json npx tsx scripts/publish-threads.ts   --edition-dir $D --schedule
-DIARIA_SOCIAL_SLOTS_FILE=$S npx tsx scripts/prep-twitter-posts.ts --edition-dir $D
+DIARIA_SOCIAL_SLOTS_FILE=$D/_internal/social-slots-x.json npx tsx scripts/prep-twitter-posts.ts --edition-dir $D
 ```
 
 Cada publicador imprime `[compute-schedule] slot explícito para …` por post; ausência dessa linha significa que o post caiu na grade da diária. Conferir no `06-social-published.json` de cada lote que o `scheduled_at` de cada post bate com o slot do `plan.json` (dia e hora) antes de relatar.

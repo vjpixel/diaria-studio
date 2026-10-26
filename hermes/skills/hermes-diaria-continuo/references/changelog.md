@@ -13,6 +13,11 @@ corrente no frontmatter (`version:`) e o comportamento ATUAL/operacional;
 este arquivo é o "porquê" de cada mudança — para quem investiga uma decisão
 passada, não para quem está rodando um tick.
 
+- 0.5.19 (26/10/2026): #10900 (decisão 261023b) — a PR do design aberta
+  pelo tick passa a ser revisada e mergeada pelo `continuo-pr-review.sh`, com
+  o mesmo gate do studio e o lock do design (`--repo vjpixel/diaria-design`).
+  O passo 4.2b deixa de registrar "aguardando merge humano"; o tick continua
+  sem mergear nada.
 - 0.5.18 (22/10/2026): #10900 (resíduo #10618) — o tick passa a varrer
   todos os repos de `issue_repos` (`fetch-open-issues-for-triage.ts --repos
   all`, que já devolve `execTrack`; antes era `gh issue list` cru no studio +

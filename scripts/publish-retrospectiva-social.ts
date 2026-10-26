@@ -292,7 +292,16 @@ export interface RunRetrospectivaSocialOptions {
    * (mesmos slots). Ausente = nenhuma checagem (só testes).
    */
   dailyEditionCheck?: (aammdd: string) => { dirExists: boolean; livePosts: number };
+  /**
+   * Canais cujo horário saiu do planner #10819 (a grade inclui o store da
+   * diária, então o espaçamento de 2 h já os separa dos posts diários): a
+   * edição diária no dia não barra estes. Ausente = LinkedIn/Instagram/Threads
+   * (o caller que não planeja Facebook/X mantém a recusa para eles).
+   */
+  plannedChannels?: ReadonlySet<RetrospectivaPostChannel>;
 }
+
+const DEFAULT_PLANNED_CHANNELS: ReadonlySet<RetrospectivaPostChannel> = new Set<RetrospectivaPostChannel>(["linkedin_pagina", "instagram", "threads"]);
 
 export interface RunRetrospectivaSocialResult {
   results: SocialPostResult[];
@@ -555,13 +564,15 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   }
   // Os posts saem nos MESMOS slots da diária (decisão do editor, #9508): o dia
   // não pode ter edição diária agendada — os dois disputariam o mesmo feed no
-  // mesmo minuto. Sábado/domingo não têm edição.
+  // mesmo minuto. Sábado/domingo não têm edição. Canal planejado pela grade
+  // #10819 (`plannedChannels`) já fica a 2 h dos posts diários e não é barrado.
   const day = schedule.d1.linkedin_pagina.slice(0, 10);
   const aammdd = `${day.slice(2, 4)}${day.slice(5, 7)}${day.slice(8, 10)}`;
   const weekend = [0, 6].includes(new Date(`${day}T12:00:00Z`).getUTCDay());
   const slotsLabel = RETROSPECTIVA_HISTORIAS.map((h) => schedule[h].linkedin_pagina.slice(11, 16)).join("/");
   const daily = o.dailyEditionCheck?.(aammdd) ?? { dirExists: false, livePosts: 0 };
-  if (daily.livePosts > 0 && active.some((u) => u.channel === "facebook" || u.channel === "x")) {
+  const planned = o.plannedChannels ?? DEFAULT_PLANNED_CHANNELS;
+  if (daily.livePosts > 0 && active.some((u) => !planned.has(u.channel))) {
     errors.push(
       `dia ${day}: a edição diária ${aammdd} tem ${daily.livePosts} post(s) social(is) agendado(s)/publicado(s) nos mesmos slots ` +
         `(${slotsLabel}) — escolha outro dia (--base-date ou --at; sábado/domingo não têm edição)`,
@@ -963,11 +974,18 @@ async function main(): Promise<void> {
   const resolveScheduledAts = async (active: readonly RetrospectivaPostKey[] = []): Promise<RetrospectivaPostSchedule> => {
     const s = resolveRetrospectivaPostScheduledAts(config, { at: values["at"], baseDate });
     const grid = await loadDivulgacaoGrid(config, [s.d1.linkedin_pagina.slice(0, 10)]);
+    // #10819: as 5 redes passam pelo planner. Facebook: a conta é a 1ª página
+    // habilitada e as outras entram em `alsoAccounts` (o post lógico sai no
+    // mesmo horário em todas, então o espaçamento vale contra a grade de cada).
+    const fbAccounts = facebookPages.map((p) => `facebook:${p.slug}`);
     const requests = active.flatMap((key) => {
       const { channel, historia } = splitPostKey(key);
-      const platform = channel === "linkedin_pagina" ? "linkedin" : channel;
-      return ["linkedin", "instagram", "threads"].includes(platform)
-        ? [{ key, account: `${platform}:diaria`, preferredAt: s[historia][channel] }] : [];
+      const preferredAt = s[historia][channel];
+      if (channel === "facebook") {
+        return fbAccounts.length ? [{ key, account: fbAccounts[0], alsoAccounts: fbAccounts.slice(1), preferredAt }] : [];
+      }
+      const account = channel === "linkedin_pagina" ? "linkedin:diaria" : channel === "x" ? "twitter:diaria" : `${channel}:diaria`;
+      return [{ key, account, preferredAt }];
     });
     for (const d of planDivulgacao(grid, requests)) {
       const { channel, historia } = splitPostKey(d.key as RetrospectivaPostKey);
@@ -984,7 +1002,7 @@ async function main(): Promise<void> {
       perfil = `(não resolvido: ${(e as Error).message})`;
     }
     console.log(
-      `Agenda (#9508) — dia ${s.d1.linkedin_pagina.slice(0, 10)}, LinkedIn/Instagram/Threads pelo planner #10819; Facebook/X nos slots de referência` +
+      `Agenda (#9508) — dia ${s.d1.linkedin_pagina.slice(0, 10)}, as 5 redes pelo planner #10819 (horário por rede)` +
         (values["at"]
           ? " — dia tirado do --at"
           : baseDate
@@ -1144,6 +1162,8 @@ async function main(): Promise<void> {
       cancelWorker: (key) => deleteFromWorkerQueue(workerUrl, workerToken, key, "publish-retrospectiva-social"),
     },
     verifyWorker: (p) => verifyWorkerDispatch(p, workerUrl, workerToken),
+    // #10819: `resolveScheduledAts` acima planeja as 5 redes contra a grade.
+    plannedChannels: new Set(RETROSPECTIVA_POST_CHANNELS),
     dailyEditionCheck: (aammdd) => {
       const dir = resolve(ROOT, editionDir(aammdd));
       const store = resolve(dir, "_internal", "06-social-published.json");

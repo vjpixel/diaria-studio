@@ -40,11 +40,15 @@
  * desligado), não gasto ausente: sai da comparação daquela fase e é nomeada
  * no veredito (#10993).
  *
- * ## Fora deste módulo (escopo remanescente do #8238)
+ * ## K10 e corte por `event.ts` (informativos)
  *
- * K10 (clique em >=1 das 10 primeiras recebidas) e o corte determinístico por
- * `event.ts` exigem ler eventos por assinante na ordem de entrega — o store
- * entrega aqui só os agregados (`total_received`/`total_unique_clicked`).
+ * K10 (clique em >=1 das 10 primeiras recebidas) precisa dos eventos na ordem
+ * de entrega, que o adaptador do store resume em agregados. Quem lê o store
+ * (`loadK10ByEmailFromStore`, `leitor-store.ts`) entrega um mapa por e-mail, e
+ * este módulo só conta e divide: custo por K10 sai ao lado, nunca decide
+ * (Emenda 17/09). Sem o mapa, as colunas de K10 saem "—". O corte por
+ * `event.ts` acontece antes, na leitura do store (`cac-report.ts --corte`);
+ * aqui ele vira só a frase de procedência da seção.
  */
 
 import { isLeitorV1 } from "./leitor.ts";
@@ -53,6 +57,7 @@ import { normalizePauseIntervals, type AdsTestPauseField } from "./ads-test-paus
 import { subscribersForChannel } from "./cac.ts";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 import type { SpendRow } from "./aquisicao-spend.ts";
+import { k10EmailKey, K10_PRIMEIRAS_RECEBIDAS, type K10Result } from "./leitor-store.ts";
 
 /** Mínimo de `leitor-v1` no total da coorte para o braço ter "sinal" (Emenda 17/09). */
 export const EMENDA_MIN_LEITORES = 3;
@@ -148,11 +153,17 @@ export interface EmendaPhaseStats {
   ativos: number;
   leitores: number;
   ativosCom20Recebidas: number;
+  /** Cadastros da fase com K10 (informativo). `null` = K10 não calculado. */
+  k10: number | null;
+  /** Cadastros da fase com >=10 recebidas (K10 já definitivo). `null` = K10 não calculado. */
+  cadastrosCom10Recebidas: number | null;
   /** `null` = gasto por fase não fornecido (`--gasto-fases`). */
   gastoBrl: number | null;
   /** `null` sem gasto da fase ou sem leitor na fase. */
   custoPorLeitor: number | null;
   custoPorCadastro: number | null;
+  /** Gasto da fase ÷ K10 (informativo). `null` sem gasto, sem K10 calculado ou com 0 K10. */
+  custoPorK10: number | null;
 }
 
 /** Um assinante da coorte, para o extrato reproduzível (`apuracao-{corte}-coorte.jsonl`). */
@@ -165,6 +176,8 @@ export interface EmendaCohortMember {
   total_received: number;
   total_unique_clicked: number;
   leitor_v1: boolean;
+  /** K10 do assinante. `null` = K10 não calculado nesta execução. */
+  k10: boolean | null;
 }
 
 export interface EmendaArmResult {
@@ -174,6 +187,9 @@ export interface EmendaArmResult {
   ativos: number;
   leitores: number;
   ativosCom20Recebidas: number;
+  /** Total de cadastros com K10 (informativo). `null` = K10 não calculado. */
+  k10: number | null;
+  cadastrosCom10Recebidas: number | null;
   /** Soma das linhas de `spend.csv` do braço com mês dentro da janela. `null` sem linha. */
   gastoTotalBrl: number | null;
   /** Meses de `spend.csv` do braço que ficaram FORA da janela (listados, nunca somados em silêncio). */
@@ -181,6 +197,8 @@ export interface EmendaArmResult {
   semSinal: boolean;
   custoPorLeitor: number | null;
   custoPorCadastro: number | null;
+  /** Gasto total ÷ K10 (informativo, nunca decide). */
+  custoPorK10: number | null;
   membros: EmendaCohortMember[];
 }
 
@@ -211,6 +229,7 @@ export function computeEmendaArm(
   runState: EmendaRunStateInput,
   braco: string,
   gastoPorFase: EmendaGastoPorFase | null = null,
+  k10ByEmail: ReadonlyMap<string, K10Result> | null = null,
 ): EmendaArmResult {
   const janelaMeses = monthsInWindow(runState.d0, runState.fim_janela);
   const linhas = spendRows.filter((r) => r.canal === braco);
@@ -229,6 +248,8 @@ export function computeEmendaArm(
     let ativos = 0;
     let leitores = 0;
     let com20 = 0;
+    let k10 = 0;
+    let com10 = 0;
     for (const s of coorte) {
       const received = s.stats?.total_received ?? 0;
       const clicked = s.stats?.total_unique_clicked ?? 0;
@@ -238,6 +259,9 @@ export function computeEmendaArm(
         if (received >= LEITOR_MIN_RECEIVED) com20 += 1;
       }
       if (leitor) leitores += 1;
+      const k = k10ByEmail?.get(k10EmailKey(s.email)) ?? null;
+      if (k?.k10) k10 += 1;
+      if (k && k.recebidasConsideradas >= K10_PRIMEIRAS_RECEBIDAS) com10 += 1;
       membros.push({
         braco,
         fase: w.id,
@@ -247,6 +271,7 @@ export function computeEmendaArm(
         total_received: received,
         total_unique_clicked: clicked,
         leitor_v1: leitor,
+        k10: k10ByEmail ? (k?.k10 ?? false) : null,
       });
     }
     const gastoFase = gastoPorFase?.[braco]?.[w.id];
@@ -260,9 +285,12 @@ export function computeEmendaArm(
       ativos,
       leitores,
       ativosCom20Recebidas: com20,
+      k10: k10ByEmail ? k10 : null,
+      cadastrosCom10Recebidas: k10ByEmail ? com10 : null,
       gastoBrl,
       custoPorLeitor: div(gastoBrl, leitores),
       custoPorCadastro: div(gastoBrl, coorte.length),
+      custoPorK10: k10ByEmail ? div(gastoBrl, k10) : null,
     };
   });
 
@@ -270,6 +298,7 @@ export function computeEmendaArm(
   const leitores = sum("leitores");
   const cadastros = sum("cadastros");
   const semSinal = leitores < EMENDA_MIN_LEITORES;
+  const k10Total = k10ByEmail ? fases.reduce((a, f) => a + (f.k10 ?? 0), 0) : null;
   return {
     braco,
     fases,
@@ -277,11 +306,14 @@ export function computeEmendaArm(
     ativos: sum("ativos"),
     leitores,
     ativosCom20Recebidas: sum("ativosCom20Recebidas"),
+    k10: k10Total,
+    cadastrosCom10Recebidas: k10ByEmail ? fases.reduce((a, f) => a + (f.cadastrosCom10Recebidas ?? 0), 0) : null,
     gastoTotalBrl,
     mesesForaDaJanela,
     semSinal,
     custoPorLeitor: semSinal ? null : div(gastoTotalBrl, leitores),
     custoPorCadastro: div(gastoTotalBrl, cadastros),
+    custoPorK10: k10Total != null ? div(gastoTotalBrl, k10Total) : null,
     membros,
   };
 }
@@ -446,6 +478,10 @@ export interface EmendaSection {
   arms: EmendaArmResult[];
   verdict: EmendaVerdict;
   gastoPorFaseFornecido: boolean;
+  /** `true` quando a leitura do store usou o corte por `event.ts` (`--corte`). */
+  corteEventos: boolean;
+  /** `true` quando o mapa de K10 foi fornecido (colunas de K10 preenchidas). */
+  k10Calculado: boolean;
 }
 
 /** Monta a seção inteira (todos os braços + veredito). @pure */
@@ -453,12 +489,21 @@ export function computeEmendaSection(
   subs: readonly BeehiivBackupSubscriber[],
   spendRows: readonly SpendRow[],
   runState: EmendaRunStateInput,
-  meta: { runStatePath: string; corte: string },
+  meta: { runStatePath: string; corte: string; corteEventos?: boolean },
   gastoPorFase: EmendaGastoPorFase | null = null,
+  k10ByEmail: ReadonlyMap<string, K10Result> | null = null,
 ): EmendaSection {
   if (gastoPorFase) validateEmendaGastoPorFaseKeys(gastoPorFase, runState);
-  const arms =runState.bracos.map((b) => computeEmendaArm(subs, spendRows, runState, b, gastoPorFase));
-  return { ...meta, arms, verdict: evaluateEmendaVerdict(arms), gastoPorFaseFornecido: gastoPorFase != null };
+  const arms = runState.bracos.map((b) => computeEmendaArm(subs, spendRows, runState, b, gastoPorFase, k10ByEmail));
+  return {
+    runStatePath: meta.runStatePath,
+    corte: meta.corte,
+    arms,
+    verdict: evaluateEmendaVerdict(arms),
+    gastoPorFaseFornecido: gastoPorFase != null,
+    corteEventos: meta.corteEventos === true,
+    k10Calculado: k10ByEmail != null,
+  };
 }
 
 function fmtBrl(n: number | null): string {
@@ -481,7 +526,11 @@ export function formatEmendaSectionMarkdown(s: EmendaSection): string[] {
   out.push("");
   out.push(
     `Coorte: cadastros no store unificado (sem contas internas/teste) com UTM do braço e cadastro dentro das fases de veiculação do \`${s.runStatePath}\`. ` +
-      `Rótulo/corte: ${s.corte} (o store é mutável — o extrato da coorte gravado junto com o relatório é o que torna a leitura reproduzível).`,
+      (s.corteEventos
+        ? `Corte determinístico: ${s.corte}, só eventos com \`ts\` até 23h59 BRT desse dia (entregas de edições posteriores ficam fora). ` +
+          `Limite: o Kit grava o \`ts\` do clique como o envio do broadcast, então clique tardio num broadcast anterior ao corte continua dentro; o status é o atual.`
+        : `Rótulo/corte: ${s.corte}, sem corte por \`event.ts\` (store no estado presente; \`--corte\` congela as entregas). ` +
+          `O extrato da coorte gravado junto com o relatório é o que torna a leitura reproduzível.`),
   );
   out.push(
     `Métrica que decide: custo por leitor-v1. Braço com menos de ${EMENDA_MIN_LEITORES} leitores sai "sem sinal". ` +
@@ -524,7 +573,31 @@ export function formatEmendaSectionMarkdown(s: EmendaSection): string[] {
   out.push("");
   out.push(`**Veredito:** ${v.texto}`);
   out.push("");
-  out.push("Não calculado nesta seção (escopo remanescente do #8238): custo por K10 e corte determinístico por timestamp de evento.");
+  out.push(`### Informativo: K10 (clique em >=1 das ${K10_PRIMEIRAS_RECEBIDAS} primeiras recebidas)`);
+  out.push("");
+  if (!s.k10Calculado) {
+    out.push("K10 não calculado nesta execução (sem leitura de eventos do store).");
+    return out;
+  }
+  out.push(
+    `Só informação, não decide (Emenda 17/09). Denominador: cadastros da coorte. "Com ${K10_PRIMEIRAS_RECEBIDAS} recebidas" = cadastros cujo K10 já é definitivo; ` +
+      `os demais ainda podem virar K10 numa edição futura.`,
+  );
+  out.push("");
+  out.push(`| Braço | Fase | Cadastros | K10 | Com ${K10_PRIMEIRAS_RECEBIDAS} recebidas | Gasto | Custo/K10 |`);
+  out.push("|---|---|---:|---:|---:|---:|---:|");
+  for (const a of s.arms) {
+    for (const f of a.fases) {
+      out.push(
+        `| ${a.braco} | ${f.label} | ${f.cadastros} | ${f.k10 ?? "—"} | ${f.cadastrosCom10Recebidas == null ? "—" : fmtPct(f.cadastrosCom10Recebidas, f.cadastros)} | ` +
+          `${fmtBrl(f.gastoBrl)} | ${fmtBrl(f.custoPorK10)} |`,
+      );
+    }
+    out.push(
+      `| **${a.braco}** | total | ${a.cadastros} | ${a.k10 ?? "—"} | ${a.cadastrosCom10Recebidas == null ? "—" : fmtPct(a.cadastrosCom10Recebidas, a.cadastros)} | ` +
+        `${fmtBrl(a.gastoTotalBrl)} | ${fmtBrl(a.custoPorK10)} |`,
+    );
+  }
   return out;
 }
 

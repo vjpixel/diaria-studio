@@ -45,12 +45,13 @@ describe("#10900 — hermes-diaria-continuo varre e reivindica issues de todos o
     assert.match(skill, /NUNCA implementar num worktree do studio/);
   });
 
-  it("teto de PR continuo/* no design e merge humano declarados", () => {
+  it("teto de PR continuo/* no design e merge pelo continuo-pr-review declarados (#10900)", () => {
     assert.match(skill, /gh pr list -R vjpixel\/diaria-design --state open/);
     // O prefixo continuo/ é filtrado no --jq, não confiado ao `head:` da busca.
     assert.match(skill, /select\(\.headRefName \|\s+startswith\("continuo\/"\)\)/);
     assert.doesNotMatch(skill, /--search "head:continuo\/" --json number --jq length/);
-    assert.match(skill, /merge dessa PR NÃO é automático/);
+    assert.match(skill, /merge dessa PR é o do `continuo-pr-review\.sh`/);
+    assert.match(skill, /O tick NUNCA\s+mergeia/);
   });
 
   it("nada da infra anterior foi removido (consumidor externo)", () => {
