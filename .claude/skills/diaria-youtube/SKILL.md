@@ -102,6 +102,8 @@ Mesmas flags do dry-run. Saída:
   - o YouTube marcou o vídeo como `failed`/`rejected`/`deleted` na releitura. O registro fica gravado, e a mensagem traz o motivo;
   - vídeo enviado sem conseguir gravar o registro.
 
+  E um caso em que nada foi enviado mas o editor decide (#11132): o canal tem um vídeo no dia BRT da edição sem a marca dela (sem AAMMDD, `utm_campaign` nem o título do D1 — pode ser uma live ou um vídeo avulso). O log traz o link e o título; nada é gravado e o link não vai para o D1. Mostrar ao editor e, conforme a resposta, rodar de novo com `--accept-period-match` (é o vídeo desta edição: registra com `source: "already-on-channel"` e põe o link no D1) ou com `--force` (não é: sobe o vídeo da edição).
+
 Com `--force`, o registro anterior vai para `previous_uploads` no novo.
 
 **Link do vídeo no D1 (#10772, #10858, #10960).** Depois do upload, o próprio `--upload` grava `_internal/05-video-url.txt` — o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook — **sempre** que o YouTube aceitou o vídeo, inclusive quando o estado relido ainda não deixa o leitor abrir: `draft` (privado, a trava da auditoria), `unknown`, ou `scheduled` com `publishAt` depois do horário do post do D1 do dia (rotação do #10305 incluída). Nesses casos o log traz `[aviso] vídeo ainda pode não abrir para o leitor: … O link será incluído no D1 mesmo assim` — o link já está no D1, e o editor precisa publicar (ou agendar antes do D1) o vídeo no Studio antes do horário do D1. Não grava só com `uploadStatus` `failed`/`rejected`/`deleted` (exit 1); uma URL diferente já gravada à mão nunca é sobrescrita. Para gravar o link à mão (arquivo ausente, ou outra URL), o editor usa:
