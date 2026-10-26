@@ -437,6 +437,12 @@ export interface EditionVideoCriteria {
   aammdd: string;
   /** Título que o upload usaria (o do D1). */
   title: string;
+  /**
+   * #11070: `short` procura o Short (vertical) da edição, não o horizontal: só
+   * vídeos marcados `#Shorts` contam, e o `utm_campaign` da descrição deixa de
+   * valer como marca (o horizontal da MESMA edição o carrega). Default `long`.
+   */
+  kind?: "long" | "short";
 }
 
 /** Como o vídeo existente foi reconhecido (do sinal mais forte ao mais fraco). */
@@ -487,6 +493,9 @@ function normalizeTitle(s: string): string {
  * #11132: `period` é o sinal fraco — qualquer vídeo não-Short do dia (live,
  * avulso) casa. O chamador (`publish-youtube.ts`) não o trata como prova: sem
  * confirmação do editor (`--accept-period-match`) não envia nem grava o link.
+ *
+ * #11070: com `kind: "short"` a busca é pelo Short (só vídeos `#Shorts`), com
+ * os mesmos três sinais, menos o `utm_campaign` (é a marca do horizontal).
  * Puro: sem rede.
  */
 export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVideoCriteria): ExistingEditionVideo | null {
@@ -508,6 +517,18 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
     const description = v.snippet?.description ?? "";
     const tags = v.snippet?.tags ?? [];
     const isShort = /#shorts?\b/i.test(`${title} ${description}`) || tags.some((t) => /^#?shorts?$/i.test(t));
+    if (criteria.kind === "short") {
+      // #11070: só o Short conta; utm_campaign é do horizontal, não marca o Short.
+      if (!isShort) continue;
+      let matchedBy: EditionVideoMatch | null = null;
+      if (token.test(title) || tags.some((t) => token.test(t))) matchedBy = "edition-tag";
+      else if (want && normalizeTitle(title) === want) matchedBy = "title";
+      else if (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt)) matchedBy = "period";
+      if (matchedBy) {
+        found.push({ videoId: v.id, url: `https://youtu.be/${v.id}`, title, matchedBy, publishedAt: v.snippet?.publishedAt ?? null, status: v.status ?? null });
+      }
+      continue;
+    }
     const campaigns = [...description.matchAll(campaignRe)].map((m) => m[1]);
     const otherEdition = campaigns.length > 0 && !campaigns.includes(aammdd);
     let matchedBy: EditionVideoMatch | null = null;

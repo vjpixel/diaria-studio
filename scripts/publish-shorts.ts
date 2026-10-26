@@ -65,10 +65,21 @@
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
  *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
- *   - `youtube_shorts` e `facebook_profile` (guiados) — o JSON traz título,
- *     descrição, horário e legenda; o skill `/diaria-shorts` executa no Chrome
- *     e grava com `--mark`. Sem comentário fixado: link em comentário de Short
- *     não é clicável (#10831).
+ *   - `youtube_shorts` (API, #11070) — Short pela YouTube Data API
+ *     (`publishYouTubeShort`, o mesmo upload do `publish-youtube.ts`), private
+ *     + `publishAt` no horário do vertical (o agendado vira público sozinho sem
+ *     a auditoria, medido em 23/10/2026), sem capa (`thumbnails.set` não vale
+ *     pra Short). Confere o canal antes (Short da edição já lá vira registro;
+ *     só pelo dia, pede `--mark` ou `--force-youtube`). Sem `YOUTUBE_*` ou com
+ *     `publishing.shorts.youtube_shorts_api: false`, volta a ser guiado.
+ *   - `facebook_profile` (guiado) — o JSON traz a legenda; o skill
+ *     `/diaria-shorts` executa no Chrome e grava com `--mark`. Sem comentário
+ *     fixado no Short: link em comentário de Short não é clicável (#10831).
+ *
+ * `linkedin_profile` pelo timer do 300 (#10982): com
+ * `publishing.shorts.linkedin_profile_via_timer: true`, só a rodada com
+ * `--linkedin-timer` (a de `scripts/shorts-linkedin-profile-timer.ts`) publica
+ * o vídeo do perfil; as outras o devolvem `skip_delegated`.
  *
  * Horário (#10831): o do vertical, `resolveShortTime` — teste de 15 dias úteis
  * alternando 06:30/08:00/12:00 BRT a partir de 261026 (`publishing.shorts.schedule`),
@@ -154,7 +165,25 @@ import {
   type WorkerInstagramAccount,
   type YouTubeShortMetadata,
 } from "./lib/diaria/short-video.ts";
-import { stripInlineMarkdown, youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
+import {
+  buildYouTubeInsertRequest,
+  buildYouTubeTags,
+  resolveYouTubeSchedule,
+  stripInlineMarkdown,
+  youtubeVideoFileName,
+  type YouTubeScheduleDecision,
+} from "./lib/diaria/youtube-video.ts";
+import {
+  ExistingEditionVideoError,
+  defaultYouTubeUploadDeps,
+  describeYouTubeState,
+  failedUploadStatus,
+  isIndeterminateUploadFailure,
+  missingYouTubeCredentials,
+  uploadYouTubeVideo,
+  type YouTubeUploadDeps,
+} from "./lib/diaria/youtube-upload.ts";
+import { resolveYouTubeState } from "./lib/publish-state.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS, downloadDriveFileById } from "./lib/drive-download.ts";
 import {
@@ -190,6 +219,14 @@ const GRAPH = "https://graph.facebook.com";
 const GRAPH_VIDEO = "https://graph-video.facebook.com";
 const RUPLOAD = "https://rupload.facebook.com";
 
+/**
+ * #10982: por que o `linkedin_profile` não sai nesta rodada quando o timer do
+ * 300 é o dono dele (`publishing.shorts.linkedin_profile_via_timer`).
+ */
+export const LINKEDIN_TIMER_DETAIL =
+  "sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, publishing.shorts.linkedin_profile_via_timer) no horário do vertical; " +
+  "para publicar desta máquina mesmo assim, rode com --linkedin-timer (confira antes que o 300 não publicou)";
+
 /** Destinos que só o skill faz (Chrome; o X pela Buffer MCP, #10772). */
 export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile", "linkedin_page_repost", "x"]);
 
@@ -211,7 +248,8 @@ export type ShortsPlanItem =
   | { destination: string; mode: "api"; action: "enqueue"; caption: string; scheduledAt: string; igAccount: WorkerInstagramAccount; idempotencyKey: string }
   | { destination: string; mode: "api" | "guided"; action: "skip_done" }
   /** `skip_late` (#10772 F4): o horário do destino passou além do teto de atraso — vira passo manual. */
-  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late"; detail: string }
+  /** `skip_delegated` (#10982): o destino sai por outro caminho (o `linkedin_profile` pelo timer do 300). */
+  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string }
   /** `at`: horário planejado do passo guiado (repost da página, #10772; Instagram manual acima do teto, slot da grade, #10933). Ausente = `shortTime`. */
   /**
    * `upload` (#10915): o arquivo a subir no passo guiado — no Instagram acima
@@ -276,6 +314,16 @@ export interface ShortsPlanInput {
   publicVideo?: { ready: true } | { ready: false; reason: string };
   /** #10772: URL do vídeo completo no YouTube (`_internal/05-video-url.txt`); null/ausente = link do canal. */
   youtubeVideoUrl?: string | null;
+  /**
+   * #11070: credencial do canal (`YOUTUBE_*`, `missingYouTubeCredentials`).
+   * Pronta → o Short sobe pela Data API; ausente ou não pronta → passo guiado.
+   */
+  youtubeApi?: { ready: true } | { ready: false; reason: string };
+  /**
+   * #10982: esta rodada é a do timer do 300 (`--linkedin-timer`). Com
+   * `linkedin_profile_via_timer` ligado, só ela publica o `linkedin_profile`.
+   */
+  linkedinTimer?: boolean;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   /**
    * #10893: duração do vertical (`mp4DurationSeconds`). Ausente = não medida;
@@ -419,6 +467,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     return `${slot.hhmm} BRT passou há ${Math.round(lateMs / 60_000)} min (teto ${MAX_FIRE_LATENESS_MS / 3_600_000} h)`;
   };
   const profileLate = lateFor("linkedin_profile");
+  // #10982: com o timer do 300 dono do vídeo do perfil, a rodada da skill não o publica.
+  const profileDelegated = cfg.linkedinProfileViaTimer && !input.linkedinTimer;
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -433,6 +483,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     const dest = destinations.find((d) => d.kind === "linkedin_profile");
     if (!dest) return "o vídeo do perfil (linkedin_profile) não está registrado nem nesta rodada";
     if (!publishable(dest)) return "o vídeo do perfil (linkedin_profile) não sai nesta rodada (sem credencial)";
+    if (profileDelegated) return `o vídeo do perfil (linkedin_profile) ${LINKEDIN_TIMER_DETAIL}`;
     if (profileLate) return `o vídeo do perfil (linkedin_profile) não sai nesta rodada (${profileLate})`;
     try {
       socialText("linkedin");
@@ -468,9 +519,30 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       return { destination: dest.id, mode: dest.mode, action: "skip_done" };
     }
     if (dest.kind === "youtube_shorts") {
-      return { destination: dest.id, mode: "guided", action: "guided", detail: "YouTube Studio no Chrome (API trava em private sem auditoria, #10659)" };
+      // #11070: Data API com publishAt (o horizontal provou em 23/10 que o
+      // agendado vira público sozinho, sem a auditoria). Sem credencial, guiado.
+      if (cfg.youtubeShortsApi && input.youtubeApi?.ready === true) {
+        const sch = input.forceNow ? null : resolveYouTubeSchedule(input.aammdd, input.now, shortTime.at);
+        const publishAt = sch?.mode === "scheduled" ? sch.publishAt : null;
+        premises.push(
+          publishAt
+            ? `youtube_shorts: Data API, agendado (private + publishAt ${publishAt}, ${time.hhmm} BRT do vertical) (#11070)`
+            : `youtube_shorts: Data API, público na hora (${input.forceNow ? "--now" : `${time.hhmm} BRT já passou ou falta menos de 15 min`}) (#11070)`,
+        );
+        return { destination: dest.id, mode: "api", action: "publish", caption: youtube.description, scheduledAt: publishAt, title: youtube.title };
+      }
+      const why = !cfg.youtubeShortsApi
+        ? "publishing.shorts.youtube_shorts_api = false"
+        : input.youtubeApi?.ready === false
+          ? input.youtubeApi.reason
+          : "credencial YOUTUBE_* não conferida";
+      if (cfg.youtubeShortsApi) warnings.push(`youtube_shorts: ${why} — vira passo guiado no YouTube Studio (#11070)`);
+      return { destination: dest.id, mode: "guided", action: "guided", detail: `YouTube Studio no Chrome (${why})` };
     }
     if (dest.kind === "linkedin_profile") {
+      if (profileDelegated) {
+        return { destination: dest.id, mode: "api", action: "skip_delegated", detail: LINKEDIN_TIMER_DETAIL };
+      }
       if (input.linkedinPersonal?.ready !== true) {
         const reason = input.linkedinPersonal?.ready === false ? input.linkedinPersonal.reason : "credencial LINKEDIN_PERSONAL_* não conferida";
         warnings.push(`linkedin_profile: ${reason}`);
@@ -1638,6 +1710,104 @@ export async function publishLinkedInProfileVideo(
   throw new Error(r.reason);
 }
 
+/** URL pública do Short (#11070) — o `youtu.be/{id}` também abre, mas o registro guarda a de Shorts. */
+export function youtubeShortUrl(videoId: string): string {
+  return `https://youtube.com/shorts/${videoId}`;
+}
+
+/**
+ * #11070: Short pela YouTube Data API — o mesmo `uploadYouTubeVideo` do
+ * horizontal (`publish-youtube.ts`), com `publishAt` no horário do vertical.
+ * Sem capa: `thumbnails.set` não vale pra Short (a capa é um frame escolhido no
+ * app). Antes de enviar confere o canal (`kind: "short"`): Short da edição já
+ * lá (subido à mão) vira registro, sem novo upload; reconhecido só pelo dia,
+ * lança pedindo confirmação (`--mark youtube_shorts=URL` ou `--force-youtube`).
+ * Falha a partir do PUT dos bytes devolve `send_unknown` (o vídeo PODE
+ * existir; a próxima rodada não re-envia). `onBeforeBytes` recebe o mesmo
+ * `send_unknown` pra gravar ANTES do PUT: um processo morto no meio do upload
+ * também não duplica.
+ */
+export async function publishYouTubeShort(input: {
+  deps: YouTubeUploadDeps;
+  env: Record<string, string | undefined>;
+  aammdd: string;
+  title: string;
+  description: string;
+  scheduledAt: string | null;
+  file: Buffer;
+  /** `--force-youtube`: pula a conferência do canal. */
+  force: boolean;
+  onBeforeBytes?: (entry: ShortPublishedEntry) => void;
+}): Promise<PublishOutcome> {
+  const missing = missingYouTubeCredentials(input.env);
+  if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
+  const schedule: YouTubeScheduleDecision = input.scheduledAt
+    ? { mode: "scheduled", publishAt: input.scheduledAt, privacyStatus: "private", premise: "" }
+    : { mode: "immediate", publishAt: null, privacyStatus: "public", premise: "" };
+  const request = buildYouTubeInsertRequest(
+    { title: input.title, description: input.description, tags: buildYouTubeTags() },
+    schedule,
+    { contentType: "video/mp4", contentLength: input.file.length },
+  );
+  const unknownEntry = (): ShortPublishedEntry => {
+    const at = input.deps.now().toISOString();
+    return { destination: "youtube_shorts", status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: input.scheduledAt, at };
+  };
+  let result;
+  try {
+    result = await uploadYouTubeVideo(input.deps, {
+      creds: {
+        clientId: (input.env.GOOGLE_CLIENT_ID ?? "").trim(),
+        clientSecret: (input.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+        refreshToken: (input.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+        channelId: (input.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+      },
+      request,
+      video: input.file,
+      contentType: "video/mp4",
+      thumbnail: null,
+      ...(input.force ? {} : { existingVideoCheck: { aammdd: input.aammdd, title: input.title, kind: "short" as const } }),
+      ...(input.onBeforeBytes ? { beforeVideoBytes: () => input.onBeforeBytes!(unknownEntry()) } : {}),
+    });
+  } catch (e) {
+    if (e instanceof ExistingEditionVideoError) {
+      const v = e.video;
+      if (v.matchedBy === "period") {
+        throw new Error(
+          `há um Short no canal no dia da edição sem a marca dela (${v.url}, "${v.title || "sem título"}") — nada enviado. ` +
+            "Se for o Short desta edição, registre com --mark youtube_shorts=URL; se não for, rode com --force-youtube",
+        );
+      }
+      const now = input.deps.now();
+      const state = v.status ? resolveYouTubeState({ status: v.status }, now) : "unknown";
+      const at = now.toISOString();
+      const base = { destination: "youtube_shorts", id: v.videoId, url: youtubeShortUrl(v.videoId), at };
+      const warn = `já no canal (reconhecido por ${v.matchedBy}), nada enviado`;
+      if (state === "published") return { entry: { ...base, status: "published", scheduled_at: null }, warnings: [warn] };
+      if (state === "scheduled") return { entry: { ...base, status: "scheduled", scheduled_at: v.status?.publishAt ?? null }, warnings: [warn] };
+      return { entry: { ...base, status: "send_unknown", scheduled_at: null }, warnings: [`${warn}; estado ${state} — confira no YouTube Studio`] };
+    }
+    if (!isIndeterminateUploadFailure(e)) throw e;
+    return {
+      entry: unknownEntry(),
+      warnings: [`upload em estado incerto (${(e as Error).message}) — o Short PODE ter sido criado; confira o canal e registre com --mark youtube_shorts=URL`],
+    };
+  }
+  const warnings: string[] = [];
+  if (result.rereadError) warnings.push(`releitura do estado falhou: ${result.rereadError}`);
+  const failed = failedUploadStatus(result.rereadStatus);
+  const base = { destination: "youtube_shorts", id: result.videoId, url: youtubeShortUrl(result.videoId), at: result.uploadedAt };
+  if (failed) {
+    warnings.push(`o YouTube marcou uploadStatus=${failed} — o Short não vai ao ar; confira no Studio (registro mantido para não re-enviar)`);
+    return { entry: { ...base, status: "send_unknown", scheduled_at: null }, warnings };
+  }
+  if (result.state !== "published" && result.state !== "scheduled") warnings.push(`estado relido ${result.state}: ${describeYouTubeState(result.state)}`);
+  return {
+    entry: input.scheduledAt ? { ...base, status: "scheduled", scheduled_at: input.scheduledAt } : { ...base, status: "published", scheduled_at: null },
+    ...(warnings.length ? { warnings } : {}),
+  };
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 function readPublished(path: string, aammdd: string): ShortsPublishedFile {
@@ -1864,13 +2034,14 @@ function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: 
 
 const USAGE =
   "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
+  "                       [--linkedin-timer] [--force-youtube]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "force-youtube"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -2006,6 +2177,8 @@ async function main(): Promise<number> {
   // #11122: Threads pessoal (fail-soft até o token existir, #10772/#11077).
   const threadsCreds = readThreadsPersonalCreds(process.env);
   const ytVideo = readD1VideoUrl(dir);
+  // #11070: Short pela Data API com a credencial do horizontal (YOUTUBE_*, youtube-oauth-setup.ts).
+  const ytMissing = missingYouTubeCredentials(process.env);
   if (ytVideo.warning) console.error(`[aviso] ${ytVideo.warning}`);
   const instagramQueue = resolveInstagramQueueReadiness({
     authorPage: shortsCfg.instagramAuthorPage,
@@ -2033,6 +2206,8 @@ async function main(): Promise<number> {
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
       publicVideo: r2.ready ? { ready: true } : { ready: false, reason: `falta ${r2.missing.join(", ")}` },
       youtubeVideoUrl: ytVideo.url,
+      youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
+      linkedinTimer: flags.has("linkedin-timer"),
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
       videoDurationSeconds: duration,
@@ -2110,6 +2285,22 @@ async function main(): Promise<number> {
           item.caption,
           item.title ?? plan.youtube.title,
         );
+      } else if (item.destination === "youtube_shorts") {
+        outcome = await publishYouTubeShort({
+          deps: defaultYouTubeUploadDeps,
+          env: process.env,
+          aammdd,
+          title: item.title ?? plan.youtube.title,
+          description: item.caption,
+          scheduledAt: item.scheduledAt,
+          file,
+          force: flags.has("force-youtube"),
+          // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
+          onBeforeBytes: (marker) => {
+            published = upsertShortEntry(published, marker);
+            writePublished(publishedPath, published);
+          },
+        });
       } else if (item.destination === THREADS_PROFILE_DESTINATION) {
         if (!threadsCreds.ready) throw new Error(threadsCreds.reason); // o plano não marca publish sem credencial
         outcome = await publishThreadsProfileVideo({
