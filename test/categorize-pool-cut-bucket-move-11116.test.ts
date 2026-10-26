@@ -109,6 +109,20 @@ describe("#11116 (261026): duas releases do mesmo repo GitHub → só a mais nov
     assert.deepEqual(dropped, []);
   });
 
+  it("tag com `%` malformado não lança (decodeURIComponent) e o item fica", () => {
+    const bad = { url: "https://github.com/anthropics/claude-code/releases/tag/v1%2", title: "v1%2" } as Article;
+    const { kept, dropped } = collapseRepeatedGithubReleases([r310, bad]);
+    assert.deepEqual(kept.map((a) => a.url), [r310.url, bad.url]);
+    assert.deepEqual(dropped, []);
+    const summary = "Claude Code release notes for the AI coding agent";
+    assert.doesNotThrow(() => categorizeArticles([{ ...bad, summary }, { ...r310, summary }]));
+  });
+
+  it("tag percent-encoded válida segue comparável", () => {
+    const enc = { url: "https://github.com/anthropics/claude-code/releases/tag/v2%2E1%2E400", title: "v2.1.400" } as Article;
+    assert.deepEqual(collapseRepeatedGithubReleases([r310, enc]).kept.map((a) => a.url), [enc.url]);
+  });
+
   it("categorizeArticles aplica o colapso e reporta o descarte no onEvent", () => {
     const events: unknown[] = [];
     const summary = "Claude Code release notes for the AI coding agent";

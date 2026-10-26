@@ -207,7 +207,15 @@ export interface CategorizeOptions {
 const GITHUB_RELEASE_TAG_RE = /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+)\/releases\/tag\/([^/?#]+)/i;
 
 function parseReleaseVersion(tag: string): number[] | null {
-  const m = decodeURIComponent(tag).match(/^v?(\d+(?:\.\d+)*)$/i);
+  // `%` malformado (ex.: "v1%2") faz decodeURIComponent lançar URIError —
+  // sem o fallback derrubaria categorize.ts inteiro (e o Stage 1). Tag crua.
+  let decoded = tag;
+  try {
+    decoded = decodeURIComponent(tag);
+  } catch {
+    /* tag não decodificável: segue com a string crua */
+  }
+  const m = decoded.match(/^v?(\d+(?:\.\d+)*)$/i);
   return m ? m[1].split(".").map(Number) : null;
 }
 
