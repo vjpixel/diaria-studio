@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Fri, 23 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Mon, 26 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Hackers usam Claude e Grok contra bancos</title>
+      <link>https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos</guid>
+      <pubDate>Mon, 26 Oct 2026 09:00:00 GMT</pubDate>
+      <description>JPMorgan e Wells Fargo correm para conter agentes | Agentes da OpenAI podiam desligar o próprio vigia</description>
+    </item>
     <item>
       <title>Falhas no PHP colocam a internet em alerta global</title>
       <link>https://diar.ia.br/p/falhas-no-php-colocam-a-internet-em-alerta-global</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome</guid>
       <pubDate>Fri, 14 Aug 2026 09:00:00 GMT</pubDate>
       <description>Gemini 3.7 Flash chega 3 semanas após o 3.6 | GPT-5.6 Sol roda 14× mais rápido na OpenAI</description>
-    </item>
-    <item>
-      <title>Amodei previu colapso do emprego. Não veio</title>
-      <link>https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/amodei-previu-colapso-do-emprego-nao-veio</guid>
-      <pubDate>Thu, 13 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Marca d&apos;água do Claude falha no mundo real | Claude avança em problema da hipótese de Riemann</description>
     </item>
   </channel>
 </rss>

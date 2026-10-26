@@ -12,7 +12,9 @@
  * `draft-ci-vermelho` subindo) nas ondas com `cap_hit: true` = voltar a 6.
  *
  * Corte natural pra 1ª leitura (ver #8496): rondas a partir de 260920
- * (primeiras com `waves`) — `--since 260920`.
+ * (primeiras com `waves`) — `--since 260920`. Para julgar o teto 10 sozinho
+ * (#10821): `--since 261023` — a 261022 gravou 2 ondas com `cap: 6` antes da
+ * troca e `--since` só compara o AAMMDD, então 261022b (já toda no 10) cai junto.
  *
  * **Resumo de UMA rodada: `--plan` (#11164).** `--since AAMMDD` é corte
  * inferior, não igualdade — pega toda rodada daquele dia em diante, inclusive

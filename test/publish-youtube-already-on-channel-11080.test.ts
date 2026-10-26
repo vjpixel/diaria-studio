@@ -9,6 +9,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchEditionVideo, editionDayWindowMs, YOUTUBE_PUBLISHED_FILE, type YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
@@ -78,7 +79,7 @@ function plan() {
   });
 }
 
-async function run(deps: YouTubeUploadDeps, p = plan(), force = false, acceptPeriodMatch = false) {
+async function run(deps: YouTubeUploadDeps, p = plan(), force = false, acceptPeriodMatch: boolean | string = false) {
   const logs: string[] = [];
   const outcome = await runYouTubeUpload(deps, {
     plan: p,
@@ -102,7 +103,7 @@ const manualVideo = (over: Record<string, unknown> = {}) => ({
 describe("--upload com o vídeo da edição já no canal (#11080)", () => {
   it("vídeo manual agendado para o dia da edição, aceito pelo editor (--accept-period-match): não sobe, reconhece e grava o registro", async () => {
     const { deps, calls } = channelDeps([manualVideo()]);
-    const { outcome, logs } = await run(deps, plan(), false, true);
+    const { outcome, logs } = await run(deps, plan(), false, MANUAL_ID);
     assert.equal(outcome.exitCode, 0, logs.join("\n"));
     assert.equal(outcome.skipped, true);
     assert.equal(outcome.record?.videoId, MANUAL_ID);
@@ -120,9 +121,46 @@ describe("--upload com o vídeo da edição já no canal (#11080)", () => {
     assert.equal(readFileSync(join(dir, "_internal/05-video-url.txt"), "utf8").trim(), `https://youtu.be/${MANUAL_ID}`);
   });
 
+  it("#11147: lista todos e aceita o ID escolhido mesmo com ordem diferente", async () => {
+    const live = manualVideo({ id: "liveVideo02" });
+    const first = channelDeps([live, manualVideo()]);
+    const refused = await run(first.deps, plan(), false, true);
+    assert.equal(refused.outcome.exitCode, 1);
+    for (const id of ["liveVideo02", MANUAL_ID]) assert.ok(refused.logs.join("\n").includes(id));
+    assert.equal(existsSync(join(dir, YOUTUBE_PUBLISHED_FILE)), false);
+    const second = channelDeps([manualVideo(), live]);
+    const accepted = await run(second.deps, plan(), false, "liveVideo02");
+    assert.equal(accepted.outcome.record?.videoId, "liveVideo02");
+    assert.equal(readFileSync(join(dir, "_internal/05-video-url.txt"), "utf8").trim(), "https://youtu.be/liveVideo02");
+    assert.equal(second.calls.some((c) => c.includes("uploadType=resumable") || c.startsWith("PUT")), false);
+  });
+
+  it("#11147: ID ausente ou inválido não aceita outro candidato nem inicia upload", async () => {
+    for (const videos of [[manualVideo()], []]) {
+      const { deps, calls } = channelDeps(videos);
+      const { outcome } = await run(deps, plan(), false, "missingVideo");
+      assert.equal(outcome.exitCode, 1);
+      assert.equal(existsSync(join(dir, YOUTUBE_PUBLISHED_FILE)), false);
+      assert.equal(existsSync(join(dir, "_internal/05-video-url.txt")), false);
+      assert.equal(calls.some((c) => c.includes("uploadType=resumable") || c.startsWith("PUT")), false);
+    }
+  });
+
+  it("#11147: CLI exige VIDEO_ID e mantém exclusão com --force/dry-run", () => {
+    for (const flags of [
+      ["--upload", "--accept-period-match"],
+      ["--upload", "--accept-period-match", MANUAL_ID, "--force"],
+      ["--dry-run", "--accept-period-match", MANUAL_ID],
+    ]) {
+      const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/publish-youtube.ts", "261022", ...flags], { encoding: "utf8" });
+      assert.equal(result.status, 2, result.stderr);
+      assert.ok(result.stderr.includes("exige VIDEO_ID"), result.stderr);
+    }
+  });
+
   it("segunda rodada: o registro gravado faz o --upload recusar sem nem chamar a API", async () => {
     const first = channelDeps([manualVideo()]);
-    await run(first.deps, plan(), false, true);
+    await run(first.deps, plan(), false, MANUAL_ID);
     const second = channelDeps([manualVideo()]);
     const { outcome } = await run(second.deps);
     assert.equal(outcome.exitCode, 0);

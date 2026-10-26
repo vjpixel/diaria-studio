@@ -24,8 +24,10 @@ O recorte usa `birefnet-portrait`, CPU, e cache `.venv-rembg/models/`;
 a primeira execução baixa o modelo e requer rede. Falha de download/importação
 ou versão divergente aborta com erro, sem substituição de modelo ou imagem.
 
-`gen-youtube-thumb.ts` valida esse ambiente antes da capa horizontal e
-recusa retrato sem transparência. O Short usa um frame via ffmpeg, sem rembg;
+Quem valida esse ambiente é o passo de recorte (`--input/--output` roda o
+`--check` antes). `gen-youtube-thumb.ts` só consome o PNG já recortado, não
+exige o venv (#11162: a capa horizontal sai em qualquer máquina com o retrato
+em mãos) e recusa retrato sem transparência. O Short usa um frame via ffmpeg, sem rembg;
 seu fluxo permanece independente. Composição/testes unitários não requerem
 instalar Python ou baixar modelos. A validação real de DLLs/modelo e um recorte
 de ponta a ponta devem ser feitos no Neo após o setup.

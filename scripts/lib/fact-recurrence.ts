@@ -19,6 +19,20 @@ export const FACT_RECURRENCE_THRESHOLD = 1;
 export interface FactItem { title: string; summary?: string; url: string; kind?: string }
 const normalize = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 const STOP = new Set(['ia', 'ai', 'the', 'uma', 'para', 'como', 'com', 'new', 'novo', 'nova', 'google', 'openai', 'meta', 'anthropic', 'claude', 'chatgpt', 'eua', 'usa']);
+/**
+ * #11163: siglas genéricas do vocabulário de tecnologia. Toda em maiúsculas,
+ * cada uma valeria 2 pontos (`isStrong`) e atingiria sozinha
+ * `FACT_RECURRENCE_MIN_WEIGHT` — "API" num item de segurança e "API" num
+ * título de incidente de 20 dias atrás não são o mesmo fato. Não identificam
+ * o fato, então não contam como entidade (nem forte, nem comum). Comparadas
+ * pela forma normalizada (minúscula, sem acento).
+ */
+const GENERIC_ACRONYMS = new Set([
+  'api', 'apis', 'sdk', 'sdks', 'app', 'apps', 'saas', 'url', 'urls', 'http', 'https', 'html', 'json', 'pdf', 'faq',
+  'ceo', 'ceos', 'cto', 'cfo', 'coo', 'ong', 'ongs',
+  'llm', 'llms', 'gpu', 'gpus', 'cpu', 'cpus', 'tpu', 'tpus', 'npu', 'ram', 'ssd', 'usb', 'vpn', 'dns', 'sms', 'agi',
+  'aws',
+]);
 const ENTITY_RE = /\b[A-Z][A-Za-z0-9-]{2,}\b/g;
 /** Sigla toda em maiúsculas (PHP, CVE) ou token com dígito (GPT-5, CVE-2026). */
 function isStrong(raw: string): boolean {
@@ -34,7 +48,7 @@ function entities(s: string, skipSentenceStart = false): Map<string, boolean> {
       const raw = m[0];
       if (m.index === start && !isStrong(raw)) continue;
       const key = normalize(raw);
-      if (STOP.has(key) || incident(key)) continue;
+      if (STOP.has(key) || GENERIC_ACRONYMS.has(key) || incident(key)) continue;
       out.set(key, (out.get(key) ?? false) || isStrong(raw));
     }
   }

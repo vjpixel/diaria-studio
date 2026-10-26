@@ -74,3 +74,18 @@ test('#11109: 2 entidades comuns ou sigla/termo com dígito ainda avisam', () =>
   const pastCve = '## 2026-10-21 — "Falha CVE-2026-1234 expõe servidores"\n';
   assert.equal(findFactRecurrences([{ title: 'CVE-2026-1234 volta a ser explorada em ataque', url: 'https://x.com/cve' }], pastCve, '261026').length, 1);
 });
+
+test('#11163: sigla genérica (API, CEO, LLM, AWS, GPU, SDK) sozinha não dispara o aviso', () => {
+  // Cenário da issue: item de segurança cita "API"; título de 20 dias atrás tem termo de incidente e "API".
+  const pastApi = '## 2026-10-06 — "Falha em API expõe dados de clientes"\nTemas cobertos:\n- Ataque a API de bancos\n';
+  assert.deepEqual(findFactRecurrences([{ title: 'Pesquisadores acham vulnerabilidade na API do Copilot', url: 'https://x.com/copilot' }], pastApi, '261026'), []);
+  for (const sigla of ['CEO', 'LLM', 'AWS', 'GPU', 'SDK', 'APIs']) {
+    const past = `## 2026-10-06 — "Ataque mira ${sigla} de empresas"\n`;
+    assert.deepEqual(findFactRecurrences([{ title: `Nova falha atinge ${sigla} de startups`, url: `https://x.com/${sigla}` }], past, '261026'), [], sigla);
+  }
+  // Sigla distintiva junto com a genérica continua avisando, e a genérica não entra em shared_entities.
+  const pastPhp = '## 2026-10-23 — "Falha no PHP afeta API de tribunais"\n';
+  const w = findFactRecurrences([{ title: 'Nova falha no PHP derruba API de bancos', url: 'https://x.com/php' }], pastPhp, '261026');
+  assert.equal(w.length, 1);
+  assert.deepEqual(w[0].shared_entities, ['php']);
+});
