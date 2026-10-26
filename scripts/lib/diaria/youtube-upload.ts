@@ -477,11 +477,18 @@ function normalizeTitle(s: string): string {
  * AAMMDD como token no título/tags; (2) título igual ao do D1; (3) período —
  * `publishAt` ou `publishedAt` dentro do dia BRT da edição. Shorts (vertical,
  * `/diaria-shorts`) ficam de fora do sinal de período: são OUTRO vídeo.
+ *
+ * #11103: (a) descrição com `utm_campaign=` de OUTRA edição (e nenhum da
+ * nossa) prova que o vídeo é daquela edição — título e período deixam de
+ * valer (ex.: o vídeo de ontem que virou público hoje); (b) vídeo com
+ * `uploadStatus` falho (`failedUploadStatus`) nunca é reconhecido — não vai
+ * ao ar, então o upload normal segue em vez de gravar um link morto no D1.
  * Puro: sem rede.
  */
 export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVideoCriteria): ExistingEditionVideo | null {
   const { aammdd } = criteria;
   const token = new RegExp(`(?<!\\d)${aammdd}(?!\\d)`);
+  const campaignRe = /utm_campaign=(\d{6})(?!\d)/g;
   const want = normalizeTitle(criteria.title);
   const { startMs, endMs } = editionDayWindowMs(aammdd);
   const inDay = (iso?: string | null): boolean => {
@@ -492,13 +499,18 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
   const found: ExistingEditionVideo[] = [];
   for (const v of videos) {
     if (!v.id) continue;
+    if (failedUploadStatus(v.status ?? null)) continue;
     const title = v.snippet?.title ?? "";
     const description = v.snippet?.description ?? "";
     const tags = v.snippet?.tags ?? [];
     const isShort = /#shorts?\b/i.test(`${title} ${description}`) || tags.some((t) => /^#?shorts?$/i.test(t));
+    const campaigns = [...description.matchAll(campaignRe)].map((m) => m[1]);
+    const otherEdition = campaigns.length > 0 && !campaigns.includes(aammdd);
     let matchedBy: EditionVideoMatch | null = null;
-    if (description.includes(`utm_campaign=${aammdd}`) || token.test(title) || tags.some((t) => token.test(t))) {
+    if (campaigns.includes(aammdd) || token.test(title) || tags.some((t) => token.test(t))) {
       matchedBy = "edition-tag";
+    } else if (otherEdition) {
+      matchedBy = null;
     } else if (want && normalizeTitle(title) === want) {
       matchedBy = "title";
     } else if (!isShort && (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt))) {
