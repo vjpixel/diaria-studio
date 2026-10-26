@@ -59,14 +59,15 @@ export interface StackTitleInput {
  * Pure: itens que vão ao tradutor — os sem nenhum sinal de português no título
  * (acento ou palavra funcional). Título já em português (inclusive o que o
  * editor reescreveu à mão) não é enviado, então nunca é "melhorado" pela LLM.
- * Uma URL aparece uma vez só.
+ * Título que o editor confirmou como está (`titleReviewed: true`, #11161) também
+ * não vai. Uma URL aparece uma vez só.
  */
 export function stackTitleTranslationCandidates(sel: SelectionSections): StackTitleInput[] {
   const seen = new Set<string>();
   const out: StackTitleInput[] = [];
   for (const section of SECTIONS) {
     for (const it of sel[section]) {
-      if (seen.has(it.url) || hasPortugueseSignal(it.title)) continue;
+      if (seen.has(it.url) || it.titleReviewed === true || hasPortugueseSignal(it.title)) continue;
       seen.add(it.url);
       out.push({ url: it.url, title: it.title, body: it.body });
     }

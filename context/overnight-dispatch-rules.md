@@ -713,7 +713,9 @@ git worktree add -b <branch> .claude/worktrees/<nome> origin/master
 seguido de dispatch normal (`Agent`, sem `isolation`) instruindo o subagente
 a rodar todo `git`/build/teste com cwd dentro de
 `.claude/worktrees/<nome>` e **proibindo explicitamente** que ele toque no
-checkout principal compartilhado.
+checkout principal compartilhado. Se nem o `git worktree add` à mão serve
+(a plataforma não cria worktree nenhum), ver o item 33: clone próprio por
+unidade.
 
 **O que NÃO fazer:** não rodar `git worktree prune` nem qualquer reparo
 agressivo (recriar `.git`, `git worktree remove --force` de entradas
@@ -1124,3 +1126,76 @@ threads resolvidas com `owner=vjpixel name=diaria-design` (item 11), guard de
 (o lock é POR REPO: não serializa com o studio), o merge com `-R
 vjpixel/diaria-design --squash` e a confirmação com `gh pr view P -R
 vjpixel/diaria-design --json state,mergedAt`.
+
+## 33. Plataforma não cria worktree nenhum: clone próprio por unidade (#11166)
+
+**Sintoma (rodada 261025b, Zenbook/Windows):** todo dispatch com `isolation:
+"worktree"` falha com `Could not read the repository git config to
+neutralize filter drivers`, embora `git config --list` rode normalmente no
+checkout. É outro caso do item 22: a recusa vem do harness, fora deste repo,
+e o `.git` não está quebrado. Não tentar reparar o checkout compartilhado.
+
+**Ordem do contorno (coordenador):**
+1. Primeiro o contorno do item 22: `git worktree add -b {branch}
+   .claude/worktrees/{nome} origin/master` à mão e dispatch sem `isolation`.
+   Se o `git worktree add` funciona, para aqui.
+2. Se nem isso serve, cada unidade ganha um **clone próprio**, criado pelo
+   coordenador antes do dispatch:
+   - **Caminho curto e fora do scratchpad.** O scratchpad do Windows fica
+     fundo em `%TEMP%` e o `git clone` estoura `Filename too long` em alguns
+     arquivos do repo. Use algo como `C:/dw/{N}` no Windows ou `~/dw/{N}` no
+     Unix, com `{N}` = issue da unidade (lote: a menor). Nos comandos de
+     shell (Git Bash, o shell do Claude Code no Windows) o caminho vai com
+     barra normal: sem aspas, `C:\dw\123` vira `C:dw123`. Barra invertida
+     só dentro dos comandos de `cmd` (`mklink`/`rmdir`, abaixo).
+   - **`core.longpaths` já no clone:** `git clone -c core.longpaths=true
+     https://github.com/vjpixel/diaria-studio.git C:/dw/{N}`. Clonar do
+     GitHub, não do checkout local: um clone do caminho local deixa `origin`
+     apontando para o checkout compartilhado, e o `git push` do subagente
+     iria para lá em vez do GitHub. Se clonar do local para poupar banda,
+     rodar logo depois `git -C C:/dw/{N} remote set-url origin
+     https://github.com/vjpixel/diaria-studio.git` e conferir com `git
+     remote -v`.
+   - **Branch:** `git -C C:/dw/{N} checkout -b {branch} origin/master`, com a
+     convenção do item 2.
+   - **`node_modules`:** `npm ci` dentro do clone, como no item 3. Nunca
+     symlink/junction de `node_modules` para o checkout principal.
+   - **`data/` só quando a unidade roda eval de agent (#8144)** ou outro
+     script que leia `data/` de verdade: junction para o `data/` real
+     (`cmd //c "mklink /J C:\dw\{N}\data {data real}"` a partir do Git
+     Bash no Windows, `ln -s` no Unix). `mklink` é comando interno do
+     `cmd`: chamado direto no bash dá `command not found`.
+     Sem eval, sem junction: menos superfície para um `rm` errado alcançar
+     dado de produção.
+3. Dispatch sem `isolation`, com o caminho do clone como cwd explícito de
+   todo `git`/build/teste e a proibição explícita de tocar o checkout
+   principal (mesmo texto do item 22). As regras 1-14 valem iguais no
+   clone.
+
+**`gh pr create` recusado pelo hook de typecheck no clone recém-instalado:**
+observado na 261025b, causa não confirmada. O próprio
+`.claude/hooks/block-pr-create-tsc-failure.mjs` trata timeout do `tsc` (60s)
+como infra e não bloqueia; a recusa provavelmente veio do timeout do hook em
+`.claude/settings.json` (90s), com o 1º `tsc` frio, ou de outro caminho. O
+remédio vale nos dois casos: rodar `npx tsc --noEmit` uma vez antes do `gh
+pr create` aquece o cache; se a recusa sem erro de tipo se repetir, repetir
+o `gh pr create` resolve. Recusa com
+erro de tipo de verdade não é esse caso: corrigir o erro.
+
+**Limpeza é do coordenador, nunca do subagente.** Na 261025b o `rm -rf`
+de um clone quebrado foi negado ao subagente, e os clones ficaram soltos em
+disco. `cleanup-merged-worktrees.ts` não enxerga clones (não são
+worktrees deste repo), então o coordenador anota no `plan.json` o caminho do
+clone de cada unidade (nota da issue) e limpa depois que a PR da unidade foi
+mergeada ou fechada:
+1. **Primeiro desfazer a junction de `data/`, se houver**, sem seguir o
+   alvo: `cmd //c "rmdir C:\dw\{N}\data"` a partir do Git Bash (remove só
+   a junction) ou `rm
+   ~/dw/{N}/data` no Unix (sem `-r`, remove só o symlink). Um `rm -rf` no
+   clone com a junction ainda lá pode descer nela e apagar o `data/` real.
+2. Conferir que a junction sumiu (`ls -la C:/dw/{N}` / `ls -la ~/dw/{N}`).
+3. Só então remover o diretório do clone.
+
+Clone de PR ainda aberta no fim da rodada fica em disco e entra no relatório
+com o caminho, para a próxima rodada ou o editor limparem. Helper que crie e
+limpe esses clones: fora do escopo desta regra, que é só o procedimento.

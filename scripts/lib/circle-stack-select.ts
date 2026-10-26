@@ -277,3 +277,32 @@ export function circleStackSelectionViolations(
   }
   return out;
 }
+
+/**
+ * Pure (#11161): títulos sem nenhum sinal de português que o editor ainda não
+ * confirmou (`titleReviewed: true`). Cobre o buraco do `looksEnglishTitle`:
+ * título sem palavra funcional do inglês ("Codex Launch Notes") passa por
+ * aquele guard, e uma seleção gravada com a tradução falhando ou com
+ * `--no-translate` sairia em inglês no `--publish` seguinte. Item já acusado
+ * por `circleStackSelectionViolations` (título com cara de inglês) não se
+ * repete aqui. Uma linha por URL.
+ */
+export function circleStackUnreviewedTitles(
+  sel: Pick<CircleStackSelection, "destaques" | "lancamentos" | "useMelhor" | "radar">,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const section of ["destaques", "lancamentos", "useMelhor", "radar"] as const) {
+    for (const it of sel[section]) {
+      if (seen.has(it.url)) continue;
+      if (it.titleReviewed === true || hasPortugueseSignal(it.title) || looksEnglishTitle(it.title)) continue;
+      seen.add(it.url);
+      out.push(
+        `${SECTION_LABEL[section]}: título sem sinal de português "${it.title}" — reescreva o campo title em português ` +
+          "na seleção, rode --translate-titles (sem --publish), ou, se for só nome de produto, marque " +
+          '"titleReviewed": true no item (#11161)',
+      );
+    }
+  }
+  return out;
+}

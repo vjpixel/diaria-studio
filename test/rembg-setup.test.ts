@@ -3,15 +3,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
-it("capa horizontal aborta antes de ler insumos quando rembg está ausente", {
+// #11162: a capa horizontal só consome o --portrait já recortado, então não
+// pode exigir o venv do rembg (que só existe no Neo). Sem o venv, o script
+// segue até validar os insumos — aqui chega no "não existe" do retrato.
+it("capa horizontal não exige o venv do rembg para consumir o retrato já recortado", {
   skip: existsSync(new URL("../.venv-rembg/Scripts/python.exe", import.meta.url)),
 }, () => {
   const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/gen-youtube-thumb.ts",
-    "261025", "--hook", "IA ladra?", "--portrait", "inexistente.png"], { encoding: "utf8" });
+    "261025", "--hook", "IA ladra?", "--portrait", "inexistente.png",
+    "--background", "inexistente-fundo.jpg"], { encoding: "utf8" });
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /rembg ausente ou inválido/);
-  assert.match(result.stderr, /py -3\.11 scripts\/setup-rembg\.py/);
-  assert.doesNotMatch(result.stderr, /inexistente.png não existe/);
+  assert.doesNotMatch(result.stderr, /rembg/);
+  assert.match(result.stderr, /inexistente\.png não existe/);
 });
 
 const python = process.platform === "win32" ? "python" : "python3";
