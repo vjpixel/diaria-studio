@@ -1,12 +1,12 @@
 ---
 name: diaria-voto-tema
-description: Votação do tema do próximo Artigo Especial pelos apoiadores Mantenedor/Patrono (R$25+, #8371) — 1 clique, link único por pessoa, resultado parcial visível. Substitui o voto manual por e-mail (BCC + resposta), que media 1-2 votos em 5-10 destinatários. Uso — `/diaria-voto-tema abrir|enviar|placar|lembrete|fechar --ciclo AAMM [--dry-run|--push] [...]`.
+description: Votação do tema do próximo Artigo Especial pelos apoiadores Conselho e Núcleo (#8371, #11200) — 1 clique, link único por pessoa, resultado parcial visível. Substitui o voto manual por e-mail (BCC + resposta), que media 1-2 votos em 5-10 destinatários. Uso — `/diaria-voto-tema abrir|enviar|placar|lembrete|fechar --ciclo AAMM [--dry-run|--push] [...]`.
 ---
 
 # /diaria-voto-tema
 
 Fecha a recompensa "voto no tema do próximo Artigo Especial" já vendida no
-tier Mantenedor (descrita na antiga página `/apoiar`, removida no #8498; a campanha do Apoia.se é a fonte) e nunca implementada
+nível Conselho (descrita na antiga página `/apoiar`, removida no #8498; a campanha do Apoia.se é a fonte) e nunca implementada
 antes da #8371 — até aqui o editor coletava votos por e-mail (BCC +
 resposta), com 1-2 votos em 5-10 destinatários nas duas rodadas que
 existiram.
@@ -20,7 +20,7 @@ editor.
 
 | Pergunta | Decisão |
 |---|---|
-| Eleitorado | Mantenedor + Patrono (R$25+), tag Kit `apoio-voto-tema` (`platform.config.json` → `kit_votacao.audience_tag`) |
+| Eleitorado | Conselho + Núcleo (sem preço na copy, decisão #11200), tag Kit `apoio-voto-tema` (`platform.config.json` → `kit_votacao.audience_tag`) |
 | Mecanismo | 1 clique, link único por pessoa (token opaco, mesmo formato do "É IA?") |
 | Cédula | O editor propõe os N candidatos (sem rodada prévia de coleta) — `data/artigo-especial/votacao/{aamm}/ballot.json` |
 | Destino do clique | Página de resultado parcial — vota e já vê o placar |
@@ -81,6 +81,66 @@ npx tsx scripts/publish-voto-tema-kit.ts --ciclo AAMM --dry-run
 npx tsx scripts/publish-voto-tema-kit.ts --ciclo AAMM --push
 ```
 
+### Caixa de divulgação após o envio (#11200)
+
+Depois que o editor confirmar o disparo do e-mail, adaptar a caixa aos temas
+EXATOS de `data/artigo-especial/votacao/{AAMM}/ballot.json`. Não enviar o
+broadcast para executar este passo. Em `abrir`, apenas preparar a copy;
+no `enviar`, publicar a caixa após o disparo confirmado, inclusive em resume.
+
+1. Gerar a proposta sem escritas editoriais:
+   `npx tsx scripts/update-voto-tema-box.ts --ciclo AAMM --dry-run`.
+2. Passar o CORPO por `Skill("humanizador", ...)` e
+   `mcp__clarice__correct_text(...)`, aplicando as sugestões (#4514).
+   Preservar títulos das opções, prazo e URL UTM. Salvar a copy revisada em
+   `data/artigo-especial/votacao/{AAMM}/divulgacao-revisada.md`.
+3. Publicar no arquivo único `data/snippets/voto-tema-divulgacao.md`:
+   `npx tsx scripts/update-voto-tema-box.ts --ciclo AAMM --copy data/artigo-especial/votacao/AAMM/divulgacao-revisada.md --push`.
+   O script valida Conselho e Núcleo e recusa preços em reais/nomes antigos.
+   Nunca criar arquivo ativo por ciclo. Slot 1 é pinado via `box-slot-pin.ts`;
+   o claim `data/artigo-especial/votacao/divulgacao-claim.json` impede outro
+   ciclo de sobrescrever caixa ativa e guarda o fallback para o fechamento.
+   Lock existente é bloqueio real: investigar o processo dono; nunca apagar
+   lock ou claim para contornar uma execução em curso.
+
+**Prazo e promessa de participação:** abaixo de 48h o script avisa que pode
+não haver tempo para confirmar apoio, sincronizar e entregar o link. Não
+estender `ballot.prazo`, nem prometer voto neste ciclo sem conferir essa
+cadeia. A copy explicita a dependência de confirmação e entrega antes do
+prazo. `expires:` é o dia ANTERIOR ao prazo em Brasília: como o header tem
+precisão diária e inclusiva, não anunciamos aquisição no dia do fechamento.
+A seleção diária desativa o pin vencido e volta ao ranking automaticamente
+(#10174), mesmo sem executar `fechar`; o config persistido só é restaurado
+no arquivamento. Não remover expires para satisfazer avisos do Stage 4.
+
+**Ciclo 2611:** preservar pin manual da #11202 e seu revert (slot 1
+`amazon-loja-divulgacao.md`, sem pin, após 27/10). Não adotar esse pin manual
+como claim automático nem alterar cédula/prazo para encaixar a divulgação.
+
+### Novos apoiadores durante a votação
+
+Enquanto o prazo estiver aberto, reexecutar a sequência quando houver novo
+apoio confirmado (antes dos lembretes e em cada execução desta skill):
+
+```
+npx tsx scripts/sync-apoio-nivel-kit.ts --push
+npx tsx scripts/sync-apoio-voto-tema-tag-kit.ts --push
+npx tsx scripts/voto-tema-open.ts --ciclo AAMM --incremental --push
+```
+
+`--incremental` lê a cédula do KV, recusa ciclo fechado/vencido e só adiciona
+hashes após preparar KV + `voto_token` no Kit. Nunca usar `--force` para
+incluir apoiador novo: opções, prazo, abertura e votos devem permanecer.
+Executar operações de escrita do MESMO ciclo em série e numa única máquina;
+o lock local não coordena duas máquinas e o KV não oferece compare-and-swap.
+Depois, preparar o link individual para cada novo apoiador a partir de seu
+`voto_token` no Kit (um link por opção N da cédula:
+`https://especial.diar.ia.br/votacao/AAMM/N?t=TOKEN`).
+Conferir destinatário e token; apresentar rascunho ao editor e entregar pelo
+Kit somente após o gate humano. Não reenviar o broadcast antigo para toda a
+tag nem afirmar que o sync sozinho entregou o link. Nenhum envio automático
+novo está autorizado por este passo.
+
 ### `placar --ciclo AAMM`
 
 Só leitura — `voto-tema-stats.ts`, sem gate. `--json` para consumo
@@ -112,6 +172,17 @@ rodar de novo com `--forcar-vencedor N` depois da decisão editorial.
 npx tsx scripts/voto-tema-close.ts --ciclo AAMM --dry-run
 npx tsx scripts/voto-tema-close.ts --ciclo AAMM --push
 ```
+
+Depois do fechamento confirmado (também no resume de ciclo já fechado),
+arquivar a caixa e restaurar o slot anterior, respeitando troca manual:
+
+```
+npx tsx scripts/update-voto-tema-box.ts --ciclo AAMM --archive --dry-run
+npx tsx scripts/update-voto-tema-box.ts --ciclo AAMM --archive --push
+```
+
+O arquivo vai para `data/snippets/_arquivo/{AAMM}-voto-tema-divulgacao.md`.
+Claim de outro ciclo recusa o arquivamento. Sem claim, não tocar caixa manual.
 
 ## Guard de publicação
 

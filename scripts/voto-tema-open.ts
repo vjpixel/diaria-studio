@@ -26,12 +26,13 @@
  * Uso:
  *   npx tsx scripts/voto-tema-open.ts --ciclo 2610 --dry-run
  *   npx tsx scripts/voto-tema-open.ts --ciclo 2610 --push
+ *   npx tsx scripts/voto-tema-open.ts --ciclo 2610 --push --incremental # novos eleitores, sem reabrir
  *   npx tsx scripts/voto-tema-open.ts --ciclo 2610 --push --force   # reabre/recalcula tokens
  *
  * Env: POLL_SECRET, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_WORKERS_TOKEN, KIT_API_KEY
  * (todas só exigidas fora de --dry-run).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, openSync, closeSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -42,11 +43,12 @@ import { fetchTagMembers } from "./lib/kit-apoio-tag-sync.ts";
 import { updateSubscriberFields } from "./lib/kit-subscribers.ts";
 import { computePollToken, pollTokenKvKey } from "./lib/shared/poll-token.ts";
 import { putTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
-import { ballotKey, parseCicloVotacao, validarCedula, eleitorHash, type BallotTema, type CandidatoTema } from "../workers/artigos/src/voto-tema-core.ts";
+import { ballotKey, parseCicloVotacao, validarCedula, eleitorHash, type BallotTema, type CandidatoTema, prazoEncerrado } from "../workers/artigos/src/voto-tema-core.ts";
 import {
   VOTO_TEMA_TAG_SYNC_COMMAND,
   VotoTemaGuardError,
   readBallotFromKv,
+  readResultFromKv,
   readPlatformConfig,
   resolveVotoTemaKvConfig,
   resolveVotoTemaTagName,
@@ -105,10 +107,56 @@ export interface RunOptions {
   dataDir: string;
   dryRun: boolean;
   force: boolean;
+  incremental?: boolean;
   log: (msg: string) => void;
 }
 
+export interface IncrementalDeps {
+  read: () => Promise<BallotTema | null>;
+  closed: () => Promise<boolean>;
+  members: () => Promise<{ id: number; email: string }[]>;
+  prepare: (member: { id: number; email: string }) => Promise<void>;
+  write: (ballot: BallotTema) => Promise<void>;
+  now: () => Date;
+}
+/** Só acrescenta hashes com token preparado; nunca troca opções, prazo ou votos. */
+export async function addNewVoters(deps: IncrementalDeps): Promise<number> {
+  const original = await deps.read();
+  const assertOpen = async () => {
+    if (!original || !original.prazo || original.fecha_em || prazoEncerrado(original, deps.now()) || await deps.closed()) {
+      throw new VotoTemaGuardError("Ciclo ausente, fechado ou sem prazo; inclusão incremental recusada.");
+    }
+  };
+  await assertOpen();
+  const hashes = new Set(original!.eleitores);
+  let added = 0;
+  for (const member of await deps.members()) {
+    const hash = await eleitorHash(member.email);
+    if (hashes.has(hash)) continue;
+    await assertOpen();
+    await deps.prepare(member); // falha aborta: nenhum hash sem token pronto
+    hashes.add(hash);
+    added++;
+  }
+  if (!added) return 0;
+  await assertOpen();
+  if (JSON.stringify(await deps.read()) !== JSON.stringify(original)) throw new VotoTemaGuardError("Cédula mudou durante o sync; repetir após concluir a outra operação.");
+  await deps.write({ ...original!, eleitores: [...hashes] });
+  return added;
+}
+
 export async function run(options: RunOptions): Promise<void> {
+  // Mesmo checkout não pode abrir/reabrir/sincronizar o ciclo simultaneamente.
+  if (options.dryRun) return runUnlocked(options);
+  const dir = resolve(options.dataDir, "artigo-especial/votacao", options.ciclo);
+  if (!parseCicloVotacao(options.ciclo)) throw new VotoTemaGuardError("Ciclo inválido.");
+  mkdirSync(dir, { recursive: true });
+  const lock = resolve(dir, ".open.lock");
+  const fd = openSync(lock, "wx");
+  try { await runUnlocked(options); } finally { closeSync(fd); unlinkSync(lock); }
+}
+
+async function runUnlocked(options: RunOptions): Promise<void> {
   const { ciclo: rawCiclo, dataDir, dryRun, force, log } = options;
   const ciclo = parseCicloVotacao(rawCiclo);
   if (!ciclo) {
@@ -121,6 +169,37 @@ export async function run(options: RunOptions): Promise<void> {
   const tagNameResolution = resolveVotoTemaTagName(platformConfig.kit_votacao);
   if (!tagNameResolution.ok) throw new VotoTemaGuardError(tagNameResolution.reason);
   const tagName = tagNameResolution.tagName;
+
+  if (options.incremental && force) throw new VotoTemaGuardError("--incremental e --force são incompatíveis.");
+  if (options.incremental) {
+    if (dryRun) {
+      log("[DRY RUN] incluiria apenas novos membros da tag, preservando a cédula no KV; sem escritas.");
+      return;
+    }
+    const kv = resolveVotoTemaKvConfig();
+    const kit = resolveKitConfig();
+    if (!kit.ok) throw new VotoTemaGuardError(kit.reason);
+    const secret = process.env.POLL_SECRET;
+    if (!secret) throw new VotoTemaGuardError("POLL_SECRET ausente.");
+    const added = await addNewVoters({
+      read: () => readBallotFromKv(ciclo, kv),
+      closed: async () => (await readResultFromKv(ciclo, kv)) !== null,
+      members: async () => {
+        const tagId = await findTagIdByName(tagName, kit.config);
+        if (tagId === null) throw new VotoTemaGuardError("Tag do eleitorado ausente; rode o sync antes.");
+        return fetchTagMembers(tagId, kit.config);
+      },
+      prepare: async (member) => {
+        const token = await computePollToken(secret, member.email);
+        await putTextToWorkerKV(pollTokenKvKey(token), member.email, kv);
+        await updateSubscriberFields(member.id, { [KIT_VOTO_TOKEN_FIELD]: token }, kit.config);
+      },
+      write: (ballot) => writeBallotToKv(ciclo, ballot, kv),
+      now: () => new Date(),
+    });
+    log(`${added} novo(s) eleitor(es) preparados. Entregar link individual após gate humano; o broadcast antigo não é reenviado automaticamente.`);
+    return;
+  }
 
   const inputPath = ballotInputPath(dataDir, ciclo);
   const input = readBallotInput(inputPath);
@@ -225,7 +304,7 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const ciclo = getStringArg(argv, "ciclo", { example: "2610" });
   if (!ciclo) {
-    process.stderr.write("Uso: npx tsx scripts/voto-tema-open.ts --ciclo AAMM [--dry-run|--push] [--force]\n");
+    process.stderr.write("Uso: npx tsx scripts/voto-tema-open.ts --ciclo AAMM [--dry-run|--push] [--force|--incremental]\n");
     process.exit(2);
   }
   try {
@@ -234,6 +313,7 @@ async function main(): Promise<void> {
       dataDir: resolve(ROOT, "data"),
       dryRun: !hasFlag(argv, "push"),
       force: hasFlag(argv, "force"),
+      incremental: hasFlag(argv, "incremental"),
       log: (msg) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`),
     });
   } catch (e) {
