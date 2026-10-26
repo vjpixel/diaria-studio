@@ -125,9 +125,10 @@ describe("renderCircleStackPost", () => {
     assert.doesNotThrow(() => buildStackPostPayload(title, md));
   });
 
-  it("título do destaque vira link para a fonte; abertura default", () => {
+  it("título do destaque vira link para a fonte; abertura resume os destaques (#11186)", () => {
     assert.ok(md.includes("### [Gemini vira colega com e-mail & agenda](https://cloud.google.com/blog/x)"));
-    assert.ok(md.includes(DEFAULT_CIRCLE_STACK_OPENING));
+    assert.ok(!md.includes(DEFAULT_CIRCLE_STACK_OPENING));
+    assert.ok(md.startsWith("Parágrafo um. Corpo. Abaixo, o que importa para quem constrói com IA."));
   });
 
   it("'Por que isso importa:' da edição em parágrafo próprio, só quando há why", () => {

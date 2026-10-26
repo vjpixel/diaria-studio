@@ -6,10 +6,15 @@
  * alunos (`circle-stack-select.ts`, gravada em
  * `data/weekly/{cycle}/_internal/circle-stack-selection.json`).
  *
- * Estrutura: abertura · Destaques da semana (título com link da fonte, corpo e
+ * Estrutura (#11186): título "Semana de DD/MM" · abertura (resumo da semana com
+ * a 1ª frase de cada destaque, ver `circleStackSummaryOpening`) · Destaques da semana (título com link da fonte, corpo e
  * "Por que isso importa:" iguais aos da edição diária) · Lançamentos · Use melhor · Radar ·
  * Outros destaques da semana (só o que não apareceu acima) · última linha ("Assine a diar.ia.br. Chega de segunda a
  * sexta...", link e fecho na mesma linha).
+ *
+ * Sem capa por destaque: o contrato do webhook da Stack não aceita imagem no
+ * texto (`buildStackPostPayload` recusa `![](...)`, `stack-webhook.ts`). A capa
+ * 2:1 da estrutura alvo do #11186 depende de a Stack aceitar imagem.
  *
  * `stackNote` (opcional, por item): texto escrito para o público da Stack
  * (o ângulo de quem constrói). Nos itens de lista, SUBSTITUI a descrição
@@ -34,8 +39,18 @@ export const CIRCLE_STACK_SUBSCRIBE_BASE_URL = "https://diar.ia.br";
 
 export type CircleStackUtmContent = "edicao" | "cta-fim";
 
+/**
+ * Abertura de reserva: só entra quando nenhum destaque rende uma frase de
+ * resumo (`circleStackSummaryOpening` devolve null).
+ */
 export const DEFAULT_CIRCLE_STACK_OPENING =
   "A edição semanal da diar.ia.br para quem constrói com IA: o que saiu na semana sobre ferramentas, agentes, automação e produto.";
+
+/** Fecho fixo do parágrafo de resumo da semana (#11186). */
+export const CIRCLE_STACK_SUMMARY_TAIL = "Abaixo, o que importa para quem constrói com IA.";
+
+/** Teto de uma frase de resumo; acima disso o destaque fica fora da abertura. */
+export const CIRCLE_STACK_SUMMARY_SENTENCE_MAX = 280;
 
 /** Cauda da última linha, logo depois de "[Assine a diar.ia.br](url). " — não é parágrafo solto. */
 export const DEFAULT_CIRCLE_STACK_CLOSING =
@@ -82,6 +97,11 @@ export interface CircleStackSelection {
   useMelhor: CircleStackItem[];
   radar: CircleStackItem[];
   weeklyEditions: CircleStackEdition[];
+  /**
+   * Abertura escrita à mão na seleção (#11186). Vence o resumo automático;
+   * perde para `--opening-file`. Ausente/vazia = resumo automático.
+   */
+  opening?: string;
 }
 
 export interface CircleStackRenderOptions {
@@ -158,6 +178,43 @@ function paragraphs(text: string): string[] {
     .filter(Boolean);
 }
 
+/** Pure: tira a marcação Markdown que não cabe numa frase corrida (negrito, itálico, link). */
+function plainText(s: string): string {
+  return s
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*|__/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Pure (#11186): primeira frase do primeiro parágrafo de um texto. Corta no
+ * primeiro `.`/`!`/`?`/`…` seguido de espaço e maiúscula (ou do fim do
+ * parágrafo); "1.000" e "US$ 0,04" não cortam porque não têm espaço depois do
+ * ponto. Acima de `CIRCLE_STACK_SUMMARY_SENTENCE_MAX` devolve null.
+ */
+export function firstSentence(text: string): string | null {
+  const para = plainText(paragraphs(text)[0] ?? "");
+  if (!para) return null;
+  const m = /[.!?…](?=\s+["“(]?[A-ZÀ-ÖØ-Þ])/u.exec(para);
+  let s = m ? para.slice(0, m.index + 1) : para;
+  if (!/[.!?…]$/.test(s)) s += ".";
+  return s.length <= CIRCLE_STACK_SUMMARY_SENTENCE_MAX ? s : null;
+}
+
+/**
+ * Pure (#11186): parágrafo de abertura que resume a semana com os fatos dos
+ * destaques — a primeira frase do corpo de cada um, na ordem do post, e o
+ * fecho fixo. Determinístico de propósito (sem LLM): a frase de abertura do
+ * corpo é a que o writer escreve para carregar o fato principal. Nenhum
+ * destaque com frase utilizável = null (o render cai na abertura de reserva).
+ */
+export function circleStackSummaryOpening(destaques: Pick<CircleStackItem, "body">[]): string | null {
+  const sentences = destaques.map((d) => firstSentence(d.body)).filter((s): s is string => s !== null);
+  if (sentences.length === 0) return null;
+  return [...sentences, CIRCLE_STACK_SUMMARY_TAIL].join(" ");
+}
+
 function listSection(heading: string, items: CircleStackItem[]): string[] {
   if (items.length === 0) return [];
   const lines = items.map((it) => {
@@ -173,7 +230,13 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
 
   const blocks: string[] = [];
 
-  blocks.push(...paragraphs(opts.opening?.trim() || DEFAULT_CIRCLE_STACK_OPENING));
+  // #11186: --opening-file > `opening` da seleção > resumo dos destaques > reserva fixa.
+  const opening =
+    opts.opening?.trim() ||
+    (typeof sel.opening === "string" ? sel.opening.trim() : "") ||
+    circleStackSummaryOpening(sel.destaques) ||
+    DEFAULT_CIRCLE_STACK_OPENING;
+  blocks.push(...paragraphs(opening));
 
   blocks.push(`## Destaques da semana`);
   for (const h of sel.destaques) {
@@ -194,7 +257,13 @@ export function renderCircleStackPost(sel: CircleStackSelection, opts: CircleSta
   // "Outros destaques da semana" (pedido do editor, 23/10/2026): só os destaques das edições
   // que NÃO apareceram acima (comparação por título normalizado). Data sem título restante some.
   const norm = (t: string) => String(t).replace(/\s+/g, " ").trim().toLowerCase();
-  const shown = new Set([...sel.destaques, ...sel.lancamentos, ...sel.useMelhor, ...sel.radar].map((it) => norm(it.title)));
+  // #11186: o título da edição (weeklyEditions) é o original; item com `title` traduzido/reescrito
+  // na seleção só é reconhecido pelo `titleOriginal` — sem ele, o D1 voltava em "Outros destaques".
+  const shown = new Set(
+    [...sel.destaques, ...sel.lancamentos, ...sel.useMelhor, ...sel.radar].flatMap((it) =>
+      [it.title, it.titleOriginal].filter((t): t is string => typeof t === "string" && t.trim() !== "").map(norm),
+    ),
+  );
   const others = sel.weeklyEditions
     .map((e) => ({ e, titles: e.destaques.map((t) => String(t).replace(/\s+/g, " ").trim()).filter((t) => t && !shown.has(norm(t))) }))
     .filter((x) => x.titles.length > 0);
