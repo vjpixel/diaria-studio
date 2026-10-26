@@ -89,7 +89,7 @@ describe("applyArtigoEspecialBoxUpdate (#5979) — edicao cirurgica", () => {
     assert.ok(updated.includes('O Artigo Especial desse mês é: **"Outro artigo"**. Outro gancho.'));
     assert.ok(!updated.includes("Engenharia de ilusão"));
     // Tier + CTA inalterados.
-    assert.ok(updated.includes("Apoiadores Mantenedor e Patrono (R$10+/mês)"));
+    assert.ok(updated.includes("Quem apoia a partir de R$10/mês (Clube, Conselho e Núcleo)"));
     assert.ok(updated.includes("[Quero apoiar](https://apoia.se/diaria)"));
     // Header preservado.
     assert.ok(updated.startsWith(ARTIGO_ESPECIAL_BOX_HEADER));

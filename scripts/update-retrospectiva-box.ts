@@ -97,7 +97,7 @@ export const RETROSPECTIVA_BOX_HEADER = `<!--
 nome: Retrospectiva do Mês
 categoria: Retrospectiva
 retrospectiva-apoiadores.md — box de divulgação da Retrospectiva do Mês
-(recompensa Mantenedor/Patrono, R$25+). Slot 2, ALTERNANDO com
+(recompensa Conselho/Núcleo, R$25+). Slot 2, ALTERNANDO com
 artigo-especial-apoiadores.md (quem publica por último ocupa o slot, #9474).
 Reescrito por scripts/update-retrospectiva-box.ts (/diaria-mensal-apoiadores)
 a cada ciclo — não editar título/parágrafo dos temas/URL do CTA à mão aqui, o
@@ -107,7 +107,7 @@ segue estável). Formato: context/snippets/README.md.
 
 /**
  * Bloco do tier (#9845): parágrafo + lista completa de benefícios de quem
- * apoia a partir de R$25 (Mantenedor = tudo dos planos anteriores, mais a
+ * apoia a partir de R$25 (Conselho = tudo dos planos anteriores, mais a
  * Retrospectiva e a votação). Estável entre ciclos — o script só o escreve no
  * seed e na migração do formato antigo; num arquivo já no formato novo ele
  * fica intocado (o editor pode ajustá-lo à mão).

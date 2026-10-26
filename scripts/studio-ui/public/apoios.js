@@ -89,17 +89,17 @@ const STATUS_LABEL = {
 // test/apoios-js-reward-label-drift.test.ts falha nesse caso.
 const REWARD_GROUP_ORDER = ["patrono", "mantenedor", "apoiador", "amigo", "nao_pagou_ainda"];
 const REWARD_GROUP_LABEL = {
-  patrono: "Patrono (R$50+)",
-  mantenedor: "Mantenedor (R$25–49)",
-  apoiador: "Apoiador (R$10–24)",
-  amigo: "Amigo (R$5–9)",
+  patrono: "Núcleo (R$50+)",
+  mantenedor: "Conselho (R$25–49)",
+  apoiador: "Clube (R$10–24)",
+  amigo: "Comunidade (R$5–9)",
   nao_pagou_ainda: "Ainda não pagou esse mês",
 };
 
 // Nome de exibição sem a faixa de valor — usado no badge de nível de
 // recompensa do card de Contatos (#4437 Entrega 2) e na lista do grupo "ainda
 // não pagou esse mês" (mostra o nível que a pessoa TINHA, não uma faixa nova).
-const LEVEL_NAME = { patrono: "Patrono", mantenedor: "Mantenedor", apoiador: "Apoiador", amigo: "Amigo" };
+const LEVEL_NAME = { patrono: "Núcleo", mantenedor: "Conselho", apoiador: "Clube", amigo: "Comunidade" };
 
 function escapeHtml(s) {
   return String(s)

@@ -110,7 +110,7 @@ export const ARTIGO_ESPECIAL_BOX_HEADER = `<!--
 -->`;
 
 const TIER_PARAGRAPH =
-  "Apoiadores Mantenedor e Patrono (R$10+/mês) têm prioridade de leitura e podem sugerir o tema do próximo. [Quero apoiar](https://apoia.se/diaria)";
+  "Quem apoia a partir de R$10/mês (Clube, Conselho e Núcleo) tem prioridade de leitura e pode sugerir o tema do próximo. [Quero apoiar](https://apoia.se/diaria)";
 
 /** Linha de título do box — regex de match (multiline) e builder. */
 const TITLE_LINE_RE = /^\*\*Artigo Especial de .+\*\*$/m;
