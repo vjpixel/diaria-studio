@@ -86,7 +86,10 @@
  * posts que as skills de divulgação agendaram pro mesmo dia.
  *
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
- * Stage 5) > slug derivado do título do D1 (aviso).
+ * Stage 5) > slug derivado do título do D1. Com `publishing.newsletter.backend`
+ * = "kit" o derivado é premissa, não aviso: é a mesma regra com que o Stage 5
+ * grava `05-edition-url.txt` (#7420), então o vertical pode sair antes da
+ * Etapa 5 (fluxo do #10943). Com "beehiiv" segue aviso (o slug pode divergir).
  *
  * Registro por destino em `{edição}/_internal/06-shorts-published.json`
  * (escrita atômica, logo após cada destino). Destino registrado é pulado.
@@ -276,6 +279,16 @@ export interface ShortsPlanInput {
   grid?: ScheduledSlot[];
 }
 
+/**
+ * Pure (#10943): `publishing.newsletter.backend` do config já carregado. Mesmo
+ * fallback de `loadNewsletterBackend` (lib/newsletter-backend.ts): qualquer
+ * valor que não seja literalmente "kit" é "beehiiv".
+ */
+export function newsletterBackendOf(config: unknown): "kit" | "beehiiv" {
+  const backend = (config as { publishing?: { newsletter?: { backend?: unknown } } } | null)?.publishing?.newsletter?.backend;
+  return backend === "kit" ? "kit" : "beehiiv";
+}
+
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
 export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const premises: string[] = [];
@@ -286,6 +299,12 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const editionUrl: string = input.editionUrl ?? deriveEditionUrl(d1.title);
   if (input.editionUrl) {
     premises.push(`link da edição: ${editionUrl} (${input.editionUrlSource ?? "--edition-url"})`);
+  } else if (newsletterBackendOf(input.config) === "kit") {
+    // #10943 item 3: no fluxo novo o vertical sai ANTES da Etapa 5, então
+    // `05-edition-url.txt` ainda não existe. Com backend "kit" o Stage 5 grava
+    // exatamente `deriveEditionUrl(D1)` (publish-newsletter-kit.ts, #7420): o
+    // link derivado aqui é o mesmo que o Stage 5 vai gravar, não um palpite.
+    premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5 com backend kit, #7420)`);
   } else {
     warnings.push(`link da edição derivado do slug do título do D1: ${editionUrl} — confira; passe --edition-url se o publicado divergir`);
   }
