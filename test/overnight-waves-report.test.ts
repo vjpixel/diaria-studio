@@ -19,7 +19,7 @@ import {
   renderWavesReportMarkdown,
 } from "../scripts/lib/overnight-waves-report.ts";
 import { buildWaveRecord, findDuplicateWave } from "../scripts/lib/overnight-waves.ts";
-import { scanOvernightRounds } from "../scripts/report-overnight-waves.ts";
+import { scanOvernightRounds, selectRounds, readRoundPlan } from "../scripts/report-overnight-waves.ts";
 import type { PlanIssue } from "../scripts/render-overnight-timeline.ts";
 
 const NOW = new Date("2026-09-20T20:00:00Z");
@@ -156,6 +156,53 @@ describe("scanOvernightRounds", () => {
 
   it("dir ausente -> array vazio, nunca lança", () => {
     assert.deepEqual(scanOvernightRounds(join(tmpdir(), "nao-existe-" + Date.now())), []);
+  });
+});
+
+describe("--plan isola a rodada da própria sessão (#11164)", () => {
+  // Cenário real 261025: rodada da 300 (261025) e da Zenbook (261025b) no
+  // mesmo dia; `--since 261025` somava as duas ("Rondas: 4").
+  function twoRounds(): string {
+    const base = mkdtempSync(join(tmpdir(), "overnight-waves-11164-"));
+    const w = (u: number[][]) => buildWaveRecord({ units: u, now: NOW });
+    for (const [dir, waves] of [
+      ["261025", [w([[1]]), w([[2]]), w([[3]])]],
+      ["261025b", [w([[9]])]],
+    ] as const) {
+      mkdirSync(join(base, dir), { recursive: true });
+      writeFileSync(join(base, dir, "plan.json"), JSON.stringify({ issues: [], waves }));
+    }
+    return base;
+  }
+
+  it("reproduz o bug: --since do dia pega as duas rodadas", () => {
+    const base = twoRounds();
+    assert.deepEqual(selectRounds({ dir: base, since: "261025" }).map((r) => r.dir), ["261025", "261025b"]);
+  });
+
+  it("--plan devolve só a rodada daquele plan.json", () => {
+    const base = twoRounds();
+    const rounds = selectRounds({ plan: join(base, "261025b", "plan.json") });
+    assert.deepEqual(rounds.map((r) => r.dir), ["261025b"]);
+    assert.equal(rounds[0].waves?.length, 1);
+    const report = aggregateWaveRounds(rounds);
+    assert.equal(report.rounds_scanned, 1);
+  });
+
+  it("--plan ausente/corrompido -> nenhuma rodada, nunca lança", () => {
+    const base = twoRounds();
+    assert.deepEqual(selectRounds({ plan: join(base, "nao-existe", "plan.json") }), []);
+    writeFileSync(join(base, "261025b", "plan.json"), "{quebrado");
+    assert.equal(readRoundPlan(join(base, "261025b", "plan.json")), null);
+  });
+
+  it("CLI recusa --plan combinado com --since", () => {
+    const r = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/report-overnight-waves.ts", "--plan", "x/plan.json", "--since", "261025"],
+      { encoding: "utf8" },
+    );
+    assert.equal(r.status, 2);
   });
 });
 

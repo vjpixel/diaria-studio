@@ -32,6 +32,16 @@
  * Uso:
  *   npx tsx scripts/check-overnight-token-instrumentation.ts --edition 260811
  *   npx tsx scripts/check-overnight-token-instrumentation.ts --run-dir data/overnight/260811
+ *   npx tsx scripts/check-overnight-token-instrumentation.ts --edition 261025 --plan data/overnight/261025b/plan.json
+ *   npx tsx scripts/check-overnight-token-instrumentation.ts --edition 261025 --session-id {uuid}
+ *
+ * **Filtro de sessão (#11164).** Só `--edition` conta os eventos de TODAS as
+ * sessões que gravaram aquela edição — e duas rodadas no mesmo dia (300 +
+ * Zenbook, 261025) gravam a mesma. Foi assim que o check disse "OK" para uma
+ * sessão que não emitira nada. Com `--plan` (lê o `session_id` da raiz do
+ * `plan.json`) ou `--session-id`, só contam os eventos com
+ * `details.session_id` daquela sessão, gravado pelos emissores
+ * (`subagent-usage-metrics.ts`, `coordinator-usage-estimate.ts`).
  *
  * `--run-dir` é um atalho: a edição é derivada do basename do path (ex:
  * `data/overnight/260811/` → edição `260811`) — útil quando o coordenador já
@@ -92,8 +102,21 @@ export interface PapelBreakdownEntry {
 /** Quebra de `subagent_metrics` por `details.papel` (#9875). */
 export type PapelBreakdown = Record<string, PapelBreakdownEntry>;
 
+/**
+ * Escopo da contagem (#11164). `sessionId` restringe aos eventos gravados por
+ * aquela sessão (`details.session_id`); sem ele a contagem é só por edição.
+ * `unscopedReason` explica no texto por que não houve filtro (ex.: `plan.json`
+ * legado sem `session_id`), pra a ressalva aparecer no relatório.
+ */
+export interface TokenInstrumentationScope {
+  sessionId?: string | null;
+  unscopedReason?: string;
+}
+
 export interface TokenInstrumentationResult {
   edition: string;
+  /** Sessão usada como filtro (#11164); `null` = contagem só por edição. */
+  sessionId: string | null;
   counts: TokenInstrumentationCounts;
   /** Quebra dos eventos `subagent_metrics` por papel (#9875). */
   papelBreakdown: PapelBreakdown;
@@ -118,14 +141,23 @@ function isTrackedMessage(msg: unknown): msg is TrackedTokenInstrumentationMessa
 }
 
 /**
- * Pure: conta, por tipo, quantos eventos `run-log.jsonl` (já lido como array
- * de linhas) batem `edition === edition` entre os 3 tipos rastreados. Linhas
- * malformadas (JSON inválido, ou sem os campos esperados) são ignoradas —
- * nunca lança; o objetivo é contar o que É reconhecível, não validar o
- * formato inteiro do log.
+ * Pure (#11164): o evento pertence à sessão pedida? Sem filtro (`sessionId`
+ * nulo/vazio) todo evento passa — comportamento legado, só por edição. Com
+ * filtro, só passa o evento cujo `details.session_id` é exatamente a sessão:
+ * evento sem o campo (emitido antes do #11164, ou à mão) NÃO conta, porque
+ * não há como provar que é desta rodada — duas rodadas no mesmo dia (300 +
+ * Zenbook, 261025) gravam a MESMA `edition`, e contar o evento alheio faz o
+ * check dizer "OK" para uma sessão que não emitiu nada.
  */
-export function countTokenInstrumentationEvents(lines: string[], edition: string): TokenInstrumentationCounts {
-  const counts = zeroCounts();
+export function eventMatchesSession(rec: Record<string, unknown>, sessionId: string | null | undefined): boolean {
+  if (!sessionId) return true;
+  const details = typeof rec.details === "object" && rec.details !== null ? (rec.details as Record<string, unknown>) : {};
+  return details.session_id === sessionId;
+}
+
+/** Pure: linhas JSON válidas (objeto) da edição e da sessão pedidas. Malformada é ignorada, nunca lança. */
+function recordsFor(lines: string[], edition: string, sessionId?: string | null): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -138,6 +170,27 @@ export function countTokenInstrumentationEvents(lines: string[], edition: string
     if (typeof obj !== "object" || obj === null) continue;
     const rec = obj as Record<string, unknown>;
     if (rec.edition !== edition) continue;
+    if (!eventMatchesSession(rec, sessionId)) continue;
+    out.push(rec);
+  }
+  return out;
+}
+
+/**
+ * Pure: conta, por tipo, quantos eventos `run-log.jsonl` (já lido como array
+ * de linhas) batem `edition === edition` entre os 3 tipos rastreados — e, com
+ * `sessionId`, só os gravados por aquela sessão (#11164). Linhas
+ * malformadas (JSON inválido, ou sem os campos esperados) são ignoradas —
+ * nunca lança; o objetivo é contar o que É reconhecível, não validar o
+ * formato inteiro do log.
+ */
+export function countTokenInstrumentationEvents(
+  lines: string[],
+  edition: string,
+  sessionId?: string | null,
+): TokenInstrumentationCounts {
+  const counts = zeroCounts();
+  for (const rec of recordsFor(lines, edition, sessionId)) {
     if (isTrackedMessage(rec.message)) {
       counts[rec.message] += 1;
     }
@@ -150,20 +203,14 @@ export function countTokenInstrumentationEvents(lines: string[], edition: string
  * `token_instrumentation_empty` (`details.tipo`) gravado nesta edição.
  * Linha malformada é ignorada, nunca lança.
  */
-export function countEmptyMarkers(lines: string[], edition: string): Set<TrackedTokenInstrumentationMessage> {
+export function countEmptyMarkers(
+  lines: string[],
+  edition: string,
+  sessionId?: string | null,
+): Set<TrackedTokenInstrumentationMessage> {
   const marked = new Set<TrackedTokenInstrumentationMessage>();
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let obj: unknown;
-    try {
-      obj = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    if (typeof obj !== "object" || obj === null) continue;
-    const rec = obj as Record<string, unknown>;
-    if (rec.edition !== edition || rec.message !== TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) continue;
+  for (const rec of recordsFor(lines, edition, sessionId)) {
+    if (rec.message !== TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) continue;
     const details = typeof rec.details === "object" && rec.details !== null ? (rec.details as Record<string, unknown>) : {};
     if (isTrackedMessage(details.tipo)) marked.add(details.tipo);
   }
@@ -176,20 +223,14 @@ export function countEmptyMarkers(lines: string[], edition: string): Set<Tracked
  * Mesma tolerância de `countTokenInstrumentationEvents`: linha malformada é
  * ignorada, nunca lança.
  */
-export function countSubagentMetricsByPapel(lines: string[], edition: string): PapelBreakdown {
+export function countSubagentMetricsByPapel(
+  lines: string[],
+  edition: string,
+  sessionId?: string | null,
+): PapelBreakdown {
   const breakdown: PapelBreakdown = {};
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let obj: unknown;
-    try {
-      obj = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-    if (typeof obj !== "object" || obj === null) continue;
-    const rec = obj as Record<string, unknown>;
-    if (rec.edition !== edition || rec.message !== "subagent_metrics") continue;
+  for (const rec of recordsFor(lines, edition, sessionId)) {
+    if (rec.message !== "subagent_metrics") continue;
     const details =
       typeof rec.details === "object" && rec.details !== null ? (rec.details as Record<string, unknown>) : {};
     const rawPapel = details.papel;
@@ -244,7 +285,14 @@ export function buildTokenInstrumentationSection(
   edition: string,
   counts: TokenInstrumentationCounts,
   verdict: TokenInstrumentationVerdict,
+  scope: TokenInstrumentationScope = {},
 ): string {
+  const scopeLabel = scope.sessionId ? `edição ${edition}, sessão ${scope.sessionId}` : `edição ${edition}`;
+  const scopeNote = scope.sessionId
+    ? ""
+    : scope.unscopedReason
+      ? ` Sem filtro de sessão (${scope.unscopedReason}): a contagem pode incluir eventos de outra rodada da mesma edição.`
+      : "";
   const countsSummary = TRACKED_TOKEN_INSTRUMENTATION_MESSAGES.map((m) => `${m}: ${counts[m]}`).join(", ");
   const emptyNote =
     verdict.empty && verdict.empty.length > 0
@@ -252,15 +300,15 @@ export function buildTokenInstrumentationSection(
       : "";
   if (verdict.status === "ok") {
     return (
-      `Instrumentação de token (checagem automática, edição ${edition}): OK — ` +
-      `${countsSummary}.${emptyNote}`
+      `Instrumentação de token (checagem automática, ${scopeLabel}): OK — ` +
+      `${countsSummary}.${emptyNote}${scopeNote}`
     );
   }
   const missingList = verdict.missing.join(", ");
   return (
-    `Instrumentação de token (checagem automática, edição ${edition}): ` +
+    `Instrumentação de token (checagem automática, ${scopeLabel}): ` +
     `instrumentação de token não foi emitida nesta rodada (coordenador esqueceu os checkpoints) — ` +
-    `tipo(s) ausente(s): ${missingList} (${countsSummary}).${emptyNote}`
+    `tipo(s) ausente(s): ${missingList} (${countsSummary}).${emptyNote}${scopeNote}`
   );
 }
 
@@ -287,16 +335,45 @@ export function resolveEditionFromArgs(values: Record<string, string>): string |
 export function checkOvernightTokenInstrumentation(
   edition: string,
   rootDir: string = process.cwd(),
+  scope: TokenInstrumentationScope = {},
 ): TokenInstrumentationResult {
   const logPath = resolveRunLogPath(rootDir);
   const lines = existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n") : [];
-  const counts = countTokenInstrumentationEvents(lines, edition);
-  const papelBreakdown = countSubagentMetricsByPapel(lines, edition);
-  const verdict = resolveTokenInstrumentationVerdict(counts, countEmptyMarkers(lines, edition));
+  const sessionId = scope.sessionId || null;
+  const counts = countTokenInstrumentationEvents(lines, edition, sessionId);
+  const papelBreakdown = countSubagentMetricsByPapel(lines, edition, sessionId);
+  const verdict = resolveTokenInstrumentationVerdict(counts, countEmptyMarkers(lines, edition, sessionId));
   const papelLine = formatPapelBreakdown(papelBreakdown);
-  const baseSection = buildTokenInstrumentationSection(edition, counts, verdict);
+  const baseSection = buildTokenInstrumentationSection(edition, counts, verdict, scope);
   const section = papelLine ? `${baseSection}\n${papelLine}` : baseSection;
-  return { edition, counts, papelBreakdown, verdict, section };
+  return { edition, sessionId, counts, papelBreakdown, verdict, section };
+}
+
+/**
+ * Resolve o filtro de sessão dos args CLI (#11164): `--session-id` explícito
+ * vence; senão o `session_id` da raiz do `plan.json` de `--plan` (gravado pelo
+ * overnight desde #6328 e pelo develop desde #6265). `plan.json` ausente,
+ * ilegível ou sem `session_id` (legado) → sem filtro, com o motivo no texto.
+ * Sem nenhum dos dois → sem filtro e sem ressalva (uso legado por edição).
+ */
+export function resolveSessionScopeFromArgs(
+  values: Record<string, string>,
+  readPlan: (path: string) => string = (p) => readFileSync(p, "utf8"),
+): TokenInstrumentationScope {
+  const explicit = values["session-id"]?.trim();
+  if (explicit) return { sessionId: explicit };
+  const planPath = values.plan;
+  if (!planPath) return {};
+  let plan: unknown;
+  try {
+    plan = JSON.parse(readPlan(planPath));
+  } catch {
+    return { unscopedReason: `plan.json ilegível em ${planPath}` };
+  }
+  const sid =
+    typeof plan === "object" && plan !== null ? (plan as Record<string, unknown>).session_id : undefined;
+  if (typeof sid === "string" && sid.trim()) return { sessionId: sid.trim() };
+  return { unscopedReason: `plan.json sem session_id em ${planPath}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +385,15 @@ if (isMainModule(import.meta.url)) {
   const edition = resolveEditionFromArgs(values);
   if (!edition) {
     console.error(
-      "[check-overnight-token-instrumentation] uso: --edition {AAMMDD} ou --run-dir {path}",
+      "[check-overnight-token-instrumentation] uso: --edition {AAMMDD} ou --run-dir {path} [--plan {plan.json} | --session-id {uuid}]",
     );
     process.exit(2);
   }
-  const result = checkOvernightTokenInstrumentation(edition, resolve(process.cwd()));
+  const result = checkOvernightTokenInstrumentation(
+    edition,
+    resolve(process.cwd()),
+    resolveSessionScopeFromArgs(values),
+  );
   console.log(result.section);
   // Advisory — nunca falha a rodada; o veredito vai pro relatório, não pro exit code.
   process.exit(0);

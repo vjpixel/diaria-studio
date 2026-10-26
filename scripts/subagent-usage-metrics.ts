@@ -367,8 +367,15 @@ function asIssueList(details: Record<string, unknown>): number[] {
   return [];
 }
 
-/** Pure: indexa o que já está no run-log para não duplicar. Linha malformada é ignorada. */
-export function indexExistingEvents(lines: string[], edition: string): ExistingEventIndex {
+/**
+ * Pure: indexa o que já está no run-log para não duplicar. Linha malformada é ignorada.
+ *
+ * `sessionId` (#11164): `presentInEdition` só considera eventos sem
+ * `details.session_id` (legado/à mão) ou da MESMA sessão — outra rodada na
+ * mesma edição (300 + Zenbook no mesmo dia) não pode suprimir o marcador
+ * vazio desta, senão o check filtrado por sessão acusa "esqueceu".
+ */
+export function indexExistingEvents(lines: string[], edition: string, sessionId?: string | null): ExistingEventIndex {
   const idx: ExistingEventIndex = {
     agentIds: new Set(),
     manualSubagent: [],
@@ -388,12 +395,13 @@ export function indexExistingEvents(lines: string[], edition: string): ExistingE
     if (typeof rec !== "object" || rec === null) continue;
     const msg = rec.message;
     const details = (typeof rec.details === "object" && rec.details !== null ? rec.details : {}) as Record<string, unknown>;
+    const sameSession = !sessionId || details.session_id === undefined || details.session_id === sessionId;
     if (msg === TOKEN_INSTRUMENTATION_EMPTY_MESSAGE) {
-      if (rec.edition === edition && typeof details.tipo === "string") idx.presentInEdition.add(details.tipo);
+      if (rec.edition === edition && sameSession && typeof details.tipo === "string") idx.presentInEdition.add(details.tipo);
       continue;
     }
     if (msg !== SUBAGENT_METRICS_MESSAGE && msg !== REVIEW_METRICS_MESSAGE && msg !== FLEET_REVIEW_METRICS_MESSAGE) continue;
-    if (rec.edition === edition) idx.presentInEdition.add(msg);
+    if (rec.edition === edition && sameSession) idx.presentInEdition.add(msg);
     if (typeof details.agent_id === "string" && details.agent_id) {
       idx.agentIds.add(details.agent_id);
       continue;
@@ -451,6 +459,10 @@ export interface PlanResult {
  * Subagente em voo (ver `TranscriptSummary.finished`) é pulado e contado em
  * `inFlight`; o sem `end_turn` com atividade mais velha que
  * `UNFINISHED_STALE_MS` é emitido com `finished: false`.
+ *
+ * `sessionId` (#11164): gravado em `details.session_id` de todo evento e
+ * marcador, pra `check-overnight-token-instrumentation.ts --plan` separar esta
+ * rodada de outra que grave a mesma edição no mesmo dia.
  */
 export function planEvents(
   records: SubagentRecord[],
@@ -458,8 +470,10 @@ export function planEvents(
   edition: string,
   sinceIso?: string,
   nowMs: number = Date.now(),
+  sessionId?: string | null,
 ): PlanResult {
-  const idx = indexExistingEvents(existingLines, edition);
+  const idx = indexExistingEvents(existingLines, edition, sessionId);
+  const sessionField = sessionId ? { session_id: sessionId } : {};
   const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
   const inWindow = records.filter((r) => {
     if (!Number.isFinite(sinceMs)) return true;
@@ -500,6 +514,7 @@ export function planEvents(
       duration_ms: durationMs(r.summary),
       ...sourceFields(r.summary),
       ...(r.summary.finished ? {} : { finished: false }),
+      ...sessionField,
     };
     if (cls.message === SUBAGENT_METRICS_MESSAGE) {
       const manualIdx = manualSubagent.findIndex((m) => m.papel === cls.papel && overlaps(m.issues, issues));
@@ -535,7 +550,7 @@ export function planEvents(
   const markers: PlannedEvent[] = [];
   for (const tipo of EMPTY_MARKER_TIPOS) {
     if (classesInWindow.has(tipo) || idx.presentInEdition.has(tipo)) continue;
-    markers.push({ message: TOKEN_INSTRUMENTATION_EMPTY_MESSAGE, details: { tipo, reason: EMPTY_MARKER_REASON[tipo] } });
+    markers.push({ message: TOKEN_INSTRUMENTATION_EMPTY_MESSAGE, details: { tipo, reason: EMPTY_MARKER_REASON[tipo], ...sessionField } });
   }
   return { events, skipped, inFlight, markers };
 }
@@ -573,7 +588,7 @@ export function collectSubagentMetrics(opts: {
   } catch {
     lines = [];
   }
-  const { events, skipped, inFlight, markers } = planEvents(records, lines, opts.edition, opts.sinceIso, opts.nowMs);
+  const { events, skipped, inFlight, markers } = planEvents(records, lines, opts.edition, opts.sinceIso, opts.nowMs, sessionId);
   return { status: "ok", events, skipped, inFlight, markers, subagents: records.length };
 }
 

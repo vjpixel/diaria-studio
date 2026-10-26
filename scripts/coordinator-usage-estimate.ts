@@ -95,6 +95,12 @@ export interface CoordinatorEstimateDetails {
   cumulative_tokens?: number;
   /** Só em `unavailable`: por que não mediu. */
   reason?: "no_session_id" | "session_file_not_found" | "no_usage_entries";
+  /**
+   * Sessão que gravou o evento (#11164), quando conhecida — é o que deixa
+   * `check-overnight-token-instrumentation.ts --plan` separar duas rodadas da
+   * mesma edição no mesmo dia. Ausente em `no_session_id`.
+   */
+  session_id?: string;
 }
 
 export type CoordinatorEstimate =
@@ -137,11 +143,17 @@ export function computeCheckpointDelta(cumulative: number, lastCumulativeBase: n
  * da sessão no checkpoint, a base certa para `computeCheckpointDelta`.
  * Evento numerado SEM `cumulative_tokens` (gravado à mão, anterior ao campo)
  * cai no `tokens` como antes — único dado disponível.
+ *
+ * `sessionId` (#11164): evento com `details.session_id` de OUTRA sessão é
+ * pulado — duas rodadas da mesma edição no mesmo dia (300 + Zenbook) não
+ * podem usar o acumulado uma da outra como base. Evento sem o campo (legado)
+ * continua valendo como base, como antes.
  */
 export function lastCoordinatorCumulativeBase(
   lines: string[],
   edition: string,
   agent: CoordinatorKind,
+  sessionId?: string | null,
 ): number | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();
@@ -157,7 +169,11 @@ export function lastCoordinatorCumulativeBase(
     if (rec.message !== COORDINATOR_ESTIMATE_MESSAGE) continue;
     if (rec.edition !== edition) continue;
     if (rec.agent !== agent) continue;
-    const details = rec.details as { tokens?: unknown; cumulative_tokens?: unknown } | null | undefined;
+    const details = rec.details as
+      | { tokens?: unknown; cumulative_tokens?: unknown; session_id?: unknown }
+      | null
+      | undefined;
+    if (sessionId && details?.session_id !== undefined && details.session_id !== sessionId) continue;
     // `Number(null)` é 0 — um evento `unavailable` ({tokens: null}) seria lido
     // como base 0 e o próximo delta viraria o cumulativo inteiro de novo.
     // Só um `number` finito conta como base (mesmo critério do aggregate).
@@ -203,16 +219,22 @@ export function decideEstimate(
   };
 }
 
-export function estimateToDetails(estimate: CoordinatorEstimate, phase: string): CoordinatorEstimateDetails {
+export function estimateToDetails(
+  estimate: CoordinatorEstimate,
+  phase: string,
+  sessionId?: string | null,
+): CoordinatorEstimateDetails {
   if (estimate.status === "ok") {
     return {
       phase,
       tokens: estimate.tokens,
       source: "context_size_proxy",
       cumulative_tokens: estimate.cumulativeTokens,
+      session_id: estimate.sessionId,
     };
   }
-  return { phase, tokens: null, source: "unavailable", reason: estimate.reason };
+  const sessionField = sessionId ? { session_id: sessionId } : {};
+  return { phase, tokens: null, source: "unavailable", reason: estimate.reason, ...sessionField };
 }
 
 /**
@@ -267,6 +289,7 @@ export function estimateCoordinatorUsage(opts: {
     existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n") : [],
     edition,
     agent,
+    sessionId,
   );
 
   if (!sessionId) return { status: "unavailable", reason: "no_session_id" };
@@ -305,13 +328,14 @@ function main(): void {
     process.exit(2);
   }
   const phase = values.phase ?? "checkpoint";
+  const sessionId = values["session-id"] ?? currentSessionId(process.env);
   const result = estimateCoordinatorUsage({
     edition,
     agent,
     sinceIso: values.since,
-    sessionId: values["session-id"] ?? undefined,
+    sessionId,
   });
-  const details = estimateToDetails(result, phase);
+  const details = estimateToDetails(result, phase, sessionId);
   if (flags.has("dry-run")) {
     console.log(JSON.stringify({ edition, agent, message: COORDINATOR_ESTIMATE_MESSAGE, details }, null, 2));
     return;

@@ -92,6 +92,20 @@ describe("lastCoordinatorCumulativeBase (#6634, #10490)", () => {
     assert.equal(lastCoordinatorCumulativeBase(lines, "261019", "overnight"), 150);
   });
 
+  it("#11164: pula o acumulado de OUTRA sessão da mesma edição; legado sem session_id ainda vale", () => {
+    const ev = (cum: number, sid?: string) =>
+      JSON.stringify({
+        agent: "overnight",
+        edition: "261025",
+        message: COORDINATOR_ESTIMATE_MESSAGE,
+        details: { phase: "x", tokens: cum, cumulative_tokens: cum, ...(sid ? { session_id: sid } : {}) },
+      });
+    const lines = [ev(100), ev(800, "zen"), ev(5_000, "s300")];
+    assert.equal(lastCoordinatorCumulativeBase(lines, "261025", "overnight", "zen"), 800);
+    assert.equal(lastCoordinatorCumulativeBase(lines, "261025", "overnight", "outra"), 100);
+    assert.equal(lastCoordinatorCumulativeBase(lines, "261025", "overnight"), 5_000);
+  });
+
   it("#10490: evento unavailable com cumulative_tokens espúrio continua ignorado", () => {
     const lines = [
       JSON.stringify({ agent: "overnight", edition: "261019", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "a", tokens: 100, cumulative_tokens: 100 } }),
@@ -157,6 +171,7 @@ describe("estimateToDetails (#6634)", () => {
       tokens: 8_000,
       source: "context_size_proxy",
       cumulative_tokens: 12_000,
+      session_id: "abc",
     });
   });
   it("unavailable → tokens null + reason (a lacuna vira telemetria, não buraco)", () => {
