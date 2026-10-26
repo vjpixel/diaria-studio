@@ -65,7 +65,7 @@ Dry-run: imprime título/descrição e horário do Shorts, a legenda de cada Ree
 npx tsx scripts/publish-shorts.ts {AAMMDD} --publish
 ```
 
-Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai. Re-rodar pula o que já foi feito, então pode rodar de novo depois do horário do vertical só para o Instagram (quando ele ficou pendente por falta de fila). Instagram enfileirado é gravado `scheduled` com a key da fila no `id` — re-rodar não enfileira de novo. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
+Cada destino é gravado em `_internal/06-shorts-published.json` assim que sai (o vídeo do perfil que o timer do 300 publica fica em `06-shorts-published.linkedin-timer.json`, que só o timer escreve; a leitura une os dois e as cópias de conflito do OneDrive, e cada destino é reconferido no disco antes de publicar, #11157). Re-rodar pula o que já foi feito, então pode rodar de novo depois do horário do vertical só para o Instagram (quando ele ficou pendente por falta de fila). Instagram enfileirado é gravado `scheduled` com a key da fila no `id` — re-rodar não enfileira de novo. Registro ilegível aborta em vez de republicar. `(processamento não confirmado em 5 min — confira)` numa linha `[ok]` pede uma olhada na página antes de relatar como publicado.
 
 ## Passo 3b — Instagram acima do teto (Chrome, #10915)
 

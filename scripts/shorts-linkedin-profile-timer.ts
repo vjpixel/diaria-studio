@@ -8,7 +8,8 @@
  *
  *   1. edição = hoje em BRT (o vertical sai no dia da própria edição);
  *   2. sem `02-reviewed.md` (fim de semana, feriado), `linkedin_profile` já
- *      registrado em `_internal/06-shorts-published.json`, ou o destino
+ *      registrado em `_internal/06-shorts-published.json` (ou no registro do
+ *      próprio timer / numa cópia de conflito do OneDrive, #11157), ou o destino
  *      desligado no config (`linkedin_profile` / `linkedin_profile_via_timer`)
  *      → nada a fazer, exit 0;
  *   3. vertical fora do disco → `fetch-drive-video.ts --orientation vertical`
@@ -36,13 +37,14 @@
 
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { aammddBrt } from "./lib/linkedin-personal.ts";
 import { SHORTS_PUBLISHED_FILE, loadShortsConfig, parseShortsPublishedFile, shortVideoFileName } from "./lib/diaria/short-video.ts";
+import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const TIMER_LOCK_FILE = "_internal/.shorts-linkedin-timer.lock";
@@ -58,6 +60,12 @@ export function decideTimerRun(input: {
   reviewedExists: boolean;
   /** Conteúdo de `06-shorts-published.json`; null = ausente. */
   publishedRaw: string | null;
+  /**
+   * #11157: os outros arquivos do registro (o do próprio timer,
+   * `06-shorts-published.linkedin-timer.json`, e cópias de conflito do
+   * OneDrive). Entrada em qualquer um deles conta como registrada.
+   */
+  otherRegistryRaws?: ReadonlyArray<{ path: string; raw: string }>;
   aammdd: string;
   videoExists: boolean;
 }): TimerDecision {
@@ -65,11 +73,15 @@ export function decideTimerRun(input: {
   if (!cfg.linkedinProfile) return { kind: "skip", reason: "publishing.shorts.linkedin_profile = false" };
   if (!cfg.linkedinProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.linkedin_profile_via_timer = false (o /diaria-shorts publica)" };
   if (!input.reviewedExists) return { kind: "skip", reason: `sem 02-reviewed.md da edição ${input.aammdd} (dia sem edição)` };
-  if (input.publishedRaw !== null) {
+  const raws = [
+    ...(input.publishedRaw !== null ? [{ path: SHORTS_PUBLISHED_FILE, raw: input.publishedRaw }] : []),
+    ...(input.otherRegistryRaws ?? []),
+  ];
+  for (const { path, raw } of raws) {
     // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
-    const file = parseShortsPublishedFile(input.publishedRaw, input.aammdd);
+    const file = parseShortsPublishedFile(raw, input.aammdd, path);
     const entry = file.entries.find((e) => e.destination === "linkedin_profile");
-    if (entry) return { kind: "skip", reason: `linkedin_profile já registrado (${entry.status}${entry.url ? `, ${entry.url}` : ""})` };
+    if (entry) return { kind: "skip", reason: `linkedin_profile já registrado (${entry.status}${entry.url ? `, ${entry.url}` : ""}${path === SHORTS_PUBLISHED_FILE ? "" : ` em ${basename(path)}`})` };
   }
   return { kind: "publish", fromDrive: !input.videoExists };
 }
@@ -147,6 +159,7 @@ async function main(): Promise<number> {
     config,
     reviewedExists: existsSync(join(dir, "02-reviewed.md")),
     publishedRaw: existsSync(publishedPath) ? readFileSync(publishedPath, "utf8") : null,
+    otherRegistryRaws: readShortsRegistryRaws(dir).filter((r) => r.path !== publishedPath),
     aammdd,
     videoExists: existsSync(videoPath),
   });
