@@ -500,13 +500,32 @@ export function isTutorialByDomainExtra(url: string): boolean {
 const EDUCATIONAL_COURSE_TITLE_FRAGMENT = "academy\\s+courses?|capacita[çc][ãa]o\\s+gratuita";
 
 const TUTORIAL_TITLE_EXTRA_RE = new RegExp(
-  `\\b(migrat(ing|ion)\\b|how\\s+[A-Z]\\w{2,}(?:\\s+[A-Z]\\w+)+\\s+(used?|leverag(es?|ed?)|powered?)\\b|case\\s+stud(y|ies)\\b|build\\s+and\\s+deploy\\b|step[- ]by[- ]step\\b|guia\\s+(pr[áa]tico|completo|passo)\\b|${EDUCATIONAL_COURSE_TITLE_FRAGMENT})\\b`,
+  `\\b(migrat(ing|ion)\\b|case\\s+stud(y|ies)\\b|build\\s+and\\s+deploy\\b|step[- ]by[- ]step\\b|guia\\s+(pr[áa]tico|completo|passo)\\b|${EDUCATIONAL_COURSE_TITLE_FRAGMENT})\\b`,
   "i",
 );
 
+/**
+ * #11119/#11116: o ramo "How <Empresa Composta> used/leverages/powered X"
+ * (#2309 item 3, comentário acima) vivia DENTRO de `TUTORIAL_TITLE_EXTRA_RE`,
+ * que tem flag `i` — e com `i` o `[A-Z]` casa minúscula também, então a
+ * exigência de ≥2 palavras CAPITALIZADAS nunca valeu: qualquer "how <palavra>
+ * <palavra> ... used" casava, inclusive no summary. Casos reais cortados ou
+ * movidos pelo editor de USE MELHOR:
+ *   - "How one hacker used AI agents and a few thousand dollars to break into
+ *     scores of sites" (rappler.com, 261022) — USE MELHOR → RADAR;
+ *   - summary "ideas for how this money might actually be used" de
+ *     "Anthropic says it's committing 5% of its shares to a 'public benefit
+ *     fund'" (techcrunch.com, 261020) — notícia corporativa cortada de USE
+ *     MELHOR.
+ * Regex próprio, SEM `i`: só "How"/"how" e o verbo toleram caixa variável; os
+ * nomes precisam começar com maiúscula de verdade.
+ */
+const HOW_NAMED_ENTITY_USED_RE =
+  /\b[Hh]ow\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(?:[Uu]sed?|[Ll]everag(?:es?|ed?)|[Pp]owered?)\b/;
+
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
-  return TUTORIAL_TITLE_EXTRA_RE.test(hay);
+  return TUTORIAL_TITLE_EXTRA_RE.test(hay) || HOW_NAMED_ENTITY_USED_RE.test(hay);
 }
 
 /**
@@ -1505,7 +1524,13 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // rankings genéricos tipo "as 10 melhores ferramentas de IA", que devem
 // continuar em RADAR/NOTÍCIAS (distinção editorial deliberada, ver teste
 // negativo em test/categorize-tutorial-video.test.ts).
-const DISCOVERY_LISTICLE_NOUN = "(?:ferramentas?|apps?|ias?|intelig[êe]ncias?\\s+artificiais?|plataformas?)";
+// #11116 (261023): "IAs" só no PLURAL. Com `ias?`, o "IA" singular — sujeito de
+// quase toda manchete de IA — fazia par com qualquer adjetivo da lista até 40
+// chars adiante: "IA revela falhas escondidas há mais de 10 anos no PHP"
+// (canaltech, notícia de segurança) caiu em USE MELHOR e o editor cortou.
+// Mesmo raciocínio do "escondid[ao]s" plural abaixo: a lista de descoberta é
+// de várias IAs, nunca da "IA" genérica.
+const DISCOVERY_LISTICLE_NOUN = "(?:ferramentas?|apps?|ias|intelig[êe]ncias?\\s+artificiais?|plataformas?)";
 // #5995 (05/10/2026): "escondid[ao]s" só no PLURAL. No singular o adjetivo
 // qualifica um objeto da notícia, não uma lista de ferramentas — "Comando
 // escondido em laudo para influenciar IA é encontrado no TJRN" (260915) caía
@@ -1597,7 +1622,12 @@ const TUTORIAL_KEYWORDS_RE = new RegExp(
     // cobrir "...; veja como usar" — mas o gate real contra falso-positivo é
     // a lista fechada de verbos: "Como a IA vai mudar X" não casa (mudar/vai
     // não estão na lista).
-    `|\\bcomo\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b` +
+    // #11116 (261023): o objeto não pode ser falha/vulnerabilidade/brecha —
+    // aí "explorar"/"usar" é EXPLORAR UM ATAQUE, não ensinar o leitor. Caso
+    // real: summary "…ajudaram pesquisadores a descobrir como explorar falhas
+    // de segurança presentes no PHP…" (canaltech, notícia) caiu em USE MELHOR
+    // e o editor cortou.
+    `|\\bcomo\\s+(?:${TUTORIAL_ACTION_VERBS_PT})\\b(?!\\s+(?:(?:as|os|essas|esses|suas|seus)\\s+)?(?:falhas?|vulnerabilidades?|brechas?|exploits?)\\b)` +
     "|\\bo\\s+que\\s+[ée]\\s+.{0,60}?\\be\\s+\\d+\\s+(maneiras|formas|jeitos)\\s+de\\s+(usar|utilizar)\\b" +
     // #5995: "N prompts para <algo>" — listicle de prompts acionáveis
     // ("11 prompts para foto profissional no ChatGPT e outras IAs").
@@ -1890,6 +1920,16 @@ const NON_PRODUCT_OFFICIAL_PATTERNS: RegExp[] = [
   // science" (openai.com/index). Conservador: exige a frase completa "the
   // next era of" — não pega "a new era" nem "next generation" isolados.
   /\bthe\s+next\s+era\s+of\b/i,
+  // #11119: divulgação de incidente/vulnerabilidade de segurança em domínio
+  // oficial é notícia, não produto que o leitor usa. Casos reais movidos pelo
+  // editor LANÇAMENTOS → RADAR: "Patch the Planet: global response
+  // coordination as agents uncover critical vulnerabilities" (openai.com,
+  // 261022, decidido pelo tie-breaker) e "Security incident disclosure — July
+  // 2026" (huggingface.co, 260720). Lançamento de ferramenta de segurança
+  // ("Introducing X, …vulnerabilities") segue protegido pelo
+  // LAUNCH_VERB_TITLE_RE em isNonProductOfficialPost. Corpus: nenhum item com
+  // estes termos mantido em LANÇAMENTOS pelo editor.
+  /\b(?:security\s+incident|(?:coordinated\s+)?disclosure|vulnerabilit(?:y|ies))\b/i,
 ];
 
 // #5995 (260828, achado do review independente do PR #6556): "How {sujeito

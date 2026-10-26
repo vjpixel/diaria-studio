@@ -194,6 +194,65 @@ export interface CategorizeOptions {
   onEvent?: (event: CategorizeEvent) => void;
 }
 
+/**
+ * #11116 (261026): duas tags de release do MESMO repositório GitHub na mesma
+ * edição ("v2.1.307" e "v2.1.310" de anthropics/claude-code) chegavam juntas
+ * em LANÇAMENTOS — o editor manteve a mais nova e cortou a outra. Patch
+ * anterior do mesmo repo no mesmo dia é redundante por construção: a release
+ * mais nova já contém a anterior. Mantém só a de maior versão por repo.
+ *
+ * Só URL `github.com/{owner}/{repo}/releases/tag/{tag}`; tag sem número
+ * comparável fica (nunca descarta o que não sabe ordenar).
+ */
+const GITHUB_RELEASE_TAG_RE = /^https?:\/\/(?:www\.)?github\.com\/([^/]+)\/([^/]+)\/releases\/tag\/([^/?#]+)/i;
+
+function parseReleaseVersion(tag: string): number[] | null {
+  // `%` malformado (ex.: "v1%2") faz decodeURIComponent lançar URIError —
+  // sem o fallback derrubaria categorize.ts inteiro (e o Stage 1). Tag crua.
+  let decoded = tag;
+  try {
+    decoded = decodeURIComponent(tag);
+  } catch {
+    /* tag não decodificável: segue com a string crua */
+  }
+  const m = decoded.match(/^v?(\d+(?:\.\d+)*)$/i);
+  return m ? m[1].split(".").map(Number) : null;
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+export function collapseRepeatedGithubReleases(
+  items: Article[],
+): { kept: Article[]; dropped: Array<{ url: string; kept_url: string }> } {
+  const latest = new Map<string, { url: string; version: number[] }>();
+  for (const a of items) {
+    const m = typeof a.url === "string" ? a.url.match(GITHUB_RELEASE_TAG_RE) : null;
+    const version = m ? parseReleaseVersion(m[3]) : null;
+    if (!m || !version) continue;
+    const repo = `${m[1]}/${m[2]}`.toLowerCase();
+    const cur = latest.get(repo);
+    if (!cur || compareVersions(version, cur.version) > 0) latest.set(repo, { url: a.url, version });
+  }
+  const dropped: Array<{ url: string; kept_url: string }> = [];
+  const kept = items.filter((a) => {
+    // Submissão do editor nunca some em silêncio (mesma regra do #5080/#10796).
+    if (a.flag === "editor_submitted") return true;
+    const m = typeof a.url === "string" ? a.url.match(GITHUB_RELEASE_TAG_RE) : null;
+    if (!m || !parseReleaseVersion(m[3])) return true;
+    const winner = latest.get(`${m[1]}/${m[2]}`.toLowerCase());
+    if (!winner || winner.url === a.url) return true;
+    dropped.push({ url: a.url, kept_url: winner.url });
+    return false;
+  });
+  return { kept, dropped };
+}
+
 export function categorizeArticles(
   articles: Article[],
   opts: CategorizeOptions = {},
@@ -324,6 +383,27 @@ export function categorizeArticles(
     const rawField = normalizedTitle !== article.title ? { title_raw: article.title } : {};
     const unresolvedField = titleUnresolved ? { title_unresolved: "redirect_stub" } : {}; // #10796
     result[bucket].push({ ...article, ...rawField, ...unresolvedField, title: normalizedTitle, category: cat, category_rule: categoryRule });
+  }
+
+  // #11116: release antiga do mesmo repo GitHub sai — a mais nova a contém.
+  // Roda sobre os buckets juntos (a tag pode cair em lancamento ou radar).
+  {
+    const all = (Object.keys(result) as Bucket[]).flatMap((b) => result[b]);
+    const { dropped } = collapseRepeatedGithubReleases(all);
+    if (dropped.length > 0) {
+      const droppedUrls = new Set(dropped.map((d) => d.url));
+      for (const b of Object.keys(result) as Bucket[]) result[b] = result[b].filter((a) => !droppedUrls.has(a.url));
+      for (const d of dropped) {
+        console.error(`[categorize] #11116 dropping older GitHub release of same repo: ${d.url} (kept ${d.kept_url})`);
+        emit({
+          stage: 1,
+          agent: "categorize",
+          level: "info",
+          message: `release antiga do mesmo repositório descartada: ${d.url} (mantida ${d.kept_url})`,
+          details: { url: d.url, kept_url: d.kept_url, reason: "older_github_release_same_repo", issue: 11116 },
+        });
+      }
+    }
   }
 
   // #1473: detectar summaries em inglês e flaggar para tradução downstream.
