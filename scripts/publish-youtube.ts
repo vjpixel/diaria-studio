@@ -10,7 +10,7 @@
  *   npx tsx scripts/publish-youtube.ts AAMMDD --dry-run
  *     [--edition-dir DIR] [--video PATH] [--episode N]
  *     [--edition-url URL] [--publish-at ISO]
- *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force | --accept-period-match]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force | --accept-period-match VIDEO_ID]
  *
  * ## `--dry-run` (default seguro)
  *
@@ -74,7 +74,7 @@
  * Reconhecido SÓ pelo período (vídeo qualquer no dia BRT da edição, #11132) →
  * exit 1 sem enviar e sem gravar nada: pode ser uma live ou um vídeo avulso, e
  * o link iria para o D1 público. O editor confere no Studio e roda de novo com
- * `--accept-period-match` (é o vídeo da edição: registra e linka) ou
+ * `--accept-period-match VIDEO_ID` (é o vídeo da edição: registra e linka) ou
  * `--force` (não é: sobe o vídeo da edição).
  */
 
@@ -284,9 +284,10 @@ export interface RunUploadInput {
   /**
    * #11132: aceita um vídeo reconhecido só pelo período (`matchedBy: "period"`)
    * como o desta edição. Sem isso o `--upload` sai exit 1 sem enviar nem gravar.
-   * Só o editor passa (`--accept-period-match`); o Stage 5 nunca.
+   * Só o editor passa (`--accept-period-match VIDEO_ID`); o Stage 5 nunca.
+   * O aceite exige o ID exato; booleanos legados não autorizam nenhum candidato.
    */
-  acceptPeriodMatch?: boolean;
+  acceptPeriodMatch?: boolean | string;
   readFile: (p: string) => Buffer;
   log: (line: string) => void;
   /**
@@ -462,11 +463,14 @@ function recordExistingVideo(
  */
 function unconfirmedPeriodMatch(e: ExistingEditionVideoError, input: RunUploadInput, plan: YouTubePublishPlan): RunUploadOutcome {
   const v = e.video;
+  for (const candidate of v.periodCandidates ?? [v]) {
+    input.log(`[candidato period] ${candidate.videoId} — ${candidate.url} — "${candidate.title || "sem título"}" — ${candidate.status?.publishAt ?? candidate.publishedAt ?? "sem data"}`);
+  }
   input.log(
     `[erro] há um vídeo no canal no dia da edição ${plan.aammdd} que não traz a marca dela (${v.url}, "${v.title || "sem título"}", ` +
       `publicado/agendado ${v.status?.publishAt ?? v.publishedAt ?? "sem data"}) — reconhecido só pelo período, sem AAMMDD, utm_campaign nem o título do D1. ` +
       "Nada foi enviado nem gravado (o link não vai para o D1). Confira no YouTube Studio: se for o vídeo desta edição, rode de novo com " +
-      "--accept-period-match (registra e põe o link no D1); se não for, rode com --force (sobe o vídeo da edição).",
+      "--accept-period-match VIDEO_ID (registra e põe o link no D1); se não for, rode com --force (sobe o vídeo da edição).",
   );
   return { exitCode: 1, record: null, skipped: false };
 }
@@ -553,12 +557,20 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
       contentType: "video/mp4",
       thumbnail,
       // #11080: --force sobe de novo de propósito; sem ele, confere o canal antes.
-      ...(input.force ? {} : { existingVideoCheck: { aammdd: plan.aammdd, title: plan.metadata.title } }),
+      ...(input.force ? {} : { existingVideoCheck: { aammdd: plan.aammdd, title: plan.metadata.title, acceptedPeriodVideoId: typeof input.acceptPeriodMatch === "string" ? input.acceptPeriodMatch : undefined } }),
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
     });
   } catch (e) {
     if (e instanceof ExistingEditionVideoError) {
-      if (e.video.matchedBy === "period" && !input.acceptPeriodMatch) return unconfirmedPeriodMatch(e, input, plan);
+      if (e.video.matchedBy === "period") {
+        const selected = (e.video.periodCandidates ?? [e.video]).find((v) => v.videoId === input.acceptPeriodMatch);
+        if (!selected) return unconfirmedPeriodMatch(e, input, plan);
+        return recordExistingVideo(new ExistingEditionVideoError(selected), input, plan, recordPath, history, deps.now());
+      }
+      if (typeof input.acceptPeriodMatch === "string" && e.video.videoId !== input.acceptPeriodMatch) {
+        log("[erro] VIDEO_ID aceito difere do vídeo reconhecido por edição/título. Nada foi enviado nem gravado.");
+        return { exitCode: 1, record: null, skipped: false };
+      }
       return recordExistingVideo(e, input, plan, recordPath, history, deps.now());
     }
     const step = e instanceof YouTubeUploadError ? e.step : "desconhecida";
@@ -641,7 +653,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match VIDEO_ID]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -661,8 +673,9 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
-  if (flags.has("accept-period-match") && (!upload || flags.has("force"))) {
-    console.error("publish-youtube: --accept-period-match só vale com --upload e sem --force (o --force pula a conferência do canal).");
+  if ((flags.has("accept-period-match") || values["accept-period-match"] !== undefined) &&
+      (!values["accept-period-match"] || !upload || flags.has("force"))) {
+    console.error("publish-youtube: --accept-period-match exige VIDEO_ID e só vale com --upload e sem --force (o --force pula a conferência do canal).");
     console.error(USAGE);
     return 2;
   }
@@ -702,7 +715,7 @@ async function main(): Promise<number> {
     editionDir: dir,
     env: process.env,
     force: flags.has("force"),
-    acceptPeriodMatch: flags.has("accept-period-match"),
+    acceptPeriodMatch: values["accept-period-match"],
     readFile: (p) => readFileSync(p),
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),
