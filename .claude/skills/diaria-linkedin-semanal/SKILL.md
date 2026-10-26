@@ -775,8 +775,15 @@ editor, nesta ordem:
      `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article`
      (grava em `data/social-schedule-rotation.jsonl`, idempotente — é o
      registro que a medição da #10305 cruza com os cliques `ln-{ciclo}`).
-     Se o editor escolher outro horário na hora, diga isso no resumo: o
-     registro fica com o planejado, não com o real.
+     Se o editor agendou (ou publicou) em outro horário, grave o real com
+     `--time` (#11180):
+     `npx tsx scripts/social-schedule-rotation.ts --record --date {publish-monday} --kind linkedin_article --time {HH:MM real}`
+     — a linha sai com `time` = real, `planned_time` = o do plano e
+     `time_differs_from_plan: true`; `--time` igual ao planejado grava a
+     linha normal. Rode no lugar do `--record` sem `--time`, nunca depois
+     dele: o registro não sobrescreve linha já gravada, e o script falha
+     (exit 1) se a linha já estiver lá com outro horário — aí corrija a
+     linha à mão em `data/social-schedule-rotation.jsonl`.
    - Confirmar em `linkedin.com/article/manage/scheduled/` que o artigo
      aparece agendado.
 
