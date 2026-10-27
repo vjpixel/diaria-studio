@@ -193,6 +193,7 @@ import {
   readShortsRegistry,
   shortsRegistryPath,
   shortsRegistryWriterFor,
+  type ShortsRegistryWriter,
 } from "./lib/diaria/shorts-published-store.ts";
 import {
   buildYouTubeInsertRequest,
@@ -380,15 +381,13 @@ export interface ShortsPlanInput {
    */
   youtubeApi?: { ready: true } | { ready: false; reason: string };
   /**
-   * #10982: esta rodada é a do timer do 300 (`--linkedin-timer`). Com
+   * Quem é esta rodada (#11368: um campo só, nunca "os dois timers"). Ausente =
+   * `main`. `linkedin-timer` (#10982, `--linkedin-timer`): com
    * `linkedin_profile_via_timer` ligado, só ela publica o `linkedin_profile`.
+   * `instagram-timer` (#11265, `--instagram-timer`): com `instagram_backend:
+   * "timer-300"`, só ela publica o `instagram`.
    */
-  linkedinTimer?: boolean;
-  /**
-   * #11265: esta rodada é a do timer do Instagram no 300 (`--instagram-timer`).
-   * Com `instagram_backend: "timer-300"`, só ela publica o `instagram`.
-   */
-  instagramTimer?: boolean;
+  writer?: ShortsRegistryWriter;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   /**
    * #10893: duração do vertical (`mp4DurationSeconds`). Ausente = não medida;
@@ -495,7 +494,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // 19:30) e o Reels nunca saía. Ele entra na grade como post fixo, pros
   // outros destinos se espaçarem em volta dele.
   const instagramViaTimer = cfg.instagramBackend === "timer-300";
-  const instagramDelegated = instagramViaTimer && !input.instagramTimer;
+  const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
   const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
   const fixedInstagramSlot: ShortSlot | null = fixedInstagram ? instagramTimerSlot(fixedInstagram, cfg, time.hhmm, shortTime.at) : null;
@@ -553,7 +552,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   };
   const profileLate = lateFor("linkedin_profile");
   // #10982: com o timer do 300 dono do vídeo do perfil, a rodada da skill não o publica.
-  const profileDelegated = cfg.linkedinProfileViaTimer && !input.linkedinTimer;
+  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer";
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -1624,7 +1623,8 @@ export class InstagramTimerGateError extends Error {
  * #11265: a conferência da conta ligada ao publish da rodada do timer, com I/O
  * injetável. Reels já no ar → grava (`persist`) e não publica; ambíguo ou
  * leitura incompleta → lança (o destino vira falha e o timer alarma, nunca
- * publica); nada na conta → publica. Erro da leitura também lança
+ * publica); achado só pela janela de horário → lança `blocked` sem gravar
+ * (#11368); nada na conta → publica. Erro da leitura também lança
  * (fail-closed: a próxima execução de hora em hora tenta de novo). Todo erro
  * daqui é `InstagramTimerGateError` (`persist-failed` carrega o Reels achado).
  */
@@ -1642,6 +1642,16 @@ export async function instagramTimerGate(deps: {
   if (pre.kind === "block") {
     throw new InstagramTimerGateError(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`, "blocked");
   }
+  if (pre.kind === "already" && pre.matchedBy === "time-window") {
+    // #11368: achado só pela janela de ±90 min, sem o marcador da edição — pode
+    // ser o Reels de OUTRA edição postado atrasado. O timer não registra (o
+    // registro errado esconderia o Reels de hoje) nem publica: o editor confere.
+    const where = pre.entry.url ?? pre.entry.id;
+    throw new InstagramTimerGateError(
+      `um Reels sem o marcador da edição está perto do horário (${where}, só pela janela de horário) — pode ser de outra edição; o timer não registra nem publica. Se for o desta edição, registre com --confirm-instagram --media-id ${pre.entry.id}`,
+      "blocked",
+    );
+  }
   if (pre.kind === "already") {
     try {
       deps.persist(pre.entry);
@@ -1651,6 +1661,20 @@ export async function instagramTimerGate(deps: {
     return pre;
   }
   return { kind: "publish" };
+}
+
+/**
+ * #11368: o passo do Instagram na rodada do timer, com I/O injetável — a
+ * conferência da conta SEMPRE antes do upload. Reels já na conta → nada sobe;
+ * gate que lança → nada sobe (o erro segue pro chamador).
+ */
+export async function instagramTimerPublishStep<T>(deps: {
+  gate: () => ReturnType<typeof instagramTimerGate>;
+  publish: () => Promise<T>;
+}): Promise<{ kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch } | { kind: "published"; outcome: T }> {
+  const gate = await deps.gate();
+  if (gate.kind === "already") return gate;
+  return { kind: "published", outcome: await deps.publish() };
 }
 
 /**
@@ -2382,12 +2406,15 @@ export function parseShortsCliArgs(argv: string[]):
   return { ok: true, aammdd, flags, values, positional: positionalOut };
 }
 
-/** Backend do Instagram no config real; config ilegível = não conferido (o plano lança depois). */
-function configuredInstagramBackend(): InstagramBackend | undefined {
+/**
+ * Backend do Instagram no config real; config ilegível = `"unreadable"` (#11368:
+ * o `--instagram-timer` recusa, inclusive no `--mark`, em vez de pular a regra).
+ */
+function configuredInstagramBackend(): InstagramBackend | "unreadable" {
   try {
     return loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))).instagramBackend;
   } catch {
-    return undefined;
+    return "unreadable";
   }
 }
 
@@ -2404,6 +2431,10 @@ async function main(): Promise<number> {
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
   const linkedinTimer = flags.has("linkedin-timer");
   const instagramTimer = flags.has("instagram-timer");
+  if (linkedinTimer && instagramTimer) {
+    console.error("publish-shorts: --instagram-timer não combina com --linkedin-timer (cada timer grava o próprio registro)");
+    return 2;
+  }
   const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
@@ -2564,8 +2595,7 @@ async function main(): Promise<number> {
       publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing) },
       youtubeVideoUrl: ytVideo.url,
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
-      linkedinTimer,
-      instagramTimer,
+      writer,
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
       videoDurationSeconds: duration,
@@ -2692,34 +2722,41 @@ async function main(): Promise<number> {
         });
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
-        if (instagramTimer) {
+        const author = igAuthor;
+        const publishReel = () => publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
+        if (writer === "instagram-timer") {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.
           const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
-          const author = igAuthor;
-          const gate = await instagramTimerGate({
-            decide: () =>
-              readAndDecideInstagramConfirm(defaultGraphDeps, {
-                igUserId: author.igUserId,
-                token: author.token,
-                apiVersion: igApiVersion,
-                published,
-                sinceIso: ctx.sinceIso,
-                markers: ctx.markers,
-                nowIso: new Date().toISOString(),
-                expectedAtIso: ctx.expectedAtIso,
+          const step = await instagramTimerPublishStep({
+            gate: () =>
+              instagramTimerGate({
+                decide: () =>
+                  readAndDecideInstagramConfirm(defaultGraphDeps, {
+                    igUserId: author.igUserId,
+                    token: author.token,
+                    apiVersion: igApiVersion,
+                    published,
+                    sinceIso: ctx.sinceIso,
+                    markers: ctx.markers,
+                    nowIso: new Date().toISOString(),
+                    expectedAtIso: ctx.expectedAtIso,
+                  }),
+                persist: (entry) => {
+                  published = persist(entry);
+                },
               }),
-            persist: (entry) => {
-              published = persist(entry);
-            },
+            publish: publishReel,
           });
-          if (gate.kind === "already") {
-            results.push({ destination: item.destination, ok: true, entry: gate.entry, alreadyRegistered: true, matchedBy: gate.matchedBy });
-            console.error(`[aviso] instagram: o Reels da edição já está na conta (${gate.matchedBy}, ${gate.entry.url ?? gate.entry.id}) — registrado, não publica de novo`);
+          if (step.kind === "already") {
+            results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy });
+            console.error(`[aviso] instagram: o Reels da edição já está na conta (${step.matchedBy}, ${step.entry.url ?? step.entry.id}) — registrado, não publica de novo`);
             continue;
           }
+          outcome = step.outcome;
+        } else {
+          outcome = await publishReel();
         }
-        outcome = await publishInstagramReel(deps, igAuthor.igUserId, igAuthor.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
         outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt);
@@ -2793,7 +2830,7 @@ async function main(): Promise<number> {
   console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
   // #11240: pulo por credencial é terminal pra limpeza (decisão do editor). Só a
   // rodada principal grava; as dos timers do 300 só planejam o próprio destino.
-  if (!linkedinTimer && !instagramTimer) {
+  if (writer === "main") {
     try {
       recordCredentialSkips(
         dir,

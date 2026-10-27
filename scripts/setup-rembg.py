@@ -6,8 +6,10 @@ import importlib.metadata
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 VENV = ROOT / ".venv-rembg"
@@ -29,6 +31,39 @@ def supported_platform(plat=None, machine=None):
     plat = sys.platform if plat is None else plat
     machine = (platform.machine() if machine is None else machine).lower()
     return (plat, machine) in SUPPORTED
+
+
+def write_output(output, data):
+    """Grava o recorte num temporário fora do repo e move para o destino (#11370).
+
+    No Neo, o Python do venv às vezes não enxerga um destino sob a junction
+    `data/` (OneDrive) e `write_bytes` direto morre com `[Errno 2]` sem dizer
+    qual parte do caminho falta. Aqui a pasta é conferida antes, o PNG nasce
+    no temporário do sistema (que sempre funcionou) e só então vai para o
+    destino; qualquer falha nos dois passos vira erro com a causa e o
+    contorno, e o temporário nunca fica para trás."""
+    output = Path(output)
+    parent = output.parent if str(output.parent) else Path(".")
+    if not parent.is_dir():
+        raise RuntimeError(
+            f"pasta de destino do --output inacessível pelo Python: {parent} "
+            "(não existe ou, sob a junction data/ do OneDrive, não é visível pelo venv). "
+            "Grave fora de data/ (ex.: --output retrato.png na raiz do repo) e copie depois."
+        )
+    fd, tmp = tempfile.mkstemp(suffix=output.suffix or ".png", prefix="rembg-")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        try:
+            shutil.move(tmp, str(output))
+        except OSError as error:
+            raise RuntimeError(
+                f"destino do --output inacessível pelo Python: {output} ({error}). "
+                "Se está em data/ (junction do OneDrive), grave fora de data/ e copie depois."
+            ) from error
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def check():
@@ -63,7 +98,7 @@ def main():
         os.environ["U2NET_HOME"] = str(VENV / "models")
         from rembg import new_session, remove
         result = remove(args.input.read_bytes(), session=new_session(MODEL, providers=["CPUExecutionProvider"]))
-        args.output.write_bytes(result)
+        write_output(args.output, result)
         return
     if not supported_platform():
         raise RuntimeError("Setup do rembg só no Neo (Windows x64) ou no 300 (Linux x86_64). " + HELP)
