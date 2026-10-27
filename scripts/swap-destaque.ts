@@ -26,6 +26,8 @@
  *   - `_internal/04-estilo-regen.json` (#10335): estado do plano de
  *     regeneração por Noite Estrelada da posição zerado — a imagem nova não
  *     herda o `pending`/contagem da antiga
+ *   - `_internal/carousel-keep-art.json` (#11213): exceção "manter a arte" da
+ *     posição removida — era da história rebaixada
  *
  * O que o script NÃO faz (sinaliza claramente quais re-renders faltam, em
  * ORDEM, no `rerenders_needed` do JSON de saída):
@@ -94,6 +96,7 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: lay
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
+import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
@@ -1141,6 +1144,13 @@ function main(): void {
             images_deleted: `04-d${demotePosition}-*.{jpg,png,json} removidos, inclusive 4x5-nativo e carousel-* (#9755)`,
             prompts_deleted: `_internal/02-d${demotePosition}-*.md/json e 04-d${demotePosition}-{sd-prompt,generator}.json removidos (precisam regenerar)`,
             estilo_regen_state: estiloRegenPlan,
+            carousel_keep_art: updateCarouselKeepArtFile(
+              editionDir,
+              (k) => clearCarouselKeepArt(k, [`d${demotePosition}`]),
+              true,
+            ).rewritten
+              ? `_internal/carousel-keep-art.json: exceção de d${demotePosition} removida (#11213)`
+              : `_internal/carousel-keep-art.json: sem exceção de d${demotePosition}, nada a remover (#11213)`,
           },
         },
         null,
@@ -1316,6 +1326,18 @@ function main(): void {
   );
   if (estilo.rewritten) result.modified.rewritten.push(estilo.rewritten);
   if (estilo.warning) console.error(`AVISO: ${estilo.warning}`);
+
+  // 7. Tira a exceção "manter a arte" da posição (#11213): ela era da história
+  // rebaixada. Mantida, valeria para a arte NOVA assim que gerada — o
+  // gen-carousel-cards.ts deixaria de regerá-la e o gate rebaixaria o stale.
+  const keepArt = updateCarouselKeepArtFile(
+    editionDir,
+    (k) => clearCarouselKeepArt(k, [`d${demotePosition}`]),
+    false,
+    (path, content) => writeFilesVerified([{ path, content }], "swap-destaque"),
+  );
+  if (keepArt.rewritten) result.modified.rewritten.push(keepArt.rewritten);
+  if (keepArt.warning) console.error(`AVISO: ${keepArt.warning}`);
 
   // -------------------------------------------------------------------------
   // OUTPUT

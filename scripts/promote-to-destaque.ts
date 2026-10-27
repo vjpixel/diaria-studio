@@ -38,7 +38,8 @@
  *      carrossel, `fact-check-sources/`, `04-crop-review.json`,
  *      `06-public-images.json` (chaves das posições deslocadas invalidadas),
  *      `04-estilo-regen.json` (estado do plano de Noite Estrelada segue a
- *      imagem; posição nova sem estado, #10335).
+ *      imagem; posição nova sem estado, #10335), `_internal/carousel-keep-art.json`
+ *      (exceção segue o slide deslocado; posição nova sem exceção, #11213).
  *
  * O que NÃO faz (exige LLM, geração de imagem ou decisão editorial — sai
  * como `next_steps` no JSON):
@@ -82,6 +83,7 @@ import {
 } from "./lib/intentional-errors.ts";
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { clearEstiloRegenDestaques, reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335, #10404
+import { remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   removePoolItemFromMd,
   syncIntroCountInMd,
@@ -506,6 +508,18 @@ export function promoteToDestaque(
   );
   if (estilo.rewritten) rewritten.push(estilo.rewritten);
   if (estilo.warning) warnings.push(estilo.warning);
+
+  // 8b. _internal/carousel-keep-art.json (#11213): a exceção "manter a arte" é
+  //     chaveada por posição — segue os slides deslocados, e a posição inserida
+  //     (mapeada a partir de um `d3` que pode ser resíduo) não herda nada.
+  const keepArt = updateCarouselKeepArtFile(
+    editionDir,
+    (k) => remapCarouselKeepArt(k, newOrder, [`d${position}`]),
+    dryRun,
+    (path, content) => writeFilesVerified([{ path, content }], "promote-to-destaque"),
+  );
+  if (keepArt.rewritten) rewritten.push(keepArt.rewritten);
+  if (keepArt.warning) warnings.push(keepArt.warning);
 
   const d = `d${position}`;
   const nextSteps = [

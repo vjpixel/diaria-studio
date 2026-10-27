@@ -21,12 +21,17 @@
  *   - `gen-carousel-cards.ts` — destaque com exceção não regera nem grava
  *     carimbo; entra como `skipped` e os arquivos existentes seguem valendo.
  *
+ * A chave é a posição, não a história (#11213): `reorder-destaques.ts` e
+ * `promote-to-destaque.ts` reindexam o arquivo junto com os slides
+ * (`remapCarouselKeepArt`); `swap-destaque.ts`/`swap-destaques.ts` apagam a
+ * entrada da posição que recebe outra história (`clearCarouselKeepArt`).
+ *
  * Ausente → `{}` (comportamento de sempre). Presente mas malformado → LANÇA
  * (`readCarouselKeepArt`) ou devolve o erro (`readCarouselKeepArtSafe`): é uma
  * instrução editorial explícita, e ignorá-la em silêncio esconderia o problema
  * (mesmo padrão de `instagram-test-override.ts`, #8681).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export const CAROUSEL_KEEP_ART_FILENAME = "carousel-keep-art.json";
@@ -80,4 +85,75 @@ export function readCarouselKeepArtSafe(editionDir: string): { keepArt: Carousel
   } catch (e) {
     return { keepArt: {}, error: (e as Error).message };
   }
+}
+
+/**
+ * #11213: a chave é a POSIÇÃO, então ela tem que seguir a história quando os
+ * destaques se movem — senão a exceção passa a rebaixar para warning o
+ * stale/overflow de OUTRA história, e um `gen-carousel-cards.ts` posterior
+ * deixa de regerar a arte dela.
+ *
+ * Pure. `newOrder[i] = k` ⇒ a posição nova `d{i+1}` recebe a entrada da
+ * posição antiga `d{k}` (mesma semântica de `reindexCarouselSourceHashes` em
+ * `reorder-destaques.ts`). Chave antiga que nenhuma posição nova referencia
+ * (ex: `d3` numa edição de 2 destaques) sai. `clear` remove as posições que
+ * recebem história nova DEPOIS do remapeamento — o slot inserido pelo promote
+ * é mapeado a partir de `d3`, que numa edição de 2 destaques pode ser um
+ * resíduo de demoção.
+ */
+export function remapCarouselKeepArt(
+  keepArt: CarouselKeepArt,
+  newOrder: readonly number[],
+  clear: readonly string[] = [],
+): CarouselKeepArt {
+  const out: CarouselKeepArt = {};
+  for (let i = 0; i < newOrder.length; i++) {
+    const novo = `d${i + 1}`;
+    const antigo = `d${newOrder[i]}`;
+    if (!(CAROUSEL_KEEP_ART_KEYS as readonly string[]).includes(novo)) continue;
+    const motivo = keepArt[antigo as CarouselKeepArtKey];
+    if (motivo !== undefined) out[novo as CarouselKeepArtKey] = motivo;
+  }
+  for (const k of clear) delete out[k as CarouselKeepArtKey];
+  return out;
+}
+
+/** Pure: remove as posições que receberam outra história (swap), sem mover as demais. */
+export function clearCarouselKeepArt(keepArt: CarouselKeepArt, positions: readonly string[]): CarouselKeepArt {
+  const out: CarouselKeepArt = { ...keepArt };
+  for (const k of positions) delete out[k as CarouselKeepArtKey];
+  return out;
+}
+
+/**
+ * Aplica `transform` ao arquivo da edição. Ausente → no-op. Malformado → NÃO
+ * mexe (a instrução do editor fica como estava, e o `carousel-text-overflow`
+ * já a acusa como error) e devolve `warning` — fail-soft como os demais JSONs
+ * secundários de reorder/promote/swap: nunca aborta a operação editorial.
+ * Resultado vazio grava `{}` (equivale a ausente para os leitores).
+ */
+export function updateCarouselKeepArtFile(
+  editionDir: string,
+  transform: (keepArt: CarouselKeepArt) => CarouselKeepArt,
+  dryRun = false,
+  write: (path: string, content: string) => void = (path, content) => writeFileSync(path, content, "utf8"),
+): { rewritten: string | null; before: CarouselKeepArt; after: CarouselKeepArt; warning?: string } {
+  const path = carouselKeepArtPath(editionDir);
+  if (!existsSync(path)) return { rewritten: null, before: {}, after: {} };
+  let before: CarouselKeepArt;
+  try {
+    before = readCarouselKeepArt(editionDir);
+  } catch (e) {
+    return {
+      rewritten: null,
+      before: {},
+      after: {},
+      warning: `${(e as Error).message} — exceção de arte mantida NÃO reindexada; conferir o arquivo à mão (#11213).`,
+    };
+  }
+  const after = transform(before);
+  const canon = (k: CarouselKeepArt) => JSON.stringify(CAROUSEL_KEEP_ART_KEYS.map((key) => k[key] ?? null));
+  if (canon(after) === canon(before)) return { rewritten: null, before, after };
+  if (!dryRun) write(path, JSON.stringify(after, null, 2) + "\n");
+  return { rewritten: path, before, after };
 }
