@@ -60,6 +60,12 @@ import { assertSentinel } from "../lib/pipeline-state.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { STAGE_PLAN as STAGE_PLAN_IMPL, runEditionStages } from "../lib/edition-stage-runner.ts";
 import { runTsx } from "../lib/run-tsx.ts";
+import {
+  EXIT_WORKSPACE_UNTRUSTED,
+  checkWorkspaceTrust,
+  stderrSaysWorkspaceUntrusted,
+  type WorkspaceTrustResult,
+} from "../lib/claude-workspace-trust.ts";
 
 /**
  * `STAGE_PLAN` e `HEADLESS_FLAGS` mudaram de casa no #5744.
@@ -239,6 +245,9 @@ export function main(
   // `sentinelExists` desde o #5744: sentinela órfã (output apagado) não conta
   // como stage concluído.
   assertSentinelFn: typeof assertSentinel = assertSentinel,
+  // Preflight de confiança do workspace (#11383). Injetável: o default lê o
+  // `~/.claude.json` real (HOME/CLAUDE_CONFIG_DIR do processo).
+  checkTrustFn: (repoRootAbs: string) => WorkspaceTrustResult = (root) => checkWorkspaceTrust(root, { env: process.env }),
 ): number {
   const dataDir = join(repoRootAbs, "data");
   const aammdd = aammddOverride ?? nextEditionDate();
@@ -299,6 +308,35 @@ export function main(
         .map((p: { stage: number }) => p.stage)
         .join(", ")}`,
     );
+  }
+
+  // -------------------------------------------------------------------
+  // Preflight de confiança do workspace (#11383), antes de qualquer spawn.
+  //
+  // `claude -p` não mostra o diálogo de confiança: sem
+  // `hasTrustDialogAccepted` em `~/.claude.json`, a allowlist de
+  // `.claude/settings.json` é ignorada inteira e cada stage morre em
+  // negações, sem sinal além de uma linha no stderr. `~/.claude.json`
+  // ilegível conta como não confiado (nunca fail-soft aqui).
+  // -------------------------------------------------------------------
+  let trust: WorkspaceTrustResult;
+  try {
+    trust = checkTrustFn(repoRootAbs);
+  } catch (e) {
+    trust = { status: "unreadable", configPath: "?", message: `confiança do workspace: erro no preflight (${(e as Error).message})` };
+  }
+  if (trust.status !== "trusted") {
+    console.error(`[${nowIso()}] ${trust.message}`);
+    log(
+      repoRootAbs,
+      dataDir,
+      aammdd,
+      `FAIL  edition=${aammdd} reason=workspace-${trust.status} exit=${EXIT_WORKSPACE_UNTRUSTED} end=${nowIso()} detail=${trust.message}`,
+      "error",
+      `scheduled-edicao: workspace sem confiança (${trust.status}) — nenhum stage disparado`,
+      JSON.stringify({ edition: aammdd, exit_code: EXIT_WORKSPACE_UNTRUSTED, reason: `workspace-${trust.status}`, config_path: trust.configPath }),
+    );
+    return EXIT_WORKSPACE_UNTRUSTED;
   }
 
   // -------------------------------------------------------------------
@@ -367,9 +405,17 @@ export function main(
       failureTail: (e as Error).message,
     });
   }
-  const exitCode = runResult.exitCode;
   const failedStage = runResult.failedStage;
   const tail = runResult.outcomes.find((o) => o.status === "failed")?.failureTail ?? "";
+  // Defesa depois da run (#11383): o CLI anunciou no stderr que ignorou a
+  // allowlist. Alcance limitado: só o stderr de stage que FALHOU
+  // (`execFileSync` só o expõe no throw) e só se a linha sobrou nas últimas
+  // linhas do `failureTail`. O preflight acima é a defesa principal.
+  const untrustedByStderr = runResult.exitCode !== 0 && stderrSaysWorkspaceUntrusted(tail);
+  if (untrustedByStderr) {
+    console.error(`[${nowIso()}] o CLI avisou que o workspace não é confiado (allowlist ignorada) — aceitar o diálogo de confiança em ${repoRootAbs} (#11383)`);
+  }
+  const exitCode = untrustedByStderr ? EXIT_WORKSPACE_UNTRUSTED : runResult.exitCode;
 
   const runEnd = nowIso();
   if (exitCode === 0) {
@@ -390,7 +436,7 @@ export function main(
       repoRootAbs,
       dataDir,
       aammdd,
-      `FAIL  edition=${aammdd} stage=${failedStage ?? "?"} exit=${exitCode} end=${runEnd} tail=${tail}`,
+      `FAIL  edition=${aammdd} stage=${failedStage ?? "?"}${untrustedByStderr ? " reason=workspace-untrusted-stderr" : ""} exit=${exitCode} end=${runEnd} tail=${tail}`,
       "error",
       `scheduled-edicao: falha no stage ${failedStage ?? "?"} (exit ${exitCode})`,
       `{"edition":"${aammdd}","exit_code":${exitCode},"failed_stage":${failedStage ?? "null"}}`,
