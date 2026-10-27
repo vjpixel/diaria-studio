@@ -29,3 +29,13 @@ em worktree pelo hook `block-worktree-bare-push`, #7722), com cwd no worktree, i
 
 `effort: medium` pelo mesmo motivo do `dev-implementador` (#9081, #9530): sem
 agent dedicado, o effort seria herdado do turno do coordenador.
+
+## Push de PR existente (#11372)
+
+Antes de começar a corrigir uma PR existente e **imediatamente antes de cada
+push/re-push**, executar `npx tsx scripts/check-pr-open-for-push.ts --pr N`
+(no repo do PR; para outro repo, `--repo owner/name`). Só `exit 0` autoriza
+push. Se MERGED/CLOSED, parar, preservar os commits locais e devolver ao
+coordenador “PR já mergeada/fechada; abrir follow-up”, com os SHAs pendentes.
+Erro de consulta também bloqueia o push. Não abrir follow-up automaticamente.
+Primeiro push, antes de existir PR, segue o fluxo normal.

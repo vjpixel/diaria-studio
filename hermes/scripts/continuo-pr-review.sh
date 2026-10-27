@@ -470,7 +470,7 @@ try_merge_gate() {
   local stderr_tmp
   stderr_tmp="$(mktemp)"
   set +e
-  GATE_JSON=$(npx tsx scripts/check-continuo-merge-gate.ts --pr "$pr" 2>"$stderr_tmp")
+  GATE_JSON=$(npx tsx scripts/check-continuo-merge-gate.ts --pr "$pr" --session-id "$SESSION_ID" 2>"$stderr_tmp")
   GATE_RC=$?
   set -e
   GATE_STDERR=$(cat "$stderr_tmp" 2>/dev/null || true)

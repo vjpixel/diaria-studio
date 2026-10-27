@@ -101,7 +101,8 @@ class FakeTrainRunner implements TrainRunner {
    * merge-lock — a maioria dos testes quer isso "verde por padrão" e só
    * sobrescreve o que importa pro caso específico. */
   withGate2Green(): this {
-    return this.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson()))
+    return this.on("npx", (a) => a.includes("scripts/check-pr-session-claims.ts"), () => ok())
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson()))
       .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(noThreadsJson()))
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("labels,body"), () => ok(notRetidoJson()))
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("title,body,commits"), () => ok(JSON.stringify({ title: "fix: exemplo", body: "Closes #10" })));
@@ -175,6 +176,22 @@ describe("fetchTrainPrInfo", () => {
 });
 
 describe("revalidateGate2", () => {
+  it("#11372: não mergeia claim alheia, tanto solo quanto em lote", () => {
+    for (const batch of [false, true]) {
+      const runner = new FakeTrainRunner().withGate2Green().withLockOk()
+        .on("npx", a => a.includes("scripts/check-pr-session-claims.ts"), a => {
+          assert.equal(a[a.indexOf("--session-id") + 1], "mine");
+          return fail("#10 reivindicada pela sessão other");
+        });
+      const result = batch
+        ? mergeTrainBatch(runner, 900, { prs: [100] } as TrainBatch, [makePrInfo()], { sessionId: "mine", kind: "develop", commitTitle: "fix", commitBody: "Closes #10" })
+        : mergeSoloPr(runner, 100, { sessionId: "mine", kind: "develop" });
+      assert.equal(result.ok, false);
+      assert.match(result.error!, /other/);
+      assert.equal(runner.calls.some(c => c.args.includes("merge-lock-acquire") || c.args[1] === "merge"), false);
+    }
+  });
+
   it("ok quando CI passou e zero threads não resolvidas", () => {
     const runner = new FakeTrainRunner().withGate2Green();
     const result = revalidateGate2(runner, 100);
