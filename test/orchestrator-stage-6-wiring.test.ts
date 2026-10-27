@@ -178,3 +178,35 @@ describe("orchestrator-stage-6.md §6b-replies — ledger só com as replies tra
     }
   });
 });
+
+describe("orchestrator-stage-6.md §6h — pré-check da purga pelos 2 backends de KV (#11253)", () => {
+  const stage6 = readFileSync(STAGE_6, "utf8");
+  const start = stage6.indexOf("### 6h.");
+  const section6h = stage6.slice(start, stage6.indexOf("\n---", start));
+  const summaryStart = stage6.indexOf("## Resumo final");
+  const summary = stage6.slice(summaryStart);
+  const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-remover-votos-pixel/SKILL.md"), "utf8");
+
+  it("§6h existe e o pré-check é purge-leaderboard.ts --check-auth", () => {
+    assert.ok(start !== -1 && summaryStart !== -1);
+    assert.match(section6h, /npx tsx scripts\/purge-leaderboard\.ts --check-auth/);
+  });
+
+  it("§6h não manda rodar scripts/check-wrangler-auth.ts como pré-check (reprovaria o 300)", () => {
+    assert.doesNotMatch(section6h, /npx tsx scripts\/check-wrangler-auth\.ts/);
+  });
+
+  it("§6h loga o warn com reason neutro purge_precheck_failed e a causa em detail (1a linha [purge])", () => {
+    assert.match(section6h, /"reason":"purge_precheck_failed"/);
+    assert.doesNotMatch(section6h, /kv_backend_unavailable/, "a falha pode ser ADMIN_SECRET, não só backend");
+    assert.match(section6h, /"detail":"\{1a linha \[purge\] do stderr/);
+  });
+
+  it("Resumo final reporta a purga como PENDENTE quando §6h não conclui", () => {
+    assert.match(summary, /Purga de votos do editor: PENDENTE/);
+  });
+
+  it("skill /diaria-remover-votos-pixel documenta o --check-auth", () => {
+    assert.match(skill, /purge-leaderboard\.ts --check-auth/);
+  });
+});

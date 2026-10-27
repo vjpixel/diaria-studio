@@ -561,26 +561,24 @@ limpa e no-op).
 **Escopo:** so votos `diaria` (default do script, sem `--brand`). O mensal (Clarice)
 usa `--brand clarice` e fica FORA deste auto-run diario — nao tocar.
 
-**Checar auth wrangler antes de rodar (label `local`, #2643).** Usar `scripts/check-wrangler-auth.ts` (#6900) —
-NUNCA `npx wrangler whoami` cru: valida identidade ERRADA (env normal, com token), não a de `purge-leaderboard.ts`
-(env sem token, sessao OAuth — #2265; falso-positivo ja ao vivo em 260901, guard cru passou com OAuth expirada e a
-purga falhou com `Authentication error [code: 10000]`). Roda `wrangler whoami` com o env sanitizado (`scripts/lib/cloudflare-oauth-env.ts`):
+**Checar a auth do KV antes de rodar (#11253).** `purge-leaderboard.ts` tem dois backends e escolhe sozinho:
+wrangler logado via OAuth (Neo; `check-wrangler-auth.ts`, env sanitizado, #6900/#2265) ou, sem esse login, a
+API REST do KV com `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (servidor `300`, que nao tem navegador
+pra `wrangler login`). O pre-check usa a MESMA escolha que a purga vai usar — nunca `npx wrangler whoami`
+cru (valida identidade errada, #6900) nem `check-wrangler-auth.ts` sozinho (reprova o `300`, que tem o caminho REST):
 ```bash
-npx tsx scripts/check-wrangler-auth.ts
+npx tsx scripts/purge-leaderboard.ts --check-auth
 ```
-- **Exit 0** (lista a conta logada) → prosseguir com a purga abaixo.
-- **Exit != 0, OU o comando estourar o timeout** (nao logado — tipico de sessao cloud
-  sem OAuth persistido) → **degradar pra warn e SEGUIR sem rodar a purga.** "Degradar
-  pra warn" aqui significa concretamente: nao chamar `purge-leaderboard.ts` (nem
-  tentar de novo), logar o warn abaixo, e passar direto pra Etapa 6b (Auto-reporter)
-  como se este passo nao existisse — o agendamento ja foi confirmado em §6d e NAO deve
-  ser reaberto ou revertido por causa disto. Nao tentar `wrangler login` nem pedir
-  credencial ao editor (Stage 6 nao bloqueia agendamento por causa de auth do KV do
-  leaderboard).
+- **Exit 0** (imprime `[purge] kv backend: wrangler|rest — {motivo}`; o probe leu E gravou no namespace e
+  `ADMIN_SECRET` existe) → guardar o `{backend}` dessa linha pro Resumo final e prosseguir com a purga abaixo.
+- **Exit != 0, OU timeout** (sem backend, probe de leitura/escrita falhou, ou falta `ADMIN_SECRET`) → **degradar
+  pra warn e SEGUIR sem a purga:** nao chamar `--execute` (nem tentar de novo), logar o warn
+  abaixo, **guardar o motivo** (1a linha `[purge]` do stderr — o `[warn]` de fallback vem depois e nao e a causa)
+  pro Resumo final (PENDENTE) e passar pra 6b. §6d NAO e reaberto. Nao tentar `wrangler login` nem pedir credencial.
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
-    --message "purga de votos do editor pulada: wrangler nao autenticado" \
-    --details '{"reason":"wrangler_not_authenticated"}'
+    --message "purga de votos do editor pulada: pre-check --check-auth falhou" \
+    --details '{"reason":"purge_precheck_failed","detail":"{1a linha [purge] do stderr do --check-auth}"}'
   ```
 
 **Se autenticado, rodar a purga (execute direto — mesma justificativa de
@@ -599,9 +597,9 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
   --details '{"emails":["pixel@memelab.com.br","vjpixel@gmail.com"],"keys_deleted":{total_keys}}'
 ```
 
-Falha inesperada de um dos 2 comandos (nao relacionada a auth — ex: erro de
-rede/KV) → logar warn com o motivo e seguir; nunca bloquear o restante do Stage 6 por
-causa desta purga.
+Falha de um dos 2 comandos (exit != 0 — erro de rede/KV, ou o `[purge] ERRO` da purga do
+DO ScoreCounter) → logar warn com o motivo, **guardar o email e o motivo pro Resumo
+final** (PENDENTE) e seguir; nunca bloquear o restante do Stage 6 por causa desta purga.
 
 ---
 
@@ -750,6 +748,11 @@ Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as i
 **#3714:** incluir `Relatório: {studio_report_url}` (summary JSON de 6b-8; é o link primário do relatório). Se vier `null` (fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir.
 
 **#4924:** 6b-9 imprimiu algo → incluir `⚠ Hubs temáticos defasados` após a linha do Relatório. Stdout vazio → omitir (sem afirmar "hubs em dia").
+
+**#11253:** §6h nao concluiu (pre-check `--check-auth` com exit != 0, ou alguma das 2 chamadas `--execute` com
+exit != 0) → incluir `⚠ Purga de votos do editor: PENDENTE — {motivo} (rodar /diaria-remover-votos-pixel)`, nunca so
+o warn do run-log (os votos seguem no ranking publico). Concluida → `Purga de votos do editor: {total_keys} keys
+apagadas ({backend})` — `{backend}` vem da linha `[purge] kv backend:` do pre-check `--check-auth`.
 
 **#5772:** `_internal/brevo-diaria-published.json` existia em §6a → incluir `Brevo diária: agendado para {scheduled_at} ✓` (exit 0) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4/5; no 5, o `reason` já indica cota esgotada, #6146). Arquivo nunca existiu (canal pulado/falhou na Etapa 5) → omitir a linha por completo — não afirmar "Brevo diária: pulado".
 
