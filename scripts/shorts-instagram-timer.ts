@@ -48,6 +48,15 @@
  * (`INSTAGRAM_TIMER_LATE_DRIVE_CHECK_FILE`); erro do Drive nunca vira "dia sem
  * vertical". I/O injetável em `runInstagramTimer` (testes de ponta a ponta).
  *
+ * #11389: vertical acima do teto de duração da API na conta autora
+ * (`instagram_api_max_seconds_by_account`, #10916) é limite CONHECIDO, não
+ * falha: o Reels sai pelo Chrome (Passo B3b, @vjpixel autor com a @diar.ia.br
+ * em collab, #11390). O timer manda um lembrete (`guided`, uma vez por
+ * edição) já antes do horário quando o corte do Instagram está no disco, e
+ * depois do teto de 3 h troca o `late` pelo mesmo lembrete
+ * (`instagramOverApiCap`). Cortar uma versão ≤ teto (opção b da issue) fica
+ * de fora: muda o conteúdo e é decisão editorial.
+ *
  * Lock O_EXCL em `_internal/.shorts-instagram-timer.lock` (o mesmo
  * `acquireTimerLock` do timer do LinkedIn): a task diária e a de hora em hora
  * nunca publicam juntas.
@@ -82,8 +91,13 @@ import {
 } from "./lib/editor-notify.ts";
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import {
+  INSTAGRAM_CHROME_ROUTE,
+  instagramChromeRouteText,
+  instagramReelsApiFit,
+  loadInstagramApiMaxSeconds,
   loadShortScheduleConfig,
   loadShortsConfig,
+  mp4DurationSeconds,
   parseShortsPublishedFile,
   resolveShortTime,
   shortInstagramVideoFileName,
@@ -193,11 +207,29 @@ export function alarmKeyOf(id: string): string {
   return id.split("#")[0] ?? id;
 }
 
+/** Puro: `HH:MM` BRT de um instante ISO. */
+function hhmmBrt(ms: number): string {
+  return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
+}
+
 /** Puro: `HH:MM` BRT do fim da janela do timer (`horário do vertical + 3 h`). */
 export function instagramTimerDeadlineHhmm(at: string): string {
-  return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(
-    new Date(Date.parse(at) + MAX_FIRE_LATENESS_MS),
-  );
+  return hhmmBrt(Date.parse(at) + MAX_FIRE_LATENESS_MS);
+}
+
+/**
+ * Puro (#11389): o vídeo do Instagram já no disco passa do teto de duração da
+ * API na conta autora (`publishing.shorts.instagram_api_max_seconds_by_account`,
+ * #10916)? Mesma regra do plano do publish-shorts (`instagramReelsApiFit`):
+ * duração ilegível ou teto desligado = cabe (a API decide). Acima do teto o
+ * Reels sai pelo Chrome (Passo B3b) e o timer não tenta publicar nem manda
+ * `late` por isso: manda um lembrete (`guided`), uma vez por edição.
+ */
+export function instagramOverApiCap(config: unknown, durationSeconds: number | null): { over: true; reason: string } | { over: false } {
+  const cfg = loadShortsConfig(config);
+  const label = cfg.instagramAuthorPage === null ? "da diar.ia.br (env)" : `vinculada à página ${cfg.instagramAuthorPage}`;
+  const fit = instagramReelsApiFit(durationSeconds, loadInstagramApiMaxSeconds(config, cfg.instagramAuthorPage), label);
+  return fit.fits ? { over: false } : { over: true, reason: fit.reason };
 }
 
 export type InstagramTimerDecision =
@@ -454,8 +486,10 @@ export function buildInstagramTimerAlarm(input: {
   driveFileId?: string | null;
   /** `HH:MM` BRT do fim da janela (`instagramTimerDeadlineHhmm`); null = desconhecido. */
   deadlineHhmm?: string | null;
+  /** #11389: `HH:MM` BRT do horário do vertical (o lembrete `guided` diz quando postar); null = desconhecido. */
+  verticalHhmm?: string | null;
 }): { subject: string; body: string } {
-  const { aammdd, key, reason, videoArg, driveFileId, deadlineHhmm } = input;
+  const { aammdd, key, reason, videoArg, driveFileId, deadlineHhmm, verticalHhmm } = input;
   const published = PUBLISHED_KEYS.has(key);
   const lines = [
     "Achado automático da task `Diaria-Shorts-Instagram`",
@@ -469,7 +503,17 @@ export function buildInstagramTimerAlarm(input: {
     ? `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only instagram --instagram-timer --publish --now --video ${videoArg}${driveFileId ? ` --from-drive ${driveFileId}` : ""}\``
     : null;
   let subject: string;
-  if (key === "collab") {
+  if (key === "guided") {
+    // #11389: limite conhecido da API, não falha: lembrete único por edição, nunca `late`.
+    lines.push(
+      "Lembrete, não é falha: o vertical desta edição passa do teto de duração da API do Instagram nesta conta, então o timer do 300 não publica o Reels. Ele sai pelo Chrome.",
+      "O que fazer:",
+      `- Postar pelo instagram.com no Chrome (Passo B3b do \`/diaria-publica-video\`)${verticalHhmm ? ` às ${verticalHhmm} BRT` : " no horário do vertical"}, ${instagramChromeRouteText()}.`,
+      `- Registrar com ${confirm} (procura também no perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} enquanto o convite de collab está pendente) ou com \`--confirm-instagram --url URL\`.`,
+      "Este lembrete sai uma vez por edição, e o timer não manda o alarme de atraso (`late`) por esse motivo.",
+    );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: postar pelo Chrome${verticalHhmm ? ` às ${verticalHhmm}` : ""} (acima do teto da API, lembrete)`;
+  } else if (key === "collab") {
     lines.push(
       "O Reels está no ar e registrado; NÃO reposte.",
       "O Instagram devolveu um aviso depois de publicar (ex.: o convite de collab descartado). Confira o Reels no app e, se o collab sumiu, convide a conta de novo editando o post.",
@@ -738,6 +782,7 @@ export async function alarm(
     videoArg: videoPath ? videoArgFor(videoPath) : null,
     driveFileId,
     deadlineHhmm: ctx.at ? instagramTimerDeadlineHhmm(ctx.at) : null,
+    verticalHhmm: ctx.at ? hhmmBrt(Date.parse(ctx.at)) : null,
   });
   const res = await notifyEditor(
     { check: "shorts-instagram-timer", fingerprint: `${aammdd}:${id}`, severity: alarmSeverity(key), family: "evento", subject, body, forceEmail },
@@ -768,6 +813,16 @@ export interface InstagramTimerRunDeps {
   /** Roda `npx tsx <args>` (o publish-shorts). */
   runScript: (args: string[]) => { status: number | null; stdout: string; stderr: string };
   notify: NotifyEditorDeps;
+  /** #11389: duração (s) de um MP4 do disco; null = ilegível. Ausente = lê o arquivo (`mp4DurationSeconds`). */
+  videoDurationSeconds?: (path: string) => number | null;
+}
+
+function readMp4Duration(path: string): number | null {
+  try {
+    return mp4DurationSeconds(readFileSync(path));
+  } catch {
+    return null;
+  }
 }
 
 function defaultRunDeps(aammdd: string, dir: string): InstagramTimerRunDeps {
@@ -821,12 +876,41 @@ export async function runInstagramTimer(aammdd: string, dir: string, dryRun: boo
       if (check.kind === "error") lateNote = ` (o Drive não respondeu ao conferir se o dia teve vertical: ${check.reason} — se a edição saiu sem vídeo, ignore)`;
     }
   }
-  if (decision.kind === "skip" || decision.kind === "wait") {
-    console.log(`${LOG_PREFIX} ${aammdd}: ${decision.kind === "skip" ? "nada a fazer" : "esperando"} — ${decision.reason}`);
+  // #11389: o vídeo do Instagram já no disco passa do teto da API da conta? O
+  // primeiro arquivo existente da lista decide (o corte vence o genérico).
+  const durationOf = deps.videoDurationSeconds ?? readMp4Duration;
+  const overCapOnDisk = (paths: string[]): { over: true; reason: string; path: string } | null => {
+    const path = paths.find((p) => existsSync(p));
+    if (!path) return null;
+    const r = instagramOverApiCap(config, durationOf(path));
+    return r.over ? { ...r, path } : null;
+  };
+  if (decision.kind === "wait") {
+    console.log(`${LOG_PREFIX} ${aammdd}: esperando — ${decision.reason}`);
+    // #11389: lembrete ANTECIPADO. Só o corte do Instagram conta aqui: o genérico
+    // acima do teto pode ainda ganhar um corte que cabe, e o lembrete mandaria
+    // postar à mão o que o timer publicaria.
+    // Lembrete já entregue: não relê o vídeo a cada hora.
+    const statePath = join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE);
+    if (alreadyAlarmed(existsSync(statePath) ? readFileSync(statePath, "utf8") : null, "guided")) return 0;
+    const over = overCapOnDisk([instagramCutPath]);
+    if (!over || dryRun) return 0;
+    return (await alarm(dir, aammdd, "guided", over.reason, { at: decision.at, videoPath: over.path, driveFileId: null }, deps.notify)) ? 0 : 1;
+  }
+  if (decision.kind === "skip") {
+    console.log(`${LOG_PREFIX} ${aammdd}: nada a fazer — ${decision.reason}`);
     return 0;
   }
   const sidecar = parseCutSidecar(existsSync(sidecarPath) ? readFileSync(sidecarPath, "utf8") : null);
   if (decision.kind === "late") {
+    // #11389: acima do teto conhecido da API não é atraso: o Reels sai pelo
+    // Chrome. Vira o lembrete `guided` (uma vez por edição), nunca `late`.
+    const over = overCapOnDisk([instagramCutPath, genericPath]);
+    if (over) {
+      console.log(`${LOG_PREFIX} ${aammdd}: ${decision.reason}, mas o vídeo passa do teto da API — lembrete do Passo B3b, sem late`);
+      if (dryRun) return 0;
+      return (await alarm(dir, aammdd, "guided", over.reason, { at: decision.at, videoPath: over.path, driveFileId: null }, deps.notify)) ? 0 : 1;
+    }
     const reason = `${decision.reason}${lateNote}`;
     console.log(`${LOG_PREFIX} ${aammdd}: ${reason}`);
     if (dryRun) return 0;
