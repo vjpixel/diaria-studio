@@ -851,6 +851,18 @@ export function mp4DurationSeconds(buf: Buffer): number | null {
  */
 export const INSTAGRAM_REELS_API_MAX_SECONDS = 40;
 
+/**
+ * Teto de TAMANHO do arquivo do Reels pela API (#11355), além do de duração.
+ * Medido em 27/10/2026 na @diar.ia.br com o vertical real da 261027: 49,9 s
+ * com 120,2 MB recusado (rupload 400 `ProcessingFailedError`), o mesmo cortado
+ * em 30 s com 72,6 MB aceito, e reencodado em 49,9 s com 10 MB aceito. O corte
+ * fica entre 72,6 e 120 MB; 70 MB fica abaixo do maior arquivo que passou.
+ * Valor provisório até a bissecção fechar. Acima dele o Instagram vira passo
+ * guiado, como acima do teto de duração (subir comprimido pela API ficou de
+ * fora por decisão do editor, #11355).
+ */
+export const INSTAGRAM_REELS_API_MAX_BYTES = 70_000_000;
+
 /** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823). */
 export type WorkerInstagramAccount = "diaria" | "vjpixel";
 
@@ -884,10 +896,10 @@ function validMaxSeconds(v: unknown, field: string): number | null {
 /**
  * Teto de duração do Reels pela API para a conta que publica (#10916). O teto
  * é POR CONTA: a @vjpixel aceita 40 s e recusa 42 s (#10893, 22/10/2026). Na
- * @diar.ia.br as medições divergem — sintéticos de até 55 s passaram em 23/10
- * (#10916), mas um sintético de 40 s (22/10) e o vertical REAL de 49,9 s (27/10)
- * foram recusados —, então o config usa 30 s, o maior valor sem recusa
- * registrada (#11281). Os valores vivem no config, não aqui. Ordem:
+ * @diar.ia.br o teto fica entre 55 e 57 s (#10916, #11355); o vertical REAL de
+ * 49,9 s recusado em 27/10 (#11281) caiu pelo TAMANHO (120 MB), não pela
+ * duração — ver `INSTAGRAM_REELS_API_MAX_BYTES`. Os valores vivem no config,
+ * não aqui. Ordem:
  *   1. `publishing.shorts.instagram_api_max_seconds_by_account[chave]`, com a
  *      chave de `instagramAccountKey(authorPage)`;
  *   2. `publishing.shorts.instagram_api_max_seconds` (legado, vale pra
@@ -973,6 +985,24 @@ export function instagramReelsApiFit(
     reason:
       `o vertical tem ${durationSeconds.toFixed(1)} s e a API do Instagram recusa Reels acima de ~${maxSeconds} s ${accountLabel ? `na conta ${accountLabel}` : "nesta conta"} ` +
       `(rupload 400 ProcessingFailedError / 2207076, #10893; teto por conta em publishing.shorts.instagram_api_max_seconds_by_account, #10916)`,
+  };
+}
+
+/**
+ * Pure (#11355): o arquivo do vertical cabe no rupload do Instagram? Tamanho
+ * desconhecido (vídeo ausente) segue: nada a medir. Acima do teto vira passo
+ * guiado, pelo mesmo caminho do teto de duração.
+ */
+export function instagramReelsApiSizeFit(
+  sizeBytes: number | null,
+  maxBytes: number = INSTAGRAM_REELS_API_MAX_BYTES,
+): { fits: true } | { fits: false; reason: string } {
+  if (sizeBytes === null || sizeBytes <= maxBytes) return { fits: true };
+  return {
+    fits: false,
+    reason:
+      `o vertical tem ${(sizeBytes / 1e6).toFixed(1)} MB e a API do Instagram recusa arquivos acima de ~${maxBytes / 1e6} MB ` +
+      `(rupload 400 ProcessingFailedError com 120 MB, aceito com 72,6 MB, #11355)`,
   };
 }
 

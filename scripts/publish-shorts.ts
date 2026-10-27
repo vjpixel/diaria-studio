@@ -149,6 +149,7 @@ import {
   INSTAGRAM_ENV_ACCOUNT_KEY,
   instagramApiMaxSecondsPremise,
   instagramReelsApiFit,
+  instagramReelsApiSizeFit,
   isDestinationDone,
   knownDestinationIds,
   listShortDestinations,
@@ -427,7 +428,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const igMaxPremise = instagramApiMaxSecondsPremise(igMaxRes);
   if (igMaxPremise && destinations.some((d) => d.id === "instagram")) premises.push(igMaxPremise);
   const igAccountLabel = cfg.instagramAuthorPage === null ? "da diar.ia.br (env)" : `vinculada à página ${cfg.instagramAuthorPage}`;
-  const igFit = instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax, igAccountLabel);
+  const igDurationFit = instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax, igAccountLabel);
+  // #11355: além da duração, o rupload recusa arquivo grande (120 MB caiu, 72,6 MB passou).
+  // Acima do teto de bytes o Instagram segue o mesmo caminho guiado da duração.
+  const igSizeFit = instagramReelsApiSizeFit(input.video.sizeBytes);
+  const igFit = !igDurationFit.fits ? igDurationFit : igSizeFit;
   // Sem credencial (ou acima do teto, no Instagram) o destino não sai pela API — não disputa a grade nem gera premissa de horário.
   function publishable(d: ShortDestination): boolean {
     if (d.kind === "facebook_page") return !input.pages.find((p) => p.slug === d.slug)!.missing.length;
@@ -459,7 +464,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   for (const s of slots) {
     if (input.forceNow) continue;
     if (s.destination === "instagram" && !igFit.fits) {
-      premises.push(`instagram: passo manual (Chrome ou app) às ${s.hhmm} BRT do dia da edição (acima do teto da API, #10893) — slot reservado na grade (#10933)`);
+      premises.push(`instagram: passo manual (Chrome ou app) às ${s.hhmm} BRT do dia da edição (acima do teto ${igDurationFit.fits ? "de tamanho" : "de duração"} da API, ${igDurationFit.fits ? "#11355" : "#10893"}) — slot reservado na grade (#10933)`);
       continue;
     }
     const sch = scheduleFor(s);
