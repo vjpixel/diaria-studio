@@ -73,9 +73,11 @@
 //     não há lista de "runners": o corpo só é pulado quando o comando INTEIRO
 //     casa a whitelist de `isHeredocDataCommand` (git commit -F -/-m "$(cat
 //     <<'D' …)", gh pr|issue create/comment --body "$(cat <<'D' …)", com
-//     `cd <caminho simples> && ` opcional antes — #10777).
-//     Falso positivo fora dela (ex.: `cat <<'EOF' > nota.md` citando o merge
-//     numa rodada) é aceito;
+//     `cd <caminho simples> && ` opcional antes — #10777; desde o #11325
+//     também `cat <<'D' > arq` / `cat > arq <<'D'` seguido no máximo de um
+//     consumidor de texto, e `gh pr|issue comment … --body-file - <<'D'`).
+//     Falso positivo fora dela (ex.: `cat <<'EOF' | tee nota.md` citando o
+//     merge) é aceito;
 //   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`).
 // Na dúvida o lexer fica do lado de VER o merge: flag desconhecida de wrapper
 // é tratada como booleana (não engole a palavra seguinte).
@@ -1336,7 +1338,32 @@ const HEAD_FORMS = [
     re: new RegExp(`^${CD_PREFIX}gh (?:pr create|pr comment|issue comment|issue create)${ARGS} --body "\\$\\(cat <<${DELIM}$`),
     tail: new RegExp(`^\\)"${ARGS}\\s*$`),
   },
+  // #11325: gh pr|issue comment|create|edit … --body-file - <<'D'  →  depois do D, nada.
+  {
+    re: new RegExp(`^${CD_PREFIX}gh (?:pr|issue) (?:comment|create|edit)${ARGS} --body-file - <<${DELIM}$`),
+    tail: /^\s*$/,
+  },
+  // #11325: cat <<'D' > ARQ  /  cat > ARQ <<'D'  (também `>>`) — o corpo vai
+  // pra um ARQUIVO, nunca pra um shell. Depois do D: nada, ou UM consumidor
+  // de texto (abaixo). Executar o arquivo na mesma chamada (`bash ARQ`,
+  // `. ARQ`, `| sh`) não casa e segue fail-closed.
+  { re: new RegExp(`^${CD_PREFIX}cat <<${DELIM} ?>>? ?${SIMPLE_ARG}$`), tail: catTail() },
+  { re: new RegExp(`^${CD_PREFIX}cat ?>>? ?${SIMPLE_ARG} <<${DELIM}$`), tail: catTail() },
 ];
+
+/**
+ * Fecho aceito depois de um `cat <<'D' > ARQ` (#11325), contado a partir da
+ * linha seguinte ao D: vazio, ou UMA linha com um comando que só LÊ o arquivo
+ * como texto (helper de review/corpo de PR, `gh pr|issue comment|create|edit`,
+ * `git commit [&& git push]`), com `cd X && ` opcional e argumentos simples
+ * (sem `$`, crase, `\` nem aspas abertas).
+ */
+function catTail() {
+  const consumer =
+    `(?:npx tsx scripts/gh-pr-review-api\\.ts|npx tsx scripts/lib/gh-pr-safe-edit\\.ts|` +
+    `gh (?:pr|issue) (?:comment|create|edit))${ARGS}|git commit${ARGS}${GIT_PUSH}`;
+  return new RegExp(`^\\s*(?:${CD_PREFIX}(?:${consumer})\\s*)?$`);
+}
 
 /**
  * `true` quando o comando INTEIRO é uma das formas de `HEAD_FORMS`: 1ª linha
