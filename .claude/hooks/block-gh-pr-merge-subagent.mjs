@@ -1246,12 +1246,13 @@ export function classifyMergeBlockCause(activeCoordinatorSessionIds, callerSessi
   // que os arquivos de sessão, então um soluço de I/O do OneDrive degrada os
   // dois sinais junto — permitir sobre lock ilegível E varredura degradada
   // seria confiar em dois estados que ninguém conseguiu ler.
-  // Varredura DEGRADADA bloqueia independente do estado do lock — inclusive
+  // #11347: coordenadora identificada com lock próprio mantém a serialização
+  // mesmo com registros de peers ilegíveis. Os demais casos bloqueiam, inclusive
   // com o lock INDETERMINADO (P2 do review cruzado): `.merge-lock.json` mora
   // no MESMO diretório sincronizado que os arquivos de sessão, então um
   // soluço de I/O do OneDrive degrada os dois sinais junto, e permitir aí
   // seria confiar em dois estados que ninguém conseguiu ler.
-  if (ctx.scanDegraded === true) return "scan-degraded";
+  if (ctx.scanDegraded === true && !(isCoordinator && holder === callerSessionId)) return "scan-degraded";
 
   // A regra de CONTENÇÃO exige saber que o lock está ausente. Ela NÃO se
   // aplica a `undefined` (não deu pra ler): "estado indeterminado nunca
@@ -1498,6 +1499,16 @@ export function buildBlockReason(ctx = {}) {
         "continuam exclusivas do fluxo da coordenadora.";
     }
   }
+  if (ctx.blockCause === "scan-degraded") {
+    return "gh pr merge bloqueado (#5716): varredura de sessões degradada/ilegível. " +
+      "Não foi possível confirmar a coordenação e a serialização; confira os erros de I/O em data/sessions/ " +
+      "e renove o merge lock da coordenadora antes de tentar novamente. Não altere a identidade da sessão.";
+  }
+  if (ctx.blockCause === "not-authorized" && ctx.callerInLinkedWorktree === true) {
+    return "gh pr merge bloqueado (#5716): payload.cwd aponta para um worktree vinculado. " +
+      "Mesmo com session_id registrado, essa chamada não comprova ser da coordenadora top-level. " +
+      "Retorne ao checkout principal e confira o cwd enviado pela ferramenta; não remova worktrees para liberar o guard.";
+  }
   const hasScopedGrant = ctx.hasLiveGrant === true && ctx.grantPr !== undefined;
   const grantMissedTarget = hasScopedGrant && ctx.grantPr !== ctx.targetPr;
   let reason = grantMissedTarget ? `${BLOCK_REASON} ${SCOPED_GRANT_HINT}` : BLOCK_REASON;
@@ -1667,9 +1678,8 @@ if (
       // `onlyUnreachableCoordinatorsActive` concluía "todas inalcançáveis"
       // por engano.
       // Downstream, `classifyMergeBlockCause` já bloqueia de qualquer forma
-      // via `ctx.scanDegraded` (linha "if (ctx.scanDegraded === true) return
-      // 'scan-degraded';", que roda incondicionalmente e não depende deste
-      // ctx.hasSelfAuthorization) — então isto nunca foi um bypass real de
+      // via `ctx.scanDegraded` (a exceção exige coordenadora com lock próprio,
+      // nunca ctx.hasSelfAuthorization) — então isto nunca foi um bypass real de
       // merge. Mas `hasSelfAuthorization` ficar `true` num estado que a
       // varredura não confirma é uma inconsistência interna que um refactor
       // futuro (ex: reordenar os checks de `classifyMergeBlockCause`)
@@ -1717,6 +1727,16 @@ if (
       // decide SE bloqueia (mesmo cálculo), `buildBlockReason` usa o motivo
       // pra emitir o hint de merge lock só quando ele é de fato a causa real.
       const blockCause = classifyMergeBlockCause(scan.ids, payload.session_id, ctx);
+      appendHookRunLog(repoRoot, "merge-guard", blockCause === null ? "info" : "warn", "merge_guard_decision", {
+        blockCause,
+        sessionId: payload.session_id,
+        cwd: payload.cwd,
+        sessionFoundInCoordinators: scan.ids.has(payload.session_id),
+        isCoordinator: scan.ids.has(payload.session_id) && ctx.callerInLinkedWorktree !== true,
+        callerInLinkedWorktree: ctx.callerInLinkedWorktree,
+        scanDegraded: scan.degraded,
+        mergeLockHolder: ctx.mergeLockHolder,
+      });
       if (blockCause !== null) {
         process.stdout.write(
           JSON.stringify({

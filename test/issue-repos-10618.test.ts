@@ -494,6 +494,14 @@ describe("e2e: guard do #5716 com lock por repo (#10618)", () => {
     run(root, `gh pr merge 23 --squash -R ${DESIGN}`);
     const log = readFileSync(join(root, "data", "run-log.jsonl"), "utf8");
     assert.match(log, /"message":"merge_target_repo"/);
+    const decision = log.split("\n").filter(Boolean).map((line) => JSON.parse(line))
+      .find((event) => event.message === "merge_guard_decision");
+    assert.equal(decision.details.blockCause, "lock-held-other");
+    assert.equal(decision.details.sessionFoundInCoordinators, true);
+    assert.equal(decision.details.isCoordinator, true);
+    assert.equal(decision.details.callerInLinkedWorktree, false);
+    assert.equal(decision.details.scanDegraded, false);
+    assert.equal(decision.details.cwd, root);
     assert.match(log, /"mode":"foreign-whitelist","targets":\["vjpixel\/diaria-design"\]/);
   });
 });
