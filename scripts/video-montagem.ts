@@ -28,6 +28,8 @@
  *   build AAMMDD [--allow-missing]
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
+ *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
+ *       corte só na vertical é um item com "skip"/"targets" no blocks.json.
  *   srt AAMMDD [--seq instagram|outras-redes] [--from-raw] [--force]
  *       legendas das verticais. Retranscreve o áudio montado (cache por trechos +
  *       identidade do áudio); --from-raw remapeia o transcript do bruto.
@@ -114,6 +116,7 @@ import {
   roteiroMarkdown,
   segmentListing,
   SHORTS_MAX_S,
+  shortsWarning,
   suggestedDurations,
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
@@ -487,6 +490,8 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean): number {
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
     for (const x of p.dropped) console.error(`   ${x}`);
     problems += p.missingBlocks.length + p.dropped.length;
+    const over = shortsWarning(p, source.fps);
+    if (over) console.error(`[aviso] ${over}`);
   }
   if (problems && !allowMissing) {
     console.error(`[erro] ${problems} problema(s) acima: corrigir o blocks.json (outra tomada, intervalo maior) ou rodar com --allow-missing`);
