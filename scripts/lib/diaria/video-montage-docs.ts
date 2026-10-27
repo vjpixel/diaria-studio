@@ -22,10 +22,12 @@
 
 import {
   BLOCK_KEYS,
+  alignTokens,
   clockTime,
+  decideTakes,
   defaultSequences,
-  groupTakes,
   isBlockKey,
+  tokenize,
   validateVocabRules,
   type BlockKey,
   type ResolvedItem,
@@ -161,30 +163,101 @@ export function parseDecupagemPlan(raw: unknown, segmentCount: number): { ok: tr
   return { ok: true, plan: raw as unknown as DecupagemPlan };
 }
 
-/** Lista numerada dos segmentos (1-based), com as tomadas repetidas apontadas: o insumo da classificação. */
+/** Lista numerada dos segmentos (1-based), com a decisão por critério de cada tomada (#11364): o insumo da classificação. */
 export function segmentListing(segments: Segment[]): string {
   const hint = takeHints(segments);
   const lines = segments.map((s, i) => `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${hint[i] ? `  (${hint[i]})` : ""}`);
   return lines.join("\n") + "\n";
 }
 
-/** Por segmento: "tomada k de n" quando é tomada repetida de uma frase (`groupTakes`), com a sugerida marcada. */
+/**
+ * Por segmento, a decisão de `decideTakes` (#11364): "tomada k de n: usar
+ * (aprovada pela direção: …)", "tomada k de n: cortar (a 3ª tomada é a última
+ * completa)", "direção: cortar (bastidor …)". "conferir" quando nenhum
+ * critério decide (a direção recusou todas): retranscrever antes de declarar
+ * dúvida.
+ */
 function takeHints(segments: Segment[]): string[] {
   const out = segments.map(() => "");
-  for (const g of groupTakes(segments)) {
-    if (g.segments.length < 2) continue;
-    g.segments.forEach((i, k) => {
-      out[i] = `tomada ${k + 1} de ${g.segments.length}${i === g.suggested ? ", a última completa" : ""}`;
-    });
+  const { bySegment } = decideTakes(segments);
+  for (const d of bySegment.values()) {
+    if (d.criterion === "bastidor") out[d.segment] = `direção: cortar (${d.reason})`;
+    else {
+      const head = d.group.length > 1 ? `tomada ${d.group.indexOf(d.segment) + 1} de ${d.group.length}: ` : "";
+      const verdict = d.criterion === "sem-criterio" ? `conferir, nenhum critério decide (${d.reason}); retranscrever o trecho` : `${d.suggestion} (${d.reason})`;
+      out[d.segment] = head + verdict;
+    }
   }
   return out;
 }
 
 /** Ordinal da tomada do segmento no grupo de repetições ("2ª tomada"), ou null se a frase saiu uma vez só. */
 function takeOrdinal(segments: Segment[], index0: number): string | null {
-  const g = groupTakes(segments).find((x) => x.segments.includes(index0));
-  if (!g || g.segments.length < 2) return null;
-  return `${g.segments.indexOf(index0) + 1}ª tomada`;
+  const d = decideTakes(segments).bySegment.get(index0);
+  if (!d || d.group.length < 2) return null;
+  return `${d.group.indexOf(index0) + 1}ª tomada`;
+}
+
+/**
+ * Confere o plano contra os critérios de decisão (#11364), juntando tudo:
+ * - erro: duas tomadas da mesma frase como "usar" (uma tomada por frase; o
+ *   XML sai com UMA montagem, não com as opções em sequência);
+ * - erro: "alternativa" numa frase que a direção já decidiu (aprovou uma tomada);
+ * - aviso: "usar" numa tomada diferente da que a direção aprovou;
+ * - aviso: comentário da direção dentro de uma linha "usar"/"alternativa" (é bastidor).
+ * Segmentos são os 1-based do plano.
+ */
+export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[]): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const { bySegment, cues } = decideTakes(segments);
+  const cueSegs = new Set(cues.map((c) => c.segment));
+  const toks = segments.map((s) => tokenize(s.text));
+  // A mesma fala dita de novo (não só o mesmo começo): o falso começo é prefixo da tomada.
+  const duplicate = (a: number, b: number) => {
+    const [x, y] = toks[a].length <= toks[b].length ? [toks[a], toks[b]] : [toks[b], toks[a]];
+    return x.length > 0 && alignTokens(x, y).length >= 0.6 * x.length;
+  };
+  const usedTakes = new Map<string, Array<{ seg: number; label: string }>>();
+  for (const b of plan.blocks) {
+    b.rows.forEach((r, j) => {
+      const label = `${b.key}.rows[${j}]`;
+      for (const s1 of r.segments) {
+        const s = s1 - 1;
+        if (cueSegs.has(s) && r.suggestion !== "cortar") {
+          warnings.push(`${label}: segmento ${s1} é comentário da direção ("${segments[s].text.trim()}"): bastidor, deixar fora do plano`);
+        }
+        const d = bySegment.get(s);
+        if (!d || d.group.length === 0) continue;
+        const approvedSeg = d.criterion === "direcao" ? d.group.find((x) => bySegment.get(x)?.suggestion === "usar") : undefined;
+        if (r.suggestion === "alternativa" && approvedSeg !== undefined) {
+          errors.push(`${label}: "alternativa" no segmento ${s1}, mas a direção aprovou o segmento ${approvedSeg + 1}: usar esse e cortar os outros`);
+        }
+        if (r.suggestion === "usar") {
+          if (approvedSeg !== undefined && approvedSeg !== s) {
+            warnings.push(`${label}: "usar" no segmento ${s1}, mas a direção aprovou o segmento ${approvedSeg + 1} (contrariar a direção pede motivo no reason)`);
+          }
+          const key = d.group.join(",");
+          const list = usedTakes.get(key) ?? [];
+          list.push({ seg: s, label });
+          usedTakes.set(key, list);
+        }
+      }
+    });
+  }
+  for (const list of usedTakes.values()) {
+    for (let i = 0; i < list.length; i++) {
+      for (let k = i + 1; k < list.length; k++) {
+        const a = list[i];
+        const c = list[k];
+        if (!duplicate(a.seg, c.seg)) continue;
+        errors.push(
+          `segmentos ${a.seg + 1} (${a.label}) e ${c.seg + 1} (${c.label}) são tomadas da mesma frase, as duas "usar": decidir uma (a outra "cortar", ou "alternativa" só se nenhum critério decide)`,
+        );
+      }
+    }
+  }
+  return { errors, warnings };
 }
 
 /** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */
@@ -192,6 +265,8 @@ export function decupagemPlanTemplate(edition: string, segments: Segment[]): Rec
   const hint = takeHints(segments);
   return {
     _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou.",
+    _criterio:
+      "Uma tomada por frase, decidida nesta ordem: (1) a aprovada pela direção; (2) a que emenda com a frase seguinte do roteiro; (3) a última completa. As outras 'cortar' com o motivo. 'alternativa' só quando nenhum critério decide, depois de retranscrever o trecho (retranscribe --from --to), com a justificativa.",
     _segmentos: segments.map((s, i) => `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${hint[i] ? `  (${hint[i]})` : ""}`),
     edition,
     blocks: BLOCK_KEYS.map((key) => ({ key, rows: [] })),
@@ -301,10 +376,18 @@ export function decupagemMarkdown(edition: string, doc: DecupagemDoc, sequences:
   }
   lines.push("## Montagem sugerida", "", "Só as linhas com sugestão \"usar\", na ordem de cada versão. A duração soma os trechos do bruto, antes de tirar os silêncios.", "");
   const byKey = new Map(doc.blocks.map((b) => [b.key, b]));
+  const totals = new Map(suggestedDurations(doc, sequences).map((d) => [d.spec.name, d]));
   for (const spec of sequences) {
     const rowsFor = (k: BlockKey) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar");
-    const total = spec.order.flatMap(rowsFor).reduce((acc, r) => acc + (r.end - r.start), 0);
-    lines.push(`### ${versionLabel(spec)}: ${spec.name} (~${clockTime(total)})`, "", "| Bloco | Trechos do bruto |", "|---|---|");
+    const d = totals.get(spec.name)!;
+    lines.push(`### ${versionLabel(spec)}: ${spec.name} (~${clockTime(d.totalS)})`, "");
+    if (d.overS > 0) {
+      lines.push(
+        `**Passa de ${SHORTS_MAX_S / 60}:00 (Shorts) em ~${d.overS.toFixed(1)} s**, estimativa antes de tirar os silêncios: a decupagem propõe o corte (trecho e tempos), não o repassa.`,
+        "",
+      );
+    }
+    lines.push("| Bloco | Trechos do bruto |", "|---|---|");
     for (const k of spec.order) {
       const rows = rowsFor(k);
       lines.push(`| ${BLOCK_LABELS[k]} | ${rows.length ? rows.map((r) => span(r.start, r.end)).join(", ") : "(nenhuma tomada com \"usar\")"} |`);
@@ -312,6 +395,25 @@ export function decupagemMarkdown(edition: string, doc: DecupagemDoc, sequences:
     lines.push("");
   }
   return lines.join("\n");
+}
+
+/** Teto das verticais: o Shorts aceita até 3:00 (#11364). */
+export const SHORTS_MAX_S = 180;
+
+/**
+ * Duração de cada versão na montagem sugerida (soma dos trechos "usar" do
+ * bruto, antes de tirar os silêncios: estimativa por cima) e quanto a vertical
+ * passa do teto do Shorts (`overS`, 0 no horizontal e dentro do teto).
+ */
+export function suggestedDurations(doc: DecupagemDoc, sequences: SequenceSpec[] = defaultSequences()): Array<{ spec: SequenceSpec; totalS: number; overS: number }> {
+  const byKey = new Map(doc.blocks.map((b) => [b.key, b]));
+  return sequences.map((spec) => {
+    const totalS = spec.order
+      .flatMap((k) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar"))
+      .reduce((acc, r) => acc + (r.end - r.start), 0);
+    const vertical = spec.target !== "youtube";
+    return { spec, totalS, overS: vertical ? Math.max(0, totalS - SHORTS_MAX_S) : 0 };
+  });
 }
 
 /**

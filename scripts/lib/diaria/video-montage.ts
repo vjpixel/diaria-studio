@@ -66,6 +66,29 @@ export function transcriptWords(t: Transcript): Word[] {
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000;
 
+/** Janela máxima da retranscrição: curta de propósito, é para um trecho em dúvida (#11364). */
+export const RETRANSCRIBE_MAX_S = 60;
+
+/** Valida a janela `--from`/`--to` da retranscrição; devolve o erro ou o intervalo. */
+export function retranscribeWindow(from: string | undefined, to: string | undefined, durationS?: number): { ok: true; window: Interval } | { ok: false; error: string } {
+  const a = Number(from);
+  const b = Number(to);
+  if (from === undefined || to === undefined || !Number.isFinite(a) || !Number.isFinite(b)) return { ok: false, error: "retranscribe exige --from SEGUNDOS e --to SEGUNDOS" };
+  if (a < 0 || b <= a) return { ok: false, error: `janela inválida: --from ${from} --to ${to}` };
+  if (b - a > RETRANSCRIBE_MAX_S) return { ok: false, error: `janela de ${(b - a).toFixed(1)} s passa de ${RETRANSCRIBE_MAX_S} s: retranscrever só o trecho em dúvida` };
+  if (durationS !== undefined && a >= durationS) return { ok: false, error: `--from ${from} além do bruto (${durationS.toFixed(1)} s)` };
+  return { ok: true, window: { start: a, end: durationS !== undefined ? Math.min(b, durationS) : b } };
+}
+
+/** Desloca os tempos de um transcript de janela para o tempo do bruto. */
+export function offsetTranscript(t: Transcript, offsetS: number): Transcript {
+  const sh = (x: number) => round3(x + offsetS);
+  return {
+    ...t,
+    segments: t.segments.map((s) => ({ ...s, start: sh(s.start), end: sh(s.end), words: s.words?.map((w) => ({ ...w, start: sh(w.start), end: sh(w.end) })) })),
+  };
+}
+
 // ── Silêncios e fala ──────────────────────────────────────────────────────
 
 /**
@@ -562,11 +585,14 @@ function startsAlike(a: string[], b: string[], n: number): boolean {
  * do grupo — termina em pontuação final e tem pelo menos 80% das palavras da
  * maior tomada; sem nenhuma assim, a mais longa.
  */
-export function groupTakes(segments: Segment[], opts: { prefixTokens?: number } = {}): TakeGroup[] {
+export function groupTakes(segments: Segment[], opts: { prefixTokens?: number; skip?: ReadonlySet<number> } = {}): TakeGroup[] {
   const n = opts.prefixTokens ?? 3;
   const toks = segments.map((s) => tokenize(s.text));
   const groups: number[][] = [];
   for (let i = 0; i < segments.length; i++) {
+    // Segmento pulado (comentário da direção entre tomadas, #11364) não quebra
+    // o grupo nem entra nele.
+    if (opts.skip?.has(i)) continue;
     const g = groups[groups.length - 1];
     if (g && startsAlike(toks[g[0]], toks[i], n)) g.push(i);
     else groups.push([i]);
@@ -577,6 +603,140 @@ export function groupTakes(segments: Segment[], opts: { prefixTokens?: number } 
     const suggested = full.length ? full[full.length - 1] : g.reduce((a, b) => (toks[b].length >= toks[a].length ? b : a));
     return { segments: g, suggested };
   });
+}
+
+// ── Decisão por critério (#11364) ─────────────────────────────────────────
+
+/**
+ * Comentário da direção gravado entre as tomadas, lido do transcript:
+ * - `aprova`: aprova a tomada logo antes ("Beleza, é este take", "Muito bom");
+ * - `prefere-anterior`: "a anterior tava melhor" (a de antes da última);
+ * - `aprova-primeira`: "foi o primeiro do começo" (a 1ª tomada da frase);
+ * - `rejeita`: pede outra ("de novo", "errei", "não ficou bom").
+ */
+export type DirectionKind = "aprova" | "prefere-anterior" | "aprova-primeira" | "rejeita";
+
+export interface DirectionCue {
+  /** Índice 0-based do segmento do comentário. */
+  segment: number;
+  kind: DirectionKind;
+  text: string;
+}
+
+/** Comentário da direção é curto; frase longa com "muito bom" no meio é fala do roteiro. */
+export const DIRECTION_MAX_TOKENS = 10;
+
+// Ordem importa: "não ficou bom" é rejeição antes de ser "ficou bom".
+const DIRECTION_PATTERNS: Array<[DirectionKind, RegExp]> = [
+  ["prefere-anterior", /\b(a|o) (anterior|de antes) (tava|estava|ficou|foi|era) melhor\b/],
+  ["aprova-primeira", /\b(foi|e|usa|fica|vai) (o|a) primeir[oa]\b/],
+  ["rejeita", /\b(de novo|outra vez|mais uma vez|vamos outra|faz outra|repete|repetir|errei|nao (ficou|foi|ta|esta) bom)\b/],
+  ["aprova", /\b(e|foi) (este|esse|essa|esta) (take|tomada)\b|\b(muito bom|muito boa|ficou (muito )?(bom|boa|otimo|otima|perfeito)|perfeito|otimo take|take bom|valeu esse)\b/],
+];
+
+/** Lê um segmento como comentário da direção; null se for fala (ou longo demais para ser comentário). */
+export function directionKind(text: string): DirectionKind | null {
+  const toks = tokenize(text);
+  if (toks.length === 0 || toks.length > DIRECTION_MAX_TOKENS) return null;
+  const norm = toks.join(" ");
+  for (const [kind, re] of DIRECTION_PATTERNS) if (re.test(norm)) return kind;
+  return null;
+}
+
+export function directionCues(segments: Segment[]): DirectionCue[] {
+  const out: DirectionCue[] = [];
+  segments.forEach((s, i) => {
+    const kind = directionKind(s.text);
+    if (kind) out.push({ segment: i, kind, text: s.text.trim() });
+  });
+  return out;
+}
+
+/** Qual critério decidiu a linha (a ordem da SKILL, Passo 2). */
+export type DecisionCriterion = "direcao" | "ultima-completa" | "bastidor" | "sem-criterio";
+
+export interface TakeDecision {
+  /** Índice 0-based do segmento. */
+  segment: number;
+  suggestion: "usar" | "cortar";
+  reason: string;
+  criterion: DecisionCriterion;
+  /** Segmentos (0-based) do grupo de tomadas da mesma frase; vazio no comentário da direção. */
+  group: number[];
+}
+
+export interface TakeDecisions {
+  cues: DirectionCue[];
+  groups: TakeGroup[];
+  /** Por segmento: só os que têm decisão (tomadas repetidas, tomada aprovada, comentário da direção). */
+  bySegment: Map<number, TakeDecision>;
+}
+
+const isComplete = (s: Segment) => /[.!?…]["”']?$/.test(s.text.trim());
+
+/**
+ * Decide usar/cortar por critério, uma tomada por frase (#11364), na ordem:
+ * (1) a tomada que a direção aprovou (o comentário vale para a tomada logo
+ * antes dele; o último comentário vence); (2) emendar com a frase seguinte do
+ * roteiro, que depende do roteiro e fica com a skill; (3) a última tomada
+ * completa, fora as que a direção recusou. O comentário da direção sai
+ * "cortar" (bastidor). Grupo em que a direção recusou todas as tomadas fica
+ * `sem-criterio`: é a dúvida real, para retranscrever o trecho antes.
+ */
+export function decideTakes(segments: Segment[]): TakeDecisions {
+  const cues = directionCues(segments);
+  const cueSet = new Set(cues.map((c) => c.segment));
+  const groups = groupTakes(segments, { skip: cueSet });
+  const groupOf = new Map<number, TakeGroup>();
+  for (const g of groups) for (const s of g.segments) groupOf.set(s, g);
+  const approved = new Map<TakeGroup, { seg: number; cue: DirectionCue }>();
+  const rejected = new Map<number, DirectionCue>();
+  for (const cue of cues) {
+    let prev = cue.segment - 1;
+    while (prev >= 0 && cueSet.has(prev)) prev--;
+    if (prev < 0) continue;
+    const g = groupOf.get(prev)!;
+    const pos = g.segments.indexOf(prev);
+    if (cue.kind === "aprova") approved.set(g, { seg: prev, cue });
+    else if (cue.kind === "aprova-primeira") approved.set(g, { seg: g.segments[0], cue });
+    else if (cue.kind === "prefere-anterior") {
+      rejected.set(prev, cue);
+      if (pos > 0) approved.set(g, { seg: g.segments[pos - 1], cue });
+    } else rejected.set(prev, cue);
+  }
+  const bySegment = new Map<number, TakeDecision>();
+  for (const cue of cues) {
+    bySegment.set(cue.segment, { segment: cue.segment, suggestion: "cortar", reason: `bastidor: comentário da direção, "${cue.text}"`, criterion: "bastidor", group: [] });
+  }
+  const ord = (g: TakeGroup, s: number) => `${g.segments.indexOf(s) + 1}ª`;
+  for (const g of groups) {
+    const ap = approved.get(g);
+    if (g.segments.length < 2 && !ap && !rejected.has(g.segments[0])) continue;
+    const set = (s: number, suggestion: "usar" | "cortar", reason: string, criterion: DecisionCriterion) =>
+      bySegment.set(s, { segment: s, suggestion, reason, criterion, group: g.segments });
+    if (ap) {
+      for (const s of g.segments) {
+        if (s === ap.seg) set(s, "usar", `aprovada pela direção: "${ap.cue.text}"`, "direcao");
+        else set(s, "cortar", `a direção aprovou a ${ord(g, ap.seg)} tomada`, "direcao");
+      }
+      continue;
+    }
+    const toks = g.segments.map((s) => tokenize(segments[s].text).length);
+    const longest = Math.max(...toks);
+    const full = new Set(g.segments.filter((s, k) => isComplete(segments[s]) && toks[k] >= 0.8 * longest));
+    const pick = g.segments.filter((s) => full.has(s) && !rejected.has(s)).at(-1);
+    if (pick === undefined) {
+      for (const s of g.segments) set(s, "cortar", rejected.has(s) ? `a direção pediu outra: "${rejected.get(s)!.text}"` : "tomada incompleta", "sem-criterio");
+      continue;
+    }
+    for (const s of g.segments) {
+      if (s === pick) set(s, "usar", g.segments.length > 1 ? `${ord(g, s)} tomada, a última completa` : "a última completa", "ultima-completa");
+      else if (rejected.has(s)) set(s, "cortar", `a direção pediu outra: "${rejected.get(s)!.text}"`, "ultima-completa");
+      else if (!full.has(s)) set(s, "cortar", "tomada incompleta", "ultima-completa");
+      else set(s, "cortar", `a ${ord(g, pick)} tomada é a última completa`, "ultima-completa");
+    }
+  }
+  return { cues, groups, bySegment };
 }
 
 /** mm:ss.d */
