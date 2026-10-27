@@ -1253,14 +1253,9 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // fora dele porque o consumidor previsto (`publish-shorts.ts`, quando a
     // integração do destino `threads_profile` entrar) é local e lê o Doppler.
     // Sem token e sem `THREADS_PERSONAL_USER_ID` sai 0 sem fazer nada.
-    // DECLARADA, NÃO ARMADA — enabled:false DE PROPÓSITO: o 300 (onde as tasks
-    // rodam) não tem o Doppler CLI, então a task ficaria em skip para sempre
-    // ou renovaria um token que nunca chega ao Doppler. Pré-requisito para
-    // armar: o 300 escrever no Doppler (CLI autenticado ou API HTTP com
-    // service token de escrita), #11077. Até lá, refresh manual na máquina
-    // do editor. Sem o enabled:false o Remediate-Never-Armed-Tasks (#8153) a
-    // auto-armaria no 300.
-    enabled: false,
+    // Armada em 27/10/2026: o pré-requisito (o 300 escrever no Doppler, #11077)
+    // foi verificado com o CLI autenticado, e os 3 `THREADS_PERSONAL_*` estão
+    // no Doppler `diaria-studio/dev` (token gerado em 27/10, vence 26/12).
     schedule: { kind: "daily", hour: 4, minute: 20 },
     issue: "#10772",
   },
