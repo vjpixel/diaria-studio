@@ -3,7 +3,7 @@
  * arma tasks. Uso: npx tsx scripts/doppler-token-expiry-alarm.ts [--dry-run].
  * Campos *_EXPIRES_AT presentes são monitorados; Threads/LinkedIn pessoais
  * também são exigidos quando o respectivo access token existe no vault.
- * Token nunca configurado (Threads adiado na #10772) não gera falso alarme.
+ * Token nunca configurado não gera falso alarme.
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +38,7 @@ export function evaluateDopplerExpiries(env: Record<string, string | undefined>,
         "Verifique a renovação pelo procedimento OAuth da plataforma e a persistência no Doppler. " +
         "O alarme consulta o vault independentemente da presença do token nesta máquina. " +
         "Nenhum valor de secret é registrado. Esta issue fecha quando o vault indicar mais de 14 dias de validade. " +
-        "A task do Threads pessoal permanece desarmada até existir token (#10772); este alarme não arma tasks nem renova tokens.",
+        "Este alarme não arma tasks nem renova tokens (o Threads pessoal renova pela task Diaria-Threads-Personal-Token, #10772).",
       contentSignature: band,
     }];
   });

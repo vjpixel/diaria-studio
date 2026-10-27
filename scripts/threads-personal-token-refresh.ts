@@ -9,9 +9,8 @@
  * #9618): `scripts/lib/threads-personal-token.ts`.
  *
  * Onde rodar: na máquina com o Doppler CLI autenticado com ESCRITA em
- * `diaria-studio/dev` (hoje, a do editor). A task `Diaria-Threads-Personal-Token`
- * está DECLARADA, NÃO ARMADA: o `300` não tem o Doppler CLI (#11077). Até lá,
- * rodar à mão nesta máquina quando faltar ≤30 dias.
+ * `diaria-studio/dev`. A task `Diaria-Threads-Personal-Token` roda no `300`
+ * (armada em 27/10/2026, #11077); à mão, rodar de qualquer máquina com o CLI.
  *
  * Setup do token (passo a passo na #10772): gravar no Doppler as TRÊS chaves —
  * `THREADS_PERSONAL_ACCESS_TOKEN`, `THREADS_PERSONAL_USER_ID` e
