@@ -69,6 +69,14 @@ describe("buildStackPostPayload", () => {
     assert.equal(buildStackPostPayload("T", "<p>x</p>").corpo, "\\<p>x\\</p>");
     assert.throws(() => buildStackPostPayload("T", "![a](https://x/a.png)"), /imagem/);
   });
+  it("título com `<` solto recebe o mesmo escape do corpo (#11197)", () => {
+    // Regressão: o título (1º destaque, #11192) ia cru e um `<` solto podia
+    // ser cortado pela remoção de HTML do webhook.
+    assert.equal(buildStackPostPayload("Modelo < 1B supera GPT", "c").titulo, "Modelo \\< 1B supera GPT");
+    assert.equal(buildStackPostPayload("O <Mercury> chegou", "c").titulo, "O \\<Mercury> chegou");
+    assert.equal(buildStackPostPayload("Já \\< escapado", "c").titulo, "Já \\< escapado");
+    assert.equal(buildStackPostPayload("Sem colchete", "c").titulo, "Sem colchete");
+  });
 });
 
 describe("sendStackPost", () => {
