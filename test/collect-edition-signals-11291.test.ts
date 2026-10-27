@@ -107,13 +107,13 @@ describe("signalsFromRecurringEditorRequests com base histórica (#11291)", () =
     assert.ok(tone, "tone em 4/7 contra base de 1/28 é mudança real");
     assert.equal(tone.details.edition_count, 4);
     assert.equal(tone.details.baseline_editions, baseline.edition_count);
-    assert.match(tone.suggested_action, /base histórica/);
+    assert.match(tone.suggested_action, /acima da base/);
   });
 
-  it("base com edições insuficientes cai na regra antiga (3-em-7)", () => {
+  it("base com edições insuficientes não dispara nada (#11337: sem taxa-base medida)", () => {
     const shortBase = computeRequestTypeBaseline(editions(260800, 5, () => ["destaque-swap"]));
     const t = titles(signalsFromRecurringEditorRequests(window, RECURRING_REQUEST_MIN_EDITIONS, shortBase));
-    assert.ok(t.includes("Pedido recorrente do editor: destaque-swap"));
+    assert.deepEqual(t, []);
   });
 
   it("o piso de 3 edições continua valendo mesmo com base que zera o limiar", () => {
