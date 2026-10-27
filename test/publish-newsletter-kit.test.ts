@@ -55,10 +55,9 @@ describe("checkSubjectNotEmpty", () => {
 });
 
 describe("checkKitBackendEnabled", () => {
-  it("backend ausente (default beehiiv): ok:false", () => {
-    const result = checkKitBackendEnabled({});
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.reason, /"beehiiv"/);
+  // REGRESSÃO #11225: Beehiiv é só arquivo histórico — chave ausente é Kit.
+  it("backend ausente (default kit, #11225): ok:true", () => {
+    assert.deepEqual(checkKitBackendEnabled({}), { ok: true });
   });
   it('backend explícito "beehiiv": ok:false', () => {
     const result = checkKitBackendEnabled({ publishing: { newsletter: { backend: "beehiiv" } } });

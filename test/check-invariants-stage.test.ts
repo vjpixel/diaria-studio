@@ -16,7 +16,7 @@ import {
   ALL_INVARIANT_RULES,
   getRulesForStage,
 } from "../scripts/lib/invariant-checks/index.ts";
-import { STAGE_0_RULES } from "../scripts/lib/invariant-checks/stage-0.ts";
+import { STAGE_0_RULES, checkBeehiivKeySet } from "../scripts/lib/invariant-checks/stage-0.ts";
 import {
   checkApprovedHas3Highlights,
   checkCategorizedHasEiaSection,
@@ -216,15 +216,28 @@ describe("invariant-checks registry (#1007)", () => {
 });
 
 describe("Stage 0 invariants", () => {
-  it("beehiiv-key-set falha quando BEEHIIV_API_KEY ausente", () => {
+  it("beehiiv-key-set falha quando BEEHIIV_API_KEY ausente E read_backend=beehiiv", () => {
     const original = process.env.BEEHIIV_API_KEY;
     delete process.env.BEEHIIV_API_KEY;
     try {
-      const rule = STAGE_0_RULES.find((r) => r.id === "beehiiv-key-set")!;
-      const v = rule.run("");
+      const v = checkBeehiivKeySet("beehiiv");
       assert.equal(v.length, 1);
       assert.equal(v[0].severity, "error");
       assert.match(v[0].message, /BEEHIIV_API_KEY/);
+    } finally {
+      if (original !== undefined) process.env.BEEHIIV_API_KEY = original;
+    }
+  });
+
+  // REGRESSÃO #11225: Beehiiv é só arquivo histórico — com read_backend=kit
+  // (o default e o valor de produção) a key ausente nunca bloqueia o Stage 0.
+  it("beehiiv-key-set NÃO exige a key com read_backend=kit (#11225)", () => {
+    const original = process.env.BEEHIIV_API_KEY;
+    delete process.env.BEEHIIV_API_KEY;
+    try {
+      assert.deepEqual(checkBeehiivKeySet("kit"), []);
+      const rule = STAGE_0_RULES.find((r) => r.id === "beehiiv-key-set")!;
+      assert.deepEqual(rule.run(""), [], "config real tem read_backend=kit — regra não pode reprovar");
     } finally {
       if (original !== undefined) process.env.BEEHIIV_API_KEY = original;
     }
@@ -2944,22 +2957,24 @@ describe("CLI --stage N", () => {
   it("--stage 0 carrega .env via DIARIA_PROJECT_ROOT (#1010 item 4, #4820)", () => {
     // E2E real: escreve .env em tmp dir, invoca CLI com DIARIA_PROJECT_ROOT
     // apontando pra ele, valida que loadProjectEnv() foi chamado
-    // (BEEHIIV_API_KEY do disco satisfaz beehiiv-key-set). Cobre o gap onde
+    // (CLARICE_API_KEY do disco satisfaz clarice-key-set). Cobre o gap onde
     // testes anteriores setavam process.env manual e nunca exercitavam o
-    // caminho de leitura do disco no CLI.
+    // caminho de leitura do disco no CLI. Sonda era BEEHIIV_API_KEY até o
+    // #11225, quando beehiiv-key-set passou a exigir a key só com
+    // read_backend=beehiiv (no config real é "kit" — a sonda ficaria vazia).
     const tmpRoot = mkdtempSync(join(tmpdir(), "diaria-cli-env-"));
     try {
       writeFileSync(
         join(tmpRoot, ".env"),
-        "BEEHIIV_API_KEY=from-env\n",
+        "CLARICE_API_KEY=from-env\n",
       );
-      // dotenv usa override:false → BEEHIIV_API_KEY precisa estar AUSENTE
+      // dotenv usa override:false → CLARICE_API_KEY precisa estar AUSENTE
       // (não vazio) no env do subprocess pra que .env consiga setá-lo.
-      // Construímos um env limpo sem BEEHIIV_API_KEY herdado do shell parent.
+      // Construímos um env limpo sem CLARICE_API_KEY herdado do shell parent.
       const scriptPath = join(PROJECT_ROOT, "scripts", "check-invariants.ts");
       const cleanEnv: Record<string, string> = {};
       for (const [k, v] of Object.entries(process.env)) {
-        if (k !== "BEEHIIV_API_KEY" && v !== undefined) cleanEnv[k] = v;
+        if (k !== "CLARICE_API_KEY" && v !== undefined) cleanEnv[k] = v;
       }
       cleanEnv.DIARIA_PROJECT_ROOT = tmpRoot;
       const r = spawnSync(
@@ -2968,15 +2983,15 @@ describe("CLI --stage N", () => {
         { cwd: PROJECT_ROOT, encoding: "utf8", env: cleanEnv },
       );
       const out = JSON.parse(r.stdout);
-      const beehivViolations = out.violations.filter(
-        (v: { rule: string }) => v.rule === "beehiiv-key-set",
+      const clariceViolations = out.violations.filter(
+        (v: { rule: string }) => v.rule === "clarice-key-set",
       );
       assert.equal(
-        beehivViolations.length,
+        clariceViolations.length,
         0,
-        `BEEHIIV_API_KEY do .env deveria satisfazer regra; achei ${JSON.stringify(beehivViolations)} (stderr: ${r.stderr})`,
+        `CLARICE_API_KEY do .env deveria satisfazer regra; achei ${JSON.stringify(clariceViolations)} (stderr: ${r.stderr})`,
       );
-      assert.ok(out.rules_run.includes("beehiiv-key-set"));
+      assert.ok(out.rules_run.includes("clarice-key-set"));
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }

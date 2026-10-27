@@ -49,8 +49,10 @@ export interface PreflightState {
   /** Gmail MCP (`mcp__claude_ai_Gmail__list_labels`). Consumido dentro do
    * próprio Stage 0 (§0n CI-failures, §0-replies). */
   gmailMcp: boolean | null;
-  /** Beehiiv MCP (`mcp__claude_ai_Beehiiv__get_current_user`). Consumido
-   * dentro do próprio Stage 0 (§0h.2 clicks enricher, §0-replies fallback). */
+  /** Beehiiv MCP (`mcp__claude_ai_Beehiiv__get_current_user`). Desde o
+   * #11225 o Stage 0 não sonda mais a Beehiiv (só arquivo histórico): o campo
+   * fica `null` nas edições novas; a flag `--beehiiv-mcp` segue aceita só por
+   * compatibilidade com estados gravados antes. */
   beehiivMcp: boolean | null;
   /** Clarice REST fallback (`cortex.clarice.ai/api-correction`). Consumido
    * pelo Stage 2 §3b antes de tentar o fallback quando o MCP falha. */

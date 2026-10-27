@@ -87,6 +87,7 @@ import {
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -335,7 +336,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
   const platformConfig = JSON.parse(
     readFileSync(resolve(rootDir, "platform.config.json"), "utf8"),
   ) as PlatformConfig;
-  const backend = platformConfig.publishing?.newsletter?.backend ?? "beehiiv";
+  const backend = parseNewsletterBackend(platformConfig.publishing?.newsletter?.backend); // default "kit" (#11225)
   if (backend !== "kit") {
     console.log(JSON.stringify({ ok: true, resolved: false, reason: "backend_not_kit" }));
     process.exitCode = 0;

@@ -1120,14 +1120,14 @@ describe("loadKitArchivePosts (#6184 — gating por read_backend + filtro public
     );
   }
 
-  it("read_backend ausente (default beehiiv) devolve [] mesmo com cache Kit populado", () => {
+  it("read_backend ausente = default kit (#11225): lê o cache Kit", () => {
     const tmp = mkdtempSync(join(tmpdir(), "gen-archive-kit-gate-"));
     try {
       const kitDir = join(tmp, "kit-cache");
       mkdirSync(kitDir, { recursive: true });
       writeKitBroadcast(kitDir, "b1.json");
       const configPath = writeConfig(tmp, undefined);
-      assert.deepEqual(loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath }), []);
+      assert.equal(loadKitArchivePosts({ kitBroadcastsDir: kitDir, configPath }).length, 1);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

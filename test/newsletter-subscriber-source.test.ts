@@ -33,8 +33,8 @@ async function withCapturedConsoleError<T>(fn: () => Promise<T> | T): Promise<{ 
 }
 
 describe("resolveNewsletterSubscriberBackend (#6051)", () => {
-  it('default "beehiiv" quando platform.config.json não existe', () => {
-    assert.equal(resolveNewsletterSubscriberBackend(join(tmpdir(), "nao-existe-6051.json")), "beehiiv");
+  it('default "kit" quando platform.config.json não existe (#11225)', () => {
+    assert.equal(resolveNewsletterSubscriberBackend(join(tmpdir(), "nao-existe-6051.json")), "kit");
   });
 
   it('lê publishing.newsletter.subscriber_backend === "kit" (chave PRÓPRIA, não "backend"/"read_backend")', () => {
@@ -53,12 +53,15 @@ describe("resolveNewsletterSubscriberBackend (#6051)", () => {
     }
   });
 
-  it('"backend"/"read_backend" = "kit" sem "subscriber_backend" NÃO afeta este eixo — continua "beehiiv"', () => {
+  it('"backend"/"read_backend" não decidem este eixo — subscriber_backend explícito "beehiiv" vence os dois em "kit"', () => {
     const dir = mkdtempSync(join(tmpdir(), "newsletter-subscriber-backend-envio-only-"));
     const path = join(dir, "platform.config.json");
     try {
-      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { backend: "kit", read_backend: "kit" } } }));
+      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { backend: "kit", read_backend: "kit", subscriber_backend: "beehiiv" } } }));
       assert.equal(resolveNewsletterSubscriberBackend(path), "beehiiv");
+      // #11225: sem subscriber_backend o default é "kit", mesmo com os outros em "beehiiv".
+      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { backend: "beehiiv", read_backend: "beehiiv" } } }));
+      assert.equal(resolveNewsletterSubscriberBackend(path), "kit");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -79,13 +82,13 @@ describe("resolveNewsletterSubscriberBackend (#6051)", () => {
     }
   });
 
-  it('valor desconhecido/typo cai no default "beehiiv" e LOGA o valor bruto', async () => {
+  it('valor desconhecido/typo cai no default "kit" e LOGA o valor bruto (#11225)', async () => {
     const dir = mkdtempSync(join(tmpdir(), "newsletter-subscriber-backend-typo-"));
     const path = join(dir, "platform.config.json");
     try {
       writeFileSync(path, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "beehiv" } } }));
       const { result, errors } = await withCapturedConsoleError(() => resolveNewsletterSubscriberBackend(path));
-      assert.equal(result, "beehiiv");
+      assert.equal(result, "kit");
       assert.ok(
         errors.some((e) => e.includes("subscriber_backend desconhecido") && e.includes("beehiv")),
         `esperava log do valor bruto desconhecido, recebi: ${JSON.stringify(errors)}`,
@@ -100,7 +103,7 @@ describe("resolveNewsletterSubscriberBackend (#6051)", () => {
     const path = join(dir, "platform.config.json");
     try {
       writeFileSync(path, "{ not json");
-      assert.equal(resolveNewsletterSubscriberBackend(path), "beehiiv");
+      assert.equal(resolveNewsletterSubscriberBackend(path), "kit");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -121,13 +124,13 @@ describe("resolveNewsletterSubscriberConfig (#6051)", () => {
     }
   });
 
-  it("platform.config.json AUSENTE segue default beehiiv normalmente (distinção do caso acima)", () => {
+  it("platform.config.json AUSENTE segue default kit normalmente (distinção do caso acima; default #11225)", () => {
     const result = resolveNewsletterSubscriberConfig({
       configPath: join(tmpdir(), "nao-existe-6051-config.json"),
-      env: { BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" },
+      env: { KIT_API_KEY: "k" },
     });
     assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.config.backend, "beehiiv");
+    if (result.ok) assert.equal(result.config.backend, "kit");
   });
 
   it("backend beehiiv sem BEEHIIV_API_KEY falha com reason explícito", () => {

@@ -198,7 +198,8 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
     try {
       const configPath = join(dir, "platform.config.json");
       const storePath = join(dir, "store.json");
-      writeFileSync(configPath, JSON.stringify({ onboarding: { enabled: true } }));
+      // subscriber_backend explícito: default virou "kit" no #11225.
+      writeFileSync(configPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "beehiiv" } }, onboarding: { enabled: true } }));
 
       const result = runScript(configPath, storePath, { beehiivApiKeyOverride: "" });
 
@@ -223,7 +224,7 @@ describe("onboarding-welcome-run.ts — kill-switch platform.config.json onboard
     try {
       const configPath = join(dir, "platform.config.json");
       const storePath = join(dir, "store.json");
-      writeFileSync(configPath, JSON.stringify({ onboarding: {} }));
+      writeFileSync(configPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "beehiiv" } }, onboarding: {} })); // default "kit" desde o #11225
 
       const result = runScript(configPath, storePath, { beehiivApiKeyOverride: "" });
 

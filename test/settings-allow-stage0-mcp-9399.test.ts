@@ -32,7 +32,8 @@ describe("settings.json allowlist do Stage 0 headless (#9399)", () => {
     const src = readFileSync("scripts/stage-0-run.ts", "utf8");
     const block = src.slice(src.indexOf("needsMcpProbes: {"));
     const probes = [...block.slice(0, 900).matchAll(/'(mcp__[a-zA-Z0-9_-]+)/g)].map((m) => m[1]);
-    assert.ok(probes.length >= 3, "esperava ≥3 probes MCP");
+    // 2 desde o #11225 (Chrome + Gmail): o ping da Beehiiv saiu do Stage 0.
+    assert.ok(probes.length >= 2, "esperava ≥2 probes MCP");
     for (const p of probes) assert.ok(allow.includes(p), `${p} ausente de permissions.allow`);
   });
 

@@ -214,6 +214,7 @@ import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defa
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
 import { THREADS_PROFILE_DESTINATION, publishThreadsProfileVideo, readThreadsPersonalCreds } from "./lib/threads-personal-video.ts";
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import {
   CHROME_UPLOAD_MAX_BYTES,
   buildChromeUploadFfmpegPasses,
@@ -364,12 +365,12 @@ export interface ShortsPlanInput {
 
 /**
  * Pure (#10943): `publishing.newsletter.backend` do config já carregado. Mesmo
- * fallback de `loadNewsletterBackend` (lib/newsletter-backend.ts): qualquer
- * valor que não seja literalmente "kit" é "beehiiv".
+ * fallback de `loadNewsletterBackend` (lib/newsletter-backend.ts): default
+ * "kit" desde o #11225 — só o literal "beehiiv" é "beehiiv".
  */
 export function newsletterBackendOf(config: unknown): "kit" | "beehiiv" {
   const backend = (config as { publishing?: { newsletter?: { backend?: unknown } } } | null)?.publishing?.newsletter?.backend;
-  return backend === "kit" ? "kit" : "beehiiv";
+  return parseNewsletterBackend(backend);
 }
 
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */

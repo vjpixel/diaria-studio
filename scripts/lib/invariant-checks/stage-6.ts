@@ -20,6 +20,7 @@ import { changedSourceFilesOnDisk, kitContentHash, type SourceHashes } from "../
 import { renderKitPayload, loadPlatformConfig } from "../../publish-newsletter-kit.ts"; // #9428
 import { deriveSlugFromD1, sitePageSourceDigest } from "../../publish-edition-site-page.ts"; // #10207
 import { recordedExpectedSlug, sitePageStaleness } from "../site-page-staleness.ts"; // #10207
+import { parseNewsletterBackend } from "../newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -31,14 +32,15 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
  */
 function loadNewsletterBackend(): string {
   const configPath = resolve(ROOT, "platform.config.json");
-  if (!existsSync(configPath)) return "beehiiv";
+  // Default "kit" desde o #11225 (Beehiiv só como arquivo histórico).
+  if (!existsSync(configPath)) return "kit";
   try {
     const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-      publishing?: { newsletter?: { backend?: string } };
+      publishing?: { newsletter?: { backend?: unknown } };
     };
-    return cfg.publishing?.newsletter?.backend ?? "beehiiv";
+    return parseNewsletterBackend(cfg.publishing?.newsletter?.backend);
   } catch {
-    return "beehiiv";
+    return "kit";
   }
 }
 

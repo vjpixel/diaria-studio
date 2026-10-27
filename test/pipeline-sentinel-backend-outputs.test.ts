@@ -301,14 +301,21 @@ describe("loadNewsletterBackend (#7963) — smoke", () => {
       writeFileSync(cfgPath, JSON.stringify({ publishing: { newsletter: { backend: "beehiiv" } } }));
       assert.equal(loadNewsletterBackend(cfgPath), "beehiiv");
 
+      // #11225: chave ausente = "kit" (Beehiiv só como arquivo histórico).
       writeFileSync(cfgPath, JSON.stringify({}));
-      assert.equal(loadNewsletterBackend(cfgPath), "beehiiv");
+      assert.equal(loadNewsletterBackend(cfgPath), "kit");
+
+      writeFileSync(cfgPath, JSON.stringify({ publishing: { newsletter: { backend: "bee" } } }));
+      assert.equal(loadNewsletterBackend(cfgPath), "kit");
+
+      writeFileSync(cfgPath, "{ not json");
+      assert.equal(loadNewsletterBackend(cfgPath), "kit");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("config ausente → default beehiiv", () => {
-    assert.equal(loadNewsletterBackend("/path/that/does/not/exist/platform.config.json"), "beehiiv");
+  it("config ausente → default kit (#11225)", () => {
+    assert.equal(loadNewsletterBackend("/path/that/does/not/exist/platform.config.json"), "kit");
   });
 });

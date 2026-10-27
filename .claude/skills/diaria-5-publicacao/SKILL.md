@@ -1,6 +1,6 @@
 ---
 name: diaria-5-publicacao
-description: Roda as Etapas 5 E 6 numa invocação só (#7983) — publicação auto (draft Beehiiv/Kit + LinkedIn/Facebook/Instagram/Threads/X agendados + Brevo diária/Kit diária) seguida do gate humano de agendamento + Schedule + auto-reporter. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
+description: Roda as Etapas 5 E 6 numa invocação só (#7983) — publicação auto (rascunho Kit + LinkedIn/Facebook/Instagram/Threads/X agendados + Brevo diária/Kit diária) seguida do gate humano de agendamento + Schedule + auto-reporter. Uso — `/diaria-5-publicacao [all|newsletter|social] AAMMDD`.
 model: claude-sonnet-5-5
 effort: low
 ---
@@ -27,7 +27,7 @@ Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o S
 
 Stage 5 dispatcha, hoje, **8 canais** — lista completa em `.claude/agents/orchestrator-stage-5.md` §5c-3/5c-3b (fonte de verdade operacional; não duplicar os detalhes de cada script aqui):
 
-1. **Newsletter** — Beehiiv (draft + test email, via `context/publishers/beehiiv-playbook.md`) OU Kit (`publish-newsletter-kit.ts` — teste preferencialmente pelo "Send test email" da UI do Kit via `--draft-only-for-ui-test` + `--mark-ui-test-sent --at`, com fallback `--send-test` sem Chrome, #10395; detalhes no §5c-1-kit), conforme `publishing.newsletter.backend` em `platform.config.json`.
+1. **Newsletter** — Kit (`publish-newsletter-kit.ts` — teste preferencialmente pelo "Send test email" da UI do Kit via `--draft-only-for-ui-test` + `--mark-ui-test-sent --at`, com fallback `--send-test` sem Chrome, #10395; detalhes no §5c-1-kit). Default `"kit"` em `publishing.newsletter.backend` (também com a chave ausente, #11225); a Beehiiv é só arquivo histórico e o ramo `"beehiiv"` (`context/publishers/beehiiv-playbook.md`) é legado, só com a chave explícita.
 2. **LinkedIn** — `publish-linkedin.ts --schedule` (Worker `diaria-linkedin-cron` + fallback Make webhook).
 3. **Facebook** — `publish-facebook.ts --schedule` (Graph API).
 4. **Instagram** — `publish-instagram.ts --schedule` (mesmo Worker do LinkedIn, `channel: "instagram"`; carrossel de 5 slides quando disponível, senão post single-image).
@@ -64,8 +64,8 @@ Crítico: este é o stage **publicador** (newsletter + todos os canais sociais +
 
 - Etapas 1–4 completas: `02-reviewed.md`, `03-social.md`, `01-eia.md` + `01-eia-A/B.jpg`, `04-d{1,2,3}*.jpg`
 - `_internal/newsletter-final.html` (pré-renderizado pelo Stage 4)
-- Chrome com extensão **Claude in Chrome** ativa (ver `docs/browser-publish-setup.md`) — só newsletter Beehiiv usa browser; LinkedIn/Facebook/Instagram/Threads/Brevo/Kit são scripts shell puros
-- Logado em Beehiiv no Chrome (quando backend = `"beehiiv"`)
+- Chrome com extensão **Claude in Chrome** ativa (ver `docs/browser-publish-setup.md`) — opcional: só o teste pela UI do Kit usa browser (sem ele, fallback `--send-test`); LinkedIn/Facebook/Instagram/Threads/Brevo/Kit são scripts shell puros
+- **Beehiiv não é pré-requisito (#11225):** a conta é só arquivo histórico, não precisa estar logada nem com o conector no ar
 - Bloco `publishing` em `platform.config.json` configurado (inclui `publishing.social.twitter.buffer_channel_id` pra X/Buffer, `kit_diaria.enabled`/`kit_diaria.audience_tag` pro Kit diária)
 - `FACEBOOK_PAGE_ACCESS_TOKEN` no env pra Graph API
 - `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` pro Worker (LinkedIn/Instagram/Threads); `INSTAGRAM_ACCESS_TOKEN`/`INSTAGRAM_BUSINESS_ACCOUNT_ID` e `THREADS_ACCESS_TOKEN`/`THREADS_USER_ID` como secrets do Worker (ausência = skip gracioso desses 2 canais, não bloqueia os demais)

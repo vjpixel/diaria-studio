@@ -436,6 +436,7 @@ import { findTagIdByName, untagSubscriber, listSubscriberTags, tagSubscriber, ty
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { formatKitSemAberturaLogLine, DEFAULT_KIT_SEM_ABERTURA_LOG_PATH } from "./lib/kit-sem-abertura.ts"; // #10437
 import { appendFileWithRetry } from "./lib/source-runs.ts"; // #10437
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -3658,7 +3659,7 @@ async function main(): Promise<number> {
   // só protege contra `platform.config.json` sem a chave `publishing`
   // (nunca deveria acontecer em produção, mas evita `undefined` virar
   // `"kit"` por engano numa comparação futura).
-  const newsletterBackend = platformConfig.publishing?.newsletter?.backend === "kit" ? "kit" : "beehiiv";
+  const newsletterBackend = parseNewsletterBackend(platformConfig.publishing?.newsletter?.backend); // default "kit" (#11225)
   const kitApiKey = process.env.KIT_API_KEY;
 
   // readStore/filter são I/O local síncrono (mesma classe do
