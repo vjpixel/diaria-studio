@@ -232,6 +232,17 @@ export function overlayWrapLines(
 }
 
 /**
+ * Pure (#11254): o título do destaque cabe no card 4x5 DIÁRIO (`04-d{N}-4x5.jpg`)
+ * — largura útil `W - 2*PAD`, piso de `DAILY_CAROUSEL_BODY_SIZE` (62px), até 3
+ * linhas. Fonte ÚNICA do critério: o `main()` deste script aborta com ele
+ * antes de renderizar, e o lint `title-card-4x5` (`lint-checks/title-limits.ts`)
+ * reprova o mesmo título já no Stage 2, antes de existir imagem.
+ */
+export function dailyCardTitleFits(title: string): boolean {
+  return overlayWrapLines(title, W - PAD * 2).fits;
+}
+
+/**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
  * `wrapTitle` (divisor `OVERLAY_CHARS_PER_LINE_DIVISOR`), tamanho
  * `available/(longest*OVERLAY_WIDTH_FIT_RATIO)` clamped
@@ -246,8 +257,8 @@ export function overlayWrapLines(
  * era 44 — abaixo do corpo fixo do carrossel diário — e título curto (poucas
  * palavras, wrap em 1 linha) caía nesse piso, violando a regra editorial "a
  * fonte do título deve ser sempre igual ou maior que a fonte do texto".
- * Título ≤52 chars (regra editorial de destaque) sempre cabe em 1-2 linhas
- * a 62px+ — `buildOverlaySvg` ancora o bloco de título na BASE do
+ * Título de destaque tem de caber em 1-3 linhas a 62px (#11254,
+ * `dailyCardTitleFits`, que substituiu o antigo teto fixo de 52 chars) — `buildOverlaySvg` ancora o bloco de título na BASE do
  * card (`baseY = CH - 150`) e cresce PRA CIMA conforme o número de linhas,
  * sem um clamp de altura — a imagem inteira dá espaço de sobra. O risco real
  * de overflow do piso é de LARGURA, não altura: coberto pelo teste de
@@ -282,8 +293,8 @@ export function overlayFittingFontSize(
  * a largura... em bold"): `line.length * fontSize * wrap.ratio` é a largura
  * estimada da linha mais larga produzida por `wrapTitle` (mesmo divisor de
  * `wrap` que `buildOverlaySvg` usa pra quebrar, independente do tamanho
- * final). Título de D1/D2/D3 (≤52 chars, regra editorial) sempre cabe a
- * 62px+; um item de RADAR/USE MELHOR (sem esse teto) pode não caber — é
+ * final). Título de D1/D2/D3 é validado no card DIÁRIO (`dailyCardTitleFits`,
+ * #11254); um item de RADAR/USE MELHOR (sem esse teto) pode não caber — é
  * esse caso que este guard existe pra pegar ANTES de renderizar, em vez de
  * deixar um card cortado sair em silêncio (mesma política do carrossel
  * diário, #6078: quem não cabe é reescrito, nunca encolhido/cortado).
@@ -512,7 +523,7 @@ async function main(): Promise<void> {
     const key = `d${i + 1}`;
     if (only && only !== key) continue;
     const d = destaques[i] as { title?: string; category?: string };
-    if (!overlayWrapLines(d.title ?? "", W - PAD * 2).fits) {
+    if (!dailyCardTitleFits(d.title ?? "")) {
       console.error(`[gen-social-card-4x5] ${key}: título não cabe a ${DAILY_CAROUSEL_BODY_SIZE}px em 1-3 linhas — reescreva: "${d.title}" (#8589)`);
       process.exit(1);
     }
