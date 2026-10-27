@@ -13,6 +13,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { checkSyncCodeMarker } from "../sync-code-marker.ts"; // #8690
+import { checkPublicImagesMd5MatchesLocal } from "../public-images-md5-check.ts"; // #11252
 import { checkPendingResearch, PENDING_RESEARCH_FILENAME } from "../pending-research.ts";
 import { loadDoc } from "../../update-stage-status.ts";
 import { isKitReviewStatus, KIT_REVIEW_FILENAME } from "../kit-review-record.ts"; // #9594
@@ -1275,6 +1276,13 @@ export const STAGE_5_RULES: InvariantRule[] = [
     source_issue: "#8690",
     stage: 5,
     run: checkSyncCodeMarker,
+  },
+  {
+    id: "public-images-md5-matches-local",
+    description: "hero 2:1 do e-mail em 06-public-images.json tem o md5 do arquivo local — o Kit publica do cache sem re-upload (#11252)",
+    source_issue: "#11252",
+    stage: 5,
+    run: checkPublicImagesMd5MatchesLocal,
   },
   {
     id: "step-4-sentinel-exists",
