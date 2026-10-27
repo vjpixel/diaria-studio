@@ -131,6 +131,7 @@ import { checkHasNegativeImpactHighlight, checkTop3Merit } from "./stage-1.ts"; 
 import { detectSponsoredMarkers } from "../lint-checks/sponsored-source-markers.ts"; // #10169
 import { loadCachedBody } from "../url-body-cache.ts"; // #10169
 import { hero2x1KeyFor, isDestaqueImagePresent } from "../shared/public-image-keys.ts"; // #7399, extraído em #7596
+import { checkPublicImagesMd5MatchesLocal } from "../public-images-md5-check.ts"; // #11252
 
 // #6336: usado só por checkKitFixtureAudit, pra localizar
 // scripts/audit-kit-fixtures.ts a partir de scripts/lib/invariant-checks/.
@@ -3746,6 +3747,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#999",
     stage: 4,
     run: checkPublicImagesPopulated,
+  },
+  {
+    id: "public-images-md5-matches-local",
+    description: "hero 2:1 do e-mail (cover/d1_play/d2_2x1/d3_2x1) em 06-public-images.json tem o md5 do arquivo local — troca de destaque não deixa imagem antiga no e-mail (#11252)",
+    source_issue: "#11252",
+    stage: 4,
+    run: checkPublicImagesMd5MatchesLocal,
   },
   {
     id: "social-hash-fresh",

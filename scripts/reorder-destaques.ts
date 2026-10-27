@@ -128,12 +128,12 @@ import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // 
 import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
+import { publicImageKeysForPosition } from "./lib/public-images-invalidate.ts"; // #11252
 import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
   carouselSourceHashPath,
-  CAROUSEL_SLIDE_SLOTS,
   type CarouselSourceHashes,
   type DailyDestaqueId,
 } from "./lib/daily-carousel-card.ts"; // #6068
@@ -1320,10 +1320,10 @@ export function reorderCropReviewJson(
  * `i` onde `newOrder[i] !== i+1` (ponto fixo de uma permutação = posição
  * cujo conteúdo NÃO mudou, cobre corretamente ciclos de 2 e de 3).
  *
- * Chaves por posição (ver `upload-images-public.ts`): `cover` é especial —
- * é o hero 2:1 do D1 (nunca `d1_2x1`); D2/D3 usam `d{N}_2x1`. `d{N}_4x5` e
- * `d{N}_carousel_{p1,p2,p3,cta}` (`CAROUSEL_SLIDE_SLOTS`) existem pra
- * qualquer posição.
+ * Chaves por posição: `publicImageKeysForPosition` (#11252,
+ * `lib/public-images-invalidate.ts`) — `cover` (hero 2:1 do D1) ou
+ * `d{N}_2x1`, `d1_play` no D1, `d{N}_4x5`, `d{N}_carousel_{p1,p2,p3,cta}` e a
+ * chave base 1:1 legada `d{N}`.
  */
 export function invalidatePublicImagesForReorder(
   data: unknown,
@@ -1339,12 +1339,8 @@ export function invalidatePublicImagesForReorder(
   for (let i = 0; i < newOrder.length; i++) {
     const pos = i + 1;
     if (newOrder[i] === pos) continue; // ponto fixo — conteúdo não mudou.
-    const keys = [
-      pos === 1 ? "cover" : `d${pos}_2x1`,
-      `d${pos}_4x5`,
-      ...CAROUSEL_SLIDE_SLOTS.map((slot) => `d${pos}_carousel_${slot}`),
-    ];
-    for (const key of keys) {
+    // #11252: lista de chaves por posição compartilhada com swap-destaque(s).
+    for (const key of publicImageKeysForPosition(pos)) {
       if (key in images) {
         delete images[key];
         removedKeys.push(key);

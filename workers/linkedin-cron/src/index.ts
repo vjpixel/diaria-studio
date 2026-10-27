@@ -337,6 +337,8 @@ export interface DoFireState {
   fired: boolean;
   /** `claiming` ainda dentro do `CLAIM_TTL_MS` = disparo em andamento. */
   inFlight: boolean;
+  /** #11238 — motivo do envio ambíguo (#11106); `null` = não houve. */
+  sendUnknown: string | null;
 }
 
 /** #11107 — `/cancel` que o DO recusa (409) se um disparo estiver em andamento. */
@@ -347,17 +349,47 @@ const CANCEL_IF_NOT_CLAIMING: RequestInit = {
 };
 
 /**
- * #11215 — o `/cancel` condicional devolve 409 em dois casos: disparo em
- * andamento (`claiming`) ou DO que já disparou (`fired`/`send_unknown`). O
- * cliente precisa saber qual: no 2º o post já saiu e tentar de novo não serve.
+ * Motivo do 409 do enqueue idempotente (#10992, #11238):
+ *  - `already_fired`: o DO disparou e o post saiu;
+ *  - `send_unknown`: o disparo terminou ambíguo (#11106) — o post PODE não ter
+ *    saído; conferir a conta antes de republicar (nunca tomar como "saiu");
+ *  - `fire_in_progress`: disparo em andamento, tentar de novo depois.
  */
-async function cancelConflictReason(res: Response): Promise<"already_fired" | "fire_in_progress"> {
+export type IdempotentConflictReason = "already_fired" | "send_unknown" | "fire_in_progress";
+
+/**
+ * #11215/#11238 — o `/cancel` condicional e o `/arm` devolvem 409 em três
+ * casos: disparo em andamento (`claiming`), DO que já disparou (`fired`) ou
+ * envio ambíguo (`send_unknown`, que vem junto com `fired: true`). O cliente
+ * precisa saber qual: `send_unknown` é checado antes de `fired`, senão o
+ * ambíguo era reportado como `already_fired` — prova falsa de publicação.
+ * Corpo sem nenhum dos marcadores (ou ilegível): `fallback` — o `/cancel`
+ * usa `fire_in_progress` (único motivo que manda tentar de novo sem afirmar
+ * nada sobre o post, #11215); o `/arm` mantém o `already_fired` que já
+ * devolvia para todo 409 sem `claiming` (#10992).
+ */
+export async function doConflictReason(
+  res: Response,
+  fallback: IdempotentConflictReason = "fire_in_progress",
+): Promise<IdempotentConflictReason> {
   try {
-    const body = (await res.json()) as { fired?: unknown };
-    return body.fired === true ? "already_fired" : "fire_in_progress";
+    const body = (await res.json()) as { fired?: unknown; send_unknown?: unknown; claiming?: unknown };
+    if (typeof body.send_unknown === "string") return "send_unknown";
+    if (body.claiming === true) return "fire_in_progress";
+    if (body.fired === true) return "already_fired";
+    return fallback;
   } catch {
-    return "fire_in_progress";
+    return fallback;
   }
+}
+
+/** #11238 — conflito a partir do `/status` do DO; `null` = livre pra (re)armar. */
+export function doFireConflict(state: DoFireState | null): IdempotentConflictReason | null {
+  if (state === null) return null;
+  if (state.sendUnknown !== null) return "send_unknown";
+  if (state.fired) return "already_fired";
+  if (state.inFlight) return "fire_in_progress";
+  return null;
 }
 
 function doStub(env: Env, name: string): DurableObjectStub {
@@ -368,10 +400,11 @@ async function readDoFireState(env: Env, queueKey: string): Promise<DoFireState 
   try {
     const res = await doStub(env, queueKey).fetch("https://do/status", { method: "GET" });
     if (!res.ok) return null;
-    const s = (await res.json()) as { fired?: unknown; claiming?: unknown; claimed_at?: unknown };
+    const s = (await res.json()) as { fired?: unknown; claiming?: unknown; claimed_at?: unknown; send_unknown?: unknown };
     const claimedAt = typeof s.claimed_at === "number" ? s.claimed_at : null;
     const inFlight = s.claiming === true && (claimedAt === null || Date.now() - claimedAt <= CLAIM_TTL_MS);
-    return { fired: s.fired === true, inFlight };
+    const sendUnknown = typeof s.send_unknown === "string" ? s.send_unknown : null;
+    return { fired: s.fired === true, inFlight, sendUnknown };
   } catch {
     return null;
   }
@@ -408,11 +441,13 @@ async function writeIdempotencyIndex(env: Env, indexName: string, queueKey: stri
  * Worker respondia 202 `alarm_armed: true` e o cliente registrava "agendado"
  * para algo que nunca saía.
  */
-function idempotentConflict(error: "already_fired" | "fire_in_progress", key: string): Response {
+function idempotentConflict(error: IdempotentConflictReason, key: string): Response {
   const message =
     error === "already_fired"
       ? "este pedido (idempotency_key) já foi disparado — nada novo foi agendado. Confira a conta antes de publicar de novo."
-      : "este pedido (idempotency_key) está sendo disparado agora — nada foi alterado. Tente de novo em alguns minutos.";
+      : error === "send_unknown"
+        ? "o disparo deste pedido (idempotency_key) terminou ambíguo — o post pode ter saído ou não, e foi pra DLQ. Nada novo foi agendado. Confira a conta antes de republicar."
+        : "este pedido (idempotency_key) está sendo disparado agora — nada foi alterado. Tente de novo em alguns minutos.";
   return json({ error, message, key }, 409);
 }
 
@@ -862,6 +897,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
             scheduled_at: body.scheduled_at as string,
             destaque: body.destaque as string,
             ...(here?.fired && { fired: true }),
+            // #11238 — `fired` com envio ambíguo não prova que o post saiu.
+            ...(here?.sendUnknown != null && { send_unknown: here.sendUnknown }),
           },
           200,
         );
@@ -870,8 +907,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       contentChanged = verdict === "changed";
       console.log(`[enqueue] idempotency_key=${body.idempotency_key} em ${key}: ${verdict === "cancelled" ? "entry cancelada (tombstone)" : "conteúdo mudou"} — regravando e re-armando (#10917)`);
     }
-    if (here?.fired) return idempotentConflict("already_fired", key);
-    if (here?.inFlight) return idempotentConflict("fire_in_progress", key);
+    const hereConflict = doFireConflict(here);
+    if (hereConflict !== null) return idempotentConflict(hereConflict, key);
 
     // #11026/#11029 — conteúdo mudou: o DO desta key ainda guarda o container
     // de Reels (#10922) E o payload/alarm da versão antiga. O `/arm` os
@@ -893,7 +930,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
           ...CANCEL_IF_NOT_CLAIMING,
           body: JSON.stringify({ if_not_claiming: true, replacement_token: replacementToken, replacement_entry: entry }),
         });
-        if (clearRes.status === 409) return idempotentConflict(await cancelConflictReason(clearRes), key);
+        if (clearRes.status === 409) return idempotentConflict(await doConflictReason(clearRes), key);
         clearOk = clearRes.ok;
       } catch (e) {
         console.warn(`[enqueue] cancel do DO ${key} (conteúdo mudado) falhou: ${(e as Error).message} (#11029)`);
@@ -917,12 +954,12 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     const indexedKey = await readIdempotencyIndex(env, indexName);
     if (indexedKey !== null && indexedKey !== key) {
       const prev = await readDoFireState(env, indexedKey);
-      if (prev?.fired) return idempotentConflict("already_fired", indexedKey);
-      if (prev?.inFlight) return idempotentConflict("fire_in_progress", indexedKey);
+      const prevConflict = doFireConflict(prev);
+      if (prevConflict !== null) return idempotentConflict(prevConflict, indexedKey);
       let cancelOk = false;
       try {
         const cancelRes = await doStub(env, indexedKey).fetch("https://do/cancel", CANCEL_IF_NOT_CLAIMING); // #11107
-        if (cancelRes.status === 409) return idempotentConflict(await cancelConflictReason(cancelRes), indexedKey);
+        if (cancelRes.status === 409) return idempotentConflict(await doConflictReason(cancelRes), indexedKey);
         cancelOk = cancelRes.ok;
       } catch (e) {
         console.warn(`[enqueue] cancel do DO ${indexedKey} falhou: ${(e as Error).message} (#10992)`);
@@ -974,7 +1011,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // Isso é importante pra compat: se LINKEDIN_SCHEDULER não estiver configurado
   // (deploy antigo / env sem binding), cron continua funcionando normalmente.
   let alarmArmed = false;
-  let armConflict: "fire_in_progress" | "already_fired" | null = null;
+  let armConflict: IdempotentConflictReason | null = null;
   try {
     const doId = env.LINKEDIN_SCHEDULER.idFromName(key);
     const doStub = env.LINKEDIN_SCHEDULER.get(doId);
@@ -1008,8 +1045,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     if (armRes.status === 409) {
       // #10992/#11035 — o DO disparou ou ganhou o claim entre /status e /arm.
       // Propagar o conflito correto ao cliente em vez de confirmar o agendamento.
-      const conflict = await armRes.json() as { claiming?: boolean };
-      const reason = conflict.claiming ? "fire_in_progress" : "already_fired";
+      const reason = await doConflictReason(armRes, "already_fired"); // #11238 — inclui send_unknown
       console.warn(`[enqueue] DO de ${key} recusou /arm: ${reason}`);
       armConflict = reason;
     }

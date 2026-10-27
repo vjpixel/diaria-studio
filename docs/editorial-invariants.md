@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 124 invariants.
+**Total**: 126 invariants.
 
 ## Static (estrutura do repo)
 
@@ -108,6 +108,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `newsletter-html-size` | _internal/newsletter-final.html acima de 45000 bytes — sinal de crescimento perto do limite de clipping do Gmail (#5232, warning-only) | #5232 |
 | `no-duplicate-urls-vs-past-editions` | URL editorial de 02-reviewed.md repetida contra os últimos ~30 dias de edições (past-editions.md, #9955) — dedup do Stage 1 não vê itens inseridos/promovidos no gate (#8993, warning-only) | #8993 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
+| `public-images-md5-matches-local` | hero 2:1 do e-mail (cover/d1_play/d2_2x1/d3_2x1) em 06-public-images.json tem o md5 do arquivo local — troca de destaque não deixa imagem antiga no e-mail (#11252) | #11252 |
 | `public-images-populated` | 06-public-images.json com URLs d1/d2/d3 (#999) | #999 |
 | `render-warnings-consumed` | eventos estruturados de render-newsletter-html.ts (divulgacao_box_dropped_no_gap / whatsapp_share_no_d1 / whatsapp_share_d1_mismatch / convite_amigo_snippet_missing) surfaced no gate (#4673, warning-only) | #4673 |
 | `social-hash-fresh` | social.md hash bate com approved.json highlights (#1413) | #1413 |
@@ -144,6 +145,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `linkedin-worker-url-https` | DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971) | #971 |
 | `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971) | #971 |
 | `pending-research-unresolved` | pesquisa pedida pelo editor no gate do Stage 4 mas ainda não integrada ao bucket alvo (#4990) | #4990 |
+| `public-images-md5-matches-local` | hero 2:1 do e-mail em 06-public-images.json tem o md5 do arquivo local — o Kit publica do cache sem re-upload (#11252) | #11252 |
 | `social-published-complete` | 06-social-published.json não-vazio, sem failed (#272) | #272 |
 | `stage-5-review-completed` | review-test-email loop rodou + terminou (#1577) | #1577 |
 | `stage-5-review-loop-enforced` | review_status=issues_unfixable exige review_attempts>=2 (#1410) | #1410 |
