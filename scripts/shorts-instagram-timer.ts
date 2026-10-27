@@ -918,6 +918,16 @@ export async function runInstagramTimer(aammdd: string, dir: string, dryRun: boo
     return (await alarm(dir, aammdd, "late", reason, { at: decision.at }, deps.notify)) ? 0 : 1;
   }
 
+  // Fix do review do PR #11395: lembrete `guided` entregue nesta edição = o
+  // editor foi mandado postar pelo Chrome. O timer nunca publica pela API
+  // depois disso, mesmo que o corte no disco passe a caber (troca de corte):
+  // o post à mão pode já existir e o gate não o enxerga com certeza.
+  const guidedStatePath = join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE);
+  if (alreadyAlarmed(existsSync(guidedStatePath) ? readFileSync(guidedStatePath, "utf8") : null, "guided")) {
+    console.log(`${LOG_PREFIX} ${aammdd}: o lembrete do Passo B3b (guided) já saiu nesta edição — não publica pela API (registre o Reels com --confirm-instagram)`);
+    return 0;
+  }
+
   const release = dryRun ? () => {} : acquireTimerLock(join(dir, INSTAGRAM_TIMER_LOCK_FILE));
   if (!release) {
     console.log(`${LOG_PREFIX} ${aammdd}: outra execução está no meio (${INSTAGRAM_TIMER_LOCK_FILE}) — sai sem publicar`);

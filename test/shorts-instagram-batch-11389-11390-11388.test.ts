@@ -30,6 +30,9 @@ import {
   INSTAGRAM_CAPTION_LEGACY_FORMAT_MARKER,
   decideInstagramConfirm,
   decideInstagramConfirmAcrossAccounts,
+  decideInstagramTimerAcrossAccounts,
+  instagramTimerGate,
+  instagramTimerPublishStep,
   instagramConfirmUrlEntry,
   type InstagramConfirmDecision,
 } from "../scripts/publish-shorts.ts";
@@ -326,5 +329,75 @@ describe("#11388: legenda do Reels com o texto final do editor", () => {
     const d = decideInstagramConfirm({ published: EMPTY, media: { data: [reel("N", edited)] }, sinceIso: "2026-10-27T03:00:00.000Z", markers: MARKERS, nowIso: "2026-10-27T20:00:00.000Z", expectedAtIso: AT });
     assert.equal(d.kind, "register");
     assert.equal(d.kind === "register" && d.matchedBy, "time-window");
+  });
+});
+
+describe("fix do review do PR #11395: nenhum Reels duplicado pela API", () => {
+  const caption = buildReelsCaption({ platform: "instagram", aammdd: AAMMDD, d1: D1, editionUrl: "https://diar.ia.br/p/x" });
+
+  it("P2 (1): gate do timer — nada na @diar.ia.br, o Reels à mão no perfil do @vjpixel (collab pendente) → registra e NÃO publica", async () => {
+    const persisted: unknown[] = [];
+    let published = 0;
+    const step = await instagramTimerPublishStep({
+      gate: () =>
+        instagramTimerGate({
+          decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), chromeAuthor: decideFrom([reel("VJ1", caption)]) }),
+          persist: (e) => persisted.push(e),
+        }),
+      publish: async () => {
+        published++;
+        return "ok";
+      },
+    });
+    assert.equal(step.kind, "already");
+    assert.equal(published, 0);
+    assert.equal(persisted.length, 1);
+  });
+
+  it("P2 (1): perfil do autor com Reels perto do horário sem marcador (só janela) → o gate bloqueia, não publica", async () => {
+    const other = reel("VJ2", "Outro título\n\nOutro gancho.\n\n" + INSTAGRAM_CAPTION_FORMAT_MARKER);
+    await assert.rejects(
+      instagramTimerGate({ decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), chromeAuthor: decideFrom([other]) }), persist: () => {} }),
+      /janela de horário/,
+    );
+  });
+
+  it("P2 (1): leitura do perfil do autor que falha → fail-closed (read-failed), nunca publica", async () => {
+    await assert.rejects(
+      instagramTimerGate({
+        decide: () =>
+          decideInstagramTimerAcrossAccounts({
+            primary: decideFrom([]),
+            chromeAuthor: async () => {
+              throw new Error("GET /media 500");
+            },
+          }),
+        persist: () => {},
+      }),
+      (e: { failure?: string }) => e.failure === "read-failed",
+    );
+  });
+
+  it("P2 (1): nada em nenhuma das contas → publica; perfil não consultável → segue a conta da API", async () => {
+    assert.deepEqual(await instagramTimerGate({ decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), chromeAuthor: decideFrom([]) }), persist: () => {} }), { kind: "publish" });
+    assert.deepEqual(await instagramTimerGate({ decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), chromeAuthor: null }), persist: () => {} }), { kind: "publish" });
+  });
+
+  it("P2 (2): lembrete antecipado entregue e o corte trocado por um que cabe → no horário o timer NÃO publica pela API", async () => {
+    const dir = edition();
+    try {
+      const cut = join(dir, shortInstagramVideoFileName(AAMMDD));
+      writeFileSync(cut, "x");
+      const early = runDeps(at(-3 * H), { [cut]: 50 });
+      assert.equal(await runInstagramTimer(AAMMDD, dir, false, early.deps), 0);
+      assert.deepEqual(alarmState(dir).alarmed, ["guided"]);
+      // O editor troca o corte por um de 25 s (cabe no teto); no horário o timer roda.
+      const onTime = runDeps(at(10 * 60_000), { [cut]: 25 }, early.notify);
+      onTime.deps.lookupInstagramCut = () => ({ kind: "none", reason: "nada" });
+      assert.equal(await runInstagramTimer(AAMMDD, dir, false, onTime.deps), 0);
+      assert.equal(onTime.scripts.length, 0, "não chama o publish-shorts depois do lembrete guided");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1643,6 +1643,48 @@ export function instagramConfirmUrlEntry(url: string, nowIso: string): { ok: tru
   return { ok: true, entry: { destination: "instagram", status: "published", id: clean, url: clean, scheduled_at: null, at: nowIso } };
 }
 
+/**
+ * #11390: o leitor do perfil do autor da rota do Chrome (@vjpixel), só leitura.
+ * `reader` null = não consultável (mesma conta da API, ou sem credencial), com
+ * o motivo em `unavailable`.
+ */
+async function resolveChromeAuthorReader(
+  apiAuthorPage: string | null,
+  pages: ResolvedFacebookPage[],
+  igApiVersion: string,
+): Promise<{ reader: Extract<InstagramAuthor, { ready: true }> | null; unavailable?: string }> {
+  if (apiAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) return { reader: null, unavailable: "é a mesma conta da API" };
+  const resolved = await resolveInstagramAuthor(defaultGraphDeps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
+  return resolved.ready ? { reader: resolved } : { reader: null, unavailable: resolved.reason };
+}
+
+/**
+ * #11389/#11390 (fix do review do PR #11395): a conferência da conta ANTES de o
+ * timer publicar olha também o perfil do autor da rota do Chrome. Um Reels
+ * postado à mão (@vjpixel autor, collab pendente) não aparece na conta da API
+ * até o convite ser aceito; sem isto o timer publicaria de novo, em conta
+ * pública. Regras:
+ * - a conta da API acha o Reels, ou bloqueia (ambíguo/janela) → vale ela;
+ * - nada na conta da API → a decisão do perfil do autor, se ele achou ou
+ *   bloqueou; se ele também não tem nada, segue a da API (publica);
+ * - leitura do perfil que falha → propaga (o gate vira `read-failed` e não
+ *   publica: fail-closed, igual à leitura da conta da API);
+ * - perfil não consultável (`chromeAuthor` null: sem credencial da página
+ *   `vjpixel`) → segue a da API. Premissa: exigir a credencial travaria toda
+ *   publicação pela API; o motivo vai pro log do chamador.
+ */
+export async function decideInstagramTimerAcrossAccounts(deps: {
+  primary: () => Promise<InstagramConfirmDecision>;
+  chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null;
+}): Promise<InstagramConfirmDecision> {
+  const primary = await deps.primary();
+  if (primary.kind !== "refuse" || (primary.cause !== "none" && primary.cause !== "no-match")) return primary;
+  if (!deps.chromeAuthor) return primary;
+  const author = await deps.chromeAuthor();
+  if (author.kind === "refuse" && (author.cause === "none" || author.cause === "no-match")) return primary;
+  return author;
+}
+
 export type InstagramTimerAlreadyMatch = "registry" | "marker" | "time-window" | "media-id";
 
 export type InstagramTimerPreflight =
@@ -2800,19 +2842,28 @@ async function main(): Promise<number> {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.
           const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
+          // Fix do review do PR #11395: o gate olha também o perfil do @vjpixel (Reels à mão com collab pendente).
+          const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
+          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não conferido antes de publicar (${chrome.unavailable ?? "sem motivo"})`);
+          const readFor = (igUserId: string, token: string) => () =>
+            readAndDecideInstagramConfirm(defaultGraphDeps, {
+              igUserId,
+              token,
+              apiVersion: igApiVersion,
+              published,
+              sinceIso: ctx.sinceIso,
+              markers: ctx.markers,
+              nowIso: new Date().toISOString(),
+              expectedAtIso: ctx.expectedAtIso,
+            });
+          const chromeReader = chrome.reader;
           const step = await instagramTimerPublishStep({
             gate: () =>
               instagramTimerGate({
                 decide: () =>
-                  readAndDecideInstagramConfirm(defaultGraphDeps, {
-                    igUserId: author.igUserId,
-                    token: author.token,
-                    apiVersion: igApiVersion,
-                    published,
-                    sinceIso: ctx.sinceIso,
-                    markers: ctx.markers,
-                    nowIso: new Date().toISOString(),
-                    expectedAtIso: ctx.expectedAtIso,
+                  decideInstagramTimerAcrossAccounts({
+                    primary: readFor(author.igUserId, author.token),
+                    chromeAuthor: chromeReader ? readFor(chromeReader.igUserId, chromeReader.token) : null,
                   }),
                 persist: (entry) => {
                   published = persist(entry);
@@ -3036,16 +3087,7 @@ async function confirmInstagram(
   };
   // #11390: o Reels do B3b é postado pela @vjpixel com a @diar.ia.br em collab;
   // até o convite ser aceito ele só aparece no perfil do autor.
-  let chromeAuthor: Extract<InstagramAuthor, { ready: true }> | null = null;
-  let chromeAuthorUnavailable: string | undefined;
-  if (cfg.instagramAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) {
-    chromeAuthorUnavailable = "é a mesma conta da API";
-  } else {
-    const resolved = await resolveInstagramAuthor(defaultGraphDeps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
-    if (resolved.ready) chromeAuthor = resolved;
-    else chromeAuthorUnavailable = resolved.reason;
-  }
-  const chromeReader = chromeAuthor;
+  const { reader: chromeReader, unavailable: chromeAuthorUnavailable } = await resolveChromeAuthorReader(cfg.instagramAuthorPage, pages, igApiVersion);
   const across = await decideInstagramConfirmAcrossAccounts({
     primary: () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: author.igUserId, token: author.token }),
     chromeAuthor: chromeReader ? () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: chromeReader.igUserId, token: chromeReader.token }) : null,
