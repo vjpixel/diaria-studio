@@ -21,9 +21,11 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  OVERNIGHT_FORBIDDEN_BASH_PROBES,
   OVERNIGHT_REQUIRED_BASH_COMMANDS,
   bashRuleMatches,
   findMatchingBashRule,
+  normalizeWhitespace,
 } from "../scripts/lib/overnight-required-bash-commands.ts";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -85,7 +87,10 @@ describe("allow list do overnight agendado (#11235)", () => {
     const cache = new Map<string, string>();
     for (const c of OVERNIGHT_REQUIRED_BASH_COMMANDS) {
       if (!cache.has(c.source)) cache.set(c.source, readFileSync(resolve(REPO_ROOT, c.source), "utf8"));
-      assert.ok(cache.get(c.source)!.includes(c.mention), `'${c.mention}' sumiu de ${c.source} — revisar a lista de #11235`);
+      assert.ok(
+        normalizeWhitespace(cache.get(c.source)!).includes(normalizeWhitespace(c.mention)),
+        `'${c.mention}' sumiu de ${c.source} — revisar a lista de #11235`,
+      );
     }
   });
 
@@ -95,15 +100,17 @@ describe("allow list do overnight agendado (#11235)", () => {
     }
   });
 
-  it("nenhuma regra ampla substitui as estreitas", () => {
-    for (const broad of ["Bash", "Bash(*)", "Bash(git *)", "Bash(gh *)", "Bash(npm *)", "Bash(npx *)", "Bash(gh api *)", "Bash(git -C *)"]) {
-      assert.ok(!allow.includes(broad), `regra ampla '${broad}' no allow list — a decisão do #11235 é allow list estreito`);
-    }
-    for (const destructive of ["git reset --hard HEAD~1", "git push --force origin master", "git stash", "git clean -fd", "rm -rf node_modules"]) {
-      const hit = findMatchingBashRule(allow, destructive);
-      // `git push --force` cai em `Bash(git push *)`, regra que já existia antes do #11235.
-      if (destructive.startsWith("git push")) continue;
-      assert.equal(hit, null, `'${destructive}' passou a ser permitido por '${hit}'`);
+  it("nenhuma regra libera os comandos-sonda proibidos", () => {
+    assert.ok(!allow.includes("Bash"), "`Bash` sem padrão libera tudo");
+    for (const probe of OVERNIGHT_FORBIDDEN_BASH_PROBES) {
+      const hit = findMatchingBashRule(allow, probe.command);
+      if (probe.knownMatchBy) {
+        // Limitação conhecida: regra anterior ao #11235 (ex.: `Bash(git push *)`
+        // casa `git push --force`). Registrada, não alterada por esta issue.
+        assert.equal(hit, probe.knownMatchBy, `'${probe.command}': limitação conhecida mudou (${hit})`);
+        continue;
+      }
+      assert.equal(hit, null, `'${probe.command}' é permitido por '${hit}'`);
     }
   });
 });

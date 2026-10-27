@@ -28,6 +28,12 @@ import {
   parseShellCommands,
 } from "../.claude/hooks/lib/gh-pr-merge-command.mjs";
 import * as targetRepo from "../.claude/hooks/lib/gh-target-repo.mjs";
+import {
+  RESOLVE_MUTATION,
+  THREADS_QUERY,
+  buildResolveArgs,
+  buildThreadsQueryArgs,
+} from "../scripts/resolve-review-threads.ts";
 
 // O hook do guard não tem `.d.mts`: import por URL computada (mesmo padrão do teste do #10681).
 type Resolution = { mode: string; targets: string[]; grantRepo: string | null; indeterminate?: boolean };
@@ -824,21 +830,23 @@ describe("#10689 H — forma documentada de resolver review thread", () => {
     assert.deepEqual(shellExpandedGraphqlQueries(DOC_FORMS.join("\n")), []);
   });
 
-  it("o loop de resolução do overnight usa a forma nova e não é merge", () => {
+  it("o loop de resolução do overnight usa o helper, e as chamadas dele não são merge", () => {
+    // #11235: o SKILL.md deixou de ter `gh api graphql` à mão (o allow list do
+    // modo agendado não libera a regra) — a resolução mora em
+    // scripts/resolve-review-threads.ts. As duas chamadas que ele monta,
+    // escritas como linha de shell, seguem sem cara de merge pro guard.
     const skill = readFileSync(join(REPO_ROOT, ".claude/skills/diaria-overnight/SKILL.md"), "utf8");
-    const lines = skill.split(/\r?\n/).filter((l) => l.includes("gh api graphql") && l.includes("-f query="));
-    assert.ok(lines.length >= 3, "esperava as queries de threads e o resolveReviewThread no SKILL.md");
-    assert.ok(lines.some((l) => l.includes("resolveReviewThread(input:{threadId:$tid})")));
-    for (const l of lines) assert.equal(isGhPrMergeCommand(l.trim(), opts), false, l);
-    // #10618 (fatia 4, review A): a query de threads lê o repo DO PR (variáveis
-    // owner/name), nunca o diaria-studio fixo — senão o PR do design teria as
-    // threads de studio PR #N resolvidas/contadas no lugar das dele.
-    const threadQueries = lines.filter((l) => l.includes("reviewThreads"));
-    assert.ok(threadQueries.length >= 2);
-    for (const l of threadQueries) {
-      assert.doesNotMatch(l, /name:\s*"diaria-studio"/, l);
-      assert.match(l, /repository\(owner:\$owner,name:\$name\)/, l);
+    assert.match(skill, /npx tsx scripts\/resolve-review-threads\.ts --pr \{N\} \[--repo \{repo\}\]/);
+    assert.equal(skill.split(/\r?\n/).filter((l) => l.includes("gh api graphql") && l.includes("-f query=")).length, 0);
+    const shell = (args: string[]) => ["gh", ...args.map((a) => `'${a.replace(/'/g, "'\\''")}'`)].join(" ");
+    for (const args of [buildThreadsQueryArgs("vjpixel/diaria-design", 23), buildResolveArgs("PRRT_x")]) {
+      assert.equal(isGhPrMergeCommand(shell(args), opts), false, shell(args));
     }
+    // #10618 (fatia 4, review A): a query de threads lê o repo DO PR (variáveis
+    // owner/name), nunca o diaria-studio fixo.
+    assert.doesNotMatch(THREADS_QUERY, /name:\s*"diaria-studio"/);
+    assert.match(THREADS_QUERY, /repository\(owner:\$owner,name:\$name\)/);
+    assert.match(RESOLVE_MUTATION, /resolveReviewThread\(input:\{threadId:\$tid\}\)/);
   });
 
   it("varredura: nenhum `gh api graphql` com $ de shell no texto da query em skills/agents/context/hermes", () => {

@@ -147,6 +147,12 @@ REAL da issue tem teste? **O output esperado são os findings listados como
 comentários inline no PR** (não fixes imediatos). Retornar: o número do PR **+ a
 linha "self-review: N findings"**.
 
+Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
+--path P --line L --body-file F` (resposta a um comentário, no fixer: `reply
+--pr N --comment-id ID --body-file F`), nunca `gh api` à mão: o modo agendado
+(`acceptEdits`) não libera `gh api` no allow list (#11235). Comentário geral
+na PR continua `gh pr comment`.
+
 ## 8. Não executar review multi-agente pós-`gh pr create`
 
 Se um hook pós-`gh pr create` exigir code-review multi-agente, **não executar** —
@@ -285,13 +291,19 @@ a causa real é `required_review_thread_resolution: true`: comentários de
 review inline (self-review do subagente, findings do review consolidado)
 ficam como threads não-resolvidas e bloqueiam o merge até alguém resolver
 via GraphQL. Antes de `gh pr merge`, resolver todos os review threads
-pendentes — `owner`/`name` são os do repo DO PR (`vjpixel`/`diaria-studio`,
-ou `vjpixel`/`diaria-design` para PR de issue do design, #10618 fatia 4),
-passados como variável do GraphQL, nunca fixos no texto da query:
+pendentes com o helper, nunca com `gh api graphql` à mão (#11235: o overnight
+agendado roda em `acceptEdits` e o allow list não libera `gh api graphql`,
+que permitiria qualquer mutation). O repo é o DO PR (`--repo
+vjpixel/diaria-design` para PR de issue do design, #10618 fatia 4; sem
+`--repo`, o diaria-studio); `owner`/`name`/`pr` vão como variável do GraphQL
+dentro do script:
 ```
-gh api graphql -f owner=vjpixel -f name=diaria-studio -F pr=N -f query='query($owner: String!, $name: String!, $pr: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $pr) { reviewThreads(first: 20) { nodes { id isResolved path } } } } }'
-gh api graphql -f tid=ID -f query='mutation($tid: ID!) { resolveReviewThread(input: {threadId: $tid}) { thread { isResolved } } }'
+npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] --list
+npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name]
 ```
+O segundo resolve as não-resolvidas (`resolveReviewThread`), relê numa query
+fresca e sai `0` só sem thread bloqueante (FORBIDDEN de revisor externo não
+conta, sai listada em `forbidden`).
 
 ## 12. Matar processo próprio: sempre por PID, nunca por nome de imagem (#5432)
 

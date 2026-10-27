@@ -23,7 +23,14 @@
  *
  * Fora daqui de propósito: `npm test` completo (proibido pelo item 4 das regras
  * de dispatch), `gh pr merge` (já coberto por `gh pr *`), `git stash` (proibido,
- * item 10), `git reset --hard`/`rm -rf` (o deny de `rm -rf *` continua).
+ * item 10), `git reset --hard`/`rm -rf` (o deny de `rm -rf *` continua),
+ * `git worktree remove` (item 22; a limpeza de worktree mergeado é do
+ * `cleanup-merged-worktrees.ts`) e `gh api` cru (só pelos helpers
+ * `scripts/resolve-review-threads.ts` e `scripts/gh-pr-review-api.ts`).
+ *
+ * O allow list protege contra deriva acidental, não é fronteira de segurança:
+ * regras anteriores (`node -e *`, `npx tsx scripts/*.ts *`) já executam código
+ * arbitrário.
  */
 
 export type RequiredCommandSource =
@@ -36,8 +43,13 @@ export interface RequiredBashCommand {
   command: string;
   /** Documento onde o fluxo pede esse comando. */
   source: RequiredCommandSource;
-  /** Trecho literal que precisa continuar aparecendo em `source`. */
+  /** Trecho que precisa continuar aparecendo em `source` (espaço em branco normalizado). */
   mention: string;
+}
+
+/** Colapsa qualquer sequência de espaço em branco num espaço só. */
+export function normalizeWhitespace(s: string): string {
+  return s.replace(/\s+/g, " ");
 }
 
 export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = [
@@ -58,10 +70,10 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   },
 
   // Commit/push da unidade (subagente) e do fixer.
-  { command: "git add scripts/lib/foo.ts test/foo.test.ts", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar\npush no mesmo branch" },
-  { command: "git commit -m 'fix(#1): x'", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar\npush no mesmo branch" },
-  { command: "git commit -F /tmp/commit-msg-1.txt", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar\npush no mesmo branch" },
-  { command: "git push -u origin overnight/fix-1-x", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar\npush no mesmo branch" },
+  { command: "git add scripts/lib/foo.ts test/foo.test.ts", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
+  { command: "git commit -m 'fix(#1): x'", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
+  { command: "git commit -F /tmp/commit-msg-1.txt", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
+  { command: "git push -u origin overnight/fix-1-x", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
   { command: "gh pr create --title t --body-file /tmp/pr-body-1-123.md", source: "context/overnight-dispatch-rules.md", mention: "gh pr create" },
 
   // Coordenador: sync de master e worktrees.
@@ -74,6 +86,7 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
     mention: "git worktree add -b <branch> .claude/worktrees/<nome> origin/master",
   },
   { command: "git worktree prune", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "git worktree prune" },
+  { command: "git worktree list", source: "context/overnight-dispatch-rules.md", mention: "git worktree list" },
   { command: "git push origin --delete overnight/fix-1-x", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "git push origin --delete overnight/fix-NNNN" },
   { command: "git -C ../diaria-design fetch origin", source: "context/overnight-dispatch-rules.md", mention: "git -C ../diaria-design fetch origin" },
   {
@@ -103,21 +116,55 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   { command: "gh run view 123 --log-failed", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run view --log-failed" },
   { command: "gh run list --branch master --limit 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run list --branch master --limit 1" },
   { command: "gh run rerun 123", source: "context/overnight-dispatch-rules.md", mention: "gh run rerun" },
+  // `gh api` só via helpers de escopo fixo (#11235, review da PR #11250): uma
+  // regra `Bash(gh api ...*)` deixaria o `*` atravessar espaço e casar
+  // `-X DELETE`/mutation arbitrária. Os helpers caem em `npx tsx scripts/*.ts *`.
   {
-    command: "gh api repos/vjpixel/diaria-studio/git/ref/heads/master --jq .object.sha",
+    command: "npx tsx scripts/gh-pr-review-api.ts ref-sha --branch master",
     source: ".claude/skills/diaria-overnight/SKILL.md",
-    mention: "gh api repos/{owner}/{repo}/git/ref/heads/{base} --jq .object.sha",
+    mention: "npx tsx scripts/gh-pr-review-api.ts ref-sha --branch {base} [--repo {repo}]",
   },
   {
-    command: "gh api graphql -f owner=vjpixel -f name=diaria-studio -F pr=1 -f query='query { viewer { login } }'",
+    command: "npx tsx scripts/resolve-review-threads.ts --pr 1 --list",
     source: "context/overnight-dispatch-rules.md",
-    mention: "gh api graphql -f owner=vjpixel -f name=diaria-studio -F pr=N",
+    mention: "npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] --list",
   },
   {
-    command: "gh api repos/vjpixel/diaria-studio/pulls/1/comments -f body=x -f commit_id=abc -f path=a.ts -F line=1",
+    command: "npx tsx scripts/resolve-review-threads.ts --pr 1 --repo vjpixel/diaria-design",
     source: ".claude/skills/diaria-overnight/SKILL.md",
-    mention: "comentários inline no PR",
+    mention: "npx tsx scripts/resolve-review-threads.ts --pr {N} [--repo {repo}]",
   },
+  {
+    command: "npx tsx scripts/gh-pr-review-api.ts comment --pr 1 --path a.ts --line 3 --body-file /tmp/c.md",
+    source: "context/overnight-dispatch-rules.md",
+    mention: "npx tsx scripts/gh-pr-review-api.ts comment --pr N --path P --line L --body-file F",
+  },
+  {
+    command: "npx tsx scripts/gh-pr-review-api.ts reply --pr 1 --comment-id 9 --body-file /tmp/r.md",
+    source: ".claude/agents/dev-fixer.md",
+    mention: "npx tsx scripts/gh-pr-review-api.ts reply --pr N --comment-id ID --body-file F",
+  },
+];
+
+/**
+ * Comandos que o allow list NÃO pode liberar (#11235, review da PR #11250).
+ * O teste exige que nenhuma regra de `allow` case cada um. `knownMatchBy`
+ * registra o caso em que uma regra ANTERIOR ao #11235 já casa (limitação
+ * conhecida, fora do escopo desta issue).
+ */
+export const OVERNIGHT_FORBIDDEN_BASH_PROBES: readonly { command: string; knownMatchBy?: string }[] = [
+  { command: "git reset --hard HEAD~1" },
+  { command: "git stash" },
+  { command: "git clean -fd" },
+  { command: "git worktree remove --force .claude/worktrees/x" },
+  { command: "git -C ../outro-repo commit -m x" },
+  { command: "gh api repos/vjpixel/x/branches/master/protection -X DELETE -H 'X: /pulls/1'" },
+  { command: "gh api repos/vjpixel/diaria-studio/pulls/1 -X PATCH -f base=main" },
+  { command: "gh api repos/vjpixel/diaria-studio/git/ref/heads/master -X DELETE" },
+  { command: "gh api graphql -f query='mutation{deleteRef(input:{refId:\"x\"}){clientMutationId}}'" },
+  { command: "rm -rf node_modules" },
+  { command: "npm test" },
+  { command: "git push --force origin master", knownMatchBy: "Bash(git push *)" },
 ];
 
 /** Prefixo `Bash(` ... `)` de uma regra de permissão; `null` se a regra não é de Bash. */
