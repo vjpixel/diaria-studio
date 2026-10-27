@@ -18,18 +18,20 @@
  *   npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] [--thread ID,ID]
  *
  * Sem `--list`, resolve as não-resolvidas (todas, ou só as de `--thread`), relê
- * as threads numa query FRESCA e imprime um JSON com o resultado.
+ * as threads numa query FRESCA e decide por ela (não pelo retorno da mutation).
  *
  * Exit:
- *   0 — `--list` ok, ou nenhuma thread bloqueante (não-resolvida e não-FORBIDDEN) restou
- *   1 — restou thread bloqueante
- *   3 — erro de comando/payload (nunca vira "0 threads")
- *   4 — mais de 100 threads (`hasNextPage`): gate automático desativado (#2222/#2232)
- *   5 — uso inválido
+ *   0 — `--list` ok, ou nenhuma thread bloqueante restou na query fresca
+ *   1 — restou thread bloqueante sem falha de infra (ex.: fora de `--thread`)
+ *   3 — erro de query/payload, ou alguma resolução falhou (rede, 5xx, timeout,
+ *       FORBIDDEN inesperado) e a thread seguiu aberta: é infra, retentar
+ *   4 — mais de 100 threads (`hasNextPage: true`): gate automático desativado (#2222/#2232)
+ *   5 — uso inválido (flag desconhecida, `--thread` sem valor, `--list` com valor)
  *
- * FORBIDDEN (#2222): thread de revisor externo que o overnight não pode
- * resolver. Não conta como bloqueante; sai listada em `forbidden` para o
- * coordenador anotar no corpo da PR.
+ * FORBIDDEN (#2222): só conta como "revisor externo" (não bloqueia, sai em
+ * `forbidden` pro coordenador anotar no corpo da PR) quando a própria thread diz
+ * `viewerCanResolve: false`. FORBIDDEN com `viewerCanResolve` true ou ausente é
+ * falta de permissão do token, não revisor externo: vai pra `failed` (exit 3).
  */
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -41,7 +43,7 @@ export type GhRunFn = (args: string[]) => GhSpawnResult;
 
 /** Query das threads: owner/name/pr como variáveis do GraphQL, nunca interpolados. */
 export const THREADS_QUERY =
-  "query($owner:String!,$name:String!,$pr:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$pr){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }";
+  "query($owner:String!,$name:String!,$pr:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$pr){ reviewThreads(first:100){ nodes{ id isResolved viewerCanResolve } pageInfo{ hasNextPage endCursor } } } } }";
 
 /** Única mutation que o script emite. */
 export const RESOLVE_MUTATION =
@@ -56,6 +58,8 @@ export const EXIT_USAGE = 5;
 export interface ReviewThread {
   id: string;
   isResolved: boolean;
+  /** `undefined` quando a resposta não trouxe o campo. */
+  viewerCanResolve?: boolean;
 }
 
 export type ThreadsParse =
@@ -72,49 +76,72 @@ export function buildResolveArgs(threadId: string): string[] {
 }
 
 /**
- * Lê a resposta da query de threads. Qualquer forma inesperada é erro — nunca
- * "0 threads" (o mesmo guard do bloco shell que este script substitui).
- * `hasNextPage` diferente de `false` (inclusive ausente) conta como próxima página.
+ * Lê a resposta da query de threads. Qualquer forma inesperada é erro, nunca
+ * "0 threads": JSON inválido, `errors[]` não vazio (mesmo com `data`), thread
+ * malformada, `hasNextPage` que não seja booleano.
  */
 export function parseThreadsResponse(stdout: string): ThreadsParse {
-  let parsed: unknown;
+  let parsed: { errors?: unknown; data?: { repository?: { pullRequest?: { reviewThreads?: unknown } } } };
   try {
     parsed = JSON.parse(stdout);
   } catch {
     return { ok: false, error: "resposta da query de threads não é JSON" };
   }
-  const rt = (parsed as { data?: { repository?: { pullRequest?: { reviewThreads?: unknown } } } })?.data?.repository
-    ?.pullRequest?.reviewThreads as { nodes?: unknown; pageInfo?: { hasNextPage?: unknown } } | undefined;
+  if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
+    return { ok: false, error: `query de threads voltou com errors[]: ${JSON.stringify(parsed.errors).slice(0, 300)}` };
+  }
+  const rt = parsed?.data?.repository?.pullRequest?.reviewThreads as
+    | { nodes?: unknown; pageInfo?: { hasNextPage?: unknown } }
+    | undefined;
   if (!rt || !Array.isArray(rt.nodes)) return { ok: false, error: "reviewThreads ausente na resposta" };
+  const hasNextPage = rt.pageInfo?.hasNextPage;
+  if (typeof hasNextPage !== "boolean") return { ok: false, error: "pageInfo.hasNextPage ausente ou não booleano" };
   const threads: ReviewThread[] = [];
-  for (const n of rt.nodes as Array<{ id?: unknown; isResolved?: unknown }>) {
+  for (const n of rt.nodes as Array<{ id?: unknown; isResolved?: unknown; viewerCanResolve?: unknown }>) {
     if (typeof n?.id !== "string" || typeof n?.isResolved !== "boolean") {
       return { ok: false, error: "thread malformada na resposta" };
     }
-    threads.push({ id: n.id, isResolved: n.isResolved });
+    threads.push({
+      id: n.id,
+      isResolved: n.isResolved,
+      viewerCanResolve: typeof n.viewerCanResolve === "boolean" ? n.viewerCanResolve : undefined,
+    });
   }
-  return { ok: true, threads, hasNextPage: rt.pageInfo?.hasNextPage !== false };
+  return { ok: true, threads, hasNextPage };
 }
 
-/** `forbidden` vem de `errors[].type == "FORBIDDEN"`, nunca de grep no corpo. */
-export function classifyResolveResult(r: GhSpawnResult): "resolved" | "forbidden" | "error" {
-  let parsed: { errors?: Array<{ type?: string }>; data?: { resolveReviewThread?: { thread?: { isResolved?: boolean } } } };
+/**
+ * Resultado de uma mutation. `forbidden` vem de `errors[].type == "FORBIDDEN"`,
+ * nunca de grep no corpo; qualquer outro `errors[]` não vazio é erro, mesmo com
+ * `data` presente.
+ */
+export function classifyResolveResult(r: GhSpawnResult): { outcome: "resolved" | "forbidden" | "error"; reason: string } {
+  let parsed: { errors?: Array<{ type?: string; message?: string }>; data?: { resolveReviewThread?: { thread?: { isResolved?: boolean } } } };
   try {
     parsed = JSON.parse(r.stdout);
   } catch {
-    return "error";
+    return { outcome: "error", reason: `gh exit ${r.status}: ${r.stderr.trim() || "resposta não é JSON"}` };
   }
-  if ((parsed.errors ?? []).some((e) => e?.type === "FORBIDDEN")) return "forbidden";
-  if (r.status === 0 && parsed.data?.resolveReviewThread?.thread?.isResolved === true) return "resolved";
-  return "error";
+  const errors = Array.isArray(parsed?.errors) ? parsed.errors : [];
+  if (errors.some((e) => e?.type === "FORBIDDEN")) return { outcome: "forbidden", reason: "FORBIDDEN" };
+  if (errors.length > 0) return { outcome: "error", reason: `errors[]: ${errors.map((e) => e?.message ?? e?.type).join("; ")}` };
+  if (r.status === 0 && parsed?.data?.resolveReviewThread?.thread?.isResolved === true) return { outcome: "resolved", reason: "" };
+  return { outcome: "error", reason: `gh exit ${r.status}: resposta sem thread resolvida` };
+}
+
+export interface FailedResolve {
+  id: string;
+  status: number | null;
+  reason: string;
 }
 
 export interface ResolveReport {
   exitCode: number;
   resolved: string[];
+  /** FORBIDDEN de revisor externo (`viewerCanResolve: false`): não bloqueia. */
   forbidden: string[];
-  failed: string[];
-  /** Não-resolvidas e não-FORBIDDEN na query fresca pós-loop. */
+  failed: FailedResolve[];
+  /** Não-resolvidas e não-FORBIDDEN-externas na query fresca pós-loop. */
   remainingBlocking: number;
   error?: string;
 }
@@ -124,6 +151,7 @@ function fetchThreads(repo: string, pr: number, ghRun: GhRunFn): ThreadsParse {
   // `gh api graphql` sai 1 quando há `errors` mesmo com JSON no stdout: o parse decide.
   const p = parseThreadsResponse(r.stdout);
   if (!p.ok && r.status !== 0) return { ok: false, error: `${p.error} (gh exit ${r.status}: ${r.stderr.trim()})` };
+  if (p.ok && r.status !== 0) return { ok: false, error: `gh exit ${r.status}: ${r.stderr.trim()}` };
   return p;
 }
 
@@ -133,68 +161,100 @@ export function resolveReviewThreads(
   ghRun: GhRunFn,
   only: ReadonlySet<string> | null = null,
 ): ResolveReport {
-  const base = { resolved: [] as string[], forbidden: [] as string[], failed: [] as string[], remainingBlocking: 0 };
+  const report: ResolveReport = { exitCode: EXIT_OK, resolved: [], forbidden: [], failed: [], remainingBlocking: 0 };
   const before = fetchThreads(repo, pr, ghRun);
-  if (!before.ok) return { ...base, exitCode: EXIT_ERROR, error: before.error };
-  if (before.hasNextPage) return { ...base, exitCode: EXIT_PAGINATION, error: "mais de 100 review threads" };
+  if (!before.ok) return { ...report, exitCode: EXIT_ERROR, error: before.error };
+  if (before.hasNextPage) return { ...report, exitCode: EXIT_PAGINATION, error: "mais de 100 review threads" };
 
   for (const t of before.threads) {
     if (t.isResolved || (only && !only.has(t.id))) continue;
-    const outcome = classifyResolveResult(ghRun(buildResolveArgs(t.id)));
-    if (outcome === "resolved") base.resolved.push(t.id);
-    else if (outcome === "forbidden") base.forbidden.push(t.id);
-    else base.failed.push(t.id);
+    const r = ghRun(buildResolveArgs(t.id));
+    const { outcome, reason } = classifyResolveResult(r);
+    if (outcome === "resolved") report.resolved.push(t.id);
+    else if (outcome === "forbidden" && t.viewerCanResolve === false) report.forbidden.push(t.id);
+    else {
+      const why = outcome === "forbidden" ? `FORBIDDEN com viewerCanResolve=${t.viewerCanResolve} (permissão do token, não revisor externo)` : reason;
+      report.failed.push({ id: t.id, status: r.status, reason: why });
+    }
   }
 
   const after = fetchThreads(repo, pr, ghRun);
-  if (!after.ok) return { ...base, exitCode: EXIT_ERROR, error: `query pós-loop: ${after.error}` };
-  if (after.hasNextPage) return { ...base, exitCode: EXIT_PAGINATION, error: "mais de 100 review threads (pós-loop)" };
-  const forbidden = new Set(base.forbidden);
-  base.remainingBlocking = after.threads.filter((t) => !t.isResolved && !forbidden.has(t.id)).length;
-  return { ...base, exitCode: base.remainingBlocking === 0 ? EXIT_OK : EXIT_BLOCKING };
+  if (!after.ok) return { ...report, exitCode: EXIT_ERROR, error: `query pós-loop: ${after.error}` };
+  if (after.hasNextPage) return { ...report, exitCode: EXIT_PAGINATION, error: "mais de 100 review threads (pós-loop)" };
+  const externalForbidden = new Set(report.forbidden);
+  const open = after.threads.filter((t) => !t.isResolved && !externalForbidden.has(t.id));
+  report.remainingBlocking = open.length;
+  if (open.length === 0) return { ...report, exitCode: EXIT_OK };
+  const failedIds = new Set(report.failed.map((f) => f.id));
+  if (open.some((t) => failedIds.has(t.id))) {
+    return { ...report, exitCode: EXIT_ERROR, error: "resolução falhou e a thread segue aberta (infra: retentar)" };
+  }
+  return { ...report, exitCode: EXIT_BLOCKING };
 }
 
 const CONFIG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const KNOWN_KEYS = new Set(["pr", "repo", "list", "thread"]);
 
-function usage(): string {
+export function usage(): string {
   return "uso: npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] [--list | --thread ID,ID]";
 }
 
-function main(): void {
-  const { values, flags } = parseArgs(process.argv.slice(2));
+export interface CliResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * CLI testável. Validação local de flags (o `parseArgs` compartilhado aceita
+ * qualquer chave e trata `--x` sem valor como flag): flag desconhecida,
+ * `--thread` sem valor/vazio e `--list` com valor são erro de uso, para nunca
+ * mudar de modo em silêncio.
+ */
+export function runCli(argv: string[], ghRun: GhRunFn, configRoot: string = CONFIG_ROOT): CliResult {
+  const usageErr = (msg: string): CliResult => ({ exitCode: EXIT_USAGE, stdout: "", stderr: `[resolve-review-threads] ${msg}\n${usage()}` });
+  const { values, flags, positional } = parseArgs(argv);
+  if (positional.length > 0) return usageErr(`argumento solto: ${positional.join(" ")}`);
+  for (const k of [...Object.keys(values), ...flags]) if (!KNOWN_KEYS.has(k)) return usageErr(`flag desconhecida: --${k}`);
+  if ("list" in values) return usageErr("--list não leva valor");
+  if (flags.has("thread")) return usageErr("--thread sem valor");
+  if (flags.has("pr")) return usageErr("--pr sem valor");
   const pr = Number(values.pr);
-  if (!Number.isInteger(pr) || pr <= 0) {
-    console.error(`[resolve-review-threads] --pr é obrigatório (inteiro positivo).\n${usage()}`);
-    process.exitCode = EXIT_USAGE;
-    return;
-  }
-  const repoFlag = resolveRepoFlag(values, flags, CONFIG_ROOT);
-  if ("error" in repoFlag) {
-    console.error(`[resolve-review-threads] ${repoFlag.error}\n${usage()}`);
-    process.exitCode = EXIT_USAGE;
-    return;
-  }
+  if (!/^\d+$/.test(values.pr ?? "") || pr <= 0) return usageErr("--pr é obrigatório (inteiro positivo)");
+  const repoFlag = resolveRepoFlag(values, flags, configRoot);
+  if ("error" in repoFlag) return usageErr(repoFlag.error);
   const repo = repoFlag.repo ?? DEFAULT_ISSUE_REPO;
-  const ghRun: GhRunFn = (args) => spawnGhSync(args, process.cwd(), 30_000);
+
+  let only: Set<string> | null = null;
+  if ("thread" in values) {
+    const ids = (values.thread ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (ids.length === 0) return usageErr("--thread vazio");
+    only = new Set(ids);
+  }
+  if (flags.has("list") && only) return usageErr("--list e --thread são exclusivos");
 
   if (flags.has("list")) {
     const p = fetchThreads(repo, pr, ghRun);
-    if (!p.ok) {
-      console.error(`[resolve-review-threads] ${p.error}`);
-      process.exitCode = EXIT_ERROR;
-      return;
-    }
+    if (!p.ok) return { exitCode: EXIT_ERROR, stdout: "", stderr: `[resolve-review-threads] ${p.error}` };
     const unresolved = p.threads.filter((t) => !t.isResolved).map((t) => t.id);
-    console.log(JSON.stringify({ repo, pr, total: p.threads.length, unresolved, hasNextPage: p.hasNextPage }));
-    process.exitCode = p.hasNextPage ? EXIT_PAGINATION : EXIT_OK;
-    return;
+    return {
+      exitCode: p.hasNextPage ? EXIT_PAGINATION : EXIT_OK,
+      stdout: JSON.stringify({ repo, pr, total: p.threads.length, unresolved, hasNextPage: p.hasNextPage }),
+      stderr: "",
+    };
   }
 
-  const only = values.thread ? new Set(values.thread.split(",").map((s) => s.trim()).filter(Boolean)) : null;
   const report = resolveReviewThreads(repo, pr, ghRun, only);
-  console.log(JSON.stringify({ repo, pr, ...report }));
-  if (report.error) console.error(`[resolve-review-threads] ${report.error}`);
-  process.exitCode = report.exitCode;
+  return {
+    exitCode: report.exitCode,
+    stdout: JSON.stringify({ repo, pr, ...report }),
+    stderr: report.error ? `[resolve-review-threads] ${report.error}` : "",
+  };
 }
 
-if (isMainModule(import.meta.url)) main();
+if (isMainModule(import.meta.url)) {
+  const r = runCli(process.argv.slice(2), (args) => spawnGhSync(args, process.cwd(), 30_000));
+  if (r.stdout) console.log(r.stdout);
+  if (r.stderr) console.error(r.stderr);
+  process.exitCode = r.exitCode;
+}

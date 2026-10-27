@@ -31,6 +31,13 @@
  * O allow list protege contra deriva acidental, não é fronteira de segurança:
  * regras anteriores (`node -e *`, `npx tsx scripts/*.ts *`) já executam código
  * arbitrário.
+ *
+ * `bashRuleMatches` imita a semântica documentada, mas não é o matcher real do
+ * Claude Code. Por isso, onde o fluxo roda o comando puro (`git pull`,
+ * `npm ci`, `git worktree prune`/`list`, `gh auth status`), o allow list tem
+ * também a regra exata sem argumentos, que não depende de "` *` final casa o
+ * comando puro". A prova real é a 1ª rodada agendada depois do merge: o
+ * `report.md` dela não pode listar negação de permissão.
  */
 
 export type RequiredCommandSource =
@@ -70,10 +77,12 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   },
 
   // Commit/push da unidade (subagente) e do fixer.
-  { command: "git add scripts/lib/foo.ts test/foo.test.ts", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
-  { command: "git commit -m 'fix(#1): x'", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
-  { command: "git commit -F /tmp/commit-msg-1.txt", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
-  { command: "git push -u origin overnight/fix-1-x", source: ".claude/agents/dev-fixer.md", mention: "commitar e dar push no mesmo branch" },
+  { command: "git add scripts/lib/foo.ts test/foo.test.ts", source: "context/overnight-dispatch-rules.md", mention: "`git add <arquivos>` (lista explícita, nunca `-A`)" },
+  { command: "git commit -F /tmp/commit-msg-1.txt", source: "context/overnight-dispatch-rules.md", mention: "`git commit -F <arquivo-de-mensagem>`" },
+  { command: "git commit --no-verify -m wip", source: "context/overnight-dispatch-rules.md", mention: "`git commit --no-verify -m wip`" },
+  { command: "git reset --soft HEAD~1", source: "context/overnight-dispatch-rules.md", mention: "`git reset --soft HEAD~1`" },
+  { command: "git push -u origin overnight/fix-1-x", source: "context/overnight-dispatch-rules.md", mention: "`git push -u origin <branch>`" },
+  { command: "git push", source: ".claude/agents/dev-fixer.md", mention: "`git commit -F <arquivo>`, `git push`" },
   { command: "gh pr create --title t --body-file /tmp/pr-body-1-123.md", source: "context/overnight-dispatch-rules.md", mention: "gh pr create" },
 
   // Coordenador: sync de master e worktrees.
@@ -112,7 +121,8 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   // Coordenador: CI, merge gate e review threads.
   { command: "bash scripts/lib/wait-pr-checks.sh 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "scripts/lib/wait-pr-checks.sh {N}" },
   { command: "scripts/lib/wait-pr-checks.sh 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "scripts/lib/wait-pr-checks.sh {N}" },
-  { command: "gh pr checks 1 --json bucket --jq '.'", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh pr checks {N} --json bucket" },
+  { command: "npx tsx scripts/check-pr-checks-gate.ts --pr 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "npx tsx scripts/check-pr-checks-gate.ts --pr {N} [--issue {ref}]" },
+  { command: "gh pr checks 1 --watch", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh pr checks {N} --watch" },
   { command: "gh run view 123 --log-failed", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run view --log-failed" },
   { command: "gh run list --branch master --limit 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run list --branch master --limit 1" },
   { command: "gh run rerun 123", source: "context/overnight-dispatch-rules.md", mention: "gh run rerun" },
@@ -140,6 +150,11 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
     mention: "npx tsx scripts/gh-pr-review-api.ts comment --pr N --path P --line L --body-file F",
   },
   {
+    command: "npx tsx scripts/gh-pr-review-api.ts list-comments --pr 1",
+    source: ".claude/agents/dev-fixer.md",
+    mention: "npx tsx scripts/gh-pr-review-api.ts list-comments --pr N",
+  },
+  {
     command: "npx tsx scripts/gh-pr-review-api.ts reply --pr 1 --comment-id 9 --body-file /tmp/r.md",
     source: ".claude/agents/dev-fixer.md",
     mention: "npx tsx scripts/gh-pr-review-api.ts reply --pr N --comment-id ID --body-file F",
@@ -164,7 +179,16 @@ export const OVERNIGHT_FORBIDDEN_BASH_PROBES: readonly { command: string; knownM
   { command: "gh api graphql -f query='mutation{deleteRef(input:{refId:\"x\"}){clientMutationId}}'" },
   { command: "rm -rf node_modules" },
   { command: "npm test" },
+  // Sondas de `Bash(git *)`: nenhum subcomando git fora dos liberados pode passar.
+  { command: "git rebase -i master" },
+  { command: "git branch -D master" },
+  { command: "git config core.hooksPath /tmp/x" },
+  { command: "git reset --soft HEAD~5" },
+  { command: "git checkout -- scripts" , knownMatchBy: "Bash(git checkout *)" },
+  // Limitações conhecidas de regras anteriores ao #11235 (não alteradas aqui).
   { command: "git push --force origin master", knownMatchBy: "Bash(git push *)" },
+  { command: "npx tsx --test test/", knownMatchBy: "Bash(npx tsx --test *)" },
+  { command: "npm run test", knownMatchBy: "Bash(npm run *)" },
 ];
 
 /** Prefixo `Bash(` ... `)` de uma regra de permissão; `null` se a regra não é de Bash. */

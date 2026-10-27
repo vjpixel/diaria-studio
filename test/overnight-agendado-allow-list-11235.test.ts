@@ -12,7 +12,11 @@
  * (`scripts/lib/overnight-required-bash-commands.ts`) com o allow list, usando
  * um matcher que imita a semântica de prefixo/curinga das regras `Bash(...)`.
  * Também confere que cada comando ainda é citado no documento do fluxo e que
- * nenhuma regra ampla (`Bash(*)`, `Bash(git *)`) entrou no lugar das estreitas.
+ * nenhuma regra ampla entrou no lugar das estreitas: em vez de comparar strings
+ * (`Bash(git *)`), passa comandos-sonda proibidos (`git rebase`, `git branch -D`,
+ * `gh api ... -X DELETE`, mutation GraphQL arbitrária...) ao matcher e exige
+ * que nenhuma regra case (`OVERNIGHT_FORBIDDEN_BASH_PROBES`). A prova real é a
+ * 1ª rodada agendada depois do merge.
  */
 
 import { describe, it } from "node:test";
@@ -97,6 +101,12 @@ describe("allow list do overnight agendado (#11235)", () => {
   it("os comandos negados nas rodadas 261026/261027 estão cobertos", () => {
     for (const cmd of ["git add -A", "git commit -m x", "git fetch origin", "git pull", "npm ci", "npx tsc --noEmit"]) {
       assert.ok(findMatchingBashRule(allow, cmd), `'${cmd}' segue fora do allow list`);
+    }
+  });
+
+  it("comando que o fluxo roda puro tem também a regra exata (não depende do ` *` casar o puro)", () => {
+    for (const bare of ["git pull", "npm ci", "git worktree prune", "git worktree list", "gh auth status"]) {
+      assert.ok(allow.includes(`Bash(${bare})`), `faltando a regra exata 'Bash(${bare})'`);
     }
   });
 
