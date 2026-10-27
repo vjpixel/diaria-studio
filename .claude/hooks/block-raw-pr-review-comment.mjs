@@ -1,5 +1,5 @@
 // PreToolUse hook (matcher Bash) — recusa comentário de review postado CRU por
-// um subagente `dev-*` (implementador/fixer/revisor das rodadas autônomas),
+// qualquer sessão (coordenador e subagentes, mesmo sem `agent_type`),
 // apontando pro `scripts/gh-pr-review-api.ts` (#11300).
 //
 // Incidente de origem (#11300, PR #11285, `/diaria-develop` 261027b): o
@@ -25,11 +25,9 @@
 //   - `gh pr review … --comment`/`-c` — comentário geral sai por
 //     `gh pr comment` (item 7 das regras de dispatch).
 //
-// Escopo: só quando o payload traz `agent_type` começando por `dev-` (os
-// agents dedicados do #9081). Sessão interativa, coordenador e qualquer
-// harness que não envie `agent_type` → não bloqueia (fail-open, mesmo
-// contrato de `block-writer-destaque-write-path.mjs`). O próprio helper chama
-// `gh api` por `spawnSync`, fora do Bash do agente, então não passa por aqui.
+// Escopo: todo Bash, independente de metadados de agente (#11331). Não
+// depende de o harness fornecer `agent_type`. O helper chama `gh api` por
+// `spawnSync`, fora do Bash do agente, então não passa por aqui.
 //
 // LIMITES CONHECIDOS (aceitos — o custo do falso negativo é atrito no Gate 2,
 // com workaround, não dano): endpoint montado em variável opaca
@@ -41,9 +39,6 @@
 import { pathToFileURL } from "node:url";
 import { parseShellCommands } from "./lib/gh-pr-merge-command.mjs";
 import { stripHeredocSpans } from "./block-handwritten-pr-checks-loop.mjs";
-
-/** Prefixo dos agents dedicados das rodadas autônomas (#9081). */
-export const DEV_AGENT_PREFIX = "dev-";
 
 /** Marcadores internos do lexer de `gh-pr-merge-command.mjs` (expansões do shell). */
 const MARKER_RE = /[\u0000-\u0004]/g;
@@ -150,7 +145,16 @@ function rawReviewCommentKind(words) {
     }
     if (words[j] !== "review") return null;
     const rest = words.slice(j + 1);
-    return rest.some((w) => w === "--comment" || w === "-c" || /^-[a-z]*c[a-z]*$/.test(w)) ? "pr-review" : null;
+    for (let i = 0; i < rest.length; i++) {
+      const w = rest[i];
+      // Valores de body/repo não são flags, mesmo quando começam por `-c`.
+      if (["-b", "--body", "-F", "--body-file", "-R", "--repo"].includes(w)) {
+        i++;
+        continue;
+      }
+      if (w === "--comment" || w === "-c") return "pr-review";
+    }
+    return null;
   }
   return null;
 }
@@ -173,20 +177,14 @@ export function findRawPrReviewComment(command, depth = 0) {
   return null;
 }
 
-export function isDevAgent(payload) {
-  const agentType = payload?.agent_type ?? payload?.agentType ?? payload?.subagent_type;
-  return typeof agentType === "string" && agentType.startsWith(DEV_AGENT_PREFIX);
-}
-
 /** Decisão completa do hook: motivo de bloqueio, ou `null`. */
 export function shouldBlockRawPrReviewComment(payload) {
-  if (!isDevAgent(payload)) return null;
   if (payload.tool_name && payload.tool_name !== "Bash") return null;
   return findRawPrReviewComment(payload.tool_input?.command);
 }
 
 export const RAW_PR_REVIEW_COMMENT_BLOCK_REASON =
-  "Comentário de review postado cru por subagente dev-* bloqueado (#11300). Sem o marcador " +
+  "Comentário de review postado cru bloqueado em qualquer sessão (#11300/#11331). Sem o marcador " +
   "`<!-- diaria-auto-review -->`, a thread é lida como do editor por `resolve-review-threads.ts` " +
   "(#11269) e trava o Gate 2. Use `npx tsx scripts/gh-pr-review-api.ts comment --pr N --path P " +
   "--line L --body-file F` (finding inline) ou `npx tsx scripts/gh-pr-review-api.ts reply --pr N " +
