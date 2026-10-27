@@ -277,8 +277,8 @@
     "shorts": {
       "facebook_pages": ["diaria", "vjpixel"],
       "instagram": true,
-      "instagram_author_page": "vjpixel",
-      "instagram_collaborators": ["diar.ia.br"],
+      "instagram_author_page": null,
+      "instagram_collaborators": ["vjpixel"],
       "instagram_api_max_seconds_by_account": {
         "vjpixel": 40,
         "diaria": 55

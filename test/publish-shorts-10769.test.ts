@@ -139,8 +139,9 @@ describe("#10769 config e destinos", () => {
     const slugs = loadFacebookPagesConfig(config).map((p) => p.slug);
     for (const s of shorts.facebookPages) assert.ok(slugs.includes(s), `slug ${s} sem página configurada`);
     assert.deepEqual(shorts.facebookPages, ["diaria", "vjpixel"]);
-    assert.equal(shorts.instagramAuthorPage, "vjpixel");
-    assert.deepEqual(shorts.instagramCollaborators, ["diar.ia.br"]);
+    // #11223: autora @diar.ia.br (conta do env), @vjpixel em collab.
+    assert.equal(shorts.instagramAuthorPage, null);
+    assert.deepEqual(shorts.instagramCollaborators, ["vjpixel"]);
   });
 
   it("páginas fora da rotina (Jandig, Teatro vs Game, Criaturas Afetivas) não entram no default", () => {

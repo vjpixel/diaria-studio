@@ -112,15 +112,15 @@ describe("#10916 teto de duração por conta", () => {
     assert.equal(instagramApiMaxSecondsPremise(resolveInstagramApiMaxSeconds(cfgWith({}), null)), null);
   });
 
-  it("platform.config.json real: o teto da autora configurada resolve sem lançar (40 s da @vjpixel hoje)", () => {
+  it("platform.config.json real: o teto da autora configurada resolve sem lançar (55 s da @diar.ia.br desde #11223)", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const config = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
     const author = config.publishing.shorts.instagram_author_page ?? null;
     const r = resolveInstagramApiMaxSeconds(config, author);
     assert.equal(r.source, "by_account", "a autora configurada tem que estar no mapa por conta");
-    assert.equal(r.maxSeconds, 40);
+    assert.equal(r.maxSeconds, 55);
     // A outra conta do mapa também resolve (validação do mapa inteiro).
-    assert.equal(loadInstagramApiMaxSeconds(config, null), 55);
+    assert.equal(loadInstagramApiMaxSeconds(config, "vjpixel"), 40);
   });
 
   it("motivo do guiado nomeia a conta pelo rótulo legível", () => {
