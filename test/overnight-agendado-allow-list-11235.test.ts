@@ -105,7 +105,7 @@ describe("allow list do overnight agendado (#11235)", () => {
   });
 
   it("comando que o fluxo roda puro tem também a regra exata (não depende do ` *` casar o puro)", () => {
-    for (const bare of ["git pull", "npm ci", "git worktree prune", "git worktree list", "gh auth status"]) {
+    for (const bare of ["git pull", "git push", "npm ci", "git worktree prune", "git worktree list", "gh auth status"]) {
       assert.ok(allow.includes(`Bash(${bare})`), `faltando a regra exata 'Bash(${bare})'`);
     }
   });

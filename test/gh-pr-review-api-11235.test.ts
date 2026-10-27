@@ -109,6 +109,20 @@ describe("gh-pr-review-api: runOp", () => {
     assert.equal(called, false);
   });
 
+  it("list-comments pede in_reply_to_id e original_line (resposta do fixer não vira finding de 1º nível)", () => {
+    for (const field of ["id", "in_reply_to_id", "path", "line", "original_line", "body", "author_association"]) {
+      assert.match(LIST_COMMENTS_JQ, new RegExp(`\\b${field}\\b`), field);
+    }
+    const op: ReviewApiOp = { kind: "list-comments", repo, pr: 5 };
+    const root = { id: 1, in_reply_to_id: null, path: "a.ts", line: null, original_line: 4, body: "finding", author_association: "OWNER", user: "v" };
+    const reply = { id: 2, in_reply_to_id: 1, path: "a.ts", line: null, original_line: 4, body: "recuso", author_association: "OWNER", user: "v" };
+    const r = runOp(op, () => ok(`${JSON.stringify(root)}\n${JSON.stringify(reply)}`));
+    assert.ok(r.ok);
+    const items = JSON.parse(r.out) as Array<{ in_reply_to_id: number | null; original_line: number }>;
+    assert.deepEqual(items.filter((c) => c.in_reply_to_id === null).length, 1);
+    assert.equal(items[0].original_line, 4);
+  });
+
   it("list-comments junta o NDJSON de todas as páginas num array; linha inválida é erro", () => {
     const op: ReviewApiOp = { kind: "list-comments", repo, pr: 5 };
     const a = { id: 1, path: "a.ts", line: 2, body: "x", author_association: "OWNER", user: "vjpixel" };

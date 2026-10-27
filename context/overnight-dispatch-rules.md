@@ -308,7 +308,12 @@ npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name]
 ```
 O segundo resolve as não-resolvidas (`resolveReviewThread`), relê numa query
 fresca e sai `0` só sem thread bloqueante (FORBIDDEN de revisor externo não
-conta, sai listada em `forbidden`).
+conta, sai listada em `forbidden`). É passo de RESOLUÇÃO, pós-fixer. O gate
+de merge é outra chamada, somente leitura: `npx tsx
+scripts/resolve-review-threads.ts --pr N [--repo owner/name] --check` (sai
+`1` se sobrar thread não resolvida que não seja de revisor externo). Nunca
+usar o modo de resolução como gate: ele apagaria a thread que o editor deixou
+aberta e aprovaria o PR sozinho.
 
 ## 12. Matar processo próprio: sempre por PID, nunca por nome de imagem (#5432)
 

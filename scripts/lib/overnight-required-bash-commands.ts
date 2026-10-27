@@ -43,7 +43,8 @@
 export type RequiredCommandSource =
   | ".claude/skills/diaria-overnight/SKILL.md"
   | "context/overnight-dispatch-rules.md"
-  | ".claude/agents/dev-fixer.md";
+  | ".claude/agents/dev-fixer.md"
+  | ".claude/skills/diaria-develop/SKILL.md";
 
 export interface RequiredBashCommand {
   /** Exemplo concreto do comando, na forma que o fluxo documenta. */
@@ -143,6 +144,16 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
     command: "npx tsx scripts/resolve-review-threads.ts --pr 1 --repo vjpixel/diaria-design",
     source: ".claude/skills/diaria-overnight/SKILL.md",
     mention: "npx tsx scripts/resolve-review-threads.ts --pr {N} [--repo {repo}]",
+  },
+  {
+    command: "npx tsx scripts/resolve-review-threads.ts --pr 1 --check",
+    source: ".claude/skills/diaria-overnight/SKILL.md",
+    mention: "npx tsx scripts/resolve-review-threads.ts --pr {N} [--repo {repo}] --check",
+  },
+  {
+    command: "npx tsx scripts/resolve-review-threads.ts --pr 1 --repo vjpixel/diaria-design --check",
+    source: ".claude/skills/diaria-develop/SKILL.md",
+    mention: "npx tsx scripts/resolve-review-threads.ts --pr {N} [--repo {repo}] --check",
   },
   {
     command: "npx tsx scripts/gh-pr-review-api.ts comment --pr 1 --path a.ts --line 3 --body-file /tmp/c.md",

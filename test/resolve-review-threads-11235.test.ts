@@ -179,6 +179,39 @@ describe("resolve-review-threads: runCli", () => {
     assert.equal(cli(["--pr", "5", "--list"], fakeGh(["x"])).r.exitCode, EXIT_ERROR);
   });
 
+  it("--check é somente leitura: nunca chama a mutation", () => {
+    const gh = fakeGh([threadsJson([open("a"), open("b", false), done("c")])]);
+    const r = runCli(["--pr", "5", "--check"], gh.run, ROOT);
+    assert.equal(r.exitCode, EXIT_BLOCKING);
+    assert.deepEqual(JSON.parse(r.stdout), {
+      repo: "vjpixel/diaria-studio", pr: 5, exitCode: EXIT_BLOCKING, total: 3, blocking: ["a"], external: ["b"], hasNextPage: false,
+    });
+    assert.equal(gh.mutations(), 0);
+    assert.equal(gh.calls.length, 1);
+  });
+
+  it("--check: só thread de revisor externo aberta passa; viewerCanResolve ausente bloqueia", () => {
+    assert.equal(runCli(["--pr", "5", "--check"], fakeGh([threadsJson([open("b", false), done("c")])]).run, ROOT).exitCode, EXIT_OK);
+    assert.equal(runCli(["--pr", "5", "--check"], fakeGh([threadsJson([open("a", undefined)])]).run, ROOT).exitCode, EXIT_BLOCKING);
+    assert.equal(runCli(["--pr", "5", "--check"], fakeGh([threadsJson([])]).run, ROOT).exitCode, EXIT_OK);
+  });
+
+  it("--check: erro de query sai 3, >100 threads sai 4, sem mutation", () => {
+    const err = fakeGh(["x"]);
+    assert.equal(runCli(["--pr", "5", "--check"], err.run, ROOT).exitCode, EXIT_ERROR);
+    const pag = fakeGh([threadsJson([open("a")], true)]);
+    assert.equal(runCli(["--pr", "5", "--check"], pag.run, ROOT).exitCode, EXIT_PAGINATION);
+    assert.equal(err.mutations() + pag.mutations(), 0);
+  });
+
+  it("--check com valor ou combinado com outro modo é erro de uso", () => {
+    for (const argv of [["--pr", "5", "--check", "x"], ["--pr", "5", "--check", "--list"], ["--pr", "5", "--check", "--thread", "a"]]) {
+      const gh = fakeGh([]);
+      assert.equal(runCli(argv, gh.run, ROOT).exitCode, EXIT_USAGE, JSON.stringify(argv));
+      assert.equal(gh.calls.length, 0);
+    }
+  });
+
   it("--thread ID,ID restringe a resolução", () => {
     const gh = fakeGh([threadsJson([open("a"), open("b"), open("c")]), threadsJson([done("a"), open("b"), done("c")])]);
     const r = runCli(["--pr", "5", "--thread", "a, c"], gh.run, ROOT);

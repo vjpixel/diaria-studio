@@ -15,13 +15,21 @@
  *
  * Uso:
  *   npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] --list
+ *   npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] --check
  *   npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] [--thread ID,ID]
  *
- * Sem `--list`, resolve as não-resolvidas (todas, ou só as de `--thread`), relê
- * as threads numa query FRESCA e decide por ela (não pelo retorno da mutation).
+ * `--check` é o GATE: somente leitura, nunca resolve nada. Lista as threads com
+ * `viewerCanResolve` e sai 1 se sobrar bloqueante (não resolvida, exceto
+ * `viewerCanResolve === false`). Gate de merge usa sempre `--check` — rodar o
+ * modo de resolução como gate faria uma thread que o editor deixou aberta
+ * sumir e o PR mergear.
+ *
+ * Sem `--list`/`--check`, RESOLVE as não-resolvidas (todas, ou só as de
+ * `--thread`), relê as threads numa query FRESCA e decide por ela (não pelo
+ * retorno da mutation). É o passo de resolução pós-fixer do overnight, nunca o gate.
  *
  * Exit:
- *   0 — `--list` ok, ou nenhuma thread bloqueante restou na query fresca
+ *   0 — `--list` ok, ou nenhuma thread bloqueante (`--check` / query fresca)
  *   1 — restou thread bloqueante sem falha de infra (ex.: fora de `--thread`)
  *   3 — erro de query/payload, ou alguma resolução falhou (rede, 5xx, timeout,
  *       FORBIDDEN inesperado) e a thread seguiu aberta: é infra, retentar
@@ -193,10 +201,43 @@ export function resolveReviewThreads(
 }
 
 const CONFIG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const KNOWN_KEYS = new Set(["pr", "repo", "list", "thread"]);
+const KNOWN_KEYS = new Set(["pr", "repo", "list", "check", "thread"]);
 
 export function usage(): string {
-  return "uso: npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] [--list | --thread ID,ID]";
+  return "uso: npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] [--list | --check | --thread ID,ID]";
+}
+
+export interface CheckReport {
+  exitCode: number;
+  total: number;
+  /** Não resolvidas que bloqueiam (`viewerCanResolve` true ou ausente). */
+  blocking: string[];
+  /** Não resolvidas de revisor externo (`viewerCanResolve: false`): não bloqueiam. */
+  external: string[];
+  hasNextPage: boolean;
+  error?: string;
+}
+
+/**
+ * Gate somente leitura (`--check`): nunca chama a mutation. Bloqueante = não
+ * resolvida, exceto `viewerCanResolve === false`. Mesmo mapa de exits: 0 nada
+ * bloqueante, 1 sobrou bloqueante, 3 erro de query/payload, 4 >100 threads.
+ */
+export function checkReviewThreads(repo: string, pr: number, ghRun: GhRunFn): CheckReport {
+  const empty = { total: 0, blocking: [], external: [], hasNextPage: false };
+  const p = fetchThreads(repo, pr, ghRun);
+  if (!p.ok) return { ...empty, exitCode: EXIT_ERROR, error: p.error };
+  if (p.hasNextPage) return { ...empty, total: p.threads.length, hasNextPage: true, exitCode: EXIT_PAGINATION, error: "mais de 100 review threads" };
+  const unresolved = p.threads.filter((t) => !t.isResolved);
+  const blocking = unresolved.filter((t) => t.viewerCanResolve !== false).map((t) => t.id);
+  const external = unresolved.filter((t) => t.viewerCanResolve === false).map((t) => t.id);
+  return {
+    exitCode: blocking.length === 0 ? EXIT_OK : EXIT_BLOCKING,
+    total: p.threads.length,
+    blocking,
+    external,
+    hasNextPage: false,
+  };
 }
 
 export interface CliResult {
@@ -217,6 +258,7 @@ export function runCli(argv: string[], ghRun: GhRunFn, configRoot: string = CONF
   if (positional.length > 0) return usageErr(`argumento solto: ${positional.join(" ")}`);
   for (const k of [...Object.keys(values), ...flags]) if (!KNOWN_KEYS.has(k)) return usageErr(`flag desconhecida: --${k}`);
   if ("list" in values) return usageErr("--list não leva valor");
+  if ("check" in values) return usageErr("--check não leva valor");
   if (flags.has("thread")) return usageErr("--thread sem valor");
   if (flags.has("pr")) return usageErr("--pr sem valor");
   const pr = Number(values.pr);
@@ -231,7 +273,17 @@ export function runCli(argv: string[], ghRun: GhRunFn, configRoot: string = CONF
     if (ids.length === 0) return usageErr("--thread vazio");
     only = new Set(ids);
   }
-  if (flags.has("list") && only) return usageErr("--list e --thread são exclusivos");
+  const modes = ["list", "check"].filter((m) => flags.has(m)).length + (only ? 1 : 0);
+  if (modes > 1) return usageErr("--list, --check e --thread são exclusivos");
+
+  if (flags.has("check")) {
+    const c = checkReviewThreads(repo, pr, ghRun);
+    return {
+      exitCode: c.exitCode,
+      stdout: c.exitCode === EXIT_ERROR ? "" : JSON.stringify({ repo, pr, ...c, error: undefined }),
+      stderr: c.error ? `[resolve-review-threads] ${c.error}` : "",
+    };
+  }
 
   if (flags.has("list")) {
     const p = fetchThreads(repo, pr, ghRun);

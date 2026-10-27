@@ -31,9 +31,13 @@
  *   npx tsx scripts/gh-pr-review-api.ts ref-sha       --branch master [--repo owner/name]
  *
  * Sem `--commit`, o comentário inline vai no head atual da PR. `list-comments`
- * imprime um array JSON com `id`, `path`, `line`, `body`, `author_association`
- * e `user` — filtrar `author_association` (OWNER/MEMBER/COLLABORATOR) é do
- * chamador (item 30 das regras de dispatch).
+ * imprime um array JSON com `id`, `in_reply_to_id`, `path`, `line`,
+ * `original_line`, `body`, `author_association` e `user`. Finding de 1º nível
+ * tem `in_reply_to_id: null`; resposta (do fixer, de outro revisor) aponta pro
+ * comentário-raiz. `line` vem `null` quando o diff andou e o comentário ficou
+ * desatualizado; `original_line` guarda a linha de origem. Filtrar
+ * `author_association` (OWNER/MEMBER/COLLABORATOR) é do chamador (item 30 das
+ * regras de dispatch).
  *
  * Exit:
  *   0 — ok (stdout: URL do comentário, SHA, ou o array JSON)
@@ -88,7 +92,8 @@ export function validateOp(op: ReviewApiOp): string | null {
 }
 
 /** jq do `list-comments`: um objeto por linha (NDJSON), um por comentário de todas as páginas. */
-export const LIST_COMMENTS_JQ = ".[] | {id, path, line, body, author_association, user: .user.login}";
+export const LIST_COMMENTS_JQ =
+  ".[] | {id, in_reply_to_id, path, line, original_line, body, author_association, user: .user.login}";
 
 /** Argumentos do `gh` para a operação (método explícito em todas). */
 export function buildGhApiArgs(op: ReviewApiOp): string[] {
