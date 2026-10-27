@@ -53,10 +53,11 @@ describe("gancho (#10800)", () => {
     assert.deepEqual(splitHook("IA sem freio"), { body: "IA sem freio", mark: "" });
   });
 
-  it("recusa gancho fora de 2 ou 3 palavras", () => {
+  it("recusa gancho fora de 2 a 4 palavras (4 aceito desde #11228)", () => {
     assert.throws(() => splitHook(""), /vazio/);
-    assert.throws(() => splitHook("IA?"), /2 ou 3/);
-    assert.throws(() => splitHook("a IA virou ladra?"), /2 ou 3/);
+    assert.throws(() => splitHook("IA?"), /2 a 4/);
+    assert.throws(() => splitHook("a IA virou mesmo ladra?"), /2 a 4/);
+    assert.deepEqual(splitHook("Google Photos te vigia?"), { body: "Google Photos te vigia", mark: "?" });
   });
 
   it("tamanho cabe na caixa e respeita teto/piso", () => {
@@ -78,10 +79,11 @@ describe("gancho (#10800)", () => {
     assert.ok(!buildHookSvg("IA sem freio").includes("<tspan"));
   });
 
-  it("gradiente é escuro e só na parte de baixo", () => {
+  it("gradiente é escuro e só na parte de cima, até 45% da altura (#11220)", () => {
     const svg = buildGradientSvg();
     assert.match(svg, /stop-color="#000"/);
-    assert.match(svg, /<rect x="0" y="396"/);
+    assert.match(svg, /<rect x="0" y="0" width="1280" height="324"/);
+    assert.match(svg, /<stop offset="0" stop-color="#000" stop-opacity="0.6"\/>/);
   });
 });
 
@@ -100,7 +102,7 @@ describe("composeYouTubeThumb (#10800)", () => {
     assert.deepEqual(warnings, []);
   });
 
-  it("retrato fica à esquerda colado na base; o lado direito alto segue o fundo (sem desfoque nem retrato)", async () => {
+  it("retrato fica à esquerda colado na base; o canto inferior direito segue o fundo (sem desfoque, gradiente, retrato nem gancho)", async () => {
     const { jpeg } = await composeYouTubeThumb({
       background: await solid(1280, 720, [0, 0, 255]),
       portrait: await cutoutPortrait(),
@@ -114,12 +116,12 @@ describe("composeYouTubeThumb (#10800)", () => {
     // Retrato (vermelho) aparado e encostado na base esquerda.
     const [r, g, b] = px(40, 600);
     assert.ok(r > 120 && b < 100, `esperava retrato em (40,600), veio ${[r, g, b]}`);
-    // Canto superior direito: fundo azul intacto.
-    const [r2, , b2] = px(1200, 40);
-    assert.ok(b2 > 200 && r2 < 40, `esperava fundo em (1200,40), veio ${px(1200, 40)}`);
+    // Canto inferior direito: fundo azul intacto (o gancho e o gradiente subiram, #11220).
+    const [r2, , b2] = px(1200, 680);
+    assert.ok(b2 > 200 && r2 < 40, `esperava fundo em (1200,680), veio ${px(1200, 680)}`);
   });
 
-  it("gancho fica no canto inferior direito e nunca invade o terço esquerdo, mesmo longo", async () => {
+  it("gancho fica no canto superior direito e nunca invade o terço esquerdo, mesmo longo (#11220)", async () => {
     const { jpeg } = await composeYouTubeThumb({
       background: await solid(1280, 720, [0, 0, 0]),
       portrait: await sharp({ create: { width: 10, height: 10, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0.02 } } }).png().toBuffer(),
@@ -129,6 +131,7 @@ describe("composeYouTubeThumb (#10800)", () => {
     let minX = Infinity;
     let maxX = -1;
     let minY = Infinity;
+    let maxY = -1;
     for (let y = 0; y < info.height; y++) {
       for (let x = 0; x < info.width; x++) {
         const i = (y * info.width + x) * info.channels;
@@ -136,12 +139,14 @@ describe("composeYouTubeThumb (#10800)", () => {
           minX = Math.min(minX, x);
           maxX = Math.max(maxX, x);
           minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
         }
       }
     }
     assert.ok(minX >= YOUTUBE_THUMB_W - 40 - 800 - 2, `texto começa em x=${minX}`);
     assert.ok(maxX <= YOUTUBE_THUMB_W - 40 + 2, `texto termina em x=${maxX}`);
-    assert.ok(minY > YOUTUBE_THUMB_H / 2, `texto sobe até y=${minY}`);
+    assert.ok(minY >= 40 - 2, `texto encosta no topo: y=${minY}`);
+    assert.ok(maxY < YOUTUBE_THUMB_H / 2, `texto desce até y=${maxY}`);
   });
 
   it("fundo 2:1 (a 04-d1-2x1.jpg crua) passa com aviso de recorte", async () => {
@@ -168,7 +173,7 @@ describe("composeYouTubeThumb (#10800)", () => {
   it("gancho inválido falha antes de processar imagem", async () => {
     await assert.rejects(
       composeYouTubeThumb({ background: Buffer.from("x"), portrait: Buffer.from("y"), hook: "IA" }),
-      /2 ou 3/,
+      /2 a 4/,
     );
   });
 
@@ -202,18 +207,20 @@ describe("capa do Short (#10800)", () => {
 describe("CLI gen-youtube-thumb.ts (#10800)", () => {
   const src = readFileSync(resolve(ROOT, "scripts/gen-youtube-thumb.ts"), "utf8");
 
-  it("tem guard de import, guard de fonte e não chama rede", () => {
+  it("tem guard de import, guard de fonte e não chama rede fora do modo --frames-from-drive", () => {
     assert.match(src, /isMainModule\(import\.meta\.url\)/);
     assert.match(src, /assertBrandSerifAvailable\("gen-youtube-thumb"\)/);
     assert.doesNotMatch(src, /\bfetch\(/);
+    // #11228: o Drive só é carregado (import dinâmico) dentro do modo de frames.
+    assert.doesNotMatch(src, /^import .*google-auth/m);
   });
 
   it("grava no arquivo que publish-youtube.ts já envia", () => {
     assert.match(src, /YOUTUBE_THUMB_FILE/);
   });
 
-  it("a skill /diaria-youtube documenta o script", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-youtube/SKILL.md"), "utf8");
+  it("a skill /diaria-publica-video documenta o script (#11209)", () => {
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
     assert.match(skill, /gen-youtube-thumb\.ts/);
   });
 });

@@ -13,7 +13,22 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { checkYouTubeStepRan, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
-import { classifyFetch, consentAllowsYouTube, parseUploadStdout, YOUTUBE_STEP_FILE } from "../scripts/stage5-youtube.ts";
+import { classifyFetch, consentAllowsYouTube, parseUploadStdout, pastedVideoUrl, YOUTUBE_STEP_FILE } from "../scripts/stage5-youtube.ts";
+
+describe("#11222 link colado pelo editor (vídeo subido pelo Studio)", () => {
+  it("pastedVideoUrl: com 05-video-url.txt o passo não busca nem sobe; sem ele, segue o fluxo", () => {
+    const withLink = edition({ "_internal/05-video-url.txt": "https://youtu.be/abc123\n" });
+    const empty = edition({ "_internal/05-video-url.txt": "  \n" });
+    const none = edition({});
+    try {
+      assert.equal(pastedVideoUrl(withLink), "https://youtu.be/abc123");
+      assert.equal(pastedVideoUrl(empty), null);
+      assert.equal(pastedVideoUrl(none), null);
+    } finally {
+      for (const d of [withLink, empty, none]) rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
 
 function edition(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "s5yt-"));

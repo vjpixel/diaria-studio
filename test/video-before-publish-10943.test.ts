@@ -31,7 +31,7 @@ describe("assessVideoBeforePublish (#10943 item 2)", () => {
       assert.equal(r.status, "no-video");
       assert.equal(r.videoUrl, null);
       assert.match(r.warning ?? "", /SEM o link do vídeo/);
-      assert.match(r.warning ?? "", /\/diaria-youtube 261024/);
+      assert.match(r.warning ?? "", /\/diaria-publica-video 261024/);
       assert.match(r.warning ?? "", /aviso, não gate/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -91,7 +91,8 @@ describe("assessVideoBeforePublish (#10943 item 2)", () => {
 
 describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
   const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
-  const sequence = /\/diaria-youtube[\s\S]{0,200}\/diaria-shorts[\s\S]{0,200}\/diaria-5-publicacao/;
+  // #11209: os dois vídeos saem por uma skill só, entre o gate 4 e a Etapa 5.
+  const sequence = /\/diaria-publica-video[\s\S]{0,200}\/diaria-5-publicacao/;
 
   it("mensagem de fim do Stage 4 cita a sequência nova e diz que nada encadeia", () => {
     const stage4 = read(".claude/agents/orchestrator-stage-4.md");
@@ -105,8 +106,23 @@ describe("prosa do fluxo novo (#10943 itens 1, 2 e 4)", () => {
     assert.match(read("CLAUDE.md"), sequence);
   });
 
-  it("/diaria-5-publicacao roda o aviso de vídeo; /diaria-youtube exige o Stage 4 aprovado", () => {
+  it("/diaria-5-publicacao roda o aviso de vídeo; /diaria-publica-video exige o Stage 4 aprovado", () => {
     assert.match(read(".claude/skills/diaria-5-publicacao/SKILL.md"), /check-video-before-publish\.ts/);
-    assert.match(read(".claude/skills/diaria-youtube/SKILL.md"), /pipeline-sentinel\.ts exists --edition \{AAMMDD\} --step 4/);
+    assert.match(read(".claude/skills/diaria-publica-video/SKILL.md"), /pipeline-sentinel\.ts exists --edition \{AAMMDD\} --step 4/);
+  });
+
+  it("#11209: /diaria-youtube e /diaria-shorts são aliases finos da /diaria-publica-video, sem duplicar o fluxo", () => {
+    for (const [alias, part] of [["diaria-youtube", "--so horizontal"], ["diaria-shorts", "--so vertical"]] as const) {
+      const skill = read(`.claude/skills/${alias}/SKILL.md`);
+      assert.match(skill, new RegExp(`^---\\nname: ${alias}\\n`));
+      assert.ok(skill.includes(".claude/skills/diaria-publica-video/SKILL.md"), `${alias} aponta para a skill nova`);
+      assert.ok(skill.includes(part), `${alias} repassa ${part}`);
+      assert.ok(skill.split("\n").length < 30, `${alias} é só um alias (${skill.split("\n").length} linhas)`);
+      assert.doesNotMatch(skill, /publish-(youtube|shorts)\.ts/, `${alias} não repete os comandos do fluxo`);
+    }
+    const merged = read(".claude/skills/diaria-publica-video/SKILL.md");
+    assert.match(merged, /^---\nname: diaria-publica-video\n/);
+    assert.match(merged, /--so horizontal\|vertical/);
+    assert.ok(merged.indexOf("## Parte A") < merged.indexOf("## Parte B"), "horizontal antes do vertical (o Short aponta pro horizontal)");
   });
 });

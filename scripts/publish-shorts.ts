@@ -710,7 +710,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       const hhmm = slot?.hhmm ?? time.hhmm;
       // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
       const detail =
-        `${igFit.reason} — poste pelo instagram.com no Chrome (Passo 3b do /diaria-shorts, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
+        `${igFit.reason} — poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
         `ou no app, como a autora${collab}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
         `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL`;
       warnings.push(`instagram: ${detail}`);
@@ -1134,7 +1134,7 @@ export async function publishInstagramReel(
     // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
     if (/ProcessingFailedError/.test(msg)) {
       throw new Error(
-        `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo 3b do /diaria-shorts) ou no app ` +
+        `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video) ou no app ` +
           `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL ` +
           `(ajuste o teto desta conta em publishing.shorts.instagram_api_max_seconds_by_account se ele mudou, #10916)`,
       );

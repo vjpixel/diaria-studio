@@ -977,13 +977,12 @@ Stage 4 aprovado — edição {AAMMDD}.
 O pré-render já deixou tudo pronto para a Etapa 5 (HTML final, preview social,
 imagens públicas, gabarito do É IA?) — nada disso precisa ser refeito.
 
-Próximos passos (#10943) — abra uma sessão NOVA para cada um, nenhum encadeia no seguinte
-(sem vídeo hoje, vá direto ao 3: a publicação segue e só avisa que o D1 sai sem o link):
-  1. /diaria-youtube {AAMMDD} (depois de gravar o vídeo do D1)
-  2. /diaria-shorts {AAMMDD}
-  3. /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
+Próximos passos (#10943, #11209) — abra uma sessão NOVA para cada um, nenhum encadeia no seguinte
+(sem vídeo hoje, vá direto ao 2: a publicação segue e só avisa que o D1 sai sem o link):
+  1. /diaria-publica-video {AAMMDD} (depois de gravar o vídeo do D1: horizontal + vertical)
+  2. /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
 
 Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) — `/diaria-5-publicacao` cobre as Etapas 5 e 6 inteiras nessa sessão nova (fusão #7983) e retoma sozinho dos arquivos em disco (#5578).
 ```
 
-Isto vale mesmo em `auto_approve = true` (`--no-gates`): o pré-render já rodou, o sentinel já foi escrito, e a mensagem acima ainda é o que a sessão imprime antes de encerrar — `--no-gates` pula a CONFIRMAÇÃO do gate, não a fronteira de contexto pós-gate. **Vídeo antes da Etapa 5 (#10943, editor 22/10/2026):** o vídeo é gravado depois deste gate (o D1 só está final aqui); com `/diaria-youtube` antes, `_internal/05-video-url.txt` já existe quando o Stage 5 cria os posts e o link entra no D1 de X, Threads e Facebook na criação (#10772, #10858). Esta sessão só IMPRIME a sequência, nunca roda nenhuma das skills (#5578).
+Isto vale mesmo em `auto_approve = true` (`--no-gates`): o pré-render já rodou, o sentinel já foi escrito, e a mensagem acima ainda é o que a sessão imprime antes de encerrar — `--no-gates` pula a CONFIRMAÇÃO do gate, não a fronteira de contexto pós-gate. **Vídeo antes da Etapa 5 (#10943, editor 22/10/2026):** o vídeo é gravado depois deste gate (o D1 só está final aqui); com `/diaria-publica-video` antes (#11209, junta o antigo `/diaria-youtube` e o `/diaria-shorts`), `_internal/05-video-url.txt` já existe quando o Stage 5 cria os posts e o link entra no D1 de X, Threads e Facebook na criação (#10772, #10858). Esta sessão só IMPRIME a sequência, nunca roda nenhuma das skills (#5578).
