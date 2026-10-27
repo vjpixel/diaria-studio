@@ -15,8 +15,14 @@
  *       da última detecção refaz só o `silences.json`.
  *   decupagem AAMMDD        sem `decupagem-plan.json`: lista numerada dos segmentos + molde do plano
  *                           (a skill classifica); com ele: o Markdown do Doc da decupagem (gate 1, por
- *                           bloco, curado, com "Montagem sugerida") + `blocks.template.json` (sempre refaz)
- *   frame AAMMDD --at S     frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
+ *                           bloco, curado, com "Montagem sugerida") + `blocks.template.json` (sempre refaz).
+ *                           A listagem traz a decisão por critério de cada tomada (#11364); o plano que
+ *                           põe duas tomadas da mesma frase como "usar", ou "alternativa" onde a direção
+ *                           já aprovou uma, é erro. Vertical acima de 3:00 sai como [aviso].
+ *   retranscribe AAMMDD --from S --to S
+ *                           retranscreve só o trecho (até 60 s; sem VAD, sem condition_on_previous_text)
+ *                           antes de declarar dúvida (#11364); não mexe no transcript.json
+ *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
  *   build AAMMDD [--xml-flop] [--allow-missing]
@@ -61,6 +67,7 @@ import {
   applyVocabularyToWords,
   buildSequencePlan,
   buildXmeml,
+  clockTime,
   cuesToSrt,
   cutPoints,
   defaultSequences,
@@ -69,7 +76,9 @@ import {
   framingFor,
   loudnessWarning,
   mapWordsToSequence,
+  offsetTranscript,
   parseBlocksFile,
+  retranscribeWindow,
   parseLoudnormJson,
   parseProbe,
   parseSilenceDetect,
@@ -98,11 +107,14 @@ import {
   alternativesFromDecupagem,
   blocksFromDecupagem,
   buildDecupagemDoc,
+  checkDecupagemCriteria,
   decupagemMarkdown,
   decupagemPlanTemplate,
   parseDecupagemPlan,
   roteiroMarkdown,
   segmentListing,
+  SHORTS_MAX_S,
+  suggestedDurations,
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
 
@@ -111,7 +123,7 @@ const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export const DEFAULT_DRIVE_ROOT = "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube";
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|frame|roteiro|build|srt|preview|review> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|retranscribe|frame|roteiro|build|srt|preview|review> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -168,11 +180,12 @@ export function loadVocab(path = VOCAB_FILE): Vocab {
   return { whisper_prompt: v.whisper_prompt, rules: v.rules ?? [], aliases: v.aliases ?? [] };
 }
 
-function transcribeWithPython(ctx: Ctx, audio: string, out: string, opts: { vad: boolean }): void {
+function transcribeWithPython(ctx: Ctx, audio: string, out: string, opts: { vad: boolean; noCondition?: boolean }): void {
   const vocab = loadVocab();
   console.error(`[video-montagem] transcrevendo ${audio} (faster-whisper large-v3-turbo, CPU int8; leva minutos)…`);
   const args = ["-P", PY_HELPER, audio, out, "--initial-prompt", vocab.whisper_prompt ?? ""];
   if (opts.vad) args.push("--vad");
+  if (opts.noCondition) args.push("--no-condition");
   run(ctx.python, args, { env: { ...process.env, HF_HUB_OFFLINE: "1" }, inheritStderr: true });
 }
 
@@ -376,9 +389,18 @@ function cmdDecupagem(ctx: Ctx): number {
     console.error(`[video-montagem] decupagem: classificar os segmentos acima em ${f(ctx, "decupagem-plan.json")} (molde: ${tplPath}) e rodar decupagem de novo`);
     return 0;
   }
+  // Decisão por critério (#11364): uma tomada por frase, a direção decide antes da "alternativa".
+  const crit = checkDecupagemCriteria(plan, segments);
+  for (const w of crit.warnings) console.error(`[aviso] ${w}`);
+  if (crit.errors.length) throw new Error(`decupagem-plan.json não decide por critério:\n  - ${crit.errors.join("\n  - ")}`);
   const doc = buildDecupagemDoc(plan, segments, loadVocab().rules);
   const source = measuredSource(ctx);
   const sequences = defaultSequences();
+  for (const d of suggestedDurations(doc, sequences)) {
+    if (d.overS > 0) console.error(`[aviso] ${d.spec.name}: ~${d.totalS.toFixed(1)} s na montagem sugerida, ${d.overS.toFixed(1)} s acima do teto do Shorts (${SHORTS_MAX_S} s, antes de tirar os silêncios): propor o corte no Doc`);
+  }
+  const alts = plan.blocks.reduce((n, b) => n + b.rows.filter((r) => r.suggestion === "alternativa").length, 0);
+  if (alts) console.error(`[video-montagem] decupagem: ${alts} linha(s) "alternativa": cada uma é dúvida real, com a justificativa (nenhum critério decidiu)`);
   const md = decupagemMarkdown(ctx.edition, doc, sequences);
   writeFileAtomic(f(ctx, "decupagem.md"), md);
   const tpl = f(ctx, "blocks.template.json");
@@ -391,6 +413,31 @@ function cmdDecupagem(ctx: Ctx): number {
   writeJson(tpl, template);
   process.stdout.write(md);
   console.error(`[video-montagem] decupagem: ${f(ctx, "decupagem.md")}; molde do blocks.json (falas "usar"): ${tpl}`);
+  return 0;
+}
+
+/**
+ * Retranscreve só um trecho do bruto (#11364), sem VAD e sem
+ * `condition_on_previous_text`: comentário da direção e começo de frase depois
+ * de pausa saem errados na transcrição longa ("bom" por "primeiro" na 261028).
+ * Imprime os segmentos no tempo do bruto; não mexe no `transcript.json`.
+ */
+function cmdRetranscribe(ctx: Ctx, from: string | undefined, to: string | undefined): number {
+  const source = measuredSource(ctx);
+  const w = retranscribeWindow(from, to, source.durationS);
+  if (!w.ok) throw new Error(w.error);
+  const audio = join(ctx.workDir, "audio.wav");
+  if (!existsSync(audio)) throw new Error(`áudio do bruto ausente (${audio}): rode transcribe de novo nesta máquina`);
+  const tag = `${w.window.start.toFixed(1)}-${w.window.end.toFixed(1)}`;
+  const wav = join(ctx.workDir, `retranscribe-${tag}.wav`);
+  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", w.window.start.toFixed(3), "-to", w.window.end.toFixed(3), "-i", audio, "-ac", "1", "-ar", "16000", wav]);
+  const raw = join(ctx.workDir, `retranscribe-${tag}.json`);
+  transcribeWithPython(ctx, wav, raw, { vad: false, noCondition: true });
+  const shifted = offsetTranscript(readJson<Transcript>(raw, "retranscrição"), w.window.start);
+  const out = f(ctx, `retranscribe-${tag}.json`);
+  writeJson(out, shifted);
+  for (const s of shifted.segments) console.log(`[${clockTime(s.start)}–${clockTime(s.end)}] ${s.text.trim()}`);
+  console.error(`[video-montagem] retranscrição do trecho: ${out} (o transcript.json fica como está; a correção vai no text do decupagem-plan.json)`);
   return 0;
 }
 
@@ -591,6 +638,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdDecupagem(ctx);
     case "frame":
       return cmdFrame(ctx, values["at"]);
+    case "retranscribe":
+      return cmdRetranscribe(ctx, values["from"], values["to"]);
     case "roteiro":
       return cmdRoteiro(ctx);
     case "build":

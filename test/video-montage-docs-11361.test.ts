@@ -189,8 +189,9 @@ describe("plano da decupagem: validação (#11361)", () => {
 
   it("molde e listagem numeram os segmentos e apontam as tomadas repetidas", () => {
     const list = segmentListing(SEGMENTS);
-    assert.match(list, /^4\. \[00:09\.0–00:10\.0\] Uma atualização de {2}\(tomada 1 de 2\)$/m);
-    assert.match(list, /^5\. .*\(tomada 2 de 2, a última completa\)$/m);
+    // Desde a #11364 a listagem traz a decisão por critério de cada tomada.
+    assert.match(list, /^4\. \[00:09\.0–00:10\.0\] Uma atualização de {2}\(tomada 1 de 2: cortar \(tomada incompleta\)\)$/m);
+    assert.match(list, /^5\. .*\(tomada 2 de 2: usar \(2ª tomada, a última completa\)\)$/m);
     const tpl = decupagemPlanTemplate("261028", SEGMENTS) as { blocks: Array<{ key: string; rows: unknown[] }>; _segmentos: string[] };
     assert.equal(tpl._segmentos.length, SEGMENTS.length);
     assert.equal(tpl.blocks.length, 9);
