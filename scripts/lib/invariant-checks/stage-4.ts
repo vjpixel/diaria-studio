@@ -24,6 +24,7 @@ import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
+  carouselSlidesOnDisk, // #11210
   carouselCoverFilename,
   carouselImageKeys,
   hashCarouselSlideTexts,
@@ -57,6 +58,7 @@ import { findOverflowingUseMelhorSlides, lintUseMelhorPostShape } from "../use-m
 import { readUseMelhorCarouselStamp, staleUseMelhorImageKeys } from "../use-melhor-slide-files.ts"; // #9795
 import { gatherUseMelhorStatusInput } from "../use-melhor-status.ts"; // #10879
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
+import { readCarouselKeepArtSafe, carouselKeepArtPath, CAROUSEL_KEEP_ART_FILENAME } from "../carousel-keep-art.ts"; // #11210
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "../comment-delivery-promise.ts"; // #8681
 
 import { lintIntroCount, countSelectedItems } from "../newsletter-count.ts";
@@ -2587,6 +2589,9 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
   // #8681: JSON malformado é reportado por `carousel-text-overflow` (que roda
   // nos Stages 2 E 4 — pega mais cedo); aqui só se usa o override válido.
   const { ctaOverride } = readCtaOverrideSafe(editionDir);
+  // #11210: exceção do editor (arte mantida). JSON malformado é reportado por
+  // `carousel-text-overflow`; aqui, com erro, nenhuma exceção vale (`{}`).
+  const { keepArt } = readCarouselKeepArtSafe(editionDir);
 
   for (const d of slots) {
     if (!slidesOnDiskDe(d)) continue; // destaque sem carrossel — publica single-image, nada a cruzar
@@ -2613,6 +2618,22 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
     }
 
     if (carimbo !== atual) {
+      const motivo = keepArt[d];
+      if (motivo) {
+        // #11210: o editor decidiu manter a arte antiga — avisa, nunca silencia.
+        violations.push({
+          rule: "carousel-cards-stale",
+          message:
+            `os slides de ${d} não refletem o texto atual de 03-social.md (carimbo ${carimbo}, atual ${atual}), ` +
+            `mas a arte foi MANTIDA pelo editor em _internal/${CAROUSEL_KEEP_ART_FILENAME}: "${motivo}". ` +
+            `O post sai com o texto novo na legenda e a arte existente no carrossel. Para voltar a regerar, ` +
+            `remover '${d}' de _internal/${CAROUSEL_KEEP_ART_FILENAME}.`,
+          source_issue: "#11210",
+          severity: "warning",
+          file: carouselKeepArtPath(editionDir),
+        });
+        continue;
+      }
       violations.push({
         rule: "carousel-cards-stale",
         message:
@@ -2646,6 +2667,11 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
  *
  * Severity "error", mesma classe do `carousel-cards-stale` em divergência:
  * não é formato degradado, é conteúdo que não pode ser rasterizado como está.
+ *
+ * #11210: destaque listado em `_internal/carousel-keep-art.json` (arte mantida
+ * pelo editor) E com os slides no disco vira "warning" citando o motivo — o
+ * texto não vai ser rasterizado. O mesmo vale pra divergência em
+ * `carousel-cards-stale`. Sem arte no disco a exceção não vale (nada a manter).
  */
 function checkCarouselTextOverflow(
   editionDir: string,
@@ -2674,7 +2700,18 @@ function checkCarouselTextOverflow(
       file: instagramTestOverridePath(editionDir),
     });
   }
-
+  // #11210: exceção do editor (arte mantida) — malformada é reportada aqui
+  // (Stages 2 e 4), nunca ignorada; com erro, nenhuma exceção é aplicada.
+  const { keepArt, error: keepArtError } = readCarouselKeepArtSafe(editionDir);
+  if (keepArtError) {
+    violations.push({
+      rule: "carousel-text-overflow",
+      message: `${keepArtError} — corrigir ou remover o arquivo; enquanto isso nenhuma exceção de arte mantida vale.`,
+      source_issue: "#11210",
+      severity: "error",
+      file: carouselKeepArtPath(editionDir),
+    });
+  }
   for (const d of slots) {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue;
@@ -2683,6 +2720,25 @@ function checkCarouselTextOverflow(
     if (overflowing.length === 0) continue;
 
     const detalhe = overflowing.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ");
+    const motivo = keepArt[d];
+    if (motivo && carouselSlidesOnDisk(editionDir, d)) {
+      // #11210: arte mantida pelo editor — o texto não vai ser rasterizado,
+      // então não precisa caber no card. Avisa, nunca silencia.
+      violations.push({
+        rule: "carousel-text-overflow",
+        message:
+          `'## ${d}' de 03-social.md tem ${overflowing.length} parágrafo(s) que não caberiam no card do carrossel ` +
+          `(${detalhe}), mas a arte foi MANTIDA pelo editor em _internal/${CAROUSEL_KEEP_ART_FILENAME}: "${motivo}". ` +
+          `O carrossel publica com a arte existente; o texto só vai na legenda.`,
+        source_issue: "#11210",
+        severity: "warning",
+        file: carouselKeepArtPath(editionDir),
+      });
+      continue;
+    }
+    const semArte = motivo
+      ? ` A exceção de _internal/${CAROUSEL_KEEP_ART_FILENAME} para ${d} não vale: a arte do carrossel no disco está incompleta ou ausente, então não há o que manter (e o gen-carousel-cards.ts vai tentar regerar e falhar).`
+      : "";
     violations.push({
       rule: "carousel-text-overflow",
       message:
@@ -2693,7 +2749,8 @@ function checkCarouselTextOverflow(
         `"npx tsx scripts/gen-carousel-cards.ts --edition-dir ${editionDir}" + ` +
         `"npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}". ` +
         `Enquanto isto não for feito, a geração dos slides FALHA — e se o gate for ignorado ` +
-        `assim mesmo, o destaque publica como post single-image (fallback tudo-ou-nada).`,
+        `assim mesmo, o destaque publica como post single-image (fallback tudo-ou-nada).` +
+        semArte,
       source_issue: "#6078",
       severity: "error",
       file: socialPath,
@@ -3928,7 +3985,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "carousel-cards-stale",
-    description: "slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064)",
+    description: "slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064; warning com arte mantida pelo editor em carousel-keep-art.json, #11210)",
     source_issue: "#6064",
     stage: 4,
     run: checkCarouselCardsStale,
@@ -3949,7 +4006,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "carousel-text-overflow",
-    description: "parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078)",
+    description: "parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210)",
     source_issue: "#6078",
     stage: 4,
     run: (editionDir) => checkCarouselTextOverflow(editionDir),
