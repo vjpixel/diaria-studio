@@ -384,7 +384,7 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   youtubeShortsApi: true,
   // #10982: desligado no código; o platform.config.json liga junto com o timer.
   linkedinProfileViaTimer: false,
-  // #11265 (decisão do editor, 27/10/2026): timer no 300, sem R2.
+  // #11265 (decisão do editor, 27/10/2026): timer no 300 (Instagram sem URL pública).
   instagramBackend: "timer-300",
   // #11223: ligado no código; o platform.config.json pausa durante a viagem.
   facebookProfile: true,

@@ -284,7 +284,7 @@ export const INSTAGRAM_TIMER_DETAIL =
  * secret aqui é `.env` defasado neste host: o aviso lista o que falta.
  */
 export function publicVideoUnavailableReason(r2Missing: readonly string[]): string {
-  return `falta ${r2Missing.join(", ")} (Doppler diaria-studio/dev; rode npm run sync-env)`;
+  return `falta ou inválido: ${r2Missing.join(", ")} — confira no Doppler diaria-studio/dev e rode npm run sync-env`;
 }
 
 /** Destinos que só o skill faz (Chrome; o X pela Buffer MCP, #10772). */
@@ -2958,7 +2958,7 @@ async function main(): Promise<number> {
         dir,
         aammdd,
         plan.items.map((i) => i.destination),
-        credentialSkippedItems(plan.items, { publicVideoTerminal: shortsCfg.instagramBackend === "timer-300" && !r2.ready }),
+        credentialSkippedItems(plan.items),
         new Date().toISOString(),
       );
     } catch (e) {
@@ -2972,20 +2972,14 @@ async function main(): Promise<number> {
 /**
  * Destinos que a rodada pulou por falta de credencial/token do PRÓPRIO destino
  * (#11240), terminais pra limpeza do vertical. O pulo por falta de URL pública
- * (`cause: "public_video"`, X e Threads) só conta quando
- * `publicVideoTerminal`: com o R2 fora de cogitação (#11265, backend
- * `timer-300` sem R2) a próxima rodada também não publica, e o X/Threads
- * manuais sobem o arquivo do Drive (`Final/`), não o `-short.mp4` local —
- * sem isso o vertical nunca seria apagado. Com o R2 só fora do ar
- * (`worker-r2`), segue não-terminal: a próxima rodada publica com o mesmo
- * arquivo. Puro.
+ * (`cause: "public_video"`, X e Threads) nunca é terminal: o R2 está habilitado
+ * desde 27/10/2026 (#10772), então faltar secret é `.env` defasado no host, e
+ * a próxima rodada (depois do `sync-env`) publica com o mesmo `-short.mp4` —
+ * apagá-lo antes deixaria X/Threads sem arquivo. Puro.
  */
-export function credentialSkippedItems(
-  items: readonly ShortsPlanItem[],
-  opts: { publicVideoTerminal?: boolean } = {},
-): Array<{ destination: string; detail: string }> {
+export function credentialSkippedItems(items: readonly ShortsPlanItem[]): Array<{ destination: string; detail: string }> {
   return items.flatMap((i) =>
-    i.action === "skip_missing_credentials" && (i.cause !== "public_video" || opts.publicVideoTerminal === true)
+    i.action === "skip_missing_credentials" && i.cause !== "public_video"
       ? [{ destination: i.destination, detail: i.detail }]
       : [],
   );

@@ -96,7 +96,7 @@ describe("#11265 config publishing.shorts.instagram_backend", () => {
   });
   it("sem R2 no host, X/Threads listam o secret que falta e apontam o sync-env (R2 habilitado desde 27/10)", () => {
     const reason = publicVideoUnavailableReason(["R2_ACCOUNT_ID", "SHORTS_R2_BUCKET"]);
-    assert.match(reason, /falta R2_ACCOUNT_ID, SHORTS_R2_BUCKET/);
+    assert.match(reason, /falta ou inválido: R2_ACCOUNT_ID, SHORTS_R2_BUCKET/);
     assert.match(reason, /sync-env/);
     assert.doesNotMatch(reason, /não será habilitado/);
   });
@@ -692,9 +692,12 @@ describe("#11265 limpeza do vertical", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-  it("X/Threads pulados por falta de URL pública: terminais só quando o R2 está fora de cogitação (timer-300 sem R2)", () => {
-    const items = [{ destination: "x", mode: "guided" as const, action: "skip_missing_credentials" as const, detail: "sem URL pública", cause: "public_video" as const }];
-    assert.deepEqual(credentialSkippedItems(items), []);
-    assert.deepEqual(credentialSkippedItems(items, { publicVideoTerminal: true }), [{ destination: "x", detail: "sem URL pública" }]);
+  it("X/Threads pulados por falta de URL pública nunca são terminais (R2 habilitado: o retry depois do sync-env precisa do vertical)", () => {
+    const items = [
+      { destination: "x", mode: "guided" as const, action: "skip_missing_credentials" as const, detail: "sem URL pública", cause: "public_video" as const },
+      { destination: "threads_profile", mode: "api" as const, action: "skip_missing_credentials" as const, detail: "sem URL pública", cause: "public_video" as const },
+      { destination: "linkedin_profile", mode: "api" as const, action: "skip_missing_credentials" as const, detail: "sem token" },
+    ];
+    assert.deepEqual(credentialSkippedItems(items), [{ destination: "linkedin_profile", detail: "sem token" }]);
   });
 });

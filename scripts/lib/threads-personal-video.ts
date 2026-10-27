@@ -22,9 +22,10 @@
  * O repost pela conta da diar.ia.br não está aqui: a Threads API pública não
  * documenta repost; segue manual (passo guiado).
  *
- * Ainda SEM validação real: o token pessoal não existe (comentários de 23/10 e
- * 25/10/2026 na #10772). Consumidor: `publish-shorts.ts`, destino
- * `threads_profile` (#11122) — fail-soft (pulado com aviso) até o token existir;
+ * Token pessoal e R2 existem desde 27/10/2026 (#10772); um contêiner VIDEO com
+ * o vertical em `https://media.diar.ia.br` chegou a FINISHED (sem publicar), mas
+ * nenhuma publicação real ainda. Consumidor: `publish-shorts.ts`, destino
+ * `threads_profile` (#11122) — fail-soft (pulado com aviso) sem token ou R2 no host;
  * `--mark threads_profile=URL` registra o resultado de um `send_unknown`.
  */
 
