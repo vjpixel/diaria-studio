@@ -114,6 +114,17 @@ test("Final/ com .mp4 tem precedência: Editado/ nem é listada", async () => {
   assert.deepEqual(listed, ["Final"]);
 });
 
+test("Final/ só com os verticais: o horizontal ainda é procurado em Editado/", async () => {
+  const V = (id: string, name: string): DriveVideoFile => ({ ...H(id, name), videoMediaMetadata: { width: 1080, height: 1920 } });
+  const { out, listed } = await dryRun({
+    Final: [V("ig", "Diaria comentada_Instagram_V3.mp4"), V("or", "Diaria comentada_Outras redes_V3.mp4")],
+    Editado: [H("edt", REAL_261028)],
+  });
+  assert.equal(out.output.action, "dry-run", JSON.stringify(out.output));
+  if (out.output.action === "dry-run") assert.equal(out.output.file.id, "edt");
+  assert.deepEqual(listed, ["Final", "Editado"]);
+});
+
 test("Final/ vazia: cai para Editado/", async () => {
   const { out, listed } = await dryRun({ Final: [], Editado: [H("edt", REAL_261028)] });
   assert.equal(out.output.action, "dry-run");

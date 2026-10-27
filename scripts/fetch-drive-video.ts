@@ -373,11 +373,21 @@ export async function runFetchDriveVideo(
       };
       const subfolders = inside.filter((f) => f.mimeType === FOLDER_MIME);
       let finalFiles = await listFinalLike(subfolders.filter((f) => isFinalFolderName(f.name)));
-      // #11385: sem .mp4 em Final/, o vídeo pronto pode estar em Editado/ (261028).
-      if (!finalFiles.some(isMp4VideoFile)) {
+      // #11385: sem candidato DESTE destino em Final/ (sem .mp4, ou só os
+      // verticais quando se pede o horizontal), o vídeo pronto pode estar em
+      // Editado/ (261028). Final/ com candidato mantém a precedência.
+      const probe = selectDriveVideo([...files, ...finalFiles], {
+        orientation,
+        now: input.now,
+        windowHours: input.windowHours,
+        editionFolderPresent: true,
+        target,
+      });
+      if (probe.kind === "none") {
         const edited = subfolders.filter((f) => isEditedFolderName(f.name));
         if (edited.length > 0) {
-          log(`[premissa] sem .mp4 em Final/ — procurando o vídeo pronto em ${edited.map((f) => `${f.name}/`).join(", ")} (#11385)`);
+          const why = finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
+          log(`[premissa] ${why} — procurando o vídeo pronto em ${edited.map((f) => `${f.name}/`).join(", ")} (#11385)`);
           finalFiles = [...finalFiles, ...(await listFinalLike(edited))];
         }
       }
