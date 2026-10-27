@@ -94,10 +94,11 @@ describe("#11265 config publishing.shorts.instagram_backend", () => {
     assert.equal(loadShortsConfig({ publishing: { shorts: { ...SHORTS, instagram_backend: "worker-r2" } } }).instagramBackend, "worker-r2");
     assert.throws(() => loadShortsConfig({ publishing: { shorts: { ...SHORTS, instagram_backend: "tunnel" } } }), /instagram_backend/);
   });
-  it("sem R2, X/Threads dizem que o R2 não será habilitado em vez de cobrar os secrets", () => {
-    assert.doesNotMatch(publicVideoUnavailableReason("timer-300", ["R2_ACCOUNT_ID"]), /R2_ACCOUNT_ID/);
-    assert.match(publicVideoUnavailableReason("timer-300", ["R2_ACCOUNT_ID"]), /#11265/);
-    assert.match(publicVideoUnavailableReason("worker-r2", ["R2_ACCOUNT_ID"]), /falta R2_ACCOUNT_ID/);
+  it("sem R2 no host, X/Threads listam o secret que falta e apontam o sync-env (R2 habilitado desde 27/10)", () => {
+    const reason = publicVideoUnavailableReason(["R2_ACCOUNT_ID", "SHORTS_R2_BUCKET"]);
+    assert.match(reason, /falta R2_ACCOUNT_ID, SHORTS_R2_BUCKET/);
+    assert.match(reason, /sync-env/);
+    assert.doesNotMatch(reason, /não será habilitado/);
   });
 });
 

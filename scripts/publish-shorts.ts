@@ -60,13 +60,13 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
  *     O plano traz texto (≤280 ponderado) e `dueAt`; com R2 configurado o
  *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl`.
- *     O R2 não será habilitado (#11265): sem ele o X é pulado com aviso e
- *     fica manual. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
+ *     R2 habilitado desde 27/10/2026 (#10772); sem os secrets no host o X é
+ *     pulado com aviso. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
  *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
  *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
  *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
- *     (`platform: "threads"`). Sem token, ou sem R2 (que não será habilitado,
- *     #11265), é pulado com aviso (fail-soft) e fica manual. A API não agenda: mesmo `pending_schedule`/teto de atraso do
+ *     (`platform: "threads"`). Sem token, ou sem os secrets do R2 no host,
+ *     é pulado com aviso (fail-soft). A API não agenda: mesmo `pending_schedule`/teto de atraso do
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
  *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
@@ -106,8 +106,9 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * opção: o vertical sobe pro R2 e o Reels vai pra FILA do Worker
  * `diaria-linkedin-cron`; sem Worker, sem R2 ou com autora que o Worker não
  * conhece, fica pendente até rodar de novo depois do horário (ou `--now`).
- * O R2 não será habilitado (#11265): X e Threads, que só recebem o vídeo por
- * URL pública, ficam pulados com aviso (manuais).
+ * X e Threads, que só recebem o vídeo por URL pública, usam o R2 (habilitado
+ * em 27/10/2026, bucket `diaria-shorts` em `https://media.diar.ia.br`, #10772)
+ * qualquer que seja o backend do Instagram.
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
  * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
@@ -278,14 +279,12 @@ export const INSTAGRAM_TIMER_DETAIL =
 
 /**
  * #11265: motivo do pulo de X/Threads quando o R2 NÃO está configurado (só é
- * chamado com `r2.ready === false`). O R2 não será habilitado (decisão do
- * editor, 27/10/2026), então com o backend do timer o aviso diz isso em vez
- * de cobrar os secrets; com `worker-r2` (que depende dele) lista o que falta.
+ * chamado com `r2.ready === false`). O R2 está habilitado desde 27/10/2026
+ * (bucket `diaria-shorts`, `https://media.diar.ia.br`, #10772), então faltar
+ * secret aqui é `.env` defasado neste host: o aviso lista o que falta.
  */
-export function publicVideoUnavailableReason(backend: InstagramBackend, r2Missing: readonly string[]): string {
-  return backend === "timer-300"
-    ? "sem URL pública do vertical: R2 não configurado, e não será habilitado (#11265, decisão do editor 27/10/2026) — fica manual"
-    : `falta ${r2Missing.join(", ")}`;
+export function publicVideoUnavailableReason(r2Missing: readonly string[]): string {
+  return `falta ${r2Missing.join(", ")} (Doppler diaria-studio/dev; rode npm run sync-env)`;
 }
 
 /** Destinos que só o skill faz (Chrome; o X pela Buffer MCP, #10772). */
@@ -2706,7 +2705,7 @@ async function main(): Promise<number> {
       instagramQueue,
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
-      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing) },
+      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(r2.missing) },
       youtubeVideoUrl: ytVideo.url,
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
       writer,

@@ -84,7 +84,7 @@ export function shortInstagramVideoFileName(aammdd: string): string {
  *     devolve `skip_delegated`, como o `linkedin_profile` (#10982).
  *   - `worker-r2` (#10823, opção antiga): sobe o vertical pro R2 e põe o
  *     Reels na fila do Worker `diaria-linkedin-cron`. Exige os 5 secrets do
- *     R2, que não serão criados (o R2 não está habilitado na conta).
+ *     R2 (habilitado em 27/10/2026 para X/Threads, #10772) e o Worker.
  */
 export const INSTAGRAM_BACKENDS = ["timer-300", "worker-r2"] as const;
 export type InstagramBackend = (typeof INSTAGRAM_BACKENDS)[number];

@@ -7,8 +7,8 @@
  * Instagram no horário do vertical, sem tarefa manual por edição e sem URL
  * pública: o Instagram não agenda Reels pela API, então alguém precisa rodar
  * o `--publish` depois do horário (decisão do editor 27/10/2026: timer no
- * 300; o túnel #11307 caiu pelo risco de ToS da Cloudflare e o R2 não será
- * habilitado).
+ * 300; o túnel #11307 caiu pelo risco de ToS da Cloudflare). O R2 foi
+ * habilitado depois, no mesmo dia, só para X/Threads (#10772).
  *
  *   1. edição = hoje em BRT (o vertical sai no dia da própria edição);
  *   2. `decideInstagramTimerRun` (puro): Instagram desligado, backend que não
@@ -61,9 +61,9 @@
  * `acquireTimerLock` do timer do LinkedIn): a task diária e a de hora em hora
  * nunca publicam juntas.
  *
- * Fica de fora (premissa registrada na #11265): X (Buffer) e Threads pessoal
- * recebem o vídeo só por URL pública; sem R2 eles seguem pulados com aviso
- * pelo `/diaria-publica-video`, manuais.
+ * Fica de fora: X (Buffer) e Threads pessoal recebem o vídeo só por URL
+ * pública, pelo R2 (`https://media.diar.ia.br`, #10772), no
+ * `/diaria-publica-video`.
  *
  * Uso: npx tsx scripts/shorts-instagram-timer.ts [--edition AAMMDD] [--dry-run]
  *   --dry-run: decide e imprime os comandos, sem publicar e sem alarme (lê o Drive).
