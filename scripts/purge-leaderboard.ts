@@ -47,9 +47,22 @@
  * pra lógica + rationale completo. As próprias chaves `identify-linked:*` são
  * apagadas no fim (ficariam órfãs).
  *
- * Auth (#2265): usa o WRANGLER (auth global do CLI — a mesma do `wrangler deploy`),
- * NÃO mais CLOUDFLARE_API_TOKEN/ACCOUNT_ID (o token avulso dava 401 sem perm de KV).
- * Pré-requisito: `wrangler` logado (`npx wrangler whoami` deve funcionar).
+ * Auth do KV (#11253, revisa o #2265) — dois backends, escolhidos de forma
+ * determinística e logada no início (`scripts/lib/purge-kv-backend.ts`):
+ *   1. `wrangler` logado via OAuth (`wrangler whoami` com o env sanitizado,
+ *      o mesmo de `scripts/check-wrangler-auth.ts`) → backend WRANGLER, o
+ *      caminho de sempre do Neo. O #2265 tirou CLOUDFLARE_API_TOKEN/ACCOUNT_ID
+ *      do env do wrangler porque o token avulso de então dava 401 sem
+ *      permissão de KV; isso continua valendo para este backend.
+ *   2. Sem login OAuth (servidor `300`: `wrangler login` precisa de
+ *      navegador) e com CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID no env →
+ *      backend REST: API REST do KV com `Authorization: Bearer` (cliente em
+ *      `scripts/lib/cloudflare-kv-rest.ts`). O token atual tem leitura e
+ *      escrita no namespace POLL (probe ao vivo de 27/10/2026, #11253).
+ *   3. Nenhum dos dois → erro claro, exit 1.
+ * `--kv-backend wrangler|rest` força um backend (default `auto`).
+ * `--check-auth` só resolve o backend (no REST, faz 1 GET de leitura no
+ * namespace) e sai 0/1 — é o pré-check do §6h do Stage 6.
  *
  * Uso:
  *   npx tsx scripts/purge-leaderboard.ts --nickname Teste --brand clarice
@@ -61,6 +74,9 @@
  *   # Dry-run é o default — só mostra o que seria apagado.
  *   # Pra executar de fato, passar --execute:
  *   npx tsx scripts/purge-leaderboard.ts --email test@example.com --brand clarice --execute
+ *
+ *   # Pré-check de auth do KV (§6h do Stage 6) — sai 0 se algum backend serve:
+ *   npx tsx scripts/purge-leaderboard.ts --check-auth
  *
  * Variáveis de ambiente (#4474):
  *   ADMIN_SECRET (ou POLL_ADMIN_SECRET)  HMAC key pro endpoint
@@ -77,7 +93,9 @@
 // abaixo SEMPRE deleta CLOUDFLARE_API_TOKEN/CLOUDFLARE_ACCOUNT_ID do env do
 // FILHO antes de invocar, incondicionalmente — não importa como essas vars
 // chegaram em `process.env` deste processo (dotenv, shell export,
-// .env), o strip acontece do mesmo jeito. dotenv passou a ser
+// .env), o strip acontece do mesmo jeito. (#11253: o token do `.env` agora
+// também alimenta o backend REST, usado só quando o wrangler não tem login
+// OAuth — ver o docstring do topo.) dotenv passou a ser
 // necessário porque #4474 introduziu um 2º caminho de auth neste script —
 // ADMIN_SECRET/POLL_ADMIN_SECRET (mesmas vars que `close-poll.ts` já lê do
 // .env) — pra assinar `POST /admin/purge-score-do` e apagar o storage do DO
@@ -96,10 +114,17 @@ import { summarizePurgeDoResults, type PurgeDoStepResult } from "./lib/purge-lea
 import type { Brand } from "../workers/poll/src/lib.ts"; // #4477 achado 3
 import { sanitizedCloudflareOAuthEnv } from "./lib/cloudflare-oauth-env.ts"; // #6900
 import { resolveWranglerBin } from "./lib/resolve-wrangler-bin.ts"; // #7117
+import { checkWranglerAuth } from "./check-wrangler-auth.ts"; // #11253
+import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts"; // #11253
+import {
+  parseKvBackendOverride,
+  resolvePurgeKvBackend,
+  type PurgeKvBackendChoice,
+  type PurgeKvBackendOverride,
+} from "./lib/purge-kv-backend.ts"; // #11253
 
-// #2265: NAMESPACE_ID do POLL (KV). Auth e acesso ao KV vão pelo WRANGLER (auth
-// global do CLI), não mais pela CF REST API com CLOUDFLARE_API_TOKEN — o token
-// avulso vivia dando 401 (sem permissão de KV) e quebrava purge + /diaria-remover-votos-pixel.
+// #2265: NAMESPACE_ID do POLL (KV). Acesso pelo WRANGLER (OAuth) quando há login,
+// senão pela API REST com CLOUDFLARE_API_TOKEN (#11253) — ver o docstring do topo.
 const NAMESPACE_ID = "72784da4ae39444481eb422ebac357c6"; // POLL namespace (KV)
 
 // Roda o wrangler via `node <bin>` (sem npx/shell) — args como array, então
@@ -153,11 +178,25 @@ function flagValue(name: string): string | null {
   return args[idx + 1];
 }
 
+const checkAuthOnly = args.includes("--check-auth"); // #11253
+
 const targetNickname = flagValue("--nickname")?.toLowerCase() ?? null;
 const targetEmail = flagValue("--email")?.toLowerCase() ?? null;
 
-if ((targetNickname === null) === (targetEmail === null)) {
-  console.error("Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--brand diaria|clarice|web] [--execute]");
+let KV_BACKEND_OVERRIDE: PurgeKvBackendOverride = "auto";
+try {
+  KV_BACKEND_OVERRIDE = parseKvBackendOverride(flagValue("--kv-backend"));
+} catch (e) {
+  console.error(`[purge] ${(e as Error).message}`);
+  process.exit(2);
+}
+
+if (!checkAuthOnly && (targetNickname === null) === (targetEmail === null)) {
+  console.error(
+    "Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--brand diaria|clarice|web] " +
+      "[--kv-backend auto|wrangler|rest] [--execute]",
+  );
+  console.error("     ou:  purge-leaderboard.ts --check-auth [--kv-backend auto|wrangler|rest]");
   console.error("     passe exatamente UM de --nickname ou --email");
   process.exit(2);
 }
@@ -178,7 +217,7 @@ const BP = BRAND === "diaria" ? "" : `${BRAND}:`;
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? process.env.POLL_ADMIN_SECRET ?? null;
 const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 
-if (execute && !ADMIN_SECRET) {
+if (execute && !checkAuthOnly && !ADMIN_SECRET) {
   console.error(
     "[purge] ADMIN_SECRET (ou POLL_ADMIN_SECRET) não definido — necessário em --execute pra assinar " +
     "/admin/purge-score-do e apagar o storage do DO ScoreCounter (#4474). Ver .env.",
@@ -186,24 +225,72 @@ if (execute && !ADMIN_SECRET) {
   process.exit(1);
 }
 
-// #2265: helpers via wrangler. `kv key list` já pagina internamente (retorna
+// #11253: as 4 operações de KV que este script usa, comuns aos dois backends.
+interface KvBackendOps {
+  list: (prefix: string) => Promise<string[]>;
+  get: (key: string) => Promise<string | null>;
+  put: (key: string, value: string) => Promise<void>;
+  delete: (key: string) => Promise<void>;
+}
+
+// #2265: backend WRANGLER. `kv key list` já pagina internamente (retorna
 // todas as chaves do prefixo). get/put/delete recebem a chave como arg literal.
+const wranglerKv: KvBackendOps = {
+  async list(prefix) {
+    const out = wrangler(["kv", "key", "list", "--namespace-id", NAMESPACE_ID, "--remote", "--prefix", prefix]);
+    const arr = JSON.parse(out) as Array<{ name: string }>;
+    return arr.map((k) => k.name);
+  },
+  async get(key) {
+    try {
+      // wrangler imprime o valor cru no stdout (banners vão p/ stderr); trim do \n final.
+      return wrangler(["kv", "key", "get", "--namespace-id", NAMESPACE_ID, "--remote", key]).replace(/\n$/, "");
+    } catch (e) {
+      // chave inexistente → wrangler sai !=0 com "404: Not Found" no stderr (verificado).
+      // Auth/rede (401/500) NÃO casam → re-lança (não engole como "vazio").
+      if (/not found|404|could not find/i.test(wranglerErrText(e))) return null;
+      throw e;
+    }
+  },
+  async put(key, value) {
+    wrangler(["kv", "key", "put", "--namespace-id", NAMESPACE_ID, "--remote", key, value]);
+  },
+  async delete(key) {
+    try {
+      wrangler(["kv", "key", "delete", "--namespace-id", NAMESPACE_ID, "--remote", key]);
+    } catch (e) {
+      // 404 = já apagada; idempotente. Outros erros propagam.
+      if (!/not found|404|could not find/i.test(wranglerErrText(e))) throw e;
+    }
+  },
+};
+
+// #11253: backend escolhido uma vez, no início de main() (ou em --check-auth).
+let kv: KvBackendOps | null = null;
+
+function resolveBackend(): PurgeKvBackendChoice {
+  return resolvePurgeKvBackend({
+    env: process.env,
+    checkWrangler: () => checkWranglerAuth(),
+    override: KV_BACKEND_OVERRIDE,
+  });
+}
+
+function restOpsFor(choice: Extract<PurgeKvBackendChoice, { backend: "rest" }>) {
+  return createKvRestOps({ accountId: choice.accountId, token: choice.token, namespaceId: NAMESPACE_ID });
+}
+
+function activeKv(): KvBackendOps {
+  if (!kv) throw new Error("backend de KV não inicializado (bug: main() não resolveu o backend)");
+  return kv;
+}
+
 async function kvList(prefix: string): Promise<string[]> {
-  const out = wrangler(["kv", "key", "list", "--namespace-id", NAMESPACE_ID, "--remote", "--prefix", prefix]);
-  const arr = JSON.parse(out) as Array<{ name: string }>;
-  return arr.map((k) => k.name);
+  return activeKv().list(prefix);
 }
 
 async function kvGet(key: string): Promise<string | null> {
-  try {
-    // wrangler imprime o valor cru no stdout (banners vão p/ stderr); trim do \n final.
-    return wrangler(["kv", "key", "get", "--namespace-id", NAMESPACE_ID, "--remote", key]).replace(/\n$/, "");
-  } catch (e) {
-    // chave inexistente → wrangler sai !=0 com "404: Not Found" no stderr (verificado).
-    // Auth/rede (401/500) NÃO casam → re-lança (não engole como "vazio").
-    if (/not found|404|could not find/i.test(wranglerErrText(e))) return null;
-    throw e;
-  }
+  return activeKv().get(key);
 }
 
 async function kvPut(key: string, value: string): Promise<void> {
@@ -211,7 +298,7 @@ async function kvPut(key: string, value: string): Promise<void> {
     console.log(`[dry-run] PUT ${key} (${value.length} bytes)`);
     return;
   }
-  wrangler(["kv", "key", "put", "--namespace-id", NAMESPACE_ID, "--remote", key, value]);
+  await activeKv().put(key, value);
 }
 
 async function kvDelete(key: string): Promise<void> {
@@ -219,12 +306,31 @@ async function kvDelete(key: string): Promise<void> {
     console.log(`[dry-run] DELETE ${key}`);
     return;
   }
-  try {
-    wrangler(["kv", "key", "delete", "--namespace-id", NAMESPACE_ID, "--remote", key]);
-  } catch (e) {
-    // 404 = já apagada; idempotente. Outros erros propagam.
-    if (!/not found|404|could not find/i.test(wranglerErrText(e))) throw e;
+  await activeKv().delete(key);
+}
+
+/**
+ * #11253: `--check-auth` — resolve o backend e, no REST, faz 1 GET de leitura
+ * no namespace (o token pode existir sem permissão de KV, que era o caso do
+ * #2265). Não escreve nada. Exit 0 = a purga tem por onde rodar.
+ */
+async function checkAuth(): Promise<void> {
+  const choice = resolveBackend();
+  if (choice.backend === "none") {
+    console.error(`[purge] sem backend de KV: ${choice.reason}`);
+    process.exitCode = 1;
+    return;
   }
+  if (choice.backend === "rest") {
+    try {
+      await restOpsFor(choice).probe();
+    } catch (e) {
+      console.error(`[purge] backend rest escolhido, mas a leitura do namespace falhou: ${(e as Error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  console.log(`[purge] kv backend: ${choice.backend} — ${choice.reason}`);
 }
 
 /**
@@ -271,6 +377,17 @@ const kvOps: PurgeKvOps = { list: kvList, get: kvGet };
 async function main(): Promise<void> {
   const target = targetEmail ? `email: "${targetEmail}"` : `nickname: "${targetNickname}"`;
   console.log(`[purge] mode: ${execute ? "EXECUTE" : "DRY-RUN"} — target ${target}`);
+
+  // #11253: escolha do backend de KV, logada. Sem backend → falha alta antes
+  // de qualquer leitura (o §6h do Stage 6 lista a purga como PENDENTE).
+  const choice = resolveBackend();
+  if (choice.backend === "none") {
+    console.error(`[purge] ERRO: sem backend de KV — ${choice.reason}`);
+    process.exitCode = 1;
+    return;
+  }
+  kv = choice.backend === "rest" ? restOpsFor(choice) : wranglerKv;
+  console.log(`[purge] kv backend: ${choice.backend} — ${choice.reason}`);
 
   console.log(`[purge] brand: ${BRAND}${BP ? ` (prefixo "${BP}")` : ""}`);
   console.log("[purge] resolvendo plano (score-by-month, identify-linked, vote)...");
@@ -432,7 +549,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
+(checkAuthOnly ? checkAuth() : main()).catch((e) => {
   console.error("[purge] erro:", e);
   process.exit(1);
 });

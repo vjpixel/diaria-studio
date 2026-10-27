@@ -14,13 +14,19 @@ Reusa `scripts/purge-leaderboard.ts` (#1802), que apaga tudo relacionado a um em
 
 ## Pré-requisito (auth)
 
-O script usa o **wrangler** (auth global do CLI) pra acessar o KV — **não** precisa mais de `CLOUDFLARE_API_TOKEN`/`ACCOUNT_ID` no env (#2265: o token avulso dava 401 sem permissão de KV). Basta o `wrangler` estar logado:
+O script escolhe sozinho por onde fala com o KV e loga a escolha (`[purge] kv backend: ...`, #11253):
+
+1. **wrangler logado via OAuth** (Neo) → usa o wrangler, como sempre (#2265). Nesse caminho o `CLOUDFLARE_API_TOKEN` do `.env` é tirado do env do wrangler filho, de propósito.
+2. **sem login OAuth** (servidor `300`, onde `wrangler login` não roda sem navegador) → usa a API REST do KV com `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` do `.env`/Doppler.
+3. nenhum dos dois → erro claro, exit 1.
+
+Pré-check sem apagar nada:
 
 ```
-npx wrangler whoami   # deve listar a conta, sem erro
+npx tsx scripts/purge-leaderboard.ts --check-auth   # exit 0 = há backend; no REST, faz 1 leitura no namespace
 ```
 
-> ⚠️ Se houver um `CLOUDFLARE_API_TOKEN` no `.env`/shell, o script o **ignora** de propósito (removido do env do wrangler filho) pra forçar a auth OAuth.
+`--kv-backend wrangler|rest` força um backend.
 
 Votos da Clarice News (mensal) exigem `--brand clarice` (votos diaria são o default).
 
