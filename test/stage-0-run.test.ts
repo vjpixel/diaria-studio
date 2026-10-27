@@ -323,6 +323,24 @@ describe("runStage0 --phase preflight", () => {
     assert.equal(result.clariceRest, false);
     assert.equal(result.cloudflareTokenOk, false);
   });
+
+  it("sonda o MCP clarice pelo headersHelper e sinaliza clariceMcp=false com REST saudável (#11312)", async () => {
+    const { exec, calls } = makeFakeExec({
+      "find-current-edition.ts": () => ({ code: 0, stdout: "data/editions/2604/260423\n", stderr: "" }),
+      "clarice-healthcheck.ts": (args) =>
+        args.includes("--mcp")
+          ? { code: 2, stdout: JSON.stringify({ ok: false, error: "Erro: a API da Clarice retornou HTTP 401." }), stderr: "" }
+          : ok(JSON.stringify({ ok: true })),
+    });
+    const result = await runStage0(["--edition", "260423"], baseDeps({ exec }));
+    assert.equal(result.code, 0, "MCP degradado é warn, nunca aborta");
+    assert.equal(result.clariceRest, true);
+    assert.equal(result.clariceMcp, false);
+    const mcpCall = calls.find((c) => c.script.includes("clarice-healthcheck") && c.args.includes("--mcp"));
+    assert.ok(mcpCall, "Stage 0 precisa sondar o MCP, não só o REST");
+    assert.ok(mcpCall!.args.includes("--via-headers-helper"), "probe usa a key do headersHelper, como o Claude Code");
+    assert.ok(result.notes.some((n) => /MCP clarice falhou.*401/.test(n)));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -361,6 +379,10 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(preflightStateCall);
     assert.ok(preflightStateCall!.args.includes("--chrome-mcp"));
     assert.ok(preflightStateCall!.args.includes("true"));
+    // #11312: o sinal do MCP clarice também é persistido.
+    const mcpIdx = preflightStateCall!.args.indexOf("--clarice-mcp");
+    assert.ok(mcpIdx >= 0, "preflight-state precisa receber --clarice-mcp");
+    assert.equal(preflightStateCall!.args[mcpIdx + 1], "true");
 
     // refresh-dedup e maintain-valid-editions-window rodaram.
     assert.ok(calls.some((c) => c.script.includes("refresh-dedup")));

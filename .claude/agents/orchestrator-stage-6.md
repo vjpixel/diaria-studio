@@ -567,14 +567,13 @@ API REST do KV com `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (servidor `3
 pra `wrangler login`). O pre-check usa a MESMA escolha que a purga vai usar — nunca `npx wrangler whoami`
 cru (valida identidade errada, #6900) nem `check-wrangler-auth.ts` sozinho (reprova o `300`, que tem o caminho REST):
 ```bash
-npx tsx scripts/purge-leaderboard.ts --check-auth
+npx tsx scripts/purge-leaderboard.ts --check-auth --edition-dir {EDITION_DIR}/ --expect-emails pixel@memelab.com.br,vjpixel@gmail.com
 ```
 - **Exit 0** (imprime `[purge] kv backend: wrangler|rest — {motivo}`; o probe leu E gravou no namespace e
-  `ADMIN_SECRET` existe) → guardar o `{backend}` dessa linha pro Resumo final e prosseguir com a purga abaixo.
+  `ADMIN_SECRET` existe) → prosseguir com a purga abaixo (o `{backend}` ja fica no arquivo de estado, #11311).
 - **Exit != 0, OU timeout** (sem backend, probe de leitura/escrita falhou, ou falta `ADMIN_SECRET`) → **degradar
-  pra warn e SEGUIR sem a purga:** nao chamar `--execute` (nem tentar de novo), logar o warn
-  abaixo, **guardar o motivo** (1a linha `[purge]` do stderr — o `[warn]` de fallback vem depois e nao e a causa)
-  pro Resumo final (PENDENTE) e passar pra 6b. §6d NAO e reaberto. Nao tentar `wrangler login` nem pedir credencial.
+  pra warn e SEGUIR sem a purga:** nao chamar `--execute` (nem tentar de novo), logar o warn abaixo e passar pra 6b
+  (o motivo — 1a linha `[purge]` do stderr — ja fica no arquivo de estado). §6d NAO e reaberto. Nao tentar `wrangler login` nem pedir credencial.
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
     --message "purga de votos do editor pulada: pre-check --check-auth falhou" \
@@ -584,9 +583,11 @@ npx tsx scripts/purge-leaderboard.ts --check-auth
 **Se autenticado, rodar a purga (execute direto — mesma justificativa de
 `/diaria-remover-votos-pixel`: sem gate, sem dry-run previo):**
 ```bash
-npx tsx scripts/purge-leaderboard.ts --email pixel@memelab.com.br --execute
-npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com --execute
+npx tsx scripts/purge-leaderboard.ts --email pixel@memelab.com.br --execute --edition-dir {EDITION_DIR}/
+npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com --execute --edition-dir {EDITION_DIR}/
 ```
+
+**Estado em arquivo, não em memória (#11311).** Com `--edition-dir` (nunca omitir), o próprio script grava em `{EDITION_DIR}/_internal/leaderboard-purge.json` o pré-check (zera a rodada) e cada `--execute` (`{status: ok|pendente, backend, motivo, at, keys_deleted, check_auth, emails}`), com "não concluiu" gravado antes de começar — timeout/kill no meio fica PENDENTE. O Resumo final lê esse arquivo.
 
 Cada execucao imprime `[purge] done — {N} keys apagadas, {M} snapshots invalidados.`
 (ou `[purge] nada pra apagar` se a conta ja estava limpa — trate como `{N}=0`). Somar
@@ -597,9 +598,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
   --details '{"emails":["pixel@memelab.com.br","vjpixel@gmail.com"],"keys_deleted":{total_keys}}'
 ```
 
-Falha de um dos 2 comandos (exit != 0 — erro de rede/KV, ou o `[purge] ERRO` da purga do
-DO ScoreCounter) → logar warn com o motivo, **guardar o email e o motivo pro Resumo
-final** (PENDENTE) e seguir; nunca bloquear o restante do Stage 6 por causa desta purga.
+Falha de um dos 2 comandos (exit != 0 — erro de rede/KV, ou o `[purge] ERRO` da purga do DO ScoreCounter) → logar warn com o motivo e seguir (e-mail e motivo já ficam no arquivo de estado); nunca bloquear o restante do Stage 6 por causa desta purga.
 
 ---
 
@@ -749,10 +748,7 @@ Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as i
 
 **#4924:** 6b-9 imprimiu algo → incluir `⚠ Hubs temáticos defasados` após a linha do Relatório. Stdout vazio → omitir (sem afirmar "hubs em dia").
 
-**#11253:** §6h nao concluiu (pre-check `--check-auth` com exit != 0, ou alguma das 2 chamadas `--execute` com
-exit != 0) → incluir `⚠ Purga de votos do editor: PENDENTE — {motivo} (rodar /diaria-remover-votos-pixel)`, nunca so
-o warn do run-log (os votos seguem no ranking publico). Concluida → `Purga de votos do editor: {total_keys} keys
-apagadas ({backend})` — `{backend}` vem da linha `[purge] kv backend:` do pre-check `--check-auth`.
+**#11253/#11311:** incluir SEMPRE, literal, a linha impressa por `npx tsx scripts/lib/leaderboard-purge-state.ts --edition-dir {EDITION_DIR}/ --summary` — lê `_internal/leaderboard-purge.json` (gravado pelo §6h) e devolve `Purga de votos do editor: {N} keys apagadas ({backend})` ou `⚠ Purga de votos do editor: PENDENTE — {motivo} (rodar /diaria-remover-votos-pixel)`; arquivo ausente (o §6h nem rodou) ou ilegível também sai PENDENTE. Nunca substituir pela memória da sessão nem só pelo warn do run-log (os votos seguem no ranking público).
 
 **#5772:** `_internal/brevo-diaria-published.json` existia em §6a → incluir `Brevo diária: agendado para {scheduled_at} ✓` (exit 0) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4/5; no 5, o `reason` já indica cota esgotada, #6146). Arquivo nunca existiu (canal pulado/falhou na Etapa 5) → omitir a linha por completo — não afirmar "Brevo diária: pulado".
 

@@ -17,7 +17,7 @@ Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.jso
 ```bash
 EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```
-**`CLARICE_REST` (#5414):** ler do disco (`npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} --read`, campo `clariceRest`) em vez de memória de sessão — roda com frequência como sessão nova via `/diaria-2-escrita`. `null` = mesma semântica permissiva de sempre: tentar o fallback Clarice abaixo mesmo assim.
+**`CLARICE_REST` (#5414):** ler do disco (`npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} --read`, campo `clariceRest`) em vez de memória de sessão — roda com frequência como sessão nova via `/diaria-2-escrita`. `null` = mesma semântica permissiva de sempre: tentar o fallback Clarice abaixo mesmo assim. **`CLARICE_MCP` (#11312):** mesmo arquivo, campo `clariceMcp` — o Stage 0 sondou o MCP `clarice` com a key do `headersHelper`. `clariceMcp === false` → o MCP já falhou no Stage 0 (401 típico do #11251): avisar o editor no início deste stage e, no passo de Clarice de §3b, **não chamar `mcp__clarice__correct_text`** — ir direto pro fallback REST (`clarice-correct.ts`), com o mesmo warn `mcp_to_rest_fallback`. `true`/`null` = caminho normal (MCP primeiro).
 
 ### Pré-condição: sentinel Stage 1
 
