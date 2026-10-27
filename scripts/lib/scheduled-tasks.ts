@@ -327,6 +327,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#10941",
   },
   {
+    name: "Diaria-Short-Related-Missed-Alarm",
+    description:
+      "alarma quando a task do vídeo relacionado do Short (#10811, no Neo) não deixou registro na edição do dia depois do prazo (#11353)",
+    steps: [{ key: "alarm", script: "scripts/short-related-missed-alarm.ts" }],
+    logPath: "short-related-missed-alarm/.alarm.log",
+    // Diária 13:30 BRT: o slot mais tardio do teste de horário do vertical é
+    // 12:00 (`publishing.shorts.schedule`, #10831) e a task do Neo desiste
+    // 60 min depois (`SHORT_RELATED_GIVE_UP_MINUTES`) — 13:00, mais 30 min de
+    // folga pra replicação do OneDrive. O prazo exato por edição
+    // (`shortAt + 60 min`) é conferido de novo pela lógica pura; fim de
+    // semana sai `weekend` sem alarmar. Slot livre (nenhuma task às 13:xx).
+    // Só LÊ `data/editions/` — nunca grava na pasta da edição, que é do Neo.
+    schedule: { kind: "daily", hour: 13, minute: 30 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem avaliar (ausencia nao e prova de nao-execucao).",
+    },
+    issue: "#11353",
+  },
+  {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
     description:
       "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
