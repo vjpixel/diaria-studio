@@ -1139,38 +1139,34 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-LinkedIn-Personal",
     description:
-      "publica no LinkedIn PESSOAL o 4º post (USE MELHOR) armado pelo Stage 6 e alarma token (expiração 60d, revogação) e intenções presas",
-    steps: [
-      { key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] },
-      { key: "token-alarm", script: "scripts/linkedin-personal-token-alarm.ts" },
-    ],
+      "alarma o token do app LinkedIn PESSOAL (expiração 60d, revogação) — o post diário no perfil pessoal foi aposentado (#11398)",
+    // #11398 (27/10/2026, pedido do editor): o 4º post (USE MELHOR) não sai
+    // mais no LinkedIn PESSOAL. O passo `publish-linkedin-personal.ts
+    // --fire-due` saiu daqui; sem ele nenhuma intenção armada
+    // (`_internal/06-linkedin-personal.json`, inclusive a da 261028, armada
+    // antes desta mudança) é publicada. O alarme do token FICA: o mesmo
+    // token (`LINKEDIN_PERSONAL_*`) publica o vertical no perfil pessoal
+    // (`Diaria-Shorts-LinkedIn-Profile`, `publish-shorts.ts`). Nome e horário
+    // (07:46 BRT, #9568) mantidos para não exigir re-arme da unit no 300.
+    steps: [{ key: "token-alarm", script: "scripts/linkedin-personal-token-alarm.ts" }],
     logPath: "linkedin-personal/.task.log",
-    // Diária 07:46 BRT (#9568) — 1 minuto DEPOIS de
-    // `publishing.social.use_melhor_time` (07:45), o slot em que a página
-    // publica o mesmo texto. A Posts API da LinkedIn não agenda, então o
-    // post sai quando a task roda; `--fire-due` só publica intenção cujo
-    // `scheduled_at` já passou (até 3h de atraso). Slot deslocado (past-slot
-    // guard, Stage 5/6 tardios) é coberto pela task `-Catchup` abaixo, e o
-    // `--arm` recusa (lembrete manual) quando nenhuma das duas cai na janela
-    // (`fireWindowCheck`, scripts/lib/linkedin-personal.ts). Mudou o slot no
-    // config? Mudar este horário junto — `test/linkedin-personal.test.ts`
-    // trava o par (minuto = use_melhor_time + 1).
     schedule: { kind: "daily", hour: 7, minute: 46 },
-    issue: "#9568",
+    issue: "#9568, #11398",
   },
   {
     name: "Diaria-LinkedIn-Personal-Catchup",
     description:
-      "repescagem de hora em hora do post do LinkedIn PESSOAL (4º post USE MELHOR) cujo horário foi deslocado para depois das 07:46",
+      "APOSENTADA (#11398) — repescagem de hora em hora do post do LinkedIn PESSOAL (4º post USE MELHOR)",
     steps: [{ key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] }],
     logPath: "linkedin-personal/.catchup.log",
-    // De hora em hora (#9568, fleet review da PR #9844): qualquer
-    // `scheduled_at` tem uma execução em até 60 min, dentro da janela de 3h.
-    // Barato (lê 2 arquivos por execução e sai). Concorrência com a das
-    // 07:46 resolvida pelo lock O_EXCL do disparo. Par travado em
-    // `test/linkedin-personal.test.ts`.
     schedule: { kind: "interval", hours: 1 },
-    issue: "#9568",
+    // `enabled: false` (#11398): o post pessoal foi aposentado. O runner pula
+    // a execução ("SKIP: task disabled") mesmo com a unit ainda armada no
+    // 300, e o gerador de units não a recria. Desarmar a unit que já existe
+    // é ação do editor no 300:
+    // `systemctl --user disable --now diaria-linkedin-personal-catchup.timer`.
+    enabled: false,
+    issue: "#9568, #11398",
   },
   {
     name: "Diaria-Shorts-LinkedIn-Profile",

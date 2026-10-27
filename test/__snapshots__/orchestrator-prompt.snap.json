@@ -13,9 +13,9 @@
 
   "orchestrator-stage-4.md": { "hash": "da042544f0dc1f8b", "lines": 990 },
 
-  "orchestrator-stage-5.md": { "hash": "7bf771cfa90e1360", "lines": 549 },
+  "orchestrator-stage-5.md": { "hash": "10a21df458b3651d", "lines": 549 },
 
-  "orchestrator-stage-6.md": { "hash": "418e7138a04841ab", "lines": 756 },
+  "orchestrator-stage-6.md": { "hash": "183e61c5b608ee68", "lines": 733 },
 
   "_regenerar": "NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts"
 }
