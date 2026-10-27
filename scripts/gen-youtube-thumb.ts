@@ -24,6 +24,12 @@
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --pick-frame N
  *     → copia o frame N para `_internal/youtube-thumb-frames/escolhido.png`
  *       (entrada do recorte rembg, que gera o `--portrait`)
+ *   Bruto espelhado (#11378): os dois modos aplicam o `mirrored` em vigor, com
+ *   a precedência da `/diaria-video-montagem` — `--mirrored`/`--no-mirrored` >
+ *   `_internal/video-montagem/blocks.json` > `source.json` > true. O
+ *   `--frames-from-drive` extrai com `hflip` e grava `frames.json`; o
+ *   `--pick-frame` só espelha se o aplicado na extração diferir do em vigor.
+ *   As flags vão depois do AAMMDD.
  *
  * Short → `{edição}/04-youtube-short-capa.jpg`, um frame do vertical dentro
  * da janela do lettering do título (0–3,5 s):
@@ -49,28 +55,39 @@ import {
   composeYouTubeThumb,
   planShortCoverFrame,
 } from "./lib/diaria/youtube-thumb.ts";
+import sharp from "sharp";
 import {
   THUMB_FRAMES_DIR,
+  THUMB_FRAMES_META,
   THUMB_FRAMES_SHEET,
   THUMB_FRAME_PICKED,
   buildFrameSheet,
   frameTimes,
+  pickFrameNeedsFlop,
   planDriveFrameArgs,
   redactFfmpegArgs,
+  resolveThumbMirrored,
   thumbFrameFileName,
+  type MirroredOrigin,
+  type ThumbFramesMeta,
 } from "./lib/diaria/youtube-thumb-frames.ts";
 
 const USAGE =
   "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" --portrait PNG [--background IMG] [--enhance-portrait] [--out PATH] [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--count N | --times T1,T2,...] [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--edition-dir DIR]\n" +
+  "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
+  "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --short-cover --at SEGUNDOS [--video MP4] [--out PATH] [--edition-dir DIR]";
 
 /**
  * #11228: extrai N frames do vídeo BRUTO direto da Drive API (sem baixar o
  * arquivo) e monta a folha de opções numerada. Só leitura no Drive.
  */
-async function framesFromDrive(dir: string, fileId: string, values: Record<string, string>): Promise<number> {
+async function framesFromDrive(
+  dir: string,
+  fileId: string,
+  values: Record<string, string>,
+  mirror: { mirrored: boolean; from: MirroredOrigin },
+): Promise<number> {
   const { getAccessToken } = await import("./google-auth.ts");
   const { gFetchRetry } = await import("./lib/drive-helpers.ts");
   const { DRIVE_API } = await import("./lib/drive-constants.ts");
@@ -96,7 +113,7 @@ async function framesFromDrive(dir: string, fileId: string, values: Record<strin
   const frames: { n: number; at: number; path: string }[] = [];
   for (const [i, at] of times.entries()) {
     const out = join(outDir, thumbFrameFileName(i + 1));
-    const args = planDriveFrameArgs({ fileId, accessToken: token, atSeconds: at, out });
+    const args = planDriveFrameArgs({ fileId, accessToken: token, atSeconds: at, out, mirrored: mirror.mirrored });
     const r = spawnSync("ffmpeg", args, { encoding: "utf8", timeout: 5 * 60_000 });
     if (r.error || r.status !== 0 || !existsSync(out)) {
       console.error(
@@ -107,11 +124,44 @@ async function framesFromDrive(dir: string, fileId: string, values: Record<strin
     }
     frames.push({ n: i + 1, at, path: out });
   }
+  const framesMeta: ThumbFramesMeta = { mirrored_applied: mirror.mirrored, mirrored_from: mirror.from };
+  writeFileAtomic(join(outDir, THUMB_FRAMES_META), JSON.stringify(framesMeta, null, 2) + "\n");
   const sheet = join(outDir, THUMB_FRAMES_SHEET);
   writeFileAtomic(sheet, await buildFrameSheet(frames.map((f) => readFileSync(f.path))));
   console.error(`[ok] ${frames.length} opções de ${meta.name ?? fileId} (${meta.videoMediaMetadata?.width ?? "?"}x${meta.videoMediaMetadata?.height ?? "?"}) — mostre ${sheet} ao editor e rode --pick-frame N com o número escolhido`);
-  console.log(JSON.stringify({ source: { id: fileId, name: meta.name ?? null, duration_s: durationS }, sheet, frames }, null, 2));
+  console.log(JSON.stringify({ source: { id: fileId, name: meta.name ?? null, duration_s: durationS }, mirrored: mirror, sheet, frames }, null, 2));
   return 0;
+}
+
+/** Estado da `/diaria-video-montagem` na edição (o `stateDir` default dela). */
+const MONTAGEM_STATE_DIR = join("_internal", "video-montagem");
+
+/** JSON opcional: ausente → undefined; ilegível → erro (nunca default silencioso). */
+function readOptionalJson(path: string): unknown {
+  if (!existsSync(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new Error(`${path} ilegível (${e instanceof Error ? e.message : e}): corrija, ou passe --mirrored/--no-mirrored`);
+  }
+}
+
+/**
+ * #11378: o `mirrored` em vigor para os frames da capa — a flag, ou o
+ * `blocks.json`/`source.json` da montagem desta edição, ou o default dela.
+ */
+function thumbMirrored(dir: string, flags: Set<string>, values: Record<string, string>): { mirrored: boolean; from: MirroredOrigin } {
+  for (const k of ["mirrored", "no-mirrored"]) {
+    if (values[k] !== undefined) throw new Error(`--${k} não leva valor (recebeu ${JSON.stringify(values[k])}): ponha a flag depois do AAMMDD`);
+  }
+  if (flags.has("mirrored") && flags.has("no-mirrored")) throw new Error("--mirrored e --no-mirrored juntos");
+  const flag = flags.has("mirrored") ? true : flags.has("no-mirrored") ? false : undefined;
+  if (flag !== undefined) return resolveThumbMirrored({ flag });
+  const state = join(dir, MONTAGEM_STATE_DIR);
+  return resolveThumbMirrored({
+    blocks: readOptionalJson(join(state, "blocks.json")),
+    source: readOptionalJson(join(state, "source.json")),
+  });
 }
 
 /** Vídeo vertical da edição (convenção usada em 261022). */
@@ -134,7 +184,9 @@ async function main(): Promise<number> {
       console.error("gen-youtube-thumb: --frames-from-drive exige o FILE_ID do vídeo bruto no Drive");
       return 2;
     }
-    return framesFromDrive(dir, fileId, values);
+    const mirror = thumbMirrored(dir, flags, values);
+    console.error(`[video] mirrored=${mirror.mirrored} (${mirror.from})${mirror.mirrored ? ": frames desespelhados (hflip)" : ""}`);
+    return framesFromDrive(dir, fileId, values, mirror);
   }
 
   if (values["pick-frame"] !== undefined || flags.has("pick-frame")) {
@@ -149,7 +201,16 @@ async function main(): Promise<number> {
       return 1;
     }
     const dst = join(dir, THUMB_FRAMES_DIR, THUMB_FRAME_PICKED);
-    copyFileSync(src, dst);
+    // #11378: frames do --frames-from-drive já saem desespelhados (frames.json);
+    // frames sem esse metadado (anteriores) são desespelhados aqui.
+    const mirror = thumbMirrored(dir, flags, values);
+    const framesMeta = readOptionalJson(join(dir, THUMB_FRAMES_DIR, THUMB_FRAMES_META)) as ThumbFramesMeta | undefined;
+    if (pickFrameNeedsFlop(mirror.mirrored, framesMeta ?? null)) {
+      writeFileAtomic(dst, await sharp(readFileSync(src)).flop().png().toBuffer());
+      console.error(`[video] mirrored=${mirror.mirrored} (${mirror.from}): frame ${n} espelhado horizontalmente na escolha`);
+    } else {
+      copyFileSync(src, dst);
+    }
     console.log(dst);
     return 0;
   }

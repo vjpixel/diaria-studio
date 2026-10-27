@@ -73,7 +73,14 @@ export function driveMediaUrl(fileId: string): string {
  * `atSeconds`, sem baixar o vídeo: `-ss` antes de `-i` faz o seek por range
  * HTTP. PNG sem perda (o recorte do rembg vem depois).
  */
-export function planDriveFrameArgs(input: { fileId: string; accessToken: string; atSeconds: number; out: string }): string[] {
+export function planDriveFrameArgs(input: {
+  fileId: string;
+  accessToken: string;
+  atSeconds: number;
+  out: string;
+  /** #11378: bruto espelhado → `-vf hflip`, o frame já sai desespelhado. */
+  mirrored?: boolean;
+}): string[] {
   if (!input.fileId.trim()) throw new Error("file id do Drive vazio");
   if (!input.accessToken.trim()) throw new Error("token OAuth vazio");
   if (!Number.isFinite(input.atSeconds) || input.atSeconds < 0) throw new Error(`instante inválido: ${input.atSeconds}`);
@@ -89,9 +96,53 @@ export function planDriveFrameArgs(input: { fileId: string; accessToken: string;
     driveMediaUrl(input.fileId),
     "-frames:v",
     "1",
+    ...(input.mirrored ? ["-vf", "hflip"] : []),
     "-y",
     input.out,
   ];
+}
+
+/**
+ * #11378: metadado gravado ao lado dos frames — se o `hflip` já foi aplicado
+ * na extração. O `--pick-frame` lê para não desespelhar duas vezes (e para
+ * desespelhar frames extraídos antes do #11378, que não têm este arquivo).
+ */
+export const THUMB_FRAMES_META = "frames.json";
+
+export type ThumbFramesMeta = { mirrored_applied: boolean; mirrored_from: MirroredOrigin };
+
+export type MirroredOrigin = "flag" | "blocks.json" | "source.json" | "default";
+
+/**
+ * O `mirrored` em vigor para os frames da capa, com a mesma precedência da
+ * `/diaria-video-montagem` (`effectiveSource` em `video-montage.ts`):
+ * `--mirrored`/`--no-mirrored` > `blocks.json` (`mirrored`, ou o legado
+ * `source.mirrored`) > `source.json` > `true` (premissa #11208: o bruto vem
+ * espelhado). Campo que não seja booleano é ignorado, como ausente.
+ */
+export function resolveThumbMirrored(input: { flag?: boolean; blocks?: unknown; source?: unknown }): {
+  mirrored: boolean;
+  from: MirroredOrigin;
+} {
+  if (input.flag !== undefined) return { mirrored: input.flag, from: "flag" };
+  const obj = (v: unknown): Record<string, unknown> | undefined =>
+    v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+  const bool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
+  const blocks = obj(input.blocks);
+  const fromBlocks = bool(blocks?.mirrored) ?? bool(obj(blocks?.source)?.mirrored);
+  if (fromBlocks !== undefined) return { mirrored: fromBlocks, from: "blocks.json" };
+  const fromSource = bool(obj(input.source)?.mirrored);
+  if (fromSource !== undefined) return { mirrored: fromSource, from: "source.json" };
+  return { mirrored: true, from: "default" };
+}
+
+/**
+ * `--pick-frame`: espelha o frame escolhido só quando o que foi aplicado na
+ * extração (`frames.json`; ausente = nada aplicado, frames anteriores ao
+ * #11378) difere do `mirrored` em vigor. Espelhar duas vezes desfaz.
+ */
+export function pickFrameNeedsFlop(desiredMirrored: boolean, meta: Pick<ThumbFramesMeta, "mirrored_applied"> | null): boolean {
+  return desiredMirrored !== (meta?.mirrored_applied ?? false);
 }
 
 /** Os mesmos argumentos com o token trocado por `***` (para log e erro). */
