@@ -26,6 +26,8 @@
  *   - `_internal/.carousel-source-hash.json` (chaves REINDEXADAS conforme
  *     newOrder — #6068; os slides do carrossel são renomeados pelo mesmo
  *     regex de imagem acima, então o carimbo precisa seguir junto)
+ *   - `_internal/carousel-keep-art.json` (exceção "manter a arte" do editor,
+ *     chaveada por posição — reindexada junto com os slides, #11213)
  *
  * Outputs a JSON com lista de arquivos modificados. NÃO re-uploada imagens
  * pro Drive/Cloudflare (editor roda upload-images-public manualmente após
@@ -126,6 +128,7 @@ import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // 
 import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
+import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
@@ -1789,6 +1792,25 @@ function main(): void {
       (d) => reorderEstiloRegenState(d, args.newOrder),
       args.dryRun,
       (path, content) => writePostBatchVerified([{ path, content }], args.newOrder),
+    );
+    if (r.rewritten) modified.rewritten.push(r.rewritten);
+    if (r.warning) {
+      console.warn(`WARN: reorder-destaques — ${r.warning}`);
+      warnings.push(r.warning);
+    }
+  }
+
+  // 8b. _internal/carousel-keep-art.json (#11213) — a exceção "manter a arte"
+  // é chaveada por POSIÇÃO; os slides já foram renomeados no passo 1, então a
+  // exceção segue a história deles. Sem isso, um swap D1↔D2 com exceção em d2
+  // rebaixa a warning o stale/overflow da história errada.
+  {
+    const r = updateCarouselKeepArtFile(
+      editionDir,
+      (k) => remapCarouselKeepArt(k, args.newOrder),
+      args.dryRun,
+      (path, content) => writePostBatchVerified([{ path, content }], args.newOrder),
+      `reorder aplicado com ${describeCarouselKeepArtRemap(args.newOrder)}`,
     );
     if (r.rewritten) modified.rewritten.push(r.rewritten);
     if (r.warning) {

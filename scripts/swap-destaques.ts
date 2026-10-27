@@ -28,7 +28,9 @@
  *   4. Imagens (`04-d{N}-*`) e prompts (`02-d{N}-*`) antigos da posição
  *      removidos (precisam regenerar);
  *   5. `_internal/04-estilo-regen.json` (#10335): estado do plano de
- *      regeneração por Noite Estrelada das posições trocadas zerado.
+ *      regeneração por Noite Estrelada das posições trocadas zerado;
+ *   6. `_internal/carousel-keep-art.json` (#11213): exceção "manter a arte"
+ *      das posições trocadas removida.
  *
  * O que NÃO faz (exige LLM/agente ou decisão editorial — sai em
  * `next_steps`, mesmo padrão do promote-to-destaque.ts):
@@ -70,6 +72,7 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: lay
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
+import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   extractUrl,
   extractTitle,
@@ -516,6 +519,22 @@ function main(): void {
   if (estilo.warning) {
     console.error(`AVISO: ${estilo.warning}`);
     result.warnings.push(estilo.warning);
+  }
+
+  // 6. Tira a exceção "manter a arte" das posições trocadas (#11213, mesmo
+  // passo do swap-destaque.ts): era das histórias substituídas e, mantida,
+  // congelaria a arte NOVA assim que gerada.
+  const keepArt = updateCarouselKeepArtFile(
+    editionDir,
+    (k) => clearCarouselKeepArt(k, slots.map((s) => `d${s.position}`)),
+    false,
+    (path, content) => writeFilesVerified([{ path, content }], "swap-destaques"),
+    `swap trocou a história de ${slots.map((s) => `d${s.position}`).join(", ")} (remover essas chaves)`,
+  );
+  if (keepArt.rewritten) result.modified.rewritten.push(keepArt.rewritten);
+  if (keepArt.warning) {
+    console.error(`AVISO: ${keepArt.warning}`);
+    result.warnings.push(keepArt.warning);
   }
 
   result.next_steps = buildSwapNextSteps(editionDir, slots);
