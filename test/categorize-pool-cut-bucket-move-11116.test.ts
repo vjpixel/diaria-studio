@@ -24,6 +24,72 @@ describe("#11119/#11116: 'how X used' exige nomes capitalizados de verdade", () 
     assert.notEqual(r.rule, "tutorial-title-extra");
   });
 
+  it("#11218: a mesma manchete em Title Case também não é tutorial", () => {
+    const r = cat({
+      url: "https://www.rappler.com/technology/features/hacker-used-ai-agents-break-into-websites-norforge-report",
+      title: "How One Hacker Used AI Agents and a Few Thousand Dollars to Break Into Scores of Sites",
+      summary:
+        "Snorre Fagerland of NorForge says instances of bad actors using AI agents to perform hacks is evidence these agents could pull off complex intrusions",
+    });
+    assert.notEqual(r.category, "tutorial");
+    assert.notEqual(r.rule, "tutorial-title-extra");
+  });
+
+  it("#11218: título em sentence case com nome composto de verdade segue tutorial", () => {
+    const r = cat({
+      url: "https://example.com/blog/mercado-libre-gemini",
+      title: "How Mercado Libre used Gemini to speed up its catalog",
+      summary: "",
+    });
+    assert.equal(r.rule, "tutorial-title-extra");
+  });
+
+  it("#11218: summary em sentence case com nome composto segue casando mesmo com título em Title Case", () => {
+    const r = cat({
+      url: "https://example.com/blog/catalog-speedup",
+      title: "Speeding Up a Catalog With Generative Models",
+      summary: "How Mercado Libre used Gemini to speed up its catalog.",
+    });
+    assert.equal(r.rule, "tutorial-title-extra");
+  });
+
+  for (const title of ["How Mercado Libre used Gemini", "How Mercado Libre used Gemini to scale"]) {
+    it(`review #11230: título curto em sentence case segue tutorial — "${title}"`, () => {
+      const r = cat({ url: "https://example.com/blog/mercado-libre-gemini", title, summary: "" });
+      assert.equal(r.category, "tutorial");
+      assert.equal(r.rule, "tutorial-title-extra");
+    });
+  }
+
+  it("review #11230: 'Case study: How Mercado Libre used Gemini' mantém o comportamento do master (#2276)", () => {
+    // Customer story de marketing é demovida pra noticias por `isMarketingCaseStudy`
+    // (#2276) ANTES de `tutorial-title-extra` — igual no master, sem relação com o
+    // guard de Title Case. O guard só não pode mudar esse resultado.
+    const r = cat({
+      url: "https://example.com/blog/mercado-libre-gemini",
+      title: "Case study: How Mercado Libre used Gemini",
+      summary: "",
+    });
+    assert.equal(r.category, "noticias");
+    assert.equal(r.rule, "noticias-default");
+  });
+
+  it("review #11230: summary que repete a manchete em Title Case não reabre o falso positivo", () => {
+    const title = "How One Hacker Used AI Agents and a Few Thousand Dollars to Break Into Scores of Sites";
+    const r = cat({
+      url: "https://www.rappler.com/technology/features/hacker-used-ai-agents-break-into-websites-norforge-report",
+      title,
+      summary: `${title}. Snorre Fagerland of NorForge says AI agents could pull off complex intrusions`,
+    });
+    assert.notEqual(r.category, "tutorial");
+    assert.notEqual(r.rule, "tutorial-title-extra");
+  });
+
+  it("review #11230: manchete curta em Title Case (verbo maiúsculo) não casa", () => {
+    const r = cat({ url: "https://example.com/news/hacker", title: "How One Hacker Used AI", summary: "" });
+    assert.notEqual(r.rule, "tutorial-title-extra");
+  });
+
   it("261020: summary 'how this money might actually be used' não vira tutorial (cortado de USE MELHOR)", () => {
     const r = cat({
       url: "https://techcrunch.com/2026/10/18/anthropic-says-its-committing-5-of-its-shares-to-a-public-benefit-fund",

@@ -14,6 +14,7 @@
  */
 import { editionDaysBefore } from './event-dedup.ts';
 import { canonicalize } from './url-utils.ts';
+import { isTitleCase } from './title-case.ts'; // #11218: fonte única
 export const FACT_RECURRENCE_MIN_WEIGHT = 2;
 /** score = min(1, 0.5 + 0.25 * peso); peso 2 => 1.0, peso 1 => 0.75. */
 export const FACT_RECURRENCE_THRESHOLD = 1;
@@ -160,17 +161,6 @@ function urlTokens(url: string): Set<string> {
   let path = url;
   try { path = new URL(url).pathname; } catch { /* URL relativa ou inválida: usa a string inteira */ }
   return new Set(normalize(path).split(/[^a-z0-9]+/).filter(t => t.length >= 3));
-}
-
-/**
- * Manchete em Title Case (padrão de veículo em inglês: "AI Breaches Are
- * Exploding"): ≥60% das palavras de 3+ letras com inicial maiúscula. Nesse caso
- * a maiúscula não indica nome próprio.
- */
-function isTitleCase(title: string): boolean {
-  const words = title.match(/\p{L}{3,}/gu) ?? [];
-  if (words.length < 3) return false;
-  return words.filter(w => /^\p{Lu}/u.test(w)).length / words.length >= 0.6;
 }
 
 function itemEntities(it: IntraEditionItem): Map<string, boolean> {
