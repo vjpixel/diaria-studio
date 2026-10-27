@@ -244,8 +244,10 @@ export async function runKitFrioSync(
   for (const r of semanalSent) semanalEng.push({ ...(await engagementOf(r)), sentAt: r.sentAt });
   const totalRead = diariaInWindow.length + semanalSent.length;
   log(`engajamento: ${totalRead - fromCache} broadcast(s) relido(s) do Kit, ${fromCache} do cache.`);
-  if (deps.engagementCache) {
+  if (deps.engagementCache && push) {
     // Reconstruído só com o que esta rodada pediu: diária fora da janela sai do cache.
+    // Dry-run lê o cache mas nunca o grava (review do PR #11308): dry-run não
+    // deixa rastro em disco.
     const next = buildKitFrioEngagementCache(frozen);
     const prevIds = Object.keys(cache?.broadcasts ?? {}).sort().join(",");
     const nextIds = Object.keys(next.broadcasts).sort().join(",");

@@ -250,7 +250,7 @@ export async function publishKitSemanalFrio(
 
 /**
  * #11294 item 2 — a semanal já agendada acompanha o principal: mesmo
- * instante ⇒ `already_done`; principal reagendado ⇒ re-PATCH pro novo
+ * instante (relido no Kit) ⇒ `already_done`; principal reagendado ⇒ re-PATCH pro novo
  * `send_at` (relido: status, horário e filtro); principal fora de
  * `scheduled` (desagendado, ex. exit 7 do `schedule-newsletter-kit.ts`) ⇒
  * desagenda a semanal (`send_at: null`, relido) e volta o estado pra
@@ -268,7 +268,20 @@ async function followMainSchedule(
   const main = deps.readMainState(editionDir);
   const mainScheduled = main !== null && main.status === "scheduled" && typeof main.scheduled_at === "string";
   if (mainScheduled && sameInstant(own.scheduled_at, main.scheduled_at!)) {
-    return { code: 0, status: "already_done", broadcastId };
+    // Review do PR #11308 (P2): o estado local `scheduled` pode estar
+    // defasado — ex. o desagendamento abaixo foi confirmado no Kit, mas a
+    // gravação do `created_unverified` falhou. Sem reler, o principal
+    // reagendado no MESMO horário daria `already_done` e a semanal ficaria
+    // rascunho em silêncio. 1 GET por rodada; divergência ⇒ cai no
+    // reagendamento abaixo (re-PATCH relido pro horário do principal).
+    const current = await deps.getBroadcast(broadcastId);
+    if (current.status === "scheduled" && sameInstant(current.send_at, main.scheduled_at!)) {
+      return { code: 0, status: "already_done", broadcastId };
+    }
+    log(
+      `semanal de frio ${broadcastId}: estado local diz agendada pra ${own.scheduled_at}, mas o Kit mostra ` +
+        `status=${current.status}, send_at=${current.send_at} — reagendando junto com o principal.`,
+    );
   }
 
   if (!mainScheduled) {
@@ -294,7 +307,21 @@ async function followMainSchedule(
       }
       return { code: 1, status: "failed", broadcastId, reason };
     }
-    deps.writeOwnState(editionDir, { ...own, status: "created_unverified", reason: "principal desagendado (#11294)" });
+    try {
+      deps.writeOwnState(editionDir, { ...own, status: "created_unverified", reason: "principal desagendado (#11294)" });
+    } catch (e) {
+      // O Kit já está certo (desagendada, relido). O estado local fica
+      // `scheduled`, e a releitura do `already_done` acima conserta na
+      // próxima rodada (review do PR #11308).
+      return {
+        code: 1,
+        status: "failed",
+        broadcastId,
+        reason:
+          `semanal ${broadcastId} desagendada no Kit (relido), mas o estado local não foi gravado (${(e as Error).message}); ` +
+          "a próxima rodada relê o Kit e a reagenda junto com o principal.",
+      };
+    }
     log(`semanal de frio ${broadcastId} desagendada junto com o principal; volta a ser agendada quando ele for.`);
     return { code: 0, status: "unscheduled", broadcastId };
   }

@@ -109,11 +109,11 @@ describe("cache de engajamento do frio (#11294 item 1)", () => {
   it("REGRESSÃO: 2ª rodada não relê do Kit a diária já madura (só a recente)", async () => {
     const store = { cache: null as unknown, writes: 0 };
     const first: number[] = [];
-    await runKitFrioSync(cfgFrioOn, { push: false }, deps(first, store));
+    await runKitFrioSync(cfgFrioOn, { push: true }, deps(first, store));
     assert.deepEqual(first, [1, 2]);
     assert.deepEqual(Object.keys((store.cache as KitFrioEngagementCache).broadcasts), ["1"], "só a madura congela");
     const second: number[] = [];
-    await runKitFrioSync(cfgFrioOn, { push: false }, deps(second, store));
+    await runKitFrioSync(cfgFrioOn, { push: true }, deps(second, store));
     assert.deepEqual(second, [2]);
     assert.equal(store.writes, 1, "nada novo congelou: não regrava");
   });
@@ -121,7 +121,7 @@ describe("cache de engajamento do frio (#11294 item 1)", () => {
   it("cache ilegível ⇒ relê tudo, sem lançar", async () => {
     const store = { cache: { version: 1, emails: "x" } as unknown, writes: 0 };
     const fetched: number[] = [];
-    const r = await runKitFrioSync(cfgFrioOn, { push: false }, deps(fetched, store));
+    const r = await runKitFrioSync(cfgFrioOn, { push: true }, deps(fetched, store));
     assert.equal(r.code, 0);
     assert.deepEqual(fetched, [1, 2]);
   });
@@ -132,9 +132,18 @@ describe("cache de engajamento do frio (#11294 item 1)", () => {
       { broadcastId: 77, delivered: ["z@x.com"], opens: ["z@x.com"], clicks: [] },
     ]);
     const store = { cache: stale as unknown, writes: 0 };
-    await runKitFrioSync(cfgFrioOn, { push: false }, deps([], store));
+    await runKitFrioSync(cfgFrioOn, { push: true }, deps([], store));
     assert.deepEqual(Object.keys((store.cache as KitFrioEngagementCache).broadcasts), ["1"]);
     assert.ok(!(store.cache as KitFrioEngagementCache).emails.includes("z@x.com"));
+  });
+
+  it("REGRESSÃO (review #11308): dry-run lê o cache mas nunca o grava", async () => {
+    const store = { cache: null as unknown, writes: 0 };
+    const fetched: number[] = [];
+    await runKitFrioSync(cfgFrioOn, { push: false }, deps(fetched, store));
+    assert.deepEqual(fetched, [1, 2]);
+    assert.equal(store.writes, 0);
+    assert.equal(store.cache, null);
   });
 });
 
@@ -253,6 +262,28 @@ describe("semanal de frio acompanha o principal (#11294 item 2)", () => {
     assert.equal(r.broadcastId, 11);
     assert.equal(t2.created.length, 0);
     assert.deepEqual(t2.scheduled, ["11@2026-11-02T10:00:00.000Z"]);
+  });
+
+  it("REGRESSÃO (review #11308, P2): desagendada no Kit mas estado local não gravado ⇒ failed; a rodada seguinte, com o principal no MESMO horário, relê o Kit e reagenda", async () => {
+    // Rodada 1: principal desagendado; o PATCH null é confirmado no Kit, mas a gravação do estado falha.
+    const t1 = followDeps({ broadcast_id: 10, subject: "S", preview_text: "P", status: "draft" }, {
+      writeOwnState: () => {
+        throw new Error("EIO");
+      },
+    });
+    const r1 = await publishKitSemanalFrio("/x/2611/261102", cfgFrioOn, { push: true, followOnly: true }, t1.d);
+    assert.equal(r1.status, "failed");
+    assert.equal(r1.code, 1);
+    assert.deepEqual(t1.scheduled, ["11@null"]);
+    // Rodada 2: estado local continua `scheduled` 09:00; principal reagendado pras MESMAS 09:00; no Kit a semanal é rascunho.
+    const t2 = followDeps(mainAt("2026-11-02T09:00:00Z"));
+    await t2.d.scheduleBroadcast(11, null);
+    t2.scheduled.length = 0;
+    const r2 = await publishKitSemanalFrio("/x/2611/261102", cfgFrioOn, { push: true }, t2.d);
+    assert.equal(r2.status, "rescheduled", "nunca already_done com o Kit mostrando rascunho");
+    assert.deepEqual(t2.scheduled, ["11@2026-11-02T09:00:00Z"]);
+    assert.equal(t2.written.at(-1)!.status, "scheduled");
+    assert.equal(t2.created.length, 0);
   });
 });
 
