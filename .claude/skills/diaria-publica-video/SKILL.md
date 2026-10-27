@@ -19,7 +19,7 @@ Os dois vídeos da edição numa skill só (decisão do editor, 26–27/10/2026)
 
 ## Passo 0 — Pré-condição: Stage 4 aprovado (#10943)
 
-Fluxo do dia (#10943, revisto em #11209): `/diaria-edicao` → `/diaria-publica-video` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). O vídeo comenta o D1, e o D1 só está final depois do gate da Etapa 4, então esta skill só roda com o sentinel do Stage 4:
+Fluxo do dia (#10943, revisto em #11209 e #11208): `/diaria-edicao` → `/diaria-video-montagem` (bruto até XML do Premiere, legendas e prévia; o editor exporta para `{AAMMDD}/Final/`) → `/diaria-publica-video` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). O vídeo comenta o D1, e o D1 só está final depois do gate da Etapa 4, então esta skill só roda com o sentinel do Stage 4:
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
