@@ -146,8 +146,15 @@ export function computeCheckpointDelta(cumulative: number, lastCumulativeBase: n
  *
  * `sessionId` (#11164): evento com `details.session_id` de OUTRA sessão é
  * pulado — duas rodadas da mesma edição no mesmo dia (300 + Zenbook) não
- * podem usar o acumulado uma da outra como base. Evento sem o campo (legado)
- * continua valendo como base, como antes.
+ * podem usar o acumulado uma da outra como base.
+ *
+ * Evento SEM `session_id` (#11217): com `sessionId` conhecido, também é
+ * pulado — mesma regra de `eventMatchesSession`
+ * (`check-overnight-token-instrumentation.ts`) e de `indexExistingEvents`
+ * (`subagent-usage-metrics.ts`, #11182). O caso que morde: outra máquina com
+ * código defasado grava o acumulado dela sem o campo, e a sessão nova o usaria
+ * como base, registrando um delta menor que o real. Só quando `sessionId` é
+ * desconhecido (null/vazio) o evento legado ainda serve de base.
  */
 export function lastCoordinatorCumulativeBase(
   lines: string[],
@@ -173,7 +180,7 @@ export function lastCoordinatorCumulativeBase(
       | { tokens?: unknown; cumulative_tokens?: unknown; session_id?: unknown }
       | null
       | undefined;
-    if (sessionId && details?.session_id !== undefined && details.session_id !== sessionId) continue;
+    if (sessionId && details?.session_id !== sessionId) continue;
     // `Number(null)` é 0 — um evento `unavailable` ({tokens: null}) seria lido
     // como base 0 e o próximo delta viraria o cumulativo inteiro de novo.
     // Só um `number` finito conta como base (mesmo critério do aggregate).

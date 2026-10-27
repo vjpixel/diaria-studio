@@ -47,6 +47,7 @@ import {
   type ExecResult,
 } from "../scripts/lib/merge-train-live.ts";
 import type { TrainBatch, TrainPrInfo } from "../scripts/lib/merge-train.ts";
+import { extractRevertedSha } from "../scripts/track-quality-report.ts";
 
 const MAIN_CWD = "C:/repo";
 
@@ -103,7 +104,7 @@ class FakeTrainRunner implements TrainRunner {
     return this.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson()))
       .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(noThreadsJson()))
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("labels,body"), () => ok(notRetidoJson()))
-      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("title,body"), () => ok(JSON.stringify({ title: "fix: exemplo", body: "Closes #10" })));
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("title,body,commits"), () => ok(JSON.stringify({ title: "fix: exemplo", body: "Closes #10" })));
   }
 
   withLockOk(): this {
@@ -482,14 +483,48 @@ describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => 
     assert.equal(result.ok, true);
     const mergeCall = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge");
     assert.ok(mergeCall);
-    assert.equal(mergeCall.args[mergeCall.args.indexOf("--subject") + 1], "fix: exemplo");
+    // #11216: --subject explícito faz o GitHub NÃO acrescentar " (#N)" —
+    // o sufixo tem que vir de nós.
+    assert.equal(mergeCall.args[mergeCall.args.indexOf("--subject") + 1], "fix: exemplo (#100)");
     assert.equal(mergeCall.args[mergeCall.args.indexOf("--body") + 1], "Closes #10");
+  });
+
+  it("#11216: título que já termina com (#N) do próprio PR não duplica o sufixo", () => {
+    const runner = new FakeTrainRunner().withGate2Green().withLockOk();
+    runner
+      .on("gh", (a) => a.includes("title,body,commits"), () => ok(JSON.stringify({ title: "fix: x (#100)", body: "Closes #10" })))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
+      .on("git", (a) => a[0] === "pull", () => ok());
+    assert.equal(mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" }).ok, true);
+    const mergeCall = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge");
+    assert.ok(mergeCall);
+    assert.equal(mergeCall.args[mergeCall.args.indexOf("--subject") + 1], "fix: x (#100)");
+  });
+
+  it("#11216: trailer 'This reverts commit' de um commit da PR é preservado no body do squash", () => {
+    const runner = new FakeTrainRunner().withGate2Green().withLockOk();
+    const sha = "ac29012ff0123456789abcdef0123456789abcde";
+    runner
+      .on("gh", (a) => a.includes("title,body,commits"), () =>
+        ok(JSON.stringify({
+          title: 'Revert "fix: y"',
+          body: "Reverte #11190.",
+          commits: [{ messageHeadline: 'Revert "fix: y"', messageBody: `This reverts commit ${sha}.` }],
+        })))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
+      .on("git", (a) => a[0] === "pull", () => ok());
+    assert.equal(mergeSoloPr(runner, 200, { sessionId: "s", kind: "develop" }).ok, true);
+    const mergeCall = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge");
+    assert.ok(mergeCall);
+    const squashBody = mergeCall.args[mergeCall.args.indexOf("--body") + 1];
+    assert.equal(squashBody, `Reverte #11190.\n\nThis reverts commit ${sha}.`);
+    assert.equal(extractRevertedSha(squashBody), sha);
   });
 
   it("#11190: body REFS prevalece sobre Closes antigo no commit", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
     const body = "REFS #11119, NÃO CLOSES (escopo parcial)";
-    runner.on("gh", (a) => a.includes("title,body"), () => ok(JSON.stringify({ title: "fix: escopo parcial", body })))
+    runner.on("gh", (a) => a.includes("title,body,commits"), () => ok(JSON.stringify({ title: "fix: escopo parcial", body })))
       .on("gh", (a) => a[1] === "merge", (args) => {
         // Sem mensagem explícita, o squash do GitHub herda o commit antigo.
         const squashBody = args.includes("--body") ? args[args.indexOf("--body") + 1] : "Closes #11119";
@@ -499,14 +534,14 @@ describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => 
       .on("git", (a) => a[0] === "pull", () => ok());
     assert.equal(mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" }).ok, true);
     const lockIndex = runner.calls.findIndex((c) => c.args.includes("merge-lock-acquire"));
-    const readIndex = runner.calls.findIndex((c) => c.args.includes("title,body"));
+    const readIndex = runner.calls.findIndex((c) => c.args.includes("title,body,commits"));
     assert.ok(readIndex > lockIndex, "relê a PR sob o lock, sem usar snapshot da descoberta");
   });
 
   for (const response of [fail("offline"), ok("invalid json"), ok("{}"), ok('{"title":"fix"}')]) {
     it(`#11190: mensagem da PR ilegível bloqueia merge e libera lock (${response.stdout || response.stderr})`, () => {
       const runner = new FakeTrainRunner().withGate2Green().withLockOk();
-      runner.on("gh", (a) => a.includes("title,body"), () => response);
+      runner.on("gh", (a) => a.includes("title,body,commits"), () => response);
       const result = mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" });
       assert.equal(result.ok, false);
       assert.match(result.error ?? "", /mensagem.*PR/i);

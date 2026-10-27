@@ -192,6 +192,19 @@ export class LinkedInScheduler {
       } catch { /* sem body = cancel incondicional */ }
       return this.state.blockConcurrencyWhile(async () => {
         if (ifNotClaiming) {
+          // #11215 — mesmo critério do `/arm` (#10992 item 1): DO que já
+          // disparou (`fired`) ou terminou ambíguo (`send_unknown`, #11106)
+          // não é cancelado. O `deleteAll` apagaria esses marcadores, a
+          // reserva (#11133) e o `/arm` seguinte armariam o conteúdo novo e
+          // o slot sairia 2 vezes.
+          const fired = (await this.state.storage.get<boolean>("fired")) === true;
+          const sendUnknown = await this.state.storage.get<string>("send_unknown");
+          if (fired || sendUnknown !== undefined) {
+            return new Response(JSON.stringify({ cancelled: false, fired: true }), {
+              status: 409,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
           const claiming = await this.state.storage.get<boolean>("claiming");
           const claimedAt = await this.state.storage.get<number>("claimed_at");
           if (claiming && (claimedAt === undefined || Date.now() - claimedAt <= CLAIM_TTL_MS)) {

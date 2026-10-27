@@ -92,7 +92,7 @@ describe("lastCoordinatorCumulativeBase (#6634, #10490)", () => {
     assert.equal(lastCoordinatorCumulativeBase(lines, "261019", "overnight"), 150);
   });
 
-  it("#11164: pula o acumulado de OUTRA sessão da mesma edição; legado sem session_id ainda vale", () => {
+  it("#11164/#11217: pula o acumulado de OUTRA sessão e o legado sem session_id quando a sessão é conhecida", () => {
     const ev = (cum: number, sid?: string) =>
       JSON.stringify({
         agent: "overnight",
@@ -102,8 +102,24 @@ describe("lastCoordinatorCumulativeBase (#6634, #10490)", () => {
       });
     const lines = [ev(100), ev(800, "zen"), ev(5_000, "s300")];
     assert.equal(lastCoordinatorCumulativeBase(lines, "261025", "overnight", "zen"), 800);
-    assert.equal(lastCoordinatorCumulativeBase(lines, "261025", "overnight", "outra"), 100);
+    assert.equal(lastCoordinatorCumulativeBase(lines, "261025", "overnight", "outra"), null);
     assert.equal(lastCoordinatorCumulativeBase(lines, "261025", "overnight"), 5_000);
+  });
+
+  it("#11217: evento legado sem session_id (outra máquina, código defasado) não serve de base para sessão conhecida", () => {
+    // Cenário da issue: o 300 grava cumulative 3M sem session_id; a sessão
+    // nova chega ao 1º checkpoint com 4M. Base tem de ser null → delta 4M.
+    const legacy = JSON.stringify({
+      agent: "overnight",
+      edition: "261027",
+      message: COORDINATOR_ESTIMATE_MESSAGE,
+      details: { phase: "x", tokens: 3_000_000, cumulative_tokens: 3_000_000 },
+    });
+    const base = lastCoordinatorCumulativeBase([legacy], "261027", "overnight", "nova");
+    assert.equal(base, null);
+    assert.equal(computeCheckpointDelta(4_000_000, base), 4_000_000);
+    // Sem sessão conhecida, o legado continua sendo a única base disponível.
+    assert.equal(lastCoordinatorCumulativeBase([legacy], "261027", "overnight", null), 3_000_000);
   });
 
   it("#10490: evento unavailable com cumulative_tokens espúrio continua ignorado", () => {
@@ -193,7 +209,7 @@ describe("estimateCoordinatorUsage — integração com transcript real em tmpdi
         { input: 1000, cacheRead: 5000, output: 200 },
       ]);
       writeRunLog(root, [
-        { agent: "overnight", edition: "260902", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "fase_0", tokens: 4000 } },
+        { agent: "overnight", edition: "260902", message: COORDINATOR_ESTIMATE_MESSAGE, details: { phase: "fase_0", tokens: 4000, session_id: "sess-1" } },
       ]);
       const est = estimateCoordinatorUsage({
         edition: "260902",
