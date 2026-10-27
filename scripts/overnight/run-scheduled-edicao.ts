@@ -77,8 +77,11 @@ export { STAGE_PLAN, HEADLESS_FLAGS } from "../lib/edition-stage-runner.ts";
  * Vars de auth da API que, se presentes no ambiente, o CLI `claude` PREFERE
  * sobre o login claude.ai — e que precisam sair antes do spawn (#5608).
  *
- * O unit systemd faz `EnvironmentFile=-.env` (#5114, necessário: sem isso o
- * `${CLARICE_API_KEY}` do `.mcp.json` não resolve), e o `.env` deste repo tem
+ * O unit systemd faz `EnvironmentFile=-.env` (#5114: credenciais do `.env` no
+ * ambiente; o `${CLARICE_API_KEY}` estático do `.mcp.json` resolve daí — o
+ * `headersHelper` do #11251 só roda em pasta com trust aceito, que um
+ * `claude -p` headless não ganha sozinho, então aqui o estático é quem
+ * autentica: não remover nem um nem outro), e o `.env` deste repo tem
  * `ANTHROPIC_API_KEY` legitimamente — `geo-citation-monitor.ts` e
  * `audit-context-tokens.ts` consomem a API direto. O efeito colateral é que a
  * edição agendada herdava a key e o CLI trocava a assinatura por uma conta

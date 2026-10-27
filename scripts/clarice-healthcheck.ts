@@ -98,7 +98,8 @@ export async function checkClariceHealth(
 // Achado #5114: o healthcheck REST acima só prova que `cortex.clarice.ai`
 // está de pé com ESTA key -- não prova nada sobre o MCP (`mcp.clarice.ai`,
 // endpoint DIFERENTE, auth resolvida num processo DIFERENTE -- o `.mcp.json`
-// interpola `${CLARICE_API_KEY}` no launch do Claude Code, não neste script).
+// monta o header no Claude Code, via `headersHelper` desde o #11251, não neste
+// script).
 // `studio-integrations.ts` já documentava essa lacuna como "aproxima, não
 // prova" desde #3848 -- este bloco fecha ela com um probe real.
 //
