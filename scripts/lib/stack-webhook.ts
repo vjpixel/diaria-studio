@@ -47,12 +47,21 @@ export function escapeLooseAngleBrackets(md: string): string {
     .replace(/(?<!\\)</g, "\\<");
 }
 
-/** Pure: valida e monta o corpo do POST (com `<` solto escapado, #10977). */
+/**
+ * Pure: valida e monta o corpo do POST (com `<` solto escapado, #10977).
+ *
+ * O título recebe o mesmo escape (#11197): desde a #11192 ele repete o
+ * título do 1º destaque (texto editorial livre), então "Modelo < 1B supera
+ * GPT" pode chegar aqui. Se o webhook também remover HTML do título (o
+ * contrato não diz; não dá pra conferir sem publicar), o `<` cru cortaria o
+ * texto. O custo do escape, se o título for texto puro do lado deles, é um
+ * `\` visível — preferível a perder metade do título.
+ */
 export function buildStackPostPayload(titulo: string, corpo: string): StackPostPayload {
   if (!titulo.trim()) throw new Error("Título do post vazio");
   if (!corpo.trim()) throw new Error("Corpo do post vazio");
   if (/!\[[^\]]*\]\(/.test(corpo)) throw new Error("Corpo contém imagem Markdown — o webhook da Stack não aceita imagens no texto");
-  return { titulo, corpo: escapeLooseAngleBrackets(corpo) } as StackPostPayload;
+  return { titulo: escapeLooseAngleBrackets(titulo), corpo: escapeLooseAngleBrackets(corpo) } as StackPostPayload;
 }
 
 type FetchLike = typeof fetch;
