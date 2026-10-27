@@ -532,15 +532,19 @@ export function resolveRunActivity(
  * `message: "stall_detected"` sozinho, porque o COORDENADOR também emite
  * `stall_detected` (ex: subagente travado, #2768) e esse é sinal legítimo de
  * que a rodada está viva.
+ *
+ * #11339: o filtro vale para QUALQUER mensagem com esse `source`, não só
+ * `stall_detected`. Antes ele exigia as duas coisas, e o
+ * `watchdog_source_broken` (#7910, também emitido por `emitRunLogEvent` com a
+ * `edition` da rodada) passava como atividade: a 261025, morta desde 25/10,
+ * renovava a "última atividade" a cada aviso desses e nunca cruzava
+ * `ABANDONED_RUN_MAX_AGE_MS`, seguindo a alarmar stall dois dias depois.
  */
 export function isOwnWatchdogEvent(
   event: { message?: string; details?: { source?: string } | null },
   kind: WatchableKind,
 ): boolean {
-  return (
-    event.message === "stall_detected" &&
-    event.details?.source === `${kind}-watchdog`
-  );
+  return event.details?.source === `${kind}-watchdog`;
 }
 
 /**
@@ -1215,8 +1219,9 @@ async function runWatchdogForKind(
   const thresholdMs = thresholdMin * 60_000;
 
   // #5520: fonte única com `findActiveRun` — desconta as escritas do próprio
-  // watchdog (`stall_events` no plan.json, eventos `stall_detected` no
-  // run-log), que antes realimentavam o alarme indefinidamente.
+  // watchdog (`stall_events` no plan.json, eventos do próprio watchdog no
+  // run-log — `stall_detected` e `watchdog_source_broken`, #11339), que antes
+  // realimentavam o alarme indefinidamente.
   const { ts: lastActivityMs, source: lastSource } = resolveRunActivity(
     ROOT,
     kind,

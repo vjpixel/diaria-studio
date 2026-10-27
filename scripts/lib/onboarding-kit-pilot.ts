@@ -488,11 +488,25 @@ export interface PilotLotOptions {
   tagCheckDelayMs?: number;
 }
 
+/** #11340: a camada 4 esgotou as releituras e a tag AINDA só está atrasada
+ *  (vazia, faltando membro, ou nome ainda não resolvendo) — nunca membro
+ *  estranho nem contagem a mais. Nada foi criado no Kit além da tag; o lote
+ *  fica `pending` e a rodada seguinte refaz. O executor de produção usa esta
+ *  classe pra contar a falha no relatório sem derrubar a unit (exit 0). */
+export class PilotTagAudienceRetryableError extends Error {
+  readonly retryable = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "PilotTagAudienceRetryableError";
+  }
+}
+
 /** Camada 4: confirma que a tag do lote resolve pro id do lote e tem
  *  exatamente os destinatários. Busca por nome e listagem de membros no
  *  MESMO loop de retry (defaults: 8 × 30s = 240s, cobre os ~90s/~180s de
  *  propagação). Nome resolvendo pra OUTRO id ou membro estranho aborta na
- *  hora. Lança quando não fecha. */
+ *  hora (`Error` comum). Esgotar as releituras só com atraso de propagação
+ *  lança `PilotTagAudienceRetryableError` (#11340). */
 export async function assertPilotTagAudience(
   deps: Pick<PilotKitDeps, "findTagIdByName" | "listTagMemberEmails" | "sleep">,
   lot: Pick<OnboardingKitLot, "tag_name" | "tag_id" | "recipient_emails">,
@@ -516,7 +530,7 @@ export async function assertPilotTagAudience(
     if (check.ok && resolved === tagId) return;
     lastReason = !check.ok ? check.reason : `tag "${lot.tag_name}" ainda não aparece na busca por nome (propagação).`;
   }
-  throw new Error(`[onboarding-kit-pilot] guard de audiência: ${lastReason} Abortando.`);
+  throw new PilotTagAudienceRetryableError(`[onboarding-kit-pilot] guard de audiência: ${lastReason} Abortando.`);
 }
 
 export interface PilotLotResult {

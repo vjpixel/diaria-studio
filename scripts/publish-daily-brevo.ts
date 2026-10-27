@@ -52,6 +52,11 @@
  *   7. Cria a campanha Brevo (`POST /emailCampaigns`) — sem `--send-now`/
  *      `--schedule-at`, fica como rascunho na conta Brevo (mesma cautela do
  *      publisher mensal: nunca dispara sozinho).
+ *   7b. #11286 — semanal acima de `brevo_diaria.semanal.split_threshold` com
+ *      `terca_list_id`: reconcilia a lista de terça (`lib/brevo-semanal-split.ts`),
+ *      cria a principal com `exclusionListIds: [terca]` e uma 2ª campanha
+ *      (`ensureTercaCampaign`, `listIds: [terca]`), as duas rascunho;
+ *      `schedule-daily-brevo.ts` agenda a de terça 24h depois da de segunda.
  *
  * Exit codes: 1 uso/erro fatal genérico (inclui guards de `--send-test`/
  * `--send-test-to` — sempre pré-`await`, ver #5086 abaixo); 2 guard de
@@ -60,7 +65,10 @@
  * token em ≥1 contato; 6 divergência entre a enumeração e
  * `listInfo.totalSubscribers` (#4532); 7 assunto vazio/em branco
  * (`content.title` ausente, #4588); 8 regime semanal ligado e a edição não é
- * de segunda (#11226 — nada criado; `--fora-da-segunda` força). A cota da CONTA (#6146) NÃO tem exit
+ * de segunda (#11226 — nada criado; `--fora-da-segunda` força); 9 semanal
+ * dividida segunda/terça (#11286) sem lista de terça confiável (reconcile
+ * falhou, ou ficou alguém fora da principal) ou rascunho registrado com outra
+ * divisão (`--force` recria) — nenhuma campanha criada. A cota da CONTA (#6146) NÃO tem exit
  * code aqui de propósito — vira aviso, porque rascunho não consome cota e o
  * dia do envio ainda não é conhecido; o gate duro é a Etapa 6.
  *
@@ -130,8 +138,9 @@ import {
   SEMANAL_INTRO_SNIPPET_FILENAME, // #11226
 } from "./lib/brevo-diaria-intro.ts";
 import { decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
+import { buildMainCampaignRecipients, decideSemanalSplit, reconcileTercaList } from "./lib/brevo-semanal-split.ts"; // #11286
 import { isKitSemAberturaEnabled, readKitSemAberturaInBrevoCount, type KitSemAberturaConfig } from "./lib/kit-sem-abertura.ts"; // #10437
-import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetList, brevoListContacts } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
 import { runInjectReativarToken as injectReativarToken } from "./inject-reativar-token-brevo.ts"; // #8194
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts"; // #4631
@@ -200,6 +209,12 @@ export interface BrevoDiariaPublished {
   /** #5772 — ISO 8601, só presente quando `status === "scheduled"`. */
   scheduled_at?: string;
   created_at: string;
+  /** #11286 — semanal dividida: lista de terça excluída da campanha principal. Ausente ⇒ sem divisão. */
+  terca_list_id?: number;
+  /** #11286 — campanha de terça (mesma edição, `listIds: [terca_list_id]`), criada como rascunho. */
+  terca_campaign_id?: number;
+  /** #11286 — ISO 8601 do agendamento da campanha de terça, confirmado por GET na Etapa 6. */
+  terca_scheduled_at?: string;
 }
 
 /** Path do state file de publicação, sob `_internal/` da edição — mesma convenção de `05-published.json`/`06-social-published.json`. */
@@ -232,6 +247,9 @@ export function readBrevoDiariaPublished(editionDir: string): BrevoDiariaPublish
       test_sent_at: typeof parsed.test_sent_at === "string" ? parsed.test_sent_at : undefined,
       scheduled_at: typeof parsed.scheduled_at === "string" ? parsed.scheduled_at : undefined,
       created_at: typeof parsed.created_at === "string" ? parsed.created_at : "",
+      ...(typeof parsed.terca_list_id === "number" ? { terca_list_id: parsed.terca_list_id } : {}),
+      ...(typeof parsed.terca_campaign_id === "number" ? { terca_campaign_id: parsed.terca_campaign_id } : {}),
+      ...(typeof parsed.terca_scheduled_at === "string" ? { terca_scheduled_at: parsed.terca_scheduled_at } : {}),
     };
   } catch {
     return null;
@@ -296,6 +314,8 @@ export function buildDraftPublishedState(params: {
   previewText: string;
   listId: number;
   createdAt: string;
+  /** #11286 — lista de terça excluída desta campanha (semanal dividida). */
+  tercaListId?: number;
 }): BrevoDiariaPublished {
   return {
     campaign_id: params.campaignId,
@@ -304,6 +324,45 @@ export function buildDraftPublishedState(params: {
     status: "draft",
     list_id: params.listId,
     created_at: params.createdAt,
+    ...(params.tercaListId !== undefined ? { terca_list_id: params.tercaListId } : {}),
+  };
+}
+
+/**
+ * Pura (#11286) — reaproveitar um rascunho cuja divisão segunda/terça não
+ * bate com a decisão de agora? Rascunho dividido e decisão sem divisão (ou
+ * outra lista de terça) é recusado: a campanha principal tem
+ * `exclusionListIds` e o PUT de `recipients` não é o caminho seguro pra
+ * desfazer isso — `--force` recria do zero. Rascunho inteiro e decisão
+ * dividida é aceito (o PUT põe a exclusão e a campanha de terça nasce) —
+ * EXCETO se esse rascunho inteiro já foi AGENDADO: os destinatários
+ * congelaram sem a exclusão, e criar a de terça faria a metade "terça"
+ * receber duas vezes (self-review do #11286).
+ */
+export function checkReuseSplitConsistency(
+  existing: Pick<BrevoDiariaPublished, "terca_list_id" | "status"> | null,
+  tercaListId: number | null,
+): { ok: true } | { ok: false; reason: string } {
+  if (!existing) return { ok: true };
+  if (existing.terca_list_id === undefined) {
+    if (existing.status === "scheduled" && tercaListId !== null) {
+      return {
+        ok: false,
+        reason:
+          "a campanha de segunda desta edição já foi AGENDADA inteira (sem excluir a lista de terça) — os destinatários " +
+          "congelaram no agendamento; criar a campanha de terça agora faria a metade \"terça\" receber dois envios. " +
+          "Nada criado (#11286). Essa semanal sai inteira na segunda.",
+      };
+    }
+    return { ok: true };
+  }
+  if (existing.terca_list_id === tercaListId) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      `o rascunho registrado desta edição foi criado DIVIDIDO (lista de terça ${existing.terca_list_id}), mas a decisão ` +
+      `de agora é ${tercaListId === null ? "sem divisão" : `dividir com a lista ${tercaListId}`} — nada alterado. ` +
+      "Rode com --force pra recriar as campanhas (#11286).",
   };
 }
 
@@ -320,6 +379,54 @@ export function buildTestSentPublishedState(
   testSentAt: string,
 ): BrevoDiariaPublished {
   return { ...base, status: "test_sent", test_email: testEmail, test_sent_at: testSentAt };
+}
+
+/**
+ * I/O injetável (#11286) — garante a campanha de TERÇA da semanal dividida:
+ * mesma edição, mesmo assunto/preview/HTML, `listIds: [terca]`, sempre
+ * RASCUNHO (o agendamento é da Etapa 6). Já registrada ⇒ PUT do conteúdo
+ * (mesma disciplina do #5689 na principal); senão cria e devolve o estado com
+ * `terca_campaign_id` — o caller grava antes de qualquer outro passo, pra uma
+ * re-invocação não criar a 2ª.
+ */
+export async function ensureTercaCampaign(
+  deps: {
+    post: (path: string, body: Record<string, unknown>) => Promise<unknown>;
+    put: (path: string, body: Record<string, unknown>) => Promise<unknown>;
+  },
+  params: {
+    base: BrevoDiariaPublished;
+    tercaListId: number;
+    subject: string;
+    previewText: string;
+    html: string;
+    sender: { name: string; email: string | null };
+    replyTo?: string;
+    nowIso: string;
+  },
+): Promise<{ state: BrevoDiariaPublished; created: boolean }> {
+  const existingId = params.base.terca_campaign_id;
+  if (typeof existingId === "number") {
+    await deps.put(`/emailCampaigns/${existingId}`, {
+      subject: params.subject,
+      previewText: params.previewText,
+      htmlContent: params.html,
+    });
+    return { state: { ...params.base, terca_list_id: params.tercaListId }, created: false };
+  }
+  const resp = (await deps.post("/emailCampaigns", {
+    name: `diar.ia.br semanal (terça) — ${params.nowIso.slice(0, 16)}`,
+    subject: params.subject,
+    previewText: params.previewText,
+    sender: params.sender,
+    ...(params.replyTo ? { replyTo: params.replyTo } : {}),
+    recipients: { listIds: [params.tercaListId] },
+    htmlContent: params.html,
+  })) as Record<string, unknown>;
+  if (typeof resp?.id !== "number") {
+    throw new Error(`Brevo API retornou resposta inesperada ao criar a campanha de terça (sem 'id'): ${JSON.stringify(resp)}`);
+  }
+  return { state: { ...params.base, terca_list_id: params.tercaListId, terca_campaign_id: resp.id }, created: true };
 }
 
 /**
@@ -943,6 +1050,32 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
+  // #11286 — semanal acima do teto: divide segunda/terça (desenho (a)). Só no
+  // regime semanal efetivo numa segunda de verdade — nunca com
+  // `--fora-da-segunda`, nunca na transição diária.
+  const splitDecision = decideSemanalSplit({
+    semanalMondaySend: semanalDecision.send && semanalDecision.mode === "semanal",
+    recipients: listInfo.totalSubscribers,
+    threshold: semanal.enabled ? semanal.splitThreshold : Number.POSITIVE_INFINITY,
+    tercaListId: semanal.enabled ? semanal.tercaListId : null,
+    mainListId: brevoDiaria!.list_id as number,
+  });
+  if ("error" in splitDecision) {
+    log(`ERRO: ${splitDecision.error}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (!splitDecision.split && splitDecision.warning) log(`AVISO: ${splitDecision.warning}`);
+  const tercaListId = splitDecision.split ? splitDecision.tercaListId : null;
+  const existingForSplit = readBrevoDiariaPublished(editionDir);
+  // `--force` recria rascunho, mas nunca contorna campanha já AGENDADA (imutável, destinatários congelados).
+  const splitConsistency = checkReuseSplitConsistency(existingForSplit, tercaListId);
+  if (!splitConsistency.ok && (!force || existingForSplit?.status === "scheduled")) {
+    log(`ERRO: ${splitConsistency.reason}`);
+    process.exitCode = 9;
+    return;
+  }
+
   // #6146: cota da CONTA, distinta do cap da LISTA acima. `daily_send_cap`
   // pergunta "a fila cresceu demais?"; isto pergunta "a conta ainda pode
   // enviar?". A edição 260825 passou no primeiro e morreu no segundo.
@@ -1066,6 +1199,40 @@ export async function main(rootDirOverride?: string): Promise<void> {
     }
   }
 
+  // #11286 — lista de terça = principal ∩ grupo "terça", relida antes de a
+  // campanha nascer (ver docstring de lib/brevo-semanal-split.ts). Falha aqui
+  // é fail-closed: sem lista de terça confiável, nenhuma campanha é criada.
+  if (tercaListId !== null) {
+    try {
+      const rec = await reconcileTercaList(
+        {
+          listContacts: (id) => brevoListContacts(apiKey!, id),
+          addToList: async (id, emails) => {
+            await brevoPost(apiKey!, `/contacts/lists/${id}/contacts/add`, { emails });
+          },
+          removeFromList: async (id, emails) => {
+            await brevoPost(apiKey!, `/contacts/lists/${id}/contacts/remove`, { emails });
+          },
+        },
+        { mainListId: brevoDiaria!.list_id as number, tercaListId },
+      );
+      log(
+        `semanal dividida (#11286): ${rec.segunda} na segunda, ${rec.terca} na terça (lista ${tercaListId}; ` +
+          `+${rec.added}/-${rec.removed} nesta rodada).`,
+      );
+      if (rec.missing.length > 0) {
+        log(
+          `AVISO: ${rec.missing.length} contato(s) do grupo "terça" não apareceram na lista de terça — recebem na segunda: ` +
+            rec.missing.slice(0, 10).join(", "),
+        );
+      }
+    } catch (e) {
+      log(`ERRO: reconcile da lista de terça falhou: ${(e as Error).message}`);
+      process.exitCode = 9;
+      return;
+    }
+  }
+
   // #5677: antes de criar uma campanha nova, checa se esta edição já tem uma
   // registrada em `brevo-diaria-published.json` — sem isso, rodar o script
   // 2x (ex: draft primeiro, depois `--send-test` — o fluxo normal do Passo 7
@@ -1110,8 +1277,22 @@ export async function main(rootDirOverride?: string): Promise<void> {
       htmlContent: html,
     });
     log(`campanha ${campaignId} atualizada via PUT com o conteúdo recalculado desta invocação.`);
+    // #11286 — rascunho criado inteiro e agora a semanal divide: põe a exclusão
+    // da lista de terça. Campanha já agendada fica como está (os destinatários
+    // congelaram no agendamento).
+    if (tercaListId !== null && previousState.status !== "scheduled") {
+      await brevoPut(apiKey!, `/emailCampaigns/${campaignId}`, {
+        recipients: buildMainCampaignRecipients(brevoDiaria!.list_id as number, tercaListId),
+      });
+      log(`campanha ${campaignId}: destinatários atualizados (exclui a lista de terça ${tercaListId}).`);
+    }
 
-    baseState = { ...previousState, subject, preview_text: previewText };
+    baseState = {
+      ...previousState,
+      subject,
+      preview_text: previewText,
+      ...(tercaListId !== null ? { terca_list_id: tercaListId } : {}),
+    };
     // #5689: persiste subject/preview_text atualizados mesmo sem --send-test
     // — senão a PRÓXIMA invocação comparia contra o registro antigo de novo
     // (campaignContentDiverges nunca veria a divergência já corrigida).
@@ -1123,7 +1304,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       previewText,
       sender: { name: brevoDiaria!.sender_name, email: brevoDiaria!.sender_email },
       ...(brevoDiaria!.reply_to ? { replyTo: brevoDiaria!.reply_to } : {}),
-      recipients: { listIds: [brevoDiaria!.list_id] },
+      recipients: buildMainCampaignRecipients(brevoDiaria!.list_id as number, tercaListId), // #11286
       htmlContent: html,
     })) as Record<string, unknown>;
 
@@ -1142,8 +1323,33 @@ export async function main(rootDirOverride?: string): Promise<void> {
       previewText,
       listId: brevoDiaria!.list_id as number,
       createdAt: new Date().toISOString(),
+      ...(tercaListId !== null ? { tercaListId } : {}),
     });
     writeBrevoDiariaPublished(editionDir, baseState);
+  }
+
+  // #11286 — campanha de terça (mesma edição e intro), gravada assim que nasce.
+  if (tercaListId !== null) {
+    const terca = await ensureTercaCampaign(
+      { post: (p, b) => brevoPost(apiKey!, p, b), put: (p, b) => brevoPut(apiKey!, p, b) },
+      {
+        base: baseState,
+        tercaListId,
+        subject,
+        previewText,
+        html,
+        sender: { name: brevoDiaria!.sender_name, email: brevoDiaria!.sender_email },
+        replyTo: brevoDiaria!.reply_to,
+        nowIso: new Date().toISOString(),
+      },
+    );
+    baseState = terca.state;
+    writeBrevoDiariaPublished(editionDir, baseState);
+    log(
+      terca.created
+        ? `campanha de terça criada: id=${baseState.terca_campaign_id} (rascunho; a Etapa 6 agenda 24h depois da de segunda).`
+        : `campanha de terça ${baseState.terca_campaign_id} atualizada via PUT com o conteúdo desta invocação.`,
+    );
   }
 
   // #5086: --send-test, espelhando publish-monthly.ts — dispara DEPOIS do

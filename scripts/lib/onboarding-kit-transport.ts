@@ -779,6 +779,14 @@ export interface KitSendRunRecord {
    *  RELEITURA do broadcast no Kit não ecoou `send_at` (não sai sozinho — o
    *  broadcast é apagado e o lote cancelado, ou marcado `schedule_failed`). */
   lots_failed: number;
+  /** #11340: SUBCONJUNTO de `lots_failed` — lotes que falharam só porque a
+   *  releitura da tag ainda não refletia os destinatários depois de todas as
+   *  tentativas (`PilotTagAudienceRetryableError`: atraso de consistência do
+   *  Kit, nunca membro estranho). Nenhum broadcast foi criado; o lote fica
+   *  `pending` e a rodada seguinte refaz. Conta na streak do alarme de
+   *  continuidade (via `lots_failed`), mas não no exit code. Ausente =
+   *  registro anterior ao campo (0). */
+  lots_failed_retryable?: number;
   /** E-mail 1/2 criados cuja releitura de confirmação FALHOU (rede/API): o
    *  lote fica `created` (não se declara falha de entrega sem leitura), mas a
    *  rodada conta como falha de transporte. Inclui (#9367 item 1) lote de
@@ -870,10 +878,19 @@ export function isFailedKitSendRun(run: KitSendRunRecord): boolean {
  * de continuidade (2 rodadas seguidas abrem issue), mas não deixam a unit
  * `failed` no dia: um 429 transitório não é incidente.
  *
+ * #11340: lote que falhou só pela releitura da tag ainda atrasada
+ * (`lots_failed_retryable`, subconjunto de `lots_failed`) também não derruba
+ * a unit — nada foi criado, o lote é refeito na rodada seguinte, e a unit
+ * `failed` abria o alarme P1 #6787 por uma falha que se resolve sozinha.
+ * Segue em `lots_failed` (relatório + streak: se persistir, o alarme de
+ * continuidade abre em 2 rodadas).
+ *
  * @pure
  */
 export function shouldExitNonZeroForKitSendRun(run: KitSendRunRecord): boolean {
-  return run.aborted === true || run.lots_failed > 0;
+  if (run.aborted === true) return true;
+  const retryable = Math.min(run.lots_failed, Math.max(0, run.lots_failed_retryable ?? 0));
+  return run.lots_failed - retryable > 0;
 }
 
 /**
