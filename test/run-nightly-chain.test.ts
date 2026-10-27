@@ -19,6 +19,8 @@ import {
   DAILY_REVIEW_SCRIPT,
   DEFAULT_DEPS,
   EXIT_OVERNIGHT_FAILED,
+  EXIT_OVERNIGHT_DELIVERY_ALARM,
+  readDeliveryCounts,
   EXIT_OVERNIGHT_NO_TRACE,
   EXIT_REVIEW_FAILED,
   REVIEW_OUTPUT_REL,
@@ -573,7 +575,7 @@ describe("run-nightly-chain — desfecho e rastro do overnight (#10808)", () => 
   it("o resultado do claude vai pro log da cadeia", () => {
     const { deps, logs } = harness({ status: 0 }, { status: 0, stdout: okResult });
     deps.findRoundTrace = () => ["261022/plan.json"];
-    assert.equal(main(makeRepo(), deps), 0);
+    assert.equal(main(makeRepo(), deps), EXIT_OVERNIGHT_DELIVERY_ALARM);
     assert.ok(
       logs.some((l) => /^overnight: resultado subtype=success is_error=false turns=4 duracao_s=29 tail=Fila vazia: 0 elegíveis/.test(l)),
       logs.join("\n"),
@@ -610,7 +612,7 @@ describe("run-nightly-chain — desfecho e rastro do overnight (#10808)", () => 
     deps.spawn = ((command, args, options) => {
       if (command !== "bash") {
         writeFileSync(join(dir, "report.md"),
-          `coordinator_model_probe_failed\nTimestamp: ${new Date().toISOString()}\nExit: 1\nSonda inválida; fase autônoma não começou.\n`);
+          `coordinator_model_probe_failed\nTimestamp: ${new Date().toISOString()}\nExit: 1\nSonda inválida; fase autônoma não começou.\n<!-- overnight-delivery: {"implementedUnits":0,"openedPrs":0} -->\n`);
         // Evita depender da resolução de mtime do filesystem.
         const fresh = new Date(Date.now() + 1000);
         utimesSync(join(dir, "report.md"), fresh, fresh);
@@ -661,5 +663,47 @@ describe("run-nightly-chain — desfecho e rastro do overnight (#10808)", () => 
   it("DEFAULT_DEPS verifica o rastro e lê o resumo", () => {
     assert.equal(DEFAULT_DEPS.findRoundTrace, findRoundTraceSince);
     assert.equal(DEFAULT_DEPS.readReviewSummary, readReviewSummary);
+  });
+});
+
+
+describe("alarme de entrega agendada (#11235)", () => {
+  for (const [label, body, expected] of [
+    ["implementou lote sem PR", '{"implementedUnits":1,"openedPrs":0}', 5],
+    ["fila vazia", '{"implementedUnits":0,"openedPrs":0}', 0],
+    ["PR aberto inclusive draft", '{"implementedUnits":2,"openedPrs":1}', 0],
+    ["contagem negativa", '{"implementedUnits":-1,"openedPrs":0}', 5],
+    ["string não é contagem", '{"implementedUnits":"1","openedPrs":0}', 5],
+    ["JSON inválido", 'inválido', 5],
+    ["marcador ausente", null, 5],
+  ] as const) {
+    it(label, () => {
+      const root = makeRepo();
+      const dir = join(root, "data", "overnight", "261027b");
+      mkdirSync(dir, { recursive: true });
+      // Um relatório antigo com entrega não pode mascarar o resultado atual.
+      const old = join(root, "data", "overnight", "261026");
+      mkdirSync(old);
+      writeFileSync(join(old, "report.md"), '<!-- overnight-delivery: {"implementedUnits":9,"openedPrs":9} -->');
+      utimesSync(join(old, "report.md"), new Date(0), new Date(0));
+      const { deps, logs } = harness({ status: 0 }, { status: 0 });
+      const spawn = deps.spawn;
+      deps.spawn = ((command, args, options) => {
+        if (command !== "bash") writeFileSync(join(dir, "report.md"), body === null ? "Só prosa: 5 PRs" : `<!-- overnight-delivery: ${body} -->`);
+        return spawn(command, args, options);
+      }) as typeof deps.spawn;
+      deps.findRoundTrace = findRoundTraceSince;
+      assert.equal(main(root, deps), expected);
+      assert.equal(logs.some(line => line.includes("ALARME DE ENTREGA")), expected === 5);
+    });
+  }
+  it("marcador duplicado não é uma contagem confiável", () => {
+    const marker = '<!-- overnight-delivery: {"implementedUnits":1,"openedPrs":0} -->';
+    assert.equal(readDeliveryCounts(marker + marker), null);
+  });
+  it("skill exige contagem inclusive implementação retida no worktree", () => {
+    const skill = readFileSync(join(import.meta.dirname, "..", ".claude/skills/diaria-overnight/SKILL.md"), "utf8");
+    assert.match(skill, /overnight-delivery:/);
+    assert.match(skill, /inclusive código testado que ficou no worktree sem commit\/PR/);
   });
 });

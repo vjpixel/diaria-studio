@@ -2,7 +2,7 @@
  * build-conteudo-autentico-jsonld.ts (#10510)
  *
  * Regrava o bloco JSON-LD (Course + FAQPage + BreadcrumbList) da página de
- * venda `/produto/conteudo-autentico`, derivado da própria página (perguntas
+ * venda `/produto/conteudo-autentico/b` (a versão ativa, para onde a URL principal redireciona), derivado da própria página (perguntas
  * dos `<details>`, preço do card da oferta, meta description). Ver
  * `scripts/lib/conteudo-autentico-page.ts`.
  *
@@ -17,7 +17,7 @@ import { isMainModule } from "./lib/cli-args.ts";
 import { applyConteudoAutenticoJsonLd } from "./lib/conteudo-autentico-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const PAGE_PATH = resolve(ROOT, "workers/site/public/produto/conteudo-autentico/index.html");
+export const PAGE_PATH = resolve(ROOT, "workers/site/public/produto/conteudo-autentico/b/index.html");
 
 function main(): void {
   const check = process.argv.includes("--check");

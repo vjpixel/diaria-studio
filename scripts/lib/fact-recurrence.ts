@@ -193,11 +193,51 @@ function itemEntities(it: IntraEditionItem): Map<string, boolean> {
  * canônica é pulada (espelho do destaque no pool não é história repetida, é
  * trabalho do dedup por URL). 1 aviso por item do pool: destaque antes de pool.
  *
- * Só aviso, nunca remove: corte no gate 4 é barato, inclusão errada não é
- * (meta de 10 itens), e a régua do corpus mostra desdobramentos legítimos com a
- * mesma entidade (Guardian analisando a "nova era" de ataques após o PHP).
+ * Esta função só AVISA (invariante do Stage 4). Desde #11116/#11244 a mesma
+ * regra, via `createStoryIndex`, também manda o item para `pool_reserve` em
+ * `curatePool` (Stage 2): nos pools renderizados de 260801-261027, 5 dos 6
+ * itens sinalizados foram cortados pelo editor. Destaque de edição anterior
+ * segue só aviso (`findFactRecurrences`): na mesma régua, só 2 de 5 itens
+ * sinalizados contra destaques dos 7 dias anteriores foram cortados (o
+ * desdobramento com a mesma entidade é mais comum entre dias).
  */
 export function findIntraEditionFactRecurrences(highlights: IntraEditionItem[], pool: IntraEditionItem[]): IntraEditionWarning[] {
+  const index = createStoryIndex(highlights, pool);
+  const hlUrls = new Set(highlights.map(h => canonicalize(h.url)));
+  const warnings: IntraEditionWarning[] = [];
+  for (const raw of pool) {
+    if (hlUrls.has(canonicalize(raw.url))) continue;
+    const w = index.match(raw);
+    if (w) warnings.push(w);
+    index.add(raw);
+  }
+  return warnings;
+}
+
+/**
+ * Índice incremental de MESMA HISTÓRIA (#11116/#11244). Mesma regra do
+ * `findIntraEditionFactRecurrences` (incidente/golpe nos dois lados, peso de
+ * entidades em comum ≥ `INTRA_EDITION_MIN_WEIGHT`), mas com as referências
+ * controladas por quem chama: `curatePool` (#10794) só faz `add` dos itens que
+ * MANTEVE no pool, então um item mandado para a reserva nunca derruba outro.
+ *
+ * - `references`: destaques da edição. Os que não têm termo de incidente/golpe
+ *   ficam de fora.
+ * - `mirrors`: itens do pool; os que têm a mesma URL canônica de uma referência
+ *   somam o texto a ela (espelho do destaque no pool, caso 261023: o D1 em PT não
+ *   traz "PHP", o espelho no RADAR traz "PHP2Shell: …").
+ */
+export interface StoryIndex {
+  /** 1º match (referências antes dos itens adicionados), ou null. */
+  match(item: IntraEditionItem): IntraEditionWarning | null;
+  /** Passa a comparar os próximos itens também contra este (se tiver incidente). */
+  add(item: IntraEditionItem): void;
+}
+
+export function createStoryIndex(
+  references: IntraEditionItem[],
+  mirrors: IntraEditionItem[] = [],
+): StoryIndex {
   type Prepared = { it: IntraEditionItem; incident: boolean; names: Map<string, boolean>; slug: Set<string>; url: string };
   const prep = (it: IntraEditionItem): Prepared => ({
     it,
@@ -215,34 +255,30 @@ export function findIntraEditionFactRecurrences(highlights: IntraEditionItem[], 
     const weight = shared.reduce((sum, x) => sum + (a.names.get(x) || b.names.get(x) ? 2 : 1), 0) + viaUrl.length;
     return { shared, viaUrl: [...new Set(viaUrl)], weight };
   };
-  // Espelho do destaque no pool (mesma URL canônica — no 01-approved.json o D1
-  // de 261023 traz a manchete em PT sem "PHP", e o espelho no RADAR traz a
-  // manchete original da Wiz, "PHP2Shell: …"): o texto do espelho soma ao do
-  // destaque, e o espelho em si não é comparado.
-  const hlUrls = new Set(highlights.map(h => canonicalize(h.url)));
-  const hs = highlights.map(h => {
-    const mirrors = pool.filter(p => canonicalize(p.url) === canonicalize(h.url));
-    return prep({ ...h, summary: [h.summary ?? '', ...mirrors.map(m => `${m.title}. ${m.summary ?? ''}`)].join('\n') });
+  const refs = references.map(h => {
+    const ms = mirrors.filter(p => canonicalize(p.url) === canonicalize(h.url));
+    return prep({ ...h, summary: [h.summary ?? '', ...ms.map(m => `${m.title}. ${m.summary ?? ''}`)].join('\n') });
   }).filter(h => h.incident);
-  const seenPool: Prepared[] = [];
-  const warnings: IntraEditionWarning[] = [];
-  for (const raw of pool) {
-    if (hlUrls.has(canonicalize(raw.url))) continue;
-    const p = prep(raw);
-    if (p.incident) {
-      for (const other of [...hs, ...seenPool]) {
+  const added: Prepared[] = [];
+  return {
+    match(raw) {
+      const p = prep(raw);
+      if (!p.incident) return null;
+      for (const other of [...refs, ...added]) {
         if (other.url === p.url) continue;
         const { shared, viaUrl, weight } = compare(p, other);
         if (weight < INTRA_EDITION_MIN_WEIGHT) continue;
-        warnings.push({
+        return {
           item_label: raw.label, item_title: raw.title, item_url: raw.url,
           matched_label: other.it.label, matched_title: other.it.title, matched_url: other.it.url,
           shared_entities: shared.sort(), url_entities: viaUrl.sort(), weight,
-        });
-        break;
+        };
       }
-      seenPool.push(p);
-    }
-  }
-  return warnings;
+      return null;
+    },
+    add(raw) {
+      const p = prep(raw);
+      if (p.incident) added.push(p);
+    },
+  };
 }

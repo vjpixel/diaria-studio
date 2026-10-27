@@ -132,7 +132,7 @@ threads, twitter, brevo, kit, youtube).
 
 ## Passo 0b — Aviso de vídeo do D1 (#10943, aviso, não gate)
 
-Fluxo ideal desde 22/10/2026: `/diaria-edicao` → `/diaria-youtube` → `/diaria-shorts` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). Antes do dispatch, conferir se o vídeo do dia já passou pelo `/diaria-youtube`:
+Fluxo ideal desde 22/10/2026 (#11209 juntou as duas skills de vídeo): `/diaria-edicao` → `/diaria-publica-video` → `/diaria-5-publicacao`, cada skill numa sessão própria, nenhuma encadeia (#5578). Antes do dispatch, conferir se o vídeo do dia já passou pelo `/diaria-publica-video`:
 
 ```bash
 npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DIR}
@@ -142,7 +142,7 @@ npx tsx scripts/check-video-before-publish.ts {AAMMDD} --edition-dir {EDITION_DI
 - `status: "no-video"` ou `"video-without-link"` → mostrar ao editor a linha `[aviso]` do stderr (o D1 sairá **sem** o link do vídeo; no 2º caso, o comando `link-video-d1.ts` que libera o link) e **seguir com o dispatch sem esperar resposta**. Não é gate: o vídeo pode ainda não existir, e a Etapa 5 nunca para por isso. Este aviso é uma foto de ANTES do dispatch: o §5b-youtube do playbook (#10659) roda em todo caso com escopo `all`/`social` (pulado em `newsletter`, com `--skip youtube` e com `none`/consent `"skipped"` — `youtubeUploadEnabled`; no-op se `05-youtube-published.json` já registra o vídeo), baixa do Drive o `.mp4` horizontal com "final" como palavra no nome e o sobe com `publishAt` 06:00 BRT, fail-soft, antes do dispatch social. Enquanto `YOUTUBE_API_PROJECT_AUDITED` for `false`, vídeo agendado **não** grava `05-video-url.txt` (#10865): o D1 sai sem o link e o resumo aponta `link-video-d1.ts` (o caso agendado/privado no D1 é da PR #10975). **O resumo final da Etapa 5 é a autoridade** sobre o link do D1, não este aviso.
 - Exit != 0 (uso inválido, erro inesperado) → logar warn e seguir.
 
-Não rodar `/diaria-youtube` nem `/diaria-shorts` daqui — são skills standalone que o editor invoca.
+Não rodar `/diaria-publica-video` (nem os aliases `/diaria-youtube`/`/diaria-shorts`) daqui — é skill standalone que o editor invoca.
 
 ## O que faz
 

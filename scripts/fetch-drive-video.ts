@@ -1,3 +1,5 @@
+import { shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
+import { loadShortsConfig } from "./lib/diaria/short-video.ts";
 /**
  * fetch-drive-video.ts (#10659, itens 3-4): acha no Drive o vídeo do dia
  * (.mp4 com "final" como palavra no nome) e, para o horizontal, baixa no
@@ -5,7 +7,15 @@
  *
  * Uso:
  *   npx tsx scripts/fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical
+ *     [--target youtube|outras-redes|instagram]
  *     [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--dry-run] [--force]
+ *
+ * Pasta `Final/` (#11222): dentro de `{AAMMDD}/`, a subpasta `Final/` é listada
+ * e os `.mp4` dela contam como finais pelo LUGAR (o nome não leva "final":
+ * `Diaria comentada_Youtube_V3.mp4`, `_Instagram_V3`, `_Outras redes_V3`). O
+ * destino escolhe o arquivo: horizontal = `_Youtube_`; vertical =
+ * `_Outras redes_` (default) ou `_Instagram_` com `--target instagram`. Regra
+ * completa em `scripts/lib/diaria/drive-video-source.ts`.
  *
  * - horizontal: baixa para `{editionDir}/diaria-comentada-{AAMMDD}.mp4`
  *   (`youtubeVideoFileName`), o default do `publish-youtube.ts`.
@@ -57,10 +67,16 @@ import { downloadDriveFile } from "./lib/drive-download.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import {
   DRIVE_VIDEO_WINDOW_HOURS,
+  VIDEO_TARGETS,
+  defaultVideoTarget,
+  isFinalFolderName,
   selectDriveVideo,
+  targetOrientation,
   type DriveVideoFile,
+  type DriveVideoScope,
   type DriveVideoSelection,
   type VideoOrientation,
+  type VideoTarget,
 } from "./lib/diaria/drive-video-source.ts";
 import { youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
 import { shortVideoFileName } from "./lib/diaria/short-video.ts";
@@ -98,6 +114,8 @@ export const defaultFetchDriveVideoDeps: FetchDriveVideoDeps = {
 export interface FetchDriveVideoInput {
   aammdd: string;
   orientation: VideoOrientation;
+  /** Destino na pasta `Final/` (#11222). Default: `defaultVideoTarget(orientation)`. */
+  target?: VideoTarget;
   folderId: string;
   editionDir: string;
   now: Date;
@@ -117,7 +135,7 @@ export interface DescribedDriveFile {
   height: number | null;
   createdTime: string | null;
   modifiedTime: string | null;
-  scope: "edition-folder" | "root";
+  scope: DriveVideoScope;
 }
 
 export interface DescribedDriveFolder {
@@ -135,6 +153,10 @@ interface OutputBase {
 
 interface OutputWithFolder extends OutputBase {
   edition_folder_id: string | null;
+  /** Subpasta(s) `Final/` dentro da da edição (#11222); vazio sem ela. */
+  final_folder_ids: string[];
+  /** Destino usado na escolha dentro de `Final/` (#11222). */
+  target: VideoTarget;
 }
 
 export type FetchDriveVideoOutput =
@@ -145,7 +167,7 @@ export type FetchDriveVideoOutput =
   | (OutputWithFolder & { action: "none"; selection: "none"; reason: string })
   | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous"; candidates: DescribedDriveFile[] })
   | (OutputWithFolder & { action: "needs-editor"; selection: "orientation-unknown"; files: DescribedDriveFile[] })
-  | (OutputWithFolder & { action: "print-id"; selection: "found"; file: DescribedDriveFile; next_command: string })
+  | (OutputWithFolder & { action: "print-id"; selection: "found"; file: DescribedDriveFile; next_command: string | null })
   | (OutputWithFolder & { action: "dry-run"; selection: "found"; file: DescribedDriveFile })
   | (OutputWithFolder & { action: "downloaded"; selection: "found"; file: DescribedDriveFile; bytes: number })
   | (OutputWithFolder & { action: "error"; phase: "download"; selection: "found"; file: DescribedDriveFile; error: string });
@@ -262,12 +284,25 @@ export async function runFetchDriveVideo(
   log: (line: string) => void,
 ): Promise<FetchDriveVideoOutcome> {
   const { aammdd, orientation } = input;
+  const target = input.target ?? defaultVideoTarget(orientation);
+  if (targetOrientation(target) !== orientation) {
+    throw new Error(`--target ${target} é ${targetOrientation(target)}, não combina com --orientation ${orientation}`);
+  }
+  // O corte do Instagram (#11222) só é identificado: o arquivo local e o
+  // registro do vertical são do corte "Outras redes", então não encurtam.
+  const instagramCut = target === "instagram";
   const timeouts = input.timeouts ?? DEFAULT_FETCH_DRIVE_VIDEO_TIMEOUTS;
   const localPath = join(
     input.editionDir,
     orientation === "horizontal" ? youtubeVideoFileName(aammdd) : shortVideoFileName(aammdd),
   );
   const base: OutputBase = { edition: aammdd, orientation, folder_id: input.folderId, local_path: localPath };
+
+  if (orientation === "vertical" && !input.force && !instagramCut && shortsVideoTerminal(input.editionDir, aammdd,
+    loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
+    log("[ok] destinos do vertical já concluídos — nada a baixar");
+    return { exitCode: 0, output: { ...base, action: "already-published", record_path: join(input.editionDir, "_internal", "06-shorts-published.json"), video_url: null } };
+  }
 
   if (orientation === "horizontal" && !input.force) {
     const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
@@ -278,7 +313,7 @@ export async function runFetchDriveVideo(
     }
   }
 
-  if (!input.force && existsSync(localPath) && statSync(localPath).size > 0) {
+  if (!input.force && !instagramCut && existsSync(localPath) && statSync(localPath).size > 0) {
     log(`[ok] ${localPath} já existe — nada a baixar (use --force para trocar)`);
     if (orientation === "vertical") {
       const next = `npx tsx scripts/publish-shorts.ts ${aammdd}`;
@@ -304,6 +339,7 @@ export async function runFetchDriveVideo(
 
   let files: DriveVideoFile[];
   let editionFolderId: string | null = null;
+  const finalFolderIds: string[] = [];
   try {
     const root = await listDriveChildren(deps, input.folderId, timeouts.listMs);
     const editionFolders = root.filter((f) => f.mimeType === FOLDER_MIME && f.name.trim() === aammdd);
@@ -319,6 +355,15 @@ export async function runFetchDriveVideo(
       files.push(
         ...inside.filter((f) => f.mimeType !== FOLDER_MIME).map((f) => ({ ...f, scope: "edition-folder" as const })),
       );
+      // #11222: o vídeo pronto mora em `{AAMMDD}/Final/`. Mais de uma `Final`
+      // (raro) entra inteira: a ambiguidade aparece no nível do arquivo.
+      for (const finalFolder of inside.filter((f) => f.mimeType === FOLDER_MIME && isFinalFolderName(f.name))) {
+        finalFolderIds.push(finalFolder.id);
+        const finals = await listDriveChildren(deps, finalFolder.id, timeouts.listMs);
+        files.push(
+          ...finals.filter((f) => f.mimeType !== FOLDER_MIME).map((f) => ({ ...f, scope: "final-folder" as const })),
+        );
+      }
     } else {
       log(`[premissa] sem subpasta ${aammdd}/ na pasta do Drive — só arquivos soltos na raiz, últimas ${input.windowHours}h`);
     }
@@ -331,15 +376,16 @@ export async function runFetchDriveVideo(
     now: input.now,
     windowHours: input.windowHours,
     editionFolderPresent: editionFolderId !== null,
+    target,
   });
-  const withFolder: OutputWithFolder = { ...base, edition_folder_id: editionFolderId };
+  const withFolder: OutputWithFolder = { ...base, edition_folder_id: editionFolderId, final_folder_ids: finalFolderIds, target };
 
   if (sel.kind === "none") {
-    log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-youtube ${aammdd}`);
+    log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-publica-video ${aammdd}`);
     return { exitCode: 0, output: { ...withFolder, action: "none", selection: "none", reason: sel.reason } };
   }
   if (sel.kind === "ambiguous") {
-    log(`[aviso] ${sel.candidates.length} .mp4 ${orientation} com "final" no nome — escolha do editor: ${sel.candidates.map(describeForLog).join(" | ")}`);
+    log(`[aviso] ${sel.candidates.length} .mp4 ${orientation} finais (destino ${target}) — escolha do editor: ${sel.candidates.map(describeForLog).join(" | ")}`);
     return {
       exitCode: 3,
       output: { ...withFolder, action: "needs-editor", selection: "ambiguous", candidates: sel.candidates.map(describeFile) },
@@ -355,6 +401,12 @@ export async function runFetchDriveVideo(
 
   const file = sel.file;
   const described = describeFile(file);
+  if (instagramCut) {
+    // O publish-shorts.ts usa um vertical só para todos os destinos (o corte
+    // "Outras redes"); o do Instagram é identificado para o passo guiado.
+    log(`[ok] corte do Instagram: ${file.name} (id ${file.id}) — o publish-shorts.ts não o usa sozinho; vale para o Instagram guiado`);
+    return { exitCode: 0, output: { ...withFolder, action: "print-id", selection: "found", file: described, next_command: null } };
+  }
   if (orientation === "vertical") {
     const next = `npx tsx scripts/publish-shorts.ts ${aammdd} --from-drive ${file.id}`;
     log(`[ok] vertical do dia: ${file.name} — próximo passo: ${next}`);
@@ -381,7 +433,7 @@ export async function runFetchDriveVideo(
 // ── CLI ───────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--dry-run] [--force]";
+  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--target youtube|outras-redes|instagram] [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--dry-run] [--force]";
 
 export function readYouTubeDriveConfig(config: unknown): { folderId: string | null; windowHours: number | null } {
   const yt = (config as { publishing?: { youtube?: { drive_folder_id?: unknown; drive_window_hours?: unknown } } })
@@ -397,6 +449,7 @@ export type ParsedFetchDriveVideoArgs =
       ok: true;
       aammdd: string;
       orientation: VideoOrientation;
+      target: VideoTarget;
       folderId: string;
       windowHours: number;
       editionDir: string | null;
@@ -413,7 +466,7 @@ export function parseFetchDriveVideoArgs(
   const { flags, values, positional } = parseArgs(argv);
   // `--dry-run 261025` engoliria a edição como valor da flag; e flag de valor sem valor vira flag solta.
   const misused = ["dry-run", "force"].filter((f) => values[f] !== undefined);
-  const missingValue = ["edition", "orientation", "folder-id", "window-hours", "edition-dir"].filter((f) => flags.has(f));
+  const missingValue = ["edition", "orientation", "target", "folder-id", "window-hours", "edition-dir"].filter((f) => flags.has(f));
   if (positional.length || misused.length || missingValue.length) {
     const what = [...positional, ...misused.map((f) => `--${f} não leva valor`), ...missingValue.map((f) => `--${f} sem valor`)];
     return { ok: false, error: `argumentos inválidos (${what.join(", ")})` };
@@ -424,6 +477,14 @@ export function parseFetchDriveVideoArgs(
   if (orientation !== "horizontal" && orientation !== "vertical") {
     return { ok: false, error: "--orientation deve ser horizontal ou vertical" };
   }
+  const rawTarget = values["target"];
+  if (rawTarget !== undefined && !(VIDEO_TARGETS as readonly string[]).includes(rawTarget)) {
+    return { ok: false, error: `--target deve ser ${VIDEO_TARGETS.join(", ")} (veio ${JSON.stringify(rawTarget)})` };
+  }
+  const target = (rawTarget as VideoTarget | undefined) ?? defaultVideoTarget(orientation);
+  if (targetOrientation(target) !== orientation) {
+    return { ok: false, error: `--target ${target} é ${targetOrientation(target)}, não combina com --orientation ${orientation}` };
+  }
   const folderId = values["folder-id"]?.trim() || cfg.folderId;
   if (!folderId) return { ok: false, error: "sem pasta — passe --folder-id ou preencha publishing.youtube.drive_folder_id" };
   const windowRaw = values["window-hours"];
@@ -433,6 +494,7 @@ export function parseFetchDriveVideoArgs(
     ok: true,
     aammdd,
     orientation,
+    target,
     folderId,
     windowHours,
     editionDir: values["edition-dir"] ?? null,
@@ -460,6 +522,7 @@ async function main(): Promise<number> {
       {
         aammdd: args.aammdd,
         orientation: args.orientation,
+        target: args.target,
         folderId: args.folderId,
         editionDir: resolve(args.editionDir ?? editionDirFor(args.aammdd)),
         now: new Date(),

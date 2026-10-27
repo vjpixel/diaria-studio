@@ -42,6 +42,12 @@
  *   Para atraso maior que as 48h, inclusive o parcial (entregues indexados,
  *   aberturas não), ver `partitionIndexedEngagement` (#10787).
  *
+ * **#11221 (27/10/2026):** a saída por supressão de score deixou de
+ * descadastrar no Kit — volta com a tag `frio` (`lib/kit-frio.ts`). O fluxo
+ * inteiro deste módulo está sendo aposentado (`kit_sem_abertura.enabled:
+ * false` pós-merge do #11221; os resíduos voltam pelo
+ * `restore-kit-sem-abertura-frio.ts`).
+ *
  * Exclusões: apoiadores (custom field `apoio_nivel` preenchido ou tag
  * `apoio-*` — tirar do Kit cortaria também a Retrospectiva, #7660; o
  * `apoio_nivel` da listagem pode vir defasado, então o sync o confirma pelo
@@ -591,9 +597,23 @@ export interface KitSemAberturaRevertLogEntry {
   step: "evaluate" | "sync_orphan";
 }
 
+/**
+ * #11221 — devolução ao Kit com a tag `frio` (nunca descadastro): supressão
+ * por score de um `kit-sem-abertura:` (`step: "evaluate"`) ou o script de
+ * transição `restore-kit-sem-abertura-frio.ts` (`step: "restore"`, também
+ * usado pra reativar os descadastrados de 25/10 depois do painel).
+ */
+export interface KitSemAberturaFrioLogEntry {
+  ts: string;
+  event: "kit_returned_frio";
+  email: string;
+  kit_subscriber_id: number;
+  step: "evaluate" | "restore";
+}
+
 /** Pura — uma linha do log (`data/brevo-diaria/kit-sem-abertura-log.jsonl`). */
 export function formatKitSemAberturaLogLine(
-  entry: KitSemAberturaLogEntry | KitSemAberturaExitLogEntry | KitSemAberturaRevertLogEntry,
+  entry: KitSemAberturaLogEntry | KitSemAberturaExitLogEntry | KitSemAberturaRevertLogEntry | KitSemAberturaFrioLogEntry,
 ): string {
   return JSON.stringify(entry) + "\n";
 }

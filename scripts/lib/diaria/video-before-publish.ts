@@ -2,9 +2,10 @@
  * scripts/lib/diaria/video-before-publish.ts (#10943)
  *
  * Aviso (nunca gate) do `/diaria-5-publicacao`: o vídeo do dia já passou
- * pelo `/diaria-youtube` antes da Etapa 5? O fluxo ideal desde 22/10/2026 é
- * `/diaria-edicao` → `/diaria-youtube` → `/diaria-shorts` →
- * `/diaria-5-publicacao`, cada skill standalone (#5578). Com o vídeo antes,
+ * pelo `/diaria-publica-video` antes da Etapa 5? O fluxo ideal desde
+ * 22/10/2026 é `/diaria-edicao` → `/diaria-publica-video` (que juntou o
+ * `/diaria-youtube` e o `/diaria-shorts`, #11209) → `/diaria-5-publicacao`,
+ * cada skill standalone (#5578). Com o vídeo antes,
  * o Stage 5 já encontra `_internal/05-video-url.txt` e põe o link no D1 de
  * X, Threads e Facebook na criação do post (#10772, #10858).
  *
@@ -54,7 +55,7 @@ export function assessVideoBeforePublish(editionDir: string, aammdd: string): Vi
     videoUrl: null,
     warning:
       `Nenhum vídeo da edição ${aammdd} (${YOUTUBE_PUBLISHED_FILE} e ${D1_VIDEO_URL_FILE} ausentes)${invalidNote}: ` +
-      `o D1 de X, Threads e Facebook sairá SEM o link do vídeo. Fluxo ideal (#10943): /diaria-youtube ${aammdd} ` +
-      `e /diaria-shorts ${aammdd} antes de /diaria-5-publicacao. A publicação segue mesmo assim (aviso, não gate).`,
+      `o D1 de X, Threads e Facebook sairá SEM o link do vídeo. Fluxo ideal (#10943, #11209): /diaria-publica-video ${aammdd} ` +
+      `antes de /diaria-5-publicacao. A publicação segue mesmo assim (aviso, não gate).`,
   };
 }

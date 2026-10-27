@@ -69,6 +69,21 @@ export function consentAllowsYouTube(raw: string | null): { enabled: boolean; no
   }
 }
 
+/**
+ * #11222: o editor sobe o horizontal pelo YouTube Studio e cola o link, que
+ * vira `_internal/05-video-url.txt` (`link-video-d1.ts --save`) sem
+ * `05-youtube-published.json`. Com o link já gravado, o vídeo existe no canal:
+ * o passo não busca no Drive nem sobe de novo (desde o #11222 o fetch acha o
+ * `_Youtube_` da pasta `Final/`, e subiria um 2º vídeo). Devolve a URL gravada,
+ * ou null sem o arquivo.
+ */
+export function pastedVideoUrl(dir: string): string | null {
+  const p = join(dir, D1_VIDEO_URL_FILE);
+  if (!existsSync(p)) return null;
+  const url = readFileSync(p, "utf8").trim();
+  return url || null;
+}
+
 /** Puro: desfecho do fetch → próximo passo. */
 export function classifyFetch(exitCode: number | null, stdout: string): { action: string; upload: boolean; outcome?: YouTubeStepOutcome; detail?: string } {
   let out: any = null;
@@ -120,8 +135,16 @@ async function main(): Promise<number> {
 
   const base = { aammdd, at: new Date().toISOString() };
   let record: Omit<YouTubeStepRecord, "d1_link">;
+  const pasted = pastedVideoUrl(dir);
   if (!consent.enabled) {
     record = { ...base, outcome: "consent-off", detail: "consent.youtube manual/skipped" };
+  } else if (pasted) {
+    record = {
+      ...base,
+      outcome: "already-published",
+      video_url: pasted,
+      detail: `link já gravado em ${D1_VIDEO_URL_FILE} (vídeo no canal, subido pelo Studio ou pelo --upload, #11222) — nada buscado nem enviado`,
+    };
   } else {
     const fetch = runTsx(["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "horizontal", "--edition-dir", dir]);
     const f = classifyFetch(fetch.status, fetch.stdout);

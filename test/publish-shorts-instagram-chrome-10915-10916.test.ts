@@ -2,8 +2,10 @@
  * test/publish-shorts-instagram-chrome-10915-10916.test.ts
  *
  * #10916: o teto de duração do Reels pela API é POR CONTA (medido: @vjpixel
- * 40 s, @diar.ia.br 55 s). Antes era um teto global de 40 s: com a autora de
- * volta à conta do env, um vertical de 50 s viraria passo guiado sem precisar.
+ * 40 s, @diar.ia.br 55 s em sintético). Antes era um teto global de 40 s. Os
+ * cenários abaixo usam um mapa de fixture (`byAccount`) pra testar o mecanismo;
+ * o valor de produção da @diar.ia.br caiu pra 30 s no #11281 (vertical real de
+ * 49,9 s recusado), travado em test/publish-shorts-instagram-cap-11281.test.ts.
  *
  * #10915: acima do teto, o Instagram vira passo guiado no Chrome com uma versão
  * ≤ 9,5 MB do vertical (file_upload do Claude in Chrome aceita 10 MB). Testa o
@@ -112,13 +114,13 @@ describe("#10916 teto de duração por conta", () => {
     assert.equal(instagramApiMaxSecondsPremise(resolveInstagramApiMaxSeconds(cfgWith({}), null)), null);
   });
 
-  it("platform.config.json real: o teto da autora configurada resolve sem lançar (55 s da @diar.ia.br desde #11223)", () => {
+  it("platform.config.json real: o teto da autora configurada resolve sem lançar (30 s da @diar.ia.br desde #11281)", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const config = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
     const author = config.publishing.shorts.instagram_author_page ?? null;
     const r = resolveInstagramApiMaxSeconds(config, author);
     assert.equal(r.source, "by_account", "a autora configurada tem que estar no mapa por conta");
-    assert.equal(r.maxSeconds, 55);
+    assert.equal(r.maxSeconds, 30);
     // A outra conta do mapa também resolve (validação do mapa inteiro).
     assert.equal(loadInstagramApiMaxSeconds(config, "vjpixel"), 40);
   });

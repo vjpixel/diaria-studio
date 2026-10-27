@@ -73,9 +73,13 @@
  * Passo 3c (#10437) — `sync-kit-sem-abertura-to-brevo.ts` (ativos no Kit com
  *  `min_mature_sends` envios da diária sem abrir → Brevo, tag `envio-brevo` no Kit). Só entra
  *  na sequência com `brevo_diaria.kit_sem_abertura.enabled` (ausente/`false`:
- *  sequência idêntica à de antes; LIGADA no `platform.config.json` desde
- *  19/10/2026, PR #10532 — #10537). Fail-soft como o 3b; dry-run no preflight,
+ *  sequência idêntica à de antes; foi LIGADA no `platform.config.json` em
+ *  19/10/2026, PR #10532 — #10537, e DESLIGADA em 27/10/2026, #11221). Fail-soft como o 3b; dry-run no preflight,
  *  `--push [--max-add N]` no apply.
+ *
+ * Passo 3d (#11221) — `sync-kit-frio.ts` (tags `frio`/`suprimido` no Kit pros
+ *  ativos sem sinal; nunca descadastro). Só com `kit.frio.enabled`; fail-soft
+ *  como o 3b/3c; dry-run no preflight, `--push` no apply.
  *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
  * mesmo guard #4343 de `scripts/lib/task-runner.ts`/`clarice-novos-run.ts`),
@@ -119,6 +123,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { readFileSync } from "node:fs";
 import { isKitSemAberturaEnabled } from "./lib/kit-sem-abertura.ts"; // #10437
 import type { KitSemAberturaPlatformConfig } from "./sync-kit-sem-abertura-to-brevo.ts"; // #10437
+import { parseKitFrio } from "./lib/kit-frio.ts"; // #11221
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
 // qualquer outro código, em module scope, pra process.env já estar populado
@@ -252,6 +257,27 @@ export interface BrevoDiariaRunDeps {
    * idêntica à de antes do #10437).
    */
   kitSemAberturaEnabled?: () => boolean;
+  /**
+   * #11221 — `kit.frio.enabled`. Ausente ou `false` ⇒ o Passo 3d (tags
+   * `frio`/`suprimido` no Kit) nem é invocado.
+   */
+  kitFrioEnabled?: () => boolean;
+}
+
+/**
+ * #11221 — lê `kit.frio.enabled` (via `parseKitFrio`). Config ilegível ⇒
+ * desligada. `kit.frio` INVÁLIDO ⇒ liga o passo de propósito: o
+ * `sync-kit-frio.ts` sai 2 com o erro e o fail-soft o põe nos warnings, em
+ * vez de a flag quebrada sumir em silêncio.
+ */
+export function readKitFrioFlag(rootDir: string): boolean {
+  try {
+    const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as { kit?: unknown };
+    const flags = parseKitFrio(cfg.kit);
+    return "error" in flags ? true : flags.enabled;
+  } catch {
+    return false;
+  }
 }
 
 /** #10437 — lê a flag; config ilegível ⇒ desligada (o resto do run já falha alto nesse caso). */
@@ -269,7 +295,12 @@ export function readKitSemAberturaFlag(rootDir: string): boolean {
 }
 
 export function productionDeps(rootDir: string = ROOT): BrevoDiariaRunDeps {
-  return { rootDir, exec: realExec(rootDir), kitSemAberturaEnabled: () => readKitSemAberturaFlag(rootDir) };
+  return {
+    rootDir,
+    exec: realExec(rootDir),
+    kitSemAberturaEnabled: () => readKitSemAberturaFlag(rootDir),
+    kitFrioEnabled: () => readKitFrioFlag(rootDir),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +444,9 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       if (deps.kitSemAberturaEnabled?.() === true) {
         softStep(deps, steps, warnings, "Passo 3c — sync-kit-sem-abertura-to-brevo (dry-run)", "scripts/sync-kit-sem-abertura-to-brevo.ts", []);
       }
+      if (deps.kitFrioEnabled?.() === true) {
+        softStep(deps, steps, warnings, "Passo 3d — sync-kit-frio (dry-run)", "scripts/sync-kit-frio.ts", []);
+      }
       return {
         code: 0,
         mode: "preflight",
@@ -484,6 +518,12 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
         "scripts/sync-kit-sem-abertura-to-brevo.ts",
         ["--push", ...maxAddArgs],
       );
+    }
+
+    // #11221 — tags `frio`/`suprimido` no Kit (frios ficam no Kit, semanal de
+    // segunda; nunca descadastro). Fail-soft: o Kit não derruba a campanha.
+    if (deps.kitFrioEnabled?.() === true) {
+      softStep(deps, steps, warnings, "Passo 3d — sync-kit-frio --push", "scripts/sync-kit-frio.ts", ["--push"]);
     }
 
     return {

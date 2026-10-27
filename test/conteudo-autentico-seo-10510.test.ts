@@ -22,7 +22,7 @@ import { renderGeoJsonLd } from "../scripts/lib/shared/geo-faq.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = join(ROOT, "workers/site/public");
-const HTML = readFileSync(join(PUBLIC, "produto/conteudo-autentico/index.html"), "utf8");
+const HTML = readFileSync(join(PUBLIC, "produto/conteudo-autentico/b/index.html"), "utf8");
 
 function jsonLdGraph(html: string): Record<string, any>[] {
   const block = extractJsonLdBlock(html);
@@ -89,10 +89,10 @@ test("JSON-LD: parseável, com Course, FAQPage e BreadcrumbList e campos obrigat
   );
 });
 
-test("JSON-LD: FAQPage tem as 8 perguntas visíveis, na mesma ordem e com o mesmo texto", () => {
+test("JSON-LD: FAQPage tem as 9 perguntas visíveis, na mesma ordem e com o mesmo texto", () => {
   const faq = node(jsonLdGraph(HTML), "FAQPage");
   const visible = extractFaqFromHtml(HTML);
-  assert.equal(visible.length, 8);
+  assert.equal(visible.length, 9);
   assert.deepEqual(
     faq.mainEntity.map((q: any) => [q.name, q.acceptedAnswer.text]),
     visible.map((q) => [q.question, q.answer]),
@@ -150,10 +150,10 @@ test("ficha da aula logo após o hero, com formato, liberação, acesso, preço,
 });
 
 test("autor linka o LinkedIn e a página linka a home e a newsletter", () => {
-  assert.match(HTML, /<a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" rel="author me">/);
+  assert.match(HTML, /<a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" target="_blank" rel="author me noopener">/);
   const footer = /<footer class="site-footer">([\s\S]*?)<\/footer>/.exec(HTML)![1];
-  assert.match(footer, /<a href="\/">/);
-  assert.match(footer, /<a href="\/assinar">/);
+  assert.match(footer, /<a href="\/" target="_blank" rel="noopener">/);
+  assert.match(footer, /<a href="\/assinar" target="_blank" rel="noopener">/);
 });
 
 test("moldura falsa de rede social fora da árvore de acessibilidade", () => {

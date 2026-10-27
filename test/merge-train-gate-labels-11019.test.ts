@@ -156,7 +156,7 @@ const isLabelEdit = (a: string[]) => a[0] === "tsx" && a[1] === "scripts/lib/gh-
 
 describe("fetchTrainPrInfo — labels e arquivos (#11019)", () => {
   it("lê labels e files; lista menor que changedFiles vira null (incompleta)", () => {
-    const r = new Fake().on("gh", (a) => a[1] === "view" && a.includes("number,headRefName,title,body,labels,files,changedFiles"), (a) =>
+    const r = new Fake().on("gh", (a) => a[1] === "view" && a.some((x) => x.startsWith("number,headRefName,title,body,labels,files,changedFiles")), (a) =>
       ok(
         JSON.stringify({
           number: Number(a[2]),
@@ -222,7 +222,7 @@ describe("runMergeTrain — PR-trem recebe a label antes do polling de CI (cená
         order.push(`ci:${a[2]}`);
         return ok(ciPass);
       })
-      .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } })))
+      .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } })))
       .on("gh", (a) => a[1] === "view" && a.includes("labels,body"), () => ok(JSON.stringify({ labels: [], body: "" })))
       .on("gh", (a) => a[1] === "merge" || a[1] === "comment" || a[1] === "close", () => ok());
 

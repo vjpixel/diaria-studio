@@ -57,14 +57,31 @@ export const PENDING_INTRO_SNIPPET_FILENAME = "brevo-diaria-pending-intro.md";
  * Produção nunca passa este parâmetro.
  */
 export function renderPendingIntroHtml(rootDir?: string): string | null {
-  const box = readSnippetFile(PENDING_INTRO_SNIPPET_FILENAME, rootDir);
+  return renderCtaIntroHtml(PENDING_INTRO_SNIPPET_FILENAME, rootDir);
+}
+
+/**
+ * #11226 — intro do regime SEMANAL (só a edição de segunda, pra quem não
+ * confirmou o cadastro). Mesmo formato e mesmas garantias do intro do
+ * Pending (CTA isolado obrigatório: o botão "Confirmar e receber a diária" é
+ * o caminho de volta). Texto literal decidido pelo editor (#11226), no
+ * snippet `data/snippets/brevo-diaria-semanal-intro.md` (texto exato no PR).
+ */
+export const SEMANAL_INTRO_SNIPPET_FILENAME = "brevo-diaria-semanal-intro.md";
+
+export function renderSemanalIntroHtml(rootDir?: string): string | null {
+  return renderCtaIntroHtml(SEMANAL_INTRO_SNIPPET_FILENAME, rootDir);
+}
+
+function renderCtaIntroHtml(filename: string, rootDir?: string): string | null {
+  const box = readSnippetFile(filename, rootDir);
   if (!box) return null;
 
   const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const ctaIdx = paras.findIndex(isCtaOnlyParagraph);
   if (ctaIdx === -1) {
     throw new Error(
-      `renderPendingIntroHtml: ${PENDING_INTRO_SNIPPET_FILENAME} não tem parágrafo CTA isolado ([texto](url) sozinho no parágrafo) — bloco sem botão de cadastro é inseguro pro segmento Pending.`,
+      `intro da Brevo diária: ${filename} não tem parágrafo CTA isolado ([texto](url) sozinho no parágrafo) — bloco sem botão de cadastro/confirmação é inseguro pra quem ainda não confirmou.`,
     );
   }
   const links = findMarkdownLinks(paras[ctaIdx]);

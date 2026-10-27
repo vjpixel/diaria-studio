@@ -33,9 +33,65 @@
  * - **Subpasta não existe** → arquivos soltos na raiz, só dentro da janela
  *   (~36h, o mais recente entre criado e modificado).
  * - Subpastas de outras edições nunca entram (quem lista não desce nelas).
+ *
+ * **Pasta `Final/` (#11222, fluxo real desde a edição 261027 — "será assim em
+ * todas as edições", palavra do editor).** O vídeo pronto fica numa subpasta
+ * `Final/` dentro de `{AAMMDD}/`, com o destino no nome e SEM "final" nele:
+ * `Diaria comentada_Youtube_V3.mp4`, `Diaria comentada_Instagram_V3.mp4`,
+ * `Diaria comentada_Outras redes_V3.mp4`. "Final" é o nome da PASTA.
+ * - Arquivos listados dentro de `Final/` têm `scope: "final-folder"` e contam
+ *   como finais pelo lugar, sem exigir "final" no nome.
+ * - Com algum `.mp4` em `Final/`, só ela conta (precede a regra do nome na
+ *   subpasta da edição). Sem `.mp4` lá, cai na regra antiga da subpasta.
+ * - Escolha por DESTINO (`videoTargetOf`): horizontal = `_Youtube_`; vertical
+ *   = `_Outras redes_` por padrão (Shorts, Reels das páginas, LinkedIn,
+ *   Threads, X), `_Instagram_` só quando pedido (`target: "instagram"`). Esta
+ *   é a convenção que faltava para os DOIS verticais da pasta (premissa
+ *   registrada em #11222: o corte "Outras redes" é o genérico; o do Instagram
+ *   é o recorte para o teto de duração dele).
+ * - O sufixo decide sem precisar da proporção (o Drive pode ainda não ter
+ *   processado o vídeo). Proporção conhecida e contrária ao destino exclui o
+ *   arquivo (um `_Youtube_` vertical não sobe como horizontal).
+ * - 2+ arquivos do mesmo destino (V2 e V3 lado a lado) → `ambiguous`, como na
+ *   regra antiga: o editor escolhe.
+ * - Arquivos sem sufixo de destino em `Final/` seguem a escolha por proporção.
  */
 
 export type VideoOrientation = "horizontal" | "vertical";
+
+/** Destino codificado no nome do arquivo da pasta `Final/` (#11222). */
+export type VideoTarget = "youtube" | "instagram" | "outras-redes";
+
+export const VIDEO_TARGETS: readonly VideoTarget[] = ["youtube", "instagram", "outras-redes"];
+
+/** Destino padrão por orientação (#11222). */
+export function defaultVideoTarget(orientation: VideoOrientation): VideoTarget {
+  return orientation === "horizontal" ? "youtube" : "outras-redes";
+}
+
+/** Orientação que cada destino exige. */
+export function targetOrientation(target: VideoTarget): VideoOrientation {
+  return target === "youtube" ? "horizontal" : "vertical";
+}
+
+/** Nome da subpasta dos vídeos prontos dentro de `{AAMMDD}/`, sem diferenciar maiúsculas. */
+export function isFinalFolderName(name: string): boolean {
+  return name.normalize("NFC").trim().toLowerCase() === "final";
+}
+
+/**
+ * Destino pelo nome: `_Youtube_`, `_Instagram_`, `_Outras redes_` (separador
+ * `_`, `-`, espaço ou `.`; sem diferenciar maiúsculas). Mais de um destino no
+ * mesmo nome, ou nenhum, é `null`.
+ */
+export function videoTargetOf(name: string): VideoTarget | null {
+  const n = ` ${name.normalize("NFC").toLowerCase().replace(/[_.\-]+/g, " ").replace(/\s+/g, " ")} `;
+  const found: VideoTarget[] = [];
+  if (/ you ?tube /.test(n)) found.push("youtube");
+  if (/ instagram /.test(n)) found.push("instagram");
+  if (/ outras redes /.test(n)) found.push("outras-redes");
+  return found.length === 1 ? found[0] : null;
+}
 
 /** Janela default para arquivos soltos na raiz da pasta (decisão de 25/10). */
 export const DRIVE_VIDEO_WINDOW_HOURS = 36;
@@ -49,9 +105,11 @@ export interface DriveVideoFile {
   /** Tamanho em bytes, como a Drive API devolve (string). */
   size?: string;
   videoMediaMetadata?: { width?: number; height?: number; durationMillis?: string };
-  /** Onde o arquivo foi listado. Default: `root`. */
-  scope?: "edition-folder" | "root";
+  /** Onde o arquivo foi listado. Default: `root`. `final-folder` = `{AAMMDD}/Final/` (#11222). */
+  scope?: DriveVideoScope;
 }
+
+export type DriveVideoScope = "final-folder" | "edition-folder" | "root";
 
 export type DriveVideoSelection =
   | { kind: "found"; orientation: VideoOrientation; file: DriveVideoFile }
@@ -69,6 +127,11 @@ export interface SelectDriveVideoOptions {
    * valor real, porque uma subpasta vazia não deixa rastro na listagem.
    */
   editionFolderPresent?: boolean;
+  /**
+   * Destino na pasta `Final/` (#11222). Default: `defaultVideoTarget(orientation)`.
+   * Precisa casar com a orientação (`targetOrientation`).
+   */
+  target?: VideoTarget;
 }
 
 /** Orientação pela proporção; `null` sem largura/altura válidas. */
@@ -146,10 +209,44 @@ function pick(pool: DriveVideoFile[], orientation: VideoOrientation): DriveVideo
   return null;
 }
 
+/**
+ * Escolha dentro de `{AAMMDD}/Final/` (#11222): pelo sufixo de destino, depois
+ * pela proporção entre os sem sufixo. `null` = nenhum `.mp4` serve para o
+ * destino pedido (o chamador decide o motivo).
+ */
+function pickFromFinalFolder(pool: DriveVideoFile[], orientation: VideoOrientation, target: VideoTarget): DriveVideoSelection | null {
+  const fitsOrientation = (f: DriveVideoFile) => {
+    const o = classifyOrientation(f);
+    return o === null || o === orientation;
+  };
+  const byTarget = pool.filter((f) => videoTargetOf(f.name) === target && fitsOrientation(f));
+  if (byTarget.length > 1) return { kind: "ambiguous", orientation, candidates: byTarget };
+  if (byTarget.length === 1) return { kind: "found", orientation, file: byTarget[0] };
+  return pick(pool.filter((f) => videoTargetOf(f.name) === null), orientation);
+}
+
 export function selectDriveVideo(files: DriveVideoFile[], opts: SelectDriveVideoOptions): DriveVideoSelection {
   const windowHours = opts.windowHours ?? DRIVE_VIDEO_WINDOW_HOURS;
-  const editionFolderPresent = opts.editionFolderPresent ?? files.some((f) => f.scope === "edition-folder");
+  const target = opts.target ?? defaultVideoTarget(opts.orientation);
+  if (targetOrientation(target) !== opts.orientation) {
+    throw new Error(`destino ${target} é ${targetOrientation(target)}, não ${opts.orientation}`);
+  }
+  const editionFolderPresent =
+    opts.editionFolderPresent ?? files.some((f) => f.scope === "edition-folder" || f.scope === "final-folder");
   const finals = files.filter((f) => isMp4VideoFile(f) && hasFinalInName(f.name));
+
+  const finalFolderPool = files.filter((f) => f.scope === "final-folder" && isMp4VideoFile(f));
+  if (finalFolderPool.length > 0) {
+    const fromFinal = pickFromFinalFolder(finalFolderPool, opts.orientation, target);
+    if (fromFinal) return fromFinal;
+    return {
+      kind: "none",
+      orientation: opts.orientation,
+      reason:
+        `a pasta Final/ da edição tem ${finalFolderPool.length} .mp4, mas nenhum do destino ${target} ` +
+        `(sufixo no nome, ex.: "Diaria comentada_${target === "youtube" ? "Youtube" : target === "instagram" ? "Instagram" : "Outras redes"}_V3.mp4") nem sem sufixo na proporção ${opts.orientation}`,
+    };
+  }
 
   if (editionFolderPresent) {
     const editionPool = finals.filter((f) => f.scope === "edition-folder");

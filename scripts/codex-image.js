@@ -1,6 +1,11 @@
 #!/usr/bin/env node
-// Usage: node scripts/codex-image.js <promptJson> <outJpg> [filenamePrefix]
+// Usage: node scripts/codex-image.js <promptJson> <outJpg> [filenamePrefix] [--ref IMG ...]
 // Gera imagem pelo Codex CLI (assinatura ChatGPT — sem custo por uso, #9088) e grava JPEG.
+//
+// Imagem de referência (#11228): `--ref IMG` (repetível) ou `reference_images`
+// no JSON do prompt anexa a imagem ao `codex exec -i`. É o outpaint da capa do
+// YouTube: `04-d1-2x1.jpg` como referência, alvo 16:9 (final_width/height),
+// pedindo o objeto do D1 menor e inteiro à direita e o terço esquerdo livre.
 //
 // O Codex não expõe a escolha do modelo de imagem (a ferramenta image_generation é
 // interna); só o modelo "orquestrador" (-m). A conta ChatGPT recusa o default do
@@ -44,6 +49,11 @@ export function targetAspectText(w, h) {
 export function buildCodexPrompt(sd) {
   let p = `Use the built-in image generation tool to create ONE image and save it as ${OUT_NAME} in the current working directory.\n`;
   p += `Format: ${targetAspectText(sd.final_width, sd.final_height)}. The image must fill the entire canvas edge to edge, with no frame, border or visible canvas.\n\n`;
+  const refs = Array.isArray(sd.reference_images) ? sd.reference_images : [];
+  if (refs.length) {
+    // #11228: outpaint com referência (capa do YouTube a partir da 04-d1-2x1.jpg).
+    p += `The attached image${refs.length > 1 ? 's are references' : ' is the reference'}: keep ${refs.length > 1 ? 'their' : 'its'} subject, painting style, palette and brushwork, and extend the scene to the new format (outpaint) instead of inventing a different picture.\n\n`;
+  }
   p += `Image description:\n${sd.positive}\n`;
   if (sd.negative) p += `\nDo NOT include any of the following: ${sd.negative}\n`;
   p += `
@@ -53,12 +63,39 @@ Leave generous empty headroom above any head or main subject; never crop the top
   return p;
 }
 
-export function buildCodexArgs(cfg) {
+export function buildCodexArgs(cfg, referenceImages = []) {
+  // `-i` antes do `-` final (prompt via stdin), um por imagem, caminho absoluto:
+  // o Codex roda com cwd num diretório temporário (#11228).
+  // #11296: `-i/--image <FILE>...` aceita VÁRIOS valores e engoliria o `-`
+  // final como mais uma imagem (o prompt só chegava porque [PROMPT] vazio cai
+  // no stdin). O `--` encerra as opções e garante que `-` seja o [PROMPT].
+  const images = referenceImages.flatMap((img) => ['-i', path.resolve(img)]);
+  const endOfOptions = images.length ? ['--'] : [];
   return [
     'exec', '--skip-git-repo-check', '--sandbox', 'workspace-write',
     '-c', 'forced_login_method="chatgpt"', // recusa API key guardada em ~/.codex/auth.json (pay-per-token)
-    '-m', cfg.model, '-c', `model_reasoning_effort=${cfg.reasoning_effort}`, '-',
+    '-m', cfg.model, '-c', `model_reasoning_effort=${cfg.reasoning_effort}`, ...images, ...endOfOptions, '-',
   ];
+}
+
+/**
+ * Separa `--ref IMG` (repetível) dos argumentos posicionais do CLI (#11228).
+ * Lança se `--ref` vier sem caminho.
+ */
+export function parseCliArgs(argv) {
+  const positional = [];
+  const refs = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--ref') {
+      const v = argv[i + 1];
+      if (!v || v.startsWith('--')) throw new Error('--ref exige o caminho da imagem de referência');
+      refs.push(v);
+      i++;
+    } else {
+      positional.push(argv[i]);
+    }
+  }
+  return { positional, refs };
 }
 
 export function checkAspect(srcW, srcH, dstW, dstH) {
@@ -149,9 +186,13 @@ async function defaultRun(args, prompt, cwd, timeoutMs) {
 /** Gera a imagem; lança Error em qualquer falha. `run` injetável para teste. */
 export async function generateWithCodex(sd, outPath, userCfg = {}, run = defaultRun) {
   const cfg = { ...DEFAULTS, ...userCfg };
+  const refs = Array.isArray(sd.reference_images) ? sd.reference_images : [];
+  for (const ref of refs) {
+    if (!fs.existsSync(ref)) throw new Error(`REFERENCE_NOT_FOUND: imagem de referência ${ref} não existe`);
+  }
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-img-'));
   try {
-    const r = await run(buildCodexArgs(cfg), buildCodexPrompt(sd), tmp, cfg.timeout_seconds * 1000); // run pode ser async (#9097)
+    const r = await run(buildCodexArgs(cfg, refs), buildCodexPrompt(sd), tmp, cfg.timeout_seconds * 1000); // run pode ser async (#9097)
     if (r.error && r.error.code === 'ETIMEDOUT') throw new Error(`CODEX_TIMEOUT após ${cfg.timeout_seconds}s`);
     if (r.error) throw new Error(`CODEX_SPAWN_FAILED: ${r.error.message}`);
     if (r.status !== 0) throw new Error(`CODEX_FAILED exit=${r.status}: ${String(r.stderr || r.stdout).slice(-500)}`);
@@ -175,13 +216,21 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  const [promptPath, outPath] = process.argv.slice(2);
+  let cli;
+  try {
+    cli = parseCliArgs(process.argv.slice(2));
+  } catch (e) {
+    console.error(e.message);
+    process.exit(2);
+  }
+  const [promptPath, outPath] = cli.positional;
   if (!promptPath || !outPath) {
-    console.error('Usage: node scripts/codex-image.js <promptJson> <outJpg> [prefix]');
+    console.error('Usage: node scripts/codex-image.js <promptJson> <outJpg> [prefix] [--ref IMG ...]');
     process.exit(2);
   }
   const appCfg = JSON.parse(fs.readFileSync('platform.config.json', 'utf8'));
   const sd = JSON.parse(fs.readFileSync(promptPath, 'utf8'));
+  if (cli.refs.length) sd.reference_images = [...(Array.isArray(sd.reference_images) ? sd.reference_images : []), ...cli.refs];
   const t0 = Date.now();
   generateWithCodex(sd, outPath, appCfg.codex ?? {})
     .then(() => {

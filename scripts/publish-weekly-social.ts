@@ -102,8 +102,8 @@
  * 72px vs 52-54px entre `highlights`/`clicked` da MESMA semana) por um valor
  * fixo. Título que não couber no valor forçado ainda transborda o guard de
  * overflow (`overlayTitleOverflows`, abaixo) e ABORTA — não renderiza
- * cortado; só o piso automático (62) tem garantia editorial de sempre caber
- * (título de D1/D2/D3 é ≤52 chars por regra), então um valor forçado maior é
+ * cortado; o piso automático (62) é o tamanho em que o título de D1/D2/D3 já
+ * foi validado no card diário (#11254), então um valor forçado maior é
  * responsabilidade de quem passou a flag.
  *
  * `--force-urls` (override manual, ad-hoc — #5903 sessão 260821): lista de
@@ -1497,9 +1497,10 @@ async function runOneMode(
   // #8480 (260919): cards internos SEMPRE no mesmo tamanho — sem overflow
   // detectável, um título que não coubesse sairia cortado em silêncio
   // (mesma classe de falha que o carrossel diário já corrige, #6078).
-  // Título de D1/D2/D3 é ≤52 chars por regra editorial e sempre cabe no
-  // piso automático (62px) — RADAR/USE MELHOR, sem esse teto, é o caso real
-  // que pode transbordar; `--force-font-size` maior que o piso também passa
+  // Título de D1/D2/D3 já passou pelo check do card diário (3 linhas a 62px,
+  // #11254 — não há mais teto fixo de 52 chars), mas o wrap SEMANAL é mais
+  // estreito, então este guard vale também para ele; RADAR/USE MELHOR é o
+  // caso mais comum de transbordar; `--force-font-size` maior que o piso também passa
   // por este guard. `WEEKLY_OVERLAY_WRAP` (#8485) precisa ser o MESMO wrap
   // que `weekly-carousel-news-card.ts`/`weekly-instagram-ondemand-card.ts`
   // passam pro render real — usar o wrap DIÁRIO aqui (default de

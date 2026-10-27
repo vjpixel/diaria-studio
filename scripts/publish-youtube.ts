@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
 /**
  * scripts/publish-youtube.ts (#10659)
  *
@@ -8,7 +9,7 @@
  *
  * Uso:
  *   npx tsx scripts/publish-youtube.ts AAMMDD --dry-run
- *     [--edition-dir DIR] [--video PATH] [--episode N]
+ *     [--keep-video] [--edition-dir DIR] [--video PATH] [--episode N]
  *     [--edition-url URL] [--publish-at ISO]
  *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force | --accept-period-match VIDEO_ID]
  *
@@ -653,7 +654,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match VIDEO_ID]) [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match VIDEO_ID]) [--keep-video] [--edition-dir DIR] [--video PATH] [--episode N] [--edition-url URL] [--publish-at ISO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -721,6 +722,7 @@ async function main(): Promise<number> {
     d1SlotAt: loadD1SlotAt(aammdd),
   });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
+  cleanupPublishedVideo({ dir, edition: aammdd, kind: "horizontal", keepVideo: flags.has("keep-video"), log: console.error });
   return outcome.exitCode;
 }
 

@@ -306,9 +306,13 @@ dentro do script:
 npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] --list
 npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name]
 ```
-O segundo resolve as não-resolvidas (`resolveReviewThread`), relê numa query
-fresca e sai `0` só sem thread bloqueante (FORBIDDEN de revisor externo não
-conta, sai listada em `forbidden`). É passo de RESOLUÇÃO, pós-fixer. O gate
+O segundo resolve as não-resolvidas da automação (`resolveReviewThread`), relê
+numa query fresca e sai `0` só sem thread bloqueante (FORBIDDEN de revisor
+externo não conta, sai listada em `forbidden`). "Da automação" (#11269) = todos
+os comentários da thread carregam o marcador `<!-- diaria-auto-review -->`, que
+`gh-pr-review-api.ts comment|reply` acrescenta sozinho; thread do editor (ou
+em que ele respondeu) sai em `skipped`, continua aberta e o helper sai `1`.
+O login do autor não serve de filtro: a rodada posta com o token do dono. É passo de RESOLUÇÃO, pós-fixer. O gate
 de merge é outra chamada, somente leitura: `npx tsx
 scripts/resolve-review-threads.ts --pr N [--repo owner/name] --check` (sai
 `1` se sobrar thread não resolvida que não seja de revisor externo). Nunca

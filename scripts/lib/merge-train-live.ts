@@ -51,8 +51,8 @@
  * (que pode levar minutos, com o CI do PR-trem no meio), o estado de
  * qualquer PR original pode mudar (novo commit, nova thread de review).
  * `revalidateGate2` reconfirma as 2 condições do Gate 2 por PR, bem antes
- * do merge — ver a nota de simplificação no docstring da função (sem o
- * carve-out FORBIDDEN completo, que pertence à sessão do review original).
+ * do merge — a condição 2 (threads) usa o mesmo `checkReviewThreads` do
+ * caminho serial (#11269).
  */
 
 import { spawnSync } from "node:child_process";
@@ -78,6 +78,7 @@ import {
 import { evaluatePrChecksGate } from "./pr-checks-gate.ts";
 import { extractRemovalDeclaration } from "./pr-removal-declaration.ts"; // #10848
 import { evaluatePrRetido, type PrRetidoResult } from "./pr-retido-para-editor.ts";
+import { checkReviewThreads, EXIT_OK as THREADS_EXIT_OK } from "../resolve-review-threads.ts"; // #11269
 
 export interface ExecResult {
   ok: boolean;
@@ -227,13 +228,13 @@ export function screenTrainPrs(runner: TrainRunner, prNumbers: number[], discove
  * ele fecha do próprio corpo (`parseClosesIssues`, mesmo parser que
  * `buildTrainPrBody`/`buildTrainMergeCommitBody` consomem via `TrainPrInfo`). */
 export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPrInfo {
-  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body,labels,files,changedFiles"]);
+  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body,labels,files,changedFiles,commits"]);
   if (!res.ok) throw new Error(`fetchTrainPrInfo: gh pr view falhou pro PR #${prNumber}: ${res.stderr}`);
   const parsed: unknown = JSON.parse(res.stdout);
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(`fetchTrainPrInfo: PR #${prNumber} — JSON inesperado de gh pr view`);
   }
-  const p = parsed as { number: number; headRefName: string; title: string; body: string; labels?: unknown; files?: unknown; changedFiles?: unknown };
+  const p = parsed as { number: number; headRefName: string; title: string; body: string; labels?: unknown; files?: unknown; changedFiles?: unknown; commits?: unknown };
   return {
     pr: p.number,
     headRefName: p.headRefName,
@@ -243,6 +244,7 @@ export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPr
     removalDeclaration: extractRemovalDeclaration(p.body ?? ""),
     labels: parseLabelNames(p.labels),
     changedFiles: parseChangedFiles(p.files, p.changedFiles),
+    commits: Array.isArray(p.commits) ? p.commits : [],
   };
 }
 
@@ -353,17 +355,11 @@ export interface Gate2Result {
  * Revalidação do Gate 2 (as 2 condições + a condição 3 `retido-para-editor`,
  * #10294) imediatamente antes de mergear —
  * chamada por `mergeTrainBatch` (por PR do lote) e `mergeSoloPr` (pro PR
- * único). Simplificação DELIBERADA da condição 2 em relação ao Gate 2 "de
- * origem" documentado nas 3 SKILL.md: aqui NÃO há carve-out de threads
- * FORBIDDEN — esse bookkeeping (quais threads retornaram FORBIDDEN durante
- * a resolução) pertence à sessão que fez o review original e não é
- * re-derivável aqui só relendo o PR. Efeito: mais CONSERVADOR que o Gate 2
- * de origem, nunca menos seguro — na pior hipótese um PR com só uma
- * thread FORBIDDEN pendente falha esta revalidação e cai pro caminho
- * normal (fora do trem), onde o Gate 2 completo decide com o carve-out
- * certo; nunca o inverso (nunca merge algo que a condição 2 de verdade
- * teria barrado). Também não pagina além de 100 threads (limite generoso,
- * mesmo usado no `first:100` da query original das SKILL.md).
+ * único). A condição 2 usa `checkReviewThreads` (`resolve-review-threads.ts
+ * --check`, #11269) — o mesmo gate do caminho serial: thread de revisor
+ * externo (`viewerCanResolve: false`) não bloqueia; erro de query, payload
+ * sem `data`/`pageInfo` e mais de 100 threads (`hasNextPage`) reprovam,
+ * nunca contam como zero threads.
  */
 export function revalidateGate2(runner: TrainRunner, prNumber: number): Gate2Result {
   const view = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "statusCheckRollup"]);
@@ -384,22 +380,20 @@ export function revalidateGate2(runner: TrainRunner, prNumber: number): Gate2Res
     return { ok: false, reason: `condição 1 (CI) não está pass — veredito atual: ${gate.verdict}` };
   }
 
-  const query = `query { repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:${prNumber}){ reviewThreads(first:100){ nodes{ isResolved } } } } }`;
-  const graphql = runner.exec("gh", ["api", "graphql", "-f", `query=${query}`]);
-  if (!graphql.ok) return { ok: false, reason: `gh api graphql (threads) falhou: ${graphql.stderr}` };
-
-  let unresolvedCount: number;
-  try {
-    const parsed = JSON.parse(graphql.stdout) as {
-      data?: { repository?: { pullRequest?: { reviewThreads?: { nodes?: { isResolved: boolean }[] } } } };
-    };
-    const nodes = parsed.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
-    unresolvedCount = nodes.filter((n) => n.isResolved === false).length;
-  } catch (e) {
-    return { ok: false, reason: `JSON malformado de gh api graphql (threads): ${e instanceof Error ? e.message : String(e)}` };
-  }
-  if (unresolvedCount > 0) {
-    return { ok: false, reason: `condição 2 (threads) — ${unresolvedCount} não resolvida(s) (sem carve-out FORBIDDEN nesta revalidação, ver docstring)` };
+  // Condição 2 (#11269): o MESMO gate do caminho serial
+  // (`resolve-review-threads.ts --check`), nunca uma query própria. A query
+  // própria que havia aqui não lia `hasNextPage` e tratava resposta sem `data`
+  // como zero threads — uma PR com >100 threads, ou um payload truncado,
+  // passava no trem e seria barrada no caminho serial.
+  const threads = checkReviewThreads(TRAIN_REPO, prNumber, (args) => {
+    const r = runner.exec("gh", args);
+    return { status: r.ok ? 0 : 1, stdout: r.stdout, stderr: r.stderr };
+  });
+  if (threads.exitCode !== THREADS_EXIT_OK) {
+    const why = threads.error
+      ? threads.error
+      : `${threads.blocking.length} thread(s) não resolvida(s) que bloqueiam`;
+    return { ok: false, reason: `condição 2 (threads) — ${why}` };
   }
 
   // Condição 3 (#10278/#10294): PR retida para o editor. Relida aqui, no

@@ -312,6 +312,14 @@ export interface ShortsConfig {
    * vídeo, com o registro ainda não sincronizado, duplicariam o post.
    */
   linkedinProfileViaTimer: boolean;
+  /**
+   * #11223: Reel no perfil PESSOAL do Facebook (passo guiado no Chrome — a
+   * Graph API não publica em perfil). `false` tira o destino do plano: o
+   * `/diaria-publica-video` não o oferece nem cobra, e a limpeza do vertical
+   * (#11240) deixa de esperar por ele. Decisão do editor (27/10/2026): pausado
+   * durante a viagem, sem o Neo.
+   */
+  facebookProfile: boolean;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -334,6 +342,8 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   youtubeShortsApi: true,
   // #10982: desligado no código; o platform.config.json liga junto com o timer.
   linkedinProfileViaTimer: false,
+  // #11223: ligado no código; o platform.config.json pausa durante a viagem.
+  facebookProfile: true,
 });
 
 function defaultShortsConfig(): ShortsConfig {
@@ -348,6 +358,7 @@ function defaultShortsConfig(): ShortsConfig {
     threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
     youtubeShortsApi: DEFAULT_SHORTS_CONFIG.youtubeShortsApi,
     linkedinProfileViaTimer: DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer,
+    facebookProfile: DEFAULT_SHORTS_CONFIG.facebookProfile,
   };
 }
 
@@ -399,6 +410,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
     youtubeShortsApi: optionalBool(raw, "youtube_shorts_api", DEFAULT_SHORTS_CONFIG.youtubeShortsApi),
     linkedinProfileViaTimer: optionalBool(raw, "linkedin_profile_via_timer", DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer),
+    facebookProfile: optionalBool(raw, "facebook_profile", DEFAULT_SHORTS_CONFIG.facebookProfile),
   };
 }
 
@@ -432,7 +444,7 @@ export function listShortDestinations(cfg: ShortsConfig): ShortDestination[] {
   if (cfg.linkedinProfile && cfg.linkedinPageRepost) out.push({ id: "linkedin_page_repost", kind: "linkedin_page_repost", mode: "guided" });
   if (cfg.x) out.push({ id: "x", kind: "x", mode: "guided" });
   if (cfg.threadsProfile) out.push({ id: "threads_profile", kind: "threads_profile", mode: "api" });
-  out.push({ id: "facebook_profile", kind: "facebook_profile", mode: "guided" });
+  if (cfg.facebookProfile) out.push({ id: "facebook_profile", kind: "facebook_profile", mode: "guided" });
   return out;
 }
 
@@ -871,9 +883,11 @@ function validMaxSeconds(v: unknown, field: string): number | null {
 
 /**
  * Teto de duração do Reels pela API para a conta que publica (#10916). O teto
- * é POR CONTA: medido em 22-23/10/2026, a @vjpixel aceita 40 s e recusa 42 s
- * (#10893) e a @diar.ia.br aceita 55 s e recusa 58 s (#10916), sempre por
- * duração, nunca por tamanho. Ordem:
+ * é POR CONTA: a @vjpixel aceita 40 s e recusa 42 s (#10893, 22/10/2026). Na
+ * @diar.ia.br as medições divergem — sintéticos de até 55 s passaram em 23/10
+ * (#10916), mas um sintético de 40 s (22/10) e o vertical REAL de 49,9 s (27/10)
+ * foram recusados —, então o config usa 30 s, o maior valor sem recusa
+ * registrada (#11281). Os valores vivem no config, não aqui. Ordem:
  *   1. `publishing.shorts.instagram_api_max_seconds_by_account[chave]`, com a
  *      chave de `instagramAccountKey(authorPage)`;
  *   2. `publishing.shorts.instagram_api_max_seconds` (legado, vale pra

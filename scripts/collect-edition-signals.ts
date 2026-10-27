@@ -465,7 +465,93 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
   "factual-correction": ".claude/agents/fact-checker.md",
 };
 
-const RECURRING_REQUEST_MIN_EDITIONS = 3;
+export const RECURRING_REQUEST_MIN_EDITIONS = 3;
+
+/**
+ * #11291: tamanho da janela de BASE histórica — as edições imediatamente
+ * anteriores à janela de detecção (7), usadas pra medir a frequência-base de
+ * cada `request_type`. Sem a base, um tipo que acontece em quase toda edição
+ * (`destaque-swap` em 34 de 39, `lead-rewrite`, `bucket-move`) passa o corte
+ * de 3-em-7 TODA semana e reabre a mesma issue (destaque-swap chegou à 5ª
+ * reabertura: #9883 → #11247) — o sinal media rotina, não mudança.
+ */
+export const RECURRING_REQUEST_BASELINE_WINDOW = 28;
+
+/**
+ * Mínimo de edições com pedidos registrados na base pra ela valer. Abaixo
+ * disso (projeto novo, logging recém-ligado) a taxa-base é ruído e o
+ * detector cai na regra antiga, só 3-em-7.
+ */
+export const RECURRING_REQUEST_MIN_BASELINE_EDITIONS = 10;
+
+/** Quantos desvios-padrão acima do esperado a janela precisa ficar pra disparar. */
+export const RECURRING_REQUEST_SIGMA = 2;
+
+/**
+ * Frequência-base por `request_type` (#11291): em quantas das edições da base
+ * (as que têm ≥1 pedido registrado) cada tipo apareceu como `accepted`/`partial`.
+ */
+export interface RequestTypeBaseline {
+  /** Edições da base com ≥1 pedido registrado (denominador). */
+  edition_count: number;
+  /** request_type → nº de edições DISTINTAS da base em que apareceu. */
+  type_edition_counts: Record<string, number>;
+}
+
+/** Tipos que nunca participam da detecção (#4966, #7964). */
+function isCountableRequest(e: EditorRequestEntry): boolean {
+  if (e.request_type === "other" || e.request_type === "process") return false;
+  return e.resolution === "accepted" || e.resolution === "partial";
+}
+
+/**
+ * Agrega a base (#11291). Pura. O denominador é o nº de edições com QUALQUER
+ * pedido registrado — edição sem `editor-requests.jsonl` não foi revisada
+ * com logging e não diz nada sobre a frequência do tipo.
+ */
+export function computeRequestTypeBaseline(
+  entriesByEdition: Record<string, EditorRequestEntry[]>,
+): RequestTypeBaseline {
+  const typeEditions = new Map<string, Set<string>>();
+  let editionCount = 0;
+  for (const [edition, entries] of Object.entries(entriesByEdition)) {
+    if (entries.length === 0) continue;
+    editionCount++;
+    for (const e of entries) {
+      if (!isCountableRequest(e)) continue;
+      let set = typeEditions.get(e.request_type);
+      if (!set) {
+        set = new Set();
+        typeEditions.set(e.request_type, set);
+      }
+      set.add(edition);
+    }
+  }
+  const type_edition_counts: Record<string, number> = {};
+  for (const [t, set] of typeEditions) type_edition_counts[t] = set.size;
+  return { edition_count: editionCount, type_edition_counts };
+}
+
+/**
+ * Limiar de disparo pra um tipo dada a base (#11291): esperado + σ·desvio
+ * de uma binomial com n = edições da janela e p = taxa-base do tipo. Um tipo
+ * rotineiro (p≈0,87, n=7) dá limiar ≈7,9 — inalcançável numa janela de 7, ou
+ * seja, nunca dispara por ser rotina; um tipo raro (p≈0,05) volta pro piso
+ * de 3-em-7. `null` = base insuficiente, valer só o piso.
+ */
+export function recurringRequestThreshold(
+  requestType: string,
+  windowEditionCount: number,
+  baseline: RequestTypeBaseline | undefined,
+  sigma = RECURRING_REQUEST_SIGMA,
+): { baseline_rate: number; expected: number; threshold: number } | null {
+  if (!baseline || baseline.edition_count < RECURRING_REQUEST_MIN_BASELINE_EDITIONS) return null;
+  const p = (baseline.type_edition_counts[requestType] ?? 0) / baseline.edition_count;
+  const n = windowEditionCount;
+  const expected = n * p;
+  const threshold = expected + sigma * Math.sqrt(n * p * (1 - p));
+  return { baseline_rate: p, expected, threshold };
+}
 
 /**
  * Seleciona a janela de edições a considerar na detecção de recorrência:
@@ -590,17 +676,24 @@ export function reclassifyEditorRequests(
  * inclui `edition_count`/`3×` no título) — o dedup do auto-reporter
  * (`auto-reporter-dedup.ts`) casa por título, e um título que varia por
  * contagem furaria esse dedup a cada edição nova que reforça o padrão.
+ *
+ * Com `baseline` (#11291), além do piso de `minEditions` o tipo precisa ficar
+ * ACIMA da própria frequência-base (`recurringRequestThreshold`): o sinal
+ * passa a medir "o editor pede isso mais que de costume", não "o editor pede
+ * isso" — tipo que ocorre em quase toda edição deixa de reabrir issue toda
+ * semana. Sem `baseline` (ou base curta demais), vale só o piso, como antes.
  */
 export function signalsFromRecurringEditorRequests(
   entriesByEdition: Record<string, EditorRequestEntry[]>,
   minEditions = RECURRING_REQUEST_MIN_EDITIONS,
+  baseline?: RequestTypeBaseline,
 ): Signal[] {
+  const windowEditionCount = Object.values(entriesByEdition).filter((es) => es.length > 0).length;
   // request_type -> edition -> entries dessa edição com esse tipo
   const byType = new Map<string, Map<string, EditorRequestEntry[]>>();
   for (const [edition, entries] of Object.entries(entriesByEdition)) {
     for (const e of entries) {
-      if (e.request_type === "other" || e.request_type === "process") continue;
-      if (e.resolution !== "accepted" && e.resolution !== "partial") continue;
+      if (!isCountableRequest(e)) continue;
       let byEdition = byType.get(e.request_type);
       if (!byEdition) {
         byEdition = new Map();
@@ -616,6 +709,8 @@ export function signalsFromRecurringEditorRequests(
   for (const [requestType, byEdition] of byType) {
     const editions = Array.from(byEdition.keys()).sort();
     if (editions.length < minEditions) continue;
+    const base = recurringRequestThreshold(requestType, windowEditionCount, baseline);
+    if (base && editions.length <= base.threshold) continue;
 
     const evidence: Array<{ edition: string; target: string; description: string }> = [];
     for (const edition of editions) {
@@ -638,9 +733,21 @@ export function signalsFromRecurringEditorRequests(
         editions,
         evidence,
         artifact_candidate: artifact,
+        ...(base
+          ? {
+              baseline_rate: Number(base.baseline_rate.toFixed(3)),
+              baseline_editions: baseline!.edition_count,
+              expected_in_window: Number(base.expected.toFixed(2)),
+              threshold: Number(base.threshold.toFixed(2)),
+            }
+          : {}),
       },
       suggested_action:
-        `Editor pediu "${requestType}" em ${editions.length} das últimas edições revisadas — ` +
+        `Editor pediu "${requestType}" em ${editions.length} das últimas edições revisadas` +
+        (base
+          ? ` (base histórica: ${Math.round(base.baseline_rate * 100)}% das edições, esperado ${base.expected.toFixed(1)})`
+          : "") +
+        ` — ` +
         `considerar ajustar ${artifact}. Evidência: ` +
         evidence
           .slice(0, 3)
@@ -1899,14 +2006,31 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
   try {
     const editionsRoot = resolve(rootDir, "data/editions");
     const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
-    const recentEditions = selectRecentEditions(editionDirsByAammdd, edition, editionDir);
+    // #11291: a janela de detecção (7) + a base histórica logo antes dela.
+    const allEditions = selectRecentEditions(
+      editionDirsByAammdd,
+      edition,
+      editionDir,
+      7 + RECURRING_REQUEST_BASELINE_WINDOW,
+    );
+    const recentEditions = allEditions.slice(0, 7);
+    const baselineEditions = allEditions.slice(7);
     // #10135: rótulos do classificador ATUAL, não os gravados no dia.
     const entriesByEdition = reclassifyEditorRequests(
       readEditorRequestsForEditions(recentEditions),
       recentEditions,
       rederiveStage2FileRequests,
     );
-    signals.push(...signalsFromRecurringEditorRequests(entriesByEdition));
+    const baseline = computeRequestTypeBaseline(
+      reclassifyEditorRequests(
+        readEditorRequestsForEditions(baselineEditions),
+        baselineEditions,
+        rederiveStage2FileRequests,
+      ),
+    );
+    signals.push(
+      ...signalsFromRecurringEditorRequests(entriesByEdition, RECURRING_REQUEST_MIN_EDITIONS, baseline),
+    );
   } catch {
     // ignore
   }
