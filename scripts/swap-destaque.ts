@@ -26,6 +26,8 @@
  *   - `_internal/04-estilo-regen.json` (#10335): estado do plano de
  *     regeneração por Noite Estrelada da posição zerado — a imagem nova não
  *     herda o `pending`/contagem da antiga
+ *   - `06-public-images.json` (#11252): chaves da posição (hero 2:1, 4:5,
+ *     carrossel, legado) removidas — a URL ainda era da arte antiga
  *   - `_internal/carousel-keep-art.json` (#11213): exceção "manter a arte" da
  *     posição removida — era da história rebaixada
  *
@@ -96,6 +98,7 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: lay
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
+import { planPublicImagesInvalidation, publicImagesInvalidatedWarning } from "./lib/public-images-invalidate.ts"; // #11252
 import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import { lintIntroCount, replaceIntroClaimedCount } from "./lib/newsletter-count.ts"; // #9601
 import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-naming.ts"; // #9601
@@ -1298,6 +1301,19 @@ function main(): void {
           `bloco escrito à mão? Não foi alterado; conferir antes do gate.`,
       );
     }
+  }
+
+  // #11252: as URLs públicas da posição trocada (hero 2:1, 4:5, carrossel)
+  // ainda são da arte do destaque ANTIGO — remove do cache no mesmo lote.
+  const publicPlan = planPublicImagesInvalidation(editionDir, [demotePosition]);
+  if (publicPlan.content !== undefined) {
+    pendingWrites.push({ path: publicPlan.path, content: publicPlan.content });
+    console.error(`AVISO: ${publicImagesInvalidatedWarning(publicPlan.removedKeys)}`);
+  } else if (publicPlan.error) {
+    console.error(
+      `AVISO: 06-public-images.json ilegível (${publicPlan.error}) — chaves da posição D${demotePosition} ` +
+        `NÃO removidas; conferir à mão antes do upload (#11252).`,
+    );
   }
 
   writeFilesVerified(pendingWrites, "swap-destaque");

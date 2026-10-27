@@ -30,7 +30,10 @@
  *   5. `_internal/04-estilo-regen.json` (#10335): estado do plano de
  *      regeneração por Noite Estrelada das posições trocadas zerado;
  *   6. `_internal/carousel-keep-art.json` (#11213): exceção "manter a arte"
- *      das posições trocadas removida.
+ *      das posições trocadas removida;
+ *   7. `06-public-images.json` (#11252): todas as chaves das posições
+ *      trocadas (hero 2:1, 4:5, carrossel, legado) removidas — a URL pública
+ *      ainda era da arte do destaque antigo.
  *
  * O que NÃO faz (exige LLM/agente ou decisão editorial — sai em
  * `next_steps`, mesmo padrão do promote-to-destaque.ts):
@@ -72,6 +75,7 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: lay
 import { writeFilesVerified, type VerifiedWrite } from "./lib/write-files-verified.ts"; // #9173
 import { appendStage4DroppedItems, stage4DroppedItemsPath } from "./lib/stage4-dropped-items.ts"; // #10100
 import { clearEstiloRegenDestaques, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
+import { planPublicImagesInvalidation, publicImagesInvalidatedWarning } from "./lib/public-images-invalidate.ts"; // #11252
 import { clearCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   extractUrl,
@@ -490,6 +494,20 @@ function main(): void {
     if (mdChanged) {
       pendingWrites.push({ path: mdPath, content: md });
     }
+  }
+
+  // 3b. 06-public-images.json (#11252): as URLs públicas das posições trocadas
+  // apontam pra arte do destaque ANTIGO. Sem remover as chaves, um upload
+  // rodado antes da imagem nova existir (spec optional pula arquivo ausente e
+  // MANTÉM o cache) deixava o e-mail sair com a imagem de outro assunto.
+  const publicPlan = planPublicImagesInvalidation(editionDir, slots.map((s) => s.position));
+  if (publicPlan.content !== undefined) {
+    pendingWrites.push({ path: publicPlan.path, content: publicPlan.content });
+    result.warnings.push(publicImagesInvalidatedWarning(publicPlan.removedKeys));
+  } else if (publicPlan.error) {
+    const w = `06-public-images.json ilegível (${publicPlan.error}) — chaves das posições trocadas NÃO removidas; conferir à mão antes do upload (#11252).`;
+    console.error(`AVISO: ${w}`);
+    result.warnings.push(w);
   }
 
   writeFilesVerified(pendingWrites, "swap-destaques");
