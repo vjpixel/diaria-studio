@@ -47,7 +47,11 @@
  * `send_at` (relido); principal fora de `scheduled` (desagendado) ⇒ desagenda
  * a semanal e volta o estado pra `created_unverified`, que o próximo
  * agendamento do principal retoma. O `schedule-newsletter-kit.ts` chama com
- * `followOnly` quando o agendamento do principal falha ou é desfeito.
+ * `followOnly` quando o agendamento do principal falha ou é desfeito; o
+ * `publish-newsletter-kit.ts` também, quando um re-run da Etapa 5 desagenda o
+ * principal por audiência divergente (#11324). A semanal relida como
+ * `completed`/`sending` é terminal (`already_sent`): nem PATCH nem
+ * desagendamento (#11323).
  *
  * Exit: 0 criado/idempotente/pulado (desligado, não é segunda, pausado, tag
  * vazia); 1 falha (API, filtro não confirmado, agendamento não confirmado);
@@ -119,6 +123,8 @@ export type SemanalFrioPublishResult =
         // #11294 item 2 — a semanal já agendada acompanhou o principal.
         | "rescheduled"
         | "unscheduled"
+        // #11323 — a semanal já saiu (`completed`/`sending` no Kit): terminal.
+        | "already_sent"
         // `followOnly` sem semanal agendada: nada a fazer.
         | "nothing_to_follow";
       broadcastId?: number;
@@ -255,7 +261,8 @@ export async function publishKitSemanalFrio(
  * `scheduled` (desagendado, ex. exit 7 do `schedule-newsletter-kit.ts`) ⇒
  * desagenda a semanal (`send_at: null`, relido) e volta o estado pra
  * `created_unverified`, que o próximo agendamento do principal retoma. Sem
- * isto a semanal sairia no horário antigo, ou sozinha.
+ * isto a semanal sairia no horário antigo, ou sozinha. Semanal já enviada
+ * (`completed`/`sending`, relido) ⇒ `already_sent`, sem tocar nela (#11323).
  */
 async function followMainSchedule(
   editionDir: string,
@@ -267,14 +274,23 @@ async function followMainSchedule(
   const broadcastId = own.broadcast_id;
   const main = deps.readMainState(editionDir);
   const mainScheduled = main !== null && main.status === "scheduled" && typeof main.scheduled_at === "string";
+  // 1 GET por rodada, relido ANTES de qualquer PATCH (#11323): a semanal que
+  // já saiu (`completed`/`sending`) é terminal. Re-rodar a Etapa 6 depois do
+  // envio daria PATCH com 422 "already sent" (falso `failed`), e um estado
+  // do principal que caiu pra `draft` depois do envio tentaria desagendar um
+  // broadcast já enviado (alarme falso).
+  const current = await deps.getBroadcast(broadcastId);
+  if (current.status === "completed" || current.status === "sending") {
+    log(`semanal de frio ${broadcastId} já ${current.status === "completed" ? "enviada" : "em envio"} no Kit — nada a acompanhar.`);
+    return { code: 0, status: "already_sent", broadcastId, reason: `semanal ${broadcastId} com status ${current.status} no Kit.` };
+  }
   if (mainScheduled && sameInstant(own.scheduled_at, main.scheduled_at!)) {
     // Review do PR #11308 (P2): o estado local `scheduled` pode estar
     // defasado — ex. o desagendamento abaixo foi confirmado no Kit, mas a
     // gravação do `created_unverified` falhou. Sem reler, o principal
     // reagendado no MESMO horário daria `already_done` e a semanal ficaria
-    // rascunho em silêncio. 1 GET por rodada; divergência ⇒ cai no
-    // reagendamento abaixo (re-PATCH relido pro horário do principal).
-    const current = await deps.getBroadcast(broadcastId);
+    // rascunho em silêncio. Divergência ⇒ cai no reagendamento abaixo
+    // (re-PATCH relido pro horário do principal).
     if (current.status === "scheduled" && sameInstant(current.send_at, main.scheduled_at!)) {
       return { code: 0, status: "already_done", broadcastId };
     }
