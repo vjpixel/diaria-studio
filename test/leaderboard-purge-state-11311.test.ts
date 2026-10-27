@@ -21,7 +21,6 @@ import {
   applyCheckAuth,
   applyEmailResult,
   derivePurgeStatus,
-  EDITOR_PURGE_EMAILS,
   formatPurgeSummaryLine,
   LEADERBOARD_PURGE_STATE_RELPATH,
   readLeaderboardPurgeState,
@@ -32,9 +31,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PURGE_SCRIPT = resolve(ROOT, "scripts", "purge-leaderboard.ts");
 const STATE_SCRIPT = resolve(ROOT, "scripts", "lib", "leaderboard-purge-state.ts");
 const NOW = new Date("2026-10-27T09:00:00Z");
+// As 2 contas do editor vêm do playbook (`--expect-emails`), nunca de código de produção.
+const EDITOR_PURGE_EMAILS = ["pixel@memelab.com.br", "vjpixel@gmail.com"];
 
 function fullRun() {
-  let s = applyCheckAuth({ ok: true, backend: "rest", motivo: null }, NOW);
+  let s = applyCheckAuth({ ok: true, backend: "rest", motivo: null }, EDITOR_PURGE_EMAILS, NOW);
   s = applyEmailResult(s, EDITOR_PURGE_EMAILS[0], { ok: true, keys_deleted: 7, motivo: null }, NOW);
   s = applyEmailResult(s, EDITOR_PURGE_EMAILS[1], { ok: true, keys_deleted: 0, motivo: null }, NOW);
   return s;
@@ -50,13 +51,13 @@ describe("leaderboard-purge-state — derivação (#11311)", () => {
   });
 
   it("pré-check falhou → pendente com o motivo do pré-check", () => {
-    const s = applyCheckAuth({ ok: false, backend: null, motivo: "sem backend de KV: x" }, NOW);
+    const s = applyCheckAuth({ ok: false, backend: null, motivo: "sem backend de KV: x" }, EDITOR_PURGE_EMAILS, NOW);
     assert.equal(s.status, "pendente");
     assert.match(formatPurgeSummaryLine({ kind: "ok", state: s }), /^⚠ Purga de votos do editor: PENDENTE — sem backend de KV: x \(rodar \/diaria-remover-votos-pixel\)$/);
   });
 
   it("só 1 das 2 contas registrada → pendente nomeando a que falta", () => {
-    let s = applyCheckAuth({ ok: true, backend: "wrangler", motivo: null }, NOW);
+    let s = applyCheckAuth({ ok: true, backend: "wrangler", motivo: null }, EDITOR_PURGE_EMAILS, NOW);
     s = applyEmailResult(s, EDITOR_PURGE_EMAILS[0], { ok: true, keys_deleted: 3, motivo: null }, NOW);
     assert.equal(s.status, "pendente");
     assert.match(s.motivo!, new RegExp(`purga de ${EDITOR_PURGE_EMAILS[1]} não registrada`));
@@ -69,14 +70,20 @@ describe("leaderboard-purge-state — derivação (#11311)", () => {
     assert.match(formatPurgeSummaryLine({ kind: "ok", state: s }), /vjpixel@gmail\.com: erro: 500/);
   });
 
+  it("pré-check sem --expect-emails → PENDENTE (fail-closed: nada registrado não prova purga)", () => {
+    const s = applyCheckAuth({ ok: true, backend: "rest", motivo: null }, [], NOW);
+    assert.equal(s.status, "pendente");
+    assert.match(s.motivo!, /--expect-emails/);
+  });
+
   it("novo pré-check zera os e-mails da rodada anterior", () => {
-    const s = applyCheckAuth({ ok: true, backend: "rest", motivo: null }, NOW);
+    const s = applyCheckAuth({ ok: true, backend: "rest", motivo: null }, EDITOR_PURGE_EMAILS, NOW);
     assert.deepEqual(s.emails, {});
     assert.equal(s.status, "pendente");
   });
 
   it("o leitor recalcula o status: arquivo com status 'ok' mas e-mail faltando sai PENDENTE", () => {
-    const forged = { ...applyCheckAuth({ ok: true, backend: "rest", motivo: null }, NOW), status: "ok" as const };
+    const forged = { ...applyCheckAuth({ ok: true, backend: "rest", motivo: null }, EDITOR_PURGE_EMAILS, NOW), status: "ok" as const };
     assert.equal(derivePurgeStatus(forged).status, "pendente");
     assert.match(formatPurgeSummaryLine({ kind: "ok", state: forged }), /PENDENTE/);
   });
@@ -131,13 +138,16 @@ describe("purge-leaderboard.ts --edition-dir grava o estado (script real, sem re
   it("pré-check sem backend → arquivo PENDENTE com o motivo, e o --summary imprime a linha", () => {
     const dir = mkdtempSync(join(tmpdir(), "purge-state-cli-"));
     try {
-      const r = run(PURGE_SCRIPT, ["--check-auth", "--kv-backend", "rest", "--edition-dir", dir]);
+      const r = run(PURGE_SCRIPT, [
+        "--check-auth", "--kv-backend", "rest", "--edition-dir", dir, "--expect-emails", EDITOR_PURGE_EMAILS.join(","),
+      ]);
       assert.equal(r.status, 1, r.stderr);
       const state = JSON.parse(readFileSync(join(dir, LEADERBOARD_PURGE_STATE_RELPATH), "utf8"));
       assert.equal(state.status, "pendente");
       assert.equal(state.check_auth.ok, false);
       assert.match(state.motivo, /CLOUDFLARE_API_TOKEN/);
       assert.doesNotMatch(state.motivo, /^\[purge\]/, "motivo sem o prefixo do log");
+      assert.deepEqual(state.expected_emails, EDITOR_PURGE_EMAILS);
 
       const summary = run(STATE_SCRIPT, ["--edition-dir", dir, "--summary"]);
       assert.equal(summary.status, 0, summary.stderr);
@@ -179,6 +189,15 @@ describe("wiring no playbook do Stage 6 (#11311)", () => {
     const calls = playbook.match(/^npx tsx scripts\/purge-leaderboard\.ts .*$/gm) ?? [];
     assert.equal(calls.length, 3, calls.join("\n"));
     for (const c of calls) assert.match(c, /--edition-dir \{EDITION_DIR\}\//, c);
+  });
+
+  it("o pré-check declara como --expect-emails exatamente as contas dos 2 --execute", () => {
+    const calls = playbook.match(/^npx tsx scripts\/purge-leaderboard\.ts .*$/gm) ?? [];
+    const check = calls.find((c) => c.includes("--check-auth"))!;
+    const expected = /--expect-emails (\S+)/.exec(check)?.[1].split(",") ?? [];
+    const executed = calls.filter((c) => c.includes("--execute")).map((c) => /--email (\S+)/.exec(c)![1]);
+    assert.deepEqual([...expected].sort(), [...executed].sort());
+    assert.equal(expected.length, 2);
   });
 
   it("Resumo final lê o arquivo via --summary em vez de memória de sessão", () => {

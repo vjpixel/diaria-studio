@@ -83,6 +83,8 @@
  *   # --edition-dir <dir> (#11311): grava o resultado do --check-auth e de cada
  *   # --email X --execute em <dir>/_internal/leaderboard-purge.json — o Resumo
  *   # final do Stage 6 lê via `scripts/lib/leaderboard-purge-state.ts --summary`.
+ *   # No --check-auth, --expect-emails a,b diz quais contas a rodada precisa
+ *   # purgar (sem a lista, o resumo sai PENDENTE).
  *
  * Variáveis de ambiente (#4474):
  *   ADMIN_SECRET (ou POLL_ADMIN_SECRET)  HMAC key pro endpoint
@@ -135,6 +137,7 @@ import {
   applyCheckAuth,
   applyEmailResult,
   LEADERBOARD_PURGE_STATE_RELPATH,
+  parseExpectEmails,
   readStateForUpsert,
   writeLeaderboardPurgeState,
 } from "./lib/leaderboard-purge-state.ts"; // #11311
@@ -201,6 +204,8 @@ const targetEmail = flagValue("--email")?.toLowerCase() ?? null;
 // "não concluiu" ANTES de trabalhar, então timeout/kill no meio fica PENDENTE.
 // Falha ao gravar é warn: nunca muda o exit code da purga em si.
 const STATE_EDITION_DIR = flagValue("--edition-dir");
+// Contas que a rodada do §6h precisa purgar — só no --check-auth (abre a rodada).
+const EXPECT_EMAILS = parseExpectEmails(flagValue("--expect-emails"));
 
 function recordState(write: () => void): void {
   if (!STATE_EDITION_DIR) return;
@@ -212,7 +217,9 @@ function recordState(write: () => void): void {
 }
 
 function recordCheckAuth(ok: boolean, backend: string | null, motivo: string | null): void {
-  recordState(() => writeLeaderboardPurgeState(STATE_EDITION_DIR!, applyCheckAuth({ ok, backend, motivo }, new Date())));
+  recordState(() =>
+    writeLeaderboardPurgeState(STATE_EDITION_DIR!, applyCheckAuth({ ok, backend, motivo }, EXPECT_EMAILS, new Date())),
+  );
 }
 
 function recordEmailResult(ok: boolean, keysDeleted: number | null, motivo: string | null): void {
@@ -241,7 +248,9 @@ if (!checkAuthOnly && (targetNickname === null) === (targetEmail === null)) {
     "Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--brand diaria|clarice|web] " +
       "[--kv-backend auto|wrangler|rest] [--execute] [--edition-dir <dir>]",
   );
-  console.error("     ou:  purge-leaderboard.ts --check-auth [--kv-backend auto|wrangler|rest] [--edition-dir <dir>]");
+  console.error(
+    "     ou:  purge-leaderboard.ts --check-auth [--kv-backend auto|wrangler|rest] [--edition-dir <dir> --expect-emails a,b]",
+  );
   console.error("     passe exatamente UM de --nickname ou --email");
   process.exit(2);
 }

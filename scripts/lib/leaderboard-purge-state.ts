@@ -13,8 +13,10 @@
  * o caso "o §6h nem rodou".
  *
  * Ciclo de um §6h:
- *   1. `purge-leaderboard.ts --check-auth --edition-dir D` → `applyCheckAuth`
- *      ZERA o estado (rodada nova) e grava o resultado do pré-check. Grava
+ *   1. `purge-leaderboard.ts --check-auth --edition-dir D --expect-emails a,b`
+ *      → `applyCheckAuth` ZERA o estado (rodada nova) e grava o resultado do
+ *      pré-check e as contas que a rodada precisa purgar (as 2 do editor vêm
+ *      do playbook, não de código: nenhum e-mail literal neste módulo). Grava
  *      "pendente" ANTES de checar, então um timeout/kill no meio deixa PENDENTE.
  *   2. `purge-leaderboard.ts --email X --execute --edition-dir D` (2×) →
  *      `applyEmailResult` faz upsert do resultado daquele e-mail (de novo:
@@ -32,9 +34,6 @@ import { dirname, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./cli-args.ts";
 
 export const LEADERBOARD_PURGE_STATE_RELPATH = "_internal/leaderboard-purge.json";
-
-/** As 2 contas do editor que o §6h purga (mesmas do playbook e de `/diaria-remover-votos-pixel`). */
-export const EDITOR_PURGE_EMAILS: readonly string[] = ["pixel@memelab.com.br", "vjpixel@gmail.com"];
 
 export const PURGE_RETRY_HINT = "rodar /diaria-remover-votos-pixel";
 
@@ -61,19 +60,26 @@ export interface LeaderboardPurgeState {
   /** Soma das keys apagadas nos e-mails concluídos. */
   keys_deleted: number;
   check_auth: PurgeCheckAuthRecord | null;
+  /** Contas que a rodada precisa purgar (`--expect-emails` do pré-check), em minúsculas. */
+  expected_emails: string[];
   emails: Record<string, PurgeEmailRecord>;
 }
 
 export function derivePurgeStatus(
-  state: Pick<LeaderboardPurgeState, "check_auth" | "emails">,
-  expectedEmails: readonly string[] = EDITOR_PURGE_EMAILS,
+  state: Pick<LeaderboardPurgeState, "check_auth" | "emails" | "expected_emails">,
 ): { status: "ok" | "pendente"; motivo: string | null } {
   const ca = state.check_auth;
   if (!ca) return { status: "pendente", motivo: "pré-check --check-auth não registrado" };
   if (!ca.ok) return { status: "pendente", motivo: ca.motivo ?? "pré-check --check-auth falhou" };
+  const expected = Array.isArray(state.expected_emails) ? state.expected_emails : [];
+  // Fail-closed: sem a lista de contas, "nenhuma falha registrada" não prova que a purga rodou.
+  if (expected.length === 0) {
+    return { status: "pendente", motivo: "contas esperadas não registradas (--expect-emails ausente no pré-check)" };
+  }
+  const emails = state.emails ?? {};
   const problems: string[] = [];
-  for (const email of expectedEmails) {
-    const r = state.emails[email];
+  for (const email of expected) {
+    const r = emails[email];
     if (!r) problems.push(`purga de ${email} não registrada`);
     else if (!r.ok) problems.push(`${email}: ${r.motivo ?? "falhou"}`);
   }
@@ -93,6 +99,7 @@ function finalize(
     at: base.at,
     keys_deleted: keys,
     check_auth: base.check_auth,
+    expected_emails: base.expected_emails,
     emails: base.emails,
   };
 }
@@ -100,10 +107,17 @@ function finalize(
 /** Pré-check: começa uma rodada nova (descarta e-mails de rodadas anteriores). */
 export function applyCheckAuth(
   result: { ok: boolean; backend: string | null; motivo: string | null },
+  expectedEmails: readonly string[],
   now: Date,
 ): LeaderboardPurgeState {
   const at = now.toISOString();
-  return finalize({ at, check_auth: { ...result, at }, emails: {} });
+  const expected = [...new Set(expectedEmails.map((e) => e.trim().toLowerCase()).filter(Boolean))];
+  return finalize({ at, check_auth: { ...result, at }, expected_emails: expected, emails: {} });
+}
+
+/** `--expect-emails a,b` → lista; ausente → `[]` (o status sai PENDENTE, fail-closed). */
+export function parseExpectEmails(raw: string | null | undefined): string[] {
+  return (raw ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
 }
 
 /** Upsert do resultado da purga de um e-mail sobre o estado da rodada. */
@@ -117,6 +131,7 @@ export function applyEmailResult(
   return finalize({
     at,
     check_auth: prev?.check_auth ?? null,
+    expected_emails: prev?.expected_emails ?? [],
     emails: { ...(prev?.emails ?? {}), [email.toLowerCase()]: { ...result, at } },
   });
 }

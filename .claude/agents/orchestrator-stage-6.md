@@ -567,7 +567,7 @@ API REST do KV com `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (servidor `3
 pra `wrangler login`). O pre-check usa a MESMA escolha que a purga vai usar — nunca `npx wrangler whoami`
 cru (valida identidade errada, #6900) nem `check-wrangler-auth.ts` sozinho (reprova o `300`, que tem o caminho REST):
 ```bash
-npx tsx scripts/purge-leaderboard.ts --check-auth --edition-dir {EDITION_DIR}/
+npx tsx scripts/purge-leaderboard.ts --check-auth --edition-dir {EDITION_DIR}/ --expect-emails pixel@memelab.com.br,vjpixel@gmail.com
 ```
 - **Exit 0** (imprime `[purge] kv backend: wrangler|rest — {motivo}`; o probe leu E gravou no namespace e
   `ADMIN_SECRET` existe) → prosseguir com a purga abaixo (o `{backend}` ja fica no arquivo de estado, #11311).
