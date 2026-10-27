@@ -102,7 +102,8 @@ class FakeTrainRunner implements TrainRunner {
   withGate2Green(): this {
     return this.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("statusCheckRollup"), () => ok(ciPassJson()))
       .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(noThreadsJson()))
-      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("labels,body"), () => ok(notRetidoJson()));
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("labels,body"), () => ok(notRetidoJson()))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("title,body"), () => ok(JSON.stringify({ title: "fix: exemplo", body: "Closes #10" })));
   }
 
   withLockOk(): this {
@@ -473,7 +474,7 @@ describe("mergeTrainBatch", () => {
 });
 
 describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => {
-  it("caminho feliz: revalida Gate 2 → lock → squash merge (sem --subject/--body custom) → pull → release", () => {
+  it("caminho feliz: revalida Gate 2 → lock → squash merge com título/body atuais da PR → pull → release", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
     runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok()).on("git", (a) => a[0] === "pull", () => ok());
 
@@ -481,8 +482,38 @@ describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => 
     assert.equal(result.ok, true);
     const mergeCall = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge");
     assert.ok(mergeCall);
-    assert.ok(!mergeCall!.args.includes("--subject"), "merge solo reusa a mensagem do PR, não custom");
+    assert.equal(mergeCall.args[mergeCall.args.indexOf("--subject") + 1], "fix: exemplo");
+    assert.equal(mergeCall.args[mergeCall.args.indexOf("--body") + 1], "Closes #10");
   });
+
+  it("#11190: body REFS prevalece sobre Closes antigo no commit", () => {
+    const runner = new FakeTrainRunner().withGate2Green().withLockOk();
+    const body = "REFS #11119, NÃO CLOSES (escopo parcial)";
+    runner.on("gh", (a) => a.includes("title,body"), () => ok(JSON.stringify({ title: "fix: escopo parcial", body })))
+      .on("gh", (a) => a[1] === "merge", (args) => {
+        // Sem mensagem explícita, o squash do GitHub herda o commit antigo.
+        const squashBody = args.includes("--body") ? args[args.indexOf("--body") + 1] : "Closes #11119";
+        assert.equal(squashBody, body);
+        return ok();
+      })
+      .on("git", (a) => a[0] === "pull", () => ok());
+    assert.equal(mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" }).ok, true);
+    const lockIndex = runner.calls.findIndex((c) => c.args.includes("merge-lock-acquire"));
+    const readIndex = runner.calls.findIndex((c) => c.args.includes("title,body"));
+    assert.ok(readIndex > lockIndex, "relê a PR sob o lock, sem usar snapshot da descoberta");
+  });
+
+  for (const response of [fail("offline"), ok("invalid json"), ok("{}"), ok('{"title":"fix"}')]) {
+    it(`#11190: mensagem da PR ilegível bloqueia merge e libera lock (${response.stdout || response.stderr})`, () => {
+      const runner = new FakeTrainRunner().withGate2Green().withLockOk();
+      runner.on("gh", (a) => a.includes("title,body"), () => response);
+      const result = mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" });
+      assert.equal(result.ok, false);
+      assert.match(result.error ?? "", /mensagem.*PR/i);
+      assert.ok(!runner.calls.some((c) => c.args[1] === "merge"));
+      assert.ok(runner.calls.some((c) => c.args.includes("merge-lock-release")));
+    });
+  }
 
   it("revalidação de Gate 2 falhando: NÃO tenta lock nem merge", () => {
     const runner = new FakeTrainRunner();
