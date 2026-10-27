@@ -128,6 +128,18 @@ condição de URL precisa casar o path ignorando query string — se casar
 `Page URL` por igualdade exata, o `?via=brevo` apaga a conversão em vez de
 diagnosticá-la.
 
+## Conferir entrega e caminho sem enviar e-mail (#8548)
+
+- `npx tsx scripts/confirmation-email-auth-report.ts` lê do DNS o DKIM
+  (`cka._domainkey.news.diar.ia.br`), o SPF do Return-Path do Kit
+  (`ckespa.news.diar.ia.br`) e o DMARC do remetente. Não cobre caixa de
+  entrada vs. spam nem o Postmaster, que dependem da conta do editor.
+- `npx tsx scripts/confirmation-path-probe.ts` segue, só com GET, os destinos
+  pós-clique (`eia.diar.ia.br/confirmado`, `diar.ia.br/confirmado`,
+  `/confirmada` e `/confirmada?via=brevo`) e confere status, `?via=`, a
+  linha de entrega certa e o container GTM. O campo "After confirming
+  redirect to" do form segue só no painel do Kit.
+
 ## Marca no corpo
 
 O plaintext da Beehiiv trazia `**diar**.**ia****.br**` — artefato da
