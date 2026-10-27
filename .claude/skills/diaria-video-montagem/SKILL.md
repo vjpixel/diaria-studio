@@ -1,6 +1,6 @@
 ---
 name: diaria-video-montagem
-description: Monta o vídeo "diar.ia.br comentada" do dia a partir do bruto no Drive (`{AAMMDD}/` da pasta YouTube) — transcrição por palavra, decupagem (gate 1), roteiro das 3 versões (gate 2), XML FCP7 (xmeml v4) com as 3 sequências para o Premiere, SRTs das verticais, prévia vertical 720x1280 e autorrevisão da prévia. Roda depois do gate da Etapa 4 (o vídeo é gravado depois dele) e antes do `/diaria-publica-video` (o editor exporta do Premiere para `{AAMMDD}/Final/`), standalone, sem encadear. Só na máquina Windows do editor (Drive em `G:`, faster-whisper, ffmpeg). Uso — `/diaria-video-montagem [AAMMDD] [--xml-flop]`.
+description: Monta o vídeo "diar.ia.br comentada" do dia a partir do bruto no Drive (`{AAMMDD}/` da pasta YouTube) — transcrição por palavra, decupagem (gate 1), roteiro das 3 versões (gate 2), XML FCP7 (xmeml v4) com as 3 sequências para o Premiere, SRTs das verticais, prévia vertical 720x1280 e autorrevisão da prévia. Roda depois do gate da Etapa 4 (o vídeo é gravado depois dele) e antes do `/diaria-publica-video` (o editor exporta do Premiere para `{AAMMDD}/Final/`), standalone, sem encadear. Só na máquina Windows do editor (Drive em `G:`, faster-whisper, ffmpeg). Uso — `/diaria-video-montagem [AAMMDD]`.
 ---
 
 # /diaria-video-montagem AAMMDD (#11208)
@@ -12,7 +12,6 @@ Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo qu
 **Argumentos:**
 
 - `AAMMDD` — opcional. Sem ele, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`) e seguir; os scripts recebem sempre a data explícita.
-- `--xml-flop` — leva o desespelhamento no XML (filtro "Flop" do FCP7). Ainda não conferido no Premiere: sem a flag, o editor aplica Horizontal Flip à mão, como na 261027 (ver Premissas).
 
 **Fluxo do dia (#10943, #11209):** `/diaria-edicao` → (o editor grava, depois do gate 4) → `/diaria-video-montagem` → (Premiere e export para `Final/`) → `/diaria-publica-video` → `/diaria-5-publicacao`. Cada skill numa sessão própria, nenhuma encadeia (#5578): ao terminar, sugerir o próximo comando sem rodá-lo.
 
@@ -77,7 +76,7 @@ Criar o Google Doc **"Roteiro final {AAMMDD} (3 versões)"** na pasta da ediçã
 ## Passo 4 — XML para o Premiere
 
 ```bash
-npx tsx scripts/video-montagem.ts build {AAMMDD} [--xml-flop] [--allow-missing]
+npx tsx scripts/video-montagem.ts build {AAMMDD} [--allow-missing]
 ```
 
 Grava `{AAMMDD} - montagem (importar no Premiere).xml` na pasta da edição (xmeml v4, um arquivo de mídia, vídeo e áudio linkados) e `plan.json`. Em cada bloco os silêncios de 0,8 s ou mais saem, com 0,2 s de respiro de cada lado; clipes com menos de 0,6 s são descartados; o fecho segura 0,5 s depois da ÚLTIMA PALAVRA, sem passar do começo da palavra seguinte do bruto; a escala alterna clipe a clipe (punch-in: 50/62 no horizontal, 115/130 nas verticais; bruto menor que 4K sobe a escala para manter a proporção); cada clipe leva o Center calculado do rosto (olhos a ~40% da altura). O stderr lista clipes e duração por sequência.
@@ -119,7 +118,7 @@ Corrigir no `blocks.json` (outra tomada, intervalo explícito) e repetir os Pass
 
 Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a folha de frames, a duração de cada versão, o loudness do bruto e os achados que sobraram da revisão. Depois, o que fica com o editor:
 
-1. Importar o XML no Premiere (File > Import). Sem `--xml-flop`, aplicar **Horizontal Flip** nos clipes das 3 sequências (se o bruto estiver espelhado).
+1. Importar o XML no Premiere (File > Import). Aplicar **Horizontal Flip** nos clipes das 3 sequências (se o bruto estiver espelhado).
 2. Importar o SRT de cada vertical na sequência dela.
 3. Edição fina; logo no início se quiser (a 261023 tinha; não entra na montagem, ver Premissas).
 4. Exportar para **`{AAMMDD}/Final/`** com o destino no nome: `Diaria comentada_Youtube_V{n}.mp4`, `Diaria comentada_Instagram_V{n}.mp4`, `Diaria comentada_Outras redes_V{n}.mp4`. O Premiere sugere o nome da sequência, que já segue esse padrão (`videoTargetOf` em `scripts/lib/diaria/drive-video-source.ts`; o `blocks.json` recusa sequência cujo nome indique outro destino).
@@ -127,9 +126,9 @@ Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a fo
 
 ## Premissas (registradas no PR da #11208)
 
-- **Flip no XML não conferido.** O FCP7 tem o filtro "Flop"; não há registro de que o Premiere o importe. Por isso `--xml-flop` é opt-in: no 1º uso, conferir se o clipe chega desespelhado; se chegar, a flag pode virar default. Detectar o espelhamento sozinho (OCR da caneca) não entrou: o `frame` do Passo 2 resolve com uma olhada.
+- **Flip fica no Premiere.** O Premiere ignora o filtro "Flop" do FCP7 no import (conferido pelo editor, #11358), por isso o XML não leva o desespelhamento e a antiga `--xml-flop` foi removida. Detectar o espelhamento sozinho (OCR da caneca) não entrou: o `frame` do Passo 2 resolve com uma olhada.
 - **Center do Basic Motion** sai em fração da largura/altura da sequência (positivo = direita/baixo), premissa a conferir no 1º import; se o Premiere posicionar errado, ajustar à mão e registrar na issue.
-- **Áudio:** o bruto é estéreo e cada clipe de áudio leva 1 `sourcetrack` (o da 261027, que importou); conferir no 1º import se os dois canais chegam.
+- **Áudio:** o bruto é estéreo e cada clipe de áudio leva 1 `sourcetrack`; o Premiere importa os dois canais (conferido no import da 261027, #11358).
 - **Detecção de rosto:** sem dependência viável e gratuita no Neo (sem OpenCV/MediaPipe); o `framing` vem da leitura do frame com grade (Passo 2) ou do default da 261027.
 - **Escalas das verticais** 115/130 (as da prévia aprovada da 261027; o XML dela usou 89/105, "enquadramento pequeno").
 - **Fades de 20–30 ms** só na prévia; no XML ficam os cortes secos, para o editor tratar no Premiere.

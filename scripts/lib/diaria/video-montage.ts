@@ -1115,15 +1115,6 @@ function baseName(path: string): string {
   return p.slice(p.lastIndexOf("/") + 1);
 }
 
-export interface XmemlOptions {
-  /**
-   * Leva o desespelhamento no XML como o filtro "Flop" (horizontal) do FCP7.
-   * Default false: não foi conferido no Premiere (#11208), que pode ignorar o
-   * filtro no import; aí o editor aplica Horizontal Flip à mão, como na 261027.
-   */
-  flopFilter?: boolean;
-}
-
 function motionFilter(scale: number, center: { horiz: number; vert: number }): string {
   return (
     `<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>\n` +
@@ -1132,22 +1123,20 @@ function motionFilter(scale: number, center: { horiz: number; vert: number }): s
   );
 }
 
-const FLOP_FILTER =
-  `<filter><effect><name>Flop</name><effectid>Flop</effectid><effectcategory>Perspective</effectcategory><effecttype>filter</effecttype><mediatype>video</mediatype>\n` +
-  `<parameter><parameterid>direction</parameterid><name>Direction</name><value>1</value></parameter></effect></filter>`;
-
 /**
  * XML FCP7 (xmeml v4) com uma sequência por plano, importável no Premiere
  * (estrutura da 261027, que importou). Um `<file>` só (o bruto), definido no
  * 1º clipe e referenciado nos outros; vídeo e áudio linkados clipe a clipe
- * (áudio com 1 `sourcetrack`, premissa a conferir no 1º import). Cada clipe
- * leva a escala efetiva e o Center de `framingFor` (o mesmo da prévia).
+ * (áudio com 1 `sourcetrack`: o Premiere importa os 2 canais, conferido no
+ * import da 261027, #11358). Cada clipe leva a escala efetiva e o Center de
+ * `framingFor` (o mesmo da prévia). O XML nunca leva o desespelhamento: o
+ * Premiere ignora o filtro "Flop" do FCP7 no import (#11358), então o
+ * Horizontal Flip é aplicado à mão.
  */
-export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: Framing, opts: XmemlOptions = {}): string {
+export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: Framing): string {
   const fps = source.fps;
   const total = Math.round(source.durationS * fps);
   const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
-  const flop = opts.flopFilter && source.mirrored ? FLOP_FILTER : "";
   let defined = false;
   let cid = 0;
   const fileEl = () => {
@@ -1174,7 +1163,7 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
       const head =
         `<name>${escapeXml(c.block)}</name><enabled>TRUE</enabled><duration>${total}</duration>\n` +
         `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`;
-      v.push(`<clipitem id="v${cid}">${head}${fileEl()}${flop}${motionFilter(fr.scalePct, fr.center)}\n${links}</clipitem>`);
+      v.push(`<clipitem id="v${cid}">${head}${fileEl()}${motionFilter(fr.scalePct, fr.center)}\n${links}</clipitem>`);
       a.push(
         `<clipitem id="a${cid}">${head}<file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem>`,
       );

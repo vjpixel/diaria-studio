@@ -364,9 +364,9 @@ describe("plano das sequências e xmeml (#11208)", () => {
         assert.notEqual(centerOf(0), centerOf(1), "punch-in muda o Center junto com a escala");
       }
     });
-    assert.doesNotMatch(xml, /Flop/, "sem --xml-flop o flip fica para o Premiere");
-    assert.match(buildXmeml(plans, SOURCE, FRAMING, { flopFilter: true }), /<effectid>Flop<\/effectid>/);
-    assert.doesNotMatch(buildXmeml(plans, { ...SOURCE, mirrored: false }, FRAMING, { flopFilter: true }), /Flop/);
+    // #11358: o Premiere ignora o Flop do FCP7; o XML nunca leva o flip, mesmo com bruto espelhado.
+    assert.equal(SOURCE.mirrored, true);
+    assert.doesNotMatch(xml, /Flop/, "o flip fica para o Premiere");
     // nome com & < ' continua XML válido
     const weird = { ...SOURCE, path: "G:/Drive/a&b <c> 'd'.mp4" };
     const x2 = buildXmeml([{ ...plans[0], spec: { ...plans[0].spec, name: "Diaria comentada_Youtube_V1 & <teste>" } }], weird, FRAMING);
