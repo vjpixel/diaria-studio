@@ -551,7 +551,7 @@ describe("buildBlockReason — LOCK_CONTENTION_HINT (#6497, cenário do incident
 
   it("blockCause 'not-authorized'/'scan-degraded' → NÃO acrescenta o hint de lock (causa não é o lock)", () => {
     assert.equal(buildBlockReason({ blockCause: "not-authorized" }), BLOCK_REASON);
-    assert.equal(buildBlockReason({ blockCause: "scan-degraded" }), BLOCK_REASON);
+    assert.match(buildBlockReason({ blockCause: "scan-degraded" }), /varredura de sessões degradada/);
   });
 
   it("concessão ESCOPADA que não bate + blockCause de lock → acrescenta OS DOIS hints", () => {
