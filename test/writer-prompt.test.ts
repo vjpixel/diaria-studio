@@ -34,9 +34,18 @@ describe("writer.md invariants (#1208)", () => {
   const content = readFileSync(WRITER_MD, "utf8");
 
   it("contém instrução explícita de char count por destaque", () => {
-    // janela única desde #6061: todos os destaques 900-1000
-    assert.match(content, /900-1000/);
-    assert.ok(!/1000-1200/.test(content), "janela assimétrica antiga do D1 não deve mais existir no prompt");
+    // #11321: janela por posição — D1 1100-1200, D2/D3 900-1000
+    assert.match(content, /D1 1100-1200, D2\/D3 900-1000/);
+    assert.match(content, /\| D1 \| 1100 \| 1200 \|/);
+    assert.ok(!/D1\/D2\/D3 todos entre 900-1000/.test(content), "a janela única do #6061 não deve mais existir no prompt");
+  });
+
+  it("writer-destaque.md: janela do D1 1100-1200 e D2/D3 900-1000 (#11321)", () => {
+    const wd = readFileSync(WRITER_DESTAQUE_MD, "utf8");
+    assert.match(wd, /\*\*D1\*\* entre \*\*1100-1200 chars\*\*/);
+    assert.match(wd, /\*\*D2 e D3\*\* entre \*\*900-1000 chars\*\*/);
+    assert.match(wd, /D1 → 1100-1200; D2\/D3 → 900-1000/);
+    assert.ok(!/D1\/D2\/D3 → todos 900-1000/.test(wd), "validação pré-write não pode manter a janela única");
   });
 
   it("contém anti-pattern reference pra D2/D3 anêmicos (#1208)", () => {

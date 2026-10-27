@@ -1460,12 +1460,12 @@ describe("reorder-destaques CLI (#3980): TÍTULO/SUBTÍTULO pós-reorder", () =>
 });
 
 describe("reorder-destaques CLI (#3982): validação destaque-max-chars pós-reorder", () => {
-  it("corpo acima da janela única (900–1000, #6061) sobrevive ao reorder → WARN, sem hard-fail", () => {
+  it("D1 de 1100 chars (dentro da janela do D1, #11321) movido pra D2 estoura o teto de 1000 → WARN, sem hard-fail", () => {
     const dir = makeEditionDirFixture();
     try {
       const md = buildReviewedMdFixture({
         d1Title: "D1 grande",
-        d1Body: "A".repeat(1100), // acima do teto da janela única (1000) — o WARN vem do texto, não do movimento
+        d1Body: "A".repeat(1100), // ok em D1 (1100–1200); o WARN vem do MOVIMENTO pra D2 (teto 1000)
         d2Title: "D2 pequeno",
         d2Body: "A".repeat(600),
         d3Title: "D3 pequeno",
@@ -1516,6 +1516,63 @@ describe("reorder-destaques CLI (#3982): validação destaque-max-chars pós-reo
 
       const parsed = JSON.parse(result.stdout);
       assert.equal(parsed.max_chars_warnings.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("D1 dentro da janela do D1 continua sem warning de max quando fica em D1 (#11321)", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const md = buildReviewedMdFixture({
+        d1Title: "D1 grande",
+        d1Body: "A".repeat(1150),
+        d2Title: "D2 ok",
+        d2Body: "A".repeat(950),
+        d3Title: "D3 ok",
+        d3Body: "A".repeat(950),
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+
+      // Troca só D2<->D3: D1 fica no slot 1, onde 1150 cabe.
+      const result = runReorderCli(["--edition", "999999", "--edition-dir", dir, "--new-order", "1,3,2"]);
+      assert.equal(result.status, 0, result.stderr);
+      const parsed = JSON.parse(result.stdout);
+      assert.equal(parsed.max_chars_warnings.length, 0, JSON.stringify(parsed.max_chars_warnings));
+      assert.equal(parsed.min_chars_warnings.length, 0, JSON.stringify(parsed.min_chars_warnings));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reorder-destaques CLI (#11321): validação destaque-min-chars pós-reorder", () => {
+  it("D2 de 950 chars promovido a D1 fica abaixo do piso de 1100 → WARN, sem hard-fail", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const md = buildReviewedMdFixture({
+        d1Title: "D1 ok",
+        d1Body: "A".repeat(1150),
+        d2Title: "D2 ok",
+        d2Body: "A".repeat(950),
+        d3Title: "D3 ok",
+        d3Body: "A".repeat(950),
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+
+      const result = runReorderCli(["--edition", "999999", "--edition-dir", dir, "--new-order", "2,1,3"]);
+      assert.equal(result.status, 0, `CLI não deveria falhar por min-chars. stderr: ${result.stderr}`);
+      assert.match(result.stderr, /destaque-min-chars pós-reorder/);
+
+      const parsed = JSON.parse(result.stdout);
+      assert.equal(parsed.min_chars_warnings.length, 1, JSON.stringify(parsed.min_chars_warnings));
+      assert.match(parsed.min_chars_warnings[0], /^D1 /);
+      assert.match(parsed.min_chars_warnings[0], /950 chars/);
+      assert.match(parsed.min_chars_warnings[0], /mínimo de 1100/);
+      // O antigo D1 (1150) agora em D2 estoura o teto de 1000.
+      assert.equal(parsed.max_chars_warnings.length, 1);
+      assert.match(parsed.max_chars_warnings[0], /^D2 /);
+      assert.match(parsed.max_chars_warnings[0], /máximo de 1000/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
