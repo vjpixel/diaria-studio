@@ -15,7 +15,10 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  * `Diaria comentada_Youtube_V3.mp4`, `_Instagram_V3`, `_Outras redes_V3`). O
  * destino escolhe o arquivo: horizontal = `_Youtube_`; vertical =
  * `_Outras redes_` (default) ou `_Instagram_` com `--target instagram`. Regra
- * completa em `scripts/lib/diaria/drive-video-source.ts`.
+ * completa em `scripts/lib/diaria/drive-video-source.ts`. Sem `.mp4` em
+ * `Final/` (ou "Finais"/"Versão final"), a subpasta `Editado/` (e variações)
+ * é listada com a mesma regra (#11385: a 261028 veio em
+ * `Editado/Diaria comentada_Youtube_FINAL.mp4`).
  *
  * - horizontal: baixa para `{editionDir}/diaria-comentada-{AAMMDD}.mp4`
  *   (`youtubeVideoFileName`), o default do `publish-youtube.ts`.
@@ -69,7 +72,9 @@ import {
   DRIVE_VIDEO_WINDOW_HOURS,
   VIDEO_TARGETS,
   defaultVideoTarget,
+  isEditedFolderName,
   isFinalFolderName,
+  isMp4VideoFile,
   selectDriveVideo,
   targetOrientation,
   type DriveVideoFile,
@@ -153,7 +158,7 @@ interface OutputBase {
 
 interface OutputWithFolder extends OutputBase {
   edition_folder_id: string | null;
-  /** Subpasta(s) `Final/` dentro da da edição (#11222); vazio sem ela. */
+  /** Subpasta(s) `Final/` (ou `Editado/`, #11385) listadas dentro da da edição (#11222); vazio sem elas. */
   final_folder_ids: string[];
   /** Destino usado na escolha dentro de `Final/` (#11222). */
   target: VideoTarget;
@@ -357,13 +362,36 @@ export async function runFetchDriveVideo(
       );
       // #11222: o vídeo pronto mora em `{AAMMDD}/Final/`. Mais de uma `Final`
       // (raro) entra inteira: a ambiguidade aparece no nível do arquivo.
-      for (const finalFolder of inside.filter((f) => f.mimeType === FOLDER_MIME && isFinalFolderName(f.name))) {
-        finalFolderIds.push(finalFolder.id);
-        const finals = await listDriveChildren(deps, finalFolder.id, timeouts.listMs);
-        files.push(
-          ...finals.filter((f) => f.mimeType !== FOLDER_MIME).map((f) => ({ ...f, scope: "final-folder" as const })),
-        );
+      const listFinalLike = async (folders: DriveVideoFile[]): Promise<DriveVideoFile[]> => {
+        const out: DriveVideoFile[] = [];
+        for (const folder of folders) {
+          finalFolderIds.push(folder.id);
+          const children = await listDriveChildren(deps, folder.id, timeouts.listMs);
+          out.push(...children.filter((f) => f.mimeType !== FOLDER_MIME).map((f) => ({ ...f, scope: "final-folder" as const })));
+        }
+        return out;
+      };
+      const subfolders = inside.filter((f) => f.mimeType === FOLDER_MIME);
+      let finalFiles = await listFinalLike(subfolders.filter((f) => isFinalFolderName(f.name)));
+      // #11385: sem candidato DESTE destino em Final/ (sem .mp4, ou só os
+      // verticais quando se pede o horizontal), o vídeo pronto pode estar em
+      // Editado/ (261028). Final/ com candidato mantém a precedência.
+      const probe = selectDriveVideo([...files, ...finalFiles], {
+        orientation,
+        now: input.now,
+        windowHours: input.windowHours,
+        editionFolderPresent: true,
+        target,
+      });
+      if (probe.kind === "none") {
+        const edited = subfolders.filter((f) => isEditedFolderName(f.name));
+        if (edited.length > 0) {
+          const why = finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
+          log(`[premissa] ${why} — procurando o vídeo pronto em ${edited.map((f) => `${f.name}/`).join(", ")} (#11385)`);
+          finalFiles = [...finalFiles, ...(await listFinalLike(edited))];
+        }
       }
+      files.push(...finalFiles);
     } else {
       log(`[premissa] sem subpasta ${aammdd}/ na pasta do Drive — só arquivos soltos na raiz, últimas ${input.windowHours}h`);
     }

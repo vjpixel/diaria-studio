@@ -24,6 +24,15 @@ export const YOUTUBE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/youtube.upload",
   // channels.list?mine=true — confirmar QUAL canal foi autorizado.
   "https://www.googleapis.com/auth/youtube.readonly",
+  // captions.insert — legenda SRT do horizontal (#11384). Tokens anteriores
+  // não o têm: o publish-youtube.ts segue sem legenda e manda rodar o setup.
+  "https://www.googleapis.com/auth/youtube.force-ssl",
+] as const;
+
+/** Sem estes o token não serve para o upload (o setup recusa gravar). */
+export const YOUTUBE_REQUIRED_SCOPES = [
+  "https://www.googleapis.com/auth/youtube.upload",
+  "https://www.googleapis.com/auth/youtube.readonly",
 ] as const;
 
 export const YOUTUBE_OAUTH_REDIRECT_PORT = 8767;
@@ -105,7 +114,17 @@ export function explainYouTubeApiError(status: number, body: string): string {
  */
 export function missingGrantedScopes(grantedScope: string | undefined): string[] {
   const granted = new Set(String(grantedScope ?? "").split(/\s+/).filter(Boolean));
-  return YOUTUBE_OAUTH_SCOPES.filter((s) => !granted.has(s));
+  return YOUTUBE_REQUIRED_SCOPES.filter((s) => !granted.has(s));
+}
+
+/**
+ * Escopos pedidos sem os quais o token ainda serve para o vídeo (#11384:
+ * `youtube.force-ssl`, só a legenda depende dele). Desmarcado no consentimento,
+ * o setup grava o token e avisa; o `publish-youtube.ts` sobe o vídeo sem legenda.
+ */
+export function missingOptionalScopes(grantedScope: string | undefined): string[] {
+  const granted = new Set(String(grantedScope ?? "").split(/\s+/).filter(Boolean));
+  return YOUTUBE_OAUTH_SCOPES.filter((s) => !(YOUTUBE_REQUIRED_SCOPES as readonly string[]).includes(s) && !granted.has(s));
 }
 
 /** Resposta do `oauth2.googleapis.com/token` que interessa à decisão. */
@@ -139,7 +158,7 @@ export function decidePersist(args: {
   if (missing.length > 0) {
     return {
       persist: false,
-      reason: `O consentimento não concedeu: ${missing.join(", ")}. Rode de novo e deixe os 2 escopos marcados`,
+      reason: `O consentimento não concedeu: ${missing.join(", ")}. Rode de novo e deixe todos os escopos marcados`,
     };
   }
   if (channelsStatus < 200 || channelsStatus >= 300) {
