@@ -52,6 +52,7 @@ import {
   intentionalErrorsForEdition,
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
+import { decodeKitClickUrl } from "./lib/kit-click-url.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -60,7 +61,8 @@ export type IssueCategory =
   | "version_inconsistency"
   | "semantic_drift"
   | "intentional_error_confirmed"
-  | "subject_mismatch";
+  | "subject_mismatch"
+  | "vote_merge_tag_unresolved";
 
 export interface LintIssue {
   type: IssueType;
@@ -80,14 +82,72 @@ export interface LintResult {
 }
 
 /**
- * #1645: normaliza o subject de um email Beehiiv pra comparação. Remove o
- * prefixo `[TEST] ` que o Beehiiv auto-adiciona em test emails (pode até
- * repetir — `[TEST] [TEST] `, ver #1215) e apara espaços.
+ * Prefixos de test email, case-insensitive: `[TEST] ` (Beehiiv) e `[teste] `
+ * (Kit, fallback `publish-newsletter-kit.ts --send-test` — #11403, achado na
+ * revisão da 261028, onde o prefixo do Kit virava `subject_mismatch` falso).
+ */
+const TEST_SUBJECT_PREFIX_RE = /^\[(?:TEST|TESTE)\]\s*/i;
+
+/**
+ * #1645: normaliza o subject de um email de teste pra comparação. Remove o
+ * prefixo de teste — `[TEST] ` que o Beehiiv auto-adiciona (pode até repetir —
+ * `[TEST] [TEST] `, ver #1215) ou `[teste] ` do Kit (#11403) — e apara espaços.
  */
 export function normalizeSubject(s: string): string {
   let out = s.trim();
-  while (/^\[TEST\]\s*/i.test(out)) out = out.replace(/^\[TEST\]\s*/i, "");
+  while (TEST_SUBJECT_PREFIX_RE.test(out)) out = out.replace(TEST_SUBJECT_PREFIX_RE, "");
   return out.trim();
+}
+
+/**
+ * #11403: confirma que a merge tag de identidade do voto do É IA? foi
+ * expandida no e-mail ENTREGUE pelo Kit. O Kit embrulha todo link no click
+ * tracking (`*.click.kit-mail3.com/.../{destino em base64url}`), então a URL
+ * `.../vote/{AAMMDD}/{A|B}?email=...` não aparece em claro — decodificamos o
+ * destino (`decodeKitClickUrl`) e checamos os parâmetros.
+ *
+ * Só olha links embrulhados pelo Kit: na Beehiiv a tag pode sair literal por
+ * limitação conhecida do modo de envio genérico (#6011/#6608), coberta pelo
+ * `lint-test-email-link-tracking.ts`. Sem nenhum voto embrulhado pelo Kit,
+ * retorna null (nada a confirmar — a ausência do É IA? é do lint de estrutura).
+ *
+ * Blocker quando algum voto traz `{{...}}` literal (cru ou percent-encoded) ou
+ * um `email=` vazio/que não parece endereço (K3 do `review-test-email`: tag
+ * crua no e-mail entregue é falha real).
+ */
+export function checkKitVoteMergeTag(emailText: string): LintIssue | null {
+  const hrefRe = /href\s*=\s*["']([^"']+)["']/gi;
+  const problems: string[] = [];
+  let votes = 0;
+  let m: RegExpExecArray | null;
+  while ((m = hrefRe.exec(emailText)) !== null) {
+    const raw = m[1].replace(/&amp;/g, "&");
+    const dest = decodeKitClickUrl(raw);
+    if (!dest) continue;
+    let u: URL;
+    try {
+      u = new URL(dest);
+    } catch {
+      continue;
+    }
+    if (!/\/vote\/\d{6}\/[A-Za-z]\b/.test(u.pathname)) continue;
+    votes++;
+    // searchParams já decodifica `%7B%7B` → `{{`; checar também o destino cru.
+    const literalTag = /\{\{|%7B%7B/i.test(dest) || [...u.searchParams.values()].some((v) => v.includes("{{"));
+    const email = u.searchParams.get("email");
+    if (literalTag) {
+      problems.push(`${u.pathname}: merge tag literal (${u.search})`);
+    } else if (email !== null && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      problems.push(`${u.pathname}: email='${email}' não é um endereço`);
+    }
+  }
+  if (votes === 0 || problems.length === 0) return null;
+  return {
+    type: "blocker",
+    category: "vote_merge_tag_unresolved",
+    destaque: "É IA?",
+    detail: `Merge tag do voto do É IA? não expandiu no e-mail entregue pelo Kit: ${problems.join("; ")}`,
+  };
 }
 
 /**
@@ -170,6 +230,10 @@ export function runLints(
     );
     if (subjectIssue) issues.push(subjectIssue);
   }
+
+  // Check 0b (#11403): merge tag do voto do É IA? expandida no e-mail do Kit.
+  const voteIssue = checkKitVoteMergeTag(emailText);
+  if (voteIssue) issues.push(voteIssue);
 
   // Check 8: version consistency intra-destaque (no email).
   // Detectamos no email — divergência V4 vs V5 dentro do mesmo destaque é o caso.
