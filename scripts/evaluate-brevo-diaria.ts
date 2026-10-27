@@ -725,7 +725,7 @@ export async function fetchBrevoContactState(
     ...(blacklistAt !== null ? { blacklist_event_latest_at: blacklistAt } : {}),
     ...(blacklistUndated ? { blacklist_event_undated: true } : {}),
     ...(opts.semanalDesdeMs !== undefined
-      ? { semanal: buildSemanalEvaluationInput(res.body?.statistics, opts.semanalDesdeMs, opts.nowMs ?? Date.now()) }
+      ? { semanal: buildSemanalEvaluationInput(res.body?.statistics, opts.semanalDesdeMs, opts.nowMs ?? Date.now(), email) }
       : {}),
   };
 }
