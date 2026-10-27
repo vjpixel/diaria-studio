@@ -284,7 +284,7 @@ export interface ShortsConfig {
    * (`INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN`).
    */
   instagramAuthorPage: string | null;
-  /** Usernames convidados como collab no Reels (#10790: `diar.ia.br`). Máx. 3 (limite da Graph API). */
+  /** Usernames convidados como collab no Reels (#11223: `vjpixel`; antes, #10790: `diar.ia.br`). Máx. 3 (limite da Graph API). */
   instagramCollaborators: string[];
   /** #10772: vídeo nativo no perfil pessoal do LinkedIn (Videos API, token `LINKEDIN_PERSONAL_*`). */
   linkedinProfile: boolean;
@@ -321,8 +321,9 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   // #10790 (decisão do editor, 22/10/2026): MemeLab fora da rotina.
   facebookPages: Object.freeze(["diaria", "vjpixel"]) as unknown as string[],
   instagram: true,
-  instagramAuthorPage: "vjpixel",
-  instagramCollaborators: Object.freeze(["diar.ia.br"]) as unknown as string[],
+  // #11223 (decisão do editor, 27/10/2026): autora @diar.ia.br (conta do env), @vjpixel em collab.
+  instagramAuthorPage: null,
+  instagramCollaborators: Object.freeze(["vjpixel"]) as unknown as string[],
   // #10772 (tabela confirmada no briefing 261022b): LinkedIn pessoal + repost da página, X @diariabr.
   linkedinProfile: true,
   linkedinPageRepost: true,
@@ -697,7 +698,7 @@ const brtHHMM = (iso: string) => new Date(Date.parse(iso) - 3 * 3_600_000).toISO
  *     skill lê um horário só pra eles;
  *   - o Instagram conta também como post dos collabs (`cfg.instagramCollaborators`,
  *     decisão do editor 261023): o aviso do teste e o espaçamento do planner
- *     olham os posts da autora E os da @diar.ia.br em collab.
+ *     olham os posts da autora E os dos collabs (hoje a @vjpixel, #11223).
  */
 export function planShortSlots(input: {
   aammdd: string;
