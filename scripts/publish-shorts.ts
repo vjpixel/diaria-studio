@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
 /**
  * scripts/publish-shorts.ts (#10769)
  *
@@ -2075,14 +2076,14 @@ function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: 
 
 const USAGE =
   "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
-  "                       [--linkedin-timer] [--force-youtube]\n" +
+  "                       [--linkedin-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "force-youtube"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "force-youtube", "keep-video"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -2130,6 +2131,9 @@ async function main(): Promise<number> {
   const writer = shortsRegistryWriterFor(flags.has("linkedin-timer"));
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
+  const cleanup = () => cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
+    config: () => loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))),
+    keepVideo: flags.has("keep-video"), log: console.error });
   const persist = (entry: ShortPublishedEntry): ShortsPublishedFile => persistShortEntry(dir, aammdd, writer, entry);
 
   if (values["mark"]) {
@@ -2152,6 +2156,7 @@ async function main(): Promise<number> {
     }
     published = persist(built.entry);
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
+    cleanup();
     return 0;
   }
 
@@ -2168,7 +2173,11 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  if (flags.has("confirm-instagram")) return confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"]);
+  if (flags.has("confirm-instagram")) {
+    const result = await confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"]);
+    if (result === 0) cleanup();
+    return result;
+  }
 
   const reviewedPath = join(dir, "02-reviewed.md");
   if (!existsSync(reviewedPath)) {
@@ -2176,6 +2185,12 @@ async function main(): Promise<number> {
     return 1;
   }
   const videoPath = resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
+  if (values["from-drive"] && !existsSync(videoPath) && shortsVideoTerminal(dir, aammdd,
+    loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
+    cleanup();
+    console.error("[ok] destinos do vertical já concluídos — nada a baixar");
+    return 0;
+  }
   if (values["from-drive"]) {
     const id = values["from-drive"];
     if (!/^[\w-]{10,}$/.test(id)) {
@@ -2457,6 +2472,7 @@ async function main(): Promise<number> {
     guided: plan.items.filter((i) => i.action === "guided").length,
   };
   console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
+  cleanup();
   return summary.failed > 0 ? 1 : 0;
 }
 
