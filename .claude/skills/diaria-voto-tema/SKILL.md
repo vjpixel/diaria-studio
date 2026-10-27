@@ -45,9 +45,28 @@ por pessoa, grava a tabela reversa `polltoken:{token} -> email` no KV,
 patcha o custom field `voto_token` no Kit, e grava
 `tema:ballot:{aamm}` (com `eleitores[]` como hash, nunca e-mail cru).
 
+**Revisão de texto ANTES do `--push` (#11199, sempre, sem perguntar).** A
+cédula vai pro KV no `abrir`; corrigir depois exige `voto-tema-open.ts --force`
+e regravar o broadcast (foi o que aconteceu no ciclo 2611):
+
+1. Passar `Skill("humanizador", ...)` (rubric completo) no `titulo` da votação
+   e no `titulo`/`descricao` de cada opção de `ballot.json`, aplicando o que ele
+   apontar.
+2. Passar `mcp__clarice__correct_text(...)` no mesmo texto, aceitando as
+   sugestões (#4514). Preservar `n`, `prazo` e `proponente`.
+3. Gravar o resultado em `ballot.json` e marcar a revisão:
+   `npx tsx scripts/voto-tema-marcar-revisado.ts --ciclo AAMM --humanizador --clarice`.
+   O marcador guarda o hash do texto: qualquer edição posterior da cédula o
+   invalida, e `publish-voto-tema-kit.ts --push` recusa criar o rascunho
+   (eleitorado e lembrete) sem marcador válido ou com o KV diferente da cédula
+   revisada. `voto-tema-open.ts` só avisa; o bloqueio é no envio.
+
+Clarice indisponível = halt banner (#738), nunca marcar sem a passada.
+
 ```
 npx tsx scripts/sync-apoio-nivel-kit.ts --push          # se a base de apoio mudou desde o último sync
 npx tsx scripts/sync-apoio-voto-tema-tag-kit.ts --push   # projeta apoio_nivel → tag apoio-voto-tema
+npx tsx scripts/voto-tema-marcar-revisado.ts --ciclo AAMM --humanizador --clarice  # depois das 2 passadas
 npx tsx scripts/voto-tema-open.ts --ciclo AAMM --dry-run
 npx tsx scripts/voto-tema-open.ts --ciclo AAMM --push
 ```
@@ -76,7 +95,17 @@ critério 1 de "Perguntar é exceção" no `CLAUDE.md`): test-send pra
 `diaria-test-email`, conferência visual + clique real de teste, e só então
 o editor dispara manualmente no painel do Kit.
 
+Antes do `--push` (#11199): passar Humanizador e depois Clarice no texto
+COMPLETO do e-mail (intro fixa + assunto + cédula; o `--dry-run` mostra o
+assunto). Ajuste na cédula → gravar em `ballot.json`, rodar de novo
+`voto-tema-marcar-revisado.ts` e regravar o KV com `voto-tema-open.ts --push
+--force`. Ajuste na intro ou no assunto (copy fixa) → corrigir também o
+template (`renderVotoTemaEmailHtml` e os assuntos em `publish-voto-tema-kit.ts`)
+antes de criar o rascunho. O `--push` recusa sem marcador válido; o `--dry-run`
+avisa.
+
 ```
+npx tsx scripts/voto-tema-marcar-revisado.ts --ciclo AAMM --check
 npx tsx scripts/publish-voto-tema-kit.ts --ciclo AAMM --dry-run
 npx tsx scripts/publish-voto-tema-kit.ts --ciclo AAMM --push
 ```
@@ -155,7 +184,8 @@ npx tsx scripts/voto-tema-stats.ts --ciclo AAMM
 Marca quem ainda não votou com a tag `voto-tema-pendente`
 (`voto-tema-lembrete.ts`), depois `enviar --audience pendentes` pra criar o
 rascunho do 2º broadcast (mesmo gate humano do `enviar` acima antes de
-disparar).
+disparar). O lembrete tem assunto próprio: passar Humanizador + Clarice nele
+também, e o guard do marcador `revisado` vale igual (#11199).
 
 ```
 npx tsx scripts/voto-tema-lembrete.ts --ciclo AAMM --push
