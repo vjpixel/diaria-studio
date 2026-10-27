@@ -287,9 +287,9 @@
       "instagram_collaborators": ["vjpixel"],
       "instagram_api_max_seconds_by_account": {
         "vjpixel": 40,
-        "diaria": 55
+        "diaria": 30
       },
-      "instagram_api_max_seconds_note": "#10893/#10916: teto de duracao do Reels pela Content Publishing API, POR CONTA (a chave e o slug de instagram_author_page; diaria = autora null, a conta da diar.ia.br do env). Medido: @vjpixel aceita 40 s e recusa 42 s (22/10/2026); @diar.ia.br aceita 55 s e recusa 58 s (23/10/2026), sempre por duracao, nao por tamanho. Acima do teto o Instagram vira passo guiado no Chrome com a versao <=10 MB (#10915). Conta fora do mapa cai em instagram_api_max_seconds (legado, global) e depois em 40; null desliga o teto daquela conta. Lido por scripts/lib/diaria/short-video.ts (loadInstagramApiMaxSeconds).",
+      "instagram_api_max_seconds_note": "#10893/#10916/#11281: teto de duracao do Reels pela Content Publishing API, POR CONTA (a chave e o slug de instagram_author_page; diaria = autora null, a conta da diar.ia.br do env). @vjpixel: aceita 40 s e recusa 42 s (22/10/2026). @diar.ia.br: teto configurado 30 s (#11281). Medicoes da @diar.ia.br divergem: sintetico de 40 s recusado (22/10/2026), sinteticos de 10 a 55 s aceitos e 58 s recusado (23/10/2026), e o vertical REAL de 49,9 s recusado com ProcessingFailedError (27/10/2026) — entao o corte nessa conta nao e so a duracao de um video sintetico. 30 s e o maior valor sem nenhuma recusa registrada na conta; acima dele o plano manda direto pro passo guiado em vez de tentar e falhar. Subir so com nova medicao num vertical REAL. Acima do teto o Instagram vira passo guiado no Chrome com a versao <=10 MB (#10915). Conta fora do mapa cai em instagram_api_max_seconds (legado, global) e depois em 40; null desliga o teto daquela conta. Lido por scripts/lib/diaria/short-video.ts (loadInstagramApiMaxSeconds).",
       "linkedin_profile": true,
       "linkedin_page_repost": true,
       "x": true,

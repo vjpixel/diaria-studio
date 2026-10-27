@@ -871,9 +871,11 @@ function validMaxSeconds(v: unknown, field: string): number | null {
 
 /**
  * Teto de duração do Reels pela API para a conta que publica (#10916). O teto
- * é POR CONTA: medido em 22-23/10/2026, a @vjpixel aceita 40 s e recusa 42 s
- * (#10893) e a @diar.ia.br aceita 55 s e recusa 58 s (#10916), sempre por
- * duração, nunca por tamanho. Ordem:
+ * é POR CONTA: a @vjpixel aceita 40 s e recusa 42 s (#10893, 22/10/2026). Na
+ * @diar.ia.br as medições divergem — sintéticos de até 55 s passaram em 23/10
+ * (#10916), mas um sintético de 40 s (22/10) e o vertical REAL de 49,9 s (27/10)
+ * foram recusados —, então o config usa 30 s, o maior valor sem recusa
+ * registrada (#11281). Os valores vivem no config, não aqui. Ordem:
  *   1. `publishing.shorts.instagram_api_max_seconds_by_account[chave]`, com a
  *      chave de `instagramAccountKey(authorPage)`;
  *   2. `publishing.shorts.instagram_api_max_seconds` (legado, vale pra

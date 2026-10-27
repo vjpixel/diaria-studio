@@ -47,7 +47,10 @@
  *      #10137: medido que, assim delegado, ninguém rodava o passo (zero
  *      substituição desde 260818). Para os DESTAQUES D1-D3 a busca agora
  *      roda aqui, determinística (Brave), em §1u-sexies — ver fase
- *      `post-select-render`. Itens de RADAR não-destaque seguem delegados.
+ *      `post-select-render`. Desde #10162 o mesmo passo cobre o pool (RADAR
+ *      launch_candidate + USE MELHOR); só a promoção radar→lançamento segue
+ *      delegada. Medição 261015-261028 (#10137): o passo rodou em todas as
+ *      10 edições.
  *   3. §1m-quinquies (discovery-searcher por vídeo não-YouTube) — **NÃO
  *      COBERTO**, delegado. Mesmo racional: fail-soft explícito
  *      (`video_url_unverified: true`, editor cola manualmente no gate).
@@ -657,10 +660,10 @@ export interface Stage1RunResult {
 
 const DELEGATED_STEPS = [
   "§1f Path B — as ~5 queries PT + ~5 EN temáticas genéricas não têm pool determinístico (diferente de how-to/negative-impact, que TÊM); julgamento do orchestrator sobre o que é relevante hoje.",
-  "§1m-ter — busca ativa de fonte primária para itens de RADAR com launch_candidate (discovery-searcher + promoção radar→lançamento) — opcional/fail-soft, nunca executado por este script. Os DESTAQUES D1-D3 são cobertos deterministicamente por §1u-sexies (#10137).",
+  "§1m-ter — só a PROMOÇÃO radar→lançamento (discovery-searcher) segue delegada e não roda neste script. A busca de fonte primária em si roda em §1u-sexies (primary-source-active-lookup.ts, Brave determinístico): destaques D1-D3 (#10137) e pool RADAR launch_candidate + USE MELHOR (#10162), com a URL oficial trocada no lugar.",
   "§1m-quinquies — resolução de URL de vídeo pro YouTube (discovery-searcher) — opcional/fail-soft, nunca executado por este script.",
   "§1g cost-capture (record-agent-costs.ts) — precisa do bloco <usage> real dos dispatches Agent, indisponível a um script puro.",
-  "§1y resolve-primary-source.ts (discovery-searcher pós-gate) — enhancement opcional fail-soft, nunca executado por este script; para os destaques D1-D3, substituído por §1u-sexies (primary-source-active-lookup.ts, pré-gate, #10137).",
+  "§1y resolve-primary-source.ts (discovery-searcher pós-gate) — não roda neste script; substituído pré-gate por §1u-sexies (primary-source-active-lookup.ts) para D1-D3 (#10137) e pool RADAR/USE MELHOR (#10162).",
   "§1x GATE HUMANO — apresentação formatada ao editor + espera de aprovação continuam do orchestrator.",
 ];
 

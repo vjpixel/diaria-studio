@@ -44,6 +44,12 @@ export interface PrimarySourceLookup {
    * headline about the same launch).
    */
   match?: "similarity" | "same-story";
+  /**
+   * #10137: título do resultado oficial escolhido — sem ele, o log
+   * `01-primary-source-lookup.json` não permitia auditar a troca (caso
+   * 261027: "Gemini 4 Carbon" trocado por página do "Gemini 4 Argon").
+   */
+  to_title?: string;
 }
 
 /**
@@ -80,8 +86,9 @@ const VARIANT_AFTER_VERSION = new RegExp(`^[\\s-]+(${VARIANT_WORDS.join("|")})\\
 // de produto — nunca colapsa pro modelo-base.
 const HYPHEN_SUFFIX_AFTER_VERSION = /^-([A-Za-z]\w*)\b/;
 
-export function extractVersionedProductCodes(text: string): Set<string> {
-  const codes = new Set<string>();
+/** Each versioned code with the text that follows it (after variant suffixes). */
+function versionedProductCodeEntries(text: string): Array<{ code: string; rest: string }> {
+  const entries: Array<{ code: string; rest: string }> = [];
   const re = /\b([A-Z][A-Za-z]*)[\s-]?(\d+(?:\.\d+)*[a-z]?)(?![\w.]*\d)/g;
   for (const m of text.matchAll(re)) {
     const version = m[2];
@@ -95,9 +102,63 @@ export function extractVersionedProductCodes(text: string): Set<string> {
       code += v[1].toLowerCase();
       rest = rest.slice(v[0].length);
     }
-    codes.add(code);
+    entries.push({ code, rest });
   }
-  return codes;
+  return entries;
+}
+
+export function extractVersionedProductCodes(text: string): Set<string> {
+  return new Set(versionedProductCodeEntries(text).map((e) => e.code));
+}
+
+/**
+ * #10137 (caso 261027): codinome capitalizado logo depois da versão — "Gemini 4
+ * Carbon", "Gemini 4 Argon", "GPT-6.1 Sol". A lista fechada `VARIANT_WORDS`
+ * não cobre codinome novo, então "Gemini 4 Carbon" e "Gemini 4 Argon" viravam
+ * o mesmo código `gemini4` e o RADAR trocou a matéria do Carbon pela página
+ * do Argon. Palavras de título em Title Case que não nomeiam variante (verbo,
+ * preposição, artigo) não contam.
+ */
+const NON_CODENAME_WORDS = new Set([
+  "is", "are", "was", "were", "be", "now", "here", "launches", "launched", "launch", "arrives", "arrive",
+  "gets", "get", "brings", "adds", "comes", "rolls", "goes", "hits", "lands", "debuts", "released",
+  "release", "with", "and", "or", "for", "in", "on", "to", "the", "a", "an", "vs", "versus", "of", "by",
+  "at", "from", "into", "beats", "takes", "makes", "can", "will", "just", "finally", "officially",
+  "chega", "ganha", "estreia", "lança", "traz", "vem", "é", "já", "agora", "faz",
+]);
+
+function codenameFromRest(rest: string): string | undefined {
+  const m = /^[ \t]+([A-ZÀ-Ý][\p{L}]+)/u.exec(rest);
+  if (!m) return undefined;
+  const word = m[1].toLowerCase();
+  return NON_CODENAME_WORDS.has(word) ? undefined : word;
+}
+
+export function codenameAfterProductCode(title: string, code: string): string | undefined {
+  const entry = versionedProductCodeEntries(title).find((e) => e.code === code);
+  return entry ? codenameFromRest(entry.rest) : undefined;
+}
+
+/**
+ * Codinome no slug da URL candidata — `…/gemini-4-argon` → "argon" para o
+ * código `gemini4`. Só olha o token imediatamente depois de `{produto}-{versão}`.
+ */
+export function codenameInUrlSlug(rawUrl: string, code: string): string | undefined {
+  let path: string;
+  try {
+    path = new URL(rawUrl).pathname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  for (const segment of path.split("/")) {
+    const tokens = segment.split(/[-_]/).filter(Boolean);
+    for (let i = 0; i + 2 < tokens.length; i++) {
+      if (`${tokens[i]}${tokens[i + 1]}` !== code) continue;
+      const next = tokens[i + 2];
+      if (/^[a-z]{3,}$/.test(next) && !NON_CODENAME_WORDS.has(next)) return next;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -207,7 +268,20 @@ export const sameStoryByExactProductVersion: SameStoryFn = (article, candidate) 
   if (candidateFirst !== subject) return false;
   const others = extractVersionedProductCodes(title);
   others.delete(subject);
-  return !candidateRest.some((code) => others.has(code));
+  if (candidateRest.some((code) => others.has(code))) return false;
+  // #10137 (261027): mesmo produto+versão mas codinome diferente ("Gemini 4
+  // Carbon" ↔ "Gemini 4 Argon") é outro modelo. Só rejeita quando o artigo
+  // TEM codinome e o candidato (título ou slug) traz outro; ausência no
+  // candidato não decide nada.
+  const articleCodename = codenameAfterProductCode(title, subject);
+  if (articleCodename) {
+    const candidateCodenames = [
+      codenameAfterProductCode(candidate.title, subject),
+      codenameInUrlSlug(candidate.url, subject),
+    ].filter((c): c is string => c !== undefined);
+    if (candidateCodenames.some((c) => c !== articleCodename)) return false;
+  }
+  return true;
 };
 
 export interface ChoosePrimarySourceOptions {
@@ -296,6 +370,7 @@ export function choosePrimarySource(
       to: winner.url,
       score: winner.score,
       match: winner.match,
+      to_title: winner.title,
     },
   };
 }
