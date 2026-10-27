@@ -21,6 +21,9 @@
  *    enquanto pausada) e abre issue de alarme (mesmo se a gravação falhar).
  *  - pausa ativa ⇒ ninguém NOVO recebe `frio` (iria pra uma semanal que não
  *    sai e perderia a diária); a volta à diária e o `suprimido` seguem.
+ *  - engajamento de broadcast com >= 7 dias (e já indexado pelo filtro do
+ *    Kit) sai de `data/kit-frio/engagement-cache.json` em vez de ser relido
+ *    a cada rodada (#11294 item 1, `lib/kit-frio-engagement-cache.ts`).
  *
  * ## Flags (`platform.config.json` → `kit.frio`, lidas por `parseKitFrio`)
  *
@@ -87,6 +90,15 @@ import {
   type SemanalFrioVigiaVerdict,
 } from "./lib/kit-frio.ts";
 import { BREVO_DIARIA_MATURATION_HOURS } from "./lib/shared/brevo-diaria-score.ts";
+import {
+  DEFAULT_KIT_FRIO_ENGAGEMENT_CACHE_PATH,
+  buildKitFrioEngagementCache,
+  cachedBroadcastEngagement,
+  isFreezableEngagement,
+  parseKitFrioEngagementCache,
+  type KitFrioEngagementCache,
+} from "./lib/kit-frio-engagement-cache.ts"; // #11294 item 1
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { ensureAlarmIssue, loadAlarmIssuesState, saveAlarmIssuesState, alarmIssueStateKey } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -123,6 +135,12 @@ export interface KitFrioDeps {
   /** Abre/reusa a issue de alarme da vigia (fail-soft no caller). */
   raiseAlarm: (reasons: string[]) => void;
   appendLog: (line: string) => void;
+  /**
+   * #11294 item 1 — cache por broadcast do engajamento já maduro
+   * (`lib/kit-frio-engagement-cache.ts`). Ausente ⇒ relê tudo do Kit, como
+   * antes do cache.
+   */
+  engagementCache?: { read: () => unknown; write: (cache: KitFrioEngagementCache) => void };
 }
 
 export interface KitFrioRunResult {
@@ -195,10 +213,50 @@ export async function runKitFrioSync(
   const semanalSent = semanal.filter(sent);
   log(`registro: ${diariaInWindow.length} diária(s) na janela, ${semanalSent.length} semanal(is) de frio enviada(s).`);
 
+  // #11294 item 1 — broadcast maduro sai do cache em vez de 3 leituras
+  // paginadas do Kit por rodada.
+  let cache: KitFrioEngagementCache | null = null;
+  if (deps.engagementCache) {
+    try {
+      const raw = deps.engagementCache.read();
+      cache = raw === null || raw === undefined ? null : parseKitFrioEngagementCache(raw);
+      if (raw !== null && raw !== undefined && !cache) log("aviso: cache de engajamento do frio em formato inválido — relendo todos os broadcasts.");
+    } catch (e) {
+      log(`aviso: cache de engajamento do frio ilegível (${(e as Error).message}) — relendo todos os broadcasts.`);
+    }
+  }
+  let fromCache = 0;
+  const frozen: BroadcastEngagement[] = [];
+  const engagementOf = async (r: DiariaBroadcastRecord): Promise<BroadcastEngagement> => {
+    const hit = cachedBroadcastEngagement(cache, r.broadcastId);
+    if (hit) {
+      fromCache++;
+      frozen.push(hit);
+      return hit;
+    }
+    const fetched = await deps.fetchEngagement(r.broadcastId);
+    if (isFreezableEngagement(fetched, r.sentAt, deps.nowMs)) frozen.push(fetched);
+    return fetched;
+  };
   const diariaEng: (BroadcastEngagement & { sentAt: string })[] = [];
-  for (const r of diariaInWindow) diariaEng.push({ ...(await deps.fetchEngagement(r.broadcastId)), sentAt: r.sentAt });
+  for (const r of diariaInWindow) diariaEng.push({ ...(await engagementOf(r)), sentAt: r.sentAt });
   const semanalEng: SemanalFrioEngagement[] = [];
-  for (const r of semanalSent) semanalEng.push({ ...(await deps.fetchEngagement(r.broadcastId)), sentAt: r.sentAt });
+  for (const r of semanalSent) semanalEng.push({ ...(await engagementOf(r)), sentAt: r.sentAt });
+  const totalRead = diariaInWindow.length + semanalSent.length;
+  log(`engajamento: ${totalRead - fromCache} broadcast(s) relido(s) do Kit, ${fromCache} do cache.`);
+  if (deps.engagementCache) {
+    // Reconstruído só com o que esta rodada pediu: diária fora da janela sai do cache.
+    const next = buildKitFrioEngagementCache(frozen);
+    const prevIds = Object.keys(cache?.broadcasts ?? {}).sort().join(",");
+    const nextIds = Object.keys(next.broadcasts).sort().join(",");
+    if (prevIds !== nextIds) {
+      try {
+        deps.engagementCache.write(next);
+      } catch (e) {
+        log(`aviso: falha ao gravar o cache de engajamento do frio (${(e as Error).message}) — a próxima rodada relê mais.`);
+      }
+    }
+  }
 
   const lastSignal = buildLastSignalIndex([...diariaEng, ...semanalEng]);
   const diariaDeliveries = buildDeliveryIndex(diariaEng);
@@ -463,6 +521,14 @@ async function main(): Promise<void> {
     readSemanalRegistry: () => readSemanalFrioRegistry(resolve(ROOT, editionsRoot())),
     listKitActive: () => listKitActiveCandidates(log, pace),
     fetchEngagement: (id) => fetchDeliveredEngagement(id, log, pace),
+    engagementCache: {
+      read: () =>
+        existsSync(DEFAULT_KIT_FRIO_ENGAGEMENT_CACHE_PATH) ? JSON.parse(readFileSync(DEFAULT_KIT_FRIO_ENGAGEMENT_CACHE_PATH, "utf8")) : null,
+      write: (c) => {
+        mkdirSync(dirname(DEFAULT_KIT_FRIO_ENGAGEMENT_CACHE_PATH), { recursive: true });
+        writeFileAtomic(DEFAULT_KIT_FRIO_ENGAGEMENT_CACHE_PATH, JSON.stringify(c) + "\n");
+      },
+    },
     findTagId: async (name) => {
       await pace();
       return findTagIdByName(name);

@@ -41,6 +41,14 @@
  *   `send_at` e filtro) e grava `scheduled`;
  * - vigia pausada (`data/kit-frio/semanal-pause.json`) ⇒ não cria.
  *
+ * ## Acompanha o principal depois de agendada (#11294 item 2)
+ *
+ * Semanal já `scheduled` e o principal reagendado ⇒ re-PATCH pro novo
+ * `send_at` (relido); principal fora de `scheduled` (desagendado) ⇒ desagenda
+ * a semanal e volta o estado pra `created_unverified`, que o próximo
+ * agendamento do principal retoma. O `schedule-newsletter-kit.ts` chama com
+ * `followOnly` quando o agendamento do principal falha ou é desfeito.
+ *
  * Exit: 0 criado/idempotente/pulado (desligado, não é segunda, pausado, tag
  * vazia); 1 falha (API, filtro não confirmado, agendamento não confirmado);
  * 2 precondição (principal não agendado, tag inexistente, config, flags
@@ -90,15 +98,32 @@ export interface SemanalFrioPublishDeps {
   countTagMembers: (tagId: number) => Promise<number>;
   getBroadcast: (id: number) => Promise<KitBroadcastDetail>;
   createBroadcast: (input: CreateBroadcastInput) => Promise<KitBroadcastDetail>;
-  /** PATCH de `send_at` (agendamento). */
-  scheduleBroadcast: (id: number, sendAt: string) => Promise<void>;
+  /** PATCH de `send_at` (agendamento; `null` desagenda, #11294). */
+  scheduleBroadcast: (id: number, sendAt: string | null) => Promise<void>;
   deleteBroadcast: (id: number) => Promise<void>;
   /** Issue de alarme: broadcast com filtro divergente que NÃO foi apagado. Fail-soft no caller. */
   raiseAlarm: (title: string, body: string) => void;
 }
 
 export type SemanalFrioPublishResult =
-  | { code: 0; status: "disabled" | "not_monday" | "paused" | "empty_tag" | "already_done" | "dry_run" | "scheduled"; broadcastId?: number; reason?: string }
+  | {
+      code: 0;
+      status:
+        | "disabled"
+        | "not_monday"
+        | "paused"
+        | "empty_tag"
+        | "already_done"
+        | "dry_run"
+        | "scheduled"
+        // #11294 item 2 — a semanal já agendada acompanhou o principal.
+        | "rescheduled"
+        | "unscheduled"
+        // `followOnly` sem semanal agendada: nada a fazer.
+        | "nothing_to_follow";
+      broadcastId?: number;
+      reason?: string;
+    }
   | { code: 1 | 2; status: "failed"; reason: string; broadcastId?: number };
 
 /** Config que o publisher lê (`kit.frio` + `kit.diaria_exclusion_segment`, via `parseKitFrio`). */
@@ -111,7 +136,12 @@ const sameInstant = (a: string | null | undefined, b: string) => typeof a === "s
 export async function publishKitSemanalFrio(
   editionDir: string,
   cfg: SemanalFrioPlatformConfig,
-  opts: { push: boolean },
+  /**
+   * `followOnly` (#11294 item 2): só acompanha uma semanal JÁ agendada
+   * (reagenda/desagenda com o principal), nunca cria. Usado quando o
+   * agendamento do principal falhou ou foi desfeito.
+   */
+  opts: { push: boolean; followOnly?: boolean },
   deps: SemanalFrioPublishDeps,
 ): Promise<SemanalFrioPublishResult> {
   const { log } = deps;
@@ -129,7 +159,10 @@ export async function publishKitSemanalFrio(
   if (!isMondayEdition(edition)) return { code: 0, status: "not_monday", reason: `edição ${edition} não é de segunda.` };
   const own = deps.readOwnState(editionDir);
   if (own && own.status === "scheduled" && typeof own.broadcast_id === "number") {
-    return { code: 0, status: "already_done", broadcastId: own.broadcast_id };
+    return followMainSchedule(editionDir, own, opts, deps);
+  }
+  if (opts.followOnly) {
+    return { code: 0, status: "nothing_to_follow", reason: "semanal de frio não está agendada — nada a acompanhar." };
   }
   const main = deps.readMainState(editionDir);
   if (!main || main.status !== "scheduled" || typeof main.scheduled_at !== "string" || typeof main.broadcast_id !== "number") {
@@ -215,6 +248,80 @@ export async function publishKitSemanalFrio(
   return { code: 0, status: "scheduled", broadcastId };
 }
 
+/**
+ * #11294 item 2 — a semanal já agendada acompanha o principal: mesmo
+ * instante ⇒ `already_done`; principal reagendado ⇒ re-PATCH pro novo
+ * `send_at` (relido: status, horário e filtro); principal fora de
+ * `scheduled` (desagendado, ex. exit 7 do `schedule-newsletter-kit.ts`) ⇒
+ * desagenda a semanal (`send_at: null`, relido) e volta o estado pra
+ * `created_unverified`, que o próximo agendamento do principal retoma. Sem
+ * isto a semanal sairia no horário antigo, ou sozinha.
+ */
+async function followMainSchedule(
+  editionDir: string,
+  own: KitSemanalFrioPublished,
+  opts: { push: boolean },
+  deps: SemanalFrioPublishDeps,
+): Promise<SemanalFrioPublishResult> {
+  const { log } = deps;
+  const broadcastId = own.broadcast_id;
+  const main = deps.readMainState(editionDir);
+  const mainScheduled = main !== null && main.status === "scheduled" && typeof main.scheduled_at === "string";
+  if (mainScheduled && sameInstant(own.scheduled_at, main.scheduled_at!)) {
+    return { code: 0, status: "already_done", broadcastId };
+  }
+
+  if (!mainScheduled) {
+    if (!opts.push) {
+      return { code: 0, status: "dry_run", broadcastId, reason: `desagendaria a semanal ${broadcastId}: o principal não está mais agendado.` };
+    }
+    let after: KitBroadcastDetail | null = null;
+    let err: string | null = null;
+    try {
+      await deps.scheduleBroadcast(broadcastId, null);
+      after = await deps.getBroadcast(broadcastId);
+    } catch (e) {
+      err = (e as Error).message;
+    }
+    if (err !== null || after === null || after.send_at != null) {
+      const reason =
+        `o principal da edição ${basename(editionDir)} não está mais agendado, mas a semanal ${broadcastId} NÃO foi desagendada ` +
+        `(${err ?? `releitura mostra send_at=${after?.send_at}`}) — ela sairia SOZINHA às ${own.scheduled_at}: desagendar à mão no Kit AGORA.`;
+      try {
+        deps.raiseAlarm(`Semanal de frio do Kit agendada sem o principal: broadcast ${broadcastId} (#11294)`, `- ${reason}`);
+      } catch (alarmErr) {
+        log(`aviso: issue de alarme não aberta (${(alarmErr as Error).message}).`);
+      }
+      return { code: 1, status: "failed", broadcastId, reason };
+    }
+    deps.writeOwnState(editionDir, { ...own, status: "created_unverified", reason: "principal desagendado (#11294)" });
+    log(`semanal de frio ${broadcastId} desagendada junto com o principal; volta a ser agendada quando ele for.`);
+    return { code: 0, status: "unscheduled", broadcastId };
+  }
+
+  const target = main!.scheduled_at!;
+  if (!opts.push) {
+    return { code: 0, status: "dry_run", broadcastId, reason: `reagendaria a semanal ${broadcastId} de ${own.scheduled_at} pra ${target} (principal reagendado).` };
+  }
+  await deps.scheduleBroadcast(broadcastId, target);
+  const after = await deps.getBroadcast(broadcastId);
+  const verdict = verifyDiariaAudienceFilter(after.subscriber_filter, buildTagFilter(own.tag_id));
+  if (!verdict.ok) {
+    return deleteOrAlarm(deps, editionDir, broadcastId, `filtro relido após o reagendamento não confere (${verdict.reason})`, own);
+  }
+  if (after.status !== "scheduled" || !sameInstant(after.send_at, target)) {
+    return {
+      code: 1,
+      status: "failed",
+      broadcastId,
+      reason: `reagendamento da semanal ${broadcastId} pra ${target} não confirmado na releitura (status=${after.status}, send_at=${after.send_at}).`,
+    };
+  }
+  deps.writeOwnState(editionDir, { ...own, scheduled_at: target });
+  log(`semanal de frio ${broadcastId} reagendada de ${own.scheduled_at} pra ${target}, junto com o principal.`);
+  return { code: 0, status: "rescheduled", broadcastId };
+}
+
 /** Apaga o broadcast com problema; se o DELETE falhar, alarme + estado `created_unverified` mantido. Sempre `failed`/1. */
 async function deleteOrAlarm(
   deps: SemanalFrioPublishDeps,
@@ -284,12 +391,14 @@ export async function runSemanalFrioAfterSchedule(
   log: (msg: string) => void,
   rootDir: string = ROOT,
   deps: SemanalFrioPublishDeps = productionSemanalFrioDeps(log),
+  /** #11294 item 2 — `followOnly` quando o agendamento do principal falhou ou foi desfeito. */
+  options: { followOnly?: boolean } = {},
 ): Promise<SemanalFrioPublishResult> {
   try {
     const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as SemanalFrioPlatformConfig;
     const flags = parseKitFrio(cfg.kit);
     if (!("error" in flags) && !flags.enabled) return { code: 0, status: "disabled" };
-    return await publishKitSemanalFrio(editionDir, cfg, { push: true }, deps);
+    return await publishKitSemanalFrio(editionDir, cfg, { push: true, followOnly: options.followOnly === true }, deps);
   } catch (e) {
     return { code: 1, status: "failed", reason: (e as Error).message };
   }

@@ -395,7 +395,8 @@ import {
   parseBrevoDiariaSemanal,
   resolveBrevoEffectiveMode,
 } from "./lib/brevo-diaria-semanal.ts"; // #11226
-import { KIT_FRIO_TAG_NAME, kitFrioNotFullyOnReason, parseKitFrio } from "./lib/kit-frio.ts"; // #11221
+import { KIT_FRIO_TAG_NAME, kitFrioNotFullyOnReason, parseKitFrio, summarizeAwaitingFrioBacklog } from "./lib/kit-frio.ts"; // #11221, #11294
+import { raiseKitFrioAlarm } from "./sync-kit-frio.ts"; // #11294 item 4
 import {
   readStore,
   writeStore,
@@ -1735,6 +1736,20 @@ export async function verifySuppressedInBrevo(apiKey: string, listId: number, em
   const listIds: unknown = res.body?.listIds;
   const stillInList = Array.isArray(listIds) && listIds.includes(listId);
   return blacklisted && !stillInList;
+}
+
+/**
+ * #11294 item 3 — releitura depois do `unlinkFromBrevoList` da premissa B
+ * (kit-sem-abertura aguardando o frio): ali não há blacklist, então
+ * `verifySuppressedInBrevo` não serve. `true` só com 200 e o contato fora de
+ * `listId` (com `listIds` legível); qualquer outra resposta ⇒ `false` (o
+ * caller mantém in_brevo).
+ */
+export async function verifyUnlinkedFromBrevoList(apiKey: string, listId: number, email: string): Promise<boolean> {
+  const res = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
+  if (res.status !== 200) return false;
+  const listIds: unknown = res.body?.listIds;
+  return Array.isArray(listIds) && !listIds.includes(listId);
 }
 
 // ── reconciliação de órfãos (#4579) ────────────────────────────────────────
@@ -3435,6 +3450,16 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
+        // #11294 item 3 — 2xx não é prova: relê antes de gravar `suppressed`
+        // (status terminal que o loop nunca reavalia). Ainda na lista ⇒ fica
+        // in_brevo e o unlink é retentado na próxima rodada.
+        if (!(await verifyUnlinkedFromBrevoList(brevoApiKey!, listId, contact.email))) {
+          log(`warn: ${contact.email} — desvinculação da lista Brevo não confirmada na releitura — mantendo in_brevo (#11294).`);
+          failed++;
+          failedContacts.push({ email: contact.email, reason: "unlink da lista Brevo (kit-sem-abertura aguardando frio) não confirmado na releitura" });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
         log(`${contact.email}: kit-sem-abertura suprimido só na Brevo — segue active no Kit com ${KIT_ENVIO_BREVO_TAG_NAME}, aguardando o frio (#11221).`);
         store = applyEvaluation(store, contact.email, {
           ...counts.instant,
@@ -3756,6 +3781,32 @@ async function main(): Promise<number> {
       `${result.doiResentViaResendForm} reenviado(s) pelo 2º form de DOI (subconjunto dos reenviados, #9986), ` +
       `${result.doiResendExhausted} esgotado(s) (200 nos dois forms de DOI, reenvio encerrado, #9986).`,
   );
+  // #11294 item 4 — o estoque INTEIRO da premissa B (não só a rodada), perto
+  // do fim do run pra cair no tail que o `brevo-diaria-run.ts` leva ao resumo
+  // da Etapa 5; acima dos tetos, alarme (só com --push).
+  const awaitingFrio = summarizeAwaitingFrioBacklog(result.store.contacts, Date.now());
+  if (awaitingFrio.count > 0) {
+    log(
+      `${awaitingFrio.alarmReasons.length > 0 ? "warn: " : ""}${awaitingFrio.count} kit-sem-abertura aguardando o frio no total, ` +
+        `sem edição nenhuma até o restore (mais antigo: ${awaitingFrio.oldestDays ?? "?"} dia(s); #11294).`,
+    );
+    if (push && awaitingFrio.alarmReasons.length > 0) {
+      try {
+        raiseKitFrioAlarm({
+          check: "kit-sem-abertura-aguardando-frio",
+          fingerprintSuffix: "estoque",
+          title: "Kit-sem-abertura aguardando o frio sem edição nenhuma (#11294)",
+          body:
+            "Contatos `kit-sem-abertura:` suprimidos por score saíram da lista Brevo e seguem fora da diária do Kit " +
+            "(tag `envio-brevo`) até o frio ficar plenamente ligado e o `restore-kit-sem-abertura-frio.ts --apply` rodar (#11221, premissa B):\n\n" +
+            awaitingFrio.alarmReasons.map((r) => `- ${r}`).join("\n") +
+            "\n\nLigar `kit.frio` (com o segmento da diária confirmado) e rodar o restore devolve essas pessoas ao Kit com a tag `frio`.",
+        });
+      } catch (e) {
+        log(`aviso: issue de alarme do estoque aguardando o frio não aberta (${(e as Error).message}).`);
+      }
+    }
+  }
   // #9986 — relink inviável na API do Kit. Com o 2º form de DOI ATIVO nesta
   // rodada (validado, não só configurado), os noops do principal seguem pra
   // ele e o aviso passa a ser só sobre quem esgotou os dois forms.
