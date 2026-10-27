@@ -366,3 +366,6 @@ mark.ok{background:var(--good-bg)}
   .hero-proof{order:6;margin-top:12px;font-size:15px}
   .hero-bullets{order:7;margin-top:20px}
 }
+
+/* Versão B: custo de esperar no fechamento, logo acima do preço. */
+.final-urgency{max-width:560px;margin:0 auto 24px;font-size:18px;line-height:1.5}
