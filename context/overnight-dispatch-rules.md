@@ -154,7 +154,8 @@ Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 na PR continua `gh pr comment`.
 
 Guard mecânico desde o #11300: `.claude/hooks/block-raw-pr-review-comment.mjs`
-nega, para subagente `dev-*`, comentário de review postado cru (`gh api` de
+nega, em toda sessão Bash (coordenador e subagentes, sem depender de
+`agent_type`, #11331), comentário de review postado cru (`gh api` de
 escrita em `…/pulls/N/comments|reviews`, mutation GraphQL de review, `gh pr
 review --comment`). Sem o marcador `<!-- diaria-auto-review -->` que o helper
 acrescenta, `resolve-review-threads.ts` lê a thread como do editor e trava o
