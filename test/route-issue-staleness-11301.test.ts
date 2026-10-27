@@ -6,7 +6,7 @@ import { formatDecisionMarker, formatExecutionBlockMarker } from "../scripts/lib
 const initial = "2026-10-27T12:00:00Z";
 const newer = "2026-10-27T12:56:00Z";
 const now = new Date("2026-10-27T13:50:00Z");
-function run(extra: Partial<Parameters<typeof routeIssue>[0]> = {}, comments = [
+function run(extra: Partial<Parameters<typeof routeIssue>[0]> = {}, comments: Array<{ body: string; createdAt: string; updatedAt?: string; authorAssociation: string }> = [
   { body: "<!-- route-issue: track=overnight -->", createdAt: newer, authorAssociation: "OWNER" },
 ]) {
   const calls: string[][] = [];
@@ -67,5 +67,5 @@ it("só o roteamento mais recente decide, independente da ordem recebida", () =>
     { body: "<!-- route-issue: track=overnight -->", createdAt: newer, authorAssociation: "OWNER" },
   ];
   assert.equal(run({}, comments).result.ok, true);
-  assert.equal(run({}, comments.toReversed()).result.ok, true);
+  assert.equal(run({}, [...comments].reverse()).result.ok, true);
 });
