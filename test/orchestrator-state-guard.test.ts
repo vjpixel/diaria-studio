@@ -80,6 +80,7 @@ const MODULES: StateModule[] = [
       "gmail-mcp": "gmailMcp",
       "beehiiv-mcp": "beehiivMcp",
       "clarice-rest": "clariceRest",
+      "clarice-mcp": "clariceMcp",
       "cloudflare-token-ok": "cloudflareTokenOk",
     },
     // gmailMcp/beehiivMcp/cloudflareTokenOk: preflight-state.ts docstring —

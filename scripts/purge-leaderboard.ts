@@ -80,6 +80,10 @@
  *   # Pré-check de auth do KV (§6h do Stage 6) — sai 0 se algum backend serve:
  *   npx tsx scripts/purge-leaderboard.ts --check-auth
  *
+ *   # --edition-dir <dir> (#11311): grava o resultado do --check-auth e de cada
+ *   # --email X --execute em <dir>/_internal/leaderboard-purge.json — o Resumo
+ *   # final do Stage 6 lê via `scripts/lib/leaderboard-purge-state.ts --summary`.
+ *
  * Variáveis de ambiente (#4474):
  *   ADMIN_SECRET (ou POLL_ADMIN_SECRET)  HMAC key pro endpoint
  *     /admin/purge-score-do — necessária SÓ em --execute (dry-run roda sem
@@ -127,6 +131,13 @@ import {
   type PurgeKvBackendOverride,
 } from "./lib/purge-kv-backend.ts"; // #11253
 import { deleteVotesAndAdjustStats } from "./lib/purge-vote-stats.ts"; // #11253 review A2
+import {
+  applyCheckAuth,
+  applyEmailResult,
+  LEADERBOARD_PURGE_STATE_RELPATH,
+  readStateForUpsert,
+  writeLeaderboardPurgeState,
+} from "./lib/leaderboard-purge-state.ts"; // #11311
 
 // #2265: NAMESPACE_ID do POLL (KV). Acesso pelo WRANGLER (OAuth) quando há login,
 // senão pela API REST com CLOUDFLARE_API_TOKEN (#11253) — ver o docstring do topo.
@@ -183,6 +194,37 @@ const checkAuthOnly = args.includes("--check-auth"); // #11253
 const targetNickname = flagValue("--nickname")?.toLowerCase() ?? null;
 const targetEmail = flagValue("--email")?.toLowerCase() ?? null;
 
+// #11311: com `--edition-dir`, o resultado do `--check-auth` e de cada
+// `--email X --execute` vai pra `{edition-dir}/_internal/leaderboard-purge.json`
+// (§6h do Stage 6), que o Resumo final lê via
+// `scripts/lib/leaderboard-purge-state.ts --summary`. Cada passo grava
+// "não concluiu" ANTES de trabalhar, então timeout/kill no meio fica PENDENTE.
+// Falha ao gravar é warn: nunca muda o exit code da purga em si.
+const STATE_EDITION_DIR = flagValue("--edition-dir");
+
+function recordState(write: () => void): void {
+  if (!STATE_EDITION_DIR) return;
+  try {
+    write();
+  } catch (e) {
+    console.error(`[warn] não gravou ${LEADERBOARD_PURGE_STATE_RELPATH}: ${(e as Error).message}`);
+  }
+}
+
+function recordCheckAuth(ok: boolean, backend: string | null, motivo: string | null): void {
+  recordState(() => writeLeaderboardPurgeState(STATE_EDITION_DIR!, applyCheckAuth({ ok, backend, motivo }, new Date())));
+}
+
+function recordEmailResult(ok: boolean, keysDeleted: number | null, motivo: string | null): void {
+  if (!targetEmail || !execute) return; // dry-run e --nickname não são o §6h
+  recordState(() =>
+    writeLeaderboardPurgeState(
+      STATE_EDITION_DIR!,
+      applyEmailResult(readStateForUpsert(STATE_EDITION_DIR!), targetEmail, { ok, keys_deleted: keysDeleted, motivo }, new Date()),
+    ),
+  );
+}
+
 let KV_BACKEND_OVERRIDE: PurgeKvBackendOverride = "auto";
 try {
   KV_BACKEND_OVERRIDE = readKvBackendFlag(args);
@@ -191,12 +233,15 @@ try {
   process.exit(2);
 }
 
+if (checkAuthOnly) recordCheckAuth(false, null, "pré-check --check-auth não concluiu (timeout ou interrompido)");
+else recordEmailResult(false, null, "purga não concluiu (timeout ou interrompida)");
+
 if (!checkAuthOnly && (targetNickname === null) === (targetEmail === null)) {
   console.error(
     "Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--brand diaria|clarice|web] " +
-      "[--kv-backend auto|wrangler|rest] [--execute]",
+      "[--kv-backend auto|wrangler|rest] [--execute] [--edition-dir <dir>]",
   );
-  console.error("     ou:  purge-leaderboard.ts --check-auth [--kv-backend auto|wrangler|rest]");
+  console.error("     ou:  purge-leaderboard.ts --check-auth [--kv-backend auto|wrangler|rest] [--edition-dir <dir>]");
   console.error("     passe exatamente UM de --nickname ou --email");
   process.exit(2);
 }
@@ -222,6 +267,7 @@ if (execute && !checkAuthOnly && !ADMIN_SECRET) {
     "[purge] ADMIN_SECRET (ou POLL_ADMIN_SECRET) não definido — necessário em --execute pra assinar " +
     "/admin/purge-score-do e apagar o storage do DO ScoreCounter (#4474). Ver .env.",
   );
+  recordEmailResult(false, null, "ADMIN_SECRET (ou POLL_ADMIN_SECRET) não definido");
   process.exit(1);
 }
 
@@ -324,9 +370,13 @@ async function kvDelete(key: string): Promise<void> {
  * `checkPurgeAuth` (lib, testada).
  */
 async function checkAuth(): Promise<void> {
-  const r = await checkPurgeAuth({ choice: resolveBackend(), opsFor, adminSecretPresent: Boolean(ADMIN_SECRET) });
+  const choice = resolveBackend();
+  const r = await checkPurgeAuth({ choice, opsFor, adminSecretPresent: Boolean(ADMIN_SECRET) });
   for (const line of r.err) console.error(line);
   for (const line of r.out) console.log(line);
+  // #11311: motivo = 1a linha `[purge]` do stderr (o `[warn]` de fallback vem depois e não é a causa).
+  const motivo = r.ok ? null : (r.err.find((l) => l.startsWith("[purge]")) ?? r.err[0] ?? "pré-check falhou").replace(/^\[purge\]\s*/, "");
+  recordCheckAuth(r.ok, choice.backend === "none" ? null : choice.backend, motivo);
   if (!r.ok) process.exitCode = 1;
 }
 
@@ -377,6 +427,7 @@ async function main(): Promise<void> {
   const choice = resolveBackend();
   if (choice.backend === "none") {
     console.error(`[purge] ERRO: sem backend de KV — ${choice.reason}`);
+    recordEmailResult(false, null, `sem backend de KV — ${choice.reason}`);
     process.exitCode = 1;
     return;
   }
@@ -394,6 +445,7 @@ async function main(): Promise<void> {
 
   if (plan.matchedEmails.length === 0) {
     console.log(`[purge] nada pra apagar — ${target} não existe no KV`);
+    recordEmailResult(true, 0, null);
     return;
   }
 
@@ -428,6 +480,7 @@ async function main(): Promise<void> {
 
   if (totalKeys === 0) {
     console.log("[purge] nada pra apagar.");
+    recordEmailResult(true, 0, null);
     return;
   }
 
@@ -516,11 +569,21 @@ async function main(): Promise<void> {
     for (const email of doSummary.failures) {
       console.error(`  [FALHOU] DO score-counter ${BRAND}:${email}`);
     }
+    recordEmailResult(
+      false,
+      totalKeys,
+      `KV limpo, mas a purga do DO ScoreCounter falhou para ${doSummary.failures.length} identidade(s)`,
+    );
     process.exitCode = 1;
+  } else {
+    recordEmailResult(true, totalKeys, null);
   }
 }
 
 (checkAuthOnly ? checkAuth() : main()).catch((e) => {
   console.error("[purge] erro:", e);
+  const motivo = `erro: ${(e as Error)?.message ?? String(e)}`.split("\n")[0];
+  if (checkAuthOnly) recordCheckAuth(false, null, motivo);
+  else recordEmailResult(false, null, motivo);
   process.exit(1);
 });

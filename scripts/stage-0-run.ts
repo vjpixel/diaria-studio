@@ -101,7 +101,7 @@
  *   `--phase continue --mcp-chrome <bool> --mcp-gmail <bool> --mcp-beehiiv <bool>`
  *     — roda a fase A de novo (idempotente — todos HTTPS reads, seguro
  *     repetir), agora COM escrita (mkdir, log-event, stage-status,
- *     0b-bis), persiste `preflight-state.json` com os 5 sinais, e continua
+ *     0b-bis), persiste `preflight-state.json` com os 6 sinais, e continua
  *     0d → 0z. É a chamada "de verdade": o orchestrator só entra aqui depois
  *     de ter feito os 3 pings MCP.
  *
@@ -516,6 +516,8 @@ export interface PhaseAResult {
   cutoffIso: string;
   windowDays: number;
   clariceRest: boolean;
+  /** #11312: MCP `clarice` sondado pelo mesmo caminho de header do Claude Code. */
+  clariceMcp: boolean;
   cloudflareTokenOk: boolean;
 }
 
@@ -745,8 +747,23 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     logEvent(deps, opts.edition, "warn", "clarice-healthcheck: REST fallback degradado", { details: parseStepJson(clariceResult.stdout) });
   }
 
+  // #11312: o 401 do MCP `clarice` (#11251) só aparecia no Stage 2, quando o
+  // passe de Clarice falhava. Sonda o MCP aqui, com a key resolvida pelo
+  // `headersHelper` do `.mcp.json` (mesmo caminho do Claude Code). Warn, nunca
+  // bloqueia: o Stage 2 tem o fallback REST (`clarice-correct.ts`).
+  const clariceMcpResult = deps.exec("scripts/clarice-healthcheck.ts", ["--mcp", "--via-headers-helper"]);
+  const clariceMcp = clariceMcpResult.code === 0;
+  if (!clariceMcp) {
+    const detail = parseStepJson(clariceMcpResult.stdout) as { error?: string } | undefined;
+    report.note(
+      `⚠️  0c: MCP clarice falhou no probe (${detail?.error ?? `exit ${clariceMcpResult.code}`}) — ` +
+        `o Stage 2 vai direto pro fallback REST (${clariceRest ? "saudável" : "também degradado"}).`,
+    );
+    if (persist) logEvent(deps, opts.edition, "warn", "clarice-healthcheck --mcp: MCP clarice degradado", { details: detail ?? clariceMcpResult.stdout.trim() });
+  }
+
   if (persist) {
-    // Persistir os 5 sinais de preflight (#5414) — ANTES do init de
+    // Persistir os 6 sinais de preflight (#5414; clariceMcp desde #11312) — ANTES do init de
     // stage-status.md, mesma ordem do playbook (§0c). `opts.mcp*` já foram
     // validados como não-undefined por `parseStage0RunArgs` quando
     // `opts.phase === "continue"` (única chamada com persist=true).
@@ -761,6 +778,8 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       String(opts.mcpBeehiiv),
       "--clarice-rest",
       String(clariceRest),
+      "--clarice-mcp",
+      String(clariceMcp),
       "--cloudflare-token-ok",
       String(cloudflareTokenOk),
     ]);
@@ -778,7 +797,7 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     ]);
   }
 
-  return { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, cloudflareTokenOk };
+  return { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, clariceMcp, cloudflareTokenOk };
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +833,7 @@ export interface Stage0RunResult {
   cutoffIso?: string;
   windowDays?: number;
   clariceRest?: boolean;
+  clariceMcp?: boolean;
   cloudflareTokenOk?: boolean;
   needsMcpProbes?: { chrome: string; gmail: string; beehiiv: string };
   pendingAgentDispatch: PendingAgentDispatch[];
@@ -860,7 +880,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   const pendingHumanDecision: PendingHumanDecision[] = [];
 
   const phaseA = await runPhaseA(deps, opts, report, true);
-  const { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, cloudflareTokenOk } = phaseA;
+  const { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, clariceMcp, cloudflareTokenOk } = phaseA;
 
   // --- 0d: refresh-dedup — falha dura (#895: nunca prosseguir com dedup stale) ---
   const dedup = step(deps, report, "refresh-dedup (0d)", "scripts/refresh-dedup.ts", []);
@@ -891,6 +911,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
       cutoffIso,
       windowDays,
       clariceRest,
+      clariceMcp,
       cloudflareTokenOk,
       pendingAgentDispatch,
       pendingHumanDecision,
@@ -1169,6 +1190,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     cutoffIso,
     windowDays,
     clariceRest,
+    clariceMcp,
     cloudflareTokenOk,
     pendingAgentDispatch,
     pendingHumanDecision,
@@ -1197,6 +1219,7 @@ export async function runStage0(argv: string[], deps: Stage0RunDeps): Promise<St
         cutoffIso: phaseA.cutoffIso,
         windowDays: phaseA.windowDays,
         clariceRest: phaseA.clariceRest,
+        clariceMcp: phaseA.clariceMcp,
         cloudflareTokenOk: phaseA.cloudflareTokenOk,
         needsMcpProbes: {
           chrome: 'mcp__claude-in-chrome__tabs_context_mcp — probe barato, sem side-effect. Resultado vira "--mcp-chrome true|false" na chamada --phase continue.',
