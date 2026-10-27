@@ -75,7 +75,7 @@ export function shortsRegistryPath(editionDir: string, writer: ShortsRegistryWri
 
 /**
  * Qual escritor é esta rodada do `publish-shorts.ts`. As duas flags de timer
- * juntas são recusadas antes (`instagramTimerScopeError`); aqui o LinkedIn
+ * juntas são recusadas antes de qualquer gravação (`instagramTimerScopeError`); aqui o LinkedIn
  * vence só por ordem.
  */
 export function shortsRegistryWriterFor(linkedinTimer: boolean, instagramTimer = false): ShortsRegistryWriter {

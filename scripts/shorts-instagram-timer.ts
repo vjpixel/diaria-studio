@@ -24,7 +24,8 @@
  *      --target instagram`); o corte vai pra
  *      `diaria-comentada-{AAMMDD}-short-instagram.mp4` e é rebaixado quando
  *      o id ou o `modifiedTime` mudam (`_internal/.shorts-instagram-cut.json`).
- *      Drive ambíguo (`needs-editor`) espera e alarma, nunca cai no genérico;
+ *      Drive ambíguo (`needs-editor`) espera e alarma (proporção ainda
+ *      desconhecida no Drive: espera, e só alarma 1 h depois), nunca cai no genérico;
  *      o vertical genérico só entra quando o Drive diz que NÃO há corte, e só
  *      se já estiver no disco (quem o baixa é o timer do LinkedIn);
  *   4. `publish-shorts.ts AAMMDD --only instagram --publish --instagram-timer
@@ -43,7 +44,7 @@
  *
  * Fica de fora (premissa registrada na #11265): X (Buffer) e Threads pessoal
  * recebem o vídeo só por URL pública; sem R2 eles seguem pulados com aviso
- * pelo `/diaria-shorts`, manuais.
+ * pelo `/diaria-publica-video`, manuais.
  *
  * Uso: npx tsx scripts/shorts-instagram-timer.ts [--edition AAMMDD] [--dry-run]
  *   --dry-run: decide e imprime os comandos, sem publicar e sem alarme (lê o Drive).
@@ -54,7 +55,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
@@ -100,18 +101,38 @@ export type InstagramTimerAlarmKey =
   | "publish-failed"
   | "published-unregistered"
   | "check-permalink"
+  /** A conferência da conta não deixou publicar (pode já haver Reels da edição, ou a leitura falhou). */
+  | "preflight-blocked"
   | "no-output"
   | "crash";
 
 /** O Reels ainda está no ar? Esses avisam com `acao`; o resto é "não saiu hoje" (`urgente`). */
 const PUBLISHED_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["published-unregistered", "check-permalink"]);
 
+/**
+ * Motivos em que publicar pela API resolve (o comando manual com `--publish`
+ * só aparece nestes). Acima do teto (`guided`), sem credencial, sem vídeo ou
+ * com o Drive ambíguo, a API não resolve.
+ */
+const API_OPTION_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["late", "publish-failed", "no-output", "crash"]);
+
+/** Motivos em que a próxima execução (de hora em hora, até `horário + 3 h`) tenta de novo sozinha. */
+const RETRY_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["publish-failed", "credentials", "no-output", "crash", "drive-error"]);
+
 export function alarmSeverity(key: InstagramTimerAlarmKey): NotifySeverity {
-  return PUBLISHED_KEYS.has(key) ? "acao" : "urgente";
+  return PUBLISHED_KEYS.has(key) || key === "preflight-blocked" ? "acao" : "urgente";
+}
+
+/** Puro: `HH:MM` BRT do fim da janela do timer (`horário do vertical + 3 h`). */
+export function instagramTimerDeadlineHhmm(at: string): string {
+  return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(
+    new Date(Date.parse(at) + MAX_FIRE_LATENESS_MS),
+  );
 }
 
 export type InstagramTimerDecision =
-  | { kind: "skip"; reason: string }
+  /** `unseenLate`: passou de 3 h e só não alarma porque nada LOCAL mostra o vertical (o Drive ainda pode mostrar). */
+  | { kind: "skip"; reason: string; unseenLate?: true }
   | { kind: "wait"; reason: string; at: string; hhmm: string }
   | { kind: "late"; reason: string; at: string; hhmm: string }
   | { kind: "publish"; at: string; hhmm: string };
@@ -126,7 +147,8 @@ export function decideInstagramTimerRun(input: {
   now: Date;
   /**
    * O dia teve vertical? (corte ou genérico no disco, corte já baixado, ou o
-   * `/diaria-shorts` já registrou outro destino). Sem isso, passar do horário
+   * `/diaria-publica-video` já registrou outro destino; ou o Drive mostra o
+   * vertical em `Final/`, `driveShowsVertical`). Sem isso, passar do horário
    * não alarma: a Etapa 5 pode seguir sem vídeo.
    */
   videoSeen: boolean;
@@ -147,7 +169,7 @@ export function decideInstagramTimerRun(input: {
   const deltaMs = input.now.getTime() - Date.parse(at);
   if (deltaMs < 0) return { kind: "wait", reason: `antes do horário do vertical (${hhmm} BRT)`, at, hhmm };
   if (deltaMs > MAX_FIRE_LATENESS_MS) {
-    if (!input.videoSeen) return { kind: "skip", reason: `${hhmm} BRT passou há mais de 3 h e o dia não teve vertical — nada a avisar` };
+    if (!input.videoSeen) return { kind: "skip", reason: `${hhmm} BRT passou há mais de 3 h e o dia não teve vertical — nada a avisar`, unseenLate: true };
     return {
       kind: "late",
       at,
@@ -167,9 +189,18 @@ export type InstagramCutLookup =
   | { kind: "found"; fileId: string; name: string; modifiedTime: string | null }
   /** O Drive diz que não há corte do Instagram (ou não tem nada a dizer sobre ele). */
   | { kind: "none"; reason: string }
-  /** Ambíguo, sem proporção, pasta duplicada: o editor escolhe. */
-  | { kind: "needs-editor"; reason: string }
+  /**
+   * Ambíguo, pasta duplicada: o editor escolhe (`immediate`: alarma já). Sem
+   * proporção (`orientation-unknown`, o Drive ainda processando o metadado):
+   * espera, e só alarma depois de `MISSING_VIDEO_ALARM_AFTER_MS`.
+   */
+  | { kind: "needs-editor"; reason: string; immediate: boolean }
   | { kind: "error"; reason: string };
+
+/** Puro: o Drive mostra um vertical da edição em `Final/` (achado ou ambíguo)? */
+export function driveShowsVertical(lookup: InstagramCutLookup): boolean {
+  return lookup.kind === "found" || lookup.kind === "needs-editor";
+}
 
 /** Puro: lê a saída do `fetch-drive-video.ts --orientation vertical --target instagram`. */
 export function interpretInstagramCutLookup(exitCode: number | null, stdout: string): InstagramCutLookup {
@@ -188,7 +219,18 @@ export function interpretInstagramCutLookup(exitCode: number | null, stdout: str
   // o arquivo local que o fetch confere); se vierem, não dizem nada do corte.
   if (action === "exists" || action === "already-published") return { kind: "none", reason: `fetch-drive-video.ts: ${action} (nada sobre o corte do Instagram)` };
   if (action === "needs-editor") {
-    return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe` };
+    if (out.selection === "orientation-unknown") {
+      return {
+        kind: "needs-editor",
+        immediate: false,
+        reason: "o Drive ainda não mostra a proporção do vídeo final (metadado processando, orientation-unknown) — se continuar assim, confira o arquivo em Final/ (Passo B1 do /diaria-publica-video)",
+      };
+    }
+    return {
+      kind: "needs-editor",
+      immediate: true,
+      reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe`,
+    };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
 }
@@ -201,7 +243,8 @@ export interface InstagramCutSidecar {
 export type InstagramVideoChoice =
   | { kind: "use-local"; path: string; source: "instagram-cut" | "generic"; note?: string }
   | { kind: "download"; path: string; fileId: string; name: string; modifiedTime: string | null }
-  | { kind: "wait"; reason: string; alarm: "missing-video" | "drive-needs-editor" }
+  /** `alarmNow`: avisa já; senão só depois de `MISSING_VIDEO_ALARM_AFTER_MS` (`shouldAlarmMissingVideo`). */
+  | { kind: "wait"; reason: string; alarm: "missing-video" | "drive-needs-editor"; alarmNow: boolean }
   | { kind: "error"; reason: string };
 
 /**
@@ -227,11 +270,11 @@ export function chooseInstagramVideo(input: {
       return { kind: "download", path: input.instagramCutPath, fileId: lookup.fileId, name: lookup.name, modifiedTime: lookup.modifiedTime };
     }
     case "needs-editor":
-      return { kind: "wait", reason: lookup.reason, alarm: "drive-needs-editor" };
+      return { kind: "wait", reason: lookup.reason, alarm: "drive-needs-editor", alarmNow: lookup.immediate };
     case "none":
       if (input.instagramCutExists) return { kind: "use-local", path: input.instagramCutPath, source: "instagram-cut", note: `${lookup.reason}; usando o corte já baixado` };
       if (input.genericExists) return { kind: "use-local", path: input.genericPath, source: "generic", note: lookup.reason };
-      return { kind: "wait", reason: `${lookup.reason} e sem o vertical genérico no disco`, alarm: "missing-video" };
+      return { kind: "wait", reason: `${lookup.reason} e sem o vertical genérico no disco`, alarm: "missing-video", alarmNow: false };
     case "error":
       // Fail-soft só com o corte já no disco; sem ele, nunca cai no genérico em silêncio.
       if (input.instagramCutExists) return { kind: "use-local", path: input.instagramCutPath, source: "instagram-cut", note: `Drive indisponível (${lookup.reason}); usando o corte já baixado` };
@@ -266,7 +309,12 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
       return { kind: "done", detail: `${result.alreadyRegistered ? "já estava na conta/registro" : "publicado"}: ${e.status} ${where}` };
     }
     if (e) {
+      // Inclui o gate que ACHOU o Reels na conta e não conseguiu gravar (cause "preflight", persist-failed).
       return { kind: "alarm", key: "published-unregistered", failed: true, detail: `o Reels ESTÁ NO AR (${where}), mas o registro não foi gravado: ${result.error ?? "?"}. Não reposte; registre com --mark instagram=${e.url ?? "URL"}` };
+    }
+    if (result.cause === "preflight") {
+      // A conferência da conta não deixou publicar: nunca "o publish falhou" (o corpo mandaria repostar).
+      return { kind: "alarm", key: "preflight-blocked", failed: true, detail: `conferência da conta (${result.preflight ?? "?"}): ${result.error ?? "sem mensagem"}` };
     }
     return { kind: "alarm", key: "publish-failed", failed: true, detail: String(result.error ?? "falha sem mensagem") };
   }
@@ -305,10 +353,17 @@ export function buildInstagramTimerAlarm(input: {
   aammdd: string;
   key: InstagramTimerAlarmKey;
   reason: string;
-  /** Caminho do corte do Instagram no 300 (pro `--video` do comando manual). */
-  cutPath: string;
+  /**
+   * `--video` do comando manual: caminho RELATIVO à raiz do repo (o comando
+   * roda no 300, cwd no checkout), nunca o absoluto da máquina.
+   */
+  videoArg: string;
+  /** Id do corte no Drive, quando conhecido (vira `--from-drive ID`). */
+  driveFileId?: string | null;
+  /** `HH:MM` BRT do fim da janela (`instagramTimerDeadlineHhmm`); null = desconhecido. */
+  deadlineHhmm?: string | null;
 }): { subject: string; body: string } {
-  const { aammdd, key, reason, cutPath } = input;
+  const { aammdd, key, reason, videoArg, driveFileId, deadlineHhmm } = input;
   const published = PUBLISHED_KEYS.has(key);
   const lines = [
     "Achado automático da task `Diaria-Shorts-Instagram`",
@@ -318,27 +373,68 @@ export function buildInstagramTimerAlarm(input: {
     "",
   ];
   const confirm = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --confirm-instagram\``;
-  const manual = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only instagram --instagram-timer --publish --now --video ${cutPath}\``;
+  const manual = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only instagram --instagram-timer --publish --now --video ${videoArg}${driveFileId ? ` --from-drive ${driveFileId}` : ""}\``;
+  let subject: string;
   if (published) {
     lines.push(
       key === "check-permalink"
         ? "O Reels está registrado. Confira se o permalink é mesmo o desta edição; se não for, corrija o registro com `--mark instagram=URL`."
         : `O Reels está no ar. NÃO reposte: registre com \`npx tsx scripts/publish-shorts.ts ${aammdd} --mark instagram=URL\` (ou ${confirm}).`,
     );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir registro (${key})`;
+  } else if (key === "preflight-blocked") {
+    // Nunca sugerir publicar: a conta pode já ter o Reels da edição.
+    lines.push(
+      "Confira a conta antes; não reposte. O timer não publicou porque não conseguiu afirmar que o Reels da edição ainda não está na conta.",
+      `- Se o Reels da edição está lá: registre com ${confirm} (com \`--media-id ID\` quando houver mais de um candidato).`,
+      `- Se a leitura da conta falhou: a próxima execução (de hora em hora${deadlineHhmm ? `, até ${deadlineHhmm} BRT` : ""}) confere de novo sozinha.`,
+    );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir a conta (${key})`;
   } else {
     if (key === "late") lines.push("Passadas 3 h do horário do vertical o timer NÃO publica mais sozinho.");
-    if (key === "missing-video") lines.push(`Suba o corte \`_Instagram_\` em \`${aammdd}/Final/\` no Drive; até 3 h depois do horário do vertical a próxima execução (de hora em hora) publica.`);
-    if (key === "drive-needs-editor") lines.push(`Deixe um só \`_Instagram_\` em \`${aammdd}/Final/\` no Drive (ou uma só pasta \`${aammdd}\`); a próxima execução publica.`);
-    lines.push(
-      "O que fazer:",
-      `- Postar no instagram.com (Passo B3b do \`/diaria-publica-video\`) e registrar com ${confirm}.`,
-      `- Ou publicar pela API desta máquina, conferindo antes que o Reels não está na conta: ${manual}`,
-    );
+    if (key === "missing-video") {
+      lines.push(`Suba o corte \`_Instagram_\` em \`${aammdd}/Final/\` no Drive; até 3 h depois do horário do vertical${deadlineHhmm ? ` (${deadlineHhmm} BRT)` : ""} a próxima execução (de hora em hora) publica.`);
+    }
+    if (key === "drive-needs-editor") {
+      lines.push(
+        `Deixe um só \`_Instagram_\` em \`${aammdd}/Final/\` no Drive (ou uma só pasta \`${aammdd}\`; se o Drive ainda não mostra a proporção do arquivo, confira se ele terminou de processar); a próxima execução publica.`,
+      );
+    }
+    if (RETRY_KEYS.has(key)) {
+      lines.push(
+        `O timer volta a tentar sozinho de hora em hora${deadlineHhmm ? ` até ${deadlineHhmm} BRT (3 h depois do horário do vertical)` : " até 3 h depois do horário do vertical"}; resolvida a causa, não precisa fazer nada.`,
+      );
+    }
+    lines.push("O que fazer:", `- Postar no instagram.com (Passo B3b do \`/diaria-publica-video\`) e registrar com ${confirm}.`);
+    if (API_OPTION_KEYS.has(key)) {
+      lines.push(
+        `- Ou publicar pela API, conferindo antes que o Reels não está na conta: ${manual}. ` +
+          "Rode SÓ NO 300: de outra máquina o comando vira um segundo escritor (o lock do timer não cruza máquina) e o Reels sai duplicado.",
+      );
+    }
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd} não saiu pelo timer do 300 (${key})`;
   }
-  return {
-    subject: published ? `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir registro (${key})` : `[diar.ia.br] Reels do Instagram de ${aammdd} não saiu pelo timer do 300 (${key})`,
-    body: lines.join("\n"),
-  };
+  return { subject, body: lines.join("\n") };
+}
+
+/**
+ * Puro: este alarme já está coberto pelo estado da edição? O mesmo motivo não
+ * repete; e `late` não sai quando `guided` já saiu (é o mesmo problema — o
+ * Reels acima do teto passou da janela — e seria um 2º e-mail urgente).
+ */
+export function alarmSuppressed(stateRaw: string | null, key: InstagramTimerAlarmKey): boolean {
+  return alreadyAlarmed(stateRaw, key) || (key === "late" && alreadyAlarmed(stateRaw, "guided"));
+}
+
+/**
+ * Puro: grava o motivo no estado depois do `notifyEditor`? Não quando a issue
+ * falhou nem quando o e-mail (urgente) não saiu (`emailError`): sem a chave no
+ * estado, a próxima execução tenta de novo.
+ */
+export function alarmDelivery(res: { issue?: { action?: string; error?: string }; emailError?: string }): { record: boolean; error?: string } {
+  if (res.issue?.action === "failed") return { record: false, error: `issue não aberta (${res.issue.error ?? "?"})` };
+  if (res.emailError !== undefined) return { record: false, error: `e-mail não enviado (${res.emailError})` };
+  return { record: true };
 }
 
 /** Puro: o motivo já foi avisado nesta edição? */
@@ -388,20 +484,44 @@ function mtimeOf(path: string): number | null {
   }
 }
 
-async function alarm(dir: string, aammdd: string, key: InstagramTimerAlarmKey, reason: string): Promise<boolean> {
+/** Contexto do comando manual do alarme. */
+interface AlarmContext {
+  /** Vídeo do `--video` (absoluto aqui; o corpo leva relativo à raiz do repo). */
+  videoPath?: string;
+  driveFileId?: string | null;
+  /** Horário do vertical (ISO) → `HH:MM` BRT do fim da janela. */
+  at?: string | null;
+}
+
+/** `--video` do comando manual: relativo à raiz do repo (o comando roda no checkout do 300). */
+function videoArgFor(path: string): string {
+  const rel = relative(ROOT, path);
+  return (rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path).split(sep).join("/");
+}
+
+async function alarm(dir: string, aammdd: string, key: InstagramTimerAlarmKey, reason: string, ctx: AlarmContext = {}): Promise<boolean> {
   const statePath = join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE);
   const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
-  if (alreadyAlarmed(stateRaw, key)) {
-    console.log(`${LOG_PREFIX} ${aammdd}: alarme "${key}" já avisado nesta edição — não repete`);
+  if (alarmSuppressed(stateRaw, key)) {
+    console.log(`${LOG_PREFIX} ${aammdd}: alarme "${key}" já coberto nesta edição${key === "late" && !alreadyAlarmed(stateRaw, key) ? ' (pelo "guided")' : ""} — não repete`);
     return true;
   }
-  const { subject, body } = buildInstagramTimerAlarm({ aammdd, key, reason, cutPath: join(dir, shortInstagramVideoFileName(aammdd)) });
+  const { subject, body } = buildInstagramTimerAlarm({
+    aammdd,
+    key,
+    reason,
+    videoArg: videoArgFor(ctx.videoPath ?? join(dir, shortInstagramVideoFileName(aammdd))),
+    driveFileId: ctx.driveFileId ?? null,
+    deadlineHhmm: ctx.at ? instagramTimerDeadlineHhmm(ctx.at) : null,
+  });
   const res = await notifyEditor(
     { check: "shorts-instagram-timer", fingerprint: `${aammdd}:${key}`, severity: alarmSeverity(key), family: "evento", subject, body },
     { cwd: ROOT },
   );
-  if (res.issue?.action === "failed") {
-    console.error(`${LOG_PREFIX} ${aammdd}: alarme "${key}" NÃO aberto (${res.issue.error})`);
+  const delivery = alarmDelivery(res);
+  if (!delivery.record) {
+    // Sem gravar a chave: a próxima execução tenta de novo.
+    console.error(`${LOG_PREFIX} ${aammdd}: alarme "${key}" NÃO entregue — ${delivery.error}; tenta de novo na próxima execução`);
     return false;
   }
   let prev: string[] = [];
@@ -416,27 +536,51 @@ async function alarm(dir: string, aammdd: string, key: InstagramTimerAlarmKey, r
   return true;
 }
 
+/** Corte do Instagram no Drive (`fetch-drive-video.ts --target instagram`, só imprime o id). */
+function lookupInstagramCut(aammdd: string, dir: string): InstagramCutLookup {
+  const f = runTsx(["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "vertical", "--target", "instagram", "--edition-dir", dir]);
+  return interpretInstagramCutLookup(f.status, f.stdout);
+}
+
+/**
+ * O Drive mostra o vertical da edição em `Final/`? O corte do Instagram (achado
+ * ou ambíguo) já basta; senão confere o vertical genérico (`_Outras redes_`,
+ * target default, também só imprime o id). Erro do Drive = não mostra.
+ */
+function driveHasVertical(aammdd: string, dir: string, instagramLookup: InstagramCutLookup | null): boolean {
+  if (instagramLookup && driveShowsVertical(instagramLookup)) return true;
+  const f = runTsx(["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "vertical", "--edition-dir", dir]);
+  return driveShowsVertical(interpretInstagramCutLookup(f.status, f.stdout));
+}
+
 async function run(aammdd: string, dir: string, dryRun: boolean): Promise<number> {
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const instagramCutPath = join(dir, shortInstagramVideoFileName(aammdd));
   const genericPath = join(dir, shortVideoFileName(aammdd));
   const sidecarPath = join(dir, INSTAGRAM_CUT_SIDECAR_FILE);
   const registryRaws = readShortsRegistryRaws(dir);
-  const videoSeen =
+  let videoSeen =
     existsSync(instagramCutPath) ||
     existsSync(genericPath) ||
     existsSync(sidecarPath) ||
     registryRaws.some(({ path, raw }) => parseShortsPublishedFile(raw, aammdd, path).entries.length > 0);
   const now = new Date();
-  const decision = decideInstagramTimerRun({ config, reviewedExists: existsSync(join(dir, "02-reviewed.md")), registryRaws, aammdd, now, videoSeen });
+  const decideWith = (seen: boolean) => decideInstagramTimerRun({ config, reviewedExists: existsSync(join(dir, "02-reviewed.md")), registryRaws, aammdd, now, videoSeen: seen });
+  let decision = decideWith(videoSeen);
+  // Passou de 3 h e nada local mostra o vertical: o Drive ainda pode mostrar (o vertical nunca baixado).
+  if (decision.kind === "skip" && decision.unseenLate && driveHasVertical(aammdd, dir, null)) {
+    videoSeen = true;
+    decision = decideWith(true);
+  }
   if (decision.kind === "skip" || decision.kind === "wait") {
     console.log(`${LOG_PREFIX} ${aammdd}: ${decision.kind === "skip" ? "nada a fazer" : "esperando"} — ${decision.reason}`);
     return 0;
   }
+  const sidecar = parseCutSidecar(existsSync(sidecarPath) ? readFileSync(sidecarPath, "utf8") : null);
   if (decision.kind === "late") {
     console.log(`${LOG_PREFIX} ${aammdd}: ${decision.reason}`);
     if (dryRun) return 0;
-    return (await alarm(dir, aammdd, "late", decision.reason)) ? 0 : 1;
+    return (await alarm(dir, aammdd, "late", decision.reason, { at: decision.at, driveFileId: existsSync(instagramCutPath) ? null : (sidecar?.fileId ?? null) })) ? 0 : 1;
   }
 
   const release = dryRun ? () => {} : acquireTimerLock(join(dir, INSTAGRAM_TIMER_LOCK_FILE));
@@ -444,14 +588,13 @@ async function run(aammdd: string, dir: string, dryRun: boolean): Promise<number
     console.log(`${LOG_PREFIX} ${aammdd}: outra execução está no meio (${INSTAGRAM_TIMER_LOCK_FILE}) — sai sem publicar`);
     return 0;
   }
+  const at = decision.at;
   try {
-    const fetchArgs = ["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "vertical", "--target", "instagram", "--edition-dir", dir];
-    const f = runTsx(fetchArgs);
-    const lookup = interpretInstagramCutLookup(f.status, f.stdout);
+    const lookup = lookupInstagramCut(aammdd, dir);
     const choice = chooseInstagramVideo({
       instagramCutPath,
       instagramCutExists: existsSync(instagramCutPath),
-      cutSidecar: parseCutSidecar(existsSync(sidecarPath) ? readFileSync(sidecarPath, "utf8") : null),
+      cutSidecar: sidecar,
       genericPath,
       genericExists: existsSync(genericPath),
       lookup,
@@ -459,15 +602,19 @@ async function run(aammdd: string, dir: string, dryRun: boolean): Promise<number
     if (choice.kind === "wait") {
       console.log(`${LOG_PREFIX} ${aammdd}: ${choice.reason} — tenta de novo na próxima execução`);
       if (dryRun) return 0;
-      // Ambíguo alarma já (o editor precisa escolher); corte faltando, 1 h depois do horário.
-      if (choice.alarm === "drive-needs-editor" || shouldAlarmMissingVideo(now, decision.at, videoSeen)) {
-        return (await alarm(dir, aammdd, choice.alarm, choice.reason)) ? 0 : 1;
+      // Ambíguo alarma já (o editor precisa escolher); corte faltando ou proporção
+      // ainda desconhecida, 1 h depois do horário — num dia que teve vertical,
+      // inclusive só no Drive.
+      if (choice.alarmNow) return (await alarm(dir, aammdd, choice.alarm, choice.reason, { at })) ? 0 : 1;
+      if (shouldAlarmMissingVideo(now, at, true)) {
+        const seen = videoSeen || driveHasVertical(aammdd, dir, lookup);
+        if (shouldAlarmMissingVideo(now, at, seen)) return (await alarm(dir, aammdd, choice.alarm, choice.reason, { at })) ? 0 : 1;
       }
       return 0;
     }
     if (choice.kind === "error") {
       console.error(`${LOG_PREFIX} ${aammdd}: ${choice.reason}`);
-      if (!dryRun) await alarm(dir, aammdd, "drive-error", `Drive: ${choice.reason}`);
+      if (!dryRun) await alarm(dir, aammdd, "drive-error", `Drive: ${choice.reason}`, { at });
       return 1;
     }
     const publishArgs = ["scripts/publish-shorts.ts", aammdd, "--only", "instagram", "--publish", "--instagram-timer", "--video", choice.path];
@@ -484,10 +631,12 @@ async function run(aammdd: string, dir: string, dryRun: boolean): Promise<number
     const before = choice.kind === "download" ? mtimeOf(choice.path) : null;
     const r = runTsx(publishArgs);
     if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
+    let downloaded = false;
     if (choice.kind === "download") {
       const after = mtimeOf(choice.path);
       // Só grava o que baixou de fato (o download falho deixa o arquivo antigo intacto).
       if (after !== null && after !== before) {
+        downloaded = true;
         mkdirSync(dirname(sidecarPath), { recursive: true });
         writeFileAtomic(sidecarPath, JSON.stringify({ fileId: choice.fileId, modifiedTime: choice.modifiedTime, name: choice.name }, null, 2) + "\n");
       }
@@ -495,7 +644,9 @@ async function run(aammdd: string, dir: string, dryRun: boolean): Promise<number
     const outcome = interpretInstagramTimerOutput(r.status, r.stdout, tail(r.stderr));
     console.log(`${LOG_PREFIX} ${aammdd}: ${outcome.kind}${outcome.kind === "alarm" ? ` (${outcome.key})` : ""} — ${outcome.detail}`);
     if (outcome.kind !== "alarm") return 0;
-    const alarmed = await alarm(dir, aammdd, outcome.key, outcome.detail);
+    // Corte que não chegou ao disco: o comando manual baixa de novo (`--from-drive`).
+    const driveFileId = choice.kind === "download" && !downloaded ? choice.fileId : null;
+    const alarmed = await alarm(dir, aammdd, outcome.key, outcome.detail, { at, videoPath: choice.path, driveFileId });
     return outcome.failed || !alarmed ? 1 : 0;
   } finally {
     release();
@@ -519,7 +670,7 @@ async function main(): Promise<number> {
     console.error(`${LOG_PREFIX} ${aammdd}: erro: ${msg}`);
     if (!dryRun) {
       try {
-        await alarm(dir, aammdd, "crash", `o timer falhou com exceção: ${msg}`);
+        await alarm(dir, aammdd, "crash", `o timer falhou com exceção: ${msg}`, {});
       } catch (e2) {
         console.error(`${LOG_PREFIX} ${aammdd}: nem o alarme saiu: ${e2 instanceof Error ? e2.message : e2}`);
       }

@@ -18,10 +18,14 @@ import { join } from "node:path";
 import {
   MISSING_VIDEO_ALARM_AFTER_MS,
   alarmSeverity,
+  alarmDelivery,
+  alarmSuppressed,
   alreadyAlarmed,
   buildInstagramTimerAlarm,
   chooseInstagramVideo,
   decideInstagramTimerRun,
+  driveShowsVertical,
+  instagramTimerDeadlineHhmm,
   interpretInstagramCutLookup,
   interpretInstagramTimerOutput,
   parseCutSidecar,
@@ -30,6 +34,7 @@ import {
 } from "../scripts/shorts-instagram-timer.ts";
 import {
   INSTAGRAM_TIMER_DETAIL,
+  InstagramTimerGateError,
   SHORTS_BOOLEAN_FLAGS,
   credentialSkippedItems,
   instagramTimerGate,
@@ -211,6 +216,13 @@ describe("#11265 decideInstagramTimerRun (age agora?)", () => {
     const d = decideInstagramTimerRun({ ...base, videoSeen: false, now: new Date("2026-10-27T14:01:00Z") });
     assert.equal(d.kind, "skip");
   });
+  it("passou de 3 h sem vertical LOCAL: o skip marca unseenLate (o timer confere o Drive e redecide como late)", () => {
+    const d = decideInstagramTimerRun({ ...base, videoSeen: false, now: new Date("2026-10-27T14:01:00Z") });
+    assert.equal((d as { unseenLate?: boolean }).unseenLate, true);
+    assert.equal(decideInstagramTimerRun({ ...base, videoSeen: true, now: new Date("2026-10-27T14:01:00Z") }).kind, "late");
+    const other = decideInstagramTimerRun({ ...base, reviewedExists: false, videoSeen: false, now: new Date("2026-10-27T14:01:00Z") });
+    assert.equal((other as { unseenLate?: boolean }).unseenLate, undefined);
+  });
   it("instagram registrado em qualquer arquivo (principal, do timer, cópia de conflito), inclusive send_unknown: nada a fazer", () => {
     for (const path of ["_internal/06-shorts-published.json", SHORTS_INSTAGRAM_TIMER_LEDGER_FILE, "_internal/06-shorts-published-Neo.json"]) {
       for (const status of ["published", "send_unknown", "scheduled"]) {
@@ -267,8 +279,27 @@ describe("#11265 leitura do Drive e escolha do arquivo", () => {
     });
   });
   it("Drive ambíguo (needs-editor) espera e alarma, NUNCA cai no genérico (nem no corte antigo)", () => {
-    const c = chooseInstagramVideo({ ...paths, instagramCutExists: true, cutSidecar: null, genericExists: true, lookup: { kind: "needs-editor", reason: "ambiguous" } });
-    assert.deepEqual(c, { kind: "wait", reason: "ambiguous", alarm: "drive-needs-editor" });
+    const c = chooseInstagramVideo({ ...paths, instagramCutExists: true, cutSidecar: null, genericExists: true, lookup: { kind: "needs-editor", reason: "ambiguous", immediate: true } });
+    assert.deepEqual(c, { kind: "wait", reason: "ambiguous", alarm: "drive-needs-editor", alarmNow: true });
+  });
+  it("proporção ainda desconhecida no Drive (orientation-unknown) espera e só alarma depois de 1 h; ambiguous/duplicate-edition-folder alarmam já", () => {
+    const lk = (selection: string) => interpretInstagramCutLookup(3, JSON.stringify({ action: "needs-editor", selection }));
+    assert.deepEqual([lk("orientation-unknown").kind, (lk("orientation-unknown") as { immediate: boolean }).immediate], ["needs-editor", false]);
+    assert.equal((lk("ambiguous") as { immediate: boolean }).immediate, true);
+    assert.equal((lk("duplicate-edition-folder") as { immediate: boolean }).immediate, true);
+    const c = chooseInstagramVideo({ ...paths, instagramCutExists: true, cutSidecar: null, genericExists: true, lookup: lk("orientation-unknown") });
+    assert.equal(c.kind, "wait");
+    assert.equal((c as { alarmNow: boolean }).alarmNow, false);
+    assert.equal((c as { alarm: string }).alarm, "drive-needs-editor");
+    // Sem corte: também espera 1 h antes de alarmar.
+    assert.equal((chooseInstagramVideo({ ...paths, instagramCutExists: false, cutSidecar: null, genericExists: false, lookup: { kind: "none", reason: "nada" } }) as { alarmNow: boolean }).alarmNow, false);
+  });
+  it("o Drive mostra o vertical da edição (achado ou ambíguo) conta como dia com vertical; none/erro não", () => {
+    assert.equal(driveShowsVertical(found), true);
+    assert.equal(driveShowsVertical({ kind: "needs-editor", reason: "r", immediate: false }), true);
+    assert.equal(driveShowsVertical(interpretInstagramCutLookup(0, JSON.stringify({ action: "print-id", file: { id: "abcdefghijk", name: "Diaria comentada_Outras redes_V3.mp4" } }))), true);
+    assert.equal(driveShowsVertical({ kind: "none", reason: "nada" }), false);
+    assert.equal(driveShowsVertical({ kind: "error", reason: "401" }), false);
   });
   it("Drive sem corte: corte já baixado > genérico no disco > espera (alarme de vídeo faltando)", () => {
     const none: InstagramCutLookup = { kind: "none", reason: "nada" };
@@ -317,6 +348,17 @@ describe("#11265 interpretInstagramTimerOutput", () => {
     const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, error: "rupload 400" }] }));
     assert.equal((r as { key: string }).key, "publish-failed");
   });
+  it("gate da conta bloqueou ou a leitura falhou (cause preflight) → preflight-blocked (acao), nunca publish-failed", () => {
+    for (const preflight of ["blocked", "read-failed"]) {
+      const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, cause: "preflight", preflight, error: "a conta pode já ter o Reels" }] }));
+      assert.equal((r as { key: string }).key, "preflight-blocked", preflight);
+    }
+    assert.equal(alarmSeverity("preflight-blocked"), "acao");
+  });
+  it("gate ACHOU o Reels mas o registro falhou (preflight persist-failed com entry) → published-unregistered", () => {
+    const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, cause: "preflight", preflight: "persist-failed", entry: { status: "published", id: "m1", url: "https://i/m1" }, error: "registro não gravado: EBUSY" }] }));
+    assert.equal((r as { key: string }).key, "published-unregistered");
+  });
   it("cada ação do plano tem destino certo", () => {
     assert.equal(interpretInstagramTimerOutput(0, item("pending_schedule")).kind, "wait");
     assert.equal(interpretInstagramTimerOutput(0, item("skip_done")).kind, "done");
@@ -364,6 +406,25 @@ describe("#11265 conferência da conta antes de publicar", () => {
   it("instagramTimerGate: erro da leitura da conta lança (fail-closed)", async () => {
     await assert.rejects(instagramTimerGate({ decide: async () => { throw new Error("GET /media 500"); }, persist: () => {} }), /500/);
   });
+  it("instagramTimerGate: todo erro é InstagramTimerGateError com o motivo (read-failed/blocked/persist-failed + o Reels achado)", async () => {
+    const failureOf = async (p: Promise<unknown>) => {
+      try {
+        await p;
+      } catch (e) {
+        assert.ok(e instanceof InstagramTimerGateError);
+        return { failure: e.failure, entry: e.entry };
+      }
+      assert.fail("não lançou");
+    };
+    assert.deepEqual(await failureOf(instagramTimerGate({ decide: async () => { throw new Error("500"); }, persist: () => {} })), { failure: "read-failed", entry: undefined });
+    for (const cause of ["ambiguous", "window", "media-id"] as const) {
+      assert.deepEqual(await failureOf(instagramTimerGate({ decide: async () => ({ kind: "refuse", reason: "r", candidates: [], cause }), persist: () => {} })), { failure: "blocked", entry: undefined });
+    }
+    const r = await failureOf(
+      instagramTimerGate({ decide: async () => ({ kind: "register", entry, candidates: [], matchedBy: "marker" }), persist: () => { throw new Error("EBUSY"); } }),
+    );
+    assert.deepEqual(r, { failure: "persist-failed", entry });
+  });
 });
 
 describe("#11265 alarme", () => {
@@ -380,21 +441,62 @@ describe("#11265 alarme", () => {
     assert.equal(alarmSeverity("published-unregistered"), "acao");
     assert.equal(alarmSeverity("check-permalink"), "acao");
   });
-  it("late: diz que o timer não publica mais e o comando manual passa --video com o caminho do corte (edição interpolada)", () => {
-    const a = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "late", reason: "08:00 passou", cutPath: "/data/editions/2610/261027/diaria-comentada-261027-short-instagram.mp4" });
+  it("late: diz que o timer não publica mais e o comando manual passa --video RELATIVO (edição interpolada), só no 300", () => {
+    const a = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "late", reason: "08:00 passou", videoArg: "data/editions/2610/261027/diaria-comentada-261027-short-instagram.mp4" });
     assert.match(a.subject, new RegExp(AAMMDD));
     assert.match(a.body, /NÃO publica mais/);
     assert.match(a.body, /--confirm-instagram/);
-    assert.match(a.body, /--instagram-timer --publish --now --video \/data\/editions\/2610\/261027\/diaria-comentada-261027-short-instagram\.mp4/);
+    assert.match(a.body, /--instagram-timer --publish --now --video data\/editions\/2610\/261027\/diaria-comentada-261027-short-instagram\.mp4/);
+    assert.match(a.body, /SÓ NO 300/);
+    assert.match(a.body, /lock do timer não cruza máquina/);
     assert.doesNotMatch(a.body, /\{AAMMDD\}/);
   });
   it("missing-video interpola a pasta da edição; published-unregistered nunca manda repostar", () => {
-    const m = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "missing-video", reason: "sem corte", cutPath: "/x.mp4" });
+    const m = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "missing-video", reason: "sem corte", videoArg: "x.mp4" });
     assert.match(m.body, /261027\/Final\//);
     assert.doesNotMatch(m.body, /\{AAMMDD\}/);
-    const p = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "published-unregistered", reason: "no ar", cutPath: "/x.mp4" });
+    const p = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "published-unregistered", reason: "no ar", videoArg: "x.mp4" });
     assert.match(p.body, /NÃO reposte/);
-    assert.doesNotMatch(p.body, /--publish --now/);
+    assert.doesNotMatch(p.body, /--publish/);
+  });
+  it("preflight-blocked: 'confira a conta antes; não reposte', nunca --publish", () => {
+    const b = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "preflight-blocked", reason: "2 Reels na janela", videoArg: "x.mp4", deadlineHhmm: "11:00" });
+    assert.match(b.body, /Confira a conta antes; não reposte/);
+    assert.match(b.body, /--confirm-instagram/);
+    assert.doesNotMatch(b.body, /--publish/);
+    assert.doesNotMatch(b.body, /instagram\.com/);
+    assert.match(b.subject, /conferir a conta/);
+  });
+  it("opção 'publicar pela API' só em late/publish-failed/no-output/crash; nunca em guided/credentials/missing-video/drive-needs-editor", () => {
+    const body = (key: Parameters<typeof buildInstagramTimerAlarm>[0]["key"]) => buildInstagramTimerAlarm({ aammdd: AAMMDD, key, reason: "r", videoArg: "x.mp4", deadlineHhmm: "11:00" }).body;
+    for (const k of ["late", "publish-failed", "no-output", "crash"] as const) assert.match(body(k), /--publish --now --video x\.mp4/, k);
+    for (const k of ["guided", "credentials", "missing-video", "drive-needs-editor", "preflight-blocked", "published-unregistered", "check-permalink"] as const) {
+      assert.doesNotMatch(body(k), /--publish/, k);
+    }
+  });
+  it("publish-failed/credentials: o timer volta a tentar de hora em hora até horário + 3 h (late não)", () => {
+    for (const k of ["publish-failed", "credentials"] as const) {
+      assert.match(buildInstagramTimerAlarm({ aammdd: AAMMDD, key: k, reason: "r", videoArg: "x.mp4", deadlineHhmm: "11:00" }).body, /volta a tentar sozinho de hora em hora até 11:00 BRT/, k);
+    }
+    assert.doesNotMatch(buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "late", reason: "r", videoArg: "x.mp4", deadlineHhmm: "11:00" }).body, /volta a tentar/);
+    assert.equal(instagramTimerDeadlineHhmm(AT), "11:00"); // 08:00 BRT + 3 h
+  });
+  it("--from-drive entra no comando manual quando o id do corte é conhecido", () => {
+    const b = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "publish-failed", reason: "r", videoArg: "x.mp4", driveFileId: "abcdefghijk" }).body;
+    assert.match(b, /--video x\.mp4 --from-drive abcdefghijk/);
+  });
+  it("late não sai quando a edição já teve guided (mesmo problema, 2º e-mail urgente); o resto segue a dedup por motivo", () => {
+    const guided = JSON.stringify({ alarmed: ["guided"] });
+    assert.equal(alarmSuppressed(guided, "late"), true);
+    assert.equal(alarmSuppressed(guided, "guided"), true);
+    assert.equal(alarmSuppressed(guided, "publish-failed"), false);
+    assert.equal(alarmSuppressed(null, "late"), false);
+  });
+  it("e-mail urgente que não saiu (emailError) não grava a chave (a próxima execução reenvia); issue falha idem", () => {
+    assert.deepEqual(alarmDelivery({ issue: { action: "created" } }), { record: true });
+    assert.equal(alarmDelivery({ issue: { action: "created" }, emailError: "resend 500" }).record, false);
+    assert.match(alarmDelivery({ issue: { action: "created" }, emailError: "resend 500" }).error!, /resend 500/);
+    assert.equal(alarmDelivery({ issue: { action: "failed", error: "gh 502" } }).record, false);
   });
 });
 

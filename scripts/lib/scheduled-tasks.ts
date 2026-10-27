@@ -1209,7 +1209,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Shorts-Instagram-Catchup",
     description:
-      "de hora em hora: publica o Reels do vertical no Instagram quando o horário do dia é hora cheia (08:00/12:00), baixa o corte do Instagram assim que ele aparece no Drive e avisa o editor quando o Reels não saiu (#11265)",
+      "de hora em hora: publica o Reels do vertical no Instagram quando o horário do dia é hora cheia (08:00/12:00), consulta e baixa o corte do Instagram do Drive dentro da janela [horário do vertical, +3 h] e avisa o editor quando o Reels não saiu (#11265)",
     steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
     logPath: "shorts/.instagram-timer-catchup.log",
     schedule: { kind: "interval", hours: 1 },
