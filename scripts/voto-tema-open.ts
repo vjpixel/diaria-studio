@@ -54,6 +54,7 @@ import {
   resolveVotoTemaTagName,
   writeBallotToKv,
 } from "./lib/voto-tema-channel.ts";
+import { checkRevisao } from "./lib/voto-tema-revisao.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[voto-tema-open]";
@@ -205,6 +206,10 @@ async function runUnlocked(options: RunOptions): Promise<void> {
   const input = readBallotInput(inputPath);
   const validation = validarCedula(input, { exigirPrazo: true });
   if (!validation.ok) throw new VotoTemaGuardError(`cédula inválida (${inputPath}): ${validation.reason}`);
+  // #11199: aviso só — o bloqueio é no publish-voto-tema-kit.ts --push. Revisar
+  // AQUI evita regravar a cédula no KV com --force depois.
+  const revisao = checkRevisao(input as BallotInput & { revisado?: unknown }, null);
+  if (!revisao.ok) log(`AVISO: ${revisao.reason} Sem isso, publish-voto-tema-kit.ts --push recusa o rascunho.`);
 
   const kvConfig = resolveVotoTemaKvConfig();
 
