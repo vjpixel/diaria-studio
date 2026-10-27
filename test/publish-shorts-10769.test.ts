@@ -177,7 +177,7 @@ describe("#10769 config e destinos", () => {
   });
 
   it("instagram: false tira o Instagram dos destinos", () => {
-    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false, instagramAuthorPage: null, instagramCollaborators: [], linkedinProfile: false, linkedinPageRepost: false, x: false, threadsProfile: false, youtubeShortsApi: true, linkedinProfileViaTimer: false }).map((d) => d.id);
+    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false, instagramAuthorPage: null, instagramCollaborators: [], linkedinProfile: false, linkedinPageRepost: false, x: false, threadsProfile: false, youtubeShortsApi: true, linkedinProfileViaTimer: false, facebookProfile: true }).map((d) => d.id);
     assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook_profile"]);
   });
 

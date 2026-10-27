@@ -2,10 +2,22 @@
 
 ## rembg para capas de vídeo (#11071)
 
-Premissa: **Neo, Windows x64 do editor**, é a máquina de mídia/capas.
-O 300 não precisa deste ambiente. Este patch só versiona o setup; não instala
-dependências no host que implementa a issue. A instalação no Neo fica pendente
-até executar os comandos abaixo.
+Premissa original: **Neo, Windows x64 do editor**, é a máquina de mídia/capas.
+Desde o #11223 (viagem do editor, o Neo ligado poucas horas por dia) o mesmo
+setup também roda no **300 (Linux x86_64)**, para o `/diaria-publica-video`
+sair inteiro de lá, comandado do celular. Este patch só versiona o setup; não
+instala dependências no host que implementa a issue. A instalação em cada
+máquina fica pendente até executar os comandos abaixo.
+
+Para saber o que falta numa máquina (ffmpeg, Codex CLI, Georgia, este venv),
+sem instalar nada:
+
+```bash
+npx tsx scripts/check-video-env.ts
+```
+
+Exit 0 = a capa sai ali; exit 1 = o relatório diz, por item, o passo bloqueado
+e o comando de setup. Em 27/10/2026, no 300, só o venv do rembg faltava.
 
 Instalar CPython **3.11.9 x64** (python.org). Na raiz do checkout no Neo:
 
@@ -14,6 +26,27 @@ py -3.11 scripts/setup-rembg.py
 .\.venv-rembg\Scripts\python.exe scripts/setup-rembg.py --check
 .\.venv-rembg\Scripts\python.exe scripts/setup-rembg.py --input retrato-original.png --output retrato.png
 ```
+
+No **300 (Linux x86_64)**, a mesma versão exata, via `uv` (sem mexer no
+Python do sistema). Na raiz do checkout:
+
+```bash
+uv python install 3.11.9
+"$(uv python find 3.11.9)" scripts/setup-rembg.py
+.venv-rembg/bin/python scripts/setup-rembg.py --check
+.venv-rembg/bin/python scripts/setup-rembg.py --input retrato-original.png --output retrato.png
+```
+
+O lock (`scripts/rembg-requirements.txt`) é o mesmo das duas máquinas; no
+Linux ele ainda não foi instalado de ponta a ponta. Se o `pip install
+--only-binary=:all:` recusar alguma versão por falta de wheel Linux, o erro
+aborta o setup (nada é trocado em silêncio): ajustar o pin com o editor.
+
+Georgia no 300: a fonte é proprietária e não entra no repo (#4090). Em
+27/10/2026 ela já resolvia no raster do 300; se o check acusar falta, copiar
+`georgia*.ttf` do Neo (`C:\Windows\Fonts`) para `~/.local/share/fonts/` e
+rodar `fc-cache -f`. Codex CLI: `docs/codex-image-setup.md`, login pela conta
+ChatGPT.
 
 O setup exige essa versão exata, cria `.venv-rembg/` na raiz deste checkout
 (ignorado pelo git, fora de `data/`/OneDrive), fixa pip 25.0.1 e instala
@@ -30,7 +63,7 @@ exige o venv (#11162: a capa horizontal sai em qualquer máquina com o retrato
 em mãos) e recusa retrato sem transparência. O Short usa um frame via ffmpeg, sem rembg;
 seu fluxo permanece independente. Composição/testes unitários não requerem
 instalar Python ou baixar modelos. A validação real de DLLs/modelo e um recorte
-de ponta a ponta devem ser feitos no Neo após o setup.
+de ponta a ponta devem ser feitos na máquina (Neo ou 300) após o setup.
 
 ## Demais dependências
 

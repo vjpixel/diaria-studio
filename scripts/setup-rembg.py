@@ -1,4 +1,6 @@
-"""Ambiente de recorte do Neo (Windows x64), #11071. Nunca usa Python global para recortar."""
+"""Ambiente de recorte das capas de vídeo: Neo (Windows x64, #11071) e 300 (Linux x86_64, #11223).
+
+Nunca usa Python global para recortar."""
 import argparse
 import importlib.metadata
 import os
@@ -9,11 +11,24 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 VENV = ROOT / ".venv-rembg"
-PYTHON = VENV / "Scripts" / "python.exe"
+# Layout do venv por plataforma: Windows usa Scripts\python.exe; Linux, bin/python.
+PYTHON = VENV / "Scripts" / "python.exe" if sys.platform == "win32" else VENV / "bin" / "python"
 LOCK = ROOT / "scripts" / "rembg-requirements.txt"
 PYTHON_VERSION = (3, 11, 9)
 MODEL = "birefnet-portrait"
-HELP = "No Neo (Windows x64), execute: py -3.11 scripts/setup-rembg.py. Veja docs/setup.md (rembg)."
+HELP = (
+    "No Neo (Windows x64), execute: py -3.11 scripts/setup-rembg.py. "
+    "No 300 (Linux x86_64), com CPython 3.11.9 (ex.: uv python install 3.11.9): "
+    "$(uv python find 3.11.9) scripts/setup-rembg.py. Veja docs/setup.md (rembg)."
+)
+# Plataformas suportadas: (sys.platform, platform.machine() em minúsculas).
+SUPPORTED = {("win32", "amd64"), ("win32", "x86_64"), ("linux", "x86_64"), ("linux", "amd64")}
+
+
+def supported_platform(plat=None, machine=None):
+    plat = sys.platform if plat is None else plat
+    machine = (platform.machine() if machine is None else machine).lower()
+    return (plat, machine) in SUPPORTED
 
 
 def check():
@@ -50,8 +65,8 @@ def main():
         result = remove(args.input.read_bytes(), session=new_session(MODEL, providers=["CPUExecutionProvider"]))
         args.output.write_bytes(result)
         return
-    if sys.platform != "win32" or platform.machine().lower() not in ("amd64", "x86_64"):
-        raise RuntimeError("Setup do rembg é exclusivo do Neo (Windows x64). " + HELP)
+    if not supported_platform():
+        raise RuntimeError("Setup do rembg só no Neo (Windows x64) ou no 300 (Linux x86_64). " + HELP)
     if sys.version_info[:3] != PYTHON_VERSION:
         raise RuntimeError("Instale CPython 3.11.9 x64 antes do setup. " + HELP)
     if not VENV.exists():
@@ -60,7 +75,7 @@ def main():
     subprocess.run([str(PYTHON), "-m", "pip", "install", "--only-binary=:all:", "--no-deps", "-r", str(LOCK)], check=True)
     subprocess.run([str(PYTHON), "-m", "pip", "check"], check=True)
     subprocess.run([str(PYTHON), str(Path(__file__).resolve()), "--check"], check=True)
-    print("rembg pronto no Neo: " + str(PYTHON))
+    print("rembg pronto: " + str(PYTHON))
 
 
 if __name__ == "__main__":

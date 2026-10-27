@@ -30,6 +30,14 @@ npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
 
 Ao terminar, sugerir o próximo comando (`/diaria-5-publicacao {AAMMDD}`) sem rodá-lo.
 
+**Máquina (#11223):** a skill roda no Neo ou no `300` (comandada do celular, durante a viagem do editor). Antes da Parte A, saber se a capa sai nesta máquina:
+
+```bash
+npx tsx scripts/check-video-env.ts
+```
+
+Exit 0 → a capa (Passo A2) sai aqui. Exit 1 → o relatório diz o que falta (ffmpeg, Codex CLI, Georgia ou o venv do rembg) e o comando de setup; **nunca instalar no meio da skill**. Seguir com o resto e deixar a capa para o Neo (ou sem capa própria), avisando no relato final. O vertical não depende disso: o `publish-shorts.ts` baixa o vídeo da pasta `Final/` do Drive (`--from-drive`, Passo B1).
+
 **Edição sem vídeo (#11125).** Se o editor disser que não vai gravar o vídeo do dia, marcar a edição com `npx tsx scripts/set-d1-no-video.ts {AAMMDD}`: grava `_internal/no-video.json`, apaga a cópia `04-d1-2x1-play.jpg` com o convite "Clique e assista a notícia comentada" e faz o upload (`upload-images-public.ts --mode newsletter`) e o render pararem de usá-la — o D1 sai com o hero puro, sem link. Depois rodar o upload em modo newsletter (tira `d1_play` de `06-public-images.json`) e re-renderizar o HTML. O marcador vence a URL do vídeo; para religar, `--clear` e rodar o upload de novo.
 
 ## Onde está o vídeo (Drive, #11222)
@@ -88,7 +96,7 @@ Regra do editor: **a única imagem realista é o editor.** Todo o resto é pintu
    ```
 
    que copia o escolhido para `_internal/youtube-thumb-frames/escolhido.png`.
-3. **Recorte:** `rembg` modelo `birefnet-portrait` (só a pessoa, PNG com transparência). No **Neo (Windows do editor)**, o ambiente de `docs/setup.md` (#11071): `.venv-rembg/Scripts/python.exe scripts/setup-rembg.py --input _internal/youtube-thumb-frames/escolhido.png --output retrato.png`. Se ausente/inválido, parar com a instrução `py -3.11 scripts/setup-rembg.py`; nunca instalar improvisado ou substituir o recorte silenciosamente. O `setup-rembg.py` é só Windows/Python 3.11.9: no `300` (Linux) a capa não roda hoje — deixar o passo para o Neo e seguir com o resto (#11222 item 4, opcional).
+3. **Recorte:** `rembg` modelo `birefnet-portrait` (só a pessoa, PNG com transparência). No **Neo (Windows do editor)**, o ambiente de `docs/setup.md` (#11071): `.venv-rembg/Scripts/python.exe scripts/setup-rembg.py --input _internal/youtube-thumb-frames/escolhido.png --output retrato.png`. No **`300` (Linux)**, desde #11223: `.venv-rembg/bin/python scripts/setup-rembg.py --input _internal/youtube-thumb-frames/escolhido.png --output retrato.png`. Se ausente/inválido, parar com a instrução de setup que o `check-video-env.ts` imprime (`py -3.11 scripts/setup-rembg.py` no Neo; `uv python install 3.11.9` + `setup-rembg.py` no `300`, `docs/setup.md`); nunca instalar improvisado ou substituir o recorte silenciosamente. Sem o venv na máquina, deixar o passo para o Neo e seguir com o resto.
 4. **Fundo:** outpaint da `04-d1-2x1.jpg` para 16:9 pelo Codex, com a imagem como referência (#11228), o objeto do D1 menor e inteiro à direita e o terço esquerdo livre, em pintura impasto nítida. Nunca desfoque:
 
    ```bash
@@ -173,7 +181,7 @@ Invocar a skill é o pedido de publicação: publicar nos destinos abaixo não p
 | `linkedin_page_repost` | guiado (Chrome) | repost do vídeo do perfil **pela página** diar.ia.br, no horário `at` do plano: a grade da página (rotação #10305) decide, com 2 h de distância dos posts dela e ≥30 min depois do perfil. Guiado porque não há token de organização local |
 | `x` | guiado (Buffer MCP) | X @diariabr. O plano traz o texto (≤280 ponderado) e o `scheduledAt`; o `--publish` sobe o vertical pro R2 e devolve `results[].buffer` (`text`, `dueAt`, `videoUrl`). Sem R2 o destino é pulado com aviso |
 | `threads_profile` | API (Threads API, #11122) | vertical no Threads **pessoal** do editor (`THREADS_PERSONAL_ACCESS_TOKEN`/`THREADS_PERSONAL_USER_ID`, `scripts/lib/threads-personal-video.ts`), com o vertical por URL pública do R2. Texto: título, gancho, vídeo completo do YouTube e a edição com `utm_source=threads&utm_medium=video&utm_campaign={AAMMDD}`. Sem token (ainda não existe, #10772/#11077) ou sem R2, é pulado com aviso. A API **não agenda**: mesmo `pending_schedule`/`skip_late` do `linkedin_profile`. Envio ambíguo grava `send_unknown` e nunca re-posta: conferir o perfil e registrar com `--mark threads_profile=URL`. O repost pela diar.ia.br não entra (a Threads API não documenta repost) |
-| `facebook_profile` | guiado (Chrome) | a Graph API não publica em perfil pessoal |
+| `facebook_profile` | guiado (Chrome) | a Graph API não publica em perfil pessoal. **Pausado durante a viagem do editor** (#11223, `publishing.shorts.facebook_profile: false`): fora do plano, a skill não oferece nem cobra o Passo B5, e a limpeza do vertical não espera por ele. Volta com `true` |
 
 **Horário do vertical (#10831):** o horizontal sai às 06:00 junto da newsletter; o vertical (Short, Reels e Instagram) sai em horário **próprio**, nunca às 06:00. Teste de 15 dias úteis (261026, segunda, a 261113, sexta; só há edição de segunda a sexta) alternando **06:30, 08:00 e 12:00 BRT** dia a dia (revisto em 22/10/2026: os cliques da newsletter concentram 59% entre 06h e 10h e só 2% às 19h; o teste 12:00/19:00 valeu só para 261022 e 261023) (`publishing.shorts.schedule`, `resolveShortTime`), comparando as visualizações nas primeiras 24 h; fora da janela vale `default_time`. O plano traz o horário em `shortTime` (`hhmm`, `at`). **Grade (#10819):** o plano lê o que já está agendado no dia (`_internal/06-social-published.json` + `06-shorts-published.json` + a fila do Worker, `GET /list`, que traz os posts das skills de divulgação; sem Worker vira `[aviso]` e segue só com os stores). O Instagram em collab conta também como post da @diar.ia.br (decisão do editor 261023). Durante o teste, o horário do teste vale pra todos os destinos e a grade só vira `[aviso]` quando ele cola (<2 h) num post da mesma conta; fora do teste, cada destino de API tem horário próprio em `slots` (alinha a post de outra conta; na mesma conta, espaçamento mínimo de 2 h e preferência pelos picos de uso 07–09, 12–14 e 18–21 BRT, decisão do editor no briefing 261022b, `scripts/lib/social-slot-planner.ts`). Destinos guiados seguem `shortTime`.
 
@@ -257,6 +265,8 @@ Carregar as ferramentas do Claude in Chrome. Abrir `https://studio.youtube.com/c
 7. Registrar: `npx tsx scripts/publish-shorts.ts {AAMMDD} --mark youtube_shorts={URL do Short}` (`--mark` só aceita os destinos guiados — `youtube_shorts`, `facebook_profile`, `linkedin_page_repost`, `x` —, o `instagram` quando o plano o devolve como guiado pelo teto de duração, #10893, e o `linkedin_profile`/`threads_profile` depois de conferir um `send_unknown`, #10772/#11122; sempre com URL http/https, exceto `x=buffer:{id}`).
 
 ### Passo B5 — Perfil pessoal (Chrome)
+
+Só quando o plano traz o item `facebook_profile`. Com `publishing.shorts.facebook_profile: false` (pausa da viagem, #11223) o item não existe: pular o passo sem mencionar pendência.
 
 O Facebook do Chrome costuma estar na identidade da página diar.ia.br. Trocar para o perfil pessoal (menu do avatar → perfil do editor), criar Reel e **chamar o editor** para escolher o arquivo. Legenda: `caption` do item `facebook_profile`. Publicar e registrar com `--mark facebook_profile={URL}`. **Voltar o Chrome para a identidade da página diar.ia.br no fim.**
 
