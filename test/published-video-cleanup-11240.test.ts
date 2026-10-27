@@ -78,7 +78,7 @@ test("fetch vertical concluído não consulta o Drive nem solicita novo download
   mkdirSync(join(dir, "_internal"));
   try {
     ledger(dir, main, listShortDestinations(config).map(d => d.id));
-    const outcome = await runFetchDriveVideo({} as never, { aammdd: edition, editionDir: dir, orientation: "vertical", folderId: "unused" }, () => {});
+    const outcome = await runFetchDriveVideo({} as never, { aammdd: edition, editionDir: dir, orientation: "vertical", folderId: "unused", now: new Date(), windowHours: 24, dryRun: false, force: false }, () => {});
     assert.equal(outcome.output.action, "already-published");
     assert.equal(existsSync(join(dir, video)), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
