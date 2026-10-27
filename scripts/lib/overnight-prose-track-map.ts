@@ -106,7 +106,7 @@ export const OVERNIGHT_PROSE_TRACK_MAP: readonly ProseTrackMapping[] = [
   {
     status: "requer-sessao-local",
     tracks: ["develop"],
-    note: "label windows (Chrome logado/ComfyUI) — MACHINE_DEVELOP_LABELS classifica develop.",
+    note: "label windows (Chrome logado/ComfyUI) — MACHINE_DEVELOP_LABELS classifica develop. Também label claude-dir (#11255): o fix escreve em .claude/, negado no overnight agendado (acceptEdits sem TTY) — CLAUDE_DIR_LABEL classifica develop.",
   },
   {
     status: "not-this-week",
