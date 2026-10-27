@@ -35,6 +35,11 @@
  * mais sozinho, e a política do editor é reescrever o parágrafo. O erro nomeia
  * destaque, slide e quanto passou — renderizar transbordado seria degradar a
  * arte em silêncio, a mesma classe de falha que o #6064 consertou.
+ *
+ * EXCEÇÃO DO EDITOR (#11210): destaque listado em
+ * `_internal/carousel-keep-art.json` não entra na pré-passada de overflow nem
+ * no render — a arte existente fica como está, sem carimbo novo, e o destaque
+ * sai em `skipped`. Os demais destaques e o 4º post geram normalmente.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -66,6 +71,7 @@ import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { extractSection, extractDestaqueBlock } from "./lib/extract-section.ts";
 import { readCoverOverride } from "./gen-social-card-4x5.ts";
 import { readInstagramTestOverride, type CarouselCtaOverride } from "./lib/instagram-test-override.ts"; // #8681
+import { readCarouselKeepArt, CAROUSEL_KEEP_ART_FILENAME } from "./lib/carousel-keep-art.ts"; // #11210
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
@@ -141,6 +147,10 @@ export async function genCarouselCards(
   // #8681: override de teste do slide CTA (lança se o JSON estiver malformado).
   const ctaOverride = readInstagramTestOverride(editionDir)?.cta_slide ?? null;
   const hashes: CarouselSourceHashes = {};
+  // #11210: destaques cuja arte o editor decidiu MANTER ficam fora da pré-passada
+  // de overflow e do render — senão o texto reparagrafado deles abortava a
+  // geração de TODOS (inclusive o 4º post). Lança se o JSON estiver malformado.
+  const keepArt = readCarouselKeepArt(editionDir);
 
   // #6078 item 2 — PRÉ-PASSADA de overflow, antes de renderizar qualquer
   // destaque. Com tamanho FIXO o texto não encolhe mais pra caber, e a política
@@ -154,6 +164,7 @@ export async function genCarouselCards(
   // mesmo comportamento do invariante irmão `carousel-text-overflow` no Stage 4.
   const transbordam: { destaque: string; slides: ReturnType<typeof findOverflowingCarouselSlides> }[] = [];
   for (const d of destaques) {
+    if (keepArt[d]) continue; // #11210: arte mantida — reportado como `skipped` abaixo
     const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
     if (!dText) continue; // reportado como `skipped` no loop principal abaixo
     const slides = findOverflowingCarouselSlides(dText.trim(), ctaOverride);
@@ -180,6 +191,14 @@ export async function genCarouselCards(
   }
 
   for (const d of destaques) {
+    if (keepArt[d]) {
+      // #11210: não regera nem grava carimbo; os slides existentes seguem
+      // valendo pro upload/publish (que já monta o carrossel com o que há no disco).
+      skipped.push({ destaque: d, reason: `arte mantida pelo editor (${CAROUSEL_KEEP_ART_FILENAME})` });
+      const existentes = CAROUSEL_SLIDE_SLOTS.map((slot) => resolve(editionDir, carouselSlideFilename(d, slot)));
+      if (existentes.every((p) => existsSync(p))) generated.push(...existentes);
+      continue;
+    }
     const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
     if (!dText) {
       skipped.push({ destaque: d, reason: `bloco '## ${d}' não encontrado em '# Social' de 03-social.md` });

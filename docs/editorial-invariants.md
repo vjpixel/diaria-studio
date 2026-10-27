@@ -84,8 +84,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `capture-failed-submission-count` | captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878) | #2878 |
 | `card-4x5-upload-missing` | card 4:5 existe no disco mas 06-public-images.json não tem a entry d{N}_4x5 (#4090, warning-only) | #4090 |
 | `carousel-cards-missing` | ausência TOTAL dos slides do carrossel diário (0 dos N×4) pra edição com texto de destaque — gen-carousel-cards.ts provavelmente nunca rodou (#6740) | #6740 |
-| `carousel-cards-stale` | slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064) | #6064 |
-| `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078) | #6078 |
+| `carousel-cards-stale` | slides do carrossel diário rasterizados com texto anterior à edição do 03-social.md (#6064; warning com arte mantida pelo editor em carousel-keep-art.json, #11210) | #6064 |
+| `carousel-text-overflow` | parágrafo do social não cabe no card do carrossel em tamanho fixo — precisa ser reescrito (#6078; warning com arte mantida pelo editor em carousel-keep-art.json, #11210) | #6078 |
 | `carousel-upload-incomplete` | slides do carrossel existem no disco mas 06-public-images.json não tem todas as 5 chaves (#6064, warning-only) | #6064 |
 | `carousel-upload-stale` | arte do carrossel no KV está atrás do arquivo local (md5 divergente) — post sairia com a arte velha (#6068) | #6068 |
 | `curto-x-weight` | post do # Curto passa de 280 no peso do X (URL = 23) — o Stage 5 pularia o post no X (#11124, mesmo cálculo do lint #10180) | #11124 |
