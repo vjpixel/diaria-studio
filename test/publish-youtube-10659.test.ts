@@ -375,9 +375,9 @@ describe("guardas do CLI e da skill", () => {
     }
   });
 
-  it("skill /diaria-youtube existe e usa o publisher com --dry-run", () => {
-    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-youtube/SKILL.md"), "utf8");
-    assert.match(skill, /^---\nname: diaria-youtube\n/);
+  it("skill /diaria-publica-video (que absorveu o /diaria-youtube, #11209) usa o publisher com --dry-run", () => {
+    const skill = readFileSync(resolve(ROOT, ".claude/skills/diaria-publica-video/SKILL.md"), "utf8");
+    assert.match(skill, /^---\nname: diaria-publica-video\n/);
     assert.match(skill, /scripts\/publish-youtube\.ts \{AAMMDD\} --dry-run/);
     assert.match(skill, /#10659/);
   });

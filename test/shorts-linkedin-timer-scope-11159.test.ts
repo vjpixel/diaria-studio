@@ -95,7 +95,7 @@ describe("#11159 escopo do --linkedin-timer", () => {
 
   it("LINKEDIN_TIMER_DETAIL e o SKILL.md mandam rodar com --only linkedin_profile", () => {
     assert.match(LINKEDIN_TIMER_DETAIL, /--only linkedin_profile --linkedin-timer/);
-    const skill = readFileSync(new URL("../.claude/skills/diaria-shorts/SKILL.md", import.meta.url), "utf8");
+    const skill = readFileSync(new URL("../.claude/skills/diaria-publica-video/SKILL.md", import.meta.url), "utf8");
     assert.match(skill, /--only linkedin_profile --publish --linkedin-timer/);
   });
 });

@@ -71,7 +71,7 @@ export function decideTimerRun(input: {
 }): TimerDecision {
   const cfg = loadShortsConfig(input.config);
   if (!cfg.linkedinProfile) return { kind: "skip", reason: "publishing.shorts.linkedin_profile = false" };
-  if (!cfg.linkedinProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.linkedin_profile_via_timer = false (o /diaria-shorts publica)" };
+  if (!cfg.linkedinProfileViaTimer) return { kind: "skip", reason: "publishing.shorts.linkedin_profile_via_timer = false (o /diaria-publica-video publica)" };
   if (!input.reviewedExists) return { kind: "skip", reason: `sem 02-reviewed.md da edição ${input.aammdd} (dia sem edição)` };
   const raws = [
     ...(input.publishedRaw !== null ? [{ path: SHORTS_PUBLISHED_FILE, raw: input.publishedRaw }] : []),
@@ -101,7 +101,7 @@ export function interpretDriveLookup(exitCode: number | null, stdout: string): D
   if (action === "exists") return { kind: "exists" };
   if (action === "none") return { kind: "wait", reason: `nenhum vertical "final" no Drive ainda (${out.reason ?? "sem motivo"})` };
   if (action === "needs-editor") {
-    return { kind: "wait", reason: `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-shorts (Passo 1); o timer não escolhe` };
+    return { kind: "wait", reason: `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe` };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
 }
