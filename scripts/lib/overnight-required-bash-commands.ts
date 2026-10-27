@@ -36,8 +36,12 @@
  * Claude Code. Por isso, onde o fluxo roda o comando puro (`git pull`,
  * `npm ci`, `git worktree prune`/`list`, `gh auth status`), o allow list tem
  * também a regra exata sem argumentos, que não depende de "` *` final casa o
- * comando puro". A prova real é a 1ª rodada agendada depois do merge: o
- * `report.md` dela não pode listar negação de permissão.
+ * comando puro". Prova real de 27/10/2026 (tabela em
+ * `docs/overnight-nightly-chain.md`): uma sessão `claude --print
+ * --permission-mode acceptEdits` rodou cada forma canônica desta lista sem
+ * negação; as formas que seguem negadas estão em
+ * `OVERNIGHT_PROBED_DENIED_FORMS`. A confirmação final é o `report.md` da
+ * próxima rodada agendada.
  */
 
 export type RequiredCommandSource =
@@ -127,6 +131,11 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   { command: "gh run view 123 --log-failed", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run view --log-failed" },
   { command: "gh run list --branch master --limit 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run list --branch master --limit 1" },
   { command: "gh run rerun 123", source: "context/overnight-dispatch-rules.md", mention: "gh run rerun" },
+  // Atualizar a branch da PR com a base é `gh pr update-branch`, não `git merge`
+  // (que a prova de 27/10 mostrou negado, #11235).
+  { command: "gh pr update-branch 1 -R vjpixel/diaria-studio", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh pr update-branch {N} -R {repo}" },
+  { command: "gh pr view 1 --json state,mergedAt", source: "context/overnight-dispatch-rules.md", mention: "--json state,mergedAt" },
+  { command: "gh pr list --state open", source: "context/overnight-dispatch-rules.md", mention: "gh pr list --state open" },
   // `gh api` só via helpers de escopo fixo (#11235, review da PR #11250): uma
   // regra `Bash(gh api ...*)` deixaria o `*` atravessar espaço e casar
   // `-X DELETE`/mutation arbitrária. Os helpers caem em `npx tsx scripts/*.ts *`.
@@ -200,6 +209,37 @@ export const OVERNIGHT_FORBIDDEN_BASH_PROBES: readonly { command: string; knownM
   { command: "git push --force origin master", knownMatchBy: "Bash(git push *)" },
   { command: "npx tsx --test test/", knownMatchBy: "Bash(npx tsx --test *)" },
   { command: "npm run test", knownMatchBy: "Bash(npm run *)" },
+];
+
+/**
+ * Formas que a prova real de 27/10/2026 (`claude --print --permission-mode
+ * acceptEdits`, worktree sob o checkout confiável, registro em
+ * `docs/overnight-nightly-chain.md`) mostrou AINDA negadas depois do #11250.
+ * Nenhuma é exigida pelo fluxo documentado: cada uma tem a forma canônica em
+ * `use`, que o allow list cobre. Quase todas apareceram na rodada 261027 como
+ * contorno depois que a forma canônica foi negada (sem `npm ci`, o subagente
+ * ia buscar o `tsx` do checkout principal; sem `git add`, tentava `git -C`).
+ *
+ * O teste exige as duas coisas: nenhuma regra de `allow` casa `denied` (se
+ * alguém liberar, a tabela da doc fica falsa e precisa ser refeita com uma
+ * prova nova) e `use` casa alguma regra.
+ */
+export const OVERNIGHT_PROBED_DENIED_FORMS: readonly { denied: string; use: string; why: string }[] = [
+  {
+    denied: "git -C /home/vjpixel/diaria-studio/.claude/worktrees/x add a.ts",
+    use: "git add a.ts",
+    why: "cwd já é o worktree; `git -C` pede aprovação (item 9 das regras)",
+  },
+  { denied: "node --test test/a.test.ts", use: "npx tsx --test test/a.test.ts", why: "teste roda por `npx tsx --test`" },
+  { denied: "node --import tsx --test test/a.test.ts", use: "npx tsx --test test/a.test.ts", why: "idem" },
+  { denied: "npx --no-install tsx --test test/a.test.ts", use: "npx tsx --test test/a.test.ts", why: "idem" },
+  {
+    denied: "node_modules/.bin/tsx --test test/a.test.ts",
+    use: "npx tsx --test test/a.test.ts",
+    why: "idem; `node_modules` vem do `npm ci` do próprio worktree",
+  },
+  { denied: "git merge --ff-only origin/master", use: "gh pr update-branch 1 -R vjpixel/diaria-studio", why: "a branch da PR é atualizada pelo GitHub" },
+  { denied: "gh api repos/vjpixel/diaria-studio/pulls/1 --jq .state", use: "gh pr view 1 --json state", why: "`gh api` só via helpers (#11235)" },
 ];
 
 /** Prefixo `Bash(` ... `)` de uma regra de permissão; `null` se a regra não é de Bash. */

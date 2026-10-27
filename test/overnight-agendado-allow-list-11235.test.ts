@@ -27,6 +27,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   OVERNIGHT_FORBIDDEN_BASH_PROBES,
+  OVERNIGHT_PROBED_DENIED_FORMS,
   OVERNIGHT_REQUIRED_BASH_COMMANDS,
   bashRuleMatches,
   findMatchingBashRule,
@@ -122,6 +123,26 @@ describe("allow list do overnight agendado (#11235)", () => {
     const { commandHasBareGitPush } = await import(pathToFileURL(resolve(REPO_ROOT, ".claude/hooks/block-worktree-bare-push.mjs")).href);
     for (const c of OVERNIGHT_REQUIRED_BASH_COMMANDS.filter((c) => /^git push\b/.test(c.command))) {
       assert.equal(commandHasBareGitPush(c.command), false, `'${c.command}' seria negado pelo hook em worktree`);
+    }
+  });
+
+  it("formas ainda negadas na prova de 27/10 seguem fora do allow list, e a forma canônica de cada uma está dentro", () => {
+    for (const f of OVERNIGHT_PROBED_DENIED_FORMS) {
+      assert.equal(
+        findMatchingBashRule(allow, f.denied),
+        null,
+        `'${f.denied}' agora casa uma regra: a tabela da prova em docs/overnight-nightly-chain.md ficou falsa — refazer a prova`,
+      );
+      assert.ok(findMatchingBashRule(allow, f.use), `forma canônica '${f.use}' (no lugar de '${f.denied}') fora do allow list`);
+    }
+  });
+
+  it("as formas negadas na prova estão registradas na doc da cadeia e nas regras de dispatch", () => {
+    const chain = normalizeWhitespace(readFileSync(resolve(REPO_ROOT, "docs/overnight-nightly-chain.md"), "utf8"));
+    const rules = normalizeWhitespace(readFileSync(resolve(REPO_ROOT, "context/overnight-dispatch-rules.md"), "utf8"));
+    for (const form of ["git -C", "node --test", "node --import tsx --test", "npx --no-install tsx", "node_modules/.bin/tsx", "git merge"]) {
+      assert.ok(chain.includes(form), `'${form}' sumiu da tabela da prova em docs/overnight-nightly-chain.md`);
+      assert.ok(rules.includes(form), `'${form}' sumiu do aviso de formas negadas em context/overnight-dispatch-rules.md`);
     }
   });
 
