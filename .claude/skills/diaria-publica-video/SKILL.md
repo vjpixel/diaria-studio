@@ -1,6 +1,6 @@
 ---
 name: diaria-publica-video
-description: Publica os dois vídeos da edição ("diar.ia.br comentada", o Pixel comentando o D1) numa invocação — Parte A, o horizontal no canal @diariabr do YouTube (metadados derivados da edição, capa no padrão diar.ia.br, o editor sobe pelo Studio e cola o link, que entra no D1; `--upload` pela API só quando pedido) e Parte B, o vertical como YouTube Shorts, Reels nas páginas do Facebook, Instagram da diar.ia.br em collab com @vjpixel, perfil pessoal, X, Threads e LinkedIn (`scripts/publish-shorts.ts`). O vídeo vem da pasta `{AAMMDD}/Final/` do Drive (#11222). Roda depois do gate da Etapa 4 e antes do `/diaria-5-publicacao` (#10943), standalone, sem encadear. Substitui `/diaria-youtube` e `/diaria-shorts` (#11209), que viraram aliases. Uso — `/diaria-publica-video AAMMDD [--so horizontal|vertical] [--video-url URL]`.
+description: Publica os dois vídeos da edição ("diar.ia.br comentada", o Pixel comentando o D1) numa invocação — Parte A, o horizontal no canal @diariabr do YouTube (metadados derivados da edição, capa no padrão diar.ia.br, upload pela API com a legenda SRT — o agente sobe, o link entra no D1 sozinho; o YouTube Studio é só fallback, #11385) e Parte B, o vertical como YouTube Shorts, Reels nas páginas do Facebook, Instagram da diar.ia.br em collab com @vjpixel, perfil pessoal, X, Threads e LinkedIn (`scripts/publish-shorts.ts`). O vídeo vem da pasta `{AAMMDD}/Final/` do Drive (#11222). Roda depois do gate da Etapa 4 e antes do `/diaria-5-publicacao` (#10943), standalone, sem encadear. Substitui `/diaria-youtube` e `/diaria-shorts` (#11209), que viraram aliases. Uso — `/diaria-publica-video AAMMDD [--so horizontal|vertical] [--video-url URL]`.
 ---
 
 # /diaria-publica-video AAMMDD (#11209)
@@ -13,7 +13,7 @@ Os dois vídeos da edição numa skill só (decisão do editor, 26–27/10/2026)
 
 - `AAMMDD` — obrigatório. Se não for passado, assumir D+1 com o banner padrão do `CLAUDE.md` (`Data não informada — assumindo {AAMMDD} (D+1). Passe AAMMDD explicitamente para outra edição.`), nunca perguntar, e passar a data explicitamente aos scripts (eles exigem).
 - `--so horizontal|vertical` — roda só uma das partes (só um vídeo ficou pronto, ou o outro já saiu). Sem a flag, as duas, na ordem A → B.
-- `--video-url URL` — o link do horizontal que o editor subiu pelo YouTube Studio (`https://youtu.be/...`). É o caminho normal desde 261027 (Passo A4).
+- `--video-url URL` — o link do horizontal quando ele já está no canal (subido pelo Studio, fallback do Passo A5). Sem ele, a skill sobe o vídeo pela API (Passo A3, o padrão desde #11385).
 
 **Retomada:** cada parte pula o que já foi feito, pelos registros em disco. Parte A está feita quando existe `_internal/05-video-url.txt` (link no D1) ou `_internal/05-youtube-published.json` com `videoId` desta edição; Parte B, destino a destino, por `_internal/06-shorts-published.json` (o `publish-shorts.ts` já pula o que está registrado). Só uma das partes presente no Drive vira aviso para a outra, nunca aborto.
 
@@ -50,6 +50,8 @@ Pasta `Mentoria Fluxo/VTSD/YouTube` (`publishing.youtube.drive_folder_id`), uma 
 | `Diaria comentada_Outras redes_V3.mp4` | vertical (padrão) | Parte B: Shorts, Reels das páginas, LinkedIn, Threads, X |
 | `Diaria comentada_Instagram_V3.mp4` | vertical | o corte do Instagram (Passo B3b) |
 
+**Variações (#11385).** A pasta também vale como "Finais" ou "Versão final"; sem `.mp4` nela, o fetch procura em **`{AAMMDD}/Editado/`** (e "Editados", "Edição", "Exportado"), com a mesma regra de destino — na 261028 o horizontal veio em `Editado/Diaria comentada_Youtube_FINAL.mp4`. Se ainda assim o fetch disser `none` e o arquivo estiver no Drive com outro nome ou lugar, subir direto do caminho do Drive for desktop: `publish-youtube.ts {AAMMDD} --upload --video "G:/…/arquivo.mp4"` (Passo A3), sem esperar o editor mover nada.
+
 A convenção dos dois verticais é premissa registrada no #11222: "Outras redes" é o corte genérico e vai para o Shorts/Reels; o do Instagram é o recorte para o teto de duração dele. Ao lado de `Final/` fica o **bruto** (ex.: `20261026_191548.mp4`, 4K HEVC) — fonte do retrato da capa (Passo A2).
 
 `scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal|vertical [--target youtube|outras-redes|instagram]` escolhe o arquivo: com `.mp4` em `Final/`, só ela conta e o sufixo decide (sem exigir "final" no nome; a proporção do Drive só exclui um arquivo de orientação contrária). Sem `Final/` (edições antigas), vale a regra de 25/10/2026: `.mp4` com "final" como palavra no nome ("pré-final", "não final" e "finalizando" não contam), na subpasta `{AAMMDD}/` (sem janela; a raiz é ignorada quando ela existe), ou solto na raiz nas últimas 36h. Saídas:
@@ -62,7 +64,7 @@ A convenção dos dois verticais é premissa registrada no #11222: "Outras redes
 
 Vídeo diário no YouTube (`@diariabr`) com o Pixel comentando o D1, decisão do editor de 21/10/2026 (1º vídeo: edição 261021, https://youtu.be/QRbXMprk9o0). O publisher é o mesmo do passo do Stage 5 (`scripts/publish-youtube.ts`, §5b-youtube do `orchestrator-stage-5.md`).
 
-**Fluxo real desde 261027 (#11222):** o editor sobe o horizontal pelo **YouTube Studio**, por fora da API, e passa o link. A skill prepara os metadados e a capa para ele usar no Studio (Passos A1–A3) e grava o link no D1 (Passo A4). O `--upload` pela API (Passo A5) continua disponível, só quando o editor pede.
+**Fluxo desde 261028 (#11385):** **o agente sobe o horizontal pela API** (`--upload`, Passo A3), com a capa e a legenda SRT; o próprio upload grava o link no D1 (`05-video-url.txt`). Invocar a skill já é o pedido de upload, como na Parte B; o editor não é o executor do upload. O YouTube Studio (Passo A5) é só fallback: a API falhou, ou o editor pediu para subir ele mesmo. Entre 261027 e 261028 o fluxo foi o inverso (o editor subia pelo Studio e colava o link, #11222) — o editor corrigiu: "você é quem faz isso".
 
 ### Passo A1 — Insumos e metadados (dry-run)
 
@@ -72,9 +74,9 @@ Na pasta da edição (`data/editions/{AAMM}/{AAMMDD}/`): `02-reviewed.md` é obr
 npx tsx scripts/publish-youtube.ts {AAMMDD} --dry-run
 ```
 
-O script tem dois modos, e um deles é obrigatório (sem nenhum, ou com os dois, sai exit 2): `--dry-run` (só o plano, sem rede; o default desta skill) e `--upload` (Passo A5). Flags opcionais: `--episode N` (número do episódio; default = cadência diária desde 261021 = #1), `--edition-url URL` (link da edição quando o slug publicado divergir do derivado do título do D1), `--publish-at ISO` (outro horário), `--video PATH`, `--edition-dir DIR`.
+O script tem três modos, e exatamente um é obrigatório (sem nenhum, ou com mais de um, sai exit 2): `--dry-run` (só o plano, sem rede; o Passo A1), `--upload` (Passo A3) e `--captions-only` (só a legenda do vídeo registrado, Passo A3). Flags opcionais: `--episode N` (número do episódio; default = cadência diária desde 261021 = #1), `--edition-url URL` (link da edição quando o slug publicado divergir do derivado do título do D1), `--publish-at ISO` (outro horário), `--video PATH`, `--edition-dir DIR`.
 
-O JSON no stdout traz título, descrição (resumo + link da edição com UTM + CTA com UTM youtube), 6 tags e o agendamento (06:00 BRT, ou na hora se já passou). No stderr, as linhas `[premissa]` e `[aviso]`. Mostrar título, descrição e tags ao editor: é o que ele cola no Studio.
+O JSON no stdout traz título, descrição (resumo + link da edição com UTM + CTA com UTM youtube), 6 tags e o agendamento (06:00 BRT, ou na hora se já passou). No stderr, as linhas `[premissa]` e `[aviso]`. Título, descrição e tags vão no upload do Passo A3 (e no relato); só no fallback do Passo A5 o editor os cola no Studio.
 
 ### Passo A2 — Capa no padrão diar.ia.br (#10800, #11220, #11228)
 
@@ -121,27 +123,9 @@ npx tsx scripts/gen-youtube-thumb.ts {AAMMDD} --short-cover --at 1.8
 
 Default do vídeo: `diaria-comentada-{AAMMDD}-short.mp4` na pasta da edição (`--video` para outro). Frame depois de 3,5 s vira `[aviso]`. Também mostrar ao editor; no Studio, "Enviar arquivo" com o frame.
 
-### Passo A3 — O editor sobe pelo Studio
+### Passo A3 — Upload pela API (`--upload`, o padrão)
 
-Com os metadados do A1 e a capa do A2, o editor sobe `Diaria comentada_Youtube_V3.mp4` (pasta `Final/`) pelo YouTube Studio e agenda ou publica. Não contornar com o Claude in Chrome: upload de arquivo é bloqueado lá.
-
-### Passo A4 — Link do vídeo no D1 (#10772, #10858, #11222)
-
-Com o link que o editor passou (`--video-url`, ou colado na conversa):
-
-```bash
-npx tsx scripts/link-video-d1.ts {AAMMDD} --video-url {URL} --save
-```
-
-`--save` grava `_internal/05-video-url.txt`, o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook diar.ia.br já na criação dos posts (1º link do texto no X; X e Threads só se couber no limite). Com o link gravado, o passo do YouTube no Stage 5 (`stage5-youtube.ts`) não busca nem sobe nada: o vídeo já está no canal (#11222).
-
-Se o `link-video-d1` recusar (exit 1, nada gravado) porque um registro do upload diz privado, indeterminado ou agendado para depois do D1, a **pergunta única** ao editor é: "o vídeo está público no Studio (ou agendado antes do horário do D1)?" (#10865 — sem a auditoria do YouTube API Services, vídeo `private` nunca vira link no D1). Com o "sim", rodar de novo com `--assume-public`.
-
-Sem link nesta invocação: relatar no fim que falta o link e o comando para gravá-lo (`/diaria-publica-video {AAMMDD} --so horizontal --video-url URL`). O JSON impresso pelo `link-video-d1` é também o plano para posts do D1 já agendados ou publicados: `edit_scheduled` (editar antes do disparo), `comment_after` (comentar/responder; no LinkedIn é sempre o 1º comentário). O script não edita nem comenta nada: aplicar esse plano ainda é manual.
-
-### Passo A5 — Upload pela API (`--upload`, só quando o editor pede)
-
-Use `--upload` quando o editor pede para subir o vídeo pela API e o `.mp4` está na pasta da edição. Para trazer o arquivo do Drive:
+Com os metadados do A1 e a capa do A2, a skill sobe o vídeo. Para trazer o arquivo do Drive:
 
 ```bash
 npx tsx scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal
@@ -163,6 +147,34 @@ Saída do `--upload`:
   E um caso em que nada foi enviado mas o editor decide (#11132): o canal tem um vídeo no dia BRT da edição sem a marca dela (sem AAMMDD, `utm_campaign` nem o título do D1 — pode ser uma live ou um vídeo avulso). O log lista todos os candidatos por período, com VIDEO_ID, link, título e data; nada é gravado e o link não vai para o D1. Mostrar ao editor e, conforme a resposta, rodar de novo com `--accept-period-match VIDEO_ID` (seleciona o candidato desta edição pelo ID: registra com `source: "already-on-channel"` e põe o link no D1) ou com `--force` (não é: sobe o vídeo da edição).
 
 Com `--force`, o registro anterior vai para `previous_uploads` no novo. O próprio `--upload` grava `_internal/05-video-url.txt` **sempre** que o YouTube aceitou o vídeo, inclusive quando o estado relido ainda não deixa o leitor abrir (`draft`, `unknown`, ou `scheduled` com `publishAt` depois do horário do post do D1, rotação do #10305 incluída); nesses casos o log traz `[aviso] vídeo ainda pode não abrir para o leitor: … O link será incluído no D1 mesmo assim`, e o editor precisa publicar (ou agendar antes do D1) no Studio. Não grava só com `uploadStatus` `failed`/`rejected`/`deleted` (exit 1); uma URL diferente já gravada à mão nunca é sobrescrita.
+
+**Legenda SRT (#11384, #11385).** O `--upload` envia junto `diaria-comentada-{AAMMDD}.srt` da pasta da edição (`captions.insert`, faixa pt-BR, publicada, sem rascunho) e grava o `captionId` em `captions` no `05-youtube-published.json`; `--captions PATH` aponta outro arquivo, `--no-captions` sobe sem. Se houver `.srt` ao lado do vídeo no Drive, **conferir a legenda contra o roteiro aprovado antes de subir**: cues depois do fim do vídeo, números ("15%" × "15 pontos percentuais") e grafia (OpenAI, diar.ia.br, Intelligence Index, nomes de modelo como GPT-6.1). A versão corrigida vai para uma cópia ao lado (o `diaria-comentada-{AAMMDD}.srt` da pasta da edição), nunca por cima do original. Sem `.srt`, o plano traz `[premissa] sem legenda` e o vídeo sobe sem ela.
+
+Token sem o escopo `youtube.force-ssl` (gerado antes do #11384): o vídeo sobe normalmente e sai `[aviso] legenda NÃO enviada` com o comando de setup. É o **único** passo para o editor: rodar no terminal dele `npx tsx scripts/youtube-oauth-setup.ts` (renova o refresh token com o escopo novo; no 300, `npm run sync-env`). Depois, só a legenda, pelo `videoId` do registro:
+
+```bash
+npx tsx scripts/publish-youtube.ts {AAMMDD} --captions-only
+```
+
+(`--force` envia outra faixa quando já há uma registrada.) Até o setup ser refeito, a legenda vai pelo Studio (Legendas → Enviar arquivo) e entra no relato como pendência do editor.
+
+### Passo A4 — Link do vídeo no D1 (#10772, #10858, #11222)
+
+Depois do Passo A3 nada a fazer: o `--upload` já gravou `_internal/05-video-url.txt`. Este passo é para o link vindo de fora — vídeo subido pelo Studio (Passo A5) ou já no canal, com o link que o editor passou (`--video-url`, ou colado na conversa):
+
+```bash
+npx tsx scripts/link-video-d1.ts {AAMMDD} --video-url {URL} --save
+```
+
+`--save` grava `_internal/05-video-url.txt`, o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook diar.ia.br já na criação dos posts (1º link do texto no X; X e Threads só se couber no limite). Com o link gravado, o passo do YouTube no Stage 5 (`stage5-youtube.ts`) não busca nem sobe nada: o vídeo já está no canal (#11222).
+
+Se o `link-video-d1` recusar (exit 1, nada gravado) porque um registro do upload diz privado, indeterminado ou agendado para depois do D1, a **pergunta única** ao editor é: "o vídeo está público no Studio (ou agendado antes do horário do D1)?" (#10865 — sem a auditoria do YouTube API Services, vídeo `private` nunca vira link no D1). Com o "sim", rodar de novo com `--assume-public`.
+
+Sem link nesta invocação (só acontece se o Passo A3 não subiu o vídeo): relatar no fim que falta o link e o comando para gravá-lo (`/diaria-publica-video {AAMMDD} --so horizontal --video-url URL`). O JSON impresso pelo `link-video-d1` é também o plano para posts do D1 já agendados ou publicados: `edit_scheduled` (editar antes do disparo), `comment_after` (comentar/responder; no LinkedIn é sempre o 1º comentário). O script não edita nem comenta nada: aplicar esse plano ainda é manual.
+
+### Passo A5 — Fallback: o editor sobe pelo Studio
+
+Só quando o Passo A3 falhou de um jeito que a skill não resolve (quota, credencial, erro da API antes dos bytes) ou o editor pediu para subir ele mesmo. Com os metadados do A1 e a capa do A2, o editor sobe o `_Youtube_` (pasta `Final/` ou `Editado/`) pelo YouTube Studio, agenda ou publica e passa o link, que entra no D1 pelo Passo A4. Não contornar com o Claude in Chrome: upload de arquivo é bloqueado lá.
 
 ## Parte B — Vertical (Shorts, Reels e afins)
 
@@ -285,5 +297,6 @@ Uma mensagem só, com os dois vídeos:
 - **Horizontal:** título, primeiras linhas da descrição, tags, horário (`publishAt` ou "na hora"), a capa, e o link no D1 (`05-video-url.txt` gravado, ou o que falta). Depois de `--upload`, o link e o `state` relido: com `state: draft` (sem a auditoria do YouTube API Services), dizer que o vídeo subiu **privado** e precisa ser publicado ou agendado à mão no Studio; com `state: scheduled` e `audit_blocked: true`, que está agendado mas o agendamento pode não torná-lo público — conferir no Studio depois do horário. Ao relatar o estado de um vídeo já existente, normalizar pelo `resolveYouTubeState` (`scripts/lib/publish-state.ts`, #573) — `private` sem `publishAt` é rascunho, nunca "publicado".
 - **Vertical:** uma linha por destino, com o estado normalizado da linha `[ok] … (estado …)` (`resolveShortEntryState`): publicado/agendado (com URL), `send_unknown` do LinkedIn (conferir o perfil), X agendado na Buffer (`scheduled` até o `dueAt`, depois `unknown` até conferir), na fila do Worker (só com `instagram_backend: "worker-r2"`: Instagram `scheduled` até a hora, depois `unknown` até confirmar no app — `resolveWorkerQueueState`), pendente (Instagram sem fila, antes do horário do vertical — só `worker-r2`), delegado ao timer do 300 (`skip_delegated`: Instagram e `linkedin_profile`, relatar como "sai pelo timer às HH:MM", nunca como publicado), Instagram manual acima do teto (pendente até o `--confirm-instagram` ou `--mark instagram=URL` do Passo B3b), pulado (sem credencial, com o comando de setup). Normalizar o estado como manda o #573: "agendado" não é "publicado".
 - A parte que não rodou (`--so`, vídeo ausente no Drive) com o motivo, e o próximo comando: `/diaria-5-publicacao {AAMMDD}`.
+- **"Próximo passo" do editor (#11385):** listar só o que de fato exige ação dele (ex.: refazer o `youtube-oauth-setup.ts` quando a legenda saiu com `scopeMissing`, publicar no Studio um vídeo que ficou privado, escolher entre candidatos `needs-editor`). Nunca devolver como passo dele uma etapa que a skill executa: subir o vídeo, gravar o link no D1, enviar a legenda com o token certo.
 
 Teste de 2 semanas a partir de 261022 (#10769, destinos; o teste de horário do #10831 é outro, ver acima): no fim, comparar os visualizadores e as visitas ao canal por destino, e manter só os destinos que trouxerem gente.

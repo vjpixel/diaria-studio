@@ -166,7 +166,7 @@ export function explainYouTubeUploadError(status: number, body: string, step?: Y
     return "o canal atingiu o limite de uploads do YouTube — suba à mão no Studio mais tarde";
   }
   if (status === 403 && /insufficientPermissions|insufficient authentication scopes|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(body)) {
-    return "token sem o escopo youtube.upload — refaça o consentimento deixando os 2 escopos marcados (`scripts/youtube-oauth-setup.ts`)";
+    return "token sem o escopo youtube.upload — refaça o consentimento deixando todos os escopos marcados (`scripts/youtube-oauth-setup.ts`)";
   }
   if (status === 403 && /accessNotConfigured|has not been used|is disabled/i.test(body)) {
     return "YouTube Data API v3 não está ativada no projeto GCP do client OAuth";
@@ -639,6 +639,12 @@ export interface YouTubeUploadInput {
    * não acontece (falha na etapa `insert`, nada enviado).
    */
   beforeVideoBytes?: () => void;
+  /**
+   * Passo extra depois da capa, com o token e o id do vídeo já confirmados
+   * (#11384: a legenda via `captions.insert`). Erro aqui nunca desfaz nem
+   * falha o upload: é engolido (o chamador registra o próprio resultado).
+   */
+  afterVideo?: (token: string, videoId: string) => Promise<void>;
 }
 
 export interface YouTubeUploadResult {
@@ -693,6 +699,14 @@ export async function uploadYouTubeVideo(deps: YouTubeUploadDeps, input: YouTube
       thumbnail.ok = true;
     } catch (e) {
       thumbnail.error = (e as Error).message;
+    }
+  }
+
+  if (input.afterVideo) {
+    try {
+      await input.afterVideo(token, videoId);
+    } catch {
+      // Contrato: o vídeo já subiu; o passo extra registra a própria falha.
     }
   }
 
