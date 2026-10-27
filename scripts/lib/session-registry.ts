@@ -4283,6 +4283,24 @@ export function acquireMergeLock(
 }
 
 /**
+ * #11380: texto do resultado de `merge-lock-acquire` no stdout. Na recusa
+ * em que o lock é da PRÓPRIA sessão (#6334, não reentrante), a mensagem diz
+ * isso em vez de "held by another session", que mandava procurar uma sessão
+ * que não existe. A palavra "denied" fica nas duas recusas: `merge-train-live.ts`
+ * e `publish-edition-site-page.ts` detectam a negação por `/denied/i`.
+ */
+export function mergeLockAcquireOutcome(ok: boolean, sessionId: string, holder: MergeLockRecord | null | undefined): string {
+  if (ok) return "ok";
+  if (holder?.heldBy === sessionId) {
+    return (
+      `denied (lock já detido por esta sessão (desde ${holder.acquiredAt}); ` +
+      "use merge-lock-renew para estender ou siga com o merge)"
+    );
+  }
+  return "denied (held by another session)";
+}
+
+/**
  * Estende o TTL de um lock de merge que a PRÓPRIA sessão já detém (#6334) —
  * o caminho correto pra "operação mais longa que o TTL, mesmo hold, nunca
  * liberado", que antes era coberto (incorretamente, ver #6334) pela
@@ -7234,8 +7252,11 @@ function main(): void {
         // #10618: lock POR REPO (`--repo owner/name`, default diaria-studio).
         const lockRepo = requireRepoFlag(values, flags);
         const ok = acquireMergeLock(repoRoot, sessionId, Date.now(), MERGE_LOCK_TTL_MS, REAL_MERGE_LOCK_IO, lockRepo);
+        // #11380: na recusa, relê quem segura o lock só pra mensagem — o
+        // resultado (`ok`/exit 1) não muda.
+        const holder = ok ? null : readJsonSafe<MergeLockRecord>(mergeLockPath(repoRoot, lockRepo));
         process.stdout.write(
-          `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} ` +
+          `session-registry: merge-lock-acquire ${mergeLockAcquireOutcome(ok, sessionId, holder)} ` +
             `[repo=${lockRepo}] [repoRoot=${repoRoot}]\n`,
         );
         const activeSessions = listActiveSessions(repoRoot);
