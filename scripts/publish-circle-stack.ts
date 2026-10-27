@@ -302,6 +302,18 @@ export function buildCircleStackReadyFinding(
   };
 }
 
+/**
+ * Pure (#11237 item 2): título exibido na prévia (`circle-stack-{cycle}.md`,
+ * log do dry-run, issue de aviso). É o `payload.titulo` — o que o webhook
+ * recebe, já com o escape de `<` (#11197). Quando o escape mudou o texto, o
+ * título sem escape vem junto entre parênteses, para o editor ver as duas
+ * formas enquanto a Stack não confirma como o n8n trata o `titulo` (item 1).
+ */
+export function circleStackPreviewTitle(renderedTitle: string, payload: Pick<StackPostPayload, "titulo">): string {
+  if (payload.titulo === renderedTitle) return payload.titulo;
+  return `${payload.titulo} (título enviado ao webhook; sem escape: ${renderedTitle})`;
+}
+
 /** Pure: post curto de teste combinado com a Stack (1º envio). */
 export const HELLO_POST = { titulo: "Olá, mundo", corpo: "Olá, mundo. Teste de publicação da **diar.ia.br** no Radar de Notícias Stack." };
 
@@ -795,18 +807,21 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
     subscribeUrl: cfg.subscribeUrl ?? undefined,
   });
 
+  const payload = buildStackPostPayload(rendered.title, rendered.markdown);
+  // #11237 item 2: a prévia mostra o título que de fato vai ao webhook
+  // (`payload.titulo`, com o escape de `<` da #11197), não o `rendered.title`.
+  const previewTitle = circleStackPreviewTitle(rendered.title, payload);
   const mdPath = join(cycleDir, `circle-stack-${cycle}.md`);
-  writeFileAtomic(mdPath, `# ${rendered.title}
+  writeFileAtomic(mdPath, `# ${previewTitle}
 
 ${rendered.markdown}
 `);
-  const payload = buildStackPostPayload(rendered.title, rendered.markdown);
   const statePath = join(cycleDir, "_internal", "circle-stack-published.json");
   const publishState = resolveCircleStackState(readCircleStackPublishedState(statePath), cycle);
 
   if (!hasFlag(argv, "publish")) {
     writeFileAtomic(join(cycleDir, "_internal", "circle-stack-payload.json"), JSON.stringify(payload, null, 2));
-    console.log(`[dry-run] ${rendered.title}`);
+    console.log(`[dry-run] ${previewTitle}`);
     console.log(`[dry-run] Estado do ciclo ${cycle} na Stack: ${publishState}`);
     console.log(`[dry-run] Seleção: ${selectionPath}`);
     console.log(`[dry-run] Prévia: ${mdPath}`);
@@ -829,8 +844,8 @@ ${rendered.markdown}
         const relDir = weeklyLinkedinRelDir(cycle);
         const finding =
           decision === "ready"
-            ? buildCircleStackReadyFinding(cycle, rendered.title, `${relDir}/circle-stack-${cycle}.md`, publishMonday, warnings)
-            : buildCircleStackAmbiguousFinding(cycle, rendered.title, `${relDir}/_internal/circle-stack-published.json`, publishMonday, warnings);
+            ? buildCircleStackReadyFinding(cycle, previewTitle, `${relDir}/circle-stack-${cycle}.md`, publishMonday, warnings)
+            : buildCircleStackAmbiguousFinding(cycle, previewTitle, `${relDir}/_internal/circle-stack-published.json`, publishMonday, warnings);
         const res = await notifyEditor(finding, { cwd: ROOT });
         if (res.issue?.action === "failed") throw new Error(`Aviso ao editor falhou: ${res.issue.error ?? "erro desconhecido"}`);
         if (res.emailError) console.warn(`⚠ Issue de aviso ok, mas o e-mail ao editor falhou: ${res.emailError}`);
