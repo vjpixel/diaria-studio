@@ -29,6 +29,22 @@
  *   caso contrário (inclusive piso de amostra não atingido) → mantém, só
  *                  atualiza contadores/taxa
  *
+ * ## Regime SEMANAL (#11226) e frios do Kit (#11221)
+ *
+ * Com `brevo_diaria.semanal.enabled`, a decisão do Passo 2 sai de
+ * `classifyBrevoDiariaSemanalAction` (contadores por semanal, a partir de
+ * `semanal.desde`): clique em qualquer link ⇒ ida pro Kit na hora (quem está
+ * `inactive` é ativado pelo form de sistema `kit.activateFormId`, consentimento
+ * explícito); abertura > 51% em >= 3 semanais ⇒ promoção de sempre; supressão
+ * só depois de 12 semanais seguidas sem sinal (quem abriu alguma vez) ou 4
+ * (quem nunca deu sinal). Desligado ⇒ o score por taxa abaixo, inalterado.
+ *
+ * Supressão por score de um `kit-sem-abertura:` NÃO descadastra mais no Kit
+ * (#11221 revisa o "sai das duas bases" do #10437): a pessoa volta pro Kit
+ * com a tag `frio` (semanal de segunda) e sai da lista Brevo sem blacklist.
+ * Descadastro nativo, reclamação e bounce na Brevo seguem propagando como
+ * antes (Passo 0).
+ *
  * ## Passo 0: descadastro NATIVO (#4476 item 7) — checado ANTES de tudo
  *
  * Antes até da auto-confirmação, cada contato `in_brevo` tem seu estado
@@ -352,10 +368,14 @@ import {
 import {
   computeBrevoDiariaOpenRate,
   classifyBrevoDiariaAction,
+  classifyBrevoDiariaSemanalAction, // #11226
   BREVO_DIARIA_MATURATION_HOURS,
   type BrevoDiariaAction,
   type BrevoDiariaRateInput,
+  type BrevoSemanalEvaluationInput,
 } from "./lib/shared/brevo-diaria-score.ts";
+import { buildSemanalEvaluationInput, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
+import { KIT_FRIO_TAG_NAME } from "./lib/kit-frio.ts"; // #11221
 import {
   readStore,
   writeStore,
@@ -390,7 +410,7 @@ import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail, u
 import { KitApiError } from "./lib/kit-client.ts"; // #9291
 import { kitApiBase } from "./lib/kit-config.ts"; // #9835
 import { vincularKitDoiForm, verificarDoiForm, mensagemDoiFormInvalido } from "./lib/shared/kit-doi.ts"; // #9835 — reenvio do DOI
-import { findTagIdByName, untagSubscriber, listSubscriberTags, type KitTag } from "./lib/kit-broadcasts.ts"; // #10437
+import { findTagIdByName, untagSubscriber, listSubscriberTags, tagSubscriber, type KitTag } from "./lib/kit-broadcasts.ts"; // #10437, #11221
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { formatKitSemAberturaLogLine, DEFAULT_KIT_SEM_ABERTURA_LOG_PATH } from "./lib/kit-sem-abertura.ts"; // #10437
 import { appendFileWithRetry } from "./lib/source-runs.ts"; // #10437
@@ -402,11 +422,11 @@ interface BrevoDiariaConfig {
   list_id: number | null;
 }
 interface PlatformConfig {
-  brevo_diaria?: BrevoDiariaConfig;
+  brevo_diaria?: BrevoDiariaConfig & { semanal?: unknown };
   /** #9835 — `kit.doiFormId`: designer form de DOI usado no reenvio.
    *  #9986 — `kit.doiResendFormId`: 2º designer form de DOI, usado só pra
    *  quem já respondeu 200 no `doiFormId` (ver `doiResendTargetForm`). */
-  kit?: { doiFormId?: string; doiResendFormId?: string };
+  kit?: { doiFormId?: string; doiResendFormId?: string; activateFormId?: string };
   /** #6339 — `publishing.newsletter.backend` decide se a promoção por score
    *  escreve na Beehiiv ou no Kit (ver `promoteKitSubscription`). */
   publishing?: { newsletter?: { backend?: string } };
@@ -420,6 +440,8 @@ interface BrevoStatEvent {
 export interface BrevoContactStatistics {
   messagesSent?: BrevoStatEvent[];
   opened?: BrevoStatEvent[];
+  /** #11226 — clique em qualquer link (entrada por campanha, timestamp em `links[]`). */
+  clicked?: BrevoStatEvent[];
   /** #4630 — `emailBlacklisted` sozinho mistura 2 causas bem diferentes:
    * clique real no link de opt-out (`userUnsubscription`) e qualquer ação
    * admin-side/bounce (`adminUnsubscription`). Só a 1ª é descadastro
@@ -603,6 +625,9 @@ export interface BrevoContactState {
    * na lista, então nem descadastra no Kit nem desfaz a movimentação (#10557).
    * Opcional: ausente equivale a `false`. */
   blacklist_event_undated?: boolean;
+  /** #11226 — entrada do score SEMANAL; presente só quando o caller passa
+   * `semanalDesdeMs` (regime semanal ligado). */
+  semanal?: BrevoSemanalEvaluationInput;
 }
 
 /** #10536 — Pura: ISO do evento de blacklist mais recente (ver `BrevoContactState.blacklist_event_latest_at`). */
@@ -650,7 +675,11 @@ export function isKitSemAberturaBlacklistNew(blacklistEventLatestAt: string | nu
   return eventMs >= addedMs;
 }
 
-export async function fetchBrevoContactState(apiKey: string, email: string): Promise<BrevoContactState> {
+export async function fetchBrevoContactState(
+  apiKey: string,
+  email: string,
+  opts: { semanalDesdeMs?: number; nowMs?: number } = {},
+): Promise<BrevoContactState> {
   const res = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
   if (res.status !== 200) {
     throw new Error(`GET /contacts/${email} falhou (HTTP ${res.status}) — não foi possível ler estado.`);
@@ -673,6 +702,9 @@ export async function fetchBrevoContactState(apiKey: string, email: string): Pro
     ...(hasComplaint(res.body?.statistics) ? { spamComplained: true } : {}),
     ...(blacklistAt !== null ? { blacklist_event_latest_at: blacklistAt } : {}),
     ...(blacklistUndated ? { blacklist_event_undated: true } : {}),
+    ...(opts.semanalDesdeMs !== undefined
+      ? { semanal: buildSemanalEvaluationInput(res.body?.statistics, opts.semanalDesdeMs, opts.nowMs ?? Date.now()) }
+      : {}),
   };
 }
 
@@ -1960,6 +1992,90 @@ export interface RunEvaluationParams {
    * for form de sistema ou igual ao `kitDoiFormId`.
    */
   kitDoiResendFormId?: string;
+  /**
+   * #11226 — início do regime SEMANAL (`brevo_diaria.semanal.desde`, ms).
+   * Presente ⇒ a decisão de cada contato usa `classifyBrevoDiariaSemanalAction`
+   * (clique promove na hora; abertura > 51% em >= 3 semanais; supressão por
+   * 12/4 semanais seguidas sem sinal). Ausente (default, toda a suíte
+   * anterior) ⇒ score por taxa de sempre.
+   */
+  semanalDesdeMs?: number;
+  /** #11226 — relógio injetável do score semanal (maturação). Default `Date.now()`. */
+  nowMs?: number;
+  /**
+   * #11226 — form de SISTEMA do Kit que promove `inactive` a `active` sem
+   * e-mail (o mesmo `KIT_ACTIVATE_FORM_ID` do worker `reativar`, #8194,
+   * medido em 16/09/2026). Usado SÓ na ida pro Kit por CLIQUE na Brevo
+   * (consentimento explícito, decisão do editor). Ausente ⇒ o clique cai no
+   * caminho de sempre (reenvio do DOI).
+   */
+  kitActivateFormId?: string;
+  /** #11226 — vínculo ao form de ativação; injetável em teste (default: POST real). */
+  activateKitViaForm?: (formId: string, subscriberId: number, apiKey: string) => Promise<void>;
+  /**
+   * #11221 — devolução de um `kit-sem-abertura:` ao Kit com a tag `frio`
+   * (substitui o descadastro no Kit na supressão por score). Injetável em
+   * teste; default = `findTagIdByName` + `tagSubscriber` + `listSubscriberTags`.
+   */
+  kitFrioTagDeps?: KitFrioTagDeps;
+}
+
+/** #11221 — I/O da tag `frio` (aplicar + reler). */
+export interface KitFrioTagDeps {
+  findTagId: (apiKey: string) => Promise<number | null>;
+  tag: (tagId: number, subscriberId: number, apiKey: string) => Promise<void>;
+  listTags: (subscriberId: number, apiKey: string) => Promise<KitTag[]>;
+}
+
+/**
+ * #11226 — ativa no Kit um assinante `inactive` pelo form de SISTEMA (sem
+ * e-mail de confirmação; mesmo caminho do clique com token no worker
+ * `reativar`, #8194). Só pra quem CLICOU na Brevo. Lança em HTTP não-2xx.
+ */
+export async function activateKitSubscriberViaSystemForm(formId: string, subscriberId: number, apiKey: string): Promise<void> {
+  const res = await fetch(`${kitApiBase()}/forms/${encodeURIComponent(formId)}/subscribers/${subscriberId}`, {
+    method: "POST",
+    headers: { "X-Kit-Api-Key": apiKey, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ referrer: "https://reativar.diar.ia.br/?utm_source=brevo-diaria&utm_medium=email&utm_campaign=semanal-clique" }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`POST /forms/${formId}/subscribers/${subscriberId} falhou (HTTP ${res.status}): ${body.slice(0, 200)}`);
+  }
+  await res.body?.cancel().catch(() => {});
+}
+
+/**
+ * #11221 — devolve ao Kit, com a tag `frio`, um contato `kit-sem-abertura:`
+ * que a supressão por score tiraria da Brevo. NUNCA descadastra no Kit
+ * (decisão do editor: silêncio não é descadastro). Ordem: `frio` aplicada e
+ * relida ANTES de tirar `envio-brevo` (se cair no meio, a pessoa fica com as
+ * duas tags — fora da diária e na semanal —, nunca sem canal).
+ */
+export async function returnKitSemAberturaToFrio(params: {
+  subscriberId: number;
+  kitApiKey: string | undefined;
+  frioDeps?: KitFrioTagDeps;
+  removeEnvioBrevoTag: (subscriberId: number) => Promise<{ ok: true } | { ok: false; reason: string }>;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { subscriberId, kitApiKey } = params;
+  if (!kitApiKey) return { ok: false, reason: "KIT_API_KEY ausente" };
+  if (!Number.isInteger(subscriberId) || subscriberId <= 0) return { ok: false, reason: "id de subscriber Kit malformado na origem" };
+  const deps: KitFrioTagDeps = params.frioDeps ?? {
+    findTagId: (apiKey) => findTagIdByName(KIT_FRIO_TAG_NAME, { apiKey }),
+    tag: (tagId, id, apiKey) => tagSubscriber(tagId, id, { apiKey }),
+    listTags: (id, apiKey) => listSubscriberTags(id, { apiKey }),
+  };
+  try {
+    const tagId = await deps.findTagId(kitApiKey);
+    if (tagId === null) return { ok: false, reason: `tag ${KIT_FRIO_TAG_NAME} não existe no Kit` };
+    await deps.tag(tagId, subscriberId, kitApiKey);
+    const tags = await deps.listTags(subscriberId, kitApiKey);
+    if (!tags.some((t) => t.id === tagId)) return { ok: false, reason: `releitura não mostra a tag ${KIT_FRIO_TAG_NAME} (2xx não é prova)` };
+  } catch (e) {
+    return { ok: false, reason: `tag ${KIT_FRIO_TAG_NAME}: ${(e as Error).message}` };
+  }
+  return params.removeEnvioBrevoTag(subscriberId);
 }
 
 /**
@@ -2148,6 +2264,15 @@ export interface RunEvaluationResult {
    * poucos deles não derrubam a unit (ver `resolveEvaluateExitCode`).
    */
   kitRateLimited: number;
+  /** #11226 — subconjunto de `promoted`: ida pro Kit decidida por CLIQUE na Brevo (regime semanal). */
+  promotedByClick: number;
+  /**
+   * #11221 — contatos `kit-sem-abertura:` que a supressão por score tiraria da
+   * Brevo e que voltaram ao Kit com a tag `frio` (nunca descadastro).
+   * Subconjunto de `suppressed`: a decisão foi suprimir, o destino é a semanal
+   * do Kit.
+   */
+  kitSemAberturaReturnedToFrio: number;
 }
 
 /**
@@ -2234,7 +2359,14 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     appendKitSemAberturaLog,
     unsubscribeKitSemAberturaDeps,
     kitEnvioBrevoTagDeps,
+    semanalDesdeMs, // #11226
+    kitActivateFormId, // #11226
+    kitFrioTagDeps, // #11221
   } = params;
+  const nowMsForScore = params.nowMs ?? Date.now();
+  const activateKitViaForm = params.activateKitViaForm ?? activateKitSubscriberViaSystemForm;
+  let promotedByClick = 0; // #11226
+  let kitSemAberturaReturnedToFrio = 0; // #11221
   // #10437 — saída terminal na Brevo de um contato `kit-sem-abertura:` vale
   // nos DOIS lados ("sai das duas bases"): descadastra no Kit e confirma por
   // releitura. Sem confirmação, o caller mantém o contato `in_brevo` (a
@@ -2377,7 +2509,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       let statusCheckFailed = false;
       if (brevoApiKey) {
         try {
-          nativeState = await fetchBrevoContactState(brevoApiKey, contact.email);
+          nativeState = await fetchBrevoContactState(brevoApiKey, contact.email, { semanalDesdeMs, nowMs: nowMsForScore });
         } catch (e) {
           log(`warn: falha ao checar estado Brevo de ${contact.email}: ${(e as Error).message}`);
           failed++;
@@ -2875,12 +3007,32 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             instant: { opens_count: contact.opens_count, sends_count: contact.sends_count },
             mature: { opens_count: contact.opens_count, sends_count: contact.sends_count },
           };
-      const evalResult = evaluateContact(counts);
+      const baseEval = evaluateContact(counts);
+      // #11226 — regime semanal: a decisão sai do score por semanal (clique
+      // promove na hora; supressão por 12/4 semanais seguidas sem sinal).
+      // Sem `nativeState` (dry-run sem a key) não há estatística por
+      // campanha: mantém (nunca decide supressão com o contador do store).
+      const semanalAction =
+        semanalDesdeMs !== undefined
+          ? nativeState?.semanal
+            ? classifyBrevoDiariaSemanalAction(nativeState.semanal)
+            : "keep"
+          : undefined;
+      const clickPromotion = semanalAction === "promote_by_click";
+      const evalResult: ReturnType<typeof evaluateContact> = {
+        ...baseEval,
+        action: semanalAction === undefined ? baseEval.action : clickPromotion ? "promote_to_beehiiv" : (semanalAction as BrevoDiariaAction),
+      };
       log(
         `${contact.email}: openRate=${(evalResult.open_rate * 100).toFixed(1)}% ` +
           `(${counts.instant.opens_count} aberto(s)/${counts.instant.sends_count} enviado(s), ` +
-          `${counts.mature.opens_count}/${counts.mature.sends_count} maduro(s) p/ supressão) → ${evalResult.action}`,
+          `${counts.mature.opens_count}/${counts.mature.sends_count} maduro(s) p/ supressão)` +
+          (semanalAction !== undefined
+            ? ` [semanal: ${nativeState?.semanal?.semanais.length ?? 0} semanal(is), ${semanalAction}]`
+            : "") +
+          ` → ${evalResult.action}`,
       );
+      if (clickPromotion) promotedByClick++;
 
       if (evalResult.action === "promote_to_beehiiv") promoted++;
       else if (evalResult.action === "suppress") suppressed++;
@@ -2955,6 +3107,41 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           const kitPromotionAction = decideKitPromotionAction(
             existingKitSubscriber ? { state: existingKitSubscriber.state } : null,
           );
+          if (
+            kitPromotionAction === "await_self_confirmation" &&
+            clickPromotion &&
+            existingKitSubscriber!.state === "inactive" &&
+            kitActivateFormId !== undefined &&
+            /^[0-9]+$/.test(kitActivateFormId)
+          ) {
+            // #11226 — CLIQUE na Brevo (botão "Confirmar e receber a diária"
+            // ou qualquer link) é consentimento explícito: ativa direto pelo
+            // form de sistema (mesmo efeito do clique com token no worker
+            // `reativar`, #8194). Só `inactive` (nunca confirmou); quem
+            // cancelou/bounced/complained no Kit nunca é reativado aqui.
+            let activated = false;
+            try {
+              await activateKitViaForm(kitActivateFormId, existingKitSubscriber!.id, kitApiKey);
+              activated = await verifyPromotedToKit(existingKitSubscriber!.id, kitApiKey);
+            } catch (e) {
+              log(`warn: ${contact.email} — ativação no Kit pelo clique falhou (${(e as Error).message}) — mantendo in_brevo (#11226).`);
+            }
+            if (!activated) {
+              failed++;
+              failedContacts.push({ email: contact.email, reason: "ativação no Kit pelo clique não confirmada (#11226)" });
+              store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+              continue;
+            }
+            log(`${contact.email}: clicou na Brevo → ativado no Kit pelo form ${kitActivateFormId} (releitura confirma active, #11226).`);
+            await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+            store = applyEvaluation(store, contact.email, {
+              ...counts.instant,
+              open_rate: evalResult.open_rate,
+              action: "promote_to_beehiiv",
+              resolutionReason: "click_kit_activated",
+            });
+            continue;
+          }
           if (kitPromotionAction === "await_self_confirmation") {
             log(
               `${contact.email}: já existe no Kit como '${existingKitSubscriber!.state}' — promoção por API não reativa ` +
@@ -3138,6 +3325,48 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           action: "promote_to_beehiiv",
           resolutionReason: newsletterBackend === "kit" ? "score_threshold_kit" : "score_threshold",
         });
+      } else if (evalResult.action === "suppress" && isKitSemAberturaOrigin) {
+        // #11221 — supressão por score/inatividade de um `kit-sem-abertura:`
+        // NUNCA descadastra no Kit (silêncio não é descadastro; revisa o "sai
+        // das duas bases" do #10437). A pessoa volta pro Kit com a tag `frio`
+        // (recebe a semanal de segunda) e sai da lista Brevo sem blacklist.
+        const back = await returnKitSemAberturaToFrio({
+          subscriberId: kitSemAberturaId!,
+          kitApiKey,
+          frioDeps: kitFrioTagDeps,
+          removeEnvioBrevoTag,
+        });
+        if (!back.ok) {
+          log(`warn: ${contact.email} — devolução ao Kit com a tag ${KIT_FRIO_TAG_NAME} NÃO confirmada (${back.reason}) — mantendo in_brevo (#11221).`);
+          failed++;
+          failedContacts.push({ email: contact.email, reason: `devolução ao Kit (frio) não confirmada: ${back.reason}` });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
+        try {
+          await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+        } catch (e) {
+          log(`warn: ${contact.email} — já com ${KIT_FRIO_TAG_NAME} no Kit, mas desvincular da lista Brevo falhou (${(e as Error).message}) — retenta na próxima rodada.`);
+          failed++;
+          failedContacts.push({ email: contact.email, reason: `unlink da lista Brevo após devolver ao Kit (frio) falhou: ${(e as Error).message}` });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
+        store = applyConvertedToKit(store, contact.email, new Date().toISOString(), "kit_sem_abertura_frio");
+        kitSemAberturaReturnedToFrio++;
+        try {
+          appendKitSemAberturaLog?.(
+            formatKitSemAberturaLogLine({
+              ts: new Date().toISOString(),
+              event: "kit_returned_frio",
+              email: normalizeEmail(contact.email),
+              kit_subscriber_id: kitSemAberturaId!,
+              step: "evaluate",
+            }),
+          );
+        } catch (e) {
+          log(`aviso: ${contact.email} — falha ao gravar o log kit-sem-abertura (${(e as Error).message}); devolução já confirmada.`);
+        }
       } else if (evalResult.action === "suppress") {
         await suppressInBrevo(brevoApiKey!, contact.email);
         await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
@@ -3148,20 +3377,6 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           failedContacts.push({ email: contact.email, reason: "supressão/desvinculação não confirmada na Brevo" });
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
-        }
-        if (isKitSemAberturaOrigin) {
-          // #10437 — "quem não abre sai das duas bases": supressão por baixa
-          // abertura também descadastra no Kit (releitura confirma). Sem
-          // confirmação, fica `in_brevo`; na próxima rodada o contato já está
-          // blacklisted na Brevo e o Passo 0 retenta o Kit.
-          const kitExit = await propagateKitSemAberturaExit(contact.email, kitSemAberturaId!, "suppress");
-          if (!kitExit.ok) {
-            log(`warn: ${contact.email} — suprimido na Brevo, mas o descadastro no Kit NÃO foi confirmado (${kitExit.reason}) — mantendo in_brevo.`);
-            failed++;
-            failedContacts.push({ email: contact.email, reason: `descadastro no Kit não confirmado após supressão: ${kitExit.reason}` });
-            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
-            continue;
-          }
         }
         store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "suppress" });
       } else {
@@ -3247,6 +3462,8 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     staleAwaitingKitConfirmation: findStaleAwaitingKitConfirmation(store), // #8753
     failedContacts,
     kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
+    promotedByClick,
+    kitSemAberturaReturnedToFrio,
   };
 }
 
@@ -3267,6 +3484,13 @@ async function main(): Promise<number> {
   const brevoDiaria = platformConfig.brevo_diaria;
   if (!brevoDiaria || brevoDiaria.list_id == null) {
     log("ERRO: brevo_diaria não configurado (ou list_id ausente) em platform.config.json.");
+    return 2;
+  }
+  // #11226 — regime semanal (config inválida aborta antes de qualquer rede:
+  // nunca decide supressão com um corte de semanais implícito).
+  const semanal = parseBrevoDiariaSemanal(platformConfig.brevo_diaria?.semanal);
+  if ("error" in semanal) {
+    log(`ERRO: ${semanal.error}`);
     return 2;
   }
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[evaluate-brevo-diaria]");
@@ -3373,7 +3597,15 @@ async function main(): Promise<number> {
     appendKitSemAberturaLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line), // #10437
     kitDoiFormId: platformConfig.kit?.doiFormId, // #9835
     kitDoiResendFormId: platformConfig.kit?.doiResendFormId, // #9986
+    semanalDesdeMs: semanal.enabled ? semanal.desdeMs : undefined, // #11226
+    kitActivateFormId: platformConfig.kit?.activateFormId, // #11226
   });
+  if (semanal.enabled) {
+    log(`regime semanal ligado desde ${semanal.desde} (#11226): ${result.promotedByClick} promovido(s) por clique.`);
+  }
+  if (result.kitSemAberturaReturnedToFrio > 0) {
+    log(`${result.kitSemAberturaReturnedToFrio} kit-sem-abertura devolvido(s) ao Kit com a tag ${KIT_FRIO_TAG_NAME} (sem descadastro, #11221).`);
+  }
 
   log(
     `resumo: ${result.unsubscribedNative} descadastrado(s) nativamente ` +

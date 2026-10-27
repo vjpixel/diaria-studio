@@ -241,7 +241,21 @@ export interface BrevoDiariaContact {
      * já estava `emailBlacklisted` na Brevo antes de entrar na lista (#10536):
      * a Brevo nunca o alcançaria, então a tag `envio-brevo` é removida no Kit
      * (confirmada por releitura) e ele volta a receber a diária por lá. */
-    | "kit_sem_abertura_preexisting_blacklist";
+    | "kit_sem_abertura_preexisting_blacklist"
+    /** #11221 — também status `converted_to_kit`: um `kit-sem-abertura:` que a
+     * supressão por score/inatividade tiraria da Brevo voltou pro Kit com a
+     * tag `frio` (semanal de segunda), sem descadastro em nenhum dos lados. */
+    | "kit_sem_abertura_frio"
+    /** #11226 — ida pro Kit decidida por CLIQUE na Brevo (regime semanal): o
+     * assinante `inactive` foi ativado pelo form de sistema (sem e-mail de
+     * confirmação) e a releitura confirmou `active`. Status `promoted_beehiiv`. */
+    | "click_kit_activated"
+    /** #11226 — contato suprimido por score que voltou à semanal da Brevo
+     * (`restore-brevo-semanal-suppressed.ts`: tinha >= 1 abertura). Status
+     * `in_brevo` de novo; `suppressed_at` (a supressão original) é preservado. */
+    | "restored_to_semanal";
+  /** #11226 — ISO de quando o contato voltou de `suppressed` pra semanal. */
+  restored_to_semanal_at?: string;
 }
 
 export interface BrevoDiariaStore {
@@ -494,7 +508,10 @@ export function applyConvertedToKit(
   email: string,
   now: string = new Date().toISOString(),
   /** #10557 — motivo; default `converted_to_kit` (guard #6485). */
-  reason: Extract<BrevoDiariaContact["resolution_reason"], "converted_to_kit" | "kit_sem_abertura_preexisting_blacklist"> = "converted_to_kit",
+  reason: Extract<
+    BrevoDiariaContact["resolution_reason"],
+    "converted_to_kit" | "kit_sem_abertura_preexisting_blacklist" | "kit_sem_abertura_frio"
+  > = "converted_to_kit",
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);
   return {
@@ -543,6 +560,27 @@ export function applySuppressionReconciliation(
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "suppressed" || c.resolution_reason !== "score_threshold") return c;
       return { ...c, reconciled_at: now, resolution_reason: "self_confirmed_after_suppression" };
+    }),
+  };
+}
+
+/**
+ * #11226 — devolve à semanal da Brevo um contato SUPRIMIDO POR SCORE
+ * (`suppressed` + `score_threshold`) que tinha >= 1 abertura (o caller decide
+ * a elegibilidade e já desfez o blacklist na Brevo). Volta a `in_brevo`, com
+ * o motivo `restored_to_semanal` + `restored_to_semanal_at` pra auditoria;
+ * `suppressed_at` é preservado. Qualquer outro status/motivo: noop.
+ */
+export function applyRestoredToSemanal(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    contacts: store.contacts.map((c) => {
+      if (c.email !== norm || c.status !== "suppressed" || c.resolution_reason !== "score_threshold") return c;
+      return { ...c, status: "in_brevo", resolution_reason: "restored_to_semanal", restored_to_semanal_at: now };
     }),
   };
 }

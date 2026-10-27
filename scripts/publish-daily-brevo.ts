@@ -59,7 +59,8 @@
  * excedido; 4 credenciais do token de voto ausentes; 5 falha ao injetar o
  * token em ≥1 contato; 6 divergência entre a enumeração e
  * `listInfo.totalSubscribers` (#4532); 7 assunto vazio/em branco
- * (`content.title` ausente, #4588). A cota da CONTA (#6146) NÃO tem exit
+ * (`content.title` ausente, #4588); 8 regime semanal ligado e a edição não é
+ * de segunda (#11226 — nada criado; `--fora-da-segunda` força). A cota da CONTA (#6146) NÃO tem exit
  * code aqui de propósito — vira aviso, porque rascunho não consome cota e o
  * dia do envio ainda não é conhecido; o gate duro é a Etapa 6.
  *
@@ -125,7 +126,10 @@ import {
   renderKitSemAberturaIntroHtml, // #10437
   buildOriginConditionalIntro, // #10437
   KIT_SEM_ABERTURA_INTRO_SNIPPET_FILENAME, // #10437
+  renderSemanalIntroHtml, // #11226
+  SEMANAL_INTRO_SNIPPET_FILENAME, // #11226
 } from "./lib/brevo-diaria-intro.ts";
+import { decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
 import { isKitSemAberturaEnabled, readKitSemAberturaInBrevoCount, type KitSemAberturaConfig } from "./lib/kit-sem-abertura.ts"; // #10437
 import { brevoPost, brevoPut, brevoGetList } from "./lib/brevo-client.ts";
 import { run as injectPollTokenBrevo, DEFAULT_POLL_KV_NAMESPACE_ID } from "./inject-poll-token-brevo.ts"; // #4517
@@ -160,6 +164,8 @@ interface BrevoDiariaConfig extends BrevoAccountLimitConfig {
   test_email?: string | null;
   /** #10437 — flag da movimentação Kit→Brevo; ligada ⇒ intro por origem. */
   kit_sem_abertura?: KitSemAberturaConfig;
+  /** #11226 — regime semanal (só segunda). Ver `lib/brevo-diaria-semanal.ts`. */
+  semanal?: unknown;
 }
 interface PlatformConfig {
   brevo_diaria?: BrevoDiariaConfig;
@@ -661,8 +667,21 @@ export function resolveDailyBrevoIntro(
     kitSemAbertura: renderKitSemAberturaIntroHtml,
   },
   movedInBrevoCount = 0,
+  /** #11226 — regime semanal: o intro do Pending dá lugar ao intro da semanal. */
+  semanal: { enabled: boolean; render?: typeof renderSemanalIntroHtml } = { enabled: false },
 ): string | null {
-  const pending = render.pending(rootDir);
+  let pending: string | null;
+  if (semanal.enabled) {
+    pending = (semanal.render ?? renderSemanalIntroHtml)(rootDir);
+    if (!pending) {
+      throw new Error(
+        `brevo_diaria.semanal ligado, mas data/snippets/${SEMANAL_INTRO_SNIPPET_FILENAME} ausente/vazio — ` +
+          "a semanal não sai sem explicar por que a pessoa recebe só segunda (#11226).",
+      );
+    }
+  } else {
+    pending = render.pending(rootDir);
+  }
   if (!isKitSemAberturaEnabled(kitSemAbertura) && movedInBrevoCount === 0) return pending;
   if (!pending) return null;
   const kit = render.kitSemAbertura(rootDir);
@@ -743,6 +762,32 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
 
   const editionDir = resolveEditionDirArgOrExit(editionDirArg, { root: rootDir }); // #9427
+
+  // #11226 — regime semanal: só a edição de segunda sai pela Brevo. Checado
+  // ANTES de renderizar, pra o dry-run já mostrar a recusa. `--fora-da-segunda`
+  // força (uso manual consciente).
+  const semanal = parseBrevoDiariaSemanal(brevoDiaria?.semanal);
+  if ("error" in semanal) {
+    log(`ERRO: ${semanal.error}`);
+    process.exit(2);
+  }
+  const movedForSemanal = readKitSemAberturaInBrevoCount(rootDir);
+  const semanalDecision = decideBrevoSemanalSend({
+    semanal,
+    editionAammdd: basename(editionDir),
+    kitSemAberturaInBrevo: "error" in movedForSemanal ? 1 : movedForSemanal.count,
+  });
+  if (!semanalDecision.send) {
+    if (!hasFlag(argv, "fora-da-segunda")) {
+      log(`${semanalDecision.reason} Nada criado (use --fora-da-segunda pra forçar).`);
+      process.exit(8);
+    }
+    log(`warn: ${semanalDecision.reason} — forçado por --fora-da-segunda.`);
+  } else if (semanalDecision.mode === "diaria" && semanalDecision.warning) {
+    log(`warn: ${semanalDecision.warning}`);
+  }
+  const semanalMode = semanal.enabled && (semanalDecision.send ? semanalDecision.mode === "semanal" : true);
+
   const content = stripGreetingAndSupporterBlocks(extractContent(editionDir));
 
   const imagesPath = resolvePublicImagesPath(editionDir);
@@ -760,7 +805,7 @@ export async function main(rootDirOverride?: string): Promise<void> {
       throw new Error(`${moved.error} — não dá pra escolher o intro por origem com segurança (#10437)`);
     }
     if (moved.warning) log(`warn: ${moved.warning} (#10437).`);
-    introHtml = resolveDailyBrevoIntro(brevoDiaria?.kit_sem_abertura, rootDir, undefined, moved.count);
+    introHtml = resolveDailyBrevoIntro(brevoDiaria?.kit_sem_abertura, rootDir, undefined, moved.count, { enabled: semanalMode });
   } catch (e) {
     log(`ERRO: ${(e as Error).message}`);
     process.exitCode = 2;

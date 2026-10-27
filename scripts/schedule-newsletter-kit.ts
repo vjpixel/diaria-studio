@@ -66,6 +66,7 @@ import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import { runSemanalFrioAfterSchedule } from "./publish-kit-semanal-frio.ts"; // #11221
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -342,6 +343,16 @@ export async function main(rootDirOverride?: string): Promise<void> {
     allowOtherDate,
     ...(audience.mode === "segment" ? { expectedAudienceFilter: audience.filter } : {}),
   });
+  // #11221 — semanal de frio (2º broadcast de segunda, tag `frio`, mesmo
+  // `send_at`). Fail-soft: só stderr, nunca muda o exit code nem o JSON do
+  // agendamento da diária.
+  if (result.ok) {
+    const log = (msg: string) => process.stderr.write(`[schedule-newsletter-kit] semanal frio: ${msg}\n`);
+    const semanal = await runSemanalFrioAfterSchedule(editionDir, log, rootDir);
+    if (semanal.status !== "disabled") {
+      log(`${semanal.status}${"reason" in semanal && semanal.reason ? ` — ${semanal.reason}` : ""}`);
+    }
+  }
   console.log(JSON.stringify(result));
   process.exitCode = result.ok ? 0 : result.code;
 }

@@ -1604,7 +1604,8 @@ describe("evaluate-brevo-diaria.ts exit semantics (#4651, mesma classe do #4638/
     const { mainBody } = readMainAndCatchBodies();
     assert.equal(/process\.exit\s*\(/.test(mainBody), false, "main() não chama mais process.exit( (#9911)");
     const returns2 = mainBody.match(/return 2;/g) ?? [];
-    assert.equal(returns2.length, 3, `esperava 3 guards pré-await com return 2, achei ${returns2.length}`);
+    // #11226: 4º guard — `brevo_diaria.semanal` inválido (pré-await, config local).
+    assert.equal(returns2.length, 4, `esperava 4 guards pré-await com return 2, achei ${returns2.length}`);
   });
 
   it("entry point do isMainModule() usa runCli, não process.exit (#4651, #9911)", () => {
