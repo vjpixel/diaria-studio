@@ -115,6 +115,16 @@
  * repos não é sintaxe do marcador; `reconcile-issue-dependencies.ts
  * --repos all` reconcilia cada repo à parte desde o #10901).
  *
+ * ## Proteção de staleness (#11301)
+ *
+ * `--triaged-at ISO` informa quando a thread foi lida para decidir o track.
+ * No CLI, o início da sessão registrada é o default quando sua identidade
+ * está disponível no ambiente. Um marcador confiável posterior com track
+ * diferente recusa TODAS as escritas. Sem base temporal conhecida, mudar um
+ * track com histórico também exige releitura. `--override-newer "motivo"`
+ * permite sobreposição deliberada e registra o motivo no comentário.
+ * `--force` não dispensa esta proteção.
+ *
  * ## `--for-create` (#6205 — declarar o track NA CRIAÇÃO da issue)
  *
  * Modo alternativo, sem nenhuma chamada `gh`: a issue ainda não existe, não
@@ -149,6 +159,7 @@ import {
   labelsForNewIssue,
   MOTIVO_LABEL,
   planRouteLabels,
+  parseRouteIssueMarkerAtStart,
   ROUTE_TRACKS,
   VAGUE_DEFERRAL_AUTO_DEFER_DAYS,
   type RouteMotivo,
@@ -169,6 +180,8 @@ import {
   upsertWaitUntilMarker,
 } from "./lib/wait-until-sync.ts";
 import { formatExecutionBlockMarker, type SessionKind } from "./lib/issue-decisions.ts";
+import { isTrustedCommentAuthor } from "./lib/trusted-comment-author.ts";
+import { listActiveSessions, resolveRepoRoot } from "./lib/session-registry.ts";
 import { parseDependsOn } from "./lib/issue-depends-on.ts";
 import { detectNonDateReason, type NonDateReasonFinding } from "./lib/route-reason-guard.ts";
 
@@ -212,6 +225,10 @@ export interface RouteIssueOptions {
    * recusa por PADRÃO de texto (fatia de escopo, dependência, gatilho
    * condicional). */
   force?: boolean;
+  /** #11301 — instante da leitura que fundamentou o veredito. */
+  triagedAt?: string;
+  /** Sobreposição deliberada, com motivo próprio registrado na thread. */
+  overrideNewer?: string;
   cwd: string;
   ghRun?: GhRunFn;
   /** Injetável pra teste; default `new Date()`. Usado só na validação final
@@ -242,6 +259,7 @@ interface FetchedIssueState {
   body: string;
   state: string;
   comments: string[];
+  routingComments: Array<{ body: string; createdAt?: string; updatedAt?: string }>;
 }
 
 function fetchIssueState(
@@ -263,7 +281,7 @@ function fetchIssueState(
     labels?: Array<{ name?: string }>;
     body?: string | null;
     state?: string;
-    comments?: Array<{ body?: string }>;
+    comments?: Array<{ body?: string; createdAt?: string; updatedAt?: string; authorAssociation?: string }>;
   };
   return {
     ok: true,
@@ -272,6 +290,8 @@ function fetchIssueState(
       body: obj.body ?? "",
       state: obj.state ?? "OPEN",
       comments: (obj.comments ?? []).map((c) => c.body ?? ""),
+      routingComments: (obj.comments ?? []).filter(isTrustedCommentAuthor)
+        .map((c) => ({ ...c, body: c.body ?? "" })),
     },
   };
 }
@@ -337,6 +357,14 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     );
   }
 
+  if (options.triagedAt !== undefined &&
+      (!/^\d{4}-\d{2}-\d{2}T/.test(options.triagedAt) || !Number.isFinite(Date.parse(options.triagedAt)) || Date.parse(options.triagedAt) > now.getTime())) {
+    return failResult("--triaged-at exige timestamp ISO válido, não futuro.");
+  }
+  if (options.overrideNewer !== undefined && !options.overrideNewer.trim()) {
+    return failResult("--override-newer exige motivo não-vazio.");
+  }
+
   // Validation antés da I/O: --motivo explícito, e --until só com agendada.
   if (options.motivo && !(options.motivo in MOTIVO_LABEL)) {
     return failResult(`--motivo desconhecido: "${options.motivo}". Válidos: ${Object.keys(MOTIVO_LABEL).join(", ")}`);
@@ -392,6 +420,26 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   const fetchedBefore = fetchIssueState(issue, cwd, ghRun);
   if (!fetchedBefore.ok) {
     return failResult(`falha ao ler estado da issue ${issueLabel}: ${fetchedBefore.error}`);
+  }
+
+  // #11301 — compare a base temporal do julgamento, não o início deste
+  // processo curto. Sem base conhecida, uma mudança de track com histórico
+  // exige releitura explícita (--triaged-at) ou override auditável.
+  const currentTrack = classifyExecTrack({ ...fetchedBefore.data, now, state: "OPEN" });
+  const relevant = fetchedBefore.data.routingComments.filter((c) =>
+    parseRouteIssueMarkerAtStart(c.body) !== null ||
+    /<!-- (?:bloqueio-execucao|decisao-editor):/.test(c.body));
+  const latest = relevant.sort((a, b) =>
+    Date.parse(b.updatedAt ?? b.createdAt ?? "") - Date.parse(a.updatedAt ?? a.createdAt ?? ""))[0];
+  if (latest && !options.overrideNewer) {
+    const markerTrack = parseRouteIssueMarkerAtStart(latest.body) ??
+      (latest.body.includes("<!-- bloqueio-execucao:") ? "bloqueada" : currentTrack);
+    const stamp = Date.parse(latest.updatedAt ?? latest.createdAt ?? "");
+    const baseline = options.triagedAt ? Date.parse(options.triagedAt) : undefined;
+    if (markerTrack !== track && (baseline === undefined || !Number.isFinite(stamp) || stamp > baseline)) {
+      return failResult(`roteamento mais novo na issue ${issueLabel} (${markerTrack}, ${latest.updatedAt ?? latest.createdAt ?? "data desconhecida"}); ` +
+        "releia a thread e informe --triaged-at ISO, ou --override-newer com motivo. Nenhuma escrita realizada (#11301).");
+    }
   }
 
   // #7270 — `--depends-on N` exige que o marcador `<!-- depends-on: #N -->`
@@ -561,7 +609,8 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
               : { tipo: "externo", descricao: reasonTrimmed },
         })
       : undefined;
-  const commentBody = buildCommentBody(track, reason, autoDeferUntilYmd, executionBlockMarker);
+  const commentBody = buildCommentBody(track, reason, autoDeferUntilYmd, executionBlockMarker) +
+    (options.overrideNewer ? `\n\nSobreposição de roteamento mais novo: ${options.overrideNewer.trim()}` : "");
   let commentAction: CommentAction;
   const alreadyPosted = fetchedBefore.data.comments.some((c) => c.trim() === commentBody.trim());
   if (alreadyPosted) {
@@ -754,6 +803,8 @@ export function routeIssueForCreate(options: ForCreateOptions): ForCreateResult 
 
 interface ParsedArgs {
   forCreate: boolean;
+  triagedAt?: string;
+  overrideNewer?: string;
   /** `--issue` cru — `N` ou `owner/repo#N` (#10618). */
   issue?: string;
   track?: string;
@@ -783,6 +834,12 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
     else if (a === "--body") out.body = argv[++i];
     else if (a === "--depends-on") out.dependsOn = argv[++i];
     else if (a === "--sessao") out.sessao = argv[++i];
+    else if (a === "--triaged-at" || a === "--override-newer") {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) return { error: `${a} exige valor` };
+      if (a === "--triaged-at") out.triagedAt = value;
+      else out.overrideNewer = value;
+    }
     else if (a === "--force") out.force = true;
     else return { error: `argumento desconhecido: ${a}` };
   }
@@ -791,6 +848,13 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
 
 /** Raiz do checkout deste script — onde mora o `platform.config.json` (#10618). */
 const MODULE_REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
+
+// O elo Codex fornece a identidade do tick; nunca inferir pelo PID do CLI.
+function sessionStartedAt(): string | undefined {
+  const id = process.env.DIARIA_INJECTED_SESSION_ID ?? process.env.CLAUDE_SESSION_ID;
+  if (!id) return undefined;
+  return listActiveSessions(resolveRepoRoot()).find((s) => s.sessionId === id)?.startedAt;
+}
 
 export function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   const raw = parseRawArgs(argv);
@@ -837,6 +901,8 @@ export function parseArgs(argv: string[]): RouteIssueOptions | { error: string }
     dependsOn,
     sessao: raw.sessao as SessionKind | undefined,
     force: raw.force,
+    triagedAt: raw.triagedAt ?? sessionStartedAt(),
+    overrideNewer: raw.overrideNewer,
     cwd: process.cwd(),
   };
 }
