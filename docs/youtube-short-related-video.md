@@ -25,6 +25,10 @@ Achado lateral útil para a decisão: o seletor aceita vídeo **não listado**, 
 
 A escolha entre 1, 2 e 3 é do editor (#10811).
 
+## Decisão (22/10/2026, reconfirmada em 26/10)
+
+Opção 1. Task local `diaria-short-video-relacionado` no Neo (app Claude desktop, dias úteis 06:30 BRT), exceção à regra "tasks só no servidor". O plano determinístico é `scripts/youtube-short-related-plan.ts` (lógica em `scripts/lib/diaria/youtube-short-related.ts`): resolve os IDs, confirma pela API que o horizontal está público e devolve `link`/`wait`/`skip`/`alert`. O clique no Studio segue o roteiro `.claude/skills/diaria-publica-video/short-related-task.md`; o resultado fica em `_internal/06-short-related.json`. Definição da task: `DESKTOP_SCHEDULED_TASKS` em `scripts/lib/scheduled-tasks.ts`.
+
 ## Fontes
 
 - Resource `videos` (YouTube Data API v3): https://developers.google.com/youtube/v3/docs/videos
