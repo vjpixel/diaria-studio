@@ -24,6 +24,35 @@ describe("#11119/#11116: 'how X used' exige nomes capitalizados de verdade", () 
     assert.notEqual(r.rule, "tutorial-title-extra");
   });
 
+  it("#11218: a mesma manchete em Title Case também não é tutorial", () => {
+    const r = cat({
+      url: "https://www.rappler.com/technology/features/hacker-used-ai-agents-break-into-websites-norforge-report",
+      title: "How One Hacker Used AI Agents and a Few Thousand Dollars to Break Into Scores of Sites",
+      summary:
+        "Snorre Fagerland of NorForge says instances of bad actors using AI agents to perform hacks is evidence these agents could pull off complex intrusions",
+    });
+    assert.notEqual(r.category, "tutorial");
+    assert.notEqual(r.rule, "tutorial-title-extra");
+  });
+
+  it("#11218: título em sentence case com nome composto de verdade segue tutorial", () => {
+    const r = cat({
+      url: "https://example.com/blog/mercado-libre-gemini",
+      title: "How Mercado Libre used Gemini to speed up its catalog",
+      summary: "",
+    });
+    assert.equal(r.rule, "tutorial-title-extra");
+  });
+
+  it("#11218: summary em sentence case com nome composto segue casando mesmo com título em Title Case", () => {
+    const r = cat({
+      url: "https://example.com/blog/catalog-speedup",
+      title: "Speeding Up a Catalog With Generative Models",
+      summary: "How Mercado Libre used Gemini to speed up its catalog.",
+    });
+    assert.equal(r.rule, "tutorial-title-extra");
+  });
+
   it("261020: summary 'how this money might actually be used' não vira tutorial (cortado de USE MELHOR)", () => {
     const r = cat({
       url: "https://techcrunch.com/2026/10/18/anthropic-says-its-committing-5-of-its-shares-to-a-public-benefit-fund",

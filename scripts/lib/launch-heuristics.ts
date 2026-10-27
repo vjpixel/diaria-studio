@@ -21,6 +21,7 @@ import { isDevReleaseNote } from "./release-note-detect.ts"; // #2469 (finding 4
 import { hasRoundupSignalInUrlOrTitle } from "./roundup-detect.ts"; // #2691 item 1: shared regex — fonte única, evita divergência com use-melhor-curation.ts
 import { isVideoUrl } from "./video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em verify-accessibility.ts
 import { VERSION_SIGNAL_RE } from "./version-signal-detect.ts"; // #4337: fonte única compartilhada com validate-lancamentos.ts
+import { isTitleCase } from "./title-case.ts"; // #11218: Title Case não é sinal de nome próprio
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export { isVideoUrl }; // #3288: re-exportado pra manter compat com importadores existentes (categorize.ts, testes)
 export type { Article };
@@ -519,13 +520,26 @@ const TUTORIAL_TITLE_EXTRA_RE = new RegExp(
  *     MELHOR.
  * Regex próprio, SEM `i`: só "How"/"how" e o verbo toleram caixa variável; os
  * nomes precisam começar com maiúscula de verdade.
+ *
+ * #11218: manchete em Title Case ("How One Hacker Used AI Agents…", a mesma
+ * história do rappler.com na grafia comum de veículo em inglês) capitaliza
+ * toda palavra, então ali a maiúscula não indica nome próprio — o título só
+ * entra no teste quando NÃO está em Title Case (`isTitleCase`). O summary é
+ * testado à parte (e não concatenado ao título, que deixava `\s+` atravessar
+ * o `\n` entre os dois).
  */
 const HOW_NAMED_ENTITY_USED_RE =
   /\b[Hh]ow\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(?:[Uu]sed?|[Ll]everag(?:es?|ed?)|[Pp]owered?)\b/;
 
+function hasHowNamedEntityUsed(article: Article): boolean {
+  const title = article.title ?? "";
+  if (!isTitleCase(title) && HOW_NAMED_ENTITY_USED_RE.test(title)) return true;
+  return HOW_NAMED_ENTITY_USED_RE.test(article.summary ?? "");
+}
+
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
-  return TUTORIAL_TITLE_EXTRA_RE.test(hay) || HOW_NAMED_ENTITY_USED_RE.test(hay);
+  return TUTORIAL_TITLE_EXTRA_RE.test(hay) || hasHowNamedEntityUsed(article);
 }
 
 /**
