@@ -15,7 +15,8 @@
  *   npx tsx scripts/gen-carousel-cards.ts --edition-dir data/editions/260824/ [--force]
  *
  * Saída local (raiz da edição): `04-{destaque}-carousel-{p1,p2,p3,cta}-4x5.jpg`.
- * `--force` regenera mesmo se nada mudou. Sem ele a idempotência é POR
+ * `--force` regenera mesmo se nada mudou, mas preserva exceções do editor
+ * em carousel-keep-art.json com aviso explícito. Sem ele a idempotência é POR
  * CONTEÚDO (#6064 item 1): pula quando os 4 arquivos existem E o texto do
  * `## d{N}` ainda rasteriza no mesmo carimbo gravado em
  * `_internal/.carousel-source-hash.json`; se o editor editou o social depois
@@ -157,6 +158,20 @@ export async function genCarouselCards(
   // swap-destaque apagou o carrossel), e o destaque gera normalmente.
   const keepArtRaw = readCarouselKeepArt(editionDir);
   const keepArt = new Set<string>(destaques.filter((d) => keepArtRaw[d] && carouselSlidesOnDisk(editionDir, d)));
+  const inactiveKeys = Object.keys(keepArtRaw).filter((d) => !destaques.some((active) => active === d));
+  if (inactiveKeys.length > 0) {
+    console.error(
+      `[gen-carousel-cards] ${CAROUSEL_KEEP_ART_FILENAME}: ${inactiveKeys.join(", ")} não pertence à edição ` +
+        `de ${destaqueCount} destaques; exceção ignorada. Remova a chave sem destaque correspondente (#11214).`,
+    );
+  }
+  if (opts.force && keepArt.size > 0) {
+    console.error(
+      `[gen-carousel-cards] --force não sobrepõe a decisão editorial em ${CAROUSEL_KEEP_ART_FILENAME}: ` +
+        `arte mantida para ${[...keepArt].join(", ")}. Para regenerar, remova a chave correspondente do arquivo ` +
+        `e rode novamente; o texto será validado antes do render (#11214).`,
+    );
+  }
   const keepArtSemArte = destaques.filter((d) => keepArtRaw[d] && !keepArt.has(d));
   if (keepArtSemArte.length > 0) {
     console.error(
