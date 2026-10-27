@@ -150,10 +150,10 @@ test("ficha da aula logo após o hero, com formato, liberação, acesso, preço,
 });
 
 test("autor linka o LinkedIn e a página linka a home e a newsletter", () => {
-  assert.match(HTML, /<a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" rel="author me">/);
+  assert.match(HTML, /<a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/" target="_blank" rel="author me noopener">/);
   const footer = /<footer class="site-footer">([\s\S]*?)<\/footer>/.exec(HTML)![1];
-  assert.match(footer, /<a href="\/">/);
-  assert.match(footer, /<a href="\/assinar">/);
+  assert.match(footer, /<a href="\/" target="_blank" rel="noopener">/);
+  assert.match(footer, /<a href="\/assinar" target="_blank" rel="noopener">/);
 });
 
 test("moldura falsa de rede social fora da árvore de acessibilidade", () => {

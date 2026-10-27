@@ -81,27 +81,15 @@ function track(event, data) {
 
 track("Visita");
 
-// Mesmo cuidado do #8982: se o navegador seguir o link no mesmo instante do
-// fbq(), a requisição do pixel é cancelada e o clique some. O clique comum
-// espera 300 ms antes de ir ao checkout; clique com modificador (nova aba)
-// segue como link normal, porque esta aba não navega.
-const NAV_DELAY_MS = 300;
+// O checkout abre em nova aba (target="_blank"): esta aba não navega, então a
+// requisição do pixel não é cancelada (#8982) e o clique segue sem espera.
 const href = checkoutHref(CHECKOUT_URL);
 document.querySelectorAll(".checkout-link").forEach((link) => {
   link.href = href;
-  link.addEventListener("click", (ev) => {
-    // #10080: no modo interno não há pixel para esperar: o link segue normal.
+  link.addEventListener("click", () => {
+    // #10080: no modo interno não há pixel.
     if (internalMode) return;
-    const data = { posicao: link.dataset.posicao || "sem-posicao" };
-    if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) {
-      track("Clique", data);
-      return;
-    }
-    ev.preventDefault();
-    track("Clique", data);
-    setTimeout(() => {
-      window.location.href = link.href;
-    }, NAV_DELAY_MS);
+    track("Clique", { posicao: link.dataset.posicao || "sem-posicao" });
   });
 });
 

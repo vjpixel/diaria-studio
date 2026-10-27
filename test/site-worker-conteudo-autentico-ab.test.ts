@@ -88,4 +88,18 @@ describe("/produto/conteudo-autentico redireciona para a versão ativa", () => {
       assert.ok(js.includes("versao: VERSAO"), v);
     }
   });
+
+  it("todo link que sai da página, inclusive o checkout, abre em nova aba", () => {
+    for (const v of ["a", "b"]) {
+      const html = readFileSync(resolve(PAGE_DIR, v, "index.html"), "utf8");
+      const js = readFileSync(resolve(PAGE_DIR, v, "script.js"), "utf8");
+      const links = [...html.matchAll(/<a\s[^>]*href="(?!#)[^"]*"[^>]*>/g)].map((m) => m[0]);
+      assert.ok(links.length > 0, v);
+      for (const a of links) {
+        assert.match(a, /target="_blank"/, `${v}: ${a}`);
+        assert.match(a, /rel="[^"]*noopener/, `${v}: ${a}`);
+      }
+      assert.doesNotMatch(js, /window\.location\.href =/, v);
+    }
+  });
 });
