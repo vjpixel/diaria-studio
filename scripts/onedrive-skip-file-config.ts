@@ -10,8 +10,10 @@
  *
  * **GUARD:** este script só lê/escreve o arquivo de config. Nunca chama
  * `systemctl`, nunca roda o binário `onedrive` (`--resync` inclusive) e
- * nunca apaga nada no OneDrive. Reiniciar o daemon pra pegar a config nova
- * é passo manual do editor (`docs/onedrive-sync-setup.md`, item 6).
+ * nunca apaga nada no OneDrive. Aplicar a config nova no daemon é passo
+ * manual do editor: no cliente v2.5 mudar `skip_file` exige `--resync`
+ * (stop, resync dry-run, resync, start — `docs/onedrive-sync-setup.md`,
+ * item 6, #11256).
  *
  * Uso:
  *   npx tsx scripts/onedrive-skip-file-config.ts                 # dry-run: mostra o plano
@@ -26,7 +28,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { hasFlag, getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { planSkipFileConfig, ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE, REQUIRED_SKIP_FILE_PATTERNS } from "./lib/onedrive-skip-file.ts";
+import {
+  planSkipFileConfig,
+  ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE,
+  REQUIRED_SKIP_FILE_PATTERNS,
+  skipFileResyncStepsInline,
+} from "./lib/onedrive-skip-file.ts";
 
 const LOG_PREFIX = "[onedrive-skip-file]";
 
@@ -70,7 +77,17 @@ function main(): void {
   }
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileAtomic(configPath, plan.text);
-  console.log(`${LOG_PREFIX} gravado. Próximo passo (manual): systemctl --user restart onedrive — ver docs/onedrive-sync-setup.md item 6.`);
+  console.log(skipFileConfigNextStepMessage());
+}
+
+/** Mensagem de próximo passo depois do `--apply` (#11256): mudar o
+ * `skip_file` exige `--resync` no cliente v2.5, só reiniciar derruba o
+ * daemon com status 126. */
+export function skipFileConfigNextStepMessage(): string {
+  return (
+    `${LOG_PREFIX} gravado. Próximo passo (manual, mudar skip_file exige --resync): ` +
+    `${skipFileResyncStepsInline()} — ver docs/onedrive-sync-setup.md item 6.`
+  );
 }
 
 if (isMainModule(import.meta.url)) {

@@ -24,6 +24,29 @@
  * cota que parou o sync de `data/` em 23/10/2026.
  */
 
+/**
+ * Procedimento depois de mudar o `skip_file` (#11256). No cliente v2.5.x,
+ * mudar essa chave e só reiniciar faz o daemon sair com status 126 ("An
+ * application configuration change has been detected where a --resync is
+ * required"), e o sync fica parado até alguém rodar o resync. Sequência
+ * que funcionou no `300` em 27/10/2026: parar o serviço, resync em dry-run
+ * (conferir que não há deleção), o mesmo resync de verdade, religar.
+ * Fonte única do texto impresso pelo `onedrive-skip-file-config.ts` e do
+ * passo citado pelo alarme de cota.
+ */
+export const SKIP_FILE_RESYNC_STEPS: readonly string[] = [
+  "systemctl --user stop onedrive",
+  "onedrive --sync --resync --resync-auth --dry-run",
+  "onedrive --sync --resync --resync-auth",
+  "systemctl --user start onedrive",
+];
+
+/** Os passos em uma linha, na ordem, com o aviso de conferir o dry-run. */
+export function skipFileResyncStepsInline(): string {
+  const [stop, dry, real, start] = SKIP_FILE_RESYNC_STEPS;
+  return `\`${stop}\`, \`${dry}\` (conferir que não há deleção), \`${real}\`, \`${start}\``;
+}
+
 /** Default do próprio cliente quando `skip_file` não está na config. Entra
  * na linha gerada porque declarar a chave SUBSTITUI o default. */
 export const ONEDRIVE_CLIENT_DEFAULT_SKIP_FILE: readonly string[] = ["~*", ".~*", "*.tmp", "*.swp", "*.partial"];
