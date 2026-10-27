@@ -761,8 +761,11 @@ export function extractWorktreeNamesFromPaths(paths: string[]): Set<string> {
  * as sessões (qualquer `kind`, não só coordenadora: um worktree aberto à mão
  * por uma sessão interativa via `EnterWorktree` também está em uso); branches
  * vêm de `SessionRecord.branch` (#7750 — ver docblock do topo do arquivo,
- * "worktree EXTERNO não tinha como ser protegido"). Pura, testável sem tocar
- * `data/sessions/` real.
+ * "worktree EXTERNO não tinha como ser protegido"), de `SessionRecord.worktrees`
+ * (contrato estreito "desta sessão") e de `known_worktrees` FILTRADO pelo uso
+ * desta sessão — path tocado dentro dele ou issue reivindicada na branch
+ * (#11317: o campo é a foto global, nunca sinal de uso). Pura, testável sem
+ * tocar `data/sessions/` real.
  *
  * **`excludeSessionId` — a própria sessão nunca se protege de si mesma
  * (#7304).** O beacon (`.claude/hooks/session-beacon.mjs`) não emite de
@@ -793,24 +796,49 @@ export function selectInUseWorktreeNames(
     if (s.stale) continue;
     if (excludeSessionId !== undefined && s.sessionId === excludeSessionId) continue;
     const paths = [...(s.touched_paths ?? []), ...(s.dirty_paths ?? [])];
-    for (const name of extractWorktreeNamesFromPaths(paths)) names.add(name);
+    const touchedNames = extractWorktreeNamesFromPaths(paths);
+    for (const name of touchedNames) names.add(name);
     if (s.branch) branches.add(s.branch);
-    // #7722 item 2 — `s.branch` sozinho só reflete o checkout onde o beacon
-    // mora (o principal), nunca a branch de um worktree onde a sessão só
-    // `cd`ou. `s.known_worktrees` (populado pelo beacon via
-    // `resolveWorktreeBranches`, ver docstring em session-registry.ts) é a
-    // foto real de TODOS os worktrees ativos — protege por branch (e por
-    // nome, quando cai sob `.claude/worktrees/`) o worktree externo que
-    // `s.branch` nunca cobria. **Deliberadamente NÃO `s.worktrees`** — esse
-    // campo tem um contrato mais estreito e já em uso
-    // (`activeSessionWorktreePaths`/`branch-cleanup.ts`, ver docblock em
-    // session-registry.ts) que reaproveitá-lo aqui quebraria.
-    for (const wt of s.known_worktrees ?? []) {
+    // `s.worktrees` — contrato ESTREITO (#6168 Parte A): "worktrees abertos
+    // POR ESTA SESSÃO". Proteger por ele é exatamente o que o campo promete.
+    for (const wt of s.worktrees ?? []) {
       if (wt.branch) branches.add(wt.branch);
       if (wt.path) names.add(worktreeNameFromPath(wt.path));
     }
+    // #11317 — `s.known_worktrees` é a foto GLOBAL de todos os worktrees do
+    // repo (#7722 item 2: o beacon re-deriva de `.git/worktrees/` a cada
+    // chamada). Até aqui TODA entrada dele virava "em uso": bastava 1 sessão
+    // viva qualquer (e quase sempre há) pra proteger todos os worktrees, e a
+    // limpeza virou no-op em silêncio (medido no 300 em 27/10/2026: 118
+    // preservados, 0 removidos, 45 GB em `.claude/worktrees/`). Agora o
+    // campo só serve pra MAPEAR path→branch de um worktree que ESTA sessão
+    // de fato usa — tocou um path dentro dele, ou reivindicou a issue que a
+    // branch dele carrega no nome (`claimed_issues`). O caso que o #7722
+    // queria cobrir (worktree externo, onde o nome nunca aparece em
+    // `touched_paths`) continua protegido por esses dois sinais.
+    const sessionPaths = paths.map(normalizePathForMatch);
+    const claimed = new Set(s.claimed_issues ?? []);
+    for (const wt of s.known_worktrees ?? []) {
+      if (!wt.path) continue;
+      const name = worktreeNameFromPath(wt.path);
+      const touchedByName = touchedNames.has(name);
+      const wtPath = normalizePathForMatch(wt.path);
+      const touchedByPath = sessionPaths.some((p) => p === wtPath || p.startsWith(`${wtPath}/`));
+      const claimedByIssue =
+        wt.branch !== undefined &&
+        claimed.size > 0 &&
+        extractIssueNumbersFromWorktreeBranch(wt.branch).some((n) => claimed.has(n));
+      if (!touchedByName && !touchedByPath && !claimedByIssue) continue;
+      names.add(name);
+      if (wt.branch) branches.add(wt.branch);
+    }
   }
   return { names, branches };
+}
+
+/** Normaliza um path pra comparação por prefixo: `\` → `/`, sem barra final. */
+function normalizePathForMatch(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
 /** Basename do path do worktree (mesmo formato usado por `extractWorktreeNamesFromPaths`). */
