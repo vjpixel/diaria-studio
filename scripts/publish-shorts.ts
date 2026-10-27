@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
+import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
 /**
  * scripts/publish-shorts.ts (#10769)
  *
@@ -263,7 +263,12 @@ export type ShortsPlanItem =
   | { destination: string; mode: "api" | "guided"; action: "skip_done" }
   /** `skip_late` (#10772 F4): o horário do destino passou além do teto de atraso — vira passo manual. */
   /** `skip_delegated` (#10982): o destino sai por outro caminho (o `linkedin_profile` pelo timer do 300). */
-  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string }
+  /**
+   * `cause: "public_video"` (#11240): o pulo veio do R2 fora do ar (X/Threads
+   * recebem o vídeo por URL pública), não de credencial do destino. Só o pulo
+   * por credencial conta como terminal pra limpeza do vertical.
+   */
+  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string; cause?: "public_video" }
   /** `at`: horário planejado do passo guiado (repost da página, #10772; Instagram manual acima do teto, slot da grade, #10933). Ausente = `shortTime`. */
   /**
    * `upload` (#10915): o arquivo a subir no passo guiado — no Instagram acima
@@ -613,7 +618,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (input.publicVideo?.ready !== true) {
         const reason = `o X recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`x: ${reason}`);
-        return { destination: dest.id, mode: "guided", action: "skip_missing_credentials", detail: reason };
+        return { destination: dest.id, mode: "guided", action: "skip_missing_credentials", detail: reason, cause: "public_video" };
       }
       let text: string;
       try {
@@ -647,7 +652,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (input.publicVideo?.ready !== true) {
         const reason = `o Threads recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`threads_profile: ${reason}`);
-        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
+        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason, cause: "public_video" };
       }
       const late = lateFor(dest.id);
       if (late) {
@@ -2472,8 +2477,28 @@ async function main(): Promise<number> {
     guided: plan.items.filter((i) => i.action === "guided").length,
   };
   console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
+  // #11240: pulo por credencial é terminal pra limpeza (decisão do editor). Só a
+  // rodada principal grava; a do timer do 300 só planeja o linkedin_profile.
+  if (!flags.has("linkedin-timer")) {
+    try {
+      recordCredentialSkips(dir, aammdd, plan.items.map((i) => i.destination), credentialSkippedItems(plan.items), new Date().toISOString());
+    } catch (e) {
+      console.error(`[aviso] não foi possível registrar os destinos pulados por credencial: ${(e as Error).message}`);
+    }
+  }
   cleanup();
   return summary.failed > 0 ? 1 : 0;
+}
+
+/**
+ * Destinos que a rodada pulou por falta de credencial/token do PRÓPRIO destino
+ * (#11240). Fica de fora o pulo por R2 fora do ar (`cause: "public_video"`):
+ * é infraestrutura, a próxima rodada publica com o mesmo arquivo. Puro.
+ */
+export function credentialSkippedItems(items: readonly ShortsPlanItem[]): Array<{ destination: string; detail: string }> {
+  return items.flatMap((i) =>
+    i.action === "skip_missing_credentials" && i.cause !== "public_video" ? [{ destination: i.destination, detail: i.detail }] : [],
+  );
 }
 
 /**
