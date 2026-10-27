@@ -34,6 +34,9 @@
  *       mcp-guard, stages 0/1/3), que não passam a flag.
  *   (d) Push por e-mail (#5341 — via `scripts/lib/push-notify.ts`, reusa a
  *       credencial OAuth do Gmail). É o único e-mail do stall.
+ *   (e) Escalada (#11276): com `UNRESUMED_STALL_ESCALATION_COUNT` stalls
+ *       seguidos sem `resumed_at`, 1 alerta `urgente` por rodada — o de (d)
+ *       é `acao`, que sob `email_policy: "urgent_only"` não vira e-mail.
  *
  * #2958: a task Task Scheduler roda com `ExecutionTimeLimit` de 5 min
  * (`setup-watchdog-schedule.ps1`) — se estourado, o Task Scheduler força o
@@ -157,7 +160,49 @@ export interface PlanJson {
    * direção de avisar, nunca de silenciar).
    */
   stall_alert_delivered?: boolean;
+  /**
+   * #11276 — `true` depois que a ESCALADA "stall sem retomada" desta rodada
+   * chegou ao editor. Mesma disciplina de `stall_alert_delivered`: gravado só
+   * depois da entrega; ausente = `false`.
+   */
+  stall_escalated?: boolean;
   [key: string]: unknown;
+}
+
+/**
+ * #11276: quantos `stall_events` consecutivos sem `resumed_at` disparam a
+ * escalada. Com o dedup de 22,5 min, 3 eventos ≈ 45 min + 2×22,5 = ~1,5h de
+ * sessão parada depois do 1º alarme.
+ */
+export const UNRESUMED_STALL_ESCALATION_COUNT = 3;
+
+/** Pure: stalls consecutivos no FIM da lista sem `resumed_at`. */
+export function countTrailingUnresumedStalls(stallEvents: StallEvent[] | undefined): number {
+  const events = stallEvents ?? [];
+  let n = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.resumed_at) break;
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Pure (#11276): escalar quando a rodada acumulou
+ * `UNRESUMED_STALL_ESCALATION_COUNT` stalls seguidos sem retomada e a escalada
+ * ainda não chegou ao editor. Motivo: o alerta normal é `acao`, e sob
+ * `email_policy: "urgent_only"` (o default) `acao` nunca vira e-mail, só
+ * issue reusada — na rodada 261027b foram 9 stalls em ~4,5h, todos sem
+ * `resumed_at`, e nada chegou ao editor. A escalada é `urgente`, com
+ * fingerprint próprio (issue nova → e-mail mesmo sob `urgent_only`).
+ */
+export function shouldEscalateUnresumedStalls(
+  stallEvents: StallEvent[] | undefined,
+  alreadyEscalated: boolean,
+  minCount: number = UNRESUMED_STALL_ESCALATION_COUNT,
+): boolean {
+  if (alreadyEscalated) return false;
+  return countTrailingUnresumedStalls(stallEvents) >= minCount;
 }
 
 /**
@@ -737,6 +782,45 @@ export const WATCHDOG_IO_TIMEOUT_MS = PUSH_IO_TIMEOUT_MS;
  * no run-log (passo (b)) NÃO mudaram — o canal síncrono do #738 segue
  * exatamente como era.
  */
+/**
+ * #11276: escalada "stall sem retomada" — `urgente`, fingerprint próprio
+ * (`{kind}:{aammdd}:sem-retomada`), 1 por rodada. Ver
+ * `shouldEscalateUnresumedStalls`. Retorna `true` quando chegou ao editor.
+ */
+export async function sendUnresumedStallEscalation(
+  rootDir: string,
+  kind: WatchableKind,
+  aammdd: string,
+  unresumedCount: number,
+  elapsedMin: number,
+  notifyDeps: NotifyEditorDeps = {},
+): Promise<boolean> {
+  const result = await notifyEditor(
+    {
+      check: "overnight-watchdog-stall-sem-retomada",
+      fingerprint: `${kind}:${aammdd}:sem-retomada`,
+      severity: "urgente",
+      subject: `[diar.ia.br ${kind}] sessão parada sem retomar — rodada ${aammdd}`,
+      body: [
+        `Rodada ${aammdd}: ${unresumedCount} alarmes de stall seguidos sem retomada (${elapsedMin} min sem atividade).`,
+        `Nenhum wake/notificação trouxe a sessão de volta. Mande uma mensagem na sessão ${kind} para retomá-la, ou encerre a rodada.`,
+      ].join("\n"),
+      labels: ["bug"],
+      priority: "P1",
+      family: "estado",
+      legacyResendIntent: "dedupe-new-occurrences-only",
+    },
+    { cwd: rootDir, rootDir, ...notifyDeps },
+  );
+  if (result.issue?.action === "failed") {
+    process.stderr.write(`[watchdog] Issue de escalada não criada/reusada: ${result.issue.error}\n`);
+  }
+  if (result.emailError) {
+    process.stderr.write(`[watchdog] E-mail de escalada falhou: ${result.emailError}\n`);
+  }
+  return notifyEditorResultReachedEditor(result);
+}
+
 export async function sendStallAlert(
   rootDir: string,
   kind: WatchableKind,
@@ -1271,6 +1355,25 @@ async function runWatchdogForKind(
       // Fail-soft: no pior caso o editor recebe o alerta 2x nesta rodada —
       // preferível a perdê-lo.
       process.stderr.write(`[watchdog] Erro ao gravar stall_alert_delivered em plan.json.\n`);
+    }
+  }
+
+  // (e) #11276 — escalada quando os stalls se repetem sem retomada.
+  if (shouldEscalateUnresumedStalls(plan.stall_events, plan.stall_escalated === true)) {
+    const escalated = await sendUnresumedStallEscalation(
+      ROOT,
+      kind,
+      aammdd,
+      countTrailingUnresumedStalls(plan.stall_events),
+      elapsedMin,
+    );
+    if (escalated) {
+      plan.stall_escalated = true;
+      try {
+        writeFileAtomic(planPath, JSON.stringify(plan, null, 2) + "\n");
+      } catch {
+        process.stderr.write(`[watchdog] Erro ao gravar stall_escalated em plan.json.\n`);
+      }
     }
   }
 

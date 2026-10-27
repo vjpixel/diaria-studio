@@ -25,15 +25,18 @@ import {
   runCli,
   type GhRunFn,
 } from "../scripts/resolve-review-threads.ts";
+import { AUTO_REVIEW_MARKER } from "../scripts/lib/auto-review-marker.ts";
 
-type T = { id: string; isResolved: boolean; viewerCanResolve?: boolean };
+type T = { id: string; isResolved: boolean; viewerCanResolve?: boolean; comments?: unknown };
+/** Comentários de uma thread da automação (todos com o marcador, #11269). */
+const autoComments = (n = 1) => ({ totalCount: n, nodes: Array.from({ length: n }, (_, i) => ({ body: `achado ${i}\n\n${AUTO_REVIEW_MARKER}` })) });
 const threadsJson = (nodes: T[], hasNextPage: unknown = false) =>
   JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes, pageInfo: { hasNextPage, endCursor: null } } } } } });
 const ok = (stdout: string) => ({ status: 0, stdout, stderr: "" });
 const resolvedJson = (id: string) => JSON.stringify({ data: { resolveReviewThread: { thread: { id, isResolved: true } } } });
 const forbidden = { status: 1, stdout: JSON.stringify({ data: { resolveReviewThread: null }, errors: [{ type: "FORBIDDEN", message: "x" }] }), stderr: "" };
 const net = { status: 1, stdout: "", stderr: "HTTP 502" };
-const open = (id: string, viewerCanResolve: boolean | undefined = true): T => ({ id, isResolved: false, viewerCanResolve });
+const open = (id: string, viewerCanResolve: boolean | undefined = true, comments: unknown = autoComments()): T => ({ id, isResolved: false, viewerCanResolve, comments });
 const done = (id: string): T => ({ id, isResolved: true, viewerCanResolve: true });
 
 /** Fake do `gh`: devolve as respostas de query em ordem e registra cada chamada. */
@@ -170,7 +173,7 @@ describe("resolve-review-threads: runCli", () => {
   it("--list imprime o JSON e não chama mutation", () => {
     const { r, gh } = cli(["--pr", "5", "--list"]);
     assert.equal(r.exitCode, EXIT_OK);
-    assert.deepEqual(JSON.parse(r.stdout), { repo: "vjpixel/diaria-studio", pr: 5, total: 2, unresolved: ["a"], hasNextPage: false });
+    assert.deepEqual(JSON.parse(r.stdout), { repo: "vjpixel/diaria-studio", pr: 5, total: 2, unresolved: ["a"], human: [], hasNextPage: false });
     assert.equal(gh.mutations(), 0);
   });
 
@@ -247,5 +250,52 @@ describe("resolve-review-threads: runCli", () => {
     const r = runCli(["--pr", "5"], n.run, ROOT);
     assert.equal(r.exitCode, EXIT_ERROR);
     assert.equal(JSON.parse(r.stdout).failed[0].status, 1);
+  });
+});
+
+describe("resolve-review-threads: thread do editor fica aberta (#11269)", () => {
+  const editor = (id: string) => open(id, true, { totalCount: 1, nodes: [{ body: "editor: não mergear ainda, olhar X" }] });
+  const editorReplied = (id: string) =>
+    open(id, true, { totalCount: 2, nodes: [{ body: `achado\n\n${AUTO_REVIEW_MARKER}` }, { body: "editor: discordo" }] });
+
+  it("sem --thread, resolve só a thread da automação; a do editor sai em skipped e bloqueia (exit 1)", () => {
+    const gh = fakeGh([threadsJson([open("auto"), editor("ed")]), threadsJson([done("auto"), editor("ed")])]);
+    const r = resolveReviewThreads("vjpixel/diaria-studio", 5, gh.run);
+    assert.deepEqual([r.resolved, r.skipped, r.remainingBlocking, r.exitCode], [["auto"], ["ed"], 1, EXIT_BLOCKING]);
+    assert.equal(gh.mutations(), 1, "nunca chamou resolveReviewThread na thread do editor");
+  });
+
+  it("thread da automação em que o editor respondeu também fica aberta", () => {
+    const gh = fakeGh([threadsJson([editorReplied("t")]), threadsJson([editorReplied("t")])]);
+    const r = resolveReviewThreads("vjpixel/diaria-studio", 5, gh.run);
+    assert.deepEqual([r.skipped, r.exitCode, gh.mutations()], [["t"], EXIT_BLOCKING, 0]);
+  });
+
+  it("na dúvida não resolve: comentários ausentes, página incompleta ou thread sem comentário", () => {
+    for (const comments of [
+      null,
+      { totalCount: 101, nodes: autoComments(100).nodes },
+      { totalCount: 0, nodes: [] },
+    ]) {
+      const t = open("x", true, comments);
+      const gh = fakeGh([threadsJson([t]), threadsJson([t])]);
+      const r = resolveReviewThreads("vjpixel/diaria-studio", 5, gh.run);
+      assert.deepEqual([r.skipped, gh.mutations()], [["x"], 0], JSON.stringify(comments));
+    }
+  });
+
+  it("--thread explícito resolve a thread listada mesmo sem o marcador (escolha do coordenador)", () => {
+    const gh = fakeGh([threadsJson([editor("ed")]), threadsJson([done("ed")])]);
+    const r = resolveReviewThreads("vjpixel/diaria-studio", 5, gh.run, new Set(["ed"]));
+    assert.deepEqual([r.resolved, r.skipped, r.exitCode], [["ed"], [], EXIT_OK]);
+  });
+
+  it("--list separa as threads do editor em human", () => {
+    const r = runCli(["--pr", "5", "--list"], fakeGh([threadsJson([open("auto"), editor("ed"), done("c")])]).run, process.cwd());
+    assert.deepEqual(JSON.parse(r.stdout).human, ["ed"]);
+  });
+
+  it("a query pede todos os corpos da thread com totalCount", () => {
+    assert.match(THREADS_QUERY, /comments\(first:100\)\{ totalCount nodes\{ body \} \}/);
   });
 });

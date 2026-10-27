@@ -30,6 +30,11 @@
  *   npx tsx scripts/gh-pr-review-api.ts head-sha      --pr N [--repo owner/name]
  *   npx tsx scripts/gh-pr-review-api.ts ref-sha       --branch master [--repo owner/name]
  *
+ * `comment` e `reply` acrescentam ao corpo o marcador `<!-- diaria-auto-review -->`
+ * (`scripts/lib/auto-review-marker.ts`, #11269): é por ele que o passo de
+ * resolução pós-fixer separa a thread da automação da thread do editor (o
+ * login do autor é o mesmo).
+ *
  * Sem `--commit`, o comentário inline vai no head atual da PR. `list-comments`
  * imprime um array JSON com `id`, `in_reply_to_id`, `path`, `line`,
  * `original_line`, `body`, `author_association` e `user`. Finding de 1º nível
@@ -50,6 +55,7 @@ import { fileURLToPath } from "node:url";
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { DEFAULT_ISSUE_REPO, resolveRepoFlag } from "./lib/issue-repos.ts";
+import { withAutoReviewMarker } from "./lib/auto-review-marker.ts";
 
 export type ReviewApiOp =
   | { kind: "comment"; repo: string; pr: number; path: string; line: number; side: "RIGHT" | "LEFT"; commit: string; body: string }
@@ -219,14 +225,14 @@ export function runCli(
         if (!head.ok) return fail(`head da PR: ${head.error}`, EXIT_GH);
         commit = head.out;
       }
-      op = { kind: "comment", repo, pr, path: values.path ?? "", line: /^\d+$/.test(values.line ?? "") ? Number(values.line) : NaN, side, commit, body: b.body };
+      op = { kind: "comment", repo, pr, path: values.path ?? "", line: /^\d+$/.test(values.line ?? "") ? Number(values.line) : NaN, side, commit, body: withAutoReviewMarker(b.body) };
       break;
     }
     case "reply": {
       const b = readBody();
       if ("error" in b) return fail(b.error, EXIT_USAGE);
       const cid = values["comment-id"] ?? "";
-      op = { kind: "reply", repo, pr, commentId: /^\d+$/.test(cid) ? Number(cid) : NaN, body: b.body };
+      op = { kind: "reply", repo, pr, commentId: /^\d+$/.test(cid) ? Number(cid) : NaN, body: withAutoReviewMarker(b.body) };
       break;
     }
     case "list-comments":

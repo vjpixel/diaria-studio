@@ -20,6 +20,7 @@ import {
   type GhRunFn,
   type ReviewApiOp,
 } from "../scripts/gh-pr-review-api.ts";
+import { AUTO_REVIEW_MARKER } from "../scripts/lib/auto-review-marker.ts";
 
 const repo = "vjpixel/diaria-studio";
 const SHA = "1f1b431d7057630378cefe88efafd776f1c6079a";
@@ -141,7 +142,15 @@ describe("gh-pr-review-api: runCli", () => {
     assert.equal(r.stdout, "https://github.com/x/pull/5#discussion_r1");
     assert.deepEqual(gh.calls[0].slice(0, 4), ["api", "-X", "GET", `repos/${repo}/pulls/5`]);
     assert.ok(gh.calls[1].includes(`commit_id=${SHA}`));
-    assert.ok(gh.calls[1].includes("body=achado"));
+    assert.ok(gh.calls[1].includes(`body=achado\n\n${AUTO_REVIEW_MARKER}`), "comment carrega o marcador da automação (#11269)");
+  });
+
+  it("reply também carrega o marcador, uma vez só (#11269)", () => {
+    const gh = fakeGh([ok("https://github.com/x/pull/5#discussion_r2")]);
+    const r = runCli(["reply", "--pr", "5", "--comment-id", "9", "--body-file", "/b.md"], gh.run, files({ "/b.md": `ok\n\n${AUTO_REVIEW_MARKER}\n` }), ROOT);
+    assert.equal(r.exitCode, EXIT_OK, r.stderr);
+    const body = gh.calls[0].find((a) => a.startsWith("body="));
+    assert.equal(body?.split(AUTO_REVIEW_MARKER).length, 2, body);
   });
 
   it("comment: head da PR indisponível é exit 1, sem postar", () => {
