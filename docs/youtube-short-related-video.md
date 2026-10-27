@@ -13,7 +13,7 @@ Investigação de 22/10/2026, pedida pelo editor antes de decidir o caminho da t
 
 ## Conclusão
 
-**Não dá por API oficial.** Não existe campo nem endpoint de escrita para o vídeo relacionado de um Short. Por isso esta PR não traz helper nem task agendada.
+**Não dá por API oficial.** Não existe campo nem endpoint de escrita para o vídeo relacionado de um Short. Por isso a investigação (PR #10840) não trouxe helper nem task agendada; a automação veio depois, pelo Studio (seção "Decisão" abaixo).
 
 Achado lateral útil para a decisão: o seletor aceita vídeo **não listado**, não só público (o comportamento observado no Studio em 261022, que listou só públicos, pode ser restrição da UI do upload e não do recurso). Se isso valer também no seletor pós-upload, o vínculo poderia ser feito antes das 06:00, com o horizontal ainda agendado. Agendado é `private` e o Studio não o lista, então valeria testar à mão se publicar o horizontal como não listado e só depois torná-lo público atende à cadência.
 
@@ -24,6 +24,10 @@ Achado lateral útil para a decisão: o seletor aceita vídeo **não listado**, 
 3. **Medir antes de automatizar:** o tráfego `traffic_source_type = 32` (Reporting API) / `insightTrafficSourceType = RELATED_VIDEO` (Analytics API) mostra quantas visualizações o link de fato gera. Se for pouco, a automação via Chrome pode não compensar.
 
 A escolha entre 1, 2 e 3 é do editor (#10811).
+
+## Decisão (22/10/2026, reconfirmada em 26/10)
+
+Opção 1. Task local `diaria-short-video-relacionado` no Neo (app Claude desktop, dias úteis 06:05 BRT, logo depois de o horizontal publicar e antes do slot mais cedo do Short), exceção à regra "tasks só no servidor". O plano determinístico é `scripts/youtube-short-related-plan.ts` (lógica em `scripts/lib/diaria/youtube-short-related.ts`): resolve os IDs, confirma pela API que o horizontal está público e devolve `link`/`wait`/`skip`/`alert`. O clique no Studio segue o roteiro `.claude/skills/diaria-publica-video/short-related-task.md`; o resultado fica em `_internal/06-short-related.json`. Definição da task: `DESKTOP_SCHEDULED_TASKS` em `scripts/lib/scheduled-tasks.ts`.
 
 ## Fontes
 

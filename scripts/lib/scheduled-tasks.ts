@@ -3437,6 +3437,69 @@ export function listDisabledScheduledTaskNames(): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Tasks LOCAIS do app Claude desktop (#10811)
+//
+// Fora de `SCHEDULED_TASKS` de propósito: não são `.ts` rodados pelo
+// `task-runner.ts` nem viram unit systemd — são sessões do Claude criadas pelo
+// MCP `scheduled-tasks` do app desktop numa máquina específica (hoje só o Neo,
+// onde está o Chrome logado). Colocá-las em `SCHEDULED_TASKS` faria o
+// `setup-systemd-timers.ts` gerar unit pro `300` e o
+// `Diaria-Task-Never-Armed-Alarm` alarmar "nunca armada". O registro aqui é a
+// definição versionada (nome, cron, prompt) que o coordenador usa pra criar ou
+// recriar a task; o prompt é um PONTEIRO pro roteiro no repo, nunca a cópia
+// (padrão do `relatorio-diario-teste-2608`, #8246).
+// ---------------------------------------------------------------------------
+
+export interface DesktopScheduledTaskDefinition {
+  /** `taskId` do MCP scheduled-tasks (diretório em `~/.claude/scheduled-tasks/`). */
+  readonly taskId: string;
+  /** Nome exibido na lista de tasks do app. */
+  readonly title: string;
+  readonly description: string;
+  /** Máquina onde a task existe — o app só roda tasks com ele aberto. */
+  readonly machine: "neo";
+  /** Cron de 5 campos no fuso LOCAL da máquina (Neo = BRT). */
+  readonly cronExpression: string;
+  /** Roteiro canônico no repo (path POSIX relativo à raiz). */
+  readonly playbook: string;
+  /**
+   * Prompt passado ao `create_scheduled_task`. Cada execução começa sem
+   * memória, então ele se sustenta sozinho no que importa (checkout, regras
+   * duras), mas os PASSOS ficam no `playbook` — o prompt aponta, não copia.
+   */
+  readonly prompt: string;
+  readonly issue: string;
+}
+
+export const DESKTOP_SCHEDULED_TASKS: readonly DesktopScheduledTaskDefinition[] = [
+  {
+    taskId: "diaria-short-video-relacionado",
+    title: "diar.ia.br: vídeo relacionado do Short",
+    description: "Vincula o horizontal da edição como vídeo relacionado do Short no YouTube Studio (#10811)",
+    machine: "neo",
+    // Dias úteis (só há edição de segunda a sexta), 06:05 BRT: logo depois de
+    // o horizontal publicar (06:00) e antes do slot mais cedo do Short (06:30,
+    // `publishing.shorts.schedule.rotation_times`). O `wait` do plano cobre o
+    // atraso do YouTube e os minutos que o app soma ao cron.
+    cronExpression: "5 6 * * 1-5",
+    playbook: ".claude/skills/diaria-publica-video/short-related-task.md",
+    prompt: [
+      "Task diária da diar.ia.br (#10811): vincular o vídeo horizontal da edição de hoje como \"vídeo relacionado\" do Short no YouTube Studio do canal @diariabr.",
+      "",
+      "Trabalhe no checkout C:\\Users\\vjpix\\Projects\\diaria-studio (todos os comandos a partir dele). Leia o arquivo .claude/skills/diaria-publica-video/short-related-task.md inteiro e siga-o à risca: ele é a fonte canônica dos passos (plano determinístico com scripts/youtube-short-related-plan.ts, Claude in Chrome no Studio aberto pela lista de Shorts do canal, registro do resultado e alerta ao editor por e-mail).",
+      "",
+      "Regras: a edição é a de hoje em BRT (o script calcula sozinho, não passe data); rode o script do plano pela ferramenta Bash com timeout de 600000 ms; só clique no Studio quando o plano disser action=link; nunca altere outro campo do vídeo nem digite senha; nunca pergunte nada (ninguém está olhando): na dúvida, registre failed e alerte. Termine com um resumo de uma linha: edição, ação final e IDs.",
+    ].join("\n"),
+    issue: "#10811",
+  },
+];
+
+/** Linhas da listagem `--desktop` (uma por task, separadas por tab). */
+export function renderDesktopScheduledTasksTable(tasks: readonly DesktopScheduledTaskDefinition[] = DESKTOP_SCHEDULED_TASKS): string {
+  return tasks.map((t) => [t.taskId, t.machine, t.cronExpression, t.playbook, t.issue].join("\t")).join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Enumeração programática (#5408) — mesmo idioma CLI de exec-mode.ts /
 // clarice-envio-enabled.ts: função pura testável + guard `isMainModule` fino.
 //
@@ -3521,16 +3584,22 @@ export function renderScheduledTasksTable(rows: ScheduledTaskRow[] = listSchedul
 if (isMainModule(import.meta.url)) {
   const { flags } = parseArgs(process.argv.slice(2));
   const rows = listScheduledTaskRows();
-  if (flags.has("json")) {
+  if (flags.has("desktop")) {
+    // #10811: tasks locais do app Claude desktop (fora do systemd).
+    console.log(flags.has("json") ? JSON.stringify(DESKTOP_SCHEDULED_TASKS, null, 2) : renderDesktopScheduledTasksTable());
+  } else if (flags.has("json")) {
     console.log(JSON.stringify(rows, null, 2));
   } else if (flags.has("list")) {
     console.log(renderScheduledTasksTable(rows));
+    // stderr: o stdout do `--list` é exatamente 1 linha por task systemd (#5408).
+    console.error(`(+ ${DESKTOP_SCHEDULED_TASKS.length} task(s) local(is) do app Claude desktop fora desta tabela: --desktop)`);
   } else {
-    console.log("Uso: npx tsx scripts/lib/scheduled-tasks.ts --list [--json]");
+    console.log("Uso: npx tsx scripts/lib/scheduled-tasks.ts --list [--json] | --desktop [--json]");
     const desarmadas = rows.filter((r) => !r.armed).length;
     console.log(
       `(${rows.length} tasks no registro — nome, schedule, scripts, logPath, killSwitch, issue, armada/DESARMADA` +
         `${desarmadas > 0 ? `; ${desarmadas} ${desarmadas === 1 ? "DESARMADA" : "DESARMADAS"} — não viram unit systemd` : ""})`,
     );
+    console.log(`(+ ${DESKTOP_SCHEDULED_TASKS.length} task(s) local(is) do app Claude desktop, fora do systemd: --desktop)`);
   }
 }
