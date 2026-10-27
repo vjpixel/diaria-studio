@@ -24,10 +24,13 @@
  * Enquanto houver contato `kit-sem-abertura:` em `in_brevo`, o segmento da
  * diária no Kit o exclui e ele só recebe pela Brevo. Num dia sem campanha
  * Brevo, `schedule-newsletter-kit.ts` aborta (exit 7) pra não deixá-lo sem a
- * edição. Por isso `decideBrevoSemanalSend` cai pro envio DIÁRIO (com aviso)
- * enquanto esse resíduo existir: a ordem segura é devolver os
+ * edição. Por isso `resolveBrevoEffectiveMode` cai pro envio DIÁRIO (com
+ * aviso) enquanto esse resíduo existir: a ordem segura é devolver os
  * `kit-sem-abertura:` ao Kit (#11221) antes de ligar o semanal, e este guard
- * impede que esquecer essa ordem tire a edição de alguém.
+ * impede que esquecer essa ordem tire a edição de alguém. O MESMO modo
+ * efetivo decide o score do `evaluate-brevo-diaria.ts` (só pontua por
+ * semanal quando a Brevo de fato é semanal) e trava o `--apply` do
+ * `restore-brevo-semanal-suppressed.ts`.
  *
  * ## Divisão segunda/terça (acima de `split_threshold`)
  *
@@ -66,6 +69,9 @@ export function parseBrevoDiariaSemanal(cfg: unknown): BrevoDiariaSemanalParse {
   if (typeof c.desde !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(c.desde) || !Number.isFinite(Date.parse(`${c.desde}T00:00:00-03:00`))) {
     return { error: `brevo_diaria.semanal.desde precisa ser YYYY-MM-DD (veio ${JSON.stringify(c.desde)}).` };
   }
+  if (editionWeekday(c.desde.slice(2).replace(/-/g, "")) !== 1) {
+    return { error: `brevo_diaria.semanal.desde precisa ser uma SEGUNDA (veio ${c.desde}) — é a 1ª semanal do regime.` };
+  }
   const split = c.split_threshold ?? BREVO_SEMANAL_DEFAULT_SPLIT_THRESHOLD;
   if (typeof split !== "number" || !Number.isInteger(split) || split < 1) {
     return { error: `brevo_diaria.semanal.split_threshold precisa ser inteiro >= 1 (veio ${JSON.stringify(split)}).` };
@@ -95,6 +101,40 @@ export type BrevoSemanalSendDecision =
   | { send: true; mode: "semanal" }
   | { send: false; reason: string };
 
+export type BrevoEffectiveMode = { mode: "diaria"; warning?: string } | { mode: "semanal"; desdeMs: number } | { error: string };
+
+/**
+ * Pura — o regime EFETIVO da Brevo diária hoje: desligado ⇒ diária; ligado
+ * mas com `kit-sem-abertura:` em `in_brevo` ⇒ diária com aviso (guarda de
+ * transição, ver docstring do módulo); senão semanal. Fonte única pro envio
+ * (`decideBrevoSemanalSend`), pro score (`evaluate-brevo-diaria.ts`) e pro
+ * `--apply` da devolução dos suprimidos.
+ */
+export function resolveBrevoEffectiveMode(semanal: BrevoDiariaSemanalParse, kitSemAberturaInBrevo: number): BrevoEffectiveMode {
+  if ("error" in semanal) return { error: semanal.error };
+  if (!semanal.enabled) return { mode: "diaria" };
+  if (kitSemAberturaInBrevo > 0) {
+    return {
+      mode: "diaria",
+      warning:
+        `brevo_diaria.semanal ligado, mas o store ainda tem ${kitSemAberturaInBrevo} contato(s) kit-sem-abertura: em ` +
+        "in_brevo — a Brevo segue DIÁRIA até eles voltarem ao Kit (scripts/restore-kit-sem-abertura-frio.ts, #11221), " +
+        "senão ficariam sem a edição nos dias sem campanha (#10533).",
+    };
+  }
+  return { mode: "semanal", desdeMs: semanal.desdeMs };
+}
+
+/** Pura — quantos `kit-sem-abertura:` ainda estão `in_brevo` no store (entrada da guarda de transição). */
+export function countKitSemAberturaInBrevo(
+  contacts: readonly { status: string; beehiiv_subscription_id?: unknown }[],
+  kitSemAberturaPrefix: string,
+): number {
+  return contacts.filter(
+    (c) => c.status === "in_brevo" && typeof c.beehiiv_subscription_id === "string" && c.beehiiv_subscription_id.startsWith(kitSemAberturaPrefix),
+  ).length;
+}
+
 /**
  * Pura — esta edição sai pela Brevo? Desligado ⇒ diária (como antes). Ligado:
  * só segunda; exceção de transição com `kit-sem-abertura:` em `in_brevo`
@@ -105,19 +145,9 @@ export function decideBrevoSemanalSend(input: {
   editionAammdd: string;
   kitSemAberturaInBrevo: number;
 }): BrevoSemanalSendDecision {
-  const { semanal } = input;
-  if ("error" in semanal) return { send: false, reason: semanal.error };
-  if (!semanal.enabled) return { send: true, mode: "diaria" };
-  if (input.kitSemAberturaInBrevo > 0) {
-    return {
-      send: true,
-      mode: "diaria",
-      warning:
-        `brevo_diaria.semanal ligado, mas o store ainda tem ${input.kitSemAberturaInBrevo} contato(s) kit-sem-abertura: em ` +
-        "in_brevo — a Brevo segue DIÁRIA até eles voltarem ao Kit (scripts/restore-kit-sem-abertura-frio.ts, #11221), " +
-        "senão ficariam sem a edição nos dias sem campanha (#10533).",
-    };
-  }
+  const eff = resolveBrevoEffectiveMode(input.semanal, input.kitSemAberturaInBrevo);
+  if ("error" in eff) return { send: false, reason: eff.error };
+  if (eff.mode === "diaria") return eff.warning ? { send: true, mode: "diaria", warning: eff.warning } : { send: true, mode: "diaria" };
   const weekday = editionWeekday(input.editionAammdd);
   if (weekday === null) return { send: false, reason: `edição ${input.editionAammdd} não é AAMMDD válido.` };
   if (weekday !== 1) {
@@ -164,12 +194,27 @@ export interface BrevoSemanalStatistics {
   clicked?: StatEvent[];
 }
 
+/** Pura — o instante cai numa SEGUNDA no horário de Brasília (UTC-3 fixo; o Brasil não tem horário de verão desde 2019). */
+export function isMondayBrt(ms: number): boolean {
+  return new Date(ms - 3 * 3600 * 1000).getUTCDay() === 1;
+}
+
 /**
  * Pura — monta a entrada de `classifyBrevoDiariaSemanalAction` a partir de
- * `statistics` do `GET /contacts/{email}`. Semanal = campanha cujo envio tem
- * timestamp >= `desdeMs` (envio sem timestamp legível nunca conta como
- * semanal: fail-safe, não soma à sequência que suprime). Madura = >= 48h.
- * `everOpened`/`everClicked` olham a vida inteira (inclusive antes do corte).
+ * `statistics` do `GET /contacts/{email}`. Semanal = campanha enviada a
+ * partir de `desdeMs` E numa SEGUNDA (BRT): na transição (#10533) e com
+ * `--fora-da-segunda` a Brevo ainda manda campanha em outros dias, e contar
+ * essas como semanais encurtaria a sequência de 12 pra ~2 semanas (#11226,
+ * review). Envio sem timestamp legível nunca conta como semanal (fail-safe:
+ * não soma à sequência que suprime). Madura = >= 48h.
+ *
+ * - `clickedSinceDesde`: clique em campanha ENVIADA a partir de `desdeMs`
+ *   (qualquer dia) — nunca clique histórico (premissa A do #11226).
+ * - `everOpened`: abertura em qualquer campanha da janela que a Brevo
+ *   devolve. **A Brevo devolve só os últimos 90 dias por padrão** ("this
+ *   endpoint will show the statistics of contact for the recent 90 days by
+ *   default", developers.brevo.com/reference/getcontactinfo-1, lido em
+ *   27/10/2026): o caller soma o marcador persistido `ever_opened` do store.
  */
 export function buildSemanalEvaluationInput(
   statistics: BrevoSemanalStatistics | undefined,
@@ -181,6 +226,7 @@ export function buildSemanalEvaluationInput(
   const opened = ids(statistics?.opened);
   const clicked = ids(statistics?.clicked);
   const maturationMs = BREVO_DIARIA_MATURATION_HOURS * 3600 * 1000;
+  // Envio mais antigo por campanha, a partir do corte.
   const sentAtByCampaign = new Map<unknown, number>();
   for (const e of Array.isArray(statistics?.messagesSent) ? statistics!.messagesSent! : []) {
     if (e?.campaignId === undefined) continue;
@@ -189,11 +235,14 @@ export function buildSemanalEvaluationInput(
     const prev = sentAtByCampaign.get(e.campaignId);
     if (prev === undefined || ts < prev) sentAtByCampaign.set(e.campaignId, ts);
   }
-  const semanais: BrevoSemanalSend[] = [...sentAtByCampaign.entries()].map(([id, ts]) => ({
-    sentAtMs: ts,
-    mature: nowMs - ts >= maturationMs,
-    opened: opened.has(id),
-    clicked: clicked.has(id),
-  }));
-  return { semanais, everOpened: opened.size > 0, everClicked: clicked.size > 0 };
+  const semanais: BrevoSemanalSend[] = [...sentAtByCampaign.entries()]
+    .filter(([, ts]) => isMondayBrt(ts))
+    .map(([id, ts]) => ({
+      sentAtMs: ts,
+      mature: nowMs - ts >= maturationMs,
+      opened: opened.has(id),
+      clicked: clicked.has(id),
+    }));
+  const clickedSinceDesde = [...clicked].some((id) => sentAtByCampaign.has(id));
+  return { semanais, everOpened: opened.size > 0, clickedSinceDesde };
 }

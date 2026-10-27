@@ -11,6 +11,18 @@
  *  B) os `kit-sem-abertura:` ainda `in_brevo` no store: voltam pro Kit com
  *     `frio`, saem da lista Brevo (sem blacklist) e o store grava
  *     `converted_to_kit` / `kit_sem_abertura_frio`.
+ *  C) os `kit-sem-abertura:` que o `evaluate-brevo-diaria.ts` suprimiu SÓ na
+ *     Brevo enquanto o frio não estava ligado (`suppressed` /
+ *     `kit_sem_abertura_aguardando_frio`, premissa B do review): já fora da
+ *     lista Brevo, ativos no Kit com `envio-brevo`; ganham `frio`, perdem
+ *     `envio-brevo` e o store vira `converted_to_kit` / `kit_sem_abertura_frio`.
+ *
+ * ## Só com o frio plenamente ligado
+ *
+ * `--apply` exige `parseKitFrio().fullyOn` (flags + segmento da diária
+ * confirmado excluindo `frio`): aplicar `frio` sem a semanal ligada, ou sem
+ * o segmento, deixaria a pessoa sem edição ou com a de segunda em dobro.
+ * O dry-run roda sempre.
  *
  * ## Reativar `cancelled` pela API: NÃO
  *
@@ -21,7 +33,8 @@
  * vínculo a form não promete reativar `cancelled`. Este script não tenta:
  * quem está `cancelled` vai pra lista `data/kit-frio/reativar-no-painel.csv`
  * (reativar à mão no painel do Kit) e, rodado de novo depois, o script
- * encontra o assinante `active` e aplica as tags. Idempotente.
+ * encontra o assinante `active` e aplica as tags. Idempotente. O CSV só é
+ * gravado com `--apply` (o dry-run só informa a contagem no log).
  *
  * Ordem por assinante (nunca sem canal): `frio` aplicada e RELIDA antes de
  * tirar `envio-brevo` (relida também). Nunca descadastra ninguém.
@@ -45,6 +58,7 @@ import { listSubscriberTags } from "./lib/kit-broadcasts.ts";
 import {
   DEFAULT_STORE_PATH,
   applyConvertedToKit,
+  applyKitSemAberturaFrioFromSuppressed,
   normalizeEmail,
   readStore,
   writeStore,
@@ -53,7 +67,7 @@ import {
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts";
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts";
 import { DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, formatKitSemAberturaLogLine } from "./lib/kit-sem-abertura.ts";
-import { KIT_FRIO_TAG_NAME } from "./lib/kit-frio.ts";
+import { KIT_FRIO_TAG_NAME, kitFrioNotFullyOnReason, parseKitFrio, type KitFrioParse } from "./lib/kit-frio.ts";
 import { appendFileWithRetry } from "./lib/source-runs.ts";
 import { createRequestPacer } from "./kit-provider-split.ts";
 import { KIT_MIN_INTERVAL_MS, tagAndConfirm, untagAndConfirm } from "./sync-kit-sem-abertura-to-brevo.ts";
@@ -64,7 +78,12 @@ const PANEL_LIST_PATH = resolve(ROOT, "data/kit-frio/reativar-no-painel.csv");
 export interface RestoreTarget {
   email: string;
   kitSubscriberId: number;
-  source: "descadastrado_2510" | "in_brevo";
+  /**
+   * `descadastrado_por_supressao`: `kit_unsubscribed`+`suppress` no log (os
+   * de 25/10/2026 e quaisquer outros do mesmo fluxo); `in_brevo`: resíduo do
+   * #10437 no store; `suprimido_aguardando_frio`: premissa B (ver docstring).
+   */
+  source: "descadastrado_por_supressao" | "in_brevo" | "suprimido_aguardando_frio";
 }
 
 /**
@@ -90,14 +109,21 @@ export function collectRestoreTargets(
       if (j.event !== "kit_unsubscribed" || j.brevo_exit !== "suppress") continue;
       if (typeof j.email !== "string" || typeof j.kit_subscriber_id !== "number") continue;
       const email = normalizeEmail(j.email);
-      if (!byEmail.has(email)) byEmail.set(email, { email, kitSubscriberId: j.kit_subscriber_id, source: "descadastrado_2510" });
+      if (!byEmail.has(email)) byEmail.set(email, { email, kitSubscriberId: j.kit_subscriber_id, source: "descadastrado_por_supressao" });
     }
   }
   for (const c of contacts) {
-    if (c.status !== "in_brevo" || !c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA)) continue;
+    if (!c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA)) continue;
+    const source: RestoreTarget["source"] | null =
+      c.status === "in_brevo"
+        ? "in_brevo"
+        : c.status === "suppressed" && c.resolution_reason === "kit_sem_abertura_aguardando_frio"
+          ? "suprimido_aguardando_frio"
+          : null;
+    if (source === null) continue;
     const raw = c.beehiiv_subscription_id.slice(ORIGIN_PREFIX.KIT_SEM_ABERTURA.length);
     const id = /^[0-9]+$/.test(raw) ? Number(raw) : 0;
-    if (id > 0) byEmail.set(normalizeEmail(c.email), { email: normalizeEmail(c.email), kitSubscriberId: id, source: "in_brevo" });
+    if (id > 0) byEmail.set(normalizeEmail(c.email), { email: normalizeEmail(c.email), kitSubscriberId: id, source });
   }
   return { targets: [...byEmail.values()], badLines };
 }
@@ -128,7 +154,7 @@ export interface KitRestoreDeps {
 
 export async function runKitSemAberturaRestore(
   targets: readonly RestoreTarget[],
-  opts: { apply: boolean },
+  opts: { apply: boolean; frio: KitFrioParse },
   deps: KitRestoreDeps,
 ): Promise<{ code: 0 | 1 | 2; counts: Record<RestoreStep | "aplicado" | "falha", number> }> {
   const { log } = deps;
@@ -142,6 +168,13 @@ export async function runKitSemAberturaRestore(
   };
   let frioId: number | null = null;
   let envioId: number | null = null;
+  if (opts.apply && ("error" in opts.frio || !opts.frio.fullyOn)) {
+    log(
+      `ERRO: --apply exige kit.frio plenamente ligado (${kitFrioNotFullyOnReason(opts.frio)}) — ` +
+        "frio sem a semanal/segmento deixaria a pessoa sem edição ou com a de segunda em dobro (#11221).",
+    );
+    return { code: 2, counts };
+  }
   if (opts.apply) {
     frioId = await deps.findTagId(KIT_FRIO_TAG_NAME);
     envioId = await deps.findTagId(KIT_ENVIO_BREVO_TAG_NAME);
@@ -178,7 +211,12 @@ export async function runKitSemAberturaRestore(
         store = applyConvertedToKit(store, t.email, deps.nowIso(), "kit_sem_abertura_frio");
         deps.writeStore(store);
       }
-      if (step === "tags" || (step === "ja_ok" && t.source === "in_brevo")) {
+      if ((step === "tags" || step === "ja_ok") && t.source === "suprimido_aguardando_frio") {
+        // Já fora da lista Brevo (o evaluate desvinculou); só o store muda.
+        store = applyKitSemAberturaFrioFromSuppressed(store, t.email, deps.nowIso());
+        deps.writeStore(store);
+      }
+      if (step === "tags" || (step === "ja_ok" && t.source !== "descadastrado_por_supressao")) {
         counts.aplicado++;
         try {
           deps.appendLog(
@@ -223,15 +261,18 @@ async function main(): Promise<void> {
   }
   const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
     brevo_diaria?: { api_key_env: string; list_id: number | null };
+    kit?: unknown;
   };
+  const frio = parseKitFrio(cfg.kit);
   const brevoKey = cfg.brevo_diaria ? process.env[cfg.brevo_diaria.api_key_env] : undefined;
   const listId = cfg.brevo_diaria?.list_id;
   const store = readStore(DEFAULT_STORE_PATH);
   const { targets, badLines } = collectRestoreTargets(readKitSemAberturaLogs(), store.contacts);
   if (badLines > 0) log(`aviso: ${badLines} linha(s) ilegível(is) nos logs (ignoradas).`);
   log(
-    `${targets.filter((t) => t.source === "descadastrado_2510").length} descadastrado(s) por supressão no log, ` +
-      `${targets.filter((t) => t.source === "in_brevo").length} kit-sem-abertura: ainda in_brevo.`,
+    `${targets.filter((t) => t.source === "descadastrado_por_supressao").length} descadastrado(s) por supressão no log, ` +
+      `${targets.filter((t) => t.source === "in_brevo").length} kit-sem-abertura: ainda in_brevo, ` +
+      `${targets.filter((t) => t.source === "suprimido_aguardando_frio").length} suprimido(s) só na Brevo aguardando o frio.`,
   );
   if (apply && targets.some((t) => t.source === "in_brevo") && (!brevoKey || listId == null)) {
     log("ERRO: há kit-sem-abertura: in_brevo e a chave/lista da Brevo diária não está disponível — não dá pra desvinculá-los.");
@@ -239,7 +280,7 @@ async function main(): Promise<void> {
     return;
   }
   const pace = createRequestPacer(KIT_MIN_INTERVAL_MS);
-  const result = await runKitSemAberturaRestore(targets, { apply }, {
+  const result = await runKitSemAberturaRestore(targets, { apply, frio }, {
     log,
     getKit: async (id) => {
       await pace();

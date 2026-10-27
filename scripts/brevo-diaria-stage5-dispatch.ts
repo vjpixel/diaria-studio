@@ -61,7 +61,7 @@ import { readStore, DEFAULT_STORE_PATH, type BrevoDiariaContact } from "./lib/br
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeCurrentActiveCount } from "./sync-pending-to-brevo.ts";
 import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts";
-import { checkSemanalCapacity, decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
+import { checkSemanalCapacity, countKitSemAberturaInBrevo, decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #11226
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -196,6 +196,13 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
   if (!brevoDiaria) {
     return { status: "skipped", reason: "brevo_diaria não configurado em platform.config.json." };
   }
+  // #11226 — config do regime semanal inválida é FALHA (antes de qualquer
+  // passo), nunca "skipped": skip esconderia que a edição não saiu pela Brevo
+  // por um erro de config.
+  const semanal = parseBrevoDiariaSemanal(brevoDiaria.semanal);
+  if ("error" in semanal) {
+    return { status: "failed", step: "config", reason: semanal.error };
+  }
 
   const storeExists = deps.storeExists();
   const currentActiveCount = storeExists ? computeCurrentActiveCount(deps.readContacts() as BrevoDiariaContact[]) : 0;
@@ -236,17 +243,14 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
 
   // #11226 — regime semanal: contatos/rampa rodam todo dia (o clique na Brevo
   // vira ida pro Kit na rodada seguinte), mas a CAMPANHA só sai na segunda.
-  const semanal = parseBrevoDiariaSemanal(brevoDiaria.semanal);
   const contactsNow = deps.storeExists() ? deps.readContacts() : [];
-  const kitSemAberturaInBrevo = contactsNow.filter(
-    (c) => c.status === "in_brevo" && typeof c.beehiiv_subscription_id === "string" && c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA),
-  ).length;
+  const kitSemAberturaInBrevo = countKitSemAberturaInBrevo(contactsNow, ORIGIN_PREFIX.KIT_SEM_ABERTURA);
   const semanalDecision = decideBrevoSemanalSend({ semanal, editionAammdd: basename(editionDir), kitSemAberturaInBrevo });
   if (!semanalDecision.send) {
     return { status: "skipped", reason: semanalDecision.reason, warnings };
   }
   if (semanalDecision.mode === "diaria" && semanalDecision.warning) warnings.push(semanalDecision.warning);
-  if (semanalDecision.mode === "semanal" && !("error" in semanal) && semanal.enabled) {
+  if (semanalDecision.mode === "semanal" && semanal.enabled) {
     const capacity = checkSemanalCapacity(activeCountAfterApply, semanal.splitThreshold);
     if (capacity.warning) warnings.push(capacity.warning);
   }

@@ -123,7 +123,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { readFileSync } from "node:fs";
 import { isKitSemAberturaEnabled } from "./lib/kit-sem-abertura.ts"; // #10437
 import type { KitSemAberturaPlatformConfig } from "./sync-kit-sem-abertura-to-brevo.ts"; // #10437
-import { isKitFrioEnabled, type KitFrioConfig } from "./lib/kit-frio.ts"; // #11221
+import { parseKitFrio } from "./lib/kit-frio.ts"; // #11221
 
 // Mesma disciplina do #4983 (clarice-novos-run.ts) — carregar .env ANTES de
 // qualquer outro código, em module scope, pra process.env já estar populado
@@ -264,11 +264,17 @@ export interface BrevoDiariaRunDeps {
   kitFrioEnabled?: () => boolean;
 }
 
-/** #11221 — lê `kit.frio.enabled`; config ilegível ⇒ desligada. */
+/**
+ * #11221 — lê `kit.frio.enabled` (via `parseKitFrio`). Config ilegível ⇒
+ * desligada. `kit.frio` INVÁLIDO ⇒ liga o passo de propósito: o
+ * `sync-kit-frio.ts` sai 2 com o erro e o fail-soft o põe nos warnings, em
+ * vez de a flag quebrada sumir em silêncio.
+ */
 export function readKitFrioFlag(rootDir: string): boolean {
   try {
-    const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as { kit?: { frio?: KitFrioConfig } };
-    return isKitFrioEnabled(cfg.kit?.frio);
+    const cfg = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as { kit?: unknown };
+    const flags = parseKitFrio(cfg.kit);
+    return "error" in flags ? true : flags.enabled;
   } catch {
     return false;
   }

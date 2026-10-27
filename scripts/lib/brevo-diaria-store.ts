@@ -253,9 +253,26 @@ export interface BrevoDiariaContact {
     /** #11226 — contato suprimido por score que voltou à semanal da Brevo
      * (`restore-brevo-semanal-suppressed.ts`: tinha >= 1 abertura). Status
      * `in_brevo` de novo; `suppressed_at` (a supressão original) é preservado. */
-    | "restored_to_semanal";
+    | "restored_to_semanal"
+    /** #11221 (premissa B do review) — status `suppressed`: um
+     * `kit-sem-abertura:` suprimido por score ENQUANTO `kit.frio` não está
+     * plenamente ligado. Saiu só da Brevo (blacklist + fora da lista, como a
+     * supressão normal); no Kit segue `active` com `envio-brevo` (fora da
+     * diária pelo segmento), nunca descadastrado. O
+     * `restore-kit-sem-abertura-frio.ts` o reconhece por este motivo e o
+     * devolve com `frio` quando o frio for ligado. */
+    | "kit_sem_abertura_aguardando_frio";
   /** #11226 — ISO de quando o contato voltou de `suppressed` pra semanal. */
   restored_to_semanal_at?: string;
+  /**
+   * #11226 — marcador PERSISTENTE de "abriu alguma vez" (só vai de ausente pra
+   * `true`). A estatística do `GET /contacts/{email}` da Brevo cobre só os
+   * últimos 90 dias por padrão, e `opens_count` é sobrescrito a cada rodada
+   * com o valor dessa janela; sem este campo, quem abriu há mais de 90 dias
+   * passaria a ser tratado como "nunca abriu" (supressão em 4 semanais em vez
+   * de 12).
+   */
+  ever_opened?: true;
 }
 
 export interface BrevoDiariaStore {
@@ -363,7 +380,7 @@ export function applyEvaluation(
         };
       }
       if (update.action === "suppress") {
-        return { ...base, status: "suppressed", suppressed_at: now, resolution_reason: "score_threshold" };
+        return { ...base, status: "suppressed", suppressed_at: now, resolution_reason: update.resolutionReason ?? "score_threshold" };
       }
       return base; // "keep" — permanece in_brevo, contadores/taxa atualizados
     }),
@@ -560,6 +577,35 @@ export function applySuppressionReconciliation(
     contacts: store.contacts.map((c) => {
       if (c.email !== norm || c.status !== "suppressed" || c.resolution_reason !== "score_threshold") return c;
       return { ...c, reconciled_at: now, resolution_reason: "self_confirmed_after_suppression" };
+    }),
+  };
+}
+
+/** #11226 — marca `ever_opened: true` (idempotente; nunca desmarca). Qualquer status. */
+export function applyEverOpened(store: BrevoDiariaStore, email: string): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  if (!store.contacts.some((c) => c.email === norm && c.ever_opened !== true)) return store;
+  return { contacts: store.contacts.map((c) => (c.email === norm ? { ...c, ever_opened: true as const } : c)) };
+}
+
+/**
+ * #11221 — `kit-sem-abertura:` suprimido à espera do frio
+ * (`suppressed` + `kit_sem_abertura_aguardando_frio`) que o
+ * `restore-kit-sem-abertura-frio.ts` devolveu ao Kit com `frio`: vira
+ * `converted_to_kit` / `kit_sem_abertura_frio` (mesmo desfecho de quem
+ * voltou direto de `in_brevo`). `suppressed_at` é preservado. Qualquer outro
+ * status/motivo: noop.
+ */
+export function applyKitSemAberturaFrioFromSuppressed(
+  store: BrevoDiariaStore,
+  email: string,
+  now: string = new Date().toISOString(),
+): BrevoDiariaStore {
+  const norm = normalizeEmail(email);
+  return {
+    contacts: store.contacts.map((c) => {
+      if (c.email !== norm || c.status !== "suppressed" || c.resolution_reason !== "kit_sem_abertura_aguardando_frio") return c;
+      return { ...c, status: "converted_to_kit", converted_to_kit_at: now, resolution_reason: "kit_sem_abertura_frio" };
     }),
   };
 }

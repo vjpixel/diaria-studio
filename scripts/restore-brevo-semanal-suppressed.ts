@@ -11,17 +11,25 @@
  * Elegível (todas):
  *  - store: `status: "suppressed"`, `resolution_reason: "score_threshold"`,
  *    origem diferente de `kit-sem-abertura:`;
- *  - Brevo ao vivo (`GET /contacts/{email}`): >= 1 abertura, e NENHUM sinal de
- *    saída da pessoa — sem `userUnsubscription`, sem hard bounce, sem
- *    reclamação de spam. O `emailBlacklisted` desses é o da NOSSA supressão
- *    (`suppressInBrevo`), não um descadastro;
- *  - origem `kit:` já `active` no Kit ⇒ fora (já recebe a diária por lá).
+ *  - Brevo ao vivo (`GET /contacts/{email}`): NENHUM sinal de saída da
+ *    pessoa — sem `userUnsubscription`, sem hard bounce, sem reclamação de
+ *    spam. O `emailBlacklisted` desses é o da NOSSA supressão
+ *    (`suppressInBrevo`), não um descadastro. A abertura vem do store
+ *    (`opens_count`/`ever_opened`) OU da estatística: a da Brevo cobre só os
+ *    últimos 90 dias por padrão (doc do `GET /contacts/{identifier}`), então
+ *    abertura antiga só aparece no store. Contato inexistente na Brevo (404)
+ *    ⇒ `contato_ausente_na_brevo`; outro status ⇒ falha;
+ *  - estado no Kit (por e-mail, QUALQUER origem): só volta quem está
+ *    `inactive` no Kit ou não existe lá. `active` ⇒ fora (já recebe a diária
+ *    por lá: canal duplo); `cancelled`/`bounced`/`complained` ⇒ fora (saiu).
  *
  * `--apply`: `PUT /contacts/{email}` com `emailBlacklisted: false` +
  * `listIds: [list_id]`, RELÊ (lista e blacklist precisam conferir) e só então
- * grava o store (`applyRestoredToSemanal`). Exige `brevo_diaria.semanal.enabled`:
- * sem o regime semanal eles voltariam a receber a diária todo dia.
- * Idempotente: quem já voltou não está mais `suppressed`.
+ * grava o store (`applyRestoredToSemanal`). Exige o regime semanal EFETIVO
+ * (`resolveBrevoEffectiveMode`): flag ligada E nenhum `kit-sem-abertura:`
+ * ainda `in_brevo` — com esse resíduo a Brevo segue diária (#10533) e eles
+ * voltariam a receber todo dia. Idempotente: quem já voltou não está mais
+ * `suppressed`.
  *
  *   npx tsx scripts/restore-brevo-semanal-suppressed.ts            # dry-run (lê Brevo/Kit, não escreve)
  *   npx tsx scripts/restore-brevo-semanal-suppressed.ts --apply
@@ -44,8 +52,8 @@ import {
   type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts";
-import { parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts";
-import { getSubscriberById } from "./lib/kit-subscribers.ts";
+import { countKitSemAberturaInBrevo, parseBrevoDiariaSemanal, resolveBrevoEffectiveMode } from "./lib/brevo-diaria-semanal.ts";
+import { getKitSubscriberByEmail } from "./lib/kit-subscribers.ts";
 import { appendFileWithRetry } from "./lib/source-runs.ts";
 import { hasComplaint, hasHardBounce, hasUserUnsubscription, type BrevoContactStatistics } from "./evaluate-brevo-diaria.ts";
 
@@ -59,27 +67,37 @@ export function selectRestoreCandidates(contacts: readonly BrevoDiariaContact[])
       c.status === "suppressed" &&
       c.resolution_reason === "score_threshold" &&
       !c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA) &&
-      c.opens_count >= 1,
+      (c.opens_count >= 1 || c.ever_opened === true),
   );
 }
 
 export type RestoreVerdict =
   | { restore: true }
-  | { restore: false; reason: "nunca_abriu" | "descadastrou" | "bounce" | "reclamou_spam" | "ativo_no_kit" | "contato_ausente_na_brevo" };
+  | {
+      restore: false;
+      reason: "nunca_abriu" | "descadastrou" | "bounce" | "reclamou_spam" | "ativo_no_kit" | "saiu_do_kit" | "contato_ausente_na_brevo";
+    };
 
-/** Pura — decide pela leitura ao vivo. */
+/**
+ * Pura — decide pela leitura ao vivo. `kitState`: estado do e-mail no Kit
+ * (`null` = não existe lá). Só `inactive`/`null` voltam.
+ */
 export function decideRestore(input: {
   brevoFound: boolean;
   statistics: BrevoContactStatistics & { opened?: unknown[] } | undefined;
-  kitActive: boolean;
+  /** Abertura registrada no store (`opens_count >= 1` ou `ever_opened`) — a estatística da Brevo cobre só 90 dias. */
+  openedInStore?: boolean;
+  kitState: string | null;
 }): RestoreVerdict {
   if (!input.brevoFound) return { restore: false, reason: "contato_ausente_na_brevo" };
   const st = input.statistics;
   if (hasUserUnsubscription(st)) return { restore: false, reason: "descadastrou" };
   if (hasComplaint(st)) return { restore: false, reason: "reclamou_spam" };
   if (hasHardBounce(st)) return { restore: false, reason: "bounce" };
-  if (!Array.isArray(st?.opened) || st!.opened!.length === 0) return { restore: false, reason: "nunca_abriu" };
-  if (input.kitActive) return { restore: false, reason: "ativo_no_kit" };
+  const openedInStats = Array.isArray(st?.opened) && st!.opened!.length > 0;
+  if (!openedInStats && input.openedInStore !== true) return { restore: false, reason: "nunca_abriu" };
+  if (input.kitState === "active") return { restore: false, reason: "ativo_no_kit" };
+  if (input.kitState !== null && input.kitState !== "inactive") return { restore: false, reason: "saiu_do_kit" };
   return { restore: true };
 }
 
@@ -89,22 +107,29 @@ export interface RestoreDeps {
   writeStore: (s: BrevoDiariaStore) => void;
   getBrevoContact: (email: string) => Promise<{ status: number; body?: { statistics?: BrevoContactStatistics; emailBlacklisted?: boolean; listIds?: number[] } }>;
   putBrevoContact: (email: string, body: Record<string, unknown>) => Promise<void>;
-  kitState: (subscriberId: number) => Promise<string>;
+  /** Estado do e-mail no Kit; `null` se não existe lá. */
+  kitStateByEmail: (email: string) => Promise<string | null>;
   appendLog: (line: string) => void;
   nowIso: () => string;
 }
 
 export async function runRestoreSemanal(
-  opts: { apply: boolean; listId: number; semanalEnabled: boolean },
+  opts: { apply: boolean; listId: number; semanal: ReturnType<typeof parseBrevoDiariaSemanal> },
   deps: RestoreDeps,
 ): Promise<{ code: 0 | 1 | 2; restored: number; eligible: number; skipped: Record<string, number>; failed: number }> {
   const { log } = deps;
   const skipped: Record<string, number> = {};
-  if (opts.apply && !opts.semanalEnabled) {
-    log("ERRO: --apply exige brevo_diaria.semanal.enabled — sem o regime semanal eles voltariam a receber a diária todo dia (#11226).");
-    return { code: 2, restored: 0, eligible: 0, skipped, failed: 0 };
-  }
   let store = deps.readStore();
+  if (opts.apply) {
+    const eff = resolveBrevoEffectiveMode(opts.semanal, countKitSemAberturaInBrevo(store.contacts, ORIGIN_PREFIX.KIT_SEM_ABERTURA));
+    if ("error" in eff || eff.mode !== "semanal") {
+      log(
+        "ERRO: --apply exige o regime semanal EFETIVO (brevo_diaria.semanal.enabled e nenhum kit-sem-abertura: ainda in_brevo) — " +
+          `sem isso eles voltariam a receber a diária todo dia (#11226). ${"error" in eff ? eff.error : (eff.warning ?? "brevo_diaria.semanal desligado.")}`,
+      );
+      return { code: 2, restored: 0, eligible: 0, skipped, failed: 0 };
+    }
+  }
   const candidates = selectRestoreCandidates(store.contacts);
   log(`${candidates.length} suprimido(s) por score com >= 1 abertura no store (fora kit-sem-abertura:).`);
   let eligible = 0;
@@ -113,12 +138,14 @@ export async function runRestoreSemanal(
   for (const c of candidates) {
     try {
       const res = await deps.getBrevoContact(c.email);
-      let kitActive = false;
-      if (c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT)) {
-        const id = Number(c.beehiiv_subscription_id.slice(ORIGIN_PREFIX.KIT.length));
-        if (Number.isInteger(id) && id > 0) kitActive = (await deps.kitState(id)) === "active";
-      }
-      const verdict = decideRestore({ brevoFound: res.status === 200, statistics: res.body?.statistics as never, kitActive });
+      if (res.status !== 200 && res.status !== 404) throw new Error(`GET /contacts respondeu HTTP ${res.status}`);
+      const kitState = res.status === 404 ? null : await deps.kitStateByEmail(c.email);
+      const verdict = decideRestore({
+        brevoFound: res.status === 200,
+        statistics: res.body?.statistics as never,
+        openedInStore: c.opens_count >= 1 || c.ever_opened === true,
+        kitState,
+      });
       if (!verdict.restore) {
         skipped[verdict.reason] = (skipped[verdict.reason] ?? 0) + 1;
         continue;
@@ -186,7 +213,7 @@ async function main(): Promise<void> {
   }
   const listId = brevo.list_id;
   const result = await runRestoreSemanal(
-    { apply, listId, semanalEnabled: semanal.enabled },
+    { apply, listId, semanal },
     {
       log,
       readStore: () => readStore(DEFAULT_STORE_PATH),
@@ -198,7 +225,7 @@ async function main(): Promise<void> {
       putBrevoContact: async (email, body) => {
         await brevoPut(apiKey, `/contacts/${encodeURIComponent(email)}`, body);
       },
-      kitState: async (id) => (await getSubscriberById(id)).state,
+      kitStateByEmail: async (email) => (await getKitSubscriberByEmail(email))?.state ?? null,
       appendLog: (line) => appendFileWithRetry(LOG_PATH, line),
       nowIso: () => new Date().toISOString(),
     },

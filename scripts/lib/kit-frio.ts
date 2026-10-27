@@ -31,9 +31,13 @@
  * contaria o e-mail de confirmação e o de boas-vindas). A data do sinal é a
  * do envio do broadcast aberto. Só marca frio quem tem o registro cobrindo a
  * janela inteira (`registryCoversSince`): sem evidência da janela toda, não
- * se afirma "N dias sem sinal" (o Kit virou backend em 04/09/2026; antes de
- * 03/12/2026 nenhuma janela de 90 dias está coberta, e quem tem cadastro com
- * 90+ dias só esfria a partir daí).
+ * se afirma "N dias sem sinal". O registro começa no 1º broadcast da
+ * kit-diaria (26/08/2026, `_internal/kit-diaria-published.json` de 260826),
+ * então a 1ª janela de 90 dias coberta fecha em ~24/11/2026: quem tem
+ * cadastro com 90+ dias só esfria a partir daí. E só esfria quem RECEBEU a
+ * diária no Kit desde o começo da janela (`frioDeliveryCoversWindow`): um
+ * cadastro antigo recém-ativado (vindo da Brevo, por exemplo) não tem como
+ * ter "N dias sem abrir" no Kit.
  *
  * ## Volta à diária (regra sem estado)
  *
@@ -46,7 +50,7 @@
 import { normalizeEmail } from "./brevo-diaria-store.ts";
 import { matchFixtureEmail } from "./kit-fixture-patterns.ts";
 import { KIT_TEST_SEND_TAG_NAME } from "./kit-broadcasts.ts";
-import { KIT_ENVIO_BREVO_TAG_NAME } from "./kit-diaria-audience.ts";
+import { KIT_ENVIO_BREVO_TAG_NAME, parseDiariaExclusionSegment } from "./kit-diaria-audience.ts";
 import { KIT_APOIO_NIVEL_FIELD_KEY } from "./apoio-segments-canonical-kit.ts";
 import { BREVO_DIARIA_MATURATION_HOURS } from "./shared/brevo-diaria-score.ts";
 import type { DiariaBroadcastRecord } from "./kit-sem-abertura.ts";
@@ -59,8 +63,19 @@ export const KIT_FRIO_WINDOW_NEW_DAYS = 30;
 /** Janela sem sinal pra cadastro com `KIT_FRIO_AGE_THRESHOLD_DAYS` ou mais. */
 export const KIT_FRIO_WINDOW_OLD_DAYS = 90;
 export const KIT_FRIO_AGE_THRESHOLD_DAYS = 90;
-/** Sinal nos últimos N dias tira `frio` (ver docstring do módulo). */
-export const KIT_FRIO_RETURN_WINDOW_DAYS = KIT_FRIO_WINDOW_NEW_DAYS;
+/**
+ * Sinal nos últimos N dias tira `frio` (ver docstring do módulo). Precisa ser
+ * <= `KIT_FRIO_WINDOW_NEW_DAYS` (a menor janela de esfriar) pra a regra sem
+ * estado valer; travado em teste. Literal, não alias: knip acusa export
+ * duplicado.
+ */
+export const KIT_FRIO_RETURN_WINDOW_DAYS = 30;
+/**
+ * Folga (dias) pra a 1ª entrega da diária na janela: a pessoa precisa ter
+ * recebido a diária no Kit até `início da janela + N dias` pra a janela
+ * contar como "N dias sem abrir" (cobre dias sem broadcast).
+ */
+export const KIT_FRIO_DELIVERY_START_SLACK_DAYS = 7;
 /** Semanais seguidas sem sinal até `suprimido`. */
 export const KIT_FRIO_SUPPRESS_AFTER_SEMANAIS = 12;
 /** Vigia: reclamação de spam da semanal acima disto (fração) pausa a semanal. */
@@ -82,13 +97,56 @@ export interface KitFrioConfig {
   enabled?: boolean;
   /** Broadcast semanal de segunda pra tag `frio` (`publish-kit-semanal-frio.ts`). Ausente ⇒ desligado. */
   semanal_enabled?: boolean;
+  /** O segmento da diária (`kit.diaria_exclusion_segment`) foi editado NO PAINEL pra excluir `frio` e `suprimido`. */
+  segmento_exclui_frio_confirmado?: boolean;
 }
 
-export function isKitFrioEnabled(cfg: KitFrioConfig | undefined): boolean {
-  return cfg?.enabled === true;
+/**
+ * Resultado ÚNICO da leitura das flags do frio (#11221, review): sync,
+ * publisher da semanal, evaluate e restore leem este mesmo objeto.
+ *
+ * - `enabled`: `kit.frio.enabled` (== `semanal_enabled`; as duas separadas é
+ *   erro: tag `frio` sem semanal deixa a pessoa sem edição nenhuma, e semanal
+ *   sem sync nunca tira ninguém do `frio`).
+ * - `fullyOn`: `enabled` + `segmento_exclui_frio_confirmado` +
+ *   `kit.diaria_exclusion_segment.enabled`. Só com isto alguém recebe `frio`
+ *   de verdade, a semanal sai e as transições aplicam a tag.
+ */
+export type KitFrioParse = { enabled: boolean; segmentoConfirmado: boolean; fullyOn: boolean } | { error: string };
+
+/** Pura — lê `kit.frio` (+ `kit.diaria_exclusion_segment`) a partir da fatia `kit` do config. */
+export function parseKitFrio(kitCfg: unknown): KitFrioParse {
+  const kit = (kitCfg ?? {}) as { frio?: unknown; diaria_exclusion_segment?: unknown };
+  if (typeof kit !== "object") return { error: "kit precisa ser objeto." };
+  const raw = kit.frio;
+  if (raw === undefined || raw === null) return { enabled: false, segmentoConfirmado: false, fullyOn: false };
+  if (typeof raw !== "object" || Array.isArray(raw)) return { error: `kit.frio precisa ser objeto (veio ${JSON.stringify(raw)}).` };
+  const f = raw as Record<string, unknown>;
+  for (const k of ["enabled", "semanal_enabled", "segmento_exclui_frio_confirmado"] as const) {
+    if (f[k] !== undefined && typeof f[k] !== "boolean") {
+      return { error: `kit.frio.${k} precisa ser booleano (veio ${JSON.stringify(f[k])}).` };
+    }
+  }
+  const enabled = f.enabled === true;
+  if (enabled !== (f.semanal_enabled === true)) {
+    return {
+      error:
+        "kit.frio.enabled e kit.frio.semanal_enabled precisam andar juntas (#11221): frio sem semanal deixa a pessoa " +
+        "sem edição; semanal sem o sync nunca devolve ninguém à diária.",
+    };
+  }
+  const segment = parseDiariaExclusionSegment(kit.diaria_exclusion_segment);
+  if ("error" in segment) return { error: segment.error };
+  const segmentoConfirmado = f.segmento_exclui_frio_confirmado === true;
+  return { enabled, segmentoConfirmado, fullyOn: enabled && segmentoConfirmado && segment.enabled };
 }
-export function isKitSemanalFrioEnabled(cfg: KitFrioConfig | undefined): boolean {
-  return cfg?.semanal_enabled === true;
+
+/** Pura — motivo legível de `fullyOn === false` (pra log/recusa). */
+export function kitFrioNotFullyOnReason(p: KitFrioParse): string {
+  if ("error" in p) return p.error;
+  if (!p.enabled) return "kit.frio.enabled/semanal_enabled = false";
+  if (!p.segmentoConfirmado) return "kit.frio.segmento_exclui_frio_confirmado = false (segmento da diária não confirmado no painel)";
+  return "kit.diaria_exclusion_segment.enabled = false";
 }
 
 /** Pura — janela sem sinal que vale pra este cadastro (30 ou 90 dias). `null` se `created_at` ilegível. */
@@ -121,6 +179,33 @@ export function buildLastSignalIndex(perBroadcast: readonly BroadcastSignals[]):
     }
   }
   return out;
+}
+
+/** Pura — e-mail → ms de cada entrega de broadcast da DIÁRIA (só `delivered`). */
+export function buildDeliveryIndex(perBroadcast: readonly { sentAt: string; delivered: readonly string[] }[]): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  for (const b of perBroadcast) {
+    const t = Date.parse(b.sentAt);
+    if (!Number.isFinite(t)) continue;
+    for (const raw of new Set(b.delivered.map(normalizeEmail))) {
+      const arr = out.get(raw);
+      if (arr) arr.push(t);
+      else out.set(raw, [t]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pura — a pessoa recebeu a diária no Kit desde o começo da janela? Exige
+ * >= 1 entrega dentro da janela e a mais antiga delas até `sinceMs +
+ * KIT_FRIO_DELIVERY_START_SLACK_DAYS`. Sem isso, "N dias sem abrir" não foi
+ * observado (recém-ativado, ou entrou pelo #10437 e ficou fora do Kit).
+ */
+export function frioDeliveryCoversWindow(deliveries: readonly number[] | undefined, sinceMs: number): boolean {
+  const inWindow = (deliveries ?? []).filter((t) => t >= sinceMs);
+  if (inWindow.length === 0) return false;
+  return Math.min(...inWindow) <= sinceMs + KIT_FRIO_DELIVERY_START_SLACK_DAYS * DAY_MS;
 }
 
 /** Pura — o registro tem broadcast enviado em ou antes de `sinceMs`? (cobre a janela inteira) */
@@ -193,6 +278,7 @@ export type KitFrioExclusion =
   | "created_at_ilegivel"
   | "cadastro_mais_novo_que_a_janela"
   | "registro_nao_cobre_a_janela"
+  | "sem_entrega_da_diaria_na_janela"
   | "teve_sinal";
 
 export type KitFrioDecision =
@@ -200,6 +286,8 @@ export type KitFrioDecision =
   | { action: "remove_frio"; lastSignalMs: number }
   | { action: "suppress"; silentSemanais: number }
   | { action: "keep_frio"; silentSemanais: number }
+  /** Supressão que caiu no meio (`suprimido` aplicada, `frio` não saiu): termina tirando `frio`. */
+  | { action: "finish_suppress" }
   | { action: "skip"; reason: KitFrioExclusion };
 
 /**
@@ -213,13 +301,20 @@ export function decideKitFrio(
     lastSignal: ReadonlyMap<string, number>;
     silentStreaks: ReadonlyMap<string, number>;
     diariaRecords: readonly DiariaBroadcastRecord[];
+    /** E-mail → entregas da diária (ver `buildDeliveryIndex`). */
+    diariaDeliveries: ReadonlyMap<string, readonly number[]>;
     seedEmails: ReadonlySet<string>;
   },
 ): KitFrioDecision {
   const email = normalizeEmail(c.email);
   const isFrio = c.tagNames.includes(KIT_FRIO_TAG_NAME);
   const lastSignalMs = ctx.lastSignal.get(email);
-  if (c.tagNames.includes(KIT_SUPRIMIDO_TAG_NAME)) return { action: "skip", reason: "suprimido" };
+  if (c.tagNames.includes(KIT_SUPRIMIDO_TAG_NAME)) {
+    // O filtro de broadcast do Kit só aceita tag/segmento em `all` (sem
+    // exclusão), então a semanal não tem como pular `suprimido`: quem ficou
+    // com as duas tags precisa perder `frio` (retentado toda rodada).
+    return isFrio ? { action: "finish_suppress" } : { action: "skip", reason: "suprimido" };
+  }
   if (isFrio) {
     if (lastSignalMs !== undefined && ctx.nowMs - lastSignalMs <= KIT_FRIO_RETURN_WINDOW_DAYS * DAY_MS) {
       return { action: "remove_frio", lastSignalMs };
@@ -242,6 +337,7 @@ export function decideKitFrio(
   const sinceMs = ctx.nowMs - windowDays * DAY_MS;
   if (Date.parse(c.created_at) > sinceMs) return { action: "skip", reason: "cadastro_mais_novo_que_a_janela" };
   if (!registryCoversSince(ctx.diariaRecords, sinceMs)) return { action: "skip", reason: "registro_nao_cobre_a_janela" };
+  if (!frioDeliveryCoversWindow(ctx.diariaDeliveries.get(email), sinceMs)) return { action: "skip", reason: "sem_entrega_da_diaria_na_janela" };
   if (lastSignalMs !== undefined && lastSignalMs >= sinceMs) return { action: "skip", reason: "teve_sinal" };
   return { action: "tag_frio", windowDays };
 }
@@ -312,27 +408,51 @@ export interface SemanalFrioPauseState {
   reasons?: string[];
 }
 
-/** Pura — lê o estado de pausa. JSON ilegível ⇒ PAUSADA (fail-safe: na dúvida, não envia a semanal). */
+/**
+ * Pura — lê o estado de pausa. Arquivo ausente ⇒ não pausada. JSON ilegível
+ * ou com shape inválido (não-objeto, `paused` ausente ou não-booleano) ⇒
+ * PAUSADA (fail-safe: na dúvida, não envia a semanal). Retomar = apagar o
+ * arquivo ou gravar `{"paused": false}`.
+ */
 export function parseSemanalFrioPauseState(raw: string | null): SemanalFrioPauseState {
   if (raw === null || raw.trim() === "") return { paused: false };
+  let p: unknown;
   try {
-    const p = JSON.parse(raw) as Partial<SemanalFrioPauseState>;
-    return { paused: p.paused === true, since: p.since, reasons: Array.isArray(p.reasons) ? p.reasons : undefined };
+    p = JSON.parse(raw);
   } catch {
     return { paused: true, reasons: ["estado de pausa ilegível (fail-safe)"] };
   }
+  if (typeof p !== "object" || p === null || Array.isArray(p) || typeof (p as { paused?: unknown }).paused !== "boolean") {
+    return { paused: true, reasons: ["estado de pausa com formato inválido (fail-safe)"] };
+  }
+  const o = p as { paused: boolean; since?: unknown; reasons?: unknown };
+  return {
+    paused: o.paused,
+    since: typeof o.since === "string" ? o.since : undefined,
+    reasons: Array.isArray(o.reasons) ? o.reasons.filter((r): r is string => typeof r === "string") : undefined,
+  };
 }
 
 // ── registro das semanais de frio ────────────────────────────────────────
 
-/** Estado gravado por edição em `_internal/kit-semanal-frio-published.json`. */
+/**
+ * Estado gravado por edição em `_internal/kit-semanal-frio-published.json`.
+ *
+ * - `created_unverified`: o RASCUNHO foi criado (sem `send_at`) e o filtro
+ *   ainda não foi conferido/agendado. Gravado ANTES da releitura: uma rodada
+ *   seguinte retoma deste id em vez de criar uma 2ª semanal.
+ * - `scheduled`: filtro conferido (exatamente a tag `frio`) e `send_at`
+ *   aplicado e relido. Só este conta no registro das semanais.
+ * - `deleted`: filtro divergente, broadcast apagado; nova tentativa pode criar.
+ */
 export interface KitSemanalFrioPublished {
   broadcast_id: number;
-  status: "scheduled";
+  status: "created_unverified" | "scheduled" | "deleted";
   scheduled_at: string;
   source_broadcast_id: number;
   tag_id: number;
   created_at: string;
+  reason?: string;
 }
 
 export const KIT_SEMANAL_FRIO_PUBLISHED_FILENAME = "kit-semanal-frio-published.json";

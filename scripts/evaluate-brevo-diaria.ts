@@ -39,9 +39,24 @@
  * só depois de 12 semanais seguidas sem sinal (quem abriu alguma vez) ou 4
  * (quem nunca deu sinal). Desligado ⇒ o score por taxa abaixo, inalterado.
  *
+ * O score semanal só vale quando o modo EFETIVO da Brevo é semanal
+ * (`resolveBrevoEffectiveMode`): na transição (#10533, `kit-sem-abertura:`
+ * ainda `in_brevo`) a Brevo segue diária e o score por taxa de sempre vale.
+ * Só conta como semanal a campanha de SEGUNDA (BRT) enviada a partir de
+ * `desde`; o clique que leva pro Kit só conta em campanha enviada a partir de
+ * `desde` (consentimento atual, nunca clique histórico).
+ *
  * Supressão por score de um `kit-sem-abertura:` NÃO descadastra mais no Kit
- * (#11221 revisa o "sai das duas bases" do #10437): a pessoa volta pro Kit
- * com a tag `frio` (semanal de segunda) e sai da lista Brevo sem blacklist.
+ * (#11221 revisa o "sai das duas bases" do #10437):
+ *  - com `kit.frio` plenamente ligado (`parseKitFrio().fullyOn`), a pessoa
+ *    volta pro Kit com a tag `frio` (semanal de segunda) e sai da lista Brevo
+ *    sem blacklist;
+ *  - sem isso, sai SÓ da lista Brevo (sem blacklist: o Passo 0 leria o nosso
+ *    blacklist como saída e descadastraria no Kit) e fica `active` no Kit com
+ *    `envio-brevo` (fora da diária pelo segmento). O store grava
+ *    `suppressed`/`kit_sem_abertura_aguardando_frio`, que o
+ *    `restore-kit-sem-abertura-frio.ts` devolve com `frio` quando o frio for
+ *    ligado. Nunca unsubscribe, nunca `frio` sem as flags.
  * Descadastro nativo, reclamação e bounce na Brevo seguem propagando como
  * antes (Passo 0).
  *
@@ -374,12 +389,18 @@ import {
   type BrevoDiariaRateInput,
   type BrevoSemanalEvaluationInput,
 } from "./lib/shared/brevo-diaria-score.ts";
-import { buildSemanalEvaluationInput, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
-import { KIT_FRIO_TAG_NAME } from "./lib/kit-frio.ts"; // #11221
+import {
+  buildSemanalEvaluationInput,
+  countKitSemAberturaInBrevo,
+  parseBrevoDiariaSemanal,
+  resolveBrevoEffectiveMode,
+} from "./lib/brevo-diaria-semanal.ts"; // #11226
+import { KIT_FRIO_TAG_NAME, kitFrioNotFullyOnReason, parseKitFrio } from "./lib/kit-frio.ts"; // #11221
 import {
   readStore,
   writeStore,
   applyEvaluation,
+  applyEverOpened, // #11226
   applySelfConfirmed,
   applyNativeUnsubscribe,
   applyBrevoDiariaBounced,
@@ -426,7 +447,7 @@ interface PlatformConfig {
   /** #9835 — `kit.doiFormId`: designer form de DOI usado no reenvio.
    *  #9986 — `kit.doiResendFormId`: 2º designer form de DOI, usado só pra
    *  quem já respondeu 200 no `doiFormId` (ver `doiResendTargetForm`). */
-  kit?: { doiFormId?: string; doiResendFormId?: string; activateFormId?: string };
+  kit?: { doiFormId?: string; doiResendFormId?: string; activateFormId?: string; frio?: unknown; diaria_exclusion_segment?: unknown };
   /** #6339 — `publishing.newsletter.backend` decide se a promoção por score
    *  escreve na Beehiiv ou no Kit (ver `promoteKitSubscription`). */
   publishing?: { newsletter?: { backend?: string } };
@@ -2013,11 +2034,39 @@ export interface RunEvaluationParams {
   /** #11226 — vínculo ao form de ativação; injetável em teste (default: POST real). */
   activateKitViaForm?: (formId: string, subscriberId: number, apiKey: string) => Promise<void>;
   /**
+   * #11221 — `parseKitFrio(...).fullyOn` (flags do frio + segmento da diária
+   * confirmado). Só com `true` a supressão de um `kit-sem-abertura:` o devolve
+   * ao Kit com `frio`; ausente/`false` ⇒ premissa B (sai só da lista Brevo,
+   * fica `active` no Kit com `envio-brevo`, store
+   * `kit_sem_abertura_aguardando_frio`).
+   */
+  kitFrioFullyOn?: boolean;
+  /**
    * #11221 — devolução de um `kit-sem-abertura:` ao Kit com a tag `frio`
    * (substitui o descadastro no Kit na supressão por score). Injetável em
    * teste; default = `findTagIdByName` + `tagSubscriber` + `listSubscriberTags`.
    */
   kitFrioTagDeps?: KitFrioTagDeps;
+}
+
+/**
+ * #11226 — `semanalDesdeMs` do `runEvaluation`: só com o modo EFETIVO
+ * semanal (`resolveBrevoEffectiveMode`, a mesma regra do envio). Na
+ * transição (#10533), a Brevo segue diária e o score por taxa vale: pontuar
+ * por semanal ali contaria diárias e suprimiria em semanas.
+ */
+export function evaluateSemanalDesdeMs(
+  semanal: ReturnType<typeof parseBrevoDiariaSemanal>,
+  contacts: readonly BrevoDiariaContact[],
+  log: (msg: string) => void = () => {},
+): number | undefined {
+  const eff = resolveBrevoEffectiveMode(semanal, countKitSemAberturaInBrevo(contacts, ORIGIN_PREFIX.KIT_SEM_ABERTURA));
+  if ("error" in eff) return undefined;
+  if (eff.mode === "diaria") {
+    if (eff.warning) log(`warn: ${eff.warning} Score por taxa (diário) nesta rodada.`);
+    return undefined;
+  }
+  return eff.desdeMs;
 }
 
 /** #11221 — I/O da tag `frio` (aplicar + reler). */
@@ -2055,10 +2104,13 @@ export async function activateKitSubscriberViaSystemForm(formId: string, subscri
 export async function returnKitSemAberturaToFrio(params: {
   subscriberId: number;
   kitApiKey: string | undefined;
+  /** `parseKitFrio().fullyOn` — sem isto nunca aplica `frio` (premissa B do review). */
+  frioFullyOn: boolean;
   frioDeps?: KitFrioTagDeps;
   removeEnvioBrevoTag: (subscriberId: number) => Promise<{ ok: true } | { ok: false; reason: string }>;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   const { subscriberId, kitApiKey } = params;
+  if (!params.frioFullyOn) return { ok: false, reason: "kit.frio não está plenamente ligado — frio não aplicado" };
   if (!kitApiKey) return { ok: false, reason: "KIT_API_KEY ausente" };
   if (!Number.isInteger(subscriberId) || subscriberId <= 0) return { ok: false, reason: "id de subscriber Kit malformado na origem" };
   const deps: KitFrioTagDeps = params.frioDeps ?? {
@@ -2273,6 +2325,13 @@ export interface RunEvaluationResult {
    * do Kit.
    */
   kitSemAberturaReturnedToFrio: number;
+  /**
+   * #11221 (premissa B) — `kit-sem-abertura:` suprimidos SÓ na Brevo porque
+   * `kit.frio` não está plenamente ligado: seguem `active` no Kit com
+   * `envio-brevo`, store `kit_sem_abertura_aguardando_frio`. Subconjunto de
+   * `suppressed`.
+   */
+  kitSemAberturaAwaitingFrio: number;
 }
 
 /**
@@ -2360,13 +2419,30 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     unsubscribeKitSemAberturaDeps,
     kitEnvioBrevoTagDeps,
     semanalDesdeMs, // #11226
-    kitActivateFormId, // #11226
     kitFrioTagDeps, // #11221
   } = params;
+  const kitFrioFullyOn = params.kitFrioFullyOn === true; // #11221
+  // #11226 — form de ativação (sistema) validado 1x por rodada: precisa ser
+  // id numérico e DIFERENTE dos forms de DOI (o form de DOI manda e-mail de
+  // confirmação; o de ativação ativa sem e-mail — trocar os dois inverte o
+  // efeito em silêncio).
+  let kitActivateFormId: string | undefined;
+  if (params.kitActivateFormId !== undefined) {
+    const id = params.kitActivateFormId.trim();
+    if (!/^[0-9]+$/.test(id)) {
+      log(`warn: kit.activateFormId inválido (${JSON.stringify(params.kitActivateFormId)}) — ativação por clique desligada nesta rodada (#11226).`);
+    } else if (id === kitDoiFormId?.trim() || id === kitDoiResendFormId?.trim()) {
+      log(`warn: kit.activateFormId (${id}) igual a um form de DOI — ignorado, ativação por clique desligada nesta rodada (#11226).`);
+    } else {
+      kitActivateFormId = id;
+    }
+  }
+  let warnedMissingActivateForm = false; // #11226 — aviso único por rodada
   const nowMsForScore = params.nowMs ?? Date.now();
   const activateKitViaForm = params.activateKitViaForm ?? activateKitSubscriberViaSystemForm;
   let promotedByClick = 0; // #11226
   let kitSemAberturaReturnedToFrio = 0; // #11221
+  let kitSemAberturaAwaitingFrio = 0; // #11221 premissa B
   // #10437 — saída terminal na Brevo de um contato `kit-sem-abertura:` vale
   // nos DOIS lados ("sai das duas bases"): descadastra no Kit e confirma por
   // releitura. Sem confirmação, o caller mantém o contato `in_brevo` (a
@@ -3008,6 +3084,10 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             mature: { opens_count: contact.opens_count, sends_count: contact.sends_count },
           };
       const baseEval = evaluateContact(counts);
+      // #11226 — "abriu alguma vez" persistente: a estatística da Brevo cobre
+      // só 90 dias, então o marcador `ever_opened` do store é a memória.
+      const openedNow = (nativeState?.semanal?.everOpened ?? false) || counts.instant.opens_count > 0;
+      if (openedNow) store = applyEverOpened(store, contact.email);
       // #11226 — regime semanal: a decisão sai do score por semanal (clique
       // promove na hora; supressão por 12/4 semanais seguidas sem sinal).
       // Sem `nativeState` (dry-run sem a key) não há estatística por
@@ -3015,7 +3095,10 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       const semanalAction =
         semanalDesdeMs !== undefined
           ? nativeState?.semanal
-            ? classifyBrevoDiariaSemanalAction(nativeState.semanal)
+            ? classifyBrevoDiariaSemanalAction({
+                ...nativeState.semanal,
+                everOpened: openedNow || contact.ever_opened === true || contact.opens_count > 0,
+              })
             : "keep"
           : undefined;
       const clickPromotion = semanalAction === "promote_by_click";
@@ -3111,8 +3194,20 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             kitPromotionAction === "await_self_confirmation" &&
             clickPromotion &&
             existingKitSubscriber!.state === "inactive" &&
-            kitActivateFormId !== undefined &&
-            /^[0-9]+$/.test(kitActivateFormId)
+            kitActivateFormId === undefined &&
+            !warnedMissingActivateForm
+          ) {
+            warnedMissingActivateForm = true;
+            log(
+              "warn: clique na Brevo de quem está inactive no Kit, mas kit.activateFormId ausente/inválido — " +
+                "cai no reenvio do DOI de sempre (aviso único por rodada, #11226).",
+            );
+          }
+          if (
+            kitPromotionAction === "await_self_confirmation" &&
+            clickPromotion &&
+            existingKitSubscriber!.state === "inactive" &&
+            kitActivateFormId !== undefined
           ) {
             // #11226 — CLIQUE na Brevo (botão "Confirmar e receber a diária"
             // ou qualquer link) é consentimento explícito: ativa direto pelo
@@ -3325,6 +3420,29 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           action: "promote_to_beehiiv",
           resolutionReason: newsletterBackend === "kit" ? "score_threshold_kit" : "score_threshold",
         });
+      } else if (evalResult.action === "suppress" && isKitSemAberturaOrigin && !kitFrioFullyOn) {
+        // #11221, premissa B do review — frio ainda não plenamente ligado:
+        // sai SÓ da lista Brevo (sem blacklist: o Passo 0 leria o nosso
+        // blacklist como saída e descadastraria no Kit). No Kit fica `active`
+        // com `envio-brevo` (fora da diária pelo segmento); o
+        // `restore-kit-sem-abertura-frio.ts` o devolve com `frio` depois.
+        try {
+          await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+        } catch (e) {
+          log(`warn: ${contact.email} — desvincular da lista Brevo falhou (${(e as Error).message}) — mantendo in_brevo, retenta na próxima rodada.`);
+          failed++;
+          failedContacts.push({ email: contact.email, reason: `unlink da lista Brevo (kit-sem-abertura aguardando frio) falhou: ${(e as Error).message}` });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
+        log(`${contact.email}: kit-sem-abertura suprimido só na Brevo — segue active no Kit com ${KIT_ENVIO_BREVO_TAG_NAME}, aguardando o frio (#11221).`);
+        store = applyEvaluation(store, contact.email, {
+          ...counts.instant,
+          open_rate: evalResult.open_rate,
+          action: "suppress",
+          resolutionReason: "kit_sem_abertura_aguardando_frio",
+        });
+        kitSemAberturaAwaitingFrio++;
       } else if (evalResult.action === "suppress" && isKitSemAberturaOrigin) {
         // #11221 — supressão por score/inatividade de um `kit-sem-abertura:`
         // NUNCA descadastra no Kit (silêncio não é descadastro; revisa o "sai
@@ -3333,6 +3451,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         const back = await returnKitSemAberturaToFrio({
           subscriberId: kitSemAberturaId!,
           kitApiKey,
+          frioFullyOn: kitFrioFullyOn,
           frioDeps: kitFrioTagDeps,
           removeEnvioBrevoTag,
         });
@@ -3464,6 +3583,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitRateLimited: failedContacts.filter((f) => f.kitRateLimited).length, // #9291
     promotedByClick,
     kitSemAberturaReturnedToFrio,
+    kitSemAberturaAwaitingFrio,
   };
 }
 
@@ -3493,6 +3613,12 @@ async function main(): Promise<number> {
     log(`ERRO: ${semanal.error}`);
     return 2;
   }
+  // #11221 — flags do frio (mesmo parser do sync/publisher/restore). Inválido
+  // ⇒ tratado como desligado (premissa B: nunca `frio`, nunca descadastro).
+  const frioFlags = parseKitFrio(platformConfig.kit);
+  if ("error" in frioFlags) log(`warn: ${frioFlags.error} — supressão de kit-sem-abertura segue a premissa B (sem frio) (#11221).`);
+  const kitFrioFullyOn = !("error" in frioFlags) && frioFlags.fullyOn;
+  if (!kitFrioFullyOn) log(`kit.frio não plenamente ligado (${kitFrioNotFullyOnReason(frioFlags)}): kit-sem-abertura suprimido sai só da Brevo (#11221).`);
   const { apiKey: beehiivApiKey, publicationId } = loadBeehiivConfig("[evaluate-brevo-diaria]");
   const brevoApiKey = process.env[brevoDiaria.api_key_env];
   if (push && !brevoApiKey) {
@@ -3597,11 +3723,15 @@ async function main(): Promise<number> {
     appendKitSemAberturaLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line), // #10437
     kitDoiFormId: platformConfig.kit?.doiFormId, // #9835
     kitDoiResendFormId: platformConfig.kit?.doiResendFormId, // #9986
-    semanalDesdeMs: semanal.enabled ? semanal.desdeMs : undefined, // #11226
+    semanalDesdeMs: evaluateSemanalDesdeMs(semanal, store.contacts, log), // #11226
     kitActivateFormId: platformConfig.kit?.activateFormId, // #11226
+    kitFrioFullyOn, // #11221
   });
   if (semanal.enabled) {
     log(`regime semanal ligado desde ${semanal.desde} (#11226): ${result.promotedByClick} promovido(s) por clique.`);
+  }
+  if (result.kitSemAberturaAwaitingFrio > 0) {
+    log(`${result.kitSemAberturaAwaitingFrio} kit-sem-abertura suprimido(s) só na Brevo, aguardando o frio (restore-kit-sem-abertura-frio.ts, #11221).`);
   }
   if (result.kitSemAberturaReturnedToFrio > 0) {
     log(`${result.kitSemAberturaReturnedToFrio} kit-sem-abertura devolvido(s) ao Kit com a tag ${KIT_FRIO_TAG_NAME} (sem descadastro, #11221).`);

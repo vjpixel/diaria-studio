@@ -212,12 +212,19 @@ export function classifyBrevoDiariaAction(input: BrevoDiariaEvaluationInput): Br
 //   - nunca abriu nem clicou → suprime depois de 4 semanais;
 //   - o resto: mantém.
 //
-// "Abriu alguma vez" olha a vida inteira do contato na conta (inclusive as
-// diárias de antes do corte): é o que separa o leitor ocasional (os 113
-// suprimidos com >= 1 abertura) de quem nunca deu sinal.
-
-/** Piso de semanais pra promover por abertura (mesmo piso de sempre, contado em semanais). */
-export const BREVO_SEMANAL_PROMOTE_MIN_SENDS = BREVO_DIARIA_PROMOTE_MIN_SENDS;
+// "Abriu alguma vez" olha toda a história disponível do contato (inclusive
+// as diárias de antes do corte): é o que separa o leitor ocasional (os 113
+// suprimidos com >= 1 abertura) de quem nunca deu sinal. A estatística do
+// `GET /contacts/{email}` da Brevo cobre só os últimos 90 dias por padrão
+// (doc oficial), então o caller soma o marcador persistido no store
+// (`ever_opened`, ver `evaluate-brevo-diaria.ts`).
+//
+// O CLIQUE que leva pro Kit, ao contrário, só conta em campanha enviada a
+// partir do corte (`desde`): ativar no Kit sem DOI exige consentimento
+// ATUAL, e clique antigo (ou de scanner de link numa diária antiga) não é.
+//
+// O piso de promoção por abertura é o mesmo `BREVO_DIARIA_PROMOTE_MIN_SENDS`
+// de sempre, contado em semanais.
 /** Semanais seguidas sem sinal pra suprimir quem já abriu alguma vez. */
 export const BREVO_SEMANAL_SUPPRESS_STREAK_OPENED = 12;
 /** Semanais seguidas sem sinal pra suprimir quem nunca abriu nem clicou. */
@@ -236,10 +243,10 @@ export interface BrevoSemanalSend {
 export interface BrevoSemanalEvaluationInput {
   /** Campanhas recebidas a partir do corte do regime semanal. */
   semanais: readonly BrevoSemanalSend[];
-  /** >= 1 abertura em QUALQUER campanha da conta (vida inteira). */
+  /** >= 1 abertura em qualquer campanha da conta (história disponível + `ever_opened` do store). */
   everOpened: boolean;
-  /** >= 1 clique em QUALQUER campanha da conta (vida inteira). */
-  everClicked: boolean;
+  /** >= 1 clique em campanha enviada a partir de `desde` (nunca clique histórico, premissa A do #11226). */
+  clickedSinceDesde: boolean;
 }
 
 /** `promote_by_click`: ida pro Kit pelo clique (consentimento explícito, ativa direto). */
@@ -268,11 +275,11 @@ export function semanalSuppressStreakThreshold(everOpened: boolean): number {
  * sem sinal (teste de regressão da issue).
  */
 export function classifyBrevoDiariaSemanalAction(input: BrevoSemanalEvaluationInput): BrevoSemanalAction {
-  if (input.everClicked || input.semanais.some((s) => s.clicked)) return "promote_by_click";
+  if (input.clickedSinceDesde || input.semanais.some((s) => s.clicked)) return "promote_by_click";
   const sends = input.semanais.length;
   const opens = input.semanais.filter((s) => s.opened).length;
   if (
-    sends >= BREVO_SEMANAL_PROMOTE_MIN_SENDS &&
+    sends >= BREVO_DIARIA_PROMOTE_MIN_SENDS &&
     computeBrevoDiariaOpenRate({ opens_count: opens, sends_count: sends }) > BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE
   ) {
     return "promote_to_beehiiv";

@@ -1116,7 +1116,7 @@ function evalParams(contacts: BrevoDiariaContact[], extra: Partial<Parameters<ty
   };
 }
 
-describe("Passo 0 e supressão: saída de kit-sem-abertura: vale nas DUAS bases (#10437)", () => {
+describe("Passo 0: saída NATIVA de kit-sem-abertura: vale nas DUAS bases (#10437); supressão por score nunca descadastra no Kit (#11221)", () => {
   const origFetch = globalThis.fetch;
 
   for (const [label, state, expected] of [
@@ -1181,6 +1181,7 @@ describe("Passo 0 e supressão: saída de kit-sem-abertura: vale nas DUAS bases 
       const r = await runEvaluation(
         evalParams([movedContact("m@x.com")], {
           unsubscribeKitSemAberturaDeps: kitUnsubDeps(["active", "cancelled"], kit),
+          kitFrioFullyOn: true,
           kitFrioTagDeps: {
             findTagId: async () => 900,
             tag: async (t, id) => void ops.push(`tag ${t} ${id}`),

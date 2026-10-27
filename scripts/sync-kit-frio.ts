@@ -13,19 +13,25 @@
  *  - `frio` com abertura/clique recente → tira `frio` (volta à diária);
  *  - `frio` com 12 semanais seguidas sem sinal → tag `suprimido` e tira
  *    `frio`. **Nunca descadastra** — só tags; nada aqui chama unsubscribe.
+ *    Supressão que caiu no meio (`suprimido` + `frio`) é terminada na rodada
+ *    seguinte (tira `frio`).
  *  - vigia: reclamação de spam da semanal > 0,1% ou queda >= 5 pp da
  *    abertura da diária no Gmail depois do início da semanal → grava a pausa
  *    em `data/kit-frio/semanal-pause.json` (o publisher da semanal recusa
- *    enquanto pausada) e abre issue de alarme.
+ *    enquanto pausada) e abre issue de alarme (mesmo se a gravação falhar).
+ *  - pausa ativa ⇒ ninguém NOVO recebe `frio` (iria pra uma semanal que não
+ *    sai e perderia a diária); a volta à diária e o `suprimido` seguem.
  *
- * ## Flags (`platform.config.json` → `kit.frio`)
+ * ## Flags (`platform.config.json` → `kit.frio`, lidas por `parseKitFrio`)
  *
- *  - `enabled` — liga ESTE script. Desligada ⇒ sai 0 sem rede.
- *  - `segmento_exclui_frio_confirmado` — o segmento da diária
- *    (`kit.diaria_exclusion_segment.segment_id`) já foi editado NO PAINEL pra
- *    excluir `frio` e `suprimido` (a API do Kit não edita segmento). Sem
- *    isto, `--push` vira dry-run: taguear `frio` sem o segmento só mandaria a
- *    edição de segunda em dobro, e `suprimido` não tiraria ninguém da diária.
+ *  - `enabled` (== `semanal_enabled`, separadas é erro de config) — liga ESTE
+ *    script. Desligada ⇒ sai 0 sem rede.
+ *  - `segmento_exclui_frio_confirmado` + `kit.diaria_exclusion_segment.enabled`
+ *    — o segmento da diária já foi editado NO PAINEL pra excluir `frio` e
+ *    `suprimido` (a API do Kit não edita segmento). Sem isto (`fullyOn`
+ *    falso), `--push` vira dry-run (inclusive a gravação da pausa da vigia):
+ *    taguear `frio` sem o segmento só mandaria a edição de segunda em dobro,
+ *    e `suprimido` não tiraria ninguém da diária.
  *
  * ## Uso
  *
@@ -48,7 +54,7 @@ import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 import { appendFileWithRetry } from "./lib/source-runs.ts";
 import { normalizeEmail } from "./lib/brevo-diaria-store.ts";
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
-import { parseDiariaExclusionSegment, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts";
+import type { DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts";
 import type { BroadcastEngagement, DiariaBroadcastRecord } from "./lib/kit-sem-abertura.ts";
 import { createRequestPacer } from "./kit-provider-split.ts";
 import {
@@ -64,12 +70,14 @@ import {
   KIT_FRIO_WINDOW_OLD_DAYS,
   KIT_SEMANAL_FRIO_PUBLISHED_FILENAME,
   KIT_SUPRIMIDO_TAG_NAME,
+  buildDeliveryIndex,
   buildLastSignalIndex,
   buildSemanalFrioSilentStreaks,
   decideKitFrio,
   decideSemanalFrioVigia,
   gmailOpenRate,
-  isKitFrioEnabled,
+  kitFrioNotFullyOnReason,
+  parseKitFrio,
   parseSemanalFrioPauseState,
   type KitFrioCandidate,
   type KitFrioConfig,
@@ -91,7 +99,7 @@ const VIGIA_GMAIL_WINDOW = 6;
 
 export interface KitFrioPlatformConfig {
   kit?: {
-    frio?: KitFrioConfig & { segmento_exclui_frio_confirmado?: boolean };
+    frio?: KitFrioConfig;
     diaria_exclusion_segment?: DiariaExclusionSegmentConfig;
   };
 }
@@ -124,6 +132,10 @@ export interface KitFrioRunResult {
   taggedFrio: number;
   removedFrio: number;
   suppressed: number;
+  /** Supressões que tinham caído no meio (`suprimido` + `frio`) e perderam `frio` agora. */
+  finishedSuppress: number;
+  /** `tag_frio` adiados porque a vigia está pausada. */
+  frioHeldByPause: number;
   keptFrio: number;
   failed: number;
   skipped: Record<string, number>;
@@ -138,20 +150,32 @@ export async function runKitFrioSync(
   deps: KitFrioDeps,
 ): Promise<KitFrioRunResult> {
   const { log } = deps;
-  const empty = { taggedFrio: 0, removedFrio: 0, suppressed: 0, keptFrio: 0, failed: 0, skipped: {} as Record<string, number> };
-  const frioCfg = cfg.kit?.frio;
-  if (!isKitFrioEnabled(frioCfg)) {
+  const empty = {
+    taggedFrio: 0,
+    removedFrio: 0,
+    suppressed: 0,
+    finishedSuppress: 0,
+    frioHeldByPause: 0,
+    keptFrio: 0,
+    failed: 0,
+    skipped: {} as Record<string, number>,
+  };
+  const flags = parseKitFrio(cfg.kit);
+  if ("error" in flags) return { code: 2, dryRun: true, ...empty, summary: `${flags.error} Nenhuma tag aplicada.` };
+  if (!flags.enabled) {
     return { code: 0, disabled: true, dryRun: true, ...empty, summary: "kit.frio.enabled = false — nada a fazer (#11221)." };
   }
   let push = opts.push;
-  const segment = parseDiariaExclusionSegment(cfg.kit?.diaria_exclusion_segment);
-  if ("error" in segment) return { code: 2, dryRun: true, ...empty, summary: `${segment.error} Nenhuma tag aplicada.` };
-  if (push && (!segment.enabled || frioCfg?.segmento_exclui_frio_confirmado !== true)) {
-    log(
-      "AVISO: o segmento da diária no Kit não está confirmado como excluindo frio/suprimido " +
-        "(kit.diaria_exclusion_segment.enabled + kit.frio.segmento_exclui_frio_confirmado). Rodando em dry-run (#11221).",
-    );
+  if (push && !flags.fullyOn) {
+    log(`AVISO: kit.frio não está plenamente ligado (${kitFrioNotFullyOnReason(flags)}). Rodando em dry-run (#11221).`);
     push = false;
+  }
+  let paused: boolean;
+  try {
+    paused = deps.readPause().paused;
+  } catch (e) {
+    log(`aviso: estado de pausa ilegível (${(e as Error).message}) — tratado como pausado (fail-safe).`);
+    paused = true;
   }
 
   let diaria: DiariaBroadcastRecord[];
@@ -177,22 +201,35 @@ export async function runKitFrioSync(
   for (const r of semanalSent) semanalEng.push({ ...(await deps.fetchEngagement(r.broadcastId)), sentAt: r.sentAt });
 
   const lastSignal = buildLastSignalIndex([...diariaEng, ...semanalEng]);
+  const diariaDeliveries = buildDeliveryIndex(diariaEng);
   const silentStreaks = buildSemanalFrioSilentStreaks(semanalEng, deps.nowMs);
   const seedEmails = new Set(EDITOR_SEED_EMAILS.map(normalizeEmail));
   const actives = await deps.listKitActive();
 
-  const plan = { tag_frio: [] as KitFrioCandidate[], remove_frio: [] as KitFrioCandidate[], suppress: [] as KitFrioCandidate[] };
+  const plan = {
+    tag_frio: [] as KitFrioCandidate[],
+    remove_frio: [] as KitFrioCandidate[],
+    suppress: [] as KitFrioCandidate[],
+    finish_suppress: [] as KitFrioCandidate[],
+  };
   const skipped: Record<string, number> = {};
   let keptFrio = 0;
   for (const c of actives) {
-    const d = decideKitFrio(c, { nowMs: deps.nowMs, lastSignal, silentStreaks, diariaRecords: diaria, seedEmails });
+    const d = decideKitFrio(c, { nowMs: deps.nowMs, lastSignal, silentStreaks, diariaRecords: diaria, diariaDeliveries, seedEmails });
     if (d.action === "skip") skipped[d.reason] = (skipped[d.reason] ?? 0) + 1;
     else if (d.action === "keep_frio") keptFrio++;
     else plan[d.action].push(c);
   }
+  // #11221 review — pausa da vigia: ninguém NOVO entra no `frio` (a semanal
+  // não sai, e o segmento o tiraria da diária: ficaria sem edição).
+  const frioHeldByPause = paused ? plan.tag_frio.length : 0;
+  if (paused && plan.tag_frio.length > 0) {
+    log(`semanal de frio PAUSADA pela vigia: ${plan.tag_frio.length} novo(s) frio adiado(s) (volta e suprimido seguem).`);
+    plan.tag_frio = [];
+  }
   log(
     `${actives.length} ativo(s): ${plan.tag_frio.length} esfriaram, ${plan.remove_frio.length} voltam à diária, ` +
-      `${plan.suppress.length} chegam a suprimido, ${keptFrio} seguem frio. Fora: ` +
+      `${plan.suppress.length} chegam a suprimido, ${plan.finish_suppress.length} suprimido(s) ainda com frio, ${keptFrio} seguem frio. Fora: ` +
       Object.entries(skipped).map(([k, v]) => `${k}=${v}`).join(", "),
   );
 
@@ -200,7 +237,8 @@ export async function runKitFrioSync(
   let taggedFrio = 0;
   let removedFrio = 0;
   let suppressed = 0;
-  if (push && (plan.tag_frio.length + plan.remove_frio.length + plan.suppress.length) > 0) {
+  let finishedSuppress = 0;
+  if (push && (plan.tag_frio.length + plan.remove_frio.length + plan.suppress.length + plan.finish_suppress.length) > 0) {
     const frioId = await deps.findTagId(KIT_FRIO_TAG_NAME);
     const suprimidoId = plan.suppress.length > 0 ? await deps.findTagId(KIT_SUPRIMIDO_TAG_NAME) : -1;
     if (frioId === null || suprimidoId === null) {
@@ -239,6 +277,16 @@ export async function runKitFrioSync(
       } catch (e) {
         failed++;
         log(`FALHA ao tirar frio de ${c.email}: ${(e as Error).message}`);
+      }
+    }
+    for (const c of plan.finish_suppress) {
+      try {
+        await deps.untag(frioId, c.id);
+        finishedSuppress++;
+        logLine("suprimido_frio_removed", c);
+      } catch (e) {
+        failed++;
+        log(`FALHA ao tirar frio de ${c.email} (já suprimido): ${(e as Error).message}`);
       }
     }
     for (const c of plan.suppress) {
@@ -293,15 +341,22 @@ export async function runKitFrioSync(
     });
     if (vigia.pause) {
       log(`VIGIA: semanal de frio deve PAUSAR — ${vigia.reasons.join("; ")}.`);
-      if (opts.push) {
-        const current = deps.readPause();
-        if (!current.paused) {
-          deps.writePause({ paused: true, since: new Date(deps.nowMs).toISOString(), reasons: vigia.reasons });
+      // `push` EFETIVO (rebaixado sem as flags): em dry-run nada é gravado
+      // nem alarmado — sem `fullyOn` o publisher já recusa a semanal.
+      if (push) {
+        const alarmReasons = [...vigia.reasons];
+        if (!paused) {
+          try {
+            deps.writePause({ paused: true, since: new Date(deps.nowMs).toISOString(), reasons: vigia.reasons });
+          } catch (e) {
+            log(`ERRO: pausa da semanal NÃO gravada (${(e as Error).message}) — alarme segue mesmo assim.`);
+            alarmReasons.push(`a pausa NÃO foi gravada (${(e as Error).message}): pausar à mão em data/kit-frio/semanal-pause.json`);
+          }
         }
         try {
-          deps.raiseAlarm(vigia.reasons);
+          deps.raiseAlarm(alarmReasons);
         } catch (e) {
-          log(`aviso: issue de alarme da vigia não aberta (${(e as Error).message}) — a pausa já está gravada.`);
+          log(`aviso: issue de alarme da vigia não aberta (${(e as Error).message}).`);
         }
       }
     } else {
@@ -315,6 +370,8 @@ export async function runKitFrioSync(
     taggedFrio: push ? taggedFrio : plan.tag_frio.length,
     removedFrio: push ? removedFrio : plan.remove_frio.length,
     suppressed: push ? suppressed : plan.suppress.length,
+    finishedSuppress: push ? finishedSuppress : plan.finish_suppress.length,
+    frioHeldByPause,
     keptFrio,
     failed,
     skipped,
@@ -327,6 +384,22 @@ export async function runKitFrioSync(
 }
 
 // ── I/O de produção ──────────────────────────────────────────────────────
+
+/** Abre/reusa uma issue de alarme `estado`/P1 do fluxo frio (vigia e publisher da semanal). Lança se o `gh` falhar. */
+export function raiseKitFrioAlarm(a: { check: string; fingerprintSuffix: string; title: string; body: string }): void {
+  const fingerprint = `${a.check}:${a.fingerprintSuffix}`;
+  const state = loadAlarmIssuesState(DEFAULT_ALARM_STATE_PATH);
+  const key = alarmIssueStateKey(a.check, fingerprint);
+  const r = ensureAlarmIssue(
+    { check: a.check, fingerprint, family: "estado", priority: "P1", labels: ["bug"], title: a.title, body: a.body },
+    state[key],
+    ROOT,
+  );
+  if (r.issueNumber !== null && r.url !== null) {
+    state[key] = { missingStreak: state[key]?.missingStreak ?? 0, closedAt: state[key]?.closedAt ?? null, issueNumber: r.issueNumber, url: r.url, family: "estado" };
+    saveAlarmIssuesState(state, DEFAULT_ALARM_STATE_PATH);
+  }
+}
 
 /** Registro das semanais de frio (`_internal/kit-semanal-frio-published.json` por edição). */
 export function readSemanalFrioRegistry(editionsRootAbs: string): DiariaBroadcastRecord[] {
@@ -365,7 +438,13 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  if (!isKitFrioEnabled(cfg.kit?.frio)) {
+  const flags = parseKitFrio(cfg.kit);
+  if ("error" in flags) {
+    log(`ERRO: ${flags.error}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (!flags.enabled) {
     log("kit.frio.enabled = false — nada a fazer (#11221).");
     console.log(JSON.stringify({ code: 0, disabled: true }));
     return;
@@ -396,33 +475,17 @@ async function main(): Promise<void> {
       mkdirSync(dirname(DEFAULT_SEMANAL_FRIO_PAUSE_PATH), { recursive: true });
       writeFileSync(DEFAULT_SEMANAL_FRIO_PAUSE_PATH, JSON.stringify(s, null, 2) + "\n");
     },
-    raiseAlarm: (reasons) => {
-      const check = "kit-semanal-frio-vigia";
-      const fingerprint = `${check}:pausa`;
-      const state = loadAlarmIssuesState(DEFAULT_ALARM_STATE_PATH);
-      const key = alarmIssueStateKey(check, fingerprint);
-      const r = ensureAlarmIssue(
-        {
-          check,
-          fingerprint,
-          family: "estado",
-          priority: "P1",
-          labels: ["bug"],
-          title: "Vigia da semanal de frio do Kit pausou o envio (#11221)",
-          body:
-            "A vigia da semanal de frio (#11221) pausou o broadcast de segunda pra tag `frio`:\n\n" +
-            reasons.map((r) => `- ${r}`).join("\n") +
-            `\n\nEstado em \`data/kit-frio/semanal-pause.json\`. Pra retomar depois de investigar: apagar o arquivo ` +
-            "(ou gravar `{\"paused\": false}`).",
-        },
-        state[key],
-        ROOT,
-      );
-      if (r.issueNumber !== null && r.url !== null) {
-        state[key] = { missingStreak: state[key]?.missingStreak ?? 0, closedAt: state[key]?.closedAt ?? null, issueNumber: r.issueNumber, url: r.url, family: "estado" };
-        saveAlarmIssuesState(state, DEFAULT_ALARM_STATE_PATH);
-      }
-    },
+    raiseAlarm: (reasons) =>
+      raiseKitFrioAlarm({
+        check: "kit-semanal-frio-vigia",
+        fingerprintSuffix: "pausa",
+        title: "Vigia da semanal de frio do Kit pausou o envio (#11221)",
+        body:
+          "A vigia da semanal de frio (#11221) pausou o broadcast de segunda pra tag `frio`:\n\n" +
+          reasons.map((r) => `- ${r}`).join("\n") +
+          `\n\nEstado em \`data/kit-frio/semanal-pause.json\`. Pra retomar depois de investigar: apagar o arquivo ` +
+          "(ou gravar `{\"paused\": false}`).",
+      }),
     appendLog: (line) => appendFileWithRetry(DEFAULT_KIT_FRIO_LOG_PATH, line),
   });
   log(result.summary);

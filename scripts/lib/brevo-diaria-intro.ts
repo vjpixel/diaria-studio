@@ -81,7 +81,7 @@ function renderCtaIntroHtml(filename: string, rootDir?: string): string | null {
   const ctaIdx = paras.findIndex(isCtaOnlyParagraph);
   if (ctaIdx === -1) {
     throw new Error(
-      `renderPendingIntroHtml: ${filename} não tem parágrafo CTA isolado ([texto](url) sozinho no parágrafo) — bloco sem botão de cadastro é inseguro pro segmento Pending.`,
+      `intro da Brevo diária: ${filename} não tem parágrafo CTA isolado ([texto](url) sozinho no parágrafo) — bloco sem botão de cadastro/confirmação é inseguro pra quem ainda não confirmou.`,
     );
   }
   const links = findMarkdownLinks(paras[ctaIdx]);
