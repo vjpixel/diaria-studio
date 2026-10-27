@@ -1,5 +1,6 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
+// @ts-expect-error -- hook .mjs sem .d.mts (TS7016), mesmo padrão dos demais testes de hooks.
 import { classifyMergeBlockCause, buildBlockReason } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 import { isGhPrMergeCommand } from "../.claude/hooks/lib/gh-pr-merge-command.mjs";
 
