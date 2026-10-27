@@ -13,6 +13,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   FECHO_HOLD_S,
+  FRAMING_261027,
   TAKE_DEFAULTS,
   alignPunctuationToScript,
   applyVocabularyToWords,
@@ -23,11 +24,15 @@ import {
   cutPoints,
   decupagemMarkdown,
   defaultSequences,
+  effectiveFraming,
+  effectiveSource,
+  escapeXml,
   findTakes,
   framingFor,
   groupTakes,
   loudnessWarning,
   mapWordsToSequence,
+  parseBlocksFile,
   parseLoudnormJson,
   parseProbe,
   parseSilenceDetect,
@@ -42,11 +47,14 @@ import {
   wrapCueText,
   type BlocksFile,
   type SequenceSpec,
+  type SourceInfo,
+  type VocabAlias,
   type VocabRule,
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
 import { videoTargetOf, hasFinalInName } from "../scripts/lib/diaria/drive-video-source.ts";
-import { previewFileName, xmlFileName } from "../scripts/video-montagem.ts";
+import { loadVocab, previewFileName, xmlFileName } from "../scripts/video-montagem.ts";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -164,6 +172,55 @@ describe("escolha de tomada (#11208, bugs da 261027)", () => {
   });
 });
 
+describe("tomadas: erros comuns do Whisper (#11208, B)", () => {
+  const ok = (words: Word[], phrase: string, extra: Parameters<typeof chooseTake>[2] = {}) => {
+    const r = chooseTake(words, phrase, extra);
+    assert.ok(r.ok, `${phrase}: ${r.ok ? "" : r.reason}`);
+    return r;
+  };
+
+  it("'Google Fotos' ouvido casa com 'Google Photos' do roteiro (vocabulário antes do match, ou 1 palavra trocada)", () => {
+    const vocab = loadVocab();
+    const words = say("Agora o Google Fotos lê tudo.", 0);
+    const file: BlocksFile = { edition: "261027", blocks: { titulo: [{ text: "Agora o Google Photos lê tudo." }] } };
+    const r = resolveBlocks(file, words, { durationS: 20, rules: vocab.rules });
+    assert.deepEqual(r.errors, []);
+    ok(words, "Agora o Google Photos lê tudo."); // sem o vocabulário: 1 palavra trocada
+  });
+
+  it("'pra' × 'para', 'GPT 5' × 'GPT-5'", () => {
+    ok(say("Isso serve pra todo mundo usar.", 0), "Isso serve para todo mundo usar.");
+    const g = ok(say("O novo GPT 5 saiu hoje.", 0), "O novo GPT-5 saiu hoje.");
+    assert.equal(g.take.lastWord, 5);
+  });
+
+  it("última palavra omitida numa frase de 8 continua completa", () => {
+    const words = [...say("A Meta lançou um modelo novo para todos", 0), ...say("Olha", 5)];
+    const r = ok(words, "A Meta lançou um modelo novo para todos hoje.");
+    assert.equal(r.take.lastWord, 7);
+  });
+
+  it("gaguejo 'a a versão' acha a tomada a partir do 2º 'a'", () => {
+    const words = say("a a versão nova chegou ao Brasil.", 0);
+    const r = ok(words, "A versão nova chegou ao Brasil.");
+    assert.equal(r.take.firstWord, 1);
+  });
+
+  it("'o' repetido no meio não é recomeço; 'usar' engolido ainda casa", () => {
+    ok(say("O Google pode usar o seu Gmail.", 0), "O Google pode usar o seu Gmail.");
+    const r = ok(say("O Google pode o seu Gmail.", 0), "O Google pode usar o seu Gmail.");
+    assert.equal(r.take.firstWord, 0);
+    assert.equal(r.take.lastWord, 5);
+  });
+
+  it("aliases: 'diária' ouvido casa com 'diar.ia.br' na frase do roteiro", () => {
+    const vocab = loadVocab();
+    const words = say("Eu sou o Pixel, editor da diária.", 0);
+    const file: BlocksFile = { edition: "261027", blocks: { abertura: [{ text: "Eu sou o Pixel, editor da diar.ia.br." }] } };
+    assert.deepEqual(resolveBlocks(file, words, { durationS: 20, rules: vocab.rules, aliases: vocab.aliases }).errors, []);
+  });
+});
+
 describe("decupagem (#11208)", () => {
   it("agrupa tomadas repetidas e sugere a última completa", () => {
     const segs = [
@@ -184,6 +241,9 @@ describe("decupagem (#11208)", () => {
 
 const SPEC_V: SequenceSpec = { target: "outras-redes", name: "Diaria comentada_Outras redes_V1", width: 1080, height: 1920, order: ["titulo", "comentario", "fecho"], scales: [115, 130] };
 
+const SOURCE: SourceInfo = { path: "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube/261027/20261026_191548.mp4", fps: 30, durationS: 20, width: 3840, height: 2160, mirrored: true };
+const FRAMING = { faceX: 1850 / 3840, eyeY: 1160 / 2160 };
+
 function blocksFixture(): { file: BlocksFile; words: Word[] } {
   const words = [
     ...say("Google pode ler seu Gmail?", 1),
@@ -192,8 +252,7 @@ function blocksFixture(): { file: BlocksFile; words: Word[] } {
   ];
   const file: BlocksFile = {
     edition: "261027",
-    source: { path: "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube/261027/20261026_191548.mp4", fps: 30, durationS: 20, width: 3840, height: 2160, mirrored: true },
-    framing: { faceX: 1850 / 3840, eyeY: 1160 / 2160 },
+    framing: FRAMING,
     blocks: {
       titulo: [{ text: "Google pode ler seu Gmail?" }],
       comentario: [{ text: "O comentário de hoje é este." }],
@@ -203,63 +262,120 @@ function blocksFixture(): { file: BlocksFile; words: Word[] } {
   return { file, words };
 }
 
+const resolveAt = (file: BlocksFile, words: Word[], extra: Partial<Parameters<typeof resolveBlocks>[2]> = {}) =>
+  resolveBlocks(file, words, { durationS: SOURCE.durationS, ...extra });
+
 describe("plano das sequências e xmeml (#11208)", () => {
-  it("alterna a escala, segura 0,5 s no fecho e lista blocos que faltam", () => {
+  it("alterna a escala, segura 0,5 s depois da última palavra no fecho e lista blocos que faltam", () => {
     const { file, words } = blocksFixture();
-    const { blocks, errors } = resolveBlocks(file, words);
+    const { blocks, errors } = resolveAt(file, words);
     assert.deepEqual(errors, []);
-    const plan = buildSequencePlan({ ...SPEC_V, order: [...SPEC_V.order, "cta_out"] }, blocks, [], file.source);
+    const plan = buildSequencePlan({ ...SPEC_V, order: [...SPEC_V.order, "cta_out"] }, blocks, [], SOURCE);
     assert.deepEqual(plan.clips.map((c) => c.scale), [115, 130, 115]);
-    const fecho = plan.clips[2];
-    assert.equal(fecho.srcOut, 10.8 + FECHO_HOLD_S);
+    const ultima = words[words.length - 1].end;
+    assert.equal(plan.clips[2].srcOut, Math.round((ultima + FECHO_HOLD_S) * 1000) / 1000, "0,5 s depois da ÚLTIMA PALAVRA, não do fim do intervalo");
     assert.deepEqual(plan.missingBlocks, ["cta_out"]);
+    assert.deepEqual(plan.dropped, []);
     assert.equal(plan.clips[1].seqStart, plan.clips[0].seqEnd, "clipes encostados na sequência");
     assert.match(plan.script, /^Google pode ler seu Gmail\? O comentário de hoje é este\. Até amanhã\.$/);
     assert.deepEqual(cutPoints(plan, 30), [plan.clips[1].seqStart / 30, plan.clips[2].seqStart / 30]);
   });
 
+  it("regressão A: o respiro do fecho não invade a tomada seguinte ('Até amanhã' forçado na tomada 1)", () => {
+    const t1 = say("Até amanhã.", 10); // termina em 10,65
+    const t2 = say("Até amanhã.", 11.05);
+    const words = [...say("Oi.", 1), ...t1, ...t2];
+    const file: BlocksFile = { edition: "261027", framing: FRAMING, blocks: { fecho: [{ text: "Até amanhã.", take: 1 }] } };
+    const { blocks, errors } = resolveAt(file, words);
+    assert.deepEqual(errors, []);
+    const plan = buildSequencePlan({ ...SPEC_V, order: ["fecho"] }, blocks, [], SOURCE);
+    const fim = plan.clips[plan.clips.length - 1].srcOut;
+    assert.ok(fim <= t2[0].start - TAKE_DEFAULTS.guardS + 1e-9, `fecho sai em ${fim}, dentro da 2ª tomada (${t2[0].start})`);
+    assert.ok(fim >= t1[t1.length - 1].end, "nunca corta a última palavra");
+    // intervalo explícito que invade a palavra seguinte também é preso
+    const exp: BlocksFile = { edition: "261027", framing: FRAMING, blocks: { fecho: [{ start: 9.9, end: 11.1 }] } };
+    const p2 = buildSequencePlan({ ...SPEC_V, order: ["fecho"] }, resolveAt(exp, words).blocks, [], SOURCE);
+    assert.ok(p2.clips[p2.clips.length - 1].srcOut <= t2[0].start - TAKE_DEFAULTS.guardS + 1e-9);
+  });
+
   it("fecho curto (<0,6 s de fala) não some: o descarte vem depois do respiro de 0,5 s", () => {
-    const { file, words } = blocksFixture();
-    file.blocks.fecho = [{ start: 10, end: 10.4 }];
-    const { blocks } = resolveBlocks(file, words);
-    const plan = buildSequencePlan(SPEC_V, blocks, [], file.source);
+    const { file } = blocksFixture();
+    const words = [...say("Google pode ler seu Gmail?", 1), ...say("O comentário de hoje é este.", 5), ...say("Tchau.", 10)];
+    file.blocks.fecho = [{ start: 10, end: 10.35 }];
+    const plan = buildSequencePlan(SPEC_V, resolveAt(file, words).blocks, [], SOURCE);
     const fecho = plan.clips.filter((c) => c.block === "fecho");
     assert.equal(fecho.length, 1);
-    assert.equal(fecho[0].srcOut, 10.9);
-    // outro bloco curto continua sendo descartado
+    assert.ok(fecho[0].srcOut - fecho[0].srcIn >= 0.6);
+  });
+
+  it("regressão F: item que some no corte e palavra fora dos clipes vão para dropped", () => {
+    const { file, words } = blocksFixture();
     file.blocks.comentario = [{ start: 5, end: 5.4 }];
-    assert.equal(buildSequencePlan(SPEC_V, resolveBlocks(file, words).blocks, [], file.source).clips.filter((c) => c.block === "comentario").length, 0);
+    const plan = buildSequencePlan(SPEC_V, resolveAt(file, words).blocks, [], SOURCE);
+    assert.equal(plan.clips.filter((c) => c.block === "comentario").length, 0);
+    assert.match(plan.dropped.join("\n"), /comentario\[0\]: some no corte/);
+    // silêncio longo engolindo uma palavra do meio
+    const { file: f2, words: w2 } = blocksFixture();
+    const meio = w2.find((w) => w.text === "hoje")!;
+    const p2 = buildSequencePlan(SPEC_V, resolveAt(f2, w2).blocks, [{ start: meio.start - 0.3, end: meio.end + 0.6 }], SOURCE);
+    assert.match(p2.dropped.join("\n"), /palavra\(s\) fora dos clipes: "hoje/);
   });
 
-  it("resolveBlocks junta os erros (intervalo inválido, frase sem tomada, item vazio)", () => {
+  it("resolveBlocks junta os erros (intervalo além do bruto, frase sem tomada)", () => {
     const { file, words } = blocksFixture();
-    file.blocks.resumo = [{ start: 5, end: 4 }, { text: "frase que não foi dita" }, {}];
-    const { errors } = resolveBlocks(file, words);
-    assert.equal(errors.length, 3);
-    assert.match(errors.join("\n"), /resumo\[0\]: intervalo inválido/);
+    file.blocks.resumo = [{ start: 5, end: 99 }, { text: "frase que não foi dita" }];
+    const { errors } = resolveAt(file, words);
+    assert.equal(errors.length, 2);
+    assert.match(errors.join("\n"), /resumo\[0\]: end 99 além da duração/);
     assert.match(errors.join("\n"), /resumo\[1\]: nenhuma tomada completa/);
-    assert.match(errors.join("\n"), /resumo\[2\]: sem texto nem intervalo/);
   });
 
-  it("xmeml v4: 3 sequências, um <file> definido uma vez, áudio linkado, Center do enquadramento", () => {
+  it("regressão I: xmeml bem formado, clipitems batem com o plano, Center alterna com a escala", () => {
     const { file, words } = blocksFixture();
-    const { blocks } = resolveBlocks(file, words);
     file.blocks.abertura = file.blocks.titulo;
-    const all = resolveBlocks(file, words).blocks;
+    const all = resolveAt(file, words).blocks;
     const specs = defaultSequences().map((s) => ({ ...s, order: s.order.filter((k) => k in all) }));
-    const plans = specs.map((s) => buildSequencePlan(s, all, [], file.source));
-    const xml = buildXmeml(plans, file.source, file.framing);
+    const plans = specs.map((s) => buildSequencePlan(s, all, [], SOURCE));
+    const xml = buildXmeml(plans, SOURCE, FRAMING);
+    assert.equal(XMLValidator.validate(xml), true);
     assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-8"\?>\n<!DOCTYPE xmeml>\n<xmeml version="4">/);
-    assert.equal((xml.match(/<sequence /g) ?? []).length, 3);
+    const doc = new XMLParser({ ignoreAttributes: false, isArray: (n) => ["sequence", "clipitem", "parameter", "link", "filter"].includes(n) }).parse(xml);
+    const seqs = doc.xmeml.sequence as Array<Record<string, any>>;
+    assert.equal(seqs.length, 3);
+    assert.equal(new Set(seqs.map((s) => s["@_id"])).size, 3, "ids de sequência únicos");
     assert.equal((xml.match(/<pathurl>/g) ?? []).length, 1, "o bruto é definido uma vez só");
     assert.match(xml, /<pathurl>file:\/\/localhost\/G:\/Meu%20Drive\/Work\/Mentoria%20Fluxo%20VTSD\/YouTube\/261027\/20261026_191548\.mp4<\/pathurl>/);
-    assert.match(xml, /<name>Diaria comentada_Outras redes_V1<\/name>/);
-    assert.match(xml, /<linkclipref>a1<\/linkclipref><mediatype>audio<\/mediatype>/);
-    assert.match(xml, /<parameterid>center<\/parameterid><name>Center<\/name><value><horiz>[-\d.]+<\/horiz><vert>[-\d.]+<\/vert><\/value>/);
+    seqs.forEach((s, si) => {
+      const plan = plans[si];
+      assert.equal(s.name, plan.spec.name);
+      const vclips = s.media.video.track.clipitem as Array<Record<string, any>>;
+      const aclips = s.media.audio.track.clipitem as Array<Record<string, any>>;
+      assert.equal(vclips.length, plan.clips.length);
+      assert.equal(aclips.length, plan.clips.length);
+      vclips.forEach((v, i) => {
+        const c = plan.clips[i];
+        assert.deepEqual([v.start, v.end, v.in, v.out], [c.seqStart, c.seqEnd, c.frameIn, c.frameOut]);
+        assert.deepEqual([aclips[i].start, aclips[i].in, aclips[i].out], [c.seqStart, c.frameIn, c.frameOut]);
+        const params = (v.filter as Array<Record<string, any>>).flatMap((fl) => fl.effect.parameter as Array<Record<string, any>>);
+        const scale = params.find((p) => p.parameterid === "scale")?.value;
+        const center = params.find((p) => p.parameterid === "center")?.value;
+        const fr = framingFor({ srcW: 3840, srcH: 2160, seqW: plan.spec.width, seqH: plan.spec.height, scalePct: c.scale, framing: FRAMING });
+        assert.equal(scale, fr.scalePct);
+        assert.deepEqual([center.horiz, center.vert], [fr.center.horiz, fr.center.vert]);
+      });
+      if (plan.spec.height > plan.spec.width && vclips.length >= 2) {
+        const centerOf = (i: number) => (vclips[i].filter as Array<Record<string, any>>).flatMap((fl) => fl.effect.parameter).find((p: any) => p.parameterid === "center").value.horiz;
+        assert.notEqual(centerOf(0), centerOf(1), "punch-in muda o Center junto com a escala");
+      }
+    });
     assert.doesNotMatch(xml, /Flop/, "sem --xml-flop o flip fica para o Premiere");
-    assert.match(buildXmeml(plans, file.source, file.framing, { flopFilter: true }), /<effectid>Flop<\/effectid>/);
-    assert.doesNotMatch(buildXmeml(plans, { ...file.source, mirrored: false }, file.framing, { flopFilter: true }), /Flop/);
-    assert.ok(blocks.titulo.length === 1);
+    assert.match(buildXmeml(plans, SOURCE, FRAMING, { flopFilter: true }), /<effectid>Flop<\/effectid>/);
+    assert.doesNotMatch(buildXmeml(plans, { ...SOURCE, mirrored: false }, FRAMING, { flopFilter: true }), /Flop/);
+    // nome com & < ' continua XML válido
+    const weird = { ...SOURCE, path: "G:/Drive/a&b <c> 'd'.mp4" };
+    const x2 = buildXmeml([{ ...plans[0], spec: { ...plans[0].spec, name: "Diaria comentada_Youtube_V1 & <teste>" } }], weird, FRAMING);
+    assert.equal(XMLValidator.validate(x2), true);
+    assert.equal(escapeXml(`a&b<c>'d"`), "a&amp;b&lt;c&gt;&apos;d&quot;");
   });
 
   it("nomes das sequências casam com o destino da pasta Final/ (#11222)", () => {
@@ -275,6 +391,66 @@ describe("plano das sequências e xmeml (#11208)", () => {
 
   it("pathUrl troca barra invertida e codifica espaço e acento", () => {
     assert.equal(pathUrl("G:\\Meu Drive\\vídeo.mp4"), "file://localhost/G:/Meu%20Drive/v%C3%ADdeo.mp4");
+  });
+});
+
+describe("blocks.json e fonte única (#11208, C/L)", () => {
+  const ok = { edition: "261027", blocks: { titulo: [{ text: "Oi" }], fecho: [{ start: 1, end: 2 }] } };
+
+  it("aceita o mínimo válido e o molde com as sequências default", () => {
+    assert.equal(parseBlocksFile(ok).ok, true);
+    assert.equal(parseBlocksFile({ ...ok, mirrored: false, sequences: defaultSequences(), holdBlocks: ["fecho"] }).ok, true);
+  });
+
+  it("junta todos os erros de uma vez", () => {
+    const r = parseBlocksFile({
+      edition: "2610",
+      mirrored: "sim",
+      framing: { faceX: 2, eyeY: 0.5 },
+      blocks: { titulo: { text: "x" }, porque_importa: [], resumo: [{ start: 5, end: 4 }, {}, { text: "a", take: 0 }] },
+      holdBlocks: ["fim"],
+      sequences: [
+        { target: "youtube", name: "Diaria comentada_Instagram_V1", width: 1920, height: 1080, order: ["titulo"], scales: [50] },
+        { target: "youtube", name: "Diaria comentada_Youtube_V1", width: 1920, height: 1080, order: ["xx"], scales: [50, -1] },
+      ],
+      vocabulary: [{ pattern: "(", replacement: "x" }],
+    });
+    assert.equal(r.ok, false);
+    const e = r.ok ? "" : r.errors.join("\n");
+    for (const re of [
+      /edition precisa ser AAMMDD/,
+      /mirrored precisa ser true\/false/,
+      /framing precisa/,
+      /blocks\.titulo: precisa ser uma lista/,
+      /blocks\.porque_importa: bloco desconhecido/,
+      /blocks\.resumo\[0\]: intervalo inválido/,
+      /blocks\.resumo\[1\]: sem texto nem intervalo/,
+      /blocks\.resumo\[2\]: take precisa ser inteiro/,
+      /holdBlocks precisa listar blocos conhecidos/,
+      /sequences\[0\]: o nome "Diaria comentada_Instagram_V1" não indica o destino youtube/,
+      /sequences\[0\]: scales precisa de exatamente 2/,
+      /sequences\[1\]: target youtube repetido/,
+      /sequences\[1\]: order precisa listar blocos conhecidos/,
+      /sequences\[1\]: scales precisa de exatamente 2 números positivos/,
+      /vocabulary\[0\]: regex inválida/,
+    ]) {
+      assert.match(e, re);
+    }
+  });
+
+  it("source.json é a fonte; blocks.json só sobrepõe mirrored e erra se divergir", () => {
+    const measured: SourceInfo = { ...SOURCE };
+    assert.equal(effectiveSource(measured, { mirrored: false }).source.mirrored, false);
+    assert.equal(effectiveSource(measured, {}).source.mirrored, true);
+    assert.equal(effectiveSource(measured, { source: { mirrored: false } }).source.mirrored, false, "legado: mirrored do source vale como override");
+    const div = effectiveSource(measured, { source: { path: "G:/outro.mp4", durationS: 30, fps: 25 } });
+    assert.equal(div.errors.length, 3);
+    assert.match(effectiveSource({ ...measured, fps: 29.97 }).errors.join(), /não inteiro/);
+  });
+
+  it("framing: um ponto só para build e prévia, com premissa quando falta", () => {
+    assert.deepEqual(effectiveFraming({}), { framing: FRAMING_261027, assumed: true });
+    assert.deepEqual(effectiveFraming({ framing: FRAMING }), { framing: FRAMING, assumed: false });
   });
 });
 
@@ -303,6 +479,17 @@ describe("enquadramento (#11208)", () => {
     assert.deepEqual(h.center, { horiz: 0, vert: 0 });
   });
 
+  it("regressão G: bruto 1080p mantém a proporção da sequência (a escala sobe em vez de achatar o recorte)", () => {
+    const v = framingFor({ srcW: 1920, srcH: 1080, seqW: 1080, seqH: 1920, scalePct: 115, framing: { faceX: 0.5, eyeY: 0.5 } });
+    assert.ok(Math.abs(v.crop.w / v.crop.h - 1080 / 1920) < 0.01, JSON.stringify(v));
+    assert.equal(v.crop.h, 1080);
+    assert.ok(v.scalePct > 115);
+    const h = framingFor({ srcW: 1920, srcH: 1080, seqW: 1920, seqH: 1080, scalePct: 50, framing: FRAMING_261027 });
+    assert.deepEqual(h.crop, { x: 0, y: 0, w: 1920, h: 1080 });
+    assert.equal(h.scalePct, 100);
+    assert.equal(framingFor({ srcW: 3840, srcH: 2160, seqW: 1080, seqH: 1920, scalePct: 115, framing: FRAMING_261027 }).scalePct, 115);
+  });
+
   it("previewClipArgs: flip, crop, 720x1280, fades de 20/30 ms", () => {
     const args = previewClipArgs({ src: "in.mp4", start: 10, end: 12.5, crop: { x: 1380, y: 492, w: 940, h: 1670 }, mirrored: true, fps: 30, out: "c00.mp4" });
     const vf = args[args.indexOf("-vf") + 1];
@@ -314,11 +501,12 @@ describe("enquadramento (#11208)", () => {
 });
 
 describe("legendas (#11208)", () => {
-  const vocab = JSON.parse(readFileSync(join(ROOT, "context/video-montagem/vocabulario.json"), "utf8")) as { rules: VocabRule[]; whisper_prompt: string };
+  const vocab = loadVocab();
 
   it("o vocabulário vive no arquivo de config, não na lógica", () => {
-    assert.ok(vocab.rules.length >= 4);
-    assert.match(vocab.whisper_prompt, /diar\.ia\.br/);
+    assert.ok(vocab.rules.length >= 3);
+    assert.ok(vocab.aliases.some((a) => a.written === "diar.ia.br"));
+    assert.match(vocab.whisper_prompt ?? "", /diar\.ia\.br/);
     const src = readFileSync(join(ROOT, "scripts/lib/diaria/video-montage.ts"), "utf8");
     assert.doesNotMatch(src, /Google Photos|Modo IA da Busca/, "termos ficam em context/video-montagem/vocabulario.json");
   });
@@ -326,10 +514,28 @@ describe("legendas (#11208)", () => {
   it("vocabulário pega termo de 2 palavras entre palavras do Whisper", () => {
     const words = say("a diária explica a inteligência personalizada no modo IA da busca do Google Fotos", 0);
     const out = applyVocabularyToWords(words, vocab.rules).map((w) => w.text).join(" ");
-    assert.equal(out, "a diar.ia.br explica a Inteligência Personalizada no Modo IA da Busca do Google Photos");
+    assert.equal(out, "a diária explica a Inteligência Personalizada no Modo IA da Busca do Google Photos", "'diária' não é regra genérica");
     const soInsta: VocabRule[] = [{ pattern: "fotos", replacement: "Photos", targets: ["instagram"] }];
     assert.equal(applyVocabularyToWords(say("fotos", 0), soInsta, "outras-redes")[0].text, "fotos");
     assert.equal(applyVocabularyToWords(say("fotos", 0), soInsta, "instagram")[0].text, "Photos");
+  });
+
+  it("regressão E: regra que muda o número de palavras é pulada sozinha, com aviso, sem derrubar as outras", () => {
+    const avisos: string[] = [];
+    const rules: VocabRule[] = [{ pattern: "Google Fotos", replacement: "GooglePhotos" }, ...vocab.rules];
+    const out = applyVocabularyToWords(say("o Google Fotos e a inteligência personalizada", 0), rules, undefined, (m) => avisos.push(m));
+    assert.equal(out.map((w) => w.text).join(" "), "o Google Photos e a Inteligência Personalizada");
+    assert.equal(avisos.length, 1);
+    assert.match(avisos[0], /Google Fotos/);
+  });
+
+  it("regressão H: 'diária' só vira diar.ia.br onde o roteiro diz diar.ia.br", () => {
+    const aliases: VocabAlias[] = vocab.aliases;
+    const words = say("Na diária de hoje, a rotina diária mudou.", 0);
+    const out = alignPunctuationToScript(words, "Na diar.ia.br de hoje, a rotina diária mudou.", aliases).map((w) => w.text).join(" ");
+    assert.equal(out, "Na diar.ia.br de hoje, a rotina diária mudou.");
+    const sem = alignPunctuationToScript(say("a rotina diária mudou", 0), "a rotina diária mudou.", aliases).map((w) => w.text).join(" ");
+    assert.equal(sem, "a rotina diária mudou.");
   });
 
   it("a pontuação segue o roteiro (o Whisper fecha frase onde o roteiro tem vírgula)", () => {
@@ -338,11 +544,18 @@ describe("legendas (#11208)", () => {
     assert.equal(out.map((w) => w.text).join(" "), "Chama Inteligência Personalizada, recurso novo do Google.");
   });
 
+  it("regressão M: a cue fecha ANTES da palavra que estoura 50 caracteres", () => {
+    const words = say("Palavraaaa Palavraaaa Palavraaaa Palavraaaa Palavraaaa Final", 0);
+    const cues = segmentCues(words).map((c) => c.map((w) => w.text).join(" "));
+    assert.ok(cues.every((t) => t.length <= 50), JSON.stringify(cues));
+    assert.deepEqual(cues, ["Palavraaaa Palavraaaa Palavraaaa Palavraaaa", "Palavraaaa Final"]);
+  });
+
   it("cues: >50 caracteres, pontuação final, vírgula depois de 30; 2 linhas perto do meio; fim = min(fim+0,3, próxima)", () => {
     const words = say("O Google pode estar usando dados do seu Gmail e das suas fotos para treinar a IA. Calma, tem jeito de desligar isso, e eu mostro como.", 0);
     const cues = segmentCues(words);
     const texts = cues.map((c) => c.map((w) => w.text).join(" "));
-    assert.ok(texts.every((t) => t.length <= 50 + 12), JSON.stringify(texts));
+    assert.ok(texts.every((t) => t.length <= 50), JSON.stringify(texts));
     assert.ok(texts.some((t) => t.endsWith("IA.")), "quebra na pontuação final");
     assert.ok(texts.some((t) => t.endsWith("isso,")), "quebra na vírgula depois de 30 caracteres");
     assert.ok(!texts.includes("Calma,"), "vírgula antes de 30 caracteres não quebra");
@@ -359,7 +572,7 @@ describe("legendas (#11208)", () => {
 
   it("mapWordsToSequence só leva palavras com o meio dentro do clipe (sem sílaba de fora)", () => {
     const words = [...say("fora", 0), ...say("dentro do clipe", 2), ...say("depois", 4)];
-    const plan = { clips: [{ block: "x", srcIn: 1.9, srcOut: 3.2, frameIn: 57, frameOut: 96, seqStart: 30, seqEnd: 69, scale: 115 }] };
+    const plan = { clips: [{ block: "titulo" as const, srcIn: 1.9, srcOut: 3.2, frameIn: 57, frameOut: 96, seqStart: 30, seqEnd: 69, scale: 115 }] };
     const out = mapWordsToSequence(words, plan.clips, 30);
     assert.deepEqual(out.map((w) => w.text), ["dentro", "do", "clipe"]);
     assert.ok(out[0].start >= 1 && out[out.length - 1].end <= 69 / 30 + 1e-9);
@@ -412,7 +625,11 @@ describe("loudness, bruto, probe (#11208)", () => {
       { name: "261027 - previa outras-redes.mp4", size: 8_000_000_000 },
       { name: "261027 - montagem (importar no Premiere).xml", size: 39_311 },
     ]);
-    assert.equal(r?.name, "20261026_191548.mp4");
+    assert.equal(r?.pick.name, "20261026_191548.mp4");
+    assert.equal(r?.candidates.length, 1);
+    const dois = pickRawSource([{ name: "a.mp4", size: 2 }, { name: "b.MOV", size: 3 }]);
+    assert.equal(dois?.pick.name, "b.MOV");
+    assert.equal(dois?.candidates.length, 2, "mais de um candidato: o CLI avisa listando todos");
     assert.equal(pickRawSource([{ name: "x.xml", size: 1 }]), null);
   });
 

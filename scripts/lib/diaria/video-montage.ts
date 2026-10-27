@@ -28,6 +28,8 @@
  *   - autorrevisão (`reviewPreview`): diff de palavras prévia × roteiro.
  */
 
+import { videoTargetOf } from "./drive-video-source.ts";
+
 // ── Tipos básicos ─────────────────────────────────────────────────────────
 
 /** Intervalo em segundos. */
@@ -157,31 +159,59 @@ function levenshtein(a: string, b: string): number {
   return prev[b.length];
 }
 
-/** Igual, ou (palavras de 5+ letras) a 1 edição de distância: o Whisper erra acento/plural. */
+/**
+ * Formas faladas que o Whisper escreve diferente do roteiro e que valem a
+ * mesma palavra ("pra" = "para"). Só equivalências gramaticais genéricas;
+ * nomes próprios vão em `aliases` de `context/video-montagem/vocabulario.json`.
+ */
+const SPOKEN_EQUIV: Readonly<Record<string, string>> = { pra: "para", pras: "paras", ta: "esta", tao: "estao", to: "estou", ce: "voce", ces: "voces" };
+
+function canonical(t: string): string {
+  return SPOKEN_EQUIV[t] ?? t;
+}
+
+/** Igual (com as formas faladas equivalentes), ou (palavras de 5+ letras) a 1 edição de distância: o Whisper erra acento/plural. */
 export function tokensMatch(a: string, b: string): boolean {
   if (!a || !b) return false;
-  if (a === b) return true;
-  return Math.min(a.length, b.length) >= 5 && levenshtein(a, b) <= 1;
+  const x = canonical(a);
+  const y = canonical(b);
+  if (x === y) return true;
+  return Math.min(x.length, y.length) >= 5 && levenshtein(x, y) <= 1;
+}
+
+/** Forma ouvida pelo Whisper → forma escrita no roteiro ("diária" → "diar.ia.br"), de `vocabulario.json`. */
+export interface VocabAlias {
+  heard: string;
+  written: string;
+  note?: string;
+}
+
+/** Casador de token do transcript (`w`) com token do roteiro (`s`), com os aliases. */
+export type TokenMatcher = (w: string, s: string) => boolean;
+
+export function makeMatcher(aliases: VocabAlias[] = []): TokenMatcher {
+  const pairs = aliases.map((a) => [normalizeToken(a.heard), normalizeToken(a.written)] as const);
+  return (w, s) => tokensMatch(w, s) || pairs.some(([h, wr]) => w === h && s === wr);
 }
 
 /**
  * Alinhamento por maior subsequência comum (LCS) entre duas listas de tokens
  * normalizados. Devolve os pares casados `[i, j]` em ordem.
  */
-export function alignTokens(a: string[], b: string[]): Array<[number, number]> {
+export function alignTokens(a: string[], b: string[], match: TokenMatcher = tokensMatch): Array<[number, number]> {
   const n = a.length;
   const m = b.length;
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = tokensMatch(a[i], b[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      dp[i][j] = match(a[i], b[j]) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
     }
   }
   const pairs: Array<[number, number]> = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
-    if (tokensMatch(a[i], b[j]) && dp[i][j] === dp[i + 1][j + 1] + 1) {
+    if (match(a[i], b[j]) && dp[i][j] === dp[i + 1][j + 1] + 1) {
       pairs.push([i, j]);
       i++;
       j++;
@@ -217,49 +247,93 @@ export interface Take {
   complete: boolean;
 }
 
+export interface TakeMatchOptions {
+  maxGapS?: number;
+  minRatio?: number;
+  /** Aliases do vocabulário ("diária" ouvido = "diar.ia.br" no roteiro). */
+  match?: TokenMatcher;
+}
+
 /**
- * Todas as tomadas da frase `phrase` no transcript. Uma tomada começa numa
- * palavra que casa com a 1ª (ou, se o Whisper engoliu a 1ª, com a 2ª) palavra
- * da frase e segue casando em ordem, tolerando 1 palavra inserida ou omitida.
- * Encerra numa pausa longa, numa palavra que não casa, ou quando a frase
- * RECOMEÇA (a palavra volta a ser a 1ª da frase depois de 1+ casada: é a
- * tomada falsa, "Uma atualização de… Uma atualização de privacidade").
+ * Todas as tomadas da frase `phrase` no transcript (as palavras já com o
+ * vocabulário aplicado, ver `resolveBlocks`). Uma tomada começa numa palavra
+ * que casa com a 1ª palavra da frase (ou com a 2ª, se o Whisper engoliu a 1ª)
+ * e segue casando em ordem. Tolera os erros comuns do Whisper:
+ *   - 1 palavra inserida, 1 omitida ou 1 TROCADA (por tomada, cada);
+ *   - palavra partida ou juntada ("GPT 5" × "GPT-5": tokens concatenados);
+ *   - a última palavra da frase omitida (completa com todas menos a última,
+ *     se ainda casar `minRatio` das palavras).
+ * Encerra numa pausa maior que `maxGapS`, numa palavra que não casa, ou
+ * quando a frase RECOMEÇA: a palavra atual casa com a 1ª da frase (e não com a
+ * esperada) E a seguinte casa com a 2ª — a tomada falsa, "Uma atualização de…
+ * Uma atualização de privacidade". Um "o"/"a" repetido no meio da frase, sem a
+ * 2ª palavra depois, não é recomeço.
  * Tomadas completas com a mesma última palavra viram uma só (a que casou mais
  * palavras; no empate, a que começa depois).
  */
-export function findTakes(words: Word[], phrase: string, opts: { maxGapS?: number; minRatio?: number } = {}): Take[] {
+export function findTakes(words: Word[], phrase: string, opts: TakeMatchOptions = {}): Take[] {
   const P = tokenize(phrase);
   if (P.length === 0) return [];
   const W = words.map((w) => normalizeToken(w.text));
+  const eq = opts.match ?? tokensMatch;
   const maxGap = opts.maxGapS ?? TAKE_DEFAULTS.maxGapS;
   const minRatio = opts.minRatio ?? TAKE_DEFAULTS.minRatio;
+  const restarts = (k: number, p: number) =>
+    P.length > 1 && p > 0 && eq(W[k], P[0]) && !eq(W[k], P[p]) && k + 1 < W.length && eq(W[k + 1], P[1]);
   const takes: Take[] = [];
   for (let i = 0; i < W.length; i++) {
     let p: number;
-    if (tokensMatch(W[i], P[0])) p = 0;
-    else if (P.length > 2 && tokensMatch(W[i], P[1]) && !(i > 0 && tokensMatch(W[i - 1], P[0]))) p = 1;
+    if (eq(W[i], P[0]) || (i + 1 < W.length && W[i] + W[i + 1] === P[0])) p = 0;
+    else if (P.length > 2 && eq(W[i], P[1]) && !(i > 0 && eq(W[i - 1], P[0]))) p = 1;
     else continue;
     let k = i;
     let matched = 0;
     let last = i;
+    let swaps = 0;
+    let skips = 0;
+    let inserts = 0;
     while (p < P.length && k < W.length) {
       if (k > i && words[k].start - words[k - 1].end > maxGap) break;
-      if (k > i && matched >= 1 && tokensMatch(W[k], P[0]) && !tokensMatch(W[k], P[p])) break;
-      if (tokensMatch(W[k], P[p])) {
+      if (k > i && restarts(k, p)) break;
+      if (eq(W[k], P[p])) {
         matched++;
         last = k;
         p++;
         k++;
-      } else if (p + 1 < P.length && tokensMatch(W[k], P[p + 1])) {
+      } else if (k + 1 < W.length && W[k] + W[k + 1] === P[p]) {
+        // "GPT 5" ouvido, "GPT-5" no roteiro
+        matched++;
+        last = k + 1;
+        p++;
+        k += 2;
+      } else if (p + 1 < P.length && W[k] === P[p] + P[p + 1]) {
+        matched += 2;
+        last = k;
+        p += 2;
+        k++;
+      } else if (skips < 1 && p + 1 < P.length && eq(W[k], P[p + 1])) {
+        // palavra da frase engolida
+        skips++;
         matched++;
         last = k;
         p += 2;
         k++;
-      } else if (k + 1 < W.length && k > i && tokensMatch(W[k + 1], P[p])) {
+      } else if (inserts < 1 && k > i && k + 1 < W.length && eq(W[k + 1], P[p])) {
+        // palavra a mais no meio
+        inserts++;
+        k++;
+      } else if (swaps < 1 && k > i && p + 1 < P.length && k + 1 < W.length && eq(W[k + 1], P[p + 1])) {
+        // palavra trocada ("Fotos" no lugar de "Photos"); nunca na última
+        // posição, senão a 1ª palavra da fala seguinte entraria no corte
+        swaps++;
+        last = k;
+        p++;
         k++;
       } else break;
     }
-    takes.push({ firstWord: i, lastWord: last, matched, complete: p >= P.length && matched / P.length >= minRatio });
+    const enough = matched / P.length >= minRatio;
+    const complete = enough && (p >= P.length || (p >= P.length - 1 && P.length >= 4));
+    takes.push({ firstWord: i, lastWord: last, matched, complete });
   }
   // Completas que terminam na mesma palavra: fica a que casou mais palavras e,
   // no empate, a que começa DEPOIS (nunca a que arrasta uma tomada falsa junto).
@@ -305,7 +379,7 @@ export type TakeChoice =
  * Escolhe a tomada da frase: por padrão a ÚLTIMA completa (o editor regrava
  * até sair boa); `take` (1-based, entre as completas) força outra.
  */
-export function chooseTake(words: Word[], phrase: string, opts: { take?: number; maxGapS?: number; minRatio?: number } = {}): TakeChoice {
+export function chooseTake(words: Word[], phrase: string, opts: TakeMatchOptions & { take?: number } = {}): TakeChoice {
   const takes = findTakes(words, phrase, opts);
   const complete = takes.filter((t) => t.complete);
   if (complete.length === 0) {
@@ -405,17 +479,25 @@ export function decupagemMarkdown(edition: string, segments: Segment[], groups: 
 
 // ── Blocos e sequências ───────────────────────────────────────────────────
 
-/** Item de um bloco: frase (a tomada sai sozinha) ou intervalo explícito no bruto. */
-export interface BlockItem {
-  /** Texto do roteiro para este trecho. Com `start`/`end` ausentes, define a tomada. */
-  text?: string;
-  start?: number;
-  end?: number;
-  /** Tomada (1-based, entre as completas) em vez da última. */
-  take?: number;
+/** Blocos conhecidos do roteiro (#11208). Nenhuma versão leva "Por que isso importa?" (editor, 26/10/2026). */
+export const BLOCK_KEYS = ["titulo", "abertura", "resumo", "resumo_curto", "comentario", "cta_yt", "cta_ig", "cta_out", "fecho"] as const;
+export type BlockKey = (typeof BLOCK_KEYS)[number];
+
+export function isBlockKey(k: string): k is BlockKey {
+  return (BLOCK_KEYS as readonly string[]).includes(k);
 }
 
+/**
+ * Item de um bloco: a FRASE (a tomada sai sozinha, a última completa; `take`
+ * força outra) ou um INTERVALO explícito no bruto (com `text` opcional, o que
+ * deveria estar sendo dito).
+ */
+export type BlockItem =
+  | { text: string; take?: number; start?: undefined; end?: undefined }
+  | { start: number; end: number; text?: string; take?: undefined };
+
 export type SequenceTarget = "youtube" | "instagram" | "outras-redes";
+export const SEQUENCE_TARGETS: readonly SequenceTarget[] = ["youtube", "instagram", "outras-redes"];
 
 export interface SequenceSpec {
   target: SequenceTarget;
@@ -424,20 +506,21 @@ export interface SequenceSpec {
   width: number;
   height: number;
   /** Blocos, na ordem. */
-  order: string[];
+  order: BlockKey[];
   /** Escala (%) alternada entre os clipes: [base, punch-in]. */
   scales: [number, number];
 }
 
+/** O bruto, como o `transcribe` mediu (`source.json`, a fonte única). */
 export interface SourceInfo {
-  /** Caminho local do bruto (Drive for desktop). */
+  /** Caminho local do bruto (Drive for desktop), com `/`. */
   path: string;
   fps: number;
   durationS: number;
   width: number;
   height: number;
-  /** Bruto espelhado (a caneca aparece invertida). Default true (premissa #11208). */
-  mirrored?: boolean;
+  /** Bruto espelhado (a caneca aparece invertida). O `transcribe` grava true (premissa #11208); `blocks.json` sobrepõe. */
+  mirrored: boolean;
 }
 
 /** Centro do rosto, em fração do quadro JÁ desespelhado: x do centro, y da linha dos olhos. */
@@ -446,23 +529,165 @@ export interface Framing {
   eyeY: number;
 }
 
+export interface VocabRule {
+  /** Regex (fonte), aplicada ao texto das palavras unido por espaço. */
+  pattern: string;
+  replacement: string;
+  /** Flags da regex; default "g". */
+  flags?: string;
+  /** Só nestas versões; ausente = todas. */
+  targets?: SequenceTarget[];
+  note?: string;
+}
+
+/**
+ * O que o gate da decupagem decide, por edição
+ * (`_internal/video-montagem/blocks.json`). O bruto em si vem do
+ * `source.json`; aqui só os overrides.
+ */
 export interface BlocksFile {
   edition: string;
-  source: SourceInfo;
+  /** Sobrepõe o `mirrored` do `source.json` (false quando a caneca aparece legível no bruto). */
+  mirrored?: boolean;
+  /** Legado: só conferido contra o `source.json` (path, duração, fps); o `mirrored` dele vale como override. */
+  source?: Partial<SourceInfo>;
   framing?: Framing;
-  blocks: Record<string, BlockItem[]>;
+  blocks: Partial<Record<BlockKey, BlockItem[]>>;
   sequences?: SequenceSpec[];
   /** Regras extras desta edição, somadas às de `context/video-montagem/vocabulario.json`. */
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
-  holdBlocks?: string[];
+  holdBlocks?: BlockKey[];
 }
 
-/** Blocos conhecidos do roteiro (#11208). Nenhuma versão leva "Por que isso importa?" (editor, 26/10/2026). */
-export const BLOCK_KEYS = ["titulo", "abertura", "resumo", "resumo_curto", "comentario", "cta_yt", "cta_ig", "cta_out", "fecho"] as const;
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+
+function validRegex(pattern: unknown, flags: unknown): string | null {
+  if (typeof pattern !== "string" || pattern === "") return "pattern vazio ou não-string";
+  try {
+    new RegExp(pattern, typeof flags === "string" ? flags : "g");
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** Confere as regras de vocabulário (de `vocabulario.json` ou do `blocks.json`). */
+export function validateVocabRules(raw: unknown, where: string): string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return [`${where}: precisa ser uma lista`];
+  const errors: string[] = [];
+  raw.forEach((r, i) => {
+    if (!isObj(r)) return void errors.push(`${where}[${i}]: precisa ser objeto`);
+    const bad = validRegex(r.pattern, r.flags);
+    if (bad) errors.push(`${where}[${i}]: regex inválida (${bad})`);
+    if (typeof r.replacement !== "string") errors.push(`${where}[${i}]: replacement precisa ser string`);
+    if (r.targets !== undefined && (!Array.isArray(r.targets) || r.targets.some((t) => !SEQUENCE_TARGETS.includes(t as SequenceTarget)))) {
+      errors.push(`${where}[${i}]: targets fora de ${SEQUENCE_TARGETS.join("/")}`);
+    }
+  });
+  return errors;
+}
+
+/**
+ * Valida o `blocks.json` lido do disco, juntando TODOS os erros (o gate mostra
+ * tudo de uma vez): chaves de bloco conhecidas, itens bem formados, sequências
+ * com destino único e coerente com o nome, escalas, vocabulário que compila.
+ */
+export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+  if (!isObj(raw)) return { ok: false, errors: ["blocks.json precisa ser um objeto"] };
+  if (typeof raw.edition !== "string" || !/^\d{6}$/.test(raw.edition)) errors.push("edition precisa ser AAMMDD");
+  if (raw.mirrored !== undefined && typeof raw.mirrored !== "boolean") errors.push("mirrored precisa ser true/false");
+  if (raw.source !== undefined && !isObj(raw.source)) errors.push("source (legado) precisa ser objeto");
+  if (raw.framing !== undefined) {
+    const fr = raw.framing;
+    if (!isObj(fr) || !isNum(fr.faceX) || !isNum(fr.eyeY) || fr.faceX < 0 || fr.faceX > 1 || fr.eyeY < 0 || fr.eyeY > 1) {
+      errors.push("framing precisa de faceX e eyeY entre 0 e 1 (fração do quadro)");
+    }
+  }
+  if (!isObj(raw.blocks)) errors.push("blocks precisa ser um objeto");
+  else {
+    for (const [key, items] of Object.entries(raw.blocks)) {
+      if (!isBlockKey(key)) {
+        errors.push(`blocks.${key}: bloco desconhecido (válidos: ${BLOCK_KEYS.join(", ")})`);
+        continue;
+      }
+      if (!Array.isArray(items)) {
+        errors.push(`blocks.${key}: precisa ser uma lista`);
+        continue;
+      }
+      items.forEach((it, i) => {
+        const label = `blocks.${key}[${i}]`;
+        if (!isObj(it)) return void errors.push(`${label}: precisa ser objeto`);
+        const hasRange = it.start !== undefined || it.end !== undefined;
+        if (hasRange) {
+          if (!isNum(it.start) || !isNum(it.end) || it.start < 0 || !(it.end > it.start)) errors.push(`${label}: intervalo inválido (start=${it.start}, end=${it.end})`);
+          if (it.take !== undefined) errors.push(`${label}: take não vale com intervalo explícito`);
+          if (it.text !== undefined && typeof it.text !== "string") errors.push(`${label}: text precisa ser string`);
+        } else {
+          if (typeof it.text !== "string" || !it.text.trim()) errors.push(`${label}: sem texto nem intervalo`);
+          if (it.take !== undefined && !(Number.isInteger(it.take) && (it.take as number) >= 1)) errors.push(`${label}: take precisa ser inteiro ≥ 1`);
+        }
+      });
+    }
+  }
+  if (raw.holdBlocks !== undefined) {
+    if (!Array.isArray(raw.holdBlocks) || raw.holdBlocks.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push("holdBlocks precisa listar blocos conhecidos");
+  }
+  if (raw.sequences !== undefined) {
+    if (!Array.isArray(raw.sequences) || raw.sequences.length === 0) errors.push("sequences precisa ser uma lista não vazia");
+    else {
+      const seen = new Set<string>();
+      raw.sequences.forEach((s, i) => {
+        const label = `sequences[${i}]`;
+        if (!isObj(s)) return void errors.push(`${label}: precisa ser objeto`);
+        if (typeof s.target !== "string" || !SEQUENCE_TARGETS.includes(s.target as SequenceTarget)) errors.push(`${label}: target fora de ${SEQUENCE_TARGETS.join("/")}`);
+        else if (seen.has(s.target)) errors.push(`${label}: target ${s.target} repetido`);
+        else seen.add(s.target);
+        if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
+        else if (videoTargetOf(s.name) !== s.target) {
+          errors.push(`${label}: o nome "${s.name}" não indica o destino ${s.target} (export cairia no destino errado da pasta Final/)`);
+        }
+        if (!Number.isInteger(s.width) || !Number.isInteger(s.height) || (s.width as number) <= 0 || (s.height as number) <= 0) errors.push(`${label}: width/height inteiros positivos`);
+        if (!Array.isArray(s.order) || s.order.length === 0 || s.order.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push(`${label}: order precisa listar blocos conhecidos`);
+        if (!Array.isArray(s.scales) || s.scales.length !== 2 || s.scales.some((x) => !isNum(x) || x <= 0)) errors.push(`${label}: scales precisa de exatamente 2 números positivos`);
+      });
+    }
+  }
+  errors.push(...validateVocabRules(raw.vocabulary, "vocabulary"));
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, file: raw as unknown as BlocksFile };
+}
+
+/**
+ * O bruto efetivo: o `source.json` com o `mirrored` sobreposto pelo
+ * `blocks.json`. Um `source` legado no `blocks.json` que diverge do
+ * `source.json` (outro bruto, outra duração, outro fps) é erro, nunca
+ * escolha silenciosa. fps fracionário também (o XML usa timebase inteiro).
+ */
+export function effectiveSource(measured: SourceInfo, file?: Pick<BlocksFile, "mirrored" | "source">): { source: SourceInfo; errors: string[] } {
+  const errors: string[] = [];
+  const legacy = file?.source;
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  if (legacy) {
+    if (legacy.path !== undefined && norm(legacy.path) !== norm(measured.path)) errors.push(`blocks.json aponta outro bruto (${legacy.path}) que o source.json (${measured.path})`);
+    if (legacy.durationS !== undefined && Math.abs(legacy.durationS - measured.durationS) > 0.05) errors.push(`duração do blocks.json (${legacy.durationS}) diverge do source.json (${measured.durationS})`);
+    if (legacy.fps !== undefined && legacy.fps !== measured.fps) errors.push(`fps do blocks.json (${legacy.fps}) diverge do source.json (${measured.fps})`);
+  }
+  if (!Number.isInteger(measured.fps)) errors.push(`fps ${measured.fps} não inteiro: o XML usa timebase inteiro com NTSC=FALSE`);
+  const mirrored = file?.mirrored ?? legacy?.mirrored ?? measured.mirrored ?? true;
+  return { source: { ...measured, mirrored }, errors };
+}
 
 /** Enquadramento medido na 261027 (`cx=1850`, olhos em y=1160 no 3840x2160, depois do flip). */
 export const FRAMING_261027: Framing = { faceX: 1850 / 3840, eyeY: 1160 / 2160 };
+
+/** O framing do `blocks.json`, ou o da 261027 (`assumed: true`, para o `[premissa]`). Um ponto só para build e prévia. */
+export function effectiveFraming(file: Pick<BlocksFile, "framing">): { framing: Framing; assumed: boolean } {
+  return file.framing ? { framing: file.framing, assumed: false } : { framing: FRAMING_261027, assumed: true };
+}
 
 /**
  * As 3 versões (#11208). Nomes no padrão dos finais da pasta `Final/`
@@ -501,61 +726,86 @@ export function defaultSequences(version = "V1"): SequenceSpec[] {
   ];
 }
 
-export interface ResolvedItem {
+export type ResolvedItem = {
   interval: Interval;
   text: string;
-  /** Como saiu: frase → tomada escolhida; intervalo explícito. */
-  how: "take" | "explicit";
-  take?: number;
-  completeTakes?: number;
+  /** Palavras do bruto dentro do intervalo (meio da palavra dentro). */
+  words: Word[];
+  /** Fim da última palavra dita no trecho; null sem palavra. */
+  lastWordEnd: number | null;
+  /** Até onde um respiro pode ir sem pegar a palavra seguinte do bruto (`next.start - guardS`, ou a duração). */
+  holdLimit: number;
+} & ({ how: "take"; take: number; completeTakes: number } | { how: "explicit" });
+
+export interface ResolveOptions {
+  durationS: number;
+  /** Vocabulário aplicado às palavras do bruto antes de casar as frases. */
+  rules?: VocabRule[];
+  aliases?: VocabAlias[];
 }
 
 /**
- * Resolve os blocos contra o transcript do bruto: frase → tomada (`chooseTake`),
- * intervalo explícito → ele mesmo (texto = palavras dentro dele). Erros juntos,
- * para o gate mostrar tudo de uma vez.
+ * Resolve os blocos contra o transcript do bruto: frase → tomada (`chooseTake`,
+ * com o vocabulário já aplicado às palavras e os aliases no casamento),
+ * intervalo explícito → ele mesmo. Erros juntos, para o gate mostrar tudo de
+ * uma vez.
  */
-export function resolveBlocks(file: BlocksFile, words: Word[]): { blocks: Record<string, ResolvedItem[]>; errors: string[] } {
-  const blocks: Record<string, ResolvedItem[]> = {};
+export function resolveBlocks(
+  file: BlocksFile,
+  rawWords: Word[],
+  opts: ResolveOptions,
+): { blocks: Partial<Record<BlockKey, ResolvedItem[]>>; errors: string[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const words = applyVocabularyToWords(rawWords, [...(opts.rules ?? []), ...(file.vocabulary ?? [])], undefined, (w) => warnings.push(w));
+  const match = makeMatcher(opts.aliases);
+  const guard = TAKE_DEFAULTS.guardS;
+  const blocks: Partial<Record<BlockKey, ResolvedItem[]>> = {};
   const errors: string[] = [];
-  for (const [key, items] of Object.entries(file.blocks)) {
-    blocks[key] = [];
+  const limitAfter = (idx: number) => (idx < words.length ? words[idx].start - guard : opts.durationS);
+  for (const [key, items] of Object.entries(file.blocks) as Array<[BlockKey, BlockItem[]]>) {
+    const out: ResolvedItem[] = [];
+    blocks[key] = out;
     items.forEach((it, i) => {
       const label = `${key}[${i}]`;
-      if (it.start !== undefined || it.end !== undefined) {
-        if (typeof it.start !== "number" || typeof it.end !== "number" || !(it.end > it.start) || it.start < 0) {
-          errors.push(`${label}: intervalo inválido (start=${it.start}, end=${it.end})`);
-          return;
-        }
-        if (it.end > file.source.durationS + 1e-6) {
-          errors.push(`${label}: end ${it.end} além da duração do bruto (${file.source.durationS})`);
-          return;
-        }
-        const inside = words.filter((w) => (w.start + w.end) / 2 >= it.start! && (w.start + w.end) / 2 <= it.end!);
-        blocks[key].push({ interval: { start: it.start, end: it.end }, text: it.text ?? inside.map((w) => w.text.trim()).join(" "), how: "explicit" });
+      if (it.start !== undefined) {
+        if (it.end > opts.durationS + 1e-6) return void errors.push(`${label}: end ${it.end} além da duração do bruto (${opts.durationS})`);
+        const idx = words.map((w, n) => [w, n] as const).filter(([w]) => (w.start + w.end) / 2 >= it.start && (w.start + w.end) / 2 <= it.end);
+        const inside = idx.map(([w]) => w);
+        const lastIdx = idx.length ? idx[idx.length - 1][1] : -1;
+        const nextIdx = lastIdx >= 0 ? lastIdx + 1 : words.findIndex((w) => w.start >= it.end);
+        out.push({
+          interval: { start: it.start, end: it.end },
+          text: it.text ?? inside.map((w) => w.text.trim()).join(" "),
+          words: inside,
+          lastWordEnd: inside.length ? inside[inside.length - 1].end : null,
+          holdLimit: round3(Math.min(opts.durationS, nextIdx < 0 ? opts.durationS : limitAfter(nextIdx))),
+          how: "explicit",
+        });
         return;
       }
-      if (!it.text?.trim()) {
-        errors.push(`${label}: sem texto nem intervalo`);
-        return;
-      }
-      const c = chooseTake(words, it.text, { take: it.take });
-      if (!c.ok) {
-        errors.push(`${label}: ${c.reason}`);
-        return;
-      }
-      blocks[key].push({ interval: c.interval, text: it.text.trim(), how: "take", take: c.takeNumber, completeTakes: c.completeTakes });
+      const c = chooseTake(words, it.text, { take: it.take, match });
+      if (!c.ok) return void errors.push(`${label}: ${c.reason}`);
+      out.push({
+        interval: c.interval,
+        text: it.text.trim(),
+        words: words.slice(c.take.firstWord, c.take.lastWord + 1),
+        lastWordEnd: words[c.take.lastWord].end,
+        holdLimit: round3(Math.min(opts.durationS, limitAfter(c.take.lastWord + 1))),
+        how: "take",
+        take: c.takeNumber,
+        completeTakes: c.completeTakes,
+      });
     });
   }
-  return { blocks, errors };
+  return { blocks, errors, warnings };
 }
 
 export interface PlannedClip {
-  block: string;
+  block: BlockKey;
   /** No bruto, segundos. */
   srcIn: number;
   srcOut: number;
-  /** No bruto, frames. */
+  /** No bruto, frames (a verdade do corte: XML e prévia usam estes). */
   frameIn: number;
   frameOut: number;
   /** Na sequência, frames. */
@@ -570,25 +820,33 @@ export interface SequencePlan {
   durationFrames: number;
   /** Texto do roteiro desta versão (os blocos na ordem), base da autorrevisão e das legendas. */
   script: string;
-  missingBlocks: string[];
+  /** Blocos da ordem sem nenhum item no `blocks.json`. */
+  missingBlocks: BlockKey[];
+  /** Itens que sumiram no corte (0 clipes) ou palavras que ficaram fora dos clipes. */
+  dropped: string[];
 }
 
 /**
  * Clipes de uma sequência: cada item do bloco vira os trechos de fala dele
- * (`speechParts`), o bloco de fecho segura `FECHO_HOLD_S` depois do último,
- * a escala alterna base/punch-in clipe a clipe.
+ * (`speechParts`), a escala alterna base/punch-in clipe a clipe. No bloco de
+ * fecho, o último trecho termina `FECHO_HOLD_S` depois da ÚLTIMA PALAVRA, preso
+ * antes da palavra seguinte do bruto (`holdLimit`), e o descarte de clipe curto
+ * vem depois desse respiro. Item que some no corte, ou palavra que fica de
+ * fora, vai para `dropped`.
  */
 export function buildSequencePlan(
   spec: SequenceSpec,
-  resolved: Record<string, ResolvedItem[]>,
+  resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   silences: Interval[],
   source: Pick<SourceInfo, "fps" | "durationS">,
-  opts: { holdBlocks?: string[]; minGapS?: number; padS?: number; minClipS?: number } = {},
+  opts: { holdBlocks?: BlockKey[]; minGapS?: number; padS?: number; minClipS?: number } = {},
 ): SequencePlan {
-  const hold = new Set(opts.holdBlocks ?? ["fecho"]);
+  const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
+  const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
   const clips: PlannedClip[] = [];
-  const missingBlocks: string[] = [];
+  const missingBlocks: BlockKey[] = [];
+  const dropped: string[] = [];
   const scriptParts: string[] = [];
   let t = 0;
   for (const key of spec.order) {
@@ -597,30 +855,34 @@ export function buildSequencePlan(
       missingBlocks.push(key);
       continue;
     }
-    let parts: Interval[] = [];
-    // No bloco de fecho o descarte de clipe curto vem DEPOIS do respiro de
-    // 0,5 s: "Até amanhã" curto não pode sumir só por ser curto antes do respiro.
     const holding = hold.has(key);
-    for (const it of items) {
-      parts.push(...speechParts(it.interval.start, it.interval.end, silences, holding ? { ...opts, minClipS: 0 } : opts));
+    items.forEach((it, idx) => {
       scriptParts.push(it.text);
-    }
-    if (holding && parts.length) {
-      const lastPart = parts[parts.length - 1];
-      lastPart.end = round3(Math.min(source.durationS, lastPart.end + FECHO_HOLD_S));
-      const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
+      let parts = speechParts(it.interval.start, it.interval.end, silences, { ...opts, minClipS: 0 });
+      if (holding && idx === items.length - 1 && parts.length) {
+        const lastPart = parts[parts.length - 1];
+        const target = it.lastWordEnd !== null ? it.lastWordEnd + FECHO_HOLD_S : lastPart.end + FECHO_HOLD_S;
+        const floor = it.lastWordEnd ?? lastPart.start;
+        lastPart.end = round3(Math.max(floor, Math.min(it.holdLimit, source.durationS, target)));
+      }
       parts = parts.filter((p) => p.end - p.start >= minClip - 1e-9);
-    }
-    for (const p of parts) {
-      const frameIn = Math.round(p.start * fps);
-      const frameOut = Math.round(p.end * fps);
-      if (frameOut <= frameIn) continue;
-      const scale = spec.scales[clips.length % 2];
-      clips.push({ block: key, srcIn: p.start, srcOut: p.end, frameIn, frameOut, seqStart: t, seqEnd: t + (frameOut - frameIn), scale });
-      t += frameOut - frameIn;
-    }
+      if (parts.length === 0) {
+        dropped.push(`${key}[${idx}]: some no corte (fala abaixo de ${minClip} s depois de tirar os silêncios)`);
+        return;
+      }
+      const lost = it.words.filter((w) => !parts.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end));
+      if (lost.length) dropped.push(`${key}[${idx}]: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
+      for (const p of parts) {
+        const frameIn = Math.round(p.start * fps);
+        const frameOut = Math.round(p.end * fps);
+        if (frameOut <= frameIn) continue;
+        const scale = spec.scales[clips.length % 2];
+        clips.push({ block: key, srcIn: p.start, srcOut: p.end, frameIn, frameOut, seqStart: t, seqEnd: t + (frameOut - frameIn), scale });
+        t += frameOut - frameIn;
+      }
+    });
   }
-  return { spec, clips, durationFrames: t, script: scriptParts.join(" "), missingBlocks };
+  return { spec, clips, durationFrames: t, script: scriptParts.join(" "), missingBlocks, dropped };
 }
 
 // ── Enquadramento ─────────────────────────────────────────────────────────
@@ -629,7 +891,7 @@ export function buildSequencePlan(
 export const EYE_LINE_FRACTION = 0.4;
 
 export interface FramingResult {
-  /** Recorte no bruto (px, já desespelhado), números pares para o ffmpeg. */
+  /** Recorte no bruto (px, já desespelhado); `w`/`h` pares para o ffmpeg, na proporção da sequência. */
   crop: { x: number; y: number; w: number; h: number };
   /**
    * Center do Basic Motion do xmeml: deslocamento do centro do clipe em
@@ -637,6 +899,8 @@ export interface FramingResult {
    * (positivo = direita/baixo). Premissa a conferir no 1º import (#11208).
    */
   center: { horiz: number; vert: number };
+  /** Escala efetiva (%): a pedida, ou maior quando o bruto é pequeno demais para ela (ex.: 1080p). */
+  scalePct: number;
 }
 
 const even = (x: number) => Math.max(2, Math.round(x / 2) * 2);
@@ -646,7 +910,9 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
  * Recorte e posição de um clipe com escala `scalePct` (100 = 1 px do bruto por
  * px da sequência, como no Premiere): o rosto (`faceX`) no centro horizontal,
  * a linha dos olhos (`eyeY`) a `eyeFraction` da altura, sem sair do bruto (o
- * recorte encosta na borda em vez de mostrar faixa preta).
+ * recorte encosta na borda em vez de mostrar faixa preta). O recorte mantém
+ * SEMPRE a proporção da sequência: se o bruto não cobre o quadro na escala
+ * pedida (bruto 1080p numa vertical a 115%), a escala sobe até cobrir.
  */
 export function framingFor(input: {
   srcW: number;
@@ -657,17 +923,25 @@ export function framingFor(input: {
   framing: Framing;
   eyeFraction?: number;
 }): FramingResult {
-  const s = input.scalePct / 100;
+  let s = input.scalePct / 100;
   if (!(s > 0)) throw new Error(`escala inválida: ${input.scalePct}`);
   const eyeFrac = input.eyeFraction ?? EYE_LINE_FRACTION;
-  const w = Math.min(input.srcW, even(input.seqW / s));
-  const h = Math.min(input.srcH, even(input.seqH / s));
+  let wf = input.seqW / s;
+  let hf = input.seqH / s;
+  const fit = Math.min(1, input.srcW / wf, input.srcH / hf);
+  if (fit < 1) {
+    wf *= fit;
+    hf *= fit;
+    s /= fit;
+  }
+  const w = Math.min(input.srcW - (input.srcW % 2), even(wf));
+  const h = Math.min(input.srcH - (input.srcH % 2), even(hf));
   const x = Math.round(clamp(input.framing.faceX * input.srcW - w / 2, 0, input.srcW - w));
   const y = Math.round(clamp(input.framing.eyeY * input.srcH - eyeFrac * h, 0, input.srcH - h));
   const dx = (input.srcW / 2 - (x + w / 2)) * s;
   const dy = (input.srcH / 2 - (y + h / 2)) * s;
   const r4 = (v: number) => Math.round(v * 10000) / 10000 || 0;
-  return { crop: { x, y, w, h }, center: { horiz: r4(dx / input.seqW), vert: r4(dy / input.seqH) } };
+  return { crop: { x, y, w, h }, center: { horiz: r4(dx / input.seqW), vert: r4(dy / input.seqH) }, scalePct: Math.round(s * 10000) / 100 };
 }
 
 // ── XML FCP7 (xmeml v4) ───────────────────────────────────────────────────
@@ -696,13 +970,11 @@ export interface XmemlOptions {
   flopFilter?: boolean;
 }
 
-function motionFilter(scale: number, center?: { horiz: number; vert: number }): string {
-  const c = center
-    ? `\n<parameter><parameterid>center</parameterid><name>Center</name><value><horiz>${center.horiz}</horiz><vert>${center.vert}</vert></value></parameter>`
-    : "";
+function motionFilter(scale: number, center: { horiz: number; vert: number }): string {
   return (
     `<filter><effect><name>Basic Motion</name><effectid>basic</effectid><effectcategory>motion</effectcategory><effecttype>motion</effecttype><mediatype>video</mediatype>\n` +
-    `<parameter><parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax><value>${scale}</value></parameter>${c}</effect></filter>`
+    `<parameter><parameterid>scale</parameterid><name>Scale</name><valuemin>0</valuemin><valuemax>1000</valuemax><value>${scale}</value></parameter>\n` +
+    `<parameter><parameterid>center</parameterid><name>Center</name><value><horiz>${center.horiz}</horiz><vert>${center.vert}</vert></value></parameter></effect></filter>`
   );
 }
 
@@ -713,14 +985,15 @@ const FLOP_FILTER =
 /**
  * XML FCP7 (xmeml v4) com uma sequência por plano, importável no Premiere
  * (estrutura da 261027, que importou). Um `<file>` só (o bruto), definido no
- * 1º clipe e referenciado nos outros; vídeo e áudio linkados clipe a clipe.
- * Com `framing`, cada clipe leva o Center calculado por `framingFor`.
+ * 1º clipe e referenciado nos outros; vídeo e áudio linkados clipe a clipe
+ * (áudio com 1 `sourcetrack`, premissa a conferir no 1º import). Cada clipe
+ * leva a escala efetiva e o Center de `framingFor` (o mesmo da prévia).
  */
-export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: Framing | undefined, opts: XmemlOptions = {}): string {
+export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: Framing, opts: XmemlOptions = {}): string {
   const fps = source.fps;
   const total = Math.round(source.durationS * fps);
   const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
-  const flop = opts.flopFilter && source.mirrored !== false ? FLOP_FILTER : "";
+  const flop = opts.flopFilter && source.mirrored ? FLOP_FILTER : "";
   let defined = false;
   let cid = 0;
   const fileEl = () => {
@@ -734,52 +1007,39 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
     );
   };
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
-  for (const plan of plans) {
+  plans.forEach((plan, si) => {
     const { spec } = plan;
     const v: string[] = [];
     const a: string[] = [];
     plan.clips.forEach((c, i) => {
       cid++;
-      const center = framing
-        ? framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct: c.scale, framing }).center
-        : undefined;
+      const fr = framingFor({ srcW: source.width, srcH: source.height, seqW: spec.width, seqH: spec.height, scalePct: c.scale, framing });
       const links =
         `<link><linkclipref>v${cid}</linkclipref><mediatype>video</mediatype></link>` +
         `<link><linkclipref>a${cid}</linkclipref><mediatype>audio</mediatype><trackindex>1</trackindex><clipindex>${i + 1}</clipindex></link>`;
       const head =
         `<name>${escapeXml(c.block)}</name><enabled>TRUE</enabled><duration>${total}</duration>\n` +
         `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`;
-      v.push(`<clipitem id="v${cid}">${head}${fileEl()}${flop}${motionFilter(c.scale, center)}\n${links}</clipitem>`);
+      v.push(`<clipitem id="v${cid}">${head}${fileEl()}${flop}${motionFilter(fr.scalePct, fr.center)}\n${links}</clipitem>`);
       a.push(
         `<clipitem id="a${cid}">${head}<file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem>`,
       );
     });
     out.push(
-      `<sequence id="seq-${escapeXml(spec.target)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
+      `<sequence id="seq-${si + 1}-${escapeXml(spec.target)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
         `<track>${v.join("\n")}</track></video>\n` +
         `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track></audio></media></sequence>`,
     );
-  }
+  });
   out.push("</xmeml>");
   return out.join("\n") + "\n";
 }
 
 // ── Legendas ──────────────────────────────────────────────────────────────
 
-export interface VocabRule {
-  /** Regex (fonte), aplicada ao texto das palavras unido por espaço. */
-  pattern: string;
-  replacement: string;
-  /** Flags da regex; default "g". */
-  flags?: string;
-  /** Só nestas versões (`SequenceTarget`); ausente = todas. */
-  targets?: SequenceTarget[];
-  note?: string;
-}
-
-/** Aplica as regras ao texto (regras de outras versões ficam de fora). */
+/** Aplica as regras ao texto (regras restritas a outras versões ficam de fora). */
 export function applyVocabulary(text: string, rules: VocabRule[], target?: SequenceTarget): string {
   let out = text;
   for (const r of rules) {
@@ -790,50 +1050,66 @@ export function applyVocabulary(text: string, rules: VocabRule[], target?: Seque
 }
 
 /**
- * Vocabulário sobre a lista de palavras: une tudo (para a regra pegar termos
- * de 2+ palavras, "inteligência personalizada"), aplica e redistribui. Se uma
- * regra mudar o número de palavras, cai para palavra a palavra.
+ * Vocabulário sobre a lista de palavras, REGRA A REGRA: une as palavras (para
+ * a regra pegar termos de 2+ palavras, "inteligência personalizada"), aplica e
+ * redistribui. A regra que muda o número de palavras é pulada (com aviso), sem
+ * derrubar as outras.
  */
-export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target?: SequenceTarget): Word[] {
-  const texts = words.map((w) => w.text.trim());
-  const joined = applyVocabulary(texts.join(" "), rules, target).split(" ");
-  if (joined.length === texts.length) return words.map((w, i) => ({ ...w, text: joined[i] }));
-  return words.map((w) => ({ ...w, text: applyVocabulary(w.text.trim(), rules, target) }));
+export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target?: SequenceTarget, warn?: (msg: string) => void): Word[] {
+  let cur = words.map((w) => ({ ...w, text: w.text.trim() }));
+  for (const r of rules) {
+    if (r.targets && (!target || !r.targets.includes(target))) continue;
+    const joined = cur.map((w) => w.text).join(" ");
+    const next = joined.replace(new RegExp(r.pattern, r.flags ?? "g"), r.replacement);
+    if (next === joined) continue;
+    const parts = next.split(" ");
+    if (parts.length !== cur.length) {
+      warn?.(`regra de vocabulário /${r.pattern}/ muda o número de palavras; pulada`);
+      continue;
+    }
+    cur = cur.map((w, i) => ({ ...w, text: parts[i] }));
+  }
+  return cur;
 }
 
-const TRAIL_PUNCT = /[.,!?;:…]+$/;
-
 /**
- * A pontuação segue o roteiro (#11208): palavra casada com o roteiro
- * (alinhamento LCS) e igual a ele depois de normalizar vira o token do
- * roteiro (grafia, maiúscula, pontuação); casada só por aproximação, ganha a
- * pontuação final do roteiro. Corrige o Whisper fechando frase onde o roteiro
- * tem vírgula ("Personalizada. Recurso" → "Personalizada, recurso").
+ * O texto aprovado vence (#11208): cada palavra casada com o roteiro
+ * (alinhamento LCS, com os aliases do vocabulário, "diária" ouvido =
+ * "diar.ia.br") vira o token do roteiro, com a grafia, a maiúscula e a
+ * pontuação dele. Corrige o Whisper fechando frase onde o roteiro tem vírgula
+ * ("Personalizada. Recurso" → "Personalizada, recurso") sem regra genérica que
+ * trocaria o adjetivo ("rotina diária" continua "diária"). Palavra sem par no
+ * roteiro fica como o Whisper ouviu.
  */
-export function alignPunctuationToScript(words: Word[], script: string): Word[] {
+export function alignPunctuationToScript(words: Word[], script: string, aliases: VocabAlias[] = []): Word[] {
   const raw = script.split(/\s+/).filter((t) => normalizeToken(t));
-  const pairs = alignTokens(words.map((w) => normalizeToken(w.text)), raw.map(normalizeToken));
+  const pairs = alignTokens(words.map((w) => normalizeToken(w.text)), raw.map(normalizeToken), makeMatcher(aliases));
   const out = words.map((w) => ({ ...w, text: w.text.trim() }));
-  for (const [i, j] of pairs) {
-    const sTok = raw[j];
-    if (normalizeToken(out[i].text) === normalizeToken(sTok)) out[i].text = sTok;
-    else out[i].text = out[i].text.replace(TRAIL_PUNCT, "") + (TRAIL_PUNCT.exec(sTok)?.[0] ?? "");
-  }
+  for (const [i, j] of pairs) out[i].text = raw[j];
   return out;
 }
 
 /** Quebra de cue (#11208): >50 caracteres, pontuação final, ou vírgula depois de 30. */
 export const CUE_DEFAULTS = { maxChars: 50, commaMinChars: 30, wrapOver: 28, tailS: 0.3 } as const;
 
+/**
+ * Cues: fecha a cue ANTES da palavra que a faria passar de `maxChars`, e
+ * depois de pontuação final ou de vírgula com mais de `commaMinChars`.
+ */
 export function segmentCues(words: Word[], opts: { maxChars?: number; commaMinChars?: number } = {}): Word[][] {
   const maxChars = opts.maxChars ?? CUE_DEFAULTS.maxChars;
   const commaMin = opts.commaMinChars ?? CUE_DEFAULTS.commaMinChars;
   const cues: Word[][] = [];
   let cur: Word[] = [];
+  const textOf = (ws: Word[]) => ws.map((x) => x.text).join(" ");
   for (const w of words) {
+    if (cur.length && textOf([...cur, w]).length > maxChars) {
+      cues.push(cur);
+      cur = [];
+    }
     cur.push(w);
-    const text = cur.map((x) => x.text).join(" ");
-    if (text.length > maxChars || /[.?!]$/.test(text) || (text.endsWith(",") && text.length > commaMin)) {
+    const text = textOf(cur);
+    if (/[.?!]$/.test(text) || (text.endsWith(",") && text.length > commaMin)) {
       cues.push(cur);
       cur = [];
     }
@@ -924,11 +1200,17 @@ export interface ReviewFinding {
 export const MIN_TAIL_S = 0.3;
 
 /**
- * Compara a transcrição da prévia com o roteiro da versão. Palavras a mais
- * que repetem o roteiro ao lado = tomada duplicada; uma palavra curta (≤3
- * letras ou <0,35 s) a mais perto de um corte = sílaba vazada de outra
- * tomada; o resto a mais = fala extra; roteiro sem correspondência = fala
- * faltando; menos de `minTailS` entre a última palavra e o fim = final seco.
+ * Compara a transcrição da prévia com o roteiro da versão (alinhamento LCS,
+ * com os aliases do vocabulário). As palavras da prévia sem par no roteiro
+ * são agrupadas em trechos contíguos e classificadas:
+ *   - `tomada-duplicada`: trecho de 2+ palavras igual às palavras logo antes
+ *     ou logo depois dele na prévia;
+ *   - `silaba-vazada`: 1 palavra só, a até `cutToleranceS` (0,4 s) de um
+ *     corte, com ≤3 letras ou menos de 0,35 s de duração;
+ *   - `fala-extra`: o resto.
+ * Trecho do roteiro sem par na prévia = `fala-faltando` (marcado no fim da
+ * última palavra casada antes dele). Menos de `minTailS` entre a última
+ * palavra e o fim da prévia = `final-seco`.
  */
 export function reviewPreview(input: {
   words: Word[];
@@ -937,11 +1219,12 @@ export function reviewPreview(input: {
   durationS: number;
   minTailS?: number;
   cutToleranceS?: number;
+  aliases?: VocabAlias[];
 }): ReviewFinding[] {
   const tol = input.cutToleranceS ?? 0.4;
   const W = input.words.map((w) => normalizeToken(w.text));
   const S = tokenize(input.script);
-  const pairs = alignTokens(W, S);
+  const pairs = alignTokens(W, S, makeMatcher(input.aliases));
   const matchedW = new Set(pairs.map(([i]) => i));
   const findings: ReviewFinding[] = [];
 
@@ -1037,14 +1320,16 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
 
 /**
  * O bruto na pasta da edição: o maior vídeo solto nela (fora de `Final/`), que
- * não seja um final (`final` no nome) nem uma prévia nossa.
+ * não seja um final (`final` no nome) nem uma prévia nossa. `candidates` traz
+ * todos os que serviriam: com mais de um, o CLI avisa listando-os (o editor
+ * pode ter gravado em 2 arquivos; `--source` escolhe outro).
  */
-export function pickRawSource(files: Array<{ name: string; size: number }>): { name: string; size: number } | null {
+export function pickRawSource(files: Array<{ name: string; size: number }>): { pick: { name: string; size: number }; candidates: Array<{ name: string; size: number }> } | null {
   const vids = files.filter(
     (f) => /\.(mp4|mov)$/i.test(f.name) && !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name),
   );
   if (vids.length === 0) return null;
-  return vids.reduce((a, b) => (b.size > a.size ? b : a));
+  return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };
 }
 
 /** fps a partir do `r_frame_rate` do ffprobe ("30/1", "30000/1001"). */
@@ -1055,10 +1340,14 @@ export function parseFrameRate(r: string): number {
   return Math.round(v * 1000) / 1000;
 }
 
-/** Saída do `ffprobe -show_streams -show_format -of json` → o que a montagem usa. */
+/**
+ * Saída do `ffprobe -show_streams -show_format -of json` → o que a montagem
+ * usa. Rotação de metadado (vídeo de celular gravado "em pé") não é tratada:
+ * o bruto da diar.ia.br é horizontal sem rotação (261027).
+ */
 export function parseProbe(json: string, path: string): SourceInfo {
   const j = JSON.parse(json) as {
-    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string; tags?: Record<string, string>; side_data_list?: Array<{ rotation?: number }> }>;
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string }>;
     format?: { duration?: string };
   };
   const v = j.streams?.find((s) => s.codec_type === "video");
@@ -1108,7 +1397,7 @@ export const PREVIEW_SUBTITLE_STYLE =
   "FontName=Arial,FontSize=10,PrimaryColour=&H00FFFFFF,BackColour=&H40201A10,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=100";
 
 /** Roteiro das versões, em markdown, para o Google Doc do gate 2. */
-export function roteiroMarkdown(edition: string, plans: SequencePlan[], resolved: Record<string, ResolvedItem[]>, fps: number): string {
+export function roteiroMarkdown(edition: string, plans: SequencePlan[], resolved: Partial<Record<BlockKey, ResolvedItem[]>>, fps: number): string {
   const lines = [`# Roteiro final ${edition} (${plans.length} versões)`, "", "Nenhuma versão leva \"Por que isso importa?\" (decisão do editor, 26/10/2026).", ""];
   for (const p of plans) {
     const dur = p.durationFrames / fps;
