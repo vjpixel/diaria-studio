@@ -96,6 +96,10 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
      ```
    - Checado no Stage 4 por `lintUseMelhorPostShape` (`scripts/lib/use-melhor-carousel.ts`, regra `use-melhor-um-shape`, warning). Lista (item com `steps`): 1º parágrafo fora da lista, parágrafo fora da lista, numeração descontínua, mais de 2 itens por card, e 2 cards de 1 item que caberiam juntos. Texto corrido (item sem `steps`, #10246): nº de parágrafos diferente de 3 e parágrafo em lista no meio da prosa.
 
+Antes de gravar, confira a precisão das relações descritas (#11249): para cada ação, compare **quem faz o quê, com qual ferramenta e em que condição** com o texto-base disponível (com `newsletter_md_path`, use o corpo revisado como régua; sem ele, use a fonte e o approved conforme o passo 2). Encurtar não pode trocar o agente, o instrumento nem a alternativa de um fluxo. Exemplos do gate 261026: "um Claude no Cursor comandava quatro subagentes" não equivale a "quatro agentes no Claude coordenavam"; passar para um script de ataque pronto quando há recusa não equivale a passar a tarefa a outro modelo. Corrija só com apoio no texto-base; não complete lacunas por plausibilidade.
+
+Confira também se cada frase acrescenta informação: o trecho em negrito deve resumir a batida do parágrafo, sem repetir a frase anterior com outras palavras. Caso real (261026 D2): listar os quatro bancos e repetir a mesma lista como "bancos afetados" não acrescenta informação e ainda pode transformar bancos que tentam conter riscos em vítimas confirmadas. Corte a repetição ou use outro fato sustentado, mantendo o formato do §3a.
+
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-social.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3` (+ `## um`, só no caso do §3c). O orchestrator fará o merge (seção `# Social`) numa etapa seguinte.
 
 ```markdown
