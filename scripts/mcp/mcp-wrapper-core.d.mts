@@ -45,8 +45,11 @@ export declare function buildDopplerChildEnv(base: EnvVars, childEnv: EnvVars): 
 
 export declare const CLARICE_API_KEY_KEY: "CLARICE_API_KEY";
 export declare const CLARICE_MCP_HEADER: "X-Clarice-Api-Key";
-export type ClariceHeaders = { headers: { "X-Clarice-Api-Key": string }; error?: undefined };
-export declare function resolveClariceHeaders(env: EnvVars): ClariceHeaders | LaunchError;
+/** Nunca falha (#11251): sem key utilizável, `headers` vem vazio e `warning` explica. */
+export type ClariceHeaders =
+  | { headers: { "X-Clarice-Api-Key": string }; warning?: undefined }
+  | { headers: Record<string, never>; warning: string };
+export declare function resolveClariceHeaders(env: EnvVars): ClariceHeaders;
 
 export type SpawnSpec = { command: string; args: string[]; options: SpawnOptions };
 export declare function buildSpawnSpec(

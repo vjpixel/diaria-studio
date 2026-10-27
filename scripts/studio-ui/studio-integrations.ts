@@ -306,7 +306,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     envVars: ["CLARICE_API_KEY"],
     probe: "env-only",
     note:
-      "HTTP header-auth (.mcp.json, X-Clarice-Api-Key via headersHelper scripts/mcp/clarice-headers.mjs, que lê o .env, #11251) — mesma env var do REST cortex acima, mas endpoint DIFERENTE (mcp.clarice.ai vs cortex.clarice.ai). Alcançabilidade aproximada pelo probe REST acima, não uma checagem direta deste endpoint.",
+      "HTTP header-auth (.mcp.json, X-Clarice-Api-Key via headersHelper scripts/mcp/clarice-headers.mjs, que lê a key só do .env — o Claude Code tira do ambiente do helper as vars com KEY no nome; a var do ambiente vale só pelo header estático ${CLARICE_API_KEY}, quando o helper não roda ou devolve {}, #11251) — mesma env var do REST cortex acima, mas endpoint DIFERENTE (mcp.clarice.ai vs cortex.clarice.ai). Alcançabilidade aproximada pelo probe REST acima, não uma checagem direta deste endpoint.",
   },
   {
     id: "mcp_beehiiv",

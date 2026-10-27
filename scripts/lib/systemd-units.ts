@@ -165,9 +165,12 @@ export function buildSystemdUnitFiles(task: ScheduledTaskDefinition, repoRootAbs
     `WorkingDirectory=${repoRootAbs}`,
     // #5114: sem isto, o unit sobe sem NENHUMA credencial do .env (CLARICE_API_KEY
     // incluída) e nenhum loader TS (env-loader.ts) roda a tempo de consertar isso
-    // pra um processo já lançado. (O MCP `clarice` não depende mais só disto desde
-    // o #11251: o `headersHelper` do .mcp.json lê a key do .env sozinho; o
-    // `${CLARICE_API_KEY}` estático ficou como fallback de pasta sem trust.) O prefixo
+    // pra um processo já lançado. (Desde o #11251 o MCP `clarice` tem um
+    // `headersHelper` que lê a key do .env, mas ele só roda em pasta com trust
+    // aceito — `hasTrustDialogAccepted`; `claude -p` headless e worktree nunca
+    // aberto interativamente não têm. Ali o MCP conecta só com o header estático
+    // `${CLARICE_API_KEY}`, resolvido deste ambiente: esta linha e o header
+    // estático seguem load-bearing, não remover nenhum dos dois.) O prefixo
     // `-` marca o arquivo como OPCIONAL (mesma semântica de "-" em ExecStartPre=)
     // -- máquina/worktree sem `.env` não impede a task de subir, só sobe sem as
     // vars (comportamento de hoje, sem regressão pra quem não usa credencial).
