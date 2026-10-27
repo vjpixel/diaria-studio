@@ -466,6 +466,15 @@ export interface SoloSquashCommit {
 
 const REVERT_TRAILER_RE = /This reverts commit ([0-9a-f]{7,40})\./gi;
 
+/** Trailers de atribuição que o squash default do GitHub trazia dos commits
+ * (#11236): `Co-Authored-By:` (coautoria no GitHub) e `Claude-Session:`.
+ * Linha inteira, chave case-insensitive. */
+const ATTRIBUTION_TRAILER_RE = /^[ \t]*(co-authored-by|claude-session)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim;
+
+function attributionKey(key: string, value: string): string {
+  return `${key.toLowerCase()}:${value.replace(/\s+/g, " ").toLowerCase()}`;
+}
+
 /**
  * Body do squash SOLO (#11216): o body da PR (fonte de `Closes`/`REFS`,
  * #11190), mais os trailers `This reverts commit <sha>.` que algum commit
@@ -474,23 +483,40 @@ const REVERT_TRAILER_RE = /This reverts commit ([0-9a-f]{7,40})\./gi;
  * graça; com `--body` explícito ele some, e `extractRevertedSha`
  * (`scripts/track-quality-report.ts`) deixa de resolver a trilha do commit
  * revertido. Commits ausentes/malformados só não contribuem nada.
+ *
+ * Desde o #11236 o mesmo vale pros trailers `Co-Authored-By:` e
+ * `Claude-Session:` dos commits: sem eles, a PR cujo body não os repete
+ * entrava na master sem atribuição de coautoria. Vão num parágrafo próprio,
+ * o ÚLTIMO do body (git/GitHub só leem trailers no parágrafo final),
+ * deduplicados por chave case-insensitive + valor, contra o body e entre
+ * commits.
  */
 export function buildSoloSquashBody(body: string, commits: readonly SoloSquashCommit[] | null | undefined): string {
-  const trailers: string[] = [];
+  const reverts: string[] = [];
+  const attributions: string[] = [];
   const seen = new Set<string>();
+  const seenAttr = new Set<string>();
   for (const m of body.matchAll(REVERT_TRAILER_RE)) seen.add(m[1].toLowerCase());
+  for (const m of body.matchAll(ATTRIBUTION_TRAILER_RE)) seenAttr.add(attributionKey(m[1], m[2]));
   for (const c of commits ?? []) {
     const text = [c?.messageHeadline, c?.messageBody].filter((v): v is string => typeof v === "string").join("\n");
     for (const m of text.matchAll(REVERT_TRAILER_RE)) {
       const sha = m[1].toLowerCase();
       if (seen.has(sha)) continue;
       seen.add(sha);
-      trailers.push(`This reverts commit ${m[1]}.`);
+      reverts.push(`This reverts commit ${m[1]}.`);
+    }
+    for (const m of text.matchAll(ATTRIBUTION_TRAILER_RE)) {
+      const key = attributionKey(m[1], m[2]);
+      if (seenAttr.has(key)) continue;
+      seenAttr.add(key);
+      attributions.push(m[0].trim());
     }
   }
-  if (trailers.length === 0) return body;
+  const blocks = [reverts, attributions].filter((b) => b.length > 0).map((b) => b.join("\n"));
+  if (blocks.length === 0) return body;
   const base = body.replace(/\s+$/, "");
-  return base ? `${base}\n\n${trailers.join("\n")}` : trailers.join("\n");
+  return [base, ...blocks].filter(Boolean).join("\n\n");
 }
 
 /**
