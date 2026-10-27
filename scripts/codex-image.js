@@ -66,11 +66,15 @@ Leave generous empty headroom above any head or main subject; never crop the top
 export function buildCodexArgs(cfg, referenceImages = []) {
   // `-i` antes do `-` final (prompt via stdin), um por imagem, caminho absoluto:
   // o Codex roda com cwd num diretório temporário (#11228).
+  // #11296: `-i/--image <FILE>...` aceita VÁRIOS valores e engoliria o `-`
+  // final como mais uma imagem (o prompt só chegava porque [PROMPT] vazio cai
+  // no stdin). O `--` encerra as opções e garante que `-` seja o [PROMPT].
   const images = referenceImages.flatMap((img) => ['-i', path.resolve(img)]);
+  const endOfOptions = images.length ? ['--'] : [];
   return [
     'exec', '--skip-git-repo-check', '--sandbox', 'workspace-write',
     '-c', 'forced_login_method="chatgpt"', // recusa API key guardada em ~/.codex/auth.json (pay-per-token)
-    '-m', cfg.model, '-c', `model_reasoning_effort=${cfg.reasoning_effort}`, ...images, '-',
+    '-m', cfg.model, '-c', `model_reasoning_effort=${cfg.reasoning_effort}`, ...images, ...endOfOptions, '-',
   ];
 }
 
