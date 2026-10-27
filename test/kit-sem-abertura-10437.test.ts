@@ -1116,7 +1116,7 @@ function evalParams(contacts: BrevoDiariaContact[], extra: Partial<Parameters<ty
   };
 }
 
-describe("Passo 0 e supressão: saída de kit-sem-abertura: vale nas DUAS bases (#10437)", () => {
+describe("Passo 0: saída NATIVA de kit-sem-abertura: vale nas DUAS bases (#10437); supressão por score nunca descadastra no Kit (#11221)", () => {
   const origFetch = globalThis.fetch;
 
   for (const [label, state, expected] of [
@@ -1163,28 +1163,43 @@ describe("Passo 0 e supressão: saída de kit-sem-abertura: vale nas DUAS bases 
     }
   });
 
-  it("supressão por baixa abertura também descadastra no Kit", async () => {
+  it("supressão por baixa abertura NUNCA descadastra no Kit: volta com a tag frio (#11221 revisa o #10437)", async () => {
     const kit: string[] = [];
-    let reads = 0;
+    const ops: string[] = [];
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
       const method = init?.method ?? "GET";
       if (u.includes("beehiiv") || u.includes("api.kit.com")) throw new Error(`inesperado: ${u}`);
-      if (method === "PUT") return jsonRes(200, {});
-      reads++;
+      if (method === "PUT") {
+        ops.push(`PUT ${String(init?.body)}`);
+        return jsonRes(200, {});
+      }
       const ids = Array.from({ length: 10 }, (_, i) => ({ campaignId: i + 1, eventTime: "2026-09-01T09:00:00Z" }));
-      return jsonRes(200, {
-        emailBlacklisted: reads > 1,
-        listIds: reads > 1 ? [] : [7],
-        statistics: { messagesSent: ids, opened: [] },
-      });
+      return jsonRes(200, { emailBlacklisted: false, listIds: [7], statistics: { messagesSent: ids, opened: [] } });
     }) as typeof fetch;
     try {
       const r = await runEvaluation(
-        evalParams([movedContact("m@x.com")], { unsubscribeKitSemAberturaDeps: kitUnsubDeps(["active", "cancelled"], kit) }),
+        evalParams([movedContact("m@x.com")], {
+          unsubscribeKitSemAberturaDeps: kitUnsubDeps(["active", "cancelled"], kit),
+          kitFrioFullyOn: true,
+          kitFrioTagDeps: {
+            findTagId: async () => 900,
+            tag: async (t, id) => void ops.push(`tag ${t} ${id}`),
+            listTags: async () => [{ id: 900, name: "frio" } as never],
+          },
+          kitEnvioBrevoTagDeps: {
+            findTagId: async () => 555,
+            untag: async (t, id) => void ops.push(`untag ${t} ${id}`),
+            listTags: async () => [],
+          },
+        }),
       );
-      assert.equal(findContact(r.store, "m@x.com")!.status, "suppressed");
-      assert.deepEqual(kit, ["get:42", "unsubscribe:42", "get:42"]);
+      const stored = findContact(r.store, "m@x.com")!;
+      assert.equal(stored.status, "converted_to_kit");
+      assert.equal(stored.resolution_reason, "kit_sem_abertura_frio");
+      assert.deepEqual(kit, [], "nenhuma leitura/descadastro no Kit pelo caminho de unsubscribe");
+      assert.deepEqual(ops.slice(0, 2), ["tag 900 42", "untag 555 42"]);
+      assert.ok(!ops.some((o) => o.includes("emailBlacklisted")), "sai da lista Brevo sem blacklist");
     } finally {
       globalThis.fetch = origFetch;
     }

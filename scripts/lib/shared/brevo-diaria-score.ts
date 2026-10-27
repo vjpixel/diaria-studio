@@ -196,3 +196,95 @@ export function classifyBrevoDiariaAction(input: BrevoDiariaEvaluationInput): Br
   }
   return "keep";
 }
+
+// ── #11226: regime SEMANAL (cadastros não confirmados) ─────────────────────
+//
+// Decisão do editor (27/10/2026, #11226): a Brevo diária passa a mandar só a
+// edição de segunda. Os contadores passam a ser POR SEMANAL (campanha enviada
+// a partir de `brevo_diaria.semanal.desde`), o clique vira sinal de ida pro
+// Kit e a supressão deixa de ser por taxa de abertura:
+//
+//   - clique em QUALQUER campanha (botão ou link comum) → vai pro Kit, na hora;
+//   - abertura > 51% (estrito) em >= 3 semanais → vai pro Kit (a regra de
+//     sempre, só que contada em semanais);
+//   - abriu alguma vez → suprime só depois de 12 semanais SEGUIDAS (as mais
+//     recentes, maduras) sem abertura nem clique;
+//   - nunca abriu nem clicou → suprime depois de 4 semanais;
+//   - o resto: mantém.
+//
+// "Abriu alguma vez" olha toda a história disponível do contato (inclusive
+// as diárias de antes do corte): é o que separa o leitor ocasional (os 113
+// suprimidos com >= 1 abertura) de quem nunca deu sinal. A estatística do
+// `GET /contacts/{email}` da Brevo cobre só os últimos 90 dias por padrão
+// (doc oficial), então o caller soma o marcador persistido no store
+// (`ever_opened`, ver `evaluate-brevo-diaria.ts`).
+//
+// O CLIQUE que leva pro Kit, ao contrário, só conta em campanha enviada a
+// partir do corte (`desde`): ativar no Kit sem DOI exige consentimento
+// ATUAL, e clique antigo (ou de scanner de link numa diária antiga) não é.
+//
+// O piso de promoção por abertura é o mesmo `BREVO_DIARIA_PROMOTE_MIN_SENDS`
+// de sempre, contado em semanais.
+/** Semanais seguidas sem sinal pra suprimir quem já abriu alguma vez. */
+export const BREVO_SEMANAL_SUPPRESS_STREAK_OPENED = 12;
+/** Semanais seguidas sem sinal pra suprimir quem nunca abriu nem clicou. */
+export const BREVO_SEMANAL_SUPPRESS_STREAK_NEVER = 4;
+
+/** Uma campanha semanal recebida pelo contato. */
+export interface BrevoSemanalSend {
+  /** Envio com >= `BREVO_DIARIA_MATURATION_HOURS` (só maduro conta na sequência sem sinal). */
+  mature: boolean;
+  opened: boolean;
+  clicked: boolean;
+  /** ms do envio — ordena a sequência (mais recente por último). */
+  sentAtMs: number;
+}
+
+export interface BrevoSemanalEvaluationInput {
+  /** Campanhas recebidas a partir do corte do regime semanal. */
+  semanais: readonly BrevoSemanalSend[];
+  /** >= 1 abertura em qualquer campanha da conta (história disponível + `ever_opened` do store). */
+  everOpened: boolean;
+  /** >= 1 clique em campanha enviada a partir de `desde` (nunca clique histórico, premissa A do #11226). */
+  clickedSinceDesde: boolean;
+}
+
+/** `promote_by_click`: ida pro Kit pelo clique (consentimento explícito, ativa direto). */
+export type BrevoSemanalAction = "promote_by_click" | BrevoDiariaAction;
+
+/** Pura — semanais maduras SEGUIDAS, a partir da mais recente, sem abertura nem clique. */
+export function trailingSemanaisSemSinal(semanais: readonly BrevoSemanalSend[]): number {
+  const mature = semanais.filter((s) => s.mature).slice().sort((a, b) => a.sentAtMs - b.sentAtMs);
+  let streak = 0;
+  for (let i = mature.length - 1; i >= 0; i--) {
+    if (mature[i]!.opened || mature[i]!.clicked) break;
+    streak++;
+  }
+  return streak;
+}
+
+/** Pura — limiar da sequência sem sinal que suprime (12 pra quem já abriu, 4 pra quem nunca deu sinal). */
+export function semanalSuppressStreakThreshold(everOpened: boolean): number {
+  return everOpened ? BREVO_SEMANAL_SUPPRESS_STREAK_OPENED : BREVO_SEMANAL_SUPPRESS_STREAK_NEVER;
+}
+
+/**
+ * Pura (#11226) — decisão do regime semanal. Clique vence tudo; depois a
+ * abertura (> 51% em >= 3 semanais); depois a supressão pela sequência sem
+ * sinal. Nunca suprime quem tem >= 1 abertura antes de 12 semanais seguidas
+ * sem sinal (teste de regressão da issue).
+ */
+export function classifyBrevoDiariaSemanalAction(input: BrevoSemanalEvaluationInput): BrevoSemanalAction {
+  if (input.clickedSinceDesde || input.semanais.some((s) => s.clicked)) return "promote_by_click";
+  const sends = input.semanais.length;
+  const opens = input.semanais.filter((s) => s.opened).length;
+  if (
+    sends >= BREVO_DIARIA_PROMOTE_MIN_SENDS &&
+    computeBrevoDiariaOpenRate({ opens_count: opens, sends_count: sends }) > BREVO_DIARIA_PROMOTE_MIN_OPEN_RATE
+  ) {
+    return "promote_to_beehiiv";
+  }
+  const everOpened = input.everOpened || opens > 0;
+  if (trailingSemanaisSemSinal(input.semanais) >= semanalSuppressStreakThreshold(everOpened)) return "suppress";
+  return "keep";
+}

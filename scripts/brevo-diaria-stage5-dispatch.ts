@@ -53,7 +53,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
 import { resolveStage5MaxAdd } from "./lib/brevo-diaria-max-add.ts";
@@ -61,6 +61,8 @@ import { readStore, DEFAULT_STORE_PATH, type BrevoDiariaContact } from "./lib/br
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeCurrentActiveCount } from "./sync-pending-to-brevo.ts";
 import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts";
+import { checkSemanalCapacity, countKitSemAberturaInBrevo, decideBrevoSemanalSend, parseBrevoDiariaSemanal } from "./lib/brevo-diaria-semanal.ts"; // #11226
+import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #11226
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -106,7 +108,7 @@ export interface Stage5BrevoDeps {
   exec: ExecFn;
   storeExists: () => boolean;
   readContacts: () => readonly BrevoDiariaContact[];
-  readPlatformConfig: () => { brevo_diaria?: { stage5_target_total?: number | null } };
+  readPlatformConfig: () => { brevo_diaria?: { stage5_target_total?: number | null; semanal?: unknown } };
   /** Mesmo shape de `readBrevoDiariaPublished` (publish-daily-brevo.ts) — retorna `null` se ausente/ilegível. */
   readPublished: (editionDir: string) => { campaign_id: number } | null;
 }
@@ -119,7 +121,7 @@ export function productionDeps(rootDir: string = ROOT): Stage5BrevoDeps {
     readContacts: () => readStore(DEFAULT_STORE_PATH).contacts,
     readPlatformConfig: () =>
       JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as {
-        brevo_diaria?: { stage5_target_total?: number | null };
+        brevo_diaria?: { stage5_target_total?: number | null; semanal?: unknown };
       },
     readPublished: (editionDir) => readBrevoDiariaPublished(editionDir),
   };
@@ -131,7 +133,7 @@ export function productionDeps(rootDir: string = ROOT): Stage5BrevoDeps {
 
 export type Stage5BrevoResult =
   | { status: "already_done"; campaignId: number }
-  | { status: "skipped"; reason: string }
+  | { status: "skipped"; reason: string; warnings?: string[] }
   | { status: "failed"; step: string; reason: string }
   | {
       status: "ok";
@@ -194,6 +196,13 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
   if (!brevoDiaria) {
     return { status: "skipped", reason: "brevo_diaria não configurado em platform.config.json." };
   }
+  // #11226 — config do regime semanal inválida é FALHA (antes de qualquer
+  // passo), nunca "skipped": skip esconderia que a edição não saiu pela Brevo
+  // por um erro de config.
+  const semanal = parseBrevoDiariaSemanal(brevoDiaria.semanal);
+  if ("error" in semanal) {
+    return { status: "failed", step: "config", reason: semanal.error };
+  }
 
   const storeExists = deps.storeExists();
   const currentActiveCount = storeExists ? computeCurrentActiveCount(deps.readContacts() as BrevoDiariaContact[]) : 0;
@@ -231,6 +240,20 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
     ? computeCurrentActiveCount(deps.readContacts() as BrevoDiariaContact[])
     : resolved.totalAtual;
   const addedActual = Math.max(0, activeCountAfterApply - resolved.totalAtual);
+
+  // #11226 — regime semanal: contatos/rampa rodam todo dia (o clique na Brevo
+  // vira ida pro Kit na rodada seguinte), mas a CAMPANHA só sai na segunda.
+  const contactsNow = deps.storeExists() ? deps.readContacts() : [];
+  const kitSemAberturaInBrevo = countKitSemAberturaInBrevo(contactsNow, ORIGIN_PREFIX.KIT_SEM_ABERTURA);
+  const semanalDecision = decideBrevoSemanalSend({ semanal, editionAammdd: basename(editionDir), kitSemAberturaInBrevo });
+  if (!semanalDecision.send) {
+    return { status: "skipped", reason: semanalDecision.reason, warnings };
+  }
+  if (semanalDecision.mode === "diaria" && semanalDecision.warning) warnings.push(semanalDecision.warning);
+  if (semanalDecision.mode === "semanal" && semanal.enabled) {
+    const capacity = checkSemanalCapacity(activeCountAfterApply, semanal.splitThreshold);
+    if (capacity.warning) warnings.push(capacity.warning);
+  }
 
   const publishResult = deps.exec("scripts/publish-daily-brevo.ts", [editionDir, "--i-reviewed-the-copy"]);
   if (publishResult.code !== 0) {

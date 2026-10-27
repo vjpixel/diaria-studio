@@ -771,7 +771,7 @@ export function readDiariaBroadcastRegistry(editionsRootAbs: string): DiariaBroa
   return dedupeBroadcastRecords(out);
 }
 
-async function listKitActiveCandidates(
+export async function listKitActiveCandidates(
   log: (msg: string) => void,
   pace: () => Promise<void>,
 ): Promise<KitActiveCandidate[]> {
@@ -832,7 +832,7 @@ async function ingestWithOrigin(apiKey: string, listId: number, email: string): 
   }
 }
 
-async function tagAndConfirm(tagId: number, subscriberId: number, pace: () => Promise<void>): Promise<void> {
+export async function tagAndConfirm(tagId: number, subscriberId: number, pace: () => Promise<void>): Promise<void> {
   await pace();
   await tagSubscriber(tagId, subscriberId);
   await pace();
@@ -841,7 +841,7 @@ async function tagAndConfirm(tagId: number, subscriberId: number, pace: () => Pr
 }
 
 /** #10557 — remove a tag e confirma pela releitura (404 no DELETE = já ausente; a releitura decide). */
-async function untagAndConfirm(tagId: number, subscriberId: number, pace: () => Promise<void>): Promise<void> {
+export async function untagAndConfirm(tagId: number, subscriberId: number, pace: () => Promise<void>): Promise<void> {
   await pace();
   try {
     await untagSubscriber(tagId, subscriberId);
@@ -863,7 +863,7 @@ async function untagAndConfirm(tagId: number, subscriberId: number, pace: () => 
  */
 export const KIT_MIN_INTERVAL_MS = 750;
 
-async function fetchDeliveredEngagement(
+export async function fetchDeliveredEngagement(
   id: number,
   log: (msg: string) => void,
   beforeRequest: () => Promise<void>,

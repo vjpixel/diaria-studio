@@ -66,6 +66,7 @@ import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import { runSemanalFrioAfterSchedule, summarizeSemanalFrioForSchedule } from "./publish-kit-semanal-frio.ts"; // #11221
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -342,7 +343,20 @@ export async function main(rootDirOverride?: string): Promise<void> {
     allowOtherDate,
     ...(audience.mode === "segment" ? { expectedAudienceFilter: audience.filter } : {}),
   });
-  console.log(JSON.stringify(result));
+  // #11221 — semanal de frio (2º broadcast de segunda, tag `frio`, mesmo
+  // `send_at`). Nunca muda o exit code do agendamento da diária, mas o
+  // desfecho vai no JSON (`semanal_frio: {status, reason, broadcast_id}`) e
+  // falha sai como ERRO no stderr — visível pra Etapa 6 relatar ao editor.
+  let semanalFrio: ReturnType<typeof summarizeSemanalFrioForSchedule> | undefined;
+  if (result.ok) {
+    const log = (msg: string) => process.stderr.write(`[schedule-newsletter-kit] semanal frio: ${msg}\n`);
+    const semanal = await runSemanalFrioAfterSchedule(editionDir, log, rootDir);
+    if (semanal.status !== "disabled") {
+      semanalFrio = summarizeSemanalFrioForSchedule(semanal);
+      log(`${semanal.status === "failed" ? "ERRO: " : ""}${semanal.status}${semanalFrio.reason ? ` — ${semanalFrio.reason}` : ""}`);
+    }
+  }
+  console.log(JSON.stringify(semanalFrio ? { ...result, semanal_frio: semanalFrio } : result));
   process.exitCode = result.ok ? 0 : result.code;
 }
 
