@@ -86,6 +86,12 @@ describe("#11325 — merge real continua bloqueado (a whitelist não abre bypass
     "gh pr comment --body-file - com merge depois do fecho": "gh pr comment 5 --body-file - <<'EOF'\nx\nEOF\ngh pr merge 5",
     "--body-file - num comando que não é gh comment": "bash --body-file - <<'EOF'\ngh pr merge 5\nEOF",
     "aspas não cobrem o comando real": `echo 'texto' && gh pr merge 5`,
+    // self-review finding 1: o consumidor executa código do repo — o destino
+    // do `cat` não pode ser um arquivo que ele roda.
+    "sobrescreve o helper e o executa": `cat > scripts/gh-pr-review-api.ts <<'EOF'\nexecSync(\`gh pr merge 5\`);\nEOF\n${helper}`,
+    "sobrescreve hook do git e commita": "cat > .git/hooks/pre-commit <<'EOF'\ngh pr merge 5\nEOF\ngit commit -F /tmp/m.md",
+    "sobrescreve tsconfig.json e roda tsx": `cat > tsconfig.json <<'EOF'\n{"x": "\`gh pr merge 5\`"}\nEOF\n${helper}`,
+    "destino .md com sufixo enganoso": "cat > /tmp/x.md.sh <<'EOF'\ngh pr merge 5\nEOF",
   };
   for (const [name, cmd] of Object.entries(bypasses)) {
     it(name, () => {

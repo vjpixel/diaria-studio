@@ -1328,6 +1328,8 @@ const GIT_PUSH = `(?: && git push${ARGS})?`;
 // trocar de diretório. Wrapper/env (`env X=1 git commit …`) segue fora da
 // whitelist (fail-closed: o corpo é lido como comandos).
 const CD_PREFIX = `(?:cd ${SIMPLE_ARG} && )?`;
+/** #11325: destino de `cat > …` — um SIMPLE_ARG terminado em `.md`/`.txt`. */
+const TEXT_FILE = String.raw`(?:[A-Za-z0-9_./:@=+,%-]+\.(?:md|txt)|"[^"$\x60\\\n]*\.(?:md|txt)"|'[^'\n]*\.(?:md|txt)')`;
 const HEAD_FORMS = [
   // git commit [flags] -F - <<'D' [&& git push ...]  →  depois do D, nada.
   { re: new RegExp(`^${CD_PREFIX}git commit${ARGS} -F - <<${DELIM}${GIT_PUSH}$`), tail: /^\s*$/ },
@@ -1346,9 +1348,12 @@ const HEAD_FORMS = [
   // #11325: cat <<'D' > ARQ  /  cat > ARQ <<'D'  (também `>>`) — o corpo vai
   // pra um ARQUIVO, nunca pra um shell. Depois do D: nada, ou UM consumidor
   // de texto (abaixo). Executar o arquivo na mesma chamada (`bash ARQ`,
-  // `. ARQ`, `| sh`) não casa e segue fail-closed.
-  { re: new RegExp(`^${CD_PREFIX}cat <<${DELIM} ?>>? ?${SIMPLE_ARG}$`), tail: catTail() },
-  { re: new RegExp(`^${CD_PREFIX}cat ?>>? ?${SIMPLE_ARG} <<${DELIM}$`), tail: catTail() },
+  // `. ARQ`, `| sh`) não casa e segue fail-closed. ARQ só `.md`/`.txt`: os
+  // consumidores executam código do repo (`scripts/*.ts`, hooks do git,
+  // `tsconfig.json`/`package.json`) — sobrescrever um deles e rodá-lo na
+  // mesma chamada seria bypass.
+  { re: new RegExp(`^${CD_PREFIX}cat <<${DELIM} ?>>? ?${TEXT_FILE}$`), tail: catTail() },
+  { re: new RegExp(`^${CD_PREFIX}cat ?>>? ?${TEXT_FILE} <<${DELIM}$`), tail: catTail() },
 ];
 
 /**
