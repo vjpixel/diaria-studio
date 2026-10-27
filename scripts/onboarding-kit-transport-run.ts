@@ -141,6 +141,7 @@ import {
   runPilotLot,
   approvePilotEmail3Lot,
   assertPilotTagAudience,
+  PilotTagAudienceRetryableError,
   rereadPilotFilter,
   assertPilotCancelable,
   buildPilotLotTagName,
@@ -946,6 +947,7 @@ async function main(): Promise<void> {
   // (inclui `schedule_failed` novo): um 429 transitório no refresh, um snippet
   // ausente ou um lote ainda `unverified` contam na streak do alarme de
   // continuidade (`isFailedKitSendRun`), mas não derrubam a unit no dia.
+  // #11340: idem lote cuja tag só estava atrasada (`lots_failed_retryable`).
   const run = summary.send_run as KitSendRunRecord | undefined;
   if (run != null && shouldExitNonZeroForKitSendRun(run)) process.exitCode = 1;
 }
@@ -1419,8 +1421,21 @@ export async function runProductionKitLot(
     lot.send_at = null;
     await verifyDraftAndSchedule(deps, lot, tagId, opts.sendAtFn, st);
   } catch (e) {
-    await cleanupUnconfirmedLot(deps, lot, redactEmails((e as Error).message), st, opts.alert);
+    const msg = redactEmails((e as Error).message);
+    // #11340: tag ainda atrasada depois de todas as releituras, sem broadcast
+    // criado — nada a limpar; preserva a classe pro caller não derrubar a unit.
+    if (e instanceof PilotTagAudienceRetryableError && lot.broadcast_id == null) {
+      lot.last_error = msg;
+      throw new PilotTagAudienceRetryableError(msg);
+    }
+    await cleanupUnconfirmedLot(deps, lot, msg, st, opts.alert);
   }
+}
+
+/** #11340: a falha do lote foi só a tag ainda atrasada (nenhum broadcast
+ *  criado, lote segue `pending`)? Conta em `lots_failed_retryable`. */
+export function isRetryableLotFailure(e: unknown): boolean {
+  return e instanceof PilotTagAudienceRetryableError;
 }
 
 /**
@@ -1793,6 +1808,7 @@ async function runNormalPlan(ctx: NormalPlanCtx, counters: SendRunCounters): Pro
       (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: true, broadcast_id: lot.broadcast_id, recipients: lot.recipient_emails.length, send_at: lot.send_at });
     } catch (e) {
       counters.lots_failed++;
+      if (isRetryableLotFailure(e)) counters.lots_failed_retryable = (counters.lots_failed_retryable ?? 0) + 1;
       lot.last_error = lot.last_error ?? redactEmails((e as Error).message);
       persistLotUpdate(storePath, lot);
       (summary.lots as unknown[]).push({ kind, lot_id: lot.lot_id, created: false, broadcast_id: lot.broadcast_id, status: lot.status, error: lot.last_error });
