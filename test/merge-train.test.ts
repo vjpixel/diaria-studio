@@ -489,4 +489,35 @@ describe("buildSoloSquashSubject / buildSoloSquashBody (#11216)", () => {
   it("body vazio recebe só os trailers", () => {
     assert.equal(buildSoloSquashBody("", [{ messageBody: "This reverts commit abcdef1." }]), "This reverts commit abcdef1.");
   });
+
+  // #11236: com --body explícito o squash perdia os Co-Authored-By dos commits.
+  it("copia Co-Authored-By e Claude-Session dos commits que o body não traz", () => {
+    const body = buildSoloSquashBody("Closes #11236\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n", [
+      { messageHeadline: "fix: x", messageBody: "Detalhe.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: abc-123" },
+    ]);
+    assert.equal(
+      body,
+      "Closes #11236\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: abc-123",
+    );
+  });
+
+  it("deduplica atribuição contra o body e entre commits, sem diferenciar caixa da chave", () => {
+    const body = buildSoloSquashBody("Closes #1\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>", [
+      { messageBody: "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" },
+      { messageBody: "Co-Authored-By: Fulano <f@x.com>" },
+      { messageBody: "co-authored-by: Fulano <f@x.com>" },
+    ]);
+    assert.equal(body, "Closes #1\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>\n\nCo-Authored-By: Fulano <f@x.com>");
+  });
+
+  it("revert e atribuição: trailers de atribuição ficam no ÚLTIMO parágrafo", () => {
+    const body = buildSoloSquashBody("Reverte.", [
+      { messageBody: "This reverts commit abcdef1.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" },
+    ]);
+    assert.equal(body, "Reverte.\n\nThis reverts commit abcdef1.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>");
+  });
+
+  it("menção a Co-Authored-By no meio de uma linha não vira trailer", () => {
+    assert.equal(buildSoloSquashBody("Closes #1", [{ messageBody: "copia o Co-Authored-By: dos commits" }]), "Closes #1");
+  });
 });
