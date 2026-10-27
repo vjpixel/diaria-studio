@@ -3,6 +3,7 @@ import { decodeHtmlEntities } from "./clean-summary.ts";
 import { canonicalize } from "./url-utils.ts";
 import { findSameFactDemotionMatch, type PublishedDestaque } from "./same-fact-demotion.ts";
 import { sameStorySignal } from "./story-grouping.ts";
+import { createStoryIndex, type IntraEditionItem } from "./fact-recurrence.ts";
 import type { ApprovedJson, StageArticle } from "./apply-stage2-caps.ts";
 
 export const POOL_PAST_WINDOW = 7;
@@ -54,12 +55,28 @@ export function poolFactAnchors(text: string): Set<string> {
   return new Set(signatures.filter(([, entity, detail, other]) => entity.test(t) && detail.test(t) && other.test(t)).map(([key]) => key));
 }
 
+function storyItem(a: StageArticle, label: string): IntraEditionItem {
+  return { title: decodeHtmlEntities(String(a.title ?? "")), summary: decodeHtmlEntities(String(a.summary ?? "")), url: String(a.url ?? ""), label };
+}
+
 export function curatePool(approved: ApprovedJson, past: PublishedDestaque[] = []): ApprovedJson {
   const references: PublishedDestaque[] = (approved.highlights ?? []).map((h, i) => {
     const a = h.article ?? h;
     return { aammdd: "current", n: i + 1, url: String(a.url ?? h.url ?? ""), title: String(a.title ?? ""), text: String(a.summary ?? "") };
   });
   references.push(...past);
+  // #11116/#11244: MESMA HISTÓRIA de incidente dentro da edição (pool × destaque,
+  // pool × pool anterior). Mesma regra do aviso do Stage 4 (#11173), aqui
+  // aplicada antes do writer: o item vai pra reserva e o próximo do bucket ocupa
+  // a vaga. Medido nos pools renderizados de 260801-261027: 6 itens sinalizados,
+  // 5 cortados pelo editor no gate 4. Destaque de edição ANTERIOR não entra
+  // (2 de 5 cortados na mesma régua): segue só como aviso (#11083).
+  const allPool: IntraEditionItem[] = (["lancamento", "radar", "use_melhor", "video"] as const)
+    .flatMap(b => (approved[b] ?? []).map(a => storyItem(a, b)));
+  const storyIndex = createStoryIndex(
+    (approved.highlights ?? []).map((h, i) => storyItem(h.article ?? h, `D${i + 1}`)),
+    allPool,
+  );
   const out = { ...approved };
   const reserve: Array<{ bucket: string; article: StageArticle; reason: string; matched_url?: string }> = [];
   // Preserve the gate's ranking, including its cross-bucket tie order.
@@ -88,11 +105,17 @@ export function curatePool(approved: ApprovedJson, past: PublishedDestaque[] = [
         return sameStorySignal(candidate.title, p.source_title ?? p.title) ||
           [...poolFactAnchors(previous)].some(key => anchors.has(key));
       });
+      const recurrence = exactHighlight || format || match || story ? null : storyIndex.match(storyItem(a, bucket));
       if (format || match || story) {
         reserve.push({ bucket, article: a, reason: format ?? "same-fact", matched_url: match?.matched_url ?? story?.url });
+      } else if (recurrence) {
+        reserve.push({ bucket, article: a, reason: "same-story", matched_url: recurrence.matched_url });
       } else {
         kept.push(a);
-        if (!exactHighlight) references.push({ aammdd: "current", n: 0, url: candidate.url, title: candidate.title, text: candidate.text });
+        if (!exactHighlight) {
+          references.push({ aammdd: "current", n: 0, url: candidate.url, title: candidate.title, text: candidate.text });
+          storyIndex.add(storyItem(a, bucket));
+        }
       }
     }
     out[bucket] = kept;
