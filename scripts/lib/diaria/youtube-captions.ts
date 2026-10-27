@@ -22,8 +22,6 @@ import {
 export const YOUTUBE_CAPTIONS_UPLOAD_ENDPOINT = "https://www.googleapis.com/upload/youtube/v3/captions";
 export const YOUTUBE_CAPTION_LANGUAGE = "pt-BR";
 export const YOUTUBE_CAPTION_NAME = "Português (Brasil)";
-/** Escopo que `captions.insert` exige. */
-export const YOUTUBE_CAPTIONS_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl";
 export const YOUTUBE_OAUTH_SETUP_COMMAND = "npx tsx scripts/youtube-oauth-setup.ts";
 
 /** Nome convencional do SRT do horizontal, ao lado do `.mp4` (#11384). */
