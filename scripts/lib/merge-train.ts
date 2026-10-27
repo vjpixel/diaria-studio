@@ -184,6 +184,8 @@ export function worstCaseCiRuns(batchSize: number): number {
  * `gh pr view`). Tipo aqui porque as funções de formatação abaixo são
  * puras e não devem importar nada de `merge-train-live.ts` (que faz I/O). */
 export interface TrainPrInfo {
+  /** Commits originais para preservar trailers no squash do lote (#11268). */
+  readonly commits?: readonly SoloSquashCommit[];
   readonly pr: number;
   readonly headRefName: string;
   readonly title: string;
@@ -551,7 +553,7 @@ export function buildTrainMergeCommitBody(batch: TrainBatch, prInfos: readonly T
   const closesLines = sorted(allIssues).map((i) => `Closes #${i}`);
   const refsLine = allRefs.size > 0 ? `Refs ${sorted(allRefs).map((i) => `#${i}`).join(", ")} — NÃO CLOSES (escopo parcial declarado nas PRs do lote)` : "";
   const prList = batch.prs.map((n) => `#${n}`).join(", ");
-  return [
+  const body = [
     `Trem de merge (#6300) — ${batch.prs.length} PRs validados juntos com 1 run de CI: ${prList}.`,
     "",
     ...closesLines,
@@ -559,6 +561,8 @@ export function buildTrainMergeCommitBody(batch: TrainBatch, prInfos: readonly T
   ]
     .filter((l) => l !== "")
     .join("\n");
+  // Reusa a deduplicação do solo; atribuição fica no último parágrafo.
+  return buildSoloSquashBody(body, batch.prs.flatMap((n) => byNumber.get(n)?.commits ?? []));
 }
 
 /**

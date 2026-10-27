@@ -227,13 +227,13 @@ export function screenTrainPrs(runner: TrainRunner, prNumbers: number[], discove
  * ele fecha do próprio corpo (`parseClosesIssues`, mesmo parser que
  * `buildTrainPrBody`/`buildTrainMergeCommitBody` consomem via `TrainPrInfo`). */
 export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPrInfo {
-  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body,labels,files,changedFiles"]);
+  const res = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "number,headRefName,title,body,labels,files,changedFiles,commits"]);
   if (!res.ok) throw new Error(`fetchTrainPrInfo: gh pr view falhou pro PR #${prNumber}: ${res.stderr}`);
   const parsed: unknown = JSON.parse(res.stdout);
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(`fetchTrainPrInfo: PR #${prNumber} — JSON inesperado de gh pr view`);
   }
-  const p = parsed as { number: number; headRefName: string; title: string; body: string; labels?: unknown; files?: unknown; changedFiles?: unknown };
+  const p = parsed as { number: number; headRefName: string; title: string; body: string; labels?: unknown; files?: unknown; changedFiles?: unknown; commits?: unknown };
   return {
     pr: p.number,
     headRefName: p.headRefName,
@@ -243,6 +243,7 @@ export function fetchTrainPrInfo(runner: TrainRunner, prNumber: number): TrainPr
     removalDeclaration: extractRemovalDeclaration(p.body ?? ""),
     labels: parseLabelNames(p.labels),
     changedFiles: parseChangedFiles(p.files, p.changedFiles),
+    commits: Array.isArray(p.commits) ? p.commits : [],
   };
 }
 

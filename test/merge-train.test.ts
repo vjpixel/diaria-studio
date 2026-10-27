@@ -303,6 +303,26 @@ describe("buildTrainMergeCommitTitle / buildTrainMergeCommitBody — commit squa
     assert.match(title, /#100.*#101|#101.*#100/);
   });
 
+  it("preserva trailers de todos os commits do lote, deduplicados, com atribuição no fim (#11268)", () => {
+    const infos: TrainPrInfo[] = [
+      { ...prInfos[0], commits: [
+        { messageBody: "This reverts commit abcdef1.\n\nCo-Authored-By: Pessoa <p@example.com>\nClaude-Session: sessao-1" },
+        { messageHeadline: "This reverts commit abcdef2.", messageBody: "Co-authored-by: pessoa <p@example.com>" },
+      ] },
+      { ...prInfos[1], commits: [
+        { messageBody: "This reverts commit ABCDEF1.\nClaude-Session: sessao-1" },
+        { messageBody: "Co-Authored-By: Outra <o@example.com>\nClaude-Session: sessao-2" },
+      ] },
+      { ...prInfos[0], pr: 999, commits: [{ messageBody: "Co-Authored-By: Fora <f@example.com>" }] },
+    ];
+    const body = buildTrainMergeCommitBody({ prs: [100, 101, 102] }, infos);
+    assert.equal(body, [
+      "Trem de merge (#6300) — 3 PRs validados juntos com 1 run de CI: #100, #101, #102.\nCloses #10\nCloses #11\nCloses #12",
+      "This reverts commit abcdef1.\nThis reverts commit abcdef2.",
+      "Co-Authored-By: Pessoa <p@example.com>\nClaude-Session: sessao-1\nCo-Authored-By: Outra <o@example.com>\nClaude-Session: sessao-2",
+    ].join("\n\n"));
+  });
+
   it("corpo tem 1 linha `Closes #N` POR ISSUE, na UNIÃO ordenada de todas as issues do lote (#10878)", () => {
     const body = buildTrainMergeCommitBody({ prs: [100, 101] }, prInfos);
     assert.match(body, /^Closes #10$/m);

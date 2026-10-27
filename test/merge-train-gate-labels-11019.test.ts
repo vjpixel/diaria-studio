@@ -156,7 +156,7 @@ const isLabelEdit = (a: string[]) => a[0] === "tsx" && a[1] === "scripts/lib/gh-
 
 describe("fetchTrainPrInfo — labels e arquivos (#11019)", () => {
   it("lê labels e files; lista menor que changedFiles vira null (incompleta)", () => {
-    const r = new Fake().on("gh", (a) => a[1] === "view" && a.includes("number,headRefName,title,body,labels,files,changedFiles"), (a) =>
+    const r = new Fake().on("gh", (a) => a[1] === "view" && a.some((x) => x.startsWith("number,headRefName,title,body,labels,files,changedFiles")), (a) =>
       ok(
         JSON.stringify({
           number: Number(a[2]),
