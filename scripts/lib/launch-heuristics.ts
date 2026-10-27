@@ -21,7 +21,6 @@ import { isDevReleaseNote } from "./release-note-detect.ts"; // #2469 (finding 4
 import { hasRoundupSignalInUrlOrTitle } from "./roundup-detect.ts"; // #2691 item 1: shared regex — fonte única, evita divergência com use-melhor-curation.ts
 import { isVideoUrl } from "./video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em verify-accessibility.ts
 import { VERSION_SIGNAL_RE } from "./version-signal-detect.ts"; // #4337: fonte única compartilhada com validate-lancamentos.ts
-import { isTitleCase } from "./title-case.ts"; // #11218: Title Case não é sinal de nome próprio
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export { isVideoUrl }; // #3288: re-exportado pra manter compat com importadores existentes (categorize.ts, testes)
 export type { Article };
@@ -523,18 +522,27 @@ const TUTORIAL_TITLE_EXTRA_RE = new RegExp(
  *
  * #11218: manchete em Title Case ("How One Hacker Used AI Agents…", a mesma
  * história do rappler.com na grafia comum de veículo em inglês) capitaliza
- * toda palavra, então ali a maiúscula não indica nome próprio — o título só
- * entra no teste quando NÃO está em Title Case (`isTitleCase`). O summary é
- * testado à parte (e não concatenado ao título, que deixava `\s+` atravessar
- * o `\n` entre os dois).
+ * toda palavra, então ali a maiúscula não indica nome próprio. O sinal de
+ * Title Case usado é o próprio VERBO: em sentence case ele vem minúsculo
+ * ("How Mercado Libre used Gemini"), em Title Case vem maiúsculo ("…Used…").
+ * Por isso o verbo é exigido em minúscula. Um guard por proporção de palavras
+ * capitalizadas (`isTitleCase`) não serve aqui: em título curto os próprios
+ * nomes que a regex exige já passam do limite de 60% e o sentence case
+ * legítimo ("How Mercado Libre used Gemini") seria descartado (review do PR
+ * #11230). Custo aceito: entidade real em manchete Title Case ("How Mercado
+ * Libre Used Gemini") não casa — indistinguível do caso do rappler.
+ * Título e summary passam pela mesma regex (summary que repete o título em
+ * Title Case não reabre o falso positivo), testados à parte — concatenar
+ * deixava `\s+` atravessar o `\n` entre os dois.
  */
 const HOW_NAMED_ENTITY_USED_RE =
-  /\b[Hh]ow\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(?:[Uu]sed?|[Ll]everag(?:es?|ed?)|[Pp]owered?)\b/;
+  /\b[Hh]ow\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(?:used?|leverag(?:es?|ed?)|powered?)\b/;
 
 function hasHowNamedEntityUsed(article: Article): boolean {
-  const title = article.title ?? "";
-  if (!isTitleCase(title) && HOW_NAMED_ENTITY_USED_RE.test(title)) return true;
-  return HOW_NAMED_ENTITY_USED_RE.test(article.summary ?? "");
+  return (
+    HOW_NAMED_ENTITY_USED_RE.test(article.title ?? "") ||
+    HOW_NAMED_ENTITY_USED_RE.test(article.summary ?? "")
+  );
 }
 
 function isTutorialByTitleExtra(article: Article): boolean {
