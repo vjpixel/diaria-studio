@@ -1234,4 +1234,16 @@
       <news:title>Hackers usam Claude e Grok contra bancos</news:title>
     </news:news>
   </url>
+  <url>
+    <loc>https://diar.ia.br/p/google-pode-usar-seus-dados-do-photos-para-direcionar</loc>
+    <lastmod>2026-10-27</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-27T00:00:00.000Z</news:publication_date>
+      <news:title>Google pode usar seus dados do Photos para direcionar anúncios</news:title>
+    </news:news>
+  </url>
 </urlset>
