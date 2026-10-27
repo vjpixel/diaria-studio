@@ -75,10 +75,11 @@ export function shortsRegistryPath(editionDir: string, writer: ShortsRegistryWri
 
 /**
  * Qual escritor é esta rodada do `publish-shorts.ts`. As duas flags de timer
- * juntas são recusadas antes de qualquer gravação (`instagramTimerScopeError`); aqui o LinkedIn
- * vence só por ordem.
+ * juntas não são um escritor (#11368): o CLI recusa antes, e aqui lança em vez
+ * de escolher um por ordem.
  */
 export function shortsRegistryWriterFor(linkedinTimer: boolean, instagramTimer = false): ShortsRegistryWriter {
+  if (linkedinTimer && instagramTimer) throw new Error("--instagram-timer não combina com --linkedin-timer (cada timer grava o próprio registro)");
   return linkedinTimer ? "linkedin-timer" : instagramTimer ? "instagram-timer" : "main";
 }
 
@@ -135,8 +136,11 @@ export function linkedinTimerScopeError(input: {
  */
 export function instagramTimerScopeError(input: {
   instagramTimer: boolean;
-  /** `publishing.shorts.instagram_backend`; ausente = não conferido. */
-  backend?: InstagramBackend;
+  /**
+   * `publishing.shorts.instagram_backend`; `"unreadable"` = o config não carregou
+   * (#11368: recusa, em vez de pular a regra como o antigo campo opcional).
+   */
+  backend: InstagramBackend | "unreadable";
   linkedinTimer?: boolean;
   only: readonly string[] | null;
   markDestination?: string | null;
@@ -144,7 +148,10 @@ export function instagramTimerScopeError(input: {
 }): string | null {
   if (!input.instagramTimer) return null;
   const dest = SHORTS_INSTAGRAM_TIMER_LEDGER_DESTINATION;
-  if (input.backend !== undefined && input.backend !== "timer-300") {
+  if (input.backend === "unreadable") {
+    return "--instagram-timer: platform.config.json não carregou, não dá pra conferir publishing.shorts.instagram_backend (o timer só age com timer-300)";
+  }
+  if (input.backend !== "timer-300") {
     return `--instagram-timer só vale com publishing.shorts.instagram_backend = "timer-300" (está "${input.backend}")`;
   }
   if (input.linkedinTimer) return "--instagram-timer não combina com --linkedin-timer (cada timer grava o próprio registro)";

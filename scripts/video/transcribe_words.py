@@ -10,7 +10,7 @@ Face; sem a variável o hub tenta a rede a cada carga). O TS passa os dois.
 
 Uso:
     python -P scripts/video/transcribe_words.py AUDIO.wav SAIDA.json
-        [--model large-v3-turbo] [--initial-prompt "..."] [--vad] [--language pt]
+        [--model large-v3-turbo] [--initial-prompt "..."] [--vad] [--language pt] [--no-condition]
 
 Saída (JSON, gravada de forma atômica):
     {"duration": s, "model": "...", "segments": [
@@ -31,6 +31,11 @@ def main() -> int:
     ap.add_argument("--initial-prompt", default="")
     ap.add_argument("--vad", action="store_true", help="filtro VAD (bruto: sim; áudio já montado: não)")
     ap.add_argument("--language", default="pt")
+    ap.add_argument(
+        "--no-condition",
+        action="store_true",
+        help="condition_on_previous_text=False (retranscrição de trecho curto, #11364)",
+    )
     a = ap.parse_args()
 
     if not os.path.isfile(a.audio):
@@ -51,6 +56,7 @@ def main() -> int:
         beam_size=5,
         word_timestamps=True,
         initial_prompt=a.initial_prompt or None,
+        condition_on_previous_text=not a.no_condition,
     )
     out = {"duration": info.duration, "model": a.model, "segments": []}
     for s in segs:
