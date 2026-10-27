@@ -213,6 +213,10 @@ describe("runMergeTrain — PR-trem recebe a label antes do polling de CI (cená
     const r = new Fake()
       .on("git", () => true, () => ok())
       .on("npx", (a) => a.includes("merge-lock-acquire") || a.includes("merge-lock-release"), () => ok())
+      .on("npx", (a) => a.includes("scripts/check-pr-session-claims.ts"), (a) => {
+        order.push(`claims:${a[a.indexOf("--pr") + 1]}`);
+        return ok();
+      })
       .on("npx", isLabelEdit, (a) => {
         order.push(`label:${a[3]}`);
         return ok();
@@ -233,5 +237,6 @@ describe("runMergeTrain — PR-trem recebe a label antes do polling de CI (cená
     assert.equal(outcomes[0].status, "merged");
     assert.equal(order[0], "label:11017", "a label vai pro PR-trem antes da 1ª leitura de CI");
     assert.ok(order.includes("ci:11017"));
+    for (const pr of [11007, 11009, 11010]) assert.ok(order.includes(`claims:${pr}`));
   });
 });

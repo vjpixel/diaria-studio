@@ -62,7 +62,7 @@
  * @see hermes/scripts/continuo-pr-review.sh
  */
 
-import { checkPrSessionClaims } from "./lib/pr-session-claim-gate.ts";
+import { checkContinuoPrSessionClaims } from "./lib/pr-session-claim-gate.ts";
 import { resolveRepoRoot } from "./lib/session-registry.ts";
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -216,7 +216,7 @@ function run(): number {
   const deletions = typeof payload.deletions === "number" ? payload.deletions : null;
   const diffLineCount = additions !== null && deletions !== null ? additions + deletions : null;
 
-  const claims = checkPrSessionClaims(resolveRepoRoot(), payload.body, values["session-id"] ?? "");
+  const claims = checkContinuoPrSessionClaims(resolveRepoRoot, payload.body);
   const gateResult = evaluateContinuoMergeGate({
     superseded: supersededVerdict.superseded,
     retidoParaEditor: retido.retido,

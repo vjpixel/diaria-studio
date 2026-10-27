@@ -19,3 +19,20 @@ export function checkPrSessionClaims(
   }
   return { ok: true, reason: "nenhuma issue reivindicada por outra sessão" };
 }
+
+/** O review tem identidade própria só para o lock. A exclusão de claims
+ * vem da sessão que criou a PR, persistida pelo tick no corpo dela.
+ * PRs antigas/sem identidade não recebem nenhuma exclusão implícita. */
+export function checkContinuoPrSessionClaims(
+  repoRoot: () => string, body: unknown, repo = DEFAULT_ISSUE_REPO, now = Date.now(),
+): { ok: boolean; reason: string } {
+  try {
+    const owners = typeof body === "string"
+      ? [...body.matchAll(/^<!-- continuo-owner-session: ([A-Za-z0-9_-]+) -->$/gm)].map(m => m[1])
+      : [];
+    if (owners.length > 1) return { ok: false, reason: "identidade da sessão dona da PR ambígua" };
+    return checkPrSessionClaims(repoRoot(), body, owners[0] ?? "", repo, now);
+  } catch (e) {
+    return { ok: false, reason: `erro ao consultar claims: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}

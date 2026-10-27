@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { checkPrSessionClaims } from "../scripts/lib/pr-session-claim-gate.ts";
+import { checkPrSessionClaims, checkContinuoPrSessionClaims } from "../scripts/lib/pr-session-claim-gate.ts";
 import { checkPrOpenForPush } from "../scripts/check-pr-open-for-push.ts";
 
 it("#11372: claim efetiva alheia barra merge de PR órfã, própria passa e expirada libera", () => {
@@ -63,11 +63,38 @@ it("#11372: fixer e implementador exigem o guard antes de cada re-push", () => {
 
 it("#11372: gates serial e contínuo consultam claims com identidade da sessão", () => {
   const gate = readFileSync("scripts/check-continuo-merge-gate.ts", "utf8");
-  assert.match(gate, /checkPrSessionClaims\(resolveRepoRoot\(\), payload.body, values\["session-id"\]/);
+  assert.match(gate, /checkContinuoPrSessionClaims\(resolveRepoRoot, payload.body\)/);
   assert.match(gate, /gateResult.action === "merge" && !claims.ok/);
   const review = readFileSync("hermes/scripts/continuo-pr-review.sh", "utf8");
-  assert.match(review, /check-continuo-merge-gate.ts --pr "\$pr" --session-id "\$SESSION_ID"/);
+  assert.match(review, /check-continuo-merge-gate.ts --pr "\$pr" 2>/);
+  assert.match(readFileSync("hermes/skills/hermes-diaria-continuo/SKILL.md", "utf8"), /<!-- continuo-owner-session: \$SESSION_ID -->/);
   for (const skill of ["diaria-develop", "diaria-overnight"]) {
     assert.match(readFileSync(`.claude/skills/${skill}/SKILL.md`, "utf8"), /check-pr-session-claims.ts --pr \{N\} --session-id \{sessionId\}/);
   }
+});
+
+it("#11372: review independente usa a dona persistida, sem liberar claims de outro tick", () => {
+  const root = mkdtempSync(join(tmpdir(), "pr-owner-11372-"));
+  const now = Date.parse("2026-10-27T21:00:00Z");
+  try {
+    mkdirSync(join(root, "data/sessions"), { recursive: true });
+    for (const [id, issues] of [["tick-owner", [11372]], ["tick-other", [11373]]] as const) {
+      writeFileSync(join(root, `data/sessions/continuo-Neo-${id}.json`), JSON.stringify({
+        kind: "continuo", machineTag: "Neo", sessionId: id,
+        startedAt: new Date(now).toISOString(), lastHeartbeat: new Date(now).toISOString(), claimed_issues: issues,
+      }));
+    }
+    const body = "Closes #11372\n<!-- continuo-owner-session: tick-owner -->";
+    assert.equal(checkPrSessionClaims(root, body, "continuo-review-new", undefined, now).ok, false);
+    const check = (text: string) => checkContinuoPrSessionClaims(() => root, text, undefined, now);
+    assert.equal(check(body).ok, true);
+    assert.match(check(body + "\nCloses #11373").reason, /tick-other/);
+    assert.equal(check("Closes #11372").ok, false);
+    assert.equal(check("Closes #11372\n<!-- continuo-owner-session:  -->").ok, false);
+    assert.equal(check(body + "\n<!-- continuo-owner-session: tick-other -->").ok, false);
+    assert.equal(check("Closes #99999").ok, true);
+    const failed = checkContinuoPrSessionClaims(() => { throw new Error("registry indisponível"); }, body);
+    assert.equal(failed.ok, false);
+    assert.match(failed.reason, /registry indisponível/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
