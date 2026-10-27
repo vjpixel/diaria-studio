@@ -1008,15 +1008,31 @@ describe("applyDestaqueTitleEdit (#3806 — Opção B spike: edição visual do 
     assert.ok(destaques[0].body.includes("Corpo do primeiro destaque"));
   });
 
-  it("lint reporta falha (ex: título > 52 chars) sem impedir o save — mesma rede de segurança de sempre, não um novo gate bloqueante", () => {
+  it("lint reporta falha (ex: assunto do D1 > 70 chars) sem impedir o save — aviso, não gate (#11254)", () => {
     writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
-    const tituloGigante = "Título propositalmente enorme pra estourar o limite de 52 caracteres do lint";
+    const tituloGigante = "Título propositalmente enorme pra estourar o limite do assunto do e-mail do lint";
+    assert.ok(tituloGigante.length > 70);
     const result = applyDestaqueTitleEdit(root, "260721", 1, tituloGigante);
     assert.equal(result.ok, true); // salva normalmente — lint é reportado, não bloqueia o save
-    const titleLenCheck = result.lint!.checks.find((c) => c.id === "title-length");
-    assert.ok(titleLenCheck);
-    assert.equal(titleLenCheck!.ok, false);
-    assert.equal(result.lint!.ok, false); // agregado reflete a falha blocking
+    const subjectCheck = result.lint!.checks.find((c) => c.id === "title-email-subject");
+    assert.ok(subjectCheck);
+    assert.equal(subjectCheck!.ok, false);
+    // #11254: limite de título fica fora do gate 4 — aviso, nunca blocking.
+    assert.equal(subjectCheck!.blocking, false);
+    assert.ok(result.lint!.checks.some((c) => c.id === "title-card-4x5" && c.blocking === false));
+    assert.equal(result.lint!.checks.some((c) => c.id === "title-length"), false);
+  });
+
+  it("#11254: título de 62 chars (acima do antigo teto de 52) não acende nenhum check de título", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const titulo62 = "Anthropic lança agente que programa sozinho por horas seguidas";
+    const result = applyDestaqueTitleEdit(root, "260721", 1, titulo62);
+    assert.equal(result.ok, true);
+    for (const id of ["title-card-4x5", "title-email-subject"]) {
+      const c = result.lint!.checks.find((x) => x.id === id);
+      assert.ok(c, id);
+      assert.equal(c!.ok, true, id);
+    }
   });
 
   it("respeita o guard de conflito mtime (#3729) — reusa saveReviewFile sem duplicar a checagem", () => {

@@ -202,6 +202,14 @@ export {
   type TitleLengthReport,
 } from "./lib/lint-checks/title-length.ts";
 export {
+  checkTitleCardFit,
+  checkTitleEmailSubject,
+  checkTitleLimits,
+  MAX_SUBJECT_LENGTH,
+  type TitleLimitError,
+  type TitleLimitReport,
+} from "./lib/lint-checks/title-limits.ts"; // #11254
+export {
   checkTitleMentionsIA,
   type TitleMentionsIaError,
   type TitleMentionsIaReport,
@@ -804,7 +812,11 @@ export function runStage2LintReport(editionDir: string, root: string): StageLint
 
 // #5895: handlers CLI extraídos pra scripts/lib/lint-checks/cli/ (motion puro).
 import { runCli as run_titlesPerHighlight } from "./lib/lint-checks/cli/titles-per-highlight.ts";
-import { runCli as run_titleLength } from "./lib/lint-checks/cli/title-length.ts";
+import {
+  runCli as run_titleLength,
+  runCardCli as run_titleCard4x5,
+  runSubjectCli as run_titleEmailSubject,
+} from "./lib/lint-checks/cli/title-length.ts"; // #11254
 import { runCli as run_whyMattersFormat } from "./lib/lint-checks/cli/why-matters-format.ts";
 import { runCli as run_eaiSection } from "./lib/lint-checks/cli/eai-section.ts";
 import { runCli as run_eiaAnswer } from "./lib/lint-checks/cli/eia-answer.ts";
@@ -851,6 +863,8 @@ import { runCli as run_agradecimentoHardcoded } from "./lib/lint-checks/cli/agra
 const CHECK_HANDLERS: Record<string, (args: Record<string, string>, root: string) => void> = {
   "titles-per-highlight": run_titlesPerHighlight,
   "title-length": run_titleLength,
+  "title-card-4x5": run_titleCard4x5, // #11254
+  "title-email-subject": run_titleEmailSubject, // #11254
   "why-matters-format": run_whyMattersFormat,
   "eai-section": run_eaiSection,
   "eia-answer": run_eiaAnswer,
@@ -934,7 +948,9 @@ function main(): void {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
         "  ou: lint-newsletter-md.ts --check titles-per-highlight --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check title-length --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check title-length --md <md-path>   (= title-card-4x5 + title-email-subject, #11254)\n" +
+        "  ou: lint-newsletter-md.ts --check title-card-4x5 --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check title-email-subject --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check why-matters-format --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check eai-section --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check eia-answer --md <md-path> [--edition-dir <dir>]\n" +

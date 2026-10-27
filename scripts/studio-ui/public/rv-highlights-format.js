@@ -8,14 +8,15 @@
  * já usa `Intl.Segmenter` pra não penalizar emojis de bandeira, ex: 🇧🇷 = 1
  * grafema mas 4 code units). Duplicado aqui de propósito: é 3 linhas puras
  * sem estado, e o cliente não tem como importar um módulo `.ts` do servidor
- * — o NÚMERO do limite (52) em si vem da API (`maxTitleLength`, ver
+ * — o NÚMERO do limite em si vem da API (`maxTitleLength`, ver
  * `readHighlightsSummary` em studio-review.ts), nunca hardcodado aqui. */
 export function graphemeLength(str) {
   return [...new Intl.Segmenter().segment(str)].length;
 }
 
 /** `true` quando `title` estoura `maxTitleLength` — vermelho no contador de
- * caracteres da opção (mesmo limite do lint bloqueante `title-length`). */
+ * caracteres da opção (teto do assunto do e-mail, `MAX_SUBJECT_LENGTH`,
+ * #11254 — aviso, não bloqueio). */
 export function isTitleTooLong(title, maxTitleLength) {
   return graphemeLength(title || "") > maxTitleLength;
 }

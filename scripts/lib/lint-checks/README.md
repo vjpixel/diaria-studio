@@ -17,7 +17,8 @@ deliberada de escopo descrita abaixo.
 | `destaque-chars.ts` | `destaque-min-chars` + `destaque-max-chars` | #914/#964 |
 | `why-matters-length.ts` | `why-matters-length` | #3993 |
 | `titles-per-highlight.ts` | `titles-per-highlight` | #178/#245 |
-| `title-length.ts` | `title-length` | #701/#801 |
+| `title-length.ts` | _(alvo de escrita de 52 chars — só medição, nenhum gate, #11254)_ | #701/#801 |
+| `title-limits.ts` | `title-card-4x5` + `title-email-subject` (`title-length` = os dois) | #11254 |
 | `highlight-parsing.ts` | _(helper compartilhado — regexes de header de destaque)_ | #1737 |
 | `eia-answer-check.ts` | `eia-answer` | #744/#927 |
 | `intentional-error.ts` | `intentional-error-flagged` | #754/#1378 |
