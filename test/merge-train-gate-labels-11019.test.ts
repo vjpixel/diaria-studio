@@ -222,7 +222,7 @@ describe("runMergeTrain — PR-trem recebe a label antes do polling de CI (cená
         order.push(`ci:${a[2]}`);
         return ok(ciPass);
       })
-      .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } })))
+      .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } })))
       .on("gh", (a) => a[1] === "view" && a.includes("labels,body"), () => ok(JSON.stringify({ labels: [], body: "" })))
       .on("gh", (a) => a[1] === "merge" || a[1] === "comment" || a[1] === "close", () => ok());
 
