@@ -2132,7 +2132,7 @@ async function main(): Promise<number> {
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
   const cleanup = () => cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
-    config: loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))),
+    config: () => loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))),
     keepVideo: flags.has("keep-video"), log: console.error });
   const persist = (entry: ShortPublishedEntry): ShortsPublishedFile => persistShortEntry(dir, aammdd, writer, entry);
 
@@ -2155,8 +2155,8 @@ async function main(): Promise<number> {
       return 2;
     }
     published = persist(built.entry);
-    cleanup();
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
+    cleanup();
     return 0;
   }
 
@@ -2471,8 +2471,8 @@ async function main(): Promise<number> {
     skipped: plan.items.filter((i) => i.action.startsWith("skip_") && i.action !== "skip_done").length,
     guided: plan.items.filter((i) => i.action === "guided").length,
   };
-  cleanup();
   console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
+  cleanup();
   return summary.failed > 0 ? 1 : 0;
 }
 

@@ -721,8 +721,8 @@ async function main(): Promise<number> {
     log: (line) => console.error(line),
     d1SlotAt: loadD1SlotAt(aammdd),
   });
-  cleanupPublishedVideo({ dir, edition: aammdd, kind: "horizontal", keepVideo: flags.has("keep-video"), log: console.error });
   if (outcome.record) console.log(JSON.stringify({ dry_run: false, skipped: outcome.skipped, ...outcome.record }, null, 2));
+  cleanupPublishedVideo({ dir, edition: aammdd, kind: "horizontal", keepVideo: flags.has("keep-video"), log: console.error });
   return outcome.exitCode;
 }
 
