@@ -225,13 +225,15 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
     }
   });
 
-  it('newsletterBackend omitido (default) → preserva o caminho Beehiiv pré-#6339, resolution_reason continua "score_threshold"', async () => {
+  it('newsletterBackend omitido (default) → promove somente no Kit (#11225)', async () => {
     let byEmailCalls = 0;
     globalThis.fetch = (async (u: string | URL, init?: RequestInit) => {
       const url = String(u);
       if (url.includes("api.kit.com")) {
         // #7382 — checagem cross-plataforma antes de promover pra Beehiiv:
         // contato NÃO existe no Kit, promoção pra Beehiiv segue normal.
+        if (init?.method === "POST") return jsonRes(200, { subscriber: { id: 42, state: "active" } });
+        if (url.includes("/subscribers/42")) return jsonRes(200, { subscriber: { id: 42, state: "active" } });
         return jsonRes(200, { subscribers: [], pagination: {} });
       }
       if (url.includes("subscriptions/by_email/")) {
@@ -269,9 +271,37 @@ describe("runEvaluation — newsletterBackend ramifica a promoção (#6339)", ()
       assert.equal(result.promoted, 1);
       assert.equal(result.skippedActiveOnKit, 0, "#7382 — contato não está no Kit, promoção segue normal");
       const stored = findContact(result.store, "default-backend@b.com");
-      assert.equal(stored!.resolution_reason, "score_threshold");
+      assert.equal(stored!.resolution_reason, "score_threshold_kit");
     } finally {
       restore();
     }
+  });
+});
+
+
+describe("#11225 confirmação histórica não depende de ponte diária", () => {
+  it("Kit não confirma ativo: mantém fila Brevo sem alterar arquivo Beehiiv", async () => {
+    const original = globalThis.fetch;
+    const writes: string[] = [];
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method && init.method !== "GET") writes.push(`${init.method} ${url}`);
+      if (url.includes("api.kit.com")) return jsonRes(200, { subscriber: { id: 42, state: "inactive" } });
+      if (url.includes("api.beehiiv.com")) {
+        assert.ok(!init?.method || init.method === "GET", "arquivo somente leitura");
+        return jsonRes(200, { data: { status: "active" } });
+      }
+      return jsonRes(200, { statistics: { messagesSent: [], opened: [] } });
+    }) as typeof fetch;
+    try {
+      const contacts = [contact("historico@b.com")];
+      const result = await runEvaluation({ contacts, store: { contacts }, push: true,
+        publicationId: "pub_1", beehiivApiKey: "bkey", brevoApiKey: "brkey",
+        kitApiKey: "kkey", listId: 7, log: () => {} });
+      assert.equal(result.failed, 1);
+      assert.equal(findContact(result.store, "historico@b.com")!.status, "in_brevo");
+      assert.ok(writes.some((w) => w.includes("api.kit.com")));
+      assert.ok(writes.every((w) => !w.includes("api.beehiiv.com") && !w.includes("api.brevo.com")));
+    } finally { globalThis.fetch = original; }
   });
 });

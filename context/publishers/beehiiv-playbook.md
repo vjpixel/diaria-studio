@@ -1,5 +1,8 @@
 # Playbook: Beehiiv (Etapa 5 — newsletter daily)
 
+> Aposentado para publicação (#11225): este documento preserva o procedimento histórico. Não executar envio, rascunho, teste ou agendamento Beehiiv. Conta mantida como arquivo; envio atual usa Kit.
+
+
 Playbook semântico+operacional pra criar a newsletter diar.ia.br no Beehiiv como **rascunho** usando o template configurado, e enviar um email de teste. Não publica nem agenda — o editor revisa e dispara manualmente do dashboard.
 
 ## TLDR (#1327)

@@ -33,8 +33,8 @@ export type NewsletterBackend = "beehiiv" | "kit";
 
 /**
  * Pure (#11225): normaliza o valor cru de `publishing.newsletter.backend` (ou
- * de qualquer chave irmã — `read_backend`, `subscriber_backend`). Default
- * `"kit"`: só o literal `"beehiiv"` (trim + lowercase) cai no ramo legado.
+ * de ENVIO. Não aplicar às chaves de leitura histórica. Default
+ * `"kit"` para todo valor; Beehiiv não é mais backend de envio.
  * Chave ausente, vazia, typo ou tipo inesperado → `"kit"`.
  *
  * Até o #11225 o default era o inverso (`"beehiiv"` pra tudo que não fosse
@@ -43,13 +43,13 @@ export type NewsletterBackend = "beehiiv" | "kit";
  * mais nada), então uma chave faltando nunca pode reativar o envio por ela.
  */
 export function parseNewsletterBackend(raw: unknown): NewsletterBackend {
-  return typeof raw === "string" && raw.trim().toLowerCase() === "beehiiv" ? "beehiiv" : "kit";
+  return "kit"; // #11225: o ramo de envio Beehiiv foi removido.
 }
 
 /**
  * Lê `publishing.newsletter.backend` de `platform.config.json`. Default
  * `"kit"` (#11225) — config ausente, ilegível, chave ausente ou qualquer valor
- * que não seja literalmente `"beehiiv"` (ver `parseNewsletterBackend`).
+ * legado também resolve para Kit (ver `parseNewsletterBackend`).
  *
  * `configPathOverride` existe só pra teste — produção sempre lê o
  * `platform.config.json` real do repo (resolvido por posição do arquivo,

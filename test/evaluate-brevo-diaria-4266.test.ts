@@ -792,7 +792,7 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
       assert.equal(result.unsubscribedNative, 1);
       assert.equal(result.unsubscribedNativeBeehiivNotFound, 0, "confirmação normal via releitura 'inactive' — não é o caminho 404 (silent-failure-hunter, review #4650)");
       assert.equal(result.failed, 0);
-      assert.equal(beehiivPutCalled, true, "chamada Beehiiv (unsubscribe:true) foi emitida");
+      assert.equal(beehiivPutCalled, false, "#11225: arquivo nunca é alterado");
       assert.deepEqual(putCalls, [{ url: putCalls[0]?.url, body: { unlinkListIds: [7] } }]);
       const c = findContact(result.store, "unsub2@b.com")!;
       assert.equal(c.status, "unsubscribed");
@@ -841,12 +841,12 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
         listId: 7,
         log: () => {},
       });
-      assert.equal(result.failed, 1, "verificação não confirmada conta como falha, nunca silenciosa");
+      assert.equal(result.failed, 0);
       assert.equal(result.unsubscribedNative, 1, "contado como 'intenção' detectada, mesmo revertido pelo fail-safe (mesmo padrão de promoted/suppressed)");
-      assert.deepEqual(brevoPutCalls, [], "unlinkFromBrevoList NUNCA chamado sem confirmação da Beehiiv");
+      assert.equal(brevoPutCalls.length, 1, "#11225: saída nativa libera Brevo sem alterar arquivo");
       const c = findContact(result.store, "unsub3@b.com")!;
-      assert.equal(c.status, "in_brevo", "NUNCA marcado unsubscribed sem confirmação — segue in_brevo pra retentar na próxima rodada");
-      assert.equal(c.resolution_reason, undefined);
+      assert.equal(c.status, "unsubscribed");
+      assert.equal(c.resolution_reason, "native_unsubscribe");
     } finally {
       restore();
     }
@@ -928,11 +928,11 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
       });
       assert.equal(result.failed, 0, "404 é PERMANENTE, resolvido na mesma rodada — nunca fica marcado como falha (diferente do 5xx/timeout)");
       assert.equal(result.unsubscribedNative, 1);
-      assert.equal(result.unsubscribedNativeBeehiivNotFound, 1, "sinal agregado distinto do caminho 404 (silent-failure-hunter, review #4650)");
+      assert.equal(result.unsubscribedNativeBeehiivNotFound, 0, "sinal agregado distinto do caminho 404 (silent-failure-hunter, review #4650)");
       assert.deepEqual(brevoPutCalls, [{ body: { unlinkListIds: [7] } }], "unlinkFromBrevoList AINDA é chamado — sai da lista Brevo mesmo sem registro Beehiiv");
       const c = findContact(result.store, "orfao404@b.com")!;
       assert.equal(c.status, "unsubscribed", "marcado direto — nunca preso em in_brevo esperando confirmação que nunca chegaria");
-      assert.equal(c.resolution_reason, "native_unsubscribe_beehiiv_404");
+      assert.equal(c.resolution_reason, "native_unsubscribe");
     } finally {
       restore();
     }
@@ -974,6 +974,7 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
     let unlinkBody: unknown;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
+      if (u.includes("api.kit.com") && !u.includes("email_address=")) return jsonRes(200, { subscriber: { id: 42, state: "active" } });
       if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "active" } });
       if (init?.method === "PUT") {
         unlinkBody = JSON.parse(init.body as string);
@@ -993,6 +994,7 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
         push: true,
         publicationId: "pub_1",
         beehiivApiKey: "bkey",
+        kitApiKey: "kkey",
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
@@ -1486,6 +1488,7 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
     const deleteUrls: string[] = [];
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
+      if (u.includes("api.kit.com") && !u.includes("email_address=")) return jsonRes(200, { subscriber: { id: 42, state: "active" } });
       if (u.includes("api.kit.com")) {
         // #7382 — checagem cross-plataforma antes de promover pra Beehiiv:
         // contato NÃO existe no Kit (nunca migrou), promoção segue normal.
@@ -1541,7 +1544,7 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
       assert.equal(result.promoted, 1);
       assert.equal(result.skippedActiveOnKit, 0, "#7382 — contato não está no Kit, promoção segue normal");
       assert.equal(findContact(result.store, "promo@b.com")!.status, "promoted_beehiiv");
-      assert.deepEqual(deleteUrls, ["https://api.beehiiv.com/v2/publications/pub_1/subscriptions/sub_promo_atual"], "DELETE mira o id vindo do GET interno, nunca um id armazenado");
+      assert.deepEqual(deleteUrls, [], "#11225: nunca DELETE no arquivo");
     } finally {
       restore();
     }

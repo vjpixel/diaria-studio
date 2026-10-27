@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-6
-description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Beehiiv + auto-reporter) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
+description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Kit + auto-reporter) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
 ---
 
 > Este arquivo e referenciado por `orchestrator.md` via `@see`. Nao executar diretamente.
@@ -9,7 +9,7 @@ description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Beehiiv 
 
 ## Etapa 6 — Agendamento (gate humano) — #1694
 
-Stage 6 e o **gate final do pipeline**. Apresenta ao editor a parada única (revisão visual do e-mail de teste + resumo de agendamento — draft Beehiiv, social agendado, achados do review, avisos de invariantes que persistiram após tentativa de correção automática, #8205), recebe a confirmacao e executa o Schedule do Beehiiv. Termina com o auto-reporter (sem gate próprio, #8205).
+Stage 6 e o **gate final do pipeline**. Apresenta ao editor a parada única (revisão visual do e-mail de teste + resumo de agendamento — draft Kit, social agendado, achados do review, avisos de invariantes que persistiram após tentativa de correção automática, #8205), recebe a confirmacao e executa o Schedule do Kit. Termina com o auto-reporter (sem gate próprio, #8205).
 
 Interacao humana SO neste stage (alem do Stage 4) — e dentro dele, **uma única parada** (§6c), não mais (#8205).
 
@@ -29,14 +29,13 @@ EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 5 \
-  --outputs "_internal/05-published.json"
-# Backend "kit": --outputs "_internal/newsletter-kit-published.json"
+  --outputs "_internal/newsletter-kit-published.json"
 ```
 
 Exit code handling:
 - `0` → continuar.
 - `1` → **FATAL:** "Etapa 5 (Publicacao) nao completou (sentinel ausente). Re-rodar `/diaria-5-publicacao {AAMMDD}` antes de continuar." Parar.
-- `2` → **FATAL:** artefato do backend atual ausente (`05-published.json` pra Beehiiv, `newsletter-kit-published.json` pra Kit). "Re-rodar Etapa 5." Parar.
+- `2` → **FATAL:** artefato do backend atual ausente (`newsletter-kit-published.json`). "Re-rodar Etapa 5." Parar.
 - `3` → logar warn, continuar.
 
 ### 6a. Pre-requisitos
@@ -50,13 +49,11 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'etapa 6 agendamento started'
   ```
-**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"kit"` se ausente, #11225 — Beehiiv é só arquivo histórico; o ramo `"beehiiv"` é legado, só com a chave explícita). Guardar esse valor — decide, mais abaixo, se §6d (Beehiiv) ou §6d-kit roda, e de onde vêm os campos desta lista.
+**Envio exclusivamente Kit (#11225).** Não consultar Beehiiv nem selecionar ramo legado; `backend` ausente ou legado também resolve para Kit.
 
-- Backend `"beehiiv"` (legado, só explícito): ler `_internal/05-published.json` → extrair: `draft_url`, `title`, `test_email_sent_at`, `review_completed`, `review_status`, `review_final_issues`.
 - Backend `"kit"` (padrão, também com a chave ausente): ler `_internal/newsletter-kit-published.json` → extrair `broadcast_id` (equivalente a `post_id`), `subject` (equivalente a `title`), `status`. Não há `draft_url`/`test_email_sent_at` neste schema — usar `_internal/05-edition-url.txt` (mesmo arquivo, ver §5c-1-kit) no lugar de `draft_url` onde o resumo do gate (§6b) citar um link pro editor conferir. `review_status`/`review_attempts`/`review_reason`/`review_final_issues` vêm de `_internal/05-review-kit.json` (gravado por `record-kit-review.ts` no fim do §5f, #9594). **Arquivo ausente/inválido NÃO é "review ok"** — é o review que não rodou (edição 261005): rodar `npx tsx scripts/check-invariants.ts --stage 5 --rule stage-5-review-completed --edition-dir {EDITION_DIR}/` (sai `0` mesmo com violação — é `warning`) e, se o JSON trouxer a violação, o `{review_status_block}` do gate (§6c) vira `⚠ review automático NÃO rodou na Etapa 5 ({mensagem da violação}) — conferir o e-mail de teste com atenção redobrada`. Nunca rodar o `review-test-email` aqui pra "completar" — a parada única do §6c já pede a revisão visual.
 - Ler `_internal/06-social-published.json` → extrair: horarios agendados dos 3 posts LinkedIn e 3 posts Facebook (`scheduled_at` por destaque).
 - Ler `_internal/06-verify-dispatch.json` (se existir) → extrair quaisquer warnings de verificacao.
-- Só no ramo Beehiiv legado: ler `post_id` de `_internal/05-published.json` (necessario para o Schedule Beehiiv e para verificacao pos-Schedule).
 - Ler horario default de agendamento: 06:00 BRT da DATA DA EDIÇÃO (`{AAMMDD}`) — **nunca** "amanhã" pelo relógio de agora (#8207: Etapa 6 rodada depois da meia-noite BRT com "amanhã" contado pelo relógio agendou a edição 260917 um dia atrasado no Kit e na Brevo diária). `scripts/resolve-edition-scheduled-at.ts` é o ÚNICO lugar que faz essa conta — usar o MESMO comando aqui e no ramo `sim HH:MM` do §6c abaixo:
   ```bash
   npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}
@@ -69,8 +66,8 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
 
 Compor o resumo que sera exibido no gate único de §6c — inclui o pedido de revisão visual do e-mail de teste (#8205) mais todo o contexto que antes tinha parada própria:
 
-- **Revisão visual do e-mail de teste (#8205):** `{test_email}` de `publishing.newsletter.test_email` em `platform.config.json`; assunto `[teste] {title}` (Kit, fallback `--send-test`), `{title}` sem prefixo (Kit, teste pela UI — `test_mode: "ui"`, #10395) ou `[TEST] {title}` (Beehiiv).
-- **Newsletter Beehiiv:**
+- **Revisão visual do e-mail de teste (#8205):** `{test_email}` de `publishing.newsletter.test_email` em `platform.config.json`; assunto `[teste] {title}` (Kit, fallback `--send-test`), `{title}` sem prefixo (Kit, teste pela UI — `test_mode: "ui"`, #10395).
+- **Newsletter Kit:**
   - URL do rascunho: `draft_url` de `05-published.json`.
   - Test email: `test_email_sent_at` formatado em BRT.
   - Status do review: se `review_completed: true` → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo ({review_reason})` (desde #8902, `review_reason` distingue `mcp_unavailable` — conector Gmail indisponível/renomeado, checagem automática ficou OFF, ver #7279 — de `not_found_timeout`/`truncated_fetch` — Gmail respondeu, email só não foi localizado/veio truncado; `ui_test_not_marked` (#10395, só Kit) → `⚠ teste pela UI não registrado: o e-mail pode nunca ter saído`; ausência de `review_reason` em edições pré-#8902 → mostrar só `⚠ review inconclusivo`); se issues → listar.
@@ -117,43 +114,9 @@ Seguir os passos 1-5 de `.claude/agents/orchestrator-stage-0-preflight.md` § "0
 
 Os rascunhos criados (com número do sorteio quando alocado) entram como contexto informativo no gate único de §6c, junto com as linhas agregadas do passo 5 de §0-replies e `result.alreadyProcessedCount` (`{N} thread(s) já processada(s) no Passo 1b`). Nunca um gate próprio.
 
-### 6b-slug. Guard de slug do bloco WhatsApp — roda ANTES do gate, nunca bloqueia sozinho (#4570, não-bloqueante desde #8205)
+### 6b-slug. Slug Kit (#11225)
 
-**Só backend `"beehiiv"`.** Com backend `"kit"`, pular esta seção inteira — problema específico da UI de SEO/URL slug da Beehiiv, sem equivalente no Kit (`public_url` do broadcast já é a URL final).
-
-O bloco encaminhável por WhatsApp (dentro do D1 desde #5152, ver `context/templates/newsletter.md`) já tem a URL `https://diar.ia.br/p/{seoSlug(title)}` BAKED IN no corpo do e-mail desde o pré-render do Stage 4 — se o slug real do post divergir, esse link 404 pra quem abrir o e-mail. **Até #8205 esta checagem rodava DEPOIS do clique em Schedule e travava o Stage 6 com um halt banner pedindo `'corrigido'` — um 2º ponto de parada, além do gate de §6c.** Desde #8205, ela roda AQUI (antes de qualquer gate), a correção automática (permanentemente bloqueada pelo plano, #3449) é tentada do mesmo jeito por completude de log, e se a divergência persistir ela vira **aviso destacado dentro da parada única de §6c** — o editor decide ali, na mesma resposta, nunca um segundo gate.
-
-1. Buscar o slug real do post: `mcp__claude_ai_Beehiiv__get_post({ post_id })` → `web_settings.slug`. **Se `get_post` falhar/erroar** (não apenas retornar slug ausente — timeout, disconnect, erro de API), tratar como falha de MCP (#738) — halt banner (comando abaixo), nunca prosseguir assumindo divergência resolvida ou slug correto. Isto **continua sendo halt de infra**, não o gate editorial que este item reduz:
-   ```bash
-   npx tsx scripts/render-halt-banner.ts \
-     --stage "6 — Agendamento" \
-     --reason "mcp__claude_ai_Beehiiv desconectado (get_post falhou ao buscar slug)" \
-     --action "reconecte e responda 'retry', ou 'abort' para abortar"
-   ```
-2. Rodar o guard determinístico (comparação pura, `scripts/lib/whatsapp-slug-guard.ts`), gravando o resultado em `_internal/whatsapp-slug-check.json` (`--out`, #4574 — backstop determinístico consumido por `check-invariants.ts --stage 6` em §6g):
-   ```bash
-   npx tsx scripts/check-whatsapp-slug-guard.ts \
-     --post-id {post_id} \
-     --d1-title "{title}" \
-     --actual-slug "{slug_atual_do_get_post}" \
-     --out {EDITION_DIR}/_internal/whatsapp-slug-check.json
-   ```
-   (omitir `--actual-slug` se `web_settings.slug` vier ausente/vazio — o guard trata ausência como divergência.) **Exit 2 (args inválidos — `post_id`/`title` ausentes)** é bug do orchestrator, não divergência de slug: investigar antes de repetir, sem tratar como aviso pro editor.
-3. **Se divergir (exit 1):** tentar a correção automática por completude — sempre falha no plano atual (#3449, `403 SEND_API_NOT_ENTERPRISE_PLAN`, não transitório), então isto é só registro, não um passo que precisa suceder:
-   ```bash
-   npx tsx scripts/fix-post-slug.ts --post-id {post_id} --slug {slug_correto} --execute
-   # exit 3 esperado (#3449) — stderr traz instrucoes manuais formatadas
-   ```
-   Guardar a mensagem de `formatManualSlugFixInstructions` (reusada pelo stderr do comando acima) para exibir como o aviso destacado dentro do gate de §6c — **nunca** renderizar halt banner nem esperar resposta aqui.
-4. Logar o resultado (ok ou diverge), em qualquer caso:
-   ```bash
-   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
-     --level {info se ok, warn se diverge} \
-     --message "whatsapp slug guard: {ok|diverge}" \
-     --details '{"ok":{ok},"expectedSlug":"{expected_slug}","actualSlug":"{actual_slug}"}'
-   ```
-
-Guardar o resultado (`SLUG_CHECK_OK` booleano + instruções de correção manual se `false`) para usar em §6c. **Segue para §6c em qualquer um dos dois casos** — divergência nunca bloqueia esta seção sozinha.
+Usar `05-edition-url.txt`/`seoSlug` e a verificação da página própria em §6b-site. Não consultar a UI/SEO Beehiiv. Definir `SLUG_CHECK_OK = true` (guard antigo de slug Beehiiv não se aplica).
 
 ### 6b-site. Checar o PR da página do site aberto no Stage 5 — roda ANTES do gate (#6202 → #8221 → #10160)
 
@@ -163,12 +126,12 @@ Sem este passo o acervo do site fica congelado e a página `/p/{slug}` — desti
 
 **1. Estado registrado pelo Stage 5.** Ler `_internal/site-page-published.json`. Se `published === true` (PR aberto/mergeado no §5b-site), NÃO republicar — pular pro passo 3 (que manda de volta pro passo 2 se a página estiver defasada, exit `5`).
 
-**2. Fallback — só se o arquivo estiver ausente, com `published !== true`, ou se o passo 3 / §6c-site devolver exit `5`** (edição despachada antes do #10160, §5b-site falhou, ou página DEFASADA — #10190: o D1 ou os insumos da página mudaram depois do §5b-site): publicar aqui, igual ao Stage 5. `--slug`: backend `"beehiiv"` → `{slug_atual_do_get_post}` de §6b-slug (divergência já virou aviso pro gate); backend `"kit"` → `--slug-from-d1` no lugar de `--slug` (`seoSlug` do título do D1, mesmo de `deriveEditionUrl`, #7420). `--sitemap` é obrigatório (#6454 — sem ela sitemap/home ficam congelados). **Republicação com slug novo limpa o slug velho sozinha (#10194):** o script lê o slug/PR anterior do state, grava o PR velho em `_internal/site-page-superseded.json` (o waiter dele desiste do merge), fecha o PR velho se aberto (`gh pr close` sem `--delete-branch`, #8158 — só a branch remota sai, fail-soft), tira a `<loc>` velha do sitemap e, se o PR velho já mergeou, remove `p/{slug-velho}` no mesmo commit do PR novo. Nada a fazer à mão; avisos saem no log:
+**2. Fallback — só se o arquivo estiver ausente, com `published !== true`, ou se o passo 3 / §6c-site devolver exit `5`** (edição despachada antes do #10160, §5b-site falhou, ou página DEFASADA — #10190: o D1 ou os insumos da página mudaram depois do §5b-site): publicar aqui, igual ao Stage 5. `--slug`: usar `--slug-from-d1` no lugar de `--slug` (`seoSlug` do título do D1, mesmo de `deriveEditionUrl`, #7420). `--sitemap` é obrigatório (#6454 — sem ela sitemap/home ficam congelados). **Republicação com slug novo limpa o slug velho sozinha (#10194):** o script lê o slug/PR anterior do state, grava o PR velho em `_internal/site-page-superseded.json` (o waiter dele desiste do merge), fecha o PR velho se aberto (`gh pr close` sem `--delete-branch`, #8158 — só a branch remota sai, fail-soft), tira a `<loc>` velha do sitemap e, se o PR velho já mergeou, remove `p/{slug-velho}` no mesmo commit do PR novo. Nada a fazer à mão; avisos saem no log:
 
 ```bash
 npx tsx scripts/publish-edition-site-page.ts \
   --edition-dir {EDITION_DIR} \
-  {--slug {slug_atual_do_get_post} | --slug-from-d1 pro Kit} \
+  --slug-from-d1 \
   --sitemap workers/site/public/sitemap.xml --no-wait-merge
 npx tsx scripts/reconcile-site-sitemap.ts
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4/5} --message "site-page stage6 fallback publish: exit {code}"
@@ -194,13 +157,13 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```bash
 npx tsx scripts/check-site-page-pr-gate.ts --edition-dir {EDITION_DIR}
 ```
-Exit: `0` MERGED · `3` CI ainda rodando · `1` CI vermelho/conflito/PR fechado · `2` `gh` falhou (estado desconhecido) · `4` sem PR registrado (o fallback do passo 2 falhou) · `5` página DEFASADA (#10190: `state.slug` ≠ slug do D1 atual, ou `sourceDigest` ≠ insumos atuais — o e-mail linkaria `/p/{slug-novo}` com a página em `/p/{slug-velho}`) → rodar o passo 2 e repetir este passo, uma vez. **`--expected-slug {slug}`** em toda chamada da trava sempre que o passo 2 publicou com `--slug {slug}` explícito (Beehiiv); sem ele o slug esperado é o `seoSlug` do D1 atual. Guardar `SITE_PUBLISH_OK` (`published === true` no state file, relido AGORA — o waiter pode tê-lo reescrito), `SITE_PR_GATE` (o JSON impresso: `kind`, `prNumber`, `reason`) e o `mergeBlocker`/`prUrl` do state para o gate de §6c. **Segue para §6c em qualquer resultado** — nenhum exit bloqueia esta seção; a trava é §6c-site.
+Exit: `0` MERGED · `3` CI ainda rodando · `1` CI vermelho/conflito/PR fechado · `2` `gh` falhou (estado desconhecido) · `4` sem PR registrado (o fallback do passo 2 falhou) · `5` página DEFASADA (#10190: `state.slug` ≠ slug do D1 atual, ou `sourceDigest` ≠ insumos atuais — o e-mail linkaria `/p/{slug-novo}` com a página em `/p/{slug-velho}`) → rodar o passo 2 e repetir este passo, uma vez. **`--expected-slug {slug}`** em toda chamada da trava sempre que o passo 2 publicou com `--slug {slug}` explícito; sem ele o slug esperado é o `seoSlug` do D1 atual. Guardar `SITE_PUBLISH_OK` (`published === true` no state file, relido AGORA — o waiter pode tê-lo reescrito), `SITE_PR_GATE` (o JSON impresso: `kind`, `prNumber`, `reason`) e o `mergeBlocker`/`prUrl` do state para o gate de §6c. **Segue para §6c em qualquer resultado** — nenhum exit bloqueia esta seção; a trava é §6c-site.
 
 ### 6c. GATE HUMANO — parada única: revisão do e-mail de teste + agendamento (#8205)
 
 **A revisão visual do e-mail de teste pelo editor é a ÚNICA parada de `/diaria-5-publicacao` (decisão do editor, 17/09/2026, #8205).** Tudo que antes tinha ponto de parada próprio — pedidos editoriais (§6b2), guard de slug (§6b-slug), auto-reporter (§6b abaixo) — entra como CONTEXTO deste gate, nunca como pergunta separada. **O PR da página do site foi aberto no início da Etapa 5 (§5b-site, #10160) e conferido em §6b-site** — não é um ponto de parada; o estado do PR entra como linha do gate, e o merge trava o Schedule logo depois (§6c-site).
 
-**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar o default de §6a (06:00 BRT da data da edição, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" contado a partir do relógio) — mesmo horário serve Beehiiv e Brevo diária (#5772, se a campanha existir). Logar:
+**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar o default de §6a (06:00 BRT da data da edição, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" contado a partir do relógio) — mesmo horário serve Kit e Brevo diária (#5772, se a campanha existir). Logar:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
   --message "Stage 6 auto-agendado via --no-gates: {scheduled_at_iso}" \
@@ -252,7 +215,7 @@ Social agendado:
   Facebook  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT} · UM {hh:mm BRT, se o 4º post saiu}
 
 {bloco Brevo diária, SÓ se _internal/brevo-diaria-published.json existir:}
-Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Beehiiv no mesmo horário abaixo (#5772)
+Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Kit no mesmo horário abaixo (#5772)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel (4º post USE MELHOR, #9568)
@@ -272,7 +235,7 @@ Aguardar resposta do editor. Interpretar — **`{AAMMDD}` (a data da edição), 
 - `abortar` → logar warn, NAO escrever sentinel, encerrar Stage 6. Editor pode re-rodar `/diaria-6-agendamento {AAMMDD}` depois.
 - Qualquer outra coisa → exibir o gate novamente (fail-closed).
 
-**Um único `scheduled_at` serve todos os canais (Beehiiv/Kit, Brevo diária, Kit diária)** — decisão do editor: o gate não pergunta o horário mais de uma vez. Se algum canal não existir (`_internal/brevo-diaria-published.json`/`kit-diaria-published.json` ausente), o bloco correspondente nunca aparece e a seção de agendamento daquele canal (abaixo) é pulada sem erro.
+**Um único `scheduled_at` serve todos os canais (Kit, Brevo diária)** — decisão do editor: o gate não pergunta o horário mais de uma vez. Se algum canal não existir (`_internal/brevo-diaria-published.json`/`kit-diaria-published.json` ausente), o bloco correspondente nunca aparece e a seção de agendamento daquele canal (abaixo) é pulada sem erro.
 
 Logar resposta:
 ```bash
@@ -298,68 +261,9 @@ npx tsx scripts/render-halt-banner.ts --stage "6 — Agendamento" --reason "PR d
 
 Backstop mecânico: o invariante `site-page-pr-merged` (`STAGE_6_RULES`, `severity: error`) faz `pipeline-sentinel.ts write --step 6` recusar o sentinel enquanto o PR registrado não estiver MERGED — pular este passo não fecha a etapa. Com `prGateBypass` gravado pela trava, ele e `site-page-published` caem pra `warning` (o bypass já foi a decisão; o sentinel não pede um 2º).
 
-### 6d. Executar Schedule do Beehiiv
+### 6d. Executar agendamento (#11225)
 
-**Só roda com backend `"beehiiv"` EXPLÍCITO (legado, ver §6a — o default é `"kit"` desde o #11225).** Com backend `"kit"`, pular esta seção INTEIRA (a checagem de slug do bloco WhatsApp em §6b-slug já pulou por igual motivo — problema específico da UI de SEO/URL slug da Beehiiv sem equivalente no Kit) e seguir direto para **§6d-kit** abaixo.
-
-**Exibir banner pre-Schedule ao editor ANTES de pedir o clique** (evitar Publish acidental, incidente 260611 #2074):
-
-```
-Proximo passo: clicar em Schedule → selecionar AMANHA {data_alvo} → {HH:MM} BRT.
-NAO clique em "Publish now" — isso dispara envio imediato pra toda a audiencia.
-```
-
-Navegar para `draft_url` no Chrome e executar o passo de Schedule do Beehiiv conforme documentado em `context/publishers/beehiiv-playbook.md` §9 (Verificar slug pos-Schedule) e §10 (Verificar estado pos-Schedule).
-
-**Clique AUTOMATIZADO (#6098, decisao do editor 25/08).** O gate humano de §6c continua onde esta — o que deixou de ser manual e o CLIQUE, nao a aprovacao. Depois da aprovacao, executar via `computer.left_click`:
-
-1. botao **Schedule** (pagina Review) → abre o modal "When should this publish?"
-2. **opcao de horario correspondente ao `{scheduled_at}` aprovado no gate** — NAO assumir que "Next usual send time" e o alvo
-3. botao **Schedule** do modal → toast "Your post is scheduled!"
-
-**Fallback pro manual, sempre:** se qualquer um dos 3 cliques falhar (modal nao abre, nao fecha, elemento nao encontrado), parar e pedir o clique ao editor com o banner pre-Schedule acima. Falha de clique NUNCA vira falha de edicao.
-
-**Verificar estado via `scripts/verify-scheduled-post.ts` (#573, #2074 — obrigatorio):**
-
-```bash
-npx tsx scripts/verify-scheduled-post.ts \
-  --post-id {post_id} \
-  --edition-dir {EDITION_DIR}/ \
-  --expect-scheduled-at {scheduled_at_iso}
-```
-
-⚠️ **`--expect-scheduled-at` e OBRIGATORIO no caminho automatizado (#6098).** Com clique manual o editor lia a data no modal; automatizado, esta flag e o unico ponto que ve. Sem ela, clicar a opcao errada no passo 2 produz um agendamento perfeitamente valido **no dia errado**, e o exit 0 diz que deu tudo certo.
-
-| Exit | Estado | Acao |
-|------|--------|------|
-| `0` | `scheduled` no horario esperado | Confirmar ao editor: "Agendado para {scheduled_at} ✓" |
-| `1` | `published` — envio imediato detectado | Sequencia de reconciliacao abaixo |
-| `2` | `unknown` / `draft` / erro | Alertar editor; verificar manualmente no dashboard Beehiiv |
-| `3` | `scheduled` no horario **ERRADO** (#6098) | Opcao errada no modal. O post NAO esta no ar — corrigir o agendamento no painel e re-verificar |
-
-**Sequencia de reconciliacao (exit 1 — publicado imediato):**
-
-O script ja atualiza `05-published.json`. Executar obrigatoriamente:
-
-```bash
-# close-poll — finalizar scores de E IA? (se ainda nao rodou)
-npx tsx scripts/close-poll.ts --edition {AAMMDD}
-
-# refresh-dedup — regra CLAUDE.md: "publicacao requer refresh-dedup"
-npx tsx scripts/refresh-dedup.ts
-```
-
-Relatar ao editor:
-```
-⚠️ ENVIO IMEDIATO DETECTADO — a newsletter foi publicada agora ({published_at}).
-O botao clicado foi "Publish" (envio imediato), nao "Schedule".
-05-published.json atualizado (status: published).
-data/past-editions.md regenerado via refresh-dedup.
-```
-
-**Slug do bloco WhatsApp — já conferido em §6b-slug, antes do gate (#8205).** Não roda de novo aqui. Se `_internal/whatsapp-slug-check.json` gravou `ok:false`, o editor já viu o aviso destacado no gate de §6c e decidiu seguir mesmo assim (`ok`/`ok HH:MM`) — nunca um 2º halt aqui. `check-invariants.ts --stage 6` (§6g) confere o arquivo pós-hoc pra auditoria, sem bloquear.
-
-**Guard refresh-dedup apos schedule confirmado:** rodar `/diaria-refresh-dedup` (equivalente a `npx tsx scripts/refresh-dedup.ts`) para manter `data/past-editions.md` atualizado.
+Somente Kit; seguir §6d-kit. Nenhum acesso Beehiiv.
 
 ### 6d-kit. Executar Schedule do Kit (#464 — só quando backend `"kit"`)
 
@@ -437,7 +341,7 @@ Fail-soft nos 2 — nunca bloqueia o resto do Stage 6. Seguir pra §6d-brevo/§6
 
 ### 6d-brevo. Agendar campanha Brevo diária (#5772)
 
-**Roda SÓ se `_internal/brevo-diaria-published.json` existir** (lido em §6a) — canal pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) significa nada a agendar aqui; pular esta seção inteira sem erro. Usa o MESMO `scheduled_at` confirmado em §6c (Beehiiv) — decisão do editor, #5772: um único gate, um único horário pros dois canais.
+**Roda SÓ se `_internal/brevo-diaria-published.json` existir** (lido em §6a) — canal pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) significa nada a agendar aqui; pular esta seção inteira sem erro. Usa o MESMO `scheduled_at` confirmado em §6c (Kit) — decisão do editor, #5772: um único gate, um único horário pros dois canais.
 
 ```bash
 npx tsx scripts/schedule-daily-brevo.ts \
@@ -452,7 +356,7 @@ Exit codes:
 |------|-------------|------|
 | `0` | Agendado e verificado. | Confirmar ao editor: "Brevo diária agendado para {scheduled_at} ✓ (campaign_id {id})". Se o JSON trouxer `terca` (semanal dividida segunda/terça, #11286), acrescentar: "+ metade de terça agendada para {terca.scheduledAt} ✓ (campaign_id {terca.campaignId})". |
 | `2` | Nenhuma campanha registrada (já esperado se o canal foi pulado/falhou na Etapa 5). | Não é erro — seguir sem mencionar no resumo, ou mencionar como "canal Brevo não participou desta edição" se `_internal/brevo-diaria-published.json` de fato não existia. |
-| `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Beehiiv já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
+| `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Kit já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
 | `4` | GET pós-PUT não confirma o agendamento. | Mesmo tratamento do exit 3 — warn, não bloqueia, sugerir retry manual. |
 | `5` | **Cota da CONTA Brevo insuficiente pro tamanho da campanha (#6146).** O plano free tem 300 e-mails/dia num balde ÚNICO (transacional + marketing) — outro processo pode ter gastado a cota mesmo com a FILA folgada (`daily_send_cap`). Também cobre falha de leitura da cota, que degrada pra "não agenda". | Warn, **não bloqueia** o resto do Stage 6 (mesmo fail-soft dos exits 3/4). **Mas comunicar ao editor com destaque, não como warn de rodapé:** foi exatamente este cenário que derrubou o canal por ~12h em silêncio em 260825 — campanha criada, agendada, e a Brevo marcou `suspended` com `sent: 0`. **NÃO sugerir retry cego** (diferente do 3/4): repetir o comando falha igual enquanto a cota não virar. O guard mede o dia UTC do ENVIO; se o envio é amanhã, a Brevo nem aceita consultar aquele dia (HTTP 400) e o veredito passa de graça — nesse caso o sinal útil é o aviso de TRANSBORDO no stderr. Conferir o consumo antes de qualquer retry (`scripts/lib/brevo-account-quota.ts`). |
 | `6` | `--scheduled-at` diverge da data da edição (#8207) — não deveria acontecer se `{scheduled_at_iso}` veio de `resolve-edition-scheduled-at.ts` (§6a/§6c). | Bloqueia (diferente do fail-soft dos exits 3/4/5 — isto é o mesmo bug que atrasou a edição 260917, nunca tratar como falha de API). Investigar como `{scheduled_at_iso}` divergiu antes de qualquer retry. Retry manual intencional (editor pediu explicitamente outro dia) usa `--allow-other-date`, nunca por padrão. |
@@ -464,48 +368,17 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
   --details '{json de saída do script}'
 ```
 
-#### §6d-kit-diaria — canal Kit PARALELO (#6048/#6126)
+#### §6d-kit-diaria — aposentado (#11225)
 
-**Só quando `kit_diaria.enabled === true`.** Roda ao lado do Beehiiv/Brevo, pra audiência própria (`kit_diaria.audience_tag`). **Não é o §6d-kit**, que agenda o backend EXCLUSIVO do switchover (#6114) — coexistem enquanto a partição por origem de cadastro durar. Mesmo `scheduled_at` do Beehiiv, sob o MESMO gate, sem pergunta separada.
-
-```bash
-npx tsx scripts/schedule-kit-diaria.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}
-npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level {info se 0/2, warn se 3/4, error se 5} --message "kit-diaria stage6 schedule: exit {code}"
-```
-
-| Exit | Ação |
-|------|------|
-| `0` | Confirmar: "Kit diária agendado para {scheduled_at} ✓ (broadcast_id {id})". |
-| `2` | Canal desligado ou estado ausente — **não é erro**, não participou desta edição; omitir do resumo. |
-| `3` | PATCH falhou / config-estado ilegível. Warn, **não bloqueia** (fail-soft do Brevo), sugerir retry. |
-| `4` | GET pós-PATCH não confirma `send_at`. Warn, não bloqueia. **Nunca reportar como agendado** — pode ter ficado rascunho. |
-| `5` | `--scheduled-at` diverge da data da edição (#8207) — não deveria acontecer se `{scheduled_at_iso}` veio de `resolve-edition-scheduled-at.ts` (§6a/§6c). Bloqueia — investigar antes de retry; `--allow-other-date` só sob pedido explícito do editor. |
-
-
-**Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
-
-**Publicação da página do site: PR aberto no início da Etapa 5 (§5b-site, #10160), conferido em §6b-site e mergeado na trava §6c-site, antes do Schedule.** Não roda de novo aqui.
+Não agendar o canal paralelo. Kit principal já cobre a audiência; preservar os artefatos antigos.
 
 ### 6d-pessoal. Armar o post pessoal automático do LinkedIn (#9568)
 
 Depois do `ok` (ou direto, com `--no-gates`), em qualquer backend, só se o pré-gate deu `PERSONAL_AUTO` exit `0`: `npx tsx scripts/publish-linkedin-personal.ts --arm --edition-dir {EDITION_DIR}/` grava `_internal/06-linkedin-personal.json` (`armed`); quem publica são as tasks `Diaria-LinkedIn-Personal` (07:46) e `-Catchup` (de hora em hora) no `300`. Exit `0` = armado/já publicado. **Qualquer exit ≠ 0 depois de um pré-gate AUTOMÁTICO reexibe ao editor o lembrete MANUAL** com `POST_PIXEL_TEXT`/`POST_PIXEL_AT` (o gate disse "não postar à mão"), exceto exit `1` com `use_melhor.status=skip` no Stage 5 (o 4º post não saiu na página). Exit `5` (posting/send_unknown/arquivo corrompido): avisar para conferir o perfil antes de postar. **Nunca bloqueia o Stage 6.**
 
-### 6e. Atualizar `05-published.json` com scheduled_at
+### 6e. Estado do agendamento Kit
 
-**Só backend `"beehiiv"`.** Com backend `"kit"`, pular esta seção — `schedule-newsletter-kit.ts` (§6d-kit) já grava `scheduled_at`/`status: "scheduled"` em `_internal/newsletter-kit-published.json` internamente, só depois de confirmar via GET (mesma garantia que este passo busca aqui pro caminho Beehiiv).
-
-Apos schedule confirmado (exit 0 do verify-scheduled-post ou reconciliacao de envio imediato), atualizar `05-published.json`:
-
-```bash
-node -e "
-  const fs = require('fs');
-  const path = '{EDITION_DIR}/_internal/05-published.json';
-  const pub = JSON.parse(fs.readFileSync(path, 'utf8'));
-  pub.scheduled_at = '{scheduled_at_iso}';
-  pub.status = 'scheduled';
-  fs.writeFileSync(path, JSON.stringify(pub, null, 2));
-"
-```
+`schedule-newsletter-kit.ts` grava `scheduled_at`/`status: "scheduled"` em `_internal/newsletter-kit-published.json` somente após confirmar via GET. Não escrever `05-published.json` legado.
 
 **Derivar pedidos editoriais do diff (#5731).** No gate de agendamento, derivar pedidos comparando snapshots vs estado atual (captura mudanças pós-Stage 4, se houver):
 ```bash
@@ -515,13 +388,7 @@ Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = l
 
 ### 6f. Escrever sentinel de conclusao
 
-**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** **Desde #7963, mesmo gate mecânico do §5h** — `write --step 6` também recusa (exit 1, sem bypass) `--outputs` com o artefato de newsletter do backend errado. Backend `"beehiiv"` (legado, só explícito):
-
-```bash
-npx tsx scripts/pipeline-sentinel.ts write \
-  --edition {AAMMDD} --step 6 \
-  --outputs "_internal/05-published.json"
-```
+**Output Kit obrigatório (#11225, guard #7963).** `write --step 6` recusa artefato legado mesmo com config antiga.
 
 Backend `"kit"`:
 
@@ -546,7 +413,7 @@ de fato. O `--status done` correto fica no passo **6b-7**, apos o report ser esc
 npx tsx scripts/check-invariants.ts --stage 6 --phase pre-dispatch --edition-dir {EDITION_DIR}/
 ```
 
-`--phase pre-dispatch` pula so `edition-report-exists` (#9822 — o report ainda nao existe aqui; 6b-7 o exige). Exit 1 = logar warn (nao bloquear auto-reporter). Sempre pós-hoc, nunca interativo (#8205 — a parada única do pipeline é §6c, nenhuma regra aqui espera resposta do editor): `whatsapp-slug-guard-ok` (#4574) confirma que `_internal/whatsapp-slug-check.json` existe com `ok:true` — se divergiu, já apareceu como aviso destacado no gate de §6c (§6b-slug) e o editor seguiu ciente; esta checagem só audita que o arquivo foi de fato gravado (agente não pulou §6b-slug por engano). `site-page-published` (#7283) lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true` — se falhou, já apareceu como aviso destacado no gate de §6c (§6b-site, #8221) e o editor seguiu ciente; `severity: error` marca a falha como digna de destaque no relatório/dashboard (usado por `docs/editorial-invariants.md`/Studio) além disso, mas **não é um 2º gate**: a regra irmã `site-sitemap-no-orphans` (#7578) segue o mesmo padrão, acusando página em `workers/site/public/p/` sem entrada no `sitemap.xml` (órfã, invisível no buscador e em `arquivo.diar.ia.br`).
+`--phase pre-dispatch` pula so `edition-report-exists` (#9822 — o report ainda nao existe aqui; 6b-7 o exige). Exit 1 = logar warn (nao bloquear auto-reporter). Sempre pós-hoc, nunca interativo (#8205 — a parada única do pipeline é §6c, nenhuma regra aqui espera resposta do editor): `whatsapp-slug-guard-ok` (#4574) é histórico e não se aplica ao backend Kit. `site-page-published` (#7283) lê `_internal/site-page-published.json` e acusa `severity: error` quando `published !== true` — se falhou, já apareceu como aviso destacado no gate de §6c (§6b-site, #8221) e o editor seguiu ciente; `severity: error` marca a falha como digna de destaque no relatório/dashboard (usado por `docs/editorial-invariants.md`/Studio) além disso, mas **não é um 2º gate**: a regra irmã `site-sitemap-no-orphans` (#7578) segue o mesmo padrão, acusando página em `workers/site/public/p/` sem entrada no `sitemap.xml` (órfã, invisível no buscador e em `arquivo.diar.ia.br`).
 
 ### 6h. Purga automatica de votos do editor no leaderboard (#3032)
 
@@ -698,7 +565,7 @@ Nao bloquear.
 
 ### 6b-8. Regenerar o report + registrar na superfície do Studio (#1510, #3457, #3714) — ULTIMO passo do pipeline
 
-Com o Stage 6 ja `done` (timer fechado em 6b-7), regenerar `edition-report.html`: a linha do Stage 6 na tabela tem `end`/duracao carimbados, entao a duracao total reflete o processamento real (Schedule Beehiiv, verificacao, purga de leaderboard, auto-reporter) em vez de ficar subcontada (#3457 — o report antigo era gerado ANTES do timer fechar). Ultima acao do pipeline inteiro:
+Com o Stage 6 ja `done` (timer fechado em 6b-7), regenerar `edition-report.html`: a linha do Stage 6 na tabela tem `end`/duracao carimbados, entao a duracao total reflete o processamento real (Schedule Kit, verificacao, purga de leaderboard, auto-reporter) em vez de ficar subcontada (#3457 — o report antigo era gerado ANTES do timer fechar). Ultima acao do pipeline inteiro:
 
 ```bash
 npx tsx scripts/send-edition-report.ts \

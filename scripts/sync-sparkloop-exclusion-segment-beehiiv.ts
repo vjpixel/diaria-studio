@@ -515,53 +515,8 @@ export async function createExclusionSegment(
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  loadProjectEnv(ROOT);
-
-  const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
-
-  log("buscando segmentos existentes (checagem de idempotência)…");
-  const existingSegments = await fetchExistingSegments(publicationId, apiKey);
-  const existing = findExistingExclusionSegment(existingSegments);
-  const action = resolveSyncAction(existing, hasFlag(argv, "push"));
-
-  if (action === "skip-existing" && existing) {
-    // Idempotente: se o segmento já existe, nada a fazer — e nem vale a
-    // pena pagar a paginação completa de /subscriptions só pra um preview
-    // que ninguém vai usar (rodar este script de novo depois do --push tem
-    // que ser barato, não repetir o fetch caro de toda vez).
-    log(
-      `segmento "${EXCLUSION_SEGMENT_NAME}" JÁ EXISTE (id ${existing.id}` +
-        `${existing.totalResults != null ? `, total_results ${existing.totalResults}` : ""}) — ` +
-        "nada a criar (idempotente).",
-    );
-    return;
-  }
-
-  log("buscando assinantes ativos (preview informativo)…");
-  const active = await fetchActiveSubscriptions(publicationId, apiKey);
-  const matches = filterSparkloopContacts(active);
-
-  log(`${active.length} assinante(s) ativo(s) na Beehiiv; ${matches.length} casam RH_SOURCE = "${RH_SOURCE_SPARKLOOP_UPSCRIBE_VALUE}":`);
-  for (const m of matches) {
-    log(`  - ${m.email}`);
-  }
-
-  const body = buildCreateSegmentBody();
-  log(`corpo do POST /publications/${publicationId}/segments:`);
-  log(`  ${JSON.stringify(body)}`);
-
-  if (action === "dry-run") {
-    log(
-      `segmento "${EXCLUSION_SEGMENT_NAME}" ainda não existe. dry-run (default) — NENHUMA mutação aplicada. ` +
-        "Use --push para criar de verdade.",
-    );
-    return;
-  }
-
-  log("--push: criando o segmento…");
-  const created = await createExclusionSegment(publicationId, apiKey);
-  log(`segmento criado: id ${created.id}, status "${created.status}" (recálculo de pertinência é assíncrono na Beehiiv).`);
+  console.log("#11225: Beehiiv é arquivo histórico. Sincronização de envio aposentada; use os canais Kit.");
+  return;
 }
 
 if (isMainModule(import.meta.url)) {

@@ -59,9 +59,9 @@ describe("checkKitBackendEnabled", () => {
   it("backend ausente (default kit, #11225): ok:true", () => {
     assert.deepEqual(checkKitBackendEnabled({}), { ok: true });
   });
-  it('backend explícito "beehiiv": ok:false', () => {
+  it('backend legado "beehiiv": Kit é o único envio', () => {
     const result = checkKitBackendEnabled({ publishing: { newsletter: { backend: "beehiiv" } } });
-    assert.equal(result.ok, false);
+    assert.equal(result.ok, true);
   });
   it('backend "kit": ok:true', () => {
     assert.deepEqual(checkKitBackendEnabled({ publishing: { newsletter: { backend: "kit" } } }), { ok: true });
@@ -377,7 +377,7 @@ function writePlatformConfig(root: string, backend: string): void {
 }
 
 describe("main() — integração", () => {
-  it("backend != kit: exitCode 2, nenhuma chamada de rede", async () => {
+  it("backend legado resolve Kit em dry-run, nenhuma chamada de rede", async () => {
     const root = mkdtempSync(join(tmpdir(), "kit-main-"));
     try {
       writePlatformConfig(root, "beehiiv");
@@ -385,10 +385,10 @@ describe("main() — integração", () => {
       mockFetch(() => {
         throw new Error("não deveria chamar fetch");
       });
-      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
+      process.argv = ["node", "publish-newsletter-kit.ts", editionDir, "--dry-run"];
       process.exitCode = undefined;
       await main(root);
-      assert.equal(process.exitCode, 2);
+      assert.equal(process.exitCode, undefined);
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });

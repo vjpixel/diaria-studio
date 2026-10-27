@@ -3,6 +3,9 @@ name: diaria-apoios-sync
 description: Sincroniza o nível de recompensa de apoio (apoia.se) com o custom field `apoio_nivel` na Beehiiv, checando antes que os 6 segmentos `Apoio — {Amigo,Apoiador,Mantenedor,Patrono,Todos,Nenhum}` ainda condicionam nesse campo (drift check). Dry-run por padrão; `--push` grava de verdade. Requer navegador logado (Claude in Chrome) — rodar no `neo`. Uso — `/diaria-apoios-sync [--push] [--allow-partial] [--force-blast-radius]`.
 ---
 
+**APOSENTADA (#11225):** não executar o procedimento Beehiiv abaixo. A conta é arquivo somente. Para apoio ativo usar `sync-apoio-nivel-kit.ts` e `sync-apoio-mensal-tag-kit.ts`; preservar os dados históricos. Encerrar esta skill após informar essa migração.
+
+
 # /diaria-apoios-sync
 
 Fecha o loop entre o CRM de Apoios (apoia.se) e a segmentação de envio da

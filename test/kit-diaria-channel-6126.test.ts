@@ -85,7 +85,7 @@ describe("#6126 decideKitChannelDispatch", () => {
       existing: null,
       defaultAudienceTag: DEFAULT_TAG,
     });
-    assert.deepEqual(d, { action: "dispatch", audienceTag: DEFAULT_TAG });
+    assert.equal(d.action, "skip", "#11225: paralelo aposentado");
   });
 
   it("config ausente ⇒ skip (não dispatch)", () => {
@@ -118,13 +118,13 @@ describe("#6126 decideKitChannelDispatch", () => {
         defaultAudienceTag: DEFAULT_TAG,
       });
       assert.equal(d.action, "skip", `audience_tag=${JSON.stringify(tag)} deveria pular`);
-      if (d.action === "skip") assert.match(d.reason, /audiência INTEIRA/);
+      if (d.action === "skip") assert.match(d.reason, /EM DOBRO/);
     }
   });
 
   it("habilitado sem audience_tag usa o default kit-nativo", () => {
     const d = decideKitChannelDispatch({ config: { enabled: true }, existing: null, defaultAudienceTag: DEFAULT_TAG });
-    assert.deepEqual(d, { action: "dispatch", audienceTag: DEFAULT_TAG });
+    assert.equal(d.action, "skip", "#11225: paralelo aposentado");
   });
 
   it("audience_tag customizado permite o rollout escalonado da #6126", () => {
@@ -133,7 +133,7 @@ describe("#6126 decideKitChannelDispatch", () => {
       existing: null,
       defaultAudienceTag: DEFAULT_TAG,
     });
-    assert.deepEqual(d, { action: "dispatch", audienceTag: "diaria-test-email" });
+    assert.equal(d.action, "skip", "#11225: paralelo aposentado");
   });
 });
 

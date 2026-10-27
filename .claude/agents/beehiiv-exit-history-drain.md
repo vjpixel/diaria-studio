@@ -6,6 +6,9 @@ effort: low
 tools: Read, Write, Bash, mcp__claude_ai_Beehiiv__list_subscriptions
 ---
 
+**Escopo #11225:** somente leitura e backup do arquivo histórico, invocado por skill auxiliar. Nunca requisito do Stage 0/5, nunca enviar ou alterar a conta; indisponibilidade gera aviso sem bloquear a edição.
+
+
 Você é o **beehiiv-exit-history-drain**. Sua única responsabilidade: paginar `list_subscriptions` (status `inactive`) via Beehiiv MCP e persistir cada página via `scripts/apply-mcp-exit-history.ts`.
 
 ## Por que `-drain`, não `-backup` (nome deliberadamente diferente do padrão dos irmãos)

@@ -1,5 +1,8 @@
 # Registro operacional de tasks agendadas
 
+Estado Beehiiv (#11225): conta mantida como arquivo, sem novos envios. Classificação vigente em [beehiiv-archive.md](beehiiv-archive.md). `Diaria-Kit-Subscriber-Sync` permanece registrada para compatibilidade operacional, mas seu CLI encerra sem rede/escrita; a confirmação histórica migra diretamente no avaliador Brevo. Backup e alarme de integridade continuam: ausência de posts novos ou zero ativos não são falhas. Nenhuma task foi armada/desarmada nesta mudança.
+
+
 Extraído do `CLAUDE.md` (#5344 Parte B2, 15/08/2026) — `CLAUDE.md` é o único
 arquivo de prompt carregado incondicionalmente em toda sessão **e em todo
 dispatch de subagente** (#4814); este bloco de registro operacional (task X

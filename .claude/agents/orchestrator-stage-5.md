@@ -15,11 +15,11 @@ Stage 5 e **dispatch puro** — sem gate proprio. O gate de revisao editorial es
 
 Primeiro abre o PR da pagina do site (§5b-site, #10160 — sem esperar o merge). Depois, quatro acoes em paralelo: (1) criar o rascunho da newsletter no Kit + enviar test email + rodar loop review; (2) LinkedIn agendado; (3) **Facebook AGENDADO** (`--schedule`); (4) **canal Brevo diária** (`brevo_diaria`) — cria a campanha como RASCUNHO (#5772), agendamento fica pro Stage 6, mesma divisão da newsletter.
 
-**Beehiiv = só arquivo histórico (#11225, decisão do editor 27/10/2026).** A conta segue ativa (posts, site, estatísticas, assinantes arquivados), mas não envia nada desde #7388 e o pipeline não depende dela: conector Beehiiv fora do ar nunca bloqueia este stage. O ramo `publishing.newsletter.backend = "beehiiv"` (Passo 5c-1 abaixo) é legado, só alcançável com a chave EXPLICITAMENTE em `"beehiiv"` — chave ausente é `"kit"` — e sai do playbook numa limpeza dedicada.
+**Beehiiv = só arquivo histórico (#11225, decisão do editor 27/10/2026).** A conta segue ativa (posts, site, estatísticas, assinantes arquivados), mas não envia nada desde #7388 e o pipeline não depende dela: conector Beehiiv fora do ar nunca bloqueia este stage. O ramo `publishing.newsletter.backend = "beehiiv"` foi removido; mesmo config legada resolve para Kit.
 
 **PARA antes do Schedule da newsletter** — ela fica como RASCUNHO com test email enviado e o loop review concluido. O Schedule NAO acontece no Stage 5 — e responsabilidade do Stage 6.
 
-Output: `newsletter-kit-published.json` (broadcast_id + test_sent_at + status; `05-published.json` só no ramo Beehiiv legado) + `06-social-published.json` (social dispatched). Sentinel `.step-5-done.json`.
+Output: `newsletter-kit-published.json` (broadcast_id + test_sent_at + status; `05-published.json` é histórico e não é output atual) + `06-social-published.json` (social dispatched). Sentinel `.step-5-done.json`.
 
 LinkedIn nao usa Chrome — Cloudflare Worker enfileira em KV e dispara Make webhook no horario agendado (#971).
 
@@ -32,7 +32,7 @@ EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```bash
 npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} --read
 ```
-Extrair `chromeMcp` do JSON retornado. **Com backend Kit (o default) a newsletter nao depende do Chrome** — `chromeMcp === false` so troca o teste pela UI do Kit pelo fallback `--send-test` (§5c-1-kit); o resto deste paragrafo vale so pro ramo Beehiiv legado. Se `chromeMcp === false`: **re-probar** (`mcp__claude-in-chrome__tabs_context_mcp`) antes de decidir — o preflight pode ter rodado ha horas (edicao retomada). Se o probe atual falhar tambem: pular o Passo 5c-1 (Newsletter Beehiiv) direto, gravar `_internal/05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"` — nao falhar o stage inteiro por causa disso. Se o probe atual suceder (preflight estava desatualizado): prosseguir normal e regravar o sinal (`--chrome-mcp true`) para refletir o estado atual. `null` (arquivo ausente — edicao pre-#5414) tem a mesma semantica permissiva de sempre: probar direto, sem pre-warn.
+Extrair `chromeMcp` do JSON retornado. Sem Chrome, usar `--send-test` (§5c-1-kit); não abrir Beehiiv nem escrever artefato `05-published.json`. Newsletter Kit não depende de Chrome.
 
 ### Pre-condicao: sentinel Stage 4
 
@@ -209,23 +209,7 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b
 
 **ORDEM OBRIGATORIA (#2454): newsletter ANTES do social.** `{edition_url}` e gravada em `_internal/05-edition-url.txt` pelo passo da newsletter — com backend Kit, `publish-newsletter-kit.ts` grava `https://diar.ia.br/p/{seoSlug(titulo do D1)}` (#7420, a pagina propria do site, publicada por `publish-edition-site-page.ts` no §5b-site; nunca o `public_url` do broadcast Kit; backstop `resolve-edition-url.ts` no 5c-2). Na era Beehiiv ela vinha do slug do draft — por isso a ordem nasceu. O passo 5c-2 (abaixo) reescreve `03-social.md` inteiro substituindo `{edition_url}` — inclusive dentro do `## post_pixel`. **#3646:** o dispatch de Stage 5 (`publish-linkedin.ts`/`publish-facebook.ts`) em si nao consome mais `{edition_url}` pra nada — o main post do LinkedIn nao carrega URL (#595) e o `comment_diaria` que antes precisava dela foi aposentado (#3627). Os consumidores reais de `05-edition-url.txt` sao o `# Curto` (X/Threads, inclusive o `## um` do 4º post, #9568) e o `## post_pixel` de edicoes ANTIGAS (aposentado na #9568 — resolvido no Stage 6 por `resolve-post-pixel.ts`, postagem manual, #1690). Disparo em paralelo causava fallback silencioso pra `https://diar.ia.br` (raiz) quando `05-edition-url.txt` ainda nao existia. A partir de #2454, o fluxo e sequencial: rascunho da newsletter → resolve URL → dispatch social.
 
-**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"kit"` se ausente, #11225 — mesmo de `parseNewsletterBackend` em `scripts/lib/newsletter-backend.ts`). Se `"kit"` ou ausente → pular **todo** o Passo 5c-1 abaixo (Beehiiv, legado) e seguir o **Passo 5c-1-kit** logo em seguida; só com `"beehiiv"` EXPLÍCITO → seguir o Passo 5c-1 e pular o 5c-1-kit. Em qualquer um dos dois casos, o Passo 5c-2 (guard anti-placeholder) roda igual depois — ele só depende de `_internal/05-edition-url.txt` existir, não de quem o escreveu.
-
-**Passo 5c-1: Newsletter Beehiiv (LEGADO — só com `backend: "beehiiv"` explícito; a conta é arquivo histórico desde #11225, este passo sai numa limpeza dedicada).**
-
-**Newsletter Beehiiv (#1054 / #207 / #1114 / #1327)**: voce (top-level) **le `context/publishers/beehiiv-playbook.md` como playbook e executa direto** — Bash + Read + `mcp__claude-in-chrome__*` (incluindo `javascript_tool`). Seguir o playbook **criando o rascunho e enviando o test email** — **NAO executar o passo de Schedule do Beehiiv** (§9-10 do playbook). O draft fica como rascunho com test email enviado. **Nao tente dispatchar via `Agent`** — `javascript_tool` e restrito ao top-level. **Estado da Fase 3 (fetch in-page do Worker): `context/publishers/beehiiv-playbook.md` §Fase 3 é a fonte única de verdade — não duplicar o diagnóstico aqui (#4196).** Resumo operacional: desde #4196 o fetch roda com timeout explícito (`AbortController`, 25s) e qualquer falha — HTTP não-2xx, timeout/abort, exceção de rede — aciona o fallback chunked base64 automaticamente via `classifyInsertResult`, sem seleção manual; o corpo inserido também é verificado quanto a tamanho plausível pós-paste (`verifyBodySizePlausible`) antes de declarar sucesso. Editor finaliza metadata na UI. Ver `context/publishers/beehiiv-playbook.md` para instruções detalhadas. Output: `_internal/05-published.json`.
-
-Playbook ja grava `_internal/05-edition-url.txt` (ver §"Gravar 05-edition-url.txt" no beehiiv-playbook.md). Se por qualquer razao o playbook nao gravou, gravar manualmente:
-
-```bash
-npx tsx scripts/resolve-edition-url.ts \
-  --edition-dir {EDITION_DIR}/ \
-  --title "{titulo_d1}"
-# Usa seoSlug(titulo) — mesmo algoritmo de 4a-bis do beehiiv-playbook (§"Setar slug SEO").
-# Se o titulo nao estiver disponivel, usar --slug {slug_correto} ou --edition-url {url_literal}.
-```
-
-**Tab isolation no Chrome**: publish-newsletter e o unico agent Chrome em Etapa 5 — abre tab Beehiiv propria via `tabs_create_mcp`. LinkedIn e Facebook sao scripts shell sem browser.
+**Envio exclusivamente Kit (#11225).** Não há ramo Beehiiv nem fallback por config legada. Seguir 5c-1-kit e depois 5c-2.
 
 **Passo 5c-1-kit: Newsletter Kit (#464 — o caminho padrão: `publishing.newsletter.backend` `"kit"` ou ausente, #11225).**
 
@@ -300,7 +284,7 @@ npx tsx scripts/render-halt-banner.ts \
 3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato, #3944 Parte A — antes deste fix o Instagram publicava tudo junto no instante do dispatch). Enfileira no MESMO Worker `diaria-linkedin-cron` do LinkedIn (`channel: "instagram"`, #3817/#3818), que dispara nos mesmos horarios (d1 09:45/d2 12:15/d3 17:15 BRT via `compute-social-schedule.ts`) rodando os 2 passos da Graph API (container → media_publish) no MOMENTO do disparo. **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` como secrets do Worker** (nao mais consumidos localmente pelo script pra publicar — a Graph API roda dentro do Worker no momento do disparo) e `_internal/06-public-images.json` populado (gerado no 5c-pre). **Carrossel de 5 slides (#6005 Parte B):** quando os 5 slides do destaque estao no cache (`resolveCarouselImageUrls`), o script manda `image_urls` (capa→p1→p2→p3→cta) em vez de `image_url` unico — o Worker ja despacha pro caminho carrossel (`fireInstagramCarousel`, #4153, antes usado so pelo semanal). Qualquer slide faltando cai pro post single-image de sempre, sem bloquear o canal. Dois modos de falha distintos: (a) se `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` (Worker) nao estiverem setados no env local, o script **aborta com exit 2** (`--schedule` nao tem fallback de fire-now — sem Worker nao ha como agendar); (b) se as env vars locais `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN` nao estiverem setadas (checadas incondicionalmente pelo script, mesmo em modo `--schedule`), o script **encerra com exit 0** (skip gracioso) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486).
 4. `Bash("npx tsx scripts/publish-threads.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato, #3944 Parte B — antes deste fix o Threads publicava na hora do dispatch). Enfileira no MESMO Worker `diaria-linkedin-cron` do LinkedIn/Instagram (`channel: "threads"`, #3944 Parte B), que dispara nos mesmos horarios (d1 09:45/d2 12:15/d3 17:15 BRT via `compute-social-schedule.ts`) rodando os 2 passos da Threads API (container → threads_publish) no MOMENTO do disparo. **Suporta so posts de 1 chunk (≤500 chars)** — chunking agendado (thread multi-post via reply_to_id) nao e implementado no Worker (risco de duplicar posts em retry automatico); textos maiores falham no enqueue com `status: "failed"` e motivo claro, sem abortar os demais destaques — publique esse destaque manualmente sem `--schedule` ou encurte o texto. **Requer `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` como secrets do Worker** (nao mais consumidos localmente pelo script pra publicar — a Threads API roda dentro do Worker no momento do disparo). Dois modos de falha distintos: (a) se `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` (Worker) nao estiverem setados no env local, o script **aborta com exit 2** (`--schedule` nao tem fallback de fire-now — sem Worker nao ha como agendar); (b) se as env vars locais `THREADS_ACCESS_TOKEN`/`THREADS_USER_ID` nao estiverem setadas (checadas incondicionalmente pelo script, mesmo em modo `--schedule`), o script **encerra com exit 0** (skip gracioso) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486, mesmo padrao do Instagram).
 5. **So se `consent.brevo === "auto"`** (#5772): `Bash("npx tsx scripts/brevo-diaria-stage5-dispatch.ts --edition-dir {EDITION_DIR}/")` — canal Brevo diária (segmento Pending, reativação); NAO depende de `{edition_url}`, so agrupado aqui por conveniência. **Desde #6793 "Faixa A" item 7 (30/08/2026, freio de volume removido): NÃO passa mais `--max-add` a `brevo-diaria-run.ts` — o backfill preenche todos os candidatos elegíveis da rodada, sem teto diário.** `stage5_target_total`/a fórmula antiga (`N = max(0, stage5_target_total - total_atual)`) seguem computados só pra log/observabilidade. Cria **só o RASCUNHO** (Passos 1-7 de `/diaria-brevo-diaria`, SEM Passo 8/agendamento — isso é Stage 6, §6d-brevo). Imprime JSON `{status: "ok"|"already_done"|"skipped"|"failed", ...}` em stdout — **fail-soft: qualquer status ≠ `"ok"`/`"already_done"` é WARNING** (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message "brevo-diaria stage5 dispatch: {status}" --details '{json de saída}'`), nunca aborta os demais canais; `"already_done"` é caminho feliz de resume, logar `info`. **Pool Kit inactive (#8192):** `status: "ok"` com `warnings` não-vazio significa que a campanha saiu mas o pool "inactive do Kit há ≥72h" falhou nesta rodada (Kit fora do ar, MV) — logar `warn` com os `warnings` no `--details`, sem bloquear nada.
-6. **So se `consent.kit === "auto"` E `kit_diaria.enabled === true`** (#6126/#6048/#6162 — gate DUPLO: `--skip kit` pula so esta edicao, a flag desliga o canal pra todas): `Bash("npx tsx scripts/kit-diaria-stage5-dispatch.ts {EDITION_DIR}/")` — canal **Kit PARALELO**, roda AO LADO da Beehiiv na mesma edicao, cada um para sua audiencia (particao por origem de cadastro: Beehiiv = base legada congelada; Kit = quem se cadastrou DEPOIS do corte, tag `kit_diaria.audience_tag`). **NAO confundir com `publishing.newsletter.backend === "kit"`**, que e o ramo EXCLUSIVO do switchover final (#6114, passo 5c-1-kit acima) — os dois coexistem de proposito enquanto a particao estiver em uso. NAO depende de `{edition_url}`. Cria **so o RASCUNHO** (`send_at: null`); o agendamento e Stage 6, §6d-kit-diaria. Imprime JSON `{status: "ok"|"already_done"|"skipped"|"failed", ...}` em stdout — fail-soft SO em relacao aos OUTROS canais (nunca aborta Beehiiv/LinkedIn/Facebook/Brevo por causa do Kit); `"already_done"` e caminho feliz de resume, logar `info`. **ATENCAO (#6582, 28/08/2026): `"skipped"`/`"failed"` DEIXOU DE SER estado normal.** Ate a migracao das ondas 0/1 (#6504) a tag `kit_diaria.audience_tag` era um canal ADITIVO (quem estava nela tambem recebia pela Beehiiv) e um dispatch pulado nao custava nada. Desde a migracao, as pessoas da tag (11 da onda 0, nunca ativas na Beehiiv; 81 da onda 1, desativadas na Beehiiv na mesma sessao) tem o Kit como UNICO canal — `"skipped"`/`"failed"` aqui significa que essas pessoas NAO recebem a edicao, sem nada mais acusar. Por isso, com `kit_diaria.enabled === true`: (a) logar `error`, nao `warn` (`--level error` no `log-event.ts` acima); (b) o invariant `kit-diaria-exclusive-audience-dispatched` (STAGE_5_RULES, `postDispatchOnly`) BLOQUEIA o gate 6 quando `_internal/kit-diaria-published.json` estiver ausente ou sem `broadcast_id` — nao prosseguir pro Stage 6 so porque o restante da Etapa 5 concluiu; resolver o motivo do skip/failed (tag sem membros — guard `checkAudienceTagHasMembers`/`countTagMembers` no proprio dispatch — ou erro de rede) e re-rodar `kit-diaria-stage5-dispatch.ts` antes de aceitar o gate.
+6. **Kit paralelo aposentado (#11225).** Não executar `kit-diaria-stage5-dispatch.ts`, mesmo com config legada `kit_diaria.enabled=true`; a audiência recebe pelo Kit principal.
 
 Aguardar todos retornarem antes de prosseguir.
 
@@ -329,26 +313,9 @@ Erro na mutation para um destaque nao aborta os demais — best-effort, mesmo pa
 
 `publish-linkedin.ts` grava direto em `06-social-published.json` via store atomica (#918).
 
-### 5d. Retry chrome_disconnected (so playbook newsletter)
+### 5d–5e. Caminhos Beehiiv aposentados (#11225)
 
-Apenas o playbook newsletter usa Chrome em Etapa 5. **Antes de passos com clique real, rodar o preflight de visibilidade da aba (#2015 — ver "Preflight de visibilidade" no beehiiv-playbook.md).**
-
-Se uma chamada `mcp__claude-in-chrome__*` retornar `chrome_disconnected`:
-1. Calcular delay: `30 * 2^(N-1)` segundos (tentativa 1 = 30s, 2 = 60s, ..., 10 = 15360s).
-2. Logar warn: `"chrome_disconnected em Etapa 5 (playbook newsletter), tentativa {N}/10 — aguardando {delay}s"`.
-3. Aguardar: `Bash("sleep {delay}")`.
-4. Re-executar o playbook newsletter do passo onde quebrou.
-5. **Apos 10 falhas consecutivas** (~17h acumuladas), logar erro e pausar com instrucao ao editor.
-- **Reset do contador**: re-execucao que sucede reseta N=1.
-
-### 5e. Validar template (publish-newsletter)
-
-- Ler `05-published.json`. Extrair `draft_url`, `title`, `test_email_sent_to`, `template_used`.
-- **Validar template (obrigatorio).** Ler `publishing.newsletter.template` de `platform.config.json`. Se `template_used` !== template esperado:
-  1. Logar erro + instruir a **deletar o rascunho incorreto** no Beehiiv.
-  2. Re-disparar publish-newsletter (ate 3 tentativas).
-  3. Se o template continuar errado apos 3 tentativas, pausar com instrucao ao editor.
-  4. **Nao prosseguir para o loop de review** enquanto o template nao estiver correto.
+Sem retry Chrome nem validação do template Beehiiv; usar render e teste Kit de 5c-1-kit.
 
 ### 5f. Loop de review do email de teste (apos newsletter retornar)
 
@@ -455,13 +422,7 @@ npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}  # exit 2 (410/403) ou 3 (
 
 **Sempre** ao fim do Stage 5 — mesmo se publicacao foi manual ou algum canal ficou `pending_manual`:
 
-**Backend-aware (#464, achado do review — sem isso o Stage 6 nunca roda com `backend: "kit"`):** `--outputs` referencia o artefato que o passo 5c-1/5c-1-kit de fato escreveu — `assertSentinel` (Stage 6, pré-condição) checa exatamente os paths gravados aqui, não um path fixo. **Desde #7963 isto também é um gate MECÂNICO, não só prosa:** `pipeline-sentinel.ts write --step 5` recusa (exit 1, SEM `--bypass-reason`) gravar o sentinel se `--outputs` citar o artefato do backend OPOSTO ao ativo em `platform.config.json` (ex: `05-published.json` sob backend `"kit"`) — mesmo assim, seguir o branch certo abaixo evita o erro de largada. Backend `"beehiiv"` (default):
-
-```bash
-npx tsx scripts/pipeline-sentinel.ts write \
-  --edition {AAMMDD} --step 5 \
-  --outputs "_internal/05-published.json"
-```
+**Output Kit obrigatório (#11225, guard #7963).** `pipeline-sentinel.ts write --step 5` recusa o artefato legado `05-published.json`, inclusive com config antiga.
 
 Backend `"kit"`:
 

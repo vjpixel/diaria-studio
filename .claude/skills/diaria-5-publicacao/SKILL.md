@@ -27,19 +27,19 @@ Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o S
 
 Stage 5 dispatcha, hoje, **8 canais** — lista completa em `.claude/agents/orchestrator-stage-5.md` §5c-3/5c-3b (fonte de verdade operacional; não duplicar os detalhes de cada script aqui):
 
-1. **Newsletter** — Kit (`publish-newsletter-kit.ts` — teste preferencialmente pelo "Send test email" da UI do Kit via `--draft-only-for-ui-test` + `--mark-ui-test-sent --at`, com fallback `--send-test` sem Chrome, #10395; detalhes no §5c-1-kit). Default `"kit"` em `publishing.newsletter.backend` (também com a chave ausente, #11225); a Beehiiv é só arquivo histórico e o ramo `"beehiiv"` (`context/publishers/beehiiv-playbook.md`) é legado, só com a chave explícita.
+1. **Newsletter** — Kit (`publish-newsletter-kit.ts` — teste preferencialmente pelo "Send test email" da UI do Kit via `--draft-only-for-ui-test` + `--mark-ui-test-sent --at`, com fallback `--send-test` sem Chrome, #10395; detalhes no §5c-1-kit). Default `"kit"` em `publishing.newsletter.backend` (também com a chave ausente, #11225); a Beehiiv é só arquivo histórico e o ramo `"beehiiv"` foi removido.
 2. **LinkedIn** — `publish-linkedin.ts --schedule` (Worker `diaria-linkedin-cron` + fallback Make webhook).
 3. **Facebook** — `publish-facebook.ts --schedule` (Graph API).
 4. **Instagram** — `publish-instagram.ts --schedule` (mesmo Worker do LinkedIn, `channel: "instagram"`; carrossel de 5 slides quando disponível, senão post single-image).
 5. **Threads** — `publish-threads.ts --schedule` (mesmo Worker, `channel: "threads"`; só posts de 1 chunk ≤500 chars).
 6. **Twitter/X** — via Buffer MCP (`prep-twitter-posts.ts` + `mcp__claude_ai_Buffer__create_post`), conduzido pelo orchestrator diretamente (não é script Bash puro — só alcançável de dentro da sessão de agente).
 7. **Brevo diária** — `brevo-diaria-stage5-dispatch.ts` (segmento Pending/reativação; cria só o RASCUNHO, agendamento é Stage 6).
-8. **Kit diária** — `kit-diaria-stage5-dispatch.ts` (canal PARALELO ao Beehiiv/Kit newsletter — audiência exclusiva por tag `kit_diaria.audience_tag`; só roda com `consent.kit === "auto"` **e** `kit_diaria.enabled === true` em `platform.config.json`; cria só o RASCUNHO).
+8. **Kit diária paralelo aposentado (#11225)** — não despachar; a audiência recebe pelo Kit principal.
 
 ## Argumentos
 
 - `/diaria-5-publicacao all AAMMDD` — roda publicação paralela (todos os canais acima) + auto-reporter
-- `/diaria-5-publicacao newsletter AAMMDD` — re-dispara só a newsletter (Beehiiv ou Kit, conforme backend); útil pra fix isolado após template errado
+- `/diaria-5-publicacao newsletter AAMMDD` — re-dispara só a newsletter (Kit); útil pra fix isolado após template errado
 - `/diaria-5-publicacao social AAMMDD` — re-dispara só os canais sociais (LinkedIn, Facebook, Instagram, Threads, Twitter/X); útil pra retry de social falhado sem regerar a newsletter
 
 **Opt-out por canal (#1326):** flag `--skip {canal[,canal...]}` (CSV) ignora dispatch dos canais listados. Canais válidos: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo`, `kit`, `youtube` (#10659, §5b-youtube; ver `VALID` em `scripts/lib/publish-consent.ts`). Default = tudo auto. Exemplos:
@@ -103,7 +103,7 @@ npx tsx scripts/check-worker-cors.ts --worker-url https://eia.diar.ia.br
 
 ## Passo 0 — Confirmar modo de publicação antes de qualquer dispatch (#336, invertido em #1326)
 
-**Default = tudo automático** (#1326). Editor pode opt-out por canal via flag `--skip` — o gate interativo (menu numérico) que existia aqui foi **removido (#5321, "Perguntar é exceção")**: o gate do Stage 4 já aconteceu, o editor já revisou o conteúdo, e nenhuma opção do menu passava no rubrico (nada irreversível — Beehiiv/Kit sai como rascunho, LinkedIn/Facebook/Instagram/Threads/X saem agendados 24h+ à frente, Brevo/Kit diária saem como rascunho, tudo reversível no dashboard de cada plataforma antes de ir ao ar).
+**Default = tudo automático** (#1326). Editor pode opt-out por canal via flag `--skip` — o gate interativo (menu numérico) que existia aqui foi **removido (#5321, "Perguntar é exceção")**: o gate do Stage 4 já aconteceu, o editor já revisou o conteúdo, e nenhuma opção do menu passava no rubrico (nada irreversível — Kit sai como rascunho, LinkedIn/Facebook/Instagram/Threads/X saem agendados 24h+ à frente, Brevo/Kit diária saem como rascunho, tudo reversível no dashboard de cada plataforma antes de ir ao ar).
 
 **Path 1 — flag `--skip` foi passado:**
 ```bash
@@ -122,7 +122,7 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
 Imprimir banner e seguir direto pro dispatch — sem esperar resposta:
 ```
 Modo de publicação: TUDO AUTOMÁTICO (default, #1326/#5321).
-Newsletter (Beehiiv/Kit) sai como rascunho; LinkedIn, Facebook, Instagram,
+Newsletter (Kit) sai como rascunho; LinkedIn, Facebook, Instagram,
 Threads e X saem agendados 24h+ à frente; Brevo diária e Kit diária saem
 como rascunho — tudo reversível no dashboard de cada plataforma antes de ir
 ao ar. Pra excluir um canal desta edição, rode de novo com
@@ -161,7 +161,7 @@ npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode soci
 
 **Newsletter primeiro (ordem obrigatória, #2454 — `{edition_url}` só existe depois do draft), depois todos os canais sociais + Brevo + Kit diária em uma única mensagem:**
 
-1. **Newsletter** — Beehiiv (`context/publishers/beehiiv-playbook.md`, você lê e executa direto — **não tente dispatchar via `Agent`**, `javascript_tool` é restrito ao top-level. **Estado da Fase 3 (fetch in-page do Worker): `context/publishers/beehiiv-playbook.md` §Fase 3 é a fonte única de verdade — não duplicar o diagnóstico aqui (#4196).** Desde #4196 o fetch roda com timeout (`AbortController`, 25s) e qualquer falha aciona o fallback chunked automaticamente, sem seleção manual. Editor finaliza metadata na UI) OU Kit (`publish-newsletter-kit.ts`: Send test da UI do Kit, preferido, ou fallback `--send-test` — §5c-1-kit, #10395), conforme `publishing.newsletter.backend`.
+1. **Newsletter** — Kit (`publish-newsletter-kit.ts`: teste da UI do Kit ou fallback `--send-test`, §5c-1-kit). Não executar playbook Beehiiv (#11225).
 2. `publish-facebook.ts --schedule` (Graph API, ~30s)
 3. `publish-linkedin.ts --schedule` (Worker queue + Make webhook × 3)
 4. `publish-instagram.ts --schedule` (Worker, `channel: "instagram"`; carrossel de 5 slides quando disponível)
@@ -170,7 +170,7 @@ npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode soci
 7. `brevo-diaria-stage5-dispatch.ts` — só se `consent.brevo === "auto"`; cria só o RASCUNHO
 8. `kit-diaria-stage5-dispatch.ts` — só se `consent.kit === "auto"` **e** `kit_diaria.enabled === true`; cria só o RASCUNHO
 
-Após todos retornarem, **loop de review-test-email** roda em cima do draft da newsletter (Beehiiv ou Kit) — só via Gmail MCP, sem fallback via Chrome (#8205).
+Após todos retornarem, **loop de review-test-email** roda em cima do draft da newsletter (Kit) — só via Gmail MCP, sem fallback via Chrome (#8205).
 
 **Stage 5 não tem gate próprio** — dispatch puro (#1326). A única parada de toda a skill é o gate único do Stage 6 (§6c) — revisão visual do e-mail de teste pelo editor + agendamento (#8205).
 
@@ -180,17 +180,17 @@ Stage 5 encerra o dispatch (newsletter draft + todos os canais sociais agendados
 
 ## Output
 
-- `_internal/05-published.json` — `draft_url`, `test_email_sent_at`, `template_used`, `review_completed` (newsletter Beehiiv) ou `_internal/newsletter-kit-published.json` (backend Kit)
+- `_internal/newsletter-kit-published.json` — broadcast, teste e estado da newsletter Kit
 - `_internal/06-social-published.json` — posts com `platform`, `destaque`, `url`, `status`, `scheduled_at` (LinkedIn, Facebook, Instagram, Threads, Twitter/X)
 - `_internal/brevo-diaria-published.json` — canal Brevo diária
-- `_internal/kit-diaria-published.json` — canal Kit diária
+- `_internal/kit-diaria-published.json` — somente histórico, sem novo dispatch
 - `_internal/.step-5-done.json` — sentinel de conclusao do Stage 5
 - `_internal/.step-6-done.json` — sentinel de conclusao do Stage 6 (rodado na mesma sessão, #7983)
 - `_internal/issues-draft.json`, `_internal/edition-report.html` — auto-reporter + relatório (Stage 6)
 
 ## Notas
 
-- **Newsletter fica como rascunho até o gate do Stage 6.** Test email enviado, loop review concluído no Stage 5. O Schedule (Beehiiv ou Kit) é feito no gate humano de §6c, **na mesma sessão** (#7983). LinkedIn, Facebook, Instagram, Threads e X saem agendados automaticamente (`--schedule`/`dueAt`) ainda no Stage 5; Brevo diária e Kit diária saem como rascunho (agendamento também acontece no gate do Stage 6).
+- **Newsletter fica como rascunho até o gate do Stage 6.** Test email enviado, loop review concluído no Stage 5. O Schedule (Kit) é feito no gate humano de §6c, **na mesma sessão** (#7983). LinkedIn, Facebook, Instagram, Threads e X saem agendados automaticamente (`--schedule`/`dueAt`) ainda no Stage 5; Brevo diária e Kit diária saem como rascunho (agendamento também acontece no gate do Stage 6).
 - **Resume-aware**: re-rodar pula o que ja existe.
 - **Continua sozinho para o Stage 6** (#7983) — não imprima `/diaria-6-agendamento` como próximo passo do editor. Essa skill continua existindo só como porta de **retomada** (sessão morreu entre dispatch e gate, ou o editor voltou horas depois).
 - Para rodar como parte do pipeline completo, use `/diaria-edicao`.

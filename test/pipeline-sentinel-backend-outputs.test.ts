@@ -53,7 +53,7 @@ function setupIsolatedCwd(): string {
 }
 
 function runWrite(args: string[], cwd: string): { status: number | null; stderr: string } {
-  const result = spawnSync(process.execPath, ["--import", "tsx", sentinelCli, "write", ...args], {
+  const result = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), sentinelCli, "write", ...args], {
     cwd,
     encoding: "utf8",
   });
@@ -299,7 +299,7 @@ describe("loadNewsletterBackend (#7963) — smoke", () => {
       assert.equal(loadNewsletterBackend(cfgPath), "kit");
 
       writeFileSync(cfgPath, JSON.stringify({ publishing: { newsletter: { backend: "beehiiv" } } }));
-      assert.equal(loadNewsletterBackend(cfgPath), "beehiiv");
+      assert.equal(loadNewsletterBackend(cfgPath), "kit", "#11225: config antiga não reativa envio Beehiiv");
 
       // #11225: chave ausente = "kit" (Beehiiv só como arquivo histórico).
       writeFileSync(cfgPath, JSON.stringify({}));

@@ -1,58 +1,9 @@
 #!/usr/bin/env node
 /**
- * scripts/schedule-kit-diaria.ts (#6048 — wiring do canal Kit paralelo, #6126)
- *
- * Agenda o broadcast do **canal Kit PARALELO** criado por
- * `kit-diaria-stage5-dispatch.ts` na Etapa 5. Roda na Etapa 6, sob o MESMO
- * gate/horário do Schedule da Beehiiv — mesma divisão 5/6 do canal Brevo
- * (`schedule-daily-brevo.ts`, #5772), que este script espelha.
- *
- * ## Por que NÃO é o `schedule-newsletter-kit.ts`
- *
- * Aquele serve o switchover final (#6114): lê
- * `_internal/newsletter-kit-published.json` e é gated por
- * `checkKitBackendEnabled` (exige `publishing.newsletter.backend === "kit"`).
- * Este canal roda com o backend ainda em `"beehiiv"`, e tem estado próprio
- * (`_internal/kit-diaria-published.json`). Reusar aquele exigiria atravessar
- * os dois comportamentos com flags e acoplaria o caminho do #6114 a este.
- *
- * ## ⚠️ Editar broadcast agendado DESAGENDA (#6181)
- *
- * Medido ao vivo em 25/08/2026: `PATCH /v4/broadcasts/{id}` com `subject`
- * responde **200 e zera o `send_at`** — o broadcast volta a rascunho, em
- * silêncio, sem erro. No piloto dos Patronos, aplicar "- patronos" no assunto
- * cancelou o envio do dia seguinte; só não virou incidente porque houve
- * reconferência.
- *
- * **Qualquer edição de broadcast agendado exige RODAR ESTE SCRIPT DE NOVO.**
- * Não confie no 200 do PATCH — confira o `send_at` depois.
- *
- * ## Verificação pós-mutação (#573)
- *
- * Nunca reporta "agendado" a partir da resposta do PATCH — relê o broadcast
- * e confere o `send_at` de volta, mesmo padrão de `verify-scheduled-post.ts`
- * (Beehiiv) e `schedule-daily-brevo.ts` (Brevo).
- *
- * Exit codes (a tabela do playbook em `orchestrator-stage-6.md` §6d-kit-diaria
- * precisa espelhar isto — ver #6147, que nasceu de uma tabela desatualizada):
- *   1 — uso: `--edition-dir`/`--scheduled-at` ausente
- *   0 — agendado e verificado
- *   2 — canal desligado (`kit_diaria.enabled !== true`) ou estado ausente:
- *       NÃO é erro, é o caminho normal quando o canal não participou da edição
- *   3 — PATCH falhou (erro de API)
- *   4 — GET não confirma o agendamento — cobre DOIS pontos desde #7285: o
- *       GET pós-PATCH de sempre, E o GET de checagem de idempotência (roda
- *       ANTES do PATCH, quando o estado local diz "scheduled" — confirma
- *       contra o broadcast vivo antes de aceitar o cache) falhando por
- *       rede/API. A `reason` do resultado distingue os dois casos em
- *       prosa; o código numérico é o mesmo porque o tratamento do chamador
- *       (warn, não bloqueia, nunca reporta "agendado") já é idêntico nos
- *       dois.
- *   5 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
- *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
- *
- * Uso:
- *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z [--allow-other-date]
+ * #11225: scheduler do canal Kit paralelo aposentado.
+ * Preserva CLI e validação de data para compatibilidade; retorna code 2
+ * sem ler estado, fazer PATCH ou agendar. O envio principal é
+ * `schedule-newsletter-kit.ts`. Arquivos históricos não são alterados.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -144,105 +95,12 @@ export async function scheduleKitDiaria(
   // NUNCA deve agendar, mesmo que `kit_diaria.enabled` tenha ficado `true`
   // por engano (dívida corrigida no próprio #6321/#6313, não garantia
   // futura).
-  if (cfg.publishing?.newsletter?.backend === "kit") {
-    return {
-      code: 2,
-      reason:
-        "publishing.newsletter.backend === \"kit\" — o switchover (#6114) já agenda pra audiência " +
-        "INTEIRA; agendar o canal paralelo também entregaria a edição EM DOBRO. Canal não participa.",
-    };
-  }
-
-  let state: ReturnType<typeof readKitDiariaState>;
-  try {
-    state = deps.readState(editionDir);
-  } catch (e) {
-    // Estado corrompido é DIFERENTE de ausente (mesma disciplina do #6153):
-    // ausente = canal pulou; ilegível = alguém precisa olhar.
-    return { code: 3, reason: `estado do canal ilegível: ${(e as Error).message}` };
-  }
-  if (!state || typeof state.broadcast_id !== "number") {
-    return { code: 2, reason: "_internal/kit-diaria-published.json ausente — canal pulou a Etapa 5." };
-  }
-
-  // Idempotência em resume: só é caminho feliz se o broadcast VIVO confirma
-  // o agendamento — nunca a partir do cache local sozinho (#7285). Um PATCH
-  // de conteúdo no meio do caminho derruba o agendamento por baixo (#6181)
-  // sem reescrever o estado local; confiar cegamente no "scheduled" daqui
-  // faria o script responder "já agendado" sobre um broadcast que voltou a
-  // draft — nada sai, nada acusa (achado ao vivo, edição 260903, corpo da
-  // issue #7285). Mesma disciplina de nunca descrever estado externo a
-  // partir do gloss de um estado local sem validar.
-  if (state.status === "scheduled" && state.scheduled_at) {
-    let live: { send_at?: string | null };
-    try {
-      live = await deps.verify(state.broadcast_id);
-    } catch (e) {
-      return { code: 4, reason: `GET de verificação (checagem de idempotência) falhou: ${(e as Error).message}` };
-    }
-    const liveMs = live.send_at ? Date.parse(live.send_at) : NaN;
-    const targetMs = Date.parse(scheduledAt);
-    if (live.send_at && Number.isFinite(liveMs) && Number.isFinite(targetMs) && liveMs === targetMs) {
-      deps.log(`já agendado para ${live.send_at} (confirmado ao vivo) — no-op.`);
-      return { code: 0, scheduledAt: live.send_at, broadcastId: state.broadcast_id };
-    }
-    deps.log(
-      `estado local dizia "scheduled" para ${state.scheduled_at}, mas o broadcast vivo está ` +
-        `${live.send_at ? `agendado para ${live.send_at} (alvo diferente)` : "draft/sem send_at"} — ` +
-        `reagendando em vez de confiar no cache (#7285).`,
-    );
-    // Cai pro PATCH abaixo — o alvo (`scheduledAt`) já é conhecido, então
-    // reagendar é a ação certa (não um código de "estado defasado" que só
-    // empurraria o problema pra quem lê o exit code decidir sozinho).
-  }
-
-  try {
-    await deps.patch(state.broadcast_id, scheduledAt);
-  } catch (e) {
-    return { code: 3, reason: `PATCH falhou: ${(e as Error).message}` };
-  }
-
-  // #573 — confirmar por releitura, nunca pela resposta do PATCH.
-  let confirmed: { send_at?: string | null; subject?: string; preview_text?: string | null };
-  try {
-    confirmed = await deps.verify(state.broadcast_id);
-  } catch (e) {
-    return { code: 4, reason: `GET de verificação falhou: ${(e as Error).message}` };
-  }
-  if (!confirmed.send_at) {
-    return { code: 4, reason: `GET pós-PATCH não traz send_at — agendamento NÃO confirmado.` };
-  }
-  // #6162 (achado do review): comparar INSTANTES, não só existência — mesmo
-  // rigor de `schedule-daily-brevo.ts` (#5851). Um PATCH pode responder 2xx
-  // sem aplicar o valor, deixando um `send_at` antigo de pé; checar só
-  // "veio algo" aceitaria esse caso como sucesso.
-  const pedidoMs = Date.parse(scheduledAt);
-  const recebidoMs = Date.parse(confirmed.send_at);
-  if (Number.isFinite(pedidoMs) && Number.isFinite(recebidoMs) && pedidoMs !== recebidoMs) {
-    return {
-      code: 4,
-      reason: `send_at confirmado (${confirmed.send_at}) difere do pedido (${scheduledAt}) — PATCH não aplicou o valor.`,
-    };
-  }
-
-  // #6181: reler subject/preview do broadcast em vez de preservar os locais.
-  // Editar o subject no painel (ou por PATCH, como o "- patronos" do piloto)
-  // deixava o arquivo local mentindo pra quem auditasse depois — o Kit é a
-  // fonte de verdade, e agora o estado reflete o que de fato vai sair.
-  deps.writeState(editionDir, {
-    ...state,
-    // #6183 (achado P2 do review): checagem explícita de `undefined`, NÃO `??`.
-    // `preview_text` é `string | null` na API — `null` é valor LEGÍTIMO (o
-    // editor removeu o preview no painel). Com `??`, um `null` do Kit cairia
-    // no valor local stale, contradizendo o motivo desta releitura existir.
-    subject: confirmed.subject !== undefined ? confirmed.subject : state.subject,
-    preview_text: confirmed.preview_text !== undefined ? confirmed.preview_text : state.preview_text,
-    status: "scheduled",
-    scheduled_at: confirmed.send_at,
-  });
-  deps.log(`agendado para ${confirmed.send_at} (broadcast_id=${state.broadcast_id}) ✓`);
-  return { code: 0, scheduledAt: confirmed.send_at, broadcastId: state.broadcast_id };
+  return {
+    code: 2,
+    reason: 'publishing.newsletter.backend === "kit" — canal paralelo aposentado (#11225); agendar também entregaria EM DOBRO. Canal não participa.',
+  };
 }
+
 
 export async function main(): Promise<void> {
   loadProjectEnv();

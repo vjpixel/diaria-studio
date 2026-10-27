@@ -5,7 +5,7 @@ description: Roda a Etapa 6 (agendamento — gate humano + Schedule Kit + auto-r
 
 # /diaria-6-agendamento
 
-Dispara a Etapa 6: apresenta resumo de agendamento ao editor, aguarda confirmacao, executa o Schedule da newsletter no Kit (`schedule-newsletter-kit.ts`; Beehiiv só no ramo legado, #11225) e roda o auto-reporter.
+Dispara a Etapa 6: apresenta resumo de agendamento ao editor, aguarda confirmacao, executa o Schedule da newsletter no Kit (`schedule-newsletter-kit.ts`; único backend de envio, #11225) e roda o auto-reporter.
 
 ## Porta de retomada (#7983, 11/09/2026)
 
@@ -35,7 +35,7 @@ npx tsx scripts/sync-code.ts --edition-dir "$EDITION_DIR"
 ## Pre-requisitos
 
 - Etapas 1-5 completas: `_internal/.step-5-done.json` + `_internal/05-published.json` com `draft_url`.
-- Beehiiv nao e pre-requisito (#11225: so arquivo historico). Chrome com **Claude in Chrome** so no ramo Beehiiv legado (`backend: "beehiiv"` explicito).
+- Beehiiv nao e pre-requisito (#11225: so arquivo historico). Chrome não é requisito para agendamento Kit.
 - `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` configurados para Drive sync (relatorio final).
 
 ## O que faz
@@ -58,9 +58,9 @@ Ler `_internal/05-published.json` e `_internal/06-social-published.json` para co
 
 Se `--no-gates`: pular o gate e auto-agendar com o default (06:00 BRT **da data da edição**, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" pelo relógio, #8207).
 
-### Etapa 6c — Schedule (Beehiiv ou Kit) + verificacao
+### Etapa 6c — Schedule (Kit) + verificacao
 
-Executar Schedule seguindo `context/publishers/beehiiv-playbook.md` §9-10 (backend Beehiiv) ou `schedule-newsletter-kit.ts` (backend Kit). Verificar estado via `scripts/verify-scheduled-post.ts` (#2074). O guard de slug do bloco WhatsApp já rodou ANTES do gate (§6b-slug) — se divergiu, o editor já viu o aviso no gate e decidiu seguir; não há um 2º ponto de parada aqui (#8205).
+Executar `schedule-newsletter-kit.ts` e confirmar o estado via GET conforme §6d-kit. Usar a URL/slug da página própria da edição; não consultar Beehiiv. Manter a parada única do gate (§6c, #8205).
 
 ### Etapa 6d — Auto-reporter (sem gate, #8205) + relatorio
 

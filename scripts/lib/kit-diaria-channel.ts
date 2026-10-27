@@ -5,43 +5,9 @@
  * testável sem tocar rede, disco ou config real. O I/O vive em
  * `scripts/kit-diaria-stage5-dispatch.ts`.
  *
- * ## Por que este canal existe (e por que NÃO é o `backend: "kit"`)
- *
- * Há dois caminhos Kit para a newsletter, de propósito, e eles não se
- * substituem:
- *
- * 1. **Branch exclusivo por `publishing.newsletter.backend`** (#464/#6114) —
- *    `orchestrator-stage-5.md` §180: quando o backend é `"kit"`, o Passo 5c-1
- *    (Beehiiv) é PULADO inteiro. Serve o switchover final, quando a base
- *    legada da Beehiiv já tiver migrado em lote e existir uma audiência só.
- *
- * 2. **Este canal, PARALELO** (#6126) — roda ao lado da Beehiiv na mesma
- *    edição, cada um para sua audiência, no molde do canal Brevo diária
- *    (`brevo-diaria-stage5-dispatch.ts`, #5772). Serve a fase de PARTIÇÃO
- *    decidida pelo editor em 25/08 (inversão da ordem da migração, #6048):
- *
- *    | | audiência | recebe de |
- *    |---|---|---|
- *    | Beehiiv | base legada, congelada no corte | Beehiiv |
- *    | Kit | só quem se cadastrar DEPOIS do corte (tag `kit-nativo`) | Kit |
- *
- *    Disjuntas por construção — sem órfão e sem entrega dupla. É a mesma razão
- *    de o par Beehiiv+Brevo funcionar hoje: o `brevo_diaria` só atinge quem
- *    está `Pending` na Beehiiv, que por isso não recebe pela Beehiiv.
- *
- * **Não unificar os dois enquanto a partição estiver em uso** (nota registrada
- * na #6114). Parecem redundantes e não são.
- *
- * ## O modo de falha que governa o desenho deste módulo
- *
- * No Kit, um `subscriber_filter` ausente ou vazio significa **audiência
- * INTEIRA**, não audiência nenhuma. Um erro de resolução de tag aqui não
- * degrada para "não envia" — degrada para "envia pra base toda", incluindo os
- * 585 assinantes importados da Beehiiv, que receberiam a edição EM DOBRO.
- *
- * Por isso `decideKitChannelDispatch` trata tag ausente/não resolvida como
- * `skip`, nunca como "seguir com filtro default", e o dispatch valida o
- * `tagId` ANTES de montar o broadcast.
+ * #11225: canal paralelo aposentado. Kit principal é o único envio;
+ * `decideKitChannelDispatch` recusa novo dispatch em qualquer config.
+ * Helpers de tags e estados permanecem para leitura histórica e testes.
  */
 
 /** Bloco `kit_diaria` de `platform.config.json`. Ausente ⇒ canal desligado. */
@@ -167,26 +133,12 @@ export function decideKitChannelDispatch(input: DecideKitChannelInput): KitChann
       reason: "kit_diaria.enabled não é true — canal Kit paralelo desligado (default).",
     };
   }
-  if (input.newsletterBackend === "kit") {
-    return {
-      action: "skip",
-      reason:
-        "publishing.newsletter.backend === \"kit\" — o switchover (#6114) já envia pra audiência INTEIRA. " +
-        "Rodar o canal paralelo junto entregaria a edição EM DOBRO a quem está nos dois filtros. " +
-        "Desligue `kit_diaria.enabled` ao virar o backend.",
-    };
-  }
-
-  const audienceTag = (config.audience_tag ?? defaultAudienceTag).trim();
-  if (audienceTag === "") {
-    return {
-      action: "skip",
-      reason: "kit_diaria.audience_tag vazio — recusando dispatch (filtro vazio no Kit = audiência INTEIRA).",
-    };
-  }
-
-  return { action: "dispatch", audienceTag };
+  return {
+    action: "skip",
+    reason: 'publishing.newsletter.backend === "kit" — canal paralelo aposentado (#11225); evita entregar EM DOBRO. Desligue `kit_diaria.enabled`.',
+  };
 }
+
 
 export type TagResolution =
   | { ok: true; tagId: number }

@@ -76,14 +76,12 @@ import { fileURLToPath } from "node:url";
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { resolveBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listAllTagSubscriberEmails } from "./lib/kit-broadcasts.ts";
 import { listBroadcasts, listAllBroadcasts, getBroadcastStats, type KitBroadcastSummary } from "./lib/kit-client.ts";
 import { isKitTestBroadcast } from "./lib/shared/kit-test-broadcast.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { brevoListContacts, brevoGetCampaignGlobalStats, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
-import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { parseDiariaExclusionSegment, KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { kitSemAberturaExemptEmails } from "./lib/brevo-kit-active-exclusion.ts"; // #10437
@@ -137,29 +135,6 @@ export interface RecentDeliveryMeasurement {
   detail?: string;
 }
 
-async function measureBeehiivRecentDelivery(
-  apiKey: string,
-  publicationId: string,
-): Promise<RecentDeliveryMeasurement> {
-  try {
-    const res = await fetch(
-      `${beehiivApiBase()}/publications/${publicationId}/posts?order_by=publish_date&direction=desc&limit=1&expand[]=stats`,
-      { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
-    );
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {});
-      return { platform: "beehiiv", measured: false, reason: `Beehiiv API ${res.status} em /posts` };
-    }
-    const body = (await res.json()) as { data?: Array<{ stats?: { email?: { recipients?: number } } }> };
-    const recipients = body.data?.[0]?.stats?.email?.recipients;
-    if (typeof recipients !== "number") {
-      return { platform: "beehiiv", measured: false, reason: "post mais recente sem stats.email.recipients" };
-    }
-    return { platform: "beehiiv", measured: true, recipients };
-  } catch (e) {
-    return { platform: "beehiiv", measured: false, reason: (e as Error).message };
-  }
-}
 
 /**
  * Pure (#10395): broadcast `completed` mais recente que NÃO é test-send. Sem o
@@ -294,7 +269,7 @@ export interface GuardOutcome {
  * normalmente.
  */
 export function shouldUseAllActiveAsKitAudience(newsletterBackend?: string): boolean {
-  return newsletterBackend === "kit";
+  return true; // #11225: Kit é o único canal principal.
 }
 
 /**
@@ -306,7 +281,7 @@ export function shouldUseAllActiveAsKitAudience(newsletterBackend?: string): boo
  * Beehiiv aparece como órfão, que é o sinal correto.
  */
 export function beehiivSendAudience(newsletterBackend: string | undefined, beehiivActiveEmails: string[]): string[] {
-  return newsletterBackend === "kit" ? [] : beehiivActiveEmails;
+  return []; // #11225: arquivo histórico nunca é audiência de envio.
 }
 
 /**
@@ -342,23 +317,10 @@ export function decideOutcome(
   const realOverlaps = audience.overlaps.filter((o) => !seeds.has(o.email.trim().toLowerCase()));
   const seedOverlapsExempted = audience.overlaps.length - realOverlaps.length;
   const audienceSemSondas = { ...audience, overlaps: realOverlaps, overlapCount: realOverlaps.length };
-  const beehiivDelivery = recentDelivery.find((r) => r.platform === "beehiiv");
-  // #7482 (decisão do editor, 10/09/2026): com o canal principal já em
-  // "kit", 0 ativos na Beehiiv é o estado ESPERADO pós-migração — não uma
-  // divergência a investigar. O "destinatários reais" que ainda aparece
-  // positivo é sempre resíduo do ÚLTIMO envio real feito antes da migração
-  // terminar (dado histórico, não uma medição de canal errado) — comparar
-  // esse resíduo contra 0 ativos vai gerar sempre o mesmo alarme falso, sem
-  // nunca convergir sozinho. Pular o check inteiro nesse caso.
-  // 16/09/2026: a condição era `&& beehiivActiveCount === 0` e quebrou no
-  // dia em que a Beehiiv passou a contar 1 ativo residual ("314 > 1,
-  // inesperado"). Com backend=kit a Beehiiv não envia a diária — o gap não
-  // mede nada, qualquer que seja a contagem.
-  const skipBeehiivGap = newsletterBackend === "kit";
-  const beehiivDeliveryGap =
-    !skipBeehiivGap && beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
-      ? checkBeehiivDeliveryGap(beehiivActiveCount, beehiivDelivery.recipients)
-      : null;
+  // #11225: campos mantidos no JSON por compatibilidade; arquivo histórico
+  // não tem gap de entrega atual, independentemente da config legada.
+  const skipBeehiivGap = true;
+  const beehiivDeliveryGap = null;
   const blocking = audienceSemSondas.overlapCount > 0 || orphans.length > 0;
   return {
     audience: audienceSemSondas,
@@ -502,11 +464,6 @@ async function main(): Promise<void> {
   const asJson = hasFlag(process.argv.slice(2), "json");
   const dryRun = hasFlag(process.argv.slice(2), "dry-run");
 
-  const beehiivConfig = resolveBeehiivConfig();
-  if (!beehiivConfig.ok) {
-    emitError(asJson, `${LOG_PREFIX} config Beehiiv inválida: ${beehiivConfig.reason}`, "config");
-    return;
-  }
   const kitConfig = resolveKitConfig();
   if (!kitConfig.ok) {
     emitError(asJson, `${LOG_PREFIX} config Kit inválida: ${kitConfig.reason}`, "config");
@@ -526,47 +483,14 @@ async function main(): Promise<void> {
   }
   const kitAudienceTag = platformConfig.kit_diaria?.audience_tag?.trim() || KIT_DEFAULT_AUDIENCE_TAG;
   const newsletterBackend = platformConfig.publishing?.newsletter?.backend;
-  // #7482, achado 16/09/2026: a tag `rampa-kit` era a audiência de envio
-  // REAL do Kit só enquanto `kit_diaria.enabled` estava `true` — a rampa
-  // incremental por ondas, DESLIGADA em 04/09/2026 (#7388) quando o
-  // backend principal virou "kit". Desde então, `publish-newsletter-kit.ts`
-  // manda a edição pra `buildAllSubscribersFilter()` — TODO assinante
-  // `active`, sem filtro de tag nenhum. Como nada mais taggeia gente nova
-  // em `rampa-kit` (só `kit-diaria-stage5-dispatch.ts` fazia isso, e só
-  // roda com `kit_diaria.enabled: true`), a tag ficou CONGELADA no
-  // tamanho de 04/09 enquanto a base ativa cresce — o guard media
-  // "órfãos" (ativo fora da audiência de envio) contra uma audiência que
-  // não é mais a real, e o número só cresce (37 em 05/09, 299 em 16/09,
-  // sempre a MESMA divergência, nunca resolvida por nenhum PR porque
-  // nenhum PR jamais tocou este ponto — as duas rodadas anteriores
-  // trataram isso como pendência de produto/mutação de audiência viva,
-  // quando na verdade é o guard medindo a coisa errada). Com backend=kit,
-  // a audiência de envio do Kit é `kitActiveEmails` (medido de qualquer
-  // forma, ver comentário abaixo) — não a tag, que fica só como registro
-  // histórico das ondas (mesmo racional do `kit_diaria.audience_tag_note`
-  // em platform.config.json).
+  // #11225: a antiga rampa por tag foi absorvida pelo Kit principal.
   const kitAudienceIsAllActive = shouldUseAllActiveAsKitAudience(newsletterBackend);
 
-  let beehiivActiveEmails: string[];
+  const beehiivActiveEmails: string[] = [];
   let kitAudienceEmails: string[];
   let kitActiveEmails: string[];
   let brevoAudienceEmails: string[];
   try {
-    process.stderr.write(`${LOG_PREFIX} buscando ativos na Beehiiv…\n`);
-    beehiivActiveEmails = await fetchActiveBeehiivEmails(beehiivConfig.config.apiKey, beehiivConfig.config.publicationId);
-
-    // #7385 review: a base de ATIVOS do Kit (todo `state: "active"`, não só
-    // a tag) é buscada À PARTE da audiência de envio (a tag) — é essa
-    // DIFERENÇA entre as duas que `findOrphans` precisa pra achar o
-    // cenário exato da issue (629 ativos, 280 na tag, 349 órfãos). Usar a
-    // MESMA lista pras duas coisas (erro do 1º rascunho deste PR, achado no
-    // self-review) faz `findOrphans` nunca encontrar órfão nenhum do lado
-    // Kit — por construção, todo elemento de `activeIn` já estaria em
-    // `sendUnion`, porque as duas listas seriam idênticas. **Isso segue
-    // valendo com backend != "kit"** (ou se a rampa for religada, ver
-    // `kit_diaria.enabled_note`) — só o caso `kitAudienceIsAllActive` acima
-    // faz as duas listas convergirem de propósito, porque aí é a REALIDADE
-    // que convergiu, não um bug de medição.
     process.stderr.write(`${LOG_PREFIX} buscando ativos no Kit…\n`);
     const kitActiveSubscribers = await listAllKitSubscribers(undefined, { status: "active" });
     kitActiveEmails = kitActiveSubscribers.map((s) => s.email_address);
@@ -579,24 +503,11 @@ async function main(): Promise<void> {
       const envioTagId = await findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME);
       const tagged = envioTagId === null ? [] : await listAllTagSubscriberEmails(envioTagId);
       kitAudienceEmails = kitSendAudienceWithExclusionSegment(kitActiveEmails, tagged, kitSemAberturaExemptEmails(readStore(DEFAULT_STORE_PATH)));
-    } else if (kitAudienceIsAllActive) {
+    } else {
       process.stderr.write(
         `${LOG_PREFIX} backend=kit — audiência de envio do Kit é TODO ativo (buildAllSubscribersFilter), não a tag "${kitAudienceTag}" — pulando lookup de tag.\n`,
       );
       kitAudienceEmails = kitActiveEmails;
-    } else {
-      process.stderr.write(`${LOG_PREFIX} resolvendo tag "${kitAudienceTag}" no Kit…\n`);
-      const tagId = await findTagIdByName(kitAudienceTag);
-      if (tagId === null) {
-        emitError(
-          asJson,
-          `${LOG_PREFIX} tag "${kitAudienceTag}" não existe no Kit — não foi possível medir a audiência de envio do Kit.`,
-          "config",
-        );
-        return;
-      }
-      process.stderr.write(`${LOG_PREFIX} listando membros da tag "${kitAudienceTag}"…\n`);
-      kitAudienceEmails = await listAllTagSubscriberEmails(tagId);
     }
 
     process.stderr.write(`${LOG_PREFIX} listando contatos da lista Brevo ${brevoListId}…\n`);
@@ -608,25 +519,17 @@ async function main(): Promise<void> {
 
   const sources: EmailSource[] = [
     { name: "kit", emails: kitAudienceEmails },
-    { name: "beehiiv", emails: beehiivSendAudience(newsletterBackend, beehiivActiveEmails) },
     { name: "brevo", emails: brevoAudienceEmails },
   ];
   const audience = reconcileSendAudiences(sources);
-  // Órfãos: ativo em alguma plataforma × audiência de ENVIO de cada
-  // plataforma — as duas listas do lado Kit são DIFERENTES de propósito
-  // (`kitActiveEmails` = todo `state: active`; `kitAudienceEmails` = só a
-  // tag). Beehiiv usa a MESMA lista dos dois lados porque ali "ativo" JÁ É
-  // "audiência de envio" por design (todo `active` recebe o post
-  // principal, ver docstring do módulo) — não há um recorte menor.
+  // Arquivo Beehiiv não participa de audiência nem de órfãos atuais.
   const activeSources: EmailSource[] = [
     { name: "kit", emails: kitActiveEmails },
-    { name: "beehiiv", emails: beehiivActiveEmails },
   ];
   const orphans = findOrphans(activeSources, sources);
 
   process.stderr.write(`${LOG_PREFIX} medindo destinatários reais do último envio por plataforma…\n`);
   const recentDelivery = await Promise.all([
-    measureBeehiivRecentDelivery(beehiivConfig.config.apiKey, beehiivConfig.config.publicationId),
     measureKitRecentDelivery(),
     measureBrevoRecentDelivery(brevoApiKey, brevoListId),
   ]);

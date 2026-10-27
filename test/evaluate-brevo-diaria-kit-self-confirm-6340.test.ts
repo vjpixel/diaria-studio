@@ -594,6 +594,7 @@ describe("runEvaluation — origens mistas no MESMO run (#6340 item 4 fix F, rev
   it("Kit-confirmado + Beehiiv-confirmado + Kit-malformado no MESMO runEvaluation → contadores independentes, nenhum estado (beehiivStatus/kitConfirmed/statusCheckFailed) vaza de um contato pro próximo", async () => {
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
+      if (u.includes("api.kit.com/v4/subscribers") && (init?.method === "POST" || u.endsWith("/502"))) return kitSubscriberRes(502, "active", "beehiiv-ok@b.com");
       if (u.includes("api.kit.com/v4/subscribers/501")) return kitSubscriberRes(501, "active", "kit-ok@b.com");
       if (u.includes("subscriptions/by_email/beehiiv-ok%40b.com")) return jsonRes(200, { data: { status: "active" } });
       if (u.includes("/contacts/")) return neutralBrevoContactRes();

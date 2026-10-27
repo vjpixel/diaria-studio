@@ -82,6 +82,7 @@ describe("runEvaluation — promoção pra Beehiiv checa o Kit antes de escrever
     let unlinkCalled = false;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
+      if (u.includes("api.kit.com") && !u.includes("email_address=")) return jsonRes(200, { subscriber: { id: 42, state: "active" } });
       if (u.includes("api.kit.com")) {
         // Contato existe no Kit e está active.
         return jsonRes(200, {
@@ -127,12 +128,12 @@ describe("runEvaluation — promoção pra Beehiiv checa o Kit antes de escrever
       });
       assert.equal(beehiivWriteCalls, 0, "nenhuma chamada de escrita na Beehiiv — a duplicidade real vinha daqui");
       assert.equal(unlinkCalled, true, "contato sai da fila Brevo mesmo sem promover pra Beehiiv (já recebe via Kit)");
-      assert.equal(result.skippedActiveOnKit, 1);
+      assert.equal(result.skippedActiveOnKit, 0);
       assert.equal(result.promoted, 1, "contador de INTENÇÃO de score continua incrementando — a decisão de destino é o que muda");
       assert.equal(result.failed, 0);
       const stored = findContact(result.store, "ativo-no-kit@b.com");
-      assert.equal(stored!.status, "converted_to_kit");
-      assert.equal(stored!.resolution_reason, "converted_to_kit");
+      assert.equal(stored!.status, "promoted_beehiiv");
+      assert.equal(stored!.resolution_reason, "score_threshold_kit");
     } finally {
       restore();
     }
@@ -142,6 +143,7 @@ describe("runEvaluation — promoção pra Beehiiv checa o Kit antes de escrever
     let byEmailCalls = 0;
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
+      if (u.includes("api.kit.com") && !u.includes("email_address=")) return jsonRes(200, { subscriber: { id: 42, state: "active" } });
       if (u.includes("api.kit.com")) {
         return jsonRes(200, { subscribers: [], pagination: {} });
       }
@@ -175,7 +177,7 @@ describe("runEvaluation — promoção pra Beehiiv checa o Kit antes de escrever
       assert.equal(result.failed, 0);
       const stored = findContact(result.store, "nao-esta-no-kit@b.com");
       assert.equal(stored!.status, "promoted_beehiiv");
-      assert.equal(stored!.resolution_reason, "score_threshold");
+      assert.equal(stored!.resolution_reason, "score_threshold_kit");
     } finally {
       restore();
     }

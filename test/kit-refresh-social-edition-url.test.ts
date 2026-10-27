@@ -361,7 +361,7 @@ describe("main() — integração (guard de CLI)", () => {
     }
   });
 
-  it("backend != kit: exitCode 0, resolved: false, reason backend_not_kit, nenhuma chamada de rede", async () => {
+  it("backend legado resolve Kit: draft ausente causa exitCode 3, sem rede", async () => {
     const root = mkdtempSync(join(tmpdir(), "kit-refresh-social-main-"));
     try {
       writePlatformConfig(root, "beehiiv");
@@ -371,7 +371,7 @@ describe("main() — integração (guard de CLI)", () => {
       process.argv = ["node", "kit-refresh-social-edition-url.ts", "--edition-dir", root];
       process.exitCode = undefined;
       await main(root);
-      assert.equal(process.exitCode, 0);
+      assert.equal(process.exitCode, 3);
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });

@@ -58,11 +58,11 @@ describe("sync-beehiiv-subscribers-kit.ts — load-bearing pra auto-confirmaçã
     assert.ok(syncStep!.args?.includes("--push"), "task deixou de rodar --push — viraria dry-run silencioso, nunca escrevendo no Kit de verdade.");
   });
 
-  it("evaluate-brevo-diaria.ts documenta a dependência residual (guard textual — falha se a nota #6339 for removida sem substituição)", () => {
+  it("evaluate-brevo-diaria.ts documenta a dependência residual (guard textual — falha se a migração síncrona Kit for removida)", () => {
     const src = readFileSync(resolve(ROOT, "scripts/evaluate-brevo-diaria.ts"), "utf8");
     assert.match(
       src,
-      /#6339, ESCOPO NÃO COBERTO/,
+      /#11225: confirmação histórica/,
       "a nota que documenta a dependência da auto-confirmação na ponte sync-beehiiv-subscribers-kit.ts sumiu de evaluate-brevo-diaria.ts — " +
         "se foi removida porque o caminho foi corrigido (auto-confirmação escrevendo direto no Kit), atualize este teste também.",
     );

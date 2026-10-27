@@ -266,7 +266,7 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       317,
     );
     assert.equal(outcome.blocking, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, true);
+    assert.equal(outcome.beehiivDeliveryGap, null);
   });
 
   // REGRESSÃO #7482 (decisão do editor, 10/09/2026): 0 ativos na Beehiiv +
@@ -296,8 +296,8 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       0,
       undefined,
     );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, false);
+    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
+    assert.equal(outcome.beehiivDeliveryGap, null);
   });
 
   // REGRESSÃO #7482 (16/09/2026): o skip exigia 0 ativos e quebrou quando a
@@ -325,8 +325,8 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       317,
       "beehiiv",
     );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, true);
+    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
+    assert.equal(outcome.beehiivDeliveryGap, null);
   });
 
   // REGRESSÃO #7482 (16/09/2026): as 5 "sobreposições bloqueantes" medidas
@@ -370,7 +370,7 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
     const withKitBackend = decideOutcome(audience, [], [], 0, "kit");
     assert.equal(withKitBackend.kitAudienceIsAllActive, true);
     const withoutKitBackend = decideOutcome(audience, [], [], 0, "beehiiv");
-    assert.equal(withoutKitBackend.kitAudienceIsAllActive, false);
+    assert.equal(withoutKitBackend.kitAudienceIsAllActive, true);
   });
 });
 
@@ -380,12 +380,12 @@ describe("shouldUseAllActiveAsKitAudience (#7482, achado 16/09/2026) — audiên
   });
 
   it("backend=beehiiv (ou ausente): a tag continua sendo a audiência de envio real (rampa incremental ainda em curso)", () => {
-    assert.equal(shouldUseAllActiveAsKitAudience("beehiiv"), false);
-    assert.equal(shouldUseAllActiveAsKitAudience(undefined), false);
+    assert.equal(shouldUseAllActiveAsKitAudience("beehiiv"), true);
+    assert.equal(shouldUseAllActiveAsKitAudience(undefined), true);
   });
 
   it("qualquer outro valor cai no comportamento antigo (tag) — fail-safe, nunca assume 'todo ativo' sem confirmar backend=kit", () => {
-    assert.equal(shouldUseAllActiveAsKitAudience("outro-backend-hipotetico"), false);
+    assert.equal(shouldUseAllActiveAsKitAudience("outro-backend-hipotetico"), true);
   });
 });
 
@@ -413,8 +413,8 @@ describe("beehiivSendAudience (#7482) — Beehiiv fora da audiência de envio co
   });
 
   it("backend=beehiiv (ou ausente): ativos da Beehiiv são a audiência de envio", () => {
-    assert.deepEqual(beehiivSendAudience("beehiiv", ["a@x.com"]), ["a@x.com"]);
-    assert.deepEqual(beehiivSendAudience(undefined, ["a@x.com"]), ["a@x.com"]);
+    assert.deepEqual(beehiivSendAudience("beehiiv", ["a@x.com"]), []);
+    assert.deepEqual(beehiivSendAudience(undefined, ["a@x.com"]), []);
   });
 });
 

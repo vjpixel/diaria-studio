@@ -1,5 +1,8 @@
 # Publicação manual requer `prep-manual-publish.ts` antes
 
+> Aposentado para publicação (#11225): este documento preserva o procedimento histórico. Não executar envio, rascunho, teste ou agendamento Beehiiv. Conta mantida como arquivo; envio atual usa Kit.
+
+
 Movido do `CLAUDE.md` (#6935 PR 2 — curadoria do teto de bytes, ver
 "Otimização de tokens" no `CLAUDE.md`). Enforcement real do que segue vive
 em código (`scripts/prep-manual-publish.ts`, `scripts/close-poll.ts`,

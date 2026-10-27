@@ -707,7 +707,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // na mesma janela livre entre Diaria-Cursos-Kv-Sync (09:15) e os checks
     // de drift matinais (09:30 em diante), sem colisão).
     name: "Diaria-Kit-Subscriber-Sync",
-    description: "sync diario de assinantes ativos Beehiiv -> Kit (--push)",
+    description: "compatibilidade: ponte Beehiiv -> Kit aposentada, CLI sem efeitos (#11225)",
     steps: [{ key: "sync", script: "scripts/sync-beehiiv-subscribers-kit.ts", args: ["--push"] }],
     logPath: "kit-subscriber-sync/.sync.log",
     schedule: { kind: "daily", hour: 9, minute: 25 },

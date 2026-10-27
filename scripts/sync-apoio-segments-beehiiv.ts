@@ -117,17 +117,8 @@ export function buildSegmentsCache(
 }
 
 async function main(): Promise<void> {
-  loadProjectEnv(ROOT);
-  const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
-
-  process.stderr.write(`${LOG_PREFIX} buscando estado atual na Beehiiv…\n`);
-  const subscriptions = await fetchCurrentBeehiivState(publicationId, apiKey);
-  process.stderr.write(`${LOG_PREFIX} ${subscriptions.length} assinante(s) ativo(s) na Beehiiv.\n`);
-
-  const cache = buildSegmentsCache(subscriptions);
-  const path = segmentsCachePath(ROOT);
-  writeFileAtomic(path, JSON.stringify(cache, null, 2));
-  process.stderr.write(`${LOG_PREFIX} cache gravado em ${path} (${Object.keys(cache).length} email(s)).\n`);
+  console.log("#11225: Beehiiv é arquivo histórico. Sincronização de envio aposentada; use os canais Kit.");
+  return;
 }
 
 if (isMainModule(import.meta.url)) {
