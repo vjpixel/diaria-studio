@@ -83,7 +83,7 @@ import {
 } from "./lib/intentional-errors.ts";
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { clearEstiloRegenDestaques, reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335, #10404
-import { remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   removePoolItemFromMd,
   syncIntroCountInMd,
@@ -517,6 +517,7 @@ export function promoteToDestaque(
     (k) => remapCarouselKeepArt(k, newOrder, [`d${position}`]),
     dryRun,
     (path, content) => writeFilesVerified([{ path, content }], "promote-to-destaque"),
+    `promote inseriu destaque em d${position} com ${describeCarouselKeepArtRemap(newOrder, [`d${position}`])}`,
   );
   if (keepArt.rewritten) rewritten.push(keepArt.rewritten);
   if (keepArt.warning) warnings.push(keepArt.warning);

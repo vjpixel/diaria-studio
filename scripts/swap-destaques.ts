@@ -529,6 +529,7 @@ function main(): void {
     (k) => clearCarouselKeepArt(k, slots.map((s) => `d${s.position}`)),
     false,
     (path, content) => writeFilesVerified([{ path, content }], "swap-destaques"),
+    `swap trocou a história de ${slots.map((s) => `d${s.position}`).join(", ")} (remover essas chaves)`,
   );
   if (keepArt.rewritten) result.modified.rewritten.push(keepArt.rewritten);
   if (keepArt.warning) {

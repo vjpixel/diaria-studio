@@ -25,6 +25,7 @@ import {
   updateCarouselKeepArtFile,
   carouselKeepArtPath,
   readCarouselKeepArt,
+  describeCarouselKeepArtRemap,
 } from "../scripts/lib/carousel-keep-art.ts";
 import { promoteToDestaque } from "../scripts/promote-to-destaque.ts";
 
@@ -188,6 +189,110 @@ describe("swaps apagam a exceção da posição trocada (#11213)", () => {
       ]);
       assert.equal(r.status, 0, r.stderr);
       assert.deepEqual(readCarouselKeepArt(dir), { d1: "a" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review da PR #11229: arquivo malformado tem que aparecer no plano do dry-run,
+// no resultado estruturado e dizer quais posições a operação mexeu.
+// ---------------------------------------------------------------------------
+
+const MALFORMED = "{ não é json";
+
+function parseStdoutJson(stdout: string): Record<string, unknown> {
+  return JSON.parse(stdout.slice(stdout.indexOf("{"))) as Record<string, unknown>;
+}
+
+describe("aviso de carousel-keep-art.json malformado (#11213, review #11229)", () => {
+  it("describeCarouselKeepArtRemap descreve as posições movidas e as zeradas", () => {
+    assert.equal(describeCarouselKeepArtRemap([2, 1, 3]), "newOrder=[2,1,3] (d1←d2, d2←d1, d3←d3)");
+    assert.equal(
+      describeCarouselKeepArtRemap([3, 1, 2], ["d1"]),
+      "newOrder=[3,1,2] (d1←d3, d2←d1, d3←d2); d1 sem exceção (história nova)",
+    );
+  });
+
+  it("updateCarouselKeepArtFile põe a operação no warning do caso malformado", () => {
+    const dir = makeEdition(3);
+    try {
+      writeFileSync(carouselKeepArtPath(dir), MALFORMED);
+      const r = updateCarouselKeepArtFile(
+        dir,
+        (k) => remapCarouselKeepArt(k, [2, 1, 3]),
+        false,
+        undefined,
+        `reorder aplicado com ${describeCarouselKeepArtRemap([2, 1, 3])}`,
+      );
+      assert.match(r.warning ?? "", /reorder aplicado com newOrder=\[2,1,3\] \(d1←d2, d2←d1, d3←d3\)/);
+      assert.match(r.warning ?? "", /remapear as chaves à mão/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("swap-destaque.ts --dry-run com arquivo malformado: plano mostra o aviso, não 'nada a remover'", () => {
+    const dir = makeEdition(3);
+    try {
+      writeFileSync(carouselKeepArtPath(dir), MALFORMED);
+      const r = run("swap-destaque.ts", [
+        "--edition", "999999", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d2", "--dry-run",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = parseStdoutJson(r.stdout);
+      const plan = (out.dry_run_plan as Record<string, string>).carousel_keep_art;
+      assert.match(plan, /NÃO reindexada/);
+      assert.doesNotMatch(plan, /nada a remover/);
+      assert.ok((out.warnings as string[]).some((w) => /NÃO reindexada.*d2/.test(w)), r.stdout);
+      assert.equal(readFileSync(carouselKeepArtPath(dir), "utf8"), MALFORMED);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("swap-destaque.ts run real com arquivo malformado: aviso chega em result.warnings", () => {
+    const dir = makeEdition(3);
+    try {
+      writeFileSync(carouselKeepArtPath(dir), MALFORMED);
+      const r = run("swap-destaque.ts", ["--edition", "999999", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d2"]);
+      assert.equal(r.status, 0, r.stderr);
+      const warnings = parseStdoutJson(r.stdout).warnings as string[] | undefined;
+      assert.ok(warnings?.some((w) => /NÃO reindexada: swap trocou a história de d2/.test(w)), r.stdout);
+      assert.equal(readFileSync(carouselKeepArtPath(dir), "utf8"), MALFORMED);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("swap-destaques.ts com arquivo malformado: aviso chega em result.warnings", () => {
+    const dir = makeEdition(3);
+    try {
+      writeFileSync(carouselKeepArtPath(dir), MALFORMED);
+      const r = run("swap-destaques.ts", [
+        "--edition", "999999", "--edition-dir", dir, "--d3-url", "https://novo.com/x", "--d3-title", "Novo",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const warnings = parseStdoutJson(r.stdout).warnings as string[];
+      assert.ok(warnings.some((w) => /NÃO reindexada: swap trocou a história de d3/.test(w)), r.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reorder-destaques.ts com arquivo malformado: aviso com o newOrder chega em warnings", () => {
+    const dir = makeEdition(3);
+    try {
+      writeFileSync(carouselKeepArtPath(dir), MALFORMED);
+      const r = run("reorder-destaques.ts", ["--edition", "999999", "--edition-dir", dir, "--new-order", "2,1,3"]);
+      assert.equal(r.status, 0, r.stderr);
+      const warnings = parseStdoutJson(r.stdout).warnings as string[];
+      assert.ok(
+        warnings.some((w) => w.includes("reorder aplicado com newOrder=[2,1,3] (d1←d2, d2←d1, d3←d3)")),
+        r.stdout,
+      );
+      assert.equal(readFileSync(carouselKeepArtPath(dir), "utf8"), MALFORMED);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

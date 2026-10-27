@@ -128,7 +128,7 @@ import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // 
 import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
-import { remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
+import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
@@ -1810,6 +1810,7 @@ function main(): void {
       (k) => remapCarouselKeepArt(k, args.newOrder),
       args.dryRun,
       (path, content) => writePostBatchVerified([{ path, content }], args.newOrder),
+      `reorder aplicado com ${describeCarouselKeepArtRemap(args.newOrder)}`,
     );
     if (r.rewritten) modified.rewritten.push(r.rewritten);
     if (r.warning) {

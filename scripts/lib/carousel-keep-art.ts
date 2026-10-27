@@ -118,6 +118,18 @@ export function remapCarouselKeepArt(
   return out;
 }
 
+/**
+ * Pure: texto das posições afetadas por `remapCarouselKeepArt(k, newOrder,
+ * clear)`, pro aviso do caso malformado — ex.: `newOrder=[2,1,3]` →
+ * `"newOrder=[2,1,3] (d1←d2, d2←d1, d3←d3)"`; com `clear=["d1"]`, acrescenta
+ * `"; d1 sem exceção (história nova)"`.
+ */
+export function describeCarouselKeepArtRemap(newOrder: readonly number[], clear: readonly string[] = []): string {
+  const moves = newOrder.map((k, i) => `d${i + 1}←d${k}`).join(", ");
+  const base = `newOrder=[${newOrder.join(",")}] (${moves})`;
+  return clear.length > 0 ? `${base}; ${clear.join(", ")} sem exceção (história nova)` : base;
+}
+
 /** Pure: remove as posições que receberam outra história (swap), sem mover as demais. */
 export function clearCarouselKeepArt(keepArt: CarouselKeepArt, positions: readonly string[]): CarouselKeepArt {
   const out: CarouselKeepArt = { ...keepArt };
@@ -137,6 +149,13 @@ export function updateCarouselKeepArtFile(
   transform: (keepArt: CarouselKeepArt) => CarouselKeepArt,
   dryRun = false,
   write: (path: string, content: string) => void = (path, content) => writeFileSync(path, content, "utf8"),
+  /**
+   * Descreve as posições que a operação mexeu (ex.: saída de
+   * `describeCarouselKeepArtRemap`). Entra no `warning` do caso malformado pra
+   * quem consertar o JSON à mão aplicar o remapeamento certo — sem ele, o
+   * conserto reintroduz a exceção na posição velha (#11213).
+   */
+  operation?: string,
 ): { rewritten: string | null; before: CarouselKeepArt; after: CarouselKeepArt; warning?: string } {
   const path = carouselKeepArtPath(editionDir);
   if (!existsSync(path)) return { rewritten: null, before: {}, after: {} };
@@ -148,7 +167,9 @@ export function updateCarouselKeepArtFile(
       rewritten: null,
       before: {},
       after: {},
-      warning: `${(e as Error).message} — exceção de arte mantida NÃO reindexada; conferir o arquivo à mão (#11213).`,
+      warning: operation
+        ? `${(e as Error).message} — exceção de arte mantida NÃO reindexada: ${operation}; remapear as chaves à mão ao consertar o arquivo (#11213).`
+        : `${(e as Error).message} — exceção de arte mantida NÃO reindexada; conferir o arquivo à mão (#11213).`,
     };
   }
   const after = transform(before);

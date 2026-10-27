@@ -169,6 +169,12 @@ export interface SwapResult {
     deleted: string[];
   };
   rerenders_needed: string[];
+  /**
+   * #11213: avisos fail-soft dos JSONs secundários (estado do Noite Estrelada,
+   * `carousel-keep-art.json` malformado) — mesmo campo de `swap-destaques.ts`
+   * e `reorder-destaques.ts` (#8679). Opcional: ausente quando não há aviso.
+   */
+  warnings?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1125,8 @@ function main(): void {
     ],
   };
 
+  const keepArtSwapOperation = `swap trocou a história de d${demotePosition} (remover essa chave)`;
+
   if (dryRun) {
     // #10335: só anuncia "zerado" quando havia estado da posição — o run real
     // é no-op com arquivo ausente/sem a posição. dryRun=true não grava nada.
@@ -1132,6 +1140,22 @@ function main(): void {
       : estiloPlan.warning
         ? `_internal/04-estilo-regen.json: ${estiloPlan.warning}`
         : `_internal/04-estilo-regen.json: sem estado de d${demotePosition}, nada a zerar (#10335)`;
+    // #11213: mesmo padrão do estiloRegenPlan — arquivo malformado volta
+    // `rewritten: null` + `warning`, e o plano não pode dizer "nada a remover".
+    const keepArtPlan = updateCarouselKeepArtFile(
+      editionDir,
+      (k) => clearCarouselKeepArt(k, [`d${demotePosition}`]),
+      true,
+      undefined,
+      keepArtSwapOperation,
+    );
+    const keepArtPlanText = keepArtPlan.rewritten
+      ? `_internal/carousel-keep-art.json: exceção de d${demotePosition} removida (#11213)`
+      : keepArtPlan.warning
+        ? `_internal/carousel-keep-art.json: ${keepArtPlan.warning}`
+        : `_internal/carousel-keep-art.json: sem exceção de d${demotePosition}, nada a remover (#11213)`;
+    const planWarnings = [estiloPlan.warning, keepArtPlan.warning].filter((w): w is string => !!w);
+    if (planWarnings.length > 0) result.warnings = planWarnings;
     console.log(
       JSON.stringify(
         {
@@ -1144,13 +1168,7 @@ function main(): void {
             images_deleted: `04-d${demotePosition}-*.{jpg,png,json} removidos, inclusive 4x5-nativo e carousel-* (#9755)`,
             prompts_deleted: `_internal/02-d${demotePosition}-*.md/json e 04-d${demotePosition}-{sd-prompt,generator}.json removidos (precisam regenerar)`,
             estilo_regen_state: estiloRegenPlan,
-            carousel_keep_art: updateCarouselKeepArtFile(
-              editionDir,
-              (k) => clearCarouselKeepArt(k, [`d${demotePosition}`]),
-              true,
-            ).rewritten
-              ? `_internal/carousel-keep-art.json: exceção de d${demotePosition} removida (#11213)`
-              : `_internal/carousel-keep-art.json: sem exceção de d${demotePosition}, nada a remover (#11213)`,
+            carousel_keep_art: keepArtPlanText,
           },
         },
         null,
@@ -1325,7 +1343,10 @@ function main(): void {
     (path, content) => writeFilesVerified([{ path, content }], "swap-destaque"),
   );
   if (estilo.rewritten) result.modified.rewritten.push(estilo.rewritten);
-  if (estilo.warning) console.error(`AVISO: ${estilo.warning}`);
+  if (estilo.warning) {
+    console.error(`AVISO: ${estilo.warning}`);
+    (result.warnings ??= []).push(estilo.warning);
+  }
 
   // 7. Tira a exceção "manter a arte" da posição (#11213): ela era da história
   // rebaixada. Mantida, valeria para a arte NOVA assim que gerada — o
@@ -1335,9 +1356,13 @@ function main(): void {
     (k) => clearCarouselKeepArt(k, [`d${demotePosition}`]),
     false,
     (path, content) => writeFilesVerified([{ path, content }], "swap-destaque"),
+    keepArtSwapOperation,
   );
   if (keepArt.rewritten) result.modified.rewritten.push(keepArt.rewritten);
-  if (keepArt.warning) console.error(`AVISO: ${keepArt.warning}`);
+  if (keepArt.warning) {
+    console.error(`AVISO: ${keepArt.warning}`);
+    (result.warnings ??= []).push(keepArt.warning);
+  }
 
   // -------------------------------------------------------------------------
   // OUTPUT
