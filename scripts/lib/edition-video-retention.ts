@@ -4,8 +4,9 @@
  * Política PURA de retenção por data dos vídeos (`*.mp4`) em
  * `data/editions/`. O vídeo da edição (`diaria-comentada-{AAMMDD}.mp4`, o
  * vertical `-short*.mp4`, a versão `-short-instagram-chrome.mp4` em
- * `_internal/`) pesa 0,3 a 0,6 GB e já tem cópias fora do disco: YouTube,
- * R2 pros verticais e a fonte no Drive (`fetch-drive-video.ts`). Depois de
+ * `_internal/`) pesa 0,3 a 0,6 GB e já tem cópias fora do disco: YouTube e a
+ * fonte no Drive (`fetch-drive-video.ts`). O R2 dos verticais (#10823) não
+ * será habilitado (#11265), então não conta como cópia. Depois de
  * alguns dias a cópia local só ocupa espaço.
  *
  * A data é a da EDIÇÃO (o diretório `AAMMDD` mais próximo do arquivo),

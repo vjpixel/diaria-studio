@@ -13,6 +13,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *   npx tsx scripts/publish-shorts.ts AAMMDD --publish      # publica os destinos de API
  *     [--only facebook:diaria,instagram] [--now] [--video PATH]
  *     [--edition-dir DIR] [--edition-url URL]
+ *     [--linkedin-timer | --instagram-timer]               # rodada de um timer do 300 (só o destino dele, #10982/#11265)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --from-drive FILE_ID
  *                                                           # baixa o vertical do Drive (OAuth do projeto, não o conector)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --mark youtube_shorts=URL
@@ -55,14 +56,15 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     2 h dos posts da rotação #10305, picos, ≥30 min depois do perfil). Guiado
  *     porque não há token de organização local (a página publica pelo Worker).
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
- *     O plano traz texto (≤280 ponderado) e `dueAt`; o `--publish` sobe o
- *     vertical pro R2 e devolve `results[].buffer.videoUrl`. Registro com
- *     `--mark x=buffer:{id} --scheduled-at {dueAt}`.
+ *     O plano traz texto (≤280 ponderado) e `dueAt`; com R2 configurado o
+ *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl`.
+ *     O R2 não será habilitado (#11265): sem ele o X é pulado com aviso e
+ *     fica manual. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
  *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
  *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
  *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
- *     (`platform: "threads"`). Sem token, ou sem R2, é pulado com aviso
- *     (fail-soft). A API não agenda: mesmo `pending_schedule`/teto de atraso do
+ *     (`platform: "threads"`). Sem token, ou sem R2 (que não será habilitado,
+ *     #11265), é pulado com aviso (fail-soft) e fica manual. A API não agenda: mesmo `pending_schedule`/teto de atraso do
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
  *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
@@ -178,8 +180,11 @@ import {
   type ShortsConfig,
   type ShortsPublishedFile,
   type ShortTime,
+  type InstagramBackend,
   type WorkerInstagramAccount,
   type YouTubeShortMetadata,
+  shortDestinationAccount,
+  shortDestinationAlsoAccounts,
 } from "./lib/diaria/short-video.ts";
 import {
   instagramTimerScopeError,
@@ -249,7 +254,7 @@ const RUPLOAD = "https://rupload.facebook.com";
  */
 export const LINKEDIN_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, publishing.shorts.linkedin_profile_via_timer) no horário do vertical; " +
-  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer " +
+  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer --publish " +
   "(confira antes que o 300 não publicou; o --linkedin-timer recusa qualquer outro destino)";
 
 /**
@@ -259,17 +264,18 @@ export const LINKEDIN_TIMER_DETAIL =
 export const INSTAGRAM_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-Instagram, publishing.shorts.instagram_backend = timer-300) no horário do vertical, " +
   "com o corte _Instagram_ do Drive pela API; se o timer não conseguir (acima do teto da API, credencial, falha), ele abre um alarme para o editor. " +
-  "Para publicar desta máquina mesmo assim, rode só esse destino com --only instagram --instagram-timer " +
+  "Para publicar desta máquina mesmo assim, rode só esse destino com --only instagram --instagram-timer --publish " +
   "(confira antes que o 300 não publicou; o --instagram-timer recusa qualquer outro destino)";
 
 /**
- * #11265: motivo do pulo de X/Threads sem URL pública do vertical. O R2 não
- * será habilitado (decisão do editor, 27/10/2026), então com o backend do
- * timer o aviso diz isso em vez de cobrar os secrets.
+ * #11265: motivo do pulo de X/Threads quando o R2 NÃO está configurado (só é
+ * chamado com `r2.ready === false`). O R2 não será habilitado (decisão do
+ * editor, 27/10/2026), então com o backend do timer o aviso diz isso em vez
+ * de cobrar os secrets; com `worker-r2` (que depende dele) lista o que falta.
  */
-export function publicVideoUnavailableReason(backend: "timer-300" | "worker-r2", r2Missing: readonly string[]): string {
+export function publicVideoUnavailableReason(backend: InstagramBackend, r2Missing: readonly string[]): string {
   return backend === "timer-300"
-    ? "sem URL pública do vertical: o R2 não é usado (#11265, decisão do editor 27/10/2026) — fica manual"
+    ? "sem URL pública do vertical: R2 não configurado, e não será habilitado (#11265, decisão do editor 27/10/2026) — fica manual"
     : `falta ${r2Missing.join(", ")}`;
 }
 
@@ -479,23 +485,40 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const manualInstagram = (d: ShortDestination) => d.kind === "instagram" && !igFit.fits;
   // #10819: só os destinos que esta rodada ainda vai publicar disputam a grade;
   // os já registrados entram nela pelo `06-shorts-published.json`.
-  const slots = planShortSlots({
-    aammdd: input.aammdd,
-    time,
-    timeAt: shortTime.at,
-    destinations: destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d))),
-    cfg,
-    grid: input.grid ?? [],
-  });
+  // #11265: com o timer do 300 dono do Instagram, o Reels sai SEMPRE no
+  // horário do vertical (`shortTime`), fora da grade — é o mesmo horário que
+  // o timer usa pra decidir quando agir (`decideInstagramTimerRun`). Pela
+  // grade, fora da rotação os dois divergiam (261117: shortTime 12:00, slot
+  // 19:30) e o Reels nunca saía. Ele entra na grade como post fixo, pros
+  // outros destinos se espaçarem em volta dele.
+  const instagramViaTimer = cfg.instagramBackend === "timer-300";
+  const instagramDelegated = instagramViaTimer && !input.instagramTimer;
+  const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
+  const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
+  const fixedInstagramSlot: ShortSlot | null = fixedInstagram ? instagramTimerSlot(fixedInstagram, cfg, time.hhmm, shortTime.at) : null;
+  const slots = [
+    ...(fixedInstagramSlot ? [fixedInstagramSlot] : []),
+    ...planShortSlots({
+      aammdd: input.aammdd,
+      time,
+      timeAt: shortTime.at,
+      destinations: slotDestinations.filter((d) => d !== fixedInstagram),
+      cfg,
+      grid: [
+        ...(input.grid ?? []),
+        ...(fixedInstagramSlot
+          ? [{ account: fixedInstagramSlot.account, at: fixedInstagramSlot.at, label: "shorts instagram (timer do 300)", ...(fixedInstagramSlot.alsoAccounts ? { alsoAccounts: fixedInstagramSlot.alsoAccounts } : {}) }]
+          : []),
+      ],
+    }),
+  ];
   const slotOf = new Map(slots.map((s) => [s.destination, s]));
   for (const s of slots) {
-    if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
+    if (s.rule === "timer-300") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
+    else if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
   }
   const scheduleFor = (s: ShortSlot) => (input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(s.at, input.now));
-  // #11265: com o timer do 300 dono do Instagram, só a rodada dele o publica.
-  const instagramViaTimer = cfg.instagramBackend === "timer-300";
-  const instagramDelegated = instagramViaTimer && !input.instagramTimer;
   for (const s of slots) {
     if (input.forceNow) continue;
     if (s.destination === "instagram" && !igFit.fits) {
@@ -841,6 +864,25 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
+}
+
+/**
+ * Pure (#11265): slot do Instagram com o timer do 300 — o horário do vertical,
+ * sem passar pela grade (ver o comentário em `planShortsPublish`).
+ */
+export function instagramTimerSlot(dest: ShortDestination, cfg: ShortsConfig, hhmm: string, at: string): ShortSlot {
+  const account = shortDestinationAccount(dest, cfg);
+  if (!account) throw new Error(`instagramTimerSlot: ${dest.id} sem conta na grade`);
+  const also = shortDestinationAlsoAccounts(dest, cfg);
+  return {
+    destination: dest.id,
+    account,
+    ...(also.length ? { alsoAccounts: also } : {}),
+    at: new Date(Date.parse(at)).toISOString(),
+    hhmm,
+    rule: "timer-300",
+    premise: "timer do 300: sempre no horário do vertical, fora da grade (#11265)",
+  };
 }
 
 /** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823) — o tipo mora em short-video.ts (#10916). */
@@ -1344,8 +1386,10 @@ export function instagramEditionMarkers(input: { aammdd: string; d1Title?: strin
 export const INSTAGRAM_HOOK_MARKER_MIN_CHARS = 30;
 
 /**
- * #10978 item 5: janela em torno do horário planejado do Reels (o `at` do
- * passo guiado) em que um Reels SEM marcador ainda pode ser o da edição.
+ * #10978 item 5: janela em torno do horário do vertical (`resolveShortTime`,
+ * o mesmo horário em que o timer do 300 publica, #11265, e o slot do
+ * Instagram no plano com `timer-300`) em que um Reels SEM marcador ainda pode
+ * ser o da edição.
  */
 export const INSTAGRAM_CONFIRM_TIME_WINDOW_MS = 90 * 60_000;
 
@@ -1526,10 +1570,12 @@ export function decideInstagramConfirm(input: {
   };
 }
 
+export type InstagramTimerAlreadyMatch = "registry" | "marker" | "time-window" | "media-id";
+
 export type InstagramTimerPreflight =
   | { kind: "proceed" }
   /** O Reels da edição já está na conta (registrado ou achado pela API): grava, não publica. */
-  | { kind: "already"; entry: ShortPublishedEntry; matchedBy: "registry" | "marker" | "time-window" | "media-id" }
+  | { kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }
   /** Pode haver Reels da edição na conta e não dá pra afirmar qual: não publica. */
   | { kind: "block"; reason: string };
 
@@ -1544,6 +1590,28 @@ export function instagramTimerPreflight(decision: InstagramConfirmDecision): Ins
   if (decision.kind === "register") return { kind: "already", entry: decision.entry, matchedBy: decision.matchedBy };
   if (decision.cause === "none" || decision.cause === "no-match") return { kind: "proceed" };
   return { kind: "block", reason: decision.reason };
+}
+
+/**
+ * #11265: a conferência da conta ligada ao publish da rodada do timer, com I/O
+ * injetável. Reels já no ar → grava (`persist`) e não publica; ambíguo ou
+ * leitura incompleta → lança (o destino vira falha e o timer alarma, nunca
+ * publica); nada na conta → publica. Erro da leitura também lança
+ * (fail-closed: a próxima execução de hora em hora tenta de novo).
+ */
+export async function instagramTimerGate(deps: {
+  decide: () => Promise<InstagramConfirmDecision>;
+  persist: (entry: ShortPublishedEntry) => void;
+}): Promise<{ kind: "publish" } | { kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }> {
+  const pre = instagramTimerPreflight(await deps.decide());
+  if (pre.kind === "block") {
+    throw new Error(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`);
+  }
+  if (pre.kind === "already") {
+    deps.persist(pre.entry);
+    return pre;
+  }
+  return { kind: "publish" };
 }
 
 /**
@@ -2275,6 +2343,15 @@ export function parseShortsCliArgs(argv: string[]):
   return { ok: true, aammdd, flags, values, positional: positionalOut };
 }
 
+/** Backend do Instagram no config real; config ilegível = não conferido (o plano lança depois). */
+function configuredInstagramBackend(): InstagramBackend | undefined {
+  try {
+    return loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))).instagramBackend;
+  } catch {
+    return undefined;
+  }
+}
+
 async function main(): Promise<number> {
   const parsed = parseShortsCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -2306,7 +2383,7 @@ async function main(): Promise<number> {
     }
     const markScopeErr =
       linkedinTimerScopeError({ linkedinTimer, only: null, markDestination: mark.destination }) ??
-      instagramTimerScopeError({ instagramTimer, linkedinTimer, only: null, markDestination: mark.destination });
+      instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: null, markDestination: mark.destination });
     if (markScopeErr) {
       console.error(`publish-shorts: ${markScopeErr}`);
       return 2;
@@ -2327,7 +2404,7 @@ async function main(): Promise<number> {
   const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
   const scopeErr =
     linkedinTimerScopeError({ linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") }) ??
-    instagramTimerScopeError({ instagramTimer, linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") });
+    instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") });
   if (scopeErr) {
     console.error(`publish-shorts: ${scopeErr}`);
     return 2;
@@ -2488,6 +2565,8 @@ async function main(): Promise<number> {
     error?: string;
     /** #11157: outro processo registrou o destino durante a rodada; nada foi enviado. */
     alreadyRegistered?: boolean;
+    /** #11265: como a conferência do timer achou o Reels já no ar (`time-window` pede conferir o permalink). */
+    matchedBy?: InstagramTimerAlreadyMatch;
     /** #10772: o que a skill passa pra Buffer `create_post` (nada é registrado até o `--mark`). */
     buffer?: { text: string; dueAt: string | null; videoUrl: string };
   }> = [];
@@ -2575,23 +2654,26 @@ async function main(): Promise<number> {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.
           const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
-          const pre = instagramTimerPreflight(
-            await readAndDecideInstagramConfirm(defaultGraphDeps, {
-              igUserId: igAuthor.igUserId,
-              token: igAuthor.token,
-              apiVersion: igApiVersion,
-              published,
-              sinceIso: ctx.sinceIso,
-              markers: ctx.markers,
-              nowIso: new Date().toISOString(),
-              expectedAtIso: ctx.expectedAtIso,
-            }),
-          );
-          if (pre.kind === "block") throw new Error(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`);
-          if (pre.kind === "already") {
-            published = persist(pre.entry);
-            results.push({ destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true });
-            console.error(`[aviso] instagram: o Reels da edição já está na conta (${pre.matchedBy}, ${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
+          const author = igAuthor;
+          const gate = await instagramTimerGate({
+            decide: () =>
+              readAndDecideInstagramConfirm(defaultGraphDeps, {
+                igUserId: author.igUserId,
+                token: author.token,
+                apiVersion: igApiVersion,
+                published,
+                sinceIso: ctx.sinceIso,
+                markers: ctx.markers,
+                nowIso: new Date().toISOString(),
+                expectedAtIso: ctx.expectedAtIso,
+              }),
+            persist: (entry) => {
+              published = persist(entry);
+            },
+          });
+          if (gate.kind === "already") {
+            results.push({ destination: item.destination, ok: true, entry: gate.entry, alreadyRegistered: true, matchedBy: gate.matchedBy });
+            console.error(`[aviso] instagram: o Reels da edição já está na conta (${gate.matchedBy}, ${gate.entry.url ?? gate.entry.id}) — registrado, não publica de novo`);
             continue;
           }
         }
@@ -2666,7 +2748,13 @@ async function main(): Promise<number> {
   // rodada principal grava; as dos timers do 300 só planejam o próprio destino.
   if (!linkedinTimer && !instagramTimer) {
     try {
-      recordCredentialSkips(dir, aammdd, plan.items.map((i) => i.destination), credentialSkippedItems(plan.items), new Date().toISOString());
+      recordCredentialSkips(
+        dir,
+        aammdd,
+        plan.items.map((i) => i.destination),
+        credentialSkippedItems(plan.items, { publicVideoTerminal: shortsCfg.instagramBackend === "timer-300" && !r2.ready }),
+        new Date().toISOString(),
+      );
     } catch (e) {
       console.error(`[aviso] não foi possível registrar os destinos pulados por credencial: ${(e as Error).message}`);
     }
@@ -2677,12 +2765,23 @@ async function main(): Promise<number> {
 
 /**
  * Destinos que a rodada pulou por falta de credencial/token do PRÓPRIO destino
- * (#11240). Fica de fora o pulo por R2 fora do ar (`cause: "public_video"`):
- * é infraestrutura, a próxima rodada publica com o mesmo arquivo. Puro.
+ * (#11240), terminais pra limpeza do vertical. O pulo por falta de URL pública
+ * (`cause: "public_video"`, X e Threads) só conta quando
+ * `publicVideoTerminal`: com o R2 fora de cogitação (#11265, backend
+ * `timer-300` sem R2) a próxima rodada também não publica, e o X/Threads
+ * manuais sobem o arquivo do Drive (`Final/`), não o `-short.mp4` local —
+ * sem isso o vertical nunca seria apagado. Com o R2 só fora do ar
+ * (`worker-r2`), segue não-terminal: a próxima rodada publica com o mesmo
+ * arquivo. Puro.
  */
-export function credentialSkippedItems(items: readonly ShortsPlanItem[]): Array<{ destination: string; detail: string }> {
+export function credentialSkippedItems(
+  items: readonly ShortsPlanItem[],
+  opts: { publicVideoTerminal?: boolean } = {},
+): Array<{ destination: string; detail: string }> {
   return items.flatMap((i) =>
-    i.action === "skip_missing_credentials" && i.cause !== "public_video" ? [{ destination: i.destination, detail: i.detail }] : [],
+    i.action === "skip_missing_credentials" && (i.cause !== "public_video" || opts.publicVideoTerminal === true)
+      ? [{ destination: i.destination, detail: i.detail }]
+      : [],
   );
 }
 

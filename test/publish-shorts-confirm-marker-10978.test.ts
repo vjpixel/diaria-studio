@@ -93,11 +93,13 @@ describe("#10978 item 5: marcador robusto a edição da 1ª linha", () => {
   it("Reels perto do horário mas sem o formato do vertical (outro conteúdo da conta): recusa", () => {
     const d = decide([reel("r1", "Bastidores do estúdio hoje", "2026-10-28T11:05:00+0000")]);
     assert.equal(d.kind, "refuse");
+    if (d.kind === "refuse") assert.equal(d.cause, "no-match");
   });
 
   it("sem horário planejado (caller antigo): só o marcador vale, como antes", () => {
     const d = decide([reel("r1", "Outro\n\nyoutube.com/@diariabr", "2026-10-28T11:05:00+0000")], { expectedAtIso: null });
     assert.equal(d.kind, "refuse");
+    if (d.kind === "refuse") assert.equal(d.cause, "no-match");
   });
 
   it("dois Reels com o marcador continuam ambíguos (o fallback de horário não desempata)", () => {

@@ -68,7 +68,8 @@ export function shortVideoFileName(aammdd: string): string {
  * #11265: o corte do Instagram (`_Instagram_` na pasta `Final/` do Drive,
  * #11222) baixado na pasta da edição. É o arquivo que o timer do 300
  * (`scripts/shorts-instagram-timer.ts`) publica pela API; a limpeza do
- * vertical (#11240) o apaga quando o `instagram` fica registrado.
+ * vertical (#11240) o apaga quando o `instagram` fica registrado como
+ * `published` ou `scheduled` (`send_unknown` mantém o arquivo, pra conferir).
  */
 export function shortInstagramVideoFileName(aammdd: string): string {
   return `diaria-comentada-${aammdd}-short-instagram.mp4`;
@@ -85,8 +86,12 @@ export function shortInstagramVideoFileName(aammdd: string): string {
  *     Reels na fila do Worker `diaria-linkedin-cron`. Exige os 5 secrets do
  *     R2, que não serão criados (o R2 não está habilitado na conta).
  */
-export type InstagramBackend = "timer-300" | "worker-r2";
-export const INSTAGRAM_BACKENDS: readonly InstagramBackend[] = ["timer-300", "worker-r2"];
+export const INSTAGRAM_BACKENDS = ["timer-300", "worker-r2"] as const;
+export type InstagramBackend = (typeof INSTAGRAM_BACKENDS)[number];
+
+export function isInstagramBackend(v: unknown): v is InstagramBackend {
+  return typeof v === "string" && (INSTAGRAM_BACKENDS as readonly string[]).includes(v);
+}
 
 /** Registro do que já saiu, por destino (idempotência do `publish-shorts.ts`). */
 export const SHORTS_PUBLISHED_FILE = "_internal/06-shorts-published.json";
@@ -426,7 +431,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
   const linkedinProfile = optionalBool(raw, "linkedin_profile", DEFAULT_SHORTS_CONFIG.linkedinProfile);
   const linkedinPageRepost = optionalBool(raw, "linkedin_page_repost", DEFAULT_SHORTS_CONFIG.linkedinPageRepost);
   const backend = raw.instagram_backend ?? DEFAULT_SHORTS_CONFIG.instagramBackend;
-  if (!INSTAGRAM_BACKENDS.includes(backend)) {
+  if (!isInstagramBackend(backend)) {
     throw new Error(`[shorts] publishing.shorts.instagram_backend precisa ser ${INSTAGRAM_BACKENDS.map((b) => `"${b}"`).join(" ou ")} (#11265).`);
   }
   if (linkedinPageRepost && !linkedinProfile) {
@@ -643,7 +648,8 @@ export interface ShortSlot {
   /** HH:MM BRT. */
   hhmm: string;
   /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
-  rule: "test-schedule" | SlotRule;
+  /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
+  rule: "test-schedule" | "timer-300" | SlotRule;
   premise: string;
   warning?: string;
 }
