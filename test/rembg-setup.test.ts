@@ -21,6 +21,35 @@ it("capa horizontal não exige o venv do rembg para consumir o retrato já recor
 
 const python = process.platform === "win32" ? "python" : "python3";
 const available = spawnSync(python, ["--version"]).status === 0;
+
+// #11370: no Neo o --output sob data/ (junction do OneDrive) morria com um
+// `[Errno 2]` cru. Agora o PNG nasce no temporário do sistema e só depois vai
+// pro destino; pasta inacessível vira erro com a causa e o contorno.
+it("recorte grava via temporário e explica destino inacessível em data/ (#11370)", { skip: !available }, () => {
+  const result = spawnSync(python, ["-c", String.raw`
+import os, runpy, tempfile
+from pathlib import Path
+m = runpy.run_path('scripts/setup-rembg.py')
+write_output = m['write_output']
+before = set(os.listdir(tempfile.gettempdir()))
+with tempfile.TemporaryDirectory() as d:
+    missing = Path(d) / 'data' / 'editions' / '2610' / '261028' / 'retrato.png'
+    try:
+        write_output(missing, b'png')
+        raise AssertionError('gravou em pasta inexistente')
+    except RuntimeError as e:
+        msg = str(e)
+        assert 'inacessível pelo Python' in msg, msg
+        assert str(missing.parent) in msg, msg
+        assert 'fora de data/' in msg, msg
+    ok = Path(d) / 'retrato.png'
+    write_output(ok, b'png-bytes')
+    assert ok.read_bytes() == b'png-bytes'
+leftover = [n for n in set(os.listdir(tempfile.gettempdir())) - before if n.startswith('rembg-')]
+assert not leftover, leftover
+`], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
 it("setup recusa venv errado e versão divergente sem instalar pacotes", { skip: !available }, () => {
   const result = spawnSync(python, ["-c", String.raw`
 import runpy, sys

@@ -19,6 +19,8 @@ import {
   INSTAGRAM_TIMER_ALARM_STATE_FILE,
   MISSING_VIDEO_ALARM_AFTER_MS,
   alarm,
+  alarmId,
+  alarmKeyOf,
   alarmSeverity,
   alarmDelivery,
   alarmSuppressed,
@@ -41,6 +43,7 @@ import {
   credentialSkippedItems,
   instagramTimerGate,
   instagramTimerPreflight,
+  instagramTimerPublishStep,
   parseShortsCliArgs,
   planShortsPublish,
   publicVideoUnavailableReason,
@@ -124,24 +127,24 @@ describe("#11265 plano: o timer é o dono do Instagram", () => {
     assert.equal(ig(planShortsPublish({ ...base, now: new Date("2026-10-27T12:00:00Z"), videoDurationSeconds: 50 })).action, "skip_delegated");
   });
   it("rodada do timer antes do horário: pending_schedule (nada sai)", () => {
-    const p = planShortsPublish({ ...base, instagramTimer: true, now: new Date("2026-10-27T10:00:00Z") });
+    const p = planShortsPublish({ ...base, writer: "instagram-timer", now: new Date("2026-10-27T10:00:00Z") });
     assert.equal(ig(p).action, "pending_schedule");
     assert.equal((ig(p) as { scheduledAt: string }).scheduledAt, AT);
     assert.ok(p.premises.some((x) => x.startsWith(`instagram: timer do 300 publica depois de ${AT}`)));
   });
   it("rodada do timer depois do horário: publish na hora (upload resumível, sem URL pública)", () => {
-    const p = planShortsPublish({ ...base, instagramTimer: true, now: new Date("2026-10-27T11:05:00Z") });
+    const p = planShortsPublish({ ...base, writer: "instagram-timer", now: new Date("2026-10-27T11:05:00Z") });
     assert.equal(ig(p).action, "publish");
   });
   it("rodada do timer: até 3 h exatas publica; 1 ms depois vira skip_late (--now publica)", () => {
     const limit = new Date(Date.parse(AT) + MAX_FIRE_LATENESS_MS);
-    assert.equal(ig(planShortsPublish({ ...base, instagramTimer: true, now: limit })).action, "publish");
+    assert.equal(ig(planShortsPublish({ ...base, writer: "instagram-timer", now: limit })).action, "publish");
     const late = new Date(limit.getTime() + 1);
-    assert.equal(ig(planShortsPublish({ ...base, instagramTimer: true, now: late })).action, "skip_late");
-    assert.equal(ig(planShortsPublish({ ...base, instagramTimer: true, forceNow: true, now: late })).action, "publish");
+    assert.equal(ig(planShortsPublish({ ...base, writer: "instagram-timer", now: late })).action, "skip_late");
+    assert.equal(ig(planShortsPublish({ ...base, writer: "instagram-timer", forceNow: true, now: late })).action, "publish");
   });
   it("rodada do timer com o vertical acima do teto: passo guiado (o timer avisa o editor)", () => {
-    const p = planShortsPublish({ ...base, instagramTimer: true, videoDurationSeconds: 50, now: new Date("2026-10-27T11:05:00Z") });
+    const p = planShortsPublish({ ...base, writer: "instagram-timer", videoDurationSeconds: 50, now: new Date("2026-10-27T11:05:00Z") });
     assert.equal(ig(p).action, "guided");
   });
   it("backend worker-r2: o caminho antigo (fila do Worker) segue igual", () => {
@@ -159,7 +162,7 @@ describe("#11265 plano: o timer é o dono do Instagram", () => {
     // A grade da conta tem post às 12:00 — antes do #11265 o planner empurrava o Reels pra 19:30.
     const grid = [{ account: igAccount, at, label: "post diário" }];
     const now = new Date("2026-11-17T15:05:00Z");
-    const p = planShortsPublish({ ...base, aammdd, published: { aammdd, entries: [] }, grid, instagramTimer: true, now });
+    const p = planShortsPublish({ ...base, aammdd, published: { aammdd, entries: [] }, grid, writer: "instagram-timer", now });
     const slot = p.slots.find((s) => s.destination === "instagram")!;
     assert.equal(slot.at, at);
     assert.equal(slot.rule, "timer-300");
@@ -172,16 +175,26 @@ describe("#11265 plano: o timer é o dono do Instagram", () => {
 
 describe("#11265 escopo do --instagram-timer e registro próprio", () => {
   it("só --only instagram (ou --mark instagram=URL); nunca com --linkedin-timer, --confirm-instagram nem backend worker-r2", () => {
-    assert.equal(instagramTimerScopeError({ instagramTimer: false, only: null }), null);
-    assert.equal(instagramTimerScopeError({ instagramTimer: true, only: ["instagram"] }), null);
-    assert.equal(instagramTimerScopeError({ instagramTimer: true, backend: "timer-300", only: ["instagram"] }), null);
+    const T = "timer-300" as const;
+    assert.equal(instagramTimerScopeError({ instagramTimer: false, backend: T, only: null }), null);
+    assert.equal(instagramTimerScopeError({ instagramTimer: true, backend: T, only: ["instagram"] }), null);
     assert.match(instagramTimerScopeError({ instagramTimer: true, backend: "worker-r2", only: ["instagram"] })!, /timer-300/);
-    assert.match(instagramTimerScopeError({ instagramTimer: true, only: null })!, /exige --only instagram/);
-    assert.match(instagramTimerScopeError({ instagramTimer: true, only: ["instagram", "facebook:diaria"] })!, /exige --only instagram/);
-    assert.match(instagramTimerScopeError({ instagramTimer: true, linkedinTimer: true, only: ["instagram"] })!, /não combina com --linkedin-timer/);
-    assert.match(instagramTimerScopeError({ instagramTimer: true, only: ["instagram"], confirmInstagram: true })!, /não combina com --confirm-instagram/);
-    assert.equal(instagramTimerScopeError({ instagramTimer: true, only: null, markDestination: "instagram" }), null);
-    assert.match(instagramTimerScopeError({ instagramTimer: true, only: null, markDestination: "x" })!, /só aceita instagram/);
+    assert.match(instagramTimerScopeError({ instagramTimer: true, backend: T, only: null })!, /exige --only instagram/);
+    assert.match(instagramTimerScopeError({ instagramTimer: true, backend: T, only: ["instagram", "facebook:diaria"] })!, /exige --only instagram/);
+    assert.match(instagramTimerScopeError({ instagramTimer: true, backend: T, linkedinTimer: true, only: ["instagram"] })!, /não combina com --linkedin-timer/);
+    assert.match(instagramTimerScopeError({ instagramTimer: true, backend: T, only: ["instagram"], confirmInstagram: true })!, /não combina com --confirm-instagram/);
+    assert.equal(instagramTimerScopeError({ instagramTimer: true, backend: T, only: null, markDestination: "instagram" }), null);
+    assert.match(instagramTimerScopeError({ instagramTimer: true, backend: T, only: null, markDestination: "x" })!, /só aceita instagram/);
+  });
+  it("config ilegível (backend unreadable) recusa, inclusive no --mark (#11368: o campo opcional pulava a regra)", () => {
+    assert.match(instagramTimerScopeError({ instagramTimer: true, backend: "unreadable", only: ["instagram"] })!, /não carregou/);
+    assert.match(instagramTimerScopeError({ instagramTimer: true, backend: "unreadable", only: null, markDestination: "instagram" })!, /não carregou/);
+    assert.equal(instagramTimerScopeError({ instagramTimer: false, backend: "unreadable", only: null }), null);
+  });
+  it("os dois timers juntos não são um escritor: shortsRegistryWriterFor lança (#11368)", () => {
+    assert.throws(() => shortsRegistryWriterFor(true, true), /não combina com --linkedin-timer/);
+    assert.equal(shortsRegistryWriterFor(true, false), "linkedin-timer");
+    assert.equal(shortsRegistryWriterFor(false, false), "main");
   });
   it("--instagram-timer é flag booleana do CLI", () => {
     assert.ok((SHORTS_BOOLEAN_FLAGS as readonly string[]).includes("instagram-timer"));
@@ -396,11 +409,33 @@ describe("#11265 conferência da conta antes de publicar", () => {
     assert.equal(instagramTimerPreflight({ kind: "refuse", reason: "r", candidates: [], cause: "ambiguous" }).kind, "block");
     assert.equal(instagramTimerPreflight({ kind: "refuse", reason: "r", candidates: [], cause: "window" }).kind, "block");
   });
-  it("instagramTimerGate: Reel já no ar → grava e NÃO publica", async () => {
+  it("instagramTimerGate: Reel já no ar (marcador) → grava e NÃO publica", async () => {
     const persisted: ShortPublishedEntry[] = [];
-    const r = await instagramTimerGate({ decide: async () => ({ kind: "register", entry, candidates: [], matchedBy: "time-window" }), persist: (e) => persisted.push(e) });
+    const r = await instagramTimerGate({ decide: async () => ({ kind: "register", entry, candidates: [], matchedBy: "marker" }), persist: (e) => persisted.push(e) });
     assert.equal(r.kind, "already");
     assert.deepEqual(persisted, [entry]);
+  });
+  it("instagramTimerGate: achado SÓ pela janela de horário → blocked, sem gravar nem publicar (#11368: pode ser Reels de outra edição)", async () => {
+    const persisted: ShortPublishedEntry[] = [];
+    await assert.rejects(
+      instagramTimerGate({ decide: async () => ({ kind: "register", entry, candidates: [], matchedBy: "time-window" }), persist: (e) => persisted.push(e) }),
+      (e: unknown) => e instanceof InstagramTimerGateError && e.failure === "blocked" && /--media-id m1/.test(e.message),
+    );
+    assert.equal(persisted.length, 0);
+  });
+  it("ordem gate→publish na rodada do timer: Reels já na conta ou gate que lança ⇒ zero uploads (#11368)", async () => {
+    let uploads = 0;
+    const publish = async () => {
+      uploads++;
+      return "ok";
+    };
+    const already = await instagramTimerPublishStep({ gate: async () => ({ kind: "already", entry, matchedBy: "marker" }), publish });
+    assert.equal(already.kind, "already");
+    await assert.rejects(instagramTimerPublishStep({ gate: async () => { throw new InstagramTimerGateError("bloqueado", "blocked"); }, publish }), /bloqueado/);
+    assert.equal(uploads, 0);
+    const done = await instagramTimerPublishStep({ gate: async () => ({ kind: "publish" }), publish });
+    assert.deepEqual(done, { kind: "published", outcome: "ok" });
+    assert.equal(uploads, 1);
   });
   it("instagramTimerGate: ambíguo → lança (não publica, vira falha + alarme); nada na conta → publica", async () => {
     const persisted: ShortPublishedEntry[] = [];
@@ -558,13 +593,14 @@ describe("#11265 alarme", () => {
 
       assert.equal(await alarm(dir, AAMMDD, "publish-failed", "rupload 400", { at: AT }, deps), false);
       assert.equal(issues.length, 1);
-      assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { aammdd: AAMMDD, alarmed: [], emailPending: ["publish-failed"] });
+      const id = alarmId("publish-failed", "rupload 400");
+      assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { aammdd: AAMMDD, alarmed: [], emailPending: [id] });
 
       pushOk = true;
       assert.equal(await alarm(dir, AAMMDD, "publish-failed", "rupload 400", { at: AT }, deps), true);
       assert.equal(issues.length, 1, "a 2ª execução reaproveita a issue");
       assert.equal(sent.length, 1, "o e-mail que falhou sai na 2ª execução");
-      assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { aammdd: AAMMDD, alarmed: ["publish-failed"], emailPending: [] });
+      assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { aammdd: AAMMDD, alarmed: [id], emailPending: [] });
 
       assert.equal(await alarm(dir, AAMMDD, "publish-failed", "rupload 400", { at: AT }, deps), true);
       assert.equal(sent.length, 1, "entregue, não repete");

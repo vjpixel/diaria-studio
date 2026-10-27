@@ -113,7 +113,7 @@ describe("#10982 delegação no plano do /diaria-shorts", () => {
     assert.equal(item(p, "linkedin_page_repost").action, "skip_invalid");
   });
   it("com --linkedin-timer (a rodada do timer): publica", () => {
-    assert.equal(item(planShortsPublish({ ...base, linkedinTimer: true }), "linkedin_profile").action, "publish");
+    assert.equal(item(planShortsPublish({ ...base, writer: "linkedin-timer" }), "linkedin_profile").action, "publish");
   });
   it("timer desligado no config: a skill publica como antes", () => {
     const cfg = { publishing: { shorts: { ...base.config.publishing.shorts, linkedin_profile_via_timer: false } } };
