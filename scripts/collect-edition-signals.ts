@@ -468,23 +468,44 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
 export const RECURRING_REQUEST_MIN_EDITIONS = 3;
 
 /**
- * #11291: tamanho da janela de BASE histórica — as edições imediatamente
- * anteriores à janela de detecção (7), usadas pra medir a frequência-base de
- * cada `request_type`. Sem a base, um tipo que acontece em quase toda edição
- * (`destaque-swap` em 34 de 39, `lead-rewrite`, `bucket-move`) passa o corte
- * de 3-em-7 TODA semana e reabre a mesma issue (destaque-swap chegou à 5ª
- * reabertura: #9883 → #11247) — o sinal media rotina, não mudança.
+ * #11291/#11337: tamanho da BASE histórica — média móvel das últimas 30
+ * edições COM pedidos registrados, janela de detecção incluída (decisão do
+ * editor na #11337: "média móvel de 30 edições + margem"). Sem a base, um
+ * tipo que acontece em quase toda edição (`destaque-swap` em 34 de 39,
+ * `lead-rewrite`, `bucket-move`, `pool-add`) passa o corte de 3-em-7 TODA
+ * semana e reabre a mesma issue (destaque-swap chegou à 5ª reabertura: #9883
+ * → #11247) — o sinal media rotina, não mudança.
+ *
+ * Por que a janela entra na média (#11337): com a base só ANTES da janela, uma
+ * base curta (10-12 edições) e uma janela de 7 dão taxas com erro de ±20 pp e
+ * o detector disparava no ruído — medido na série real 2609-2610, `pool-add`
+ * (7/7 contra base 5/10) e `bucket-move` (6/7 contra 0,56) ainda abriam issue.
+ * Com a média móvel que inclui a janela, nenhum dos tipos rotineiros dispara
+ * em nenhuma janela de 2609-2610 (`test/collect-edition-signals-11337.test.ts`).
  */
-export const RECURRING_REQUEST_BASELINE_WINDOW = 28;
+export const RECURRING_REQUEST_BASELINE_WINDOW = 30;
+
+/**
+ * Quantos diretórios de edição varrer pra achar as 30 edições com pedidos da
+ * base: nem toda edição tem `editor-requests.jsonl` (em 2608-2610, 40 de 61).
+ */
+export const RECURRING_REQUEST_BASELINE_SCAN = 60;
 
 /**
  * Mínimo de edições com pedidos registrados na base pra ela valer. Abaixo
- * disso (projeto novo, logging recém-ligado) a taxa-base é ruído e o
- * detector cai na regra antiga, só 3-em-7.
+ * disso (projeto novo, logging recém-ligado) não há taxa-base medida, e desde
+ * a #11337 o detector NÃO dispara — antes caía na regra antiga (só 3-em-7),
+ * que é justamente o comportamento que abria issue de rotina.
  */
 export const RECURRING_REQUEST_MIN_BASELINE_EDITIONS = 10;
 
-/** Quantos desvios-padrão acima do esperado a janela precisa ficar pra disparar. */
+/**
+ * Margem: quantos desvios-padrão (binomial, n = edições da janela, p = taxa
+ * da base) acima do esperado a janela precisa ficar pra disparar. Margem em
+ * desvios e não em pontos percentuais fixos porque o erro de uma taxa medida
+ * em 7 edições depende de p: uma margem fixa de 25 pp ainda disparava em
+ * `pool-add`/`bucket-move` na série real (#11337).
+ */
 export const RECURRING_REQUEST_SIGMA = 2;
 
 /**
@@ -533,11 +554,30 @@ export function computeRequestTypeBaseline(
 }
 
 /**
+ * #11337: recorta as `maxEditions` edições mais recentes COM pedidos — o
+ * universo da média móvel. Pura. AAMMDD ordena cronologicamente.
+ */
+export function selectBaselineEntries(
+  entriesByEdition: Record<string, EditorRequestEntry[]>,
+  maxEditions = RECURRING_REQUEST_BASELINE_WINDOW,
+): Record<string, EditorRequestEntry[]> {
+  const keys = Object.keys(entriesByEdition)
+    .filter((k) => entriesByEdition[k].length > 0)
+    .sort()
+    .reverse()
+    .slice(0, maxEditions);
+  const out: Record<string, EditorRequestEntry[]> = {};
+  for (const k of keys) out[k] = entriesByEdition[k];
+  return out;
+}
+
+/**
  * Limiar de disparo pra um tipo dada a base (#11291): esperado + σ·desvio
  * de uma binomial com n = edições da janela e p = taxa-base do tipo. Um tipo
  * rotineiro (p≈0,87, n=7) dá limiar ≈7,9 — inalcançável numa janela de 7, ou
  * seja, nunca dispara por ser rotina; um tipo raro (p≈0,05) volta pro piso
- * de 3-em-7. `null` = base insuficiente, valer só o piso.
+ * de 3-em-7. `null` = base insuficiente (ou ausente): sem taxa-base medida;
+ * quem chama decide (o detector não dispara com base curta desde a #11337).
  */
 export function recurringRequestThreshold(
   requestType: string,
@@ -681,7 +721,13 @@ export function reclassifyEditorRequests(
  * ACIMA da própria frequência-base (`recurringRequestThreshold`): o sinal
  * passa a medir "o editor pede isso mais que de costume", não "o editor pede
  * isso" — tipo que ocorre em quase toda edição deixa de reabrir issue toda
- * semana. Sem `baseline` (ou base curta demais), vale só o piso, como antes.
+ * semana.
+ *
+ * #11337: `baseline` curta demais (< `RECURRING_REQUEST_MIN_BASELINE_EDITIONS`)
+ * = sem taxa-base medida = NÃO dispara (decisão do editor: só abrir issue
+ * acima da base medida). Sem `baseline` nenhum (`undefined`) vale só o piso
+ * de 3-em-7 — modo legado do helper puro, que o coletor não usa mais.
+ * Corpo do sinal cita a taxa da janela × a taxa-base e o limiar.
  */
 export function signalsFromRecurringEditorRequests(
   entriesByEdition: Record<string, EditorRequestEntry[]>,
@@ -710,7 +756,10 @@ export function signalsFromRecurringEditorRequests(
     const editions = Array.from(byEdition.keys()).sort();
     if (editions.length < minEditions) continue;
     const base = recurringRequestThreshold(requestType, windowEditionCount, baseline);
+    if (baseline && !base) continue; // base curta: sem taxa-base medida (#11337)
     if (base && editions.length <= base.threshold) continue;
+    const windowRate = windowEditionCount > 0 ? editions.length / windowEditionCount : 0;
+    const pct = (x: number) => `${Math.round(x * 100)}%`;
 
     const evidence: Array<{ edition: string; target: string; description: string }> = [];
     for (const edition of editions) {
@@ -733,19 +782,22 @@ export function signalsFromRecurringEditorRequests(
         editions,
         evidence,
         artifact_candidate: artifact,
+        window_editions: windowEditionCount,
+        window_rate: Number(windowRate.toFixed(3)),
         ...(base
           ? {
               baseline_rate: Number(base.baseline_rate.toFixed(3)),
               baseline_editions: baseline!.edition_count,
+              baseline_type_editions: baseline!.type_edition_counts[requestType] ?? 0,
               expected_in_window: Number(base.expected.toFixed(2)),
               threshold: Number(base.threshold.toFixed(2)),
             }
           : {}),
       },
       suggested_action:
-        `Editor pediu "${requestType}" em ${editions.length} das últimas edições revisadas` +
+        `Editor pediu "${requestType}" em ${editions.length} de ${windowEditionCount} edições revisadas da janela (${pct(windowRate)})` +
         (base
-          ? ` (base histórica: ${Math.round(base.baseline_rate * 100)}% das edições, esperado ${base.expected.toFixed(1)})`
+          ? `, acima da base: ${pct(base.baseline_rate)} na média móvel (${baseline!.type_edition_counts[requestType] ?? 0} de ${baseline!.edition_count} edições; esperado ${base.expected.toFixed(1)} na janela, limiar ${base.threshold.toFixed(1)})`
           : "") +
         ` — ` +
         `considerar ajustar ${artifact}. Evidência: ` +
@@ -2006,28 +2058,25 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
   try {
     const editionsRoot = resolve(rootDir, "data/editions");
     const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
-    // #11291: a janela de detecção (7) + a base histórica logo antes dela.
-    const allEditions = selectRecentEditions(
+    // #11291/#11337: janela de detecção (7 edições) + base = média móvel das
+    // 30 edições mais recentes com pedidos, janela incluída.
+    const scannedEditions = selectRecentEditions(
       editionDirsByAammdd,
       edition,
       editionDir,
-      7 + RECURRING_REQUEST_BASELINE_WINDOW,
+      RECURRING_REQUEST_BASELINE_SCAN,
     );
-    const recentEditions = allEditions.slice(0, 7);
-    const baselineEditions = allEditions.slice(7);
     // #10135: rótulos do classificador ATUAL, não os gravados no dia.
-    const entriesByEdition = reclassifyEditorRequests(
-      readEditorRequestsForEditions(recentEditions),
-      recentEditions,
+    const allEntries = reclassifyEditorRequests(
+      readEditorRequestsForEditions(scannedEditions),
+      scannedEditions,
       rederiveStage2FileRequests,
     );
-    const baseline = computeRequestTypeBaseline(
-      reclassifyEditorRequests(
-        readEditorRequestsForEditions(baselineEditions),
-        baselineEditions,
-        rederiveStage2FileRequests,
-      ),
-    );
+    const entriesByEdition: Record<string, EditorRequestEntry[]> = {};
+    for (const { edition: ed } of scannedEditions.slice(0, 7)) {
+      if (allEntries[ed]) entriesByEdition[ed] = allEntries[ed];
+    }
+    const baseline = computeRequestTypeBaseline(selectBaselineEntries(allEntries));
     signals.push(
       ...signalsFromRecurringEditorRequests(entriesByEdition, RECURRING_REQUEST_MIN_EDITIONS, baseline),
     );
