@@ -9,7 +9,7 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,6 +20,22 @@ import {
 import { NO_BACKGROUND_DIRECTIVE, editionDirDirective } from "../scripts/lib/edition-stage-runner.ts";
 
 const AAMMDD = "260812";
+
+/**
+ * #11383: `main` confere a confiança do workspace no `~/.claude.json` antes de
+ * qualquer stage. Os repos destes testes nascem em `tmpdir()`, então um
+ * `.claude.json` fixture que confia no `tmpdir()` (ancestral) cobre todos, sem
+ * ler o arquivo real da máquina (o CI nem tem um). Os casos sem a marca vivem
+ * em test/claude-workspace-trust-11383.test.ts.
+ */
+{
+  const configDir = mkdtempSync(join(tmpdir(), "run-scheduled-edicao-claude-config-"));
+  writeFileSync(
+    join(configDir, ".claude.json"),
+    JSON.stringify({ projects: { [realpathSync(tmpdir())]: { hasTrustDialogAccepted: true } } }),
+  );
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+}
 
 /** #9223: diretiva de diretório que todo prompt carrega (nested por default; `flat` = edição legada já em disco). */
 const dirNote = (root: string, flat = false) =>
