@@ -6,6 +6,8 @@ import {
   applyPrimarySourceLookup,
   buildPrimarySourceQuery,
   choosePrimarySource,
+  codenameAfterProductCode,
+  codenameInUrlSlug,
   extractVersionedProductCodes,
   runActivePrimarySourceLookup,
   sameStoryByExactProductVersion,
@@ -506,6 +508,51 @@ describe("sameStoryByExactProductVersion — subject code only, variants distinc
     assert.equal(subjectVersionedProductCode("Meta releases a new open-weight AI model: Llama 5"), "llama5");
     // objeto que nomeia produto continua encerrando
     assert.equal(subjectVersionedProductCode("Microsoft launches Copilot Vision: Windows 11 gets AI"), undefined);
+  });
+});
+
+// #10137 (medição 261021-261027): na edição 261027 o passe do pool trocou a
+// matéria do "Gemini 4 Carbon" (testingcatalog) pela página do "Gemini 4
+// Argon" (deepmind.google) — codinome fora de VARIANT_WORDS, os dois títulos
+// viravam `gemini4`. Caso real do `01-primary-source-lookup.json`.
+describe("sameStoryByExactProductVersion — codinome diferente não casa (#10137, 261027)", () => {
+  const carbon = { title: "Gemini 4 Carbon early test results are in ahead of release" };
+
+  it("rejeita a página do Argon pelo slug da URL (caso real)", () => {
+    const candidate = { url: "https://deepmind.google/models/evals-methodology/gemini-4-argon", title: "Gemini 4 evals methodology" };
+    assert.equal(sameStoryByExactProductVersion(carbon, candidate), false);
+    const r = choosePrimarySource(
+      { ...carbon, url: "https://www.testingcatalog.com/gemini-4-carbon-early-test-results", suggested_primary_domain: "deepmind.google" },
+      [candidate],
+      { sameStory: sameStoryByExactProductVersion },
+    );
+    assert.equal(r.lookup.status, "preserved");
+  });
+
+  it("rejeita pelo codinome no título do candidato", () => {
+    assert.equal(sameStoryByExactProductVersion(carbon, { url: "https://deepmind.google/x", title: "Gemini 4 Argon - Google DeepMind" }), false);
+  });
+
+  it("aceita o mesmo codinome e candidato sem codinome", () => {
+    assert.equal(sameStoryByExactProductVersion(carbon, { url: "https://deepmind.google/models/gemini-4-carbon", title: "Gemini 4 Carbon" }), true);
+    assert.equal(sameStoryByExactProductVersion(carbon, { url: "https://deepmind.google/x", title: "Gemini 4" }), true);
+  });
+
+  it("verbo em Title Case não é codinome", () => {
+    assert.equal(codenameAfterProductCode("GPT-5.5 Launches With Lower Prices", "gpt5.5"), undefined);
+    assert.equal(sameStoryByExactProductVersion({ title: "OpenAI's GPT-5.5 Is Here" }, { url: "https://openai.com/index/introducing-gpt-5-5", title: "GPT-5.5 Arrives" }), true);
+    assert.equal(codenameInUrlSlug("https://deepmind.google/models/gemini-4-argon", "gemini4"), "argon");
+    assert.equal(codenameInUrlSlug("https://openai.com/index/gpt-6-is-here", "gpt6"), undefined);
+  });
+
+  it("registra o título do resultado escolhido (to_title) para auditoria", () => {
+    const r = choosePrimarySource(
+      { title: "Anthropic launches Claude Haiku 5.5", url: "https://press.example/haiku", suggested_primary_domain: "anthropic.com" },
+      [{ url: "https://www.anthropic.com/claude/haiku", title: "Claude Haiku 5.5 \\ Anthropic" }],
+      { sameStory: sameStoryByExactProductVersion },
+    );
+    assert.equal(r.lookup.status, "replaced");
+    assert.equal(r.lookup.to_title, "Claude Haiku 5.5 \\ Anthropic");
   });
 });
 
