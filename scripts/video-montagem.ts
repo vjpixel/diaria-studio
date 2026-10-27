@@ -180,7 +180,11 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined): number {
   }
   const sourcePath = f(ctx, "source.json");
   let source: SourceInfo;
-  if (existsSync(sourcePath) && !ctx.force) source = readJson<SourceInfo>(sourcePath, "source.json");
+  const cached = existsSync(sourcePath) && !ctx.force ? readJson<SourceInfo>(sourcePath, "source.json") : null;
+  if (cached && cached.path !== src.replace(/\\/g, "/")) {
+    throw new Error(`source.json aponta para outro bruto (${cached.path}); rode com --force para trocar por ${src}`);
+  }
+  if (cached) source = cached;
   else {
     const probe = run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", src]).stdout;
     source = parseProbe(probe, src.replace(/\\/g, "/"));
@@ -298,12 +302,18 @@ function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boo
   const ranges = sequenceSourceRanges(plan, source.fps);
   const wav = join(ctx.workDir, `seq-${plan.spec.target}.wav`);
   const out = f(ctx, `seq-${plan.spec.target}.transcript.json`);
-  if (!existsSync(out) || ctx.force) {
+  // A transcrição em cache vale só para os MESMOS trechos: depois de um
+  // `build` novo (loop da autorrevisão) ela é refeita sozinha.
+  const rangesPath = f(ctx, `seq-${plan.spec.target}.ranges.json`);
+  const rangesKey = JSON.stringify(ranges);
+  const sameRanges = existsSync(rangesPath) && readFileSync(rangesPath, "utf8").trim() === rangesKey;
+  if (!existsSync(out) || !sameRanges || ctx.force) {
     const graph =
       ranges.map((r, i) => `[0:a]atrim=start=${r.start.toFixed(3)}:end=${r.end.toFixed(3)},asetpts=PTS-STARTPTS[a${i}]`).join(";") +
       ";" + ranges.map((_, i) => `[a${i}]`).join("") + `concat=n=${ranges.length}:v=0:a=1[out]`;
     run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", audio, "-filter_complex", graph, "-map", "[out]", wav]);
     transcribeWithPython(ctx, wav, out, { vad: false });
+    writeFileAtomic(rangesPath, rangesKey + "\n");
   }
   return transcriptWords(readJson<Transcript>(out, "transcrição da sequência"));
 }
