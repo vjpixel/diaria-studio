@@ -446,6 +446,54 @@ export function buildTrainMergeCommitTitle(batch: TrainBatch): string {
 }
 
 /**
+ * Subject do squash SOLO (`mergeSoloPr`, #11216). Com `--subject` explícito
+ * o GitHub usa o texto como está e NÃO acrescenta o sufixo ` (#N)` que o
+ * squash default põe — sem ele o commit perde o vínculo commit→PR no
+ * `git log` (`git log --grep '#N'`, auditorias pós-merge). Não duplica se o
+ * título já terminar com `(#N)` do próprio PR.
+ */
+export function buildSoloSquashSubject(title: string, prNumber: number): string {
+  const trimmed = title.trim();
+  if (trimmed.endsWith(`(#${prNumber})`)) return trimmed;
+  return `${trimmed} (#${prNumber})`;
+}
+
+/** Commit de uma PR como devolvido por `gh pr view --json commits`. */
+export interface SoloSquashCommit {
+  messageHeadline?: unknown;
+  messageBody?: unknown;
+}
+
+const REVERT_TRAILER_RE = /This reverts commit ([0-9a-f]{7,40})\./gi;
+
+/**
+ * Body do squash SOLO (#11216): o body da PR (fonte de `Closes`/`REFS`,
+ * #11190), mais os trailers `This reverts commit <sha>.` que algum commit
+ * da PR carregue e o body ainda não repita. O squash default do GitHub
+ * usava a lista de commits como body — o trailer de `git revert` vinha de
+ * graça; com `--body` explícito ele some, e `extractRevertedSha`
+ * (`scripts/track-quality-report.ts`) deixa de resolver a trilha do commit
+ * revertido. Commits ausentes/malformados só não contribuem nada.
+ */
+export function buildSoloSquashBody(body: string, commits: readonly SoloSquashCommit[] | null | undefined): string {
+  const trailers: string[] = [];
+  const seen = new Set<string>();
+  for (const m of body.matchAll(REVERT_TRAILER_RE)) seen.add(m[1].toLowerCase());
+  for (const c of commits ?? []) {
+    const text = [c?.messageHeadline, c?.messageBody].filter((v): v is string => typeof v === "string").join("\n");
+    for (const m of text.matchAll(REVERT_TRAILER_RE)) {
+      const sha = m[1].toLowerCase();
+      if (seen.has(sha)) continue;
+      seen.add(sha);
+      trailers.push(`This reverts commit ${m[1]}.`);
+    }
+  }
+  if (trailers.length === 0) return body;
+  const base = body.replace(/\s+$/, "");
+  return base ? `${base}\n\n${trailers.join("\n")}` : trailers.join("\n");
+}
+
+/**
  * Corpo do commit squash final — a UNIÃO ordenada de `issueNumbers` de
  * TODOS os PRs do lote (decisão do editor, 26/08/2026: 1 commit squash só
  * por lote, mesma convenção de fusão de cluster colidente do develop, #4319

@@ -68,6 +68,9 @@ import {
   buildTrainPrBody,
   buildTrainMergeCommitTitle,
   buildTrainMergeCommitBody,
+  buildSoloSquashSubject,
+  buildSoloSquashBody,
+  type SoloSquashCommit,
   computeTrainGateLabels,
   type TrainBatch,
   type TrainPrInfo,
@@ -795,10 +798,11 @@ export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSo
     };
   }
   try {
-    const message = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "title,body"]);
+    const message = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "title,body,commits"]);
     if (!message.ok) return { ok: false, error: `mensagem da PR #${prNumber} ilegível: ${message.stderr}` };
     let title: string;
     let body: string;
+    let commits: SoloSquashCommit[];
     try {
       const data = JSON.parse(message.stdout);
       if (typeof data.title !== "string" || !data.title.trim() || typeof data.body !== "string") {
@@ -806,10 +810,22 @@ export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSo
       }
       title = data.title;
       body = data.body;
+      // `commits` só enriquece o body com trailers de revert (#11216) —
+      // ausente/malformado não bloqueia o merge.
+      commits = Array.isArray(data.commits) ? data.commits : [];
     } catch (err) {
       return { ok: false, error: `mensagem da PR #${prNumber} ilegível: ${err instanceof Error ? err.message : String(err)}` };
     }
-    const merge = runner.exec("gh", ["pr", "merge", String(prNumber), "--squash", "--subject", title, "--body", body]);
+    const merge = runner.exec("gh", [
+      "pr",
+      "merge",
+      String(prNumber),
+      "--squash",
+      "--subject",
+      buildSoloSquashSubject(title, prNumber),
+      "--body",
+      buildSoloSquashBody(body, commits),
+    ]);
     const mergeOk = merge.ok || confirmMerged(runner, prNumber);
     if (!mergeOk) return { ok: false, error: `gh pr merge --squash falhou (confirmado via gh pr view --json state,mergedAt): ${merge.stderr}` };
     const pull = runner.exec("git", ["pull"]);
