@@ -132,6 +132,7 @@ import {
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
 import { checkPorqueImportaGenericAdvice } from "./lib/lint-checks/porque-importa-generic-advice.ts"; // #9382
 import { checkPorqueImportaReaderImpact } from "./lib/lint-checks/porque-importa-reader-impact.ts"; // #11073
+import { checkNumberReferenceAntecedent } from "./lib/lint-checks/number-reference-antecedent.ts"; // #11196
 import {
   checkBannedLexicon,
   type BannedLexiconError,
@@ -653,6 +654,11 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
     runCheckSafely(push, "porque-importa-reader-impact", "#11073", "warn-only", () =>
       checkPorqueImportaReaderImpact(md),
     );
+    // #11196: "Os 33%" sem o número ter sido dado antes no bloco. WARN-ONLY
+    // (no gate o texto pode já ser do editor, #7401).
+    runCheckSafely(push, "number-reference-antecedent", "#11196", "warn-only", () =>
+      checkNumberReferenceAntecedent(md),
+    );
 
     runCheckSafely(push, "snippet-staleness", "#4076", "warn-only", () =>
       runSnippetStalenessCheck(mdPath, root),
@@ -785,6 +791,11 @@ export function runStage2LintReport(editionDir: string, root: string): StageLint
   // #11073: WARN-ONLY.
   runCheckSafely(push, "porque-importa-reader-impact", "#11073", "warn-only", () =>
     checkPorqueImportaReaderImpact(md),
+  );
+
+  // #11196: WARN-ONLY — não dispara retry do writer; visível ao editor.
+  runCheckSafely(push, "number-reference-antecedent", "#11196", "warn-only", () =>
+    checkNumberReferenceAntecedent(md),
   );
 
   const passed = checks.every((c) => c.severity !== "gate-blocking" || c.ok);

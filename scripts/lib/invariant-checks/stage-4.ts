@@ -30,6 +30,8 @@ import {
   hashCarouselSlideTexts,
   readCarouselSourceHashes,
   findOverflowingCarouselSlides, // #6078
+  readCarouselCardParagraphs, // #11211
+  resolveCarouselCardText, // #11211
   DAILY_CAROUSEL_BODY_SIZE, // #6078
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET, // #6078
 } from "../daily-carousel-card.ts"; // #6064
@@ -2593,6 +2595,9 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
   // #11210: exceção do editor (arte mantida). JSON malformado é reportado por
   // `carousel-text-overflow`; aqui, com erro, nenhuma exceção vale (`{}`).
   const { keepArt } = readCarouselKeepArtSafe(editionDir);
+  // #11211: legenda só reparagrafada (mesmas palavras) segue a divisão em
+  // cards gravada no render — a arte não está velha, só a quebra do post mudou.
+  const storedParagraphs = readCarouselCardParagraphs(editionDir);
 
   for (const d of slots) {
     if (!slidesOnDiskDe(d)) continue; // destaque sem carrossel — publica single-image, nada a cruzar
@@ -2600,7 +2605,7 @@ function checkCarouselCardsStale(editionDir: string): InvariantViolation[] {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue; // sem bloco não há o que comparar (o gen já pulou este destaque)
 
-    const atual = hashCarouselSlideTexts(dText.trim(), ctaOverride);
+    const atual = hashCarouselSlideTexts(resolveCarouselCardText(dText.trim(), storedParagraphs), ctaOverride);
     const carimbo = stored[d];
 
     if (!carimbo) {
@@ -2713,11 +2718,14 @@ function checkCarouselTextOverflow(
       file: carouselKeepArtPath(editionDir),
     });
   }
+  // #11211: o que se mede é o texto DOS CARDS — se a legenda só foi
+  // reparagrafada, a divisão gravada no render, não a quebra nova do post.
+  const storedParagraphs = readCarouselCardParagraphs(editionDir);
   for (const d of slots) {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue;
 
-    const overflowing = findOverflowingCarouselSlides(dText.trim(), ctaOverride);
+    const overflowing = findOverflowingCarouselSlides(resolveCarouselCardText(dText.trim(), storedParagraphs), ctaOverride);
     if (overflowing.length === 0) continue;
 
     const detalhe = overflowing.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ");

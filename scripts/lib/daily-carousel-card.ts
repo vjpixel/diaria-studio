@@ -524,6 +524,99 @@ export function writeCarouselSourceHashes(
   }
 }
 
+/**
+ * (#11211) Quebra/espaçamento do texto do POST independente da divisão dos
+ * CARDS do carrossel.
+ *
+ * O texto dos cards sai do mesmo `## d{N}` da legenda, dividido em 3 pelas
+ * linhas em branco (`splitIntoParagraphCards`). Até aqui isso amarrava a
+ * paragrafação do post à do carrossel: o editor reparagrafar a legenda no
+ * gate 4 (caso da edição 261027 — d2 em 4 parágrafos, d3 em 5, mesmas
+ * palavras) fazia o gerador juntar os parágrafos extras no 3º card, que
+ * estourava, e mudava o carimbo, que acusava a arte de velha.
+ *
+ * Mecanismo: quando os slides são gerados, a divisão em cards usada no render
+ * é gravada aqui (`_internal/.carousel-card-paragraphs.json`). Depois, se o
+ * texto do `## d{N}` tem EXATAMENTE as mesmas palavras de uma divisão gravada
+ * (diferença só de espaço em branco/quebra de linha/parágrafo), os cards usam
+ * a divisão gravada — a arte, o carimbo e a checagem de overflow ficam
+ * idênticos aos do render, e a legenda segue com a quebra que o editor quis.
+ *
+ * Qualquer mudança de palavra, pontuação ou negrito (`**`, que é renderizado
+ * no card) não casa e cai no comportamento de sempre: o carimbo diverge, a
+ * arte é regerada a partir dos parágrafos do texto novo, e parágrafo que não
+ * couber continua sendo REESCRITO, nunca truncado nem encolhido (#6078).
+ *
+ * A busca é por conteúdo, não pela posição: um `reorder-destaques`/`swap`
+ * que muda a história de `d2` não faz a divisão velha valer pra outra
+ * história (o texto não casaria), e por isso o arquivo não precisa ser
+ * reindexado junto com os slides.
+ */
+export function carouselCardParagraphsPath(editionDir: string): string {
+  return resolve(editionDir, "_internal", ".carousel-card-paragraphs.json");
+}
+
+export type CarouselCardParagraphs = Partial<Record<DailyDestaqueId, string[]>>;
+
+/** Pure: os parágrafos-card (até 3) que `buildCarouselSlideTexts` usaria para `genericText`. */
+export function carouselCardParagraphs(genericText: string): string[] {
+  return splitIntoParagraphCards(splitBodyAndTags(genericText).body, 3);
+}
+
+function normalizeCardWords(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Pure (#11211): o texto que vira card. Se o corpo de `genericText` (sem as
+ * hashtags) tem exatamente as mesmas palavras de alguma divisão gravada em
+ * `stored`, devolve essa divisão (parágrafos separados por linha em branco);
+ * senão devolve `genericText` como veio. Entrada malformada em `stored` é
+ * ignorada (nunca lança — o pior caso é o comportamento de antes do #11211).
+ */
+export function resolveCarouselCardText(genericText: string, stored?: CarouselCardParagraphs | null): string {
+  if (!stored) return genericText;
+  const body = normalizeCardWords(splitBodyAndTags(genericText).body);
+  if (!body) return genericText;
+  for (const paragraphs of Object.values(stored)) {
+    if (!Array.isArray(paragraphs) || paragraphs.length === 0) continue;
+    if (!paragraphs.every((p) => typeof p === "string" && p.trim())) continue;
+    if (normalizeCardWords(paragraphs.join(" ")) === body) return paragraphs.join("\n\n");
+  }
+  return genericText;
+}
+
+/** Lê a divisão gravada. Ausente → `{}`; ilegível → `{}` com aviso (fallback seguro: comportamento de antes). */
+export function readCarouselCardParagraphs(editionDir: string): CarouselCardParagraphs {
+  const path = carouselCardParagraphsPath(editionDir);
+  if (!existsSync(path)) return {};
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8")) as { paragraphs?: CarouselCardParagraphs };
+    return data.paragraphs && typeof data.paragraphs === "object" && !Array.isArray(data.paragraphs) ? data.paragraphs : {};
+  } catch (err) {
+    console.warn(
+      `daily-carousel-card: warn — ${path} existe mas não parseou ` +
+        `(${(err as Error).message}); cards voltam a seguir a paragrafação do 03-social.md (#11211).`,
+    );
+    return {};
+  }
+}
+
+/** Grava (mesclando por destaque) a divisão usada no render. Mesmo lock + tmp + rename do carimbo. */
+export function writeCarouselCardParagraphs(editionDir: string, paragraphs: CarouselCardParagraphs): void {
+  const path = carouselCardParagraphsPath(editionDir);
+  const lockPath = path + ".lock";
+  acquireLock(lockPath);
+  try {
+    const merged = { ...readCarouselCardParagraphs(editionDir), ...paragraphs };
+    const tmpPath = path + ".tmp";
+    writeFileSync(tmpPath, JSON.stringify({ paragraphs: merged, generated_at: new Date().toISOString() }, null, 2) + "\n", "utf8");
+    renameSync(tmpPath, path);
+  } finally {
+    releaseLock(lockPath);
+  }
+}
+
 /** Nome do arquivo local (raiz da edição) de um slide sem foto do carrossel. */
 export function carouselSlideFilename(destaque: string, slot: CarouselSlideSlot): string {
   return `04-${destaque}-carousel-${slot}-4x5.jpg`;

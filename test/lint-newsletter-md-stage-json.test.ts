@@ -180,7 +180,7 @@ describe("runStage4LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 
-  it("23 checks presentes (#11073 + porque-importa-reader-impact; 21 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias, #8594 radar-summary-matches-title, #9358 pool-summary-quality, #9382 porque-importa-generic-advice)", () => {
+  it("24 checks presentes (#11196 + number-reference-antecedent; #11073 + porque-importa-reader-impact; 21 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias, #8594 radar-summary-matches-title, #9358 pool-summary-quality, #9382 porque-importa-generic-advice)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -192,6 +192,7 @@ describe("runStage4LintReport (#5416)", () => {
       "no-trailing-ellipsis",
       "no-untranslated-summary",
       "no-xml-artifacts",
+      "number-reference-antecedent",
       "orphan-box-in-gap",
       "pool-summary-quality",
       "porque-importa-generic-advice",
@@ -300,7 +301,7 @@ describe("runStage2LintReport (#5416)", () => {
     return dir;
   }
 
-  it("9 checks presentes; todos gate-blocking exceto porque-importa-* (#9382/#11073, warn-only)", () => {
+  it("10 checks presentes; todos gate-blocking exceto porque-importa-* e number-reference-antecedent (#9382/#11073/#11196, warn-only)", () => {
     const editionDir = makeEditionDir();
     const report = runStage2LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
@@ -309,6 +310,7 @@ describe("runStage2LintReport (#5416)", () => {
       "destaque-max-chars",
       "destaque-min-chars",
       "destaque-url-matches-approved",
+      "number-reference-antecedent",
       "porque-importa-generic-advice",
       "porque-importa-reader-impact",
       "section-counts",
@@ -316,7 +318,8 @@ describe("runStage2LintReport (#5416)", () => {
       "why-matters-length",
     ]);
     for (const c of report.checks) {
-      assert.equal(c.severity, c.id.startsWith("porque-importa-") ? "warn-only" : "gate-blocking");
+      const warnOnly = c.id.startsWith("porque-importa-") || c.id === "number-reference-antecedent";
+      assert.equal(c.severity, warnOnly ? "warn-only" : "gate-blocking");
     }
     rmSync(editionDir, { recursive: true, force: true });
   });
@@ -437,7 +440,7 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     // Todos os 21 checks continuam presentes — nenhum foi engolido (#7260
     // adicionou banned-lexicon, #8200 adicionou destaque-category-noticias,
     // #9358 adicionou pool-summary-quality).
-    assert.equal(out.checks.length, 23); // #9382: + porque-importa-generic-advice
+    assert.equal(out.checks.length, 24); // #9382: + porque-importa-generic-advice; #11196: + number-reference-antecedent
 
     rmSync(dir, { recursive: true, force: true });
   });
@@ -498,7 +501,7 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     assert.deepEqual(aprofunde.result, checkAprofundeFormat(buildMd()));
 
     // Todos os 6 checks continuam presentes.
-    assert.equal(out.checks.length, 9); // #9252: + destaque-url-matches-approved; #9382: + porque-importa-generic-advice
+    assert.equal(out.checks.length, 10); // #9252: + destaque-url-matches-approved; #9382: + porque-importa-generic-advice; #11196: + number-reference-antecedent
 
     rmSync(dir, { recursive: true, force: true });
   });
