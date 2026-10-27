@@ -40,6 +40,7 @@ O review recebe o diretório do binário `claude` à frente do `PATH`. Sob syste
 |---|---|---|
 | 0 | Overnight ok (ou pulado por sessão ativa) e review ok/noop | ok |
 | 3 | Review falhou ou estourou o tempo, e o overnight rodou | `failed`, de propósito: o `Diaria-Systemd-Failed-Units-Alarm` avisa |
+| 5 | 0 PRs com ≥1 unidade implementada, ou contagem final ausente/inválida (`<!-- overnight-delivery: {"implementedUnits":N,"openedPrs":N} -->` no `report.md` desta run, incluindo fila vazia com zeros). Contagem por unidade, incluindo lotes e mini-rodadas; PRs incluem drafts e já mergeados (#11235). | `failed`: `Diaria-Systemd-Failed-Units-Alarm` |
 | 4 | Overnight saiu 0 sem gravar `plan.json` nem `report.md` em `data/overnight/*` durante a run: aborto cedo (#10808) | `failed`, de propósito |
 | 2 | Overnight falhou: exit ≠ 0 do `claude`, ou evento `result` com `is_error`. O exit original fica no log | `failed` |
 | 1 | Binário `claude` não encontrado; nada rodou | `failed` |
