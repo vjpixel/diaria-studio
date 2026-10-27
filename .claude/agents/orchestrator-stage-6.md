@@ -573,12 +573,12 @@ npx tsx scripts/purge-leaderboard.ts --check-auth
   `ADMIN_SECRET` existe) → guardar o `{backend}` dessa linha pro Resumo final e prosseguir com a purga abaixo.
 - **Exit != 0, OU timeout** (sem backend, probe de leitura/escrita falhou, ou falta `ADMIN_SECRET`) → **degradar
   pra warn e SEGUIR sem a purga:** nao chamar `--execute` (nem tentar de novo), logar o warn
-  abaixo, **guardar o motivo pro Resumo final** (PENDENTE) e passar pra Etapa 6b. O agendamento
-  de §6d NAO e reaberto. Nao tentar `wrangler login` nem pedir credencial ao editor.
+  abaixo, **guardar o motivo** (1a linha `[purge]` do stderr — o `[warn]` de fallback vem depois e nao e a causa)
+  pro Resumo final (PENDENTE) e passar pra 6b. §6d NAO e reaberto. Nao tentar `wrangler login` nem pedir credencial.
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
-    --message "purga de votos do editor pulada: sem backend de KV" \
-    --details '{"reason":"kv_backend_unavailable","detail":"{1a linha do stderr do --check-auth}"}'
+    --message "purga de votos do editor pulada: pre-check --check-auth falhou" \
+    --details '{"reason":"purge_precheck_failed","detail":"{1a linha [purge] do stderr do --check-auth}"}'
   ```
 
 **Se autenticado, rodar a purga (execute direto — mesma justificativa de

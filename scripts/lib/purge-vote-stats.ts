@@ -15,11 +15,13 @@
  * apagados não são mais encontrados, e os que ficaram ainda não foram
  * descontados.
  *
- * Risco residual, assumido: se o PUT de um `stats:*` falhar DEPOIS dos votos
- * dele já apagados, aquele stats fica alto (conta votos que não existem mais)
- * e re-rodar não corrige — os votos já não estão lá para gerar o delta. É o
- * erro do lado inofensivo (stats de votação de uma edição, não o leaderboard),
- * e a falha é relançada com o nome da chave pro operador ajustar à mão.
+ * Risco residual, assumido: se a leitura ou o PUT de um `stats:*` falhar
+ * DEPOIS dos votos dele já apagados, aquele stats fica alto (conta votos que
+ * não existem mais) e re-rodar não corrige — os votos já não estão lá para
+ * gerar o delta. É o erro do lado inofensivo (stats de votação de uma edição,
+ * não o leaderboard). As demais edições seguem sendo ajustadas, e no fim sai
+ * UM erro listando cada chave que falhou com o valor-alvo (ou o desconto, se
+ * a leitura falhou), pro operador ajustar à mão.
  */
 
 import type { KvOps } from "./cloudflare-kv-rest.ts";
@@ -73,11 +75,24 @@ export async function deleteVotesAndAdjustStats(
     deleteFailure = e;
   }
 
+  // Percorre TODAS as edições mesmo se uma falhar: os votos já saíram, então
+  // um stats pulado aqui não é recuperável por re-run. As falhas viram um erro
+  // único no fim, listando cada chave (com o alvo, quando a leitura deu certo).
   const statsAdjusted: string[] = [];
+  const statsFailures: string[] = [];
   log(`\n[purge] ajustando stats:{edition} pra ${deltas.size} edition(s) (só votos apagados)...`);
   for (const [edition, delta] of deltas) {
     const sKey = `${bp}stats:${edition}`;
-    const raw = await ops.get(sKey);
+    let raw: string | null;
+    try {
+      raw = await ops.get(sKey);
+    } catch (e) {
+      statsFailures.push(
+        `${sKey}: leitura falhou (${(e as Error).message}) — descontar à mão total-${delta.dTotal} ` +
+          `a-${delta.dA} b-${delta.dB} correct-${delta.dCorrect}`,
+      );
+      continue;
+    }
     if (!raw) { log(`  [skip] ${sKey} não existe`); continue; }
     let s: StatsRecord;
     try { s = JSON.parse(raw) as StatsRecord; } catch { log(`  [skip] ${sKey} parse error`); continue; }
@@ -88,17 +103,23 @@ export async function deleteVotesAndAdjustStats(
     try {
       await ops.put(sKey, JSON.stringify(s));
     } catch (e) {
-      throw new Error(
-        `ajuste de ${sKey} falhou depois de ${delta.dTotal} voto(s) dele já apagado(s) — o stats ficou alto ` +
-          `e re-rodar não corrige; ajustar à mão para total=${s.total} a=${s.voted_a} b=${s.voted_b} ` +
-          `correct=${s.correct_count}: ${(e as Error).message}`,
-        { cause: deleteFailure ?? e },
+      statsFailures.push(
+        `${sKey}: gravação falhou (${(e as Error).message}) — gravar à mão total=${s.total} a=${s.voted_a} ` +
+          `b=${s.voted_b} correct=${s.correct_count}`,
       );
+      continue;
     }
     statsAdjusted.push(sKey);
     log(`  [adj]  ${sKey} → total=${s.total} a=${s.voted_a} b=${s.voted_b} correct=${s.correct_count}`);
   }
 
+  if (statsFailures.length > 0) {
+    throw new Error(
+      `ajuste de ${statsFailures.length} stats:* falhou depois dos votos já apagados — esses stats ficaram ` +
+        `altos e re-rodar NÃO corrige:\n  ${statsFailures.join("\n  ")}`,
+      { cause: deleteFailure ?? undefined },
+    );
+  }
   if (deleteFailure) throw deleteFailure;
   return { deleted, statsAdjusted };
 }

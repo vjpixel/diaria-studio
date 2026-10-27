@@ -196,9 +196,10 @@ describe("orchestrator-stage-6.md §6h — pré-check da purga pelos 2 backends 
     assert.doesNotMatch(section6h, /npx tsx scripts\/check-wrangler-auth\.ts/);
   });
 
-  it("§6h loga o warn com reason kv_backend_unavailable e detail", () => {
-    assert.match(section6h, /"reason":"kv_backend_unavailable"/);
-    assert.match(section6h, /"detail":/);
+  it("§6h loga o warn com reason neutro purge_precheck_failed e a causa em detail (1a linha [purge])", () => {
+    assert.match(section6h, /"reason":"purge_precheck_failed"/);
+    assert.doesNotMatch(section6h, /kv_backend_unavailable/, "a falha pode ser ADMIN_SECRET, não só backend");
+    assert.match(section6h, /"detail":"\{1a linha \[purge\] do stderr/);
   });
 
   it("Resumo final reporta a purga como PENDENTE quando §6h não conclui", () => {

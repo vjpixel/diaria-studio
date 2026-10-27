@@ -401,6 +401,22 @@ describe("checkPurgeAuth (#11253 review A3/A4)", () => {
     assert.ok(r.err.some((l) => l.startsWith("[warn] wrangler whoami falhou")));
   });
 
+  it("REGRESSÃO (300): com fallback, a 1ª linha do stderr é a CAUSA da falha, não o [warn]", async () => {
+    const fallback = { ...rest, fallbackWarning: "wrangler whoami falhou (x) — caindo pra API REST do KV" };
+    const noSecret = await checkPurgeAuth({ choice: fallback, opsFor: okOps, adminSecretPresent: false });
+    assert.equal(noSecret.ok, false);
+    assert.match(noSecret.err[0], /^\[purge\] ADMIN_SECRET .*ausente/);
+    assert.match(noSecret.err.at(-1)!, /^\[warn\] /);
+
+    const probeFail = await checkPurgeAuth({
+      choice: fallback,
+      opsFor: () => ({ probe: async () => { throw new Error("HTTP 403"); } }),
+      adminSecretPresent: true,
+    });
+    assert.match(probeFail.err[0], /^\[purge\] backend rest escolhido .*HTTP 403/);
+    assert.match(probeFail.err.at(-1)!, /^\[warn\] /);
+  });
+
   it("KV ok mas sem ADMIN_SECRET → falha (o --execute não rodaria)", async () => {
     const r = await checkPurgeAuth({ choice: rest, opsFor: okOps, adminSecretPresent: false });
     assert.equal(r.ok, false);
@@ -456,6 +472,33 @@ describe("deleteVotesAndAdjustStats (#11253 review A2)", () => {
     await deleteVotesAndAdjustStats(opsOn(store), keys, "");
     assert.equal(total(store, "stats:261026"), 9, "não desconta de novo");
     assert.equal(total(store, "stats:261027"), 9);
+  });
+
+  it("REGRESSÃO: PUT/leitura de stats falhando não interrompe as demais edições; erro único lista todas", async () => {
+    const store = seed();
+    store.set(`vote:261028:${email}`, vote("A", false));
+    store.set("stats:261028", stats());
+    const allKeys = [...keys, `vote:261028:${email}`];
+    const ops = {
+      get: async (k: string) => {
+        if (k === "stats:261027") throw new Error("HTTP 502");
+        return store.get(k) ?? null;
+      },
+      put: async (k: string, val: string) => {
+        if (k === "stats:261026") throw new Error("HTTP 500");
+        store.set(k, val);
+      },
+      delete: async (k: string) => { store.delete(k); },
+    };
+    await assert.rejects(deleteVotesAndAdjustStats(ops, allKeys, ""), (e: Error) => {
+      assert.match(e.message, /ajuste de 2 stats/);
+      assert.match(e.message, /stats:261026: gravação falhou \(HTTP 500\) — gravar à mão total=9 a=5 b=4 correct=4/);
+      assert.match(e.message, /stats:261027: leitura falhou \(HTTP 502\) — descontar à mão total-1 a-0 b-1 correct-0/);
+      return true;
+    });
+    // Todos os votos saíram, e a edição seguinte às falhas foi ajustada mesmo assim.
+    assert.ok(allKeys.every((k) => !store.has(k)));
+    assert.equal(total(store, "stats:261028"), 9);
   });
 
   it("prefixo de marca: só o stats da mesma marca é tocado", async () => {

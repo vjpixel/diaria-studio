@@ -65,9 +65,6 @@ export interface KvOps {
   probe: () => Promise<void>;
 }
 
-/** @deprecated alias histórico — use `KvOps`. */
-export type KvRestOps = KvOps;
-
 /** Chave sentinela do probe de escrita (PUT + DELETE). */
 export const KV_PROBE_SENTINEL_KEY = "__purge_probe__";
 export const KV_REST_TIMEOUT_MS = 30_000;

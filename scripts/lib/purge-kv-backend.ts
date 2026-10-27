@@ -165,16 +165,25 @@ export interface CheckPurgeAuthResult {
  * PUT/DELETE de uma chave sentinela, ver `KV_PROBE_SENTINEL_KEY`); (3)
  * `ADMIN_SECRET`/`POLL_ADMIN_SECRET` está no env. Não verifica o endpoint
  * `/admin/purge-score-do` em si (só a presença do secret).
+ *
+ * Ordem do stderr: a linha de FALHA (`[purge] ...`) vem sempre PRIMEIRO, e o
+ * `[warn]` de fallback do auto pro REST por último. No `300` o auto sempre cai
+ * pro REST, então se o warn viesse antes, a 1ª linha do stderr — que o §6h
+ * grava como `detail` e no PENDENTE do resumo — seria sempre o warn, nunca a
+ * causa real (#11253 review).
  */
 export async function checkPurgeAuth(input: CheckPurgeAuthInput): Promise<CheckPurgeAuthResult> {
   const { choice } = input;
   const out: string[] = [];
   const err: string[] = [];
+  const finish = (ok: boolean): CheckPurgeAuthResult => {
+    if (choice.backend === "rest" && choice.fallbackWarning) err.push(`[warn] ${choice.fallbackWarning}`);
+    return { ok, out, err };
+  };
   if (choice.backend === "none") {
     err.push(`[purge] sem backend de KV: ${choice.reason}`);
-    return { ok: false, out, err };
+    return finish(false);
   }
-  if (choice.backend === "rest" && choice.fallbackWarning) err.push(`[warn] ${choice.fallbackWarning}`);
   try {
     await input.opsFor(choice).probe();
   } catch (e) {
@@ -182,7 +191,7 @@ export async function checkPurgeAuth(input: CheckPurgeAuthInput): Promise<CheckP
       `[purge] backend ${choice.backend} escolhido (${choice.reason}), mas o probe de leitura/escrita do ` +
         `namespace falhou: ${(e as Error).message}`,
     );
-    return { ok: false, out, err };
+    return finish(false);
   }
   out.push(`[purge] kv backend: ${choice.backend} — ${choice.reason}`);
   if (!input.adminSecretPresent) {
@@ -190,8 +199,8 @@ export async function checkPurgeAuth(input: CheckPurgeAuthInput): Promise<CheckP
       "[purge] ADMIN_SECRET (ou POLL_ADMIN_SECRET) ausente — o KV está acessível, mas o --execute vai falhar " +
         "(purga do DO ScoreCounter, #4474). Ver .env/Doppler.",
     );
-    return { ok: false, out, err };
+    return finish(false);
   }
   out.push("[purge] ADMIN_SECRET: presente");
-  return { ok: true, out, err };
+  return finish(true);
 }
