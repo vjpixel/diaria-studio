@@ -105,9 +105,16 @@ describe("allow list do overnight agendado (#11235)", () => {
   });
 
   it("comando que o fluxo roda puro tem também a regra exata (não depende do ` *` casar o puro)", () => {
-    for (const bare of ["git pull", "git push", "npm ci", "git worktree prune", "git worktree list", "gh auth status"]) {
+    for (const bare of ["git pull", "npm ci", "git worktree prune", "git worktree list", "gh auth status"]) {
       assert.ok(allow.includes(`Bash(${bare})`), `faltando a regra exata 'Bash(${bare})'`);
     }
+  });
+
+  it("dev-fixer nunca é instruído a `git push` puro (hook block-worktree-bare-push nega em worktree, #7722)", () => {
+    const fixer = readFileSync(".claude/agents/dev-fixer.md", "utf8").replace(/\s+/g, " ");
+    assert.ok(!/`git push`/.test(fixer), "dev-fixer.md manda `git push` puro");
+    assert.ok(fixer.includes("`git push origin <branch>`"), "dev-fixer.md deve citar `git push origin <branch>`");
+    assert.ok(!allow.includes("Bash(git push)"), "`Bash(git push)` exato não deve voltar: o fluxo sempre nomeia remote+branch");
   });
 
   it("nenhuma regra libera os comandos-sonda proibidos", () => {
