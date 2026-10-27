@@ -191,59 +191,59 @@ describe("subscribersForChannel / CHANNEL_GROUP_KEYS", () => {
 // ---------------------------------------------------------------------------
 
 describe("subscribersForChannel — teste de 3 canais (260816, utm_source exato)", () => {
-  it("Google Ads (teste 2608) casa utm_source='google-ads' e só esse", () => {
+  it("Google Ads (UTM) casa utm_source='google-ads' e só esse", () => {
     const subs = [sub({ utm_source: "google-ads" }), sub({ utm_source: "microsoft-ads" }), sub({ utm_source: "meta-ads" })];
-    const result = subscribersForChannel(subs, "Google Ads (teste 2608)");
+    const result = subscribersForChannel(subs, "Google Ads (UTM)");
     assert.equal(result.length, 1);
     assert.equal(result[0].utm_source, "google-ads");
   });
 
-  it("Microsoft Ads (teste 2608) casa utm_source='microsoft-ads' e só esse", () => {
+  it("Microsoft Ads (UTM) casa utm_source='microsoft-ads' e só esse", () => {
     const subs = [sub({ utm_source: "google-ads" }), sub({ utm_source: "microsoft-ads" }), sub({ utm_source: "meta-ads" })];
-    const result = subscribersForChannel(subs, "Microsoft Ads (teste 2608)");
+    const result = subscribersForChannel(subs, "Microsoft Ads (UTM)");
     assert.equal(result.length, 1);
     assert.equal(result[0].utm_source, "microsoft-ads");
   });
 
-  it("Meta Ads (teste 2608) casa utm_source='meta-ads' e só esse", () => {
+  it("Meta Ads (UTM) casa utm_source='meta-ads' e só esse", () => {
     const subs = [sub({ utm_source: "google-ads" }), sub({ utm_source: "microsoft-ads" }), sub({ utm_source: "meta-ads" })];
-    const result = subscribersForChannel(subs, "Meta Ads (teste 2608)");
+    const result = subscribersForChannel(subs, "Meta Ads (UTM)");
     assert.equal(result.length, 1);
     assert.equal(result[0].utm_source, "meta-ads");
   });
 
   it("case-insensitive, mesma disciplina de normalizeKey já testada acima pro Google Ads legado", () => {
     const subs = [sub({ utm_source: "Meta-Ads" })];
-    assert.equal(subscribersForChannel(subs, "Meta Ads (teste 2608)").length, 1);
+    assert.equal(subscribersForChannel(subs, "Meta Ads (UTM)").length, 1);
   });
 
   it("REGRESSÃO: assinante orgânico com referring_site=instagram.com/facebook.com e utm_source vazio " +
-    "NÃO cai no balde Meta Ads (teste 2608) — protege contra o bug que hoje colocaria LinkedIn em " +
+    "NÃO cai no balde Meta Ads (UTM) — protege contra o bug que hoje colocaria LinkedIn em " +
     "1º lugar com R$0 de custo se um referrer de plataforma virasse chave paga (#5493)", () => {
     const organicInstagram = sub({ utm_source: "", referring_site: "instagram.com" });
     const organicFacebook = sub({ utm_source: "", referring_site: "facebook.com" });
-    assert.deepEqual(subscribersForChannel([organicInstagram, organicFacebook], "Meta Ads (teste 2608)"), []);
+    assert.deepEqual(subscribersForChannel([organicInstagram, organicFacebook], "Meta Ads (UTM)"), []);
     // mesma disciplina pros outros 2 canais do teste — nenhum referrer de
     // plataforma orgânica deveria casar nenhuma das 3 specs novas.
-    assert.deepEqual(subscribersForChannel([organicInstagram, organicFacebook], "Google Ads (teste 2608)"), []);
-    assert.deepEqual(subscribersForChannel([organicInstagram, organicFacebook], "Microsoft Ads (teste 2608)"), []);
+    assert.deepEqual(subscribersForChannel([organicInstagram, organicFacebook], "Google Ads (UTM)"), []);
+    assert.deepEqual(subscribersForChannel([organicInstagram, organicFacebook], "Microsoft Ads (UTM)"), []);
   });
 
   it("assinante orgânico com utm_source vazio e referring_site=google.com/bing.com também não casa " +
     "(chaves do teste são só utm_source, nunca domínio de busca orgânica)", () => {
     const organicGoogle = sub({ utm_source: "", referring_site: "google.com" });
     const organicBing = sub({ utm_source: "", referring_site: "bing.com" });
-    assert.deepEqual(subscribersForChannel([organicGoogle, organicBing], "Google Ads (teste 2608)"), []);
-    assert.deepEqual(subscribersForChannel([organicGoogle, organicBing], "Microsoft Ads (teste 2608)"), []);
+    assert.deepEqual(subscribersForChannel([organicGoogle, organicBing], "Google Ads (UTM)"), []);
+    assert.deepEqual(subscribersForChannel([organicGoogle, organicBing], "Microsoft Ads (UTM)"), []);
   });
 
   it("canal com n=0 nunca vira unmappedChannels — as 3 specs existem em CHANNEL_KEY_SPECS mesmo sem " +
     "assinante nenhum casando ainda (a lacuna que o §8.2 fecha: n=0 por spec ausente lia 'canal não " +
     "trouxe leitor'; n=0 por spec presente e tráfego ainda não chegado é honesto)", () => {
     const spendRows: SpendRow[] = [
-      spend({ canal: "Google Ads (teste 2608)", valor: 100 }),
-      spend({ canal: "Microsoft Ads (teste 2608)", valor: 100 }),
-      spend({ canal: "Meta Ads (teste 2608)", valor: 100 }),
+      spend({ canal: "Google Ads (UTM)", valor: 100 }),
+      spend({ canal: "Microsoft Ads (UTM)", valor: 100 }),
+      spend({ canal: "Meta Ads (UTM)", valor: 100 }),
     ];
     const report = buildCacReport(spendRows, []);
     assert.deepEqual(report.unmappedChannels, []);
@@ -572,31 +572,31 @@ describe("computeMonthBudgetUsage", () => {
 // ---------------------------------------------------------------------------
 
 describe("detectDuplicateChannelSpend", () => {
-  it("achado ao vivo #8210: 'Google Ads' + 'Google Ads (teste 2608)' no MESMO mês colide", () => {
+  it("achado ao vivo #8210: 'Google Ads' + 'Google Ads (UTM)' no MESMO mês colide", () => {
     const rows: SpendRow[] = [
       spend({ canal: "Google Ads", mes: "2026-09", valor: 500.9 }),
-      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 500.57 }),
-      spend({ canal: "Microsoft Ads (teste 2608)", mes: "2026-09", valor: 288.02 }),
+      spend({ canal: "Google Ads (UTM)", mes: "2026-09", valor: 500.57 }),
+      spend({ canal: "Microsoft Ads (UTM)", mes: "2026-09", valor: 288.02 }),
     ];
     const warnings = detectDuplicateChannelSpend(rows);
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0].monthKey, "2026-09");
     assert.equal(warnings[0].baseChannel, "Google Ads");
-    assert.deepEqual(warnings[0].canais, ["Google Ads", "Google Ads (teste 2608)"]);
+    assert.deepEqual(warnings[0].canais, ["Google Ads", "Google Ads (UTM)"]);
   });
 
   it("mesmo canal-base em MESES diferentes não colide", () => {
     const rows: SpendRow[] = [
       spend({ canal: "Google Ads", mes: "2026-08", valor: 100 }),
-      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 200 }),
+      spend({ canal: "Google Ads (UTM)", mes: "2026-09", valor: 200 }),
     ];
     assert.deepEqual(detectDuplicateChannelSpend(rows), []);
   });
 
   it("canais genuinamente distintos (sem base comum) não colidem", () => {
     const rows: SpendRow[] = [
-      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 100 }),
-      spend({ canal: "Microsoft Ads (teste 2608)", mes: "2026-09", valor: 200 }),
+      spend({ canal: "Google Ads (UTM)", mes: "2026-09", valor: 100 }),
+      spend({ canal: "Microsoft Ads (UTM)", mes: "2026-09", valor: 200 }),
     ];
     assert.deepEqual(detectDuplicateChannelSpend(rows), []);
   });
@@ -604,7 +604,7 @@ describe("detectDuplicateChannelSpend", () => {
   it("computeMonthBudgetUsage propaga só os warnings DO mês pedido, nunca soma silenciosa (soma continua acontecendo, mas fica visível)", () => {
     const rows: SpendRow[] = [
       spend({ canal: "Google Ads", mes: "2026-09", valor: 500.9 }),
-      spend({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 500.57 }),
+      spend({ canal: "Google Ads (UTM)", mes: "2026-09", valor: 500.57 }),
       spend({ canal: "Google Ads (velho)", mes: "2026-01", valor: 999 }),
       spend({ canal: "Google Ads", mes: "2026-01", valor: 1 }),
     ];

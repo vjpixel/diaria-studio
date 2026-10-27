@@ -164,7 +164,7 @@ describe("#9378 — runHeadless grava em spend.csv só o gasto da newsletter", (
     const code = await runHeadless(spendPath, fakeGraph([]), { now: NOW, campaignIds: [NEWSLETTER], sleep: async () => {} });
     assert.equal(code, 0);
     const csv = readFileSync(spendPath, "utf8");
-    assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,15\.5,/);
+    assert.match(csv, /Meta Ads \(UTM\),2026-09,BRL,15\.5,/);
     assert.doesNotMatch(csv, /1490/);
   });
 });

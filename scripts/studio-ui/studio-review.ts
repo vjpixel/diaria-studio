@@ -482,7 +482,9 @@ export interface HighlightsSummary {
   note?: string;
   /** #6447 Fatia 2: limite de chars por opção de título (`MAX_SUBJECT_LENGTH`
    * desde #11254 — teto do assunto do e-mail, aviso, nunca bloqueio) — sempre presente
-   * (independe de `available`), pro client nunca precisar hardcodar o número. */
+   * (independe de `available`), pro client nunca precisar hardcodar o número.
+   * Vale só para o D1, o único título que vira assunto: o client aplica via
+   * `titleLimitForHighlight` e mostra D2/D3 sem teto (#11329). */
   maxTitleLength: number;
 }
 

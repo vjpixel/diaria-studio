@@ -14,16 +14,29 @@ export function graphemeLength(str) {
   return [...new Intl.Segmenter().segment(str)].length;
 }
 
+/** Teto de caracteres que vale para o título do destaque `n` (#11329): o
+ * `maxTitleLength` da API é o teto do ASSUNTO do e-mail (`MAX_SUBJECT_LENGTH`,
+ * #11254), e só o título do D1 vira assunto. D2/D3 não têm teto de contagem
+ * (o limite deles é caber no card 4x5, que depende da quebra de linha e sai
+ * no lint `title-card-4x5`, não no contador) — `null`. */
+export function titleLimitForHighlight(n, maxTitleLength) {
+  return n === 1 && typeof maxTitleLength === "number" ? maxTitleLength : null;
+}
+
 /** `true` quando `title` estoura `maxTitleLength` — vermelho no contador de
  * caracteres da opção (teto do assunto do e-mail, `MAX_SUBJECT_LENGTH`,
- * #11254 — aviso, não bloqueio). */
+ * #11254 — aviso, não bloqueio). `maxTitleLength` nulo (D2/D3, ver
+ * `titleLimitForHighlight`) nunca estoura. */
 export function isTitleTooLong(title, maxTitleLength) {
+  if (maxTitleLength == null) return false;
   return graphemeLength(title || "") > maxTitleLength;
 }
 
-/** Texto do contador de caracteres exibido ao lado de cada opção de título. */
+/** Texto do contador de caracteres exibido ao lado de cada opção de título:
+ * `62/70` com teto, só `62` sem teto (D2/D3). */
 export function formatTitleCharCount(title, maxTitleLength) {
-  return `${graphemeLength(title || "")}/${maxTitleLength}`;
+  const n = graphemeLength(title || "");
+  return maxTitleLength == null ? `${n}` : `${n}/${maxTitleLength}`;
 }
 
 /**

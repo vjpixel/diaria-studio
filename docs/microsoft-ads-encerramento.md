@@ -17,7 +17,7 @@ O canal ficou parado depois do teste 2608 (#5524). O braço Microsoft gastou R$ 
 ## O que fica (log de atividades)
 
 - **Nada em `data/` foi apagado.** O gasto já gravado em `data/aquisicao/spend.csv`, o log `data/aquisicao/.microsoft-ads-ingest.log`, o registro de edições das campanhas (`edicoes.jsonl`, `scripts/ads-registrar-edicao.ts`) e os relatórios congelados em `data/aquisicao/cac-reports/` continuam onde estão.
-- O braço `Microsoft Ads (teste 2608)` segue em `CHANNEL_KEY_SPECS` e em `ADS_TEST_2608_BRACOS`. É isso que mantém o gasto histórico atribuído no relatório de CAC (`cac-report.ts`) e na apuração do teste 2608 (`sumTeste2608Spend`). Travado por `test/microsoft-ads-encerramento-10755.test.ts`.
+- O braço `Microsoft Ads (UTM)` (era `Microsoft Ads (teste 2608)` até o #5862, que tornou os nomes permanentes; a linha antiga de `spend.csv` é lida com o nome novo por `canonicalChannelName`) segue em `CHANNEL_KEY_SPECS` e em `ADS_TEST_2608_BRACOS`. É isso que mantém o gasto histórico atribuído no relatório de CAC (`cac-report.ts`) e na apuração do teste 2608 (`sumTeste2608Spend`). Travado por `test/microsoft-ads-encerramento-10755.test.ts`.
 - Cadastros que ainda chegam por link antigo continuam classificados certo: `utm_source=microsoft-ads` cai no braço Microsoft, e o `click_id` `msclkid:` é reconhecido como origem paga Microsoft (`resolveOrigemPagaWithClickIdFallback`).
 - Na página `/ads`, o braço aparece na tabela de canais com o último gasto reconciliado em `spend.csv` (selo "manual"), sem fonte ao vivo.
 

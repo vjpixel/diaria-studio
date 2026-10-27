@@ -218,7 +218,7 @@ export function extractTitle(item: Record<string, unknown>): string {
 
 /**
  * #9381: converte um destaque rebaixado em item de POOL. A manchete de
- * destaque (`title_options`, ≤52 chars, gancho de e-mail) não serve pro
+ * destaque (`title_options`, curta, gancho de e-mail) não serve pro
  * RADAR/LANÇAMENTOS — o editor trocava à mão pelo título da fonte. Remove
  * `title_options` (topo e `article`) e usa o título da FONTE (`article.title`,
  * senão `title`) normalizado via `normalizeItemTitle`. Devolve cópia; não muta.

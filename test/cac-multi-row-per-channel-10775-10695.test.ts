@@ -32,7 +32,7 @@ import { computeApuracaoArmStats, detectZeroCadastrosAcrossArms } from "../scrip
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
 
-const META = "Meta Ads (teste 2608)";
+const META = "Meta Ads (UTM)";
 
 function sub(i: number, createdIso: string, overrides: Partial<BeehiivBackupSubscriber> = {}): BeehiivBackupSubscriber {
   return {

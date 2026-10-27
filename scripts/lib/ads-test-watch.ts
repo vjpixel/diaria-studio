@@ -45,6 +45,7 @@
 import Papa from "papaparse";
 import { addDays, daysBetween, type DateOnlyString } from "./ads-test-schedule.ts";
 import type { AdsTestRunState } from "./ads-test-run-state.ts";
+import { canonicalChannelName } from "./shared/channel-key-specs.ts";
 import { plannedBudgetBRL, type AdsTestBudgetPeriod, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
 import { aggregateMeasuredRowsByCanal, subscribersForChannel, type CacReport, type CacRow } from "./cac.ts";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
@@ -208,7 +209,9 @@ export function parseClicksCsv(content: string): ClicksCsvParseResult {
   const errors: ClicksCsvRowError[] = [];
   parsed.data.forEach((raw, idx) => {
     const line = idx + 2;
-    const canal = (raw.canal ?? "").trim();
+    // #5862: `clicks-2608.csv` é do teste e traz "X Ads (teste 2608)"; o
+    // braço do run-state e o canal de spend.csv chegam com o nome novo.
+    const canal = canonicalChannelName((raw.canal ?? "").trim());
     const data_apuracao = (raw.data_apuracao ?? "").trim();
     const gastoRaw = (raw.gasto_acumulado ?? "").trim();
     if (!canal || !data_apuracao || !gastoRaw) {

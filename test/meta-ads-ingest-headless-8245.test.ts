@@ -210,7 +210,7 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     assert.doesNotMatch(combined, /fetch não devolveu nenhuma linha com custo/);
   });
 
-  it("(b) com META_ADS_ACCESS_TOKEN (mockado): grava 'Meta Ads (teste 2608),AAAA-MM' com fonte no formato exigido", async () => {
+  it("(b) com META_ADS_ACCESS_TOKEN (mockado): grava 'Meta Ads (UTM),AAAA-MM' com fonte no formato exigido", async () => {
     process.env.META_ADS_ACCESS_TOKEN = "tok-fake-nunca-logado";
     const fetchImpl = (async () =>
       jsonResponse(200, {
@@ -227,7 +227,7 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     assert.equal(code, 0);
     assert.ok(existsSync(spendPath), "spend.csv deveria ser criado");
     const csv = readFileSync(spendPath, "utf8");
-    assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,270\.17,/);
+    assert.match(csv, /Meta Ads \(UTM\),2026-09,BRL,270\.17,/);
     assert.match(
       csv,
       /Meta Graph API insights \(level=campaign, meta_ads\.campaign_ids, time_increment=1\), 2 dia\(s\) \(2026-09-05\.\.2026-09-06\), janela 2026-09-01\.\.2026-09-30, ingestão automática/,
@@ -300,10 +300,10 @@ describe("#8245 — runHeadless (caminho sem --input)", () => {
     const csv = readFileSync(spendPath, "utf8");
     // Setembro preservado, intocado — nem a linha antiga some, nem é
     // substituída pelo fragmento (150) que a janela truncada traria.
-    assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,517\.85,/);
-    assert.doesNotMatch(csv, /Meta Ads \(teste 2608\),2026-09,BRL,150/);
+    assert.match(csv, /Meta Ads \(UTM\),2026-09,BRL,517\.85,/);
+    assert.doesNotMatch(csv, /Meta Ads \(UTM\),2026-09,BRL,150/);
     // Outubro é o mês mais recente — sempre atualizado.
-    assert.match(csv, /Meta Ads \(teste 2608\),2026-10,BRL,50,/);
+    assert.match(csv, /Meta Ads \(UTM\),2026-10,BRL,50,/);
   });
 
   it("linhas sem date_start (schema drift no upstream): já filtradas por fetchMetaAdsChannelMetrics ANTES de chegar aqui — trata como gasto zero, não como defeito", async () => {

@@ -35,6 +35,9 @@ import { fileURLToPath } from "node:url";
 import { isInlineLinkLine } from "./lib/inline-link.ts"; // #599
 import { readEiaAnswer } from "./lib/eia-answer.ts"; // #927
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { dailyCardTitleFits } from "./lib/card-title-wrap.ts";
+import { MAX_SUBJECT_LENGTH } from "./lib/lint-checks/title-limits.ts";
+import { graphemeLength } from "./lib/lint-checks/title-length.ts";
 
 export interface NormalizeReport {
   highlight_headers_split: number;
@@ -43,15 +46,31 @@ export interface NormalizeReport {
   warnings: string[];
 }
 
-const TITLE_MAX_CHARS = 52;
-const TITLE_TOLERANCE = 60; // pequena folga; títulos válidos podem chegar a ~52
+/** Um título plausível do destaque `destaque`: cabe no card 4x5 (o limite
+ *  de todo título de destaque) e, no D1, tem até `MAX_SUBJECT_LENGTH`
+ *  grafemas (vira o assunto do e-mail). Os mesmos 2 limites do lint
+ *  (`lint-checks/title-limits.ts`, #11254) — nada de teto fixo de 52. */
+function isPlausibleTitle(title: string, destaque: number): boolean {
+  // Título tem minúscula; a CATEGORIA do header é toda em maiúsculas. Sem
+  // isto, um header legítimo de categoria com várias palavras ("DESTAQUE 1 |
+  // IA E O TRABALHO") viraria 3 "títulos" de uma palavra cada.
+  if (!/\p{Ll}/u.test(title)) return false;
+  if (!dailyCardTitleFits(title)) return false;
+  return destaque !== 1 || graphemeLength(title) <= MAX_SUBJECT_LENGTH;
+}
 
 /**
  * Quebra "DESTAQUE N | CATEGORIA <título1> <título2> <título3>" em 4 linhas
  * separadas. Retorna a linha original se não detectar concatenação.
  *
- * Heurística: se a linha começa com "DESTAQUE N | CAT " e tem texto extra,
- * tenta dividir esse extra em 3 títulos por largura/pontuação.
+ * Heurística (#11329): se a linha começa com "DESTAQUE N | CAT " e tem texto
+ * extra, procura, entre todos os cortes do extra em 3 trechos de palavras
+ * inteiras, o mais EQUILIBRADO em comprimento (as 3 opções são variações do
+ * mesmo título, então tendem a ter tamanho parecido) em que cada trecho é um
+ * título plausível (`isPlausibleTitle`). Até o #11329 o corte era guloso
+ * por um teto de 60 chars, derivado do antigo limite de 52 — com títulos
+ * acima disso (válidos desde o #11254) o 1º título engolia palavras do 2º.
+ * Nenhum corte plausível → linha original intacta.
  */
 export function splitConcatenatedHighlightHeader(
   line: string,
@@ -62,29 +81,26 @@ export function splitConcatenatedHighlightHeader(
   const rest = m[2].trim();
   if (!rest) return { lines: [line], split: false };
 
-  // Tentar dividir o rest em 3 títulos. Estratégia: greedy split por largura.
-  // Cada título deve ter palavras inteiras + ≤ TITLE_TOLERANCE chars.
+  const destaque = Number(header.match(/^DESTAQUE\s+(\d+)/)?.[1] ?? 0);
   const words = rest.split(/\s+/);
-  const titles: string[] = [];
-  let current: string[] = [];
-  for (const w of words) {
-    const candidate = [...current, w].join(" ");
-    if (
-      candidate.length > TITLE_TOLERANCE &&
-      current.length > 0 &&
-      titles.length < 2
-    ) {
-      titles.push(current.join(" "));
-      current = [w];
-    } else {
-      current.push(w);
+  if (words.length < 3) return { lines: [line], split: false };
+
+  let best: string[] | null = null;
+  let bestSpread = Infinity;
+  for (let i = 1; i < words.length - 1; i++) {
+    for (let j = i + 1; j < words.length; j++) {
+      const candidate = [words.slice(0, i), words.slice(i, j), words.slice(j)].map((ws) => ws.join(" "));
+      if (!candidate.every((t) => isPlausibleTitle(t, destaque))) continue;
+      const lens = candidate.map(graphemeLength);
+      const spread = Math.max(...lens) - Math.min(...lens);
+      if (spread < bestSpread) {
+        bestSpread = spread;
+        best = candidate;
+      }
     }
   }
-  if (current.length > 0) titles.push(current.join(" "));
-
-  // Só aceita split se chegou a exatamente 3 títulos plausíveis.
-  if (titles.length !== 3) return { lines: [line], split: false };
-  if (titles.some((t) => t.length === 0)) return { lines: [line], split: false };
+  if (!best) return { lines: [line], split: false };
+  const titles = best;
 
   return { lines: [header, ...titles], split: true };
 }

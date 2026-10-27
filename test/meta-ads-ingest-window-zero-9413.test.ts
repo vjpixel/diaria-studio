@@ -110,8 +110,8 @@ describe("#9413 — runHeadless", () => {
     const code = await runHeadless(spendPath, fetchImpl, { lookbackDays, now, campaignIds: ["123"] });
     assert.equal(code, 0);
     const csv = readFileSync(spendPath, "utf8");
-    assert.match(csv, /Meta Ads \(teste 2608\),2026-08,BRL,0,/);
-    assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,100,/);
+    assert.match(csv, /Meta Ads \(UTM\),2026-08,BRL,0,/);
+    assert.match(csv, /Meta Ads \(UTM\),2026-09,BRL,100,/);
     assert.doesNotMatch(csv, /999\.99/);
   });
 

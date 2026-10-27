@@ -18,20 +18,20 @@ import { isEditorTestSignupEmail } from "../scripts/lib/ads-campaign-economics-f
 
 describe("#8246 — ads-live-spend-signups: formatadores", () => {
   it("formatSpendTable ordena por data e acumula, independente da ordem de entrada", () => {
-    const out = formatSpendTable("Google Ads (teste 2608)", [
+    const out = formatSpendTable("Google Ads (UTM)", [
       { date: "2026-09-07", gastoBrl: 50 },
       { date: "2026-09-05", gastoBrl: 100 },
       { date: "2026-09-06", gastoBrl: 30 },
     ]);
     const lines = out.trim().split("\n");
-    assert.equal(lines[0], "Google Ads (teste 2608)");
+    assert.equal(lines[0], "Google Ads (UTM)");
     assert.match(lines[2], /2026-09-05\s+100\.00\s+100\.00/);
     assert.match(lines[3], /2026-09-06\s+30\.00\s+130\.00/);
     assert.match(lines[4], /2026-09-07\s+50\.00\s+180\.00/);
   });
 
   it("formatSignupsTable acumula inteiros, sem casas decimais", () => {
-    const out = formatSignupsTable("Microsoft Ads (teste 2608)", [
+    const out = formatSignupsTable("Microsoft Ads (UTM)", [
       { date: "2026-09-06", cadastros: 2 },
       { date: "2026-09-07", cadastros: 3 },
     ]);
@@ -52,7 +52,7 @@ describe("#8246 — ads-live-spend-signups: formatadores", () => {
   // `test/ads-campaign-economics-fetch.test.ts` — os dois juntos travam o
   // rótulo na ponta e a exclusão na fonte.
   it("formatSignupsTable declara a exclusão do e-mail de teste, e o filtro de fato exclui (#8433)", () => {
-    const out = formatSignupsTable("Google Ads (teste 2608)", [
+    const out = formatSignupsTable("Google Ads (UTM)", [
       { date: "2026-09-06", cadastros: 2 },
       { date: "2026-09-07", cadastros: 1 },
     ]);

@@ -92,7 +92,7 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
     assert.equal(calls, 2);
     assert.deepEqual(sleeps, [META_ADS_FETCH_RETRY.backoffMs[0]]);
     assert.ok(existsSync(spendPath), "spend.csv deveria ser gravado depois do retry");
-    assert.match(readFileSync(spendPath, "utf8"), /Meta Ads \(teste 2608\),2026-09,BRL,42\.5,/);
+    assert.match(readFileSync(spendPath, "utf8"), /Meta Ads \(UTM\),2026-09,BRL,42\.5,/);
     // Nenhum banner de fallback — é o que o alarme lê como defeito.
     assert.doesNotMatch(warn, /fallback pro CSV manual/);
   });
@@ -160,7 +160,7 @@ describe("#9012 — Meta Ads ingest: retry de blip de rede + exit code fail-loud
     assert.equal(page2Calls, 2);
     assert.ok(seen.every((s) => s.auth === "Bearer tok-fake-nunca-logado"), "Authorization em toda tentativa/página");
     assert.ok(seen.every((s) => s.hasSignal), "signal do retry chega ao fetchImpl");
-    assert.match(readFileSync(spendPath, "utf8"), /Meta Ads \(teste 2608\),2026-09,BRL,52\.5,/);
+    assert.match(readFileSync(spendPath, "utf8"), /Meta Ads \(UTM\),2026-09,BRL,52\.5,/);
     assert.doesNotMatch(warn + log, /tok-fake-nunca-logado/);
   });
 

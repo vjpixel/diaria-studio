@@ -71,7 +71,7 @@ describe("#7577 — CLI ads-rolling-cac: exit codes", () => {
     // parser engole linhas em silêncio quando a quebra de linha não bate
     // (CRLF vs LF, incidente de 07/09), e calcular sobre um CSV meio-lido
     // produziria uma janela silenciosamente incompleta.
-    const { dir, args } = csvFixture(["Google Ads (teste 2608),2026-09-04,não-é-número,10,,0,painel"]);
+    const { dir, args } = csvFixture(["Google Ads (UTM),2026-09-04,não-é-número,10,,0,painel"]);
     try {
       const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-04"]));
       assert.equal(valor, 1);
@@ -83,7 +83,7 @@ describe("#7577 — CLI ads-rolling-cac: exit codes", () => {
 
   it("--dias não-numérico sai 1 com mensagem, em vez de estourar RangeError", () => {
     // `Number("abc")` é NaN e atravessa `shiftDate` até `toISOString` lançar.
-    const { dir, args } = csvFixture(["Google Ads (teste 2608),2026-09-04,190,22,,0,painel"]);
+    const { dir, args } = csvFixture(["Google Ads (UTM),2026-09-04,190,22,,0,painel"]);
     try {
       const { valor, out } = capturar(() => main([...args, "--dias", "abc"]));
       assert.equal(valor, 1);
@@ -94,7 +94,7 @@ describe("#7577 — CLI ads-rolling-cac: exit codes", () => {
   });
 
   it("--ate em formato inválido sai 1 — comparação de string devolveria janela torta, não erro", () => {
-    const { dir, args } = csvFixture(["Google Ads (teste 2608),2026-09-04,190,22,,0,painel"]);
+    const { dir, args } = csvFixture(["Google Ads (UTM),2026-09-04,190,22,,0,painel"]);
     try {
       const { valor, out } = capturar(() => main([...args, "--ate", "04/09/2026"]));
       assert.equal(valor, 1);
@@ -106,8 +106,8 @@ describe("#7577 — CLI ads-rolling-cac: exit codes", () => {
 
   it("braço não-comparável NÃO é erro — sai 0 e explica na saída", () => {
     const { dir, args } = csvFixture([
-      "Microsoft Ads (teste 2608),2026-09-03,1.34,0,,0,painel",
-      "Microsoft Ads (teste 2608),2026-09-04,1.34,0,,0,painel",
+      "Microsoft Ads (UTM),2026-09-03,1.34,0,,0,painel",
+      "Microsoft Ads (UTM),2026-09-04,1.34,0,,0,painel",
     ]);
     try {
       const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-04"]));
@@ -122,8 +122,8 @@ describe("#7577 — CLI ads-rolling-cac: exit codes", () => {
 describe("#7577 — CLI ads-rolling-cac: saída", () => {
   it("--json traz comparacaoPossivel no topo, sem exigir re-derivação", () => {
     const { dir, args } = csvFixture([
-      "Google Ads (teste 2608),2026-09-01,100,10,,0,painel",
-      "Google Ads (teste 2608),2026-09-04,190,22,,0,painel",
+      "Google Ads (UTM),2026-09-01,100,10,,0,painel",
+      "Google Ads (UTM),2026-09-04,190,22,,0,painel",
     ]);
     try {
       const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-04", "--json"]));
@@ -142,8 +142,8 @@ describe("#7577 — CLI ads-rolling-cac: saída", () => {
     // "não medido" e "zero cadastros" pedem ações opostas do editor, e num
     // alinhamento à direita os dois se leem igual.
     const { dir, args } = csvFixture([
-      "Google Ads (teste 2608),2026-09-03,100,,,0,painel",
-      "Google Ads (teste 2608),2026-09-04,190,,,0,painel",
+      "Google Ads (UTM),2026-09-03,100,,,0,painel",
+      "Google Ads (UTM),2026-09-04,190,,,0,painel",
     ]);
     try {
       const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-04"]));
@@ -169,9 +169,9 @@ describe("#7577 — CLI ads-rolling-cac: saída", () => {
 describe("#7577 — cobertura do último dia pega a linha engolida que o parser não acusa", () => {
   it("braço sem linha no último dia sai 1, mesmo com o parse limpo", () => {
     const { dir, args } = csvFixture([
-      "Google Ads (teste 2608),2026-09-03,100,10,,0,painel",
-      "Google Ads (teste 2608),2026-09-04,190,22,,0,painel",
-      "Meta Ads (teste 2608),2026-09-03,50,5,,0,painel",
+      "Google Ads (UTM),2026-09-03,100,10,,0,painel",
+      "Google Ads (UTM),2026-09-04,190,22,,0,painel",
+      "Meta Ads (UTM),2026-09-03,50,5,,0,painel",
       // Meta SEM linha em 04 — foi o formato exato do incidente CRLF.
     ]);
     try {
@@ -186,8 +186,8 @@ describe("#7577 — cobertura do último dia pega a linha engolida que o parser 
 
   it("todos os braços com linha no último dia passa normalmente", () => {
     const { dir, args } = csvFixture([
-      "Google Ads (teste 2608),2026-09-04,190,22,,0,painel",
-      "Meta Ads (teste 2608),2026-09-04,90,12,,0,painel",
+      "Google Ads (UTM),2026-09-04,190,22,,0,painel",
+      "Meta Ads (UTM),2026-09-04,90,12,,0,painel",
     ]);
     try {
       const { valor } = capturar(() => main([...args, "--ate", "2026-09-04"]));
@@ -199,7 +199,7 @@ describe("#7577 — cobertura do último dia pega a linha engolida que o parser 
 });
 
 describe("#7577 — CLI: colunas de CAC diário (ontem e anteontem)", () => {
-  const CANAL = "Google Ads (teste 2608)";
+  const CANAL = "Google Ads (UTM)";
   // Acumulados escolhidos para que os dois dias tenham CAC DIFERENTE entre si
   // e diferente do da janela: se a CLI imprimisse a mesma célula três vezes,
   // um teste com números coincidentes passaria.
@@ -283,7 +283,7 @@ describe("#7577 — CLI: colunas de CAC diário (ontem e anteontem)", () => {
  */
 describe("#8246 — CLI ads-rolling-cac: contextoJanela", () => {
   it("run-state sem d0/fim_janela -> contextoJanela.d0 null (nunca inferido)", () => {
-    const { dir, args } = csvFixture(["Google Ads (teste 2608),2026-09-04,190,22,,0,painel"]);
+    const { dir, args } = csvFixture(["Google Ads (UTM),2026-09-04,190,22,,0,painel"]);
     try {
       const { valor, out } = capturar(() => main([...args, "--ate", "2026-09-04", "--json"]));
       assert.equal(valor, 0);
@@ -302,7 +302,7 @@ describe("#8246 — CLI ads-rolling-cac: contextoJanela", () => {
     // de 20/09. `--ate 19/09` => hoje=20/09; com fim_janela real (27/09) a
     // janela segue em andamento.
     const { dir, args } = csvFixture(
-      ["Google Ads (teste 2608),2026-09-19,1900,50,,0,painel"],
+      ["Google Ads (UTM),2026-09-19,1900,50,,0,painel"],
       undefined,
       { d0: "2026-09-05", fim_janela: "2026-09-27", coorte_madura: "2026-10-24" },
     );
@@ -314,7 +314,7 @@ describe("#8246 — CLI ads-rolling-cac: contextoJanela", () => {
       assert.equal(j.contextoJanela.fimJanela, "2026-09-27");
       assert.equal(j.contextoJanela.janelaEncerrada, false);
       assert.equal(j.contextoJanela.coorteAtingida, false);
-      assert.equal(typeof j.contextoJanela.gastoEsperadoAteOntemPorBraco["Google Ads (teste 2608)"], "number");
+      assert.equal(typeof j.contextoJanela.gastoEsperadoAteOntemPorBraco["Google Ads (UTM)"], "number");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -322,7 +322,7 @@ describe("#8246 — CLI ads-rolling-cac: contextoJanela", () => {
 
   it("--ate após fim_janela -> janelaEncerrada true, e o texto humano avisa 'ENCERRADA'", () => {
     const { dir, args } = csvFixture(
-      ["Google Ads (teste 2608),2026-09-28,2700,80,,0,painel"],
+      ["Google Ads (UTM),2026-09-28,2700,80,,0,painel"],
       undefined,
       { d0: "2026-09-05", fim_janela: "2026-09-27", coorte_madura: "2026-10-24" },
     );

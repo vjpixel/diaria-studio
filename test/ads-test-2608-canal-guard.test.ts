@@ -15,11 +15,12 @@
  * mesmo com gasto real) e `ADS_TEST_2608_BRACOS` (senão o gasto não é
  * atribuído a nenhum braço do teste, e `sumTeste2608Spend` o ignora).
  *
- * Quando a #5862 renomear ou remover as specs temporárias "(teste 2608)",
- * as constantes mudam juntas e este teste é o que exige que mudem juntas.
+ * A #5862 (27/10/2026) renomeou as specs temporárias "(teste 2608)" para os
+ * nomes permanentes "X Ads (UTM)": as constantes mudaram juntas, e este
+ * teste é o que exige que mudem juntas.
  *
  * #10755 (21/10/2026): o canal Microsoft Ads foi encerrado e o ingest dele
- * saiu do repo. O braço `Microsoft Ads (teste 2608)` CONTINUA em
+ * saiu do repo. O braço `Microsoft Ads (UTM)` (ex-"(teste 2608)") CONTINUA em
  * `CHANNEL_KEY_SPECS` e em `ADS_TEST_2608_BRACOS` — é o que mantém o gasto
  * já gravado em `spend.csv` atribuído ao braço no relatório de CAC e na
  * apuração do teste. Ele entra aqui como exceção documentada (braço só de
@@ -45,7 +46,7 @@ const CANAIS_DE_INGESTAO = [
  *  no histórico de `spend.csv` (#10755). Continuam precisando de spec e de
  *  lugar em `ADS_TEST_2608_BRACOS`, senão o histórico vira "canal
  *  desconhecido" no cac-report e some de `sumTeste2608Spend`. */
-const BRACOS_SO_HISTORICO = ["Microsoft Ads (teste 2608)"] as const;
+const BRACOS_SO_HISTORICO = ["Microsoft Ads (UTM)"] as const;
 
 /**
  * Valores que os scripts JÁ usaram e que causaram (ou teriam causado) o
@@ -57,12 +58,13 @@ const BRACOS_SO_HISTORICO = ["Microsoft Ads (teste 2608)"] as const;
  *
  * | valor | spec em CHANNEL_KEY_SPECS | braço do teste | como o defeito aparece |
  * |---|---|---|---|
- * | `"Google Ads"` | **sim** (linhas 2026-02 PMax/Search usam esse nome) | não | 2 linhas pro MESMO gasto (`Google Ads` da ingestão + `Google Ads (teste 2608)` da reconciliação), **somadas** por `computeMonthBudgetUsage` — gasto contado 2× |
+ * | `"Google Ads"` | **sim** (linhas 2026-02 PMax/Search usam esse nome) | não | 2 linhas pro MESMO gasto (`Google Ads` da ingestão + `Google Ads (UTM)` da reconciliação), **somadas** por `computeMonthBudgetUsage` — gasto contado 2× |
  * | `"Meta"` | não (só `RESERVED_CHANNEL_NAMES`) | não | linha cai no caminho "canal desconhecido" — aviso em stderr, n=0 no relatório |
  *
  * Por isso o invariante comum que este guard afirma é **"não é braço do
  * teste 2608"**, e não "não tem spec": `"Google Ads"` tem spec legítima e
- * deve continuar tendo (a #5862 decide o destino dela). O que nenhum dos
+ * deve continuar tendo (canal legado dez/2025–fev/2026, por referrer; a
+ * #5862 manteve os dois separados). O que nenhum dos
  * dois pode ser é o canal que um ingest do teste 2608 escreve.
  */
 const VALORES_DEFEITUOSOS = ["Google Ads", "Meta"] as const;
@@ -102,7 +104,7 @@ describe("#8239 — guard único: os ingests do teste 2608 escrevem canal com sp
   });
 
   it("cobre TODOS os braços do teste 2608 — um braço novo sem ingest cadastrado aqui falha", () => {
-    // Se a #5862 (ou qualquer issue futura) acrescentar um 4º braço, este
+    // Se uma issue futura acrescentar um 4º braço, este
     // teste falha até que o ingest correspondente entre em CANAIS_DE_INGESTAO
     // — é o que impede a assimetria que gerou o #8239 (Microsoft corrigido
     // em #7544, Google esquecido por 2 meses, sem nada acusando).
@@ -142,7 +144,7 @@ describe("#8239 — guard único: os ingests do teste 2608 escrevem canal com sp
           bracos.includes(defeituoso),
           false,
           `"${defeituoso}" virou um braço do teste 2608 (ADS_TEST_2608_BRACOS). Se foi ` +
-            `intencional (#5862 renomeando as specs temporárias), reveja este guard e a ` +
+            `intencional (renomeação como a do #5862), reveja este guard e a ` +
             `tabela de VALORES_DEFEITUOSOS junto.`,
         );
       });

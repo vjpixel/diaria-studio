@@ -799,7 +799,7 @@ describe("#7960 — ads-test-watch main (I/O): --dry-run nunca notifica o editor
 
 describe("#8238 — loadApuracaoCohortGuard / realIsStoreFresh sobre store fixture", () => {
   const NOW = "2026-10-25T06:30:00.000Z";
-  const GOOGLE = "Google Ads (teste 2608)";
+  const GOOGLE = "Google Ads (UTM)";
 
   async function seedStore(dir: string, opts: { linkDelivered: boolean; kitUpdatedAt?: string }): Promise<string> {
     const { openDiariaSubscribersDb, ensureSubscriber, upsertSubscription, recordEvent } = await import(

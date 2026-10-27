@@ -42,6 +42,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./shared/reativar-confirmou-via.ts";
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME } from "./shared/kit-signup-origin.ts";
+import { classifyCanalPago } from "./subscriber-confirmation-report.ts";
 
 /** Nome de diretório de snapshot: `YYYY-MM-DD` — mesmo regex de
  *  `beehiiv-backup-snapshots.ts`. */
@@ -335,6 +336,34 @@ export interface DoiConfirmationCohortMember {
    *  reapareceu no snapshot de maturação, mesmo padrão fail-soft de
    *  "ausência não é confirmação"). */
   confirmed: boolean;
+  /** #8548 — canal pago do cadastro (`google-ads`/`meta-ads`/`microsoft-ads`/
+   *  `orgânico`/desconhecido), via `resolveCohortCanal`. Alimenta a
+   *  decomposição `canal` de `doi-confirmacao-dia`. */
+  canal: string;
+}
+
+/**
+ * Canal pago de um membro da safra (#8548), só a partir dos snapshots — a
+ * mesma ordem de `buildConfirmationReport` sem a fonte do store (que este
+ * módulo não abre): (1) `utm_source` não vazio no snapshot de nascimento;
+ * (2) o primeiro `utm_source` não vazio de um snapshot POSTERIOR (o endpoint
+ * de lista do Kit serve `fields` com atraso); (3) `""` no nascimento (#10507,
+ * campo comprovadamente vazio) → orgânico; (4) nenhum dado → desconhecido,
+ * nunca orgânico. O PRIMEIRO valor vence o último porque o reativar pode
+ * sobrescrever o `utm_source` no Kit (#8235). @pure
+ */
+export function resolveCohortCanal(
+  id: number,
+  birth: SubscriberStateRecord,
+  laterSnapshotsAsc: readonly ReadonlyMap<number, SubscriberStateRecord>[],
+): string {
+  if (birth.utm_source) return classifyCanalPago(birth.utm_source, true);
+  for (const byId of laterSnapshotsAsc) {
+    const r = byId.get(id);
+    if (r?.utm_source) return classifyCanalPago(r.utm_source, true);
+  }
+  if (birth.utm_source === "") return classifyCanalPago("", true);
+  return classifyCanalPago(undefined, false);
 }
 
 export interface DoiConfirmationCohortResult {
@@ -400,8 +429,8 @@ export function buildDoiConfirmationCohort(
   // status (snapshot antigo), cai na heurística por `doi_form` presente.
   const status = doiStatusByDate?.get(cohortDate);
   const formCoverage = status ? status.ok : dayRecords.some((r) => r.doi_form === true);
-  const cohortIds = (formCoverage ? bornInactive.filter((r) => r.doi_form === true) : bornInactive).map((r) => r.id);
-  if (cohortIds.length === 0) {
+  const cohortBirths = formCoverage ? bornInactive.filter((r) => r.doi_form === true) : bornInactive;
+  if (cohortBirths.length === 0) {
     return {
       cohort: [],
       motivoIndeterminado: `nenhum assinante inactive criado em ${cohortDate}${formCoverage ? " e vinculado ao form DOI" : ""} no snapshot desse dia`,
@@ -417,9 +446,54 @@ export function buildDoiConfirmationCohort(
   }
   const maturedRecords = snapshotsByDate.get(maturedSnapshotDate)!;
   const maturedById = new Map(maturedRecords.map((r) => [r.id, r]));
-  const cohort: DoiConfirmationCohortMember[] = cohortIds.map((id) => ({
-    id,
-    confirmed: maturedById.get(id)?.state === "active",
+  // Snapshots posteriores ao dia da safra, indexados por id — só pra achar o
+  // canal de quem nasceu com `fields` ainda defasado (`resolveCohortCanal`).
+  const laterById = dates
+    .filter((d) => d > cohortDate)
+    .map((d) => (d === maturedSnapshotDate ? maturedById : new Map(snapshotsByDate.get(d)!.map((r) => [r.id, r]))));
+  const cohort: DoiConfirmationCohortMember[] = cohortBirths.map((birth) => ({
+    id: birth.id,
+    confirmed: maturedById.get(birth.id)?.state === "active",
+    canal: resolveCohortCanal(birth.id, birth, laterById),
   }));
   return { cohort, ...(formCoverage ? {} : { semFiltroDoi: true }) };
+}
+
+/**
+ * A safra mais recente que já resolve (#8548): anda para trás a partir do
+ * snapshot mais novo, no máximo `maxLookbackDays` datas de snapshot, e
+ * devolve o primeiro dia cuja safra de `buildDoiConfirmationCohort` saiu não
+ * vazia. Existe porque a safra de HOJE nunca resolve (precisa de 48h de
+ * maturação): um painel que pedisse a métrica só para "hoje" ficaria
+ * eternamente `indeterminado`, que é o defeito que esta função fecha no
+ * Studio (`studio-metrics.ts`).
+ *
+ * `cohortDate: null` quando nenhum dia da janela resolve — o chamador mostra
+ * `motivoIndeterminado`. @pure
+ */
+export function findLatestResolvedDoiCohort(
+  snapshotsByDate: ReadonlyMap<string, readonly SubscriberStateRecord[]>,
+  doiStatusByDate?: ReadonlyMap<string, { ok: boolean }>,
+  maxLookbackDays = 14,
+  maturationHours = 48,
+): { cohortDate: string; result: DoiConfirmationCohortResult } | { cohortDate: null; motivoIndeterminado: string } {
+  const dates = [...snapshotsByDate.keys()].sort();
+  if (dates.length === 0) {
+    return {
+      cohortDate: null,
+      motivoIndeterminado: "nenhum snapshot diário do Kit disponível (scripts/subscriber-state-snapshot.ts)",
+    };
+  }
+  let motivoMaisRecente: string | null = null;
+  for (const date of dates.slice(-maxLookbackDays).reverse()) {
+    const result = buildDoiConfirmationCohort(snapshotsByDate, date, maturationHours, doiStatusByDate);
+    if (result.cohort.length > 0) return { cohortDate: date, result };
+    motivoMaisRecente ??= result.motivoIndeterminado ?? null;
+  }
+  return {
+    cohortDate: null,
+    motivoIndeterminado:
+      `nenhuma safra resolvida nas últimas ${maxLookbackDays} datas de snapshot` +
+      (motivoMaisRecente ? ` (mais recente: ${motivoMaisRecente})` : ""),
+  };
 }

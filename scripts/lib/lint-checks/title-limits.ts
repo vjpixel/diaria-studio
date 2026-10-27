@@ -7,8 +7,8 @@
  * 1. `title-card-4x5` — todo título de destaque (D1/D2/D3, todas as opções)
  *    tem de caber no card 4x5 diário (`04-d{N}-4x5.jpg`) em até 3 linhas a
  *    62px. O critério é o MESMO que `gen-social-card-4x5.ts` usa para abortar
- *    antes de renderizar (`dailyCardTitleFits`), importado de lá, nunca
- *    reimplementado: um título que este check aprova é um título que o
+ *    antes de renderizar (`dailyCardTitleFits`, de `lib/card-title-wrap.ts`,
+ *    que os dois importam), nunca reimplementado: um título que este check aprova é um título que o
  *    gerador do card aceita. Não é contagem de caracteres: depende de como as
  *    palavras quebram (na edição 261027 um título de 72 chars coube; um de 80,
  *    não).
@@ -30,7 +30,9 @@
  * card continua protegido no Stage 3 pelo próprio gerador, que aborta.
  */
 
-import { dailyCardTitleFits } from "../../gen-social-card-4x5.ts";
+// Do módulo puro, não de `gen-social-card-4x5.ts`: o gerador traz o `sharp`,
+// e este lint roda no Stage 2 e no painel do Studio (#11329 item 4).
+import { dailyCardTitleFits } from "../card-title-wrap.ts";
 import { collectDestaqueTitleCandidates, graphemeLength } from "./title-length.ts";
 
 /** Teto do assunto do e-mail (título do D1), em grafemas. Faixa do editor: ~60-70. */

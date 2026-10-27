@@ -38,9 +38,9 @@ import { cacReportCorteExclusiveMs, main as cacReportMain } from "../scripts/cac
 import { buildApuracaoCacReportArgv } from "../scripts/ads-test-watch.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
 
-const G = "Google Ads (teste 2608)";
-const M = "Meta Ads (teste 2608)";
-const MS = "Microsoft Ads (teste 2608)";
+const G = "Google Ads (UTM)";
+const M = "Meta Ads (UTM)";
+const MS = "Microsoft Ads (UTM)";
 
 const RUN_STATE: EmendaRunStateInput = {
   d0: "2026-09-05",
@@ -204,7 +204,7 @@ describe("seção da apuração com K10", () => {
     const s = computeEmendaSection(subs, spend, RUN_STATE, { runStatePath: "rs.json", corte: "2026-10-21", corteEventos: true }, null, k10);
     const md = formatEmendaSectionMarkdown(s).join("\n");
     assert.match(md, /Informativo: K10/);
-    assert.match(md, /\| \*\*Google Ads \(teste 2608\)\*\* \| total \| 3 \| 2 \| 66\.7% \| R\$ 300,00 \| R\$ 150,00 \|/);
+    assert.match(md, /\| \*\*Google Ads \(UTM\)\*\* \| total \| 3 \| 2 \| 66\.7% \| R\$ 300,00 \| R\$ 150,00 \|/);
     assert.match(md, /Corte determinístico: 2026-10-21/);
     assert.match(md, /clique tardio/);
   });
@@ -238,7 +238,7 @@ describe("cac-report --corte", () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-corte-8238-"));
     try {
       const spendPath = join(root, "spend.csv");
-      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (UTM),2026-09,BRL,500.57,teste\n", "utf8");
       const storePath = join(root, "s.db");
       const db = openDiariaSubscribersDb(storePath);
       const id = ensureSubscriber(db, "kit", "k1", "l1@example.com", "2026-09-06T13:00:00.000Z");
@@ -262,7 +262,7 @@ describe("cac-report --corte", () => {
       assert.ok(r, `cac-report deveria rodar (exit ${code})`);
       assert.match(out, /Corte por evento: só eventos com `ts` até 2026-10-05 23h59 BRT/);
       // Corte em 05/10: 5 entregas (01..05/10), clique na 2ª → K10.
-      assert.match(out, /\| \*\*Google Ads \(teste 2608\)\*\* \| total \| 1 \| 1 \| 0\.0% \|/);
+      assert.match(out, /\| \*\*Google Ads \(UTM\)\*\* \| total \| 1 \| 1 \| 0\.0% \|/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -29,7 +29,7 @@ const PAUSA_PRODUCAO = normalizePauseIntervals({
   fim: "2026-09-17T00:16:00-03:00",
 });
 
-const CANAL = "Microsoft Ads (teste 2608)";
+const CANAL = "Microsoft Ads (UTM)";
 
 /** Gasto/cadastro só nos dias veiculados — durante a pausa a API reporta
  *  zero, que é o que reproduz o trecho horizontal do bug. */

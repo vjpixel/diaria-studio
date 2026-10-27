@@ -56,6 +56,7 @@ import { registerReport, reportId, type ReportRegistryInput, type RegisterReport
 import { detectExecMode } from "./lib/exec-mode.ts";
 import { addDays } from "./lib/ads-test-schedule.ts";
 import { readSpendCsv } from "./lib/aquisicao-spend.ts";
+import { canonicalChannelName } from "./lib/shared/channel-key-specs.ts";
 import { assertValidRunState, type AdsTestRunState } from "./lib/ads-test-run-state.ts";
 import { latestSnapshotDate, readSnapshotSubscribers } from "./lib/beehiiv-backup-snapshots.ts";
 import { parseClicksCsv } from "./lib/ads-test-watch.ts";
@@ -127,7 +128,13 @@ function loadHistory(path: string): AdsDailyDigestHistory {
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<AdsDailyDigestHistory>;
     if (!Array.isArray(raw.rows)) return emptyDigestHistory();
-    return { rows: raw.rows, capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : "" };
+    // #5862: o histórico gravado antes da troca de nome traz "X Ads (teste
+    // 2608)"; sem normalizar, o 1º digest depois do rename veria o canal
+    // antigo "sumir" e o novo "aparecer" com o gasto inteiro como delta.
+    const rows = raw.rows.map((row) =>
+      row && typeof row.canal === "string" ? { ...row, canal: canonicalChannelName(row.canal) } : row,
+    );
+    return { rows, capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : "" };
   } catch {
     return emptyDigestHistory();
   }

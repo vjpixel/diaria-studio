@@ -146,7 +146,7 @@ describe("buildAdsData — caminho feliz", () => {
     clearAdsCache();
     const root = makeRoot();
     try {
-      writeSpendCsv(root, "canal,mes,moeda,valor,fonte\nMeta Ads (teste 2608),2026-09,BRL,517.85,teste\n");
+      writeSpendCsv(root, "canal,mes,moeda,valor,fonte\nMeta Ads (UTM),2026-09,BRL,517.85,teste\n");
       // NENHUM snapshot Beehiiv escrito — o caso real do #8210 (cadastro do
       // teste foi só pro Kit, o backend do backend está em "kit").
       const storeDir = join(root, "data", "diaria-subscribers");
@@ -172,8 +172,8 @@ describe("buildAdsData — caminho feliz", () => {
       const data = buildAdsData(root, { forceRefresh: true, now: () => new Date("2026-09-17T12:00:00Z") });
       assert.equal(data.subscribersSource, "store");
       assert.ok(data.report, "store presente deveria montar report mesmo sem snapshot Beehiiv");
-      const metaRow = data.report!.rows.find((r) => r.canal === "Meta Ads (teste 2608)") as any;
-      assert.ok(metaRow, "canal Meta Ads (teste 2608) deveria aparecer, vindo do store (Kit)");
+      const metaRow = data.report!.rows.find((r) => r.canal === "Meta Ads (UTM)") as any;
+      assert.ok(metaRow, "canal Meta Ads (UTM) deveria aparecer, vindo do store (Kit)");
       assert.equal(metaRow.kind, "measured");
       assert.ok(metaRow.cadastros > 0, "cadastro ingerido só no Kit precisa contar — era invisível no snapshot Beehiiv");
     } finally {
@@ -262,7 +262,7 @@ function writeRunState(root: string, extra: Record<string, unknown> = {}): void 
         religar_brevo: "2026-01-22",
         coorte_madura: "2026-02-11",
         apuracao_snapshot: "2026-02-15",
-        bracos: ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"],
+        bracos: ["Google Ads (UTM)", "Microsoft Ads (UTM)", "Meta Ads (UTM)"],
         registrado_em: "2026-01-01T00:00:00.000Z",
         ...extra,
       },
@@ -338,8 +338,8 @@ describe("buildAdsCampaignEconomics — run-state.json presente + fontes respond
       assert.ok(data.runState);
       assert.equal(data.testState.emAndamento, true);
       assert.equal(data.cumulative.series.length, 1);
-      assert.equal(data.cumulative.series[0].canal, "Google Ads (teste 2608)");
-      const googleRow = data.channels.find((c) => c.canal === "Google Ads (teste 2608)")!;
+      assert.equal(data.cumulative.series[0].canal, "Google Ads (UTM)");
+      const googleRow = data.channels.find((c) => c.canal === "Google Ads (UTM)")!;
       assert.equal(googleRow.gastoTotalBrl, 5);
       assert.equal(googleRow.cadastrosTotal, 1);
       assert.equal(googleRow.custoPorCadastroBrl, 5);
@@ -413,7 +413,7 @@ describe("#8288 — run-state.json com revisao.pausa", () => {
 });
 
 describe("#8210 melhoria 1 — buildAdsCampaignEconomics: funil por canal a partir do store unificado", () => {
-  it("store presente (Kit) com cadastro 'meta-ads' active — canal Meta Ads (teste 2608) ganha ativosTotal > 0, n visível", async () => {
+  it("store presente (Kit) com cadastro 'meta-ads' active — canal Meta Ads (UTM) ganha ativosTotal > 0, n visível", async () => {
     clearAdsCampaignEconomicsCache();
     const root = makeRoot();
     try {
@@ -435,8 +435,8 @@ describe("#8210 melhoria 1 — buildAdsCampaignEconomics: funil por canal a part
       const fetchImpl = (async () => jsonResponse(200, { results: [] })) as typeof fetch;
       const data = await buildAdsCampaignEconomics(root, { now: () => new Date("2026-01-05T12:00:00Z"), env: {}, fetchImpl });
 
-      const metaRow = data.channels.find((c) => c.canal === "Meta Ads (teste 2608)")!;
-      assert.ok(metaRow, "canal Meta Ads (teste 2608) deveria aparecer (activeCountsByChannel cobre os 3 braços de ADS_TEST_2608_BRACOS)");
+      const metaRow = data.channels.find((c) => c.canal === "Meta Ads (UTM)")!;
+      assert.ok(metaRow, "canal Meta Ads (UTM) deveria aparecer (activeCountsByChannel cobre os 3 braços de ADS_TEST_2608_BRACOS)");
       assert.equal(metaRow.ativosTotal, 1);
       assert.equal(metaRow.ativosAmostraN, 1);
       assert.equal(metaRow.pctAtivo, 1);
@@ -444,7 +444,7 @@ describe("#8210 melhoria 1 — buildAdsCampaignEconomics: funil por canal a part
       // Braço sem NENHUM subscriber no store ainda ganha entrada com
       // ativosTotal=0 (dado real medido — "0 de 0" é diferente de
       // "desconhecido"), nunca aparece ausente do mapa.
-      const googleRow = data.channels.find((c) => c.canal === "Google Ads (teste 2608)")!;
+      const googleRow = data.channels.find((c) => c.canal === "Google Ads (UTM)")!;
       assert.equal(googleRow.ativosTotal, 0);
       assert.equal(googleRow.ativosAmostraN, 0);
       assert.equal(googleRow.pctAtivo, null, "sem amostra (n=0) — pctAtivo continua null, nunca 0/0");
@@ -469,7 +469,7 @@ describe("#8210 melhoria 2 — buildAdsCampaignEconomics: badge ativa/pausada a 
           religar_brevo: "2026-01-22",
           coorte_madura: "2026-02-11",
           apuracao_snapshot: "2026-02-15",
-          bracos: ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"],
+          bracos: ["Google Ads (UTM)", "Microsoft Ads (UTM)", "Meta Ads (UTM)"],
           registrado_em: "2026-01-01T00:00:00.000Z",
           revisao: { pausas: [{ desde: "2026-01-04", ate: "2026-01-06" }] },
         }),
@@ -614,7 +614,7 @@ describe("storeResultProvider (#8292) — 1 única leitura do store por request"
     clearAdsCampaignEconomicsCache();
     const root = makeRoot();
     try {
-      writeSpendCsv(root, "canal,mes,moeda,valor,fonte\nMeta Ads (teste 2608),2026-09,BRL,517.85,teste\n");
+      writeSpendCsv(root, "canal,mes,moeda,valor,fonte\nMeta Ads (UTM),2026-09,BRL,517.85,teste\n");
       writeRunState(root);
       const storeDir = join(root, "data", "diaria-subscribers");
       mkdirSync(storeDir, { recursive: true });
@@ -652,7 +652,7 @@ describe("storeResultProvider (#8292) — 1 única leitura do store por request"
       });
 
       assert.equal(adsData.subscribersSource, "store");
-      const metaRow = campaignEconomics.channels.find((c) => c.canal === "Meta Ads (teste 2608)")!;
+      const metaRow = campaignEconomics.channels.find((c) => c.canal === "Meta Ads (UTM)")!;
       assert.equal(metaRow.ativosTotal, 1, "resultado do store compartilhado ainda chega corretamente nas 2 funções");
     } finally {
       rmSync(root, { recursive: true, force: true });

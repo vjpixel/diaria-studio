@@ -46,6 +46,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
+import { GOOGLE_ADS_UTM_CANAL } from "./lib/shared/channel-key-specs.ts";
 import {
   runGoogleAdsIngest,
   type FetchLike,
@@ -73,11 +74,13 @@ export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.
  * Studio `/ads` — gasto contado 2× (achado ao vivo #8210, 17/09/2026:
  * R$ 1.807,34 exibido contra R$ 1.306,44 real). Mesmo padrão que o
  * `MICROSOFT_ADS_CANAL` seguia antes do encerramento do canal (#10755).
- * Quando as specs temporárias "(teste 2608)" saírem (decisão da
- * #5862), este valor muda junto — `test/google-ads-ingest-spend.test.ts`
- * trava que ele sempre bate com uma entrada real de `CHANNEL_KEY_SPECS`.
+ * Desde o #5862 é o nome PERMANENTE `"Google Ads (UTM)"` (era `"Google Ads
+ * (teste 2608)"`, temporário do teste) — `test/google-ads-ingest-spend.test.ts`
+ * trava que ele sempre bate com uma entrada real de `CHANNEL_KEY_SPECS`. As
+ * linhas antigas de `spend.csv` são lidas com o nome novo por `parseSpendCsv`
+ * e regravadas com ele na próxima ingestão.
  */
-export const GOOGLE_ADS_CANAL = "Google Ads (teste 2608)";
+export const GOOGLE_ADS_CANAL = GOOGLE_ADS_UTM_CANAL;
 
 /**
  * `GOOGLE_PROJECT_ID` NÃO entra aqui de propósito (corrigido em 17/08/2026).

@@ -11,7 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeAdsWindowContext } from "../scripts/lib/ads-window-context.ts";
 
-const BRACOS = ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"] as const;
+const BRACOS = ["Google Ads (UTM)", "Microsoft Ads (UTM)", "Meta Ads (UTM)"] as const;
 
 // Pausa real do teste 2608: 09/09 09h10 -> 17/09 00h16 (registrada em
 // run-state.json `revisao.pausa`).
@@ -110,7 +110,7 @@ describe("#8246 — computeAdsWindowContext, gasto esperado descontando pausa", 
     const runStateComOrcamento = {
       ...RUN_STATE_2608,
       orcamento_diario_brl: {
-        "Microsoft Ads (teste 2608)": [
+        "Microsoft Ads (UTM)": [
           { desde: "2026-09-05T00:00:00-03:00", brl: 100 },
           { desde: "2026-09-06T17:07:00-03:00", brl: 200 },
         ],
@@ -120,12 +120,12 @@ describe("#8246 — computeAdsWindowContext, gasto esperado descontando pausa", 
     // "ontem" = 07/09 -> 3 dias de veiculação sem pausa (05,06,07/09; a
     // pausa só começa 09/09). Google/Meta seguem no default 100/dia (sem
     // schedule declarado) = 300.
-    assert.equal(ctx.gastoEsperadoAteOntemPorBraco?.["Google Ads (teste 2608)"], 3 * 100);
-    assert.equal(ctx.gastoEsperadoAteOntemPorBraco?.["Meta Ads (teste 2608)"], 3 * 100);
+    assert.equal(ctx.gastoEsperadoAteOntemPorBraco?.["Google Ads (UTM)"], 3 * 100);
+    assert.equal(ctx.gastoEsperadoAteOntemPorBraco?.["Meta Ads (UTM)"], 3 * 100);
     // Microsoft: 05/09 a 100 + 06/09 pró-rateado (100 até 17h07, 200 depois
     // — #8270, `plannedBudgetBRL` não usa mais o diário vigente ao FIM do
     // dia inteiro) + 07/09 a 200 ≈ 100 + 128,68 + 200 = 428,68.
-    const v = ctx.gastoEsperadoAteOntemPorBraco?.["Microsoft Ads (teste 2608)"];
+    const v = ctx.gastoEsperadoAteOntemPorBraco?.["Microsoft Ads (UTM)"];
     assert.ok(v !== undefined && Math.abs(v - 428.68) < 0.5, `esperado ~428,68; recebi ${v}`);
   });
 });

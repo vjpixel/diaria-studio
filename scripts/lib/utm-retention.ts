@@ -56,6 +56,7 @@
  */
 
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
+import { GOOGLE_ADS_UTM_CANAL, META_ADS_UTM_CANAL, MICROSOFT_ADS_UTM_CANAL } from "./shared/channel-key-specs.ts";
 
 /** Retenção mínima aceitável em QUALQUER braço (fração 0-1). Abaixo disto a
  *  comparação de custo entre braços morre — §8.4. */
@@ -98,17 +99,17 @@ export interface ArmRetentionSpec {
 /** Baldes da §8.4, transcritos do protocolo. */
 export const ARM_RETENTION_SPECS: readonly ArmRetentionSpec[] = [
   {
-    canal: "Google Ads (teste 2608)",
+    canal: GOOGLE_ADS_UTM_CANAL,
     utmSource: "google-ads",
     referrerBuckets: ["googleadservices.com", "googlesyndication.com", "android.googlequicksearchbox"],
   },
   {
-    canal: "Microsoft Ads (teste 2608)",
+    canal: MICROSOFT_ADS_UTM_CANAL,
     utmSource: "microsoft-ads",
     referrerBuckets: ["bing.com", "duckduckgo.com", "search.yahoo.com", "ecosia.org"],
   },
   {
-    canal: "Meta Ads (teste 2608)",
+    canal: META_ADS_UTM_CANAL,
     utmSource: "meta-ads",
     referrerBuckets: [
       "facebook.com",

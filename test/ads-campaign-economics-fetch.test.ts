@@ -50,7 +50,7 @@ describe("#7536 — fetchGoogleAdsChannelMetrics", () => {
     const result = await fetchGoogleAdsChannelMetrics(fetchImpl, GOOGLE_AUTH, { now: new Date("2026-01-02T00:00:00Z") });
     assert.equal(result.error, null);
     assert.equal(result.metrics.length, 1);
-    assert.equal(result.metrics[0].canal, "Google Ads (teste 2608)");
+    assert.equal(result.metrics[0].canal, "Google Ads (UTM)");
     assert.equal(result.metrics[0].gastoBrl, 1);
     assert.equal(result.metrics[0].cliques, 5);
     assert.equal(result.metrics[0].impressoes, 100);
@@ -263,9 +263,9 @@ describe("#7536 — fetchKitSignupsByChannel", () => {
 
     assert.equal(result.error, null);
     assert.equal(result.signups.length, 4);
-    const googleD1 = result.signups.find((s) => s.canal === "Google Ads (teste 2608)" && s.date === "2026-01-05");
-    const msD1 = result.signups.find((s) => s.canal === "Microsoft Ads (teste 2608)" && s.date === "2026-01-05");
-    const googleD2 = result.signups.find((s) => s.canal === "Google Ads (teste 2608)" && s.date === "2026-01-06");
+    const googleD1 = result.signups.find((s) => s.canal === "Google Ads (UTM)" && s.date === "2026-01-05");
+    const msD1 = result.signups.find((s) => s.canal === "Microsoft Ads (UTM)" && s.date === "2026-01-05");
+    const googleD2 = result.signups.find((s) => s.canal === "Google Ads (UTM)" && s.date === "2026-01-06");
     const metaD3 = result.signups.find((s) => s.canal === META_ADS_TESTE_CANAL && s.date === "2026-01-07");
     assert.equal(googleD1?.cadastros, 1);
     assert.equal(msD1?.cadastros, 1);
@@ -319,7 +319,7 @@ describe("#7536 — fetchKitSignupsByChannel", () => {
     assert.equal(result.error, null);
     // Só o cadastro real (id 1) deve contar — os 3 de teste do editor são excluídos.
     assert.equal(result.signups.length, 1);
-    assert.equal(result.signups[0].canal, "Google Ads (teste 2608)");
+    assert.equal(result.signups[0].canal, "Google Ads (UTM)");
     assert.equal(result.signups[0].date, "2026-01-05");
     assert.equal(result.signups[0].cadastros, 1);
   });
@@ -442,6 +442,6 @@ describe("#7536 — fetchCampaignEconomicsSources", () => {
     }
     assert.equal(result.sources["Meta Ads"].error, null);
     assert.equal(result.metrics.length, 1);
-    assert.equal(result.metrics[0].canal, "Meta Ads (teste 2608)");
+    assert.equal(result.metrics[0].canal, "Meta Ads (UTM)");
   });
 });

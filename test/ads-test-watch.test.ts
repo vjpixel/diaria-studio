@@ -164,18 +164,18 @@ describe("#5845 — ads-test-watch: parseClicksCsv", () => {
   const HEADER = "canal,data_apuracao,gasto_acumulado,cliques,impressoes,cpc_medio,conversoes,custo_por_conversao,perda_orcamento,perda_ranking,fonte\n";
 
   it("parseia linhas válidas", () => {
-    const csv = HEADER + "Google Ads (teste 2608),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google\n";
+    const csv = HEADER + "Google Ads (UTM),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].canal, "Google Ads (teste 2608)");
+    assert.equal(rows[0].canal, "Google Ads (UTM)");
     assert.equal(rows[0].gasto_acumulado, 71.43);
     assert.equal(rows[0].leitoresAcumulado, null, "sem a coluna 'leitores_acumulado' no header -> null, nunca erro (#5239)");
   });
 
   it("#5239 — coluna OPCIONAL 'leitores_acumulado' presente e preenchida -> parseia como número", () => {
     const headerWithLeitores = HEADER.trim() + ",leitores_acumulado\n";
-    const csv = headerWithLeitores + "Google Ads (teste 2608),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,12\n";
+    const csv = headerWithLeitores + "Google Ads (UTM),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,12\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows[0].leitoresAcumulado, 12);
@@ -183,7 +183,7 @@ describe("#5845 — ads-test-watch: parseClicksCsv", () => {
 
   it("#5239 — coluna presente mas VAZIA nesta linha -> null, não é erro (editor ainda não reconciliou este campo)", () => {
     const headerWithLeitores = HEADER.trim() + ",leitores_acumulado\n";
-    const csv = headerWithLeitores + "Google Ads (teste 2608),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,\n";
+    const csv = headerWithLeitores + "Google Ads (UTM),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows.length, 1);
@@ -192,7 +192,7 @@ describe("#5845 — ads-test-watch: parseClicksCsv", () => {
 
   it("#5239 — coluna presente com valor NÃO-numérico -> erro (mesma disciplina das demais colunas numéricas)", () => {
     const headerWithLeitores = HEADER.trim() + ",leitores_acumulado\n";
-    const csv = headerWithLeitores + "Google Ads (teste 2608),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,abc\n";
+    const csv = headerWithLeitores + "Google Ads (UTM),2026-08-26,71.43,10,1000,7.1,1,71.43,,,painel Google,abc\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(rows.length, 0);
     assert.equal(errors.length, 1);
@@ -205,20 +205,20 @@ describe("#5845 — ads-test-watch: parseClicksCsv", () => {
   });
 
   it("linha com gasto_acumulado vazio vira erro, não 0 silencioso", () => {
-    const csv = HEADER + "Google Ads (teste 2608),2026-08-26,,,,,,,,,\n";
+    const csv = HEADER + "Google Ads (UTM),2026-08-26,,,,,,,,,\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(rows.length, 0);
     assert.equal(errors.length, 1);
   });
 
   it("linha com data_apuracao malformada vira erro", () => {
-    const csv = HEADER + "Google Ads (teste 2608),26/08/2026,71.43,,,,,,,,\n";
+    const csv = HEADER + "Google Ads (UTM),26/08/2026,71.43,,,,,,,,\n";
     const { errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 1);
   });
 
   it("linha com gasto_acumulado não-numérico vira erro", () => {
-    const csv = HEADER + "Google Ads (teste 2608),2026-08-26,abc,,,,,,,,\n";
+    const csv = HEADER + "Google Ads (UTM),2026-08-26,abc,,,,,,,,\n";
     const { errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 1);
   });
@@ -246,7 +246,7 @@ describe("#5845 — ads-test-watch: findMissingClicksBracosForDate", () => {
 
 describe("#5845 — ads-test-watch: evaluateSpendOverageDeathCondition (§3.2 item 3)", () => {
   const D0 = "2026-08-26";
-  const BRACOS = ["Google Ads (teste 2608)"];
+  const BRACOS = ["Google Ads (UTM)"];
 
   it("gasto dentro do esperado (não excede 2× o planejado) → nenhum achado", () => {
     // dia 1 (D0): planejado R$100, gasto R$150 (< 2×100=200) → ok.
@@ -301,8 +301,8 @@ describe("#5845 — ads-test-watch: evaluateSpendOverageDeathCondition (§3.2 it
  */
 describe("#8240 — evaluateSpendOverageDeathCondition com pausa + diário vigente", () => {
   const D0 = "2026-09-05";
-  const BRACO_META = "Meta Ads (teste 2608)";
-  const BRACO_MSFT = "Microsoft Ads (teste 2608)";
+  const BRACO_META = "Meta Ads (UTM)";
+  const BRACO_MSFT = "Microsoft Ads (UTM)";
   const PAUSE = [{ inicio: "2026-09-09T09:10:00-03:00", fim: "2026-09-17T00:16:00-03:00" }];
 
   it("regressão: SEM opts (comportamento antigo) a pausa de 8 dias INFLA o planejado até esconder o estouro", () => {
@@ -343,7 +343,7 @@ describe("#8240 — evaluateSpendOverageDeathCondition com pausa + diário vigen
   });
 
   it("razão real até a pausa: Google ≈1,14× (não 0,42×) — pausa 09h10 gravada no run-state (não existia teste pro Google antes)", () => {
-    const BRACO_GOOGLE = "Google Ads (teste 2608)";
+    const BRACO_GOOGLE = "Google Ads (UTM)";
     const planned = plannedBudgetBRL(D0, "2026-09-09", undefined, PAUSE, 100);
     const ratio = 500.57 / planned;
     assert.ok(Math.abs(ratio - 1.14) < 0.02, `esperava ≈1,14×, obtive ${ratio.toFixed(4)}×`);
@@ -419,7 +419,7 @@ describe("#8240 — evaluateSpendOverageDeathCondition com pausa + diário vigen
 });
 
 describe("#8240 item 4 (2º ponto) — projectBudgetCrossing", () => {
-  const BRACO = "Microsoft Ads (teste 2608)";
+  const BRACO = "Microsoft Ads (UTM)";
   const FIM_JANELA = "2026-09-27";
 
   it("R$288,03 + R$200/dia desde 17/09 cruza R$1.500 em 23/09, com fim_janela em 27/09", () => {
@@ -449,7 +449,7 @@ describe("#8240 item 4 (2º ponto) — projectBudgetCrossing", () => {
 });
 
 describe("#8240 item 3 — resolveArmSpend (fonte automática complementa o CSV, nunca substitui)", () => {
-  const BRACO = "Microsoft Ads (teste 2608)";
+  const BRACO = "Microsoft Ads (UTM)";
 
   it("sem linha nenhuma no CSV → sem baseline, fonte automática não complementa", () => {
     const resolved = resolveArmSpend(BRACO, [], "2026-09-17", new Map([["2026-09-17", 200]]));
@@ -533,14 +533,14 @@ describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
   const HEADER_COM = `${HEADER_BASE},cadastros_acumulado\n`;
 
   it("coluna AUSENTE do header -> null, nunca erro", () => {
-    const csv = `${HEADER_BASE}\n` + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel\n";
+    const csv = `${HEADER_BASE}\n` + "Google Ads (UTM),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows[0].cadastrosAcumulado, null);
   });
 
   it("presente e preenchida -> número", () => {
-    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,25\n";
+    const csv = HEADER_COM + "Google Ads (UTM),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,25\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows[0].cadastrosAcumulado, 25);
@@ -549,7 +549,7 @@ describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
   it("presente e VAZIA na linha -> null (sem amostra), e a linha continua válida", () => {
     // A linha ainda serve pro watchdog de gasto — perder `gasto_acumulado` por
     // causa de uma coluna opcional em branco seria pior que não ter a coluna.
-    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,\n";
+    const csv = HEADER_COM + "Google Ads (UTM),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows.length, 1);
@@ -558,7 +558,7 @@ describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
   });
 
   it("valor NÃO-NUMÉRICO é erro da linha — nunca coagido em silêncio", () => {
-    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,vinte\n";
+    const csv = HEADER_COM + "Google Ads (UTM),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,vinte\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(rows.length, 0);
     assert.equal(errors.length, 1);
@@ -566,7 +566,7 @@ describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
   });
 
   it("valor NEGATIVO é erro — acumulado de cadastros não pode ser negativo", () => {
-    const csv = HEADER_COM + "Google Ads (teste 2608),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,-3\n";
+    const csv = HEADER_COM + "Google Ads (UTM),2026-09-04,190.00,10,1000,7.1,1,71.43,,,painel,-3\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(rows.length, 0);
     assert.equal(errors.length, 1);
@@ -576,7 +576,7 @@ describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
   it("zero é valor VÁLIDO, distinto de vazio", () => {
     // `0` significa "medido, nenhum cadastro"; vazio significa "não medido".
     // Colapsar os dois é o erro que a §3.5 do protocolo proíbe.
-    const csv = HEADER_COM + "Microsoft Ads (teste 2608),2026-09-04,1.34,2,80,0.67,0,,,,painel,0\n";
+    const csv = HEADER_COM + "Microsoft Ads (UTM),2026-09-04,1.34,2,80,0.67,0,,,,painel,0\n";
     const { rows, errors } = parseClicksCsv(csv);
     assert.equal(errors.length, 0);
     assert.equal(rows[0].cadastrosAcumulado, 0);
@@ -592,8 +592,8 @@ describe("#7577 — parseClicksCsv: coluna 'cadastros_acumulado'", () => {
 function measuredRow(overrides: Partial<CacMeasuredRowLike> = {}): CacRow {
   return {
     kind: "measured",
-    canal: "Google Ads (teste 2608)",
-    spend: { canal: "Google Ads (teste 2608)", mes: "2026-09", moeda: "BRL", valor: 500.57, fonte: "teste" },
+    canal: "Google Ads (UTM)",
+    spend: { canal: "Google Ads (UTM)", mes: "2026-09", moeda: "BRL", valor: 500.57, fonte: "teste" },
     cadastros: 0,
     ativos: 0,
     leitores: 0,
@@ -705,7 +705,7 @@ describe("#8238 — evaluateStoreFreshness (gate da apuração olha o STORE, nã
 describe("#8238 (5a/5b) — evaluateApuracaoCohortGuard", () => {
   function arm(overrides: Partial<ApuracaoArmStats> = {}): ApuracaoArmStats {
     return {
-      braco: "Google Ads (teste 2608)",
+      braco: "Google Ads (UTM)",
       cadastrosRelatorio: 80,
       cadastrosStore: 80,
       ativos: 67,
@@ -716,26 +716,26 @@ describe("#8238 (5a/5b) — evaluateApuracaoCohortGuard", () => {
   }
 
   it("coorte saudável -> sem problema", () => {
-    const r = evaluateApuracaoCohortGuard([arm(), arm({ braco: "Meta Ads (teste 2608)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 130, ativosCom20Recebidas: 120 })]);
+    const r = evaluateApuracaoCohortGuard([arm(), arm({ braco: "Meta Ads (UTM)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 130, ativosCom20Recebidas: 120 })]);
     assert.deepEqual(r.problems, []);
     assert.ok(r.coverageLines.some((l) => l.startsWith("- Total: 203 ativo(s)")));
   });
 
   it("(a) UM braço com 0 no relatório e cadastros no store -> problema (o guard antigo só pegava os 3 zerados)", () => {
-    const r = evaluateApuracaoCohortGuard([arm({ cadastrosRelatorio: 0 }), arm({ braco: "Meta Ads (teste 2608)" })]);
+    const r = evaluateApuracaoCohortGuard([arm({ cadastrosRelatorio: 0 }), arm({ braco: "Meta Ads (UTM)" })]);
     assert.equal(r.problems.length, 1);
-    assert.match(r.problems[0], /Google Ads \(teste 2608\): o relatório saiu com 0 cadastros, mas o store tem 80/);
+    assert.match(r.problems[0], /Google Ads \(UTM\): o relatório saiu com 0 cadastros, mas o store tem 80/);
   });
 
   it("(a) braço zerado nos DOIS lados (sem cadastro real) -> não é problema de coorte perdida", () => {
-    const r = evaluateApuracaoCohortGuard([arm(), arm({ braco: "Microsoft Ads (teste 2608)", cadastrosRelatorio: 0, cadastrosStore: 0, ativos: 0, ativosComEntrega: 0, ativosCom20Recebidas: 0 })]);
+    const r = evaluateApuracaoCohortGuard([arm(), arm({ braco: "Microsoft Ads (UTM)", cadastrosRelatorio: 0, cadastrosStore: 0, ativos: 0, ativosComEntrega: 0, ativosCom20Recebidas: 0 })]);
     assert.deepEqual(r.problems, []);
   });
 
   it("(b) cenário medido em 17/09: 203 ativos, só 1 com entrega ligada -> problema", () => {
     const r = evaluateApuracaoCohortGuard([
       arm({ ativos: 67, ativosComEntrega: 1, ativosCom20Recebidas: 0 }),
-      arm({ braco: "Meta Ads (teste 2608)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
+      arm({ braco: "Meta Ads (UTM)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
     ]);
     assert.ok(r.problems.some((p) => /só 1 de 203 ativos/.test(p)), r.problems.join("\n"));
   });
@@ -743,16 +743,16 @@ describe("#8238 (5a/5b) — evaluateApuracaoCohortGuard", () => {
   it("(b) por braço: Google 67 ativos SEM entrega + Meta 136 cobertos (67% no total) -> bloqueia (review P2 #10594)", () => {
     const r = evaluateApuracaoCohortGuard([
       arm({ ativos: 67, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
-      arm({ braco: "Meta Ads (teste 2608)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 136, ativosCom20Recebidas: 120 }),
+      arm({ braco: "Meta Ads (UTM)", cadastrosRelatorio: 150, cadastrosStore: 150, ativos: 136, ativosComEntrega: 136, ativosCom20Recebidas: 120 }),
     ]);
     assert.equal(r.problems.length, 1);
-    assert.match(r.problems[0], /^Google Ads \(teste 2608\): cobertura de entrega do braço — só 0 de 67 ativos/);
+    assert.match(r.problems[0], /^Google Ads \(UTM\): cobertura de entrega do braço — só 0 de 67 ativos/);
   });
 
   it("(b) por braço: braço abaixo do volume mínimo (Microsoft 1 ativo sem entrega) não alarma sozinho", () => {
     const r = evaluateApuracaoCohortGuard([
       arm(),
-      arm({ braco: "Microsoft Ads (teste 2608)", cadastrosRelatorio: 1, cadastrosStore: 1, ativos: 1, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
+      arm({ braco: "Microsoft Ads (UTM)", cadastrosRelatorio: 1, cadastrosStore: 1, ativos: 1, ativosComEntrega: 0, ativosCom20Recebidas: 0 }),
     ]);
     assert.deepEqual(r.problems, []);
   });

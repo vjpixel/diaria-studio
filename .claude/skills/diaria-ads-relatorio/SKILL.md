@@ -163,8 +163,9 @@ vigente: `canal,data_apuracao,gasto_acumulado,cadastros_acumulado,custo_por_cada
 
 Atualize também o gasto acumulado do mês vigente em `data/aquisicao/spend.csv`.
 Os nomes de canal precisam bater **byte a byte** com `CHANNEL_KEY_SPECS`
-(`scripts/lib/shared/channel-key-specs.ts`): `Google Ads (teste 2608)`,
-`Microsoft Ads (teste 2608)`, `Meta Ads (teste 2608)`. Reconcilie sempre
+(`scripts/lib/shared/channel-key-specs.ts`): `Google Ads (UTM)`,
+`Microsoft Ads (UTM)`, `Meta Ads (UTM)` (nomes permanentes desde o #5862;
+linhas antigas com `(teste 2608)` continuam sendo lidas). Reconcilie sempre
 contra o painel, nunca contra o valor planejado.
 
 ## Passo 3 — compor o relatório
