@@ -16,7 +16,9 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  INSTAGRAM_TIMER_ALARM_STATE_FILE,
   MISSING_VIDEO_ALARM_AFTER_MS,
+  alarm,
   alarmSeverity,
   alarmDelivery,
   alarmSuppressed,
@@ -64,6 +66,8 @@ import { MAX_FIRE_LATENESS_MS } from "../scripts/lib/linkedin-personal.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 import platformConfig from "../platform.config.json" with { type: "json" };
+import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
+import type { NotifyEditorResult } from "../scripts/lib/editor-notify.ts";
 
 const SCHEDULE = { rotation_times: ["06:30", "08:00", "12:00"], rotation_start: "2026-10-26", rotation_end: "2026-11-13", default_time: "12:00" };
 const SHORTS = { facebook_pages: [], instagram: true, instagram_collaborators: ["vjpixel"], linkedin_profile: false, linkedin_page_repost: false, x: false, threads_profile: false, schedule: SCHEDULE };
@@ -348,12 +352,16 @@ describe("#11265 interpretInstagramTimerOutput", () => {
     const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, error: "rupload 400" }] }));
     assert.equal((r as { key: string }).key, "publish-failed");
   });
-  it("gate da conta bloqueou ou a leitura falhou (cause preflight) → preflight-blocked (acao), nunca publish-failed", () => {
-    for (const preflight of ["blocked", "read-failed"]) {
-      const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, cause: "preflight", preflight, error: "a conta pode já ter o Reels" }] }));
-      assert.equal((r as { key: string }).key, "preflight-blocked", preflight);
-    }
+  it("gate da conta bloqueou (cause preflight, blocked) → preflight-blocked (acao), nunca publish-failed", () => {
+    const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, cause: "preflight", preflight: "blocked", error: "a conta pode já ter o Reels" }] }));
+    assert.equal((r as { key: string }).key, "preflight-blocked");
     assert.equal(alarmSeverity("preflight-blocked"), "acao");
+  });
+  it("leitura da conta falhou (cause preflight, read-failed: token expirado, 5xx) → preflight-read-failed URGENTE (o Reels não sai; e-mail sob urgent_only)", () => {
+    const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, cause: "preflight", preflight: "read-failed", error: "a leitura da conta do Instagram falhou (OAuth 190)" }] }));
+    assert.equal((r as { key: string }).key, "preflight-read-failed");
+    assert.equal((r as { failed: boolean }).failed, true);
+    assert.equal(alarmSeverity("preflight-read-failed"), "urgente");
   });
   it("gate ACHOU o Reels mas o registro falhou (preflight persist-failed com entry) → published-unregistered", () => {
     const r = interpretInstagramTimerOutput(1, out({ items: [], results: [{ destination: "instagram", ok: false, cause: "preflight", preflight: "persist-failed", entry: { status: "published", id: "m1", url: "https://i/m1" }, error: "registro não gravado: EBUSY" }] }));
@@ -435,7 +443,7 @@ describe("#11265 alarme", () => {
     assert.equal(alreadyAlarmed("{", "late"), false);
   });
   it("Reels que não saiu no dia é urgente (e-mail sob urgent_only); Reels no ar pedindo conferência é ação", () => {
-    for (const k of ["late", "guided", "missing-video", "drive-needs-editor", "drive-error", "credentials", "publish-failed", "no-output", "crash"] as const) {
+    for (const k of ["late", "guided", "missing-video", "drive-needs-editor", "drive-error", "credentials", "publish-failed", "no-output", "crash", "preflight-read-failed"] as const) {
       assert.equal(alarmSeverity(k), "urgente", k);
     }
     assert.equal(alarmSeverity("published-unregistered"), "acao");
@@ -467,10 +475,19 @@ describe("#11265 alarme", () => {
     assert.doesNotMatch(b.body, /instagram\.com/);
     assert.match(b.subject, /conferir a conta/);
   });
+  it("preflight-read-failed: confira a conta e a credencial antes de qualquer repost, nunca --publish nem 'postar no instagram.com' direto", () => {
+    const b = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "preflight-read-failed", reason: "OAuth 190", videoArg: "x.mp4", deadlineHhmm: "11:00" });
+    assert.match(b.body, /confira a conta e a credencial do Instagram no 300 antes de qualquer repost/);
+    assert.match(b.body, /--confirm-instagram/);
+    assert.match(b.body, /de hora em hora, até 11:00 BRT/);
+    assert.doesNotMatch(b.body, /--publish/);
+    assert.doesNotMatch(b.body, /Postar no instagram\.com/);
+    assert.match(b.subject, /não saiu/);
+  });
   it("opção 'publicar pela API' só em late/publish-failed/no-output/crash; nunca em guided/credentials/missing-video/drive-needs-editor", () => {
     const body = (key: Parameters<typeof buildInstagramTimerAlarm>[0]["key"]) => buildInstagramTimerAlarm({ aammdd: AAMMDD, key, reason: "r", videoArg: "x.mp4", deadlineHhmm: "11:00" }).body;
     for (const k of ["late", "publish-failed", "no-output", "crash"] as const) assert.match(body(k), /--publish --now --video x\.mp4/, k);
-    for (const k of ["guided", "credentials", "missing-video", "drive-needs-editor", "preflight-blocked", "published-unregistered", "check-permalink"] as const) {
+    for (const k of ["guided", "credentials", "missing-video", "drive-needs-editor", "drive-error", "preflight-blocked", "preflight-read-failed", "published-unregistered", "check-permalink"] as const) {
       assert.doesNotMatch(body(k), /--publish/, k);
     }
   });
@@ -492,11 +509,78 @@ describe("#11265 alarme", () => {
     assert.equal(alarmSuppressed(guided, "publish-failed"), false);
     assert.equal(alarmSuppressed(null, "late"), false);
   });
-  it("e-mail urgente que não saiu (emailError) não grava a chave (a próxima execução reenvia); issue falha idem", () => {
-    assert.deepEqual(alarmDelivery({ issue: { action: "created" } }), { record: true });
-    assert.equal(alarmDelivery({ issue: { action: "created" }, emailError: "resend 500" }).record, false);
-    assert.match(alarmDelivery({ issue: { action: "created" }, emailError: "resend 500" }).error!, /resend 500/);
-    assert.equal(alarmDelivery({ issue: { action: "failed", error: "gh 502" } }).record, false);
+  it("late (que manda publicar) não sai depois de um motivo que diz 'não reposte' — entregue ou com o e-mail pendente", () => {
+    for (const k of ["preflight-blocked", "published-unregistered", "check-permalink"]) {
+      assert.equal(alarmSuppressed(JSON.stringify({ alarmed: [k] }), "late"), true, k);
+      assert.equal(alarmSuppressed(JSON.stringify({ alarmed: [], emailPending: [k] }), "late"), true, `${k} pendente`);
+    }
+    // Leitura da conta que falhou não diz que o Reels está no ar: late segue.
+    assert.equal(alarmSuppressed(JSON.stringify({ alarmed: ["preflight-read-failed", "publish-failed"] }), "late"), false);
+  });
+  it("e-mail pendente do mesmo motivo não é suprimido (reenvia); entregue, é", () => {
+    assert.equal(alarmSuppressed(JSON.stringify({ alarmed: [], emailPending: ["publish-failed"] }), "publish-failed"), false);
+    assert.equal(alarmSuppressed(JSON.stringify({ alarmed: ["publish-failed"] }), "publish-failed"), true);
+  });
+  it("alarmDelivery: issue falha = retry; e-mail devido que falhou = email-pending; política suprimiu (acao) ou e-mail saiu = delivered", () => {
+    const base = { severity: "urgente", emailPolicy: "urgent_only" } as const;
+    const issue = { issueNumber: 7, url: "https://github.com/x/y/issues/7", action: "created" } as const;
+    assert.equal(alarmDelivery({ ...base, issue, emailSent: true } as NotifyEditorResult).kind, "delivered");
+    assert.equal(alarmDelivery({ ...base, severity: "acao", issue, emailSent: false } as NotifyEditorResult).kind, "delivered");
+    const pending = alarmDelivery({ ...base, issue, emailSent: false, emailError: "resend 500" } as NotifyEditorResult);
+    assert.equal(pending.kind, "email-pending");
+    assert.match((pending as { error: string }).error, /resend 500/);
+    assert.equal(alarmDelivery({ ...base, issue: { action: "failed", error: "gh 502" }, emailSent: false } as NotifyEditorResult).kind, "retry");
+  });
+  it("sequência real sob urgent_only: 1ª execução cria a issue e o e-mail falha → 2ª reenvia o e-mail (issue reused) → 3ª não repete", async () => {
+    const dir = tmp();
+    try {
+      // `gh` falso com estado: a issue criada na 1ª execução é achada pelo marcador nas seguintes.
+      const issues: { number: number; url: string; body: string; state: string }[] = [];
+      const ghRun = (args: string[]): GhSpawnResult => {
+        if (args[0] === "issue" && args[1] === "list") return { status: 0, stdout: JSON.stringify(issues), stderr: "" };
+        if (args[0] === "issue" && args[1] === "create") {
+          const body = args[args.indexOf("--body") + 1] ?? "";
+          const n = 900 + issues.length;
+          issues.push({ number: n, url: `https://github.com/vjpixel/diaria-studio/issues/${n}`, body, state: "OPEN" });
+          return { status: 0, stdout: `${issues.at(-1)!.url}\n`, stderr: "" };
+        }
+        throw new Error(`gh inesperado: ${args.join(" ")}`);
+      };
+      const sent: string[] = [];
+      let pushOk = false;
+      const sendPush = async (m: { subject: string }) => {
+        if (!pushOk) return { ok: false, error: "resend 500" };
+        sent.push(m.subject);
+        return { ok: true };
+      };
+      const deps = { ghRun, sendPush, emailPolicy: "urgent_only" as const, log: () => true };
+      const statePath = join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE);
+
+      assert.equal(await alarm(dir, AAMMDD, "publish-failed", "rupload 400", { at: AT }, deps), false);
+      assert.equal(issues.length, 1);
+      assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { aammdd: AAMMDD, alarmed: [], emailPending: ["publish-failed"] });
+
+      pushOk = true;
+      assert.equal(await alarm(dir, AAMMDD, "publish-failed", "rupload 400", { at: AT }, deps), true);
+      assert.equal(issues.length, 1, "a 2ª execução reaproveita a issue");
+      assert.equal(sent.length, 1, "o e-mail que falhou sai na 2ª execução");
+      assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), { aammdd: AAMMDD, alarmed: ["publish-failed"], emailPending: [] });
+
+      assert.equal(await alarm(dir, AAMMDD, "publish-failed", "rupload 400", { at: AT }, deps), true);
+      assert.equal(sent.length, 1, "entregue, não repete");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("issue que não abre não grava nada (a próxima execução tenta tudo de novo)", async () => {
+    const dir = tmp();
+    try {
+      const deps = { ghRun: (): GhSpawnResult => ({ status: 1, stdout: "", stderr: "gh offline" }), sendPush: async () => ({ ok: true }), emailPolicy: "urgent_only" as const, log: () => true };
+      assert.equal(await alarm(dir, AAMMDD, "crash", "boom", {}, deps), false);
+      assert.equal(existsSync(join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE)), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

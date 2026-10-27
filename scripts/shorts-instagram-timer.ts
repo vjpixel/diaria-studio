@@ -36,7 +36,9 @@
  *      alarme por MOTIVO (`InstagramTimerAlarmKey`, fingerprint
  *      `{AAMMDD}:{motivo}`, família `evento`; `urgente` quando o Reels não saiu
  *      no dia, então o e-mail sai mesmo com `email_policy: urgent_only`). O
- *      mesmo motivo não repete a cada hora (`_internal/.shorts-instagram-timer-alarm.json`).
+ *      mesmo motivo não repete a cada hora (`_internal/.shorts-instagram-timer-alarm.json`);
+ *      e-mail devido que não saiu fica pendente ali e é reenviado na execução
+ *      seguinte (`forceEmail`), mesmo com a issue já aberta.
  *
  * Lock O_EXCL em `_internal/.shorts-instagram-timer.lock` (o mesmo
  * `acquireTimerLock` do timer do LinkedIn): a task diária e a de hora em hora
@@ -62,7 +64,13 @@ import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
-import { notifyEditor, type NotifySeverity } from "./lib/editor-notify.ts";
+import {
+  notifyEditor,
+  notifyEditorResultReachedEditor,
+  type NotifyEditorDeps,
+  type NotifyEditorResult,
+  type NotifySeverity,
+} from "./lib/editor-notify.ts";
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import {
   loadShortScheduleConfig,
@@ -101,8 +109,10 @@ export type InstagramTimerAlarmKey =
   | "publish-failed"
   | "published-unregistered"
   | "check-permalink"
-  /** A conferência da conta não deixou publicar (pode já haver Reels da edição, ou a leitura falhou). */
+  /** A conferência da conta não deixou publicar: pode já haver Reels da edição na conta. */
   | "preflight-blocked"
+  /** A leitura da conta falhou (token expirado, 5xx no `/media`): o Reels não sai até a conta voltar a responder. */
+  | "preflight-read-failed"
   | "no-output"
   | "crash";
 
@@ -117,7 +127,13 @@ const PUBLISHED_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["published-
 const API_OPTION_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["late", "publish-failed", "no-output", "crash"]);
 
 /** Motivos em que a próxima execução (de hora em hora, até `horário + 3 h`) tenta de novo sozinha. */
-const RETRY_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["publish-failed", "credentials", "no-output", "crash", "drive-error"]);
+const RETRY_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["publish-failed", "credentials", "no-output", "crash", "drive-error", "preflight-read-failed"]);
+
+/**
+ * Motivos que dizem "não reposte" (o Reels pode estar no ar): depois de um
+ * deles, `late` não sai — o corpo dele manda publicar.
+ */
+const LATE_BLOCKER_KEYS: ReadonlyArray<InstagramTimerAlarmKey> = ["guided", "preflight-blocked", "published-unregistered", "check-permalink"];
 
 export function alarmSeverity(key: InstagramTimerAlarmKey): NotifySeverity {
   return PUBLISHED_KEYS.has(key) || key === "preflight-blocked" ? "acao" : "urgente";
@@ -314,7 +330,10 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
     }
     if (result.cause === "preflight") {
       // A conferência da conta não deixou publicar: nunca "o publish falhou" (o corpo mandaria repostar).
-      return { kind: "alarm", key: "preflight-blocked", failed: true, detail: `conferência da conta (${result.preflight ?? "?"}): ${result.error ?? "sem mensagem"}` };
+      // `read-failed`: a conta não respondeu (credencial, 5xx) — urgente, o Reels não sai;
+      // o resto (`blocked`, ou motivo desconhecido) pode ter Reels na conta.
+      const key: InstagramTimerAlarmKey = result.preflight === "read-failed" ? "preflight-read-failed" : "preflight-blocked";
+      return { kind: "alarm", key, failed: true, detail: `conferência da conta (${result.preflight ?? "?"}): ${result.error ?? "sem mensagem"}` };
     }
     return { kind: "alarm", key: "publish-failed", failed: true, detail: String(result.error ?? "falha sem mensagem") };
   }
@@ -387,9 +406,18 @@ export function buildInstagramTimerAlarm(input: {
     lines.push(
       "Confira a conta antes; não reposte. O timer não publicou porque não conseguiu afirmar que o Reels da edição ainda não está na conta.",
       `- Se o Reels da edição está lá: registre com ${confirm} (com \`--media-id ID\` quando houver mais de um candidato).`,
-      `- Se a leitura da conta falhou: a próxima execução (de hora em hora${deadlineHhmm ? `, até ${deadlineHhmm} BRT` : ""}) confere de novo sozinha.`,
     );
     subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir a conta (${key})`;
+  } else if (key === "preflight-read-failed") {
+    // A conta não respondeu: o Reels não sai, mas nada diz que ele não está lá — nunca sugerir publicar.
+    lines.push(
+      "O timer não conseguiu ler a conta do Instagram (token expirado, permissão ou erro da API) e não publicou: o Reels não sai enquanto a leitura falhar.",
+      `A próxima execução (de hora em hora${deadlineHhmm ? `, até ${deadlineHhmm} BRT` : ""}) confere a conta de novo sozinha.`,
+      "O que fazer: confira a conta e a credencial do Instagram no 300 antes de qualquer repost.",
+      `- Se o Reels da edição já está na conta: registre com ${confirm}.`,
+      "- Se não está: renove a credencial; a próxima execução publica dentro da janela.",
+    );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd} não saiu: a leitura da conta falhou (${key})`;
   } else {
     if (key === "late") lines.push("Passadas 3 h do horário do vertical o timer NÃO publica mais sozinho.");
     if (key === "missing-video") {
@@ -418,34 +446,74 @@ export function buildInstagramTimerAlarm(input: {
 }
 
 /**
- * Puro: este alarme já está coberto pelo estado da edição? O mesmo motivo não
- * repete; e `late` não sai quando `guided` já saiu (é o mesmo problema — o
- * Reels acima do teto passou da janela — e seria um 2º e-mail urgente).
+ * Estado dos alarmes da edição: `alarmed` = motivos entregues ao editor;
+ * `emailPending` = motivos com a issue aberta e o e-mail devido que NÃO saiu
+ * (a próxima execução reenvia com `forceEmail`).
  */
-export function alarmSuppressed(stateRaw: string | null, key: InstagramTimerAlarmKey): boolean {
-  return alreadyAlarmed(stateRaw, key) || (key === "late" && alreadyAlarmed(stateRaw, "guided"));
+export interface InstagramTimerAlarmState {
+  alarmed: string[];
+  emailPending: string[];
+}
+
+/** Puro: lê o estado; ilegível = vazio (avisa de novo: melhor um alarme a mais do que nenhum). */
+export function parseAlarmState(stateRaw: string | null): InstagramTimerAlarmState {
+  if (!stateRaw) return { alarmed: [], emailPending: [] };
+  try {
+    const o = JSON.parse(stateRaw);
+    const list = (v: unknown) => (Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : []);
+    return { alarmed: list(o?.alarmed), emailPending: list(o?.emailPending) };
+  } catch {
+    return { alarmed: [], emailPending: [] };
+  }
+}
+
+/** Puro: o e-mail deste motivo ficou pendente numa execução anterior? */
+export function emailPending(stateRaw: string | null, key: InstagramTimerAlarmKey): boolean {
+  return parseAlarmState(stateRaw).emailPending.includes(key);
 }
 
 /**
- * Puro: grava o motivo no estado depois do `notifyEditor`? Não quando a issue
- * falhou nem quando o e-mail (urgente) não saiu (`emailError`): sem a chave no
- * estado, a próxima execução tenta de novo.
+ * Puro: este alarme já está coberto pelo estado da edição? O mesmo motivo não
+ * repete (salvo com o e-mail pendente: aí reenvia); e `late` não sai depois de
+ * um motivo que diz "não reposte" (`guided`, `preflight-blocked`,
+ * `published-unregistered`, `check-permalink` — entregue ou pendente): o corpo
+ * do `late` manda publicar e o Reels pode estar no ar (ou, no `guided`, é o
+ * mesmo problema e seria um 2º e-mail urgente).
  */
-export function alarmDelivery(res: { issue?: { action?: string; error?: string }; emailError?: string }): { record: boolean; error?: string } {
-  if (res.issue?.action === "failed") return { record: false, error: `issue não aberta (${res.issue.error ?? "?"})` };
-  if (res.emailError !== undefined) return { record: false, error: `e-mail não enviado (${res.emailError})` };
-  return { record: true };
+export function alarmSuppressed(stateRaw: string | null, key: InstagramTimerAlarmKey): boolean {
+  const state = parseAlarmState(stateRaw);
+  if (key === "late" && LATE_BLOCKER_KEYS.some((k) => state.alarmed.includes(k) || state.emailPending.includes(k))) return true;
+  if (state.emailPending.includes(key)) return false;
+  return state.alarmed.includes(key);
+}
+
+export type AlarmDelivery =
+  /** Chegou ao editor (issue + e-mail, ou só a issue quando a política não manda e-mail): grava em `alarmed`. */
+  | { kind: "delivered" }
+  /** Issue aberta, e-mail devido que não saiu: grava em `emailPending` (a próxima execução reenvia). */
+  | { kind: "email-pending"; error: string }
+  /** Issue não aberta: não grava nada (a próxima execução tenta tudo de novo). */
+  | { kind: "retry"; error: string };
+
+/** Puro: o que gravar depois do `notifyEditor` (`notifyEditorResultReachedEditor` decide o "chegou"). */
+export function alarmDelivery(res: NotifyEditorResult): AlarmDelivery {
+  if (!res.issue || res.issue.action === "failed") return { kind: "retry", error: `issue não aberta (${res.issue?.error ?? "?"})` };
+  if (notifyEditorResultReachedEditor(res)) return { kind: "delivered" };
+  return { kind: "email-pending", error: `e-mail não enviado (${res.emailError ?? "?"})` };
+}
+
+/** Puro: o estado depois da entrega; null = não grava (`retry`). */
+export function nextAlarmState(stateRaw: string | null, aammdd: string, key: InstagramTimerAlarmKey, delivery: AlarmDelivery): string | null {
+  if (delivery.kind === "retry") return null;
+  const state = parseAlarmState(stateRaw);
+  const alarmed = delivery.kind === "delivered" ? [...new Set([...state.alarmed, key])] : state.alarmed;
+  const pending = delivery.kind === "delivered" ? state.emailPending.filter((k) => k !== key) : [...new Set([...state.emailPending, key])];
+  return JSON.stringify({ aammdd, alarmed, emailPending: pending }, null, 2) + "\n";
 }
 
 /** Puro: o motivo já foi avisado nesta edição? */
 export function alreadyAlarmed(stateRaw: string | null, key: InstagramTimerAlarmKey): boolean {
-  if (!stateRaw) return false;
-  try {
-    const keys = JSON.parse(stateRaw)?.alarmed;
-    return Array.isArray(keys) && keys.includes(key);
-  } catch {
-    return false; // estado ilegível: avisa de novo (melhor um alarme a mais do que nenhum)
-  }
+  return parseAlarmState(stateRaw).alarmed.includes(key);
 }
 
 /** Puro: lê o sidecar do corte; ilegível = desconhecido (rebaixa). */
@@ -499,13 +567,27 @@ function videoArgFor(path: string): string {
   return (rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path).split(sep).join("/");
 }
 
-async function alarm(dir: string, aammdd: string, key: InstagramTimerAlarmKey, reason: string, ctx: AlarmContext = {}): Promise<boolean> {
+/**
+ * Abre (ou reaproveita) a issue do motivo, manda o e-mail e grava o estado.
+ * `notifyDeps` é injetável (testes: `gh` e envio falsos); produção usa `{ cwd: ROOT }`.
+ */
+export async function alarm(
+  dir: string,
+  aammdd: string,
+  key: InstagramTimerAlarmKey,
+  reason: string,
+  ctx: AlarmContext = {},
+  notifyDeps: NotifyEditorDeps = { cwd: ROOT },
+): Promise<boolean> {
   const statePath = join(dir, INSTAGRAM_TIMER_ALARM_STATE_FILE);
   const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
   if (alarmSuppressed(stateRaw, key)) {
-    console.log(`${LOG_PREFIX} ${aammdd}: alarme "${key}" já coberto nesta edição${key === "late" && !alreadyAlarmed(stateRaw, key) ? ' (pelo "guided")' : ""} — não repete`);
+    console.log(`${LOG_PREFIX} ${aammdd}: alarme "${key}" já coberto nesta edição${key === "late" && !alreadyAlarmed(stateRaw, key) ? " (por um motivo que diz para não repostar)" : ""} — não repete`);
     return true;
   }
+  // E-mail devido que falhou numa execução anterior: a issue já existe (volta
+  // `reused` e a política não mandaria de novo) — força o reenvio.
+  const forceEmail = emailPending(stateRaw, key);
   const { subject, body } = buildInstagramTimerAlarm({
     aammdd,
     key,
@@ -515,23 +597,19 @@ async function alarm(dir: string, aammdd: string, key: InstagramTimerAlarmKey, r
     deadlineHhmm: ctx.at ? instagramTimerDeadlineHhmm(ctx.at) : null,
   });
   const res = await notifyEditor(
-    { check: "shorts-instagram-timer", fingerprint: `${aammdd}:${key}`, severity: alarmSeverity(key), family: "evento", subject, body },
-    { cwd: ROOT },
+    { check: "shorts-instagram-timer", fingerprint: `${aammdd}:${key}`, severity: alarmSeverity(key), family: "evento", subject, body, forceEmail },
+    notifyDeps,
   );
   const delivery = alarmDelivery(res);
-  if (!delivery.record) {
-    // Sem gravar a chave: a próxima execução tenta de novo.
+  const next = nextAlarmState(stateRaw, aammdd, key, delivery);
+  if (next !== null) {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileAtomic(statePath, next);
+  }
+  if (delivery.kind !== "delivered") {
     console.error(`${LOG_PREFIX} ${aammdd}: alarme "${key}" NÃO entregue — ${delivery.error}; tenta de novo na próxima execução`);
     return false;
   }
-  let prev: string[] = [];
-  try {
-    prev = stateRaw ? (JSON.parse(stateRaw)?.alarmed ?? []) : [];
-  } catch {
-    prev = [];
-  }
-  mkdirSync(dirname(statePath), { recursive: true });
-  writeFileAtomic(statePath, JSON.stringify({ aammdd, alarmed: [...new Set([...prev, key])] }, null, 2) + "\n");
   console.log(`${LOG_PREFIX} ${aammdd}: alarme "${key}" ${res.issue?.action ?? "registrado"}${res.issue?.url ? ` ${res.issue.url}` : ""}${res.emailSent ? " (e-mail enviado)" : ""}`);
   return true;
 }

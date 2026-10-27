@@ -234,6 +234,28 @@ describe("notifyEditor", () => {
     assert.equal(sendPush.mock.callCount(), 0);
   });
 
+  it("forceEmail (#11265): reenvia o e-mail pendente mesmo com a issue reused sob 'urgent_only'", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const cachedEntry = { issueNumber: 202, url: "https://github.com/vjpixel/diaria-studio/issues/202", closedAt: null };
+    const result = await notifyEditor(
+      { check: "shorts-instagram-timer", fingerprint: "261027:publish-failed", severity: "urgente", subject: "s", body: "b", forceEmail: true },
+      { cachedEntry, ghRun: ghRunConfirmingOpen(), sendPush, emailPolicy: "urgent_only" },
+    );
+    assert.equal(result.issue?.action, "reused");
+    assert.equal(result.emailSent, true);
+    assert.equal(sendPush.mock.callCount(), 1);
+  });
+
+  it("forceEmail não manda e-mail quando a issue falhou", async () => {
+    const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
+    const result = await notifyEditor(
+      { check: "x", fingerprint: "y", severity: "urgente", subject: "s", body: "b", forceEmail: true },
+      { log: () => true, sendPush, emailPolicy: "urgent_only", ghRun: (): GhSpawnResult => ({ status: 1, stdout: "", stderr: "gh: offline" }) },
+    );
+    assert.equal(result.issue?.action, "failed");
+    assert.equal(sendPush.mock.callCount(), 0);
+  });
+
   it("severity 'urgente' sob 'legacy': manda e-mail mesmo em reused (comportamento pré-#7957)", async () => {
     const sendPush = mock.fn(async (_message: PushMessage) => ({ ok: true }));
     const cachedEntry = { issueNumber: 303, url: "https://github.com/vjpixel/diaria-studio/issues/303", closedAt: null };
