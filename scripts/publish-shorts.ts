@@ -56,12 +56,12 @@ import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/publish
  *     porque não há token de organização local (a página publica pelo Worker).
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
  *     O plano traz texto (≤280 ponderado) e `dueAt`; o `--publish` sobe o
- *     vertical pro R2 e devolve `results[].buffer.videoUrl`. Registro com
+ *     vertical na URL pública e devolve `results[].buffer.videoUrl`. Registro com
  *     `--mark x=buffer:{id} --scheduled-at {dueAt}`.
  *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
  *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
- *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
- *     (`platform: "threads"`). Sem token, ou sem R2, é pulado com aviso
+ *     vertical por URL pública e o texto de `buildShortSocialText`
+ *     (`platform: "threads"`). Sem token, ou sem URL pública, é pulado com aviso
  *     (fail-soft). A API não agenda: mesmo `pending_schedule`/teto de atraso do
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
@@ -91,10 +91,20 @@ import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/publish
  * agenda (a folga é reconferida antes de cada página); senão publica na hora.
  * O Instagram não agenda Reels pela API — com horário futuro o Reels vai pra
  * FILA do Worker `diaria-linkedin-cron` (#10823), que publica no horário: o
- * vertical sobe pro R2 (`scripts/lib/r2-object-upload.ts`, a Graph baixa pelo
- * `video_url` público) e a entry leva a conta (`ig_account`) e os collabs.
- * Sem Worker (`DIARIA_LINKEDIN_CRON_URL`/`_TOKEN`), sem R2 (`R2_*`,
- * `SHORTS_R2_*`) ou com autora que o Worker não conhece, cai no comportamento
+ * vertical vai pra URL pública (a Graph baixa pelo `video_url`) e a entry leva
+ * a conta (`ig_account`) e os collabs.
+ *
+ * URL pública do vertical (#11265, `publishing.shorts.public_video`): backend
+ * `tunnel` (decisão do editor, briefing 261027d) copia o vertical pra pasta do
+ * 300 servida em https://media.diar.ia.br pelo `scripts/shorts-media-server.ts`
+ * atrás do Cloudflare Tunnel; backend `r2` sobe pro R2
+ * (`scripts/lib/r2-object-upload.ts`, #10823). Risco do túnel: o 300 e o túnel
+ * precisam estar de pé NA HORA DO DISPARO (quem baixa é a Graph/Buffer/Threads
+ * no horário). Ver `scripts/lib/diaria/shorts-public-video.ts` e
+ * docs/shorts-media-tunnel.md.
+ * Sem Worker (`DIARIA_LINKEDIN_CRON_URL`/`_TOKEN`), sem URL pública (pasta do
+ * túnel ausente nesta máquina, túnel fora do ar, ou `R2_*`/`SHORTS_R2_*` no
+ * backend r2) ou com autora que o Worker não conhece, cai no comportamento
  * de antes: fica pendente até rodar de novo depois do horário (ou `--now`).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
@@ -207,7 +217,7 @@ import {
   mergeGrids,
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
-import { loadR2UploadConfig, uploadToR2 } from "./lib/r2-object-upload.ts";
+import { loadPublicVideoConfig, resolvePublicVideoHost } from "./lib/diaria/shorts-public-video.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
@@ -274,7 +284,7 @@ export type ShortsPlanItem =
   | { destination: string; mode: "guided"; action: "guided"; caption?: string; detail: string; at?: string; upload?: ChromeUploadPlanFile }
   /**
    * #10772: X via Buffer (MCP, só a skill chama). `scheduledAt` null = postar
-   * já. A URL pública do vídeo só existe no `--publish` (sobe pro R2): vem em
+   * já. A URL pública do vídeo só existe no `--publish` (túnel do 300 ou R2, #11265): vem em
    * `results[].buffer`.
    */
   | { destination: string; mode: "guided"; action: "buffer"; caption: string; scheduledAt: string | null; detail: string };
@@ -322,7 +332,7 @@ export interface ShortsPlanInput {
    */
   threadsPersonal?: { ready: true } | { ready: false; reason: string };
   /**
-   * #10772: dá pra servir o vertical por URL pública (R2)? O X (Buffer) só
+   * #10772: dá pra servir o vertical por URL pública (túnel do 300 ou R2, #11265)? O X (Buffer) só
    * recebe vídeo por URL. Ausente = não → X pulado com aviso.
    */
   publicVideo?: { ready: true } | { ready: false; reason: string };
@@ -611,7 +621,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     if (dest.kind === "x") {
       if (input.publicVideo?.ready !== true) {
-        const reason = `o X recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        const reason = `o X recebe o vídeo por URL pública e ela não está pronta (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`x: ${reason}`);
         return { destination: dest.id, mode: "guided", action: "skip_missing_credentials", detail: reason };
       }
@@ -631,7 +641,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         caption: text,
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
         detail:
-          "Buffer create_post no canal @diariabr com o vídeo de results[].buffer.videoUrl (o --publish sobe o vertical pro R2); " +
+          "Buffer create_post no canal @diariabr com o vídeo de results[].buffer.videoUrl (o --publish publica o vertical na URL pública — túnel do 300 ou R2, #11265); " +
           "registre com --mark x=buffer:{id do post} --scheduled-at {dueAt}",
       };
     }
@@ -645,7 +655,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
       if (input.publicVideo?.ready !== true) {
-        const reason = `o Threads recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        const reason = `o Threads recebe o vídeo por URL pública e ela não está pronta (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`threads_profile: ${reason}`);
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
@@ -792,7 +802,8 @@ export type InstagramQueueReadiness = { ready: true; account: WorkerInstagramAcc
 
 /**
  * Pure (#10823): a fila do Worker consegue agendar o Reels desta autora? Precisa
- * do Worker (URL + token), do R2 pro `video_url` público e de uma autora que o
+ * do Worker (URL + token), da URL pública do vídeo (túnel ou R2, #11265; o
+ * campo `r2Missing` leva o que falta em qualquer backend) e de uma autora que o
  * Worker conhece: `instagram_author_page` null = conta da diar.ia.br
  * (`diaria`); `vjpixel` = a conta vinculada à página VJ pixel (secrets
  * `INSTAGRAM_VJPIXEL_*` no Worker). Qualquer outra página não tem credencial
@@ -1641,7 +1652,7 @@ export function attachChromeUploadToPlan(
 }
 
 export interface InstagramEnqueueDeps {
-  /** Sobe o vertical e devolve a URL pública (R2). */
+  /** Publica o vertical e devolve a URL pública (túnel do 300 ou R2, #11265). */
   uploadVideo: () => Promise<string>;
   /** `POST /queue` do Worker. */
   enqueue: (payload: WorkerQueuePayload) => Promise<{ key: string; scheduled_at: string }>;
@@ -2022,7 +2033,7 @@ export interface BufferPrepResult {
 }
 
 /**
- * Ramo `buffer` do `--publish` (#10772 F6): só sobe o vertical (R2) e devolve o
+ * Ramo `buffer` do `--publish` (#10772 F6): só publica o vertical na URL pública e devolve o
  * que a skill passa pra Buffer `create_post`. Nada é registrado aqui — o
  * registro vem do `--mark x=buffer:{id}` depois do `create_post`.
  */
@@ -2246,7 +2257,21 @@ async function main(): Promise<number> {
     config?.publishing?.social?.linkedin?.cloudflare_worker_url ??
     "";
   const workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
-  const r2 = loadR2UploadConfig(process.env);
+  // #11265: URL pública do vertical — túnel do 300 (media.diar.ia.br) ou R2, por publishing.shorts.public_video.
+  let publicVideoCfg: ReturnType<typeof loadPublicVideoConfig>;
+  try {
+    publicVideoCfg = loadPublicVideoConfig(config, process.env);
+  } catch (e) {
+    console.error(`publish-shorts: ${(e as Error).message}`);
+    return 2;
+  }
+  const videoHost = await resolvePublicVideoHost(publicVideoCfg, process.env, {
+    fetch: (u, i) => fetch(u, i),
+    now: () => new Date(),
+    warn: (m) => console.error(`[aviso] ${m}`),
+  });
+  if (videoHost.ready) console.error(`[premissa] URL pública do vertical: ${videoHost.label}`);
+  else console.error(`[aviso] URL pública do vertical (${videoHost.label}) indisponível: falta ${videoHost.missing.join(", ")}`);
   // #10772: LinkedIn pessoal (mesmo token do 4º post) e o vídeo completo do YouTube pro texto.
   const liCreds = readPersonalCreds(process.env, new Date());
   const liApiVersion = process.env[LINKEDIN_PERSONAL_ENV.apiVersion]?.trim() || defaultLinkedInApiVersion(new Date());
@@ -2260,7 +2285,7 @@ async function main(): Promise<number> {
     authorPage: shortsCfg.instagramAuthorPage,
     workerUrl,
     workerToken,
-    r2Missing: r2.ready ? [] : r2.missing,
+    r2Missing: videoHost.ready ? [] : videoHost.missing,
   });
   // #10819: a fila do Worker entra na grade (só leitura, fail-soft).
   const warnGrid = (m: string) => console.error(`[aviso] ${m}`);
@@ -2280,7 +2305,7 @@ async function main(): Promise<number> {
       instagramQueue,
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
-      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: `falta ${r2.missing.join(", ")}` },
+      publicVideo: videoHost.ready ? { ready: true } : { ready: false, reason: `${videoHost.label}: falta ${videoHost.missing.join(", ")}` },
       youtubeVideoUrl: ytVideo.url,
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
       linkedinTimer: flags.has("linkedin-timer"),
@@ -2328,8 +2353,8 @@ async function main(): Promise<number> {
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
   let uploaded: Promise<string> | null = null;
   const uploadVideo = () => {
-    if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
-    uploaded ??= uploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4");
+    if (!videoHost.ready) throw new Error(`URL pública do vertical indisponível (${videoHost.label}: ${videoHost.missing.join(", ")})`);
+    uploaded ??= videoHost.upload(aammdd, file, videoPath);
     return uploaded;
   };
   for (const item of plan.items) {
@@ -2354,7 +2379,7 @@ async function main(): Promise<number> {
       // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
       const r = await prepareBufferItem(item, uploadVideo);
       results.push(r);
-      console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
+      console.error(r.ok ? `[ok] ${item.destination}: vídeo na URL pública (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
       continue;
     }
     if (item.action !== "publish" && item.action !== "enqueue") continue;

@@ -38,14 +38,24 @@
 # re-rodar o script pra mudar --hostname/rotacionar token falso-positivaria
 # contra o PRÓPRIO conector, contradizendo a idempotência prometida acima).
 #
+# 2º hostname, mídia pública do Shorts (#11265): --media-hostname media.diar.ia.br
+# [--media-port 4175] acrescenta ao MESMO tunnel o ingress pro
+# scripts/shorts-media-server.ts (vertical do dia, somente leitura) e roteia o
+# DNS dele. Esse hostname NÃO pode ficar atrás do Cloudflare Access: quem baixa
+# o vídeo é a Graph API/Buffer/Threads, sem login. Re-rodar SEM
+# --media-hostname reescreve o config.yml sem essa linha (o script avisa).
+# Runbook: docs/shorts-media-tunnel.md.
+#
 # Uso:
-#   ./scripts/studio/setup-remote-tunnel-linux.sh --hostname studio.diar.ia.br [--port 4174] [--dry-run]
+#   ./scripts/studio/setup-remote-tunnel-linux.sh --hostname studio.diar.ia.br [--port 4174] [--media-hostname media.diar.ia.br] [--media-port 4175] [--dry-run]
 #   ./scripts/studio/setup-remote-tunnel-linux.sh --unregister   # remove o service (não desfaz o tunnel/DNS)
 set -euo pipefail
 
 TUNNEL_NAME="diaria-studio"
 HOSTNAME_ARG=""
 PORT=4174
+MEDIA_HOSTNAME=""
+MEDIA_PORT=4175
 DRY_RUN=0
 UNREGISTER=0
 FORCE=0
@@ -54,6 +64,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --hostname) HOSTNAME_ARG="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
+    --media-hostname) MEDIA_HOSTNAME="$2"; shift 2 ;;
+    --media-port) MEDIA_PORT="$2"; shift 2 ;;
     --tunnel-name) TUNNEL_NAME="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --unregister) UNREGISTER=1; shift ;;
@@ -120,10 +132,16 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "[--dry-run] Pararia aqui a verificação de pré-requisitos. Próximos passos (não executados):"
   echo "  3. $CLOUDFLARED_BIN tunnel create $TUNNEL_NAME (ou reusar, se já existir)"
   echo "  4. gerar $CONFIG_PATH (ingress -> http://127.0.0.1:$PORT)"
+  if [ -n "$MEDIA_HOSTNAME" ]; then
+    echo "     + ingress $MEDIA_HOSTNAME -> http://127.0.0.1:$MEDIA_PORT (mídia do Shorts, #11265)"
+  fi
   if [ -n "$HOSTNAME_ARG" ]; then
     echo "  5. $CLOUDFLARED_BIN tunnel route dns $TUNNEL_NAME $HOSTNAME_ARG"
   else
     echo "  5. (pulado — sem --hostname) $CLOUDFLARED_BIN tunnel route dns $TUNNEL_NAME <hostname>"
+  fi
+  if [ -n "$MEDIA_HOSTNAME" ]; then
+    echo "     + $CLOUDFLARED_BIN tunnel route dns $TUNNEL_NAME $MEDIA_HOSTNAME"
   fi
   echo "  6. gerar token de conector em $TOKEN_PATH (chmod 600)"
   echo "  7. registrar service '$UNIT_FILE' (systemd --user, Restart=always)"
@@ -176,6 +194,16 @@ if [ -n "$HOSTNAME_ARG" ]; then
   INGRESS_LINE="  - hostname: $HOSTNAME_ARG
     service: http://127.0.0.1:$PORT"
 fi
+if [ -n "$MEDIA_HOSTNAME" ]; then
+  INGRESS_LINE="$INGRESS_LINE
+  # mídia pública do Shorts (#11265) -- sem Cloudflare Access de propósito
+  - hostname: $MEDIA_HOSTNAME
+    service: http://127.0.0.1:$MEDIA_PORT"
+elif [ -f "$CONFIG_PATH" ] && grep -q "mídia pública do Shorts" "$CONFIG_PATH" 2>/dev/null; then
+  echo "AVISO (#11265): o config.yml atual tem o ingress da mídia do Shorts e este run" >&2
+  echo "  NÃO passou --media-hostname -- a linha vai sumir e o Reel/X/Threads agendados" >&2
+  echo "  deixam de baixar o vertical. Rode de novo com --media-hostname media.diar.ia.br." >&2
+fi
 cat > "$CONFIG_PATH" <<EOF
 # Gerado por scripts/studio/setup-remote-tunnel-linux.sh (#4808) -- idempotente,
 # seguro sobrescrever. Autenticado via tunnel token (--token-file), não
@@ -198,6 +226,14 @@ else
     echo "Aviso: 'tunnel route dns' retornou erro (pode já existir um registro — confira no painel CF > DNS)."
   else
     echo "DNS roteado: $HOSTNAME_ARG -> $TUNNEL_NAME"
+  fi
+fi
+if [ -n "$MEDIA_HOSTNAME" ]; then
+  echo "Roteando $MEDIA_HOSTNAME -> tunnel $TUNNEL_NAME (mídia do Shorts, #11265)..."
+  if ! "$CLOUDFLARED_BIN" tunnel route dns "$TUNNEL_NAME" "$MEDIA_HOSTNAME" 2>&1; then
+    echo "Aviso: 'tunnel route dns' retornou erro para $MEDIA_HOSTNAME (pode já existir um registro — confira no painel CF > DNS)."
+  else
+    echo "DNS roteado: $MEDIA_HOSTNAME -> $TUNNEL_NAME"
   fi
 fi
 
@@ -233,6 +269,7 @@ echo "  Tunnel      : $TUNNEL_NAME ($TUNNEL_ID)"
 echo "  Config      : $CONFIG_PATH"
 echo "  Hostname    : ${HOSTNAME_ARG:-'(não configurado — rode de novo com --hostname)'}"
 echo "  Studio local: http://127.0.0.1:$PORT"
+echo "  Mídia Shorts: ${MEDIA_HOSTNAME:-'(sem --media-hostname)'} -> http://127.0.0.1:$MEDIA_PORT (#11265, sem Access)"
 echo "  Unit        : $UNIT_FILE"
 echo ""
 echo "Iniciar agora (requer diaria-studio-server.service já ativo -- ver"
