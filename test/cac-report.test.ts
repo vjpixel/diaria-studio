@@ -631,7 +631,7 @@ describe("main — end-to-end com fixtures em tmpdir", () => {
 // #8238 — --fonte store: a coorte do teste 2608 nasce no Kit, nunca no
 // snapshot Beehiiv. Fixture: store SQLite real (mesmo padrão de
 // test/studio-ads.test.ts) com um subscriber "kit" cujo utm_source casa
-// "Google Ads (teste 2608)" — o snapshot Beehiiv correspondente fica VAZIO
+// "Google Ads (UTM)" — o snapshot Beehiiv correspondente fica VAZIO
 // de propósito (é exatamente o cenário real do #8238).
 // ---------------------------------------------------------------------------
 
@@ -647,7 +647,7 @@ describe("#8238 — main --fonte store: coorte que só existe no Kit é capturad
       writeFileSync(join(backupRoot, "2026-09-17", "subscribers.jsonl"), subscriberLine({ email: "outro@example.com" }) + "\n", "utf8");
 
       const spendPath = join(root, "spend.csv");
-      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (UTM),2026-09,BRL,500.57,teste\n", "utf8");
 
       // Store unificado: 2 cadastros REAIS no Kit com utm_source="google-ads"
       // (a chave exata de CHANNEL_KEY_SPECS pro braço Google do teste 2608).
@@ -679,7 +679,7 @@ describe("#8238 — main --fonte store: coorte que só existe no Kit é capturad
       process.exitCode = exitBefore;
 
       assert.ok(beehiivReport, "relatório --fonte beehiiv deveria ter sido computado (não é erro de insumo)");
-      const beehiivRow = beehiivReport!.rows.find((r) => r.canal === "Google Ads (teste 2608)");
+      const beehiivRow = beehiivReport!.rows.find((r) => r.canal === "Google Ads (UTM)");
       assert.equal(beehiivRow?.kind === "measured" ? beehiivRow.cadastros : -1, 0, "snapshot Beehiiv não viu os cadastros do Kit");
 
       // --fonte store: mesmo spend.csv, mesmo store — os 2 cadastros aparecem.
@@ -700,7 +700,7 @@ describe("#8238 — main --fonte store: coorte que só existe no Kit é capturad
       process.exitCode = exitBefore;
 
       assert.ok(storeReport, "relatório --fonte store deveria ter sido computado");
-      const storeRow = storeReport!.rows.find((r) => r.canal === "Google Ads (teste 2608)");
+      const storeRow = storeReport!.rows.find((r) => r.canal === "Google Ads (UTM)");
       assert.equal(storeRow?.kind, "measured");
       assert.equal(storeRow?.kind === "measured" ? storeRow.cadastros : -1, 2, "os 2 cadastros do Kit deveriam aparecer com --fonte store");
     } finally {
@@ -712,7 +712,7 @@ describe("#8238 — main --fonte store: coorte que só existe no Kit é capturad
     const root = mkdtempSync(join(tmpdir(), "cac-report-fonte-store-nosnap-"));
     try {
       const spendPath = join(root, "spend.csv");
-      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (UTM),2026-09,BRL,500.57,teste\n", "utf8");
 
       const exitBefore = process.exitCode;
       process.exitCode = undefined;
@@ -757,7 +757,7 @@ describe("#8238 — detectTeste2608BeehiivStoreMismatch: guard warn-before-zero 
       writeFileSync(join(backupRoot, "2026-09-17", "subscribers.jsonl"), subscriberLine({ email: "outro@example.com" }) + "\n", "utf8");
 
       const spendPath = join(root, "spend.csv");
-      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (UTM),2026-09,BRL,500.57,teste\n", "utf8");
 
       const storeDir = join(root, "data", "diaria-subscribers");
       mkdirSync(storeDir, { recursive: true });
@@ -785,14 +785,14 @@ describe("#8238 — detectTeste2608BeehiivStoreMismatch: guard warn-before-zero 
       process.exitCode = exitBefore;
 
       assert.ok(report);
-      const row = report!.rows.find((r) => r.canal === "Google Ads (teste 2608)");
+      const row = report!.rows.find((r) => r.canal === "Google Ads (UTM)");
       assert.equal(row?.kind === "measured" ? row.cadastros : -1, 0, "sanity: Beehiiv de fato não vê o cadastro do Kit");
 
       const reportPath = join(root, "data", "aquisicao", "cac-reports", "2026-09-17.md");
       assert.ok(existsSync(reportPath));
       const md = readFileSync(reportPath, "utf8");
       assert.match(md, /Possível coorte na fonte errada/);
-      assert.match(md, /Google Ads \(teste 2608\)/);
+      assert.match(md, /Google Ads \(UTM\)/);
       assert.match(md, /--fonte store/);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -807,7 +807,7 @@ describe("#8238 — detectTeste2608BeehiivStoreMismatch: guard warn-before-zero 
       writeFileSync(join(backupRoot, "2026-09-17", "subscribers.jsonl"), subscriberLine() + "\n", "utf8");
 
       const spendPath = join(root, "spend.csv");
-      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (UTM),2026-09,BRL,500.57,teste\n", "utf8");
 
       const exitBefore = process.exitCode;
       process.exitCode = undefined;

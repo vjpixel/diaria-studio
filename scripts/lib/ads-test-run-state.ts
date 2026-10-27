@@ -19,16 +19,58 @@
 
 import { deriveAdsTestSchedule, type AdsTestSchedule, type DateOnlyString } from "./ads-test-schedule.ts";
 import type { AdsTestPauseField } from "./ads-test-pause-window.ts";
+import {
+  canonicalChannelName,
+  GOOGLE_ADS_UTM_CANAL,
+  META_ADS_UTM_CANAL,
+  MICROSOFT_ADS_UTM_CANAL,
+} from "./shared/channel-key-specs.ts";
 
 /** Os 3 braços do teste 2608 — nomes de canal EXATOS que já vivem em
- *  `CHANNEL_GROUP_KEYS` (`scripts/lib/cac.ts`) e nas linhas de `spend.csv`
- *  do teste (§8.2 do protocolo). Não é uma constante arbitrária: mudar
- *  esses nomes aqui sem mudar os dois lugares acima quebra a atribuição. */
-export const ADS_TEST_2608_BRACOS = [
-  "Google Ads (teste 2608)",
-  "Microsoft Ads (teste 2608)",
-  "Meta Ads (teste 2608)",
-] as const;
+ *  `CHANNEL_GROUP_KEYS` (`scripts/lib/cac.ts`) e nas linhas de `spend.csv`.
+ *  Não é uma constante arbitrária: mudar esses nomes aqui sem mudar os dois
+ *  lugares acima quebra a atribuição. Desde o #5862 são os nomes
+ *  PERMANENTES (`"X Ads (UTM)"`); os arquivos congelados do teste ainda
+ *  dizem `"X Ads (teste 2608)"` e são lidos via
+ *  {@link canonicalizeRunStateChannelNames} / `canonicalChannelName`. */
+export const ADS_TEST_2608_BRACOS = [GOOGLE_ADS_UTM_CANAL, MICROSOFT_ADS_UTM_CANAL, META_ADS_UTM_CANAL] as const;
+
+/**
+ * Troca, NO PRÓPRIO objeto, os nomes antigos de braço (`"X Ads (teste
+ * 2608)"`) pelos permanentes (#5862) em `bracos` e nas chaves de
+ * `revisao.pausa[].inicio_por_braco`. O `run-state.json` é imutável por
+ * desenho (§7.1) e continua no disco com os nomes antigos; quem o lê
+ * normaliza aqui, senão o braço do arquivo não casaria com o canal de
+ * `spend.csv` (já lido com o nome novo por `parseSpendCsv`) nem com
+ * `clicks-2608.csv` (idem, `parseClicksCsv`). Chamado por
+ * {@link assertValidRunState} — os leitores que parseiam o JSON sem ele
+ * (`ads-rolling-cac.ts`, apuração do `cac-report.ts`) chamam direto.
+ * Tolerante a forma inválida: só mexe no que tem o tipo esperado (a
+ * validação é de `assertValidRunState`). Idempotente. Devolve o mesmo
+ * objeto.
+ */
+export function canonicalizeRunStateChannelNames<T>(raw: T): T {
+  if (raw == null || typeof raw !== "object") return raw;
+  const r = raw as Record<string, unknown>;
+  if (Array.isArray(r.bracos)) {
+    r.bracos = r.bracos.map((b) => (typeof b === "string" ? canonicalChannelName(b) : b));
+  }
+  const revisao = r.revisao;
+  if (revisao != null && typeof revisao === "object") {
+    const pausa = (revisao as Record<string, unknown>).pausa;
+    const items = Array.isArray(pausa) ? pausa : pausa != null ? [pausa] : [];
+    for (const item of items) {
+      if (item == null || typeof item !== "object") continue;
+      const iv = item as Record<string, unknown>;
+      const porBraco = iv.inicio_por_braco;
+      if (porBraco == null || typeof porBraco !== "object" || Array.isArray(porBraco)) continue;
+      iv.inicio_por_braco = Object.fromEntries(
+        Object.entries(porBraco as Record<string, unknown>).map(([braco, ts]) => [canonicalChannelName(braco), ts]),
+      );
+    }
+  }
+  return raw;
+}
 
 /** Um intervalo de PAUSA de veiculação (campanha desativada nos 3 braços) —
  *  `desde`/`ate` inclusivos, mesma convenção `YYYY-MM-DD` do resto do
@@ -155,11 +197,13 @@ export function planRunStateWrite(
  *  usado pelo I/O layer antes de confiar no conteúdo (arquivo pode ter sido
  *  editado à mão / corrompido pelo sync do OneDrive). Lança com mensagem
  *  explicativa em vez de deixar um `undefined` se propagar silenciosamente
- *  pros cálculos de fase. */
+ *  pros cálculos de fase. Também normaliza, no próprio objeto, os nomes
+ *  antigos de braço (#5862, {@link canonicalizeRunStateChannelNames}). */
 export function assertValidRunState(raw: unknown): asserts raw is AdsTestRunState {
   if (raw == null || typeof raw !== "object") {
     throw new Error("ads-test-run-state: run-state.json não é um objeto JSON válido.");
   }
+  canonicalizeRunStateChannelNames(raw);
   const r = raw as Record<string, unknown>;
   const requiredDateFields = ["d0", "fim_janela", "religar_brevo", "coorte_madura", "apuracao_snapshot"] as const;
   for (const field of requiredDateFields) {

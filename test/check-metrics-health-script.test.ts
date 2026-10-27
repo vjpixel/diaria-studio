@@ -224,7 +224,7 @@ describe("loadPaidTestWindowSources (#10647)", () => {
     religar_brevo: "2026-09-26",
     coorte_madura: "2026-10-20",
     apuracao_snapshot: "2026-10-21",
-    bracos: ["Google Ads (teste 2608)"],
+    bracos: ["Google Ads (UTM)"],
     registrado_em: "2026-09-05T02:54:26.025Z",
   };
 

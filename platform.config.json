@@ -425,7 +425,7 @@
   },
   "meta_ads": {
     "campaign_ids": ["52527432124198"],
-    "note": "#9378 — campanhas da conta Meta Ads (act_10151064543294811) cujo gasto/cadastro conta como canal da newsletter (`Meta Ads (teste 2608)`). A conta tambem roda campanhas de outros produtos (ingresso do evento agente-ia desde 24/09/2026); a ingestao (scripts/meta-ads-ingest-spend.ts, painel /ads, aquisicao-conversions-ingest) consulta insights com level=campaign filtrando por estes ids. Lista vazia = conta inteira (level=account), comportamento anterior ao #9378. Campanha nova da newsletter precisa entrar aqui."
+    "note": "#9378 — campanhas da conta Meta Ads (act_10151064543294811) cujo gasto/cadastro conta como canal da newsletter (`Meta Ads (UTM)`, ex-`Meta Ads (teste 2608)`, #5862). A conta tambem roda campanhas de outros produtos (ingresso do evento agente-ia desde 24/09/2026); a ingestao (scripts/meta-ads-ingest-spend.ts, painel /ads, aquisicao-conversions-ingest) consulta insights com level=campaign filtrando por estes ids. Lista vazia = conta inteira (level=account), comportamento anterior ao #9378. Campanha nova da newsletter precisa entrar aqui."
   },
   "hotmart": {
     "vendas_desde": "2026-10-21",

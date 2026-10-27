@@ -26,9 +26,9 @@ import { main as cacReportMain } from "../scripts/cac-report.ts";
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
 
-const G = "Google Ads (teste 2608)";
-const M = "Meta Ads (teste 2608)";
-const MS = "Microsoft Ads (teste 2608)";
+const G = "Google Ads (UTM)";
+const M = "Meta Ads (UTM)";
+const MS = "Microsoft Ads (UTM)";
 
 /** Mesmo shape do `run-state.json` real (revisão 17/09 + encerramento 23/09). */
 const RUN_STATE: EmendaRunStateInput = {
@@ -324,7 +324,7 @@ describe("cac-report --apuracao-2608 (integração com store fixture)", () => {
     const root = mkdtempSync(join(tmpdir(), "cac-report-8238-emenda-"));
     try {
       const spendPath = join(root, "spend.csv");
-      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (UTM),2026-09,BRL,500.57,teste\n", "utf8");
       const storeDir = join(root, "data", "diaria-subscribers");
       mkdirSync(storeDir, { recursive: true });
       const storePath = join(storeDir, "diaria-subscribers.db");
@@ -368,7 +368,7 @@ describe("cac-report --apuracao-2608 (integração com store fixture)", () => {
       assert.match(out, /Apuração do teste 2608/);
 
       const md = readFileSync(join(root, "data", "aquisicao", "cac-reports", "2026-10-21--store.md"), "utf8");
-      assert.match(md, /\| \*\*Google Ads \(teste 2608\)\*\* \| total \| — \| 2 \|/, "só os 2 cadastros dentro das fases entram");
+      assert.match(md, /\| \*\*Google Ads \(UTM\)\*\* \| total \| — \| 2 \|/, "só os 2 cadastros dentro das fases entram");
 
       const extrato = join(tdir, "apuracao-2026-10-21--store-coorte.jsonl");
       assert.ok(existsSync(extrato));

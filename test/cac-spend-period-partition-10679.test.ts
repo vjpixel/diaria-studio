@@ -2,7 +2,7 @@
  * test/cac-spend-period-partition-10679.test.ts (#10679)
  *
  * Regressão: com duas linhas de gasto do MESMO canal em meses diferentes
- * (Meta Ads (teste 2608): R$ 1435,51 em 2026-09 e R$ 8,30 em 2026-10), cada
+ * (Meta Ads (UTM): R$ 1435,51 em 2026-09 e R$ 8,30 em 2026-10), cada
  * linha recebia a coorte INTEIRA do canal. A linha de outubro herdava os
  * cadastros de setembro e mostrava custo por leitor de R$ 0,19 inexistente,
  * com o canal listado duas vezes com os mesmos leitores.
@@ -21,7 +21,7 @@ import {
 import type { BeehiivBackupSubscriber } from "../scripts/lib/beehiiv-backup-snapshots.ts";
 import type { SpendRow } from "../scripts/lib/aquisicao-spend.ts";
 
-const META = "Meta Ads (teste 2608)";
+const META = "Meta Ads (UTM)";
 
 function epoch(day: string): number {
   return Date.parse(`${day}T12:00:00Z`) / 1000;

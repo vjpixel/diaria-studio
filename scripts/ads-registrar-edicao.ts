@@ -14,11 +14,11 @@
  *
  * Uso:
  *   npx tsx scripts/ads-registrar-edicao.ts \
- *     --braco "Google Ads (teste 2608)" --tipo edicao-em-voo \
+ *     --braco "Google Ads (UTM)" --tipo edicao-em-voo \
  *     --origem editor --motivo "..." --edicao "..."
  *   npx tsx scripts/ads-registrar-edicao.ts --braco todos --tipo pausa-total-anuncios --origem editor --efeito pausa --motivo "..."
  *   npx tsx scripts/ads-registrar-edicao.ts \
- *     --braco "Google Ads (teste 2608)" --tipo lance-alvo --origem editor \
+ *     --braco "Google Ads (UTM)" --tipo lance-alvo --origem editor \
  *     --campanha "Max" --de "tCPA R$ 4,00" --para "tCPA R$ 3,00" --issue 8543 --motivo "..."
  *     # #10423 — troca de lance/meta de lance (tCPA/tROAS/estratégia); efeito "mudanca"
  *

@@ -25,7 +25,7 @@ import {
   type EdicaoEmVoo,
 } from "../scripts/lib/ads-rolling-window.ts";
 
-const CANAL = "Google Ads (teste 2608)";
+const CANAL = "Google Ads (UTM)";
 
 function row(data: string, gasto: number, cadastros: number | null): ClicksCsvRow {
   return { canal: CANAL, data_apuracao: data as ClicksCsvRow["data_apuracao"], gasto_acumulado: gasto, leitoresAcumulado: null, cadastrosAcumulado: cadastros };
@@ -105,7 +105,7 @@ describe("#8241 item 1 — contarDiasAposUltimaEdicao lê as 7 linhas reais (ant
   it("linha braco:'todos' com tipo 'edicao-em-voo' conta pra QUALQUER canal", () => {
     const linhas: EdicaoEmVoo[] = [{ ts: "2026-09-16T12:00:00-03:00", tipo: "edicao-em-voo" } as unknown as EdicaoEmVoo];
     const dias = ["2026-09-16", "2026-09-17", "2026-09-18"];
-    const { diasApos, ultimaEdicao } = contarDiasAposUltimaEdicao(linhas, "Meta Ads (teste 2608)", dias);
+    const { diasApos, ultimaEdicao } = contarDiasAposUltimaEdicao(linhas, "Meta Ads (UTM)", dias);
     assert.equal(ultimaEdicao, "2026-09-16");
     assert.equal(diasApos, 2);
   });

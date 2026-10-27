@@ -72,6 +72,7 @@ import { fileURLToPath } from "node:url";
 import { isMainModule, getStringArg } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { readSpendCsv, formatSpendCsv, type SpendRow } from "./lib/aquisicao-spend.ts";
+import { META_ADS_UTM_CANAL } from "./lib/shared/channel-key-specs.ts";
 import { runMetaAdsIngest } from "./lib/meta-ads-ingest.ts";
 import {
   runSpendIngest,
@@ -108,12 +109,12 @@ export const DEFAULT_SPEND_CSV_PATH = resolve(ROOT, "data", "aquisicao", "spend.
  * `CHANNEL_KEY_SPECS`) quando nenhum `canal` é passado — nome reservado mas
  * SEM spec cadastrada, então nunca seria `measured`. Passar esta constante
  * explicitamente em `runMetaAdsIngest({ canal: META_ADS_CANAL, ... })`
- * evita esse caminho. Quando as specs temporárias "(teste 2608)" saírem
- * (decisão da #5862, prevista 08/10), este valor muda junto —
+ * evita esse caminho. Desde o #5862 é o nome PERMANENTE `"Meta Ads (UTM)"`
+ * (era `"Meta Ads (teste 2608)"`, temporário do teste) —
  * `test/meta-ads-ingest-spend.test.ts` trava que ele sempre bate com uma
  * entrada real de `CHANNEL_KEY_SPECS` E de `ADS_TEST_2608_BRACOS`.
  */
-export const META_ADS_CANAL = "Meta Ads (teste 2608)";
+export const META_ADS_CANAL = META_ADS_UTM_CANAL;
 
 /** Prefixo de `fonte` do caminho headless (#8245) — mesmo formato dos
  *  demais ingests automáticos (`google-ads-ingest-spend.ts`:

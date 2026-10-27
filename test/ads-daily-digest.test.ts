@@ -135,13 +135,13 @@ describe("#7487 — hasSpendInPeriod", () => {
 });
 
 describe("#7487 — sumTeste2608Spend / summarizeTeste2608", () => {
-  const bracos = ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"] as const;
+  const bracos = ["Google Ads (UTM)", "Microsoft Ads (UTM)", "Meta Ads (UTM)"] as const;
 
   it("soma só as linhas cujo canal está nos braços do teste, ignorando outros canais", () => {
     const rows: SpendRow[] = [
-      spendRow({ canal: "Google Ads (teste 2608)", mes: "2026-08", valor: 100 }),
-      spendRow({ canal: "Google Ads (teste 2608)", mes: "2026-09", valor: 50 }),
-      spendRow({ canal: "Microsoft Ads (teste 2608)", mes: "2026-08", valor: 30 }),
+      spendRow({ canal: "Google Ads (UTM)", mes: "2026-08", valor: 100 }),
+      spendRow({ canal: "Google Ads (UTM)", mes: "2026-09", valor: 50 }),
+      spendRow({ canal: "Microsoft Ads (UTM)", mes: "2026-08", valor: 30 }),
       spendRow({ canal: "Google Ads", mes: "2026-08", valor: 999 }), // fora do teste
     ];
     assert.equal(sumTeste2608Spend(rows, bracos), 180);
@@ -154,7 +154,7 @@ describe("#7487 — sumTeste2608Spend / summarizeTeste2608", () => {
   it("hoje dentro de d0..fim_janela → emAndamento true", () => {
     const runState = { d0: "2026-08-26", fim_janela: "2026-09-09", bracos };
     const summary = summarizeTeste2608(
-      [spendRow({ canal: "Google Ads (teste 2608)", valor: 100 })],
+      [spendRow({ canal: "Google Ads (UTM)", valor: 100 })],
       runState,
       "2026-09-01",
     );
@@ -291,7 +291,7 @@ describe("#7487 — buildAdsDailyDigestEmail", () => {
     const { body } = buildAdsDailyDigestEmail({
       periodDate: "2026-09-05",
       deltas: [],
-      teste2608: { emAndamento: true, totalAcumulado: 1234.56, bracos: ["Google Ads (teste 2608)"] },
+      teste2608: { emAndamento: true, totalAcumulado: 1234.56, bracos: ["Google Ads (UTM)"] },
       readers: null,
       readersSnapshotDate: null,
     });
@@ -303,7 +303,7 @@ describe("#7487 — buildAdsDailyDigestEmail", () => {
     const { body } = buildAdsDailyDigestEmail({
       periodDate: "2026-09-05",
       deltas: [],
-      teste2608: { emAndamento: false, totalAcumulado: 1234.56, bracos: ["Google Ads (teste 2608)"] },
+      teste2608: { emAndamento: false, totalAcumulado: 1234.56, bracos: ["Google Ads (UTM)"] },
       readers: null,
       readersSnapshotDate: null,
     });
@@ -352,10 +352,10 @@ describe("#7487 — buildAdsDailyDigestEmail", () => {
       teste2608: null,
       readers: null,
       readersSnapshotDate: null,
-      spendWatchLines: ["Teste 2608 — avisos de gasto (sem efeito de morte):", "  - Google Ads (teste 2608): acima de 1.25×."],
+      spendWatchLines: ["Teste 2608 — avisos de gasto (sem efeito de morte):", "  - Google Ads (UTM): acima de 1.25×."],
     });
     assert.match(body, /avisos de gasto/);
-    assert.match(body, /Google Ads \(teste 2608\)/);
+    assert.match(body, /Google Ads \(UTM\)/);
   });
 
   it("spendWatchLines vazio/omitido → nenhuma seção extra, corpo idêntico ao comportamento pré-#8262", () => {

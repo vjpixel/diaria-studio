@@ -70,6 +70,7 @@ import {
 import { refreshGoogleAdsAccessToken, postGoogleAdsWithLoginRetry, DEFAULT_API_VERSION } from "./lib/google-ads-ingest.ts";
 import { authConfigFromEnv } from "./lib/google-ads-conversion-sender.ts";
 import { main as registrarEdicaoMain } from "./ads-registrar-edicao.ts";
+import { GOOGLE_ADS_UTM_CANAL } from "./lib/shared/channel-key-specs.ts";
 
 const DEFAULT_CONVERSION_ACTION_ID = "7758161410";
 
@@ -238,7 +239,7 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   // `ads-registrar-edicao.ts` é síncrono e só faz `appendFileSync`.
   const registroCode = registrarEdicaoMain([
     "--braco",
-    "Google Ads (teste 2608)",
+    GOOGLE_ADS_UTM_CANAL,
     "--tipo",
     "conversion-action-secundaria",
     "--origem",
@@ -256,7 +257,7 @@ export async function main(argv: string[] = process.argv.slice(2), fetchFn: type
   if (registroCode !== 0) {
     console.error(
       "[google-ads-set-conversion-primary] ⚠ mutação e confirmação OK, mas o registro em edicoes.jsonl falhou (ver mensagem acima). " +
-        `Registrar manualmente: npx tsx scripts/ads-registrar-edicao.ts --braco 'Google Ads (teste 2608)' --tipo conversion-action-secundaria --origem agente --issue ${issue} --conversion-action ${conversionActionId} --motivo '...'`,
+        `Registrar manualmente: npx tsx scripts/ads-registrar-edicao.ts --braco '${GOOGLE_ADS_UTM_CANAL}' --tipo conversion-action-secundaria --origem agente --issue ${issue} --conversion-action ${conversionActionId} --motivo '...'`,
     );
     return 1;
   }

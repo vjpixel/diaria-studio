@@ -47,6 +47,7 @@ import { openDiariaSubscribersDbSafe } from "../lib/diaria-subscribers-db.ts";
 import { buildCacCompatibleSubscribersFromStore } from "../lib/leitor-store.ts";
 import { assertValidRunState, ADS_TEST_2608_BRACOS, type AdsTestRunState } from "../lib/ads-test-run-state.ts";
 import { daysBetween } from "../lib/ads-test-schedule.ts";
+import { GOOGLE_ADS_UTM_CANAL } from "../lib/shared/channel-key-specs.ts";
 import { resolveKitConfig } from "../lib/kit-config.ts";
 import {
   fetchCampaignEconomicsSources,
@@ -369,10 +370,10 @@ export function buildAdsData(rootDir: string, opts: BuildAdsDataOptions = {}): A
 /** Nome da FONTE em `sourcesResult.sources` (chave fixa de
  *  `fetchCampaignEconomicsSources`) → nome do CANAL do teste 2608 em
  *  `spend.csv`/`ChannelSummaryRow.canal` — precisa pra traduzir "a fonte
- *  Google Ads falhou" em "o canal 'Google Ads (teste 2608)' tem gasto
+ *  Google Ads falhou" em "o canal 'Google Ads (UTM)' tem gasto
  *  desconhecido" (#8210 Bug 3). */
 const SOURCE_TO_TESTE_2608_CANAL: Readonly<Record<string, string>> = {
-  "Google Ads": "Google Ads (teste 2608)",
+  "Google Ads": GOOGLE_ADS_UTM_CANAL,
   "Meta Ads": META_ADS_TESTE_CANAL,
 };
 

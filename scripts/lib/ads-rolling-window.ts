@@ -50,6 +50,7 @@
  */
 import type { ClicksCsvRow } from "./ads-test-watch.ts";
 import { pausedDatesInRange, type AdsTestPauseInterval } from "./ads-test-pause-window.ts";
+import { canonicalChannelName } from "./shared/channel-key-specs.ts";
 
 /**
  * BRT (America/Sao_Paulo) não tem horário de verão desde 2019 — offset fixo.
@@ -269,7 +270,9 @@ export function normalizeEdicaoRegistro(raw: EdicaoEmVoo, warn?: (msg: string) =
   const ts = raw.ts ?? raw.registrado_em_utc;
   const tipo = raw.tipo;
   if (!ts || !tipo) return null;
-  const braco = raw.braco ?? "todos";
+  // #5862: `edicoes.jsonl` guarda o braço com o nome antigo
+  // ("X Ads (teste 2608)"); o canal comparado já é o permanente.
+  const braco = raw.braco != null ? canonicalChannelName(raw.braco) : "todos";
   const efeitoConhecido = TIPO_TO_EFEITO[tipo];
   if (efeitoConhecido) return { braco, ts, tipo, efeito: efeitoConhecido };
   warn?.(`ads-rolling-window: tipo desconhecido "${tipo}" (braço ${braco}, ${ts}) — tratado como "mudanca", nunca ignorado em silêncio.`);

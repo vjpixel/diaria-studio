@@ -176,7 +176,7 @@ describe("#10423 — tipo lance-alvo no conjunto fechado de edicoes.jsonl", () =
 
   it("validateRegistrarEdicaoInput aceita lance-alvo e auto-deriva efeito mudanca", () => {
     const r = validateRegistrarEdicaoInput(
-      { braco: "Google Ads (teste 2608)", tipo: "lance-alvo", origem: "editor", extra: { campanha: "Max", issue: "8543" } },
+      { braco: "Google Ads (UTM)", tipo: "lance-alvo", origem: "editor", extra: { campanha: "Max", issue: "8543" } },
       "2026-10-18T00:00:00.000Z",
     );
     assert.equal(r.ok, true);
@@ -192,7 +192,7 @@ describe("#10423 — tipo lance-alvo no conjunto fechado de edicoes.jsonl", () =
     try {
       const code = registrarMain([
         "--braco",
-        "Google Ads (teste 2608)",
+        "Google Ads (UTM)",
         "--tipo",
         "lance-alvo",
         "--origem",

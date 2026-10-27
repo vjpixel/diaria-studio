@@ -36,10 +36,12 @@
  * 3. `lintNewsletterMd` (`lint-newsletter-md.ts`) — agregado de todos os
  *    lints GATE-BLOCKING da newsletter.
  * 4. `title_char_count` de `ScoringFeatureRow` (#7975, `scoring-features.ts`)
- *    — título ≤52 chars NÃO tem checker mecânico dedicado hoje (só
- *    orientativo no prompt do writer, igual o cap de carrossel era antes do
- *    #6439) — medido diretamente do feature store já persistido, sem
- *    reimplementar extração de título.
+ *    — mede o ALVO DE ESCRITA do writer (≤52 chars, prompt), não uma regra
+ *    editorial: os limites reais do título são o card 4x5 e o assunto do D1
+ *    (≤70), checados por `lint-checks/title-limits.ts` desde o #11254. Medido
+ *    diretamente do feature store já persistido, sem reimplementar extração
+ *    de título. O nome do check (`title-length-52-chars`) fica: é a chave
+ *    dos resultados já gravados e mede exatamente esse alvo.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -50,6 +52,7 @@ import { checkBannedLexicon } from "./lint-checks/banned-lexicon.ts";
 import { runStage2LintReport } from "../lint-newsletter-md.ts";
 import type { ScoringFeatureRow } from "./scoring-features.ts";
 
+/** Alvo de escrita do writer (prompt), não limite editorial (#11254/#11329). */
 export const TITLE_MAX_CHARS = 52;
 
 export interface BacktestCheckResult {

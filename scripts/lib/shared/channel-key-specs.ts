@@ -65,10 +65,61 @@ export interface ChannelKeySpec {
  * Meta/Microsoft Advertising deliberadamente NÃO têm spec de REFERRER
  * (#5493) — só `RESERVED_CHANNEL_NAMES` reserva os nomes canônicos.
  *
- * As 3 specs "teste 2608" (§8.2) casam por `utm_source` EXATO que os
- * próprios anúncios do teste escrevem na URL final — nunca domínio de
- * plataforma, que também carrega orgânico (#5493).
+ * As 3 specs "(UTM)" casam por `utm_source` EXATO que os próprios anúncios
+ * escrevem na URL final — nunca domínio de plataforma, que também carrega
+ * orgânico (#5493). Nasceram temporárias no teste 2608 (§8.2, nome
+ * `"X Ads (teste 2608)"`) e viraram permanentes no #5862 (decisão do editor
+ * em 27/10/2026, caminho (a): manter e renomear). Ver
+ * {@link canonicalChannelName} para a leitura dos nomes antigos.
  */
+/**
+ * Nomes PERMANENTES por plataforma dos canais pagos atribuídos por
+ * `utm_source` próprio (#5862). Não são `"Google Ads"` puro porque esse nome
+ * já é o canal legado da campanha dez/2025–fev/2026, atribuído por REFERRER
+ * com sub-canais PMax/Search (specs acima): fundir os dois somaria as
+ * chaves de referrer (`android.googlequicksearchbox`, que também carrega
+ * orgânico) à coorte do gasto atual, e misturaria linha de canal inteiro com
+ * linha de sub-canal no mesmo canal (`assertNoMixedSubcanalRows`). O sufixo
+ * `(UTM)` diz o critério de atribuição, que é o que distingue os dois — e,
+ * como é sufixo entre parênteses, `detectDuplicateChannelSpend` (#8210)
+ * continua comparando `"Google Ads (UTM)"` com `"Google Ads"` no mesmo mês.
+ */
+export const GOOGLE_ADS_UTM_CANAL = "Google Ads (UTM)";
+export const MICROSOFT_ADS_UTM_CANAL = "Microsoft Ads (UTM)";
+export const META_ADS_UTM_CANAL = "Meta Ads (UTM)";
+
+/**
+ * Nomes antigos (temporários do teste 2608, §8.2) → nome permanente (#5862).
+ * O histórico em disco continua com os nomes antigos: `spend.csv` (até a
+ * próxima ingestão regravar a linha), e os artefatos congelados do teste
+ * (`teste-2608/run-state.json`, `clicks-2608.csv`, `gasto-fases-2608.json`,
+ * o histórico do digest diário). Ninguém reescreve esses arquivos: quem os
+ * lê passa o nome por {@link canonicalChannelName}, senão o gasto histórico
+ * cairia em "canal desconhecido" (`unattributedSpend`, #5860).
+ */
+export const LEGACY_CHANNEL_NAME_ALIASES: Readonly<Record<string, string>> = {
+  "Google Ads (teste 2608)": GOOGLE_ADS_UTM_CANAL,
+  "Microsoft Ads (teste 2608)": MICROSOFT_ADS_UTM_CANAL,
+  "Meta Ads (teste 2608)": META_ADS_UTM_CANAL,
+};
+
+/**
+ * Nome canônico de um canal lido de disco: troca um nome antigo de
+ * {@link LEGACY_CHANNEL_NAME_ALIASES} pelo permanente, inclusive quando ele
+ * é PREFIXO de um rótulo de sub-campanha (`"Microsoft Ads (teste 2608) —
+ * PMax"` → `"Microsoft Ads (UTM) — PMax"`). Qualquer outro nome volta
+ * igual. Idempotente. @pure
+ */
+export function canonicalChannelName(canal: string): string {
+  for (const [legacy, current] of Object.entries(LEGACY_CHANNEL_NAME_ALIASES)) {
+    if (canal === legacy) return current;
+    if (canal.startsWith(legacy) && /^\s/.test(canal.slice(legacy.length))) {
+      return current + canal.slice(legacy.length);
+    }
+  }
+  return canal;
+}
+
 export const CHANNEL_KEY_SPECS: readonly ChannelKeySpec[] = [
   {
     canal: "Google Ads",
@@ -89,20 +140,21 @@ export const CHANNEL_KEY_SPECS: readonly ChannelKeySpec[] = [
     canal: "LinkedIn",
     keys: ["linkedin", "linkedin.com", "l.linkedin.com", "www.linkedin.com"],
   },
-  // Teste de 3 canais (260816, §8.2) — chaves de utm_source que NÓS
-  // escrevemos nas URLs finais dos anúncios, não adivinhação de referrer
-  // (ver docstring acima). Nomes de canal EXATOS: são as strings gravadas
-  // na coluna `canal` de `data/aquisicao/spend.csv` por este teste.
+  // Canais pagos por utm_source próprio (nascidos no teste 2608, §8.2;
+  // permanentes desde o #5862) — chaves de utm_source que NÓS escrevemos
+  // nas URLs finais dos anúncios, não adivinhação de referrer (ver
+  // docstring acima). Nomes de canal EXATOS: são as strings gravadas na
+  // coluna `canal` de `data/aquisicao/spend.csv` pelas ingestões.
   {
-    canal: "Google Ads (teste 2608)",
+    canal: GOOGLE_ADS_UTM_CANAL,
     keys: ["google-ads"],
   },
   {
-    canal: "Microsoft Ads (teste 2608)",
+    canal: MICROSOFT_ADS_UTM_CANAL,
     keys: ["microsoft-ads"],
   },
   {
-    canal: "Meta Ads (teste 2608)",
+    canal: META_ADS_UTM_CANAL,
     keys: ["meta-ads"],
   },
 ];

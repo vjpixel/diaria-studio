@@ -123,8 +123,8 @@ describe("#9378 — runHeadless regrava o mês quando a janela cobre o dia 1", (
       assert.equal(code, 0);
       assert.equal(requestedSince(), "2026-09-01");
       const csv = readFileSync(spendPath, "utf8");
-      assert.match(csv, /Meta Ads \(teste 2608\),2026-09,BRL,150,"Meta Graph API insights \(level=campaign/);
-      assert.match(csv, /Meta Ads \(teste 2608\),2026-10,BRL,7\.84,/);
+      assert.match(csv, /Meta Ads \(UTM\),2026-09,BRL,150,"Meta Graph API insights \(level=campaign/);
+      assert.match(csv, /Meta Ads \(UTM\),2026-10,BRL,7\.84,/);
       assert.doesNotMatch(csv, /2563\.12/);
     });
   }

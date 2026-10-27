@@ -27,7 +27,7 @@ import {
 const D0 = "2026-08-26";
 const G: KillSwitchGuardrails = DEFAULT_KILL_SWITCH_GUARDRAILS; // minLeitores=10, minDaysSinceD0=3, ratios=2, minBaselineSamples=2
 
-const BRACOS = ["Google Ads (teste 2608)", "Microsoft Ads (teste 2608)", "Meta Ads (teste 2608)"] as const;
+const BRACOS = ["Google Ads (UTM)", "Microsoft Ads (UTM)", "Meta Ads (UTM)"] as const;
 const [GOOGLE, MICROSOFT, META] = BRACOS;
 
 function sample(braco: string, date: string, leitores: number, custoPorLeitor: number): ArmCostSample {
