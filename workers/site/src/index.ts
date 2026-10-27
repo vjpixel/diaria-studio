@@ -513,6 +513,11 @@ async function withArchiveCacheValidators(request: Request, response: Response, 
   return conditionalNotModified(request, withValidators) ?? withValidators;
 }
 
+/** Página de venda da aula Conteúdo Autêntico com IA; as versões ficam em subpastas (`/a`, `/b`). */
+export const CONTEUDO_AUTENTICO_PATH = "/produto/conteudo-autentico";
+/** Versão para onde `CONTEUDO_AUTENTICO_PATH` redireciona. Trocar aqui ao trocar de versão. */
+export const CONTEUDO_AUTENTICO_VERSAO_ATIVA = "b";
+
 export default {
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     // #8982: beacon do clique em .checkout-link (evento/agente-ia) — cedo,
@@ -596,6 +601,22 @@ export default {
       const target = new URL("/confirmada", reqUrl);
       target.search = reqUrl.search;
       return Response.redirect(target.toString(), 301);
+    }
+
+    // /produto/conteudo-autentico — a página de venda da aula ganhou versões em
+    // pastas (/a = a de 18/10/2026, /b = a corrigida em 27/10/2026), e a URL
+    // dos anúncios, da home e dos cursos passa a mandar para a versão ativa.
+    // 302 (e não 301): a versão ativa muda a cada teste, e o navegador não deve
+    // guardar o destino. Leva a query string inteira (UTMs e fbclid chegam à
+    // página e ao checkout) e o hash. Redirecionar no Worker evita o salto extra
+    // de uma página com script, que custa tempo de carregamento no celular.
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      (reqUrl.pathname === CONTEUDO_AUTENTICO_PATH || reqUrl.pathname === `${CONTEUDO_AUTENTICO_PATH}/`)
+    ) {
+      const target = new URL(`${CONTEUDO_AUTENTICO_PATH}/${CONTEUDO_AUTENTICO_VERSAO_ATIVA}`, reqUrl);
+      target.search = reqUrl.search;
+      return Response.redirect(target.toString(), 302);
     }
 
     // #8563: /evento/agente-ia — hospedado como asset ESTÁTICO em

@@ -191,7 +191,7 @@ describe("workers/site/public — robots.txt + sitemap.xml (guard de regressão,
     "https://diar.ia.br/clarice",
     // #10509: home + landings fora de /p/ passaram a entrar no sitemap.
     "https://diar.ia.br/",
-    "https://diar.ia.br/produto/conteudo-autentico",
+    "https://diar.ia.br/produto/conteudo-autentico/b",
     "https://diar.ia.br/guia/agente-ia",
     "https://diar.ia.br/evento/agente-ia",
   ]);

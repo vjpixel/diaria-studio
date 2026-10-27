@@ -24,13 +24,13 @@ import {
 import { renderAnalyticsHead } from "../scripts/lib/shared/seo-meta.ts";
 
 const PUBLIC = join(resolve(dirname(fileURLToPath(import.meta.url)), ".."), "workers/site/public");
-const PAGES = ["evento/agente-ia/a", "evento/agente-ia/b", "evento/agente-ia/c", "evento/agente-ia/d", "evento/agente-ia/e", "evento/agente-ia/f", "guia/agente-ia", "produto/conteudo-autentico"].map((p) => ({
+const PAGES = ["evento/agente-ia/a", "evento/agente-ia/b", "evento/agente-ia/c", "evento/agente-ia/d", "evento/agente-ia/e", "evento/agente-ia/f", "guia/agente-ia", "produto/conteudo-autentico/a", "produto/conteudo-autentico/b"].map((p) => ({
   name: p,
   html: readFileSync(join(PUBLIC, p, "index.html"), "utf8"),
 }));
 const EVENTO_JS = readFileSync(join(PUBLIC, "evento/agente-ia/script.js"), "utf8");
 const GUIA_JS = readFileSync(join(PUBLIC, "guia/agente-ia/script.js"), "utf8");
-const PRODUTO_JS = readFileSync(join(PUBLIC, "produto/conteudo-autentico/script.js"), "utf8");
+const PRODUTO_JS = readFileSync(join(PUBLIC, "produto/conteudo-autentico/b/script.js"), "utf8");
 
 function fakeStorage(initial: Record<string, string> = {}, opts: { throws?: boolean } = {}) {
   const data = new Map(Object.entries(initial));
