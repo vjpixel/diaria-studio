@@ -139,6 +139,10 @@ export const AGENT_EVAL_EXCLUDED_AGENTS: readonly AgentEvalExclusion[] = [
     ["stack-title-translator"],
     "tradução de títulos do post semanal da Stack (#11005) — saída validada mecanicamente por lib/circle-stack-translate.ts (JSON completo, tamanho, sem markdown, sem cara de inglês) e revisada pelo editor na seleção antes do --publish; sem fixture de replay ainda.",
   ),
+  ...excludedGroup(
+    ["stack-writer"],
+    "texto próprio do post semanal da Stack (#11184, skill /diaria-stack: abertura + descrição dos itens de lista) — saída validada mecanicamente por lib/circle-stack-copy.ts (cobertura de todos os itens, teto, sem markdown/URL/emoji/seta), humanizada e revisada pelo editor na prévia antes do --publish manual; sem fixture de replay ainda.",
+  ),
   ...excludedGroup(["title-picker"], "fallback de escolha entre títulos JÁ escritos por writer-destaque — não gera texto novo, os graders de texto não discriminam nada aqui."),
 ];
 
