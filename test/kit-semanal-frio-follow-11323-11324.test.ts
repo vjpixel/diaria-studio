@@ -225,7 +225,7 @@ describe("review do PR #11326", () => {
   it("(P3) semanal abortada no Kit é terminal ⇒ status aborted, sem PATCH nem alarme", async () => {
     for (const main of [mainAt("2026-11-02T11:00:00.000Z"), draftMain]) {
       const t = deps(main, "aborted");
-      const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: true, followOnly: main.status !== "scheduled" }, t.d);
+      const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: true, followOnly: main?.status !== "scheduled" }, t.d);
       assert.equal(r.code, 0);
       assert.equal(r.status, "aborted");
       assert.deepEqual(t.patched, []);
