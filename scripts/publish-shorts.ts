@@ -30,9 +30,9 @@
  *     o POST único dava 413 com o vertical de 275 MB) — vídeo vertical aparece
  *     como Reel.
  *   - `instagram` (API) — Reels no Instagram. Autora: a conta do Instagram
- *     vinculada à página `publishing.shorts.instagram_author_page` (#10790:
- *     conta pessoal do editor, ligada à página VJ pixel, publicando com o
- *     token dessa página); `null` = conta da diar.ia.br
+ *     vinculada à página `publishing.shorts.instagram_author_page` (#10790
+ *     usava a conta pessoal do editor, ligada à página VJ pixel); `null` = conta
+ *     da diar.ia.br, a autora desde #11223 (27/10/2026)
  *     (`INSTAGRAM_BUSINESS_ACCOUNT_ID` + `INSTAGRAM_ACCESS_TOKEN`). Contas de
  *     `instagram_collaborators` entram como collab (aceitam o convite no app);
  *     depois do publish o script relê os collaborators da mídia e avisa se o

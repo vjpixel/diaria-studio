@@ -72,7 +72,7 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
     const g = ig as { caption?: string; detail: string };
     assert.match(g.detail, /113\.9 s/);
     assert.match(g.detail, /--mark instagram=URL/);
-    assert.match(g.detail, /@diar\.ia\.br em collab/);
+    assert.match(g.detail, /@vjpixel em collab/); // #11223: collab do default
     assert.match(g.caption ?? "", /link da bio/);
     // #10933: o post manual também ocupa o horário da conta — reserva o slot na grade.
     assert.ok(p.slots.some((s) => s.destination === "instagram"));
