@@ -594,7 +594,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     case "roteiro":
       return cmdRoteiro(ctx);
     case "build":
-      if (flags.has("xml-flop")) {
+      if (flags.has("xml-flop") || "xml-flop" in values) {
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }

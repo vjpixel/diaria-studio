@@ -52,7 +52,7 @@ import {
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
 import { videoTargetOf, hasFinalInName } from "../scripts/lib/diaria/drive-video-source.ts";
-import { loadVocab, previewFileName, xmlFileName } from "../scripts/video-montagem.ts";
+import { loadVocab, main as videoMontagemMain, previewFileName, xmlFileName } from "../scripts/video-montagem.ts";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -655,5 +655,12 @@ describe("skill e fluxo do dia (#11208)", () => {
   it("CLAUDE.md e a /diaria-publica-video põem a montagem antes da publicação do vídeo", () => {
     assert.match(read("CLAUDE.md"), /\/diaria-video-montagem[\s\S]{0,300}\/diaria-publica-video[\s\S]{0,300}\/diaria-5-publicacao/);
     assert.match(read(".claude/skills/diaria-publica-video/SKILL.md"), /\/diaria-video-montagem/);
+  });
+});
+
+describe("--xml-flop removida (#11358)", () => {
+  it("build recusa a flag (também na forma --xml-flop=valor) antes de ler ou gravar qualquer coisa", async () => {
+    assert.equal(await videoMontagemMain(["build", "261027", "--xml-flop"]), 2);
+    assert.equal(await videoMontagemMain(["build", "261027", "--xml-flop=true"]), 2);
   });
 });
