@@ -1,12 +1,13 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { routeIssue, parseArgs } from "../scripts/route-issue.ts";
 import { formatDecisionMarker, formatExecutionBlockMarker } from "../scripts/lib/issue-decisions.ts";
 
 const initial = "2026-10-27T12:00:00Z";
 const newer = "2026-10-27T12:56:00Z";
 const now = new Date("2026-10-27T13:50:00Z");
-function run(extra: Partial<Parameters<typeof routeIssue>[0]> = {}, comments: Array<{ body: string; createdAt: string; updatedAt?: string; authorAssociation: string }> = [
+function run(extra: Partial<Parameters<typeof routeIssue>[0]> = {}, comments: Array<{ body: string; createdAt: string; authorAssociation: string }> = [
   { body: "<!-- route-issue: track=overnight -->", createdAt: newer, authorAssociation: "OWNER" },
 ], initialLabels: string[] = []) {
   const calls: string[][] = [];
@@ -17,7 +18,10 @@ function run(extra: Partial<Parameters<typeof routeIssue>[0]> = {}, comments: Ar
     ghRun(args) {
       calls.push(args);
       if (args[1] === "view") return { status: 0, stderr: "", stdout: args.includes("-q") ? "corpo" : JSON.stringify({ labels: labels.map(name => ({ name })), body: "corpo", state: "OPEN", comments }) };
-      if (args[1] === "edit" && args.includes("--add-label")) labels = args[args.indexOf("--add-label") + 1].split(",");
+      if (args[1] === "edit") {
+        if (args.includes("--remove-label")) labels = labels.filter(l => !args[args.indexOf("--remove-label") + 1].split(",").includes(l));
+        if (args.includes("--add-label")) labels.push(...args[args.indexOf("--add-label") + 1].split(","));
+      }
       return { status: 0, stderr: "", stdout: "" };
     },
   });
@@ -41,7 +45,9 @@ it("override exige motivo e registra-o no comentário", () => {
   assert.match(calls.find(c => c[1] === "comment")?.join(" ") ?? "", /credencial revalidada e revogada agora/);
 });
 it("comentário externo não comanda o roteamento", () => assert.equal(run({}, [{ body: "<!-- route-issue: track=overnight -->", createdAt: newer, authorAssociation: "NONE" }]).result.ok, true));
-it("edição recente de comentário antigo também protege", () => refused({}, [{ body: "<!-- route-issue: track=overnight -->", createdAt: initial, updatedAt: newer, authorAssociation: "MEMBER" }]));
+it("histórico antigo relido permite reclassificação com payload real do gh", () => {
+  assert.equal(run({}, [{ body: "<!-- route-issue: track=overnight -->", createdAt: initial, authorAssociation: "MEMBER" }]).result.ok, true);
+});
 it("decisão do editor recente exige releitura mesmo sem declarar track", () => refused({}, [{ body: formatDecisionMarker({ decided_at: newer, pergunta: "bloqueio?", resposta: "removido", sessao: "develop" }), createdAt: newer, authorAssociation: "OWNER" }]));
 it("bloqueio recente impede desbloqueio com triagem antiga", () => {
   const body = formatExecutionBlockMarker({ recorded_at: "2026-10-27", motivo: "credencial", sessao: "develop", condicao: { tipo: "externo", descricao: "renovar" } });
@@ -85,4 +91,53 @@ it("#11315: decisão recente também protege quando labels já coincidem com o p
     body: formatDecisionMarker({ decided_at: newer, pergunta: "qual direção?", resposta: "reavaliar o escopo", sessao: "develop" }),
     createdAt: newer, authorAssociation: "OWNER",
   }]);
+});
+
+it("#11315: develop consome decisão e remove trade-off-real com histórico de bloqueio real", () => {
+  // Usa o comentário realmente produzido por routeIssue, com os dois marcadores.
+  const blocked = run({}, []).calls.find(c => c[1] === "comment")!;
+  const body = blocked[blocked.indexOf("--body") + 1];
+  assert.match(body, /route-issue:/);
+  assert.match(body, /bloqueio-execucao:/);
+  const comments = [
+    { body, createdAt: initial, authorAssociation: "OWNER" },
+    { body: formatDecisionMarker({ decided_at: newer, pergunta: "qual opção?", resposta: "opção A, implementar", sessao: "develop" }), createdAt: newer, authorAssociation: "OWNER" },
+  ];
+  const extra = { track: "overnight" as const, motivo: "triada" as const, triagedAt: "2026-10-27T12:57:00Z" };
+  const { result, calls } = run(extra, comments, ["trade-off-real", "bloqueio-execucao"]);
+  assert.equal(result.ok, true, result.error);
+  assert.ok(calls.find(c => c[1] === "edit")?.join(" ").includes("trade-off-real"));
+  // Outra sessão roteou depois da releitura da decisão: nenhuma escrita.
+  refused(extra, [...comments, { body, createdAt: "2026-10-27T12:58:00Z", authorAssociation: "OWNER" }]);
+  refused(extra, [...comments, { body: "<!-- route-issue: track=develop -->", createdAt: "2026-10-27T12:58:00Z", authorAssociation: "OWNER" }]);
+});
+
+it("marcador sem data não desaparece atrás de marcador datado", () => {
+  const comments = [
+    { body: "<!-- route-issue: track=develop -->", createdAt: "", authorAssociation: "OWNER" },
+    { body: "<!-- route-issue: track=bloqueada -->", createdAt: newer, authorAssociation: "OWNER" },
+  ];
+  refused({}, comments);
+  refused({}, [...comments].reverse());
+});
+
+it("CLI não substitui releitura pelo início da sessão", () => {
+  const parsed = parseArgs(["--issue", "1", "--track", "overnight"]);
+  assert.ok(!("error" in parsed));
+  assert.equal(parsed.triagedAt, undefined);
+});
+
+it("#11315: todos os coordenadores instruem releitura após decisão e timestamp explícito", () => {
+  for (const path of [
+    ".claude/skills/diaria-develop/SKILL.md",
+    ".claude/skills/diaria-overnight/SKILL.md",
+    ".claude/skills/diaria-continuo/SKILL.md",
+    ".claude/skills/diaria-desbloqueia/SKILL.md",
+    "hermes/skills/hermes-diaria-continuo/SKILL.md",
+  ]) {
+    const text = readFileSync(new URL("../" + path, import.meta.url), "utf8");
+    assert.match(text, /--triaged-at "\{triaged_at\}"/, path);
+    assert.match(text, /Depois de postar `decisao-editor`/, path);
+    assert.match(text, /no início dessa nova leitura, após a postagem/, path);
+  }
 });

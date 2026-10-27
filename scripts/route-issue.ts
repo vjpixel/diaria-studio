@@ -118,8 +118,8 @@
  * ## Proteção de staleness (#11301)
  *
  * `--triaged-at ISO` informa quando a thread foi lida para decidir o track.
- * No CLI, o início da sessão registrada é o default quando sua identidade
- * está disponível no ambiente. Um marcador confiável posterior com track
+ * A base deve vir da releitura da thread, nunca do início da sessão.
+ * Um marcador confiável posterior com track
  * diferente (ou decisão sem track ainda não relida) recusa TODAS as escritas.
  * Sem base temporal conhecida, mudar um track com histórico também exige releitura. `--override-newer "motivo"`
  * permite sobreposição deliberada e registra o motivo no comentário.
@@ -181,7 +181,6 @@ import {
 } from "./lib/wait-until-sync.ts";
 import { formatExecutionBlockMarker, type SessionKind } from "./lib/issue-decisions.ts";
 import { isTrustedCommentAuthor } from "./lib/trusted-comment-author.ts";
-import { listActiveSessions, resolveRepoRoot } from "./lib/session-registry.ts";
 import { parseDependsOn } from "./lib/issue-depends-on.ts";
 import { detectNonDateReason, type NonDateReasonFinding } from "./lib/route-reason-guard.ts";
 
@@ -259,7 +258,7 @@ interface FetchedIssueState {
   body: string;
   state: string;
   comments: string[];
-  routingComments: Array<{ body: string; createdAt?: string; updatedAt?: string }>;
+  routingComments: Array<{ body: string; createdAt?: string }>;
 }
 
 function fetchIssueState(
@@ -281,7 +280,7 @@ function fetchIssueState(
     labels?: Array<{ name?: string }>;
     body?: string | null;
     state?: string;
-    comments?: Array<{ body?: string; createdAt?: string; updatedAt?: string; authorAssociation?: string }>;
+    comments?: Array<{ body?: string; createdAt?: string; authorAssociation?: string }>;
   };
   return {
     ok: true,
@@ -428,18 +427,23 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   const relevant = fetchedBefore.data.routingComments.filter((c) =>
     parseRouteIssueMarkerAtStart(c.body) !== null ||
     /<!-- (?:bloqueio-execucao|decisao-editor):/.test(c.body));
-  const latest = relevant.sort((a, b) =>
-    Date.parse(b.updatedAt ?? b.createdAt ?? "") - Date.parse(a.updatedAt ?? a.createdAt ?? ""))[0];
+  // gh issue view fornece createdAt, não updatedAt. Datas ausentes ficam
+  // conservadoramente à frente: não podem ser tratadas como histórico antigo.
+  const timestamp = (c: { createdAt?: string }): number => {
+    const ms = Date.parse(c.createdAt ?? "");
+    return Number.isFinite(ms) ? ms : Infinity;
+  };
+  const latest = relevant.sort((a, b) => timestamp(b) - timestamp(a))[0];
   if (latest && !options.overrideNewer) {
     const markerTrack = parseRouteIssueMarkerAtStart(latest.body) ??
       (latest.body.includes("<!-- bloqueio-execucao:") ? "bloqueada" : undefined);
-    const stamp = Date.parse(latest.updatedAt ?? latest.createdAt ?? "");
+    const stamp = Date.parse(latest.createdAt ?? "");
     const baseline = options.triagedAt ? Date.parse(options.triagedAt) : undefined;
     // Decisões não declaram track: exigem releitura, sem herdar labels antigas.
     // Isso permite decisão → route com --triaged-at após ler a decisão, mas
     // continua barrando julgamentos anteriores a uma decisão recente.
     if (markerTrack !== track && (baseline === undefined || !Number.isFinite(stamp) || stamp > baseline)) {
-      return failResult(`roteamento mais novo na issue ${issueLabel} (${markerTrack ?? "decisao-editor sem track"}, ${latest.updatedAt ?? latest.createdAt ?? "data desconhecida"}); ` +
+      return failResult(`roteamento mais novo na issue ${issueLabel} (${markerTrack ?? "decisao-editor sem track"}, ${latest.createdAt ?? "data desconhecida"}); ` +
         "releia a thread e informe --triaged-at ISO, ou --override-newer com motivo. Nenhuma escrita realizada (#11301).");
     }
   }
@@ -851,13 +855,6 @@ function parseRawArgs(argv: string[]): ParsedArgs | { error: string } {
 /** Raiz do checkout deste script — onde mora o `platform.config.json` (#10618). */
 const MODULE_REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..");
 
-// O elo Codex fornece a identidade do tick; nunca inferir pelo PID do CLI.
-function sessionStartedAt(): string | undefined {
-  const id = process.env.DIARIA_INJECTED_SESSION_ID ?? process.env.CLAUDE_SESSION_ID;
-  if (!id) return undefined;
-  return listActiveSessions(resolveRepoRoot()).find((s) => s.sessionId === id)?.startedAt;
-}
-
 export function parseArgs(argv: string[]): RouteIssueOptions | { error: string } {
   const raw = parseRawArgs(argv);
   if ("error" in raw) return raw;
@@ -903,7 +900,7 @@ export function parseArgs(argv: string[]): RouteIssueOptions | { error: string }
     dependsOn,
     sessao: raw.sessao as SessionKind | undefined,
     force: raw.force,
-    triagedAt: raw.triagedAt ?? sessionStartedAt(),
+    triagedAt: raw.triagedAt,
     overrideNewer: raw.overrideNewer,
     cwd: process.cwd(),
   };
