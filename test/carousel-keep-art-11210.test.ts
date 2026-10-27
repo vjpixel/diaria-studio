@@ -274,6 +274,36 @@ describe("gen-carousel-cards com exceção (#11210)", () => {
     assert.ok(stamps.d1 && stamps.d3);
   });
 
+  it("exceção com arte PARCIAL/ausente não vale: o destaque gera normalmente e o overflow aborta", async () => {
+    // Arte incompleta (ex.: swap-destaque apagou o carrossel) — nada a manter.
+    const dir = makeEdition({ d1: CURTO, d2: CURTO, d3: CURTO });
+    writeFileSync(join(dir, carouselSlideFilename("d2", "p1")), "parcial");
+    writeKeepArt(dir, { d2: MOTIVO });
+    const r = renders();
+    const result = await genCarouselCards(dir, { render: r.render, useMelhorConfig: OFF });
+    assert.equal(r.destaques.length, 3, "d2 também renderiza");
+    assert.deepEqual(result.skipped, []);
+    assert.ok(readCarouselSourceHashes(dir).d2, "d2 ganha carimbo como qualquer outro");
+
+    const dir2 = makeEdition({ d1: CURTO, d2: ESTOURA, d3: CURTO });
+    writeKeepArt(dir2, { d2: MOTIVO });
+    await assert.rejects(() => genCarouselCards(dir2, { render: r.render, useMelhorConfig: OFF }), /não cabem no card/);
+  });
+
+  it("edição com 2 destaques: exceção para d2 vale", async () => {
+    const dir = makeEdition({ d1: CURTO, d2: ESTOURA, d3: CURTO });
+    writeFileSync(join(dir, "_internal", "01-approved-capped.json"), JSON.stringify({ highlights: [{}, {}] }));
+    writeSlides(dir, "d2");
+    writeKeepArt(dir, { d2: MOTIVO });
+    const r = renders();
+    const result = await genCarouselCards(dir, { render: r.render, useMelhorConfig: OFF });
+    assert.equal(r.destaques.length, 1);
+    assert.deepEqual(result.skipped.map((s) => s.destaque), ["d2"]);
+    const v = checkCarouselTextOverflow(dir, OFF);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning");
+  });
+
   it("JSON malformado ABORTA (instrução editorial explícita, nunca ignorada)", async () => {
     const dir = makeEdition({ d1: CURTO, d2: CURTO, d3: CURTO });
     writeKeepArt(dir, "{");

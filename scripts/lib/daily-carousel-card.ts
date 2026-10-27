@@ -529,6 +529,11 @@ export function carouselSlideFilename(destaque: string, slot: CarouselSlideSlot)
   return `04-${destaque}-carousel-${slot}-4x5.jpg`;
 }
 
+/** Os 4 slides sem foto do carrossel de `destaque` existem no disco (#11210). */
+export function carouselSlidesOnDisk(editionDir: string, destaque: string): boolean {
+  return CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(resolve(editionDir, carouselSlideFilename(destaque, slot))));
+}
+
 /**
  * Renderiza os 4 slides sem foto de um destaque (3 parágrafos + CTA) em
  * `outPaths[slot]` — wrapper fino sobre `renderFlatCard`, 1 call por slot.

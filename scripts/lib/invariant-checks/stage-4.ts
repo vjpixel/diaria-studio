@@ -24,6 +24,7 @@ import { checkCurtoXWeight } from "../lint-checks/curto-x-weight.ts"; // #11124
 import {
   CAROUSEL_SLIDE_SLOTS,
   carouselSlideFilename,
+  carouselSlidesOnDisk, // #11210
   carouselCoverFilename,
   carouselImageKeys,
   hashCarouselSlideTexts,
@@ -2711,9 +2712,6 @@ function checkCarouselTextOverflow(
       file: carouselKeepArtPath(editionDir),
     });
   }
-  const slidesOnDiskDe = (d: string): boolean =>
-    CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(resolve(editionDir, carouselSlideFilename(d, slot))));
-
   for (const d of slots) {
     const dText = extractDestaqueBlock(section, d);
     if (!dText) continue;
@@ -2723,7 +2721,7 @@ function checkCarouselTextOverflow(
 
     const detalhe = overflowing.map((o) => `${o.slot} (${o.chars} chars, ${o.excessPx}px além)`).join("; ");
     const motivo = keepArt[d];
-    if (motivo && slidesOnDiskDe(d)) {
+    if (motivo && carouselSlidesOnDisk(editionDir, d)) {
       // #11210: arte mantida pelo editor — o texto não vai ser rasterizado,
       // então não precisa caber no card. Avisa, nunca silencia.
       violations.push({
@@ -2739,7 +2737,7 @@ function checkCarouselTextOverflow(
       continue;
     }
     const semArte = motivo
-      ? ` A exceção de _internal/${CAROUSEL_KEEP_ART_FILENAME} para ${d} não vale: não há arte do carrossel no disco para manter.`
+      ? ` A exceção de _internal/${CAROUSEL_KEEP_ART_FILENAME} para ${d} não vale: a arte do carrossel no disco está incompleta ou ausente, então não há o que manter (e o gen-carousel-cards.ts vai tentar regerar e falhar).`
       : "";
     violations.push({
       rule: "carousel-text-overflow",
