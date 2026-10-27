@@ -36,6 +36,7 @@
  * upload mantêm a trava. Só depois de solta a trava o veredito volta a vir
  * da medida local, que sozinha nunca solta um `quota-full` vindo do log.
  */
+import { skipFileResyncStepsInline } from "./onedrive-skip-file.ts";
 
 export const DEFAULT_QUOTA_WARN_PCT = 80;
 
@@ -304,7 +305,7 @@ export function buildQuotaCauseText(ev: OnedriveQuotaEvaluation): string {
   out.push("O que fazer (passos manuais, docs/onedrive-sync-setup.md item 6):");
   if (ev.mp4Excluded !== true) {
     out.push(
-      "- `*.mp4` ainda não está no skip_file: `npx tsx scripts/onedrive-skip-file-config.ts --apply` e depois `systemctl --user restart onedrive`.",
+      `- \`*.mp4\` ainda não está no skip_file: \`npx tsx scripts/onedrive-skip-file-config.ts --apply\` e depois (mudar skip_file exige --resync, #11256) ${skipFileResyncStepsInline()}.`,
     );
   }
   out.push(

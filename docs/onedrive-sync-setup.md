@@ -44,11 +44,16 @@ Padrão a padrão:
 
 ```bash
 # 1. Editar ~/.config/onedrive/config, adicionar/ajustar a linha skip_file acima.
-# 2. Reiniciar o serviço pra pegar a config nova:
-systemctl --user restart onedrive
+# 2. Aplicar a config nova. Mudar skip_file exige --resync (só reiniciar não basta, ver abaixo):
+systemctl --user stop onedrive
+onedrive --sync --resync --resync-auth --dry-run   # conferir que o plano não tem deleção
+onedrive --sync --resync --resync-auth
+systemctl --user start onedrive
 # 3. Confirmar (leitura, sem mutar nada):
 systemctl --user status onedrive
 ```
+
+**Só `restart` derruba o daemon (#11256).** No cliente v2.5.x (medido no `300` com o v2.5.10, 27/10/2026), mudar `skip_file` e reiniciar faz o serviço sair com status 126 e a mensagem "An application configuration change has been detected where a --resync is required". O sync fica parado até alguém rodar o resync, e o `onedrive-sync-alarm` só percebe depois da janela de tolerância. Por isso a sequência acima para o serviço, roda o resync primeiro em `--dry-run` (se o plano listar deleção de arquivo, parar e investigar antes de seguir), depois o mesmo comando sem `--dry-run`, e só então religa. O resync relista a conta inteira: fazer com tempo.
 
 `skip_file` só afeta o que o cliente escolhe subir/baixar DAQUI PRA FRENTE — não remove um arquivo já sincronizado incorretamente antes. Se `run-log.jsonl`/`*.db-shm`/`*.db-wal` já subiram pro OneDrive em versões antigas, ficam órfãos lá (histórico, sem ação automática — mesmo tratamento dado a artefatos legados noutros lugares deste repo, ex: docs do Drive do #3713).
 
@@ -159,7 +164,7 @@ Em 23/10/2026 a conta do OneDrive ficou sem espaço e o sync de `data/` parou. A
 
 ### Peças
 
-- `scripts/onedrive-skip-file-config.ts` — põe `*.mp4` (e os padrões do item 2) no `skip_file` de `~/.config/onedrive/config`. Idempotente, dry-run por padrão, `--apply` grava com backup `.bak-{timestamp}` ao lado. Não reinicia o daemon nem chama o binário `onedrive`. `--print` mostra a linha recomendada inteira. Lógica em `scripts/lib/onedrive-skip-file.ts`.
+- `scripts/onedrive-skip-file-config.ts` — põe `*.mp4` (e os padrões do item 2) no `skip_file` de `~/.config/onedrive/config`. Idempotente, dry-run por padrão, `--apply` grava com backup `.bak-{timestamp}` ao lado e imprime a sequência de resync abaixo. Não reinicia o daemon nem chama o binário `onedrive`. `--print` mostra a linha recomendada inteira. Lógica em `scripts/lib/onedrive-skip-file.ts`.
 - `scripts/prune-edition-videos.ts` — retenção dos `.mp4` de `data/editions/` pela data da EDIÇÃO (diretório `AAMMDD`, não o mtime). Dry-run por padrão, mantém 14 dias (`--keep-days`), `--apply` apaga. `.mp4` sem diretório de edição no caminho nunca é tocado. Não está agendado: armar a retenção automática fica pra depois de o editor ver o dry-run. Lógica em `scripts/lib/edition-video-retention.ts`.
 - Sinal de cota no `scripts/onedrive-sync-alarm.ts` — lê (só leitura) o log do daemon (`journalctl --user -u onedrive`, janela de `--tolerance-hours`) atrás de recusa de upload por falta de espaço, e mede o que `data/` sincroniza descontando o `skip_file` efetivo, contra o orçamento `--quota-gb` (default 5, aviso a partir de `--quota-warn-pct` 80). Achado próprio, `check: "onedrive-quota"`: `quota-full` (P1, recusa no log ou uso ≥ cota) e `quota-near` (P2). O texto da issue e do e-mail traz a causa: total, quanto é `.mp4` e quanto dele ainda sincroniza, os maiores diretórios (`editions/{AAMM}` separado) e arquivos, e o passo que resolve. Sem `data/` e sem recusa no log, o veredito é `unmeasured` e as issues de cota ficam congeladas (não fecham por falta de medida). Lógica em `scripts/lib/onedrive-quota.ts`.
 
@@ -175,12 +180,15 @@ Em 23/10/2026 a conta do OneDrive ficou sem espaço e o sync de `data/` parou. A
 # 1. Ver o plano e gravar o skip_file (backup automático ao lado):
 npx tsx scripts/onedrive-skip-file-config.ts
 npx tsx scripts/onedrive-skip-file-config.ts --apply
-# 2. Reiniciar o daemon pra pegar a config nova:
-systemctl --user restart onedrive
+# 2. Aplicar a config nova (mudar skip_file exige --resync, ver item 2):
+systemctl --user stop onedrive
+onedrive --sync --resync --resync-auth --dry-run   # conferir que o plano não tem deleção
+onedrive --sync --resync --resync-auth
+systemctl --user start onedrive
 journalctl --user -u onedrive -n 50 --no-pager
 ```
 
-Se o log pedir `--resync` por mudança de config (algumas versões do cliente exigem isso quando `skip_file` muda), parar o serviço antes (`systemctl --user stop onedrive`), rodar `onedrive --resync` uma vez, e religar. Isso relista a conta inteira: fazer com tempo.
+Não usar só `systemctl --user restart onedrive` aqui: no cliente v2.5.x o daemon sai com status 126 pedindo `--resync` e o sync fica parado (#11256). O resync relista a conta inteira: fazer com tempo.
 
 ```bash
 # 3. Liberar a cota: os .mp4 que já subiram seguem ocupando espaço online.

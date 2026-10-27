@@ -79,7 +79,10 @@
  * `linkedin_profile` pelo timer do 300 (#10982): com
  * `publishing.shorts.linkedin_profile_via_timer: true`, só a rodada com
  * `--linkedin-timer` (a de `scripts/shorts-linkedin-profile-timer.ts`) publica
- * o vídeo do perfil; as outras o devolvem `skip_delegated`.
+ * o vídeo do perfil; as outras o devolvem `skip_delegated`. #11159: o
+ * `--linkedin-timer` só vale com `--only linkedin_profile` (ou `--mark
+ * linkedin_profile=URL`) — qualquer outro destino nessa rodada cairia no
+ * registro do timer e voltaria a ter dois escritores em máquinas diferentes.
  *
  * Horário (#10831): o do vertical, `resolveShortTime` — teste de 15 dias úteis
  * alternando 06:30/08:00/12:00 BRT a partir de 261026 (`publishing.shorts.schedule`),
@@ -167,7 +170,13 @@ import {
   type WorkerInstagramAccount,
   type YouTubeShortMetadata,
 } from "./lib/diaria/short-video.ts";
-import { persistShortEntry, readShortsRegistry, shortsRegistryPath, shortsRegistryWriterFor } from "./lib/diaria/shorts-published-store.ts";
+import {
+  linkedinTimerScopeError,
+  persistShortEntry,
+  readShortsRegistry,
+  shortsRegistryPath,
+  shortsRegistryWriterFor,
+} from "./lib/diaria/shorts-published-store.ts";
 import {
   buildYouTubeInsertRequest,
   buildYouTubeTags,
@@ -228,7 +237,8 @@ const RUPLOAD = "https://rupload.facebook.com";
  */
 export const LINKEDIN_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, publishing.shorts.linkedin_profile_via_timer) no horário do vertical; " +
-  "para publicar desta máquina mesmo assim, rode com --linkedin-timer (confira antes que o 300 não publicou)";
+  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer " +
+  "(confira antes que o 300 não publicou; o --linkedin-timer recusa qualquer outro destino)";
 
 /** Destinos que só o skill faz (Chrome; o X pela Buffer MCP, #10772). */
 export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile", "linkedin_page_repost", "x"]);
@@ -1823,6 +1833,34 @@ export function registeredSinceRead(fresh: ShortsPublishedFile, destination: str
   return fresh.entries.find((e) => e.destination === destination) ?? null;
 }
 
+/** #11159: resultado da reconferência no disco logo antes de publicar um destino. */
+export type PrePublishRecheck =
+  | { kind: "proceed"; fresh: ShortsPublishedFile }
+  | { kind: "already"; fresh: ShortsPublishedFile; entry: ShortPublishedEntry }
+  | { kind: "unreadable"; error: string };
+
+/**
+ * #11157/#11159: a reconferência do laço de publicação, extraída pra ser
+ * testável. Relê o registro unido do disco (`read`, injetável no teste);
+ * registro ilegível nunca vira "publica" (`unreadable`), destino já registrado
+ * por outro processo vira `already`.
+ */
+export function recheckBeforePublish(
+  dir: string,
+  aammdd: string,
+  destination: string,
+  read: (dir: string, aammdd: string) => ShortsPublishedFile = readShortsRegistry,
+): PrePublishRecheck {
+  let fresh: ShortsPublishedFile;
+  try {
+    fresh = read(dir, aammdd);
+  } catch (e) {
+    return { kind: "unreadable", error: `registro ilegível na reconferência, não publica: ${(e as Error).message}` };
+  }
+  const entry = registeredSinceRead(fresh, destination);
+  return entry ? { kind: "already", fresh, entry } : { kind: "proceed", fresh };
+}
+
 /**
  * Grade já agendada do dia (#10819): posts sociais da edição + o que o vertical
  * já registrou + a fila do Worker (`opts.workerQueue`, a resposta de `GET
@@ -2102,6 +2140,11 @@ async function main(): Promise<number> {
       console.error((e as Error).message);
       return 2;
     }
+    const markScopeErr = linkedinTimerScopeError({ linkedinTimer: flags.has("linkedin-timer"), only: null, markDestination: mark.destination });
+    if (markScopeErr) {
+      console.error(`publish-shorts: ${markScopeErr}`);
+      return 2;
+    }
     const built = buildMarkEntry(mark, values["scheduled-at"], new Date().toISOString());
     if (!built.ok) {
       console.error(built.error);
@@ -2110,6 +2153,19 @@ async function main(): Promise<number> {
     published = persist(built.entry);
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
     return 0;
+  }
+
+  // #11159: a rodada do timer só toca o linkedin_profile — checado antes de
+  // qualquer download, chamada de API ou gravação.
+  const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
+  const scopeErr = linkedinTimerScopeError({
+    linkedinTimer: flags.has("linkedin-timer"),
+    only: onlyList,
+    confirmInstagram: flags.has("confirm-instagram"),
+  });
+  if (scopeErr) {
+    console.error(`publish-shorts: ${scopeErr}`);
+    return 2;
   }
 
   if (flags.has("confirm-instagram")) return confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"]);
@@ -2157,7 +2213,6 @@ async function main(): Promise<number> {
     console.error(`publish-shorts: ${(e as Error).message}`);
     return 2;
   }
-  const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
   const igAuthor: InstagramAuthor = wantsInstagram(shortsCfg, onlyList, published)
     ? await resolveInstagramAuthor(defaultGraphDeps, shortsCfg.instagramAuthorPage, pages, igApiVersion, {
         igUserId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
@@ -2266,18 +2321,15 @@ async function main(): Promise<number> {
     if (item.action === "buffer" || item.action === "publish" || item.action === "enqueue") {
       // #11157: reconfere no disco antes de publicar — outro escritor pode ter
       // registrado o destino depois da leitura do início da rodada.
-      let fresh: ShortsPublishedFile;
-      try {
-        fresh = readShortsRegistry(dir, aammdd);
-      } catch (e) {
-        const msg = `registro ilegível na reconferência, não publica: ${(e as Error).message}`;
-        results.push({ destination: item.destination, ok: false, error: msg });
-        console.error(`[erro] ${item.destination}: ${msg}`);
+      const recheck = recheckBeforePublish(dir, aammdd, item.destination);
+      if (recheck.kind === "unreadable") {
+        results.push({ destination: item.destination, ok: false, error: recheck.error });
+        console.error(`[erro] ${item.destination}: ${recheck.error}`);
         continue;
       }
-      const already = registeredSinceRead(fresh, item.destination);
-      if (already) {
-        published = fresh;
+      if (recheck.kind === "already") {
+        const already = recheck.entry;
+        published = recheck.fresh;
         results.push({ destination: item.destination, ok: true, entry: already, alreadyRegistered: true });
         console.error(`[aviso] ${item.destination}: registrado por outro processo durante esta rodada (${already.status}${already.url ? `, ${already.url}` : ""}) — não publica de novo`);
         continue;

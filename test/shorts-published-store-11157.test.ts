@@ -181,7 +181,9 @@ describe("#11157 publish-shorts usa o store (trava contra a gravação do arquiv
   });
   it("reconfere o registro no disco dentro do laço de publicação", () => {
     const loop = src.slice(src.indexOf("for (const item of plan.items)"));
-    assert.match(loop.slice(0, 1500), /readShortsRegistry\(dir, aammdd\)/);
+    // #11159: a reconferência virou `recheckBeforePublish` (comportamento testado em
+    // test/shorts-linkedin-timer-scope-11159.test.ts); aqui só a chamada no laço.
+    assert.match(loop.slice(0, 1500), /recheckBeforePublish\(dir, aammdd, item\.destination\)/);
   });
   it("o planner de divulgação lê também o registro do timer", () => {
     const planner = readFileSync(new URL("../scripts/divulgacao-slot-planner.ts", import.meta.url), "utf8");

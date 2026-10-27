@@ -60,6 +60,39 @@ export function shortsRegistryWriterFor(linkedinTimer: boolean): ShortsRegistryW
   return linkedinTimer ? "linkedin-timer" : "main";
 }
 
+/**
+ * #11159: único destino que o registro do timer aceita. O arquivo do timer só
+ * fica com um escritor por destino se nenhuma outra entrada cair nele: um
+ * `--linkedin-timer` sem `--only` no neo gravaria ali as páginas do Facebook e
+ * o Instagram, e uma gravação do timer no 300 a partir da cópia sem elas
+ * (último a escrever vence no OneDrive) apagaria essas entradas — o próximo
+ * `--publish` republicaria os Reels.
+ */
+export const SHORTS_TIMER_LEDGER_DESTINATION = "linkedin_profile";
+
+/**
+ * Pure (#11159): o escopo de uma rodada `--linkedin-timer`. Devolve a mensagem
+ * de erro, ou `null` quando a rodada pode seguir. A rodada do timer só pode
+ * tocar o `linkedin_profile`: `--only linkedin_profile` (exatamente), ou um
+ * `--mark linkedin_profile=URL`; `--confirm-instagram` nunca.
+ */
+export function linkedinTimerScopeError(input: {
+  linkedinTimer: boolean;
+  only: readonly string[] | null;
+  markDestination?: string | null;
+  confirmInstagram?: boolean;
+}): string | null {
+  if (!input.linkedinTimer) return null;
+  const dest = SHORTS_TIMER_LEDGER_DESTINATION;
+  if (input.confirmInstagram) return `--linkedin-timer não combina com --confirm-instagram (a rodada do timer só grava ${dest})`;
+  if (input.markDestination != null) {
+    return input.markDestination === dest ? null : `--linkedin-timer com --mark só aceita ${dest} (recebeu ${input.markDestination})`;
+  }
+  const only = input.only ? [...new Set(input.only)] : [];
+  if (only.length === 1 && only[0] === dest) return null;
+  return `--linkedin-timer exige --only ${dest} (recebeu ${only.length ? `--only ${only.join(",")}` : "sem --only"}): o registro do timer só pode ter o ${dest}`;
+}
+
 const REGISTRY_STEM = basename(SHORTS_PUBLISHED_FILE, ".json"); // "06-shorts-published"
 
 /**
@@ -137,6 +170,13 @@ export function persistShortEntry(
   entry: ShortPublishedEntry,
   lockTimeoutMs = 30_000,
 ): ShortsPublishedFile {
+  // #11159: defesa em profundidade além do guard da CLI — nenhum caminho grava
+  // outro destino no arquivo do timer.
+  if (writer === "linkedin-timer" && entry.destination !== SHORTS_TIMER_LEDGER_DESTINATION) {
+    throw new Error(
+      `registro do timer só aceita ${SHORTS_TIMER_LEDGER_DESTINATION} (recebeu ${entry.destination}): grave os outros destinos numa rodada sem --linkedin-timer`,
+    );
+  }
   const path = shortsRegistryPath(editionDir, writer);
   mkdirSync(dirname(path), { recursive: true });
   withFileLock(
