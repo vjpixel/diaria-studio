@@ -22,6 +22,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -105,8 +106,22 @@ describe("allow list do overnight agendado (#11235)", () => {
   });
 
   it("comando que o fluxo roda puro tem também a regra exata (não depende do ` *` casar o puro)", () => {
-    for (const bare of ["git pull", "git push", "npm ci", "git worktree prune", "git worktree list", "gh auth status"]) {
+    for (const bare of ["git pull", "npm ci", "git worktree prune", "git worktree list", "gh auth status"]) {
       assert.ok(allow.includes(`Bash(${bare})`), `faltando a regra exata 'Bash(${bare})'`);
+    }
+  });
+
+  it("dev-fixer nunca é instruído a `git push` puro (hook block-worktree-bare-push nega em worktree, #7722)", () => {
+    const fixer = readFileSync(resolve(REPO_ROOT, ".claude/agents/dev-fixer.md"), "utf8").replace(/\s+/g, " ");
+    assert.ok(!/`git push`/.test(fixer), "dev-fixer.md manda `git push` puro");
+    assert.ok(fixer.includes("`git push origin <branch>`"), "dev-fixer.md deve citar `git push origin <branch>`");
+    assert.ok(!allow.includes("Bash(git push)"), "`Bash(git push)` exato não deve voltar: o fluxo sempre nomeia remote+branch");
+  });
+
+  it("todo `git push` da lista de comandos obrigatórios passa no hook block-worktree-bare-push (#7722)", async () => {
+    const { commandHasBareGitPush } = await import(pathToFileURL(resolve(REPO_ROOT, ".claude/hooks/block-worktree-bare-push.mjs")).href);
+    for (const c of OVERNIGHT_REQUIRED_BASH_COMMANDS.filter((c) => /^git push\b/.test(c.command))) {
+      assert.equal(commandHasBareGitPush(c.command), false, `'${c.command}' seria negado pelo hook em worktree`);
     }
   });
 

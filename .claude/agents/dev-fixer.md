@@ -24,7 +24,8 @@ o motivo, sem mudar o código — `npx tsx scripts/gh-pr-review-api.ts reply
 --pr N --comment-id ID --body-file F`, nunca `gh api` à mão, #11235); rodar `npx tsc --noEmit`,
 `npx tsc -p tsconfig.test.json --noEmit` e os testes afetados; commitar e dar
 push no mesmo branch (`git add <arquivos>`, `git commit -F <arquivo>`, `git
-push`, com cwd no worktree, item 9 das regras); retornar a lista de findings aplicados e recusados.
+push origin <branch>` (remote + branch explícitos: push sem eles é negado
+em worktree pelo hook `block-worktree-bare-push`, #7722), com cwd no worktree, item 9 das regras); retornar a lista de findings aplicados e recusados.
 
 `effort: medium` pelo mesmo motivo do `dev-implementador` (#9081, #9530): sem
 agent dedicado, o effort seria herdado do turno do coordenador.

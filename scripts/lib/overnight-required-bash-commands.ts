@@ -83,7 +83,7 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   { command: "git commit --no-verify -m wip", source: "context/overnight-dispatch-rules.md", mention: "`git commit --no-verify -m wip`" },
   { command: "git reset --soft HEAD~1", source: "context/overnight-dispatch-rules.md", mention: "`git reset --soft HEAD~1`" },
   { command: "git push -u origin overnight/fix-1-x", source: "context/overnight-dispatch-rules.md", mention: "`git push -u origin <branch>`" },
-  { command: "git push", source: ".claude/agents/dev-fixer.md", mention: "`git commit -F <arquivo>`, `git push`" },
+  { command: "git push origin develop/fix-1-x", source: ".claude/agents/dev-fixer.md", mention: "`git push origin <branch>`" },
   { command: "gh pr create --title t --body-file /tmp/pr-body-1-123.md", source: "context/overnight-dispatch-rules.md", mention: "gh pr create" },
 
   // Coordenador: sync de master e worktrees.
