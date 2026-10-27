@@ -1,6 +1,7 @@
 /**
  * mcp-wrapper-core.mjs (#8994) — núcleo puro dos wrappers de MCP stdio
- * declarados em `.mcp.json` (`run-google-ads-mcp.mjs`, `run-doppler-mcp.mjs`).
+ * declarados em `.mcp.json` (`run-google-ads-mcp.mjs`, `run-doppler-mcp.mjs`)
+ * e do `headersHelper` do MCP http `clarice` (`clarice-headers.mjs`, #11251).
  *
  * **Por que wrapper e não `${VAR}` direto no `.mcp.json`:** o harness do
  * Claude Code interpola `${VAR}` a partir do ambiente do PROCESSO dele, que
@@ -49,6 +50,11 @@ export const GOOGLE_ADS_ENV_KEYS = [
 ];
 
 export const DOPPLER_MCP_TOKEN_KEY = "DOPPLER_MCP_TOKEN";
+
+/** Var da key da Clarice — a mesma do REST (`scripts/clarice-correct.ts`). */
+export const CLARICE_API_KEY_KEY = "CLARICE_API_KEY";
+/** Header que `https://mcp.clarice.ai/mcp` aceita (probe ao vivo, #11251: `X-API-Key` dá 401). */
+export const CLARICE_MCP_HEADER = "X-Clarice-Api-Key";
 
 /** `.env` existe mas não pôde ser lido/parseado — os entrypoints saem com 1. */
 export class EnvFileReadError extends Error {}
@@ -200,6 +206,29 @@ export function resolveDopplerLaunch(env, { find = (n) => findOnPath(n) } = {}) 
 export function buildDopplerChildEnv(base, childEnv) {
   const { [DOPPLER_MCP_TOKEN_KEY]: _omit, ...rest } = base;
   return { ...rest, ...childEnv };
+}
+
+/**
+ * Headers do MCP `clarice` (#11251), consumidos pelo `headersHelper` de
+ * `.mcp.json` (`scripts/mcp/clarice-headers.mjs`). Sem key (ambiente e
+ * `.env`), devolve erro em vez de um header vazio — header vazio é o 401 do
+ * #11251. Key com quebra de linha também é recusada: viraria injeção de
+ * header (ou, mais provável, `.env` malformado). A mensagem de erro nunca
+ * carrega o valor da key.
+ */
+export function resolveClariceHeaders(env) {
+  const key = (env[CLARICE_API_KEY_KEY] ?? "").trim();
+  if (!key) {
+    return {
+      error:
+        `[clarice-headers] ${CLARICE_API_KEY_KEY} ausente no ambiente e no .env do projeto — ` +
+        `rode \`npm run sync-env\` (Doppler) ou adicione a key ao .env (ver docs/setup.md).`,
+    };
+  }
+  if (/[\r\n]/.test(key)) {
+    return { error: `[clarice-headers] ${CLARICE_API_KEY_KEY} contém quebra de linha — confira o .env.` };
+  }
+  return { headers: { [CLARICE_MCP_HEADER]: key } };
 }
 
 /**

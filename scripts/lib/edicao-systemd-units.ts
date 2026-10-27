@@ -66,10 +66,10 @@ export function buildEdicaoSystemdUnitFiles(repoRootAbs: string): SystemdUnitFil
     "Type=oneshot",
     `WorkingDirectory=${repoRootAbs}`,
     // #5114: sem isto, `claude -p` sobe sem CLARICE_API_KEY (e qualquer outra
-    // credencial do .env) no ambiente -- o `${CLARICE_API_KEY}` do .mcp.json é
-    // resolvido pelo PROCESSO do Claude Code no momento do launch, a partir do
-    // ambiente herdado deste unit. Ver comentário gêmeo em systemd-units.ts
-    // (mesmo racional, `-` = arquivo opcional).
+    // credencial do .env) no ambiente. Pro MCP `clarice`, desde o #11251 o
+    // `headersHelper` do .mcp.json lê a key do .env sozinho; o `${CLARICE_API_KEY}`
+    // estático, resolvido do ambiente deste unit, ficou como fallback. Ver
+    // comentário gêmeo em systemd-units.ts (mesmo racional, `-` = arquivo opcional).
     `EnvironmentFile=-${repoRootAbs}/.env`,
     `ExecStart=${execStart}`,
     // O pipeline completo (Stages 0-4 + pré-render) tipicamente usa 50-90

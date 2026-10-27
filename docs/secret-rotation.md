@@ -30,7 +30,7 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 - **Para que serve:** revisão linguística no Stage 2 (`mcp__clarice__correct_text`).
 - **Onde gerar:** painel da Clarice (entrar em contato com o operador da API; chave hoje vem por canal manual).
 - **Onde atualizar:**
-  1. `.env` local — substituir o valor de `CLARICE_API_KEY=`.
+  1. `.env` local — substituir o valor de `CLARICE_API_KEY=`. É dele que o MCP lê a key desde o #11251 (`headersHelper` `scripts/mcp/clarice-headers.mjs`); o ambiente, quando tem a var, vence.
   2. Shell ambiente persistente:
      ```powershell
      [Environment]::SetEnvironmentVariable("CLARICE_API_KEY", "NOVO_TOKEN", "User")

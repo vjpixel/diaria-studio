@@ -43,6 +43,11 @@ export declare function resolveDopplerLaunch(
 ): DopplerLaunch | LaunchError;
 export declare function buildDopplerChildEnv(base: EnvVars, childEnv: EnvVars): EnvVars;
 
+export declare const CLARICE_API_KEY_KEY: "CLARICE_API_KEY";
+export declare const CLARICE_MCP_HEADER: "X-Clarice-Api-Key";
+export type ClariceHeaders = { headers: { "X-Clarice-Api-Key": string }; error?: undefined };
+export declare function resolveClariceHeaders(env: EnvVars): ClariceHeaders | LaunchError;
+
 export type SpawnSpec = { command: string; args: string[]; options: SpawnOptions };
 export declare function buildSpawnSpec(
   command: string,

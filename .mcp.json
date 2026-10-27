@@ -3,6 +3,7 @@
     "clarice": {
       "type": "http",
       "url": "https://mcp.clarice.ai/mcp",
+      "headersHelper": "node scripts/mcp/clarice-headers.mjs",
       "headers": {
         "X-Clarice-Api-Key": "${CLARICE_API_KEY}"
       }
