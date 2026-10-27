@@ -519,13 +519,35 @@ const TUTORIAL_TITLE_EXTRA_RE = new RegExp(
  *     MELHOR.
  * Regex próprio, SEM `i`: só "How"/"how" e o verbo toleram caixa variável; os
  * nomes precisam começar com maiúscula de verdade.
+ *
+ * #11218: manchete em Title Case ("How One Hacker Used AI Agents…", a mesma
+ * história do rappler.com na grafia comum de veículo em inglês) capitaliza
+ * toda palavra, então ali a maiúscula não indica nome próprio. O sinal de
+ * Title Case usado é o próprio VERBO: em sentence case ele vem minúsculo
+ * ("How Mercado Libre used Gemini"), em Title Case vem maiúsculo ("…Used…").
+ * Por isso o verbo é exigido em minúscula. Um guard por proporção de palavras
+ * capitalizadas (`isTitleCase`) não serve aqui: em título curto os próprios
+ * nomes que a regex exige já passam do limite de 60% e o sentence case
+ * legítimo ("How Mercado Libre used Gemini") seria descartado (review do PR
+ * #11230). Custo aceito: entidade real em manchete Title Case ("How Mercado
+ * Libre Used Gemini") não casa — indistinguível do caso do rappler.
+ * Título e summary passam pela mesma regex (summary que repete o título em
+ * Title Case não reabre o falso positivo), testados à parte — concatenar
+ * deixava `\s+` atravessar o `\n` entre os dois.
  */
 const HOW_NAMED_ENTITY_USED_RE =
-  /\b[Hh]ow\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(?:[Uu]sed?|[Ll]everag(?:es?|ed?)|[Pp]owered?)\b/;
+  /\b[Hh]ow\s+[A-Z]\w{2,}(?:\s+[A-Z]\w+)+\s+(?:used?|leverag(?:es?|ed?)|powered?)\b/;
+
+function hasHowNamedEntityUsed(article: Article): boolean {
+  return (
+    HOW_NAMED_ENTITY_USED_RE.test(article.title ?? "") ||
+    HOW_NAMED_ENTITY_USED_RE.test(article.summary ?? "")
+  );
+}
 
 function isTutorialByTitleExtra(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
-  return TUTORIAL_TITLE_EXTRA_RE.test(hay) || HOW_NAMED_ENTITY_USED_RE.test(hay);
+  return TUTORIAL_TITLE_EXTRA_RE.test(hay) || hasHowNamedEntityUsed(article);
 }
 
 /**
