@@ -977,10 +977,11 @@ Stage 4 aprovado — edição {AAMMDD}.
 O pré-render já deixou tudo pronto para a Etapa 5 (HTML final, preview social,
 imagens públicas, gabarito do É IA?) — nada disso precisa ser refeito.
 
-Próximos passos (#10943, #11209) — abra uma sessão NOVA para cada um, nenhum encadeia no seguinte
-(sem vídeo hoje, vá direto ao 2: a publicação segue e só avisa que o D1 sai sem o link):
-  1. /diaria-publica-video {AAMMDD} (depois de gravar o vídeo do D1: horizontal + vertical)
-  2. /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
+Próximos passos (#10943, #11209, #11208) — abra uma sessão NOVA para cada um, nenhum encadeia no seguinte
+(sem vídeo hoje, vá direto ao 3: a publicação segue e só avisa que o D1 sai sem o link):
+  1. /diaria-video-montagem {AAMMDD} (depois de gravar o vídeo do D1; na máquina Windows, monta o XML do Premiere)
+  2. /diaria-publica-video {AAMMDD} (depois de exportar do Premiere para {AAMMDD}/Final/: horizontal + vertical)
+  3. /diaria-5-publicacao {AAMMDD}{ --skip "{skip_channels}" se --skip foi passado a /diaria-edicao}
 
 Isso mantém o contexto desta revisão fora da Publicação/Agendamento (#6171) — `/diaria-5-publicacao` cobre as Etapas 5 e 6 inteiras nessa sessão nova (fusão #7983) e retoma sozinho dos arquivos em disco (#5578).
 ```
