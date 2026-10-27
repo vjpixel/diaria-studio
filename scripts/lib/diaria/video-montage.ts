@@ -1039,16 +1039,6 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
 
 // ── Legendas ──────────────────────────────────────────────────────────────
 
-/** Aplica as regras ao texto (regras restritas a outras versões ficam de fora). */
-export function applyVocabulary(text: string, rules: VocabRule[], target?: SequenceTarget): string {
-  let out = text;
-  for (const r of rules) {
-    if (r.targets && (!target || !r.targets.includes(target))) continue;
-    out = out.replace(new RegExp(r.pattern, r.flags ?? "g"), r.replacement);
-  }
-  return out;
-}
-
 /**
  * Vocabulário sobre a lista de palavras, REGRA A REGRA: une as palavras (para
  * a regra pegar termos de 2+ palavras, "inteligência personalizada"), aplica e
