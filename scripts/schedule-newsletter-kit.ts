@@ -354,7 +354,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
   {
     const log = (msg: string) => process.stderr.write(`[schedule-newsletter-kit] semanal frio: ${msg}\n`);
     const semanal = await runSemanalFrioAfterSchedule(editionDir, log, rootDir, undefined, { followOnly: !result.ok });
-    if (semanal.status !== "disabled" && semanal.status !== "nothing_to_follow") {
+    // `not_monday` fica fora como no caller do publisher (review do PR #11326):
+    // sairia em toda edição que não é de segunda, sem nada a relatar.
+    if (semanal.status !== "disabled" && semanal.status !== "nothing_to_follow" && semanal.status !== "not_monday") {
       semanalFrio = summarizeSemanalFrioForSchedule(semanal);
       log(`${semanal.status === "failed" ? "ERRO: " : ""}${semanal.status}${semanalFrio.reason ? ` — ${semanalFrio.reason}` : ""}`);
     }

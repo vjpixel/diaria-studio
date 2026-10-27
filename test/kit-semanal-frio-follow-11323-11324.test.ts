@@ -178,6 +178,64 @@ describe("Etapa 5 desagenda o principal ⇒ a semanal acompanha (#11324)", () =>
     assert.ok(start > 0);
     const block = src.slice(start, src.indexOf("process.exitCode = 13", start));
     assert.ok(block.length > 0);
-    assert.match(block, /await revertMainToDraftAndFollowSemanal\(editionDir, existing, log, rootDir\)/);
+    // Só o nome da chamada (review do PR #11326): casar os argumentos literais
+    // quebrava com qualquer renomeação de variável.
+    assert.match(block, /await revertMainToDraftAndFollowSemanal\(/);
+  });
+});
+
+describe("review do PR #11326", () => {
+  const draftMain: MainState = { broadcast_id: 10, subject: "S", preview_text: "P", status: "draft" };
+
+  it("REGRESSÃO (P2): principal desagendado + GET inicial falha + desagendamento falha ⇒ alarme 'sairia SOZINHA', nunca exceção sem alarme", async () => {
+    const t = deps(draftMain, "scheduled");
+    const d: SemanalFrioPublishDeps = {
+      ...t.d,
+      getBroadcast: async () => {
+        throw new Error("Kit API GET -> 503");
+      },
+    };
+    const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: true, followOnly: true }, d);
+    assert.equal(r.status, "failed");
+    assert.equal(r.code, 1);
+    assert.match(r.reason!, /sairia SOZINHA/);
+    assert.equal(t.alarms.length, 1);
+    assert.match(t.alarms[0], /agendada sem o principal/);
+    assert.deepEqual(t.patched, ["11@null"], "tentou desagendar mesmo sem conseguir reler antes");
+  });
+
+  it("principal desagendado + GET inicial falha, mas o desagendamento e a releitura funcionam ⇒ unscheduled", async () => {
+    const t = deps(draftMain, "scheduled");
+    let calls = 0;
+    const d: SemanalFrioPublishDeps = {
+      ...t.d,
+      getBroadcast: async (id) => {
+        calls++;
+        if (calls === 1) throw new Error("Kit API GET -> 503");
+        return { id, status: "draft", send_at: null, subscriber_filter: buildTagFilter(900) } as never;
+      },
+      scheduleBroadcast: async (id, at) => void t.patched.push(`${id}@${at}`),
+    };
+    const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: true, followOnly: true }, d);
+    assert.equal(r.status, "unscheduled");
+    assert.deepEqual(t.patched, ["11@null"]);
+    assert.deepEqual(t.alarms, []);
+  });
+
+  it("(P3) semanal abortada no Kit é terminal ⇒ status aborted, sem PATCH nem alarme", async () => {
+    for (const main of [mainAt("2026-11-02T11:00:00.000Z"), draftMain]) {
+      const t = deps(main, "aborted");
+      const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: true, followOnly: main.status !== "scheduled" }, t.d);
+      assert.equal(r.code, 0);
+      assert.equal(r.status, "aborted");
+      assert.deepEqual(t.patched, []);
+      assert.deepEqual(t.alarms, []);
+      assert.deepEqual(t.written, []);
+    }
+  });
+
+  it("(P3) schedule-newsletter-kit.ts omite not_monday do log/JSON, como o caller do publisher", () => {
+    const src = readFileSync(resolve(import.meta.dirname, "../scripts/schedule-newsletter-kit.ts"), "utf8");
+    assert.match(src, /semanal\.status !== "not_monday"/);
   });
 });

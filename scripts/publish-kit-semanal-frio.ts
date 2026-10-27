@@ -51,7 +51,9 @@
  * `publish-newsletter-kit.ts` também, quando um re-run da Etapa 5 desagenda o
  * principal por audiência divergente (#11324). A semanal relida como
  * `completed`/`sending` é terminal (`already_sent`): nem PATCH nem
- * desagendamento (#11323).
+ * desagendamento (#11323); `aborted` também (status próprio, review do PR
+ * #11326). GET inicial que falha não aborta o acompanhamento: com o principal
+ * desagendado, segue pro desagendamento relido e, se ele falhar, alarme.
  *
  * Exit: 0 criado/idempotente/pulado (desligado, não é segunda, pausado, tag
  * vazia); 1 falha (API, filtro não confirmado, agendamento não confirmado);
@@ -125,6 +127,8 @@ export type SemanalFrioPublishResult =
         | "unscheduled"
         // #11323 — a semanal já saiu (`completed`/`sending` no Kit): terminal.
         | "already_sent"
+        // Review do PR #11326 — a semanal foi abortada no Kit: terminal, sem PATCH.
+        | "aborted"
         // `followOnly` sem semanal agendada: nada a fazer.
         | "nothing_to_follow";
       broadcastId?: number;
@@ -279,10 +283,28 @@ async function followMainSchedule(
   // envio daria PATCH com 422 "already sent" (falso `failed`), e um estado
   // do principal que caiu pra `draft` depois do envio tentaria desagendar um
   // broadcast já enviado (alarme falso).
-  const current = await deps.getBroadcast(broadcastId);
-  if (current.status === "completed" || current.status === "sending") {
+  //
+  // Review do PR #11326 (P2): o GET fica em try/catch. Falha dele é "estado
+  // desconhecido", nunca exceção que sobe: com o principal desagendado, a
+  // exceção virava `failed` sem alarme e a semanal seguia agendada sozinha.
+  // Com `current = null` o fluxo segue como se ela pudesse estar agendada —
+  // desagendar (ou reagendar) com releitura, e alarme se isso também falhar.
+  let current: KitBroadcastDetail | null = null;
+  try {
+    current = await deps.getBroadcast(broadcastId);
+  } catch (e) {
+    log(`aviso: releitura da semanal ${broadcastId} no Kit falhou (${(e as Error).message}) — estado desconhecido, seguindo como se estivesse agendada.`);
+  }
+  if (current && (current.status === "completed" || current.status === "sending")) {
     log(`semanal de frio ${broadcastId} já ${current.status === "completed" ? "enviada" : "em envio"} no Kit — nada a acompanhar.`);
     return { code: 0, status: "already_sent", broadcastId, reason: `semanal ${broadcastId} com status ${current.status} no Kit.` };
+  }
+  // Review do PR #11326 (P3): `aborted` também é terminal — o Kit não aceita
+  // PATCH num broadcast abortado. Status próprio pro editor ver no JSON/log.
+  if (current && current.status === "aborted") {
+    const reason = `semanal ${broadcastId} está abortada no Kit — não sai; recriar à mão se ainda for pra sair.`;
+    log(reason);
+    return { code: 0, status: "aborted", broadcastId, reason };
   }
   if (mainScheduled && sameInstant(own.scheduled_at, main.scheduled_at!)) {
     // Review do PR #11308 (P2): o estado local `scheduled` pode estar
@@ -291,12 +313,12 @@ async function followMainSchedule(
     // reagendado no MESMO horário daria `already_done` e a semanal ficaria
     // rascunho em silêncio. Divergência ⇒ cai no reagendamento abaixo
     // (re-PATCH relido pro horário do principal).
-    if (current.status === "scheduled" && sameInstant(current.send_at, main.scheduled_at!)) {
+    if (current && current.status === "scheduled" && sameInstant(current.send_at, main.scheduled_at!)) {
       return { code: 0, status: "already_done", broadcastId };
     }
     log(
       `semanal de frio ${broadcastId}: estado local diz agendada pra ${own.scheduled_at}, mas o Kit mostra ` +
-        `status=${current.status}, send_at=${current.send_at} — reagendando junto com o principal.`,
+        (current ? `status=${current.status}, send_at=${current.send_at}` : "estado ilegível") + " — reagendando junto com o principal.",
     );
   }
 
