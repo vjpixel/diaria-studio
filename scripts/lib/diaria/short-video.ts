@@ -182,10 +182,22 @@ export function buildYouTubeShortMetadata(input: { d1: ShortD1Input }): YouTubeS
 export type ReelsPlatform = "facebook" | "instagram";
 
 /**
+ * #11388 (decisão do editor, 27/10/2026, testada à mão na legenda do Reels de
+ * 261027): a legenda do Reels diz o que é a diar.ia.br em vez de pressupor que
+ * o leitor já conhece a newsletter. Sem "grátis": a oferta não foi confirmada.
+ */
+export const REELS_NEWSLETTER_SENTENCE = "A diar.ia.br é a newsletter que resume as notícias de IA do dia em 5 minutos.";
+
+/** #11388: CTA do Reels no Instagram, o texto final aprovado pelo editor (o link da bio é o único clicável). */
+export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo link da bio.`;
+
+/**
  * Legenda do Reels. Tratamos link em legenda de Reels como não clicável nas
- * duas redes (é o comportamento do app hoje), então o CTA principal é o canal escrito por extenso; no Facebook
- * o link da edição vai com UTM (atribuível se alguém copiar), no Instagram a
- * chamada é pro link da bio (padrão dos posts diários).
+ * duas redes (é o comportamento do app hoje). #11388: o CTA explica a
+ * newsletter (`REELS_NEWSLETTER_SENTENCE`) e o link do canal do YouTube saiu
+ * da legenda. No Instagram a chamada é pro link da bio (`INSTAGRAM_REELS_CTA`);
+ * no Facebook, que não tem bio, o link da edição vai com UTM (atribuível se
+ * alguém copiar).
  */
 export function buildReelsCaption(input: {
   platform: ReelsPlatform;
@@ -198,17 +210,16 @@ export function buildReelsCaption(input: {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
-  const channel = `Vídeo completo no YouTube: ${DIARIA_YOUTUBE_CHANNEL_URL.replace(/^https:\/\/www\./, "")}`;
-  const edition =
+  const cta =
     input.platform === "instagram"
-      ? "Edição completa no link da bio."
-      : `Edição completa: ${withShortUtm(input.editionUrl, {
+      ? INSTAGRAM_REELS_CTA
+      : `${REELS_NEWSLETTER_SENTENCE} Leia a edição de hoje e assine: ${withShortUtm(input.editionUrl, {
           source: "facebook",
           medium: "reels",
           campaign: input.aammdd,
           content: input.utmContent ?? null,
         })}`;
-  const caption = [title, hook, [channel, edition].join("\n"), SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  const caption = [title, hook, cta, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
     throw new Error(`legenda do Instagram passou de ${INSTAGRAM_CAPTION_MAX_CHARS} caracteres`);
   }
@@ -895,6 +906,26 @@ export const INSTAGRAM_REELS_API_MAX_SECONDS = 40;
 export type WorkerInstagramAccount = "diaria" | "vjpixel";
 
 export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
+
+/**
+ * #11390: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
+ * Chrome ou app), a que o editor usa: @vjpixel é o AUTOR e a @diar.ia.br entra
+ * como colaboradora. É o inverso da rota da API (autora @diar.ia.br com a
+ * @vjpixel em collab, #11223, `instagram_author_page`/`instagram_collaborators`).
+ * Enquanto o convite de collab está pendente, o post só aparece no perfil do
+ * autor, então o `--confirm-instagram` procura também nele (`authorPage` = slug
+ * de `publishing.social.facebook.pages` cuja conta vinculada é a @vjpixel).
+ */
+export const INSTAGRAM_CHROME_ROUTE = {
+  authorUsername: "vjpixel",
+  authorPage: "vjpixel",
+  collaboratorUsername: "diar.ia.br",
+} as const;
+
+/** #11390: a rota do B3b em texto, pros avisos e alarmes (nunca "como a autora"). */
+export function instagramChromeRouteText(): string {
+  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autor), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} como colaboradora`;
+}
 
 /**
  * Qualquer slug de página pode ser autora; as contas que o Worker conhece

@@ -18,8 +18,10 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *                                                           # baixa o vertical do Drive (OAuth do projeto, não o conector)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --mark youtube_shorts=URL
  *                                                           # registra destino GUIADO já feito
- *   npx tsx scripts/publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]
- *                                                           # registra o Reels postado no Chrome (lê /media, #10915)
+ *   npx tsx scripts/publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID] [--url URL]
+ *                                                           # registra o Reels postado no Chrome (lê /media, #10915;
+ *                                                           # #11390: procura também no perfil do @vjpixel, autor da
+ *                                                           # rota do Chrome, e aceita o permalink com --url)
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -158,8 +160,11 @@ import {
   firstSentence,
   facebookDestinationId,
   facebookUploadRoute,
+  INSTAGRAM_CHROME_ROUTE,
   INSTAGRAM_ENV_ACCOUNT_KEY,
+  REELS_NEWSLETTER_SENTENCE,
   instagramApiMaxSecondsPremise,
+  instagramChromeRouteText,
   instagramReelsApiFit,
   isDestinationDone,
   knownDestinationIds,
@@ -777,15 +782,15 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       return { destination: dest.id, mode: "api", action: "skip_delegated", detail: INSTAGRAM_TIMER_DETAIL };
     }
     if (!igFit.fits) {
-      const collab = cfg.instagramCollaborators.length ? ` com ${cfg.instagramCollaborators.map((c) => `@${c}`).join(", ")} em collab` : "";
       // #10933: o horário vem da grade (o mesmo slot que os outros destinos já enxergaram).
       const slot = slotOf.get(dest.id);
       const hhmm = slot?.hhmm ?? time.hhmm;
       // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
+      // #11390: a rota à mão é a do editor (@vjpixel autor, @diar.ia.br colaboradora), não a da API.
       const detail =
         `${igFit.reason} — poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
-        `ou no app, como a autora${collab}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
-        `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL`;
+        `ou no app, ${instagramChromeRouteText()}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
+        `e registre com --confirm-instagram (procura também no perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} enquanto o collab está pendente; ou --url URL do Reel) ou --mark instagram=URL`;
       warnings.push(`instagram: ${detail}`);
       let caption: string | undefined;
       try {
@@ -1176,6 +1181,8 @@ export async function resolveInstagramAuthor(
   pages: ResolvedFacebookPage[],
   apiVersion: string,
   envAccount: { igUserId: string; token: string },
+  /** #11390: `readOnly` = só lê a conta (o `--confirm-instagram` no perfil do autor); não exige o escopo de publicação. */
+  opts: { readOnly?: boolean } = {},
 ): Promise<InstagramAuthor> {
   if (authorPage === null) {
     if (!envAccount.igUserId || !envAccount.token) return { ready: false, reason: "sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN" };
@@ -1202,6 +1209,7 @@ export async function resolveInstagramAuthor(
         `(scripts/facebook-page-token-setup.ts --pages ${authorPage})`,
     };
   }
+  if (opts.readOnly) return { ready: true, igUserId: ig.id, token: page.token, username: ig.username ?? null, source: `conta vinculada à página ${authorPage}` };
   // #10820: ler a conta vinculada não prova que o token PUBLICA — sem o escopo, a falha só apareceria no --publish.
   const scopeCheck = await readTokenScopes(deps, page.token, apiVersion);
   const warnings: string[] = [];
@@ -1396,11 +1404,15 @@ export const INSTAGRAM_HOOK_MARKER_MIN_CHARS = 30;
 export const INSTAGRAM_CONFIRM_TIME_WINDOW_MS = 90 * 60_000;
 
 /**
- * #10978 item 5: trecho fixo da legenda de todo vertical (a linha do canal do
- * YouTube, `buildReelsCaption`). Não identifica a edição, só o formato: entra
- * junto com a janela de horário, nunca sozinho.
+ * #10978 item 5: trecho fixo da legenda de todo vertical (`buildReelsCaption`).
+ * Não identifica a edição, só o formato: entra junto com a janela de horário,
+ * nunca sozinho. #11388: a frase que explica a newsletter substituiu a linha do
+ * canal do YouTube.
  */
-export const INSTAGRAM_CAPTION_FORMAT_MARKER = DIARIA_YOUTUBE_CHANNEL_URL.replace(/^https:\/\/www\./, "");
+export const INSTAGRAM_CAPTION_FORMAT_MARKER = REELS_NEWSLETTER_SENTENCE;
+
+/** #11388: o trecho fixo das legendas de antes (linha do canal do YouTube), que segue valendo pros Reels já no ar. */
+export const INSTAGRAM_CAPTION_LEGACY_FORMAT_MARKER = DIARIA_YOUTUBE_CHANNEL_URL.replace(/^https:\/\/www\./, "");
 
 function normalizeForMatch(s: string): string {
   return s.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
@@ -1552,7 +1564,7 @@ export function decideInstagramConfirm(input: {
   if (!Number.isNaN(expected)) {
     const windowMs = input.windowMs ?? INSTAGRAM_CONFIRM_TIME_WINDOW_MS;
     const near = reelsRaw.filter(
-      (m: any) => Math.abs(parseIgTimestamp(m.timestamp) - expected) <= windowMs && captionMatchesEdition(m.caption, [INSTAGRAM_CAPTION_FORMAT_MARKER]),
+      (m: any) => Math.abs(parseIgTimestamp(m.timestamp) - expected) <= windowMs && captionMatchesEdition(m.caption, [INSTAGRAM_CAPTION_FORMAT_MARKER, INSTAGRAM_CAPTION_LEGACY_FORMAT_MARKER]),
     );
     if (near.length === 1) return { kind: "register", entry: entryFor(toCandidate(near[0])), candidates: reels, matchedBy: "time-window" };
     if (near.length > 1) {
@@ -1570,6 +1582,107 @@ export function decideInstagramConfirm(input: {
     candidates: reels,
     cause: "no-match",
   };
+}
+
+/**
+ * #11390: recusas da conta da API em que vale procurar no perfil do autor da
+ * rota do Chrome (`INSTAGRAM_CHROME_ROUTE`): nada da edição na conta (o post
+ * só aparece na @diar.ia.br depois que o convite de collab é aceito), ou o
+ * `--media-id` escolhido não está entre as mídias dela. Ambíguo e janela
+ * incompleta não: lá a conta já tem candidato e quem escolhe é o editor.
+ */
+const CHROME_AUTHOR_FALLBACK_CAUSES: ReadonlySet<string> = new Set(["none", "no-match", "media-id"]);
+
+export interface InstagramConfirmAcrossAccounts {
+  decision: InstagramConfirmDecision;
+  /** De onde veio a decisão: a conta da API ou o perfil do autor da rota do Chrome. */
+  account: "primary" | "chrome-author";
+  /** Por que o perfil do autor não resolveu (sem credencial, leitura falhou, recusa); ausente = não foi consultado ou resolveu. */
+  fallbackNote?: string;
+}
+
+/**
+ * #11390: o `--confirm-instagram` procura primeiro na conta da API e, se ela
+ * não tem o Reels da edição, no perfil do autor da rota do Chrome
+ * (@vjpixel), onde o post fica enquanto o collab com a @diar.ia.br está
+ * pendente. `chromeAuthor` null = o perfil não é consultável (sem credencial,
+ * ou é a mesma conta da API); o motivo vem em `chromeAuthorUnavailable`.
+ * Falha na leitura do perfil nunca derruba a decisão da conta da API.
+ */
+export async function decideInstagramConfirmAcrossAccounts(deps: {
+  primary: () => Promise<InstagramConfirmDecision>;
+  chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null;
+  chromeAuthorUnavailable?: string;
+}): Promise<InstagramConfirmAcrossAccounts> {
+  const primary = await deps.primary();
+  if (primary.kind !== "refuse" || !CHROME_AUTHOR_FALLBACK_CAUSES.has(primary.cause)) return { decision: primary, account: "primary" };
+  const who = `@${INSTAGRAM_CHROME_ROUTE.authorUsername}`;
+  if (!deps.chromeAuthor) {
+    return { decision: primary, account: "primary", ...(deps.chromeAuthorUnavailable ? { fallbackNote: `perfil do ${who} não consultado: ${deps.chromeAuthorUnavailable}` } : {}) };
+  }
+  let fallback: InstagramConfirmDecision;
+  try {
+    fallback = await deps.chromeAuthor();
+  } catch (e) {
+    return { decision: primary, account: "primary", fallbackNote: `a leitura do perfil do ${who} falhou: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (fallback.kind === "register" || fallback.kind === "already_registered") return { decision: fallback, account: "chrome-author" };
+  return { decision: primary, account: "primary", fallbackNote: `perfil do ${who}: ${fallback.reason}` };
+}
+
+/**
+ * Pure (#11390): `--confirm-instagram --url URL` registra o Reel pela URL que
+ * o editor copiou (o post do collab pendente, sem acesso ao perfil do autor
+ * pela API). Só aceita permalink do instagram.com (`/reel/`, `/reels/`, `/p/`,
+ * com ou sem o usuário antes); a query (`?igsh=...`) sai do registro.
+ */
+export function instagramConfirmUrlEntry(url: string, nowIso: string): { ok: true; entry: ShortPublishedEntry } | { ok: false; error: string } {
+  const m = url.trim().match(/^https:\/\/(?:www\.)?instagram\.com\/(?:[A-Za-z0-9_.]+\/)?(?:reel|reels|p)\/([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/);
+  if (!m) return { ok: false, error: `--url precisa ser o permalink do Reel no instagram.com (https://www.instagram.com/reel/CODIGO/), recebido ${JSON.stringify(url)}` };
+  const clean = url.trim().replace(/[?#].*$/, "");
+  return { ok: true, entry: { destination: "instagram", status: "published", id: clean, url: clean, scheduled_at: null, at: nowIso } };
+}
+
+/**
+ * #11390: o leitor do perfil do autor da rota do Chrome (@vjpixel), só leitura.
+ * `reader` null = não consultável (mesma conta da API, ou sem credencial), com
+ * o motivo em `unavailable`.
+ */
+async function resolveChromeAuthorReader(
+  apiAuthorPage: string | null,
+  pages: ResolvedFacebookPage[],
+  igApiVersion: string,
+): Promise<{ reader: Extract<InstagramAuthor, { ready: true }> | null; unavailable?: string }> {
+  if (apiAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) return { reader: null, unavailable: "é a mesma conta da API" };
+  const resolved = await resolveInstagramAuthor(defaultGraphDeps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
+  return resolved.ready ? { reader: resolved } : { reader: null, unavailable: resolved.reason };
+}
+
+/**
+ * #11389/#11390 (fix do review do PR #11395): a conferência da conta ANTES de o
+ * timer publicar olha também o perfil do autor da rota do Chrome. Um Reels
+ * postado à mão (@vjpixel autor, collab pendente) não aparece na conta da API
+ * até o convite ser aceito; sem isto o timer publicaria de novo, em conta
+ * pública. Regras:
+ * - a conta da API acha o Reels, ou bloqueia (ambíguo/janela) → vale ela;
+ * - nada na conta da API → a decisão do perfil do autor, se ele achou ou
+ *   bloqueou; se ele também não tem nada, segue a da API (publica);
+ * - leitura do perfil que falha → propaga (o gate vira `read-failed` e não
+ *   publica: fail-closed, igual à leitura da conta da API);
+ * - perfil não consultável (`chromeAuthor` null: sem credencial da página
+ *   `vjpixel`) → segue a da API. Premissa: exigir a credencial travaria toda
+ *   publicação pela API; o motivo vai pro log do chamador.
+ */
+export async function decideInstagramTimerAcrossAccounts(deps: {
+  primary: () => Promise<InstagramConfirmDecision>;
+  chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null;
+}): Promise<InstagramConfirmDecision> {
+  const primary = await deps.primary();
+  if (primary.kind !== "refuse" || (primary.cause !== "none" && primary.cause !== "no-match")) return primary;
+  if (!deps.chromeAuthor) return primary;
+  const author = await deps.chromeAuthor();
+  if (author.kind === "refuse" && (author.cause === "none" || author.cause === "no-match")) return primary;
+  return author;
 }
 
 export type InstagramTimerAlreadyMatch = "registry" | "marker" | "time-window" | "media-id";
@@ -2369,7 +2482,8 @@ const USAGE =
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
-  "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
+  "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br e perfil do @vjpixel, #11390)\n" +
+  "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
 export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "force-youtube", "keep-video"] as const;
@@ -2481,7 +2595,7 @@ async function main(): Promise<number> {
   }
 
   if (flags.has("confirm-instagram")) {
-    const result = await confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"]);
+    const result = await confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"], values["url"]);
     if (result === 0) cleanup();
     return result;
   }
@@ -2728,19 +2842,28 @@ async function main(): Promise<number> {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.
           const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
+          // Fix do review do PR #11395: o gate olha também o perfil do @vjpixel (Reels à mão com collab pendente).
+          const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
+          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não conferido antes de publicar (${chrome.unavailable ?? "sem motivo"})`);
+          const readFor = (igUserId: string, token: string) => () =>
+            readAndDecideInstagramConfirm(defaultGraphDeps, {
+              igUserId,
+              token,
+              apiVersion: igApiVersion,
+              published,
+              sinceIso: ctx.sinceIso,
+              markers: ctx.markers,
+              nowIso: new Date().toISOString(),
+              expectedAtIso: ctx.expectedAtIso,
+            });
+          const chromeReader = chrome.reader;
           const step = await instagramTimerPublishStep({
             gate: () =>
               instagramTimerGate({
                 decide: () =>
-                  readAndDecideInstagramConfirm(defaultGraphDeps, {
-                    igUserId: author.igUserId,
-                    token: author.token,
-                    apiVersion: igApiVersion,
-                    published,
-                    sinceIso: ctx.sinceIso,
-                    markers: ctx.markers,
-                    nowIso: new Date().toISOString(),
-                    expectedAtIso: ctx.expectedAtIso,
+                  decideInstagramTimerAcrossAccounts({
+                    primary: readFor(author.igUserId, author.token),
+                    chromeAuthor: chromeReader ? readFor(chromeReader.igUserId, chromeReader.token) : null,
                   }),
                 persist: (entry) => {
                   published = persist(entry);
@@ -2910,6 +3033,7 @@ async function confirmInstagram(
   sinceFlag: string | undefined,
   mediaIdFlag: string | undefined,
   editionUrlFlag: string | undefined,
+  urlFlag?: string,
 ): Promise<number> {
   const already = instagramAlreadyRegistered(published);
   if (already) {
@@ -2919,6 +3043,19 @@ async function confirmInstagram(
       console.error(`publish-shorts: o instagram já está registrado como "${e.status}", não "published" — confira na conta antes de relatar; nada foi gravado`);
     }
     return already.exitCode;
+  }
+  // #11390: o editor colou o permalink (o Reel do collab pendente, no perfil do autor).
+  if (urlFlag !== undefined) {
+    const built = instagramConfirmUrlEntry(urlFlag, new Date().toISOString());
+    if (!built.ok) {
+      console.error(`publish-shorts: ${built.error}`);
+      return 2;
+    }
+    persist(built.entry);
+    const warning = "registrado pela URL informada, sem conferir na API — confira que é o Reel desta edição";
+    console.error(`[aviso] instagram: ${warning}`);
+    console.log(JSON.stringify({ confirmed: true, id: built.entry.id, url: built.entry.url, account: "--url", warnings: [warning] }));
+    return 0;
   }
   // #10978: --since inválido falha antes de qualquer chamada à API.
   if (sinceFlag !== undefined && Number.isNaN(Date.parse(sinceFlag))) {
@@ -2939,9 +3076,7 @@ async function confirmInstagram(
   }
   const ctx = instagramConfirmContext(dir, aammdd, config, editionUrlFlag);
   if (!ctx.d1Title && !mediaIdFlag) console.error(`[aviso] instagram: sem título do D1 (${join(dir, "02-reviewed.md")}) — o marcador fica só utm_campaign/URL e a janela de horário; se recusar, use --media-id`);
-  const decision = await readAndDecideInstagramConfirm(defaultGraphDeps, {
-    igUserId: author.igUserId,
-    token: author.token,
+  const readInput = {
     apiVersion: igApiVersion,
     published,
     sinceIso: sinceFlag ?? ctx.sinceIso,
@@ -2949,15 +3084,27 @@ async function confirmInstagram(
     mediaId: mediaIdFlag ?? null,
     nowIso: new Date().toISOString(),
     expectedAtIso: ctx.expectedAtIso,
+  };
+  // #11390: o Reels do B3b é postado pela @vjpixel com a @diar.ia.br em collab;
+  // até o convite ser aceito ele só aparece no perfil do autor.
+  const { reader: chromeReader, unavailable: chromeAuthorUnavailable } = await resolveChromeAuthorReader(cfg.instagramAuthorPage, pages, igApiVersion);
+  const across = await decideInstagramConfirmAcrossAccounts({
+    primary: () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: author.igUserId, token: author.token }),
+    chromeAuthor: chromeReader ? () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: chromeReader.igUserId, token: chromeReader.token }) : null,
+    chromeAuthorUnavailable,
   });
-  const who = author.username ? `@${author.username}` : author.igUserId;
+  const decision = across.decision;
+  const reader = across.account === "chrome-author" && chromeReader ? chromeReader : author;
+  const who = reader.username ? `@${reader.username}` : across.account === "chrome-author" ? `@${INSTAGRAM_CHROME_ROUTE.authorUsername}` : reader.igUserId;
   if (decision.kind !== "register") {
     // already_registered foi tratado acima; aqui só sobra a recusa.
     const reason = decision.kind === "refuse" ? decision.reason : "já registrado";
     const candidates = decision.kind === "refuse" ? decision.candidates : [];
     console.error(`publish-shorts: ${who}: ${reason}. Nada gravado.`);
+    if (across.fallbackNote) console.error(`publish-shorts: ${across.fallbackNote}`);
     for (const c of candidates) console.error(`  candidato: --media-id ${c.id}  ${c.timestamp}  ${c.permalink ?? "(sem permalink)"}${c.matchesEdition ? "  [marcador da edição]" : ""}`);
-    console.log(JSON.stringify({ confirmed: false, reason, candidates }));
+    console.error(`publish-shorts: com o permalink em mãos, registre com --confirm-instagram --url URL (ou --mark instagram=URL)`);
+    console.log(JSON.stringify({ confirmed: false, reason, candidates, ...(across.fallbackNote ? { fallback: across.fallbackNote } : {}) }));
     return 1;
   }
   const entry = decision.entry;
@@ -2966,10 +3113,15 @@ async function confirmInstagram(
     warnings.push(`a legenda não tem o título nem o gancho do D1; registrado pelo único Reels no formato do vertical perto das ${ctx.expectedAtIso} (#10978) — confira o permalink`);
   }
   if (!entry.url) warnings.push(`a mídia ${entry.id} veio sem permalink — o id fica no registro`);
-  if (cfg.instagramCollaborators.length) {
+  // Collab esperado: na rota do Chrome é a @diar.ia.br (o post é do @vjpixel); na da API, os do config.
+  const expectedCollabs: string[] = across.account === "chrome-author" ? [INSTAGRAM_CHROME_ROUTE.collaboratorUsername] : cfg.instagramCollaborators;
+  if (across.account === "chrome-author") {
+    warnings.push(`achado no perfil do ${who} (rota do Chrome, #11390): o Reel aparece na @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} quando o convite de collab for aceito`);
+  }
+  if (expectedCollabs.length) {
     try {
-      const collab = await graphGet(defaultGraphDeps, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: author.token }, igApiVersion);
-      warnings.push(...collabInviteWarnings(collab?.data, cfg.instagramCollaborators, { reportPending: true }));
+      const collab = await graphGet(defaultGraphDeps, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: reader.token }, igApiVersion);
+      warnings.push(...collabInviteWarnings(collab?.data, expectedCollabs, { reportPending: true }));
     } catch (e) {
       warnings.push(`não deu pra conferir o collab (${(e as Error).message}) — confira no app`);
     }
