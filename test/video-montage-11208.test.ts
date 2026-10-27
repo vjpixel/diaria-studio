@@ -52,7 +52,7 @@ import {
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
 import { videoTargetOf, hasFinalInName } from "../scripts/lib/diaria/drive-video-source.ts";
-import { loadVocab, previewFileName, xmlFileName } from "../scripts/video-montagem.ts";
+import { loadVocab, main as videoMontagemMain, previewFileName, xmlFileName } from "../scripts/video-montagem.ts";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -364,9 +364,9 @@ describe("plano das sequências e xmeml (#11208)", () => {
         assert.notEqual(centerOf(0), centerOf(1), "punch-in muda o Center junto com a escala");
       }
     });
-    assert.doesNotMatch(xml, /Flop/, "sem --xml-flop o flip fica para o Premiere");
-    assert.match(buildXmeml(plans, SOURCE, FRAMING, { flopFilter: true }), /<effectid>Flop<\/effectid>/);
-    assert.doesNotMatch(buildXmeml(plans, { ...SOURCE, mirrored: false }, FRAMING, { flopFilter: true }), /Flop/);
+    // #11358: o Premiere ignora o Flop do FCP7; o XML nunca leva o flip, mesmo com bruto espelhado.
+    assert.equal(SOURCE.mirrored, true);
+    assert.doesNotMatch(xml, /Flop/, "o flip fica para o Premiere");
     // nome com & < ' continua XML válido
     const weird = { ...SOURCE, path: "G:/Drive/a&b <c> 'd'.mp4" };
     const x2 = buildXmeml([{ ...plans[0], spec: { ...plans[0].spec, name: "Diaria comentada_Youtube_V1 & <teste>" } }], weird, FRAMING);
@@ -655,5 +655,12 @@ describe("skill e fluxo do dia (#11208)", () => {
   it("CLAUDE.md e a /diaria-publica-video põem a montagem antes da publicação do vídeo", () => {
     assert.match(read("CLAUDE.md"), /\/diaria-video-montagem[\s\S]{0,300}\/diaria-publica-video[\s\S]{0,300}\/diaria-5-publicacao/);
     assert.match(read(".claude/skills/diaria-publica-video/SKILL.md"), /\/diaria-video-montagem/);
+  });
+});
+
+describe("--xml-flop removida (#11358)", () => {
+  it("build recusa a flag (também na forma --xml-flop=valor) antes de ler ou gravar qualquer coisa", async () => {
+    assert.equal(await videoMontagemMain(["build", "261027", "--xml-flop"]), 2);
+    assert.equal(await videoMontagemMain(["build", "261027", "--xml-flop=true"]), 2);
   });
 });

@@ -19,7 +19,7 @@
  *   frame AAMMDD --at S     frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
- *   build AAMMDD [--xml-flop] [--allow-missing]
+ *   build AAMMDD [--allow-missing]
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *   srt AAMMDD [--seq instagram|outras-redes] [--from-raw] [--force]
@@ -429,7 +429,7 @@ export function previewFileName(edition: string, target: SequenceTarget): string
   return `${edition} - previa ${target}.mp4`;
 }
 
-function cmdBuild(ctx: Ctx, flop: boolean, allowMissing: boolean): number {
+function cmdBuild(ctx: Ctx, allowMissing: boolean): number {
   const { file, source, plans: ps, hash } = plans(ctx);
   const { framing, assumed } = effectiveFraming(file);
   if (assumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (rosto em 48% da largura, olhos em 54% da altura)");
@@ -445,13 +445,13 @@ function cmdBuild(ctx: Ctx, flop: boolean, allowMissing: boolean): number {
     console.error(`[erro] ${problems} problema(s) acima: corrigir o blocks.json (outra tomada, intervalo maior) ou rodar com --allow-missing`);
     return 1;
   }
-  const xml = buildXmeml(ps, source, framing, { flopFilter: flop });
+  const xml = buildXmeml(ps, source, framing);
   mkdirSync(ctx.outDir, { recursive: true });
   const xmlPath = join(ctx.outDir, xmlFileName(ctx.edition));
   writeFileAtomic(xmlPath, xml);
   const pf: PlanFile = { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps };
   writeJson(f(ctx, "plan.json"), pf);
-  if (source.mirrored && !flop) console.error("[premissa] bruto espelhado: aplicar Horizontal Flip nos clipes no Premiere (o XML não leva o flip sem --xml-flop)");
+  if (source.mirrored) console.error("[premissa] bruto espelhado: aplicar Horizontal Flip nos clipes no Premiere (o Premiere ignora o Flop do XML, #11358)");
   console.log(xmlPath);
   return 0;
 }
@@ -594,7 +594,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     case "roteiro":
       return cmdRoteiro(ctx);
     case "build":
-      return cmdBuild(ctx, flags.has("xml-flop"), flags.has("allow-missing"));
+      if (flags.has("xml-flop") || "xml-flop" in values) {
+        console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
+        return 2;
+      }
+      return cmdBuild(ctx, flags.has("allow-missing"));
     case "srt":
       return cmdSrt(ctx, seq, flags.has("from-raw"));
     case "preview":
