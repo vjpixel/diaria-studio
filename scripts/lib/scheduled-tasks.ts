@@ -1180,6 +1180,47 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#10982",
   },
   {
+    name: "Diaria-Shorts-Instagram",
+    description:
+      "publica o Reels do vertical no Instagram no horário do vertical, pelo upload resumível da Graph API (sem URL pública), com o corte _Instagram_ do Drive (#11265)",
+    steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
+    logPath: "shorts/.instagram-timer.log",
+    // Diária 06:32 BRT (#11265, decisão do editor 27/10/2026: timer no 300 em
+    // vez de R2/túnel): 2 minutos depois do 1º horário do teste do vertical
+    // (#10831, `publishing.shorts.schedule.rotation_times`) — 06:31 já é do
+    // `Diaria-Shorts-LinkedIn-Profile`. Os horários em hora cheia (08:00,
+    // 12:00 e o `default_time`) caem na execução de hora em hora abaixo. O
+    // script só publica depois do horário do vertical (até 3 h de atraso;
+    // depois disso abre alarme), então rodar antes é no-op; o lock O_EXCL
+    // resolve a concorrência entre as duas. Só age com
+    // `publishing.shorts.instagram_backend: "timer-300"`. Mudou um horário do
+    // teste para fora da hora cheia? Ajustar aqui —
+    // `test/shorts-instagram-timer-11265.test.ts` trava o par. Sem
+    // `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153) arma
+    // no 300 depois do merge, como o timer do LinkedIn (#10982).
+    schedule: { kind: "daily", hour: 6, minute: 32 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11265",
+  },
+  {
+    name: "Diaria-Shorts-Instagram-Catchup",
+    description:
+      "de hora em hora: publica o Reels do vertical no Instagram quando o horário do dia é hora cheia (08:00/12:00), baixa o corte do Instagram assim que ele aparece no Drive e avisa o editor quando o Reels não saiu (#11265)",
+    steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
+    logPath: "shorts/.instagram-timer-catchup.log",
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11265",
+  },
+  {
     name: "Diaria-Threads-Personal-Token",
     description:
       "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",

@@ -31,7 +31,7 @@ function plan(extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
     reviewedMd: reviewed,
     // 261022 06:00 BRT: o horário do vertical (12:00) ainda está à frente.
     now: new Date("2026-10-22T09:00:00Z"),
-    config: {},
+    config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_collaborators: ["vjpixel"] } } },
     pages,
     instagramReady: true,
     instagramQueue: { ready: true, account: "vjpixel" },
@@ -139,5 +139,5 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
 });
 
 function shortsCfg() {
-  return { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] };
+  return { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] };
 }

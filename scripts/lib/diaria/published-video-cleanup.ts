@@ -3,7 +3,7 @@
  */
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { listShortDestinations, type ShortsConfig } from "./short-video.ts";
+import { listShortDestinations, shortInstagramVideoFileName, type ShortsConfig } from "./short-video.ts";
 import { readShortsRegistry } from "./shorts-published-store.ts";
 
 /**
@@ -121,7 +121,7 @@ function cleanupCandidates(input: CleanupInput): string[] {
     const entries = readShortsRegistry(dir, edition).entries;
     const ig = entries.find(e => e.destination === "instagram");
     if (shortsVideoTerminal(dir, edition, config)) paths.push(join(dir, `${stem}-short.mp4`));
-    if (ig?.status === "published" || ig?.status === "scheduled") paths.push(join(dir, `${stem}-short-instagram.mp4`));
+    if (ig?.status === "published" || ig?.status === "scheduled") paths.push(join(dir, shortInstagramVideoFileName(edition)));
     if (ig?.status === "published") {
       const chrome = join(dir, "_internal", `${stem}-short-instagram-chrome.mp4`);
       paths.push(chrome, `${chrome}.json`);

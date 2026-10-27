@@ -49,6 +49,7 @@ function planDiaria(duration: number) {
           schedule: SCHEDULE,
           facebook_pages: ["diaria"],
           instagram: true,
+          instagram_backend: "worker-r2",
           instagram_author_page: null,
           instagram_collaborators: ["vjpixel"],
           instagram_api_max_seconds_by_account: shorts.instagram_api_max_seconds_by_account,
