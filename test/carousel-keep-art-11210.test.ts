@@ -10,7 +10,7 @@
  * gerador pula só o destaque mantido.
  */
 
-import { describe, it, afterEach } from "node:test";
+import { describe, it, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -310,5 +310,39 @@ describe("gen-carousel-cards com exceção (#11210)", () => {
     const r = renders();
     await assert.rejects(() => genCarouselCards(dir, { render: r.render, useMelhorConfig: OFF }), /carousel-keep-art/);
     assert.equal(r.destaques.length, 0);
+  });
+});
+
+
+describe("ergonomia carousel-keep-art (#11214)", () => {
+  it("--force avisa, preserva arte/carimbo e mantém as outras gerações", async () => {
+    const dir = makeEdition({ d1: CURTO, d2: ESTOURA, d3: CURTO });
+    writeSlides(dir, "d2");
+    writeCarouselSourceHashes(dir, { d2: "antigo" });
+    writeKeepArt(dir, { d2: MOTIVO });
+    const warning = mock.method(console, "error", () => {});
+    try {
+      let calls = 0;
+      await genCarouselCards(dir, { force: true, useMelhorConfig: OFF, render: async (_text, paths) => {
+        calls++;
+        return paths;
+      } });
+      assert.equal(calls, 2);
+      assert.equal(readCarouselSourceHashes(dir).d2, "antigo");
+      assert.equal(readFileSync(join(dir, carouselSlideFilename("d2", "p1")), "utf8"), "arte-antiga");
+      assert.match(warning.mock.calls.map((c) => c.arguments.join(" ")).join("\n"), /--force.*arte mantida para d2.*remova a chave/);
+    } finally { warning.mock.restore(); }
+  });
+
+  it("avisa sobre d3 sem destaque correspondente numa edição de dois destaques", async () => {
+    const dir = makeEdition({ d1: CURTO, d2: CURTO, d3: CURTO });
+    writeFileSync(join(dir, "_internal/01-approved-capped.json"), JSON.stringify({ highlights: [{}, {}] }));
+    writeKeepArt(dir, { d3: MOTIVO });
+    const warning = mock.method(console, "error", () => {});
+    try {
+      const result = await genCarouselCards(dir, { useMelhorConfig: OFF, render: async (_text, paths) => paths });
+      assert.equal(result.generated.length, 8);
+      assert.match(warning.mock.calls.map((c) => c.arguments.join(" ")).join("\n"), /d3.*não pertence.*2 destaques.*Remova a chave/);
+    } finally { warning.mock.restore(); }
   });
 });
