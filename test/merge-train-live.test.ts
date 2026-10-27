@@ -147,6 +147,15 @@ function makePrInfo(overrides: Partial<TrainPrInfo> = {}): TrainPrInfo {
 }
 
 describe("fetchTrainPrInfo", () => {
+  it("solicita e preserva os commits usados nos trailers do lote (#11268)", () => {
+    const runner = new FakeTrainRunner();
+    const commits = [{ messageBody: "Co-Authored-By: Pessoa <p@example.com>" }];
+    runner.on("gh", (a) => a[0] === "pr" && a.includes("number,headRefName,title,body,labels,files,changedFiles,commits"), () =>
+      ok(JSON.stringify({ number: 100, headRefName: "continuo/fix-100", title: "fix: X", body: "", commits })),
+    );
+    assert.deepEqual(fetchTrainPrInfo(runner, 100).commits, commits);
+  });
+
   it("extrai headRefName/title e as issues via parseClosesIssues do body", () => {
     const runner = new FakeTrainRunner();
     runner.on("gh", (a) => a[0] === "pr" && a[1] === "view" && a[2] === "100", () =>
