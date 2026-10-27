@@ -347,11 +347,14 @@ export async function main(rootDirOverride?: string): Promise<void> {
   // `send_at`). Nunca muda o exit code do agendamento da diária, mas o
   // desfecho vai no JSON (`semanal_frio: {status, reason, broadcast_id}`) e
   // falha sai como ERRO no stderr — visível pra Etapa 6 relatar ao editor.
+  // #11294 item 2 — com o principal NÃO agendado (falha, ou desfeito pelo
+  // exit 7), a semanal só acompanha: se já estava agendada, é desagendada
+  // (senão sairia sozinha); nunca é criada.
   let semanalFrio: ReturnType<typeof summarizeSemanalFrioForSchedule> | undefined;
-  if (result.ok) {
+  {
     const log = (msg: string) => process.stderr.write(`[schedule-newsletter-kit] semanal frio: ${msg}\n`);
-    const semanal = await runSemanalFrioAfterSchedule(editionDir, log, rootDir);
-    if (semanal.status !== "disabled") {
+    const semanal = await runSemanalFrioAfterSchedule(editionDir, log, rootDir, undefined, { followOnly: !result.ok });
+    if (semanal.status !== "disabled" && semanal.status !== "nothing_to_follow") {
       semanalFrio = summarizeSemanalFrioForSchedule(semanal);
       log(`${semanal.status === "failed" ? "ERRO: " : ""}${semanal.status}${semanalFrio.reason ? ` — ${semanalFrio.reason}` : ""}`);
     }

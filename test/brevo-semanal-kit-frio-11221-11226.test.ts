@@ -437,7 +437,9 @@ describe("runEvaluation — premissa B: frio NÃO plenamente ligado (#11221 revi
           brevoPuts.push(String(init.body));
           return jsonRes(200, {});
         }
-        return jsonRes(200, { emailBlacklisted: false, listIds: [7], statistics: { messagesSent: sent, opened: [] } });
+        // #11294 item 3: a releitura pós-unlink precisa mostrar o contato fora da lista.
+        const unlinked = brevoPuts.some((b) => b.includes("unlinkListIds"));
+        return jsonRes(200, { emailBlacklisted: false, listIds: unlinked ? [] : [7], statistics: { messagesSent: sent, opened: [] } });
       },
       () => {
         const contacts = [contact("frio@x.com", "kit-sem-abertura:42")];
@@ -924,7 +926,8 @@ function semanalDeps(over: Partial<SemanalFrioPublishDeps> = {}, opts: { rereadF
     },
     scheduleBroadcast: async (id, at) => {
       scheduled.push(`${id}@${at}`);
-      sendAt.set(id, at);
+      if (at === null) sendAt.delete(id); // #11294: `null` desagenda
+      else sendAt.set(id, at);
     },
     deleteBroadcast: async (id) => void deleted.push(id),
     raiseAlarm: (title) => void alarms.push(title),
