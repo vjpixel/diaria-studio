@@ -85,9 +85,14 @@ import {
   readCarouselSourceHashes,
   writeCarouselSourceHashes,
   findOverflowingCarouselSlides,
+  readCarouselCardParagraphs, // #11211
+  writeCarouselCardParagraphs, // #11211
+  resolveCarouselCardText, // #11211
+  carouselCardParagraphs, // #11211
   DAILY_CAROUSEL_BODY_SIZE,
   DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET,
   type CarouselSourceHashes,
+  type CarouselCardParagraphs, // #11211
 } from "./lib/daily-carousel-card.ts";
 
 export interface GenCarouselCardsResult {
@@ -151,6 +156,15 @@ export async function genCarouselCards(
   // #8681: override de teste do slide CTA (lança se o JSON estiver malformado).
   const ctaOverride = readInstagramTestOverride(editionDir)?.cta_slide ?? null;
   const hashes: CarouselSourceHashes = {};
+  // #11211: divisão em cards gravada no último render. Se o `## d{N}` só foi
+  // reparagrafado (mesmas palavras), os cards seguem essa divisão — a arte não
+  // muda e o 3º card não engole os parágrafos extras da legenda.
+  const storedParagraphs = readCarouselCardParagraphs(editionDir);
+  const cardParagraphs: CarouselCardParagraphs = {};
+  const cardTextOf = (d: (typeof destaques)[number]): string | null => {
+    const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
+    return dText ? resolveCarouselCardText(dText.trim(), storedParagraphs) : dText;
+  };
   // #11210: destaques cuja arte o editor decidiu MANTER ficam fora da pré-passada
   // de overflow e do render — senão o texto reparagrafado deles abortava a
   // geração de TODOS (inclusive o 4º post). Lança se o JSON estiver malformado.
@@ -193,9 +207,9 @@ export async function genCarouselCards(
   const transbordam: { destaque: string; slides: ReturnType<typeof findOverflowingCarouselSlides> }[] = [];
   for (const d of destaques) {
     if (keepArt.has(d)) continue; // #11210: arte mantida — reportado como `skipped` abaixo
-    const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
+    const dText = cardTextOf(d);
     if (!dText) continue; // reportado como `skipped` no loop principal abaixo
-    const slides = findOverflowingCarouselSlides(dText.trim(), ctaOverride);
+    const slides = findOverflowingCarouselSlides(dText, ctaOverride);
     if (slides.length > 0) transbordam.push({ destaque: d, slides });
   }
   if (transbordam.length > 0) {
@@ -226,7 +240,7 @@ export async function genCarouselCards(
       generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => resolve(editionDir, carouselSlideFilename(d, slot))));
       continue;
     }
-    const dText = slideSourceText(editionDir, d, section ? extractDestaqueBlock(section, d) : null);
+    const dText = cardTextOf(d);
     if (!dText) {
       skipped.push({ destaque: d, reason: `bloco '## ${d}' não encontrado em '# Social' de 03-social.md` });
       continue;
@@ -239,8 +253,9 @@ export async function genCarouselCards(
     // #6064 item 1: idempotência por CONTEÚDO, não por existência de arquivo.
     // Texto igual ao do carimbo → pula; texto editado depois (Studio, Stage 4)
     // → regera, senão a arte publicada fica com o texto pré-edição.
-    const hash = hashCarouselSlideTexts(dText.trim(), ctaOverride);
+    const hash = hashCarouselSlideTexts(dText, ctaOverride);
     hashes[d] = hash;
+    cardParagraphs[d] = carouselCardParagraphs(dText);
     const allSlidesExist = CAROUSEL_SLIDE_SLOTS.every((slot) => existsSync(outPaths[slot]));
     if (!shouldRenderCarouselSlides({ allSlidesExist, storedHash: storedHashes[d], currentHash: hash, force: opts.force })) {
       generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => outPaths[slot]));
@@ -248,7 +263,7 @@ export async function genCarouselCards(
     }
     if (allSlidesExist && storedHashes[d] !== hash) refreshed.push(d);
 
-    const rendered = await render(dText.trim(), outPaths, ctaOverride);
+    const rendered = await render(dText, outPaths, ctaOverride);
     generated.push(...CAROUSEL_SLIDE_SLOTS.map((slot) => rendered[slot]));
     // #6068: carimbo gravado LOGO APÓS cada render bem-sucedido, não num
     // único write no fim. `renderCarouselSlides` escreve os 4 slots em
@@ -258,11 +273,15 @@ export async function genCarouselCards(
     // até alguém re-rodar. O merge de `writeCarouselSourceHashes` torna a
     // escrita incremental barata e idempotente.
     writeCarouselSourceHashes(editionDir, { [d]: hash });
+    writeCarouselCardParagraphs(editionDir, { [d]: cardParagraphs[d] }); // #11211
   }
 
   // Destaques PULADOS (carimbo já batia) também precisam constar — cobre a
   // edição pré-#6064 cujo carimbo nasce agora, sem re-render.
   if (Object.keys(hashes).length > 0) writeCarouselSourceHashes(editionDir, hashes);
+  // #11211: idem para a divisão em cards — destaque pulado cuja arte já batia
+  // passa a ter a divisão gravada (edição anterior ao #11211).
+  if (Object.keys(cardParagraphs).length > 0) writeCarouselCardParagraphs(editionDir, cardParagraphs);
 
   const result: GenCarouselCardsResult = { generated, skipped, refreshed };
   // #9568: 4º post — só quando o slot está definido. Desligado → nenhum campo
