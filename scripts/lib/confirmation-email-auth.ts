@@ -3,7 +3,7 @@
  *
  * Autenticação do remetente do e-mail de confirmação do double opt-in, lida
  * do DNS público, sem enviar e-mail nenhum. O e-mail sai do Kit com From
- * `oi@news.diar.ia.br` (`docs/kit-doi-confirmation-copy.md`), então a
+ * `oi` em `news.diar.ia.br` (`docs/kit-doi-confirmation-copy.md`), então a
  * entrega depende de três registros desse domínio:
  *
  * - **DKIM** — `cka._domainkey.news.diar.ia.br`, CNAME para a chave que o

@@ -2,7 +2,7 @@
 /**
  * confirmation-email-auth-report.ts (#8548 item 2) — DKIM, SPF do
  * Return-Path e DMARC do remetente do e-mail de confirmação do double
- * opt-in (`oi@news.diar.ia.br`, Kit), lidos do DNS público. Não envia
+ * opt-in (`oi` em `news.diar.ia.br`, Kit), lidos do DNS público. Não envia
  * e-mail. Lógica e limites em `scripts/lib/confirmation-email-auth.ts`.
  *
  * Uso: `npx tsx scripts/confirmation-email-auth-report.ts [--domain D] [--json]`
