@@ -34,12 +34,17 @@
  * substituído e resolvido) — a página de "tag de e-mail não resolvida" (400)
  * significa que o Kit NÃO substituiu a merge tag.
  *
+ * `--push` (fora do `--test-send`) exige o marcador `revisado` em
+ * `ballot.json`, com hash igual ao texto da cédula local e da do KV (#11199,
+ * `scripts/lib/voto-tema-revisao.ts`). Sem ele, recusa antes de tocar o Kit.
+ *
  * Uso:
  *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610 --dry-run
  *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610                      # cria rascunho (eleitorado inteiro)
  *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610 --audience pendentes  # rascunho do lembrete
  *   npx tsx scripts/publish-voto-tema-kit.ts --ciclo 2610 --test-send --push    # teste da merge tag (#9261)
  */
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -75,6 +80,8 @@ import {
   resolveVotoTemaTagName,
 } from "./lib/voto-tema-channel.ts";
 import { VOTO_TEMA_PENDENTE_TAG } from "./voto-tema-lembrete.ts";
+import { ballotInputPath } from "./voto-tema-open.ts";
+import { checkRevisao, type CedulaTexto, type RevisaoCheck } from "./lib/voto-tema-revisao.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[publish-voto-tema-kit]";
@@ -218,6 +225,17 @@ export async function runTestSend(
   return { broadcastId: created.id, tagId, members: members.length, sendAt };
 }
 
+/**
+ * #11199 — confere o marcador `revisado` (Humanizador + Clarice) de
+ * `ballot.json` contra o texto da cédula local e o da cédula do KV, que é a
+ * renderizada no e-mail. Lê o arquivo; a regra em si é `checkRevisao`.
+ */
+export function checkCedulaRevisada(dataDir: string, ciclo: string, kvBallot: CedulaTexto): RevisaoCheck {
+  const path = ballotInputPath(dataDir, ciclo);
+  const local = existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as CedulaTexto & { revisado?: unknown }) : null;
+  return checkRevisao(local, kvBallot);
+}
+
 export interface RunOptions {
   ciclo: string;
   audience: "eleitorado" | "pendentes";
@@ -285,6 +303,14 @@ export async function run(options: RunOptions): Promise<void> {
         })()
       : VOTO_TEMA_PENDENTE_TAG;
 
+  // #11199: rascunho real (eleitorado ou lembrete) só com a cédula revisada.
+  // O --test-send fica de fora: vai só pra tag de teste e prova a merge tag.
+  const revisao = checkCedulaRevisada(dataDir, ciclo, ballot);
+  if (!revisao.ok) {
+    if (!dryRun) throw new VotoTemaGuardError(`revisão de texto pendente: ${revisao.reason}`);
+    log(`[DRY RUN] AVISO: --push vai recusar — ${revisao.reason}`);
+  }
+
   const html = renderVotoTemaEmailHtml(ciclo, ballot);
   const subject =
     audience === "eleitorado"
@@ -295,6 +321,7 @@ export async function run(options: RunOptions): Promise<void> {
     log(`[DRY RUN] assunto: ${subject}`);
     log(`[DRY RUN] audiência: tag "${tagName}"`);
     log(`[DRY RUN] ${html.length} bytes de HTML, ${ballot.opcoes.length} opção(ões).`);
+    if (revisao.ok) log(`[DRY RUN] cédula revisada (Humanizador + Clarice) em ${revisao.marker.em}.`);
     log("[DRY RUN] broadcast que SERIA criado: rascunho (send_at: null), public: false.");
     return;
   }
