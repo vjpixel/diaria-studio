@@ -37,7 +37,7 @@ O modelo é faster-whisper `large-v3-turbo` na CPU em int8 (a CUDA do Neo não f
 npx tsx scripts/video-montagem.ts transcribe {AAMMDD} [--source PATH] [--force]
 ```
 
-Acha o bruto (o maior `.mp4`/`.mov` solto na pasta da edição, fora de `Final/`, sem "final" nem "previa" no nome; com mais de um candidato sai `[aviso]` listando todos, e `--source PATH` escolhe outro), lê fps/resolução/duração (`source.json`, a fonte única do bruto), extrai o áudio em 16 kHz mono, mede o loudness (`loudness.json`), detecta os silêncios (`silencedetect` -45 dB, 0,45 s: `silences.json`) e transcreve com tempo por palavra (`transcript.json`, alguns minutos). Transcrição sem nenhuma palavra é erro. Bruto abaixo de -24 LUFS sai `[aviso]` (a 261027 chegou a -31, contra -21 a -23 nos finais anteriores): relatar no fim, a prévia já sai normalizada.
+Acha o bruto (o maior `.mp4`/`.mov` solto na pasta da edição, fora de `Final/`, sem "final" nem "previa" no nome; com mais de um candidato sai `[aviso]` listando todos, e `--source PATH` escolhe outro), lê fps/resolução/duração (`source.json`, a fonte única do bruto), extrai o áudio em 16 kHz mono, mede o loudness (`loudness.json`), detecta os silêncios (`silencedetect`, 0,45 s: `silences.json`) e transcreve com tempo por palavra (`transcript.json`, alguns minutos). O limiar do silêncio é relativo ao loudness do bruto (#11351): o loudness integrado menos 25 dB, entre -45 dB (o piso, que serviu ao bruto baixo da 261027) e -25 dB; o bruto quente da 261028 (-9,9 LUFS) dá -35 dB, onde o -45 fixo achava 1 silêncio em 21 min. `--silence-db -35` sobrepõe; o limiar usado fica em `silences.meta.json` e mudar o limiar refaz só os silêncios. Transcrição sem nenhuma palavra é erro. Bruto abaixo de -24 LUFS sai `[aviso]` (a 261027 chegou a -31, contra -21 a -23 nos finais anteriores), e também bruto acima de -14 LUFS ou com true peak ≥ 0 dBTP (provável clipping, a 261028): relatar no fim, a prévia já sai normalizada.
 
 ## Passo 2 — Decupagem (Gate 1)
 
@@ -61,7 +61,7 @@ Imprime a tabela (tempo, fala, sugestão, decisão em branco) e grava `decupagem
 npx tsx scripts/video-montagem.ts roteiro {AAMMDD}
 ```
 
-Resolve as tomadas (erro lista todos os itens com problema de uma vez: frase sem tomada completa, intervalo além do bruto) e imprime o roteiro das 3 versões com a duração de cada bloco e a tomada usada:
+Resolve as tomadas (erro lista todos os itens com problema de uma vez: frase sem tomada completa, intervalo além do bruto) e imprime o roteiro das 3 versões com a duração de cada bloco e a tomada usada. Item cuja fala ouvida difere do texto pedido (palavra trocada, engolida ou a mais que o casamento tolerou) sai com a linha `**fala difere**` e o que foi ouvido, e como `[aviso]` no stderr: mostrar ao editor no Gate 2 (#11362). Frase com menos de 8 palavras aceita uma tolerância só, e a palavra trocada só se parecida com a do roteiro ("Fotos"/"Photos"), nunca uma troca de sentido ("médio"/"baixo", 261028):
 
 | Versão | Sequência | Ordem |
 |---|---|---|
@@ -79,7 +79,7 @@ npx tsx scripts/video-montagem.ts build {AAMMDD} [--xml-flop] [--allow-missing]
 
 Grava `{AAMMDD} - montagem (importar no Premiere).xml` na pasta da edição (xmeml v4, um arquivo de mídia, vídeo e áudio linkados) e `plan.json`. Em cada bloco os silêncios de 0,8 s ou mais saem, com 0,2 s de respiro de cada lado; clipes com menos de 0,6 s são descartados; o fecho segura 0,5 s depois da ÚLTIMA PALAVRA, sem passar do começo da palavra seguinte do bruto; a escala alterna clipe a clipe (punch-in: 50/62 no horizontal, 115/130 nas verticais; bruto menor que 4K sobe a escala para manter a proporção); cada clipe leva o Center calculado do rosto (olhos a ~40% da altura). O stderr lista clipes e duração por sequência.
 
-Bloco da ordem sem item no `blocks.json`, item que some inteiro no corte ou palavra que fica fora dos clipes é **erro** (exit 1, nada gravado): corrigir o `blocks.json` (outra tomada, intervalo maior). `--allow-missing` grava assim mesmo, só quando a falta é intencional e foi dita ao editor.
+Bloco da ordem sem item no `blocks.json`, item que some inteiro no corte ou palavra que fica fora dos clipes é **erro** (palavra que o Whisper esticou por cima da pausa, com o trecho fora dos clipes dentro de um silêncio detectado, não conta, #11351) (exit 1, nada gravado): corrigir o `blocks.json` (outra tomada, intervalo maior). `--allow-missing` grava assim mesmo, só quando a falta é intencional e foi dita ao editor.
 
 ## Passo 5 — Legendas das verticais
 

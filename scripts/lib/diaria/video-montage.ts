@@ -68,8 +68,30 @@ const round3 = (x: number) => Math.round(x * 1000) / 1000;
 
 // ── Silêncios e fala ──────────────────────────────────────────────────────
 
-/** Parâmetros do `silencedetect` da 261027 (#11208). */
+/**
+ * Parâmetros do `silencedetect` da 261027 (#11208). `noiseDb` é o limiar
+ * quando o loudness do bruto não foi medido, e o PISO do limiar relativo
+ * (`silenceNoiseDb`, #11351).
+ */
 export const SILENCE_DETECT = { noiseDb: -45, minDurationS: 0.45 } as const;
+
+/**
+ * Limiar relativo do silêncio (#11351): o loudness integrado do bruto menos
+ * `belowLufsDb`, entre `noiseDb` de `SILENCE_DETECT` (-45, o da 261027, bruto
+ * baixo) e `maxDb`. Na 261028 o bruto veio a -9,9 LUFS e o -45 fixo achou 1
+ * silêncio em 21 min; -35 achou 120.
+ */
+export const SILENCE_RELATIVE = { belowLufsDb: 25, maxDb: -25 } as const;
+
+export type SilenceThreshold = { noiseDb: number; how: "override" | "relative" | "default" };
+
+/** Limiar do `silencedetect` para este bruto: `overrideDb` (--silence-db) vence; sem loudness medido, -45. */
+export function silenceNoiseDb(m: LoudnessMeasure | null, overrideDb?: number): SilenceThreshold {
+  if (overrideDb !== undefined) return { noiseDb: overrideDb, how: "override" };
+  if (!m || !Number.isFinite(m.inputI)) return { noiseDb: SILENCE_DETECT.noiseDb, how: "default" };
+  const rel = Math.round(m.inputI - SILENCE_RELATIVE.belowLufsDb);
+  return { noiseDb: Math.min(SILENCE_RELATIVE.maxDb, Math.max(SILENCE_DETECT.noiseDb, rel)), how: "relative" };
+}
 
 /**
  * Silêncios a partir do stderr do `ffmpeg -af silencedetect`. Linhas
@@ -142,6 +164,53 @@ export function normalizeToken(t: string): string {
 
 export function tokenize(text: string): string[] {
   return text.split(/\s+/).map(normalizeToken).filter(Boolean);
+}
+
+/**
+ * Texto de uma lista de palavras do Whisper, unidas por espaço, colando ao
+ * número anterior o pedaço que o Whisper separa (#11360): "6" ".1" → "6.1",
+ * "53" ",6" "%" → "53,6%". `%` cola sempre; `.`/`,` seguido de dígito só
+ * depois de um token que termina em dígito.
+ */
+export function joinWordTexts(texts: string[]): string {
+  let out = "";
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (!t) continue;
+    if (out && (t.startsWith("%") || (/^[.,]\d/.test(t) && /\d$/.test(out)))) out += t;
+    else out += (out ? " " : "") + t;
+  }
+  return out;
+}
+
+/**
+ * Junta palavras do Whisper que, coladas, formam um token do roteiro com
+ * número ("GPT" "6" ".1" → "GPT-6.1"; "53" ",6" "%" → "53,6%"), para o
+ * alinhamento palavra a palavra casar o token inteiro (#11360). Só junta
+ * quando o token do roteiro tem dígito (um "a" + "o" nunca vira "ao"). A
+ * palavra juntada vai do início da 1ª ao fim da última.
+ */
+export function mergeSplitNumberTokens(words: Word[], scriptTokens: string[]): Word[] {
+  const targets = new Set(scriptTokens.filter((t) => /\d/.test(t)).map(normalizeToken).filter(Boolean));
+  if (targets.size === 0) return words.map((w) => ({ ...w }));
+  const out: Word[] = [];
+  for (let i = 0; i < words.length; ) {
+    let merged = false;
+    for (const n of [3, 2]) {
+      if (i + n > words.length) continue;
+      const slice = words.slice(i, i + n);
+      const own = normalizeToken(slice[0].text);
+      if (targets.has(own)) break; // a 1ª palavra já é o token inteiro
+      if (targets.has(slice.map((w) => normalizeToken(w.text)).join(""))) {
+        out.push({ start: slice[0].start, end: slice[n - 1].end, text: joinWordTexts(slice.map((w) => w.text)) });
+        i += n;
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) out.push({ ...words[i++] });
+  }
+  return out;
 }
 
 function levenshtein(a: string, b: string): number {
@@ -221,6 +290,41 @@ export function alignTokens(a: string[], b: string[], match: TokenMatcher = toke
   return pairs;
 }
 
+/**
+ * A fala ouvida (`heard`, tokens) diz o mesmo que o texto pedido (`wanted`)?
+ * Iguais palavra a palavra pelo `match` (acento, plural, "pra", aliases), ou
+ * iguais com tudo colado ("GPT 5" × "GPT-5"). Palavra trocada, engolida ou a
+ * mais = diferente (#11362).
+ */
+export function sameSpeech(heard: string[], wanted: string[], match: TokenMatcher = tokensMatch): boolean {
+  let i = 0;
+  let j = 0;
+  // Quantos tokens de `xs`, a partir de `k`, colados dão `target` (2 ou 3; 0 = nenhum).
+  const glue = (xs: string[], k: number, target: string) =>
+    k + 1 < xs.length && xs[k] + xs[k + 1] === target ? 2 : k + 2 < xs.length && xs[k] + xs[k + 1] + xs[k + 2] === target ? 3 : 0;
+  while (i < heard.length && j < wanted.length) {
+    if (match(heard[i], wanted[j])) {
+      i++;
+      j++;
+      continue;
+    }
+    const gh = glue(heard, i, wanted[j]);
+    if (gh) {
+      i += gh;
+      j++;
+      continue;
+    }
+    const gw = glue(wanted, j, heard[i]);
+    if (gw) {
+      i++;
+      j += gw;
+      continue;
+    }
+    return false;
+  }
+  return i === heard.length && j === wanted.length;
+}
+
 // ── Tomadas ───────────────────────────────────────────────────────────────
 
 /** Margens do corte de uma tomada (premissa #11208, medidas na 261027). */
@@ -235,6 +339,15 @@ export const TAKE_DEFAULTS = {
   maxGapS: 2.5,
   /** Fração mínima das palavras da frase que a tomada precisa casar. */
   minRatio: 0.8,
+  /**
+   * Frase com menos palavras que isso é "curta" (#11362): aceita UMA tolerância
+   * só (palavra engolida, a mais, ou trocada por uma parecida), nunca uma troca
+   * de sentido. Na 261028, "com esforço médio de raciocínio," casou com "com
+   * baixo esforço de raciocínio," (palavra a mais + palavra engolida = troca).
+   */
+  shortPhraseTokens: 8,
+  /** Na frase curta, a palavra trocada só vale a até esta distância de edição ("Fotos" × "Photos" = 2; "médio" × "baixo" = 5). */
+  shortSwapMaxEdits: 2,
 } as const;
 
 export interface Take {
@@ -259,8 +372,12 @@ export interface TakeMatchOptions {
  * vocabulário aplicado, ver `resolveBlocks`). Uma tomada começa numa palavra
  * que casa com a 1ª palavra da frase (ou com a 2ª, se o Whisper engoliu a 1ª)
  * e segue casando em ordem. Tolera os erros comuns do Whisper:
- *   - 1 palavra inserida, 1 omitida ou 1 TROCADA (por tomada, cada);
- *   - palavra partida ou juntada ("GPT 5" × "GPT-5": tokens concatenados);
+ *   - 1 palavra inserida, 1 omitida ou 1 TROCADA (por tomada, cada); na frase
+ *     CURTA (`shortPhraseTokens`, #11362) só UMA dessas no total, e a trocada
+ *     só se parecida com a do roteiro (`shortSwapMaxEdits`): frase curta com
+ *     uma palavra de sentido trocada é OUTRA frase, não a tomada dela;
+ *   - palavra partida ou juntada ("GPT 5" × "GPT-5", "GPT 6 .1" × "GPT-6.1":
+ *     2 ou 3 tokens concatenados, #11360);
  *   - a última palavra da frase omitida (completa com todas menos a última,
  *     se ainda casar `minRatio` das palavras).
  * Encerra numa pausa maior que `maxGapS`, numa palavra que não casa, ou
@@ -278,12 +395,20 @@ export function findTakes(words: Word[], phrase: string, opts: TakeMatchOptions 
   const eq = opts.match ?? tokensMatch;
   const maxGap = opts.maxGapS ?? TAKE_DEFAULTS.maxGapS;
   const minRatio = opts.minRatio ?? TAKE_DEFAULTS.minRatio;
+  const short = P.length < TAKE_DEFAULTS.shortPhraseTokens;
   const restarts = (k: number, p: number) =>
     P.length > 1 && p > 0 && eq(W[k], P[0]) && !eq(W[k], P[p]) && k + 1 < W.length && eq(W[k + 1], P[1]);
+  // Quantos tokens do transcript, juntos, formam o token `target` do roteiro
+  // (3 antes de 2: "53" ",6" "%" → "536" leva o "%" junto). 0 = nenhum.
+  const glued = (k: number, target: string): number => {
+    if (k + 2 < W.length && W[k] + W[k + 1] + W[k + 2] === target) return 3;
+    if (k + 1 < W.length && W[k] + W[k + 1] === target) return 2;
+    return 0;
+  };
   const takes: Take[] = [];
   for (let i = 0; i < W.length; i++) {
     let p: number;
-    if (eq(W[i], P[0]) || (i + 1 < W.length && W[i] + W[i + 1] === P[0])) p = 0;
+    if (eq(W[i], P[0]) || glued(i, P[0]) > 0) p = 0;
     else if (P.length > 2 && eq(W[i], P[1]) && !(i > 0 && eq(W[i - 1], P[0]))) p = 1;
     else continue;
     let k = i;
@@ -292,37 +417,48 @@ export function findTakes(words: Word[], phrase: string, opts: TakeMatchOptions 
     let swaps = 0;
     let skips = 0;
     let inserts = 0;
+    // Frase curta: uma tolerância só, somando as três (#11362).
+    const canTolerate = () => !short || swaps + skips + inserts === 0;
     while (p < P.length && k < W.length) {
       if (k > i && words[k].start - words[k - 1].end > maxGap) break;
       if (k > i && restarts(k, p)) break;
+      const g = eq(W[k], P[p]) ? 0 : glued(k, P[p]);
       if (eq(W[k], P[p])) {
         matched++;
         last = k;
         p++;
         k++;
-      } else if (k + 1 < W.length && W[k] + W[k + 1] === P[p]) {
-        // "GPT 5" ouvido, "GPT-5" no roteiro
+      } else if (g > 0) {
+        // "GPT 5" ouvido, "GPT-5" no roteiro; "GPT 6 .1" × "GPT-6.1" (#11360)
         matched++;
-        last = k + 1;
+        last = k + g - 1;
         p++;
-        k += 2;
+        k += g;
       } else if (p + 1 < P.length && W[k] === P[p] + P[p + 1]) {
         matched += 2;
         last = k;
         p += 2;
         k++;
-      } else if (skips < 1 && p + 1 < P.length && eq(W[k], P[p + 1])) {
+      } else if (skips < 1 && canTolerate() && p + 1 < P.length && eq(W[k], P[p + 1])) {
         // palavra da frase engolida
         skips++;
         matched++;
         last = k;
         p += 2;
         k++;
-      } else if (inserts < 1 && k > i && k + 1 < W.length && eq(W[k + 1], P[p])) {
+      } else if (inserts < 1 && canTolerate() && k > i && k + 1 < W.length && eq(W[k + 1], P[p])) {
         // palavra a mais no meio
         inserts++;
         k++;
-      } else if (swaps < 1 && k > i && p + 1 < P.length && k + 1 < W.length && eq(W[k + 1], P[p + 1])) {
+      } else if (
+        swaps < 1 &&
+        canTolerate() &&
+        k > i &&
+        p + 1 < P.length &&
+        k + 1 < W.length &&
+        eq(W[k + 1], P[p + 1]) &&
+        (!short || levenshtein(canonical(W[k]), canonical(P[p])) <= TAKE_DEFAULTS.shortSwapMaxEdits)
+      ) {
         // palavra trocada ("Fotos" no lugar de "Photos"); nunca na última
         // posição, senão a 1ª palavra da fala seguinte entraria no corte
         swaps++;
@@ -399,7 +535,7 @@ export function chooseTake(words: Word[], phrase: string, opts: TakeMatchOptions
     takeNumber: idx + 1,
     interval: takeInterval(words, take),
     completeTakes: complete.length,
-    text: words.slice(take.firstWord, take.lastWord + 1).map((w) => w.text.trim()).join(" "),
+    text: joinWordTexts(words.slice(take.firstWord, take.lastWord + 1).map((w) => w.text)),
   };
 }
 
@@ -729,6 +865,12 @@ export function defaultSequences(version = "V1"): SequenceSpec[] {
 export type ResolvedItem = {
   interval: Interval;
   text: string;
+  /**
+   * A fala ouvida no trecho, só quando difere do `text` pedido (#11362): o
+   * `roteiro` mostra a diferença no Gate 2 em vez de o casamento tolerante
+   * esconder uma palavra trocada.
+   */
+  heard?: string;
   /** Palavras do bruto dentro do intervalo (meio da palavra dentro). */
   words: Word[];
   /** Fim da última palavra dita no trecho; null sem palavra. */
@@ -762,6 +904,14 @@ export function resolveBlocks(
   const blocks: Partial<Record<BlockKey, ResolvedItem[]>> = {};
   const errors: string[] = [];
   const limitAfter = (idx: number) => (idx < words.length ? words[idx].start - guard : opts.durationS);
+  // A fala ouvida, quando ela difere do texto pedido (#11362); undefined quando bate.
+  const heardIfDiffers = (label: string, wanted: string | undefined, ws: Word[]): string | undefined => {
+    if (wanted === undefined || ws.length === 0) return undefined;
+    const heard = joinWordTexts(ws.map((w) => w.text));
+    if (sameSpeech(tokenize(heard), tokenize(wanted), match)) return undefined;
+    warnings.push(`${label}: a fala ouvida difere do texto pedido: "${heard}" (pedido: "${wanted.trim()}")`);
+    return heard;
+  };
   for (const [key, items] of Object.entries(file.blocks) as Array<[BlockKey, BlockItem[]]>) {
     const out: ResolvedItem[] = [];
     blocks[key] = out;
@@ -773,9 +923,11 @@ export function resolveBlocks(
         const inside = idx.map(([w]) => w);
         const lastIdx = idx.length ? idx[idx.length - 1][1] : -1;
         const nextIdx = lastIdx >= 0 ? lastIdx + 1 : words.findIndex((w) => w.start >= it.end);
+        const heard = heardIfDiffers(label, it.text, inside);
         out.push({
           interval: { start: it.start, end: it.end },
-          text: it.text ?? inside.map((w) => w.text.trim()).join(" "),
+          text: it.text ?? joinWordTexts(inside.map((w) => w.text)),
+          ...(heard !== undefined ? { heard } : {}),
           words: inside,
           lastWordEnd: inside.length ? inside[inside.length - 1].end : null,
           holdLimit: round3(Math.min(opts.durationS, nextIdx < 0 ? opts.durationS : limitAfter(nextIdx))),
@@ -785,10 +937,13 @@ export function resolveBlocks(
       }
       const c = chooseTake(words, it.text, { take: it.take, match });
       if (!c.ok) return void errors.push(`${label}: ${c.reason}`);
+      const takeWords = words.slice(c.take.firstWord, c.take.lastWord + 1);
+      const heard = heardIfDiffers(label, it.text, takeWords);
       out.push({
         interval: c.interval,
         text: it.text.trim(),
-        words: words.slice(c.take.firstWord, c.take.lastWord + 1),
+        ...(heard !== undefined ? { heard } : {}),
+        words: takeWords,
         lastWordEnd: words[c.take.lastWord].end,
         holdLimit: round3(Math.min(opts.durationS, limitAfter(c.take.lastWord + 1))),
         how: "take",
@@ -827,12 +982,36 @@ export interface SequencePlan {
 }
 
 /**
+ * A palavra está no vídeo mesmo com o meio fora dos clipes (#11351): o Whisper
+ * estica a palavra por cima da pausa seguinte ("medida" em 1035,2–1036,2 s com
+ * silêncio em 1035,5–1036,8 s), o corte do silêncio passa no meio dela e o
+ * áudio da palavra continua no clipe. Coberta = parte dela dentro de um clipe
+ * E todo o resto dentro de silêncios detectados. Palavra sem nada dentro dos
+ * clipes continua perdida.
+ */
+export function wordCoveredBySilence(w: Interval, parts: Interval[], silences: Interval[], tolS = 1e-6): boolean {
+  const sorted = [...parts].sort((a, b) => a.start - b.start);
+  if (!sorted.some((p) => Math.min(w.end, p.end) - Math.max(w.start, p.start) > tolS)) return false;
+  // Pedaços da palavra fora dos clipes.
+  const gaps: Interval[] = [];
+  let cur = w.start;
+  for (const p of sorted) {
+    if (p.end <= cur || p.start >= w.end) continue;
+    if (p.start > cur) gaps.push({ start: cur, end: Math.min(p.start, w.end) });
+    cur = Math.max(cur, p.end);
+  }
+  if (cur < w.end) gaps.push({ start: cur, end: w.end });
+  return gaps.every((g) => g.end - g.start <= tolS || silences.some((s) => s.start <= g.start + tolS && s.end >= g.end - tolS));
+}
+
+/**
  * Clipes de uma sequência: cada item do bloco vira os trechos de fala dele
  * (`speechParts`), a escala alterna base/punch-in clipe a clipe. No bloco de
  * fecho, o último trecho termina `FECHO_HOLD_S` depois da ÚLTIMA PALAVRA, preso
  * antes da palavra seguinte do bruto (`holdLimit`), e o descarte de clipe curto
  * vem depois desse respiro. Item que some no corte, ou palavra que fica de
- * fora, vai para `dropped`.
+ * fora, vai para `dropped` (palavra esticada sobre a pausa não conta, ver
+ * `wordCoveredBySilence`).
  */
 export function buildSequencePlan(
   spec: SequenceSpec,
@@ -870,7 +1049,9 @@ export function buildSequencePlan(
         dropped.push(`${key}[${idx}]: some no corte (fala abaixo de ${minClip} s depois de tirar os silêncios)`);
         return;
       }
-      const lost = it.words.filter((w) => !parts.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end));
+      const lost = it.words.filter(
+        (w) => !parts.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, parts, silences),
+      );
       if (lost.length) dropped.push(`${key}[${idx}]: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
       for (const p of parts) {
         const frameIn = Math.round(p.start * fps);
@@ -1073,8 +1254,10 @@ export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target
  */
 export function alignPunctuationToScript(words: Word[], script: string, aliases: VocabAlias[] = []): Word[] {
   const raw = script.split(/\s+/).filter((t) => normalizeToken(t));
-  const pairs = alignTokens(words.map((w) => normalizeToken(w.text)), raw.map(normalizeToken), makeMatcher(aliases));
-  const out = words.map((w) => ({ ...w, text: w.text.trim() }));
+  // Número partido pelo Whisper ("GPT" "6" ".1") vira 1 palavra antes de casar com "GPT-6.1" (#11360).
+  const merged = mergeSplitNumberTokens(words, raw);
+  const pairs = alignTokens(merged.map((w) => normalizeToken(w.text)), raw.map(normalizeToken), makeMatcher(aliases));
+  const out = merged.map((w) => ({ ...w, text: w.text.trim() }));
   for (const [i, j] of pairs) out[i].text = raw[j];
   return out;
 }
@@ -1091,7 +1274,7 @@ export function segmentCues(words: Word[], opts: { maxChars?: number; commaMinCh
   const commaMin = opts.commaMinChars ?? CUE_DEFAULTS.commaMinChars;
   const cues: Word[][] = [];
   let cur: Word[] = [];
-  const textOf = (ws: Word[]) => ws.map((x) => x.text).join(" ");
+  const textOf = (ws: Word[]) => joinWordTexts(ws.map((x) => x.text));
   for (const w of words) {
     if (cur.length && textOf([...cur, w]).length > maxChars) {
       cues.push(cur);
@@ -1138,7 +1321,7 @@ export function cuesToSrt(cues: Word[][], opts: { tailS?: number; wrapOver?: num
       const last = c[c.length - 1];
       const next = cues[i + 1];
       const end = next ? Math.min(last.end + tail, next[0].start) : last.end;
-      const text = wrapCueText(c.map((w) => w.text).join(" "), opts.wrapOver);
+      const text = wrapCueText(joinWordTexts(c.map((w) => w.text)), opts.wrapOver);
       return `${i + 1}\n${srtTimestamp(c[0].start)} --> ${srtTimestamp(end)}\n${text}\n`;
     })
     .join("\n");
@@ -1212,6 +1395,8 @@ export function reviewPreview(input: {
   aliases?: VocabAlias[];
 }): ReviewFinding[] {
   const tol = input.cutToleranceS ?? 0.4;
+  // "GPT 6 .1" ouvido = "GPT-6.1" do roteiro, não fala-extra + fala-faltando (#11360).
+  input = { ...input, words: mergeSplitNumberTokens(input.words, input.script.split(/\s+/)) };
   const W = input.words.map((w) => normalizeToken(w.text));
   const S = tokenize(input.script);
   const pairs = alignTokens(W, S, makeMatcher(input.aliases));
@@ -1277,6 +1462,10 @@ export function reviewPreview(input: {
 
 /** Abaixo disso o bruto chega baixo demais (261027: -31 LUFS; finais anteriores -21 a -23). */
 export const LOUDNESS_WARN_LUFS = -24;
+/** Acima disso o bruto chega quente demais (261028: -9,9 LUFS, pico em 0 dBFS), #11351. */
+export const LOUDNESS_HOT_LUFS = -14;
+/** True peak a partir disso = provável clipping no bruto (#11351). */
+export const TRUE_PEAK_CLIP_DBTP = 0;
 /** Alvo do `loudnorm` da prévia. */
 export const LOUDNORM_TARGET = "loudnorm=I=-16:TP=-1.5:LRA=11";
 
@@ -1304,6 +1493,15 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
   if (!m) return "loudness do bruto não medido (o loudnorm não imprimiu o resumo)";
   if (m.inputI < LOUDNESS_WARN_LUFS) {
     return `bruto em ${m.inputI.toFixed(1)} LUFS, abaixo de ${LOUDNESS_WARN_LUFS} LUFS: normalizar no Premiere (a prévia já sai com loudnorm I=-16)`;
+  }
+  const hot = m.inputI > LOUDNESS_HOT_LUFS;
+  const clip = Number.isFinite(m.inputTp) && m.inputTp >= TRUE_PEAK_CLIP_DBTP;
+  if (hot || clip) {
+    const why = [
+      hot ? `${m.inputI.toFixed(1)} LUFS, acima de ${LOUDNESS_HOT_LUFS} LUFS` : null,
+      clip ? `true peak ${m.inputTp.toFixed(1)} dBTP (≥ ${TRUE_PEAK_CLIP_DBTP}): provável clipping` : null,
+    ].filter(Boolean);
+    return `bruto quente: ${why.join("; ")}. Conferir o áudio no Premiere e baixar o ganho do microfone na próxima gravação (o silencedetect já usa limiar relativo ao loudness)`;
   }
   return null;
 }
@@ -1401,6 +1599,10 @@ export function roteiroMarkdown(edition: string, plans: SequencePlan[], resolved
       const secs = p.clips.filter((c) => c.block === key).reduce((acc, c) => acc + (c.frameOut - c.frameIn) / fps, 0);
       const takes = items.map((it) => (it.how === "take" ? `tomada ${it.take}/${it.completeTakes}` : `${clockTime(it.interval.start)}–${clockTime(it.interval.end)}`)).join(", ");
       lines.push(`- **${key}** (${secs.toFixed(1)} s; ${takes}): ${items.map((it) => it.text).join(" ")}`);
+      // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
+      items.forEach((it, i) => {
+        if (it.heard !== undefined) lines.push(`  - **fala difere** ${key}[${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`);
+      });
     }
     if (p.missingBlocks.length) lines.push("", `Faltam no blocks.json: ${p.missingBlocks.join(", ")}.`);
     lines.push("");

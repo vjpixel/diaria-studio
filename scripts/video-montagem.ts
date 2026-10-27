@@ -6,10 +6,13 @@
  * ffmpeg/ffprobe e o helper Python e lê/grava os arquivos.
  *
  * Subcomandos e flags próprias:
- *   transcribe AAMMDD [--source PATH] [--force]
+ *   transcribe AAMMDD [--source PATH] [--force] [--silence-db DB]
  *       bruto → `source.json`, áudio 16 kHz, `loudness.json`, `silences.json`,
  *       `transcript.json`. Pula o que já existe; `source.json` refeito (--force)
- *       refaz todos os derivados.
+ *       refaz todos os derivados. O limiar do silencedetect é relativo ao
+ *       loudness do bruto (#11351, `silenceNoiseDb`, gravado em
+ *       `silences.meta.json`); `--silence-db -35` sobrepõe. Limiar diferente do
+ *       da última detecção refaz só o `silences.json`.
  *   decupagem AAMMDD        tabela da decupagem (gate 1) + `blocks.template.json` (sempre refaz)
  *   frame AAMMDD --at S     frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2; sempre refaz)
@@ -77,6 +80,7 @@ import {
   roteiroMarkdown,
   segmentCues,
   sequenceSourceRanges,
+  silenceNoiseDb,
   transcriptWords,
   validateVocabRules,
   type BlocksFile,
@@ -241,7 +245,15 @@ function pickPlan(all: SequencePlan[], target: string | undefined, verticalOnly:
 
 // ── Subcomandos ───────────────────────────────────────────────────────────
 
-function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined): number {
+/** `--silence-db` (#11351): número negativo em dB; ausente = limiar relativo ao loudness. */
+export function parseSilenceDbArg(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n >= 0) throw new Error(`--silence-db precisa ser um número negativo em dB (ex.: -35), não ${raw}`);
+  return n;
+}
+
+function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: number | undefined): number {
   mkdirSync(ctx.workDir, { recursive: true });
   mkdirSync(ctx.stateDir, { recursive: true });
   let src = sourceArg ? resolve(sourceArg) : undefined;
@@ -287,21 +299,31 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined): number {
   }
   const loud = readJson<ReturnType<typeof parseLoudnormJson>>(loudPath, "loudness.json");
 
+  // Limiar relativo ao loudness do bruto (#11351); --silence-db sobrepõe.
+  const threshold = silenceNoiseDb(loud, silenceDb);
   const silPath = f(ctx, "silences.json");
-  if (redo || !existsSync(silPath)) {
+  const silMetaPath = f(ctx, "silences.meta.json");
+  const silMeta = existsSync(silMetaPath) ? readJson<{ noiseDb?: number; minDurationS?: number }>(silMetaPath, "silences.meta.json") : null;
+  // silences.json sem meta (anterior ao #11351) ou com outro limiar é refeito.
+  const silStale = !silMeta || silMeta.noiseDb !== threshold.noiseDb || silMeta.minDurationS !== SILENCE_DETECT.minDurationS;
+  if (redo || !existsSync(silPath) || silStale) {
     const { stderr } = run("ffmpeg", [
       "-hide_banner", "-nostats", "-i", audio,
-      "-af", `silencedetect=noise=${SILENCE_DETECT.noiseDb}dB:d=${SILENCE_DETECT.minDurationS}`, "-f", "null", "-",
+      "-af", `silencedetect=noise=${threshold.noiseDb}dB:d=${SILENCE_DETECT.minDurationS}`, "-f", "null", "-",
     ]);
     writeJson(silPath, parseSilenceDetect(stderr, source.durationS));
+    writeJson(silMetaPath, { noiseDb: threshold.noiseDb, minDurationS: SILENCE_DETECT.minDurationS, how: threshold.how });
   }
+  console.error(`[video-montagem] silencedetect a ${threshold.noiseDb} dB (${threshold.how === "relative" ? "relativo ao loudness do bruto" : threshold.how === "override" ? "--silence-db" : "padrão, loudness não medido"})`);
 
   const trPath = f(ctx, "transcript.json");
   if (redo || !existsSync(trPath)) transcribeWithPython(ctx, audio, trPath, { vad: true });
   const words = nonEmptyWords(trPath, "transcript.json");
   const warn = loudnessWarning(loud);
   if (warn) console.error(`[aviso] ${warn}`);
-  console.log(JSON.stringify({ source: source.path, durationS: source.durationS, words: words.length, silences: silences(ctx).length, loudness: loud, stateDir: ctx.stateDir }, null, 2));
+  console.log(
+    JSON.stringify({ source: source.path, durationS: source.durationS, words: words.length, silences: silences(ctx).length, silenceDb: threshold.noiseDb, loudness: loud, stateDir: ctx.stateDir }, null, 2),
+  );
   return 0;
 }
 
@@ -511,7 +533,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const seq = values["seq"];
   switch (cmd) {
     case "transcribe":
-      return cmdTranscribe(ctx, values["source"]);
+      return cmdTranscribe(ctx, values["source"], parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)));
     case "decupagem":
       return cmdDecupagem(ctx);
     case "frame":
