@@ -3,6 +3,10 @@
 // os parâmetros da visita seguem para o checkout da Hotmart (src/sck mostram a
 // origem da venda; fbclid deixa o pixel do checkout reconhecer o clique no anúncio).
 
+// Versão da página (A = a de 18/10/2026, B = a corrigida pelo diagnóstico de 27/10/2026). Vai em todo
+// evento (campo `versao`) e no sck do checkout, para separar as duas sem criar conversão nova na Meta.
+const VERSAO = "b";
+
 const CHECKOUT_URL = "https://pay.hotmart.com/U107768057V?off=lhwtb1jf";
 
 // #10080: modo interno (?interno=1). O bootstrap inline do <head> define
@@ -40,7 +44,7 @@ function checkoutHref(base) {
   const source = visit.get("utm_source");
   const content = (visit.get("utm_content") || "").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
   if (source && !url.searchParams.has("src")) url.searchParams.set("src", source);
-  if (!url.searchParams.has("sck")) url.searchParams.set("sck", ["lp", "conteudo-autentico", content].filter(Boolean).join("-"));
+  if (!url.searchParams.has("sck")) url.searchParams.set("sck", ["lp", "conteudo-autentico", VERSAO, content].filter(Boolean).join("-"));
   return url.toString();
 }
 
@@ -52,7 +56,7 @@ function visitOrigin(search) {
   const visit = new URLSearchParams(search);
   const clean = (key) => (visit.get(key) || "").trim().slice(0, ORIGIN_FIELD_MAX).trim();
   const source = clean("utm_source");
-  const data = { origem: source || (clean("fbclid") ? "meta" : "direto") };
+  const data = { origem: source || (clean("fbclid") ? "meta" : "direto"), versao: VERSAO };
   const campaign = clean("utm_campaign");
   const content = clean("utm_content");
   if (campaign) data.utm_campaign = campaign;
@@ -123,14 +127,15 @@ if (floatCta) {
   update();
 }
 
-// Profundidade de leitura: separa quem saiu no topo de quem leu e não comprou.
+// Profundidade de leitura: separa quem saiu no topo de quem leu e não comprou. O marco de 25%
+// entrou em 27/10/2026: a página tem cerca de 24 telas no celular, e 50% sozinho não mostrava onde a pessoa para.
 const reached = new Set();
 window.addEventListener(
   "scroll",
   () => {
     const doc = document.documentElement;
     const pct = ((window.scrollY + window.innerHeight) / doc.scrollHeight) * 100;
-    [50, 90].forEach((mark) => {
+    [25, 50, 90].forEach((mark) => {
       if (pct >= mark && !reached.has(mark)) {
         reached.add(mark);
         track(`Rolagem${mark}`);

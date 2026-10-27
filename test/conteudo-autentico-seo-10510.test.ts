@@ -22,7 +22,7 @@ import { renderGeoJsonLd } from "../scripts/lib/shared/geo-faq.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC = join(ROOT, "workers/site/public");
-const HTML = readFileSync(join(PUBLIC, "produto/conteudo-autentico/index.html"), "utf8");
+const HTML = readFileSync(join(PUBLIC, "produto/conteudo-autentico/b/index.html"), "utf8");
 
 function jsonLdGraph(html: string): Record<string, any>[] {
   const block = extractJsonLdBlock(html);
@@ -89,10 +89,10 @@ test("JSON-LD: parseável, com Course, FAQPage e BreadcrumbList e campos obrigat
   );
 });
 
-test("JSON-LD: FAQPage tem as 8 perguntas visíveis, na mesma ordem e com o mesmo texto", () => {
+test("JSON-LD: FAQPage tem as 9 perguntas visíveis, na mesma ordem e com o mesmo texto", () => {
   const faq = node(jsonLdGraph(HTML), "FAQPage");
   const visible = extractFaqFromHtml(HTML);
-  assert.equal(visible.length, 8);
+  assert.equal(visible.length, 9);
   assert.deepEqual(
     faq.mainEntity.map((q: any) => [q.name, q.acceptedAnswer.text]),
     visible.map((q) => [q.question, q.answer]),

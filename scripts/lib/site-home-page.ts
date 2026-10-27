@@ -479,7 +479,8 @@ export const KNOWN_STATIC_SITEMAP_PATHS: readonly (string | RegExp)[] = [
   // sitemap. Nomeadas uma a uma (não um prefixo `/produto/*`) pela mesma
   // razão da allowlist inteira; `test/site-sitemap-landings-10509.test.ts`
   // acusa landing em disco que entre no sitemap sem estar aqui.
-  "/produto/conteudo-autentico",
+  // A URL principal redireciona (302) para a versão ativa; quem entra no sitemap é a versão.
+  "/produto/conteudo-autentico/b",
   "/guia/agente-ia",
   "/evento/agente-ia",
 ];
