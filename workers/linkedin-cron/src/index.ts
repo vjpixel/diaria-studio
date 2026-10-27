@@ -346,6 +346,20 @@ const CANCEL_IF_NOT_CLAIMING: RequestInit = {
   body: JSON.stringify({ if_not_claiming: true }),
 };
 
+/**
+ * #11215 — o `/cancel` condicional devolve 409 em dois casos: disparo em
+ * andamento (`claiming`) ou DO que já disparou (`fired`/`send_unknown`). O
+ * cliente precisa saber qual: no 2º o post já saiu e tentar de novo não serve.
+ */
+async function cancelConflictReason(res: Response): Promise<"already_fired" | "fire_in_progress"> {
+  try {
+    const body = (await res.json()) as { fired?: unknown };
+    return body.fired === true ? "already_fired" : "fire_in_progress";
+  } catch {
+    return "fire_in_progress";
+  }
+}
+
 function doStub(env: Env, name: string): DurableObjectStub {
   return env.LINKEDIN_SCHEDULER.get(env.LINKEDIN_SCHEDULER.idFromName(name));
 }
@@ -879,7 +893,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
           ...CANCEL_IF_NOT_CLAIMING,
           body: JSON.stringify({ if_not_claiming: true, replacement_token: replacementToken, replacement_entry: entry }),
         });
-        if (clearRes.status === 409) return idempotentConflict("fire_in_progress", key);
+        if (clearRes.status === 409) return idempotentConflict(await cancelConflictReason(clearRes), key);
         clearOk = clearRes.ok;
       } catch (e) {
         console.warn(`[enqueue] cancel do DO ${key} (conteúdo mudado) falhou: ${(e as Error).message} (#11029)`);
@@ -908,7 +922,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       let cancelOk = false;
       try {
         const cancelRes = await doStub(env, indexedKey).fetch("https://do/cancel", CANCEL_IF_NOT_CLAIMING); // #11107
-        if (cancelRes.status === 409) return idempotentConflict("fire_in_progress", indexedKey);
+        if (cancelRes.status === 409) return idempotentConflict(await cancelConflictReason(cancelRes), indexedKey);
         cancelOk = cancelRes.ok;
       } catch (e) {
         console.warn(`[enqueue] cancel do DO ${indexedKey} falhou: ${(e as Error).message} (#10992)`);
