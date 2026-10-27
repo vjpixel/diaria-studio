@@ -68,7 +68,7 @@ function ciPassJson(): string {
 }
 /** Resposta padrão pra `gh api graphql` (threads): nenhuma pendente. */
 function noThreadsJson(): string {
-  return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } });
+  return JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } } } } });
 }
 
 /** Resposta padrão pra `gh pr view --json labels,body` (#10294): sem retenção. */
@@ -196,7 +196,7 @@ describe("revalidateGate2", () => {
     runner
       .on("gh", (a) => a.includes("statusCheckRollup"), () => ok(ciPassJson()))
       .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () =>
-        ok(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ isResolved: false }] } } } } })),
+        ok(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: "T1", isResolved: false, viewerCanResolve: true }], pageInfo: { hasNextPage: false, endCursor: null } } } } } })),
       );
     const result = revalidateGate2(runner, 100);
     assert.equal(result.ok, false);
@@ -208,6 +208,51 @@ describe("revalidateGate2", () => {
     runner.on("gh", () => true, () => fail("timeout"));
     const result = revalidateGate2(runner, 100);
     assert.equal(result.ok, false);
+  });
+
+  // #11269: a condição 2 usa o mesmo gate do caminho serial (checkReviewThreads).
+  function threadsRunner(payload: unknown): FakeTrainRunner {
+    return new FakeTrainRunner()
+      .withGate2Green()
+      .on("gh", (a) => a[0] === "api" && a[1] === "graphql", () => ok(JSON.stringify(payload)));
+  }
+
+  it("#11269: reprova com mais de 100 threads (hasNextPage: true), mesmo com a 1ª página toda resolvida", () => {
+    const result = revalidateGate2(
+      threadsRunner({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: "T1", isResolved: true, viewerCanResolve: true }], pageInfo: { hasNextPage: true, endCursor: "c" } } } } } }),
+      100,
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /condição 2.*mais de 100/);
+  });
+
+  it("#11269: resposta sem data e sem errors não passa como zero threads", () => {
+    const result = revalidateGate2(threadsRunner({}), 100);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /condição 2.*reviewThreads ausente/);
+  });
+
+  it("#11269: resposta sem pageInfo (payload truncado) reprova", () => {
+    const result = revalidateGate2(threadsRunner({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }), 100);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /condição 2.*hasNextPage/);
+  });
+
+  it("#11269: thread de revisor externo (viewerCanResolve: false) não bloqueia, igual ao --check", () => {
+    const result = revalidateGate2(
+      threadsRunner({ data: { repository: { pullRequest: { reviewThreads: { nodes: [{ id: "EXT", isResolved: false, viewerCanResolve: false }], pageInfo: { hasNextPage: false, endCursor: null } } } } } }),
+      100,
+    );
+    assert.equal(result.ok, true, result.reason);
+  });
+
+  it("#11269: consulta as threads do repo do trem com variáveis do GraphQL (query do helper)", () => {
+    const runner = new FakeTrainRunner().withGate2Green();
+    revalidateGate2(runner, 4242);
+    const gql = runner.calls.find((c) => c.cmd === "gh" && c.args[0] === "api" && c.args[1] === "graphql");
+    assert.ok(gql, "consultou as threads");
+    assert.ok(gql.args.includes("owner=vjpixel") && gql.args.includes("name=diaria-studio") && gql.args.includes("pr=4242"), JSON.stringify(gql.args));
+    assert.ok(gql.args.some((a) => a.includes("hasNextPage")), "a query pede pageInfo.hasNextPage");
   });
 });
 

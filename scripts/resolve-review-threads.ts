@@ -24,13 +24,22 @@
  * modo de resolução como gate faria uma thread que o editor deixou aberta
  * sumir e o PR mergear.
  *
- * Sem `--list`/`--check`, RESOLVE as não-resolvidas (todas, ou só as de
+ * Sem `--list`/`--check`, RESOLVE as não-resolvidas da AUTOMAÇÃO (ou só as de
  * `--thread`), relê as threads numa query FRESCA e decide por ela (não pelo
  * retorno da mutation). É o passo de resolução pós-fixer do overnight, nunca o gate.
  *
+ * Sem `--thread`, só resolve a thread em que TODOS os comentários carregam o
+ * marcador `<!-- diaria-auto-review -->` (`lib/auto-review-marker.ts`, posto por
+ * `gh-pr-review-api.ts comment|reply`) — #11269. Thread aberta pelo editor, ou
+ * em que ele respondeu, sai em `skipped`, continua aberta e bloqueia (exit 1):
+ * o token das rodadas é o do dono, `viewerCanResolve` é true e o login do autor
+ * é o mesmo, então só o marcador separa as duas. `--thread ID,ID` resolve
+ * exatamente as listadas (escolha explícita do coordenador).
+ *
  * Exit:
  *   0 — `--list` ok, ou nenhuma thread bloqueante (`--check` / query fresca)
- *   1 — restou thread bloqueante sem falha de infra (ex.: fora de `--thread`)
+ *   1 — restou thread bloqueante sem falha de infra (ex.: fora de `--thread`, ou
+ *       thread do editor deixada em `skipped`)
  *   3 — erro de query/payload, ou alguma resolução falhou (rede, 5xx, timeout,
  *       FORBIDDEN inesperado) e a thread seguiu aberta: é infra, retentar
  *   4 — mais de 100 threads (`hasNextPage: true`): gate automático desativado (#2222/#2232)
@@ -44,6 +53,7 @@
 import { spawnGhSync, type GhSpawnResult } from "./lib/shared/gh-run.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { DEFAULT_ISSUE_REPO, resolveRepoFlag } from "./lib/issue-repos.ts";
+import { hasAutoReviewMarker } from "./lib/auto-review-marker.ts";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,7 +61,7 @@ export type GhRunFn = (args: string[]) => GhSpawnResult;
 
 /** Query das threads: owner/name/pr como variáveis do GraphQL, nunca interpolados. */
 export const THREADS_QUERY =
-  "query($owner:String!,$name:String!,$pr:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$pr){ reviewThreads(first:100){ nodes{ id isResolved viewerCanResolve } pageInfo{ hasNextPage endCursor } } } } }";
+  "query($owner:String!,$name:String!,$pr:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$pr){ reviewThreads(first:100){ nodes{ id isResolved viewerCanResolve comments(first:100){ totalCount nodes{ body } } } pageInfo{ hasNextPage endCursor } } } } }";
 
 /** Única mutation que o script emite. */
 export const RESOLVE_MUTATION =
@@ -68,6 +78,12 @@ export interface ReviewThread {
   isResolved: boolean;
   /** `undefined` quando a resposta não trouxe o campo. */
   viewerCanResolve?: boolean;
+  /**
+   * Thread só da automação (#11269): todos os comentários lidos carregam o
+   * marcador e nenhum ficou fora da página. Na dúvida (campo ausente, página
+   * incompleta, thread sem comentário), `false` — nunca resolvida sem `--thread`.
+   */
+  automated: boolean;
 }
 
 export type ThreadsParse =
@@ -105,7 +121,7 @@ export function parseThreadsResponse(stdout: string): ThreadsParse {
   const hasNextPage = rt.pageInfo?.hasNextPage;
   if (typeof hasNextPage !== "boolean") return { ok: false, error: "pageInfo.hasNextPage ausente ou não booleano" };
   const threads: ReviewThread[] = [];
-  for (const n of rt.nodes as Array<{ id?: unknown; isResolved?: unknown; viewerCanResolve?: unknown }>) {
+  for (const n of rt.nodes as Array<{ id?: unknown; isResolved?: unknown; viewerCanResolve?: unknown; comments?: unknown }>) {
     if (typeof n?.id !== "string" || typeof n?.isResolved !== "boolean") {
       return { ok: false, error: "thread malformada na resposta" };
     }
@@ -113,9 +129,18 @@ export function parseThreadsResponse(stdout: string): ThreadsParse {
       id: n.id,
       isResolved: n.isResolved,
       viewerCanResolve: typeof n.viewerCanResolve === "boolean" ? n.viewerCanResolve : undefined,
+      automated: isAutomatedThread(n.comments),
     });
   }
   return { ok: true, threads, hasNextPage };
+}
+
+/** Todos os comentários da thread vieram da automação? Ver `ReviewThread.automated`. */
+export function isAutomatedThread(comments: unknown): boolean {
+  const c = comments as { totalCount?: unknown; nodes?: unknown } | null | undefined;
+  if (!c || !Array.isArray(c.nodes) || c.nodes.length === 0) return false;
+  if (c.totalCount !== c.nodes.length) return false;
+  return (c.nodes as Array<{ body?: unknown }>).every((x) => hasAutoReviewMarker(x?.body));
 }
 
 /**
@@ -149,6 +174,8 @@ export interface ResolveReport {
   /** FORBIDDEN de revisor externo (`viewerCanResolve: false`): não bloqueia. */
   forbidden: string[];
   failed: FailedResolve[];
+  /** Não resolvidas e fora da automação (#11269): deixadas abertas de propósito. */
+  skipped: string[];
   /** Não-resolvidas e não-FORBIDDEN-externas na query fresca pós-loop. */
   remainingBlocking: number;
   error?: string;
@@ -169,13 +196,17 @@ export function resolveReviewThreads(
   ghRun: GhRunFn,
   only: ReadonlySet<string> | null = null,
 ): ResolveReport {
-  const report: ResolveReport = { exitCode: EXIT_OK, resolved: [], forbidden: [], failed: [], remainingBlocking: 0 };
+  const report: ResolveReport = { exitCode: EXIT_OK, resolved: [], forbidden: [], failed: [], skipped: [], remainingBlocking: 0 };
   const before = fetchThreads(repo, pr, ghRun);
   if (!before.ok) return { ...report, exitCode: EXIT_ERROR, error: before.error };
   if (before.hasNextPage) return { ...report, exitCode: EXIT_PAGINATION, error: "mais de 100 review threads" };
 
   for (const t of before.threads) {
     if (t.isResolved || (only && !only.has(t.id))) continue;
+    if (!only && !t.automated) {
+      report.skipped.push(t.id);
+      continue;
+    }
     const r = ghRun(buildResolveArgs(t.id));
     const { outcome, reason } = classifyResolveResult(r);
     if (outcome === "resolved") report.resolved.push(t.id);
@@ -289,9 +320,10 @@ export function runCli(argv: string[], ghRun: GhRunFn, configRoot: string = CONF
     const p = fetchThreads(repo, pr, ghRun);
     if (!p.ok) return { exitCode: EXIT_ERROR, stdout: "", stderr: `[resolve-review-threads] ${p.error}` };
     const unresolved = p.threads.filter((t) => !t.isResolved).map((t) => t.id);
+    const human = p.threads.filter((t) => !t.isResolved && !t.automated).map((t) => t.id);
     return {
       exitCode: p.hasNextPage ? EXIT_PAGINATION : EXIT_OK,
-      stdout: JSON.stringify({ repo, pr, total: p.threads.length, unresolved, hasNextPage: p.hasNextPage }),
+      stdout: JSON.stringify({ repo, pr, total: p.threads.length, unresolved, human, hasNextPage: p.hasNextPage }),
       stderr: "",
     };
   }
