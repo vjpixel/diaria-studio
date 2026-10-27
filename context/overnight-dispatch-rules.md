@@ -1229,3 +1229,42 @@ mergeada ou fechada:
 Clone de PR ainda aberta no fim da rodada fica em disco e entra no relatório
 com o caminho, para a próxima rodada ou o editor limparem. Helper que crie e
 limpe esses clones: fora do escopo desta regra, que é só o procedimento.
+
+## 34. Escrita em `.claude/` não sai no overnight AGENDADO: a issue vai pra Develop (#11255)
+
+**O que a doc oficial diz (conferida em 27/10/2026,
+https://code.claude.com/docs/en/permission-modes, §Protected paths):**
+`.claude/` é diretório protegido. Em `default` e `acceptEdits` a escrita ali
+é **perguntada**, e regra de allow não muda isso. A doc usa o próprio exemplo:
+uma entrada como `Edit(.claude/**)` no settings "does not change the per-mode
+outcome", porque a checagem de caminho protegido roda antes das regras de
+allow. O overnight agendado (`scripts/overnight/run-nightly-chain.ts`) roda
+`claude --print --permission-mode acceptEdits`: sem TTY, a pergunta vira
+negação. A exceção de worktree (`.claude/worktrees/`) não cobre o `.claude/`
+aninhado dentro do worktree, e foi ali que a rodada 261026 foi negada
+(#11104). Só `bypassPermissions` (ou o classifier do modo `auto`) aprovaria,
+e trocar a postura de segurança do modo agendado é decisão do editor, fora
+desta regra.
+
+**Na prática:** issue cujo fix escreve em `.claude/skills/*`,
+`.claude/agents/*`, `.claude/hooks/*` ou `.claude/settings*.json` é trabalho
+de sessão interativa (`/diaria-develop` ou sessão comum, com o editor
+aprovando o prompt). Ela leva a label `claude-dir`, que `classifyExecTrack`
+classifica `develop`, com a mesma precedência de `windows`.
+
+- **Implementador no modo agendado:** se a escrita em `.claude/` for negada,
+  não contornar por `Bash` (`>`, `tee`, `sed -i` no mesmo arquivo: a doc
+  aplica a mesma checagem de caminho protegido aos redirects). Entregar o
+  que estiver fora de `.claude/` com `REFS #N, NÃO CLOSES (escrita em
+  .claude/ negada no modo agendado, #11255)` e reportar ao coordenador quais
+  arquivos de `.claude/` faltaram.
+- **Coordenador no modo agendado:** issue que voltou assim (ou que, pelo
+  corpo, só mexe em `.claude/`) é roteada com `npx tsx scripts/route-issue.ts
+  --issue N --track develop --motivo claude-dir --reason "<arquivos de
+  .claude/ que faltam>"`, em comando standalone. Sem isso ela volta pra fila
+  toda noite e é negada de novo.
+- **Quem entrega na sessão interativa** tira a label ao terminar
+  (`route-issue --track overnight`, ou o track do resíduo), como com `windows`.
+
+O roteamento é por label, nunca por heurística sobre o corpo: citar
+`.claude/skills/...` como contexto não quer dizer que o fix mora lá.

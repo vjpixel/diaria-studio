@@ -79,6 +79,7 @@
 
 import {
   EXEC_TRACK_UI,
+  CLAUDE_DIR_LABEL,
   DEPENDS_ON_BLOCK_LABEL,
   TRIAGED_OVERNIGHT_LABEL,
   type ExecTrack,
@@ -140,6 +141,11 @@ export const ROUTABLE_LABELS: readonly string[] = [
   // develop — MACHINE_DEVELOP_LABELS + DEVELOP_HUMAN_BLOCK_LABEL
   "windows",
   "develop-track",
+  // #11255 — `.claude/` só se escreve em sessão interativa (o overnight
+  // agendado roda em `acceptEdits` sem TTY). Roteável pelos dois lados, como
+  // `dependencia-aberta`: aplicável via `--motivo claude-dir` e removida
+  // quando a issue for roteada pra outro track.
+  CLAUDE_DIR_LABEL,
   // overnight — #7493: `trade-off-real` migrou do grupo develop pra cá. A
   // label continua ROTEÁVEL (aplicável/removível pelo verbo), só mudou o
   // veredito que ela produz em `classifyExecTrack`: overnight (entra na fila
@@ -222,6 +228,9 @@ export const MOTIVO_LABEL: Readonly<Record<string, string>> = {
   // nenhum caller precisa dele, mas remover quebraria uma chamada antiga
   // que ainda passasse `--motivo epica` explicitamente.
   "epica": "epic-guarda-chuva",
+  // develop — #11255: o fix escreve em `.claude/`, negado no overnight
+  // agendado (`acceptEdits` sem TTY). `--track develop --motivo claude-dir`.
+  "claude-dir": CLAUDE_DIR_LABEL,
   // fora-de-rodada
   "sem-direcao": "sem-direcao-acionavel",
   "decisao": "decisao-registrada",

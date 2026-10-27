@@ -173,6 +173,39 @@ describe("classifyExecTrack — máquina", () => {
   });
 });
 
+describe("classifyExecTrack — claude-dir (#11255)", () => {
+  // O overnight agendado roda em `acceptEdits` sem TTY e o Claude Code nega
+  // escrita em `.claude/` nesse modo (allow rule não pré-aprova caminho
+  // protegido). Sem esta regra, a issue de skill/agent/hook ficava Overnight
+  // e voltava pra fila toda noite, sempre negada (#11104, rodada 261026).
+  it("label claude-dir → develop, com a regra própria em matched", () => {
+    assert.deepEqual(
+      classifyExecTrackWithRule({ labels: ["claude-dir"], body: "", now: NOW }),
+      { track: "develop", matched: "label:claude-dir" },
+    );
+  });
+
+  it("claude-dir vence trade-off-real e triada-overnight (o briefing não destrava a permissão)", () => {
+    assert.equal(track(["trade-off-real", "claude-dir"]), "develop");
+    assert.equal(track(["triada-overnight", "claude-dir"]), "develop");
+  });
+
+  it("bloqueio real, data futura e engavetamento continuam vencendo claude-dir", () => {
+    assert.equal(track(["claude-dir", "external-blocker"]), "bloqueada");
+    assert.equal(track(["claude-dir", "not-this-week"]), "bloqueada");
+    assert.equal(track(["claude-dir", "on-hold"]), "fora-de-rodada");
+    assert.equal(track(["claude-dir"], "<!-- aguardando-ate: 2099-01-01 -->"), "agendada");
+  });
+
+  it("citar .claude/ no corpo sem a label NÃO muda o track (classificação é por label, não heurística)", () => {
+    assert.equal(track([], "Ajustar `.claude/skills/diaria-overnight/SKILL.md` e `.claude/hooks/x.mjs`."), "overnight");
+  });
+
+  it("tem motivo legível no painel", () => {
+    assert.equal(resolveExecTrackReason("label:claude-dir", null)?.short, "escreve em .claude/");
+  });
+});
+
 describe("classifyExecTrack — bloqueio", () => {
   for (const label of ["external-blocker", "kit-migration", "beehiiv", "bloqueio-execucao"]) {
     it(`label ${label} → bloqueada`, () => {

@@ -86,6 +86,9 @@ describe("planRouteLabels — round-trip dos 5 motivos #6197 (3a)", () => {
     // "fora-de-rodada": epic-guarda-chuva ganhou precedência acima de
     // BLOCKED_LABELS, então classifica "epica", não "fora-de-rodada")
     ["epica", "epica"],
+    // develop — #11255: fix que escreve em `.claude/` (negado no overnight
+    // agendado, `acceptEdits` sem TTY).
+    ["develop", "claude-dir"],
     // fora-de-rodada
     ["fora-de-rodada", "sem-direcao"],
     ["fora-de-rodada", "decisao"],

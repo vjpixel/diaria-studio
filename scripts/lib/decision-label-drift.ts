@@ -455,6 +455,9 @@ export const DRIFT_PATTERNS: readonly DriftPattern[] = [
       "develop-track",
       "trade-off-real",
       "windows",
+      // #11255 — resíduo REFS-NÃO-CLOSES por escrita em `.claude/` negada
+      // no overnight agendado vai pra Develop por esta label.
+      "claude-dir",
       "sem-direcao-acionavel",
     ],
   },

@@ -894,6 +894,7 @@ describe("escopo-residual (#6437)", () => {
       "develop-track",
       "trade-off-real",
       "windows",
+      "claude-dir",
       "sem-direcao-acionavel",
     ]);
   });

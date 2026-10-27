@@ -89,6 +89,9 @@
  *                          últimas gravam automaticamente um marcador
  *                          `aguardando-ate:` D+7/D+30, ver docstring de
  *                          `VAGUE_DEFERRAL_AUTO_DEFER_DAYS` em `issue-route.ts`)
+ *   --track develop:        claude-dir (#11255 — fix escreve em `.claude/`,
+ *                          negado no overnight agendado; sem --motivo,
+ *                          aplica `develop-track`)
  *   --track epica:          epica (default sem --motivo — ver `TRACK_ADD_LABEL`)
  *   --track fora-de-rodada: sem-direcao, decisao, alarme-estado
  *   --track overnight:     alarme-evento

@@ -163,6 +163,7 @@ export type ExecTrackMatch =
   | "label:not-this-week"
   | "label:next-month"
   | "label:windows"
+  | "label:claude-dir"
   | "label:trade-off-real"
   | "label:credencial-escopo"
   | "label:develop-track"
@@ -203,6 +204,7 @@ export const EXEC_TRACK_MATCH_CATALOG: readonly ExecTrackMatch[] = [
   "label:not-this-week",
   "label:next-month",
   "label:windows",
+  "label:claude-dir",
   "label:trade-off-real",
   "label:credencial-escopo",
   "label:develop-track",
@@ -453,6 +455,35 @@ const DEFERRED_LABELS = new Set(["not-this-week", "next-month"]);
 /** Exige a máquina Windows do editor (Chrome logado, ComfyUI) — o overnight
  * roda no servidor Linux, então não alcança. */
 const MACHINE_DEVELOP_LABELS = new Set(["windows"]);
+
+/**
+ * #11255 — a issue exige escrever em `.claude/` (skill, agent, hook,
+ * settings), e o overnight AGENDADO não consegue.
+ *
+ * `scripts/overnight/run-nightly-chain.ts` sobe o `claude --print
+ * --permission-mode acceptEdits`. O Claude Code trata `.claude/` como
+ * diretório protegido, e a doc oficial diz, sem ambiguidade
+ * (https://code.claude.com/docs/en/permission-modes, §Protected paths,
+ * conferido em 27/10/2026): em `default`/`acceptEdits` a escrita num
+ * caminho protegido é PERGUNTADA, e "`permissions.allow` rules in settings
+ * files do not pre-approve protected-path writes. The safety check runs
+ * before Claude Code evaluates allow rules" — o próprio exemplo citado é
+ * `Edit(.claude/**)`. Sem TTY a pergunta vira negação. A exceção dos
+ * worktrees (`.claude/worktrees/`) não cobre o `.claude/` ANINHADO dentro
+ * do worktree: a rodada 261026 foi negada exatamente ali (#11104).
+ * Só `bypassPermissions` (ou o classifier do modo `auto`) aprova — troca de
+ * postura de segurança que é decisão do editor, fora do escopo daqui.
+ *
+ * Por isso a issue vai pra `develop`: uma sessão interativa, com o editor
+ * aprovando o prompt, é quem consegue entregá-la. Label e não heurística
+ * sobre o corpo (citar `.claude/skills/...` como contexto não quer dizer
+ * que o fix mora lá — mesmo princípio de `issue-decisions.ts`, #5373):
+ * quem aplica é quem sabe, tipicamente o coordenador do overnight agendado
+ * quando o implementador volta com a escrita negada
+ * (`context/overnight-dispatch-rules.md`, item sobre `.claude/`).
+ * Mesma precedência de `windows`: bloqueio real, data e deferimento vencem.
+ */
+export const CLAUDE_DIR_LABEL = "claude-dir";
 
 /**
  * Julgamento já gravado pelo overnight: a ambiguidade desta issue é
@@ -838,6 +869,7 @@ export function classifyExecTrackWithRule(input: ExecTrackInput): ExecTrackResul
   // deste bloco no #7493 — ver o branch logo abaixo.
   const machineLabel = labels.find((l) => MACHINE_DEVELOP_LABELS.has(l));
   if (machineLabel) return { track: "develop", matched: `label:${machineLabel}`  };
+  if (has(CLAUDE_DIR_LABEL)) return { track: "develop", matched: "label:claude-dir" };
   if (isCredentialScopeUnblock) return { track: "develop", matched: "label:credencial-escopo" };
   if (has(DEVELOP_HUMAN_BLOCK_LABEL)) return { track: "develop", matched: "label:develop-track" };
 
@@ -999,7 +1031,7 @@ export const EXEC_TRACK_EXPLAIN: Record<ExecTrack, string> = {
   overnight:
     "Overnight — nenhum bloqueio, nenhuma dependência de máquina. Inclui a issue ambígua ainda não triada (quem separa ambiguidade trivial de trade-off real é o próprio overnight, na Fase 0), o alarme sobre EVENTO PASSADO (label `alarm-evento`, #5553 — achado ancorado a um ID imutável que nunca se auto-resolve, precisa de revisão), e o alarme de ESTADO que só normaliza por AÇÃO (label `alarm-acao`, #6772 — ex: timer nunca armado/órfão, remediado rodando um script, não sozinho).",
   develop:
-    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C), (#5694) é `external-blocker` com escopo de credencial já identificado (label `credencial-escopo` — credencial existente, só falta permission, cat. A), ou (#5948) é bloqueio humano/dependência sem data específica (label `develop-track` — se tivesse data, seria `aguardando-ate:` e viraria Agendada).",
+    "Develop — precisa do editor presente: exige a máquina Windows (label `windows`), (#11255) escreve em `.claude/`, que o overnight agendado não consegue (label `claude-dir`),é trade-off real de produto/editorial já julgado pelo overnight (label `trade-off-real`, cat. C), (#5694) é `external-blocker` com escopo de credencial já identificado (label `credencial-escopo` — credencial existente, só falta permission, cat. A), ou (#5948) é bloqueio humano/dependência sem data específica (label `develop-track` — se tivesse data, seria `aguardando-ate:` e viraria Agendada).",
   agendada:
     "Agendada — tem data específica pra ser resolvida, registrada no marcador `aguardando-ate: AAAA-MM-DD`. Não está bloqueada por nada: é trabalho fazível que volta sozinho ao fluxo normal na data, sem ninguém precisar remover label. Adiamento sem data (`not-this-week`, `next-month`, `on-hold`) não é Agendada.",
   bloqueada:
@@ -1124,6 +1156,10 @@ export const EXEC_TRACK_MATCH_REASON: Record<ExecTrackMatch, { short: string; lo
   "label:windows": {
     short: "exige máquina Windows",
     long: "Label `windows`: precisa do Chrome logado / ComfyUI / `data/` local. É Develop — acionável numa sessão na máquina do editor, nunca no 300.",
+  },
+  "label:claude-dir": {
+    short: "escreve em .claude/",
+    long: "Label `claude-dir` (#11255): o fix mexe em `.claude/` (skill, agent, hook, settings). O overnight agendado roda em `acceptEdits` sem TTY, e o Claude Code nega escrita em diretório protegido nesse modo mesmo com `Edit(.claude/**)` no allow list. É Develop — uma sessão interativa aprova o prompt.",
   },
   "label:trade-off-real": {
     short: "trade-off na fila do briefing",
