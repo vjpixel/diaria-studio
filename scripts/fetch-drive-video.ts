@@ -1,3 +1,5 @@
+import { shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
+import { loadShortsConfig } from "./lib/diaria/short-video.ts";
 /**
  * fetch-drive-video.ts (#10659, itens 3-4): acha no Drive o vídeo do dia
  * (.mp4 com "final" como palavra no nome) e, para o horizontal, baixa no
@@ -268,6 +270,12 @@ export async function runFetchDriveVideo(
     orientation === "horizontal" ? youtubeVideoFileName(aammdd) : shortVideoFileName(aammdd),
   );
   const base: OutputBase = { edition: aammdd, orientation, folder_id: input.folderId, local_path: localPath };
+
+  if (orientation === "vertical" && !input.force && shortsVideoTerminal(input.editionDir, aammdd,
+    loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
+    log("[ok] destinos do vertical já concluídos — nada a baixar");
+    return { exitCode: 0, output: { ...base, action: "already-published", record_path: join(input.editionDir, "_internal", "06-shorts-published.json"), video_url: null } };
+  }
 
   if (orientation === "horizontal" && !input.force) {
     const recordPath = join(input.editionDir, YOUTUBE_PUBLISHED_FILE);
