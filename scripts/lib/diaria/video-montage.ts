@@ -626,12 +626,29 @@ export interface DirectionCue {
 /** Comentário da direção é curto; frase longa com "muito bom" no meio é fala do roteiro. */
 export const DIRECTION_MAX_TOKENS = 10;
 
-// Ordem importa: "não ficou bom" é rejeição antes de ser "ficou bom".
-const DIRECTION_PATTERNS: Array<[DirectionKind, RegExp]> = [
+/**
+ * Teto do comentário GENÉRICO ("Muito bom.", "De novo.", "Perfeito!"): sem
+ * marcador de tomada, só o segmento quase todo comentário conta. Fala do
+ * roteiro com essas palavras ("A OpenAI subiu de novo o preço.", "O modelo
+ * não é perfeito.") passa disso e fica como fala (#11364).
+ */
+export const DIRECTION_GENERIC_MAX_TOKENS = 4;
+
+// Marcadores específicos (take/tomada, "do começo", "a anterior", "errei"): valem até DIRECTION_MAX_TOKENS.
+// Ordem importa: recusa antes de aprovação ("não ficou bom esse take").
+const DIRECTION_ANCHORED: Array<[DirectionKind, RegExp]> = [
   ["prefere-anterior", /\b(a|o) (anterior|de antes) (tava|estava|ficou|foi|era) melhor\b/],
-  ["aprova-primeira", /\b(foi|e|usa|fica|vai) (o|a) primeir[oa]\b/],
-  ["rejeita", /\b(de novo|outra vez|mais uma vez|vamos outra|faz outra|repete|repetir|errei|nao (ficou|foi|ta|esta) bom)\b/],
-  ["aprova", /\b(e|foi) (este|esse|essa|esta) (take|tomada)\b|\b(muito bom|muito boa|ficou (muito )?(bom|boa|otimo|otima|perfeito)|perfeito|otimo take|take bom|valeu esse)\b/],
+  ["aprova-primeira", /\b(o|a) primeir[oa] (do comeco|take|tomada)\b/],
+  ["rejeita", /\berrei\b|\b(faz|vamos|mais) (outra|outro|uma) (take|tomada)\b|\bnao (ficou|foi|ta|esta) (bom|boa) (esse|este|essa|esta) (take|tomada)\b/],
+  ["aprova", /\b(e|foi) (este|esse|essa|esta) (take|tomada)\b|\b(take|tomada) (bom|boa|valendo|perfeito|perfeita)\b|\botimo take\b/],
+];
+
+// Comentário genérico: o segmento inteiro (até DIRECTION_GENERIC_MAX_TOKENS), com muleta opcional na frente.
+const LEAD = "(?:(?:beleza|ok|ta|isso|pronto|show|espera|opa|ai) )*";
+const DIRECTION_GENERIC: Array<[DirectionKind, RegExp]> = [
+  ["aprova-primeira", new RegExp(`^${LEAD}(foi|e|usa|fica|vai) (o|a) primeir[oa]$`)],
+  ["rejeita", new RegExp(`^${LEAD}(de novo|outra vez|mais uma vez|vamos outra|faz outra|repete|repetir|nao (ficou|foi|ta|esta) (bom|boa))$`)],
+  ["aprova", new RegExp(`^${LEAD}(muito bom|muito boa|ficou (muito )?(bom|boa|otimo|otima|perfeito|perfeita)|perfeito|otimo)( (esse|este|essa|esta))?$`)],
 ];
 
 /** Lê um segmento como comentário da direção; null se for fala (ou longo demais para ser comentário). */
@@ -639,7 +656,9 @@ export function directionKind(text: string): DirectionKind | null {
   const toks = tokenize(text);
   if (toks.length === 0 || toks.length > DIRECTION_MAX_TOKENS) return null;
   const norm = toks.join(" ");
-  for (const [kind, re] of DIRECTION_PATTERNS) if (re.test(norm)) return kind;
+  for (const [kind, re] of DIRECTION_ANCHORED) if (re.test(norm)) return kind;
+  if (toks.length > DIRECTION_GENERIC_MAX_TOKENS) return null;
+  for (const [kind, re] of DIRECTION_GENERIC) if (re.test(norm)) return kind;
   return null;
 }
 

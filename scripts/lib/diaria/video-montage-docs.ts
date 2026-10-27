@@ -28,6 +28,7 @@ import {
   defaultSequences,
   isBlockKey,
   tokenize,
+  tokensMatch,
   validateVocabRules,
   type BlockKey,
   type ResolvedItem,
@@ -198,6 +199,9 @@ function takeOrdinal(segments: Segment[], index0: number): string | null {
   return `${d.group.indexOf(index0) + 1}ª tomada`;
 }
 
+/** Fração das palavras da tomada mais longa que a outra precisa casar para ser a mesma fala (1 erro do Whisper em 10). */
+export const DUPLICATE_MIN_SIMILARITY = 0.9;
+
 /**
  * Confere o plano contra os critérios de decisão (#11364), juntando tudo:
  * - erro: duas tomadas da mesma frase como "usar" (uma tomada por frase; o
@@ -213,10 +217,15 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
   const { bySegment, cues } = decideTakes(segments);
   const cueSegs = new Set(cues.map((c) => c.segment));
   const toks = segments.map((s) => tokenize(s.text));
-  // A mesma fala dita de novo (não só o mesmo começo): o falso começo é prefixo da tomada.
+  // A mesma fala dita de novo, não só o mesmo começo: o falso começo (a mais
+  // curta é prefixo inteiro da outra) ou a frase inteira igual em ao menos
+  // DUPLICATE_MIN_SIMILARITY das palavras da MAIS LONGA. "O Google lançou o
+  // Gemini." × "O Google lançou o Veo." (4 de 5) são frases distintas.
   const duplicate = (a: number, b: number) => {
     const [x, y] = toks[a].length <= toks[b].length ? [toks[a], toks[b]] : [toks[b], toks[a]];
-    return x.length > 0 && alignTokens(x, y).length >= 0.6 * x.length;
+    if (x.length === 0) return false;
+    const prefix = x.length < y.length && x.every((t, k) => tokensMatch(t, y[k]));
+    return prefix || alignTokens(x, y).length >= DUPLICATE_MIN_SIMILARITY * y.length;
   };
   const usedTakes = new Map<string, Array<{ seg: number; label: string }>>();
   for (const b of plan.blocks) {

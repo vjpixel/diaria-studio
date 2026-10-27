@@ -98,6 +98,43 @@ describe("comentários da direção (#11364)", () => {
     assert.equal(directionKind(""), null);
   });
 
+  it("regressão (self-review da PR #11373): fala do roteiro com palavra de comentário nunca vira comentário", () => {
+    for (const line of [
+      "É a primeira vez que a OpenAI lança isso.",
+      "Foi o primeiro modelo a passar no teste.",
+      "O modelo não é perfeito.",
+      "Não é perfeito.",
+      "A OpenAI subiu de novo o preço.",
+      "O Gemini ficou muito bom em código.",
+      "O resultado ficou muito bom.",
+      "Mais uma vez, o Google atrasou.",
+    ]) {
+      assert.equal(directionKind(line), null, line);
+    }
+  });
+
+  it("regressão: fala do roteiro no meio das tomadas não sai como bastidor nem decide a tomada anterior", () => {
+    const segs = [
+      seg("Google lança modo IA da Busca no Brasil.", 0),
+      seg("Google lança modo IA da Busca no Brasil.", 4),
+      seg("É a primeira vez que a busca tem agente.", 8),
+    ];
+    const d = decideTakes(segs);
+    assert.deepEqual(d.cues, []);
+    assert.equal(d.bySegment.get(2), undefined);
+    // Sem a leitura errada como "aprova-primeira", vale a última completa (a 2ª), não a 1ª.
+    assert.equal(d.bySegment.get(1)?.suggestion, "usar");
+    assert.equal(d.bySegment.get(0)?.suggestion, "cortar");
+    assert.doesNotMatch(segmentListing(segs), /bastidor/);
+  });
+
+  it("comentário com muleta na frente continua lido", () => {
+    assert.equal(directionKind("Beleza, muito bom."), "aprova");
+    assert.equal(directionKind("Espera, de novo."), "rejeita");
+    assert.equal(directionKind("Ok, foi a primeira."), "aprova-primeira");
+    assert.equal(directionKind("Esse take tá bom, é este take."), "aprova");
+  });
+
   it("comentário entre as tomadas não quebra o grupo da frase", () => {
     const groups = groupTakes(SEGMENTS, { skip: new Set([3, 7, 9, 13]) });
     const comentario = groups.find((g) => g.segments.includes(8))!;
@@ -212,6 +249,18 @@ describe("plano conferido contra o critério (#11364)", () => {
     const segs = [seg("O Google lançou o Gemini para todos.", 0), seg("O Google lançou também um navegador novo com agente.", 4)];
     const plan: DecupagemPlan = { edition: "261028", blocks: [{ key: "resumo", rows: [{ segments: [1], suggestion: "usar" }, { segments: [2], suggestion: "usar" }] }] };
     assert.deepEqual(checkDecupagemCriteria(plan, segs).errors, []);
+  });
+
+  it("regressão (self-review da PR #11373): frases curtas distintas com a mesma abertura não são tomada duplicada", () => {
+    const segs = [seg("O Google lançou o Gemini.", 0), seg("O Google lançou o Veo.", 3)];
+    const plan: DecupagemPlan = { edition: "261028", blocks: [{ key: "resumo", rows: [{ segments: [1], suggestion: "usar" }, { segments: [2], suggestion: "usar" }] }] };
+    assert.deepEqual(checkDecupagemCriteria(plan, segs).errors, []);
+  });
+
+  it("o falso começo (prefixo inteiro da tomada) junto da tomada continua erro", () => {
+    const segs = [seg("Uma atualização de", 0), seg("Uma atualização de privacidade do Google.", 2)];
+    const plan: DecupagemPlan = { edition: "261028", blocks: [{ key: "titulo", rows: [{ segments: [1, 2], suggestion: "usar" }] }] };
+    assert.equal(checkDecupagemCriteria(plan, segs).errors.length, 1);
   });
 
   it("bastidor fora do plano vira 'cortar (bastidor)' no Doc", () => {
