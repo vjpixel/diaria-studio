@@ -391,6 +391,11 @@ export function roteiroMarkdown(
       });
       alts.forEach((a, k) => lines.push(`| ${mdCell(`${label}, opção ${LETTERS[k + 1] ?? k + 2}`)} | ${mdCell(a.text)} | ${span(a.start, a.end)} |`));
     }
+    // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
+    const differs = p.spec.order.flatMap((key) =>
+      (resolved[key] ?? []).flatMap((it, i) => (it.heard !== undefined ? [`- **fala difere** ${BLOCK_LABELS[key]} [${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`] : [])),
+    );
+    if (differs.length) lines.push("", ...differs);
     if (p.missingBlocks.length) lines.push("", `Faltam no blocks.json: ${p.missingBlocks.map((k) => BLOCK_LABELS[k]).join(", ")}.`);
     lines.push("");
   }
