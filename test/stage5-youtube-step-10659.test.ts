@@ -13,20 +13,64 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { checkYouTubeStepRan, STAGE_5_RULES } from "../scripts/lib/invariant-checks/stage-5.ts";
-import { classifyFetch, consentAllowsYouTube, parseUploadStdout, pastedVideoUrl, YOUTUBE_STEP_FILE } from "../scripts/stage5-youtube.ts";
+import { classifyFetch, consentAllowsYouTube, parseUploadStdout, pastedVideoUrl, planFromDryRun, YOUTUBE_STEP_FILE } from "../scripts/stage5-youtube.ts";
 
 describe("#11222 link colado pelo editor (vídeo subido pelo Studio)", () => {
   it("pastedVideoUrl: com 05-video-url.txt o passo não busca nem sobe; sem ele, segue o fluxo", () => {
-    const withLink = edition({ "_internal/05-video-url.txt": "https://youtu.be/abc123\n" });
+    const withLink = edition({ "_internal/05-video-url.txt": "https://www.youtube.com/watch?v=dQw4w9WgXcQ\n" });
     const empty = edition({ "_internal/05-video-url.txt": "  \n" });
     const none = edition({});
     try {
-      assert.equal(pastedVideoUrl(withLink), "https://youtu.be/abc123");
+      // #11297: passa pelo parseD1VideoUrlFile (normaliza para youtu.be).
+      assert.deepEqual(pastedVideoUrl(withLink), { url: "https://youtu.be/dQw4w9WgXcQ" });
       assert.equal(pastedVideoUrl(empty), null);
       assert.equal(pastedVideoUrl(none), null);
     } finally {
       for (const d of [withLink, empty, none]) rmSync(d, { recursive: true, force: true });
     }
+  });
+
+  it("#11297: arquivo com conteúdo que não é link do YouTube vira invalid (nunca url crua)", () => {
+    const junk = edition({ "_internal/05-video-url.txt": "colar aqui depois\n" });
+    try {
+      const r = pastedVideoUrl(junk);
+      assert.ok(r && "invalid" in r, `esperava invalid, veio ${JSON.stringify(r)}`);
+    } finally {
+      rmSync(junk, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#11297 horizontal de Final/ não sobe sem sinal explícito", () => {
+  const dryRun = (scope: string) =>
+    JSON.stringify({ action: "dry-run", selection: "found", file: { id: "x", name: "Diaria comentada_Youtube_V3.mp4", scope } });
+
+  it("cenário da issue: dry-run acha o _Youtube_ em Final/, sem link e sem sinal → awaiting-link, sem download", () => {
+    const p = planFromDryRun(0, dryRun("final-folder"), false, "261028");
+    assert.equal(p.kind, "stop");
+    assert.equal(p.kind === "stop" && p.outcome, "awaiting-link");
+    assert.match(p.kind === "stop" ? p.detail ?? "" : "", /link-video-d1\.ts 261028 --save/);
+  });
+
+  it("com --upload-from-final, Final/ segue para o download", () => {
+    assert.equal(planFromDryRun(0, dryRun("final-folder"), true).kind, "download");
+  });
+
+  it("edição sem Final/ (subpasta ou raiz) mantém o upload automático", () => {
+    assert.equal(planFromDryRun(0, dryRun("edition-folder"), false).kind, "download");
+    assert.equal(planFromDryRun(0, dryRun("root"), false).kind, "download");
+  });
+
+  it("exists sobe o arquivo local; none/already-published/needs-editor param como antes", () => {
+    assert.equal(planFromDryRun(0, JSON.stringify({ action: "exists" }), false).kind, "upload-existing");
+    const none = planFromDryRun(0, JSON.stringify({ action: "none", reason: "r" }), false);
+    assert.equal(none.kind === "stop" && none.outcome, "no-video");
+    const pub = planFromDryRun(0, JSON.stringify({ action: "already-published" }), false);
+    assert.equal(pub.kind === "stop" && pub.outcome, "already-published");
+    const amb = planFromDryRun(3, JSON.stringify({ action: "needs-editor", selection: "ambiguous" }), false);
+    assert.equal(amb.kind === "stop" && amb.outcome, "needs-editor");
+    const bad = planFromDryRun(1, "nada", false);
+    assert.equal(bad.kind === "stop" && bad.outcome, "fetch-error");
   });
 });
 
