@@ -8,9 +8,9 @@ const newer = "2026-10-27T12:56:00Z";
 const now = new Date("2026-10-27T13:50:00Z");
 function run(extra: Partial<Parameters<typeof routeIssue>[0]> = {}, comments: Array<{ body: string; createdAt: string; updatedAt?: string; authorAssociation: string }> = [
   { body: "<!-- route-issue: track=overnight -->", createdAt: newer, authorAssociation: "OWNER" },
-]) {
+], initialLabels: string[] = []) {
   const calls: string[][] = [];
-  let labels: string[] = [];
+  let labels: string[] = [...initialLabels];
   const result = routeIssue({
     issue: 11251, track: "bloqueada", reason: "credencial que só o editor provisiona",
     triagedAt: initial, now, cwd: "/tmp", ...extra,
@@ -42,7 +42,7 @@ it("override exige motivo e registra-o no comentário", () => {
 });
 it("comentário externo não comanda o roteamento", () => assert.equal(run({}, [{ body: "<!-- route-issue: track=overnight -->", createdAt: newer, authorAssociation: "NONE" }]).result.ok, true));
 it("edição recente de comentário antigo também protege", () => refused({}, [{ body: "<!-- route-issue: track=overnight -->", createdAt: initial, updatedAt: newer, authorAssociation: "MEMBER" }]));
-it("decisão do editor recente impede contradizer o track atual", () => refused({}, [{ body: formatDecisionMarker({ decided_at: newer, pergunta: "bloqueio?", resposta: "removido", sessao: "develop" }), createdAt: newer, authorAssociation: "OWNER" }]));
+it("decisão do editor recente exige releitura mesmo sem declarar track", () => refused({}, [{ body: formatDecisionMarker({ decided_at: newer, pergunta: "bloqueio?", resposta: "removido", sessao: "develop" }), createdAt: newer, authorAssociation: "OWNER" }]));
 it("bloqueio recente impede desbloqueio com triagem antiga", () => {
   const body = formatExecutionBlockMarker({ recorded_at: "2026-10-27", motivo: "credencial", sessao: "develop", condicao: { tipo: "externo", descricao: "renovar" } });
   refused({ track: "develop" }, [{ body, createdAt: newer, authorAssociation: "COLLABORATOR" }]);
@@ -68,4 +68,21 @@ it("só o roteamento mais recente decide, independente da ordem recebida", () =>
   ];
   assert.equal(run({}, comments).result.ok, true);
   assert.equal(run({}, [...comments].reverse()).result.ok, true);
+});
+
+it("#11315: desbloqueia relê decisão e roteia fora-de-rodada → overnight sem override", () => {
+  const comments = [{
+    body: formatDecisionMarker({ decided_at: newer, pergunta: "qual critério?", resposta: "implementar o critério definido", sessao: "develop" }),
+    createdAt: newer, authorAssociation: "OWNER",
+  }];
+  const { result, calls } = run({ track: "overnight", motivo: "triada", triagedAt: "2026-10-27T12:57:00Z" }, comments, ["sem-direcao-acionavel"]);
+  assert.equal(result.ok, true, result.error);
+  assert.ok(calls.some(c => c[1] === "edit"));
+  assert.ok(calls.some(c => c[1] === "comment"));
+});
+it("#11315: decisão recente também protege quando labels já coincidem com o pedido", () => {
+  refused({ track: "overnight" }, [{
+    body: formatDecisionMarker({ decided_at: newer, pergunta: "qual direção?", resposta: "reavaliar o escopo", sessao: "develop" }),
+    createdAt: newer, authorAssociation: "OWNER",
+  }]);
 });

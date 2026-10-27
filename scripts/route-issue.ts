@@ -120,8 +120,8 @@
  * `--triaged-at ISO` informa quando a thread foi lida para decidir o track.
  * No CLI, o início da sessão registrada é o default quando sua identidade
  * está disponível no ambiente. Um marcador confiável posterior com track
- * diferente recusa TODAS as escritas. Sem base temporal conhecida, mudar um
- * track com histórico também exige releitura. `--override-newer "motivo"`
+ * diferente (ou decisão sem track ainda não relida) recusa TODAS as escritas.
+ * Sem base temporal conhecida, mudar um track com histórico também exige releitura. `--override-newer "motivo"`
  * permite sobreposição deliberada e registra o motivo no comentário.
  * `--force` não dispensa esta proteção.
  *
@@ -425,7 +425,6 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
   // #11301 — compare a base temporal do julgamento, não o início deste
   // processo curto. Sem base conhecida, uma mudança de track com histórico
   // exige releitura explícita (--triaged-at) ou override auditável.
-  const currentTrack = classifyExecTrack({ ...fetchedBefore.data, now, state: "OPEN" });
   const relevant = fetchedBefore.data.routingComments.filter((c) =>
     parseRouteIssueMarkerAtStart(c.body) !== null ||
     /<!-- (?:bloqueio-execucao|decisao-editor):/.test(c.body));
@@ -433,11 +432,14 @@ export function routeIssue(options: RouteIssueOptions): RouteIssueResult {
     Date.parse(b.updatedAt ?? b.createdAt ?? "") - Date.parse(a.updatedAt ?? a.createdAt ?? ""))[0];
   if (latest && !options.overrideNewer) {
     const markerTrack = parseRouteIssueMarkerAtStart(latest.body) ??
-      (latest.body.includes("<!-- bloqueio-execucao:") ? "bloqueada" : currentTrack);
+      (latest.body.includes("<!-- bloqueio-execucao:") ? "bloqueada" : undefined);
     const stamp = Date.parse(latest.updatedAt ?? latest.createdAt ?? "");
     const baseline = options.triagedAt ? Date.parse(options.triagedAt) : undefined;
+    // Decisões não declaram track: exigem releitura, sem herdar labels antigas.
+    // Isso permite decisão → route com --triaged-at após ler a decisão, mas
+    // continua barrando julgamentos anteriores a uma decisão recente.
     if (markerTrack !== track && (baseline === undefined || !Number.isFinite(stamp) || stamp > baseline)) {
-      return failResult(`roteamento mais novo na issue ${issueLabel} (${markerTrack}, ${latest.updatedAt ?? latest.createdAt ?? "data desconhecida"}); ` +
+      return failResult(`roteamento mais novo na issue ${issueLabel} (${markerTrack ?? "decisao-editor sem track"}, ${latest.updatedAt ?? latest.createdAt ?? "data desconhecida"}); ` +
         "releia a thread e informe --triaged-at ISO, ou --override-newer com motivo. Nenhuma escrita realizada (#11301).");
     }
   }

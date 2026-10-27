@@ -452,9 +452,14 @@ estourou".
 - **Token colado**: nunca vai pro comentário. Só confirmar via probe
   determinístico (ex: a var existe em `.env`, um script de dry-run passa)
   e comentar o RESULTADO do probe, nunca o valor.
+- Antes de rotear (e após gravar a decisão, quando houver), reler a thread
+  completa e registrar o instante UTC
+  dessa leitura como `{triaged_at}` (ISO 8601). A decisão não declara track:
+  o guard #11301 exige essa releitura, sem `--override-newer`. Se outro
+  comentário chegar depois da leitura, reler e reavaliar antes de tentar de novo.
 - Em todos os casos, depois de comentar a decisão (ou como único passo,
   pro caso de bloqueio de execução): `npx tsx scripts/route-issue.ts
-  --issue {ref} --track {track} --reason "..."` (`{ref}` = o `ref` da
+  --issue {ref} --track {track} --reason "..." --triaged-at {triaged_at}` (`{ref}` = o `ref` da
   candidata no scan, #10935) (`--track bloqueada` exige
   `--reason` não-vazio desde #7270; `--sessao develop` opcional) — nunca
   `gh issue edit --add-label` cru (mesma disciplina do #5969, ver
