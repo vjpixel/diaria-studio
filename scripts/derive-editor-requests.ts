@@ -495,12 +495,14 @@ export function sourceUpgradeAliases(oldContent: string | undefined, newContent:
  * `sameStory` (#9936, opcional): `sourceUpgradeAliases` do `01-approved.json`
  * — chave do link novo → chave do link antigo quando é a MESMA história com
  * outra URL. Sem ele, troca de fonte vira `destaque-swap` (comportamento
- * anterior).
+ * anterior). `approvedSelection` permite reconhecer uma troca só no markdown
+ * quando o mesmo slot continua selecionado e o corpo foi preservado (#11170).
  */
 export function classifyNewsletterDiff(
   oldContent: string,
   newContent: string,
   sameStory?: ReadonlyMap<string, string>,
+  approvedSelection?: { before: ReadonlyMap<string, string>; after: ReadonlyMap<string, string> },
 ): Array<{
   request_type: RequestType;
   target: RequestTarget;
@@ -710,7 +712,17 @@ export function classifyNewsletterDiff(
           // #9753: sem este `else`, URL trocada da mesma página ficava `title-choice`.
           if (text(oldTitleLine!) !== text(newTitleLine!)) urlClass = { type: "title-choice", kind: "titulo-reescrito" };
           else urlClass = { type: "link-swap", kind: "link-trocado" };
-        } else if (story(newKey) === story(oldKey)) {
+        } else if (
+          story(newKey) === story(oldKey) ||
+          // #11170: fonte trocada só no markdown, com seleção estável no
+          // approved. Exigir corpo preservado evita esconder uma história nova.
+          (approvedSelection &&
+            articleUrlKey(approvedSelection.before.get(section.replace("destaque-", "d")) ?? "") === oldKey &&
+            articleUrlKey(approvedSelection.after.get(section.replace("destaque-", "d")) ?? "") === oldKey &&
+            ![...approvedSelection.before.values(), ...approvedSelection.after.values()].some((url) => articleUrlKey(url) === newKey) &&
+            destaqueBody(oldText).trim() !== "" &&
+            wordSimilarity(destaqueBody(oldText), destaqueBody(newText)) >= LEAD_REWRITE_SIMILARITY_THRESHOLD)
+        ) {
           // #9936: mesma história, outra URL (ex.: imprensa → post oficial). Troca de link, não de destaque.
           urlClass = { type: "link-swap", kind: "fonte-trocada" };
         } else {
@@ -1158,8 +1170,9 @@ export function classifyPoolDiff(oldJson: any, newJson: any): Array<{
       continue;
     }
 
-    // Saiu do pool. Se virou destaque, quem reporta é o caminho destaque-*.
-    if (newHighlights.has(url)) continue;
+    // #11170: espelho de destaque no próprio lado ou promoção: o caminho
+    // destaque-* já reporta a mudança, inclusive quando a fonte foi trocada.
+    if (oldHighlights.has(url) || newHighlights.has(url)) continue;
 
     // Link-swap (#7974 Fix 3): alguma URL alternativa do MESMO cluster
     // (a própria antiga, ou uma das listadas em cluster_sources) resolve
@@ -1201,8 +1214,8 @@ export function classifyPoolDiff(oldJson: any, newJson: any): Array<{
 
   for (const [url, newItem] of newPool) {
     if (oldPool.has(url)) continue;
-    // Entrou no pool vindo dos destaques: é demoção, reportada por destaque-cut.
-    if (oldHighlights.has(url)) continue;
+    // #11170: espelho no lado novo ou demoção: reportado pelo caminho destaque-*.
+    if (oldHighlights.has(url) || newHighlights.has(url)) continue;
     // Já reportado como o lado "novo" de um link-swap acima.
     if (swapConsumedNewUrls.has(url)) continue;
     results.push({
@@ -1591,7 +1604,7 @@ function buildStage2FilesClassifierMap(
   }
   const sameStory = sourceUpgradeAliases(baselineApproved, currentApproved);
   return new Map<string, (oldC: string, newC: string) => any[]>([
-    ["02-reviewed.md", (oldC, newC) => classifyNewsletterDiff(oldC, newC, sameStory)],
+    ["02-reviewed.md", (oldC, newC) => classifyNewsletterDiff(oldC, newC, sameStory, { before: baselineDestaqueUrls, after: destaqueUrls })],
     ["03-social.md", (oldC, newC) => classifySocialDiff(oldC, newC, destaqueUrls, baselineDestaqueUrls)],
     ["_internal/01-approved.json", classifyApprovedDiff],
   ]);
