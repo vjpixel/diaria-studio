@@ -1030,7 +1030,7 @@ um round-trip inteiro de CI. Mas se esquecer, **corrigir depois funciona**:
    API falhar depois das tentativas, o gate usa o body congelado e **avisa
    explicitamente** no log (`vem do PAYLOAD do evento (possivelmente
    desatualizado, #7140)`). Só nesse caso um push de verdade
-   (`git commit --allow-empty` + `git push`) vira necessário.
+   (`git commit --allow-empty` + `git push origin <branch>`) vira necessário.
 2. Pra editar o corpo, use `npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N
    --body-file {arquivo}` — nunca `gh pr edit --body`, que falha em silêncio
    com `exit 0` sem alterar nada (#6292). E o `--body-file` vai pro
