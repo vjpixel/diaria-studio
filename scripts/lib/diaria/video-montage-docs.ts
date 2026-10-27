@@ -27,6 +27,7 @@ import {
   decideTakes,
   defaultSequences,
   isBlockKey,
+  itemInTarget,
   tokenize,
   tokensMatch,
   validateVocabRules,
@@ -409,6 +410,23 @@ export function decupagemMarkdown(edition: string, doc: DecupagemDoc, sequences:
 /** Teto das verticais: o Shorts aceita até 3:00 (#11364). */
 export const SHORTS_MAX_S = 180;
 
+/** Quanto a versão passa do teto do Shorts: 0 no horizontal e dentro do teto. */
+export function shortsOverS(spec: Pick<SequenceSpec, "target">, totalS: number): number {
+  return spec.target === "youtube" ? 0 : Math.max(0, totalS - SHORTS_MAX_S);
+}
+
+/**
+ * O aviso da sequência montada que passa do teto do Shorts (#11377), ou null.
+ * Mesmo texto no `[aviso]` do build e no roteiro (Gate 2). Aqui a duração é a
+ * da montagem (silêncios já fora), não a estimativa da decupagem.
+ */
+export function shortsWarning(plan: Pick<SequencePlan, "spec" | "durationFrames">, fps: number): string | null {
+  const totalS = plan.durationFrames / fps;
+  const over = shortsOverS(plan.spec, totalS);
+  if (over <= 0) return null;
+  return `${plan.spec.name}: ${clockTime(totalS)} (${totalS.toFixed(1)} s), ${over.toFixed(1)} s acima do teto do Shorts (${SHORTS_MAX_S} s); cortar só na vertical com "skip"/"targets" no item do blocks.json`;
+}
+
 /**
  * Duração de cada versão na montagem sugerida (soma dos trechos "usar" do
  * bruto, antes de tirar os silêncios: estimativa por cima) e quanto a vertical
@@ -420,8 +438,7 @@ export function suggestedDurations(doc: DecupagemDoc, sequences: SequenceSpec[] 
     const totalS = spec.order
       .flatMap((k) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar"))
       .reduce((acc, r) => acc + (r.end - r.start), 0);
-    const vertical = spec.target !== "youtube";
-    return { spec, totalS, overS: vertical ? Math.max(0, totalS - SHORTS_MAX_S) : 0 };
+    return { spec, totalS, overS: shortsOverS(spec, totalS) };
   });
 }
 
@@ -471,7 +488,10 @@ const LETTERS = "ABCDEFGH";
  * por versão (`Bloco | Fala | Bruto`), duração da versão no título, texto
  * integral de cada item com o timecode do bruto e a tomada. Bloco com tomadas
  * alternativas (as "alternativa" da decupagem) mostra a escolhida como
- * "opção A" e as outras como linhas extras "opção B", "opção C".
+ * "opção A" e as outras como linhas extras "opção B", "opção C". Cada versão
+ * leva só os itens que entram nela (`targets`/`skip`, #11377), com o escopo
+ * anotado na coluna Bruto, e a vertical que passa de 3:00 ganha o `[aviso]`
+ * com quanto passa (`shortsWarning`).
  */
 export function roteiroMarkdown(
   edition: string,
@@ -485,26 +505,39 @@ export function roteiroMarkdown(
   if (diff) lines.push(diff, "");
   lines.push("Nenhuma versão leva \"Por que isso importa?\" (decisão do editor, 26/10/2026).", "");
   for (const p of plans) {
-    lines.push(`## ${versionLabel(p.spec)}: ${p.spec.name} (${clockTime(p.durationFrames / fps)})`, "", "| Bloco | Fala | Bruto |", "|---|---|---|");
+    lines.push(`## ${versionLabel(p.spec)}: ${p.spec.name} (${clockTime(p.durationFrames / fps)})`, "");
+    const over = shortsWarning(p, fps);
+    if (over) lines.push(`**[aviso] ${over}**`, "");
+    lines.push("| Bloco | Fala | Bruto |", "|---|---|---|");
+    // Só os itens desta versão (`targets`/`skip`, #11377).
+    const forThis = (key: BlockKey) => (resolved[key] ?? []).filter((it) => itemInTarget(it, p.spec.target));
     for (const key of p.spec.order) {
-      const items = resolved[key];
+      const all = resolved[key];
+      const items = forThis(key);
       const label = BLOCK_LABELS[key];
-      if (!items?.length) {
+      if (!all?.length) {
         lines.push(`| ${label} | (falta no blocks.json) |  |`);
+        continue;
+      }
+      if (!items.length) {
+        lines.push(`| ${label} | (nenhum item nesta versão: targets/skip) |  |`);
         continue;
       }
       const secs = p.clips.filter((c) => c.block === key).reduce((acc, c) => acc + (c.frameOut - c.frameIn) / fps, 0);
       const alts = opts.alternatives?.[key] ?? [];
       items.forEach((it, i) => {
         const head = i === 0 ? `${label}${alts.length ? ", opção A" : ""} (${secs.toFixed(1)} s)` : "";
-        const bruto = span(it.interval.start, it.interval.end) + (it.how === "take" ? ` (tomada ${it.take} de ${it.completeTakes})` : "");
+        const scope = it.targets ? ` (só ${it.targets.join(", ")})` : it.skip ? ` (fora de ${it.skip.join(", ")})` : "";
+        const bruto = span(it.interval.start, it.interval.end) + (it.how === "take" ? ` (tomada ${it.take} de ${it.completeTakes})` : "") + scope;
         lines.push(`| ${mdCell(head)} | ${mdCell(it.text)} | ${bruto} |`);
       });
       alts.forEach((a, k) => lines.push(`| ${mdCell(`${label}, opção ${LETTERS[k + 1] ?? k + 2}`)} | ${mdCell(a.text)} | ${span(a.start, a.end)} |`));
     }
     // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
     const differs = p.spec.order.flatMap((key) =>
-      (resolved[key] ?? []).flatMap((it, i) => (it.heard !== undefined ? [`- **fala difere** ${BLOCK_LABELS[key]} [${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`] : [])),
+      (resolved[key] ?? []).flatMap((it, i) =>
+        it.heard === undefined || !itemInTarget(it, p.spec.target) ? [] : [`- **fala difere** ${BLOCK_LABELS[key]} [${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`],
+      ),
     );
     if (differs.length) lines.push("", ...differs);
     if (p.missingBlocks.length) lines.push("", `Faltam no blocks.json: ${p.missingBlocks.map((k) => BLOCK_LABELS[k]).join(", ")}.`);

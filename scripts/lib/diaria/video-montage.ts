@@ -780,12 +780,46 @@ export function isBlockKey(k: string): k is BlockKey {
  * força outra) ou um INTERVALO explícito no bruto (com `text` opcional, o que
  * deveria estar sendo dito).
  */
-export type BlockItem =
-  | { text: string; take?: number; start?: undefined; end?: undefined }
-  | { start: number; end: number; text?: string; take?: undefined };
+export type BlockItem = ItemScope &
+  (
+    | { text: string; take?: number; start?: undefined; end?: undefined }
+    | { start: number; end: number; text?: string; take?: undefined }
+  );
 
 export type SequenceTarget = "youtube" | "instagram" | "outras-redes";
 export const SEQUENCE_TARGETS: readonly SequenceTarget[] = ["youtube", "instagram", "outras-redes"];
+
+/**
+ * Em quais versões um item de bloco entra (#11377): `targets` lista as versões
+ * em que entra; `skip`, as que pula. Os dois ausentes = todas. Os dois juntos é
+ * erro na validação. Serve para cortar parte do comentário só nas verticais
+ * (passaram de 3:00 do Shorts) sem duplicar o bloco.
+ */
+export interface ItemScope {
+  targets?: SequenceTarget[];
+  skip?: SequenceTarget[];
+}
+
+/** O item entra na versão `target`? */
+export function itemInTarget(scope: ItemScope, target: SequenceTarget): boolean {
+  if (scope.targets && !scope.targets.includes(target)) return false;
+  if (scope.skip && scope.skip.includes(target)) return false;
+  return true;
+}
+
+/** Erros de `targets`/`skip` de um item (lista não vazia de versões conhecidas, sem os dois juntos). */
+function validateItemScope(it: Record<string, unknown>, label: string): string[] {
+  const errors: string[] = [];
+  for (const field of ["targets", "skip"] as const) {
+    const v = it[field];
+    if (v === undefined) continue;
+    if (!Array.isArray(v) || v.length === 0 || v.some((t) => !SEQUENCE_TARGETS.includes(t as SequenceTarget))) {
+      errors.push(`${label}: ${field} precisa ser uma lista não vazia de ${SEQUENCE_TARGETS.join("/")}`);
+    }
+  }
+  if (it.targets !== undefined && it.skip !== undefined) errors.push(`${label}: targets e skip juntos; usar só um`);
+  return errors;
+}
 
 export interface SequenceSpec {
   target: SequenceTarget;
@@ -918,6 +952,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
           if (typeof it.text !== "string" || !it.text.trim()) errors.push(`${label}: sem texto nem intervalo`);
           if (it.take !== undefined && !(Number.isInteger(it.take) && (it.take as number) >= 1)) errors.push(`${label}: take precisa ser inteiro ≥ 1`);
         }
+        errors.push(...validateItemScope(it, label));
       });
     }
   }
@@ -1029,7 +1064,11 @@ export type ResolvedItem = {
   lastWordEnd: number | null;
   /** Até onde um respiro pode ir sem pegar a palavra seguinte do bruto (`next.start - guardS`, ou a duração). */
   holdLimit: number;
-} & ({ how: "take"; take: number; completeTakes: number } | { how: "explicit" });
+} & ItemScope &
+  ({ how: "take"; take: number; completeTakes: number } | { how: "explicit" });
+
+/** O escopo do item, só com os campos presentes (o `plan.json` não ganha `targets: undefined`). */
+const scopeOf = (it: ItemScope): ItemScope => ({ ...(it.targets ? { targets: it.targets } : {}), ...(it.skip ? { skip: it.skip } : {}) });
 
 export interface ResolveOptions {
   durationS: number;
@@ -1083,6 +1122,7 @@ export function resolveBlocks(
           words: inside,
           lastWordEnd: inside.length ? inside[inside.length - 1].end : null,
           holdLimit: round3(Math.min(opts.durationS, nextIdx < 0 ? opts.durationS : limitAfter(nextIdx))),
+          ...scopeOf(it),
           how: "explicit",
         });
         return;
@@ -1098,6 +1138,7 @@ export function resolveBlocks(
         words: takeWords,
         lastWordEnd: words[c.take.lastWord].end,
         holdLimit: round3(Math.min(opts.durationS, limitAfter(c.take.lastWord + 1))),
+        ...scopeOf(it),
         how: "take",
         take: c.takeNumber,
         completeTakes: c.completeTakes,
@@ -1127,7 +1168,10 @@ export interface SequencePlan {
   durationFrames: number;
   /** Texto do roteiro desta versão (os blocos na ordem), base da autorrevisão e das legendas. */
   script: string;
-  /** Blocos da ordem sem nenhum item no `blocks.json`. */
+  /**
+   * Blocos da ordem sem nenhum item no `blocks.json`. Bloco com itens que
+   * `targets`/`skip` tiram todos desta versão não conta: foi decisão, não falta.
+   */
   missingBlocks: BlockKey[];
   /** Itens que sumiram no corte (0 clipes) ou palavras que ficaram fora dos clipes. */
   dropped: string[];
@@ -1163,7 +1207,8 @@ export function wordCoveredBySilence(w: Interval, parts: Interval[], silences: I
  * antes da palavra seguinte do bruto (`holdLimit`), e o descarte de clipe curto
  * vem depois desse respiro. Item que some no corte, ou palavra que fica de
  * fora, vai para `dropped` (palavra esticada sobre a pausa não conta, ver
- * `wordCoveredBySilence`).
+ * `wordCoveredBySilence`). Item com `targets`/`skip` que exclui esta versão
+ * fica de fora dela (#11377); o respiro do fecho vai no último item que entra.
  */
 export function buildSequencePlan(
   spec: SequenceSpec,
@@ -1187,10 +1232,12 @@ export function buildSequencePlan(
       continue;
     }
     const holding = hold.has(key);
-    items.forEach((it, idx) => {
+    // Só os itens desta versão (`targets`/`skip`, #11377); o rótulo guarda o índice do blocks.json.
+    const mine = items.map((it, idx) => ({ it, idx })).filter(({ it }) => itemInTarget(it, spec.target));
+    mine.forEach(({ it, idx }, n) => {
       scriptParts.push(it.text);
       let parts = speechParts(it.interval.start, it.interval.end, silences, { ...opts, minClipS: 0 });
-      if (holding && idx === items.length - 1 && parts.length) {
+      if (holding && n === mine.length - 1 && parts.length) {
         const lastPart = parts[parts.length - 1];
         const target = it.lastWordEnd !== null ? it.lastWordEnd + FECHO_HOLD_S : lastPart.end + FECHO_HOLD_S;
         const floor = it.lastWordEnd ?? lastPart.start;
