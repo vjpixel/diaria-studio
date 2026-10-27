@@ -57,7 +57,7 @@
  * `enabled: false`; ligada em 20/10/2026). Passos manuais: `docs/overnight-nightly-chain.md`.
  */
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
@@ -100,8 +100,10 @@ export const EXIT_REVIEW_FAILED = 3;
  */
 export const EXIT_OVERNIGHT_NO_TRACE = 4;
 
+export const EXIT_OVERNIGHT_DELIVERY_ALARM = 5;
+
 export type ReviewStatus = "ok" | "noop" | "failed" | "timeout";
-export type OvernightStatus = "ok" | "failed" | "no-trace" | "skipped-active-session";
+export type OvernightStatus = "ok" | "failed" | "no-trace" | "delivery-alarm" | "skipped-active-session";
 
 export interface ReviewOutcome {
   status: ReviewStatus;
@@ -332,6 +334,18 @@ export function findRoundTraceSince(repoRootAbs: string, sinceMs: number): strin
   return hits;
 }
 
+/** Contagem estruturada no relatório final; nunca infere entrega da prosa (#11235). */
+export function readDeliveryCounts(report: string): { implementedUnits: number; openedPrs: number } | null {
+  const matches = [...report.matchAll(/<!-- overnight-delivery: (.*?) -->/g)];
+  if (matches.length !== 1) return null;
+  try {
+    const value = JSON.parse(matches[0][1]);
+    if (!value || !Number.isSafeInteger(value.implementedUnits) || value.implementedUnits < 0 ||
+        !Number.isSafeInteger(value.openedPrs) || value.openedPrs < 0) return null;
+    return { implementedUnits: value.implementedUnits, openedPrs: value.openedPrs };
+  } catch { return null; }
+}
+
 /**
  * Exit code final da cadeia. Falha do overnight vence (é a parte cara e a
  * que o editor precisa ver primeiro); review falho com overnight ok/pulado →
@@ -342,6 +356,7 @@ export function chainExitCode(review: ReviewStatus, overnight: OvernightOutcome)
   // como "só o review falhou". O exit original fica no log.
   if (overnight.status === "failed") return EXIT_OVERNIGHT_FAILED;
   if (overnight.status === "no-trace") return EXIT_OVERNIGHT_NO_TRACE;
+  if (overnight.status === "delivery-alarm") return EXIT_OVERNIGHT_DELIVERY_ALARM;
   if (review === "failed" || review === "timeout") return EXIT_REVIEW_FAILED;
   return 0;
 }
@@ -570,6 +585,18 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
     return { status: "no-trace", exitCode: 0 };
   } else {
     deps.log(`overnight: rastro ${trace.join(", ")}`);
+    const reports = trace.filter((path) => path.endsWith("/report.md"));
+    let alarm = reports.length === 0;
+    for (const path of reports) {
+      let counts = null;
+      try { counts = readDeliveryCounts(readFileSync(join(repoRootAbs, "data", "overnight", path), "utf8")); } catch { /* ausência não é zero entrega */ }
+      deps.log(`overnight: entrega ${path} ${counts ? JSON.stringify(counts) : "contagem ausente/inválida"}`);
+      if (!counts || (counts.openedPrs === 0 && counts.implementedUnits >= 1)) alarm = true;
+    }
+    if (alarm) {
+      deps.log("overnight: ALARME DE ENTREGA — 0 PRs com unidade implementada, ou contagem final ausente/inválida; Diaria-Systemd-Failed-Units-Alarm via exit 5");
+      return { status: "delivery-alarm", exitCode: 0 };
+    }
   }
   return { status: "ok", exitCode: 0 };
 }
