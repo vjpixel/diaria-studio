@@ -104,7 +104,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * opção: o vertical sobe pro R2 e o Reels vai pra FILA do Worker
  * `diaria-linkedin-cron`; sem Worker, sem R2 ou com autora que o Worker não
  * conhece, fica pendente até rodar de novo depois do horário (ou `--now`).
- * O R2 não está habilitado (#10940): X e Threads, que só recebem o vídeo por
+ * O R2 não será habilitado (#11265): X e Threads, que só recebem o vídeo por
  * URL pública, ficam pulados com aviso (manuais).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
@@ -264,8 +264,10 @@ export const LINKEDIN_TIMER_DETAIL =
  */
 export const INSTAGRAM_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-Instagram, publishing.shorts.instagram_backend = timer-300) no horário do vertical, " +
-  "com o corte _Instagram_ do Drive pela API; se o timer não conseguir (acima do teto da API, credencial, falha), ele abre um alarme para o editor. " +
-  "Para publicar desta máquina mesmo assim, rode só esse destino com --only instagram --instagram-timer --publish " +
+  "com o corte _Instagram_ do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
+  "e, se ainda assim o Reels não sair (acima do teto da API, credencial, falha), abre um alarme para o editor. " +
+  "Para publicar pela API mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor: o lock do timer não cruza máquina e o Reels sai duplicado) " +
+  "só esse destino com --only instagram --instagram-timer --publish " +
   "(confira antes que o 300 não publicou; o --instagram-timer recusa qualquer outro destino)";
 
 /**
@@ -1594,22 +1596,58 @@ export function instagramTimerPreflight(decision: InstagramConfirmDecision): Ins
 }
 
 /**
+ * #11265: por que a conferência da conta do timer não deixou publicar.
+ * `blocked` = pode haver Reels da edição na conta (ambíguo, janela ou media-id);
+ * `read-failed` = a leitura do `/media` falhou; `persist-failed` = o Reels foi
+ * ACHADO na conta, mas o registro não foi gravado (`entry` = o achado).
+ */
+export type InstagramTimerGateFailure = "blocked" | "read-failed" | "persist-failed";
+
+/**
+ * #11265: erro da conferência da conta do timer. O resultado do destino leva
+ * `cause: "preflight"` no JSON, para o timer distinguir "o gate não deixou
+ * publicar" (nunca sugerir `--publish`: pode duplicar o Reels) de "o publish
+ * falhou".
+ */
+export class InstagramTimerGateError extends Error {
+  readonly failure: InstagramTimerGateFailure;
+  readonly entry?: ShortPublishedEntry;
+  constructor(message: string, failure: InstagramTimerGateFailure, entry?: ShortPublishedEntry) {
+    super(message);
+    this.name = "InstagramTimerGateError";
+    this.failure = failure;
+    if (entry) this.entry = entry;
+  }
+}
+
+/**
  * #11265: a conferência da conta ligada ao publish da rodada do timer, com I/O
  * injetável. Reels já no ar → grava (`persist`) e não publica; ambíguo ou
  * leitura incompleta → lança (o destino vira falha e o timer alarma, nunca
  * publica); nada na conta → publica. Erro da leitura também lança
- * (fail-closed: a próxima execução de hora em hora tenta de novo).
+ * (fail-closed: a próxima execução de hora em hora tenta de novo). Todo erro
+ * daqui é `InstagramTimerGateError` (`persist-failed` carrega o Reels achado).
  */
 export async function instagramTimerGate(deps: {
   decide: () => Promise<InstagramConfirmDecision>;
   persist: (entry: ShortPublishedEntry) => void;
 }): Promise<{ kind: "publish" } | { kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }> {
-  const pre = instagramTimerPreflight(await deps.decide());
+  let decision: InstagramConfirmDecision;
+  try {
+    decision = await deps.decide();
+  } catch (e) {
+    throw new InstagramTimerGateError(`a leitura da conta do Instagram falhou (${e instanceof Error ? e.message : String(e)}) — o timer não publica sem conferir`, "read-failed");
+  }
+  const pre = instagramTimerPreflight(decision);
   if (pre.kind === "block") {
-    throw new Error(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`);
+    throw new InstagramTimerGateError(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`, "blocked");
   }
   if (pre.kind === "already") {
-    deps.persist(pre.entry);
+    try {
+      deps.persist(pre.entry);
+    } catch (e) {
+      throw new InstagramTimerGateError(`registro não gravado: ${e instanceof Error ? e.message : String(e)}`, "persist-failed", pre.entry);
+    }
     return pre;
   }
   return { kind: "publish" };
@@ -2570,6 +2608,9 @@ async function main(): Promise<number> {
     matchedBy?: InstagramTimerAlreadyMatch;
     /** #10772: o que a skill passa pra Buffer `create_post` (nada é registrado até o `--mark`). */
     buffer?: { text: string; dueAt: string | null; videoUrl: string };
+    /** #11265: a falha veio da conferência da conta do timer (`instagramTimerGate`), não do publish. */
+    cause?: "preflight";
+    preflight?: InstagramTimerGateFailure;
   }> = [];
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
   let uploaded: Promise<string> | null = null;
@@ -2685,7 +2726,12 @@ async function main(): Promise<number> {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      results.push({ destination: item.destination, ok: false, error: msg });
+      if (e instanceof InstagramTimerGateError) {
+        // #11265: o gate não deixou publicar — o timer não pode tratar isso como "o publish falhou".
+        results.push({ destination: item.destination, ok: false, error: msg, cause: "preflight", preflight: e.failure, ...(e.entry ? { entry: e.entry } : {}) });
+      } else {
+        results.push({ destination: item.destination, ok: false, error: msg });
+      }
       console.error(`[erro] ${item.destination}: ${msg}`);
       continue;
     }

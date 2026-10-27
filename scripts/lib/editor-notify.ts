@@ -126,6 +126,16 @@ export interface NotifyEditorFinding {
    * `LegacyResendIntent`. Default `"resend-every-run"` (comportamento
    * histórico). */
   legacyResendIntent?: LegacyResendIntent;
+  /**
+   * #11265 — manda o e-mail mesmo quando a política (`shouldEmailForIssueOutcome`)
+   * não mandaria (issue `reused`/`updated` sob `urgent_only`). Para o REENVIO de
+   * um e-mail que já era devido numa execução anterior e falhou no push: a 1ª
+   * execução cria a issue e o e-mail falha; na 2ª a issue volta `reused` e,
+   * sem isto, o e-mail nunca mais seria tentado. Só vale para `"acao"`/
+   * `"urgente"` com issue tratada com sucesso (`action !== "failed"`); quem
+   * passa guarda por conta própria que o e-mail daquele achado está pendente.
+   */
+  forceEmail?: boolean;
 }
 
 export interface NotifyEditorDeps {
@@ -403,7 +413,7 @@ export async function notifyEditor(
     return { severity: finding.severity, emailPolicy, issue, emailSent: false };
   }
 
-  if (!shouldEmailForIssueOutcome(finding.severity, issue, emailPolicy, finding.legacyResendIntent)) {
+  if (!finding.forceEmail && !shouldEmailForIssueOutcome(finding.severity, issue, emailPolicy, finding.legacyResendIntent)) {
     return { severity: finding.severity, emailPolicy, issue, emailSent: false };
   }
 
