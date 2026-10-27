@@ -84,7 +84,15 @@ import {
   type LtvPorOrigemDeps,
   type LtvPorOrigemClasseInput,
   type LtvCacRatioDeps,
+  type DoiConfirmacaoDiaDeps,
 } from "../lib/metrics/registry.ts";
+import {
+  snapshotRootDefault,
+  listSubscriberStateSnapshotDates,
+  loadAllSubscriberStateSnapshots,
+  loadDoiFormStatuses,
+  findLatestResolvedDoiCohort,
+} from "../lib/subscriber-state-snapshot.ts";
 import { classifyAcquisition, type AcquisitionClass } from "../lib/metrics/acquisition-class.ts";
 import { aggregateMeasuredRowsByCanal, normalizeEmail } from "../lib/cac.ts";
 import { readMonthCacheDetailed } from "../lib/apoia-se.ts";
@@ -956,6 +964,44 @@ function summarizeMetric(def: MetricDef): MetricDefSummary {
   };
 }
 
+/** Insumo de `doi-confirmacao-dia` no baseline (#8548): a safra mais recente
+ *  já resolvida e a janela do dia DELA. */
+export interface DoiBaselineInput {
+  janela: Janela;
+  deps: DoiConfirmacaoDiaDeps;
+}
+
+/** Quantas datas de snapshot o painel lê — cobre a busca da safra mais
+ *  recente resolvida (`findLatestResolvedDoiCohort`, até 14 dias para trás)
+ *  mais o snapshot de maturação, sem carregar o histórico inteiro. */
+const DOI_BASELINE_SNAPSHOT_DATES = 21;
+
+/**
+ * Lê os snapshots diários do Kit (`data/subscriber-state-snapshots/kit/`) e
+ * resolve a safra de confirmação DOI mais recente (#8548). Antes daqui o
+ * baseline chamava a métrica com `deps: {}`, então o painel mostrava
+ * `indeterminado` para sempre mesmo com a métrica ligada no
+ * `check-metrics-health.ts` (#8552). Sem snapshot nenhum (sessão sem `data/`)
+ * devolve `null` e o baseline cai no comportamento antigo. Nunca lança.
+ */
+export function loadDoiBaselineInput(dataDir: string): DoiBaselineInput | null {
+  try {
+    const root = snapshotRootDefault(dataDir);
+    const dates = listSubscriberStateSnapshotDates(root).slice(-DOI_BASELINE_SNAPSHOT_DATES);
+    if (dates.length === 0) return null;
+    const snapshots = loadAllSubscriberStateSnapshots(root, dates);
+    const statuses = loadDoiFormStatuses(root, dates);
+    const found = findLatestResolvedDoiCohort(snapshots, statuses);
+    if (found.cohortDate === null) {
+      return { janela: janelaDia(dates[dates.length - 1]), deps: { motivoIndeterminado: found.motivoIndeterminado } };
+    }
+    const { cohort, semFiltroDoi } = found.result;
+    return { janela: janelaDia(found.cohortDate), deps: { cohort, semFiltroDoi } };
+  } catch {
+    return null;
+  }
+}
+
 const BASELINE_METRIC_IDS: readonly string[] = [
   "cadastros-dia",
   "doi-confirmacao-dia",
@@ -1023,6 +1069,8 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
   //    esta contagem (ver `computeBaseAtiva`).
   const crossPlatformActiveLayer = loadCrossPlatformActiveLayer(db);
 
+  const doiBaselineInput = loadDoiBaselineInput(resolve(rootDir, "data"));
+
   // ── Baseline (zona 1) ──────────────────────────────────────────────
   const baseline: MetricBaselineItem[] = [];
   for (const id of BASELINE_METRIC_IDS) {
@@ -1038,6 +1086,7 @@ export async function buildMetricsData(rootDir: string, opts: BuildMetricsDataOp
       kitActiveLayer.count,
       crossPlatformActiveLayer.count,
       crossPlatformActiveLayer.asOf,
+      doiBaselineInput,
     );
     baseline.push({ metric: summarizeMetric(def), result });
   }
@@ -1147,11 +1196,16 @@ async function computeBaseline(
   kitActive: number | null,
   crossPlatformActive: number | null = null,
   crossPlatformAsOf: string | null = null,
+  doiInput: DoiBaselineInput | null = null,
 ): Promise<MetricResult> {
   switch (def.id) {
     case "cadastros-dia":
       return def.computar({ janela, deps: acqDeps });
     case "doi-confirmacao-dia":
+      // #8548: a safra de HOJE nunca resolve (precisa de 48h de maturação), então
+      // o painel mostra a safra mais recente já resolvida — com a janela DELA,
+      // não a de hoje — e a decomposição por canal pago.
+      if (doiInput) return def.computar({ janela: doiInput.janela, decomposicao: "canal", deps: doiInput.deps });
       return def.computar({ janela, deps: {} });
     case "doi-orfaos":
       // F2 ainda não expõe a leitura viva (`inactiveSubscribers`/

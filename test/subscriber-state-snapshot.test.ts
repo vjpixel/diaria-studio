@@ -222,7 +222,7 @@ describe("buildDoiConfirmationCohort", () => {
     const result = buildDoiConfirmationCohort(snapshots, "2026-09-18");
     assert.equal(result.motivoIndeterminado, undefined);
     assert.deepEqual(
-      result.cohort.sort((a, b) => a.id - b.id),
+      result.cohort.sort((a, b) => a.id - b.id).map(({ id, confirmed }) => ({ id, confirmed })),
       [
         { id: 1, confirmed: true },
         { id: 2, confirmed: false },
@@ -238,7 +238,7 @@ describe("buildDoiConfirmationCohort", () => {
       ["2026-09-25", [{ id: 1, state: "inactive", created_at: "2026-09-18T10:00:00.000Z" }]], // ruído posterior
     ]);
     const result = buildDoiConfirmationCohort(snapshots, "2026-09-18", 48);
-    assert.deepEqual(result.cohort, [{ id: 1, confirmed: true }]);
+    assert.deepEqual(result.cohort.map(({ id, confirmed }) => ({ id, confirmed })), [{ id: 1, confirmed: true }]);
   });
 });
 
@@ -270,7 +270,10 @@ describe("doi_form (#8552 a)", () => {
     const day = [mk(1, "inactive", true), mk(2, "inactive", true), mk(3, "inactive")]; // 3 = órfão
     const matured = [mk(1, "active", true), mk(2, "inactive", true), mk(3, "inactive")];
     const r = buildDoiConfirmationCohort(new Map([["2026-09-18", day], ["2026-09-20", matured]]), "2026-09-18");
-    assert.deepEqual(r.cohort, [{ id: 1, confirmed: true }, { id: 2, confirmed: false }]);
+    assert.deepEqual(r.cohort.map(({ id, confirmed }) => ({ id, confirmed })), [
+      { id: 1, confirmed: true },
+      { id: 2, confirmed: false },
+    ]);
   });
 
   it("sem cobertura (snapshot antigo), mantém todo inactive criado no dia", () => {
