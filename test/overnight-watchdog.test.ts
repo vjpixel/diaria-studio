@@ -14,7 +14,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ import {
   isDeduped,
   findActiveRun,
   getLastRunLogActivity,
+  isOwnWatchdogEvent,
   isSelfInflictedPlanMtime,
   resolveRunActivity,
   diagnoseWatchdogActivity,
@@ -1335,6 +1336,97 @@ describe("getLastRunLogActivity ignora eventos do próprio watchdog (#5520)", ()
     ]);
 
     assert.equal(getLastRunLogActivity(tmpRoot, "260707", "overnight"), null);
+  });
+
+  it("REGRESSÃO #11339: watchdog_source_broken do próprio watchdog não conta como atividade", () => {
+    writeLog([
+      {
+        timestamp: "2026-10-25T03:00:00Z",
+        edition: "261025",
+        agent: "overnight",
+        message: "pr_opened",
+        details: {},
+      },
+      {
+        timestamp: "2026-10-27T04:40:00Z",
+        edition: "261025",
+        agent: "overnight",
+        message: "watchdog_source_broken",
+        details: { source: "overnight-watchdog", reason: "unknown", elapsed_min: 90 },
+      },
+    ]);
+
+    assert.equal(
+      getLastRunLogActivity(tmpRoot, "261025", "overnight"),
+      new Date("2026-10-25T03:00:00Z").getTime(),
+    );
+  });
+
+  it("isOwnWatchdogEvent: qualquer mensagem com source do watchdog do mesmo kind (#11339)", () => {
+    const src = { source: "overnight-watchdog" };
+    assert.equal(isOwnWatchdogEvent({ message: "stall_detected", details: src }, "overnight"), true);
+    assert.equal(isOwnWatchdogEvent({ message: "watchdog_source_broken", details: src }, "overnight"), true);
+    assert.equal(isOwnWatchdogEvent({ message: "outra_coisa", details: src }, "overnight"), true);
+    // source de outro kind, ou sem source, segue sendo atividade da rodada
+    assert.equal(isOwnWatchdogEvent({ message: "watchdog_source_broken", details: src }, "continuo"), false);
+    assert.equal(isOwnWatchdogEvent({ message: "watchdog_source_broken", details: {} }, "overnight"), false);
+    assert.equal(isOwnWatchdogEvent({ message: "stall_detected", details: null }, "overnight"), false);
+  });
+});
+
+describe("findActiveRun: rodada morta só com eventos do watchdog é abandonada (#11339)", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "watchdog-11339-"));
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("REGRESSÃO: sem report.md, última atividade real há 2 dias e só watchdog_source_broken/stall_detected nas últimas 24h → null", () => {
+    const HOUR = 3_600_000;
+    const nowMs = Date.now();
+    const dir = join(tmpRoot, "data", "overnight", "261025");
+    mkdirSync(dir, { recursive: true });
+    const planPath = join(dir, "plan.json");
+    const realActivity = new Date(nowMs - 48 * HOUR);
+    writeFileSync(
+      planPath,
+      JSON.stringify({ started_at: new Date(nowMs - 50 * HOUR).toISOString(), stall_events: [] }),
+      "utf-8",
+    );
+    // mtime do plan.json = última escrita genuína do coordenador, 2 dias atrás
+    utimesSync(planPath, realActivity, realActivity);
+
+    const ev = (hoursAgo: number, message: string, details: object) => ({
+      timestamp: new Date(nowMs - hoursAgo * HOUR).toISOString(),
+      edition: "261025",
+      agent: "overnight",
+      level: "warn",
+      message,
+      details,
+    });
+    writeFileSync(
+      join(tmpRoot, "data", "run-log.jsonl"),
+      [
+        ev(48, "pr_opened", {}),
+        ev(6, "watchdog_source_broken", { source: "overnight-watchdog", reason: "unknown" }),
+        ev(3, "stall_detected", { source: "overnight-watchdog", reason: "unknown" }),
+        ev(1, "watchdog_source_broken", { source: "overnight-watchdog", reason: "unknown" }),
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n") + "\n",
+      "utf-8",
+    );
+
+    const activity = resolveRunActivity(tmpRoot, "overnight", "261025", planPath);
+    assert.ok(
+      nowMs - activity.ts > 24 * HOUR,
+      `atividade real é de 48h atrás; veio ${(nowMs - activity.ts) / HOUR}h (${activity.source})`,
+    );
+    assert.equal(findActiveRun(tmpRoot, "overnight", { nowMs }), null, "carcaça não pode ser vigiada");
   });
 });
 

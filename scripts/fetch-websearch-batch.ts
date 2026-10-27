@@ -39,7 +39,7 @@ import { braveSearch, freshnessForWindow, type BraveWebResult, type BraveSearchR
 import { isAggregator } from "./lib/aggregator-blocklist.ts";
 import { containsAITerms } from "./lib/ai-relevance.ts";
 import { isMainModule } from "./lib/cli-args.ts";
-import { isNonEditorialPath } from "./lib/non-editorial-paths.ts"; // #1559 A
+import { isNonEditorialForSource } from "./lib/non-editorial-paths.ts"; // #1559 A, #11338
 import { fetchOgMetadata } from "./lib/extract-og.ts"; // #1559 B
 import { recordBraveCredit } from "./lib/brave-credits.ts"; // #1558
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts"; // #2278
@@ -133,6 +133,7 @@ export function processResult(
   sourceName: string,
   cutoffIso: string,
   discovered = false,
+  siteQuery?: string,
 ): { kept: BatchArticle | null; reason?: "date" | "aggregator" | "relevance" | "non_editorial_path" } {
   // 1. Aggregator check
   const aggCheck = isAggregator(r.url);
@@ -143,7 +144,8 @@ export function processResult(
   // 2. Non-editorial path check (#1559) — drop help/FAQ/about/legal pages
   // que vêm pelo site:query mas não são conteúdo editorial. Caso real 260529:
   // site:openai.com retornou help.openai.com/articles/... como artigo.
-  if (isNonEditorialPath(r.url)) {
+  // #11338: exceto quando o host de ajuda É a fonte cadastrada (site:help.openai.com).
+  if (isNonEditorialForSource(r.url, discovered ? undefined : siteQuery)) {
     return { kept: null, reason: "non_editorial_path" };
   }
 
@@ -273,7 +275,7 @@ async function runQuery(
   let filtered_by_non_editorial_path = 0;
 
   for (const r of response.results) {
-    const { kept, reason } = processResult(r, sourceName, args.cutoffIso, discovered);
+    const { kept, reason } = processResult(r, sourceName, args.cutoffIso, discovered, query);
     if (kept) {
       articles.push(kept);
     } else if (reason === "date") filtered_by_date++;

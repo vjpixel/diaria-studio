@@ -1,6 +1,6 @@
 # Fontes cadastradas — diar.ia.br
 
-**Total:** 62 fontes (15 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 65 fontes (17 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -229,6 +229,12 @@
 - URL: https://www.anthropic.com/institute
 - Site query: `site:anthropic.com/institute`
 
+### OpenAI Alignment Research Blog
+- URL: https://alignment.openai.com/
+- Site query: `site:alignment.openai.com`
+- RSS: https://alignment.openai.com/rss.xml
+- Low cadence: sim
+
 ## Tutoriais
 
 ### Anthropic Cookbook
@@ -319,6 +325,16 @@
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
 - Use Melhor: sim
 - Low cadence: sim
+
+### OpenAI Help Center
+- URL: https://help.openai.com/en/
+- Site query: `site:help.openai.com`
+- Use Melhor: sim
+
+### Claude Help Center
+- URL: https://support.claude.com/en/
+- Site query: `site:support.claude.com`
+- Use Melhor: sim
 
 ## Aplicação
 

@@ -1,0 +1,12 @@
+{
+  "note": "#11208: vocabulário da montagem do vídeo diário (scripts/video-montagem.ts). 'rules': regex JS aplicadas regra a regra ao texto das palavras unido por espaço (flags default 'g'); a regra que mudar o número de palavras é pulada com aviso; 'targets' restringe a versões (youtube, instagram, outras-redes). Valem para casar as frases do blocks.json com o bruto e para as legendas. 'aliases': forma ouvida pelo Whisper que equivale a uma forma escrita no roteiro; só valem onde a palavra casa com o roteiro (ex.: 'diária' ouvido onde o roteiro diz 'diar.ia.br'), nunca como troca genérica ('rotina diária' continua 'diária'). Nas legendas, toda palavra casada com o roteiro vira o texto aprovado (grafia e pontuação dele). Termos de uma edição só vão no campo vocabulary do blocks.json dela.",
+  "whisper_prompt": "Olá! Eu sou o Pixel, editor da diar.ia.br. Google, Gmail, Google Photos, Calendar, Inteligência Personalizada, Modo IA da Busca.",
+  "rules": [
+    { "pattern": "\\b[Ii]nteligência(\\s)[Pp]ersonalizada\\b", "replacement": "Inteligência$1Personalizada" },
+    { "pattern": "\\b[Mm]odo(\\s)IA(\\s)da(\\s)[Bb]usca\\b", "replacement": "Modo$1IA$2da$3Busca" },
+    { "pattern": "\\bGoogle(\\s)[Ff]otos\\b", "replacement": "Google$1Photos" }
+  ],
+  "aliases": [
+    { "heard": "diária", "written": "diar.ia.br", "note": "o nome da newsletter sai como 'diária' no Whisper" }
+  ]
+}

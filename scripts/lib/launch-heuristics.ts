@@ -172,6 +172,9 @@ const PESQUISA_PATTERNS: RegExp[] = [
   /^anthropic\.com\/research\//,
   // OpenAI research (não blog)
   /^openai\.com\/research\//,
+  // #11338: blog de pesquisa de alinhamento/segurança da OpenAI (fonte
+  // cadastrada como Pesquisa) — notas de pesquisa, não anúncio de produto.
+  /^alignment\.openai\.com\//,
   // #5995 (05/10/2026): Apple Machine Learning Research — /research/ é a
   // listagem de papers do laboratório (no corpus, os 58 itens em /research/ estão em
   // RADAR). Sem o path aqui, um abstract que diz "choosing which positions"

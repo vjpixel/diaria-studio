@@ -1715,6 +1715,14 @@ describe("collectSignals — recurring_editor_request cross-edição (#4966)", (
       const editionsRoot = join(root, "data/editions");
       mkdirSync(editionsRoot, { recursive: true });
 
+      // #11337: sem taxa-base medida (≥10 edições com pedidos) o sinal não
+      // dispara — 26 edições anteriores de histórico sem title-length.
+      for (let i = 1; i <= 26; i++) {
+        const ed = `2607${String(i).padStart(2, "0")}`;
+        const dir = join(editionsRoot, ed);
+        mkdirSync(dir, { recursive: true });
+        writeEditorRequest(dir, ed, "destaque-swap", "accepted");
+      }
       const editions = ["260805", "260807", "260809", "260811"];
       for (const ed of editions) {
         const dir = join(editionsRoot, ed);

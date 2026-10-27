@@ -35,6 +35,13 @@
  *       aqui produziria uma campanha `suspended` no horário, em silêncio
  *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
+ *
+ * Semanal dividida (#11286): com `terca_campaign_id` no estado, depois da
+ * campanha de segunda confirmada agenda também a de terça, 24h depois (mesmo
+ * fluxo: cota do dia de terça sobre a lista de terça, PUT, GET). Falha na de
+ * terça devolve o exit dela (3/4/5) com a de segunda já agendada e gravada;
+ * re-rodar o mesmo comando pula a de segunda (idempotente) e tenta a de terça.
+ * A cota da de segunda desconta a lista de terça (excluída da campanha).
  */
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +66,7 @@ import {
 } from "./publish-daily-brevo.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import { tercaScheduledAt } from "./lib/brevo-semanal-split.ts"; // #11286
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -70,7 +78,15 @@ interface PlatformConfig {
 }
 
 export type ScheduleDailyBrevoResult =
-  | { ok: true; campaignId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean }
+  | {
+      ok: true;
+      campaignId: number;
+      scheduledAt: string;
+      status: string;
+      alreadyScheduled?: boolean;
+      /** #11286 — campanha de terça da semanal dividida, quando existe. */
+      terca?: { campaignId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean };
+    }
   | { ok: false; code: 2 | 3 | 4 | 5 | 6; reason: string };
 
 /**
@@ -88,7 +104,12 @@ export interface ScheduleDailyBrevoDeps {
    * dia corrente. Injetável como o resto; `productionDeps` lê a lista pra
    * saber quantos destinatários o agendamento vai comprometer.
    */
-  checkQuota: (listId: number, sendDay: string) => Promise<{ check: AccountQuotaCheck; warnings: string[] }>;
+  checkQuota: (
+    listId: number,
+    sendDay: string,
+    /** #11286 — lista excluída da campanha (semanal dividida): destinatários = lista − excluída. */
+    excludeListId?: number,
+  ) => Promise<{ check: AccountQuotaCheck; warnings: string[] }>;
 }
 
 export async function scheduleDailyBrevo(
@@ -118,64 +139,42 @@ export async function scheduleDailyBrevo(
         "diária foi pulado/falhou na Etapa 5, ou --skip brevo foi usado).",
     };
   }
-  const campaignId = published.campaign_id;
+  const main = await scheduleMainCampaign(editionDir, published, scheduledAtIso, deps);
+  if (!main.ok) return main;
+  const state = main.state;
+  const mainResult: ScheduleDailyBrevoResult & { ok: true } = main.result;
 
-  // Idempotência HONESTA (#8207 item 3, mesmo achado do #464 — reagendar pelo
-  // script oficial respondia "sucesso" sem mudar nada quando o horário pedido
-  // divergia do gravado). `already_scheduled` só quando o horário GRAVADO é o
-  // MESMO instante do pedido (compara instantes via `Date.parse`, não
-  // strings — mesma disciplina do #5851 já usado mais abaixo). Pedido com
-  // horário DIFERENTE cai pro PUT normal abaixo, apesar da campanha Brevo
-  // agendada ser nominalmente imutável (docstring acima) — é exatamente esse
-  // PUT que o editor rodou manualmente em 17/09 pra corrigir a edição 260917;
-  // este guard só formaliza o caminho.
-  if (published.status === "scheduled" && typeof published.scheduled_at === "string") {
-    const storedMs = Date.parse(published.scheduled_at);
-    const requestedMs = Date.parse(scheduledAtIso);
-    if (Number.isFinite(storedMs) && Number.isFinite(requestedMs) && storedMs === requestedMs) {
-      return {
-        ok: true,
-        campaignId,
-        scheduledAt: published.scheduled_at,
-        status: "already_scheduled",
-        alreadyScheduled: true,
-      };
-    }
-  }
-
-  // #6146: checado DEPOIS do short-circuit de idempotência acima (uma
-  // campanha já agendada não deve ser reprovada por cota — o compromisso já
-  // foi feito e é imutável) e ANTES do PUT, que é o ponto de não-retorno.
-  // Sem isto, a Etapa 6 agendava alegremente uma campanha que a Brevo iria
-  // suspender no horário por falta de cota, e ninguém ficava sabendo
-  // (incidente 260825).
-  let quota: { check: AccountQuotaCheck; warnings: string[] };
-  try {
-    // O dia consultado é o do ENVIO, não o de hoje: a cota da Brevo zera por
-    // dia UTC, e a Etapa 6 às vezes roda antes da virada (a campanha 27 foi
-    // criada 20/08 23:57 UTC pra enviar 21/08 09:00 UTC). Consultar "hoje"
-    // aqui mediria um balde que não é o que vai despachar a campanha.
-    quota = await deps.checkQuota(published.list_id, toStatsDay(new Date(scheduledAtIso)));
-  } catch (e) {
+  // #11286 — semanal dividida: a campanha de terça (mesma edição, lista de
+  // terça) sai 24h depois da de segunda. Só depois da principal confirmada.
+  if (typeof state.terca_campaign_id !== "number" || typeof state.terca_list_id !== "number") return mainResult;
+  const terca = await scheduleTercaCampaign(editionDir, state, scheduledAtIso, deps);
+  if (!terca.ok) {
     return {
       ok: false,
-      code: 5,
+      code: terca.code,
       reason:
-        `não foi possível ler a cota da conta Brevo antes de agendar: ${(e as Error).message}. ` +
-        "Cota ilegível nunca vira permissão de agendamento (#6146).",
+        `campanha de segunda ${mainResult.campaignId} agendada (${mainResult.scheduledAt}), mas a de terça ` +
+        `${state.terca_campaign_id} não: ${terca.reason}`,
     };
   }
-  for (const w of quota.warnings) process.stderr.write(`[schedule-daily-brevo] AVISO: ${w}\n`);
-  if (!quota.check.ok) {
-    return { ok: false, code: 5, reason: quota.check.reason };
-  }
+  return { ...mainResult, terca: terca.terca };
+}
 
+type CampaignScheduleOutcome =
+  | { ok: true; state: BrevoDiariaPublished; result: ScheduleDailyBrevoResult & { ok: true } }
+  | { ok: false; code: 3 | 4 | 5; reason: string };
+
+/** PUT `scheduledAt` + GET de confirmação, comparando INSTANTES (#5851). */
+async function putAndVerify(
+  campaignId: number,
+  scheduledAtIso: string,
+  deps: ScheduleDailyBrevoDeps,
+): Promise<{ ok: true; status: string; scheduledAt: string } | { ok: false; code: 3 | 4; reason: string }> {
   try {
     await deps.putSchedule(campaignId, scheduledAtIso);
   } catch (e) {
     return { ok: false, code: 3, reason: `PUT /emailCampaigns/${campaignId} falhou: ${(e as Error).message}` };
   }
-
   let verified: { status: string; scheduledAt?: string | null };
   try {
     verified = await deps.getCampaign(campaignId);
@@ -186,7 +185,6 @@ export async function scheduleDailyBrevo(
       reason: `GET /emailCampaigns/${campaignId} (verificação pós-PUT) falhou: ${(e as Error).message}`,
     };
   }
-
   // #5851: compara INSTANTES, não strings — a Brevo devolve `scheduledAt` no
   // offset LOCAL da conta (ex: `-03:00`), não em `Z`. Um agendamento correto
   // (mesmo instante, formato diferente do que foi enviado no PUT) falhava
@@ -207,11 +205,114 @@ export async function scheduleDailyBrevo(
         `recebido ${JSON.stringify(verified.scheduledAt)} (status atual: ${verified.status}).`,
     };
   }
+  return { ok: true, status: verified.status, scheduledAt: verified.scheduledAt! };
+}
+
+/** #6146 — cota da conta no dia do envio; ilegível nunca vira permissão. */
+async function checkQuotaOrFail(
+  deps: ScheduleDailyBrevoDeps,
+  listId: number,
+  sendIso: string,
+  excludeListId?: number,
+): Promise<{ ok: true } | { ok: false; code: 5; reason: string }> {
+  let quota: { check: AccountQuotaCheck; warnings: string[] };
+  try {
+    // O dia consultado é o do ENVIO, não o de hoje: a cota da Brevo zera por
+    // dia UTC, e a Etapa 6 às vezes roda antes da virada (a campanha 27 foi
+    // criada 20/08 23:57 UTC pra enviar 21/08 09:00 UTC). Consultar "hoje"
+    // aqui mediria um balde que não é o que vai despachar a campanha.
+    quota =
+      excludeListId === undefined
+        ? await deps.checkQuota(listId, toStatsDay(new Date(sendIso)))
+        : await deps.checkQuota(listId, toStatsDay(new Date(sendIso)), excludeListId);
+  } catch (e) {
+    return {
+      ok: false,
+      code: 5,
+      reason:
+        `não foi possível ler a cota da conta Brevo antes de agendar: ${(e as Error).message}. ` +
+        "Cota ilegível nunca vira permissão de agendamento (#6146).",
+    };
+  }
+  for (const w of quota.warnings) process.stderr.write(`[schedule-daily-brevo] AVISO: ${w}\n`);
+  if (!quota.check.ok) return { ok: false, code: 5, reason: quota.check.reason };
+  return { ok: true };
+}
+
+async function scheduleMainCampaign(
+  editionDir: string,
+  published: BrevoDiariaPublished,
+  scheduledAtIso: string,
+  deps: ScheduleDailyBrevoDeps,
+): Promise<CampaignScheduleOutcome> {
+  const campaignId = published.campaign_id;
+
+  // Idempotência HONESTA (#8207 item 3, mesmo achado do #464 — reagendar pelo
+  // script oficial respondia "sucesso" sem mudar nada quando o horário pedido
+  // divergia do gravado). `already_scheduled` só quando o horário GRAVADO é o
+  // MESMO instante do pedido (compara instantes via `Date.parse`, não
+  // strings — mesma disciplina do #5851 já usado mais abaixo). Pedido com
+  // horário DIFERENTE cai pro PUT normal abaixo, apesar da campanha Brevo
+  // agendada ser nominalmente imutável (docstring acima) — é exatamente esse
+  // PUT que o editor rodou manualmente em 17/09 pra corrigir a edição 260917;
+  // este guard só formaliza o caminho.
+  if (published.status === "scheduled" && typeof published.scheduled_at === "string") {
+    const storedMs = Date.parse(published.scheduled_at);
+    const requestedMs = Date.parse(scheduledAtIso);
+    if (Number.isFinite(storedMs) && Number.isFinite(requestedMs) && storedMs === requestedMs) {
+      return {
+        ok: true,
+        state: published,
+        result: { ok: true, campaignId, scheduledAt: published.scheduled_at, status: "already_scheduled", alreadyScheduled: true },
+      };
+    }
+  }
+
+  // #6146: checado DEPOIS do short-circuit de idempotência acima (uma
+  // campanha já agendada não deve ser reprovada por cota — o compromisso já
+  // foi feito e é imutável) e ANTES do PUT, que é o ponto de não-retorno.
+  // Sem isto, a Etapa 6 agendava alegremente uma campanha que a Brevo iria
+  // suspender no horário por falta de cota, e ninguém ficava sabendo
+  // (incidente 260825). #11286: semanal dividida conta só quem fica na
+  // segunda (a lista de terça é excluída desta campanha).
+  const quota = await checkQuotaOrFail(deps, published.list_id, scheduledAtIso, published.terca_list_id);
+  if (!quota.ok) return quota;
+
+  const put = await putAndVerify(campaignId, scheduledAtIso, deps);
+  if (!put.ok) return put;
 
   // Só persiste depois da verificação via GET confirmar — nunca a partir só do PUT (#5772).
-  deps.writePublished(editionDir, buildScheduledPublishedState(published, verified.scheduledAt!));
+  const state = buildScheduledPublishedState(published, put.scheduledAt);
+  deps.writePublished(editionDir, state);
+  return { ok: true, state, result: { ok: true, campaignId, scheduledAt: put.scheduledAt, status: put.status } };
+}
 
-  return { ok: true, campaignId, scheduledAt: verified.scheduledAt!, status: verified.status };
+/**
+ * #11286 — agenda a campanha de TERÇA da semanal dividida: 24h depois do
+ * `scheduledAtIso` da de segunda, cota do dia de terça medida sobre a lista
+ * de terça, mesma idempotência por instante e mesma confirmação por GET.
+ */
+async function scheduleTercaCampaign(
+  editionDir: string,
+  state: BrevoDiariaPublished,
+  mondayIso: string,
+  deps: ScheduleDailyBrevoDeps,
+): Promise<
+  | { ok: true; terca: { campaignId: number; scheduledAt: string; status: string; alreadyScheduled?: boolean } }
+  | { ok: false; code: 3 | 4 | 5; reason: string }
+> {
+  const campaignId = state.terca_campaign_id!;
+  const tercaIso = tercaScheduledAt(mondayIso);
+  if (tercaIso === null) return { ok: false, code: 4, reason: `--scheduled-at ilegível (${mondayIso}) pra derivar a terça.` };
+  if (typeof state.terca_scheduled_at === "string" && Date.parse(state.terca_scheduled_at) === Date.parse(tercaIso)) {
+    return { ok: true, terca: { campaignId, scheduledAt: state.terca_scheduled_at, status: "already_scheduled", alreadyScheduled: true } };
+  }
+  const quota = await checkQuotaOrFail(deps, state.terca_list_id!, tercaIso);
+  if (!quota.ok) return quota;
+  const put = await putAndVerify(campaignId, tercaIso, deps);
+  if (!put.ok) return put;
+  deps.writePublished(editionDir, { ...state, terca_scheduled_at: put.scheduledAt });
+  return { ok: true, terca: { campaignId, scheduledAt: put.scheduledAt, status: put.status } };
 }
 
 export function productionDeps(rootDir: string = ROOT): ScheduleDailyBrevoDeps {
@@ -229,16 +330,18 @@ export function productionDeps(rootDir: string = ROOT): ScheduleDailyBrevoDeps {
       if (!apiKey) throw new Error(`${brevoDiaria?.api_key_env ?? "BREVO_DIARIA_API_KEY"} não definido no ambiente.`);
       return brevoGetCampaign(apiKey, campaignId);
     },
-    checkQuota: async (listId, sendDay) => {
+    checkQuota: async (listId, sendDay, excludeListId) => {
       if (!apiKey) throw new Error(`${brevoDiaria?.api_key_env ?? "BREVO_DIARIA_API_KEY"} não definido no ambiente.`);
       const listInfo = await brevoGetList(apiKey, listId);
+      // #11286 — a lista de terça é subconjunto da principal (reconcile no publish).
+      const excluded = excludeListId === undefined ? 0 : (await brevoGetList(apiKey, excludeListId)).totalSubscribers;
       const snapshot = await fetchAccountQuotaSnapshot(apiKey, sendDay);
       const dailyLimit = resolveAccountDailyLimit(brevoDiaria);
       return {
         check: checkAccountSendQuota({
           dailyLimit,
           transactionalRequestsOnSendDay: snapshot.transactionalRequestsOnSendDay,
-          recipients: listInfo.totalSubscribers,
+          recipients: Math.max(0, listInfo.totalSubscribers - excluded),
         }),
         warnings: describeQuotaWarnings(snapshot, dailyLimit),
       };

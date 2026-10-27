@@ -251,7 +251,8 @@ export function runStage5BrevoDispatch(editionDir: string, deps: Stage5BrevoDeps
   }
   if (semanalDecision.mode === "diaria" && semanalDecision.warning) warnings.push(semanalDecision.warning);
   if (semanalDecision.mode === "semanal" && semanal.enabled) {
-    const capacity = checkSemanalCapacity(activeCountAfterApply, semanal.splitThreshold);
+    // #11286 — com `terca_list_id`, a divisão segunda/terça é feita pelo publish; sem ele, avisa.
+    const capacity = checkSemanalCapacity(activeCountAfterApply, semanal.splitThreshold, semanal.tercaListId);
     if (capacity.warning) warnings.push(capacity.warning);
   }
 
