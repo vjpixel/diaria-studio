@@ -1250,12 +1250,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Diária (#10772): só chama a API quando faltam ≤30 dias para vencer (ou o
     // vencimento é desconhecido), então o custo é 0 requisições na maioria dos
     // dias. Mesmas regras do refresh do token da diar.ia.br no Worker (#9618),
-    // fora dele porque o consumidor previsto (`publish-shorts.ts`, quando a
-    // integração do destino `threads_profile` entrar) é local e lê o Doppler.
+    // fora dele porque o consumidor (`publish-shorts.ts`, destino
+    // `threads_profile`, #11122) é local e lê o Doppler/`.env`.
     // Sem token e sem `THREADS_PERSONAL_USER_ID` sai 0 sem fazer nada.
-    // Armada em 27/10/2026: o pré-requisito (o 300 escrever no Doppler, #11077)
-    // foi verificado com o CLI autenticado, e os 3 `THREADS_PERSONAL_*` estão
-    // no Doppler `diaria-studio/dev` (token gerado em 27/10, vence 26/12).
+    // Habilitada em 27/10/2026: o pré-requisito (o 300 escrever no Doppler,
+    // #11077) foi verificado com o CLI autenticado, e os 3 `THREADS_PERSONAL_*`
+    // estão no Doppler `diaria-studio/dev` e no `.env` do 300 (token gerado em
+    // 27/10, vence 26/12). Arma pelo Remediate-Never-Armed-Tasks (#8153) ou à mão.
     schedule: { kind: "daily", hour: 4, minute: 20 },
     issue: "#10772",
   },
