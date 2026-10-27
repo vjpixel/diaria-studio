@@ -57,12 +57,14 @@
  *   2. Sem login OAuth (servidor `300`: `wrangler login` precisa de
  *      navegador) e com CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID no env →
  *      backend REST: API REST do KV com `Authorization: Bearer` (cliente em
- *      `scripts/lib/cloudflare-kv-rest.ts`). O token atual tem leitura e
- *      escrita no namespace POLL (probe ao vivo de 27/10/2026, #11253).
+ *      `scripts/lib/cloudflare-kv-rest.ts`). Em 27/10/2026 o token do `.env`
+ *      lia e gravava no POLL (probe manual, #11253); `--check-auth` refaz a prova.
  *   3. Nenhum dos dois → erro claro, exit 1.
  * `--kv-backend wrangler|rest` força um backend (default `auto`).
- * `--check-auth` só resolve o backend (no REST, faz 1 GET de leitura no
- * namespace) e sai 0/1 — é o pré-check do §6h do Stage 6.
+ * `--check-auth` resolve o backend, faz o probe de LEITURA e ESCRITA dele
+ * (list + PUT/DELETE de uma chave sentinela, nos dois backends) e confere
+ * que ADMIN_SECRET/POLL_ADMIN_SECRET está no env; sai 0 só se o `--execute`
+ * tem tudo pra rodar — é o pré-check do §6h do Stage 6.
  *
  * Uso:
  *   npx tsx scripts/purge-leaderboard.ts --nickname Teste --brand clarice
@@ -115,13 +117,16 @@ import type { Brand } from "../workers/poll/src/lib.ts"; // #4477 achado 3
 import { sanitizedCloudflareOAuthEnv } from "./lib/cloudflare-oauth-env.ts"; // #6900
 import { resolveWranglerBin } from "./lib/resolve-wrangler-bin.ts"; // #7117
 import { checkWranglerAuth } from "./check-wrangler-auth.ts"; // #11253
-import { createKvRestOps } from "./lib/cloudflare-kv-rest.ts"; // #11253
+import { createKvRestOps, KV_PROBE_SENTINEL_KEY, type KvOps } from "./lib/cloudflare-kv-rest.ts"; // #11253
 import {
-  parseKvBackendOverride,
+  checkPurgeAuth,
+  isWranglerKvNotFound,
+  readKvBackendFlag,
   resolvePurgeKvBackend,
   type PurgeKvBackendChoice,
   type PurgeKvBackendOverride,
 } from "./lib/purge-kv-backend.ts"; // #11253
+import { deleteVotesAndAdjustStats } from "./lib/purge-vote-stats.ts"; // #11253 review A2
 
 // #2265: NAMESPACE_ID do POLL (KV). Acesso pelo WRANGLER (OAuth) quando há login,
 // senão pela API REST com CLOUDFLARE_API_TOKEN (#11253) — ver o docstring do topo.
@@ -164,11 +169,6 @@ function wrangler(wargs: string[]): string {
   });
 }
 
-function wranglerErrText(e: unknown): string {
-  const err = e as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
-  return [err.stderr, err.stdout, err.message].map((x) => x?.toString() ?? "").join(" ");
-}
-
 const args = process.argv.slice(2);
 const execute = args.includes("--execute");
 
@@ -185,7 +185,7 @@ const targetEmail = flagValue("--email")?.toLowerCase() ?? null;
 
 let KV_BACKEND_OVERRIDE: PurgeKvBackendOverride = "auto";
 try {
-  KV_BACKEND_OVERRIDE = parseKvBackendOverride(flagValue("--kv-backend"));
+  KV_BACKEND_OVERRIDE = readKvBackendFlag(args);
 } catch (e) {
   console.error(`[purge] ${(e as Error).message}`);
   process.exit(2);
@@ -225,17 +225,11 @@ if (execute && !checkAuthOnly && !ADMIN_SECRET) {
   process.exit(1);
 }
 
-// #11253: as 4 operações de KV que este script usa, comuns aos dois backends.
-interface KvBackendOps {
-  list: (prefix: string) => Promise<string[]>;
-  get: (key: string) => Promise<string | null>;
-  put: (key: string, value: string) => Promise<void>;
-  delete: (key: string) => Promise<void>;
-}
-
 // #2265: backend WRANGLER. `kv key list` já pagina internamente (retorna
 // todas as chaves do prefixo). get/put/delete recebem a chave como arg literal.
-const wranglerKv: KvBackendOps = {
+// #11253: tipado pelo mesmo `KvOps` do backend REST — os dois contratos são
+// checados em compilação.
+const wranglerKv: KvOps = {
   async list(prefix) {
     const out = wrangler(["kv", "key", "list", "--namespace-id", NAMESPACE_ID, "--remote", "--prefix", prefix]);
     const arr = JSON.parse(out) as Array<{ name: string }>;
@@ -246,9 +240,10 @@ const wranglerKv: KvBackendOps = {
       // wrangler imprime o valor cru no stdout (banners vão p/ stderr); trim do \n final.
       return wrangler(["kv", "key", "get", "--namespace-id", NAMESPACE_ID, "--remote", key]).replace(/\n$/, "");
     } catch (e) {
-      // chave inexistente → wrangler sai !=0 com "404: Not Found" no stderr (verificado).
+      // chave inexistente → wrangler sai !=0 com "- 404: Not Found" no stderr.
       // Auth/rede (401/500) NÃO casam → re-lança (não engole como "vazio").
-      if (/not found|404|could not find/i.test(wranglerErrText(e))) return null;
+      // Só stderr/stdout: err.message carrega a chave (#11253 review A1).
+      if (isWranglerKvNotFound(e)) return null;
       throw e;
     }
   },
@@ -260,13 +255,20 @@ const wranglerKv: KvBackendOps = {
       wrangler(["kv", "key", "delete", "--namespace-id", NAMESPACE_ID, "--remote", key]);
     } catch (e) {
       // 404 = já apagada; idempotente. Outros erros propagam.
-      if (!/not found|404|could not find/i.test(wranglerErrText(e))) throw e;
+      if (!isWranglerKvNotFound(e)) throw e;
     }
+  },
+  async probe() {
+    // Leitura + escrita, como o probe REST: list de um prefixo que não casa com
+    // nada + PUT/DELETE da sentinela. Lança (execFileSync) se qualquer um falhar.
+    await wranglerKv.list(KV_PROBE_SENTINEL_KEY);
+    await wranglerKv.put(KV_PROBE_SENTINEL_KEY, new Date().toISOString());
+    await wranglerKv.delete(KV_PROBE_SENTINEL_KEY);
   },
 };
 
 // #11253: backend escolhido uma vez, no início de main() (ou em --check-auth).
-let kv: KvBackendOps | null = null;
+let kv: KvOps | null = null;
 
 function resolveBackend(): PurgeKvBackendChoice {
   return resolvePurgeKvBackend({
@@ -280,7 +282,11 @@ function restOpsFor(choice: Extract<PurgeKvBackendChoice, { backend: "rest" }>) 
   return createKvRestOps({ accountId: choice.accountId, token: choice.token, namespaceId: NAMESPACE_ID });
 }
 
-function activeKv(): KvBackendOps {
+function opsFor(choice: Exclude<PurgeKvBackendChoice, { backend: "none" }>): KvOps {
+  return choice.backend === "rest" ? restOpsFor(choice) : wranglerKv;
+}
+
+function activeKv(): KvOps {
   if (!kv) throw new Error("backend de KV não inicializado (bug: main() não resolveu o backend)");
   return kv;
 }
@@ -310,27 +316,18 @@ async function kvDelete(key: string): Promise<void> {
 }
 
 /**
- * #11253: `--check-auth` — resolve o backend e, no REST, faz 1 GET de leitura
- * no namespace (o token pode existir sem permissão de KV, que era o caso do
- * #2265). Não escreve nada. Exit 0 = a purga tem por onde rodar.
+ * #11253: `--check-auth`. Exit 0 = o `--execute` tem tudo pra rodar: há
+ * backend de KV, o probe dele LÊ e GRAVA no namespace (list + PUT/DELETE da
+ * chave sentinela `__purge_probe__`, nos dois backends — inclusive com
+ * `--kv-backend wrangler` forçado) e ADMIN_SECRET/POLL_ADMIN_SECRET está no
+ * env. A única escrita é a sentinela, apagada em seguida. Lógica em
+ * `checkPurgeAuth` (lib, testada).
  */
 async function checkAuth(): Promise<void> {
-  const choice = resolveBackend();
-  if (choice.backend === "none") {
-    console.error(`[purge] sem backend de KV: ${choice.reason}`);
-    process.exitCode = 1;
-    return;
-  }
-  if (choice.backend === "rest") {
-    try {
-      await restOpsFor(choice).probe();
-    } catch (e) {
-      console.error(`[purge] backend rest escolhido, mas a leitura do namespace falhou: ${(e as Error).message}`);
-      process.exitCode = 1;
-      return;
-    }
-  }
-  console.log(`[purge] kv backend: ${choice.backend} — ${choice.reason}`);
+  const r = await checkPurgeAuth({ choice: resolveBackend(), opsFor, adminSecretPresent: Boolean(ADMIN_SECRET) });
+  for (const line of r.err) console.error(line);
+  for (const line of r.out) console.log(line);
+  if (!r.ok) process.exitCode = 1;
 }
 
 /**
@@ -366,9 +363,6 @@ async function purgeScoreCounterDoStep(email: string): Promise<boolean> {
   return result.ok;
 }
 
-interface VoteRecord { choice: "A" | "B"; ts: string; correct: boolean | null }
-interface StatsRecord { total: number; voted_a: number; voted_b: number; correct_count: number }
-
 // #4433: implementação real das operações de KV que buildPurgePlan (lib pura,
 // testável sem wrangler) consome via injeção — mesmo padrão de KvSyncOps em
 // sync-cursos-subscribers-kv.ts.
@@ -386,7 +380,8 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  kv = choice.backend === "rest" ? restOpsFor(choice) : wranglerKv;
+  if (choice.backend === "rest" && choice.fallbackWarning) console.error(`[warn] ${choice.fallbackWarning}`);
+  kv = opsFor(choice);
   console.log(`[purge] kv backend: ${choice.backend} — ${choice.reason}`);
 
   console.log(`[purge] brand: ${BRAND}${BP ? ` (prefixo "${BP}")` : ""}`);
@@ -459,46 +454,21 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Ajustar stats:{edition} antes de deletar (precisa do choice + correct)
-  const statsAdjust = new Map<string, { dTotal: number; dA: number; dB: number; dCorrect: number }>();
-  for (const p of plan.plans) {
-    for (const vk of p.voteKeys) {
-      const m = vk.match(new RegExp(`^${BP}vote:(\\d{6}):`));
-      if (!m) continue;
-      const edition = m[1];
-      const raw = await kvGet(vk);
-      if (!raw) continue;
-      let v: VoteRecord;
-      try { v = JSON.parse(raw); } catch { continue; }
-      const cur = statsAdjust.get(edition) ?? { dTotal: 0, dA: 0, dB: 0, dCorrect: 0 };
-      cur.dTotal += 1;
-      if (v.choice === "A") cur.dA += 1;
-      if (v.choice === "B") cur.dB += 1;
-      if (v.correct === true) cur.dCorrect += 1;
-      statsAdjust.set(edition, cur);
-    }
-  }
-
-  console.log(`\n[purge] ajustando stats:{edition} pra ${statsAdjust.size} edition(s)...`);
-  for (const [edition, delta] of statsAdjust) {
-    const sKey = `${BP}stats:${edition}`;
-    const raw = await kvGet(sKey);
-    if (!raw) { console.log(`  [skip] ${sKey} não existe`); continue; }
-    let s: StatsRecord;
-    try { s = JSON.parse(raw); } catch { console.log(`  [skip] ${sKey} parse error`); continue; }
-    s.total = Math.max(0, s.total - delta.dTotal);
-    s.voted_a = Math.max(0, s.voted_a - delta.dA);
-    s.voted_b = Math.max(0, s.voted_b - delta.dB);
-    s.correct_count = Math.max(0, s.correct_count - delta.dCorrect);
-    await kvPut(sKey, JSON.stringify(s));
-    console.log(`  [adj]  ${sKey} → total=${s.total} a=${s.voted_a} b=${s.voted_b} correct=${s.correct_count}`);
-  }
+  // #11253 review A2: votos ANTES dos stats, e os stats só descontam o que foi
+  // de fato apagado — uma falha de DELETE no meio + re-run não desconta duas
+  // vezes (ver scripts/lib/purge-vote-stats.ts).
+  console.log("\n[purge] deletando votos...");
+  await deleteVotesAndAdjustStats(
+    { get: kvGet, put: kvPut, delete: kvDelete },
+    plan.plans.flatMap((p) => p.voteKeys),
+    BP,
+    (line) => console.log(line),
+  );
 
   console.log("\n[purge] deletando keys...");
   for (const p of plan.plans) {
     if (p.scoreExists) { await kvDelete(p.scoreKey); console.log(`  [del] ${p.scoreKey}`); }
     for (const k of p.sbmKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
-    for (const k of p.voteKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
     // #3976: counted:* são guard-keys idempotentes (podem já ter expirado via
     // TTL de 90 dias) — kvDelete já é 404-safe/idempotente, mesmo tratamento
     // dos demais deletes acima.
@@ -540,7 +510,8 @@ async function main(): Promise<void> {
       `\n[purge] ERRO: a purga do storage do DO ScoreCounter FALHOU para ${doSummary.failures.length} de ` +
       `${plan.plans.length} identidade(s). O KV foi limpo, mas o storage interno do DO ScoreCounter NÃO — ` +
       `essas identidades continuam vulneráveis ao cenário do #4474 (voto ressuscitado se votarem de novo no ` +
-      `mesmo mês civil) até uma nova execução bem-sucedida deste script (idempotente — seguro re-rodar).`,
+      `mesmo mês civil) até uma nova execução bem-sucedida deste script (re-rodar não desconta stats:* de novo — ` +
+      `só votos ainda presentes entram no ajuste).`,
     );
     for (const email of doSummary.failures) {
       console.error(`  [FALHOU] DO score-counter ${BRAND}:${email}`);

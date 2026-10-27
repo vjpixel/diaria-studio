@@ -2,10 +2,18 @@
 /**
  * check-wrangler-auth.ts
  *
- * Guard de auth do §6h do Stage 6 (#6900) — roda `wrangler whoami` com o
- * MESMO env sanitizado que `purge-leaderboard.ts` usa de fato (ver
- * `scripts/lib/cloudflare-oauth-env.ts`), pra que o guard nunca valide uma
- * identidade diferente da que a purga real vai usar em seguida.
+ * Detecta login OAuth do wrangler (#6900) — roda `wrangler whoami` com o
+ * MESMO env sanitizado que o backend wrangler de `purge-leaderboard.ts` usa
+ * (ver `scripts/lib/cloudflare-oauth-env.ts`), pra nunca validar uma
+ * identidade diferente da que a purga vai usar em seguida.
+ *
+ * Desde o #11253 o consumidor é `resolvePurgeKvBackend`
+ * (`scripts/lib/purge-kv-backend.ts`), via `checkWranglerAuth()`, chamado por
+ * `purge-leaderboard.ts --check-auth` e pela própria purga: whoami ok →
+ * backend wrangler; senão cai pra API REST do KV. Esta CLI sozinha NÃO é
+ * mais o pré-check do §6h do Stage 6 (reprovaria o servidor `300`, que não
+ * tem `wrangler login` mas tem o caminho REST) — o §6h roda
+ * `purge-leaderboard.ts --check-auth`. A CLI fica para diagnóstico manual.
  *
  * Antes: o playbook do orchestrator rodava `npx wrangler whoami` no
  * ambiente NORMAL do processo, que ainda tem `CLOUDFLARE_API_TOKEN` — então

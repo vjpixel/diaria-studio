@@ -12,17 +12,30 @@
  *   - `list(prefix)`  pagina por `cursor` até esgotar (limit 1000/página);
  *   - `get(key)`      404 → `null` (chave inexistente); outro erro lança;
  *   - `put(key, v)`   lança em status != 2xx;
- *   - `delete(key)`   404 → ok (idempotente); outro erro lança;
- *   - `probe()`       1 GET de `keys?limit=10` — checa que o token lê o
- *                     namespace, sem escrever nada (usado por `--check-auth`).
+ *   - `delete(key)`   idempotente — a Cloudflare já responde 200 pra chave
+ *                     inexistente; um 404 (namespace/rota) também é tratado
+ *                     como ok, por defesa; outro erro lança;
+ *   - `probe()`       checa LEITURA e ESCRITA: 1 GET de `keys?limit=10` e
+ *                     depois PUT + DELETE da chave sentinela
+ *                     `KV_PROBE_SENTINEL_KEY` (usado por `--check-auth`). A
+ *                     sentinela não casa com nenhum prefixo que o Worker POLL
+ *                     lê (`score:`, `vote:`, `stats:`...), então o probe não
+ *                     afeta dado nenhum; se o DELETE falhar, ela fica órfã e
+ *                     inofensiva, e o probe lança.
+ *
+ * Toda request tem timeout (`timeoutMs`, default 30s, via `AbortSignal.timeout`)
+ * — um `fetch` pendurado travaria o §6h do Stage 6.
  *
  * As mensagens de erro nunca incluem o token: só método, chave, status e o
  * texto de `errors[]` que a Cloudflare devolve.
  *
  * `fetchFn` é injetável pra teste (nenhum teste fala com a Cloudflare real).
- * Os scripts mais antigos que falam com o KV por REST (`migrate-nickname-index.ts`,
- * `rebuild-stats.ts`, `backfill-*.ts`) têm cada um sua cópia inline; migrá-los
- * pra cá fica fora deste escopo.
+ * Outros pontos que falam com o KV por REST têm cada um sua cópia inline
+ * (`migrate-nickname-index.ts`, `rebuild-stats.ts`, `backfill-score-by-month.ts`,
+ * `backfill-seq-state.ts`, `coupon-clarice-class.ts`,
+ * `build-diaria-dashboard-data.ts`, `lib/cloudflare-kv-upload.ts` — conferido
+ * por `grep storage/kv/namespaces` em 27/10/2026); migrá-los pra cá fica fora
+ * deste escopo.
  */
 
 export type KvFetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -32,21 +45,44 @@ export interface KvRestConfig {
   token: string;
   namespaceId: string;
   fetchFn?: KvFetch;
+  /** Timeout por request, em ms (default `KV_REST_TIMEOUT_MS`). */
+  timeoutMs?: number;
 }
 
-export interface KvRestOps {
+/**
+ * Contrato comum aos dois backends de KV de `purge-leaderboard.ts` (REST
+ * aqui, wrangler no próprio script) — os dois são checados contra o mesmo
+ * tipo em compilação.
+ */
+export interface KvOps {
   list: (prefix: string) => Promise<string[]>;
+  /** `null` = chave inexistente; qualquer outro erro lança. */
   get: (key: string) => Promise<string | null>;
   put: (key: string, value: string) => Promise<void>;
+  /** Idempotente: chave inexistente não é erro. */
   delete: (key: string) => Promise<void>;
+  /** Checa leitura E escrita no namespace sem tocar dado real; lança se falhar. */
   probe: () => Promise<void>;
 }
+
+/** @deprecated alias histórico — use `KvOps`. */
+export type KvRestOps = KvOps;
+
+/** Chave sentinela do probe de escrita (PUT + DELETE). */
+export const KV_PROBE_SENTINEL_KEY = "__purge_probe__";
+export const KV_REST_TIMEOUT_MS = 30_000;
 
 interface CfEnvelope {
   success?: boolean;
   errors?: Array<{ code?: number; message?: string }>;
   result?: Array<{ name: string }>;
   result_info?: { cursor?: string; count?: number };
+}
+
+/** Página de `keys` já validada: `result` garantidamente é array. */
+interface KeysPage {
+  names: string[];
+  cursor: string | undefined;
 }
 
 const API_BASE = "https://api.cloudflare.com/client/v4";
@@ -73,39 +109,48 @@ async function discardBody(res: Response): Promise<void> {
   await res.body?.cancel().catch(() => {});
 }
 
-export function createKvRestOps(cfg: KvRestConfig): KvRestOps {
+export function createKvRestOps(cfg: KvRestConfig): KvOps {
   if (!cfg.accountId || !cfg.token || !cfg.namespaceId) {
     throw new Error("createKvRestOps: accountId, token e namespaceId são obrigatórios");
   }
-  const fetchFn: KvFetch = cfg.fetchFn ?? ((url, init) => fetch(url, init));
+  const rawFetch: KvFetch = cfg.fetchFn ?? ((url, init) => fetch(url, init));
+  const timeoutMs = cfg.timeoutMs ?? KV_REST_TIMEOUT_MS;
+  const fetchFn: KvFetch = (url, init) => rawFetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   const base = `${API_BASE}/accounts/${encodeURIComponent(cfg.accountId)}/storage/kv/namespaces/${encodeURIComponent(cfg.namespaceId)}`;
   const auth = { Authorization: `Bearer ${cfg.token}` };
   const valueUrl = (key: string) => `${base}/values/${encodeURIComponent(key)}`;
 
-  async function listPage(prefix: string | null, limit: number, cursor?: string): Promise<CfEnvelope> {
+  async function listPage(prefix: string | null, limit: number, cursor?: string): Promise<KeysPage> {
     const params = new URLSearchParams({ limit: String(limit) });
     if (prefix) params.set("prefix", prefix);
     if (cursor) params.set("cursor", cursor);
+    const op = `KV REST list (prefix "${prefix ?? ""}")`;
     const res = await fetchFn(`${base}/keys?${params}`, { headers: auth });
     if (!res.ok) {
-      throw new Error(`KV REST list (prefix "${prefix ?? ""}") falhou: HTTP ${res.status} — ${await errorDetail(res)}`);
+      throw new Error(`${op} falhou: HTTP ${res.status} — ${await errorDetail(res)}`);
     }
-    const json = (await res.json()) as CfEnvelope;
-    if (json.success === false || !Array.isArray(json.result)) {
-      throw new Error(`KV REST list (prefix "${prefix ?? ""}") devolveu envelope inválido: ${JSON.stringify(json.errors ?? [])}`);
+    const text = await res.text();
+    let json: CfEnvelope;
+    try {
+      json = JSON.parse(text) as CfEnvelope;
+    } catch {
+      throw new Error(`${op} devolveu HTTP ${res.status} com corpo não-JSON: ${text.slice(0, 200)}`);
     }
-    return json;
+    if (json === null || typeof json !== "object" || json.success === false || !Array.isArray(json.result)) {
+      throw new Error(`${op} devolveu envelope inválido: ${JSON.stringify(json?.errors ?? [])}`);
+    }
+    return { names: json.result.map((k) => k.name), cursor: json.result_info?.cursor || undefined };
   }
 
-  return {
+  const ops: KvOps = {
     async list(prefix) {
       const names: string[] = [];
       let cursor: string | undefined;
       const seen = new Set<string>();
       do {
         const page = await listPage(prefix, LIST_PAGE_LIMIT, cursor);
-        for (const k of page.result!) names.push(k.name);
-        cursor = page.result_info?.cursor || undefined;
+        names.push(...page.names);
+        cursor = page.cursor;
         // Guard contra cursor que se repete (API defeituosa) — evita loop infinito.
         if (cursor) {
           if (seen.has(cursor)) throw new Error(`KV REST list: cursor repetido (${cursor}) — abortando paginação`);
@@ -146,8 +191,12 @@ export function createKvRestOps(cfg: KvRestConfig): KvRestOps {
     },
 
     async probe() {
-      // limit mínimo aceito pela API de keys é 10.
+      // Leitura: limit mínimo aceito pela API de keys é 10.
       await listPage(null, 10);
+      // Escrita: o token pode ler sem poder gravar — a purga precisa dos dois.
+      await ops.put(KV_PROBE_SENTINEL_KEY, new Date().toISOString());
+      await ops.delete(KV_PROBE_SENTINEL_KEY);
     },
   };
+  return ops;
 }

@@ -569,15 +569,16 @@ cru (valida identidade errada, #6900) nem `check-wrangler-auth.ts` sozinho (repr
 ```bash
 npx tsx scripts/purge-leaderboard.ts --check-auth
 ```
-- **Exit 0** (imprime `[purge] kv backend: wrangler|rest — {motivo}`) → prosseguir com a purga abaixo.
-- **Exit != 0, OU timeout** (nem wrangler logado nem token que leia o namespace) → **degradar
+- **Exit 0** (imprime `[purge] kv backend: wrangler|rest — {motivo}`; o probe leu E gravou no namespace e
+  `ADMIN_SECRET` existe) → guardar o `{backend}` dessa linha pro Resumo final e prosseguir com a purga abaixo.
+- **Exit != 0, OU timeout** (sem backend, probe de leitura/escrita falhou, ou falta `ADMIN_SECRET`) → **degradar
   pra warn e SEGUIR sem a purga:** nao chamar `--execute` (nem tentar de novo), logar o warn
   abaixo, **guardar o motivo pro Resumo final** (PENDENTE) e passar pra Etapa 6b. O agendamento
   de §6d NAO e reaberto. Nao tentar `wrangler login` nem pedir credencial ao editor.
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
     --message "purga de votos do editor pulada: sem backend de KV" \
-    --details '{"reason":"kv_backend_unavailable"}'
+    --details '{"reason":"kv_backend_unavailable","detail":"{1a linha do stderr do --check-auth}"}'
   ```
 
 **Se autenticado, rodar a purga (execute direto — mesma justificativa de
@@ -748,10 +749,10 @@ Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as i
 
 **#4924:** 6b-9 imprimiu algo → incluir `⚠ Hubs temáticos defasados` após a linha do Relatório. Stdout vazio → omitir (sem afirmar "hubs em dia").
 
-**#11253:** §6h nao concluiu (pre-check `--check-auth` com exit != 0, ou alguma das 2
-chamadas `--execute` com exit != 0) → incluir `⚠ Purga de votos do editor: PENDENTE — {motivo}
-(rodar /diaria-remover-votos-pixel)`, nunca so o warn do run-log (os votos seguem no ranking
-publico). Concluida → `Purga de votos do editor: {total_keys} keys apagadas ({backend})`.
+**#11253:** §6h nao concluiu (pre-check `--check-auth` com exit != 0, ou alguma das 2 chamadas `--execute` com
+exit != 0) → incluir `⚠ Purga de votos do editor: PENDENTE — {motivo} (rodar /diaria-remover-votos-pixel)`, nunca so
+o warn do run-log (os votos seguem no ranking publico). Concluida → `Purga de votos do editor: {total_keys} keys
+apagadas ({backend})` — `{backend}` vem da linha `[purge] kv backend:` do pre-check `--check-auth`.
 
 **#5772:** `_internal/brevo-diaria-published.json` existia em §6a → incluir `Brevo diária: agendado para {scheduled_at} ✓` (exit 0) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4/5; no 5, o `reason` já indica cota esgotada, #6146). Arquivo nunca existiu (canal pulado/falhou na Etapa 5) → omitir a linha por completo — não afirmar "Brevo diária: pulado".
 

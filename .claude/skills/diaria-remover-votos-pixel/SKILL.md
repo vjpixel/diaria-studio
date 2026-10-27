@@ -23,10 +23,12 @@ O script escolhe sozinho por onde fala com o KV e loga a escolha (`[purge] kv ba
 Pré-check sem apagar nada:
 
 ```
-npx tsx scripts/purge-leaderboard.ts --check-auth   # exit 0 = há backend; no REST, faz 1 leitura no namespace
+npx tsx scripts/purge-leaderboard.ts --check-auth
 ```
 
-`--kv-backend wrangler|rest` força um backend.
+Exit 0 = o `--execute` tem tudo pra rodar: há backend, o probe dele leu E gravou no namespace (list + PUT/DELETE da chave sentinela `__purge_probe__`, nos dois backends) e `ADMIN_SECRET`/`POLL_ADMIN_SECRET` está no env. Exit 1 = falta algum dos três (a mensagem diz qual). Não testa o endpoint `/admin/purge-score-do` em si, só a presença do secret.
+
+`--kv-backend wrangler|rest` força um backend (sem valor → exit 2).
 
 Votos da Clarice News (mensal) exigem `--brand clarice` (votos diaria são o default).
 
