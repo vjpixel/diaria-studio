@@ -454,10 +454,12 @@ export interface SessionRecord {
    * diretamente), re-derivado do disco a CADA write (nunca faz merge com o
    * `known_worktrees` anterior — sempre a foto fresca, nunca acumula
    * entradas de worktrees já removidos). Consumido por
-   * `selectInUseWorktreeNames` (`scripts/cleanup-merged-worktrees.ts`) pra
-   * proteger, por branch, um worktree externo (fora de
-   * `.claude/worktrees/`) de limpeza enquanto alguma sessão está viva — o
-   * `branch` singular acima não bastava pra isso (ver seu docblock). */
+   * `selectInUseWorktreeNames` (`scripts/cleanup-merged-worktrees.ts`) só
+   * como MAPA path→branch: protege um worktree (inclusive externo, fora de
+   * `.claude/worktrees/`) quando ESTA sessão tocou um path dentro dele ou
+   * reivindicou a issue da branch dele. **Nunca ler como "em uso"** — é a
+   * foto global, e tratá-la assim protegia todo worktree do repo enquanto
+   * houvesse qualquer sessão viva (#11317). */
   known_worktrees?: WorktreeRef[];
   /** Caminhos tocados nesta sessão, com teto (`TOUCHED_PATHS_CAP`) — colapsa
    * pra prefixo de diretório quando estoura. */
