@@ -55,6 +55,7 @@ import { isLeitorV1 } from "./leitor.ts";
 import { minDetectableRatio } from "./poisson-detectable-ratio.ts";
 import { normalizePauseIntervals, type AdsTestPauseField } from "./ads-test-pause-window.ts";
 import { subscribersForChannel } from "./cac.ts";
+import { canonicalChannelName } from "./shared/channel-key-specs.ts";
 import type { BeehiivBackupSubscriber } from "./beehiiv-backup-snapshots.ts";
 import type { SpendRow } from "./aquisicao-spend.ts";
 import { k10EmailKey, K10_PRIMEIRAS_RECEBIDAS, type K10Result } from "./leitor-store.ts";
@@ -607,9 +608,12 @@ export function parseEmendaGastoPorFase(raw: unknown): EmendaGastoPorFase {
     throw new Error("--gasto-fases: esperado objeto { braço: { idDaFase: BRL } }");
   }
   const out: EmendaGastoPorFase = {};
-  for (const [braco, fases] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [bracoRaw, fases] of Object.entries(raw as Record<string, unknown>)) {
+    // #5862: `gasto-fases-2608.json` foi gravado com os nomes antigos
+    // ("X Ads (teste 2608)"); os braços do run-state chegam já normalizados.
+    const braco = canonicalChannelName(bracoRaw);
     if (fases == null || typeof fases !== "object" || Array.isArray(fases)) {
-      throw new Error(`--gasto-fases: valor de "${braco}" deve ser objeto { idDaFase: BRL }`);
+      throw new Error(`--gasto-fases: valor de "${bracoRaw}" deve ser objeto { idDaFase: BRL }`);
     }
     out[braco] = {};
     for (const [fase, valor] of Object.entries(fases as Record<string, unknown>)) {

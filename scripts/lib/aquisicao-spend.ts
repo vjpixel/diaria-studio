@@ -39,6 +39,7 @@
 
 import Papa from "papaparse";
 import { existsSync, readFileSync } from "node:fs";
+import { canonicalChannelName } from "./shared/channel-key-specs.ts";
 
 export const SPEND_CSV_HEADERS = ["canal", "mes", "moeda", "valor", "fonte"] as const;
 /** Não exportado (knip flagged como unused export, #5276) — nenhum caller
@@ -99,7 +100,11 @@ export function parseSpendCsv(content: string): ParseSpendCsvResult {
 
   parsed.data.forEach((raw, idx) => {
     const line = idx + 2; // +1 pelo header, +1 pra 1-based
-    const canal = (raw.canal ?? "").trim();
+    // #5862: nome antigo "X Ads (teste 2608)" lido como o permanente
+    // "X Ads (UTM)" — as linhas históricas continuam no arquivo com o nome
+    // antigo até a próxima ingestão regravá-las, e sem isto cairiam em
+    // "canal desconhecido" (#5860).
+    const canal = canonicalChannelName((raw.canal ?? "").trim());
     const mes = (raw.mes ?? "").trim();
     const moeda = (raw.moeda ?? "").trim();
     const fonte = (raw.fonte ?? "").trim();

@@ -114,9 +114,9 @@ describe("#5845 — ads-test-run-state: assertValidRunState", () => {
           inicio: "2026-09-09T16:05:36-03:00",
           fim: "2026-09-17T00:16:00-03:00",
           inicio_por_braco: {
-            "Google Ads (teste 2608)": "2026-09-09T16:05:49-03:00",
-            "Meta Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
-            "Microsoft Ads (teste 2608)": "2026-09-09T16:18:21-03:00",
+            "Google Ads (UTM)": "2026-09-09T16:05:49-03:00",
+            "Meta Ads (UTM)": "2026-09-09T16:05:36-03:00",
+            "Microsoft Ads (UTM)": "2026-09-09T16:18:21-03:00",
           },
         },
       },

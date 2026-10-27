@@ -56,7 +56,7 @@ describe("#10730 — apuracaoReportPath do watch == arquivo escrito pelo cac-rep
 
       // 1) cac-report real, --fonte store, registrando (default) em `root`.
       const spendPath = join(root, "spend.csv");
-      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (teste 2608),2026-09,BRL,500.57,teste\n", "utf8");
+      writeFileSync(spendPath, "canal,mes,moeda,valor,fonte\nGoogle Ads (UTM),2026-09,BRL,500.57,teste\n", "utf8");
       const storeDir = join(root, "data", "diaria-subscribers");
       mkdirSync(storeDir, { recursive: true });
       const storePath = join(storeDir, "diaria-subscribers.db");
@@ -143,7 +143,7 @@ function storeShapedSub(overrides: Partial<BeehiivBackupSubscriber> = {}): Beehi
 }
 
 describe("#10729 — fonte store sem campo de abertura nunca imprime 0.0%", () => {
-  const spend: SpendRow = { canal: "Google Ads (teste 2608)", mes: "2026-09", moeda: "BRL", valor: 500.57, fonte: "teste" };
+  const spend: SpendRow = { canal: "Google Ads (UTM)", mes: "2026-09", moeda: "BRL", valor: 500.57, fonte: "teste" };
 
   it("hasOpenData: false sem o campo, true com o campo (mesmo 0)", () => {
     assert.equal(hasOpenData([{ status: "active", stats: { total_received: 30, total_unique_clicked: 3 } }]), false);
@@ -171,7 +171,7 @@ describe("#10729 — fonte store sem campo de abertura nunca imprime 0.0%", () =
     const subs = [storeShapedSub(), storeShapedSub({ email: "b@example.com" })];
     const report = buildCacReport([spend], subs);
     const md = formatCacReportMarkdown(report, computeMonthBudgetUsage([spend], "2026-09"), { fonte: "store" });
-    const row = md.split("\n").find((l) => l.startsWith("| Google Ads (teste 2608) |"));
+    const row = md.split("\n").find((l) => l.startsWith("| Google Ads (UTM) |"));
     assert.ok(row, `linha do canal ausente no markdown:\n${md}`);
     const cells = row!.split("|").map((c) => c.trim());
     // | Canal | Sub-canal | Custo/leitor | Leitores | Ativos | Cadastros | Abertura (canal) | vs. base | ...

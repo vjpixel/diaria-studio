@@ -66,7 +66,7 @@ function person(over: Partial<FunnelPersonInput> & { personKey: string }): Funne
   };
 }
 
-const SPEND_BASE = { canal: "Meta Ads (teste 2608)", origens: ["meta-ads"], gasto: 300, fonte: "csv", frescor: null };
+const SPEND_BASE = { canal: "Meta Ads (UTM)", origens: ["meta-ads"], gasto: 300, fonte: "csv", frescor: null };
 
 function onlyRow(people: FunnelPersonInput[], fontes = FONTES) {
   const rep = buildChannelCohortFunnel(people, { now: NOW, fontes });
@@ -256,7 +256,7 @@ test("granularidade semana rotula pela segunda-feira BRT e agrupa campanha/desti
 // Custo
 // ---------------------------------------------------------------------------
 
-const SPEND = { canal: "Meta Ads (teste 2608)", origens: ["meta-ads"], gasto: 300, fonte: "csv", frescor: null };
+const SPEND = { canal: "Meta Ads (UTM)", origens: ["meta-ads"], gasto: 300, fonte: "csv", frescor: null };
 
 test("gasto sem correspondência na população: custo indisponível, nunca dividido por outra coorte", () => {
   const c = computeCohortCost([person({ personKey: "1", enteredAt: daysAgo(60) })], { ...SPEND, de: "2026-09-20", ate: "2026-09-22" }, { now: NOW, fontes: FONTES });
@@ -347,15 +347,15 @@ test("coorte de custo imatura: leitor em observação, janela com dia em curso �
 
 test("buildCohortSpendInputs reusa exatamente o gasto da janela do relatório de 3 dias", () => {
   const rows: ClicksCsvRow[] = [
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-09-01", gasto_acumulado: 100 },
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-09-02", gasto_acumulado: 150 },
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-09-03", gasto_acumulado: 210 },
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-09-04", gasto_acumulado: 260 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-09-01", gasto_acumulado: 100 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-09-02", gasto_acumulado: 150 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-09-03", gasto_acumulado: 210 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-09-04", gasto_acumulado: 260 },
     { canal: "Canal desconhecido", data_apuracao: "2026-09-04", gasto_acumulado: 9 },
   ] as ClicksCsvRow[];
   const out = buildCohortSpendInputs(rows, { ate: "2026-09-04", dias: 3, fonte: "csv" });
   assert.equal(out.length, 1);
-  const w = computeRollingWindow(rows, { canal: "Meta Ads (teste 2608)", ate: "2026-09-04", dias: 3 });
+  const w = computeRollingWindow(rows, { canal: "Meta Ads (UTM)", ate: "2026-09-04", dias: 3 });
   assert.equal(out[0].gasto, w.gastoJanela);
   assert.equal(out[0].gasto, 160);
   assert.deepEqual([out[0].de, out[0].ate, out[0].cobreUltimoDia], ["2026-09-02", "2026-09-04", true]);
@@ -375,7 +375,7 @@ test("buildCohortSpendInputs reusa exatamente o gasto da janela do relatório de
 
 test("janela de gasto sem nenhuma linha no CSV: custo indisponível, nunca R$ 0,00 calculado", () => {
   const rows = [
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-01", gasto_acumulado: 100 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-01", gasto_acumulado: 100 },
   ] as ClicksCsvRow[];
   const [s] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 3, fonte: "csv" });
   assert.equal(s.gasto, 0);
@@ -390,9 +390,9 @@ test("janela de gasto sem nenhuma linha no CSV: custo indisponível, nunca R$ 0,
 
 test("CSV que termina antes de `ate` bloqueia o custo (gasto até X ÷ população até Y)", () => {
   const rows = [
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-18", gasto_acumulado: 100 },
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-19", gasto_acumulado: 150 },
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-20", gasto_acumulado: 200 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-18", gasto_acumulado: 100 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-19", gasto_acumulado: 150 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-20", gasto_acumulado: 200 },
   ] as ClicksCsvRow[];
   const [s] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 3, fonte: "csv" });
   const c = computeCohortCost([person({ personKey: "1", enteredAt: "2026-08-21T15:00:00.000Z" })], s, { now: NOW, fontes: FONTES });
@@ -402,11 +402,11 @@ test("CSV que termina antes de `ate` bloqueia o custo (gasto até X ÷ populaç�
 
 test("linha-base recuada por buraco antes da janela (#7790) vira ressalva e impede 'calculado'", () => {
   const rows = [
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-15", gasto_acumulado: 100, cadastrosAcumulado: 1 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-15", gasto_acumulado: 100, cadastrosAcumulado: 1 },
     // buraco: 16..18 sem linha
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-19", gasto_acumulado: 150, cadastrosAcumulado: 10 },
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-20", gasto_acumulado: 200, cadastrosAcumulado: 20 },
-    { canal: "Meta Ads (teste 2608)", data_apuracao: "2026-08-21", gasto_acumulado: 300, cadastrosAcumulado: 21 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-19", gasto_acumulado: 150, cadastrosAcumulado: 10 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-20", gasto_acumulado: 200, cadastrosAcumulado: 20 },
+    { canal: "Meta Ads (UTM)", data_apuracao: "2026-08-21", gasto_acumulado: 300, cadastrosAcumulado: 21 },
   ] as ClicksCsvRow[];
   const [s] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 3, fonte: "csv" });
   assert.equal(s.gasto, 200, "300 − 100 (base recuada para 15/08 em vez de 18/08)");
@@ -420,7 +420,7 @@ test("linha-base recuada por buraco antes da janela (#7790) vira ressalva e impe
   assert.equal(c.estado, "parcial");
   assert.match(c.motivo ?? "", /linha-base/);
   // Janela íntegra com poucos cadastros: o motivo de amostra mínima NÃO vira ressalva.
-  const wOk = computeRollingWindow(rows, { canal: "Meta Ads (teste 2608)", ate: "2026-08-21", dias: 1 });
+  const wOk = computeRollingWindow(rows, { canal: "Meta Ads (UTM)", ate: "2026-08-21", dias: 1 });
   assert.match(wOk.motivo ?? "", /abaixo do piso/);
   const [ok] = buildCohortSpendInputs(rows, { ate: "2026-08-21", dias: 1, fonte: "csv" });
   assert.equal(ok.ressalvaGasto, null);
@@ -652,10 +652,10 @@ test("CLI com CSV presente: custo por coorte calculado e canal sem spec avisado"
     writeFileSync(
       csv,
       "canal,data_apuracao,gasto_acumulado,cadastros_acumulado\n" +
-        "Meta Ads (teste 2608),2026-08-31,10,1\n" +
-        "Meta Ads (teste 2608),2026-09-01,20,2\n" +
-        "Meta Ads (teste 2608),2026-09-02,30,3\n" +
-        "Meta Ads (teste 2608),2026-09-03,70,5\n" +
+        "Meta Ads (UTM),2026-08-31,10,1\n" +
+        "Meta Ads (UTM),2026-09-01,20,2\n" +
+        "Meta Ads (UTM),2026-09-02,30,3\n" +
+        "Meta Ads (UTM),2026-09-03,70,5\n" +
         "Canal Novo,2026-09-03,5,0\n",
     );
     console.log = (s: string) => logs.push(s);
@@ -664,7 +664,7 @@ test("CLI com CSV presente: custo por coorte calculado e canal sem spec avisado"
     assert.equal(out.custoIndisponivel, null);
     assert.equal(out.custos.length, 1);
     const c = out.custos[0];
-    assert.equal(c.canal, "Meta Ads (teste 2608)");
+    assert.equal(c.canal, "Meta Ads (UTM)");
     assert.equal(c.gasto, 60);
     assert.equal(c.populacao, 2);
     assert.equal(c.custoPorConfirmado, 30);

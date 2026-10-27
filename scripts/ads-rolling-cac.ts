@@ -55,6 +55,7 @@ import {
 import { normalizePauseIntervals, type AdsTestPauseInterval, type AdsTestRunStateWithPause } from "./lib/ads-test-pause-window.ts";
 import { computeAdsWindowContext, type AdsWindowContext, type AdsWindowContextRunState } from "./lib/ads-window-context.ts";
 import { DEFAULT_PLANNED_DAILY_BUDGET_BRL } from "./lib/ads-test-watch.ts";
+import { canonicalizeRunStateChannelNames } from "./lib/ads-test-run-state.ts";
 
 const CLICKS_CSV = "data/aquisicao/clicks-2608.csv";
 const EDICOES_JSONL = "data/aquisicao/teste-2608/edicoes.jsonl";
@@ -155,7 +156,9 @@ function lerRunStateParaRelatorio(
     );
     return { bracos: fallbackBracos, pauseIntervals: [], runStateForContext: null };
   }
-  const st = raw as { bracos?: string[] } & AdsTestRunStateWithPause & AdsWindowContextRunState;
+  // #5862: braços e `inicio_por_braco` com o nome permanente — o CSV
+  // (`parseClicksCsv`) já chega normalizado, e os dois precisam casar.
+  const st = canonicalizeRunStateChannelNames(raw) as { bracos?: string[] } & AdsTestRunStateWithPause & AdsWindowContextRunState;
   let bracos = fallbackBracos;
   if (st.bracos?.length) {
     bracos = st.bracos;

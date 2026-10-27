@@ -11,6 +11,7 @@ import {
   graphemeLength,
   isTitleTooLong,
   formatTitleCharCount,
+  titleLimitForHighlight,
   resolveFinalTitle,
   buildHighlightSavePayload,
   initCardState,
@@ -28,21 +29,49 @@ describe("graphemeLength", () => {
 });
 
 describe("isTitleTooLong / formatTitleCharCount", () => {
+  // 70 = teto do assunto do e-mail (`MAX_SUBJECT_LENGTH`, #11254), o valor que
+  // a API manda em `maxTitleLength`.
   it("título dentro do limite -> não estoura, contador correto", () => {
     const title = "Título curto";
-    assert.equal(isTitleTooLong(title, 52), false);
-    assert.equal(formatTitleCharCount(title, 52), `${title.length}/52`);
+    assert.equal(isTitleTooLong(title, 70), false);
+    assert.equal(formatTitleCharCount(title, 70), `${title.length}/70`);
   });
 
   it("título acima do limite -> estoura", () => {
-    const longTitle = "x".repeat(60);
-    assert.equal(isTitleTooLong(longTitle, 52), true);
-    assert.equal(formatTitleCharCount(longTitle, 52), "60/52");
+    const longTitle = "x".repeat(72);
+    assert.equal(isTitleTooLong(longTitle, 70), true);
+    assert.equal(formatTitleCharCount(longTitle, 70), "72/70");
   });
 
   it("título nulo/undefined não lança — trata como vazio", () => {
-    assert.equal(isTitleTooLong(undefined, 52), false);
-    assert.equal(formatTitleCharCount(null, 52), "0/52");
+    assert.equal(isTitleTooLong(undefined, 70), false);
+    assert.equal(formatTitleCharCount(null, 70), "0/70");
+  });
+
+  it("sem teto (null) -> nunca estoura e o contador sai sem '/N'", () => {
+    const longTitle = "x".repeat(90);
+    assert.equal(isTitleTooLong(longTitle, null), false);
+    assert.equal(formatTitleCharCount(longTitle, null), "90");
+  });
+});
+
+describe("titleLimitForHighlight (#11329)", () => {
+  it("o teto do assunto vale só pro D1, o único título que vira assunto do e-mail", () => {
+    assert.equal(titleLimitForHighlight(1, 70), 70);
+    assert.equal(titleLimitForHighlight(2, 70), null);
+    assert.equal(titleLimitForHighlight(3, 70), null);
+  });
+
+  it("regressão: título de 72 chars no D2 não aparece como '72/70' em vermelho", () => {
+    const t = "x".repeat(72);
+    const max = titleLimitForHighlight(2, 70);
+    assert.equal(isTitleTooLong(t, max), false);
+    assert.equal(formatTitleCharCount(t, max), "72");
+  });
+
+  it("teto ausente da API -> D1 também sem teto", () => {
+    assert.equal(titleLimitForHighlight(1, null), null);
+    assert.equal(titleLimitForHighlight(1, undefined), null);
   });
 });
 

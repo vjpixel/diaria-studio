@@ -70,14 +70,14 @@ describe("nearestDateIndex (#8300)", () => {
 
 const SERIES = [
   {
-    canal: "Google Ads (teste 2608)",
+    canal: "Google Ads (UTM)",
     points: [
       { date: "2026-09-13", custoPorCadastroAcumulado: 6.77 },
       { date: "2026-09-14", custoPorCadastroAcumulado: 6.9 },
     ],
   },
   {
-    canal: "Meta Ads (teste 2608)",
+    canal: "Meta Ads (UTM)",
     points: [
       { date: "2026-09-13", custoPorCadastroAcumulado: null },
       { date: "2026-09-14", custoPorCadastroAcumulado: 3.52 },
@@ -91,8 +91,8 @@ describe("tooltipRowsForIndex (#8300)", () => {
     assert.deepEqual(
       rows.map((r) => [r.canal, r.value]),
       [
-        ["Google Ads (teste 2608)", 6.9],
-        ["Meta Ads (teste 2608)", 3.52],
+        ["Google Ads (UTM)", 6.9],
+        ["Meta Ads (UTM)", 3.52],
       ],
     );
   });
@@ -102,7 +102,7 @@ describe("tooltipRowsForIndex (#8300)", () => {
     // tela existe pra comparar canais lado a lado.
     const rows = tooltipRowsForIndex(SERIES, 0);
     assert.equal(rows.length, SERIES.length);
-    assert.equal(rows[1].canal, "Meta Ads (teste 2608)");
+    assert.equal(rows[1].canal, "Meta Ads (UTM)");
     assert.equal(rows[1].value, null);
   });
 

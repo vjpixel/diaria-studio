@@ -3,8 +3,9 @@
  *
  * Backstop editorial: a diar.ia.br é uma newsletter *sobre* IA — dizer
  * "IA"/"inteligência artificial"/"AI" em título de destaque é redundante
- * (o contexto já está dado) e gasta caracteres preciosos (título ≤52 chars,
- * `editorial-rules.md` seção 3). A regra editorial completa (com as
+ * (o contexto já está dado) e gasta caracteres preciosos (o título tem de
+ * caber no card 4x5 e, no D1, no assunto de ≤70 chars — `editorial-rules.md`
+ * seção 3, #11254). A regra editorial completa (com as
  * exceções legítimas: manchete sobre a categoria em si, ambiguidade real,
  * nome próprio/citação/nome de produto) vive em `context/editorial-rules.md`
  * seção 5 (Linguagem) — este check é só o backstop mecânico.

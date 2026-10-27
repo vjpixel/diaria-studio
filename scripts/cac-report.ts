@@ -79,7 +79,7 @@
  * Default `beehiiv` (comportamento inalterado): o funil principal (tabela do
  * topo, ranking, "Funil por canal") lê a coorte do snapshot local
  * `data/beehiiv-backup/`. Canal cujo cadastro nasce no Kit e nunca passa pela
- * Beehiiv (os 3 braços "(teste 2608)" — `publishing.newsletter.backend =
+ * Beehiiv (os 3 canais "(UTM)", ex-braços "(teste 2608)" — `publishing.newsletter.backend =
  * "kit"`, ver `CHANNEL_KEY_SPECS`) aparece com 0 cadastros nesta fonte,
  * mesmo tendo cadastros reais — não porque o canal não converteu, mas porque
  * a fonte nunca viu esses assinantes (achado #8238).
@@ -119,7 +119,7 @@
  *
  * **Detecção fail-soft, mesmo em `--fonte beehiiv`:** quando a fonte é
  * `beehiiv`, o relatório roda uma checagem adicional (`detectTeste2608BeehiivStoreMismatch`)
- * comparando, só para os canais "(teste 2608)", os cadastros do snapshot
+ * comparando, só para os canais "(UTM)" do teste 2608, os cadastros do snapshot
  * Beehiiv contra o store — se o Beehiiv mostra 0 e o store mostra > 0, isso
  * vira um aviso explícito no relatório (nunca silencioso) recomendando
  * `--fonte store`. Store ausente/ilegível é fail-soft (a checagem só some,
@@ -163,6 +163,7 @@ import {
   type BeehiivBackupSubscriber,
 } from "./lib/beehiiv-backup-snapshots.ts";
 import { readSpendCsv, type SpendRow, type SpendRowError } from "./lib/aquisicao-spend.ts";
+import { ADS_TEST_2608_BRACOS, canonicalizeRunStateChannelNames } from "./lib/ads-test-run-state.ts";
 import {
   computeEmendaSection,
   formatEmendaSectionMarkdown,
@@ -179,7 +180,6 @@ import {
   computeMonthBudgetUsage,
   MONTHLY_BUDGET_FLOOR_BRL,
   CHANNEL_GROUP_KEYS,
-  CHANNEL_KEY_SPECS,
   subscribersForChannel,
   type CacReport,
   type CacRow,
@@ -683,7 +683,7 @@ export function resolveLtvLatestSnapshotDate(dates: readonly string[], snapshotD
 /**
  * Checagem fail-soft (#8238): quando a coorte do funil principal vem do
  * snapshot Beehiiv (`--fonte beehiiv`, o default), compara — só pros canais
- * "(teste 2608)" de `CHANNEL_KEY_SPECS` — os cadastros que o Beehiiv viu
+ * do teste 2608 (`ADS_TEST_2608_BRACOS`, "X Ads (UTM)" desde o #5862) — os cadastros que o Beehiiv viu
  * contra os que o store unificado (Kit + Beehiiv + Brevo diária) tem pro
  * MESMO canal. Beehiiv em 0 com store > 0 é o sintoma exato do #8238
  * (cadastro nasceu no Kit, nunca passou pela Beehiiv) — vira aviso explícito
@@ -706,7 +706,7 @@ export function detectTeste2608BeehiivStoreMismatch(
     db = openDb(storeDbPath);
     if (!db) return [];
     const storeSubs = buildCacCompatibleSubscribersFromStore(db);
-    const testeCanais = [...new Set(CHANNEL_KEY_SPECS.filter((s) => s.canal.includes("(teste 2608)")).map((s) => s.canal))];
+    const testeCanais: readonly string[] = ADS_TEST_2608_BRACOS;
     const warnings: string[] = [];
     // Soma TODAS as linhas do canal: desde #10679 um canal com gasto em
     // meses diferentes reparte a coorte entre as linhas, então a 1ª linha
@@ -1344,7 +1344,7 @@ export async function main(
 
   if (fonte === "store") {
     // #8238: coorte inteira vem do store unificado (Kit + Beehiiv + Brevo
-    // diária) — necessário pros canais "(teste 2608)", cujo cadastro nasce
+    // diária) — necessário pros canais "(UTM)" (ex-"(teste 2608)"), cujo cadastro nasce
     // no Kit e nunca aparece no snapshot Beehiiv. Sem "mais recente" nesta
     // fonte (o store é mutável, não datado em diretórios) — `--snapshot` é
     // obrigatório como rótulo/corte do relatório.
@@ -1415,7 +1415,7 @@ export async function main(
   const provenance: CacReportProvenance = { apuradoEm, snapshotDate, fonte, ...(args.corte ? { corteEventos: args.corte } : {}) };
 
   // #8238: fail-soft, só quando a fonte É o snapshot Beehiiv — compara os
-  // canais "(teste 2608)" contra o store pra detectar coorte perdida (ver
+  // canais "(UTM)" (ex-"(teste 2608)") contra o store pra detectar coorte perdida (ver
   // docstring do módulo e de `detectTeste2608BeehiivStoreMismatch`).
   const mismatchWarnings: string[] = fonte === "beehiiv" ? detectTeste2608BeehiivStoreMismatch(report, args.storeDbPath) : [];
 
@@ -1451,7 +1451,11 @@ export async function main(
   let emendaSection: EmendaSection | undefined;
   if (args.apuracao2608) {
     try {
-      const runState = JSON.parse(readFileSync(args.apuracao2608, "utf8")) as EmendaRunStateInput;
+      // #5862: o run-state congelado ainda diz "X Ads (teste 2608)"; o
+      // braço precisa casar com o canal de spend.csv (já lido com o nome novo).
+      const runState = canonicalizeRunStateChannelNames(
+        JSON.parse(readFileSync(args.apuracao2608, "utf8")) as EmendaRunStateInput,
+      );
       const gastoPorFase = args.gastoFases ? parseEmendaGastoPorFase(JSON.parse(readFileSync(args.gastoFases, "utf8"))) : null;
       emendaSection = computeEmendaSection(
         subs,

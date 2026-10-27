@@ -29,7 +29,7 @@ import {
   shiftDate,
 } from "../scripts/lib/ads-rolling-window.ts";
 
-const CANAL = "Google Ads (teste 2608)";
+const CANAL = "Google Ads (UTM)";
 
 function row(data: string, gasto: number, cadastros: number | null): ClicksCsvRow {
   return {
@@ -73,7 +73,7 @@ describe("#7577 — a janela é DIFERENÇA de acumulados, não soma de linhas", 
   });
 
   it("não mistura braços", () => {
-    const rows = [row("2026-09-04", 90, 9), { ...row("2026-09-04", 999, 999), canal: "Meta Ads (teste 2608)" }];
+    const rows = [row("2026-09-04", 90, 9), { ...row("2026-09-04", 999, 999), canal: "Meta Ads (UTM)" }];
     const r = computeRollingWindow(rows, { canal: CANAL, ate: "2026-09-04" });
     assert.equal(r.gastoJanela, 90);
   });
@@ -139,7 +139,7 @@ describe("#7577 — janela que cruza refinamento não é estado estável", () =>
 
   it("edição de OUTRO braço não afeta este", () => {
     const { ultimaEdicao } = contarDiasAposUltimaEdicao(
-      [{ braco: "Meta Ads (teste 2608)", tipo: "edicao-em-voo", registrado_em_utc: "2026-09-03T12:00:00.000Z" }],
+      [{ braco: "Meta Ads (UTM)", tipo: "edicao-em-voo", registrado_em_utc: "2026-09-03T12:00:00.000Z" }],
       CANAL,
       dias,
     );

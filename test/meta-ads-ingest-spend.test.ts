@@ -8,7 +8,7 @@
  * `meta-ads-ingest-spend.ts` não sobrescrevia o `canal` passado a
  * `runMetaAdsIngest`, então caía no default `"Meta"` (`RESERVED_CHANNEL_NAMES`,
  * sem spec própria em `CHANNEL_KEY_SPECS`) — a 1ª execução real teria criado
- * `Meta,2026-09` ao lado de `Meta Ads (teste 2608),2026-09`, duplicando o
+ * `Meta,2026-09` ao lado de `Meta Ads (UTM),2026-09`, duplicando o
  * gasto do teste (mesmo defeito do Google, #8239).
  *
  * Não chama a API/MCP — só importa a constante e valida contra as 2 fontes
@@ -23,7 +23,7 @@ import { ADS_TEST_2608_BRACOS } from "../scripts/lib/ads-test-run-state.ts";
 
 describe("#8239 — META_ADS_CANAL trava contra drift de nome de canal", () => {
   it("META_ADS_CANAL é o nome do braço Meta do teste 2608", () => {
-    assert.equal(META_ADS_CANAL, "Meta Ads (teste 2608)");
+    assert.equal(META_ADS_CANAL, "Meta Ads (UTM)");
   });
 
   it("META_ADS_CANAL bate com uma entrada real de CHANNEL_KEY_SPECS (não apenas RESERVED_CHANNEL_NAMES)", () => {

@@ -433,7 +433,7 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
   // ESCREVE os títulos) de fora sempre que a correção veio do caminho comum
   // (editor poda manualmente no gate).
   "title-choice": ".claude/agents/writer-destaque.md (escreve as 3 opções) + .claude/agents/title-picker.md (fallback de seleção quando o editor não poda) + regra de título em context/editorial-rules.md",
-  "title-length": ".claude/agents/writer-destaque.md (escreve as 3 opções, inclui a regra de ≤52 chars) + .claude/agents/title-picker.md (fallback de seleção) + regra de título em context/editorial-rules.md",
+  "title-length": ".claude/agents/writer-destaque.md (escreve as 3 opções, mira o alvo de escrita de ≤52 chars) + .claude/agents/title-picker.md (fallback de seleção) + regra de título em context/editorial-rules.md (limites reais: card 4x5 e assunto do D1 ≤70, #11254)",
   "destaque-swap": "rubrico do scorer / .claude/agents/scorer-select.md",
   "destaque-promote": "rubrico do scorer / .claude/agents/scorer-select.md",
   "destaque-cut": "rubrico do scorer / .claude/agents/scorer-select.md",

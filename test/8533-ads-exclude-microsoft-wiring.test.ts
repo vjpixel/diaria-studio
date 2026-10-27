@@ -24,7 +24,7 @@ import {
   META_ADS_TESTE_CANAL,
 } from "../scripts/lib/ads-campaign-economics-fetch.ts";
 
-const GOOGLE_CANAL = "Google Ads (teste 2608)";
+const GOOGLE_CANAL = "Google Ads (UTM)";
 
 function makeRoot(): string {
   return mkdtempSync(join(tmpdir(), "ads-8533-"));

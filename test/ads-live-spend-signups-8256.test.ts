@@ -18,17 +18,17 @@ import { groupByCanalSince } from "../scripts/ads-live-spend-signups.ts";
 describe("#8256 — groupByCanalSince (pure)", () => {
   it("agrupa por canal, preservando só o que `pick` seleciona", () => {
     const rows = [
-      { canal: "Microsoft Ads (teste 2608) — PMax", date: "2026-09-05", gastoBrl: 10 },
-      { canal: "Microsoft Ads (teste 2608) — Search", date: "2026-09-05", gastoBrl: 15 },
-      { canal: "Microsoft Ads (teste 2608) — PMax", date: "2026-09-06", gastoBrl: 5 },
+      { canal: "Microsoft Ads (UTM) — PMax", date: "2026-09-05", gastoBrl: 10 },
+      { canal: "Microsoft Ads (UTM) — Search", date: "2026-09-05", gastoBrl: 15 },
+      { canal: "Microsoft Ads (UTM) — PMax", date: "2026-09-06", gastoBrl: 5 },
     ];
     const grouped = groupByCanalSince(rows, "2026-09-01", (r) => ({ date: r.date, gastoBrl: r.gastoBrl }));
     assert.equal(grouped.size, 2);
-    assert.deepEqual(grouped.get("Microsoft Ads (teste 2608) — PMax"), [
+    assert.deepEqual(grouped.get("Microsoft Ads (UTM) — PMax"), [
       { date: "2026-09-05", gastoBrl: 10 },
       { date: "2026-09-06", gastoBrl: 5 },
     ]);
-    assert.deepEqual(grouped.get("Microsoft Ads (teste 2608) — Search"), [{ date: "2026-09-05", gastoBrl: 15 }]);
+    assert.deepEqual(grouped.get("Microsoft Ads (UTM) — Search"), [{ date: "2026-09-05", gastoBrl: 15 }]);
   });
 
   it("descarta dias anteriores a d0 — mesmo filtro que as tabelas por braço já aplicavam", () => {

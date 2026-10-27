@@ -42,6 +42,7 @@ import {
   type FetchLike as GoogleFetchLike,
 } from "./google-ads-ingest.ts";
 import type { DailyConversionCount } from "./shared/daily-conversion-count.ts";
+import { GOOGLE_ADS_UTM_CANAL, META_ADS_UTM_CANAL, MICROSOFT_ADS_UTM_CANAL } from "./shared/channel-key-specs.ts";
 
 export type { DailyConversionCount };
 import { listKitSubscribersPage, type KitSubscriberSummary } from "./kit-subscribers.ts";
@@ -127,7 +128,7 @@ export async function fetchGoogleAdsChannelMetrics(
   opts: FetchGoogleAdsChannelMetricsOptions = {},
 ): Promise<ChannelFetchResult> {
   const now = opts.now ?? new Date();
-  const canal = opts.canal ?? "Google Ads (teste 2608)";
+  const canal = opts.canal ?? GOOGLE_ADS_UTM_CANAL;
   const lookbackDays = opts.lookbackDays ?? 30;
 
   const tokenResult = await refreshGoogleAdsAccessToken(fetchImpl, auth);
@@ -149,7 +150,7 @@ export async function fetchGoogleAdsChannelMetrics(
  *  continuam atribuídos a ele (`DEFAULT_UTM_SOURCE_TO_CANAL` abaixo) e
  *  porque `studio-ads.ts` precisa do nome pra ler o gasto do histórico em
  *  `spend.csv`. Mesma string de `CHANNEL_KEY_SPECS`/`ADS_TEST_2608_BRACOS`. */
-export const MICROSOFT_ADS_TESTE_CANAL = "Microsoft Ads (teste 2608)";
+export const MICROSOFT_ADS_TESTE_CANAL = MICROSOFT_ADS_UTM_CANAL;
 
 // ---------------------------------------------------------------------------
 // Meta Ads — Graph API `insights` diária (gasto + cliques + impressões)
@@ -170,7 +171,7 @@ export const MICROSOFT_ADS_TESTE_CANAL = "Microsoft Ads (teste 2608)";
  *  O default da lib continua `"Meta"` (usado fora do período de teste,
  *  quando não há `canal` explícito); é só o CLI que agora sobrescreve com
  *  este mesmo valor. */
-export const META_ADS_TESTE_CANAL = "Meta Ads (teste 2608)";
+export const META_ADS_TESTE_CANAL = META_ADS_UTM_CANAL;
 
 /** Subconjunto de `fetch` usado — mesma assinatura de `GoogleFetchLike`,
  *  permite injetar mock em teste. */
@@ -569,7 +570,7 @@ export interface FetchKitSignupsByChannelOptions {
 }
 
 const DEFAULT_UTM_SOURCE_TO_CANAL: Record<string, string> = {
-  "google-ads": "Google Ads (teste 2608)",
+  "google-ads": GOOGLE_ADS_UTM_CANAL,
   "microsoft-ads": MICROSOFT_ADS_TESTE_CANAL,
   "meta-ads": META_ADS_TESTE_CANAL,
 };

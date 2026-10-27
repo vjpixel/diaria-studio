@@ -281,10 +281,11 @@ function fmtInt(n) {
   return new Intl.NumberFormat("pt-BR").format(n);
 }
 
-/** Rótulo curto pro canal — encurta "X (teste 2608)" pra "X" nos lugares
- *  onde o contexto (a seção inteira é do teste 2608) já deixa isso claro. */
+/** Rótulo curto pro canal — encurta "X (UTM)" (nome permanente desde o
+ *  #5862; antes "X (teste 2608)") pra "X" nos lugares onde o contexto (a
+ *  seção inteira é dos canais pagos) já deixa isso claro. */
 function shortChannelLabel(canal) {
-  return String(canal).replace(/\s*\(teste 2608\)\s*$/, "");
+  return String(canal).replace(/\s*\((?:UTM|teste 2608)\)\s*$/, "");
 }
 
 function renderCampaignTiles(testState) {

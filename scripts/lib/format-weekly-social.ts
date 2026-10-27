@@ -268,7 +268,7 @@ export const THREADS_WEEKLY_CHAR_LIMIT = 500;
  * Instagram/Facebook, mas caption COMPACTA — só título numerado por item,
  * sem a linha de contexto ("por que importa") que Instagram/Facebook têm,
  * porque o orçamento de 500 chars não sobra pra isso com 5 itens (títulos
- * de até 52 chars cada já usam boa parte do limite). Link clicável no corpo
+ * de ~50-70 chars cada já usam boa parte do limite). Link clicável no corpo
  * (Threads renderiza URL como link, igual Facebook) — CTA direta, sem
  * indireção "link na bio". Truncado no limite de caption do Threads (500
  * chars) preservando palavras inteiras, mesmo mecanismo de

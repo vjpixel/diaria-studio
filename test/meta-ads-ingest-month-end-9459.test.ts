@@ -89,7 +89,7 @@ describe("#9459 — runHeadless SEM lookbackDays grava outubro inteiro", () => {
       const code = await runHeadless(spendPath, fetchImpl, { now: new Date(nowIso), campaignIds: ["123"] });
       assert.equal(code, 0);
       assert.equal(requestedSince(), "2026-10-01");
-      assert.match(readFileSync(spendPath, "utf8"), /Meta Ads \(teste 2608\),2026-10,BRL,310,/);
+      assert.match(readFileSync(spendPath, "utf8"), /Meta Ads \(UTM\),2026-10,BRL,310,/);
     });
   }
 
