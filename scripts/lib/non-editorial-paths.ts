@@ -96,3 +96,40 @@ export function isNonEditorialPath(url: string): boolean {
 
   return false;
 }
+
+/**
+ * Pure (#11338): host do `site:` de uma query de fonte cadastrada
+ * (`site:help.openai.com AI OR ...` → `help.openai.com`), sem `www.`,
+ * lowercase. `null` quando a query não tem `site:` (discovery).
+ */
+export function siteQueryHost(query: string | undefined): string | null {
+  if (!query) return null;
+  const m = query.match(/(?:^|\s)site:(\S+)/i);
+  if (!m) return null;
+  const host = m[1].split("/")[0].toLowerCase().replace(/^www\./, "");
+  return host || null;
+}
+
+/**
+ * Pure (#11338): `isNonEditorialPath` com a exceção da fonte cadastrada.
+ *
+ * O filtro #1559 existe pra fonte cujo `site:` é o domínio-mãe
+ * (`site:openai.com` trazendo `help.openai.com/articles/...`). Quando o próprio
+ * host de ajuda é a fonte cadastrada (`site:help.openai.com`,
+ * `site:support.claude.com` — decisão do editor, #11338), o resultado desse
+ * host é justamente o que a fonte existe pra trazer, então não é descartado.
+ * A exceção vale só pra host IGUAL ao do `site:`: `site:openai.com` continua
+ * descartando `help.openai.com` (regressão 260529).
+ */
+export function isNonEditorialForSource(url: string, siteQuery?: string): boolean {
+  if (!isNonEditorialPath(url)) return false;
+  const sourceHost = siteQueryHost(siteQuery);
+  if (!sourceHost) return true;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return true;
+  }
+  return host !== sourceHost;
+}
