@@ -18,7 +18,7 @@ Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo qu
 
 **Onde fica cada coisa:** os JSON em `data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem/`; o áudio e os clipes temporários em `{tmp}/diaria-video-montagem/{AAMMDD}/`; XML, SRTs e prévia na pasta da edição no Drive (`G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube/{AAMMDD}/`; `--drive-root` ou `DIARIA_VIDEO_DRIVE_ROOT` para outra). Nada vai para `Final/`: essa pasta é só dos exports do editor, e é dela que o `/diaria-publica-video` lê.
 
-**Retomada:** o `transcribe` pula o que já está em disco (`--force` refaz tudo; `source.json` refeito refaz os derivados) e o `srt` reaproveita a transcrição da sequência enquanto os trechos e o áudio do bruto forem os mesmos. `decupagem`, `roteiro`, `build`, `preview` e `review` sempre refazem. O `plan.json` guarda o hash do `blocks.json` e do `source.json`: `srt`, `preview` e `review` recusam um plano defasado (rodar `build` de novo), o `preview` recusa um SRT mais velho que o plano e o `review` uma prévia mais velha que o plano.
+**Retomada:** o `transcribe` pula o que já está em disco (`--force` refaz tudo; `source.json` refeito refaz os derivados) e o `srt` reaproveita a transcrição da sequência enquanto os trechos e o áudio do bruto forem os mesmos. `decupagem`, `roteiro`, `build`, `preview` e `review` sempre refazem. O `plan.json` guarda o hash do `blocks.json`, do `source.json` e do `silences.json` (redetectado pelo `transcribe` quando o limiar muda, #11351): `srt`, `preview` e `review` recusam um plano defasado (rodar `build` de novo), o `preview` recusa um SRT mais velho que o plano e o `review` uma prévia mais velha que o plano.
 
 ## Passo 0 — Máquina
 

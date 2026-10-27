@@ -17,7 +17,7 @@
  *   frame AAMMDD --at S     frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2; sempre refaz)
  *   build AAMMDD [--xml-flop] [--allow-missing]
- *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json e do source.json).
+ *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *   srt AAMMDD [--seq instagram|outras-redes] [--from-raw] [--force]
  *       legendas das verticais. Retranscreve o áudio montado (cache por trechos +
@@ -192,9 +192,25 @@ function sourceFor(ctx: Ctx, file?: BlocksFile): SourceInfo {
   return source;
 }
 
-/** Hash do que o plano depende: blocks.json + source.json. */
+/**
+ * Hash do que o plano depende: blocks.json + source.json + silences.json (#11351:
+ * o `transcribe` redetecta os silêncios sozinho quando o limiar muda, e um plano
+ * de antes da redetecção tem os cortes velhos). `silences` null = arquivo ausente.
+ */
+export function planHashOf(blocksText: string, sourceJson: Buffer | string, silences: Buffer | string | null): string {
+  return createHash("sha256")
+    .update(blocksText)
+    .update("\0")
+    .update(sourceJson)
+    .update("\0")
+    .update(silences ?? "\0sem-silences")
+    .digest("hex")
+    .slice(0, 16);
+}
+
 function planHash(ctx: Ctx, blocksText: string): string {
-  return createHash("sha256").update(blocksText).update("\0").update(readFileSync(f(ctx, "source.json"))).digest("hex").slice(0, 16);
+  const sil = f(ctx, "silences.json");
+  return planHashOf(blocksText, readFileSync(f(ctx, "source.json")), existsSync(sil) ? readFileSync(sil) : null);
 }
 
 function silences(ctx: Ctx): Interval[] {
@@ -231,7 +247,7 @@ interface PlanFile {
 function loadPlan(ctx: Ctx): PlanFile {
   const pf = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json (rode build)");
   const { text } = loadBlocks(ctx);
-  if (pf.hash !== planHash(ctx, text)) throw new Error("plan.json defasado: blocks.json ou source.json mudaram depois do build; rode build de novo");
+  if (pf.hash !== planHash(ctx, text)) throw new Error("plan.json defasado: blocks.json, source.json ou silences.json mudaram depois do build; rode build de novo");
   return pf;
 }
 

@@ -32,7 +32,7 @@ import {
   type SequenceSpec,
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
-import { parseSilenceDbArg } from "../scripts/video-montagem.ts";
+import { parseSilenceDbArg, planHashOf } from "../scripts/video-montagem.ts";
 
 function say(text: string, t0: number, dur = 0.3, gap = 0.05): Word[] {
   let t = t0;
@@ -69,6 +69,12 @@ describe("#11362: frase curta não casa com a tomada de outra frase", () => {
     assert.ok(chooseTake(say("Agora o Google Fotos lê tudo.", 0), "Agora o Google Photos lê tudo.").ok);
     // uma tolerância só: palavra engolida sozinha ainda vale
     assert.ok(chooseTake(say("com esforço de raciocínio,", 0), "com esforço médio de raciocínio,").ok);
+  });
+
+  it("frase curta nunca troca número ('subiu 20%' não é tomada de 'subiu 10%'), só casa exato", () => {
+    assert.equal(chooseTake(say("O uso subiu 20 % no Brasil.", 0), "O uso subiu 10% no Brasil.").ok, false);
+    assert.equal(chooseTake(say("Saiu a versão 4 hoje.", 0), "Saiu a versão 5 hoje.").ok, false);
+    assert.ok(chooseTake(say("O uso subiu 10 % no Brasil.", 0), "O uso subiu 10% no Brasil.").ok, "o número certo, partido, ainda casa");
   });
 
   it("frase longa (8+ palavras) mantém as tolerâncias de antes", () => {
@@ -152,6 +158,16 @@ describe("#11351: silêncio relativo ao loudness e bruto quente", () => {
     assert.equal(silenceNoiseDb({ inputI: -21, inputTp: -3, inputLra: 5 }).noiseDb, -45);
     assert.deepEqual(silenceNoiseDb(null), { noiseDb: -45, how: "default" });
     assert.equal(silenceNoiseDb({ inputI: 2, inputTp: 3, inputLra: 1 }).noiseDb, -25);
+  });
+
+  it("o hash do plan.json muda quando o silences.json é redetectado (srt/preview/review recusam o plano velho)", () => {
+    const blocks = '{"edition":"261028","blocks":{}}';
+    const source = '{"path":"x.mp4","fps":30}';
+    const antes = planHashOf(blocks, source, JSON.stringify([{ start: 1, end: 2 }]));
+    const depois = planHashOf(blocks, source, JSON.stringify([{ start: 1, end: 2 }, { start: 5, end: 6.2 }]));
+    assert.notEqual(antes, depois);
+    assert.equal(antes, planHashOf(blocks, source, JSON.stringify([{ start: 1, end: 2 }])), "determinístico");
+    assert.notEqual(planHashOf(blocks, source, null), planHashOf(blocks, source, ""), "ausente ≠ vazio");
   });
 
   it("--silence-db sobrepõe e é validado", () => {

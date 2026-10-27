@@ -457,7 +457,8 @@ export function findTakes(words: Word[], phrase: string, opts: TakeMatchOptions 
         p + 1 < P.length &&
         k + 1 < W.length &&
         eq(W[k + 1], P[p + 1]) &&
-        (!short || levenshtein(canonical(W[k]), canonical(P[p])) <= TAKE_DEFAULTS.shortSwapMaxEdits)
+        // Na frase curta, número nunca é trocado ("10%" × "20%" é outro fato): só casa exato ou colado.
+        (!short || (!/\d/.test(W[k]) && !/\d/.test(P[p]) && levenshtein(canonical(W[k]), canonical(P[p])) <= TAKE_DEFAULTS.shortSwapMaxEdits))
       ) {
         // palavra trocada ("Fotos" no lugar de "Photos"); nunca na última
         // posição, senão a 1ª palavra da fala seguinte entraria no corte
