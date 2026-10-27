@@ -39,7 +39,7 @@ function daily(date: string, accounts = ["facebook:diaria", "instagram:diaria", 
 const SCHEDULE = { rotation_times: ["06:30", "08:00", "12:00"], rotation_start: "2026-10-26", rotation_end: "2026-11-13", default_time: "12:00" };
 const config = {
   publishing: {
-    shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE },
+    shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE },
   },
 };
 

@@ -48,16 +48,33 @@ import {
 /** Registro escrito SÓ pela rodada do timer do 300 (`--linkedin-timer`). */
 export const SHORTS_TIMER_LEDGER_FILE = "_internal/06-shorts-published.linkedin-timer.json";
 
-export type ShortsRegistryWriter = "main" | "linkedin-timer";
+/**
+ * #11265: registro escrito SÓ pela rodada do timer do Instagram no 300
+ * (`--instagram-timer`, `scripts/shorts-instagram-timer.ts`). Mesmo padrão do
+ * registro do timer do LinkedIn: um escritor por arquivo entre máquinas.
+ */
+export const SHORTS_INSTAGRAM_TIMER_LEDGER_FILE = "_internal/06-shorts-published.instagram-timer.json";
+
+export type ShortsRegistryWriter = "main" | "linkedin-timer" | "instagram-timer";
+
+const LEDGER_FILE_OF: Record<ShortsRegistryWriter, string> = {
+  main: SHORTS_PUBLISHED_FILE,
+  "linkedin-timer": SHORTS_TIMER_LEDGER_FILE,
+  "instagram-timer": SHORTS_INSTAGRAM_TIMER_LEDGER_FILE,
+};
 
 /** Caminho do arquivo que `writer` escreve, dentro da pasta da edição. */
 export function shortsRegistryPath(editionDir: string, writer: ShortsRegistryWriter): string {
-  return join(editionDir, writer === "linkedin-timer" ? SHORTS_TIMER_LEDGER_FILE : SHORTS_PUBLISHED_FILE);
+  return join(editionDir, LEDGER_FILE_OF[writer]);
 }
 
-/** Qual escritor é esta rodada do `publish-shorts.ts`. */
-export function shortsRegistryWriterFor(linkedinTimer: boolean): ShortsRegistryWriter {
-  return linkedinTimer ? "linkedin-timer" : "main";
+/**
+ * Qual escritor é esta rodada do `publish-shorts.ts`. As duas flags de timer
+ * juntas são recusadas antes (`instagramTimerScopeError`); aqui o LinkedIn
+ * vence só por ordem.
+ */
+export function shortsRegistryWriterFor(linkedinTimer: boolean, instagramTimer = false): ShortsRegistryWriter {
+  return linkedinTimer ? "linkedin-timer" : instagramTimer ? "instagram-timer" : "main";
 }
 
 /**
@@ -69,6 +86,15 @@ export function shortsRegistryWriterFor(linkedinTimer: boolean): ShortsRegistryW
  * `--publish` republicaria os Reels.
  */
 export const SHORTS_TIMER_LEDGER_DESTINATION = "linkedin_profile";
+
+/** #11265: único destino que o registro do timer do Instagram aceita. */
+export const SHORTS_INSTAGRAM_TIMER_LEDGER_DESTINATION = "instagram";
+
+/** Destino único de cada registro de timer (`main` aceita todos). */
+const LEDGER_DESTINATION_OF: Partial<Record<ShortsRegistryWriter, string>> = {
+  "linkedin-timer": SHORTS_TIMER_LEDGER_DESTINATION,
+  "instagram-timer": SHORTS_INSTAGRAM_TIMER_LEDGER_DESTINATION,
+};
 
 /**
  * Pure (#11159): o escopo de uma rodada `--linkedin-timer`. Devolve a mensagem
@@ -93,6 +119,32 @@ export function linkedinTimerScopeError(input: {
   return `--linkedin-timer exige --only ${dest} (recebeu ${only.length ? `--only ${only.join(",")}` : "sem --only"}): o registro do timer só pode ter o ${dest}`;
 }
 
+/**
+ * Pure (#11265): o escopo de uma rodada `--instagram-timer`, mesmo contrato do
+ * `linkedinTimerScopeError`. Só `--only instagram` (exatamente) ou `--mark
+ * instagram=URL`; nunca junto do `--linkedin-timer` nem do
+ * `--confirm-instagram` (o timer confere a conta pela API antes de publicar,
+ * sem a flag).
+ */
+export function instagramTimerScopeError(input: {
+  instagramTimer: boolean;
+  linkedinTimer?: boolean;
+  only: readonly string[] | null;
+  markDestination?: string | null;
+  confirmInstagram?: boolean;
+}): string | null {
+  if (!input.instagramTimer) return null;
+  const dest = SHORTS_INSTAGRAM_TIMER_LEDGER_DESTINATION;
+  if (input.linkedinTimer) return "--instagram-timer não combina com --linkedin-timer (cada timer grava o próprio registro)";
+  if (input.confirmInstagram) return `--instagram-timer não combina com --confirm-instagram (a rodada do timer confere a conta sozinha antes de publicar)`;
+  if (input.markDestination != null) {
+    return input.markDestination === dest ? null : `--instagram-timer com --mark só aceita ${dest} (recebeu ${input.markDestination})`;
+  }
+  const only = input.only ? [...new Set(input.only)] : [];
+  if (only.length === 1 && only[0] === dest) return null;
+  return `--instagram-timer exige --only ${dest} (recebeu ${only.length ? `--only ${only.join(",")}` : "sem --only"}): o registro do timer só pode ter o ${dest}`;
+}
+
 const REGISTRY_STEM = basename(SHORTS_PUBLISHED_FILE, ".json"); // "06-shorts-published"
 
 /**
@@ -110,8 +162,8 @@ export function listShortsRegistryFiles(editionDir: string): string[] {
   const dir = dirname(join(editionDir, SHORTS_PUBLISHED_FILE));
   if (!existsSync(dir)) return [];
   const main = basename(SHORTS_PUBLISHED_FILE);
-  const ledger = basename(SHORTS_TIMER_LEDGER_FILE);
-  const rank = (n: string) => (n === main ? 0 : n === ledger ? 1 : 2);
+  const ledgers = new Set([basename(SHORTS_TIMER_LEDGER_FILE), basename(SHORTS_INSTAGRAM_TIMER_LEDGER_FILE)]);
+  const rank = (n: string) => (n === main ? 0 : ledgers.has(n) ? 1 : 2);
   return readdirSync(dir)
     .filter(isShortsRegistryFileName)
     .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
@@ -170,11 +222,12 @@ export function persistShortEntry(
   entry: ShortPublishedEntry,
   lockTimeoutMs = 30_000,
 ): ShortsPublishedFile {
-  // #11159: defesa em profundidade além do guard da CLI — nenhum caminho grava
-  // outro destino no arquivo do timer.
-  if (writer === "linkedin-timer" && entry.destination !== SHORTS_TIMER_LEDGER_DESTINATION) {
+  // #11159/#11265: defesa em profundidade além do guard da CLI — nenhum
+  // caminho grava outro destino no arquivo de um timer.
+  const only = LEDGER_DESTINATION_OF[writer];
+  if (only !== undefined && entry.destination !== only) {
     throw new Error(
-      `registro do timer só aceita ${SHORTS_TIMER_LEDGER_DESTINATION} (recebeu ${entry.destination}): grave os outros destinos numa rodada sem --linkedin-timer`,
+      `registro do timer só aceita ${only} (recebeu ${entry.destination}): grave os outros destinos numa rodada sem --${writer}`,
     );
   }
   const path = shortsRegistryPath(editionDir, writer);

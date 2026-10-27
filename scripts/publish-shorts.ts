@@ -89,13 +89,21 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * alternando 06:30/08:00/12:00 BRT a partir de 261026 (`publishing.shorts.schedule`),
  * nunca as 06:00 do horizontal. Com pelo menos 10 min de folga o Facebook
  * agenda (a folga é reconferida antes de cada página); senão publica na hora.
- * O Instagram não agenda Reels pela API — com horário futuro o Reels vai pra
- * FILA do Worker `diaria-linkedin-cron` (#10823), que publica no horário: o
- * vertical sobe pro R2 (`scripts/lib/r2-object-upload.ts`, a Graph baixa pelo
- * `video_url` público) e a entry leva a conta (`ig_account`) e os collabs.
- * Sem Worker (`DIARIA_LINKEDIN_CRON_URL`/`_TOKEN`), sem R2 (`R2_*`,
- * `SHORTS_R2_*`) ou com autora que o Worker não conhece, cai no comportamento
- * de antes: fica pendente até rodar de novo depois do horário (ou `--now`).
+ * O Instagram não agenda Reels pela API. Desde #11265 (decisão do editor,
+ * 27/10/2026) quem publica é o timer do 300 (`publishing.shorts.instagram_backend`
+ * = "timer-300", default): `scripts/shorts-instagram-timer.ts` roda esta CLI com
+ * `--only instagram --publish --instagram-timer` no horário do vertical, pelo
+ * upload resumível da Graph API (sem URL pública), e as outras rodadas
+ * devolvem o `instagram` como `skip_delegated`. A rodada do timer grava no
+ * registro próprio (`06-shorts-published.instagram-timer.json`), confere
+ * antes na conta (`/media`, só leitura) se o Reels da edição já saiu por fora,
+ * e passadas 3 h do horário vira `skip_late` (o timer avisa o editor).
+ * O caminho antigo (#10823, `instagram_backend: "worker-r2"`) segue como
+ * opção: o vertical sobe pro R2 e o Reels vai pra FILA do Worker
+ * `diaria-linkedin-cron`; sem Worker, sem R2 ou com autora que o Worker não
+ * conhece, fica pendente até rodar de novo depois do horário (ou `--now`).
+ * O R2 não está habilitado (#10940): X e Threads, que só recebem o vídeo por
+ * URL pública, ficam pulados com aviso (manuais).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
  * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
@@ -144,6 +152,8 @@ import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/face
 import {
   buildReelsCaption,
   buildYouTubeShortMetadata,
+  DIARIA_YOUTUBE_CHANNEL_URL,
+  firstSentence,
   facebookDestinationId,
   facebookUploadRoute,
   INSTAGRAM_ENV_ACCOUNT_KEY,
@@ -172,6 +182,7 @@ import {
   type YouTubeShortMetadata,
 } from "./lib/diaria/short-video.ts";
 import {
+  instagramTimerScopeError,
   linkedinTimerScopeError,
   persistShortEntry,
   readShortsRegistry,
@@ -240,6 +251,27 @@ export const LINKEDIN_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, publishing.shorts.linkedin_profile_via_timer) no horário do vertical; " +
   "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer " +
   "(confira antes que o 300 não publicou; o --linkedin-timer recusa qualquer outro destino)";
+
+/**
+ * #11265: por que o `instagram` não sai nesta rodada quando o timer do 300 é
+ * o dono dele (`publishing.shorts.instagram_backend: "timer-300"`).
+ */
+export const INSTAGRAM_TIMER_DETAIL =
+  "sai pelo timer do 300 (Diaria-Shorts-Instagram, publishing.shorts.instagram_backend = timer-300) no horário do vertical, " +
+  "com o corte _Instagram_ do Drive pela API; se o timer não conseguir (acima do teto da API, credencial, falha), ele abre um alarme para o editor. " +
+  "Para publicar desta máquina mesmo assim, rode só esse destino com --only instagram --instagram-timer " +
+  "(confira antes que o 300 não publicou; o --instagram-timer recusa qualquer outro destino)";
+
+/**
+ * #11265: motivo do pulo de X/Threads sem URL pública do vertical. O R2 não
+ * será habilitado (decisão do editor, 27/10/2026), então com o backend do
+ * timer o aviso diz isso em vez de cobrar os secrets.
+ */
+export function publicVideoUnavailableReason(backend: "timer-300" | "worker-r2", r2Missing: readonly string[]): string {
+  return backend === "timer-300"
+    ? "sem URL pública do vertical: o R2 não é usado (#11265, decisão do editor 27/10/2026) — fica manual"
+    : `falta ${r2Missing.join(", ")}`;
+}
 
 /** Destinos que só o skill faz (Chrome; o X pela Buffer MCP, #10772). */
 export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile", "linkedin_page_repost", "x"]);
@@ -343,6 +375,11 @@ export interface ShortsPlanInput {
    * `linkedin_profile_via_timer` ligado, só ela publica o `linkedin_profile`.
    */
   linkedinTimer?: boolean;
+  /**
+   * #11265: esta rodada é a do timer do Instagram no 300 (`--instagram-timer`).
+   * Com `instagram_backend: "timer-300"`, só ela publica o `instagram`.
+   */
+  instagramTimer?: boolean;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   /**
    * #10893: duração do vertical (`mp4DurationSeconds`). Ausente = não medida;
@@ -456,6 +493,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (s.warning) warnings.push(s.warning);
   }
   const scheduleFor = (s: ShortSlot) => (input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(s.at, input.now));
+  // #11265: com o timer do 300 dono do Instagram, só a rodada dele o publica.
+  const instagramViaTimer = cfg.instagramBackend === "timer-300";
+  const instagramDelegated = instagramViaTimer && !input.instagramTimer;
   for (const s of slots) {
     if (input.forceNow) continue;
     if (s.destination === "instagram" && !igFit.fits) {
@@ -465,7 +505,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     const sch = scheduleFor(s);
     premises.push(
       sch.mode === "scheduled"
-        ? `${s.destination}: ${s.destination !== "instagram" ? "agendado para" : input.instagramQueue?.ready ? "fila do Worker para" : "pendente até"} ${sch.at} (${s.hhmm} BRT do dia da edição)`
+        ? `${s.destination}: ${s.destination !== "instagram" ? "agendado para" : instagramViaTimer ? "timer do 300 publica depois de" : input.instagramQueue?.ready ? "fila do Worker para" : "pendente até"} ${sch.at} (${s.hhmm} BRT do dia da edição)`
         : `${s.destination}: ${s.hhmm} BRT do dia da edição já passou (ou falta <10 min) — publica na hora`,
     );
   }
@@ -616,7 +656,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     if (dest.kind === "x") {
       if (input.publicVideo?.ready !== true) {
-        const reason = `o X recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        const reason = `o X recebe o vídeo por URL pública, indisponível nesta rodada (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`x: ${reason}`);
         return { destination: dest.id, mode: "guided", action: "skip_missing_credentials", detail: reason, cause: "public_video" };
       }
@@ -650,7 +690,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
       if (input.publicVideo?.ready !== true) {
-        const reason = `o Threads recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        const reason = `o Threads recebe o vídeo por URL pública, indisponível nesta rodada (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`threads_profile: ${reason}`);
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason, cause: "public_video" };
       }
@@ -708,6 +748,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       };
     }
     // instagram
+    if (instagramDelegated) {
+      return { destination: dest.id, mode: "api", action: "skip_delegated", detail: INSTAGRAM_TIMER_DETAIL };
+    }
     if (!igFit.fits) {
       const collab = cfg.instagramCollaborators.length ? ` com ${cfg.instagramCollaborators.map((c) => `@${c}`).join(", ")} em collab` : "";
       // #10933: o horário vem da grade (o mesmo slot que os outros destinos já enxergaram).
@@ -746,6 +789,30 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     const slot = slotOf.get(dest.id)!;
     const schedule = scheduleFor(slot);
+    if (instagramViaTimer) {
+      // #11265: rodada do timer do 300. Antes do horário espera; até 3 h depois
+      // publica (upload resumível, sem URL pública); depois disso não publica
+      // sozinho fora do horário do teste (#10831), mesmo teto do linkedin_profile.
+      if (schedule.mode === "scheduled") {
+        return {
+          destination: dest.id,
+          mode: "api",
+          action: "pending_schedule",
+          caption,
+          scheduledAt: schedule.at,
+          detail: `o Instagram não agenda Reels pela API — o timer do 300 publica depois das ${slot.hhmm} BRT (ou use --now)`,
+        };
+      }
+      const late = lateFor(dest.id);
+      if (late) {
+        const detail =
+          `${late} — fora do horário do teste (#10831), não publica sozinho. ` +
+          `Publique à mão (Passo B3b) e registre com --confirm-instagram ou --mark instagram=URL, ou rode com --now para publicar mesmo assim`;
+        warnings.push(`instagram: ${detail}`);
+        return { destination: dest.id, mode: "api", action: "skip_late", detail };
+      }
+      return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
+    }
     if (schedule.mode === "scheduled") {
       // #10823: a fila do Worker publica no horário (o Instagram não agenda Reels pela API).
       if (input.instagramQueue?.ready) {
@@ -1257,14 +1324,37 @@ export interface InstagramReelCandidate {
  * pro link da bio —, então o marcador principal é o título do D1, que abre a
  * legenda. `utm_campaign={AAMMDD}` e a URL da edição entram também, pro caso
  * de a legenda colada trazer o link.
+ *
+ * #10978 item 5: o gancho (1ª frase do D1, 2º parágrafo da legenda) também
+ * conta, então editar só a 1ª linha (o título) no Chrome não derruba o
+ * match. Gancho curto demais (< `INSTAGRAM_HOOK_MARKER_MIN_CHARS`) fica de
+ * fora: casaria legenda de outra edição.
  */
-export function instagramEditionMarkers(input: { aammdd: string; d1Title?: string | null; editionUrl?: string | null }): string[] {
+export function instagramEditionMarkers(input: { aammdd: string; d1Title?: string | null; d1Body?: string | null; editionUrl?: string | null }): string[] {
   const out = [`utm_campaign=${input.aammdd}`];
   if (input.editionUrl) out.push(input.editionUrl.replace(/[?#].*$/, ""));
   const title = input.d1Title ? stripInlineMarkdown(input.d1Title).replace(/\s+/g, " ").trim() : "";
   if (title) out.push(title);
+  const hook = input.d1Body ? firstSentence(input.d1Body) : "";
+  if (Array.from(hook).length >= INSTAGRAM_HOOK_MARKER_MIN_CHARS) out.push(hook);
   return out;
 }
+
+/** #10978 item 5: tamanho mínimo do gancho pra valer como marcador da edição. */
+export const INSTAGRAM_HOOK_MARKER_MIN_CHARS = 30;
+
+/**
+ * #10978 item 5: janela em torno do horário planejado do Reels (o `at` do
+ * passo guiado) em que um Reels SEM marcador ainda pode ser o da edição.
+ */
+export const INSTAGRAM_CONFIRM_TIME_WINDOW_MS = 90 * 60_000;
+
+/**
+ * #10978 item 5: trecho fixo da legenda de todo vertical (a linha do canal do
+ * YouTube, `buildReelsCaption`). Não identifica a edição, só o formato: entra
+ * junto com a janela de horário, nunca sozinho.
+ */
+export const INSTAGRAM_CAPTION_FORMAT_MARKER = DIARIA_YOUTUBE_CHANNEL_URL.replace(/^https:\/\/www\./, "");
 
 function normalizeForMatch(s: string): string {
   return s.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
@@ -1280,9 +1370,14 @@ export function captionMatchesEdition(caption: unknown, markers: string[]): bool
 export type InstagramConfirmDecision =
   /** Já registrado: no-op, nada é escrito. `exitCode` 1 quando o registro não é `published` (ex.: `scheduled` na fila). */
   | { kind: "already_registered"; entry: ShortPublishedEntry; exitCode: 0 | 1 }
-  /** Nenhum match, mais de 1 match, ou `--media-id` fora da lista: recusa (exit 1) listando os candidatos. */
-  | { kind: "refuse"; reason: string; candidates: InstagramReelCandidate[] }
-  | { kind: "register"; entry: ShortPublishedEntry; candidates: InstagramReelCandidate[] };
+  /**
+   * Nenhum match, mais de 1 match, ou `--media-id` fora da lista: recusa (exit 1) listando os candidatos.
+   * `cause` (#11265): `none` = nenhum Reels na janela; `no-match` = há Reels, nenhum da edição;
+   * `ambiguous` = mais de um candidato; `window` = a leitura não cobriu o corte; `media-id` = escolha inválida.
+   */
+  | { kind: "refuse"; reason: string; candidates: InstagramReelCandidate[]; cause: "none" | "no-match" | "ambiguous" | "window" | "media-id" }
+  /** `matchedBy` (#10978 item 5): pelo marcador na legenda, pela janela de horário + formato, ou pelo `--media-id`. */
+  | { kind: "register"; entry: ShortPublishedEntry; candidates: InstagramReelCandidate[]; matchedBy: "marker" | "time-window" | "media-id" };
 
 /**
  * Pure (#10915): decide o que o `--confirm-instagram` grava, a partir do
@@ -1317,6 +1412,13 @@ export function decideInstagramConfirm(input: {
    * — pode haver outro Reels da edição não lido — e exige `--media-id`.
    */
   windowCovered?: boolean;
+  /**
+   * #10978 item 5: horário planejado do Reels (ISO). Sem nenhum marcador na
+   * legenda, aceita o ÚNICO Reels a até `windowMs` dele cuja legenda ainda tem
+   * o formato do vertical (`INSTAGRAM_CAPTION_FORMAT_MARKER`). Ausente = só marcador.
+   */
+  expectedAtIso?: string | null;
+  windowMs?: number;
 }): InstagramConfirmDecision {
   const already = instagramAlreadyRegistered(input.published);
   if (already) return { kind: "already_registered", ...already };
@@ -1352,6 +1454,7 @@ export function decideInstagramConfirm(input: {
         kind: "refuse",
         reason: `--media-id ${input.mediaId} não está entre as ${data.length} mídias mais recentes lidas da autora`,
         candidates: all,
+        cause: "media-id",
       };
     }
     // #10966: a escolha explícita também precisa ser um Reels — uma foto ou um
@@ -1362,14 +1465,13 @@ export function decideInstagramConfirm(input: {
         kind: "refuse",
         reason: `--media-id ${input.mediaId} não é um Reels (media_product_type: ${type}${typeof raw.media_type === "string" ? `, media_type: ${raw.media_type}` : ""}) — escolha um dos Reels listados`,
         candidates: valid.filter(isReels).map(toCandidate).sort(byNewest),
+        cause: "media-id",
       };
     }
-    return { kind: "register", entry: entryFor(toCandidate(raw)), candidates: all };
+    return { kind: "register", entry: entryFor(toCandidate(raw)), candidates: all, matchedBy: "media-id" };
   }
-  const reels: InstagramReelCandidate[] = valid
-    .filter((m: any) => isReels(m) && parseIgTimestamp(m.timestamp) >= since)
-    .map(toCandidate)
-    .sort(byNewest);
+  const reelsRaw = valid.filter((m: any) => isReels(m) && parseIgTimestamp(m.timestamp) >= since);
+  const reels: InstagramReelCandidate[] = reelsRaw.map(toCandidate).sort(byNewest);
   const matches = reels.filter((c) => c.matchesEdition);
   const windowCovered = input.windowCovered ?? (input.media as any)?.windowCovered !== false;
   if (!windowCovered) {
@@ -1377,23 +1479,71 @@ export function decideInstagramConfirm(input: {
       kind: "refuse",
       reason: `a leitura parou no teto de páginas (${data.length} mídias) sem chegar a ${input.sinceIso} — pode haver Reels da edição não lido; escolha com --media-id`,
       candidates: matches.length ? matches : reels,
+      cause: "window",
     };
   }
-  if (matches.length === 1) return { kind: "register", entry: entryFor(matches[0]), candidates: reels };
+  if (matches.length === 1) return { kind: "register", entry: entryFor(matches[0]), candidates: reels, matchedBy: "marker" };
   if (!reels.length) {
     return {
       kind: "refuse",
       reason: `nenhum Reels desde ${input.sinceIso} (entre as ${data.length} mídias mais recentes lidas) — o Share terminou? (o processamento leva ~30–60 s)`,
       candidates: [],
+      cause: "none",
     };
+  }
+  if (matches.length > 1) {
+    return {
+      kind: "refuse",
+      reason: `${matches.length} Reels desde ${input.sinceIso} têm o marcador desta edição na legenda — escolha com --media-id`,
+      candidates: matches,
+      cause: "ambiguous",
+    };
+  }
+  // #10978 item 5: legenda editada (título e gancho trocados no Chrome). Vale o
+  // ÚNICO Reels perto do horário planejado que ainda tem o formato do vertical;
+  // dois ou mais na janela é ambíguo e recusa, como sempre.
+  const expected = input.expectedAtIso ? Date.parse(input.expectedAtIso) : Number.NaN;
+  if (!Number.isNaN(expected)) {
+    const windowMs = input.windowMs ?? INSTAGRAM_CONFIRM_TIME_WINDOW_MS;
+    const near = reelsRaw.filter(
+      (m: any) => Math.abs(parseIgTimestamp(m.timestamp) - expected) <= windowMs && captionMatchesEdition(m.caption, [INSTAGRAM_CAPTION_FORMAT_MARKER]),
+    );
+    if (near.length === 1) return { kind: "register", entry: entryFor(toCandidate(near[0])), candidates: reels, matchedBy: "time-window" };
+    if (near.length > 1) {
+      return {
+        kind: "refuse",
+        reason: `nenhum Reels tem o marcador desta edição e ${near.length} Reels no formato do vertical caem a até ${Math.round(windowMs / 60_000)} min do horário planejado — escolha com --media-id`,
+        candidates: near.map(toCandidate).sort(byNewest),
+        cause: "ambiguous",
+      };
+    }
   }
   return {
     kind: "refuse",
-    reason: matches.length
-      ? `${matches.length} Reels desde ${input.sinceIso} têm o marcador desta edição na legenda — escolha com --media-id`
-      : `nenhum dos ${reels.length} Reels desde ${input.sinceIso} tem o marcador desta edição na legenda (título do D1 ou utm_campaign) — escolha com --media-id`,
-    candidates: matches.length ? matches : reels,
+    reason: `nenhum dos ${reels.length} Reels desde ${input.sinceIso} tem o marcador desta edição na legenda (título ou gancho do D1, utm_campaign)${Number.isNaN(expected) ? "" : " nem cai perto do horário planejado com o formato do vertical"} — escolha com --media-id`,
+    candidates: reels,
+    cause: "no-match",
   };
+}
+
+export type InstagramTimerPreflight =
+  | { kind: "proceed" }
+  /** O Reels da edição já está na conta (registrado ou achado pela API): grava, não publica. */
+  | { kind: "already"; entry: ShortPublishedEntry; matchedBy: "registry" | "marker" | "time-window" | "media-id" }
+  /** Pode haver Reels da edição na conta e não dá pra afirmar qual: não publica. */
+  | { kind: "block"; reason: string };
+
+/**
+ * Pure (#11265): antes de o timer do 300 publicar o Reels, a conta já tem o da
+ * edição? Cobre o Share feito por fora (Chrome/app) sem `--confirm-instagram`:
+ * o registro não sabe, a conta sabe. Achou → grava e não publica; ambíguo ou
+ * leitura incompleta → não publica (o timer avisa); nada → publica.
+ */
+export function instagramTimerPreflight(decision: InstagramConfirmDecision): InstagramTimerPreflight {
+  if (decision.kind === "already_registered") return { kind: "already", entry: decision.entry, matchedBy: "registry" };
+  if (decision.kind === "register") return { kind: "already", entry: decision.entry, matchedBy: decision.matchedBy };
+  if (decision.cause === "none" || decision.cause === "no-match") return { kind: "proceed" };
+  return { kind: "block", reason: decision.reason };
 }
 
 /**
@@ -1471,6 +1621,8 @@ export async function readAndDecideInstagramConfirm(
     mediaId?: string | null;
     nowIso: string;
     maxPages?: number;
+    /** #10978 item 5: horário planejado do Reels (ver `decideInstagramConfirm`). */
+    expectedAtIso?: string | null;
   },
 ): Promise<InstagramConfirmDecision> {
   if (Number.isNaN(Date.parse(input.sinceIso))) throw new Error(`--since inválido: ${input.sinceIso}`);
@@ -1487,6 +1639,7 @@ export async function readAndDecideInstagramConfirm(
     mediaId: input.mediaId ?? null,
     nowIso: input.nowIso,
     windowCovered: media.windowCovered,
+    expectedAtIso: input.expectedAtIso ?? null,
   });
 }
 
@@ -2081,14 +2234,14 @@ function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: 
 
 const USAGE =
   "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
-  "                       [--linkedin-timer] [--force-youtube] [--keep-video]\n" +
+  "                       [--linkedin-timer | --instagram-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "force-youtube", "keep-video"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "force-youtube", "keep-video"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -2133,7 +2286,9 @@ async function main(): Promise<number> {
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
-  const writer = shortsRegistryWriterFor(flags.has("linkedin-timer"));
+  const linkedinTimer = flags.has("linkedin-timer");
+  const instagramTimer = flags.has("instagram-timer");
+  const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
   const cleanup = () => cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
@@ -2149,7 +2304,9 @@ async function main(): Promise<number> {
       console.error((e as Error).message);
       return 2;
     }
-    const markScopeErr = linkedinTimerScopeError({ linkedinTimer: flags.has("linkedin-timer"), only: null, markDestination: mark.destination });
+    const markScopeErr =
+      linkedinTimerScopeError({ linkedinTimer, only: null, markDestination: mark.destination }) ??
+      instagramTimerScopeError({ instagramTimer, linkedinTimer, only: null, markDestination: mark.destination });
     if (markScopeErr) {
       console.error(`publish-shorts: ${markScopeErr}`);
       return 2;
@@ -2165,14 +2322,12 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  // #11159: a rodada do timer só toca o linkedin_profile — checado antes de
-  // qualquer download, chamada de API ou gravação.
+  // #11159/#11265: a rodada de um timer só toca o destino dele — checado antes
+  // de qualquer download, chamada de API ou gravação.
   const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
-  const scopeErr = linkedinTimerScopeError({
-    linkedinTimer: flags.has("linkedin-timer"),
-    only: onlyList,
-    confirmInstagram: flags.has("confirm-instagram"),
-  });
+  const scopeErr =
+    linkedinTimerScopeError({ linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") }) ??
+    instagramTimerScopeError({ instagramTimer, linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") });
   if (scopeErr) {
     console.error(`publish-shorts: ${scopeErr}`);
     return 2;
@@ -2261,12 +2416,17 @@ async function main(): Promise<number> {
   // #11070: Short pela Data API com a credencial do horizontal (YOUTUBE_*, youtube-oauth-setup.ts).
   const ytMissing = missingYouTubeCredentials(process.env);
   if (ytVideo.warning) console.error(`[aviso] ${ytVideo.warning}`);
-  const instagramQueue = resolveInstagramQueueReadiness({
-    authorPage: shortsCfg.instagramAuthorPage,
-    workerUrl,
-    workerToken,
-    r2Missing: r2.ready ? [] : r2.missing,
-  });
+  // #11265: a fila do Worker (e o R2) só entra com o backend antigo; com o
+  // timer do 300 nada aqui cobra os secrets do R2.
+  const instagramQueue =
+    shortsCfg.instagramBackend === "worker-r2"
+      ? resolveInstagramQueueReadiness({
+          authorPage: shortsCfg.instagramAuthorPage,
+          workerUrl,
+          workerToken,
+          r2Missing: r2.ready ? [] : r2.missing,
+        })
+      : undefined;
   // #10819: a fila do Worker entra na grade (só leitura, fail-soft).
   const warnGrid = (m: string) => console.error(`[aviso] ${m}`);
   const workerQueue = await loadWorkerQueueForGrid(workerUrl, workerToken, fetch, warnGrid);
@@ -2285,10 +2445,11 @@ async function main(): Promise<number> {
       instagramQueue,
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
-      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: `falta ${r2.missing.join(", ")}` },
+      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing) },
       youtubeVideoUrl: ytVideo.url,
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
-      linkedinTimer: flags.has("linkedin-timer"),
+      linkedinTimer,
+      instagramTimer,
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
       videoDurationSeconds: duration,
@@ -2410,6 +2571,30 @@ async function main(): Promise<number> {
         });
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
+        if (instagramTimer) {
+          // #11265: o timer confere a conta antes — um Share feito por fora sem
+          // --confirm-instagram não está no registro, mas está no /media.
+          const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
+          const pre = instagramTimerPreflight(
+            await readAndDecideInstagramConfirm(defaultGraphDeps, {
+              igUserId: igAuthor.igUserId,
+              token: igAuthor.token,
+              apiVersion: igApiVersion,
+              published,
+              sinceIso: ctx.sinceIso,
+              markers: ctx.markers,
+              nowIso: new Date().toISOString(),
+              expectedAtIso: ctx.expectedAtIso,
+            }),
+          );
+          if (pre.kind === "block") throw new Error(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`);
+          if (pre.kind === "already") {
+            published = persist(pre.entry);
+            results.push({ destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true });
+            console.error(`[aviso] instagram: o Reels da edição já está na conta (${pre.matchedBy}, ${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
+            continue;
+          }
+        }
         outcome = await publishInstagramReel(deps, igAuthor.igUserId, igAuthor.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
@@ -2478,8 +2663,8 @@ async function main(): Promise<number> {
   };
   console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
   // #11240: pulo por credencial é terminal pra limpeza (decisão do editor). Só a
-  // rodada principal grava; a do timer do 300 só planeja o linkedin_profile.
-  if (!flags.has("linkedin-timer")) {
+  // rodada principal grava; as dos timers do 300 só planejam o próprio destino.
+  if (!linkedinTimer && !instagramTimer) {
     try {
       recordCredentialSkips(dir, aammdd, plan.items.map((i) => i.destination), credentialSkippedItems(plan.items), new Date().toISOString());
     } catch (e) {
@@ -2499,6 +2684,32 @@ export function credentialSkippedItems(items: readonly ShortsPlanItem[]): Array<
   return items.flatMap((i) =>
     i.action === "skip_missing_credentials" && i.cause !== "public_video" ? [{ destination: i.destination, detail: i.detail }] : [],
   );
+}
+
+/**
+ * #10978 item 5 / #11265: o que identifica o Reels da edição na conta —
+ * marcadores (título e gancho do D1, utm, URL), o corte default (00:00 BRT do
+ * dia da edição, o vertical sai no próprio dia, #10831) e o horário planejado
+ * do vertical (`resolveShortTime`), base da janela de horário quando a
+ * legenda foi editada. Usado pelo `--confirm-instagram` e pela conferência do
+ * timer antes de publicar.
+ */
+function instagramConfirmContext(
+  dir: string,
+  aammdd: string,
+  config: unknown,
+  editionUrlFlag: string | undefined,
+): { markers: string[]; sinceIso: string; expectedAtIso: string | null; d1Title: string | null } {
+  const reviewedPath = join(dir, "02-reviewed.md");
+  const d1 = existsSync(reviewedPath) ? (parseDestaques(readFileSync(reviewedPath, "utf8")).find((d) => d.n === 1) ?? null) : null;
+  const markers = instagramEditionMarkers({ aammdd, d1Title: d1?.title ?? null, d1Body: d1?.body ?? null, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
+  let expectedAtIso: string | null = null;
+  try {
+    expectedAtIso = resolveEditionScheduledAt(aammdd, resolveShortTime(loadShortScheduleConfig(config), aammdd).hhmm);
+  } catch {
+    expectedAtIso = null; // config de horário inválido: fica só o marcador (a recusa segue segura)
+  }
+  return { markers, sinceIso: resolveEditionScheduledAt(aammdd, "00:00"), expectedAtIso, d1Title: d1?.title ?? null };
 }
 
 /**
@@ -2543,22 +2754,18 @@ async function confirmInstagram(
     console.error(`publish-shorts: não deu pra ler a conta do Instagram (${author.reason}) — registre com --mark instagram=URL`);
     return 1;
   }
-  // Marcador da edição: o título do D1 abre a legenda do Reels (buildReelsCaption).
-  const reviewedPath = join(dir, "02-reviewed.md");
-  const d1Title = existsSync(reviewedPath) ? (parseDestaques(readFileSync(reviewedPath, "utf8")).find((d) => d.n === 1)?.title ?? null) : null;
-  if (!d1Title && !mediaIdFlag) console.error(`[aviso] instagram: sem título do D1 (${reviewedPath}) — o marcador fica só utm_campaign/URL; se recusar, use --media-id`);
-  const markers = instagramEditionMarkers({ aammdd, d1Title, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
-  // Default: 00:00 BRT do dia da edição (o vertical sai no próprio dia, #10831).
-  const since = sinceFlag ?? resolveEditionScheduledAt(aammdd, "00:00");
+  const ctx = instagramConfirmContext(dir, aammdd, config, editionUrlFlag);
+  if (!ctx.d1Title && !mediaIdFlag) console.error(`[aviso] instagram: sem título do D1 (${join(dir, "02-reviewed.md")}) — o marcador fica só utm_campaign/URL e a janela de horário; se recusar, use --media-id`);
   const decision = await readAndDecideInstagramConfirm(defaultGraphDeps, {
     igUserId: author.igUserId,
     token: author.token,
     apiVersion: igApiVersion,
     published,
-    sinceIso: since,
-    markers,
+    sinceIso: sinceFlag ?? ctx.sinceIso,
+    markers: ctx.markers,
     mediaId: mediaIdFlag ?? null,
     nowIso: new Date().toISOString(),
+    expectedAtIso: ctx.expectedAtIso,
   });
   const who = author.username ? `@${author.username}` : author.igUserId;
   if (decision.kind !== "register") {
@@ -2572,6 +2779,9 @@ async function confirmInstagram(
   }
   const entry = decision.entry;
   const warnings: string[] = [];
+  if (decision.matchedBy === "time-window") {
+    warnings.push(`a legenda não tem o título nem o gancho do D1; registrado pelo único Reels no formato do vertical perto das ${ctx.expectedAtIso} (#10978) — confira o permalink`);
+  }
   if (!entry.url) warnings.push(`a mídia ${entry.id} veio sem permalink — o id fica no registro`);
   if (cfg.instagramCollaborators.length) {
     try {
