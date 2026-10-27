@@ -22,9 +22,8 @@
  * que também vai pro Doppler — nunca só pro `.env`, senão o `sync-env` aborta
  * com `LocalOnlyEnvKeysError`).
  *
- * Onde roda: na máquina com o Doppler CLI autenticado com escrita (hoje, a do
- * editor). O `300` não tem o Doppler CLI (#11077), por isso a task está
- * DECLARADA, NÃO ARMADA.
+ * Onde roda: na máquina com o Doppler CLI autenticado com escrita — o `300`,
+ * onde a task está armada desde 27/10/2026 (#11077 verificou o CLI lá).
  *
  * Doppler fora de sincronia: se a gravação no Doppler falhar, o `.env` local
  * fica com o token novo e o vault com o velho. Um marcador persistente
@@ -92,7 +91,7 @@ export interface RefreshRunResult {
 }
 
 const HOW_TO_FIX_DOPPLER =
-  "rode na máquina do editor (Doppler CLI autenticado com escrita em diaria-studio/dev): " +
+  "rode numa máquina com o Doppler CLI autenticado com escrita em diaria-studio/dev (o 300 ou a do editor): " +
   "npx tsx scripts/threads-personal-token-refresh.ts, ou grave à mão com doppler secrets set. " +
   "Enquanto THREADS_PERSONAL_TOKEN_EXPIRES_AT existir só no .env, o npm run sync-env aborta com LocalOnlyEnvKeysError";
 
