@@ -54,6 +54,12 @@ describe("isNonEditorialForSource (#11338)", () => {
   it("URL editorial nunca vira não-editorial", () => {
     assert.equal(isNonEditorialForSource("https://openai.com/blog/x", "site:help.openai.com"), false);
   });
+
+  it("fonte de host comum não ganha passe livre pra /careers/, /about/ do próprio host", () => {
+    assert.equal(isNonEditorialForSource("https://openai.com/careers/x", "site:openai.com AI"), true);
+    assert.equal(isNonEditorialForSource("https://exame.com/about/", "site:exame.com AI"), true);
+    assert.equal(isNonEditorialForSource("https://anthropic.com/legal/x", "site:anthropic.com/news AI"), true);
+  });
 });
 
 describe("processResult com a fonte de ajuda (#11338)", () => {

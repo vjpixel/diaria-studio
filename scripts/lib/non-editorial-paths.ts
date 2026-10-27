@@ -119,12 +119,18 @@ export function siteQueryHost(query: string | undefined): string | null {
  * `site:support.claude.com` — decisão do editor, #11338), o resultado desse
  * host é justamente o que a fonte existe pra trazer, então não é descartado.
  * A exceção vale só pra host IGUAL ao do `site:`: `site:openai.com` continua
- * descartando `help.openai.com` (regressão 260529).
+ * descartando `help.openai.com` (regressão 260529). E só pra fonte cujo host
+ * é ele mesmo de ajuda (`help.*`/`support.*`/...): `site:openai.com` NÃO
+ * ganha passe livre pra `openai.com/careers/` ou `/about/`.
  */
 export function isNonEditorialForSource(url: string, siteQuery?: string): boolean {
   if (!isNonEditorialPath(url)) return false;
   const sourceHost = siteQueryHost(siteQuery);
   if (!sourceHost) return true;
+  const sourceIsHelpHost = NON_EDITORIAL_HOST_PREFIXES.some(
+    (prefix) => sourceHost === prefix || sourceHost.startsWith(prefix + "."),
+  );
+  if (!sourceIsHelpHost) return true;
   let host: string;
   try {
     host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
