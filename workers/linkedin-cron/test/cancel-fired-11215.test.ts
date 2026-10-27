@@ -159,7 +159,9 @@ describe("#11215 /cancel if_not_claiming não apaga DO que já disparou", () => 
 
 describe("#11215 enqueue: o fire completo entre /status e /cancel não duplica o post", () => {
   for (const mode of ["ok", "503"] as const) {
-    it(`conteúdo mudado, alarm dispara (${mode}) no meio → 409 already_fired, nada novo armado`, async () => {
+    // #11238 — envio ambíguo (503) tem motivo próprio: `already_fired` era prova falsa de publicação.
+    const expected = mode === "503" ? "send_unknown" : "already_fired";
+    it(`conteúdo mudado, alarm dispara (${mode}) no meio → 409 ${expected}, nada novo armado`, async () => {
       const g = mockThreads(mode);
       let race = false;
       // eslint-disable-next-line prefer-const
@@ -175,7 +177,7 @@ describe("#11215 enqueue: o fire completo entre /status e /cancel não duplica o
       race = true;
       const res = await enqueue(ctx.env, post({ text: "Texto novo" }));
       assert.equal(res.status, 409);
-      assert.equal(((await res.json()) as { error?: string }).error, "already_fired");
+      assert.equal(((await res.json()) as { error?: string }).error, expected);
 
       const storage = ctx.get(key).state.storage.store;
       assert.equal(storage.get("fired"), true, "fired sobrevive ao cancel");
