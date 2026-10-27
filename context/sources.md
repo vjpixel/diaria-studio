@@ -151,6 +151,7 @@
 ### Replit Changelog
 - URL: https://docs.replit.com/updates
 - Site query: `site:docs.replit.com`
+- RSS: https://docs.replit.com/sitemap.xml
 
 ### Flavio Macknight Pies
 - URL: https://flaviomacknightpies.substack.com
