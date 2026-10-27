@@ -50,13 +50,13 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'etapa 6 agendamento started'
   ```
-**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"beehiiv"`). Guardar esse valor — decide, mais abaixo, se §6d (Beehiiv) ou §6d-kit roda, e de onde vêm os campos desta lista.
+**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"kit"` se ausente, #11225 — Beehiiv é só arquivo histórico; o ramo `"beehiiv"` é legado, só com a chave explícita). Guardar esse valor — decide, mais abaixo, se §6d (Beehiiv) ou §6d-kit roda, e de onde vêm os campos desta lista.
 
-- Backend `"beehiiv"` (default): ler `_internal/05-published.json` → extrair: `draft_url`, `title`, `test_email_sent_at`, `review_completed`, `review_status`, `review_final_issues`.
-- Backend `"kit"`: ler `_internal/newsletter-kit-published.json` → extrair `broadcast_id` (equivalente a `post_id`), `subject` (equivalente a `title`), `status`. Não há `draft_url`/`test_email_sent_at` neste schema — usar `_internal/05-edition-url.txt` (mesmo arquivo, ver §5c-1-kit) no lugar de `draft_url` onde o resumo do gate (§6b) citar um link pro editor conferir. `review_status`/`review_attempts`/`review_reason`/`review_final_issues` vêm de `_internal/05-review-kit.json` (gravado por `record-kit-review.ts` no fim do §5f, #9594). **Arquivo ausente/inválido NÃO é "review ok"** — é o review que não rodou (edição 261005): rodar `npx tsx scripts/check-invariants.ts --stage 5 --rule stage-5-review-completed --edition-dir {EDITION_DIR}/` (sai `0` mesmo com violação — é `warning`) e, se o JSON trouxer a violação, o `{review_status_block}` do gate (§6c) vira `⚠ review automático NÃO rodou na Etapa 5 ({mensagem da violação}) — conferir o e-mail de teste com atenção redobrada`. Nunca rodar o `review-test-email` aqui pra "completar" — a parada única do §6c já pede a revisão visual.
+- Backend `"beehiiv"` (legado, só explícito): ler `_internal/05-published.json` → extrair: `draft_url`, `title`, `test_email_sent_at`, `review_completed`, `review_status`, `review_final_issues`.
+- Backend `"kit"` (padrão, também com a chave ausente): ler `_internal/newsletter-kit-published.json` → extrair `broadcast_id` (equivalente a `post_id`), `subject` (equivalente a `title`), `status`. Não há `draft_url`/`test_email_sent_at` neste schema — usar `_internal/05-edition-url.txt` (mesmo arquivo, ver §5c-1-kit) no lugar de `draft_url` onde o resumo do gate (§6b) citar um link pro editor conferir. `review_status`/`review_attempts`/`review_reason`/`review_final_issues` vêm de `_internal/05-review-kit.json` (gravado por `record-kit-review.ts` no fim do §5f, #9594). **Arquivo ausente/inválido NÃO é "review ok"** — é o review que não rodou (edição 261005): rodar `npx tsx scripts/check-invariants.ts --stage 5 --rule stage-5-review-completed --edition-dir {EDITION_DIR}/` (sai `0` mesmo com violação — é `warning`) e, se o JSON trouxer a violação, o `{review_status_block}` do gate (§6c) vira `⚠ review automático NÃO rodou na Etapa 5 ({mensagem da violação}) — conferir o e-mail de teste com atenção redobrada`. Nunca rodar o `review-test-email` aqui pra "completar" — a parada única do §6c já pede a revisão visual.
 - Ler `_internal/06-social-published.json` → extrair: horarios agendados dos 3 posts LinkedIn e 3 posts Facebook (`scheduled_at` por destaque).
 - Ler `_internal/06-verify-dispatch.json` (se existir) → extrair quaisquer warnings de verificacao.
-- Ler `post_id` de `_internal/05-published.json` (necessario para o Schedule Beehiiv e para verificacao pos-Schedule).
+- Só no ramo Beehiiv legado: ler `post_id` de `_internal/05-published.json` (necessario para o Schedule Beehiiv e para verificacao pos-Schedule).
 - Ler horario default de agendamento: 06:00 BRT da DATA DA EDIÇÃO (`{AAMMDD}`) — **nunca** "amanhã" pelo relógio de agora (#8207: Etapa 6 rodada depois da meia-noite BRT com "amanhã" contado pelo relógio agendou a edição 260917 um dia atrasado no Kit e na Brevo diária). `scripts/resolve-edition-scheduled-at.ts` é o ÚNICO lugar que faz essa conta — usar o MESMO comando aqui e no ramo `sim HH:MM` do §6c abaixo:
   ```bash
   npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}
@@ -300,7 +300,7 @@ Backstop mecânico: o invariante `site-page-pr-merged` (`STAGE_6_RULES`, `severi
 
 ### 6d. Executar Schedule do Beehiiv
 
-**Só roda com backend `"beehiiv"` (default, ver §6a).** Com backend `"kit"`, pular esta seção INTEIRA (a checagem de slug do bloco WhatsApp em §6b-slug já pulou por igual motivo — problema específico da UI de SEO/URL slug da Beehiiv sem equivalente no Kit) e seguir direto para **§6d-kit** abaixo.
+**Só roda com backend `"beehiiv"` EXPLÍCITO (legado, ver §6a — o default é `"kit"` desde o #11225).** Com backend `"kit"`, pular esta seção INTEIRA (a checagem de slug do bloco WhatsApp em §6b-slug já pulou por igual motivo — problema específico da UI de SEO/URL slug da Beehiiv sem equivalente no Kit) e seguir direto para **§6d-kit** abaixo.
 
 **Exibir banner pre-Schedule ao editor ANTES de pedir o clique** (evitar Publish acidental, incidente 260611 #2074):
 
@@ -515,7 +515,7 @@ Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = l
 
 ### 6f. Escrever sentinel de conclusao
 
-**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** **Desde #7963, mesmo gate mecânico do §5h** — `write --step 6` também recusa (exit 1, sem bypass) `--outputs` com o artefato de newsletter do backend errado. Backend `"beehiiv"` (default):
+**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** **Desde #7963, mesmo gate mecânico do §5h** — `write --step 6` também recusa (exit 1, sem bypass) `--outputs` com o artefato de newsletter do backend errado. Backend `"beehiiv"` (legado, só explícito):
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \

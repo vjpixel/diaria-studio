@@ -24,6 +24,7 @@ import {
   type FacebookCredentialsFile,
   type FacebookPageConfig,
 } from "../facebook-pages.ts"; // #10458
+import { parseNewsletterBackend } from "../newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -73,14 +74,15 @@ const BEST_EFFORT_SOCIALS = new Set(["instagram", "threads", "twitter"]);
  */
 function loadNewsletterBackend(): string {
   const configPath = resolve(ROOT, "platform.config.json");
-  if (!existsSync(configPath)) return "beehiiv";
+  // Default "kit" desde o #11225 (Beehiiv só como arquivo histórico).
+  if (!existsSync(configPath)) return "kit";
   try {
     const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-      publishing?: { newsletter?: { backend?: string } };
+      publishing?: { newsletter?: { backend?: unknown } };
     };
-    return cfg.publishing?.newsletter?.backend ?? "beehiiv";
+    return parseNewsletterBackend(cfg.publishing?.newsletter?.backend);
   } catch {
-    return "beehiiv";
+    return "kit";
   }
 }
 

@@ -66,9 +66,10 @@ describe("#10943 item 3: link da edição no vertical antes da Etapa 5", () => {
     assert.ok(p.warnings.some((w) => w.includes("derivado do slug")));
   });
 
-  it("chave ausente cai no default beehiiv (aviso)", () => {
+  it("chave ausente cai no default kit (premissa, sem aviso) — #11225", () => {
     const p = plan(undefined);
-    assert.ok(p.warnings.some((w) => w.includes("derivado do slug")));
+    assert.ok(!p.warnings.some((w) => w.includes("derivado do slug")), p.warnings.join("\n"));
+    assert.ok(p.premises.some((m) => m.includes("#7420")), p.premises.join("\n"));
   });
 
   it("--edition-url / 05-edition-url.txt vencem o backend", () => {
@@ -77,11 +78,12 @@ describe("#10943 item 3: link da edição no vertical antes da Etapa 5", () => {
     assert.ok(p.premises.some((m) => m.includes("https://diar.ia.br/p/outro")));
   });
 
-  it("newsletterBackendOf: só o literal 'kit' é kit", () => {
+  it("newsletterBackendOf: default kit, só o literal 'beehiiv' é beehiiv (#11225)", () => {
     assert.equal(newsletterBackendOf({ publishing: { newsletter: { backend: "kit" } } }), "kit");
-    assert.equal(newsletterBackendOf({ publishing: { newsletter: { backend: "KIT" } } }), "beehiiv");
-    assert.equal(newsletterBackendOf(null), "beehiiv");
-    assert.equal(newsletterBackendOf(undefined), "beehiiv");
-    assert.equal(newsletterBackendOf({}), "beehiiv");
+    assert.equal(newsletterBackendOf({ publishing: { newsletter: { backend: "KIT" } } }), "kit");
+    assert.equal(newsletterBackendOf({ publishing: { newsletter: { backend: "beehiiv" } } }), "beehiiv");
+    assert.equal(newsletterBackendOf(null), "kit");
+    assert.equal(newsletterBackendOf(undefined), "kit");
+    assert.equal(newsletterBackendOf({}), "kit");
   });
 });

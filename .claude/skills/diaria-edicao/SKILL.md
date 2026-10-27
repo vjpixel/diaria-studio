@@ -22,7 +22,7 @@ Executa as Etapas 1-4 da diar.ia.br (Pesquisa → Escrita → Imagens → Revis�
 Antes de iniciar, verifique:
 1. `context/audience-profile.md` existe e não é placeholder. Se for, avise: rode `/diaria-atualiza-audiencia` primeiro (muda lento, rodar semanalmente/mensalmente).
 2. `context/sources.md` existe. Se não, rode `npm run sync-sources`.
-3. `data/past-editions.md` **não precisa estar atualizado** — o orchestrator regenera automaticamente via Beehiiv MCP no Stage 0.
+3. `data/past-editions.md` **não precisa estar atualizado** — o orchestrator regenera automaticamente no Stage 0 (`refresh-dedup.ts`, lendo o Kit via `read_backend`; a Beehiiv é só arquivo histórico e não é pré-requisito, #11225).
 
 ## Passo 0 — Sincronizar código com origin/master (#2686)
 

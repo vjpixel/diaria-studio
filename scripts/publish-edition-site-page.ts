@@ -316,6 +316,7 @@ import { acquireMergeLock, releaseMergeLock } from "./lib/session-registry.ts";
 // deste próprio publish, ANTES do commit único (ver `backfillAndReindexArchive`).
 import { runBackfill } from "./backfill-archive-page-links-seo.ts";
 import { main as genArchiveIndexMain } from "./gen-archive-index.ts";
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SITE_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
@@ -325,7 +326,7 @@ export class EditionInputsInvalid extends Error {}
 
 /**
  * Lê `publishing.newsletter.backend` de `platform.config.json` (default
- * `"beehiiv"` — mesmo default usado por `publish-newsletter-kit.ts`).
+ * `"kit"` desde o #11225 — mesmo default de `publish-newsletter-kit.ts`).
  * Fail-soft: config ausente/ilegível nunca lança, cai no default — este
  * helper só é chamado dentro de um caminho que já é `code: 2` benigno por
  * padrão, então uma falha de leitura aqui não deve regredir isso pra pior.
@@ -334,9 +335,9 @@ function readNewsletterBackend(rootDir: string): string {
   try {
     const raw = readFileSync(join(rootDir, "platform.config.json"), "utf8");
     const cfg = JSON.parse(raw) as { publishing?: { newsletter?: { backend?: string } } };
-    return cfg.publishing?.newsletter?.backend ?? "beehiiv";
+    return parseNewsletterBackend(cfg.publishing?.newsletter?.backend);
   } catch {
-    return "beehiiv";
+    return "kit";
   }
 }
 

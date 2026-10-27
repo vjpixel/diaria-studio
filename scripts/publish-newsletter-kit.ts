@@ -227,6 +227,7 @@ import { getBroadcast } from "./lib/kit-client.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeKitDraftSourceHashes, kitContentHash, type SourceHashes } from "./lib/kit-draft-freshness.ts"; // #9428
 import { KIT_TEST_SUBJECT_PREFIX } from "./lib/shared/kit-test-broadcast.ts"; // #10395
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -660,7 +661,7 @@ export type BackendCheck = { ok: true } | { ok: false; reason: string };
 /** Pura — recusa rodar se a flag não estiver em "kit" (achado #464: script
  *  standalone pode ser invocado por engano fora do switchover). */
 export function checkKitBackendEnabled(platformConfig: PlatformConfig): BackendCheck {
-  const backend = platformConfig.publishing?.newsletter?.backend ?? "beehiiv";
+  const backend = parseNewsletterBackend(platformConfig.publishing?.newsletter?.backend); // default "kit" (#11225)
   if (backend !== "kit") {
     return {
       ok: false,

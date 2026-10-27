@@ -78,18 +78,20 @@ const MODULES: StateModule[] = [
     fields: {
       "chrome-mcp": "chromeMcp",
       "gmail-mcp": "gmailMcp",
-      "beehiiv-mcp": "beehiivMcp",
+      // "beehiiv-mcp" saiu deste mapa no #11225: o módulo ainda aceita a flag
+      // (compat com edições antigas), mas nenhum playbook a escreve mais — a
+      // Beehiiv é só arquivo histórico e não é sondada no Stage 0.
       "clarice-rest": "clariceRest",
       "clarice-mcp": "clariceMcp",
       "cloudflare-token-ok": "cloudflareTokenOk",
     },
-    // gmailMcp/beehiivMcp/cloudflareTokenOk: preflight-state.ts docstring —
+    // gmailMcp/cloudflareTokenOk: preflight-state.ts docstring —
     // "só são consumidos dentro do próprio Stage 0 hoje, mas são
     // persistidos igual — robustez contra o Stage 0 em si rodar por partes
     // (compaction no meio, resume) e uniformidade dos 5 sinais". Consumidos
     // via variável de sessão (GMAIL_MCP/BEEHIIV_MCP/CLOUDFLARE_TOKEN_OK em
     // caps) dentro do mesmo arquivo, nunca relidos do disco por outro stage.
-    writeOnlyAllowlist: ["gmailMcp", "beehiivMcp", "cloudflareTokenOk"],
+    writeOnlyAllowlist: ["gmailMcp", "cloudflareTokenOk"],
   },
   {
     script: "eia-dispatch-state.ts",

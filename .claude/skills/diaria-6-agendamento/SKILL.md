@@ -1,11 +1,11 @@
 ---
 name: diaria-6-agendamento
-description: Roda a Etapa 6 (agendamento — gate humano + Schedule Beehiiv + auto-reporter). Desde #7983 o caminho normal é `/diaria-5-publicacao` encadear pra cá sozinho na mesma sessão — use este comando pra RETOMAR quando isso não aconteceu. Uso — `/diaria-6-agendamento [AAMMDD]`.
+description: Roda a Etapa 6 (agendamento — gate humano + Schedule Kit + auto-reporter). Desde #7983 o caminho normal é `/diaria-5-publicacao` encadear pra cá sozinho na mesma sessão — use este comando pra RETOMAR quando isso não aconteceu. Uso — `/diaria-6-agendamento [AAMMDD]`.
 ---
 
 # /diaria-6-agendamento
 
-Dispara a Etapa 6: apresenta resumo de agendamento ao editor, aguarda confirmacao, executa o Schedule do Beehiiv e roda o auto-reporter.
+Dispara a Etapa 6: apresenta resumo de agendamento ao editor, aguarda confirmacao, executa o Schedule da newsletter no Kit (`schedule-newsletter-kit.ts`; Beehiiv só no ramo legado, #11225) e roda o auto-reporter.
 
 ## Porta de retomada (#7983, 11/09/2026)
 
@@ -18,7 +18,7 @@ Desde a fusão 5+6, o caminho normal é `/diaria-5-publicacao` continuar direto 
   - **Se `candidates.length === 0`**: erro. `Nenhuma edicao com Stage 5 (Publicacao) aprovado e Stage 6 incompleto. Rode /diaria-5-publicacao primeiro ou passe AAMMDD explicitamente.`
   - **Se `candidates.length >= 2`**: default (#5321) — assumir a mais recente (`candidates[candidates.length - 1]`, lista vem ordenada ascendente) e imprimir banner: `Múltiplas edições em curso: {lista}. Assumindo a mais recente: {AAMMDD}. Passe AAMMDD explicitamente para outra.` Editor pode interromper se errado.
 
-Critico: este e o stage que **agenda** a newsletter no Beehiiv; rodar na edicao errada causa agendamento de conteudo incorreto.
+Critico: este e o stage que **agenda** a newsletter (Kit); rodar na edicao errada causa agendamento de conteudo incorreto.
 
 ## Passo -1 — Sincronizar código com origin/master (#2686, #8684, #8786)
 
@@ -35,7 +35,7 @@ npx tsx scripts/sync-code.ts --edition-dir "$EDITION_DIR"
 ## Pre-requisitos
 
 - Etapas 1-5 completas: `_internal/.step-5-done.json` + `_internal/05-published.json` com `draft_url`.
-- Chrome com extensao **Claude in Chrome** ativa, logado em Beehiiv.
+- Beehiiv nao e pre-requisito (#11225: so arquivo historico). Chrome com **Claude in Chrome** so no ramo Beehiiv legado (`backend: "beehiiv"` explicito).
 - `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` configurados para Drive sync (relatorio final).
 
 ## O que faz

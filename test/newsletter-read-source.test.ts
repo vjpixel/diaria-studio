@@ -4,7 +4,7 @@
  * Sem rede real: `globalThis.fetch` é monkeypatchado (mesmo padrão de
  * `test/refresh-dedup.test.ts`/`test/kit-client.test.ts`). Cobre:
  *
- *   - `resolveNewsletterBackend` — default "beehiiv", flag ausente/inválida
+ *   - `resolveNewsletterBackend` — default "kit" (#11225), flag ausente/inválida
  *     não muda o default (fail-safe); chave `publishing.newsletter.read_backend`
  *     (item 1, #6362 — separada da chave de ENVIO).
  *   - `resolveNewsletterReadConfig` — delega pra `resolveBeehiivConfig`/
@@ -71,8 +71,8 @@ function kitBroadcastsResponse(broadcasts: unknown[]) {
 }
 
 describe("resolveNewsletterBackend (#6184, #6362 item 1/4)", () => {
-  it('default "beehiiv" quando platform.config.json não existe', () => {
-    assert.equal(resolveNewsletterBackend(join(tmpdir(), "nao-existe-6184.json")), "beehiiv");
+  it('default "kit" quando platform.config.json não existe (#11225)', () => {
+    assert.equal(resolveNewsletterBackend(join(tmpdir(), "nao-existe-6184.json")), "kit");
   });
 
   it('lê publishing.newsletter.read_backend === "kit" (chave PRÓPRIA de leitura, não "backend")', () => {
@@ -89,12 +89,15 @@ describe("resolveNewsletterBackend (#6184, #6362 item 1/4)", () => {
     }
   });
 
-  it('"backend" (ENVIO) = "kit" sem "read_backend" NÃO afeta a leitura — continua "beehiiv" (item 1, no-op de merge)', () => {
+  it('"backend" (ENVIO) não decide a leitura — read_backend explícito "beehiiv" vence backend "kit" (item 1)', () => {
     const dir = mkdtempSync(join(tmpdir(), "newsletter-backend-envio-only-"));
     const path = join(dir, "platform.config.json");
     try {
-      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { backend: "kit" } } }));
+      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { backend: "kit", read_backend: "beehiiv" } } }));
       assert.equal(resolveNewsletterBackend(path), "beehiiv");
+      // #11225: sem read_backend, o default é "kit" (não herda de "backend").
+      writeFileSync(path, JSON.stringify({ publishing: { newsletter: { backend: "beehiiv" } } }));
+      assert.equal(resolveNewsletterBackend(path), "kit");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -115,13 +118,13 @@ describe("resolveNewsletterBackend (#6184, #6362 item 1/4)", () => {
     }
   });
 
-  it('valor desconhecido/typo cai no default "beehiiv" e LOGA o valor bruto (item 4, precedente #6291)', async () => {
+  it('valor desconhecido/typo cai no default "kit" e LOGA o valor bruto (item 4, precedente #6291; default #11225)', async () => {
     const dir = mkdtempSync(join(tmpdir(), "newsletter-backend-typo-"));
     const path = join(dir, "platform.config.json");
     try {
       writeFileSync(path, JSON.stringify({ publishing: { newsletter: { read_backend: "beehiv" } } }));
       const { result, errors } = await withCapturedConsoleError(() => resolveNewsletterBackend(path));
-      assert.equal(result, "beehiiv");
+      assert.equal(result, "kit");
       assert.ok(
         errors.some((e) => e.includes("read_backend desconhecido") && e.includes("beehiv")),
         `esperava log do valor bruto desconhecido, recebi: ${JSON.stringify(errors)}`,
@@ -136,7 +139,7 @@ describe("resolveNewsletterBackend (#6184, #6362 item 1/4)", () => {
     const path = join(dir, "platform.config.json");
     try {
       writeFileSync(path, "{ not json");
-      assert.equal(resolveNewsletterBackend(path), "beehiiv");
+      assert.equal(resolveNewsletterBackend(path), "kit");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -157,13 +160,13 @@ describe("resolveNewsletterReadConfig (#6184, #6362 item 6)", () => {
     }
   });
 
-  it("platform.config.json AUSENTE segue default beehiiv normalmente (distinção do caso acima)", () => {
+  it("platform.config.json AUSENTE segue default kit normalmente (distinção do caso acima; default #11225)", () => {
     const result = resolveNewsletterReadConfig({
       configPath: join(tmpdir(), "nao-existe-6362.json"),
-      env: { BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" },
+      env: { KIT_API_KEY: "k" },
     });
     assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.config.backend, "beehiiv");
+    if (result.ok) assert.equal(result.config.backend, "kit");
   });
 
   it("backend beehiiv sem BEEHIIV_API_KEY falha com reason explícito", () => {
