@@ -22,7 +22,6 @@ import {
   chooseTake,
   cuesToSrt,
   cutPoints,
-  decupagemMarkdown,
   defaultSequences,
   effectiveFraming,
   effectiveSource,
@@ -232,10 +231,7 @@ describe("decupagem (#11208)", () => {
     const groups = groupTakes(segs);
     assert.deepEqual(groups.map((g) => g.segments), [[0], [1, 2], [3]]);
     assert.equal(groups[1].suggested, 2);
-    const md = decupagemMarkdown("261027", segs, groups);
-    assert.match(md, /\| 2 \| 00:03\.0–00:04\.0 \| Uma atualização de \| descartar \(tomada repetida\) \|/);
-    assert.match(md, /usar \(tomada 2 de 2\)/);
-    assert.match(md, /\| Tempo \| Fala \| Sugestão \| Decisão \|/);
+    // O Doc da decupagem (por bloco, curado) é testado em test/video-montage-docs-11361.test.ts.
   });
 });
 

@@ -10,9 +10,12 @@
  *       bruto → `source.json`, áudio 16 kHz, `loudness.json`, `silences.json`,
  *       `transcript.json`. Pula o que já existe; `source.json` refeito (--force)
  *       refaz todos os derivados.
- *   decupagem AAMMDD        tabela da decupagem (gate 1) + `blocks.template.json` (sempre refaz)
+ *   decupagem AAMMDD        sem `decupagem-plan.json`: lista numerada dos segmentos + molde do plano
+ *                           (a skill classifica); com ele: o Markdown do Doc da decupagem (gate 1, por
+ *                           bloco, curado, com "Montagem sugerida") + `blocks.template.json` (sempre refaz)
  *   frame AAMMDD --at S     frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
- *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2; sempre refaz)
+ *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
+ *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
  *   build AAMMDD [--xml-flop] [--allow-missing]
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json e do source.json).
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
@@ -48,7 +51,6 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import {
-  BLOCK_KEYS,
   LOUDNORM_TARGET,
   PREVIEW_SUBTITLE_STYLE,
   SILENCE_DETECT,
@@ -58,12 +60,10 @@ import {
   buildXmeml,
   cuesToSrt,
   cutPoints,
-  decupagemMarkdown,
   defaultSequences,
   effectiveFraming,
   effectiveSource,
   framingFor,
-  groupTakes,
   loudnessWarning,
   mapWordsToSequence,
   parseBlocksFile,
@@ -74,7 +74,6 @@ import {
   previewClipArgs,
   resolveBlocks,
   reviewPreview,
-  roteiroMarkdown,
   segmentCues,
   sequenceSourceRanges,
   transcriptWords,
@@ -82,6 +81,7 @@ import {
   type BlocksFile,
   type Framing,
   type Interval,
+  type Segment,
   type SequencePlan,
   type SequenceTarget,
   type SourceInfo,
@@ -90,6 +90,17 @@ import {
   type VocabRule,
   type Word,
 } from "./lib/diaria/video-montage.ts";
+import {
+  alternativesFromDecupagem,
+  blocksFromDecupagem,
+  buildDecupagemDoc,
+  decupagemMarkdown,
+  decupagemPlanTemplate,
+  parseDecupagemPlan,
+  roteiroMarkdown,
+  segmentListing,
+  type DecupagemPlan,
+} from "./lib/diaria/video-montage-docs.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
@@ -305,21 +316,43 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined): number {
   return 0;
 }
 
+/** O plano da decupagem (classificação da skill), validado contra o transcript; null se ainda não existe. */
+function loadDecupagemPlan(ctx: Ctx, segments: Segment[]): DecupagemPlan | null {
+  const path = f(ctx, "decupagem-plan.json");
+  if (!existsSync(path)) return null;
+  const parsed = parseDecupagemPlan(JSON.parse(readFileSync(path, "utf8")), segments.length);
+  if (!parsed.ok) throw new Error(`decupagem-plan.json inválido:\n  - ${parsed.errors.join("\n  - ")}`);
+  if (parsed.plan.edition !== ctx.edition) throw new Error(`decupagem-plan.json é da edição ${parsed.plan.edition}, não ${ctx.edition}`);
+  return parsed.plan;
+}
+
 function cmdDecupagem(ctx: Ctx): number {
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
-  const md = decupagemMarkdown(ctx.edition, tr.segments, groupTakes(tr.segments));
+  const segments = tr.segments;
+  const plan = loadDecupagemPlan(ctx, segments);
+  if (!plan) {
+    // 1ª passada: a listagem numerada e o molde do plano, para a skill classificar (#11361).
+    const tplPath = f(ctx, "decupagem-plan.template.json");
+    writeJson(tplPath, decupagemPlanTemplate(ctx.edition, segments));
+    process.stdout.write(segmentListing(segments));
+    console.error(`[video-montagem] decupagem: classificar os segmentos acima em ${f(ctx, "decupagem-plan.json")} (molde: ${tplPath}) e rodar decupagem de novo`);
+    return 0;
+  }
+  const doc = buildDecupagemDoc(plan, segments, loadVocab().rules);
+  const source = measuredSource(ctx);
+  const sequences = defaultSequences();
+  const md = decupagemMarkdown(ctx.edition, doc, sequences);
   writeFileAtomic(f(ctx, "decupagem.md"), md);
   const tpl = f(ctx, "blocks.template.json");
-  const source = measuredSource(ctx);
   const template: BlocksFile = {
     edition: ctx.edition,
     mirrored: source.mirrored,
-    blocks: Object.fromEntries(BLOCK_KEYS.map((k) => [k, []])),
-    sequences: defaultSequences(),
+    blocks: blocksFromDecupagem(doc),
+    sequences,
   };
   writeJson(tpl, template);
   process.stdout.write(md);
-  console.error(`[video-montagem] decupagem: ${f(ctx, "decupagem.md")}; molde do blocks.json: ${tpl}`);
+  console.error(`[video-montagem] decupagem: ${f(ctx, "decupagem.md")}; molde do blocks.json (falas "usar"): ${tpl}`);
   return 0;
 }
 
@@ -338,7 +371,11 @@ function cmdFrame(ctx: Ctx, at: string | undefined): number {
 
 function cmdRoteiro(ctx: Ctx): number {
   const { source, plans: ps, resolved } = plans(ctx);
-  const md = roteiroMarkdown(ctx.edition, ps, resolved, source.fps);
+  // As linhas "alternativa" da decupagem viram as opções B, C… do roteiro (#11361).
+  const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
+  const dplan = loadDecupagemPlan(ctx, tr.segments);
+  const alternatives = dplan ? alternativesFromDecupagem(buildDecupagemDoc(dplan, tr.segments, loadVocab().rules)) : undefined;
+  const md = roteiroMarkdown(ctx.edition, ps, resolved, source.fps, { alternatives });
   writeFileAtomic(f(ctx, "roteiro.md"), md);
   process.stdout.write(md);
   return 0;
