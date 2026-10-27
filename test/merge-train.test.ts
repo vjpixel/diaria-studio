@@ -22,6 +22,8 @@ import {
   buildTrainPrBody,
   buildTrainMergeCommitTitle,
   buildTrainMergeCommitBody,
+  buildSoloSquashSubject,
+  buildSoloSquashBody,
   summarizeTrainCiRuns,
   type TrainCandidate,
   type TrainPrInfo,
@@ -449,5 +451,42 @@ describe("parseClosesIssues — só marcador real fecha, menção em crase/bloco
   it("stripNonMarkerContext preserva o número de linhas", () => {
     const body = "a\n```\nb\n```\n> c\nd";
     assert.equal(stripNonMarkerContext(body).split("\n").length, body.split("\n").length);
+  });
+});
+
+describe("buildSoloSquashSubject / buildSoloSquashBody (#11216)", () => {
+  it("acrescenta (#N) ao título — --subject explícito não ganha o sufixo do GitHub", () => {
+    assert.equal(buildSoloSquashSubject("fix: x", 42), "fix: x (#42)");
+    assert.equal(buildSoloSquashSubject("  fix: x  ", 42), "fix: x (#42)");
+  });
+
+  it("não duplica quando o título já termina com (#N) do próprio PR", () => {
+    assert.equal(buildSoloSquashSubject("fix: x (#42)", 42), "fix: x (#42)");
+  });
+
+  it("título que termina com (#M) de OUTRO número ainda ganha o (#N)", () => {
+    assert.equal(buildSoloSquashSubject("fix: x (#7)", 42), "fix: x (#7) (#42)");
+  });
+
+  it("body sem commits de revert fica intacto", () => {
+    assert.equal(buildSoloSquashBody("Closes #1", []), "Closes #1");
+    assert.equal(buildSoloSquashBody("Closes #1", undefined), "Closes #1");
+    assert.equal(buildSoloSquashBody("Closes #1", [{ messageHeadline: "fix", messageBody: "" }]), "Closes #1");
+  });
+
+  it("anexa trailers de revert dos commits, deduplicados, sem repetir o que o body já tem", () => {
+    const a = "abcdef1234567";
+    const b = "1234567abcdef";
+    const body = buildSoloSquashBody(`Reverte.\nThis reverts commit ${a}.\n`, [
+      { messageBody: `This reverts commit ${a}.` },
+      { messageBody: `This reverts commit ${b}.` },
+      { messageBody: `This reverts commit ${b}.` },
+      { messageHeadline: null, messageBody: 5 },
+    ]);
+    assert.equal(body, `Reverte.\nThis reverts commit ${a}.\n\nThis reverts commit ${b}.`);
+  });
+
+  it("body vazio recebe só os trailers", () => {
+    assert.equal(buildSoloSquashBody("", [{ messageBody: "This reverts commit abcdef1." }]), "This reverts commit abcdef1.");
   });
 });
