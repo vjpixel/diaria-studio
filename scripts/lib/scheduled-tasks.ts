@@ -327,6 +327,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#10941",
   },
   {
+    name: "Diaria-Short-Related-Missed-Alarm",
+    description:
+      "alarma quando a task do vídeo relacionado do Short (#10811, no Neo) não deixou registro na edição do dia depois do prazo (#11353)",
+    steps: [{ key: "alarm", script: "scripts/short-related-missed-alarm.ts" }],
+    logPath: "short-related-missed-alarm/.alarm.log",
+    // Diária 13:30 BRT: o slot mais tardio do teste de horário do vertical é
+    // 12:00 (`publishing.shorts.schedule`, #10831) e a task do Neo desiste
+    // 60 min depois (`SHORT_RELATED_GIVE_UP_MINUTES`) — 13:00, mais 30 min de
+    // folga pra replicação do OneDrive. O prazo exato por edição
+    // (`shortAt + 60 min`) é conferido de novo pela lógica pura; fim de
+    // semana sai `weekend` sem alarmar. Slot livre (nenhuma task às 13:xx).
+    // Só LÊ `data/editions/` — nunca grava na pasta da edição, que é do Neo.
+    schedule: { kind: "daily", hour: 13, minute: 30 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem avaliar (ausencia nao e prova de nao-execucao).",
+    },
+    issue: "#11353",
+  },
+  {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
     description:
       "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
@@ -1178,6 +1199,47 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "shorts/.linkedin-profile-timer-catchup.log",
     schedule: { kind: "interval", hours: 1 },
     issue: "#10982",
+  },
+  {
+    name: "Diaria-Shorts-Instagram",
+    description:
+      "publica o Reels do vertical no Instagram no horário do vertical, pelo upload resumível da Graph API (sem URL pública), com o corte _Instagram_ do Drive (#11265)",
+    steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
+    logPath: "shorts/.instagram-timer.log",
+    // Diária 06:32 BRT (#11265, decisão do editor 27/10/2026: timer no 300 em
+    // vez de R2/túnel): 2 minutos depois do 1º horário do teste do vertical
+    // (#10831, `publishing.shorts.schedule.rotation_times`) — 06:31 já é do
+    // `Diaria-Shorts-LinkedIn-Profile`. Os horários em hora cheia (08:00,
+    // 12:00 e o `default_time`) caem na execução de hora em hora abaixo. O
+    // script só publica depois do horário do vertical (até 3 h de atraso;
+    // depois disso abre alarme), então rodar antes é no-op; o lock O_EXCL
+    // resolve a concorrência entre as duas. Só age com
+    // `publishing.shorts.instagram_backend: "timer-300"`. Mudou um horário do
+    // teste para fora da hora cheia? Ajustar aqui —
+    // `test/shorts-instagram-timer-11265.test.ts` trava o par. Sem
+    // `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153) arma
+    // no 300 depois do merge, como o timer do LinkedIn (#10982).
+    schedule: { kind: "daily", hour: 6, minute: 32 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11265",
+  },
+  {
+    name: "Diaria-Shorts-Instagram-Catchup",
+    description:
+      "de hora em hora: publica o Reels do vertical no Instagram quando o horário do dia é hora cheia (08:00/12:00), baixa o corte do Instagram assim que ele aparece no Drive e avisa o editor quando o Reels não saiu (#11265)",
+    steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
+    logPath: "shorts/.instagram-timer-catchup.log",
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11265",
   },
   {
     name: "Diaria-Threads-Personal-Token",

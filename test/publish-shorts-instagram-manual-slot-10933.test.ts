@@ -20,7 +20,7 @@ const pages: ResolvedFacebookPage[] = [
   { slug: "diaria", enabled: true, pageId: "1", token: "t1", missing: [], utmContent: null },
   { slug: "vjpixel", enabled: false, pageId: "937", token: "tok", missing: [], utmContent: "page-vjpixel" },
 ];
-const shorts = { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] };
+const shorts = { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] };
 
 /**
  * Janela do teste de horário FIXADA no próprio teste (hotfix #10933): nunca

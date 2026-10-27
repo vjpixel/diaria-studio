@@ -64,6 +64,35 @@ export function shortVideoFileName(aammdd: string): string {
   return `diaria-comentada-${aammdd}-short.mp4`;
 }
 
+/**
+ * #11265: o corte do Instagram (`_Instagram_` na pasta `Final/` do Drive,
+ * #11222) baixado na pasta da edição. É o arquivo que o timer do 300
+ * (`scripts/shorts-instagram-timer.ts`) publica pela API; a limpeza do
+ * vertical (#11240) o apaga quando o `instagram` fica registrado como
+ * `published` ou `scheduled` (`send_unknown` mantém o arquivo, pra conferir).
+ */
+export function shortInstagramVideoFileName(aammdd: string): string {
+  return `diaria-comentada-${aammdd}-short-instagram.mp4`;
+}
+
+/**
+ * #11265: quem publica o Reels do Instagram com horário futuro.
+ *   - `timer-300` (default, decisão do editor 27/10/2026): o timer do 300
+ *     (`Diaria-Shorts-Instagram`) roda `publish-shorts.ts --only instagram
+ *     --publish --instagram-timer` no horário do vertical e sobe pelo upload
+ *     resumível da Graph API, sem URL pública. A rodada do `/diaria-shorts`
+ *     devolve `skip_delegated`, como o `linkedin_profile` (#10982).
+ *   - `worker-r2` (#10823, opção antiga): sobe o vertical pro R2 e põe o
+ *     Reels na fila do Worker `diaria-linkedin-cron`. Exige os 5 secrets do
+ *     R2, que não serão criados (o R2 não está habilitado na conta).
+ */
+export const INSTAGRAM_BACKENDS = ["timer-300", "worker-r2"] as const;
+export type InstagramBackend = (typeof INSTAGRAM_BACKENDS)[number];
+
+export function isInstagramBackend(v: unknown): v is InstagramBackend {
+  return typeof v === "string" && (INSTAGRAM_BACKENDS as readonly string[]).includes(v);
+}
+
 /** Registro do que já saiu, por destino (idempotência do `publish-shorts.ts`). */
 export const SHORTS_PUBLISHED_FILE = "_internal/06-shorts-published.json";
 
@@ -312,6 +341,8 @@ export interface ShortsConfig {
    * vídeo, com o registro ainda não sincronizado, duplicariam o post.
    */
   linkedinProfileViaTimer: boolean;
+  /** #11265: quem publica o Reels do Instagram (`InstagramBackend`). */
+  instagramBackend: InstagramBackend;
   /**
    * #11223: Reel no perfil PESSOAL do Facebook (passo guiado no Chrome — a
    * Graph API não publica em perfil). `false` tira o destino do plano: o
@@ -342,6 +373,8 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   youtubeShortsApi: true,
   // #10982: desligado no código; o platform.config.json liga junto com o timer.
   linkedinProfileViaTimer: false,
+  // #11265 (decisão do editor, 27/10/2026): timer no 300, sem R2.
+  instagramBackend: "timer-300",
   // #11223: ligado no código; o platform.config.json pausa durante a viagem.
   facebookProfile: true,
 });
@@ -358,6 +391,7 @@ function defaultShortsConfig(): ShortsConfig {
     threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
     youtubeShortsApi: DEFAULT_SHORTS_CONFIG.youtubeShortsApi,
     linkedinProfileViaTimer: DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer,
+    instagramBackend: DEFAULT_SHORTS_CONFIG.instagramBackend,
     facebookProfile: DEFAULT_SHORTS_CONFIG.facebookProfile,
   };
 }
@@ -396,6 +430,10 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
   }
   const linkedinProfile = optionalBool(raw, "linkedin_profile", DEFAULT_SHORTS_CONFIG.linkedinProfile);
   const linkedinPageRepost = optionalBool(raw, "linkedin_page_repost", DEFAULT_SHORTS_CONFIG.linkedinPageRepost);
+  const backend = raw.instagram_backend ?? DEFAULT_SHORTS_CONFIG.instagramBackend;
+  if (!isInstagramBackend(backend)) {
+    throw new Error(`[shorts] publishing.shorts.instagram_backend precisa ser ${INSTAGRAM_BACKENDS.map((b) => `"${b}"`).join(" ou ")} (#11265).`);
+  }
   if (linkedinPageRepost && !linkedinProfile) {
     throw new Error("[shorts] publishing.shorts.linkedin_page_repost exige linkedin_profile: o repost é do vídeo do perfil (#10772).");
   }
@@ -410,6 +448,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
     youtubeShortsApi: optionalBool(raw, "youtube_shorts_api", DEFAULT_SHORTS_CONFIG.youtubeShortsApi),
     linkedinProfileViaTimer: optionalBool(raw, "linkedin_profile_via_timer", DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer),
+    instagramBackend: backend,
     facebookProfile: optionalBool(raw, "facebook_profile", DEFAULT_SHORTS_CONFIG.facebookProfile),
   };
 }
@@ -609,7 +648,8 @@ export interface ShortSlot {
   /** HH:MM BRT. */
   hhmm: string;
   /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
-  rule: "test-schedule" | SlotRule;
+  /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
+  rule: "test-schedule" | "timer-300" | SlotRule;
   premise: string;
   warning?: string;
 }

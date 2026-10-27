@@ -43,6 +43,9 @@ describe("findRawPrReviewComment (#11300)", () => {
     assert.equal(find(`gh pr review 11285 --comment -b "self-review: 4 findings"`), "pr-review");
     assert.equal(find(`gh pr -R o/r review 5 -c -b x`), "pr-review");
     assert.equal(find(`gh pr review 5 --approve`), null);
+    assert.equal(find(`gh pr review 5 --approve --body -correcao`), null);
+    assert.equal(find(`gh pr review 5 --approve --body-file -comentarios`), null);
+    assert.equal(find(`gh pr review 5 --body -correcao --comment`), "pr-review");
   });
   it("leitura (GET) e outros endpoints → passa", () => {
     assert.equal(find(`gh api repos/o/r/pulls/5/comments`), null);
@@ -61,16 +64,16 @@ describe("findRawPrReviewComment (#11300)", () => {
   });
 });
 
-describe("shouldBlockRawPrReviewComment — escopo dev-* (#11300)", () => {
+describe("shouldBlockRawPrReviewComment — todas as sessões (#11331)", () => {
   const cmd = `gh api repos/o/r/pulls/5/comments -f body=x`;
   it("dev-implementador, dev-fixer e dev-revisor → bloqueia", () => {
     for (const agent_type of ["dev-implementador", "dev-fixer", "dev-revisor"]) {
       assert.equal(shouldBlock({ tool_name: "Bash", agent_type, tool_input: { command: cmd } }), "rest", agent_type);
     }
   });
-  it("sem agent_type (sessão principal/coordenador) ou outro agent → não bloqueia", () => {
-    assert.equal(shouldBlock({ tool_name: "Bash", tool_input: { command: cmd } }), null);
-    assert.equal(shouldBlock({ tool_name: "Bash", agent_type: "general-purpose", tool_input: { command: cmd } }), null);
+  it("sem agent_type (coordenador) ou outro agent → bloqueia", () => {
+    assert.equal(shouldBlock({ tool_name: "Bash", tool_input: { command: cmd } }), "rest");
+    assert.equal(shouldBlock({ tool_name: "Bash", agent_type: "general-purpose", tool_input: { command: cmd } }), "rest");
     assert.equal(shouldBlock({ tool_name: "Edit", agent_type: "dev-fixer", tool_input: { command: cmd } }), null);
   });
 });
@@ -84,6 +87,17 @@ describe("hook block-raw-pr-review-comment.mjs (processo)", () => {
     assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
     assert.equal(out.hookSpecificOutput.permissionDecisionReason, RAW_PR_REVIEW_COMMENT_BLOCK_REASON);
     assert.match(RAW_PR_REVIEW_COMMENT_BLOCK_REASON, /gh-pr-review-api\.ts comment/);
+  });
+  it("nega no processo sem metadados de agente (#11331)", () => {
+    for (const command of [
+      "gh api repos/o/r/pulls/5/comments -f body=x",
+      "gh pr review 5 --comment --body x",
+      "gh api graphql -f 'query=mutation { addPullRequestReview(input: {}) { clientMutationId } }'",
+    ]) {
+      const r = run({ tool_name: "Bash", tool_input: { command } });
+      assert.equal(r.status, 0);
+      assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
+    }
   });
   it("silencioso pra comando legítimo e fail-open em JSON inválido", () => {
     assert.equal(run({ tool_name: "Bash", agent_type: "dev-fixer", tool_input: { command: "gh pr view 5" } }).stdout, "");

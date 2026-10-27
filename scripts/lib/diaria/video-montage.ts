@@ -586,34 +586,6 @@ export function clockTime(s: number): string {
   return `${String(m).padStart(2, "0")}:${r.toFixed(1).padStart(4, "0")}`;
 }
 
-const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
-
-/**
- * Tabela da decupagem para o Google Doc do gate 1: tempo, fala, sugestão,
- * decisão (em branco, o editor preenche). Tomadas repetidas aparecem lado a
- * lado, com a sugestão na última completa.
- */
-export function decupagemMarkdown(edition: string, segments: Segment[], groups: TakeGroup[]): string {
-  const lines = [
-    `# Decupagem ${edition}`,
-    "",
-    "Sugestão: a última tomada completa de cada frase. Decisão: usar, descartar, ou o bloco (titulo, abertura, resumo, resumo_curto, comentario, cta_yt, cta_ig, cta_out, fecho).",
-    "",
-    "| # | Tempo | Fala | Sugestão | Decisão |",
-    "|---|---|---|---|---|",
-  ];
-  let n = 0;
-  for (const g of groups) {
-    for (const i of g.segments) {
-      n++;
-      const s = segments[i];
-      const sug = g.segments.length === 1 ? "usar" : i === g.suggested ? `usar (tomada ${g.segments.indexOf(i) + 1} de ${g.segments.length})` : "descartar (tomada repetida)";
-      lines.push(`| ${n} | ${clockTime(s.start)}–${clockTime(s.end)} | ${cell(s.text)} | ${sug} |  |`);
-    }
-  }
-  return lines.join("\n") + "\n";
-}
-
 // ── Blocos e sequências ───────────────────────────────────────────────────
 
 /** Blocos conhecidos do roteiro (#11208). Nenhuma versão leva "Por que isso importa?" (editor, 26/10/2026). */
@@ -1584,29 +1556,3 @@ export function previewClipArgs(input: {
 /** Estilo da legenda queimada na prévia (o da 261027). */
 export const PREVIEW_SUBTITLE_STYLE =
   "FontName=Arial,FontSize=10,PrimaryColour=&H00FFFFFF,BackColour=&H40201A10,BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=100";
-
-/** Roteiro das versões, em markdown, para o Google Doc do gate 2. */
-export function roteiroMarkdown(edition: string, plans: SequencePlan[], resolved: Partial<Record<BlockKey, ResolvedItem[]>>, fps: number): string {
-  const lines = [`# Roteiro final ${edition} (${plans.length} versões)`, "", "Nenhuma versão leva \"Por que isso importa?\" (decisão do editor, 26/10/2026).", ""];
-  for (const p of plans) {
-    const dur = p.durationFrames / fps;
-    lines.push(`## ${p.spec.name} (${p.spec.width}x${p.spec.height}, ${clockTime(dur)})`, "");
-    for (const key of p.spec.order) {
-      const items = resolved[key];
-      if (!items?.length) {
-        lines.push(`- **${key}**: (falta no blocks.json)`);
-        continue;
-      }
-      const secs = p.clips.filter((c) => c.block === key).reduce((acc, c) => acc + (c.frameOut - c.frameIn) / fps, 0);
-      const takes = items.map((it) => (it.how === "take" ? `tomada ${it.take}/${it.completeTakes}` : `${clockTime(it.interval.start)}–${clockTime(it.interval.end)}`)).join(", ");
-      lines.push(`- **${key}** (${secs.toFixed(1)} s; ${takes}): ${items.map((it) => it.text).join(" ")}`);
-      // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
-      items.forEach((it, i) => {
-        if (it.heard !== undefined) lines.push(`  - **fala difere** ${key}[${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`);
-      });
-    }
-    if (p.missingBlocks.length) lines.push("", `Faltam no blocks.json: ${p.missingBlocks.join(", ")}.`);
-    lines.push("");
-  }
-  return lines.join("\n");
-}

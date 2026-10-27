@@ -24,7 +24,6 @@ import {
   mergeSplitNumberTokens,
   resolveBlocks,
   reviewPreview,
-  roteiroMarkdown,
   segmentCues,
   silenceNoiseDb,
   wordCoveredBySilence,
@@ -32,6 +31,7 @@ import {
   type SequenceSpec,
   type Word,
 } from "../scripts/lib/diaria/video-montage.ts";
+import { roteiroMarkdown } from "../scripts/lib/diaria/video-montage-docs.ts";
 import { parseSilenceDbArg, planHashOf } from "../scripts/video-montagem.ts";
 
 function say(text: string, t0: number, dur = 0.3, gap = 0.05): Word[] {
@@ -92,7 +92,7 @@ describe("#11362: frase curta não casa com a tomada de outra frase", () => {
     assert.match(res.warnings.join("\n"), /resumo\[0\]: a fala ouvida difere/);
     const plan = buildSequencePlan(SPEC, res.blocks, [], { fps: 30, durationS: 10 });
     const md = roteiroMarkdown("261028", [plan], res.blocks, 30);
-    assert.match(md, /\*\*fala difere\*\* resumo\[0\], ouvido: "O Google pode o seu Gmail\." \(pedido: "O Google pode usar o seu Gmail\."\)/);
+    assert.match(md, /\*\*fala difere\*\* \S+ \[0\], ouvido: "O Google pode o seu Gmail\." \(pedido: "O Google pode usar o seu Gmail\."\)/);
   });
 
   it("fala igual ao pedido (acento, 'pra', GPT 5 × GPT-5) não marca diferença", () => {

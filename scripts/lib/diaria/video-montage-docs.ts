@@ -1,0 +1,403 @@
+/**
+ * scripts/lib/diaria/video-montage-docs.ts (#11361) — o Markdown dos dois Docs
+ * da `/diaria-video-montagem`: a decupagem (gate 1) e o roteiro final (gate 2),
+ * no formato que o editor aprovou nos Docs feitos à mão na 261027.
+ *
+ * Decupagem: uma tabela por bloco do roteiro (`Tempo | Fala | Sugestão |
+ * Decisão`), curada — só as tomadas da fala; os bastidores e falsos começos
+ * ficam agrupados em linhas "cortar (bastidor)" —, sugestão com motivo, texto
+ * limpo (vocabulário aplicado), coluna Decisão em branco para o editor, e
+ * "Montagem sugerida" por versão com os timecodes do bruto.
+ *
+ * A classificação (qual segmento é de qual bloco, qual tomada usar e por quê)
+ * é julgamento: quem a faz é a skill, lendo a transcrição, e grava o
+ * `decupagem-plan.json`. Este módulo valida o plano e monta o Markdown; os
+ * tempos saem sempre do transcript, nunca do plano.
+ *
+ * Roteiro final: uma tabela por versão (`Bloco | Fala | Bruto`), a duração no
+ * título da seção, texto integral de cada bloco com o timecode do bruto, um
+ * parágrafo inicial dizendo o que muda entre as versões, e as tomadas que
+ * ficam para quem finaliza escolher como linhas "opção A/B" no bloco.
+ */
+
+import {
+  BLOCK_KEYS,
+  clockTime,
+  defaultSequences,
+  groupTakes,
+  isBlockKey,
+  validateVocabRules,
+  type BlockKey,
+  type ResolvedItem,
+  type Segment,
+  type SequencePlan,
+  type SequenceSpec,
+  type SequenceTarget,
+  type VocabRule,
+} from "./video-montage.ts";
+
+// ── Rótulos ───────────────────────────────────────────────────────────────
+
+/** Nome de cada bloco nos Docs. */
+export const BLOCK_LABELS: Readonly<Record<BlockKey, string>> = {
+  titulo: "Título",
+  abertura: "Abertura",
+  resumo: "Resumo",
+  resumo_curto: "Resumo curto",
+  comentario: "Comentário",
+  cta_yt: "CTA YouTube",
+  cta_ig: "CTA Instagram",
+  cta_out: "CTA outras redes",
+  fecho: "Encerramento",
+};
+
+const TARGET_LABELS: Readonly<Record<SequenceTarget, string>> = {
+  youtube: "Horizontal YouTube",
+  instagram: "Vertical Instagram",
+  "outras-redes": "Vertical outras redes",
+};
+
+/** "Horizontal YouTube 1920x1080" etc. */
+export function versionLabel(spec: SequenceSpec): string {
+  return `${TARGET_LABELS[spec.target]} ${spec.width}x${spec.height}`;
+}
+
+/** Célula de tabela Markdown: sem `|` cru nem quebra de linha. */
+export const mdCell = (s: string): string => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+
+const span = (start: number, end: number) => `${clockTime(start)}–${clockTime(end)}`;
+
+/** Vocabulário aplicado a um texto de exibição (regra a regra, como nas legendas; aqui o número de palavras pode mudar). */
+export function applyVocabularyToText(text: string, rules: VocabRule[], target?: SequenceTarget): string {
+  let out = text;
+  for (const r of rules) {
+    if (r.targets && (!target || !r.targets.includes(target))) continue;
+    out = out.replace(new RegExp(r.pattern, r.flags ?? "g"), r.replacement);
+  }
+  return out;
+}
+
+// ── Plano da decupagem (`decupagem-plan.json`) ────────────────────────────
+
+export type DecupagemSuggestion = "usar" | "cortar" | "alternativa";
+const SUGGESTIONS: readonly DecupagemSuggestion[] = ["usar", "cortar", "alternativa"];
+
+export interface DecupagemRow {
+  /** Segmentos do transcript (numeração 1-based da listagem), consecutivos ou não; juntos formam a fala da linha. */
+  segments: number[];
+  suggestion: DecupagemSuggestion;
+  /** O motivo ("2ª tomada", "título antigo", "tropeço no meio"). Obrigatório em cortar/alternativa. */
+  reason?: string;
+  /** Texto limpo da fala, quando o do Whisper não serve ("PNI" → "PIB"). Sem ele, o do transcript com o vocabulário. */
+  text?: string;
+}
+
+export interface DecupagemBlock {
+  key: BlockKey;
+  rows: DecupagemRow[];
+}
+
+export interface DecupagemPlan {
+  edition: string;
+  /** Na ordem em que aparecem no Doc (a 261027: abertura, título, resumo, comentário, CTAs, encerramento). */
+  blocks: DecupagemBlock[];
+  /** Termos só desta edição, somados aos de `context/video-montagem/vocabulario.json`. */
+  vocabulary?: VocabRule[];
+}
+
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+
+/**
+ * Valida o plano contra o transcript, juntando todos os erros: bloco conhecido
+ * e não repetido, segmento existente e em uma linha só, sugestão conhecida,
+ * motivo em cortar/alternativa. Chaves que começam com `_` (as notas do molde)
+ * são ignoradas.
+ */
+export function parseDecupagemPlan(raw: unknown, segmentCount: number): { ok: true; plan: DecupagemPlan } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+  if (!isObj(raw)) return { ok: false, errors: ["decupagem-plan.json precisa ser um objeto"] };
+  if (typeof raw.edition !== "string" || !/^\d{6}$/.test(raw.edition)) errors.push("edition precisa ser AAMMDD");
+  const seenSeg = new Map<number, string>();
+  const seenKey = new Set<string>();
+  let used = 0;
+  if (!Array.isArray(raw.blocks)) errors.push("blocks precisa ser uma lista de { key, rows }");
+  else {
+    raw.blocks.forEach((b, i) => {
+      const where = `blocks[${i}]`;
+      if (!isObj(b)) return void errors.push(`${where}: precisa ser objeto`);
+      if (typeof b.key !== "string" || !isBlockKey(b.key)) return void errors.push(`${where}: key "${String(b.key)}" desconhecida (válidas: ${BLOCK_KEYS.join(", ")})`);
+      if (seenKey.has(b.key)) errors.push(`${where}: bloco ${b.key} repetido`);
+      seenKey.add(b.key);
+      if (!Array.isArray(b.rows)) return void errors.push(`${where} (${b.key}): rows precisa ser lista`);
+      b.rows.forEach((r, j) => {
+        const label = `${b.key}.rows[${j}]`;
+        if (!isObj(r)) return void errors.push(`${label}: precisa ser objeto`);
+        if (!Array.isArray(r.segments) || r.segments.length === 0) errors.push(`${label}: segments precisa listar ao menos 1 segmento`);
+        else {
+          for (const s of r.segments) {
+            if (!Number.isInteger(s) || (s as number) < 1 || (s as number) > segmentCount) {
+              errors.push(`${label}: segmento ${String(s)} fora de 1..${segmentCount}`);
+              continue;
+            }
+            const prev = seenSeg.get(s as number);
+            if (prev) errors.push(`${label}: segmento ${s} já está em ${prev}`);
+            else seenSeg.set(s as number, label);
+            used++;
+          }
+        }
+        if (typeof r.suggestion !== "string" || !SUGGESTIONS.includes(r.suggestion as DecupagemSuggestion)) {
+          errors.push(`${label}: suggestion precisa ser ${SUGGESTIONS.join(", ")}`);
+        } else if (r.suggestion !== "usar" && (typeof r.reason !== "string" || !r.reason.trim())) {
+          errors.push(`${label}: ${r.suggestion} precisa de reason (o motivo vai na coluna Sugestão)`);
+        }
+        if (r.reason !== undefined && typeof r.reason !== "string") errors.push(`${label}: reason precisa ser string`);
+        if (r.text !== undefined && (typeof r.text !== "string" || !r.text.trim())) errors.push(`${label}: text, se presente, não pode ser vazio`);
+      });
+    });
+  }
+  if (Array.isArray(raw.blocks) && used === 0 && errors.length === 0) errors.push("nenhum segmento classificado: o plano precisa de ao menos uma linha");
+  errors.push(...validateVocabRules(raw.vocabulary, "vocabulary"));
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, plan: raw as unknown as DecupagemPlan };
+}
+
+/** Lista numerada dos segmentos (1-based), com as tomadas repetidas apontadas: o insumo da classificação. */
+export function segmentListing(segments: Segment[]): string {
+  const hint = takeHints(segments);
+  const lines = segments.map((s, i) => `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${hint[i] ? `  (${hint[i]})` : ""}`);
+  return lines.join("\n") + "\n";
+}
+
+/** Por segmento: "tomada k de n" quando é tomada repetida de uma frase (`groupTakes`), com a sugerida marcada. */
+function takeHints(segments: Segment[]): string[] {
+  const out = segments.map(() => "");
+  for (const g of groupTakes(segments)) {
+    if (g.segments.length < 2) continue;
+    g.segments.forEach((i, k) => {
+      out[i] = `tomada ${k + 1} de ${g.segments.length}${i === g.suggested ? ", a última completa" : ""}`;
+    });
+  }
+  return out;
+}
+
+/** Ordinal da tomada do segmento no grupo de repetições ("2ª tomada"), ou null se a frase saiu uma vez só. */
+function takeOrdinal(segments: Segment[], index0: number): string | null {
+  const g = groupTakes(segments).find((x) => x.segments.includes(index0));
+  if (!g || g.segments.length < 2) return null;
+  return `${g.segments.indexOf(index0) + 1}ª tomada`;
+}
+
+/** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */
+export function decupagemPlanTemplate(edition: string, segments: Segment[]): Record<string, unknown> {
+  const hint = takeHints(segments);
+  return {
+    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou.",
+    _segmentos: segments.map((s, i) => `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${hint[i] ? `  (${hint[i]})` : ""}`),
+    edition,
+    blocks: BLOCK_KEYS.map((key) => ({ key, rows: [] })),
+    vocabulary: [],
+  };
+}
+
+export interface DecupagemTableRow {
+  start: number;
+  end: number;
+  fala: string;
+  sugestao: string;
+  /** Linha de bastidor (segmentos fora de toda linha do plano). */
+  bastidor: boolean;
+  /** A sugestão crua (bastidor = cortar). */
+  suggestion: DecupagemSuggestion;
+  segments: number[];
+}
+
+export interface DecupagemDoc {
+  blocks: Array<{ key: BlockKey; rows: DecupagemTableRow[] }>;
+}
+
+const BASTIDOR_SNIPPET = 70;
+
+/**
+ * Monta as linhas de cada bloco: as do plano (texto limpo, sugestão com
+ * motivo; "usar" sem motivo ganha o da tomada, "2ª tomada", quando a frase saiu
+ * mais de uma vez) e os bastidores. Cada sequência contígua de segmentos fora
+ * do plano vira UMA linha "cortar (bastidor)" no bloco da fala seguinte (o
+ * falso começo vem antes da tomada boa); depois da última fala, no bloco da
+ * anterior. Dentro do bloco, as linhas ficam em ordem de tempo.
+ */
+export function buildDecupagemDoc(plan: DecupagemPlan, segments: Segment[], rules: VocabRule[] = []): DecupagemDoc {
+  const allRules = [...rules, ...(plan.vocabulary ?? [])];
+  const owner = new Map<number, BlockKey>();
+  const out = plan.blocks.map((b) => ({ key: b.key, rows: [] as DecupagemTableRow[] }));
+  const byKey = new Map(out.map((b) => [b.key, b]));
+  for (const b of plan.blocks) {
+    for (const r of b.rows) {
+      const segs = [...r.segments].sort((x, y) => x - y);
+      for (const s of segs) owner.set(s, b.key);
+      const ss = segs.map((s) => segments[s - 1]);
+      const raw = r.text ?? ss.map((s) => s.text.trim()).join(" ");
+      let reason = r.reason?.trim();
+      if (!reason && r.suggestion === "usar" && segs.length === 1) reason = takeOrdinal(segments, segs[0] - 1) ?? undefined;
+      byKey.get(b.key)!.rows.push({
+        start: Math.min(...ss.map((s) => s.start)),
+        end: Math.max(...ss.map((s) => s.end)),
+        fala: applyVocabularyToText(raw, allRules),
+        sugestao: reason ? `${r.suggestion} (${reason})` : r.suggestion,
+        bastidor: false,
+        suggestion: r.suggestion,
+        segments: segs,
+      });
+    }
+  }
+  // Bastidores: sequências contíguas de segmentos sem dono.
+  const owned = [...owner.keys()].sort((a, b) => a - b);
+  let i = 1;
+  while (i <= segments.length) {
+    if (owner.has(i)) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 <= segments.length && !owner.has(j + 1)) j++;
+    const next = owned.find((n) => n > j);
+    const prev = [...owned].reverse().find((n) => n < i);
+    const key = owner.get((next ?? prev)!)!;
+    const run = segments.slice(i - 1, j);
+    const joined = run.map((s) => s.text.trim()).join(" ");
+    const snippet = joined.length > BASTIDOR_SNIPPET ? `${joined.slice(0, BASTIDOR_SNIPPET).trimEnd()}…` : joined;
+    const n = j - i + 1;
+    byKey.get(key)!.rows.push({
+      start: run[0].start,
+      end: run[run.length - 1].end,
+      fala: `${snippet}${n > 1 ? ` (${n} trechos)` : ""}`,
+      sugestao: "cortar (bastidor)",
+      bastidor: true,
+      suggestion: "cortar",
+      segments: Array.from({ length: n }, (_, k) => i + k),
+    });
+    i = j + 1;
+  }
+  for (const b of out) b.rows.sort((x, y) => x.start - y.start || x.end - y.end);
+  return { blocks: out };
+}
+
+/**
+ * O Doc da decupagem ("Transcrição vídeo {AAMMDD} (decupagem)"): uma tabela
+ * por bloco, Decisão em branco, e no fim a "Montagem sugerida" de cada versão
+ * (as linhas "usar" na ordem da sequência, com os timecodes do bruto).
+ */
+export function decupagemMarkdown(edition: string, doc: DecupagemDoc, sequences: SequenceSpec[] = defaultSequences()): string {
+  const lines = [
+    `# Transcrição vídeo ${edition} (decupagem)`,
+    "",
+    "Uma tabela por bloco do roteiro, com os tempos do bruto. A sugestão traz o motivo; bastidores e falsos começos estão agrupados em \"cortar (bastidor)\". A coluna Decisão fica para o editor: usar, cortar, ou outro bloco.",
+    "",
+  ];
+  for (const b of doc.blocks) {
+    if (b.rows.length === 0) continue;
+    lines.push(`## ${BLOCK_LABELS[b.key]}`, "", "| Tempo | Fala | Sugestão | Decisão |", "|---|---|---|---|");
+    for (const r of b.rows) lines.push(`| ${span(r.start, r.end)} | ${mdCell(r.fala)} | ${mdCell(r.sugestao)} |  |`);
+    lines.push("");
+  }
+  lines.push("## Montagem sugerida", "", "Só as linhas com sugestão \"usar\", na ordem de cada versão. A duração soma os trechos do bruto, antes de tirar os silêncios.", "");
+  const byKey = new Map(doc.blocks.map((b) => [b.key, b]));
+  for (const spec of sequences) {
+    const rowsFor = (k: BlockKey) => (byKey.get(k)?.rows ?? []).filter((r) => !r.bastidor && r.suggestion === "usar");
+    const total = spec.order.flatMap(rowsFor).reduce((acc, r) => acc + (r.end - r.start), 0);
+    lines.push(`### ${versionLabel(spec)}: ${spec.name} (~${clockTime(total)})`, "", "| Bloco | Trechos do bruto |", "|---|---|");
+    for (const k of spec.order) {
+      const rows = rowsFor(k);
+      lines.push(`| ${BLOCK_LABELS[k]} | ${rows.length ? rows.map((r) => span(r.start, r.end)).join(", ") : "(nenhuma tomada com \"usar\")"} |`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Molde do `blocks.json` a partir da decupagem: cada fala "usar" vira um
+ * INTERVALO explícito no bruto (os tempos dos segmentos da linha) com o texto
+ * limpo. Frase solta não serviria: o `roteiro` casaria a ÚLTIMA tomada
+ * completa, que pode ser justo a cortada ou a alternativa da mesma frase.
+ */
+export function blocksFromDecupagem(doc: DecupagemDoc): Record<BlockKey, Array<{ start: number; end: number; text: string }>> {
+  const out = Object.fromEntries(BLOCK_KEYS.map((k) => [k, [] as Array<{ start: number; end: number; text: string }>])) as Record<
+    BlockKey,
+    Array<{ start: number; end: number; text: string }>
+  >;
+  for (const b of doc.blocks) for (const r of b.rows) if (!r.bastidor && r.suggestion === "usar") out[b.key].push({ start: r.start, end: r.end, text: r.fala });
+  return out;
+}
+
+/** As linhas "alternativa" da decupagem, por bloco: viram as opções B, C… do roteiro final. */
+export function alternativesFromDecupagem(doc: DecupagemDoc): Partial<Record<BlockKey, Array<{ start: number; end: number; text: string }>>> {
+  const out: Partial<Record<BlockKey, Array<{ start: number; end: number; text: string }>>> = {};
+  for (const b of doc.blocks) {
+    const alts = b.rows.filter((r) => r.suggestion === "alternativa");
+    if (alts.length) out[b.key] = alts.map((r) => ({ start: r.start, end: r.end, text: r.fala }));
+  }
+  return out;
+}
+
+// ── Roteiro final (gate 2) ────────────────────────────────────────────────
+
+/** O parágrafo inicial: o que é comum às versões e o que só uma (ou algumas) leva. */
+export function versionsDiffParagraph(specs: SequenceSpec[]): string {
+  if (specs.length < 2) return "";
+  const common = BLOCK_KEYS.filter((k) => specs.every((s) => s.order.includes(k)));
+  const parts = [`Comum às ${specs.length} versões: ${common.length ? common.map((k) => BLOCK_LABELS[k]).join(", ") : "nenhum bloco"}.`];
+  for (const s of specs) {
+    const own = s.order.filter((k) => !common.includes(k));
+    if (own.length) parts.push(`${TARGET_LABELS[s.target]} leva ainda ${own.map((k) => BLOCK_LABELS[k]).join(", ")}.`);
+  }
+  return parts.join(" ");
+}
+
+const LETTERS = "ABCDEFGH";
+
+/**
+ * O Doc do roteiro final ("Roteiro final {AAMMDD} (3 versões)"): uma tabela
+ * por versão (`Bloco | Fala | Bruto`), duração da versão no título, texto
+ * integral de cada item com o timecode do bruto e a tomada. Bloco com tomadas
+ * alternativas (as "alternativa" da decupagem) mostra a escolhida como
+ * "opção A" e as outras como linhas extras "opção B", "opção C".
+ */
+export function roteiroMarkdown(
+  edition: string,
+  plans: SequencePlan[],
+  resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
+  fps: number,
+  opts: { alternatives?: Partial<Record<BlockKey, Array<{ start: number; end: number; text: string }>>> } = {},
+): string {
+  const lines = [`# Roteiro final ${edition} (${plans.length} versões)`, ""];
+  const diff = versionsDiffParagraph(plans.map((p) => p.spec));
+  if (diff) lines.push(diff, "");
+  lines.push("Nenhuma versão leva \"Por que isso importa?\" (decisão do editor, 26/10/2026).", "");
+  for (const p of plans) {
+    lines.push(`## ${versionLabel(p.spec)}: ${p.spec.name} (${clockTime(p.durationFrames / fps)})`, "", "| Bloco | Fala | Bruto |", "|---|---|---|");
+    for (const key of p.spec.order) {
+      const items = resolved[key];
+      const label = BLOCK_LABELS[key];
+      if (!items?.length) {
+        lines.push(`| ${label} | (falta no blocks.json) |  |`);
+        continue;
+      }
+      const secs = p.clips.filter((c) => c.block === key).reduce((acc, c) => acc + (c.frameOut - c.frameIn) / fps, 0);
+      const alts = opts.alternatives?.[key] ?? [];
+      items.forEach((it, i) => {
+        const head = i === 0 ? `${label}${alts.length ? ", opção A" : ""} (${secs.toFixed(1)} s)` : "";
+        const bruto = span(it.interval.start, it.interval.end) + (it.how === "take" ? ` (tomada ${it.take} de ${it.completeTakes})` : "");
+        lines.push(`| ${mdCell(head)} | ${mdCell(it.text)} | ${bruto} |`);
+      });
+      alts.forEach((a, k) => lines.push(`| ${mdCell(`${label}, opção ${LETTERS[k + 1] ?? k + 2}`)} | ${mdCell(a.text)} | ${span(a.start, a.end)} |`));
+    }
+    // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
+    const differs = p.spec.order.flatMap((key) =>
+      (resolved[key] ?? []).flatMap((it, i) => (it.heard !== undefined ? [`- **fala difere** ${BLOCK_LABELS[key]} [${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`] : [])),
+    );
+    if (differs.length) lines.push("", ...differs);
+    if (p.missingBlocks.length) lines.push("", `Faltam no blocks.json: ${p.missingBlocks.map((k) => BLOCK_LABELS[k]).join(", ")}.`);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
