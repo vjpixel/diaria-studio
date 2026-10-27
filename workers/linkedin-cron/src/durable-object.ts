@@ -59,13 +59,14 @@ export interface DoStoredPayload {
  * Protocol interno (fetch ao DO):
  *   POST /arm     body: DoStoredPayload + { scheduledAtMs: number }
  *                 → persiste payload, agenda alarm, retorna { armed: true }
- *                 → 409 { armed: false, fired: true } se o DO já disparou (#10992)
+ *                 → 409 { armed: false, fired: true, send_unknown? } se o DO já disparou ou terminou ambíguo (#10992, #11238)
  *                 → 409 { armed: false, claiming: true } durante claim ativo (#11035)
  *                 → apaga `reels_container` se o conteúdo mudou (#11024)
  *   GET  /idem    → { queue_key: string | null } — só no DO-índice `idem:{uuid}` (#10992)
  *   POST /idem    body: { queue_key } → grava a queue key atual da chave idempotente
  *   POST /cancel  → cancela alarm, limpa storage (para DELETE /queue/:key)
  *                 → body { if_not_claiming: true }: 409 { cancelled: false, claiming: true } durante claim ativo (#11107)
+ *                 → body { if_not_claiming: true }: 409 { cancelled: false, fired: true, send_unknown? } se já disparou/ambíguo (#11215, #11238)
  *                 → com replacement_token + replacement_entry, reserva claiming até /arm do dono ou /release-replacement (#11133)
  *   POST /release-replacement body: { replacement_token } → libera apenas a reserva correspondente
  *   GET  /status  → retorna { fired: boolean; claiming: boolean; claimed_at: number | null; send_unknown: string | null } (consultado por fireDueItems; send_unknown #11106)
@@ -77,6 +78,42 @@ export interface DoStoredPayload {
  *                   Implementa exactly-once entre cron↔alarm (#2219 bug 2).
  *                   (#2230 bug 3) alarm() usa tryClaim() DIRETAMENTE — não via self-fetch.
  */
+
+/**
+ * #11238 — estado terminal de um DO: disparou (`fired`) ou terminou num envio
+ * ambíguo (`send_unknown`, #11106). `null` = ainda pode disparar.
+ *
+ * Fonte única do critério para `/arm`, `/claim`, `tryClaim()` e `/cancel`:
+ * cada um checava do seu jeito (só `/cancel` olhava `send_unknown`), e se
+ * `send_unknown` passasse a ser gravado sem `fired` eles divergiriam — o
+ * `/arm` re-armaria e o `/claim` entregaria o claim de um post que pode já
+ * ter saído. `send_unknown` vem antes de `fired` no retorno: o chamador
+ * precisa saber que o post PODE não ter saído (não é prova de publicação).
+ */
+export type FiredOrAmbiguous =
+  | { kind: "send_unknown"; reason: string }
+  | { kind: "fired" };
+
+export async function firedOrAmbiguous(storage: Pick<DurableObjectStorage, "get">): Promise<FiredOrAmbiguous | null> {
+  const sendUnknown = await storage.get<string>("send_unknown");
+  if (sendUnknown !== undefined && sendUnknown !== null) return { kind: "send_unknown", reason: String(sendUnknown) };
+  if ((await storage.get<boolean>("fired")) === true) return { kind: "fired" };
+  return null;
+}
+
+export async function isFiredOrAmbiguous(storage: Pick<DurableObjectStorage, "get">): Promise<boolean> {
+  return (await firedOrAmbiguous(storage)) !== null;
+}
+
+/** Corpo do 409 de `/arm`/`/cancel` para um DO terminal (#11238). */
+function terminalConflictBody(state: FiredOrAmbiguous, base: Record<string, unknown>): string {
+  return JSON.stringify({
+    ...base,
+    fired: true,
+    ...(state.kind === "send_unknown" && { send_unknown: state.reason }),
+  });
+}
+
 export class LinkedInScheduler {
   private state: DurableObjectState;
 
@@ -97,8 +134,7 @@ export class LinkedInScheduler {
   async tryClaim(): Promise<boolean> {
     return this.state.blockConcurrencyWhile(async () => {
       const alreadyClaiming = await this.state.storage.get<boolean>("claiming");
-      const alreadyFired = await this.state.storage.get<boolean>("fired");
-      if (alreadyFired) return false;
+      if (await isFiredOrAmbiguous(this.state.storage)) return false; // #11238
       if (alreadyClaiming) {
         // Verificar se o claim expirou (crash mid-flight sem release)
         const claimedAt = await this.state.storage.get<number>("claimed_at");
@@ -124,8 +160,10 @@ export class LinkedInScheduler {
         // mas `tryClaim()` devolve false com `fired=true` e nada é publicado —
         // responder 200 aqui fazia o enqueue devolver 202 `alarm_armed: true`
         // para um post que nunca sai. 409 deixa o caller dizer isso ao cliente.
-        if ((await this.state.storage.get<boolean>("fired")) === true) {
-          return new Response(JSON.stringify({ armed: false, fired: true }), {
+        // #11238 — mesmo critério de `/claim`/`/cancel` (`isFiredOrAmbiguous`).
+        const terminal = await firedOrAmbiguous(this.state.storage);
+        if (terminal !== null) {
+          return new Response(terminalConflictBody(terminal, { armed: false }), {
             status: 409,
             headers: { "Content-Type": "application/json" },
           });
@@ -197,10 +235,11 @@ export class LinkedInScheduler {
           // não é cancelado. O `deleteAll` apagaria esses marcadores, a
           // reserva (#11133) e o `/arm` seguinte armariam o conteúdo novo e
           // o slot sairia 2 vezes.
-          const fired = (await this.state.storage.get<boolean>("fired")) === true;
-          const sendUnknown = await this.state.storage.get<string>("send_unknown");
-          if (fired || sendUnknown !== undefined) {
-            return new Response(JSON.stringify({ cancelled: false, fired: true }), {
+          // #11238 — o body leva `send_unknown` quando o envio foi ambíguo:
+          // `fired: true` sozinho fazia o cliente ler "o post saiu".
+          const terminal = await firedOrAmbiguous(this.state.storage);
+          if (terminal !== null) {
+            return new Response(terminalConflictBody(terminal, { cancelled: false }), {
               status: 409,
               headers: { "Content-Type": "application/json" },
             });
@@ -276,8 +315,7 @@ export class LinkedInScheduler {
     if (url.pathname === "/claim" && request.method === "POST") {
       const claimed = await this.state.blockConcurrencyWhile(async () => {
         const alreadyClaiming = await this.state.storage.get<boolean>("claiming");
-        const alreadyFired = await this.state.storage.get<boolean>("fired");
-        if (alreadyFired) return false;
+        if (await isFiredOrAmbiguous(this.state.storage)) return false; // #11238
         if (alreadyClaiming) {
           // Verificar se o claim expirou (crash mid-flight sem release)
           const claimedAt = await this.state.storage.get<number>("claimed_at");
