@@ -445,12 +445,12 @@ npx tsx scripts/schedule-daily-brevo.ts \
   --scheduled-at {scheduled_at_iso}
 ```
 
-O script faz PUT `/emailCampaigns/{id}` (`scheduledAt`) e SÓ declara sucesso depois de um GET de verificação confirmar o `scheduledAt` de volta — mesmo padrão de `verify-scheduled-post.ts` pro Beehiiv. Uma campanha Brevo agendada é **imutável** — não há re-tentativa automática além do retry HTTP já embutido em `brevoPut`/`brevoGetCampaign`.
+O script faz PUT `/emailCampaigns/{id}` (`scheduledAt`) e SÓ declara sucesso depois de um GET de verificação confirmar o `scheduledAt` de volta — mesmo padrão de `verify-scheduled-post.ts` pro Beehiiv. **Semanal dividida (#11286):** quando a Etapa 5 criou também a campanha de TERÇA (`terca_campaign_id` no estado), o mesmo comando agenda ela 24h depois da de segunda (cota do dia de terça, PUT + GET) e devolve `terca` no JSON; exit 3/4/5 com a segunda já agendada significa que só a de terça falhou — re-rodar o mesmo comando pula a de segunda e tenta só a de terça. Uma campanha Brevo agendada é **imutável** — não há re-tentativa automática além do retry HTTP já embutido em `brevoPut`/`brevoGetCampaign`.
 
 Exit codes:
 | Exit | Significado | Ação |
 |------|-------------|------|
-| `0` | Agendado e verificado. | Confirmar ao editor: "Brevo diária agendado para {scheduled_at} ✓ (campaign_id {id})". |
+| `0` | Agendado e verificado. | Confirmar ao editor: "Brevo diária agendado para {scheduled_at} ✓ (campaign_id {id})". Se o JSON trouxer `terca` (semanal dividida segunda/terça, #11286), acrescentar: "+ metade de terça agendada para {terca.scheduledAt} ✓ (campaign_id {terca.campaignId})". |
 | `2` | Nenhuma campanha registrada (já esperado se o canal foi pulado/falhou na Etapa 5). | Não é erro — seguir sem mencionar no resumo, ou mencionar como "canal Brevo não participou desta edição" se `_internal/brevo-diaria-published.json` de fato não existia. |
 | `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Beehiiv já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
 | `4` | GET pós-PUT não confirma o agendamento. | Mesmo tratamento do exit 3 — warn, não bloqueia, sugerir retry manual. |

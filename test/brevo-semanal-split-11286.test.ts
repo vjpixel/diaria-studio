@@ -273,8 +273,16 @@ describe("publish: rascunho, reaproveitamento e campanha de terça (#11286)", ()
   it("checkReuseSplitConsistency: rascunho dividido e decisão sem divisão ⇒ recusa", () => {
     assert.equal(checkReuseSplitConsistency(base, null).ok, false);
     assert.equal(checkReuseSplitConsistency(base, TERCA).ok, true);
-    assert.equal(checkReuseSplitConsistency({ terca_list_id: undefined }, TERCA).ok, true, "inteiro → dividido é aceito");
+    assert.equal(checkReuseSplitConsistency({ terca_list_id: undefined, status: "draft" }, TERCA).ok, true, "inteiro → dividido é aceito");
     assert.equal(checkReuseSplitConsistency(null, null).ok, true);
+  });
+
+  it("regressão: segunda já AGENDADA inteira + publish de novo acima do teto ⇒ recusa (terça receberia 2 envios)", () => {
+    const r = checkReuseSplitConsistency({ terca_list_id: undefined, status: "scheduled" }, TERCA);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.reason, /AGENDADA inteira/);
+    assert.equal(checkReuseSplitConsistency({ terca_list_id: undefined, status: "scheduled" }, null).ok, true, "sem divisão segue ok");
+    assert.equal(checkReuseSplitConsistency({ terca_list_id: undefined, status: "test_sent" }, TERCA).ok, true, "rascunho testado ainda aceita");
   });
 
   it("estado gravado preserva os campos de terça na releitura", () => {

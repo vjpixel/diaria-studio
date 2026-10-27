@@ -334,13 +334,28 @@ export function buildDraftPublishedState(params: {
  * outra lista de terça) é recusado: a campanha principal tem
  * `exclusionListIds` e o PUT de `recipients` não é o caminho seguro pra
  * desfazer isso — `--force` recria do zero. Rascunho inteiro e decisão
- * dividida é aceito (o PUT põe a exclusão e a campanha de terça nasce).
+ * dividida é aceito (o PUT põe a exclusão e a campanha de terça nasce) —
+ * EXCETO se esse rascunho inteiro já foi AGENDADO: os destinatários
+ * congelaram sem a exclusão, e criar a de terça faria a metade "terça"
+ * receber duas vezes (self-review do #11286).
  */
 export function checkReuseSplitConsistency(
-  existing: Pick<BrevoDiariaPublished, "terca_list_id"> | null,
+  existing: Pick<BrevoDiariaPublished, "terca_list_id" | "status"> | null,
   tercaListId: number | null,
 ): { ok: true } | { ok: false; reason: string } {
-  if (!existing || existing.terca_list_id === undefined) return { ok: true };
+  if (!existing) return { ok: true };
+  if (existing.terca_list_id === undefined) {
+    if (existing.status === "scheduled" && tercaListId !== null) {
+      return {
+        ok: false,
+        reason:
+          "a campanha de segunda desta edição já foi AGENDADA inteira (sem excluir a lista de terça) — os destinatários " +
+          "congelaram no agendamento; criar a campanha de terça agora faria a metade \"terça\" receber dois envios. " +
+          "Nada criado (#11286). Essa semanal sai inteira na segunda.",
+      };
+    }
+    return { ok: true };
+  }
   if (existing.terca_list_id === tercaListId) return { ok: true };
   return {
     ok: false,
@@ -1053,8 +1068,9 @@ export async function main(rootDirOverride?: string): Promise<void> {
   if (!splitDecision.split && splitDecision.warning) log(`AVISO: ${splitDecision.warning}`);
   const tercaListId = splitDecision.split ? splitDecision.tercaListId : null;
   const existingForSplit = readBrevoDiariaPublished(editionDir);
-  const splitConsistency = force ? ({ ok: true } as const) : checkReuseSplitConsistency(existingForSplit, tercaListId);
-  if (!splitConsistency.ok) {
+  // `--force` recria rascunho, mas nunca contorna campanha já AGENDADA (imutável, destinatários congelados).
+  const splitConsistency = checkReuseSplitConsistency(existingForSplit, tercaListId);
+  if (!splitConsistency.ok && (!force || existingForSplit?.status === "scheduled")) {
     log(`ERRO: ${splitConsistency.reason}`);
     process.exitCode = 9;
     return;
