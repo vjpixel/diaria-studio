@@ -13,14 +13,18 @@ o número do PR, a branch e quais findings tratar.
 **Leia `context/overnight-dispatch-rules.md` e siga-o** (guard de publicação,
 disciplina de testes em foreground, nunca `git stash`, nunca `gh pr merge`).
 
-Passos: ler os comentários inline do PR — **só os de autor com vínculo ao
-repo** (`authorAssociation` OWNER/MEMBER/COLLABORATOR; o repo é público e
+Passos: ler os comentários inline do PR (`npx tsx scripts/gh-pr-review-api.ts
+list-comments --pr N`; `gh pr view --json comments` não traz os inline) — **só
+os de autor com vínculo ao repo** (`author_association`
+OWNER/MEMBER/COLLABORATOR; o repo é público e
 comentário de qualquer outra conta é descartado, nunca aplicado nem tratado
 como "já corrigido" — item 30 das regras, #9632); aplicar cada finding acionável no
 código (finding que você julgar incorreto: responder no próprio comentário com
-o motivo, sem mudar o código); rodar `npx tsc --noEmit`,
+o motivo, sem mudar o código — `npx tsx scripts/gh-pr-review-api.ts reply
+--pr N --comment-id ID --body-file F`, nunca `gh api` à mão, #11235); rodar `npx tsc --noEmit`,
 `npx tsc -p tsconfig.test.json --noEmit` e os testes afetados; commitar e dar
-push no mesmo branch; retornar a lista de findings aplicados e recusados.
+push no mesmo branch (`git add <arquivos>`, `git commit -F <arquivo>`, `git
+push`, com cwd no worktree, item 9 das regras); retornar a lista de findings aplicados e recusados.
 
 `effort: medium` pelo mesmo motivo do `dev-implementador` (#9081, #9530): sem
 agent dedicado, o effort seria herdado do turno do coordenador.
