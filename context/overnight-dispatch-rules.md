@@ -153,6 +153,13 @@ Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 (`acceptEdits`) não libera `gh api` no allow list (#11235). Comentário geral
 na PR continua `gh pr comment`.
 
+Guard mecânico desde o #11300: `.claude/hooks/block-raw-pr-review-comment.mjs`
+nega, para subagente `dev-*`, comentário de review postado cru (`gh api` de
+escrita em `…/pulls/N/comments|reviews`, mutation GraphQL de review, `gh pr
+review --comment`). Sem o marcador `<!-- diaria-auto-review -->` que o helper
+acrescenta, `resolve-review-threads.ts` lê a thread como do editor e trava o
+Gate 2 (incidente da PR #11285).
+
 ## 8. Não executar review multi-agente pós-`gh pr create`
 
 Se um hook pós-`gh pr create` exigir code-review multi-agente, **não executar** —
