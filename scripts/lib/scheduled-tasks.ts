@@ -1238,6 +1238,54 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#11265",
   },
   {
+    name: "Diaria-Shorts-Threads-Profile",
+    description:
+      "publica o vertical da edição do dia no Threads PESSOAL do editor no horário do vertical (a Threads API não agenda), com o vídeo por URL pública do R2, e avisa o editor quando o post não sai (#11410)",
+    steps: [{ key: "post", script: "scripts/shorts-threads-profile-timer.ts" }],
+    logPath: "shorts/.threads-profile-timer.log",
+    // Diária 06:33 BRT (#11410): 3 minutos depois do 1º horário do teste do
+    // vertical (#10831, `publishing.shorts.schedule.rotation_times`) — 06:31 é
+    // do timer do LinkedIn e 06:32 do Instagram. Os horários em hora cheia
+    // (08:00, 12:00 e o `default_time`) caem na execução de hora em hora
+    // abaixo. O script só publica depois do horário do vertical (até 3 h de
+    // atraso; depois abre alarme), então rodar antes é no-op; o lock O_EXCL
+    // resolve a concorrência entre as duas. Mudou um horário do teste para
+    // fora da hora cheia? Ajustar aqui —
+    // `test/shorts-threads-profile-timer-11410.test.ts` trava o par.
+    //
+    // REGISTRADA, NÃO ARMADA (`enabled: false`, decisão da rodada #11410:
+    // armar é do editor). Sem isso o `Diaria-Remediate-Never-Armed-Tasks`
+    // (#8153) armaria no 300 depois do merge. Mesmo armada, o script só age
+    // com `publishing.shorts.threads_profile_via_timer: true`. Para armar:
+    // tirar o `enabled: false` desta e da `-Catchup`, ligar o config e, no
+    // 300, `setup-systemd-timers.ts --task` + `arm-systemd-timers.ts --task`
+    // para cada uma (passo a passo em docs/scheduled-tasks-registry.md).
+    enabled: false,
+    schedule: { kind: "daily", hour: 6, minute: 33 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11410",
+  },
+  {
+    name: "Diaria-Shorts-Threads-Profile-Catchup",
+    description:
+      "de hora em hora: publica o vertical no Threads PESSOAL quando o horário do dia é hora cheia (08:00/12:00), baixa o vertical do Drive se ele ainda não está no 300 e avisa o editor quando o post não saiu (#11410)",
+    steps: [{ key: "post", script: "scripts/shorts-threads-profile-timer.ts" }],
+    logPath: "shorts/.threads-profile-timer-catchup.log",
+    // REGISTRADA, NÃO ARMADA (#11410): mesmo racional da diária acima.
+    enabled: false,
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11410",
+  },
+  {
     name: "Diaria-Threads-Personal-Token",
     description:
       "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",

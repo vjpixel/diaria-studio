@@ -13,7 +13,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *   npx tsx scripts/publish-shorts.ts AAMMDD --publish      # publica os destinos de API
  *     [--only facebook:diaria,instagram] [--now] [--video PATH]
  *     [--edition-dir DIR] [--edition-url URL]
- *     [--linkedin-timer | --instagram-timer]               # rodada de um timer do 300 (só o destino dele, #10982/#11265)
+ *     [--linkedin-timer | --instagram-timer | --threads-timer] # rodada de um timer do 300 (só o destino dele, #10982/#11265/#11410)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --from-drive FILE_ID
  *                                                           # baixa o vertical do Drive (OAuth do projeto, não o conector)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --mark youtube_shorts=URL
@@ -70,6 +70,13 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
  *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
+ *     #11410: com `publishing.shorts.threads_profile_via_timer: true` quem
+ *     publica é o timer do 300 (`scripts/shorts-threads-profile-timer.ts`,
+ *     `--only threads_profile --publish --threads-timer`), no horário do
+ *     vertical; as outras rodadas devolvem `skip_delegated`. A rodada do timer
+ *     confere o perfil antes (`threadsProfilePreflight`, só leitura), grava no
+ *     registro próprio (`06-shorts-published.threads-timer.json`) e
+ *     reaproveita o objeto do vertical já no R2 (`reuseOrUploadToR2`).
  *   - `youtube_shorts` (API, #11070) — Short pela YouTube Data API
  *     (`publishYouTubeShort`, o mesmo upload do `publish-youtube.ts`), private
  *     + `publishAt` no horário do vertical (o agendado vira público sozinho sem
@@ -194,6 +201,7 @@ import {
 import {
   instagramTimerScopeError,
   linkedinTimerScopeError,
+  threadsTimerScopeError,
   persistShortEntry,
   readShortsRegistry,
   shortsRegistryPath,
@@ -229,13 +237,20 @@ import {
   mergeGrids,
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
-import { loadR2UploadConfig, uploadToR2 } from "./lib/r2-object-upload.ts";
+import { loadR2UploadConfig, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
-import { THREADS_PROFILE_DESTINATION, publishThreadsProfileVideo, readThreadsPersonalCreds } from "./lib/threads-personal-video.ts";
+import {
+  THREADS_PROFILE_DESTINATION,
+  ThreadsTimerGateError,
+  publishThreadsProfileVideo,
+  readThreadsPersonalCreds,
+  threadsProfilePreflight,
+  type ThreadsTimerGateFailure,
+} from "./lib/threads-personal-video.ts";
 import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import {
   CHROME_UPLOAD_MAX_BYTES,
@@ -275,6 +290,17 @@ export const INSTAGRAM_TIMER_DETAIL =
   "Para publicar pela API mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor: o lock do timer não cruza máquina e o Reels sai duplicado) " +
   "só esse destino com --only instagram --instagram-timer --publish " +
   "(confira antes que o 300 não publicou; o --instagram-timer recusa qualquer outro destino)";
+
+/**
+ * #11410: por que o `threads_profile` não sai nesta rodada quando o timer do
+ * 300 é o dono dele (`publishing.shorts.threads_profile_via_timer`).
+ */
+export const THREADS_TIMER_DETAIL =
+  "sai pelo timer do 300 (Diaria-Shorts-Threads-Profile, publishing.shorts.threads_profile_via_timer) no horário do vertical, " +
+  "até 3 h depois dele; se não sair, o timer abre um alarme para o editor. " +
+  "Para publicar mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor e o post pode sair duplicado) " +
+  "só esse destino com --only threads_profile --threads-timer --publish " +
+  "(confira antes que o vídeo não está no perfil; o --threads-timer recusa qualquer outro destino)";
 
 /**
  * #11265: motivo do pulo de X/Threads quando o R2 NÃO está configurado (só é
@@ -390,7 +416,9 @@ export interface ShortsPlanInput {
    * `main`. `linkedin-timer` (#10982, `--linkedin-timer`): com
    * `linkedin_profile_via_timer` ligado, só ela publica o `linkedin_profile`.
    * `instagram-timer` (#11265, `--instagram-timer`): com `instagram_backend:
-   * "timer-300"`, só ela publica o `instagram`.
+   * "timer-300"`, só ela publica o `instagram`. `threads-timer` (#11410,
+   * `--threads-timer`): com `threads_profile_via_timer`, só ela publica o
+   * `threads_profile`.
    */
   writer?: ShortsRegistryWriter;
   video: { path: string; exists: boolean; sizeBytes: number | null };
@@ -558,6 +586,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const profileLate = lateFor("linkedin_profile");
   // #10982: com o timer do 300 dono do vídeo do perfil, a rodada da skill não o publica.
   const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer";
+  // #11410: idem pro Threads pessoal.
+  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer";
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -714,6 +744,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       // #11122: vertical no Threads pessoal. Mesmo contrato do linkedin_profile:
       // sem credencial é fail-soft, a API não agenda (pending antes do horário,
       // skip_late depois do teto), `send_unknown` conta como feito.
+      if (threadsDelegated) {
+        return { destination: dest.id, mode: "api", action: "skip_delegated", detail: THREADS_TIMER_DETAIL };
+      }
       if (input.threadsPersonal?.ready !== true) {
         const reason = input.threadsPersonal?.ready === false ? input.threadsPersonal.reason : "credencial THREADS_PERSONAL_* não conferida";
         warnings.push(`threads_profile: ${reason}`);
@@ -2478,7 +2511,7 @@ function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: 
 
 const USAGE =
   "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
-  "                       [--linkedin-timer | --instagram-timer] [--force-youtube] [--keep-video]\n" +
+  "                       [--linkedin-timer | --instagram-timer | --threads-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
@@ -2486,7 +2519,7 @@ const USAGE =
   "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "force-youtube", "keep-video"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -2521,6 +2554,18 @@ export function parseShortsCliArgs(argv: string[]):
 }
 
 /**
+ * #11410: `publishing.shorts.threads_profile_via_timer` no config real; config
+ * ilegível = `"unreadable"` (o `--threads-timer` recusa).
+ */
+function configuredThreadsViaTimer(): boolean | "unreadable" {
+  try {
+    return loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))).threadsProfileViaTimer;
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
  * Backend do Instagram no config real; config ilegível = `"unreadable"` (#11368:
  * o `--instagram-timer` recusa, inclusive no `--mark`, em vez de pular a regra).
  */
@@ -2545,11 +2590,16 @@ async function main(): Promise<number> {
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
   const linkedinTimer = flags.has("linkedin-timer");
   const instagramTimer = flags.has("instagram-timer");
+  const threadsTimer = flags.has("threads-timer");
   if (linkedinTimer && instagramTimer) {
     console.error("publish-shorts: --instagram-timer não combina com --linkedin-timer (cada timer grava o próprio registro)");
     return 2;
   }
-  const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer);
+  if (threadsTimer && (linkedinTimer || instagramTimer)) {
+    console.error("publish-shorts: --threads-timer não combina com outro timer (cada timer grava o próprio registro)");
+    return 2;
+  }
+  const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer, threadsTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
   const cleanup = () => cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
@@ -2567,7 +2617,8 @@ async function main(): Promise<number> {
     }
     const markScopeErr =
       linkedinTimerScopeError({ linkedinTimer, only: null, markDestination: mark.destination }) ??
-      instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: null, markDestination: mark.destination });
+      instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: null, markDestination: mark.destination }) ??
+      threadsTimerScopeError({ threadsTimer, viaTimer: configuredThreadsViaTimer(), only: null, markDestination: mark.destination });
     if (markScopeErr) {
       console.error(`publish-shorts: ${markScopeErr}`);
       return 2;
@@ -2588,7 +2639,8 @@ async function main(): Promise<number> {
   const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
   const scopeErr =
     linkedinTimerScopeError({ linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") }) ??
-    instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") });
+    instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") }) ??
+    threadsTimerScopeError({ threadsTimer, viaTimer: configuredThreadsViaTimer(), only: onlyList, confirmInstagram: flags.has("confirm-instagram") });
   if (scopeErr) {
     console.error(`publish-shorts: ${scopeErr}`);
     return 2;
@@ -2754,13 +2806,17 @@ async function main(): Promise<number> {
     buffer?: { text: string; dueAt: string | null; videoUrl: string };
     /** #11265: a falha veio da conferência da conta do timer (`instagramTimerGate`), não do publish. */
     cause?: "preflight";
-    preflight?: InstagramTimerGateFailure;
+    preflight?: InstagramTimerGateFailure | ThreadsTimerGateFailure;
   }> = [];
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
+  // #11410: objeto do dia já no bucket com o mesmo tamanho é reaproveitado (sem novo PUT).
   let uploaded: Promise<string> | null = null;
   const uploadVideo = () => {
     if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
-    uploaded ??= uploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4");
+    uploaded ??= reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4").then((r) => {
+      console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo tamanho, sem novo upload)" : "enviado"}: ${r.url}`);
+      return r.url;
+    });
     return uploaded;
   };
   for (const item of plan.items) {
@@ -2828,6 +2884,30 @@ async function main(): Promise<number> {
         });
       } else if (item.destination === THREADS_PROFILE_DESTINATION) {
         if (!threadsCreds.ready) throw new Error(threadsCreds.reason); // o plano não marca publish sem credencial
+        if (writer === "threads-timer") {
+          // #11410: o timer confere o perfil antes — um post à mão (depois de um
+          // skip_late) ou de uma rodada sem registro sincronizado não está no
+          // registro, mas está no perfil. Falha de leitura nunca vira "não está lá".
+          const pre = await threadsProfilePreflight({
+            creds: threadsCreds.creds,
+            sinceIso: resolveEditionScheduledAt(aammdd, "00:00"),
+            // 1ª linha do texto = o título do D1 como o post o leva (cortado com … se não coube).
+            markers: threadsEditionMarkers(aammdd, item.caption.split("\n")[0] ?? ""),
+            now: () => new Date(),
+          });
+          if (pre.kind === "already") {
+            try {
+              published = persist(pre.entry);
+            } catch (e) {
+              results.push({ destination: item.destination, ok: false, entry: pre.entry, error: `registro não gravado: ${(e as Error).message}`, cause: "preflight" });
+              console.error(`[erro] threads_profile: o vídeo JÁ ESTÁ no perfil (${pre.entry.url ?? pre.entry.id}) mas o registro não foi gravado: ${(e as Error).message}`);
+              continue;
+            }
+            results.push({ destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true });
+            console.error(`[aviso] threads_profile: o vídeo da edição já está no perfil (${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
+            continue;
+          }
+        }
         outcome = await publishThreadsProfileVideo({
           creds: threadsCreds.creds,
           videoUrl: await uploadVideo(),
@@ -2889,6 +2969,9 @@ async function main(): Promise<number> {
       if (e instanceof InstagramTimerGateError) {
         // #11265: o gate não deixou publicar — o timer não pode tratar isso como "o publish falhou".
         results.push({ destination: item.destination, ok: false, error: msg, cause: "preflight", preflight: e.failure, ...(e.entry ? { entry: e.entry } : {}) });
+      } else if (e instanceof ThreadsTimerGateError) {
+        // #11410: idem pro Threads pessoal (perfil ilegível ou vídeo do dia sem marcador).
+        results.push({ destination: item.destination, ok: false, error: msg, cause: "preflight", preflight: e.failure });
       } else {
         results.push({ destination: item.destination, ok: false, error: msg });
       }
@@ -2968,6 +3051,17 @@ async function main(): Promise<number> {
   }
   cleanup();
   return summary.failed > 0 ? 1 : 0;
+}
+
+/**
+ * Pure (#11410): o que identifica o vertical da edição num post do perfil do
+ * Threads — o `utm_campaign={AAMMDD}` do link da edição que
+ * `buildShortSocialText` põe no texto, e o título do D1 como o texto o leva.
+ * Título com reticências (cortado pra caber) entra sem elas.
+ */
+export function threadsEditionMarkers(aammdd: string, d1Title: string): string[] {
+  const title = stripInlineMarkdown(d1Title).replace(/\s+/g, " ").replace(/…$/, "").trim();
+  return [`utm_campaign=${aammdd}`, ...(title ? [title] : [])];
 }
 
 /**
