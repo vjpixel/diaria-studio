@@ -40,6 +40,42 @@ export interface KvImageStore {
   get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
 }
 
+/** Metadado R2 mínimo (subconjunto de `R2Object`, o que `head` devolve). */
+export interface R2ImageHead {
+  /** ETag já entre aspas, pronto pro header (`R2Object.httpEtag`). */
+  httpEtag: string;
+  httpMetadata?: { contentType?: string };
+}
+
+/** Objeto R2 mínimo que este módulo consome (subconjunto de `R2ObjectBody`). */
+export interface R2ImageObject extends R2ImageHead {
+  body: ReadableStream;
+}
+
+/** Binding R2 mínimo (subconjunto de `R2Bucket`) — mesmo racional de `KvImageStore`. */
+export interface R2ImageStore {
+  get(key: string): Promise<R2ImageObject | null>;
+  /** #11412 F4: HEAD em `/img/` usa só o metadado, sem ler o corpo. */
+  head(key: string): Promise<R2ImageHead | null>;
+}
+
+/**
+ * #11412 (fatia 1): chave R2 de uma key `/img/`. As imagens novas sobem pro R2
+ * em `img/{AAMMDD}/{resto}` (`r2ImageKeyFor` em `scripts/upload-images-public.ts`
+ * usa esta mesma função), e a URL pública continua no formato de sempre,
+ * `/img/img-{AAMMDD}-{resto}`: e-mail, página e preview não mudam de forma.
+ *
+ * `null` (sem fallback R2) para key fora da allowlist (#4112), key sem
+ * AAMMDD (`img-monthly-*`, que segue só no KV) e resto com barra — a chave
+ * vem da URL, e `img-260512-../../shorts/x` não pode virar um caminho
+ * arbitrário dentro do bucket.
+ */
+export function r2KeyForImageKey(key: string): string | null {
+  if (!isPublicImageKey(key)) return null;
+  const m = /^img-(\d{6})-([^/\\]+)$/.exec(key);
+  return m ? `img/${m[1]}/${m[2]}` : null;
+}
+
 /**
  * #5136: distingue keys de imagem com cache-bust por hash
  * (`img-{AAMMDD}-{base}-{md5short}.{ext}`, `md5short` = 8 hex chars
@@ -146,11 +182,17 @@ async function sha256HexOfBytes(buf: ArrayBuffer): Promise<string> {
  * os paths (200, 304 e 404). #1132 P2.4: pre-check de CORS faz probe contra
  * key que pode não existir; com CORS apenas em 200, o pre-check produzia
  * falso negativo.
+ *
+ * #11412: `r2` (opcional) é o binding do bucket de mídia. Key ausente no KV
+ * cai no R2 (`r2KeyForImageKey`); sem o binding, o comportamento é o de antes
+ * (404).
  */
 export async function serveKvImage(
   key: string,
   kv: KvImageStore,
   ifNoneMatch?: string | null,
+  r2?: R2ImageStore | null,
+  method?: string,
 ): Promise<Response> {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
@@ -179,6 +221,10 @@ export async function serveKvImage(
     return new Response("temporarily unavailable", { status: 503, headers: corsHeaders });
   }
   if (!value) {
+    // #11412: KV primeiro (todo e-mail já enviado aponta pra lá); só a key que
+    // o KV não tem vai ao R2, e só quando o Worker tem o binding.
+    const r2Key = r2 ? r2KeyForImageKey(key) : null;
+    if (r2 && r2Key) return serveR2Image(key, r2Key, r2, ifNoneMatch, method === "HEAD");
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
@@ -204,6 +250,52 @@ export async function serveKvImage(
       "Content-Type": "image/jpeg",
       "Cache-Control": cacheControl,
       ETag: etag,
+    },
+  });
+}
+
+/**
+ * #11412: serve do R2 a key que não estava no KV. Mesmos contratos do
+ * caminho KV: CORS em todo path, 503 (não 404) em falha do binding,
+ * `Cache-Control` por classe de key e `If-None-Match` → 304. O ETag é o do
+ * próprio R2 (MD5 do PUT simples), não SHA-256: o corpo vem em stream, sem
+ * ler o objeto inteiro na memória do Worker (um dos motivos da migração).
+ * HEAD (F4 do review) usa `r2.head`: só metadado, sem abrir o corpo.
+ */
+async function serveR2Image(
+  key: string,
+  r2Key: string,
+  r2: R2ImageStore,
+  ifNoneMatch?: string | null,
+  isHead = false,
+): Promise<Response> {
+  const corsHeaders = { "Access-Control-Allow-Origin": "*" };
+  let obj: R2ImageObject | R2ImageHead | null;
+  try {
+    obj = isHead ? await r2.head(r2Key) : await r2.get(r2Key);
+  } catch (err) {
+    console.error(`kv-image: falha lendo "${r2Key}" do R2:`, err);
+    return new Response("temporarily unavailable", { status: 503, headers: corsHeaders });
+  }
+  if (!obj) {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
+  const cacheControl = imageCacheControlFor(key);
+  const body: ReadableStream | null = isHead ? null : (obj as R2ImageObject).body;
+  if (ifNoneMatch && ifNoneMatch === obj.httpEtag) {
+    // O corpo não vai ser lido: cancelar libera o stream do binding.
+    if (body) await body.cancel().catch(() => {});
+    return new Response(null, {
+      status: 304,
+      headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: obj.httpEtag },
+    });
+  }
+  return new Response(body, {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": obj.httpMetadata?.contentType || "image/jpeg",
+      "Cache-Control": cacheControl,
+      ETag: obj.httpEtag,
     },
   });
 }

@@ -51,7 +51,7 @@ import {
 import { renderCuradoriaRobotsTxt } from "../../../scripts/lib/shared/robots-txt.ts"; // #4777
 // #7657: miolo de /img/{key} compartilhado com workers/site, que serve as
 // MESMAS imagens em diar.ia.br/img/{key} (mesma origem do documento da home).
-import { imageKeyFromPath, serveKvImage } from "../../../scripts/lib/shared/kv-image.ts";
+import { imageKeyFromPath, serveKvImage, type R2ImageStore } from "../../../scripts/lib/shared/kv-image.ts";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
 // cor/fonte inline aqui (ver test/poll-ds-tokens.test.ts para a trava).
@@ -63,6 +63,12 @@ export { ScoreCounter } from "./score-counter";
 
 export interface Env {
   POLL: KVNamespace;
+  /** #11412: bucket R2 de mídia (`diaria-shorts`, `media.diar.ia.br`) — as
+   * imagens novas da edição vivem em `img/{AAMMDD}/…` e `/img/{key}` cai nele
+   * quando a key não está no KV. Opcional: sem o binding declarado no
+   * `wrangler.toml`, `/img/` serve só o KV, como antes. Tipado pelo
+   * subconjunto que `serveKvImage` usa (um `R2Bucket` encaixa). */
+  MEDIA?: R2ImageStore;
   /** #2187: Durable Object namespace para serialização de dedup de voto por email.
    * Opcional para compat com testes que não passam o binding (falha graciosamente
    * para KV-only dedup quando VOTE_DEDUP não está disponível). */
@@ -1681,7 +1687,7 @@ export async function handleImage(path: string, env: Env, request?: Request): Pr
   if (key === null) {
     return new Response("not found", { status: 404, headers: { "Access-Control-Allow-Origin": "*" } });
   }
-  return serveKvImage(key, env.POLL, request?.headers.get("If-None-Match"));
+  return serveKvImage(key, env.POLL, request?.headers.get("If-None-Match"), env.MEDIA, request?.method);
 }
 
 // ── /sitemap.xml (#5135 item 2) ──────────────────────────────────────────────

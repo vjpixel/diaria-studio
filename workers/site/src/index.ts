@@ -48,7 +48,7 @@
  */
 import { EXPECTED_SUBSCRIBE_REDIRECT_HOST } from "../../../scripts/lib/apex-cutover.ts";
 // #7657: mesmo miolo que workers/poll usa em eia.diar.ia.br/img/{key}.
-import { imageKeyFromPath, serveKvImage, type KvImageStore } from "../../../scripts/lib/shared/kv-image.ts";
+import { imageKeyFromPath, serveKvImage, type KvImageStore, type R2ImageStore } from "../../../scripts/lib/shared/kv-image.ts";
 // #7737: página de confirmação do double opt-in, movida de
 // eia.diar.ia.br/confirmado (Worker `poll`, que agora só faz 301 pra cá) —
 // render puro em scripts/lib/shared/, sem import cross-worker (ver
@@ -132,6 +132,10 @@ export interface Env {
   /** #7657: KV `POLL` — o MESMO namespace que `workers/poll` lê. Só leitura
    *  aqui; quem escreve continua sendo a pipeline (upload-images-public.ts). */
   POLL: KvImageStore;
+  /** #11412: bucket R2 de mídia — fallback de `/img/{key}` para as imagens
+   *  novas (`img/{AAMMDD}/…`), mesmo contrato de `workers/poll`. Opcional:
+   *  sem o binding no `wrangler.toml`, só o KV. */
+  MEDIA?: R2ImageStore;
   /** #8062: KV `CURSOS_SUBSCRIBERS` — o MESMO namespace que
    *  `workers/arquivo`/`workers/cursos` usam, prefixo próprio
    *  (`counter:ai-fetch:site:`). `incrementAiFetchCounter` trata KV ausente
@@ -572,7 +576,7 @@ export default {
     if (request.method === "GET" || request.method === "HEAD") {
       const key = imageKeyFromPath(reqUrl.pathname);
       if (key !== null) {
-        return serveKvImage(key, env.POLL, request.headers.get("If-None-Match"));
+        return serveKvImage(key, env.POLL, request.headers.get("If-None-Match"), env.MEDIA, request.method);
       }
     }
 

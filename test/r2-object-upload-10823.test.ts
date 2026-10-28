@@ -45,7 +45,7 @@ describe("#10823 loadR2UploadConfig", () => {
   });
   it("lista o que falta", () => {
     const r = loadR2UploadConfig({ ...full, R2_SECRET_ACCESS_KEY: "", SHORTS_R2_BUCKET: undefined });
-    assert.deepEqual(r, { ready: false, missing: ["R2_SECRET_ACCESS_KEY", "SHORTS_R2_BUCKET"] });
+    assert.deepEqual(r, { ready: false, missing: ["R2_SECRET_ACCESS_KEY", "R2_BUCKET (ou SHORTS_R2_BUCKET)"] });
   });
   it("base pública http é recusada (a Graph exige https)", () => {
     const r = loadR2UploadConfig({ ...full, SHORTS_R2_PUBLIC_BASE: "http://x.test" });
