@@ -114,6 +114,7 @@ describe("#6126 decideKitChannelDispatch", () => {
     for (const tag of ["", "   "]) {
       const d = decideKitChannelDispatch({
         config: { enabled: true, audience_tag: tag },
+        newsletterBackend: "beehiiv",
         existing: null,
         defaultAudienceTag: DEFAULT_TAG,
       });
@@ -123,13 +124,35 @@ describe("#6126 decideKitChannelDispatch", () => {
   });
 
   it("habilitado sem audience_tag usa o default kit-nativo", () => {
-    const d = decideKitChannelDispatch({ config: { enabled: true }, existing: null, defaultAudienceTag: DEFAULT_TAG });
+    const d = decideKitChannelDispatch({
+      config: { enabled: true },
+      newsletterBackend: "beehiiv",
+      existing: null,
+      defaultAudienceTag: DEFAULT_TAG,
+    });
     assert.deepEqual(d, { action: "dispatch", audienceTag: DEFAULT_TAG });
+  });
+
+  it("REGRESSÃO #11225: backend AUSENTE conta como \"kit\" ⇒ skip, mesmo com o canal ligado", () => {
+    // Até o #11225, chave ausente caía no ramo legado (Beehiiv) e o canal
+    // paralelo despachava — com o backend Kit default, isso entregaria a
+    // edição EM DOBRO. Typo/valor inesperado idem.
+    for (const newsletterBackend of [undefined, "", "Kit", "kti"]) {
+      const d = decideKitChannelDispatch({
+        config: { enabled: true },
+        newsletterBackend,
+        existing: null,
+        defaultAudienceTag: DEFAULT_TAG,
+      });
+      assert.equal(d.action, "skip", `backend=${JSON.stringify(newsletterBackend)} deveria pular`);
+      if (d.action === "skip") assert.match(d.reason, /EM DOBRO/);
+    }
   });
 
   it("audience_tag customizado permite o rollout escalonado da #6126", () => {
     const d = decideKitChannelDispatch({
       config: { enabled: true, audience_tag: "diaria-test-email" },
+      newsletterBackend: "beehiiv",
       existing: null,
       defaultAudienceTag: DEFAULT_TAG,
     });

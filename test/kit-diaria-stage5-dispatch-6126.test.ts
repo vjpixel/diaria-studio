@@ -58,6 +58,10 @@ function makeDeps(over: {
   const deps: Stage5KitDeps = {
     readPlatformConfig: () => ({
       kit_diaria: over.config === undefined ? { enabled: true } : over.config,
+      // #11225: o canal paralelo só existe no ramo legado — backend ausente
+      // agora conta como "kit" (skip). Os cenários deste arquivo exercitam o
+      // canal, então declaram o legado explicitamente.
+      publishing: { newsletter: { backend: "beehiiv" } },
     }),
     readState: over.readState ?? (() => over.existing ?? null),
     writeState:
