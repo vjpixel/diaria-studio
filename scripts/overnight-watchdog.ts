@@ -37,6 +37,9 @@
  *   (e) Escalada (#11276): com `UNRESUMED_STALL_ESCALATION_COUNT` stalls
  *       seguidos sem `resumed_at`, 1 alerta `urgente` por rodada — o de (d)
  *       é `acao`, que sob `email_policy: "urgent_only"` não vira e-mail.
+ *       `resumed_at` é derivado pelo próprio watchdog a cada stall novo
+ *       (`markLastStallResumed`, #11433): atividade real depois do stall
+ *       anterior marca esse stall como retomado.
  *
  * #2958: a task Task Scheduler roda com `ExecutionTimeLimit` de 5 min
  * (`setup-watchdog-schedule.ps1`) — se estourado, o Task Scheduler força o
@@ -185,6 +188,35 @@ export function countTrailingUnresumedStalls(stallEvents: StallEvent[] | undefin
     n++;
   }
   return n;
+}
+
+/**
+ * Pure (#11433): deriva `resumed_at` mecanicamente. Se a última atividade da
+ * rodada (`lastActivityMs`, já sem as escritas do próprio watchdog — #5520,
+ * #11339) é POSTERIOR ao `at` do último stall ainda aberto, a sessão voltou
+ * depois dele: o evento ganha `resumed_at` = instante dessa atividade.
+ *
+ * Antes daqui nenhum código gravava `resumed_at` (o watchdog sempre anexa
+ * `null`, e o único "escritor" era prosa no SKILL.md pedindo ao coordenador
+ * que gravasse ao retomar), então três stalls com atividade real entre eles
+ * contavam como "stall contínuo sem retomada" e disparavam a escalada
+ * `urgente` do #11276 numa rodada que se recuperou a cada vez.
+ *
+ * Só o ÚLTIMO evento é marcado: a escalada é avaliada a cada stall novo, então
+ * uma sequência contígua anterior já foi julgada quando aconteceu; marcar o
+ * último basta para quebrar a contagem final. Retorna a MESMA referência
+ * quando nada muda (o chamador não precisa gravar nada além do que já grava).
+ */
+export function markLastStallResumed(
+  stallEvents: StallEvent[] | undefined,
+  lastActivityMs: number,
+): StallEvent[] {
+  const events = stallEvents ?? [];
+  const last = events[events.length - 1];
+  if (!last || last.resumed_at) return events;
+  const atMs = new Date(last.at).getTime();
+  if (isNaN(atMs) || !(lastActivityMs > atMs)) return events;
+  return [...events.slice(0, -1), { ...last, resumed_at: new Date(lastActivityMs).toISOString() }];
 }
 
 /**
@@ -1282,6 +1314,12 @@ async function runWatchdogForKind(
     process.stderr.write(`[watchdog] Erro ao ler plan.json: ${planPath}\n`);
     return;
   }
+
+  // #11433: houve atividade real depois do último stall? Então ele foi
+  // retomado — marca `resumed_at` antes do dedup e da escalada. Sem gravação
+  // extra: vai junto com o append do passo (a), cujo mtime cai dentro de
+  // `SELF_WRITE_TOLERANCE_MS` do novo `stall_event.at` (não vira "atividade").
+  plan.stall_events = markLastStallResumed(plan.stall_events, lastActivityMs);
 
   // Dedup: janela = metade do threshold (nunca menos de 15 min)
   const dedupWindowMs = Math.max(Math.floor(thresholdMs / 2), 15 * 60_000);
