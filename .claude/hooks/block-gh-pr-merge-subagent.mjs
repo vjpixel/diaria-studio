@@ -1461,9 +1461,26 @@ export function buildReturnToMainCheckoutHint(root) {
   );
 }
 
-/** Sufixo da mensagem de bloqueio quando o PR não é (só) do diaria-studio (#10618). */
-export function buildRepoHint(targetRepos, complex = false) {
+/**
+ * Sufixo da mensagem de bloqueio quando o PR não é (só) do diaria-studio (#10618).
+ * `unlisted` (#11501): `{ repo, pr }` quando o comando prova mirar um único
+ * repo FORA de `issue_repos` (`resolveMergeTargets(...).unlistedRepo`) — a
+ * mensagem nomeia o lock que o guard confere (o do diaria-studio) em vez da
+ * genérica de "forma que o guard não consegue provar".
+ */
+export function buildRepoHint(targetRepos, complex = false, unlisted = null) {
   const foreign = targetRepos.filter((r) => r !== DIARIA_STUDIO_REPO);
+  if (complex && unlisted && typeof unlisted.repo === "string") {
+    const n = Number.isInteger(unlisted.pr) ? unlisted.pr : "N";
+    return (
+      ` (#11501) Este PR é de ${unlisted.repo}, que está FORA de platform.config.json → issue_repos: ` +
+      `o guard NÃO aceita o lock próprio dele (\`--repo ${unlisted.repo}\`) e confere o lock do diaria-studio ` +
+      "(typo, fork ou nome antigo de repo renomeado podem cair no studio, #10618), sem concessão/auto-autorização. " +
+      `Pegue o lock do studio — \`npx tsx scripts/lib/session-registry.ts merge-lock-acquire --pr ${n}\`, SEM --repo — ` +
+      "e rode o merge sozinho; solte com `merge-lock-release` sem --repo. Para o repo ter lock próprio, ele precisa " +
+      "entrar em issue_repos (o que também o põe na varredura das rodadas)."
+    );
+  }
   if (complex) {
     return (
       " (#10618) O comando não está na forma que o guard consegue provar (`gh pr merge N|<URL canônica> " +
@@ -1636,6 +1653,9 @@ if (
       const targetRepos = resolution.targets;
       const complex = resolution.mode === "strict";
       const singleRepo = resolution.grantRepo;
+      // #11501: merge provado de um repo fora de issue_repos — a mensagem nomeia o lock conferido.
+      const unlisted =
+        typeof resolution.unlistedRepo === "string" ? { repo: resolution.unlistedRepo, pr: resolution.pr } : null;
       if (repoRoot !== null) {
         appendHookRunLog(repoRoot, "merge-guard", complex ? "warn" : "info", "merge_target_repo", {
           mode: resolution.mode,
@@ -1654,7 +1674,7 @@ if (
               permissionDecisionReason:
                 `${BLOCK_REASON} (#10618) Não foi possível localizar o checkout do diaria-studio (data/sessions/) ` +
                 "a partir do cwd nem do diretório do hook — varredura de sessões indeterminada, bloqueado na dúvida." +
-                buildRepoHint(targetRepos, complex),
+                buildRepoHint(targetRepos, complex, unlisted),
             },
           }),
         );
@@ -1772,7 +1792,7 @@ if (
               permissionDecisionReason: buildBlockReason({ ...ctx, blockCause, command }) +
                 (findGhPrMergeInvocations(command).every((inv) => inv.via === "api-graphql")
                   ? ""
-                  : buildRepoHint(targetRepos, complex)),
+                  : buildRepoHint(targetRepos, complex, unlisted)),
             },
           }),
         );

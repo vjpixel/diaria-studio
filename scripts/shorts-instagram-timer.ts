@@ -65,7 +65,8 @@
  * Fica de fora (premissa registrada na #11265): X (Buffer) e Threads pessoal
  * recebem o vídeo só por URL pública; saem pelo `/diaria-publica-video` com o
  * vertical no R2 (habilitado em 27/10/2026, #10772), e só numa máquina sem os
- * secrets do R2 ficam pulados com aviso, manuais.
+ * secrets do R2 ficam pulados com aviso e PENDENTES (#11478/#11498): o
+ * `-short.mp4` fica no disco e uma máquina com os secrets publica.
  *
  * Uso: npx tsx scripts/shorts-instagram-timer.ts [--edition AAMMDD] [--dry-run]
  *   --dry-run: decide e imprime os comandos, sem publicar e sem alarme (lê o Drive).
