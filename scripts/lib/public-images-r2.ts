@@ -25,8 +25,10 @@
  * semanal/mensal/anual são fatias seguintes da #11412.
  *
  * ATIVAÇÃO (ordem recomendada; desde o F1 da #11456 o uploader confere a URL
- * do Worker depois do PUT e cai no KV se ela não vier 200, então ligar a flag
- * antes do binding não deixa imagem em 404, só mantém tudo no KV):
+ * do Worker `poll` depois do PUT, e desde o #11459 também a do Worker `site`
+ * (`diar.ia.br/img/…`), caindo no KV se alguma não vier 200; então ligar a
+ * flag antes do binding, ou com o binding só num dos dois Workers, não deixa
+ * imagem em 404, só mantém tudo no KV):
  *   1. Descomentar o bloco `[[r2_buckets]] binding = "MEDIA"` em
  *      `workers/poll/wrangler.toml` e `workers/site/wrangler.toml` e mergear
  *      (o deploy dos dois é automático no push).
@@ -71,20 +73,38 @@ export function workerImageUrl(workerUrl: string, kvKey: string): string {
 }
 
 /**
+ * #11459: origem do Worker `site` (apex `diar.ia.br`). A home reescreve as
+ * imagens da edição para `/img/` same-origin (#7657), então esse Worker
+ * também precisa servir a key; sem o binding `MEDIA` nele a home dá 404
+ * mesmo com o Worker `poll` servindo.
+ */
+export const PUBLIC_IMAGE_SITE_ORIGIN = "https://diar.ia.br";
+
+/**
  * Monta o uploader real. Lança se a key não tem forma R2 (o caller só chama
  * para key com `r2KeyForImageKey` não-nulo).
+ *
+ * `options.siteOrigin` (default `PUBLIC_IMAGE_SITE_ORIGIN`): segundo host
+ * conferido depois do PUT (#11459). `null` desliga a conferência; origem igual
+ * à do `workerUrl` não repete o HEAD.
  */
 export function makeR2ImageUploader(
   config: R2UploadConfig,
   workerUrl: string,
   deps: R2UploadDeps = { fetch: (u, i) => fetch(u, i), now: () => new Date() },
+  options: { siteOrigin?: string | null } = {},
 ): R2ImageUploader {
+  const siteOrigin = options.siteOrigin === undefined ? PUBLIC_IMAGE_SITE_ORIGIN : options.siteOrigin;
   return async (imagePath, kvKey, contentType) => {
     const r2Key = r2KeyForImageKey(kvKey);
     if (!r2Key) throw new Error(`public-images-r2: key "${kvKey}" não tem forma img-{AAMMDD}-… (fica no KV)`);
     await uploadToR2(deps, config, r2Key, readFileSync(imagePath), contentType, { cacheControl: PUBLIC_IMAGE_R2_CACHE_CONTROL });
     const url = workerImageUrl(workerUrl, kvKey);
     await assertWorkerServesImage(deps, url);
+    if (siteOrigin !== null) {
+      const siteUrl = workerImageUrl(siteOrigin, kvKey);
+      if (siteUrl !== url) await assertWorkerServesImage(deps, siteUrl);
+    }
     return url;
   };
 }
@@ -96,6 +116,8 @@ export function makeR2ImageUploader(
  * binding `MEDIA` no ar. Conferir essa URL aqui torna a flag segura em
  * qualquer ordem de ativação: sem o binding o Worker responde 404, o
  * uploader lança e `upload-images-public.ts` cai no KV para essa imagem.
+ * Desde o #11459 a mesma conferência roda também no Worker `site`
+ * (`diar.ia.br/img/…`): o binding pode estar só num dos dois `wrangler.toml`.
  */
 async function assertWorkerServesImage(deps: R2UploadDeps, url: string): Promise<void> {
   let res: Response;

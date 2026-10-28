@@ -309,7 +309,10 @@ describe("#11412 makeR2ImageUploader", () => {
       // F1: depois do PUT, HEAD na URL do Worker (a que vai pro e-mail).
       assert.equal(calls[2].url, `https://eia.diar.ia.br/img/${NEW_KEY}`);
       assert.equal(calls[2].init?.method, "HEAD");
-      assert.equal(calls.length, 3);
+      // #11459: e também no Worker `site` (home em diar.ia.br/img/…).
+      assert.equal(calls[3].url, `https://diar.ia.br/img/${NEW_KEY}`);
+      assert.equal(calls[3].init?.method, "HEAD");
+      assert.equal(calls.length, 4);
       await assert.rejects(up(file, "img-monthly-x.jpg", "image/jpeg"), /fica no KV/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -345,6 +348,56 @@ describe("#11412 makeR2ImageUploader", () => {
       }
     });
   }
+
+  // #11459: binding MEDIA descomentado só no `poll` → eia.diar.ia.br serve,
+  // mas a home (Worker `site`, diar.ia.br/img/…) devolve 404. Tem que cair no KV.
+  function uploaderWithSite(siteRes: () => Response, options?: { siteOrigin?: string | null }, workerUrl = "https://eia.diar.ia.br") {
+    const calls: string[] = [];
+    const up = makeR2ImageUploader(
+      { accountId: "acc", accessKeyId: "k", secretAccessKey: "s", bucket: "diaria-shorts", publicBase: "https://media.diar.ia.br" },
+      workerUrl,
+      {
+        now: () => new Date("2026-10-28T12:00:00Z"),
+        fetch: async (u, init) => {
+          calls.push(u);
+          if (u.startsWith("https://diar.ia.br/")) return siteRes();
+          return init?.method === "HEAD" ? new Response(null, { status: 200, headers: { "content-length": "5" } }) : new Response("", { status: 200 });
+        },
+      },
+      options,
+    );
+    return { up, calls };
+  }
+
+  it("#11459: Worker poll 200 mas site (diar.ia.br/img/) 404 → lança (cai no KV)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "r2-up-"));
+    try {
+      const file = join(dir, "x.jpg");
+      writeFileSync(file, "bytes");
+      const { up, calls } = uploaderWithSite(() => new Response(null, { status: 404 }));
+      await assert.rejects(up(file, NEW_KEY, "image/jpeg"), new RegExp(`HTTP 404 em https://diar\\.ia\\.br/img/.*KV`));
+      assert.ok(calls.includes(`https://eia.diar.ia.br/img/${NEW_KEY}`));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#11459: siteOrigin null não confere o site; workerUrl = site não repete o HEAD", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "r2-up-"));
+    try {
+      const file = join(dir, "x.jpg");
+      writeFileSync(file, "bytes");
+      const off = uploaderWithSite(() => new Response(null, { status: 404 }), { siteOrigin: null });
+      assert.equal(await off.up(file, NEW_KEY, "image/jpeg"), `https://eia.diar.ia.br/img/${NEW_KEY}`);
+      assert.ok(!off.calls.some((u) => u.startsWith("https://diar.ia.br/")));
+
+      const same = uploaderWithSite(() => new Response(null, { status: 200 }), {}, "https://diar.ia.br/");
+      await same.up(file, NEW_KEY, "image/jpeg");
+      assert.equal(same.calls.filter((u) => u === `https://diar.ia.br/img/${NEW_KEY}`).length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("HEAD no Worker falha na rede → lança (cai no KV)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "r2-up-"));

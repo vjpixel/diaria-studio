@@ -162,6 +162,9 @@
  * `300` em 100% com 150 worktrees, 108 deles nessa situação). Branch com PR
  * aberta fica de fora, a não ser com `--reclaim-open-pr`, que só o guard de
  * disco (`scripts/check-disk-space-guard.ts`) passa quando falta espaço.
+ * No modo normal (sem `--reclaim-open-pr`) o seletor só pega branch de rodada
+ * autônoma, `worktree-agent-*` ou `overnight/*` (#11458): worktree parado do
+ * editor, de qualquer outra branch, nunca sai por ele fora do guard de disco.
  *
  * Uso:
  *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>]
@@ -497,6 +500,18 @@ export function selectAbandonedForRemoval(
   return result;
 }
 
+/**
+ * #11458 — branch de worktree criado por rodada autônoma: `worktree-agent-*`
+ * (isolação `worktree` do Agent tool, inclusive o worktree parado em
+ * `origin/master` sem PR) ou `overnight/*`. Branch nula (HEAD destacado) ou
+ * de outra convenção (`develop/*`, nome livre do editor) é tratada como
+ * possivelmente do editor e fica fora do 4º seletor no modo normal.
+ */
+export function isAutonomousWorktreeBranch(branch: string | null): boolean {
+  if (branch === null) return false;
+  return branch.startsWith("worktree-agent-") || branch.startsWith("overnight/");
+}
+
 /** 3 horas: idade mínima de um worktree "já enviado" (#11446) antes de virar
  * candidato a remoção. Folga para uma unidade da onda corrente que acabou de
  * dar push e ainda vai receber o fixer no mesmo worktree. */
@@ -525,6 +540,15 @@ export const PUSHED_CLEAN_MIN_AGE_MS = 3 * 60 * 60 * 1000;
  * espaço livre está abaixo do limiar: aí o disco cheio custa mais que
  * recriar o worktree do fixer.
  *
+ * `autonomousOnly` (default `false` aqui; `main()` liga no modo normal,
+ * #11458): só entra worktree cuja branch é de rodada autônoma
+ * (`isAutonomousWorktreeBranch`). Sem isso, qualquer fim de overnight/develop
+ * removia um worktree parado do editor (limpo, HEAD em `origin/master` ou
+ * branch empurrada sem PR, ocioso há 3h), e a proteção de sessão em uso
+ * (`selectInUseWorktreeNames`) não cobre sessão interativa `stale` (15 min).
+ * Sob `--reclaim-open-pr` (guard de disco) `main()` desliga o filtro: aí o
+ * disco cheio custa mais que recriar o worktree.
+ *
  * Fail-soft na direção segura: `isHeadOnRemote` indeterminado deve devolver
  * `false`; `getLastActivityMs` indeterminado (`null`) nunca seleciona.
  * Worktree `locked` e em uso por sessão ativa já saíram antes, em `main()`.
@@ -536,14 +560,16 @@ export function selectPushedCleanForRemoval(
   getLastActivityMs: (path: string) => number | null,
   hasOpenPr: (branch: string) => boolean,
   nowMs: number,
-  options: { minAgeMs?: number; includeOpenPr?: boolean } = {},
+  options: { minAgeMs?: number; includeOpenPr?: boolean; autonomousOnly?: boolean } = {},
 ): WorktreeEntry[] {
   const minAgeMs = options.minAgeMs ?? PUSHED_CLEAN_MIN_AGE_MS;
   const includeOpenPr = options.includeOpenPr ?? false;
+  const autonomousOnly = options.autonomousOnly ?? false;
   const alreadyPaths = new Set(alreadySelected.map((e) => e.path));
   const result: WorktreeEntry[] = [];
   for (const e of entries) {
     if (alreadyPaths.has(e.path)) continue;
+    if (autonomousOnly && !isAutonomousWorktreeBranch(e.branch)) continue;
     const lastActivityMs = getLastActivityMs(e.path);
     if (lastActivityMs === null) continue;
     if (nowMs - lastActivityMs < minAgeMs) continue;
@@ -1250,7 +1276,8 @@ export function runMainWithCheckers(
             checkers.lastActivityMs,
             checkers.hasOpenPr,
             checkers.nowMs ?? Date.now(),
-            { includeOpenPr: reclaimOpenPr },
+            // #11458: no modo normal, só worktree de rodada autônoma.
+            { includeOpenPr: reclaimOpenPr, autonomousOnly: !reclaimOpenPr },
           )
         : [];
     // #7304: último filtro, depois de toda a elegibilidade por histórico —
@@ -1269,7 +1296,7 @@ export function runMainWithCheckers(
         `${orphanedStaleRemoval.length} órfão(s) parado(s) há mais de 7 dias (#5418), ` +
         `${abandonedRemoval.length} abandonado(s) — issue fechada há mais de 14 dias (#7650), ` +
         `${pushedCleanRemoval.length} já enviado(s) — HEAD no remoto, parado há 3h ou mais` +
-        `${reclaimOpenPr ? ", incluindo PR aberta" : ""} (#11446).`,
+        `${reclaimOpenPr ? ", incluindo PR aberta e qualquer branch" : ", só worktree-agent-*/overnight/* (#11458)"} (#11446).`,
     );
 
     if (mergedOpenPrSkipped.skipped.length > 0) {
