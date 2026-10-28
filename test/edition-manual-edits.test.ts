@@ -10,7 +10,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   applyAutofixReplacements,
   applyIntentionalError,
@@ -449,9 +449,12 @@ describe("stage1EditorAddedUrls (#9641)", () => {
 
 describe("editionsRootOf / trailingSeriesSummary (#9641)", () => {
   it("editionsRootOf: layout nested (AAMM/AAMMDD) e flat (AAMMDD)", () => {
-    assert.equal(editionsRootOf("/x/data/editions/2609/260930"), "/x/data/editions");
-    assert.equal(editionsRootOf("/x/data/editions/260930"), "/x/data/editions");
-    assert.equal(editionsRootOf("/x/data/editions/2609/260930/"), "/x/data/editions");
+    // `resolve` no esperado: o código devolve caminho absoluto do SO (no
+    // Windows, `C:\x\data\editions`), e é isso que ele deve devolver (#11243).
+    const root = resolve("/x/data/editions");
+    assert.equal(editionsRootOf("/x/data/editions/2609/260930"), root);
+    assert.equal(editionsRootOf("/x/data/editions/260930"), root);
+    assert.equal(editionsRootOf("/x/data/editions/2609/260930/"), root);
   });
 
   const editionNames = (n: number) =>

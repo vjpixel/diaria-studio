@@ -50,7 +50,7 @@ describe("#9188: lote verificado de conteúdo reverte em falha parcial", { skip:
 
       // O rollback do próprio 03-social.md também falha (EACCES) — inofensivo, ele
       // nunca foi alterado; o que importa é que os JSONs/md voltaram.
-      assert.throws(() => promoteToDestaque(dir, URL_RADAR, 1), /EACCES/);
+      assert.throws(() => promoteToDestaque(dir, URL_RADAR, 1), /EACCES|EPERM/); // Windows: EPERM (#11243)
       assert.deepEqual(snapshot(dir), before);
     } finally {
       chmodSync(join(dir, "03-social.md"), 0o644);
@@ -83,7 +83,7 @@ describe("#9188: lote verificado de conteúdo reverte em falha parcial", { skip:
         { cwd: projectRoot, encoding: "utf8" },
       );
       assert.notEqual(r.status, 0, `CLI deveria falhar. stdout: ${r.stdout}`);
-      assert.match(r.stderr, /EACCES/);
+      assert.match(r.stderr, /EACCES|EPERM/); // Windows: EPERM (#11243)
       assert.deepEqual(snapshot(dir), before);
       // Nenhum arquivo residual criado no lote.
       assert.deepEqual(readdirSync(dir).sort(), ["02-reviewed.md", "03-social.md", "_internal"]);

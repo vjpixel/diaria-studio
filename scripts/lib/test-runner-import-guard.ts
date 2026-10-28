@@ -25,7 +25,14 @@
  * `node:test`.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
+
+/** Caminho relativo a `baseDir` sempre com `/`, no Windows também (#11243):
+ *  é texto de mensagem pro humano, e o mesmo infrator não pode sair
+ *  `test\x.test.ts` no Neo e `test/x.test.ts` no CI. */
+function relativoPosix(baseDir: string, arquivo: string): string {
+  return relative(baseDir, arquivo).split(sep).join("/");
+}
 
 /** Runners que este repo NÃO usa. Importar qualquer um deles é erro de
  *  ambiente, não escolha — `node:test` é o runner único (ver `npm test` →
@@ -81,7 +88,7 @@ export function detectarRunnerProibido(arquivos: string[], baseDir: string): str
         `^\\s*import\\b[^;]*from\\s*["']${alvo}["']|require\\(\\s*["']${alvo}["']`,
       );
       if (linhas.some((l) => re.test(l))) {
-        infratores.push(`${relative(baseDir, arquivo)} → ${runner}`);
+        infratores.push(`${relativoPosix(baseDir, arquivo)} → ${runner}`);
       }
     }
   }
@@ -100,7 +107,7 @@ export function detectarImportAusenteNodeTest(arquivos: string[], baseDir: strin
       /from\s*["']node:test["']/.test(src) || /import\(\s*["']node:test["']/.test(src);
     if (importaDoNodeTest) continue;
     const usa = linhasDeCodigo(src).some((l) => /^\s*(describe|it)\s*\(/.test(l));
-    if (usa) infratores.push(relative(baseDir, arquivo));
+    if (usa) infratores.push(relativoPosix(baseDir, arquivo));
   }
   return infratores;
 }

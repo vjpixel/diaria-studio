@@ -17,10 +17,13 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: executa script bash do continuo/hermes, que só roda no 300 (Linux); no Git Bash do Windows symlink, chmod e jq não se comportam igual";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT_PATH = join(ROOT, "test/continuo-pr-review-infra-error-visibility-6910.test.sh");
 
-describe("continuo-pr-review.sh — motivo de erro de infra chega ao resumo de stdout (#6910)", () => {
+describe("continuo-pr-review.sh — motivo de erro de infra chega ao resumo de stdout (#6910)", { skip: SKIP_WIN32 }, () => {
   it("bash test/continuo-pr-review-infra-error-visibility-6910.test.sh sai com exit 0", () => {
     let out = "";
     try {

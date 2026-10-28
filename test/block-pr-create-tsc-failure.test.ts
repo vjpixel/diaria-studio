@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 
 import {
   TSC_PR_GUARD_BYPASS_ENV,
@@ -132,7 +133,7 @@ describe("logTscGuardEvent (#8482) — fail-soft e nunca silencioso quando usado
       } as never,
     );
     assert.equal(writes.length, 1);
-    assert.equal(writes[0].path, "/wt/data/run-log.jsonl");
+    assert.equal(writes[0].path, join("/wt", "data", "run-log.jsonl")); // `join`: separador do SO (#11243)
     const parsed = JSON.parse(writes[0].content.trim());
     assert.equal(parsed.message, "tsc_pr_guard_bypassed");
     assert.equal(parsed.agent, "pr-create-tsc-guard");

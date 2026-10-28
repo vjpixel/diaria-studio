@@ -26,6 +26,9 @@ import {
 import type { ScheduledTaskDefinition } from "../scripts/lib/scheduled-tasks.ts";
 import type { GitSyncResult } from "../scripts/lib/git-sync.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: sinais POSIX; no Windows o SIGTERM vira TerminateProcess e o filho não termina 'pelo sinal'";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 const NOOP_SYNC = (): GitSyncResult => ({
@@ -70,7 +73,7 @@ describe("#10063 — abnormalStepExitReason distingue sinal de falha de spawn", 
     assert.match(r, /falha de spawn antes do processo iniciar\): ENOENT/);
   });
 
-  it("spawn real de um script que se mata com SIGTERM → output nomeia o sinal", () => {
+  it("spawn real de um script que se mata com SIGTERM → output nomeia o sinal", { skip: SKIP_WIN32 }, () => {
     const script = join(workDir, "self-kill.ts");
     writeFileSync(script, 'process.kill(process.pid, "SIGTERM");\nsetTimeout(() => {}, 5000);\n');
     const result = execTsxStep(script, [], ROOT);

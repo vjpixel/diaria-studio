@@ -15,7 +15,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { planBeehiivSnapshotReport } from "../scripts/lib/data-dir-gc-policy.ts";
 import {
   findMonthsWithoutSnapshot,
@@ -142,7 +142,9 @@ describe("#10710 — Stage 0 pede o dispatch do beehiiv-exit-history-drain (0h.4
   }
 
   it("manifest ausente com data/beehiiv-backup/ presente → dispatch 0h.4 (o estado encontrado em 21/10)", () => {
-    const d = planExitHistoryDispatch(fsDeps({}, ["/repo/data/beehiiv-backup"]));
+    // Chaves do fs falso montadas com `resolve`: o código usa `resolve(rootDir, ...)`,
+    // que no Windows sai com `\` (#11243).
+    const d = planExitHistoryDispatch(fsDeps({}, [resolve("/repo", "data", "beehiiv-backup")]));
     assert.ok(d);
     assert.equal(d!.step, "0h.4");
     assert.equal(d!.agent, "beehiiv-exit-history-drain");
@@ -151,10 +153,11 @@ describe("#10710 — Stage 0 pede o dispatch do beehiiv-exit-history-drain (0h.4
   });
 
   it("manifest incompleto → dispatch; completo → nada", () => {
-    const path = "/repo/data/beehiiv-backup/exit-history/manifest.json";
-    const incompleto = planExitHistoryDispatch(fsDeps({ [path]: JSON.stringify({ complete: false }) }, ["/repo/data/beehiiv-backup"]));
+    const path = resolve("/repo", "data", "beehiiv-backup", "exit-history", "manifest.json");
+    const backupDir = resolve("/repo", "data", "beehiiv-backup");
+    const incompleto = planExitHistoryDispatch(fsDeps({ [path]: JSON.stringify({ complete: false }) }, [backupDir]));
     assert.match(incompleto!.detail, /incomplete/);
-    assert.equal(planExitHistoryDispatch(fsDeps({ [path]: JSON.stringify({ complete: true }) }, ["/repo/data/beehiiv-backup"])), null);
+    assert.equal(planExitHistoryDispatch(fsDeps({ [path]: JSON.stringify({ complete: true }) }, [backupDir])), null);
   });
 
   it("sem data/beehiiv-backup/ (sessão cloud, clone fresco) → nunca despacha", () => {

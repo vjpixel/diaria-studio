@@ -15,6 +15,9 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { DEFAULT_ALLOWED_SESSION_FIELDS, extractSessionStatus } from "../scripts/lib/hermes-session-status.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do Hermes, que só roda no 300 (Linux): allowlist ancorada em ~/.hermes e caminhos POSIX";
+
 describe("extractSessionStatus — objeto mapa sessionId -> registro", () => {
   it("mantém a CHAVE (id estrutural) e filtra o VALOR pelos campos permitidos", () => {
     const raw = {
@@ -78,7 +81,7 @@ describe("extractSessionStatus — formas inesperadas", () => {
   });
 });
 
-describe("CLI read-hermes-session-status.ts", () => {
+describe("CLI read-hermes-session-status.ts", { skip: SKIP_WIN32 }, () => {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const script = resolve(repoRoot, "scripts/read-hermes-session-status.ts");
 

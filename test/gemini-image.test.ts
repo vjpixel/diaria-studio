@@ -136,8 +136,10 @@ describe("gemini-image.js usa fileURLToPath (#6486)", () => {
   it("fileURLToPath continua correto no formato Unix/Linux (caminho que já funcionava)", () => {
     const unixArgv1 = "/home/ed/diaria-studio/scripts/gemini-image.js";
     const unixMetaUrl = "file:///home/ed/diaria-studio/scripts/gemini-image.js";
-    assert.equal(fileURLToPath(unixMetaUrl), unixArgv1);
-    assert.notEqual(fileURLToPath(unixMetaUrl), "/home/ed/diaria-studio/scripts/outro-script.ts");
+    // `windows: false`: a semântica Linux é o que se testa aqui, em qualquer SO —
+    // no Windows o default recusa `file:///home/...` sem letra de drive (#11243).
+    assert.equal(fileURLToPath(unixMetaUrl, { windows: false }), unixArgv1);
+    assert.notEqual(fileURLToPath(unixMetaUrl, { windows: false }), "/home/ed/diaria-studio/scripts/outro-script.ts");
   });
 });
 

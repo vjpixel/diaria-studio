@@ -31,6 +31,9 @@ import {
 import { getScheduledTaskByName, SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import { scheduleToOnCalendar } from "../scripts/lib/systemd-units.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: watchdog systemd do 300 (Linux): wrapper bash com hermes falso e PATH POSIX (~/.local/bin, ':')";
+
 const JOB_ID = "5d791ef6fc2c";
 const SYSTEMD_LIKE_PATH = "/usr/bin:/bin";
 
@@ -95,7 +98,7 @@ function runWrapper(fake: FakeHome) {
   return { code, logs, events };
 }
 
-describe("#10070 — retomada por execução horária, fora do watch diário", () => {
+describe("#10070 — retomada por execução horária, fora do watch diário", { skip: SKIP_WIN32 }, () => {
   let fake: FakeHome | null = null;
   beforeEach(() => {
     fake = null;
@@ -159,7 +162,7 @@ describe("#10070 — Diaria-Continuo-Ratelimit-Watchdog no registro", () => {
 });
 
 describe("#10070 — helpers do wrapper", () => {
-  it("buildWatchdogEnv põe ~/.local/bin na frente do PATH, sem duplicar", () => {
+  it("buildWatchdogEnv põe ~/.local/bin na frente do PATH, sem duplicar", { skip: SKIP_WIN32 }, () => {
     const env = buildWatchdogEnv({ PATH: "/usr/bin:/bin" }, "/home/x");
     assert.equal(env.PATH, "/home/x/.local/bin:/usr/bin:/bin");
     assert.equal(env.HOME, "/home/x");

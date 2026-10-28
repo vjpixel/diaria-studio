@@ -49,6 +49,9 @@ import {
   resolveEnvInjectedSessionId,
 } from "../scripts/lib/session-id-required-subcommands.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: elo Codex do Hermes, que só roda no 300 (Linux): executa os scripts bash do elo, hooks de git e gh shim com shebang";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WRAPPER = join(ROOT, "hermes/scripts/claude-delegate.sh");
 const LANE_DIR = join(ROOT, "hermes/scripts/codex-lane");
@@ -227,7 +230,7 @@ function attemptOrder(stderr: string): string[] {
 // sempre o de assinatura.
 const FIRST_NON_CODEX = new Set(["sonnet"]);
 
-describe("#10560 — ordem da cadeia", () => {
+describe("#10560 — ordem da cadeia", { skip: SKIP_WIN32 }, () => {
   it("desligado por padrão: codex nunca é chamado", () => {
     writeSessionFile();
     const r = runWrapper(wrapperEnv());
@@ -733,7 +736,7 @@ describe("#10560 — stderr real de cota esgotada (codex-rs rust-v0.159.1)", () 
   });
 });
 
-describe("#10584 — guard de master só no checkout-alvo", () => {
+describe("#10584 — guard de master só no checkout-alvo", { skip: SKIP_WIN32 }, () => {
   it("e2e: dentro do codex, commit em master de repo descartável passa; no checkout-alvo é recusado", () => {
     const target = join(tmp, `repo-scope-${Date.now()}`);
     initRepo(target);
@@ -787,7 +790,7 @@ describe("#10584 — guard de master só no checkout-alvo", () => {
   });
 });
 
-describe("#10560 — invocação e ambiente do processo codex", () => {
+describe("#10560 — invocação e ambiente do processo codex", { skip: SKIP_WIN32 }, () => {
   it("argv pinado: exec -m gpt-6.1-sol -c model_reasoning_effort=\"low\" --sandbox ... --color never -C <cwd> -", () => {
     writeSessionFile();
     const r = runWrapper(wrapperEnv({ CLAUDE_DELEGATE_CODEX_LANE: "1" }), ["--effort", "high"]);
@@ -889,7 +892,7 @@ describe("#10560 — preflight fail-closed", () => {
   });
 });
 
-describe("#10560 — guard de master/main (reference-transaction por core.hooksPath)", () => {
+describe("#10560 — guard de master/main (reference-transaction por core.hooksPath)", { skip: SKIP_WIN32 }, () => {
   let r: string;
   before(() => {
     r = join(tmp, "hookrepo");
@@ -940,7 +943,7 @@ describe("#10560 — guard de master/main (reference-transaction por core.hooksP
   });
 });
 
-describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard de PII)", () => {
+describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard de PII)", { skip: SKIP_WIN32 }, () => {
   let r: string;
   let realGhDir: string;
   let ghLog: string;

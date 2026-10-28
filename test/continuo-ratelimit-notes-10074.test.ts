@@ -33,6 +33,9 @@ import {
   ratelimitNotesPath,
 } from "../scripts/lib/continuo-ratelimit-notes.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: executa o wrapper bash do continuo (300, Linux) com hermes falso no PATH; no Git Bash do Windows o shim não é achado";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const JOB_ID = "5d791ef6fc2c";
 const SYSTEMD_LIKE_PATH = "/usr/bin:/bin";
@@ -72,7 +75,7 @@ function makeActiveJobHome(): { home: string; callsFile: string; markerPath: str
   return { home, callsFile, markerPath: join(cronDir, ".paused-by-watchdog") };
 }
 
-describe("#10074 — ramo de pausa pelo wrapper enfileira o aviso pro watch", () => {
+describe("#10074 — ramo de pausa pelo wrapper enfileira o aviso pro watch", { skip: SKIP_WIN32 }, () => {
   it("job ativo + failure_streak>=2 + 403 → pausa, exit 0, marcador key_limit, evento info, aviso na fila", () => {
     const fake = makeActiveJobHome();
     const events: Array<{ level: string; message: string }> = [];
@@ -103,7 +106,7 @@ describe("#10074 — ramo de pausa pelo wrapper enfileira o aviso pro watch", ()
     const notesPath = ratelimitNotesPath(fake.home);
     appendRatelimitNote(notesPath, "⏸️ **Diária Contínuo pausado** pelo watchdog", new Date("2026-10-13T14:00:00Z"));
     const run = () =>
-      execFileSync("npx", ["tsx", join(ROOT, "scripts", "drain-continuo-ratelimit-notes.ts"), "--home", fake.home], {
+      execFileSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "drain-continuo-ratelimit-notes.ts"), "--home", fake.home], {
         cwd: ROOT,
         encoding: "utf8",
       });

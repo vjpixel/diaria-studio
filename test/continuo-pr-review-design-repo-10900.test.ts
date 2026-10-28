@@ -20,6 +20,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: executa script bash do continuo/hermes, que só roda no 300 (Linux); no Git Bash do Windows symlink, chmod e jq não se comportam igual";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(ROOT, "hermes/scripts/continuo-pr-review.sh");
 const src = readFileSync(SCRIPT, "utf8");
@@ -98,7 +101,7 @@ function runTryMergeGate(repo: "studio" | "design"): string[] {
   }
 }
 
-describe("continuo-pr-review.sh — PRs do vjpixel/diaria-design (#10900)", () => {
+describe("continuo-pr-review.sh — PRs do vjpixel/diaria-design (#10900)", { skip: SKIP_WIN32 }, () => {
   it("vez do design: gate e merge com GH_REPO do design, lock --repo, sem git pull; volta pro studio limpa GH_REPO", () => {
     const ev = runTryMergeGate("design");
     assert.deepEqual(ev, [

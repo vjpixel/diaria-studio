@@ -128,8 +128,10 @@ describe("#9101: invariante Stage 2/Stage 4", () => {
   };
 
   it("deriva o jsonl a partir do diretório nested da edição", () => {
-    assert.equal(intentionalErrorsJsonlPathForEditionDir("/r/data/editions/2609/260930"), "/r/data/intentional-errors.jsonl");
-    assert.equal(intentionalErrorsJsonlPathForEditionDir("/r/data/editions/260930"), "/r/data/intentional-errors.jsonl");
+    // `join` no esperado: o código monta com o separador do SO (#11243).
+    const jsonl = join("/r", "data", "intentional-errors.jsonl");
+    assert.equal(intentionalErrorsJsonlPathForEditionDir("/r/data/editions/2609/260930"), jsonl);
+    assert.equal(intentionalErrorsJsonlPathForEditionDir("/r/data/editions/260930"), jsonl);
   });
   it("Anthropik em 260930 → violação error (caso real)", () => {
     const v = checkIntentionalErrorNotRecentRepeat(fixture(ANTHROPIK, JSONL));

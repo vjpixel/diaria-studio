@@ -84,8 +84,9 @@ describe("intentional-error-flagged CLI — --headless true escala pra exit 1 (#
     try {
       assert.throws(() => {
         execFileSync(
-          "npx",
+          process.execPath,
           [
+            "--import",
             "tsx",
             cliPath,
             "--check",
@@ -107,8 +108,8 @@ describe("intentional-error-flagged CLI — --headless true escala pra exit 1 (#
     const mdPath = makeEdition("numeric");
     try {
       execFileSync(
-        "npx",
-        ["tsx", cliPath, "--check", "intentional-error-flagged", "--md", mdPath],
+        process.execPath,
+        ["--import", "tsx", cliPath, "--check", "intentional-error-flagged", "--md", mdPath],
         { stdio: "pipe" },
       );
       // Sem throw = exit 0. Sucesso.
@@ -121,8 +122,9 @@ describe("intentional-error-flagged CLI — --headless true escala pra exit 1 (#
     const mdPath = makeEdition("ortografico");
     try {
       execFileSync(
-        "npx",
+        process.execPath,
         [
+          "--import",
           "tsx",
           cliPath,
           "--check",

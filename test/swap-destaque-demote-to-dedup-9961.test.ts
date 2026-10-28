@@ -151,8 +151,8 @@ describe("#9961 — CLI e2e: --promote radar:0 --demote d3 --demote-to radar", (
       writeFileSync(join(internal, "01-approved.json"), JSON.stringify(fixture(), null, 2));
       writeFileSync(join(internal, "01-approved-capped.json"), JSON.stringify(fixture(), null, 2));
       const stdout = execFileSync(
-        "npx",
-        ["tsx", SCRIPT, "--edition", "261009", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d3", "--demote-to", "radar"],
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition", "261009", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d3", "--demote-to", "radar"],
         { encoding: "utf8", cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
       const result = JSON.parse(stdout);
@@ -176,8 +176,8 @@ describe("#9961 — CLI e2e: --promote radar:0 --demote d3 --demote-to radar", (
       writeFileSync(join(internal, "01-approved.json"), JSON.stringify(fixture(), null, 2));
       writeFileSync(join(internal, "01-approved-capped.json"), JSON.stringify(fixture(), null, 2));
       execFileSync(
-        "npx",
-        ["tsx", SCRIPT, "--edition", "261009", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d3", "--drop"],
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition", "261009", "--edition-dir", dir, "--promote", "radar:0", "--demote", "d3", "--drop"],
         { encoding: "utf8", cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
       for (const f of ["01-approved.json", "01-approved-capped.json"]) {

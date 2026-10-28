@@ -393,7 +393,7 @@ const SCRIPT = pathResolve(ROOT, "scripts", "swap-destaques.ts");
 
 function runCli(args: string[]): { stdout: string; stderr: string; status: number } {
   try {
-    const stdout = execFileSync("npx", ["tsx", SCRIPT, ...args], {
+    const stdout = execFileSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
       encoding: "utf8",
       cwd: ROOT,
     });

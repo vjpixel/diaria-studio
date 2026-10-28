@@ -18,6 +18,9 @@ import {
   matchingHermesRuntimeRules,
 } from "../scripts/lib/hermes-runtime-sensitive-paths.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do Hermes, que só roda no 300 (Linux): allowlist ancorada em ~/.hermes e caminhos POSIX";
+
 const HOME = "/home/vjpixel";
 
 describe("homeRelative", () => {
@@ -80,7 +83,7 @@ describe("higiene das regras", () => {
   });
 });
 
-describe("CLI check-continuo-workdir.ts --check-runtime-sensitive", () => {
+describe("CLI check-continuo-workdir.ts --check-runtime-sensitive", { skip: SKIP_WIN32 }, () => {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const script = resolve(repoRoot, "scripts/check-continuo-workdir.ts");
 

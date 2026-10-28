@@ -26,6 +26,9 @@ import {
   extractIndependentReviewVerdict,
 } from "../scripts/lib/pr-review-authenticity.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: roda o jq real contra o script do watcher do continuo (300, Linux); o Git Bash do Windows não tem jq";
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HEAD = "7489aca0123456789abcdef0123456789abcdef0";
 
@@ -129,7 +132,7 @@ function jq(filter: string, input: unknown): { status: number | null; stdout: st
 }
 
 describe("paridade dos consumidores em shell com a fonte única (#9632)", () => {
-  it("TRUSTED_AUTHOR_JQ_SELECT casa exatamente o conjunto de TRUSTED_AUTHOR_ASSOCIATIONS (jq real)", () => {
+  it("TRUSTED_AUTHOR_JQ_SELECT casa exatamente o conjunto de TRUSTED_AUTHOR_ASSOCIATIONS (jq real)", { skip: SKIP_WIN32 }, () => {
     const input = [
       ...TRUSTED_AUTHOR_ASSOCIATIONS.map((a) => ({ authorAssociation: a, body: a })),
       { author_association: "MEMBER", body: "rest" },

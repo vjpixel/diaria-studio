@@ -18,6 +18,9 @@ import { tmpdir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do continuo testado com gh falso (shim bash + PATH com ':'); no Windows o gh.exe real vence o shim. O CLI só roda no 300";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = "scripts/check-continuo-escalate-label.ts";
 const JUDGED = "a".repeat(40); // head que o gate julgou
@@ -51,7 +54,7 @@ function makeFakeGh(): { dir: string; postLog: string } {
 
 function run(args: string[], dir: string, postLog: string): { stdout: string; status: number } {
   try {
-    const stdout = execFileSync("npx", ["tsx", SCRIPT, ...args], {
+    const stdout = execFileSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
       cwd: ROOT,
       encoding: "utf8",
       timeout: 60_000,
@@ -65,7 +68,7 @@ function run(args: string[], dir: string, postLog: string): { stdout: string; st
   }
 }
 
-describe("marcador de head escalado grava o SHA julgado pelo gate (#9323)", () => {
+describe("marcador de head escalado grava o SHA julgado pelo gate (#9323)", { skip: SKIP_WIN32 }, () => {
   it("--head A com head atual B (push pós-gate) → marcador grava A, nunca B", () => {
     const { dir, postLog } = makeFakeGh();
     try {

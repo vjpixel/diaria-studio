@@ -56,9 +56,11 @@ test("#7722 item 2 — resolveWorktreeBranches lista TODOS os worktrees a partir
     const result = resolveWorktreeBranches(main);
     assert.notEqual(result, null, "deve resolver algo a partir do checkout principal — era o bug");
     const byBranch = Object.fromEntries((result as Array<{ branch: string; path: string | null }>).map((w) => [w.branch, w.path]));
-    assert.equal(byBranch["overnight/fix-100"], join(base, "wt-a1"), "worktree A deve refletir a branch dele, não a do principal");
-    assert.equal(byBranch["develop/fix-200"], join(base, "wt-b2"), "worktree B deve refletir a branch dele, não a do principal");
-    assert.equal(byBranch["continuo/fix-300"], join(base, "wt-c3"), "worktree C deve refletir a branch dele, não a do principal");
+    // O beacon normaliza o path pra `/` (`normalizePath`), no Windows também (#11243).
+    const posixPath = (p: string) => p.replaceAll("\\", "/");
+    assert.equal(byBranch["overnight/fix-100"], posixPath(join(base, "wt-a1")), "worktree A deve refletir a branch dele, não a do principal");
+    assert.equal(byBranch["develop/fix-200"], posixPath(join(base, "wt-b2")), "worktree B deve refletir a branch dele, não a do principal");
+    assert.equal(byBranch["continuo/fix-300"], posixPath(join(base, "wt-c3")), "worktree C deve refletir a branch dele, não a do principal");
     assert.equal(Object.keys(byBranch).length, 3, "os 3 worktrees devem aparecer, nenhum colapsando nos outros");
   } finally {
     rmSync(base, { recursive: true, force: true });

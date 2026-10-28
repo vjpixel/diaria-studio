@@ -36,6 +36,9 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: executa watch-continuo-health.sh (300, Linux) com gh falso; no Git Bash do Windows a saída com acento (—, ó, í) chega corrompida";
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = join(REPO_ROOT, "hermes", "scripts", "watch-continuo-health.sh");
 const source = readFileSync(SCRIPT, "utf8");
@@ -78,7 +81,7 @@ function runPrFirstFailedCheck(prnum: string, ghScript: string): { stdout: strin
   }
 }
 
-describe("#7832 — watch-continuo-health.sh: primeiro check falho por PR", () => {
+describe("#7832 — watch-continuo-health.sh: primeiro check falho por PR", { skip: SKIP_WIN32 }, () => {
   it("sintaxe bash do script continua válida (bash -n)", () => {
     const res = spawnSync("bash", ["-n", SCRIPT], { encoding: "utf8" });
     assert.equal(res.status, 0, `bash -n falhou: ${res.stderr}`);

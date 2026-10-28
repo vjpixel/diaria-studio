@@ -6,6 +6,9 @@ import { formatEscalateHeadMarker } from "../scripts/lib/continuo-escalate-owner
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: roda o jq real contra o script do watcher do continuo (300, Linux); o Git Bash do Windows não tem jq";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REVIEW_SH = join(ROOT, "hermes", "scripts", "continuo-pr-review.sh");
 const WATCH_SH = join(ROOT, "hermes", "scripts", "watch-continuo-health.sh");
@@ -109,7 +112,7 @@ describe("#8862 — PR de resgate (draft + bloqueio-execucao) não conta no alar
     );
   });
 
-  it("o jq real filtra uma PR draft+bloqueio-execucao (caso #8858), mantendo uma PR normal e removendo bot/*", () => {
+  it("o jq real filtra uma PR draft+bloqueio-execucao (caso #8858), mantendo uma PR normal e removendo bot/*", { skip: SKIP_WIN32 }, () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     const match = section.match(/--jq '(\[\.\[\][^\n]*\])'/);
     assert.ok(match, "expressão --jq não encontrada na §9");
@@ -152,7 +155,7 @@ describe("#8862 — PR de resgate (draft + bloqueio-execucao) não conta no alar
 describe("#9031 — PR já escalada (continuo-escalado) não conta no alarme de fila parada", () => {
   it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
 
-  it("o jq real filtra PR escalada draft (#8961) e não-draft (#9004) cujo head atual é o SHA escalado, mantendo uma PR normal", () => {
+  it("o jq real filtra PR escalada draft (#8961) e não-draft (#9004) cujo head atual é o SHA escalado, mantendo uma PR normal", { skip: SKIP_WIN32 }, () => {
     const input = [
       {
         number: 8961,
@@ -206,7 +209,7 @@ function runQueueFilters(input: object[]): number[] {
 describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escalado (push depois volta ao alarme)", () => {
   it("sintaxe bash válida", () => bashSyntaxOk(WATCH_SH));
 
-  it("PR escalada + push POSTERIOR à escalada (head != SHA escalado) entra na fila do alarme", () => {
+  it("PR escalada + push POSTERIOR à escalada (head != SHA escalado) entra na fila do alarme", { skip: SKIP_WIN32 }, () => {
     const out = runQueueFilters([
       {
         number: 9100,
@@ -221,7 +224,7 @@ describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escala
     assert.deepEqual(out, [9100], "PR consertada depois da escalada tem de voltar a contar no alarme");
   });
 
-  it("#9184 item 2: commit ANTIGO (data de committer anterior à escalada) empurrado depois volta a contar", () => {
+  it("#9184 item 2: commit ANTIGO (data de committer anterior à escalada) empurrado depois volta a contar", { skip: SKIP_WIN32 }, () => {
     // Na versão por datas, escalatedAt >= lastCommitAt excluía esta PR para sempre.
     const out = runQueueFilters([
       {
@@ -239,14 +242,14 @@ describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escala
     assert.deepEqual(out, [9110]);
   });
 
-  it("#9184 item 1: re-escalada do head novo (marcador novo) volta a excluir", () => {
+  it("#9184 item 1: re-escalada do head novo (marcador novo) volta a excluir", { skip: SKIP_WIN32 }, () => {
     const out = runQueueFilters([
       { number: 9111, headRefName: "e", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedHead: "ddddddd4", headSha: "ddddddd4" },
     ]);
     assert.deepEqual(out, []);
   });
 
-  it("dado de escalada/head indisponível = fail-open NA DIREÇÃO DO ALARME (a PR conta)", () => {
+  it("dado de escalada/head indisponível = fail-open NA DIREÇÃO DO ALARME (a PR conta)", { skip: SKIP_WIN32 }, () => {
     const out = runQueueFilters([
       { number: 9101, headRefName: "a", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }] },
       { number: 9102, headRefName: "b", createdAt: "2026-09-20T10:00:00Z", isDraft: false, labels: [{ name: "continuo-escalado" }], escalatedHead: null, headSha: "abcdef1" },
@@ -265,7 +268,7 @@ describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escala
     assert.match(section, /QUEUE_JSON=\$\(printf '%s' "\$QUEUE_RAW_JSON" \| jq -c --argjson enrich "\$QUEUE_ENRICH" "\$QUEUE_ENRICH_MERGE"[\s\S]{0,120}jq -c "\$QUEUE_ESCALATION_FILTER"/);
   });
 
-  it("a expressão --jq real de captura do marcador pega o ÚLTIMO SHA (vários por comentário, vários comentários)", () => {
+  it("a expressão --jq real de captura do marcador pega o ÚLTIMO SHA (vários por comentário, vários comentários)", { skip: SKIP_WIN32 }, () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     const m = section.match(/--jq '(\.\[\] \| select\([^\n]*\| \.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
     assert.ok(m, "expressão de captura do marcador não encontrada");
@@ -285,7 +288,7 @@ describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escala
     assert.equal(lines[lines.length - 1], "ccccccc3");
   });
 
-  it("o marcador que o watcher lê é o mesmo que check-continuo-escalate-label.ts grava", () => {
+  it("o marcador que o watcher lê é o mesmo que check-continuo-escalate-label.ts grava", { skip: SKIP_WIN32 }, () => {
     const out = formatEscalateHeadMarker("0123abcd");
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     const m = section.match(/--jq '(\.\[\] \| select\([^\n]*\| \.body \| capture[^\n]*)' 2>\/dev\/null \| tail -n 1\)/);
@@ -293,7 +296,7 @@ describe("#9156/#9184 — exclusão de continuo-escalado vale só pro SHA escala
     assert.equal(res.stdout.trim(), "0123abcd");
   });
 
-  it("o merge real do mapa de enriquecimento (chave string × .number numérico) alimenta o filtro", () => {
+  it("o merge real do mapa de enriquecimento (chave string × .number numérico) alimenta o filtro", { skip: SKIP_WIN32 }, () => {
     const section = watch.slice(watch.indexOf("QUEUE_COUNT_THRESHOLD=5"));
     const mergeMatch = section.match(/QUEUE_ENRICH_MERGE='([^'\n]+)'/);
     const filterMatch = section.match(/QUEUE_ESCALATION_FILTER='([^'\n]+)'/);

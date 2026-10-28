@@ -14,7 +14,7 @@
  */
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -198,7 +198,9 @@ test("filesystem: report.md sem plano força sufixo e preserva o relatório do h
     const probe = createFsPlanProbe();
     const resolved = resolvePlanPath(base, "261022", "new-session", probe);
     assert.equal(resolved.mode, "derived-after-collision");
-    assert.equal(resolved.path, join(base, "261022b", "plan.json"));
+    // `normalize`: o path sai `${base}/261022b/plan.json` (separador `/`
+    // fixo, por design); no Windows `base` tem `\` e a string fica mista (#11243).
+    assert.equal(normalize(resolved.path), join(base, "261022b", "plan.json"));
     mkdirSync(join(base, "261022b"));
     writeFileSync(resolved.path, JSON.stringify({ session_id: "new-session" }));
     writeFileSync(join(base, "261022b", "report.md"), "rodada normal");

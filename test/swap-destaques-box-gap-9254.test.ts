@@ -115,8 +115,8 @@ describe("swap preserva caixas de divulgação entre destaques (#9254)", () => {
       writeFileSync(join(dir, "_internal", "01-approved.json"), JSON.stringify(approved(), null, 2));
       writeFileSync(join(dir, "02-reviewed.md"), reviewedMdWithBoxes());
       execFileSync(
-        "npx",
-        ["tsx", SCRIPT, "--edition", "261001", "--edition-dir", dir, "--d2-url", "https://novo.com/y", "--d2-title", "Título Y"],
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition", "261001", "--edition-dir", dir, "--d2-url", "https://novo.com/y", "--d2-title", "Título Y"],
         { encoding: "utf8", cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
       );
       const md = readFileSync(join(dir, "02-reviewed.md"), "utf8");
