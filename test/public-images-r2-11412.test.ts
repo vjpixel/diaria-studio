@@ -118,10 +118,19 @@ function kvStore(entries: Record<string, ArrayBuffer>): KvImageStore & { reads: 
   };
 }
 
-function r2Store(entries: Record<string, { bytes: string; contentType?: string; etag?: string }>, opts: { throws?: boolean } = {}): R2ImageStore & { reads: string[] } {
+function r2Store(entries: Record<string, { bytes: string; contentType?: string; etag?: string }>, opts: { throws?: boolean } = {}): R2ImageStore & { reads: string[]; heads: string[] } {
   const reads: string[] = [];
+  const heads: string[] = [];
   return {
     reads,
+    heads,
+    head: async (key: string) => {
+      heads.push(key);
+      if (opts.throws) throw new Error("R2 indisponível");
+      const e = entries[key];
+      if (!e) return null;
+      return { httpEtag: e.etag ?? '"etag-r2"', httpMetadata: e.contentType ? { contentType: e.contentType } : undefined };
+    },
     get: async (key: string) => {
       reads.push(key);
       if (opts.throws) throw new Error("R2 indisponível");
@@ -183,6 +192,41 @@ describe("#11412 serveKvImage — fallback KV → R2", () => {
     const res = await serveKvImage(NEW_KEY, kvStore({}), null, r2Store({}, { throws: true }));
     assert.equal(res.status, 503);
     assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
+  });
+
+  it("HEAD (F4) usa r2.head, nunca r2.get: 200 sem corpo, mesmos headers", async () => {
+    const r2 = r2Store({ [NEW_R2_KEY]: { bytes: "r2-bytes", contentType: "image/png", etag: '"abc"' } });
+    const res = await serveKvImage(NEW_KEY, kvStore({}), null, r2, "HEAD");
+    assert.equal(res.status, 200);
+    assert.equal(res.body, null);
+    assert.equal(res.headers.get("Content-Type"), "image/png");
+    assert.equal(res.headers.get("ETag"), '"abc"');
+    assert.equal(res.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
+    assert.deepEqual(r2.heads, [NEW_R2_KEY]);
+    assert.deepEqual(r2.reads, []);
+  });
+
+  it("HEAD (F4) ausente → 404; If-None-Match → 304", async () => {
+    assert.equal((await serveKvImage(NEW_KEY, kvStore({}), null, r2Store({}), "HEAD")).status, 404);
+    const r2 = r2Store({ [NEW_R2_KEY]: { bytes: "x", etag: '"abc"' } });
+    const res = await serveKvImage(NEW_KEY, kvStore({}), '"abc"', r2, "HEAD");
+    assert.equal(res.status, 304);
+    assert.deepEqual(r2.reads, []);
+  });
+
+  it("Worker poll: HEAD em /img/ chega como HEAD no R2", async () => {
+    const r2 = r2Store({ [NEW_R2_KEY]: { bytes: "via-poll" } });
+    const env = {
+      POLL: kvStore({}) as unknown as KVNamespace,
+      MEDIA: r2,
+      POLL_SECRET: "t",
+      ADMIN_SECRET: "t",
+      ALLOWED_ORIGINS: "https://diar.ia.br",
+    } as Env;
+    const res = await handleImage(`/img/${NEW_KEY}`, env, new Request(`https://eia.diar.ia.br/img/${NEW_KEY}`, { method: "HEAD" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(r2.heads, [NEW_R2_KEY]);
+    assert.deepEqual(r2.reads, []);
   });
 
   it("sem binding R2 → 404 como antes", async () => {
@@ -262,7 +306,57 @@ describe("#11412 makeR2ImageUploader", () => {
       assert.equal(calls[0].url, `https://acc.r2.cloudflarestorage.com/diaria-shorts/${NEW_R2_KEY}`);
       assert.equal((calls[0].init?.headers as Record<string, string>)["cache-control"], PUBLIC_IMAGE_R2_CACHE_CONTROL);
       assert.equal(calls[1].url, `https://media.diar.ia.br/${NEW_R2_KEY}`);
+      // F1: depois do PUT, HEAD na URL do Worker (a que vai pro e-mail).
+      assert.equal(calls[2].url, `https://eia.diar.ia.br/img/${NEW_KEY}`);
+      assert.equal(calls[2].init?.method, "HEAD");
+      assert.equal(calls.length, 3);
       await assert.rejects(up(file, "img-monthly-x.jpg", "image/jpeg"), /fica no KV/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // F1 (review da #11456): flag ligada antes do binding MEDIA subir → o
+  // bucket tem o objeto, mas o Worker responde 404. O uploader tem que lançar
+  // para o upload-images-public.ts cair no KV, nunca devolver a URL quebrada.
+  function uploaderWithWorker(workerRes: () => Response | Promise<Response>) {
+    return makeR2ImageUploader(
+      { accountId: "acc", accessKeyId: "k", secretAccessKey: "s", bucket: "diaria-shorts", publicBase: "https://media.diar.ia.br" },
+      "https://eia.diar.ia.br",
+      {
+        now: () => new Date("2026-10-28T12:00:00Z"),
+        fetch: async (u, init) => {
+          if (u.startsWith("https://eia.diar.ia.br/")) return workerRes();
+          return init?.method === "HEAD" ? new Response(null, { status: 200, headers: { "content-length": "5" } }) : new Response("", { status: 200 });
+        },
+      },
+    );
+  }
+
+  for (const status of [404, 503, 403]) {
+    it(`Worker responde ${status} na URL /img/ → lança (cai no KV)`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "r2-up-"));
+      try {
+        const file = join(dir, "x.jpg");
+        writeFileSync(file, "bytes");
+        await assert.rejects(uploaderWithWorker(() => new Response(null, { status }))(file, NEW_KEY, "image/jpeg"), new RegExp(`HTTP ${status}.*KV`));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("HEAD no Worker falha na rede → lança (cai no KV)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "r2-up-"));
+    try {
+      const file = join(dir, "x.jpg");
+      writeFileSync(file, "bytes");
+      await assert.rejects(
+        uploaderWithWorker(() => {
+          throw new Error("ECONNRESET");
+        })(file, NEW_KEY, "image/jpeg"),
+        /ECONNRESET.*KV/,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -361,6 +455,43 @@ describe("#11412 uploadPublicImages com R2 ligado", () => {
       assert.equal(r2.length, 1, "capa re-enviada pro R2");
       assert.deepEqual(kv, [], "É IA? cacheado no KV é reusado");
       assert.equal(res.images.cover.target, "r2");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("F1 ponta a ponta: Worker em 404 (binding ausente) → capa vai pro KV, com aviso", async () => {
+    const { dir, cleanup } = setupEdition();
+    try {
+      const kv: string[] = [];
+      let putSize = 0;
+      const up = makeR2ImageUploader(
+        { accountId: "acc", accessKeyId: "k", secretAccessKey: "s", bucket: "b", publicBase: "https://media.diar.ia.br" },
+        "https://eia.diar.ia.br",
+        {
+          now: () => new Date("2026-10-28T12:00:00Z"),
+          fetch: async (u, init) => {
+            if (u.startsWith("https://eia.diar.ia.br/")) return new Response("not found", { status: 404 });
+            if (init?.method === "PUT") {
+              putSize = (init.body as Uint8Array).byteLength;
+              return new Response("", { status: 200 });
+            }
+            return new Response(null, { status: 200, headers: { "content-length": String(putSize) } });
+          },
+        },
+      );
+      const res = await uploadPublicImages({
+        editionDir: dir,
+        mode: "newsletter",
+        uploaders: {
+          uploadToCloudflare: async (_p, key) => (kv.push(key), `https://kv/img/${key}`),
+          uploadToR2: up,
+        },
+        ensureD1PlayImage: async () => ({ status: "no_hero", path: null }),
+      });
+      assert.equal(res.images.cover.target, "cloudflare");
+      assert.equal(kv.length, 3);
+      assert.ok(res.warnings.some((w) => w.startsWith("cover") && w.includes("R2 falhou") && w.includes("HTTP 404")), JSON.stringify(res.warnings));
     } finally {
       cleanup();
     }

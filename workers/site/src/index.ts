@@ -576,7 +576,7 @@ export default {
     if (request.method === "GET" || request.method === "HEAD") {
       const key = imageKeyFromPath(reqUrl.pathname);
       if (key !== null) {
-        return serveKvImage(key, env.POLL, request.headers.get("If-None-Match"), env.MEDIA);
+        return serveKvImage(key, env.POLL, request.headers.get("If-None-Match"), env.MEDIA, request.method);
       }
     }
 

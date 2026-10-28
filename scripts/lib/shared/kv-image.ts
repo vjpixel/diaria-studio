@@ -40,17 +40,23 @@ export interface KvImageStore {
   get(key: string, type: "arrayBuffer"): Promise<ArrayBuffer | null>;
 }
 
-/** Objeto R2 mínimo que este módulo consome (subconjunto de `R2ObjectBody`). */
-export interface R2ImageObject {
-  body: ReadableStream;
+/** Metadado R2 mínimo (subconjunto de `R2Object`, o que `head` devolve). */
+export interface R2ImageHead {
   /** ETag já entre aspas, pronto pro header (`R2Object.httpEtag`). */
   httpEtag: string;
   httpMetadata?: { contentType?: string };
 }
 
+/** Objeto R2 mínimo que este módulo consome (subconjunto de `R2ObjectBody`). */
+export interface R2ImageObject extends R2ImageHead {
+  body: ReadableStream;
+}
+
 /** Binding R2 mínimo (subconjunto de `R2Bucket`) — mesmo racional de `KvImageStore`. */
 export interface R2ImageStore {
   get(key: string): Promise<R2ImageObject | null>;
+  /** #11412 F4: HEAD em `/img/` usa só o metadado, sem ler o corpo. */
+  head(key: string): Promise<R2ImageHead | null>;
 }
 
 /**
@@ -186,6 +192,7 @@ export async function serveKvImage(
   kv: KvImageStore,
   ifNoneMatch?: string | null,
   r2?: R2ImageStore | null,
+  method?: string,
 ): Promise<Response> {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
@@ -217,7 +224,7 @@ export async function serveKvImage(
     // #11412: KV primeiro (todo e-mail já enviado aponta pra lá); só a key que
     // o KV não tem vai ao R2, e só quando o Worker tem o binding.
     const r2Key = r2 ? r2KeyForImageKey(key) : null;
-    if (r2 && r2Key) return serveR2Image(key, r2Key, r2, ifNoneMatch);
+    if (r2 && r2Key) return serveR2Image(key, r2Key, r2, ifNoneMatch, method === "HEAD");
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
@@ -253,17 +260,19 @@ export async function serveKvImage(
  * `Cache-Control` por classe de key e `If-None-Match` → 304. O ETag é o do
  * próprio R2 (MD5 do PUT simples), não SHA-256: o corpo vem em stream, sem
  * ler o objeto inteiro na memória do Worker (um dos motivos da migração).
+ * HEAD (F4 do review) usa `r2.head`: só metadado, sem abrir o corpo.
  */
 async function serveR2Image(
   key: string,
   r2Key: string,
   r2: R2ImageStore,
   ifNoneMatch?: string | null,
+  isHead = false,
 ): Promise<Response> {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
-  let obj: R2ImageObject | null;
+  let obj: R2ImageObject | R2ImageHead | null;
   try {
-    obj = await r2.get(r2Key);
+    obj = isHead ? await r2.head(r2Key) : await r2.get(r2Key);
   } catch (err) {
     console.error(`kv-image: falha lendo "${r2Key}" do R2:`, err);
     return new Response("temporarily unavailable", { status: 503, headers: corsHeaders });
@@ -272,15 +281,16 @@ async function serveR2Image(
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
   const cacheControl = imageCacheControlFor(key);
+  const body: ReadableStream | null = isHead ? null : (obj as R2ImageObject).body;
   if (ifNoneMatch && ifNoneMatch === obj.httpEtag) {
     // O corpo não vai ser lido: cancelar libera o stream do binding.
-    await obj.body.cancel().catch(() => {});
+    if (body) await body.cancel().catch(() => {});
     return new Response(null, {
       status: 304,
       headers: { ...corsHeaders, "Cache-Control": cacheControl, ETag: obj.httpEtag },
     });
   }
-  return new Response(obj.body, {
+  return new Response(body, {
     headers: {
       ...corsHeaders,
       "Content-Type": obj.httpMetadata?.contentType || "image/jpeg",

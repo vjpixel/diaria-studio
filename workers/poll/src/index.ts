@@ -1687,7 +1687,7 @@ export async function handleImage(path: string, env: Env, request?: Request): Pr
   if (key === null) {
     return new Response("not found", { status: 404, headers: { "Access-Control-Allow-Origin": "*" } });
   }
-  return serveKvImage(key, env.POLL, request?.headers.get("If-None-Match"), env.MEDIA);
+  return serveKvImage(key, env.POLL, request?.headers.get("If-None-Match"), env.MEDIA, request?.method);
 }
 
 // ── /sitemap.xml (#5135 item 2) ──────────────────────────────────────────────

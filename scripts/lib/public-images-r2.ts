@@ -24,8 +24,9 @@
  * fixa que o `/vote` monta) e as chaves do jogo. Poda do KV e os uploaders
  * semanal/mensal/anual são fatias seguintes da #11412.
  *
- * ATIVAÇÃO (ordem importa — ligar a flag antes do binding deixa as imagens
- * novas em 404):
+ * ATIVAÇÃO (ordem recomendada; desde o F1 da #11456 o uploader confere a URL
+ * do Worker depois do PUT e cai no KV se ela não vier 200, então ligar a flag
+ * antes do binding não deixa imagem em 404, só mantém tudo no KV):
  *   1. Descomentar o bloco `[[r2_buckets]] binding = "MEDIA"` em
  *      `workers/poll/wrangler.toml` e `workers/site/wrangler.toml` e mergear
  *      (o deploy dos dois é automático no push).
@@ -82,8 +83,31 @@ export function makeR2ImageUploader(
     const r2Key = r2KeyForImageKey(kvKey);
     if (!r2Key) throw new Error(`public-images-r2: key "${kvKey}" não tem forma img-{AAMMDD}-… (fica no KV)`);
     await uploadToR2(deps, config, r2Key, readFileSync(imagePath), contentType, { cacheControl: PUBLIC_IMAGE_R2_CACHE_CONTROL });
-    return workerImageUrl(workerUrl, kvKey);
+    const url = workerImageUrl(workerUrl, kvKey);
+    await assertWorkerServesImage(deps, url);
+    return url;
   };
+}
+
+/**
+ * #11412 F1 (review da #11456): o HEAD de `uploadToR2` confere só a URL
+ * pública do bucket (`media.diar.ia.br/img/…`), mas a URL que vai pro e-mail
+ * é a do Worker (`{worker_url}/img/img-…`), que só serve o objeto com o
+ * binding `MEDIA` no ar. Conferir essa URL aqui torna a flag segura em
+ * qualquer ordem de ativação: sem o binding o Worker responde 404, o
+ * uploader lança e `upload-images-public.ts` cai no KV para essa imagem.
+ */
+async function assertWorkerServesImage(deps: R2UploadDeps, url: string): Promise<void> {
+  let res: Response;
+  try {
+    // UA explícito: request sem UA pode levar challenge da Cloudflare.
+    res = await deps.fetch(url, { method: "HEAD", headers: { "User-Agent": "diaria-studio/public-images-r2" } });
+  } catch (err) {
+    throw new Error(`public-images-r2: HEAD ${url} falhou (${err instanceof Error ? err.message : String(err)}) — imagem fica no KV`);
+  }
+  if (res.status !== 200) {
+    throw new Error(`public-images-r2: Worker devolveu HTTP ${res.status} em ${url} (binding MEDIA no ar?) — imagem fica no KV`);
+  }
 }
 
 /**
