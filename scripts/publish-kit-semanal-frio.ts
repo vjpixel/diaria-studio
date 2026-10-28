@@ -24,6 +24,12 @@
  * que o editor aprovou no gate da Etapa 4, sem re-render. Assunto e preview
  * iguais; `public: false` (a edição já tem a página pública do principal).
  *
+ * A cópia não é única (#11429): o estado guarda `source_content_hash`
+ * (assunto + preview + conteúdo do principal). No follow (semanal agendada)
+ * e no resume (`created_unverified`) o principal é relido; hash diferente
+ * (a Etapa 5 corrigiu o principal com `updateExistingKitBroadcast`) ⇒ PATCH
+ * de assunto/preview/conteúdo na semanal, relido, antes de (re)agendar.
+ *
  * ## Guards de audiência (#6126, #6582, #7651)
  *
  * Um `subscriber_filter` não resolvido no Kit manda pra base INTEIRA. Por isso:
@@ -60,6 +66,7 @@
  * 2 precondição (principal não agendado, tag inexistente, config, flags
  * parciais).
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +82,7 @@ import {
   findTagIdByName,
   updateBroadcast,
   type CreateBroadcastInput,
+  type UpdateBroadcastInput,
 } from "./lib/kit-broadcasts.ts";
 import { verifyDiariaAudienceFilter } from "./lib/kit-diaria-audience.ts";
 import { isMondayEdition } from "./lib/brevo-diaria-semanal.ts";
@@ -106,6 +114,13 @@ export interface SemanalFrioPublishDeps {
   createBroadcast: (input: CreateBroadcastInput) => Promise<KitBroadcastDetail>;
   /** PATCH de `send_at` (agendamento; `null` desagenda, #11294). */
   scheduleBroadcast: (id: number, sendAt: string | null) => Promise<void>;
+  /**
+   * #11429 — PATCH de assunto/preview/conteúdo quando o principal foi
+   * corrigido depois de a semanal existir. Sempre leva `send_at` e
+   * `subscriber_filter` explícitos (campo omitido no PATCH não é garantia de
+   * preservado, #8208).
+   */
+  updateBroadcastContent: (id: number, input: UpdateBroadcastInput) => Promise<void>;
   deleteBroadcast: (id: number) => Promise<void>;
   /** Issue de alarme: broadcast com filtro divergente que NÃO foi apagado. Fail-soft no caller. */
   raiseAlarm: (title: string, body: string) => void;
@@ -129,6 +144,8 @@ export type SemanalFrioPublishResult =
         | "already_sent"
         // Review do PR #11326 — a semanal foi abortada no Kit: terminal, sem PATCH.
         | "aborted"
+        // #11429 — principal corrigido depois de a semanal existir: conteúdo re-sincronizado, horário igual.
+        | "content_synced"
         // `followOnly` sem semanal agendada: nada a fazer.
         | "nothing_to_follow";
       broadcastId?: number;
@@ -142,6 +159,80 @@ export interface SemanalFrioPlatformConfig {
 }
 
 const sameInstant = (a: string | null | undefined, b: string) => typeof a === "string" && Date.parse(a) === Date.parse(b);
+
+/** O que a semanal copia do principal (assunto, preview, conteúdo cru, antes do intro). */
+interface SemanalSourceFields {
+  subject: string;
+  preview_text: string | null;
+  content: string;
+}
+
+function sourceFields(source: KitBroadcastDetail, fallbackPreview: string | null | undefined): SemanalSourceFields | null {
+  if (!source.content) return null;
+  return { subject: source.subject, preview_text: source.preview_text ?? fallbackPreview ?? null, content: source.content };
+}
+
+/** Pura (#11429) — hash do que a semanal copiou do principal; muda quando a Etapa 5 corrige o principal. */
+export function semanalSourceContentHash(f: SemanalSourceFields): string {
+  return createHash("sha256").update(JSON.stringify([f.subject, f.preview_text, f.content]), "utf8").digest("hex");
+}
+
+/**
+ * #11429 — relê o principal e, se o conteúdo mudou desde a cópia
+ * (`source_content_hash`), faz PATCH de assunto/preview/conteúdo na semanal
+ * e relê pra confirmar (assunto, preview e filtro). Estado sem hash (gravado
+ * antes do #11429) não tem base de comparação: `unchanged` com aviso.
+ */
+async function resyncSemanalContent(
+  deps: SemanalFrioPublishDeps,
+  args: {
+    broadcastId: number;
+    own: KitSemanalFrioPublished;
+    mainBroadcastId: number;
+    mainPreview: string | null | undefined;
+    sendAt: string | null;
+    push: boolean;
+  },
+): Promise<
+  | { kind: "unchanged"; hash: string | undefined }
+  | { kind: "dry_run"; reason: string }
+  | { kind: "synced"; hash: string; after: KitBroadcastDetail }
+  | { kind: "failed"; reason: string; filterDiverged?: boolean }
+> {
+  const { own, broadcastId } = args;
+  if (typeof own.source_content_hash !== "string") {
+    deps.log(`aviso: estado da semanal ${broadcastId} sem source_content_hash (anterior ao #11429) — conteúdo não re-sincronizado com o principal.`);
+    return { kind: "unchanged", hash: undefined };
+  }
+  const source = await deps.getBroadcast(args.mainBroadcastId);
+  const fields = sourceFields(source, args.mainPreview);
+  if (!fields) return { kind: "failed", reason: `broadcast principal ${args.mainBroadcastId} sem content no GET (re-sincronização da semanal, #11429).` };
+  const hash = semanalSourceContentHash(fields);
+  if (hash === own.source_content_hash) return { kind: "unchanged", hash };
+  if (!args.push) {
+    return { kind: "dry_run", reason: `re-sincronizaria o conteúdo da semanal ${broadcastId}: o principal ${args.mainBroadcastId} mudou desde a cópia (#11429).` };
+  }
+  const filter = buildTagFilter(own.tag_id);
+  await deps.updateBroadcastContent(broadcastId, {
+    subject: fields.subject,
+    preview_text: fields.preview_text ?? undefined,
+    content: injectSemanalFrioIntro(fields.content),
+    public: false,
+    send_at: args.sendAt,
+    subscriber_filter: filter,
+  });
+  const after = await deps.getBroadcast(broadcastId);
+  const verdict = verifyDiariaAudienceFilter(after.subscriber_filter, filter);
+  if (!verdict.ok) return { kind: "failed", filterDiverged: true, reason: `filtro relido após re-sincronizar o conteúdo não confere (${verdict.reason})` };
+  if (after.subject !== fields.subject || (fields.preview_text !== null && after.preview_text !== fields.preview_text)) {
+    return {
+      kind: "failed",
+      reason: `re-sincronização do conteúdo da semanal ${broadcastId} não confirmada na releitura (assunto/preview divergem); a próxima rodada tenta de novo.`,
+    };
+  }
+  deps.log(`semanal de frio ${broadcastId}: conteúdo re-sincronizado com o principal ${args.mainBroadcastId}, corrigido depois da cópia (#11429).`);
+  return { kind: "synced", hash, after };
+}
 
 export async function publishKitSemanalFrio(
   editionDir: string,
@@ -189,6 +280,7 @@ export async function publishKitSemanalFrio(
   const filter = buildTagFilter(tagId);
 
   let broadcastId: number;
+  let sourceHash: string | undefined;
   const stateBase = (id: number): KitSemanalFrioPublished => ({
     broadcast_id: id,
     status: "created_unverified",
@@ -196,20 +288,39 @@ export async function publishKitSemanalFrio(
     source_broadcast_id: main.broadcast_id!,
     tag_id: tagId,
     created_at: deps.nowIso(),
+    ...(sourceHash !== undefined ? { source_content_hash: sourceHash } : {}),
   });
   if (resuming) {
     if (!opts.push) return { code: 0, status: "dry_run", reason: `retomaria o rascunho ${resuming.broadcast_id} (created_unverified).` };
     broadcastId = resuming.broadcast_id;
     log(`retomando a semanal de frio ${broadcastId} (created_unverified de uma rodada anterior).`);
+    // #11429 — o principal pode ter sido corrigido (re-run da Etapa 5) desde a
+    // cópia: re-sincroniza antes de agendar. Rascunho: `send_at: null`, o
+    // agendamento abaixo recoloca o horário.
+    const sync = await resyncSemanalContent(deps, {
+      broadcastId,
+      own: resuming,
+      mainBroadcastId: main.broadcast_id,
+      mainPreview: main.preview_text,
+      sendAt: null,
+      push: true,
+    });
+    if (sync.kind === "failed") {
+      if (sync.filterDiverged) return deleteOrAlarm(deps, editionDir, broadcastId, sync.reason, stateBase(broadcastId));
+      return { code: 1, status: "failed", broadcastId, reason: sync.reason };
+    }
+    if (sync.kind === "unchanged" || sync.kind === "synced") sourceHash = sync.hash;
   } else {
     const members = await deps.countTagMembers(tagId);
     if (members === 0) return { code: 0, status: "empty_tag", reason: `tag "${KIT_FRIO_TAG_NAME}" sem membros — nada a enviar.` };
     const source = await deps.getBroadcast(main.broadcast_id);
-    if (!source.content) return { code: 1, status: "failed", reason: `broadcast principal ${main.broadcast_id} sem content no GET.` };
+    const fields = sourceFields(source, main.preview_text);
+    if (!fields) return { code: 1, status: "failed", reason: `broadcast principal ${main.broadcast_id} sem content no GET.` };
+    sourceHash = semanalSourceContentHash(fields);
     const input: CreateBroadcastInput = {
-      subject: source.subject,
+      subject: fields.subject,
       preview_text: source.preview_text ?? main.preview_text,
-      content: injectSemanalFrioIntro(source.content),
+      content: injectSemanalFrioIntro(fields.content),
       description: `Semanal frio (#11221) — edição ${edition}`,
       public: false,
       send_at: null, // RASCUNHO: só agenda depois de conferir o filtro
@@ -270,11 +381,12 @@ export async function publishKitSemanalFrio(
  */
 async function followMainSchedule(
   editionDir: string,
-  own: KitSemanalFrioPublished,
+  ownIn: KitSemanalFrioPublished,
   opts: { push: boolean },
   deps: SemanalFrioPublishDeps,
 ): Promise<SemanalFrioPublishResult> {
   const { log } = deps;
+  let own = ownIn;
   const broadcastId = own.broadcast_id;
   const main = deps.readMainState(editionDir);
   const mainScheduled = main !== null && main.status === "scheduled" && typeof main.scheduled_at === "string";
@@ -306,6 +418,32 @@ async function followMainSchedule(
     log(reason);
     return { code: 0, status: "aborted", broadcastId, reason };
   }
+  // #11429 — o principal corrigido depois do agendamento (re-run da Etapa 5,
+  // `updateExistingKitBroadcast`) não pode deixar a semanal com o conteúdo
+  // antigo. Só com o principal agendado: desagendado, a semanal sai do ar
+  // abaixo e o conteúdo é revisto quando ela for retomada.
+  let contentSynced = false;
+  if (mainScheduled) {
+    const sync = await resyncSemanalContent(deps, {
+      broadcastId,
+      own,
+      mainBroadcastId: main!.broadcast_id,
+      mainPreview: main!.preview_text,
+      sendAt: current?.send_at ?? own.scheduled_at,
+      push: opts.push,
+    });
+    if (sync.kind === "dry_run") return { code: 0, status: "dry_run", broadcastId, reason: sync.reason };
+    if (sync.kind === "failed") {
+      if (sync.filterDiverged) return deleteOrAlarm(deps, editionDir, broadcastId, sync.reason, own);
+      return { code: 1, status: "failed", broadcastId, reason: sync.reason };
+    }
+    if (sync.kind === "synced") {
+      own = { ...own, source_content_hash: sync.hash, source_broadcast_id: main!.broadcast_id };
+      deps.writeOwnState(editionDir, own);
+      current = sync.after; // o PATCH pode ter mexido no send_at (#8208): o que segue usa a releitura
+      contentSynced = true;
+    }
+  }
   if (mainScheduled && sameInstant(own.scheduled_at, main.scheduled_at!)) {
     // Review do PR #11308 (P2): o estado local `scheduled` pode estar
     // defasado — ex. o desagendamento abaixo foi confirmado no Kit, mas a
@@ -314,7 +452,7 @@ async function followMainSchedule(
     // rascunho em silêncio. Divergência ⇒ cai no reagendamento abaixo
     // (re-PATCH relido pro horário do principal).
     if (current && current.status === "scheduled" && sameInstant(current.send_at, main.scheduled_at!)) {
-      return { code: 0, status: "already_done", broadcastId };
+      return contentSynced ? { code: 0, status: "content_synced", broadcastId } : { code: 0, status: "already_done", broadcastId };
     }
     log(
       `semanal de frio ${broadcastId}: estado local diz agendada pra ${own.scheduled_at}, mas o Kit mostra ` +
@@ -441,6 +579,9 @@ export function productionSemanalFrioDeps(log: (msg: string) => void): SemanalFr
     createBroadcast: (input) => createBroadcast(input),
     scheduleBroadcast: async (id, sendAt) => {
       await updateBroadcast(id, { send_at: sendAt });
+    },
+    updateBroadcastContent: async (id, input) => {
+      await updateBroadcast(id, input);
     },
     deleteBroadcast: (id) => deleteBroadcast(id),
     raiseAlarm: (title, body) => raiseKitFrioAlarm({ check: "kit-semanal-frio-filtro", fingerprintSuffix: "nao-apagado", title, body }),

@@ -60,6 +60,9 @@ function deps(main: MainState, kitStatus: string) {
       patched.push(`${id}@${at}`);
       throw new Error("Kit API PATCH -> 422: Broadcast has already been sent");
     },
+    updateBroadcastContent: async () => {
+      throw new Error("não deveria re-sincronizar conteúdo");
+    },
     deleteBroadcast: async () => {
       throw new Error("não deveria apagar");
     },

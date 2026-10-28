@@ -191,6 +191,9 @@ function followDeps(main: MainState, over: Partial<SemanalFrioPublishDeps> = {})
       if (at === null) sendAt.delete(id);
       else sendAt.set(id, at);
     },
+    updateBroadcastContent: async () => {
+      throw new Error("não deveria re-sincronizar conteúdo");
+    },
     deleteBroadcast: async () => {},
     raiseAlarm: (title) => void alarms.push(title),
     ...over,

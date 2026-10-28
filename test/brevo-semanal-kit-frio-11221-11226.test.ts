@@ -929,6 +929,9 @@ function semanalDeps(over: Partial<SemanalFrioPublishDeps> = {}, opts: { rereadF
       if (at === null) sendAt.delete(id); // #11294: `null` desagenda
       else sendAt.set(id, at);
     },
+    updateBroadcastContent: async () => {
+      throw new Error("não deveria re-sincronizar conteúdo");
+    },
     deleteBroadcast: async (id) => void deleted.push(id),
     raiseAlarm: (title) => void alarms.push(title),
     ...over,
@@ -1064,9 +1067,13 @@ describe("restore-kit-sem-abertura-frio (#11221)", () => {
     ]);
   });
   it("cancelled vai pro painel (a API não reativa); active ganha as tags", () => {
-    assert.equal(decideKitRestore("cancelled", []), "painel");
-    assert.equal(decideKitRestore("active", ["envio-brevo"]), "tags");
-    assert.equal(decideKitRestore("active", ["frio"]), "ja_ok");
+    assert.equal(decideKitRestore("cancelled", [], "descadastrado_por_supressao"), "painel");
+    assert.equal(decideKitRestore("active", ["envio-brevo"], "in_brevo"), "tags");
+    assert.equal(decideKitRestore("active", ["frio"], "suprimido_aguardando_frio"), "ja_ok");
+  });
+  it("REGRESSÃO #11430: cancelled de origem in_brevo/suprimido_aguardando_frio é opt-out próprio, nunca vai pro painel", () => {
+    assert.equal(decideKitRestore("cancelled", [], "in_brevo"), "descadastro_proprio");
+    assert.equal(decideKitRestore("cancelled", ["envio-brevo"], "suprimido_aguardando_frio"), "descadastro_proprio");
   });
   function restoreDeps(ops: string[], storeRef: { store: { contacts: BrevoDiariaContact[] } }, panel: unknown[]) {
     return {
@@ -1106,6 +1113,26 @@ describe("restore-kit-sem-abertura-frio (#11221)", () => {
     const e = findContact(ref.store, "e@x.com")!;
     assert.equal(e.status, "converted_to_kit");
     assert.equal(e.resolution_reason, "kit_sem_abertura_frio");
+  });
+  it("REGRESSÃO #11430: --apply com cancelled in_brevo + cancelled por supressão ⇒ CSV só com o descadastrado por nós, sem tag/unlink/store", async () => {
+    const ops: string[] = [];
+    const ref = { store: { contacts: [contact("c@x.com", "kit-sem-abertura:3")] } };
+    const panel: { email: string }[] = [];
+    const deps = { ...restoreDeps(ops, ref, panel as unknown[]), getKit: async () => ({ state: "cancelled", tagNames: ["envio-brevo"] }) };
+    const r = await runKitSemAberturaRestore(
+      [
+        { email: "a@x.com", kitSubscriberId: 1, source: "descadastrado_por_supressao" },
+        { email: "c@x.com", kitSubscriberId: 3, source: "in_brevo" },
+        { email: "e@x.com", kitSubscriberId: 5, source: "suprimido_aguardando_frio" },
+      ],
+      { apply: true, frio: frioOn },
+      deps,
+    );
+    assert.deepEqual(panel.map((p) => p.email), ["a@x.com"]);
+    assert.equal(r.counts.painel, 1);
+    assert.equal(r.counts.descadastro_proprio, 2);
+    assert.deepEqual(ops, []);
+    assert.equal(findContact(ref.store, "c@x.com")!.status, "in_brevo");
   });
   it("REGRESSÃO P1-6: --apply sem kit.frio plenamente ligado ⇒ exit 2, nenhuma tag", async () => {
     const ops: string[] = [];
