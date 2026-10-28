@@ -81,6 +81,12 @@
  *  ativos sem sinal; nunca descadastro). Só com `kit.frio.enabled`; fail-soft
  *  como o 3b/3c; dry-run no preflight, `--push` no apply.
  *
+ * Passo 3e (#11431) — `sync-kit-envio-brevo-orphans.ts` (órfãos da tag
+ *  `envio-brevo` sem entrada no store: volta à diária do Kit, ou grava o
+ *  store se ainda recebe pela Brevo). Só com o 3c DESLIGADO (ligado, ele
+ *  mesmo reconcilia); roda antes do 3d, fail-soft, dry-run no preflight,
+ *  `--push` no apply.
+ *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
  * mesmo guard #4343 de `scripts/lib/task-runner.ts`/`clarice-novos-run.ts`),
  * nunca por import — spawn preserva stdout/stderr/exit code como contrato
@@ -262,6 +268,12 @@ export interface BrevoDiariaRunDeps {
    * `frio`/`suprimido` no Kit) nem é invocado.
    */
   kitFrioEnabled?: () => boolean;
+  /**
+   * #11431 — Passo 3e (`sync-kit-envio-brevo-orphans.ts`, órfãos da tag
+   * `envio-brevo` fora do store). Em produção = 3c DESLIGADO (com o 3c
+   * ligado, ele mesmo reconcilia os órfãos). Ausente ⇒ não invocado.
+   */
+  envioBrevoOrphanSweepEnabled?: () => boolean;
 }
 
 /**
@@ -300,6 +312,7 @@ export function productionDeps(rootDir: string = ROOT): BrevoDiariaRunDeps {
     exec: realExec(rootDir),
     kitSemAberturaEnabled: () => readKitSemAberturaFlag(rootDir),
     kitFrioEnabled: () => readKitFrioFlag(rootDir),
+    envioBrevoOrphanSweepEnabled: () => !readKitSemAberturaFlag(rootDir),
   };
 }
 
@@ -444,6 +457,9 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
       if (deps.kitSemAberturaEnabled?.() === true) {
         softStep(deps, steps, warnings, "Passo 3c — sync-kit-sem-abertura-to-brevo (dry-run)", "scripts/sync-kit-sem-abertura-to-brevo.ts", []);
       }
+      if (deps.envioBrevoOrphanSweepEnabled?.() === true) {
+        softStep(deps, steps, warnings, "Passo 3e — sync-kit-envio-brevo-orphans (dry-run)", "scripts/sync-kit-envio-brevo-orphans.ts", []);
+      }
       if (deps.kitFrioEnabled?.() === true) {
         softStep(deps, steps, warnings, "Passo 3d — sync-kit-frio (dry-run)", "scripts/sync-kit-frio.ts", []);
       }
@@ -518,6 +534,13 @@ export function runBrevoDiaria(argv: string[], deps: BrevoDiariaRunDeps): BrevoD
         "scripts/sync-kit-sem-abertura-to-brevo.ts",
         ["--push", ...maxAddArgs],
       );
+    }
+
+    // #11431 — com o 3c desligado, ninguém mais reparava o órfão da tag
+    // `envio-brevo` (fora do store): sem edição nenhuma, sem prazo. Antes do
+    // 3d, pra o frio já ver quem voltou ao Kit. Fail-soft como o 3b.
+    if (deps.envioBrevoOrphanSweepEnabled?.() === true) {
+      softStep(deps, steps, warnings, "Passo 3e — sync-kit-envio-brevo-orphans --push", "scripts/sync-kit-envio-brevo-orphans.ts", ["--push"]);
     }
 
     // #11221 — tags `frio`/`suprimido` no Kit (frios ficam no Kit, semanal de
