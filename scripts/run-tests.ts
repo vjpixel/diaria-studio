@@ -1075,8 +1075,10 @@ export function processChunkedBatches(
           result = retry;
         } else {
           emit(retry);
-          console.error(
-            `run-tests: falha ao spawnar ${label} (${batch.length} arquivos) mesmo após retry: ${retry.error.message} (timeout de ${batchTimeoutMs}ms — ${tryBisect(batch)})`,
+          // #11447: sempre pelo `stderr` injetado, nunca `console.error` —
+          // ver o comentário do branch `else` logo abaixo.
+          stderr.write(
+            `\nrun-tests: falha ao spawnar ${label} (${batch.length} arquivos) mesmo após retry: ${retry.error.message} (timeout de ${batchTimeoutMs}ms — ${tryBisect(batch)})\n`,
           );
           exitCode = 1;
           failedBatches.push(`${label} (falha ao spawnar, retry esgotado)`);
@@ -1086,8 +1088,13 @@ export function processChunkedBatches(
         const suffix = isTimeout
           ? ` (timeout de ${batchTimeoutMs}ms — ${tryBisect(batch)})`
           : "";
-        console.error(
-          `run-tests: falha ao spawnar ${label} (${batch.length} arquivos): ${result.error.message}${suffix}`,
+        // #11447: `stderr` injetado, nunca `console.error`. O `console.error`
+        // ignorava o sink que o teste passa e escrevia as mensagens dos
+        // FIXTURES de test/run-tests.test.ts ("falha ao spawnar ... /hang.test.ts
+        // ETIMEDOUT") no log real do CI, onde se confundiam com um travamento
+        // de verdade da suíte (PR #11407).
+        stderr.write(
+          `\nrun-tests: falha ao spawnar ${label} (${batch.length} arquivos): ${result.error.message}${suffix}\n`,
         );
         exitCode = 1;
         failedBatches.push(`${label} (falha ao spawnar)`);
@@ -1118,7 +1125,7 @@ export function processChunkedBatches(
           // Review #6833: mesmo fix do branch acima — emitir o parcial antes
           // de reportar o erro do retry.
           emit(retry);
-          console.error(`run-tests: falha ao spawnar retry do ${label}: ${retry.error.message}`);
+          stderr.write(`\nrun-tests: falha ao spawnar retry do ${label}: ${retry.error.message}\n`); // #11447
           exitCode = 1;
           failedBatches.push(`${label} (falha ao spawnar retry)`);
           return;
