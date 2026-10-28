@@ -1268,9 +1268,7 @@ async function main(): Promise<number | void> {
   // Fail-soft: qualquer peça faltando pula SÓ este post (warning), nunca
   // grava `failed` por ausência nem afeta D1/D2/D3 acima. Erro de agendamento
   // grava `failed`, igual aos destaques. O perfil PESSOAL (vjpixel) não sai
-  // daqui — o Worker recusa webhook_target=pixel com action=post; o mesmo
-  // texto sai automático com token do app pessoal (#9568,
-  // publish-linkedin-personal.ts), senão lembrete manual no Stage 6.
+  // daqui nem de lugar nenhum desde a #11398 (post pessoal aposentado).
   let useMelhorSummary: UseMelhorDispatchSummary = { status: "off", reason: "--only sem 'um'" };
   if (includeUseMelhor) {
     const umPlan = planUseMelhorDispatch(editionDir, config);

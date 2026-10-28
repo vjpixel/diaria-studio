@@ -1,21 +1,21 @@
 {
   "_formato": "orchestrator-prompt-snapshot/v2 (#9709): uma entrada por playbook, separadas por linha em branco para PRs em playbooks diferentes não conflitarem",
 
-  "orchestrator.md": { "hash": "665392f170ddf38a", "lines": 165 },
+  "orchestrator.md": { "hash": "04865489092813ee", "lines": 165 },
 
-  "orchestrator-stage-0-preflight.md": { "hash": "c3056c3f8dd799ac", "lines": 625 },
+  "orchestrator-stage-0-preflight.md": { "hash": "3a538a63b0e4ba33", "lines": 625 },
 
   "orchestrator-stage-1-research.md": { "hash": "5feca4b7dbe1ae61", "lines": 760 },
 
-  "orchestrator-stage-2.md": { "hash": "fb9f0e0c1638befc", "lines": 580 },
+  "orchestrator-stage-2.md": { "hash": "f52866a020fe664b", "lines": 580 },
 
   "orchestrator-stage-3.md": { "hash": "65a8a40bf8f6fac2", "lines": 147 },
 
-  "orchestrator-stage-4.md": { "hash": "e41ea3654829e870", "lines": 989 },
+  "orchestrator-stage-4.md": { "hash": "da042544f0dc1f8b", "lines": 990 },
 
-  "orchestrator-stage-5.md": { "hash": "0d65e478f1c72a10", "lines": 546 },
+  "orchestrator-stage-5.md": { "hash": "10a21df458b3651d", "lines": 549 },
 
-  "orchestrator-stage-6.md": { "hash": "3c802bd77f2cdb35", "lines": 757 },
+  "orchestrator-stage-6.md": { "hash": "183e61c5b608ee68", "lines": 733 },
 
   "_regenerar": "NODE_TEST_SNAPSHOTS=1 npx tsx --test test/orchestrator-prompt.test.ts"
 }

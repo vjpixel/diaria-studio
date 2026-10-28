@@ -12,9 +12,9 @@
  * (conservador, #9758). Recusa "<24h" da Meta não alerta (o token é novo), como
  * o Worker.
  *
- * Por que não no Worker: o consumidor previsto deste token é um script LOCAL
- * (`publish-shorts.ts`, que lê Doppler/`.env`, quando a integração do destino
- * `threads_profile` entrar), e o Worker não escreve no Doppler — o token
+ * Por que não no Worker: o consumidor deste token é um script LOCAL
+ * (`publish-shorts.ts`, que lê Doppler/`.env`, destino `threads_profile`,
+ * #11122), e o Worker não escreve no Doppler — o token
  * renovado no KV dele nunca chegaria ao consumidor. O token renovado vai pro
  * Doppler + `.env` por `scripts/lib/secret-persist.ts` (mesmo caminho dos
  * setups de OAuth do LinkedIn pessoal, YouTube e Facebook), com o vencimento em
@@ -22,9 +22,8 @@
  * que também vai pro Doppler — nunca só pro `.env`, senão o `sync-env` aborta
  * com `LocalOnlyEnvKeysError`).
  *
- * Onde roda: na máquina com o Doppler CLI autenticado com escrita (hoje, a do
- * editor). O `300` não tem o Doppler CLI (#11077), por isso a task está
- * DECLARADA, NÃO ARMADA.
+ * Onde roda: no `300`, que tem o Doppler CLI autenticado com escrita (#11077);
+ * a task foi habilitada em 27/10/2026.
  *
  * Doppler fora de sincronia: se a gravação no Doppler falhar, o `.env` local
  * fica com o token novo e o vault com o velho. Um marcador persistente
@@ -92,8 +91,8 @@ export interface RefreshRunResult {
 }
 
 const HOW_TO_FIX_DOPPLER =
-  "rode na máquina do editor (Doppler CLI autenticado com escrita em diaria-studio/dev): " +
-  "npx tsx scripts/threads-personal-token-refresh.ts, ou grave à mão com doppler secrets set. " +
+  "corrija a autenticação do Doppler CLI na máquina onde o refresh falhou (o 300, para a task) — a próxima execução regrava o token do .env dali " +
+  "(ou rode lá npx tsx scripts/threads-personal-token-refresh.ts). " +
   "Enquanto THREADS_PERSONAL_TOKEN_EXPIRES_AT existir só no .env, o npm run sync-env aborta com LocalOnlyEnvKeysError";
 
 /**

@@ -145,6 +145,7 @@ describe("#10916 teto de duração por conta", () => {
         schedule: SCHEDULE,
         facebook_pages: ["diaria"],
         instagram: true,
+        instagram_backend: "worker-r2",
         instagram_author_page: author,
         instagram_collaborators: author === null ? [] : ["diar.ia.br"],
         instagram_api_max_seconds_by_account: byAccount,

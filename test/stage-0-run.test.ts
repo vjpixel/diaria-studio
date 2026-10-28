@@ -219,7 +219,7 @@ describe("parseStage0RunArgs", () => {
     assert.throws(() => parseStage0RunArgs(["--edition", "260423", "--phase", "bogus"]), Stage0Abort);
   });
 
-  it("--phase continue sem os 3 --mcp-* -> Stage0Abort", () => {
+  it("--phase continue sem --mcp-chrome/--mcp-gmail -> Stage0Abort", () => {
     assert.throws(() => parseStage0RunArgs(["--edition", "260423", "--phase", "continue"]), Stage0Abort);
     assert.throws(
       () => parseStage0RunArgs(["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true"]),
@@ -227,7 +227,16 @@ describe("parseStage0RunArgs", () => {
     );
   });
 
-  it("--phase continue com os 3 --mcp-* -> parseia bools", () => {
+  // REGRESSÃO #11225: a Beehiiv é só arquivo histórico — o ping do MCP dela
+  // saiu do Stage 0 e `--mcp-beehiiv` deixou de ser exigido pela fase continue.
+  it("--phase continue sem --mcp-beehiiv é válido (Beehiiv opcional, #11225)", () => {
+    const o = parseStage0RunArgs(["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"]);
+    assert.equal(o.mcpChrome, true);
+    assert.equal(o.mcpGmail, true);
+    assert.equal(o.mcpBeehiiv, undefined);
+  });
+
+  it("--phase continue com os 3 --mcp-* -> parseia bools (--mcp-beehiiv segue aceito por compat)", () => {
     const o = parseStage0RunArgs([
       "--edition",
       "260423",
@@ -270,7 +279,7 @@ describe("parseStage0RunArgs", () => {
 // ---------------------------------------------------------------------------
 
 describe("runStage0 --phase preflight", () => {
-  it("resolve EDITION_DIR/datas e pede os 3 pings MCP, sem tocar log-event/mkdir/stage-status/0b-bis", async () => {
+  it("resolve EDITION_DIR/datas e pede os 2 pings MCP (sem Beehiiv, #11225), sem tocar log-event/mkdir/stage-status/0b-bis", async () => {
     const mkdirCalls: string[] = [];
     const { exec, calls } = makeFakeExec({
       "find-current-edition.ts": () => ({ code: 0, stdout: "data/editions/2604/260423\n", stderr: "" }),
@@ -294,7 +303,7 @@ describe("runStage0 --phase preflight", () => {
     assert.ok(result.needsMcpProbes);
     assert.match(result.needsMcpProbes!.chrome, /tabs_context_mcp/);
     assert.match(result.needsMcpProbes!.gmail, /list_labels/);
-    assert.match(result.needsMcpProbes!.beehiiv, /get_current_user/);
+    assert.deepEqual(Object.keys(result.needsMcpProbes!).sort(), ["chrome", "gmail"], "Beehiiv não é mais sondada (#11225)");
     assert.deepEqual(result.pendingAgentDispatch, []);
     assert.deepEqual(result.pendingHumanDecision, []);
     assert.ok(result.delegatedSteps.some((s) => s.startsWith("0n")));
@@ -322,6 +331,24 @@ describe("runStage0 --phase preflight", () => {
     assert.equal(result.code, 0);
     assert.equal(result.clariceRest, false);
     assert.equal(result.cloudflareTokenOk, false);
+  });
+
+  it("sonda o MCP clarice pelo headersHelper e sinaliza clariceMcp=false com REST saudável (#11312)", async () => {
+    const { exec, calls } = makeFakeExec({
+      "find-current-edition.ts": () => ({ code: 0, stdout: "data/editions/2604/260423\n", stderr: "" }),
+      "clarice-healthcheck.ts": (args) =>
+        args.includes("--mcp")
+          ? { code: 2, stdout: JSON.stringify({ ok: false, error: "Erro: a API da Clarice retornou HTTP 401." }), stderr: "" }
+          : ok(JSON.stringify({ ok: true })),
+    });
+    const result = await runStage0(["--edition", "260423"], baseDeps({ exec }));
+    assert.equal(result.code, 0, "MCP degradado é warn, nunca aborta");
+    assert.equal(result.clariceRest, true);
+    assert.equal(result.clariceMcp, false);
+    const mcpCall = calls.find((c) => c.script.includes("clarice-healthcheck") && c.args.includes("--mcp"));
+    assert.ok(mcpCall, "Stage 0 precisa sondar o MCP, não só o REST");
+    assert.ok(mcpCall!.args.includes("--via-headers-helper"), "probe usa a key do headersHelper, como o Claude Code");
+    assert.ok(result.notes.some((n) => /MCP clarice falhou.*401/.test(n)));
   });
 });
 
@@ -361,6 +388,10 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.ok(preflightStateCall);
     assert.ok(preflightStateCall!.args.includes("--chrome-mcp"));
     assert.ok(preflightStateCall!.args.includes("true"));
+    // #11312: o sinal do MCP clarice também é persistido.
+    const mcpIdx = preflightStateCall!.args.indexOf("--clarice-mcp");
+    assert.ok(mcpIdx >= 0, "preflight-state precisa receber --clarice-mcp");
+    assert.equal(preflightStateCall!.args[mcpIdx + 1], "true");
 
     // refresh-dedup e maintain-valid-editions-window rodaram.
     assert.ok(calls.some((c) => c.script.includes("refresh-dedup")));
@@ -383,6 +414,23 @@ describe("runStage0 --phase continue — caminho feliz", () => {
       (c) => c.script.includes("update-stage-status") && c.args.includes("done"),
     );
     assert.ok(statusDoneCall);
+  });
+
+  it("sem --mcp-beehiiv: roda até o fim e não grava --beehiiv-mcp no preflight-state (#11225)", async () => {
+    const { exec, calls } = makeFakeExec(happyExecHandlers());
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
+
+    const result = await runStage0(
+      ["--edition", "260423", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    const preflightStateCall = calls.find((c) => c.script.includes("preflight-state"));
+    assert.ok(preflightStateCall);
+    assert.ok(!preflightStateCall!.args.includes("--beehiiv-mcp"), "sinal ausente fica null no disco, nunca 'undefined'");
+    assert.ok(!preflightStateCall!.args.includes("undefined"));
   });
 
   it("HALT (code 2) quando maintain-valid-editions-window falha — nunca bypassa mesmo com --auto-approve", async () => {

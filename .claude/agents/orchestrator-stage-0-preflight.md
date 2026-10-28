@@ -23,7 +23,7 @@ seguro repetir (leitura pura, sem escrita). Só quando o resume aponta "começar
 do Stage 0" é que o runner abaixo entra em cena.
 
 A partir daí, os passos **0a, 0b-bis, 0c (só os 3 checks HTTPS/token — locks,
-Cloudflare, Clarice REST; os 3 pings MCP continuam manuais, ver passo 2 abaixo),
+Cloudflare, Clarice REST; os 2 pings MCP (Chrome, Gmail) continuam manuais, ver passo 2 abaixo),
 0d, 0d.bis, 0e-0h, 0i, 0j (a detecção; a decisão humana s/n/d continua sendo do
 editor), 0k, 0l, 0o e 0z** são executados por `npx tsx scripts/stage-0-run.ts` num
 único fluxo de 2 chamadas, em vez de serem interpretados turno a turno em Bash
@@ -39,18 +39,18 @@ Design de 2 fases (o script é um processo Node puro — não alcança MCP):
      [--window-days {window_days}] [--auto-approve] [--pre-gate]
    ```
    Devolve JSON com `editionDir`, `editionIso`, `anchorIso`, `cutoffIso`,
-   `windowDays`, `clariceRest`, `cloudflareTokenOk` e `needsMcpProbes`
-   (descrição dos 3 pings que só o orchestrator consegue fazer).
+   `windowDays`, `clariceRest`, `clariceMcp` (#11312), `cloudflareTokenOk` e `needsMcpProbes`
+   (descrição dos 2 pings que só o orchestrator consegue fazer).
 
-2. **Fazer os 3 pings MCP** — mesmos de sempre, ver §0c abaixo pro racional
-   de cada um: `mcp__claude-in-chrome__tabs_context_mcp`,
-   `mcp__claude_ai_Gmail__list_labels`, `mcp__claude_ai_Beehiiv__get_current_user`.
-   Sucesso/erro de cada um vira `true`/`false`.
+2. **Fazer os 2 pings MCP** — ver §0c abaixo pro racional de cada um:
+   `mcp__claude-in-chrome__tabs_context_mcp`, `mcp__claude_ai_Gmail__list_labels`.
+   Sucesso/erro de cada um vira `true`/`false`. **A Beehiiv NÃO é sondada (#11225):**
+   só arquivo histórico — conector fora do ar nunca bloqueia nem pausa a edição.
 
 3. **Fase `continue`** (execução real — persiste tudo, roda 0d → 0z):
    ```bash
    npx tsx scripts/stage-0-run.ts --phase continue --edition {AAMMDD} \
-     --mcp-chrome {true|false} --mcp-gmail {true|false} --mcp-beehiiv {true|false} \
+     --mcp-chrome {true|false} --mcp-gmail {true|false} \
      [--window-days {window_days}] [--auto-approve] [--pre-gate]
    ```
 
@@ -68,7 +68,7 @@ Design de 2 fases (o script é um processo Node puro — não alcança MCP):
   `Agent(subagent_type: entry.agent, prompt: <manifest em entry.manifestPath,
   1 item por linha "post_id=<id> title=<title>">)` — mesmo fluxo de §0h.2
   abaixo, incluindo a validação determinística pós-dispatch (`verify-clicks-
-  enrichment.ts`). `0h.4` (#10710): `Agent(subagent_type: "beehiiv-exit-history-drain", prompt: "retome do manifest")`, só com `BEEHIIV_MCP = true`, fail-soft (warn); some quando o manifest fica `complete` — conferir no disco (#573).
+  enrichment.ts`). `0h.4` (#10710): `Agent(subagent_type: "beehiiv-exit-history-drain", prompt: "retome do manifest")`, fail-soft (warn); some quando o manifest fica `complete` — conferir no disco (#573). **Os dois são leitura opcional do arquivo histórico da Beehiiv (#11225):** se o conector Beehiiv não responder, o agent falha, loga warn e o Stage 0 segue — nunca halt, nunca pergunta.
 - `pendingHumanDecision[]` (hoje `0g` freshness stale e `0j` drafts
   pendentes) → apresentar `detail`/`prompt`/`options` ao editor exatamente
   como as subseções correspondentes abaixo descrevem, e agir conforme a
@@ -186,7 +186,7 @@ Substitui o forward manual que o editor fazia diariamente.
 
 Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth expirado, sem acesso à rede): skip do passo (logar `info "0b-bis skipped: fetch-newsletter-threads falhou"`). Esse é o **único** skip legítimo (#1756). **Não usar `mcp__claude_ai_Gmail__get_thread` como fallback** — o volume de HTML no contexto é o problema que este corte resolve. **Não é mais silencioso pro resto da pipeline (#2878):** o próprio script grava `_internal/.capture-newsletter-failed.json` (`{ failed: true, error, at }`) antes de sair 1 — `inject-inbox-urls.ts` (Stage 1 §1h) lê esse sentinel e propaga `capture_failed`/`capture_error` pro marker `.marker-inject-inbox-urls.json`. Sem isso, `captured_newsletter_count: 0` era indistinguível de "editor genuinamente não enviou newsletter nenhuma" — a coverage line (Stage 2) e o gate do Stage 4 checam esse sinal e trocam "X submissões" por um aviso `⚠️ contagem de submissões indisponível` em vez de afirmar "0 submissões" (histórico: `docs/stage-0-incident-history.md` §0b-bis).
 
-### 0c. Inicialização de log + stage-status (#1217 — removed cost.md) (→ os 3 checks HTTPS/token cobertos por `stage-0-run.ts`; os 3 pings MCP continuam manuais, ver passo 2 do bloco acima; texto abaixo é referência/fallback)
+### 0c. Inicialização de log + stage-status (#1217 — removed cost.md) (→ os 3 checks HTTPS/token cobertos por `stage-0-run.ts`; os 2 pings MCP continuam manuais, ver passo 2 do bloco acima; texto abaixo é referência/fallback)
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
 - **Pre-flight unificado de travas externas (#2358) — rodar ANTES dos checks individuais.** Agrega todos os checks de autenticação externos num único resumo de prontidão antes de gastar tokens em pesquisa. Travas que vencem silenciosamente (OAuth expirado, token CF inválido, API key ausente) são detectadas aqui, não no meio do stage que as usa:
@@ -203,7 +203,7 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
        --action "{reauth_action}"
      ```
   3. **Default (#5321, "Perguntar é exceção"): seguir a pipeline com o banner já renderizado**, sem aguardar o editor — nenhum critério do rubrico se aplica (não é MCP disconnect do #738/token de sessão travando um `AskUserQuestion` do #3938; é OAuth/token de plataforma expirado, reversível, sem trade-off editorial). Registrar o impacto (`blocks_stages` do resumo) via `log-event.ts --level warn` — o editor resolve a trava quando quiser, os stages afetados falham fail-soft na hora (não silenciosamente).
-  Conectores MCP (Gmail, Beehiiv) são reportados como `unchecked` — verificados em runtime pelo orchestrator (#738), não neste preflight TS.
+  Conectores MCP (Gmail) são reportados como `unchecked` — verificados em runtime pelo orchestrator (#738), não neste preflight TS. A Beehiiv não entra (#11225: só arquivo histórico).
 - **Pre-flight token OAuth Google (#1973) — coberto pelo preflight unificado acima.** O check individual `check-google-token.ts` NÃO deve ser executado aqui — o preflight unificado (#2358) já chama `checkOAuthLock` → `checkTokenHealth` e emite o halt banner se o token estiver expirado/ausente. Rodar os dois causaria double-halt: o editor seria parado pelo preflight unificado, confirmaria continuar, e seria parado novamente pelo check individual. Se o preflight unificado não estiver disponível (ex: worktree antigo sem o arquivo), rodar como fallback:
   ```bash
   npx tsx scripts/check-google-token.ts
@@ -218,17 +218,17 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   ```bash
   npx tsx scripts/clarice-healthcheck.ts
   ```
-  Output JSON: `{ ok, latency_ms?, error? }`. Exit 0 = saudável (`CLARICE_REST = true`); exit 2 = degradado (`CLARICE_REST = false`, logar warn com `error` e seguir). Stage 2 §3b consulta `CLARICE_REST` antes de tentar o fallback quando o MCP falha. Sem essa flag, Stage 2 ainda tenta o fallback — só perde a chance de pre-warn o editor.
+  Output JSON: `{ ok, latency_ms?, error? }`. Exit 0 = saudável (`CLARICE_REST = true`); exit 2 = degradado (`CLARICE_REST = false`, logar warn com `error` e seguir). Stage 2 §3b consulta `CLARICE_REST` antes de tentar o fallback quando o MCP falha. Sem essa flag, Stage 2 ainda tenta o fallback — só perde a chance de pre-warn o editor. **MCP também (#11312):** o probe REST não diz nada do MCP `clarice` (outro endpoint; header montado pelo Claude Code via `headersHelper`, #11251), cujo 401 só aparecia no Stage 2 — rodar `npx tsx scripts/clarice-healthcheck.ts --mcp --via-headers-helper` (key resolvida pelo MESMO `scripts/mcp/clarice-headers.mjs` do `.mcp.json`; exit 0 → `CLARICE_MCP = true`, exit 2 → `CLARICE_MCP = false` + warn, nunca bloqueia). Stage 2 §3b lê `clariceMcp`: `false` → direto pro fallback REST. Limite: o script não vê o trust da pasta, e o fallback pro header estático usa o ambiente deste processo, não o do Claude Code.
 - **Pre-flight Claude in Chrome MCP (#143).** Tentar `mcp__claude-in-chrome__tabs_context_mcp`. Setar `CHROME_MCP = true` se sucesso, `CHROME_MCP = false` se erro.
   - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve`), alertar editor e aguardar `[y/n]`. **Em `auto_approve`**, prosseguir silenciosamente.
   - **Na Etapa 5**: checar `CHROME_MCP`. Se `false`, gravar `_internal/05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
 - **Pre-flight Gmail MCP (#3451, espelha #143).** Tentar `mcp__claude_ai_Gmail__list_labels` (leitura barata, sem side-effect). Setar `GMAIL_MCP = true` se sucesso; se erro, `GMAIL_MCP = false` e logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message "mcp_disconnect: claude_ai_Gmail" --details '{"server":"claude_ai_Gmail","kind":"mcp_disconnect"}'` (mesmo evento estruturado que `collect-edition-signals.ts` já pareia com `mcp_reconnect:` pra medir duração, #766 — nada novo a instrumentar aqui). **Em modo interativo**, alertar editor e aguardar `[y/n]`; **em `auto_approve`**, prosseguir silenciosamente. Cobre só os passos que usam o MCP claude.ai Gmail (0n CI-failures, 0-replies) — 0b-bis (auto-capture de newsletters) usa a Gmail REST API direto via OAuth (`data/.credentials.json`), caminho de auth separado, não depende deste flag. 0n e 0-replies já tratam Gmail MCP indisponível como skip fail-soft individualmente — este preflight só antecipa o aviso pro editor antes de gastar tokens em pesquisa, não muda o comportamento de skip já existente.
-- **Pre-flight Beehiiv MCP (#3451, espelha #143).** Tentar `mcp__claude_ai_Beehiiv__get_current_user` (leitura barata, sem side-effect). Setar `BEEHIIV_MCP = true` se sucesso; se erro, `BEEHIIV_MCP = false` e logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message "mcp_disconnect: claude_ai_Beehiiv" --details '{"server":"claude_ai_Beehiiv","kind":"mcp_disconnect"}'`. **Em modo interativo**, alertar editor e aguardar `[y/n]`; **em `auto_approve`**, prosseguir silenciosamente. Cobre só os passos que usam o MCP claude.ai Beehiiv (0h.2 clicks enricher, 0-replies fallback remoto, correção de slug no Stage 6) — o dedup refresh (0d) usa a REST API direta via `BEEHIIV_API_KEY` e não depende deste flag.
-- **Persistir os 5 sinais acima em disco (#5414) — não confiar só na memória desta conversa.** Os 5 checks acima (`CHROME_MCP`, `GMAIL_MCP`, `BEEHIIV_MCP`, `CLARICE_REST`, `CLOUDFLARE_TOKEN_OK`) só existiam "em sessão" até esta issue — um stage disparado depois como sessão NOVA (`/diaria-2-escrita`, `/diaria-5-publicacao`, a premissa do #5414 de rodar contexto limpo entre etapas) nunca rodou este Stage 0 na própria conversa, então não tem como "lembrar" desses valores. Gravar de uma vez, logo após o último dos 5 checks:
+- **Sem pre-flight Beehiiv MCP (#11225, removido; era #3451).** Decisão do editor (27/10/2026): a Beehiiv é só arquivo histórico — não envia desde #7388, `read_backend`/`subscriber_backend` são `"kit"` — e o conector fora do ar nunca pode bloquear nem pausar a edição. Nada de `get_current_user`, nada de `[y/n]`. Os passos que ainda leem o histórico pelo MCP (0h.2 clicks enricher, 0h.4 exit-history, fallback remoto de 0-replies) tentam direto e são fail-soft individualmente; o dedup refresh (0d) lê do Kit (`read_backend`).
+- **Persistir os sinais acima em disco (#5414; `CLARICE_MCP` desde #11312; `BEEHIIV_MCP` não é mais apurado desde #11225 e fica `null`) — não confiar só na memória desta conversa.** Os checks acima (`CHROME_MCP`, `GMAIL_MCP`, `CLARICE_REST`, `CLARICE_MCP`, `CLOUDFLARE_TOKEN_OK`) só existiam "em sessão" até esta issue — um stage disparado depois como sessão NOVA (`/diaria-2-escrita`, `/diaria-5-publicacao`, a premissa do #5414 de rodar contexto limpo entre etapas) nunca rodou este Stage 0 na própria conversa, então não tem como "lembrar" desses valores. Gravar de uma vez, logo após o último dos checks:
   ```bash
   npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} \
-    --chrome-mcp {CHROME_MCP} --gmail-mcp {GMAIL_MCP} --beehiiv-mcp {BEEHIIV_MCP} \
-    --clarice-rest {CLARICE_REST} --cloudflare-token-ok {CLOUDFLARE_TOKEN_OK}
+    --chrome-mcp {CHROME_MCP} --gmail-mcp {GMAIL_MCP} \
+    --clarice-rest {CLARICE_REST} --clarice-mcp {CLARICE_MCP} --cloudflare-token-ok {CLOUDFLARE_TOKEN_OK}
   ```
   (`{X}` = `true`/`false` já apurado no passo correspondente acima.) Escreve/faz upsert em `{EDITION_DIR}/_internal/preflight-state.json`. Stage 2 §3b e Stage 5 leem este arquivo no início do próprio stage em vez de depender de variável de sessão — ver `scripts/lib/preflight-state.ts` pro contrato completo (`null` = "nunca verificado", mesma semântica permissiva de antes).
 - **Inicializar `stage-status.md` (#960, #1217).** Single source of truth pra timing + custo + tokens + modelos. `_internal/cost.md` (legado pré-#1217) foi removido — era redundante com stage-status e nunca foi preenchido na prática. Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline. Editor abre localmente durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
@@ -582,7 +582,7 @@ Após a Etapa 4 (publicação paralela) completar, orchestrator deve disparar `c
 
 ### 0z. Pre-flight invariants (#1007 Fase 1) (→ coberto por `stage-0-run.ts`, junto com o fechamento do stage e a captura de custo; referência/fallback)
 
-Última verificação antes de gastar tokens na pesquisa. Valida env vars críticas (BEEHIIV_API_KEY, Drive credentials, past-editions-raw shape):
+Última verificação antes de gastar tokens na pesquisa. Valida env vars críticas (Drive credentials, past-editions-raw shape; `BEEHIIV_API_KEY` só quando `read_backend` ainda é `"beehiiv"` — #11225):
 
 ```bash
 npx tsx scripts/check-invariants.ts --stage 0

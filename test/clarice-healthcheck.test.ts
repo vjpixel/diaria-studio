@@ -1,10 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   checkClariceHealth,
   checkClariceMcpHealth,
   parseMcpSseResponse,
   parseHealthcheckArgs,
+  resolveProbeKeyFromHelper,
+  runClariceHeadersHelper,
   DEFAULT_TIMEOUT_MS,
   OBSERVED_PROBE_LATENCY_MS,
 } from "../scripts/clarice-healthcheck.ts";
@@ -122,6 +128,10 @@ describe("parseHealthcheckArgs", () => {
 
   it("--mcp → mcp: true", () => {
     assert.deepEqual(parseHealthcheckArgs(["--mcp"]), { mcp: true });
+  });
+
+  it("--via-headers-helper implica --mcp (#11312)", () => {
+    assert.deepEqual(parseHealthcheckArgs(["--via-headers-helper"]), { mcp: true, viaHeadersHelper: true });
   });
 
   it("--mcp combinado com --timeout-ms → os dois presentes", () => {
@@ -317,5 +327,70 @@ describe("abort no fim da checagem (#9911)", () => {
     const result = await checkClariceHealth({ apiKey: "k", fetchImpl, timeoutMs: 1000 });
     assert.equal(result.ok, true);
     assert.equal(signal?.aborted, true);
+  });
+});
+
+describe("resolveProbeKeyFromHelper (#11312)", () => {
+  const okRun = (stdout: string) => ({ code: 0, stdout, stderr: "" });
+
+  it("header dinâmico do helper vence a key do ambiente", () => {
+    const r = resolveProbeKeyFromHelper(okRun('{"X-Clarice-Api-Key":"k-helper"}\n'), "k-env");
+    assert.deepEqual(r, { ok: true, apiKey: "k-helper", source: "headers-helper" });
+  });
+
+  it("helper sem header ({}) → cai no estático do ambiente, com nota", () => {
+    const r = resolveProbeKeyFromHelper(okRun("{}\n"), "k-env");
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.apiKey, "k-env");
+      assert.equal(r.source, "static-env");
+      assert.match(r.note!, /estático/);
+    }
+  });
+
+  it("helper sem header e ambiente sem key → falha nomeando o 401 (cenário do #11251)", () => {
+    const r = resolveProbeKeyFromHelper(okRun("{}\n"), undefined);
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.error, /401/);
+  });
+
+  it("helper quebrado (exit != 0) → falha, mesmo com key no ambiente", () => {
+    const r = resolveProbeKeyFromHelper({ code: 1, stdout: "", stderr: "SyntaxError: boom" }, "k-env");
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.error, /exit 1.*SyntaxError/);
+  });
+
+  it("helper em timeout (code null + spawnError) → falha", () => {
+    const r = resolveProbeKeyFromHelper({ code: null, stdout: "", stderr: "", spawnError: "spawnSync node ETIMEDOUT" }, "k-env");
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.match(r.error, /ETIMEDOUT/);
+  });
+
+  it("stdout que não é JSON, ou JSON que não é objeto → falha", () => {
+    assert.equal(resolveProbeKeyFromHelper(okRun("oops"), "k").ok, false);
+    assert.equal(resolveProbeKeyFromHelper(okRun("[]"), "k").ok, false);
+    assert.equal(resolveProbeKeyFromHelper(okRun("null"), "k").ok, false);
+  });
+});
+
+describe("runClariceHeadersHelper (#11312) — roda o helper real do .mcp.json", () => {
+  it("a CLARICE_API_KEY do ambiente não chega ao helper (o Claude Code tira vars com KEY do ambiente dele)", () => {
+    // Projeto falso sem .env: o helper real só acharia key se herdasse a do
+    // ambiente. Copia o helper + core pra um dir temporário com a mesma árvore.
+    const root = mkdtempSync(join(tmpdir(), "clarice-helper-"));
+    try {
+      mkdirSync(join(root, "scripts", "mcp"), { recursive: true });
+      const here = dirname(fileURLToPath(import.meta.url));
+      for (const f of ["clarice-headers.mjs", "mcp-wrapper-core.mjs"]) {
+        copyFileSync(join(here, "..", "scripts", "mcp", f), join(root, "scripts", "mcp", f));
+      }
+      // O core importa `dotenv`: link pro node_modules do repo (rmSync remove o link, não o alvo).
+      symlinkSync(join(here, "..", "node_modules"), join(root, "node_modules"), "junction");
+      const run = runClariceHeadersHelper(root, { ...process.env, CLARICE_API_KEY: "vazaria" });
+      assert.equal(run.code, 0, run.stderr);
+      assert.deepEqual(JSON.parse(run.stdout), {});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -443,7 +443,7 @@ printf '%s' "Implemente a issue #N do repo atual (leia fresca: gh api repos/{own
 Siga o CLAUDE.md. NUNCA commite em master: git switch -c continuo/fix-<issue>-<slug> ANTES do 1º commit (o hook recusa). O prefixo continuo/ (continuo/fix-N-slug) é o que faz o PR aparecer como CONTINUO na Triagem
 do Studio, #6446. Implemente com edições cirúrgicas, adicione
 teste de regressão se for bugfix (#633), rode os testes afetados + `npx tsx scripts/which-set-guards.ts` (rode TODOS os testFiles que ele listar, não só o do arquivo tocado — #8879), abra PR
-com gh pr create referenciando a issue. NÃO mergeie — desde o #6864, nem
+com gh pr create referenciando a issue. Inclua no corpo da PR, em linha própria, o marcador <!-- continuo-owner-session: $SESSION_ID --> com o ID deste tick já expandido (preserve-o nos re-pushes; nunca use o ID do review). NÃO mergeie — desde o #6864, nem
 o coordenador deste tick mergeia mais: o merge acontece exclusivamente no
 pickup (#6823) ou no review consolidado. Se a issue for inviável/ambígua
 além do trivial, comente nela o bloqueio via gh issue comment e pare." | \

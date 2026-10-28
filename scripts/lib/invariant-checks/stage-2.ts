@@ -92,7 +92,11 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
   const file = resolve(editionDir, "02-reviewed.md");
   const checks: Array<{ name: string; issue: string; extraArgs?: string[] }> = [
     { name: "titles-per-highlight", issue: "#159" },
-    { name: "title-length", issue: "#editorial-rules" },
+    // #11254: o teto fixo de 52 chars saiu — os limites reais são o card 4x5
+    // (3 linhas a 62px) e o assunto do e-mail (D1 ≤70). Bloqueiam aqui, na
+    // saída do writer; ficam fora do gate 4 (decisão do editor, 261027d).
+    { name: "title-card-4x5", issue: "#11254" },
+    { name: "title-email-subject", issue: "#11254" },
     { name: "why-matters-format", issue: "#editorial-rules" },
     { name: "destaque-min-chars", issue: "#914" },
     { name: "destaque-max-chars", issue: "#964" },

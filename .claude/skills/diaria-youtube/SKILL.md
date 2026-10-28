@@ -1,6 +1,6 @@
 ---
 name: diaria-youtube
-description: Alias de `/diaria-publica-video AAMMDD --so horizontal` (#11209) — só o vídeo horizontal da edição no YouTube (@diariabr). O fluxo inteiro (metadados, capa, link do Studio no D1, `--upload` pela API) vive em `.claude/skills/diaria-publica-video/SKILL.md`. Uso — `/diaria-youtube AAMMDD [--video-url URL]`.
+description: Alias de `/diaria-publica-video AAMMDD --so horizontal` (#11209) — só o vídeo horizontal da edição no YouTube (@diariabr). O fluxo inteiro (metadados, capa, `--upload` pela API com a legenda — o padrão, #11385 —, link no D1, Studio como fallback) vive em `.claude/skills/diaria-publica-video/SKILL.md`. Uso — `/diaria-youtube AAMMDD [--video-url URL]`.
 ---
 
 # /diaria-youtube AAMMDD — alias (#11209)

@@ -153,6 +153,14 @@ Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 (`acceptEdits`) não libera `gh api` no allow list (#11235). Comentário geral
 na PR continua `gh pr comment`.
 
+Guard mecânico desde o #11300: `.claude/hooks/block-raw-pr-review-comment.mjs`
+nega, em toda sessão Bash (coordenador e subagentes, sem depender de
+`agent_type`, #11331), comentário de review postado cru (`gh api` de
+escrita em `…/pulls/N/comments|reviews`, mutation GraphQL de review, `gh pr
+review --comment`). Sem o marcador `<!-- diaria-auto-review -->` que o helper
+acrescenta, `resolve-review-threads.ts` lê a thread como do editor e trava o
+Gate 2 (incidente da PR #11285).
+
 ## 8. Não executar review multi-agente pós-`gh pr create`
 
 Se um hook pós-`gh pr create` exigir code-review multi-agente, **não executar** —
@@ -170,6 +178,15 @@ Comandos do commit, na forma que o allow list do modo agendado libera (#11235),
 rodados com cwd no próprio worktree (sem `cd X &&` e sem `git -C`, que pedem
 aprovação): `git add <arquivos>` (lista explícita, nunca `-A`), `git commit -F
 <arquivo-de-mensagem>` e `git push -u origin <branch>`.
+
+**Formas que o modo agendado ainda nega (prova de 27/10/2026, tabela em
+`docs/overnight-nightly-chain.md`):** `git -C <dir> ...`, `cd <dir> && git
+...`, `git merge`, `node --test`, `node --import tsx --test`, `npx --no-install
+tsx` e `node_modules/.bin/tsx`, `gh api` cru, e laço `for` com variável. Use a
+forma canônica: `git` com cwd no worktree, `npx tsx --test` depois do `npm ci`
+do próprio worktree (nunca o `tsx` do checkout principal), `gh pr
+update-branch` para atualizar a branch da PR. Se a forma canônica for negada,
+não tente as variantes: registre a negação no retorno ao coordenador.
 
 **Diff grande (>500 adições) exige também `removal-declaration:` no corpo — ver
 item 29.** Incluir já na criação evita uma volta de CI; esquecer é recuperável

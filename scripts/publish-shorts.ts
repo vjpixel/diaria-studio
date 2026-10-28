@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
+import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } from "./lib/diaria/published-video-cleanup.ts";
 /**
  * scripts/publish-shorts.ts (#10769)
  *
@@ -13,12 +13,15 @@ import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/publish
  *   npx tsx scripts/publish-shorts.ts AAMMDD --publish      # publica os destinos de API
  *     [--only facebook:diaria,instagram] [--now] [--video PATH]
  *     [--edition-dir DIR] [--edition-url URL]
+ *     [--linkedin-timer | --instagram-timer | --threads-timer] # rodada de um timer do 300 (só o destino dele, #10982/#11265/#11410)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --from-drive FILE_ID
  *                                                           # baixa o vertical do Drive (OAuth do projeto, não o conector)
  *   npx tsx scripts/publish-shorts.ts AAMMDD --mark youtube_shorts=URL
  *                                                           # registra destino GUIADO já feito
- *   npx tsx scripts/publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]
- *                                                           # registra o Reels postado no Chrome (lê /media, #10915)
+ *   npx tsx scripts/publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID] [--url URL]
+ *                                                           # registra o Reels postado no Chrome (lê /media, #10915;
+ *                                                           # #11390: procura também no perfil do @vjpixel, autor da
+ *                                                           # rota do Chrome, e aceita o permalink com --url)
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -55,17 +58,25 @@ import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/publish
  *     2 h dos posts da rotação #10305, picos, ≥30 min depois do perfil). Guiado
  *     porque não há token de organização local (a página publica pelo Worker).
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
- *     O plano traz texto (≤280 ponderado) e `dueAt`; o `--publish` sobe o
- *     vertical pro R2 e devolve `results[].buffer.videoUrl`. Registro com
- *     `--mark x=buffer:{id} --scheduled-at {dueAt}`.
+ *     O plano traz texto (≤280 ponderado) e `dueAt`; com R2 configurado o
+ *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl`.
+ *     O R2 não será habilitado (#11265): sem ele o X é pulado com aviso e
+ *     fica manual. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
  *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
  *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
  *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
- *     (`platform: "threads"`). Sem token, ou sem R2, é pulado com aviso
- *     (fail-soft). A API não agenda: mesmo `pending_schedule`/teto de atraso do
+ *     (`platform: "threads"`). Sem token, ou sem R2 (que não será habilitado,
+ *     #11265), é pulado com aviso (fail-soft) e fica manual. A API não agenda: mesmo `pending_schedule`/teto de atraso do
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
  *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
+ *     #11410: com `publishing.shorts.threads_profile_via_timer: true` quem
+ *     publica é o timer do 300 (`scripts/shorts-threads-profile-timer.ts`,
+ *     `--only threads_profile --publish --threads-timer`), no horário do
+ *     vertical; as outras rodadas devolvem `skip_delegated`. A rodada do timer
+ *     confere o perfil antes (`threadsProfilePreflight`, só leitura), grava no
+ *     registro próprio (`06-shorts-published.threads-timer.json`) e
+ *     reaproveita o objeto do vertical já no R2 (`reuseOrUploadToR2`).
  *   - `youtube_shorts` (API, #11070) — Short pela YouTube Data API
  *     (`publishYouTubeShort`, o mesmo upload do `publish-youtube.ts`), private
  *     + `publishAt` no horário do vertical (o agendado vira público sozinho sem
@@ -89,13 +100,21 @@ import { cleanupPublishedVideo, shortsVideoTerminal } from "./lib/diaria/publish
  * alternando 06:30/08:00/12:00 BRT a partir de 261026 (`publishing.shorts.schedule`),
  * nunca as 06:00 do horizontal. Com pelo menos 10 min de folga o Facebook
  * agenda (a folga é reconferida antes de cada página); senão publica na hora.
- * O Instagram não agenda Reels pela API — com horário futuro o Reels vai pra
- * FILA do Worker `diaria-linkedin-cron` (#10823), que publica no horário: o
- * vertical sobe pro R2 (`scripts/lib/r2-object-upload.ts`, a Graph baixa pelo
- * `video_url` público) e a entry leva a conta (`ig_account`) e os collabs.
- * Sem Worker (`DIARIA_LINKEDIN_CRON_URL`/`_TOKEN`), sem R2 (`R2_*`,
- * `SHORTS_R2_*`) ou com autora que o Worker não conhece, cai no comportamento
- * de antes: fica pendente até rodar de novo depois do horário (ou `--now`).
+ * O Instagram não agenda Reels pela API. Desde #11265 (decisão do editor,
+ * 27/10/2026) quem publica é o timer do 300 (`publishing.shorts.instagram_backend`
+ * = "timer-300", default): `scripts/shorts-instagram-timer.ts` roda esta CLI com
+ * `--only instagram --publish --instagram-timer` no horário do vertical, pelo
+ * upload resumível da Graph API (sem URL pública), e as outras rodadas
+ * devolvem o `instagram` como `skip_delegated`. A rodada do timer grava no
+ * registro próprio (`06-shorts-published.instagram-timer.json`), confere
+ * antes na conta (`/media`, só leitura) se o Reels da edição já saiu por fora,
+ * e passadas 3 h do horário vira `skip_late` (o timer avisa o editor).
+ * O caminho antigo (#10823, `instagram_backend: "worker-r2"`) segue como
+ * opção: o vertical sobe pro R2 e o Reels vai pra FILA do Worker
+ * `diaria-linkedin-cron`; sem Worker, sem R2 ou com autora que o Worker não
+ * conhece, fica pendente até rodar de novo depois do horário (ou `--now`).
+ * O R2 não será habilitado (#11265): X e Threads, que só recebem o vídeo por
+ * URL pública, ficam pulados com aviso (manuais).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
  * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
@@ -144,10 +163,15 @@ import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/face
 import {
   buildReelsCaption,
   buildYouTubeShortMetadata,
+  DIARIA_YOUTUBE_CHANNEL_URL,
+  firstSentence,
   facebookDestinationId,
   facebookUploadRoute,
+  INSTAGRAM_CHROME_ROUTE,
   INSTAGRAM_ENV_ACCOUNT_KEY,
+  REELS_NEWSLETTER_SENTENCE,
   instagramApiMaxSecondsPremise,
+  instagramChromeRouteText,
   instagramReelsApiFit,
   isDestinationDone,
   knownDestinationIds,
@@ -168,15 +192,21 @@ import {
   type ShortsConfig,
   type ShortsPublishedFile,
   type ShortTime,
+  type InstagramBackend,
   type WorkerInstagramAccount,
   type YouTubeShortMetadata,
+  shortDestinationAccount,
+  shortDestinationAlsoAccounts,
 } from "./lib/diaria/short-video.ts";
 import {
+  instagramTimerScopeError,
   linkedinTimerScopeError,
+  threadsTimerScopeError,
   persistShortEntry,
   readShortsRegistry,
   shortsRegistryPath,
   shortsRegistryWriterFor,
+  type ShortsRegistryWriter,
 } from "./lib/diaria/shorts-published-store.ts";
 import {
   buildYouTubeInsertRequest,
@@ -207,13 +237,21 @@ import {
   mergeGrids,
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
-import { loadR2UploadConfig, uploadToR2 } from "./lib/r2-object-upload.ts";
+import { loadR2UploadConfig, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
-import { THREADS_PROFILE_DESTINATION, publishThreadsProfileVideo, readThreadsPersonalCreds } from "./lib/threads-personal-video.ts";
+import {
+  THREADS_PROFILE_DESTINATION,
+  ThreadsTimerGateError,
+  publishThreadsProfileVideo,
+  readThreadsPersonalCreds,
+  threadsProfilePreflight,
+  type ThreadsTimerGateFailure,
+} from "./lib/threads-personal-video.ts";
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import {
   CHROME_UPLOAD_MAX_BYTES,
   buildChromeUploadFfmpegPasses,
@@ -238,8 +276,43 @@ const RUPLOAD = "https://rupload.facebook.com";
  */
 export const LINKEDIN_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, publishing.shorts.linkedin_profile_via_timer) no horário do vertical; " +
-  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer " +
+  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer --publish " +
   "(confira antes que o 300 não publicou; o --linkedin-timer recusa qualquer outro destino)";
+
+/**
+ * #11265: por que o `instagram` não sai nesta rodada quando o timer do 300 é
+ * o dono dele (`publishing.shorts.instagram_backend: "timer-300"`).
+ */
+export const INSTAGRAM_TIMER_DETAIL =
+  "sai pelo timer do 300 (Diaria-Shorts-Instagram, publishing.shorts.instagram_backend = timer-300) no horário do vertical, " +
+  "com o corte _Instagram_ do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
+  "e, se ainda assim o Reels não sair (acima do teto da API, credencial, falha), abre um alarme para o editor. " +
+  "Para publicar pela API mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor: o lock do timer não cruza máquina e o Reels sai duplicado) " +
+  "só esse destino com --only instagram --instagram-timer --publish " +
+  "(confira antes que o 300 não publicou; o --instagram-timer recusa qualquer outro destino)";
+
+/**
+ * #11410: por que o `threads_profile` não sai nesta rodada quando o timer do
+ * 300 é o dono dele (`publishing.shorts.threads_profile_via_timer`).
+ */
+export const THREADS_TIMER_DETAIL =
+  "sai pelo timer do 300 (Diaria-Shorts-Threads-Profile, publishing.shorts.threads_profile_via_timer) no horário do vertical, " +
+  "até 3 h depois dele; se não sair, o timer abre um alarme para o editor. " +
+  "Para publicar mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor e o post pode sair duplicado) " +
+  "só esse destino com --only threads_profile --threads-timer --publish " +
+  "(confira antes que o vídeo não está no perfil; o --threads-timer recusa qualquer outro destino)";
+
+/**
+ * #11265: motivo do pulo de X/Threads quando o R2 NÃO está configurado (só é
+ * chamado com `r2.ready === false`). O R2 não será habilitado (decisão do
+ * editor, 27/10/2026), então com o backend do timer o aviso diz isso em vez
+ * de cobrar os secrets; com `worker-r2` (que depende dele) lista o que falta.
+ */
+export function publicVideoUnavailableReason(backend: InstagramBackend, r2Missing: readonly string[]): string {
+  return backend === "timer-300"
+    ? "sem URL pública do vertical: R2 não configurado, e não será habilitado (#11265, decisão do editor 27/10/2026) — fica manual"
+    : `falta ${r2Missing.join(", ")}`;
+}
 
 /** Destinos que só o skill faz (Chrome; o X pela Buffer MCP, #10772). */
 export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile", "linkedin_page_repost", "x"]);
@@ -263,7 +336,12 @@ export type ShortsPlanItem =
   | { destination: string; mode: "api" | "guided"; action: "skip_done" }
   /** `skip_late` (#10772 F4): o horário do destino passou além do teto de atraso — vira passo manual. */
   /** `skip_delegated` (#10982): o destino sai por outro caminho (o `linkedin_profile` pelo timer do 300). */
-  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string }
+  /**
+   * `cause: "public_video"` (#11240): o pulo veio do R2 fora do ar (X/Threads
+   * recebem o vídeo por URL pública), não de credencial do destino. Só o pulo
+   * por credencial conta como terminal pra limpeza do vertical.
+   */
+  | { destination: string; mode: "api" | "guided"; action: "skip_missing_credentials" | "skip_invalid" | "skip_late" | "skip_delegated"; detail: string; cause?: "public_video" }
   /** `at`: horário planejado do passo guiado (repost da página, #10772; Instagram manual acima do teto, slot da grade, #10933). Ausente = `shortTime`. */
   /**
    * `upload` (#10915): o arquivo a subir no passo guiado — no Instagram acima
@@ -334,10 +412,15 @@ export interface ShortsPlanInput {
    */
   youtubeApi?: { ready: true } | { ready: false; reason: string };
   /**
-   * #10982: esta rodada é a do timer do 300 (`--linkedin-timer`). Com
+   * Quem é esta rodada (#11368: um campo só, nunca "os dois timers"). Ausente =
+   * `main`. `linkedin-timer` (#10982, `--linkedin-timer`): com
    * `linkedin_profile_via_timer` ligado, só ela publica o `linkedin_profile`.
+   * `instagram-timer` (#11265, `--instagram-timer`): com `instagram_backend:
+   * "timer-300"`, só ela publica o `instagram`. `threads-timer` (#11410,
+   * `--threads-timer`): com `threads_profile_via_timer`, só ela publica o
+   * `threads_profile`.
    */
-  linkedinTimer?: boolean;
+  writer?: ShortsRegistryWriter;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   /**
    * #10893: duração do vertical (`mp4DurationSeconds`). Ausente = não medida;
@@ -359,12 +442,12 @@ export interface ShortsPlanInput {
 
 /**
  * Pure (#10943): `publishing.newsletter.backend` do config já carregado. Mesmo
- * fallback de `loadNewsletterBackend` (lib/newsletter-backend.ts): qualquer
- * valor que não seja literalmente "kit" é "beehiiv".
+ * fallback de `loadNewsletterBackend` (lib/newsletter-backend.ts): default
+ * "kit" desde o #11225 — só o literal "beehiiv" é "beehiiv".
  */
 export function newsletterBackendOf(config: unknown): "kit" | "beehiiv" {
   const backend = (config as { publishing?: { newsletter?: { backend?: unknown } } } | null)?.publishing?.newsletter?.backend;
-  return backend === "kit" ? "kit" : "beehiiv";
+  return parseNewsletterBackend(backend);
 }
 
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
@@ -437,17 +520,37 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const manualInstagram = (d: ShortDestination) => d.kind === "instagram" && !igFit.fits;
   // #10819: só os destinos que esta rodada ainda vai publicar disputam a grade;
   // os já registrados entram nela pelo `06-shorts-published.json`.
-  const slots = planShortSlots({
-    aammdd: input.aammdd,
-    time,
-    timeAt: shortTime.at,
-    destinations: destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d))),
-    cfg,
-    grid: input.grid ?? [],
-  });
+  // #11265: com o timer do 300 dono do Instagram, o Reels sai SEMPRE no
+  // horário do vertical (`shortTime`), fora da grade — é o mesmo horário que
+  // o timer usa pra decidir quando agir (`decideInstagramTimerRun`). Pela
+  // grade, fora da rotação os dois divergiam (261117: shortTime 12:00, slot
+  // 19:30) e o Reels nunca saía. Ele entra na grade como post fixo, pros
+  // outros destinos se espaçarem em volta dele.
+  const instagramViaTimer = cfg.instagramBackend === "timer-300";
+  const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
+  const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
+  const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
+  const fixedInstagramSlot: ShortSlot | null = fixedInstagram ? instagramTimerSlot(fixedInstagram, cfg, time.hhmm, shortTime.at) : null;
+  const slots = [
+    ...(fixedInstagramSlot ? [fixedInstagramSlot] : []),
+    ...planShortSlots({
+      aammdd: input.aammdd,
+      time,
+      timeAt: shortTime.at,
+      destinations: slotDestinations.filter((d) => d !== fixedInstagram),
+      cfg,
+      grid: [
+        ...(input.grid ?? []),
+        ...(fixedInstagramSlot
+          ? [{ account: fixedInstagramSlot.account, at: fixedInstagramSlot.at, label: "shorts instagram (timer do 300)", ...(fixedInstagramSlot.alsoAccounts ? { alsoAccounts: fixedInstagramSlot.alsoAccounts } : {}) }]
+          : []),
+      ],
+    }),
+  ];
   const slotOf = new Map(slots.map((s) => [s.destination, s]));
   for (const s of slots) {
-    if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
+    if (s.rule === "timer-300") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
+    else if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
   }
   const scheduleFor = (s: ShortSlot) => (input.forceNow ? ({ mode: "immediate" } as const) : resolveReelsSchedule(s.at, input.now));
@@ -460,7 +563,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     const sch = scheduleFor(s);
     premises.push(
       sch.mode === "scheduled"
-        ? `${s.destination}: ${s.destination !== "instagram" ? "agendado para" : input.instagramQueue?.ready ? "fila do Worker para" : "pendente até"} ${sch.at} (${s.hhmm} BRT do dia da edição)`
+        ? `${s.destination}: ${s.destination !== "instagram" ? "agendado para" : instagramViaTimer ? "timer do 300 publica depois de" : input.instagramQueue?.ready ? "fila do Worker para" : "pendente até"} ${sch.at} (${s.hhmm} BRT do dia da edição)`
         : `${s.destination}: ${s.hhmm} BRT do dia da edição já passou (ou falta <10 min) — publica na hora`,
     );
   }
@@ -482,7 +585,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   };
   const profileLate = lateFor("linkedin_profile");
   // #10982: com o timer do 300 dono do vídeo do perfil, a rodada da skill não o publica.
-  const profileDelegated = cfg.linkedinProfileViaTimer && !input.linkedinTimer;
+  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer";
+  // #11410: idem pro Threads pessoal.
+  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer";
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -611,9 +716,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     if (dest.kind === "x") {
       if (input.publicVideo?.ready !== true) {
-        const reason = `o X recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        const reason = `o X recebe o vídeo por URL pública, indisponível nesta rodada (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`x: ${reason}`);
-        return { destination: dest.id, mode: "guided", action: "skip_missing_credentials", detail: reason };
+        return { destination: dest.id, mode: "guided", action: "skip_missing_credentials", detail: reason, cause: "public_video" };
       }
       let text: string;
       try {
@@ -639,15 +744,18 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       // #11122: vertical no Threads pessoal. Mesmo contrato do linkedin_profile:
       // sem credencial é fail-soft, a API não agenda (pending antes do horário,
       // skip_late depois do teto), `send_unknown` conta como feito.
+      if (threadsDelegated) {
+        return { destination: dest.id, mode: "api", action: "skip_delegated", detail: THREADS_TIMER_DETAIL };
+      }
       if (input.threadsPersonal?.ready !== true) {
         const reason = input.threadsPersonal?.ready === false ? input.threadsPersonal.reason : "credencial THREADS_PERSONAL_* não conferida";
         warnings.push(`threads_profile: ${reason}`);
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
       if (input.publicVideo?.ready !== true) {
-        const reason = `o Threads recebe o vídeo por URL pública e o R2 não está pronto (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        const reason = `o Threads recebe o vídeo por URL pública, indisponível nesta rodada (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
         warnings.push(`threads_profile: ${reason}`);
-        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
+        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason, cause: "public_video" };
       }
       const late = lateFor(dest.id);
       if (late) {
@@ -703,16 +811,19 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       };
     }
     // instagram
+    if (instagramDelegated) {
+      return { destination: dest.id, mode: "api", action: "skip_delegated", detail: INSTAGRAM_TIMER_DETAIL };
+    }
     if (!igFit.fits) {
-      const collab = cfg.instagramCollaborators.length ? ` com ${cfg.instagramCollaborators.map((c) => `@${c}`).join(", ")} em collab` : "";
       // #10933: o horário vem da grade (o mesmo slot que os outros destinos já enxergaram).
       const slot = slotOf.get(dest.id);
       const hhmm = slot?.hhmm ?? time.hhmm;
       // #10915: o --publish gera a versão comprimida pro file_upload do Chrome (campo `upload` do item).
+      // #11390: a rota à mão é a do editor (@vjpixel autor, @diar.ia.br colaboradora), não a da API.
       const detail =
         `${igFit.reason} — poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video, com o arquivo mirando 9,5 MB, abaixo do limite de 10 MB do file_upload, que o --publish gera em _internal/) ` +
-        `ou no app, como a autora${collab}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
-        `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL`;
+        `ou no app, ${instagramChromeRouteText()}, às ${hhmm} BRT do dia da edição (slot reservado na grade, #10933), ` +
+        `e registre com --confirm-instagram (procura também no perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} enquanto o collab está pendente; ou --url URL do Reel) ou --mark instagram=URL`;
       warnings.push(`instagram: ${detail}`);
       let caption: string | undefined;
       try {
@@ -741,6 +852,30 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     const slot = slotOf.get(dest.id)!;
     const schedule = scheduleFor(slot);
+    if (instagramViaTimer) {
+      // #11265: rodada do timer do 300. Antes do horário espera; até 3 h depois
+      // publica (upload resumível, sem URL pública); depois disso não publica
+      // sozinho fora do horário do teste (#10831), mesmo teto do linkedin_profile.
+      if (schedule.mode === "scheduled") {
+        return {
+          destination: dest.id,
+          mode: "api",
+          action: "pending_schedule",
+          caption,
+          scheduledAt: schedule.at,
+          detail: `o Instagram não agenda Reels pela API — o timer do 300 publica depois das ${slot.hhmm} BRT (ou use --now)`,
+        };
+      }
+      const late = lateFor(dest.id);
+      if (late) {
+        const detail =
+          `${late} — fora do horário do teste (#10831), não publica sozinho. ` +
+          `Publique à mão (Passo B3b) e registre com --confirm-instagram ou --mark instagram=URL, ou rode com --now para publicar mesmo assim`;
+        warnings.push(`instagram: ${detail}`);
+        return { destination: dest.id, mode: "api", action: "skip_late", detail };
+      }
+      return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
+    }
     if (schedule.mode === "scheduled") {
       // #10823: a fila do Worker publica no horário (o Instagram não agenda Reels pela API).
       if (input.instagramQueue?.ready) {
@@ -769,6 +904,25 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
+}
+
+/**
+ * Pure (#11265): slot do Instagram com o timer do 300 — o horário do vertical,
+ * sem passar pela grade (ver o comentário em `planShortsPublish`).
+ */
+export function instagramTimerSlot(dest: ShortDestination, cfg: ShortsConfig, hhmm: string, at: string): ShortSlot {
+  const account = shortDestinationAccount(dest, cfg);
+  if (!account) throw new Error(`instagramTimerSlot: ${dest.id} sem conta na grade`);
+  const also = shortDestinationAlsoAccounts(dest, cfg);
+  return {
+    destination: dest.id,
+    account,
+    ...(also.length ? { alsoAccounts: also } : {}),
+    at: new Date(Date.parse(at)).toISOString(),
+    hhmm,
+    rule: "timer-300",
+    premise: "timer do 300: sempre no horário do vertical, fora da grade (#11265)",
+  };
 }
 
 /** Contas do Instagram que a fila do Worker sabe publicar (`ig_account`, #10823) — o tipo mora em short-video.ts (#10916). */
@@ -1060,6 +1214,8 @@ export async function resolveInstagramAuthor(
   pages: ResolvedFacebookPage[],
   apiVersion: string,
   envAccount: { igUserId: string; token: string },
+  /** #11390: `readOnly` = só lê a conta (o `--confirm-instagram` no perfil do autor); não exige o escopo de publicação. */
+  opts: { readOnly?: boolean } = {},
 ): Promise<InstagramAuthor> {
   if (authorPage === null) {
     if (!envAccount.igUserId || !envAccount.token) return { ready: false, reason: "sem INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN" };
@@ -1086,6 +1242,7 @@ export async function resolveInstagramAuthor(
         `(scripts/facebook-page-token-setup.ts --pages ${authorPage})`,
     };
   }
+  if (opts.readOnly) return { ready: true, igUserId: ig.id, token: page.token, username: ig.username ?? null, source: `conta vinculada à página ${authorPage}` };
   // #10820: ler a conta vinculada não prova que o token PUBLICA — sem o escopo, a falha só apareceria no --publish.
   const scopeCheck = await readTokenScopes(deps, page.token, apiVersion);
   const warnings: string[] = [];
@@ -1252,14 +1409,43 @@ export interface InstagramReelCandidate {
  * pro link da bio —, então o marcador principal é o título do D1, que abre a
  * legenda. `utm_campaign={AAMMDD}` e a URL da edição entram também, pro caso
  * de a legenda colada trazer o link.
+ *
+ * #10978 item 5: o gancho (1ª frase do D1, 2º parágrafo da legenda) também
+ * conta, então editar só a 1ª linha (o título) no Chrome não derruba o
+ * match. Gancho curto demais (< `INSTAGRAM_HOOK_MARKER_MIN_CHARS`) fica de
+ * fora: casaria legenda de outra edição.
  */
-export function instagramEditionMarkers(input: { aammdd: string; d1Title?: string | null; editionUrl?: string | null }): string[] {
+export function instagramEditionMarkers(input: { aammdd: string; d1Title?: string | null; d1Body?: string | null; editionUrl?: string | null }): string[] {
   const out = [`utm_campaign=${input.aammdd}`];
   if (input.editionUrl) out.push(input.editionUrl.replace(/[?#].*$/, ""));
   const title = input.d1Title ? stripInlineMarkdown(input.d1Title).replace(/\s+/g, " ").trim() : "";
   if (title) out.push(title);
+  const hook = input.d1Body ? firstSentence(input.d1Body) : "";
+  if (Array.from(hook).length >= INSTAGRAM_HOOK_MARKER_MIN_CHARS) out.push(hook);
   return out;
 }
+
+/** #10978 item 5: tamanho mínimo do gancho pra valer como marcador da edição. */
+export const INSTAGRAM_HOOK_MARKER_MIN_CHARS = 30;
+
+/**
+ * #10978 item 5: janela em torno do horário do vertical (`resolveShortTime`,
+ * o mesmo horário em que o timer do 300 publica, #11265, e o slot do
+ * Instagram no plano com `timer-300`) em que um Reels SEM marcador ainda pode
+ * ser o da edição.
+ */
+export const INSTAGRAM_CONFIRM_TIME_WINDOW_MS = 90 * 60_000;
+
+/**
+ * #10978 item 5: trecho fixo da legenda de todo vertical (`buildReelsCaption`).
+ * Não identifica a edição, só o formato: entra junto com a janela de horário,
+ * nunca sozinho. #11388: a frase que explica a newsletter substituiu a linha do
+ * canal do YouTube.
+ */
+export const INSTAGRAM_CAPTION_FORMAT_MARKER = REELS_NEWSLETTER_SENTENCE;
+
+/** #11388: o trecho fixo das legendas de antes (linha do canal do YouTube), que segue valendo pros Reels já no ar. */
+export const INSTAGRAM_CAPTION_LEGACY_FORMAT_MARKER = DIARIA_YOUTUBE_CHANNEL_URL.replace(/^https:\/\/www\./, "");
 
 function normalizeForMatch(s: string): string {
   return s.normalize("NFC").replace(/\s+/g, " ").trim().toLowerCase();
@@ -1275,9 +1461,14 @@ export function captionMatchesEdition(caption: unknown, markers: string[]): bool
 export type InstagramConfirmDecision =
   /** Já registrado: no-op, nada é escrito. `exitCode` 1 quando o registro não é `published` (ex.: `scheduled` na fila). */
   | { kind: "already_registered"; entry: ShortPublishedEntry; exitCode: 0 | 1 }
-  /** Nenhum match, mais de 1 match, ou `--media-id` fora da lista: recusa (exit 1) listando os candidatos. */
-  | { kind: "refuse"; reason: string; candidates: InstagramReelCandidate[] }
-  | { kind: "register"; entry: ShortPublishedEntry; candidates: InstagramReelCandidate[] };
+  /**
+   * Nenhum match, mais de 1 match, ou `--media-id` fora da lista: recusa (exit 1) listando os candidatos.
+   * `cause` (#11265): `none` = nenhum Reels na janela; `no-match` = há Reels, nenhum da edição;
+   * `ambiguous` = mais de um candidato; `window` = a leitura não cobriu o corte; `media-id` = escolha inválida.
+   */
+  | { kind: "refuse"; reason: string; candidates: InstagramReelCandidate[]; cause: "none" | "no-match" | "ambiguous" | "window" | "media-id" }
+  /** `matchedBy` (#10978 item 5): pelo marcador na legenda, pela janela de horário + formato, ou pelo `--media-id`. */
+  | { kind: "register"; entry: ShortPublishedEntry; candidates: InstagramReelCandidate[]; matchedBy: "marker" | "time-window" | "media-id" };
 
 /**
  * Pure (#10915): decide o que o `--confirm-instagram` grava, a partir do
@@ -1312,6 +1503,13 @@ export function decideInstagramConfirm(input: {
    * — pode haver outro Reels da edição não lido — e exige `--media-id`.
    */
   windowCovered?: boolean;
+  /**
+   * #10978 item 5: horário planejado do Reels (ISO). Sem nenhum marcador na
+   * legenda, aceita o ÚNICO Reels a até `windowMs` dele cuja legenda ainda tem
+   * o formato do vertical (`INSTAGRAM_CAPTION_FORMAT_MARKER`). Ausente = só marcador.
+   */
+  expectedAtIso?: string | null;
+  windowMs?: number;
 }): InstagramConfirmDecision {
   const already = instagramAlreadyRegistered(input.published);
   if (already) return { kind: "already_registered", ...already };
@@ -1347,6 +1545,7 @@ export function decideInstagramConfirm(input: {
         kind: "refuse",
         reason: `--media-id ${input.mediaId} não está entre as ${data.length} mídias mais recentes lidas da autora`,
         candidates: all,
+        cause: "media-id",
       };
     }
     // #10966: a escolha explícita também precisa ser um Reels — uma foto ou um
@@ -1357,14 +1556,13 @@ export function decideInstagramConfirm(input: {
         kind: "refuse",
         reason: `--media-id ${input.mediaId} não é um Reels (media_product_type: ${type}${typeof raw.media_type === "string" ? `, media_type: ${raw.media_type}` : ""}) — escolha um dos Reels listados`,
         candidates: valid.filter(isReels).map(toCandidate).sort(byNewest),
+        cause: "media-id",
       };
     }
-    return { kind: "register", entry: entryFor(toCandidate(raw)), candidates: all };
+    return { kind: "register", entry: entryFor(toCandidate(raw)), candidates: all, matchedBy: "media-id" };
   }
-  const reels: InstagramReelCandidate[] = valid
-    .filter((m: any) => isReels(m) && parseIgTimestamp(m.timestamp) >= since)
-    .map(toCandidate)
-    .sort(byNewest);
+  const reelsRaw = valid.filter((m: any) => isReels(m) && parseIgTimestamp(m.timestamp) >= since);
+  const reels: InstagramReelCandidate[] = reelsRaw.map(toCandidate).sort(byNewest);
   const matches = reels.filter((c) => c.matchesEdition);
   const windowCovered = input.windowCovered ?? (input.media as any)?.windowCovered !== false;
   if (!windowCovered) {
@@ -1372,23 +1570,274 @@ export function decideInstagramConfirm(input: {
       kind: "refuse",
       reason: `a leitura parou no teto de páginas (${data.length} mídias) sem chegar a ${input.sinceIso} — pode haver Reels da edição não lido; escolha com --media-id`,
       candidates: matches.length ? matches : reels,
+      cause: "window",
     };
   }
-  if (matches.length === 1) return { kind: "register", entry: entryFor(matches[0]), candidates: reels };
+  if (matches.length === 1) return { kind: "register", entry: entryFor(matches[0]), candidates: reels, matchedBy: "marker" };
   if (!reels.length) {
     return {
       kind: "refuse",
       reason: `nenhum Reels desde ${input.sinceIso} (entre as ${data.length} mídias mais recentes lidas) — o Share terminou? (o processamento leva ~30–60 s)`,
       candidates: [],
+      cause: "none",
     };
+  }
+  if (matches.length > 1) {
+    return {
+      kind: "refuse",
+      reason: `${matches.length} Reels desde ${input.sinceIso} têm o marcador desta edição na legenda — escolha com --media-id`,
+      candidates: matches,
+      cause: "ambiguous",
+    };
+  }
+  // #10978 item 5: legenda editada (título e gancho trocados no Chrome). Vale o
+  // ÚNICO Reels perto do horário planejado que ainda tem o formato do vertical;
+  // dois ou mais na janela é ambíguo e recusa, como sempre.
+  const expected = input.expectedAtIso ? Date.parse(input.expectedAtIso) : Number.NaN;
+  if (!Number.isNaN(expected)) {
+    const windowMs = input.windowMs ?? INSTAGRAM_CONFIRM_TIME_WINDOW_MS;
+    const near = reelsRaw.filter(
+      (m: any) => Math.abs(parseIgTimestamp(m.timestamp) - expected) <= windowMs && captionMatchesEdition(m.caption, [INSTAGRAM_CAPTION_FORMAT_MARKER, INSTAGRAM_CAPTION_LEGACY_FORMAT_MARKER]),
+    );
+    if (near.length === 1) return { kind: "register", entry: entryFor(toCandidate(near[0])), candidates: reels, matchedBy: "time-window" };
+    if (near.length > 1) {
+      return {
+        kind: "refuse",
+        reason: `nenhum Reels tem o marcador desta edição e ${near.length} Reels no formato do vertical caem a até ${Math.round(windowMs / 60_000)} min do horário planejado — escolha com --media-id`,
+        candidates: near.map(toCandidate).sort(byNewest),
+        cause: "ambiguous",
+      };
+    }
   }
   return {
     kind: "refuse",
-    reason: matches.length
-      ? `${matches.length} Reels desde ${input.sinceIso} têm o marcador desta edição na legenda — escolha com --media-id`
-      : `nenhum dos ${reels.length} Reels desde ${input.sinceIso} tem o marcador desta edição na legenda (título do D1 ou utm_campaign) — escolha com --media-id`,
-    candidates: matches.length ? matches : reels,
+    reason: `nenhum dos ${reels.length} Reels desde ${input.sinceIso} tem o marcador desta edição na legenda (título ou gancho do D1, utm_campaign)${Number.isNaN(expected) ? "" : " nem cai perto do horário planejado com o formato do vertical"} — escolha com --media-id`,
+    candidates: reels,
+    cause: "no-match",
   };
+}
+
+/**
+ * #11390: recusas da conta da API em que vale procurar no perfil do autor da
+ * rota do Chrome (`INSTAGRAM_CHROME_ROUTE`): nada da edição na conta (o post
+ * só aparece na @diar.ia.br depois que o convite de collab é aceito), ou o
+ * `--media-id` escolhido não está entre as mídias dela. Ambíguo e janela
+ * incompleta não: lá a conta já tem candidato e quem escolhe é o editor.
+ */
+const CHROME_AUTHOR_FALLBACK_CAUSES: ReadonlySet<string> = new Set(["none", "no-match", "media-id"]);
+
+export interface InstagramConfirmAcrossAccounts {
+  decision: InstagramConfirmDecision;
+  /** De onde veio a decisão: a conta da API ou o perfil do autor da rota do Chrome. */
+  account: "primary" | "chrome-author";
+  /** Por que o perfil do autor não resolveu (sem credencial, leitura falhou, recusa); ausente = não foi consultado ou resolveu. */
+  fallbackNote?: string;
+}
+
+/**
+ * #11390: o `--confirm-instagram` procura primeiro na conta da API e, se ela
+ * não tem o Reels da edição, no perfil do autor da rota do Chrome
+ * (@vjpixel), onde o post fica enquanto o collab com a @diar.ia.br está
+ * pendente. `chromeAuthor` null = o perfil não é consultável (sem credencial,
+ * ou é a mesma conta da API); o motivo vem em `chromeAuthorUnavailable`.
+ * Falha na leitura do perfil nunca derruba a decisão da conta da API.
+ */
+export async function decideInstagramConfirmAcrossAccounts(deps: {
+  primary: () => Promise<InstagramConfirmDecision>;
+  chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null;
+  chromeAuthorUnavailable?: string;
+}): Promise<InstagramConfirmAcrossAccounts> {
+  const primary = await deps.primary();
+  if (primary.kind !== "refuse" || !CHROME_AUTHOR_FALLBACK_CAUSES.has(primary.cause)) return { decision: primary, account: "primary" };
+  const who = `@${INSTAGRAM_CHROME_ROUTE.authorUsername}`;
+  if (!deps.chromeAuthor) {
+    return { decision: primary, account: "primary", ...(deps.chromeAuthorUnavailable ? { fallbackNote: `perfil do ${who} não consultado: ${deps.chromeAuthorUnavailable}` } : {}) };
+  }
+  let fallback: InstagramConfirmDecision;
+  try {
+    fallback = await deps.chromeAuthor();
+  } catch (e) {
+    return { decision: primary, account: "primary", fallbackNote: `a leitura do perfil do ${who} falhou: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (fallback.kind === "register" || fallback.kind === "already_registered") return { decision: fallback, account: "chrome-author" };
+  return { decision: primary, account: "primary", fallbackNote: `perfil do ${who}: ${fallback.reason}` };
+}
+
+/**
+ * Pure (#11390): `--confirm-instagram --url URL` registra o Reel pela URL que
+ * o editor copiou (o post do collab pendente, sem acesso ao perfil do autor
+ * pela API). Só aceita permalink do instagram.com (`/reel/`, `/reels/`, `/p/`,
+ * com ou sem o usuário antes); a query (`?igsh=...`) sai do registro.
+ */
+export function instagramConfirmUrlEntry(url: string, nowIso: string): { ok: true; entry: ShortPublishedEntry } | { ok: false; error: string } {
+  const m = url.trim().match(/^https:\/\/(?:www\.)?instagram\.com\/(?:[A-Za-z0-9_.]+\/)?(?:reel|reels|p)\/([A-Za-z0-9_-]+)\/?(?:[?#].*)?$/);
+  if (!m) return { ok: false, error: `--url precisa ser o permalink do Reel no instagram.com (https://www.instagram.com/reel/CODIGO/), recebido ${JSON.stringify(url)}` };
+  const clean = url.trim().replace(/[?#].*$/, "");
+  return { ok: true, entry: { destination: "instagram", status: "published", id: clean, url: clean, scheduled_at: null, at: nowIso } };
+}
+
+/**
+ * #11390: o leitor do perfil do autor da rota do Chrome (@vjpixel), só leitura.
+ * `reader` null = não consultável (mesma conta da API, ou sem credencial), com
+ * o motivo em `unavailable`.
+ */
+async function resolveChromeAuthorReader(
+  apiAuthorPage: string | null,
+  pages: ResolvedFacebookPage[],
+  igApiVersion: string,
+): Promise<{ reader: Extract<InstagramAuthor, { ready: true }> | null; unavailable?: string; sameAccount?: true }> {
+  if (apiAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) return { reader: null, unavailable: "é a mesma conta da API", sameAccount: true };
+  const resolved = await resolveInstagramAuthor(defaultGraphDeps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
+  return resolved.ready ? { reader: resolved } : { reader: null, unavailable: resolved.reason };
+}
+
+/**
+ * #11389/#11390 (fix do review do PR #11395): a conferência da conta ANTES de o
+ * timer publicar olha também o perfil do autor da rota do Chrome. Um Reels
+ * postado à mão (@vjpixel autor, collab pendente) não aparece na conta da API
+ * até o convite ser aceito; sem isto o timer publicaria de novo, em conta
+ * pública. Regras:
+ * - a conta da API acha o Reels, ou bloqueia (ambíguo/janela) → vale ela;
+ * - nada na conta da API → a decisão do perfil do autor, se ele achou ou
+ *   bloqueou; se ele também não tem nada, segue a da API (publica);
+ * - leitura do perfil que falha → propaga (o gate vira `read-failed` e não
+ *   publica: fail-closed, igual à leitura da conta da API);
+ * - perfil não consultável por ser a mesma conta da API (`chromeAuthor` null,
+ *   sem `chromeAuthorUnavailable`) → segue a da API: ela já é o perfil do autor;
+ * - perfil não consultável por falta da credencial da página `vjpixel`
+ *   (`chromeAuthor` null com `chromeAuthorUnavailable`) → fail-closed (#11421):
+ *   lança `InstagramTimerGateError` `author-unchecked` e não publica. Um Reels
+ *   postado à mão com collab pendente seria invisível e a API duplicaria o post
+ *   em conta pública; o timer alarma para o editor postar pelo Chrome ou prover
+ *   a credencial. Só vale quando a conta da API não tem nada: achado/bloqueio
+ *   nela continua decidindo sozinho.
+ */
+export async function decideInstagramTimerAcrossAccounts(deps: {
+  primary: () => Promise<InstagramConfirmDecision>;
+  chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null;
+  /** Por que o perfil do autor não é consultável (sem credencial). Ausente com `chromeAuthor` null = mesma conta da API. */
+  chromeAuthorUnavailable?: string;
+}): Promise<InstagramConfirmDecision> {
+  const primary = await deps.primary();
+  if (primary.kind !== "refuse" || (primary.cause !== "none" && primary.cause !== "no-match")) return primary;
+  if (!deps.chromeAuthor) {
+    if (deps.chromeAuthorUnavailable === undefined) return primary;
+    throw new InstagramTimerGateError(
+      `o perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não foi conferido (${deps.chromeAuthorUnavailable}) — um Reels postado à mão com collab pendente não aparece na conta da API; o timer não publica sem conferir. Poste pelo Chrome (collab) ou forneça a credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300`,
+      "author-unchecked",
+    );
+  }
+  const author = await deps.chromeAuthor();
+  if (author.kind === "refuse" && (author.cause === "none" || author.cause === "no-match")) return primary;
+  return author;
+}
+
+export type InstagramTimerAlreadyMatch = "registry" | "marker" | "time-window" | "media-id";
+
+export type InstagramTimerPreflight =
+  | { kind: "proceed" }
+  /** O Reels da edição já está na conta (registrado ou achado pela API): grava, não publica. */
+  | { kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }
+  /** Pode haver Reels da edição na conta e não dá pra afirmar qual: não publica. */
+  | { kind: "block"; reason: string };
+
+/**
+ * Pure (#11265): antes de o timer do 300 publicar o Reels, a conta já tem o da
+ * edição? Cobre o Share feito por fora (Chrome/app) sem `--confirm-instagram`:
+ * o registro não sabe, a conta sabe. Achou → grava e não publica; ambíguo ou
+ * leitura incompleta → não publica (o timer avisa); nada → publica.
+ */
+export function instagramTimerPreflight(decision: InstagramConfirmDecision): InstagramTimerPreflight {
+  if (decision.kind === "already_registered") return { kind: "already", entry: decision.entry, matchedBy: "registry" };
+  if (decision.kind === "register") return { kind: "already", entry: decision.entry, matchedBy: decision.matchedBy };
+  if (decision.cause === "none" || decision.cause === "no-match") return { kind: "proceed" };
+  return { kind: "block", reason: decision.reason };
+}
+
+/**
+ * #11265: por que a conferência da conta do timer não deixou publicar.
+ * `blocked` = pode haver Reels da edição na conta (ambíguo, janela ou media-id);
+ * `read-failed` = a leitura do `/media` falhou; `persist-failed` = o Reels foi
+ * ACHADO na conta, mas o registro não foi gravado (`entry` = o achado);
+ * `author-unchecked` (#11421) = nada na conta da API, mas o perfil do autor da
+ * rota do Chrome (@vjpixel) não pôde ser conferido (sem credencial).
+ */
+export type InstagramTimerGateFailure = "blocked" | "read-failed" | "persist-failed" | "author-unchecked";
+
+/**
+ * #11265: erro da conferência da conta do timer. O resultado do destino leva
+ * `cause: "preflight"` no JSON, para o timer distinguir "o gate não deixou
+ * publicar" (nunca sugerir `--publish`: pode duplicar o Reels) de "o publish
+ * falhou".
+ */
+export class InstagramTimerGateError extends Error {
+  readonly failure: InstagramTimerGateFailure;
+  readonly entry?: ShortPublishedEntry;
+  constructor(message: string, failure: InstagramTimerGateFailure, entry?: ShortPublishedEntry) {
+    super(message);
+    this.name = "InstagramTimerGateError";
+    this.failure = failure;
+    if (entry) this.entry = entry;
+  }
+}
+
+/**
+ * #11265: a conferência da conta ligada ao publish da rodada do timer, com I/O
+ * injetável. Reels já no ar → grava (`persist`) e não publica; ambíguo ou
+ * leitura incompleta → lança (o destino vira falha e o timer alarma, nunca
+ * publica); achado só pela janela de horário → lança `blocked` sem gravar
+ * (#11368); nada na conta → publica. Erro da leitura também lança
+ * (fail-closed: a próxima execução de hora em hora tenta de novo). Todo erro
+ * daqui é `InstagramTimerGateError` (`persist-failed` carrega o Reels achado).
+ */
+export async function instagramTimerGate(deps: {
+  decide: () => Promise<InstagramConfirmDecision>;
+  persist: (entry: ShortPublishedEntry) => void;
+}): Promise<{ kind: "publish" } | { kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }> {
+  let decision: InstagramConfirmDecision;
+  try {
+    decision = await deps.decide();
+  } catch (e) {
+    if (e instanceof InstagramTimerGateError) throw e; // #11421: `author-unchecked` não é falha de leitura
+    throw new InstagramTimerGateError(`a leitura da conta do Instagram falhou (${e instanceof Error ? e.message : String(e)}) — o timer não publica sem conferir`, "read-failed");
+  }
+  const pre = instagramTimerPreflight(decision);
+  if (pre.kind === "block") {
+    throw new InstagramTimerGateError(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`, "blocked");
+  }
+  if (pre.kind === "already" && pre.matchedBy === "time-window") {
+    // #11368: achado só pela janela de ±90 min, sem o marcador da edição — pode
+    // ser o Reels de OUTRA edição postado atrasado. O timer não registra (o
+    // registro errado esconderia o Reels de hoje) nem publica: o editor confere.
+    const where = pre.entry.url ?? pre.entry.id;
+    throw new InstagramTimerGateError(
+      `um Reels sem o marcador da edição está perto do horário (${where}, só pela janela de horário) — pode ser de outra edição; o timer não registra nem publica. Se for o desta edição, registre com --confirm-instagram --media-id ${pre.entry.id}`,
+      "blocked",
+    );
+  }
+  if (pre.kind === "already") {
+    try {
+      deps.persist(pre.entry);
+    } catch (e) {
+      throw new InstagramTimerGateError(`registro não gravado: ${e instanceof Error ? e.message : String(e)}`, "persist-failed", pre.entry);
+    }
+    return pre;
+  }
+  return { kind: "publish" };
+}
+
+/**
+ * #11368: o passo do Instagram na rodada do timer, com I/O injetável — a
+ * conferência da conta SEMPRE antes do upload. Reels já na conta → nada sobe;
+ * gate que lança → nada sobe (o erro segue pro chamador).
+ */
+export async function instagramTimerPublishStep<T>(deps: {
+  gate: () => ReturnType<typeof instagramTimerGate>;
+  publish: () => Promise<T>;
+}): Promise<{ kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch } | { kind: "published"; outcome: T }> {
+  const gate = await deps.gate();
+  if (gate.kind === "already") return gate;
+  return { kind: "published", outcome: await deps.publish() };
 }
 
 /**
@@ -1466,6 +1915,8 @@ export async function readAndDecideInstagramConfirm(
     mediaId?: string | null;
     nowIso: string;
     maxPages?: number;
+    /** #10978 item 5: horário planejado do Reels (ver `decideInstagramConfirm`). */
+    expectedAtIso?: string | null;
   },
 ): Promise<InstagramConfirmDecision> {
   if (Number.isNaN(Date.parse(input.sinceIso))) throw new Error(`--since inválido: ${input.sinceIso}`);
@@ -1482,6 +1933,7 @@ export async function readAndDecideInstagramConfirm(
     mediaId: input.mediaId ?? null,
     nowIso: input.nowIso,
     windowCovered: media.windowCovered,
+    expectedAtIso: input.expectedAtIso ?? null,
   });
 }
 
@@ -2076,14 +2528,15 @@ function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: 
 
 const USAGE =
   "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
-  "                       [--linkedin-timer] [--force-youtube] [--keep-video]\n" +
+  "                       [--linkedin-timer | --instagram-timer | --threads-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
-  "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API)";
+  "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br e perfil do @vjpixel, #11390)\n" +
+  "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "force-youtube", "keep-video"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -2117,6 +2570,30 @@ export function parseShortsCliArgs(argv: string[]):
   return { ok: true, aammdd, flags, values, positional: positionalOut };
 }
 
+/**
+ * #11410: `publishing.shorts.threads_profile_via_timer` no config real; config
+ * ilegível = `"unreadable"` (o `--threads-timer` recusa).
+ */
+function configuredThreadsViaTimer(): boolean | "unreadable" {
+  try {
+    return loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))).threadsProfileViaTimer;
+  } catch {
+    return "unreadable";
+  }
+}
+
+/**
+ * Backend do Instagram no config real; config ilegível = `"unreadable"` (#11368:
+ * o `--instagram-timer` recusa, inclusive no `--mark`, em vez de pular a regra).
+ */
+function configuredInstagramBackend(): InstagramBackend | "unreadable" {
+  try {
+    return loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))).instagramBackend;
+  } catch {
+    return "unreadable";
+  }
+}
+
 async function main(): Promise<number> {
   const parsed = parseShortsCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -2128,7 +2605,18 @@ async function main(): Promise<number> {
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
-  const writer = shortsRegistryWriterFor(flags.has("linkedin-timer"));
+  const linkedinTimer = flags.has("linkedin-timer");
+  const instagramTimer = flags.has("instagram-timer");
+  const threadsTimer = flags.has("threads-timer");
+  if (linkedinTimer && instagramTimer) {
+    console.error("publish-shorts: --instagram-timer não combina com --linkedin-timer (cada timer grava o próprio registro)");
+    return 2;
+  }
+  if (threadsTimer && (linkedinTimer || instagramTimer)) {
+    console.error("publish-shorts: --threads-timer não combina com outro timer (cada timer grava o próprio registro)");
+    return 2;
+  }
+  const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer, threadsTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
   const cleanup = () => cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
@@ -2144,7 +2632,10 @@ async function main(): Promise<number> {
       console.error((e as Error).message);
       return 2;
     }
-    const markScopeErr = linkedinTimerScopeError({ linkedinTimer: flags.has("linkedin-timer"), only: null, markDestination: mark.destination });
+    const markScopeErr =
+      linkedinTimerScopeError({ linkedinTimer, only: null, markDestination: mark.destination }) ??
+      instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: null, markDestination: mark.destination }) ??
+      threadsTimerScopeError({ threadsTimer, viaTimer: configuredThreadsViaTimer(), only: null, markDestination: mark.destination });
     if (markScopeErr) {
       console.error(`publish-shorts: ${markScopeErr}`);
       return 2;
@@ -2160,21 +2651,20 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  // #11159: a rodada do timer só toca o linkedin_profile — checado antes de
-  // qualquer download, chamada de API ou gravação.
+  // #11159/#11265: a rodada de um timer só toca o destino dele — checado antes
+  // de qualquer download, chamada de API ou gravação.
   const onlyList = values["only"] ? values["only"].split(",").map((s) => s.trim()).filter(Boolean) : null;
-  const scopeErr = linkedinTimerScopeError({
-    linkedinTimer: flags.has("linkedin-timer"),
-    only: onlyList,
-    confirmInstagram: flags.has("confirm-instagram"),
-  });
+  const scopeErr =
+    linkedinTimerScopeError({ linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") }) ??
+    instagramTimerScopeError({ instagramTimer, backend: configuredInstagramBackend(), linkedinTimer, only: onlyList, confirmInstagram: flags.has("confirm-instagram") }) ??
+    threadsTimerScopeError({ threadsTimer, viaTimer: configuredThreadsViaTimer(), only: onlyList, confirmInstagram: flags.has("confirm-instagram") });
   if (scopeErr) {
     console.error(`publish-shorts: ${scopeErr}`);
     return 2;
   }
 
   if (flags.has("confirm-instagram")) {
-    const result = await confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"]);
+    const result = await confirmInstagram(aammdd, dir, persist, published, values["since"], values["media-id"], values["edition-url"], values["url"]);
     if (result === 0) cleanup();
     return result;
   }
@@ -2256,12 +2746,17 @@ async function main(): Promise<number> {
   // #11070: Short pela Data API com a credencial do horizontal (YOUTUBE_*, youtube-oauth-setup.ts).
   const ytMissing = missingYouTubeCredentials(process.env);
   if (ytVideo.warning) console.error(`[aviso] ${ytVideo.warning}`);
-  const instagramQueue = resolveInstagramQueueReadiness({
-    authorPage: shortsCfg.instagramAuthorPage,
-    workerUrl,
-    workerToken,
-    r2Missing: r2.ready ? [] : r2.missing,
-  });
+  // #11265: a fila do Worker (e o R2) só entra com o backend antigo; com o
+  // timer do 300 nada aqui cobra os secrets do R2.
+  const instagramQueue =
+    shortsCfg.instagramBackend === "worker-r2"
+      ? resolveInstagramQueueReadiness({
+          authorPage: shortsCfg.instagramAuthorPage,
+          workerUrl,
+          workerToken,
+          r2Missing: r2.ready ? [] : r2.missing,
+        })
+      : undefined;
   // #10819: a fila do Worker entra na grade (só leitura, fail-soft).
   const warnGrid = (m: string) => console.error(`[aviso] ${m}`);
   const workerQueue = await loadWorkerQueueForGrid(workerUrl, workerToken, fetch, warnGrid);
@@ -2280,10 +2775,10 @@ async function main(): Promise<number> {
       instagramQueue,
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
-      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: `falta ${r2.missing.join(", ")}` },
+      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing) },
       youtubeVideoUrl: ytVideo.url,
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
-      linkedinTimer: flags.has("linkedin-timer"),
+      writer,
       published,
       video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
       videoDurationSeconds: duration,
@@ -2322,14 +2817,23 @@ async function main(): Promise<number> {
     error?: string;
     /** #11157: outro processo registrou o destino durante a rodada; nada foi enviado. */
     alreadyRegistered?: boolean;
+    /** #11265: como a conferência do timer achou o Reels já no ar (`time-window` pede conferir o permalink). */
+    matchedBy?: InstagramTimerAlreadyMatch;
     /** #10772: o que a skill passa pra Buffer `create_post` (nada é registrado até o `--mark`). */
     buffer?: { text: string; dueAt: string | null; videoUrl: string };
+    /** #11265: a falha veio da conferência da conta do timer (`instagramTimerGate`), não do publish. */
+    cause?: "preflight";
+    preflight?: InstagramTimerGateFailure | ThreadsTimerGateFailure;
   }> = [];
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
+  // #11410: objeto do dia já no bucket com o mesmo tamanho é reaproveitado (sem novo PUT).
   let uploaded: Promise<string> | null = null;
   const uploadVideo = () => {
     if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
-    uploaded ??= uploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4");
+    uploaded ??= reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4").then((r) => {
+      console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo tamanho, sem novo upload)" : "enviado"}: ${r.url}`);
+      return r.url;
+    });
     return uploaded;
   };
   for (const item of plan.items) {
@@ -2397,6 +2901,30 @@ async function main(): Promise<number> {
         });
       } else if (item.destination === THREADS_PROFILE_DESTINATION) {
         if (!threadsCreds.ready) throw new Error(threadsCreds.reason); // o plano não marca publish sem credencial
+        if (writer === "threads-timer") {
+          // #11410: o timer confere o perfil antes — um post à mão (depois de um
+          // skip_late) ou de uma rodada sem registro sincronizado não está no
+          // registro, mas está no perfil. Falha de leitura nunca vira "não está lá".
+          const pre = await threadsProfilePreflight({
+            creds: threadsCreds.creds,
+            sinceIso: resolveEditionScheduledAt(aammdd, "00:00"),
+            // 1ª linha do texto = o título do D1 como o post o leva (cortado com … se não coube).
+            markers: threadsEditionMarkers(aammdd, item.caption.split("\n")[0] ?? ""),
+            now: () => new Date(),
+          });
+          if (pre.kind === "already") {
+            try {
+              published = persist(pre.entry);
+            } catch (e) {
+              results.push({ destination: item.destination, ok: false, entry: pre.entry, error: `registro não gravado: ${(e as Error).message}`, cause: "preflight" });
+              console.error(`[erro] threads_profile: o vídeo JÁ ESTÁ no perfil (${pre.entry.url ?? pre.entry.id}) mas o registro não foi gravado: ${(e as Error).message}`);
+              continue;
+            }
+            results.push({ destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true });
+            console.error(`[aviso] threads_profile: o vídeo da edição já está no perfil (${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
+            continue;
+          }
+        }
         outcome = await publishThreadsProfileVideo({
           creds: threadsCreds.creds,
           videoUrl: await uploadVideo(),
@@ -2405,14 +2933,67 @@ async function main(): Promise<number> {
         });
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
-        outcome = await publishInstagramReel(deps, igAuthor.igUserId, igAuthor.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
+        const author = igAuthor;
+        const publishReel = () => publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
+        if (writer === "instagram-timer") {
+          // #11265: o timer confere a conta antes — um Share feito por fora sem
+          // --confirm-instagram não está no registro, mas está no /media.
+          const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
+          // Fix do review do PR #11395: o gate olha também o perfil do @vjpixel (Reels à mão com collab pendente).
+          const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
+          // #11421: sem a credencial da página do autor, o gate não publica (fail-closed) se a conta da API não tiver o Reels.
+          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não consultável (${chrome.unavailable ?? "sem motivo"})${chrome.sameAccount ? "" : " — o timer não publica pela API sem conferir"}`);
+          const readFor = (igUserId: string, token: string) => () =>
+            readAndDecideInstagramConfirm(defaultGraphDeps, {
+              igUserId,
+              token,
+              apiVersion: igApiVersion,
+              published,
+              sinceIso: ctx.sinceIso,
+              markers: ctx.markers,
+              nowIso: new Date().toISOString(),
+              expectedAtIso: ctx.expectedAtIso,
+            });
+          const chromeReader = chrome.reader;
+          const step = await instagramTimerPublishStep({
+            gate: () =>
+              instagramTimerGate({
+                decide: () =>
+                  decideInstagramTimerAcrossAccounts({
+                    primary: readFor(author.igUserId, author.token),
+                    chromeAuthor: chromeReader ? readFor(chromeReader.igUserId, chromeReader.token) : null,
+                    ...(chromeReader || chrome.sameAccount ? {} : { chromeAuthorUnavailable: chrome.unavailable ?? "sem credencial" }),
+                  }),
+                persist: (entry) => {
+                  published = persist(entry);
+                },
+              }),
+            publish: publishReel,
+          });
+          if (step.kind === "already") {
+            results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy });
+            console.error(`[aviso] instagram: o Reels da edição já está na conta (${step.matchedBy}, ${step.entry.url ?? step.entry.id}) — registrado, não publica de novo`);
+            continue;
+          }
+          outcome = step.outcome;
+        } else {
+          outcome = await publishReel();
+        }
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
         outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      results.push({ destination: item.destination, ok: false, error: msg });
+      if (e instanceof InstagramTimerGateError) {
+        // #11265: o gate não deixou publicar — o timer não pode tratar isso como "o publish falhou".
+        results.push({ destination: item.destination, ok: false, error: msg, cause: "preflight", preflight: e.failure, ...(e.entry ? { entry: e.entry } : {}) });
+      } else if (e instanceof ThreadsTimerGateError) {
+        // #11410: idem pro Threads pessoal (perfil ilegível ou vídeo do dia sem marcador).
+        results.push({ destination: item.destination, ok: false, error: msg, cause: "preflight", preflight: e.failure });
+      } else {
+        results.push({ destination: item.destination, ok: false, error: msg });
+      }
       console.error(`[erro] ${item.destination}: ${msg}`);
       continue;
     }
@@ -2472,8 +3053,82 @@ async function main(): Promise<number> {
     guided: plan.items.filter((i) => i.action === "guided").length,
   };
   console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
+  // #11240: pulo por credencial é terminal pra limpeza (decisão do editor). Só a
+  // rodada principal grava; as dos timers do 300 só planejam o próprio destino.
+  if (writer === "main") {
+    try {
+      recordCredentialSkips(
+        dir,
+        aammdd,
+        plan.items.map((i) => i.destination),
+        credentialSkippedItems(plan.items, { publicVideoTerminal: shortsCfg.instagramBackend === "timer-300" && !r2.ready }),
+        new Date().toISOString(),
+      );
+    } catch (e) {
+      console.error(`[aviso] não foi possível registrar os destinos pulados por credencial: ${(e as Error).message}`);
+    }
+  }
   cleanup();
   return summary.failed > 0 ? 1 : 0;
+}
+
+/**
+ * Pure (#11410): o que identifica o vertical da edição num post do perfil do
+ * Threads — o `utm_campaign={AAMMDD}` do link da edição que
+ * `buildShortSocialText` põe no texto, e o título do D1 como o texto o leva.
+ * Título com reticências (cortado pra caber) entra sem elas.
+ */
+export function threadsEditionMarkers(aammdd: string, d1Title: string): string[] {
+  const title = stripInlineMarkdown(d1Title).replace(/\s+/g, " ").replace(/…$/, "").trim();
+  return [`utm_campaign=${aammdd}`, ...(title ? [title] : [])];
+}
+
+/**
+ * Destinos que a rodada pulou por falta de credencial/token do PRÓPRIO destino
+ * (#11240), terminais pra limpeza do vertical. O pulo por falta de URL pública
+ * (`cause: "public_video"`, X e Threads) só conta quando
+ * `publicVideoTerminal`: com o R2 fora de cogitação (#11265, backend
+ * `timer-300` sem R2) a próxima rodada também não publica, e o X/Threads
+ * manuais sobem o arquivo do Drive (`Final/`), não o `-short.mp4` local —
+ * sem isso o vertical nunca seria apagado. Com o R2 só fora do ar
+ * (`worker-r2`), segue não-terminal: a próxima rodada publica com o mesmo
+ * arquivo. Puro.
+ */
+export function credentialSkippedItems(
+  items: readonly ShortsPlanItem[],
+  opts: { publicVideoTerminal?: boolean } = {},
+): Array<{ destination: string; detail: string }> {
+  return items.flatMap((i) =>
+    i.action === "skip_missing_credentials" && (i.cause !== "public_video" || opts.publicVideoTerminal === true)
+      ? [{ destination: i.destination, detail: i.detail }]
+      : [],
+  );
+}
+
+/**
+ * #10978 item 5 / #11265: o que identifica o Reels da edição na conta —
+ * marcadores (título e gancho do D1, utm, URL), o corte default (00:00 BRT do
+ * dia da edição, o vertical sai no próprio dia, #10831) e o horário planejado
+ * do vertical (`resolveShortTime`), base da janela de horário quando a
+ * legenda foi editada. Usado pelo `--confirm-instagram` e pela conferência do
+ * timer antes de publicar.
+ */
+function instagramConfirmContext(
+  dir: string,
+  aammdd: string,
+  config: unknown,
+  editionUrlFlag: string | undefined,
+): { markers: string[]; sinceIso: string; expectedAtIso: string | null; d1Title: string | null } {
+  const reviewedPath = join(dir, "02-reviewed.md");
+  const d1 = existsSync(reviewedPath) ? (parseDestaques(readFileSync(reviewedPath, "utf8")).find((d) => d.n === 1) ?? null) : null;
+  const markers = instagramEditionMarkers({ aammdd, d1Title: d1?.title ?? null, d1Body: d1?.body ?? null, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
+  let expectedAtIso: string | null = null;
+  try {
+    expectedAtIso = resolveEditionScheduledAt(aammdd, resolveShortTime(loadShortScheduleConfig(config), aammdd).hhmm);
+  } catch {
+    expectedAtIso = null; // config de horário inválido: fica só o marcador (a recusa segue segura)
+  }
+  return { markers, sinceIso: resolveEditionScheduledAt(aammdd, "00:00"), expectedAtIso, d1Title: d1?.title ?? null };
 }
 
 /**
@@ -2491,6 +3146,7 @@ async function confirmInstagram(
   sinceFlag: string | undefined,
   mediaIdFlag: string | undefined,
   editionUrlFlag: string | undefined,
+  urlFlag?: string,
 ): Promise<number> {
   const already = instagramAlreadyRegistered(published);
   if (already) {
@@ -2500,6 +3156,19 @@ async function confirmInstagram(
       console.error(`publish-shorts: o instagram já está registrado como "${e.status}", não "published" — confira na conta antes de relatar; nada foi gravado`);
     }
     return already.exitCode;
+  }
+  // #11390: o editor colou o permalink (o Reel do collab pendente, no perfil do autor).
+  if (urlFlag !== undefined) {
+    const built = instagramConfirmUrlEntry(urlFlag, new Date().toISOString());
+    if (!built.ok) {
+      console.error(`publish-shorts: ${built.error}`);
+      return 2;
+    }
+    persist(built.entry);
+    const warning = "registrado pela URL informada, sem conferir na API — confira que é o Reel desta edição";
+    console.error(`[aviso] instagram: ${warning}`);
+    console.log(JSON.stringify({ confirmed: true, id: built.entry.id, url: built.entry.url, account: "--url", warnings: [warning] }));
+    return 0;
   }
   // #10978: --since inválido falha antes de qualquer chamada à API.
   if (sinceFlag !== undefined && Number.isNaN(Date.parse(sinceFlag))) {
@@ -2518,40 +3187,54 @@ async function confirmInstagram(
     console.error(`publish-shorts: não deu pra ler a conta do Instagram (${author.reason}) — registre com --mark instagram=URL`);
     return 1;
   }
-  // Marcador da edição: o título do D1 abre a legenda do Reels (buildReelsCaption).
-  const reviewedPath = join(dir, "02-reviewed.md");
-  const d1Title = existsSync(reviewedPath) ? (parseDestaques(readFileSync(reviewedPath, "utf8")).find((d) => d.n === 1)?.title ?? null) : null;
-  if (!d1Title && !mediaIdFlag) console.error(`[aviso] instagram: sem título do D1 (${reviewedPath}) — o marcador fica só utm_campaign/URL; se recusar, use --media-id`);
-  const markers = instagramEditionMarkers({ aammdd, d1Title, editionUrl: resolveEditionUrlInput(dir, editionUrlFlag).url ?? null });
-  // Default: 00:00 BRT do dia da edição (o vertical sai no próprio dia, #10831).
-  const since = sinceFlag ?? resolveEditionScheduledAt(aammdd, "00:00");
-  const decision = await readAndDecideInstagramConfirm(defaultGraphDeps, {
-    igUserId: author.igUserId,
-    token: author.token,
+  const ctx = instagramConfirmContext(dir, aammdd, config, editionUrlFlag);
+  if (!ctx.d1Title && !mediaIdFlag) console.error(`[aviso] instagram: sem título do D1 (${join(dir, "02-reviewed.md")}) — o marcador fica só utm_campaign/URL e a janela de horário; se recusar, use --media-id`);
+  const readInput = {
     apiVersion: igApiVersion,
     published,
-    sinceIso: since,
-    markers,
+    sinceIso: sinceFlag ?? ctx.sinceIso,
+    markers: ctx.markers,
     mediaId: mediaIdFlag ?? null,
     nowIso: new Date().toISOString(),
+    expectedAtIso: ctx.expectedAtIso,
+  };
+  // #11390: o Reels do B3b é postado pela @vjpixel com a @diar.ia.br em collab;
+  // até o convite ser aceito ele só aparece no perfil do autor.
+  const { reader: chromeReader, unavailable: chromeAuthorUnavailable } = await resolveChromeAuthorReader(cfg.instagramAuthorPage, pages, igApiVersion);
+  const across = await decideInstagramConfirmAcrossAccounts({
+    primary: () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: author.igUserId, token: author.token }),
+    chromeAuthor: chromeReader ? () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: chromeReader.igUserId, token: chromeReader.token }) : null,
+    chromeAuthorUnavailable,
   });
-  const who = author.username ? `@${author.username}` : author.igUserId;
+  const decision = across.decision;
+  const reader = across.account === "chrome-author" && chromeReader ? chromeReader : author;
+  const who = reader.username ? `@${reader.username}` : across.account === "chrome-author" ? `@${INSTAGRAM_CHROME_ROUTE.authorUsername}` : reader.igUserId;
   if (decision.kind !== "register") {
     // already_registered foi tratado acima; aqui só sobra a recusa.
     const reason = decision.kind === "refuse" ? decision.reason : "já registrado";
     const candidates = decision.kind === "refuse" ? decision.candidates : [];
     console.error(`publish-shorts: ${who}: ${reason}. Nada gravado.`);
+    if (across.fallbackNote) console.error(`publish-shorts: ${across.fallbackNote}`);
     for (const c of candidates) console.error(`  candidato: --media-id ${c.id}  ${c.timestamp}  ${c.permalink ?? "(sem permalink)"}${c.matchesEdition ? "  [marcador da edição]" : ""}`);
-    console.log(JSON.stringify({ confirmed: false, reason, candidates }));
+    console.error(`publish-shorts: com o permalink em mãos, registre com --confirm-instagram --url URL (ou --mark instagram=URL)`);
+    console.log(JSON.stringify({ confirmed: false, reason, candidates, ...(across.fallbackNote ? { fallback: across.fallbackNote } : {}) }));
     return 1;
   }
   const entry = decision.entry;
   const warnings: string[] = [];
+  if (decision.matchedBy === "time-window") {
+    warnings.push(`a legenda não tem o título nem o gancho do D1; registrado pelo único Reels no formato do vertical perto das ${ctx.expectedAtIso} (#10978) — confira o permalink`);
+  }
   if (!entry.url) warnings.push(`a mídia ${entry.id} veio sem permalink — o id fica no registro`);
-  if (cfg.instagramCollaborators.length) {
+  // Collab esperado: na rota do Chrome é a @diar.ia.br (o post é do @vjpixel); na da API, os do config.
+  const expectedCollabs: string[] = across.account === "chrome-author" ? [INSTAGRAM_CHROME_ROUTE.collaboratorUsername] : cfg.instagramCollaborators;
+  if (across.account === "chrome-author") {
+    warnings.push(`achado no perfil do ${who} (rota do Chrome, #11390): o Reel aparece na @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} quando o convite de collab for aceito`);
+  }
+  if (expectedCollabs.length) {
     try {
-      const collab = await graphGet(defaultGraphDeps, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: author.token }, igApiVersion);
-      warnings.push(...collabInviteWarnings(collab?.data, cfg.instagramCollaborators, { reportPending: true }));
+      const collab = await graphGet(defaultGraphDeps, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: reader.token }, igApiVersion);
+      warnings.push(...collabInviteWarnings(collab?.data, expectedCollabs, { reportPending: true }));
     } catch (e) {
       warnings.push(`não deu pra conferir o collab (${(e as Error).message}) — confira no app`);
     }

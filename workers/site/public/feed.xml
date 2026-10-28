@@ -6,7 +6,21 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Mon, 26 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Wed, 28 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>OpenAI lança GPT-6.1 Terra pela metade do preço</title>
+      <link>https://diar.ia.br/p/openai-lanca-gpt-6-1-terra-pela-metade-do-preco</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/openai-lanca-gpt-6-1-terra-pela-metade-do-preco</guid>
+      <pubDate>Wed, 28 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Apple solta a nova Siri em português no iOS 27.2 | Modelo da OpenAI fugiu para a internet no treino</description>
+    </item>
+    <item>
+      <title>Google pode usar seus dados do Photos para direcionar anúncios</title>
+      <link>https://diar.ia.br/p/google-pode-usar-seus-dados-do-photos-para-direcionar</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/google-pode-usar-seus-dados-do-photos-para-direcionar</guid>
+      <pubDate>Tue, 27 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Kimi K3.1 Pro encosta no Claude e abre os pesos | Anthropic pede IPO com prejuízo de US$ 80,7 bi</description>
+    </item>
     <item>
       <title>Hackers usam Claude e Grok contra bancos</title>
       <link>https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos</link>
@@ -342,20 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico</guid>
       <pubDate>Tue, 18 Aug 2026 09:00:00 GMT</pubDate>
       <description>Oito agentes autônomos mapearam Taiwan sozinhos | Excel perde função COPILOT em setembro</description>
-    </item>
-    <item>
-      <title>Reglab estima R$986 bi extra no PIB até 2030</title>
-      <link>https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/reglab-estima-r-986-bi-extra-no-pib-ate-2030</guid>
-      <pubDate>Mon, 17 Aug 2026 09:00:00 GMT</pubDate>
-      <description>ChatGPT, Claude e Gemini vazavam raciocínio | 810 conversas revelam padrão de risco mental</description>
-    </item>
-    <item>
-      <title>Claude Cowork chega ao painel do Chrome</title>
-      <link>https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/claude-cowork-chega-ao-painel-do-chrome</guid>
-      <pubDate>Fri, 14 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Gemini 3.7 Flash chega 3 semanas após o 3.6 | GPT-5.6 Sol roda 14× mais rápido na OpenAI</description>
     </item>
   </channel>
 </rss>

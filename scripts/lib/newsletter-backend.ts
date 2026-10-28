@@ -32,10 +32,24 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export type NewsletterBackend = "beehiiv" | "kit";
 
 /**
+ * Pure (#11225): normaliza o valor cru de `publishing.newsletter.backend` (ou
+ * de qualquer chave irmã — `read_backend`, `subscriber_backend`). Default
+ * `"kit"`: só o literal `"beehiiv"` (trim + lowercase) cai no ramo legado.
+ * Chave ausente, vazia, typo ou tipo inesperado → `"kit"`.
+ *
+ * Até o #11225 o default era o inverso (`"beehiiv"` pra tudo que não fosse
+ * literalmente `"kit"`) — herança de antes da migração (#7388). Desde a
+ * decisão do editor de 27/10/2026 a Beehiiv é só arquivo histórico (não envia
+ * mais nada), então uma chave faltando nunca pode reativar o envio por ela.
+ */
+export function parseNewsletterBackend(raw: unknown): NewsletterBackend {
+  return typeof raw === "string" && raw.trim().toLowerCase() === "beehiiv" ? "beehiiv" : "kit";
+}
+
+/**
  * Lê `publishing.newsletter.backend` de `platform.config.json`. Default
- * `"beehiiv"` — config ausente, chave ausente, ou qualquer valor que não
- * seja literalmente `"kit"` (mesmo fallback de `loadNewsletterBackend` em
- * `invariant-checks/stage-5.ts`/`stage-6.ts`).
+ * `"kit"` (#11225) — config ausente, ilegível, chave ausente ou qualquer valor
+ * que não seja literalmente `"beehiiv"` (ver `parseNewsletterBackend`).
  *
  * `configPathOverride` existe só pra teste — produção sempre lê o
  * `platform.config.json` real do repo (resolvido por posição do arquivo,
@@ -44,14 +58,14 @@ export type NewsletterBackend = "beehiiv" | "kit";
  */
 export function loadNewsletterBackend(configPathOverride?: string): NewsletterBackend {
   const configPath = configPathOverride ?? resolve(ROOT, "platform.config.json");
-  if (!existsSync(configPath)) return "beehiiv";
+  if (!existsSync(configPath)) return "kit";
   try {
     const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-      publishing?: { newsletter?: { backend?: string } };
+      publishing?: { newsletter?: { backend?: unknown } };
     };
-    return cfg.publishing?.newsletter?.backend === "kit" ? "kit" : "beehiiv";
+    return parseNewsletterBackend(cfg.publishing?.newsletter?.backend);
   } catch {
-    return "beehiiv";
+    return "kit";
   }
 }
 

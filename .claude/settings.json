@@ -261,6 +261,14 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-handwritten-pr-checks-loop.mjs"
             ]
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-raw-pr-review-comment.mjs"
+            ]
           }
         ]
       },

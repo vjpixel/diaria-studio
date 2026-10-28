@@ -22,13 +22,18 @@
  * O repost pela conta da diar.ia.br não está aqui: a Threads API pública não
  * documenta repost; segue manual (passo guiado).
  *
+ * #11410: a rodada do timer do 300 (`--threads-timer`) confere o perfil antes
+ * de publicar (`threadsProfilePreflight`): o vídeo da edição já no perfil
+ * (postado à mão depois de um `skip_late`, ou por uma rodada cujo registro não
+ * sincronizou) vira registro em vez de um segundo post.
+ *
  * Ainda SEM validação real: o token pessoal não existe (comentários de 23/10 e
  * 25/10/2026 na #10772). Consumidor: `publish-shorts.ts`, destino
  * `threads_profile` (#11122) — fail-soft (pulado com aviso) até o token existir;
  * `--mark threads_profile=URL` registra o resultado de um `send_unknown`.
  */
 
-import { THREADS_API_VERSION, ThreadsApiError, createThreadsContainer, fetchThreadsPermalink, publishThreadsContainer, waitForThreadsContainer, type ThreadsFetch } from "./threads-api.ts";
+import { THREADS_API_BASE, THREADS_API_VERSION, ThreadsApiError, createThreadsContainer, fetchThreadsPermalink, publishThreadsContainer, waitForThreadsContainer, type ThreadsFetch } from "./threads-api.ts";
 import type { ShortPublishedEntry } from "./diaria/short-video.ts";
 
 export const THREADS_PROFILE_DESTINATION = "threads_profile";
@@ -139,5 +144,151 @@ function sendUnknown(deps: ThreadsVideoDeps, detail: string): ThreadsVideoOutcom
       `${detail} — não tente de novo antes de conferir no perfil do Threads se o vídeo saiu; ` +
         `se saiu, registre com publish-shorts.ts {AAMMDD} --mark threads_profile=URL`,
     ],
+  };
+}
+
+/** #11410: post do perfil pessoal, como `GET /{user-id}/threads` devolve. */
+export interface ThreadsProfilePost {
+  id: string;
+  mediaType: string;
+  text: string;
+  /** ISO normalizado (`+0000` → `+00:00`); null = ilegível. */
+  timestamp: string | null;
+  permalink: string | null;
+}
+
+/** Páginas lidas no máximo (50 posts cada): um dia do perfil pessoal cabe com folga. */
+export const THREADS_PROFILE_LIST_MAX_PAGES = 4;
+
+/** A Threads API devolve `2026-10-28T09:31:02+0000`; `Date.parse` só garante o formato com `:`. */
+function normalizeThreadsTimestamp(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw) return null;
+  const iso = raw.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  return Number.isNaN(Date.parse(iso)) ? null : iso;
+}
+
+/**
+ * #11410: posts do perfil desde `sinceIso` (`GET /{user-id}/threads`, campos
+ * `id,media_type,text,timestamp,permalink`, `since` em segundos). Só leitura.
+ * Qualquer falha (rede, HTTP, corpo ilegível, `error` no corpo, mais páginas do
+ * que o teto) LANÇA: o chamador nunca pode tratar "não consegui ler" como
+ * "o perfil não tem o vídeo" (publicaria em duplicata).
+ */
+export async function listThreadsProfilePosts(args: { creds: ThreadsPersonalCreds; sinceIso: string; fetch?: ThreadsFetch }): Promise<ThreadsProfilePost[]> {
+  const { creds } = args;
+  const fetchFn = args.fetch ?? ((u: string, i?: RequestInit) => fetch(u, i));
+  const sinceS = Math.floor(Date.parse(args.sinceIso) / 1000);
+  if (!Number.isFinite(sinceS)) throw new Error(`threads_profile: sinceIso inválido (${args.sinceIso})`);
+  const params = new URLSearchParams({ fields: "id,media_type,text,timestamp,permalink", since: String(sinceS), limit: "50" });
+  let url: string | null = `${THREADS_API_BASE}/${creds.apiVersion}/${creds.userId}/threads?${params}`;
+  const out: ThreadsProfilePost[] = [];
+  for (let page = 0; url; page++) {
+    if (page >= THREADS_PROFILE_LIST_MAX_PAGES) throw new Error(`threads_profile: o perfil tem mais de ${THREADS_PROFILE_LIST_MAX_PAGES} páginas de posts desde ${args.sinceIso} — não deu pra conferir tudo`);
+    const res = await fetchFn(url, { method: "GET", headers: { Authorization: `Bearer ${creds.accessToken}` } });
+    const raw = await res.text().catch(() => "");
+    if (!res.ok) throw new Error(`threads_profile: leitura do perfil HTTP ${res.status}: ${raw.slice(0, 300)}`);
+    let data: { data?: unknown; paging?: { next?: unknown }; error?: unknown } | null;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error(`threads_profile: leitura do perfil com corpo ilegível: ${raw.slice(0, 200)}`);
+    }
+    if (data?.error) throw new Error(`threads_profile: leitura do perfil com erro: ${JSON.stringify(data.error).slice(0, 300)}`);
+    if (!Array.isArray(data?.data)) throw new Error("threads_profile: leitura do perfil sem lista de posts (data)");
+    for (const p of data.data as Array<Record<string, unknown>>) {
+      if (typeof p?.id !== "string" || !p.id) continue;
+      out.push({
+        id: p.id,
+        mediaType: typeof p.media_type === "string" ? p.media_type : "",
+        text: typeof p.text === "string" ? p.text : "",
+        timestamp: normalizeThreadsTimestamp(p.timestamp),
+        permalink: typeof p.permalink === "string" && p.permalink ? p.permalink : null,
+      });
+    }
+    const next = data?.paging?.next;
+    url = typeof next === "string" && next ? next : null;
+  }
+  return out;
+}
+
+export type ThreadsProfileDuplicateDecision =
+  | { kind: "none" }
+  /** O vídeo da edição já está no perfil: registrar, nunca postar de novo. */
+  | { kind: "found"; post: ThreadsProfilePost }
+  /** Vídeo no perfil no dia da edição sem marcador: não dá pra afirmar que não é o da edição. */
+  | { kind: "blocked"; reason: string; candidates: ThreadsProfilePost[] };
+
+/**
+ * Pure (#11410): o vídeo da edição já está no perfil? Só posts de VÍDEO desde
+ * `sinceIso` (o dia da edição, 00:00 BRT) contam. Vídeo cujo texto tem um dos
+ * `markers` (o `utm_campaign={AAMMDD}` do link da edição, o título do D1) é o
+ * da edição. Vídeo do dia SEM marcador bloqueia (premissa conservadora: um
+ * post à mão com outro texto não pode virar um segundo post do mesmo vídeo;
+ * o editor confere e registra com `--mark`). Timestamp ilegível conta como
+ * do dia (nunca exclui um candidato por falta de dado).
+ */
+export function decideThreadsProfileDuplicate(posts: readonly ThreadsProfilePost[], opts: { sinceIso: string; markers: readonly string[] }): ThreadsProfileDuplicateDecision {
+  const sinceMs = Date.parse(opts.sinceIso);
+  const markers = opts.markers.map((m) => m.trim().toLowerCase()).filter((m) => m.length >= 4);
+  const videos = posts.filter((p) => p.mediaType === "VIDEO" && (p.timestamp === null || Date.parse(p.timestamp) >= sinceMs));
+  const marked = videos.filter((p) => markers.some((m) => p.text.toLowerCase().includes(m)));
+  if (marked.length > 0) return { kind: "found", post: marked[0] };
+  if (videos.length > 0) {
+    return {
+      kind: "blocked",
+      reason:
+        `o perfil já tem ${videos.length} vídeo(s) no dia da edição sem o marcador dela (${videos.map((v) => v.permalink ?? v.id).join(", ")}) — ` +
+        "confira se é o vertical; se for, registre com --mark threads_profile=URL",
+      candidates: videos,
+    };
+  }
+  return { kind: "none" };
+}
+
+export type ThreadsTimerGateFailure = "blocked" | "read-failed";
+
+/** #11410: a conferência do perfil não deixou o timer publicar. */
+export class ThreadsTimerGateError extends Error {
+  constructor(
+    message: string,
+    readonly failure: ThreadsTimerGateFailure,
+  ) {
+    super(message);
+    this.name = "ThreadsTimerGateError";
+  }
+}
+
+/**
+ * #11410: conferência do perfil antes da rodada do timer publicar. Achou o
+ * vídeo da edição → `already` com a entrada a registrar (status `published`).
+ * Leitura falhou → `ThreadsTimerGateError("read-failed")`; vídeo do dia sem
+ * marcador → `ThreadsTimerGateError("blocked")`. Nos dois, nada é publicado.
+ */
+export async function threadsProfilePreflight(args: {
+  creds: ThreadsPersonalCreds;
+  sinceIso: string;
+  markers: readonly string[];
+  fetch?: ThreadsFetch;
+  now: () => Date;
+}): Promise<{ kind: "publish" } | { kind: "already"; entry: ShortPublishedEntry }> {
+  let posts: ThreadsProfilePost[];
+  try {
+    posts = await listThreadsProfilePosts({ creds: args.creds, sinceIso: args.sinceIso, fetch: args.fetch });
+  } catch (e) {
+    throw new ThreadsTimerGateError(`não deu pra ler o perfil do Threads antes de publicar: ${(e as Error).message}`, "read-failed");
+  }
+  const d = decideThreadsProfileDuplicate(posts, { sinceIso: args.sinceIso, markers: args.markers });
+  if (d.kind === "blocked") throw new ThreadsTimerGateError(d.reason, "blocked");
+  if (d.kind === "none") return { kind: "publish" };
+  return {
+    kind: "already",
+    entry: {
+      destination: THREADS_PROFILE_DESTINATION,
+      status: "published",
+      id: d.post.id,
+      ...(d.post.permalink ? { url: d.post.permalink } : {}),
+      scheduled_at: null,
+      at: d.post.timestamp ?? args.now().toISOString(),
+    },
   };
 }

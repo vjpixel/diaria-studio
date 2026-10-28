@@ -50,13 +50,13 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level info --message 'etapa 6 agendamento started'
   ```
-**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"beehiiv"`). Guardar esse valor — decide, mais abaixo, se §6d (Beehiiv) ou §6d-kit roda, e de onde vêm os campos desta lista.
+**Branch por backend (#464).** Ler `publishing.newsletter.backend` de `platform.config.json` (default `"kit"` se ausente, #11225 — Beehiiv é só arquivo histórico; o ramo `"beehiiv"` é legado, só com a chave explícita). Guardar esse valor — decide, mais abaixo, se §6d (Beehiiv) ou §6d-kit roda, e de onde vêm os campos desta lista.
 
-- Backend `"beehiiv"` (default): ler `_internal/05-published.json` → extrair: `draft_url`, `title`, `test_email_sent_at`, `review_completed`, `review_status`, `review_final_issues`.
-- Backend `"kit"`: ler `_internal/newsletter-kit-published.json` → extrair `broadcast_id` (equivalente a `post_id`), `subject` (equivalente a `title`), `status`. Não há `draft_url`/`test_email_sent_at` neste schema — usar `_internal/05-edition-url.txt` (mesmo arquivo, ver §5c-1-kit) no lugar de `draft_url` onde o resumo do gate (§6b) citar um link pro editor conferir. `review_status`/`review_attempts`/`review_reason`/`review_final_issues` vêm de `_internal/05-review-kit.json` (gravado por `record-kit-review.ts` no fim do §5f, #9594). **Arquivo ausente/inválido NÃO é "review ok"** — é o review que não rodou (edição 261005): rodar `npx tsx scripts/check-invariants.ts --stage 5 --rule stage-5-review-completed --edition-dir {EDITION_DIR}/` (sai `0` mesmo com violação — é `warning`) e, se o JSON trouxer a violação, o `{review_status_block}` do gate (§6c) vira `⚠ review automático NÃO rodou na Etapa 5 ({mensagem da violação}) — conferir o e-mail de teste com atenção redobrada`. Nunca rodar o `review-test-email` aqui pra "completar" — a parada única do §6c já pede a revisão visual.
+- Backend `"beehiiv"` (legado, só explícito): ler `_internal/05-published.json` → extrair: `draft_url`, `title`, `test_email_sent_at`, `review_completed`, `review_status`, `review_final_issues`.
+- Backend `"kit"` (padrão, também com a chave ausente): ler `_internal/newsletter-kit-published.json` → extrair `broadcast_id` (equivalente a `post_id`), `subject` (equivalente a `title`), `status`. Não há `draft_url`/`test_email_sent_at` neste schema — usar `_internal/05-edition-url.txt` (mesmo arquivo, ver §5c-1-kit) no lugar de `draft_url` onde o resumo do gate (§6b) citar um link pro editor conferir. `review_status`/`review_attempts`/`review_reason`/`review_final_issues` vêm de `_internal/05-review-kit.json` (gravado por `record-kit-review.ts` no fim do §5f, #9594). **Arquivo ausente/inválido NÃO é "review ok"** — é o review que não rodou (edição 261005): rodar `npx tsx scripts/check-invariants.ts --stage 5 --rule stage-5-review-completed --edition-dir {EDITION_DIR}/` (sai `0` mesmo com violação — é `warning`) e, se o JSON trouxer a violação, o `{review_status_block}` do gate (§6c) vira `⚠ review automático NÃO rodou na Etapa 5 ({mensagem da violação}) — conferir o e-mail de teste com atenção redobrada`. Nunca rodar o `review-test-email` aqui pra "completar" — a parada única do §6c já pede a revisão visual.
 - Ler `_internal/06-social-published.json` → extrair: horarios agendados dos 3 posts LinkedIn e 3 posts Facebook (`scheduled_at` por destaque).
 - Ler `_internal/06-verify-dispatch.json` (se existir) → extrair quaisquer warnings de verificacao.
-- Ler `post_id` de `_internal/05-published.json` (necessario para o Schedule Beehiiv e para verificacao pos-Schedule).
+- Só no ramo Beehiiv legado: ler `post_id` de `_internal/05-published.json` (necessario para o Schedule Beehiiv e para verificacao pos-Schedule).
 - Ler horario default de agendamento: 06:00 BRT da DATA DA EDIÇÃO (`{AAMMDD}`) — **nunca** "amanhã" pelo relógio de agora (#8207: Etapa 6 rodada depois da meia-noite BRT com "amanhã" contado pelo relógio agendou a edição 260917 um dia atrasado no Kit e na Brevo diária). `scripts/resolve-edition-scheduled-at.ts` é o ÚNICO lugar que faz essa conta — usar o MESMO comando aqui e no ramo `sim HH:MM` do §6c abaixo:
   ```bash
   npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}
@@ -208,22 +208,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 Prosseguir direto para §6c-site (trava do PR do site, #10160) e só então §6d (executar Schedule).
 
-**Pré-gate: texto do post pessoal vjpixel para o lembrete (#2153, #9568).** Desde a #9568 o post pessoal do LinkedIn é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`) que a página agendou no Stage 5 — o `## post_pixel` standalone de D1 (#1690) não é mais gerado. Sem token do app pessoal segue manual (o Worker `linkedin-cron` recusa `webhook_target=pixel` + `action=post`, ver `context/publishers/linkedin.md`); com token, sai automático (§6d-pessoal). `resolve-post-pixel.ts` só devolve o `## um` quando o plano do 4º post está `ready` (mesmo `planUseMelhorDispatch` do Stage 5 — item re-conferido contra o `02-reviewed.md` final); `## um` presente mas plano pulado → `(nao encontrado)` + motivo no stderr. Edição antiga sem `## um` cai no `## post_pixel` legado (resolvendo `{outros_count}`/`{edition_url}`):
-
-```bash
-npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/            # → POST_PIXEL_TEXT
-npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/ --image    # → POST_PIXEL_IMAGE (04-um-carousel-cover-4x5.jpg; edição antiga: 04-d1-1x1.jpg)
-npx tsx scripts/resolve-post-pixel.ts --edition-dir {EDITION_DIR}/ --json     # → scheduled_at = POST_PIXEL_AT
-```
-
-Exit code (os três modos):
-- `0` → resolvido (`## um` com plano pronto, ou `## post_pixel` legado).
-- `1` → nada a mostrar: 03-social.md ausente, nem `## um` nem `## post_pixel`, plano do 4º post pulado (motivo no stderr — repetir o motivo no lembrete), ou, em `--image`, arquivo inexistente/carrossel defasado. stdout = `(nao encontrado)`. Sem imagem: omitir a linha `Imagem:` do lembrete. **Não bloqueia o gate.**
-- `2` → (só caminho legado `## post_pixel`) `outros_count` não pôde ser resolvido — o stdout ainda traz o texto (com `{outros_count}` literal); acrescentar `⚠ outros_count não resolvido — preencher manualmente antes de postar` ao lembrete. **Não bloqueia o gate** (#2153 — post pessoal é amplificação opcional).
-
-**Post pessoal automático (#9568, app LinkedIn pessoal separado).** Rodar também `npx tsx scripts/publish-linkedin-personal.ts --check --edition-dir {EDITION_DIR}/` → `PERSONAL_AUTO`: simula o `--arm` sem gravar (token + `GET /v2/userinfo`, `## um` com plano `ready`, `scheduled_at` da página e uma execução das tasks `Diaria-LinkedIn-Personal`/`-Catchup` em até 3h depois dele). **Só exit `0` é AUTOMÁTICO** (o JSON traz `scheduled_at`, nunca null nesse caso); qualquer outro exit = lembrete manual igual a antes (exit `5` = estado ambíguo de um disparo anterior: acrescentar "conferir o perfil pessoal antes de postar à mão"). Edição legada (`## post_pixel`) segue manual sempre. Setup: `docs/linkedin-personal-setup.md`.
-
-Guardar o stdout dos três em `POST_PIXEL_TEXT`, `POST_PIXEL_IMAGE` e `POST_PIXEL_AT` (`scheduled_at` do `--json` — o horário REAL da entry `linkedin`/`um` de `06-social-published.json`, que pode ter sido shiftado pelo past-slot guard; `null` → "mesmo horário do 4º post da página, ver resumo do Stage 5"). Nunca usar `use_melhor_time` do config como horário do lembrete. Se `use_melhor.status` da saída do `publish-linkedin.ts` (Stage 5) for `skip`, o lembrete diz que o 4º post não saiu e por quê.
+**Post pessoal vjpixel: APOSENTADO (#11398, pedido do editor 27/10/2026).** O 4º post (USE MELHOR, `## um`) não sai mais no LinkedIn PESSOAL do editor — nem automático (`publish-linkedin-personal.ts --arm`, antigo §6d-pessoal) nem por lembrete manual no gate. O Stage 6 **não** roda `resolve-post-pixel.ts` nem `publish-linkedin-personal.ts --check`/`--arm`, e o gate de §6c não tem bloco de lembrete do post pessoal. A página diar.ia.br segue recebendo o 4º post normalmente (Stage 5). Trava: `test/stage6-sem-linkedin-pessoal-11398.test.ts`.
 
 **Marcador de `gate_at` (#8866) — fail-soft, nunca bloqueia.** Imediatamente antes de apresentar o gate único, gravar o timestamp de apresentação (usado por `pipeline_ms` — tempo do pipeline até o gate, excluindo a espera pela resposta do editor):
 ```bash
@@ -253,14 +238,6 @@ Social agendado:
 
 {bloco Brevo diária, SÓ se _internal/brevo-diaria-published.json existir:}
 Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Beehiiv no mesmo horário abaixo (#5772)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📣 LEMBRETE (nao bloqueia) — post pessoal vjpixel (4º post USE MELHOR, #9568)
-Agende manualmente no LinkedIn PESSOAL (nao a pagina Diar.ia) para {POST_PIXEL_AT em BRT} — mesmo horário do 4º post da página:   ← com PERSONAL_AUTO: "Sai AUTOMATICO no LinkedIn PESSOAL as {POST_PIXEL_AT em BRT} (armado apos o ok) — nao postar a mao"
-  Imagem: {EDITION_DIR}/{POST_PIXEL_IMAGE}   ← omitir a linha se --image saiu 1
-
-{POST_PIXEL_TEXT}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   ok           → agenda para 06:00 BRT do dia da edição (default)
   ok HH:MM     → agenda para {horario informado} BRT do dia da edição
@@ -300,7 +277,7 @@ Backstop mecânico: o invariante `site-page-pr-merged` (`STAGE_6_RULES`, `severi
 
 ### 6d. Executar Schedule do Beehiiv
 
-**Só roda com backend `"beehiiv"` (default, ver §6a).** Com backend `"kit"`, pular esta seção INTEIRA (a checagem de slug do bloco WhatsApp em §6b-slug já pulou por igual motivo — problema específico da UI de SEO/URL slug da Beehiiv sem equivalente no Kit) e seguir direto para **§6d-kit** abaixo.
+**Só roda com backend `"beehiiv"` EXPLÍCITO (legado, ver §6a — o default é `"kit"` desde o #11225).** Com backend `"kit"`, pular esta seção INTEIRA (a checagem de slug do bloco WhatsApp em §6b-slug já pulou por igual motivo — problema específico da UI de SEO/URL slug da Beehiiv sem equivalente no Kit) e seguir direto para **§6d-kit** abaixo.
 
 **Exibir banner pre-Schedule ao editor ANTES de pedir o clique** (evitar Publish acidental, incidente 260611 #2074):
 
@@ -445,12 +422,12 @@ npx tsx scripts/schedule-daily-brevo.ts \
   --scheduled-at {scheduled_at_iso}
 ```
 
-O script faz PUT `/emailCampaigns/{id}` (`scheduledAt`) e SÓ declara sucesso depois de um GET de verificação confirmar o `scheduledAt` de volta — mesmo padrão de `verify-scheduled-post.ts` pro Beehiiv. Uma campanha Brevo agendada é **imutável** — não há re-tentativa automática além do retry HTTP já embutido em `brevoPut`/`brevoGetCampaign`.
+O script faz PUT `/emailCampaigns/{id}` (`scheduledAt`) e SÓ declara sucesso depois de um GET de verificação confirmar o `scheduledAt` de volta — mesmo padrão de `verify-scheduled-post.ts` pro Beehiiv. **Semanal dividida (#11286):** quando a Etapa 5 criou também a campanha de TERÇA (`terca_campaign_id` no estado), o mesmo comando agenda ela 24h depois da de segunda (cota do dia de terça, PUT + GET) e devolve `terca` no JSON; exit 3/4/5 com a segunda já agendada significa que só a de terça falhou — re-rodar o mesmo comando pula a de segunda e tenta só a de terça. Uma campanha Brevo agendada é **imutável** — não há re-tentativa automática além do retry HTTP já embutido em `brevoPut`/`brevoGetCampaign`.
 
 Exit codes:
 | Exit | Significado | Ação |
 |------|-------------|------|
-| `0` | Agendado e verificado. | Confirmar ao editor: "Brevo diária agendado para {scheduled_at} ✓ (campaign_id {id})". |
+| `0` | Agendado e verificado. | Confirmar ao editor: "Brevo diária agendado para {scheduled_at} ✓ (campaign_id {id})". Se o JSON trouxer `terca` (semanal dividida segunda/terça, #11286), acrescentar: "+ metade de terça agendada para {terca.scheduledAt} ✓ (campaign_id {terca.campaignId})". |
 | `2` | Nenhuma campanha registrada (já esperado se o canal foi pulado/falhou na Etapa 5). | Não é erro — seguir sem mencionar no resumo, ou mencionar como "canal Brevo não participou desta edição" se `_internal/brevo-diaria-published.json` de fato não existia. |
 | `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Beehiiv já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
 | `4` | GET pós-PUT não confirma o agendamento. | Mesmo tratamento do exit 3 — warn, não bloqueia, sugerir retry manual. |
@@ -486,9 +463,9 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 
 **Publicação da página do site: PR aberto no início da Etapa 5 (§5b-site, #10160), conferido em §6b-site e mergeado na trava §6c-site, antes do Schedule.** Não roda de novo aqui.
 
-### 6d-pessoal. Armar o post pessoal automático do LinkedIn (#9568)
+### 6d-pessoal. (aposentado, #11398)
 
-Depois do `ok` (ou direto, com `--no-gates`), em qualquer backend, só se o pré-gate deu `PERSONAL_AUTO` exit `0`: `npx tsx scripts/publish-linkedin-personal.ts --arm --edition-dir {EDITION_DIR}/` grava `_internal/06-linkedin-personal.json` (`armed`); quem publica são as tasks `Diaria-LinkedIn-Personal` (07:46) e `-Catchup` (de hora em hora) no `300`. Exit `0` = armado/já publicado. **Qualquer exit ≠ 0 depois de um pré-gate AUTOMÁTICO reexibe ao editor o lembrete MANUAL** com `POST_PIXEL_TEXT`/`POST_PIXEL_AT` (o gate disse "não postar à mão"), exceto exit `1` com `use_melhor.status=skip` no Stage 5 (o 4º post não saiu na página). Exit `5` (posting/send_unknown/arquivo corrompido): avisar para conferir o perfil antes de postar. **Nunca bloqueia o Stage 6.**
+Não arma mais nada. O post pessoal do LinkedIn (4º post no perfil vjpixel, #9568) foi desligado a pedido do editor em 27/10/2026 — ver a nota antes do gate de §6c. Intenção já armada por edição anterior (`_internal/06-linkedin-personal.json`) não é disparada: a task `Diaria-LinkedIn-Personal` não roda mais o `--fire-due` e a `-Catchup` está `enabled: false` em `scripts/lib/scheduled-tasks.ts`.
 
 ### 6e. Atualizar `05-published.json` com scheduled_at
 
@@ -515,7 +492,7 @@ Exit code handling: `0` = derivação concluída (contagem no stdout); `!=0` = l
 
 ### 6f. Escrever sentinel de conclusao
 
-**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** **Desde #7963, mesmo gate mecânico do §5h** — `write --step 6` também recusa (exit 1, sem bypass) `--outputs` com o artefato de newsletter do backend errado. Backend `"beehiiv"` (default):
+**Backend-aware (#464, mesmo motivo do §5h/Stage 5 e da Pre-condicao acima).** **Desde #7963, mesmo gate mecânico do §5h** — `write --step 6` também recusa (exit 1, sem bypass) `--outputs` com o artefato de newsletter do backend errado. Backend `"beehiiv"` (legado, só explícito):
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
@@ -561,34 +538,33 @@ limpa e no-op).
 **Escopo:** so votos `diaria` (default do script, sem `--brand`). O mensal (Clarice)
 usa `--brand clarice` e fica FORA deste auto-run diario — nao tocar.
 
-**Checar auth wrangler antes de rodar (label `local`, #2643).** Usar `scripts/check-wrangler-auth.ts` (#6900) —
-NUNCA `npx wrangler whoami` cru: valida identidade ERRADA (env normal, com token), não a de `purge-leaderboard.ts`
-(env sem token, sessao OAuth — #2265; falso-positivo ja ao vivo em 260901, guard cru passou com OAuth expirada e a
-purga falhou com `Authentication error [code: 10000]`). Roda `wrangler whoami` com o env sanitizado (`scripts/lib/cloudflare-oauth-env.ts`):
+**Checar a auth do KV antes de rodar (#11253).** `purge-leaderboard.ts` tem dois backends e escolhe sozinho:
+wrangler logado via OAuth (Neo; `check-wrangler-auth.ts`, env sanitizado, #6900/#2265) ou, sem esse login, a
+API REST do KV com `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (servidor `300`, que nao tem navegador
+pra `wrangler login`). O pre-check usa a MESMA escolha que a purga vai usar — nunca `npx wrangler whoami`
+cru (valida identidade errada, #6900) nem `check-wrangler-auth.ts` sozinho (reprova o `300`, que tem o caminho REST):
 ```bash
-npx tsx scripts/check-wrangler-auth.ts
+npx tsx scripts/purge-leaderboard.ts --check-auth --edition-dir {EDITION_DIR}/ --expect-emails pixel@memelab.com.br,vjpixel@gmail.com
 ```
-- **Exit 0** (lista a conta logada) → prosseguir com a purga abaixo.
-- **Exit != 0, OU o comando estourar o timeout** (nao logado — tipico de sessao cloud
-  sem OAuth persistido) → **degradar pra warn e SEGUIR sem rodar a purga.** "Degradar
-  pra warn" aqui significa concretamente: nao chamar `purge-leaderboard.ts` (nem
-  tentar de novo), logar o warn abaixo, e passar direto pra Etapa 6b (Auto-reporter)
-  como se este passo nao existisse — o agendamento ja foi confirmado em §6d e NAO deve
-  ser reaberto ou revertido por causa disto. Nao tentar `wrangler login` nem pedir
-  credencial ao editor (Stage 6 nao bloqueia agendamento por causa de auth do KV do
-  leaderboard).
+- **Exit 0** (imprime `[purge] kv backend: wrangler|rest — {motivo}`; o probe leu E gravou no namespace e
+  `ADMIN_SECRET` existe) → prosseguir com a purga abaixo (o `{backend}` ja fica no arquivo de estado, #11311).
+- **Exit != 0, OU timeout** (sem backend, probe de leitura/escrita falhou, ou falta `ADMIN_SECRET`) → **degradar
+  pra warn e SEGUIR sem a purga:** nao chamar `--execute` (nem tentar de novo), logar o warn abaixo e passar pra 6b
+  (o motivo — 1a linha `[purge]` do stderr — ja fica no arquivo de estado). §6d NAO e reaberto. Nao tentar `wrangler login` nem pedir credencial.
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
-    --message "purga de votos do editor pulada: wrangler nao autenticado" \
-    --details '{"reason":"wrangler_not_authenticated"}'
+    --message "purga de votos do editor pulada: pre-check --check-auth falhou" \
+    --details '{"reason":"purge_precheck_failed","detail":"{1a linha [purge] do stderr do --check-auth}"}'
   ```
 
 **Se autenticado, rodar a purga (execute direto — mesma justificativa de
 `/diaria-remover-votos-pixel`: sem gate, sem dry-run previo):**
 ```bash
-npx tsx scripts/purge-leaderboard.ts --email pixel@memelab.com.br --execute
-npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com --execute
+npx tsx scripts/purge-leaderboard.ts --email pixel@memelab.com.br --execute --edition-dir {EDITION_DIR}/
+npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com --execute --edition-dir {EDITION_DIR}/
 ```
+
+**Estado em arquivo, não em memória (#11311).** Com `--edition-dir` (nunca omitir), o próprio script grava em `{EDITION_DIR}/_internal/leaderboard-purge.json` o pré-check (zera a rodada) e cada `--execute` (`{status: ok|pendente, backend, motivo, at, keys_deleted, check_auth, emails}`), com "não concluiu" gravado antes de começar — timeout/kill no meio fica PENDENTE. O Resumo final lê esse arquivo.
 
 Cada execucao imprime `[purge] done — {N} keys apagadas, {M} snapshots invalidados.`
 (ou `[purge] nada pra apagar` se a conta ja estava limpa — trate como `{N}=0`). Somar
@@ -599,9 +575,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
   --details '{"emails":["pixel@memelab.com.br","vjpixel@gmail.com"],"keys_deleted":{total_keys}}'
 ```
 
-Falha inesperada de um dos 2 comandos (nao relacionada a auth — ex: erro de
-rede/KV) → logar warn com o motivo e seguir; nunca bloquear o restante do Stage 6 por
-causa desta purga.
+Falha de um dos 2 comandos (exit != 0 — erro de rede/KV, ou o `[purge] ERRO` da purga do DO ScoreCounter) → logar warn com o motivo e seguir (e-mail e motivo já ficam no arquivo de estado); nunca bloquear o restante do Stage 6 por causa desta purga.
 
 ---
 
@@ -750,6 +724,8 @@ Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as i
 **#3714:** incluir `Relatório: {studio_report_url}` (summary JSON de 6b-8; é o link primário do relatório). Se vier `null` (fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir.
 
 **#4924:** 6b-9 imprimiu algo → incluir `⚠ Hubs temáticos defasados` após a linha do Relatório. Stdout vazio → omitir (sem afirmar "hubs em dia").
+
+**#11253/#11311:** incluir SEMPRE, literal, a linha impressa por `npx tsx scripts/lib/leaderboard-purge-state.ts --edition-dir {EDITION_DIR}/ --summary` — lê `_internal/leaderboard-purge.json` (gravado pelo §6h) e devolve `Purga de votos do editor: {N} keys apagadas ({backend})` ou `⚠ Purga de votos do editor: PENDENTE — {motivo} (rodar /diaria-remover-votos-pixel)`; arquivo ausente (o §6h nem rodou) ou ilegível também sai PENDENTE. Nunca substituir pela memória da sessão nem só pelo warn do run-log (os votos seguem no ranking público).
 
 **#5772:** `_internal/brevo-diaria-published.json` existia em §6a → incluir `Brevo diária: agendado para {scheduled_at} ✓` (exit 0) ou `Brevo diária: agendamento falhou — {reason}, ver run-log` (exit 3/4/5; no 5, o `reason` já indica cota esgotada, #6146). Arquivo nunca existiu (canal pulado/falhou na Etapa 5) → omitir a linha por completo — não afirmar "Brevo diária: pulado".
 

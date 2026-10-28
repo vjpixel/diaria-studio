@@ -361,7 +361,7 @@ export interface Gate2Result {
  * sem `data`/`pageInfo` e mais de 100 threads (`hasNextPage`) reprovam,
  * nunca contam como zero threads.
  */
-export function revalidateGate2(runner: TrainRunner, prNumber: number): Gate2Result {
+export function revalidateGate2(runner: TrainRunner, prNumber: number, sessionId?: string): Gate2Result {
   const view = runner.exec("gh", ["pr", "view", String(prNumber), "--json", "statusCheckRollup"]);
   if (!view.ok) return { ok: false, reason: `gh pr view falhou: ${view.stderr}` };
 
@@ -406,6 +406,8 @@ export function revalidateGate2(runner: TrainRunner, prNumber: number): Gate2Res
     return { ok: false, retido: retido.retido, reason: `condição 3 (retido-para-editor) — ${retido.reason}` };
   }
 
+  const claims = runner.exec("npx", ["tsx", "scripts/check-pr-session-claims.ts", "--pr", String(prNumber), "--session-id", sessionId ?? ""]);
+  if (!claims.ok) return { ok: false, reason: `claims: ${claims.stderr || claims.stdout}` };
   return { ok: true };
 }
 
@@ -623,7 +625,7 @@ export function mergeTrainBatch(
   opts: { sessionId: string; kind: string; commitTitle: string; commitBody: string },
 ): MergeTrainBatchResult {
   for (const pr of batch.prs) {
-    const gate = revalidateGate2(runner, pr);
+    const gate = revalidateGate2(runner, pr, opts.sessionId);
     if (!gate.ok) {
       return {
         ok: false,
@@ -769,7 +771,7 @@ export interface MergeSoloOptions {
  * vermelho (#10997): esse PR é revalidado sobre a base atual pelo caminho
  * do lote (PR-trem de 1). */
 export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSoloOptions): MergeTrainBatchResult {
-  const gate = revalidateGate2(runner, prNumber);
+  const gate = revalidateGate2(runner, prNumber, opts.sessionId);
   if (!gate.ok) {
     return { ok: false, error: `revalidação de Gate 2 falhou: ${gate.reason}`, ...retidoFields(gate, prNumber) };
   }

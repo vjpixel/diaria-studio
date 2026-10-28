@@ -227,6 +227,7 @@ import { getBroadcast } from "./lib/kit-client.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeKitDraftSourceHashes, kitContentHash, type SourceHashes } from "./lib/kit-draft-freshness.ts"; // #9428
 import { KIT_TEST_SUBJECT_PREFIX } from "./lib/shared/kit-test-broadcast.ts"; // #10395
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -660,7 +661,7 @@ export type BackendCheck = { ok: true } | { ok: false; reason: string };
 /** Pura — recusa rodar se a flag não estiver em "kit" (achado #464: script
  *  standalone pode ser invocado por engano fora do switchover). */
 export function checkKitBackendEnabled(platformConfig: PlatformConfig): BackendCheck {
-  const backend = platformConfig.publishing?.newsletter?.backend ?? "beehiiv";
+  const backend = parseNewsletterBackend(platformConfig.publishing?.newsletter?.backend); // default "kit" (#11225)
   if (backend !== "kit") {
     return {
       ok: false,
@@ -868,6 +869,50 @@ export async function unscheduleKitBroadcast(
   await deps.updateBroadcast(id, { send_at: null });
   const reread = await deps.getBroadcast(id);
   if (reread.send_at) throw new Error(`releitura ainda mostra send_at=${reread.send_at}`);
+}
+
+/**
+ * #11324 — o principal JÁ agendado foi desagendado aqui (audiência divergente
+ * no re-run da Etapa 5): o estado local volta pra `draft` e a semanal de frio
+ * (#11221), se estava agendada junto, é desagendada também (`followOnly`).
+ * Antes disso o follow só rodava no `schedule-newsletter-kit.ts`; sem repetir
+ * a Etapa 6, a semanal saía SOZINHA no horário antigo.
+ *
+ * Ordem importa: o follow relê o estado do principal do disco, então o
+ * `draft` é gravado ANTES. Fail-soft: o follow nunca lança e não muda o exit
+ * code (13) do publisher; falha vira `ERRO:` no stderr.
+ */
+export async function revertMainToDraftAndFollowSemanal(
+  editionDir: string,
+  existing: KitNewsletterPublished,
+  log: (msg: string) => void,
+  rootDir: string,
+  deps: {
+    writeState?: (editionDir: string, state: KitNewsletterPublished) => void;
+    followSemanal?: (editionDir: string, log: (msg: string) => void, rootDir: string) => Promise<{ status: string; reason?: string }>;
+  } = {},
+): Promise<void> {
+  const writeState = deps.writeState ?? writePublishedState;
+  const { scheduled_at: _dropped, ...rest } = existing;
+  writeState(editionDir, { ...rest, status: "draft" });
+  log("estado local voltou pra status draft (agendamento desfeito) — reagende pela Etapa 6 depois de corrigir a audiência.");
+  const followSemanal =
+    deps.followSemanal ??
+    (async (dir: string, l: (msg: string) => void, root: string) => {
+      // Import dinâmico: `publish-kit-semanal-frio.ts` importa deste módulo
+      // (`readPublishedState`); estático, viraria import circular.
+      const { runSemanalFrioAfterSchedule } = await import("./publish-kit-semanal-frio.ts");
+      return runSemanalFrioAfterSchedule(dir, l, root, undefined, { followOnly: true });
+    });
+  const semanalLog = (msg: string) => log(`semanal frio: ${msg}`);
+  try {
+    const r = await followSemanal(editionDir, semanalLog, rootDir);
+    if (r.status !== "disabled" && r.status !== "nothing_to_follow" && r.status !== "not_monday") {
+      semanalLog(`${r.status === "failed" ? "ERRO: " : ""}${r.status}${r.reason ? ` — ${r.reason}` : ""}`);
+    }
+  } catch (e) {
+    semanalLog(`ERRO: acompanhamento da semanal falhou (${(e as Error).message}) — conferir no Kit se ela segue agendada sem o principal.`);
+  }
 }
 
 // ── main ──────────────────────────────────────────────────────────────
@@ -1119,9 +1164,8 @@ export async function main(rootDirOverride?: string): Promise<void> {
       if (check.unscheduled && existing) {
         // O estado local não pode seguir dizendo "scheduled": um re-run
         // reforçaria `send_at` no PATCH e reagendaria a audiência divergente.
-        const { scheduled_at: _dropped, ...rest } = existing;
-        writePublishedState(editionDir, { ...rest, status: "draft" });
-        log("estado local voltou pra status draft (agendamento desfeito) — reagende pela Etapa 6 depois de corrigir a audiência.");
+        // #11324: a semanal de frio agendada junto acompanha o desagendamento.
+        await revertMainToDraftAndFollowSemanal(editionDir, existing, log, rootDir);
       }
       process.exitCode = 13;
       return;

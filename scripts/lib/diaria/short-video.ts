@@ -64,6 +64,35 @@ export function shortVideoFileName(aammdd: string): string {
   return `diaria-comentada-${aammdd}-short.mp4`;
 }
 
+/**
+ * #11265: o corte do Instagram (`_Instagram_` na pasta `Final/` do Drive,
+ * #11222) baixado na pasta da edição. É o arquivo que o timer do 300
+ * (`scripts/shorts-instagram-timer.ts`) publica pela API; a limpeza do
+ * vertical (#11240) o apaga quando o `instagram` fica registrado como
+ * `published` ou `scheduled` (`send_unknown` mantém o arquivo, pra conferir).
+ */
+export function shortInstagramVideoFileName(aammdd: string): string {
+  return `diaria-comentada-${aammdd}-short-instagram.mp4`;
+}
+
+/**
+ * #11265: quem publica o Reels do Instagram com horário futuro.
+ *   - `timer-300` (default, decisão do editor 27/10/2026): o timer do 300
+ *     (`Diaria-Shorts-Instagram`) roda `publish-shorts.ts --only instagram
+ *     --publish --instagram-timer` no horário do vertical e sobe pelo upload
+ *     resumível da Graph API, sem URL pública. A rodada do `/diaria-shorts`
+ *     devolve `skip_delegated`, como o `linkedin_profile` (#10982).
+ *   - `worker-r2` (#10823, opção antiga): sobe o vertical pro R2 e põe o
+ *     Reels na fila do Worker `diaria-linkedin-cron`. Exige os 5 secrets do
+ *     R2, que não serão criados (o R2 não está habilitado na conta).
+ */
+export const INSTAGRAM_BACKENDS = ["timer-300", "worker-r2"] as const;
+export type InstagramBackend = (typeof INSTAGRAM_BACKENDS)[number];
+
+export function isInstagramBackend(v: unknown): v is InstagramBackend {
+  return typeof v === "string" && (INSTAGRAM_BACKENDS as readonly string[]).includes(v);
+}
+
 /** Registro do que já saiu, por destino (idempotência do `publish-shorts.ts`). */
 export const SHORTS_PUBLISHED_FILE = "_internal/06-shorts-published.json";
 
@@ -153,10 +182,22 @@ export function buildYouTubeShortMetadata(input: { d1: ShortD1Input }): YouTubeS
 export type ReelsPlatform = "facebook" | "instagram";
 
 /**
+ * #11388 (decisão do editor, 27/10/2026, testada à mão na legenda do Reels de
+ * 261027): a legenda do Reels diz o que é a diar.ia.br em vez de pressupor que
+ * o leitor já conhece a newsletter. Sem "grátis": a oferta não foi confirmada.
+ */
+export const REELS_NEWSLETTER_SENTENCE = "A diar.ia.br é a newsletter que resume as notícias de IA do dia em 5 minutos.";
+
+/** #11388: CTA do Reels no Instagram, o texto final aprovado pelo editor (o link da bio é o único clicável). */
+export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo link da bio.`;
+
+/**
  * Legenda do Reels. Tratamos link em legenda de Reels como não clicável nas
- * duas redes (é o comportamento do app hoje), então o CTA principal é o canal escrito por extenso; no Facebook
- * o link da edição vai com UTM (atribuível se alguém copiar), no Instagram a
- * chamada é pro link da bio (padrão dos posts diários).
+ * duas redes (é o comportamento do app hoje). #11388: o CTA explica a
+ * newsletter (`REELS_NEWSLETTER_SENTENCE`) e o link do canal do YouTube saiu
+ * da legenda. No Instagram a chamada é pro link da bio (`INSTAGRAM_REELS_CTA`);
+ * no Facebook, que não tem bio, o link da edição vai com UTM (atribuível se
+ * alguém copiar).
  */
 export function buildReelsCaption(input: {
   platform: ReelsPlatform;
@@ -169,17 +210,16 @@ export function buildReelsCaption(input: {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
-  const channel = `Vídeo completo no YouTube: ${DIARIA_YOUTUBE_CHANNEL_URL.replace(/^https:\/\/www\./, "")}`;
-  const edition =
+  const cta =
     input.platform === "instagram"
-      ? "Edição completa no link da bio."
-      : `Edição completa: ${withShortUtm(input.editionUrl, {
+      ? INSTAGRAM_REELS_CTA
+      : `${REELS_NEWSLETTER_SENTENCE} Leia a edição de hoje e assine: ${withShortUtm(input.editionUrl, {
           source: "facebook",
           medium: "reels",
           campaign: input.aammdd,
           content: input.utmContent ?? null,
         })}`;
-  const caption = [title, hook, [channel, edition].join("\n"), SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  const caption = [title, hook, cta, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
     throw new Error(`legenda do Instagram passou de ${INSTAGRAM_CAPTION_MAX_CHARS} caracteres`);
   }
@@ -313,6 +353,17 @@ export interface ShortsConfig {
    */
   linkedinProfileViaTimer: boolean;
   /**
+   * #11410: o vertical do Threads PESSOAL sai pelo timer do `300`
+   * (`scripts/shorts-threads-profile-timer.ts`, task
+   * `Diaria-Shorts-Threads-Profile`), não pela rodada do
+   * `/diaria-publica-video`: a Threads API não agenda. Com `true`, uma rodada
+   * sem `--threads-timer` pula o `threads_profile` (`skip_delegated`), mesmo
+   * contrato do `linkedinProfileViaTimer`.
+   */
+  threadsProfileViaTimer: boolean;
+  /** #11265: quem publica o Reels do Instagram (`InstagramBackend`). */
+  instagramBackend: InstagramBackend;
+  /**
    * #11223: Reel no perfil PESSOAL do Facebook (passo guiado no Chrome — a
    * Graph API não publica em perfil). `false` tira o destino do plano: o
    * `/diaria-publica-video` não o oferece nem cobra, e a limpeza do vertical
@@ -342,6 +393,10 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   youtubeShortsApi: true,
   // #10982: desligado no código; o platform.config.json liga junto com o timer.
   linkedinProfileViaTimer: false,
+  // #11410: desligado; o editor liga no platform.config.json junto com o arme da task no 300.
+  threadsProfileViaTimer: false,
+  // #11265 (decisão do editor, 27/10/2026): timer no 300, sem R2.
+  instagramBackend: "timer-300",
   // #11223: ligado no código; o platform.config.json pausa durante a viagem.
   facebookProfile: true,
 });
@@ -358,6 +413,8 @@ function defaultShortsConfig(): ShortsConfig {
     threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
     youtubeShortsApi: DEFAULT_SHORTS_CONFIG.youtubeShortsApi,
     linkedinProfileViaTimer: DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer,
+    threadsProfileViaTimer: DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer,
+    instagramBackend: DEFAULT_SHORTS_CONFIG.instagramBackend,
     facebookProfile: DEFAULT_SHORTS_CONFIG.facebookProfile,
   };
 }
@@ -396,6 +453,10 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
   }
   const linkedinProfile = optionalBool(raw, "linkedin_profile", DEFAULT_SHORTS_CONFIG.linkedinProfile);
   const linkedinPageRepost = optionalBool(raw, "linkedin_page_repost", DEFAULT_SHORTS_CONFIG.linkedinPageRepost);
+  const backend = raw.instagram_backend ?? DEFAULT_SHORTS_CONFIG.instagramBackend;
+  if (!isInstagramBackend(backend)) {
+    throw new Error(`[shorts] publishing.shorts.instagram_backend precisa ser ${INSTAGRAM_BACKENDS.map((b) => `"${b}"`).join(" ou ")} (#11265).`);
+  }
   if (linkedinPageRepost && !linkedinProfile) {
     throw new Error("[shorts] publishing.shorts.linkedin_page_repost exige linkedin_profile: o repost é do vídeo do perfil (#10772).");
   }
@@ -410,6 +471,8 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
     youtubeShortsApi: optionalBool(raw, "youtube_shorts_api", DEFAULT_SHORTS_CONFIG.youtubeShortsApi),
     linkedinProfileViaTimer: optionalBool(raw, "linkedin_profile_via_timer", DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer),
+    threadsProfileViaTimer: optionalBool(raw, "threads_profile_via_timer", DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer),
+    instagramBackend: backend,
     facebookProfile: optionalBool(raw, "facebook_profile", DEFAULT_SHORTS_CONFIG.facebookProfile),
   };
 }
@@ -609,7 +672,8 @@ export interface ShortSlot {
   /** HH:MM BRT. */
   hhmm: string;
   /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
-  rule: "test-schedule" | SlotRule;
+  /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
+  rule: "test-schedule" | "timer-300" | SlotRule;
   premise: string;
   warning?: string;
 }
@@ -855,6 +919,26 @@ export const INSTAGRAM_REELS_API_MAX_SECONDS = 40;
 export type WorkerInstagramAccount = "diaria" | "vjpixel";
 
 export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
+
+/**
+ * #11390: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
+ * Chrome ou app), a que o editor usa: @vjpixel é o AUTOR e a @diar.ia.br entra
+ * como colaboradora. É o inverso da rota da API (autora @diar.ia.br com a
+ * @vjpixel em collab, #11223, `instagram_author_page`/`instagram_collaborators`).
+ * Enquanto o convite de collab está pendente, o post só aparece no perfil do
+ * autor, então o `--confirm-instagram` procura também nele (`authorPage` = slug
+ * de `publishing.social.facebook.pages` cuja conta vinculada é a @vjpixel).
+ */
+export const INSTAGRAM_CHROME_ROUTE = {
+  authorUsername: "vjpixel",
+  authorPage: "vjpixel",
+  collaboratorUsername: "diar.ia.br",
+} as const;
+
+/** #11390: a rota do B3b em texto, pros avisos e alarmes (nunca "como a autora"). */
+export function instagramChromeRouteText(): string {
+  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autor), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} como colaboradora`;
+}
 
 /**
  * Qualquer slug de página pode ser autora; as contas que o Worker conhece

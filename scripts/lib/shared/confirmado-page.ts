@@ -124,10 +124,13 @@ function renderConfirmadoStyles(): string {
 
 /**
  * Linha de expectativa de entrega — varia com a origem da confirmação (#8539).
+ * Exportada para a sonda do caminho de confirmação (#8548,
+ * `scripts/lib/confirmation-path-probe.ts`) conferir que a página NO AR serve
+ * a variante certa para cada `?via=`.
  *
  * @pure
  */
-function renderTimingLine(via?: ConfirmadoVia): string {
+export function renderTimingLine(via?: ConfirmadoVia): string {
   // `trim()` pela mesma disciplina de `parseEmailParam` no worker `reativar`:
   // espaço acidental na query não deveria trocar a copy em silêncio.
   return via?.trim() === VIA_BREVO

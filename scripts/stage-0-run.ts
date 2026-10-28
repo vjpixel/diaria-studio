@@ -61,11 +61,13 @@
  *       done + capture-stage-usage.ts.
  *
  * NÃO COBERTO — delegado ao orchestrator, NUNCA simulado aqui:
- *   0c (3 pings MCP): `mcp__claude-in-chrome__tabs_context_mcp`,
- *       `mcp__claude_ai_Gmail__list_labels`,
- *       `mcp__claude_ai_Beehiiv__get_current_user`. Só alcançáveis de dentro
- *       de uma sessão com esses conectores — este script não tenta. Ver
- *       "Design de 2 fases" abaixo.
+ *   0c (2 pings MCP): `mcp__claude-in-chrome__tabs_context_mcp`,
+ *       `mcp__claude_ai_Gmail__list_labels`. Só alcançáveis de dentro de uma
+ *       sessão com esses conectores — este script não tenta. Ver "Design de
+ *       2 fases" abaixo. O ping da Beehiiv (`get_current_user`) saiu no
+ *       #11225: a conta é só arquivo histórico (não envia desde #7388) e o
+ *       conector fora do ar nunca pode bloquear a edição — `--mcp-beehiiv`
+ *       continua aceito por compatibilidade, mas é opcional.
  *   0h.2. Enrichment de clicks via `Agent(subagent_type="beehiiv-clicks-
  *       enricher")` — dispatch de subagente, fora do alcance de um script
  *       Node. Se `beehiiv-sync.ts` (0h.1) devolver `posts_needing_clicks`
@@ -89,21 +91,21 @@
  *       Stage 0 em si, é uma nota de preparação no playbook).
  *
  * ═══════════════════════════════════════════════════════════════════════
- * DESIGN DE 2 FASES (por causa dos 3 pings MCP no meio de 0c)
+ * DESIGN DE 2 FASES (por causa dos 2 pings MCP no meio de 0c)
  * ═══════════════════════════════════════════════════════════════════════
  *
  *   `--phase preflight` — roda 0a + os 3 checks HTTPS de 0c (locks, Cloudflare,
  *     Clarice REST) SEM nenhuma escrita em disco (mkdir/log/stage-status/
  *     0b-bis ficam para a fase `continue`) e devolve um JSON pedindo ao
- *     orchestrator para fazer os 3 pings MCP e invocar de novo com os
+ *     orchestrator para fazer os 2 pings MCP e invocar de novo com os
  *     resultados. Mesmo padrão de `audience-run.ts --resolve-only`.
  *
- *   `--phase continue --mcp-chrome <bool> --mcp-gmail <bool> --mcp-beehiiv <bool>`
+ *   `--phase continue --mcp-chrome <bool> --mcp-gmail <bool> [--mcp-beehiiv <bool>]`
  *     — roda a fase A de novo (idempotente — todos HTTPS reads, seguro
  *     repetir), agora COM escrita (mkdir, log-event, stage-status,
- *     0b-bis), persiste `preflight-state.json` com os 5 sinais, e continua
+ *     0b-bis), persiste `preflight-state.json` com os 6 sinais, e continua
  *     0d → 0z. É a chamada "de verdade": o orchestrator só entra aqui depois
- *     de ter feito os 3 pings MCP.
+ *     de ter feito os 2 pings MCP.
  *
  * Cada sub-script é invocado por SPAWN (`process.execPath --import tsx`,
  * nunca `npx tsx` — guard #4343), nunca por import — preserva o contrato de
@@ -124,7 +126,7 @@
  *     [--window-days N] [--auto-approve] [--pre-gate] [--now ISO]
  *
  *   npx tsx scripts/stage-0-run.ts --phase continue --edition AAMMDD \
- *     --mcp-chrome true|false --mcp-gmail true|false --mcp-beehiiv true|false \
+ *     --mcp-chrome true|false --mcp-gmail true|false [--mcp-beehiiv true|false] \
  *     [--window-days N] [--auto-approve] [--pre-gate] [--now ISO]
  *
  * @see .claude/agents/orchestrator-stage-0-preflight.md (playbook em prosa —
@@ -318,6 +320,8 @@ export interface Stage0RunOptions {
   nowIso?: string;
   mcpChrome?: boolean;
   mcpGmail?: boolean;
+  /** Opcional desde o #11225 — Beehiiv é só arquivo histórico; ausente =
+   *  não sondado (nunca exigido pela fase `continue`). */
   mcpBeehiiv?: boolean;
 }
 
@@ -360,11 +364,10 @@ export function parseStage0RunArgs(argv: string[]): Stage0RunOptions {
     for (const [key, val] of [
       ["mcp-chrome", opts.mcpChrome],
       ["mcp-gmail", opts.mcpGmail],
-      ["mcp-beehiiv", opts.mcpBeehiiv],
     ] as const) {
       if (val === undefined) {
         throw new Stage0Abort(
-          `--phase continue exige --${key} true|false — rode "--phase preflight" primeiro, faça os 3 pings MCP, e chame de novo com os 3 resultados.`,
+          `--phase continue exige --${key} true|false — rode "--phase preflight" primeiro, faça os 2 pings MCP (Chrome, Gmail), e chame de novo com os 2 resultados.`,
         );
       }
     }
@@ -516,6 +519,8 @@ export interface PhaseAResult {
   cutoffIso: string;
   windowDays: number;
   clariceRest: boolean;
+  /** #11312: MCP `clarice` sondado pelo mesmo caminho de header do Claude Code. */
+  clariceMcp: boolean;
   cloudflareTokenOk: boolean;
 }
 
@@ -745,8 +750,23 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     logEvent(deps, opts.edition, "warn", "clarice-healthcheck: REST fallback degradado", { details: parseStepJson(clariceResult.stdout) });
   }
 
+  // #11312: o 401 do MCP `clarice` (#11251) só aparecia no Stage 2, quando o
+  // passe de Clarice falhava. Sonda o MCP aqui, com a key resolvida pelo
+  // `headersHelper` do `.mcp.json` (mesmo caminho do Claude Code). Warn, nunca
+  // bloqueia: o Stage 2 tem o fallback REST (`clarice-correct.ts`).
+  const clariceMcpResult = deps.exec("scripts/clarice-healthcheck.ts", ["--mcp", "--via-headers-helper"]);
+  const clariceMcp = clariceMcpResult.code === 0;
+  if (!clariceMcp) {
+    const detail = parseStepJson(clariceMcpResult.stdout) as { error?: string } | undefined;
+    report.note(
+      `⚠️  0c: MCP clarice falhou no probe (${detail?.error ?? `exit ${clariceMcpResult.code}`}) — ` +
+        `o Stage 2 vai direto pro fallback REST (${clariceRest ? "saudável" : "também degradado"}).`,
+    );
+    if (persist) logEvent(deps, opts.edition, "warn", "clarice-healthcheck --mcp: MCP clarice degradado", { details: detail ?? clariceMcpResult.stdout.trim() });
+  }
+
   if (persist) {
-    // Persistir os 5 sinais de preflight (#5414) — ANTES do init de
+    // Persistir os 6 sinais de preflight (#5414; clariceMcp desde #11312) — ANTES do init de
     // stage-status.md, mesma ordem do playbook (§0c). `opts.mcp*` já foram
     // validados como não-undefined por `parseStage0RunArgs` quando
     // `opts.phase === "continue"` (única chamada com persist=true).
@@ -757,10 +777,13 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
       String(opts.mcpChrome),
       "--gmail-mcp",
       String(opts.mcpGmail),
-      "--beehiiv-mcp",
-      String(opts.mcpBeehiiv),
+      // #11225: Beehiiv não é mais sondada — só grava o sinal se o caller
+      // ainda passar `--mcp-beehiiv` (compat); ausente fica `null` no disco.
+      ...(opts.mcpBeehiiv === undefined ? [] : ["--beehiiv-mcp", String(opts.mcpBeehiiv)]),
       "--clarice-rest",
       String(clariceRest),
+      "--clarice-mcp",
+      String(clariceMcp),
       "--cloudflare-token-ok",
       String(cloudflareTokenOk),
     ]);
@@ -778,7 +801,7 @@ async function runPhaseA(deps: Stage0RunDeps, opts: Stage0RunOptions, report: Re
     ]);
   }
 
-  return { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, cloudflareTokenOk };
+  return { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, clariceMcp, cloudflareTokenOk };
 }
 
 // ---------------------------------------------------------------------------
@@ -814,8 +837,9 @@ export interface Stage0RunResult {
   cutoffIso?: string;
   windowDays?: number;
   clariceRest?: boolean;
+  clariceMcp?: boolean;
   cloudflareTokenOk?: boolean;
-  needsMcpProbes?: { chrome: string; gmail: string; beehiiv: string };
+  needsMcpProbes?: { chrome: string; gmail: string };
   pendingAgentDispatch: PendingAgentDispatch[];
   pendingHumanDecision: PendingHumanDecision[];
   delegatedSteps: string[];
@@ -844,8 +868,8 @@ export function planExitHistoryDispatch(deps: Pick<Stage0RunDeps, "rootDir" | "e
     agent: "beehiiv-exit-history-drain",
     detail:
       `exit-history da Beehiiv ${status} — dispatch via Agent(subagent_type="beehiiv-exit-history-drain"), ` +
-      `prompt "retome do manifest" (o agent lê ${EXIT_HISTORY_MANIFEST_REL_PATH} sozinho). Só com BEEHIIV_MCP=true; ` +
-      `fail-soft, nunca bloqueia o Stage 0 (#10710, #7248).`,
+      `prompt "retome do manifest" (o agent lê ${EXIT_HISTORY_MANIFEST_REL_PATH} sozinho). Opcional — leitura do ` +
+      `arquivo histórico da Beehiiv: conector fora do ar = warn e segue, nunca bloqueia o Stage 0 (#10710, #7248, #11225).`,
     manifestPath: EXIT_HISTORY_MANIFEST_REL_PATH,
   };
 }
@@ -860,7 +884,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   const pendingHumanDecision: PendingHumanDecision[] = [];
 
   const phaseA = await runPhaseA(deps, opts, report, true);
-  const { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, cloudflareTokenOk } = phaseA;
+  const { editionDir, editionIso, anchorIso, cutoffIso, windowDays, clariceRest, clariceMcp, cloudflareTokenOk } = phaseA;
 
   // --- 0d: refresh-dedup — falha dura (#895: nunca prosseguir com dedup stale) ---
   const dedup = step(deps, report, "refresh-dedup (0d)", "scripts/refresh-dedup.ts", []);
@@ -891,6 +915,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
       cutoffIso,
       windowDays,
       clariceRest,
+      clariceMcp,
       cloudflareTokenOk,
       pendingAgentDispatch,
       pendingHumanDecision,
@@ -984,7 +1009,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
         pendingAgentDispatch.push({
           step: "0h.2",
           agent: "beehiiv-clicks-enricher",
-          detail: `${manifest.length} post(s) precisam de enrichment de clicks — dispatch via Agent(subagent_type="beehiiv-clicks-enricher"), 1 item por linha "post_id=<id> title=<title>"; validar depois com verify-clicks-enrichment.ts (#4732)`,
+          detail: `${manifest.length} post(s) precisam de enrichment de clicks — dispatch via Agent(subagent_type="beehiiv-clicks-enricher"), 1 item por linha "post_id=<id> title=<title>"; validar depois com verify-clicks-enrichment.ts (#4732). Opcional — arquivo histórico da Beehiiv: conector fora do ar = warn e segue, nunca bloqueia (#11225)`,
           manifestPath,
         });
       }
@@ -1169,6 +1194,7 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     cutoffIso,
     windowDays,
     clariceRest,
+    clariceMcp,
     cloudflareTokenOk,
     pendingAgentDispatch,
     pendingHumanDecision,
@@ -1197,11 +1223,11 @@ export async function runStage0(argv: string[], deps: Stage0RunDeps): Promise<St
         cutoffIso: phaseA.cutoffIso,
         windowDays: phaseA.windowDays,
         clariceRest: phaseA.clariceRest,
+        clariceMcp: phaseA.clariceMcp,
         cloudflareTokenOk: phaseA.cloudflareTokenOk,
         needsMcpProbes: {
           chrome: 'mcp__claude-in-chrome__tabs_context_mcp — probe barato, sem side-effect. Resultado vira "--mcp-chrome true|false" na chamada --phase continue.',
           gmail: 'mcp__claude_ai_Gmail__list_labels — probe barato, sem side-effect. Resultado vira "--mcp-gmail true|false".',
-          beehiiv: 'mcp__claude_ai_Beehiiv__get_current_user — probe barato, sem side-effect. Resultado vira "--mcp-beehiiv true|false".',
         },
         pendingAgentDispatch: [],
         pendingHumanDecision: [],

@@ -55,6 +55,12 @@
  * - 2+ arquivos do mesmo destino (V2 e V3 lado a lado) → `ambiguous`, como na
  *   regra antiga: o editor escolhe.
  * - Arquivos sem sufixo de destino em `Final/` seguem a escolha por proporção.
+ *
+ * **Variações (#11385).** O nome da pasta aceita "Final", "Finais", "Versão
+ * final" (`isFinalFolderName`). Sem `.mp4` em nenhuma delas, o fetch lista a
+ * subpasta `Editado/` (e variações: `isEditedFolderName`) e trata os arquivos
+ * dela como os de `Final/` — na 261028 o vídeo veio em
+ * `Editado/Diaria comentada_Youtube_FINAL.mp4`.
  */
 
 export type VideoOrientation = "horizontal" | "vertical";
@@ -74,9 +80,42 @@ export function targetOrientation(target: VideoTarget): VideoOrientation {
   return target === "youtube" ? "horizontal" : "vertical";
 }
 
-/** Nome da subpasta dos vídeos prontos dentro de `{AAMMDD}/`, sem diferenciar maiúsculas. */
+/** Minúsculas, sem acento, separadores (`_`, `-`, `.`) e espaços colapsados. */
+function folderKey(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/[_.\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const FINAL_FOLDER_KEYS = new Set(["final", "finais", "versao final", "video final", "videos finais"]);
+
+/**
+ * Nome da subpasta dos vídeos prontos dentro de `{AAMMDD}/` (#11222), sem
+ * diferenciar maiúsculas nem acento. Aceita as variações "Final", "Finais",
+ * "Versão final" (#11385).
+ */
 export function isFinalFolderName(name: string): boolean {
-  return name.normalize("NFC").trim().toLowerCase() === "final";
+  return FINAL_FOLDER_KEYS.has(folderKey(name));
+}
+
+const EDITED_FOLDER_KEYS = new Set([
+  "editado", "editados", "editada", "editadas", "edicao", "edicoes",
+  "exportado", "exportados", "export", "exports",
+]);
+
+/**
+ * Subpasta alternativa ao `Final/` (#11385): na edição 261028 o horizontal
+ * veio em `{AAMMDD}/Editado/Diaria comentada_Youtube_FINAL.mp4` e o fetch
+ * respondeu `none`. Só é listada quando não há `.mp4` em nenhuma `Final/`
+ * (que continua sendo a convenção e tem precedência); os arquivos dela entram
+ * com o mesmo `scope: "final-folder"` e a mesma regra de destino/proporção.
+ */
+export function isEditedFolderName(name: string): boolean {
+  return EDITED_FOLDER_KEYS.has(folderKey(name));
 }
 
 /**

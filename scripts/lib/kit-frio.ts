@@ -440,7 +440,9 @@ export function parseSemanalFrioPauseState(raw: string | null): SemanalFrioPause
  *
  * - `created_unverified`: o RASCUNHO foi criado (sem `send_at`) e o filtro
  *   ainda não foi conferido/agendado. Gravado ANTES da releitura: uma rodada
- *   seguinte retoma deste id em vez de criar uma 2ª semanal.
+ *   seguinte retoma deste id em vez de criar uma 2ª semanal. Também é o
+ *   estado de uma semanal DESAGENDADA porque o principal voltou a rascunho
+ *   (#11294 item 2): o reagendamento do principal a retoma.
  * - `scheduled`: filtro conferido (exatamente a tag `frio`) e `send_at`
  *   aplicado e relido. Só este conta no registro das semanais.
  * - `deleted`: filtro divergente, broadcast apagado; nova tentativa pode criar.
@@ -499,4 +501,46 @@ export function injectSemanalFrioIntro(content: string, introHtml: string = rend
   const close = content.indexOf(">", bodyIdx);
   if (close === -1) throw new Error("injectSemanalFrioIntro: tag <body> malformada.");
   return content.slice(0, close + 1) + introHtml + content.slice(close + 1);
+}
+
+// ── observabilidade da premissa B (#11294 item 4) ────────────────────────
+
+/**
+ * Teto de contatos `kit_sem_abertura_aguardando_frio` acima do qual o
+ * `evaluate-brevo-diaria.ts` abre alarme. Cada um está SEM edição nenhuma
+ * (fora da lista Brevo e fora da diária do Kit pelo `envio-brevo`) até o frio
+ * ligar e o `restore-kit-sem-abertura-frio.ts` rodar.
+ */
+export const KIT_SEM_ABERTURA_AGUARDANDO_FRIO_ALARM_COUNT = 30;
+/** Idade (dias desde a supressão) do mais antigo a partir da qual abre alarme. */
+export const KIT_SEM_ABERTURA_AGUARDANDO_FRIO_ALARM_DAYS = 21;
+
+export interface AwaitingFrioBacklog {
+  count: number;
+  /** Dias desde a supressão do mais antigo (`suppressed_at`); `null` sem nenhum datado. */
+  oldestDays: number | null;
+  /** Motivos do alarme; vazio = abaixo dos dois tetos. */
+  alarmReasons: string[];
+}
+
+/**
+ * Pura — o estoque INTEIRO (não só a rodada) de `kit-sem-abertura:` suprimidos
+ * só na Brevo aguardando o frio (premissa B do #11221). Antes do #11294 o
+ * único sinal era a linha de log com os suprimidos DESTA rodada.
+ */
+export function summarizeAwaitingFrioBacklog(
+  contacts: readonly { status: string; resolution_reason?: string | null; suppressed_at?: string }[],
+  nowMs: number,
+): AwaitingFrioBacklog {
+  const waiting = contacts.filter((c) => c.status === "suppressed" && c.resolution_reason === "kit_sem_abertura_aguardando_frio");
+  const times = waiting.map((c) => (c.suppressed_at ? Date.parse(c.suppressed_at) : NaN)).filter((t) => Number.isFinite(t));
+  const oldestDays = times.length > 0 ? Math.floor((nowMs - Math.min(...times)) / (24 * 3600 * 1000)) : null;
+  const alarmReasons: string[] = [];
+  if (waiting.length >= KIT_SEM_ABERTURA_AGUARDANDO_FRIO_ALARM_COUNT) {
+    alarmReasons.push(`${waiting.length} contato(s) kit-sem-abertura aguardando o frio (teto ${KIT_SEM_ABERTURA_AGUARDANDO_FRIO_ALARM_COUNT})`);
+  }
+  if (oldestDays !== null && oldestDays >= KIT_SEM_ABERTURA_AGUARDANDO_FRIO_ALARM_DAYS) {
+    alarmReasons.push(`o mais antigo espera há ${oldestDays} dia(s) sem edição nenhuma (teto ${KIT_SEM_ABERTURA_AGUARDANDO_FRIO_ALARM_DAYS})`);
+  }
+  return { count: waiting.length, oldestDays, alarmReasons };
 }

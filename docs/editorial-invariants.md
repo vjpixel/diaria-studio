@@ -18,7 +18,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 
 | id | descrição | issue |
 |---|---|---|
-| `beehiiv-key-set` | BEEHIIV_API_KEY env var presente (#895) | #895 |
+| `beehiiv-key-set` | BEEHIIV_API_KEY env var presente quando read_backend=beehiiv (#895, #11225) | #895 |
 | `clarice-key-set` | CLARICE_API_KEY env var presente (#1370) | #1370 |
 | `drive-creds-valid` | data/.credentials.json existe e tem refresh_token (#121) | #121 |
 | `gemini-model-valid` | platform.config.json > gemini.model resolve em /v1beta/models (#1396) | #1396 |

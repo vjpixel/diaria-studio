@@ -1,6 +1,7 @@
 /**
  * mcp-wrapper-core.mjs (#8994) — núcleo puro dos wrappers de MCP stdio
- * declarados em `.mcp.json` (`run-google-ads-mcp.mjs`, `run-doppler-mcp.mjs`).
+ * declarados em `.mcp.json` (`run-google-ads-mcp.mjs`, `run-doppler-mcp.mjs`)
+ * e do `headersHelper` do MCP http `clarice` (`clarice-headers.mjs`, #11251).
  *
  * **Por que wrapper e não `${VAR}` direto no `.mcp.json`:** o harness do
  * Claude Code interpola `${VAR}` a partir do ambiente do PROCESSO dele, que
@@ -50,7 +51,12 @@ export const GOOGLE_ADS_ENV_KEYS = [
 
 export const DOPPLER_MCP_TOKEN_KEY = "DOPPLER_MCP_TOKEN";
 
-/** `.env` existe mas não pôde ser lido/parseado — os entrypoints saem com 1. */
+/** Var da key da Clarice — a mesma do REST (`scripts/clarice-correct.ts`). */
+export const CLARICE_API_KEY_KEY = "CLARICE_API_KEY";
+/** Header que `https://mcp.clarice.ai/mcp` aceita (probe ao vivo, #11251: `X-API-Key` dá 401). */
+export const CLARICE_MCP_HEADER = "X-Clarice-Api-Key";
+
+/** `.env` existe mas não pôde ser lido/parseado — os wrappers stdio saem com 1; o `clarice-headers.mjs` imprime `{}` (#11251). */
 export class EnvFileReadError extends Error {}
 
 /**
@@ -200,6 +206,46 @@ export function resolveDopplerLaunch(env, { find = (n) => findOnPath(n) } = {}) 
 export function buildDopplerChildEnv(base, childEnv) {
   const { [DOPPLER_MCP_TOKEN_KEY]: _omit, ...rest } = base;
   return { ...rest, ...childEnv };
+}
+
+/**
+ * Headers do MCP `clarice` (#11251), consumidos pelo `headersHelper` de
+ * `.mcp.json` (`scripts/mcp/clarice-headers.mjs`).
+ *
+ * Nunca falha: sem key utilizável devolve `headers: {}` + `warning`. Motivo:
+ * o Claude Code tira do ambiente de um helper de repositório toda var com
+ * `KEY`/`TOKEN`/`SECRET`/`PASSWORD`/`AUTH` no nome (doc oficial, "Use dynamic
+ * headers for custom authentication"), então numa máquina com a key SÓ no
+ * ambiente (não no `.env`) o helper não a vê — e um exit não-zero arriscaria
+ * derrubar a conexão que o header estático `${CLARICE_API_KEY}` faria
+ * funcionar. `{}` não acrescenta header nenhum (nunca um header vazio, que é
+ * o 401 do #11251) e deixa o estático valer.
+ *
+ * Key com quebra de linha segue a mesma regra (`{}` + aviso), não exit 1:
+ * viraria injeção de header, então não pode ir pro header dinâmico — mas um
+ * `.env` malformado não deve matar o fallback estático, que pode ter uma key
+ * boa vinda do ambiente. O aviso nunca carrega o valor da key.
+ */
+export function resolveClariceHeaders(env) {
+  const key = (env[CLARICE_API_KEY_KEY] ?? "").trim();
+  if (!key) {
+    return {
+      headers: {},
+      warning:
+        `[clarice-headers] ${CLARICE_API_KEY_KEY} ausente no .env do projeto (o ambiente de um headersHelper ` +
+        `vem sem vars com KEY no nome) — sem header dinâmico; vale o \`\${${CLARICE_API_KEY_KEY}}\` estático do .mcp.json. ` +
+        `Pra não depender dele, rode \`npm run sync-env\` (Doppler) ou adicione a key ao .env (ver docs/setup.md).`,
+    };
+  }
+  if (/[\r\n]/.test(key)) {
+    return {
+      headers: {},
+      warning:
+        `[clarice-headers] ${CLARICE_API_KEY_KEY} contém quebra de linha — confira o .env. ` +
+        `Sem header dinâmico; vale o estático do .mcp.json.`,
+    };
+  }
+  return { headers: { [CLARICE_MCP_HEADER]: key } };
 }
 
 /**

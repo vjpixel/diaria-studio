@@ -27,6 +27,8 @@
  *   # as entradas de `issues[]` marcadas "não trabalhada por esta sessão"
  *   # (`deixado-para-o-300`; e `claimed-por-outra-sessao` em plano develop) —
  *   # track que virou develop/bloqueada desde a gravação → exit 1.
+ *   # #11301 item 2: também acusa bloqueio-externo inicial cujo track atual
+ *   # deixou de ser bloqueada, antes de reaplicar decisão obsoleta.
  *   # `--kind develop|overnight|continuo` sobrepõe a inferência pelo path.
  *
  *   # #10618 (fatia 3): plano com issue de outro repo (`"vjpixel/diaria-design#21"`)
@@ -346,7 +348,7 @@ if (isMainModule(import.meta.url)) {
     retracked.length === 0
   ) {
     const convergenceNote = convergenceRan
-      ? `nenhuma issue nova fora da varredura, nenhuma issue do plano re-roteada pra develop/bloqueada${foreignNotScanned.length > 0 ? " (exceto nos repos NÃO varridos acima)" : ""}`
+      ? `nenhuma issue nova fora da varredura, nenhuma divergência de track nas issues não trabalhadas do plano${foreignNotScanned.length > 0 ? " (exceto nos repos NÃO varridos acima)" : ""}`
       : "re-varredura de convergência NÃO executada (--skip-convergence ou gh indisponível) — só pendência explícita foi checada";
     console.log(`ok — nenhuma pendência de re-triagem, ${convergenceNote}`);
     process.exit(0);
@@ -374,7 +376,7 @@ if (isMainModule(import.meta.url)) {
       .map((r) => `${r.key ?? `#${r.number}`} (${r.motivo}, ${r.track_gravado ?? "sem exec_track_painel"} → ${r.track_atual})`)
       .join(", ");
     console.error(
-      `re-classificação (#10407): issue(s) do plano marcada(s) como não trabalhada(s) por esta sessão que agora são develop/bloqueada: ${list} — o 300 não pega essas; atualize exec_track_painel e reavalie dispatch antes de fechar a rodada`,
+      `re-classificação (#10407) / bloqueio obsoleto (#11301): issue(s) não trabalhada(s) com track divergente ou bloqueio inicial obsoleto: ${list} — releia o roteamento atual antes de re-rotear; atualize exec_track_painel e reavalie dispatch antes de fechar a rodada`,
     );
   }
   process.exit(1);

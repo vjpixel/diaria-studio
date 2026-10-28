@@ -14,7 +14,10 @@
  * - Só graders MECÂNICOS, reusando o que `distillation-backtest.ts` já
  *   importa (`checkCarouselTextOverflow`, `checkBannedLexicon`,
  *   `runStage2LintReport`) + `checkTitleLengths` (`lint-checks/
- *   title-length.ts`) pro título ≤52 chars. **Zero checagem nova.**
+ *   title-length.ts`) pro ALVO DE ESCRITA de título ≤52 chars do writer
+ *   (prompt; os limites editoriais reais são o card 4x5 e o assunto ≤70,
+ *   #11254 — o grader mede se o prompt é seguido, não se o título é
+ *   publicável). **Zero checagem nova.**
  * - **Desvio deliberado de uma leitura possível do texto da issue**: uma
  *   leitura possível do critério de título da issue seria usar
  *   `title_char_count` de `ScoringFeatureRow` (`scoring-features.ts`) como

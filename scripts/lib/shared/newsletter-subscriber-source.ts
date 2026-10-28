@@ -21,8 +21,8 @@
  * independente das outras duas (a atribuição UTM nativa do Kit só existe
  * pra quem se cadastrou pelo formulário hospedado no Kit; quem entrou via
  * API/worker não carrega `attribution`, ver `kit-subscribers.ts`). Por
- * isso: chave PRÓPRIA, `publishing.newsletter.subscriber_backend`, default
- * `"beehiiv"` — migrar aqui não depende de, nem afeta, `backend`/
+ * isso: chave PRÓPRIA, `publishing.newsletter.subscriber_backend` (default
+ * `"kit"` desde o #11225; era `"beehiiv"`) — migrar aqui não depende de, nem afeta, `backend`/
  * `read_backend`.
  *
  * ## Limitação do lado Kit — CORRIGIDA no consumidor (#7359, não muda esta chave)
@@ -39,9 +39,8 @@
  * `workers/poll/src/subscribe.ts`) — `fetchAndAggregateKit`
  * (`count-subscriptions-by-utm.ts`) lê `fields` primeiro, com `attribution`
  * só como fallback pro caso nativo (#7359). O que este comentário registra
- * é só que a leitura de assinante por este módulo continua defaultando pra
- * `"beehiiv"` (ver nota abaixo) — migrar essa chave é uma decisão separada
- * de já ter corrigido a fonte certa do lado Kit.
+ * é só que corrigir a fonte certa do lado Kit e migrar esta chave foram
+ * decisões separadas (a chave virou `"kit"` no #7395; o default, no #11225).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -67,7 +66,8 @@ export type NewsletterSubscriberBackend = "beehiiv" | "kit";
 function resolveSubscriberBackendChecked(
   configPath: string,
 ): { ok: true; backend: NewsletterSubscriberBackend } | { ok: false; reason: string } {
-  if (!existsSync(configPath)) return { ok: true, backend: "beehiiv" };
+  // #11225: default "kit" (Beehiiv só como arquivo histórico).
+  if (!existsSync(configPath)) return { ok: true, backend: "kit" };
   let cfg: { publishing?: { newsletter?: { subscriber_backend?: string } } };
   try {
     cfg = JSON.parse(readFileSync(configPath, "utf8"));
@@ -76,23 +76,23 @@ function resolveSubscriberBackendChecked(
   }
   const raw = cfg.publishing?.newsletter?.subscriber_backend;
   const normalized = (raw ?? "").trim().toLowerCase();
-  if (normalized === "kit") return { ok: true, backend: "kit" };
-  if (normalized && normalized !== "beehiiv") {
+  if (normalized === "beehiiv") return { ok: true, backend: "beehiiv" };
+  if (normalized && normalized !== "kit") {
     console.error(
-      `[newsletter-subscriber-source] publishing.newsletter.subscriber_backend desconhecido: ${JSON.stringify(raw)} — caindo em beehiiv`,
+      `[newsletter-subscriber-source] publishing.newsletter.subscriber_backend desconhecido: ${JSON.stringify(raw)} — caindo em kit`,
     );
   }
-  return { ok: true, backend: "beehiiv" };
+  return { ok: true, backend: "kit" };
 }
 
 /** Convenience pura — sempre devolve um backend usável, nunca lança. Use
- *  quando "beehiiv" no erro é aceitável (só quer saber "qual backend
+ *  quando "kit" no erro é aceitável (só quer saber "qual backend
  *  hoje"). */
 export function resolveNewsletterSubscriberBackend(
   configPath: string = DEFAULT_CONFIG_PATH,
 ): NewsletterSubscriberBackend {
   const result = resolveSubscriberBackendChecked(configPath);
-  return result.ok ? result.backend : "beehiiv";
+  return result.ok ? result.backend : "kit";
 }
 
 export type NewsletterSubscriberConfig =

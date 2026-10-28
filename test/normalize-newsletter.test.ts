@@ -794,3 +794,37 @@ describe("normalizeNewsletter (#1441) — integração com inject separators", (
     assert.ok(r.report.warnings.some((w) => /separador.*injetado/.test(w)));
   });
 });
+
+describe("splitConcatenatedHighlightHeader — limites reais do título (#11329)", () => {
+  // As 3 opções têm 62, 65 e 67 chars: acima do antigo teto de 52 e da folga
+  // de 60 do corte guloso, abaixo do teto do assunto (70, #11254). O corte
+  // guloso por 60 empurrava palavras do 2º título pro 1º.
+  const t1 = "OpenAI lança modelo que escreve código sozinho por horas a fio";
+  const t2 = "Novo modelo da OpenAI programa sem parar e entrega projeto pronto";
+  const t3 = "OpenAI mostra IA que trabalha por horas num código sem ajuda humana";
+
+  it("separa as 3 opções exatamente, mesmo acima de 60 chars", () => {
+    const r = splitConcatenatedHighlightHeader(`DESTAQUE 2 | LANÇAMENTO ${t1} ${t2} ${t3}`);
+    assert.equal(r.split, true);
+    assert.deepEqual(r.lines, ["DESTAQUE 2 | LANÇAMENTO", t1, t2, t3]);
+  });
+
+  it("D1: nenhum trecho passa do teto do assunto (70)", () => {
+    const r = splitConcatenatedHighlightHeader(`DESTAQUE 1 | LANÇAMENTO ${t1} ${t2} ${t3}`);
+    assert.equal(r.split, true);
+    for (const t of r.lines.slice(1)) assert.ok([...new Intl.Segmenter().segment(t)].length <= 70, t);
+  });
+
+  it("header de categoria com várias palavras em maiúsculas não vira 3 títulos", () => {
+    const line = "DESTAQUE 1 | IA E O TRABALHO";
+    const r = splitConcatenatedHighlightHeader(line);
+    assert.equal(r.split, false);
+    assert.deepEqual(r.lines, [line]);
+  });
+
+  it("texto que não cabe em 3 títulos de card → linha intacta", () => {
+    const longo = "palavra ".repeat(60).trim();
+    const r = splitConcatenatedHighlightHeader(`DESTAQUE 3 | PESQUISA ${longo}`);
+    assert.equal(r.split, false);
+  });
+});

@@ -139,12 +139,20 @@ test("#7722 item 2 — buildBeaconRecord descarta entradas sem path resolvido (g
   assert.deepEqual(record.known_worktrees, [{ path: "/repo/.claude/worktrees/agent-b2", branch: "develop/fix-200" }]);
 });
 
-test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo `branch` singular (checkout principal), CADA worktree protegido pela sua PRÓPRIA branch via `worktrees`", () => {
+test("#7722 item 2 + #11317 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo `branch` singular (checkout principal), CADA worktree protegido pela issue que a sessão reivindicou (known_worktrees é só o mapa path→branch)", () => {
   // Reproduz a medição ao vivo da issue: 3 sessões interativas do Neo, todas
   // publicando `branch=hotfix/robots-guard-expected-hosts` (a do checkout
-  // principal) — nenhuma delas de fato trabalhando ali. Cada uma tem seu
-  // PRÓPRIO worktree/branch em `worktrees`, populado pelo beacon corrigido.
+  // principal) — nenhuma delas de fato trabalhando ali. `known_worktrees` é a
+  // foto GLOBAL (igual nas 3 sessões, inclui o worktree livre); o que diz
+  // qual worktree é de quem é `claimed_issues` ↔ número da issue na branch
+  // (#11317 — antes, toda entrada de known_worktrees virava "em uso").
   const SAME_MAIN_BRANCH = "hotfix/robots-guard-expected-hosts";
+  const GLOBAL = [
+    { path: "C:/Users/vjpix/Projects/wt-A", branch: "overnight/fix-100" },
+    { path: "C:/Users/vjpix/Projects/wt-B", branch: "develop/fix-200" },
+    { path: "C:/Users/vjpix/Projects/wt-C", branch: "continuo/fix-300" },
+    { path: "C:/Users/vjpix/Projects/wt-livre", branch: "chore/nada-a-ver" },
+  ];
   const sessions: SessionRecord[] = [
     {
       kind: "overnight",
@@ -153,7 +161,8 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
       startedAt: "2026-09-09T00:00:00.000Z",
       lastHeartbeat: "2026-09-09T00:05:00.000Z",
       branch: SAME_MAIN_BRANCH,
-      known_worktrees: [{ path: "C:/Users/vjpix/Projects/wt-A", branch: "overnight/fix-100" }],
+      known_worktrees: GLOBAL,
+      claimed_issues: [100],
     },
     {
       kind: "develop",
@@ -162,7 +171,8 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
       startedAt: "2026-09-09T00:00:00.000Z",
       lastHeartbeat: "2026-09-09T00:05:00.000Z",
       branch: SAME_MAIN_BRANCH,
-      known_worktrees: [{ path: "C:/Users/vjpix/Projects/wt-B", branch: "develop/fix-200" }],
+      known_worktrees: GLOBAL,
+      claimed_issues: [200],
     },
     {
       kind: "continuo",
@@ -171,7 +181,8 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
       startedAt: "2026-09-09T00:00:00.000Z",
       lastHeartbeat: "2026-09-09T00:05:00.000Z",
       branch: SAME_MAIN_BRANCH,
-      known_worktrees: [{ path: "C:/Users/vjpix/Projects/wt-C", branch: "continuo/fix-300" }],
+      known_worktrees: GLOBAL,
+      claimed_issues: [300],
     },
   ];
 
@@ -186,9 +197,9 @@ test("#7722 item 2 — cleanup-merged-worktrees: 3 sessões concorrentes, mesmo 
   // Apenas o `branch` singular (checkout principal) NÃO teria protegido
   // nenhum dos 3 worktrees externos — é exatamente o bug da issue.
   assert.equal(inUse.branches.has(SAME_MAIN_BRANCH), true);
-  assert.equal(inUse.branches.has("overnight/fix-100"), true, "protegido via worktrees da sess-a, não via branch singular");
-  assert.equal(inUse.branches.has("develop/fix-200"), true, "protegido via worktrees da sess-b, não via branch singular");
-  assert.equal(inUse.branches.has("continuo/fix-300"), true, "protegido via worktrees da sess-c, não via branch singular");
+  assert.equal(inUse.branches.has("overnight/fix-100"), true, "protegido pela issue 100 reivindicada pela sess-a");
+  assert.equal(inUse.branches.has("develop/fix-200"), true, "protegido pela issue 200 reivindicada pela sess-b");
+  assert.equal(inUse.branches.has("continuo/fix-300"), true, "protegido pela issue 300 reivindicada pela sess-c");
 
   const filtered = filterOutInUseWorktrees(entries, inUse);
   assert.deepEqual(

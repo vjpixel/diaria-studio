@@ -1,9 +1,10 @@
 /**
  * preflight-state.ts (#5414)
  *
- * Persiste os 5 sinais de saúde de dependência externa que o Stage 0
+ * Persiste os sinais de saúde de dependência externa que o Stage 0
  * ("Preflight") do orchestrator apura uma vez por edição — CHROME_MCP,
- * GMAIL_MCP, BEEHIIV_MCP, CLARICE_REST, CLOUDFLARE_TOKEN_OK — hoje só
+ * GMAIL_MCP, BEEHIIV_MCP, CLARICE_REST, CLOUDFLARE_TOKEN_OK, e desde o #11312
+ * CLARICE_MCP — hoje só
  * guardados "em sessão" (na conversa do orchestrator, `orchestrator-stage-0-
  * preflight.md` §0c). Isso quebra a premissa de rodar a pipeline stage-a-
  * stage com contexto limpo entre etapas (#5414, corte de ~49% de custo
@@ -17,7 +18,7 @@
  * os 5 checks em sequência — cada write faz upsert sobre o que já foi
  * gravado antes na mesma execução, nunca apaga os outros campos). Lido no
  * início de qualquer stage que precisar do sinal — hoje Stage 2 §3b consulta
- * `clariceRest`, Stage 5 consulta `chromeMcp`. `gmailMcp`/`beehiivMcp`/
+ * `clariceRest` e `clariceMcp`, Stage 5 consulta `chromeMcp`. `gmailMcp`/`beehiivMcp`/
  * `cloudflareTokenOk` só são consumidos dentro do próprio Stage 0 hoje, mas
  * são persistidos igual — robustez contra o Stage 0 em si rodar por partes
  * (compaction no meio, resume) e uniformidade dos 5 sinais.
@@ -48,12 +49,20 @@ export interface PreflightState {
   /** Gmail MCP (`mcp__claude_ai_Gmail__list_labels`). Consumido dentro do
    * próprio Stage 0 (§0n CI-failures, §0-replies). */
   gmailMcp: boolean | null;
-  /** Beehiiv MCP (`mcp__claude_ai_Beehiiv__get_current_user`). Consumido
-   * dentro do próprio Stage 0 (§0h.2 clicks enricher, §0-replies fallback). */
+  /** Beehiiv MCP (`mcp__claude_ai_Beehiiv__get_current_user`). Desde o
+   * #11225 o Stage 0 não sonda mais a Beehiiv (só arquivo histórico): o campo
+   * fica `null` nas edições novas; a flag `--beehiiv-mcp` segue aceita só por
+   * compatibilidade com estados gravados antes. */
   beehiivMcp: boolean | null;
   /** Clarice REST fallback (`cortex.clarice.ai/api-correction`). Consumido
    * pelo Stage 2 §3b antes de tentar o fallback quando o MCP falha. */
   clariceRest: boolean | null;
+  /** MCP `clarice` (`mcp.clarice.ai`), sondado com a key resolvida pelo
+   * `headersHelper` do `.mcp.json` (`clarice-healthcheck.ts
+   * --via-headers-helper`, #11312). Pega o 401 do MCP (#11251) já no Stage 0
+   * em vez de só no Stage 2. Consumido pelo Stage 2 §3b: `false` → ir direto
+   * pro fallback REST. Warn, nunca bloqueia. */
+  clariceMcp: boolean | null;
   /** Token Cloudflare/wrangler (`CLOUDFLARE_API_TOKEN`). Consumido dentro do
    * próprio Stage 0 (§0d.bis maintain-valid-editions). */
   cloudflareTokenOk: boolean | null;
@@ -66,6 +75,7 @@ const DEFAULT_STATE: PreflightState = {
   gmailMcp: null,
   beehiivMcp: null,
   clariceRest: null,
+  clariceMcp: null,
   cloudflareTokenOk: null,
   capturedAt: null,
 };
@@ -90,6 +100,7 @@ function normalizeState(raw: Partial<PreflightState>): PreflightState {
     gmailMcp: boolOrNull(raw.gmailMcp),
     beehiivMcp: boolOrNull(raw.beehiivMcp),
     clariceRest: boolOrNull(raw.clariceRest),
+    clariceMcp: boolOrNull(raw.clariceMcp),
     cloudflareTokenOk: boolOrNull(raw.cloudflareTokenOk),
     capturedAt: typeof raw.capturedAt === "string" ? raw.capturedAt : null,
   };
@@ -177,6 +188,7 @@ const FIELD_BY_FLAG: Record<string, keyof Omit<PreflightState, "capturedAt">> = 
   "gmail-mcp": "gmailMcp",
   "beehiiv-mcp": "beehiivMcp",
   "clarice-rest": "clariceRest",
+  "clarice-mcp": "clariceMcp",
   "cloudflare-token-ok": "cloudflareTokenOk",
 };
 
@@ -200,7 +212,7 @@ if (isMainModule(import.meta.url)) {
     console.error(
       "uso: preflight-state.ts --edition-dir <dir> [--read] [--chrome-mcp true|false] " +
         "[--gmail-mcp true|false] [--beehiiv-mcp true|false] [--clarice-rest true|false] " +
-        "[--cloudflare-token-ok true|false]",
+        "[--clarice-mcp true|false] [--cloudflare-token-ok true|false]",
     );
     process.exit(1);
   }
@@ -229,7 +241,7 @@ if (isMainModule(import.meta.url)) {
     if (Object.keys(patch).length === 0) {
       console.error(
         "nada para escrever — passe ao menos 1 flag (--chrome-mcp, --gmail-mcp, --beehiiv-mcp, " +
-          "--clarice-rest, --cloudflare-token-ok) ou --read",
+          "--clarice-rest, --clarice-mcp, --cloudflare-token-ok) ou --read",
       );
       process.exit(1);
     }

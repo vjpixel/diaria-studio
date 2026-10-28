@@ -693,6 +693,7 @@ function unworkedMotivo(entry: PlanIssueEntryLike, includeClaimed: boolean): str
   const candidates: unknown[] = [entry.status === "pulada" ? entry.motivo : undefined, entry.status];
   for (const c of candidates) {
     if (typeof c !== "string") continue;
+    if (c === "bloqueio-externo") return c; // #11301: revalidar bloqueio inicial
     if (UNWORKED_300_MOTIVOS.has(c)) return c;
     if (includeClaimed && c === UNWORKED_CLAIMED_MOTIVO) return c;
   }
@@ -709,6 +710,11 @@ function unworkedMotivo(entry: PlanIssueEntryLike, includeClaimed: boolean): str
  * convergência só olhava issue NOVA e deu "ok", a sessão fechou com
  * `Goal: atingido` e 3 issues develop abertas. Mesmo princípio do #5586:
  * herança não dispensa reverificação.
+ *
+ * #11301 item 2: também revalida `bloqueio-externo` contra qualquer track
+ * atual diferente de bloqueada, sinalizando decisão inicial obsoleta antes
+ * de o coordenador reaplicar o bloqueio. Não depende de comentários nem
+ * substitui o guard de escrita de route-issue (item 1).
  *
  * Issue fechada (ausente de `openIssues`) não entra — saiu do backlog.
  * Track gravado já igual ao atual não entra — a sessão já sabia (e
@@ -739,7 +745,9 @@ export function findRetrackedUnworkedIssues(
     const open = byNumber.get(n);
     if (!open) continue;
     const trackAtual = classifyExecTrack({ labels: open.labels, body: open.body, now: opts.now });
-    if (!RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
+    // #11301 item 2: bloqueio inicial pode ter sido removido por outra sessão.
+    // O estado atual basta para exigir re-triagem; não escreve roteamento.
+    if (motivo === "bloqueio-externo" ? trackAtual === "bloqueada" : !RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
     const trackGravado =
       typeof entry.exec_track_painel === "string" ? entry.exec_track_painel : null;
     if (trackGravado === trackAtual) continue;
@@ -778,7 +786,9 @@ export function findRetrackedUnworkedForeignIssues(
     const open = byKey.get(key);
     if (!open) continue; // outro repo, ou issue fechada
     const trackAtual = classifyExecTrack({ labels: open.labels, body: open.body, now: opts.now });
-    if (!RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
+    // #11301 item 2: bloqueio inicial pode ter sido removido por outra sessão.
+    // O estado atual basta para exigir re-triagem; não escreve roteamento.
+    if (motivo === "bloqueio-externo" ? trackAtual === "bloqueada" : !RETRACK_HOLE_TRACKS.has(trackAtual)) continue;
     const trackGravado = typeof entry.exec_track_painel === "string" ? entry.exec_track_painel : null;
     if (trackGravado === trackAtual) continue;
     seen.add(key);

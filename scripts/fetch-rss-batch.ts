@@ -47,6 +47,24 @@ export interface SourceSpec {
    * são marcados com bypass_date_window=true para não serem descartados pelo
    * filter-date-window mesmo que caiam fora da janela padrão. */
   low_cadence?: boolean;
+  /** #11401: URL da fonte (coluna URL do seed). Em fonte de sitemap, o caminho
+   * dela restringe as entradas (ver `sitemapPathPrefix`). */
+  url?: string;
+}
+
+/**
+ * #11401: prefixo de caminho que restringe um sitemap à seção da fonte —
+ * o caminho da URL cadastrada (`https://docs.replit.com/updates` → `/updates`).
+ * URL ausente, inválida ou na raiz → `undefined` (sitemap inteiro, como antes).
+ */
+export function sitemapPathPrefix(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const p = new URL(url).pathname.replace(/\/+$/, "");
+    return p || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type Outcome = "ok" | "empty" | "fail" | "timeout";
@@ -113,7 +131,12 @@ async function runOne(
   try {
     // Promise.race com timeout custom
     const fetchPromise = isSitemap
-      ? fetchSitemapEntries({ url: src.rss, sourceName: src.name, days: effectiveDays })
+      ? fetchSitemapEntries({
+          url: src.rss,
+          sourceName: src.name,
+          days: effectiveDays,
+          pathPrefix: sitemapPathPrefix(src.url),
+        })
       : fetchRss({ url: src.rss, sourceName: src.name, days: effectiveDays, topicFilter });
 
     const timeoutPromise = new Promise<never>((_, reject) =>

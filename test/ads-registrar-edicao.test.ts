@@ -98,14 +98,14 @@ describe("#8241 item 4 — validateRegistrarEdicaoInput", () => {
 
   it("linha completa e válida", () => {
     const r = validateRegistrarEdicaoInput(
-      { ts: "2026-09-17T13:50:00-03:00", braco: "Meta Ads (teste 2608)", tipo: "edicao-em-voo", origem: "editor", extra: { motivo: "teste" } },
+      { ts: "2026-09-17T13:50:00-03:00", braco: "Meta Ads (UTM)", tipo: "edicao-em-voo", origem: "editor", extra: { motivo: "teste" } },
       NOW,
     );
     assert.deepEqual(r, {
       ok: true,
       line: {
         ts: "2026-09-17T13:50:00-03:00",
-        braco: "Meta Ads (teste 2608)",
+        braco: "Meta Ads (UTM)",
         tipo: "edicao-em-voo",
         efeito: "mudanca",
         origem: "editor",

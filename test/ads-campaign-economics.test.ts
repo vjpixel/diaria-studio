@@ -21,15 +21,15 @@ import {
 describe("#7536 — buildCumulativeSeries: requisito 1 (acumulado, nunca diário)", () => {
   it("dia sem cadastro não gera divisão por zero — custoPorCadastroAcumulado usa o acumulado até ali", () => {
     const metrics: ChannelDailyMetric[] = [
-      { canal: "Google Ads (teste 2608)", date: "2026-01-01", gastoBrl: 100, cliques: 10, impressoes: 1000 },
-      { canal: "Google Ads (teste 2608)", date: "2026-01-02", gastoBrl: 100, cliques: 10, impressoes: 1000 },
-      { canal: "Google Ads (teste 2608)", date: "2026-01-03", gastoBrl: 100, cliques: 10, impressoes: 1000 },
+      { canal: "Google Ads (UTM)", date: "2026-01-01", gastoBrl: 100, cliques: 10, impressoes: 1000 },
+      { canal: "Google Ads (UTM)", date: "2026-01-02", gastoBrl: 100, cliques: 10, impressoes: 1000 },
+      { canal: "Google Ads (UTM)", date: "2026-01-03", gastoBrl: 100, cliques: 10, impressoes: 1000 },
     ];
     // Só o dia 1 e o dia 3 têm cadastro — dia 2 é o "zero cadastro" que a
     // issue cita (30% dos dias reais de jan/2026).
     const signups: ChannelDailySignup[] = [
-      { canal: "Google Ads (teste 2608)", date: "2026-01-01", cadastros: 2 },
-      { canal: "Google Ads (teste 2608)", date: "2026-01-03", cadastros: 1 },
+      { canal: "Google Ads (UTM)", date: "2026-01-01", cadastros: 2 },
+      { canal: "Google Ads (UTM)", date: "2026-01-03", cadastros: 1 },
     ];
     const result = buildCumulativeSeries(metrics, signups, { start: "2026-01-01", end: "2026-01-03" });
     assert.equal(result.series.length, 1);
@@ -73,14 +73,14 @@ describe("#7536 — buildCumulativeSeries: requisito 2 (escala compartilhada)", 
 describe("#7536 — buildCumulativeSeries: requisito 3 (canal sem cadastro não ganha linha)", () => {
   it("canal com gasto mas zero cadastro no período INTEIRO some de `series`, aparece em `omittedNoSignups`", () => {
     const metrics: ChannelDailyMetric[] = [
-      { canal: "Microsoft Ads (teste 2608)", date: "2026-01-01", gastoBrl: 200, cliques: 5, impressoes: 500 },
-      { canal: "Google Ads (teste 2608)", date: "2026-01-01", gastoBrl: 100, cliques: 5, impressoes: 500 },
+      { canal: "Microsoft Ads (UTM)", date: "2026-01-01", gastoBrl: 200, cliques: 5, impressoes: 500 },
+      { canal: "Google Ads (UTM)", date: "2026-01-01", gastoBrl: 100, cliques: 5, impressoes: 500 },
     ];
-    const signups: ChannelDailySignup[] = [{ canal: "Google Ads (teste 2608)", date: "2026-01-01", cadastros: 1 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Google Ads (UTM)", date: "2026-01-01", cadastros: 1 }];
     const result = buildCumulativeSeries(metrics, signups, { start: "2026-01-01", end: "2026-01-01" });
     const canaisNaSerie = result.series.map((s) => s.canal);
-    assert.deepEqual(canaisNaSerie, ["Google Ads (teste 2608)"]);
-    assert.deepEqual(result.omittedNoSignups, ["Microsoft Ads (teste 2608)"]);
+    assert.deepEqual(canaisNaSerie, ["Google Ads (UTM)"]);
+    assert.deepEqual(result.omittedNoSignups, ["Microsoft Ads (UTM)"]);
   });
 });
 
@@ -118,11 +118,11 @@ describe("#8210 Bug 3c — gasto desconhecido nunca vira 0 (custo/cadastro nunca
     // via Kit. Antes do fix: gastoTotalBrl calculava como 0 (soma de []) e
     // custoPorCadastroBrl saía 0/146 = 0 — "grátis" enganoso.
     const metrics: ChannelDailyMetric[] = [];
-    const signups: ChannelDailySignup[] = [{ canal: "Meta Ads (teste 2608)", date: "2026-09-01", cadastros: 146 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Meta Ads (UTM)", date: "2026-09-01", cadastros: 146 }];
     const rows = buildChannelTable(metrics, signups, {
-      channelsWithUnknownLiveSpend: new Set(["Meta Ads (teste 2608)"]),
+      channelsWithUnknownLiveSpend: new Set(["Meta Ads (UTM)"]),
     });
-    const meta = rows.find((r) => r.canal === "Meta Ads (teste 2608)")!;
+    const meta = rows.find((r) => r.canal === "Meta Ads (UTM)")!;
     assert.ok(meta, "canal com gasto desconhecido ainda precisa aparecer na tabela");
     assert.equal(meta.gastoTotalBrl, null, "nunca 0 — gasto é DESCONHECIDO, não zero real");
     assert.equal(meta.gastoFonte, "unknown");
@@ -130,12 +130,12 @@ describe("#8210 Bug 3c — gasto desconhecido nunca vira 0 (custo/cadastro nunca
   });
 
   it("com fallback manual (spend.csv reconciliado): gastoFonte='manual', custo/cadastro calculado sobre o valor manual", () => {
-    const signups: ChannelDailySignup[] = [{ canal: "Meta Ads (teste 2608)", date: "2026-09-01", cadastros: 100 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Meta Ads (UTM)", date: "2026-09-01", cadastros: 100 }];
     const rows = buildChannelTable([], signups, {
-      channelsWithUnknownLiveSpend: new Set(["Meta Ads (teste 2608)"]),
-      manualFallback: { "Meta Ads (teste 2608)": { totalBrl: 517.85, asOfDate: "2026-09-09" } },
+      channelsWithUnknownLiveSpend: new Set(["Meta Ads (UTM)"]),
+      manualFallback: { "Meta Ads (UTM)": { totalBrl: 517.85, asOfDate: "2026-09-09" } },
     });
-    const meta = rows.find((r) => r.canal === "Meta Ads (teste 2608)")!;
+    const meta = rows.find((r) => r.canal === "Meta Ads (UTM)")!;
     assert.equal(meta.gastoTotalBrl, 517.85);
     assert.equal(meta.gastoFonte, "manual");
     assert.equal(meta.gastoAsOf, "2026-09-09");
@@ -143,9 +143,9 @@ describe("#8210 Bug 3c — gasto desconhecido nunca vira 0 (custo/cadastro nunca
   });
 
   it("gasto AO VIVO genuinamente zero (API respondeu, canal não gastou) continua gastoFonte='live', não vira 'unknown'", () => {
-    const metrics: ChannelDailyMetric[] = [{ canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 0, cliques: 0, impressoes: 0 }];
+    const metrics: ChannelDailyMetric[] = [{ canal: "Google Ads (UTM)", date: "2026-09-01", gastoBrl: 0, cliques: 0, impressoes: 0 }];
     const rows = buildChannelTable(metrics, [], { channelsWithUnknownLiveSpend: new Set() });
-    const google = rows.find((r) => r.canal === "Google Ads (teste 2608)")!;
+    const google = rows.find((r) => r.canal === "Google Ads (UTM)")!;
     assert.equal(google.gastoTotalBrl, 0);
     assert.equal(google.gastoFonte, "live");
   });
@@ -304,23 +304,23 @@ describe("#7536 — computeSourceFreshness: requisito 5 (idade/frescor por fonte
 
 describe("#8210 melhoria 1 — buildChannelTable: funil (ativos/% ativo) por canal a partir do store", () => {
   it("canal AUSENTE de activeCountsByChannel (store não ingerido nesta máquina) nunca vira 0 — ativosTotal/pctAtivo ficam null", () => {
-    const metrics: ChannelDailyMetric[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", gastoBrl: 288.02, cliques: 4, impressoes: 200 }];
-    const signups: ChannelDailySignup[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", cadastros: 1 }];
+    const metrics: ChannelDailyMetric[] = [{ canal: "Microsoft Ads (UTM)", date: "2026-09-01", gastoBrl: 288.02, cliques: 4, impressoes: 200 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Microsoft Ads (UTM)", date: "2026-09-01", cadastros: 1 }];
     // opts sem `activeCountsByChannel` — o caso "nenhuma ingestão do store rodou ainda".
     const rows = buildChannelTable(metrics, signups);
-    const ms = rows.find((r) => r.canal === "Microsoft Ads (teste 2608)")!;
+    const ms = rows.find((r) => r.canal === "Microsoft Ads (UTM)")!;
     assert.equal(ms.ativosTotal, null, "dado desconhecido — nunca 0");
     assert.equal(ms.ativosAmostraN, 0);
     assert.equal(ms.pctAtivo, null);
   });
 
   it("canal com n BAIXO (achado #7999: Microsoft, 2 cadastros, 0 ativos) expõe o n em vez de esconder a taxa enganosa", () => {
-    const metrics: ChannelDailyMetric[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", gastoBrl: 288.02, cliques: 4, impressoes: 200 }];
-    const signups: ChannelDailySignup[] = [{ canal: "Microsoft Ads (teste 2608)", date: "2026-09-01", cadastros: 2 }];
+    const metrics: ChannelDailyMetric[] = [{ canal: "Microsoft Ads (UTM)", date: "2026-09-01", gastoBrl: 288.02, cliques: 4, impressoes: 200 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Microsoft Ads (UTM)", date: "2026-09-01", cadastros: 2 }];
     const rows = buildChannelTable(metrics, signups, {
-      activeCountsByChannel: { "Microsoft Ads (teste 2608)": { ativos: 0, totalNoStore: 2 } },
+      activeCountsByChannel: { "Microsoft Ads (UTM)": { ativos: 0, totalNoStore: 2 } },
     });
-    const ms = rows.find((r) => r.canal === "Microsoft Ads (teste 2608)")!;
+    const ms = rows.find((r) => r.canal === "Microsoft Ads (UTM)")!;
     assert.equal(ms.ativosTotal, 0, "0 ativos é um dado REAL medido, não 'desconhecido' — ver teste anterior");
     assert.equal(ms.ativosAmostraN, 2, "n sempre visível — UI decide esmaecer com base nele, nunca esconder");
     assert.equal(ms.pctAtivo, 0);
@@ -328,11 +328,11 @@ describe("#8210 melhoria 1 — buildChannelTable: funil (ativos/% ativo) por can
 
   it("canal com dado normal: pctAtivo = ativos/totalNoStore, independente de cadastrosTotal (fonte diferente, Kit vs. store)", () => {
     const metrics: ChannelDailyMetric[] = [];
-    const signups: ChannelDailySignup[] = [{ canal: "Google Ads (teste 2608)", date: "2026-09-01", cadastros: 10 }];
+    const signups: ChannelDailySignup[] = [{ canal: "Google Ads (UTM)", date: "2026-09-01", cadastros: 10 }];
     const rows = buildChannelTable(metrics, signups, {
-      activeCountsByChannel: { "Google Ads (teste 2608)": { ativos: 6, totalNoStore: 8 } },
+      activeCountsByChannel: { "Google Ads (UTM)": { ativos: 6, totalNoStore: 8 } },
     });
-    const google = rows.find((r) => r.canal === "Google Ads (teste 2608)")!;
+    const google = rows.find((r) => r.canal === "Google Ads (UTM)")!;
     assert.equal(google.cadastrosTotal, 10, "cadastrosTotal segue vindo do Kit — não é sobrescrito pelo store");
     assert.equal(google.ativosTotal, 6);
     assert.equal(google.ativosAmostraN, 8);
@@ -367,9 +367,9 @@ describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/d
         inicio: "2026-09-09T16:05:36-03:00",
         fim: "2026-09-17T00:16:00-03:00",
         inicio_por_braco: {
-          "Google Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
-          "Microsoft Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
-          "Meta Ads (teste 2608)": "2026-09-09T16:05:36-03:00",
+          "Google Ads (UTM)": "2026-09-09T16:05:36-03:00",
+          "Microsoft Ads (UTM)": "2026-09-09T16:05:36-03:00",
+          "Meta Ads (UTM)": "2026-09-09T16:05:36-03:00",
         },
       },
     };
@@ -392,15 +392,15 @@ describe("#8210 melhoria 2 — computeCampaignPauseStatus: badge ativa/pausada/d
 
   it("buildChannelTable aplica o MESMO pauseStatus aos 3 braços (pausas são da campanha inteira, não por canal)", () => {
     const metrics: ChannelDailyMetric[] = [
-      { canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },
-      { canal: "Meta Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },
+      { canal: "Google Ads (UTM)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },
+      { canal: "Meta Ads (UTM)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 },
     ];
     const rows = buildChannelTable(metrics, [], { pauseStatus: "pausada" });
     assert.ok(rows.every((r) => r.pauseStatus === "pausada"));
   });
 
   it("sem pauseStatus em opts (default): 'desconhecido' — nunca 'ativa' por omissão", () => {
-    const metrics: ChannelDailyMetric[] = [{ canal: "Google Ads (teste 2608)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 }];
+    const metrics: ChannelDailyMetric[] = [{ canal: "Google Ads (UTM)", date: "2026-09-01", gastoBrl: 10, cliques: 1, impressoes: 10 }];
     const rows = buildChannelTable(metrics, []);
     assert.equal(rows[0].pauseStatus, "desconhecido");
   });

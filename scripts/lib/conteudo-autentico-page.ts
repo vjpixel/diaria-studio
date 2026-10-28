@@ -2,7 +2,8 @@
  * conteudo-autentico-page.ts (#10510)
  *
  * Dado estruturado (JSON-LD) da página de venda
- * `workers/site/public/produto/conteudo-autentico/index.html`.
+ * `workers/site/public/produto/conteudo-autentico/b/index.html` (a versão ativa; a A, em `/a`, fica com
+ * noindex e sem JSON-LD).
  *
  * A página é HTML escrito à mão (não há gerador do corpo). Só o bloco
  * JSON-LD é derivado, e derivado da PRÓPRIA página: as perguntas do FAQPage
@@ -26,7 +27,7 @@
  */
 import { GEO_AUTHOR, buildGeoFaqPageNode, renderJsonLdGraphScript, type GeoFaqItem } from "./shared/geo-faq.ts";
 
-export const PAGE_URL = "https://diar.ia.br/produto/conteudo-autentico";
+export const PAGE_URL = "https://diar.ia.br/produto/conteudo-autentico/b";
 export const SITE_URL = "https://diar.ia.br/";
 export const COURSE_NAME = "Conteúdo Autêntico com IA";
 

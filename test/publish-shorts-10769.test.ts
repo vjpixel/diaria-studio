@@ -19,6 +19,8 @@ import {
   buildYouTubeShortTitle,
   firstSentence,
   FACEBOOK_REELS_API_MAX_SECONDS,
+  INSTAGRAM_REELS_CTA,
+  REELS_NEWSLETTER_SENTENCE,
   facebookUploadRoute,
   isDestinationDone,
   listShortDestinations,
@@ -102,10 +104,12 @@ describe("#10769 metadados e legendas", () => {
     assert.deepEqual(Object.keys(m).sort(), ["description", "title"], "link em comentário de Short não é clicável — sem pinnedComment");
   });
 
-  it("Reels Facebook: CTA do canal + link da edição com UTM da página", () => {
+  it("Reels Facebook: CTA que explica a newsletter + link da edição com UTM da página, sem o YouTube (#11388)", () => {
     const c = buildReelsCaption({ platform: "facebook", aammdd: "261022", d1: D1, editionUrl: EDITION_URL, utmContent: "page-memelab" });
     assert.match(c, /^Você já viu IA mentir/);
-    assert.match(c, /youtube\.com\/@diariabr/);
+    assert.ok(c.includes(REELS_NEWSLETTER_SENTENCE));
+    assert.doesNotMatch(c, /youtube/i);
+    assert.doesNotMatch(c, /grátis/);
     assert.match(c, /utm_source=facebook&utm_medium=reels&utm_campaign=261022&utm_content=page-memelab/);
   });
 
@@ -118,6 +122,22 @@ describe("#10769 metadados e legendas", () => {
     const c = buildReelsCaption({ platform: "instagram", aammdd: "261022", d1: D1, editionUrl: EDITION_URL });
     assert.match(c, /link da bio/);
     assert.ok(!c.includes("diar.ia.br/p/"));
+  });
+
+  it("#11388: legenda do Reels no Instagram usa o texto final do editor e não cita o YouTube nem 'Edição completa'", () => {
+    const c = buildReelsCaption({ platform: "instagram", aammdd: "261022", d1: D1, editionUrl: EDITION_URL });
+    assert.equal(INSTAGRAM_REELS_CTA, "A diar.ia.br é a newsletter que resume as notícias de IA do dia em 5 minutos. Assine pelo link da bio.");
+    assert.equal(
+      c,
+      [
+        "Você já viu IA mentir. Já viu roubar?",
+        "Um modelo da OpenAI gastou o saldo de uma carteira de terceiros.",
+        INSTAGRAM_REELS_CTA,
+        "#IA #inteligênciaartificial",
+      ].join("\n\n"),
+    );
+    assert.doesNotMatch(c, /youtube/i);
+    assert.doesNotMatch(c, /Edição completa/);
   });
 });
 
@@ -177,7 +197,7 @@ describe("#10769 config e destinos", () => {
   });
 
   it("instagram: false tira o Instagram dos destinos", () => {
-    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false, instagramAuthorPage: null, instagramCollaborators: [], linkedinProfile: false, linkedinPageRepost: false, x: false, threadsProfile: false, youtubeShortsApi: true, linkedinProfileViaTimer: false, facebookProfile: true }).map((d) => d.id);
+    const ids = listShortDestinations({ facebookPages: ["diaria"], instagram: false, instagramAuthorPage: null, instagramCollaborators: [], linkedinProfile: false, linkedinPageRepost: false, x: false, threadsProfile: false, youtubeShortsApi: true, linkedinProfileViaTimer: false, threadsProfileViaTimer: false, instagramBackend: "timer-300", facebookProfile: true }).map((d) => d.id);
     assert.deepEqual(ids, ["youtube_shorts", "facebook:diaria", "facebook_profile"]);
   });
 
@@ -193,7 +213,7 @@ describe("#10769 plano do publish-shorts", () => {
   const base = {
     aammdd: "261022",
     reviewedMd: REVIEWED,
-    config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE } } },
+    config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"], schedule: SCHEDULE } } },
     pages: [page("diaria", [], null), page("vjpixel", ["FACEBOOK_VJPIXEL_PAGE_ACCESS_TOKEN"]), page("memelab")],
     instagramReady: true,
     published: { aammdd: "261022", entries: [] },
@@ -242,8 +262,12 @@ describe("#10769 plano do publish-shorts", () => {
     assert.throws(() => planShortsPublish({ ...base, now: new Date(), only: ["facebook:vjpxel"] }), /desconhecido: facebook:vjpxel/);
   });
 
-  it("sem --edition-url, o link derivado do título vira AVISO (não premissa silenciosa)", () => {
-    const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), editionUrl: undefined });
+  it("sem --edition-url, backend beehiiv (legado): o link derivado do título vira AVISO (não premissa silenciosa)", () => {
+    // O `base` não tem `publishing.newsletter.backend` — desde o #11225 isso
+    // é "kit" (premissa, ver publish-shorts-edition-url-kit-10943); o aviso
+    // só sobra no ramo legado explícito.
+    const config = { publishing: { ...base.config.publishing, newsletter: { backend: "beehiiv" } } };
+    const plan = planShortsPublish({ ...base, config, now: new Date("2026-10-22T12:00:00Z"), editionUrl: undefined });
     assert.equal(plan.editionUrl, EDITION_URL);
     assert.ok(plan.warnings.some((w) => w.includes("derivado do slug")));
   });

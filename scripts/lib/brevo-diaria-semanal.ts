@@ -32,12 +32,17 @@
  * semanal quando a Brevo de fato é semanal) e trava o `--apply` do
  * `restore-brevo-semanal-suppressed.ts`.
  *
- * ## Divisão segunda/terça (acima de `split_threshold`)
+ * ## Divisão segunda/terça (acima de `split_threshold`, #11286)
  *
  * `semanalSplitGroup` é a divisão FIXA por pessoa (hash estável do e-mail
- * normalizado). O envio da metade de terça ainda não existe — exige uma 2ª
- * lista na Brevo e uma 2ª campanha agendada — e fica como follow-up declarado
- * no PR; `checkSemanalCapacity` só torna visível quando o teto é cruzado.
+ * normalizado). Acima do teto, e com `terca_list_id` configurado, a semanal
+ * sai em duas campanhas da MESMA edição de segunda (desenho (a), decisão do
+ * editor no #11286): a de segunda com `exclusionListIds: [terca]` e a de terça
+ * com `listIds: [terca]`, agendada 24h depois. A lista de terça é reconciliada
+ * contra a lista principal logo antes de a campanha nascer
+ * (`lib/brevo-semanal-split.ts`), então ela nunca tem quem já saiu da
+ * principal. Sem `terca_list_id`, `checkSemanalCapacity` avisa e a campanha
+ * sai inteira na segunda (comportamento anterior).
  */
 
 import { eventTimestampMs } from "./brevo-stats.ts";
@@ -50,11 +55,13 @@ export interface BrevoDiariaSemanalConfig {
   /** `YYYY-MM-DD` — 1ª segunda do regime; campanhas antes disso não contam como semanal. */
   desde?: string;
   split_threshold?: number;
+  /** #11286 — id da 2ª lista Brevo ("terça"); `null`/ausente ⇒ sem divisão. */
+  terca_list_id?: number | null;
 }
 
 export type BrevoDiariaSemanalParse =
   | { enabled: false }
-  | { enabled: true; desde: string; desdeMs: number; splitThreshold: number }
+  | { enabled: true; desde: string; desdeMs: number; splitThreshold: number; tercaListId: number | null }
   | { error: string };
 
 /** Pura — valida a config. Ligado sem `desde` válido é erro (nunca um corte implícito). */
@@ -76,8 +83,12 @@ export function parseBrevoDiariaSemanal(cfg: unknown): BrevoDiariaSemanalParse {
   if (typeof split !== "number" || !Number.isInteger(split) || split < 1) {
     return { error: `brevo_diaria.semanal.split_threshold precisa ser inteiro >= 1 (veio ${JSON.stringify(split)}).` };
   }
+  const terca = c.terca_list_id ?? null;
+  if (terca !== null && (typeof terca !== "number" || !Number.isInteger(terca) || terca < 1)) {
+    return { error: `brevo_diaria.semanal.terca_list_id precisa ser inteiro >= 1 ou null (veio ${JSON.stringify(terca)}).` };
+  }
   // Meia-noite BRT do dia `desde`: a campanha de segunda sai às 06:00 BRT desse dia.
-  return { enabled: true, desde: c.desde, desdeMs: Date.parse(`${c.desde}T00:00:00-03:00`), splitThreshold: split };
+  return { enabled: true, desde: c.desde, desdeMs: Date.parse(`${c.desde}T00:00:00-03:00`), splitThreshold: split, tercaListId: terca };
 }
 
 /** Pura — dia da semana (0=domingo … 1=segunda) de uma edição `AAMMDD`; `null` se malformada. */
@@ -171,15 +182,24 @@ export function semanalSplitGroup(email: string): "segunda" | "terca" {
   return stableEmailHash(email) % 2 === 0 ? "segunda" : "terca";
 }
 
-/** Pura — o tamanho da semanal passou do teto que pede divisão? */
-export function checkSemanalCapacity(recipients: number, threshold: number): { splitNeeded: boolean; warning?: string } {
+/**
+ * Pura — o tamanho da semanal passou do teto que pede divisão? Com
+ * `tercaListId` configurado, a divisão acontece no `publish-daily-brevo.ts`
+ * (#11286) e não há aviso; sem ele, avisa que a campanha sai inteira.
+ */
+export function checkSemanalCapacity(
+  recipients: number,
+  threshold: number,
+  tercaListId: number | null = null,
+): { splitNeeded: boolean; warning?: string } {
   if (recipients <= threshold) return { splitNeeded: false };
+  if (tercaListId !== null) return { splitNeeded: true };
   return {
     splitNeeded: true,
     warning:
       `semanal da Brevo com ${recipients} destinatário(s), acima de ${threshold}: a decisão do #11226 é dividir ` +
-      "segunda/terça por pessoa (semanalSplitGroup). O envio de terça ainda não existe (follow-up do #11226) — " +
-      "esta campanha sai inteira na segunda; confira a cota da conta (300/dia).",
+      "segunda/terça por pessoa (semanalSplitGroup), mas brevo_diaria.semanal.terca_list_id não está configurado " +
+      "(scripts/create-brevo-semanal-terca-list.ts, #11286) — esta campanha sai inteira na segunda; confira a cota da conta (300/dia).",
   };
 }
 
@@ -194,19 +214,47 @@ export interface BrevoSemanalStatistics {
   clicked?: StatEvent[];
 }
 
-/** Pura — o instante cai numa SEGUNDA no horário de Brasília (UTC-3 fixo; o Brasil não tem horário de verão desde 2019). */
+/** Pura — dia da semana (0=domingo) do instante no horário de Brasília (UTC-3 fixo; o Brasil não tem horário de verão desde 2019). */
+export function weekdayBrt(ms: number): number {
+  return new Date(ms - 3 * 3600 * 1000).getUTCDay();
+}
+
+/** Pura — o instante cai numa SEGUNDA no horário de Brasília. */
 export function isMondayBrt(ms: number): boolean {
-  return new Date(ms - 3 * 3600 * 1000).getUTCDay() === 1;
+  return weekdayBrt(ms) === 1;
+}
+
+/**
+ * Pura (#11286, #11420) — o envio conta como SEMANAL desta pessoa? Segunda
+ * sempre; terça só quando a campanha é a campanha de TERÇA da semanal
+ * dividida (id em `tercaCampaignIds`, os `terca_campaign_id` registrados por
+ * `publish-daily-brevo.ts`) E a pessoa é do grupo "terça". Nunca pelo dia da
+ * semana sozinho: na transição (#10533) e com `--fora-da-segunda` a Brevo
+ * manda campanha de terça que não é semanal, e contá-la daria 2 semanais por
+ * semana ao grupo "terça" (#11420). Sem e-mail ou sem ids, só segunda.
+ */
+export function isSemanalSendDay(
+  ms: number,
+  email?: string,
+  campaignId?: unknown,
+  tercaCampaignIds?: ReadonlySet<number>,
+): boolean {
+  if (weekdayBrt(ms) === 1) return true;
+  if (email === undefined || semanalSplitGroup(email) !== "terca") return false;
+  return typeof campaignId === "number" && tercaCampaignIds !== undefined && tercaCampaignIds.has(campaignId);
 }
 
 /**
  * Pura — monta a entrada de `classifyBrevoDiariaSemanalAction` a partir de
  * `statistics` do `GET /contacts/{email}`. Semanal = campanha enviada a
- * partir de `desdeMs` E numa SEGUNDA (BRT): na transição (#10533) e com
- * `--fora-da-segunda` a Brevo ainda manda campanha em outros dias, e contar
- * essas como semanais encurtaria a sequência de 12 pra ~2 semanas (#11226,
- * review). Envio sem timestamp legível nunca conta como semanal (fail-safe:
- * não soma à sequência que suprime). Madura = >= 48h.
+ * partir de `desdeMs` E numa SEGUNDA (BRT) — ou, pra quem é do grupo "terça"
+ * da divisão, a campanha de terça da semanal dividida (#11286/#11420,
+ * `isSemanalSendDay` + `tercaCampaignIds`; sem isso a metade de terça nunca
+ * acumularia semanais): na transição (#10533) e com `--fora-da-segunda` a
+ * Brevo ainda manda campanha em outros dias, e contar essas como semanais
+ * encurtaria a sequência de 12 pra ~2 semanas (#11226, review). Envio sem
+ * timestamp legível nunca conta como semanal (fail-safe: não soma à
+ * sequência que suprime). Madura = >= 48h.
  *
  * - `clickedSinceDesde`: clique em campanha ENVIADA a partir de `desdeMs`
  *   (qualquer dia) — nunca clique histórico (premissa A do #11226).
@@ -220,6 +268,8 @@ export function buildSemanalEvaluationInput(
   statistics: BrevoSemanalStatistics | undefined,
   desdeMs: number,
   nowMs: number,
+  email?: string,
+  tercaCampaignIds?: ReadonlySet<number>,
 ): BrevoSemanalEvaluationInput {
   const ids = (events: StatEvent[] | undefined): Set<unknown> =>
     new Set<unknown>((Array.isArray(events) ? events : []).map((e) => e?.campaignId).filter((v) => v !== undefined));
@@ -236,7 +286,7 @@ export function buildSemanalEvaluationInput(
     if (prev === undefined || ts < prev) sentAtByCampaign.set(e.campaignId, ts);
   }
   const semanais: BrevoSemanalSend[] = [...sentAtByCampaign.entries()]
-    .filter(([, ts]) => isMondayBrt(ts))
+    .filter(([id, ts]) => isSemanalSendDay(ts, email, id, tercaCampaignIds))
     .map(([id, ts]) => ({
       sentAtMs: ts,
       mature: nowMs - ts >= maturationMs,

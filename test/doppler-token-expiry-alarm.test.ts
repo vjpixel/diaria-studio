@@ -39,3 +39,13 @@ it("renovação no Doppler fecha o alarme com fingerprint estável", () => {
   const state: AlarmIssuesState = { [alarmIssueStateKey(finding.check, finding.fingerprint)]: { issueNumber: 123, url: "https://github.com/x/y/issues/123", missingStreak: 0, closedAt: null, family: "estado" } };
   assert.deepEqual(planAlarmReconciliation(evaluateDopplerExpiries({ [key]: at(60) }, now), state, 1).map((a) => a.kind), ["close"]);
 });
+
+it("#11415: o alarme está registrado em SCHEDULED_TASKS (habilitado, diário) — sem task ele não roda sozinho", async () => {
+  const { SCHEDULED_TASKS } = await import("../scripts/lib/scheduled-tasks.ts");
+  const tasks = SCHEDULED_TASKS.filter((t) => t.steps.some((s) => s.script === "scripts/doppler-token-expiry-alarm.ts"));
+  assert.equal(tasks.length, 1, "exatamente uma task invoca o alarme");
+  const [task] = tasks;
+  assert.equal(task.name, "Diaria-Doppler-Token-Expiry-Alarm");
+  assert.notEqual(task.enabled, false, "habilitada: o Remediate-Never-Armed-Tasks a arma no 300");
+  assert.equal(task.schedule.kind, "daily", "janela de aviso de 14 dias e faixa crítica de 3: diária basta e não atravessa o crítico");
+});

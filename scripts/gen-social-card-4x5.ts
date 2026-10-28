@@ -28,132 +28,36 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { computeCarouselTitleFontSize } from "./lib/weekly-carousel-font-size.ts";
-import { DAILY_CAROUSEL_BODY_SIZE } from "./lib/daily-carousel-card.ts";
+import { DAILY_CAROUSEL_BODY_SIZE } from "./lib/daily-carousel-body-size.ts";
+import {
+  CARD_4X5_PAD as PAD,
+  CARD_4X5_WIDTH as W,
+  dailyCardTitleFits,
+  OVERLAY_WIDTH_FIT_RATIO,
+  overlayWrapLines,
+  wrapTitle,
+  type OverlayWrap,
+} from "./lib/card-title-wrap.ts";
 export { computeCarouselTitleFontSize };
+// #11329: o wrap do título e o critério "cabe no card" vivem em
+// `lib/card-title-wrap.ts`, sem `sharp` — o lint de título e o painel do
+// Studio importam de lá. Re-exportados aqui para os importadores de sempre.
+export {
+  dailyCardTitleFits,
+  OVERLAY_CHARS_PER_LINE_DIVISOR,
+  OVERLAY_WIDTH_FIT_RATIO,
+  overlayWrapLines,
+  WEEKLY_OVERLAY_WRAP,
+  wrapTitle,
+  type OverlayWrap,
+} from "./lib/card-title-wrap.ts";
 
-const W = 1080;
 const H = 1350;
 /** Altura da faixa de texto (embaixo). O resto é imagem. */
 const TEXT_H = 470;
 const IMG_H = H - TEXT_H;
-const PAD = 72;
 
 const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
-
-/**
- * Quebra o título em linhas que caibam na largura útil. Estimativa por
- * caractere (0.52 * font-size) — mesma heurística de largura usada nos outros
- * geradores de card do repo; sem medição real de glifo, o clamp de font-size
- * abaixo é o que garante que não estoura.
- *
- * Wrap guloso (empurra o máximo de palavras pra 1ª linha) só decide QUANTAS
- * linhas o título precisa — esse é o mínimo possível (greedy first-fit é
- * ótimo em contagem de linhas, prova por troca). A partir daí,
- * `balanceLines` (#4575) busca, entre todas as formas de distribuir as MESMAS
- * palavras nesse mesmo número de linhas, a que deixa as linhas mais parecidas
- * em comprimento — corrige o caso clássico do wrap guloso (1ª linha quase
- * cheia, última com uma palavra órfã).
- */
-export function wrapTitle(title: string, maxCharsPerLine: number): string[] {
-  const words = title.split(/\s+/).filter(Boolean);
-  const greedy = greedyWrapLines(words, maxCharsPerLine);
-  if (greedy.length < 2) return greedy;
-  return balanceLines(words, maxCharsPerLine, greedy.length) ?? greedy;
-}
-
-function greedyWrapLines(words: string[], maxCharsPerLine: number): string[] {
-  const lines: string[] = [];
-  let cur = "";
-  for (const w of words) {
-    const candidate = cur ? `${cur} ${w}` : w;
-    if (candidate.length > maxCharsPerLine && cur) {
-      lines.push(cur);
-      cur = w;
-    } else {
-      cur = candidate;
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines;
-}
-
-/** Uma palavra sozinha nunca é cortada/descartada, mesmo estourando o limite — mesma regra do wrap guloso. */
-function isValidSegment(wordCount: number, segmentLen: number, maxCharsPerLine: number): boolean {
-  return wordCount === 1 || segmentLen <= maxCharsPerLine;
-}
-
-/** [maior-menor, soma dos quadrados da folga em relação à média] — comparado lexicograficamente (menor é melhor). */
-function balanceCost(lines: string[]): [number, number] {
-  const lens = lines.map((l) => l.length);
-  const max = Math.max(...lens);
-  const min = Math.min(...lens);
-  const mean = lens.reduce((a, b) => a + b, 0) / lens.length;
-  const sumSq = lens.reduce((a, l) => a + (l - mean) ** 2, 0);
-  return [max - min, sumSq];
-}
-
-function costLess(a: [number, number], b: [number, number]): boolean {
-  return a[0] !== b[0] ? a[0] < b[0] : a[1] < b[1];
-}
-
-/**
- * Busca, por força bruta, a distribuição das `words` em exatamente `lineCount`
- * linhas contíguas que minimiza `balanceCost` — sem nunca violar
- * `maxCharsPerLine` (exceto o caso degenerado de palavra única maior que o
- * limite, que `isValidSegment` permite). Viável porque `lineCount` e o número
- * de palavras são pequenos com títulos editoriais (≤52 caracteres); o guard
- * de `words.length` é só defensivo pra input fora desse regime.
- *
- * O espaço de busca sempre contém a própria partição gulosa (ela é composta
- * só de segmentos válidos por construção), então o resultado nunca é pior que
- * o guloso — na pior das hipóteses, empata.
- */
-function balanceLines(words: string[], maxCharsPerLine: number, lineCount: number): string[] | null {
-  if (lineCount < 2 || words.length < lineCount) return null;
-  // Guard defensivo: título editorial é ≤52 caracteres (~10-15 palavras em
-  // português); 24 dá margem generosa mantendo o pior caso da busca na casa
-  // de poucos ms mesmo com palavras curtas adversariais (medido: ~8ms com 28
-  // palavras curtas vs. ~550ms com 40 — a busca cresce combinatorialmente com
-  // o nº de palavras). Acima do guard, cai pro resultado guloso sem tentar
-  // balancear.
-  if (words.length > 24) return null;
-
-  let best: string[] | null = null;
-  let bestCost: [number, number] | null = null;
-
-  const segmentStr = (start: number, end: number): string => words.slice(start, end).join(" ");
-
-  function search(startIdx: number, linesLeft: number, acc: string[]): void {
-    if (linesLeft === 1) {
-      const wordsLeft = words.length - startIdx;
-      if (wordsLeft < 1) return;
-      const seg = segmentStr(startIdx, words.length);
-      if (!isValidSegment(wordsLeft, seg.length, maxCharsPerLine)) return;
-      const lines = [...acc, seg];
-      const cost = balanceCost(lines);
-      if (!bestCost || costLess(cost, bestCost)) {
-        bestCost = cost;
-        best = lines;
-      }
-      return;
-    }
-    // Precisa sobrar ao menos 1 palavra por linha restante.
-    const maxLen = words.length - startIdx - (linesLeft - 1);
-    for (let len = 1; len <= maxLen; len++) {
-      const seg = segmentStr(startIdx, startIdx + len);
-      if (isValidSegment(len, seg.length, maxCharsPerLine)) {
-        search(startIdx + len, linesLeft - 1, [...acc, seg]);
-      } else if (len >= 2) {
-        // Comprimento só cresce com `len` — uma vez estourado (segmento com
-        // 2+ palavras), qualquer `len` maior também estoura. Corta a busca.
-        break;
-      }
-    }
-  }
-
-  search(0, lineCount, []);
-  return best;
-}
 
 /** Escapa texto pra dentro de `<text>` do SVG. */
 /** Exportada (#5330) — reusada por weekly-flat-card.ts em vez de duplicar. */
@@ -186,50 +90,6 @@ export function stripKickerEmoji(category: string): string {
  * O gradiente vai de transparente (60% da altura) a quase opaco na base: cobre
  * a área do texto sem apagar a imagem inteira.
  */
-/**
- * Constantes de largura média de glifo pro título do overlay — CALIBRADAS
- * PRO PESO 700 (bold, achado ao vivo 260914: ver comentário de
- * `font-weight="700"` em `buildOverlaySvg`). Bold renderiza ~12% mais largo
- * que regular no Georgia; usar o divisor/multiplicador de regular (26 /
- * 0.52) aqui subestimava a largura real e deixava título de 1 linha vazar
- * pra fora do card (edição 260915, D3: "Freelancers que usam IA ganham
- * mais" wrapado em 1 linha por caber nos 26px/char de regular, mas
- * estourando em bold). Únicas 2 constantes que `overlayFittingFontSize` e
- * `buildOverlaySvg` usam pra wrap/tamanho — mantidas em sync aqui de
- * propósito, mesma lição do #5330 (não duplicar em cópia separada).
- */
-export const OVERLAY_CHARS_PER_LINE_DIVISOR = 29;
-export const OVERLAY_WIDTH_FIT_RATIO = 0.58;
-
-/**
- * Parâmetros do carrossel SEMANAL (#8480): quebra mais cedo e razão de largura
- * mais conservadora, porque o rasterizador cai numa serif mais larga que Georgia
- * quando ela não está instalada e título longo cortava a 62px (achado 260919).
- * Só o semanal passa isto; o card diário segue nas constantes acima.
- */
-export const WEEKLY_OVERLAY_WRAP = { divisor: 41, ratio: 0.66 } as const;
-export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
-
-/**
- * Quebra de título do overlay (#8589). Card semanal (`wrap` explícito): inalterado.
- * Card diário: a regra de quebra (divisor 29, ~33 chars) deixa passar título de
- * 1 linha que estoura a largura no piso de 62px (~26 chars). Se a quebra normal
- * estoura, tenta o limite que cabe a 62px (balanceando em até 3 linhas); se nem
- * assim cabe, retorna `fits: false` (política #6078: reescrever, nunca cortar).
- */
-export function overlayWrapLines(
-  title: string,
-  availableWidth: number,
-  wrap?: OverlayWrap,
-): { lines: string[]; fits: boolean } {
-  const w = wrap ?? { divisor: OVERLAY_CHARS_PER_LINE_DIVISOR, ratio: OVERLAY_WIDTH_FIT_RATIO };
-  const lines = wrapTitle(title, Math.floor(availableWidth / w.divisor));
-  if (wrap) return { lines, fits: true };
-  const fitsAt = (ls: string[]) => ls.every((l) => l.length * DAILY_CAROUSEL_BODY_SIZE * w.ratio <= availableWidth);
-  if (fitsAt(lines)) return { lines, fits: true };
-  const tight = wrapTitle(title, Math.floor(availableWidth / (DAILY_CAROUSEL_BODY_SIZE * w.ratio)));
-  return tight.length <= 3 && fitsAt(tight) ? { lines: tight, fits: true } : { lines, fits: false };
-}
 
 /**
  * Pure: fórmula de tamanho de fonte do overlay de notícia — wrap via
@@ -246,8 +106,8 @@ export function overlayWrapLines(
  * era 44 — abaixo do corpo fixo do carrossel diário — e título curto (poucas
  * palavras, wrap em 1 linha) caía nesse piso, violando a regra editorial "a
  * fonte do título deve ser sempre igual ou maior que a fonte do texto".
- * Título ≤52 chars (regra editorial de destaque) sempre cabe em 1-2 linhas
- * a 62px+ — `buildOverlaySvg` ancora o bloco de título na BASE do
+ * Título de destaque tem de caber em 1-3 linhas a 62px (#11254,
+ * `dailyCardTitleFits`, que substituiu o antigo teto fixo de 52 chars) — `buildOverlaySvg` ancora o bloco de título na BASE do
  * card (`baseY = CH - 150`) e cresce PRA CIMA conforme o número de linhas,
  * sem um clamp de altura — a imagem inteira dá espaço de sobra. O risco real
  * de overflow do piso é de LARGURA, não altura: coberto pelo teste de
@@ -282,8 +142,8 @@ export function overlayFittingFontSize(
  * a largura... em bold"): `line.length * fontSize * wrap.ratio` é a largura
  * estimada da linha mais larga produzida por `wrapTitle` (mesmo divisor de
  * `wrap` que `buildOverlaySvg` usa pra quebrar, independente do tamanho
- * final). Título de D1/D2/D3 (≤52 chars, regra editorial) sempre cabe a
- * 62px+; um item de RADAR/USE MELHOR (sem esse teto) pode não caber — é
+ * final). Título de D1/D2/D3 é validado no card DIÁRIO (`dailyCardTitleFits`,
+ * #11254); um item de RADAR/USE MELHOR (sem esse teto) pode não caber — é
  * esse caso que este guard existe pra pegar ANTES de renderizar, em vez de
  * deixar um card cortado sair em silêncio (mesma política do carrossel
  * diário, #6078: quem não cabe é reescrito, nunca encolhido/cortado).
@@ -512,7 +372,7 @@ async function main(): Promise<void> {
     const key = `d${i + 1}`;
     if (only && only !== key) continue;
     const d = destaques[i] as { title?: string; category?: string };
-    if (!overlayWrapLines(d.title ?? "", W - PAD * 2).fits) {
+    if (!dailyCardTitleFits(d.title ?? "")) {
       console.error(`[gen-social-card-4x5] ${key}: título não cabe a ${DAILY_CAROUSEL_BODY_SIZE}px em 1-3 linhas — reescreva: "${d.title}" (#8589)`);
       process.exit(1);
     }

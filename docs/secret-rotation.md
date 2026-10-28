@@ -30,7 +30,7 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 - **Para que serve:** revisão linguística no Stage 2 (`mcp__clarice__correct_text`).
 - **Onde gerar:** painel da Clarice (entrar em contato com o operador da API; chave hoje vem por canal manual).
 - **Onde atualizar:**
-  1. `.env` local — substituir o valor de `CLARICE_API_KEY=`.
+  1. `.env` local — substituir o valor de `CLARICE_API_KEY=`. É dele que o MCP lê a key desde o #11251 (`headersHelper` `scripts/mcp/clarice-headers.mjs`). O Claude Code tira do ambiente do helper toda var com `KEY` no nome, então a key do ambiente (passo 2) **não** chega ao helper: ela só conta pelo header estático `${CLARICE_API_KEY}` do `.mcp.json`, usado quando o helper não roda (pasta sem trust aceito) ou devolve `{}` (key ausente no `.env`). Atualize os dois lugares.
   2. Shell ambiente persistente:
      ```powershell
      [Environment]::SetEnvironmentVariable("CLARICE_API_KEY", "NOVO_TOKEN", "User")

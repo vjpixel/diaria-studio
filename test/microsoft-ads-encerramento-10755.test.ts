@@ -40,7 +40,10 @@ import { MICROSOFT_ADS_TESTE_CANAL } from "../scripts/lib/ads-campaign-economics
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TASK = "Diaria-Microsoft-Ads-Spend-Ingest";
-const MS = "Microsoft Ads (teste 2608)";
+const MS = "Microsoft Ads (UTM)";
+/** Nome com que a ingestão gravou o gasto em setembro (#5862 renomeou o
+ *  canal; o arquivo em disco continua com o nome antigo). */
+const MS_LEGACY = "Microsoft Ads (teste 2608)";
 
 const REMOVED_FILES = [
   "scripts/microsoft-ads-ingest-spend.ts",
@@ -105,7 +108,7 @@ describe("#10755 — o histórico do braço Microsoft continua sendo lido", () =
   const SPEND_CSV = [
     "canal,mes,moeda,valor,fonte",
     "Google Ads (teste 2608),2026-09,BRL,900.00,google-ads-api",
-    `${MS},2026-09,BRL,835.97,microsoft-ads-api`,
+    `${MS_LEGACY},2026-09,BRL,835.97,microsoft-ads-api`,
     "Meta Ads (teste 2608),2026-09,BRL,1435.51,meta-ads-api",
   ].join("\n");
 

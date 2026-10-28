@@ -31,7 +31,7 @@ function page(slug: string): ResolvedFacebookPage {
 const base: Omit<ShortsPlanInput, "now"> = {
   aammdd: "261022",
   reviewedMd: REVIEWED,
-  config: {},
+  config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_collaborators: ["vjpixel"] } } },
   pages: [page("diaria"), page("vjpixel")],
   instagramReady: true,
   published: { aammdd: "261022", entries: [] },

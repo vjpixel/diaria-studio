@@ -43,7 +43,8 @@
  * (`resolveBrevoEffectiveMode`): na transição (#10533, `kit-sem-abertura:`
  * ainda `in_brevo`) a Brevo segue diária e o score por taxa de sempre vale.
  * Só conta como semanal a campanha de SEGUNDA (BRT) enviada a partir de
- * `desde`; o clique que leva pro Kit só conta em campanha enviada a partir de
+ * `desde` — e, pro grupo "terça" da divisão (#11286), a campanha de terça
+ * cujo id é um `terca_campaign_id` registrado (#11420, nunca só o dia); o clique que leva pro Kit só conta em campanha enviada a partir de
  * `desde` (consentimento atual, nunca clique histórico).
  *
  * Supressão por score de um `kit-sem-abertura:` NÃO descadastra mais no Kit
@@ -395,7 +396,8 @@ import {
   parseBrevoDiariaSemanal,
   resolveBrevoEffectiveMode,
 } from "./lib/brevo-diaria-semanal.ts"; // #11226
-import { KIT_FRIO_TAG_NAME, kitFrioNotFullyOnReason, parseKitFrio } from "./lib/kit-frio.ts"; // #11221
+import { KIT_FRIO_TAG_NAME, kitFrioNotFullyOnReason, parseKitFrio, summarizeAwaitingFrioBacklog } from "./lib/kit-frio.ts"; // #11221, #11294
+import { raiseKitFrioAlarm } from "./sync-kit-frio.ts"; // #11294 item 4
 import {
   readStore,
   writeStore,
@@ -435,6 +437,9 @@ import { findTagIdByName, untagSubscriber, listSubscriberTags, tagSubscriber, ty
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { formatKitSemAberturaLogLine, DEFAULT_KIT_SEM_ABERTURA_LOG_PATH } from "./lib/kit-sem-abertura.ts"; // #10437
 import { appendFileWithRetry } from "./lib/source-runs.ts"; // #10437
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #11420
+import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts"; // #11420
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -699,7 +704,7 @@ export function isKitSemAberturaBlacklistNew(blacklistEventLatestAt: string | nu
 export async function fetchBrevoContactState(
   apiKey: string,
   email: string,
-  opts: { semanalDesdeMs?: number; nowMs?: number } = {},
+  opts: { semanalDesdeMs?: number; nowMs?: number; semanalTercaCampaignIds?: ReadonlySet<number> } = {},
 ): Promise<BrevoContactState> {
   const res = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
   if (res.status !== 200) {
@@ -724,7 +729,14 @@ export async function fetchBrevoContactState(
     ...(blacklistAt !== null ? { blacklist_event_latest_at: blacklistAt } : {}),
     ...(blacklistUndated ? { blacklist_event_undated: true } : {}),
     ...(opts.semanalDesdeMs !== undefined
-      ? { semanal: buildSemanalEvaluationInput(res.body?.statistics, opts.semanalDesdeMs, opts.nowMs ?? Date.now()) }
+      ? { semanal: buildSemanalEvaluationInput(
+            res.body?.statistics,
+            opts.semanalDesdeMs,
+            opts.nowMs ?? Date.now(),
+            email,
+            opts.semanalTercaCampaignIds, // #11420
+          ),
+        }
       : {}),
   };
 }
@@ -1737,6 +1749,20 @@ export async function verifySuppressedInBrevo(apiKey: string, listId: number, em
   return blacklisted && !stillInList;
 }
 
+/**
+ * #11294 item 3 — releitura depois do `unlinkFromBrevoList` da premissa B
+ * (kit-sem-abertura aguardando o frio): ali não há blacklist, então
+ * `verifySuppressedInBrevo` não serve. `true` só com 200 e o contato fora de
+ * `listId` (com `listIds` legível); qualquer outra resposta ⇒ `false` (o
+ * caller mantém in_brevo).
+ */
+export async function verifyUnlinkedFromBrevoList(apiKey: string, listId: number, email: string): Promise<boolean> {
+  const res = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
+  if (res.status !== 200) return false;
+  const listIds: unknown = res.body?.listIds;
+  return Array.isArray(listIds) && !listIds.includes(listId);
+}
+
 // ── reconciliação de órfãos (#4579) ────────────────────────────────────────
 
 interface BrevoListContactsPage {
@@ -2021,6 +2047,13 @@ export interface RunEvaluationParams {
    * anterior) ⇒ score por taxa de sempre.
    */
   semanalDesdeMs?: number;
+  /**
+   * #11420 — ids das campanhas de TERÇA da semanal dividida (`terca_campaign_id`
+   * de `_internal/brevo-diaria-published.json`, `collectTercaCampaignIds`). Só
+   * envio de terça com id aqui conta como semanal do grupo "terça"; ausente ⇒
+   * nenhuma terça conta (direção que não suprime).
+   */
+  semanalTercaCampaignIds?: ReadonlySet<number>;
   /** #11226 — relógio injetável do score semanal (maturação). Default `Date.now()`. */
   nowMs?: number;
   /**
@@ -2047,6 +2080,24 @@ export interface RunEvaluationParams {
    * teste; default = `findTagIdByName` + `tagSubscriber` + `listSubscriberTags`.
    */
   kitFrioTagDeps?: KitFrioTagDeps;
+}
+
+/**
+ * #11420 — ids das campanhas de TERÇA da semanal dividida (#11286), lidos do
+ * `terca_campaign_id` de `_internal/brevo-diaria-published.json` de cada
+ * edição (layouts flat e nested, `enumerateEditionDirs`). É o que separa a
+ * terça da semanal dividida de um envio de terça qualquer (transição #10533,
+ * `--fora-da-segunda`) no score semanal. Pasta ausente/ilegível ⇒ conjunto
+ * vazio: nenhuma terça conta, a direção que não suprime ninguém antes da hora.
+ */
+export function collectTercaCampaignIds(editionsDir: string, log: (m: string) => void = () => {}): Set<number> {
+  const ids = new Set<number>();
+  for (const dir of enumerateEditionDirs(editionsDir).values()) {
+    const id = readBrevoDiariaPublished(dir)?.terca_campaign_id;
+    if (typeof id === "number") ids.add(id);
+  }
+  log(`semanal dividida (#11420): ${ids.size} campanha(s) de terça registrada(s) contam como semanal do grupo terça.`);
+  return ids;
 }
 
 /**
@@ -2419,6 +2470,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     unsubscribeKitSemAberturaDeps,
     kitEnvioBrevoTagDeps,
     semanalDesdeMs, // #11226
+    semanalTercaCampaignIds, // #11420
     kitFrioTagDeps, // #11221
   } = params;
   const kitFrioFullyOn = params.kitFrioFullyOn === true; // #11221
@@ -2585,7 +2637,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       let statusCheckFailed = false;
       if (brevoApiKey) {
         try {
-          nativeState = await fetchBrevoContactState(brevoApiKey, contact.email, { semanalDesdeMs, nowMs: nowMsForScore });
+          nativeState = await fetchBrevoContactState(brevoApiKey, contact.email, {
+            semanalDesdeMs,
+            nowMs: nowMsForScore,
+            semanalTercaCampaignIds, // #11420
+          });
         } catch (e) {
           log(`warn: falha ao checar estado Brevo de ${contact.email}: ${(e as Error).message}`);
           failed++;
@@ -3435,6 +3491,16 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
+        // #11294 item 3 — 2xx não é prova: relê antes de gravar `suppressed`
+        // (status terminal que o loop nunca reavalia). Ainda na lista ⇒ fica
+        // in_brevo e o unlink é retentado na próxima rodada.
+        if (!(await verifyUnlinkedFromBrevoList(brevoApiKey!, listId, contact.email))) {
+          log(`warn: ${contact.email} — desvinculação da lista Brevo não confirmada na releitura — mantendo in_brevo (#11294).`);
+          failed++;
+          failedContacts.push({ email: contact.email, reason: "unlink da lista Brevo (kit-sem-abertura aguardando frio) não confirmado na releitura" });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
         log(`${contact.email}: kit-sem-abertura suprimido só na Brevo — segue active no Kit com ${KIT_ENVIO_BREVO_TAG_NAME}, aguardando o frio (#11221).`);
         store = applyEvaluation(store, contact.email, {
           ...counts.instant,
@@ -3633,7 +3699,7 @@ async function main(): Promise<number> {
   // só protege contra `platform.config.json` sem a chave `publishing`
   // (nunca deveria acontecer em produção, mas evita `undefined` virar
   // `"kit"` por engano numa comparação futura).
-  const newsletterBackend = platformConfig.publishing?.newsletter?.backend === "kit" ? "kit" : "beehiiv";
+  const newsletterBackend = parseNewsletterBackend(platformConfig.publishing?.newsletter?.backend); // default "kit" (#11225)
   const kitApiKey = process.env.KIT_API_KEY;
 
   // readStore/filter são I/O local síncrono (mesma classe do
@@ -3724,6 +3790,7 @@ async function main(): Promise<number> {
     kitDoiFormId: platformConfig.kit?.doiFormId, // #9835
     kitDoiResendFormId: platformConfig.kit?.doiResendFormId, // #9986
     semanalDesdeMs: evaluateSemanalDesdeMs(semanal, store.contacts, log), // #11226
+    semanalTercaCampaignIds: semanal.enabled ? collectTercaCampaignIds(resolve(ROOT, "data", "editions"), log) : undefined, // #11420
     kitActivateFormId: platformConfig.kit?.activateFormId, // #11226
     kitFrioFullyOn, // #11221
   });
@@ -3756,6 +3823,32 @@ async function main(): Promise<number> {
       `${result.doiResentViaResendForm} reenviado(s) pelo 2º form de DOI (subconjunto dos reenviados, #9986), ` +
       `${result.doiResendExhausted} esgotado(s) (200 nos dois forms de DOI, reenvio encerrado, #9986).`,
   );
+  // #11294 item 4 — o estoque INTEIRO da premissa B (não só a rodada), perto
+  // do fim do run pra cair no tail que o `brevo-diaria-run.ts` leva ao resumo
+  // da Etapa 5; acima dos tetos, alarme (só com --push).
+  const awaitingFrio = summarizeAwaitingFrioBacklog(result.store.contacts, Date.now());
+  if (awaitingFrio.count > 0) {
+    log(
+      `${awaitingFrio.alarmReasons.length > 0 ? "warn: " : ""}${awaitingFrio.count} kit-sem-abertura aguardando o frio no total, ` +
+        `sem edição nenhuma até o restore (mais antigo: ${awaitingFrio.oldestDays ?? "?"} dia(s); #11294).`,
+    );
+    if (push && awaitingFrio.alarmReasons.length > 0) {
+      try {
+        raiseKitFrioAlarm({
+          check: "kit-sem-abertura-aguardando-frio",
+          fingerprintSuffix: "estoque",
+          title: "Kit-sem-abertura aguardando o frio sem edição nenhuma (#11294)",
+          body:
+            "Contatos `kit-sem-abertura:` suprimidos por score saíram da lista Brevo e seguem fora da diária do Kit " +
+            "(tag `envio-brevo`) até o frio ficar plenamente ligado e o `restore-kit-sem-abertura-frio.ts --apply` rodar (#11221, premissa B):\n\n" +
+            awaitingFrio.alarmReasons.map((r) => `- ${r}`).join("\n") +
+            "\n\nLigar `kit.frio` (com o segmento da diária confirmado) e rodar o restore devolve essas pessoas ao Kit com a tag `frio`.",
+        });
+      } catch (e) {
+        log(`aviso: issue de alarme do estoque aguardando o frio não aberta (${(e as Error).message}).`);
+      }
+    }
+  }
   // #9986 — relink inviável na API do Kit. Com o 2º form de DOI ATIVO nesta
   // rodada (validado, não só configurado), os noops do principal seguem pra
   // ele e o aviso passa a ser só sobre quem esgotou os dois forms.

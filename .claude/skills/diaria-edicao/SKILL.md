@@ -22,7 +22,7 @@ Executa as Etapas 1-4 da diar.ia.br (Pesquisa → Escrita → Imagens → Revis�
 Antes de iniciar, verifique:
 1. `context/audience-profile.md` existe e não é placeholder. Se for, avise: rode `/diaria-atualiza-audiencia` primeiro (muda lento, rodar semanalmente/mensalmente).
 2. `context/sources.md` existe. Se não, rode `npm run sync-sources`.
-3. `data/past-editions.md` **não precisa estar atualizado** — o orchestrator regenera automaticamente via Beehiiv MCP no Stage 0.
+3. `data/past-editions.md` **não precisa estar atualizado** — o orchestrator regenera automaticamente no Stage 0 (`refresh-dedup.ts`, lendo o Kit via `read_backend`; a Beehiiv é só arquivo histórico e não é pré-requisito, #11225).
 
 ## Passo 0 — Sincronizar código com origin/master (#2686)
 
@@ -189,7 +189,7 @@ Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`). **Desde 
 
 `/diaria-edicao` **não** encadeia para a Etapa 5 no fim do Stage 4, mesmo tendo rodado as Etapas 1-4 na mesma invocação. Medição do #6171 (edição 260826, sessão de 989 turnos): o gate do Stage 4 sozinho — 433 turnos, 1h49 de revisão humana — inflou o contexto residente a ponto das Etapas 5 e 6 relerem esse histórico a cada tool call, ~268M tokens de `cache_read` evitáveis (a maior fatia dos ~US$115 da edição). Diferente dos Stages 1-3 (§Passo 2, #5744), que já rodam num processo `claude` isolado porque não têm gate, a Etapa 4 PRECISA da sessão do editor — não dá pra spawná-la headless. A fronteira segura fica então DEPOIS do gate: ao aprovar (ou auto-aprovar com `--no-gates`), o orchestrator escreve o sentinel do Stage 4, imprime as instruções de próximo passo, e a sessão termina — sem ler `orchestrator-stage-5.md`.
 
-**Sequência do dia (#10943, decisão do editor 22/10/2026; vídeos numa skill só desde #11209):** `/diaria-edicao` → `/diaria-publica-video {AAMMDD}` (horizontal + vertical) → `/diaria-5-publicacao {AAMMDD}`. O vídeo é gravado depois do gate do Stage 4 (o D1 só está final ali) e sobe antes da Etapa 5, para o link do vídeo entrar no D1 de X, Threads e Facebook já na criação do post (#10772). **Cada skill é standalone e nenhuma encadeia na seguinte (#5578)** — a mensagem pós-gate só imprime a sequência. Sem vídeo no dia, o editor pula direto para `/diaria-5-publicacao`, que segue normalmente e só avisa que o D1 sairá sem o link.
+**Sequência do dia (#10943, decisão do editor 22/10/2026; vídeos numa skill só desde #11209):** `/diaria-edicao` → `/diaria-video-montagem {AAMMDD}` (montagem no Premiere, #11208) → `/diaria-publica-video {AAMMDD}` (horizontal + vertical) → `/diaria-5-publicacao {AAMMDD}`. O vídeo é gravado depois do gate do Stage 4 (o D1 só está final ali) e sobe antes da Etapa 5, para o link do vídeo entrar no D1 de X, Threads e Facebook já na criação do post (#10772). **Cada skill é standalone e nenhuma encadeia na seguinte (#5578)** — a mensagem pós-gate só imprime a sequência. Sem vídeo no dia, o editor pula direto para `/diaria-5-publicacao`, que segue normalmente e só avisa que o D1 sairá sem o link.
 
 O editor (ou a automação que estiver conduzindo a sessão) abre uma sessão NOVA para cada passo; o da publicação é:
 ```

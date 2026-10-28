@@ -29,7 +29,7 @@ import { CHANNEL_KEY_SPECS } from "../scripts/lib/shared/channel-key-specs.ts";
 import { classifyAcquisition } from "../scripts/lib/metrics/acquisition-class.ts";
 import { computeDrift } from "../scripts/studio-ui/studio-utms.ts";
 
-describe("#8256 — Microsoft Ads (teste 2608): PMax e Search separadas por utm_campaign, mesmo utm_source", () => {
+describe("#8256 — Microsoft Ads (UTM): PMax e Search separadas por utm_campaign, mesmo utm_source", () => {
   it("as 2 superfícies estão registradas, com campaign distinto e mesmo source", () => {
     const pmax = EXTERNAL_UTM_SURFACES.find((s) => s.id === "ads-microsoft-2608");
     const search = EXTERNAL_UTM_SURFACES.find((s) => s.id === "ads-microsoft-2608-search");
@@ -42,8 +42,8 @@ describe("#8256 — Microsoft Ads (teste 2608): PMax e Search separadas por utm_
   });
 
   it("CHANNEL_KEY_SPECS do braço Microsoft casa por utm_source, não por utm_campaign", () => {
-    const spec = CHANNEL_KEY_SPECS.find((s) => s.canal === "Microsoft Ads (teste 2608)");
-    assert.ok(spec, "spec 'Microsoft Ads (teste 2608)' ausente de CHANNEL_KEY_SPECS");
+    const spec = CHANNEL_KEY_SPECS.find((s) => s.canal === "Microsoft Ads (UTM)");
+    assert.ok(spec, "spec 'Microsoft Ads (UTM)' ausente de CHANNEL_KEY_SPECS");
     assert.deepEqual(spec!.keys, ["microsoft-ads"]);
     assert.equal(spec!.subcanal, undefined, "subcanal presente contaminaria a agregação de gasto por campanha (#8246)");
   });

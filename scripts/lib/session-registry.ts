@@ -454,10 +454,12 @@ export interface SessionRecord {
    * diretamente), re-derivado do disco a CADA write (nunca faz merge com o
    * `known_worktrees` anterior — sempre a foto fresca, nunca acumula
    * entradas de worktrees já removidos). Consumido por
-   * `selectInUseWorktreeNames` (`scripts/cleanup-merged-worktrees.ts`) pra
-   * proteger, por branch, um worktree externo (fora de
-   * `.claude/worktrees/`) de limpeza enquanto alguma sessão está viva — o
-   * `branch` singular acima não bastava pra isso (ver seu docblock). */
+   * `selectInUseWorktreeNames` (`scripts/cleanup-merged-worktrees.ts`) só
+   * como MAPA path→branch: protege um worktree (inclusive externo, fora de
+   * `.claude/worktrees/`) quando ESTA sessão tocou um path dentro dele ou
+   * reivindicou a issue da branch dele. **Nunca ler como "em uso"** — é a
+   * foto global, e tratá-la assim protegia todo worktree do repo enquanto
+   * houvesse qualquer sessão viva (#11317). */
   known_worktrees?: WorktreeRef[];
   /** Caminhos tocados nesta sessão, com teto (`TOUCHED_PATHS_CAP`) — colapsa
    * pra prefixo de diretório quando estoura. */
@@ -580,7 +582,38 @@ export type ActiveSessionRecord = SessionRecord & {
    * pra não quebrar fixtures de teste montadas à mão; `listActiveSessions`
    * sempre preenche. */
   claimed_foreign_issues_effective?: string[];
+  /** #11299 — só no `list-active` do CLI: a MESMA sessão foi coordenadora até
+   * pouco antes (ver `annotatePreviousCoordinator`). Ausente no caso comum. */
+  previous_coordinator?: PreviousCoordinatorNote;
 };
+
+/**
+ * #11299 — "esta sessão `interactive` era uma rodada coordenadora que acabou de
+ * chamar `end`". Achado da rodada 261027c: a 261027b (Neo, sessão 150a0611)
+ * registrou `overnight` às 04:59Z, reivindicou 10 issues, mergeou a última às
+ * 12:48:17Z e chamou `end` às 12:48:25Z (evento `ended` em
+ * `data/session-lifecycle.jsonl`). Três segundos depois, a próxima chamada de
+ * ferramenta da MESMA conversa fez o beacon (`session-beacon.mjs`) criar
+ * `interactive-Neo-150a0611…json` do zero — correto: a conversa seguia viva e
+ * já não era coordenadora. A 261027c começou às 12:50:39Z, viu a sessão como
+ * `interactive` sem `claimed_issues` e leu isso como "o register não valeu na
+ * Neo" ou "o beacon rebaixou o registro". Nenhum dos dois aconteceu; o que
+ * faltava era o `list-active` dizer de onde aquele registro vinha. Esta nota
+ * vem do log de lifecycle (o arquivo coordenador já foi apagado por
+ * `endSession`) e é só diagnóstico: não muda claim, liveness nem guard.
+ */
+export interface PreviousCoordinatorNote {
+  kind: SessionKind;
+  event: SessionLifecycleEventType;
+  /** `ts` do evento de lifecycle (momento do `end`/remoção). */
+  endedAt: string;
+  startedAt?: string | null;
+  claimed_issues_ever?: number[];
+}
+
+/** Janela em que um fim de rodada coordenadora ainda explica um registro
+ * `interactive` da mesma sessão (#11299). 24h = `MAX_SESSION_AGE_MS`. */
+export const PREVIOUS_COORDINATOR_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 interface MergeLockRecord {
   heldBy: string;
@@ -2072,6 +2105,69 @@ function logSessionLifecycleEvent(repoRoot: string, event: SessionLifecycleEvent
   } catch {
     // best-effort — nunca propaga.
   }
+}
+
+/**
+ * Lê `data/session-lifecycle.jsonl` (#11299). Fail-soft: arquivo ausente ou
+ * ilegível vira `[]`, linha corrompida é pulada — a leitura alimenta só a nota
+ * diagnóstica de `list-active`, nunca uma decisão.
+ */
+export function readSessionLifecycleEvents(repoRoot: string): SessionLifecycleEvent[] {
+  let raw: string;
+  try {
+    raw = readFileSync(sessionLifecycleLogPath(repoRoot), "utf8");
+  } catch {
+    return [];
+  }
+  const out: SessionLifecycleEvent[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const ev = JSON.parse(line) as SessionLifecycleEvent;
+      if (ev && typeof ev.sessionId === "string" && typeof ev.ts === "string" && typeof ev.kind === "string") {
+        out.push(ev);
+      }
+    } catch {
+      // linha corrompida (append concorrente via OneDrive) — pula.
+    }
+  }
+  return out;
+}
+
+/**
+ * #11299 — anota cada sessão `interactive` cujo `sessionId` teve, nas últimas
+ * `windowMs`, um evento de fim de rodada COORDENADORA no log de lifecycle
+ * (o mais recente vence). Pura: não lê disco. Só considera eventos com `ts`
+ * até `startedAt` do registro interativo + tolerância de clock skew — um
+ * `end` posterior ao nascimento do interativo não o explica.
+ */
+export function annotatePreviousCoordinator<T extends { kind: SessionKind; sessionId: string; startedAt: string }>(
+  sessions: T[],
+  events: SessionLifecycleEvent[],
+  now: number = Date.now(),
+  windowMs: number = PREVIOUS_COORDINATOR_WINDOW_MS,
+): (T & { previous_coordinator?: PreviousCoordinatorNote })[] {
+  return sessions.map((s) => {
+    if (s.kind !== "interactive") return s;
+    const bornMs = Date.parse(s.startedAt);
+    let best: SessionLifecycleEvent | undefined;
+    let bestMs = -Infinity;
+    for (const ev of events) {
+      if (ev.sessionId !== s.sessionId || !isCoordinatorKind(ev.kind)) continue;
+      const evMs = Date.parse(ev.ts);
+      if (!Number.isFinite(evMs) || now - evMs > windowMs || evMs - now > CLOCK_SKEW_TOLERANCE_MS) continue;
+      if (Number.isFinite(bornMs) && evMs - bornMs > CLOCK_SKEW_TOLERANCE_MS) continue;
+      if (evMs > bestMs) {
+        best = ev;
+        bestMs = evMs;
+      }
+    }
+    if (!best) return s;
+    const note: PreviousCoordinatorNote = { kind: best.kind, event: best.event, endedAt: best.ts };
+    if (best.startedAt !== undefined) note.startedAt = best.startedAt;
+    if (Array.isArray(best.claimed_issues_ever)) note.claimed_issues_ever = best.claimed_issues_ever;
+    return { ...s, previous_coordinator: note };
+  });
 }
 
 /**
@@ -4184,6 +4280,24 @@ export function acquireMergeLock(
   io.overwrite(path, data);
   const verify = io.readCurrent(path);
   return verify?.heldBy === sessionId;
+}
+
+/**
+ * #11380: texto do resultado de `merge-lock-acquire` no stdout. Na recusa
+ * em que o lock é da PRÓPRIA sessão (#6334, não reentrante), a mensagem diz
+ * isso em vez de "held by another session", que mandava procurar uma sessão
+ * que não existe. A palavra "denied" fica nas duas recusas: `merge-train-live.ts`
+ * e `publish-edition-site-page.ts` detectam a negação por `/denied/i`.
+ */
+export function mergeLockAcquireOutcome(ok: boolean, sessionId: string, holder: MergeLockRecord | null | undefined): string {
+  if (ok) return "ok";
+  if (holder?.heldBy === sessionId) {
+    return (
+      `denied (lock já detido por esta sessão (desde ${holder.acquiredAt}); ` +
+      "use merge-lock-renew para estender ou siga com o merge)"
+    );
+  }
+  return "denied (held by another session)";
 }
 
 /**
@@ -7098,7 +7212,9 @@ function main(): void {
         break;
       }
       case "list-active": {
-        const sessions = listActiveSessions(repoRoot);
+        // #11299: `previous_coordinator` explica um `interactive` que até
+        // pouco antes era a rodada coordenadora da mesma conversa.
+        const sessions = annotatePreviousCoordinator(listActiveSessions(repoRoot), readSessionLifecycleEvents(repoRoot));
         process.stdout.write(JSON.stringify(sessions, null, 2) + "\n");
         break;
       }
@@ -7136,8 +7252,11 @@ function main(): void {
         // #10618: lock POR REPO (`--repo owner/name`, default diaria-studio).
         const lockRepo = requireRepoFlag(values, flags);
         const ok = acquireMergeLock(repoRoot, sessionId, Date.now(), MERGE_LOCK_TTL_MS, REAL_MERGE_LOCK_IO, lockRepo);
+        // #11380: na recusa, relê quem segura o lock só pra mensagem — o
+        // resultado (`ok`/exit 1) não muda.
+        const holder = ok ? null : readJsonSafe<MergeLockRecord>(mergeLockPath(repoRoot, lockRepo));
         process.stdout.write(
-          `session-registry: merge-lock-acquire ${ok ? "ok" : "denied (held by another session)"} ` +
+          `session-registry: merge-lock-acquire ${mergeLockAcquireOutcome(ok, sessionId, holder)} ` +
             `[repo=${lockRepo}] [repoRoot=${repoRoot}]\n`,
         );
         const activeSessions = listActiveSessions(repoRoot);

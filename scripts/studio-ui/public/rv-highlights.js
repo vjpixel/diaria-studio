@@ -24,6 +24,7 @@ import { SAVE_CONFLICT_CONFIRM_MESSAGE } from "./revisao-guards.js";
 import {
   isTitleTooLong,
   formatTitleCharCount,
+  titleLimitForHighlight,
   resolveFinalTitle,
   buildHighlightSavePayload,
   mergeIncomingHighlights,
@@ -67,8 +68,10 @@ function markDirty(state, statusEl) {
   statusEl.textContent = state.statusMessage;
 }
 
-function renderTitleOptions(state, maxTitleLength, onSelect) {
+function renderTitleOptions(state, subjectMaxLength, onSelect) {
   const wrap = el_("div", { className: "rv-hl-title-options" });
+  // #11329: o teto da API é o do assunto do e-mail, que só vale pro D1.
+  const maxTitleLength = titleLimitForHighlight(state.n, subjectMaxLength);
   state.titleOptions.forEach((opt, idx) => {
     const label = el_("label", {
       className: `rv-hl-title-option${idx === state.selectedIndex ? " selected" : ""}`,
@@ -312,7 +315,9 @@ async function saveCardForce(state, statusEl, saveBtn, payload) {
   statusEl.textContent = `Erro ao sobrescrever: ${(body && body.error) || "falha desconhecida"}`;
 }
 
-let currentMaxTitleLength = 52;
+// Teto do assunto do e-mail, vindo da API (`maxTitleLength`); `null` até o
+// 1º load. Vale só pro D1 (`titleLimitForHighlight`, #11329).
+let currentMaxTitleLength = null;
 
 function renderCards() {
   clear(el.cards);
@@ -335,7 +340,7 @@ export async function loadHighlights() {
     const res = await fetch(`/api/editions/${encodeURIComponent(aammdd)}/review/reviewed/highlights`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const summary = await res.json();
-    currentMaxTitleLength = summary.maxTitleLength || 52;
+    currentMaxTitleLength = typeof summary.maxTitleLength === "number" ? summary.maxTitleLength : null;
     if (!summary.available) {
       el.status.textContent = summary.note || "Editor por destaque indisponível.";
       cardState.clear();

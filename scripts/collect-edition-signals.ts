@@ -51,6 +51,7 @@ import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import {
   isHardFailure,
+  RECENT_OUTCOMES_MAX,
   roundDryStreak,
   roundFailureStreak,
   roundFeedFailureStreak,
@@ -433,7 +434,7 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
   // ESCREVE os títulos) de fora sempre que a correção veio do caminho comum
   // (editor poda manualmente no gate).
   "title-choice": ".claude/agents/writer-destaque.md (escreve as 3 opções) + .claude/agents/title-picker.md (fallback de seleção quando o editor não poda) + regra de título em context/editorial-rules.md",
-  "title-length": ".claude/agents/writer-destaque.md (escreve as 3 opções, inclui a regra de ≤52 chars) + .claude/agents/title-picker.md (fallback de seleção) + regra de título em context/editorial-rules.md",
+  "title-length": ".claude/agents/writer-destaque.md (escreve as 3 opções, mira o alvo de escrita de ≤52 chars) + .claude/agents/title-picker.md (fallback de seleção) + regra de título em context/editorial-rules.md (limites reais: card 4x5 e assunto do D1 ≤70, #11254)",
   "destaque-swap": "rubrico do scorer / .claude/agents/scorer-select.md",
   "destaque-promote": "rubrico do scorer / .claude/agents/scorer-select.md",
   "destaque-cut": "rubrico do scorer / .claude/agents/scorer-select.md",
@@ -465,7 +466,133 @@ export const REQUEST_TYPE_ARTIFACT_MAP: Record<string, string> = {
   "factual-correction": ".claude/agents/fact-checker.md",
 };
 
-const RECURRING_REQUEST_MIN_EDITIONS = 3;
+export const RECURRING_REQUEST_MIN_EDITIONS = 3;
+
+/**
+ * #11291/#11337: tamanho da BASE histórica — média móvel das últimas 30
+ * edições COM pedidos registrados, janela de detecção incluída (decisão do
+ * editor na #11337: "média móvel de 30 edições + margem"). Sem a base, um
+ * tipo que acontece em quase toda edição (`destaque-swap` em 34 de 39,
+ * `lead-rewrite`, `bucket-move`, `pool-add`) passa o corte de 3-em-7 TODA
+ * semana e reabre a mesma issue (destaque-swap chegou à 5ª reabertura: #9883
+ * → #11247) — o sinal media rotina, não mudança.
+ *
+ * Por que a janela entra na média (#11337): com a base só ANTES da janela, uma
+ * base curta (10-12 edições) e uma janela de 7 dão taxas com erro de ±20 pp e
+ * o detector disparava no ruído — medido na série real 2609-2610, `pool-add`
+ * (7/7 contra base 5/10) e `bucket-move` (6/7 contra 0,56) ainda abriam issue.
+ * Com a média móvel que inclui a janela, nenhum dos tipos rotineiros dispara
+ * em nenhuma janela de 2609-2610 (`test/collect-edition-signals-11337.test.ts`).
+ */
+export const RECURRING_REQUEST_BASELINE_WINDOW = 30;
+
+/**
+ * Quantos diretórios de edição varrer pra achar as 30 edições com pedidos da
+ * base: nem toda edição tem `editor-requests.jsonl` (em 2608-2610, 40 de 61).
+ */
+export const RECURRING_REQUEST_BASELINE_SCAN = 60;
+
+/**
+ * Mínimo de edições com pedidos registrados na base pra ela valer. Abaixo
+ * disso (projeto novo, logging recém-ligado) não há taxa-base medida, e desde
+ * a #11337 o detector NÃO dispara — antes caía na regra antiga (só 3-em-7),
+ * que é justamente o comportamento que abria issue de rotina.
+ */
+export const RECURRING_REQUEST_MIN_BASELINE_EDITIONS = 10;
+
+/**
+ * Margem: quantos desvios-padrão (binomial, n = edições da janela, p = taxa
+ * da base) acima do esperado a janela precisa ficar pra disparar. Margem em
+ * desvios e não em pontos percentuais fixos porque o erro de uma taxa medida
+ * em 7 edições depende de p: uma margem fixa de 25 pp ainda disparava em
+ * `pool-add`/`bucket-move` na série real (#11337).
+ */
+export const RECURRING_REQUEST_SIGMA = 2;
+
+/**
+ * Frequência-base por `request_type` (#11291): em quantas das edições da base
+ * (as que têm ≥1 pedido registrado) cada tipo apareceu como `accepted`/`partial`.
+ */
+export interface RequestTypeBaseline {
+  /** Edições da base com ≥1 pedido registrado (denominador). */
+  edition_count: number;
+  /** request_type → nº de edições DISTINTAS da base em que apareceu. */
+  type_edition_counts: Record<string, number>;
+}
+
+/** Tipos que nunca participam da detecção (#4966, #7964). */
+function isCountableRequest(e: EditorRequestEntry): boolean {
+  if (e.request_type === "other" || e.request_type === "process") return false;
+  return e.resolution === "accepted" || e.resolution === "partial";
+}
+
+/**
+ * Agrega a base (#11291). Pura. O denominador é o nº de edições com QUALQUER
+ * pedido registrado — edição sem `editor-requests.jsonl` não foi revisada
+ * com logging e não diz nada sobre a frequência do tipo.
+ */
+export function computeRequestTypeBaseline(
+  entriesByEdition: Record<string, EditorRequestEntry[]>,
+): RequestTypeBaseline {
+  const typeEditions = new Map<string, Set<string>>();
+  let editionCount = 0;
+  for (const [edition, entries] of Object.entries(entriesByEdition)) {
+    if (entries.length === 0) continue;
+    editionCount++;
+    for (const e of entries) {
+      if (!isCountableRequest(e)) continue;
+      let set = typeEditions.get(e.request_type);
+      if (!set) {
+        set = new Set();
+        typeEditions.set(e.request_type, set);
+      }
+      set.add(edition);
+    }
+  }
+  const type_edition_counts: Record<string, number> = {};
+  for (const [t, set] of typeEditions) type_edition_counts[t] = set.size;
+  return { edition_count: editionCount, type_edition_counts };
+}
+
+/**
+ * #11337: recorta as `maxEditions` edições mais recentes COM pedidos — o
+ * universo da média móvel. Pura. AAMMDD ordena cronologicamente.
+ */
+export function selectBaselineEntries(
+  entriesByEdition: Record<string, EditorRequestEntry[]>,
+  maxEditions = RECURRING_REQUEST_BASELINE_WINDOW,
+): Record<string, EditorRequestEntry[]> {
+  const keys = Object.keys(entriesByEdition)
+    .filter((k) => entriesByEdition[k].length > 0)
+    .sort()
+    .reverse()
+    .slice(0, maxEditions);
+  const out: Record<string, EditorRequestEntry[]> = {};
+  for (const k of keys) out[k] = entriesByEdition[k];
+  return out;
+}
+
+/**
+ * Limiar de disparo pra um tipo dada a base (#11291): esperado + σ·desvio
+ * de uma binomial com n = edições da janela e p = taxa-base do tipo. Um tipo
+ * rotineiro (p≈0,87, n=7) dá limiar ≈7,9 — inalcançável numa janela de 7, ou
+ * seja, nunca dispara por ser rotina; um tipo raro (p≈0,05) volta pro piso
+ * de 3-em-7. `null` = base insuficiente (ou ausente): sem taxa-base medida;
+ * quem chama decide (o detector não dispara com base curta desde a #11337).
+ */
+export function recurringRequestThreshold(
+  requestType: string,
+  windowEditionCount: number,
+  baseline: RequestTypeBaseline | undefined,
+  sigma = RECURRING_REQUEST_SIGMA,
+): { baseline_rate: number; expected: number; threshold: number } | null {
+  if (!baseline || baseline.edition_count < RECURRING_REQUEST_MIN_BASELINE_EDITIONS) return null;
+  const p = (baseline.type_edition_counts[requestType] ?? 0) / baseline.edition_count;
+  const n = windowEditionCount;
+  const expected = n * p;
+  const threshold = expected + sigma * Math.sqrt(n * p * (1 - p));
+  return { baseline_rate: p, expected, threshold };
+}
 
 /**
  * Seleciona a janela de edições a considerar na detecção de recorrência:
@@ -590,17 +717,30 @@ export function reclassifyEditorRequests(
  * inclui `edition_count`/`3×` no título) — o dedup do auto-reporter
  * (`auto-reporter-dedup.ts`) casa por título, e um título que varia por
  * contagem furaria esse dedup a cada edição nova que reforça o padrão.
+ *
+ * Com `baseline` (#11291), além do piso de `minEditions` o tipo precisa ficar
+ * ACIMA da própria frequência-base (`recurringRequestThreshold`): o sinal
+ * passa a medir "o editor pede isso mais que de costume", não "o editor pede
+ * isso" — tipo que ocorre em quase toda edição deixa de reabrir issue toda
+ * semana.
+ *
+ * #11337: `baseline` curta demais (< `RECURRING_REQUEST_MIN_BASELINE_EDITIONS`)
+ * = sem taxa-base medida = NÃO dispara (decisão do editor: só abrir issue
+ * acima da base medida). Sem `baseline` nenhum (`undefined`) vale só o piso
+ * de 3-em-7 — modo legado do helper puro, que o coletor não usa mais.
+ * Corpo do sinal cita a taxa da janela × a taxa-base e o limiar.
  */
 export function signalsFromRecurringEditorRequests(
   entriesByEdition: Record<string, EditorRequestEntry[]>,
   minEditions = RECURRING_REQUEST_MIN_EDITIONS,
+  baseline?: RequestTypeBaseline,
 ): Signal[] {
+  const windowEditionCount = Object.values(entriesByEdition).filter((es) => es.length > 0).length;
   // request_type -> edition -> entries dessa edição com esse tipo
   const byType = new Map<string, Map<string, EditorRequestEntry[]>>();
   for (const [edition, entries] of Object.entries(entriesByEdition)) {
     for (const e of entries) {
-      if (e.request_type === "other" || e.request_type === "process") continue;
-      if (e.resolution !== "accepted" && e.resolution !== "partial") continue;
+      if (!isCountableRequest(e)) continue;
       let byEdition = byType.get(e.request_type);
       if (!byEdition) {
         byEdition = new Map();
@@ -616,6 +756,11 @@ export function signalsFromRecurringEditorRequests(
   for (const [requestType, byEdition] of byType) {
     const editions = Array.from(byEdition.keys()).sort();
     if (editions.length < minEditions) continue;
+    const base = recurringRequestThreshold(requestType, windowEditionCount, baseline);
+    if (baseline && !base) continue; // base curta: sem taxa-base medida (#11337)
+    if (base && editions.length <= base.threshold) continue;
+    const windowRate = windowEditionCount > 0 ? editions.length / windowEditionCount : 0;
+    const pct = (x: number) => `${Math.round(x * 100)}%`;
 
     const evidence: Array<{ edition: string; target: string; description: string }> = [];
     for (const edition of editions) {
@@ -638,9 +783,24 @@ export function signalsFromRecurringEditorRequests(
         editions,
         evidence,
         artifact_candidate: artifact,
+        window_editions: windowEditionCount,
+        window_rate: Number(windowRate.toFixed(3)),
+        ...(base
+          ? {
+              baseline_rate: Number(base.baseline_rate.toFixed(3)),
+              baseline_editions: baseline!.edition_count,
+              baseline_type_editions: baseline!.type_edition_counts[requestType] ?? 0,
+              expected_in_window: Number(base.expected.toFixed(2)),
+              threshold: Number(base.threshold.toFixed(2)),
+            }
+          : {}),
       },
       suggested_action:
-        `Editor pediu "${requestType}" em ${editions.length} das últimas edições revisadas — ` +
+        `Editor pediu "${requestType}" em ${editions.length} de ${windowEditionCount} edições revisadas da janela (${pct(windowRate)})` +
+        (base
+          ? `, acima da base: ${pct(base.baseline_rate)} na média móvel (${baseline!.type_edition_counts[requestType] ?? 0} de ${baseline!.edition_count} edições; esperado ${base.expected.toFixed(1)} na janela, limiar ${base.threshold.toFixed(1)})`
+          : "") +
+        ` — ` +
         `considerar ajustar ${artifact}. Evidência: ` +
         evidence
           .slice(0, 3)
@@ -778,6 +938,42 @@ function isStaleOutcome(
 export const SOURCE_DRY_THRESHOLD_ROUNDS = 3;
 
 /**
+ * #11399/#11400: idade mínima (dias desde a 1ª coleta registrada) pra uma
+ * fonte poder sair como `source_dry`. As 3 rodadas do limiar acima cabem em 3
+ * dias, e fonte recém-cadastrada de cadência semanal (Cursor Changelog e
+ * Cursor Blog, cadastradas no #10952 em 24/10/2026, último post em 20/10) saía
+ * como "seca" sem ter publicado nada desde o cadastro. 14 dias = 2 ciclos de
+ * uma fonte semanal. Feed com URL errada não espera por isto: dá `fail`, e
+ * `source_streak` dispara em 3 rodadas.
+ */
+export const SOURCE_DRY_MIN_AGE_DAYS = 14;
+
+/**
+ * #11399/#11400: a fonte tem histórico de pelo menos `minAgeDays`? Só dá pra
+ * afirmar que é NOVA quando `recent_outcomes` guarda a história inteira (não
+ * foi truncado em `RECENT_OUTCOMES_MAX`, e `attempts` não passa do que está
+ * guardado) e o 1º outcome tem timestamp válido. Qualquer dúvida → `true`
+ * (velha o bastante): o sinal continua disparando como antes.
+ */
+export function sourceOldEnoughForDry(
+  entry: { attempts?: number; recent_outcomes?: Array<{ timestamp?: string }> },
+  now: Date,
+  minAgeDays: number = SOURCE_DRY_MIN_AGE_DAYS,
+): boolean {
+  const recent = entry.recent_outcomes ?? [];
+  if (recent.length === 0) return true;
+  if (recent.length >= RECENT_OUTCOMES_MAX) return true;
+  if (typeof entry.attempts === "number" && entry.attempts > recent.length) return true;
+  const first = recent[0]?.timestamp;
+  if (!first) return true;
+  const t = Date.parse(first);
+  // Futuro também é dúvida: o V8 aceita lixo como "t-261026" e devolve um ano
+  // de seis dígitos.
+  if (Number.isNaN(t) || t > now.getTime()) return true;
+  return now.getTime() - t >= minAgeDays * 86_400_000;
+}
+
+/**
  * #9657: rodadas seguidas com o caminho FEED (RSS/sitemap) falhando — com a
  * fonte saudável pela busca `site:` — pra emitir `source_feed_broken`.
  */
@@ -805,6 +1001,8 @@ export function signalsFromSourceHealth(
    * antigas. `undefined` (seed ilegível) → comportamento anterior.
    */
   feedSources?: Set<string>,
+  /** #11399/#11400: ver `SOURCE_DRY_MIN_AGE_DAYS`. */
+  dryMinAgeDays = SOURCE_DRY_MIN_AGE_DAYS,
 ): Signal[] {
   const out: Signal[] = [];
   for (const [source, entry] of Object.entries(health.sources ?? {})) {
@@ -893,7 +1091,12 @@ export function signalsFromSourceHealth(
     const hasRecentOk = recent.some((r) => r.outcome === "ok");
     const lifetimeSuccesses = entry.successes ?? 0;
     const dryStreak = roundDryStreak(recent); // #9652: rodadas, não linhas
-    if (!hasRecentOk && lifetimeSuccesses === 0 && dryStreak >= dryThreshold) {
+    if (
+      !hasRecentOk &&
+      lifetimeSuccesses === 0 &&
+      dryStreak >= dryThreshold &&
+      sourceOldEnoughForDry(entry, now, dryMinAgeDays)
+    ) {
       const hardCount = recent.filter((r) => isHardFailure(r.outcome)).length;
       const emptyCount = recent.filter((r) => r.outcome === "empty").length;
       out.push({
@@ -1899,14 +2102,28 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
   try {
     const editionsRoot = resolve(rootDir, "data/editions");
     const editionDirsByAammdd = enumerateEditionDirs(editionsRoot);
-    const recentEditions = selectRecentEditions(editionDirsByAammdd, edition, editionDir);
+    // #11291/#11337: janela de detecção (7 edições) + base = média móvel das
+    // 30 edições mais recentes com pedidos, janela incluída.
+    const scannedEditions = selectRecentEditions(
+      editionDirsByAammdd,
+      edition,
+      editionDir,
+      RECURRING_REQUEST_BASELINE_SCAN,
+    );
     // #10135: rótulos do classificador ATUAL, não os gravados no dia.
-    const entriesByEdition = reclassifyEditorRequests(
-      readEditorRequestsForEditions(recentEditions),
-      recentEditions,
+    const allEntries = reclassifyEditorRequests(
+      readEditorRequestsForEditions(scannedEditions),
+      scannedEditions,
       rederiveStage2FileRequests,
     );
-    signals.push(...signalsFromRecurringEditorRequests(entriesByEdition));
+    const entriesByEdition: Record<string, EditorRequestEntry[]> = {};
+    for (const { edition: ed } of scannedEditions.slice(0, 7)) {
+      if (allEntries[ed]) entriesByEdition[ed] = allEntries[ed];
+    }
+    const baseline = computeRequestTypeBaseline(selectBaselineEntries(allEntries));
+    signals.push(
+      ...signalsFromRecurringEditorRequests(entriesByEdition, RECURRING_REQUEST_MIN_EDITIONS, baseline),
+    );
   } catch {
     // ignore
   }

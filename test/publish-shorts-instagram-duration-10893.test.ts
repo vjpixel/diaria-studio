@@ -31,7 +31,7 @@ function plan(extra: Partial<Parameters<typeof planShortsPublish>[0]> = {}) {
     reviewedMd: reviewed,
     // 261022 06:00 BRT: o horário do vertical (12:00) ainda está à frente.
     now: new Date("2026-10-22T09:00:00Z"),
-    config: {},
+    config: { publishing: { shorts: { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_collaborators: ["vjpixel"] } } },
     pages,
     instagramReady: true,
     instagramQueue: { ready: true, account: "vjpixel" },
@@ -72,7 +72,9 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
     const g = ig as { caption?: string; detail: string };
     assert.match(g.detail, /113\.9 s/);
     assert.match(g.detail, /--mark instagram=URL/);
-    assert.match(g.detail, /@vjpixel em collab/); // #11223: collab do default
+    // #11390: o passo à mão segue a rota do editor (@vjpixel autor, @diar.ia.br colaboradora), não a da API.
+    assert.match(g.detail, /como @vjpixel \(autor\), com a @diar\.ia\.br como colaboradora/);
+    assert.doesNotMatch(g.detail, /como a autora/);
     assert.match(g.caption ?? "", /link da bio/);
     // #10933: o post manual também ocupa o horário da conta — reserva o slot na grade.
     assert.ok(p.slots.some((s) => s.destination === "instagram"));
@@ -139,5 +141,5 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
 });
 
 function shortsCfg() {
-  return { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] };
+  return { facebook_pages: ["diaria", "vjpixel"], instagram: true, instagram_backend: "worker-r2", instagram_author_page: "vjpixel", instagram_collaborators: ["diar.ia.br"] };
 }

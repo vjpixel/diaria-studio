@@ -43,6 +43,7 @@ import {
   checkConvergenceScan,
   recordConvergenceScan,
   findRetrackedUnworkedIssues,
+  findRetrackedUnworkedForeignIssues,
   type PlanWithStateChanged,
   type PlanWithGoal,
   type ConvergenceScanIssue,
@@ -453,6 +454,23 @@ describe("CLI (scripts/check-state-changed-pending.ts)", () => {
     assert.match(r.stderr, /#10385 \(deixado-para-o-300, overnight → develop\)/);
     assert.match(r.stderr, /#10387 \(deixado-para-o-300, overnight → bloqueada\)/);
     assert.doesNotMatch(r.stderr, /#10400/);
+    assert.doesNotMatch(r.stdout, /^ok/);
+  });
+
+  it("#11301: bloqueio inicial removido por outra sessão → exit 1 antes de re-rotear", () => {
+    const { planPath, env } = setupFakeGh({
+      planSubdir: join("overnight", "261027"),
+      plan: { goal: { target_set: [11251] }, issues: [
+        { number: 11251, status: "pulada", motivo: "bloqueio-externo", exec_track_painel: "bloqueada" },
+      ] },
+      stdout: JSON.stringify([{ number: 11251, labels: [] }]),
+    });
+    const r = spawnSync(process.execPath, ["--import", "tsx", CLI, "--plan", planPath], {
+      encoding: "utf8", cwd: ROOT, env,
+    });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /#11251 \(bloqueio-externo, bloqueada → overnight\)/);
+    assert.match(r.stderr, /releia o roteamento atual antes de re-rotear/);
     assert.doesNotMatch(r.stdout, /^ok/);
   });
 
@@ -888,5 +906,34 @@ describe("isDevelopPlan (#10407)", () => {
     assert.equal(isDevelopPlan("data/developer/plan.json"), false);
     assert.equal(isDevelopPlan("data/develop/261018/plan.json", "overnight"), false);
     assert.equal(isDevelopPlan("data/overnight/x/plan.json", "develop"), true);
+  });
+});
+
+// #11301 item 2: classificação inicial não pode esconder desbloqueio concorrente.
+describe("bloqueio externo obsoleto (#11301)", () => {
+  it("detecta desbloqueio no plano inicial, mas ignora bloqueio atual, fechado e já atualizado", () => {
+    const plan: PlanWithGoal = { issues: [
+      { number: 11251, status: "pulada", motivo: "bloqueio-externo", exec_track_painel: "bloqueada" },
+      { number: 11253, status: "pulada", motivo: "bloqueio-externo" },
+      { number: 3, status: "pulada", motivo: "bloqueio-externo" },
+      { number: 4, status: "pulada", motivo: "bloqueio-externo" },
+      { number: 5, status: "pulada", motivo: "bloqueio-externo", exec_track_painel: "overnight" },
+    ] };
+    const open: ConvergenceScanIssue[] = [
+      { number: 11251, labels: [] }, { number: 11253, labels: ["windows"] },
+      { number: 3, labels: ["external-blocker"] }, { number: 5, labels: [] },
+    ];
+    assert.deepEqual(findRetrackedUnworkedIssues(plan, open).map(r => [r.number, r.track_atual]),
+      [[11251, "overnight"], [11253, "develop"]]);
+  });
+
+  it("preserva a identidade do repo e aceita motivo direto em status", () => {
+    const plan: PlanWithGoal = { issues: [
+      { ref: "vjpixel/diaria-design#21", status: "bloqueio-externo", exec_track_painel: "bloqueada" },
+    ] };
+    const open: ConvergenceScanIssue[] = [{ number: 21, labels: [] }];
+    assert.deepEqual(findRetrackedUnworkedIssues(plan, open), []);
+    assert.deepEqual(findRetrackedUnworkedForeignIssues(plan, "vjpixel/diaria-design", open)
+      .map(r => [r.key, r.track_atual]), [["vjpixel/diaria-design#21", "overnight"]]);
   });
 });

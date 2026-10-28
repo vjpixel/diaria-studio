@@ -384,11 +384,13 @@ describe("check-acquisition-health.ts main() — CLI end-to-end sobre fixture lo
       assert.deepEqual(loadState(statePath), seeded);
     });
 
-    it("subscriber_backend ausente do config (default beehiiv): guard NÃO dispara, comportamento normal preservado", async () => {
+    it("subscriber_backend=beehiiv explícito (legado): guard NÃO dispara, comportamento normal preservado", async () => {
+      // Era "ausente do config (default beehiiv)" até o #11225, quando o
+      // default virou "kit" — o caminho Beehiiv agora só com a chave explícita.
       const root = join(tmpRoot, "root-8243-default");
       const statePath = join(tmpRoot, "state-8243-default.json");
       const emptyConfigPath = join(tmpRoot, "platform.config.8243-default.json");
-      writeFileSync(emptyConfigPath, JSON.stringify({}));
+      writeFileSync(emptyConfigPath, JSON.stringify({ publishing: { newsletter: { subscriber_backend: "beehiiv" } } }));
 
       mkdirSync(join(root, "2026-08-02"), { recursive: true });
       writeFileSync(

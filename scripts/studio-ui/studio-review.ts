@@ -72,7 +72,6 @@ import { gatherUseMelhorStatusInput } from "../lib/use-melhor-status.ts"; // #95
 import { readUseMelhorCarouselStamp } from "../lib/use-melhor-carousel.ts"; // #9568
 import {
   countTitlesPerHighlight,
-  checkTitleLengths,
   checkWhyMattersFormat,
   checkEaiSection,
   lintIntroCount,
@@ -142,10 +141,13 @@ import {
   applyHighlightEdit,
   type HighlightEdit,
 } from "../lib/lint-checks/highlight-block-edit.ts";
-// #6447 Fatia 2: limite de chars por opção de título, mesma constante que
-// `checkTitleLengths` (lint bloqueante) já usa — o painel client-side lê o
-// valor da resposta HTTP em vez de repetir o número (ver rv-highlights.js).
-import { MAX_TITLE_LENGTH } from "../lib/lint-checks/title-length.ts";
+// #6447 Fatia 2: limite de chars por opção de título — o painel client-side
+// lê o valor da resposta HTTP em vez de repetir o número (ver rv-highlights.js).
+// #11254: era o teto fixo de 52 (`MAX_TITLE_LENGTH`), sem justificativa; o único
+// limite que é CONTAGEM de caracteres agora é o do assunto do e-mail (título do
+// D1, `MAX_SUBJECT_LENGTH`). O do card 4x5 depende da quebra de linha e vem no
+// lint `title-card-4x5`, não no contador.
+import { MAX_SUBJECT_LENGTH, checkTitleCardFit, checkTitleEmailSubject } from "../lib/lint-checks/title-limits.ts";
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
@@ -478,9 +480,11 @@ export interface HighlightsSummary {
   /** Presente quando `available` é `false` — motivo (arquivo ainda não
    * existe nesta edição, ou AAMMDD inválido). */
   note?: string;
-  /** #6447 Fatia 2: limite de chars por opção de título (`MAX_TITLE_LENGTH`,
-   * mesma constante do lint `title-length` bloqueante) — sempre presente
-   * (independe de `available`), pro client nunca precisar hardcodar o número. */
+  /** #6447 Fatia 2: limite de chars por opção de título (`MAX_SUBJECT_LENGTH`
+   * desde #11254 — teto do assunto do e-mail, aviso, nunca bloqueio) — sempre presente
+   * (independe de `available`), pro client nunca precisar hardcodar o número.
+   * Vale só para o D1, o único título que vira assunto: o client aplica via
+   * `titleLimitForHighlight` e mostra D2/D3 sem teto (#11329). */
   maxTitleLength: number;
 }
 
@@ -490,17 +494,17 @@ export interface HighlightsSummary {
 export function readHighlightsSummary(rootDir: string, aammdd: string): HighlightsSummary {
   const state = readReviewFile(rootDir, aammdd, "reviewed");
   if (!state.ok) {
-    return { available: false, note: state.error ?? "AAMMDD ou arquivo inválido", maxTitleLength: MAX_TITLE_LENGTH };
+    return { available: false, note: state.error ?? "AAMMDD ou arquivo inválido", maxTitleLength: MAX_SUBJECT_LENGTH };
   }
   if (!state.exists) {
     return {
       available: false,
       note: "02-reviewed.md ainda não existe nesta edição",
-      maxTitleLength: MAX_TITLE_LENGTH,
+      maxTitleLength: MAX_SUBJECT_LENGTH,
     };
   }
   const { blocks } = parseHighlightBlocks(state.content);
-  return { available: true, highlights: blocks, modifiedAt: state.modifiedAt, maxTitleLength: MAX_TITLE_LENGTH };
+  return { available: true, highlights: blocks, modifiedAt: state.modifiedAt, maxTitleLength: MAX_SUBJECT_LENGTH };
 }
 
 export interface ApplyHighlightBlockEditResult extends SaveReviewResult {
@@ -651,7 +655,9 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
 
   const checks: LintCheckResult[] = [
     runCheck("titles-per-highlight", "1 título por destaque após poda (#178)", true, () => countTitlesPerHighlight(md)),
-    runCheck("title-length", "Título ≤52 chars", true, () => checkTitleLengths(md)),
+    // #11254: os dois limites reais do título, fora do gate 4 (aviso, nunca bloqueio).
+    runCheck("title-card-4x5", "Título cabe no card 4x5 (3 linhas a 62px)", false, () => checkTitleCardFit(md)),
+    runCheck("title-email-subject", "Título do D1 cabe no assunto do e-mail (≤70 chars)", false, () => checkTitleEmailSubject(md)),
     runCheck("why-matters-format", "'Por que isso importa' sem abertura 'Para [audiência],'", true, () => checkWhyMattersFormat(md)),
     runCheck("eai-section", "Seção É IA? presente", true, () => checkEaiSection(md)),
     runCheck("intro-count", "Intro bate com contagem real de itens (#743)", true, () => lintIntroCount(md)),

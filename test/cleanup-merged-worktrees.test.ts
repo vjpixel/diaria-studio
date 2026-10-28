@@ -1036,3 +1036,92 @@ test("#8661 — removeWorktreeSafe: processo vivo de OUTRO worktree não bloquei
 
   rmSync(base, { recursive: true, force: true });
 });
+
+// ─── #11317 — known_worktrees é foto GLOBAL, nunca sinal de "em uso" ──────
+
+function sess11317(extra: Partial<SessionRecord>): SessionRecord {
+  return {
+    kind: "continuo",
+    machineTag: "300",
+    sessionId: "sess-11317",
+    startedAt: "2026-10-27T00:00:00.000Z",
+    lastHeartbeat: "2026-10-27T00:05:00.000Z",
+    branch: "master",
+    ...extra,
+  };
+}
+
+test("#11317 — sessão viva com known_worktrees listando N worktrees mergeados e sem touched_paths neles deixa todos removíveis", () => {
+  const entries = Array.from({ length: 5 }, (_, i) => ({
+    path: `/repo/.claude/worktrees/agent-${i}`,
+    branch: `overnight/fix-${9000 + i}-algo`,
+    locked: false,
+  }));
+  const s = sess11317({
+    known_worktrees: entries.map((e) => ({ path: e.path, branch: e.branch })),
+    touched_paths: ["scripts/outra-coisa.ts"],
+  });
+  const inUse = selectInUseWorktreeNames([s]);
+  assert.equal(inUse.names.size, 0, "nenhum nome protegido só por aparecer na foto global");
+  assert.deepEqual([...inUse.branches], ["master"], "só o branch singular do checkout principal");
+  const candidates = filterOutLockedWorktrees(filterOutInUseWorktrees(entries, inUse));
+  assert.deepEqual(
+    selectMergedForRemoval(candidates, () => true).map((e) => e.path),
+    entries.map((e) => e.path),
+    "todos os mergeados seguem removíveis com a sessão viva",
+  );
+});
+
+test("#11317 — known_worktrees ainda protege o worktree que a sessão TOCOU (nome sob .claude/worktrees ou path externo)", () => {
+  const entries = [
+    { path: "/repo/.claude/worktrees/agent-tocado", branch: "overnight/fix-1-a", locked: false },
+    { path: "C:/Users/vjpix/Projects/wt-externo", branch: "chore/externo", locked: false },
+    { path: "/repo/.claude/worktrees/agent-livre", branch: "overnight/fix-2-b", locked: false },
+  ];
+  const s = sess11317({
+    known_worktrees: entries.map((e) => ({ path: e.path, branch: e.branch })),
+    touched_paths: [".claude/worktrees/agent-tocado/scripts/x.ts", "C:\\Users\\vjpix\\Projects\\wt-externo\\a.ts"],
+  });
+  const inUse = selectInUseWorktreeNames([s]);
+  assert.equal(inUse.branches.has("chore/externo"), true, "externo protegido pela branch resolvida via known_worktrees");
+  assert.deepEqual(
+    filterOutInUseWorktrees(entries, inUse).map((e) => e.path),
+    ["/repo/.claude/worktrees/agent-livre"],
+  );
+});
+
+test("#11317 — known_worktrees protege o worktree cuja branch carrega uma issue REIVINDICADA pela sessão", () => {
+  const entries = [
+    { path: "/repo/.claude/worktrees/agent-claim", branch: "overnight/fix-11317-worktree-cleanup", locked: false },
+    { path: "/repo/.claude/worktrees/agent-outro", branch: "overnight/fix-11318-x", locked: false },
+  ];
+  const s = sess11317({
+    known_worktrees: entries.map((e) => ({ path: e.path, branch: e.branch })),
+    claimed_issues: [11317],
+  });
+  assert.deepEqual(
+    filterOutInUseWorktrees(entries, selectInUseWorktreeNames([s])).map((e) => e.path),
+    ["/repo/.claude/worktrees/agent-outro"],
+  );
+});
+
+test("#11317 — o prefixo de path não casa worktree de nome parecido (wt-a vs wt-ab)", () => {
+  const entries = [
+    { path: "C:/P/wt-a", branch: "chore/a", locked: false },
+    { path: "C:/P/wt-ab", branch: "chore/ab", locked: false },
+  ];
+  const s = sess11317({
+    known_worktrees: entries.map((e) => ({ path: e.path, branch: e.branch })),
+    touched_paths: ["C:/P/wt-ab/x.ts"],
+  });
+  assert.deepEqual(filterOutInUseWorktrees(entries, selectInUseWorktreeNames([s])).map((e) => e.path), ["C:/P/wt-a"]);
+});
+
+test("#11317 — `worktrees` (contrato estreito, desta sessão) protege por nome e branch", () => {
+  const entries = [
+    { path: "C:/P/wt-meu", branch: "chore/meu", locked: false },
+    { path: "C:/P/wt-livre", branch: "chore/livre", locked: false },
+  ];
+  const s = sess11317({ worktrees: [{ path: "C:/P/wt-meu", branch: "chore/meu" }] });
+  assert.deepEqual(filterOutInUseWorktrees(entries, selectInUseWorktreeNames([s])).map((e) => e.path), ["C:/P/wt-livre"]);
+});

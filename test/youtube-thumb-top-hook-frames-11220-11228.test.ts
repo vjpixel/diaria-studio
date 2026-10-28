@@ -229,6 +229,16 @@ describe("#11228 codex-image.js com imagem de referência (outpaint)", () => {
     assert.ok(!buildCodexArgs(DEFAULTS).includes("-i"), "sem referência, sem -i");
   });
 
+  it("#11296: `--` entre a última imagem e o `-` do stdin (o -i variádico não engole o `-`)", () => {
+    const args: string[] = buildCodexArgs(DEFAULTS, ["/a.jpg", "/b.jpg"]);
+    assert.deepEqual(args.slice(-2), ["--", "-"]);
+    assert.equal(args.lastIndexOf("-i"), args.length - 4, "a última imagem vem logo antes do `--`");
+    // Sem referência não há opção variádica antes do `-`: argv inalterado.
+    const plain: string[] = buildCodexArgs(DEFAULTS);
+    assert.ok(!plain.includes("--"));
+    assert.equal(plain.at(-1), "-");
+  });
+
   it("prompt pede outpaint mantendo a pintura da referência só quando há referência", () => {
     const sd = { positive: "x", final_width: 1536, final_height: 864 };
     assert.doesNotMatch(buildCodexPrompt(sd), /reference/);

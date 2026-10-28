@@ -67,8 +67,8 @@ describe("classifyCanalPago", () => {
     }
   });
 
-  it("PAID_UTM_SOURCES casa com as specs 'teste 2608' de CHANNEL_KEY_SPECS (drift)", () => {
-    const teste2608 = CHANNEL_KEY_SPECS.filter((s) => s.canal.includes("teste 2608")).flatMap((s) => s.keys);
+  it("PAID_UTM_SOURCES casa com as specs '(UTM)' (ex-'teste 2608', #5862) de CHANNEL_KEY_SPECS (drift)", () => {
+    const teste2608 = CHANNEL_KEY_SPECS.filter((s) => s.canal.endsWith("(UTM)")).flatMap((s) => s.keys);
     assert.deepEqual([...PAID_UTM_SOURCES].sort(), [...teste2608].sort());
   });
 });

@@ -32,6 +32,7 @@ const DEFAULT: PreflightState = {
   gmailMcp: null,
   beehiivMcp: null,
   clariceRest: null,
+  clariceMcp: null,
   cloudflareTokenOk: null,
   capturedAt: null,
 };
@@ -244,6 +245,16 @@ describe("preflight-state.ts CLI (#5414)", () => {
     assert.equal(state.chromeMcp, true);
     assert.equal(state.clariceRest, false);
     assert.ok(state.capturedAt);
+  });
+
+  it("--clarice-mcp grava o sinal clariceMcp sem apagar os outros (#11312)", () => {
+    execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--clarice-rest", "true"], { cwd: ROOT, shell: true });
+    execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--clarice-mcp", "false"], { cwd: ROOT, shell: true });
+    const state = JSON.parse(
+      execFileSync("npx", ["tsx", SCRIPT, "--edition-dir", editionDir, "--read"], { encoding: "utf8", cwd: ROOT, shell: true }).trim(),
+    );
+    assert.equal(state.clariceMcp, false);
+    assert.equal(state.clariceRest, true);
   });
 
   it("sem --edition-dir -> exit != 0", () => {

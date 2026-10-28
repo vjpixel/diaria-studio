@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { usesGeminiModel } from "../image-backends.ts"; // #9094
+import { resolveNewsletterBackend, type NewsletterBackend } from "../shared/newsletter-read-source.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -53,17 +54,26 @@ function checkPastEditionsRawValid(): InvariantViolation[] {
 }
 
 /**
- * `BEEHIIV_API_KEY` deve estar setado. refresh-dedup, fetch-poll-stats,
- * collect-monthly-runner e outros falham silenciosamente sem ela.
+ * `BEEHIIV_API_KEY` deve estar setado — SÓ quando a leitura de edições
+ * (`publishing.newsletter.read_backend`) ainda é a Beehiiv. Era incondicional
+ * (#895: refresh-dedup, fetch-poll-stats e collect-monthly falhavam
+ * silenciosamente sem ela); desde o #11225 a Beehiiv é só arquivo histórico
+ * (não envia desde #7388, `read_backend: "kit"` desde #8142) e a key ausente
+ * nunca pode bloquear a edição — os leitores de histórico que ainda a usam
+ * (`beehiiv-sync.ts`, backups) são fail-soft.
+ *
+ * `readBackend` existe como seam de teste; produção lê o config real.
  */
-function checkBeehiivKeySet(): InvariantViolation[] {
+function checkBeehiivKeySet(readBackend: NewsletterBackend = resolveNewsletterBackend()): InvariantViolation[] {
+  if (readBackend !== "beehiiv") return [];
   if (!process.env.BEEHIIV_API_KEY || process.env.BEEHIIV_API_KEY.trim().length === 0) {
     return [
       {
         rule: "beehiiv-key-set",
         message:
           "BEEHIIV_API_KEY não definida no env. Configure em .env ou exporte no shell. " +
-          "Sem ela, refresh-dedup, fetch-poll-stats e collect-monthly falham.",
+          "Sem ela, refresh-dedup, fetch-poll-stats e collect-monthly falham " +
+          "(exigida só com publishing.newsletter.read_backend = \"beehiiv\", #11225).",
         source_issue: "#895",
         severity: "error",
       },
@@ -369,7 +379,7 @@ export const STAGE_0_RULES: InvariantRule[] = [
   },
   {
     id: "beehiiv-key-set",
-    description: "BEEHIIV_API_KEY env var presente (#895)",
+    description: "BEEHIIV_API_KEY env var presente quando read_backend=beehiiv (#895, #11225)",
     source_issue: "#895",
     stage: 0,
     run: () => checkBeehiivKeySet(),

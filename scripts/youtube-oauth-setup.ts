@@ -2,7 +2,9 @@
  * youtube-oauth-setup.ts (#10659 — vídeo diário no @diariabr)
  *
  * OAuth one-shot (authorization code + redirect de loopback) da conta dona
- * do canal @diariabr, com escopos `youtube.upload` + `youtube.readonly`.
+ * do canal @diariabr, com escopos `youtube.upload` + `youtube.readonly` +
+ * `youtube.force-ssl` (este desde #11384, para o `captions.insert` da legenda
+ * SRT: token gerado antes não envia legenda — rodar o setup de novo uma vez).
  * Rodar na máquina do editor (abre o navegador logado na conta Google).
  *
  * Lê do ambiente (Doppler → `.env`): GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
@@ -39,6 +41,7 @@ import {
   buildYouTubeAuthUrl,
   classifyCallback,
   decidePersist,
+  missingOptionalScopes,
   type YouTubeTokenResponse,
 } from "./lib/youtube-oauth.ts";
 
@@ -163,6 +166,13 @@ async function main(): Promise<number> {
   });
   const ch = decision.channel;
   console.log(`✔ Canal autorizado: ${ch.title} (${ch.customUrl}, ${ch.id}).`);
+  const optionalMissing = missingOptionalScopes(tokens.scope);
+  if (optionalMissing.length > 0) {
+    console.error(
+      `⚠ O consentimento não concedeu ${optionalMissing.join(", ")}: o vídeo sobe, mas a legenda SRT não (#11384). ` +
+        "Rode o setup de novo deixando todos os escopos marcados.",
+    );
+  }
   // #10786: o resultado do Doppler vem antes do ".env gravado" — a ordem
   // inversa parecia sucesso logo antes da falha (exit 2).
   if (r.dopplerFailed.length > 0) {

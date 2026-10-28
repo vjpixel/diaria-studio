@@ -574,6 +574,30 @@ const DOI_CONFIRMACAO_MIN_N = 5;
 export interface DoiConfirmacaoCohortMember {
   id: number;
   confirmed: boolean;
+  /** #8548 — canal pago do cadastro (`resolveCohortCanal`). Ausente = canal
+   *  desconhecido na decomposição `canal`, nunca orgânico. */
+  canal?: string;
+}
+
+/** Rótulo da decomposição `canal` pra membro sem canal resolvido — o mesmo
+ *  texto de `CANAL_PAGO_UNKNOWN_LABEL` no relatório de confirmação. */
+const DOI_CANAL_DESCONHECIDO = "(utm_source desconhecido)";
+
+/** Taxa por canal da safra (#8548). Canal com menos de
+ *  `DOI_CONFIRMACAO_MIN_N` membros sai com `valor: null` — mesma regra do
+ *  total ("nunca renderiza com n<5"). Ordem: maior safra primeiro. @pure */
+export function doiConfirmacaoPorCanal(cohort: readonly DoiConfirmacaoCohortMember[]): MetricSeriesPoint[] {
+  const porCanal = new Map<string, { n: number; confirmados: number }>();
+  for (const m of cohort) {
+    const chave = m.canal || DOI_CANAL_DESCONHECIDO;
+    const acc = porCanal.get(chave) ?? { n: 0, confirmados: 0 };
+    acc.n++;
+    if (m.confirmed) acc.confirmados++;
+    porCanal.set(chave, acc);
+  }
+  return [...porCanal.entries()]
+    .sort((a, b) => b[1].n - a[1].n || a[0].localeCompare(b[0]))
+    .map(([chave, { n, confirmados }]) => ({ chave, valor: n >= DOI_CONFIRMACAO_MIN_N ? confirmados / n : null }));
 }
 
 export interface DoiConfirmacaoDiaDeps extends MetricDeps {
@@ -597,13 +621,15 @@ const doiConfirmacaoDiaDef: MetricDef<DoiConfirmacaoDiaDeps> = {
   definicao:
     "razão: quantos da safra de D (created com state inactive no snapshot diário de D) " +
     "registraram confirmação (state=active) até a maturação de 48h ÷ tamanho da safra (denominador = safra " +
-    "do dia D, fixado no snapshot de criação, nunca encolhe). Nunca renderiza com n<5.",
+    "do dia D, fixado no snapshot de criação, nunca encolhe). Nunca renderiza com n<5. " +
+    "decomposicao 'canal' devolve a taxa por canal pago do cadastro (utm_source do Kit: google-ads/meta-ads/" +
+    "microsoft-ads/orgânico/desconhecido, #8548), com o mesmo piso de n<5 por canal.",
   unidade: "razao",
   direcao: "maior-melhor",
   fonte:
     "scripts/subscriber-state-snapshot.ts (snapshot diário id/state/created_at do Kit) — " +
     "buildDoiConfirmationCohort compara o snapshot do dia D com o snapshot de maturação (D+48h)",
-  decomposicoes: [],
+  decomposicoes: ["canal"],
   async computar(args) {
     validarDecomposicao(doiConfirmacaoDiaDef, args.decomposicao);
     const { cohort, motivoIndeterminado, semFiltroDoi } = args.deps;
@@ -627,15 +653,17 @@ const doiConfirmacaoDiaDef: MetricDef<DoiConfirmacaoDiaDeps> = {
       );
     }
     const confirmados = cohort.filter((m) => m.confirmed).length;
+    const series = args.decomposicao === "canal" ? doiConfirmacaoPorCanal(cohort) : undefined;
     if (semFiltroDoi) {
-      return piso(
+      const r = piso(
         confirmados / cohort.length,
         args.janela,
         null,
         "sem-filtro-doi: snapshot do dia sem participação no form DOI — a safra inclui quem nunca foi vinculado (órfãos), então a taxa é um piso",
       );
+      return series ? { ...r, series } : r;
     }
-    return exato(confirmados / cohort.length, args.janela, null);
+    return exato(confirmados / cohort.length, args.janela, null, series);
   },
 };
 

@@ -327,6 +327,27 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#10941",
   },
   {
+    name: "Diaria-Short-Related-Missed-Alarm",
+    description:
+      "alarma quando a task do vídeo relacionado do Short (#10811, no Neo) não deixou registro na edição do dia depois do prazo (#11353)",
+    steps: [{ key: "alarm", script: "scripts/short-related-missed-alarm.ts" }],
+    logPath: "short-related-missed-alarm/.alarm.log",
+    // Diária 13:30 BRT: o slot mais tardio do teste de horário do vertical é
+    // 12:00 (`publishing.shorts.schedule`, #10831) e a task do Neo desiste
+    // 60 min depois (`SHORT_RELATED_GIVE_UP_MINUTES`) — 13:00, mais 30 min de
+    // folga pra replicação do OneDrive. O prazo exato por edição
+    // (`shortAt + 60 min`) é conferido de novo pela lógica pura; fim de
+    // semana sai `weekend` sem alarmar. Slot livre (nenhuma task às 13:xx).
+    // Só LÊ `data/editions/` — nunca grava na pasta da edição, que é do Neo.
+    schedule: { kind: "daily", hour: 13, minute: 30 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem avaliar (ausencia nao e prova de nao-execucao).",
+    },
+    issue: "#11353",
+  },
+  {
     name: "Diaria-Continuo-Ratelimit-Watchdog",
     description:
       "roda hermes/scripts/pause-cron-on-ratelimit.py de hora em hora: pausa o contínuo em 403 Key limit exceeded e o retoma logo depois da virada UTC, sem esperar o watch diário (#10070)",
@@ -1116,40 +1137,67 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7250",
   },
   {
+    name: "Diaria-Doppler-Token-Expiry-Alarm",
+    description:
+      "alarma (issue P1/P2) quando um *_EXPIRES_AT do Doppler diaria-studio/dev está a <=14 dias de vencer, vencido ou ilegível — lê o vault, não o .env local (#11415, script #11077)",
+    steps: [{ key: "alarm", script: "scripts/doppler-token-expiry-alarm.ts" }],
+    logPath: "doppler-token-expiry-alarm/.alarm.log",
+    // #11415: o script existia desde o #11077 sem ponto de invocação (item 27
+    // de context/overnight-dispatch-rules.md: guard sem task não está
+    // entregue). É a rede de segurança do caso silencioso que as tasks de
+    // refresh não pegam — `.env` do 300 sem o token e sem o user id faz
+    // `Diaria-Threads-Personal-Token` sair 0 ("nada a renovar") e o token
+    // vencer calado; só um alarme que lê o VAULT avisa. Cobre
+    // THREADS_PERSONAL_*, LINKEDIN_PERSONAL_* e todo `*_EXPIRES_AT`.
+    //
+    // Diária 11:00 BRT, no fim do cluster matinal de alarmes (Codex 10:50,
+    // Ads-Daily-Digest 10:55) — slot livre conferido com `--list`. Diária e
+    // não mais frequente: a janela de aviso é de 14 dias e a resposta (refazer
+    // o OAuth) é manual; diária e não semanal porque o limiar "critical" é de
+    // 3 dias, e uma semana de latência o atravessaria. Repetição não vira
+    // spam: `applyAlarmReconciliation` deduplica por fingerprint (o nome da
+    // chave) e só reabre/comenta quando a faixa muda.
+    //
+    // Falha de leitura do Doppler (CLI ausente, login vencido) aborta antes de
+    // reconciliar, sem fechar issue nenhuma, e sai != 0 — a unit fica
+    // `failed` e o `Diaria-Systemd-Failed-Units-Alarm` pega. Sem `guard`: o
+    // dado lido é o vault, não `data/` (o estado de dedup em
+    // `data/doppler-token-expiry-alarm-issues.json` é o mesmo padrão dos
+    // vizinhos de `alarm-issues.ts`).
+    schedule: { kind: "daily", hour: 11, minute: 0 },
+    issue: "#11415, #11077",
+  },
+  {
     name: "Diaria-LinkedIn-Personal",
     description:
-      "publica no LinkedIn PESSOAL o 4º post (USE MELHOR) armado pelo Stage 6 e alarma token (expiração 60d, revogação) e intenções presas",
-    steps: [
-      { key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] },
-      { key: "token-alarm", script: "scripts/linkedin-personal-token-alarm.ts" },
-    ],
+      "alarma o token do app LinkedIn PESSOAL (expiração 60d, revogação) — o post diário no perfil pessoal foi aposentado (#11398)",
+    // #11398 (27/10/2026, pedido do editor): o 4º post (USE MELHOR) não sai
+    // mais no LinkedIn PESSOAL. O passo `publish-linkedin-personal.ts
+    // --fire-due` saiu daqui; sem ele nenhuma intenção armada
+    // (`_internal/06-linkedin-personal.json`, inclusive a da 261028, armada
+    // antes desta mudança) é publicada. O alarme do token FICA: o mesmo
+    // token (`LINKEDIN_PERSONAL_*`) publica o vertical no perfil pessoal
+    // (`Diaria-Shorts-LinkedIn-Profile`, `publish-shorts.ts`). Nome e horário
+    // (07:46 BRT, #9568) mantidos para não exigir re-arme da unit no 300.
+    steps: [{ key: "token-alarm", script: "scripts/linkedin-personal-token-alarm.ts" }],
     logPath: "linkedin-personal/.task.log",
-    // Diária 07:46 BRT (#9568) — 1 minuto DEPOIS de
-    // `publishing.social.use_melhor_time` (07:45), o slot em que a página
-    // publica o mesmo texto. A Posts API da LinkedIn não agenda, então o
-    // post sai quando a task roda; `--fire-due` só publica intenção cujo
-    // `scheduled_at` já passou (até 3h de atraso). Slot deslocado (past-slot
-    // guard, Stage 5/6 tardios) é coberto pela task `-Catchup` abaixo, e o
-    // `--arm` recusa (lembrete manual) quando nenhuma das duas cai na janela
-    // (`fireWindowCheck`, scripts/lib/linkedin-personal.ts). Mudou o slot no
-    // config? Mudar este horário junto — `test/linkedin-personal.test.ts`
-    // trava o par (minuto = use_melhor_time + 1).
     schedule: { kind: "daily", hour: 7, minute: 46 },
-    issue: "#9568",
+    issue: "#9568, #11398",
   },
   {
     name: "Diaria-LinkedIn-Personal-Catchup",
     description:
-      "repescagem de hora em hora do post do LinkedIn PESSOAL (4º post USE MELHOR) cujo horário foi deslocado para depois das 07:46",
+      "APOSENTADA (#11398) — repescagem de hora em hora do post do LinkedIn PESSOAL (4º post USE MELHOR)",
     steps: [{ key: "post", script: "scripts/publish-linkedin-personal.ts", args: ["--fire-due"] }],
     logPath: "linkedin-personal/.catchup.log",
-    // De hora em hora (#9568, fleet review da PR #9844): qualquer
-    // `scheduled_at` tem uma execução em até 60 min, dentro da janela de 3h.
-    // Barato (lê 2 arquivos por execução e sai). Concorrência com a das
-    // 07:46 resolvida pelo lock O_EXCL do disparo. Par travado em
-    // `test/linkedin-personal.test.ts`.
     schedule: { kind: "interval", hours: 1 },
-    issue: "#9568",
+    // `enabled: false` (#11398): o post pessoal foi aposentado. O runner pula
+    // a execução ("SKIP: task disabled") mesmo com a unit ainda armada no
+    // 300, e o gerador de units não a recria. Desarmar a unit que já existe
+    // é ação do editor no 300:
+    // `systemctl --user disable --now diaria-linkedin-personal-catchup.timer`.
+    enabled: false,
+    issue: "#9568, #11398",
   },
   {
     name: "Diaria-Shorts-LinkedIn-Profile",
@@ -1180,6 +1228,95 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#10982",
   },
   {
+    name: "Diaria-Shorts-Instagram",
+    description:
+      "publica o Reels do vertical no Instagram no horário do vertical, pelo upload resumível da Graph API (sem URL pública), com o corte _Instagram_ do Drive (#11265)",
+    steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
+    logPath: "shorts/.instagram-timer.log",
+    // Diária 06:32 BRT (#11265, decisão do editor 27/10/2026: timer no 300 em
+    // vez de R2/túnel): 2 minutos depois do 1º horário do teste do vertical
+    // (#10831, `publishing.shorts.schedule.rotation_times`) — 06:31 já é do
+    // `Diaria-Shorts-LinkedIn-Profile`. Os horários em hora cheia (08:00,
+    // 12:00 e o `default_time`) caem na execução de hora em hora abaixo. O
+    // script só publica depois do horário do vertical (até 3 h de atraso;
+    // depois disso abre alarme), então rodar antes é no-op; o lock O_EXCL
+    // resolve a concorrência entre as duas. Só age com
+    // `publishing.shorts.instagram_backend: "timer-300"`. Mudou um horário do
+    // teste para fora da hora cheia? Ajustar aqui —
+    // `test/shorts-instagram-timer-11265.test.ts` trava o par. Sem
+    // `enabled: false`: o `Diaria-Remediate-Never-Armed-Tasks` (#8153) arma
+    // no 300 depois do merge, como o timer do LinkedIn (#10982).
+    schedule: { kind: "daily", hour: 6, minute: 32 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11265",
+  },
+  {
+    name: "Diaria-Shorts-Instagram-Catchup",
+    description:
+      "de hora em hora: publica o Reels do vertical no Instagram quando o horário do dia é hora cheia (08:00/12:00), consulta e baixa o corte do Instagram do Drive dentro da janela [horário do vertical, +3 h] e avisa o editor quando o Reels não saiu (#11265)",
+    steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
+    logPath: "shorts/.instagram-timer-catchup.log",
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11265",
+  },
+  {
+    name: "Diaria-Shorts-Threads-Profile",
+    description:
+      "publica o vertical da edição do dia no Threads PESSOAL do editor no horário do vertical (a Threads API não agenda), com o vídeo por URL pública do R2, e avisa o editor quando o post não sai (#11410)",
+    steps: [{ key: "post", script: "scripts/shorts-threads-profile-timer.ts" }],
+    logPath: "shorts/.threads-profile-timer.log",
+    // Diária 06:33 BRT (#11410): 3 minutos depois do 1º horário do teste do
+    // vertical (#10831, `publishing.shorts.schedule.rotation_times`) — 06:31 é
+    // do timer do LinkedIn e 06:32 do Instagram. Os horários em hora cheia
+    // (08:00, 12:00 e o `default_time`) caem na execução de hora em hora
+    // abaixo. O script só publica depois do horário do vertical (até 3 h de
+    // atraso; depois abre alarme), então rodar antes é no-op; o lock O_EXCL
+    // resolve a concorrência entre as duas. Mudou um horário do teste para
+    // fora da hora cheia? Ajustar aqui —
+    // `test/shorts-threads-profile-timer-11410.test.ts` trava o par.
+    //
+    // REGISTRADA, NÃO ARMADA (`enabled: false`, decisão da rodada #11410:
+    // armar é do editor). Sem isso o `Diaria-Remediate-Never-Armed-Tasks`
+    // (#8153) armaria no 300 depois do merge. Mesmo armada, o script só age
+    // com `publishing.shorts.threads_profile_via_timer: true`. Para armar:
+    // tirar o `enabled: false` desta e da `-Catchup`, ligar o config e, no
+    // 300, `setup-systemd-timers.ts --task` + `arm-systemd-timers.ts --task`
+    // para cada uma (passo a passo em docs/scheduled-tasks-registry.md).
+    enabled: false,
+    schedule: { kind: "daily", hour: 6, minute: 33 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11410",
+  },
+  {
+    name: "Diaria-Shorts-Threads-Profile-Catchup",
+    description:
+      "de hora em hora: publica o vertical no Threads PESSOAL quando o horário do dia é hora cheia (08:00/12:00), baixa o vertical do Drive se ele ainda não está no 300 e avisa o editor quando o post não saiu (#11410)",
+    steps: [{ key: "post", script: "scripts/shorts-threads-profile-timer.ts" }],
+    logPath: "shorts/.threads-profile-timer-catchup.log",
+    // REGISTRADA, NÃO ARMADA (#11410): mesmo racional da diária acima.
+    enabled: false,
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler o registro do vertical.",
+    },
+    issue: "#11410",
+  },
+  {
     name: "Diaria-Threads-Personal-Token",
     description:
       "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",
@@ -1188,17 +1325,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // Diária (#10772): só chama a API quando faltam ≤30 dias para vencer (ou o
     // vencimento é desconhecido), então o custo é 0 requisições na maioria dos
     // dias. Mesmas regras do refresh do token da diar.ia.br no Worker (#9618),
-    // fora dele porque o consumidor previsto (`publish-shorts.ts`, quando a
-    // integração do destino `threads_profile` entrar) é local e lê o Doppler.
+    // fora dele porque o consumidor (`publish-shorts.ts`, destino
+    // `threads_profile`, #11122) é local e lê o Doppler/`.env`.
     // Sem token e sem `THREADS_PERSONAL_USER_ID` sai 0 sem fazer nada.
-    // DECLARADA, NÃO ARMADA — enabled:false DE PROPÓSITO: o 300 (onde as tasks
-    // rodam) não tem o Doppler CLI, então a task ficaria em skip para sempre
-    // ou renovaria um token que nunca chega ao Doppler. Pré-requisito para
-    // armar: o 300 escrever no Doppler (CLI autenticado ou API HTTP com
-    // service token de escrita), #11077. Até lá, refresh manual na máquina
-    // do editor. Sem o enabled:false o Remediate-Never-Armed-Tasks (#8153) a
-    // auto-armaria no 300.
-    enabled: false,
+    // Habilitada em 27/10/2026: o pré-requisito (o 300 escrever no Doppler,
+    // #11077) foi verificado com o CLI autenticado, e os 3 `THREADS_PERSONAL_*`
+    // estão no Doppler `diaria-studio/dev` e no `.env` do 300 (token gerado em
+    // 27/10, vence 26/12). Arma pelo Remediate-Never-Armed-Tasks (#8153) ou à mão.
     schedule: { kind: "daily", hour: 4, minute: 20 },
     issue: "#10772",
   },
@@ -3437,6 +3570,69 @@ export function listDisabledScheduledTaskNames(): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Tasks LOCAIS do app Claude desktop (#10811)
+//
+// Fora de `SCHEDULED_TASKS` de propósito: não são `.ts` rodados pelo
+// `task-runner.ts` nem viram unit systemd — são sessões do Claude criadas pelo
+// MCP `scheduled-tasks` do app desktop numa máquina específica (hoje só o Neo,
+// onde está o Chrome logado). Colocá-las em `SCHEDULED_TASKS` faria o
+// `setup-systemd-timers.ts` gerar unit pro `300` e o
+// `Diaria-Task-Never-Armed-Alarm` alarmar "nunca armada". O registro aqui é a
+// definição versionada (nome, cron, prompt) que o coordenador usa pra criar ou
+// recriar a task; o prompt é um PONTEIRO pro roteiro no repo, nunca a cópia
+// (padrão do `relatorio-diario-teste-2608`, #8246).
+// ---------------------------------------------------------------------------
+
+export interface DesktopScheduledTaskDefinition {
+  /** `taskId` do MCP scheduled-tasks (diretório em `~/.claude/scheduled-tasks/`). */
+  readonly taskId: string;
+  /** Nome exibido na lista de tasks do app. */
+  readonly title: string;
+  readonly description: string;
+  /** Máquina onde a task existe — o app só roda tasks com ele aberto. */
+  readonly machine: "neo";
+  /** Cron de 5 campos no fuso LOCAL da máquina (Neo = BRT). */
+  readonly cronExpression: string;
+  /** Roteiro canônico no repo (path POSIX relativo à raiz). */
+  readonly playbook: string;
+  /**
+   * Prompt passado ao `create_scheduled_task`. Cada execução começa sem
+   * memória, então ele se sustenta sozinho no que importa (checkout, regras
+   * duras), mas os PASSOS ficam no `playbook` — o prompt aponta, não copia.
+   */
+  readonly prompt: string;
+  readonly issue: string;
+}
+
+export const DESKTOP_SCHEDULED_TASKS: readonly DesktopScheduledTaskDefinition[] = [
+  {
+    taskId: "diaria-short-video-relacionado",
+    title: "diar.ia.br: vídeo relacionado do Short",
+    description: "Vincula o horizontal da edição como vídeo relacionado do Short no YouTube Studio (#10811)",
+    machine: "neo",
+    // Dias úteis (só há edição de segunda a sexta), 06:05 BRT: logo depois de
+    // o horizontal publicar (06:00) e antes do slot mais cedo do Short (06:30,
+    // `publishing.shorts.schedule.rotation_times`). O `wait` do plano cobre o
+    // atraso do YouTube e os minutos que o app soma ao cron.
+    cronExpression: "5 6 * * 1-5",
+    playbook: ".claude/skills/diaria-publica-video/short-related-task.md",
+    prompt: [
+      "Task diária da diar.ia.br (#10811): vincular o vídeo horizontal da edição de hoje como \"vídeo relacionado\" do Short no YouTube Studio do canal @diariabr.",
+      "",
+      "Trabalhe no checkout C:\\Users\\vjpix\\Projects\\diaria-studio (todos os comandos a partir dele). Leia o arquivo .claude/skills/diaria-publica-video/short-related-task.md inteiro e siga-o à risca: ele é a fonte canônica dos passos (plano determinístico com scripts/youtube-short-related-plan.ts, Claude in Chrome no Studio aberto pela lista de Shorts do canal, registro do resultado e alerta ao editor por e-mail).",
+      "",
+      "Regras: a edição é a de hoje em BRT (o script calcula sozinho, não passe data); rode o script do plano pela ferramenta Bash com timeout de 600000 ms; só clique no Studio quando o plano disser action=link; nunca altere outro campo do vídeo nem digite senha; nunca pergunte nada (ninguém está olhando): na dúvida, registre failed e alerte. Termine com um resumo de uma linha: edição, ação final e IDs.",
+    ].join("\n"),
+    issue: "#10811",
+  },
+];
+
+/** Linhas da listagem `--desktop` (uma por task, separadas por tab). */
+export function renderDesktopScheduledTasksTable(tasks: readonly DesktopScheduledTaskDefinition[] = DESKTOP_SCHEDULED_TASKS): string {
+  return tasks.map((t) => [t.taskId, t.machine, t.cronExpression, t.playbook, t.issue].join("\t")).join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Enumeração programática (#5408) — mesmo idioma CLI de exec-mode.ts /
 // clarice-envio-enabled.ts: função pura testável + guard `isMainModule` fino.
 //
@@ -3521,16 +3717,22 @@ export function renderScheduledTasksTable(rows: ScheduledTaskRow[] = listSchedul
 if (isMainModule(import.meta.url)) {
   const { flags } = parseArgs(process.argv.slice(2));
   const rows = listScheduledTaskRows();
-  if (flags.has("json")) {
+  if (flags.has("desktop")) {
+    // #10811: tasks locais do app Claude desktop (fora do systemd).
+    console.log(flags.has("json") ? JSON.stringify(DESKTOP_SCHEDULED_TASKS, null, 2) : renderDesktopScheduledTasksTable());
+  } else if (flags.has("json")) {
     console.log(JSON.stringify(rows, null, 2));
   } else if (flags.has("list")) {
     console.log(renderScheduledTasksTable(rows));
+    // stderr: o stdout do `--list` é exatamente 1 linha por task systemd (#5408).
+    console.error(`(+ ${DESKTOP_SCHEDULED_TASKS.length} task(s) local(is) do app Claude desktop fora desta tabela: --desktop)`);
   } else {
-    console.log("Uso: npx tsx scripts/lib/scheduled-tasks.ts --list [--json]");
+    console.log("Uso: npx tsx scripts/lib/scheduled-tasks.ts --list [--json] | --desktop [--json]");
     const desarmadas = rows.filter((r) => !r.armed).length;
     console.log(
       `(${rows.length} tasks no registro — nome, schedule, scripts, logPath, killSwitch, issue, armada/DESARMADA` +
         `${desarmadas > 0 ? `; ${desarmadas} ${desarmadas === 1 ? "DESARMADA" : "DESARMADAS"} — não viram unit systemd` : ""})`,
     );
+    console.log(`(+ ${DESKTOP_SCHEDULED_TASKS.length} task(s) local(is) do app Claude desktop, fora do systemd: --desktop)`);
   }
 }

@@ -103,7 +103,9 @@ describe("recorrência usa o classificador atual (#10135)", () => {
       }
       const draft = collectSignals({ rootDir: root, editionDir: current });
       const recurring = draft.signals.filter((s) => s.kind === "recurring_editor_request");
-      assert.deepEqual(titles(recurring), ["Pedido recorrente do editor: pool-cut"]);
+      // 5 edições não formam taxa-base medida (#11337): nenhum sinal — e,
+      // principalmente, nada de title-choice/length-cut pelos rótulos velhos.
+      assert.deepEqual(titles(recurring), []);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

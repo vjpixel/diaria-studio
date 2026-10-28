@@ -22,7 +22,7 @@
  * `publishing.newsletter.backend` (`platform.config.json`) controla o
  * backend de **ENVIO** — migrou pra `"kit"` no switchover do #6114
  * (26/08/2026). Este módulo controla o backend de **LEITURA**, sob a chave
- * PRÓPRIA `publishing.newsletter.read_backend` (default `"beehiiv"`) — as
+ * PRÓPRIA `publishing.newsletter.read_backend` (default `"kit"` desde o #11225) — as
  * duas prontidões são independentes: o envio já tem confiança pra rodar em
  * produção no Kit, mas a LEITURA (dedup incremental, digest mensal) só pode
  * migrar quando o Kit tiver histórico real de edições publicadas. Medido ao
@@ -41,7 +41,7 @@
  * ## Desenho
  *
  * Resolve o backend de leitura (`publishing.newsletter.read_backend`,
- * default `"beehiiv"`) e as credenciais UMA vez (`resolveNewsletterReadConfig`),
+ * default `"kit"`, #11225) e as credenciais UMA vez (`resolveNewsletterReadConfig`),
  * devolvendo um objeto discriminado (`NewsletterReadConfig`) que os 3
  * pontos de leitura abaixo aceitam sem precisar saber qual backend está por
  * trás:
@@ -164,7 +164,8 @@ export type NewsletterBackend = "beehiiv" | "kit";
 function resolveReadBackendChecked(
   configPath: string,
 ): { ok: true; backend: NewsletterBackend } | { ok: false; reason: string } {
-  if (!existsSync(configPath)) return { ok: true, backend: "beehiiv" };
+  // #11225: default "kit" (Beehiiv só como arquivo histórico).
+  if (!existsSync(configPath)) return { ok: true, backend: "kit" };
   let cfg: { publishing?: { newsletter?: { read_backend?: string } } };
   try {
     cfg = JSON.parse(readFileSync(configPath, "utf8"));
@@ -173,26 +174,26 @@ function resolveReadBackendChecked(
   }
   const raw = cfg.publishing?.newsletter?.read_backend;
   const normalized = (raw ?? "").trim().toLowerCase();
-  if (normalized === "kit") return { ok: true, backend: "kit" };
-  if (normalized && normalized !== "beehiiv") {
+  if (normalized === "beehiiv") return { ok: true, backend: "beehiiv" };
+  if (normalized && normalized !== "kit") {
     console.error(
-      `[newsletter-read-source] publishing.newsletter.read_backend desconhecido: ${JSON.stringify(raw)} — caindo em beehiiv`,
+      `[newsletter-read-source] publishing.newsletter.read_backend desconhecido: ${JSON.stringify(raw)} — caindo em kit`,
     );
   }
-  return { ok: true, backend: "beehiiv" };
+  return { ok: true, backend: "kit" };
 }
 
 /**
  * Convenience pura sobre `resolveReadBackendChecked` — SEMPRE devolve um
  * backend usável, nunca lança, nunca propaga o erro de JSON inválido (só
- * degrada pro default `"beehiiv"`). Use quando "beehiiv" no erro é
+ * degrada pro default `"kit"`, #11225). Use quando "kit" no erro é
  * aceitável (ex: só quer saber "qual backend hoje", sem side-effect de
  * abortar processo). `resolveNewsletterReadConfig` abaixo usa a versão
  * CHECADA internamente — é ela quem de fato precisa propagar o erro (item 6).
  */
 export function resolveNewsletterBackend(configPath: string = DEFAULT_CONFIG_PATH): NewsletterBackend {
   const result = resolveReadBackendChecked(configPath);
-  return result.ok ? result.backend : "beehiiv";
+  return result.ok ? result.backend : "kit";
 }
 
 /** Config resolvida e discriminada por backend — o que as 3 funções de

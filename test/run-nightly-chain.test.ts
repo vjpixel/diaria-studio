@@ -335,6 +335,7 @@ describe("run-nightly-chain — log incremental sobrevive a processo morto (#106
         `  ...DEFAULT_DEPS,`,
         `  resolveClaudeBin: () => "/opt/claude",`,
         `  hasActiveOvernight: () => false,`,
+        `  checkWorkspaceTrust: () => ({ status: "trusted", configPath: "/x", message: "ok" }),`,
         `  log: () => {},`,
         `  spawn: ((cmd: string) => {`,
         `    if (cmd !== "bash") process.kill(process.pid, "SIGKILL");`,

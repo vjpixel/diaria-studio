@@ -66,6 +66,14 @@ import { getScheduledTaskByName } from "../lib/scheduled-tasks.ts";
 import { hasActiveSessionOfKind } from "../lib/session-registry.ts";
 import { NO_BACKGROUND_DIRECTIVE, dataAddDirArgs } from "../lib/edition-stage-runner.ts";
 import { claudeCliEnv } from "./run-scheduled-edicao.ts";
+import {
+  EXIT_WORKSPACE_UNTRUSTED,
+  checkWorkspaceTrust,
+  stderrSaysWorkspaceUntrusted,
+  type WorkspaceTrustResult,
+} from "../lib/claude-workspace-trust.ts";
+
+export { EXIT_WORKSPACE_UNTRUSTED } from "../lib/claude-workspace-trust.ts";
 
 /** Script do review, relativo à raiz do repo. */
 export const DAILY_REVIEW_SCRIPT = "hermes/scripts/opus-daily-diff-review.sh";
@@ -103,7 +111,14 @@ export const EXIT_OVERNIGHT_NO_TRACE = 4;
 export const EXIT_OVERNIGHT_DELIVERY_ALARM = 5;
 
 export type ReviewStatus = "ok" | "noop" | "failed" | "timeout";
-export type OvernightStatus = "ok" | "failed" | "no-trace" | "delivery-alarm" | "skipped-active-session";
+export type OvernightStatus =
+  | "ok"
+  | "failed"
+  | "no-trace"
+  | "delivery-alarm"
+  | "skipped-active-session"
+  /** Repo sem `hasTrustDialogAccepted` em `~/.claude.json`, ou o CLI disse isso no stderr (#11383). */
+  | "untrusted-workspace";
 
 export interface ReviewOutcome {
   status: ReviewStatus;
@@ -354,6 +369,9 @@ export function readDeliveryCounts(report: string): { implementedUnits: number; 
 export function chainExitCode(review: ReviewStatus, overnight: OvernightOutcome): number {
   // Código fixo, não o exit do `claude`: um `claude` que saísse 3 seria lido
   // como "só o review falhou". O exit original fica no log.
+  // Workspace sem confiança vence tudo: é a causa raiz de qualquer outra
+  // falha da mesma run (allowlist inteira ignorada, #11383).
+  if (overnight.status === "untrusted-workspace") return EXIT_WORKSPACE_UNTRUSTED;
   if (overnight.status === "failed") return EXIT_OVERNIGHT_FAILED;
   if (overnight.status === "no-trace") return EXIT_OVERNIGHT_NO_TRACE;
   if (overnight.status === "delivery-alarm") return EXIT_OVERNIGHT_DELIVERY_ALARM;
@@ -381,6 +399,13 @@ export interface NightlyChainDeps {
    * devolvendo null (não verificável), o runner não reprova por falta de rastro.
    */
   findRoundTrace?: (repoRootAbs: string, sinceMs: number) => string[] | null;
+  /**
+   * Preflight de confiança do workspace (#11383), chamado antes de subir o
+   * overnight. Recebe o `env` da cadeia (de onde sai o `HOME`). Opcional:
+   * ausente, o preflight não roda (harness de teste antigo); o
+   * `DEFAULT_DEPS` sempre liga.
+   */
+  checkWorkspaceTrust?: (repoRootAbs: string, env: NodeJS.ProcessEnv) => WorkspaceTrustResult;
 }
 
 /** Nome da task no registro (`scripts/lib/scheduled-tasks.ts`) que dispara este runner. */
@@ -530,6 +555,7 @@ export const DEFAULT_DEPS: NightlyChainDeps = {
   rotateLiveLog,
   readReviewSummary,
   findRoundTrace: findRoundTraceSince,
+  checkWorkspaceTrust: (root, env) => checkWorkspaceTrust(root, { env }),
 };
 
 export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): ReviewOutcome {
@@ -565,6 +591,16 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
   // "fila vazia" e "abortou cedo" eram a mesma linha `overnight=ok`.
   const result = parseStreamResult(r.stdout ?? "");
   deps.log(formatStreamResult(result));
+  // Defesa depois da run (#11383): o preflight leu o arquivo, mas quem decide
+  // é o CLI. Se ele anunciou no stderr que ignorou a allowlist, a rodada
+  // inteira rodou sem permissões, qualquer que seja o exit.
+  if (stderrSaysWorkspaceUntrusted(r.stderr)) {
+    deps.log(
+      "overnight: WORKSPACE NÃO CONFIADO — o CLI avisou no stderr que ignorou a allowlist de .claude/settings.json " +
+        `(this workspace has not been trusted); exit=${r.status ?? "?"}. Aceitar o diálogo de confiança em ${repoRootAbs} (#11383)`,
+    );
+    return { status: "untrusted-workspace", exitCode: r.status };
+  }
   if (r.error || r.status !== 0) {
     deps.log(
       `overnight: FALHOU exit=${r.status ?? "?"} ${r.error ? `erro=${r.error.message} ` : ""}tail=${tailLines(r.stderr ?? "")}`,
@@ -599,6 +635,28 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
     }
   }
   return { status: "ok", exitCode: 0 };
+}
+
+/**
+ * Preflight de confiança (#11383). true = NÃO subir o overnight. Exceção no
+ * próprio check conta como não confiado (nunca fail-soft: é o cenário que a
+ * issue quer ver).
+ */
+function preflightUntrusted(repoRootAbs: string, deps: NightlyChainDeps): boolean {
+  if (!deps.checkWorkspaceTrust) return false;
+  let trust: WorkspaceTrustResult;
+  try {
+    trust = deps.checkWorkspaceTrust(repoRootAbs, deps.env);
+  } catch (e) {
+    deps.log(`overnight: PULADO — confiança do workspace: erro no preflight (${(e as Error).message}); tratado como não confiado (#11383)`);
+    return true;
+  }
+  if (trust.status === "trusted") {
+    deps.log(`overnight: ${trust.message}`);
+    return false;
+  }
+  deps.log(`overnight: PULADO — ${trust.message}`);
+  return true;
 }
 
 export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_DEPS): number {
@@ -643,6 +701,8 @@ export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_D
   if (deps.hasActiveOvernight(repoRootAbs)) {
     deps.log("overnight: SKIP — já existe sessão overnight ativa no session-registry (rodada aberta à mão?)");
     overnight = { status: "skipped-active-session", exitCode: null };
+  } else if (preflightUntrusted(repoRootAbs, deps)) {
+    overnight = { status: "untrusted-workspace", exitCode: null };
   } else {
     deps.log(`overnight: claude --print /diaria-overnight ${AGENDADO_FLAG} (${NIGHTLY_OVERNIGHT_MODEL}/${NIGHTLY_OVERNIGHT_EFFORT})`);
     try {

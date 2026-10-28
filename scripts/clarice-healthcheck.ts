@@ -8,13 +8,19 @@
  * pra cair no fallback (`clarice-correct.ts`) sem halt.
  *
  * Uso (CLI):
- *   npx tsx scripts/clarice-healthcheck.ts [--timeout-ms N] [--mcp]
+ *   npx tsx scripts/clarice-healthcheck.ts [--timeout-ms N] [--mcp] [--via-headers-helper]
  *
  * --mcp: em vez do REST cortex, sonda o MCP `clarice` de verdade
  * (`checkClariceMcpHealth` abaixo, #5114) — ver docstring da função pro
  * porquê disso não ser redundante com o probe REST default.
  *
+ * --via-headers-helper (#11312, implica --mcp): a key do probe MCP sai do
+ * `headersHelper` do `.mcp.json` (`scripts/mcp/clarice-headers.mjs`), como o
+ * Claude Code faz, em vez de `CLARICE_API_KEY` lida por este script. O Stage 0
+ * roda nesse modo (`stage-0-run.ts`, sinal `clariceMcp` do preflight-state).
+ *
  * Stdout: JSON { ok: boolean, latency_ms?: number, error?: string }
+ *   (com --via-headers-helper, também `key_source` e, às vezes, `note`)
  * Exit codes:
  *   0 — saudável (ok: true)
  *   1 — arg inválido
@@ -25,6 +31,9 @@
  */
 
 import "dotenv/config";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 
@@ -98,7 +107,8 @@ export async function checkClariceHealth(
 // Achado #5114: o healthcheck REST acima só prova que `cortex.clarice.ai`
 // está de pé com ESTA key -- não prova nada sobre o MCP (`mcp.clarice.ai`,
 // endpoint DIFERENTE, auth resolvida num processo DIFERENTE -- o `.mcp.json`
-// interpola `${CLARICE_API_KEY}` no launch do Claude Code, não neste script).
+// monta o header no Claude Code, via `headersHelper` desde o #11251, não neste
+// script).
 // `studio-integrations.ts` já documentava essa lacuna como "aproxima, não
 // prova" desde #3848 -- este bloco fecha ela com um probe real.
 //
@@ -240,8 +250,121 @@ export async function checkClariceMcpHealth(opts: HealthOptions): Promise<Health
   }
 }
 
-export function parseHealthcheckArgs(argv: string[]): { timeoutMs?: number; mcp?: boolean } {
-  const out: { timeoutMs?: number; mcp?: boolean } = {};
+// ─── Key pelo MESMO caminho do Claude Code (#11312) ────────────────────
+//
+// O probe MCP acima usa a key que ESTE processo lê (`CLARICE_API_KEY` do
+// ambiente + `.env` via dotenv). O Claude Code monta o header do MCP de outro
+// jeito (`.mcp.json`, #11251): roda o `headersHelper`
+// (`node scripts/mcp/clarice-headers.mjs`) e, se ele não devolver o header,
+// cai no estático `${CLARICE_API_KEY}`. Um helper quebrado passaria batido num
+// probe que só usa a key do script. Com `--via-headers-helper`, o probe roda o
+// MESMO helper e usa a saída dele.
+//
+// Limites (documentados, não resolvíveis daqui): (1) trust da pasta — sem
+// trust aceito o Claude Code nem roda o helper, e um script não tem como saber
+// isso; (2) o estático é expandido do ambiente do processo do Claude Code, não
+// deste script (que já carregou o `.env`), então o fallback abaixo é uma
+// aproximação otimista do header estático.
+
+/** Caminho do helper relativo à raiz do projeto — o mesmo de `.mcp.json`. */
+export const CLARICE_HEADERS_HELPER = "scripts/mcp/clarice-headers.mjs";
+const CLARICE_MCP_HEADER_NAME = "X-Clarice-Api-Key";
+/** Timeout do Claude Code para um `headersHelper` (doc oficial de MCP). */
+const HEADERS_HELPER_TIMEOUT_MS = 10_000;
+/** O Claude Code tira do ambiente de um helper de repositório as vars com
+ * cara de credencial (ver docstring de `clarice-headers.mjs`). Reproduzido
+ * aqui para o helper ler o `.env` como leria sob o Claude Code. */
+const CREDENTIAL_ENV_NAME = /KEY|TOKEN|SECRET|PASSWORD/i;
+
+export interface HelperRun {
+  /** `null` = o processo não saiu com código (timeout/sinal/spawn falhou). */
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  /** Mensagem de erro do spawn (ex.: ENOENT, ETIMEDOUT), quando houver. */
+  spawnError?: string;
+}
+
+export type ProbeKeySource = "headers-helper" | "static-env";
+
+export type ProbeKeyResolution =
+  | { ok: true; apiKey: string; source: ProbeKeySource; note?: string }
+  | { ok: false; error: string };
+
+/**
+ * Decide qual key o probe MCP usa a partir da saída do `headersHelper`, na
+ * mesma ordem do Claude Code: header dinâmico do helper primeiro; helper sem
+ * header (`{}`, a saída dele quando não acha key) → estático do ambiente.
+ * Helper que falha (exit != 0, timeout, stdout que não é objeto JSON) é
+ * reportado como falha — é exatamente o caso "helper quebrado" que o probe
+ * com a key do script não enxergava (#11312). Pura, nunca lança.
+ */
+export function resolveProbeKeyFromHelper(run: HelperRun, envKey: string | undefined): ProbeKeyResolution {
+  if (run.spawnError || run.code !== 0) {
+    const why = run.spawnError ?? `exit ${run.code ?? "sem código (timeout/sinal)"}`;
+    const stderr = run.stderr.trim().slice(0, 200);
+    return { ok: false, error: `headersHelper ${CLARICE_HEADERS_HELPER} falhou: ${why}${stderr ? ` — ${stderr}` : ""}` };
+  }
+  let headers: unknown;
+  try {
+    headers = JSON.parse(run.stdout.trim());
+  } catch {
+    return { ok: false, error: `headersHelper ${CLARICE_HEADERS_HELPER} imprimiu algo que não é JSON: ${run.stdout.trim().slice(0, 200)}` };
+  }
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    return { ok: false, error: `headersHelper ${CLARICE_HEADERS_HELPER} não imprimiu um objeto JSON de headers` };
+  }
+  const dynamic = (headers as Record<string, unknown>)[CLARICE_MCP_HEADER_NAME];
+  if (typeof dynamic === "string" && dynamic.trim()) {
+    return { ok: true, apiKey: dynamic.trim(), source: "headers-helper" };
+  }
+  const staticKey = envKey?.trim();
+  if (!staticKey) {
+    return {
+      ok: false,
+      error:
+        `headersHelper sem ${CLARICE_MCP_HEADER_NAME} e CLARICE_API_KEY ausente no ambiente — ` +
+        `o MCP iria com header vazio (401, sintoma do #11251)`,
+    };
+  }
+  return {
+    ok: true,
+    apiKey: staticKey,
+    source: "static-env",
+    note: "headersHelper não devolveu header; probe usou a key do ambiente (aproxima o header estático do .mcp.json)",
+  };
+}
+
+/** Roda o `headersHelper` como o Claude Code roda: cwd na raiz do projeto,
+ * timeout de 10s, ambiente sem vars com cara de credencial. Nunca lança. */
+export function runClariceHeadersHelper(projectRoot: string, env: NodeJS.ProcessEnv = process.env): HelperRun {
+  const helperEnv: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (!CREDENTIAL_ENV_NAME.test(k)) helperEnv[k] = v;
+  }
+  const res = spawnSync(process.execPath, [CLARICE_HEADERS_HELPER], {
+    cwd: projectRoot,
+    env: helperEnv,
+    encoding: "utf8",
+    timeout: HEADERS_HELPER_TIMEOUT_MS,
+  });
+  return {
+    code: res.status,
+    stdout: res.stdout ?? "",
+    stderr: res.stderr ?? "",
+    ...(res.error ? { spawnError: res.error.message } : {}),
+  };
+}
+
+export interface HealthcheckArgs {
+  timeoutMs?: number;
+  mcp?: boolean;
+  /** #11312: probe MCP com a key resolvida pelo `headersHelper` (implica `--mcp`). */
+  viaHeadersHelper?: boolean;
+}
+
+export function parseHealthcheckArgs(argv: string[]): HealthcheckArgs {
+  const out: HealthcheckArgs = {};
   for (let i = 0; i < argv.length; i++) {
     // Mesmo guard de clarice-correct.ts: só consome o próximo token como valor
     // se ele não for outra --flag.
@@ -257,17 +380,34 @@ export function parseHealthcheckArgs(argv: string[]): { timeoutMs?: number; mcp?
     if (argv[i] === "--mcp") {
       out.mcp = true;
     }
+    if (argv[i] === "--via-headers-helper") {
+      out.viaHeadersHelper = true;
+      out.mcp = true;
+    }
   }
   return out;
 }
 
 async function main(): Promise<number> {
-  let args: { timeoutMs?: number; mcp?: boolean };
+  let args: HealthcheckArgs;
   try {
     args = parseHealthcheckArgs(process.argv.slice(2));
   } catch (e) {
     console.error((e as Error).message);
     return 1;
+  }
+  if (args.viaHeadersHelper) {
+    const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const resolution = resolveProbeKeyFromHelper(runClariceHeadersHelper(projectRoot), process.env.CLARICE_API_KEY);
+    if (!resolution.ok) {
+      console.log(JSON.stringify({ ok: false, error: resolution.error }));
+      return 2;
+    }
+    const result = await checkClariceMcpHealth({ apiKey: resolution.apiKey, timeoutMs: args.timeoutMs });
+    console.log(
+      JSON.stringify({ ...result, key_source: resolution.source, ...(resolution.note ? { note: resolution.note } : {}) }),
+    );
+    return result.ok ? 0 : 2;
   }
   const apiKey = process.env.CLARICE_API_KEY;
   if (!apiKey) {

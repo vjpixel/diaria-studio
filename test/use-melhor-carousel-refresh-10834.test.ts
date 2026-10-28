@@ -236,7 +236,7 @@ describe("upload-images-public regera o carrossel defasado antes de subir (#1083
 });
 
 describe("banner do 03-social.md (#10833)", () => {
-  it("diz que o LinkedIn pessoal é automático, nunca 'manualmente'", () => {
+  it("diz que o 4º post não sai no LinkedIn pessoal (#11398), nunca 'manualmente' nem 'automaticamente'", () => {
     const dir = mkdtempSync(join(tmpdir(), "diaria-10833-"));
     dirs.push(dir);
     mkdirSync(join(dir, "_internal"), { recursive: true });
@@ -250,8 +250,9 @@ describe("banner do 03-social.md (#10833)", () => {
     const banner = out.split("\n").find((l) => l.startsWith("> **Texto único")) ?? "";
     assert.ok(banner, "banner presente");
     assert.doesNotMatch(banner, /manualmente no LinkedIn pessoal/);
-    assert.match(banner, /automaticamente no LinkedIn pessoal/);
-    assert.match(banner, /publish-linkedin-personal\.ts/);
+    assert.doesNotMatch(banner, /automaticamente no LinkedIn pessoal/);
+    assert.doesNotMatch(banner, /publish-linkedin-personal\.ts/);
+    assert.match(banner, /Não sai no LinkedIn pessoal/);
     assert.equal(existsSync(join(dir, "_internal", "03-social.tmp.md")), false);
   });
 });

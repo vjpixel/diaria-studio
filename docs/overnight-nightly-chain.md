@@ -72,4 +72,65 @@ Para desarmar, voltar `enabled: false` (o `run-task.ts` passa a pular) ou `syste
 - **Watchdog precisa do rearme pós-#10565.** Desde o #10565 o `Diaria-Overnight-Watchdog` roda 24h (antes, só de 18:00 a 09:00 BRT), então uma rodada agendada que passe das 09:00 continua vigiada. Isso só vale na máquina depois de regerar e recopiar o timer (`docs/overnight-watchdog-setup.md`, "Rearme depois do #10565"); com o timer antigo armado, a rodada fica sem detecção externa de stall entre 09:00 e 18:00.
 - **Sessão single-turn.** Em `claude --print` não existe turno seguinte, então a skill não pode esperar notificação de tarefa em background. O prompt leva a mesma diretiva `NO_BACKGROUND_DIRECTIVE` dos stages da edição agendada, e o "Modo agendado" da skill tira o passo de sonda que dependia de encerrar o turno.
 - **Colisão com a edição.** Se uma edição diária estiver em curso, o guard de colisão editorial (Fase 1 passo 1 da skill) encerra a Fase 1 (`preempted_by: edicao_editorial`) e a rodada segue para 1.5 e relatório. Não existe pausa à espera da edição: numa sessão `--print` não há turno seguinte para retomar (#10570).
-- **Permissões.** A sessão roda com `--permission-mode acceptEdits`, igual aos stages da edição agendada. Comando Bash fora da allowlist de `.claude/settings.json` é negado, e não há ninguém para aprovar. Se a primeira noite mostrar negações recorrentes no JSON de saída, o conserto é ampliar a allowlist.
+- **Permissões.** A sessão roda com `--permission-mode acceptEdits`, igual aos stages da edição agendada. Comando Bash fora da allowlist de `.claude/settings.json` é negado, e não há ninguém para aprovar. Se a primeira noite mostrar negações recorrentes no JSON de saída, o conserto é ampliar a allowlist. Prova de 27/10/2026 logo abaixo.
+- **Confiança do workspace.** `claude -p` nunca mostra o diálogo de confiança, e a doc diz que as regras `permissions.allow` de `.claude/settings.json` só valem num diretório já confiado (https://code.claude.com/docs/en/permissions, "Project allow rules and workspace trust"). No `300`, `/home/vjpixel/diaria-studio` tem `hasTrustDialogAccepted: true` em `~/.claude.json`, e worktree herda a confiança do checkout principal. Se essa marca sumir (máquina nova, `~/.claude.json` recriado), toda a allowlist do projeto é ignorada, e o único sinal é uma linha `Ignoring N permissions.allow entries ... this workspace has not been trusted` no stderr (`.nightly-chain-last-overnight.stderr.log`). Foi o que aconteceu com o 1º run da prova num clone fora do repo: 38 negações, inclusive `gh pr view` e `node -e`. **Desde o #11383 isso alarma:** antes de subir o `claude`, `run-nightly-chain.ts` e `run-scheduled-edicao.ts` leem `~/.claude.json` (ou `$CLAUDE_CONFIG_DIR/.claude.json`) e procuram a marca no repo ou num ancestral (`scripts/lib/claude-workspace-trust.ts`). Sem ela, ou com o arquivo ausente/ilegível (mensagem própria, `NÃO VERIFICÁVEL`, nunca tratado como confiado), o runner loga o motivo e sai `6` (`EXIT_WORKSPACE_UNTRUSTED`), fora de `successExitCodes`, e o `Diaria-Systemd-Failed-Units-Alarm` avisa. Na cadeia, o review do dia roda antes e o overnight é pulado (`overnight=untrusted-workspace`). Defesa adicional: a linha `this workspace has not been trusted` no stderr da run também vira exit `6` (na edição agendada, só quando o stage falha e a linha sobra no tail). Conserto: abrir `claude` interativo na raiz do repo uma vez e aceitar o diálogo.
+
+## Prova da allowlist (#11235)
+
+Rodada em 27/10/2026 no `300`, depois dos PRs #11250, #11267 e #11275, num worktree descartável sob o checkout confiável (`.claude/worktrees/probe-11235-allow`, branch `probe/allow-11235-base`, criado de `origin/master` 67de39c23). Comando, com as variáveis de `CLAUDE_CLI_STRIPPED_ENV_VARS` removidas do ambiente e `DISABLE_AUTOUPDATER=1`:
+
+```
+claude --print --permission-mode acceptEdits --model claude-sonnet-5-5 --effort medium \
+  --no-session-persistence --output-format stream-json --verbose < prompt.txt
+```
+
+O prompt pedia cada comando numa chamada Bash própria, sem reescrever. A coluna "negado" vem do `permission_denials` do evento `result`, não do texto do modelo. Push foi sempre `--dry-run`, e escrita no GitHub só com `--help`. `gh pr merge` ficou fora.
+
+**Antes** é a rodada agendada 261027 (03:23Z, antes do #11250), lida de `.nightly-chain-last-overnight.json` (`.prev` para a 261026). "n/o" = não aparece negado naquele log.
+
+| Comando | Antes (261026/261027) | Depois (prova 27/10) |
+|---|---|---|
+| `git status`, `rev-parse`, `merge-base`, `log`, `show`, `diff`, `branch --show-current`, `worktree list` | n/o (read-only) | rodou |
+| `git fetch origin master` | negado | rodou |
+| `git checkout -b <branch> origin/master`, `git checkout <branch>` | n/o | rodou |
+| `git pull`, `git checkout master && git pull` | negado | rodou |
+| `git add <arquivos>` | negado | rodou |
+| `git commit -m` (inclusive multilinha), `git commit -F <arquivo>`, `git commit -F - <<'EOF'` | negado | rodou |
+| `git add a && git commit ...` | negado | rodou |
+| `git reset --soft HEAD~1` | n/o | rodou |
+| `git push --dry-run -u origin <branch>`, `git push --dry-run origin --delete <branch>` | n/o | rodou |
+| `git worktree add -b ...`, `git worktree prune` | n/o | rodou |
+| `mkdir -p data/overnight/...`, `cp`, `touch`, `wc`, `sed -i`, redirect `> arquivo` no worktree | n/o | rodou (acceptEdits) |
+| `npm ci`, `npm ci --prefer-offline`, `npm ci --dry-run` | negado | rodou |
+| `npx tsc --noEmit` / `npx tsc --version` (inclusive `2>&1 \| tail`) | negado | rodou |
+| `npx tsx --test ...`, `NODE_TEST_SNAPSHOTS=1 npx tsx --test ...` | n/o | rodou |
+| `npx tsx scripts/lib/gh-pr-safe-edit.ts`, `scripts/resolve-review-threads.ts --check`, `scripts/gh-pr-review-api.ts list-comments` | n/o | rodou |
+| `node -e`, `gh auth status`, `gh pr view/checks/list`, `gh pr create --help`, `gh issue view/list`, `gh issue comment/edit/create --help`, `gh run list`, `gh search issues`, `sleep`, `date` | n/o | rodou |
+| `git -C <worktree> add/status/fetch/checkout/log` | negado | **negado** |
+| `cd <dir> && git ...` | n/o (`cd <dir> && python3`/`grep` negados) | **negado** |
+| `git merge --ff-only origin/master` | n/o | **negado** |
+| `node --test`, `node --import tsx --test`, `npx --no-install tsx --test`, `node_modules/.bin/tsx --test` | negado | **negado** |
+| `for f in a b; do echo $f; done` (variável não verificável) | n/o | **negado** |
+| `gh api ...` cru | n/o | **negado** (de propósito) |
+| `python3 - <<'EOF'` (edição por script) | negado | não testado; fora do fluxo, editar é pela ferramenta Edit |
+
+Nenhuma forma ainda negada é exigida pelo fluxo documentado, por isso a prova não acrescentou regra ao allow list. Na 261027 elas apareceram como contorno depois que a forma canônica foi negada: sem `npm ci`, os subagentes buscavam o `tsx` do checkout principal; sem `git add`, tentavam `git -C`. As formas canônicas estão em `context/overnight-dispatch-rules.md` (item 9), e `test/overnight-agendado-allow-list-11235.test.ts` trava as duas listas (`OVERNIGHT_REQUIRED_BASH_COMMANDS` e `OVERNIGHT_PROBED_DENIED_FORMS`).
+
+Limites da prova: escrita em `.claude/` não entrou (é a #11255, regra 34 das regras de dispatch). A sessão da prova roda no worktree, sem o `.claude/settings.local.json` do checkout principal (gitignored, com `Bash(npx tsx *)` no `300`), então ela é mais restrita que o coordenador real, não menos. Os subagentes herdam as permissões da sessão do coordenador (medido na prova seguinte, #11383). A confirmação final continua sendo o `report.md` da próxima rodada agendada.
+
+### Subagentes herdam a allowlist (#11383)
+
+O #11235 afirmou a herança sem medir. Medido em 27/10/2026 no `300` (Claude Code 2.1.310): mesmo comando acima, com as variáveis de `CLAUDE_CLI_STRIPPED_ENV_VARS` fora do ambiente, num worktree descartável sob o checkout confiável (`.claude/worktrees/probe-11383-sub`, de `origin/master` c07fe5791, com `npm ci` feito). O prompt mandava o coordenador rodar, um por chamada Bash, Write de um arquivo temporário, `git add`, `git commit -m`, `git fetch origin master`, `npm ci --dry-run` e `npx tsc --version`, e depois disparar UM subagente via Agent (`subagent_type: dev-implementador`, `isolation: worktree`) com a mesma lista.
+
+| Comando | Coordenador | Subagente (`dev-implementador`, worktree próprio) |
+|---|---|---|
+| Write do arquivo temporário | rodou | rodou |
+| `git add <arquivo>` | rodou | rodou |
+| `git commit -m "..."` | rodou | rodou |
+| `git fetch origin master` | rodou | rodou |
+| `npm ci --dry-run` | rodou | rodou |
+| `npx tsc --version` | rodou (`Version 5.9.3`) | rodou (`Version 5.9.3`) |
+
+`permission_denials` do evento `result` veio vazio, o stderr veio vazio, e o stream-json (os eventos do subagente chegam com `parent_tool_use_id`) mostra cada `tool_result` do subagente sem erro. O subagente rodou em `.claude/worktrees/agent-<id>`, branch `worktree-agent-<id>`, sem `node_modules`: o `npx tsc` dele achou o `tsc` subindo até o `node_modules` do checkout principal, que é o pai do worktree. Para um comando de leitura isso é inofensivo, mas é a mesma rota pela qual a 261027 acabou usando o `tsx` do checkout principal; o `npm ci` do próprio worktree (item 3 das regras de dispatch) continua obrigatório. Conclusão: na mesma sessão, o subagente não é negado onde o coordenador não é. Nenhum push, nenhum `gh`; os dois worktrees e as duas branches da sonda foram removidos.
+
+Limites: o achado vale para o subagente dedicado com `isolation: worktree`, o formato que o overnight usa. Nenhum comando foi negado ao subagente, então não ficou provado que uma negação dele apareceria no `permission_denials` do coordenador; o stream-json já mostra o erro no `tool_result` do subagente.

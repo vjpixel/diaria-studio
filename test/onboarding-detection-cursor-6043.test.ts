@@ -142,11 +142,13 @@ describe("onboarding-welcome-run.ts — detecção via cursor (#6043)", () => {
       const snippetsDir = resolve(dir, "snippets"); // vazio de propósito — dry-run não precisa de conteúdo definitivo
       writeFileSync(
         configPath,
-        JSON.stringify({ onboarding: { enabled: true, snippets_dir: snippetsDir, store_path: storePath } }),
+        // subscriber_backend explícito: o default virou "kit" no #11225 e este
+        // teste cobre a detecção pelo ramo Beehiiv (store fixture abaixo).
+        JSON.stringify({ publishing: { newsletter: { subscriber_backend: "beehiiv" } }, onboarding: { enabled: true, snippets_dir: snippetsDir, store_path: storePath } }),
       );
       // Store fixture: cursor já bootstrapado (não é a 1ª execução), sem entries conhecidas.
       // `last_detection_backend: "beehiiv"` explícito e IGUAL ao backend
-      // default deste teste (config sem `subscriber_backend` → beehiiv) —
+      // deste teste (config com `subscriber_backend: "beehiiv"` explícito) —
       // sem isso o guard de troca de backend do #7599
       // (`shouldResetCursorForBackendSwitch`) trataria o campo ausente como
       // "backend desconhecido" e forçaria um re-bootstrap, mascarando o
@@ -199,6 +201,7 @@ describe("onboarding-welcome-run.ts — detecção via cursor (#6043)", () => {
       writeFileSync(
         configPath,
         JSON.stringify({
+          publishing: { newsletter: { subscriber_backend: "beehiiv" } }, // default virou "kit" no #11225
           onboarding: { enabled: true, snippets_dir: snippetsDir, store_path: storePath, sender_email: "oi@example.com" },
         }),
       );

@@ -157,7 +157,7 @@ describe("#10509 — repo real", () => {
 
   it("as 4 URLs da issue estão no sitemap publicado", () => {
     const declared = pathsInSitemap(readFileSync(DEFAULT_SITEMAP, "utf8"));
-    for (const p of ["/", "/produto/conteudo-autentico", "/guia/agente-ia", "/evento/agente-ia"]) {
+    for (const p of ["/", "/produto/conteudo-autentico/b", "/guia/agente-ia", "/evento/agente-ia"]) {
       assert.ok(declared.has(p), `${p} ausente de ${DEFAULT_SITEMAP}`);
     }
   });

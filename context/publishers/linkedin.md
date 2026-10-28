@@ -97,22 +97,23 @@ O composer abre por padrão no contexto do perfil pessoal. É obrigatório troca
 - Conteúdo: seção `## d{N}` dentro de `# LinkedIn` em `03-social.md`, com heading e comentários HTML removidos.
 - Não adicionar nada — o conteúdo já vem pronto e revisado por Clarice.
 
-### 5. Imagem via URL pública (Drive) — #48
+### 5. Imagem via URL pública (Cloudflare KV) — #48, #2147, #11414
 
-**Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__claude-in-chrome__upload_image`), **colar a URL pública** retornada pelo pre-flight do agent (`scripts/upload-images-public.ts`). LinkedIn auto-detecta e renderiza preview visual.
+**Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__claude-in-chrome__upload_image`), **colar a URL pública** que `scripts/upload-images-public.ts --mode social` grava em `{edition_dir}/06-public-images.json`. LinkedIn auto-detecta e renderiza preview visual.
 
+- Destino é sempre o Cloudflare Worker KV (`defaultTargetFor` → `"cloudflare"` em todos os modos desde #2147; o ramo Google Drive e o `uc?id=` foram removidos no #11414). A URL tem a forma `https://eia.diar.ia.br/img/img-{AAMMDD}-04-d{N}-4x5-{md5}.jpg` — copiar o campo `url` da chave do destaque (`d{N}_4x5`, ou o hero 2:1 quando o card 4:5 não existir) em `06-public-images.json`, nunca montar à mão.
 - No campo do composer, **appendar em linha separada no fim do texto** (depois de hashtags):
   ```
   (texto do post)
 
   (hashtags)
 
-  https://drive.google.com/uc?id={file_id}&export=view
+  {url de 06-public-images.json}
   ```
-- LinkedIn detecta a URL em 1-2s e renderiza card de preview com a imagem inline.
-- Se o preview não renderizar (rare — Drive a vezes demora), aguardar 5s e re-verificar.
-- Se não renderizar mesmo assim, tentar URL alternativa: `https://drive.google.com/file/d/{file_id}/view` (HTML wrapper com og:image).
+- LinkedIn detecta a URL em 1-2s e renderiza card de preview com a imagem inline (o Worker serve o JPEG direto com `Content-Type: image/jpeg`).
+- Se o preview não renderizar, aguardar 5s e re-verificar. Persistindo, conferir se a URL abre no navegador (KV vazio = rodar o upload de novo) antes de publicar sem imagem.
 - **Não** clicar em ícone de Photo (📷) — upload local não funciona no Claude in Chrome.
+- Este roteiro é o fallback manual: o caminho padrão da página é a API (`publish-linkedin.ts`, que lê o mesmo `06-public-images.json`).
 
 **Trade-off vs upload nativo**:
 - Preview do LinkedIn mostra card de link em vez de imagem fullscreen.
@@ -187,6 +188,8 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 - **Nem draft nem schedule funcionam** → abortar este post, registrar em `06-social-published.json` com `status: "failed"` e prosseguir para o próximo.
 
 ## Post pessoal (vjpixel) — texto do 4º post `## um` (#9568; antes `## post_pixel`, #1690)
+
+**APOSENTADO desde 27/10/2026 (#11398, pedido do editor):** o 4º post não sai mais no LinkedIn pessoal — nem automático (o Stage 6 não roda mais `publish-linkedin-personal.ts --arm` e nenhuma task dispara `--fire-due`) nem por lembrete manual no gate. A página diar.ia.br segue recebendo o 4º post. O texto abaixo fica como histórico do fluxo; o app pessoal (`LINKEDIN_PERSONAL_*`) continua em uso pelo vertical no perfil pessoal (`publish-shorts.ts`).
 
 **Desde a #9568 o post pessoal é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`)** que a página publica — o `## post_pixel` (post standalone de D1 em voz pessoal) deixou de ser gerado. Edições antigas que ainda têm `## post_pixel` seguem com o fluxo antigo (o texto vem de `resolve-post-pixel.ts`, que prefere `## um` e cai no `## post_pixel` só quando `## um` não existe).
 
