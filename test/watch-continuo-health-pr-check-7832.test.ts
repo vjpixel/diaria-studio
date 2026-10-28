@@ -30,11 +30,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 /** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
 const SKIP_WIN32 = process.platform === "win32" && "#11243: executa watch-continuo-health.sh (300, Linux) com gh falso; no Git Bash do Windows a saída com acento (—, ó, í) chega corrompida";
@@ -62,9 +63,7 @@ function extractFunction(src: string, name: string): string {
 function runPrFirstFailedCheck(prnum: string, ghScript: string): { stdout: string; status: number | null } {
   const dir = mkdtempSync(join(tmpdir(), "watch-continuo-pr-check-"));
   try {
-    const ghPath = join(dir, "gh");
-    writeFileSync(ghPath, `#!/usr/bin/env bash\n${ghScript}\n`);
-    chmodSync(ghPath, 0o755);
+    writeFakeGh(dir, `#!/usr/bin/env bash\n${ghScript}\n`);
 
     const funcSrc = extractFunction(source, "pr_first_failed_check");
     const driver = `${funcSrc}\npr_first_failed_check "$1"\n`;
@@ -73,7 +72,7 @@ function runPrFirstFailedCheck(prnum: string, ghScript: string): { stdout: strin
 
     const res = spawnSync("bash", [driverPath, prnum], {
       encoding: "utf8",
-      env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      env: fakeGhEnv(dir),
     });
     return { stdout: res.stdout, status: res.status };
   } finally {

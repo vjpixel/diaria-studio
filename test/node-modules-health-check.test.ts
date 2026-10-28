@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 const SCRIPT = join(import.meta.dirname, "..", "scripts", "systemd", "node-modules-health-check.sh");
 
@@ -48,8 +49,7 @@ case "$1 $2" in
 esac
 exit 0
 `;
-  writeFileSync(join(bin, "gh"), stub);
-  chmodSync(join(bin, "gh"), 0o755);
+  writeFakeGh(bin, stub);
 
   let nodeModules: string;
   if (opts.nodeModules === null) {
@@ -70,9 +70,8 @@ exit 0
     writeFileSync(state, String(now));
   }
 
-  const env: Record<string, string> = {
-    ...process.env,
-    PATH: `${bin}:${process.env.PATH}`,
+  const env: NodeJS.ProcessEnv = {
+    ...fakeGhEnv(bin),
     DIARIA_NODE_MODULES: nodeModules,
     DIARIA_HEALTH_STATE: state,
     DIARIA_HEALTH_FALLBACK: join(sandbox, "fallback"),

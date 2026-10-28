@@ -787,9 +787,11 @@ function emitWarnEvent(message: string, eventMessage: string = "watchdog_not_arm
   const logScript = resolve(ROOT, "scripts", "log-event.ts");
   if (!existsSync(logScript)) return;
   try {
+    // #11488: node direto, sem `npx` — no Windows `npx` sem shell dá ENOENT.
     execFileSync(
-      "npx",
+      process.execPath,
       [
+        "--import",
         "tsx",
         logScript,
         "--agent",

@@ -11,11 +11,12 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 import { loadIssueRepos } from "../scripts/lib/issue-repos.ts";
 import { main as duplicatePreflightMain } from "../scripts/check-issue-duplicate-preflight.ts";
 import { main as openPrMain } from "../scripts/check-issue-open-pr.ts";
@@ -114,15 +115,13 @@ describe("#10910 — gates de fim de rodada resolvem issue_repos pela raiz do m�
       const cwd = cwdWithoutConfig();
       // `gh` falso que falha: o gate segue até a leitura das labels (fail-soft
       // de gh) sem tocar a rede.
-      const gh = join(cwd, "gh");
-      writeFileSync(gh, "#!/usr/bin/env bash\necho 'gh falso: offline' >&2\nexit 1\n");
-      chmodSync(gh, 0o755);
+      writeFakeGh(cwd, "#!/usr/bin/env bash\necho 'gh falso: offline' >&2\nexit 1\n");
       const tsx = join(ROOT, "node_modules", ".bin", "tsx");
       const r = spawnSync(tsx, [join(ROOT, "scripts", "check-trade-off-label-cleared.ts"), "--issue", `${DESIGN}#21`], {
         cwd,
         encoding: "utf8",
         timeout: 60_000,
-        env: { ...process.env, PATH: `${cwd}${delimiter}${process.env.PATH ?? ""}` },
+        env: fakeGhEnv(cwd),
       });
       assert.doesNotMatch(r.stderr, /fora de issue_repos/, r.stderr);
       assert.match(r.stderr, /gh indisponível/, r.stderr);

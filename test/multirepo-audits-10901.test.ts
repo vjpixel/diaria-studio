@@ -14,10 +14,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 import { listOpenIssuesByRepo, resolveReposCliArg, type GhRunFn } from "../scripts/lib/open-issues-by-repo.ts";
 import { main as collisionsMain, computeCollisionsByRepo } from "../scripts/check-issue-file-collisions.ts";
@@ -330,9 +331,7 @@ describe("#10901 — check-continuo-escalate-label --repo (CLI com gh falso)", {
     ].join("\n");
     const fakeJsPath = join(dir, "fake-gh.mjs");
     writeFileSync(fakeJsPath, fakeJs, "utf8");
-    const bin = join(dir, "gh");
-    writeFileSync(bin, `#!/usr/bin/env bash\nexec node "${fakeJsPath}" "$@"\n`, "utf8");
-    chmodSync(bin, 0o755);
+    writeFakeGh(dir, `#!/usr/bin/env bash\nexec node "${fakeJsPath}" "$@"\n`);
     try {
       fn(dir, log);
     } finally {
@@ -341,12 +340,14 @@ describe("#10901 — check-continuo-escalate-label --repo (CLI com gh falso)", {
   }
 
   function run(args: string[], dir: string, log: string): { stdout: string; status: number } {
+    // Fora do try: gh resolvido que não seja o falso falha o teste alto (#11487).
+    const env = fakeGhEnv(dir, { FAKE_GH_CALLS: log });
     try {
       const stdout = execFileSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
         cwd: ROOT,
         encoding: "utf8",
         timeout: 60_000,
-        env: { ...process.env, FAKE_GH_CALLS: log, PATH: `${dir}:${process.env.PATH ?? ""}` },
+        env,
         stdio: ["ignore", "pipe", "pipe"],
       });
       return { stdout, status: 0 };

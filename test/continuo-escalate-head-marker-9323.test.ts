@@ -13,10 +13,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 /** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
 const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do continuo testado com gh falso (shim bash + PATH com ':'); no Windows o gh.exe real vence o shim. O CLI só roda no 300";
@@ -46,19 +47,19 @@ function makeFakeGh(): { dir: string; postLog: string } {
   ].join("\n");
   const fakeJsPath = join(dir, "fake-gh.mjs");
   writeFileSync(fakeJsPath, fakeJs, "utf8");
-  const bin = join(dir, "gh");
-  writeFileSync(bin, `#!/usr/bin/env bash\nexec node "${fakeJsPath}" "$@"\n`, "utf8");
-  chmodSync(bin, 0o755);
+  writeFakeGh(dir, `#!/usr/bin/env bash\nexec node "${fakeJsPath}" "$@"\n`);
   return { dir, postLog };
 }
 
 function run(args: string[], dir: string, postLog: string): { stdout: string; status: number } {
+  // Fora do try: se o gh resolvido não for o falso, o teste falha alto (#11487).
+  const env = fakeGhEnv(dir, { FAKE_GH_POSTS: postLog });
   try {
     const stdout = execFileSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
       cwd: ROOT,
       encoding: "utf8",
       timeout: 60_000,
-      env: { ...process.env, FAKE_GH_POSTS: postLog, PATH: `${dir}:${process.env.PATH ?? ""}` },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return { stdout, status: 0 };

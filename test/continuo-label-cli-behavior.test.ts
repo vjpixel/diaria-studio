@@ -22,10 +22,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 /** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
 const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do continuo testado com gh falso (shim bash + PATH com ':'); no Windows o gh.exe real vence o shim. O CLI só roda no 300";
@@ -95,9 +96,7 @@ function makeFakeGh(mode: string, label: string): string {
   writeFileSync(fakeJsPath, fakeJs, "utf8");
 
   const shim = ["#!/usr/bin/env bash", 'exec node "' + fakeJsPath + '" "$@"'].join("\n") + "\n";
-  const bin = join(dir, "gh");
-  writeFileSync(bin, shim, "utf8");
-  chmodSync(bin, 0o755);
+  writeFakeGh(dir, shim);
 
   fakeEnv.set(dir, { FAKE_GH_MODE: mode, FAKE_GH_STATE: statePath });
   return dir;
@@ -112,12 +111,14 @@ interface RunResult {
 }
 
 function runCli(script: string, args: string[], fakeGhDir: string): RunResult {
+  // Fora do try: gh resolvido que não seja o falso falha o teste alto (#11487).
+  const env = fakeGhEnv(fakeGhDir, fakeEnv.get(fakeGhDir) ?? {});
   try {
     const stdout = execFileSync(process.execPath, ["--import", "tsx", script, ...args], {
       cwd: ROOT,
       encoding: "utf8",
       timeout: 60_000,
-      env: { ...process.env, ...(fakeEnv.get(fakeGhDir) ?? {}), PATH: `${fakeGhDir}:${process.env.PATH ?? ""}` },
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return { stdout, status: 0 };

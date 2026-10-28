@@ -21,10 +21,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakeGhEnv, withoutGhCredentials, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 import {
   isPublishingInvocation,
@@ -759,9 +760,7 @@ try { stdin = fs.readFileSync(0, "utf8"); } catch {}
 fs.writeFileSync(process.env.FAKE_GH_OUT, JSON.stringify({ argv: process.argv.slice(2), stdin }));
 process.exit(0);
 `;
-  const p = join(dir, "gh");
-  writeFileSync(p, script);
-  chmodSync(p, 0o755);
+  writeFakeGh(dir, script);
   return dir;
 }
 
@@ -769,7 +768,7 @@ function runWrapper(argv: string[], opts: { input?: string } = {}) {
   const fakeDir = makeFakeGhDir();
   const outFile = join(fakeDir, "out.json");
   const res = spawnSync(process.execPath, [WRAPPER_PATH, ...argv], {
-    env: { ...process.env, PATH: `${fakeDir}:${process.env.PATH}`, FAKE_GH_OUT: outFile },
+    env: fakeGhEnv(fakeDir, { FAKE_GH_OUT: outFile }),
     input: opts.input ?? "",
     encoding: "utf8",
   });
@@ -806,7 +805,7 @@ function runWrapperIsolated(argv: string[], opts: { input?: string; fakeDir?: st
   const fakeDir = opts.fakeDir ?? makeFakeGhDir();
   const outFile = join(fakeDir, "out.json");
   const res = spawnSync(process.execPath, [WRAPPER_PATH, ...argv], {
-    env: envWithPath(fakeDir, { FAKE_GH_OUT: outFile }),
+    env: withoutGhCredentials(envWithPath(fakeDir, { FAKE_GH_OUT: outFile })),
     input: opts.input ?? "",
     encoding: "utf8",
   });
@@ -902,7 +901,7 @@ describe("gh-wrapper.mjs invocado via symlink (#8900)", { skip: SKIP_WIN32 }, ()
     const symlinkPath = join(symlinkDir, "gh");
     symlinkSync(WRAPPER_PATH, symlinkPath);
     const res = spawnSync(process.execPath, [symlinkPath, ...argv], {
-      env: { ...process.env, PATH: `${fakeDir}:${process.env.PATH}`, FAKE_GH_OUT: outFile },
+      env: fakeGhEnv(fakeDir, { FAKE_GH_OUT: outFile }),
       input: opts.input ?? "",
       encoding: "utf8",
     });

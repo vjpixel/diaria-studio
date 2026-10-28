@@ -675,7 +675,8 @@ export type RunBackupFn = () => Promise<void> | void;
  *  fora de `--push` (guard de publicação: só a rodada real dispara backup
  *  ao vivo, dry-run nunca toca a API Beehiiv). */
 export function defaultRunBackup(): void {
-  execFileSync("npx", ["tsx", resolve(ROOT, "scripts/backup-beehiiv.ts")], {
+  // #11488: node direto, sem `npx` — no Windows `npx` sem shell dá ENOENT.
+  execFileSync(process.execPath, ["--import", "tsx", resolve(ROOT, "scripts/backup-beehiiv.ts")], {
     stdio: "inherit",
     cwd: ROOT,
   });

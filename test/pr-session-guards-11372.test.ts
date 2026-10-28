@@ -1,11 +1,12 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { checkPrSessionClaims, checkContinuoPrSessionClaims } from "../scripts/lib/pr-session-claim-gate.ts";
 import { checkPrOpenForPush } from "../scripts/check-pr-open-for-push.ts";
+import { FAKE_GH_SKIP_WIN32, fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 it("#11372: claim efetiva alheia barra merge de PR órfã, própria passa e expirada libera", () => {
   const root = mkdtempSync(join(tmpdir(), "pr-claims-11372-"));
@@ -35,18 +36,16 @@ it("#11372: push só permite estado OPEN; MERGED/CLOSED exigem follow-up", () =>
   for (const state of [undefined, null, "", "open"]) assert.equal(checkPrOpenForPush(state).ok, false);
 });
 
-it("#11372: CLI de pré-push consulta gh fresco e falha fechado", () => {
+it("#11372: CLI de pré-push consulta gh fresco e falha fechado", { skip: FAKE_GH_SKIP_WIN32 }, () => {
   const root = mkdtempSync(join(tmpdir(), "pr-push-11372-"));
   try {
-    const gh = join(root, "gh");
-    writeFileSync(gh, `#!/bin/sh
+    writeFakeGh(root, `#!/bin/sh
 [ "$*" = "pr view 11352 --json state" ] || exit 9
 [ "$TEST_PR_STATE" != "FAIL" ] || exit 2
 printf '%s\\n' "$TEST_PR_STATE"
 `);
-    chmodSync(gh, 0o755);
     for (const [payload, exit] of [[{state:"OPEN"},0], [{state:"MERGED"},1], [{state:"CLOSED"},1], [{},1], ["invalid",3], ["FAIL",3]] as const) {
-      const r = spawnSync(process.execPath, ["--import", "tsx", resolve("scripts/check-pr-open-for-push.ts"), "--pr", "11352"], { encoding: "utf8", env: { ...process.env, PATH: `${root}:${process.env.PATH}`, TEST_PR_STATE: typeof payload === "string" ? payload : JSON.stringify(payload) } });
+      const r = spawnSync(process.execPath, ["--import", "tsx", resolve("scripts/check-pr-open-for-push.ts"), "--pr", "11352"], { encoding: "utf8", env: fakeGhEnv(root, { TEST_PR_STATE: typeof payload === "string" ? payload : JSON.stringify(payload) }) });
       assert.equal(r.status, exit, r.stderr);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }

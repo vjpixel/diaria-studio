@@ -9,11 +9,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve, dirname } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 import { ISSUE_REPOS_CONFIG_ROOT, loadIssueRepos } from "../scripts/lib/issue-repos.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,15 +42,13 @@ describe("#10901 — gates de PR resolvem issue_repos pela raiz do módulo", () 
       try {
         // `gh` falso que falha: o gate segue até a leitura do PR (erro de gh,
         // não de uso) sem tocar a rede.
-        const gh = join(cwd, "gh");
-        writeFileSync(gh, "#!/usr/bin/env bash\necho 'gh falso: offline' >&2\nexit 1\n");
-        chmodSync(gh, 0o755);
+        writeFakeGh(cwd, "#!/usr/bin/env bash\necho 'gh falso: offline' >&2\nexit 1\n");
         const tsx = join(ROOT, "node_modules", ".bin", "tsx");
         const r = spawnSync(tsx, [join(ROOT, "scripts", "check-pr-retido-gate.ts"), "--pr", "5", "--repo", "vjpixel/diaria-design"], {
           cwd,
           encoding: "utf8",
           timeout: 60_000,
-          env: { ...process.env, PATH: `${cwd}${delimiter}${process.env.PATH ?? ""}` },
+          env: fakeGhEnv(cwd),
         });
         assert.doesNotMatch(r.stderr, /fora de platform\.config\.json/, r.stderr);
         assert.notEqual(r.status, 0);
