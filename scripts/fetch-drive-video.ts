@@ -383,7 +383,16 @@ export async function runFetchDriveVideo(
         editionFolderPresent: true,
         target,
       });
-      if (probe.kind === "none") {
+      // #11419: para o Instagram, "Final/ com .mp4 mas sem `_Instagram_`" é o
+      // caso NORMAL (sem corte próprio, vale o genérico) — nunca um sinal de
+      // que o vídeo pronto está em Editado/, onde costumam ficar exportações
+      // intermediárias (um `_Instagram_V2` antigo viraria Reels público).
+      // Instagram só cai em Editado/ quando Final/ não tem .mp4 nenhum.
+      const skipEdited = instagramCut && finalFiles.some(isMp4VideoFile);
+      if (probe.kind === "none" && skipEdited) {
+        log(`[premissa] Final/ tem .mp4 e nenhum do destino instagram — sem corte próprio do Instagram; Editado/ não é consultada (#11419)`);
+      }
+      if (probe.kind === "none" && !skipEdited) {
         const edited = subfolders.filter((f) => isEditedFolderName(f.name));
         if (edited.length > 0) {
           const why = finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";

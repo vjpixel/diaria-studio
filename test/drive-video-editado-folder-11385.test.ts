@@ -61,14 +61,17 @@ function mockDrive(subfolders: Record<string, DriveVideoFile[]>) {
   return { deps, listed };
 }
 
-async function dryRun(subfolders: Record<string, DriveVideoFile[]>) {
+async function dryRun(
+  subfolders: Record<string, DriveVideoFile[]>,
+  opts: Pick<FetchDriveVideoInput, "orientation" | "target"> = { orientation: "horizontal" },
+) {
   const dir = mkdtempSync(join(tmpdir(), "fdv-editado-"));
   const logs: string[] = [];
   try {
     const { deps, listed } = mockDrive(subfolders);
     const input: FetchDriveVideoInput = {
       aammdd: "261028",
-      orientation: "horizontal",
+      ...opts,
       folderId: ROOT_ID,
       editionDir: dir,
       now: NOW,
@@ -122,6 +125,32 @@ test("Final/ só com os verticais: o horizontal ainda é procurado em Editado/",
   });
   assert.equal(out.output.action, "dry-run", JSON.stringify(out.output));
   if (out.output.action === "dry-run") assert.equal(out.output.file.id, "edt");
+  assert.deepEqual(listed, ["Final", "Editado"]);
+});
+
+test("#11419: --target instagram com Final/ só com o genérico NÃO pega o _Instagram_V2 antigo de Editado/", async () => {
+  const V = (id: string, name: string): DriveVideoFile => ({ ...H(id, name), videoMediaMetadata: { width: 1080, height: 1920 } });
+  const { out, listed, logs } = await dryRun(
+    {
+      Final: [H("yt", "Diaria comentada_Youtube_V3.mp4"), V("or", "Diaria comentada_Outras redes_V3.mp4")],
+      Editado: [V("ig-v2", "Diaria comentada_Instagram_V2.mp4")],
+    },
+    { orientation: "vertical", target: "instagram" },
+  );
+  assert.notEqual(out.output.action, "print-id", JSON.stringify(out.output));
+  assert.equal(out.output.action, "none", JSON.stringify(out.output));
+  assert.deepEqual(listed, ["Final"], "Editado/ nem é listada para o Instagram com Final/ cheia");
+  assert.ok(logs.some((l) => /#11419/.test(l)), logs.join("\n"));
+});
+
+test("#11419: --target instagram com Final/ sem .mp4 ainda cai para Editado/", async () => {
+  const V = (id: string, name: string): DriveVideoFile => ({ ...H(id, name), videoMediaMetadata: { width: 1080, height: 1920 } });
+  const { out, listed } = await dryRun(
+    { Final: [], Editado: [V("ig", "Diaria comentada_Instagram_FINAL.mp4")] },
+    { orientation: "vertical", target: "instagram" },
+  );
+  assert.equal(out.output.action, "print-id", JSON.stringify(out.output));
+  if (out.output.action === "print-id") assert.equal(out.output.file.id, "ig");
   assert.deepEqual(listed, ["Final", "Editado"]);
 });
 
