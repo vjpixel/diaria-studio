@@ -300,10 +300,10 @@ describe("repo alvo de gh pr create/merge (#10618)", () => {
     );
   });
 
-  it("pr-create-review: URL do PR criado decide (com allowlist)", () => {
+  it("pr-create-review: URL do PR criado decide (sem allowlist, #11482)", () => {
     assert.equal(isForeignRepoPrUrl(`https://github.com/${DESIGN}/pull/23`), true);
     assert.equal(isForeignRepoPrUrl("https://github.com/vjpixel/diaria-studio/pull/10650"), false);
-    assert.equal(isForeignRepoPrUrl("https://github.com/alguem/fork/pull/1"), false);
+    assert.equal(isForeignRepoPrUrl("https://github.com/alguem/fork/pull/1"), true);
     assert.equal(isForeignRepoPrUrl("não é url"), false);
   });
 });
@@ -725,9 +725,9 @@ describe("e2e: hooks de regra do diaria-studio pulam PR de outro repo (#10618)",
     return r.stdout ?? "";
   }
 
-  it("diaria-studio: runner proibido bloqueia (controle)", () => {
+  it("#11482: outro checkout do studio também fica fora do escopo local", () => {
     const root = makeRepo("https://github.com/vjpixel/diaria-studio.git");
-    assert.match(run(root, "gh pr create --title t --body b"), /"permissionDecision":"deny"/);
+    assert.equal(run(root, "gh pr create --title t --body b"), "");
   });
 
   it("checkout do diaria-design: regra do diaria-studio não se aplica", () => {
@@ -760,7 +760,7 @@ describe("e2e: hooks de regra do diaria-studio pulam PR de outro repo (#10618)",
       "block-pr-create-test-runner-import.mjs",
     ]) {
       const src = readFileSync(join(ROOT, ".claude", "hooks", f), "utf8");
-      assert.match(src, /if \(isForeignRepoGhCommand\(command, cwd\)\) return;/, f);
+      assert.match(src, /studioPrCreateCwd\(command, payload.cwd, hookDir\)/, f);
     }
     const review = readFileSync(join(ROOT, ".claude", "hooks", "pr-create-review.mjs"), "utf8");
     assert.doesNotMatch(review, /reason: "foreign_repo"/, "review não é mais suprimido por repo");
@@ -1088,11 +1088,11 @@ describe("hooks de gh pr create com comando complexo (#10618)", () => {
     assert.equal(run(root, 'gh pr create --title t --body "$(cat <<\'EOF\'\ncorpo\nEOF\n)"'), "");
   });
 
-  it("complexo citando o diaria-studio, ou no checkout do studio: aplica a regra", () => {
+  it("#11482: cwd fora deste checkout não recebe checks locais mesmo citando o studio", () => {
     const design = makeRepo(`https://github.com/${DESIGN}.git`);
-    assert.match(run(design, 'gh pr create -R vjpixel/diaria-studio --body "$(cat x)"'), /"permissionDecision":"deny"/);
+    assert.equal(run(design, 'gh pr create -R vjpixel/diaria-studio --body "$(cat x)"'), "");
     const studio = makeRepo("https://github.com/vjpixel/diaria-studio.git");
-    assert.match(run(studio, 'gh pr create --body "$(cat x)"'), /"permissionDecision":"deny"/);
+    assert.equal(run(studio, 'gh pr create --body "$(cat x)"'), "");
   });
 });
 

@@ -118,7 +118,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { isForeignRepo } from "./lib/gh-target-repo.mjs";
+import { normalizeRepoSlug, DIARIA_STUDIO_REPO } from "./lib/gh-target-repo.mjs";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -1311,7 +1311,8 @@ export function isForeignRepoPrUrl(prUrl) {
   const m = /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/i.exec(
     typeof prUrl === "string" ? prUrl.trim() : "",
   );
-  return m ? isForeignRepo(m[1]) : false;
+  const repo = m ? normalizeRepoSlug(m[1]) : null;
+  return repo !== null && repo !== DIARIA_STUDIO_REPO;
 }
 
 /**
