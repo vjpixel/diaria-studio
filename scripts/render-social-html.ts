@@ -366,15 +366,16 @@ function withUseMelhorCaptionTitle(sectionName: string, main: string, title: str
   return `${titleLine}\n\n${main.replace(/^\s+/, "")}`;
 }
 
-/** #9999: canais de TEXTO longo, onde o publish separa os itens do `## um`
- * por linha em branco (`finalizeUseMelhorTextChannelPostText`). */
-const USE_MELHOR_TEXT_CHANNELS: ReadonlySet<string> = new Set(["linkedin", "facebook"]);
+/** #9999: canais do texto único, onde o publish separa os itens do `## um`
+ * por linha em branco (`finalizeUseMelhorTextChannelPostText`). Instagram
+ * entrou no #11499 (antes publicava os itens em pares). */
+const USE_MELHOR_TEXT_CHANNELS: ReadonlySet<string> = new Set(["linkedin", "facebook", "instagram"]);
 
 /**
  * #10087: blocos do 4º post (`## um`) com o texto que CADA canal publica —
- * LinkedIn/Facebook via `finalizeUseMelhorTextChannelPostText` (itens
- * separados por linha em branco, #9999), os demais (Instagram, `# Curto`) via
- * `finalizeUseMelhorPostText`. Os dois resolvem `{quebra}` e aplicam a UTM do
+ * LinkedIn/Facebook/Instagram via `finalizeUseMelhorTextChannelPostText`
+ * (itens separados por linha em branco, #9999; Instagram desde o #11499), o
+ * `# Curto` via `finalizeUseMelhorPostText`. Os dois resolvem `{quebra}` e aplicam a UTM do
  * 4º post. Antes o preview mostrava o `## um` cru, num bloco único pros 3
  * canais, e o editor via os itens colados que nunca saem assim no
  * LinkedIn/Facebook. Quando os textos finais dos dois grupos coincidem (lista

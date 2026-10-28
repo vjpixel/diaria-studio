@@ -77,7 +77,7 @@ import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn 
 import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10201
 import {
   USE_MELHOR_COVER_FILE,
-  finalizeUseMelhorPostText,
+  finalizeUseMelhorTextChannelPostText, // #11499
   prependUseMelhorCaptionTitle, // #10201
   planUseMelhorDispatch,
   reportUseMelhorImageFallback,
@@ -452,8 +452,13 @@ export function buildUseMelhorInstagramPost(input: {
   try {
     // #10201: título do item como 1ª linha da legenda — a capa do carrossel
     // abre o post, mas a legenda sozinha começava no "1)".
+    // #11499: itens da lista separados por linha em branco, igual a
+    // LinkedIn/Facebook (antes saíam em pares, herdados dos cards).
     caption = truncateCaption(
-      prependUseMelhorCaptionTitle(finalizeUseMelhorPostText(extractPostText(input.socialMd, "um")), input.plan.captionTitle),
+      prependUseMelhorCaptionTitle(
+        finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "um")),
+        input.plan.captionTitle,
+      ),
     );
   } catch (e) {
     return { ok: false, reason: `texto '## um' indisponível: ${(e as Error).message}` };
