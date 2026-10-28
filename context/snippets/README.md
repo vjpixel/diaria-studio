@@ -310,3 +310,25 @@ que no mesmo bloco (sem `---` entre os dois); fora desse bloco o lint
 sobrar depois dele é apontado pelo `orphan-box-in-gap`). E qualquer bloco
 entre a cobertura e o `<!-- box0 -->` que não seja callout nem trailer dele
 não é renderizado; o mesmo lint avisa em vez de deixar sumir.
+
+**Colagem manual no slot 0 (#11481):** o marcador `<!-- box0 -->` é
+obrigatório, imediatamente antes do título. Use o formato abaixo em
+`02-reviewed.md`, depois da abertura e antes de `**DESTAQUE 1**`:
+
+```markdown
+---
+
+<!-- box0 -->
+**Título do box**
+
+Parágrafo do box.
+
+[CTA](https://example.com)
+
+---
+```
+
+O stitch inclui o marcador automaticamente. Sem ele, o renderer não
+reconhece o slot 0; o Stage 4 apenas avisa quando encontra um padrão
+provável (título + parágrafo + CTA isolado), sem bloquear ou alterar o
+conteúdo. Callouts de abertura comuns continuam sem esse marcador.
