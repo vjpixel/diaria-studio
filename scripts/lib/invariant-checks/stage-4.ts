@@ -3736,7 +3736,7 @@ export function checkSocialInviteDrift(editionDir: string): InvariantViolation[]
   if (!drift) return [];
   const preview = drift.paragraph.length > 120 ? `${drift.paragraph.slice(0, 120)}…` : drift.paragraph;
   const message = drift.kind === "unrecognized"
-    ? `Convite social do PARA ENCERRAR não foi reconhecido pelo renderer e vai sair SEM a borda de box: "${preview}". Restaurar o início "Para acompanhar as 3 principais notícias de IA todos os dias, siga a" (ou colar o SOCIAL_INVITE atual de scripts/lib/shared/encerramento-snippet.ts).`
+    ? `Convite social do PARA ENCERRAR não foi reconhecido pelo renderer e vai sair SEM a borda de box: "${preview}". Restaurar o início "Siga a **diar.ia.br**:" (ou colar o SOCIAL_INVITE atual de scripts/lib/shared/encerramento-snippet.ts).`
     : `Convite social do PARA ENCERRAR difere do SOCIAL_INVITE atual (ex.: lista de redes desatualizada): "${preview}". Sai com a caixa, mas com o texto antigo; colar o SOCIAL_INVITE atual de scripts/lib/shared/encerramento-snippet.ts se a diferença não for intencional.`;
   return [{ rule: "social-invite-drift", message, source_issue: "#10835", severity: "warning", file: path }];
 }
