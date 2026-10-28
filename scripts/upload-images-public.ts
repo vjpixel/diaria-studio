@@ -26,6 +26,12 @@
  * reusam file_ids existentes (skip re-upload).
  *
  * Credenciais: CLOUDFLARE_* do .env + `platform.config.json` → poll.kv_namespace_id.
+ *
+ * #11412 (fatia 1): com `platform.config.json → public_images_r2.enabled`, as
+ * imagens content-addressed sobem pro R2 (`img/{AAMMDD}/…`, env `R2_*`) em vez
+ * do KV, com a MESMA forma de URL (`/img/img-{AAMMDD}-…`). Flag desligada (o
+ * default) = só KV, como antes. Detalhes e ordem de ativação:
+ * `scripts/lib/public-images-r2.ts`.
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -35,6 +41,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
+import { r2KeyForImageKey, readPublicImagesR2Settings, resolveR2ImageUploader, type R2ImageUploader } from "./lib/public-images-r2.ts"; // #11412
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { md5OfFile } from "./lib/shared/file-md5.ts"; // #6068 (era local, #1418)
@@ -58,12 +65,14 @@ export interface PublicImage {
   mime_type: string;
   filename: string;
   /**
-   * Target onde a imagem está hospedada (#1119). Hoje sempre "cloudflare";
+   * Target onde a imagem está hospedada (#1119). "cloudflare" = KV `POLL`;
+   * "r2" = bucket R2 de mídia (#11412, atrás de `public_images_r2.enabled`);
    * "drive" só aparece em caches de edições antigas (o upload pro Drive foi
    * removido no #11414) e ausente = entry muito antiga (tratada como drive).
-   * Qualquer entry não-cloudflare é re-uploadada (ver `shouldReuseCachedUpload`).
+   * Entry com target diferente do que este upload usaria é re-uploadada (ver
+   * `shouldReuseCachedUpload`) — ligar/desligar a flag migra o cache sozinho.
    */
-  target?: "drive" | "cloudflare";
+  target?: "drive" | "cloudflare" | "r2";
   /** #1418: md5 dos bytes locais no momento do upload — pra detectar drift
    * em re-runs (imagem regerada local com bytes novos mas cache aponta pro
    * upload antigo). Ausente em entries pre-#1418 → assume drift e re-uploadar. */
@@ -80,6 +89,9 @@ export interface PublicImage {
  * o escape hatch `--target drive` foi removido junto com o ramo Drive.
  */
 export type UploadTarget = "cloudflare";
+
+/** Onde uma imagem de fato fica: o target do CLI ou o R2 (#11412). */
+export type HostTarget = UploadTarget | "r2";
 
 /**
  * Default de target por modo (#1119, unificado em #2147):
@@ -365,7 +377,7 @@ export { md5OfFile };
 export function shouldReuseCachedUpload(
   cached: PublicImage | undefined,
   imagePath: string,
-  target: UploadTarget,
+  target: HostTarget,
   localMd5?: string,
 ): boolean {
   if (!cached?.file_id) return false;
@@ -421,6 +433,22 @@ export interface UploadDeps {
     key: string,
     cfg: { kvNamespaceId: string; workerUrl: string },
   ) => Promise<string>;
+  /**
+   * #11412: uploader R2 (recebe a key no formato KV, `img-{AAMMDD}-…`, e
+   * devolve a URL pública). `null` desliga o R2. Ausente: com o uploader KV
+   * real, resolve pela flag `public_images_r2` + env; com o KV injetado
+   * (testes), desligado — o teste não lê `platform.config.json`.
+   */
+  uploadToR2?: R2ImageUploader | null;
+}
+
+/**
+ * #11412: a imagem vai pro R2? Só com uploader R2 ativo, só key
+ * content-addressed (o É IA?, `noCacheBust`, fica no KV: o `/vote` monta a URL
+ * com nome fixo) e só key com forma `img-{AAMMDD}-…`.
+ */
+export function shouldUploadToR2(spec: Pick<ImageSpec, "noCacheBust">, kvKey: string, r2Active: boolean): boolean {
+  return r2Active && !spec.noCacheBust && r2KeyForImageKey(kvKey) !== null;
 }
 
 /**
@@ -584,6 +612,7 @@ export async function uploadPublicImages(
   // não é necessário — o stub ignora o 3º arg. Isso elimina a dependência
   // implícita de platform.config.json nos testes (#2147 finding 6).
   let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
+  let uploadToR2: R2ImageUploader | null = opts.uploaders?.uploadToR2 ?? null;
   if (!opts.uploaders?.uploadToCloudflare) {
     const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
@@ -593,6 +622,12 @@ export async function uploadPublicImages(
       throw new Error("platform.config.json → poll.kv_namespace_id não configurado (target=cloudflare)");
     }
     cfConfig = { kvNamespaceId, workerUrl };
+    // #11412: R2 atrás da flag; sem credencial, avisa e segue no KV.
+    if (opts.uploaders?.uploadToR2 === undefined) {
+      const r2 = resolveR2ImageUploader(readPublicImagesR2Settings(cfg), process.env, workerUrl);
+      uploadToR2 = r2.uploader;
+      if (r2.warning) warnings.push(r2.warning);
+    }
   }
 
   for (const spec of specs) {
@@ -631,13 +666,17 @@ export async function uploadPublicImages(
     // false → reuse=false → re-upload). `existing[spec.key]` só alimenta o
     // shouldReuse e a preservação de cloudflare_url; não força reuse sozinho.
     const cached = existing[spec.key];
+    // #11412: o target desta imagem — R2 ou KV — entra no reuse: entry de um
+    // host diferente do atual é re-uploadada (ligar a flag migra o cache).
+    const kvKey = kvKeyForSpec(editionDir, spec, localMd5);
+    const specTarget: HostTarget = shouldUploadToR2(spec, kvKey, uploadToR2 !== null) ? "r2" : target;
     let reuse =
-      skipExisting && !forceReupload && shouldReuseCachedUpload(cached, imagePath, target, localMd5);
+      skipExisting && !forceReupload && shouldReuseCachedUpload(cached, imagePath, specTarget, localMd5);
     // #1704 self-heal: pra cloudflare, a key cacheada precisa bater com a que
     // gravaríamos agora. Uma key legacy do É IA? COM hash (cacheada antes do
     // noCacheBust) passa no check de md5 mas aponta pra key errada → /vote 404.
     // Forçar re-upload nesse caso pra a key sem hash de fato cair no KV.
-    if (reuse && cached?.file_id !== kvKeyForSpec(editionDir, spec, localMd5)) {
+    if (reuse && cached?.file_id !== kvKey) {
       reuse = false;
     }
     if (reuse) continue;
@@ -645,14 +684,25 @@ export async function uploadPublicImages(
     // #1584: md5 suffix no key cache-busts re-uploads.
     // #1704: imagens do É IA? (spec.noCacheBust) NÃO recebem o sufixo — o
     // Worker /vote monta a URL com convenção fixa sem hash; com sufixo dá 404.
-    const key = kvKeyForSpec(editionDir, spec, localMd5);
-    const url = await uploadToCloudflare(imagePath, key, cfConfig!);
+    const key = kvKey;
+    let url: string | null = null;
+    let hostTarget: HostTarget = specTarget;
+    if (specTarget === "r2") {
+      try {
+        url = await uploadToR2!(imagePath, key, mime);
+      } catch (e) {
+        // #11412: falha do R2 nunca deixa a edição sem a imagem — vai pro KV.
+        warnings.push(`${spec.key} (${spec.filename}): upload pro R2 falhou (${(e as Error).message}) — enviada pro KV, como antes (#11412).`);
+        hostTarget = target;
+      }
+    }
+    if (url === null) url = await uploadToCloudflare(imagePath, key, cfConfig!);
     images[spec.key] = {
       file_id: key,
       url,
       mime_type: mime,
       filename: spec.filename,
-      target,
+      target: hostTarget,
       md5: localMd5,
       cloudflare_url: url,
     };

@@ -19,7 +19,8 @@
 
 import { z } from "zod";
 
-export const ImageTargetSchema = z.enum(["drive", "cloudflare"]);
+// #11412: "r2" = bucket R2 de mídia (imagens novas atrás de `public_images_r2.enabled`).
+export const ImageTargetSchema = z.enum(["drive", "cloudflare", "r2"]);
 // Tipo inferido disponível inline via `z.infer<typeof ImageTargetSchema>` se precisar.
 
 export const PublicImageSchema = z.object({

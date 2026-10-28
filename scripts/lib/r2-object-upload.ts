@@ -18,8 +18,15 @@
  *   R2_ACCOUNT_ID            id da conta Cloudflare (endpoint {id}.r2.cloudflarestorage.com)
  *   R2_ACCESS_KEY_ID         chave de API do R2 com escrita no bucket
  *   R2_SECRET_ACCESS_KEY
- *   SHORTS_R2_BUCKET         nome do bucket
- *   SHORTS_R2_PUBLIC_BASE    base pública do bucket (domínio próprio ou r2.dev), https
+ *   R2_BUCKET                nome do bucket (legado: SHORTS_R2_BUCKET)
+ *   R2_PUBLIC_BASE           base pública do bucket (domínio próprio ou r2.dev), https
+ *                            (legado: SHORTS_R2_PUBLIC_BASE)
+ *
+ * #11412: o mesmo bucket passou a receber as imagens públicas da edição
+ * (`img/{AAMMDD}/…`, `scripts/upload-images-public.ts`), não só os verticais
+ * (`shorts/`). Por isso os nomes genéricos `R2_BUCKET`/`R2_PUBLIC_BASE`; os
+ * `SHORTS_R2_*` continuam aceitos (são os que estão no Doppler hoje) e o
+ * genérico vence quando os dois existem.
  */
 
 import { createHash, createHmac } from "node:crypto";
@@ -33,27 +40,45 @@ export interface R2UploadConfig {
   publicBase: string;
 }
 
-export const R2_ENV_VARS = [
-  "R2_ACCOUNT_ID",
-  "R2_ACCESS_KEY_ID",
-  "R2_SECRET_ACCESS_KEY",
-  "SHORTS_R2_BUCKET",
-  "SHORTS_R2_PUBLIC_BASE",
-] as const;
+/**
+ * Vars da config. Cada entrada é a lista de nomes aceitos, em ordem de
+ * preferência (#11412: genérico primeiro, `SHORTS_*` legado depois).
+ */
+export const R2_ENV_VARS: readonly (readonly string[])[] = [
+  ["R2_ACCOUNT_ID"],
+  ["R2_ACCESS_KEY_ID"],
+  ["R2_SECRET_ACCESS_KEY"],
+  ["R2_BUCKET", "SHORTS_R2_BUCKET"],
+  ["R2_PUBLIC_BASE", "SHORTS_R2_PUBLIC_BASE"],
+];
+
+/** Primeiro nome da lista com valor não-vazio no env. */
+function pickEnv(env: Record<string, string | undefined>, names: readonly string[]): { name: string; value: string } | null {
+  for (const name of names) {
+    const v = env[name]?.trim();
+    if (v) return { name, value: v };
+  }
+  return null;
+}
+
+/** Como uma var ausente aparece em `missing`: `R2_BUCKET (ou SHORTS_R2_BUCKET)`. */
+const describeEnv = (names: readonly string[]) => (names.length > 1 ? `${names[0]} (ou ${names.slice(1).join(", ")})` : names[0]);
 
 /** Lê a config do env. Falta qualquer var (ou base não-https) → `ready: false` com o que falta. */
 export function loadR2UploadConfig(env: Record<string, string | undefined>): { ready: true; config: R2UploadConfig } | { ready: false; missing: string[] } {
-  const missing = R2_ENV_VARS.filter((k) => !env[k]?.trim());
-  if (missing.length) return { ready: false, missing: [...missing] };
-  const publicBase = env.SHORTS_R2_PUBLIC_BASE!.trim().replace(/\/+$/, "");
-  if (!/^https:\/\/[^/\s]+/.test(publicBase)) return { ready: false, missing: ["SHORTS_R2_PUBLIC_BASE (precisa ser https)"] };
+  const picked = R2_ENV_VARS.map((names) => pickEnv(env, names));
+  const missing = R2_ENV_VARS.filter((_, i) => !picked[i]).map(describeEnv);
+  if (missing.length) return { ready: false, missing };
+  const [accountId, accessKeyId, secretAccessKey, bucket, publicBaseRaw] = picked;
+  const publicBase = publicBaseRaw!.value.replace(/\/+$/, "");
+  if (!/^https:\/\/[^/\s]+/.test(publicBase)) return { ready: false, missing: [`${publicBaseRaw!.name} (precisa ser https)`] };
   return {
     ready: true,
     config: {
-      accountId: env.R2_ACCOUNT_ID!.trim(),
-      accessKeyId: env.R2_ACCESS_KEY_ID!.trim(),
-      secretAccessKey: env.R2_SECRET_ACCESS_KEY!.trim(),
-      bucket: env.SHORTS_R2_BUCKET!.trim(),
+      accountId: accountId!.value,
+      accessKeyId: accessKeyId!.value,
+      secretAccessKey: secretAccessKey!.value,
+      bucket: bucket!.value,
       publicBase,
     },
   };
@@ -278,14 +303,19 @@ export async function uploadToR2(
   key: string,
   body: Buffer,
   contentType: string,
+  opts: { cacheControl?: string } = {},
 ): Promise<string> {
   const host = `${config.accountId}.r2.cloudflarestorage.com`;
   const path = `/${config.bucket}/${key}`;
+  // #11412: `cache-control` vira metadado HTTP do objeto (o R2 devolve no GET
+  // pelo domínio público) — as imagens content-addressed sobem `immutable`.
+  const putHeaders: Record<string, string> = { "content-type": contentType };
+  if (opts.cacheControl) putHeaders["cache-control"] = opts.cacheControl;
   const headers = signS3Request({
     method: "PUT",
     host,
     path,
-    headers: { "content-type": contentType },
+    headers: putHeaders,
     payloadHash: sha256Hex(body),
     region: "auto",
     service: "s3",
@@ -298,7 +328,7 @@ export async function uploadToR2(
 
   const url = r2PublicUrl(config, key);
   const head = await deps.fetch(url, { method: "HEAD" });
-  if (!head.ok) throw new Error(`R2: ${url} não está público (HEAD ${head.status}) — confira o acesso público do bucket (SHORTS_R2_PUBLIC_BASE)`);
+  if (!head.ok) throw new Error(`R2: ${url} não está público (HEAD ${head.status}) — confira o acesso público do bucket (R2_PUBLIC_BASE/SHORTS_R2_PUBLIC_BASE)`);
   const len = head.headers.get("content-length");
   if (len !== null && Number(len) !== body.length) {
     throw new Error(`R2: ${url} serve ${len} bytes, o arquivo tem ${body.length} — upload incompleto ou cache velho`);

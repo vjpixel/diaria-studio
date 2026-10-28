@@ -123,6 +123,10 @@
     "kv_namespace_id": "72784da4ae39444481eb422ebac357c6",
     "enabled": true
   },
+  "public_images_r2": {
+    "_comment": "#11412 fatia 1: imagens novas da edição no R2 (img/{AAMMDD}/…) em vez do KV POLL, mesma URL /img/. Ligar só depois do binding MEDIA nos Workers poll e site (ordem em scripts/lib/public-images-r2.ts).",
+    "enabled": false
+  },
   "raffle": {
     "meet_url": "https://meet.google.com/zcp-hxpv-vvd",
     "sorteio_do_mes": {
