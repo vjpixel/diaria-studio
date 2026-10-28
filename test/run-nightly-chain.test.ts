@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   AGENDADO_FLAG,
@@ -108,7 +108,7 @@ describe("run-nightly-chain — o overnight sobe sempre (#10552)", () => {
   it("review roda ANTES do overnight", () => {
     const { deps, calls } = harness({ status: 0 }, { status: 0 });
     main(makeRepo(), deps);
-    assert.ok(calls[0].args[0].endsWith(DAILY_REVIEW_SCRIPT));
+    assert.ok(calls[0].args[0].replaceAll("\\", "/").endsWith(DAILY_REVIEW_SCRIPT)); // `resolve` usa `\` no Windows (#11243)
     assert.ok(calls[1].args.includes("--print"));
   });
 
@@ -186,11 +186,13 @@ describe("run-nightly-chain — invocação headless do overnight", () => {
   });
 
   it("env do review: diretório do binário claude à frente do PATH (systemd não tem ~/.npm-global/bin, #5549), sem duplicar", () => {
-    const env = buildReviewEnv({ PATH: "/usr/bin:/bin", ANTHROPIC_API_KEY: "x" }, "/home/u/.npm-global/bin/claude");
-    assert.equal(env.PATH, "/home/u/.npm-global/bin:/usr/bin:/bin");
+    // PATH montado com `delimiter`: o código separa pelo do SO (`;` no Windows, #11243).
+    const p = (...parts: string[]) => parts.join(delimiter);
+    const env = buildReviewEnv({ PATH: p("/usr/bin", "/bin"), ANTHROPIC_API_KEY: "x" }, "/home/u/.npm-global/bin/claude");
+    assert.equal(env.PATH, p("/home/u/.npm-global/bin", "/usr/bin", "/bin"));
     assert.equal(env.ANTHROPIC_API_KEY, undefined);
-    const again = buildReviewEnv({ PATH: "/home/u/.npm-global/bin:/usr/bin" }, "/home/u/.npm-global/bin/claude");
-    assert.equal(again.PATH, "/home/u/.npm-global/bin:/usr/bin");
+    const again = buildReviewEnv({ PATH: p("/home/u/.npm-global/bin", "/usr/bin") }, "/home/u/.npm-global/bin/claude");
+    assert.equal(again.PATH, p("/home/u/.npm-global/bin", "/usr/bin"));
   });
 });
 

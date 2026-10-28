@@ -17,6 +17,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import {
   evaluateNewsletterHtmlFreshness,
@@ -151,7 +152,8 @@ describe("#10268 defeito 1 — carimbo é o sha do que o render LEU (CLI real)",
 
     const r = spawnSync(
       process.execPath,
-      ["--import", "tsx", "--import", preload, SCRIPT, d, "--out", outPath],
+      // `--import` quer URL: caminho absoluto do Windows (`C:\...`) vira scheme `c:` (#11243).
+      ["--import", "tsx", "--import", pathToFileURL(preload).href, SCRIPT, d, "--out", outPath],
       { encoding: "utf8", cwd: PROJECT_ROOT },
     );
     assert.equal(r.status, 0, `render falhou: ${r.stderr}`);

@@ -199,7 +199,9 @@ describe("#9963 runWithFreshCodeWorktree — git e fs reais", () => {
     commit(other, "scripts/publish-edition-site-page.ts", "// gerador v1\n");
     git(["push", "-q", "origin", "master"], other);
     const host = tmp("diaria-9963-host-");
-    git(["clone", "-q", origin, host], host);
+    // autocrlf desligado: no Windows o checkout viraria CRLF e o conteúdo lido
+    // pelo filho não bateria com o commitado (#11243).
+    git(["clone", "-q", "-c", "core.autocrlf=false", origin, host], host);
     commit(other, "scripts/publish-edition-site-page.ts", "// gerador v2 (sem seta)\n");
     git(["push", "-q", "origin", "master"], other);
     git(["fetch", "-q", "origin"], host);

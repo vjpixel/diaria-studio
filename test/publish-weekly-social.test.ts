@@ -2632,7 +2632,7 @@ describe("main(): dispatch mockado", () => {
       const json = JSON.parse(out);
       assert.equal(json.mode, "highlights");
       assert.equal(json.carouselKey, "271225-highlights");
-      assert.match(json.summariesPath, /weekly\/271225-highlights\/_internal\/06-summaries\.json$/);
+      assert.match(json.summariesPath, /weekly[\\/]271225-highlights[\\/]_internal[\\/]06-summaries\.json$/); // separador do SO (#11243)
       assert.equal(json.items.length, 1);
       assert.deepEqual([json.items[0].title, json.items[0].url], [TITLE, URL]);
       assert.match(json.items[0].body, /Corpo do D1/);

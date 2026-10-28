@@ -28,6 +28,9 @@ import {
   slugifyMotivo,
 } from "../scripts/lib/hermes-config-writer.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do Hermes, que só roda no 300 (Linux): allowlist ancorada em ~/.hermes e caminhos POSIX";
+
 describe("slugifyMotivo", () => {
   it("minúsculas, espaços e pontuação viram hífen único", () => {
     assert.equal(slugifyMotivo("Trocar Modelo do Profile Coding!"), "trocar-modelo-do-profile-coding");
@@ -205,7 +208,7 @@ describe("redactConfigText", () => {
   });
 });
 
-describe("CLI write-hermes-config.ts", () => {
+describe("CLI write-hermes-config.ts", { skip: SKIP_WIN32 }, () => {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const script = resolve(repoRoot, "scripts/write-hermes-config.ts");
 

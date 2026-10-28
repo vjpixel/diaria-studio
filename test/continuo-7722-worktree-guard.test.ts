@@ -3,6 +3,7 @@ import assert from "node:assert";
 import fs from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { claimWorktree } from "../scripts/lib/session-registry.ts";
 
@@ -73,7 +74,8 @@ describe("#7722 worktree guard — regressão executável (não grep)", () => {
     fs.writeFileSync(
       runnerScript,
       [
-        "import { claimWorktree } from " + JSON.stringify(join(process.cwd(), "scripts/lib/session-registry.ts")) + ";",
+        // URL, não caminho cru: no Windows `C:\...` vira scheme `c:` no import ESM (#11243).
+        "import { claimWorktree } from " + JSON.stringify(pathToFileURL(join(process.cwd(), "scripts/lib/session-registry.ts")).href) + ";",
         "const [, , root, path, sessionId, delayMs] = process.argv;",
         "await new Promise((r) => setTimeout(r, Number(delayMs)));",
         "process.stdout.write(String(claimWorktree(path, sessionId, root)));",

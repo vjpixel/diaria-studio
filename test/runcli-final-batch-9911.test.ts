@@ -29,6 +29,9 @@ import { exitCodeFor } from "../scripts/studio/verify-remote-tunnel.ts";
 import { main as rampMain } from "../scripts/clarice-schedule-ramp.ts";
 import { waitForOAuthCode } from "../scripts/oauth-setup.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: sinais POSIX; no Windows o SIGTERM vira TerminateProcess e o handler nunca roda";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const BATCH_5 = [
@@ -256,7 +259,7 @@ describe("oauth-setup: o callback libera os handles (#9911)", () => {
   });
 });
 
-describe("serve-preview: teardown por sinal sai 0 sem process.exit (#9911)", () => {
+describe("serve-preview: teardown por sinal sai 0 sem process.exit (#9911)", { skip: SKIP_WIN32 }, () => {
   for (const watch of [false, true]) {
     it(`SIGTERM encerra o servidor${watch ? " com --watch" : ""} e o processo sai 0`, async () => {
       const dir = mkdtempSync(join(tmpdir(), "serve-preview-9911-"));

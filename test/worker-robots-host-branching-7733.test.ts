@@ -29,6 +29,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   discoverWorkerPublicHosts,
@@ -110,7 +111,8 @@ export default {
     // Cobertura de integração real contra o repo já vive em
     // worker-robots-txt-guard-4777.test.ts; aqui só reforça a expectativa
     // ESPECÍFICA por host (o que o defeito original escondia).
-    const ROOT = join(new URL("..", import.meta.url).pathname);
+    // `fileURLToPath`, não `.pathname`: no Windows `.pathname` sai `/C:/...` (#11243).
+    const ROOT = fileURLToPath(new URL("..", import.meta.url));
     const workersDir = join(ROOT, "workers");
 
     const canonical = classifyHostRobotsHandling(workersDir, "retrospectiva", "retrospectiva.diar.ia.br");

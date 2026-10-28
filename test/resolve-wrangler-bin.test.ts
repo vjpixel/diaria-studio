@@ -10,13 +10,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 import { resolveWranglerBin } from "../scripts/lib/resolve-wrangler-bin.ts";
 
 describe("resolveWranglerBin (#7117)", () => {
   it("resolve um caminho absoluto que existe de fato no disco", () => {
     const bin = resolveWranglerBin(import.meta.url);
-    assert.ok(bin.startsWith("/"), `esperava caminho absoluto, recebeu: ${bin}`);
+    assert.ok(isAbsolute(bin), `esperava caminho absoluto, recebeu: ${bin}`); // não `startsWith("/")`: no Windows é `C:\...` (#11243)
     assert.ok(bin.endsWith("wrangler.js"), `esperava terminar em wrangler.js, recebeu: ${bin}`);
     assert.ok(existsSync(bin), `binário resolvido não existe no disco: ${bin}`);
   });

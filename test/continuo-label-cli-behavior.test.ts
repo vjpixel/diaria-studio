@@ -27,6 +27,9 @@ import { tmpdir } from "node:os";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do continuo testado com gh falso (shim bash + PATH com ':'); no Windows o gh.exe real vence o shim. O CLI só roda no 300";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
@@ -110,7 +113,7 @@ interface RunResult {
 
 function runCli(script: string, args: string[], fakeGhDir: string): RunResult {
   try {
-    const stdout = execFileSync("npx", ["tsx", script, ...args], {
+    const stdout = execFileSync(process.execPath, ["--import", "tsx", script, ...args], {
       cwd: ROOT,
       encoding: "utf8",
       timeout: 60_000,
@@ -129,7 +132,7 @@ const WRAPPERS = [
   { script: "scripts/check-continuo-escalate-label.ts", label: "continuo-escalado" },
 ];
 
-describe("labelApplied = 'o label ESTÁ na PR ao final', não 'apliquei agora' (#7704)", () => {
+describe("labelApplied = 'o label ESTÁ na PR ao final', não 'apliquei agora' (#7704)", { skip: SKIP_WIN32 }, () => {
   for (const { script, label } of WRAPPERS) {
     it(`${script}: PR JÁ labelada → firstTime=false E labelApplied=TRUE (regressão do falso erro de infra por tick)`, () => {
       const dir = makeFakeGh("labeled", label);
@@ -176,7 +179,7 @@ describe("labelApplied = 'o label ESTÁ na PR ao final', não 'apliquei agora' (
   }
 });
 
-describe("mark-continuo-ci-fix-attempted: as duas metades falham alto (#7704)", () => {
+describe("mark-continuo-ci-fix-attempted: as duas metades falham alto (#7704)", { skip: SKIP_WIN32 }, () => {
   const SCRIPT = "scripts/mark-continuo-ci-fix-attempted.ts";
 
   it("sucesso → exit 0 e labelApplied=true", () => {

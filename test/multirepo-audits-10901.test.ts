@@ -26,6 +26,9 @@ import { main as reconcileMain, buildReconcileReport } from "../scripts/reconcil
 import { runDesbloqueioScan } from "../scripts/desbloqueia-scan.ts";
 import { ensureContinuoLabel, CONTINUO_ESCALATED_LABEL_SPEC } from "../scripts/lib/continuo-labels.ts";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: CLI do continuo testado com gh falso (shim bash + PATH com ':'); no Windows o gh.exe real vence o shim. O CLI só roda no 300";
+
 const STUDIO = "vjpixel/diaria-studio";
 const DESIGN = "vjpixel/diaria-design";
 const ALLOWED = [STUDIO, DESIGN];
@@ -305,7 +308,7 @@ describe("#10901 — ensureContinuoLabel com repo", () => {
   });
 });
 
-describe("#10901 — check-continuo-escalate-label --repo (CLI com gh falso)", () => {
+describe("#10901 — check-continuo-escalate-label --repo (CLI com gh falso)", { skip: SKIP_WIN32 }, () => {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const SCRIPT = "scripts/check-continuo-escalate-label.ts";
   const HEAD = "c".repeat(40);
@@ -339,7 +342,7 @@ describe("#10901 — check-continuo-escalate-label --repo (CLI com gh falso)", (
 
   function run(args: string[], dir: string, log: string): { stdout: string; status: number } {
     try {
-      const stdout = execFileSync("npx", ["tsx", SCRIPT, ...args], {
+      const stdout = execFileSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
         cwd: ROOT,
         encoding: "utf8",
         timeout: 60_000,

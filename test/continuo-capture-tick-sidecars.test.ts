@@ -10,11 +10,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
-const SCRIPT = new URL("../scripts/continuo-capture-tick-sidecars.ts", import.meta.url).pathname;
+// `fileURLToPath`, não `.pathname`: no Windows `.pathname` sai `/C:/...` (#11243).
+const SCRIPT = fileURLToPath(new URL("../scripts/continuo-capture-tick-sidecars.ts", import.meta.url));
 
 function runCli(args: string[]): { stdout: string; stderr: string } {
-  const result = execFileSync("npx", ["tsx", SCRIPT, ...args], { encoding: "utf8" });
+  const result = execFileSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], { encoding: "utf8" });
   return { stdout: result, stderr: "" };
 }
 

@@ -23,7 +23,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import { editionsRoot } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
@@ -92,8 +92,12 @@ function readNamedCheckpoints(dir: string) {
 }
 
 function measureOne(edition: string, dir: string, baselineOverride: string | null): EditionResult {
-  const snapDir = join(SNAPSHOT_DIR, STAGE2_BASELINE_LABEL);
-  const snapshotPath = join(snapDir, "03-social.md");
+  // Caminhos RELATIVOS à edição que também saem no JSON/relatório
+  // (`baselineSource`/`approvedSource`): `posix.join` pra o texto sair igual
+  // no Windows e no Linux, e casar com os candidatos legados, que já são `/`
+  // (#11243). O `fs` do Windows aceita `/` sem problema.
+  const snapDir = posix.join(SNAPSHOT_DIR, STAGE2_BASELINE_LABEL);
+  const snapshotPath = posix.join(snapDir, "03-social.md");
   let baselinePath: string;
   let baselineNote: string;
   if (baselineOverride) {
@@ -117,7 +121,7 @@ function measureOne(edition: string, dir: string, baselineOverride: string | nul
   const baselineMd = readIf(join(dir, baselinePath));
   if (baselineMd === undefined) return { edition, unrecoverable: `baseline ${baselinePath} não existe` };
 
-  const s4 = join(SNAPSHOT_DIR, STAGE4_POST_GATE_LABEL, "03-social.md");
+  const s4 = posix.join(SNAPSHOT_DIR, STAGE4_POST_GATE_LABEL, "03-social.md");
   const approvedPath = existsSync(join(dir, s4)) ? s4 : "03-social.md";
   const approvedMd = readIf(join(dir, approvedPath));
   if (approvedMd === undefined) return { edition, unrecoverable: "03-social.md aprovado não existe" };

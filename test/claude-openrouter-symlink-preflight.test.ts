@@ -18,10 +18,13 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: executa script bash do continuo/hermes, que só roda no 300 (Linux); no Git Bash do Windows symlink, chmod e jq não se comportam igual";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT_PATH = join(ROOT, "hermes/scripts/claude-openrouter-symlink-preflight.test.sh");
 
-describe("claude-delegate.sh — source resolve através de symlink de deploy (#6943)", () => {
+describe("claude-delegate.sh — source resolve através de symlink de deploy (#6943)", { skip: SKIP_WIN32 }, () => {
   it("bash hermes/scripts/claude-openrouter-symlink-preflight.test.sh sai com exit 0", () => {
     let out = "";
     try {

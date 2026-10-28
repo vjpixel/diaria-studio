@@ -26,7 +26,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -86,17 +86,17 @@ function findInvocations(file: string): Invocation[] {
 describe("#9153 — todo `claude -p` de hermes/scripts remove ANTHROPIC_* do ambiente", () => {
   const scripts = listShellScripts();
   const invocations = scripts
-    .filter((f) => !EXEMPT.has(f.split("/").pop()!))
+    .filter((f) => !EXEMPT.has(basename(f)))
     .flatMap(findInvocations);
 
   it("encontra os 2 call sites conhecidos (sanidade do parser)", () => {
-    const names = invocations.map((v) => v.file.split("/").pop());
+    const names = invocations.map((v) => basename(v.file)) // `basename`, não `split("/")`: no Windows o separador é `\` (#11243);
     assert.ok(names.includes("continuo-pr-review.sh"), `call sites: ${names.join(", ")}`);
     assert.ok(names.includes("opus-daily-diff-review.sh"), `call sites: ${names.join(", ")}`);
   });
 
   for (const inv of invocations) {
-    it(`${inv.file.split("/").pop()}:${inv.line} faz env -u de todas as vars de auth/gateway`, () => {
+    it(`${basename(inv.file)}:${inv.line} faz env -u de todas as vars de auth/gateway`, () => {
       const envIdx = inv.command.search(/\benv\s+-u\b/);
       const claudeIdx = inv.command.search(/\bclaude\s/);
       assert.ok(envIdx >= 0 && envIdx < claudeIdx, `sem \`env -u\` antes do claude -p:\n${inv.command}`);
@@ -124,11 +124,11 @@ describe("#9153 — todo `claude -p` de hermes/scripts remove ANTHROPIC_* do amb
 
 describe("#9153 — execução real do prefixo extraído com claude stub", { skip: process.platform === "win32" }, () => {
   const invocations = listShellScripts()
-    .filter((f) => !EXEMPT.has(f.split("/").pop()!))
+    .filter((f) => !EXEMPT.has(basename(f)))
     .flatMap(findInvocations);
 
   for (const inv of invocations) {
-    it(`${inv.file.split("/").pop()}:${inv.line}: filho não recebe ANTHROPIC_*`, () => {
+    it(`${basename(inv.file)}:${inv.line}: filho não recebe ANTHROPIC_*`, () => {
       const dir = mkdtempSync(join(tmpdir(), "claude-stub-9153-"));
       try {
         const stub = join(dir, "claude");

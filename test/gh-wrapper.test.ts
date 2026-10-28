@@ -35,6 +35,9 @@ import {
 } from "../hermes/scripts/lib/gh-wrapper-core.mjs";
 import { findRealGh } from "../hermes/scripts/gh-wrapper.mjs";
 
+/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+const SKIP_WIN32 = process.platform === "win32" && "#11243: gh-wrapper só é instalado no 300 (Linux): PATH separado por ':' e gh falso com shebang";
+
 // Sintético — nunca um literal com formato real (ver docstring acima).
 const OR_KEY = "sk-or-v1-" + "a1b2c3d4".repeat(8);
 
@@ -716,7 +719,7 @@ describe("#9056: token GitHub sem word boundary antes do prefixo", () => {
   });
 });
 
-describe("findRealGh (#8884)", () => {
+describe("findRealGh (#8884)", { skip: SKIP_WIN32 }, () => {
   it("pula a si mesmo e acha o próximo `gh` no PATH", () => {
     const calls: string[] = [];
     const real = findRealGh("/self/bin:/usr/bin", "/self/bin/gh", {
@@ -772,7 +775,7 @@ function runWrapper(argv: string[], opts: { input?: string } = {}) {
   return { ...res, fakeGhInvoked };
 }
 
-describe("gh-wrapper.mjs — ponta a ponta (#8884)", () => {
+describe("gh-wrapper.mjs — ponta a ponta (#8884)", { skip: SKIP_WIN32 }, () => {
   it("bloqueia --body com segredo expandido, sem chamar o gh real", () => {
     const r = runWrapper(["pr", "comment", "1", "--body", `log: ${OR_KEY}`]);
     assert.notEqual(r.status, 0);
@@ -849,7 +852,7 @@ describe("realpath do próprio arquivo resolve de forma estável (#8884)", () =>
 // real nem imprimir nada. Estes testes invocam o wrapper PELO SYMLINK (não
 // pelo caminho direto, que já era coberto acima) e confirmam que a chamada
 // realmente atravessa até o `gh` falso.
-describe("gh-wrapper.mjs invocado via symlink (#8900)", () => {
+describe("gh-wrapper.mjs invocado via symlink (#8900)", { skip: SKIP_WIN32 }, () => {
   function runWrapperViaSymlink(argv: string[], opts: { input?: string } = {}) {
     const fakeDir = makeFakeGhDir();
     const outFile = join(fakeDir, "out.json");
