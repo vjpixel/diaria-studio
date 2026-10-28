@@ -264,6 +264,7 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       [],
       [{ platform: "beehiiv", measured: true, recipients: 314 }],
       317,
+      "beehiiv", // #11225: gap da Beehiiv só é medido no ramo legado explícito
     );
     assert.equal(outcome.blocking, false);
     assert.equal(outcome.beehiivDeliveryGap?.ok, true);
@@ -287,7 +288,20 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
     assert.equal(outcome.beehiivDeliveryGap, null);
   });
 
-  it("0 ativos na Beehiiv SEM backend=kit: continua alarmando normalmente (comportamento antigo preservado)", () => {
+  it("0 ativos na Beehiiv + backend=beehiiv explícito (legado): continua alarmando normalmente", () => {
+    const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
+    const outcome = decideOutcome(
+      audience,
+      [],
+      [{ platform: "beehiiv", measured: true, recipients: 314 }],
+      0,
+      "beehiiv",
+    );
+    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
+    assert.equal(outcome.beehiivDeliveryGap?.ok, false);
+  });
+
+  it("REGRESSÃO #11225: backend AUSENTE conta como \"kit\" — pula o gap check da Beehiiv (arquivo histórico)", () => {
     const audience = reconcileSendAudiences([{ name: "kit", emails: ["a@x.com"] }]);
     const outcome = decideOutcome(
       audience,
@@ -296,8 +310,9 @@ describe("decideOutcome (#7385) — orquestração do guard de 3 plataformas", (
       0,
       undefined,
     );
-    assert.equal(outcome.beehiivGapSkippedPostMigration, false);
-    assert.equal(outcome.beehiivDeliveryGap?.ok, false);
+    assert.equal(outcome.beehiivGapSkippedPostMigration, true);
+    assert.equal(outcome.beehiivDeliveryGap, null);
+    assert.equal(outcome.kitAudienceIsAllActive, true);
   });
 
   // REGRESSÃO #7482 (16/09/2026): o skip exigia 0 ativos e quebrou quando a
@@ -379,13 +394,14 @@ describe("shouldUseAllActiveAsKitAudience (#7482, achado 16/09/2026) — audiên
     assert.equal(shouldUseAllActiveAsKitAudience("kit"), true);
   });
 
-  it("backend=beehiiv (ou ausente): a tag continua sendo a audiência de envio real (rampa incremental ainda em curso)", () => {
+  it("backend=beehiiv explícito (legado): a tag continua sendo a audiência de envio", () => {
     assert.equal(shouldUseAllActiveAsKitAudience("beehiiv"), false);
-    assert.equal(shouldUseAllActiveAsKitAudience(undefined), false);
   });
 
-  it("qualquer outro valor cai no comportamento antigo (tag) — fail-safe, nunca assume 'todo ativo' sem confirmar backend=kit", () => {
-    assert.equal(shouldUseAllActiveAsKitAudience("outro-backend-hipotetico"), false);
+  it("REGRESSÃO #11225: backend ausente/typo conta como \"kit\" — só o literal \"beehiiv\" cai no ramo legado", () => {
+    assert.equal(shouldUseAllActiveAsKitAudience(undefined), true);
+    assert.equal(shouldUseAllActiveAsKitAudience(""), true);
+    assert.equal(shouldUseAllActiveAsKitAudience("outro-backend-hipotetico"), true);
   });
 });
 
@@ -412,9 +428,12 @@ describe("beehiivSendAudience (#7482) — Beehiiv fora da audiência de envio co
     assert.equal(orphans.length, 1);
   });
 
-  it("backend=beehiiv (ou ausente): ativos da Beehiiv são a audiência de envio", () => {
+  it("backend=beehiiv explícito (legado): ativos da Beehiiv são a audiência de envio", () => {
     assert.deepEqual(beehiivSendAudience("beehiiv", ["a@x.com"]), ["a@x.com"]);
-    assert.deepEqual(beehiivSendAudience(undefined, ["a@x.com"]), ["a@x.com"]);
+  });
+
+  it("REGRESSÃO #11225: backend ausente conta como \"kit\" — Beehiiv fora da audiência de envio", () => {
+    assert.deepEqual(beehiivSendAudience(undefined, ["a@x.com"]), []);
   });
 });
 

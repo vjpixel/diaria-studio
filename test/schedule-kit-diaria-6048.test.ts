@@ -29,7 +29,7 @@ const draft: KitDiariaPublished = {
 function makeDeps(
   over: Partial<{
     enabled: boolean;
-    newsletterBackend: string;
+    newsletterBackend: string | undefined;
     state: KitDiariaPublished | null;
     readStateThrows: boolean;
     patchThrows: boolean;
@@ -39,11 +39,15 @@ function makeDeps(
 ): { deps: ScheduleKitDiariaDeps; written: KitDiariaPublished[]; patched: number[] } {
   const written: KitDiariaPublished[] = [];
   const patched: number[] = [];
+  // #11225: o canal paralelo só agenda no ramo legado — sem a chave, o
+  // backend conta como "kit" (skip). Default do fixture = "beehiiv" explícito;
+  // passar `newsletterBackend: undefined` exercita a chave ausente.
+  const backend = "newsletterBackend" in over ? over.newsletterBackend : "beehiiv";
   const deps: ScheduleKitDiariaDeps = {
     readPlatformConfig: () => ({
       kit_diaria: { enabled: over.enabled ?? true },
-      ...(over.newsletterBackend !== undefined
-        ? { publishing: { newsletter: { backend: over.newsletterBackend } } }
+      ...(backend !== undefined
+        ? { publishing: { newsletter: { backend } } }
         : {}),
     }),
     readState: (() => {
@@ -86,6 +90,19 @@ describe("#6048 scheduleKitDiaria — caminho feliz", () => {
     assert.equal(r.code, 0);
     if (r.code === 0) assert.equal(r.scheduledAt, mesmoInstante);
     assert.equal(written[0].scheduled_at, mesmoInstante);
+  });
+});
+
+describe("#11225 scheduleKitDiaria — backend ausente conta como kit", () => {
+  it("REGRESSÃO #11225: chave publishing.newsletter.backend AUSENTE ⇒ code 2, nada agendado", async () => {
+    // Antes, chave ausente caía no ramo legado e o canal paralelo agendava
+    // junto do backend Kit default — edição EM DOBRO.
+    const { deps, written, patched } = makeDeps({ newsletterBackend: undefined });
+    const r = await scheduleKitDiaria(EDITION, WHEN, deps);
+    assert.equal(r.code, 2);
+    if (r.code === 2) assert.match(r.reason, /EM DOBRO/);
+    assert.deepEqual(patched, []);
+    assert.equal(written.length, 0);
   });
 });
 

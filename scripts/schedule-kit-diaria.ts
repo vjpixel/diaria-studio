@@ -66,6 +66,7 @@ import {
   writeKitDiariaState,
 } from "./kit-diaria-stage5-dispatch.ts";
 import type { KitDiariaChannelConfig } from "./lib/kit-diaria-channel.ts";
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
 import { resolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
@@ -144,7 +145,7 @@ export async function scheduleKitDiaria(
   // NUNCA deve agendar, mesmo que `kit_diaria.enabled` tenha ficado `true`
   // por engano (dívida corrigida no próprio #6321/#6313, não garantia
   // futura).
-  if (cfg.publishing?.newsletter?.backend === "kit") {
+  if (parseNewsletterBackend(cfg.publishing?.newsletter?.backend) === "kit") { // ausente = "kit" (#11225)
     return {
       code: 2,
       reason:
