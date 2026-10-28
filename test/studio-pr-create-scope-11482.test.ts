@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync } 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { studioPrCreateCwd } from '../.claude/hooks/lib/studio-pr-create-scope.mjs';
+// @ts-expect-error -- hook .mjs sem .d.mts, como nos testes pr-create-review-hook-budget.
 import { isForeignRepoPrUrl } from '../.claude/hooks/pr-create-review.mjs';
 
 const root = resolve('.');

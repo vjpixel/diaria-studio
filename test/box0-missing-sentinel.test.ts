@@ -27,7 +27,8 @@ it('Stage 4 registra WARN sem acrescentar falha bloqueante', () => {
     assert.equal(check?.ok, false);
     writeFileSync(join(dir, '02-reviewed.md'), edition('<!-- box0 -->\n' + box));
     const marked = runStage4LintReport(dir, process.cwd());
-    assert.equal(report.ok, marked.ok);
+    assert.equal(typeof report.passed, 'boolean');
+    assert.equal(report.passed, marked.passed);
     assert.deepEqual(report.checks.filter(c => c.severity === 'gate-blocking' && !c.ok).map(c => c.id), marked.checks.filter(c => c.severity === 'gate-blocking' && !c.ok).map(c => c.id));
     assert.equal(marked.checks.find(c => c.id === 'box0-missing-sentinel')?.ok, true);
   } finally { rmSync(dir, { recursive: true, force: true }); }
