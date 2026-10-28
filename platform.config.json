@@ -296,6 +296,8 @@
       "threads_profile": true,
       "youtube_shorts_api": true,
       "linkedin_profile_via_timer": true,
+      "threads_profile_via_timer": false,
+      "threads_profile_via_timer_note": "#11410: true = o vertical do Threads PESSOAL sai pelo timer do 300 (Diaria-Shorts-Threads-Profile, scripts/shorts-threads-profile-timer.ts) no horario do vertical, ate 3 h depois, com o video por URL publica do R2 (reaproveita o objeto shorts/ do dia), conferindo o perfil antes de publicar; o /diaria-publica-video passa a devolver o threads_profile como skip_delegated. Ligar JUNTO com o arme das duas tasks no 300 (registradas com enabled:false em scripts/lib/scheduled-tasks.ts; passo a passo em docs/scheduled-tasks-registry.md). Com false (hoje) nada muda: o /diaria-publica-video publica e o timer nao faz nada.",
       "instagram_backend": "timer-300",
       "instagram_backend_note": "#11265/#10940 (decisao do editor, 27/10/2026): o Reels do Instagram sai pelo timer do 300 (Diaria-Shorts-Instagram, scripts/shorts-instagram-timer.ts) no horario do vertical, pelo upload resumivel da Graph API, sem URL publica — o tunel (#11307) caiu pelo risco de ToS da Cloudflare e o R2 nao sera habilitado. O timer usa o corte _Instagram_ da pasta Final/ do Drive (#11222), confere a conta antes de publicar e abre alarme quando o Reels nao sai (acima do teto da API, credencial, atraso > 3 h). O /diaria-publica-video devolve o instagram como skip_delegated. \"worker-r2\" volta ao caminho antigo do #10823 (R2 + fila do Worker), que exige os 5 secrets do R2. X e Threads pessoal, que so recebem o video por URL publica, ficam pulados com aviso (manuais).",
       "facebook_profile": false,

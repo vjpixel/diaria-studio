@@ -352,6 +352,15 @@ export interface ShortsConfig {
    * vídeo, com o registro ainda não sincronizado, duplicariam o post.
    */
   linkedinProfileViaTimer: boolean;
+  /**
+   * #11410: o vertical do Threads PESSOAL sai pelo timer do `300`
+   * (`scripts/shorts-threads-profile-timer.ts`, task
+   * `Diaria-Shorts-Threads-Profile`), não pela rodada do
+   * `/diaria-publica-video`: a Threads API não agenda. Com `true`, uma rodada
+   * sem `--threads-timer` pula o `threads_profile` (`skip_delegated`), mesmo
+   * contrato do `linkedinProfileViaTimer`.
+   */
+  threadsProfileViaTimer: boolean;
   /** #11265: quem publica o Reels do Instagram (`InstagramBackend`). */
   instagramBackend: InstagramBackend;
   /**
@@ -384,6 +393,8 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   youtubeShortsApi: true,
   // #10982: desligado no código; o platform.config.json liga junto com o timer.
   linkedinProfileViaTimer: false,
+  // #11410: desligado; o editor liga no platform.config.json junto com o arme da task no 300.
+  threadsProfileViaTimer: false,
   // #11265 (decisão do editor, 27/10/2026): timer no 300, sem R2.
   instagramBackend: "timer-300",
   // #11223: ligado no código; o platform.config.json pausa durante a viagem.
@@ -402,6 +413,7 @@ function defaultShortsConfig(): ShortsConfig {
     threadsProfile: DEFAULT_SHORTS_CONFIG.threadsProfile,
     youtubeShortsApi: DEFAULT_SHORTS_CONFIG.youtubeShortsApi,
     linkedinProfileViaTimer: DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer,
+    threadsProfileViaTimer: DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer,
     instagramBackend: DEFAULT_SHORTS_CONFIG.instagramBackend,
     facebookProfile: DEFAULT_SHORTS_CONFIG.facebookProfile,
   };
@@ -459,6 +471,7 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     threadsProfile: optionalBool(raw, "threads_profile", DEFAULT_SHORTS_CONFIG.threadsProfile),
     youtubeShortsApi: optionalBool(raw, "youtube_shorts_api", DEFAULT_SHORTS_CONFIG.youtubeShortsApi),
     linkedinProfileViaTimer: optionalBool(raw, "linkedin_profile_via_timer", DEFAULT_SHORTS_CONFIG.linkedinProfileViaTimer),
+    threadsProfileViaTimer: optionalBool(raw, "threads_profile_via_timer", DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer),
     instagramBackend: backend,
     facebookProfile: optionalBool(raw, "facebook_profile", DEFAULT_SHORTS_CONFIG.facebookProfile),
   };

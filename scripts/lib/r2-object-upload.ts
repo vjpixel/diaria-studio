@@ -313,3 +313,29 @@ export async function uploadToR2(
   }
   return url;
 }
+
+/**
+ * #11410: sobe o arquivo, ou reaproveita o objeto que já está no bucket com o
+ * MESMO tamanho (HEAD 200 na URL pública). O vertical do dia costuma já ter
+ * subido numa rodada anterior (o `/diaria-publica-video` com o X, ou outra
+ * execução do timer do Threads): sem isso cada rodada repetiria o PUT de
+ * ~275 MB. HEAD que falha, 404 ou tamanho diferente → upload normal
+ * (`uploadToR2`, que confere a URL depois). Devolve a URL e se reaproveitou.
+ */
+export async function reuseOrUploadToR2(
+  deps: R2UploadDeps,
+  config: R2UploadConfig,
+  key: string,
+  body: Buffer,
+  contentType: string,
+): Promise<{ url: string; reused: boolean }> {
+  const url = r2PublicUrl(config, key);
+  try {
+    const head = await deps.fetch(url, { method: "HEAD" });
+    const len = head.headers.get("content-length");
+    if (head.ok && len !== null && Number(len) === body.length) return { url, reused: true };
+  } catch {
+    // HEAD falhou (rede): sobe de novo, e o upload confere a URL no fim.
+  }
+  return { url: await uploadToR2(deps, config, key, body, contentType), reused: false };
+}
