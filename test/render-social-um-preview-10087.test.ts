@@ -69,13 +69,13 @@ function assertPreviewMatchesPublish(previewMain: string, published: string): vo
 }
 
 describe("#10087 — preview do ## um = texto que cada canal publica", () => {
-  it("LinkedIn e Facebook num bloco, Instagram em outro (textos finais diferem)", () => {
+  it("LinkedIn, Facebook e Instagram num bloco só (#11499: mesmo texto final)", () => {
+    // Antes do #11499 o Instagram saía em bloco próprio, com os itens em pares.
     const labels = umBlocks().map((b) => b.channels);
-    assert.equal(labels.length, 2, JSON.stringify(labels));
+    assert.equal(labels.length, 1, JSON.stringify(labels));
     assert.match(labels[0], /LinkedIn/);
     assert.match(labels[0], /Facebook/);
-    assert.doesNotMatch(labels[0], /Instagram/);
-    assert.match(labels[1], /Instagram/);
+    assert.match(labels[0], /Instagram/);
   });
 
   it("LinkedIn: preview bate com buildUseMelhorLinkedInPost", () => {
@@ -92,13 +92,14 @@ describe("#10087 — preview do ## um = texto que cada canal publica", () => {
     assertPreviewMatchesPublish(blockFor("Facebook").post.main, r.caption);
   });
 
-  it("Instagram: preview bate com buildUseMelhorInstagramPost (itens em pares, sem separar)", () => {
+  it("Instagram: preview bate com buildUseMelhorInstagramPost (itens separados, #11499)", () => {
     const r = buildUseMelhorInstagramPost({ socialMd: MD, plan, images, editionDir: "x", fileExists: () => true });
     assert.ok(r.ok, JSON.stringify(r));
     if (!r.ok) return;
     const main = blockFor("Instagram").post.main;
     assertPreviewMatchesPublish(main, r.caption);
-    assert.match(main, /primeiro rascunho\*\* de e-mails\.\n2\)/, "Instagram mantém o par 1+2 no mesmo parágrafo");
+    assert.match(main, /primeiro rascunho\*\* de e-mails\.\n\n2\)/, "Instagram separa o par 1+2");
+    assert.match(r.caption, /de e-mails\.\n\n2\)/);
   });
 
   it("HTML do preview: sem {quebra} literal, itens 1 e 2 em parágrafos separados no bloco LinkedIn/Facebook", () => {

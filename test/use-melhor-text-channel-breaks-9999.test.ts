@@ -5,7 +5,8 @@
  * colados em pares (1+2, 3+4, 5+6, 7+8), herdando o agrupamento de 2 itens por
  * card do carrossel (#9791). Decisão do editor (10/10): nos canais de TEXTO
  * (LinkedIn página + pessoal, Facebook) cada item sai separado por linha em
- * branco; o carrossel do Instagram segue com 2 itens por card.
+ * branco; o carrossel do Instagram segue com 2 itens por card. #11499: a
+ * legenda do Instagram passou a separar os itens também (antes ficava em pares).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -76,7 +77,7 @@ describe("separateUseMelhorListItems (#9999)", () => {
   });
 });
 
-describe("publicadores de texto separam os itens; carrossel/Instagram não mudam (#9999)", () => {
+describe("publicadores de texto separam os itens; carrossel não muda (#9999, #11499)", () => {
   const md = [
     "# Social", "", "## d1", "", "Texto do destaque.", "", "#Tag", "",
     "## um", "", UM, "",
@@ -121,13 +122,25 @@ describe("publicadores de texto separam os itens; carrossel/Instagram não mudam
     }
   });
 
-  it("Instagram (legenda junto do carrossel) mantém os pares", () => {
+  it("Instagram separa os itens como LinkedIn/Facebook (#11499)", () => {
+    // Antes do #11499 a legenda do Instagram mantinha os pares (1+2, 3+4...)
+    // dos cards do carrossel, diferente das outras redes.
     const r = buildUseMelhorInstagramPost({ socialMd: md, plan, images, editionDir: "x", fileExists: () => true });
     assert.ok(r.ok, JSON.stringify(r));
-    if (r.ok) assert.match(r.caption, /contando o seu nível\.\n(?:\*\*)?6\)/);
+    if (!r.ok) return;
+    assertEveryItemSeparated(r.caption);
+    assert.doesNotMatch(r.caption, /contando o seu nível\.\n(?:\*\*)?6\)/);
+    // Mesmo corpo de lista que o Facebook publica (as linhas de CTA/engajamento
+    // de cada canal diferem e ficam fora da comparação).
+    const fb = buildUseMelhorFacebookPost({ socialMd: md, plan, images, editionDir: "x", fileExists: () => false });
+    assert.ok(fb.ok, JSON.stringify(fb));
+    if (!fb.ok) return;
+    const list = (t: string) => t.split("\n\n").filter((p) => /^(?:\*\*)?\d+\)/.test(p));
+    assert.deepEqual(list(r.caption), list(fb.caption));
+    assert.equal(list(r.caption).length, 8);
   });
 
-  it("finalizeUseMelhorPostText (Instagram/Curto) segue sem separar", () => {
+  it("finalizeUseMelhorPostText (Curto) segue sem separar", () => {
     assert.equal(finalizeUseMelhorPostText(PAIRS[0]), PAIRS[0]);
   });
 });

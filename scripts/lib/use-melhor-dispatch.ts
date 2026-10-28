@@ -351,12 +351,14 @@ export function prependUseMelhorCaptionTitle(text: string, title: string | null 
 }
 
 /**
- * Pure (#9999): `finalizeUseMelhorPostText` dos canais de TEXTO longo —
- * LinkedIn página, LinkedIn pessoal e Facebook — com cada item da lista
- * numerada separado por linha em branco (`separateUseMelhorListItems`).
- * Instagram (legenda junto do carrossel, decisão do editor restrita aos 3
- * canais acima) e o `# Curto` (Threads/X, outro texto e teto de chars) seguem
- * no `finalizeUseMelhorPostText` puro.
+ * Pure (#9999): `finalizeUseMelhorPostText` dos canais do texto único —
+ * LinkedIn página, LinkedIn pessoal, Facebook e, desde o #11499, a legenda
+ * do Instagram — com cada item da lista numerada separado por linha em branco
+ * (`separateUseMelhorListItems`). O #9999 deixava o Instagram de fora e a
+ * legenda saía com os itens em pares (herdados dos cards do carrossel); o
+ * editor quer o mesmo layout nos três canais. O carrossel não muda: sai do
+ * `03-social.md`, não deste texto. Só o `# Curto` (Threads/X, outro texto e
+ * teto de chars) segue no `finalizeUseMelhorPostText` puro.
  */
 export function finalizeUseMelhorTextChannelPostText(text: string): string {
   return finalizeUseMelhorPostText(separateUseMelhorListItems(text));
