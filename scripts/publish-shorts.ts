@@ -3069,7 +3069,7 @@ async function main(): Promise<number> {
         dir,
         aammdd,
         plan.items.map((i) => i.destination),
-        credentialSkippedItems(plan.items, { publicVideoTerminal: shortsCfg.instagramBackend === "timer-300" && !r2.ready }),
+        credentialSkippedItems(plan.items),
         new Date().toISOString(),
       );
     } catch (e) {
@@ -3094,21 +3094,19 @@ export function threadsEditionMarkers(aammdd: string, d1Title: string): string[]
 /**
  * Destinos que a rodada pulou por falta de credencial/token do PRÓPRIO destino
  * (#11240), terminais pra limpeza do vertical. O pulo por falta de URL pública
- * (`cause: "public_video"`, X e Threads) só conta quando
- * `publicVideoTerminal`: com o backend `timer-300` numa máquina sem os
- * secrets do R2 (#11265; o R2 existe desde 27/10/2026, #10772, mas aqui não
- * está configurado) a próxima rodada também não publica, e o X/Threads
- * manuais sobem o arquivo do Drive (`Final/`), não o `-short.mp4` local —
- * sem isso o vertical nunca seria apagado. Com o R2 só fora do ar
- * (`worker-r2`), segue não-terminal: a próxima rodada publica com o mesmo
- * arquivo. Puro.
+ * (`cause: "public_video"`, X e Threads) NUNCA conta, em nenhum backend
+ * (#11478): o R2 está habilitado desde 27/10/2026 (#10772), então esse pulo
+ * só quer dizer que ESTA máquina não tem os secrets `R2_*`/`SHORTS_R2_*`
+ * (clone novo, sync de env atrasado). Outra máquina com eles ainda publica
+ * com o mesmo `-short.mp4`, que por isso não pode ser podado. A regra
+ * anterior (terminal com `timer-300` sem R2, #11265) era do tempo em que o
+ * R2 não seria habilitado. Puro.
  */
 export function credentialSkippedItems(
   items: readonly ShortsPlanItem[],
-  opts: { publicVideoTerminal?: boolean } = {},
 ): Array<{ destination: string; detail: string }> {
   return items.flatMap((i) =>
-    i.action === "skip_missing_credentials" && (i.cause !== "public_video" || opts.publicVideoTerminal === true)
+    i.action === "skip_missing_credentials" && i.cause !== "public_video"
       ? [{ destination: i.destination, detail: i.detail }]
       : [],
   );
