@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isAggregator } from "./lib/aggregators";
 import { isEditoriallyBlocked } from "./lib/editorial-blocklist.ts";
 import { isUrlBlocked } from "./lib/url-blocklist.ts";
+import { extractVersionedProducts } from "./lib/same-fact-check.ts";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
@@ -49,6 +50,7 @@ import {
   extractPastUrlsWithinDays,
   extractPastUrlsUnbounded,
   extractPastTitles,
+  extractPastItemTitles,
   extractPastThemeEntities,
   matchesRecentTheme,
   extractPastThemeFacts,
@@ -201,6 +203,8 @@ export function dedup(
   // com título ainda placeholder é comparado (Pass-1b/1c) por esse título, ou
   // pelo slug da URL — ver lib/placeholder-dedup-title.ts.
   pastArticleTitleByUrl: Map<string, string> = new Map(),
+  // #11511: títulos publicados no markdown, janela curta, mesmo sem pastas locais.
+  pastItemTitles: string[] = [],
 ): {
   kept: Article[];
   removed: RemovedEntry[];
@@ -530,10 +534,19 @@ export function dedup(
   // úteis (#9565) da edição corrente (`pastEventDistanceDays`) habilitam o sinal (C).
   const afterPass1f: Article[] = [];
   const pastEventTitles = [...new Set([...pastTitles, ...pastArticleTitles])];
-  if (pastEventTitles.length > 0) {
+  const versionedPast = pastItemTitles.map((title) => ({ title, products: extractVersionedProducts(title) }));
+  if (pastEventTitles.length > 0 || versionedPast.length > 0) {
     let strongConceptRemoved = 0; // #8666: remoções pelo sinal (C), contadas à parte
     const pastEventEntries = pastEventTitles.map((t) => ({ title: t, distanceDays: pastEventDistanceDays.get(t) }));
     for (const art of afterPass1e) {
+      const products = extractVersionedProducts(art.title ?? "");
+      const productHit = versionedPast.find((past) => [...products].some((p) => past.products.has(p)));
+      if (productHit) {
+        const note = `same-product-version (#11511) com artigo de edição anterior "${productHit.title}"`;
+        if (art.flag === "editor_submitted") afterPass1f.push({ ...art, event_dedup_flagged: note });
+        else pushRemoved(removed, art, note);
+        continue;
+      }
       const hit = art.title ? findSameEvent(art.title, pastEventEntries) : null;
       if (!hit) {
         afterPass1f.push(art);
@@ -989,6 +1002,7 @@ async function main() {
     pastEventDistanceDays,
     pastThemeFacts,
     pastArticleTitleByUrl,
+    extractPastItemTitles(pastMd, window, currentAammdd),
   );
 
   console.error(

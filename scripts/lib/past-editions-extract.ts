@@ -296,6 +296,18 @@ export function extractPastTitlesWithEdition(
   return out;
 }
 
+/** #11511: títulos individuais, compatível com URLs sem título do formato legado.
+ * Exclui a edição corrente/futuras antes de aplicar a janela curta de edições.
+ */
+export function extractPastItemTitles(md: string, window: number, currentAammdd?: string): string[] {
+  const sections = md.split(/\n(?=## \d{4}-\d{2}-\d{2})/)
+    .map((section) => ({ section, date: section.match(/^## (\d{4})-(\d{2})-(\d{2})/m) }))
+    .filter(({ date }) => date && (!currentAammdd || `${date[1].slice(2)}${date[2]}${date[3]}` < currentAammdd))
+    .sort((a, b) => b.date![0].localeCompare(a.date![0]))
+    .slice(0, window);
+  return sections.flatMap(({ section }) => [...section.matchAll(/^-\s+https?:\/\/\S+[^\S\n]+—[^\S\n]+(.+)$/gm)].map((m) => m[1].trim()));
+}
+
 /**
  * #1475: extrai entidades dos "Temas cobertos:" de past-editions.md.
  * Retorna Set de entidades lowercased das últimas `window` edições.
