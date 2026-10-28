@@ -95,9 +95,67 @@ export function parseSitemap(xml: string): SitemapEntry[] {
 }
 
 /**
- * Mantém entradas cujo `lastmod` é >= `now - days*86400000`.
- * Entradas sem `lastmod` são descartadas — sitemap sem lastmod não é útil
- * pra fetch janelado.
+ * #11401: data de publicação embutida no caminho (`/AAAA/MM/DD/`), comum em
+ * changelog datado (ex.: `docs.replit.com/updates/2026/10/23/changelog`).
+ * Retorna `AAAA-MM-DD` ou `null` se o caminho não tiver data válida.
+ */
+export function dateFromPath(loc: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(loc).pathname;
+  } catch {
+    return null;
+  }
+  const m = pathname.match(/\/(\d{4})\/(\d{2})\/(\d{2})(?:\/|$)/);
+  if (!m) return null;
+  const iso = `${m[1]}-${m[2]}-${m[3]}`;
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso) return null;
+  return iso;
+}
+
+/**
+ * #11401: data efetiva de publicação de uma entrada. `lastmod` sobe quando a
+ * página é reeditada ou retraduzida (no sitemap do docs.replit.com, o
+ * changelog de 13/12/2024 tem `lastmod` de abril/2026) — então, se o caminho
+ * traz a data, ela manda. `lastmod` só vale quando cai no mesmo dia da data do
+ * caminho (é mais preciso que meia-noite) ou quando o caminho não tem data.
+ */
+export function effectiveDate(entry: SitemapEntry): string | null {
+  const pathDate = dateFromPath(entry.loc);
+  if (!pathDate) return entry.lastmod;
+  if (entry.lastmod && entry.lastmod.slice(0, 10) === pathDate) return entry.lastmod;
+  return `${pathDate}T00:00:00.000Z`;
+}
+
+/**
+ * #11401: mantém só as entradas cujo caminho está sob `pathPrefix` (ex.:
+ * `/updates` → `/updates/2026/10/23/changelog`, mas não `/pt/updates/...` nem
+ * as páginas de documentação do mesmo sitemap). Prefixo vazio ou `/` → sem
+ * filtro. Sem isso um sitemap de site de documentação inteiro (2,5 mil URLs,
+ * centenas com `lastmod` recente) entraria como "artigo".
+ */
+export function filterByPathPrefix(
+  entries: SitemapEntry[],
+  pathPrefix: string | undefined,
+): SitemapEntry[] {
+  const prefix = (pathPrefix ?? "").replace(/\/+$/, "");
+  if (!prefix) return entries;
+  return entries.filter((e) => {
+    let pathname: string;
+    try {
+      pathname = new URL(e.loc).pathname.replace(/\/+$/, "");
+    } catch {
+      return false;
+    }
+    return pathname.startsWith(prefix + "/");
+  });
+}
+
+/**
+ * Mantém entradas cuja data efetiva (`effectiveDate`: data do caminho, senão
+ * `lastmod`) é >= `now - days*86400000`. Entradas sem data nenhuma são
+ * descartadas — sitemap sem lastmod não é útil pra fetch janelado.
  */
 export function filterByWindow(
   entries: SitemapEntry[],
@@ -106,8 +164,9 @@ export function filterByWindow(
 ): SitemapEntry[] {
   const cutoff = now.getTime() - days * 24 * 60 * 60 * 1000;
   return entries.filter((e) => {
-    if (!e.lastmod) return false;
-    const t = new Date(e.lastmod).getTime();
+    const date = effectiveDate(e);
+    if (!date) return false;
+    const t = new Date(date).getTime();
     if (Number.isNaN(t)) return false;
     return t >= cutoff;
   });
@@ -174,7 +233,7 @@ function entryToArticle(entry: SitemapEntry): Article {
   return {
     url: entry.loc,
     title,
-    published_at: entry.lastmod,
+    published_at: effectiveDate(entry),
     summary,
   };
 }
@@ -189,6 +248,8 @@ export async function fetchSitemapEntries(opts: {
   days?: number;
   timeoutMs?: number;
   now?: Date;
+  /** #11401: só entradas sob este caminho (ver `filterByPathPrefix`). */
+  pathPrefix?: string;
 }): Promise<SitemapFetchResult> {
   const days = opts.days ?? DEFAULT_DAYS;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -263,7 +324,7 @@ export async function fetchSitemapEntries(opts: {
     };
   }
 
-  const inWindow = filterByWindow(entries, days, now);
+  const inWindow = filterByWindow(filterByPathPrefix(entries, opts.pathPrefix), days, now);
   const enriched = await Promise.all(
     inWindow.map((e) => enrichEntry(e, { timeoutMs })),
   );
