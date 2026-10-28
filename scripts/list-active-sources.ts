@@ -131,10 +131,13 @@ async function main(): Promise<void> {
   // remove campos não-websearch.
   const formatted = rssOnly
     ? sources.map((s) => {
-        const { name, rss, filter, low_cadence } = s;
+        const { name, rss, filter, low_cadence, url } = s;
         const obj: Record<string, unknown> = { name, rss };
         if (filter) obj.filter = filter;
         if (low_cadence) obj.low_cadence = true;
+        // #11401: fonte de sitemap leva a URL — o caminho dela restringe as
+        // entradas do sitemap à seção da fonte (fetch-rss-batch.ts).
+        if (url && rss?.endsWith("sitemap.xml")) obj.url = url;
         return obj;
       })
     : websearchOnly

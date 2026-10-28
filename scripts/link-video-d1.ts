@@ -23,7 +23,8 @@
  *   - `--save` grava `_internal/05-video-url.txt`. Com o arquivo presente
  *     ANTES do Stage 5, `prep-twitter-posts.ts`, `publish-threads.ts` e
  *     `publish-facebook.ts` já põem o link no texto do D1 (X e Threads só se
- *     couber no limite do canal). A newsletter também lê o arquivo (#10784):
+ *     couber no limite do canal; se não couber, tiram as hashtags do fim antes
+ *     de desistir, #11402). A newsletter também lê o arquivo (#10784):
  *     com ele presente quando o HTML é renderizado, a imagem do D1 aponta pro
  *     vídeo; sem ele, pro canal @diariabr (`lib/diaria/d1-video-hero.ts`) — o
  *     Kit re-renderiza no Stage 5, então gravar antes do envio basta;

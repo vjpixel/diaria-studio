@@ -411,11 +411,14 @@ export function prepTwitterPosts(
     if (editionUrl) text = tagEditionUrlInText(text, editionUrl, TWITTER_EDITION_UTM);
 
     // #10772: só se couber no peso do X — estourar mantém o texto original
-    // (o link vai depois, como resposta), nunca derruba o post do D1.
+    // (o link vai depois, como resposta), nunca derruba o post do D1. #11402:
+    // antes de desistir, tenta sem as hashtags do fim.
     if (d === "d1" && d1Video.url) {
       const inj = injectVideoLinkWithinLimit(text, d1Video.url, TWITTER_CHAR_LIMIT, computeTwitterWeightedLength);
-      if (inj.injected) text = inj.text;
-      else console.warn(`AVISO twitter/d1: link do vídeo não entrou no texto — ${inj.reason}`);
+      if (inj.injected) {
+        text = inj.text;
+        if (inj.droppedHashtags) console.warn("AVISO twitter/d1: hashtags removidas para o link do vídeo caber em 280 (#11402)");
+      } else console.warn(`AVISO twitter/d1: link do vídeo não entrou no texto — ${inj.reason}`);
     }
 
     // #4285/#4264 adendo do editor: conta URL como TWITTER_URL_WEIGHT (peso

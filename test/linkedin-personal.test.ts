@@ -258,11 +258,11 @@ describe("janela das tasks (#9568)", () => {
     assert.equal(nextRunOf(hourly, new Date("2030-10-15T09:10:00-03:00"))!.toISOString(), "2030-10-15T13:00:00.000Z");
     assert.equal(nextRunOf(hourly, new Date("2030-10-15T23:30:00-03:00"))!.toISOString(), "2030-10-16T03:00:00.000Z");
   });
-  it("slot padrão sai às 07:46; slot deslocado (09:10) sai na repescagem das 10:00 — dentro da janela", () => {
+  it("slot padrão: a próxima execução da task diária é 07:46 (#11398: a repescagem está desativada)", () => {
     assert.equal(nextPersonalFireRun(new Date("2030-10-15T07:45:00-03:00"))!.toISOString(), "2030-10-15T10:46:00.000Z");
+    // Sem a repescagem, o slot deslocado (09:10) só teria a diária do dia seguinte: fora da janela de 3h.
     const shifted = fireWindowCheck(new Date("2030-10-15T09:10:00-03:00"), new Date("2030-10-15T08:00:00-03:00"));
-    assert.ok(shifted.ok);
-    if (shifted.ok) assert.equal(shifted.nextRun.toISOString(), "2030-10-15T13:00:00.000Z");
+    assert.equal(shifted.ok, false);
   });
   it("arme depois da janela inteira (> 3h do scheduled_at) e scheduled_at ilegível = fora", () => {
     const late = fireWindowCheck(new Date("2030-10-15T07:45:00-03:00"), new Date("2030-10-15T11:00:00-03:00"));
@@ -553,23 +553,13 @@ describe("alarme (#9568)", () => {
   });
 });
 
-describe("tasks Diaria-LinkedIn-Personal (#9568)", () => {
-  it("a diária roda 1 minuto depois de publishing.social.use_melhor_time e a repescagem é de hora em hora", () => {
+describe("tasks Diaria-LinkedIn-Personal (#9568, post aposentado na #11398)", () => {
+  it("a diária só alarma o token (o vertical usa o mesmo app) e a repescagem está desativada", () => {
     const task = getScheduledTaskByName(PERSONAL_TASK_NAME);
     const catchup = getScheduledTaskByName(PERSONAL_CATCHUP_TASK_NAME);
     assert.ok(task && catchup);
-    const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
-    const [h, m] = String(cfg.publishing.social.use_melhor_time).split(":").map(Number);
-    const slot = h * 60 + m + 1;
-    assert.deepEqual(task!.schedule, { kind: "daily", hour: Math.floor(slot / 60), minute: slot % 60 });
-    assert.deepEqual(catchup!.schedule, { kind: "interval", hours: 1 });
-    assert.deepEqual(
-      task!.steps.map((s) => [s.script, s.args ?? []]),
-      [
-        ["scripts/publish-linkedin-personal.ts", ["--fire-due"]],
-        ["scripts/linkedin-personal-token-alarm.ts", []],
-      ],
-    );
-    assert.deepEqual(catchup!.steps.map((s) => [s.script, s.args ?? []]), [["scripts/publish-linkedin-personal.ts", ["--fire-due"]]]);
+    assert.notEqual(task!.enabled, false);
+    assert.deepEqual(task!.steps.map((s) => [s.script, s.args ?? []]), [["scripts/linkedin-personal-token-alarm.ts", []]]);
+    assert.equal(catchup!.enabled, false);
   });
 });

@@ -88,7 +88,7 @@ describe("injectVideoLinkWithinLimit", () => {
 
   it("cabendo, insere", () => {
     const r = injectVideoLinkWithinLimit("Curto.", VIDEO, 500);
-    assert.deepEqual(r, { injected: true, text: `Curto.\n\n${videoLinkLine(VIDEO)}` });
+    assert.deepEqual(r, { injected: true, text: `Curto.\n\n${videoLinkLine(VIDEO)}`, droppedHashtags: false });
   });
 });
 

@@ -1,5 +1,12 @@
 # LinkedIn pessoal automatizado (#9568)
 
+> **O post diário do 4º item no perfil pessoal foi APOSENTADO em 27/10/2026
+> (#11398, pedido do editor).** O Stage 6 não arma nem lembra mais esse post,
+> e a task `Diaria-LinkedIn-Personal` só alarma o token. O app e o token
+> descritos aqui continuam necessários: o vertical da edição sai no perfil
+> pessoal com o mesmo token (`publish-shorts.ts`). As seções sobre armar e
+> disparar o post diário abaixo ficam como histórico.
+
 O 4º post diário (item USE MELHOR, `## um` de `03-social.md`) sai na página
 diar.ia.br pelo Stage 5. No perfil **pessoal** do editor, o mesmo texto saía
 por lembrete manual do Stage 6. Com este setup ele sai sozinho, no mesmo

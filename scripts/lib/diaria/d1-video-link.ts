@@ -118,14 +118,35 @@ export function insertVideoLinkLine(text: string, videoUrl: string): string {
 }
 
 export type InjectVideoLinkResult =
-  | { injected: true; text: string }
+  /** `droppedHashtags`: o link só coube sem a(s) linha(s) final(is) de hashtags (#11402). */
+  | { injected: true; text: string; droppedHashtags: boolean }
   | { injected: false; text: string; reason: string };
+
+/** Linha feita só de hashtags (`#OpenAI #GPT61`, `#Segurança`). */
+const HASHTAG_ONLY_LINE_RE = /^\s*#[\p{L}\p{N}_]+(?:\s+#[\p{L}\p{N}_]+)*\s*$/u;
+
+/**
+ * Remove as linhas de hashtags do FIM do texto (e o espaço em branco que
+ * sobra). Hashtag no meio do texto fica. Sem linha de hashtags no fim, o texto
+ * volta igual.
+ */
+export function stripTrailingHashtagLines(text: string): string {
+  const lines = text.replace(/\s+$/, "").split("\n");
+  let end = lines.length;
+  while (end > 0 && (lines[end - 1].trim() === "" || HASHTAG_ONLY_LINE_RE.test(lines[end - 1]))) end--;
+  if (end === lines.length) return text;
+  // Só linhas em branco no fim, sem hashtag: nada a tirar.
+  if (!lines.slice(end).some((l) => HASHTAG_ONLY_LINE_RE.test(l))) return text;
+  return lines.slice(0, end).join("\n").replace(/\s+$/, "");
+}
 
 /**
  * Versão com teto: insere o link só se o texto resultante couber em
- * `measure(text) <= limit`. Estourar devolve o texto ORIGINAL com o motivo —
- * nunca derruba o post do D1 por causa do link (o link pode entrar depois,
- * como resposta).
+ * `measure(text) <= limit`. Não coube com o texto inteiro → tenta de novo
+ * sem as hashtags do fim (#11402: na 261028 o D1 do X ficou com 287 de 280 e
+ * o link, que é o objetivo do post, caiu inteiro; as hashtags são a parte de
+ * menor valor do texto curto). Nem assim coube → devolve o texto ORIGINAL com
+ * o motivo — nunca derruba o post do D1 por causa do link.
  */
 export function injectVideoLinkWithinLimit(
   text: string,
@@ -136,14 +157,21 @@ export function injectVideoLinkWithinLimit(
   if (textHasVideoLink(text, videoUrl)) return { injected: false, text, reason: "texto já cita o vídeo" };
   const next = insertVideoLinkLine(text, videoUrl);
   const size = measure(next);
-  if (size > limit) {
-    return {
-      injected: false,
-      text,
-      reason: `com o link do vídeo o texto ficaria com ${size} chars (limite ${limit}) — link fica para depois (#10772)`,
-    };
+  if (size <= limit) return { injected: true, text: next, droppedHashtags: false };
+
+  const withoutHashtags = stripTrailingHashtagLines(text);
+  let leanNote = "";
+  if (withoutHashtags !== text) {
+    const lean = insertVideoLinkLine(withoutHashtags, videoUrl);
+    const leanSize = measure(lean);
+    if (leanSize <= limit) return { injected: true, text: lean, droppedHashtags: true };
+    leanNote = `; sem as hashtags, ${leanSize}`;
   }
-  return { injected: true, text: next };
+  return {
+    injected: false,
+    text,
+    reason: `com o link do vídeo o texto ficaria com ${size} chars${leanNote} (limite ${limit}) — link fica para depois (#10772)`,
+  };
 }
 
 /** Parse do conteúdo de `_internal/05-video-url.txt` (vazio → null). */

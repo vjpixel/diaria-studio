@@ -166,7 +166,7 @@ Depois do Passo A3 nada a fazer: o `--upload` já gravou `_internal/05-video-url
 npx tsx scripts/link-video-d1.ts {AAMMDD} --video-url {URL} --save
 ```
 
-`--save` grava `_internal/05-video-url.txt`, o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook diar.ia.br já na criação dos posts (1º link do texto no X; X e Threads só se couber no limite). Com o link gravado, o passo do YouTube no Stage 5 (`stage5-youtube.ts`) não busca nem sobe nada: o vídeo já está no canal (#11222).
+`--save` grava `_internal/05-video-url.txt`, o arquivo que o Stage 5 lê para pôr o link no D1 de X, Threads e Facebook diar.ia.br já na criação dos posts (1º link do texto no X; X e Threads só se couber no limite, tirando as hashtags do fim quando é isso que falta, #11402). Com o link gravado, o passo do YouTube no Stage 5 (`stage5-youtube.ts`) não busca nem sobe nada: o vídeo já está no canal (#11222).
 
 Se o `link-video-d1` recusar (exit 1, nada gravado) porque um registro do upload diz privado, indeterminado ou agendado para depois do D1, a **pergunta única** ao editor é: "o vídeo está público no Studio (ou agendado antes do horário do D1)?" (#10865 — sem a auditoria do YouTube API Services, vídeo `private` nunca vira link no D1). Com o "sim", rodar de novo com `--assume-public`.
 
