@@ -1,6 +1,7 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { evaluateDopplerExpiries, readDopplerExpiries } from "../scripts/doppler-token-expiry-alarm.ts";
+import { DEDICATED_EXPIRY_ALARM_KEYS, evaluateDopplerExpiries, readDopplerExpiries } from "../scripts/doppler-token-expiry-alarm.ts";
+import { LINKEDIN_PERSONAL_ENV, evaluateTokenExpiry } from "../scripts/lib/linkedin-personal.ts";
 import { planAlarmReconciliation, alarmIssueStateKey, type AlarmIssuesState } from "../scripts/lib/alarm-issues.ts";
 const now = new Date("2026-11-01T12:00:00Z");
 const key = "THREADS_PERSONAL_TOKEN_EXPIRES_AT";
@@ -24,10 +25,21 @@ it("faixas de 14/3 dias, vencido, ilegível, vazio e renovado", () => {
   }
 });
 it("outros EXPIRES_AT e metadata ausente de token configurado são cobertos", () => {
-  const findings = evaluateDopplerExpiries({ LINKEDIN_PERSONAL_ACCESS_TOKEN: "sentinel-secret", OTHER_TOKEN_EXPIRES_AT: at(10) }, now);
+  const findings = evaluateDopplerExpiries({ THREADS_PERSONAL_ACCESS_TOKEN: "sentinel-secret", OTHER_TOKEN_EXPIRES_AT: at(10) }, now);
   assert.equal(findings.length, 2);
-  assert.ok(findings.some((f) => f.fingerprint === "LINKEDIN_PERSONAL_TOKEN_EXPIRES_AT" && f.contentSignature === "unknown"));
+  assert.ok(findings.some((f) => f.fingerprint === "THREADS_PERSONAL_TOKEN_EXPIRES_AT" && f.contentSignature === "unknown"));
   assert.deepEqual(evaluateDopplerExpiries({}, now), [], "Threads nunca configurado não alarma antes da #10772");
+});
+it("#11435: vencimento do LinkedIn pessoal só alarma no alarme dedicado, nunca nos dois", () => {
+  const env = { LINKEDIN_PERSONAL_ACCESS_TOKEN: "sentinel-secret", LINKEDIN_PERSONAL_TOKEN_EXPIRES_AT: at(2) };
+  assert.ok(DEDICATED_EXPIRY_ALARM_KEYS.has(LINKEDIN_PERSONAL_ENV.expiresAt));
+  assert.deepEqual(evaluateDopplerExpiries(env, now), [], "presente e perto de vencer: o Doppler não duplica");
+  assert.deepEqual(evaluateDopplerExpiries({ LINKEDIN_PERSONAL_ACCESS_TOKEN: "sentinel-secret" }, now), [], "ausente com token: idem");
+  const dedicated = evaluateTokenExpiry(env, now, null);
+  assert.equal(dedicated?.priority, "P1", "o alarme dedicado segue emitindo o vencimento");
+  const total = [...evaluateDopplerExpiries(env, now), ...(dedicated ? [dedicated] : [])];
+  assert.equal(total.length, 1, "um único finding de vencimento entre os dois alarmes");
+  assert.equal(evaluateDopplerExpiries({ ...env, OTHER_TOKEN_EXPIRES_AT: at(2) }, now).length, 1, "os demais campos seguem alarmados");
 });
 it("erros/vault vazio abortam sem expor conteúdo nem reconciliar", () => {
   for (const runner of [() => { throw new Error("sentinel-secret"); }, () => "", () => "invalid snapshot"]) {
