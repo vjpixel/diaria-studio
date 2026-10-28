@@ -13,7 +13,8 @@
  *       [--min-free-pct P] [--check-only] [--dry-run]
  *
  * Limiares também por ambiente: `DIARIA_DISK_GUARD_MIN_FREE_GB`,
- * `DIARIA_DISK_GUARD_MIN_FREE_PCT` (defaults 10 GB e 10%).
+ * `DIARIA_DISK_GUARD_MIN_FREE_PCT` (defaults 10 GB e 10%). `P` é sempre
+ * percentual 0-100 (`1` = 1%, não 100%).
  *
  * Saída:
  *   0 — espaço ok (de saída ou depois da limpeza): pode abrir a onda.

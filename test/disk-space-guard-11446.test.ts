@@ -249,6 +249,29 @@ test("resolveDiskGuardThresholds: flag > env > default; percentual; inválido av
   assert.equal(bad.warnings.length, 1);
 });
 
+test("resolveDiskGuardThresholds: --min-free-pct é sempre percentual (1 = 1%, nunca 100%) — regressão PR #11453", () => {
+  const one = resolveDiskGuardThresholds({ "min-free-pct": "1" }, {});
+  assert.equal(one.thresholds.minFreePct, 0.01);
+  assert.deepEqual(one.warnings, []);
+
+  const oneEnv = resolveDiskGuardThresholds({}, { DIARIA_DISK_GUARD_MIN_FREE_PCT: "1" });
+  assert.equal(oneEnv.thresholds.minFreePct, 0.01);
+
+  const half = resolveDiskGuardThresholds({ "min-free-pct": "0.5" }, {});
+  assert.equal(half.thresholds.minFreePct, 0.005);
+
+  const full = resolveDiskGuardThresholds({ "min-free-pct": "100" }, {});
+  assert.equal(full.thresholds.minFreePct, 1);
+
+  const over = resolveDiskGuardThresholds({ "min-free-pct": "150" }, {});
+  assert.equal(over.thresholds.minFreePct, DEFAULT_MIN_FREE_PCT);
+  assert.equal(over.warnings.length, 1);
+
+  // 1% num disco com 5% livres: ok no critério percentual (antes travava como 100%).
+  const e = evaluateDiskSpace({ totalBytes: 1000 * GIB, availableBytes: 50 * GIB }, one.thresholds);
+  assert.equal(e.verdict, "ok");
+});
+
 // ── núcleo do CLI ──
 
 function guardRun(readings: Array<{ totalBytes: number; availableBytes: number } | Error>, args: Record<string, string> = {}) {

@@ -71,8 +71,9 @@ function parsePositiveNumber(raw: string | undefined): number | null {
 
 /**
  * Resolve os limiares: flag > variável de ambiente > default. Valor inválido
- * cai no próximo nível e entra em `warnings`. `minFreePct` aceita fração
- * (`0.15`) ou percentual (`15`): acima de 1 é lido como percentual.
+ * cai no próximo nível e entra em `warnings`. `--min-free-pct` e a variável de
+ * ambiente são sempre percentual 0-100 (`15` = 15%, `1` = 1%, `0.5` = 0,5%);
+ * o `minFreePct` devolvido é fração 0-1.
  */
 export function resolveDiskGuardThresholds(
   args: Record<string, string | undefined>,
@@ -95,10 +96,13 @@ export function resolveDiskGuardThresholds(
     return fallback;
   };
   const minFreeGb = pick("min-free-gb", ENV_MIN_FREE_GB, DEFAULT_MIN_FREE_GB);
-  let minFreePct = pick("min-free-pct", ENV_MIN_FREE_PCT, DEFAULT_MIN_FREE_PCT);
-  if (minFreePct > 1) minFreePct = minFreePct / 100;
-  if (minFreePct > 1) {
-    warnings.push(`min-free-pct acima de 100%, usando o default ${DEFAULT_MIN_FREE_PCT}`);
+  // Flag e env são SEMPRE percentual (0-100): `1` é 1%, nunca 100%. A versão
+  // anterior aceitava fração ou percentual e só convertia valor > 1, então
+  // `--min-free-pct 1` virava 100% e travava toda onda (review do PR #11453).
+  const minFreePctRaw = pick("min-free-pct", ENV_MIN_FREE_PCT, DEFAULT_MIN_FREE_PCT * 100);
+  let minFreePct = minFreePctRaw / 100;
+  if (minFreePctRaw > 100) {
+    warnings.push(`min-free-pct=${minFreePctRaw} acima de 100%, usando o default ${DEFAULT_MIN_FREE_PCT * 100}%`);
     minFreePct = DEFAULT_MIN_FREE_PCT;
   }
   return { thresholds: { minFreeBytes: minFreeGb * GIB, minFreePct }, warnings };
