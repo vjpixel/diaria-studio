@@ -199,14 +199,15 @@ describe("score: a metade de terça acumula semanais (#11286)", () => {
 
   it("pessoa do grupo terça: envios de terça contam como semanais", () => {
     const [e] = emailsOfGroup("terca", 1);
-    const r = buildSemanalEvaluationInput(stats, desdeMs, nowMs, e);
+    // #11420 — só as campanhas de terça da semanal dividida (ids registrados).
+    const r = buildSemanalEvaluationInput(stats, desdeMs, nowMs, e, new Set([1, 2]));
     assert.equal(r.semanais.length, 2);
     assert.equal(r.semanais.filter((s) => s.opened).length, 1);
   });
 
   it("pessoa do grupo segunda: envio de terça (forçado) não conta", () => {
     const [e] = emailsOfGroup("segunda", 1);
-    assert.equal(buildSemanalEvaluationInput(stats, desdeMs, nowMs, e).semanais.length, 0);
+    assert.equal(buildSemanalEvaluationInput(stats, desdeMs, nowMs, e, new Set([1, 2])).semanais.length, 0);
   });
 
   it("sem e-mail: só segunda (comportamento anterior)", () => {

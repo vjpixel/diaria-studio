@@ -225,26 +225,36 @@ export function isMondayBrt(ms: number): boolean {
 }
 
 /**
- * Pura (#11286) — o envio conta como SEMANAL desta pessoa? Segunda sempre;
- * terça só pra quem é do grupo "terça" da divisão (é o dia em que a metade
- * dela recebe quando a semanal passa do teto). Sem e-mail, só segunda.
+ * Pura (#11286, #11420) — o envio conta como SEMANAL desta pessoa? Segunda
+ * sempre; terça só quando a campanha é a campanha de TERÇA da semanal
+ * dividida (id em `tercaCampaignIds`, os `terca_campaign_id` registrados por
+ * `publish-daily-brevo.ts`) E a pessoa é do grupo "terça". Nunca pelo dia da
+ * semana sozinho: na transição (#10533) e com `--fora-da-segunda` a Brevo
+ * manda campanha de terça que não é semanal, e contá-la daria 2 semanais por
+ * semana ao grupo "terça" (#11420). Sem e-mail ou sem ids, só segunda.
  */
-export function isSemanalSendDay(ms: number, email?: string): boolean {
-  const wd = weekdayBrt(ms);
-  if (wd === 1) return true;
-  return wd === 2 && email !== undefined && semanalSplitGroup(email) === "terca";
+export function isSemanalSendDay(
+  ms: number,
+  email?: string,
+  campaignId?: unknown,
+  tercaCampaignIds?: ReadonlySet<number>,
+): boolean {
+  if (weekdayBrt(ms) === 1) return true;
+  if (email === undefined || semanalSplitGroup(email) !== "terca") return false;
+  return typeof campaignId === "number" && tercaCampaignIds !== undefined && tercaCampaignIds.has(campaignId);
 }
 
 /**
  * Pura — monta a entrada de `classifyBrevoDiariaSemanalAction` a partir de
  * `statistics` do `GET /contacts/{email}`. Semanal = campanha enviada a
- * partir de `desdeMs` E numa SEGUNDA (BRT) — ou numa TERÇA pra quem é do
- * grupo "terça" da divisão (#11286, `isSemanalSendDay`; sem isso a metade de
- * terça nunca acumularia semanais): na transição (#10533) e com
- * `--fora-da-segunda` a Brevo ainda manda campanha em outros dias, e contar
- * essas como semanais encurtaria a sequência de 12 pra ~2 semanas (#11226,
- * review). Envio sem timestamp legível nunca conta como semanal (fail-safe:
- * não soma à sequência que suprime). Madura = >= 48h.
+ * partir de `desdeMs` E numa SEGUNDA (BRT) — ou, pra quem é do grupo "terça"
+ * da divisão, a campanha de terça da semanal dividida (#11286/#11420,
+ * `isSemanalSendDay` + `tercaCampaignIds`; sem isso a metade de terça nunca
+ * acumularia semanais): na transição (#10533) e com `--fora-da-segunda` a
+ * Brevo ainda manda campanha em outros dias, e contar essas como semanais
+ * encurtaria a sequência de 12 pra ~2 semanas (#11226, review). Envio sem
+ * timestamp legível nunca conta como semanal (fail-safe: não soma à
+ * sequência que suprime). Madura = >= 48h.
  *
  * - `clickedSinceDesde`: clique em campanha ENVIADA a partir de `desdeMs`
  *   (qualquer dia) — nunca clique histórico (premissa A do #11226).
@@ -259,6 +269,7 @@ export function buildSemanalEvaluationInput(
   desdeMs: number,
   nowMs: number,
   email?: string,
+  tercaCampaignIds?: ReadonlySet<number>,
 ): BrevoSemanalEvaluationInput {
   const ids = (events: StatEvent[] | undefined): Set<unknown> =>
     new Set<unknown>((Array.isArray(events) ? events : []).map((e) => e?.campaignId).filter((v) => v !== undefined));
@@ -275,7 +286,7 @@ export function buildSemanalEvaluationInput(
     if (prev === undefined || ts < prev) sentAtByCampaign.set(e.campaignId, ts);
   }
   const semanais: BrevoSemanalSend[] = [...sentAtByCampaign.entries()]
-    .filter(([, ts]) => isSemanalSendDay(ts, email))
+    .filter(([id, ts]) => isSemanalSendDay(ts, email, id, tercaCampaignIds))
     .map(([id, ts]) => ({
       sentAtMs: ts,
       mature: nowMs - ts >= maturationMs,
