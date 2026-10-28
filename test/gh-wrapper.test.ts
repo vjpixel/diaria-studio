@@ -25,7 +25,7 @@ import { mkdtempSync, writeFileSync, readFileSync, realpathSync, symlinkSync } f
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
+import { fakeGhEnv, withoutGhCredentials, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 import {
   isPublishingInvocation,
@@ -36,7 +36,14 @@ import {
 } from "../hermes/scripts/lib/gh-wrapper-core.mjs";
 import { findRealGh } from "../hermes/scripts/gh-wrapper.mjs";
 
-/** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
+/**
+ * #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal.
+ * #11489: o skip fica só nos `it` que dependem de PATH POSIX (`findRealGh`,
+ * separador `:`) ou que EXECUTAM o `gh` falso (repasse, symlink). No Windows,
+ * um `gh` falso no PATH herdado perde para o `gh.exe` real (incidente da
+ * #11487); os casos de "bloqueia segredo" rodam com PATH ISOLADO
+ * (`runWrapperIsolated`), sem nenhum `gh` real alcançável.
+ */
 const SKIP_WIN32 = process.platform === "win32" && "#11243: gh-wrapper só é instalado no 300 (Linux): PATH separado por ':' e gh falso com shebang";
 
 // Sintético — nunca um literal com formato real (ver docstring acima).
@@ -774,19 +781,57 @@ function runWrapper(argv: string[], opts: { input?: string } = {}) {
   return { ...res, fakeGhInvoked };
 }
 
-describe("gh-wrapper.mjs — ponta a ponta (#8884)", { skip: SKIP_WIN32 }, () => {
+/**
+ * `process.env` sem nenhuma variante de caixa de `PATH` (no Windows a chave é
+ * `Path`; espalhar e somar `PATH` deixaria as duas no ambiente do filho).
+ */
+function envWithPath(pathValue: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.toUpperCase() !== "PATH") env[k] = v;
+  }
+  return { ...env, PATH: pathValue, ...extra };
+}
+
+/**
+ * #11489: roda o wrapper com o PATH reduzido ao diretório do `gh` falso. O
+ * wrapper precisa achar UM `gh` antes de avaliar (sai 127 sem isso), mas nenhum
+ * `gh` real fica alcançável: se o bloqueio regredir, o pior caso é o `gh` falso
+ * (ou um erro de spawn), nunca uma escrita no GitHub. Por isso estes casos
+ * rodam também no Windows; o `/bloqueado/` no stderr distingue o bloqueio de
+ * um 127 ou de uma falha de spawn.
+ */
+function runWrapperIsolated(argv: string[], opts: { input?: string; fakeDir?: string } = {}) {
+  const fakeDir = opts.fakeDir ?? makeFakeGhDir();
+  const outFile = join(fakeDir, "out.json");
+  const res = spawnSync(process.execPath, [WRAPPER_PATH, ...argv], {
+    env: withoutGhCredentials(envWithPath(fakeDir, { FAKE_GH_OUT: outFile })),
+    input: opts.input ?? "",
+    encoding: "utf8",
+  });
+  let fakeGhInvoked: { argv: string[]; stdin: string } | null = null;
+  try {
+    fakeGhInvoked = JSON.parse(readFileSync(outFile, "utf8"));
+  } catch {
+    fakeGhInvoked = null;
+  }
+  return { ...res, fakeGhInvoked };
+}
+
+describe("gh-wrapper.mjs — ponta a ponta (#8884)", () => {
   it("bloqueia --body com segredo expandido, sem chamar o gh real", () => {
-    const r = runWrapper(["pr", "comment", "1", "--body", `log: ${OR_KEY}`]);
+    const r = runWrapperIsolated(["pr", "comment", "1", "--body", `log: ${OR_KEY}`]);
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /bloqueado.*#8884/i);
     assert.equal(r.fakeGhInvoked, null, "o `gh` (falso) nunca deveria ter sido chamado");
   });
 
   it("bloqueia segredo vindo via stdin (--body-file -)", () => {
-    const r = runWrapper(["pr", "comment", "1", "--body-file", "-"], {
+    const r = runWrapperIsolated(["pr", "comment", "1", "--body-file", "-"], {
       input: `via stdin: ${OR_KEY}`,
     });
     assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /bloqueado.*#8884/i);
     assert.equal(r.fakeGhInvoked, null);
   });
 
@@ -794,30 +839,27 @@ describe("gh-wrapper.mjs — ponta a ponta (#8884)", { skip: SKIP_WIN32 }, () =>
     const fakeDir = makeFakeGhDir();
     const secretFile = join(fakeDir, "body.md");
     writeFileSync(secretFile, `contexto\n${OR_KEY}\n`);
-    const outFile = join(fakeDir, "out.json");
-    const res = spawnSync(process.execPath, [WRAPPER_PATH, "issue", "comment", "1", "--body-file", secretFile], {
-      env: fakeGhEnv(fakeDir, { FAKE_GH_OUT: outFile }),
-      encoding: "utf8",
-    });
-    assert.notEqual(res.status, 0);
-    assert.throws(() => readFileSync(outFile, "utf8"));
+    const r = runWrapperIsolated(["issue", "comment", "1", "--body-file", secretFile], { fakeDir });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /bloqueado.*#8884/i);
+    assert.equal(r.fakeGhInvoked, null);
   });
 
-  it("repassa argv intactos pro gh real quando o texto é limpo", () => {
+  it("repassa argv intactos pro gh real quando o texto é limpo", { skip: SKIP_WIN32 }, () => {
     const r = runWrapper(["pr", "comment", "42", "--body", "LGTM, mergeando"]);
     assert.equal(r.status, 0);
     assert.ok(r.fakeGhInvoked);
     assert.deepEqual(r.fakeGhInvoked!.argv, ["pr", "comment", "42", "--body", "LGTM, mergeando"]);
   });
 
-  it("repassa stdin intacto pro gh real quando o texto é limpo", () => {
+  it("repassa stdin intacto pro gh real quando o texto é limpo", { skip: SKIP_WIN32 }, () => {
     const r = runWrapper(["pr", "comment", "1", "--body-file", "-"], { input: "corpo limpo via stdin" });
     assert.equal(r.status, 0);
     assert.ok(r.fakeGhInvoked);
     assert.equal(r.fakeGhInvoked!.stdin, "corpo limpo via stdin");
   });
 
-  it("comando de leitura passa direto, sem checagem nenhuma", () => {
+  it("comando de leitura passa direto, sem checagem nenhuma", { skip: SKIP_WIN32 }, () => {
     const r = runWrapper(["pr", "view", "1"]);
     assert.equal(r.status, 0);
     assert.ok(r.fakeGhInvoked);
@@ -826,7 +868,7 @@ describe("gh-wrapper.mjs — ponta a ponta (#8884)", { skip: SKIP_WIN32 }, () =>
 
   it("gh real ausente no PATH sai com 127 e mensagem clara", () => {
     const res = spawnSync(process.execPath, [WRAPPER_PATH, "pr", "view", "1"], {
-      env: { ...process.env, PATH: "/nonexistent-dir-for-test" },
+      env: envWithPath("/nonexistent-dir-for-test"),
       encoding: "utf8",
     });
     assert.equal(res.status, 127);

@@ -21,6 +21,7 @@ import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper 
 import { applyBrandWordmark, breakBrandDomainAutolink } from "../shared/brand-wordmark.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — movido pra shared/ no #4797 (extraído de newsletter-render-html.ts, que agora só re-exporta por back-compat)
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
 import { isUnpairedBoldMarker, scanBalancedParenClose } from "../shared/markdown-primitives.ts"; // #7126 — item 6 do plano do #3269, antes duplicado aqui
+import { parseSocialInviteIcons, renderSocialInviteIconsHtml } from "../shared/encerramento-snippet.ts"; // #11483 — convite social com ícones, mesmo render da diária
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import { imageCreditCaption, imageToolNameFromCaption, applyImageToolNameToCredits } from "../shared/image-tool-name.ts"; // #10826 — mesmo mapa slug → ferramenta da diária
 import type { Brand } from "../../../workers/poll/src/lib.ts"; // #7633 — fonte única do vocabulário de brand (só o TIPO, sem runtime do worker)
@@ -1141,8 +1142,18 @@ export function renderEncerramento(body: string): string {
     parts.push(`<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:0 auto;"><tr><td style="text-align:center;">${group.pills.join("")}</td></tr></table>`);
   }
   if (last) {
+    // #11483: convite no formato de ícones ("Siga a diar.ia.br:" + links de
+    // rede) vira a fileira de ícones; qualquer outro texto sai como sempre.
+    const icons = parseSocialInviteIcons(last);
+    const inner = icons
+      ? `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(icons.lead)}</p>${renderSocialInviteIconsHtml(icons.links, {
+          textColor: INK,
+          fontFamily: FONT_SANS,
+          hrefFor: (_label, url) => normalizeKnownUrl(url),
+        })}`
+      : `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(last)}</p>`;
     parts.push(
-      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;"><p style="margin:0;font-family:${FONT_SANS};">${renderInline(last)}</p></td></tr></table>`,
+      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;">${inner}</td></tr></table>`,
     );
   }
 

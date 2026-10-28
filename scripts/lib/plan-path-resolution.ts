@@ -206,6 +206,21 @@ const SUFFIXES: readonly string[] = [
   ...Array.from({ length: 25 }, (_, i) => String.fromCharCode("b".charCodeAt(0) + i)),
 ];
 
+/**
+ * #11489: o path de `plan.json` sai SEMPRE com `/` como separador. O sufixo
+ * (`/{aammdd}{suffix}/plan.json`) é montado com `/` fixo, então um `baseDir`
+ * nativo do Windows (`C:\...\data\overnight`, o que `join()` devolve lá)
+ * gerava uma string com separadores misturados. No win32 o `\` do `baseDir`
+ * vira `/` (o Node aceita os dois lá); fora do win32 o `baseDir` passa intacto,
+ * porque `\` é caractere válido de nome no POSIX, e a saída no Linux fica
+ * byte a byte igual à de antes. Não usar `path.join` nativo: no Windows ele
+ * devolveria `data\develop\...` nos dois CLIs, e o skill passa esse path
+ * pro Git Bash, onde a barra invertida sem aspas some.
+ */
+function toPosixSeparators(baseDir: string): string {
+  return process.platform === "win32" ? baseDir.replaceAll("\\", "/") : baseDir;
+}
+
 function normalizeSessionId(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -226,9 +241,10 @@ export function resolvePlanPath(
 ): ResolvedPlanPath {
   const ourSessionId = normalizeSessionId(sessionId);
   const collisions: CollisionEntry[] = [];
+  const base = toPosixSeparators(baseDir);
 
   for (const suffix of SUFFIXES) {
-    const path = `${baseDir}/${aammdd}${suffix}/plan.json`;
+    const path = `${base}/${aammdd}${suffix}/plan.json`;
     const probed = probe(path);
 
     if (!probed.exists) {

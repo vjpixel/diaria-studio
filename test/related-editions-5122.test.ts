@@ -30,6 +30,7 @@ import {
 import { stitchNewsletter, buildParaEncerrar } from "../scripts/stitch-newsletter.ts";
 import { renderEncerrar } from "../scripts/lib/newsletter-render-html.ts";
 import { extractTemplateBlock } from "../scripts/lib/newsletter-parse.ts";
+import { SOCIAL_INVITE_PREFIX } from "../scripts/lib/shared/encerramento-snippet.ts"; // #11483
 
 describe("selectRelatedEditions (#5122/#5181) — pura", () => {
   it("nenhuma manchete casa nenhum hub -> null", () => {
@@ -224,7 +225,7 @@ describe("buildParaEncerrar — grupo 'Mais sobre {tema}' (#5122/#5181)", () => 
     assert.match(out, /Mais sobre OpenAI e ChatGPT:\n- \[Outra edição\]\(https:\/\/diar\.ia\.br\/p\/outra\)/);
     const curadoriasPos = out.indexOf("Curadorias:");
     const relatedPos = out.indexOf("Mais sobre OpenAI e ChatGPT:");
-    const socialInvitePos = out.indexOf("Para acompanhar as 3 principais notícias");
+    const socialInvitePos = out.indexOf(SOCIAL_INVITE_PREFIX); // #11483
     assert.ok(curadoriasPos !== -1 && relatedPos !== -1 && socialInvitePos !== -1);
     assert.ok(curadoriasPos < relatedPos && relatedPos < socialInvitePos);
   });

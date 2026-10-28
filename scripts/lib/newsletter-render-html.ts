@@ -30,7 +30,7 @@ import {
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
 import { EIA_ARCHIVE_UTM, WHATSAPP_SHARE_UTM, CONVITE_AMIGO_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM; WHATSAPP_SHARE_UTM #4486; CONVITE_AMIGO_UTM #5794
-import { isSocialInviteParagraph } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo; #10781: detecção por prefixo estável (sobrevive a versões anteriores da constante)
+import { isSocialInviteParagraph, parseSocialInviteIcons, renderSocialInviteIconsHtml } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo; #10781: detecção por prefixo estável (sobrevive a versões anteriores da constante); #11483: ícones das redes
 import { applyImageToolToCredits, imageCreditCaption } from "./shared/image-tool-name.ts"; // #10783
 import { d1HeroAlt } from "./diaria/d1-video-hero.ts"; // #10784
 import { readSnippetFile, readSnippetFileRaw } from "./shared/snippet-loader.ts"; // #5794 (revisado 260821): "Convide um amigo" virou snippet de verdade, editável no painel Caixas do Studio, em vez de copy hardcoded; readSnippetFileRaw #5882 — header cru pra ler titulo:
@@ -2451,11 +2451,20 @@ export function renderEncerrar(text: string, conviteAmigoHtml: string | null = n
     .join("\n  ");
 
   // CTA final (convite social, `SOCIAL_INVITE`) = box "painel" do DS.
+  // #11483: no formato novo ("Siga a diar.ia.br:" + links), os links viram
+  // ícones; texto corrido legado (edições costuradas até a 261029) sai como
+  // sempre saiu.
+  const ctaText = ctaBlock?.content.join(" ") ?? "";
+  const ctaIcons = ctaBlock ? parseSocialInviteIcons(ctaText) : null;
+  const ctaInner = ctaIcons
+    ? `${bodyP("0", mdInlineToHtml(ctaIcons.lead))}
+      ${renderSocialInviteIconsHtml(ctaIcons.links, { textColor: TEXT_COLOR, fontFamily: FONT_BODY })}`
+    : bodyP("0", mdInlineToHtml(ctaText));
   const ctaBox = ctaBlock
     ? `
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:${BOX_MARGIN_TOP}px;border-collapse:separate;border-spacing:0"><tr>
     <td style="background:${SURFACE};border-radius:12px;padding:${PAD_BOX_OUTLINE};">
-      ${bodyP("0", mdInlineToHtml(ctaBlock.content.join(" ")))}
+      ${ctaInner}
     </td>
   </tr></table>`
     : "";

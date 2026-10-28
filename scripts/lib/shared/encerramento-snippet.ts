@@ -55,25 +55,134 @@ import {
  * ~30 mil pessoas). Ordem das redes: LinkedIn → Instagram → Threads →
  * Facebook → X → YouTube (o Facebook caiu do 2º pro 4º lugar em relação à redação
  * anterior). Sempre o ÚLTIMO parágrafo da seção `PARA ENCERRAR`
- * (invariante do #3219/#3368, preservada).
+ * (invariante do #3219/#3368, preservada). O TEXTO mudou no #11483 (ver
+ * abaixo); bloco fixo e ordem das redes seguem iguais.
  */
-export const SOCIAL_INVITE_PREFIX =
-  "Para acompanhar as 3 principais notícias de IA todos os dias, siga a";
+/**
+ * #11483 (pedido do editor, 28/10/2026, revisa o texto do #4413): o convite
+ * virou "Siga a diar.ia.br:" seguido dos ÍCONES das redes, cada um linkando a
+ * rede. No markdown continua um parágrafo só, com um link por rede (mesma
+ * ordem); o renderer troca cada link pelo ícone (`renderSocialInviteIconsHtml`).
+ * Vale a partir das edições costuradas depois deste PR: o `02-reviewed.md` de
+ * uma edição já costurada (261029 e anteriores) guarda o texto antigo e
+ * re-renderiza igual, pelo prefixo legado abaixo.
+ */
+export const SOCIAL_INVITE_PREFIX = "Siga a **diar.ia.br**:";
 
 export const SOCIAL_INVITE =
-  `${SOCIAL_INVITE_PREFIX} **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}), [X](${DIARIA_X_URL}) ou [YouTube](${DIARIA_YOUTUBE_URL}).`;
+  `${SOCIAL_INVITE_PREFIX} [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) [Instagram](${DIARIA_INSTAGRAM_URL}) [Threads](${DIARIA_THREADS_URL}) [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) [X](${DIARIA_X_URL}) [YouTube](${DIARIA_YOUTUBE_URL})`;
+
+/** Prefixo da redação anterior ao #11483 (#4413), em texto corrido. Edições
+ * costuradas até a 261029 têm este texto em `02-reviewed.md`. */
+export const SOCIAL_INVITE_LEGACY_PREFIX =
+  "Para acompanhar as 3 principais notícias de IA todos os dias, siga a";
+
+/** `SOCIAL_INVITE` como era antes do #11483 (última versão, com o YouTube,
+ * #10761). O invariante de drift aceita este texto sem avisar: é o que as
+ * edições já costuradas carregam, e re-renderizá-las não deve mudar nada. */
+export const SOCIAL_INVITE_LEGACY =
+  `${SOCIAL_INVITE_LEGACY_PREFIX} **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), [Instagram](${DIARIA_INSTAGRAM_URL}), [Threads](${DIARIA_THREADS_URL}), [Facebook](${DIARIA_FACEBOOK_PAGE_URL}), [X](${DIARIA_X_URL}) ou [YouTube](${DIARIA_YOUTUBE_URL}).`;
 
 /**
  * #10781: o parágrafo é o convite social? Casa pelo PREFIXO estável
  * (`SOCIAL_INVITE_PREFIX`), não pela igualdade com a constante atual — toda
  * edição costurada com uma versão anterior de `SOCIAL_INVITE` (ex.: antes do
  * YouTube entrar na lista, #10761) tem o texto antigo em `02-reviewed.md` e
- * perdia a caixa "painel" ao re-renderizar. Também aceita a redação legada
- * "Agora que chegou…" (#1148).
+ * perdia a caixa "painel" ao re-renderizar. Também aceita a redação de texto
+ * corrido anterior ao #11483 (`SOCIAL_INVITE_LEGACY_PREFIX`) e a redação
+ * legada "Agora que chegou…" (#1148).
  */
 export function isSocialInviteParagraph(text: string): boolean {
   const t = text.trim();
-  return t.startsWith(SOCIAL_INVITE_PREFIX) || /^agora que chegou/i.test(t);
+  return (
+    t.startsWith(SOCIAL_INVITE_PREFIX) ||
+    t.startsWith(SOCIAL_INVITE_LEGACY_PREFIX) ||
+    /^agora que chegou/i.test(t)
+  );
+}
+
+/** #11483: chave do ícone (nome do arquivo em `assets/social-icons/` e em
+ * `workers/site/public/icons/social/`), na ordem do convite. */
+export const SOCIAL_INVITE_ICON_KEYS = ["linkedin", "instagram", "threads", "facebook", "x", "youtube"] as const;
+export type SocialInviteIconKey = (typeof SOCIAL_INVITE_ICON_KEYS)[number];
+
+/** Rótulo do link no markdown → chave do ícone. */
+const SOCIAL_INVITE_ICON_BY_LABEL: Record<string, SocialInviteIconKey> = {
+  LinkedIn: "linkedin",
+  Instagram: "instagram",
+  Threads: "threads",
+  Facebook: "facebook",
+  X: "x",
+  YouTube: "youtube",
+};
+
+/** Tamanho exibido do ícone no e-mail (px). O PNG tem 3x isso. */
+export const SOCIAL_INVITE_ICON_PX = 28;
+
+/** Os PNGs vivem no Worker do apex (`workers/site/public/icons/social/`,
+ * gerados por `scripts/gen-social-invite-icons.ts`). Mesmo host do
+ * `og-default.png` da home. */
+export const SOCIAL_INVITE_ICON_BASE_URL = "https://diar.ia.br/icons/social";
+
+export function socialInviteIconUrl(key: SocialInviteIconKey): string {
+  return `${SOCIAL_INVITE_ICON_BASE_URL}/${key}.png`;
+}
+
+/**
+ * #11483: separa o convite no formato de ícones em `lead` (o texto antes do
+ * 1º link, ex. "Siga a **diar.ia.br**:") e os links de rede. `null` quando o
+ * parágrafo não é o convite novo (texto corrido legado, "Agora que chegou…",
+ * ou algo entre os links além de espaço) — o renderer cai no texto corrido de
+ * sempre, sem perder conteúdo.
+ */
+export function parseSocialInviteIcons(
+  text: string,
+): { lead: string; links: Array<{ label: string; url: string; icon: SocialInviteIconKey | null }> } | null {
+  const t = text.trim();
+  if (!t.startsWith(SOCIAL_INVITE_PREFIX)) return null;
+  const rest = t.slice(SOCIAL_INVITE_PREFIX.length);
+  const linkRe = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  const links: Array<{ label: string; url: string; icon: SocialInviteIconKey | null }> = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(rest)) !== null) {
+    if (rest.slice(last, m.index).trim() !== "") return null;
+    links.push({ label: m[1], url: m[2], icon: SOCIAL_INVITE_ICON_BY_LABEL[m[1]] ?? null });
+    last = m.index + m[0].length;
+  }
+  if (rest.slice(last).trim() !== "" || links.length === 0) return null;
+  return { lead: SOCIAL_INVITE_PREFIX, links };
+}
+
+function escAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * #11483: HTML da fileira de ícones do convite (só a fileira; o `lead` é
+ * renderizado por quem chama, com o pipeline inline do próprio formato).
+ * PNG hospedado, nunca SVG inline (Gmail/Outlook não renderizam SVG); `alt` =
+ * nome da rede, então com imagens bloqueadas o leitor ainda vê "LinkedIn",
+ * "Instagram"... clicáveis. Link sem ícone conhecido sai como texto.
+ * `hrefFor` deixa o formato aplicar a própria normalização de URL (o mensal
+ * põe UTM nos links). `textColor`/`fontFamily` estilizam o alt e o fallback.
+ */
+export function renderSocialInviteIconsHtml(
+  links: Array<{ label: string; url: string; icon: SocialInviteIconKey | null }>,
+  opts: { textColor: string; fontFamily: string; hrefFor?: (label: string, url: string) => string },
+): string {
+  const px = SOCIAL_INVITE_ICON_PX;
+  // Estilo do texto (alt e fallback) vai uma vez no <p> e é herdado: repetir
+  // por link custava ~500 bytes por rede num e-mail que já encosta no limite
+  // de clipping do Gmail.
+  const anchors = links.map(({ label, url, icon }) => {
+    const href = escAttr(opts.hrefFor ? opts.hrefFor(label, url) : url);
+    const inner = icon
+      ? `<img src="${socialInviteIconUrl(icon)}" width="${px}" height="${px}" alt="${escAttr(label)}" style="display:block;border:0;">`
+      : escAttr(label);
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer nofollow" style="display:inline-block;margin:0 14px 0 0;vertical-align:middle;color:${opts.textColor};text-decoration:none;">${inner}</a>`;
+  });
+  return `<p style="margin:12px 0 0;line-height:${px}px;font-family:${opts.fontFamily};font-size:14px;color:${opts.textColor};">${anchors.join("")}</p>`;
 }
 
 /** Rótulos dos links de rede no convite social — usados pra reconhecer um
@@ -101,6 +210,9 @@ export function detectSocialInviteDrift(markdown: string): SocialInviteDrift | n
   for (let i = paragraphs.length - 1; i >= 0; i--) {
     const p = paragraphs[i];
     if (p === SOCIAL_INVITE) return null;
+    // #11483: edição costurada antes da troca pelos ícones carrega o texto
+    // corrido; é o esperado, não drift.
+    if (p === SOCIAL_INVITE_LEGACY) return null;
     if (isSocialInviteParagraph(p)) {
       // Redação legada "Agora que chegou…" é aceita pelo renderer de propósito
       // (#1148) — não reclamar de edição antiga só por isso.
