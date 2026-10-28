@@ -189,14 +189,16 @@ export function extractEmailStructure(content: string): StructureSnapshot {
   // #11403: o kicker de categoria do destaque usa a MESMA marcação do header de
   // seção (`● LANÇAMENTO`), e `LAN[ÇC]AMENTOS?` casava com ele — seção
   // LANÇAMENTOS fantasma em toda edição com destaque de lançamento (mascarava
-  // `section_missing`). Um kicker é seguido do título do destaque (`<a
-  // class="headline">` / `<h2>`) antes de qualquer item de seção (`<h3>`).
+  // `section_missing`). Um kicker é aquele cujo PRÓXIMO link é o título do
+  // destaque (`<a class="headline">`); num header de seção o próximo link é o
+  // 1º item. Só vale no render atual (que tem `class="headline"`): em HTML
+  // sem essa marcação (local mínimo, legado, Beehiiv) nenhum header é
+  // descartado — o comportamento anterior fica intacto.
+  const hasHeadlineMarkup = /<a\b[^>]*class=["'][^"']*\bheadline\b/i.test(content);
   const isDestaqueKicker = (end: number): boolean => {
-    const after = content.slice(end, end + 4000);
-    const h2 = after.search(/<a\b[^>]*class=["'][^"']*\bheadline\b|<h2\b/i);
-    if (h2 < 0) return false;
-    const h3 = after.search(/<h3\b/i);
-    return h3 < 0 || h2 < h3;
+    if (!hasHeadlineMarkup) return false;
+    const nextA = content.slice(end).match(/<a\b[^>]*>/i);
+    return !!nextA && /class=["'][^"']*\bheadline\b/i.test(nextA[0]);
   };
   const headers = new Map<string, { idx: number; len: number }>();
   // Seções cujas ocorrências no RAW eram TODAS kickers de destaque (fantasma).

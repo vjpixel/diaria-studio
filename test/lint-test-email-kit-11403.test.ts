@@ -92,6 +92,18 @@ describe("extractEmailStructure — HTML entregue pelo Kit (#11403)", () => {
     assert.equal(issues.some((i) => i.type === "destaque_count_mismatch"), true);
   });
 
+  it("HTML sem `class=\"headline\"` (header de seção seguido de outro `<h2>`): nenhum header vira kicker", () => {
+    // Formato mínimo do #8635: `<h2>📡 RADAR</h2>` seguido do item e do próximo
+    // header `<h2>` — antes da correção, o `<h2>` seguinte fazia o RADAR ser
+    // descartado como kicker de destaque (section_missing falso).
+    const html =
+      "<html><body><h2>📡 RADAR</h2><a href='https://a.com/1'>Item um</a>" +
+      "<h2>🛠️ USE MELHOR</h2><a href='https://b.com/1'>Tutorial</a></body></html>";
+    const snap = extractEmailStructure(html);
+    assert.deepEqual(snap.sections.map((s) => s.name), ["RADAR", "USE MELHOR"]);
+    assert.deepEqual(snap.destaques, []);
+  });
+
   it("seção realmente ausente continua acusada (RADAR removido)", () => {
     // O espaço entre o ponto e o nome é U+00A0 no HTML entregue (`&nbsp;` decodificado).
     const html = KIT_EMAIL.replace(/<span style="color:#00A0A0;">●<\/span>\s*RADAR/, "");
