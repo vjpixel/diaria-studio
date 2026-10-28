@@ -195,7 +195,9 @@ cru seguem negados no modo agendado. O wrapper chama o REST `PUT
 /repos/{owner}/{repo}/pulls/{n}/update-branch` como processo filho (o mesmo
 merge da base que o botão "Update branch" do GitHub faz, nunca rebase nem
 force-push), espera o HEAD da PR mudar e imprime `{ outcome, headBefore,
-headAfter }`. `already-up-to-date` sai `0`; `conflict`, `head-mismatch`
+headAfter }`. `already-up-to-date` sai `0` (também quando o GitHub devolve
+202 com a branch já em dia: o HEAD não muda e a base já é ancestral dele,
+#11455); `conflict`, `head-mismatch`
 (com `--expected-head`) e `timeout` saem `1` e seguem o caminho de
 fix/draft. Depois do `updated`, o worktree local está atrás do remoto:
 `git pull --ff-only` dentro do próprio worktree antes de testar ou de

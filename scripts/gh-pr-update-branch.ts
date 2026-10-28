@@ -27,6 +27,11 @@
  * o GitHub aceitou e o HEAD novo ainda não foi lido). Exit 1: `conflict`,
  * `head-mismatch`, `timeout` (o GitHub aceitou, mas o HEAD não mudou no
  * prazo: reler antes de seguir). Exit 3: erro de uso ou de consulta.
+ *
+ * Se o GitHub devolver 202 com a branch já em dia, o HEAD não muda: no fim do
+ * prazo o script confere `behind_by` da base e sai `already-up-to-date` em vez
+ * de `timeout`. Falha do `gh pr view` durante a espera não aborta a espera
+ * (review do #11455): o JSON sai sempre, com as falhas resumidas em `detail`.
  */
 import { spawnSync } from "node:child_process";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -64,19 +69,82 @@ export function updateBranchApiArgs(pr: number, repo: string | undefined, expect
   return args;
 }
 
-function readHead(pr: number, repo: string | undefined): string {
-  const r = spawnSync("gh", ["pr", "view", String(pr), ...(repo ? ["-R", repo] : []), "--json", "headRefOid"], {
-    encoding: "utf8",
-    timeout: 30_000,
-  });
+function readPr(pr: number, repo: string | undefined): { head: string; base: string } {
+  const r = spawnSync(
+    "gh",
+    ["pr", "view", String(pr), ...(repo ? ["-R", repo] : []), "--json", "headRefOid,baseRefName"],
+    { encoding: "utf8", timeout: 30_000 },
+  );
   if (r.error || r.status !== 0) throw new Error(`gh pr view falhou: ${r.error?.message ?? r.stderr}`);
-  const head = JSON.parse(r.stdout).headRefOid;
+  const parsed = JSON.parse(r.stdout);
+  const head = parsed.headRefOid;
+  const base = parsed.baseRefName;
   if (typeof head !== "string" || head === "") throw new Error("gh pr view sem headRefOid");
-  return head;
+  if (typeof base !== "string" || base === "") throw new Error("gh pr view sem baseRefName");
+  return { head, base };
+}
+
+/**
+ * Quantos commits da base faltam no HEAD (`behind_by` do compare). `0` = a base
+ * já é ancestral do HEAD, ou seja, a branch já está em dia.
+ */
+function readBehindBy(repo: string | undefined, base: string, head: string): number {
+  const path = `repos/${repo ?? "{owner}/{repo}"}/compare/${encodeURIComponent(base)}...${head}`;
+  const r = spawnSync("gh", ["api", path, "--jq", ".behind_by"], { encoding: "utf8", timeout: 30_000 });
+  if (r.error || r.status !== 0) throw new Error(`gh api compare falhou: ${r.error?.message ?? r.stderr}`);
+  const n = Number(r.stdout.trim());
+  if (!Number.isInteger(n) || n < 0) throw new Error(`behind_by inválido: ${r.stdout.trim()}`);
+  return n;
 }
 
 function sleepMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+export type WaitOutcome = "updated" | "already-up-to-date" | "timeout";
+
+export interface WaitDeps {
+  /** Relê o HEAD da PR; pode lançar (falha transitória do `gh pr view`). */
+  readHead: () => string;
+  /** `behind_by` da base em relação ao HEAD; pode lançar. */
+  readBehindBy: (head: string) => number;
+  sleep: (ms: number) => void;
+  now: () => number;
+}
+
+/**
+ * Espera o HEAD da PR mudar depois do 202 (#11448). Duas proteções contra o
+ * falso `timeout` (review do #11455):
+ * - falha da releitura dentro do laço não aborta: conta como "HEAD ainda não
+ *   mudou" e tenta de novo até o prazo, guardando o último erro em `readErrors`;
+ * - se o prazo vence com o HEAD igual e a base já é ancestral do HEAD
+ *   (`behind_by == 0`), a branch estava em dia (o GitHub devolveu 202 em vez do
+ *   422 "no new commits"): `already-up-to-date`, não `timeout`.
+ */
+export function waitForHeadChange(
+  headBefore: string,
+  timeoutS: number,
+  deps: WaitDeps,
+  pollMs = 3000,
+): { outcome: WaitOutcome; headAfter: string; readErrors: string[] } {
+  const readErrors: string[] = [];
+  const deadline = deps.now() + timeoutS * 1000;
+  let headAfter = headBefore;
+  while (headAfter === headBefore && deps.now() < deadline) {
+    deps.sleep(pollMs);
+    try {
+      headAfter = deps.readHead();
+    } catch (e) {
+      readErrors.push(String(e instanceof Error ? e.message : e));
+    }
+  }
+  if (headAfter !== headBefore) return { outcome: "updated", headAfter, readErrors };
+  try {
+    if (deps.readBehindBy(headAfter) === 0) return { outcome: "already-up-to-date", headAfter, readErrors };
+  } catch (e) {
+    readErrors.push(String(e instanceof Error ? e.message : e));
+  }
+  return { outcome: "timeout", headAfter, readErrors };
 }
 
 if (isMainModule(import.meta.url)) {
@@ -90,23 +158,31 @@ if (isMainModule(import.meta.url)) {
     const timeoutS = values["timeout-s"] !== undefined ? Number(values["timeout-s"]) : 90;
     if (!Number.isFinite(timeoutS) || timeoutS < 0) throw new Error("--timeout-s inválido");
 
-    const headBefore = readHead(pr, repo);
+    const { head: headBefore, base } = readPr(pr, repo);
     const r = spawnSync("gh", updateBranchApiArgs(pr, repo, values["expected-head"]), {
       encoding: "utf8",
       timeout: 60_000,
     });
     if (r.error) throw new Error(`gh api falhou: ${r.error.message}`);
-    const { outcome, detail } = classifyUpdateBranchResponse(r.status, r.stdout ?? "", r.stderr ?? "");
+    const classified = classifyUpdateBranchResponse(r.status, r.stdout ?? "", r.stderr ?? "");
+    let detail = classified.detail;
 
-    let finalOutcome: string = outcome;
+    let finalOutcome: string = classified.outcome;
     let headAfter = headBefore;
-    if (outcome === "accepted" && !flags.has("no-wait")) {
-      const deadline = Date.now() + timeoutS * 1000;
-      while (headAfter === headBefore && Date.now() < deadline) {
-        sleepMs(3000);
-        headAfter = readHead(pr, repo);
+    if (classified.outcome === "accepted" && !flags.has("no-wait")) {
+      const waited = waitForHeadChange(headBefore, timeoutS, {
+        readHead: () => readPr(pr, repo).head,
+        readBehindBy: (head) => readBehindBy(repo, base, head),
+        sleep: sleepMs,
+        now: Date.now,
+      });
+      finalOutcome = waited.outcome;
+      headAfter = waited.headAfter;
+      if (waited.readErrors.length > 0) {
+        detail = `${detail} | releituras com falha: ${waited.readErrors.length} (última: ${waited.readErrors.at(-1)})`
+          .replace(/\s+/g, " ")
+          .slice(0, 500);
       }
-      finalOutcome = headAfter === headBefore ? "timeout" : "updated";
     }
 
     console.log(JSON.stringify({ outcome: finalOutcome, pr, repo: repo ?? null, headBefore, headAfter, detail }));
