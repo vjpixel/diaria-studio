@@ -557,11 +557,14 @@ describe("#6202 readEditionInputs — implementação REAL contra fixture (regre
       }
     });
 
-    it("backend beehiiv (default) com o mesmo estado de arquivos ⇒ continua null benigno (code 2)", () => {
+    it("#11225: backend beehiiv legado normaliza para Kit e exige --slug", () => {
       const dir = makeKitLikeEditionDir();
       const rootDir = makeRootWithBackend("beehiiv");
       try {
-        assert.equal(readEditionInputs(dir, undefined, rootDir), null);
+        assert.throws(
+          () => readEditionInputs(dir, undefined, rootDir),
+          (err: unknown) => err instanceof EditionInputsInvalid && /Kit/.test(err.message) && /--slug/.test(err.message),
+        );
       } finally {
         rmSync(dir, { recursive: true, force: true });
         rmSync(rootDir, { recursive: true, force: true });
