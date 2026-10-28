@@ -188,6 +188,8 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 
 ## Post pessoal (vjpixel) — texto do 4º post `## um` (#9568; antes `## post_pixel`, #1690)
 
+**APOSENTADO desde 27/10/2026 (#11398, pedido do editor):** o 4º post não sai mais no LinkedIn pessoal — nem automático (o Stage 6 não roda mais `publish-linkedin-personal.ts --arm` e nenhuma task dispara `--fire-due`) nem por lembrete manual no gate. A página diar.ia.br segue recebendo o 4º post. O texto abaixo fica como histórico do fluxo; o app pessoal (`LINKEDIN_PERSONAL_*`) continua em uso pelo vertical no perfil pessoal (`publish-shorts.ts`).
+
 **Desde a #9568 o post pessoal é o MESMO texto do 4º post (item USE MELHOR, `## um` de `# Social`)** que a página publica — o `## post_pixel` (post standalone de D1 em voz pessoal) deixou de ser gerado. Edições antigas que ainda têm `## post_pixel` seguem com o fluxo antigo (o texto vem de `resolve-post-pixel.ts`, que prefere `## um` e cai no `## post_pixel` só quando `## um` não existe).
 
 **Automático desde #9568 (app LinkedIn pessoal separado):** com `LINKEDIN_PERSONAL_ACCESS_TOKEN` + `LINKEDIN_PERSONAL_PERSON_URN` no ambiente, o Stage 6 arma o post (`publish-linkedin-personal.ts --arm`) e a task `Diaria-LinkedIn-Personal` publica no slot pela Posts API, com `author` = a pessoa. O fluxo manual abaixo vale só sem token (ou token expirado) e para edição legada com `## post_pixel`. Setup: `docs/linkedin-personal-setup.md`.

@@ -51,6 +51,7 @@ import { resolveReadPath } from "./lib/edition-paths.ts";
 import { runMain } from "./lib/exit-handler.ts";
 import {
   isHardFailure,
+  RECENT_OUTCOMES_MAX,
   roundDryStreak,
   roundFailureStreak,
   roundFeedFailureStreak,
@@ -937,6 +938,42 @@ function isStaleOutcome(
 export const SOURCE_DRY_THRESHOLD_ROUNDS = 3;
 
 /**
+ * #11399/#11400: idade mínima (dias desde a 1ª coleta registrada) pra uma
+ * fonte poder sair como `source_dry`. As 3 rodadas do limiar acima cabem em 3
+ * dias, e fonte recém-cadastrada de cadência semanal (Cursor Changelog e
+ * Cursor Blog, cadastradas no #10952 em 24/10/2026, último post em 20/10) saía
+ * como "seca" sem ter publicado nada desde o cadastro. 14 dias = 2 ciclos de
+ * uma fonte semanal. Feed com URL errada não espera por isto: dá `fail`, e
+ * `source_streak` dispara em 3 rodadas.
+ */
+export const SOURCE_DRY_MIN_AGE_DAYS = 14;
+
+/**
+ * #11399/#11400: a fonte tem histórico de pelo menos `minAgeDays`? Só dá pra
+ * afirmar que é NOVA quando `recent_outcomes` guarda a história inteira (não
+ * foi truncado em `RECENT_OUTCOMES_MAX`, e `attempts` não passa do que está
+ * guardado) e o 1º outcome tem timestamp válido. Qualquer dúvida → `true`
+ * (velha o bastante): o sinal continua disparando como antes.
+ */
+export function sourceOldEnoughForDry(
+  entry: { attempts?: number; recent_outcomes?: Array<{ timestamp?: string }> },
+  now: Date,
+  minAgeDays: number = SOURCE_DRY_MIN_AGE_DAYS,
+): boolean {
+  const recent = entry.recent_outcomes ?? [];
+  if (recent.length === 0) return true;
+  if (recent.length >= RECENT_OUTCOMES_MAX) return true;
+  if (typeof entry.attempts === "number" && entry.attempts > recent.length) return true;
+  const first = recent[0]?.timestamp;
+  if (!first) return true;
+  const t = Date.parse(first);
+  // Futuro também é dúvida: o V8 aceita lixo como "t-261026" e devolve um ano
+  // de seis dígitos.
+  if (Number.isNaN(t) || t > now.getTime()) return true;
+  return now.getTime() - t >= minAgeDays * 86_400_000;
+}
+
+/**
  * #9657: rodadas seguidas com o caminho FEED (RSS/sitemap) falhando — com a
  * fonte saudável pela busca `site:` — pra emitir `source_feed_broken`.
  */
@@ -964,6 +1001,8 @@ export function signalsFromSourceHealth(
    * antigas. `undefined` (seed ilegível) → comportamento anterior.
    */
   feedSources?: Set<string>,
+  /** #11399/#11400: ver `SOURCE_DRY_MIN_AGE_DAYS`. */
+  dryMinAgeDays = SOURCE_DRY_MIN_AGE_DAYS,
 ): Signal[] {
   const out: Signal[] = [];
   for (const [source, entry] of Object.entries(health.sources ?? {})) {
@@ -1052,7 +1091,12 @@ export function signalsFromSourceHealth(
     const hasRecentOk = recent.some((r) => r.outcome === "ok");
     const lifetimeSuccesses = entry.successes ?? 0;
     const dryStreak = roundDryStreak(recent); // #9652: rodadas, não linhas
-    if (!hasRecentOk && lifetimeSuccesses === 0 && dryStreak >= dryThreshold) {
+    if (
+      !hasRecentOk &&
+      lifetimeSuccesses === 0 &&
+      dryStreak >= dryThreshold &&
+      sourceOldEnoughForDry(entry, now, dryMinAgeDays)
+    ) {
       const hardCount = recent.filter((r) => isHardFailure(r.outcome)).length;
       const emptyCount = recent.filter((r) => r.outcome === "empty").length;
       out.push({

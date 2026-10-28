@@ -939,8 +939,10 @@ async function main(): Promise<number | void> {
     // chunk (o agendamento recusa mais de 1); senão o texto fica como está.
     if (d === "d1" && d1Video.url) {
       const inj = injectVideoLinkWithinLimit(text, d1Video.url, THREADS_CHAR_LIMIT);
-      if (inj.injected) text = inj.text;
-      else console.warn(`AVISO threads/d1: link do vídeo não entrou no texto — ${inj.reason}`);
+      if (inj.injected) {
+        text = inj.text;
+        if (inj.droppedHashtags) console.warn(`AVISO threads/d1: hashtags removidas para o link do vídeo caber em ${THREADS_CHAR_LIMIT} (#11402)`);
+      } else console.warn(`AVISO threads/d1: link do vídeo não entrou no texto — ${inj.reason}`);
     }
 
     // Dividir em chunks de 500 chars se necessário
