@@ -357,7 +357,8 @@ describe("overlayTitleOverflows (#8480, 260919 — cards internos do carrossel s
   });
 
   it("o MESMO título que transborda a um tamanho forçado grande cabe a um tamanho menor", () => {
-    const title = "Um título de notícia consideravelmente mais longo que o normal pra este teste de largura";
+    // Até 3 linhas: com 4+, o wrap diário reprova em qualquer tamanho (#11434).
+    const title = "Um título de notícia consideravelmente mais longo que o normal";
     assert.equal(overlayTitleOverflows(title, 88), true);
     assert.equal(overlayTitleOverflows(title, 40), false);
   });
