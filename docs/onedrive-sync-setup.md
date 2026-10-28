@@ -160,7 +160,7 @@ Por que não fundir: um é sensível e local à decisão de merge, o outro é le
 
 ## Item 6 — Cota: vídeo fora do sync, retenção e alarme (#10957)
 
-Em 23/10/2026 a conta do OneDrive ficou sem espaço e o sync de `data/` parou. A causa era vídeo: `data/` tinha 4,8 GB, `data/editions/2610` sozinho 2,0 GB, quase todo `.mp4` (edição com vídeo 0,4 a 0,7 GB contra ~0,1 GB sem). O vídeo já tem cópia fora do disco (YouTube, R2 pros verticais, a fonte no Drive, que `fetch-drive-video.ts` baixa de novo). Decisão do editor (briefing do overnight 261026b): tirar `*.mp4` do sync, retenção por data, e alarme de cota que diga a causa.
+Em 23/10/2026 a conta do OneDrive ficou sem espaço e o sync de `data/` parou. A causa era vídeo: `data/` tinha 4,8 GB, `data/editions/2610` sozinho 2,0 GB, quase todo `.mp4` (edição com vídeo 0,4 a 0,7 GB contra ~0,1 GB sem). O vídeo já tem cópia fora do disco (YouTube e a fonte no Drive, que `fetch-drive-video.ts` baixa de novo). O R2 dos verticais (bucket `diaria-shorts`, habilitado em 27/10/2026, #10772) também guarda o vertical publicado, mas só por 7 dias (lifecycle de `shorts/`), menos que a retenção local de 14: não serve de cópia de longo prazo. Decisão do editor (briefing do overnight 261026b): tirar `*.mp4` do sync, retenção por data, e alarme de cota que diga a causa.
 
 ### Peças
 

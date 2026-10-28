@@ -84,7 +84,8 @@ export function shortInstagramVideoFileName(aammdd: string): string {
  *     devolve `skip_delegated`, como o `linkedin_profile` (#10982).
  *   - `worker-r2` (#10823, opção antiga): sobe o vertical pro R2 e põe o
  *     Reels na fila do Worker `diaria-linkedin-cron`. Exige os 5 secrets do
- *     R2, que não serão criados (o R2 não está habilitado na conta).
+ *     R2, que existem desde 27/10/2026 (#10772); o editor manteve o
+ *     `timer-300` mesmo assim (#11411).
  */
 export const INSTAGRAM_BACKENDS = ["timer-300", "worker-r2"] as const;
 export type InstagramBackend = (typeof INSTAGRAM_BACKENDS)[number];
@@ -395,7 +396,7 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   linkedinProfileViaTimer: false,
   // #11410: desligado; o editor liga no platform.config.json junto com o arme da task no 300.
   threadsProfileViaTimer: false,
-  // #11265 (decisão do editor, 27/10/2026): timer no 300, sem R2.
+  // #11265 (decisão do editor, 27/10/2026): timer no 300, sem depender do R2 (mantido com o R2 habilitado, #11411).
   instagramBackend: "timer-300",
   // #11223: ligado no código; o platform.config.json pausa durante a viagem.
   facebookProfile: true,
