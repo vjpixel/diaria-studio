@@ -455,6 +455,13 @@ export interface KitSemanalFrioPublished {
   tag_id: number;
   created_at: string;
   reason?: string;
+  /**
+   * #11429 — sha256 de assunto + preview + conteúdo do broadcast PRINCIPAL
+   * copiados na semanal. O follow/resume relê o principal e, se o hash mudou
+   * (a Etapa 5 corrigiu o principal), re-sincroniza a semanal. Ausente em
+   * estado gravado antes do #11429: sem base de comparação, não re-sincroniza.
+   */
+  source_content_hash?: string;
 }
 
 export const KIT_SEMANAL_FRIO_PUBLISHED_FILENAME = "kit-semanal-frio-published.json";
