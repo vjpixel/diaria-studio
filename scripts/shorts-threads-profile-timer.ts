@@ -67,7 +67,8 @@ import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { loadShortScheduleConfig, loadShortsConfig, parseShortsPublishedFile, resolveShortTime, shortVideoFileName } from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
-import { TIMER_LOCK_FILE as LINKEDIN_TIMER_LOCK_FILE, TIMER_LOCK_STALE_MS, acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
+import { TIMER_LOCK_FILE as LINKEDIN_TIMER_LOCK_FILE, acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
+import { DOWNLOAD_PART_FRESH_MS, SHORTS_THREADS_TIMER_LOCK_FILE, verticalDownloadBusy } from "./lib/diaria/vertical-download-guard.ts";
 import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState } from "./shorts-instagram-timer.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
@@ -75,13 +76,13 @@ import type { ShortsPlanItem } from "./publish-shorts.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[shorts-threads-timer]";
 const DESTINATION = "threads_profile";
-export const THREADS_TIMER_LOCK_FILE = "_internal/.shorts-threads-timer.lock";
+export const THREADS_TIMER_LOCK_FILE = SHORTS_THREADS_TIMER_LOCK_FILE;
 /** Alarmes já avisados ao editor nesta edição (não repete o mesmo a cada hora). */
 export const THREADS_TIMER_ALARM_STATE_FILE = "_internal/.shorts-threads-timer-alarm.json";
 /** Sem vertical 1 h depois do horário, num dia que teve vertical: alarma. */
 export const THREADS_MISSING_VIDEO_ALARM_AFTER_MS = 60 * 60_000;
-/** `.part` mais novo que isto = outro processo baixando o vertical agora. */
-export const DOWNLOAD_PART_FRESH_MS = 30 * 60_000;
+/** `.part` mais novo que isto = outro processo baixando o vertical agora (#11432: mora em `lib/diaria/vertical-download-guard.ts`). */
+export { DOWNLOAD_PART_FRESH_MS };
 
 /** Motivo do alarme — chave estável (fingerprint e dedup), nunca texto variável. */
 export type ThreadsTimerAlarmKey =
@@ -183,15 +184,12 @@ export function decideThreadsTimerRun(input: {
 /**
  * Puro: outro processo está baixando o vertical agora? `.part` recente do
  * download (`downloadDriveFileById` grava em `{arquivo}.part`), ou o lock do
- * timer do LinkedIn, que baixa o mesmo arquivo. Os dois baixando juntos
- * escreveriam no mesmo `.part`.
+ * timer do LinkedIn, que baixa o mesmo arquivo. O timer do LinkedIn faz o
+ * mesmo com o lock deste (#11432), e o `O_EXCL` do `.part` em
+ * `lib/drive-download.ts` garante que só um baixa mesmo se os dois passarem juntos.
  */
 export function verticalDownloadInProgress(input: { partMtimeMs: number | null; linkedinLockMtimeMs: number | null; nowMs: number }): string | null {
-  if (input.partMtimeMs !== null && input.nowMs - input.partMtimeMs <= DOWNLOAD_PART_FRESH_MS) return "download do vertical em curso (.part recente)";
-  if (input.linkedinLockMtimeMs !== null && input.nowMs - input.linkedinLockMtimeMs <= TIMER_LOCK_STALE_MS) {
-    return `o timer do LinkedIn está no meio de uma execução (${LINKEDIN_TIMER_LOCK_FILE}) e pode estar baixando o vertical`;
-  }
-  return null;
+  return verticalDownloadBusy({ partMtimeMs: input.partMtimeMs, otherLockMtimeMs: input.linkedinLockMtimeMs, otherLabel: "LinkedIn", otherLockFile: LINKEDIN_TIMER_LOCK_FILE, nowMs: input.nowMs });
 }
 
 export type ThreadsVerticalLookup =

@@ -12,6 +12,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -374,15 +375,23 @@ describe("#11410 conferência do perfil antes de publicar", () => {
 describe("#11410 R2: reaproveita o objeto do dia", () => {
   const cfg: R2UploadConfig = { accountId: "acc", accessKeyId: "k", secretAccessKey: "s", bucket: "b", publicBase: "https://media.diar.ia.br" };
   const body = Buffer.from("0123456789");
-  it("HEAD 200 com o mesmo tamanho: reaproveita, sem PUT", async () => {
+  it("HEAD 200 com o mesmo tamanho e o mesmo ETag (MD5): reaproveita, sem PUT", async () => {
     const calls: string[] = [];
-    const fetch = async (_u: string, i?: RequestInit) => (calls.push(i?.method ?? "GET"), new Response(null, { status: 200, headers: { "content-length": "10" } }));
+    const etag = `"${createHash("md5").update(body).digest("hex")}"`;
+    const fetch = async (_u: string, i?: RequestInit) => (calls.push(i?.method ?? "GET"), new Response(null, { status: 200, headers: { "content-length": "10", etag } }));
     const r = await reuseOrUploadToR2({ fetch, now: () => new Date(AT) }, cfg, "shorts/v.mp4", body, "video/mp4");
     assert.deepEqual(r, { url: "https://media.diar.ia.br/shorts/v.mp4", reused: true });
     assert.deepEqual(calls, ["HEAD"]);
   });
-  it("404 ou tamanho diferente: sobe de novo", async () => {
-    for (const first of [new Response(null, { status: 404 }), new Response(null, { status: 200, headers: { "content-length": "3" } })]) {
+  it("404, tamanho diferente, ou (#11432) mesmo tamanho com conteúdo diferente / sem ETag: sobe de novo", async () => {
+    const otherEtag = `"${createHash("md5").update(Buffer.from("XXXXXXXXXX")).digest("hex")}"`;
+    for (const first of [
+      new Response(null, { status: 404 }),
+      new Response(null, { status: 200, headers: { "content-length": "3" } }),
+      // #11432: objeto corrompido de mesmo tamanho no bucket — antes era reaproveitado em toda retentativa.
+      new Response(null, { status: 200, headers: { "content-length": "10", etag: otherEtag } }),
+      new Response(null, { status: 200, headers: { "content-length": "10" } }),
+    ]) {
       const calls: string[] = [];
       let n = 0;
       const fetch = async (_u: string, i?: RequestInit) => {

@@ -11,7 +11,9 @@
  *   - `content-type` conferido (`isAcceptableDownloadContentType`: `video/mp4`,
  *     ou `application/octet-stream` com nome `.mp4`).
  *
- * Falha nunca deixa `.part` (se não der pra apagar, vai pro `log`).
+ * Falha nunca deixa `.part` (se não der pra apagar, vai pro `log`). O `.part`
+ * é exclusivo (O_EXCL, #11432): um 2º download do mesmo arquivo em paralelo
+ * recusa em vez de truncar o do 1º.
  *
  * Consumidores: `fetch-drive-video.ts` (horizontal) e `publish-shorts.ts
  * --from-drive` (vertical). Antes do #11082 o `publish-shorts.ts` tinha a
@@ -19,7 +21,7 @@
  * conferência de tamanho.
  */
 
-import { createWriteStream, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -81,9 +83,53 @@ export async function fetchDriveFileMeta(
   };
 }
 
+/** `.part` sem escrita há mais que isto é resto de um processo morto (#11432). */
+export const PART_STALE_MIN_MS = 5 * 60_000;
+
+/** Outro processo está baixando o mesmo arquivo (`{dest}.part` fresco, #11432). */
+export class DriveDownloadInProgressError extends Error {
+  constructor(public readonly partPath: string) {
+    super(`outro processo está baixando este arquivo agora (${partPath} recente) — nada gravado; tente de novo depois`);
+    this.name = "DriveDownloadInProgressError";
+  }
+}
+
+/**
+ * Cria `tmp` com O_EXCL e devolve o fd. `.part` já existente e escrito há menos
+ * de `staleMs` é de um download vivo → `DriveDownloadInProgressError` (nunca
+ * trunca nem apaga o arquivo do outro). Mais velho que isso → apaga e tenta
+ * de novo uma vez (um download vivo escreve pelo menos a cada `idleMs`, senão
+ * o watchdog dele aborta).
+ */
+export function claimPartFile(tmp: string, staleMs: number, now: number = Date.now()): number {
+  const tryOpen = (): number | null => {
+    try {
+      return openSync(tmp, "wx");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") return null;
+      throw e;
+    }
+  };
+  const fd = tryOpen();
+  if (fd !== null) return fd;
+  let age = 0;
+  try {
+    age = now - statSync(tmp).mtimeMs;
+  } catch {
+    age = Infinity; // sumiu entre o open e o stat: o outro terminou ou desistiu
+  }
+  if (age <= staleMs) throw new DriveDownloadInProgressError(tmp);
+  rmSync(tmp, { force: true });
+  const retry = tryOpen();
+  if (retry === null) throw new DriveDownloadInProgressError(tmp);
+  return retry;
+}
+
 /**
  * Baixa `alt=media` em `{dest}.part` (streaming) e renomeia no fim. Devolve os
- * bytes gravados. Lança em falha, sem deixar `.part`.
+ * bytes gravados. Lança em falha, sem deixar `.part`. O `.part` é criado com
+ * O_EXCL (#11432): se outro processo está baixando o mesmo arquivo, lança
+ * `DriveDownloadInProgressError` sem tocar no `.part` dele.
  */
 export async function downloadDriveFile(
   deps: DriveDownloadDeps,
@@ -104,6 +150,13 @@ export async function downloadDriveFile(
     }, timeouts.idleMs);
   };
   const tmp = `${dest}.part`;
+  // #11432: o `.part` é do processo que o criou. Sem o O_EXCL, um 2º download do
+  // mesmo arquivo (timers do LinkedIn e do Threads no mesmo vertical) truncava o
+  // `.part` do 1º, que seguia escrevendo no próprio offset e renomeava um
+  // arquivo com o começo zerado e o tamanho certo.
+  mkdirSync(dirname(dest), { recursive: true });
+  const fd = claimPartFile(tmp, Math.max(2 * timeouts.idleMs, PART_STALE_MIN_MS));
+  let fdHandedOff = false;
   try {
     armIdle();
     const res = await deps.driveFetch(
@@ -116,17 +169,19 @@ export async function downloadDriveFile(
       throw new Error(`o arquivo ${file.id} do Drive não é .mp4 (content-type "${type}") — nada gravado`);
     }
     if (!res.body) throw new Error(`download do Drive sem corpo (${file.id}) — nada gravado`);
-    mkdirSync(dirname(dest), { recursive: true });
     const watchdog = new Transform({
       transform(chunk, _enc, cb) {
         armIdle();
         cb(null, chunk);
       },
     });
+    // O stream assume o fd (autoClose): daqui em diante quem fecha é ele.
+    const out = createWriteStream(tmp, { fd });
+    fdHandedOff = true;
     await pipeline(
       Readable.fromWeb(res.body as unknown as NodeWebReadableStream<Uint8Array>),
       watchdog,
-      createWriteStream(tmp),
+      out,
       { signal },
     );
     const bytes = statSync(tmp).size;
@@ -138,6 +193,13 @@ export async function downloadDriveFile(
     renameSync(tmp, dest);
     return bytes;
   } catch (e) {
+    if (!fdHandedOff) {
+      try {
+        closeSync(fd);
+      } catch {
+        // já fechado
+      }
+    }
     try {
       if (existsSync(tmp)) unlinkSync(tmp);
     } catch (unlinkErr) {
