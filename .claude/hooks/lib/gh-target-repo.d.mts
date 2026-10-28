@@ -53,6 +53,12 @@ export type MergeResolution =
       explicitRepo: null;
       /** Alvo do merge indeterminado (#10689 M): todo repo de `issue_repos` está em `targets`. */
       indeterminate: boolean;
+      /**
+       * #11501: o comando PROVA (whitelist estrita) que mira um único repo
+       * FORA de `issue_repos`. Continua estrito (lock do diaria-studio, sem
+       * concessão — #10618 D), mas a mensagem nomeia o lock que falta.
+       */
+      unlistedRepo: string | null;
     };
 export function resolveMergeTargets(
   command: unknown,

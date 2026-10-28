@@ -134,6 +134,12 @@ import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts
 import { PUSH_IO_TIMEOUT_MS } from "./lib/push-notify.ts";
 import { notifyEditor, notifyEditorResultReachedEditor, type NotifyEditorDeps } from "./lib/editor-notify.ts";
 import {
+  ALARM_LABEL,
+  defaultAlarmGhRun,
+  extractAlarmFingerprintForCheck,
+  type GhRunFn,
+} from "./lib/alarm-issues.ts";
+import {
   CI_WAIT_TIMEOUT_MIN,
   OVERNIGHT_STALL_THRESHOLD_MIN,
 } from "./lib/overnight-stall-threshold.ts";
@@ -893,6 +899,98 @@ export async function sendStallAlert(
 }
 
 /**
+ * #11502: checks cujas issues de alarme pertencem a UMA rodada (fingerprint
+ * `{kind}:{rodada}` e `{kind}:{rodada}:sem-retomada`, ver `sendStallAlert` e
+ * `sendUnresumedStallEscalation`).
+ */
+export const STALL_ALARM_CHECKS = ["overnight-watchdog-stall", "overnight-watchdog-stall-sem-retomada"] as const;
+
+export interface StallAlarmClosure {
+  issueNumber: number;
+  check: string;
+  fingerprint: string;
+  /** Rodada do fingerprint (`AAMMDD[a-z]`). */
+  round: string;
+}
+
+/**
+ * Pure (#11502): issues ABERTAS de alarme de stall deste `kind` cuja rodada
+ * não é mais a vigiada (`activeRound`; `null` = nenhuma rodada ativa). Rodada
+ * que não é a ativa de `findActiveRun` terminou (`report.md`), foi superada
+ * por uma mais nova ou foi abandonada (sem atividade há mais de
+ * `ABANDONED_RUN_MAX_AGE_MS`) — nos três casos o watchdog não a avalia mais,
+ * então a issue dela nunca receberia outro sinal e ficava órfã (#11063,
+ * #11272, fechadas à mão em 28/10/2026). Fingerprint de outro `kind`, sem
+ * marcador destes checks ou com rodada ilegível fica de fora (não é desta
+ * vigia). A issue da rodada ATIVA nunca entra: um stall dela ainda pode
+ * estar em curso.
+ */
+export function planStallAlarmClosures(
+  issues: readonly { number: number; body?: string | null }[],
+  kind: WatchableKind,
+  activeRound: string | null,
+): StallAlarmClosure[] {
+  const out: StallAlarmClosure[] = [];
+  for (const issue of issues) {
+    for (const check of STALL_ALARM_CHECKS) {
+      const fingerprint = extractAlarmFingerprintForCheck(issue.body ?? "", check);
+      if (fingerprint === null || !fingerprint.startsWith(`${kind}:`)) continue;
+      const round = fingerprint.slice(kind.length + 1).replace(/:sem-retomada$/, "");
+      if (!RUN_DIR_PATTERN.test(round) || round === activeRound) continue;
+      out.push({ issueNumber: issue.number, check, fingerprint, round });
+      break;
+    }
+  }
+  return out;
+}
+
+export interface CloseEndedRunStallAlarmsResult {
+  /** `false` quando a listagem via `gh` falhou — nada foi avaliado. */
+  listed: boolean;
+  closed: number[];
+  failed: number[];
+}
+
+/**
+ * #11502: fecha as issues de alarme de stall de rodadas que o watchdog não
+ * vigia mais (`planStallAlarmClosures`). Uma listagem `gh` por execução,
+ * fail-soft TOTAL — falha de listagem ou de fechamento nunca lança, volta no
+ * resultado e a próxima execução tenta de novo. `--reason "not planned"`,
+ * mesmo critério de `closeAlarmIssue` (#6798): é o alarme deixando de valer,
+ * não uma correção.
+ */
+export function closeEndedRunStallAlarms(
+  rootDir: string,
+  kind: WatchableKind,
+  activeRound: string | null,
+  run: GhRunFn = defaultAlarmGhRun,
+): CloseEndedRunStallAlarmsResult {
+  const res = run(
+    ["issue", "list", "--label", ALARM_LABEL, "--state", "open", "--json", "number,body", "--limit", "200"],
+    rootDir,
+  );
+  if (res.status !== 0) return { listed: false, closed: [], failed: [] };
+  let issues: { number: number; body?: string | null }[];
+  try {
+    issues = JSON.parse(res.stdout) as { number: number; body?: string | null }[];
+    if (!Array.isArray(issues)) return { listed: false, closed: [], failed: [] };
+  } catch {
+    return { listed: false, closed: [], failed: [] };
+  }
+  const closed: number[] = [];
+  const failed: number[] = [];
+  for (const c of planStallAlarmClosures(issues, kind, activeRound)) {
+    const comment =
+      `Fechada automaticamente pelo watchdog (#11502): a rodada ${c.round} (${kind}) não é mais a vigiada ` +
+      `(${activeRound === null ? "nenhuma rodada ativa" : `rodada ativa: ${activeRound}`}) — terminou, foi ` +
+      "superada por uma mais nova ou foi abandonada, então este alarme não recebe mais sinal.";
+    const closeRes = run(["issue", "close", String(c.issueNumber), "--comment", comment, "--reason", "not planned"], rootDir);
+    (closeRes.status === 0 ? closed : failed).push(c.issueNumber);
+  }
+  return { listed: true, closed, failed };
+}
+
+/**
  * Argumentos passados a `scripts/render-halt-banner.ts` no stall. Pure e
  * exportada pra `test/overnight-watchdog.test.ts` conseguir alimentar o
  * parser real do banner com esta saída e provar que `--no-push` chega lá
@@ -1243,6 +1341,21 @@ async function runWatchdogForKind(
   thresholdMin: number,
 ): Promise<void> {
   const active = findActiveRun(ROOT, kind);
+
+  // #11502: antes de qualquer `return` — alarme de stall de rodada que não é
+  // mais a vigiada (encerrada, superada ou abandonada) nunca mais recebe sinal.
+  if (!dryRun) {
+    const closures = closeEndedRunStallAlarms(ROOT, kind, active?.aammdd ?? null);
+    if (!closures.listed) {
+      process.stderr.write(`[watchdog] Não consegui listar as issues de alarme de stall (fica pra próxima execução).\n`);
+    }
+    if (closures.closed.length > 0) {
+      console.log(`[watchdog] Alarmes de stall de rodada encerrada fechados: ${closures.closed.map((n) => `#${n}`).join(", ")}.`);
+    }
+    if (closures.failed.length > 0) {
+      process.stderr.write(`[watchdog] Falha ao fechar alarme de stall: ${closures.failed.map((n) => `#${n}`).join(", ")}.\n`);
+    }
+  }
 
   if (!active) {
     console.log(`[watchdog] Nenhuma rodada ${kind} ativa detectada.`);

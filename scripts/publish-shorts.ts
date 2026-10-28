@@ -62,13 +62,17 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl`.
  *     O R2 está habilitado desde 27/10/2026 (#10772, bucket `diaria-shorts`);
  *     só numa máquina sem os secrets dele o X é pulado com aviso e fica
- *     manual. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
+ *     PENDENTE (#11478/#11498): o `-short.mp4` fica no disco e uma máquina com
+ *     os secrets publica; à mão só registrando com `--mark`, senão sai
+ *     duplicado. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
  *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
  *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
  *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
  *     (`platform: "threads"`). Sem token, ou sem os secrets do R2 na máquina
  *     (os dois existem desde 27/10/2026, #10772), é pulado com aviso
- *     (fail-soft) e fica manual. A API não agenda: mesmo `pending_schedule`/teto de atraso do
+ *     (fail-soft). Sem token é terminal (#11240); sem R2 fica PENDENTE para
+ *     uma máquina com os secrets (#11478/#11498), nunca "postar à mão" sem
+ *     `--mark`. A API não agenda: mesmo `pending_schedule`/teto de atraso do
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
  *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
@@ -314,11 +318,13 @@ export const THREADS_TIMER_DETAIL =
  * (decisão do editor, 27/10/2026); ele foi habilitado no mesmo dia (#10772),
  * então hoje `r2.ready === false` significa máquina sem os secrets
  * `R2_*`/`SHORTS_R2_*`. Com o backend do timer o aviso não lista os secrets;
- * com `worker-r2` (que depende dele) lista o que falta.
+ * com `worker-r2` (que depende dele) lista o que falta. Desde o #11478 o
+ * destino fica PENDENTE (não terminal) e o aviso diz isso (#11498): mandar o
+ * editor postar à mão o que outra máquina vai publicar duplica o post.
  */
 export function publicVideoUnavailableReason(backend: InstagramBackend, r2Missing: readonly string[]): string {
   return backend === "timer-300"
-    ? "sem URL pública do vertical: R2 não configurado nesta máquina (faltam os secrets R2_*/SHORTS_R2_*; o bucket existe desde 27/10/2026, #10772/#11265) — fica manual"
+    ? "sem URL pública do vertical: R2 não configurado nesta máquina (faltam os secrets R2_*/SHORTS_R2_*; o bucket existe desde 27/10/2026, #10772/#11265) — fica pendente; publica numa máquina com os secrets do R2 (ou à mão, registrando com --mark)"
     : `falta ${r2Missing.join(", ")}`;
 }
 

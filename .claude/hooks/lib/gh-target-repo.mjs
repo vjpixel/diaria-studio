@@ -858,15 +858,23 @@ export function parseStrictMerge(command) {
 export function resolveMergeTargets(command, cwd, opts = {}) {
   const { execFn = execFileSync, allowed = loadAllowedForeignRepos(), env = process.env } = opts;
   const parsed = parseStrictMerge(command);
+  // #11501: merge provado de um repo FORA de `issue_repos` (ex.:
+  // vjpixel/fluxo-criativo). Segue estrito — o lock do diaria-studio é o que
+  // vale (#10618 D: typo, fork ou nome antigo de repo renomeado, que o GitHub
+  // redireciona, podem cair no studio) —, mas o guard passa a dizer isso em
+  // vez da mensagem genérica de "forma que o guard não consegue provar".
+  let unlistedRepo = null;
   // #10751: a whitelist textual SÓ vale se o detector concordar que todas as
   // invocações são `gh pr merge` literal — o invariante deixa de depender só
   // de `parseStrictMerge` reler o comando cru (defesa em profundidade; com a
   // whitelist de hoje as duas leituras sempre concordam).
   if (parsed && detectorConfirmsPlainMerge(command, opts)) {
     const { repo, cd, pr } = parsed;
-    if (repo !== null && repo !== DIARIA_STUDIO_REPO) {
-      // Repo de fora: só vale se permitido e, com `cd`, se o diretório é dele.
-      if (allowed.has(repo) && (cd === null || repoFromCwdOrigin(cd, execFn) === repo)) {
+    if (repo !== null && repo !== DIARIA_STUDIO_REPO && !allowed.has(repo)) {
+      unlistedRepo = repo;
+    } else if (repo !== null && repo !== DIARIA_STUDIO_REPO) {
+      // Repo de fora permitido: com `cd`, só vale se o diretório é dele.
+      if (cd === null || repoFromCwdOrigin(cd, execFn) === repo) {
         return { mode: "foreign-whitelist", targets: [repo], grantRepo: repo, pr, explicitRepo: repo };
       }
     } else if (repo === DIARIA_STUDIO_REPO) {
@@ -920,6 +928,7 @@ export function resolveMergeTargets(command, cwd, opts = {}) {
     pr: parsed?.pr ?? null,
     explicitRepo: null,
     indeterminate: hints.unknown,
+    unlistedRepo,
   };
 }
 
