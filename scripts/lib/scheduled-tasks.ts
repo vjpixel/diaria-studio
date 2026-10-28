@@ -569,15 +569,16 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     logPath: "subscriber-state-snapshots/.recent.log",
     // Horaria: so cadastros recentes (poucas dezenas de linhas, 1 chamada
     // paginada, sem ler o form DOI, so LEITURA no Kit) -- muito abaixo do rate
-    // limit. DECLARADA com enabled:false -- armar no 300 via
-    // `scripts/setup-systemd-timers.ts` (mesma maquina da task diaria acima).
-    // enabled:false DE PROPOSITO: sem isso o Remediate-Never-Armed-Tasks
-    // (#8153) a auto-arma no dia seguinte ao merge, em qualquer maquina, e
-    // sem KIT_API_KEY falharia toda hora; data/ e junction OneDrive (escrita
-    // concorrente se armada em 2 maquinas). Armar manualmente so no 300.
-    enabled: false,
+    // limit. ARMADA desde o #8548 (decisao do editor 28/10/2026: medir a
+    // confirmacao em 1h por coorte/canal; sem esta task a janela de 1h ficava
+    // `n/d` para sempre, kit-recent/ nunca existiu). Era enabled:false (#8552
+    // b) por 3 riscos que nao valem mais: (1) o Remediate-Never-Armed-Tasks
+    // (#8153) e systemd, e as tasks so rodam no 300 (a maquina do editor nao
+    // roda mais tasks) -- auto-armar = armar no 300; (2) KIT_API_KEY ja esta
+    // no .env do 300 (a task diaria acima, irma, roda la todo dia); (3) sem
+    // 2a maquina armada nao ha escrita concorrente em data/.
     schedule: { kind: "interval", hours: 1 },
-    issue: "#8552",
+    issue: "#8552, #8548",
   },
   {
     name: "Diaria-Nightly-Chain",

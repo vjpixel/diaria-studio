@@ -122,7 +122,9 @@ export function buildReportOutput(
     utmSourceByKitId: utm.map ?? undefined,
   });
   if (utm.aviso) report.avisos.push(utm.aviso);
-  const hourly = buildHourlyConfirmationReport(loadHourlyObservations(recentRoot));
+  const hourly = buildHourlyConfirmationReport(loadHourlyObservations(recentRoot), {
+    utmSourceByKitId: utm.map ?? undefined,
+  });
   return opts.format === "json"
     ? JSON.stringify({ ...report, horario: hourly }, null, 2) + "\n"
     : renderConfirmationReportText(report) + "\n" + renderHourlyConfirmationText(hourly);
