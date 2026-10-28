@@ -193,7 +193,7 @@ describe("runEnvioBrevoOrphanSweep (#11431)", () => {
     const before = decideKitFrio({ id: 1, email: "o@x.com", created_at: "2026-01-01T00:00:00Z", tagNames: ["envio-brevo"] }, ctx);
     assert.deepEqual(before, { action: "skip", reason: "tag_envio_brevo" });
     const after = decideKitFrio({ id: 1, email: "o@x.com", created_at: "2026-01-01T00:00:00Z", tagNames: [] }, ctx);
-    assert.notDeepEqual(after, { action: "skip", reason: "tag_envio_brevo" });
+    assert.deepEqual(after, { action: "skip", reason: "registro_nao_cobre_a_janela" });
   });
 });
 
