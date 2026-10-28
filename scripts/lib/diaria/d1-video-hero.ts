@@ -7,7 +7,7 @@
  * Decisão do editor (22/10/2026, #10784):
  *   - só o D1: a imagem hero vira link pro vídeo do dia, com UTM
  *     `utm_source=newsletter&utm_medium=email&utm_campaign=video-d1-{AAMMDD}`;
- *   - o convite vai ESCRITO NA IMAGEM ("Clique e assista a notícia comentada" com o
+ *   - o convite vai ESCRITO NA IMAGEM ("Clique para assistir meus comentários" com o
  *     símbolo de play ao lado, no canto inferior direito), sem play no centro (decisão do editor, 22/10/2026,
  *     revisa a legenda-convite do #10784); com isso a legenda abaixo da imagem
  *     volta a ser o crédito padrão da ferramenta de imagem, como no D2 e no D3;
@@ -44,18 +44,18 @@ export const D1_PLAY_IMAGE_KEY = "d1_play";
 export const D1_VIDEO_FALLBACK_URL = DIARIA_YOUTUBE_URL;
 
 /**
- * Convite escrito na imagem (texto do editor, 22/10/2026). Um texto só para o
+ * Convite escrito na imagem (texto do editor, 28/10/2026, #11475). Um texto só para o
  * vídeo e para o fallback do canal: a cópia da imagem é gerada no upload, antes
  * de a URL do vídeo existir, então ela não pode depender de qual dos dois vale.
  */
-export const D1_INVITE_TEXT = "Clique e assista a notícia comentada";
+export const D1_INVITE_TEXT = "Clique para assistir meus comentários";
 
 /**
  * Versão do desenho do convite, carimbada junto do md5 do hero: mudar o desenho
  * (texto, faixa, posição) sem mudar o hero também regera a cópia. Subir a versão
  * a cada mudança em `buildInviteSvg`/`D1_INVITE_TEXT`.
  */
-export const D1_INVITE_VERSION = "invite-v5";
+export const D1_INVITE_VERSION = "invite-v6";
 
 /** `alt` da imagem do D1 quando ela é link: a imagem é o único conteúdo do link e o convite está só nos pixels. */
 export function d1HeroAlt(title: string): string {

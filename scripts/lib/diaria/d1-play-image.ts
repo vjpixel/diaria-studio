@@ -2,7 +2,7 @@
  * scripts/lib/diaria/d1-play-image.ts (#10784)
  *
  * Gera `04-d1-2x1-play.jpg`: cópia do hero do D1 com o convite escrito
- * (`buildInviteSvg`: "Clique e assista a notícia comentada" com o símbolo de
+ * (`buildInviteSvg`: "Clique para assistir meus comentários" com o símbolo de
  * play ao lado, no canto inferior direito, sem play no centro), só para a
  * newsletter. O hero original
  * (`04-d1-2x1.jpg`) nunca é tocado — as redes seguem usando ele.
