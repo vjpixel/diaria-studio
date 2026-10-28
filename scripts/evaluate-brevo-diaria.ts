@@ -43,7 +43,8 @@
  * (`resolveBrevoEffectiveMode`): na transição (#10533, `kit-sem-abertura:`
  * ainda `in_brevo`) a Brevo segue diária e o score por taxa de sempre vale.
  * Só conta como semanal a campanha de SEGUNDA (BRT) enviada a partir de
- * `desde`; o clique que leva pro Kit só conta em campanha enviada a partir de
+ * `desde` — e, pro grupo "terça" da divisão (#11286), a campanha de terça
+ * cujo id é um `terca_campaign_id` registrado (#11420, nunca só o dia); o clique que leva pro Kit só conta em campanha enviada a partir de
  * `desde` (consentimento atual, nunca clique histórico).
  *
  * Supressão por score de um `kit-sem-abertura:` NÃO descadastra mais no Kit
@@ -437,6 +438,8 @@ import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #104
 import { formatKitSemAberturaLogLine, DEFAULT_KIT_SEM_ABERTURA_LOG_PATH } from "./lib/kit-sem-abertura.ts"; // #10437
 import { appendFileWithRetry } from "./lib/source-runs.ts"; // #10437
 import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #11420
+import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts"; // #11420
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -701,7 +704,7 @@ export function isKitSemAberturaBlacklistNew(blacklistEventLatestAt: string | nu
 export async function fetchBrevoContactState(
   apiKey: string,
   email: string,
-  opts: { semanalDesdeMs?: number; nowMs?: number } = {},
+  opts: { semanalDesdeMs?: number; nowMs?: number; semanalTercaCampaignIds?: ReadonlySet<number> } = {},
 ): Promise<BrevoContactState> {
   const res = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
   if (res.status !== 200) {
@@ -726,7 +729,14 @@ export async function fetchBrevoContactState(
     ...(blacklistAt !== null ? { blacklist_event_latest_at: blacklistAt } : {}),
     ...(blacklistUndated ? { blacklist_event_undated: true } : {}),
     ...(opts.semanalDesdeMs !== undefined
-      ? { semanal: buildSemanalEvaluationInput(res.body?.statistics, opts.semanalDesdeMs, opts.nowMs ?? Date.now(), email) }
+      ? { semanal: buildSemanalEvaluationInput(
+            res.body?.statistics,
+            opts.semanalDesdeMs,
+            opts.nowMs ?? Date.now(),
+            email,
+            opts.semanalTercaCampaignIds, // #11420
+          ),
+        }
       : {}),
   };
 }
@@ -2037,6 +2047,13 @@ export interface RunEvaluationParams {
    * anterior) ⇒ score por taxa de sempre.
    */
   semanalDesdeMs?: number;
+  /**
+   * #11420 — ids das campanhas de TERÇA da semanal dividida (`terca_campaign_id`
+   * de `_internal/brevo-diaria-published.json`, `collectTercaCampaignIds`). Só
+   * envio de terça com id aqui conta como semanal do grupo "terça"; ausente ⇒
+   * nenhuma terça conta (direção que não suprime).
+   */
+  semanalTercaCampaignIds?: ReadonlySet<number>;
   /** #11226 — relógio injetável do score semanal (maturação). Default `Date.now()`. */
   nowMs?: number;
   /**
@@ -2063,6 +2080,24 @@ export interface RunEvaluationParams {
    * teste; default = `findTagIdByName` + `tagSubscriber` + `listSubscriberTags`.
    */
   kitFrioTagDeps?: KitFrioTagDeps;
+}
+
+/**
+ * #11420 — ids das campanhas de TERÇA da semanal dividida (#11286), lidos do
+ * `terca_campaign_id` de `_internal/brevo-diaria-published.json` de cada
+ * edição (layouts flat e nested, `enumerateEditionDirs`). É o que separa a
+ * terça da semanal dividida de um envio de terça qualquer (transição #10533,
+ * `--fora-da-segunda`) no score semanal. Pasta ausente/ilegível ⇒ conjunto
+ * vazio: nenhuma terça conta, a direção que não suprime ninguém antes da hora.
+ */
+export function collectTercaCampaignIds(editionsDir: string, log: (m: string) => void = () => {}): Set<number> {
+  const ids = new Set<number>();
+  for (const dir of enumerateEditionDirs(editionsDir).values()) {
+    const id = readBrevoDiariaPublished(dir)?.terca_campaign_id;
+    if (typeof id === "number") ids.add(id);
+  }
+  log(`semanal dividida (#11420): ${ids.size} campanha(s) de terça registrada(s) contam como semanal do grupo terça.`);
+  return ids;
 }
 
 /**
@@ -2435,6 +2470,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     unsubscribeKitSemAberturaDeps,
     kitEnvioBrevoTagDeps,
     semanalDesdeMs, // #11226
+    semanalTercaCampaignIds, // #11420
     kitFrioTagDeps, // #11221
   } = params;
   const kitFrioFullyOn = params.kitFrioFullyOn === true; // #11221
@@ -2601,7 +2637,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       let statusCheckFailed = false;
       if (brevoApiKey) {
         try {
-          nativeState = await fetchBrevoContactState(brevoApiKey, contact.email, { semanalDesdeMs, nowMs: nowMsForScore });
+          nativeState = await fetchBrevoContactState(brevoApiKey, contact.email, {
+            semanalDesdeMs,
+            nowMs: nowMsForScore,
+            semanalTercaCampaignIds, // #11420
+          });
         } catch (e) {
           log(`warn: falha ao checar estado Brevo de ${contact.email}: ${(e as Error).message}`);
           failed++;
@@ -3750,6 +3790,7 @@ async function main(): Promise<number> {
     kitDoiFormId: platformConfig.kit?.doiFormId, // #9835
     kitDoiResendFormId: platformConfig.kit?.doiResendFormId, // #9986
     semanalDesdeMs: evaluateSemanalDesdeMs(semanal, store.contacts, log), // #11226
+    semanalTercaCampaignIds: semanal.enabled ? collectTercaCampaignIds(resolve(ROOT, "data", "editions"), log) : undefined, // #11420
     kitActivateFormId: platformConfig.kit?.activateFormId, // #11226
     kitFrioFullyOn, // #11221
   });
