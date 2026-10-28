@@ -173,38 +173,93 @@ export function extractEmailStructure(content: string): StructureSnapshot {
   const SECTION_ANCHOR = String.raw`(?:${SECTION_EMOJI}|(?:&#9679;|&#x25cf;|\u{25CF})\s*)`;
   const headerInText = (body: string): boolean =>
     new RegExp(`${SECTION_ANCHOR}${body}`, "iu").test(text);
-  // Posição do header no RAW content (pra contar <a href> no slice). Best-effort
-  // — item_count é COSMÉTICO (só entra na detail string; compareStructure usa
-  // presença, não count). Se a âncora falhar no raw (tags entre emoji e nome),
-  // count=0 mas a presença (acima) já foi registrada → sem falso section_missing.
-  const rawPos = (body: string, from = 0): { idx: number; len: number } => {
-    const m = content.slice(from).match(new RegExp(`${SECTION_ANCHOR}${body}`, "iu"));
-    if (m?.index === undefined) return { idx: -1, len: 0 };
-    return { idx: from + m.index, len: m[0].length };
+  // #11403: no HTML do Kit o ponto fica dentro de um `<span>` colorido
+  // (`<span style="color:#00A0A0;">●</span> RADAR`), então no RAW há tags entre
+  // a âncora e o nome — a busca crua falhava e todo `item_count` saía 0. O
+  // separador cru aceita tags e espaço entre a âncora e o nome.
+  const RAW_GAP = String.raw`(?:\s|&nbsp;|&#160;|<[^>]*>)*`;
+  // Posições de TODOS os headers de uma seção no RAW content.
+  const rawAll = (body: string): { idx: number; len: number }[] => {
+    const re = new RegExp(`${SECTION_ANCHOR}${RAW_GAP}${body}`, "giu");
+    const out: { idx: number; len: number }[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) out.push({ idx: m.index, len: m[0].length });
+    return out;
   };
+  // #11403: o kicker de categoria do destaque usa a MESMA marcação do header de
+  // seção (`● LANÇAMENTO`), e `LAN[ÇC]AMENTOS?` casava com ele — seção
+  // LANÇAMENTOS fantasma em toda edição com destaque de lançamento (mascarava
+  // `section_missing`). Um kicker é aquele cujo PRÓXIMO link é o título do
+  // destaque (`<a class="headline">`); num header de seção o próximo link é o
+  // 1º item. Só vale no render atual (que tem `class="headline"`): em HTML
+  // sem essa marcação (local mínimo, legado, Beehiiv) nenhum header é
+  // descartado — o comportamento anterior fica intacto.
+  const hasHeadlineMarkup = /<a\b[^>]*class=["'][^"']*\bheadline\b/i.test(content);
+  const isDestaqueKicker = (end: number): boolean => {
+    if (!hasHeadlineMarkup) return false;
+    const nextA = content.slice(end).match(/<a\b[^>]*>/i);
+    return !!nextA && /class=["'][^"']*\bheadline\b/i.test(nextA[0]);
+  };
+  const headers = new Map<string, { idx: number; len: number }>();
+  // Seções cujas ocorrências no RAW eram TODAS kickers de destaque (fantasma).
+  const onlyKickers = new Set<string>();
+  const allHeaderStarts: number[] = [];
   for (const sec of KNOWN_SECTIONS) {
-    if (!headerInText(sec.body)) continue;
-    const { idx, len } = rawPos(sec.body);
+    const all = rawAll(sec.body);
+    const hits = all.filter((h) => !isDestaqueKicker(h.idx + h.len));
+    for (const h of hits) allHeaderStarts.push(h.idx);
+    if (hits.length > 0) headers.set(sec.name, hits[0]);
+    else if (all.length > 0) onlyKickers.add(sec.name);
+  }
+  for (const sec of KNOWN_SECTIONS) {
+    const hit = headers.get(sec.name);
+    // Presença: header real no RAW; senão, o texto stripado (texto puro,
+    // markup que o RAW não alcança) — exceto quando o RAW mostrou que o único
+    // casamento é o kicker de um destaque.
+    const present = hit !== undefined || (!onlyKickers.has(sec.name) && headerInText(sec.body));
+    if (!present) continue;
     let slice = "";
-    if (idx >= 0) {
-      const sliceStart = idx + len;
+    if (hit) {
+      const sliceStart = hit.idx + hit.len;
+      // Termina no próximo header de seção OU no próximo bloco de destaque/
+      // kicker — o que vier antes.
       let sliceEnd = content.length;
-      for (const other of KNOWN_SECTIONS) {
-        if (other.name === sec.name) continue;
-        const o = rawPos(other.body, sliceStart);
-        if (o.idx > sliceStart && o.idx < sliceEnd) sliceEnd = o.idx;
-      }
+      for (const s of allHeaderStarts) if (s > sliceStart && s < sliceEnd) sliceEnd = s;
+      const nextKicker = content.slice(sliceStart).search(new RegExp(SECTION_ANCHOR, "iu"));
+      if (nextKicker >= 0 && sliceStart + nextKicker < sliceEnd) sliceEnd = sliceStart + nextKicker;
       slice = content.slice(sliceStart, sliceEnd);
     }
+    // Item de seção no render atual = título em `<h3>` (1 por item); sem `<h3>`
+    // (e-mail legado/texto), cai na contagem de links como aproximação.
+    const h3Count = (slice.match(/<h3\b/gi) ?? []).length;
     const linkCount = (slice.match(/<a\s+[^>]*href/gi) ?? []).length;
-    // Cada item é geralmente 1 link de título — mas comments/imagens podem
-    // duplicar. Fallback heurística: contar título e descrição em pares.
-    // Pra reduzir ruído, contamos só hrefs primeiros do tipo cnnbrasil/anthropic etc
-    // — mas isso é frágil. Mantemos contagem simples e logamos como aproximação.
-    sections.push({ name: sec.name, item_count: linkCount });
+    sections.push({ name: sec.name, item_count: h3Count > 0 ? h3Count : linkCount });
+  }
+
+  // #11403: destaques no HTML do render atual (Kit e local) — o título é o
+  // `<h2>` dentro de `<a class="headline">`. Antes nada era extraído e
+  // `destaques` saía sempre vazio no e-mail (o `destaque_count_mismatch`
+  // nunca podia disparar).
+  const headlineRe = /<a\b[^>]*class=["'][^"']*\bheadline\b[^"']*["'][^>]*>\s*<h2\b[^>]*>([\s\S]*?)<\/h2>/gi;
+  let hm: RegExpExecArray | null;
+  while ((hm = headlineRe.exec(content)) !== null) {
+    const title = decodeBasicEntities(hm[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    if (title) destaques.push(title);
   }
 
   return { has_eia, destaques, sections };
+}
+
+function decodeBasicEntities(s: string): string {
+  return s
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&amp;/g, "&");
 }
 
 export function compareStructure(

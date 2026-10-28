@@ -263,7 +263,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
    - Subject == título da **edição anterior** → o título da edição atual não foi setado. `"email:subject_mismatch: subject == título da edição anterior '{prev}'"`
    - Subject diverge do esperado → `"email:subject_mismatch: subject '{recebido}' diverge do esperado '{edition_title}'"`
 
-   A verificação é **determinística** via o lint script (passo 8-9 abaixo) quando você passa as flags `--subject-received`/`--subject-expected`/`--prev-title` — prefira isso a comparar à mão. O prefixo `[TEST] ` é normalizado pelo script. Subject errado mata o open rate; **subject_mismatch é blocker**, nunca classificar como falso-positivo.
+   A verificação é **determinística** via o lint script (passo 8-9 abaixo) quando você passa as flags `--subject-received`/`--subject-expected`/`--prev-title` — prefira isso a comparar à mão. O prefixo `[TEST] ` (Beehiiv) e o `[teste] ` (Kit, #11403) são normalizados pelo script. Subject errado mata o open rate; **subject_mismatch é blocker**, nunca classificar como falso-positivo.
 
 1. **Cor dos labels de categoria/secao.** O label no topo de cada box de destaque (ex: "LANCAMENTO", "PESQUISA") deve estar em cor verde (cor do template). Se estiver preto ou outra cor, registrar issue:
    `"label_color_wrong: D{N} label '{texto}' aparece em cor preta, deveria ser verde do template"`
@@ -334,7 +334,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
       {
         "issues": [
           { "type": "blocker"|"warning"|"info",
-            "category": "subject_mismatch"|"version_inconsistency"|"semantic_drift"|"intentional_error_confirmed",
+            "category": "subject_mismatch"|"vote_merge_tag_unresolved"|"version_inconsistency"|"semantic_drift"|"intentional_error_confirmed",
             "destaque": "DESTAQUE 2",
             "detail": "...",
             "source_md_value": "..." }
@@ -345,6 +345,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
    4. Mapear cada `issues[]` do CLI pra string compatível com o output do agent:
       - `type:blocker` + `category:subject_mismatch` → `"email:subject_mismatch: {detail}"` (#1645 — sempre blocker, nunca falso-positivo)
+      - `type:blocker` + `category:vote_merge_tag_unresolved` → `"email:link_dead: {detail}"` (#11403 — só Kit: o script decodifica o destino dos links do click tracking do Kit e acusa voto do É IA? com merge tag literal ou `email=` vazio; mesmo critério do K3)
       - `type:blocker` + `category:version_inconsistency` → `"email:version_inconsistency: {destaque} {detail} — source: {source_md_value}"`
       - `type:warning` + `category:semantic_drift` → `"email:semantic_drift: {destaque} {detail}"`
       - `type:info` + `category:intentional_error_confirmed` → `"info:intentional_error_confirmed: {destaque} {detail}"`
