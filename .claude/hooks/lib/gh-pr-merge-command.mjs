@@ -78,7 +78,10 @@
 //     consumidor de texto, e `gh pr|issue comment … --body-file - <<'D'`).
 //     Falso positivo fora dela (ex.: `cat <<'EOF' | tee nota.md` citando o
 //     merge) é aceito;
-//   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`).
+//   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`);
+//   - comando de shell vindo de CONFIG do git (`git -c core.editor=…`,
+//     `alias.x=!…`, `core.pager`, `core.sshCommand`, `git config` gravado
+//     antes) — só o valor das variáveis de `SHELL_VALUE_VARS` é lido (#11513).
 // Na dúvida o lexer fica do lado de VER o merge: flag desconhecida de wrapper
 // é tratada como booleana (não engole a palavra seguinte).
 
@@ -134,7 +137,8 @@ function isOpaque(v) {
 //                                      ou o alvo não dá pra ler. `reason`:
 //                                      "xargs", "endpoint", "subcommand",
 //                                      "alias-unreadable", "alias-import",
-//                                      "alias-loop", "depth". `args` = o que
+//                                      "alias-loop", "depth", "shell-var"
+//                                      (#11513). `args` = o que
 //                                      deu pra ler, no formato de `pr-merge`.
 // ANTES do #10751 era `string[][]` com `targetUnknown` não-enumerável, e `[]`
 // tinha seis sentidos indistinguíveis. Só `pr-merge` pode sair do modo
@@ -530,6 +534,35 @@ function scan(src, start, closer, commands, depth, ctx = DEFAULT_CTX) {
 }
 
 const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
+
+/**
+ * #11513: variáveis cujo VALOR o git/gh (ou o pager/navegador que eles abrem)
+ * executam como comando de shell — `GIT_EDITOR='gh pr merge 5;:' git commit`
+ * faz o git rodar `sh -c 'gh pr merge 5;:' …`. O valor é lido como comandos
+ * (`collect`) onde quer que a atribuição apareça: prefixo de comando
+ * (`X=v cmd`), comando só de atribuição (`X=v; cmd`), `env X=v cmd` e
+ * `export`/`declare`/`typeset`/`readonly`/`local X=v`. Valor com expansão do
+ * shell (`"$X"`, `$(…)`) não dá pra ler: fail-closed, conta como merge.
+ */
+const SHELL_VALUE_VARS = new Set([
+  "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL", "GH_EDITOR",
+  "GIT_PAGER", "GH_PAGER", "PAGER", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS",
+  "GIT_EXTERNAL_DIFF", "BROWSER", "GH_BROWSER",
+]);
+/** Builtins de declaração: os argumentos `X=v` são atribuições, nada é executado. */
+const DECL_BUILTINS = new Set(["export", "declare", "typeset", "readonly", "local"]);
+
+/** Se `word` atribui uma das `SHELL_VALUE_VARS`, lê o valor como comandos (#11513). */
+function scanShellValueAssignment(word, depth, out, env) {
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/.exec(word);
+  if (!m || !SHELL_VALUE_VARS.has(m[1])) return;
+  const value = word.slice(m[0].length);
+  if (isExpanded(value)) {
+    out.push(opaqueInvocation("shell-var"));
+    return;
+  }
+  collect(value, depth + 1, out, DEFAULT_CTX, env);
+}
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh"]);
 /** Palavra que faz um here-string (`<<<`) ser EXECUTADO (lido como comandos). */
 const BODY_RUNNERS = new Set([...SHELLS, "source", ".", "eval"]);
@@ -614,7 +647,10 @@ function mergeArgsOf(words, depth, out, env) {
   let xargsReplace = null;
   for (;;) {
     for (;;) {
-      if (i < words.length && (ASSIGNMENT_RE.test(words[i]) || RESERVED_PREFIX.has(words[i]))) i++;
+      if (i < words.length && ASSIGNMENT_RE.test(words[i])) {
+        scanShellValueAssignment(words[i], depth, out, env); // #11513
+        i++;
+      } else if (i < words.length && RESERVED_PREFIX.has(words[i])) i++;
       // #10777: `function f { gh pr merge 5; }` — `function` + o NOME da
       // função antecedem o corpo (a forma `function f() {…}` já se quebra no
       // `)` e o `{` cai no RESERVED_PREFIX).
@@ -627,6 +663,11 @@ function mergeArgsOf(words, depth, out, env) {
     }
     if (i >= words.length) return;
     const name = basename(words[i]);
+    if (DECL_BUILTINS.has(name)) {
+      // #11513: `export GIT_EDITOR='gh pr merge 5;:'` — só declara.
+      for (const w of words.slice(i + 1)) if (ASSIGNMENT_RE.test(w)) scanShellValueAssignment(w, depth, out, env);
+      return;
+    }
     if (name === "find") {
       findExecCommands(words, i + 1, depth, out, env);
       return;
@@ -682,6 +723,7 @@ function mergeArgsOf(words, depth, out, env) {
         continue;
       }
       if (wrapper.assignments && ASSIGNMENT_RE.test(w)) {
+        scanShellValueAssignment(w, depth, out, env); // #11513: `env GIT_EDITOR=… git commit`
         i++;
         continue;
       }
@@ -1347,11 +1389,19 @@ const VAR_REF = String.raw`\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\
 // NODE_OPTIONS, BASH_ENV, ENV, IFS, SHELL, CDPATH) nunca casam, e (2) com
 // atribuição presente o único consumidor aceito é `gh (pr|issue) …
 // --body-file` (`catTail(true)`), nunca `git commit` nem `npx tsx`.
-const SAFE_ASSIGN_NAME = String.raw`(?!(?:GIT_|GH_|LD_)|(?:EDITOR|VISUAL|PATH|HOME|NODE_OPTIONS|BASH_ENV|ENV|IFS|SHELL|CDPATH)=)[A-Za-z_][A-Za-z0-9_]*`;
+// #11516: também BROWSER/PAGER (o gh abre `$BROWSER <url>` em `--web`) e
+// XDG_* (`XDG_CONFIG_HOME` muda o `config.yml` do gh, que define editor,
+// navegador, pager e aliases).
+const SAFE_ASSIGN_NAME = String.raw`(?!(?:GIT_|GH_|LD_|XDG_)|(?:EDITOR|VISUAL|PATH|HOME|NODE_OPTIONS|BASH_ENV|ENV|IFS|SHELL|CDPATH|BROWSER|PAGER)=)[A-Za-z_][A-Za-z0-9_]*`;
 const ASSIGN_PREFIX = `(?:${SAFE_ASSIGN_NAME}=${SIMPLE_ARG}(?:; | && ))+`;
 const VAR_TEXT_FILE = String.raw`(?:(?:[A-Za-z0-9_./:@=+,%-]|${VAR_REF})+\.(?:md|txt)|"(?:[^"$\x60\\\n]|${VAR_REF})*\.(?:md|txt)"|'[^'\n]*\.(?:md|txt)')`;
 const VAR_ARG = String.raw`(?:(?:[A-Za-z0-9_./:@=+,%-]|${VAR_REF})+|"(?:[^"$\x60\\\n]|${VAR_REF})*"|'[^'\n]*')`;
 const VAR_ARGS = `(?: ${VAR_ARG})*`;
+// #11516: argumentos do consumidor `gh` da whitelist — sem `--web`/`-w` (o gh
+// executa `$BROWSER <url>`) nem `--editor`/`-e` (executa `$GH_EDITOR`/
+// `$EDITOR`), inclusive em cluster de flags curtas (`-we`) ou entre aspas.
+const GH_ARG = String.raw`(?!["']?(?:--web\b|--editor\b|-[A-Za-z]*[we]))${VAR_ARG}`;
+const GH_ARGS = `(?: ${GH_ARG})*`;
 const HEAD_FORMS = [
   // git commit [flags] -F - <<'D' [&& git push ...]  →  depois do D, nada.
   { re: new RegExp(`^${CD_PREFIX}git commit${ARGS} -F - <<${DELIM}${GIT_PUSH}$`), tail: /^\s*$/ },
@@ -1393,9 +1443,9 @@ const HEAD_FORMS = [
  */
 function catTail(afterAssign) {
   const consumer = afterAssign
-    ? `gh (?:pr|issue) (?:comment|create|edit)${VAR_ARGS} --body-file${VAR_ARGS}`
-    : `(?:npx tsx scripts/gh-pr-review-api\\.ts|npx tsx scripts/lib/gh-pr-safe-edit\\.ts|` +
-      `gh (?:pr|issue) (?:comment|create|edit))${VAR_ARGS}|git commit${VAR_ARGS}${GIT_PUSH}`;
+    ? `gh (?:pr|issue) (?:comment|create|edit)${GH_ARGS} --body-file${GH_ARGS}`
+    : `(?:npx tsx scripts/gh-pr-review-api\\.ts|npx tsx scripts/lib/gh-pr-safe-edit\\.ts)${VAR_ARGS}|` +
+      `gh (?:pr|issue) (?:comment|create|edit)${GH_ARGS}|git commit${VAR_ARGS}${GIT_PUSH}`;
   return new RegExp(`^\\s*(?:${CD_PREFIX}(?:${consumer})\\s*)?$`);
 }
 
