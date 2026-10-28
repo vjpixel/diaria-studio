@@ -156,9 +156,16 @@
  * aplicado depois dos três seletores — nunca remove com working tree suja,
  * mesmo aqui.
  *
+ * **Extensão #11446 — `selectPushedCleanForRemoval`, quarto seletor.**
+ * Worktree com HEAD inteiro em alguma ref remota, árvore limpa e parado há
+ * 3h ou mais sai também, mesmo sem PR mergeada (rodada 261027e: disco do
+ * `300` em 100% com 150 worktrees, 108 deles nessa situação). Branch com PR
+ * aberta fica de fora, a não ser com `--reclaim-open-pr`, que só o guard de
+ * disco (`scripts/check-disk-space-guard.ts`) passa quando falta espaço.
+ *
  * Uso:
  *   npx tsx scripts/cleanup-merged-worktrees.ts [--dry-run] [--root <repoRoot>]
- *       [--confirm-shared] [--session-id <id>]
+ *       [--confirm-shared] [--session-id <id>] [--reclaim-open-pr]
  *
  * `--session-id` (#7304) é injetado por `.claude/hooks/inject-session-id.mjs`
  * e faz a sessão chamadora não se contar como "outra sessão ativa" ao decidir
@@ -490,9 +497,131 @@ export function selectAbandonedForRemoval(
   return result;
 }
 
+/** 3 horas: idade mínima de um worktree "já enviado" (#11446) antes de virar
+ * candidato a remoção. Folga para uma unidade da onda corrente que acabou de
+ * dar push e ainda vai receber o fixer no mesmo worktree. */
+export const PUSHED_CLEAN_MIN_AGE_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * #11446 — quarto seletor: worktree cujo HEAD já está inteiro em alguma ref
+ * remota (`isHeadOnRemote`, ou seja, nenhum commit local que não tenha ido
+ * para o GitHub) e sem atividade há pelo menos `minAgeMs`.
+ *
+ * Origem: na rodada 261027e o disco do `300` chegou a 100% com 150 worktrees
+ * (54 GB). Os três seletores anteriores liberaram só 4,6 GB; 108 worktrees
+ * limpos com HEAD em branch remota tiveram de ser removidos à mão. Nenhum
+ * deles cabia nos critérios existentes: a PR ainda não tinha mergeado, ou a
+ * branch era um `worktree-agent-*` parado em `origin/master`, sem PR nenhuma.
+ *
+ * Por que é seguro: tudo que o worktree tem de versionado já existe no
+ * remoto, e o guard de sujeira (`filterOutDirtyWorktrees`, #7304) continua
+ * como último filtro, então trabalho não commitado nunca é removido. Quem
+ * precisar do worktree de novo recria com `git worktree add` a partir da
+ * branch remota.
+ *
+ * `includeOpenPr` (default `false`): branch com PR aberta fica de fora no
+ * modo normal, porque o coordenador pode reusar aquele worktree no fixer. O
+ * guard de disco (`scripts/check-disk-space-guard.ts`) liga a opção quando o
+ * espaço livre está abaixo do limiar: aí o disco cheio custa mais que
+ * recriar o worktree do fixer.
+ *
+ * Fail-soft na direção segura: `isHeadOnRemote` indeterminado deve devolver
+ * `false`; `getLastActivityMs` indeterminado (`null`) nunca seleciona.
+ * Worktree `locked` e em uso por sessão ativa já saíram antes, em `main()`.
+ */
+export function selectPushedCleanForRemoval(
+  entries: WorktreeEntry[],
+  alreadySelected: WorktreeEntry[],
+  isHeadOnRemote: (path: string) => boolean,
+  getLastActivityMs: (path: string) => number | null,
+  hasOpenPr: (branch: string) => boolean,
+  nowMs: number,
+  options: { minAgeMs?: number; includeOpenPr?: boolean } = {},
+): WorktreeEntry[] {
+  const minAgeMs = options.minAgeMs ?? PUSHED_CLEAN_MIN_AGE_MS;
+  const includeOpenPr = options.includeOpenPr ?? false;
+  const alreadyPaths = new Set(alreadySelected.map((e) => e.path));
+  const result: WorktreeEntry[] = [];
+  for (const e of entries) {
+    if (alreadyPaths.has(e.path)) continue;
+    const lastActivityMs = getLastActivityMs(e.path);
+    if (lastActivityMs === null) continue;
+    if (nowMs - lastActivityMs < minAgeMs) continue;
+    if (!isHeadOnRemote(e.path)) continue;
+    if (!includeOpenPr && e.branch !== null && hasOpenPr(e.branch)) continue;
+    result.push(e);
+  }
+  return result;
+}
+
 // ─── I/O real (fail-soft) ────────────────────────────────────────────────
 
 const GH_TIMEOUT_MS = 10_000;
+
+/**
+ * #11446 — `git rev-list -n 1 HEAD --not --remotes` no worktree: saída vazia
+ * quer dizer que todo commit alcançável do HEAD já está em alguma ref remota
+ * (branch da PR, `origin/master`). Qualquer falha (diretório sumiu, git
+ * falhou, timeout) devolve `false`: sem confirmação, não remove.
+ */
+export function isHeadOnRemoteSafe(path: string): boolean {
+  try {
+    if (!existsSync(path)) return false;
+    const result = spawnSync("git", ["rev-list", "-n", "1", "HEAD", "--not", "--remotes"], {
+      cwd: path,
+      encoding: "utf8",
+      timeout: GH_TIMEOUT_MS,
+    });
+    if (result.status !== 0) return false;
+    return (result.stdout ?? "").trim() === "";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #11446 — última atividade conhecida do worktree, em ms: o maior entre o
+ * mtime do diretório, o mtime de `HEAD` e de `logs/HEAD` no gitdir do
+ * worktree (mudam a cada commit/checkout) e a data do commit do HEAD. Pegar o
+ * MAIOR deixa o worktree mais jovem, o lado seguro. `null` quando nenhum dos
+ * sinais pôde ser lido.
+ *
+ * O `index` fica de fora de propósito: o `git status` do guard de sujeira
+ * reescreve o index e faria todo worktree parecer recém-usado.
+ */
+export function getWorktreeLastActivityMsSafe(path: string): number | null {
+  const samples: number[] = [];
+  const dirMtime = getWorktreeMtimeMsSafe(path);
+  if (dirMtime !== null) samples.push(dirMtime);
+  try {
+    if (existsSync(path)) {
+      const gitDir = spawnSync("git", ["rev-parse", "--absolute-git-dir"], {
+        cwd: path,
+        encoding: "utf8",
+        timeout: GH_TIMEOUT_MS,
+      });
+      if (gitDir.status === 0) {
+        const dir = (gitDir.stdout ?? "").trim();
+        for (const f of [join(dir, "HEAD"), join(dir, "logs", "HEAD")]) {
+          const m = getWorktreeMtimeMsSafe(f);
+          if (m !== null) samples.push(m);
+        }
+      }
+      const commit = spawnSync("git", ["log", "-1", "--format=%ct", "HEAD"], {
+        cwd: path,
+        encoding: "utf8",
+        timeout: GH_TIMEOUT_MS,
+      });
+      if (commit.status === 0) {
+        const seconds = Number((commit.stdout ?? "").trim());
+        if (Number.isFinite(seconds) && seconds > 0) samples.push(seconds * 1000);
+      }
+    }
+  } catch {
+    // fail-soft: fica com o que já foi lido
+  }
+  return samples.length > 0 ? Math.max(...samples) : null;
+}
 
 /**
  * `gh pr list --head {branch} --state merged` — retorna true só se a chamada
@@ -1014,11 +1143,19 @@ export function runMainWithCheckers(
     removeWorktree: (path: string, processes: ProcessInfo[]) => { ok: boolean; error?: string };
     removeWorktreeDir: (path: string) => { dirRemoved: boolean; errors: string[] };
     findHusks: (worktreesDir: string, tracked: Set<string>) => string[];
+    /** #11446 — opcionais: sem os dois, o seletor de worktree já enviado
+     *  fica desligado (comportamento anterior). `main()` passa os reais. */
+    isHeadOnRemote?: (path: string) => boolean;
+    lastActivityMs?: (path: string) => number | null;
     nowMs?: number;
   },
 ): void {
   const dryRun = args["dry-run"] === "true";
   const confirmShared = args["confirm-shared"] === "true";
+  // #11446: `--reclaim-open-pr` inclui no seletor de worktree já enviado as
+  // branches com PR aberta. Só o guard de disco passa a flag, com o espaço
+  // livre abaixo do limiar.
+  const reclaimOpenPr = args["reclaim-open-pr"] === "true";
   // #7304: injetado por `.claude/hooks/inject-session-id.mjs`; ausente numa
   // invocação manual, e aí o comportamento é o de antes (nada é excluído).
   const ownSessionId = args["session-id"] ? String(args["session-id"]) : undefined;
@@ -1102,12 +1239,26 @@ export function runMainWithCheckers(
       checkers.hasOpenPr,
       checkers.nowMs ?? Date.now(),
     );
+    // #11446: worktree com HEAD inteiro no remoto e parado há >= 3h — ver
+    // docblock de `selectPushedCleanForRemoval`.
+    const pushedCleanRemoval =
+      checkers.isHeadOnRemote && checkers.lastActivityMs
+        ? selectPushedCleanForRemoval(
+            candidates,
+            [...mergedRemovalEffective, ...orphanedStaleRemoval, ...abandonedRemoval],
+            checkers.isHeadOnRemote,
+            checkers.lastActivityMs,
+            checkers.hasOpenPr,
+            checkers.nowMs ?? Date.now(),
+            { includeOpenPr: reclaimOpenPr },
+          )
+        : [];
     // #7304: último filtro, depois de toda a elegibilidade por histórico —
     // worktree com trabalho não-commitado nunca é removido, mesmo com branch
-    // mergeada, mesmo órfão+stale, mesmo abandonado. Ver docblock de
-    // `filterOutDirtyWorktrees`.
+    // mergeada, mesmo órfão+stale, mesmo abandonado, mesmo já enviado
+    // (#11446). Ver docblock de `filterOutDirtyWorktrees`.
     const { kept: toRemove, skipped: dirtySkipped } = filterOutDirtyWorktrees(
-      [...mergedRemovalEffective, ...orphanedStaleRemoval, ...abandonedRemoval],
+      [...mergedRemovalEffective, ...orphanedStaleRemoval, ...abandonedRemoval, ...pushedCleanRemoval],
       checkers.isWorktreeDirty,
     );
 
@@ -1116,7 +1267,9 @@ export function runMainWithCheckers(
         `${mergedRemovalEffective.length} com PR mergeada confirmada (sem PR aberta, #8792), ` +
         `${mergedOpenPrSkipped.skipped.length} com PR mergeada MAS PR aberta na branch (preservados, #8792), ` +
         `${orphanedStaleRemoval.length} órfão(s) parado(s) há mais de 7 dias (#5418), ` +
-        `${abandonedRemoval.length} abandonado(s) — issue fechada há mais de 14 dias (#7650).`,
+        `${abandonedRemoval.length} abandonado(s) — issue fechada há mais de 14 dias (#7650), ` +
+        `${pushedCleanRemoval.length} já enviado(s) — HEAD no remoto, parado há 3h ou mais` +
+        `${reclaimOpenPr ? ", incluindo PR aberta" : ""} (#11446).`,
     );
 
     if (mergedOpenPrSkipped.skipped.length > 0) {
@@ -1150,7 +1303,9 @@ export function runMainWithCheckers(
         ? "branch mergeada"
         : orphanedStaleRemoval.includes(entry)
           ? "órfão + stale (#5418)"
-          : "abandonado + issue fechada (#7650)";
+          : abandonedRemoval.includes(entry)
+            ? "abandonado + issue fechada (#7650)"
+            : "já enviado + parado há 3h (#11446)";
       if (dryRun) {
         console.log(`[cleanup-merged-worktrees] (dry-run) removeria: ${entry.path} (branch ${entry.branch}, motivo: ${reason})`);
         continue;
@@ -1212,7 +1367,17 @@ function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
   const repoRoot = args.root ? resolve(String(args.root)) : ROOT;
+  runCleanupWithRealCheckers(args, repoRoot);
+}
+
+/**
+ * #11446 — a varredura com os checkers reais, exportada para o guard de disco
+ * (`scripts/check-disk-space-guard.ts`) rodar a limpeza no mesmo processo.
+ */
+export function runCleanupWithRealCheckers(args: Record<string, string>, repoRoot: string): void {
   runMainWithCheckers(args, repoRoot, {
+    isHeadOnRemote: (path) => isHeadOnRemoteSafe(path),
+    lastActivityMs: (path) => getWorktreeLastActivityMsSafe(path),
     isMerged: (branch) => checkBranchMergedViaGh(branch, repoRoot),
     hasOpenPr: (branch) => checkBranchHasOpenPrViaGh(branch, repoRoot),
     branchExistsLocally: (branch) => checkBranchExistsLocally(branch, repoRoot),
