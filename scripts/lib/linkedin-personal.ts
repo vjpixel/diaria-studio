@@ -68,9 +68,6 @@ export const MAX_FIRE_LATENESS_MS = 3 * 60 * 60 * 1000;
 /** Intenção `posting`/`send_unknown` há mais que isso = presa (alarme). */
 export const STUCK_AFTER_MS = 60 * 60 * 1000;
 
-/** Janela de varredura do alarme sobre as intenções das edições. */
-export const ALARM_SCAN_DAYS = 7;
-
 /** Timeout de cada chamada HTTP — sem isso um socket pendurado segura a task. */
 export const HTTP_TIMEOUT_MS = 30_000;
 

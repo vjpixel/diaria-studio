@@ -11,10 +11,13 @@
  *      token é renovado): > 14 dias = nada; ≤ 14 = P2; ≤ 3 (inclui < 24h) ou
  *      expirado = P1; `EXPIRES_AT` ausente/ilegível = P2; `GET /v2/userinfo`
  *      com 401/403 = P1 "token revogado". Token nunca configurado = sem
- *      alarme (o lembrete manual do Stage 6 é o modo legítimo).
- *   2. Intenções das edições dos últimos 7 dias (`evaluatePersonalIntents`,
- *      família `evento`): `posting`/`send_unknown` há mais de 1h, `armed`
- *      vencido há mais de 3h, `armed` sem token nesta máquina.
+ *      alarme.
+ *   2. (APOSENTADO, #11398) Intenções das edições dos últimos 7 dias
+ *      (`evaluatePersonalIntents`). O post diário no perfil pessoal saiu do
+ *      Stage 6 e a task não dispara mais `--fire-due`: uma intenção `armed`
+ *      que sobrou (ex.: 261028, armada antes da mudança) viraria um P1 falso
+ *      "armado e não disparado". O token segue alarmado porque o vertical
+ *      (`publish-shorts.ts`) usa o mesmo app pessoal.
  *
  * Uso:
  *   npx tsx scripts/linkedin-personal-token-alarm.ts            # avalia + cria/reusa/fecha issue
@@ -22,13 +25,11 @@
  *
  * Estado: `data/linkedin-personal-token-alarm-issues.json`.
  */
-import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { editionDir } from "./lib/edition-paths.ts";
 import {
   applyAlarmReconciliation,
   loadAlarmIssuesState,
@@ -36,15 +37,10 @@ import {
   saveAlarmIssuesState,
 } from "./lib/alarm-issues.ts";
 import {
-  ALARM_SCAN_DAYS,
   LINKEDIN_PERSONAL_ENV,
-  PERSONAL_INTENT_FILE,
-  aammddBrt,
   checkTokenRemote,
-  evaluatePersonalIntents,
   evaluateTokenExpiry,
   tokenAlarmFreezeOnUnknownRemote,
-  type PersonalPostIntent,
 } from "./lib/linkedin-personal.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,22 +51,6 @@ const LOG_PREFIX = "[linkedin-personal-token-alarm]";
  * pra issue de token revogado — ver `tokenAlarmFreezeOnUnknownRemote`. */
 export const CLOSE_AFTER_RUNS = 1;
 
-/** Intenções legíveis das edições dos últimos `ALARM_SCAN_DAYS` dias (BRT). */
-export function readRecentIntents(rootDir: string, now: Date, days = ALARM_SCAN_DAYS): PersonalPostIntent[] {
-  const out: PersonalPostIntent[] = [];
-  for (let i = 0; i <= days; i++) {
-    const aammdd = aammddBrt(new Date(now.getTime() - i * 24 * 60 * 60 * 1000));
-    const p = resolve(rootDir, editionDir(aammdd), "_internal", PERSONAL_INTENT_FILE);
-    if (!existsSync(p)) continue;
-    try {
-      out.push(JSON.parse(readFileSync(p, "utf8")) as PersonalPostIntent);
-    } catch (e) {
-      console.error(`${LOG_PREFIX} ${p} ilegível: ${(e as Error).message}`);
-    }
-  }
-  return out;
-}
-
 async function main(): Promise<number> {
   loadProjectEnv(ROOT);
   const now = new Date();
@@ -78,7 +58,8 @@ async function main(): Promise<number> {
   const remote = token ? await checkTokenRemote(fetch, token) : null;
   if (remote?.state === "unknown") console.warn(`${LOG_PREFIX} não consegui checar o token na LinkedIn: ${remote.reason}`);
   const tokenFinding = evaluateTokenExpiry(process.env, now, remote);
-  const findings = [...(tokenFinding ? [tokenFinding] : []), ...evaluatePersonalIntents(readRecentIntents(ROOT, now), process.env, now)];
+  // Só o token (#11398): intenções do post pessoal não são mais avaliadas.
+  const findings = tokenFinding ? [tokenFinding] : [];
   console.log(`${LOG_PREFIX} ${findings.length === 0 ? "nada a alarmar" : findings.map((f) => f.title).join(" | ")}`);
   const state = loadAlarmIssuesState(STATE_PATH);
   const allowlist = tokenAlarmFreezeOnUnknownRemote(remote, state);
