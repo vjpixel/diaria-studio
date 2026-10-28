@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   selectPushedCleanForRemoval,
+  isAutonomousWorktreeBranch,
   PUSHED_CLEAN_MIN_AGE_MS,
   runMainWithCheckers,
   isHeadOnRemoteSafe,
@@ -96,7 +97,7 @@ test("seletor: limite exato de 3h já conta", () => {
 
 // ── wiring em runMainWithCheckers (cenário real da issue) ──
 
-function runScenario(opts: { reclaimOpenPr?: boolean; dirty?: Set<string> }) {
+function runScenario(opts: { reclaimOpenPr?: boolean; dirty?: Set<string>; extra?: WorktreeEntry[] }) {
   const main: WorktreeEntry = { path: "/repo", branch: "master", locked: false };
   const agent = wt("agent-old", "worktree-agent-old"); // parado em origin/master, sem PR
   const prOpen = wt("fix-9-x", "overnight/fix-9-x"); // PR aberta, já enviado
@@ -113,7 +114,7 @@ function runScenario(opts: { reclaimOpenPr?: boolean; dirty?: Set<string> }) {
       hasOpenPr: (b) => b === "overnight/fix-9-x",
       branchExistsLocally: () => true,
       issueClosedAtMs: () => null,
-      listWorktrees: () => [main, agent, prOpen, unpushed],
+      listWorktrees: () => [main, agent, prOpen, unpushed, ...(opts.extra ?? [])],
       listActiveSessions: () => ({ sessions: [], readable: true }),
       listProcesses: () => [],
       isWorktreeDirty: (p) => opts.dirty?.has(p) ?? false,
@@ -148,6 +149,44 @@ test("main: worktree sujo nunca sai, mesmo já enviado e sob pressão", () => {
   const dirtyPath = "/repo/.claude/worktrees/agent-old";
   const r = runScenario({ reclaimOpenPr: true, dirty: new Set([dirtyPath]) });
   assert.ok(!r.removed.includes(dirtyPath));
+});
+
+// ── #11458: no modo normal o 4º seletor só pega worktree de rodada autônoma ──
+
+test("isAutonomousWorktreeBranch: worktree-agent-* e overnight/* sim; editor, develop/ e HEAD destacado não", () => {
+  assert.equal(isAutonomousWorktreeBranch("worktree-agent-a7b2"), true);
+  assert.equal(isAutonomousWorktreeBranch("overnight/fix-1-x"), true);
+  assert.equal(isAutonomousWorktreeBranch("overnight/batch-y"), true);
+  assert.equal(isAutonomousWorktreeBranch("develop/fix-1"), false);
+  assert.equal(isAutonomousWorktreeBranch("minha-investigacao"), false);
+  assert.equal(isAutonomousWorktreeBranch("master"), false);
+  assert.equal(isAutonomousWorktreeBranch(null), false);
+});
+
+test("seletor com autonomousOnly: worktree parado do editor fica, o do agente sai", () => {
+  const editor = wt("investigacao", "minha-investigacao");
+  const agent = wt("agent-z", "worktree-agent-z");
+  const sel = selectPushedCleanForRemoval([editor, agent], [], () => true, () => NOW - 10 * HOUR, () => false, NOW, {
+    autonomousOnly: true,
+  });
+  assert.deepEqual(sel.map((e) => e.path), [agent.path]);
+});
+
+test("main (cenário da #11458): worktree do editor em origin/master parado há 5h NÃO sai no modo normal; sai sob --reclaim-open-pr", () => {
+  const editorOnMaster = wt("editor-wt", "editor-wt"); // parado em origin/master
+  const editorPushed = wt("develop-fix-7", "develop/fix-7"); // branch empurrada sem PR
+  const detached: WorktreeEntry = { path: "/repo/.claude/worktrees/detached", branch: null, locked: false };
+  const extra = [editorOnMaster, editorPushed, detached];
+
+  const normal = runScenario({ extra });
+  assert.deepEqual(normal.removed, [normal.agent.path], "modo normal: só o worktree-agent-* sai");
+
+  const pressure = runScenario({ reclaimOpenPr: true, extra });
+  assert.deepEqual(
+    pressure.removed.sort(),
+    [pressure.agent.path, pressure.prOpen.path, editorOnMaster.path, editorPushed.path, detached.path].sort(),
+    "guard de disco: qualquer branch limpa e enviada sai",
+  );
 });
 
 test("main sem os checkers novos: comportamento anterior (nada sai por este seletor)", () => {
