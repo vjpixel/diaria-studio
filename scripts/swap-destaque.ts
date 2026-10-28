@@ -105,6 +105,7 @@ import { ALL_SECTION_NAMES_PATTERN, sectionHeaderRegex } from "./lib/section-nam
 import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
 import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
 import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts"; // #9961
+import { urlsMatch } from "./lib/url-utils.ts"; // #11497
 import {
   replaceTitleInTituloSubtitulo,
   tituloPendingPath,
@@ -796,6 +797,59 @@ export function swapInApprovedJson(
 }
 
 /**
+ * #11497: posição do item com a URL dada no bucket `bucket` de um approved
+ * (comparação por URL canônica, `urlsMatch`). -1 se o bucket não existe ou não
+ * tem o item. O `--promote bucket:idx` vale para `01-approved.json`; o
+ * `01-approved-capped.json` tem o mesmo bucket com outro tamanho e outra ordem
+ * (edição 261029: radar com 77 itens num, 5 no outro), então o índice do
+ * capped sai daqui, pela URL, nunca reaproveitado.
+ *
+ * @pure
+ */
+export function findBucketIndexByUrl(
+  data: Record<string, unknown>,
+  bucket: string,
+  url: string,
+): number {
+  const items = data[bucket];
+  if (!Array.isArray(items) || !url) return -1;
+  return (items as unknown[]).findIndex(
+    (it) => it !== null && typeof it === "object" && urlsMatch(extractUrl(it as Record<string, unknown>), url),
+  );
+}
+
+/**
+ * #11497: divergências de `highlights[]` entre os dois approved depois do
+ * swap — uma linha por posição com URL diferente (comparação canônica) e uma
+ * para tamanho diferente. Lista vazia = os dois arquivos concordam.
+ *
+ * @pure
+ */
+export function highlightUrlDivergence(
+  approved: Record<string, unknown>,
+  capped: Record<string, unknown>,
+): string[] {
+  const urls = (d: Record<string, unknown>): string[] =>
+    Array.isArray(d.highlights)
+      ? (d.highlights as unknown[]).map((h) =>
+          h !== null && typeof h === "object" ? extractUrl(h as Record<string, unknown>) : "",
+        )
+      : [];
+  const a = urls(approved);
+  const c = urls(capped);
+  const out: string[] = [];
+  if (a.length !== c.length) {
+    out.push(`highlights[] tem ${a.length} itens em 01-approved.json e ${c.length} em 01-approved-capped.json`);
+  }
+  for (let i = 0; i < Math.min(a.length, c.length); i++) {
+    if (!a[i] || !c[i] || !urlsMatch(a[i], c[i])) {
+      out.push(`D${i + 1}: 01-approved.json = ${a[i] || "(sem URL)"} | 01-approved-capped.json = ${c[i] || "(sem URL)"}`);
+    }
+  }
+  return out;
+}
+
+/**
  * #2521 Bug 1: fallback de sincronização do 01-approved-capped.json quando
  * `swapInApprovedJson` falha no capped (bucket ausente/curto). Espelha a lógica
  * do approved.json: troca highlights[demotePos] pelo promovido e — se `--drop`
@@ -1165,6 +1219,17 @@ function main(): void {
           ...result,
           dry_run_plan: {
             approved_json: `highlights[${demotePos}] ← ${promote.bucket}[${promote.idx}] ("${promotedTitle}")`,
+            ...(approvedCappedData
+              ? {
+                  // #11497: no capped o item é localizado pela URL, não pelo índice.
+                  approved_capped_json: (() => {
+                    const i = findBucketIndexByUrl(approvedCappedData, promote.bucket, promotedUrl);
+                    return i >= 0
+                      ? `highlights[${demotePos}] ← ${promote.bucket}[${i}] (mesma URL)`
+                      : `highlights[${demotePos}] ← item do 01-approved.json (URL ausente do bucket "${promote.bucket}" no capped)`;
+                  })(),
+                }
+              : {}),
             demoted_item: drop ? `descartado` : `devolvido a ${demoteTo}[0] (flat, #9601)`,
             social_hash: "NÃO regravado (#9169) — recarimbar via refresh-social-hash.ts depois do splice do social",
             md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder; item promovido sai da seção de pool (seção esvaziada sai junto), TÍTULO/SUBTÍTULO e contagem da intro re-sincronizados (#9601)`,
@@ -1204,25 +1269,32 @@ function main(): void {
     { path: approvedPath, content: JSON.stringify(approvedData, null, 2) + "\n" },
   ];
 
-  // 2. Mutate 01-approved-capped.json (highlights[] only — same position swap)
+  // 2. Mutate 01-approved-capped.json (same position swap in highlights[])
   if (approvedCappedData) {
-    const cappedSwap = swapInApprovedJson(
-      approvedCappedData,
-      promote.bucket,
-      // For capped JSON, the promoted item might not be in the bucket (it caps items).
-      // We try; if the bucket is absent/short, we skip the bucket mutation but still
-      // swap the highlights[] slot with the same promoted item from approved.json.
-      promote.idx,
-      demotePos,
-      drop,
-      demoteTo,
-    );
-    if (!cappedSwap.ok) {
-      // #2521: capped JSON pode ter o bucket ausente/curto — espelhar o swap via
+    // #11497: o índice do `--promote` é do 01-approved.json. No capped o bucket
+    // tem outro tamanho e outra ordem, então o item é localizado pela URL do
+    // promovido — reaproveitar o índice promovia OUTRA matéria no capped (que é
+    // o que o writer-destaque lê), sem nada acusar.
+    const cappedIdx = findBucketIndexByUrl(approvedCappedData, promote.bucket, promotedUrl);
+    const cappedSwap =
+      cappedIdx >= 0
+        ? swapInApprovedJson(approvedCappedData, promote.bucket, cappedIdx, demotePos, drop, demoteTo)
+        : null;
+    let cappedSynced = cappedSwap?.ok === true;
+    if (!cappedSynced) {
+      // Item ausente do bucket no capped (o capped corta itens), ou bucket
+      // ausente/curto (#2521): espelhar o swap com o item do 01-approved.json via
       // helper testável (mirrorCappedSwapFallback). Fail-loud se highlights[] for
-      // curto demais pro demotePos (slot inexistente) — avisa em vez de gravar
-      // capped divergente em silêncio.
-      const { warning } = mirrorCappedSwapFallback(
+      // curto demais pro demotePos (slot inexistente).
+      if (cappedIdx < 0) {
+        console.error(
+          `AVISO: "${promotedTitle}" (${promotedUrl}) não está no bucket "${promote.bucket}" de ` +
+            `01-approved-capped.json — o destaque do capped recebe o item do 01-approved.json (#11497).`,
+        );
+        // Cópia do promovido em outro bucket do capped sairia duplicada (destaque + pool).
+        removeUrlFromPoolBuckets(approvedCappedData, promotedUrl);
+      }
+      const mirrored = mirrorCappedSwapFallback(
         approvedCappedData,
         promote.bucket,
         demotePos,
@@ -1230,7 +1302,20 @@ function main(): void {
         promotedItem,
         demoteTo,
       );
-      if (warning) console.error(`AVISO: ${warning}`);
+      if (mirrored.warning) console.error(`AVISO: ${mirrored.warning}`);
+      cappedSynced = mirrored.synced;
+    }
+    // #11497: com o capped sincronizado, os dois highlights[] têm que bater em
+    // URL e posição. Divergência aborta antes de gravar qualquer arquivo.
+    if (cappedSynced) {
+      const divergence = highlightUrlDivergence(approvedData, approvedCappedData);
+      if (divergence.length > 0) {
+        console.error(
+          `Erro: depois do swap, highlights[] de 01-approved.json e 01-approved-capped.json divergem ` +
+            `(#11497) — nada foi gravado:\n  ${divergence.join("\n  ")}`,
+        );
+        process.exit(1);
+      }
     }
     pendingWrites.push({
       path: approvedCappedPath,
