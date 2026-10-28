@@ -27,7 +27,9 @@
  *
  * Lock O_EXCL em `_internal/.shorts-linkedin-timer.lock` (lock com mais de
  * 90 min é tratado como resto de um processo morto): a task diária e a de
- * hora em hora nunca publicam juntas.
+ * hora em hora nunca publicam juntas. Antes de baixar do Drive, recua se o
+ * timer do Threads pessoal (que baixa o mesmo vertical) está no meio de uma
+ * execução ou se há `.part` fresco (#11432).
  *
  * Uso: npx tsx scripts/shorts-linkedin-profile-timer.ts [--edition AAMMDD] [--dry-run]
  *   --dry-run: decide e imprime os comandos, sem rodar nenhum.
@@ -45,10 +47,40 @@ import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { aammddBrt } from "./lib/linkedin-personal.ts";
 import { SHORTS_PUBLISHED_FILE, loadShortsConfig, parseShortsPublishedFile, shortVideoFileName } from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
+import {
+  SHORTS_LINKEDIN_TIMER_LOCK_FILE,
+  SHORTS_THREADS_TIMER_LOCK_FILE,
+  SHORTS_TIMER_LOCK_STALE_MS,
+  verticalDownloadBusy,
+} from "./lib/diaria/vertical-download-guard.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const TIMER_LOCK_FILE = "_internal/.shorts-linkedin-timer.lock";
-export const TIMER_LOCK_STALE_MS = 90 * 60_000;
+export const TIMER_LOCK_FILE = SHORTS_LINKEDIN_TIMER_LOCK_FILE;
+export const TIMER_LOCK_STALE_MS = SHORTS_TIMER_LOCK_STALE_MS;
+
+function mtimeOf(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #11432: o timer do Threads pessoal (#11410) baixa o MESMO vertical. Com o
+ * `.part` fresco ou o lock dele de pé, este timer recua (exit 0, tenta na
+ * próxima execução) em vez de rodar `--from-drive` por cima do download do
+ * outro. Devolve o motivo, ou null. Lê só mtimes do disco.
+ */
+export function linkedinVerticalDownloadBusy(dir: string, videoPath: string, nowMs: number = Date.now()): string | null {
+  return verticalDownloadBusy({
+    partMtimeMs: mtimeOf(`${videoPath}.part`),
+    otherLockMtimeMs: mtimeOf(join(dir, SHORTS_THREADS_TIMER_LOCK_FILE)),
+    otherLabel: "Threads pessoal",
+    otherLockFile: SHORTS_THREADS_TIMER_LOCK_FILE,
+    nowMs,
+  });
+}
 
 export type TimerDecision =
   | { kind: "skip"; reason: string }
@@ -176,6 +208,11 @@ async function main(): Promise<number> {
   try {
     const publishArgs = ["scripts/publish-shorts.ts", aammdd, "--only", "linkedin_profile", "--publish", "--linkedin-timer"];
     if (decision.fromDrive) {
+      const busy = linkedinVerticalDownloadBusy(dir, videoPath);
+      if (busy) {
+        console.log(`[shorts-linkedin-timer] ${aammdd}: ${busy} — tenta de novo na próxima execução`);
+        return 0;
+      }
       const fetchArgs = ["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "vertical", "--edition-dir", dir];
       const r = runTsx(fetchArgs, true);
       const lookup = interpretDriveLookup(r.status, r.stdout);
