@@ -503,13 +503,25 @@ export function selectAbandonedForRemoval(
 /**
  * #11458 — branch de worktree criado por rodada autônoma: `worktree-agent-*`
  * (isolação `worktree` do Agent tool, inclusive o worktree parado em
- * `origin/master` sem PR) ou `overnight/*`. Branch nula (HEAD destacado) ou
- * de outra convenção (`develop/*`, nome livre do editor) é tratada como
+ * `origin/master` sem PR), `overnight/*`, `continuo/*` (`continuo/fix-*` e
+ * `continuo/rescue-*`, loop do Hermes no `300`) ou `merge-train/*` (trem de
+ * merge, #6300) — #11463: sem os dois últimos, os worktrees do contínuo e do
+ * trem só saíam pelo guard de disco (`--reclaim-open-pr`). Branch nula (HEAD
+ * destacado) ou de outra convenção (nome livre do editor) é tratada como
  * possivelmente do editor e fica fora do 4º seletor no modo normal.
+ * `develop/*` fica de fora DE PROPÓSITO: o develop roda com o editor
+ * presente, que pode estar trabalhando no worktree à mão.
  */
+const AUTONOMOUS_WORKTREE_BRANCH_PREFIXES = [
+  "worktree-agent-",
+  "overnight/",
+  "continuo/",
+  "merge-train/",
+] as const;
+
 export function isAutonomousWorktreeBranch(branch: string | null): boolean {
   if (branch === null) return false;
-  return branch.startsWith("worktree-agent-") || branch.startsWith("overnight/");
+  return AUTONOMOUS_WORKTREE_BRANCH_PREFIXES.some((p) => branch.startsWith(p));
 }
 
 /** 3 horas: idade mínima de um worktree "já enviado" (#11446) antes de virar

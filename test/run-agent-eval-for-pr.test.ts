@@ -10,7 +10,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -26,6 +28,7 @@ import {
   checkHeadMatchesPr,
   postComment,
   runEvalsForTriggering,
+  resolveReportsRoot,
   type CommandRunner,
   type CommandRunnerResult,
 } from "../scripts/run-agent-eval-for-pr.ts";
@@ -555,5 +558,51 @@ describe("checkHeadMatchesPr (#9338)", () => {
   });
   it("HEAD igual passa sem aviso, em live e dry-run", () => {
     for (const live of [true, false]) assert.deepEqual(checkHeadMatchesPr("abc123", "abc123", live), { ok: true });
+  });
+});
+
+// ── #11462: relatório vai pro checkout principal, não pro worktree ──
+describe("resolveReportsRoot (#11462)", () => {
+  it("--reports-root explícito vence", () => {
+    const r = resolveReportsRoot({ override: "/tmp/x", worktreeRoot: "/wt", resolveMainRoot: () => "/main" });
+    assert.equal(r.root, resolve("/tmp/x"));
+    assert.equal(r.warning, undefined);
+  });
+  it("sem override, usa o checkout principal resolvido a partir do worktree", () => {
+    const seen: string[] = [];
+    const r = resolveReportsRoot({ worktreeRoot: "/wt", resolveMainRoot: (cwd) => { seen.push(cwd); return "/main"; } });
+    assert.equal(r.root, "/main");
+    assert.deepEqual(seen, ["/wt"]);
+  });
+  it("override vazio não conta como override", () => {
+    assert.equal(resolveReportsRoot({ override: "  ", worktreeRoot: "/wt", resolveMainRoot: () => "/main" }).root, "/main");
+  });
+  it("falha ao resolver cai no worktree com warning, nunca lança", () => {
+    const r = resolveReportsRoot({ worktreeRoot: "/wt", resolveMainRoot: () => { throw new Error("sem git"); } });
+    assert.equal(r.root, "/wt");
+    assert.match(r.warning ?? "", /#11462.*sem git.*--reports-root/);
+  });
+  it("cenário real: num worktree git vinculado, resolve pro checkout principal", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "eval-reports-root-")));
+    try {
+      const main = join(base, "main");
+      const git = (cwd: string, ...args: string[]) => {
+        const res = spawnSync("git", args, { cwd, encoding: "utf8" });
+        assert.equal(res.status, 0, res.stderr);
+      };
+      git(base, "init", "-q", "main");
+      git(main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init");
+      const wt = join(main, ".claude", "worktrees", "agent-x");
+      git(main, "worktree", "add", "-q", "-b", "wt-x", wt);
+      assert.equal(resolveReportsRoot({ worktreeRoot: wt }).root, main);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+  it("main() grava e registra o relatório na raiz resolvida, não em ROOT", () => {
+    const src = readFileSync(join(ROOT, "scripts", "run-agent-eval-for-pr.ts"), "utf8");
+    assert.match(src, /const outDir = resolve\(reportsRoot\.root, "data", "reports", "agent-eval"\)/);
+    assert.match(src, /registerReport\(\s*reportsRoot\.root,/);
+    assert.doesNotMatch(src, /resolve\(ROOT, "data", "reports"/);
   });
 });

@@ -163,6 +163,15 @@ test("isAutonomousWorktreeBranch: worktree-agent-* e overnight/* sim; editor, de
   assert.equal(isAutonomousWorktreeBranch(null), false);
 });
 
+test("#11463: continuo/* e merge-train/* contam como autônomos; develop/* e prefixo parecido não", () => {
+  assert.equal(isAutonomousWorktreeBranch("continuo/fix-11400-x"), true);
+  assert.equal(isAutonomousWorktreeBranch("continuo/rescue-11401"), true);
+  assert.equal(isAutonomousWorktreeBranch("merge-train/261028-1"), true);
+  assert.equal(isAutonomousWorktreeBranch("develop/blast-1"), false);
+  assert.equal(isAutonomousWorktreeBranch("continuo-manual"), false);
+  assert.equal(isAutonomousWorktreeBranch("merge-trainee"), false);
+});
+
 test("seletor com autonomousOnly: worktree parado do editor fica, o do agente sai", () => {
   const editor = wt("investigacao", "minha-investigacao");
   const agent = wt("agent-z", "worktree-agent-z");

@@ -92,6 +92,10 @@
  *   npx tsx scripts/run-agent-eval-for-pr.ts --pr 8200 --live \
  *     --arms claude-sonnet-5-5:low,claude-opus-5-5:low
  *
+ * O relatório (`data/reports/agent-eval/pr-N.md` + `data/reports/index.jsonl`)
+ * é gravado no checkout PRINCIPAL, não no worktree de onde o script roda
+ * (#11462, `resolveReportsRoot`); `--reports-root <path>` sobrepõe.
+ *
  * Sem `--reference-editions`, deriva as `--num-editions` (default 3) mais
  * recentes sob `--editions-dir` (default `data/editions`) que já têm
  * `_internal/01-approved.json` em disco — mesmo espírito de
@@ -110,6 +114,7 @@ import { registerReport } from "./studio-ui/studio-reports.ts";
 import { AGENT_EVAL_LABEL } from "./check-agent-eval-required.ts";
 import { ClaudeCliError, preview } from "./lib/claude-cli-subprocess.ts";
 import { parseArms, type EvalArm } from "./lib/prompt-regression-eval.ts";
+import { resolveRepoRoot } from "./lib/session-registry.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DEFAULT_NUM_EDITIONS = 3;
@@ -516,6 +521,45 @@ export function runEvalsForTriggering(params: RunEvalsForTriggeringParams): Part
 }
 
 // ---------------------------------------------------------------------------
+// Raiz de ESCRITA do relatório (#11462)
+// ---------------------------------------------------------------------------
+
+/**
+ * #11462 — a raiz onde o relatório é GRAVADO (`data/reports/agent-eval/` +
+ * `data/reports/index.jsonl`) não é a mesma raiz de onde o corpo candidato do
+ * agent é LIDO. A pré-condição do script é rodar com o cwd no worktree da PR
+ * (o corpo candidato vem do disco), então `ROOT` aponta pro worktree — e o
+ * relatório ia parar em `.claude/worktrees/.../data/`, invisível pro Studio
+ * (`/relatorios`) e perdido quando o worktree é limpo (achado na PR #11392).
+ *
+ * Ordem: `--reports-root` explícito vence; senão, o checkout principal
+ * resolvido por `git rev-parse --git-common-dir` (`resolveRepoRoot`, o mesmo
+ * `.git` compartilhado por todos os worktrees); se isso falhar, cai no
+ * `worktreeRoot` com warning — o eval já rodou e o relatório em disco ainda
+ * serve de evidência, mesma postura fail-soft do `registerReport` abaixo.
+ */
+export function resolveReportsRoot(params: {
+  override?: string;
+  worktreeRoot: string;
+  resolveMainRoot?: (cwd: string) => string;
+}): { root: string; warning?: string } {
+  if (params.override !== undefined && params.override.trim() !== "") {
+    return { root: resolve(params.override) };
+  }
+  const resolveMain = params.resolveMainRoot ?? resolveRepoRoot;
+  try {
+    return { root: resolveMain(params.worktreeRoot) };
+  } catch (err) {
+    return {
+      root: params.worktreeRoot,
+      warning:
+        `[#11462] não consegui resolver o checkout principal (${err instanceof Error ? err.message : String(err)}) — ` +
+        `relatório gravado sob ${params.worktreeRoot}; passe --reports-root <checkout principal> pra o Studio enxergá-lo.`,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // main()
 // ---------------------------------------------------------------------------
 
@@ -529,7 +573,7 @@ async function main(): Promise<void> {
   const editionsRootDir = resolve(ROOT, values["editions-dir"] ?? "data/editions");
 
   if (!prNumber) {
-    console.error("Uso: run-agent-eval-for-pr.ts --pr <N> [--repetitions N] [--reference-editions AAMMDD,...] [--baseline-ref REF] [--editions-dir path] [--num-editions N] [--arms modelo[:effort],...] [--live]");
+    console.error("Uso: run-agent-eval-for-pr.ts --pr <N> [--repetitions N] [--reference-editions AAMMDD,...] [--baseline-ref REF] [--editions-dir path] [--num-editions N] [--arms modelo[:effort],...] [--reports-root path] [--live]");
     process.exit(2);
     return;
   }
@@ -672,14 +716,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  const outDir = resolve(ROOT, "data", "reports", "agent-eval");
+  const reportsRoot = resolveReportsRoot({ override: values["reports-root"], worktreeRoot: ROOT });
+  if (reportsRoot.warning) console.warn(reportsRoot.warning);
+  const outDir = resolve(reportsRoot.root, "data", "reports", "agent-eval");
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, `pr-${prMeta.number}.md`);
   writeFileSync(outPath, markdown, "utf8");
   const relOutPath = `data/reports/agent-eval/pr-${prMeta.number}.md`;
 
+  console.log(`[#11462] relatório gravado em ${outPath}`);
   const registerResult = registerReport(
-    ROOT,
+    reportsRoot.root,
     { kind: "agent-eval", sessionId: String(prMeta.number), title: `Eval de agent — PR #${prMeta.number} (${triggering.map((t) => t.agent).join(", ")})`, htmlPath: relOutPath },
     undefined,
     false, // #8144: sem e-mail automático — o sinal certo é a label + comentário na própria PR, mesma decisão de "calibration" (#7978)

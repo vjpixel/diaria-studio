@@ -25,6 +25,14 @@
  *   npx tsx scripts/run-merge-train.ts --session-id <uuid> --kind develop --prs 6340,6341,6345
  *   npx tsx scripts/run-merge-train.ts --session-id <uuid> --kind overnight --open
  *   npx tsx scripts/run-merge-train.ts --session-id <uuid> --kind develop --prs 6340,6341 --max-batch-size 3 --ci-timeout-ms 1800000
+ *   npx tsx scripts/run-merge-train.ts --session-id <uuid> --kind overnight --prs 1,2 \
+ *     --resolve-low-severity-threads --report data/overnight/261028/report.md
+ *
+ * `--resolve-low-severity-threads` (#11461): antes de compor os lotes, resolve
+ * as threads de self-review da automação com finding P2/P3 sem confiança alta
+ * (`resolve-review-threads.ts --low-severity-only`); as demais seguram a PR.
+ * `--report <report.md>` (#11461): ao terminar, reconcilia o relatório da
+ * rodada com o estado real das PRs (`reconcile-overnight-report.ts`), fail-soft.
  *
  * Exit codes:
  *   0 = todos os PRs ADMITIDOS no trem terminaram em `merged`/`solo-merged`.
@@ -67,9 +75,14 @@ import {
   partitionRetidoCandidates,
   runMergeTrain,
   trainHasRealFailure,
+  TRAIN_REPO,
   type TrainBatchOutcome,
 } from "./lib/merge-train-live.ts";
 import { logEvent } from "./lib/run-log.ts";
+import { resolveReviewThreads, EXIT_OK as THREADS_EXIT_OK } from "./resolve-review-threads.ts";
+import { reconcileReport, realGhJson } from "./reconcile-overnight-report.ts";
+import { spawnGhSync } from "./lib/shared/gh-run.ts";
+import { dirname, join, resolve as resolvePath } from "node:path";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
 const VALID_KINDS = ["overnight", "develop", "continuo"] as const;
@@ -182,6 +195,57 @@ async function main() {
   // explícito — nunca entra num lote e por isso nunca prende os demais.
   // Sinal ilegível = fail-closed (excluída também) e conta como falha no
   // exit code; retenção de fato é decisão deliberada, não falha.
+  // #11461: com `--report`, o relatório da rodada é reconciliado com o estado
+  // real das PRs no fim do trem — inclusive quando o trem termina depois de a
+  // sessão já ter gravado o `report.md`. Fail-soft: falha aqui só avisa, nunca
+  // muda o exit code do trem (o merge já aconteceu ou não; o relatório é rastro).
+  if (flags.has("report")) {
+    console.error("run-merge-train: --report precisa de valor (caminho do report.md da rodada)");
+    process.exit(2);
+    return;
+  }
+  const reportPath = typeof values.report === "string" ? resolvePath(values.report) : null;
+  const trainedPrs = [...prNumbers];
+  const finish = (code: number): void => {
+    if (reportPath) {
+      const r = reconcileReport({
+        reportPath,
+        planPath: join(dirname(reportPath), "plan.json"),
+        extraPrs: trainedPrs,
+        discover: true,
+        check: false,
+        gh: realGhJson,
+      });
+      (r.exitCode === 0 ? console.log : console.warn)(`run-merge-train: reconcile do relatório (#11461): ${r.message}`);
+    }
+    process.exit(code);
+  };
+
+  // #11461: threads de self-review P2/P3 (sem confiança alta) da automação
+  // travavam o merge sob o ruleset (`required_review_thread_resolution`) numa
+  // rodada desassistida. `--resolve-low-severity-threads` resolve só essas
+  // antes de compor os lotes; P0/P1/confiança alta/sem severidade ficam
+  // abertas e a condição 2 do Gate 2 segura a PR, como sempre.
+  if (flags.has("resolve-low-severity-threads")) {
+    const gh = (args: string[]) => spawnGhSync(args, cwd, 30_000);
+    for (const pr of prNumbers) {
+      const rep = resolveReviewThreads(TRAIN_REPO, pr, gh, null, { lowSeverityOnly: true });
+      console.log(
+        `run-merge-train: threads PR #${pr} (#11461) — resolvidas ${rep.resolved.length}, retidas ${rep.held.length} (P0/P1/confiança alta/sem severidade), do editor ${rep.skipped.length}` +
+          (rep.exitCode === THREADS_EXIT_OK ? "" : ` — exit ${rep.exitCode}${rep.error ? `: ${rep.error}` : ""}`),
+      );
+      for (const f of rep.resolvedFindings) console.log(`    resíduo resolvido ${f.id}: ${f.excerpt}`);
+      logEvent({
+        edition: null,
+        stage: null,
+        agent: kind,
+        level: rep.exitCode === THREADS_EXIT_OK ? "info" : "warn",
+        message: "merge_train_low_severity_threads",
+        details: { pr, resolved: rep.resolved.length, held: rep.held, skipped: rep.skipped, findings: rep.resolvedFindings, exit_code: rep.exitCode },
+      });
+    }
+  }
+
   const { eligible, excluded } = partitionRetidoCandidates(runner, prNumbers);
   for (const ex of excluded) {
     console.log(`run-merge-train: PR #${ex.pr} EXCLUÍDO do trem (${ex.retido === true ? "retido para o editor" : "sinal de retenção ilegível — fail-closed"}): ${ex.reason}`);
@@ -197,7 +261,7 @@ async function main() {
   const retidoReadFailure = excluded.some((ex) => ex.retido === null);
   if (eligible.length === 0) {
     console.log("run-merge-train: nenhum PR elegível após excluir os retidos — nada a mergear.");
-    process.exit(retidoReadFailure ? 1 : 0);
+    finish(retidoReadFailure ? 1 : 0);
     return;
   }
 
@@ -283,7 +347,7 @@ async function main() {
   // `retido-ilegivel` (#10299) conta: sinal ilegível no instante do merge,
   // mesma regra do ilegível da descoberta (`retidoReadFailure`).
   const hasRealFailure = trainHasRealFailure(allOutcomes, retidoReadFailure);
-  process.exit(hasRealFailure ? 1 : 0);
+  finish(hasRealFailure ? 1 : 0);
 }
 
 if (isMainModule(import.meta.url)) {

@@ -36,6 +36,14 @@
  * é o mesmo, então só o marcador separa as duas. `--thread ID,ID` resolve
  * exatamente as listadas (escolha explícita do coordenador).
  *
+ * `--low-severity-only` (#11461) é o passo PRÉ-TREM do overnight: resolve só as
+ * threads da automação cujo finding é P2/P3 sem confiança alta
+ * (`classifyFindingSeverity`), deixa as P0/P1/confiança alta/sem severidade em
+ * `held` (abertas, seguram o merge) e devolve `resolvedFindings` com o trecho
+ * de cada finding resolvido, para o resíduo ir ao relatório ou a uma issue de
+ * follow-up. Sem isso, as threads P3 do self-review travavam o merge sob o
+ * ruleset (`required_review_thread_resolution`) numa rodada desassistida.
+ *
  * Exit:
  *   0 — `--list` ok, ou nenhuma thread bloqueante (`--check` / query fresca)
  *   1 — restou thread bloqueante sem falha de infra (ex.: fora de `--thread`, ou
@@ -84,6 +92,29 @@ export interface ReviewThread {
    * incompleta, thread sem comentário), `false` — nunca resolvida sem `--thread`.
    */
   automated: boolean;
+  /** Corpo do 1º comentário (o finding). `undefined` quando a thread veio sem comentário legível. */
+  rootBody?: string;
+}
+
+/**
+ * #11461 — gravidade declarada no finding de self-review. O self-review do
+ * implementador marca cada finding com confiança (`alta`/`média`/`baixa`) e
+ * severidade (`P0..P3`), ex.: "Confiança média, P3: ...".
+ *
+ * - `high`: P0/P1, ou confiança alta — o merge espera o editor/fixer (CLAUDE.md,
+ *   #5251: finding de alta confiança pendente segura o merge);
+ * - `low`: P2/P3 sem nenhum sinal de `high`;
+ * - `untagged`: nenhuma severidade reconhecível — fail-closed, tratado como
+ *   `high` pelo modo `--low-severity-only` (nunca resolvido às cegas).
+ */
+export type FindingSeverity = "high" | "low" | "untagged";
+
+export function classifyFindingSeverity(body: string | undefined): FindingSeverity {
+  if (typeof body !== "string") return "untagged";
+  if (/(^|[^\w])P[01]([^\w]|$)/.test(body)) return "high";
+  if (/confian[cç]a\s*:?\s*alta/i.test(body)) return "high";
+  if (/(^|[^\w])P[23]([^\w]|$)/.test(body)) return "low";
+  return "untagged";
 }
 
 export type ThreadsParse =
@@ -130,6 +161,7 @@ export function parseThreadsResponse(stdout: string): ThreadsParse {
       isResolved: n.isResolved,
       viewerCanResolve: typeof n.viewerCanResolve === "boolean" ? n.viewerCanResolve : undefined,
       automated: isAutomatedThread(n.comments),
+      rootBody: rootCommentBody(n.comments),
     });
   }
   return { ok: true, threads, hasNextPage };
@@ -141,6 +173,13 @@ export function isAutomatedThread(comments: unknown): boolean {
   if (!c || !Array.isArray(c.nodes) || c.nodes.length === 0) return false;
   if (c.totalCount !== c.nodes.length) return false;
   return (c.nodes as Array<{ body?: unknown }>).every((x) => hasAutoReviewMarker(x?.body));
+}
+
+function rootCommentBody(comments: unknown): string | undefined {
+  const c = comments as { nodes?: unknown } | null | undefined;
+  if (!c || !Array.isArray(c.nodes) || c.nodes.length === 0) return undefined;
+  const body = (c.nodes[0] as { body?: unknown } | null)?.body;
+  return typeof body === "string" ? body : undefined;
 }
 
 /**
@@ -176,6 +215,18 @@ export interface ResolveReport {
   failed: FailedResolve[];
   /** Não resolvidas e fora da automação (#11269): deixadas abertas de propósito. */
   skipped: string[];
+  /**
+   * #11461 — só no modo `lowSeverityOnly`: threads da automação deixadas
+   * abertas porque o finding é P0/P1, de confiança alta ou sem severidade
+   * reconhecível. Seguram o merge até o fixer/editor.
+   */
+  held: string[];
+  /**
+   * #11461 — só no modo `lowSeverityOnly`: trecho do finding de cada thread
+   * resolvida, para o coordenador registrar o resíduo (relatório ou issue de
+   * follow-up) em vez de perdê-lo junto com a thread.
+   */
+  resolvedFindings: Array<{ id: string; excerpt: string }>;
   /** Não-resolvidas e não-FORBIDDEN-externas na query fresca pós-loop. */
   remainingBlocking: number;
   error?: string;
@@ -195,8 +246,9 @@ export function resolveReviewThreads(
   pr: number,
   ghRun: GhRunFn,
   only: ReadonlySet<string> | null = null,
+  opts: { lowSeverityOnly?: boolean } = {},
 ): ResolveReport {
-  const report: ResolveReport = { exitCode: EXIT_OK, resolved: [], forbidden: [], failed: [], skipped: [], remainingBlocking: 0 };
+  const report: ResolveReport = { exitCode: EXIT_OK, resolved: [], forbidden: [], failed: [], skipped: [], held: [], resolvedFindings: [], remainingBlocking: 0 };
   const before = fetchThreads(repo, pr, ghRun);
   if (!before.ok) return { ...report, exitCode: EXIT_ERROR, error: before.error };
   if (before.hasNextPage) return { ...report, exitCode: EXIT_PAGINATION, error: "mais de 100 review threads" };
@@ -207,9 +259,16 @@ export function resolveReviewThreads(
       report.skipped.push(t.id);
       continue;
     }
+    if (opts.lowSeverityOnly && classifyFindingSeverity(t.rootBody) !== "low") {
+      report.held.push(t.id);
+      continue;
+    }
     const r = ghRun(buildResolveArgs(t.id));
     const { outcome, reason } = classifyResolveResult(r);
-    if (outcome === "resolved") report.resolved.push(t.id);
+    if (outcome === "resolved") {
+      report.resolved.push(t.id);
+      if (opts.lowSeverityOnly) report.resolvedFindings.push({ id: t.id, excerpt: findingExcerpt(t.rootBody) });
+    }
     else if (outcome === "forbidden" && t.viewerCanResolve === false) report.forbidden.push(t.id);
     else {
       const why = outcome === "forbidden" ? `FORBIDDEN com viewerCanResolve=${t.viewerCanResolve} (permissão do token, não revisor externo)` : reason;
@@ -231,11 +290,18 @@ export function resolveReviewThreads(
   return { ...report, exitCode: EXIT_BLOCKING };
 }
 
+/** 1ª linha útil do finding, sem o marcador, até 200 caracteres. */
+export function findingExcerpt(body: string | undefined): string {
+  const text = (body ?? "").replace(AUTO_REVIEW_MARKER_RE, "").replace(/\s+/g, " ").trim();
+  return text.length > 200 ? `${text.slice(0, 199)}…` : text;
+}
+const AUTO_REVIEW_MARKER_RE = /<!--\s*diaria-auto-review\s*-->/g;
+
 const CONFIG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const KNOWN_KEYS = new Set(["pr", "repo", "list", "check", "thread"]);
+const KNOWN_KEYS = new Set(["pr", "repo", "list", "check", "thread", "low-severity-only"]);
 
 export function usage(): string {
-  return "uso: npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] [--list | --check | --thread ID,ID]";
+  return "uso: npx tsx scripts/resolve-review-threads.ts --pr N [--repo owner/name] [--list | --check | --thread ID,ID | --low-severity-only]";
 }
 
 export interface CheckReport {
@@ -290,6 +356,7 @@ export function runCli(argv: string[], ghRun: GhRunFn, configRoot: string = CONF
   for (const k of [...Object.keys(values), ...flags]) if (!KNOWN_KEYS.has(k)) return usageErr(`flag desconhecida: --${k}`);
   if ("list" in values) return usageErr("--list não leva valor");
   if ("check" in values) return usageErr("--check não leva valor");
+  if ("low-severity-only" in values) return usageErr("--low-severity-only não leva valor");
   if (flags.has("thread")) return usageErr("--thread sem valor");
   if (flags.has("pr")) return usageErr("--pr sem valor");
   const pr = Number(values.pr);
@@ -304,8 +371,8 @@ export function runCli(argv: string[], ghRun: GhRunFn, configRoot: string = CONF
     if (ids.length === 0) return usageErr("--thread vazio");
     only = new Set(ids);
   }
-  const modes = ["list", "check"].filter((m) => flags.has(m)).length + (only ? 1 : 0);
-  if (modes > 1) return usageErr("--list, --check e --thread são exclusivos");
+  const modes = ["list", "check", "low-severity-only"].filter((m) => flags.has(m)).length + (only ? 1 : 0);
+  if (modes > 1) return usageErr("--list, --check, --thread e --low-severity-only são exclusivos");
 
   if (flags.has("check")) {
     const c = checkReviewThreads(repo, pr, ghRun);
@@ -328,7 +395,7 @@ export function runCli(argv: string[], ghRun: GhRunFn, configRoot: string = CONF
     };
   }
 
-  const report = resolveReviewThreads(repo, pr, ghRun, only);
+  const report = resolveReviewThreads(repo, pr, ghRun, only, { lowSeverityOnly: flags.has("low-severity-only") });
   return {
     exitCode: report.exitCode,
     stdout: JSON.stringify({ repo, pr, ...report }),
