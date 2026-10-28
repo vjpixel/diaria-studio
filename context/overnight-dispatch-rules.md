@@ -147,6 +147,11 @@ REAL da issue tem teste? **O output esperado são os findings listados como
 comentários inline no PR** (não fixes imediatos). Retornar: o número do PR **+ a
 linha "self-review: N findings"**.
 
+Cada finding abre com confiança e severidade, ex.: `Confiança média, P3: ...`
+(#11461). É essa tag que `resolve-review-threads.ts --low-severity-only` lê
+para resolver as P2/P3 sem confiança alta antes do trem; finding sem tag fica
+retido e segura o merge.
+
 Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 --path P --line L --body-file F` (resposta a um comentário, no fixer: `reply
 --pr N --comment-id ID --body-file F`), nunca `gh api` à mão: o modo agendado
@@ -350,6 +355,25 @@ scripts/resolve-review-threads.ts --pr N [--repo owner/name] --check` (sai
 `1` se sobrar thread não resolvida que não seja de revisor externo). Nunca
 usar o modo de resolução como gate: ele apagaria a thread que o editor deixou
 aberta e aprovaria o PR sozinho.
+
+**Threads de self-review P2/P3 sem fixer (#11461).** Na rodada agendada
+261028 as threads do self-review (todas P3) ficaram abertas e 4 PRs com CI
+verde pararam em `BLOCKED`. Quando a unidade não passa por fixer, o
+coordenador resolve com `npx tsx scripts/resolve-review-threads.ts --pr N
+--low-severity-only`: só as threads da automação com finding P2/P3 sem
+confiança alta saem resolvidas; P0/P1, confiança alta e finding sem
+severidade reconhecível ficam em `held`, abertas. O JSON traz
+`resolvedFindings` (trecho de cada finding resolvido) para o resíduo ir ao
+relatório ou a uma issue de follow-up. O trem faz o mesmo com
+`run-merge-train.ts --resolve-low-severity-threads`. Por isso o self-review
+(item 7) tagueia cada finding com confiança e severidade ("Confiança média,
+P3: ..."): finding sem tag é retido, nunca resolvido às cegas.
+
+**Relatório depois do último merge (#11461).** O `report.md` é escrito num
+instante e o trem pode mergear depois. `npx tsx
+scripts/reconcile-overnight-report.ts --report data/overnight/{AAMMDD}/report.md`
+grava no fim do arquivo o estado real de cada PR da rodada (bloco
+idempotente); `run-merge-train.ts --report <path>` roda o mesmo ao terminar.
 
 ## 12. Matar processo próprio: sempre por PID, nunca por nome de imagem (#5432)
 
