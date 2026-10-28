@@ -1340,7 +1340,15 @@ const TEXT_FILE = String.raw`(?:[A-Za-z0-9_./:@=+,%-]+\.(?:md|txt)|"[^"$\x60\\\n
 // nada: no redirect vira só o nome do arquivo (`.md`/`.txt` continua exigido)
 // e no consumidor (que só LÊ texto) vira argumento.
 const VAR_REF = String.raw`\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})`;
-const ASSIGN_PREFIX = `(?:[A-Za-z_][A-Za-z0-9_]*=${SIMPLE_ARG}(?:; | && ))*`;
+// Review da #11510: uma atribuição é uma variável de shell ANTES do consumidor —
+// `GIT_EDITOR='sh x.md'; cat > x.md <<'EOF' … EOF` + `git commit` faria o git
+// executar o corpo do heredoc. Por isso (1) nomes que mudam o que um
+// consumidor executa (GIT_*, GH_*, LD_*, EDITOR, VISUAL, PATH, HOME,
+// NODE_OPTIONS, BASH_ENV, ENV, IFS, SHELL, CDPATH) nunca casam, e (2) com
+// atribuição presente o único consumidor aceito é `gh (pr|issue) …
+// --body-file` (`catTail(true)`), nunca `git commit` nem `npx tsx`.
+const SAFE_ASSIGN_NAME = String.raw`(?!(?:GIT_|GH_|LD_)|(?:EDITOR|VISUAL|PATH|HOME|NODE_OPTIONS|BASH_ENV|ENV|IFS|SHELL|CDPATH)=)[A-Za-z_][A-Za-z0-9_]*`;
+const ASSIGN_PREFIX = `(?:${SAFE_ASSIGN_NAME}=${SIMPLE_ARG}(?:; | && ))+`;
 const VAR_TEXT_FILE = String.raw`(?:(?:[A-Za-z0-9_./:@=+,%-]|${VAR_REF})+\.(?:md|txt)|"(?:[^"$\x60\\\n]|${VAR_REF})*\.(?:md|txt)"|'[^'\n]*\.(?:md|txt)')`;
 const VAR_ARG = String.raw`(?:(?:[A-Za-z0-9_./:@=+,%-]|${VAR_REF})+|"(?:[^"$\x60\\\n]|${VAR_REF})*"|'[^'\n]*')`;
 const VAR_ARGS = `(?: ${VAR_ARG})*`;
@@ -1366,9 +1374,12 @@ const HEAD_FORMS = [
   // consumidores executam código do repo (`scripts/*.ts`, hooks do git,
   // `tsconfig.json`/`package.json`) — sobrescrever um deles e rodá-lo na
   // mesma chamada seria bypass.
-  // #11501: `NOME=valor; ` antes e `$NOME` no caminho (ver VAR_REF).
-  { re: new RegExp(`^${ASSIGN_PREFIX}${CD_PREFIX}cat <<${DELIM} ?>>? ?${VAR_TEXT_FILE}$`), tail: catTail() },
-  { re: new RegExp(`^${ASSIGN_PREFIX}${CD_PREFIX}cat ?>>? ?${VAR_TEXT_FILE} <<${DELIM}$`), tail: catTail() },
+  // #11501: `$NOME` no caminho (ver VAR_REF); `NOME=valor; ` antes só com
+  // consumidor `gh … --body-file` (ver SAFE_ASSIGN_NAME).
+  { re: new RegExp(`^${CD_PREFIX}cat <<${DELIM} ?>>? ?${VAR_TEXT_FILE}$`), tail: catTail(false) },
+  { re: new RegExp(`^${CD_PREFIX}cat ?>>? ?${VAR_TEXT_FILE} <<${DELIM}$`), tail: catTail(false) },
+  { re: new RegExp(`^${ASSIGN_PREFIX}${CD_PREFIX}cat <<${DELIM} ?>>? ?${VAR_TEXT_FILE}$`), tail: catTail(true) },
+  { re: new RegExp(`^${ASSIGN_PREFIX}${CD_PREFIX}cat ?>>? ?${VAR_TEXT_FILE} <<${DELIM}$`), tail: catTail(true) },
 ];
 
 /**
@@ -1377,11 +1388,14 @@ const HEAD_FORMS = [
  * como texto (helper de review/corpo de PR, `gh pr|issue comment|create|edit`,
  * `git commit [&& git push]`), com `cd X && ` opcional e argumentos simples
  * (sem `$`, crase, `\` nem aspas abertas).
+ * `afterAssign`: houve `NOME=valor; ` antes do `cat` — aí só `gh (pr|issue)
+ * (comment|create|edit) … --body-file …` (review da #11510).
  */
-function catTail() {
-  const consumer =
-    `(?:npx tsx scripts/gh-pr-review-api\\.ts|npx tsx scripts/lib/gh-pr-safe-edit\\.ts|` +
-    `gh (?:pr|issue) (?:comment|create|edit))${VAR_ARGS}|git commit${VAR_ARGS}${GIT_PUSH}`;
+function catTail(afterAssign) {
+  const consumer = afterAssign
+    ? `gh (?:pr|issue) (?:comment|create|edit)${VAR_ARGS} --body-file${VAR_ARGS}`
+    : `(?:npx tsx scripts/gh-pr-review-api\\.ts|npx tsx scripts/lib/gh-pr-safe-edit\\.ts|` +
+      `gh (?:pr|issue) (?:comment|create|edit))${VAR_ARGS}|git commit${VAR_ARGS}${GIT_PUSH}`;
   return new RegExp(`^\\s*(?:${CD_PREFIX}(?:${consumer})\\s*)?$`);
 }
 

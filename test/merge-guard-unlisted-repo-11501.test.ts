@@ -125,6 +125,9 @@ describe("#11501 — heredoc que só cita um merge não é merge", () => {
     "caso real: S=…; cat > $S/x.md <<'EOF' + gh issue create --body-file $S/x.md": `S=${S}; cat > $S/marker.md <<'EOF'\n${BODY}\nEOF\ngh issue create --title "Guard de merge (#5716)" --label bug --label P3 --body-file $S/marker.md`,
     "atribuição com && e ${S}": `S=${S} && cat > \${S}/m.md <<'EOF'\n${BODY}\nEOF\ngh issue comment 11501 --body-file \${S}/m.md`,
     "$RANDOM no nome do arquivo entre aspas": `cat > "/tmp/pr-body-11501-$RANDOM.md" <<'EOF'\n${BODY}\nEOF`,
+    // Review da #11510: o fechamento do bypass não pode re-quebrar o caso real.
+    "caso real com corpo que é um merge cru, gh issue create --body-file": `S=${S}; cat > $S/x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngh issue create --title t --body-file $S/x.md`,
+    "sem atribuição, git commit -F continua liberado": `cat > /tmp/msg.md <<'EOF'\n${BODY}\nEOF\ngit commit -F /tmp/msg.md`,
   };
   for (const [name, cmd] of Object.entries(dataCases)) {
     it(name, () => {
@@ -141,6 +144,16 @@ describe("#11501 — heredoc que só cita um merge não é merge", () => {
     "expansão com operador no caminho": `cat > \${S:-$(gh pr merge 5)}/m.md <<'EOF'\nx\nEOF`,
     "arquivo executado na mesma chamada": `S=${S}; cat > $S/m.md <<'EOF'\ngh pr merge 5\nEOF\nbash $S/m.md`,
     "corpo pra um shell (sem whitelist)": `S=${S}; bash <<'EOF'\ngh pr merge 5\nEOF`,
+    // Review da #11510: atribuição + `git commit` deixava o git executar o corpo.
+    "GIT_EDITOR; + git commit": `GIT_EDITOR='sh x.md'; cat > x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngit commit --allow-empty`,
+    "GIT_EDITOR && + git commit": `GIT_EDITOR='sh x.md' && cat > x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngit commit --allow-empty`,
+    "S=…; GIT_EDITOR=\"sh\"; + git commit -e -F": `S=/tmp; GIT_EDITOR="sh"; cat > $S/x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngit commit -e -F $S/x.md`,
+    "atribuição inócua + git commit": `S=/tmp; cat > $S/x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngit commit -F $S/x.md`,
+    "atribuição + npx tsx": `S=/tmp; cat > $S/x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\nnpx tsx scripts/gh-pr-review-api.ts reply --pr 1 --comment-id 2 --body-file $S/x.md`,
+    "GH_CONFIG_DIR + gh --body-file": `GH_CONFIG_DIR=/tmp/evil; cat > x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngh issue create --body-file x.md`,
+    "PATH + gh --body-file": `PATH=/tmp/evil; cat > x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngh issue create --body-file x.md`,
+    "NODE_OPTIONS sem consumidor": `NODE_OPTIONS=--require=/tmp/x.js; cat > x.md <<'EOF'\ngh pr merge 5 --squash\nEOF`,
+    "atribuição + gh sem --body-file": `S=/tmp; cat > $S/x.md <<'EOF'\ngh pr merge 5 --squash\nEOF\ngh issue comment 1 --body x`,
   };
   for (const [name, cmd] of Object.entries(bypasses)) {
     it(`bypass continua merge: ${name}`, () => {
