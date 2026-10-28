@@ -131,9 +131,14 @@ export const OVERNIGHT_REQUIRED_BASH_COMMANDS: readonly RequiredBashCommand[] = 
   { command: "gh run view 123 --log-failed", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run view --log-failed" },
   { command: "gh run list --branch master --limit 1", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh run list --branch master --limit 1" },
   { command: "gh run rerun 123", source: "context/overnight-dispatch-rules.md", mention: "gh run rerun" },
-  // Atualizar a branch da PR com a base é `gh pr update-branch`, não `git merge`
-  // (que a prova de 27/10 mostrou negado, #11235).
-  { command: "gh pr update-branch 1 -R vjpixel/diaria-studio", source: ".claude/skills/diaria-overnight/SKILL.md", mention: "gh pr update-branch {N} -R {repo}" },
+  // Atualizar a branch da PR com a base é o wrapper REST, não `git merge`
+  // (que a prova de 27/10 mostrou negado, #11235) nem `gh pr update-branch`
+  // (ausente no gh do 300, #11448).
+  {
+    command: "npx tsx scripts/gh-pr-update-branch.ts --pr 1 --repo vjpixel/diaria-studio --expected-head abc",
+    source: ".claude/skills/diaria-overnight/SKILL.md",
+    mention: "npx tsx scripts/gh-pr-update-branch.ts --pr {N} [--repo {repo}]",
+  },
   { command: "gh pr view 1 --json state,mergedAt", source: "context/overnight-dispatch-rules.md", mention: "--json state,mergedAt" },
   { command: "gh pr list --state open", source: "context/overnight-dispatch-rules.md", mention: "gh pr list --state open" },
   // `gh api` só via helpers de escopo fixo (#11235, review da PR #11250): uma
@@ -238,7 +243,11 @@ export const OVERNIGHT_PROBED_DENIED_FORMS: readonly { denied: string; use: stri
     use: "npx tsx --test test/a.test.ts",
     why: "idem; `node_modules` vem do `npm ci` do próprio worktree",
   },
-  { denied: "git merge --ff-only origin/master", use: "gh pr update-branch 1 -R vjpixel/diaria-studio", why: "a branch da PR é atualizada pelo GitHub" },
+  {
+    denied: "git merge --ff-only origin/master",
+    use: "npx tsx scripts/gh-pr-update-branch.ts --pr 1",
+    why: "a branch da PR é atualizada pelo GitHub (REST update-branch, #11448)",
+  },
   { denied: "gh api repos/vjpixel/diaria-studio/pulls/1 --jq .state", use: "gh pr view 1 --json state", why: "`gh api` só via helpers (#11235)" },
 ];
 

@@ -15,7 +15,7 @@ test("#10927: PRs prontas usam o trem sem exigir chegada simultânea ou inferir 
 
 test("#10927: caminho serial valida a nova combinação e recusa base ou HEAD que mudaram", () => {
   const serial = train.slice(train.indexOf("**Validação da combinação (#10927)"));
-  assert.match(serial, /gh pr update-branch \{N\} -R \{repo\}/);
+  assert.match(serial, /npx tsx scripts\/gh-pr-update-branch\.ts --pr \{N\} \[--repo \{repo\}\]/);
   assert.match(serial, /testes consumidores dos símbolos\/contratos alterados/);
   assert.match(serial, /enrich-inbox-redirect-10796\.test\.ts/);
   assert.match(serial, /which-set-guards\.ts.*TODOS os `testFiles`/);

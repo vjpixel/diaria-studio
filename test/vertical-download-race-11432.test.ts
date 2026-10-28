@@ -11,10 +11,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claimPartFile, downloadDriveFile, DriveDownloadInProgressError, PART_STALE_MIN_MS, type DriveDownloadDeps } from "../scripts/lib/drive-download.ts";
+import { claimPartFile, downloadDriveFile, DriveDownloadInProgressError, PART_STALE_MIN_MS, takeStalePart, type DriveDownloadDeps } from "../scripts/lib/drive-download.ts";
 import { etagMatchesBody } from "../scripts/lib/r2-object-upload.ts";
 import { linkedinVerticalDownloadBusy, TIMER_LOCK_FILE as LINKEDIN_LOCK, TIMER_LOCK_STALE_MS } from "../scripts/shorts-linkedin-profile-timer.ts";
 import { THREADS_TIMER_LOCK_FILE, verticalDownloadInProgress } from "../scripts/shorts-threads-profile-timer.ts";
@@ -164,5 +164,49 @@ describe("#11432 R2: ETag (MD5) tem que bater, tamanho não basta", () => {
     assert.equal(etagMatchesBody(`"${createHash("md5").update(Buffer.from("XXXXXXXXXX")).digest("hex")}"`, body), false);
     assert.equal(etagMatchesBody(null, body), false);
     assert.equal(etagMatchesBody(`"${md5}-2"`, body), false);
+  });
+});
+
+describe("#11450 tomar o .part velho não apaga o .part novo de outro processo", () => {
+  it("inode ainda é o velho: tira do caminho sem deixar resto `.stale-*`", () => {
+    const dir = tmp();
+    try {
+      const part = join(dir, "v.mp4.part");
+      writeFileSync(part, "resto");
+      takeStalePart(part, statSync(part).ino);
+      assert.equal(existsSync(part), false);
+      assert.deepEqual(readdirSync(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("outro processo já trocou o .part (inode novo): devolve o arquivo dele e recusa", () => {
+    const dir = tmp();
+    try {
+      const part = join(dir, "v.mp4.part");
+      writeFileSync(part, "resto");
+      const staleIno = statSync(part).ino;
+      // O 1º processo tirou o velho e criou o novo antes do 2º agir. O velho
+      // fica vivo com outro nome, então o novo nunca reusa o inode dele.
+      renameSync(part, join(dir, "velho-tirado-pelo-outro"));
+      writeFileSync(part, "novo-do-outro");
+      assert.notEqual(statSync(part).ino, staleIno);
+      assert.throws(() => takeStalePart(part, staleIno), DriveDownloadInProgressError);
+      assert.equal(readFileSync(part, "utf8"), "novo-do-outro");
+      assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".stale-")), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it(".part já sumiu (outro tirou): não lança", () => {
+    const dir = tmp();
+    try {
+      takeStalePart(join(dir, "v.mp4.part"), 123);
+      assert.deepEqual(readdirSync(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

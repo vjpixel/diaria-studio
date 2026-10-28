@@ -28,6 +28,7 @@ import {
   LOCK_CONTENTION_HINT,
   CONSUMED_GRANT_HINT,
   buildBlockReason,
+  buildReturnToMainCheckoutHint,
 } from "../.claude/hooks/block-gh-pr-merge-subagent.mjs";
 
 // #5716: guard MECÂNICO contra subagente implementador mergeando o próprio
@@ -516,6 +517,33 @@ describe("buildBlockReason (#6322 achado 2 — concessão escopada bloqueia sem 
   it("concessão ESCOPADA + alvo DIFERENTE (número explícito, mas de outro PR) → acrescenta o hint", () => {
     const reason = buildBlockReason({ hasLiveGrant: true, grantPr: 100, targetPr: 200 });
     assert.equal(reason, `${BLOCK_REASON} ${SCOPED_GRANT_HINT}`);
+  });
+});
+
+describe("buildBlockReason — veto por worktree indica o cd standalone (#11449, rodada 261027e)", () => {
+  it("com a raiz do checkout principal → cita `cd <raiz>` standalone e o motivo (cwd de antes do comando)", () => {
+    const reason = buildBlockReason({
+      blockCause: "not-authorized",
+      callerInLinkedWorktree: true,
+      mainCheckoutRoot: "/home/x/diaria-studio",
+    });
+    assert.match(reason, /worktree vinculado/);
+    assert.ok(reason.includes("`cd /home/x/diaria-studio`"), reason);
+    assert.match(reason, /standalone/);
+    assert.match(reason, /sem `&&`/);
+    assert.match(reason, /Não remova worktrees/);
+  });
+
+  it("sem raiz resolvida → orientação genérica, sem caminho inventado", () => {
+    const reason = buildBlockReason({ blockCause: "not-authorized", callerInLinkedWorktree: true });
+    assert.match(reason, /cd` para o checkout principal como comando standalone/);
+    assert.ok(!reason.includes("undefined"), reason);
+    assert.equal(buildReturnToMainCheckoutHint("  ").includes("`cd   `"), false);
+  });
+
+  it("fora do veto por worktree → mensagem inalterada (sem a dica de cd)", () => {
+    const reason = buildBlockReason({ blockCause: "not-authorized", mainCheckoutRoot: "/home/x/diaria-studio" });
+    assert.equal(reason, BLOCK_REASON);
   });
 });
 

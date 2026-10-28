@@ -291,7 +291,26 @@ export async function publishKitSemanalFrio(
     ...(sourceHash !== undefined ? { source_content_hash: sourceHash } : {}),
   });
   if (resuming) {
-    if (!opts.push) return { code: 0, status: "dry_run", reason: `retomaria o rascunho ${resuming.broadcast_id} (created_unverified).` };
+    if (!opts.push) {
+      // #11450: o dry-run diz também se a retomada re-sincronizaria o conteúdo
+      // (só leitura do principal; `push: false` nunca faz PATCH).
+      const preview = await resyncSemanalContent(deps, {
+        broadcastId: resuming.broadcast_id,
+        own: resuming,
+        mainBroadcastId: main.broadcast_id,
+        mainPreview: main.preview_text,
+        sendAt: null,
+        push: false,
+      });
+      const base = `retomaria o rascunho ${resuming.broadcast_id} (created_unverified)`;
+      const reason =
+        preview.kind === "dry_run"
+          ? `${base} e ${preview.reason}`
+          : preview.kind === "failed"
+            ? `${base}; a re-sincronização falharia: ${preview.reason}`
+            : `${base}.`;
+      return { code: 0, status: "dry_run", broadcastId: resuming.broadcast_id, reason };
+    }
     broadcastId = resuming.broadcast_id;
     log(`retomando a semanal de frio ${broadcastId} (created_unverified de uma rodada anterior).`);
     // #11429 — o principal pode ter sido corrigido (re-run da Etapa 5) desde a
@@ -439,7 +458,14 @@ async function followMainSchedule(
     }
     if (sync.kind === "synced") {
       own = { ...own, source_content_hash: sync.hash, source_broadcast_id: main!.broadcast_id };
-      deps.writeOwnState(editionDir, own);
+      // #11450: o Kit já está correto (PATCH relido). Falha ao gravar o hash
+      // novo só faz a próxima rodada re-sincronizar de novo (PATCH idempotente),
+      // então vira aviso, nunca `failed`.
+      try {
+        deps.writeOwnState(editionDir, own);
+      } catch (e) {
+        log(`aviso: conteúdo da semanal ${broadcastId} re-sincronizado no Kit, mas o estado local não foi gravado (${(e as Error).message}) — a próxima rodada re-sincroniza de novo.`);
+      }
       current = sync.after; // o PATCH pode ter mexido no send_at (#8208): o que segue usa a releitura
       contentSynced = true;
     }

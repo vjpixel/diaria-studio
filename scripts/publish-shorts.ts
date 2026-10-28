@@ -113,8 +113,10 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * opção: o vertical sobe pro R2 e o Reels vai pra FILA do Worker
  * `diaria-linkedin-cron`; sem Worker, sem R2 ou com autora que o Worker não
  * conhece, fica pendente até rodar de novo depois do horário (ou `--now`).
- * O R2 não será habilitado (#11265): X e Threads, que só recebem o vídeo por
- * URL pública, ficam pulados com aviso (manuais).
+ * O R2 foi habilitado depois (#10772), mas o editor manteve o `timer-300`
+ * (#11411: o timer funciona e o corte `_Instagram_` do Drive não chega ao R2;
+ * racional em `docs/scheduled-tasks-registry.md`). X e Threads, que só
+ * recebem o vídeo por URL pública, ficam pulados com aviso (manuais).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
  * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
