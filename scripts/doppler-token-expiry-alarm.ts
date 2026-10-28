@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /** #11077: consulta o vault, mesmo sem token local. Não renova credenciais nem
  * arma tasks. Uso: npx tsx scripts/doppler-token-expiry-alarm.ts [--dry-run].
- * Campos *_EXPIRES_AT presentes são monitorados; Threads/LinkedIn pessoais
- * também são exigidos quando o respectivo access token existe no vault.
+ * Campos *_EXPIRES_AT presentes são monitorados; o do Threads pessoal também é
+ * exigido quando o access token existe no vault. O do LinkedIn pessoal fica de
+ * fora: tem alarme dedicado (`linkedin-personal-token-alarm.ts`, #11435).
  * Token nunca configurado não gera falso alarme.
  */
 import { resolve, dirname } from "node:path";
@@ -11,6 +12,7 @@ import { parse } from "dotenv";
 import { defaultDopplerRunner, type DopplerRunner } from "./sync-env.ts";
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { LINKEDIN_PERSONAL_ENV } from "./lib/linkedin-personal.ts";
 import { applyAlarmReconciliation, loadAlarmIssuesState, planAlarmReconciliation, saveAlarmIssuesState, type AlarmFinding } from "./lib/alarm-issues.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -18,11 +20,18 @@ const STATE = resolve(ROOT, "data/doppler-token-expiry-alarm-issues.json");
 const CHECK = "doppler-token-expiry";
 const DAY = 86_400_000;
 
+/** #11435: campos com alarme de vencimento DEDICADO, com as mesmas faixas.
+ * Alarmá-los aqui também abria duas issues por vencimento (check e título
+ * diferentes, `alarm-issues` não deduplica entre eles). O LinkedIn pessoal fica
+ * com `linkedin-personal-token-alarm.ts` (task diária `Diaria-LinkedIn-Personal`),
+ * que além do vencimento checa 401/403 na API. O Threads pessoal não tem alarme
+ * de issue próprio (a task de refresh só renova), então segue aqui. */
+export const DEDICATED_EXPIRY_ALARM_KEYS: ReadonlySet<string> = new Set([LINKEDIN_PERSONAL_ENV.expiresAt]);
+
 export function evaluateDopplerExpiries(env: Record<string, string | undefined>, now: Date): AlarmFinding[] {
   const keys = new Set(Object.keys(env).filter((key) => /^[A-Z][A-Z0-9_]*_EXPIRES_AT$/.test(key)));
-  for (const prefix of ["THREADS_PERSONAL", "LINKEDIN_PERSONAL"]) {
-    if (env[`${prefix}_ACCESS_TOKEN`]?.trim()) keys.add(`${prefix}_TOKEN_EXPIRES_AT`);
-  }
+  if (env.THREADS_PERSONAL_ACCESS_TOKEN?.trim()) keys.add("THREADS_PERSONAL_TOKEN_EXPIRES_AT");
+  for (const key of DEDICATED_EXPIRY_ALARM_KEYS) keys.delete(key);
   return [...keys].sort().flatMap((key): AlarmFinding[] => {
     const raw = env[key]?.trim();
     const timestamp = raw && /^\d{4}-\d{2}-\d{2}T/.test(raw) ? Date.parse(raw) : NaN;

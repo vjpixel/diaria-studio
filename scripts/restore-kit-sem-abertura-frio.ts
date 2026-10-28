@@ -36,6 +36,12 @@
  * encontra o assinante `active` e aplica as tags. Idempotente. O CSV só é
  * gravado com `--apply` (o dry-run só informa a contagem no log).
  *
+ * Só entra no CSV o `cancelled` que NÓS fizemos (`descadastrado_por_supressao`,
+ * #11430). Nas origens `in_brevo`/`suprimido_aguardando_frio` o nosso fluxo
+ * deixou a pessoa `active` no Kit: `cancelled` ali é opt-out da própria
+ * pessoa (rodapé/preferências do Kit), e reativá-la seria voltar a enviar pra
+ * quem pediu pra sair. Esses saem como `descadastro_proprio`, só no log.
+ *
  * Ordem por assinante (nunca sem canal): `frio` aplicada e RELIDA antes de
  * tirar `envio-brevo` (relida também). Nunca descadastra ninguém.
  *
@@ -128,11 +134,16 @@ export function collectRestoreTargets(
   return { targets: [...byEmail.values()], badLines };
 }
 
-export type RestoreStep = "ja_ok" | "tags" | "painel" | "estado_nao_reativavel";
+export type RestoreStep = "ja_ok" | "tags" | "painel" | "descadastro_proprio" | "estado_nao_reativavel";
 
-/** Pura — o que fazer com o assinante, pelo estado e tags atuais no Kit. */
-export function decideKitRestore(state: string, tagNames: readonly string[]): RestoreStep {
-  if (state === "cancelled") return "painel";
+/**
+ * Pura — o que fazer com o assinante, pelo estado e tags atuais no Kit e pela
+ * origem do alvo. `cancelled` só vai pro painel quando o descadastro foi nosso
+ * (`descadastrado_por_supressao`); nas outras origens é opt-out da pessoa e
+ * nunca se reativa (#11430).
+ */
+export function decideKitRestore(state: string, tagNames: readonly string[], source: RestoreTarget["source"]): RestoreStep {
+  if (state === "cancelled") return source === "descadastrado_por_supressao" ? "painel" : "descadastro_proprio";
   if (state !== "active") return "estado_nao_reativavel"; // bounced/complained/inactive: não é o caso desta reparação
   if (tagNames.includes(KIT_FRIO_TAG_NAME) && !tagNames.includes(KIT_ENVIO_BREVO_TAG_NAME)) return "ja_ok";
   return "tags";
@@ -162,6 +173,7 @@ export async function runKitSemAberturaRestore(
     ja_ok: 0,
     tags: 0,
     painel: 0,
+    descadastro_proprio: 0,
     estado_nao_reativavel: 0,
     aplicado: 0,
     falha: 0,
@@ -194,9 +206,10 @@ export async function runKitSemAberturaRestore(
       log(`FALHA ao ler ${t.email} no Kit: ${(e as Error).message}`);
       continue;
     }
-    const step = decideKitRestore(kit.state, kit.tagNames);
+    const step = decideKitRestore(kit.state, kit.tagNames, t.source);
     counts[step]++;
     if (step === "painel") panel.push(t);
+    if (step === "descadastro_proprio") log(`${t.email}: cancelled no Kit por opt-out próprio (origem ${t.source}) — não reativar (#11430).`);
     if (step === "estado_nao_reativavel") log(`${t.email}: estado '${kit.state}' no Kit — fora desta reparação.`);
     if (!opts.apply) continue;
     try {

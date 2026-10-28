@@ -315,12 +315,28 @@ export async function uploadToR2(
 }
 
 /**
+ * #11432: o ETag do objeto prova que o conteúdo é este `body`? O `uploadToR2`
+ * faz PUT simples (nunca multipart), e nesse caso o ETag do R2 é o MD5 hex do
+ * corpo, entre aspas. Aceita o prefixo fraco `W/` (proxy que reescreve). ETag
+ * ausente, de multipart (`…-N`) ou diferente → false: na dúvida, sobe de novo.
+ */
+export function etagMatchesBody(etag: string | null, body: Buffer): boolean {
+  if (!etag) return false;
+  const tag = etag.trim().replace(/^W\//, "").replace(/^"|"$/g, "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(tag)) return false;
+  return tag === createHash("md5").update(body).digest("hex");
+}
+
+/**
  * #11410: sobe o arquivo, ou reaproveita o objeto que já está no bucket com o
- * MESMO tamanho (HEAD 200 na URL pública). O vertical do dia costuma já ter
+ * MESMO conteúdo (HEAD 200 na URL pública). O vertical do dia costuma já ter
  * subido numa rodada anterior (o `/diaria-publica-video` com o X, ou outra
  * execução do timer do Threads): sem isso cada rodada repetiria o PUT de
- * ~275 MB. HEAD que falha, 404 ou tamanho diferente → upload normal
- * (`uploadToR2`, que confere a URL depois). Devolve a URL e se reaproveitou.
+ * ~275 MB. Desde o #11432 tamanho igual não basta: o ETag (MD5) tem que bater
+ * com o arquivo, senão um objeto corrompido de mesmo tamanho seria
+ * reaproveitado em toda retentativa. HEAD que falha, 404, tamanho ou ETag
+ * diferente → upload normal (`uploadToR2`, que confere a URL depois). Devolve
+ * a URL e se reaproveitou.
  */
 export async function reuseOrUploadToR2(
   deps: R2UploadDeps,
@@ -333,7 +349,7 @@ export async function reuseOrUploadToR2(
   try {
     const head = await deps.fetch(url, { method: "HEAD" });
     const len = head.headers.get("content-length");
-    if (head.ok && len !== null && Number(len) === body.length) return { url, reused: true };
+    if (head.ok && len !== null && Number(len) === body.length && etagMatchesBody(head.headers.get("etag"), body)) return { url, reused: true };
   } catch {
     // HEAD falhou (rede): sobe de novo, e o upload confere a URL no fim.
   }
