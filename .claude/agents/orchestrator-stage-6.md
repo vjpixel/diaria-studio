@@ -1,6 +1,6 @@
 ---
 name: orchestrator-stage-6
-description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Beehiiv + auto-reporter) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
+description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Kit + auto-reporter) do orchestrator diar.ia.br. Lido pelo orchestrator principal durante a execucao — nao e um subagente invocavel diretamente.
 ---
 
 > Este arquivo e referenciado por `orchestrator.md` via `@see`. Nao executar diretamente.
@@ -9,7 +9,7 @@ description: Detalhe da Etapa 6 (agendamento — gate humano + Schedule Beehiiv 
 
 ## Etapa 6 — Agendamento (gate humano) — #1694
 
-Stage 6 e o **gate final do pipeline**. Apresenta ao editor a parada única (revisão visual do e-mail de teste + resumo de agendamento — draft Beehiiv, social agendado, achados do review, avisos de invariantes que persistiram após tentativa de correção automática, #8205), recebe a confirmacao e executa o Schedule do Beehiiv. Termina com o auto-reporter (sem gate próprio, #8205).
+Stage 6 e o **gate final do pipeline**. Apresenta ao editor a parada única (revisão visual do e-mail de teste + resumo de agendamento — rascunho Kit (ou draft Beehiiv no ramo legado), social agendado, achados do review, avisos de invariantes que persistiram após tentativa de correção automática, #8205), recebe a confirmacao e executa o Schedule do backend (Kit por padrão, #11225; Beehiiv só no ramo legado explícito). Termina com o auto-reporter (sem gate próprio, #8205).
 
 Interacao humana SO neste stage (alem do Stage 4) — e dentro dele, **uma única parada** (§6c), não mais (#8205).
 
@@ -429,7 +429,7 @@ Exit codes:
 |------|-------------|------|
 | `0` | Agendado e verificado. | Confirmar ao editor: "Brevo diária agendado para {scheduled_at} ✓ (campaign_id {id})". Se o JSON trouxer `terca` (semanal dividida segunda/terça, #11286), acrescentar: "+ metade de terça agendada para {terca.scheduledAt} ✓ (campaign_id {terca.campaignId})". |
 | `2` | Nenhuma campanha registrada (já esperado se o canal foi pulado/falhou na Etapa 5). | Não é erro — seguir sem mencionar no resumo, ou mencionar como "canal Brevo não participou desta edição" se `_internal/brevo-diaria-published.json` de fato não existia. |
-| `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (Beehiiv já agendado é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
+| `3` | PUT falhou (erro de API). | Logar warn com o `reason` do JSON de stdout; **não bloqueia** o resto do Stage 6 (a newsletter do backend — Kit, ou Beehiiv no legado — já agendada é o que importa, #5772 fail-soft) — avisar o editor que o Brevo precisa de retry manual (`npx tsx scripts/schedule-daily-brevo.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}`). |
 | `4` | GET pós-PUT não confirma o agendamento. | Mesmo tratamento do exit 3 — warn, não bloqueia, sugerir retry manual. |
 | `5` | **Cota da CONTA Brevo insuficiente pro tamanho da campanha (#6146).** O plano free tem 300 e-mails/dia num balde ÚNICO (transacional + marketing) — outro processo pode ter gastado a cota mesmo com a FILA folgada (`daily_send_cap`). Também cobre falha de leitura da cota, que degrada pra "não agenda". | Warn, **não bloqueia** o resto do Stage 6 (mesmo fail-soft dos exits 3/4). **Mas comunicar ao editor com destaque, não como warn de rodapé:** foi exatamente este cenário que derrubou o canal por ~12h em silêncio em 260825 — campanha criada, agendada, e a Brevo marcou `suspended` com `sent: 0`. **NÃO sugerir retry cego** (diferente do 3/4): repetir o comando falha igual enquanto a cota não virar. O guard mede o dia UTC do ENVIO; se o envio é amanhã, a Brevo nem aceita consultar aquele dia (HTTP 400) e o veredito passa de graça — nesse caso o sinal útil é o aviso de TRANSBORDO no stderr. Conferir o consumo antes de qualquer retry (`scripts/lib/brevo-account-quota.ts`). |
 | `6` | `--scheduled-at` diverge da data da edição (#8207) — não deveria acontecer se `{scheduled_at_iso}` veio de `resolve-edition-scheduled-at.ts` (§6a/§6c). | Bloqueia (diferente do fail-soft dos exits 3/4/5 — isto é o mesmo bug que atrasou a edição 260917, nunca tratar como falha de API). Investigar como `{scheduled_at_iso}` divergiu antes de qualquer retry. Retry manual intencional (editor pediu explicitamente outro dia) usa `--allow-other-date`, nunca por padrão. |
@@ -459,7 +459,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 | `5` | `--scheduled-at` diverge da data da edição (#8207) — não deveria acontecer se `{scheduled_at_iso}` veio de `resolve-edition-scheduled-at.ts` (§6a/§6c). Bloqueia — investigar antes de retry; `--allow-other-date` só sob pedido explícito do editor. |
 
 
-**Falha aqui NUNCA desfaz o Schedule do Beehiiv já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
+**Falha aqui NUNCA desfaz o Schedule da newsletter (Kit, ou Beehiiv no legado) já confirmado** — os dois canais são independentes; o Brevo é sempre o secundário/extra (segmento Pending, reativação).
 
 **Publicação da página do site: PR aberto no início da Etapa 5 (§5b-site, #10160), conferido em §6b-site e mergeado na trava §6c-site, antes do Schedule.** Não roda de novo aqui.
 

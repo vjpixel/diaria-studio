@@ -88,6 +88,7 @@ import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { parseDiariaExclusionSegment, KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { kitSemAberturaExemptEmails } from "./lib/brevo-kit-active-exclusion.ts"; // #10437
 import { readStore, DEFAULT_STORE_PATH, normalizeEmail } from "./lib/brevo-diaria-store.ts"; // #10437
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import {
   applyAlarmReconciliation,
   loadAlarmIssuesState,
@@ -292,9 +293,13 @@ export interface GuardOutcome {
  * nada mais alimenta a tag pra gente nova, então ela fica congelada
  * enquanto a base cresce, produzindo "órfãos" que na verdade recebem
  * normalmente.
+ *
+ * #11225: `newsletterBackend` cru do config passa por `parseNewsletterBackend`
+ * — chave ausente/typo conta como `"kit"`; só o literal `"beehiiv"` cai no
+ * ramo legado (a Beehiiv é só arquivo histórico desde 27/10/2026).
  */
-export function shouldUseAllActiveAsKitAudience(newsletterBackend?: string): boolean {
-  return newsletterBackend === "kit";
+export function shouldUseAllActiveAsKitAudience(newsletterBackend?: unknown): boolean {
+  return parseNewsletterBackend(newsletterBackend) === "kit";
 }
 
 /**
@@ -305,8 +310,8 @@ export function shouldUseAllActiveAsKitAudience(newsletterBackend?: string): boo
  * ativos da Beehiiv continuam em `activeSources`: quem estiver ativo SÓ na
  * Beehiiv aparece como órfão, que é o sinal correto.
  */
-export function beehiivSendAudience(newsletterBackend: string | undefined, beehiivActiveEmails: string[]): string[] {
-  return newsletterBackend === "kit" ? [] : beehiivActiveEmails;
+export function beehiivSendAudience(newsletterBackend: unknown, beehiivActiveEmails: string[]): string[] {
+  return parseNewsletterBackend(newsletterBackend) === "kit" ? [] : beehiivActiveEmails;
 }
 
 /**
@@ -354,7 +359,8 @@ export function decideOutcome(
   // dia em que a Beehiiv passou a contar 1 ativo residual ("314 > 1,
   // inesperado"). Com backend=kit a Beehiiv não envia a diária — o gap não
   // mede nada, qualquer que seja a contagem.
-  const skipBeehiivGap = newsletterBackend === "kit";
+  // #11225: chave ausente conta como "kit" (ver `parseNewsletterBackend`).
+  const skipBeehiivGap = parseNewsletterBackend(newsletterBackend) === "kit";
   const beehiivDeliveryGap =
     !skipBeehiivGap && beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
       ? checkBeehiivDeliveryGap(beehiivActiveCount, beehiivDelivery.recipients)

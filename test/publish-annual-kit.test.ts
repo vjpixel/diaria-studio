@@ -54,9 +54,11 @@ describe("guard de backend (#5608)", () => {
     assert.ok(r.reason?.includes("beehiiv"));
   });
 
-  it("config sem a chave também é recusa, não passe-livre", () => {
-    assert.equal(checkKitBackend({}).ok, false);
-    assert.equal(checkKitBackend({ publishing: {} }).ok, false);
+  it("REGRESSÃO #11225: config sem a chave conta como \"kit\" (Beehiiv é só arquivo histórico)", () => {
+    // Até o #11225 era recusa. O default do backend virou "kit" em todo o
+    // repo (`parseNewsletterBackend`); só o literal "beehiiv" recusa aqui.
+    assert.equal(checkKitBackend({}).ok, true);
+    assert.equal(checkKitBackend({ publishing: {} }).ok, true);
   });
 });
 

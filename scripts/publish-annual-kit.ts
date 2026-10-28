@@ -48,6 +48,7 @@ import { relinkAnnualEditionHtml } from "./lib/anual/annual-relink.ts";
 import { filterPublicEditionsWithWarning, loadUnifiedEditionCache } from "./lib/shared/edition-cache-reader.ts";
 import { lintAnnualDraft } from "./lint-annual-draft.ts";
 import { tipoFromSlug, type AnnualTipo } from "./lib/anual/annual-window.ts";
+import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -80,7 +81,8 @@ export function checkKitBackend(config: { publishing?: { newsletter?: { backend?
   reason?: string;
 } {
   const backend = config.publishing?.newsletter?.backend;
-  if (backend !== "kit") {
+  // #11225: chave ausente conta como "kit"; só o literal "beehiiv" (legado) recusa.
+  if (parseNewsletterBackend(backend) !== "kit") {
     return {
       ok: false,
       reason: `publishing.newsletter.backend = ${JSON.stringify(backend)} — este script só roda com "kit".`,

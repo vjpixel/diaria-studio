@@ -44,6 +44,8 @@
  * `tagId` ANTES de montar o broadcast.
  */
 
+import { parseNewsletterBackend } from "./newsletter-backend.ts"; // #11225 (função pura)
+
 /** Bloco `kit_diaria` de `platform.config.json`. Ausente ⇒ canal desligado. */
 export interface KitDiariaChannelConfig {
   /** Interruptor explícito. Ausente ou `false` ⇒ canal não roda. */
@@ -167,7 +169,9 @@ export function decideKitChannelDispatch(input: DecideKitChannelInput): KitChann
       reason: "kit_diaria.enabled não é true — canal Kit paralelo desligado (default).",
     };
   }
-  if (input.newsletterBackend === "kit") {
+  // #11225: chave ausente conta como "kit" — com ela faltando, o canal
+  // paralelo ligado entregaria em dobro junto do backend Kit default.
+  if (parseNewsletterBackend(input.newsletterBackend) === "kit") {
     return {
       action: "skip",
       reason:
