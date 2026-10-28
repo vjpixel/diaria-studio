@@ -62,8 +62,11 @@ import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/cluster-sources.ts";
 import { sameEvent, SAME_EDITION } from "./lib/event-dedup.ts";
 // #9360 padrão 2: agrupa coberturas da mesma história entre LANÇAMENTOS/RADAR.
-import { groupSameStory } from "./lib/story-grouping.ts";
+import { groupSameStory, LAUNCH_TITLE_RE } from "./lib/story-grouping.ts";
 import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts";
+// #11496: par produto+versão ("genie 4", "ios 27.2") — o mesmo sinal do MESMO
+// FATO entre edições, aplicado aqui dentro da edição.
+import { extractVersionedProducts, extractProductVariants } from "./lib/same-fact-check.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -269,6 +272,66 @@ export function extractCompanyMentionsIntra(title: string): Set<string> {
 }
 
 /**
+ * #11496: empresas (mesma lista de `COMPANY_STOPWORDS_INTRA`) nomeadas no HOST
+ * ou no CAMINHO da URL. Página oficial de lançamento muitas vezes não cita a
+ * empresa no título ("We’re announcing Genie 4, our new world model…") — ela
+ * só aparece em `blog.google/.../google-deepmind/introducing-genie-4/`. Usado
+ * só no path (d) cross-vehicle, com exigência maior de tópico compartilhado
+ * quando a empresa vem só da URL (ver `isIntraEditionDuplicate`).
+ */
+export function extractCompanyMentionsFromUrl(url: string | null | undefined): Set<string> {
+  const found = new Set<string>();
+  if (!url) return found;
+  let haystack: string;
+  try {
+    const u = new URL(url);
+    haystack = `${u.hostname} ${decodeURIComponent(u.pathname)}`;
+  } catch {
+    return found;
+  }
+  const tokens = new Set(
+    haystack
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-z0-9]+/),
+  );
+  for (const company of COMPANY_STOPWORDS_INTRA) {
+    if (tokens.has(company)) found.add(company);
+  }
+  return found;
+}
+
+/**
+ * #11496: termos genéricos de manchete em INGLÊS que não discriminam a
+ * história quando a empresa compartilhada veio só da URL (página oficial
+ * sem a empresa no título). `normalizeTitle` só remove artigos/preposições,
+ * então "new", "our", "model" sobrevivem como token e casariam qualquer
+ * anúncio da mesma empresa.
+ */
+const URL_COMPANY_TOPIC_STOPWORDS_INTRA = new Set([
+  "new", "our", "your", "we", "model", "models", "introducing", "announcing",
+  "announces", "announced", "launch", "launches", "launching", "today",
+  "update", "updates", "now", "available", "more", "how", "what", "why",
+]);
+
+/**
+ * #11496: mínimo de tokens de tópico compartilhados no path (d) quando a
+ * empresa em comum só aparece na URL de um dos lados. Mais alto que o 1 do
+ * caso título×título porque o host oficial (`blog.google`) cobre todos os
+ * anúncios do dia da empresa.
+ */
+export const URL_COMPANY_MIN_SHARED_TOPICS = 2;
+
+/**
+ * #11496: tokens de produto+versão (`extractVersionedProducts`) do título,
+ * para o path (b2) — mesmo produto e mesma versão nos dois títulos.
+ */
+function versionedProductsOf(title: string): Set<string> {
+  return extractVersionedProducts(stripVehicleSuffix(title));
+}
+
+/**
  * Extrai entidades nomeadas para dedup INTRA-edição.
  *
  * Diferenças vs `extractNamedEntities` do dedup.ts (#2397):
@@ -291,7 +354,13 @@ function extractEntitiesWithStopwords(
   const entities = new Set<string>();
   const words = cleaned.split(/\s+/);
   for (let i = 0; i < words.length; i++) {
-    const word = words[i].replace(/[^\p{L}\p{N}]/gu, "");
+    // #11496: contração/possessivo em inglês sai ANTES de limpar a pontuação
+    // — "We’re" virava a falsa entidade "were" e "OpenAI's" virava "openais".
+    // Apóstrofe tipográfica (’) e reta (') tratadas igual.
+    const word = words[i]
+      .replace(/[^\p{L}\p{N}'’]/gu, "")
+      .replace(/['’](?:s|re|ll|ve|d|m|t)$/iu, "")
+      .replace(/['’]/g, "");
     if (word.length < 4) continue;
     // #2397: NÃO pular index-0 — em títulos de artigos a empresa principal
     // frequentemente é a primeira palavra (ex: "SpaceX compra Cursor").
@@ -394,6 +463,8 @@ interface IntraEditionRemovedEntry {
     | "cross_vehicle"
     | "product_code"
     | "content_terms"
+    /** #11496: mesmo produto+versão nos dois títulos + tópico em comum. */
+    | "product_version"
     /** #9249: mesmo evento (lib/event-dedup.ts). */
     | "event"
     /** #4360: duplicata DENTRO do bucket LANÇAMENTOS (não envolve destaque). */
@@ -812,6 +883,7 @@ export function isIntraEditionDuplicate(
     | "cross_vehicle"
     | "product_code"
     | "content_terms"
+    | "product_version"
     | "event";
   matched_highlight: string;
   score: number;
@@ -834,6 +906,11 @@ export function isIntraEditionDuplicate(
   // #2587: entidades de PRODUTO (inclui Gemini/GPT, exclui só empresa+genéricos)
   // pro segundo-sinal do domain-match — capturadas 1× fora do loop.
   const artProductEntities = extractProductEntitiesIntra(artTitle);
+  // #11496: produto+versão e empresas da URL, capturados 1× fora do loop.
+  const artVersioned = versionedProductsOf(artTitle);
+  const artVariants = extractProductVariants(stripVehicleSuffix(artTitle));
+  const artCompanies = extractCompanyMentionsIntra(artTitle);
+  const artUrlCompanies = extractCompanyMentionsFromUrl(article.url);
 
   for (const h of highlights) {
     const hTitle = highlightTitle(h);
@@ -908,6 +985,52 @@ export function isIntraEditionDuplicate(
       };
     }
 
+    // (b2) #11496: mesmo PRODUTO + VERSÃO nos dois títulos ("Genie 4",
+    // "iOS 27.2") + um segundo sinal: ≥1 token de tópico em comum além do
+    // produto e da família ("claude", "gemini" não contam), OU os dois
+    // títulos com cara de anúncio de lançamento (`LAUNCH_TITLE_RE`, o mesmo
+    // sinal (2) de lib/story-grouping.ts).
+    // Caso real 261029: D2 "Genie 4: A new generation of world simulation"
+    // (deepmind.google) × LANÇAMENTO "We’re announcing Genie 4, our new world
+    // model for real-time interactive simulation" (blog.google) — Jaccard
+    // 0.31, 1 entidade só ("genie"), nenhuma empresa no título do LANÇAMENTO.
+    // Versão sozinha não basta (mesmo motivo do sinal (2) de
+    // lib/story-grouping.ts, review da PR #9430): "GPT-6.1 banido em escolas"
+    // × "GPT-6.1 ganha modo de voz" são histórias diferentes e não dividem
+    // nenhum tópico. Variantes nomeadas diferentes ("GPT-6.1 Sol" × "GPT-6.1
+    // Astra") descartam o par, como no MESMO FATO.
+    if (artVersioned.size > 0) {
+      const hVersioned = versionedProductsOf(hTitle);
+      const hVariants = extractProductVariants(stripVehicleSuffix(hTitle));
+      const sharedVersioned = [...artVersioned].filter((p) => {
+        if (!hVersioned.has(p)) return false;
+        const va = artVariants.get(p);
+        const vb = hVariants.get(p);
+        return !(va !== undefined && vb !== undefined && va !== vb);
+      });
+      if (sharedVersioned.length > 0) {
+        const productWords = new Set(sharedVersioned.flatMap((p) => p.split(" ")));
+        const sharedTopics = [...artTokens].filter(
+          (t) =>
+            hTokens.has(t) &&
+            !productWords.has(t) &&
+            !/^\d/.test(t) &&
+            !TOPIC_TOKEN_STOPWORDS_INTRA.has(t) &&
+            !URL_COMPANY_TOPIC_STOPWORDS_INTRA.has(t) &&
+            !COMPANY_STOPWORDS_INTRA.has(t) &&
+            !PRODUCT_STOPWORDS_INTRA.has(t),
+        );
+        const bothLaunch = LAUNCH_TITLE_RE.test(artTitle) && LAUNCH_TITLE_RE.test(hTitle);
+        if (sharedTopics.length >= 1 || bothLaunch) {
+          return {
+            match_type: "product_version",
+            matched_highlight: hTitle,
+            score: sharedVersioned.length + sharedTopics.length,
+          };
+        }
+      }
+    }
+
     // (d) #3099: cross-vehicle cobertura da MESMA empresa/evento quando nem
     // Jaccard nem domain-match capturam — cenário em que AMBOS os lados são
     // cobertura de imprensa (nenhum é a página oficial do lançamento), então
@@ -927,17 +1050,31 @@ export function isIntraEditionDuplicate(
     // atribuição/substantivos genéricos (TOPIC_TOKEN_STOPWORDS_INTRA) — mesmo
     // padrão de segundo-sinal do domain-match (#2587), aplicado aqui sem
     // exigir `suggested_primary_domain`.
-    const artCompanies = extractCompanyMentionsIntra(artTitle);
+    //
+    // #11496: a empresa também vale quando só aparece no host/caminho da URL
+    // (página oficial sem a empresa no título, caso Genie 4 261029). Nesse
+    // caso a exigência sobe para `URL_COMPANY_MIN_SHARED_TOPICS` tópicos, sem
+    // contar termos genéricos de anúncio em inglês nem nome de produto da
+    // família ("gemini", "claude"): dois anúncios diferentes do mesmo blog
+    // oficial citam o mesmo produto o tempo todo.
     const hCompanies = extractCompanyMentionsIntra(hTitle);
-    const sharedCompanies = [...artCompanies].filter((c) => hCompanies.has(c));
+    const titleSharedCompanies = [...artCompanies].filter((c) => hCompanies.has(c));
+    const hUrlCompanies = extractCompanyMentionsFromUrl(hUrl);
+    const artAllCompanies = new Set([...artCompanies, ...artUrlCompanies]);
+    const hAllCompanies = new Set([...hCompanies, ...hUrlCompanies]);
+    const sharedCompanies = titleSharedCompanies.length > 0
+      ? titleSharedCompanies
+      : [...artAllCompanies].filter((c) => hAllCompanies.has(c));
+    const viaUrlOnly = titleSharedCompanies.length === 0;
     if (sharedCompanies.length >= 1) {
       const sharedTopicTokens = [...artTokens].filter(
         (t) =>
           hTokens.has(t) &&
           !sharedCompanies.includes(t) &&
-          !TOPIC_TOKEN_STOPWORDS_INTRA.has(t),
+          !TOPIC_TOKEN_STOPWORDS_INTRA.has(t) &&
+          !(viaUrlOnly && (URL_COMPANY_TOPIC_STOPWORDS_INTRA.has(t) || COMPANY_STOPWORDS_INTRA.has(t) || PRODUCT_STOPWORDS_INTRA.has(t))),
       );
-      if (sharedTopicTokens.length >= 1) {
+      if (sharedTopicTokens.length >= (viaUrlOnly ? URL_COMPANY_MIN_SHARED_TOPICS : 1)) {
         return {
           match_type: "cross_vehicle",
           matched_highlight: hTitle,
