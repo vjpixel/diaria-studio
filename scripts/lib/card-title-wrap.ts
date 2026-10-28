@@ -163,8 +163,9 @@ export type OverlayWrap = { readonly divisor: number; readonly ratio: number };
  * Quebra de título do overlay (#8589). Card semanal (`wrap` explícito): inalterado.
  * Card diário: a regra de quebra (divisor 29, ~33 chars) deixa passar título de
  * 1 linha que estoura a largura no piso de 62px (~26 chars). Se a quebra normal
- * estoura, tenta o limite que cabe a 62px (balanceando em até 3 linhas); se nem
- * assim cabe, retorna `fits: false` (política #6078: reescrever, nunca cortar).
+ * estoura (ou passa de 3 linhas, #11434), tenta o limite que cabe a 62px
+ * (balanceando em até 3 linhas); se nem assim cabe, retorna `fits: false`
+ * (política #6078: reescrever, nunca cortar).
  */
 export function overlayWrapLines(
   title: string,
@@ -175,7 +176,9 @@ export function overlayWrapLines(
   const lines = wrapTitle(title, Math.floor(availableWidth / w.divisor));
   if (wrap) return { lines, fits: true };
   const fitsAt = (ls: string[]) => ls.every((l) => l.length * DAILY_CAROUSEL_BODY_SIZE * w.ratio <= availableWidth);
-  if (fitsAt(lines)) return { lines, fits: true };
+  // Teto de 3 linhas também na quebra normal (#11434): sem ele, título longo de
+  // linhas curtas (4+ linhas que cabem na largura) passava como `fits: true`.
+  if (lines.length <= 3 && fitsAt(lines)) return { lines, fits: true };
   const tight = wrapTitle(title, Math.floor(availableWidth / (DAILY_CAROUSEL_BODY_SIZE * w.ratio)));
   return tight.length <= 3 && fitsAt(tight) ? { lines: tight, fits: true } : { lines, fits: false };
 }

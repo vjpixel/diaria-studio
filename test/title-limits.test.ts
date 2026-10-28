@@ -18,6 +18,7 @@ import {
 } from "../scripts/lib/lint-checks/title-limits.ts";
 import { checkTitleLengths, MAX_TITLE_LENGTH } from "../scripts/lib/lint-checks/title-length.ts";
 import { dailyCardTitleFits } from "../scripts/gen-social-card-4x5.ts";
+import { CARD_4X5_PAD, CARD_4X5_WIDTH, overlayWrapLines } from "../scripts/lib/card-title-wrap.ts";
 
 function edition(d1: string, d2 = "Título curto do segundo", d3 = "Título curto do terceiro"): string {
   return [
@@ -47,6 +48,8 @@ const TITULO_62 = "Anthropic lança agente que programa sozinho por horas seguid
 const TITULO_SEM_QUEBRA = "Supercalifragilisticexpialidocious-hiperautomatizacao-generativa";
 // 75 grafemas, quebra normal em palavras.
 const TITULO_75 = "Governo publica regra que obriga bancos a explicar decisões tomadas por IA";
+// 98 chars, cenário da #11434: cada linha cabe na largura, mas são 4 linhas.
+const TITULO_4_LINHAS = "IA da Meta erra fatos em uma de cada três respostas e o grupo diz que vai rever o uso em aula hoje";
 
 describe("title-limits (#11254)", () => {
   it("regressão 261027: título > 52 que cabe no card e no assunto passa nos dois checks", () => {
@@ -68,8 +71,20 @@ describe("title-limits (#11254)", () => {
     assert.equal(r.errors[0].max, null);
   });
 
+  it("regressão #11434: título que quebra em 4 linhas curtas não cabe no card (teto de 3 linhas)", () => {
+    const { lines } = overlayWrapLines(TITULO_4_LINHAS, CARD_4X5_WIDTH - CARD_4X5_PAD * 2);
+    assert.ok(lines.length > 3, `fixture precisa quebrar em 4+ linhas, quebrou em ${lines.length}`);
+    assert.equal(dailyCardTitleFits(TITULO_4_LINHAS), false);
+    const r = checkTitleCardFit(edition("Título ok", TITULO_4_LINHAS));
+    assert.equal(r.ok, false);
+    assert.equal(r.errors[0].kind, "card-4x5");
+    assert.equal(r.errors[0].destaque, 2);
+    // O de 75 chars quebra em 3 linhas e continua cabendo.
+    assert.equal(dailyCardTitleFits(TITULO_75), true);
+  });
+
   it("card 4x5: mesmo veredito que dailyCardTitleFits para cada título", () => {
-    for (const t of [TITULO_62, TITULO_75, TITULO_SEM_QUEBRA, "Curto"]) {
+    for (const t of [TITULO_62, TITULO_75, TITULO_SEM_QUEBRA, TITULO_4_LINHAS, "Curto"]) {
       assert.equal(checkTitleCardFit(edition(t)).ok, dailyCardTitleFits(t), t);
     }
   });
