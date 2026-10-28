@@ -95,8 +95,10 @@ describe("#10781 — convite social de versão anterior mantém a caixa painel",
   });
 
   it("render do convite ANTERIOR sai dentro da caixa, igual ao atual", () => {
+    // #11483: a constante atual abre com "Siga a diar.ia.br:"; as anteriores
+    // seguem em texto corrido. As duas ficam na caixa.
     const boxRe = /border-radius:12px;padding:[^"]*;">\s*<p[^>]*>Para acompanhar as 3 principais/;
-    assert.match(renderEncerrar(encerrarWith(SOCIAL_INVITE)), boxRe);
+    assert.match(renderEncerrar(encerrarWith(SOCIAL_INVITE)), /border-radius:12px;padding:[^"]*;">\s*<p[^>]*>Siga a /);
     assert.match(renderEncerrar(encerrarWith(PREVIOUS_SOCIAL_INVITE)), boxRe);
   });
 });

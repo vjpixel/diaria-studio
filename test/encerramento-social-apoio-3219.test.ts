@@ -256,7 +256,7 @@ describe("data/snippets/encerramento-social-apoio.md — mecanismo de load/rende
 
 describe("#10761 — YouTube no convite social", () => {
   it("inclui o canal aprovado só no convite, sem criar pill avulsa", () => {
-    assert.ok(SOCIAL_INVITE.endsWith("[X](https://x.com/diariabr) ou [YouTube](https://www.youtube.com/@diariabr)."));
+    assert.ok(SOCIAL_INVITE.endsWith("[X](https://x.com/diariabr) [YouTube](https://www.youtube.com/@diariabr)"));
     assert.doesNotMatch(CURADORIA_PILLS, /YouTube|youtube/);
   });
 
@@ -267,16 +267,18 @@ describe("#10761 — YouTube no convite social", () => {
     const tables = [...html.matchAll(/<table\b[\s\S]*?<\/table>/g)];
     const painel = tables.at(-1)?.[0] ?? "";
     assert.match(painel, /border-radius:12px/);
-    assert.match(painel, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*>YouTube<\/a>/);
-    assert.match(painel, /Para acompanhar as 3 principais notícias/);
+    // #11483: o link do YouTube vira o ícone, com o nome da rede no alt.
+    assert.match(painel, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*><img src="https:\/\/diar\.ia\.br\/icons\/social\/youtube\.png"[^>]*alt="YouTube"/);
+    assert.match(painel, /Siga a /);
   });
 
   it("renderiza o YouTube no convite do digest mensal copiado do prompt", () => {
     const prompt = readFileSync(WRITER_MONTHLY_MD, "utf8");
-    const convite = prompt.split("\n").find((line) => line.includes("`Para acompanhar"));
+    const convite = prompt.split("\n").find((line) => line.includes("`Siga a **diar.ia.br**:"));
     assert.ok(convite);
     const html = renderEncerramento(convite.trim().slice(1, -1));
-    assert.match(html, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*>YouTube<\/a>/);
+    // #11483: o mensal usa o mesmo render de ícones da diária.
+    assert.match(html, /href="https:\/\/www\.youtube\.com\/@diariabr"[^>]*><img src="https:\/\/diar\.ia\.br\/icons\/social\/youtube\.png"/);
   });
 });
 
@@ -520,7 +522,7 @@ describe("integração de render — diário (renderEncerrar processa o novo blo
       assert.match(html, new RegExp(`href="${DIARIA_THREADS_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
       assert.match(html, new RegExp(`href="${DIARIA_FACEBOOK_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
       assert.match(html, new RegExp(`href="${DIARIA_X_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
-      assert.match(html, /Para acompanhar as 3 principais notícias de IA todos os dias/);
+      assert.match(html, /Siga a /);
     });
   });
 
