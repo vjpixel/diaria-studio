@@ -241,10 +241,38 @@ export interface ConfirmationReportOptions {
 }
 
 /** Dia BRT (AAAA-MM-DD) de um instante ISO; `null` se inválido. */
-function brtDay(iso: string): string | null {
+export function brtDay(iso: string): string | null {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+}
+
+/** Fontes de `utm_source` de um assinante, na série de observações. */
+export interface CanalPagoSources {
+  /** `utm_source` NÃO VAZIO da observação de nascimento. */
+  utmAtBirth: string | null;
+  /** #10507 — a observação de nascimento gravou `utm_source: ""`. */
+  utmBirthEmpty: boolean;
+  /** PRIMEIRO `utm_source` não vazio de uma observação posterior. */
+  utmLater: string | null;
+}
+
+/**
+ * Canal pago de um assinante, na ordem de precedência documentada no topo
+ * deste módulo: nascimento não vazio → store → observação posterior →
+ * nascimento vazio (orgânico) → desconhecido. Fonte única, usada pelo
+ * relatório diário e pela observação horária (#8548). @pure
+ */
+export function resolveCanalPago(
+  id: number,
+  src: CanalPagoSources,
+  utmSourceByKitId?: ReadonlyMap<number, string | null>,
+): { canal: string; fonte: "snapshot" | "store" | "desconhecido" } {
+  if (src.utmAtBirth !== null) return { canal: classifyCanalPago(src.utmAtBirth, true), fonte: "snapshot" };
+  if (utmSourceByKitId?.has(id)) return { canal: classifyCanalPago(utmSourceByKitId.get(id), true), fonte: "store" };
+  if (src.utmLater !== null) return { canal: classifyCanalPago(src.utmLater, true), fonte: "snapshot" };
+  if (src.utmBirthEmpty) return { canal: classifyCanalPago("", true), fonte: "snapshot" };
+  return { canal: classifyCanalPago(null, false), fonte: "desconhecido" };
 }
 
 /** Soma dias a uma chave AAAA-MM-DD (aritmética em UTC, sem fuso). */
@@ -457,27 +485,12 @@ export function buildConfirmationReport(
   const members: Member[] = [];
   const ambActive: Array<{ dia: string; canal: string; canalPago: string }> = [];
   const utmCobertura = { snapshot: 0, store: 0, desconhecido: 0 };
-  const resolveCanalPago = (id: number, t: Track): string => {
-    if (t.utmAtBirth !== null) {
-      utmCobertura.snapshot++;
-      return classifyCanalPago(t.utmAtBirth, true);
-    }
-    if (opts.utmSourceByKitId?.has(id)) {
-      utmCobertura.store++;
-      return classifyCanalPago(opts.utmSourceByKitId.get(id), true);
-    }
-    if (t.utmLater !== null) {
-      utmCobertura.snapshot++;
-      return classifyCanalPago(t.utmLater, true);
-    }
-    if (t.utmBirthEmpty) {
-      // #10507: o nascimento provou campo vazio e nenhuma outra fonte trouxe
-      // valor → orgânico conhecido, não desconhecido.
-      utmCobertura.snapshot++;
-      return classifyCanalPago("", true);
-    }
-    utmCobertura.desconhecido++;
-    return classifyCanalPago(null, false);
+  const resolveTrackCanalPago = (id: number, t: Track): string => {
+    // #10507: nascimento com campo vazio e nenhuma outra fonte → orgânico
+    // conhecido, não desconhecido (precedência em `resolveCanalPago`).
+    const { canal, fonte } = resolveCanalPago(id, t, opts.utmSourceByKitId);
+    utmCobertura[fonte]++;
+    return canal;
   };
   for (const [id, t] of tracks) {
     const cohortDay = brtDay(t.created_at);
@@ -497,7 +510,7 @@ export function buildConfirmationReport(
       continue;
     }
     if (t.firstState === "active") {
-      ambActive.push({ dia: cohortDay, canal: t.origem ?? CANAL_UNKNOWN_LABEL, canalPago: resolveCanalPago(id, t) });
+      ambActive.push({ dia: cohortDay, canal: t.origem ?? CANAL_UNKNOWN_LABEL, canalPago: resolveTrackCanalPago(id, t) });
       continue;
     }
     if (t.firstState !== "inactive") {
@@ -509,7 +522,7 @@ export function buildConfirmationReport(
       cohortDay,
       daysToConfirm: t.firstActiveDate ? diffDays(cohortDay, t.firstActiveDate) : null,
       canal: t.origem ?? CANAL_UNKNOWN_LABEL,
-      canalPago: resolveCanalPago(id, t),
+      canalPago: resolveTrackCanalPago(id, t),
       via: t.via ? (CONFIRMOU_VIA_LABELS[t.via] ?? t.via) : CONFIRMOU_VIA_NONE_LABEL,
     });
   }
