@@ -691,9 +691,8 @@ describe("#11265 limpeza do vertical", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-  it("X/Threads pulados por falta de URL pública: terminais só quando o R2 está fora de cogitação (timer-300 sem R2)", () => {
+  it("X/Threads pulados por falta de URL pública nunca são terminais, em nenhum backend (#11478, R2 habilitado)", () => {
     const items = [{ destination: "x", mode: "guided" as const, action: "skip_missing_credentials" as const, detail: "sem URL pública", cause: "public_video" as const }];
     assert.deepEqual(credentialSkippedItems(items), []);
-    assert.deepEqual(credentialSkippedItems(items, { publicVideoTerminal: true }), [{ destination: "x", detail: "sem URL pública" }]);
   });
 });
