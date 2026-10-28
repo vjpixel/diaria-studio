@@ -18,17 +18,15 @@ id = "72784da4ae39444481eb422ebac357c6"
 # #11412 (fatia 1): binding do bucket R2 de mídia (`diaria-shorts`, público em
 # https://media.diar.ia.br) — fallback de `/img/{key}` para as imagens novas
 # da edição, que sobem em `img/{AAMMDD}/…` quando a flag
-# `platform.config.json → public_images_r2.enabled` liga. COMENTADO DE
-# PROPÓSITO: o deploy deste Worker é automático no push (.github/workflows/deploy-poll.yml), e um
-# binding que o deploy não consiga resolver derruba o Worker inteiro (o jogo É IA? junto).
-# O código já trata o binding ausente (`env.MEDIA` opcional → `/img/` serve
-# só o KV, como antes). Para ativar: descomentar o bloco aqui E no worker
-# irmão (workers/site/wrangler.toml), conferir o deploy e um GET de
-# `/img/img-{AAMMDD}-…` de uma key que só exista no R2, e só então ligar
-# `public_images_r2.enabled`. Passo a passo: scripts/lib/public-images-r2.ts.
-# [[r2_buckets]]
-# binding = "MEDIA"
-# bucket_name = "diaria-shorts"
+# `platform.config.json → public_images_r2.enabled` liga. ATIVO desde 28/10/2026 (/diaria-develop 261028):
+# o deploy (.github/workflows/deploy-poll.yml) foi conferido com o binding antes do
+# merge. O código trata o binding ausente (`env.MEDIA` opcional), mas um
+# binding que o deploy não resolva faz o deploy falhar, e o jogo É IA? fica
+# preso na versão anterior. Mexer aqui junto com o worker irmão
+# (workers/site/wrangler.toml). Passo a passo: scripts/lib/public-images-r2.ts.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "diaria-shorts"
 
 # #4054: `SUBSCRIBERS_KV` (verificação primária de assinante ativo pro gate
 # de `/jogar`, ver web-gate.ts) é OPCIONAL DE PROPÓSITO e NÃO está declarado
