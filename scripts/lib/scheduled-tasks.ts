@@ -1137,6 +1137,37 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#7250",
   },
   {
+    name: "Diaria-Doppler-Token-Expiry-Alarm",
+    description:
+      "alarma (issue P1/P2) quando um *_EXPIRES_AT do Doppler diaria-studio/dev está a <=14 dias de vencer, vencido ou ilegível — lê o vault, não o .env local (#11415, script #11077)",
+    steps: [{ key: "alarm", script: "scripts/doppler-token-expiry-alarm.ts" }],
+    logPath: "doppler-token-expiry-alarm/.alarm.log",
+    // #11415: o script existia desde o #11077 sem ponto de invocação (item 27
+    // de context/overnight-dispatch-rules.md: guard sem task não está
+    // entregue). É a rede de segurança do caso silencioso que as tasks de
+    // refresh não pegam — `.env` do 300 sem o token e sem o user id faz
+    // `Diaria-Threads-Personal-Token` sair 0 ("nada a renovar") e o token
+    // vencer calado; só um alarme que lê o VAULT avisa. Cobre
+    // THREADS_PERSONAL_*, LINKEDIN_PERSONAL_* e todo `*_EXPIRES_AT`.
+    //
+    // Diária 11:00 BRT, no fim do cluster matinal de alarmes (Codex 10:50,
+    // Ads-Daily-Digest 10:55) — slot livre conferido com `--list`. Diária e
+    // não mais frequente: a janela de aviso é de 14 dias e a resposta (refazer
+    // o OAuth) é manual; diária e não semanal porque o limiar "critical" é de
+    // 3 dias, e uma semana de latência o atravessaria. Repetição não vira
+    // spam: `applyAlarmReconciliation` deduplica por fingerprint (o nome da
+    // chave) e só reabre/comenta quando a faixa muda.
+    //
+    // Falha de leitura do Doppler (CLI ausente, login vencido) aborta antes de
+    // reconciliar, sem fechar issue nenhuma, e sai != 0 — a unit fica
+    // `failed` e o `Diaria-Systemd-Failed-Units-Alarm` pega. Sem `guard`: o
+    // dado lido é o vault, não `data/` (o estado de dedup em
+    // `data/doppler-token-expiry-alarm-issues.json` é o mesmo padrão dos
+    // vizinhos de `alarm-issues.ts`).
+    schedule: { kind: "daily", hour: 11, minute: 0 },
+    issue: "#11415, #11077",
+  },
+  {
     name: "Diaria-LinkedIn-Personal",
     description:
       "alarma o token do app LinkedIn PESSOAL (expiração 60d, revogação) — o post diário no perfil pessoal foi aposentado (#11398)",

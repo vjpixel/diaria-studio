@@ -586,6 +586,21 @@ describe("makeDopplerSet — resolução do binário (#10772, mesma do sync-env 
     assert.deepEqual(s.calls.map((c) => c.bin), ["/opt/doppler"]);
   });
 
+  it("#11415: passa --project diaria-studio --config dev explícitos (não depende do `doppler setup` do cwd)", () => {
+    const seen: string[][] = [];
+    const spawn: DopplerSpawn = (_bin, args) => {
+      seen.push(args);
+      return { status: 0, stderr: "" };
+    };
+    makeDopplerSet({ spawn, env: {}, exists: () => false, platform: "linux" })("THREADS_PERSONAL_ACCESS_TOKEN", "segredo");
+    assert.equal(seen.length, 1);
+    const args = seen[0];
+    assert.deepEqual(args.slice(0, 4), ["secrets", "set", "THREADS_PERSONAL_ACCESS_TOKEN", "--silent"]);
+    assert.equal(args[args.indexOf("--project") + 1], "diaria-studio");
+    assert.equal(args[args.indexOf("--config") + 1], "dev");
+    assert.ok(!args.includes("segredo"), "valor nunca na linha de comando");
+  });
+
   it("Windows: `doppler` do PATH roda com shell (resolve .cmd/.exe), como antes", () => {
     const s = spawnRec({});
     makeDopplerSet({ spawn: s.spawn, env: {}, platform: "win32", exists: () => false })("K", "v");
