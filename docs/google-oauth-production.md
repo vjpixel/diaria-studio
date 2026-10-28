@@ -15,7 +15,7 @@ O token OAuth do Google (`data/.credentials.json`) **expira a cada ~7 dias**, de
 
 - `drive-sync.ts` (Stage 0/3/4) → `invalid_grant: Token has been expired or revoked`
 - `inbox-drain.ts` (Stage 1) → submissões do editor para o inbox editorial **perdidas**
-- `upload-images-public --mode social` (Stage 4) → imagens sociais sem Drive
+- (histórico) `upload-images-public --mode social` (Stage 4) → imagens sociais sem Drive — não depende mais do OAuth Google desde #2147 (KV por padrão); o ramo Drive foi removido no #11414
 
 ## Causa raiz
 

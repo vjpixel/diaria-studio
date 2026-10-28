@@ -226,7 +226,7 @@ falha aqui é issue de I/O. Logar warning e prosseguir.
 
 **Este passo é crítico.** Gera HTML completo + sobe imagens pro Cloudflare Worker KV ANTES de qualquer interação com o browser.
 
-> **#1119 (2026-05-11)**: Imagens pra newsletter daily agora vão pro Cloudflare Worker KV (`/img/{key}`), não pro Drive. Razão: Drive `uc?id=...` retorna HTML wrapper na 1ª request + throttle agressivo + sem Cache-Control. Cloudflare entrega JPEG direto, com `Cache-Control: public, max-age=31536000, immutable`. LinkedIn/Facebook seguem com Drive (mode `social`) — OG preview funciona melhor lá.
+> **#1119 (2026-05-11)**: Imagens pra newsletter daily agora vão pro Cloudflare Worker KV (`/img/{key}`), não pro Drive. Razão: Drive `uc?id=...` retorna HTML wrapper na 1ª request + throttle agressivo + sem Cache-Control. Cloudflare entrega JPEG direto, com `Cache-Control: public, max-age=31536000, immutable`. Desde #2147 o modo `social` (LinkedIn/Facebook) também vai pro KV, e o ramo Drive foi removido do script no #11414.
 
 #### 1.1 Extrair metadata
 
@@ -252,9 +252,9 @@ KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servid
 
 Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eia_a, eia_b: { url, file_id, filename, target: "cloudflare" } }` (edições antigas: `eia_real`/`eia_ia` no lugar de `eia_a`/`eia_b`).
 
-Resume-aware: re-execução pula imagens já no cache, **respeitando target**. Se cache tem entries `target=drive` mas o run pede `target=cloudflare`, faz re-upload.
+Resume-aware: re-execução pula imagens já no cache, **respeitando target**. Entry legada `target=drive` (ou sem `target`) de edição antiga é re-uploadada pro KV.
 
-**Escape hatch**: passar `--target drive` força Drive (ex: pra debug ou edições antigas que dependiam de URLs Drive específicas).
+**Sem escape hatch pro Drive**: `--target drive` foi removido no #11414 (o script sai com erro); o único destino é `cloudflare`.
 
 **Credenciais Cloudflare**: `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` no `.env`. Namespace ID lido de `platform.config.json → poll.kv_namespace_id`.
 

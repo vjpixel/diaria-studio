@@ -1,11 +1,13 @@
 /**
  * upload-images-public.ts
  *
- * Faz upload das imagens de destaque (D1 square, D2, D3) pro Google Drive
- * como arquivos publicamente acessíveis, retornando URLs shareable.
+ * Faz upload das imagens da edição (destaques, capa, É IA?, slides) pro
+ * Cloudflare KV servido pelo Worker (`/img/{key}`), retornando URLs públicas.
+ * Único destino desde #11414 — o ramo Google Drive (`uc?id=`) foi removido;
+ * o default já era KV para todos os modos desde #2147.
  *
- * Usado pelo Stage 4 social (LinkedIn / Facebook) — `publish-linkedin.ts`
- * passa a URL no payload Make.com pra `image_url`; LinkedIn renderiza preview.
+ * Usado pelo Stage 4 (pré-render) e pelo Stage 5 (publishers sociais leem
+ * `06-public-images.json` e passam a URL como `image_url`).
  *
  * Uso:
  *   npx tsx scripts/upload-images-public.ts --edition-dir data/editions/260424/
@@ -23,7 +25,7 @@
  * Cache: escreve em `{edition_dir}/06-public-images.json`. Re-execuções
  * reusam file_ids existentes (skip re-upload).
  *
- * Credenciais: data/.credentials.json (via google-auth.ts).
+ * Credenciais: CLOUDFLARE_* do .env + `platform.config.json` → poll.kv_namespace_id.
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -32,7 +34,6 @@ loadProjectEnv(); // #1157 — carrega .env antes de process.env access (CLOUDFL
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
@@ -50,16 +51,18 @@ import { D1_PLAY_HERO_FILE, D1_PLAY_IMAGE_KEY, D1_PLAY_STAMP_FILE } from "./lib/
 import { D1_NO_VIDEO_MARKER_FILE, isNoVideoEdition } from "./lib/diaria/d1-no-video.ts"; // #11125
 import type { D1PlayImageResult } from "./lib/diaria/d1-play-image.ts"; // #10784 (sharp só carrega via import dinâmico)
 
-const DRIVE_API = "https://www.googleapis.com/drive/v3";
-const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
-
 export interface PublicImage {
-  /** Drive file_id (target=drive) ou Cloudflare KV key (target=cloudflare). #1119 */
+  /** Cloudflare KV key (target=cloudflare). Entries legadas `target=drive` guardam o file_id do Drive. #1119 */
   file_id: string;
   url: string;
   mime_type: string;
   filename: string;
-  /** Target onde a imagem está hospedada. Default drive (compat com edições antigas). #1119 */
+  /**
+   * Target onde a imagem está hospedada (#1119). Hoje sempre "cloudflare";
+   * "drive" só aparece em caches de edições antigas (o upload pro Drive foi
+   * removido no #11414) e ausente = entry muito antiga (tratada como drive).
+   * Qualquer entry não-cloudflare é re-uploadada (ver `shouldReuseCachedUpload`).
+   */
   target?: "drive" | "cloudflare";
   /** #1418: md5 dos bytes locais no momento do upload — pra detectar drift
    * em re-runs (imagem regerada local com bytes novos mas cache aponta pro
@@ -72,15 +75,16 @@ export interface PublicImage {
   cloudflare_url?: string;
 }
 
-/** Target de hospedagem das imagens. #1119 */
-export type UploadTarget = "drive" | "cloudflare";
+/**
+ * Target de hospedagem das imagens (#1119). Só "cloudflare" desde #11414 —
+ * o escape hatch `--target drive` foi removido junto com o ramo Drive.
+ */
+export type UploadTarget = "cloudflare";
 
 /**
  * Default de target por modo (#1119, unificado em #2147):
  * todos os modes → cloudflare (KV). Parâmetro `mode` mantido por compat de
  * assinatura; ignorado — o retorno é sempre "cloudflare".
- *
- * Editor pode override via flag `--target drive`/`--target cloudflare`.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function defaultTargetFor(_mode: UploadMode): UploadTarget {
@@ -102,26 +106,6 @@ export interface PublicImagesOutput {
    * social/all). Ausente no modo newsletter e com `destaques` explícitos.
    */
   use_melhor_carousel?: UseMelhorCarouselRefresh;
-}
-
-/**
- * URL shareable pra preview de imagem em LinkedIn/Facebook.
- * Formato `uc?id=X&export=view` serve bytes da imagem diretamente com
- * content-type correto — crawlers de preview detectam como imagem.
- *
- * Alternativa `file/d/{id}/view` serve HTML wrapper — útil pra OG preview,
- * mas preview de imagem direto é melhor visualmente.
- */
-export function publicImageUrl(fileId: string): string {
-  return `https://drive.google.com/uc?id=${fileId}&export=view`;
-}
-
-/**
- * URL alternativa formato "view" (HTML wrapper com og:image meta).
- * Pode funcionar melhor em alguns clients.
- */
-export function publicFileViewUrl(fileId: string): string {
-  return `https://drive.google.com/file/d/${fileId}/view?usp=sharing`;
 }
 
 /** Detecta mime type básico por extensão. */
@@ -341,54 +325,6 @@ export function imageSpecsFor(
   return out;
 }
 
-async function driveUploadFile(
-  name: string,
-  content: Buffer,
-  mimeType: string,
-): Promise<{ id: string }> {
-  const boundary = "diaria_public_" + Date.now();
-  const metadataPart =
-    `--${boundary}\r\n` +
-    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
-    JSON.stringify({ name }) +
-    `\r\n`;
-  const contentPart =
-    `--${boundary}\r\n` +
-    `Content-Type: ${mimeType}\r\n\r\n`;
-  const closingBoundary = `\r\n--${boundary}--`;
-
-  const body = Buffer.concat([
-    Buffer.from(metadataPart, "utf8"),
-    Buffer.from(contentPart, "utf8"),
-    content,
-    Buffer.from(closingBoundary, "utf8"),
-  ]);
-
-  const res = await gFetch(
-    `${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id`,
-    {
-      method: "POST",
-      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
-      body,
-    },
-  );
-  if (!res.ok) {
-    throw new Error(`Drive upload error (${res.status}): ${await res.text()}`);
-  }
-  return res.json() as Promise<{ id: string }>;
-}
-
-async function makeFilePublic(fileId: string): Promise<void> {
-  const res = await gFetch(`${DRIVE_API}/files/${fileId}/permissions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ role: "reader", type: "anyone" }),
-  });
-  if (!res.ok) {
-    throw new Error(`Drive permission error (${res.status}): ${await res.text()}`);
-  }
-}
-
 function loadCache(cachePath: string): Record<string, PublicImage> {
   if (!existsSync(cachePath)) return {};
   try {
@@ -422,7 +358,7 @@ export { md5OfFile };
  * #1418: decide se um cached entry pode ser reused pra um source path local.
  * Reuse OK quando:
  *   1. cache tem file_id válido (upload anterior teve sucesso), E
- *   2. target bate (não mudou drive ↔ cloudflare), E
+ *   2. target bate (entry legada `drive`, ou sem target, nunca é reusada), E
  *   3. md5 do cache bate com md5 atual do arquivo local
  *      (ausência de md5 no cache = entry pre-#1418 → assume drift, re-upload).
  */
@@ -464,9 +400,9 @@ export interface UploadOptions {
   /** #1418: ignora cache md5/target e força re-upload. Útil pra recovery. */
   forceReupload?: boolean;
   /**
-   * #1865: seam de injeção pros uploads de rede (Cloudflare KV / Drive). Default
-   * usa as implementações reais; testes injetam stubs pra exercitar o merge
-   * cross-mode sem rede (gFetch faz OAuth do Google, inviável em teste).
+   * #1865: seam de injeção pro upload de rede (Cloudflare KV). Default usa a
+   * implementação real; testes injetam stubs pra exercitar o merge cross-mode
+   * sem rede.
    */
   uploaders?: UploadDeps;
   /**
@@ -485,8 +421,6 @@ export interface UploadDeps {
     key: string,
     cfg: { kvNamespaceId: string; workerUrl: string },
   ) => Promise<string>;
-  uploadToDrive?: (name: string, content: Buffer, mime: string) => Promise<{ id: string }>;
-  makeDrivePublic?: (fileId: string) => Promise<void>;
 }
 
 /**
@@ -644,15 +578,13 @@ export async function uploadPublicImages(
   // #1865: uploaders injetáveis (default = reais). Testes stubbam pra exercitar
   // o merge sem rede.
   const uploadToCloudflare = opts.uploaders?.uploadToCloudflare ?? uploadImageToWorkerKV;
-  const uploadToDrive = opts.uploaders?.uploadToDrive ?? driveUploadFile;
-  const makeDrivePublic = opts.uploaders?.makeDrivePublic ?? makeFilePublic;
 
-  // Cloudflare config (lazy — só carrega se target=cloudflare e uploader real).
+  // Cloudflare config (lazy — só carrega com o uploader real).
   // Quando opts.uploaders.uploadToCloudflare é injetado (testes), o cfConfig
   // não é necessário — o stub ignora o 3º arg. Isso elimina a dependência
   // implícita de platform.config.json nos testes (#2147 finding 6).
   let cfConfig: { kvNamespaceId: string; workerUrl: string } | null = null;
-  if (target === "cloudflare" && !opts.uploaders?.uploadToCloudflare) {
+  if (!opts.uploaders?.uploadToCloudflare) {
     const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const kvNamespaceId = cfg?.poll?.kv_namespace_id;
@@ -694,7 +626,7 @@ export async function uploadPublicImages(
     const localMd5 = md5OfFile(imagePath);
 
     // #1418: cache hit + md5 match → reuse. md5 ausente (entries pre-#1418)
-    // OU mudou drive↔cloudflare OU bytes locais diferem → re-uploadar.
+    // OU entry legada do Drive OU bytes locais diferem → re-uploadar.
     // #1865: a decisão de REUSE ainda gateia em `skipExisting` (--no-cache →
     // false → reuse=false → re-upload). `existing[spec.key]` só alimenta o
     // shouldReuse e a preservação de cloudflare_url; não força reuse sozinho.
@@ -705,45 +637,25 @@ export async function uploadPublicImages(
     // gravaríamos agora. Uma key legacy do É IA? COM hash (cacheada antes do
     // noCacheBust) passa no check de md5 mas aponta pra key errada → /vote 404.
     // Forçar re-upload nesse caso pra a key sem hash de fato cair no KV.
-    if (reuse && target === "cloudflare" && cached?.file_id !== kvKeyForSpec(editionDir, spec, localMd5)) {
+    if (reuse && cached?.file_id !== kvKeyForSpec(editionDir, spec, localMd5)) {
       reuse = false;
     }
     if (reuse) continue;
 
-    if (target === "cloudflare") {
-      // #1584: md5 suffix no key cache-busts re-uploads.
-      // #1704: imagens do É IA? (spec.noCacheBust) NÃO recebem o sufixo — o
-      // Worker /vote monta a URL com convenção fixa sem hash; com sufixo dá 404.
-      const key = kvKeyForSpec(editionDir, spec, localMd5);
-      const url = await uploadToCloudflare(imagePath, key, cfConfig!);
-      images[spec.key] = {
-        file_id: key,
-        url,
-        mime_type: mime,
-        filename: spec.filename,
-        target: "cloudflare",
-        md5: localMd5,
-        cloudflare_url: url,
-      };
-    } else {
-      const content = readFileSync(imagePath);
-      const driveName = `diaria-${spec.key}-${Date.now()}-${spec.filename}`;
-      const { id: fileId } = await uploadToDrive(driveName, content, mime);
-      await makeDrivePublic(fileId);
-      // #1584: preserva cloudflare_url se já estava no cache (mode=newsletter
-      // rodou primeiro e fez upload pra Cloudflare). Sem isso, social mode
-      // sobrescrevia o entry e o renderer social perdia a URL Cloudflare.
-      const preservedCloudflare = cached?.cloudflare_url;
-      images[spec.key] = {
-        file_id: fileId,
-        url: publicImageUrl(fileId),
-        mime_type: mime,
-        filename: spec.filename,
-        target: "drive",
-        md5: localMd5,
-        ...(preservedCloudflare ? { cloudflare_url: preservedCloudflare } : {}),
-      };
-    }
+    // #1584: md5 suffix no key cache-busts re-uploads.
+    // #1704: imagens do É IA? (spec.noCacheBust) NÃO recebem o sufixo — o
+    // Worker /vote monta a URL com convenção fixa sem hash; com sufixo dá 404.
+    const key = kvKeyForSpec(editionDir, spec, localMd5);
+    const url = await uploadToCloudflare(imagePath, key, cfConfig!);
+    images[spec.key] = {
+      file_id: key,
+      url,
+      mime_type: mime,
+      filename: spec.filename,
+      target,
+      md5: localMd5,
+      cloudflare_url: url,
+    };
   }
 
   // #9795: chaves de slide do 4º post sem arquivo local (sobra de um render
@@ -853,9 +765,9 @@ async function main(): Promise<void> {
   const editionDirArg = args["edition-dir"];
   if (typeof editionDirArg !== "string") {
     console.error(
-      "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--target drive|cloudflare] [--no-cache] [--force-reupload]\n" +
+      "Uso: upload-images-public.ts --edition-dir <path> [--mode social|newsletter|all] [--target cloudflare] [--no-cache] [--force-reupload]\n" +
         "\n" +
-        "Default target: 'cloudflare' pra todos os modes (#2147 — d2/d3 social agora vão pro KV, não Drive).\n" +
+        "Target: sempre 'cloudflare' (KV). O ramo Drive foi removido no #11414.\n" +
         "--force-reupload: ignora cache md5/target e força re-upload (recovery após bytes locais mudarem).",
     );
     process.exit(1);
@@ -869,8 +781,15 @@ async function main(): Promise<void> {
       : "social";
 
   const targetArg = args.target;
-  const target: UploadTarget | undefined =
-    targetArg === "drive" || targetArg === "cloudflare" ? targetArg : undefined;
+  if (targetArg !== undefined && targetArg !== "cloudflare") {
+    // #11414: `--target drive` deixou de existir — falhar alto em vez de cair
+    // em silêncio no KV, pra quem ainda tem o escape hatch antigo em script/doc.
+    console.error(
+      `upload-images-public: --target ${String(targetArg)} não é suportado — o único destino é 'cloudflare' (ramo Drive removido no #11414).`,
+    );
+    process.exit(1);
+  }
+  const target: UploadTarget | undefined = targetArg === "cloudflare" ? targetArg : undefined;
 
   const result = await uploadPublicImages({ editionDir, mode, skipExisting, target, forceReupload });
   console.log(JSON.stringify(result, null, 2));

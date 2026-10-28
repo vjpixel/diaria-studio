@@ -97,22 +97,23 @@ O composer abre por padrão no contexto do perfil pessoal. É obrigatório troca
 - Conteúdo: seção `## d{N}` dentro de `# LinkedIn` em `03-social.md`, com heading e comentários HTML removidos.
 - Não adicionar nada — o conteúdo já vem pronto e revisado por Clarice.
 
-### 5. Imagem via URL pública (Drive) — #48
+### 5. Imagem via URL pública (Cloudflare KV) — #48, #2147, #11414
 
-**Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__claude-in-chrome__upload_image`), **colar a URL pública** retornada pelo pre-flight do agent (`scripts/upload-images-public.ts`). LinkedIn auto-detecta e renderiza preview visual.
+**Mudança**: em vez de upload do arquivo local (que não funciona via `mcp__claude-in-chrome__upload_image`), **colar a URL pública** que `scripts/upload-images-public.ts --mode social` grava em `{edition_dir}/06-public-images.json`. LinkedIn auto-detecta e renderiza preview visual.
 
+- Destino é sempre o Cloudflare Worker KV (`defaultTargetFor` → `"cloudflare"` em todos os modos desde #2147; o ramo Google Drive e o `uc?id=` foram removidos no #11414). A URL tem a forma `https://eia.diar.ia.br/img/img-{AAMMDD}-04-d{N}-4x5-{md5}.jpg` — copiar o campo `url` da chave do destaque (`d{N}_4x5`, ou o hero 2:1 quando o card 4:5 não existir) em `06-public-images.json`, nunca montar à mão.
 - No campo do composer, **appendar em linha separada no fim do texto** (depois de hashtags):
   ```
   (texto do post)
 
   (hashtags)
 
-  https://drive.google.com/uc?id={file_id}&export=view
+  {url de 06-public-images.json}
   ```
-- LinkedIn detecta a URL em 1-2s e renderiza card de preview com a imagem inline.
-- Se o preview não renderizar (rare — Drive a vezes demora), aguardar 5s e re-verificar.
-- Se não renderizar mesmo assim, tentar URL alternativa: `https://drive.google.com/file/d/{file_id}/view` (HTML wrapper com og:image).
+- LinkedIn detecta a URL em 1-2s e renderiza card de preview com a imagem inline (o Worker serve o JPEG direto com `Content-Type: image/jpeg`).
+- Se o preview não renderizar, aguardar 5s e re-verificar. Persistindo, conferir se a URL abre no navegador (KV vazio = rodar o upload de novo) antes de publicar sem imagem.
 - **Não** clicar em ícone de Photo (📷) — upload local não funciona no Claude in Chrome.
+- Este roteiro é o fallback manual: o caminho padrão da página é a API (`publish-linkedin.ts`, que lê o mesmo `06-public-images.json`).
 
 **Trade-off vs upload nativo**:
 - Preview do LinkedIn mostra card de link em vez de imagem fullscreen.
