@@ -1685,8 +1685,8 @@ async function resolveChromeAuthorReader(
   apiAuthorPage: string | null,
   pages: ResolvedFacebookPage[],
   igApiVersion: string,
-): Promise<{ reader: Extract<InstagramAuthor, { ready: true }> | null; unavailable?: string }> {
-  if (apiAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) return { reader: null, unavailable: "é a mesma conta da API" };
+): Promise<{ reader: Extract<InstagramAuthor, { ready: true }> | null; unavailable?: string; sameAccount?: true }> {
+  if (apiAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) return { reader: null, unavailable: "é a mesma conta da API", sameAccount: true };
   const resolved = await resolveInstagramAuthor(defaultGraphDeps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
   return resolved.ready ? { reader: resolved } : { reader: null, unavailable: resolved.reason };
 }
@@ -1702,17 +1702,31 @@ async function resolveChromeAuthorReader(
  *   bloqueou; se ele também não tem nada, segue a da API (publica);
  * - leitura do perfil que falha → propaga (o gate vira `read-failed` e não
  *   publica: fail-closed, igual à leitura da conta da API);
- * - perfil não consultável (`chromeAuthor` null: sem credencial da página
- *   `vjpixel`) → segue a da API. Premissa: exigir a credencial travaria toda
- *   publicação pela API; o motivo vai pro log do chamador.
+ * - perfil não consultável por ser a mesma conta da API (`chromeAuthor` null,
+ *   sem `chromeAuthorUnavailable`) → segue a da API: ela já é o perfil do autor;
+ * - perfil não consultável por falta da credencial da página `vjpixel`
+ *   (`chromeAuthor` null com `chromeAuthorUnavailable`) → fail-closed (#11421):
+ *   lança `InstagramTimerGateError` `author-unchecked` e não publica. Um Reels
+ *   postado à mão com collab pendente seria invisível e a API duplicaria o post
+ *   em conta pública; o timer alarma para o editor postar pelo Chrome ou prover
+ *   a credencial. Só vale quando a conta da API não tem nada: achado/bloqueio
+ *   nela continua decidindo sozinho.
  */
 export async function decideInstagramTimerAcrossAccounts(deps: {
   primary: () => Promise<InstagramConfirmDecision>;
   chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null;
+  /** Por que o perfil do autor não é consultável (sem credencial). Ausente com `chromeAuthor` null = mesma conta da API. */
+  chromeAuthorUnavailable?: string;
 }): Promise<InstagramConfirmDecision> {
   const primary = await deps.primary();
   if (primary.kind !== "refuse" || (primary.cause !== "none" && primary.cause !== "no-match")) return primary;
-  if (!deps.chromeAuthor) return primary;
+  if (!deps.chromeAuthor) {
+    if (deps.chromeAuthorUnavailable === undefined) return primary;
+    throw new InstagramTimerGateError(
+      `o perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não foi conferido (${deps.chromeAuthorUnavailable}) — um Reels postado à mão com collab pendente não aparece na conta da API; o timer não publica sem conferir. Poste pelo Chrome (collab) ou forneça a credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300`,
+      "author-unchecked",
+    );
+  }
   const author = await deps.chromeAuthor();
   if (author.kind === "refuse" && (author.cause === "none" || author.cause === "no-match")) return primary;
   return author;
@@ -1744,9 +1758,11 @@ export function instagramTimerPreflight(decision: InstagramConfirmDecision): Ins
  * #11265: por que a conferência da conta do timer não deixou publicar.
  * `blocked` = pode haver Reels da edição na conta (ambíguo, janela ou media-id);
  * `read-failed` = a leitura do `/media` falhou; `persist-failed` = o Reels foi
- * ACHADO na conta, mas o registro não foi gravado (`entry` = o achado).
+ * ACHADO na conta, mas o registro não foi gravado (`entry` = o achado);
+ * `author-unchecked` (#11421) = nada na conta da API, mas o perfil do autor da
+ * rota do Chrome (@vjpixel) não pôde ser conferido (sem credencial).
  */
-export type InstagramTimerGateFailure = "blocked" | "read-failed" | "persist-failed";
+export type InstagramTimerGateFailure = "blocked" | "read-failed" | "persist-failed" | "author-unchecked";
 
 /**
  * #11265: erro da conferência da conta do timer. O resultado do destino leva
@@ -1782,6 +1798,7 @@ export async function instagramTimerGate(deps: {
   try {
     decision = await deps.decide();
   } catch (e) {
+    if (e instanceof InstagramTimerGateError) throw e; // #11421: `author-unchecked` não é falha de leitura
     throw new InstagramTimerGateError(`a leitura da conta do Instagram falhou (${e instanceof Error ? e.message : String(e)}) — o timer não publica sem conferir`, "read-failed");
   }
   const pre = instagramTimerPreflight(decision);
@@ -2924,7 +2941,8 @@ async function main(): Promise<number> {
           const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
           // Fix do review do PR #11395: o gate olha também o perfil do @vjpixel (Reels à mão com collab pendente).
           const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
-          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não conferido antes de publicar (${chrome.unavailable ?? "sem motivo"})`);
+          // #11421: sem a credencial da página do autor, o gate não publica (fail-closed) se a conta da API não tiver o Reels.
+          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não consultável (${chrome.unavailable ?? "sem motivo"})${chrome.sameAccount ? "" : " — o timer não publica pela API sem conferir"}`);
           const readFor = (igUserId: string, token: string) => () =>
             readAndDecideInstagramConfirm(defaultGraphDeps, {
               igUserId,
@@ -2944,6 +2962,7 @@ async function main(): Promise<number> {
                   decideInstagramTimerAcrossAccounts({
                     primary: readFor(author.igUserId, author.token),
                     chromeAuthor: chromeReader ? readFor(chromeReader.igUserId, chromeReader.token) : null,
+                    ...(chromeReader || chrome.sameAccount ? {} : { chromeAuthorUnavailable: chrome.unavailable ?? "sem credencial" }),
                   }),
                 persist: (entry) => {
                   published = persist(entry);
