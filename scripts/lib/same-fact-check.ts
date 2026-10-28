@@ -113,18 +113,32 @@ const NON_PRODUCT_WORDS = new Set([
 ]);
 
 /**
+ * Palavra de produto: nome próprio (`Sonnet`), sigla (`GPT`) ou marca em
+ * camelCase com inicial minúscula (`iOS`, `macOS`, `iPhone`, #11496). O
+ * camelCase exige 1-6 minúsculas seguidas de UMA maiúscula, então palavra
+ * comum toda em minúsculas ("versão 2", "top 10") continua de fora.
+ */
+const PRODUCT_WORD_SRC = String.raw`\p{Lu}[\p{L}]+|\p{Lu}{2,}|\p{Ll}{1,6}\p{Lu}[\p{L}]*`;
+
+/**
  * Extrai pares `produto versão` normalizados de um título.
  *
  * Aceita "Sonnet 5.5", "GPT-6.1", "Gemma 4", "Llama 4.1", "o3"-like não
  * (sem separador não há como distinguir de palavra comum). Exige:
  *   - palavra do produto com inicial maiúscula ou toda em maiúsculas
- *     (nome próprio) e ≥2 letras;
+ *     (nome próprio) e ≥2 letras — ou marca em camelCase que começa com
+ *     minúscula (`iOS`, `iPadOS`, `macOS`, `watchOS`, `visionOS`, `iPhone`,
+ *     #11496: "iOS 27.2" não casava e a Siri em português saiu dois dias
+ *     seguidos);
  *   - versão numérica curta (1-2 dígitos, opcional `.d+`) que NÃO seja
  *     seguida de `%`, unidade monetária ou mais dígitos (anos, cifras).
  */
 export function extractVersionedProducts(title: string): Set<string> {
   const out = new Set<string>();
-  const re = /(?<![\p{L}\p{N}])(\p{Lu}[\p{L}]+|\p{Lu}{2,})[\s-](\d{1,2}(?:[.,]\d{1,2})?)(?![\p{N}%]|[.,]\d|\s?(?:mil|bi|mi|bilh|milh|billion|million|k\b))/gu;
+  const re = new RegExp(
+    `(?<![\\p{L}\\p{N}])(${PRODUCT_WORD_SRC})[\\s-](\\d{1,2}(?:[.,]\\d{1,2})?)(?![\\p{N}%]|[.,]\\d|\\s?(?:mil|bi|mi|bilh|milh|billion|million|k\\b))`,
+    "gu",
+  );
   for (const m of title.matchAll(re)) {
     const word = m[1].toLowerCase();
     if (NON_PRODUCT_WORDS.has(word)) continue;
@@ -153,7 +167,10 @@ const NON_VARIANT_WORDS = new Set([
  */
 export function extractProductVariants(text: string): Map<string, string> {
   const out = new Map<string, string>();
-  const re = /(?<![\p{L}\p{N}])(\p{Lu}[\p{L}]+|\p{Lu}{2,})[\s-](\d{1,2}(?:[.,]\d{1,2})?)\s(\p{Lu}[\p{L}]+)/gu;
+  const re = new RegExp(
+    `(?<![\\p{L}\\p{N}])(${PRODUCT_WORD_SRC})[\\s-](\\d{1,2}(?:[.,]\\d{1,2})?)\\s(\\p{Lu}[\\p{L}]+)`,
+    "gu",
+  );
   for (const m of text.matchAll(re)) {
     const variant = m[3].toLowerCase();
     if (NON_VARIANT_WORDS.has(variant)) continue;

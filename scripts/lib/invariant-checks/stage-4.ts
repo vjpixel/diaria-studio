@@ -1,4 +1,7 @@
 import { findFactRecurrences, findIntraEditionFactRecurrences, type IntraEditionItem } from "../fact-recurrence.ts";
+import { findStoryTwice, type PastStoryItem } from "../story-twice-in-edition.ts"; // #11496
+import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
+import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
 /**
  * Invariants de Stage 4 — Publicação (#1007 Fase 1).
  *
@@ -1975,6 +1978,119 @@ export function checkIntraEditionFactRecurrence(editionDir: string): InvariantVi
   });
 }
 
+/** #11496: quantas edições anteriores entram na comparação de MESMA HISTÓRIA
+ *  (`story-twice-in-edition`). Mesma janela curta do gatilho cross-source do
+ *  Stage 1 (3 edições): produto+versão repetido mais longe que isso é mais
+ *  provável desdobramento que repetição. */
+export const STORY_TWICE_PAST_WINDOW = 3;
+
+/**
+ * #11496: itens PUBLICADOS (`02-reviewed.md`) das `window` edições anteriores
+ * a `currentAammdd` em `editionsRoot` (layout flat ou nested). Arquivo
+ * ausente ou ilegível = edição ignorada.
+ */
+export function readPastStoryItems(
+  editionsRoot: string,
+  currentAammdd: string,
+  window: number = STORY_TWICE_PAST_WINDOW,
+): PastStoryItem[] {
+  if (!existsSync(editionsRoot)) return [];
+  const dirs = enumerateEditionDirs(editionsRoot);
+  const out: PastStoryItem[] = [];
+  for (const aammdd of recentEditionDirs(editionsRoot, window, currentAammdd)) {
+    const dir = dirs.get(aammdd);
+    if (!dir) continue;
+    const file = resolve(dir, "02-reviewed.md");
+    if (!existsSync(file)) continue;
+    let md: string;
+    try {
+      md = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const { highlights, pool } = readIntraEditionItems(md);
+    for (const h of highlights) out.push({ ...h, aammdd, highlight: true });
+    for (const it of pool) out.push({ ...it, aammdd, highlight: false });
+  }
+  return out;
+}
+
+/**
+ * #11496: a MESMA HISTÓRIA duas vezes na edição final — destaque × destaque,
+ * item do pool × destaque (sinais do dedup intra-edição do Stage 1) — ou
+ * qualquer item repetindo, por produto+versão no título, um item publicado nas
+ * últimas `STORY_TWICE_PAST_WINDOW` edições. Roda sobre o `02-reviewed.md`
+ * FINAL, então pega a duplicata que as trocas do gate (swap/promote/demote)
+ * reintroduzem depois do Stage 1 (caso 261029: Siri demovida de D3 voltou ao
+ * RADAR repetindo o D2 de 261028; Genie 4 em D2 e em LANÇAMENTOS).
+ * Severity "warning" (premissa registrada na PR: o editor pode querer o
+ * desdobramento; o aviso sobe ao gate como 🚨, não bloqueia).
+ */
+export function checkStoryTwiceInEdition(
+  editionDir: string,
+  editionsRoot: string = resolve(ROOT, "data/editions"),
+): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const { highlights, pool } = readIntraEditionItems(readFileSync(file, "utf8"));
+  const past = readPastStoryItems(editionsRoot, basename(editionDir));
+  return findStoryTwice(highlights, pool, past).map(w => ({
+    rule: "story-twice-in-edition", source_issue: "#11496", severity: "warning" as const, file,
+    message: w.scope === "edition"
+      ? `🚨 Mesma história duas vezes na edição: [${w.item_label}] “${w.item_title}” (${w.item_url}) repete ${w.matched_label} “${w.matched_title}” (sinal: ${w.signal}). Cortar um dos dois no gate, salvo desdobramento.`
+      : `🚨 Mesma história de edição recente: [${w.item_label}] “${w.item_title}” (${w.item_url}) repete ${w.matched_label} de ${w.matched_edition} “${w.matched_title}” (${w.signal}). Cortar no gate, salvo fato novo.`,
+  }));
+}
+
+/**
+ * #11496 item 4: o passe de tema do Stage 1 (`check-highlight-themes.ts`)
+ * grava em `_internal/01-highlight-theme-check.json → warnings[]` o candidato a
+ * destaque que repete o tema de um DESTAQUE recente (`cross_source_match:
+ * true`, threshold baixo contra destaques reais, #8951). Esse aviso nunca
+ * chegava ao editor: o Stage 1 roda em `--no-gates` e o resumo do gate 4 só
+ * lia `same_fact_warnings`. Caso 261029: a Siri do D1 candidato repetia o D2
+ * de 261028 (jaccard 0.5) e só foi percebida porque o editor perguntou.
+ * Aqui sai como warning 🚨 quando a URL do candidato ainda está no
+ * `02-reviewed.md` final; item que já tem `same_fact_warnings` fica de fora
+ * (um aviso por item, o MESMO FATO já aparece no gate).
+ */
+export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolation[] {
+  const reviewed = resolve(editionDir, "02-reviewed.md");
+  const themeFile = resolve(editionDir, "_internal", "01-highlight-theme-check.json");
+  if (!existsSync(reviewed) || !existsSync(themeFile)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(themeFile, "utf8"));
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== "object") return [];
+  const { warnings, same_fact_warnings } = parsed as { warnings?: unknown; same_fact_warnings?: unknown };
+  if (!Array.isArray(warnings)) return [];
+  const sameFactUrls = new Set(
+    (Array.isArray(same_fact_warnings) ? same_fact_warnings : [])
+      .map((w) => (w && typeof w === "object" ? (w as { item_url?: unknown }).item_url : undefined))
+      .filter((u): u is string => typeof u === "string")
+      .map((u) => canonicalize(u)),
+  );
+  const inEdition = new Set(extractUrlsWithLines(readFileSync(reviewed, "utf8")).map(({ url }) => canonicalize(url)));
+  const out: InvariantViolation[] = [];
+  const seen = new Set<string>();
+  for (const w of warnings) {
+    if (!w || typeof w !== "object") continue;
+    const { cross_source_match, candidate_url, candidate_title, matched_edition, matched_title, jaccard } = w as Record<string, unknown>;
+    if (cross_source_match !== true || typeof candidate_url !== "string") continue;
+    const url = canonicalize(candidate_url);
+    if (!inEdition.has(url) || sameFactUrls.has(url) || seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      rule: "theme-cross-source-repeat", source_issue: "#11496", severity: "warning", file: reviewed,
+      message: `🚨 Repete tema de destaque recente: “${String(candidate_title ?? "")}” (${candidate_url}) × ${String(matched_edition ?? "?")} “${String(matched_title ?? "")}” (jaccard=${String(jaccard ?? "?")}, gatilho cross-source do Stage 1). Cortar no gate, salvo fato novo.`,
+    });
+  }
+  return out;
+}
+
 export interface DuplicateUrlMatch {
   url: string;
   line: number;
@@ -3933,6 +4049,16 @@ export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "intra-edition-fact-recurrence", description: "Item do pool com a mesma história de um destaque ou de outro item da edição (heurístico, warning-only)",
     source_issue: "#11173", stage: 4, run: checkIntraEditionFactRecurrence,
+  },
+  {
+    id: "story-twice-in-edition",
+    description: "Mesma história duas vezes na edição final (destaque × destaque, pool × destaque) ou repetindo item publicado nas últimas 3 edições por produto+versão (heurístico, warning-only)",
+    source_issue: "#11496", stage: 4, run: (dir: string) => checkStoryTwiceInEdition(dir),
+  },
+  {
+    id: "theme-cross-source-repeat",
+    description: "Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only)",
+    source_issue: "#11496", stage: 4, run: checkThemeCrossSourceRepeat,
   },
   {
     id: "no-duplicate-urls-vs-past-editions",
