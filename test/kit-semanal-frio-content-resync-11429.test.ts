@@ -209,6 +209,40 @@ describe("semanal de frio re-sincroniza o conteúdo do principal corrigido (#114
   });
 });
 
+describe("resíduos do self-review do #11440 (#11450)", () => {
+  it("dry-run de created_unverified com principal corrigido ⇒ informa a re-sincronização, sem PATCH nem escrita", async () => {
+    const t = kit({ own: ownState("created_unverified", OLD_HASH) });
+    const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: false }, t.d);
+    assert.equal(r.status, "dry_run");
+    assert.match(r.reason ?? "", /retomaria o rascunho 11/);
+    assert.match(r.reason ?? "", /re-sincronizaria o conteúdo/);
+    assert.deepEqual(t.contentPatches, []);
+    assert.deepEqual(t.schedules, []);
+    assert.deepEqual(t.written, []);
+  });
+
+  it("dry-run de created_unverified sem mudança no principal ⇒ só 'retomaria'", async () => {
+    const t = kit({ own: ownState("created_unverified", NEW_HASH) });
+    const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: false }, t.d);
+    assert.equal(r.status, "dry_run");
+    assert.doesNotMatch(r.reason ?? "", /re-sincronizaria/);
+  });
+
+  it("REGRESSÃO: falha ao gravar o estado depois do PATCH de conteúdo não vira failed (o Kit já está certo)", async () => {
+    const t = kit({ own: ownState("scheduled", OLD_HASH) });
+    const logs: string[] = [];
+    t.d.log = (l) => void logs.push(l);
+    t.d.writeOwnState = () => {
+      throw new Error("EACCES");
+    };
+    const r = await publishKitSemanalFrio(MONDAY_DIR, cfgFrioOn, { push: true }, t.d);
+    assert.equal(r.code, 0);
+    assert.equal(r.status, "content_synced");
+    assert.equal(t.contentPatches.length, 1);
+    assert.ok(logs.some((l) => /estado local não foi gravado/.test(l)), logs.join("\n"));
+  });
+});
+
 describe("criação grava o hash da cópia (#11429)", () => {
   it("source_content_hash do estado = hash do principal copiado", async () => {
     const t = kit({ own: null, mainContent: OLD });

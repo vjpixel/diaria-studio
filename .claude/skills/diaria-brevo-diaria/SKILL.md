@@ -218,8 +218,13 @@ do backfill enxergar os novos):
 6. `verify-kit-inactive-emails-mv.ts` (#8192 — pool "inactive do Kit com e-mail de confirmação há ≥72h"; recebe `--confirm` junto com `--confirm-mv`)
 7. `sync-kit-inactive-to-brevo.ts --push --max-add N` (só roda se o 6 passar; nunca recebe `--i-know-this-skips-mv` — esse pool só entra verificado)
 
-Os passos 6-7 são FAIL-SOFT: uma falha no pool Kit vira aviso no `summary`
-e não impede a campanha do dia. O preflight também roda o 7 em dry-run.
+8. **Passo 3c** — `sync-kit-sem-abertura-to-brevo.ts --push --max-add N` (#10437; só com `brevo_diaria.kit_sem_abertura.enabled = true`, desligado desde 27/10/2026, #11295)
+9. **Passo 3e** — `sync-kit-envio-brevo-orphans.ts --push` (#11431; só com o 3c DESLIGADO: repara os órfãos da tag `envio-brevo` sem entrada no store — quem ainda recebe pela Brevo ganha a entrada no store, sem ingerir nada; o resto perde a tag no Kit e volta à diária de lá. Store ausente ou vazio sai `exit 2` sem tocar em nada)
+10. **Passo 3d** — `sync-kit-frio.ts --push` (#11221; só com `kit.frio.enabled = true`; roda depois do 3e, pra o frio já ver quem voltou ao Kit)
+
+Os passos 6-10 são FAIL-SOFT: uma falha no pool Kit vira aviso no `summary`
+e não impede a campanha do dia. O preflight também roda o 7 e os passos
+3c/3e/3d em dry-run (cada um sob a mesma condição de config).
 
 O script PARA no primeiro passo que falhar (passos 1-5) — nunca continua a sequência com
 uma mutação parcial. Se o passo 4 (`verify-pending-emails-mv`) falhar por

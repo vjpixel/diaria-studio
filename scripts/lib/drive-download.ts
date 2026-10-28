@@ -95,6 +95,41 @@ export class DriveDownloadInProgressError extends Error {
 }
 
 /**
+ * Tira do caminho um `.part` velho sem apagar o de outro processo (#11450,
+ * follow-up do #11432). `stat → rm → open wx` não é atômico: dois processos
+ * que leem o mesmo `.part` velho podiam fazer o 2º `rm` apagar o `.part` NOVO
+ * que o 1º acabou de criar. Aqui o velho é renomeado para um nome único antes
+ * de sair; se o inode renomeado não é o que o `stat` viu, o arquivo é de
+ * outro processo: volta para o lugar e o download recusa
+ * (`DriveDownloadInProgressError`).
+ */
+export function takeStalePart(tmp: string, staleIno: number): void {
+  const aside = `${tmp}.stale-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    renameSync(tmp, aside);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return; // outro já tirou
+    throw e;
+  }
+  let movedIno: number | null = null;
+  try {
+    movedIno = statSync(aside).ino;
+  } catch {
+    movedIno = null;
+  }
+  if (movedIno !== staleIno) {
+    // Pegamos o `.part` recém-criado por outro download: devolve sem sobrescrever.
+    try {
+      if (!existsSync(tmp)) renameSync(aside, tmp);
+    } catch {
+      // o outro processo segue com o fd dele; só o nome se perdeu
+    }
+    throw new DriveDownloadInProgressError(tmp);
+  }
+  rmSync(aside, { force: true });
+}
+
+/**
  * Cria `tmp` com O_EXCL e devolve o fd. `.part` já existente e escrito há menos
  * de `staleMs` é de um download vivo → `DriveDownloadInProgressError` (nunca
  * trunca nem apaga o arquivo do outro). Mais velho que isso → apaga e tenta
@@ -113,13 +148,16 @@ export function claimPartFile(tmp: string, staleMs: number, now: number = Date.n
   const fd = tryOpen();
   if (fd !== null) return fd;
   let age = 0;
+  let staleIno: number | null = null;
   try {
-    age = now - statSync(tmp).mtimeMs;
+    const st = statSync(tmp);
+    age = now - st.mtimeMs;
+    staleIno = st.ino;
   } catch {
     age = Infinity; // sumiu entre o open e o stat: o outro terminou ou desistiu
   }
   if (age <= staleMs) throw new DriveDownloadInProgressError(tmp);
-  rmSync(tmp, { force: true });
+  if (staleIno !== null) takeStalePart(tmp, staleIno);
   const retry = tryOpen();
   if (retry === null) throw new DriveDownloadInProgressError(tmp);
   return retry;

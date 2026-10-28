@@ -1440,6 +1440,27 @@ export function combineMergeLockHolders(holders, callerSessionId) {
   return holders.length > 0 ? callerSessionId : null;
 }
 
+/**
+ * Dica de saída para a coordenadora que deu `cd` num worktree de agente e
+ * teve o `gh pr merge` vetado por `callerInLinkedWorktree` (#11449, rodada
+ * 261027e). O `cd` tem de ser um comando PRÓPRIO: `payload.cwd` é o cwd da
+ * sessão ANTES do comando, então `cd <principal> && gh pr merge N` continua
+ * chegando ao guard com o cwd do worktree e é negado de novo. `root` ausente
+ * (raiz não resolvida) cai na orientação genérica, sem inventar caminho.
+ */
+export function buildReturnToMainCheckoutHint(root) {
+  if (typeof root === "string" && root.trim() !== "") {
+    return (
+      `Rode \`cd ${root}\` como comando standalone (sozinho, sem \`&&\` no mesmo comando: o guard lê o cwd ` +
+      "de antes do comando) e repita o `gh pr merge`. Confira o cwd enviado pela ferramenta."
+    );
+  }
+  return (
+    "Rode `cd` para o checkout principal como comando standalone (sozinho, sem `&&` no mesmo comando: o guard " +
+    "lê o cwd de antes do comando) e repita o `gh pr merge`. Confira o cwd enviado pela ferramenta."
+  );
+}
+
 /** Sufixo da mensagem de bloqueio quando o PR não é (só) do diaria-studio (#10618). */
 export function buildRepoHint(targetRepos, complex = false) {
   const foreign = targetRepos.filter((r) => r !== DIARIA_STUDIO_REPO);
@@ -1507,7 +1528,8 @@ export function buildBlockReason(ctx = {}) {
   if (ctx.blockCause === "not-authorized" && ctx.callerInLinkedWorktree === true) {
     return "gh pr merge bloqueado (#5716): payload.cwd aponta para um worktree vinculado. " +
       "Mesmo com session_id registrado, essa chamada não comprova ser da coordenadora top-level. " +
-      "Retorne ao checkout principal e confira o cwd enviado pela ferramenta; não remova worktrees para liberar o guard.";
+      buildReturnToMainCheckoutHint(ctx.mainCheckoutRoot) +
+      " Não remova worktrees para liberar o guard.";
   }
   const hasScopedGrant = ctx.hasLiveGrant === true && ctx.grantPr !== undefined;
   const grantMissedTarget = hasScopedGrant && ctx.grantPr !== ctx.targetPr;
@@ -1722,6 +1744,8 @@ if (
         // #7712: `payload.cwd` — nunca o cwd do processo deste hook (ver
         // docblock de `isCallerInLinkedWorktree` pro porquê).
         callerInLinkedWorktree: isCallerInLinkedWorktree(payload.cwd),
+        // #11449: destino do `cd` sugerido quando o veto é por worktree.
+        mainCheckoutRoot: repoRoot,
       };
       // #6497: classifica a causa UMA vez e reusa — `shouldBlockGhPrMerge`
       // decide SE bloqueia (mesmo cálculo), `buildBlockReason` usa o motivo

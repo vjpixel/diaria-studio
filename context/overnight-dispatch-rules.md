@@ -184,9 +184,22 @@ aprovação): `git add <arquivos>` (lista explícita, nunca `-A`), `git commit -
 ...`, `git merge`, `node --test`, `node --import tsx --test`, `npx --no-install
 tsx` e `node_modules/.bin/tsx`, `gh api` cru, e laço `for` com variável. Use a
 forma canônica: `git` com cwd no worktree, `npx tsx --test` depois do `npm ci`
-do próprio worktree (nunca o `tsx` do checkout principal), `gh pr
-update-branch` para atualizar a branch da PR. Se a forma canônica for negada,
-não tente as variantes: registre a negação no retorno ao coordenador.
+do próprio worktree (nunca o `tsx` do checkout principal), `npx tsx
+scripts/gh-pr-update-branch.ts --pr N [--repo owner/name]` para atualizar a
+branch da PR com a base. Se a forma canônica for negada, não tente as
+variantes: registre a negação no retorno ao coordenador.
+
+**Atualizar a branch da PR (#11448).** O `gh` instalado no `300` não tem o
+subcomando `gh pr update-branch` (rodada 261027e), e `git merge` e `gh api`
+cru seguem negados no modo agendado. O wrapper chama o REST `PUT
+/repos/{owner}/{repo}/pulls/{n}/update-branch` como processo filho (o mesmo
+merge da base que o botão "Update branch" do GitHub faz, nunca rebase nem
+force-push), espera o HEAD da PR mudar e imprime `{ outcome, headBefore,
+headAfter }`. `already-up-to-date` sai `0`; `conflict`, `head-mismatch`
+(com `--expected-head`) e `timeout` saem `1` e seguem o caminho de
+fix/draft. Depois do `updated`, o worktree local está atrás do remoto:
+`git pull --ff-only` dentro do próprio worktree antes de testar ou de
+qualquer novo commit.
 
 **Diff grande (>500 adições) exige também `removal-declaration:` no corpo — ver
 item 29.** Incluir já na criação evita uma volta de CI; esquecer é recuperável
