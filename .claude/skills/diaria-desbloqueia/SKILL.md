@@ -70,6 +70,19 @@ turno novo e todo o resto — triagem do Passo 2b, as 2 baterias de
 por inferência (não observado ao vivo), para um `Bash` em background: a
 notificação dele também chega depois de o turno ter sido encerrado à espera.
 
+
+**Re-roteamento após releitura (#11301/#11315).** Em TODA chamada de
+`route-issue.ts` para issue existente, passar `--triaged-at "{triaged_at}"`.
+Depois de postar `decisao-editor` (ou outro marcador próprio), reler corpo,
+labels e TODOS os comentários antes de rotear. Capturar `triaged_at` em ISO
+no início dessa nova leitura, após a postagem; só usá-lo quando a leitura
+terminar com sucesso e o veredito estiver confirmado. Nunca reutilizar o
+início da sessão nem gerar o timestamp apenas na hora da escrita. Se surgir
+marcador concorrente posterior, reler e reavaliar; não usar `--override-newer`
+para destravar automaticamente. Isso também vale para reclassificações
+posteriores na mesma sessão e chamadas sem identidade no registry.
+
+
 ## Requisito central — ler tudo antes de perguntar QUALQUER coisa
 
 Este projeto grava decisão durável em **comentário**, não só no corpo da
@@ -142,7 +155,7 @@ npx tsx scripts/desbloqueia-scan.ts --issues 123,456    # só essas issues
 npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # 1 bucket (bloqueada|develop|sem-sinal|fora-de-rodada)
 npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal     # sem o bucket ·sem sinal
 npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas  # varre também on-hold/wontfix
-npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos (números DAQUELE repo; re-rotear com route-issue.ts --issue owner/repo#N)
+npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos (números DAQUELE repo; re-rotear com route-issue.ts --issue owner/repo#N --triaged-at "{triaged_at}")
 ```
 
 **Toda ação sobre uma issue usa o `ref` que o scan devolve, nunca o número
@@ -152,7 +165,7 @@ inclusive no studio). O `#N` de uma varredura `--repo vjpixel/diaria-design`
 #N do diaria-studio, re-roteia e comenta a issue errada sem erro nenhum.
 Por isso, em todos os passos abaixo:
 
-- re-roteamento: `npx tsx scripts/route-issue.ts --issue {ref} ...` (o
+- re-roteamento: `npx tsx scripts/route-issue.ts --issue {ref} --triaged-at "{triaged_at}" ...` (o
   `{ref}` da candidata, copiado do JSON);
 - comentário direto (o "Revisado por /diaria-desbloqueia" do Passo 2, os
   marcadores `decisao-editor`/`acao-adiada` do Passo 4): `gh issue comment
@@ -188,7 +201,7 @@ ainda exige julgamento/máquina do editor) ou `overnight` (se, resolvido o
 trade-off, o resto é mecânico). Rotear:
 
 ```bash
-npx tsx scripts/route-issue.ts --issue {ref} --track {develop|overnight} \
+npx tsx scripts/route-issue.ts --issue {ref} --triaged-at "{triaged_at}" --track {develop|overnight} \
   --reason "decisão já registrada em comentário anterior — reclassificando sem nova pergunta (#6628)"
 ```
 
@@ -243,7 +256,7 @@ classificada `overnight` e o `300` ia tentar executá-la e falhar.
 Comentar não basta: rotear.
 
 ```bash
-npx tsx scripts/route-issue.ts --issue {ref} --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
+npx tsx scripts/route-issue.ts --issue {ref} --triaged-at "{triaged_at}" --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
 ```
 
 Se `dependenciasNaoResolvidas` no relatório não estiver vazio, o estado das
@@ -452,9 +465,14 @@ estourou".
 - **Token colado**: nunca vai pro comentário. Só confirmar via probe
   determinístico (ex: a var existe em `.env`, um script de dry-run passa)
   e comentar o RESULTADO do probe, nunca o valor.
+- Antes de rotear (e após gravar a decisão, quando houver), reler a thread
+  completa e registrar o instante UTC
+  do início dessa nova leitura como `{triaged_at}` (ISO 8601). A decisão não declara track:
+  o guard #11301 exige essa releitura, sem `--override-newer`. Se outro
+  comentário chegar depois da leitura, reler e reavaliar antes de tentar de novo.
 - Em todos os casos, depois de comentar a decisão (ou como único passo,
   pro caso de bloqueio de execução): `npx tsx scripts/route-issue.ts
-  --issue {ref} --track {track} --reason "..."` (`{ref}` = o `ref` da
+  --issue {ref} --track {track} --reason "..." --triaged-at {triaged_at}` (`{ref}` = o `ref` da
   candidata no scan, #10935) (`--track bloqueada` exige
   `--reason` não-vazio desde #7270; `--sessao develop` opcional) — nunca
   `gh issue edit --add-label` cru (mesma disciplina do #5969, ver

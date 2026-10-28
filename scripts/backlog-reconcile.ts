@@ -169,6 +169,8 @@ export function applyFix(fix: MarkerDeferralConflictFix, cwd: string, ghRun: GhR
     cwd,
     ghRun,
     now,
+    // Base da leitura do backlog; marcadores concorrentes posteriores ainda bloqueiam.
+    triagedAt: now?.toISOString(),
   });
 }
 
@@ -228,6 +230,7 @@ async function main(): Promise<void> {
   const dryRun = hasFlag(argv, "dry-run");
   const limit = getIntArg(argv, "limit", { min: 1 }) ?? DEFAULT_LIMIT;
 
+  const now = new Date();
   const issues = fetchOpenBacklog(ROOT, limit);
   if (issues === null) {
     console.error(`${LOG_PREFIX} 'gh issue list' falhou — não avalia, não corrige. Checar 'gh auth status'.`);
@@ -235,7 +238,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  const now = new Date();
   const findings = evaluateBacklog(issues, now, ROOT);
   const { fixes } = splitFindingsByAction(findings);
 

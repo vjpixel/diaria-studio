@@ -51,6 +51,19 @@ backlog **bloqueado**, monta um lote de perguntas, pergunta via
 implementando o que a resposta destrava e voltando ao passo 1. Ver "Loop
 invariável" abaixo.
 
+
+**Re-roteamento após releitura (#11301/#11315).** Em TODA chamada de
+`route-issue.ts` para issue existente, passar `--triaged-at "{triaged_at}"`.
+Depois de postar `decisao-editor` (ou outro marcador próprio), reler corpo,
+labels e TODOS os comentários antes de rotear. Capturar `triaged_at` em ISO
+no início dessa nova leitura, após a postagem; só usá-lo quando a leitura
+terminar com sucesso e o veredito estiver confirmado. Nunca reutilizar o
+início da sessão nem gerar o timestamp apenas na hora da escrita. Se surgir
+marcador concorrente posterior, reler e reavaliar; não usar `--override-newer`
+para destravar automaticamente. Isso também vale para reclassificações
+posteriores na mesma sessão e chamadas sem identidade no registry.
+
+
 ## Como usar
 
 **Toda invocação se auto-envolve em `/loop` (#5332, 15/08/2026) — o editor
@@ -432,7 +445,7 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   **Issue pulada por guard de arquivo sensível (#9463):** quando uma edição for
   negada por guard (ou o motivo for `requer-sessao-local`/`guard-de-execucao`),
   além do comentário, rotear a issue pra Develop:
-  `npx tsx scripts/route-issue.ts --issue N --track develop --reason "guard-de-execucao: {arquivo}"`
+  `npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue N --track develop --reason "guard-de-execucao: {arquivo}"`
   (com dedup). Sem a label `develop-track`, a Triagem continua mostrando
   Overnight e o próximo ciclo a pega de novo. Gate:
   `npx tsx scripts/check-skipped-develop-track.ts --plan {plan.json}`.
@@ -787,7 +800,7 @@ aqui.
    - **(c) Bloqueio genuíno não-decisão** — credencial-runtime, conta
      externa, ação humana fora do repo (inclusive prospecção/contato com
      terceiros no mundo real). **Aplicar a label `external-blocker`**
-     (`gh issue edit N --add-label external-blocker`, se ainda ausente — #5462 — **ressalva #6196: `route-issue` (`npx tsx scripts/route-issue.ts --issue N --track bloqueada`) substitui isso quando mergeado; até lá, `gh issue edit` ainda aceitável**)
+     (`gh issue edit N --add-label external-blocker`, se ainda ausente — #5462 — **ressalva #6196: `route-issue` (`npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue N --track bloqueada`) substitui isso quando mergeado; até lá, `gh issue edit` ainda aceitável**)
      #5462/#5533: sem ela a Triagem do Studio não enxerga a issue como
      Bloqueada, mesmo racional do `trade-off-real` no lote de perguntas do
      passo 4) na mesma respiração do comentário na issue registrando
@@ -944,7 +957,7 @@ aqui.
    `{decided_at, pergunta, resposta, sessao: "continuo"}`) antes da prosa de
    sempre — a prosa não muda, o marcador é só o prefixo. Junto: `gh issue
    edit N --add-label decisao-registrada` — e, se a resposta destrava
-   código (não encerra o assunto), `npx tsx scripts/route-issue.ts --issue N
+   código (não encerra o assunto), `npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue N
    --track overnight --motivo triada --reason "decidido: {resposta breve}"`,
    senão a label sozinha classifica `fora-de-rodada` (#9229, mesma regra do
    passo 5 do overnight; decisão que encerra o assunto → `--track
@@ -961,7 +974,7 @@ aqui.
    controla (acesso a painel de terceiro, guard de publicação da `continuo`
    proibindo envio real, feature gated por plano de plataforma), gravar
    isso como estado durável em vez de deixar a issue voltar pra fila com
-   cara de "decisão pendente": `npx tsx scripts/route-issue.ts --issue N --track bloqueada --reason "{motivo}" --sessao continuo` —
+   cara de "decisão pendente": `npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue N --track bloqueada --reason "{motivo}" --sessao continuo` —
    **desde #7270, embute automaticamente o marcador `bloqueio-execucao`
    (`{recorded_at, motivo, condicao}`, `scripts/lib/issue-decisions.ts`) no
    mesmo comentário do roteamento; não construir `formatExecutionBlockMarker`
@@ -987,7 +1000,7 @@ aqui.
    fecha uma "rodada" com relatório final como overnight/develop — o
    equivalente aqui é o momento logo antes de ir pro passo 6 (dormir): rodar
    `npx tsx scripts/check-state-changed-pending.ts --plan data/continuo/{AAMMDD}/plan.json`.
-   Qualquer `route-issue` (`npx tsx scripts/route-issue.ts --issue N --track {agendada|destravada}` — #6196: substitui `gh issue edit N --add-label ...` direto que nunca tinha chamador no write-path das SKILLs; até #6196 mergear, `gh issue edit` ainda aceitável como fallback)
+   Qualquer `route-issue` (`npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue N --track {agendada|destravada}` — #6196: substitui `gh issue edit N --add-label ...` direto que nunca tinha chamador no write-path das SKILLs; até #6196 mergear, `gh issue edit` ainda aceitável como fallback)
    aplicado fora do fluxo normal de decisão (passo 5 acima), ou claim de
    `session-registry` encerrada/removida manualmente durante o ciclo, deve já
    ter sido registrada na hora com `--add-pending {N}` — este é só o ponto
