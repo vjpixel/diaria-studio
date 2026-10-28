@@ -197,11 +197,12 @@ describe("#10784 — cópia do hero com play", () => {
       const r2 = await ensureD1PlayImage(dir);
       assert.equal(r2.status, "fresh");
 
-      // Cópia antiga (carimbo sem `overlay`, do ícone de play) regera mesmo com o hero igual.
+      // #11475: cópia com a copy anterior regera mesmo com o hero igual.
       const stampPath = join(dir, D1_PLAY_STAMP_FILE);
       const stamp = JSON.parse(readFileSync(stampPath, "utf8"));
+      assert.equal(D1_INVITE_VERSION, "invite-v6");
       assert.equal(stamp.overlay, D1_INVITE_VERSION);
-      delete stamp.overlay;
+      stamp.overlay = "invite-v5";
       writeFileSync(stampPath, JSON.stringify(stamp));
       assert.equal((await ensureD1PlayImage(dir)).status, "generated", "mudou só o desenho: regera");
 
@@ -240,6 +241,7 @@ describe("#10784 — cópia do hero com play", () => {
       const out = await sharp(flat).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).raw().toBuffer({ resolveWithObject: true });
       const px = (x: number, y: number) => out.data[(y * out.info.width + x) * out.info.channels];
       const { pill, iconCx, iconD } = inviteGeometry(W, H, m);
+      assert.ok(pill.x >= 0 && pill.y >= 0, `${family}: faixa inteira dentro do hero`);
       // Caixa dos pixels brancos (ícone + texto) dentro da faixa.
       let minX = W, maxX = -1, minY = H, maxY = -1;
       for (let y = Math.floor(pill.y); y < pill.y + pill.h; y++) for (let x = Math.floor(pill.x); x < pill.x + pill.w; x++) {
@@ -267,7 +269,7 @@ describe("#10784 — cópia do hero com play", () => {
     assert.ok(pill.x + pill.w < 1600 && pill.y + pill.h < 800 && pill.x + pill.w / 2 > 800 && pill.y > 400, "canto inferior direito, com margem");
     assert.equal((svg.match(/<text /g) ?? []).length, 1, "convite em uma linha só");
     assert.ok(svg.includes(D1_INVITE_TEXT), D1_INVITE_TEXT);
-    assert.equal(D1_INVITE_TEXT, "Clique e assista a notícia comentada");
+    assert.equal(D1_INVITE_TEXT, "Clique para assistir meus comentários");
     assert.ok(svg.includes(`fill="#171411"`));
     assert.ok(svg.includes("<circle") && svg.includes("<polygon"), "símbolo de play ao lado do texto");
   });

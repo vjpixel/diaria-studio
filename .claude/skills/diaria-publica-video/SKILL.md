@@ -38,7 +38,7 @@ npx tsx scripts/check-video-env.ts
 
 Exit 0 → a capa (Passo A2) sai aqui. Exit 1 → o relatório diz o que falta (ffmpeg, Codex CLI, Georgia ou o venv do rembg) e o comando de setup; **nunca instalar no meio da skill**. Seguir com o resto e deixar a capa para o Neo (ou sem capa própria), avisando no relato final. O vertical não depende disso: o `publish-shorts.ts` baixa o vídeo da pasta `Final/` do Drive (`--from-drive`, Passo B1).
 
-**Edição sem vídeo (#11125).** Se o editor disser que não vai gravar o vídeo do dia, marcar a edição com `npx tsx scripts/set-d1-no-video.ts {AAMMDD}`: grava `_internal/no-video.json`, apaga a cópia `04-d1-2x1-play.jpg` com o convite "Clique e assista a notícia comentada" e faz o upload (`upload-images-public.ts --mode newsletter`) e o render pararem de usá-la — o D1 sai com o hero puro, sem link. Depois rodar o upload em modo newsletter (tira `d1_play` de `06-public-images.json`) e re-renderizar o HTML. O marcador vence a URL do vídeo; para religar, `--clear` e rodar o upload de novo.
+**Edição sem vídeo (#11125).** Se o editor disser que não vai gravar o vídeo do dia, marcar a edição com `npx tsx scripts/set-d1-no-video.ts {AAMMDD}`: grava `_internal/no-video.json`, apaga a cópia `04-d1-2x1-play.jpg` com o convite "Clique para assistir meus comentários" e faz o upload (`upload-images-public.ts --mode newsletter`) e o render pararem de usá-la — o D1 sai com o hero puro, sem link. Depois rodar o upload em modo newsletter (tira `d1_play` de `06-public-images.json`) e re-renderizar o HTML. O marcador vence a URL do vídeo; para religar, `--clear` e rodar o upload de novo.
 
 ## Onde está o vídeo (Drive, #11222)
 
