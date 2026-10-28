@@ -7,14 +7,18 @@
  * isso importa" + parágrafo de impacto).
  *
  * Mínimos/máximos editoriais (complementam o writer.md):
- *   D1 ≥ 900,  ≤ 1000
+ *   D1 ≥ 1100, ≤ 1200
  *   D2 ≥ 900,  ≤ 1000
  *   D3 ≥ 900,  ≤ 1000
  *
- * Janela ÚNICA para os três destaques (#6061, pedido do editor 24/08/2026):
- * o tamanho de D1 deve ser igual ao de D2 e D3 — a hierarquia editorial
- * (manchete > segundas) não precisa de mais chars pra se expressar, e a
- * janela assimétrica antiga (D1 1000–1200) gerava D1 inflado artificialmente.
+ * Janela POR POSIÇÃO (#11321, pedido do editor 27/10/2026): o D1 voltou a ter
+ * janela própria, 1100–1200, e D2/D3 seguem em 900–1000. O D1 é o destaque
+ * com mais fatos a sustentar (preço, benchmark, comparação) e na 261028
+ * chegou a 1000 sem espaço para o fato de comparação que o editor queria.
+ * Entre #6061 (24/08/2026) e #11321 a janela foi única (900–1000 para os
+ * três); antes do #6061 o D1 era 1000–1200. Como a janela depende da
+ * posição, um reorder que move um destaque de/para D1 muda o limite que vale
+ * para ele (`reorder-destaques.ts` avisa nos dois sentidos).
  * Histórico da motivação original dos pisos: em 260507 D1=999/D2=708/D3=679
  * (abaixo do piso — variação D1↔D3 = +47% no peso editorial); em 260508
  * D2=1409 (acima do teto) passou despercebido até o gate. Ambos os checks
@@ -25,13 +29,13 @@
 import { parseHighlights } from "../measure-highlights.ts"; // #914
 
 export const DESTAQUE_MIN_CHARS = {
-  1: 900,
+  1: 1100,
   2: 900,
   3: 900,
 } as const;
 
 export const DESTAQUE_MAX_CHARS = {
-  1: 1000,
+  1: 1200,
   2: 1000,
   3: 1000,
 } as const;

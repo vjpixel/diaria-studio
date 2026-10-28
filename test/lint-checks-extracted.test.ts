@@ -309,18 +309,20 @@ describe("lint-checks extraídos (#1737 item 2)", () => {
         "Por que isso importa: impacto.",
         "",
       ].join("\n");
-    // D1 com body curtíssimo → abaixo do mínimo (900, janela única #6061) → min falha
+    // D1 com body curtíssimo → abaixo do mínimo (1100 no D1, #11321) → min falha
     const tiny = minDirect(destaque(1, 50));
     assert.equal(tiny.ok, false);
     assert.equal(tiny.errors[0].destaque, 1);
     assert.ok(tiny.errors[0].chars < tiny.errors[0].min);
-    // D1 com body enorme → acima do máximo (1000, janela única #6061) → max falha
+    // D1 com body enorme → acima do máximo (1200 no D1, #11321) → max falha
     const huge = maxDirect(destaque(1, 2000));
     assert.equal(huge.ok, false);
     assert.ok(huge.errors[0].chars > huge.errors[0].max);
-    // dentro da faixa → ambos ok
-    assert.equal(minDirect(destaque(1, 950)).ok, true);
-    assert.equal(maxDirect(destaque(1, 950)).ok, true);
+    // dentro da faixa → ambos ok (D1 1100–1200, D2 900–1000, #11321)
+    assert.equal(minDirect(destaque(1, 1130)).ok, true);
+    assert.equal(maxDirect(destaque(1, 1130)).ok, true);
+    assert.equal(minDirect(destaque(2, 950)).ok, true);
+    assert.equal(maxDirect(destaque(2, 950)).ok, true);
   });
 
   it("titles-per-highlight + title-length: módulos auto-contidos (shared highlight-parsing)", () => {

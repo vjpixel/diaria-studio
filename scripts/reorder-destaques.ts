@@ -124,7 +124,7 @@ import {
   extractTitlesFromMd,
   insertOrUpdateTituloSubtitulo,
 } from "./insert-titulo-subtitulo.ts"; // #3980
-import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
+import { checkDestaqueMaxChars, checkDestaqueMinChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982, #11321
 import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source-hash.ts"; // #6062, #8596
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
@@ -1838,16 +1838,25 @@ function main(): void {
     nextSteps.push(`Re-subir as imagens das posições afetadas: npx tsx scripts/upload-images-public.ts --edition-dir ${editionDir}/`);
   }
 
-  // #3982: validação PÓS-reorder do limite de chars por slot (janela única
-  // 900–1000 desde #6061; antes era D1=1200,
-  // D2/D3=1000 — scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
-  // `lint-newsletter-md.ts --check destaque-max-chars`). WARN-only: trim é
-  // call editorial do humano, então reorder NUNCA bloqueia por isso, só avisa.
-  // Com a janela única do #6061 o MOVIMENTO em si não estoura mais nada (os
-  // três slots têm o mesmo teto) — o que sobra desta checagem é pegar
-  // destaque que já estava acima da janela antes do reorder.
+  // #3982: validação PÓS-reorder do limite de chars por slot
+  // (scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
+  // `lint-newsletter-md.ts --check destaque-max-chars`/`destaque-min-chars`).
+  // WARN-only: trim/expansão é call editorial do humano, então reorder NUNCA
+  // bloqueia por isso, só avisa. Desde #11321 a janela é por posição (D1
+  // 1100–1200, D2/D3 900–1000; entre #6061 e #11321 foi única), então o
+  // MOVIMENTO em si muda o limite: o destaque que sai de D1 pode estourar o
+  // teto de 1000 e o que entra em D1 pode ficar abaixo do piso de 1100.
   const maxCharsWarnings: string[] = [];
+  const minCharsWarnings: string[] = [];
   if (reorderedReviewedMd !== null) {
+    const minCharsResult = checkDestaqueMinChars(reorderedReviewedMd);
+    for (const e of minCharsResult.errors) {
+      const msg =
+        `D${e.destaque} (${e.category}): ${e.chars} chars — abaixo do mínimo de ${e.min} ` +
+        `chars pro slot novo (deficit: ${e.min - e.chars}). Expansão manual recomendada.`;
+      minCharsWarnings.push(msg);
+      console.error(`⚠️  destaque-min-chars pós-reorder: ${msg}`);
+    }
     const maxCharsResult = checkDestaqueMaxChars(reorderedReviewedMd);
     for (const e of maxCharsResult.errors) {
       const msg =
@@ -1866,6 +1875,7 @@ function main(): void {
         dry_run: args.dryRun,
         modified,
         max_chars_warnings: maxCharsWarnings,
+        min_chars_warnings: minCharsWarnings,
         warnings,
         next_steps: nextSteps,
       },

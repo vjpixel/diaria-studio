@@ -275,7 +275,7 @@ npx tsx scripts/lint-newsletter-md.ts \
 
 `--check section-counts` (#907) valida que LANÇAMENTOS, PESQUISAS, OUTRAS NOTÍCIAS no MD respeitam os caps de #358. Exit 1 = re-disparar writer com erro explicitado.
 
-`--check destaque-min-chars` (#914) valida que cada destaque atinge o mínimo de chars (D1/D2/D3≥900 — janela única desde #6061). Exit 1 = re-disparar writer pra expandir.
+`--check destaque-min-chars` (#914) valida que cada destaque atinge o mínimo de chars (D1≥1100, D2/D3≥900 — janela por posição desde #11321). Exit 1 = re-disparar writer pra expandir.
 
 ### 3b. Clarice (inline)
 
