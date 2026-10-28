@@ -2,7 +2,8 @@
  * test/shorts-instagram-timer-11265.test.ts (#11265, #10940)
  *
  * O Reels do Instagram sai pelo timer do 300 no horário do vertical, sem URL
- * pública (decisão do editor 27/10/2026: túnel descartado, R2 não habilitado):
+ * pública (decisão do editor 27/10/2026: túnel descartado, R2 ainda não habilitado;
+ * habilitado depois, #10772, com o timer mantido, #11411):
  * config, delegação no plano do `/diaria-shorts`, horário fixo fora da grade,
  * escopo do `--instagram-timer`, registro próprio do timer, decisão "age
  * agora?", escolha do arquivo (Drive sempre consultado), leitura da saída do
@@ -94,7 +95,7 @@ describe("#11265 config publishing.shorts.instagram_backend", () => {
     assert.equal(loadShortsConfig({ publishing: { shorts: { ...SHORTS, instagram_backend: "worker-r2" } } }).instagramBackend, "worker-r2");
     assert.throws(() => loadShortsConfig({ publishing: { shorts: { ...SHORTS, instagram_backend: "tunnel" } } }), /instagram_backend/);
   });
-  it("sem R2, X/Threads dizem que o R2 não será habilitado em vez de cobrar os secrets", () => {
+  it("sem R2 na máquina, X/Threads dizem que faltam os secrets do R2 sem listar um a um", () => {
     assert.doesNotMatch(publicVideoUnavailableReason("timer-300", ["R2_ACCOUNT_ID"]), /R2_ACCOUNT_ID/);
     assert.match(publicVideoUnavailableReason("timer-300", ["R2_ACCOUNT_ID"]), /#11265/);
     assert.match(publicVideoUnavailableReason("worker-r2", ["R2_ACCOUNT_ID"]), /falta R2_ACCOUNT_ID/);

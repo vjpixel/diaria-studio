@@ -60,13 +60,15 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
  *     O plano traz texto (≤280 ponderado) e `dueAt`; com R2 configurado o
  *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl`.
- *     O R2 não será habilitado (#11265): sem ele o X é pulado com aviso e
- *     fica manual. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
+ *     O R2 está habilitado desde 27/10/2026 (#10772, bucket `diaria-shorts`);
+ *     só numa máquina sem os secrets dele o X é pulado com aviso e fica
+ *     manual. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
  *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
  *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
  *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
- *     (`platform: "threads"`). Sem token, ou sem R2 (que não será habilitado,
- *     #11265), é pulado com aviso (fail-soft) e fica manual. A API não agenda: mesmo `pending_schedule`/teto de atraso do
+ *     (`platform: "threads"`). Sem token, ou sem os secrets do R2 na máquina
+ *     (os dois existem desde 27/10/2026, #10772), é pulado com aviso
+ *     (fail-soft) e fica manual. A API não agenda: mesmo `pending_schedule`/teto de atraso do
  *     `linkedin_profile`. Envio ambíguo grava `send_unknown` (conta como feito,
  *     nunca re-posta); confira o perfil e registre com `--mark threads_profile=URL`.
  *     O repost pela diar.ia.br não entra: a Threads API não documenta repost.
@@ -116,7 +118,9 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * O R2 foi habilitado depois (#10772), mas o editor manteve o `timer-300`
  * (#11411: o timer funciona e o corte `_Instagram_` do Drive não chega ao R2;
  * racional em `docs/scheduled-tasks-registry.md`). X e Threads, que só
- * recebem o vídeo por URL pública, ficam pulados com aviso (manuais).
+ * recebem o vídeo por URL pública, usam o R2 independente do
+ * `instagram_backend` (`r2.ready`); só sem os secrets dele ficam pulados com
+ * aviso (manuais).
  *
  * Grade (#10819, `planShortSlots`): o plano lê o que já está agendado no dia
  * (`_internal/06-social-published.json` + `06-shorts-published.json`). Durante
@@ -306,13 +310,15 @@ export const THREADS_TIMER_DETAIL =
 
 /**
  * #11265: motivo do pulo de X/Threads quando o R2 NÃO está configurado (só é
- * chamado com `r2.ready === false`). O R2 não será habilitado (decisão do
- * editor, 27/10/2026), então com o backend do timer o aviso diz isso em vez
- * de cobrar os secrets; com `worker-r2` (que depende dele) lista o que falta.
+ * chamado com `r2.ready === false`). Escrito quando o R2 não seria habilitado
+ * (decisão do editor, 27/10/2026); ele foi habilitado no mesmo dia (#10772),
+ * então hoje `r2.ready === false` significa máquina sem os secrets
+ * `R2_*`/`SHORTS_R2_*`. Com o backend do timer o aviso não lista os secrets;
+ * com `worker-r2` (que depende dele) lista o que falta.
  */
 export function publicVideoUnavailableReason(backend: InstagramBackend, r2Missing: readonly string[]): string {
   return backend === "timer-300"
-    ? "sem URL pública do vertical: R2 não configurado, e não será habilitado (#11265, decisão do editor 27/10/2026) — fica manual"
+    ? "sem URL pública do vertical: R2 não configurado nesta máquina (faltam os secrets R2_*/SHORTS_R2_*; o bucket existe desde 27/10/2026, #10772/#11265) — fica manual"
     : `falta ${r2Missing.join(", ")}`;
 }
 

@@ -7,8 +7,9 @@
  * nunca apaga. Política pura em `scripts/lib/edition-video-retention.ts`
  * (data da EDIÇÃO pelo diretório `AAMMDD`, não o mtime).
  *
- * Os vídeos têm cópia fora do disco (YouTube, R2 pros verticais, fonte no
- * Drive — `fetch-drive-video.ts` baixa de novo se precisar). Não é tarefa
+ * Os vídeos têm cópia fora do disco (YouTube e a fonte no Drive —
+ * `fetch-drive-video.ts` baixa de novo se precisar; o R2 dos verticais,
+ * habilitado em 27/10/2026, #10772, só guarda 7 dias). Não é tarefa
  * agendada: armar a retenção automática é decisão do editor depois de ver
  * o dry-run (`docs/onedrive-sync-setup.md` item 6).
  *
