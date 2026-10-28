@@ -90,7 +90,7 @@ describe("#9153 — todo `claude -p` de hermes/scripts remove ANTHROPIC_* do amb
     .flatMap(findInvocations);
 
   it("encontra os 2 call sites conhecidos (sanidade do parser)", () => {
-    const names = invocations.map((v) => basename(v.file)) // `basename`, não `split("/")`: no Windows o separador é `\` (#11243);
+    const names = invocations.map((v) => basename(v.file)); // `basename`, não `split("/")`: no Windows o separador é `\` (#11243)
     assert.ok(names.includes("continuo-pr-review.sh"), `call sites: ${names.join(", ")}`);
     assert.ok(names.includes("opus-daily-diff-review.sh"), `call sites: ${names.join(", ")}`);
   });

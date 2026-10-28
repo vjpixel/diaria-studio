@@ -14,7 +14,7 @@
  */
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, normalize } from "node:path";
+import { join, sep } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -198,9 +198,11 @@ test("filesystem: report.md sem plano força sufixo e preserva o relatório do h
     const probe = createFsPlanProbe();
     const resolved = resolvePlanPath(base, "261022", "new-session", probe);
     assert.equal(resolved.mode, "derived-after-collision");
-    // `normalize`: o path sai `${base}/261022b/plan.json` (separador `/`
-    // fixo, por design); no Windows `base` tem `\` e a string fica mista (#11243).
-    assert.equal(normalize(resolved.path), join(base, "261022b", "plan.json"));
+    // Comparação exata, sem `normalize()` (#11489): o path sai sempre com `/`.
+    // No Linux `sep` já é `/` e a expectativa é o próprio `${base}/...`; no
+    // Windows o `\` nativo de `base` vira `/`, nunca uma string mista.
+    assert.equal(resolved.path, `${base.split(sep).join("/")}/261022b/plan.json`);
+    assert.ok(process.platform !== "win32" || !resolved.path.includes("\\"), resolved.path);
     mkdirSync(join(base, "261022b"));
     writeFileSync(resolved.path, JSON.stringify({ session_id: "new-session" }));
     writeFileSync(join(base, "261022b", "report.md"), "rodada normal");
@@ -209,4 +211,17 @@ test("filesystem: report.md sem plano força sufixo e preserva o relatório do h
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// #11489: o sufixo é montado com `/` fixo, então o `baseDir` tem de seguir o
+// mesmo separador. No win32 o `\` vira `/`; fora dele o `baseDir` passa
+// intacto (no POSIX `\` é caractere de nome, e a saída do Linux não muda).
+test("#11489: baseDir com barra invertida → path só com `/` no win32, intacto fora dele", () => {
+  const disk = fakeDisk({});
+  const resolved = resolvePlanPath("C:\\r\\data\\overnight", "260826", "session-A", disk.probe);
+  const expected =
+    process.platform === "win32"
+      ? "C:/r/data/overnight/260826/plan.json"
+      : "C:\\r\\data\\overnight/260826/plan.json";
+  assert.equal(resolved.path, expected);
 });
