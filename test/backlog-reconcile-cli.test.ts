@@ -24,7 +24,7 @@ interface FakeIssue {
   state: string;
   labels: string[];
   body: string;
-  comments: string[];
+  comments: Array<string | { body: string; createdAt: string; authorAssociation: string }>;
 }
 
 /** Fake `GhRunFn` completo o bastante pra servir `fetchOpenBacklog`
@@ -72,7 +72,7 @@ function makeFakeGh(seed: readonly FakeIssue[]): { run: GhRunFn; store: Map<numb
           state: i.state,
           labels: i.labels.map((name) => ({ name })),
           body: i.body,
-          comments: i.comments.map((body) => ({ body })),
+          comments: i.comments.map((comment) => typeof comment === "string" ? { body: comment } : comment),
         }),
         stderr: "",
       };
@@ -211,7 +211,7 @@ describe("applyFix — aplica via routeIssue (nunca gh issue edit direto) e é i
     assert.equal(fixes.filter((f) => f.issue === 5734).length, 0);
   });
 
-  it("marcador EXPIRADO + on-hold: applyFix roteia pra overnight, e a correção sobrevive a uma 2ª rodada sem re-escrever nada", () => {
+  it("#11301: marcador agendada anterior + marcador EXPIRADO + on-hold: applyFix roteia pra overnight, e a correção sobrevive a uma 2ª rodada sem re-escrever nada", () => {
     const { run, store } = makeFakeGh([
       {
         number: 90001,
@@ -220,7 +220,7 @@ describe("applyFix — aplica via routeIssue (nunca gh issue edit direto) e é i
         state: "OPEN",
         labels: ["on-hold"],
         body: "<!-- aguardando-ate: 2026-08-01 -->",
-        comments: [],
+        comments: [{ body: "<!-- route-issue: track=agendada -->", createdAt: "2026-07-31T12:00:00Z", authorAssociation: "OWNER" }],
       },
     ]);
 
@@ -248,6 +248,24 @@ describe("applyFix — aplica via routeIssue (nunca gh issue edit direto) e é i
     const issues = fetchOpenBacklog("/repo", 300, run)!;
     const findings = evaluateBacklog(issues, NOW, "/repo", run);
     assert.equal(findings.length, 0);
+  });
+
+  it("#11301: marcador concorrente posterior à leitura impede a reconciliação", () => {
+    const { run, store } = makeFakeGh([{
+      number: 90002, title: "concorrência", url: "u", state: "OPEN",
+      labels: ["on-hold"], body: "<!-- aguardando-ate: 2026-08-01 -->",
+      comments: [{ body: "<!-- route-issue: track=agendada -->",
+        createdAt: "2026-08-26T12:00:01Z", authorAssociation: "OWNER" }],
+    }]);
+    const before = structuredClone(store.get(90002));
+    const result = applyFix({
+      action: "fix", patternId: "marker-deferral-conflict", issue: 90002,
+      title: "x", url: "u", conflictingLabels: ["on-hold"],
+      markerDate: "2026-08-01", routeTrack: "overnight",
+    }, "/repo", run, NOW);
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /roteamento mais novo/);
+    assert.deepEqual(store.get(90002), before);
   });
 
   it("rodar applyFix 2× seguidas com o MESMO fix é no-op na 2ª (comentário deduplicado, sem 2º gh issue edit de labels)", () => {

@@ -155,17 +155,17 @@ npx tsx scripts/desbloqueia-scan.ts --issues 123,456    # só essas issues
 npx tsx scripts/desbloqueia-scan.ts --track bloqueada    # 1 bucket (bloqueada|develop|sem-sinal|fora-de-rodada)
 npx tsx scripts/desbloqueia-scan.ts --skip-sem-sinal     # sem o bucket ·sem sinal
 npx tsx scripts/desbloqueia-scan.ts --incluir-engavetadas  # varre também on-hold/wontfix
-npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos (números DAQUELE repo; re-rotear com route-issue.ts --triaged-at "{triaged_at}" --issue owner/repo#N)
+npx tsx scripts/desbloqueia-scan.ts --repo vjpixel/diaria-design  # #10901: outro repo de issue_repos (números DAQUELE repo; re-rotear com route-issue.ts --issue owner/repo#N --triaged-at "{triaged_at}")
 ```
 
 **Toda ação sobre uma issue usa o `ref` que o scan devolve, nunca o número
 pelado (#10935).** Cada candidata do relatório traz `ref` (`owner/repo#N`,
 inclusive no studio). O `#N` de uma varredura `--repo vjpixel/diaria-design`
-é o número DO DESIGN: `route-issue.ts --triaged-at "{triaged_at}" --issue N` com o número pelado age no
+é o número DO DESIGN: `route-issue.ts --issue N` com o número pelado age no
 #N do diaria-studio, re-roteia e comenta a issue errada sem erro nenhum.
 Por isso, em todos os passos abaixo:
 
-- re-roteamento: `npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue {ref} ...` (o
+- re-roteamento: `npx tsx scripts/route-issue.ts --issue {ref} --triaged-at "{triaged_at}" ...` (o
   `{ref}` da candidata, copiado do JSON);
 - comentário direto (o "Revisado por /diaria-desbloqueia" do Passo 2, os
   marcadores `decisao-editor`/`acao-adiada` do Passo 4): `gh issue comment
@@ -201,7 +201,7 @@ ainda exige julgamento/máquina do editor) ou `overnight` (se, resolvido o
 trade-off, o resto é mecânico). Rotear:
 
 ```bash
-npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue {ref} --track {develop|overnight} \
+npx tsx scripts/route-issue.ts --issue {ref} --triaged-at "{triaged_at}" --track {develop|overnight} \
   --reason "decisão já registrada em comentário anterior — reclassificando sem nova pergunta (#6628)"
 ```
 
@@ -256,7 +256,7 @@ classificada `overnight` e o `300` ia tentar executá-la e falhar.
 Comentar não basta: rotear.
 
 ```bash
-npx tsx scripts/route-issue.ts --triaged-at "{triaged_at}" --issue {ref} --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
+npx tsx scripts/route-issue.ts --issue {ref} --triaged-at "{triaged_at}" --track bloqueada   --reason "{motivo do bloqueio-execucao já registrado na thread}"   # --motivo conta-de-terceiro | plataforma | kit | execucao — conforme a thread
 ```
 
 Se `dependenciasNaoResolvidas` no relatório não estiver vazio, o estado das
