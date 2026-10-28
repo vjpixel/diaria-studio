@@ -97,6 +97,27 @@ describe("sendPushNotification (fail-soft)", () => {
     assert.ok(calledTo && calledTo.includes("@"));
   });
 
+  it("`to` vazio (getArg(argv, \"to\") sem a flag) cai no default, não manda pra \"\" (#11472)", async () => {
+    // Os alarmes passam `emailTo: getArg(argv, "to")`, que vale "" quando
+    // `--to` não vem. Com `opts.to ?? ...` o "" passava direto e o e-mail
+    // saía com cabeçalho `To:` vazio.
+    for (const to of ["", "   "]) {
+      let calledTo: string | undefined;
+      const result = await sendPushNotification(
+        { subject: "x", body: "y" },
+        {
+          to,
+          sendFn: (async (t: string) => {
+            calledTo = t;
+            return { id: "1", threadId: "1" };
+          }) as any,
+        },
+      );
+      assert.equal(result.ok, true);
+      assert.ok(calledTo && calledTo.includes("@"), `to=${JSON.stringify(to)} virou ${JSON.stringify(calledTo)}`);
+    }
+  });
+
   it("PUSH_IO_TIMEOUT_MS é finito e positivo", () => {
     assert.ok(Number.isFinite(PUSH_IO_TIMEOUT_MS) && PUSH_IO_TIMEOUT_MS > 0);
   });

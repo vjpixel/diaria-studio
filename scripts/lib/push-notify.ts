@@ -73,7 +73,7 @@ export interface PushNotifyResult {
 export interface SendPushNotificationOptions {
   /** Destinatário — default `resolveEditorEmail(platform.config.json)`
    * (mesmo helper usado pelos 17 alarmes existentes; hoje resolve pra
-   * `vjpixel@gmail.com`). */
+   * `vjpixel@gmail.com`). String vazia/só espaços conta como ausente. */
   to?: string;
   /** `sendGmailMessage` injetável (testes) — evita bater na rede/Gmail
    * real. */
@@ -105,7 +105,10 @@ export async function sendPushNotification(
   message: PushMessage,
   opts: SendPushNotificationOptions = {},
 ): Promise<PushNotifyResult> {
-  const to = opts.to ?? resolveEditorEmail(opts.platformConfigPath ?? PLATFORM_CONFIG_PATH_DEFAULT);
+  // `||`, não `??` (#11472): os alarmes passam `emailTo: getArg(argv, "to")`,
+  // que vale "" quando `--to` não vem. Com `??` o "" passava e o e-mail saía
+  // com `To:` vazio em vez de ir pro editor.
+  const to = opts.to?.trim() || resolveEditorEmail(opts.platformConfigPath ?? PLATFORM_CONFIG_PATH_DEFAULT);
   const timeoutMs = opts.timeoutMs ?? PUSH_IO_TIMEOUT_MS;
   if (opts.sendFn === undefined && isNodeTestContext()) {
     const refusal = testContextRefusalMessage("sendGmailMessage (e-mail real)");

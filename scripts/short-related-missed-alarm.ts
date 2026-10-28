@@ -23,7 +23,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { getArg, getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { notifyEditor } from "./lib/editor-notify.ts";
@@ -78,6 +78,19 @@ function loadShortAt(aammdd: string): Date | null {
   }
 }
 
+/**
+ * Edição avaliada: `--edition AAMMDD` quando passada, senão a de hoje em BRT
+ * (o timer chama sem a flag). Usa `getStringArg`, que devolve `undefined`
+ * quando a flag está ausente: com `getArg` (que devolve `""`) o `??` nunca
+ * caía no fallback e toda execução do timer morria em "--edition inválido"
+ * (#11472). Flag passada sem valor ou vazia lança, em vez de virar "hoje".
+ */
+export function resolveAlarmEdition(argv: string[], now: Date): string {
+  const aammdd = getStringArg(argv, "edition", { example: "261027" }) ?? brtTodayAammdd(now);
+  if (!/^\d{6}$/.test(aammdd)) throw new Error(`--edition inválido: ${JSON.stringify(aammdd)} (esperado AAMMDD)`);
+  return aammdd;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, "dry-run");
@@ -85,8 +98,7 @@ async function main(): Promise<void> {
   loadProjectEnv(ROOT);
 
   const now = new Date();
-  const aammdd = getArg(argv, "edition") ?? brtTodayAammdd(now);
-  if (!/^\d{6}$/.test(aammdd)) throw new Error(`--edition inválido: ${JSON.stringify(aammdd)} (esperado AAMMDD)`);
+  const aammdd = resolveAlarmEdition(argv, now);
   const dir = resolve(ROOT, editionDirFor(aammdd));
   const editionExists = existsSync(dir);
 
