@@ -128,9 +128,15 @@ function sliceCall(masked: string, start: number): string {
   return masked.slice(start);
 }
 
-/** `spawnSync(` seguido de uma abertura de string — qual COMANDO é fica pro
- *  fonte original, já que no mascarado o conteúdo virou espaço. */
-const CALL_RE = /spawnSync\(\s*(["'`])/g;
+/** Chamada de processo filho SEM shell por padrão seguida de uma abertura de
+ *  string — qual COMANDO é fica pro fonte original, já que no mascarado o
+ *  conteúdo virou espaço. Cobre `spawnSync`, `spawn`, `execFileSync` e
+ *  `execFile` (#11488: a 1ª versão só via `spawnSync`, e 11 chamadas
+ *  `execFileSync("npx", …)` em 9 arquivos quebravam no Windows sem o guard
+ *  acusar). `\b` + o `(` logo depois do nome impedem `spawn` de casar dentro
+ *  de `spawnSync` e `execFile` dentro de `execFileSync`. `execSync`/`exec`
+ *  ficam de fora: sempre rodam por shell, onde `npx` resolve `npx.cmd`. */
+const CALL_RE = /\b(?:spawnSync|spawn|execFileSync|execFile)\(\s*(["'`])/g;
 
 /** A opção precisa ser a CHAVE `shell:`, não a palavra solta — senão um
  *  argumento contendo "shell" (`"shell.ts"`) faz a chamada passar por
@@ -236,6 +242,30 @@ describe("spawnSync com npx sempre trata Windows (ENOENT invisível no CI)", () 
     assert.deepEqual(findOffendingOffsets(weird), []);
     const nested = 'spawnSync("npx", ["tsx", join(a, "b.ts")], { cwd: r, shell: true })';
     assert.deepEqual(findOffendingOffsets(nested), []);
+  });
+
+  it("DETECTA execFileSync, execFile e spawn com npx sem `shell` (#11488)", () => {
+    // Fixture do padrão que a #11485 limpou à mão em 9 arquivos.
+    assert.equal(findOffendingOffsets('execFileSync("npx", ["tsx", SCRIPT, "--read"], { cwd: ROOT, encoding: "utf8" })').length, 1);
+    assert.equal(findOffendingOffsets("execFile('npx', ['tsx', 'x.ts'], { cwd: r }, cb)").length, 1);
+    assert.equal(findOffendingOffsets('const child = spawn("npx", args, { cwd: r });').length, 1);
+    assert.equal(findOffendingOffsets('cp.execFileSync("npx", ["a"])').length, 1, "sem objeto de opções também é ofensor");
+  });
+
+  it("aceita execFileSync/execFile/spawn com npx quando passam `shell` (#11488)", () => {
+    assert.deepEqual(findOffendingOffsets('execFileSync("npx", ["tsx", S], { cwd: ROOT, shell: true })'), []);
+    assert.deepEqual(findOffendingOffsets('spawn("npx", args, { shell: isWindows, ...opts })'), []);
+    assert.deepEqual(findOffendingOffsets("execFile('npx', ['a'], { shell: process.platform === 'win32' }, cb)"), []);
+  });
+
+  it("nomes vizinhos não são confundidos com as chamadas cobertas (#11488)", () => {
+    // Uma ocorrência só: `spawnSync(` não pode ser contado também como `spawn(`.
+    assert.equal(findOffendingOffsets('spawnSync("npx", ["a"], { cwd: r })').length, 1);
+    assert.equal(findOffendingOffsets('execFileSync("npx", ["a"], { cwd: r })').length, 1);
+    // `execSync` roda por shell: fora do escopo do guard.
+    assert.deepEqual(findOffendingOffsets('execSync("npx tsx x.ts", { cwd: r })'), []);
+    assert.deepEqual(findOffendingOffsets('respawn("npx", ["a"])'), []);
+    assert.deepEqual(findOffendingOffsets('myExecFile("npx", ["a"])'), []);
   });
 
   it("comando que só COMEÇA com npx não é confundido", () => {

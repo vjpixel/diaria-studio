@@ -10,11 +10,12 @@
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 import { loadIssueRepos } from "../scripts/lib/issue-repos.ts";
 import { main as syncLabelsMain, type GhRunner } from "../scripts/sync-issue-labels.ts";
 
@@ -40,9 +41,8 @@ after(() => {
  * `develop-track`). Nada toca a rede. */
 function installFakeGh(dir: string): string {
   const log = join(dir, "calls.log");
-  const gh = join(dir, "gh");
-  writeFileSync(
-    gh,
+  writeFakeGh(
+    dir,
     [
       "#!/usr/bin/env bash",
       `echo "$*" >> "${log}"`,
@@ -53,7 +53,6 @@ function installFakeGh(dir: string): string {
       "",
     ].join("\n"),
   );
-  chmodSync(gh, 0o755);
   return log;
 }
 
@@ -63,7 +62,7 @@ function runCli(script: string, args: string[], cwd: string) {
     cwd,
     encoding: "utf8",
     timeout: 60_000,
-    env: { ...process.env, PATH: `${cwd}${delimiter}${process.env.PATH ?? ""}` },
+    env: fakeGhEnv(cwd),
   });
 }
 

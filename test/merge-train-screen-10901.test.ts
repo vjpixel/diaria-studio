@@ -11,11 +11,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname, delimiter } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 import {
   checkStudioTrainPr,
   screenTrainPrs,
@@ -110,14 +111,12 @@ echo "gh falso: chamada inesperada: $*" >&2; exit 99
 function runCli(args: string[], env: Record<string, string>) {
   const bin = mkdtempSync(join(tmpdir(), "fake-gh-10901-"));
   try {
-    const gh = join(bin, "gh");
-    writeFileSync(gh, FAKE_GH);
-    chmodSync(gh, 0o755);
+    writeFakeGh(bin, FAKE_GH);
     return spawnSync(process.execPath, ["--import", "tsx", join(ROOT, "scripts", "run-merge-train.ts"), ...args], {
       cwd: ROOT,
       encoding: "utf8",
       timeout: 60_000,
-      env: { ...process.env, ...env, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` },
+      env: fakeGhEnv(bin, env),
     });
   } finally {
     rmSync(bin, { recursive: true, force: true });

@@ -37,6 +37,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { withIsolatedGhConfig } from "./helpers/isolated-gh-config.ts";
+import { FAKE_GH_PROBE_ARG, FAKE_GH_PROBE_REPLY, assertFakeGhResolves, withoutGhCredentials } from "./_helpers/fake-gh.ts";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -98,16 +99,17 @@ function runCli(root: string, ...args: string[]) {
 function runHook(root: string, sessionId: string, command: string, extraEnv: Record<string, string> = {}, binDir?: string) {
   // Sem GH_REPO/GH_HOST: a consulta do hook precisa falhar no repo temporário
   // sem remote (ou cair no gh falso), nunca consultar um PR real por herança.
-  const env: Record<string, string | undefined> = { ...withIsolatedGhConfig(), ...extraEnv };
-  delete env.GH_REPO;
-  delete env.GH_HOST;
   // #10618: com o origin do studio no repo temporário, o `gh` real resolveria
   // `{owner}/{repo}` e consultaria o PR de verdade — GH_HOST inválido mantém a
-  // consulta falhando offline quando não há gh falso no PATH.
-  if (!binDir) env.GH_HOST = "github.invalid";
+  // consulta falhando offline quando não há gh falso no PATH. #11487: além
+  // disso, token inválido no ambiente (vence o keyring) e, com gh falso, a
+  // sonda confirma que é ele que o PATH resolve antes de rodar o hook.
+  const env: Record<string, string | undefined> = withoutGhCredentials({ ...withIsolatedGhConfig(), ...extraEnv });
+  delete env.GH_REPO;
   if (binDir) {
     const pathKey = Object.keys(env).find((k) => k.toLowerCase() === "path") ?? "PATH";
     env[pathKey] = `${binDir}${delimiter}${env[pathKey] ?? ""}`;
+    assertFakeGhResolves(env);
   }
   return spawnSync(process.execPath, [CONSUME_HOOK], {
     cwd: root,
@@ -148,7 +150,9 @@ function makeFakeGh(): { binDir: string; env: (state: string, callsFile: string)
       'import { appendFileSync } from "node:fs";',
       'import { basename } from "node:path";',
       'if (/^gh(\\.exe)?$/i.test(basename(process.execPath)) || process.env.FAKE_GH_DIRECT === "1") {',
-      '  appendFileSync(process.env.FAKE_GH_CALLS, JSON.stringify(process.argv.slice(process.env.FAKE_GH_DIRECT === "1" ? 2 : 1)) + "\\n");',
+      '  const args = process.argv.slice(process.env.FAKE_GH_DIRECT === "1" ? 2 : 1);',
+      `  if (args[0] === ${JSON.stringify(FAKE_GH_PROBE_ARG)}) { process.stdout.write(${JSON.stringify(FAKE_GH_PROBE_REPLY)}); process.exit(0); }`,
+      '  appendFileSync(process.env.FAKE_GH_CALLS, JSON.stringify(args) + "\\n");',
       '  process.stdout.write(JSON.stringify({ state: process.env.FAKE_GH_STATE, autoMergeRequest: null, mergeQueueEntry: null }));',
       "  process.exit(0);",
       "}",

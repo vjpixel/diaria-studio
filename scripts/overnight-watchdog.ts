@@ -941,9 +941,10 @@ function renderHaltBanner(
   }
 
   try {
+    // #11488: node direto, sem `npx` — no Windows `npx` sem shell dá ENOENT.
     const out = execFileSync(
-      "npx",
-      ["tsx", haltScript, ...buildHaltBannerArgs(kind, aammdd, elapsedMin, thresholdMin)],
+      process.execPath,
+      ["--import", "tsx", haltScript, ...buildHaltBannerArgs(kind, aammdd, elapsedMin, thresholdMin)],
       {
         cwd: rootDir,
         encoding: "utf-8",
@@ -978,9 +979,11 @@ function emitRunLogEvent(
   if (!existsSync(logScript)) return;
 
   try {
+    // #11488: node direto, sem `npx` — no Windows `npx` sem shell dá ENOENT.
     execFileSync(
-      "npx",
+      process.execPath,
       [
+        "--import",
         "tsx",
         logScript,
         "--edition",

@@ -40,8 +40,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakeGhEnv, withoutGhCredentials, writeFakeGh } from "./_helpers/fake-gh.ts";
 import {
   ENV_INJECTABLE_SUBCOMMANDS,
   ENV_INJECTED_SESSION_ID_VAR,
@@ -190,8 +191,10 @@ beforeEach(() => {
 });
 
 function wrapperEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  // #11487: sem credencial do gh no ambiente — nenhum elo da cadeia escreve
+  // no GitHub real se algo resolver o gh de verdade.
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...withoutGhCredentials(process.env),
     PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
     CLAUDE_BINARY_PREFLIGHT_CMD: "claude",
     TMPDIR: runTmp,
@@ -948,6 +951,7 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
   let realGhDir: string;
   let ghLog: string;
   let ghStdinLog: string;
+  let baseEnv: NodeJS.ProcessEnv = {};
 
   before(() => {
     r = join(tmp, "ghrepo");
@@ -956,8 +960,8 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
     mkdirSync(realGhDir);
     ghLog = join(tmp, "realgh.log");
     ghStdinLog = join(tmp, "realgh-stdin.log");
-    writeFileSync(
-      join(realGhDir, "gh"),
+    writeFakeGh(
+      realGhDir,
       [
         "#!/usr/bin/env bash",
         `echo "$*" >> '${ghLog}'`,
@@ -969,7 +973,11 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
         "",
       ].join("\n"),
     );
-    chmodSync(join(realGhDir, "gh"), 0o755);
+    // #11487: a sonda confirma que o "gh real" do PATH é o falso deste teste;
+    // o shim de produção entra na frente dele depois.
+    baseEnv = fakeGhEnv(realGhDir, { TMPDIR: tmp });
+    const key = Object.keys(baseEnv).find((k) => k.toLowerCase() === "path") ?? "PATH";
+    baseEnv[key] = `${GH_SHIM_DIR}${delimiter}${baseEnv[key] ?? ""}`;
   });
 
   function gh(args: string[], cwd = r, input?: string) {
@@ -978,7 +986,7 @@ describe("#10560 — gh shim (merge recusado, pr create só de continuo/*, guard
       input,
       encoding: "utf8",
       timeout: 30_000,
-      env: { ...process.env, PATH: `${GH_SHIM_DIR}:${realGhDir}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
+      env: baseEnv,
     });
   }
 

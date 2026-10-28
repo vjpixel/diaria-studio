@@ -19,6 +19,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, mkdirSync 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakeGhEnv, writeFakeGh } from "./_helpers/fake-gh.ts";
 
 /** #11243: pulado só no Windows (Neo); no CI Linux e no `300` roda normal. */
 const SKIP_WIN32 = process.platform === "win32" && "#11243: executa script bash do continuo/hermes, que só roda no 300 (Linux); no Git Bash do Windows symlink, chmod e jq não se comportam igual";
@@ -63,10 +64,11 @@ function runTryMergeGate(repo: "studio" | "design"): string[] {
   const dir = mkdtempSync(join(tmpdir(), "continuo-design-10900-"));
   try {
     mkdirSync(join(dir, "bin"));
-    for (const [name, body] of [["npx", FAKE_NPX], ["gh", FAKE_GH], ["git", FAKE_GIT]] as const) {
+    for (const [name, body] of [["npx", FAKE_NPX], ["git", FAKE_GIT]] as const) {
       writeFileSync(join(dir, "bin", name), body);
       chmodSync(join(dir, "bin", name), 0o755);
     }
+    writeFakeGh(join(dir, "bin"), FAKE_GH);
     const events = join(dir, "events.log");
     writeFileSync(events, "");
     const harness = [
@@ -93,7 +95,7 @@ function runTryMergeGate(repo: "studio" | "design"): string[] {
     execFileSync("bash", ["-c", harness], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, EVENTS_LOG: events, GH_REPO: "" },
+      env: fakeGhEnv(join(dir, "bin"), { EVENTS_LOG: events, GH_REPO: "" }),
     });
     return readFileSync(events, "utf8").trim().split("\n");
   } finally {

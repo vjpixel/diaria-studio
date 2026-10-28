@@ -76,7 +76,7 @@ describe("#6098 o script aceita a flag nova sem quebrar o uso antigo", () => {
     mkdirSync(join(dir, "_internal"), { recursive: true });
     writeFileSync(join(dir, "_internal", "05-published.json"), JSON.stringify({ post_id: "post_x" }), "utf8");
     try {
-      execFileSync("npx", ["tsx", "scripts/verify-scheduled-post.ts", ...args], {
+      execFileSync(process.execPath, ["--import", "tsx", "scripts/verify-scheduled-post.ts", ...args], {
         cwd: ROOT,
         encoding: "utf8",
         stdio: "pipe",
