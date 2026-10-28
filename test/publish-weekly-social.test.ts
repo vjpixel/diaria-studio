@@ -2632,7 +2632,12 @@ describe("main(): dispatch mockado", () => {
       const json = JSON.parse(out);
       assert.equal(json.mode, "highlights");
       assert.equal(json.carouselKey, "271225-highlights");
-      assert.match(json.summariesPath, /weekly[\\/]271225-highlights[\\/]_internal[\\/]06-summaries\.json$/); // separador do SO (#11243)
+      // Separador do SO (#11243): `[\\/]` só no win32; no Linux segue `/` estrito (#11489).
+      const sepRe = process.platform === "win32" ? String.raw`[\\/]` : "/";
+      assert.match(
+        json.summariesPath,
+        new RegExp(`weekly${sepRe}271225-highlights${sepRe}_internal${sepRe}06-summaries\\.json$`),
+      );
       assert.equal(json.items.length, 1);
       assert.deepEqual([json.items[0].title, json.items[0].url], [TITLE, URL]);
       assert.match(json.items[0].body, /Corpo do D1/);
