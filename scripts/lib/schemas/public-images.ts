@@ -6,6 +6,8 @@
  *   e Make webhook. Schema drift = LinkedIn post sem imagem ou Make falha.
  *
  * #1119: campo `target` ("drive" | "cloudflare") opcional adicionado.
+ * #11414: o upload pro Drive foi removido — "drive" segue no enum só pra
+ * ler caches de edições antigas (que o upload re-envia pro KV).
  * #1132 P2.5: `parsePublicImages` agora retorna erro com path descritivo
  * em vez de stack trace genérico do ZodError.
  *

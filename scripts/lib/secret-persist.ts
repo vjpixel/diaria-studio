@@ -16,6 +16,15 @@ import { upsertEnvVar } from "./google-ads-credentials.ts";
 
 export type DopplerSet = (name: string, value: string) => { ok: boolean; error?: string };
 
+/**
+ * Escopo explícito do vault (#11415): sem ele o `doppler secrets set` depende do
+ * `doppler setup` do diretório de onde o script roda — task systemd, worktree
+ * ou checkout sem setup gravariam em outro projeto/config, ou falhariam. Mesmo
+ * escopo que `doppler-token-expiry-alarm.ts` lê, então o que se grava aqui é o
+ * que o alarme de vencimento vigia.
+ */
+export const DOPPLER_SCOPE_ARGS: readonly string[] = ["--project", "diaria-studio", "--config", "dev"];
+
 export type DopplerSpawn = (
   bin: string,
   args: string[],
@@ -46,7 +55,7 @@ export function makeDopplerSet(deps: {
   const exists = deps.exists ?? existsSync;
   const platform = deps.platform ?? process.platform;
   return (name, value) => {
-    const args = ["secrets", "set", name, "--silent"];
+    const args = ["secrets", "set", name, "--silent", ...DOPPLER_SCOPE_ARGS];
     const override = env.DOPPLER_BIN?.trim();
     let r = override
       ? spawn(override, args, { input: value, shell: false })
@@ -63,7 +72,7 @@ export function makeDopplerSet(deps: {
   };
 }
 
-/** `doppler secrets set NAME --silent` com o valor pelo stdin (nunca na linha de comando). */
+/** `doppler secrets set NAME --silent --project diaria-studio --config dev` com o valor pelo stdin (nunca na linha de comando). */
 export const defaultDopplerSet: DopplerSet = makeDopplerSet();
 
 export type PersistResult = { doppler: string[]; dopplerFailed: string[]; dopplerErrors: string[]; envWritten: boolean };

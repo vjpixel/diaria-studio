@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  publicImageUrl,
-  publicFileViewUrl,
   mimeTypeFor,
   sourceImageFor,
   imageSpecsFor,
@@ -43,9 +41,9 @@ describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#18
 
       // Simula o social mode (--no-cache) escrevendo por cima: spread sobre a base.
       const socialResult: Record<string, PublicImage> = {
-        d1: { file_id: "d1d", url: "u-d1-drive", target: "drive", cloudflare_url: "u-d1" } as PublicImage,
-        d2: { file_id: "d2d", url: "u-d2-drive", target: "drive" } as PublicImage,
-        d3: { file_id: "d3d", url: "u-d3-drive", target: "drive" } as PublicImage,
+        d1: { file_id: "d1k", url: "u-d1-new", target: "cloudflare", cloudflare_url: "u-d1-new" } as PublicImage,
+        d2: { file_id: "d2k", url: "u-d2", target: "cloudflare" } as PublicImage,
+        d3: { file_id: "d3k", url: "u-d3", target: "cloudflare" } as PublicImage,
       };
       const merged = { ...base, ...socialResult };
       // cover/eia_a/eia_b do newsletter NÃO somem (era o bug #1865).
@@ -85,18 +83,16 @@ describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#18
         writeFileSync(join(dir, f), `fake-jpg-bytes-${f}`, "utf8");
       }
 
-      const driveUploads: string[] = [];
+      const kvUploads: string[] = [];
       await uploadPublicImages({
         editionDir: dir,
         mode: "social",
         skipExisting: false, // --no-cache
-        target: "drive",
         uploaders: {
-          uploadToDrive: async (name: string) => {
-            driveUploads.push(name);
-            return { id: `drive-${name}` };
+          uploadToCloudflare: async (_path: string, key: string) => {
+            kvUploads.push(key);
+            return `https://kv.example/img/${key}`;
           },
-          makeDrivePublic: async () => {},
         },
       });
 
@@ -105,12 +101,12 @@ describe("mergeBaseFromCache — merge cross-mode preservado com --no-cache (#18
       assert.ok(out.cover, "cover preservada");
       assert.ok(out.eia_a && out.eia_b, "eia_a/eia_b preservados");
       assert.equal(out.cover.cloudflare_url, "u-cover");
-      // Social keys (4:5) re-uploadadas (target drive). #7399: sem chave base.
+      // Social keys (4:5) re-uploadadas pro KV. #7399: sem chave base.
       assert.ok(out.d1_4x5 && out.d2_4x5 && out.d3_4x5, "d1_4x5/d2_4x5/d3_4x5 presentes");
       assert.ok(!out.d1 && !out.d2 && !out.d3, "#7399: chave base 1x1 não deve mais ser uploadada");
-      assert.equal(out.d1_4x5.target, "drive");
+      assert.equal(out.d1_4x5.target, "cloudflare");
       // --no-cache forçou re-upload dos 3 (não reusou).
-      assert.equal(driveUploads.length, 3);
+      assert.equal(kvUploads.length, 3);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -246,26 +242,61 @@ describe("upload-images-public env auto-load (regression #1157)", () => {
   });
 });
 
-describe("publicImageUrl", () => {
-  it("constrói URL com uc?id + export=view", () => {
-    assert.equal(
-      publicImageUrl("abc123"),
-      "https://drive.google.com/uc?id=abc123&export=view",
-    );
+describe("#11414: ramo Drive removido — KV é o único destino", () => {
+  const src = readFileSync(resolve(__ROOT, "scripts/upload-images-public.ts"), "utf8");
+
+  it("o script não fala mais com a API do Drive (gFetch / drive.google.com)", () => {
+    assert.doesNotMatch(src, /google-auth/, "não importa mais gFetch de google-auth.ts");
+    assert.doesNotMatch(src, /googleapis\.com\/(upload\/)?drive/, "sem endpoint da Drive API");
+    assert.doesNotMatch(src, /drive\.google\.com/, "sem URL uc?id / file/d do Drive");
+    assert.doesNotMatch(src, /uploadToDrive|makeDrivePublic/, "seam de upload Drive removido");
   });
 
-  it("aceita IDs com caracteres válidos de Drive", () => {
-    const id = "1a2b_-Xyz.ZZZ";
-    assert.ok(publicImageUrl(id).includes(id));
+  it("os helpers de URL do Drive não são mais exportados", async () => {
+    const mod = (await import("../scripts/upload-images-public.ts")) as Record<string, unknown>;
+    assert.equal(mod.publicImageUrl, undefined);
+    assert.equal(mod.publicFileViewUrl, undefined);
   });
-});
 
-describe("publicFileViewUrl", () => {
-  it("constrói URL formato /file/d/ID/view", () => {
-    assert.equal(
-      publicFileViewUrl("abc123"),
-      "https://drive.google.com/file/d/abc123/view?usp=sharing",
-    );
+  it("entry legada target=drive no cache é re-uploadada pro KV (nunca reusada)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "260101-11414-"));
+    try {
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), "bytes-d1", "utf8");
+      writeFileSync(
+        join(dir, "06-public-images.json"),
+        JSON.stringify({
+          images: {
+            d1_4x5: {
+              file_id: "drive-id",
+              url: "https://drive.google.com/uc?id=drive-id&export=view",
+              mime_type: "image/jpeg",
+              filename: "04-d1-4x5.jpg",
+              target: "drive",
+              md5: md5OfFile(join(dir, "04-d1-4x5.jpg")),
+            },
+          },
+        }),
+        "utf8",
+      );
+      const kvUploads: string[] = [];
+      const out = await uploadPublicImages({
+        editionDir: dir,
+        mode: "social",
+        uploaders: {
+          uploadToCloudflare: async (_p: string, key: string) => {
+            kvUploads.push(key);
+            return `https://kv.example/img/${key}`;
+          },
+        },
+      });
+      assert.equal(kvUploads.length, 1, "re-upload pro KV aconteceu (md5 igual, mas target legado)");
+      for (const img of Object.values(out.images)) {
+        assert.equal(img.target, "cloudflare");
+        assert.doesNotMatch(img.url, /drive\.google\.com/);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -619,7 +650,7 @@ describe("shouldReuseCachedUpload (#1418)", () => {
     cleanup();
   });
 
-  it("default target=drive quando cached.target ausente (entries muito antigas)", () => {
+  it("entry sem target (muito antiga, era Drive) nunca é reusada (#11414)", () => {
     const { path, cleanup } = makeImageFile("any");
     const cached: PublicImage = {
       file_id: "k1",
@@ -629,9 +660,7 @@ describe("shouldReuseCachedUpload (#1418)", () => {
       md5: md5OfFile(path),
       // target ausente
     };
-    // target solicitado = drive → matches default
-    assert.equal(shouldReuseCachedUpload(cached, path, "drive"), true);
-    // target solicitado = cloudflare → não bate
+    // target ausente = drive legado → não bate com cloudflare, re-upload.
     assert.equal(shouldReuseCachedUpload(cached, path, "cloudflare"), false);
     cleanup();
   });
