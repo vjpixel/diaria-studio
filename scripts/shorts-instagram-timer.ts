@@ -148,6 +148,12 @@ export type InstagramTimerAlarmKey =
   | "preflight-blocked"
   /** A leitura da conta falhou (token expirado, 5xx no `/media`): o Reels não sai até a conta voltar a responder. */
   | "preflight-read-failed"
+  /**
+   * #11421: nada na conta da API, mas o perfil do @vjpixel (autor da rota do
+   * Chrome, onde fica o Reels à mão com collab pendente) não pôde ser conferido
+   * por falta da credencial da página: o timer não publica (fail-closed).
+   */
+  | "author-unchecked"
   | "no-output"
   | "crash"
   /** #11368: o Reels saiu, mas o publish devolveu aviso (o Instagram descartou o convite de collab). */
@@ -172,10 +178,10 @@ const RETRY_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["publish-failed
  * Motivos que dizem "não reposte" (o Reels pode estar no ar): depois de um
  * deles, `late` não sai — o corpo dele manda publicar.
  */
-const LATE_BLOCKER_KEYS: ReadonlyArray<InstagramTimerAlarmKey> = ["guided", "preflight-blocked", "published-unregistered", "check-permalink"];
+const LATE_BLOCKER_KEYS: ReadonlyArray<InstagramTimerAlarmKey> = ["guided", "preflight-blocked", "author-unchecked", "published-unregistered", "check-permalink"];
 
 /** O Reels saiu (ou pode ter saído) e o editor só confere: `acao`, nunca `urgente`. */
-const ACAO_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["preflight-blocked", "collab", "cut-unverified"]);
+const ACAO_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["preflight-blocked", "author-unchecked", "collab", "cut-unverified"]);
 
 export function alarmSeverity(key: InstagramTimerAlarmKey): NotifySeverity {
   return PUBLISHED_KEYS.has(key) || ACAO_KEYS.has(key) ? "acao" : "urgente";
@@ -435,7 +441,9 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
       // A conferência da conta não deixou publicar: nunca "o publish falhou" (o corpo mandaria repostar).
       // `read-failed`: a conta não respondeu (credencial, 5xx) — urgente, o Reels não sai;
       // o resto (`blocked`, ou motivo desconhecido) pode ter Reels na conta.
-      const key: InstagramTimerAlarmKey = result.preflight === "read-failed" ? "preflight-read-failed" : "preflight-blocked";
+      // `author-unchecked` (#11421): o perfil do @vjpixel não foi conferido (sem credencial) — pode ter o Reels à mão.
+      const key: InstagramTimerAlarmKey =
+        result.preflight === "read-failed" ? "preflight-read-failed" : result.preflight === "author-unchecked" ? "author-unchecked" : "preflight-blocked";
       return { kind: "alarm", key, failed: true, detail: `conferência da conta (${result.preflight ?? "?"}): ${result.error ?? "sem mensagem"}` };
     }
     return { kind: "alarm", key: "publish-failed", failed: true, detail: String(result.error ?? "falha sem mensagem") };
@@ -539,6 +547,16 @@ export function buildInstagramTimerAlarm(input: {
       `- Se o Reels da edição está lá: registre com ${confirm} (com \`--media-id ID\` quando houver mais de um candidato).`,
     );
     subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir a conta (${key})`;
+  } else if (key === "author-unchecked") {
+    // #11421: o Reels pode estar no perfil do autor (collab pendente) — nunca sugerir publicar pela API.
+    lines.push(
+      `O timer não publicou: a conta da API não tem o Reels da edição, mas o perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} (onde fica o Reels postado à mão enquanto o collab está pendente) não pôde ser conferido por falta da credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300. Publicar sem conferir poderia duplicar o Reels em conta pública.`,
+      "O que fazer (uma das duas):",
+      `- Postar pelo instagram.com no Chrome (Passo B3b do \`/diaria-publica-video\`), ${instagramChromeRouteText()}, e registrar com ${confirm} ou com \`--confirm-instagram --url URL\`. Se já postou, só registre.`,
+      `- Ou fornecer a credencial da página ${INSTAGRAM_CHROME_ROUTE.authorPage} no 300; a próxima execução (de hora em hora${deadlineHhmm ? `, até ${deadlineHhmm} BRT` : ""}) confere o perfil e publica se o Reels não estiver lá.`,
+      "Este alarme sai uma vez por edição.",
+    );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: postar pelo Chrome ou fornecer a credencial do @${INSTAGRAM_CHROME_ROUTE.authorUsername} (${key})`;
   } else if (key === "preflight-read-failed") {
     // A conta não respondeu: o Reels não sai, mas nada diz que ele não está lá — nunca sugerir publicar.
     lines.push(
