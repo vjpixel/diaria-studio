@@ -53,6 +53,19 @@ import { PassThrough } from "node:stream";
  *  em cada mock. */
 const OK_SUMMARY = "# tests 1\n# pass 1\n# fail 0\n";
 
+/** #11447: sinks mudos pros testes que não inspecionam o log do runner.
+ *  Sem eles, `runTestBatches`/`finalizeExitCode` caem no `process.stdout`/
+ *  `process.stderr` reais e as mensagens dos FIXTURES ("cobertura incompleta
+ *  — 0/4 arquivos", "falha ao spawnar ... ETIMEDOUT", "sem sumário") saem no
+ *  log do CI com a mesma cara de um travamento real. Na PR #11407 isso foi
+ *  lido como "workers pendurados, 0/4 arquivos", quando a falha era 1 teste
+ *  comum. Teste que quer ler o log passa o próprio sink DEPOIS do spread, e
+ *  o dele vence. */
+const QUIET_STREAMS = {
+  stdout: { write: (_chunk: string) => true },
+  stderr: { write: (_chunk: string) => true },
+};
+
 /** #7753: `process.kill(pid, 0)` não manda sinal nenhum — só testa se o
  *  processo existe e é alcançável (mesma convenção POSIX que `kill -0`).
  *  `true` = ainda vivo; `false` = morto (ESRCH) — usado pelo teste de
@@ -99,6 +112,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
   it("lista vazia: retorna 0 sem chamar spawn (guard anti-vacuidade é o pretest, não este wrapper)", () => {
     let calls = 0;
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: [],
       spawn: (() => {
         calls++;
@@ -111,6 +125,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
 
   it("1 batch, spawn retorna status 0 + sumário válido → exit 0", () => {
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts", "/b.test.ts"],
       batchSize: 10,
       spawn: (() => ({ status: 0, stdout: OK_SUMMARY, stderr: "" })) as unknown as typeof import(
@@ -129,6 +144,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
   it("#7094: sumário válido com fail 0 + status != 0 → exit 1 E mensagem nomeada no stderr", () => {
     const written: string[] = [];
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts"],
       batchSize: 10,
       spawn: (() => ({
@@ -150,6 +166,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
   it("#7094: sumário válido com fail 0 e status 0 → exit 0, SEM a mensagem (não vira ruído por batch)", () => {
     const written: string[] = [];
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts"],
       batchSize: 10,
       spawn: (() => ({ status: 0, stdout: OK_SUMMARY, stderr: "" })) as unknown as typeof import(
@@ -164,6 +181,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
   it("2 batches, 1º falha e 2º passa → exit agregado 1, AMBOS batches rodam (nunca aborta cedo)", () => {
     const seenBatches: number[][] = [];
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: [1, 2, 3, 4] as unknown as string[],
       batchSize: 2,
       // Mock deliberadamente sem sumário do node:test — este teste exerce
@@ -185,6 +203,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
 
   it("spawn retorna result.error (falha de spawn, não do teste) → tratado como falha, sem lançar", () => {
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts"],
       spawn: (() => ({ error: new Error("ENOENT: spawn boom"), status: null })) as unknown as typeof import(
         "node:child_process"
@@ -196,6 +215,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
   it("args extras (--test-name-pattern) são repassados a cada batch", () => {
     const invocations: string[][] = [];
     runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts", "/b.test.ts", "/c.test.ts"],
       batchSize: 1,
       extraArgs: ["--test-name-pattern", "foo"],
@@ -217,6 +237,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
 
   it("todos os batches passam (com sumário válido) → exit 0", () => {
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts", "/b.test.ts", "/c.test.ts", "/d.test.ts"],
       batchSize: 2,
       spawn: (() => ({ status: 0, stdout: OK_SUMMARY, stderr: "" })) as unknown as typeof import(
@@ -231,6 +252,7 @@ describe("runTestBatches (#6495) — spawn injetado, nunca roda node --test real
     "de #6495 ter chance de rodar", () => {
     let seenOptions: Record<string, unknown> | undefined;
     runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts"],
       spawn: ((_cmd: unknown, _args: unknown, options: unknown) => {
         seenOptions = options as Record<string, unknown>;
@@ -299,6 +321,7 @@ describe("runTestBatches — sumário agregado reflete TODOS os batches, não s�
   it("1º batch falha (fail 1), 2º batch (último) passa (fail 0) → agregado soma fail 1 e nomeia o batch 1", () => {
     const written: string[] = [];
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts", "/b.test.ts"],
       batchSize: 1,
       bisectBudgetMs: 0,
@@ -323,6 +346,7 @@ describe("runTestBatches — sumário agregado reflete TODOS os batches, não s�
   it("todos os batches passam → agregado soma pass corretamente, nenhum batch nomeado como falho", () => {
     const written: string[] = [];
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts", "/b.test.ts", "/c.test.ts"],
       batchSize: 1,
       spawn: (() => ({
@@ -719,8 +743,11 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
 
   it("spawnSync mata por ETIMEDOUT (caminho real do Node, não só result.signal) → mensagem nomeia os arquivos e o timeout usado", () => {
     const logs: string[] = [];
+    // #11447: o log vai pelo `stderr` injetado; `console.error` vira espião que
+    // não pode ser chamado (ele vazava as mensagens do fixture pro log do CI).
+    const consoleCalls: string[] = [];
     const origError = console.error;
-    console.error = (msg: string) => logs.push(msg);
+    console.error = (...args: unknown[]) => void consoleCalls.push(args.join(" "));
     try {
       const exit = runTestBatches({
         files: ["/hang.test.ts"],
@@ -730,13 +757,14 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
           status: null,
         })) as unknown as typeof import("node:child_process").spawnSync,
         stdout: { write: () => {} },
-        stderr: { write: () => {} },
+        stderr: { write: (s: string) => void logs.push(s) },
       });
       assert.equal(exit, 1);
       assert.ok(
         logs.some((s) => s.includes("/hang.test.ts") && s.includes("9999") && s.includes("timeout")),
         `mensagem deve nomear arquivo + timeout usado, veio: ${JSON.stringify(logs)}`,
       );
+      assert.deepEqual(consoleCalls, [], "nada pode sair por console.error com stderr injetado (#11447)");
     } finally {
       console.error = origError;
     }
@@ -771,8 +799,11 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
     // error.message NÃO contém a string "ETIMEDOUT" — só error.code contém.
     // Se o código regredisse pra checar a mensagem, este teste pegaria.
     const logs: string[] = [];
+    // #11447: o log vai pelo `stderr` injetado; `console.error` vira espião que
+    // não pode ser chamado (ele vazava as mensagens do fixture pro log do CI).
+    const consoleCalls: string[] = [];
     const origError = console.error;
-    console.error = (msg: string) => logs.push(msg);
+    console.error = (...args: unknown[]) => void consoleCalls.push(args.join(" "));
     try {
       const exit = runTestBatches({
         files: ["/hang.test.ts"],
@@ -782,13 +813,14 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
           status: null,
         })) as unknown as typeof import("node:child_process").spawnSync,
         stdout: { write: () => {} },
-        stderr: { write: () => {} },
+        stderr: { write: (s: string) => void logs.push(s) },
       });
       assert.equal(exit, 1);
       assert.ok(
         logs.some((s) => s.includes("/hang.test.ts") && s.includes("4242") && s.includes("timeout")),
         `deve reconhecer timeout via error.code mesmo sem a palavra na mensagem, veio: ${JSON.stringify(logs)}`,
       );
+      assert.deepEqual(consoleCalls, [], "nada pode sair por console.error com stderr injetado (#11447)");
     } finally {
       console.error = origError;
     }
@@ -821,8 +853,11 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
 
   it("#7387: spawn ETIMEDOUT nas DUAS tentativas (original + retry) → falha dura, mensagem nomeia o retry esgotado", () => {
     const logs: string[] = [];
+    // #11447: o log vai pelo `stderr` injetado; `console.error` vira espião que
+    // não pode ser chamado (ele vazava as mensagens do fixture pro log do CI).
+    const consoleCalls: string[] = [];
     const origError = console.error;
-    console.error = (msg: string) => logs.push(msg);
+    console.error = (...args: unknown[]) => void consoleCalls.push(args.join(" "));
     let calls = 0;
     try {
       const exit = runTestBatches({
@@ -833,7 +868,7 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
           return { error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }), status: null };
         }) as unknown as typeof import("node:child_process").spawnSync,
         stdout: { write: () => {} },
-        stderr: { write: () => {} },
+        stderr: { write: (s: string) => void logs.push(s) },
       });
       assert.equal(exit, 1);
       assert.ok(calls >= 2, `retry deve ter sido tentado (>=2 chamadas de spawn na tentativa principal), veio calls=${calls}`);
@@ -841,6 +876,7 @@ describe("runTestBatches — batch que TRAVA/MORRE produz exit != 0 (#6822, Defe
         logs.some((s) => s.includes("/hang-sempre.test.ts") && s.includes("mesmo após retry") && s.includes("7777")),
         `mensagem deve nomear o arquivo, indicar que o retry também esgotou, e citar o timeout, veio: ${JSON.stringify(logs)}`,
       );
+      assert.deepEqual(consoleCalls, [], "nada pode sair por console.error com stderr injetado (#11447)");
     } finally {
       console.error = origError;
     }
@@ -1045,8 +1081,11 @@ describe("runTestBatches — bisecção automática no caminho de falha (#6822 D
 
   it("spawnSync mata por ETIMEDOUT também aciona bisecção (não só o caminho de result.signal)", () => {
     const logs: string[] = [];
+    // #11447: o log vai pelo `stderr` injetado; `console.error` vira espião que
+    // não pode ser chamado (ele vazava as mensagens do fixture pro log do CI).
+    const consoleCalls: string[] = [];
     const origError = console.error;
-    console.error = (msg: string) => logs.push(msg);
+    console.error = (...args: unknown[]) => void consoleCalls.push(args.join(" "));
     try {
       runTestBatches({
         files: ["/inocente.test.ts", "/culpado.test.ts"],
@@ -1062,12 +1101,13 @@ describe("runTestBatches — bisecção automática no caminho de falha (#6822 D
             : { status: 0, stdout: OK_SUMMARY, stderr: "" };
         }) as unknown as typeof import("node:child_process").spawnSync,
         stdout: { write: () => {} },
-        stderr: { write: () => {} },
+        stderr: { write: (s: string) => void logs.push(s) },
       });
       assert.ok(
         logs.some((s) => s.includes("candidato") && s.includes("/culpado.test.ts") && !s.includes("/inocente.test.ts")),
         `deve isolar o culpado via bisecção mesmo no caminho de ETIMEDOUT, veio: ${JSON.stringify(logs)}`,
       );
+      assert.deepEqual(consoleCalls, [], "nada pode sair por console.error com stderr injetado (#11447)");
     } finally {
       console.error = origError;
     }
@@ -1136,12 +1176,12 @@ describe("splitIntoWorkerGroups (#6877)", () => {
 
 describe("finalizeExitCode (#6877, extraído do check final de #6822)", () => {
   it("completedFiles === totalFiles → devolve o exitCode recebido, sem mexer", () => {
-    assert.equal(finalizeExitCode(0, 10, 10), 0);
-    assert.equal(finalizeExitCode(1, 10, 10), 1, "exitCode 1 de falha real de teste não é mascarado");
+    assert.equal(finalizeExitCode(0, 10, 10, QUIET_STREAMS.stderr), 0);
+    assert.equal(finalizeExitCode(1, 10, 10, QUIET_STREAMS.stderr), 1, "exitCode 1 de falha real de teste não é mascarado");
   });
 
   it("completedFiles !== totalFiles → SEMPRE 1, mesmo se exitCode recebido fosse 0 (#6822: nunca cobertura parcial vira sucesso)", () => {
-    assert.equal(finalizeExitCode(0, 8, 10), 1);
+    assert.equal(finalizeExitCode(0, 8, 10, QUIET_STREAMS.stderr), 1);
   });
 
   it("cobertura incompleta escreve mensagem diagnóstica no stderr injetado, citando a contagem real", () => {
@@ -1168,6 +1208,7 @@ describe("REGRESSÃO (#6991): shard morto não pode virar 'conjunto de falhas id
   it("3 de 4 shards saem com sumário limpo (fail 0) e 1 morre por ETIMEDOUT sem sumário → exit agregado é 1, nunca 0", () => {
     const deadShard = "/c.test.ts";
     const exit = runTestBatches({
+      ...QUIET_STREAMS, // #11447: fixture nunca escreve no log real do CI
       files: ["/a.test.ts", "/b.test.ts", deadShard, "/d.test.ts"],
       batchSize: 1,
       // Isola o resultado agregado sem o custo extra de bisecção — o alvo
@@ -2303,5 +2344,94 @@ describe("pipeWorkerStream (#7448) — erro de escrita no DESTINO do pipe é log
       recebido.join("").includes("B ainda escreve depois"),
       "dado do worker B (que terminou DEPOIS de A) tem de chegar ao destino inteiro",
     );
+  });
+});
+
+// --- #11447: fixture do runner nunca escreve no log real do CI -------------
+//
+// Na PR #11407 o log do job `test` trazia "cobertura incompleta — 0/4
+// arquivos", "falha ao spawnar ... ETIMEDOUT" e "NÃO produziu sumário", e a
+// rodada leu isso como workers do CI pendurados. Eram as mensagens dos
+// FIXTURES deste arquivo: chamadas sem sink caíam no process.stdout/stderr
+// reais, e 3 caminhos de `processChunkedBatches` usavam `console.error`,
+// ignorando o sink injetado. A falha real da run era 1 teste comum
+// ("RESUMO AGREGADO ... fail 1 — grupo 1/4 batch 3/5").
+describe("REGRESSÃO (#11447): mensagens de fixture do runner não vazam pro log real", () => {
+  const etimedout = () => ({
+    error: Object.assign(new Error("spawnSync node ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    status: null,
+  });
+  const cenarios: Array<{ nome: string; spawn: () => unknown; bisectBudgetMs?: number }> = [
+    { nome: "ETIMEDOUT sem orçamento de retry", spawn: etimedout, bisectBudgetMs: 0 },
+    { nome: "ETIMEDOUT nas duas tentativas", spawn: etimedout },
+    { nome: "falha de spawn não-timeout", spawn: () => ({ error: new Error("ENOENT: spawn boom"), status: null }) },
+    { nome: "batch sem sumário", spawn: () => ({ status: 0, stdout: "sem sumário\n", stderr: "" }), bisectBudgetMs: 0 },
+    {
+      nome: "batch morto por sinal",
+      spawn: () => ({ status: null, signal: "SIGKILL", stdout: "", stderr: "" }),
+      bisectBudgetMs: 0,
+    },
+  ];
+
+  for (const c of cenarios) {
+    it(`${c.nome}: tudo vai pro sink injetado, nada pro process.stdout/stderr nem console.error`, () => {
+      const vazou: string[] = [];
+      const captado: string[] = [];
+      const origOut = process.stdout.write;
+      const origErr = process.stderr.write;
+      const origConsoleError = console.error;
+      // `runTestBatches` é síncrono: nenhum tick do event loop roda entre o
+      // stub e o restore, então o reporter do node:test não escreve no meio.
+      process.stdout.write = ((chunk: unknown) => (vazou.push(`OUT:${String(chunk)}`), true)) as typeof process.stdout.write;
+      process.stderr.write = ((chunk: unknown) => (vazou.push(`ERR:${String(chunk)}`), true)) as typeof process.stderr.write;
+      console.error = (...args: unknown[]) => void vazou.push(`CONSOLE:${args.join(" ")}`);
+      let exit: number;
+      try {
+        exit = runTestBatches({
+          files: ["/x.test.ts", "/y.test.ts"],
+          batchSize: 1,
+          batchTimeoutMs: 1234,
+          bisectTimeoutMs: 10,
+          ...(c.bisectBudgetMs === undefined ? {} : { bisectBudgetMs: c.bisectBudgetMs }),
+          retryDelayMs: 0,
+          spawn: c.spawn as unknown as typeof import("node:child_process").spawnSync,
+          stdout: { write: (s: string) => void captado.push(s) },
+          stderr: { write: (s: string) => void captado.push(s) },
+        });
+      } finally {
+        process.stdout.write = origOut;
+        process.stderr.write = origErr;
+        console.error = origConsoleError;
+      }
+      assert.equal(exit, 1, "todos os cenários são falha");
+      assert.deepEqual(vazou, [], `nada pode escapar do sink injetado, vazou: ${JSON.stringify(vazou)}`);
+      assert.ok(captado.join("").includes("RESUMO AGREGADO"), "o sink injetado recebe o log completo, inclusive o agregado");
+    });
+  }
+
+  it("toda chamada sequencial do runner neste arquivo passa sink (próprio ou QUIET_STREAMS)", () => {
+    const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+    const sem: number[] = [];
+    const re = /\b(runTestBatches|finalizeExitCode)\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src))) {
+      let i = m.index + m[0].length;
+      let depth = 1;
+      while (depth > 0 && i < src.length) {
+        const ch = src[i++];
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+      }
+      const call = src.slice(m.index, i);
+      // Ignora esta própria regex e menções em prosa sem argumentos.
+      if (!/\(\s*[{0-9]/.test(call.slice(m[0].length - 1, m[0].length + 2))) continue;
+      const temSink =
+        call.includes("QUIET_STREAMS") ||
+        (m[1] === "finalizeExitCode"
+          ? /\{\s*write/.test(call)
+          : /\bstdout:\s*\{/.test(call) && /\bstderr:\s*\{/.test(call));
+      if (!temSink) sem.push(src.slice(0, m.index).split("\n").length);
+    }
+    assert.deepEqual(sem, [], `chamadas sem sink nas linhas ${sem.join(", ")} — use ...QUIET_STREAMS`);
   });
 });
