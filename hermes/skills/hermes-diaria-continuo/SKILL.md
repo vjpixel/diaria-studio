@@ -21,18 +21,11 @@ execução) vive em `references/changelog.md` — aqui fica só o comportamento 
 Papel do Hermes nesta skill: **orquestrador** (loop do cron, claims, fila,
 relatório no Telegram). Quem pensa sobre código é o harness delegado.
 
-
-**Re-roteamento após releitura (#11301/#11315).** Em TODA chamada de
-`route-issue.ts` para issue existente, passar `--triaged-at "{triaged_at}"`.
-Depois de postar `decisao-editor` (ou outro marcador próprio), reler corpo,
-labels e TODOS os comentários antes de rotear. Capturar `triaged_at` em ISO
-no início dessa nova leitura, após a postagem; só usá-lo quando a leitura
-terminar com sucesso e o veredito estiver confirmado. Nunca reutilizar o
-início da sessão nem gerar o timestamp apenas na hora da escrita. Se surgir
-marcador concorrente posterior, reler e reavaliar; não usar `--override-newer`
-para destravar automaticamente. Isso também vale para reclassificações
-posteriores na mesma sessão e chamadas sem identidade no registry.
-
+**Re-roteamento (#11301):** `route-issue.ts` em issue existente leva
+`--triaged-at "{triaged_at}"`. Depois de postar `decisao-editor`, reler tudo
+e capturar o ISO no início dessa nova leitura, após a postagem; marcador
+mais novo → reler, nunca `--override-newer` automático. Detalhe:
+`references/route-issue-triaged-at-11301.md`.
 
 ## Segurança e escopo
 
@@ -124,11 +117,7 @@ posteriores na mesma sessão e chamadas sem identidade no registry.
 ### 1. Preparar e sincronizar (Hermes, shell direto)
 
 0. **Recuperação mecânica de tick interrompido (#7130), ANTES de qualquer
-   outro comando deste passo.** Medição ao vivo (#6908, 02/09): 2 de 3 ticks
-   longos produziram diff real e não fecharam o laço — sem claim, sem
-   commit, sem PR, árvore de trabalho deixada suja em `master` no checkout
-   compartilhado (#6952: 498 linhas nunca commitadas, sessão anterior
-   reportou "concluído"). `cd /home/vjpixel/diaria-studio && npx tsx
+   outro comando deste passo.** (Porquê: `references/rescue-7130-rationale.md`.) `cd /home/vjpixel/diaria-studio && npx tsx
    scripts/rescue-continuo-orphaned-work.ts --push`. Desde #8588, o mesmo
    comando também resgata commit(s) feito(s) direto em `master` (sem árvore
    suja) — mesma semântica de exit code. `outcome: "clean"`
@@ -294,18 +283,11 @@ ordem:
    reivindicar nenhuma, justificando com "conforme a regra de prioridade
    da fila" — **essa regra nunca existiu neste arquivo.**
 
-   **Pickup existe desde o #6823 e `continuo-pr-review.sh` ganhou
-   autoridade de merge própria desde o #6926 — cadeia completa de quem
-   mergeia na referência acima.** Resumo operacional: pickup roda só
-   dentro do `/diaria-overnight` (Fase 0, passo 2b) sobre PR self-review/
-   no-review, mergeia se limpo; `/diaria-develop` deliberadamente não
-   ganhou esse passo (#5751). `continuo-pr-review.sh` tem autoridade de
-   merge própria desde #6926 (fallback do pickup, não mais caminho único)
-   — o SCRIPT BASH mergeia depois que a sessão já saiu, atrás de 8 portões
-   fail-closed em `scripts/check-continuo-merge-gate.ts`; escala pro
-   pickup só em caminho sensível ou diff acima do limiar de effort.
-   `opus-daily-diff-review.sh` continua só gerando achados/comentários,
-   nunca mergeando.
+   **Pickup existe desde o #6823 (cadeia completa na referência acima):**
+   só no `/diaria-overnight` (Fase 0, 2b); `continuo-pr-review.sh` mergeia
+   como fallback atrás de 8 portões fail-closed
+   (`scripts/check-continuo-merge-gate.ts`, #6926), escalando em caminho
+   sensível ou diff grande; `opus-daily-diff-review.sh` nunca mergeia.
 
 ### 3b. Antes de reivindicar issue nova: candidata de conserto de CI (#7446 item 3)
 

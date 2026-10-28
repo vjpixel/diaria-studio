@@ -257,7 +257,7 @@ function main(): void {
     process.stdout.write(
       `  ${f.label} (status: ${f.status}) — label(s) que mantêm em Develop: ${f.developLabels.join(", ") || "(nenhuma; ver corpo)"}\n` +
         `     A razão que a trouxe pro Develop ainda existe? Se NÃO:\n` +
-        `       npx tsx scripts/route-issue.ts --issue ${f.issueArg} --track {overnight|bloqueada} --reason "..."\n` +
+        `       npx tsx scripts/route-issue.ts --issue ${f.issueArg} --track {overnight|bloqueada} --reason "..." --triaged-at "{ISO do início da releitura}"\n` +
         `     Se SIM (ex: parte 2 segue exigindo Chrome logado), grave o porquê em\n` +
         `     develop_track_justificado no plan.json desta issue.\n`,
     );

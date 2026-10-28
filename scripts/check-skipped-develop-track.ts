@@ -65,7 +65,7 @@ if (isMainModule(import.meta.url)) {
   }
   if (bad.length) {
     console.error(`[check-skipped-develop-track] sem trilha Develop: ${bad.map(issueKeyLabel).join(", ")}`);
-    console.error("  corrigir: npx tsx scripts/route-issue.ts --issue N --track develop --reason \"...\"  (outro repo: --issue owner/repo#N)");
+    console.error("  corrigir: npx tsx scripts/route-issue.ts --issue N --track develop --reason \"...\" --triaged-at \"{ISO do início da releitura}\"  (outro repo: --issue owner/repo#N)");
     process.exit(1);
   }
   console.log("ok — toda issue pulada por guard/sessão-local está na trilha Develop");
