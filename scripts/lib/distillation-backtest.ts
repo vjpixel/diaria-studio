@@ -20,10 +20,11 @@
  * de edições passadas, muitas delas escritas sob regras mais antigas —
  * uma taxa alta aqui (medida: ~98%) não significa "a pipeline está
  * quebrada", significa "as regras evoluíram desde então". `title-length-
- * 52-chars` (medida: 100%) é o oposto — mede uma regra que NUNCA mudou
- * (#0, desde sempre no template) contra o campo já extraído
- * (`title_char_count`), então uma taxa alta ali é sinal genuíno de
- * padrão recorrente, não artefato de regra que mudou. `distill-prompt-
+ * 52-chars` (medida: 100%) é o oposto — mede um ALVO DE ESCRITA que nunca
+ * mudou no prompt do writer (desde sempre no template) contra o campo já
+ * extraído (`title_char_count`), então uma taxa alta ali é sinal genuíno de
+ * padrão recorrente, não artefato de alvo que mudou. Desde o #11254 o 52
+ * deixou de ser regra editorial (ver item 4 abaixo). `distill-prompt-
  * corrections.ts` usa estas taxas como CONTEXTO/evidência de
  * recorrência, nunca como corte automático — decisão do editor no
  * sign-off, não deste módulo.
