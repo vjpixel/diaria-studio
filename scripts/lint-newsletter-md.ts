@@ -38,6 +38,7 @@ import {
 import { lintMultilineLinks } from "./lib/lint-checks/multiline-links.ts";
 import { lintRelativeTime } from "./lib/lint-checks/relative-time.ts";
 import { lintCalloutPlacement, lintStackedIntroCallouts } from "./lib/lint-checks/callout-placement.ts";
+import { checkBox0MissingSentinel } from "./lib/lint-checks/box0-missing-sentinel.ts";
 import { findOrphanBoxWarnings } from "./lib/newsletter-parse.ts"; // #3204
 import { checkWhyMattersFormat } from "./lib/lint-checks/why-matters-format.ts";
 import { checkEaiSection } from "./lib/lint-checks/eai-section.ts";
@@ -626,6 +627,10 @@ export function runStage4LintReport(editionDir: string, root: string): StageLint
     // issue (não alterada aqui; sinalizada no PR #5416 para triagem futura).
     runCheckSafely(push, "stacked-intro-callouts", "#2729", "gate-blocking", () =>
       lintStackedIntroCallouts(md),
+    );
+
+    runCheckSafely(push, "box0-missing-sentinel", "#11481", "warn-only", () =>
+      checkBox0MissingSentinel(md),
     );
 
     runCheckSafely(push, "orphan-box-in-gap", "#3204", "gate-blocking", () => {

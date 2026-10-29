@@ -180,13 +180,14 @@ describe("runStage4LintReport (#5416)", () => {
     rmSync(editionDir, { recursive: true, force: true });
   });
 
-  it("24 checks presentes (#11196 + number-reference-antecedent; #11073 + porque-importa-reader-impact; 21 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias, #8594 radar-summary-matches-title, #9358 pool-summary-quality, #9382 porque-importa-generic-advice)", () => {
+  it("25 checks presentes (#11196 + number-reference-antecedent; #11073 + porque-importa-reader-impact; 21 do MD + agradecimento-hardcoded, #8200 adicionou destaque-category-noticias, #8594 radar-summary-matches-title, #9358 pool-summary-quality, #9382 porque-importa-generic-advice)", () => {
     const editionDir = makeEditionDir();
     const report = runStage4LintReport(editionDir, PROJECT_ROOT);
     const ids = report.checks.map((c) => c.id).sort();
     assert.deepEqual(ids, [
       "agradecimento-hardcoded",
       "banned-lexicon",
+      "box0-missing-sentinel",
       "destaque-category-noticias",
       "mid-sentence-ellipsis",
       "no-trailing-ellipsis",
@@ -440,7 +441,7 @@ describe("runStage4LintReport / runStage2LintReport — 01-approved*.json malfor
     // Todos os 21 checks continuam presentes — nenhum foi engolido (#7260
     // adicionou banned-lexicon, #8200 adicionou destaque-category-noticias,
     // #9358 adicionou pool-summary-quality).
-    assert.equal(out.checks.length, 24); // #9382: + porque-importa-generic-advice; #11196: + number-reference-antecedent
+    assert.equal(out.checks.length, 25); // #9382: + porque-importa-generic-advice; #11196: + number-reference-antecedent
 
     rmSync(dir, { recursive: true, force: true });
   });
