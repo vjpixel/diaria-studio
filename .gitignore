@@ -86,6 +86,10 @@ __pycache__/
 # PRÓPRIA (ver #6691).
 /.rev*.md
 /.review*.md
+# #11544: variante `.rv{pr}.md` escapou das duas regras acima — a PR de
+# rescue #11514 saiu só com `.rv11490.md`/`.rv11493.md`/`.rv11510.md`.
+# `continuo-tick-closure.ts` (REVIEW_SCRATCH_PATTERNS) também filtra a família.
+/.rv*.md
 
 # #9960: nomes de dispositivo reservados do Windows. Um `> nul` digitado num
 # shell Unix (Git Bash/Claude Code no Windows) cria um ARQUIVO literal `nul`

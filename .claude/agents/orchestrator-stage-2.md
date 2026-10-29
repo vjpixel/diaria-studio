@@ -440,8 +440,10 @@ npx tsx scripts/clarice-diff.ts \
   {EDITION_DIR}/_internal/03-social-pre-humanizador.md
 ```
 
-**Gravar sentinel de humanizador social (#2279):** após humanizar+Clarice (ambos concluídos), gravar o hash do `03-social.md` final:
+**Gravar sentinel de humanizador social (#2279):** após humanizar+Clarice (ambos concluídos), registrar a prova de cada passo (#11534 — é o que o `--write` do Stage 4 confere, e o que o `--provenance` mostra no gate) e gravar o hash do `03-social.md` final:
 ```bash
+npx tsx scripts/check-humanizer-social.ts --record-run --step humanizador --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md --post {EDITION_DIR}/_internal/03-social-post-humanizador.md --edition-dir {EDITION_DIR}/
+npx tsx scripts/check-humanizer-social.ts --record-run --step clarice --pre {EDITION_DIR}/_internal/03-social-post-humanizador.md --post {EDITION_DIR}/03-social.md --edition-dir {EDITION_DIR}/
 npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
 ```
 Isso grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar.

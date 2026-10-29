@@ -42,6 +42,7 @@ import {
   type RenameFileDeps,
 } from "../scripts/reorder-destaques.ts";
 import { hashFromApprovedFile } from "../scripts/lib/social-source-hash.ts";
+import { syncExtraSources } from "../scripts/lib/fact-check-extra-sources.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
 import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
 
@@ -2211,6 +2212,108 @@ describe("reorderFactCheckSources (#8679): manifest.json + d{N}.txt", () => {
       assert.equal(manifest[0].destaque, 1, "dry-run não altera o manifest em disco");
       assert.equal(readFileSync(join(fcDir, "d1.txt"), "utf8"), "d1");
       assert.equal(readFileSync(join(fcDir, "d2.txt"), "utf8"), "d2");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("swap D1<->D2 remapeia extras.json E renomeia d{N}-extra-{k}.txt (#11531)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-factcheck-extras-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      const fcDir = join(internalDir, "fact-check-sources");
+      mkdirSync(fcDir, { recursive: true });
+      const extra = (destaque: number, k: number, url: string, primary: string, origin = "editor") => ({
+        destaque,
+        k,
+        url,
+        origin,
+        primary_url: primary,
+        status: "ok",
+        erro: null,
+        bytes: 1,
+        fetched_at: "t",
+      });
+      writeFileSync(
+        join(fcDir, "extras.json"),
+        JSON.stringify([
+          extra(1, 1, "https://poder360.example/a", "https://d1.example"),
+          extra(1, 2, "https://cluster.example/a", "https://d1.example", "cluster"),
+          extra(2, 1, "https://outra.example/b", "https://d2.example"),
+          extra(3, 1, "https://tres.example/c", "https://d3.example"),
+        ]),
+        "utf8",
+      );
+      writeFileSync(join(fcDir, "d1-extra-1.txt"), "extra 1 do D1 antigo", "utf8");
+      writeFileSync(join(fcDir, "d1-extra-2.txt"), "extra 2 do D1 antigo", "utf8");
+      writeFileSync(join(fcDir, "d2-extra-1.txt"), "extra 1 do D2 antigo", "utf8");
+      writeFileSync(join(fcDir, "d3-extra-1.txt"), "extra 1 do D3", "utf8");
+
+      reorderFactCheckSources(internalDir, [2, 1, 3], false);
+
+      const extras = JSON.parse(readFileSync(join(fcDir, "extras.json"), "utf8")) as Array<{
+        destaque: number;
+        k: number;
+        url: string;
+        primary_url: string;
+      }>;
+      const byUrl = new Map(extras.map((e) => [e.url, e]));
+      assert.equal(byUrl.get("https://poder360.example/a")?.destaque, 2);
+      assert.equal(byUrl.get("https://poder360.example/a")?.primary_url, "https://d1.example");
+      assert.equal(byUrl.get("https://cluster.example/a")?.destaque, 2);
+      assert.equal(byUrl.get("https://outra.example/b")?.destaque, 1);
+      assert.equal(byUrl.get("https://tres.example/c")?.destaque, 3);
+
+      assert.equal(readFileSync(join(fcDir, "d2-extra-1.txt"), "utf8"), "extra 1 do D1 antigo");
+      assert.equal(readFileSync(join(fcDir, "d2-extra-2.txt"), "utf8"), "extra 2 do D1 antigo");
+      assert.equal(readFileSync(join(fcDir, "d1-extra-1.txt"), "utf8"), "extra 1 do D2 antigo");
+      assert.equal(readFileSync(join(fcDir, "d3-extra-1.txt"), "utf8"), "extra 1 do D3");
+      assert.equal(existsSync(join(fcDir, "d1-extra-2.txt")), false, "órfão do slot antigo removido");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reorder + syncExtraSources mantém a fonte do editor (#11531)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-factcheck-extras-sync-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      const fcDir = join(internalDir, "fact-check-sources");
+      mkdirSync(fcDir, { recursive: true });
+      writeFileSync(
+        join(fcDir, "extras.json"),
+        JSON.stringify([
+          {
+            destaque: 1,
+            k: 1,
+            url: "https://poder360.example/a",
+            origin: "editor",
+            primary_url: "https://d1.example",
+            status: "ok",
+            erro: null,
+            bytes: 5,
+            fetched_at: "t",
+          },
+        ]),
+        "utf8",
+      );
+      writeFileSync(join(fcDir, "d1-extra-1.txt"), "texto", "utf8");
+
+      reorderFactCheckSources(internalDir, [2, 1, 3], false);
+
+      const fetchImpl = (async () => {
+        throw new Error("não deveria baixar nada");
+      }) as unknown as typeof fetch;
+      const out = await syncExtraSources(
+        { highlights: [{}, {}, {}] },
+        ["https://d2.example", "https://d1.example", "https://d3.example"],
+        internalDir,
+        { fetchImpl },
+      );
+      assert.equal(out.length, 1);
+      assert.equal(out[0].destaque, 2);
+      assert.equal(out[0].status, "ok");
+      assert.equal(readFileSync(join(fcDir, "d2-extra-1.txt"), "utf8"), "texto");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

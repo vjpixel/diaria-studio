@@ -24,7 +24,21 @@ import {
   writeSentinel,
   lintTicsOnMismatch,
   computeChangedSections,
+  UnprovenSectionsError,
 } from "../scripts/check-humanizer-social.ts";
+import {
+  planRunRecord,
+  readRunRecord,
+  writeRunRecord,
+  normalizeForFormatting,
+} from "../scripts/lib/humanizer-run-record.ts";
+
+/** #11534: registra humanizador (pre→post) e Clarice (post→post, sem mudança). */
+function recordProof(dir: string, preMd: string, postMd: string): void {
+  const h = planRunRecord(readRunRecord(dir), "humanizador", preMd, postMd);
+  const c = planRunRecord(h.record, "clarice", postMd, postMd);
+  writeRunRecord(dir, c.record);
+}
 
 const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/check-humanizer-social.ts");
 
@@ -500,6 +514,7 @@ describe("--bypass-reason guard (#2373) — writeSentinel library", () => {
     try {
       writeSentinel(dir); // sentinel com hash de CONTENT_A
       writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simula edição
+      recordProof(dir, SOCIAL_CONTENT_A, SOCIAL_CONTENT_B); // #11534: humanizador + Clarice rodaram
       const path = writeSentinel(dir, "humanizador re-rodou após swap D1↔D2 no Stage 4");
       assert.ok(existsSync(path), "sentinel deve existir após write com bypass");
       const data = JSON.parse(readFileSync(path, "utf8"));
@@ -547,6 +562,7 @@ describe("--bypass-reason guard (#2373) — CLI subprocess", () => {
     try {
       writeSentinel(dir); // sentinel com hash de CONTENT_A
       writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simula edição pós-gate
+      recordProof(dir, SOCIAL_CONTENT_A, SOCIAL_CONTENT_B); // #11534
       const result = runScript([
         "--write",
         "--bypass-reason", "humanizador re-rodou após ajuste Stage 4",
@@ -563,6 +579,152 @@ describe("--bypass-reason guard (#2373) — CLI subprocess", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #11534: --bypass-reason não é prova — caso real 261029
+// ---------------------------------------------------------------------------
+
+describe("--bypass-reason exige prova de humanizador + Clarice (#11534)", () => {
+  const SENTINEL = (dir: string) => join(dir, "_internal", ".humanizer-social-done.json");
+  const D1_REWRITTEN = SOCIAL_CONTENT_MULTI.replace("Post d1 humanizado.", "Post d1 reescrito à mão pelo agente no gate.");
+  const D1_HUMANIZED = SOCIAL_CONTENT_MULTI.replace("Post d1 humanizado.", "Post d1 reescrito e humanizado de novo.");
+
+  it("caso 261029: D1 reescrito à mão + --bypass-reason → recusa e não regrava o selo", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      const before = readFileSync(SENTINEL(dir), "utf8");
+      writeFileSync(join(dir, "03-social.md"), D1_REWRITTEN, "utf8");
+      assert.throws(
+        () => writeSentinel(dir, "humanizador já rodou nesta sessão"),
+        (e: unknown) => e instanceof UnprovenSectionsError && e.sections.join(",") === "main_d1",
+      );
+      assert.equal(readFileSync(SENTINEL(dir), "utf8"), before, "selo antigo intacto");
+      assert.equal(checkSentinel(dir).ok, false, "invariante segue acusando");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("humanizador sem Clarice ainda recusa (Clarice falta)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      writeFileSync(join(dir, "03-social.md"), D1_HUMANIZED, "utf8");
+      writeRunRecord(dir, planRunRecord(readRunRecord(dir), "humanizador", D1_REWRITTEN, D1_HUMANIZED).record);
+      assert.throws(
+        () => writeSentinel(dir, "ajuste D1"),
+        (e: unknown) =>
+          e instanceof UnprovenSectionsError &&
+          e.provenance.some((p) => p.section === "main_d1" && p.humanizador && !p.clarice),
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("humanizador + Clarice registrados → aceita e grava section_provenance", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      writeFileSync(join(dir, "03-social.md"), D1_HUMANIZED, "utf8");
+      recordProof(dir, D1_REWRITTEN, D1_HUMANIZED);
+      const data = JSON.parse(readFileSync(writeSentinel(dir, "ajuste D1"), "utf8"));
+      assert.deepEqual(data.section_provenance, [
+        { section: "main_d1", change: "redaction", humanizador: true, clarice: true },
+      ]);
+      assert.equal(data.unproven_sections, undefined);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("humanizador que devolveu a seção idêntica não gera prova", () => {
+    const plan = planRunRecord(readRunRecordEmpty(), "humanizador", D1_REWRITTEN, D1_REWRITTEN);
+    assert.deepEqual(plan.recorded, []);
+    assert.ok(plan.skipped.some((s) => s.section === "main_d1"));
+  });
+
+  it("Clarice sobre texto não humanizado não gera prova", () => {
+    const plan = planRunRecord(readRunRecordEmpty(), "clarice", D1_REWRITTEN, D1_REWRITTEN);
+    assert.deepEqual(plan.recorded, []);
+  });
+
+  it("mudança só de formatação ({quebra}, hashtag, espaço) passa sem prova", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      const fmt = SOCIAL_CONTENT_MULTI.replace("Post d2 humanizado.", "Post d2 {quebra} humanizado.  #IA");
+      writeFileSync(join(dir, "03-social.md"), fmt, "utf8");
+      const data = JSON.parse(readFileSync(writeSentinel(dir, "só {quebra} no D2"), "utf8"));
+      assert.deepEqual(data.section_provenance, [
+        { section: "main_d2", change: "formatting", humanizador: false, clarice: false },
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("unprovenOk aceita e registra as seções sem prova no selo", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      writeFileSync(join(dir, "03-social.md"), D1_REWRITTEN, "utf8");
+      const data = JSON.parse(readFileSync(writeSentinel(dir, "editor", { unprovenOk: "editor pediu manter o texto" }), "utf8"));
+      assert.deepEqual(data.unproven_sections, ["main_d1"]);
+      assert.equal(data.unproven_ok, "editor pediu manter o texto");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("normalizeForFormatting ignora {quebra}, hashtags e espaços, não redação", () => {
+    assert.equal(normalizeForFormatting("A  {quebra} b #IA #ia_br"), normalizeForFormatting("A b"));
+    assert.notEqual(normalizeForFormatting("A b"), normalizeForFormatting("A c"));
+  });
+
+  function runCli(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const r = spawnSync(process.execPath, ["--import", "tsx/esm", SCRIPT_PATH, ...args], { encoding: "utf8" });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  it("CLI: --write --bypass-reason sem prova sai 4; --record-run nos 2 passos libera; --provenance lista", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      const pre = join(dir, "_internal", "pre.md");
+      const postH = join(dir, "_internal", "post-h.md");
+      writeFileSync(pre, D1_REWRITTEN, "utf8");
+      writeFileSync(postH, D1_HUMANIZED, "utf8");
+      writeFileSync(join(dir, "03-social.md"), D1_HUMANIZED, "utf8");
+
+      const denied = runCli(["--write", "--bypass-reason", "x", "--edition-dir", dir]);
+      assert.equal(denied.status, 4, denied.stderr);
+      assert.match(denied.stderr, /main_d1/);
+
+      const h = runCli(["--record-run", "--step", "humanizador", "--pre", pre, "--post", postH, "--sections", "main_d1", "--edition-dir", dir]);
+      assert.equal(h.status, 0, h.stderr);
+      assert.deepEqual(JSON.parse(h.stdout.trim()).recorded, ["main_d1"]);
+      const c = runCli(["--record-run", "--step", "clarice", "--pre", postH, "--post", join(dir, "03-social.md"), "--edition-dir", dir]);
+      assert.equal(c.status, 0, c.stderr);
+
+      const ok = runCli(["--write", "--bypass-reason", "x", "--edition-dir", dir]);
+      assert.equal(ok.status, 0, ok.stderr);
+
+      const prov = runCli(["--provenance", "--edition-dir", dir]);
+      assert.equal(prov.status, 0, prov.stderr);
+      const rows = JSON.parse(prov.stdout.trim()).sections as Array<{ section: string; humanizador: boolean; clarice: boolean }>;
+      assert.deepEqual(rows.find((r) => r.section === "main_d1"), { section: "main_d1", humanizador: true, clarice: true });
+      assert.deepEqual(rows.find((r) => r.section === "main_d2"), { section: "main_d2", humanizador: false, clarice: false });
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+function readRunRecordEmpty() {
+  return { version: 1 as const, humanizador: [], clarice: [], runs: [] };
+}
 
 // ---------------------------------------------------------------------------
 // #2529: Tic lint on hash mismatch — caso real 260624
