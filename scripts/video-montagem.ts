@@ -89,7 +89,7 @@
 
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -313,22 +313,25 @@ function sourceFor(ctx: Ctx, file?: BlocksFile): SourceInfo {
 /**
  * Hash do que o plano depende: blocks.json + source.json + silences.json (#11351:
  * o `transcribe` redetecta os silêncios sozinho quando o limiar muda, e um plano
- * de antes da redetecção tem os cortes velhos). `silences` null = arquivo ausente.
+ * de antes da redetecção tem os cortes velhos) + transcript.json (#11603: as falas
+ * se resolvem nas palavras dele). `silences`/`transcript` null = arquivo ausente.
  */
-export function planHashOf(blocksText: string, sourceJson: Buffer | string, silences: Buffer | string | null): string {
-  return createHash("sha256")
+export function planHashOf(blocksText: string, sourceJson: Buffer | string, silences: Buffer | string | null, transcript: Buffer | string | null = null): string {
+  const h = createHash("sha256")
     .update(blocksText)
     .update("\0")
     .update(sourceJson)
     .update("\0")
-    .update(silences ?? "\0sem-silences")
-    .digest("hex")
-    .slice(0, 16);
+    .update(silences ?? "\0sem-silences");
+  // #11603: o plano resolve as falas nas palavras do transcript; transcript novo = plano refeito.
+  if (transcript !== null) h.update("\0transcript\0").update(transcript);
+  return h.digest("hex").slice(0, 16);
 }
 
 function planHash(ctx: Ctx, blocksText: string): string {
   const sil = f(ctx, "silences.json");
-  return planHashOf(blocksText, readFileSync(f(ctx, "source.json")), existsSync(sil) ? readFileSync(sil) : null);
+  const tr = f(ctx, "transcript.json");
+  return planHashOf(blocksText, readFileSync(f(ctx, "source.json")), existsSync(sil) ? readFileSync(sil) : null, existsSync(tr) ? readFileSync(tr) : null);
 }
 
 function silences(ctx: Ctx): Interval[] {
@@ -369,7 +372,7 @@ interface PlanFile {
 function loadPlan(ctx: Ctx): PlanFile {
   const pf = readJson<PlanFile>(f(ctx, "plan.json"), "plan.json (rode build)");
   const { text } = loadBlocks(ctx);
-  if (pf.hash !== planHash(ctx, text)) throw new Error("plan.json defasado: blocks.json, source.json ou silences.json mudaram depois do build; rode build de novo");
+  if (pf.hash !== planHash(ctx, text)) throw new Error("plan.json defasado: blocks.json, source.json, silences.json ou transcript.json mudaram depois do build; rode build de novo");
   return pf;
 }
 
@@ -497,6 +500,54 @@ function alignFromAudio(ctx: Ctx, source: SourceInfo, videoWav: string, audioPat
   );
 }
 
+/**
+ * `--from-audio` que falhou depois de trocar o bruto para o vídeo (#11601):
+ * volta o `source.json` para o de antes e apaga o áudio, o loudness e os
+ * silêncios já extraídos do vídeo. Sem isso, o `transcript.json` (ainda o do
+ * áudio, nos tempos do áudio) ficava ao lado de um `source.json` do vídeo, e o
+ * `transcribe` seguinte saía 0 sem aviso: `build` cortava o vídeo nos tempos
+ * do áudio (~47-57 s fora na 261029). Devolve o trecho para a mensagem de erro.
+ */
+function rollbackSourceSwitch(ctx: Ctx, prevSourceText: string | null, newPath: string): string {
+  let prevPath: string | undefined;
+  try {
+    prevPath = prevSourceText === null ? undefined : (JSON.parse(prevSourceText) as SourceInfo).path;
+  } catch {
+    prevPath = undefined;
+  }
+  if (prevSourceText !== null && prevPath === newPath) return "";
+  if (prevSourceText === null) rmSync(f(ctx, "source.json"), { force: true });
+  else writeFileAtomic(f(ctx, "source.json"), prevSourceText);
+  for (const p of [join(ctx.workDir, "audio.wav"), f(ctx, "loudness.json"), f(ctx, "silences.json"), f(ctx, "silences.meta.json")]) rmSync(p, { force: true });
+  return prevSourceText === null
+    ? ". source.json removido (o bruto não foi trocado para o vídeo; o transcript.json ficou como estava)"
+    : `. source.json voltou para ${prevPath ?? "o anterior"} (o bruto não foi trocado para o vídeo; o transcript.json ficou como estava)`;
+}
+
+/** Arquivos que dependem dos números de segmento ou dos tempos do `transcript.json` (#11603). */
+export const TRANSCRIPT_DERIVED = ["decupagem-plan.json", "decupagem-plan.template.json", "decupagem.md", "blocks.json", "blocks.template.json", "plan.json"] as const;
+
+/**
+ * Quando o `transcript.json` muda (#11603, ex.: `transcribe --from-audio` depois
+ * dos gates feitos no modo áudio), a decupagem e o `blocks.json` feitos sobre o
+ * anterior passam a apontar para outros segmentos/tempos sem erro nenhum. Põe
+ * cada um de lado como `{nome}.defasado.{ext}` (nunca apaga: o texto e as
+ * decisões do editor servem para refazer). Transcript novo (sem anterior) ou
+ * igual byte a byte não mexe em nada.
+ */
+export function setAsideOnTranscriptChange(ctx: Pick<Ctx, "stateDir">, before: Buffer | null, after: Buffer | null): Array<{ from: string; to: string }> {
+  if (before === null || after === null || before.equals(after)) return [];
+  const moved: Array<{ from: string; to: string }> = [];
+  for (const name of TRANSCRIPT_DERIVED) {
+    const from = join(ctx.stateDir, name);
+    if (!existsSync(from)) continue;
+    const to = name.replace(/\.(json|md)$/, ".defasado.$1");
+    renameSync(from, join(ctx.stateDir, to));
+    moved.push({ from: name, to });
+  }
+  return moved;
+}
+
 function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: number | undefined, fromAudio?: { audio: string; transcript?: string }): number {
   mkdirSync(ctx.workDir, { recursive: true });
   mkdirSync(ctx.stateDir, { recursive: true });
@@ -520,6 +571,12 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   }
   const srcPath = src.replace(/\\/g, "/");
   const sourcePath = f(ctx, "source.json");
+  const trPath = f(ctx, "transcript.json");
+  // #11601: o source.json de antes, para voltar a ele se o --from-audio falhar.
+  const prevSourceText = existsSync(sourcePath) ? readFileSync(sourcePath, "utf8") : null;
+  // #11603: o transcript.json de antes, para saber se ele mudou nesta rodada.
+  const prevTranscript = existsSync(trPath) ? readFileSync(trPath) : null;
+  let wroteSource = false;
   let cached = existsSync(sourcePath) && !ctx.force ? readJson<SourceInfo>(sourcePath, "source.json") : null;
   if (audioPath && audioPath === srcPath) throw new Error("--from-audio aponta para o próprio bruto; o áudio separado é outro arquivo (o vídeo vai em --source ou solto na pasta)");
   // --from-audio troca o bruto do áudio para o vídeo sem --force: a transcrição do áudio já está guardada.
@@ -533,6 +590,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     const probe = run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", src]).stdout;
     source = parseProbe(probe, srcPath);
     writeJson(sourcePath, source);
+    wroteSource = true;
     redo = true;
   }
   if (source.audioOnly) {
@@ -572,18 +630,33 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   }
   console.error(`[video-montagem] silencedetect a ${threshold.noiseDb} dB (${threshold.how === "relative" ? "relativo ao loudness do bruto" : threshold.how === "override" ? "--silence-db" : "padrão, loudness não medido"})`);
 
-  const trPath = f(ctx, "transcript.json");
   if (audioPath && audioTr) {
     if (source.audioOnly) throw new Error("--from-audio precisa de um bruto de VÍDEO (o bruto achado é só de áudio): passe --source VIDEO");
     const prev = existsSync(trPath) ? readJson<{ aligned_from_audio?: { audio?: string; video?: string } }>(trPath, "transcript.json") : null;
     const done = !ctx.force && !redo && prev?.aligned_from_audio?.audio === audioPath && prev.aligned_from_audio.video === source.path;
     if (done) console.error(`[video-montagem] transcript.json já alinhado do áudio ${audioPath}; --force refaz`);
-    else alignFromAudio(ctx, source, audio, audioPath, audioTr, trPath);
+    else {
+      try {
+        alignFromAudio(ctx, source, audio, audioPath, audioTr, trPath);
+      } catch (e) {
+        if (!wroteSource) throw e;
+        const back = rollbackSourceSwitch(ctx, prevSourceText, source.path);
+        throw new Error(`${(e as Error).message}${back}`);
+      }
+    }
   } else if (ctx.force || !existsSync(trPath)) transcribeWithPython(ctx, audio, trPath, { vad: true });
   else if (redo) {
     // #11504: source.json novo (ou áudio refeito nesta máquina) não retranscreve por cima de um transcript.json existente.
     const prev = readJson<Transcript>(trPath, "transcript.json");
     console.error(`[aviso] ${keptTranscriptWarning(prev, source.durationS)}`);
+  }
+  // #11603: transcript novo renumera os segmentos e muda os tempos; a decupagem e o blocks.json de antes não valem.
+  const aside = setAsideOnTranscriptChange(ctx, prevTranscript, existsSync(trPath) ? readFileSync(trPath) : null);
+  if (aside.length) {
+    console.error(
+      `[aviso] transcript.json mudou: ${aside.map((m) => `${m.from} → ${m.to}`).join(", ")} postos de lado (números de segmento e tempos eram do transcript anterior, #11603). ` +
+        "Refazer a decupagem (1ª passada) e o blocks.json; as decisões do editor estão nos arquivos .defasado para reaproveitar o texto.",
+    );
   }
   const words = nonEmptyWords(trPath, "transcript.json");
   const warn = loudnessWarning(loud);

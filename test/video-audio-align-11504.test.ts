@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "../scripts/lib/diaria/video-audio-align.ts";
 import type { Transcript, Word } from "../scripts/lib/diaria/video-montage.ts";
-import { keptTranscriptWarning, main } from "../scripts/video-montagem.ts";
+import { keptTranscriptWarning, main, planHashOf, setAsideOnTranscriptChange } from "../scripts/video-montagem.ts";
 
 /**
  * Gerador determinístico (mulberry32) para os testes não dependerem de
@@ -143,6 +143,71 @@ describe("remapToVideo + mergeRetranscribed (#11504)", () => {
     const all = merged.segments.flatMap((s) => s.words ?? []).map((x) => x.text.trim());
     assert.deepEqual(all, ["intro", "antes", "corte", "pausa", "depois"], "'corte' da retranscrição (49,1) cai no trecho remapeado e sai");
     for (let i = 1; i < merged.segments.length; i++) assert.ok(merged.segments[i].start >= merged.segments[i - 1].start);
+  });
+});
+
+describe("segmento do Whisper que atravessa o corte (#11602)", () => {
+  const runs = [
+    { audioStart: 0, audioEnd: 40, offset: 10 },
+    { audioStart: 40, audioEnd: 106.5, offset: 13.5 },
+  ];
+  const w = (start: number, text: string): Word => ({ start, end: start + 0.3, text: ` ${text}` });
+  // "a" antes do corte (→ 48), "no" na borda (sai), "b" depois do corte (→ 54,5): um segmento só.
+  const audioTr: Transcript = {
+    duration: 106.5,
+    segments: [{ start: 38, end: 41.3, text: " a no b", words: [w(38, "a"), w(39.8, "no"), w(41, "b")] }],
+  };
+  const rm = remapToVideo(audioTr, runs, 120, { audioDurS: 106.5 });
+
+  it("sai em um segmento por trecho, cada um com o texto só das suas palavras", () => {
+    assert.equal(rm.segments.length, 2);
+    assert.deepEqual(rm.segments.map((s) => [s.start, s.end, s.text]), [
+      [48, 48.3, "a"],
+      [54.5, 54.8, "b"],
+    ]);
+    assert.equal(rm.words, 2);
+    assert.equal(rm.dropped, 1);
+  });
+
+  it("a palavra retranscrita do vão fica entre os dois lados, e as palavras saem em ordem de tempo", () => {
+    const patch: Transcript = { segments: [{ start: 50.2, end: 50.5, text: " no", words: [w(50.2, "no")] }] };
+    const merged = mergeRetranscribed(rm.segments, [patch], rm.uncovered, 120);
+    const all = merged.segments.flatMap((s) => s.words ?? []);
+    assert.deepEqual(all.map((x) => x.text.trim()), ["a", "no", "b"]);
+    for (let i = 1; i < all.length; i++) assert.ok(all[i].start >= all[i - 1].end, `palavra ${i} fora de ordem`);
+    for (let i = 1; i < merged.segments.length; i++) assert.ok(merged.segments[i].start >= merged.segments[i - 1].end, `segmento ${i} sobreposto`);
+  });
+
+  it("segmento inteiro dentro de um trecho mantém o texto original", () => {
+    const one = remapToVideo({ segments: [{ start: 5, end: 6.3, text: " Texto, original.", words: [w(5, "Texto,"), w(6, "original.")] }] }, runs, 120, { audioDurS: 106.5 });
+    assert.equal(one.segments.length, 1);
+    assert.equal(one.segments[0].text, " Texto, original.");
+  });
+});
+
+describe("transcript novo invalida a decupagem e o plano (#11603)", () => {
+  it("planHashOf muda quando só o transcript muda", () => {
+    const a = planHashOf("{}", "{}", "[]", JSON.stringify({ segments: [{ start: 1 }] }));
+    const b = planHashOf("{}", "{}", "[]", JSON.stringify({ segments: [{ start: 48 }] }));
+    assert.notEqual(a, b);
+    assert.equal(planHashOf("{}", "{}", "[]"), planHashOf("{}", "{}", "[]", null), "sem transcript = hash de antes");
+  });
+
+  it("setAsideOnTranscriptChange: só mexe quando havia transcript e ele mudou", () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-11603-"));
+    try {
+      writeFileSync(join(dir, "blocks.json"), "B");
+      const same = Buffer.from("T");
+      assert.deepEqual(setAsideOnTranscriptChange({ stateDir: dir }, same, Buffer.from("T")), []);
+      assert.deepEqual(setAsideOnTranscriptChange({ stateDir: dir }, null, Buffer.from("T")), [], "1º transcript: nada a invalidar");
+      assert.ok(existsSync(join(dir, "blocks.json")));
+      const moved = setAsideOnTranscriptChange({ stateDir: dir }, same, Buffer.from("U"));
+      assert.deepEqual(moved, [{ from: "blocks.json", to: "blocks.defasado.json" }]);
+      assert.equal(readFileSync(join(dir, "blocks.defasado.json"), "utf8"), "B");
+      assert.equal(existsSync(join(dir, "blocks.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -368,6 +433,55 @@ describe("transcribe com binários falsos (#11504)", { skip: process.platform ==
     assert.equal(again.code, 0);
     assert.equal(pythonCalls().length, 0);
     assert.match(again.err, /já alinhado/);
+  });
+
+  it("regressão #11601: alinhamento que falha volta o source.json para o áudio e não deixa o transcribe seguinte sair 0", async () => {
+    const dir = state("fail");
+    mkdirSync(dir, { recursive: true });
+    const audioSource = JSON.stringify({ path: env.FAKE_AUDIO_SRC, fps: 30, durationS: 106.5, width: 0, height: 0, mirrored: false, audioOnly: true });
+    writeFileSync(join(dir, "source.json"), audioSource);
+    const trText = JSON.stringify({ duration: 106.5, segments: [{ start: 5, end: 5.3, text: " p0", words: [{ start: 5, end: 5.3, text: " p0" }] }] });
+    writeFileSync(join(dir, "transcript.json"), trText);
+    // O "áudio separado" é outro som: cobertura abaixo do mínimo.
+    const outro = join(root, "outro.wav");
+    writeFileSync(outro, wavBytes(speechPcm(106.5, 99)));
+    const saved = process.env.FAKE_AUDIO_WAV;
+    process.env.FAKE_AUDIO_WAV = outro;
+    try {
+      await assert.rejects(transcribe("fail", ["--from-audio", env.FAKE_AUDIO_SRC]), /não casa com o vídeo.*source\.json voltou para/s);
+    } finally {
+      process.env.FAKE_AUDIO_WAV = saved;
+    }
+    assert.equal(readFileSync(join(dir, "source.json"), "utf8"), audioSource, "source.json de volta ao áudio");
+    assert.equal(readFileSync(join(dir, "transcript.json"), "utf8"), trText, "transcript.json intocado");
+    for (const name of ["loudness.json", "silences.json", "silences.meta.json"]) assert.equal(existsSync(join(dir, name)), false, `${name} do vídeo apagado`);
+    assert.equal(existsSync(join(root, "fail-work", "audio.wav")), false, "audio.wav do vídeo apagado");
+    // Antes: o transcribe seguinte, sem flags, saía 0 com o transcript do áudio sob um source.json do vídeo.
+    await assert.rejects(transcribe("fail", []), /source\.json aponta para outro bruto/);
+  });
+
+  it("regressão #11603: --from-audio depois dos gates no modo áudio põe de lado a decupagem, o blocks.json e o plan.json", async () => {
+    const dir = state("gates");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "source.json"), JSON.stringify({ path: env.FAKE_AUDIO_SRC, fps: 30, durationS: 106.5, width: 0, height: 0, mirrored: false, audioOnly: true }));
+    const words = [5, 20, 41, 70, 100].map((t, i) => ({ start: t, end: t + 0.3, text: ` p${i}` }));
+    writeFileSync(join(dir, "transcript.json"), JSON.stringify({ duration: 106.5, segments: words.map((x) => ({ start: x.start, end: x.end, text: x.text, words: [x] })) }));
+    for (const name of ["decupagem-plan.json", "blocks.json", "plan.json", "decupagem.md"]) writeFileSync(join(dir, name), `ANTES ${name}`);
+    const r = await transcribe("gates", ["--from-audio", env.FAKE_AUDIO_SRC]);
+    assert.equal(r.code, 0, r.err);
+    for (const name of ["decupagem-plan.json", "blocks.json", "plan.json", "decupagem.md"]) {
+      assert.equal(existsSync(join(dir, name)), false, `${name} não vale mais`);
+      const aside = name.replace(/\.(json|md)$/, ".defasado.$1");
+      assert.equal(readFileSync(join(dir, aside), "utf8"), `ANTES ${name}`, `${aside} guarda o que o editor decidiu`);
+    }
+    assert.match(r.err, /transcript\.json mudou.*decupagem-plan\.json → decupagem-plan\.defasado\.json.*#11603/s);
+
+    // Rodar de novo (transcript igual) não põe nada de lado.
+    writeFileSync(join(dir, "blocks.json"), "NOVO");
+    const again = await transcribe("gates", ["--from-audio", env.FAKE_AUDIO_SRC]);
+    assert.equal(again.code, 0);
+    assert.equal(readFileSync(join(dir, "blocks.json"), "utf8"), "NOVO");
+    assert.doesNotMatch(again.err, /transcript\.json mudou/);
   });
 
   it("--from-audio sem nenhuma transcrição do áudio é erro, sem tocar no transcript.json", async () => {
