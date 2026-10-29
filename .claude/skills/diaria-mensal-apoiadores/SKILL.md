@@ -550,24 +550,26 @@ Pulado post a post por `--skip` ou já `done` sem `--force` (#9508).
    `channelId`, `text`, `dueAt`, `images` (capa + 3 parágrafos, **sem** o
    slide de CTA — até `TWITTER_IMAGE_LIMIT` = 4) e `publishedPath` (o store da
    história) — o MCP do Buffer só é alcançável daqui. Pra CADA payload:
-   **antes da mutation**, listar os posts agendados do canal no Buffer
-   (`execute_query`) e pular se já houver um com o mesmo `dueAt` — uma
+   **antes do `create_post`**, listar os posts agendados do canal no Buffer
+   (`mcp__claude_ai_Buffer__list_posts` com `organizationId` de `get_account`,
+   `channelIds: [channelId]` e `status: ["scheduled"]`) e pular se já houver um com o mesmo `dueAt` — uma
    execução anterior pode ter criado o post e caído antes de gravar (o
    payload é reimpresso até o `append`). `imagePendingUpload: true` só
-   aparece no `--dry-run` (as URLs nascem no upload do envio). Chamar `mcp__claude_ai_Buffer__execute_mutation` (NÃO `create_post`: o
-   schema não tipa `assets` como array, ver Passo 5c-3b de
-   `.claude/agents/orchestrator-stage-5.md`) com `createPost(input: {
-   channelId, text, mode: customScheduled, schedulingType: automatic, dueAt,
-   assets: [{ image: { url, metadata: { altText } } }, ...] })` — um asset por
+   aparece no `--dry-run` (as URLs nascem no upload do envio). Chamar `mcp__claude_ai_Buffer__create_post` (#11564: o conector
+   atual não expõe `execute_mutation`/`execute_query`, e o schema de
+   `create_post` tipa `assets` como array; armadilha do #8056 e fallback no
+   Passo 5c-3b de `.claude/agents/orchestrator-stage-5.md`) com `{
+   channelId, text, mode: "customScheduled", schedulingType: "automatic", dueAt,
+   assets: [{ image: { url, metadata: { altText } } }, ...] }` — um asset por
    item de `images`, na ordem — e gravar:
    ```bash
    npx tsx scripts/append-twitter-published.ts --published-path {publishedPath} \
      --destaque especial-retrospectiva --status scheduled --buffer-post-id {id} --scheduled-at {dueAt}
    npx tsx scripts/mark-retrospectiva-channel.ts --cycle $CYCLE --channel x:d{N} --status done
    ```
-   Erro na mutation → `append-twitter-published.ts ... --status failed
+   Erro no `create_post` → `append-twitter-published.ts ... --status failed
    --reason "{erro}"` + `mark-retrospectiva-channel.ts --channel x:d{N} --status
-   failed --reason "{erro}"`; sem fallback pra `create_post`.
+   failed --reason "{erro}"`; sem fallback pra post só-texto.
 3. **Perfil LinkedIn (manual, 1 post só):** pulado se `--skip linkedin`.
    Rodar de novo o `check-retrospectiva-divulgacao.ts` (o texto pode ter sido
    mexido depois do gate) e agendar `divulgacao/linkedin-perfil.md` no

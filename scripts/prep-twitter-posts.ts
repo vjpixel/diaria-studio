@@ -78,12 +78,11 @@
  * `posts` é a lista que o orchestrator deve efetivamente postar via Buffer MCP
  * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`; quando `images` não é
  * vazio, passar `assets: post.images.map(({url, altText}) => ({ image: { url, metadata: { altText } } }))`
- * — **1 ou várias entries, nunca só a 1ª**. Nota #8056 (achado ao vivo
- * 260912): o schema desta ferramenta MCP não tipa `assets` como array em
- * todo conector Buffer — quando `create_post` rejeitar o array (`expected
- * array, received string`), usar `execute_mutation` (GraphQL) com a mesma
- * mutation `createPost` (ver `orchestrator-stage-5.md` §5c-3b e a memória
- * `buffer-mcp-create-post-array-via-execute-mutation`).
+ * — **1 ou várias entries, nunca só a 1ª**. A ferramenta é
+ * `mcp__claude_ai_Buffer__create_post`, que no conector atual tipa `assets`
+ * como array (#11564, edição 261029). O `execute_mutation` do #8056 (260912)
+ * só serve de fallback num conector que ainda o exponha — o atual não expõe
+ * (ver `orchestrator-stage-5.md` §5c-3b).
  */
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
