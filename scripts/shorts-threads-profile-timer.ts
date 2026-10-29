@@ -196,7 +196,8 @@ export type ThreadsVerticalLookup =
   | { kind: "found"; fileId: string; name: string }
   /** O arquivo local apareceu entre a checagem e a consulta (outro processo baixou). */
   | { kind: "exists" }
-  | { kind: "none"; reason: string }
+  /** `editionFolderSeen` (#11618): a pasta `{AAMMDD}/` existe no Drive — o dia teve vídeo, mesmo sem nada no disco. */
+  | { kind: "none"; reason: string; editionFolderSeen?: boolean }
   | { kind: "needs-editor"; reason: string }
   | { kind: "error"; reason: string };
 
@@ -211,7 +212,10 @@ export function interpretThreadsVerticalLookup(exitCode: number | null, stdout: 
   const action = out?.action;
   if (action === "print-id" && typeof out.file?.id === "string" && out.file.id) return { kind: "found", fileId: out.file.id, name: String(out.file.name ?? "") };
   if (action === "exists") return { kind: "exists" };
-  if (action === "none" || action === "already-published") return { kind: "none", reason: `nenhum vertical "final" no Drive (${out.reason ?? action})` };
+  if (action === "none" || action === "already-published") {
+    const editionFolderSeen = typeof out.edition_folder_id === "string" && out.edition_folder_id.length > 0;
+    return { kind: "none", reason: `nenhum vertical "final" no Drive (${out.reason ?? action})`, ...(editionFolderSeen ? { editionFolderSeen } : {}) };
+  }
   if (action === "needs-editor") {
     return { kind: "needs-editor", reason: `o Drive tem mais de um candidato ou um arquivo ambíguo (${out.selection ?? "?"}) — o editor escolhe (Passo B1 do /diaria-publica-video); o timer não escolhe` };
   }
@@ -449,7 +453,8 @@ export async function runThreadsTimer(aammdd: string, dir: string, dryRun: boole
         // Ambíguo: o editor precisa escolher, alarma já. Sem vertical: só num dia
         // que teve vertical, e só 1 h depois do horário (pode ainda estar subindo).
         if (lookup.kind === "needs-editor") return (await threadsAlarm(dir, aammdd, "drive-needs-editor", lookup.reason, at, deps.notify)) ? 0 : 1;
-        if (videoSeen && now.getTime() - Date.parse(at) >= THREADS_MISSING_VIDEO_ALARM_AFTER_MS) {
+        // #11618: a pasta da edição no Drive também conta (sem ela no disco, nada local mostrava o vídeo do dia).
+        if ((videoSeen || lookup.editionFolderSeen === true) && now.getTime() - Date.parse(at) >= THREADS_MISSING_VIDEO_ALARM_AFTER_MS) {
           return (await threadsAlarm(dir, aammdd, "missing-video", lookup.reason, at, deps.notify)) ? 0 : 1;
         }
         return 0;

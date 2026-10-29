@@ -17,7 +17,14 @@
  *      Drive e o 300 baixa sozinho) e o download vai pelo `--from-drive` do
  *      `publish-shorts.ts`. Nenhum vertical "final" ainda → exit 0 (a próxima
  *      execução tenta de novo); dois candidatos → exit 0 com aviso (quem
- *      escolhe é o editor, no `/diaria-shorts`);
+ *      escolhe é o editor, no `/diaria-shorts`). #11618: as duas esperas
+ *      alarmam o editor (`linkedinAlarm`, issue + e-mail `urgente`, uma vez por
+ *      motivo e edição, `_internal/.shorts-linkedin-timer-alarm.json`) quando
+ *      o dia teve vídeo (a pasta `{AAMMDD}/` existe no Drive, ou outro destino
+ *      já está no registro): sem vertical 1 h depois do horário do vertical
+ *      (`missing-video`), ou candidatos ambíguos a partir do horário
+ *      (`drive-needs-editor`). Antes disso o timer saía em silêncio e o post
+ *      do dia não saía sem ninguém saber (29/10/2026);
  *   4. `publish-shorts.ts AAMMDD --only linkedin_profile --publish
  *      --linkedin-timer`. O horário é o do vertical (#10831): antes dele o
  *      destino fica `pending_schedule` (nada sai), depois dele publica, e
@@ -34,7 +41,8 @@
  * Uso: npx tsx scripts/shorts-linkedin-profile-timer.ts [--edition AAMMDD] [--dry-run]
  *   --dry-run: decide e imprime os comandos, sem rodar nenhum.
  *
- * Exit: 0 = feito, nada a fazer ou esperando; 1 = falha (Drive, publish); 2 = uso.
+ * Exit: 0 = feito, nada a fazer, esperando ou avisado; 1 = falha (Drive,
+ * publish, alarme não entregue); 2 = uso.
  */
 
 import { spawnSync } from "node:child_process";
@@ -43,9 +51,19 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
-import { aammddBrt } from "./lib/linkedin-personal.ts";
-import { SHORTS_PUBLISHED_FILE, loadShortsConfig, parseShortsPublishedFile, shortVideoFileName } from "./lib/diaria/short-video.ts";
+import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
+import { notifyEditor, type NotifyEditorDeps } from "./lib/editor-notify.ts";
+import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
+import {
+  SHORTS_PUBLISHED_FILE,
+  loadShortScheduleConfig,
+  loadShortsConfig,
+  parseShortsPublishedFile,
+  resolveShortTime,
+  shortVideoFileName,
+} from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import {
   SHORTS_LINKEDIN_TIMER_LOCK_FILE,
@@ -118,7 +136,17 @@ export function decideTimerRun(input: {
   return { kind: "publish", fromDrive: !input.videoExists };
 }
 
-export type DriveLookup = { kind: "found"; fileId: string; name: string } | { kind: "exists" } | { kind: "wait"; reason: string } | { kind: "error"; reason: string };
+export type DriveLookup =
+  | { kind: "found"; fileId: string; name: string }
+  | { kind: "exists" }
+  /**
+   * Espera: `why` diz o motivo (#11618) — sem vertical (`none`) ou o editor
+   * precisa escolher (`needs-editor`). `editionFolderSeen`: a pasta
+   * `{AAMMDD}/` existe no Drive, ou seja, o dia teve vídeo (é onde o bruto e
+   * `Final/` moram); sem ela, dia sem vídeo, nada a avisar.
+   */
+  | { kind: "wait"; reason: string; why: "none" | "needs-editor"; editionFolderSeen: boolean }
+  | { kind: "error"; reason: string };
 
 /** Puro: lê a saída do `fetch-drive-video.ts --orientation vertical`. */
 export function interpretDriveLookup(exitCode: number | null, stdout: string): DriveLookup {
@@ -131,9 +159,18 @@ export function interpretDriveLookup(exitCode: number | null, stdout: string): D
   const action = out?.action;
   if (action === "print-id" && typeof out.file?.id === "string" && out.file.id) return { kind: "found", fileId: out.file.id, name: String(out.file.name ?? "") };
   if (action === "exists") return { kind: "exists" };
-  if (action === "none") return { kind: "wait", reason: `nenhum vertical "final" no Drive ainda (${out.reason ?? "sem motivo"})` };
+  const editionFolderSeen = typeof out?.edition_folder_id === "string" && out.edition_folder_id.length > 0;
+  if (action === "none") {
+    return { kind: "wait", why: "none", editionFolderSeen, reason: `nenhum vertical "final" no Drive ainda (${out.reason ?? "sem motivo"})` };
+  }
   if (action === "needs-editor") {
-    return { kind: "wait", reason: `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe` };
+    // `duplicate-edition-folder` não traz `edition_folder_id`, mas é o Drive com DUAS pastas da edição: o dia teve vídeo.
+    return {
+      kind: "wait",
+      why: "needs-editor",
+      editionFolderSeen: editionFolderSeen || out.selection === "duplicate-edition-folder",
+      reason: `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe`,
+    };
   }
   return { kind: "error", reason: `fetch-drive-video.ts: ${action ?? "sem action"} (exit ${exitCode})${out?.error ? ` — ${out.error}` : ""}` };
 }
@@ -164,6 +201,99 @@ export function acquireTimerLock(path: string, now: number = Date.now()): (() =>
   return () => rmSync(path, { force: true });
 }
 
+/** Motivos já avisados ao editor nesta edição (não repete o mesmo a cada hora, #11618). */
+export const LINKEDIN_TIMER_ALARM_STATE_FILE = "_internal/.shorts-linkedin-timer-alarm.json";
+/** Sem vertical 1 h depois do horário, num dia que teve vídeo: alarma (o mesmo prazo do Threads e do Instagram). */
+export const LINKEDIN_MISSING_VIDEO_ALARM_AFTER_MS = 60 * 60_000;
+
+/** Motivo do alarme (#11618) — chave estável (fingerprint `{AAMMDD}:{motivo}` e dedup). */
+export type LinkedinTimerAlarmKey = "missing-video" | "drive-needs-editor";
+
+/** Puro: horário do vertical da edição (`resolveShortTime`), como instante ISO e `HH:MM` BRT. */
+export function linkedinVerticalTime(config: unknown, aammdd: string): { at: string; hhmm: string } {
+  const { hhmm } = resolveShortTime(loadShortScheduleConfig(config), aammdd);
+  return { at: resolveEditionScheduledAt(aammdd, hhmm), hhmm };
+}
+
+/**
+ * Puro (#11618): a espera do Drive vira alarme? Só num dia que teve vídeo
+ * (`videoSeen`: a pasta da edição no Drive ou outro destino registrado) — dia
+ * sem vídeo não avisa (a Etapa 5 segue sem). Ambíguo: a partir do horário do
+ * vertical (o editor precisa escolher). Sem vertical: 1 h depois do horário
+ * (o export pode estar subindo). Antes disso, null: espera calada.
+ */
+export function linkedinWaitAlarm(input: { why: "none" | "needs-editor"; videoSeen: boolean; now: Date; at: string }): LinkedinTimerAlarmKey | null {
+  if (!input.videoSeen) return null;
+  const deltaMs = input.now.getTime() - Date.parse(input.at);
+  if (input.why === "needs-editor") return deltaMs >= 0 ? "drive-needs-editor" : null;
+  return deltaMs >= LINKEDIN_MISSING_VIDEO_ALARM_AFTER_MS ? "missing-video" : null;
+}
+
+/** Puro: `HH:MM` BRT de um instante. */
+function hhmmBrt(ms: number): string {
+  return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
+}
+
+/** Puro: corpo do alarme, com os comandos já com a edição. */
+export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTimerAlarmKey; reason: string; at: string }): { subject: string; body: string } {
+  const { aammdd, key, reason, at } = input;
+  const deadline = hhmmBrt(Date.parse(at) + MAX_FIRE_LATENESS_MS);
+  const mark = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --mark linkedin_profile=URL\``;
+  const lines = [
+    "Achado automático da task `Diaria-Shorts-LinkedIn-Profile`",
+    "(`scripts/shorts-linkedin-profile-timer.ts`, #10982/#11618).",
+    "",
+    `Motivo (${key}): ${reason}`,
+    "",
+  ];
+  if (key === "missing-video") {
+    lines.push(`O vertical "Outras redes" não está no disco do 300 nem em \`${aammdd}/Final/\` no Drive. Salve-o lá; a próxima execução (de hora em hora) baixa e publica até ${deadline} BRT (3 h depois do horário do vertical).`);
+  } else {
+    lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
+  }
+  lines.push(
+    "",
+    "Depois desse horário o timer não publica mais sozinho. O que fazer então:",
+    `- Postar o vertical à mão no LinkedIn pessoal e registrar com ${mark}.`,
+    `- Ou rodar \`/diaria-publica-video ${aammdd} --so vertical\`.`,
+  );
+  return { subject: `[diar.ia.br] Vertical no LinkedIn pessoal de ${aammdd} não saiu pelo timer do 300 (${key})`, body: lines.join("\n") };
+}
+
+/**
+ * Abre (ou reaproveita) a issue do alarme, manda o e-mail (`urgente`: o post
+ * do dia não saiu) e grava o estado. Mesmas regras de estado dos timers do
+ * Instagram e do Threads: entregue não repete; e-mail pendente é reenviado.
+ */
+export async function linkedinAlarm(dir: string, aammdd: string, key: LinkedinTimerAlarmKey, reason: string, at: string, notifyDeps: NotifyEditorDeps = { cwd: ROOT }): Promise<boolean> {
+  // Import tardio: o timer do Instagram importa `acquireTimerLock` deste módulo (ciclo no load).
+  const { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } = await import("./shorts-instagram-timer.ts");
+  const statePath = join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE);
+  const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
+  const state = parseAlarmState(stateRaw);
+  if (state.alarmed.includes(key) && !state.emailPending.includes(key)) {
+    console.log(`[shorts-linkedin-timer] ${aammdd}: alarme "${key}" já avisado nesta edição — não repete`);
+    return true;
+  }
+  const { subject, body } = buildLinkedinTimerAlarm({ aammdd, key, reason, at });
+  const res = await notifyEditor(
+    { check: "shorts-linkedin-timer", fingerprint: `${aammdd}:${key}`, severity: "urgente", family: "evento", subject, body, forceEmail: emailPending(stateRaw, key) },
+    notifyDeps,
+  );
+  const delivery = alarmDelivery(res);
+  const next = nextAlarmState(stateRaw, aammdd, key, delivery);
+  if (next !== null) {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileAtomic(statePath, next);
+  }
+  if (delivery.kind !== "delivered") {
+    console.error(`[shorts-linkedin-timer] ${aammdd}: alarme "${key}" NÃO entregue — ${delivery.error}; tenta de novo na próxima execução`);
+    return false;
+  }
+  console.log(`[shorts-linkedin-timer] ${aammdd}: alarme "${key}" ${res.issue?.action ?? "registrado"}${res.issue?.url ? ` ${res.issue.url}` : ""}${res.emailSent ? " (e-mail enviado)" : ""}`);
+  return true;
+}
+
 function runTsx(args: string[], capture: boolean): { status: number | null; stdout: string } {
   const r = spawnSync(process.execPath, ["--import", "tsx", ...args], {
     cwd: ROOT,
@@ -175,23 +305,30 @@ function runTsx(args: string[], capture: boolean): { status: number | null; stdo
   return { status: r.status, stdout: capture ? (r.stdout ?? "") : "" };
 }
 
-async function main(): Promise<number> {
-  const { flags, values } = parseArgs(process.argv.slice(2));
-  const aammdd = values["edition"] ?? aammddBrt(new Date());
-  if (!/^\d{6}$/.test(aammdd)) {
-    console.error("uso: shorts-linkedin-profile-timer.ts [--edition AAMMDD] [--dry-run]");
-    return 2;
-  }
-  const dryRun = flags.has("dry-run");
-  const dir = editionDirFor(aammdd);
+/** I/O da execução, injetável nos testes (#11618). */
+export interface LinkedinTimerRunDeps {
+  config: unknown;
+  now: Date;
+  /** Roda `npx tsx <args>`; `capture` devolve o stdout (o fetch-drive-video). */
+  runScript: (args: string[], capture: boolean) => { status: number | null; stdout: string };
+  notify: NotifyEditorDeps;
+}
+
+function defaultRunDeps(): LinkedinTimerRunDeps {
+  return { config: JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")), now: new Date(), runScript: runTsx, notify: { cwd: ROOT } };
+}
+
+export async function runLinkedinTimer(aammdd: string, dir: string, dryRun: boolean, deps: LinkedinTimerRunDeps = defaultRunDeps()): Promise<number> {
+  const { config, now } = deps;
   const publishedPath = join(dir, SHORTS_PUBLISHED_FILE);
   const videoPath = join(dir, shortVideoFileName(aammdd));
-  const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  const publishedRaw = existsSync(publishedPath) ? readFileSync(publishedPath, "utf8") : null;
+  const otherRegistryRaws = readShortsRegistryRaws(dir).filter((r) => r.path !== publishedPath);
   const decision = decideTimerRun({
     config,
     reviewedExists: existsSync(join(dir, "02-reviewed.md")),
-    publishedRaw: existsSync(publishedPath) ? readFileSync(publishedPath, "utf8") : null,
-    otherRegistryRaws: readShortsRegistryRaws(dir).filter((r) => r.path !== publishedPath),
+    publishedRaw,
+    otherRegistryRaws,
     aammdd,
     videoExists: existsSync(videoPath),
   });
@@ -200,7 +337,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const release = dryRun ? () => {} : acquireTimerLock(join(dir, TIMER_LOCK_FILE));
+  const release = dryRun ? () => {} : acquireTimerLock(join(dir, TIMER_LOCK_FILE), now.getTime());
   if (!release) {
     console.log(`[shorts-linkedin-timer] ${aammdd}: outra execução está no meio (${TIMER_LOCK_FILE}) — sai sem publicar`);
     return 0;
@@ -214,11 +351,19 @@ async function main(): Promise<number> {
         return 0;
       }
       const fetchArgs = ["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "vertical", "--edition-dir", dir];
-      const r = runTsx(fetchArgs, true);
+      const r = deps.runScript(fetchArgs, true);
       const lookup = interpretDriveLookup(r.status, r.stdout);
       if (lookup.kind === "wait") {
         console.log(`[shorts-linkedin-timer] ${aammdd}: ${lookup.reason} — tenta de novo na próxima execução`);
-        return 0;
+        if (dryRun) return 0;
+        // #11618: a espera calada deixava o post do dia sem sair e sem ninguém saber.
+        const registrySeen = [...(publishedRaw !== null ? [{ path: publishedPath, raw: publishedRaw }] : []), ...otherRegistryRaws].some(
+          ({ path, raw }) => parseShortsPublishedFile(raw, aammdd, path).entries.length > 0,
+        );
+        const { at } = linkedinVerticalTime(config, aammdd);
+        const key = linkedinWaitAlarm({ why: lookup.why, videoSeen: lookup.editionFolderSeen || registrySeen, now, at });
+        if (key === null) return 0;
+        return (await linkedinAlarm(dir, aammdd, key, lookup.reason, at, deps.notify)) ? 0 : 1;
       }
       if (lookup.kind === "error") {
         console.error(`[shorts-linkedin-timer] ${aammdd}: ${lookup.reason}`);
@@ -233,11 +378,21 @@ async function main(): Promise<number> {
       console.log(`[shorts-linkedin-timer] dry-run: npx tsx ${publishArgs.join(" ")}`);
       return 0;
     }
-    const r = runTsx(publishArgs, false);
+    const r = deps.runScript(publishArgs, false);
     return r.status === 0 ? 0 : 1;
   } finally {
     release();
   }
+}
+
+async function main(): Promise<number> {
+  const { flags, values } = parseArgs(process.argv.slice(2));
+  const aammdd = values["edition"] ?? aammddBrt(new Date());
+  if (!/^\d{6}$/.test(aammdd)) {
+    console.error("uso: shorts-linkedin-profile-timer.ts [--edition AAMMDD] [--dry-run]");
+    return 2;
+  }
+  return runLinkedinTimer(aammdd, editionDirFor(aammdd), flags.has("dry-run"));
 }
 
 if (isMainModule(import.meta.url)) {
