@@ -1511,7 +1511,9 @@ function motionFilter(scale: number, center: { horiz: number; vert: number }): s
  * Premiere ignora o filtro "Flop" do FCP7 no import (#11358), então o
  * Horizontal Flip é aplicado à mão.
  */
-export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: Framing): string {
+export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: Framing, opts: { mediaPath?: string } = {}): string {
+  // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
+  const mediaPath = opts.mediaPath ?? source.path;
   const fps = source.fps;
   const total = Math.round(source.durationS * fps);
   const rate = `<rate><timebase>${fps}</timebase><ntsc>FALSE</ntsc></rate>`;
@@ -1521,7 +1523,7 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
     if (defined) return '<file id="file-1"/>';
     defined = true;
     return (
-      `<file id="file-1"><name>${escapeXml(baseName(source.path))}</name><pathurl>${escapeXml(pathUrl(source.path))}</pathurl>\n` +
+      `<file id="file-1"><name>${escapeXml(baseName(mediaPath))}</name><pathurl>${escapeXml(pathUrl(mediaPath))}</pathurl>\n` +
       `${rate}<duration>${total}</duration>\n` +
       `<media><video><samplecharacteristics><width>${source.width}</width><height>${source.height}</height></samplecharacteristics></video>\n` +
       `<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>`

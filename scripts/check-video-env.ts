@@ -15,9 +15,17 @@
  *
  * Uso: npx tsx scripts/check-video-env.ts [--json]
  * Exit: 0 = a capa sai nesta máquina; 1 = falta algo (o relatório diz o quê).
+ *
+ * `--montagem [--edition AAMMDD]` (#11642): o ambiente do `/diaria-video-montagem`
+ * (Passo 0 da skill), no lugar da capa: ffmpeg, Python com faster-whisper (o
+ * mesmo que o `video-montagem.ts` usaria, `resolveVideoPython`), o modelo
+ * `large-v3-turbo` no cache do Hugging Face (a transcrição roda offline), acesso
+ * à pasta YouTube (Drive for desktop em `G:` ou a API pelo OAuth do projeto) e
+ * espaço no disco do cache (3x o bruto da edição, quando `--edition` acha um;
+ * 25 GB sem ele). Exit 0 = a montagem roda aqui; 1 = falta algo.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +40,26 @@ import {
   type VideoEnvProbes,
   type VideoEnvReport,
 } from "./lib/diaria/video-env-check.ts";
+import {
+  WHISPER_MODEL,
+  assessMontageEnv,
+  formatMontageEnvReport,
+  requiredFreeBytes,
+  resolveVideoPython,
+  type MontageEnvReport,
+  type MontageProbe,
+} from "./lib/diaria/video-montage-env.ts";
+import {
+  DEFAULT_DRIVE_ROOT,
+  findEditionFolder,
+  freeBytes,
+  listChildren,
+  pickDriveBruto,
+  youtubeFolderIdFrom,
+  type MontageDriveDeps,
+} from "./lib/diaria/video-montage-drive.ts";
+import { gFetchRetry } from "./lib/drive-helpers.ts";
+import { DRIVE_API } from "./lib/drive-constants.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -90,8 +118,60 @@ export async function runVideoEnvCheck(): Promise<VideoEnvReport> {
   return assessVideoEnv(probes, process.platform);
 }
 
+function probePython(python: string, code: string, timeoutMs: number): MontageProbe {
+  const r = spawnSync(python, ["-P", "-c", code], { encoding: "utf8", timeout: timeoutMs, env: { ...process.env, HF_HUB_OFFLINE: "1" } });
+  if (r.error) return { ok: false, detail: `${python} não roda: ${r.error.message}` };
+  if (r.status !== 0) return { ok: false, detail: firstLine((r.stderr ?? "").split(/\r?\n/).filter(Boolean).slice(-1)[0]) ?? `exit ${r.status}` };
+  return { ok: true, detail: firstLine(r.stdout) };
+}
+
+/** Acesso à pasta YouTube: Drive for desktop, ou a API (e o tamanho do bruto da edição, quando pedida). */
+async function probeDrive(edition: string | undefined): Promise<{ probe: MontageProbe; brutoBytes: number | null }> {
+  const localRoot = process.env.DIARIA_VIDEO_DRIVE_ROOT ?? DEFAULT_DRIVE_ROOT;
+  if (existsSync(localRoot)) return { probe: { ok: true, detail: `Drive for desktop em ${localRoot}` }, brutoBytes: null };
+  try {
+    const rootId = youtubeFolderIdFrom(JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")));
+    if (!rootId) return { probe: { ok: false, detail: "sem G: e sem publishing.youtube.drive_folder_id no platform.config.json" }, brutoBytes: null };
+    const deps: MontageDriveDeps = { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) };
+    const res = await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(rootId)}?fields=id,name&supportsAllDrives=true`, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) return { probe: { ok: false, detail: `API do Drive: pasta YouTube ${rootId} respondeu ${res.status}` }, brutoBytes: null };
+    if (!edition) return { probe: { ok: true, detail: `API do Drive (pasta YouTube ${rootId})` }, brutoBytes: null };
+    const folder = await findEditionFolder(deps, rootId, edition);
+    const raw = pickDriveBruto(await listChildren(deps, folder.id));
+    if (!raw) return { probe: { ok: true, detail: `API do Drive; ${edition}/ sem bruto ainda` }, brutoBytes: null };
+    const bytes = Number(raw.pick.size ?? 0) || null;
+    return { probe: { ok: true, detail: `API do Drive; bruto ${raw.pick.name} (${((bytes ?? 0) / 1e9).toFixed(2)} GB)` }, brutoBytes: bytes };
+  } catch (e) {
+    return { probe: { ok: false, detail: `API do Drive: ${(e as Error).message}` }, brutoBytes: null };
+  }
+}
+
+export async function runMontageEnvCheck(edition?: string): Promise<MontageEnvReport> {
+  const py = resolveVideoPython({ env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
+  const python = probePython(py.python, "import faster_whisper; print('faster-whisper', faster_whisper.__version__)", 60_000);
+  const model = python.ok
+    ? probePython(py.python, `from faster_whisper.utils import download_model; print(download_model('${WHISPER_MODEL}', local_files_only=True))`, 60_000)
+    : { ok: false, detail: "sem Python com faster-whisper" };
+  const drive = await probeDrive(edition);
+  const cacheRoot = process.env.DIARIA_VIDEO_CACHE_DIR ?? resolve(homedir(), ".cache", "diaria-video-montagem");
+  mkdirSync(cacheRoot, { recursive: true });
+  const free = freeBytes(cacheRoot);
+  const need = requiredFreeBytes(drive.brutoBytes);
+  const disk: MontageProbe =
+    free === null
+      ? { ok: false, detail: `espaço livre ilegível em ${cacheRoot}` }
+      : { ok: free >= need, detail: `${(free / 1e9).toFixed(1)} GB livres em ${cacheRoot}, precisa ${(need / 1e9).toFixed(1)} GB` };
+  return assessMontageEnv({ ffmpeg: probeCommand("ffmpeg", ["-version"]), python, model, drive: drive.probe, disk }, process.platform, `${py.python} (${py.from})`);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  if (args.flags.has("montagem")) {
+    const r = await runMontageEnvCheck(args.values["edition"]);
+    console.log(args.flags.has("json") ? JSON.stringify(r, null, 2) : formatMontageEnvReport(r));
+    process.exitCode = r.ready ? 0 : 1;
+    return;
+  }
   const report = await runVideoEnvCheck();
   if (args.flags.has("json")) console.log(JSON.stringify(report, null, 2));
   else console.log(formatVideoEnvReport(report));

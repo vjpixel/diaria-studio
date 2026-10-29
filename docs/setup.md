@@ -65,6 +65,38 @@ seu fluxo permanece independente. Composição/testes unitários não requerem
 instalar Python ou baixar modelos. A validação real de DLLs/modelo e um recorte
 de ponta a ponta devem ser feitos na máquina (Neo ou 300) após o setup.
 
+## Vídeo: montagem (#11642)
+
+`/diaria-video-montagem` roda no Neo (bruto em `G:`, Drive for desktop) e no
+300 (pasta da edição pela API do Drive, #11639/#11640/#11641). Precisa de
+ffmpeg, de um Python com faster-whisper e do modelo `large-v3-turbo` no cache do
+Hugging Face: a transcrição roda com `HF_HUB_OFFLINE=1`, então o modelo tem de
+estar baixado antes. O diagnóstico, que é o Passo 0 da skill:
+
+```bash
+npx tsx scripts/check-video-env.ts --montagem --edition AAMMDD
+```
+
+Setup do venv próprio (o `video-montagem.ts` usa `~/.venv-video-montagem`
+sozinho quando ele existe; `DIARIA_VIDEO_PYTHON` aponta para outro). Linux (o 300):
+
+```bash
+uv venv --python 3.12 ~/.venv-video-montagem
+VIRTUAL_ENV=~/.venv-video-montagem uv pip install faster-whisper
+~/.venv-video-montagem/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')"
+```
+
+O último comando baixa o modelo (~1,6 GB, uma vez, com rede). No 300, em
+29/10/2026, `python` resolvia para o venv do Hermes (que tinha faster-whisper
+por acaso) e o cache só tinha os modelos `base` e `small`: daí o venv próprio. O
+Neo segue com o Python do usuário (`python` do PATH).
+
+No 300 o bruto é baixado para `~/.cache/diaria-video-montagem/{AAMMDD}/bruto/`
+(em disco: o `/tmp` dele é tmpfs) e o check pede 3x o tamanho do bruto livre;
+apagar a pasta da edição depois do `/diaria-publica-video` libera o espaço.
+Auth: o OAuth do projeto (`data/.credentials.json`), o mesmo do
+`fetch-drive-video.ts`.
+
 ## Demais dependências
 
 > Gerador de imagens via assinatura ChatGPT (Codex CLI, sem custo por uso): ver `docs/codex-image-setup.md` (#9088).

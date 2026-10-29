@@ -1,6 +1,6 @@
 ---
 name: diaria-video-montagem
-description: Monta o vídeo "diar.ia.br comentada" do dia a partir do bruto no Drive (`{AAMMDD}/` da pasta YouTube) — transcrição por palavra, decupagem (gate 1), roteiro das 3 versões (gate 2), XML FCP7 (xmeml v4) com as 3 sequências para o Premiere, SRTs das verticais, prévia vertical 720x1280 e autorrevisão da prévia. Roda depois do gate da Etapa 4 (o vídeo é gravado depois dele) e antes do `/diaria-publica-video` (o editor exporta do Premiere para `{AAMMDD}/Final/`), standalone, sem encadear. Só na máquina Windows do editor (Drive em `G:`, faster-whisper, ffmpeg). Uso — `/diaria-video-montagem [AAMMDD]`.
+description: Monta o vídeo "diar.ia.br comentada" do dia a partir do bruto no Drive (`{AAMMDD}/` da pasta YouTube) — transcrição por palavra, decupagem (gate 1), roteiro das 3 versões (gate 2), XML FCP7 (xmeml v4) com as 3 sequências para o Premiere, SRTs das verticais, prévia vertical 720x1280 e autorrevisão da prévia. Roda depois do gate da Etapa 4 (o vídeo é gravado depois dele) e antes do `/diaria-publica-video` (o editor exporta do Premiere para `{AAMMDD}/Final/`), standalone, sem encadear. Roda no Neo (Drive em `G:`) ou no 300 (pasta da edição pela API do Drive, #11643); faster-whisper e ffmpeg nos dois. Uso — `/diaria-video-montagem [AAMMDD]`.
 ---
 
 # /diaria-video-montagem AAMMDD (#11208)
@@ -15,20 +15,23 @@ Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo qu
 
 **Fluxo do dia (#10943, #11209):** `/diaria-edicao` → (o editor grava, depois do gate 4) → `/diaria-video-montagem` → (Premiere e export para `Final/`) → `/diaria-publica-video` → `/diaria-5-publicacao`. Cada skill numa sessão própria, nenhuma encadeia (#5578): ao terminar, sugerir o próximo comando sem rodá-lo.
 
-**Onde fica cada coisa:** os JSON em `data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem/`; o áudio e os clipes temporários em `{tmp}/diaria-video-montagem/{AAMMDD}/`; XML, SRTs e prévia na pasta da edição no Drive (`G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube/{AAMMDD}/`; `--drive-root` ou `DIARIA_VIDEO_DRIVE_ROOT` para outra). Nada vai para `Final/`: essa pasta é só dos exports do editor, e é dela que o `/diaria-publica-video` lê.
+**Onde fica cada coisa:** os JSON em `data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem/`; o áudio e os clipes temporários em `{tmp}/diaria-video-montagem/{AAMMDD}/`; XML, SRTs e prévia na pasta da edição no Drive (`G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube/{AAMMDD}/`; `--drive-root` ou `DIARIA_VIDEO_DRIVE_ROOT` para outra). No modo API (o 300, Passo 0) o bruto e as saídas ficam num cache em disco (`~/.cache/diaria-video-montagem/{AAMMDD}/`, `bruto/` e `out/`; `--cache-dir` ou `DIARIA_VIDEO_CACHE_DIR`) e as saídas sobem sozinhas para a mesma pasta da edição. Nada vai para `Final/`: essa pasta é só dos exports do editor, e é dela que o `/diaria-publica-video` lê.
 
 **Retomada:** o `transcribe` pula o que já está em disco (`--force` refaz tudo; `source.json` refeito refaz os derivados, menos um `transcript.json` existente, que só `--force` retranscreve, #11504) e o `srt` reaproveita a transcrição da sequência enquanto os trechos e o áudio do bruto forem os mesmos. `decupagem`, `roteiro`, `build`, `preview` e `review` sempre refazem. O `plan.json` guarda o hash do `blocks.json`, do `source.json` e do `silences.json` (redetectado pelo `transcribe` quando o limiar muda, #11351): `srt`, `preview` e `review` recusam um plano defasado (rodar `build` de novo), o `preview` recusa um SRT mais velho que o plano e o `review` uma prévia mais velha que o plano.
 
 ## Passo 0 — Máquina
 
-Só no Neo (label `windows` da #11208): o bruto está no Drive for desktop (`G:`), a transcrição roda local. Conferir antes:
+Roda no **Neo** (Drive for desktop em `G:`) ou no **300** (sem `G:`, a pasta da edição pela API do Drive, #11643). Conferir antes, nas duas:
 
 ```bash
-ffmpeg -version
-python -P -c "import faster_whisper; print(faster_whisper.__version__)"
+npx tsx scripts/check-video-env.ts --montagem --edition {AAMMDD}
 ```
 
-O modelo é faster-whisper `large-v3-turbo` na CPU em int8 (a CUDA do Neo não funciona: falta `cublas64_12.dll`). O helper roda com `python -P` (não `-I`, que esconde o site-packages do usuário) e `HF_HUB_OFFLINE=1`; o script passa os dois. Outro Python: `--python` ou `DIARIA_VIDEO_PYTHON`. Faltando ffmpeg ou faster-whisper, parar e dizer o que falta; nunca instalar no meio da skill.
+Confere ffmpeg, o Python com faster-whisper, o modelo `large-v3-turbo` no cache do Hugging Face (a transcrição roda offline, `HF_HUB_OFFLINE=1`), o acesso à pasta YouTube (`G:` ou a API pelo OAuth do projeto, que já acha o bruto da edição) e o espaço no disco do cache (3x o bruto). Exit 1 = parar e dizer o que falta (o relatório traz o comando de cada item); nunca instalar no meio da skill. Setup das duas máquinas: `docs/setup.md`, seção "Vídeo: montagem".
+
+O modelo é faster-whisper `large-v3-turbo` na CPU em int8 (a CUDA do Neo não funciona: falta `cublas64_12.dll`). O helper roda com `python -P` (não `-I`, que esconde o site-packages do usuário) e `HF_HUB_OFFLINE=1`; o script passa os dois. O Python vem de `--python`, `DIARIA_VIDEO_PYTHON`, o venv `~/.venv-video-montagem` (quando existe; o do 300) ou `python` do PATH (o Neo), nessa ordem (#11642).
+
+**Modo API do Drive (#11639, #11640, #11641).** Sem a pasta da edição em `G:` (e sem `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` explícito), o script entra sozinho no modo API (`--from-drive` força, `--no-drive-api` desliga): o `transcribe` escolhe o bruto na pasta `{AAMMDD}/` do Drive pela mesma regra do disco e o baixa para o cache (6,9 GB na 261030; o teto do download cresce com o tamanho, e o cache em dia não baixa de novo); `--from-audio NOME` e `review-final --file NOME` aceitam o nome do arquivo na pasta da edição e em `Final/`. `build`, `srt` e `preview` sobem o que gravaram (XML, SRTs, prévia) para a pasta da edição, atualizando pelo id o arquivo de mesmo nome (sem duplicar); os links saem no stderr (`[drive] enviado …`) e em `drive-uploads.json`. O XML grava o caminho do bruto no Neo (`G:/Meu Drive/…/{AAMMDD}/{nome}`), não o do cache, para o Premiere abrir com a mídia online (`--xml-media-root` sobrepõe). Sem o conector do Docs, `upload {AAMMDD} --file …/decupagem.md` põe o Markdown na pasta da edição.
 
 ## Passo 1 — Transcrição
 
@@ -173,7 +176,7 @@ O destino sai do nome (`_Youtube_` = 16:9; `_Instagram_`/`_Outras redes_` = 9:16
 - **Flip fica no Premiere.** O Premiere ignora o filtro "Flop" do FCP7 no import (conferido pelo editor, #11358), por isso o XML não leva o desespelhamento e a antiga `--xml-flop` foi removida. Detectar o espelhamento sozinho (OCR da caneca) não entrou: o `frame` do Passo 2 resolve com uma olhada.
 - **Center do Basic Motion** sai em fração da largura/altura da sequência (positivo = direita/baixo), premissa a conferir no 1º import; se o Premiere posicionar errado, ajustar à mão e registrar na issue.
 - **Áudio:** o bruto é estéreo e cada clipe de áudio leva 1 `sourcetrack`; o Premiere importa os dois canais (conferido no import da 261027, #11358).
-- **Detecção de rosto:** sem dependência viável e gratuita no Neo (sem OpenCV/MediaPipe); o `framing` vem da leitura do frame com grade (Passo 2) ou do default da 261027.
+- **Detecção de rosto:** sem dependência viável e gratuita no Neo nem no 300 (sem OpenCV/MediaPipe); o `framing` vem da leitura do frame com grade (Passo 2) ou do default da 261027.
 - **Escalas das verticais** 115/130 (as da prévia aprovada da 261027; o XML dela usou 89/105, "enquadramento pequeno").
 - **Fades de 20–30 ms** só na prévia; no XML ficam os cortes secos, para o editor tratar no Premiere.
 - **Logo no início** fica de fora da montagem automática: opção do editor no Premiere.

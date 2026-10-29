@@ -75,7 +75,18 @@
  *   --state-dir DIR    onde ficam os JSON (default: data/editions/{AAMM}/{AAMMDD}/_internal/video-montagem)
  *   --work-dir DIR     áudio e clipes temporários (default: {tmp}/diaria-video-montagem/{AAMMDD})
  *   --out-dir DIR      onde saem XML, SRT e prévia (default: a pasta da edição no Drive)
- *   --python EXE       Python com faster-whisper (default: env DIARIA_VIDEO_PYTHON ou "python")
+ *   --python EXE       Python com faster-whisper (default: env DIARIA_VIDEO_PYTHON, o venv
+ *                      ~/.venv-video-montagem quando existe, ou "python"; #11642)
+ *
+ * Modo API do Drive (#11639, #11640, #11641), o 300 sem o Drive for desktop:
+ * sem a pasta {drive-root}/{AAMMDD} no disco (e sem --drive-root/DIARIA_VIDEO_DRIVE_ROOT
+ * explícito), ou com --from-drive, a pasta da edição é lida pela API (OAuth do projeto;
+ * pasta YouTube em publishing.youtube.drive_folder_id, --folder-id sobrepõe). --no-drive-api
+ * desliga. O bruto vai para um cache em disco (--cache-dir, DIARIA_VIDEO_CACHE_DIR ou
+ * ~/.cache/diaria-video-montagem/{AAMMDD}: bruto/ e out/), registrado em bruto.drive.json;
+ * build/srt/preview sobem o que gravaram para a pasta da edição (nunca Final/), em
+ * drive-uploads.json; o XML aponta o bruto no Neo (--xml-media-root sobrepõe).
+ *   upload AAMMDD --file PATH   sobe um arquivo para a pasta da edição (ex.: o decupagem.md)
  *
  * Bruto só de áudio (#11552): sem stream de vídeo (ou, sem vídeo solto na
  * pasta, um .m4a/.mp3/.wav), o `transcribe` grava `source.json` com
@@ -83,14 +94,15 @@
  * frame, build, srt, preview e review param com exit 3 e o motivo no stdout
  * (`{audio_only: true, stopped: true}`): a montagem é à mão a partir do roteiro.
  *
- * Nada aqui publica ou sobe arquivo: as saídas vão para a pasta local do Drive
- * for desktop, que sincroniza sozinha. O upload continua no `/diaria-publica-video`.
+ * Nada aqui publica: no Neo as saídas vão para a pasta local do Drive for
+ * desktop, que sincroniza sozinha; no modo API sobem para a mesma pasta. O
+ * upload do vídeo continua no `/diaria-publica-video`.
  */
 
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
@@ -189,13 +201,31 @@ import {
 } from "./lib/diaria/video-cut-refine.ts";
 import { classifyVoices, segmentF0s, type VoiceMark } from "./lib/diaria/video-voice.ts";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
+import { gFetchRetry } from "./lib/drive-helpers.ts";
+import {
+  DEFAULT_DRIVE_ROOT,
+  changedFiles,
+  ensureCachedFile,
+  finalFolders,
+  findByName,
+  findEditionFolder,
+  listChildren,
+  pickDriveBruto,
+  snapshotDir,
+  uploadToFolder,
+  xmlMediaPath,
+  youtubeFolderIdFrom,
+  type BrutoDriveInfo,
+  type MontageDriveDeps,
+} from "./lib/diaria/video-montage-drive.ts";
+import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
-export const DEFAULT_DRIVE_ROOT = "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube";
+export { DEFAULT_DRIVE_ROOT };
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|retranscribe|frame|roteiro|build|srt|preview|review|review-final> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|retranscribe|frame|roteiro|build|srt|preview|review|review-final|upload> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -206,6 +236,8 @@ interface Ctx {
   outDir: string;
   python: string;
   force: boolean;
+  /** #11639: caminho do bruto no XML (`--xml-media-root`); ver `xmlMediaPath`. */
+  xmlMediaRoot?: string;
 }
 
 const f = (ctx: Ctx, name: string) => join(ctx.stateDir, name);
@@ -947,7 +979,11 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
     console.error(`[erro] ${problems} problema(s) acima: corrigir o blocks.json (outra tomada, intervalo maior) ou rodar com --allow-missing`);
     return 1;
   }
-  const xml = buildXmeml(ps, source, framing);
+  // #11641: no XML vai o caminho do bruto no Neo, não o do cache local do modo API.
+  const drive = existsSync(f(ctx, BRUTO_DRIVE_FILE)) ? readJson<BrutoDriveInfo>(f(ctx, BRUTO_DRIVE_FILE), BRUTO_DRIVE_FILE) : null;
+  const mediaPath = xmlMediaPath(source.path, { edition: ctx.edition, drive, xmlMediaRoot: ctx.xmlMediaRoot });
+  if (mediaPath !== source.path) console.error(`[video-montagem] XML aponta o bruto em ${mediaPath} (lido de ${source.path}, #11641)`);
+  const xml = buildXmeml(ps, source, framing, { mediaPath });
   mkdirSync(ctx.outDir, { recursive: true });
   const xmlPath = join(ctx.outDir, xmlFileName(ctx.edition));
   writeFileAtomic(xmlPath, xml);
@@ -1149,6 +1185,130 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   return 0;
 }
 
+// ── Drive pela API, fora do Neo (#11639, #11640, #11641) ─────────────────
+
+/** Registro do bruto baixado pela API (no state dir): id, nome no Drive e o caminho do cache. */
+export const BRUTO_DRIVE_FILE = "bruto.drive.json";
+/** O que já subiu para a pasta da edição (nome → id/link), para o relato. */
+const DRIVE_UPLOADS_FILE = "drive-uploads.json";
+/** Subcomandos cujas saídas (XML, SRTs, prévia) sobem para a pasta da edição no modo API. */
+export const DRIVE_UPLOAD_COMMANDS = ["build", "srt", "preview"] as const;
+
+/**
+ * Como esta execução chega na pasta da edição (#11639): `local` (Drive for
+ * desktop, o Neo) ou `api` (o 300). `--from-drive` força a API; `--no-drive-api`
+ * a desliga. Sem flag: a pasta local existe → local; `--drive-root`/
+ * `DIARIA_VIDEO_DRIVE_ROOT` explícito e ausente → local (o erro de sempre, a raiz
+ * foi pedida); senão (a raiz padrão `G:` não existe nesta máquina) → api.
+ */
+export function driveModeFor(o: { driveDirExists: boolean; fromDrive: boolean; noDriveApi: boolean; explicitRoot: boolean }): "local" | "api" {
+  if (o.fromDrive && o.noDriveApi) throw new Error("--from-drive e --no-drive-api juntos: escolha um");
+  if (o.fromDrive) return "api";
+  if (o.noDriveApi || o.driveDirExists || o.explicitRoot) return "local";
+  return "api";
+}
+
+/** Cache em DISCO do modo API (o `/tmp` do 300 é tmpfs): `--cache-dir`, `DIARIA_VIDEO_CACHE_DIR` ou `~/.cache/diaria-video-montagem`. */
+export function driveCacheDir(edition: string, flag: string | undefined, env: string | undefined, home: string): string {
+  return resolve(join(flag ?? env ?? join(home, ".cache", "diaria-video-montagem"), edition));
+}
+
+interface DriveSession {
+  deps: MontageDriveDeps;
+  edition: string;
+  cacheDir: string;
+  rootFolderId: string;
+  folder: () => Promise<{ id: string; webViewLink?: string }>;
+}
+
+function driveSession(edition: string, cacheDir: string, folderIdFlag: string | undefined): DriveSession {
+  let rootFolderId = folderIdFlag?.trim() || null;
+  if (!rootFolderId) {
+    const cfgPath = join(ROOT, "platform.config.json");
+    rootFolderId = youtubeFolderIdFrom(JSON.parse(readFileSync(cfgPath, "utf8")));
+    if (!rootFolderId) throw new Error("modo API do Drive sem pasta YouTube: preencha publishing.youtube.drive_folder_id no platform.config.json ou passe --folder-id");
+  }
+  const deps: MontageDriveDeps = { driveFetch: (url, init) => gFetchRetry(url, init ?? {}) };
+  let memo: Promise<{ id: string; webViewLink?: string }> | null = null;
+  const root = rootFolderId;
+  return { deps, edition, cacheDir, rootFolderId: root, folder: () => (memo ??= findEditionFolder(deps, root, edition)) };
+}
+
+const log = (line: string) => console.error(line);
+
+/** transcribe sem --source no modo API: escolhe o bruto na pasta da edição e baixa para o cache (#11639). */
+async function fetchBruto(ctx: Ctx, d: DriveSession): Promise<string> {
+  const folder = await d.folder();
+  const children = await listChildren(d.deps, folder.id);
+  const raw = pickDriveBruto(children);
+  if (!raw) throw new Error(`nenhum bruto (.mp4/.mov, ou áudio .m4a/.mp3/.wav) solto na pasta ${d.edition}/ do Drive (${folder.id}); passe --source`);
+  if (raw.audioOnly) log(`[premissa] nenhum vídeo solto em ${d.edition}/ no Drive; usando o áudio ${raw.pick.name} (modo áudio, #11552)`);
+  if (raw.candidates.length > 1) {
+    log(`[aviso] ${raw.candidates.length} candidatos a bruto no Drive; usando o maior (${raw.pick.name}). Outro: --source. Candidatos: ${raw.candidates.map((c) => `${c.name} (${(Number(c.size ?? 0) / 1e9).toFixed(2)} GB)`).join(", ")}`);
+  }
+  const got = await ensureCachedFile(d.deps, raw.pick, join(d.cacheDir, "bruto"), log);
+  const info: BrutoDriveInfo = {
+    id: raw.pick.id,
+    name: raw.pick.name,
+    size: Number(raw.pick.size ?? got.bytes),
+    modifiedTime: raw.pick.modifiedTime ?? null,
+    folderId: folder.id,
+    localPath: got.localPath.replace(/\\/g, "/"),
+  };
+  writeJson(f(ctx, BRUTO_DRIVE_FILE), info);
+  return got.localPath;
+}
+
+/** frame/preview: o bruto do source.json sumiu do cache (limpeza, outra máquina) → baixa de novo pelo id. */
+async function ensureBrutoLocal(ctx: Ctx, d: DriveSession): Promise<void> {
+  const path = f(ctx, "source.json");
+  if (!existsSync(path)) return;
+  const source = readJson<SourceInfo>(path, "source.json");
+  if (existsSync(source.path)) return;
+  const infoPath = f(ctx, BRUTO_DRIVE_FILE);
+  if (!existsSync(infoPath)) return; // bruto local de outra origem: o comando dá o erro dele
+  const info = readJson<BrutoDriveInfo>(infoPath, BRUTO_DRIVE_FILE);
+  if (info.localPath !== source.path.replace(/\\/g, "/")) return;
+  log(`[drive] bruto ausente do cache (${source.path}); baixando de novo do Drive`);
+  await ensureCachedFile(d.deps, { id: info.id, name: info.name, mimeType: "", size: String(info.size) }, dirname(info.localPath), log);
+}
+
+/** Um arquivo pelo nome na pasta da edição (`--from-audio`) ou em `Final/` (`review-final --file`), baixado para o cache. */
+async function fetchNamed(d: DriveSession, name: string, where: "edition" | "final"): Promise<string> {
+  const folder = await d.folder();
+  const folders = where === "edition" ? [folder] : finalFolders(await listChildren(d.deps, folder.id));
+  if (folders.length === 0) throw new Error(`pasta Final/ não encontrada em ${d.edition}/ no Drive (procurando ${name})`);
+  for (const dir of folders) {
+    const { file, duplicates } = await findByName(d.deps, dir.id, name);
+    if (!file) continue;
+    if (duplicates) log(`[aviso] ${duplicates + 1} arquivos "${name}" no Drive: usando o mais recente (${file.id})`);
+    return (await ensureCachedFile(d.deps, file, join(d.cacheDir, where === "edition" ? "bruto" : "final"), log)).localPath;
+  }
+  throw new Error(`${name} não encontrado em ${d.edition}/${where === "final" ? "Final/" : ""} no Drive`);
+}
+
+/** Sobe os arquivos e registra em `drive-uploads.json`; devolve as linhas do relato. */
+async function uploadAll(ctx: Ctx, d: DriveSession, paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  const folder = await d.folder();
+  const regPath = f(ctx, DRIVE_UPLOADS_FILE);
+  const reg = existsSync(regPath) ? readJson<Record<string, unknown>>(regPath, DRIVE_UPLOADS_FILE) : {};
+  for (const p of paths) {
+    const r = await uploadToFolder(d.deps, folder.id, p, log);
+    reg[r.name] = { id: r.id, link: r.webViewLink, at: new Date().toISOString(), from: p };
+    writeJson(regPath, reg);
+    log(`[drive] ${r.updated ? "atualizado" : "enviado"} ${d.edition}/${r.name}: ${r.webViewLink ?? r.id}`);
+  }
+}
+
+function cmdUpload(ctx: Ctx, d: DriveSession | null, file: string | undefined): Promise<number> | number {
+  if (!file) throw new Error("upload exige --file PATH (ex.: o decupagem.md quando o conector do Docs falhar)");
+  if (!d) throw new Error("upload é do modo API do Drive (o 300); no Neo, copie o arquivo para a pasta da edição em G:");
+  const path = resolve(file);
+  if (!existsSync(path)) throw new Error(`arquivo não encontrado: ${path}`);
+  return uploadAll(ctx, d, [path]).then(() => 0);
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const { values, flags, positional } = parseArgs(argv);
   const [cmd, edition] = positional;
@@ -1160,32 +1320,73 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     console.error(`video-montagem: AAMMDD inválido: ${edition}`);
     return 2;
   }
-  const driveRoot = values["drive-root"] ?? process.env.DIARIA_VIDEO_DRIVE_ROOT ?? DEFAULT_DRIVE_ROOT;
+  const explicitRoot = values["drive-root"] ?? process.env.DIARIA_VIDEO_DRIVE_ROOT;
+  const driveRoot = explicitRoot ?? DEFAULT_DRIVE_ROOT;
   const driveDir = join(driveRoot, edition);
+  const mode = driveModeFor({
+    driveDirExists: existsSync(driveDir),
+    fromDrive: flags.has("from-drive"),
+    noDriveApi: flags.has("no-drive-api"),
+    explicitRoot: explicitRoot !== undefined,
+  });
+  const cacheDir = driveCacheDir(edition, values["cache-dir"], process.env.DIARIA_VIDEO_CACHE_DIR, homedir());
+  const py = resolveVideoPython({ flag: values["python"], env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
   const ctx: Ctx = {
     edition,
     stateDir: resolve(values["state-dir"] ?? join(editionDirFor(edition), "_internal", "video-montagem")),
     workDir: resolve(values["work-dir"] ?? join(tmpdir(), "diaria-video-montagem", edition)),
     driveDir,
-    outDir: resolve(values["out-dir"] ?? driveDir),
-    python: values["python"] ?? process.env.DIARIA_VIDEO_PYTHON ?? "python",
+    // Modo API: as saídas ficam no cache local e sobem para a pasta da edição (#11640).
+    outDir: resolve(values["out-dir"] ?? (mode === "api" ? join(cacheDir, "out") : driveDir)),
+    python: py.python,
     force: flags.has("force"),
+    xmlMediaRoot: values["xml-media-root"],
   };
   const seq = values["seq"];
   if ((VIDEO_ONLY_COMMANDS as readonly string[]).includes(cmd)) {
     const stop = audioOnlyStop(ctx, cmd);
     if (stop !== null) return stop;
   }
+  const NEEDS_DRIVE = ["transcribe", "frame", "preview", "review-final", "upload", ...DRIVE_UPLOAD_COMMANDS];
+  const d = mode === "api" && NEEDS_DRIVE.includes(cmd) ? driveSession(edition, cacheDir, values["folder-id"]) : null;
+  if (d && cmd === "transcribe") console.error(`[video-montagem] modo API do Drive (sem ${driveDir} nesta máquina, #11639); cache em ${cacheDir}`);
+  const before = d && (DRIVE_UPLOAD_COMMANDS as readonly string[]).includes(cmd) ? snapshotDir(ctx.outDir, (dir) => readdirSync(dir)) : null;
+  const code = await runCommand(ctx, cmd, values, flags, seq, d);
+  if (before && d && code === 0) {
+    const changed = changedFiles(before, snapshotDir(ctx.outDir, (dir) => readdirSync(dir)));
+    try {
+      await uploadAll(ctx, d, changed.map((n) => join(ctx.outDir, n)));
+    } catch (e) {
+      console.error(`[erro] upload para o Drive falhou: ${(e as Error).message}. Os arquivos estão em ${ctx.outDir}; reenviar com: upload ${edition} --file ARQUIVO`);
+      return 1;
+    }
+  }
+  return code;
+}
+
+async function runCommand(
+  ctx: Ctx,
+  cmd: string,
+  values: Record<string, string | undefined>,
+  flags: Set<string>,
+  seq: string | undefined,
+  d: DriveSession | null,
+): Promise<number> {
   switch (cmd) {
     case "transcribe": {
       if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "G:/…/Diaria comentada_Youtube.wav")');
-      const fromAudio = values["from-audio"] !== undefined ? { audio: values["from-audio"], transcript: values["audio-transcript"] } : undefined;
+      let audio = values["from-audio"];
+      // #11639: no modo API, um --from-audio que não existe no disco é o nome do arquivo na pasta da edição.
+      if (d && audio !== undefined && !existsSync(audio)) audio = await fetchNamed(d, basename(audio.replace(/\\/g, "/")), "edition");
+      const fromAudio = audio !== undefined ? { audio, transcript: values["audio-transcript"] } : undefined;
       if (!fromAudio && values["audio-transcript"] !== undefined) throw new Error("--audio-transcript só vale com --from-audio");
-      return cmdTranscribe(ctx, values["source"], parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)), fromAudio);
+      const source = values["source"] ?? (d ? await fetchBruto(ctx, d) : undefined);
+      return cmdTranscribe(ctx, source, parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)), fromAudio);
     }
     case "decupagem":
       return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]));
     case "frame":
+      if (d) await ensureBrutoLocal(ctx, d);
       return cmdFrame(ctx, values["at"]);
     case "retranscribe":
       return cmdRetranscribe(ctx, values["from"], values["to"]);
@@ -1200,11 +1401,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     case "srt":
       return cmdSrt(ctx, seq, flags.has("from-raw"));
     case "preview":
+      if (d) await ensureBrutoLocal(ctx, d);
       return cmdPreview(ctx, seq);
     case "review":
       return cmdReview(ctx, seq);
-    case "review-final":
-      return cmdReviewFinal(ctx, values["file"], seq, !flags.has("no-text"));
+    case "review-final": {
+      let file = values["file"];
+      // #11639: no modo API, o export é procurado pelo nome em Final/ da edição no Drive.
+      if (d && file !== undefined && !existsSync(file)) file = await fetchNamed(d, basename(file.replace(/\\/g, "/")), "final");
+      return cmdReviewFinal(ctx, file, seq, !flags.has("no-text"));
+    }
+    case "upload":
+      return cmdUpload(ctx, d, values["file"]);
     default:
       console.error(`video-montagem: subcomando desconhecido: ${cmd}\n${USAGE}`);
       return 2;
