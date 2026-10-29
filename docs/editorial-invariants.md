@@ -117,7 +117,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
 | `sponsored-source-marker` | página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169) | #10169 |
 | `story-twice-in-edition` | Mesma história duas vezes na edição final (destaque × destaque, pool × destaque) ou repetindo item publicado nas últimas 3 edições por produto+versão (heurístico, warning-only) | #11496 |
-| `theme-cross-source-repeat` | Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only; 🚨 "cortar" só com jaccard ≥0.35 sem palavras de anúncio genéricas, abaixo de 0.20 não sobe, #11517) | #11496 |
+| `theme-cross-source-repeat` | Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only) | #11496 |
 | `title-mentions-ia` | título de destaque sem menção a 'IA'/'AI'/'inteligência artificial' quando evitável (#4825, warning-only) | #4825 |
 | `title-publisher-suffix` | título sem sufixo residual de veículo (' \| Veículo' / ' - Veículo', #2664) | #2664 |
 | `title-trailing-period` | título de destaque/item sem ponto final único (#2672) | #2672 |
