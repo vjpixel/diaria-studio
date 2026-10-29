@@ -48,9 +48,8 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     `upload` do item, #10915), e o `--confirm-instagram` registra.
  *   - `linkedin_profile` (API, #10772) — vídeo NATIVO no perfil pessoal do
  *     editor pela Videos API (`scripts/lib/linkedin-video.ts`), com o token do
- *     4º post (`LINKEDIN_PERSONAL_*`, nenhum segredo novo). Texto com o vídeo
- *     completo do YouTube (`_internal/05-video-url.txt`) e a edição com
- *     `utm_source=linkedin&utm_medium=video&utm_campaign={AAMMDD}`. A Posts API
+ *     4º post (`LINKEDIN_PERSONAL_*`, nenhum segredo novo). Texto sem link
+ *     (título, gancho e hashtags, #11617). A Posts API
  *     não agenda: antes do horário fica `pending_schedule` (rode de novo depois,
  *     ou `--now`). Envio ambíguo grava `send_unknown` e nunca re-posta.
  *   - `linkedin_page_repost` (guiado, #10772) — repost do vídeo do perfil pela
@@ -252,7 +251,6 @@ import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type Worke
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
-import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
 import {
   THREADS_PROFILE_DESTINATION,
   ThreadsTimerGateError,
@@ -519,8 +517,6 @@ export interface ShortsPlanInput {
    * recebe vídeo por URL. Ausente = não → X pulado com aviso.
    */
   publicVideo?: { ready: true } | { ready: false; reason: string };
-  /** #10772: URL do vídeo completo no YouTube (`_internal/05-video-url.txt`); null/ausente = link do canal. */
-  youtubeVideoUrl?: string | null;
   /**
    * #11070: credencial do canal (`YOUTUBE_*`, `missingYouTubeCredentials`).
    * Pronta → o Short sobe pela Data API; ausente ou não pronta → passo guiado.
@@ -684,7 +680,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   }
 
   const socialText = (platform: "linkedin" | "x" | "threads") =>
-    buildShortSocialText({ platform, aammdd: input.aammdd, d1: d1In, editionUrl, videoUrl: input.youtubeVideoUrl ?? null });
+    buildShortSocialText({ platform, d1: d1In });
 
   // #10772 F4: a Posts API do LinkedIn não agenda — o vídeo sai quando a rodada
   // roda. Sem teto, uma rodada horas depois (ou no dia seguinte) publicaria fora
@@ -742,9 +738,6 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (s.warning) warnings.push(s.warning);
     return s;
   })();
-  if (destinations.some((d) => d.kind === "linkedin_profile" || d.kind === "x" || d.kind === "threads_profile") && !input.youtubeVideoUrl) {
-    premises.push("LinkedIn/X/Threads: sem _internal/05-video-url.txt — o texto aponta pro canal do YouTube em vez do vídeo completo");
-  }
 
   const items: ShortsPlanItem[] = destinations.map((dest) => planDestination(dest));
 
@@ -906,7 +899,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "guided",
         action: "guided",
-        caption: buildReelsCaption({ platform: "facebook", aammdd: input.aammdd, d1: d1In, editionUrl, utmContent: "perfil" }),
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In }),
         detail: "perfil pessoal: a Graph API não publica em perfil de pessoa — Chrome, ou compartilhar o Reels da página",
       };
     }
@@ -921,7 +914,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         destination: dest.id,
         mode: "api",
         action: "publish",
-        caption: buildReelsCaption({ platform: "facebook", aammdd: input.aammdd, d1: d1In, editionUrl, utmContent: page.utmContent }),
+        caption: buildReelsCaption({ platform: "facebook", d1: d1In }),
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
       };
     }
@@ -942,7 +935,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       warnings.push(`instagram: ${detail}`);
       let caption: string | undefined;
       try {
-        caption = buildReelsCaption({ platform: "instagram", aammdd: input.aammdd, d1: d1In, editionUrl });
+        caption = buildReelsCaption({ platform: "instagram", d1: d1In });
       } catch (e) {
         warnings.push(`instagram: ${(e as Error).message}`);
       }
@@ -959,7 +952,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
     let caption: string;
     try {
-      caption = buildReelsCaption({ platform: "instagram", aammdd: input.aammdd, d1: d1In, editionUrl });
+      caption = buildReelsCaption({ platform: "instagram", d1: d1In });
     } catch (e) {
       // Legenda grande demais só derruba o Instagram, não os outros destinos.
       warnings.push(`instagram: ${(e as Error).message}`);
@@ -2925,10 +2918,8 @@ async function main(): Promise<number> {
   const liApiVersion = process.env[LINKEDIN_PERSONAL_ENV.apiVersion]?.trim() || defaultLinkedInApiVersion(new Date());
   // #11122: Threads pessoal (fail-soft até o token existir, #10772/#11077).
   const threadsCreds = readThreadsPersonalCreds(process.env);
-  const ytVideo = readD1VideoUrl(dir);
   // #11070: Short pela Data API com a credencial do horizontal (YOUTUBE_*, youtube-oauth-setup.ts).
   const ytMissing = missingYouTubeCredentials(process.env);
-  if (ytVideo.warning) console.error(`[aviso] ${ytVideo.warning}`);
   // #11265: a fila do Worker (e o R2) só entra com o backend antigo; com o
   // timer do 300 nada aqui cobra os secrets do R2.
   const instagramQueue =
@@ -2961,7 +2952,6 @@ async function main(): Promise<number> {
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
       publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing) },
-      youtubeVideoUrl: ytVideo.url,
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
       writer,
       published,
@@ -3272,8 +3262,9 @@ async function main(): Promise<number> {
 
 /**
  * Pure (#11410): o que identifica o vertical da edição num post do perfil do
- * Threads — o `utm_campaign={AAMMDD}` do link da edição que
- * `buildShortSocialText` põe no texto, e o título do D1 como o texto o leva.
+ * Threads — o título do D1 como o texto de `buildShortSocialText` o leva, e o
+ * `utm_campaign={AAMMDD}` do link da edição que o texto levava até o #11617
+ * (segue como marcador pros posts já no ar).
  * Título com reticências (cortado pra caber) entra sem elas.
  */
 export function threadsEditionMarkers(aammdd: string, d1Title: string): string[] {

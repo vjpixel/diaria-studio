@@ -101,31 +101,35 @@ describe("#10769 metadados e legendas", () => {
     assert.match(m.description, /^Um modelo da OpenAI/);
     assert.match(m.description, /#Shorts/);
     assert.ok(!m.description.includes("http"), "link na descrição de Short não é clicável");
+    assert.doesNotMatch(m.description, /diar\.ia\.br|youtu/, "#11617: nem o domínio solto na descrição");
+    assert.equal(m.description, "Um modelo da OpenAI gastou o saldo de uma carteira de terceiros.\n\n#Shorts #IA #inteligênciaartificial");
     assert.deepEqual(Object.keys(m).sort(), ["description", "title"], "link em comentário de Short não é clicável — sem pinnedComment");
   });
 
-  it("Reels Facebook: CTA que explica a newsletter + link da edição com UTM da página, sem o YouTube (#11388)", () => {
-    const c = buildReelsCaption({ platform: "facebook", aammdd: "261022", d1: D1, editionUrl: EDITION_URL, utmContent: "page-memelab" });
-    assert.match(c, /^Você já viu IA mentir/);
-    assert.ok(c.includes(REELS_NEWSLETTER_SENTENCE));
+  it("Reels Facebook: CTA que explica a newsletter, sem o YouTube e sem link (#11388, #11617)", () => {
+    const c = buildReelsCaption({ platform: "facebook", d1: D1 });
+    assert.equal(
+      c,
+      [
+        "Você já viu IA mentir. Já viu roubar?",
+        "Um modelo da OpenAI gastou o saldo de uma carteira de terceiros.",
+        REELS_NEWSLETTER_SENTENCE,
+        "#IA #inteligênciaartificial",
+      ].join("\n\n"),
+    );
     assert.doesNotMatch(c, /youtube/i);
     assert.doesNotMatch(c, /grátis/);
-    assert.match(c, /utm_source=facebook&utm_medium=reels&utm_campaign=261022&utm_content=page-memelab/);
-  });
-
-  it("Reels Facebook da página diar.ia.br (utm_content null) não ganha tag", () => {
-    const c = buildReelsCaption({ platform: "facebook", aammdd: "261022", d1: D1, editionUrl: EDITION_URL, utmContent: null });
-    assert.ok(!c.includes("utm_content"));
+    assert.doesNotMatch(c, /https?:\/\/|utm_|diar\.ia\.br\/p\//, "#11617: legenda do vídeo sem link");
   });
 
   it("Reels Instagram: link da bio, sem URL da edição", () => {
-    const c = buildReelsCaption({ platform: "instagram", aammdd: "261022", d1: D1, editionUrl: EDITION_URL });
+    const c = buildReelsCaption({ platform: "instagram", d1: D1 });
     assert.match(c, /link da bio/);
     assert.ok(!c.includes("diar.ia.br/p/"));
   });
 
   it("#11388: legenda do Reels no Instagram usa o texto final do editor e não cita o YouTube nem 'Edição completa'", () => {
-    const c = buildReelsCaption({ platform: "instagram", aammdd: "261022", d1: D1, editionUrl: EDITION_URL });
+    const c = buildReelsCaption({ platform: "instagram", d1: D1 });
     assert.equal(INSTAGRAM_REELS_CTA, "A diar.ia.br é a newsletter que resume as notícias de IA do dia em 5 minutos. Assine pelo link da bio.");
     assert.equal(
       c,
@@ -277,11 +281,11 @@ describe("#10769 plano do publish-shorts", () => {
     assert.ok(plan.warnings.some((w) => w === "instagram: nenhuma conta do Instagram vinculada à página vjpixel"));
   });
 
-  it("instagramReady false → skip com aviso; perfil pessoal sai com utm_content=perfil", () => {
+  it("instagramReady false → skip com aviso; perfil pessoal sai com a legenda sem link (#11617)", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), instagramReady: false });
     const by = Object.fromEntries(plan.items.map((i) => [i.destination, i])) as any;
     assert.equal(by.instagram.action, "skip_missing_credentials");
-    assert.match(by.facebook_profile.caption, /utm_content=perfil/);
+    assert.doesNotMatch(by.facebook_profile.caption, /https?:\/\/|utm_/);
   });
 
   it("YouTube Shorts sai com os metadados guiados", () => {

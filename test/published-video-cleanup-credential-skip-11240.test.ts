@@ -116,7 +116,6 @@ test("credentialSkippedItems: pulo por credencial entra; R2 fora do ar e delega√
     published: { aammdd: "261022", entries: [] },
     video: { path: "v.mp4", exists: true, sizeBytes: 10 },
     editionUrl: "https://diar.ia.br/p/x",
-    youtubeVideoUrl: "https://youtu.be/MMyBVHVQELI",
     now: new Date("2026-10-22T16:00:00Z"),
   };
   const noToken = planShortsPublish({ ...base, threadsPersonal: { ready: false, reason: "THREADS_PERSONAL_ACCESS_TOKEN ausente(s)." }, publicVideo: { ready: true } });

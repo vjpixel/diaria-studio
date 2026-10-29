@@ -37,7 +37,7 @@ const EMPTY = { aammdd: AAMMDD, entries: [] };
 const reel = (id: string, caption: string) => ({ id, caption, timestamp: "2026-10-27T11:05:00+0000", media_product_type: "REELS", permalink: `https://www.instagram.com/reel/${id}/` });
 const decideFrom = (data: unknown[]) => async (): Promise<InstagramConfirmDecision> =>
   decideInstagramConfirm({ published: EMPTY, media: { data }, sinceIso: "2026-10-27T03:00:00.000Z", markers: MARKERS, nowIso: "2026-10-27T20:00:00.000Z", expectedAtIso: AT });
-const caption = buildReelsCaption({ platform: "instagram", aammdd: AAMMDD, d1: D1, editionUrl: "https://diar.ia.br/p/x" });
+const caption = buildReelsCaption({ platform: "instagram", d1: D1 });
 
 describe("#11421: gate do timer sem a credencial da página vjpixel", () => {
   it("nada na conta da API e o perfil do @vjpixel não consultável (sem credencial) → NÃO publica, falha author-unchecked", async () => {
