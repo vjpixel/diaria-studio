@@ -22,7 +22,10 @@ export type GhOpaqueMergeReason =
   | "alias-unreadable"
   | "alias-import"
   | "alias-loop"
-  | "depth";
+  | "depth"
+  | "shell-var"
+  | "git-config"
+  | "gh-config";
 
 /** Repo de um `gh api` REST de merge: literal do caminho, o do diretório (`{owner}/{repo}`), ou indeterminado. */
 export type GhRestMergeRepo = { kind: "literal"; slug: string } | { kind: "cwd" } | { kind: "unknown" };
@@ -48,6 +51,12 @@ export function isGhPrMergeCommand(command: unknown, opts?: GhMergeDetectOptions
 export function extractGhPrMergeTargetPr(command: unknown, opts?: GhMergeDetectOptions): number | undefined;
 export function mergeTargetHints(command: unknown, opts?: GhMergeDetectOptions): { repos: string[]; unknown: boolean };
 export function isHeredocDataCommand(command: unknown): boolean;
+/** Variáveis cujo valor o git/gh executam como shell (#11513); fonte única da denylist do heredoc (#11522). */
+export const SHELL_VALUE_VARS: ReadonlySet<string>;
+/** Nomes exatos que nunca são atribuição inócua na whitelist de heredoc (#11522). */
+export const UNSAFE_ASSIGN_NAMES: ReadonlySet<string>;
+/** Prefixos de nome que nunca são atribuição inócua na whitelist de heredoc (#11522). */
+export const UNSAFE_ASSIGN_PREFIXES: readonly string[];
 export function parseGhAliasesYaml(text: unknown): LoadedGhAliases;
 export function loadGhAliases(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): LoadedGhAliases;
 export function ghConfigPath(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string;

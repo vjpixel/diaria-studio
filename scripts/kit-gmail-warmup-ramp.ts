@@ -101,7 +101,7 @@ import { listAllSubscribersForTag, findKitSubscriberByEmail, fetchSubscriberTagI
 import { createOrUpdateSubscriber, listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { isApoioNivel, type ApoioNivel } from "./sync-apoio-nivel-beehiiv.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
-import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
+import { fetchActiveBeehiivEmails } from "./lib/beehiiv-active-subscriptions.ts";
 import {
   computeGmailRejectedEmails,
   planNextWave,

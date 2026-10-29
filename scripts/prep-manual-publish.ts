@@ -137,7 +137,7 @@ const CHECK_NAME_TEMPLATE_STALE = 'Template Default sem "Resultado da última ed
 
 /**
  * #3221: busca o conteúdo persistido do template "Default" via API (mesmo
- * expand[]=free_web_content usado por fetch-beehiiv-poll-stats.ts) e roda
+ * expand[]=free_web_content do antigo fetch-beehiiv-poll-stats.ts) e roda
  * `hasStaleResultLineStyle` sobre ele. Falha de API/rede não bloqueia o
  * fluxo manual (fail-open, `passed: true`) — vira aviso pra conferência
  * manual, já que essa checagem é aditiva, não uma pré-condição de dados
