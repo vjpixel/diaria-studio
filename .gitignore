@@ -78,6 +78,12 @@ __pycache__/
 # #8281, 123 linhas cujo conteúdo já tinha virado a issue #8106 e reviews
 # de 4 PRs já mergeadas. ATENÇÃO: comentário em linha PRÓPRIA (ver #6691).
 .dr-*
+# #11544: mesma classe — rascunho de corpo de comentário de review escrito
+# na raiz só para `--body-file` (`.rv{pr}.md`, `.review-*.md`). A PR de rescue
+# #11514 saiu só com três deles; a #7438 levou `.review-i1.md` pra master.
+# `continuo-tick-closure.ts` (REVIEW_SCRATCH_PATTERNS) também os filtra.
+/.rv*.md
+/.review-*.md
 # #9833: rascunhos temporários de comentário de review (`.rev9801.md`,
 # `.review-i1.md`) gravados na RAIZ do checkout pelo reviewer só para alimentar
 # `gh pr comment --body-file`. Mesma classe do `.dr-*` acima: o rescue do

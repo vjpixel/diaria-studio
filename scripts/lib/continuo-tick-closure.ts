@@ -48,6 +48,50 @@ export function hasUncommittedWork(porcelain: string): boolean {
   return porcelain.trim().length > 0;
 }
 
+/** Rascunhos efêmeros de corpo de comentário de review/finding que agentes
+ * escrevem na RAIZ do checkout só para alimentar `--body-file` (#11544). O
+ * destino real é o comentário já publicado na PR/issue, nunca o repo: a PR de
+ * rescue #11514 saiu só com `.rv11490.md`/`.rv11493.md`/`.rv11510.md`, e a
+ * #7438 já tinha levado `.review-i1.md` pra `master`. `.dr-*` é o scratch da
+ * daily-review (#7130). O `.gitignore` cobre os mesmos nomes; esta lista é a
+ * 2ª camada, para quando um agente inventa um nome que escapa do ignore. Só
+ * path UNTRACKED é filtrado: arquivo já rastreado com esse nome continua
+ * sendo trabalho a resgatar. */
+export const REVIEW_SCRATCH_PATTERNS: readonly RegExp[] = [
+  /^\.rv[^/]*\.md$/,
+  /^\.review-[^/]*\.md$/,
+  /^\.dr-[^/]*$/,
+];
+
+/** `true` quando o path (relativo à raiz, como o porcelain imprime) é rascunho
+ * de review na raiz do checkout — puro. Só a raiz: `docs/.rv1.md` não casa. */
+export function isReviewScratchPath(path: string): boolean {
+  return REVIEW_SCRATCH_PATTERNS.some((re) => re.test(path));
+}
+
+export interface PorcelainSplit {
+  /** Paths untracked que são rascunho de review (nunca resgatados). */
+  scratch: string[];
+  /** Linhas do porcelain que continuam sendo trabalho a resgatar. */
+  work: string[];
+}
+
+/** Separa (puro) as linhas de `git status --porcelain` em rascunho de review
+ * untracked (`?? .rv123.md`) e trabalho real. Path entre aspas (nome com
+ * caractere especial) nunca é tratado como rascunho: fica em `work`, lado
+ * seguro do erro (resgatar a mais, nunca descartar). */
+export function splitReviewScratch(porcelain: string): PorcelainSplit {
+  const scratch: string[] = [];
+  const work: string[] = [];
+  for (const line of porcelain.split("\n")) {
+    if (line.trim().length === 0) continue;
+    const path = line.slice(3);
+    if (line.startsWith("?? ") && isReviewScratchPath(path)) scratch.push(path);
+    else work.push(line);
+  }
+  return { scratch, work };
+}
+
 export interface RescueBranchPlan {
   branchName: string;
   commitMessage: string;
@@ -254,6 +298,20 @@ export function rescueOrphanedWork(
       return { outcome: "clean", message: "checkout compartilhado limpo — nada a recuperar." };
     }
 
+    // #11544: rascunho de corpo de review (`.rv*.md`, `.review-*.md`, `.dr-*`)
+    // não é trabalho órfão — o comentário já foi publicado. Só ele sujo →
+    // "clean"; misturado com trabalho real → resgata o resto e deixa o
+    // rascunho fora do commit (unstage logo depois do `git add -A`).
+    const split = splitReviewScratch(statusRes.stdout);
+    if (split.work.length === 0) {
+      return {
+        outcome: "clean",
+        message:
+          `checkout compartilhado só tem rascunho(s) de review, não resgatado(s) (#11544): ` +
+          `${split.scratch.join(", ")}.`,
+      };
+    }
+
     // #8639: antes de mover QUALQUER coisa pra uma branch de rescue, garante
     // que nenhum arquivo sujo carrega marcador de conflito de merge literal
     // — sinal de um `git stash pop` conflitante (git-sync.ts, #6668) que a
@@ -307,6 +365,19 @@ export function rescueOrphanedWork(
           `git add -A falhou (${addRes.stderr.trim()}) na branch ${plan.branchName} — trabalho parcialmente ` +
           `movido, investigar manualmente ('git status', 'git checkout master' só depois de resolver).`,
       };
+    }
+
+    if (split.scratch.length > 0) {
+      const unstageRes = spawn("git", ["reset", "-q", "--", ...split.scratch]);
+      if (unstageRes.status !== 0) {
+        return {
+          outcome: "rescue_failed",
+          message:
+            `git reset dos rascunhos de review (${split.scratch.join(", ")}) falhou ` +
+            `(${unstageRes.stderr.trim()}) na branch ${plan.branchName} — trabalho staged mas NÃO commitado, ` +
+            `investigar manualmente antes de trocar de branch (#11544).`,
+        };
+      }
     }
 
     const commitRes = spawn("git", ["commit", "-m", plan.commitMessage]);
