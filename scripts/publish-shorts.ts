@@ -1201,7 +1201,11 @@ export async function publishFacebookReel(
 /** Autora do Reels no Instagram, resolvida pra uma conta + token (#10790). */
 export type InstagramAuthor =
   | { ready: true; igUserId: string; token: string; username: string | null; source: string; warnings?: string[] }
-  | { ready: false; reason: string };
+  /**
+   * `readFailed` (#11427): a credencial existe, mas a leitura da conta vinculada
+   * na Graph falhou (5xx, rede) — falha transitória, não credencial ausente.
+   */
+  | { ready: false; reason: string; readFailed?: true };
 
 /** Escopo que o token da página precisa pra publicar no Instagram vinculado. */
 export const INSTAGRAM_PUBLISH_SCOPE = "instagram_content_publish";
@@ -1251,7 +1255,7 @@ export async function resolveInstagramAuthor(
   try {
     json = await graphGet(deps as GraphDeps, page.pageId, { fields: "instagram_business_account{id,username}", access_token: page.token }, apiVersion);
   } catch (e) {
-    return { ready: false, reason: `não foi possível ler a conta do Instagram vinculada à página ${authorPage}: ${(e as Error).message}` };
+    return { ready: false, reason: `não foi possível ler a conta do Instagram vinculada à página ${authorPage}: ${(e as Error).message}`, readFailed: true };
   }
   const ig = json?.instagram_business_account;
   if (!ig?.id) {
@@ -1699,19 +1703,55 @@ export function instagramConfirmUrlEntry(url: string, nowIso: string): { ok: tru
   return { ok: true, entry: { destination: "instagram", status: "published", id: clean, url: clean, scheduled_at: null, at: nowIso } };
 }
 
+export interface ChromeAuthorResolution {
+  reader: Extract<InstagramAuthor, { ready: true }> | null;
+  unavailable?: string;
+  sameAccount?: true;
+  /** #11427: a credencial existe, mas a leitura da conta vinculada falhou (transitório). */
+  readFailed?: true;
+}
+
 /**
  * #11390: o leitor do perfil do autor da rota do Chrome (@vjpixel), só leitura.
- * `reader` null = não consultável (mesma conta da API, ou sem credencial), com
- * o motivo em `unavailable`.
+ * `reader` null = não consultável (mesma conta da API, sem credencial, ou a
+ * leitura falhou — `readFailed`, #11427), com o motivo em `unavailable`.
  */
-async function resolveChromeAuthorReader(
+export async function resolveChromeAuthorReader(
   apiAuthorPage: string | null,
   pages: ResolvedFacebookPage[],
   igApiVersion: string,
-): Promise<{ reader: Extract<InstagramAuthor, { ready: true }> | null; unavailable?: string; sameAccount?: true }> {
+  deps: Pick<GraphDeps, "fetch"> = defaultGraphDeps,
+): Promise<ChromeAuthorResolution> {
   if (apiAuthorPage === INSTAGRAM_CHROME_ROUTE.authorPage) return { reader: null, unavailable: "é a mesma conta da API", sameAccount: true };
-  const resolved = await resolveInstagramAuthor(defaultGraphDeps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
-  return resolved.ready ? { reader: resolved } : { reader: null, unavailable: resolved.reason };
+  const resolved = await resolveInstagramAuthor(deps, INSTAGRAM_CHROME_ROUTE.authorPage, pages, igApiVersion, { igUserId: "", token: "" }, { readOnly: true });
+  if (resolved.ready) return { reader: resolved };
+  return { reader: null, unavailable: resolved.reason, ...(resolved.readFailed ? { readFailed: true as const } : {}) };
+}
+
+/**
+ * Pure (#11427): o perfil do autor resolvido → as deps do
+ * `decideInstagramTimerAcrossAccounts`. Leitura que falhou com a credencial
+ * presente NÃO é "sem credencial": vira um `chromeAuthor` que lança, e o gate
+ * classifica como `read-failed` (urgente, a próxima rodada tenta de novo) em
+ * vez de `author-unchecked` (alarme `acao` que manda fornecer a credencial e
+ * suprime o `late` da edição). Só é consultado quando a conta da API não tem
+ * o Reels, como antes.
+ */
+export function timerChromeAuthorDeps(
+  chrome: ChromeAuthorResolution,
+  readFor: (igUserId: string, token: string) => () => Promise<InstagramConfirmDecision>,
+): { chromeAuthor: (() => Promise<InstagramConfirmDecision>) | null; chromeAuthorUnavailable?: string } {
+  if (chrome.reader) return { chromeAuthor: readFor(chrome.reader.igUserId, chrome.reader.token) };
+  if (chrome.sameAccount) return { chromeAuthor: null };
+  const why = chrome.unavailable ?? "sem credencial";
+  if (chrome.readFailed) {
+    return {
+      chromeAuthor: async () => {
+        throw new Error(why);
+      },
+    };
+  }
+  return { chromeAuthor: null, chromeAuthorUnavailable: why };
 }
 
 /**
@@ -1725,6 +1765,9 @@ async function resolveChromeAuthorReader(
  *   bloqueou; se ele também não tem nada, segue a da API (publica);
  * - leitura do perfil que falha → propaga (o gate vira `read-failed` e não
  *   publica: fail-closed, igual à leitura da conta da API);
+ *   inclui a leitura da conta vinculada à página `vjpixel` com a credencial
+ *   presente (#11427, `timerChromeAuthorDeps`): é transitória, não
+ *   `author-unchecked`;
  * - perfil não consultável por ser a mesma conta da API (`chromeAuthor` null,
  *   sem `chromeAuthorUnavailable`) → segue a da API: ela já é o perfil do autor;
  * - perfil não consultável por falta da credencial da página `vjpixel`
@@ -2541,7 +2584,7 @@ export function blockRepostOnProfileFailure(
 }
 
 /** Link da edição: --edition-url > `_internal/05-edition-url.txt` > (derivado, no plano). */
-function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
+export function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
   if (flag) return { url: flag, source: "--edition-url" };
   const p = join(dir, "_internal", "05-edition-url.txt");
   if (existsSync(p)) {
@@ -2977,7 +3020,8 @@ async function main(): Promise<number> {
           // Fix do review do PR #11395: o gate olha também o perfil do @vjpixel (Reels à mão com collab pendente).
           const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
           // #11421: sem a credencial da página do autor, o gate não publica (fail-closed) se a conta da API não tiver o Reels.
-          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não consultável (${chrome.unavailable ?? "sem motivo"})${chrome.sameAccount ? "" : " — o timer não publica pela API sem conferir"}`);
+          // #11427: leitura que falhou com a credencial presente vira `read-failed` (nova tentativa), não `author-unchecked`.
+          if (!chrome.reader) console.error(`[aviso] instagram: perfil do @${INSTAGRAM_CHROME_ROUTE.authorUsername} não consultável (${chrome.unavailable ?? "sem motivo"})${chrome.sameAccount ? "" : chrome.readFailed ? " — leitura falhou; o timer não publica pela API sem conferir e tenta de novo na próxima rodada" : " — o timer não publica pela API sem conferir"}`);
           const readFor = (igUserId: string, token: string) => () =>
             readAndDecideInstagramConfirm(defaultGraphDeps, {
               igUserId,
@@ -2989,15 +3033,13 @@ async function main(): Promise<number> {
               nowIso: new Date().toISOString(),
               expectedAtIso: ctx.expectedAtIso,
             });
-          const chromeReader = chrome.reader;
           const step = await instagramTimerPublishStep({
             gate: () =>
               instagramTimerGate({
                 decide: () =>
                   decideInstagramTimerAcrossAccounts({
                     primary: readFor(author.igUserId, author.token),
-                    chromeAuthor: chromeReader ? readFor(chromeReader.igUserId, chromeReader.token) : null,
-                    ...(chromeReader || chrome.sameAccount ? {} : { chromeAuthorUnavailable: chrome.unavailable ?? "sem credencial" }),
+                    ...timerChromeAuthorDeps(chrome, readFor),
                   }),
                 persist: (entry) => {
                   published = persist(entry);

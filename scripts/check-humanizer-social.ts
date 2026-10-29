@@ -28,12 +28,33 @@
  *             Logar a decisão (acusou / passou limpo) no run-log via log-event.ts
  *             quando --edition-dir é fornecido (sempre o caso no Stage 4).
  *
+ *   --record-run --step humanizador|clarice --pre <arquivo> --post <arquivo> [--sections a,b]
+ *             (#11534) Registra em `_internal/.humanizer-run.json` a PROVA de que o
+ *             passo rodou: o sha256 de cada seção que saiu dele. `humanizador`:
+ *             --pre = snapshot antes da Skill, --post = snapshot pós-humanizador;
+ *             toda seção do escopo ganha prova, inclusive a que saiu idêntica
+ *             (#11604, marcada "texto mantido" no --provenance). `clarice`: --pre = snapshot
+ *             pós-humanizador, --post = `03-social.md` pós-Clarice; só seção cujo
+ *             texto de entrada já tinha prova do humanizador.
+ *
+ *   --provenance  (#11534) Imprime, por seção do `03-social.md` atual, se o texto
+ *             passou pelo humanizador e pela Clarice (bloco do resumo do gate).
+ *
  * Flags:
+ *   --unproven-ok <motivo>   (#11534, só com --write) aceita seção com mudança de
+ *             redação SEM prova de humanizador + Clarice. Só quando o EDITOR pediu
+ *             para manter um texto dele sem humanizar; fica gravado no selo
+ *             (`unproven_sections`) e aparece no `--provenance`.
+ *
  *   --bypass-reason <motivo>   (opcional, só válido com --write)
  *             Registra o motivo no sentinel quando --write é chamado com hash
  *             divergente (ex: "humanizador re-rodou após ajuste D1↔D2 no Stage 4").
  *             OBRIGATÓRIO quando --write é chamado após edição pós-humanização
  *             para garantir rastreabilidade (#2373).
+ *             Desde #11534 o motivo sozinho não basta: cada seção com mudança de
+ *             REDAÇÃO precisa de prova no `.humanizer-run.json` (humanizador E
+ *             Clarice). Mudança só de formatação (`{quebra}`, hashtags, espaços)
+ *             passa. Sem prova: exit 4, listando as seções.
  *
  * Uso:
  *   npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/AAMMDD/
@@ -52,6 +73,16 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
 import { computeSectionHashes } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
 import { hashSocialContent } from "./lib/humanizer-social-seal.ts"; // #9679: fonte única do sha256
+import {
+  classifySealChanges,
+  computeSectionFormatHashes,
+  describeProvenance,
+  planRunRecord,
+  readRunRecord,
+  writeRunRecord,
+  type RunStep,
+  type SectionProvenance,
+} from "./lib/humanizer-run-record.ts"; // #11534: prova de humanizador + Clarice
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SENTINEL_FILENAME = ".humanizer-social-done.json";
@@ -74,6 +105,40 @@ export interface HumanizerSocialSentinel {
    * headers `## d{N}` (reorder/promote) sobre um social que já batia com o selo.
    */
   resealed_by?: string;
+  /** #11534: sha256 da versão normalizada (sem `{quebra}`/hashtags/espaços) de cada seção. */
+  section_format_hashes?: Record<string, string>;
+  /** #11534: seções alteradas neste `--write` e a prova de cada uma. */
+  section_provenance?: SectionProvenance[];
+  /** #11534: seções aceitas sem prova via `--unproven-ok` / `unprovenOk`. */
+  unproven_sections?: string[];
+  unproven_ok?: string;
+}
+
+/** #11534: `--write --bypass-reason` com seção reescrita sem prova de humanizador + Clarice. */
+export class UnprovenSectionsError extends Error {
+  constructor(
+    public readonly sections: string[],
+    public readonly provenance: SectionProvenance[],
+  ) {
+    const detail = sections
+      .map((s) => {
+        const p = provenance.find((x) => x.section === s);
+        return `${s} (humanizador ${p?.humanizador ? "ok" : "falta"}, Clarice ${p?.clarice ? "ok" : "falta"})`;
+      })
+      .join(", ");
+    super(
+      `check-humanizer-social: seção(ões) com mudança de redação sem prova de humanizador + Clarice: ${detail}. ` +
+        "Rodar o humanizador e a Clarice nessas seções e registrar cada passo com " +
+        "--record-run --step humanizador|clarice antes do --write (#11534). " +
+        '--unproven-ok "<motivo>" só quando o editor pediu para manter o texto dele sem humanizar.',
+    );
+    this.name = "UnprovenSectionsError";
+  }
+}
+
+export interface WriteSentinelOptions {
+  /** Aceita seções sem prova; o motivo fica no selo. Ex.: autofix mecânico de fact-check. */
+  unprovenOk?: string;
 }
 
 /**
@@ -96,7 +161,7 @@ export function computeSocialHash(socialPath: string): string {
  *                      pós-humanização. Obrigatório quando hash diverge.
  * @returns path do sentinel gravado
  */
-export function writeSentinel(editionDir: string, bypassReason?: string): string {
+export function writeSentinel(editionDir: string, bypassReason?: string, opts: WriteSentinelOptions = {}): string {
   const socialPath = resolve(editionDir, "03-social.md");
   if (!existsSync(socialPath)) {
     throw new Error(`check-humanizer-social: 03-social.md não existe em ${editionDir}`);
@@ -107,6 +172,8 @@ export function writeSentinel(editionDir: string, bypassReason?: string): string
 
   // Guard #2373: se sentinel anterior existe e hash diverge, exigir bypassReason
   // para evitar uso de --write como atalho que bypassa a humanização.
+  let provenance: SectionProvenance[] | undefined;
+  let unproven: string[] = [];
   if (existsSync(sentinelPath)) {
     let existing: HumanizerSocialSentinel | null = null;
     try {
@@ -124,14 +191,28 @@ export function writeSentinel(editionDir: string, bypassReason?: string): string
           "o humanizador já rodou nesta sessão (#2373).",
         );
       }
+      if (existing.social_sha256 !== currentHash) {
+        // #11534: o motivo não é prova. Cada seção reescrita precisa ter passado
+        // pelo humanizador e pela Clarice (registro `.humanizer-run.json`).
+        const cls = classifySealChanges(existing, readFileSync(socialPath, "utf8"), readRunRecord(editionDir));
+        provenance = cls.changed;
+        unproven = cls.unproven;
+        if (unproven.length > 0 && !opts.unprovenOk) {
+          throw new UnprovenSectionsError(unproven, cls.changed);
+        }
+      }
     }
   }
 
+  const socialMd = readFileSync(socialPath, "utf8");
   const sentinel: HumanizerSocialSentinel = {
     social_sha256: computeSocialHash(socialPath),
     written_at: new Date().toISOString(),
-    section_hashes: computeSectionHashes(readFileSync(socialPath, "utf8")), // #3446
+    section_hashes: computeSectionHashes(socialMd), // #3446
+    section_format_hashes: computeSectionFormatHashes(socialMd), // #11534
     ...(bypassReason ? { bypass_reason: bypassReason } : {}),
+    ...(provenance ? { section_provenance: provenance } : {}),
+    ...(unproven.length > 0 ? { unproven_sections: unproven, unproven_ok: opts.unprovenOk } : {}),
   };
   writeFileSync(sentinelPath, JSON.stringify(sentinel, null, 2) + "\n", "utf8");
   return sentinelPath;
@@ -336,21 +417,86 @@ function main(): void {
   const editionDirArg = values["edition-dir"];
 
   if (!editionDirArg) {
-    console.error("Uso: check-humanizer-social.ts [--write|--check] --edition-dir data/editions/AAMMDD/ [--bypass-reason <motivo>]");
+    console.error(
+      "Uso: check-humanizer-social.ts [--write|--check|--record-run|--provenance] --edition-dir data/editions/AAMMDD/ " +
+        "[--bypass-reason <motivo>] [--unproven-ok <motivo>] [--step humanizador|clarice --pre <arq> --post <arq> [--sections a,b]]",
+    );
     process.exit(1);
   }
 
   const editionDir = resolve(ROOT, editionDirArg);
   const bypassReason = values["bypass-reason"];
+  const unprovenOk = values["unproven-ok"];
+
+  if (flags.has("record-run")) {
+    const step = values["step"];
+    const pre = values["pre"];
+    const post = values["post"];
+    if ((step !== "humanizador" && step !== "clarice") || !pre || !post) {
+      console.error("Uso: --record-run --step humanizador|clarice --pre <arquivo> --post <arquivo> [--sections a,b] --edition-dir DIR");
+      process.exit(1);
+    }
+    const prePath = resolve(ROOT, pre);
+    const postPath = resolve(ROOT, post);
+    if (!existsSync(prePath) || !existsSync(postPath)) {
+      console.error(`[check-humanizer-social] ERRO: arquivo ausente — pre=${existsSync(prePath)} post=${existsSync(postPath)}`);
+      process.exit(1);
+    }
+    const sections = values["sections"]?.split(",").map((s) => s.trim()).filter(Boolean);
+    const plan = planRunRecord(
+      readRunRecord(editionDir),
+      step as RunStep,
+      readFileSync(prePath, "utf8"),
+      readFileSync(postPath, "utf8"),
+      sections,
+    );
+    const recordPath = writeRunRecord(editionDir, plan.record);
+    for (const s of plan.skipped) {
+      console.error(`[check-humanizer-social] sem prova (${step}): ${s.section} — ${s.reason}`);
+    }
+    console.log(JSON.stringify({ ok: true, step, record_path: recordPath, recorded: plan.recorded, skipped: plan.skipped }));
+    process.exit(0);
+  }
+
+  if (flags.has("provenance")) {
+    const socialPath = resolve(editionDir, "03-social.md");
+    if (!existsSync(socialPath)) {
+      console.error(`[check-humanizer-social] ERRO: 03-social.md não existe em ${editionDir}`);
+      process.exit(1);
+    }
+    const rows = describeProvenance(readFileSync(socialPath, "utf8"), readRunRecord(editionDir));
+    let unprovenSections: string[] = [];
+    const sentinelPath = join(editionDir, "_internal", SENTINEL_FILENAME);
+    if (existsSync(sentinelPath)) {
+      try {
+        const s = JSON.parse(readFileSync(sentinelPath, "utf8")) as HumanizerSocialSentinel;
+        unprovenSections = s.unproven_sections ?? [];
+      } catch (e) {
+        console.error(`[check-humanizer-social] WARN: selo ilegível (${(e as Error).message}) — unproven_sections não listadas`);
+      }
+    }
+    for (const r of rows) {
+      const extra = unprovenSections.includes(r.section) ? " · aceita sem prova (--unproven-ok)" : "";
+      const kept = r.kept ? " (texto mantido)" : ""; // #11604
+      console.error(`  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"}${kept} · Clarice ${r.clarice ? "sim" : "NÃO"}${extra}`);
+    }
+    console.log(JSON.stringify({ ok: true, sections: rows, unproven_sections: unprovenSections }));
+    process.exit(0);
+  }
 
   if (flags.has("write")) {
     try {
-      const path = writeSentinel(editionDir, bypassReason);
+      const path = writeSentinel(editionDir, bypassReason, { unprovenOk });
       const out: Record<string, unknown> = { ok: true, sentinel_path: path };
       if (bypassReason) out["bypass_reason"] = bypassReason;
       console.log(JSON.stringify(out));
       process.exit(0);
     } catch (e) {
+      if (e instanceof UnprovenSectionsError) {
+        console.error(`[check-humanizer-social] PROVA AUSENTE — ${e.message}`);
+        console.log(JSON.stringify({ ok: false, reason: "unproven_sections", unproven_sections: e.sections, provenance: e.provenance }));
+        process.exit(4);
+      }
       const msg = (e as Error).message;
       if (msg.includes("hash diverge") || msg.includes("--bypass-reason")) {
         // Guard #2373: hash diverge sem bypass-reason — exit 3 (distinguível de I/O errors)

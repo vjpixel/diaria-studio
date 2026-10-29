@@ -37,6 +37,7 @@
  * inconsistentes sem aviso:
  *   - `_internal/fact-check-sources/manifest.json` + `_internal/fact-check-
  *     sources/d{N}.txt` — remapeados por posição (`reorderFactCheckSources`).
+ *     Idem `extras.json` + `d{N}-extra-{k}.txt` (fontes adicionais, #11531).
  *   - `_internal/04-crop-review.json` — `results[].destaque` remapeado
  *     (`reorderCropReviewJson`); desde o #9679 também as menções `D{N}` no
  *     texto livre (`motivo`/`sugestao`), senão o gate mandava regenerar o
@@ -129,6 +130,7 @@ import { hashFromApprovedFile, writeSocialSourceHash } from "./lib/social-source
 import { planHumanizerReseal } from "./lib/humanizer-social-seal.ts"; // #9679
 import { reorderEstiloRegenState, updateEstiloRegenStateFile } from "./lib/estilo-regen-state.ts"; // #10335
 import { publicImageKeysForPosition } from "./lib/public-images-invalidate.ts"; // #11252
+import { EXTRAS_MANIFEST, extraSourceFileName } from "./lib/fact-check-extra-sources.ts"; // #11531
 import { describeCarouselKeepArtRemap, remapCarouselKeepArt, updateCarouselKeepArtFile } from "./lib/carousel-keep-art.ts"; // #11213
 import {
   readCarouselSourceHashes,
@@ -1167,6 +1169,45 @@ export function reorderFactCheckManifest(
   return { changed, entries: reordered };
 }
 
+/**
+ * (#11531) Remapeia `_internal/fact-check-sources/extras.json` (fontes
+ * ADICIONAIS por destaque, `scripts/lib/fact-check-extra-sources.ts`) conforme
+ * `newOrder`: a entrada com `destaque: newOrder[i]` passa a `destaque: i+1`. O
+ * `k` e a `primary_url` ficam como estão — a URL primária acompanha a história,
+ * então depois do reorder ela volta a bater com o slot novo e
+ * `syncExtraSources` não descarta a entrada (sem isso, a fonte registrada pelo
+ * editor com `add-destaque-source.ts` se perdia no reorder). Puro. Entradas
+ * fora do range de `newOrder` ficam intactas.
+ */
+export function reorderExtrasManifest(
+  entries: unknown,
+  newOrder: number[],
+): { changed: boolean; entries: unknown } {
+  if (!Array.isArray(entries)) return { changed: false, entries };
+  const newPosOf = new Map<number, number>();
+  newOrder.forEach((oldN, i) => newPosOf.set(oldN, i + 1));
+  let changed = false;
+  const out = entries.map((e) => {
+    if (!e || typeof e !== "object") return e;
+    const d = (e as { destaque?: unknown }).destaque;
+    if (typeof d !== "number") return e;
+    const np = newPosOf.get(d);
+    if (np === undefined || np === d) return e;
+    changed = true;
+    return { ...(e as Record<string, unknown>), destaque: np };
+  });
+  if (changed) {
+    out.sort((a, b) => {
+      const da = (a as { destaque?: number })?.destaque ?? Infinity;
+      const db = (b as { destaque?: number })?.destaque ?? Infinity;
+      const ka = (a as { k?: number })?.k ?? 0;
+      const kb = (b as { k?: number })?.k ?? 0;
+      return da - db || ka - kb;
+    });
+  }
+  return { changed, entries: out };
+}
+
 export function reorderFactCheckSources(
   internalDir: string,
   newOrder: number[],
@@ -1202,14 +1243,55 @@ export function reorderFactCheckSources(
     }
   }
 
-  // d{N}.txt — mesmo mecanismo staging+verify das imagens/prompts, já que
-  // este diretório também mora dentro do `data/` sincronizado pelo OneDrive.
+  // extras.json (#11531) — fontes adicionais por destaque seguem a mesma
+  // permutação; os `d{N}-extra-{k}.txt` entram no lote de rename abaixo.
+  const extrasPath = join(dir, EXTRAS_MANIFEST);
+  if (existsSync(extrasPath)) {
+    let extras: unknown;
+    try {
+      extras = JSON.parse(readFileSync(extrasPath, "utf8"));
+    } catch (e) {
+      console.warn(
+        `WARN: reorder-destaques — fact-check-sources/${EXTRAS_MANIFEST} ilegível (${e}), pulando.`,
+      );
+      extras = undefined;
+    }
+    if (extras !== undefined) {
+      const result = reorderExtrasManifest(extras, newOrder);
+      if (result.changed) {
+        if (!dryRun) {
+          writeFilesVerified(
+            [{ path: extrasPath, content: JSON.stringify(result.entries, null, 2) + "\n" }],
+            "reorder-destaques",
+          );
+        }
+        modified.push(extrasPath);
+      }
+    }
+  }
+
+  // d{N}.txt + d{N}-extra-{k}.txt — mesmo mecanismo staging+verify das
+  // imagens/prompts, já que este diretório também mora dentro do `data/`
+  // sincronizado pelo OneDrive. Um lote só: o staging resolve ciclos da
+  // permutação (d1↔d2) para os dois tipos de arquivo de uma vez.
   const pending: PendingFileRename[] = [];
   for (let i = 0; i < newOrder.length; i++) {
     const from = `d${newOrder[i]}.txt`;
     const to = `d${i + 1}.txt`;
     if (from === to) continue;
     if (existsSync(join(dir, from))) pending.push({ originalName: from, finalName: to });
+  }
+  if (existsSync(dir)) {
+    const newPosOf = new Map<number, number>();
+    newOrder.forEach((oldN, i) => newPosOf.set(oldN, i + 1));
+    for (const name of readdirSync(dir)) {
+      const m = /^d(\d+)-extra-(\d+)\.txt$/.exec(name);
+      if (!m) continue;
+      const oldN = Number(m[1]);
+      const np = newPosOf.get(oldN);
+      if (np === undefined || np === oldN) continue;
+      pending.push({ originalName: name, finalName: extraSourceFileName(np, Number(m[2])) });
+    }
   }
   if (pending.length > 0) {
     if (!dryRun) {

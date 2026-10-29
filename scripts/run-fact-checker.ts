@@ -31,6 +31,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { sectionHeaderRegex, ALL_SECTION_NAMES_PATTERN } from "./lib/section-naming.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { fetchSourceText } from "./fetch-source-text.ts";
+import { syncExtraSources, urlKey } from "./lib/fact-check-extra-sources.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -248,7 +249,70 @@ export function formatFactCheckUnavailableMessage(
  * - Se há superlatives não-SUSTAINED: mostra com ⚠️
  * - Se há NOT_FOUND_IN_SOURCE: mostra com ⚠️
  */
-export function formatGateSummary(result: FactCheckResult): string {
+/** Host legível de uma URL (sem `www.`); a própria string se não parsear. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * (#11531) Linhas do resumo do gate que dizem de qual fonte veio cada claim
+ * sustentado (SUSTAINED/INFERRED com `source_url`). Por destaque, uma linha de
+ * contagem por host; claims sustentados por fonte ADICIONAL (URL diferente da
+ * primária do destaque) saem também nomeados, que é o que o editor precisa
+ * conferir. Sem `primaryUrls` não há como separar primária de adicional:
+ * retorna `[]` (resumo idêntico ao de antes).
+ */
+export function formatSourceAttribution(
+  claims: FactClaim[],
+  primaryUrls: Array<string | undefined> | undefined,
+): string[] {
+  if (!primaryUrls) return [];
+  const supported = claims.filter(
+    (c) =>
+      (c.verdict === "SUSTAINED" || c.verdict === "INFERRED") &&
+      typeof c.destaque === "number" &&
+      typeof c.source_url === "string" &&
+      c.source_url.length > 0,
+  );
+  const byDestaque = new Map<number, FactClaim[]>();
+  for (const c of supported) {
+    const n = c.destaque as number;
+    byDestaque.set(n, [...(byDestaque.get(n) ?? []), c]);
+  }
+  if (byDestaque.size === 0) return [];
+  const extraClaims: FactClaim[] = [];
+  const countLines: string[] = [];
+  for (const n of [...byDestaque.keys()].sort((a, b) => a - b)) {
+    const primary = primaryUrls[n - 1];
+    const counts = new Map<string, number>();
+    for (const c of byDestaque.get(n)!) {
+      const isExtra = !primary || urlKey(c.source_url!) !== urlKey(primary);
+      const label = `${hostOf(c.source_url!)}${isExtra ? " (adicional)" : ""}`;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+      if (isExtra) extraClaims.push(c);
+    }
+    countLines.push(
+      `    D${n}: ${[...counts.entries()].map(([label, k]) => `${label} ${k}`).join(", ")}`,
+    );
+  }
+  const out = ["  Fonte dos claims sustentados (#11531):", ...countLines];
+  if (extraClaims.length > 0) {
+    out.push("    Sustentados por fonte ADICIONAL (não pelo link do título):");
+    for (const c of extraClaims) {
+      out.push(`      ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}" ← ${c.source_url}`);
+    }
+  }
+  return out;
+}
+
+export function formatGateSummary(
+  result: FactCheckResult,
+  opts: { primaryUrls?: Array<string | undefined> } = {},
+): string {
   const { claims, summary } = result;
   const lines: string[] = [];
 
@@ -265,6 +329,7 @@ export function formatGateSummary(result: FactCheckResult): string {
       `${summary.divergent > 0 ? `❌ ${summary.divergent} divergentes` : `✅ 0 divergentes`} | ` +
       `${summary.not_found_in_source > 0 ? `⚠️  ${summary.not_found_in_source} não encontrados na fonte` : `✅ 0 não encontrados`}`,
   );
+  lines.push(...formatSourceAttribution(claims, opts.primaryUrls));
 
   if (summary.attention_items === 0) {
     lines.push("  ✅ Todos os claims verificados sem divergências.");
@@ -896,7 +961,13 @@ async function main(): Promise<number | void> {
     const result = normalizeFactCheckResult(raw, edition);
 
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
-    console.log(formatGateSummary(result));
+    let primaryUrls: Array<string | undefined> | undefined;
+    try {
+      primaryUrls = highlightSourceUrls(JSON.parse(readFileSync(approvedPath, "utf8")) as unknown);
+    } catch {
+      primaryUrls = undefined; // sem approved legível: resumo sai sem a atribuição de fonte
+    }
+    console.log(formatGateSummary(result, { primaryUrls }));
 
     // Exit code 0 sempre neste modo, SALVO --check-blocking (#2468 finding 4 + code-review):
     // A presença de attention_items em geral NÃO é um erro — o fact-check é
@@ -924,8 +995,10 @@ async function main(): Promise<number | void> {
           if (c.note) console.error(`     → ${c.note}`);
         }
         console.error(
-          "  Ação: reescrever/remover o claim em 02-reviewed.md e/ou 03-social.md (ou localizar suporte " +
-          "adicional na fonte), depois re-rodar o fact-checker + este check antes de aprovar o gate.",
+          "  Ação: reescrever/remover o claim em 02-reviewed.md e/ou 03-social.md, ou — se o fato vem de " +
+          "outra fonte da mesma história — registrá-la com `npx tsx scripts/add-destaque-source.ts " +
+          "--edition-dir <dir> --destaque N --url <URL>` (#11531); depois re-rodar o fact-checker + este " +
+          "check antes de aprovar o gate.",
         );
         return 2;
       }
@@ -950,6 +1023,25 @@ async function main(): Promise<number | void> {
       console.log(
         s.path ? `    D${s.destaque}: ${s.path}` : `    D${s.destaque}: (indisponível) ${s.error} — ${s.url}`,
       );
+    }
+    // #11531: fontes adicionais da mesma história (cluster_sources, Aprofunde,
+    // indicadas pelo editor) — fail-soft, nunca derruba o pré-download primário.
+    try {
+      const extras = await syncExtraSources(approved, highlightSourceUrls(approved), internalDir, {
+        reviewedMd: readFileSync(newsletterPath, "utf8"),
+      });
+      if (extras.length > 0) {
+        console.log("  Fontes adicionais (#11531 — extras.json; mesmo destaque, mesma história):");
+        for (const x of extras) {
+          console.log(
+            x.status === "ok"
+              ? `    D${x.destaque} [${x.origin}]: ${join(internalDir, "fact-check-sources", `d${x.destaque}-extra-${x.k}.txt`)}`
+              : `    D${x.destaque} [${x.origin}]: (indisponível) ${x.erro} — ${x.url}`,
+          );
+        }
+      }
+    } catch (e) {
+      console.log(`  Fontes adicionais: pré-download falhou (${(e as Error).message}).`);
     }
   } catch (e) {
     console.log(`  Fontes brutas: pré-download falhou (${(e as Error).message}); usar WebFetch.`);

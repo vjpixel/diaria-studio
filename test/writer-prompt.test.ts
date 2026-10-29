@@ -25,6 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DESTAQUE_MIN_CHARS, DESTAQUE_MAX_CHARS } from "../scripts/lib/lint-checks/destaque-chars.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WRITER_MD = resolve(ROOT, ".claude/agents/writer.md");
@@ -46,6 +47,22 @@ describe("writer.md invariants (#1208)", () => {
     assert.match(wd, /\*\*D2 e D3\*\* entre \*\*900-1000 chars\*\*/);
     assert.match(wd, /D1 → 1100-1200; D2\/D3 → 900-1000/);
     assert.ok(!/D1\/D2\/D3 → todos 900-1000/.test(wd), "validação pré-write não pode manter a janela única");
+  });
+
+  it("writer-destaque.md: alvo recomendado de corpo + why cabe na janela do lint (#11520)", () => {
+    // O alvo "mire corpo entre ~X-Y no D1 / ~X-Y no D2/D3, com why ~A-B"
+    // somado nas pontas tem que cair dentro de DESTAQUE_MIN/MAX_CHARS —
+    // antes do #11520, 840 + 220 = 1060 ficava abaixo do piso de 1100.
+    const wd = readFileSync(WRITER_DESTAQUE_MD, "utf8");
+    const m = wd.match(
+      /mire corpo entre \*\*~(\d+)-(\d+) chars no D1\*\* e \*\*~(\d+)-(\d+) chars no D2\/D3\*\*, com "Por que isso importa" perto do meio da janela \(~(\d+)-(\d+) chars\)/,
+    );
+    assert.ok(m, "alvo recomendado de corpo/why não encontrado no writer-destaque.md");
+    const [d1Lo, d1Hi, d23Lo, d23Hi, whyLo, whyHi] = m.slice(1).map(Number);
+    assert.ok(d1Lo + whyLo >= DESTAQUE_MIN_CHARS[1], `D1: ${d1Lo}+${whyLo} < ${DESTAQUE_MIN_CHARS[1]}`);
+    assert.ok(d1Hi + whyHi <= DESTAQUE_MAX_CHARS[1], `D1: ${d1Hi}+${whyHi} > ${DESTAQUE_MAX_CHARS[1]}`);
+    assert.ok(d23Lo + whyLo >= DESTAQUE_MIN_CHARS[2], `D2/D3: ${d23Lo}+${whyLo} < ${DESTAQUE_MIN_CHARS[2]}`);
+    assert.ok(d23Hi + whyHi <= DESTAQUE_MAX_CHARS[2], `D2/D3: ${d23Hi}+${whyHi} > ${DESTAQUE_MAX_CHARS[2]}`);
   });
 
   it("contém anti-pattern reference pra D2/D3 anêmicos (#1208)", () => {

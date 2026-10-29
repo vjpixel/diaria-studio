@@ -23,6 +23,7 @@
 import {
   BLOCK_KEYS,
   alignTokens,
+  clipSecondsOfBlock,
   clockTime,
   decideTakes,
   defaultSequences,
@@ -39,6 +40,7 @@ import {
   type SequenceTarget,
   type VocabRule,
 } from "./video-montage.ts";
+import { voiceHint, type VoiceMark } from "./video-voice.ts";
 
 // ── Rótulos ───────────────────────────────────────────────────────────────
 
@@ -166,10 +168,21 @@ export function parseDecupagemPlan(raw: unknown, segmentCount: number): { ok: tr
 }
 
 /** Lista numerada dos segmentos (1-based), com a decisão por critério de cada tomada (#11364): o insumo da classificação. */
-export function segmentListing(segments: Segment[]): string {
+export function segmentListing(segments: Segment[], voices?: Array<VoiceMark | null>): string {
+  return segmentLines(segments, voices).join("\n") + "\n";
+}
+
+/**
+ * Uma linha por segmento: tempo, fala, a decisão da tomada (#11364) e, numa
+ * gravação com duas vozes (#11507), a voz provável pela F0 ("voz: entrevistadora,
+ * 214 Hz: cortar (fala da entrevistadora)", "voz: ouvir" na faixa ambígua).
+ */
+function segmentLines(segments: Segment[], voices?: Array<VoiceMark | null>): string[] {
   const hint = takeHints(segments);
-  const lines = segments.map((s, i) => `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${hint[i] ? `  (${hint[i]})` : ""}`);
-  return lines.join("\n") + "\n";
+  return segments.map((s, i) => {
+    const notes = [hint[i], voiceHint(voices?.[i] ?? null)].filter(Boolean);
+    return `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${notes.length ? `  (${notes.join("; ")})` : ""}`;
+  });
 }
 
 /**
@@ -271,13 +284,12 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
 }
 
 /** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */
-export function decupagemPlanTemplate(edition: string, segments: Segment[]): Record<string, unknown> {
-  const hint = takeHints(segments);
+export function decupagemPlanTemplate(edition: string, segments: Segment[], voices?: Array<VoiceMark | null>): Record<string, unknown> {
   return {
     _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou.",
     _criterio:
       "Uma tomada por frase, decidida nesta ordem: (1) a aprovada pela direção; (2) a que emenda com a frase seguinte do roteiro; (3) a última completa. As outras 'cortar' com o motivo. 'alternativa' só quando nenhum critério decide, depois de retranscrever o trecho (retranscribe --from --to), com a justificativa.",
-    _segmentos: segments.map((s, i) => `${i + 1}. [${span(s.start, s.end)}] ${s.text.trim()}${hint[i] ? `  (${hint[i]})` : ""}`),
+    _segmentos: segmentLines(segments, voices),
     edition,
     blocks: BLOCK_KEYS.map((key) => ({ key, rows: [] })),
     vocabulary: [],
@@ -523,7 +535,8 @@ export function roteiroMarkdown(
         lines.push(`| ${label} | (nenhum item nesta versão: targets/skip) |  |`);
         continue;
       }
-      const secs = p.clips.filter((c) => c.block === key).reduce((acc, c) => acc + (c.frameOut - c.frameIn) / fps, 0);
+      // Clipe fundido de blocos diferentes (#11503) conta só o pedaço deste bloco.
+      const secs = p.clips.reduce((acc, c) => acc + clipSecondsOfBlock(c, key, fps), 0);
       const alts = opts.alternatives?.[key] ?? [];
       items.forEach((it, i) => {
         const head = i === 0 ? `${label}${alts.length ? ", opção A" : ""} (${secs.toFixed(1)} s)` : "";

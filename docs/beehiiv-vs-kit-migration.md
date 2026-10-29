@@ -92,7 +92,7 @@ Sequência original decidida em 2026-05-08 (Pixel): "A migração da diar.ia.br 
 | `scripts/refresh-dedup.ts` | Lista posts publicados pra dedup | `GET /publications/{pubId}/posts` + `GET /posts/{postId}` |
 | `scripts/fetch-monthly-posts.ts` | Lista posts do mês pro digest mensal | mesmo |
 | `scripts/refresh-past-editions.ts` | Lê HTML de cada post pra extrair links | `GET /posts/{postId}?expand=free_email_content` |
-| `scripts/fetch-beehiiv-poll-stats.ts` | Lê respostas do poll É IA? | `GET /publications/{pubId}/posts/{postId}/polls/{pollId}/responses` |
+| `scripts/fetch-beehiiv-poll-stats.ts` (removido, #11225) | Lê respostas do poll É IA? | `GET /publications/{pubId}/posts/{postId}/polls/{pollId}/responses` |
 | `scripts/collect-edition-signals.ts` | Stats de post (open rate, CTR) | `GET /posts/{postId}/stats` |
 
 Chrome automation (sem API): `publish-newsletter` (navega composer, cola HTML, upload de imagens, test email — hoje via fluxo Worker-hosted, ver `context/publishers/beehiiv-playbook.md`), `upload-images-public.ts` (Cloudflare KV como CDN desde #2147; o ramo Drive saiu no #11414). Audience/forms: `scripts/update-audience.ts` via `mcp__claude_ai_Beehiiv__list_survey_responses`.
@@ -191,10 +191,22 @@ qualquer um deles é decisão à parte):
 | `beehiiv-clicks-enricher` (agent) | manter | cliques por link das edições antigas (CTR histórico); fail-soft no Stage 0 |
 | `backup-beehiiv.ts` + `beehiiv-backup-staleness-alarm.ts` | manter | backup do arquivo; o alarme é leitura local, não depende de post novo |
 | `diaria-subscribers-ingest-beehiiv.ts` | manter | lê o backup local, sem rede |
-| `fetch-beehiiv-poll-stats.ts` | aposentar quando quiser | o "É IA?" é infra própria (`workers/poll`); só serve a edições antigas |
+| `fetch-beehiiv-poll-stats.ts` | **aposentado** (removido, #11225) | o "É IA?" é infra própria (`workers/poll`, `fetch-poll-stats.ts`); só servia a edições antigas |
 | `sync-beehiiv-subscribers-kit.ts` | aposentar | só fazia sentido com cadastro entrando na Beehiiv (0 ativos desde #7386) |
-| `reconcile-beehiiv-kit.ts` | aposentar | guard de pré-switchover (#6269), já cumprido |
+| `reconcile-beehiiv-kit.ts` | **aposentado** (removido, #11225) | guard de pré-switchover (#6269), já cumprido; `fetchActiveBeehiivEmails` foi para `scripts/lib/beehiiv-active-subscriptions.ts` (3 consumidores vivos) |
 | `sync-apoio-nivel-beehiiv.ts`, `sync-apoio-segments-beehiiv.ts` | migrar/aposentar | o par Kit (`sync-apoio-nivel-kit.ts`, tag) já é o caminho da audiência de apoio |
+
+Decisão do editor de 28/10/2026 (itens 4 e 6): ficam o backup e os drains
+de histórico; saem os scripts que só serviam ao envio. A 2ª fatia (#11225)
+removeu `reconcile-beehiiv-kit.ts` e `fetch-beehiiv-poll-stats.ts`. Ainda
+saem, com pré-requisito: `sync-beehiiv-subscribers-kit.ts` (a auto-confirmação
+do Passo 1 de `evaluate-brevo-diaria.ts` ainda depende dele, travado por
+`test/sync-beehiiv-subscribers-kit-load-bearing-6339.test.ts`; antes de remover,
+essa auto-confirmação tem de escrever direto no Kit e a unit
+`Diaria-Kit-Subscriber-Sync` tem de ser desarmada no `300`), os
+`sync-apoio-*-beehiiv.ts` (o `apoios-diff-alarm.ts`, o painel Apoios do Studio
+e a skill `/diaria-apoios-sync` dependem deles) e o `beehiiv-clicks-enricher`
+(Stage 0h.2, `diaria-linkedin-semanal`, `diaria-retro-semanal`, `diaria-mensal`).
 
 Fora desta fatia, aguardando o editor: plano/assinatura da conta (item 6) e a
 remoção do ramo legado e dos scripts marcados como aposentar. Alarmes que

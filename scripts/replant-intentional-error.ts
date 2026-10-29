@@ -33,7 +33,13 @@
  *     com o erro saiu; o que sobrou é menção legítima de outro item) ou com
  *     `--allow-elsewhere` explícito.
  *
- * Uso: npx tsx scripts/replant-intentional-error.ts --edition-dir data/editions/AAMMDD/ [--jsonl path] [--dry-run] [--allow-elsewhere]
+ * Escolha do editor (#11553): `--entity <marca>` (ex. `Gemini`, ou a grafia
+ * errada `Gemine`) e/ou `--section <SEÇÃO>` (ex. `RADAR`) restringem os
+ * candidatos ao item/grafia escolhido em vez do 1º da ordem de preferência.
+ * O filtro de repetição dos últimos 30 dias continua valendo: entidade vetada
+ * pelo histórico não vira candidato, e o motivo sai em `no_candidate`.
+ *
+ * Uso: npx tsx scripts/replant-intentional-error.ts --edition-dir data/editions/AAMMDD/ [--entity Marca] [--section SEÇÃO] [--jsonl path] [--dry-run] [--allow-elsewhere]
  * Stdout: JSON `{ action: "replanted"|"no_candidate"|"invalid"|"old_error_still_present"|"old_error_maybe_moved"|"md_changed"|..., ... }`.
  * Exit: 0 = replantado (ou dry-run ok); 1 = sem candidato / validação falhou / recusa; 2 = uso inválido.
  */
@@ -41,7 +47,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { listIntentionalErrorCandidates } from "./lib/propose-intentional-error-candidate.ts";
 import {
   frontmatterToEntry,
@@ -197,6 +203,33 @@ export function findOldErrorStillPresent(
   return { present: false, scope: key, elsewhere };
 }
 
+/** Normaliza pra comparar nome de marca/seção: caixa, acento e espaços. */
+function norm(s: string): string {
+  return s.normalize("NFD").replace(/\p{M}/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * (#11553) O candidato bate com a escolha do editor? `entity` casa com o
+ * `correct_value` ou o `wrong_value` (a marca certa ou a grafia errada);
+ * `section` casa com o prefixo de `location` ("RADAR (menção a …)").
+ * Filtro ausente = aceita.
+ */
+export function candidateMatchesChoice(
+  c: Pick<IntentionalErrorJson, "correct_value" | "wrong_value" | "location">,
+  choice: { entity?: string; section?: string },
+): boolean {
+  if (choice.entity) {
+    const want = norm(choice.entity);
+    if (norm(c.correct_value ?? "") !== want && norm(c.wrong_value ?? "") !== want) return false;
+  }
+  if (choice.section) {
+    const loc = norm(c.location ?? "");
+    const want = norm(choice.section);
+    if (loc !== want && !loc.startsWith(`${want} (`)) return false;
+  }
+  return true;
+}
+
 function jsonRecordBody(record: IntentionalErrorJson): string {
   // Mesmo formato de `writeIntentionalErrorJson`.
   return JSON.stringify(record, null, 2) + "\n";
@@ -234,8 +267,11 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   const dryRun = values["dry-run"] === "true" || argv.includes("--dry-run");
   const allowElsewhere = values["allow-elsewhere"] === "true" || argv.includes("--allow-elsewhere");
   const editionDirArg = values["edition-dir"]?.replace(/[\\/]+$/, "");
-  if (!editionDirArg) {
-    console.error("Uso: npx tsx scripts/replant-intentional-error.ts --edition-dir data/editions/AAMMDD/ [--dry-run] [--allow-elsewhere]");
+  const choice = { entity: values["entity"]?.trim() || undefined, section: values["section"]?.trim() || undefined };
+  if (!editionDirArg || editionDirArg === "true" || ["entity", "section", "jsonl"].some((k) => values[k] === "true")) {
+    console.error(
+      "Uso: npx tsx scripts/replant-intentional-error.ts --edition-dir data/editions/AAMMDD/ [--entity Marca] [--section SEÇÃO] [--dry-run] [--allow-elsewhere]",
+    );
     return 2;
   }
   const editionDir = resolve(editionDirArg);
@@ -349,7 +385,9 @@ export function main(argv: string[] = process.argv.slice(2)): number {
 
   const tried: string[] = [];
   const invalid: string[] = [];
+  const filtered = !!(choice.entity || choice.section);
   for (const c of listIntentionalErrorCandidates(md, { history, edition })) {
+    if (filtered && !candidateMatchesChoice(c, choice)) continue;
     tried.push(c.location);
     const planted = plantIntentionalError(md, c);
     if (!planted) continue;
@@ -390,6 +428,23 @@ export function main(argv: string[] = process.argv.slice(2)): number {
   }
   if (invalid.length > 0) {
     console.log(JSON.stringify({ action: "invalid", violations: invalid, tried }));
+    return 1;
+  }
+  if (filtered) {
+    // (#11553) Sem candidato com a escolha do editor: a marca não aparece numa seção
+    // secundária, não está no catálogo #5742, ou o histórico a veta (últimos 30 dias /
+    // grafia já usada). Nada gravado — nunca cai pra outro candidato sem a escolha.
+    const available = [...listIntentionalErrorCandidates(md, { history, edition })].map((c) => c.location);
+    const unfiltered = [...listIntentionalErrorCandidates(md, { edition })].filter((c) => candidateMatchesChoice(c, choice));
+    const reason = unfiltered.length > 0 ? "vetado_pelo_historico" : "fora_do_catalogo_ou_sem_mencao";
+    console.log(JSON.stringify({ action: "no_candidate", choice, reason, tried, available }));
+    console.error(
+      `replant-intentional-error: nenhum candidato com ${JSON.stringify(choice)} — ` +
+        (reason === "vetado_pelo_historico"
+          ? "a escolha repete erro dos últimos 30 dias (ou grafia já usada) no data/intentional-errors.jsonl. "
+          : "a marca não aparece numa seção secundária do texto atual ou não está no catálogo #5742. ") +
+        `Disponíveis: ${available.join("; ") || "nenhum"}. Nada gravado.`,
+    );
     return 1;
   }
   console.log(JSON.stringify({ action: "no_candidate", tried }));

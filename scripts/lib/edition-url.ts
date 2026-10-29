@@ -59,10 +59,11 @@ export function deriveEditionUrl(title: string): string {
 
 /**
  * Placeholders {snake_case} que são DEFERRED — resolvidos apenas no momento
- * do dispatch (publish-linkedin.ts), portanto SEMPRE presentes em 03-social.md
+ * do dispatch (publish-linkedin.ts / use-melhor-dispatch.ts), presentes em 03-social.md
  * neste ponto do pipeline. Nunca rejeitados pelo guard.
  */
-const DEFERRED_PLACEHOLDERS = new Set<string>(["{outros_count}"]);
+// #11563: {quebra} vira linha em branco em finalizeUseMelhorPostText (#9866).
+const DEFERRED_PLACEHOLDERS = new Set<string>(["{outros_count}", "{quebra}"]);
 
 /**
  * Padrão genérico de placeholder — qualquer token `{algum_nome}` (letras/

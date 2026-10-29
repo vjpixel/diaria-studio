@@ -21,8 +21,12 @@ dessas regras — você trabalha no worktree DO DESIGN que o coordenador criou
 (nunca num worktree do studio), abre a PR com `gh pr create -R
 vjpixel/diaria-design --base main` e `Closes #N` com o número LOCAL do design,
 e confere o corpo com `gh-pr-safe-edit.ts --pr P --repo vjpixel/diaria-design
---verify-body --issues N`. Se o worktree recebido for do studio para uma issue
-do design, pare e reporte ao coordenador em vez de implementar.
+--verify-body --issues N --worktree {worktree do design}` (rodado do checkout do
+studio, onde o helper mora; o `--worktree` faz a conferência do commit da PR,
+#11566, olhar o checkout certo — sem ele a PR do design fica sem a proteção
+contra branch sobrada de PR mergeada, #11587). Se o worktree recebido for do
+studio para uma issue do design, pare e reporte ao coordenador em vez de
+implementar.
 
 ## Por que este agent existe (#9081, #9530)
 

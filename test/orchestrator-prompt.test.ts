@@ -154,7 +154,9 @@ describe("orchestrator-prompt (#634)", () => {
       // limpo) logo após a resolução de `{EDITION_DIR}`, substituindo o
       // consumo por variável de sessão em §3b. Arquivo foi a 576 linhas.
       // Teto bumped de 575→580 com headroom pequeno.
-      "orchestrator-stage-2.md": 580,
+      // #11534: +2 linhas (`--record-run` do humanizador e da Clarice antes do
+      // `--write` do selo social). Arquivo foi a 581 linhas. Teto 580→585.
+      "orchestrator-stage-2.md": 585,
       // #4258 item 3: +9 linhas (novo §3a-bis — passo de humanizador+Clarice
       // sobre a frase de descrição do É IA?, único texto da edição que não
       // passava por esse fluxo). Teto bumped de 135→150 com headroom (era
@@ -293,7 +295,10 @@ describe("orchestrator-prompt (#634)", () => {
       // 3b cria o doc, §4d puxa edições/acusa conflito antes de cada
       // apresentação e mantém o doc atualizado, branch `sim` faz o último
       // apply, §4e confere com `check`). Arquivo foi a 981 linhas. Teto 960→990.
-      "orchestrator-stage-4.md": 990,
+      // #11534: +3 linhas (prova de humanizador + Clarice via `--record-run`
+      // em §4d.1 passo 6 e bloco `--provenance` no resumo do gate). Arquivo
+      // foi a 992 linhas. Teto 990→1000.
+      "orchestrator-stage-4.md": 1000,
       // #464 (PR #6096): +53 linhas (wiring do dispatch por backend —
       // `publishing.newsletter.backend`, #461: passo 5c-1-kit inteiro
       // [Newsletter Kit via `publish-newsletter-kit.ts`, sem browser

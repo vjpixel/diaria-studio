@@ -1,4 +1,10 @@
 export const DIARIA_STUDIO_REPO: string;
+/** Allowlist de repos de fora: um `Set` de slugs, ou `ANY_NON_STUDIO_REPO` (#11482). */
+export interface RepoAllowlist {
+  has(slug: string): boolean;
+}
+/** #11482 — aceita qualquer repo que não seja o diaria-studio (hooks de `gh pr create`). */
+export const ANY_NON_STUDIO_REPO: RepoAllowlist;
 export function normalizeRepoSlug(input: unknown): string | null;
 export function repoFromRemoteUrl(url: unknown): string | null;
 export function mergeLockFileName(repo?: string | null): string;
@@ -30,7 +36,7 @@ type ExecFn = (cmd: string, args: string[], opts: object) => string | Buffer;
 interface ResolveOpts {
   execFn?: ExecFn;
   subcommands?: string[];
-  allowed?: Set<string>;
+  allowed?: RepoAllowlist;
   cdStrict?: boolean;
   cwdAlreadyResolved?: boolean;
 }
@@ -65,7 +71,7 @@ export function resolveMergeTargets(
   cwd: unknown,
   opts?: {
     execFn?: ExecFn;
-    allowed?: Set<string>;
+    allowed?: RepoAllowlist;
     env?: Record<string, string | undefined>;
     aliases?: ReadonlyMap<string, string | null>;
   },
@@ -77,8 +83,8 @@ export function toNativePath<T>(path: T, platform?: string): T;
 
 /** Motivos de o comando não estar na forma simples (vazio = simples). */
 export function commandComplexity(command: unknown): string[];
-export function reposMentioned(command: unknown, allowed?: Set<string>): Set<string>;
+export function reposMentioned(command: unknown, allowed?: RepoAllowlist): Set<string>;
 /** `true` quando a resolução caiu no modo complexo (fail-closed). */
 export function isComplexTarget(targets: GhTarget[]): boolean;
-export function isForeignRepo(repo: string | null | undefined, allowed?: Set<string>): boolean;
+export function isForeignRepo(repo: string | null | undefined, allowed?: RepoAllowlist): boolean;
 export function isForeignRepoGhCommand(command: unknown, cwd: unknown, opts?: ResolveOpts): boolean;

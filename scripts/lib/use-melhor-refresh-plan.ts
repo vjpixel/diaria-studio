@@ -102,7 +102,7 @@ export function buildUseMelhorRefreshPlan(
         (srcPath ? ` e source_text_paths={"${USE_MELHOR_POST_ID}":"${srcPath}"}` : " (sem source_text_path: fetch da fonte falhou, omitir a chave)") +
         `; o prompt manda ler context/editorial-rules.md ANTES de escrever.`,
       `${n++}. Integrar cirurgicamente (#495) o '## ${USE_MELHOR_POST_ID}' novo em '# Social' e '# Curto' de ${dir}/03-social.md.`,
-      `${n++}. Re-humanizar SCOPED (changed_sections=main_${USE_MELHOR_POST_ID}) e regravar o selo (check-humanizer-social.ts --write).`,
+      `${n++}. Re-humanizar SCOPED (changed_sections=main_${USE_MELHOR_POST_ID}) com Clarice, registrar os dois passos (check-humanizer-social.ts --record-run, #11534) e regravar o selo (check-humanizer-social.ts --write).`,
     );
   }
   if (plan.regenerate_carousel) {

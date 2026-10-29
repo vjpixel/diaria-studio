@@ -21,7 +21,7 @@
  *     da seguinte (os dois bugs da 261027: tomada falsa duplicada e sílaba da
  *     tomada seguinte vazando no corte);
  *   - plano das sequências (`buildSequencePlan`) e o XML FCP7 xmeml v4
- *     (`buildXmeml`), 3 sequências com áudio linkado e zoom alternado;
+ *     (`buildXmeml`), 3 sequências com áudio linkado e zoom alternando só nos cortes (#11503);
  *   - enquadramento (`framingFor`): crop da prévia e Center do Basic Motion a
  *     partir do centro do rosto, olhos a ~40% da altura;
  *   - legendas (`segmentCues`, `cuesToSrt`, vocabulário, pontuação do roteiro);
@@ -358,7 +358,7 @@ export const TAKE_DEFAULTS = {
   postRollS: 0.25,
   /** Distância mínima até a palavra vizinha (fora da tomada). */
   guardS: 0.05,
-  /** Pausa maior que isso entre duas palavras encerra a tomada. */
+  /** Pausa maior que isso entre duas palavras encerra a tomada, salvo se a palavra seguinte é a esperada do roteiro (#11505). */
   maxGapS: 2.5,
   /** Fração mínima das palavras da frase que a tomada precisa casar. */
   minRatio: 0.8,
@@ -403,7 +403,8 @@ export interface TakeMatchOptions {
  *     2 ou 3 tokens concatenados, #11360);
  *   - a última palavra da frase omitida (completa com todas menos a última,
  *     se ainda casar `minRatio` das palavras).
- * Encerra numa pausa maior que `maxGapS`, numa palavra que não casa, ou
+ * Encerra numa pausa maior que `maxGapS` seguida de palavra que não é a
+ * esperada (#11505: pausa longa no meio da frase não quebra), numa palavra que não casa, ou
  * quando a frase RECOMEÇA: a palavra atual casa com a 1ª da frase (e não com a
  * esperada) E a seguinte casa com a 2ª — a tomada falsa, "Uma atualização de…
  * Uma atualização de privacidade". Um "o"/"a" repetido no meio da frase, sem a
@@ -443,7 +444,12 @@ export function findTakes(words: Word[], phrase: string, opts: TakeMatchOptions 
     // Frase curta: uma tolerância só, somando as três (#11362).
     const canTolerate = () => !short || swaps + skips + inserts === 0;
     while (p < P.length && k < W.length) {
-      if (k > i && words[k].start - words[k - 1].end > maxGap) break;
+      // Pausa longa só encerra a tomada quando a palavra depois dela NÃO segue o
+      // roteiro (#11505): fala pausada ("por exemplo, [4 s] a Anthropic", 261029)
+      // continua a mesma tomada se a palavra seguinte é a esperada, exata ou
+      // colada. Do outro lado da pausa nenhuma tolerância vale (palavra engolida,
+      // a mais ou trocada): aí a pausa encerra, como antes.
+      if (k > i && words[k].start - words[k - 1].end > maxGap && !(eq(W[k], P[p]) || glued(k, P[p]) > 0)) break;
       if (k > i && restarts(k, p)) break;
       const g = eq(W[k], P[p]) ? 0 : glued(k, P[p]);
       if (eq(W[k], P[p])) {
@@ -829,7 +835,7 @@ export interface SequenceSpec {
   height: number;
   /** Blocos, na ordem. */
   order: BlockKey[];
-  /** Escala (%) alternada entre os clipes: [base, punch-in]. */
+  /** Escala (%) alternada nos cortes (clipes contíguos fundidos antes, #11503): [base, punch-in]. */
   scales: [number, number];
 }
 
@@ -843,7 +849,17 @@ export interface SourceInfo {
   height: number;
   /** Bruto espelhado (a caneca aparece invertida). O `transcribe` grava true (premissa #11208); `blocks.json` sobrepõe. */
   mirrored: boolean;
+  /**
+   * Bruto só de áudio (#11552, edição 261029): sem stream de vídeo, `width` e
+   * `height` saem 0 e `fps` é o nominal `AUDIO_ONLY_FPS` (só a grade dos
+   * tempos do roteiro). Transcrição, decupagem e roteiro rodam; build, srt,
+   * prévia, review e frame param antes, dizendo o motivo. Ausente = vídeo.
+   */
+  audioOnly?: true;
 }
+
+/** fps nominal do modo áudio (#11552): o roteiro conta tempo em frames; 30 é o dos brutos de vídeo. */
+export const AUDIO_ONLY_FPS = 30;
 
 /** Centro do rosto, em fração do quadro JÁ desespelhado: x do centro, y da linha dos olhos. */
 export interface Framing {
@@ -876,6 +892,8 @@ export interface BlocksFile {
   framing?: Framing;
   blocks: Partial<Record<BlockKey, BlockItem[]>>;
   sequences?: SequenceSpec[];
+  /** Formato da gravação (#11507); decide as sequências default quando `sequences` falta. Ausente = inferido dos blocos (`effectiveFormat`). */
+  format?: VideoFormat;
   /** Regras extras desta edição, somadas às de `context/video-montagem/vocabulario.json`. */
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
@@ -922,6 +940,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
   if (!isObj(raw)) return { ok: false, errors: ["blocks.json precisa ser um objeto"] };
   if (typeof raw.edition !== "string" || !/^\d{6}$/.test(raw.edition)) errors.push("edition precisa ser AAMMDD");
   if (raw.mirrored !== undefined && typeof raw.mirrored !== "boolean") errors.push("mirrored precisa ser true/false");
+  if (raw.format !== undefined && !VIDEO_FORMATS.includes(raw.format as VideoFormat)) errors.push(`format precisa ser ${VIDEO_FORMATS.join(" ou ")}`);
   if (raw.source !== undefined && !isObj(raw.source)) errors.push("source (legado) precisa ser objeto");
   if (raw.framing !== undefined) {
     const fr = raw.framing;
@@ -1013,6 +1032,30 @@ export function effectiveFraming(file: Pick<BlocksFile, "framing">): { framing: 
 }
 
 /**
+ * Formato da gravação (#11507). `monologo` (o de sempre): o Pixel grava título,
+ * resumo e comentário. `entrevista` (261029): a entrevistadora pergunta, o
+ * Pixel responde, sem título nem resumo gravados; as sequências default
+ * pulam esses blocos.
+ */
+export type VideoFormat = "monologo" | "entrevista";
+export const VIDEO_FORMATS: readonly VideoFormat[] = ["monologo", "entrevista"];
+
+/** Blocos que só o monólogo grava: sem nenhum deles (e com comentário), o formato é entrevista. */
+export const MONOLOGUE_ONLY_BLOCKS: readonly BlockKey[] = ["titulo", "resumo", "resumo_curto"];
+
+/**
+ * O formato da edição: o `format` do `blocks.json` vence; sem ele, `entrevista`
+ * quando nenhum bloco de `MONOLOGUE_ONLY_BLOCKS` tem item e o comentário tem
+ * (`inferred: true`, para o `[premissa]`).
+ */
+export function effectiveFormat(file: { format?: VideoFormat; blocks: Partial<Record<BlockKey, unknown[]>> }): { format: VideoFormat; inferred: boolean } {
+  if (file.format) return { format: file.format, inferred: false };
+  const has = (k: BlockKey) => (file.blocks[k]?.length ?? 0) > 0;
+  const entrevista = has("comentario") && MONOLOGUE_ONLY_BLOCKS.every((k) => !has(k));
+  return { format: entrevista ? "entrevista" : "monologo", inferred: entrevista };
+}
+
+/**
  * As 3 versões (#11208). Nomes no padrão dos finais da pasta `Final/`
  * (`Diaria comentada_Youtube_V3.mp4`, #11222): o Premiere sugere o nome da
  * sequência no export, e `videoTargetOf` lê o destino dele. Escalas: 50/62 no
@@ -1020,7 +1063,15 @@ export function effectiveFraming(file: Pick<BlocksFile, "framing">): { framing: 
  * prévia aprovada da 261027; o XML dela saiu com 89/105, "enquadramento
  * pequeno" na autorrevisão).
  */
-export function defaultSequences(version = "V1"): SequenceSpec[] {
+export function defaultSequences(version = "V1", format: VideoFormat = "monologo"): SequenceSpec[] {
+  if (format === "entrevista") {
+    // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
+    return [
+      { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [50, 62] },
+      { target: "instagram", name: `Diaria comentada_Instagram_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_ig", "fecho"], scales: [115, 130] },
+      { target: "outras-redes", name: `Diaria comentada_Outras redes_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_out", "fecho"], scales: [115, 130] },
+    ];
+  }
   return [
     {
       target: "youtube",
@@ -1160,6 +1211,109 @@ export interface PlannedClip {
   seqStart: number;
   seqEnd: number;
   scale: number;
+  /** Texto do roteiro que o clipe cobre (o do item, ou dos itens fundidos): a referência do refino das bordas (#11500). */
+  script?: string;
+  /** Clipe fundido de trechos de blocos DIFERENTES: o pedaço de cada bloco (a duração por bloco do roteiro sai daqui). */
+  parts?: Array<{ block: BlockKey; srcIn: number; srcOut: number }>;
+}
+
+/** Trecho do bruto antes de virar clipe (sem frames, sem posição na sequência, sem escala). */
+export interface RawClip {
+  block: BlockKey;
+  srcIn: number;
+  srcOut: number;
+  script?: string;
+  parts?: PlannedClip["parts"];
+}
+
+/** Segundos do clipe que são do bloco `key` (clipe fundido de blocos diferentes conta só o pedaço do bloco). */
+export function clipSecondsOfBlock(c: Pick<PlannedClip, "block" | "frameIn" | "frameOut" | "parts">, key: BlockKey, fps: number): number {
+  const a = c.frameIn / fps;
+  const b = c.frameOut / fps;
+  if (!c.parts?.length) return c.block === key ? b - a : 0;
+  // Bordas do clipe fora dos pedaços (refino, respiro do fecho) contam para o pedaço vizinho.
+  return c.parts.reduce((acc, p, i, all) => {
+    if (p.block !== key) return acc;
+    const lo = i === 0 ? a : Math.max(a, p.srcIn);
+    const hi = i === all.length - 1 ? b : Math.min(b, all[i + 1].srcIn);
+    return acc + Math.max(0, hi - lo);
+  }, 0);
+}
+
+/** Ajuste de um corte, no tempo do bruto (#11500): vai para o `plan.json` e para o relato do `build`. */
+export interface CutAdjustment {
+  block: BlockKey;
+  /** `in` = entrada do clipe, `out` = saída; `emenda` = dois clipes contíguos (ou sobrepostos) viraram um. */
+  edge: "in" | "out" | "emenda";
+  from: number;
+  to: number;
+  reason: string;
+}
+
+/**
+ * Clipes da sequência a partir dos trechos do bruto, na ordem (#11503, #11500):
+ *   1. trecho que começa colado no anterior (menos de 1 frame depois do fim
+ *      dele) ou por cima dele (sobreposição: o áudio sairia repetido) se funde
+ *      com o anterior num clipe só, que vai do começo do 1º ao fim mais tardio.
+ *      Fala contínua no bruto nunca vira dois clipes;
+ *   2. a escala alterna base/punch-in a cada clipe JÁ fundido.
+ * Resultado, as duas regras do zoom (decisão do editor, 28/10/2026): todo corte
+ * muda o zoom, e nenhuma mudança de zoom acontece sem corte. Trecho que volta
+ * no bruto (começa antes do começo do anterior) é corte de verdade, não funde.
+ * Clipe fundido de dois blocos leva o nome do 1º e guarda o pedaço de cada um
+ * em `parts` (`clipSecondsOfBlock`).
+ */
+export function assembleClips(
+  spec: Pick<SequenceSpec, "scales">,
+  raws: RawClip[],
+  fps: number,
+): { clips: PlannedClip[]; durationFrames: number; merges: CutAdjustment[] } {
+  const merged: RawClip[] = [];
+  const merges: CutAdjustment[] = [];
+  const frame = 1 / fps;
+  for (const r of raws) {
+    if (!(r.srcOut > r.srcIn)) continue;
+    const prev = merged[merged.length - 1];
+    if (prev && r.srcIn >= prev.srcIn - 1e-9 && r.srcIn - prev.srcOut < frame - 1e-9) {
+      merges.push({
+        block: r.block,
+        edge: "emenda",
+        from: prev.srcOut,
+        to: r.srcIn,
+        reason: r.srcIn < prev.srcOut ? `sobreposição de ${Math.round((prev.srcOut - r.srcIn) * 1000)} ms fundida (áudio repetido)` : "contíguos no bruto: um clipe só, sem troca de zoom",
+      });
+      if (prev.parts || r.parts || r.block !== prev.block) {
+        const own = (x: RawClip) => x.parts ?? [{ block: x.block, srcIn: x.srcIn, srcOut: x.srcOut }];
+        prev.parts = [...own(prev), ...own(r)];
+      }
+      prev.srcOut = Math.max(prev.srcOut, r.srcOut);
+      if (r.script) prev.script = prev.script ? `${prev.script} ${r.script}` : r.script;
+      continue;
+    }
+    merged.push({ ...r });
+  }
+  const clips: PlannedClip[] = [];
+  let t = 0;
+  for (const r of merged) {
+    const frameIn = Math.round(r.srcIn * fps);
+    const frameOut = Math.round(r.srcOut * fps);
+    if (frameOut <= frameIn) continue;
+    const scale = spec.scales[clips.length % 2];
+    clips.push({
+      block: r.block,
+      srcIn: round3(r.srcIn),
+      srcOut: round3(r.srcOut),
+      frameIn,
+      frameOut,
+      seqStart: t,
+      seqEnd: t + (frameOut - frameIn),
+      scale,
+      ...(r.script ? { script: r.script } : {}),
+      ...(r.parts ? { parts: r.parts } : {}),
+    });
+    t += frameOut - frameIn;
+  }
+  return { clips, durationFrames: t, merges };
 }
 
 export interface SequencePlan {
@@ -1175,6 +1329,8 @@ export interface SequencePlan {
   missingBlocks: BlockKey[];
   /** Itens que sumiram no corte (0 clipes) ou palavras que ficaram fora dos clipes. */
   dropped: string[];
+  /** Emendas de clipes contíguos e, depois do refino por áudio, os ajustes de corte (#11500, #11503). */
+  cutAdjustments?: CutAdjustment[];
 }
 
 /**
@@ -1202,7 +1358,9 @@ export function wordCoveredBySilence(w: Interval, parts: Interval[], silences: I
 
 /**
  * Clipes de uma sequência: cada item do bloco vira os trechos de fala dele
- * (`speechParts`), a escala alterna base/punch-in clipe a clipe. No bloco de
+ * (`speechParts`); trechos contíguos no bruto (itens do roteiro escritos frase a
+ * frase sobre uma fala contínua) se fundem e a escala alterna base/punch-in a
+ * cada clipe fundido, ou seja, exatamente nos cortes (`assembleClips`, #11503). No bloco de
  * fecho, o último trecho termina `FECHO_HOLD_S` depois da ÚLTIMA PALAVRA, preso
  * antes da palavra seguinte do bruto (`holdLimit`), e o descarte de clipe curto
  * vem depois desse respiro. Item que some no corte, ou palavra que fica de
@@ -1220,11 +1378,10 @@ export function buildSequencePlan(
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
-  const clips: PlannedClip[] = [];
+  const raws: RawClip[] = [];
   const missingBlocks: BlockKey[] = [];
   const dropped: string[] = [];
   const scriptParts: string[] = [];
-  let t = 0;
   for (const key of spec.order) {
     const items = resolved[key];
     if (!items || items.length === 0) {
@@ -1252,17 +1409,12 @@ export function buildSequencePlan(
         (w) => !parts.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, parts, silences),
       );
       if (lost.length) dropped.push(`${key}[${idx}]: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
-      for (const p of parts) {
-        const frameIn = Math.round(p.start * fps);
-        const frameOut = Math.round(p.end * fps);
-        if (frameOut <= frameIn) continue;
-        const scale = spec.scales[clips.length % 2];
-        clips.push({ block: key, srcIn: p.start, srcOut: p.end, frameIn, frameOut, seqStart: t, seqEnd: t + (frameOut - frameIn), scale });
-        t += frameOut - frameIn;
-      }
+      for (const p of parts) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text });
     });
   }
-  return { spec, clips, durationFrames: t, script: scriptParts.join(" "), missingBlocks, dropped };
+  // Contíguos no bruto viram um clipe só antes de alternar a escala (#11503).
+  const { clips, durationFrames, merges } = assembleClips(spec, raws, fps);
+  return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges };
 }
 
 // ── Enquadramento ─────────────────────────────────────────────────────────
@@ -1411,24 +1563,125 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
 /**
  * Vocabulário sobre a lista de palavras, REGRA A REGRA: une as palavras (para
  * a regra pegar termos de 2+ palavras, "inteligência personalizada"), aplica e
- * redistribui. A regra que muda o número de palavras é pulada (com aviso), sem
- * derrubar as outras.
+ * redistribui pelas palavras que cada casamento tocou. Desde o #11506 a regra
+ * pode mudar o número de palavras: o Whisper ouve "ChatGPT" como "chat EPT", e
+ * N palavras viram 1 (do início da 1ª ao fim da última); 1 palavra que vira N
+ * (ou N→M) divide o tempo do trecho pelo tamanho de cada palavra nova. Só a
+ * regra que APAGARIA palavras (substituição vazia) é pulada, com aviso, sem
+ * derrubar as outras: sem palavra não há onde pôr o tempo.
  */
 export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target?: SequenceTarget, warn?: (msg: string) => void): Word[] {
   let cur = words.map((w) => ({ ...w, text: w.text.trim() }));
   for (const r of rules) {
     if (r.targets && (!target || !r.targets.includes(target))) continue;
-    const joined = cur.map((w) => w.text).join(" ");
-    const next = joined.replace(new RegExp(r.pattern, r.flags ?? "g"), r.replacement);
-    if (next === joined) continue;
-    const parts = next.split(" ");
-    if (parts.length !== cur.length) {
-      warn?.(`regra de vocabulário /${r.pattern}/ muda o número de palavras; pulada`);
+    const next = applyRuleToWords(cur, r);
+    if (next === null) {
+      warn?.(`regra de vocabulário /${r.pattern}/ apagaria palavras; pulada`);
       continue;
     }
-    cur = cur.map((w, i) => ({ ...w, text: parts[i] }));
+    cur = next;
   }
   return cur;
+}
+
+/** Expande `$1`, `$<nome>`, `$&`, `$$` da substituição para um casamento (a mesma sintaxe de `String.replace`). */
+function expandReplacement(tpl: string, m: RegExpExecArray): string {
+  return tpl.replace(/\$(\$|&|`|'|<([^>]*)>|(\d{1,2}))/g, (all, tok: string, name: string | undefined, num: string | undefined) => {
+    if (tok === "$") return "$";
+    if (tok === "&") return m[0];
+    if (tok === "`") return m.input.slice(0, m.index);
+    if (tok === "'") return m.input.slice(m.index + m[0].length);
+    if (name !== undefined) return m.groups?.[name] ?? "";
+    const n = Number(num);
+    if (n >= 1 && n < m.length) return m[n] ?? "";
+    // "$12" com 1 grupo só: "$1" + "2", como o String.replace.
+    if (num && num.length === 2 && Number(num[0]) >= 1 && Number(num[0]) < m.length) return (m[Number(num[0])] ?? "") + num[1];
+    return all;
+  });
+}
+
+/**
+ * Uma regra sobre as palavras (#11506). Cada casamento toca as palavras que
+ * cobre (inteiras ou em parte); casamentos que tocam a mesma palavra formam um
+ * trecho só. O texto novo do trecho é dividido por espaço: o mesmo número de
+ * palavras guarda os tempos de cada uma; 1 palavra nova fica com o trecho
+ * inteiro; outro número divide o trecho pelo tamanho. `null` = a regra apaga
+ * todas as palavras de algum trecho. Sem casamento, devolve `words` como veio.
+ */
+function applyRuleToWords(words: Word[], r: VocabRule): Word[] | null {
+  if (words.length === 0) return words;
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let pos = 0;
+  for (const w of words) {
+    starts.push(pos);
+    pos += w.text.length;
+    ends.push(pos);
+    pos += 1; // o espaço que une
+  }
+  const joined = words.map((w) => w.text).join(" ");
+  const flags = r.flags ?? "g";
+  const re = new RegExp(r.pattern, flags.includes("g") ? flags : flags + "g");
+  const matches: Array<{ start: number; end: number; repl: string }> = [];
+  for (let m = re.exec(joined); m !== null; m = re.exec(joined)) {
+    if (m[0].length === 0) {
+      re.lastIndex++;
+      continue;
+    }
+    matches.push({ start: m.index, end: m.index + m[0].length, repl: expandReplacement(r.replacement, m) });
+    if (!flags.includes("g")) break;
+  }
+  if (matches.length === 0) return words;
+  // Palavras de cada casamento: da que contém o início (ou a anterior ao espaço
+  // onde ele começa) à que contém o fim (ou a seguinte, se o casamento comeu o espaço).
+  const spans: Array<{ first: number; last: number; ms: typeof matches }> = [];
+  for (const m of matches) {
+    let first = 0;
+    while (first + 1 < words.length && starts[first + 1] <= m.start) first++;
+    let last = first;
+    while (last + 1 < words.length && starts[last + 1] < m.end) last++;
+    if (m.end > ends[last] && last + 1 < words.length) last++;
+    const prev = spans[spans.length - 1];
+    if (prev && first <= prev.last) {
+      prev.last = Math.max(prev.last, last);
+      prev.ms.push(m);
+    } else spans.push({ first, last, ms: [m] });
+  }
+  let changed = false;
+  const out: Word[] = [];
+  let i = 0;
+  for (const sp of spans) {
+    while (i < sp.first) out.push(words[i++]);
+    const a = starts[sp.first];
+    const b = ends[sp.last];
+    let text = "";
+    let p = a;
+    for (const m of sp.ms) {
+      text += joined.slice(p, m.start) + m.repl;
+      p = m.end;
+    }
+    text += joined.slice(p, b);
+    const original = joined.slice(a, b);
+    const parts = text.split(" ").filter((t) => t !== "");
+    if (parts.length === 0) return null;
+    const span = words.slice(sp.first, sp.last + 1);
+    if (text !== original) changed = true;
+    if (parts.length === span.length) span.forEach((w, k) => out.push({ ...w, text: parts[k] }));
+    else {
+      const t0 = span[0].start;
+      const t1 = span[span.length - 1].end;
+      const total = parts.reduce((n, t) => n + t.length, 0);
+      let acc = 0;
+      for (const t of parts) {
+        const s = t0 + ((t1 - t0) * acc) / total;
+        acc += t.length;
+        out.push({ start: round3(s), end: round3(t0 + ((t1 - t0) * acc) / total), text: t });
+      }
+    }
+    i = sp.last + 1;
+  }
+  while (i < words.length) out.push(words[i++]);
+  return changed ? out : words;
 }
 
 /**
@@ -1555,6 +1808,8 @@ export interface ReviewFinding {
   /** Instante na prévia (s). */
   at: number;
   detail: string;
+  /** Instante no bruto (s), pelos clipes do plano (#11500): é onde se corrige. Ausente/null fora dos clipes. */
+  srcAt?: number | null;
 }
 
 /** O fecho precisa de ao menos isso depois da última palavra (a 261027 saiu "seca"). */
@@ -1698,15 +1953,21 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
  * O bruto na pasta da edição: o maior vídeo solto nela (fora de `Final/`), que
  * não seja um final (`final` no nome) nem uma prévia nossa. `candidates` traz
  * todos os que serviriam: com mais de um, o CLI avisa listando-os (o editor
- * pode ter gravado em 2 arquivos; `--source` escolhe outro).
+ * pode ter gravado em 2 arquivos; `--source` escolhe outro). Sem nenhum vídeo,
+ * o maior áudio solto (`audioOnly: true`, #11552).
  */
-export function pickRawSource(files: Array<{ name: string; size: number }>): { pick: { name: string; size: number }; candidates: Array<{ name: string; size: number }> } | null {
-  const vids = files.filter(
-    (f) => /\.(mp4|mov)$/i.test(f.name) && !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name),
-  );
-  if (vids.length === 0) return null;
-  return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };
+export function pickRawSource(files: Array<{ name: string; size: number }>): { pick: { name: string; size: number }; candidates: Array<{ name: string; size: number }>; audioOnly?: true } | null {
+  const usable = (f: { name: string }) => !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name);
+  const vids = files.filter((f) => /\.(mp4|mov)$/i.test(f.name) && usable(f));
+  if (vids.length > 0) return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };
+  // #11552: sem vídeo solto, um arquivo de áudio (os comentários gravados à parte).
+  const audios = files.filter((f) => AUDIO_EXT.test(f.name) && usable(f));
+  if (audios.length === 0) return null;
+  return { pick: audios.reduce((a, b) => (b.size > a.size ? b : a)), candidates: audios, audioOnly: true };
 }
+
+/** Extensões de áudio aceitas como bruto quando não há vídeo solto (#11552). */
+const AUDIO_EXT = /\.(m4a|mp3|wav|aac|ogg|opus|flac)$/i;
 
 /** fps a partir do `r_frame_rate` do ffprobe ("30/1", "30000/1001"). */
 export function parseFrameRate(r: string): number {
@@ -1723,12 +1984,18 @@ export function parseFrameRate(r: string): number {
  */
 export function parseProbe(json: string, path: string): SourceInfo {
   const j = JSON.parse(json) as {
-    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string }>;
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string; disposition?: { attached_pic?: number } }>;
     format?: { duration?: string };
   };
-  const v = j.streams?.find((s) => s.codec_type === "video");
-  if (!v || !v.width || !v.height || !v.r_frame_rate) throw new Error("ffprobe sem stream de vídeo com largura/altura/fps");
+  // Capa embutida num .m4a/.mp3 vem como stream de vídeo `attached_pic`: não é vídeo.
+  const v = j.streams?.find((s) => s.codec_type === "video" && !s.disposition?.attached_pic);
   const durationS = Number(j.format?.duration);
+  if (!v && j.streams?.some((s) => s.codec_type === "audio")) {
+    // #11552: bruto só de áudio. Segue no modo áudio (transcrição, decupagem, roteiro).
+    if (!Number.isFinite(durationS) || durationS <= 0) throw new Error("ffprobe sem duração");
+    return { path, fps: AUDIO_ONLY_FPS, durationS: round3(durationS), width: 0, height: 0, mirrored: false, audioOnly: true };
+  }
+  if (!v || !v.width || !v.height || !v.r_frame_rate) throw new Error("ffprobe sem stream de vídeo com largura/altura/fps");
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error("ffprobe sem duração");
   const fps = parseFrameRate(v.r_frame_rate);
   if (!Number.isInteger(fps)) {

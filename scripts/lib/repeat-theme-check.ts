@@ -170,6 +170,39 @@ export function detectSubjectThemeOverlap(
   return matches;
 }
 
+/**
+ * #11517: palavras de ANÚNCIO genéricas (já normalizadas — minúsculas, sem
+ * acento, como sai de `tokenizeForJaccard`). Sozinhas fazem dois títulos sem
+ * relação nenhuma passarem do piso de 0.20 do sinal cross-source: no replay
+ * de 20 edições os 2 únicos hits (261015) eram "Introducing The X
+ * Subscription" × "Introducing the Anthropic Cyber Mission" e "An Update on
+ * Character.ai" × "2026 Usage Policy update", ambos jaccard 0.2 só por
+ * "introducing"/"update". Não entram na detecção do Stage 1
+ * (`detectEventOverlap` segue calibrado pelo #8896); servem para quem
+ * GRADUA o aviso (`contentJaccard`, consumido pelo gate 4).
+ */
+export const GENERIC_ANNOUNCEMENT_TOKENS: ReadonlySet<string> = new Set([
+  // EN
+  "introducing", "introduces", "introduce", "announcing", "announces", "announce",
+  "update", "updates", "updated", "new", "launch", "launches", "launching", "launched",
+  "today", "now", "available", "release", "releases", "released",
+  // PT-BR
+  "anuncia", "anunciou", "apresenta", "apresentou", "lanca", "lancou", "lancamento",
+  "atualizacao", "atualiza", "novo", "nova", "novos", "novas", "agora", "hoje", "chega",
+]);
+
+/**
+ * #11517: Jaccard de título SEM as palavras de anúncio genéricas. Mesmo
+ * tokenizador do sinal cross-source; só remove `GENERIC_ANNOUNCEMENT_TOKENS`
+ * dos dois lados antes de comparar. Título que só tinha palavra genérica
+ * vira set vazio e dá 0 (degeneração de `jaccardSimilarity`).
+ */
+export function contentJaccard(a: string, b: string): number {
+  const strip = (title: string): Set<string> =>
+    new Set([...tokenizeForJaccard(title)].filter((t) => !GENERIC_ANNOUNCEMENT_TOKENS.has(t)));
+  return jaccardSimilarity(strip(a), strip(b));
+}
+
 /** Combina os 2 sinais no shape `{ flagged, theme }` esperado pelo gate §1x. */
 export function buildRepeatThemeResult(
   eventMatches: RepeatThemeEventMatch[],

@@ -300,10 +300,10 @@ describe("repo alvo de gh pr create/merge (#10618)", () => {
     );
   });
 
-  it("pr-create-review: URL do PR criado decide (com allowlist)", () => {
+  it("pr-create-review: URL do PR criado decide (qualquer repo que não o studio, #11482)", () => {
     assert.equal(isForeignRepoPrUrl(`https://github.com/${DESIGN}/pull/23`), true);
     assert.equal(isForeignRepoPrUrl("https://github.com/vjpixel/diaria-studio/pull/10650"), false);
-    assert.equal(isForeignRepoPrUrl("https://github.com/alguem/fork/pull/1"), false);
+    assert.equal(isForeignRepoPrUrl("https://github.com/alguem/fork/pull/1"), true);
     assert.equal(isForeignRepoPrUrl("não é url"), false);
   });
 });
