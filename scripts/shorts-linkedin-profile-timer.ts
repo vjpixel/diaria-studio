@@ -253,7 +253,7 @@ export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTi
     lines.push(`O vertical "Outras redes" não está no disco do 300 nem em \`${aammdd}/Final/\` no Drive. Salve-o lá; a próxima execução (de hora em hora) baixa e publica até ${deadline} BRT (3 h depois do horário do vertical).`);
   } else if (selection === "ambiguous-cover") {
     // #11628: o vertical já é único; o que trava o download é a capa Still (que o LinkedIn nem usa).
-    lines.push(`O vertical já é único; o bloqueio é a capa: há mais de uma capa Still em \`${aammdd}/Final/\` no Drive. Deixe uma só capa Still lá (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
+    lines.push(`O vertical já é único; o bloqueio é a capa: há mais de uma capa Still em \`${aammdd}/Final/\` no Drive. Deixe uma só capa Still lá; a próxima execução publica até ${deadline} BRT.`);
   } else {
     lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
   }

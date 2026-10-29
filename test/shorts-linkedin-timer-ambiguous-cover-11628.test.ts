@@ -75,6 +75,8 @@ describe("#11628 alarme de capa ambígua orienta a capa, não o vertical", () =>
     const { body } = buildLinkedinTimerAlarm({ aammdd: AAMMDD, key: "drive-needs-editor", reason: "r", at: AT, selection: "ambiguous-cover" });
     assert.match(body, /uma só capa Still/);
     assert.doesNotMatch(body, /Deixe um só vertical/);
+    // O B1 não escolhe capa (a skill para e registra bloqueio com duas capas Still).
+    assert.doesNotMatch(body, /capa Still[^\n]*Passo B1/);
   });
 
   it("outros needs-editor seguem pedindo um só vertical", () => {
