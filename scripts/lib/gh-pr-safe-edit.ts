@@ -253,9 +253,57 @@ export type HeadCheck =
   | { status: "match"; oid: string }
   /** O checkout local está noutra branch: não é o checkout da PR, nada a comparar. */
   | { status: "other-branch"; prBranch: string; localBranch: string }
-  | { status: "mismatch"; branch: string; prOid: string; localOid: string }
+  /**
+   * Commits diferentes na mesma branch. `relation` (preenchido por
+   * `checkPrHeadMatchesLocal` via `git merge-base --is-ancestor`): `ahead` = a
+   * PR está num ancestral do HEAD local (falta `git push`); `diverged` = os dois
+   * não estão na mesma linha (branch remota sobrou de PR mergeada, #11566);
+   * `unknown` = o git não conseguiu decidir (ex.: objeto da PR ausente).
+   */
+  | { status: "mismatch"; branch: string; prOid: string; localOid: string; relation?: "ahead" | "diverged" | "unknown" }
+  /**
+   * O HEAD local é ancestral do `headRefOid`: o checkout só está ATRÁS do
+   * remoto (ex.: logo depois de `gh-pr-update-branch.ts` com `updated`, ou
+   * outra sessão empurrou na mesma branch). Aviso, não erro (review do #11584).
+   */
+  | { status: "local-behind"; branch: string; prOid: string; localOid: string }
   /** O diretório não é checkout git (ex.: cwd sem `.git`): nada a comparar. */
   | { status: "no-local-checkout"; dir: string; reason: string };
+
+/**
+ * `git merge-base --is-ancestor a b` → `true` (0), `false` (1) ou `null`
+ * (outro código, ex.: 128 com objeto ausente no checkout local).
+ */
+function isAncestor(gitRun: GitRunFn, dir: string, a: string, b: string): boolean | null {
+  const r = gitRun(["merge-base", "--is-ancestor", a, b], dir);
+  if (r.status === 0) return true;
+  if (r.status === 1) return false;
+  return null;
+}
+
+/**
+ * Refina um `mismatch` com a relação de ancestralidade entre os commits. Se o
+ * objeto da PR não existe localmente (o caso típico de "local atrás" depois de
+ * `gh-pr-update-branch.ts`), faz um `git fetch` da branch e tenta de novo;
+ * falha do fetch deixa `relation: "unknown"`, que segue sendo erro.
+ */
+export function classifyMismatch(
+  check: Extract<HeadCheck, { status: "mismatch" }>,
+  dir: string,
+  gitRun: GitRunFn = defaultGitRun,
+): HeadCheck {
+  let behind = isAncestor(gitRun, dir, check.localOid, check.prOid);
+  if (behind === null) {
+    const fetched = gitRun(["fetch", "--quiet", "origin", check.branch], dir);
+    if (fetched.status === 0) behind = isAncestor(gitRun, dir, check.localOid, check.prOid);
+  }
+  if (behind === true) {
+    return { status: "local-behind", branch: check.branch, prOid: check.prOid, localOid: check.localOid };
+  }
+  if (behind === null) return { ...check, relation: "unknown" };
+  const ahead = isAncestor(gitRun, dir, check.prOid, check.localOid);
+  return { ...check, relation: ahead === true ? "ahead" : ahead === false ? "diverged" : "unknown" };
+}
 
 /** Comparação pura: mesma branch e mesmo commit → `match`. */
 export function compareHeadWithLocal(
@@ -302,19 +350,30 @@ export function checkPrHeadMatchesLocal(
   if (!prBranch || !prOid) {
     return { ok: false, error: `resposta inesperada do gh para headRefName/headRefOid: "${view.stdout.trim()}"` };
   }
-  return {
-    ok: true,
-    check: compareHeadWithLocal({ branch: prBranch, oid: prOid }, { branch: branch.stdout.trim(), oid: oid.stdout.trim() }),
-  };
+  const check = compareHeadWithLocal({ branch: prBranch, oid: prOid }, { branch: branch.stdout.trim(), oid: oid.stdout.trim() });
+  return { ok: true, check: check.status === "mismatch" ? classifyMismatch(check, localDir, gitRun) : check };
 }
 
 /** Mensagem de erro do `mismatch` (exportada para o teste travar o texto útil). */
 export function headMismatchError(pr: number, check: Extract<HeadCheck, { status: "mismatch" }>, repo?: string): string {
-  return (
+  const head =
     `a ${prLabelInRepo(pr, repo)} aponta para ${check.prOid.slice(0, 9)}, mas o HEAD local da branch ` +
-    `${check.branch} é ${check.localOid.slice(0, 9)} — o push não chegou ao remoto. O caso típico é push recusado ` +
-    `(non-fast-forward) porque a branch remota sobrou de uma PR anterior já mergeada (#11566): feche esta PR, ` +
-    `crie uma branch de nome novo (sufixo -2) e reabra; nunca force-push sobre branch de PR alheia.`
+    `${check.branch} é ${check.localOid.slice(0, 9)} — `;
+  if (check.relation === "ahead") {
+    return (
+      head +
+      `o commit da PR é ancestral do HEAD local, ou seja, só falta push: rode \`git push origin ${check.branch}\` ` +
+      `e confira de novo. Se o push for recusado, trate como branch sobrada (#11566).`
+    );
+  }
+  const cause =
+    check.relation === "diverged"
+      ? `os dois commits divergem: push recusado (non-fast-forward) porque a branch remota sobrou de uma PR anterior já mergeada (#11566)`
+      : `não deu para decidir a ancestralidade; o caso típico é push recusado (non-fast-forward) porque a branch remota sobrou de uma PR anterior já mergeada (#11566) — se o \`git push\` só não foi feito, basta empurrar`;
+  return (
+    head +
+    `${cause}. Com branch sobrada: feche esta PR, crie uma branch de nome novo (sufixo -2) e reabra; ` +
+    `nunca force-push sobre branch de PR alheia.`
   );
 }
 
@@ -341,7 +400,7 @@ function usage(): string {
     "--body-file recusa corpo que não cita (Closes/REFS) as issues da PR — da branch, ou de --issues (#10698).\n" +
     "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`.\n" +
     "  Também confere que o headRefOid da PR é o HEAD local (#11566) — do checkout em --worktree (default cwd);\n" +
-    "  checkout em outra branch ou fora do git só gera aviso."
+    "  checkout em outra branch, fora do git ou só ATRÁS da PR (HEAD local ancestral do da PR) só gera aviso."
   );
 }
 
@@ -410,6 +469,11 @@ async function main() {
       errors.push(head.error);
     } else if (head.check.status === "mismatch") {
       errors.push(headMismatchError(pr, head.check, repo));
+    } else if (head.check.status === "local-behind") {
+      console.error(
+        `[gh-pr-safe-edit] aviso: o HEAD local ${head.check.localOid.slice(0, 9)} de ${head.check.branch} está ATRÁS do da PR ` +
+          `(${head.check.prOid.slice(0, 9)}) — checkout desatualizado, não push perdido; rode \`git pull --ff-only\` antes de novo commit (#11566).`,
+      );
     } else if (head.check.status === "other-branch") {
       console.error(
         `[gh-pr-safe-edit] aviso: ${localDir} está na branch ${head.check.localBranch}, não na ${head.check.prBranch} da PR — HEAD não conferido; passe --worktree <checkout da PR> (#11566).`,

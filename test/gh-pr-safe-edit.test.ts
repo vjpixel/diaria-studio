@@ -18,6 +18,7 @@ import {
   addPrLabelsRest,
   checkBodyCitesIssues,
   checkPrHeadMatchesLocal,
+  classifyMismatch,
   compareHeadWithLocal,
   headMismatchError,
   issuesFromBranch,
@@ -338,21 +339,89 @@ describe("checkPrHeadMatchesLocal (#11566) — com git real", () => {
     return { dir, old, head: git("rev-parse", "HEAD") };
   }
 
-  it("PR aberta em cima do commit antigo → mismatch, e a mensagem explica o caso", () => {
-    const { dir, old, head } = repoWithTwoCommits("develop/fix-11467");
+  it("PR num commit DIVERGENTE (branch sobrada, cenário da #11566) → mismatch diverged, mensagem de renomear", () => {
+    const { dir, old } = repoWithTwoCommits("develop/fix-11467");
+    // Commit irmão do `novo` a partir do `antigo`: fica fora da linha do HEAD,
+    // como o commit da PR mergeada que sobrou no remoto.
+    const git = (...args: string[]) => {
+      const r = spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args], {
+        cwd: dir,
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    git("checkout", "-q", "-b", "sobra", old);
+    writeFileSync(join(dir, "a.txt"), "sobra");
+    git("commit", "-q", "-am", "sobra");
+    const stale = git("rev-parse", "HEAD");
+    git("checkout", "-q", "develop/fix-11467");
+    const head = git("rev-parse", "HEAD");
     const calls: string[][] = [];
     const r = checkPrHeadMatchesLocal(11528, "/repo", dir, (args) => {
       calls.push(args);
-      return ok(`develop/fix-11467 ${old}\n`);
+      return ok(`develop/fix-11467 ${stale}\n`);
     });
     assert.ok(r.ok);
-    assert.deepEqual(r.check, { status: "mismatch", branch: "develop/fix-11467", prOid: old, localOid: head });
+    assert.deepEqual(r.check, { status: "mismatch", branch: "develop/fix-11467", prOid: stale, localOid: head, relation: "diverged" });
     assert.ok(calls[0].includes("headRefName,headRefOid"));
     assert.ok(r.check.status === "mismatch");
     const msg = headMismatchError(11528, r.check);
     assert.match(msg, /PR #11528/);
     assert.match(msg, /non-fast-forward/);
     assert.match(msg, /#11566/);
+    assert.match(msg, /sufixo -2/);
+  });
+
+  it("PR num ancestral do HEAD local → mismatch ahead, mensagem manda dar push (não renomear)", () => {
+    const { dir, old, head } = repoWithTwoCommits("develop/fix-11467");
+    const r = checkPrHeadMatchesLocal(11528, "/repo", dir, () => ok(`develop/fix-11467 ${old}\n`));
+    assert.ok(r.ok);
+    assert.deepEqual(r.check, { status: "mismatch", branch: "develop/fix-11467", prOid: old, localOid: head, relation: "ahead" });
+    assert.ok(r.check.status === "mismatch");
+    const msg = headMismatchError(11528, r.check);
+    assert.match(msg, /falta push/);
+    assert.match(msg, /git push origin develop\/fix-11467/);
+    assert.doesNotMatch(msg, /sufixo -2/);
+  });
+
+  // Review do #11584 (P2): depois de `gh-pr-update-branch.ts` com `updated`, o
+  // checkout local fica ATRÁS do headRefOid. Antes saía `mismatch` (exit 1) com
+  // o conselho errado de fechar a PR.
+  it("HEAD local ancestral do da PR (checkout atrás) → local-behind, não mismatch", () => {
+    const { dir, old, head } = repoWithTwoCommits("overnight/fix-11566-x");
+    const r0 = spawnSync("git", ["reset", "-q", "--hard", old], { cwd: dir, encoding: "utf8" });
+    assert.equal(r0.status, 0, r0.stderr);
+    const r = checkPrHeadMatchesLocal(11584, "/repo", dir, () => ok(`overnight/fix-11566-x ${head}\n`));
+    assert.deepEqual(r, { ok: true, check: { status: "local-behind", branch: "overnight/fix-11566-x", prOid: head, localOid: old } });
+  });
+
+  it("objeto da PR ausente localmente e fetch falha → mismatch unknown (segue erro)", () => {
+    const { dir, head } = repoWithTwoCommits("overnight/fix-2-x");
+    const ghost = "0123456789abcdef0123456789abcdef01234567";
+    const r = checkPrHeadMatchesLocal(2, "/repo", dir, () => ok(`overnight/fix-2-x ${ghost}\n`));
+    assert.ok(r.ok);
+    assert.deepEqual(r.check, { status: "mismatch", branch: "overnight/fix-2-x", prOid: ghost, localOid: head, relation: "unknown" });
+  });
+
+  it("objeto ausente: faz fetch da branch e reclassifica (local-behind)", () => {
+    const calls: string[][] = [];
+    let fetched = false;
+    const check = classifyMismatch(
+      { status: "mismatch", branch: "b", prOid: "p", localOid: "l" },
+      "/dir",
+      (args) => {
+        calls.push(args);
+        if (args[0] === "fetch") {
+          fetched = true;
+          return ok("");
+        }
+        if (!fetched) return { status: 128, stdout: "", stderr: "fatal: Not a valid commit name p" };
+        return args[2] === "l" ? ok("") : { status: 1, stdout: "", stderr: "" };
+      },
+    );
+    assert.deepEqual(check, { status: "local-behind", branch: "b", prOid: "p", localOid: "l" });
+    assert.deepEqual(calls[1], ["fetch", "--quiet", "origin", "b"]);
   });
 
   it("PR no commit atual → match", () => {
