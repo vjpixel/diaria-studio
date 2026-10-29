@@ -31,7 +31,7 @@ import {
   type DriveEntry,
   type MontageDriveDeps,
 } from "../scripts/lib/diaria/video-montage-drive.ts";
-import { assessMontageEnv, montageVenvPython, requiredFreeBytes, resolveVideoPython, type MontageEnvProbes } from "../scripts/lib/diaria/video-montage-env.ts";
+import { assessMontageEnv, montageSetupCommand, montageVenvPython, requiredFreeBytes, resolveVideoPython, type MontageEnvProbes } from "../scripts/lib/diaria/video-montage-env.ts";
 import { buildSequencePlan, buildXmeml, defaultSequences, resolveBlocks, type BlocksFile, type SequenceSpec, type SourceInfo, type Word } from "../scripts/lib/diaria/video-montage.ts";
 import { DRIVE_UPLOAD_COMMANDS, driveCacheDir, driveModeFor } from "../scripts/video-montagem.ts";
 
@@ -275,6 +275,13 @@ describe("#11642 Python e ambiente da montagem", () => {
     assert.deepEqual(r.missing, ["model"]);
     assert.match(r.items.find((i) => i.id === "model")!.fix!, /large-v3-turbo/);
     assert.equal(assessMontageEnv({ ...probes, model: ok }, "linux", "py").ready, true);
+  });
+
+  it("setup instala pelo lock, que fixa o PyAV 18 (o 19 quebra o decode do faster-whisper 1.2.1, 261030)", () => {
+    for (const p of ["linux", "win32"]) assert.match(montageSetupCommand(p), /-r scripts\/video\/montagem-requirements\.txt/);
+    const lock = readFileSync(new URL("../scripts/video/montagem-requirements.txt", import.meta.url), "utf8");
+    assert.match(lock, /^faster-whisper==1\.2\.1$/m);
+    assert.match(lock, /^av==18\./m);
   });
 
   it("espaço exigido: 3x o bruto, 25 GB sem bruto conhecido", () => {

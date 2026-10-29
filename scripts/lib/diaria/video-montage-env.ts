@@ -70,8 +70,8 @@ export function requiredFreeBytes(brutoBytes: number | null): number {
 /** Comando de setup do venv (o mesmo de `docs/setup.md`, seção do vídeo). */
 export function montageSetupCommand(platform: NodeJS.Platform | string): string {
   return platform === "win32"
-    ? "uv venv --python 3.12 %USERPROFILE%\\.venv-video-montagem && set VIRTUAL_ENV=%USERPROFILE%\\.venv-video-montagem && uv pip install faster-whisper"
-    : "uv venv --python 3.12 ~/.venv-video-montagem && VIRTUAL_ENV=~/.venv-video-montagem uv pip install faster-whisper";
+    ? "uv venv --python 3.12 %USERPROFILE%\\.venv-video-montagem && set VIRTUAL_ENV=%USERPROFILE%\\.venv-video-montagem && uv pip install -r scripts/video/montagem-requirements.txt"
+    : "uv venv --python 3.12 ~/.venv-video-montagem && VIRTUAL_ENV=~/.venv-video-montagem uv pip install -r scripts/video/montagem-requirements.txt";
 }
 
 const ORDER: MontageEnvItemId[] = ["ffmpeg", "python", "model", "drive", "disk"];

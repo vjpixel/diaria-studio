@@ -25,9 +25,9 @@
  * 25 GB sem ele). Exit 0 = a montagem roda aqui; 1 = falta algo.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { isBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
@@ -125,6 +125,28 @@ function probePython(python: string, code: string, timeoutMs: number): MontagePr
   return { ok: true, detail: firstLine(r.stdout) };
 }
 
+/**
+ * Python com faster-whisper que DECODIFICA áudio (#11642): importar não basta.
+ * No 300 o PyAV 19 importava normal e quebrava no `decode_audio`
+ * (`metadata_errors`), só no meio do `transcribe`. Gera 0,5 s de seno com o
+ * ffmpeg e decodifica pelo mesmo caminho da transcrição.
+ */
+function probeWhisperDecode(python: string): MontageProbe {
+  const dir = mkdtempSync(join(tmpdir(), "vm-env-"));
+  try {
+    const wav = join(dir, "sine.wav");
+    const ff = spawnSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=0.5", "-ar", "16000", wav], { encoding: "utf8", timeout: 30_000 });
+    const code = ff.status === 0
+      ? `import faster_whisper, av; from faster_whisper.audio import decode_audio; n = len(decode_audio(${JSON.stringify(wav)})); print('faster-whisper', faster_whisper.__version__, 'av', av.__version__, 'decode ok' if n > 0 else 'decode vazio')`
+      : "import faster_whisper; print('faster-whisper', faster_whisper.__version__, '(decode não testado: ffmpeg falhou)')";
+    const r = probePython(python, code, 60_000);
+    if (r.ok && /decode vazio/.test(r.detail ?? "")) return { ok: false, detail: r.detail };
+    return r.ok ? r : { ok: false, detail: `${r.detail} (pin do lock: scripts/video/montagem-requirements.txt)` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** Acesso à pasta YouTube: Drive for desktop, ou a API (e o tamanho do bruto da edição, quando pedida). */
 async function probeDrive(edition: string | undefined): Promise<{ probe: MontageProbe; brutoBytes: number | null }> {
   const localRoot = process.env.DIARIA_VIDEO_DRIVE_ROOT ?? DEFAULT_DRIVE_ROOT;
@@ -148,7 +170,7 @@ async function probeDrive(edition: string | undefined): Promise<{ probe: Montage
 
 export async function runMontageEnvCheck(edition?: string): Promise<MontageEnvReport> {
   const py = resolveVideoPython({ env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
-  const python = probePython(py.python, "import faster_whisper; print('faster-whisper', faster_whisper.__version__)", 60_000);
+  const python = probeWhisperDecode(py.python);
   const model = python.ok
     ? probePython(py.python, `from faster_whisper.utils import download_model; print(download_model('${WHISPER_MODEL}', local_files_only=True))`, 60_000)
     : { ok: false, detail: "sem Python com faster-whisper" };
