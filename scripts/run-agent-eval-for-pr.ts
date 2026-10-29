@@ -97,12 +97,15 @@
  * (#11462, `resolveReportsRoot`); `--reports-root <path>` sobrepõe.
  *
  * Sem `--reference-editions`, deriva as `--num-editions` (default 3) mais
- * recentes sob `--editions-dir` (default `data/editions`) que já têm
- * `_internal/01-approved.json` em disco — mesmo espírito de
+ * recentes sob `--editions-dir` (default `data/editions`, nos layouts flat e
+ * nested — #11616, `deriveReferenceEditions`) que já têm
+ * `_internal/01-approved.json` em disco. Worktree sem a junction `data/` cai
+ * sozinho no `data/editions` do checkout principal (#11616,
+ * `resolveEditionsRootDir`) — não precisa mais de symlink à mão — mesmo espírito de
  * `find-current-edition.ts`, decisão automática com log explícito em vez de
  * exigir o operador digitar a lista toda vez (#5321, "perguntar é exceção").
  */
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -115,6 +118,7 @@ import { AGENT_EVAL_LABEL } from "./check-agent-eval-required.ts";
 import { ClaudeCliError, preview } from "./lib/claude-cli-subprocess.ts";
 import { parseArms, type EvalArm } from "./lib/prompt-regression-eval.ts";
 import { resolveRepoRoot } from "./lib/session-registry.ts";
+import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const DEFAULT_NUM_EDITIONS = 3;
@@ -337,6 +341,71 @@ export function agentDeclaresMcpTools(content: string | null): boolean {
 export function pickDefaultReferenceEditions(dirNames: string[], hasApprovedJson: (dirName: string) => boolean, limit: number = DEFAULT_NUM_EDITIONS): string[] {
   const candidates = dirNames.filter((d) => /^\d{6}$/.test(d) && hasApprovedJson(d)).sort();
   return candidates.slice(Math.max(0, candidates.length - limit));
+}
+
+/**
+ * #11616 — deriva as edições de referência enumerando os DOIS layouts
+ * (flat legado `data/editions/AAMMDD` e nested `data/editions/AAMM/AAMMDD`,
+ * #2463). Antes lia só o 1º nível com `readdirSync`: no layout nested o 1º
+ * nível são pastas `AAMM` (4 dígitos), que `pickDefaultReferenceEditions`
+ * descarta — a derivação automática devolvia "(nenhuma)" em todo checkout
+ * real. `enumerate` é injetável pra teste; default `enumerateEditionDirs`,
+ * a mesma resolução dual que `createReplayFixture` usa pra achar a edição.
+ */
+export function deriveReferenceEditions(
+  editionsRootDir: string,
+  limit: number = DEFAULT_NUM_EDITIONS,
+  enumerate: (root: string) => Map<string, string> = enumerateEditionDirs,
+  fileExists: (path: string) => boolean = existsSync,
+): string[] {
+  const dirs = enumerate(editionsRootDir);
+  return pickDefaultReferenceEditions(
+    [...dirs.keys()],
+    (aammdd) => {
+      const dir = dirs.get(aammdd);
+      return dir !== undefined && fileExists(join(dir, "_internal", "01-approved.json"));
+    },
+    limit,
+  );
+}
+
+/**
+ * #11616 — resolve o diretório de edições. O script roda com o cwd no
+ * worktree da PR (o corpo candidato vem do disco), e worktree de subagente
+ * não tem a junction `data/` — o coordenador precisava criar à mão um
+ * symlink de `data/editions` dentro do worktree. Ordem: `--editions-dir`
+ * explícito vence (relativo ao worktree); senão `{worktree}/data/editions`
+ * se existir; senão `data/editions` do checkout PRINCIPAL (mesmo
+ * `resolveRepoRoot` do relatório, #11462) se existir; senão devolve o path
+ * do worktree e o caller aborta com a mensagem de "nenhuma edição".
+ */
+export function resolveEditionsRootDir(params: {
+  override?: string;
+  worktreeRoot: string;
+  resolveMainRoot?: (cwd: string) => string;
+  dirExists?: (path: string) => boolean;
+}): { dir: string; note?: string } {
+  if (params.override !== undefined && params.override.trim() !== "") {
+    return { dir: resolve(params.worktreeRoot, params.override) };
+  }
+  const exists = params.dirExists ?? existsSync;
+  const local = join(params.worktreeRoot, "data", "editions");
+  if (exists(local)) return { dir: local };
+  const resolveMain = params.resolveMainRoot ?? resolveRepoRoot;
+  let mainRoot: string;
+  try {
+    mainRoot = resolveMain(params.worktreeRoot);
+  } catch {
+    return { dir: local };
+  }
+  const main = join(mainRoot, "data", "editions");
+  if (main !== local && exists(main)) {
+    return {
+      dir: main,
+      note: `[#11616] ${local} ausente (worktree sem a junction data/) — usando as edições do checkout principal: ${main}.`,
+    };
+  }
+  return { dir: local };
 }
 
 export interface CostDelta {
@@ -570,7 +639,9 @@ async function main(): Promise<void> {
   const repetitions = values["repetitions"] ? Number(values["repetitions"]) : DEFAULT_REPETITIONS;
   const baselineRef = values["baseline-ref"] ?? DEFAULT_BASELINE_REF;
   const numEditions = values["num-editions"] ? Number(values["num-editions"]) : DEFAULT_NUM_EDITIONS;
-  const editionsRootDir = resolve(ROOT, values["editions-dir"] ?? "data/editions");
+  const editionsResolution = resolveEditionsRootDir({ override: values["editions-dir"], worktreeRoot: ROOT });
+  const editionsRootDir = editionsResolution.dir;
+  if (editionsResolution.note) console.log(editionsResolution.note);
 
   if (!prNumber) {
     console.error("Uso: run-agent-eval-for-pr.ts --pr <N> [--repetitions N] [--reference-editions AAMMDD,...] [--baseline-ref REF] [--editions-dir path] [--num-editions N] [--arms modelo[:effort],...] [--reports-root path] [--live]");
@@ -655,8 +726,7 @@ async function main(): Promise<void> {
   if (values["reference-editions"]) {
     referenceEditions = values["reference-editions"].split(",").map((s) => s.trim()).filter(Boolean);
   } else if (existsSync(editionsRootDir)) {
-    const dirNames = readdirSync(editionsRootDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-    referenceEditions = pickDefaultReferenceEditions(dirNames, (d) => existsSync(join(editionsRootDir, d, "_internal", "01-approved.json")), numEditions);
+    referenceEditions = deriveReferenceEditions(editionsRootDir, numEditions);
     console.log(`[#8144] --reference-editions omitido — derivadas automaticamente: ${referenceEditions.join(",") || "(nenhuma)"} (#5321, default declarado em vez de perguntar).`);
   } else {
     referenceEditions = [];

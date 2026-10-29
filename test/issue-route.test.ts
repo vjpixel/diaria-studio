@@ -687,6 +687,31 @@ describe("routeIssue — validacao pos-escrita falha ruidosamente", () => {
     assert.ok(gh.state.labels.includes("develop-track"));
   });
 
+  it("regressao #11614: --motivo sem-direcao NUNCA fecha a issue (route-issue nao muda estado)", () => {
+    // Overnight 261029: a #11560 apareceu CLOSED com `sem-direcao-acionavel`
+    // e `issueClosed: true`, lido como "o route-issue fechou". Quem fechou foi
+    // o `Closes #11560` da PR #11597, 24 min antes. O verbo so mexe em
+    // labels, marcador e comentario; `issueClosed` reflete o estado ANTERIOR.
+    const gh = fakeGh({ labels: ["bug", "P3"], body: "", state: "OPEN", comments: [] });
+    const result = routeIssue({
+      issue: 11560,
+      track: "fora-de-rodada",
+      motivo: "sem-direcao",
+      reason: "sem-direcao-acionavel (#5968)",
+      cwd: "/tmp",
+      ghRun: gh.run,
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.resolvedTrack, "fora-de-rodada");
+    assert.equal("issueClosed" in result, false);
+    assert.equal(gh.state.state, "OPEN");
+    assert.ok(gh.state.labels.includes("sem-direcao-acionavel"));
+    const stateChanging = gh.calls.filter(
+      (a) => a[0] === "issue" && (a[1] === "close" || a[1] === "reopen" || a.includes("--state")),
+    );
+    assert.deepEqual(stateChanging, [], "route-issue nao pode fechar nem reabrir issue");
+  });
+
   it("issue OPEN nao carrega issueClosed no resultado (#10976)", () => {
     const gh = fakeGh({ labels: [], body: "", state: "OPEN", comments: [] });
     const result = routeIssue({ issue: 52, track: "develop", cwd: "/tmp", ghRun: gh.run });

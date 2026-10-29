@@ -248,7 +248,10 @@ export interface RouteIssueResult {
   resolvedTrack?: RouteTrack | "fora-de-rodada" | "overnight" | "bloqueada" | "develop" | "agendada";
   /** #10976 — `true` quando a issue estava FECHADA: labels/marcador foram
    * aplicados e `resolvedTrack` é o veredito pelas labels (o que a issue
-   * teria se reaberta); o track efetivo dela segue `fora-de-rodada`. */
+   * teria se reaberta); o track efetivo dela segue `fora-de-rodada`.
+   * Reflete o estado ANTERIOR à chamada: o verbo nunca fecha nem reabre
+   * issue (#11614 — `issueClosed: true` após `--motivo sem-direcao` na
+   * #11560 era a issue já fechada pelo `Closes` de uma PR mergeada). */
   issueClosed?: boolean;
   error?: string;
 }
