@@ -655,8 +655,9 @@ export function checkSocialHumanizerSealFresh(editionDir: string): InvariantViol
       message: missing
         ? `_internal/.humanizer-social-done.json ausente — não dá pra afirmar que o 03-social.md atual passou pelo humanizador.`
         : `03-social.md mudou depois do selo do humanizador (stored=${result.stored.slice(0, 12)}… ` +
-          `current=${result.current.slice(0, 12)}…) — re-humanizar as seções alteradas (§4d.1 passo 6) e ` +
-          `gravar: npx tsx scripts/check-humanizer-social.ts --write --bypass-reason "<ajuste>" --edition-dir ${editionDir}/`,
+          `current=${result.current.slice(0, 12)}…) — re-humanizar e passar a Clarice nas seções alteradas (§4d.1 passo 6), ` +
+          `registrar cada passo com --record-run (#11534) e gravar: ` +
+          `npx tsx scripts/check-humanizer-social.ts --write --bypass-reason "<ajuste>" --edition-dir ${editionDir}/`,
       source_issue: "#9820",
       severity: missing ? "warning" : "error",
       file: resolve(editionDir, "03-social.md"),
