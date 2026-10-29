@@ -757,7 +757,9 @@ async function main(): Promise<void> {
       socialSentinelBypassReason =
         `factcheck-autofix: ${appliedSocialEntries.length} correção(ões) DIVERGENT aplicada(s) em 03-social.md (${destaquesTouched.join(", ")})`;
       try {
-        writeSentinel(editionDir, socialSentinelBypassReason);
+        // #11534: correção factual mecânica não passa pelo humanizador; o selo
+        // registra as seções em `unproven_sections` e o `--provenance` do gate mostra.
+        writeSentinel(editionDir, socialSentinelBypassReason, { unprovenOk: socialSentinelBypassReason });
       } catch (e) {
         console.warn(`[apply-factcheck-autofix] WARN: falha ao regravar sentinel do humanizador social — ${(e as Error).message}`);
       }

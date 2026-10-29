@@ -165,7 +165,10 @@ describe("#4505 item 2 — mock: correção mecânica pós-humanizador reintrodu
 
       for (const [i, variant] of variants.entries()) {
         writeFileSync(socialPath, mkSocialMd("texto limpo temporário " + i), "utf8");
-        writeSentinel(dir, i === 0 ? undefined : `re-humanizou após ajuste ${i} (#4505 replay)`);
+        // #11534: o mock não roda humanizador/Clarice de verdade; o selo aceita
+        // as seções sem prova via unprovenOk (o foco aqui é o tic-lint).
+        const reason = i === 0 ? undefined : `re-humanizou após ajuste ${i} (#4505 replay)`;
+        writeSentinel(dir, reason, { unprovenOk: reason });
 
         writeFileSync(socialPath, mkSocialMd(variant), "utf8");
         const result = runLint(socialPath, "no-antithesis-reveal");

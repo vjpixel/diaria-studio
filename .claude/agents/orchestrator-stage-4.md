@@ -309,6 +309,8 @@ Exit code handling:
 
   **Re-humanizar antes de aprovar** (quando exit 2, independente de tics) — seguir o mesmo fluxo SCOPED/FULL-FILE de **§4d.1 passo 6** (re-humanização scoped #3446): a saída do `--check` acima já traz `{ legacy, changed_sections }` no stdout — usar direto, sem rodar o check de novo.
 
+**Proveniência do social no resumo do gate (#11534):** a cada apresentação do gate, rodar `npx tsx scripts/check-humanizer-social.ts --provenance --edition-dir {EDITION_DIR}/` e incluir as linhas do stderr (`main_d1: humanizador sim · Clarice sim`, etc.) no resumo. Seção com `NÃO` ou `aceita sem prova (--unproven-ok)` vai como ⚠️ nomeando a seção — o editor vê o que não passou por humanizador e Clarice em vez de descobrir perguntando. Informativo, nunca bloqueia (o bloqueio é o exit 4 do `--write`).
+
 **4c.3 — Imagens geradas:**
 - Listar `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` com tamanhos (bytes) e, por destaque, quantos dos 4 slides do carrossel do Instagram existem (`04-d{N}-carousel-{p1,p2,p3,cta}-4x5.jpg`, #6005 Parte B) — são 12 imagens por edição de 3 destaques que, sem esta linha, o editor só veria depois de publicadas (#6064 item 3). Formato sugerido: `d1: 4/4 · d2: 4/4 · d3: 4/4 (capa = 04-d{N}-4x5.jpg)`; contagem parcial significa que aquele destaque publica como post single-image (carga tudo-ou-nada, `resolveCarouselImageUrls`) — cruzar com o warning `carousel-upload-incomplete` do `{violations_block}`.
 - URL pública no Worker KV: `{newsletter_url}` (capturada em §4b step 2b).
@@ -843,7 +845,8 @@ Tratar cada substituição D{N} ↔ item do pool como as 2 operações independe
       ```
       Mesmo arquivo consumido pelo passo 6.7 abaixo — sobrescrevê-lo aqui garante que o baseline reflita o efeito real DESTE round de re-humanização antes que a Clarice tenha chance de reverter alguma seção de volta pra perto do texto pré-humanizador original (o que produziria o mesmo falso-positivo do #3929 — "humanizador pulou a seção" — só que dentro do loop scoped do Stage 4).
 
-   Rodar `mcp__clarice__correct_text` no `## post_pixel` **só se `"post_pixel"` estiver em `changed_sections`**.
+   Registrar a prova do humanizador (#11534 — sem ela o `--write` do 6.6 sai exit 4): `npx tsx scripts/check-humanizer-social.ts --record-run --step humanizador --pre {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md --post {EDITION_DIR}/_internal/03-social-post-humanizador.md --sections {changed_sections join vírgula} --edition-dir {EDITION_DIR}/`.
+   Rodar `mcp__clarice__correct_text` (fallback REST `clarice-correct.ts`, regra do Stage 2) **em cada seção de `changed_sections`**, aplicar todas as sugestões (#4514) e registrar: `npx tsx scripts/check-humanizer-social.ts --record-run --step clarice --pre {EDITION_DIR}/_internal/03-social-post-humanizador.md --post {EDITION_DIR}/03-social.md --edition-dir {EDITION_DIR}/`.
    **6.4** — **Verificar que o escopo foi respeitado** (#3953 — comparar contra o snapshot pós-humanizador/pré-Clarice gravado no passo 6.3 acima, nunca contra o `03-social.md` FINAL: a Clarice já rodou entre o passo 6.3 e este passo, então `03-social.md` está pós-Clarice aqui — se ela reverter `post_pixel` de volta pro estado do INÍCIO desta rodada scoped, comparar contra o arquivo final produziria o mesmo falso-positivo `untouchedTargets` do #3947/#3929, só que neste check em vez do de 6.7. Fallback pro `03-social.md` final só se o snapshot não existir — sessão retomada a partir de checkpoint anterior ao #3947):
       ```bash
       VERIFY_POST_MD={EDITION_DIR}/_internal/03-social-post-humanizador.md
@@ -859,11 +862,11 @@ Tratar cada substituição D{N} ↔ item do pool como as 2 operações independe
 
    **Fluxo FULL-FILE (fallback — `legacy: true`, ou escalonamento do passo 6.4 acima):**
 
-   **6.2'** — Rodar o humanizador em `03-social.md` inteiro (passagem completa via Skill humanizador) — comportamento pré-#3446, preservado como rede de segurança.
+   **6.2'** — Snapshot `cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md` e rodar o humanizador em `03-social.md` inteiro (passagem completa via Skill humanizador) — comportamento pré-#3446, preservado como rede de segurança.
 
    **Snapshot pós-humanizador / pré-Clarice (#3947):** mesmo passo do fluxo SCOPED acima, antes de rodar a Clarice: `cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/03-social-post-humanizador.md`.
 
-   Rodar `mcp__clarice__correct_text` no `## post_pixel` (revisão ortográfica).
+   Registrar as duas provas como no fluxo SCOPED (#11534), sem `--sections`: `--record-run --step humanizador` (pre = `.stage4-pre-scoped-humanize.md`, post = `03-social-post-humanizador.md`), `mcp__clarice__correct_text` em todas as seções alteradas (e no `## post_pixel`, quando houver), depois `--record-run --step clarice` (pre = `03-social-post-humanizador.md`, post = `03-social.md`).
 
    **Os dois fluxos convergem aqui:**
 
@@ -873,7 +876,7 @@ Tratar cada substituição D{N} ↔ item do pool como as 2 operações independe
         --bypass-reason "humanizador re-rodou ({scoped: changed_sections | full-file}) após ajuste {descrição} no Stage 4" \
         --edition-dir {EDITION_DIR}/
       ```
-      O `--write` SEM `--bypass-reason` falhará com exit 3 se o hash divergir — essa é a trava que impede bypasse acidental (#2373). Nunca usar `--write` como atalho para limpar o lint sem re-humanizar.
+      O `--write` SEM `--bypass-reason` falhará com exit 3 se o hash divergir — essa é a trava que impede bypasse acidental (#2373). Nunca usar `--write` como atalho para limpar o lint sem re-humanizar. **Desde #11534 o motivo não é prova:** seção com mudança de redação cujo texto atual não está no `_internal/.humanizer-run.json` (humanizador E Clarice, passos de registro acima) sai **exit 4**, com as seções listadas — voltar ao 6.2/6.3 nelas. Mudança só de `{quebra}`, hashtag ou espaço passa sem prova. `--unproven-ok "<motivo>"` só quando o EDITOR pediu para manter um texto dele sem humanizar; a seção fica gravada em `unproven_sections` e aparece no resumo do gate.
    **6.7** — Re-rodar lints de qualidade social (mesmo fluxo do exit-2 em §4c.2b — comparam contra o baseline ORIGINAL de Stage 2, válido em ambos os fluxos), **sem mudança nesta rodada síncrona** — ela é o que garante o veredito ANTES do passo 6.8/6.9, garantia que a rodada assíncrona de `stage4-post-edit-checks.ts` não dá sozinha (mesmo racional do passo 2 acima). `no-xml-artifacts`/`no-antithesis-reveal`/`no-trailing-editorial-hook`/`post_pixel-matches-d1` também saem cobertos, de forma redundante, pela rodada em background (#8123 Fatia 3, nota no topo de §4d.1) — útil pro `inputs_hash` de aprovação do gate, não substitui a chamada síncrona aqui. `humanizer-section-coverage`/`relative-time`/`linkedin-schema`/`platform-headers-unicos` NÃO entram no agregador (dependem de `--pre` ou têm severity condicional à prosa, não ao exit code — ver docstring de `runStage4SocialLintReport`) e continuam disparados aqui como antes. **#3947 — `humanizer-section-coverage` compara contra o snapshot pós-humanizador/pré-Clarice (`03-social-post-humanizador.md`, gravado no passo 6.2'/6.3 acima), nunca contra o `03-social.md` final** — senão uma reversão legítima da Clarice (ela desfaz uma edição do Humanizador, aproximando o texto do pré-humanizador original) seria lida como "seção não coberta pelo humanizador", o mesmo falso-positivo do #3929. Fallback pro `03-social.md` final só se o snapshot não existir (sessão retomada a partir de um checkpoint anterior ao #3947):
       ```bash
       COVERAGE_MD={EDITION_DIR}/_internal/03-social-post-humanizador.md
