@@ -53,13 +53,12 @@ export function hasUncommittedWork(porcelain: string): boolean {
  * destino real é o comentário já publicado na PR/issue, nunca o repo: a PR de
  * rescue #11514 saiu só com `.rv11490.md`/`.rv11493.md`/`.rv11510.md`, e a
  * #7438 já tinha levado `.review-i1.md` pra `master`. `.dr-*` é o scratch da
- * daily-review (#7130). O `.gitignore` cobre os mesmos nomes; esta lista é a
- * 2ª camada, para quando um agente inventa um nome que escapa do ignore. Só
- * path UNTRACKED é filtrado: arquivo já rastreado com esse nome continua
- * sendo trabalho a resgatar. */
+ * daily-review (#7130). O `.gitignore` cobre os mesmos nomes (#9833 + #11544);
+ * esta lista é a 2ª camada, para o caso de a regra do ignore se perder ou
+ * ficar inerte (#6691). Só path UNTRACKED é filtrado: arquivo já rastreado
+ * com esse nome continua sendo trabalho a resgatar. */
 export const REVIEW_SCRATCH_PATTERNS: readonly RegExp[] = [
-  /^\.rv[^/]*\.md$/,
-  /^\.review-[^/]*\.md$/,
+  /^\.re?v[^/]*\.md$/, // .rv11490.md, .rev9801.md, .review-i1.md
   /^\.dr-[^/]*$/,
 ];
 

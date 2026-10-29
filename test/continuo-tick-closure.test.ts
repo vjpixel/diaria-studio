@@ -586,7 +586,7 @@ describe("rescueOrphanedMasterCommits (#8588)", () => {
 
 describe("#11544 rascunhos de review (.rv*.md) nunca viram PR de rescue", () => {
   it("isReviewScratchPath casa só rascunho na raiz", () => {
-    for (const p of [".rv11490.md", ".rv11493.md", ".review-i1.md", ".dr-body.md", ".dr-steps.txt"]) {
+    for (const p of [".rv11490.md", ".rev9801.md", ".review-i1.md", ".dr-body.md", ".dr-steps.txt"]) {
       assert.equal(isReviewScratchPath(p), true, p);
     }
     for (const p of ["docs/.rv1.md", "scripts/foo.ts", ".rv11490.txt", "rv1.md", ".gitignore"]) {
@@ -642,7 +642,7 @@ describe("#11544 rascunhos de review (.rv*.md) nunca viram PR de rescue", () => 
   });
 
   it("o .gitignore real ignora os rascunhos na raiz (git check-ignore)", () => {
-    for (const p of [".rv11490.md", ".review-i1.md", ".dr-body.md"]) {
+    for (const p of [".rv11490.md", ".rev9801.md", ".review-i1.md", ".dr-body.md"]) {
       const r = spawnSync("git", ["check-ignore", "-q", "--no-index", p], { cwd: repoRoot });
       assert.equal(r.status, 0, `${p} não está ignorado`);
     }
