@@ -1867,10 +1867,22 @@ describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a cont
         ),
         "git log --no-walk=unsorted --format=%H %T i1 i2": ok("i1 ti\ni2 ti\n"),
         "git stash drop stash@{0}": ok("Dropped stash@{0} (0ee1e555)\n"),
+        // #11562: a recusa lista os caminhos, os dois são idênticos a
+        // origin/master (hash-object × ls-tree) → clean + checkout + ff
+        // re-tentado; a re-tentativa recusa com stderr não reconhecido e o
+        // fluxo segue pelo stash amplo: +5 spawns.
+        "git hash-object -- arquivo.txt solto/x.ts": ok("h1\nh2\n"),
+        "git ls-tree -z origin/master -- arquivo.txt solto/x.ts": ok(
+          "100644 blob h1\tarquivo.txt\x00100644 blob h2\tsolto/x.ts\x00",
+        ),
       },
       {
         "git merge --ff-only origin/master": [
-          fail("error: Your local changes to the following files would be overwritten by merge"),
+          fail(
+            "error: Your local changes to the following files would be overwritten by merge:\n\tarquivo.txt\n" +
+              "error: The following untracked working tree files would be overwritten by merge:\n\tsolto/x.ts\n",
+          ),
+          fail("fatal: erro simulado sem lista de caminhos"),
           ok("Fast-forward\n 1 file changed"),
         ],
       },
