@@ -143,9 +143,11 @@ export type DriveLookup =
    * Espera: `why` diz o motivo (#11618) — sem vertical (`none`) ou o editor
    * precisa escolher (`needs-editor`). `editionFolderSeen`: a pasta
    * `{AAMMDD}/` existe no Drive, ou seja, o dia teve vídeo (é onde o bruto e
-   * `Final/` moram); sem ela, dia sem vídeo, nada a avisar.
+   * `Final/` moram); sem ela, dia sem vídeo, nada a avisar. `selection`
+   * (#11628): o `selection` do `needs-editor` (ex.: `ambiguous-cover`, que é a
+   * capa Still, não o vertical), para o alarme orientar o passo certo.
    */
-  | { kind: "wait"; reason: string; why: "none" | "needs-editor"; editionFolderSeen: boolean }
+  | { kind: "wait"; reason: string; why: "none" | "needs-editor"; editionFolderSeen: boolean; selection?: string }
   | { kind: "error"; reason: string };
 
 /** Puro: lê a saída do `fetch-drive-video.ts --orientation vertical`. */
@@ -169,6 +171,7 @@ export function interpretDriveLookup(exitCode: number | null, stdout: string): D
       kind: "wait",
       why: "needs-editor",
       editionFolderSeen: editionFolderSeen || out.selection === "duplicate-edition-folder",
+      ...(typeof out.selection === "string" ? { selection: out.selection } : {}),
       reason: `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe`,
     };
   }
@@ -235,8 +238,8 @@ function hhmmBrt(ms: number): string {
 }
 
 /** Puro: corpo do alarme, com os comandos já com a edição. */
-export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTimerAlarmKey; reason: string; at: string }): { subject: string; body: string } {
-  const { aammdd, key, reason, at } = input;
+export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTimerAlarmKey; reason: string; at: string; selection?: string }): { subject: string; body: string } {
+  const { aammdd, key, reason, at, selection } = input;
   const deadline = hhmmBrt(Date.parse(at) + MAX_FIRE_LATENESS_MS);
   const mark = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --mark linkedin_profile=URL\``;
   const lines = [
@@ -248,6 +251,9 @@ export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTi
   ];
   if (key === "missing-video") {
     lines.push(`O vertical "Outras redes" não está no disco do 300 nem em \`${aammdd}/Final/\` no Drive. Salve-o lá; a próxima execução (de hora em hora) baixa e publica até ${deadline} BRT (3 h depois do horário do vertical).`);
+  } else if (selection === "ambiguous-cover") {
+    // #11628: o vertical já é único; o que trava o download é a capa Still (que o LinkedIn nem usa).
+    lines.push(`O vertical já é único; o bloqueio é a capa: há mais de uma capa Still em \`${aammdd}/Final/\` no Drive. Deixe uma só capa Still lá (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
   } else {
     lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
   }
@@ -265,7 +271,15 @@ export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTi
  * do dia não saiu) e grava o estado. Mesmas regras de estado dos timers do
  * Instagram e do Threads: entregue não repete; e-mail pendente é reenviado.
  */
-export async function linkedinAlarm(dir: string, aammdd: string, key: LinkedinTimerAlarmKey, reason: string, at: string, notifyDeps: NotifyEditorDeps = { cwd: ROOT }): Promise<boolean> {
+export async function linkedinAlarm(
+  dir: string,
+  aammdd: string,
+  key: LinkedinTimerAlarmKey,
+  reason: string,
+  at: string,
+  notifyDeps: NotifyEditorDeps = { cwd: ROOT },
+  selection?: string,
+): Promise<boolean> {
   // Import tardio: o timer do Instagram importa `acquireTimerLock` deste módulo (ciclo no load).
   const { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } = await import("./shorts-instagram-timer.ts");
   const statePath = join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE);
@@ -275,7 +289,7 @@ export async function linkedinAlarm(dir: string, aammdd: string, key: LinkedinTi
     console.log(`[shorts-linkedin-timer] ${aammdd}: alarme "${key}" já avisado nesta edição — não repete`);
     return true;
   }
-  const { subject, body } = buildLinkedinTimerAlarm({ aammdd, key, reason, at });
+  const { subject, body } = buildLinkedinTimerAlarm({ aammdd, key, reason, at, selection });
   const res = await notifyEditor(
     { check: "shorts-linkedin-timer", fingerprint: `${aammdd}:${key}`, severity: "urgente", family: "evento", subject, body, forceEmail: emailPending(stateRaw, key) },
     notifyDeps,
@@ -363,7 +377,7 @@ export async function runLinkedinTimer(aammdd: string, dir: string, dryRun: bool
         const { at } = linkedinVerticalTime(config, aammdd);
         const key = linkedinWaitAlarm({ why: lookup.why, videoSeen: lookup.editionFolderSeen || registrySeen, now, at });
         if (key === null) return 0;
-        return (await linkedinAlarm(dir, aammdd, key, lookup.reason, at, deps.notify)) ? 0 : 1;
+        return (await linkedinAlarm(dir, aammdd, key, lookup.reason, at, deps.notify, lookup.selection)) ? 0 : 1;
       }
       if (lookup.kind === "error") {
         console.error(`[shorts-linkedin-timer] ${aammdd}: ${lookup.reason}`);
