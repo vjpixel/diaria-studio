@@ -1,0 +1,20 @@
+# Itens extraídos de newsletter com título e escopo CONFIRMADOS pelo editor (#11554).
+#
+# Item de LANÇAMENTOS com `flag: newsletter_extracted` só fica na seção com
+# summary real e `verify_verdict` accessible/anti_bot (#9250/#9292). Sem isso,
+# validate-lancamentos.ts rebaixa o item pra RADAR, porque o título pode ser o
+# assunto do e-mail e não o da página de destino.
+#
+# Se você conferiu na página que o título e o escopo do item estão certos,
+# adicione aqui 1 SUBSTRING de URL por linha e rode o validador de novo.
+#
+# Esta lista é separada de lancamentos-tool-allowlist.txt de propósito: aquela
+# responde "é ferramenta?", esta responde "o título foi confirmado?". Uma
+# entrada lá não libera extrato aqui, e vice-versa.
+#
+# Só URL ESPECÍFICA vale. Padrão de caminho (termina em `/`, ou só o domínio)
+# é ignorado: confirmar título é sobre uma página que você olhou.
+#
+# Linhas começando com `#` são comentário; linhas em branco ignoradas.
+# Ex (fictício):
+#   exemplo.com/blog/ferramenta-x-lancada

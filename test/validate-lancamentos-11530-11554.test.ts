@@ -11,6 +11,7 @@ import {
   isUnverifiedNewsletterExtract,
   isAllowlistPathPattern,
   loadToolAllowlist,
+  loadExtractConfirmedList,
 } from "../scripts/validate-lancamentos.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,14 +80,44 @@ describe("#11554 allowlist: padrão de caminho vs URL específica", () => {
     verify_verdict: "uncertain",
   };
 
-  it("padrão de caminho NÃO libera extrato de newsletter sem confirmação", () => {
-    assert.equal(isUnverifiedNewsletterExtract(extract, ["replit.com/blog/"]), true);
+  it("allowlist de ferramenta (padrão de caminho) NÃO libera extrato de newsletter", () => {
     const { demoted } = demoteNotATool({ lancamento: [extract], radar: [] }, ["replit.com/blog/"]);
     assert.equal(demoted.length, 1);
+    const summary = validateLancamentosFromApproved({ lancamento: [extract], radar: [] }, ["replit.com/blog/"]);
+    assert.equal(summary.unverified_extract.length, 1);
   });
 
-  it("URL específica continua liberando o extrato (#9292)", () => {
-    assert.equal(isUnverifiedNewsletterExtract(extract, ["replit.com/blog/some-unrelated-post"]), false);
+  it("allowlist de ferramenta (URL específica) também NÃO libera extrato", () => {
+    // Regressão do #11554 item 1: a allowlist responde só "é ferramenta?".
+    const allow = ["replit.com/blog/some-unrelated-post"];
+    const { demoted } = demoteNotATool({ lancamento: [extract], radar: [] }, allow);
+    assert.equal(demoted.length, 1);
+    const summary = validateLancamentosFromApproved({ lancamento: [extract], radar: [] }, allow);
+    assert.equal(summary.unverified_extract.length, 1);
+  });
+
+  it("lista de extrato confirmado libera a URL específica (#9292)", () => {
+    const confirmed = ["replit.com/blog/some-unrelated-post"];
+    assert.equal(isUnverifiedNewsletterExtract(extract, confirmed), false);
+    // As duas perguntas respondidas, cada uma pela sua lista.
+    const { demoted } = demoteNotATool({ lancamento: [extract], radar: [] }, ["replit.com/blog/"], confirmed);
+    assert.equal(demoted.length, 0);
+  });
+
+  it("lista de extrato confirmado ignora padrão de caminho", () => {
+    assert.equal(isUnverifiedNewsletterExtract(extract, ["replit.com/blog/"]), true);
+    assert.equal(isUnverifiedNewsletterExtract(extract, ["replit.com"]), true);
+  });
+
+  it("lista real de extrato confirmado carrega sem padrões nem comentários", () => {
+    for (const a of loadExtractConfirmedList(ROOT)) {
+      assert.ok(!/\s/.test(a), `entrada com espaço (comentário vazou?): ${a}`);
+      assert.ok(!isAllowlistPathPattern(a), `padrão de caminho na lista: ${a}`);
+    }
+  });
+
+  it("allowlist real cobre o caminho atual replit.com/blog/", () => {
+    assert.ok(loadToolAllowlist(ROOT).includes("replit.com/blog/"));
   });
 
   it("padrão de caminho continua respondendo 'é ferramenta'", () => {

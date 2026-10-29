@@ -145,12 +145,12 @@ describe("#9292 newsletter_extracted: anti_bot, allowlist e contagem alinhada", 
     assert.deepEqual((out.lancamento ?? []).map((i) => i.url), [antiBot.url]);
   });
 
-  it("allowlist protege o item da demoção (escolha do editor)", () => {
-    const allow = ["openai.com/index/introducing-gpt-6-4"];
-    assert.equal(isUnverifiedNewsletterExtract(uncertain, allow), false);
-    const summary = validateLancamentosFromApproved({ lancamento: [uncertain], radar: [] }, allow);
+  it("lista de extrato confirmado protege o item da demoção (escolha do editor, #11554)", () => {
+    const confirmed = ["openai.com/index/introducing-gpt-6-4"];
+    assert.equal(isUnverifiedNewsletterExtract(uncertain, confirmed), false);
+    const summary = validateLancamentosFromApproved({ lancamento: [uncertain], radar: [] }, [], confirmed);
     assert.equal(summary.unverified_extract.length, 0);
-    const { approved: out } = demoteNotATool({ lancamento: [uncertain], radar: [] }, allow);
+    const { approved: out } = demoteNotATool({ lancamento: [uncertain], radar: [] }, [], confirmed);
     assert.deepEqual((out.lancamento ?? []).map((i) => i.url), [uncertain.url]);
   });
 

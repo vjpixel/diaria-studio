@@ -78,12 +78,30 @@ export function loadToolAllowlist(root: string): string[] {
 }
 
 /**
- * #11554: entrada da allowlist que é PADRÃO de caminho (domínio inteiro ou
- * seção, ex. `replit.com/blog/`), e não uma URL específica. Convenção: termina
- * em `/` ou não tem caminho nenhum. Padrão responde só "é ferramenta?"
- * (`isVerifiedTool`); não confirma título/escopo de item extraído de
- * newsletter (`isUnverifiedNewsletterExtract`), porque o editor nunca olhou
- * aquela página específica.
+ * #11554: lista SEPARADA da allowlist de ferramenta. Responde só "o editor
+ * confirmou título e escopo deste item extraído de newsletter?" (escape-hatch
+ * do #9292 contra a demoção do #9250). Arquivo
+ * `seed/lancamentos-extract-confirmed.txt`, mesmo formato da allowlist (1
+ * substring de URL por linha, `#` = comentário). Só URL ESPECÍFICA vale:
+ * padrão de caminho (`exemplo.com/blog/`) é ignorado, porque confirmar título
+ * é sobre uma página que o editor olhou, nunca sobre um domínio inteiro.
+ * Ausente / vazio → lista vazia (nenhum extrato sem verificação escapa).
+ */
+export function loadExtractConfirmedList(root: string): string[] {
+  const p = resolve(root, "seed", "lancamentos-extract-confirmed.txt");
+  if (!existsSync(p)) return [];
+  return readFileSync(p, "utf8")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/#.*$/, "").trim())
+    .filter((l) => l.length > 0 && !isAllowlistPathPattern(l));
+}
+
+/**
+ * #11554: entrada que é PADRÃO de caminho (domínio inteiro ou seção, ex.
+ * `replit.com/blog/`), e não uma URL específica. Convenção: termina em `/` ou
+ * não tem caminho nenhum. Na allowlist de ferramenta, padrão e URL específica
+ * valem igual (os dois respondem "é ferramenta?"); na lista de extrato
+ * confirmado (`loadExtractConfirmedList`), padrão é descartado.
  */
 export function isAllowlistPathPattern(entry: string): boolean {
   if (entry.endsWith("/")) return true;
@@ -601,7 +619,9 @@ export interface LancamentosRemovedSummary {
 /**
  * #9250: item extraído de newsletter capturada (`flag: newsletter_extracted`)
  * só entra em LANÇAMENTOS com summary real E `verify_verdict` `accessible`/`anti_bot`
- * (#9292; verdict ausente segue rebaixado; allowlist de URL é escape-hatch).
+ * (#9292; verdict ausente segue rebaixado). Escape-hatch do editor: a URL em
+ * `seed/lancamentos-extract-confirmed.txt` (#11554), nunca a allowlist de
+ * ferramenta — "é ferramenta" e "título confirmado" são perguntas diferentes.
  * Sem isso o título/escopo do item nunca foi confirmado contra a página de
  * destino (caso real 261001: título = assunto do e-mail da 7min.ai, sem
  * summary, `verify_verdict: uncertain`). Demovido pra radar[] junto com os
@@ -609,14 +629,15 @@ export interface LancamentosRemovedSummary {
  */
 export function isUnverifiedNewsletterExtract(
   item: { [k: string]: unknown },
-  allowlist: string[] = [],
+  confirmedExtracts: string[] = [],
 ): boolean {
   if (item.flag !== "newsletter_extracted") return false;
-  // #9292: URL na allowlist nunca é rebaixada. #11554: só entrada de URL
-  // ESPECÍFICA conta aqui (o editor olhou aquela página); padrão de caminho
-  // (`replit.com/blog/`) diz "é ferramenta", não "o título foi confirmado".
+  // #9292: URL confirmada pelo editor nunca é rebaixada. #11554: a confirmação
+  // vem da lista própria (`loadExtractConfirmedList`), não da allowlist de
+  // ferramenta; padrão de caminho é ignorado mesmo se chegar aqui por chamada
+  // direta.
   const url = typeof item.url === "string" ? item.url : "";
-  const specific = allowlist.filter((a) => a && !isAllowlistPathPattern(a));
+  const specific = confirmedExtracts.filter((a) => a && !isAllowlistPathPattern(a));
   if (url && matchesAllowlist(url, specific)) return false;
   const summary = typeof item.summary === "string" ? item.summary.trim() : "";
   // #9292: `anti_bot` (Cloudflare em site oficial, ex. openai.com) conta como
@@ -640,6 +661,7 @@ interface ApprovedShape {
 export function validateLancamentosFromApproved(
   approved: ApprovedShape,
   allowlist: string[] = [],
+  confirmedExtracts: string[] = [],
 ): LancamentosRemovedSummary {
   const list = Array.isArray(approved.lancamento) ? approved.lancamento : [];
   const removed: LancamentoRemoved[] = [];
@@ -676,7 +698,7 @@ export function validateLancamentosFromApproved(
       !isConferenceRoundupWarn(title);
     if (isNatool) {
       not_a_tool.push({ url, title });
-    } else if (isUnverifiedNewsletterExtract(item, allowlist)) {
+    } else if (isUnverifiedNewsletterExtract(item, confirmedExtracts)) {
       // #9292: sem condicionar a `official` — `demoteNotATool` rebaixa
       // independentemente do domínio, e o resumo tem de contar o que move.
       unverified_extract.push({ url, title });
@@ -749,6 +771,7 @@ export interface DemoteNotAToolResult {
 export function demoteNotATool(
   approved: ApprovedShape,
   allowlist: string[] = [],
+  confirmedExtracts: string[] = [],
 ): DemoteNotAToolResult {
   const list = Array.isArray(approved.lancamento) ? approved.lancamento : [];
   const radar = Array.isArray(approved.radar) ? [...approved.radar] : [];
@@ -764,7 +787,7 @@ export function demoteNotATool(
     if (isNatool) {
       demoted.push({ url, title });
       radar.push({ ...item, demoted_from: "lancamento", demoted_reason: "not_a_tool" });
-    } else if (isUnverifiedNewsletterExtract(item, allowlist)) {
+    } else if (isUnverifiedNewsletterExtract(item, confirmedExtracts)) {
       // #9250: newsletter_extracted sem summary verificado nunca fica em LANÇAMENTOS.
       demoted.push({ url, title });
       radar.push({ ...item, demoted_from: "lancamento", demoted_reason: "unverified_newsletter_extract" });
@@ -817,7 +840,8 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
     process.exit(2);
   }
   const allowlist = loadToolAllowlist(ROOT);
-  const summary = validateLancamentosFromApproved(approved, allowlist);
+  const confirmedExtracts = loadExtractConfirmedList(ROOT);
+  const summary = validateLancamentosFromApproved(approved, allowlist, confirmedExtracts);
   console.log(JSON.stringify(summary, null, 2));
 
   if (args["write-removed"]) {
@@ -856,7 +880,7 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
   // `01-approved.json` (mesmo path de `--approved`) com o item já movido, ANTES
   // do writer rodar — o item nunca chega a aparecer em LANÇAMENTOS na newsletter.
   if (summary.not_a_tool.length > 0 || summary.unverified_extract.length > 0) {
-    const { approved: demotedApproved, demoted, consolidated } = demoteNotATool(approved, allowlist);
+    const { approved: demotedApproved, demoted, consolidated } = demoteNotATool(approved, allowlist, confirmedExtracts);
     writeFileSync(approvedPath, JSON.stringify(demotedApproved, null, 2) + "\n", "utf8");
     console.error(
       `\n➡️  [aviso, não bloqueia] ${demoted.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) ou extraído(s) de newsletter sem summary verificado (#9250) foram movidos automaticamente para RADAR (#4339):`,
@@ -866,7 +890,8 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
       console.error(`  ${n.url}${titleHint}`);
     }
     console.error(
-      "Se algum destes for ferramenta legítima de slug atípico, adicione a URL a seed/lancamentos-tool-allowlist.txt e rode novamente.",
+      "Se algum destes for ferramenta legítima de slug atípico, adicione a URL a seed/lancamentos-tool-allowlist.txt e rode novamente. " +
+        "Se for extrato de newsletter cujo título e escopo você conferiu na página, adicione a URL a seed/lancamentos-extract-confirmed.txt (#11554).",
     );
     // #4386: item demovido colidiu com um item JÁ presente em radar[] — foram
     // consolidados (não duplicados) via o mesmo dedup intra-bucket do #4360.
