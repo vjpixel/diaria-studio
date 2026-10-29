@@ -8,11 +8,18 @@
  * um stub em memória, mesmo padrão de `test/wait-until-sync.test.ts`/
  * `test/alarm-issues.test.ts`.
  */
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   addPrLabelsRest,
   checkBodyCitesIssues,
+  checkPrHeadMatchesLocal,
+  compareHeadWithLocal,
+  headMismatchError,
   issuesFromBranch,
   issuesMissingFromBody,
   parseIssuesFlag,
@@ -277,5 +284,108 @@ describe("#10618 fatia 4 (review B) — PR de outro repo da allowlist", () => {
     setPrBodyRest(23, "x", "/repo", run);
     assert.ok(calls[0].includes("repos/{owner}/{repo}/pulls/23"));
     assert.ok(!calls[1].includes("-R"));
+  });
+});
+
+// ─── #11566: HEAD da PR = HEAD local ────────────────────────────────────
+//
+// Cenário real (/diaria-develop 261029): `develop/fix-11467` sobrou no remoto
+// da PR #11480 (squash sem --delete-branch). A 2ª PR reaproveitou o nome, o
+// push foi recusado (non-fast-forward) e o `gh pr create` abriu a #11528 em
+// cima do commit ANTIGO `24cef52`. O corpo citava a issue certa, então a
+// conferência do #10698 sozinha passava.
+describe("compareHeadWithLocal (#11566)", () => {
+  it("mesma branch, commit diferente → mismatch", () => {
+    assert.deepEqual(
+      compareHeadWithLocal({ branch: "develop/fix-11467", oid: "24cef52aaa" }, { branch: "develop/fix-11467", oid: "f00dbabe11" }),
+      { status: "mismatch", branch: "develop/fix-11467", prOid: "24cef52aaa", localOid: "f00dbabe11" },
+    );
+  });
+
+  it("mesma branch e commit (case-insensitive) → match", () => {
+    assert.equal(compareHeadWithLocal({ branch: "b", oid: "ABC" }, { branch: "b", oid: "abc" }).status, "match");
+  });
+
+  it("checkout em outra branch → other-branch (não é o checkout da PR)", () => {
+    assert.equal(compareHeadWithLocal({ branch: "b", oid: "1" }, { branch: "master", oid: "2" }).status, "other-branch");
+  });
+});
+
+describe("checkPrHeadMatchesLocal (#11566) — com git real", () => {
+  const dirs: string[] = [];
+  after(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  function repoWithTwoCommits(branch: string): { dir: string; old: string; head: string } {
+    const dir = mkdtempSync(join(tmpdir(), "safe-edit-11566-"));
+    dirs.push(dir);
+    const git = (...args: string[]) => {
+      const r = spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args], {
+        cwd: dir,
+        encoding: "utf8",
+      });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    git("init", "-q", "-b", branch);
+    writeFileSync(join(dir, "a.txt"), "1");
+    git("add", "a.txt");
+    git("commit", "-q", "-m", "antigo");
+    const old = git("rev-parse", "HEAD");
+    writeFileSync(join(dir, "a.txt"), "2");
+    git("commit", "-q", "-am", "novo");
+    return { dir, old, head: git("rev-parse", "HEAD") };
+  }
+
+  it("PR aberta em cima do commit antigo → mismatch, e a mensagem explica o caso", () => {
+    const { dir, old, head } = repoWithTwoCommits("develop/fix-11467");
+    const calls: string[][] = [];
+    const r = checkPrHeadMatchesLocal(11528, "/repo", dir, (args) => {
+      calls.push(args);
+      return ok(`develop/fix-11467 ${old}\n`);
+    });
+    assert.ok(r.ok);
+    assert.deepEqual(r.check, { status: "mismatch", branch: "develop/fix-11467", prOid: old, localOid: head });
+    assert.ok(calls[0].includes("headRefName,headRefOid"));
+    assert.ok(r.check.status === "mismatch");
+    const msg = headMismatchError(11528, r.check);
+    assert.match(msg, /PR #11528/);
+    assert.match(msg, /non-fast-forward/);
+    assert.match(msg, /#11566/);
+  });
+
+  it("PR no commit atual → match", () => {
+    const { dir, head } = repoWithTwoCommits("overnight/fix-1-x");
+    const r = checkPrHeadMatchesLocal(1, "/repo", dir, () => ok(`overnight/fix-1-x ${head}\n`));
+    assert.deepEqual(r, { ok: true, check: { status: "match", oid: head } });
+  });
+
+  it("diretório fora do git → no-local-checkout, sem consultar o gh", () => {
+    const dir = mkdtempSync(join(tmpdir(), "safe-edit-11566-nogit-"));
+    dirs.push(dir);
+    const r = checkPrHeadMatchesLocal(1, "/repo", dir, () => {
+      throw new Error("não devia chamar gh");
+    });
+    assert.ok(r.ok);
+    assert.equal(r.check.status, "no-local-checkout");
+  });
+
+  it("falha do gh é erro (fail-closed); PR de outro repo vai com -R", () => {
+    const { dir } = repoWithTwoCommits("develop/fix-21-x");
+    const calls: string[][] = [];
+    const r = checkPrHeadMatchesLocal(
+      23,
+      "/repo",
+      dir,
+      (args) => {
+        calls.push(args);
+        return fail("rate limit");
+      },
+      undefined,
+      "vjpixel/diaria-design",
+    );
+    assert.equal(r.ok, false);
+    assert.ok(calls[0].includes("-R") && calls[0].includes("vjpixel/diaria-design"));
   });
 });

@@ -234,6 +234,90 @@ export function checkBodyCitesIssues(body: string, issues: readonly number[]): S
   };
 }
 
+// ─── HEAD da PR = HEAD local (#11566) ────────────────────────────────────
+//
+// /diaria-develop 261029: a branch `develop/fix-11467` da PR #11480 (mergeada
+// por squash, sem `--delete-branch`, de propósito — ver "--delete-branch troca
+// a checkout") ficou no remoto. A 2ª PR da mesma issue reaproveitou o nome, o
+// `git push -u` foi recusado como non-fast-forward (só um `hint:` no stderr)
+// e o `gh pr create` abriu a #11528 em cima do commit ANTIGO. O corpo citava a
+// issue certa, então a conferência do #10698 passava. O sinal mecânico é o
+// `headRefOid` da PR diferente do `HEAD` do checkout que acabou de abri-la.
+
+/** Runner de `git` injetável (default: `spawnGhSync` com `bin = "git"`). */
+export type GitRunFn = (args: string[], cwd: string) => GhSpawnResult;
+
+const defaultGitRun: GitRunFn = (args, cwd) => spawnGhSync(args, cwd, undefined, "git");
+
+export type HeadCheck =
+  | { status: "match"; oid: string }
+  /** O checkout local está noutra branch: não é o checkout da PR, nada a comparar. */
+  | { status: "other-branch"; prBranch: string; localBranch: string }
+  | { status: "mismatch"; branch: string; prOid: string; localOid: string }
+  /** O diretório não é checkout git (ex.: cwd sem `.git`): nada a comparar. */
+  | { status: "no-local-checkout"; dir: string; reason: string };
+
+/** Comparação pura: mesma branch e mesmo commit → `match`. */
+export function compareHeadWithLocal(
+  pr: { branch: string; oid: string },
+  local: { branch: string; oid: string },
+): HeadCheck {
+  if (pr.branch !== local.branch) {
+    return { status: "other-branch", prBranch: pr.branch, localBranch: local.branch };
+  }
+  if (pr.oid.toLowerCase() !== local.oid.toLowerCase()) {
+    return { status: "mismatch", branch: pr.branch, prOid: pr.oid, localOid: local.oid };
+  }
+  return { status: "match", oid: pr.oid };
+}
+
+/**
+ * Lê `headRefName`/`headRefOid` da PR e o `HEAD` do checkout `localDir` e
+ * compara. O git é lido primeiro: `localDir` que não é checkout git devolve
+ * `no-local-checkout` sem consultar o gh (nada a comparar). Falha do gh é
+ * erro (fail-closed, como em `resolveExpectedIssues`).
+ */
+export function checkPrHeadMatchesLocal(
+  pr: number,
+  cwd: string,
+  localDir: string,
+  ghRun: GhRunFn = spawnGhSync,
+  gitRun: GitRunFn = defaultGitRun,
+  repo?: string,
+): { ok: true; check: HeadCheck } | { ok: false; error: string } {
+  const branch = gitRun(["rev-parse", "--abbrev-ref", "HEAD"], localDir);
+  const oid = gitRun(["rev-parse", "HEAD"], localDir);
+  if (branch.status !== 0 || oid.status !== 0) {
+    const reason = (branch.stderr || oid.stderr).trim() || "git rev-parse falhou";
+    return { ok: true, check: { status: "no-local-checkout", dir: localDir, reason } };
+  }
+  const view = ghRun(
+    ["pr", "view", String(pr), ...repoArgs(repo), "--json", "headRefName,headRefOid", "--jq", '.headRefName + " " + .headRefOid'],
+    cwd,
+  );
+  if (view.status !== 0) {
+    return { ok: false, error: `não consegui ler o HEAD da ${prLabelInRepo(pr, repo)}: ${view.stderr.trim() || "gh pr view falhou"}` };
+  }
+  const [prBranch, prOid] = view.stdout.trim().split(/\s+/);
+  if (!prBranch || !prOid) {
+    return { ok: false, error: `resposta inesperada do gh para headRefName/headRefOid: "${view.stdout.trim()}"` };
+  }
+  return {
+    ok: true,
+    check: compareHeadWithLocal({ branch: prBranch, oid: prOid }, { branch: branch.stdout.trim(), oid: oid.stdout.trim() }),
+  };
+}
+
+/** Mensagem de erro do `mismatch` (exportada para o teste travar o texto útil). */
+export function headMismatchError(pr: number, check: Extract<HeadCheck, { status: "mismatch" }>, repo?: string): string {
+  return (
+    `a ${prLabelInRepo(pr, repo)} aponta para ${check.prOid.slice(0, 9)}, mas o HEAD local da branch ` +
+    `${check.branch} é ${check.localOid.slice(0, 9)} — o push não chegou ao remoto. O caso típico é push recusado ` +
+    `(non-fast-forward) porque a branch remota sobrou de uma PR anterior já mergeada (#11566): feche esta PR, ` +
+    `crie uma branch de nome novo (sufixo -2) e reabra; nunca force-push sobre branch de PR alheia.`
+  );
+}
+
 /** `"10698,10699"` → `[10698, 10699]`; `null` se ausente/vazio; lança se algum item não é inteiro positivo. */
 export function parseIssuesFlag(raw: string | undefined): number[] | null {
   if (raw === undefined || raw.trim() === "") return null;
@@ -250,12 +334,14 @@ function usage(): string {
   return (
     "Uso:\n" +
     "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N [--repo owner/name] --body-file arquivo.md [--issues N,M] [--allow-missing-issue-marker]\n" +
-    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N [--repo owner/name] --verify-body [--issues N,M]\n" +
+    "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N [--repo owner/name] --verify-body [--issues N,M] [--worktree DIR]\n" +
     "  npx tsx scripts/lib/gh-pr-safe-edit.ts --pr N [--repo owner/name] --add-label a,b,c\n" +
     "--repo: PR de outro repo de issue_repos (ex.: vjpixel/diaria-design, #10618); sem ele, o repo do cwd.\n" +
     "Substitui `gh pr edit --body`/`--add-label` (falha em silêncio, #6292) por REST + verificação pós-escrita.\n" +
     "--body-file recusa corpo que não cita (Closes/REFS) as issues da PR — da branch, ou de --issues (#10698).\n" +
-    "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`."
+    "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`.\n" +
+    "  Também confere que o headRefOid da PR é o HEAD local (#11566) — do checkout em --worktree (default cwd);\n" +
+    "  checkout em outra branch ou fora do git só gera aviso."
   );
 }
 
@@ -312,7 +398,30 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    const result = citesCheck(view.stdout) ?? { ok: true };
+    const bodyResult = citesCheck(view.stdout) ?? { ok: true };
+    // #11566: o corpo pode estar certo e a PR apontar para um commit antigo
+    // (push recusado em branch que sobrou de PR mergeada). Compara o HEAD da PR
+    // com o do checkout que a abriu (`--worktree`, default cwd).
+    const localDir = values.worktree ? resolve(values.worktree) : cwd;
+    const head = checkPrHeadMatchesLocal(pr, cwd, localDir, spawnGhSync, defaultGitRun, repo);
+    const errors: string[] = [];
+    if (!bodyResult.ok && bodyResult.error) errors.push(bodyResult.error);
+    if (!head.ok) {
+      errors.push(head.error);
+    } else if (head.check.status === "mismatch") {
+      errors.push(headMismatchError(pr, head.check, repo));
+    } else if (head.check.status === "other-branch") {
+      console.error(
+        `[gh-pr-safe-edit] aviso: ${localDir} está na branch ${head.check.localBranch}, não na ${head.check.prBranch} da PR — HEAD não conferido; passe --worktree <checkout da PR> (#11566).`,
+      );
+    } else if (head.check.status === "no-local-checkout") {
+      console.error(
+        `[gh-pr-safe-edit] aviso: ${localDir} não é checkout git (${head.check.reason}) — HEAD da PR não conferido; passe --worktree <checkout da PR> (#11566).`,
+      );
+    }
+    const result: SafeEditResult & { head?: string } =
+      errors.length === 0 ? { ok: true } : { ok: false, error: errors.join(" | ") };
+    if (head.ok) result.head = head.check.status;
     console.log(JSON.stringify(result));
     if (!result.ok) process.exitCode = 1;
     return;
