@@ -25,8 +25,12 @@
  *      senão o `url-bucket` acusa a duplicata `lancamento` + `radar`);
  *   3. Bloco `**DESTAQUE N**` de `02-reviewed.md` substituído por
  *      placeholder `[RASCUNHO PENDENTE]`;
- *   4. Imagens (`04-d{N}-*`) e prompts (`02-d{N}-*`) antigos da posição
- *      removidos (precisam regenerar);
+ *   4. Imagens (`04-d{N}-*`) e prompts/rascunho (`02-d{N}-*`) antigos da
+ *      posição tirados do lugar (precisam regenerar) — MOVIDOS para
+ *      `_internal/_forensic/swap-{aammdd-hhmm}-dN/` com manifest, nunca
+ *      apagados (#11573, mesmo backup do swap-destaque.ts #11529). Se o
+ *      editor trouxer o item de volta à posição, `swap-destaque.ts --restore
+ *      dN` devolve arquivos e chaves de `06-public-images.json`;
  *   5. `_internal/04-estilo-regen.json` (#10335): estado do plano de
  *      regeneração por Noite Estrelada das posições trocadas zerado;
  *   6. `_internal/carousel-keep-art.json` (#11213): exceção "manter a arte"
@@ -82,12 +86,15 @@ import {
   extractTitle,
   toBucketItem,
   removeDestaqueBlockFromMd,
-  deleteDestaqueImages,
-  deleteDestaquePrompts,
   removeUrlFromPoolBuckets,
   POOL_BUCKETS,
   type SourceBucket,
 } from "./swap-destaque.ts";
+import {
+  backupDemotedDestaque,
+  readPublicImagesForPosition,
+  type BackupResult,
+} from "./lib/swap-destaque-forensic.ts"; // #11573
 
 export { removeUrlFromPoolBuckets }; // #9869 — vive no swap-destaque.ts desde o #9961
 
@@ -128,6 +135,12 @@ export interface SwapDestaquesResult {
     rewritten: string[];
     deleted: string[];
   };
+  /**
+   * #11573: backup dos artefatos de cada posição trocada
+   * (`_internal/_forensic/swap-...`; `dir: null` = nada a guardar).
+   * Restaurar com `swap-destaque.ts --restore dN`.
+   */
+  backups?: Array<{ position: number } & BackupResult>;
   /** Avisos não-fatais — arquivo secundário divergente, placeholder não inserido, etc. */
   warnings: string[];
   next_steps: string[];
@@ -136,6 +149,20 @@ export interface SwapDestaquesResult {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Bucket de origem de um highlight para o manifest do backup (#11573) —
+ * `bucket` do wrapper, senão `article.category`, senão `null`. Mesma regra do
+ * swap-destaque.ts (#11529).
+ *
+ * @pure
+ */
+export function highlightSourceBucket(h: unknown): string | null {
+  const x = (h ?? {}) as { bucket?: unknown; article?: { category?: unknown } };
+  if (typeof x.bucket === "string") return x.bucket;
+  if (typeof x.article?.category === "string") return x.article.category;
+  return null;
+}
 
 /** Highlight mínimo pra um item que não veio de nenhum bucket do pool. */
 export function buildManualHighlight(
@@ -408,6 +435,12 @@ function main(): void {
     return;
   }
 
+  // #11573: highlights originais das posições trocadas (o swap abaixo os
+  // substitui IN PLACE) — o bucket de origem vai pro manifest do backup.
+  const originalHighlights = Array.isArray(approvedData.highlights)
+    ? [...(approvedData.highlights as unknown[])]
+    : [];
+
   // 1. 01-approved.json
   const swapResult = swapManualInApprovedJson(approvedData, slots, drop, demoteTo);
   if (!swapResult.ok) {
@@ -496,6 +529,12 @@ function main(): void {
     }
   }
 
+  // #11573: guarda as entradas públicas das posições ANTES de o lote abaixo
+  // gravar o cache invalidado — vão para o manifest do backup de cada posição.
+  const demotedPublicImages = new Map(
+    slots.map((s) => [s.position, readPublicImagesForPosition(editionDir, s.position)] as const),
+  );
+
   // 3b. 06-public-images.json (#11252): as URLs públicas das posições trocadas
   // apontam pra arte do destaque ANTIGO. Sem remover as chaves, um upload
   // rodado antes da imagem nova existir (spec optional pula arquivo ausente e
@@ -513,14 +552,25 @@ function main(): void {
   writeFilesVerified(pendingWrites, "swap-destaques");
   for (const w of pendingWrites) result.modified.rewritten.push(w.path);
 
-  // 4. Imagens e prompts antigos por slot
+  // 4. Imagens e prompts/rascunho antigos por slot — MOVIDOS para
+  // _internal/_forensic/ com manifest, nunca apagados (#11573, mesmo backup
+  // do swap-destaque.ts #11529): se o editor trouxer o item de volta,
+  // `swap-destaque.ts --restore dN` devolve tudo.
+  result.backups = [];
   for (const s of slots) {
-    for (const d of deleteDestaqueImages(editionDir, s.position, false)) {
-      result.modified.deleted.push(d.deleted);
-    }
-    for (const d of deleteDestaquePrompts(internalDir, s.position, false)) {
-      result.modified.deleted.push(d.deleted);
-    }
+    const demoted = swapResult.demoted.find((d) => d.position === s.position);
+    const backup = backupDemotedDestaque({
+      editionDir,
+      position: s.position,
+      url: demoted?.url ?? "",
+      title: demoted?.title ?? "",
+      sourceBucket: highlightSourceBucket(originalHighlights[s.position - 1]),
+      demotedTo: drop ? null : demoteTo,
+      publicImages: demotedPublicImages.get(s.position) ?? {},
+    });
+    result.backups.push({ position: s.position, ...backup });
+    // Compatibilidade: modified.deleted mantém os nomes sem o prefixo `_internal/`.
+    for (const f of backup.files) result.modified.deleted.push(f.replace(/^_internal\//, ""));
   }
 
   // 5. Zera o estado do plano de Noite Estrelada das posições trocadas
@@ -566,6 +616,12 @@ function main(): void {
         (s) =>
           `  d${s.position}: "${s.promoted.title}" ← NOVO  |  "${s.demoted.title}" → ${s.demoted.dropped ? "DESCARTADO" : `${s.demoted.to_bucket}[0]`}`,
       ),
+      ...(result.backups ?? [])
+        .filter((b) => b.dir)
+        .map(
+          (b) =>
+            `  Backup do d${b.position} substituído: ${b.dir} (voltando à posição: swap-destaque.ts --restore d${b.position}, #11573)`,
+        ),
       ...(result.warnings.length > 0
         ? ["", "  Avisos:", ...result.warnings.map((w) => `    ⚠️  ${w}`)]
         : []),
