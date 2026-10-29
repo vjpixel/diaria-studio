@@ -340,7 +340,9 @@ documentado e testado em `.claude/skills/diaria-overnight/SKILL.md` e em
   lê) e o cita — não reproduz — no prompt de dispatch de cada subagente
   implementador. O prompt exige arquivo do corpo do PR com nome único
   (números das issues + sufixo aleatório) e `gh-pr-safe-edit.ts
-  --verify-body` logo após o `gh pr create` (#10698, item 9).
+  --verify-body --worktree {worktree da unidade}` logo após o `gh pr create`
+  (#10698, item 9; o `--worktree` aponta a conferência do commit da PR,
+  #11566, pro checkout certo — PR do design incluída, #11587).
 - **Trem de merge (#6300, decisão do editor 26/08/2026, default ATIVO):**
   o parágrafo "Trem de merge" do Gate 2 do overnight (`.claude/skills/
   diaria-overnight/SKILL.md`) se aplica aqui por citação, igual ao resto
