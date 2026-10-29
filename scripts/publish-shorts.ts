@@ -2530,7 +2530,7 @@ export function blockRepostOnProfileFailure(
 }
 
 /** Link da edição: --edition-url > `_internal/05-edition-url.txt` > (derivado, no plano). */
-function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
+export function resolveEditionUrlInput(dir: string, flag: string | undefined): { url?: string; source?: string } {
   if (flag) return { url: flag, source: "--edition-url" };
   const p = join(dir, "_internal", "05-edition-url.txt");
   if (existsSync(p)) {
