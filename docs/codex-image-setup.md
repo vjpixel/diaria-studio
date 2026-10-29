@@ -10,6 +10,8 @@ A edição diária hoje é rodada à mão (timer agendado do `300` cancelado em 
 2. `codex login` com a **conta ChatGPT** (nunca API key).
 3. Conferir: `codex exec --skip-git-repo-check -m gpt-5.6-luna "reply ok"`.
 
+**No `300` (#11532, conferido em 29/10/2026):** o Codex está instalado pelo npm global do usuário, em `~/.npm-global/bin/codex` (codex-cli 0.159.1), com o login em `~/.codex/auth.json`. Esse diretório entra no PATH só na shell interativa: `ssh 300 'codex --version'` (shell não interativa) não acha o binário, e foi isso que o diagnóstico de 28/10 viu. Não precisa reinstalar: `codex-image.js` e `check-video-env.ts` tentam `~/.npm-global/bin/codex` e `~/.local/bin/codex` quando `codex` não resolve no PATH. Para usar o `codex` direto numa sessão por SSH, `export PATH="$HOME/.npm-global/bin:$PATH"`. Os pré-requisitos da capa por máquina (ffmpeg, Codex, Georgia, rembg) saem de `npx tsx scripts/check-video-env.ts` e, sem capa pronta, no `cover_prerequisites` do `publish-youtube.ts --dry-run`. O venv do rembg (`.venv-rembg/`) fica no checkout principal; num worktree, a sonda o dá como ausente.
+
 ## Armadilhas
 
 - **Modelo explícito.** O default do `~/.codex/config.toml` (`gpt-6-sol`), `gpt-6-luna` e `gpt-5.6` são **recusados** na conta ChatGPT. O backend sempre passa `-m` (`platform.config.json → codex.model`, default `gpt-5.6-luna`; `gpt-5.5` também funciona). O modelo de *imagem* é interno ao Codex e não é configurável.

@@ -123,6 +123,14 @@
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/block-writer-destaque-write-path.mjs"
             ]
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/require-writer-context-reads.mjs"
+            ]
           }
         ]
       },
@@ -287,6 +295,19 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "timeout": 10,
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/require-writer-context-reads.mjs"
+            ]
+          }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [

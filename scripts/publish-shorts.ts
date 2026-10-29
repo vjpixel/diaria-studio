@@ -383,8 +383,106 @@ export interface ShortsPlan {
   /** Horário de cada destino de API desta rodada contra a grade já agendada (#10819). */
   slots: ShortSlot[];
   items: ShortsPlanItem[];
+  /**
+   * #11550: quem executa cada destino que não sai nesta rodada (ou sai por
+   * passo da skill). Decisão do editor de 28/10/2026: "sempre é você que
+   * precisa publicar" — nenhum destino volta para ele como passo manual.
+   */
+  owners: ShortsDestinationOwner[];
   premises: string[];
   warnings: string[];
+}
+
+/**
+ * #11550: o dono automático de um destino.
+ *   - `timer-300`: uma task do 300 publica (`task`), sem ação da skill;
+ *   - `agent-scheduled-task`: a skill cria uma task agendada one-shot que roda
+ *     `command` em `at` (a API do destino não agenda e não há timer ligado);
+ *   - `agent`: o agente executa nesta mesma rodada (`command`, ou o passo
+ *     guiado/Buffer descrito no item).
+ * Nunca `editor`: o relato da skill não devolve destino ao editor.
+ */
+export interface ShortsDestinationOwner {
+  destination: string;
+  action: ShortsPlanItem["action"];
+  by: "timer-300" | "agent-scheduled-task" | "agent";
+  task?: string;
+  at?: string;
+  command?: string;
+  note: string;
+}
+
+/** Task do 300 que é dona de cada destino delegado (`scripts/lib/scheduled-tasks.ts`). */
+export const SHORTS_TIMER_TASKS: Readonly<Record<string, string>> = {
+  linkedin_profile: "Diaria-Shorts-LinkedIn-Profile",
+  instagram: "Diaria-Shorts-Instagram",
+  [THREADS_PROFILE_DESTINATION]: "Diaria-Shorts-Threads-Profile",
+};
+
+/** Antecedência mínima para valer a pena agendar em vez de executar já (mesmo limiar de `resolveReelsSchedule`). */
+const OWNER_SCHEDULE_MIN_LEAD_MS = 10 * 60_000;
+
+/**
+ * Pure (#11550): dono de cada destino que não terminou nesta rodada.
+ * `pending_schedule` sem timer vira task agendada pela skill; `skip_late` e os
+ * passos guiados/Buffer ficam com o agente; `skip_delegated`, com o timer.
+ * Destinos que saem nesta rodada (`publish`/`enqueue`), já registrados
+ * (`skip_done`) ou pulados por credencial/conteúdo não entram.
+ */
+export function assignShortsDestinationOwners(
+  items: readonly ShortsPlanItem[],
+  ctx: { aammdd: string; now: Date; instagramViaTimer: boolean },
+): ShortsDestinationOwner[] {
+  const base = `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
+  const owners: ShortsDestinationOwner[] = [];
+  for (const item of items) {
+    const { destination, action } = item;
+    if (action === "skip_delegated") {
+      const task = SHORTS_TIMER_TASKS[destination];
+      owners.push({ destination, action, by: "timer-300", ...(task ? { task } : {}), note: `o timer do 300${task ? ` (${task})` : ""} publica no horário do vertical e alarma se não sair` });
+    } else if (action === "pending_schedule") {
+      if (destination === "instagram" && ctx.instagramViaTimer) {
+        owners.push({ destination, action, by: "timer-300", task: SHORTS_TIMER_TASKS.instagram, at: item.scheduledAt, note: "rodada do timer do 300: ele mesmo publica depois do horário" });
+      } else {
+        owners.push({
+          destination,
+          action,
+          by: "agent-scheduled-task",
+          at: item.scheduledAt,
+          command: `${base} --only ${destination} --publish`,
+          note:
+            `a API não agenda: a skill cria uma task agendada one-shot para ${item.scheduledAt} com este comando` +
+            (SHORTS_TIMER_TASKS[destination] ? ` (dono permanente: ligar o timer ${SHORTS_TIMER_TASKS[destination]} no 300)` : ""),
+        });
+      }
+    } else if (action === "skip_late") {
+      owners.push({
+        destination,
+        action,
+        by: "agent",
+        command: `${base} --only ${destination} --publish --now`,
+        note: "horário passou do teto: o agente publica nesta rodada com --now (ou registra com --mark se já saiu); nunca volta ao editor",
+      });
+    } else if (action === "guided") {
+      const at = item.at;
+      const later = at !== undefined && Date.parse(at) - ctx.now.getTime() > OWNER_SCHEDULE_MIN_LEAD_MS;
+      owners.push(
+        later
+          ? {
+              destination,
+              action,
+              by: "agent-scheduled-task",
+              at,
+              command: `/diaria-publica-video ${ctx.aammdd} --so vertical`,
+              note: `passo guiado da skill (Chrome) às ${at}: a skill agenda a própria re-execução para esse horário`,
+            }
+          : { destination, action, by: "agent", note: "passo guiado da skill (Chrome), executado pelo agente nesta rodada" },
+      );
+    } else if (action === "buffer") {
+      owners.push({ destination, action, by: "agent", note: "o agente agenda pela Buffer MCP (create_post) nesta rodada" });
+    }
+  }
+  return owners;
 }
 
 export interface ShortsPlanInput {
@@ -686,8 +784,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       }
       if (profileLate) {
         const detail =
-          `${profileLate} — fora do horário do teste (#10831), não publica sozinho. ` +
-          `Publique à mão no perfil e registre com --mark linkedin_profile=URL, ou rode com --now para publicar mesmo assim`;
+          `${profileLate} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
+          `O agente publica com --only linkedin_profile --publish --now (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`linkedin_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -708,7 +806,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           action: "pending_schedule",
           caption: text,
           scheduledAt: schedule.at,
-          detail: `a Posts API do LinkedIn não agenda — rode de novo depois das ${slot.hhmm} BRT (ou use --now)`,
+          detail: `a Posts API do LinkedIn não agenda — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550)`,
         };
       }
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null, title };
@@ -777,8 +875,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       const late = lateFor(dest.id);
       if (late) {
         const detail =
-          `${late} — fora do horário do teste (#10831), não publica sozinho. ` +
-          `Publique à mão no perfil e registre com --mark threads_profile=URL, ou rode com --now para publicar mesmo assim`;
+          `${late} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
+          `O agente publica com --only threads_profile --publish --now (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`threads_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -798,7 +896,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           action: "pending_schedule",
           caption: text,
           scheduledAt: schedule.at,
-          detail: `a Threads API não agenda — rode de novo depois das ${slot.hhmm} BRT (ou use --now)`,
+          detail: `a Threads API não agenda — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550)`,
         };
       }
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null };
@@ -914,7 +1012,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         action: "pending_schedule",
         caption,
         scheduledAt: schedule.at,
-        detail: `o Instagram não agenda Reels pela API — rode de novo depois das ${slot.hhmm} BRT (ou use --now).${why}`,
+        detail: `o Instagram não agenda Reels pela API — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550).${why}`,
       };
     }
     return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
@@ -924,7 +1022,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     i.destination === "instagram" ? (input.coverPath ? (input.coverUploadReady ? "cover_url" : "unavailable: R2 credentials missing; automatic frame") : "automatic")
       : "unsupported",
   ])) };
-  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
+  const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer });
+  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
 
 /**
@@ -3138,6 +3237,8 @@ async function main(): Promise<number> {
     }
     for (const w of attached.warnings) console.error(`[aviso] ${w}`);
   }
+  // #11550: os itens podem ter mudado depois do plano (repost bloqueado, upload do Chrome) — os donos acompanham.
+  plan = { ...plan, owners: assignShortsDestinationOwners(plan.items, { aammdd, now: new Date(), instagramViaTimer: shortsCfg.instagramBackend === "timer-300" }) };
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,
     scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,

@@ -19,7 +19,10 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * o agendamento (06:00 BRT do dia da edição, ou na hora se já passou ou
  * faltam menos de 15 min, #10875) e
  * imprime o request de `videos.insert` + o passo de `thumbnails.set` como
- * JSON — SEM chamar a API e sem escrever nada.
+ * JSON — SEM chamar a API e sem escrever nada. Sem `04-youtube-thumb.jpg`, o
+ * JSON traz `cover_prerequisites` (ffmpeg, codex, Georgia, rembg desta
+ * máquina, a sonda de `check-video-env.ts`, #11532): o que falta para gerar a
+ * capa aqui, antes do Passo A2.
  *
  * ## `--upload` (upload real, #10659)
  *
@@ -129,6 +132,7 @@ import {
   type CaptionUploadResult,
 } from "./lib/diaria/youtube-captions.ts";
 import { d1SocialSlotAt, videoLinkEligibility } from "./lib/diaria/youtube-video-link-gate.ts";
+import { coverPrerequisites } from "./lib/diaria/video-env-check.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -871,7 +875,16 @@ async function main(): Promise<number> {
   for (const p of plan.premises) console.error(`[premissa] ${p}`);
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);
   if (dryRun) {
-    console.log(JSON.stringify({ dry_run: true, ...plan }, null, 2));
+    // #11532 item 3: sem capa pronta, o plano lista o que a máquina precisa
+    // para gerá-la (ffmpeg, codex, Georgia, rembg). Só sonda, nunca instala.
+    let coverPrereqs: ReturnType<typeof coverPrerequisites> | null = null;
+    if (!plan.thumbnail) {
+      const { runVideoEnvCheck } = await import("./check-video-env.ts");
+      coverPrereqs = coverPrerequisites(await runVideoEnvCheck());
+      console.error(`[premissa] ${coverPrereqs.summary}`);
+      for (const i of coverPrereqs.items.filter((x) => !x.ok)) console.error(`[aviso] capa: falta ${i.id} (${i.detail ?? "?"}) — bloqueia ${i.blocks}. Resolver: ${i.fix}`);
+    }
+    console.log(JSON.stringify({ dry_run: true, ...plan, ...(coverPrereqs ? { cover_prerequisites: coverPrereqs } : {}) }, null, 2));
     return 0;
   }
 

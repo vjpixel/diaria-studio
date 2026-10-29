@@ -171,6 +171,18 @@ export function runWithTreeKill(cmd, args, { cwd, input, timeoutMs, env, shell =
   });
 }
 
+/**
+ * #11532: onde o Codex CLI costuma estar instalado FORA do PATH de uma shell
+ * não interativa (ex.: `ssh 300 'cmd'` não lê o trecho do `.bashrc` que põe
+ * `~/.npm-global/bin` no PATH). Só Unix: no Windows o fallback é o `codex.cmd`.
+ * Mesma lista de `codexCandidatePaths` em `scripts/lib/diaria/video-env-check.ts`
+ * (paridade travada em `test/codex-path-fallback-11532.test.ts`).
+ */
+export function codexFallbackPaths(platform = process.platform, home = os.homedir()) {
+  if (platform === 'win32' || !home) return [];
+  return [path.join(home, '.npm-global', 'bin', 'codex'), path.join(home, '.local', 'bin', 'codex')];
+}
+
 async function defaultRun(args, prompt, cwd, timeoutMs) {
   const opts = { cwd, input: prompt, timeoutMs, env: sanitizedEnv(process.env) };
   // #9097: preferir o binário real (codex.exe nativo / binário Linux) ao wrapper.
@@ -179,6 +191,14 @@ async function defaultRun(args, prompt, cwd, timeoutMs) {
   // O timeout ainda funciona: killProcessTree usa taskkill /T (árvore do cmd.exe).
   if (r.error && r.error.code === 'ENOENT' && process.platform === 'win32') {
     return runWithTreeKill('codex.cmd', args, { ...opts, shell: true });
+  }
+  // #11532: fora do PATH (shell não interativa no 300), tenta os caminhos de instalação conhecidos.
+  if (r.error && r.error.code === 'ENOENT') {
+    const found = codexFallbackPaths().find((p) => fs.existsSync(p));
+    if (found) {
+      console.error(`[aviso] codex fora do PATH — usando ${found} (#11532)`);
+      return runWithTreeKill(found, args, opts);
+    }
   }
   return r;
 }

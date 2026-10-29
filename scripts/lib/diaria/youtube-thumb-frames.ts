@@ -111,7 +111,7 @@ export const THUMB_FRAMES_META = "frames.json";
 
 export type ThumbFramesMeta = { mirrored_applied: boolean; mirrored_from: MirroredOrigin };
 
-export type MirroredOrigin = "flag" | "blocks.json" | "source.json" | "default";
+export type MirroredOrigin = "flag" | "blocks.json" | "source.json" | "default" | "final";
 
 /**
  * O `mirrored` em vigor para os frames da capa, com a mesma precedência da
@@ -119,12 +119,17 @@ export type MirroredOrigin = "flag" | "blocks.json" | "source.json" | "default";
  * `--mirrored`/`--no-mirrored` > `blocks.json` (`mirrored`, ou o legado
  * `source.mirrored`) > `source.json` > `true` (premissa #11208: o bruto vem
  * espelhado). Campo que não seja booleano é ignorado, como ausente.
+ *
+ * `final` (#11532): os frames saem do vídeo exportado em `Final/` (fallback
+ * quando o bruto não está no Drive). A exportação do Premiere já vem com o
+ * espelhamento da montagem desfeito, então, sem flag explícita, não espelha.
  */
-export function resolveThumbMirrored(input: { flag?: boolean; blocks?: unknown; source?: unknown }): {
+export function resolveThumbMirrored(input: { flag?: boolean; blocks?: unknown; source?: unknown; final?: boolean }): {
   mirrored: boolean;
   from: MirroredOrigin;
 } {
   if (input.flag !== undefined) return { mirrored: input.flag, from: "flag" };
+  if (input.final) return { mirrored: false, from: "final" };
   const obj = (v: unknown): Record<string, unknown> | undefined =>
     v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
   const bool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
@@ -140,9 +145,38 @@ export function resolveThumbMirrored(input: { flag?: boolean; blocks?: unknown; 
  * `--pick-frame`: espelha o frame escolhido só quando o que foi aplicado na
  * extração (`frames.json`; ausente = nada aplicado, frames anteriores ao
  * #11378) difere do `mirrored` em vigor. Espelhar duas vezes desfaz.
+ * Frames do `Final/` (#11532, `mirrored_from: "final"`) já estão na
+ * orientação certa: nunca espelha, o bruto da montagem não vale para eles.
  */
-export function pickFrameNeedsFlop(desiredMirrored: boolean, meta: Pick<ThumbFramesMeta, "mirrored_applied"> | null): boolean {
+export function pickFrameNeedsFlop(
+  desiredMirrored: boolean,
+  meta: Pick<ThumbFramesMeta, "mirrored_applied"> & Partial<Pick<ThumbFramesMeta, "mirrored_from">> | null,
+): boolean {
+  if (meta?.mirrored_from === "final") return false;
   return desiredMirrored !== (meta?.mirrored_applied ?? false);
+}
+
+/** Altura mínima para não avisar de resolução menor (o bruto é 4K, 2160 p). */
+export const RAW_MIN_HEIGHT = 2160;
+
+/**
+ * #11532 item 2: avisos sobre a origem dos frames. Do `Final/` (fallback
+ * explícito, `--from-final`) o vídeo é a exportação de entrega, em geral
+ * 1080 p: o retrato sai com menos detalhe que o do bruto 4K. Também avisa
+ * quando o arquivo passado como bruto não tem a altura do 4K.
+ */
+export function framesSourceWarnings(input: { fromFinal: boolean; width?: number | null; height?: number | null }): string[] {
+  const h = typeof input.height === "number" && input.height > 0 ? input.height : null;
+  const res = h ? `${input.width ?? "?"}x${h}` : "resolução desconhecida";
+  if (input.fromFinal) {
+    return [
+      `frames do vídeo exportado em Final/ (${res}), não do bruto 4K — fallback de quando o bruto não está no Drive; o retrato sai com menos detalhe (#11532)`,
+    ];
+  }
+  if (h !== null && h < RAW_MIN_HEIGHT) {
+    return [`o vídeo tem ${res}, abaixo do bruto 4K — se não é o bruto, passe --from-final para não espelhar a exportação (#11532)`];
+  }
+  return [];
 }
 
 /** Os mesmos argumentos com o token trocado por `***` (para log e erro). */

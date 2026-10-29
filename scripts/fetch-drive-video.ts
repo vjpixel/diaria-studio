@@ -540,8 +540,11 @@ export async function runFetchDriveVideo(
       }
       // Capa tem busca própria: Editado pode conter o Still mesmo com MP4 em Final.
       coverFiles.push(...finalFiles);
-      const unlistedEdited = subfolders.filter((f) => isEditedFolderName(f.name) && !finalFolderIds.includes(f.id));
-      coverFiles.push(...await listFinalLike(unlistedEdited, true));
+      // Só para o Still (#11542): nunca entra em `final_folder_ids` nem na escolha do vídeo.
+      for (const folder of subfolders.filter((f) => isEditedFolderName(f.name) && !finalFolderIds.includes(f.id))) {
+        const children = await listDriveChildren(deps, folder.id, timeouts.listMs);
+        coverFiles.push(...children.filter((f) => f.mimeType !== FOLDER_MIME).map((f) => ({ ...f, scope: "final-folder" as const, editedFolder: true })));
+      }
       files.push(...finalFiles);
     } else {
       log(`[premissa] sem subpasta ${aammdd}/ na pasta do Drive — só arquivos soltos na raiz, últimas ${input.windowHours}h`);

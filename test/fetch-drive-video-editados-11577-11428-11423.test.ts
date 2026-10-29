@@ -167,7 +167,9 @@ test("#11577: Final/ só com arquivo do editor (sem cópia) não lista Editados/
   const { out, listed } = await run({ Final: [YT(3)], Editados: [YT(9)] });
   assert.equal(out.output.action, "dry-run");
   if (out.output.action === "dry-run") assert.equal(out.output.file.id, "yt3");
-  assert.deepEqual(listed, ["Final"]);
+  // #11542: Editados/ é listada só para achar o Still da capa; o vídeo continua vindo de Final/.
+  assert.deepEqual(listed, ["Final", "Editados"]);
+  if (out.output.action === "dry-run") assert.deepEqual(out.output.final_folder_ids?.length, 1);
 });
 
 // ---------- #11428 ----------
@@ -198,8 +200,9 @@ test("#11428: Final/ com o vertical genérico do editor ainda barra Editado/ par
     { Final: [YT(3), OR(3)], Editado: [file("ig", "Diaria comentada_Instagram_V2.mp4", VERT)] },
     { orientation: "vertical", target: "instagram" },
   );
+  // O _Instagram_ de Editado/ não vira o vídeo (#11419); a pasta só é listada atrás do Still (#11542).
   assert.equal(out.output.action, "none", JSON.stringify(out.output));
-  assert.deepEqual(listed, ["Final"]);
+  assert.deepEqual(listed, ["Final", "Editado"]);
 });
 
 // ---------- #11423 ----------
