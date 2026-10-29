@@ -19,6 +19,7 @@ import { isAggregator } from "./lib/aggregators";
 import { isEditoriallyBlocked } from "./lib/editorial-blocklist.ts";
 import { isUrlBlocked } from "./lib/url-blocklist.ts";
 import { extractVersionedProducts } from "./lib/same-fact-check.ts";
+import { matchProductVersionStory, hasStorySecondSignal } from "./lib/product-version-story.ts"; // #11576
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
@@ -532,24 +533,43 @@ export function dedup(
   // documentados em lib/event-dedup.ts. Submissão do editor nunca é removida
   // (#4192), só marcada com `event_dedup_flagged`. #8666: títulos a ≤2 dias
   // úteis (#9565) da edição corrente (`pastEventDistanceDays`) habilitam o sinal (C).
+  // #11511/#11576: produto+versão em comum com item publicado só REMOVE com
+  // segundo sinal (tópico em comum ou os dois títulos são anúncio), o mesmo
+  // critério do (b2) intra-edição; sem ele o item fica no pool marcado com
+  // `event_dedup_flagged`, para o editor decidir no gate.
   const afterPass1f: Article[] = [];
   const pastEventTitles = [...new Set([...pastTitles, ...pastArticleTitles])];
-  const versionedPast = pastItemTitles.map((title) => ({ title, products: extractVersionedProducts(title) }));
+  const versionedPast = pastItemTitles
+    .map((title) => ({ title, products: extractVersionedProducts(title) }))
+    .filter((past) => past.products.size > 0);
   if (pastEventTitles.length > 0 || versionedPast.length > 0) {
     let strongConceptRemoved = 0; // #8666: remoções pelo sinal (C), contadas à parte
     const pastEventEntries = pastEventTitles.map((t) => ({ title: t, distanceDays: pastEventDistanceDays.get(t) }));
     for (const art of afterPass1e) {
-      const products = extractVersionedProducts(art.title ?? "");
-      const productHit = versionedPast.find((past) => [...products].some((p) => past.products.has(p)));
-      if (productHit) {
-        const note = `same-product-version (#11511) com artigo de edição anterior "${productHit.title}"`;
-        if (art.flag === "editor_submitted") afterPass1f.push({ ...art, event_dedup_flagged: note });
-        else pushRemoved(removed, art, note);
-        continue;
+      let weakProductNote: string | null = null;
+      const products = art.title ? extractVersionedProducts(art.title) : new Set<string>();
+      if (products.size > 0) {
+        let strong: { title: string; detail: string } | null = null;
+        for (const past of versionedPast) {
+          if (![...products].some((p) => past.products.has(p))) continue;
+          const m = matchProductVersionStory(art.title!, past.title);
+          if (!m) continue; // variantes nomeadas diferentes ("Flash" × "Pro")
+          if (hasStorySecondSignal(m)) {
+            strong = { title: past.title, detail: m.topics.length > 0 ? `tópico: ${m.topics.join(", ")}` : "os dois são anúncio" };
+            break;
+          }
+          weakProductNote ??= `same-product-version sem segundo sinal (#11576: ${m.products.join(", ")}) com artigo de edição anterior "${past.title}" — mantido para o editor decidir`;
+        }
+        if (strong) {
+          const note = `same-product-version (#11511, ${strong.detail}) com artigo de edição anterior "${strong.title}"`;
+          if (art.flag === "editor_submitted") afterPass1f.push({ ...art, event_dedup_flagged: note });
+          else pushRemoved(removed, art, note);
+          continue;
+        }
       }
       const hit = art.title ? findSameEvent(art.title, pastEventEntries) : null;
       if (!hit) {
-        afterPass1f.push(art);
+        afterPass1f.push(weakProductNote ? { ...art, event_dedup_flagged: weakProductNote } : art);
         continue;
       }
       const note = `same-event (#9249, ${hit.match.signal}: ${hit.match.shared.join(", ")}) com artigo de edição anterior "${hit.title}"`;

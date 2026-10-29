@@ -32,7 +32,9 @@ it("#11511: regen guarda títulos publicados e CLI dedup funciona sem diretório
     writeFileSync(past, md);
     const articles = join(root, "articles.json");
     writeFileSync(articles, JSON.stringify([
-      { url: "https://b.example/1", title: "Apple rolls out iOS 27.2 worldwide" },
+      // #11576: tópico em comum ("português") além do produto+versão → remove.
+      { url: "https://b.example/1", title: "Siri fala português no iOS 27.2" },
+      // #11576: só o produto+versão em comum, sem segundo sinal → fica marcado.
       { url: "https://b.example/2", title: "Experimente o Genie 4 hoje" },
       { url: "https://b.example/3", title: "iOS 27.3 chega" },
       { url: "https://b.example/4", title: "Gemma 4 disponível" },
@@ -43,9 +45,11 @@ it("#11511: regen guarda títulos publicados e CLI dedup funciona sem diretório
       "--articles", articles, "--past-editions", past, "--editions-dir", join(root, "missing"),
       "--current-edition", "261029", "--log-root-dir", root, "--out", out], { stdio: "pipe" });
     const result = JSON.parse(readFileSync(out, "utf8"));
-    assert.equal(result.removed.length, 2);
-    assert.ok(result.removed.every((r: { dedup_note: string }) => r.dedup_note.includes("same-product-version")));
-    assert.equal(result.kept.length, 3);
+    assert.equal(result.removed.length, 1);
+    assert.equal(result.removed[0].url, "https://b.example/1");
+    assert.match(result.removed[0].dedup_note, /same-product-version \(#11511, tópico: portugues\)/);
+    assert.equal(result.kept.length, 4);
+    assert.match(result.kept.find((a: { url: string }) => a.url === "https://b.example/2").event_dedup_flagged, /sem segundo sinal \(#11576/);
     assert.match(result.kept.find((a: { flag?: string }) => a.flag === "editor_submitted").event_dedup_flagged, /same-product-version/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
