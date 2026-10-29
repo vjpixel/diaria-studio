@@ -774,7 +774,7 @@ export function clockTime(s: number): string {
 // ── Blocos e sequências ───────────────────────────────────────────────────
 
 /** Blocos conhecidos do roteiro (#11208). Nenhuma versão leva "Por que isso importa?" (editor, 26/10/2026). */
-export const BLOCK_KEYS = ["titulo", "abertura", "resumo", "resumo_curto", "comentario", "cta_yt", "cta_ig", "cta_out", "fecho"] as const;
+export const BLOCK_KEYS = ["titulo", "abertura", "resumo", "resumo_curto", "comentario", "cta_yt", "cta_vertical", "cta_ig", "cta_out", "fecho"] as const;
 export type BlockKey = (typeof BLOCK_KEYS)[number];
 
 export function isBlockKey(k: string): k is BlockKey {
@@ -978,6 +978,9 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
   if (raw.holdBlocks !== undefined) {
     if (!Array.isArray(raw.holdBlocks) || raw.holdBlocks.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push("holdBlocks precisa listar blocos conhecidos");
   }
+  if (raw.sequences === undefined && isObj(raw.blocks) && ([raw.blocks.cta_ig, raw.blocks.cta_out].some((items) => Array.isArray(items) && items.length > 0))) {
+    errors.push("blocks.json legado: renomeie o CTA escolhido (cta_out ou cta_ig) para cta_vertical e remova o outro; ou informe sequences explícitas para preservar os cortes antigos");
+  }
   if (raw.sequences !== undefined) {
     if (!Array.isArray(raw.sequences) || raw.sequences.length === 0) errors.push("sequences precisa ser uma lista não vazia");
     else {
@@ -1056,7 +1059,7 @@ export function effectiveFormat(file: { format?: VideoFormat; blocks: Partial<Re
 }
 
 /**
- * As 3 versões (#11208). Nomes no padrão dos finais da pasta `Final/`
+ * As 2 versões (#11491). Nomes no padrão dos finais da pasta `Final/`
  * (`Diaria comentada_Youtube_V3.mp4`, #11222): o Premiere sugere o nome da
  * sequência no export, e `videoTargetOf` lê o destino dele. Escalas: 50/62 no
  * horizontal (50% de um 4K enche 1920x1080); 115/130 nas verticais (a da
@@ -1068,8 +1071,7 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
     // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
     return [
       { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [50, 62] },
-      { target: "instagram", name: `Diaria comentada_Instagram_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_ig", "fecho"], scales: [115, 130] },
-      { target: "outras-redes", name: `Diaria comentada_Outras redes_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_out", "fecho"], scales: [115, 130] },
+      { target: "outras-redes", name: `Diaria comentada_Vertical_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_vertical", "fecho"], scales: [115, 130] },
     ];
   }
   return [
@@ -1082,19 +1084,11 @@ export function defaultSequences(version = "V1", format: VideoFormat = "monologo
       scales: [50, 62],
     },
     {
-      target: "instagram",
-      name: `Diaria comentada_Instagram_${version}`,
-      width: 1080,
-      height: 1920,
-      order: ["titulo", "resumo_curto", "comentario", "cta_ig", "fecho"],
-      scales: [115, 130],
-    },
-    {
       target: "outras-redes",
-      name: `Diaria comentada_Outras redes_${version}`,
+      name: `Diaria comentada_Vertical_${version}`,
       width: 1080,
       height: 1920,
-      order: ["titulo", "resumo_curto", "comentario", "cta_out", "fecho"],
+      order: ["titulo", "resumo_curto", "comentario", "cta_vertical", "fecho"],
       scales: [115, 130],
     },
   ];

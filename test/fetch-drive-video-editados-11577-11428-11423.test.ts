@@ -184,14 +184,14 @@ test("isVerticalCutCandidate: sufixo vertical ou proporção vertical/desconheci
   assert.equal(isVerticalCutCandidate(file("j", "Still.jpg", { mimeType: "image/jpeg" })), false);
 });
 
-test("#11428: --target instagram com Final/ só com o horizontal desce em Editado/ e acha o _Instagram_", async () => {
+test("#11428: --target instagram com Final/ só com o horizontal desce em Editado/ e prefere _Outras redes_", async () => {
   const IG = file("ig", "Diaria comentada_Instagram_V2.mp4", VERT);
   const { out, listed } = await run(
     { Final: [YT(3)], Editado: [OR(2), IG] },
     { orientation: "vertical", target: "instagram" },
   );
   assert.equal(out.output.action, "print-id", JSON.stringify(out.output));
-  if (out.output.action === "print-id") assert.equal(out.output.file.id, "ig");
+  if (out.output.action === "print-id") assert.equal(out.output.file.id, "or2");
   assert.deepEqual(listed, ["Final", "Editado"]);
 });
 
@@ -201,7 +201,8 @@ test("#11428: Final/ com o vertical genérico do editor ainda barra Editado/ par
     { orientation: "vertical", target: "instagram" },
   );
   // O _Instagram_ de Editado/ não vira o vídeo (#11419); a pasta só é listada atrás do Still (#11542).
-  assert.equal(out.output.action, "none", JSON.stringify(out.output));
+  assert.equal(out.output.action, "print-id", JSON.stringify(out.output));
+  if (out.output.action === "print-id") assert.equal(out.output.file.id, "or3");
   assert.deepEqual(listed, ["Final", "Editado"]);
 });
 

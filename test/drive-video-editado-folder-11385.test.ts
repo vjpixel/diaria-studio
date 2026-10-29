@@ -137,10 +137,10 @@ test("#11419: --target instagram com Final/ só com o genérico NÃO pega o _Ins
     },
     { orientation: "vertical", target: "instagram" },
   );
-  assert.notEqual(out.output.action, "print-id", JSON.stringify(out.output));
-  assert.equal(out.output.action, "none", JSON.stringify(out.output));
+  assert.equal(out.output.action, "print-id", JSON.stringify(out.output));
+  if (out.output.action === "print-id") assert.equal(out.output.file.id, "or");
   assert.deepEqual(listed, ["Final", "Editado"], "Editado/ é consultada para capas, sem selecionar o MP4 antigo");
-  assert.ok(logs.some((l) => /#11419/.test(l)), logs.join("\n"));
+
 });
 
 test("#11419: --target instagram com Final/ sem .mp4 ainda cai para Editado/", async () => {

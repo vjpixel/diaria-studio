@@ -159,8 +159,7 @@ describe("formato entrevista (#11507)", () => {
     const m = defaultSequences("V1");
     assert.deepEqual(e.map((s) => s.order), [
       ["abertura", "comentario", "cta_yt", "fecho"],
-      ["abertura", "comentario", "cta_ig", "fecho"],
-      ["abertura", "comentario", "cta_out", "fecho"],
+      ["abertura", "comentario", "cta_vertical", "fecho"],
     ]);
     assert.deepEqual(e.map((s) => [s.target, s.name, s.width, s.height, s.scales]), m.map((s) => [s.target, s.name, s.width, s.height, s.scales]));
   });
@@ -182,8 +181,7 @@ describe("formato entrevista (#11507)", () => {
         abertura: [{ start: 0.9, end: 3 }],
         comentario: [{ start: 9.9, end: 11.6 }],
         cta_yt: [{ start: 19.9, end: 21.2 }],
-        cta_ig: [{ start: 24.9, end: 26.2 }],
-        cta_out: [{ start: 29.9, end: 31.2 }],
+        cta_vertical: [{ start: 29.9, end: 31.2 }],
         fecho: [{ start: 34.9, end: 35.8 }],
       },
     };

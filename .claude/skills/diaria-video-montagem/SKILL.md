@@ -1,11 +1,11 @@
 ---
 name: diaria-video-montagem
-description: Monta o vídeo "diar.ia.br comentada" do dia a partir do bruto no Drive (`{AAMMDD}/` da pasta YouTube) — transcrição por palavra, decupagem (gate 1), roteiro das 3 versões (gate 2), XML FCP7 (xmeml v4) com as 3 sequências para o Premiere, SRTs das verticais, prévia vertical 720x1280 e autorrevisão da prévia. Roda depois do gate da Etapa 4 (o vídeo é gravado depois dele) e antes do `/diaria-publica-video` (o editor exporta do Premiere para `{AAMMDD}/Final/`), standalone, sem encadear. Roda no Neo (Drive em `G:`) ou no 300 (pasta da edição pela API do Drive, #11643); faster-whisper e ffmpeg nos dois. Uso — `/diaria-video-montagem [AAMMDD]`.
+description: Monta o vídeo "diar.ia.br comentada" do dia a partir do bruto no Drive (`{AAMMDD}/` da pasta YouTube) — transcrição por palavra, decupagem (gate 1), roteiro das 2 versões (gate 2), XML FCP7 (xmeml v4) com as 2 sequências para o Premiere, SRTs das verticais, prévia vertical 720x1280 e autorrevisão da prévia. Roda depois do gate da Etapa 4 (o vídeo é gravado depois dele) e antes do `/diaria-publica-video` (o editor exporta do Premiere para `{AAMMDD}/Final/`), standalone, sem encadear. Roda no Neo (Drive em `G:`) ou no 300 (pasta da edição pela API do Drive, #11643); faster-whisper e ffmpeg nos dois. Uso — `/diaria-video-montagem [AAMMDD]`.
 ---
 
 # /diaria-video-montagem AAMMDD (#11208)
 
-Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo que em 26/10/2026 (edição 261027) foi feito à mão numa sessão inteira. A skill entrega: o Doc da decupagem, o Doc do roteiro final, o XML com as 3 sequências, as legendas das verticais e uma prévia vertical já revisada. **Dois gates humanos** (decupagem e roteiro final: os dois decidem o que o leitor vê); o resto é automático.
+Leva o bruto que o editor gravou até o ponto de partida no Premiere, o fluxo que em 26/10/2026 (edição 261027) foi feito à mão numa sessão inteira. A skill entrega: o Doc da decupagem, o Doc do roteiro final, o XML com as 2 sequências, as legendas das verticais e uma prévia vertical já revisada. **Dois gates humanos** (decupagem e roteiro final: os dois decidem o que o leitor vê); o resto é automático.
 
 **Fora de escopo:** o upload do vídeo final (é do `/diaria-publica-video`) e a edição fina no Premiere, que continua manual.
 
@@ -62,7 +62,7 @@ O Doc segue o formato da 261027 (#11361): **uma tabela por bloco do roteiro** (`
 - **1ª passada (sem `decupagem-plan.json`):** imprime a lista numerada dos segmentos do transcript (tempo, fala e, em cada tomada repetida, a decisão por critério: "tomada 3 de 4: usar (aprovada pela direção: …)", "tomada 1 de 4: cortar (a direção aprovou a 3ª tomada)", "direção: cortar (bastidor …)") e grava o molde `decupagem-plan.template.json`. Ler a lista e escrever `decupagem-plan.json` em `_internal/video-montagem/`: `blocks` é uma lista `{ key, rows }` na ordem do Doc (a da 261027: abertura, título, resumo, comentário, CTAs, encerramento; chaves do `blocks.json`), cada linha `{ segments: [n, …], suggestion: usar|cortar|alternativa, reason?, text? }`. `reason` é obrigatório em cortar/alternativa ("usar" numa frase repetida já sai com "Nª tomada"). Segmento fora de toda linha é bastidor: não listar a conversa com a direção nem os falsos começos, o script agrupa cada sequência deles numa linha só, no bloco da fala seguinte. `text` corrige o que o Whisper errou e o vocabulário não cobre (a 261028 trazia "PNI", "artificial análise", "notícias de ar"); termo que se repete na edição vai em `vocabulary` (mesmo formato do `blocks.json`).
 - **2ª passada (com o plano):** valida (todos os erros de uma vez, inclusive os de critério abaixo) e grava `decupagem.md`, o Markdown do Doc, e o molde `blocks.template.json` já com cada fala "usar" como intervalo no bruto e o texto limpo.
 
-**Entrevista (#11507, edição 261029).** Na 1ª passada, a listagem mede a altura da voz (F0 mediana) de cada segmento no `audio.wav` e, quando há duas vozes separadas (centros a ~3 semitons ou mais), marca cada segmento: `voz: Pixel, 163 Hz`, `voz: entrevistadora, 214 Hz: cortar (fala da entrevistadora)`, `voz: ouvir, 190 Hz` (faixa ambígua entre as duas, ou F0 não medida). O Pixel é a voz com mais tempo de fala (`[premissa]`); `--pixel-f0 HZ` fixa a referência. A medida fica em `voices.json`. Fala da entrevistadora é bastidor (fica fora do plano ou "cortar"); "ouvir" se confere no áudio antes de decidir. Monólogo (uma voz só) não marca nada. Sem nenhum título nem resumo "usar", a 2ª passada sai com `format: "entrevista"` no molde e as sequências abertura → comentário → CTA → fecho nas 3 versões (`[premissa]`); o `build` faz o mesmo com um `blocks.json` sem esses blocos e sem `sequences`. `format` (`monologo`/`entrevista`) ou `sequences` no `blocks.json` sobrepõem.
+**Entrevista (#11507, edição 261029).** Na 1ª passada, a listagem mede a altura da voz (F0 mediana) de cada segmento no `audio.wav` e, quando há duas vozes separadas (centros a ~3 semitons ou mais), marca cada segmento: `voz: Pixel, 163 Hz`, `voz: entrevistadora, 214 Hz: cortar (fala da entrevistadora)`, `voz: ouvir, 190 Hz` (faixa ambígua entre as duas, ou F0 não medida). O Pixel é a voz com mais tempo de fala (`[premissa]`); `--pixel-f0 HZ` fixa a referência. A medida fica em `voices.json`. Fala da entrevistadora é bastidor (fica fora do plano ou "cortar"); "ouvir" se confere no áudio antes de decidir. Monólogo (uma voz só) não marca nada. Sem nenhum título nem resumo "usar", a 2ª passada sai com `format: "entrevista"` no molde e as sequências abertura → comentário → CTA → fecho nas 2 versões (`[premissa]`); o `build` faz o mesmo com um `blocks.json` sem esses blocos e sem `sequences`. `format` (`monologo`/`entrevista`) ou `sequences` no `blocks.json` sobrepõem.
 
 **Decidir por critério, não repassar a dúvida (#11364).** A decupagem decide cada frase: **uma tomada "usar" por frase, as outras "cortar" com o motivo.** A 261028 saiu com ~13 "alternativa" e o XML com todas as opções em sequência (6:55 no YouTube) porque o que tinha critério na própria gravação foi tratado como dúvida. O critério, nesta ordem:
 
@@ -86,7 +86,7 @@ Janela curta (até 60 s), sem VAD e sem `condition_on_previous_text`: comentári
 2. Comparação com os vídeos anteriores: duração, estrutura e loudness dos finais das últimas edições (`Final/` das pastas anteriores, `ffprobe -v error -show_entries format=duration -of csv=p=0 ARQUIVO`). Uma linha no resumo do gate.
 3. **Enquadramento e espelhamento:** `npx tsx scripts/video-montagem.ts frame {AAMMDD} --at {S}` grava um frame do bruto, desespelhado conforme o `mirrored` em vigor (o `source.json` grava `true`; o `blocks.json` sobrepõe), com grade em décimos. Ler a imagem: se a caneca aparecer invertida mesmo assim, o bruto NÃO está espelhado e o `blocks.json` leva `"mirrored": false` (rodar o `frame` de novo para conferir). O centro do rosto (`faceX`) e a linha dos olhos (`eyeY`) saem em fração do quadro para o `framing`. Sem leitura confiável, fica o default da 261027 (`faceX` 0,482, `eyeY` 0,537), que o `build` e a prévia usam igual, com `[premissa]`.
 4. **Gate 1:** mostrar ao editor o link do Doc e o resumo (tomadas por frase, sugestões com o critério que decidiu, quantas "alternativa" e por quê, a duração estimada de cada versão com o corte proposto quando a vertical passa de 3:00, loudness, enquadramento). Ele decide no Doc ou na conversa o que entra e em qual bloco.
-5. Com a decisão, escrever `blocks.json` a partir do molde (que já traz as falas "usar"; o que o editor mudou na coluna Decisão entra aqui). Blocos: `titulo`, `abertura` ("Olá, eu sou o Pixel", só no horizontal), `resumo`, `resumo_curto` (verticais), `comentario`, `cta_yt`, `cta_ig`, `cta_out`, `fecho`; chave fora dessa lista é erro. Cada item é **a frase** como deve ficar na legenda (`{"text": "…"}`, a tomada sai sozinha: a última completa, `"take": N` para outra) ou **um intervalo** no bruto (`{"start": s, "end": s}`) quando a frase não serve. Item que entra só em algumas versões leva `"targets": ["youtube"]` ou `"skip": ["instagram", "outras-redes"]` (um ou outro, nunca os dois; #11377): é assim que o corte só na vertical, quando ela passa de 3:00, entra no XML em vez de virar instrução manual no Doc. O `build` e o `roteiro` (Gate 2) dão `[aviso]` com quanto a vertical montada passa de 180 s. Os intervalos nunca são fixos: vêm desta decisão, por edição. O casamento das frases tolera os erros comuns do Whisper (1 palavra trocada, engolida ou a mais; "pra"/"para"; "GPT 5"/"GPT-5"; a última palavra omitida) e já aplica o vocabulário. O vocabulário de sempre (Inteligência Personalizada, Modo IA da Busca, Google Photos, e o alias "diária" ouvido = "diar.ia.br" escrito) vive em `context/video-montagem/vocabulario.json`; termo só desta edição vai em `vocabulary` do `blocks.json` (mesmo formato, `targets` para uma versão só). O `blocks.json` é validado inteiro na carga, com todos os erros de uma vez.
+5. Com a decisão, escrever `blocks.json` a partir do molde (que já traz as falas "usar"; o que o editor mudou na coluna Decisão entra aqui). Blocos: `titulo`, `abertura` ("Olá, eu sou o Pixel", só no horizontal), `resumo`, `resumo_curto` (verticais), `comentario`, `cta_yt`, `cta_vertical`, `fecho`; chave fora dessa lista é erro. Cada item é **a frase** como deve ficar na legenda (`{"text": "…"}`, a tomada sai sozinha: a última completa, `"take": N` para outra) ou **um intervalo** no bruto (`{"start": s, "end": s}`) quando a frase não serve. Item que entra só em algumas versões leva `"targets": ["youtube"]` ou `"skip": ["instagram", "outras-redes"]` (um ou outro, nunca os dois; #11377): é assim que o corte só na vertical, quando ela passa de 3:00, entra no XML em vez de virar instrução manual no Doc. O `build` e o `roteiro` (Gate 2) dão `[aviso]` com quanto a vertical montada passa de 180 s. Os intervalos nunca são fixos: vêm desta decisão, por edição. O casamento das frases tolera os erros comuns do Whisper (1 palavra trocada, engolida ou a mais; "pra"/"para"; "GPT 5"/"GPT-5"; a última palavra omitida) e já aplica o vocabulário. O vocabulário de sempre (Inteligência Personalizada, Modo IA da Busca, Google Photos, e o alias "diária" ouvido = "diar.ia.br" escrito) vive em `context/video-montagem/vocabulario.json`; termo só desta edição vai em `vocabulary` do `blocks.json` (mesmo formato, `targets` para uma versão só). O `blocks.json` é validado inteiro na carga, com todos os erros de uma vez.
 
 **Nenhuma versão leva "Por que isso importa?"** (decisão do editor, 26/10/2026).
 
@@ -101,10 +101,11 @@ Resolve as tomadas (erro lista todos os itens com problema de uma vez: frase sem
 | Versão | Sequência | Ordem |
 |---|---|---|
 | Horizontal YouTube 1920x1080 | `Diaria comentada_Youtube_V1` | título → abertura → resumo → comentário → CTA YouTube → fecho |
-| Vertical Instagram 1080x1920 | `Diaria comentada_Instagram_V1` | título → resumo curto → comentário → CTA Instagram → fecho |
-| Vertical outras redes 1080x1920 | `Diaria comentada_Outras redes_V1` | título → resumo curto → comentário → CTA outras redes → fecho |
+| Vertical 1080x1920 | `Diaria comentada_Vertical_V1` | título → resumo curto → comentário → CTA vertical → fecho |
 
-Criar o Google Doc **"Roteiro final {AAMMDD} (3 versões)"** na pasta da edição a partir do `roteiro.md`, com as tabelas como tabelas. **Gate 2:** o editor revisa; onde ainda não sabe a duração, deixa "XX". As mudanças voltam para o `blocks.json` (texto, tomada, ordem em `sequences`) e o `roteiro` roda de novo até ele aprovar. O texto aprovado é a referência das legendas (grafia e pontuação) e da autorrevisão.
+Criar o Google Doc **"Roteiro final {AAMMDD} (2 versões)"** na pasta da edição a partir do `roteiro.md`, com as tabelas como tabelas. **Gate 2:** o editor revisa; onde ainda não sabe a duração, deixa "XX". As mudanças voltam para o `blocks.json` (texto, tomada, ordem em `sequences`) e o `roteiro` roda de novo até ele aprovar. O texto aprovado é a referência das legendas (grafia e pontuação) e da autorrevisão.
+
+Legado: `cta_ig`/`cta_out` continuam válidos com `sequences` explícitas. Sem elas, migrar o CTA escolhido para `cta_vertical` e remover o outro. O target técnico da vertical segue `outras-redes` para preservar escopos e caches antigos.
 
 ## Passo 4 — XML para o Premiere
 
@@ -123,26 +124,26 @@ Bloco da ordem sem item no `blocks.json`, item que some inteiro no corte ou pala
 ## Passo 5 — Legendas das verticais
 
 ```bash
-npx tsx scripts/video-montagem.ts srt {AAMMDD} [--seq instagram|outras-redes] [--from-raw] [--force]
+npx tsx scripts/video-montagem.ts srt {AAMMDD} [--from-raw] [--force]
 ```
 
-Sem `--seq`, as duas verticais (o `--seq` de `srt`, `preview` e `review` só aceita verticais). Monta o áudio de cada vertical a partir dos clipes e transcreve de novo (tempos confiáveis no tempo da sequência), aplica o vocabulário, troca cada palavra casada com o roteiro pelo texto aprovado (grafia e pontuação dele; palavra sem par fica como ouvida) e quebra as cues (fecha antes de passar de 50 caracteres, em pontuação final, ou em vírgula depois de 30; 2 linhas quebradas perto do meio). Grava `{sequência} - legendas.srt`. `--from-raw` remapeia o transcript do bruto em vez de retranscrever (mais rápido, tempos menos precisos).
+Sem `--seq`, a vertical única (em planos antigos, todas as verticais) (o `--seq` de `srt`, `preview` e `review` só aceita verticais). Monta o áudio de cada vertical a partir dos clipes e transcreve de novo (tempos confiáveis no tempo da sequência), aplica o vocabulário, troca cada palavra casada com o roteiro pelo texto aprovado (grafia e pontuação dele; palavra sem par fica como ouvida) e quebra as cues (fecha antes de passar de 50 caracteres, em pontuação final, ou em vírgula depois de 30; 2 linhas quebradas perto do meio). Grava `{sequência} - legendas.srt`. `--from-raw` remapeia o transcript do bruto em vez de retranscrever (mais rápido, tempos menos precisos).
 
 ## Passo 6 — Prévia vertical
 
 ```bash
-npx tsx scripts/video-montagem.ts preview {AAMMDD} [--seq outras-redes|instagram]
+npx tsx scripts/video-montagem.ts preview {AAMMDD}
 ```
 
-Default `outras-redes`. Renderiza `{AAMMDD} - previa {destino}.mp4` em 720x1280: flip (pelo `mirrored` em vigor), crop pelo rosto (o mesmo cálculo e o mesmo framing do XML), cortes nos mesmos frames do XML, fades de áudio de 20/30 ms em cada corte, legenda queimada e `loudnorm I=-16`. Grava também uma folha com 14 frames espalhados pela prévia inteira (`_internal/video-montagem/previa-{destino}.jpg`): ler a imagem e conferir enquadramento e legenda.
+A única vertical é selecionada automaticamente. Renderiza `{AAMMDD} - previa {destino}.mp4` em 720x1280: flip (pelo `mirrored` em vigor), crop pelo rosto (o mesmo cálculo e o mesmo framing do XML), cortes nos mesmos frames do XML, fades de áudio de 20/30 ms em cada corte, legenda queimada e `loudnorm I=-16`. Grava também uma folha com 14 frames espalhados pela prévia inteira (`_internal/video-montagem/previa-{destino}.jpg`): ler a imagem e conferir enquadramento e legenda.
 
 ## Passo 7 — Autorrevisão
 
 ```bash
-npx tsx scripts/video-montagem.ts review {AAMMDD} [--seq outras-redes|instagram]
+npx tsx scripts/video-montagem.ts review {AAMMDD}
 ```
 
-Default `outras-redes`; rodar também com `--seq instagram` (prévia dela no Passo 6 antes). Transcreve a prévia e compara com o roteiro, palavra a palavra. Achados (`review-{destino}.json`):
+A única vertical é selecionada automaticamente. Transcreve a prévia e compara com o roteiro, palavra a palavra. Achados (`review-{destino}.json`):
 
 - `tomada-duplicada` — trecho de 2+ palavras fora do roteiro igual ao trecho ao lado (a tomada falsa da 261027, "Uma atualização de…" duas vezes);
 - `silaba-vazada` — 1 palavra fora do roteiro a até 0,4 s de um corte, curta (≤3 letras ou <0,35 s): sílaba de tomada descartada;
@@ -155,10 +156,10 @@ Corrigir no `blocks.json` (outra tomada, intervalo explícito) e repetir os Pass
 
 Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a folha de frames, a duração de cada versão, o loudness do bruto e os achados que sobraram da revisão. Depois, o que fica com o editor:
 
-1. Importar o XML no Premiere (File > Import). Aplicar **Horizontal Flip** nos clipes das 3 sequências (se o bruto estiver espelhado).
+1. Importar o XML no Premiere (File > Import). Aplicar **Horizontal Flip** nos clipes das 2 sequências (se o bruto estiver espelhado).
 2. Importar o SRT de cada vertical na sequência dela.
 3. Edição fina; logo no início se quiser (a 261023 tinha; não entra na montagem, ver Premissas).
-4. Exportar para **`{AAMMDD}/Final/`** com o destino no nome: `Diaria comentada_Youtube_V{n}.mp4`, `Diaria comentada_Instagram_V{n}.mp4`, `Diaria comentada_Outras redes_V{n}.mp4`. O Premiere sugere o nome da sequência, que já segue esse padrão (`videoTargetOf` em `scripts/lib/diaria/drive-video-source.ts`; o `blocks.json` recusa sequência cujo nome indique outro destino).
+4. Exportar para **`{AAMMDD}/Final/`** com o destino no nome: `Diaria comentada_Youtube_V{n}.mp4`, `Diaria comentada_Vertical_V{n}.mp4`. O Premiere sugere o nome da sequência, que já segue esse padrão (`videoTargetOf` em `scripts/lib/diaria/drive-video-source.ts`; o `blocks.json` recusa sequência cujo nome indique outro destino).
 5. Rodar `/diaria-publica-video {AAMMDD}` (sugerir, nunca rodar daqui).
 
 ## Revisão do export final (#11557)
