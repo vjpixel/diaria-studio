@@ -200,7 +200,7 @@ Exit: `0` MERGED · `3` CI ainda rodando · `1` CI vermelho/conflito/PR fechado 
 
 **A revisão visual do e-mail de teste pelo editor é a ÚNICA parada de `/diaria-5-publicacao` (decisão do editor, 17/09/2026, #8205).** Tudo que antes tinha ponto de parada próprio — pedidos editoriais (§6b2), guard de slug (§6b-slug), auto-reporter (§6b abaixo) — entra como CONTEXTO deste gate, nunca como pergunta separada. **O PR da página do site foi aberto no início da Etapa 5 (§5b-site, #10160) e conferido em §6b-site** — não é um ponto de parada; o estado do PR entra como linha do gate, e o merge trava o Schedule logo depois (§6c-site).
 
-**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar o default de §6a (06:00 BRT da data da edição, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" contado a partir do relógio) — mesmo horário serve Beehiiv e Brevo diária (#5772, se a campanha existir). Logar:
+**Se `--no-gates` (`auto_approve = true`):** pular o gate, usar o default de §6a (06:00 BRT da data da edição, via `resolve-edition-scheduled-at.ts` — nunca "amanhã" contado a partir do relógio) — mesmo horário serve a newsletter (Kit, ou Beehiiv no legado), a Brevo diária e a Kit diária (#5772, se a campanha existir). Logar:
 ```bash
 npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator --level warn \
   --message "Stage 6 auto-agendado via --no-gates: {scheduled_at_iso}" \
@@ -237,7 +237,7 @@ Social agendado:
   Facebook  D1 {hh:mm BRT} · D2 {hh:mm BRT} · D3 {hh:mm BRT} · UM {hh:mm BRT, se o 4º post saiu}
 
 {bloco Brevo diária, SÓ se _internal/brevo-diaria-published.json existir:}
-Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com o Beehiiv no mesmo horário abaixo (#5772)
+Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com a newsletter no mesmo horário abaixo (#5772)
 
   ok           → agenda para 06:00 BRT do dia da edição (default)
   ok HH:MM     → agenda para {horario informado} BRT do dia da edição
@@ -249,7 +249,7 @@ Aguardar resposta do editor. Interpretar — **`{AAMMDD}` (a data da edição), 
 - `abortar` → logar warn, NAO escrever sentinel, encerrar Stage 6. Editor pode re-rodar `/diaria-6-agendamento {AAMMDD}` depois.
 - Qualquer outra coisa → exibir o gate novamente (fail-closed).
 
-**Um único `scheduled_at` serve todos os canais (Beehiiv/Kit, Brevo diária, Kit diária)** — decisão do editor: o gate não pergunta o horário mais de uma vez. Se algum canal não existir (`_internal/brevo-diaria-published.json`/`kit-diaria-published.json` ausente), o bloco correspondente nunca aparece e a seção de agendamento daquele canal (abaixo) é pulada sem erro.
+**Um único `scheduled_at` serve todos os canais (newsletter Kit, ou Beehiiv no legado; Brevo diária; Kit diária)** — decisão do editor: o gate não pergunta o horário mais de uma vez. Se algum canal não existir (`_internal/brevo-diaria-published.json`/`kit-diaria-published.json` ausente), o bloco correspondente nunca aparece e a seção de agendamento daquele canal (abaixo) é pulada sem erro.
 
 Logar resposta:
 ```bash
@@ -414,7 +414,7 @@ Fail-soft nos 2 — nunca bloqueia o resto do Stage 6. Seguir pra §6d-brevo/§6
 
 ### 6d-brevo. Agendar campanha Brevo diária (#5772)
 
-**Roda SÓ se `_internal/brevo-diaria-published.json` existir** (lido em §6a) — canal pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) significa nada a agendar aqui; pular esta seção inteira sem erro. Usa o MESMO `scheduled_at` confirmado em §6c (Beehiiv) — decisão do editor, #5772: um único gate, um único horário pros dois canais.
+**Roda SÓ se `_internal/brevo-diaria-published.json` existir** (lido em §6a) — canal pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) significa nada a agendar aqui; pular esta seção inteira sem erro. Usa o MESMO `scheduled_at` confirmado em §6c para a newsletter principal (Kit, ou Beehiiv no legado, #11225) — decisão do editor, #5772: um único gate, um único horário para todos os canais.
 
 ```bash
 npx tsx scripts/schedule-daily-brevo.ts \
@@ -422,7 +422,7 @@ npx tsx scripts/schedule-daily-brevo.ts \
   --scheduled-at {scheduled_at_iso}
 ```
 
-O script faz PUT `/emailCampaigns/{id}` (`scheduledAt`) e SÓ declara sucesso depois de um GET de verificação confirmar o `scheduledAt` de volta — mesmo padrão de `verify-scheduled-post.ts` pro Beehiiv. **Semanal dividida (#11286):** quando a Etapa 5 criou também a campanha de TERÇA (`terca_campaign_id` no estado), o mesmo comando agenda ela 24h depois da de segunda (cota do dia de terça, PUT + GET) e devolve `terca` no JSON; exit 3/4/5 com a segunda já agendada significa que só a de terça falhou — re-rodar o mesmo comando pula a de segunda e tenta só a de terça. Uma campanha Brevo agendada é **imutável** — não há re-tentativa automática além do retry HTTP já embutido em `brevoPut`/`brevoGetCampaign`.
+O script faz PUT `/emailCampaigns/{id}` (`scheduledAt`) e SÓ declara sucesso depois de um GET de verificação confirmar o `scheduledAt` de volta — mesmo padrão de `schedule-newsletter-kit.ts` (§6d-kit; `verify-scheduled-post.ts` no ramo Beehiiv legado). **Semanal dividida (#11286):** quando a Etapa 5 criou também a campanha de TERÇA (`terca_campaign_id` no estado), o mesmo comando agenda ela 24h depois da de segunda (cota do dia de terça, PUT + GET) e devolve `terca` no JSON; exit 3/4/5 com a segunda já agendada significa que só a de terça falhou — re-rodar o mesmo comando pula a de segunda e tenta só a de terça. Uma campanha Brevo agendada é **imutável** — não há re-tentativa automática além do retry HTTP já embutido em `brevoPut`/`brevoGetCampaign`.
 
 Exit codes:
 | Exit | Significado | Ação |
@@ -443,7 +443,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator \
 
 #### §6d-kit-diaria — canal Kit PARALELO (#6048/#6126)
 
-**Só quando `kit_diaria.enabled === true`.** Roda ao lado do Beehiiv/Brevo, pra audiência própria (`kit_diaria.audience_tag`). **Não é o §6d-kit**, que agenda o backend EXCLUSIVO do switchover (#6114) — coexistem enquanto a partição por origem de cadastro durar. Mesmo `scheduled_at` do Beehiiv, sob o MESMO gate, sem pergunta separada.
+**Só quando `kit_diaria.enabled === true`.** Roda ao lado da newsletter principal (Kit, §6d-kit; Beehiiv só no ramo legado, #11225) e da Brevo diária, pra audiência própria (`kit_diaria.audience_tag`). **Não é o §6d-kit**, que agenda o backend EXCLUSIVO do switchover (#6114) — coexistem enquanto a partição por origem de cadastro durar. Mesmo `scheduled_at` da newsletter principal, confirmado no gate de §6c, sem pergunta separada.
 
 ```bash
 npx tsx scripts/schedule-kit-diaria.ts --edition-dir {EDITION_DIR}/ --scheduled-at {scheduled_at_iso}
