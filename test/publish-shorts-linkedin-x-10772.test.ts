@@ -65,24 +65,31 @@ function page(slug: string): ResolvedFacebookPage {
 const CREDS = { accessToken: "tok-pessoal", personUrn: "urn:li:person:abc", expiresAt: null };
 const brt = (hhmm: string) => new Date(`2026-10-22T${hhmm}:00-03:00`).toISOString();
 
-describe("#10772 texto do vertical no LinkedIn e no X", () => {
-  it("LinkedIn: vídeo completo do YouTube + edição com UTM linkedin/video/{AAMMDD}", () => {
-    const t = buildShortSocialText({ platform: "linkedin", aammdd: "261022", d1: D1, editionUrl: EDITION_URL, videoUrl: YT });
-    assert.match(t, /^Você já viu IA mentir/);
-    assert.ok(t.includes(`Vídeo completo no YouTube: ${YT}`));
-    assert.ok(t.includes(`${EDITION_URL}?utm_source=linkedin&utm_medium=video&utm_campaign=261022`));
+describe("#10772/#11617 texto do vertical no LinkedIn e no X (sem link)", () => {
+  it("LinkedIn: título, gancho e hashtags, sem link", () => {
+    const t = buildShortSocialText({ platform: "linkedin", d1: D1 });
+    assert.equal(t, ["Você já viu IA mentir. Já viu roubar?", "Um modelo da OpenAI gastou o saldo de terceiros.", "#IA #inteligênciaartificial"].join("\n\n"));
+    assert.doesNotMatch(t, /https?:\/\/|utm_|youtu|diar\.ia\.br/);
   });
 
-  it("sem URL do vídeo completo, o texto aponta pro canal", () => {
-    const t = buildShortSocialText({ platform: "linkedin", aammdd: "261022", d1: D1, editionUrl: EDITION_URL, videoUrl: null });
-    assert.ok(t.includes("https://www.youtube.com/@diariabr"));
+  it("X: título e gancho, sem link", () => {
+    const t = buildShortSocialText({ platform: "x", d1: D1 });
+    assert.equal(t, "Você já viu IA mentir. Já viu roubar?\n\nUm modelo da OpenAI gastou o saldo de terceiros.");
+    assert.doesNotMatch(t, /https?:\/\/|utm_|youtu|diar\.ia\.br/);
   });
 
-  it("X: utm_source=twitter e ≤280 ponderado mesmo com título enorme", () => {
-    const t = buildShortSocialText({ platform: "x", aammdd: "261022", d1: { title: "palavra ".repeat(60), body: "" }, editionUrl: EDITION_URL, videoUrl: YT });
+  it("X: ≤280 ponderado mesmo com título enorme (corta o título, sem link)", () => {
+    const t = buildShortSocialText({ platform: "x", d1: { title: "palavra ".repeat(60), body: "" } });
     assert.ok(computeTwitterWeightedLength(t) <= 280);
-    assert.ok(t.includes("utm_source=twitter&utm_medium=video&utm_campaign=261022"));
-    assert.ok(t.includes(YT));
+    assert.ok(t.endsWith("…"));
+    assert.doesNotMatch(t, /https?:\/\//);
+  });
+
+  it("X: gancho que não cabe sai, o título fica inteiro", () => {
+    // Gancho de até 220 (firstSentence) + título de ~95 passa de 280 ponderado.
+    const title = "palavra ".repeat(12).trim();
+    const t = buildShortSocialText({ platform: "x", d1: { title, body: `${"frase longa ".repeat(30)}.` } });
+    assert.equal(t, title);
   });
 });
 
@@ -121,7 +128,6 @@ describe("#10772 plano", () => {
     published: { aammdd: "261022", entries: [] },
     video: { path: "v.mp4", exists: true, sizeBytes: 10 },
     editionUrl: EDITION_URL,
-    youtubeVideoUrl: YT,
     linkedinPersonal: { ready: true } as const,
     publicVideo: { ready: true } as const,
     grid: pageGrid,
@@ -133,14 +139,14 @@ describe("#10772 plano", () => {
     assert.equal(p.linkedin_profile.action, "pending_schedule");
     assert.equal(p.x.action, "buffer");
     assert.equal(p.x.scheduledAt, brt("12:00"));
-    assert.ok(p.x.caption.includes("utm_source=twitter"));
+    assert.doesNotMatch(p.x.caption, /https?:\/\//, "#11617: sem link no texto do X");
   });
 
   it("depois do horário (ou --now): LinkedIn pessoal publica com o texto e o título do D1", () => {
     const p = by(planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z"), forceNow: true }));
     assert.equal(p.linkedin_profile.action, "publish");
     assert.equal(p.linkedin_profile.title, D1.title);
-    assert.ok(p.linkedin_profile.caption.includes("utm_source=linkedin&utm_medium=video&utm_campaign=261022"));
+    assert.doesNotMatch(p.linkedin_profile.caption, /https?:\/\//, "#11617: sem link no texto do LinkedIn");
     assert.equal(p.x.scheduledAt, null);
   });
 

@@ -245,7 +245,7 @@ const decideFrom = (data: unknown[]) => async (): Promise<InstagramConfirmDecisi
   decideInstagramConfirm({ published: EMPTY, media: { data }, sinceIso: "2026-10-27T03:00:00.000Z", markers: MARKERS, nowIso: "2026-10-27T20:00:00.000Z", expectedAtIso: AT });
 
 describe("#11390: --confirm-instagram acha o Reels do collab pendente no perfil do autor", () => {
-  const caption = buildReelsCaption({ platform: "instagram", aammdd: AAMMDD, d1: D1, editionUrl: "https://diar.ia.br/p/x" });
+  const caption = buildReelsCaption({ platform: "instagram", d1: D1 });
 
   it("rota do Chrome: @vjpixel autor, @diar.ia.br colaboradora (o inverso da rota da API)", () => {
     assert.equal(INSTAGRAM_CHROME_ROUTE.authorUsername, "vjpixel");
@@ -313,7 +313,7 @@ describe("#11390: --confirm-instagram acha o Reels do collab pendente no perfil 
 
 describe("#11388: legenda do Reels com o texto final do editor", () => {
   it("Instagram: o CTA é a frase decidida, sem YouTube e sem 'Edição completa'", () => {
-    const c = buildReelsCaption({ platform: "instagram", aammdd: AAMMDD, d1: D1, editionUrl: "https://diar.ia.br/p/x" });
+    const c = buildReelsCaption({ platform: "instagram", d1: D1 });
     assert.ok(c.includes("A diar.ia.br é a newsletter que resume as notícias de IA do dia em 5 minutos. Assine pelo link da bio."));
     assert.ok(c.includes(INSTAGRAM_REELS_CTA));
     assert.doesNotMatch(c, /youtube/i);
@@ -321,7 +321,7 @@ describe("#11388: legenda do Reels com o texto final do editor", () => {
   });
 
   it("o marcador de formato do --confirm-instagram acompanha a legenda nova e ainda reconhece a antiga", () => {
-    const c = buildReelsCaption({ platform: "instagram", aammdd: AAMMDD, d1: D1, editionUrl: "https://diar.ia.br/p/x" });
+    const c = buildReelsCaption({ platform: "instagram", d1: D1 });
     assert.ok(c.includes(INSTAGRAM_CAPTION_FORMAT_MARKER));
     assert.equal(INSTAGRAM_CAPTION_LEGACY_FORMAT_MARKER, "youtube.com/@diariabr");
     // Legenda nova com título e gancho editados no Chrome: só a janela de horário + o formato.
@@ -333,7 +333,7 @@ describe("#11388: legenda do Reels com o texto final do editor", () => {
 });
 
 describe("fix do review do PR #11395: nenhum Reels duplicado pela API", () => {
-  const caption = buildReelsCaption({ platform: "instagram", aammdd: AAMMDD, d1: D1, editionUrl: "https://diar.ia.br/p/x" });
+  const caption = buildReelsCaption({ platform: "instagram", d1: D1 });
 
   it("P2 (1): gate do timer — nada na @diar.ia.br, o Reels à mão no perfil do @vjpixel (collab pendente) → registra e NÃO publica", async () => {
     const persisted: unknown[] = [];

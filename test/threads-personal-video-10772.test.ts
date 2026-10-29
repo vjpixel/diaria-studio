@@ -247,32 +247,22 @@ describe("readThreadsPersonalCreds (#10772)", () => {
   });
 });
 
-describe("buildShortSocialText — threads (#10772)", () => {
-  const EDITION = "https://diar.ia.br/p/edicao-261025";
-  it("título, gancho, vídeo e edição com utm_source=threads", () => {
-    const t = buildShortSocialText({
-      platform: "threads",
-      aammdd: "261025",
-      d1: { title: "Título do D1", body: "Primeira frase. Segunda." },
-      editionUrl: EDITION,
-      videoUrl: "https://youtu.be/abc",
-    });
-    assert.match(t, /^Título do D1\n\nPrimeira frase\./);
-    assert.match(t, /Vídeo completo no YouTube: https:\/\/youtu\.be\/abc/);
-    assert.match(t, /utm_source=threads&utm_medium=video&utm_campaign=261025/);
+describe("buildShortSocialText — threads (#10772, #11617)", () => {
+  it("título e gancho, sem link nem hashtags", () => {
+    const t = buildShortSocialText({ platform: "threads", d1: { title: "Título do D1", body: "Primeira frase. Segunda." } });
+    assert.equal(t, "Título do D1\n\nPrimeira frase.");
+    assert.doesNotMatch(t, /https?:\/\/|utm_|youtu/, "#11617: sem link no texto do Threads");
     assert.ok(!t.includes("#IA"), "sem hashtags no Threads");
   });
 
   it("texto longo cabe em 500 (tira o gancho, depois corta o título)", () => {
     const t = buildShortSocialText({
       platform: "threads",
-      aammdd: "261025",
       d1: { title: "palavra ".repeat(80), body: "frase longa ".repeat(30) + "." },
-      editionUrl: EDITION,
-      videoUrl: null,
     });
     assert.ok(Array.from(t).length <= THREADS_TEXT_MAX_CHARS, `tamanho ${Array.from(t).length}`);
-    assert.match(t, /Edição completa: /);
+    assert.ok(t.startsWith("palavra palavra"));
+    assert.doesNotMatch(t, /https?:\/\//);
   });
 });
 

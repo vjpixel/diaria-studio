@@ -7,9 +7,10 @@
  * chama a Graph API é `scripts/publish-shorts.ts`.
  *
  * Decisões do editor que este módulo codifica (#10769, 21-22/10/2026):
- *   - objetivo é levar gente pro canal do YouTube (@diariabr) — o CTA aponta
- *     pro canal; o link da edição vai na legenda do Facebook (no Instagram,
- *     "link da bio");
+ *   - objetivo é levar gente pro canal do YouTube (@diariabr); no Instagram o
+ *     CTA manda pro "link da bio". Desde #11617 (29/10/2026) nenhum texto do
+ *     vertical mostra link (nem a edição com UTM, nem o vídeo completo, nem o
+ *     domínio solto);
  *   - Reels TODO DIA nas páginas diar.ia.br e VJ Pixel (MemeLab saiu, #10790)
  *     e no perfil pessoal do editor. Jandig, Teatro vs Game e Criaturas Afetivas ficam fora
  *     da rotina — só quando o editor pedir, nunca automático;
@@ -39,7 +40,6 @@
  * repost) ainda não entrou: falta o token da conta pessoal.
  */
 
-import { BEEHIIV_BASE_URL } from "../edition-url.ts";
 import { TWITTER_CHAR_LIMIT, computeTwitterWeightedLength } from "../twitter-weight.ts";
 import { THREADS_TEXT_MAX_CHARS } from "../threads-api.ts"; // #10772
 import { civilDayNumber, formatCivilDate, parseIsoCivilDate, type CivilDate } from "../social-schedule-rotation.ts";
@@ -128,27 +128,10 @@ export function firstSentence(body: string, maxChars = 220): string {
   return `${(lastSpace > maxChars / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 }
 
-/** UTMs de um link do projeto num vídeo curto (`utm_medium=shorts|reels|video`). */
-export function withShortUtm(
-  url: string,
-  utm: {
-    source: "youtube" | "facebook" | "instagram" | "linkedin" | "twitter" | "threads";
-    medium: "shorts" | "reels" | "video";
-    campaign: string;
-    content?: string | null;
-  },
-): string {
-  const u = new URL(url);
-  u.searchParams.set("utm_source", utm.source);
-  u.searchParams.set("utm_medium", utm.medium);
-  u.searchParams.set("utm_campaign", utm.campaign);
-  if (utm.content) u.searchParams.set("utm_content", utm.content);
-  return u.toString();
-}
-
 /**
  * Metadados do Short. Sem comentário fixado (#10831): link em comentário de
  * Short não é clicável desde 2023 — o funil clicável é o vídeo relacionado.
+ * Sem link nem domínio na descrição (#11617): gancho + hashtags.
  */
 export interface YouTubeShortMetadata {
   title: string;
@@ -168,15 +151,7 @@ export function buildYouTubeShortTitle(d1Title: string): string {
 export function buildYouTubeShortMetadata(input: { d1: ShortD1Input }): YouTubeShortMetadata {
   if (!input.d1.title.trim()) throw new Error("D1 sem título");
   const hook = sanitizeForYouTube(firstSentence(input.d1.body));
-  const description = [
-    hook,
-    "",
-    `Vídeo completo e edição: ${BEEHIIV_BASE_URL.replace(/^https:\/\//, "")}`,
-    ["#Shorts", ...SHORTS_HASHTAGS].join(" "),
-  ]
-    .filter((l, i) => i > 0 || l)
-    .join("\n")
-    .trim();
+  const description = [hook, ["#Shorts", ...SHORTS_HASHTAGS].join(" ")].filter(Boolean).join("\n\n");
   return { title: buildYouTubeShortTitle(input.d1.title), description };
 }
 
@@ -197,29 +172,15 @@ export const INSTAGRAM_REELS_CTA = `${REELS_NEWSLETTER_SENTENCE} Assine pelo lin
  * duas redes (é o comportamento do app hoje). #11388: o CTA explica a
  * newsletter (`REELS_NEWSLETTER_SENTENCE`) e o link do canal do YouTube saiu
  * da legenda. No Instagram a chamada é pro link da bio (`INSTAGRAM_REELS_CTA`);
- * no Facebook, que não tem bio, o link da edição vai com UTM (atribuível se
- * alguém copiar).
+ * no Facebook, que não tem bio, fica só a frase da newsletter: o link da
+ * edição com UTM saiu da legenda (#11617, pedido do editor: post do vídeo
+ * sem link no texto).
  */
-export function buildReelsCaption(input: {
-  platform: ReelsPlatform;
-  aammdd: string;
-  d1: ShortD1Input;
-  editionUrl: string;
-  /** `utm_content` da página do Facebook (`page-memelab`…); null = sem tag. */
-  utmContent?: string | null;
-}): string {
+export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1Input }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
   const hook = firstSentence(input.d1.body);
-  const cta =
-    input.platform === "instagram"
-      ? INSTAGRAM_REELS_CTA
-      : `${REELS_NEWSLETTER_SENTENCE} Leia a edição de hoje e assine: ${withShortUtm(input.editionUrl, {
-          source: "facebook",
-          medium: "reels",
-          campaign: input.aammdd,
-          content: input.utmContent ?? null,
-        })}`;
+  const cta = input.platform === "instagram" ? INSTAGRAM_REELS_CTA : REELS_NEWSLETTER_SENTENCE;
   const caption = [title, hook, cta, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
   if (input.platform === "instagram" && Array.from(caption).length > INSTAGRAM_CAPTION_MAX_CHARS) {
     throw new Error(`legenda do Instagram passou de ${INSTAGRAM_CAPTION_MAX_CHARS} caracteres`);
@@ -227,54 +188,33 @@ export function buildReelsCaption(input: {
   return caption;
 }
 
-/** Plataformas do vertical NATIVO com link clicável no texto (#10772). */
+/** Plataformas do vertical NATIVO no feed (#10772): LinkedIn pessoal, X e Threads pessoal. */
 export type ShortLinkPlatform = "linkedin" | "x" | "threads";
 
 /** Teto do texto do post no LinkedIn (`commentary` da Posts API). */
 export const LINKEDIN_COMMENTARY_MAX_CHARS = 3000;
 
 /**
- * Texto do post do vertical no LinkedIn pessoal e no X (#10772). Ao contrário
- * da legenda do Reels, o link é clicável nas duas redes: o vídeo completo
- * (horizontal, URL do YouTube de `_internal/05-video-url.txt`; ausente = canal)
- * e a edição com UTM `utm_source={linkedin|twitter}&utm_medium=video&utm_campaign={AAMMDD}`
- * (a fonte do X segue o `utm_source=twitter` dos posts diários, #4295).
+ * Texto do post do vertical no LinkedIn pessoal, no X e no Threads pessoal
+ * (#10772). Sem link no texto (#11617, pedido do editor em 29/10/2026): o
+ * vídeo sobe nativo nas três redes, então o texto não precisa de URL pra gerar
+ * card. Até o #11617 o texto levava o vídeo completo do YouTube e a edição com
+ * `utm_medium=video`; essa atribuição por UTM deixou de existir.
  *
- * X: título + vídeo + edição, sem o gancho; título longo é cortado até caber
- * em 280 com URL pesando 23 (`computeTwitterWeightedLength`). Lança se nem o
- * título mínimo couber (não acontece com URL de 23).
- *
- * Threads (perfil pessoal, #10772): `utm_source=threads`; ver `buildThreadsShortText`.
+ * LinkedIn: título, gancho (1ª frase do D1) e hashtags.
+ * X e Threads: título e gancho no teto da rede (`fitShortText`).
  */
-export function buildShortSocialText(input: {
-  platform: ShortLinkPlatform;
-  aammdd: string;
-  d1: ShortD1Input;
-  editionUrl: string;
-  /** URL do vídeo completo no YouTube; null = link do canal. */
-  videoUrl: string | null;
-}): string {
+export function buildShortSocialText(input: { platform: ShortLinkPlatform; d1: ShortD1Input }): string {
   const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
   if (!title) throw new Error("D1 sem título");
-  const video = input.videoUrl ?? DIARIA_YOUTUBE_CHANNEL_URL;
-  const source = input.platform === "x" ? "twitter" : input.platform;
-  const edition = withShortUtm(input.editionUrl, { source, medium: "video", campaign: input.aammdd });
+  const hook = firstSentence(input.d1.body);
   if (input.platform === "linkedin") {
-    const text = [title, firstSentence(input.d1.body), `Vídeo completo no YouTube: ${video}`, `Edição completa: ${edition}`, SHORTS_HASHTAGS.join(" ")]
-      .filter(Boolean)
-      .join("\n\n");
+    const text = [title, hook, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
     if (Array.from(text).length > LINKEDIN_COMMENTARY_MAX_CHARS) throw new Error(`texto do LinkedIn passou de ${LINKEDIN_COMMENTARY_MAX_CHARS} caracteres`);
     return text;
   }
-  if (input.platform === "threads") return buildThreadsShortText(title, input.d1.body, video, edition);
-  const tail = `\n\nVídeo completo: ${video}\nEdição: ${edition}`;
-  const chars = Array.from(title);
-  for (let n = chars.length; n >= 10; n--) {
-    const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
-    const text = head + tail;
-    if (computeTwitterWeightedLength(text) <= TWITTER_CHAR_LIMIT) return text;
-  }
-  throw new Error(`texto do X não cabe em ${TWITTER_CHAR_LIMIT} caracteres`);
+  if (input.platform === "threads") return fitShortText(title, hook, threadsTextLength, THREADS_TEXT_MAX_CHARS, "Threads");
+  return fitShortText(title, hook, computeTwitterWeightedLength, TWITTER_CHAR_LIMIT, "X");
 }
 
 const UTF8 = new TextEncoder();
@@ -293,24 +233,23 @@ export function threadsTextLength(text: string): number {
 }
 
 /**
- * Texto do vertical no Threads (#10772): título, gancho (1ª frase do D1), vídeo
- * completo e edição, em até 500 caracteres (o Threads conta caractere, URL
- * inteira — mas emoji conta pelo tamanho em BYTES UTF-8, ver `threadsTextLength`).
- * Sem hashtags: no Threads só a 1ª vira tag de tópico. Não cabe →
- * tira o gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
+ * Título + gancho no teto da rede (#10772/#11617). X: 280 ponderado
+ * (`computeTwitterWeightedLength`); Threads: 500, com emoji pesando o tamanho
+ * em BYTES UTF-8 (`threadsTextLength`). Sem hashtags: no Threads só a 1ª vira
+ * tag de tópico, e no X elas tirariam espaço do gancho. Não cabe → tira o
+ * gancho; ainda não cabe → corta o título. Lança se nem o título mínimo couber.
  */
-function buildThreadsShortText(title: string, body: string, video: string, edition: string): string {
-  const tail = `\n\nVídeo completo no YouTube: ${video}\nEdição completa: ${edition}`;
-  const hook = firstSentence(body);
-  const withHook = hook ? `${title}\n\n${hook}${tail}` : `${title}${tail}`;
-  if (threadsTextLength(withHook) <= THREADS_TEXT_MAX_CHARS) return withHook;
+function fitShortText(title: string, hook: string, measure: (t: string) => number, max: number, label: string): string {
+  if (hook) {
+    const withHook = `${title}\n\n${hook}`;
+    if (measure(withHook) <= max) return withHook;
+  }
   const chars = Array.from(title);
   for (let n = chars.length; n >= 10; n--) {
     const head = n === chars.length ? title : `${chars.slice(0, n - 1).join("").trimEnd()}…`;
-    const text = head + tail;
-    if (threadsTextLength(text) <= THREADS_TEXT_MAX_CHARS) return text;
+    if (measure(head) <= max) return head;
   }
-  throw new Error(`texto do Threads não cabe em ${THREADS_TEXT_MAX_CHARS} caracteres`);
+  throw new Error(`texto do ${label} não cabe em ${max} caracteres`);
 }
 
 /** Configuração `publishing.shorts` em `platform.config.json`. */

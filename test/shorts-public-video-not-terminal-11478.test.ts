@@ -49,7 +49,6 @@ function planWithoutR2() {
     published: { aammdd: AAMMDD, entries: [] },
     video: { path: "v.mp4", exists: true, sizeBytes: 10 },
     editionUrl: "https://diar.ia.br/p/x",
-    youtubeVideoUrl: "https://youtu.be/MMyBVHVQELI",
     now: new Date("2026-10-22T16:00:00Z"),
     threadsPersonal: { ready: true },
     // Mesmo motivo que o main() monta numa máquina sem os secrets do R2.

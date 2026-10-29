@@ -47,7 +47,6 @@ const base = {
   published: { aammdd: "261022", entries: [] },
   video: { path: "v.mp4", exists: true, sizeBytes: 10 },
   editionUrl: EDITION_URL,
-  youtubeVideoUrl: YT,
   threadsPersonal: { ready: true } as const,
   publicVideo: { ready: true } as const,
 };
@@ -91,12 +90,12 @@ describe("#11122 plano", () => {
     assert.equal(p.slots.find((s) => s.destination === "threads_profile")?.account, THREADS_PERSONAL_ACCOUNT);
   });
 
-  it("no horário (ou --now): publish com texto do Threads (UTM threads/video/{AAMMDD})", () => {
+  it("no horário (ou --now): publish com texto do Threads sem link (#11617)", () => {
     const p = planShortsPublish({ ...base, now: new Date("2026-10-22T03:00:00Z"), forceNow: true });
     const it0 = item(p);
     assert.equal(it0.action, "publish");
-    assert.ok(it0.caption.includes("utm_source=threads&utm_medium=video&utm_campaign=261022"), it0.caption);
-    assert.ok(it0.caption.includes(YT));
+    assert.doesNotMatch(it0.caption, /https?:\/\/|utm_/, it0.caption);
+    assert.ok(!it0.caption.includes(YT));
   });
 
   it("muito depois do horário: skip_late apontando o --mark threads_profile", () => {
