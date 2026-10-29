@@ -181,8 +181,6 @@ export const BEEHIIV_CTA_ALLOWLIST = [
   "scripts/check-stage2-invariants.ts",
   // Propriedade VERIFICADA no Search Console ainda é o host antigo.
   "scripts/seo-pull.ts",
-  // URLs de poll da própria API do Beehiiv.
-  "scripts/fetch-beehiiv-poll-stats.ts",
   // Normalizador `diaria.beehiiv.com` → `diar.ia.br`: precisa citar os dois.
   "scripts/monthly-relink-to-diaria.ts",
   "scripts/lib/mensal/monthly-render.ts",

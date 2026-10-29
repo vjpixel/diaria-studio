@@ -9,8 +9,9 @@
  * passa e o problema fica invisível. Este módulo compara os CONJUNTOS de
  * e-mail, nunca as contagens.
  *
- * O script CLI (`scripts/reconcile-beehiiv-kit.ts`) faz só o fetch paginado
- * das duas APIs e delega toda a lógica de comparação pra cá — é o que torna
+ * O script CLI (`scripts/reconcile-beehiiv-kit.ts`, aposentado no #11225
+ * depois de cumprir o papel em 04/09/2026) fazia só o fetch paginado das
+ * duas APIs e delegava toda a lógica de comparação pra cá — é o que torna
  * este módulo testável sem rede (mesmo padrão de `apoios-diff-alarm.ts`,
  * `daily-carousel-card.ts` etc: I/O fino em `scripts/`, lógica em
  * `scripts/lib/`).

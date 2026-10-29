@@ -4,9 +4,10 @@
  *
  * Guard "quem recebe × quem recebe" nas 3 plataformas de envio da edição
  * diária — sucessor, em ESCOPO, de `scripts/reconcile-beehiiv-kit.ts`
- * (#6269), que continua existindo intocado (é o precondition do switchover
- * #6114, "só na Beehiiv: 0" contra as bases de ATIVOS, ver
- * `platform.config.json` → `publishing.newsletter.backend_note`).
+ * (#6269, o precondition do switchover #6114, "só na Beehiiv: 0" contra as
+ * bases de ATIVOS). Aquele CLI foi aposentado no #11225, depois de cumprido
+ * em 04/09/2026; o fetch paginado de ativos da Beehiiv que este script usa
+ * mora em `scripts/lib/beehiiv-active-subscriptions.ts`.
  *
  * O achado do #7385: comparar BASES DE ATIVOS engana. Medição de
  * 03/09/2026 — Kit tinha 629 assinantes ativos, mas só 280 na tag
@@ -83,7 +84,7 @@ import { listBroadcasts, listAllBroadcasts, getBroadcastStats, type KitBroadcast
 import { isKitTestBroadcast } from "./lib/shared/kit-test-broadcast.ts";
 import { listAllKitSubscribers } from "./lib/kit-subscribers.ts";
 import { brevoListContacts, brevoGetCampaignGlobalStats, fetchCampaignsByStatus } from "./lib/brevo-client.ts";
-import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
+import { fetchActiveBeehiivEmails } from "./lib/beehiiv-active-subscriptions.ts";
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { parseDiariaExclusionSegment, KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { kitSemAberturaExemptEmails } from "./lib/brevo-kit-active-exclusion.ts"; // #10437

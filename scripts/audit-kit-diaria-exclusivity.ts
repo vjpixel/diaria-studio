@@ -17,8 +17,8 @@
  * Miolo puro (comparação de conjuntos) em
  * `scripts/lib/kit-diaria-audience-exclusivity.ts` — este script só faz o
  * fetch (Kit: paginação de `GET /v4/tags/{id}/subscribers` via
- * `listTagSubscribersPage`; Beehiiv: `fetchActiveBeehiivEmails`, já
- * exportado por `reconcile-beehiiv-kit.ts`, reusado aqui em vez de
+ * `listTagSubscribersPage`; Beehiiv: `fetchActiveBeehiivEmails`, de
+ * `scripts/lib/beehiiv-active-subscriptions.ts`, reusado aqui em vez de
  * duplicado) e delega.
  *
  * Uso:
@@ -26,7 +26,7 @@
  *   npx tsx scripts/audit-kit-diaria-exclusivity.ts --json      # JSON pra consumo programático
  *   npx tsx scripts/audit-kit-diaria-exclusivity.ts --tag rampa-kit  # override do nome da tag
  *
- * Exit codes (mesmo espírito de `reconcile-beehiiv-kit.ts`):
+ * Exit codes (mesmo espírito do `reconcile-beehiiv-kit.ts`, aposentado no #11225):
  *   0 = nenhuma sobreposição (partição íntegra)
  *   1 = BLOQUEANTE — alguém está na tag do Kit E ativo na Beehiiv (dobro)
  *   2 = falha de config/rede — não foi possível medir (NUNCA confundir com "medi e não diverge")
@@ -47,7 +47,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { findTagIdByName, listTagSubscribersPage } from "./lib/kit-broadcasts.ts";
-import { fetchActiveBeehiivEmails } from "./reconcile-beehiiv-kit.ts";
+import { fetchActiveBeehiivEmails } from "./lib/beehiiv-active-subscriptions.ts";
 import { KIT_NATIVE_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import {

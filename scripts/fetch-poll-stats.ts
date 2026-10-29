@@ -2,7 +2,8 @@
  * fetch-poll-stats.ts (#469)
  *
  * Busca estatísticas de votação do Worker de poll para uma edição.
- * Substitui fetch-beehiiv-poll-stats.ts na migração para o sistema próprio.
+ * Substituiu fetch-beehiiv-poll-stats.ts na migração para o sistema próprio
+ * (o antigo foi removido no #11225).
  *
  * Uso:
  *   npx tsx scripts/fetch-poll-stats.ts --edition 260502 --out data/editions/260502/_internal/04-eia-poll-stats.json
