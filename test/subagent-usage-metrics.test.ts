@@ -502,3 +502,72 @@ describe("subagente em voo (#10483 finding 1)", () => {
     assert.deepEqual(same.markers, []);
   });
 });
+
+describe("as duas definições de tokens, cache separado (#11568)", () => {
+  /**
+   * Reproduz o achado do /diaria-develop 261029: implementador com 38 turnos
+   * relendo um prefixo de ~180k em cache a cada turno. O harness notificou
+   * 183.426 (turno final); o script gravou 5.804.716 (soma, 96,5% cache_read)
+   * sem dizer que era outra definição. Transcript sintético na mesma forma.
+   */
+  function inflatedTranscript(turns: number): string[] {
+    const lines: string[] = [];
+    for (let i = 0; i < turns; i++) {
+      const last = i === turns - 1;
+      const ts = new Date(Date.parse("2026-10-29T01:40:00.000Z") + i * 10_000).toISOString();
+      const line = assistantLine({
+        id: `m${i}`,
+        ts,
+        input: 2,
+        cacheRead: 150_000 + i * 1000,
+        output: 500,
+        toolUseId: last ? undefined : `t${i}`,
+        stopReason: last ? "end_turn" : "tool_use",
+      });
+      // O harness repete o mesmo usage em cada bloco da resposta.
+      lines.push(line, line);
+    }
+    return lines;
+  }
+
+  it("summarizeTranscript separa cache_read e expõe o turno final (o número do harness)", () => {
+    const s = summarizeTranscript(inflatedTranscript(38).join("\n"));
+    const finalTurn = 2 + (150_000 + 37 * 1000) + 500;
+    let cacheRead = 0;
+    for (let i = 0; i < 38; i++) cacheRead += 150_000 + i * 1000;
+    assert.equal(s.finalTurnTokens, finalTurn);
+    assert.equal(s.cacheReadTokens, cacheRead);
+    assert.equal(s.tokens, cacheRead + 38 * 502);
+    // A soma inflada que motivou a issue: ~30× o turno final.
+    assert.ok((s.tokens as number) / finalTurn > 25, `razão soma/final = ${(s.tokens as number) / finalTurn}`);
+  });
+
+  it("evento gravado leva as duas definições + cache separado, e a invariante fecha", () => {
+    const root = mkdtempSync(join(tmpdir(), "subagent-usage-metrics-11568-"));
+    const home = makeSession(root, [
+      { id: "impl", agentType: "dev-implementador", description: "Implement #11205 items 6/7", lines: inflatedTranscript(38) },
+    ]);
+    const outcome = collectSubagentMetrics({ edition: "261029", sessionId: SESSION, rootDir: root, homeDir: home, nowMs: NOW + 30 * 86_400_000 });
+    assert.equal(outcome.status, "ok");
+    if (outcome.status !== "ok") return;
+    const ev = outcome.events.find((e) => e.details.agent_id === "impl");
+    assert.ok(ev);
+    const d = ev.details;
+    assert.equal(d.tokens_definition, "sum_all_turns_incl_cache_read");
+    assert.equal(d.final_turn_tokens, 2 + 187_000 + 500);
+    assert.equal(typeof d.cache_read_tokens, "number");
+    assert.equal(typeof d.uncached_tokens, "number");
+    assert.equal((d.uncached_tokens as number) + (d.cache_read_tokens as number), d.subagent_tokens);
+    assert.equal(d.uncached_tokens, 38 * 502);
+  });
+
+  it("sem usage: nenhum campo de breakdown (tokens null continua o sinal)", () => {
+    const s = summarizeTranscript(JSON.stringify({ type: "user", timestamp: "2026-10-18T18:00:00.000Z" }));
+    assert.equal(s.cacheReadTokens, null);
+    assert.equal(s.finalTurnTokens, null);
+    const { events } = planEvents([{ agentId: "x", meta: { agentType: "dev-implementador", description: "#1" }, summary: s }], [], "261029", undefined, NOW);
+    assert.equal(events[0].details.subagent_tokens, null);
+    assert.equal("final_turn_tokens" in events[0].details, false);
+    assert.equal("tokens_definition" in events[0].details, false);
+  });
+});

@@ -241,6 +241,18 @@ não cita alguma issue com `Closes`/`REFS`: reescrever o arquivo e corrigir via
 recusa o corpo que não cita as issues (`--allow-missing-issue-marker` só
 quando a omissão é intencional).
 
+**`--verify-body` também confere o commit da PR (#11566).** Branch de PR
+mergeada por squash fica no remoto (o merge não usa `--delete-branch`), e a
+2ª PR da mesma issue reaproveita o nome: o `git push -u` é recusado como
+non-fast-forward, só com um `hint:` no stderr, e o `gh pr create` abre a PR
+em cima do commit ANTIGO. Por isso o `--verify-body` compara o `headRefOid`
+da PR com o `HEAD` do checkout da PR (`--worktree DIR`, default cwd) e sai
+`exit 1` se a branch for a mesma e o commit não. Checkout em outra branch ou
+fora do git só gera aviso. No `exit 1` por commit: fechar a PR, criar branch
+de nome novo (sufixo `-2`) e reabrir; nunca force-push sobre a branch velha.
+Para não cair nisso, antes do 1º push conferir `git ls-remote --heads origin
+{branch}`: se a branch já existe no remoto, usar outro nome.
+
 **"PR mergeado com `REFS`" e "issue fechada" são estados DIFERENTES (#5327
 item 2).** Antes de qualquer resumo de status ao editor que mencione uma issue
 como "fechada"/"resolvida", confirmar via `gh issue view {N} --json state` —
@@ -1203,8 +1215,9 @@ vjpixel/diaria-design --base main`, corpo com `Closes #N` LOCAL (o `#N` do
 design — o GitHub resolve no repo do PR). Nunca abrir PR no studio fechando
 `#N` do studio, nem citar `vjpixel/diaria-design#N` num PR do studio como se
 o fechasse. Conferência do corpo: `gh-pr-safe-edit.ts --pr P --repo
-vjpixel/diaria-design --verify-body --issues N` (rodado do checkout do
-studio, onde o helper mora). Testes/typecheck: os do próprio design (ler o
+vjpixel/diaria-design --verify-body --issues N --worktree {worktree do
+design}` (rodado do checkout do studio, onde o helper mora; o `--worktree`
+aponta a conferência do commit da PR, #11566, para o checkout certo). Testes/typecheck: os do próprio design (ler o
 `package.json`/README dele) — `npx tsc`/`test/lib-boundary.test.ts` do item 4
 são do studio.
 
