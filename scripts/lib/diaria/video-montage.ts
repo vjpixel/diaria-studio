@@ -892,6 +892,8 @@ export interface BlocksFile {
   framing?: Framing;
   blocks: Partial<Record<BlockKey, BlockItem[]>>;
   sequences?: SequenceSpec[];
+  /** Formato da gravação (#11507); decide as sequências default quando `sequences` falta. Ausente = inferido dos blocos (`effectiveFormat`). */
+  format?: VideoFormat;
   /** Regras extras desta edição, somadas às de `context/video-montagem/vocabulario.json`. */
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
@@ -938,6 +940,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
   if (!isObj(raw)) return { ok: false, errors: ["blocks.json precisa ser um objeto"] };
   if (typeof raw.edition !== "string" || !/^\d{6}$/.test(raw.edition)) errors.push("edition precisa ser AAMMDD");
   if (raw.mirrored !== undefined && typeof raw.mirrored !== "boolean") errors.push("mirrored precisa ser true/false");
+  if (raw.format !== undefined && !VIDEO_FORMATS.includes(raw.format as VideoFormat)) errors.push(`format precisa ser ${VIDEO_FORMATS.join(" ou ")}`);
   if (raw.source !== undefined && !isObj(raw.source)) errors.push("source (legado) precisa ser objeto");
   if (raw.framing !== undefined) {
     const fr = raw.framing;
@@ -1029,6 +1032,30 @@ export function effectiveFraming(file: Pick<BlocksFile, "framing">): { framing: 
 }
 
 /**
+ * Formato da gravação (#11507). `monologo` (o de sempre): o Pixel grava título,
+ * resumo e comentário. `entrevista` (261029): a entrevistadora pergunta, o
+ * Pixel responde, sem título nem resumo gravados; as sequências default
+ * pulam esses blocos.
+ */
+export type VideoFormat = "monologo" | "entrevista";
+export const VIDEO_FORMATS: readonly VideoFormat[] = ["monologo", "entrevista"];
+
+/** Blocos que só o monólogo grava: sem nenhum deles (e com comentário), o formato é entrevista. */
+export const MONOLOGUE_ONLY_BLOCKS: readonly BlockKey[] = ["titulo", "resumo", "resumo_curto"];
+
+/**
+ * O formato da edição: o `format` do `blocks.json` vence; sem ele, `entrevista`
+ * quando nenhum bloco de `MONOLOGUE_ONLY_BLOCKS` tem item e o comentário tem
+ * (`inferred: true`, para o `[premissa]`).
+ */
+export function effectiveFormat(file: { format?: VideoFormat; blocks: Partial<Record<BlockKey, unknown[]>> }): { format: VideoFormat; inferred: boolean } {
+  if (file.format) return { format: file.format, inferred: false };
+  const has = (k: BlockKey) => (file.blocks[k]?.length ?? 0) > 0;
+  const entrevista = has("comentario") && MONOLOGUE_ONLY_BLOCKS.every((k) => !has(k));
+  return { format: entrevista ? "entrevista" : "monologo", inferred: entrevista };
+}
+
+/**
  * As 3 versões (#11208). Nomes no padrão dos finais da pasta `Final/`
  * (`Diaria comentada_Youtube_V3.mp4`, #11222): o Premiere sugere o nome da
  * sequência no export, e `videoTargetOf` lê o destino dele. Escalas: 50/62 no
@@ -1036,7 +1063,15 @@ export function effectiveFraming(file: Pick<BlocksFile, "framing">): { framing: 
  * prévia aprovada da 261027; o XML dela saiu com 89/105, "enquadramento
  * pequeno" na autorrevisão).
  */
-export function defaultSequences(version = "V1"): SequenceSpec[] {
+export function defaultSequences(version = "V1", format: VideoFormat = "monologo"): SequenceSpec[] {
+  if (format === "entrevista") {
+    // #11507 (261029): sem título nem resumo gravados, a ordem que o editor montou à mão.
+    return [
+      { target: "youtube", name: `Diaria comentada_Youtube_${version}`, width: 1920, height: 1080, order: ["abertura", "comentario", "cta_yt", "fecho"], scales: [50, 62] },
+      { target: "instagram", name: `Diaria comentada_Instagram_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_ig", "fecho"], scales: [115, 130] },
+      { target: "outras-redes", name: `Diaria comentada_Outras redes_${version}`, width: 1080, height: 1920, order: ["abertura", "comentario", "cta_out", "fecho"], scales: [115, 130] },
+    ];
+  }
   return [
     {
       target: "youtube",
@@ -1528,24 +1563,125 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
 /**
  * Vocabulário sobre a lista de palavras, REGRA A REGRA: une as palavras (para
  * a regra pegar termos de 2+ palavras, "inteligência personalizada"), aplica e
- * redistribui. A regra que muda o número de palavras é pulada (com aviso), sem
- * derrubar as outras.
+ * redistribui pelas palavras que cada casamento tocou. Desde o #11506 a regra
+ * pode mudar o número de palavras: o Whisper ouve "ChatGPT" como "chat EPT", e
+ * N palavras viram 1 (do início da 1ª ao fim da última); 1 palavra que vira N
+ * (ou N→M) divide o tempo do trecho pelo tamanho de cada palavra nova. Só a
+ * regra que APAGARIA palavras (substituição vazia) é pulada, com aviso, sem
+ * derrubar as outras: sem palavra não há onde pôr o tempo.
  */
 export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target?: SequenceTarget, warn?: (msg: string) => void): Word[] {
   let cur = words.map((w) => ({ ...w, text: w.text.trim() }));
   for (const r of rules) {
     if (r.targets && (!target || !r.targets.includes(target))) continue;
-    const joined = cur.map((w) => w.text).join(" ");
-    const next = joined.replace(new RegExp(r.pattern, r.flags ?? "g"), r.replacement);
-    if (next === joined) continue;
-    const parts = next.split(" ");
-    if (parts.length !== cur.length) {
-      warn?.(`regra de vocabulário /${r.pattern}/ muda o número de palavras; pulada`);
+    const next = applyRuleToWords(cur, r);
+    if (next === null) {
+      warn?.(`regra de vocabulário /${r.pattern}/ apagaria palavras; pulada`);
       continue;
     }
-    cur = cur.map((w, i) => ({ ...w, text: parts[i] }));
+    cur = next;
   }
   return cur;
+}
+
+/** Expande `$1`, `$<nome>`, `$&`, `$$` da substituição para um casamento (a mesma sintaxe de `String.replace`). */
+function expandReplacement(tpl: string, m: RegExpExecArray): string {
+  return tpl.replace(/\$(\$|&|`|'|<([^>]*)>|(\d{1,2}))/g, (all, tok: string, name: string | undefined, num: string | undefined) => {
+    if (tok === "$") return "$";
+    if (tok === "&") return m[0];
+    if (tok === "`") return m.input.slice(0, m.index);
+    if (tok === "'") return m.input.slice(m.index + m[0].length);
+    if (name !== undefined) return m.groups?.[name] ?? "";
+    const n = Number(num);
+    if (n >= 1 && n < m.length) return m[n] ?? "";
+    // "$12" com 1 grupo só: "$1" + "2", como o String.replace.
+    if (num && num.length === 2 && Number(num[0]) >= 1 && Number(num[0]) < m.length) return (m[Number(num[0])] ?? "") + num[1];
+    return all;
+  });
+}
+
+/**
+ * Uma regra sobre as palavras (#11506). Cada casamento toca as palavras que
+ * cobre (inteiras ou em parte); casamentos que tocam a mesma palavra formam um
+ * trecho só. O texto novo do trecho é dividido por espaço: o mesmo número de
+ * palavras guarda os tempos de cada uma; 1 palavra nova fica com o trecho
+ * inteiro; outro número divide o trecho pelo tamanho. `null` = a regra apaga
+ * todas as palavras de algum trecho. Sem casamento, devolve `words` como veio.
+ */
+function applyRuleToWords(words: Word[], r: VocabRule): Word[] | null {
+  if (words.length === 0) return words;
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let pos = 0;
+  for (const w of words) {
+    starts.push(pos);
+    pos += w.text.length;
+    ends.push(pos);
+    pos += 1; // o espaço que une
+  }
+  const joined = words.map((w) => w.text).join(" ");
+  const flags = r.flags ?? "g";
+  const re = new RegExp(r.pattern, flags.includes("g") ? flags : flags + "g");
+  const matches: Array<{ start: number; end: number; repl: string }> = [];
+  for (let m = re.exec(joined); m !== null; m = re.exec(joined)) {
+    if (m[0].length === 0) {
+      re.lastIndex++;
+      continue;
+    }
+    matches.push({ start: m.index, end: m.index + m[0].length, repl: expandReplacement(r.replacement, m) });
+    if (!flags.includes("g")) break;
+  }
+  if (matches.length === 0) return words;
+  // Palavras de cada casamento: da que contém o início (ou a anterior ao espaço
+  // onde ele começa) à que contém o fim (ou a seguinte, se o casamento comeu o espaço).
+  const spans: Array<{ first: number; last: number; ms: typeof matches }> = [];
+  for (const m of matches) {
+    let first = 0;
+    while (first + 1 < words.length && starts[first + 1] <= m.start) first++;
+    let last = first;
+    while (last + 1 < words.length && starts[last + 1] < m.end) last++;
+    if (m.end > ends[last] && last + 1 < words.length) last++;
+    const prev = spans[spans.length - 1];
+    if (prev && first <= prev.last) {
+      prev.last = Math.max(prev.last, last);
+      prev.ms.push(m);
+    } else spans.push({ first, last, ms: [m] });
+  }
+  let changed = false;
+  const out: Word[] = [];
+  let i = 0;
+  for (const sp of spans) {
+    while (i < sp.first) out.push(words[i++]);
+    const a = starts[sp.first];
+    const b = ends[sp.last];
+    let text = "";
+    let p = a;
+    for (const m of sp.ms) {
+      text += joined.slice(p, m.start) + m.repl;
+      p = m.end;
+    }
+    text += joined.slice(p, b);
+    const original = joined.slice(a, b);
+    const parts = text.split(" ").filter((t) => t !== "");
+    if (parts.length === 0) return null;
+    const span = words.slice(sp.first, sp.last + 1);
+    if (text !== original) changed = true;
+    if (parts.length === span.length) span.forEach((w, k) => out.push({ ...w, text: parts[k] }));
+    else {
+      const t0 = span[0].start;
+      const t1 = span[span.length - 1].end;
+      const total = parts.reduce((n, t) => n + t.length, 0);
+      let acc = 0;
+      for (const t of parts) {
+        const s = t0 + ((t1 - t0) * acc) / total;
+        acc += t.length;
+        out.push({ start: round3(s), end: round3(t0 + ((t1 - t0) * acc) / total), text: t });
+      }
+    }
+    i = sp.last + 1;
+  }
+  while (i < words.length) out.push(words[i++]);
+  return changed ? out : words;
 }
 
 /**

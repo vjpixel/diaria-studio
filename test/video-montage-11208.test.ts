@@ -516,9 +516,9 @@ describe("legendas (#11208)", () => {
     assert.equal(applyVocabularyToWords(say("fotos", 0), soInsta, "instagram")[0].text, "Photos");
   });
 
-  it("regressão E: regra que muda o número de palavras é pulada sozinha, com aviso, sem derrubar as outras", () => {
+  it("regressão E: regra que apagaria palavras é pulada sozinha, com aviso, sem derrubar as outras (#11506: juntar/separar palavras vale)", () => {
     const avisos: string[] = [];
-    const rules: VocabRule[] = [{ pattern: "Google Fotos", replacement: "GooglePhotos" }, ...vocab.rules];
+    const rules: VocabRule[] = [{ pattern: "Google Fotos", replacement: "" }, ...vocab.rules];
     const out = applyVocabularyToWords(say("o Google Fotos e a inteligência personalizada", 0), rules, undefined, (m) => avisos.push(m));
     assert.equal(out.map((w) => w.text).join(" "), "o Google Photos e a Inteligência Personalizada");
     assert.equal(avisos.length, 1);
