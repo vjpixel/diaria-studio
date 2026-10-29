@@ -36,7 +36,7 @@
  *     `manifest.json` (url, título, bucket de origem), não apagados. Se o
  *     editor trouxer o item de volta (novo swap promovendo-o à mesma posição),
  *     `--restore dN` devolve arquivos e chaves; sobra só o re-upload
- *     (`lib/swap-destaque-backup.ts`).
+ *     (`lib/swap-destaque-forensic.ts`).
  *
  * O que o script NÃO faz (sinaliza claramente quais re-renders faltam, em
  * ORDEM, no `rerenders_needed` do JSON de saída):
@@ -128,7 +128,7 @@ import {
   SWAP_BACKUP_MANIFEST,
   type FoundBackup,
   type SwapBackupManifest,
-} from "./lib/swap-destaque-backup.ts"; // #11529
+} from "./lib/swap-destaque-forensic.ts"; // #11529
 import {
   replaceTitleInTituloSubtitulo,
   tituloPendingPath,

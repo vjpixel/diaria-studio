@@ -21,7 +21,7 @@ import {
   listSwapBackups,
   restoreSwapBackup,
   swapBackupDirName,
-} from "../scripts/lib/swap-destaque-backup.ts";
+} from "../scripts/lib/swap-destaque-forensic.ts";
 import { publicImageKeysForPosition } from "../scripts/lib/public-images-invalidate.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
