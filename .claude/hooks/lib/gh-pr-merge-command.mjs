@@ -79,9 +79,19 @@
 //     Falso positivo fora dela (ex.: `cat <<'EOF' | tee nota.md` citando o
 //     merge) é aceito;
 //   - wrappers fora da lista `WRAPPERS` abaixo (ex.: `chronic`, `doas`);
-//   - comando de shell vindo de CONFIG do git (`git -c core.editor=…`,
-//     `alias.x=!…`, `core.pager`, `core.sshCommand`, `git config` gravado
-//     antes) — só o valor das variáveis de `SHELL_VALUE_VARS` é lido (#11513).
+//   - comando de shell vindo de CONFIG gravado ANTES, fora do comando
+//     (`~/.gitconfig`, `.git/config`, `config.yml` do gh) ou por variável
+//     (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, que só
+//     tiram a atribuição da whitelist de heredoc pelo prefixo `GIT_`). Desde o
+//     #11522 são lidos no PRÓPRIO comando: `git -c CHAVE=VALOR`,
+//     `--config-env`, `git config [set] CHAVE VALOR` (core.editor/pager/
+//     sshCommand/askpass, sequence.editor, pager.*, alias.*=!…, …, ver
+//     `GIT_SHELL_CONFIG_KEYS`) e `gh config set editor|pager|browser`;
+//   - valor de shell (variável de `SHELL_VALUE_VARS` ou config acima) com
+//     expansão só em ARGUMENTO de comando literal (`GIT_SSH_COMMAND="ssh -i
+//     $KEY"`) é lido normalmente (#11522) — a expansão no argumento é o mesmo
+//     limite geral de `$VAR` acima; na posição de comando, ou como argumento
+//     de shell/`eval`/wrapper, segue fail-closed (`scanShellValue`).
 // Na dúvida o lexer fica do lado de VER o merge: flag desconhecida de wrapper
 // é tratada como booleana (não engole a palavra seguinte).
 
@@ -138,7 +148,8 @@ function isOpaque(v) {
 //                                      "xargs", "endpoint", "subcommand",
 //                                      "alias-unreadable", "alias-import",
 //                                      "alias-loop", "depth", "shell-var"
-//                                      (#11513). `args` = o que
+//                                      (#11513), "git-config", "gh-config"
+//                                      (#11522). `args` = o que
 //                                      deu pra ler, no formato de `pr-merge`.
 // ANTES do #10751 era `string[][]` com `targetUnknown` não-enumerável, e `[]`
 // tinha seis sentidos indistinguíveis. Só `pr-merge` pode sair do modo
@@ -542,13 +553,28 @@ const ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=/;
  * (`collect`) onde quer que a atribuição apareça: prefixo de comando
  * (`X=v cmd`), comando só de atribuição (`X=v; cmd`), `env X=v cmd` e
  * `export`/`declare`/`typeset`/`readonly`/`local X=v`. Valor com expansão do
- * shell (`"$X"`, `$(…)`) não dá pra ler: fail-closed, conta como merge.
+ * shell: ver `scanShellValue` (#11522).
+ *
+ * FONTE ÚNICA (#11522): a denylist de atribuição da whitelist de heredoc
+ * (`SAFE_ASSIGN_NAME`, mais abaixo) é gerada a partir deste conjunto — antes
+ * eram duas listas escritas à mão e `SSH_ASKPASS` só existia nesta.
  */
-const SHELL_VALUE_VARS = new Set([
+export const SHELL_VALUE_VARS = new Set([
   "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "EDITOR", "VISUAL", "GH_EDITOR",
   "GIT_PAGER", "GH_PAGER", "PAGER", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS",
   "GIT_EXTERNAL_DIFF", "BROWSER", "GH_BROWSER",
 ]);
+/**
+ * Variáveis que, sem serem executadas como shell, mudam o que um comando
+ * executa (binário achado, config lido, shell de inicialização). Só a
+ * whitelist de heredoc as usa: junto com `SHELL_VALUE_VARS` e os prefixos de
+ * `UNSAFE_ASSIGN_PREFIXES`, nunca casam como atribuição "inócua" (#11510, #11516).
+ */
+const UNSAFE_ASSIGN_EXTRA = ["PATH", "HOME", "NODE_OPTIONS", "BASH_ENV", "ENV", "IFS", "SHELL", "CDPATH"];
+/** Prefixos de nome que nunca são atribuição inócua (`GIT_*`, `GH_*`, `LD_*`, `XDG_*`). */
+export const UNSAFE_ASSIGN_PREFIXES = Object.freeze(["GIT_", "GH_", "LD_", "XDG_"]);
+/** Nomes exatos que nunca são atribuição inócua: `SHELL_VALUE_VARS` ∪ `UNSAFE_ASSIGN_EXTRA`. */
+export const UNSAFE_ASSIGN_NAMES = new Set([...SHELL_VALUE_VARS, ...UNSAFE_ASSIGN_EXTRA]);
 /** Builtins de declaração: os argumentos `X=v` são atribuições, nada é executado. */
 const DECL_BUILTINS = new Set(["export", "declare", "typeset", "readonly", "local"]);
 
@@ -556,12 +582,47 @@ const DECL_BUILTINS = new Set(["export", "declare", "typeset", "readonly", "loca
 function scanShellValueAssignment(word, depth, out, env) {
   const m = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/.exec(word);
   if (!m || !SHELL_VALUE_VARS.has(m[1])) return;
-  const value = word.slice(m[0].length);
-  if (isExpanded(value)) {
-    out.push(opaqueInvocation("shell-var"));
+  scanShellValue(word.slice(m[0].length), depth, out, env, "shell-var");
+}
+
+/**
+ * Lê como comandos um valor que o git/gh vão executar num `sh -c` (variável de
+ * `SHELL_VALUE_VARS`, `git -c core.editor=…`, `alias.x=!…`, …).
+ *
+ * #11522: valor com expansão do shell deixou de ser fail-closed por inteiro.
+ * `GIT_SSH_COMMAND="ssh -i $KEY"` é o uso legítimo comum, e a expansão ali é
+ * só ARGUMENTO de um comando literal. O valor é lido como comandos e só conta
+ * como merge opaco (`reason`) quando algum comando simples dele tem a palavra
+ * de COMANDO vinda de expansão (`"$X"`, `"$(cat x)"`) ou é um executor de
+ * texto (shell, `eval`, `source`/`.`, wrapper como `env`/`xargs`, `find`) com
+ * alguma expansão nos argumentos — aí o que roda só existe em execução.
+ * `$(…)` dentro do valor já foi lido como comando pelo lexer externo.
+ */
+function scanShellValue(value, depth, out, env, reason) {
+  if (typeof value !== "string") {
+    out.push(opaqueInvocation(reason));
+    return;
+  }
+  if (isExpanded(value) && shellValueRunsExpansion(value, depth)) {
+    out.push(opaqueInvocation(reason));
     return;
   }
   collect(value, depth + 1, out, DEFAULT_CTX, env);
+}
+
+/** Algum comando simples de `value` executa algo que só existe em execução (ver `scanShellValue`). */
+function shellValueRunsExpansion(value, depth) {
+  for (const words of parseShellCommands(value, depth + 1)) {
+    if (words[0] === DEPTH_EXCEEDED) return true;
+    const k = words.findIndex((w) => !ASSIGNMENT_RE.test(w) && !RESERVED_PREFIX.has(w));
+    if (k === -1) continue;
+    const cmd = words[k];
+    if (isExpanded(cmd) || cmd.includes("$")) return true;
+    const name = basename(cmd).replace(/\.exe$/i, "");
+    const runsText = BODY_RUNNERS.has(name) || Object.hasOwn(WRAPPERS, name) || name === "find";
+    if (runsText && words.slice(k + 1).some((w) => isExpanded(w))) return true;
+  }
+  return false;
 }
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh"]);
 /** Palavra que faz um here-string (`<<<`) ser EXECUTADO (lido como comandos). */
@@ -735,12 +796,118 @@ function mergeArgsOf(words, depth, out, env) {
       break;
     }
   }
+  if (i < words.length && isGitWord(words[i])) {
+    gitConfigCommands(words.slice(i + 1), depth, out, env); // #11522
+    return;
+  }
   if (i >= words.length || !isGhWord(words[i])) return;
   let ghArgs = words.slice(i + 1);
   // `xargs -I{} gh api -X PUT {}`: o `{}` vira o que vier do stdin — opaco.
   if (viaXargs && xargsReplace) ghArgs = ghArgs.map((a) => (a.includes(xargsReplace) ? a.split(xargsReplace).join(SUBST) : a));
   // Sem `-I`, o xargs ANEXA o stdin ao fim do comando (inclusive flags).
   ghInvocation(ghArgs, depth, out, { appends: viaXargs && !xargsReplace, env, chain: [] });
+}
+
+// ─── Config do git que vira comando de shell (#11522) ───────────────────
+// `git -c core.editor='gh pr merge 5;:' commit` faz o git rodar o valor num
+// `sh -c`, igual ao `GIT_EDITOR=…` do #11513. Lidos: `-c CHAVE=VALOR` e
+// `--config-env=CHAVE=VAR` antes do subcomando, e `git config [set] CHAVE
+// VALOR` (o valor gravado roda num comando FUTURO, que o hook não vê — por
+// isso é lido já na gravação).
+
+/** `git` como palavra de comando: `git`, `git.exe`, ou caminho terminado nisso. */
+function isGitWord(w) {
+  return /^git(\.exe)?$/i.test(basename(w));
+}
+
+/**
+ * Chaves de config do git cujo valor o git executa como comando de shell.
+ * Seção e nome sem distinção de caixa (o git os normaliza); a subseção do
+ * meio (`pager.<cmd>`, `filter.<driver>.clean`) é livre. `alias.*` e
+ * `credential.helper` só executam com `!` na frente (`bang`).
+ */
+const GIT_SHELL_CONFIG_KEYS = [
+  { re: /^core\.(?:editor|pager|sshcommand|askpass|fsmonitor)$/i },
+  { re: /^sequence\.editor$/i },
+  { re: /^diff\.external$/i },
+  { re: /^pager\.[^.]+$/i },
+  { re: /^(?:diff|difftool|mergetool|browser)\..+\.(?:cmd|command|textconv)$/i },
+  { re: /^filter\..+\.(?:clean|smudge|process)$/i },
+  { re: /^merge\..+\.driver$/i },
+  { re: /^gpg(?:\.[^.]+)?\.program$/i },
+  { re: /^alias\..+$/i, bang: true },
+  { re: /^credential(?:\..+)?\.helper$/i, bang: true },
+];
+
+/**
+ * Se `key`=`value` é config que o git executa, lê o valor como comandos.
+ * `value === undefined` = valor que só existe em execução (`--config-env`).
+ */
+function scanGitConfigValue(key, value, depth, out, env) {
+  if (typeof key !== "string") return;
+  if (isExpanded(key)) {
+    out.push(opaqueInvocation("git-config")); // chave opaca: pode ser qualquer uma
+    return;
+  }
+  const rule = GIT_SHELL_CONFIG_KEYS.find((r) => r.re.test(key));
+  if (!rule) return;
+  if (value === undefined) {
+    out.push(opaqueInvocation("git-config"));
+    return;
+  }
+  if (rule.bang) {
+    const v = value.replace(/^[\u0001\u0003]/, ""); // marcador de expansão antes do `!` não muda nada
+    if (!v.startsWith("!")) return; // alias de subcomando do git / helper nomeado: não é shell
+    value = v.slice(1);
+  }
+  scanShellValue(value, depth, out, env, "git-config");
+}
+
+/** Opções globais do git (antes do subcomando) que consomem a palavra seguinte. */
+const GIT_VALUE_FLAGS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path", "--list-cmds"]);
+
+/** Argumentos depois da palavra `git`: `-c`/`--config-env` globais e `git config [set] CHAVE VALOR`. */
+function gitConfigCommands(args, depth, out, env) {
+  let i = 0;
+  const kv = (s) => {
+    const eq = s.indexOf("=");
+    return eq === -1 ? [s, ""] : [s.slice(0, eq), s.slice(eq + 1)]; // `-c chave` sem `=` = booleano true
+  };
+  while (i < args.length && args[i].startsWith("-") && args[i] !== "-" && args[i] !== "--") {
+    const a = args[i];
+    if (a === "-c" || /^-c./.test(a)) {
+      const pair = a === "-c" ? args[i + 1] : a.slice(2);
+      if (typeof pair === "string") scanGitConfigValue(...kv(pair), depth, out, env);
+      i += a === "-c" ? 2 : 1;
+      continue;
+    }
+    if (a === "--config-env" || a.startsWith("--config-env=")) {
+      const pair = a === "--config-env" ? args[i + 1] : a.slice("--config-env=".length);
+      if (typeof pair === "string") scanGitConfigValue(kv(pair)[0], undefined, depth, out, env);
+      i += a === "--config-env" ? 2 : 1;
+      continue;
+    }
+    i += GIT_VALUE_FLAGS.has(a) ? 2 : 1;
+  }
+  if (args[i] !== "config") return;
+  // `git config [--global|--file F|…] CHAVE VALOR` e a forma nova `git config
+  // set [flags] CHAVE VALOR`. Outros subcomandos (`get`, `unset`, `--get`,
+  // `--unset`, `-l`) não gravam valor: só sobram 0-1 posicionais e nada é lido.
+  const CONFIG_VALUE_FLAGS = new Set(["-f", "--file", "--blob", "--type", "--default", "--comment", "--value"]);
+  const READ_FLAGS = new Set(["--get", "--get-all", "--get-regexp", "--get-urlmatch", "--unset", "--unset-all", "-l", "--list", "-e", "--edit", "--remove-section", "--rename-section"]);
+  const positional = [];
+  for (let k = i + 1; k < args.length; k++) {
+    const a = args[k];
+    if (READ_FLAGS.has(a)) return;
+    if (a.startsWith("-") && a !== "-") {
+      if (CONFIG_VALUE_FLAGS.has(a)) k++;
+      continue;
+    }
+    positional.push(a);
+  }
+  if (positional[0] === "set") positional.shift();
+  else if (["get", "unset", "list", "edit", "rename-section", "remove-section"].includes(positional[0])) return;
+  if (positional.length >= 2) scanGitConfigValue(positional[0], positional[1], depth, out, env);
 }
 
 /** Ações do `find` que executam um comando (`-exec … ;`/`+`). */
@@ -830,6 +997,16 @@ function ghInvocation(args, depth, out, ctx) {
   }
   if (sub === "alias") {
     recordAliasDefinition(args.slice(i), env);
+    return;
+  }
+  if (sub === "config") {
+    // #11522: `gh config set editor|pager|browser VALOR` — o gh roda o valor
+    // num shell num comando futuro; lido já na gravação (como `git config`).
+    const pos = args.slice(i).filter((a, k, arr) => !a.startsWith("-") && !(k > 0 && /^(?:-h|--host)$/.test(arr[k - 1])));
+    if (pos[0] === "set" && pos.length >= 3) {
+      if (isExpanded(pos[1])) out.push(opaqueInvocation("gh-config"));
+      else if (/^(?:editor|pager|browser)$/.test(pos[1])) scanShellValue(pos[2], depth, out, env, "gh-config");
+    }
     return;
   }
   if (GH_BUILTINS.has(sub)) return;
@@ -1392,7 +1569,10 @@ const VAR_REF = String.raw`\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\
 // #11516: também BROWSER/PAGER (o gh abre `$BROWSER <url>` em `--web`) e
 // XDG_* (`XDG_CONFIG_HOME` muda o `config.yml` do gh, que define editor,
 // navegador, pager e aliases).
-const SAFE_ASSIGN_NAME = String.raw`(?!(?:GIT_|GH_|LD_|XDG_)|(?:EDITOR|VISUAL|PATH|HOME|NODE_OPTIONS|BASH_ENV|ENV|IFS|SHELL|CDPATH|BROWSER|PAGER)=)[A-Za-z_][A-Za-z0-9_]*`;
+// #11522: gerado de `UNSAFE_ASSIGN_PREFIXES`/`UNSAFE_ASSIGN_NAMES` (que contém
+// `SHELL_VALUE_VARS`) — uma variável nova ali entra aqui sozinha.
+const SAFE_ASSIGN_NAME =
+  `(?!(?:${UNSAFE_ASSIGN_PREFIXES.join("|")})|(?:${[...UNSAFE_ASSIGN_NAMES].join("|")})=)` + String.raw`[A-Za-z_][A-Za-z0-9_]*`;
 const ASSIGN_PREFIX = `(?:${SAFE_ASSIGN_NAME}=${SIMPLE_ARG}(?:; | && ))+`;
 const VAR_TEXT_FILE = String.raw`(?:(?:[A-Za-z0-9_./:@=+,%-]|${VAR_REF})+\.(?:md|txt)|"(?:[^"$\x60\\\n]|${VAR_REF})*\.(?:md|txt)"|'[^'\n]*\.(?:md|txt)')`;
 const VAR_ARG = String.raw`(?:(?:[A-Za-z0-9_./:@=+,%-]|${VAR_REF})+|"(?:[^"$\x60\\\n]|${VAR_REF})*"|'[^'\n]*')`;
