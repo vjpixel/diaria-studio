@@ -77,6 +77,23 @@ export function loadToolAllowlist(root: string): string[] {
     .filter((l) => l.length > 0);
 }
 
+/**
+ * #11554: entrada da allowlist que é PADRÃO de caminho (domínio inteiro ou
+ * seção, ex. `replit.com/blog/`), e não uma URL específica. Convenção: termina
+ * em `/` ou não tem caminho nenhum. Padrão responde só "é ferramenta?"
+ * (`isVerifiedTool`); não confirma título/escopo de item extraído de
+ * newsletter (`isUnverifiedNewsletterExtract`), porque o editor nunca olhou
+ * aquela página específica.
+ */
+export function isAllowlistPathPattern(entry: string): boolean {
+  if (entry.endsWith("/")) return true;
+  return !entry.replace(/^https?:\/\//, "").includes("/");
+}
+
+function matchesAllowlist(url: string, allowlist: string[]): boolean {
+  return allowlist.some((a) => a && url.includes(a));
+}
+
 export interface ValidationResult {
   lancamento_count: number;
   invalid_urls: Array<{ url: string; line: number }>;
@@ -378,12 +395,32 @@ function isHuggingFaceOrgBlogPost(url: string): boolean {
   }
 }
 
+/**
+ * #11530: post de blog/changelog/news do próprio fornecedor cujo slug não traz
+ * nome de produto (caso real 261029: `replit.com/blog/anyone-can-bring-ideas-
+ * to-company-codebase`, anúncio de disponibilidade dos Cloud Agents). O slug
+ * sozinho não dá sinal, mas o caminho é de canal oficial de anúncio e o TÍTULO
+ * traz verbo de lançamento/disponibilidade. Só o título conta aqui: "now" no
+ * slug é comum demais (`how-we-now-think-about-x`). Os chamadores só aplicam
+ * isto a URL de domínio oficial (#160), e governança/pesquisa continua
+ * vencendo antes (`isNonProductLancamento` em `isVerifiedTool`).
+ */
+const ANNOUNCEMENT_PATH_RE =
+  /\/(?:blog|changelog|news|newsroom|updates|releases?|release-notes)(?:\/|$)/i;
+const AVAILABILITY_TITLE_RE =
+  /\b(?:now|available|availability|introduc(?:e|es|ing|ed)|rolling\s+out|agora|dispon[íi]ve(?:l|is)|chega(?:m)?)\b/iu;
+
+function isAnnouncementPostWithAvailabilityTitle(raw: string, title: string): boolean {
+  return !!title && ANNOUNCEMENT_PATH_RE.test(raw) && AVAILABILITY_TITLE_RE.test(title);
+}
+
 export function hasProductSignal(url: string, title?: string): boolean {
   const norm = normalizedSlug(url);
   const raw = rawSlug(url);
   const t = title ?? "";
   return (
     PRODUCT_PATH_RE.test(raw) ||
+    isAnnouncementPostWithAvailabilityTitle(raw, t) ||
     // #2493: huggingface.co/blog/{org}/{slug} = org released model/tool on HF
     isHuggingFaceOrgBlogPost(url) ||
     PRODUCT_SIGNAL_RE.test(norm) ||
@@ -404,7 +441,7 @@ export function hasProductSignal(url: string, title?: string): boolean {
  * hard-block de lançamentos de produto que mencionem parceria no slug/título.
  */
 export function isVerifiedTool(url: string, title?: string, allowlist: string[] = []): boolean {
-  if (allowlist.some((a) => a && url.includes(a))) return true;
+  if (matchesAllowlist(url, allowlist)) return true;
   if (isNonProductLancamento(url, title)) return false;
   return hasProductSignal(url, title);
 }
@@ -575,9 +612,12 @@ export function isUnverifiedNewsletterExtract(
   allowlist: string[] = [],
 ): boolean {
   if (item.flag !== "newsletter_extracted") return false;
-  // #9292: mesma escape-hatch do not_a_tool — URL na allowlist nunca é rebaixada.
+  // #9292: URL na allowlist nunca é rebaixada. #11554: só entrada de URL
+  // ESPECÍFICA conta aqui (o editor olhou aquela página); padrão de caminho
+  // (`replit.com/blog/`) diz "é ferramenta", não "o título foi confirmado".
   const url = typeof item.url === "string" ? item.url : "";
-  if (url && allowlist.some((a) => a && url.includes(a))) return false;
+  const specific = allowlist.filter((a) => a && !isAllowlistPathPattern(a));
+  if (url && matchesAllowlist(url, specific)) return false;
   const summary = typeof item.summary === "string" ? item.summary.trim() : "";
   // #9292: `anti_bot` (Cloudflare em site oficial, ex. openai.com) conta como
   // verificado — a página existe, só bloqueou o fetch automatizado.
@@ -819,7 +859,7 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
     const { approved: demotedApproved, demoted, consolidated } = demoteNotATool(approved, allowlist);
     writeFileSync(approvedPath, JSON.stringify(demotedApproved, null, 2) + "\n", "utf8");
     console.error(
-      `\n➡️  ${demoted.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) ou extraído(s) de newsletter sem summary verificado (#9250) foram movidos automaticamente para RADAR (#4339):`,
+      `\n➡️  [aviso, não bloqueia] ${demoted.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) ou extraído(s) de newsletter sem summary verificado (#9250) foram movidos automaticamente para RADAR (#4339):`,
     );
     for (const n of demoted) {
       const titleHint = n.title ? ` ("${n.title.slice(0, 60)}")` : "";
@@ -892,7 +932,7 @@ function main(): void {
   }
   if (result.invalid_urls.length > 0) {
     console.error(
-      `\n❌ ${result.invalid_urls.length} URL(s) em LANÇAMENTOS não bate(m) com whitelist oficial:`,
+      `\n❌ [BLOQUEIA o gate da Etapa 4, exit 1] ${result.invalid_urls.length} URL(s) em LANÇAMENTOS não bate(m) com whitelist oficial:`,
     );
     for (const u of result.invalid_urls) {
       console.error(`  linha ${u.line}: ${u.url}`);
@@ -904,13 +944,13 @@ function main(): void {
   // #1968: verificação POSITIVA — item oficial sem sinal de produto = not_a_tool.
   if (result.not_a_tool.length > 0) {
     console.error(
-      `\n❌ ${result.not_a_tool.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) (#1968):`,
+      `\n❌ [BLOQUEIA o gate da Etapa 4, exit 1] ${result.not_a_tool.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) (#1968):`,
     );
     for (const u of result.not_a_tool) {
       console.error(`  linha ${u.line}: ${u.url}`);
     }
     console.error(
-      "\nMova pra NOTÍCIAS, ou — se for ferramenta legítima de slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt.",
+      "\nMova pra NOTÍCIAS, ou — se for ferramenta legítima de slug atípico — adicione a URL (ou o padrão de caminho, ex. `exemplo.com/blog/`) a seed/lancamentos-tool-allowlist.txt.",
     );
   }
   if (result.status === "error") {
