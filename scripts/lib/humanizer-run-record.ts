@@ -14,10 +14,12 @@
  *
  *   - `humanizador`: hash de cada seção do escopo que saiu do humanizador.
  *     Seção que saiu idêntica também ganha prova (#11604): o humanizador leu o
- *     texto e o manteve, e sem isso um ajuste pequeno do editor que ele não
- *     altera prendia o `--write` em exit 4 sem saída fora do `--unproven-ok`.
- *     Esses hashes ficam também em `humanizador_unchanged`, pra auditoria e
- *     pro `--provenance` mostrar "texto mantido". O escopo continua sendo o
+ *     texto e o manteve. Mas só quando ao menos outra seção do escopo do mesmo
+ *     run mudou (#11609, opção a do editor): snapshots idênticos em todo o
+ *     escopo são indistinguíveis de "a Skill não rodou" e não provam nada —
+ *     run de uma única seção mantida cai em `--unproven-ok`. Os hashes
+ *     mantidos ficam também em `humanizador_unchanged`, pra auditoria e pro
+ *     `--provenance` mostrar "texto mantido". O escopo continua sendo o
  *     `--sections` pedido (ou o arquivo inteiro na passada full-file).
  *   - `clarice`: hash de cada seção que saiu da Clarice partindo de um texto
  *     já provado pelo humanizador. A Clarice pode não mudar nada; a prova vem
@@ -105,12 +107,29 @@ export function planRunRecord(
   const recorded: string[] = [];
   const skipped: RunRecordPlan["skipped"] = [];
 
-  for (const [name, postHash] of Object.entries(post)) {
-    if (only && !only.has(name)) continue;
+  // #11609 (decisão do editor, opção a): pre === post sozinho não distingue "o
+  // humanizador leu e manteve" de "o humanizador não rodou" (Skill pulada ou
+  // falha silenciosa deixa os dois snapshots iguais). Seção idêntica só vira
+  // prova se ao menos outra seção do escopo deste run mudou — sinal de que o
+  // passo de fato reescreveu o arquivo. Run em que nada mudou não prova nada.
+  const inScope = Object.entries(post).filter(([name]) => !only || only.has(name));
+  const runChangedSomething = inScope.some(([name, postHash]) => pre[name] !== postHash);
+
+  for (const [name, postHash] of inScope) {
     const preHash = pre[name];
     if (step === "humanizador") {
-      // #11604: idêntica também é prova (o humanizador manteve o texto).
-      if (preHash === postHash) unchanged.add(postHash);
+      if (preHash === postHash) {
+        if (!runChangedSomething) {
+          skipped.push({
+            section: name,
+            reason:
+              "seção devolvida idêntica e nenhuma outra seção do run mudou — sem sinal de que o humanizador rodou (#11609)",
+          });
+          continue;
+        }
+        // #11604: idêntica com outra seção alterada no mesmo run = o humanizador manteve o texto.
+        unchanged.add(postHash);
+      }
       humanizador.add(postHash);
       recorded.push(name);
     } else {
