@@ -68,6 +68,15 @@
  * empate no `n` desfeito pelo `modifiedTime`), com a escolha devolvida como
  * `premise`. `needs-editor` fica para nome sem versão ou empate que a data não
  * desfaz. Em `Final/` nada muda: 2+ do mesmo destino seguem `ambiguous`.
+ *
+ * **Cópia promovida não congela a versão (#11577).** A cópia que o fetch pôs
+ * em `Final/` (`appProperties.diaria_promoted_from`) entra na mesma regra da
+ * versão mais alta: com `_Youtube_V6` exportado depois do V5 promovido, vale o
+ * V6. O original da cópia em `Editados/` sai do pool (é o mesmo vídeo).
+ *
+ * **Vertical de `Editados/` só com sufixo (#11423).** Para os destinos
+ * verticais, um `.mp4` sem `_Instagram_`/`_Outras redes_` em `Editados/` é
+ * rascunho e nunca é escolhido pela proporção.
  */
 
 export type VideoOrientation = "horizontal" | "vertical";
@@ -319,21 +328,44 @@ function pick(pool: DriveVideoFile[], orientation: VideoOrientation): DriveVideo
  * pela proporção entre os sem sufixo. `null` = nenhum `.mp4` serve para o
  * destino pedido (o chamador decide o motivo).
  */
-function pickFromFinalFolder(pool: DriveVideoFile[], orientation: VideoOrientation, target: VideoTarget): DriveVideoSelection | null {
+function pickFromFinalFolder(allFiles: DriveVideoFile[], orientation: VideoOrientation, target: VideoTarget): DriveVideoSelection | null {
   const fitsOrientation = (f: DriveVideoFile) => {
     const o = classifyOrientation(f);
     return o === null || o === orientation;
   };
+  // #11577: o original em Editados/ de uma cópia promovida já presente em
+  // Final/ é o mesmo vídeo: a cópia o representa (senão V5 e cópia do V5
+  // empatariam no `n`).
+  const promotedSources = new Set(allFiles.filter(isPromotedCopy).map((f) => f.appProperties?.[PROMOTED_FROM_PROPERTY]));
+  const pool = allFiles.filter((f) => !(f.editedFolder && promotedSources.has(f.id)));
   const byTarget = pool.filter((f) => videoTargetOf(f.name) === target && fitsOrientation(f));
   if (byTarget.length > 1) {
     // #11556: em Editados/ ficam todas as exportações (V1…V5); a mais alta é a
     // final. Em Final/ o editor pôs as duas de propósito: segue ambíguo.
-    const highest = byTarget.every((f) => f.editedFolder) ? pickHighestVersion(byTarget) : null;
+    // #11577: a cópia que o fetch promoveu para Final/ conta como Editados/ —
+    // uma exportação mais nova lá (V6 depois do V5 promovido) vence a cópia.
+    const highest = byTarget.every((f) => f.editedFolder || isPromotedCopy(f)) ? pickHighestVersion(byTarget) : null;
     if (highest) return { kind: "found", orientation, file: highest.file, premise: highest.premise };
     return { kind: "ambiguous", orientation, candidates: byTarget };
   }
   if (byTarget.length === 1) return { kind: "found", orientation, file: byTarget[0] };
-  return pick(pool.filter((f) => videoTargetOf(f.name) === null), orientation);
+  // #11423: vertical sem sufixo de destino em Editados/ é rascunho, nunca o
+  // vertical publicado (LinkedIn/X/Threads/Instagram). Lá só vale o sufixo.
+  const unsuffixed = pool.filter((f) => videoTargetOf(f.name) === null && !(orientation === "vertical" && f.editedFolder));
+  return pick(unsuffixed, orientation);
+}
+
+/**
+ * `.mp4` que pode ser um corte VERTICAL (#11428): sufixo `_Instagram_`/
+ * `_Outras redes_`, ou, sem sufixo, proporção vertical ou ainda desconhecida.
+ * O `_Youtube_` (ou um horizontal sem sufixo) não é.
+ */
+export function isVerticalCutCandidate(file: DriveVideoFile): boolean {
+  if (!isMp4VideoFile(file)) return false;
+  const target = videoTargetOf(file.name);
+  if (target) return targetOrientation(target) === "vertical";
+  const o = classifyOrientation(file);
+  return o === "vertical" || o === null;
 }
 
 export function selectDriveVideo(files: DriveVideoFile[], opts: SelectDriveVideoOptions): DriveVideoSelection {
