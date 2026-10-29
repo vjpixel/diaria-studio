@@ -126,6 +126,11 @@
  *      git não deixa outro worktree mover o branch que o checkout principal
  *      tem em uso — o lado do CÓDIGO defasado é coberto pelo #9963 no
  *      `publish-edition-site-page.ts`.)
+ *   3g. #11562: logo após a recusa do ff direto, ANTES do guard de config
+ *      (#9276) e de qualquer stash, os caminhos em colisão cujo conteúdo local
+ *      é idêntico ao de origin/master (página da edição + sitemap gerados no
+ *      checkout e também mergeados pelo PR do site) são descartados sem perda
+ *      e o ff é re-tentado — ver `discardCollisionsIdenticalToUpstream()`.
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_partial_failure (ou sua variante
@@ -338,10 +343,18 @@ export interface GitSyncResult {
    * re-tentado depois disso (sucesso → `synced_stash_preserved`).
    */
   ff_retried_after_partial_stash?: boolean;
+  /**
+   * #11562: caminhos em colisão com o ff cujo conteúdo local era IDÊNTICO ao
+   * de origin/master e que foram descartados (sem perda) antes de re-tentar o
+   * ff. Ausente quando nenhum foi descartado. Ver
+   * `discardCollisionsIdenticalToUpstream()`.
+   */
+  discarded_identical_paths?: string[];
 }
 
 /** Estado interno passado de `syncCodeLocked` pra `syncCode` (anexado ao resultado). */
 interface SyncCtx {
+  discardedIdentical?: string[];
   ffRefusal?: FfRefusal;
   targetedStashPaths?: string[];
   reservedExcluded?: string[];
@@ -763,9 +776,15 @@ export interface LockFs {
  *
  * #9988 (10/10/2026): de 18 para 19 — `git ls-files --others` (passo 9
  * acima) expande diretório untracked colapsado na busca de nome reservado
- * do Windows. Valor atual: 19.
+ * do Windows.
+ *
+ * #11562 (29/10/2026): de 19 para 24 — logo após a recusa do ff direto (passo
+ * 6), `discardCollisionsIdenticalToUpstream()` roda até 4 spawns (hash-object,
+ * ls-tree, clean, checkout) e, se descartou algo, 1 `merge --ff-only`
+ * re-tentado. O pior caso é a re-tentativa recusar com stderr não reconhecido
+ * e o fluxo seguir pelo stash amplo (passos 7-19). Valor atual: 24.
  */
-export const MAX_SEQUENTIAL_GIT_SPAWNS = 19;
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 24;
 
 /**
  * Lock morto (processo dono crashou sem `release()`) é considerado stale após
@@ -1408,6 +1427,146 @@ export function isAgentWorktreeCheckout(repoRoot: string = REPO_ROOT): boolean {
   return /[\\/]\.claude[\\/]worktrees[\\/]/.test(repoRoot);
 }
 
+/**
+ * #11562: caminhos da recusa do ff que podem ser descartados SE o conteúdo
+ * local for idêntico ao de origin/master. Puro. Elegível:
+ * - `tracked`: linha ` M <caminho>` no porcelain (mudança só no working tree,
+ *   índice == HEAD — restaurar do índice não perde nada staged);
+ * - `untracked`: `?? <caminho>` exato, ou dentro de um diretório untracked
+ *   colapsado (`?? dir/`).
+ * Fora: caminho entre aspas (não é o literal), `PROTECTED_CONFIG_PATHS` (o
+ * fluxo do #9276 decide sobre eles com o porcelain já lido), qualquer outro
+ * código XY (staged, deletado, rename) e caminho que o porcelain não explica.
+ */
+export function identicalDiscardCandidates(
+  refusalPaths: string[],
+  porcelainStdout: string,
+  protectedPaths: readonly string[] = PROTECTED_CONFIG_PATHS,
+): { tracked: string[]; untracked: string[] } {
+  const lines = porcelainStdout.split("\n").map((l) => l.replace(/\r$/, ""));
+  const modifiedOnly = new Set(lines.filter((l) => l.startsWith(" M ")).map((l) => l.slice(3)));
+  const untrackedEntries = lines.filter((l) => l.startsWith("?? ")).map((l) => l.slice(3));
+  const untrackedFiles = new Set(untrackedEntries.filter((u) => !u.endsWith("/")));
+  const untrackedDirs = untrackedEntries.filter((u) => u.endsWith("/") && !u.startsWith('"'));
+  const tracked: string[] = [];
+  const untracked: string[] = [];
+  for (const raw of new Set(refusalPaths.map((p) => p.trim()))) {
+    if (!raw || raw.startsWith('"') || protectedPaths.includes(raw)) continue;
+    if (modifiedOnly.has(raw)) tracked.push(raw);
+    else if (untrackedFiles.has(raw) || untrackedDirs.some((d) => raw.startsWith(d))) untracked.push(raw);
+  }
+  return { tracked, untracked };
+}
+
+/**
+ * #11562: parse de `git ls-tree -z <ref> -- <caminhos>` → caminho → SHA do
+ * blob. Entradas que não são blob (diretório, submódulo) ficam de fora. Puro.
+ */
+export function parseLsTreeBlobs(stdoutZ: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const rec of stdoutZ.split("\0")) {
+    const tab = rec.indexOf("\t");
+    if (tab < 0) continue;
+    const [, type, sha] = rec.slice(0, tab).split(" ");
+    if (type === "blob" && sha) out.set(rec.slice(tab + 1), sha);
+  }
+  return out;
+}
+
+/**
+ * #11562: descarta, SEM PERDA, os caminhos em colisão com o ff cujo conteúdo
+ * local já é byte a byte o de origin/master.
+ *
+ * Incidente 28/10/2026 (edição 261029): o `publish-edition-site-page.ts`
+ * gera a página da edição e o `sitemap.xml` no checkout em disco (os
+ * geradores rodam ali; o worktree do #8636 isola só o commit/push), e a
+ * mesma página chega ao master pelo PR do site. Na rodada seguinte o ff
+ * direto recusa: `workers/site/public/sitemap.xml` modificado e
+ * `workers/site/public/p/{slug}/index.html` untracked colidem com o master,
+ * embora sejam idênticos a ele. Com `platform.config.json` editado no gate 4,
+ * o fluxo cai em `protected_config_dirty` (#9276) e o código fica defasado em
+ * silêncio — o `validate-lancamentos` reprovou um item por falta de uma linha
+ * de allowlist já mergeada (#11549).
+ *
+ * Conteúdo idêntico = o ff escreveria exatamente os mesmos bytes, então
+ * descartar a cópia local e deixar o ff escrevê-la não perde nada. Medição:
+ * `git hash-object` (mesmos filtros de limpeza que o git usa ao gravar o
+ * blob) contra o blob de origin/master em `git ls-tree`. Descarte: `git clean
+ * -f` para untracked e `git checkout --` (restaura do índice, == HEAD pelo
+ * critério de `identicalDiscardCandidates`) para rastreado. Qualquer falha de
+ * medição → não descarta nada daquele grupo (comportamento anterior). Nunca
+ * toca stash (#8719).
+ *
+ * Spawns: hash-object + ls-tree + clean + checkout = até 4 (refletidos em
+ * `MAX_SEQUENTIAL_GIT_SPAWNS`). Nunca lança.
+ */
+export function discardCollisionsIdenticalToUpstream(
+  spawn: SpawnFn,
+  refusal: FfRefusal,
+  porcelainStdout: string,
+): { discarded: string[]; warnings: string[] } {
+  const none = { discarded: [] as string[], warnings: [] as string[] };
+  if (refusal.kind !== "local_changes_collide" && refusal.kind !== "untracked_collide") return none;
+  const { tracked, untracked } = identicalDiscardCandidates(refusal.paths, porcelainStdout);
+  const candidates = [...tracked, ...untracked];
+  if (candidates.length === 0 || candidates.length > TARGETED_STASH_MAX_PATHS) return none;
+
+  const hashRes = spawn("git", ["hash-object", "--", ...candidates]);
+  const hashes = hashRes.stdout.split("\n").map((h) => h.trim()).filter((h) => h.length > 0);
+  if (hashRes.status !== 0 || hashes.length !== candidates.length) {
+    return {
+      ...none,
+      warnings: [
+        `[git-sync] INFO: não consegui medir o conteúdo local dos caminhos em colisão (#11562, git hash-object ` +
+          `exit ${hashRes.status}) — nada descartado. Stderr: ${hashRes.stderr.trim() || "(vazio)"}`,
+      ],
+    };
+  }
+  const treeRes = spawn("git", ["ls-tree", "-z", "origin/master", "--", ...candidates]);
+  if (treeRes.status !== 0) {
+    return {
+      ...none,
+      warnings: [
+        `[git-sync] INFO: não consegui ler origin/master para os caminhos em colisão (#11562, git ls-tree ` +
+          `exit ${treeRes.status}) — nada descartado. Stderr: ${treeRes.stderr.trim() || "(vazio)"}`,
+      ],
+    };
+  }
+  const upstream = parseLsTreeBlobs(treeRes.stdout);
+  const identical = new Set(candidates.filter((p, i) => upstream.get(p) === hashes[i]));
+  const identicalUntracked = untracked.filter((p) => identical.has(p));
+  const identicalTracked = tracked.filter((p) => identical.has(p));
+
+  const discarded: string[] = [];
+  const warnings: string[] = [];
+  if (identicalUntracked.length > 0) {
+    const cleanRes = spawn("git", ["clean", "-f", "-q", "--", ...identicalUntracked.map((p) => `:(literal)${p}`)]);
+    if (cleanRes.status === 0) discarded.push(...identicalUntracked);
+    else
+      warnings.push(
+        `[git-sync] WARN: git clean dos untracked idênticos a origin/master falhou (#11562, exit ${cleanRes.status}): ` +
+          `${identicalUntracked.join(", ")}. Stderr: ${cleanRes.stderr.trim() || "(vazio)"}`,
+      );
+  }
+  if (identicalTracked.length > 0) {
+    const coRes = spawn("git", ["checkout", "--", ...identicalTracked.map((p) => `:(literal)${p}`)]);
+    if (coRes.status === 0) discarded.push(...identicalTracked);
+    else
+      warnings.push(
+        `[git-sync] WARN: git checkout dos rastreados idênticos a origin/master falhou (#11562, exit ${coRes.status}): ` +
+          `${identicalTracked.join(", ")}. Stderr: ${coRes.stderr.trim() || "(vazio)"}`,
+      );
+  }
+  if (discarded.length > 0) {
+    warnings.push(
+      `[git-sync] INFO: ${discarded.length} caminho(s) em colisão eram idênticos a origin/master e foram ` +
+        `descartados sem perda antes de re-tentar o ff (#11562): ${discarded.slice(0, 10).join(", ")}` +
+        `${discarded.length > 10 ? ` (+${discarded.length - 10})` : ""}.`,
+    );
+  }
+  return { discarded, warnings };
+}
+
 function isAlreadyUpToDate(stdout: string): boolean {
   // git merge/pull imprime "Already up to date." (EN) ou "Já está atualizado." (PT).
   // Espaços literais (não wildcards) — evita falso-positivo em strings inesperadas.
@@ -1513,6 +1672,7 @@ export function syncCode(
       ...(ctx.targetedStashPaths ? { targeted_stash_paths: ctx.targetedStashPaths } : {}),
       ...(ctx.reservedExcluded ? { reserved_untracked_excluded: ctx.reservedExcluded } : {}),
       ...(ctx.ffRetriedAfterPartialStash ? { ff_retried_after_partial_stash: true } : {}),
+      ...(ctx.discardedIdentical ? { discarded_identical_paths: ctx.discardedIdentical } : {}),
     };
     return out;
   } finally {
@@ -1726,9 +1886,42 @@ function syncCodeLocked(
     // autostashes na #9690) não dizia se a colisão era a config, outro
     // arquivo ou divergência. Vai em `ff_refusal` em todo outcome daqui pra
     // baixo (via `withRefusal`) e numa linha de warning.
-    const ffRefusal = classifyFfRefusal(directFfRes.stderr);
+    let ffRefusal = classifyFfRefusal(directFfRes.stderr);
     ctx.ffRefusal = ffRefusal;
     warnings.push(`[git-sync] INFO: ff-only direto recusou (#9690) — ${describeFfRefusal(ffRefusal)}.`);
+
+    // #11562: colisão com artefato local idêntico ao de origin/master (página
+    // da edição + sitemap gerados no checkout e também mergeados pelo PR do
+    // site) → descarta a cópia local, sem perda, e re-tenta o ff ANTES do
+    // guard de config (#9276) e de qualquer stash. Sem isso, config editada no
+    // gate 4 + essa colisão deixavam o código defasado em silêncio.
+    if (statusRes.status === 0) {
+      const identical =discardCollisionsIdenticalToUpstream(spawn, ffRefusal, statusRes.stdout);
+      warnings.push(...identical.warnings);
+      if (identical.discarded.length > 0) {
+        ctx.discardedIdentical = identical.discarded;
+        const retryFfRes = spawn("git", ["merge", "--ff-only", "origin/master"]);
+        if (retryFfRes.status === 0) {
+          const upToDate = isAlreadyUpToDate(retryFfRes.stdout);
+          return {
+            outcome: upToDate ? "already_up_to_date" : "synced",
+            message:
+              `[git-sync] Código sincronizado com origin/master depois de descartar ${identical.discarded.length} ` +
+              `cópia(s) local(is) idêntica(s) a origin/master (#11562); demais mudanças locais preservadas, sem stash.`,
+            branch_before: branchBefore,
+            warnings,
+            proceed: true,
+            preserved_stash: null,
+          };
+        }
+        ffRefusal = classifyFfRefusal(retryFfRes.stderr);
+        ctx.ffRefusal = ffRefusal;
+        warnings.push(
+          `[git-sync] INFO: ff-only re-tentado após descartar as cópias idênticas (#11562) ainda recusou — ` +
+            `${describeFfRefusal(ffRefusal)}.`,
+        );
+      }
+    }
 
     // #9276: config consumida pela edição suja → NÃO stasha. Stashar tiraria
     // a config do working tree (a publicação seguiria com a do master em
