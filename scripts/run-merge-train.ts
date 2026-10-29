@@ -83,9 +83,40 @@ import { resolveReviewThreads, EXIT_OK as THREADS_EXIT_OK } from "./resolve-revi
 import { reconcileReport, realGhJson } from "./reconcile-overnight-report.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
 import { dirname, join, resolve as resolvePath } from "node:path";
+import { existsSync } from "node:fs";
 
 const DEFAULT_MAX_BATCH_SIZE = 3; // "K não deve ser grande. Começar em 3." — issue #6300
 const VALID_KINDS = ["overnight", "develop", "continuo"] as const;
+
+/**
+ * Linha de reconcile do relatório no fim do trem (#11461, #11615).
+ *
+ * `--report` apontando pra um `report.md` que ainda não existe é o caso
+ * NORMAL quando o trem roda antes da Fase 2 gravar o relatório: vira uma
+ * linha informativa, não o aviso "relatório não encontrado" de falha.
+ */
+export function reconcileReportAtTrainEnd(
+  reportPath: string,
+  trainedPrs: number[],
+  deps: { exists?: (p: string) => boolean; reconcile?: typeof reconcileReport } = {},
+): { level: "log" | "warn"; message: string } {
+  const exists = deps.exists ?? existsSync;
+  if (!exists(reportPath)) {
+    return {
+      level: "log",
+      message: `run-merge-train: relatório ainda não gravado (${reportPath}), reconcile pulado — esperado quando o report.md só sai na Fase 2; rode reconcile-overnight-report.ts --report depois de gravá-lo`,
+    };
+  }
+  const r = (deps.reconcile ?? reconcileReport)({
+    reportPath,
+    planPath: join(dirname(reportPath), "plan.json"),
+    extraPrs: trainedPrs,
+    discover: true,
+    check: false,
+    gh: realGhJson,
+  });
+  return { level: r.exitCode === 0 ? "log" : "warn", message: `run-merge-train: reconcile do relatório (#11461): ${r.message}` };
+}
 
 function printOutcome(o: TrainBatchOutcome): string {
   const prs = o.batch.prs.map((n) => `#${n}`).join(", ");
@@ -208,15 +239,8 @@ async function main() {
   const trainedPrs = [...prNumbers];
   const finish = (code: number): void => {
     if (reportPath) {
-      const r = reconcileReport({
-        reportPath,
-        planPath: join(dirname(reportPath), "plan.json"),
-        extraPrs: trainedPrs,
-        discover: true,
-        check: false,
-        gh: realGhJson,
-      });
-      (r.exitCode === 0 ? console.log : console.warn)(`run-merge-train: reconcile do relatório (#11461): ${r.message}`);
+      const line = reconcileReportAtTrainEnd(reportPath, trainedPrs);
+      (line.level === "log" ? console.log : console.warn)(line.message);
     }
     process.exit(code);
   };

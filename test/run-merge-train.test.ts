@@ -85,3 +85,37 @@ describe("run-merge-train CLI — contrato de exit code", () => {
     assert.doesNotMatch(r.stderr, /TypeError|at Object\.<anonymous>/);
   });
 });
+
+describe("reconcileReportAtTrainEnd — --report com report.md ainda inexistente (#11615)", () => {
+  it("relatório ausente: linha informativa (log), sem chamar o reconcile nem acusar 'não encontrado'", async () => {
+    const { reconcileReportAtTrainEnd } = await import("../scripts/run-merge-train.ts");
+    let called = false;
+    const line = reconcileReportAtTrainEnd("/x/data/overnight/261029/report.md", [1, 2], {
+      exists: () => false,
+      reconcile: () => {
+        called = true;
+        return { exitCode: 3, message: "relatório não encontrado", prs: [] };
+      },
+    });
+    assert.equal(line.level, "log");
+    assert.match(line.message, /relatório ainda não gravado/);
+    assert.doesNotMatch(line.message, /não encontrado/);
+    assert.equal(called, false);
+  });
+
+  it("relatório presente: delega ao reconcile e vira warn só quando ele falha", async () => {
+    const { reconcileReportAtTrainEnd } = await import("../scripts/run-merge-train.ts");
+    const seen: number[][] = [];
+    const line = reconcileReportAtTrainEnd("/x/report.md", [7], {
+      exists: () => true,
+      reconcile: (p) => {
+        seen.push(p.extraPrs);
+        assert.equal(p.planPath, join("/x", "plan.json"));
+        return { exitCode: 1, message: "falhou", prs: [] };
+      },
+    });
+    assert.deepEqual(seen, [[7]]);
+    assert.equal(line.level, "warn");
+    assert.match(line.message, /reconcile do relatório \(#11461\): falhou/);
+  });
+});
