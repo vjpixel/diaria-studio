@@ -15,9 +15,27 @@
 # demais. Ex (fictício):
 #   exemplo.com/launches/ferramenta-sem-keyword
 #
-# (vazio por padrão — adicione conforme necessário)
+# Dois tipos de entrada (#11554):
+#   - URL ESPECÍFICA (sem `/` no fim): diz "é ferramenta" E vale como
+#     confirmação de título/escopo de item extraído de newsletter (#9292).
+#   - PADRÃO DE CAMINHO (termina em `/`, ou só o domínio): diz só "é
+#     ferramenta" para tudo sob o caminho. Item extraído de newsletter sob o
+#     padrão continua exigindo summary + verify_verdict confirmados (#9250).
+#
+# A allowlist só impede o REBAIXAMENTO de LANÇAMENTOS para RADAR; não promove
+# item que o categorizer pôs em outra seção.
+#
+# Desde #11530, post de blog/changelog/news oficial com verbo de lançamento ou
+# disponibilidade no TÍTULO ("now", "available", "introducing", "agora",
+# "disponível") já passa sem entrada aqui.
+#
+# Padrões de caminho por decisão do editor (28/10/2026, #11530): blog oficial
+# da Replit é sempre lançamento. `blog.replit.com/` cobre os links antigos do
+# domínio que hoje redireciona pra `replit.com/blog/`.
+blog.replit.com/
 cohere.com/blog/transcribe-arabic
 developers.googleblog.com/litertjs-googles-high-performance-web-ai-inference
 huggingface.co/blog/nunchaku-diffusers
 blogs.nvidia.com/blog/local-ai-dgx-spark-64gb-sync
 z.ai/blog/glm-legal
+replit.com/blog/

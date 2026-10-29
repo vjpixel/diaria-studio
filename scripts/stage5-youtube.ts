@@ -207,7 +207,8 @@ async function main(): Promise<number> {
     };
   };
   const fetchAndUpload = (): Omit<YouTubeStepRecord, "d1_link"> => {
-    const fetch = runTsx(fetchArgs);
+    // #11551: o fetch só baixa com --download (o default é o plano, sem gravar nada).
+    const fetch = runTsx([...fetchArgs, "--download"]);
     const f = classifyFetch(fetch.status, fetch.stdout);
     if (f.upload) return upload(f.action, fetch.status);
     return { ...base, outcome: f.outcome!, fetch_action: f.action, fetch_exit: fetch.status, ...(f.detail ? { detail: f.detail } : {}) };
