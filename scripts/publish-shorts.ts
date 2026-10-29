@@ -375,6 +375,7 @@ export interface ShortsPlan {
   aammdd: string;
   editionUrl: string;
   video: { path: string; exists: boolean; sizeBytes: number | null };
+  cover: { path: string | null; destinations: Record<string, string> };
   longVideo: string;
   youtube: YouTubeShortMetadata;
   /** Horário do vertical (#10831): HH:MM BRT, ISO no dia da edição, de onde veio. Base dos destinos guiados. */
@@ -387,6 +388,8 @@ export interface ShortsPlan {
 }
 
 export interface ShortsPlanInput {
+  coverPath?: string | null;
+  coverUploadReady?: boolean;
   aammdd: string;
   reviewedMd: string;
   now: Date;
@@ -917,7 +920,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
   }
 
-  return { aammdd: input.aammdd, editionUrl, video: input.video, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
+  const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination,
+    i.destination === "instagram" ? (input.coverPath ? (input.coverUploadReady ? "cover_url" : "unavailable: R2 credentials missing; automatic frame") : "automatic")
+      : "unsupported",
+  ])) };
+  return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, premises, warnings };
 }
 
 /**
@@ -1291,9 +1298,11 @@ export async function publishInstagramReel(
   file: Buffer,
   caption: string,
   collaborators: string[] = [],
+  coverUrl?: string,
 ): Promise<PublishOutcome> {
   const params: Record<string, string> = { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token };
   // #10790: collab — a Graph API recebe a lista como JSON; cada conta aceita o convite no app.
+  if (coverUrl) params.cover_url = coverUrl;
   if (collaborators.length) params.collaborators = JSON.stringify(collaborators);
   const container = await graphPost(deps, `${igUserId}/media`, params, apiVersion);
   const containerId: string = container.id;
@@ -2109,6 +2118,7 @@ export function attachChromeUploadToPlan(
 export interface InstagramEnqueueDeps {
   /** Sobe o vertical e devolve a URL pública (R2). */
   uploadVideo: () => Promise<string>;
+  uploadCover?: () => Promise<string | undefined>;
   /** `POST /queue` do Worker. */
   enqueue: (payload: WorkerQueuePayload) => Promise<{ key: string; scheduled_at: string }>;
   now: () => Date;
@@ -2132,6 +2142,7 @@ export async function enqueueInstagramReel(
       buildReelsQueuePayload({
         caption: item.caption,
         videoUrl,
+        coverUrl: await deps.uploadCover?.(),
         scheduledAt: item.scheduledAt,
         account: item.igAccount,
         collaborators,
@@ -2779,6 +2790,8 @@ async function main(): Promise<number> {
   try {
     plan = planShortsPublish({
       aammdd,
+      coverPath: existsSync(join(dir, "04-youtube-short-capa.jpg")) ? join(dir, "04-youtube-short-capa.jpg") : null,
+      coverUploadReady: r2.ready,
       reviewedMd: readFileSync(reviewedPath, "utf8"),
       now: new Date(),
       config,
@@ -2850,6 +2863,13 @@ async function main(): Promise<number> {
     });
     return uploaded;
   };
+  let uploadedCover: Promise<string> | undefined;
+  const uploadCover = async (): Promise<string | undefined> => {
+    if (!plan.cover.path || !r2.ready) return undefined;
+    uploadedCover ??= reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
+      `shorts/${aammdd}-cover.jpg`, readFileSync(plan.cover.path), "image/jpeg").then((r) => r.url);
+    return uploadedCover;
+  };
   for (const item of plan.items) {
     if (item.action === "buffer" || item.action === "publish" || item.action === "enqueue") {
       // #11157: reconfere no disco antes de publicar — outro escritor pode ter
@@ -2882,6 +2902,7 @@ async function main(): Promise<number> {
         outcome = await enqueueInstagramReel(
           {
             uploadVideo,
+            uploadCover,
             enqueue: (payload) => postToWorkerQueue(workerUrl, workerToken, payload, 2, "publish-shorts"),
             now: () => new Date(),
           },
@@ -2948,7 +2969,7 @@ async function main(): Promise<number> {
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         const author = igAuthor;
-        const publishReel = () => publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators);
+        const publishReel = async () => publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators, await uploadCover());
         if (writer === "instagram-timer") {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.

@@ -20,6 +20,11 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  * é listada com a mesma regra (#11385: a 261028 veio em
  * `Editado/Diaria comentada_Youtube_FINAL.mp4`).
  *
+ * #11542: procura também imagens Still JPG/JPEG/PNG em Final/ e Editado(s)/
+ * da edição. Sequência YouTube = horizontal; sequência vertical = todos os
+ * verticais. 2+ capas por orientação dão needs-editor; nunca desempata por data.
+ * O plano inclui `cover`; sem dry-run baixa JPEG real no caminho do publisher.
+ *
  * - horizontal: baixa para `{editionDir}/diaria-comentada-{AAMMDD}.mp4`
  *   (`youtubeVideoFileName`), o default do `publish-youtube.ts`.
  * - vertical: só IMPRIME o file id e o comando pronto
@@ -59,7 +64,8 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  *       edição (`duplicate-edition-folder`), com os ids.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import sharp from "sharp";
+import { existsSync, readFileSync, statSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -72,6 +78,7 @@ import {
   DRIVE_VIDEO_WINDOW_HOURS,
   VIDEO_TARGETS,
   defaultVideoTarget,
+  driveCoverCandidates,
   isEditedFolderName,
   isFinalFolderName,
   isMp4VideoFile,
@@ -154,6 +161,7 @@ interface OutputBase {
   orientation: VideoOrientation;
   folder_id: string;
   local_path: string;
+  cover?: { source: "drive" | "local" | "automatic"; local_path: string; file?: DescribedDriveFile };
 }
 
 interface OutputWithFolder extends OutputBase {
@@ -169,6 +177,8 @@ export type FetchDriveVideoOutput =
   | (OutputBase & { action: "already-published"; record_path: string; video_url: string | null })
   | (OutputBase & { action: "error"; phase: "folder" | "list"; error: string })
   | (OutputBase & { action: "needs-editor"; selection: "duplicate-edition-folder"; folders: DescribedDriveFolder[] })
+  | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous-cover"; candidates: DescribedDriveFile[] })
+  | (OutputWithFolder & { action: "error"; phase: "cover-download"; error: string })
   | (OutputWithFolder & { action: "none"; selection: "none"; reason: string })
   | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous"; candidates: DescribedDriveFile[] })
   | (OutputWithFolder & { action: "needs-editor"; selection: "orientation-unknown"; files: DescribedDriveFile[] })
@@ -318,15 +328,6 @@ export async function runFetchDriveVideo(
     }
   }
 
-  if (!input.force && !instagramCut && existsSync(localPath) && statSync(localPath).size > 0) {
-    log(`[ok] ${localPath} já existe — nada a baixar (use --force para trocar)`);
-    if (orientation === "vertical") {
-      const next = `npx tsx scripts/publish-shorts.ts ${aammdd}`;
-      return { exitCode: 0, output: { ...base, action: "exists", next_command: next } };
-    }
-    return { exitCode: 0, output: { ...base, action: "exists" } };
-  }
-
   const failed = (phase: "folder" | "list", e: unknown): FetchDriveVideoOutcome => {
     const message = (e as Error).message;
     log(`fetch-drive-video: ${message}`);
@@ -345,6 +346,7 @@ export async function runFetchDriveVideo(
   let files: DriveVideoFile[];
   let editionFolderId: string | null = null;
   const finalFolderIds: string[] = [];
+  const coverFiles: DriveVideoFile[] = [];
   try {
     const root = await listDriveChildren(deps, input.folderId, timeouts.listMs);
     const editionFolders = root.filter((f) => f.mimeType === FOLDER_MIME && f.name.trim() === aammdd);
@@ -390,7 +392,7 @@ export async function runFetchDriveVideo(
       // Instagram só cai em Editado/ quando Final/ não tem .mp4 nenhum.
       const skipEdited = instagramCut && finalFiles.some(isMp4VideoFile);
       if (probe.kind === "none" && skipEdited) {
-        log(`[premissa] Final/ tem .mp4 e nenhum do destino instagram — sem corte próprio do Instagram; Editado/ não é consultada (#11419)`);
+        log(`[premissa] Final/ tem .mp4 e nenhum do destino instagram — sem corte próprio do Instagram; Editado/ não é consultada para vídeos (#11419)`);
       }
       if (probe.kind === "none" && !skipEdited) {
         const edited = subfolders.filter((f) => isEditedFolderName(f.name));
@@ -400,6 +402,10 @@ export async function runFetchDriveVideo(
           finalFiles = [...finalFiles, ...(await listFinalLike(edited))];
         }
       }
+      // Capa tem busca própria: Editado pode conter o Still mesmo com MP4 em Final.
+      coverFiles.push(...finalFiles);
+      const unlistedEdited = subfolders.filter((f) => isEditedFolderName(f.name) && !finalFolderIds.includes(f.id));
+      coverFiles.push(...await listFinalLike(unlistedEdited));
       files.push(...finalFiles);
     } else {
       log(`[premissa] sem subpasta ${aammdd}/ na pasta do Drive — só arquivos soltos na raiz, últimas ${input.windowHours}h`);
@@ -416,6 +422,48 @@ export async function runFetchDriveVideo(
     target,
   });
   const withFolder: OutputWithFolder = { ...base, edition_folder_id: editionFolderId, final_folder_ids: finalFolderIds, target };
+
+  const coverPath = join(input.editionDir, orientation === "horizontal" ? "04-youtube-thumb.jpg" : "04-youtube-short-capa.jpg");
+  const covers = driveCoverCandidates(coverFiles, orientation);
+  if (covers.length > 1) {
+    log(`[aviso] capas Still ambíguas: ${covers.map(describeForLog).join(" | ")}`);
+    return { exitCode: 3, output: { ...withFolder, action: "needs-editor", selection: "ambiguous-cover", candidates: covers.map(describeFile) } };
+  }
+  const cover = covers[0];
+  const coverPlan: NonNullable<OutputBase["cover"]> = {
+    source: cover ? "drive" : existsSync(coverPath) && statSync(coverPath).size > 0 ? "local" : "automatic",
+    local_path: coverPath,
+    ...(cover ? { file: describeFile(cover) } : {}),
+  };
+  withFolder.cover = coverPlan;
+  base.cover = coverPlan;
+  if (cover && !input.dryRun) {
+    const source = `${coverPath}.drive-source-${process.pid}-${Date.now()}`;
+    const converted = `${coverPath}.drive-converted-${process.pid}.jpg`;
+    try {
+      await downloadDriveFile(deps, cover, source, timeouts, log, (type) => {
+        const mime = type.split(";")[0].trim().toLowerCase();
+        return ["image/jpeg", "image/png", "application/octet-stream"].includes(mime);
+      });
+      // Os publishers esperam JPEG real, inclusive quando o Still no Drive é PNG.
+      await sharp(source).rotate().jpeg({ quality: 95 }).toFile(converted);
+      renameSync(converted, coverPath);
+      log(`[ok] capa do Drive: ${describeForLog(cover)} → ${coverPath}`);
+    } catch (e) {
+      return { exitCode: 1, output: { ...withFolder, action: "error", phase: "cover-download", error: (e as Error).message } };
+    } finally {
+      rmSync(source, { force: true });
+      rmSync(converted, { force: true });
+    }
+  }
+  if (!input.force && !instagramCut && existsSync(localPath) && statSync(localPath).size > 0) {
+    log(`[ok] ${localPath} já existe — nada a baixar (use --force para trocar)`);
+    if (orientation === "vertical") {
+      const next = `npx tsx scripts/publish-shorts.ts ${aammdd}`;
+      return { exitCode: 0, output: { ...base, action: "exists", next_command: next } };
+    }
+    return { exitCode: 0, output: { ...base, action: "exists" } };
+  }
 
   if (sel.kind === "none") {
     log(`[aviso] ${sel.reason} — nada baixado; quando o vídeo subir, rodar /diaria-publica-video ${aammdd}`);

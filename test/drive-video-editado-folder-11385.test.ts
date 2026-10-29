@@ -107,14 +107,14 @@ test("caso real 261028: o horizontal em Editado/ (sem Final/) é encontrado, nã
   assert.ok(logs.some((l) => /Editado\/.*#11385/.test(l)), logs.join("\n"));
 });
 
-test("Final/ com .mp4 tem precedência: Editado/ nem é listada", async () => {
+test("Final/ com .mp4 tem precedência: Editado/ só contribui com capas", async () => {
   const { out, listed } = await dryRun({
     Final: [H("fin", "Diaria comentada_Youtube_V3.mp4")],
     Editado: [H("edt", REAL_261028)],
   });
   assert.equal(out.output.action, "dry-run");
   if (out.output.action === "dry-run") assert.equal(out.output.file.id, "fin");
-  assert.deepEqual(listed, ["Final"]);
+  assert.deepEqual(listed, ["Final", "Editado"]);
 });
 
 test("Final/ só com os verticais: o horizontal ainda é procurado em Editado/", async () => {
@@ -139,7 +139,7 @@ test("#11419: --target instagram com Final/ só com o genérico NÃO pega o _Ins
   );
   assert.notEqual(out.output.action, "print-id", JSON.stringify(out.output));
   assert.equal(out.output.action, "none", JSON.stringify(out.output));
-  assert.deepEqual(listed, ["Final"], "Editado/ nem é listada para o Instagram com Final/ cheia");
+  assert.deepEqual(listed, ["Final", "Editado"], "Editado/ é consultada para capas, sem selecionar o MP4 antigo");
   assert.ok(logs.some((l) => /#11419/.test(l)), logs.join("\n"));
 });
 

@@ -197,6 +197,7 @@ export interface QueueEntry {
   // Ausente = post de imagem/carrossel de sempre.
   media_type?: "REELS";
   video_url?: string;
+  cover_url?: string;
   /** #10823 — usernames convidados como collab (só com media_type=REELS, ≤3). */
   collaborators?: string[];
   /** #10823 — conta do Instagram que publica (default "diaria"). Ver InstagramAccount. */
@@ -468,6 +469,7 @@ const IDEMPOTENT_CONTENT_FIELDS = [
   "channel",
   "media_type",
   "video_url",
+  "cover_url",
   "collaborators",
   "ig_account",
 ] as const satisfies readonly (keyof QueueEntry)[];
@@ -588,6 +590,10 @@ export function validateReelsFields(
   }
   if (body.media_type !== undefined && body.media_type !== "REELS") {
     return { body: { error: "media_type must be 'REELS' (omit for image/carousel posts)" } };
+  }
+  if (body.cover_url !== undefined && (body.media_type !== "REELS" || typeof body.cover_url !== "string" ||
+      body.cover_url.length > MAX_URL_LENGTH || !/^https:\/\//.test(body.cover_url))) {
+    return { body: { error: "cover_url requires REELS and a public https URL" } };
   }
   const isReels = body.media_type === "REELS";
   if (!isReels) {
@@ -847,6 +853,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     // #10823 — omitidos se undefined: entries sem eles seguem o caminho de imagem da conta diar.ia.br
     ...(body.media_type !== undefined && { media_type: body.media_type }),
     ...(body.video_url !== undefined && { video_url: body.video_url }),
+    ...(body.cover_url !== undefined && { cover_url: body.cover_url }),
     ...(body.collaborators !== undefined && { collaborators: body.collaborators }),
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),

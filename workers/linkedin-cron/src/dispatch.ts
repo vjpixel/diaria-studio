@@ -926,6 +926,7 @@ async function fireInstagramReels(
         share_to_feed: "true",
         access_token: creds.accessToken,
       });
+      if (entry.cover_url) params.set("cover_url", entry.cover_url);
       if (entry.collaborators && entry.collaborators.length > 0) {
         params.set("collaborators", JSON.stringify(entry.collaborators));
       }

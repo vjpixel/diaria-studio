@@ -133,7 +133,7 @@ describe("#10823 Reels: disparo pela fila", () => {
   it("cria container REELS com video_url + collaborators, espera FINISHED e publica na conta vjpixel", async () => {
     const calls = mockGraph(["IN_PROGRESS", "IN_PROGRESS", "FINISHED"]);
     const out = await fireQueueEntry(
-      reelsEntry({ ig_account: "vjpixel", collaborators: ["diar.ia.br"] }),
+      reelsEntry({ ig_account: "vjpixel", collaborators: ["diar.ia.br"], cover_url: "https://cdn.test/cover.jpg" }),
       baseConfig(),
     );
     assert.deepEqual(out, { status: "fired" });
@@ -142,6 +142,7 @@ describe("#10823 Reels: disparo pela fila", () => {
     assert.ok(create, "deve criar o container");
     assert.match(create!.url, /\/ig-vjpixel\/media$/, "publica na conta vjpixel, não na diar.ia.br");
     const params = new URLSearchParams(create!.body);
+    assert.equal(params.get("cover_url"), "https://cdn.test/cover.jpg");
     assert.equal(params.get("media_type"), "REELS");
     assert.equal(params.get("video_url"), "https://eia.diar.ia.br/video/261022-short.mp4");
     assert.equal(params.get("share_to_feed"), "true");
@@ -259,9 +260,10 @@ describe("#10823 Reels: disparo pela fila", () => {
 describe("#10823 Reels: validação no enqueue", () => {
   it("aceita Reels na conta vjpixel com credencial, persiste os campos e destaque=shorts", async () => {
     const { env, kv } = mkEnv(VJPIXEL);
-    const res = await enqueue(env, reelsPayload({ ig_account: "vjpixel", collaborators: ["diar.ia.br"] }));
+    const res = await enqueue(env, reelsPayload({ ig_account: "vjpixel", collaborators: ["diar.ia.br"], cover_url: "https://cdn.test/cover.jpg" }));
     assert.equal(res.status, 202, await res.clone().text());
     const [stored] = [...kv.store.values()].map((v) => JSON.parse(v) as QueueEntry);
+    assert.equal(stored.cover_url, "https://cdn.test/cover.jpg");
     assert.equal(stored.media_type, "REELS");
     assert.equal(stored.video_url, "https://eia.diar.ia.br/video/261022-short.mp4");
     assert.deepEqual(stored.collaborators, ["diar.ia.br"]);
@@ -281,6 +283,7 @@ describe("#10823 Reels: validação no enqueue", () => {
   const rejects: Array<[string, Record<string, unknown>, RegExp]> = [
     ["REELS fora do Instagram", { channel: "threads" }, /requires channel='instagram'/],
     ["REELS sem video_url", { video_url: undefined }, /video_url is required/],
+    ["REELS com cover_url http", { cover_url: "http://x.test/c.jpg" }, /cover_url requires REELS/],
     ["REELS com video_url http", { video_url: "http://x.test/v.mp4" }, /public https URL/],
     ["REELS com image_url", { image_url: "https://x.test/a.jpg" }, /does not take image_url/],
     ["media_type desconhecido", { media_type: "VIDEO" }, /media_type must be 'REELS'/],

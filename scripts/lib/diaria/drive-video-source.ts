@@ -312,3 +312,12 @@ export function selectDriveVideo(files: DriveVideoFile[], opts: SelectDriveVideo
       : `sem subpasta da edição e nenhum .mp4 ${opts.orientation} com "final" no nome na raiz nas últimas ${windowHours}h`;
   return { kind: "none", orientation: opts.orientation, reason };
 }
+
+/** #11542: Premiere Export Frame; vertical stills serve todos os verticais. */
+export function driveCoverCandidates(files: DriveVideoFile[], orientation: VideoOrientation): DriveVideoFile[] {
+  return files.filter((f) => {
+    if (f.scope !== "final-folder" || !/still/i.test(f.name) || !/\.(jpe?g|png)$/i.test(f.name)) return false;
+    const target = videoTargetOf(f.name.replace(/[()]/g, " "));
+    return target !== null && targetOrientation(target) === orientation;
+  });
+}
