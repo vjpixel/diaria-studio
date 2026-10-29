@@ -118,7 +118,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripQuotedSpans } from "./lib/shell-quote-strip.mjs";
-import { isForeignRepo } from "./lib/gh-target-repo.mjs";
+import { ANY_NON_STUDIO_REPO, isForeignRepo } from "./lib/gh-target-repo.mjs";
 
 // 24h — comfortably above the longest observed round (~16h, rodada 260611) while
 // still bounding "stuck active forever" to at most a day if Fase 2's cleanup is
@@ -1301,17 +1301,18 @@ export function resolveEmitDecision(toolResponseText, command) {
 }
 
 /**
- * #10618 — `true` quando a URL do PR criado é de um repo de FORA permitido
- * (`platform.config.json → issue_repos`, não o diaria-studio). Só decide se o
- * conserto de `Closes #N` (`ensureCloseKeywords`, convenção de issues do
- * diaria-studio) roda — o review automatizado dispara em PR de qualquer repo.
- * URL ilegível ou repo fora da allowlist → `false` (regra do diaria-studio).
+ * #10618 — `true` quando a URL do PR criado é de um repo que NÃO é o
+ * diaria-studio (#11482: qualquer repo, não só os de `issue_repos` — ex.:
+ * `vjpixel/fluxo-criativo`). Só decide se o conserto de `Closes #N`
+ * (`ensureCloseKeywords`, convenção de issues do diaria-studio) roda — o
+ * review automatizado dispara em PR de qualquer repo. URL ilegível →
+ * `false` (regra do diaria-studio).
  */
 export function isForeignRepoPrUrl(prUrl) {
   const m = /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+\/[^/\s]+)\/pull\/\d+/i.exec(
     typeof prUrl === "string" ? prUrl.trim() : "",
   );
-  return m ? isForeignRepo(m[1]) : false;
+  return m ? isForeignRepo(m[1], ANY_NON_STUDIO_REPO) : false;
 }
 
 /**

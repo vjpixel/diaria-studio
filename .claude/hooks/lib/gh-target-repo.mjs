@@ -27,7 +27,11 @@
 //      do diaria-studio também entra na conta.
 //   3. ALLOWLIST: um repo só é tratado como "de fora" se estiver em
 //      `platform.config.json → issue_repos`. Qualquer outro (typo, fork,
-//      origin renomeado) recebe as regras do diaria-studio.
+//      origin renomeado) recebe as regras do diaria-studio. EXCEÇÃO (#11482):
+//      os hooks de `gh pr create` (`isForeignRepoGhCommand`, `isForeignRepoPrUrl`)
+//      pulam QUALQUER repo determinado que não seja o diaria-studio — sem lock
+//      em jogo, a allowlist só forçava o escape hatch em PR de outro projeto
+//      (`gh pr create -R vjpixel/fluxo-criativo`, #11467).
 //
 // MERGE — ÔNUS DA PROVA INVERTIDO (re-verificação da PR #10668): os hooks de
 // merge usam `resolveMergeTargets`, não `resolveGhTargets`. O lock do
@@ -1008,11 +1012,27 @@ export function commandWithoutMessageText(command) {
 }
 
 /**
+ * #11482 — "conjunto" que aceita QUALQUER repo: usado como `allowed` pelos
+ * hooks de `gh pr create`. Ali não há lock em jogo (a allowlist de
+ * `issue_repos` existe pra o merge não escapar do lock do diaria-studio por
+ * typo/fork); a regra de create é só "o alvo não é o diaria-studio". Um
+ * `gh pr create -R vjpixel/fluxo-criativo` (fora de `issue_repos`) caía nas
+ * regras do diaria-studio e o guard do snapshot bloqueava por não achar
+ * `test/orchestrator-prompt.test.ts` lá (#11467), forçando o escape hatch.
+ * Alvo INDETERMINADO (`-R $REPO`, origin ilegível, comando não parseável)
+ * continua sendo o diaria-studio — `normalizeRepoSlug` devolve `null` e o
+ * lado estrito vale.
+ */
+export const ANY_NON_STUDIO_REPO = Object.freeze({ has: (slug) => typeof slug === "string" && slug !== DIARIA_STUDIO_REPO });
+
+/**
  * Hooks de `gh pr create`: `true` quando TODO segmento do comando mira um
- * repo de fora permitido. `cwd` é a raiz já resolvida pelo hook (inclui o
- * alvo de `cd`).
+ * repo determinado que NÃO é o diaria-studio (#11482: qualquer repo, não só
+ * os de `issue_repos`; `opts.allowed` restringe, ex.: testes). `cwd` é a raiz
+ * já resolvida pelo hook (inclui o alvo de `cd`).
  */
 export function isForeignRepoGhCommand(command, cwd, opts = {}) {
+  opts = { ...opts, allowed: opts.allowed ?? ANY_NON_STUDIO_REPO };
   // Comando COMPLEXO (ex: o habitual `--body "$(cat <<'EOF' ...)"`): decide
   // pelo checkout em `cwd` — de onde o `gh pr create` sai — e só pula se ele
   // é um repo de fora permitido E o comando não menciona o diaria-studio.
@@ -1022,7 +1042,7 @@ export function isForeignRepoGhCommand(command, cwd, opts = {}) {
   // quando esse texto é inerte, ver `isInertMessageValue`) — PR do design cujo
   // corpo cita `vjpixel/diaria-studio#N` é o caso comum, não um alvo.
   if (commandComplexity(command).length > 0) {
-    const allowed = opts.allowed ?? loadAllowedForeignRepos();
+    const allowed = opts.allowed;
     const origin = repoFromCwdOrigin(cwd, opts.execFn ?? execFileSync);
     return isForeignRepo(origin, allowed) && !reposMentioned(commandWithoutMessageText(command), allowed).has(DIARIA_STUDIO_REPO);
   }
