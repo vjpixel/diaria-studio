@@ -1,0 +1,6 @@
+# Venv da montagem do vídeo (#11642): ~/.venv-video-montagem.
+# av fica em 18.x: o PyAV 19 removeu o argumento `metadata_errors` que o
+# faster-whisper 1.2.1 passa ao `av.open` (TypeError no decode do áudio,
+# achado no 300 em 29/10/2026, edição 261030).
+faster-whisper==1.2.1
+av==18.0.0
