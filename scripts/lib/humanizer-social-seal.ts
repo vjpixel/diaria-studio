@@ -29,6 +29,35 @@ export function hashSocialContent(content: string): string {
   return createHash("sha256").update(content.replace(/\r\n/g, "\n")).digest("hex");
 }
 
+/**
+ * #11605: nome antigo → nome novo de cada seção, pelo conteúdo (sha256 por
+ * seção). Seção cujo texto não reaparece no `after` fica fora do mapa. Texto
+ * repetido em duas seções casa pela ordem, sem reaproveitar o destino.
+ */
+export function sectionRenameMap(
+  beforeSections: Record<string, string>,
+  afterSections: Record<string, string>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  const used = new Set<string>();
+  for (const [from, hash] of Object.entries(beforeSections)) {
+    // Mesmo nome com o mesmo texto vence (ponto fixo da permutação).
+    if (afterSections[from] === hash && !used.has(from)) {
+      map.set(from, from);
+      used.add(from);
+    }
+  }
+  for (const [from, hash] of Object.entries(beforeSections)) {
+    if (map.has(from)) continue;
+    const to = Object.keys(afterSections).find((n) => !used.has(n) && afterSections[n] === hash);
+    if (to) {
+      map.set(from, to);
+      used.add(to);
+    }
+  }
+  return map;
+}
+
 export type HumanizerResealPlan =
   | { status: "absent" }
   | { status: "stale_before"; stored: string; before: string }
@@ -63,12 +92,35 @@ export function planHumanizerReseal(
   const afterHash = hashSocialContent(after);
   if (afterHash === beforeHash) return { status: "unchanged" };
 
-  const sentinel = {
+  const beforeSections = computeSectionHashes(before);
+  const afterSections = computeSectionHashes(after);
+  const sentinel: Record<string, unknown> = {
     ...stored,
     social_sha256: afterHash,
     written_at: new Date().toISOString(),
-    section_hashes: computeSectionHashes(after),
+    section_hashes: afterSections,
     resealed_by: resealedBy,
   };
+  // #11605: campos endereçados por NOME de seção seguem o texto no reorder
+  // (D1↔D3 troca o nome, não o conteúdo). Sem isso o `--provenance` do gate
+  // marcava "aceita sem prova" no destaque errado.
+  const rename = sectionRenameMap(beforeSections, afterSections);
+  if (Array.isArray(stored.unproven_sections)) {
+    sentinel.unproven_sections = stored.unproven_sections
+      .filter((s): s is string => typeof s === "string")
+      .flatMap((s) => (rename.has(s) ? [rename.get(s)!] : []));
+  }
+  if (Array.isArray(stored.section_provenance)) {
+    sentinel.section_provenance = (stored.section_provenance as Array<Record<string, unknown>>).flatMap((p) => {
+      const to = typeof p?.section === "string" ? rename.get(p.section) : undefined;
+      return to ? [{ ...p, section: to }] : [];
+    });
+  }
+  if (stored.section_format_hashes && typeof stored.section_format_hashes === "object") {
+    const fmt = stored.section_format_hashes as Record<string, unknown>;
+    const remapped: Record<string, unknown> = {};
+    for (const [from, to] of rename) if (from in fmt) remapped[to] = fmt[from];
+    sentinel.section_format_hashes = remapped;
+  }
   return { status: "reseal", path, content: JSON.stringify(sentinel, null, 2) + "\n" };
 }
