@@ -32,7 +32,8 @@
  *             (#11534) Registra em `_internal/.humanizer-run.json` a PROVA de que o
  *             passo rodou: o sha256 de cada seção que saiu dele. `humanizador`:
  *             --pre = snapshot antes da Skill, --post = snapshot pós-humanizador;
- *             só seção que mudou ganha prova. `clarice`: --pre = snapshot
+ *             toda seção do escopo ganha prova, inclusive a que saiu idêntica
+ *             (#11604, marcada "texto mantido" no --provenance). `clarice`: --pre = snapshot
  *             pós-humanizador, --post = `03-social.md` pós-Clarice; só seção cujo
  *             texto de entrada já tinha prova do humanizador.
  *
@@ -476,7 +477,8 @@ function main(): void {
     }
     for (const r of rows) {
       const extra = unprovenSections.includes(r.section) ? " · aceita sem prova (--unproven-ok)" : "";
-      console.error(`  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"} · Clarice ${r.clarice ? "sim" : "NÃO"}${extra}`);
+      const kept = r.kept ? " (texto mantido)" : ""; // #11604
+      console.error(`  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"}${kept} · Clarice ${r.clarice ? "sim" : "NÃO"}${extra}`);
     }
     console.log(JSON.stringify({ ok: true, sections: rows, unproven_sections: unprovenSections }));
     process.exit(0);
