@@ -1,6 +1,7 @@
 import { findFactRecurrences, findIntraEditionFactRecurrences, type IntraEditionItem } from "../fact-recurrence.ts";
 import { findStoryTwice, type PastStoryItem } from "../story-twice-in-edition.ts"; // #11496
 import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
+import { contentJaccard, REPEAT_THEME_WARN_THRESHOLD } from "../repeat-theme-check.ts"; // #11517
 import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
 /**
  * Invariants de Stage 4 — Publicação (#1007 Fase 1).
@@ -2069,6 +2070,14 @@ export function checkStoryTwiceInEdition(
  * `02-reviewed.md` final; item que já tem `same_fact_warnings` fica de fora
  * (um aviso por item, o MESMO FATO já aparece no gate).
  */
+/**
+ * #11517: jaccard de conteúdo (sem palavras de anúncio genéricas) a partir do
+ * qual o aviso cross-source sai como 🚨 "Cortar no gate". Mesmo valor do passe
+ * padrão de tema (`JACCARD_THRESHOLD` de check-highlight-themes.ts). O caso
+ * real da 261029 (Siri) dá 0.57; os falsos positivos da 261015 dão 0.
+ */
+export const THEME_CROSS_SOURCE_CUT_MIN_JACCARD = 0.35;
+
 export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolation[] {
   const reviewed = resolve(editionDir, "02-reviewed.md");
   const themeFile = resolve(editionDir, "_internal", "01-highlight-theme-check.json");
@@ -2097,10 +2106,24 @@ export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolat
     if (cross_source_match !== true || typeof candidate_url !== "string") continue;
     const url = canonicalize(candidate_url);
     if (!inEdition.has(url) || sameFactUrls.has(url) || seen.has(url)) continue;
+    // #11517: gradua pelo jaccard SEM palavras de anúncio genéricas
+    // ("introducing", "update"...), recalculado dos dois títulos. Abaixo do
+    // piso do sinal o par só casava por palavra genérica: não sobe. Entre o
+    // piso e THEME_CROSS_SOURCE_CUT_MIN_JACCARD sobe sem 🚨, como conferência;
+    // "Cortar no gate" fica para o par com sobreposição de conteúdo real.
+    // Sem os dois títulos, cai no jaccard gravado pelo Stage 1.
+    const contentSim =
+      typeof candidate_title === "string" && typeof matched_title === "string"
+        ? contentJaccard(candidate_title, matched_title)
+        : typeof jaccard === "number" ? jaccard : THEME_CROSS_SOURCE_CUT_MIN_JACCARD;
+    if (contentSim < REPEAT_THEME_WARN_THRESHOLD) continue;
     seen.add(url);
+    const pair = `“${String(candidate_title ?? "")}” (${candidate_url}) × ${String(matched_edition ?? "?")} “${String(matched_title ?? "")}” (jaccard=${String(jaccard ?? "?")}, sem palavras genéricas=${Math.round(contentSim * 100) / 100}, gatilho cross-source do Stage 1)`;
     out.push({
       rule: "theme-cross-source-repeat", source_issue: "#11496", severity: "warning", file: reviewed,
-      message: `🚨 Repete tema de destaque recente: “${String(candidate_title ?? "")}” (${candidate_url}) × ${String(matched_edition ?? "?")} “${String(matched_title ?? "")}” (jaccard=${String(jaccard ?? "?")}, gatilho cross-source do Stage 1). Cortar no gate, salvo fato novo.`,
+      message: contentSim >= THEME_CROSS_SOURCE_CUT_MIN_JACCARD
+        ? `🚨 Repete tema de destaque recente: ${pair}. Cortar no gate, salvo fato novo.`
+        : `Possível tema de destaque recente (sinal fraco): ${pair}. Conferir no gate se é o mesmo assunto.`,
     });
   }
   return out;
