@@ -40,18 +40,20 @@ function mkEdition(md: string): { dir: string; cleanup: () => void } {
 }
 
 describe("#11604: seção que o humanizador devolve idêntica conta como provada", () => {
-  it("ajuste pequeno no D1 + humanizador sem mudança + Clarice → --write passa (sem --unproven-ok)", () => {
+  it("ajuste pequeno no D1 + humanizador sem mudança no D1 (mas reescrevendo o D3 no mesmo run) + Clarice → --write passa (sem --unproven-ok)", () => {
     const original = SOCIAL("A OpenAI lançou o modelo X ontem.", "Texto do d3.");
     const { dir, cleanup } = mkEdition(original);
     try {
       writeSentinel(dir);
-      // Editor troca uma palavra no D1; o humanizador lê e não muda nada.
-      const edited = SOCIAL("A OpenAI lançou o modelo X na terça.", "Texto do d3.");
-      writeFileSync(join(dir, "03-social.md"), edited, "utf8");
-      const h = planRunRecord(readRunRecord(dir), "humanizador", edited, edited, ["main_d1"]);
-      assert.deepEqual(h.recorded, ["main_d1"]);
+      // Editor troca uma palavra no D1 e outra no D3; o humanizador mantém o
+      // D1 e reescreve o D3 (#11609: idêntica só prova com outra seção mudando).
+      const edited = SOCIAL("A OpenAI lançou o modelo X na terça.", "Texto do d3 mexido.");
+      const humanized = SOCIAL("A OpenAI lançou o modelo X na terça.", "Texto do d3 humanizado.");
+      writeFileSync(join(dir, "03-social.md"), humanized, "utf8");
+      const h = planRunRecord(readRunRecord(dir), "humanizador", edited, humanized, ["main_d1", "main_d3"]);
+      assert.deepEqual(h.recorded.sort(), ["main_d1", "main_d3"]);
       assert.deepEqual(h.skipped, []);
-      const c = planRunRecord(h.record, "clarice", edited, edited);
+      const c = planRunRecord(h.record, "clarice", humanized, humanized);
       assert.ok(c.recorded.includes("main_d1"), "Clarice parte de texto provado");
       writeRunRecord(dir, c.record);
 
@@ -59,7 +61,7 @@ describe("#11604: seção que o humanizador devolve idêntica conta como provada
       assert.equal(data.unproven_sections, undefined);
       assert.equal(checkSentinel(dir).ok, true);
 
-      const row = describeProvenance(edited, readRunRecord(dir)).find((r) => r.section === "main_d1");
+      const row = describeProvenance(humanized, readRunRecord(dir)).find((r) => r.section === "main_d1");
       assert.deepEqual(row, { section: "main_d1", humanizador: true, clarice: true, kept: true });
     } finally {
       cleanup();
@@ -67,8 +69,9 @@ describe("#11604: seção que o humanizador devolve idêntica conta como provada
   });
 
   it("seção fora do --sections continua sem prova", () => {
-    const md = SOCIAL("x", "y");
-    const h = planRunRecord(readRunRecord("/nao/existe"), "humanizador", md, md, ["main_d1"]);
+    const pre = SOCIAL("x", "y");
+    const post = SOCIAL("x humanizado", "y");
+    const h = planRunRecord(readRunRecord("/nao/existe"), "humanizador", pre, post, ["main_d1"]);
     assert.deepEqual(h.recorded, ["main_d1"]);
     assert.equal(h.record.humanizador.length, 1);
   });
@@ -90,6 +93,55 @@ describe("#11604: seção que o humanizador devolve idêntica conta como provada
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("#11609: seção idêntica só prova se outra seção do mesmo run mudou", () => {
+  it("Skill pulada no modo full-file (pre === post) não prova nada e o --write segue recusando", () => {
+    const original = SOCIAL("Texto do d1 humanizado.", "Texto do d3 humanizado.");
+    const { dir, cleanup } = mkEdition(original);
+    try {
+      writeSentinel(dir);
+      // Agente reescreve o D1 à mão, tira o snapshot, PULA a Skill, tira o outro.
+      const handEdited = SOCIAL("Texto do d1 reescrito à mão sem humanizar.", "Texto do d3 humanizado.");
+      writeFileSync(join(dir, "03-social.md"), handEdited, "utf8");
+      const h = planRunRecord(readRunRecord(dir), "humanizador", handEdited, handEdited);
+      assert.deepEqual(h.recorded, []);
+      assert.deepEqual(h.record.humanizador, []);
+      assert.deepEqual(h.record.humanizador_unchanged, []);
+      assert.deepEqual(h.skipped.map((s) => s.section).sort(), ["main_d1", "main_d2", "main_d3"]);
+      const c = planRunRecord(h.record, "clarice", handEdited, handEdited);
+      assert.deepEqual(c.recorded, [], "Clarice não prova texto que não passou pelo humanizador");
+      writeRunRecord(dir, c.record);
+      assert.throws(() => writeSentinel(dir, "ajuste D1"), /main_d1/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("Skill pulada no modo scoped com várias seções (todas idênticas) não prova", () => {
+    const md = SOCIAL("a", "b");
+    const h = planRunRecord(readRunRecord("/nao/existe"), "humanizador", md, md, ["main_d1", "main_d3"]);
+    assert.deepEqual(h.recorded, []);
+    assert.equal(h.skipped.length, 2);
+  });
+
+  it("ao menos uma seção mudou → as idênticas do mesmo run são provadas (texto mantido)", () => {
+    const pre = SOCIAL("d1 rascunho", "d3 mantido");
+    const post = SOCIAL("d1 humanizado", "d3 mantido");
+    const h = planRunRecord(readRunRecord("/nao/existe"), "humanizador", pre, post);
+    assert.deepEqual(h.recorded.sort(), ["main_d1", "main_d2", "main_d3"]);
+    assert.deepEqual(h.skipped, []);
+    const rows = describeProvenance(post, h.record);
+    assert.equal(rows.find((r) => r.section === "main_d1")?.kept, undefined);
+    assert.equal(rows.find((r) => r.section === "main_d3")?.kept, true);
+  });
+
+  it("mudança só fora do escopo não conta como 'outra seção do run mudou'", () => {
+    const pre = SOCIAL("d1 igual", "d3 antes");
+    const post = SOCIAL("d1 igual", "d3 depois");
+    const h = planRunRecord(readRunRecord("/nao/existe"), "humanizador", pre, post, ["main_d1"]);
+    assert.deepEqual(h.recorded, []);
   });
 });
 

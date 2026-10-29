@@ -639,10 +639,19 @@ describe("--bypass-reason exige prova de humanizador + Clarice (#11534)", () => 
     }
   });
 
-  it("humanizador que devolveu a seção idêntica gera prova marcada como texto mantido (#11604)", () => {
-    const plan = planRunRecord(readRunRecordEmpty(), "humanizador", D1_REWRITTEN, D1_REWRITTEN, ["main_d1"]);
-    assert.deepEqual(plan.recorded, ["main_d1"]);
+  it("humanizador que devolveu a seção idêntica gera prova marcada como texto mantido se outra seção do run mudou (#11604, #11609)", () => {
+    const post = D1_HUMANIZED.replace("Post d2 humanizado.", "Post d2 humanizado de novo.");
+    const pre = D1_HUMANIZED; // d1 já humanizado, d2 muda neste run
+    const plan = planRunRecord(readRunRecordEmpty(), "humanizador", pre, post, ["main_d1", "main_d2"]);
+    assert.deepEqual(plan.recorded.sort(), ["main_d1", "main_d2"]);
     assert.equal(plan.record.humanizador_unchanged.length, 1);
+  });
+
+  it("run de seção única devolvida idêntica não prova (#11609)", () => {
+    const plan = planRunRecord(readRunRecordEmpty(), "humanizador", D1_REWRITTEN, D1_REWRITTEN, ["main_d1"]);
+    assert.deepEqual(plan.recorded, []);
+    assert.deepEqual(plan.record.humanizador, []);
+    assert.equal(plan.skipped[0]?.section, "main_d1");
   });
 
   it("Clarice sobre texto não humanizado não gera prova", () => {
