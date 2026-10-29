@@ -54,6 +54,7 @@ export interface WorkerQueuePayload {
   // workers/linkedin-cron/src/index.ts. Monte com `buildReelsQueuePayload`.
   media_type?: "REELS";
   video_url?: string;
+  cover_url?: string;
   collaborators?: string[];
   ig_account?: "diaria" | "vjpixel";
   // #10906 — chave idempotente: o Worker deriva a key da fila dela, então o
@@ -72,6 +73,7 @@ export interface WorkerQueuePayload {
 export function buildReelsQueuePayload(input: {
   caption: string;
   videoUrl: string;
+  coverUrl?: string;
   scheduledAt: string;
   account?: "diaria" | "vjpixel";
   collaborators?: string[];
@@ -86,6 +88,7 @@ export function buildReelsQueuePayload(input: {
     channel: "instagram",
     media_type: "REELS",
     video_url: input.videoUrl,
+    ...(input.coverUrl && { cover_url: input.coverUrl }),
     ...(input.collaborators && input.collaborators.length > 0 && { collaborators: input.collaborators }),
     ...(input.account && { ig_account: input.account }),
     ...(input.idempotencyKey && { idempotency_key: input.idempotencyKey }),

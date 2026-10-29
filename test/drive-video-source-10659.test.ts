@@ -320,14 +320,14 @@ test(
 );
 
 test(
-  "CLI: arquivo local já existe → no-op sem tocar no Drive",
+  "CLI: vídeo local já existe → procura capa sem baixar vídeo",
   withDir(async (dir) => {
     writeFileSync(DEST(dir), "já baixado");
     const { deps, calls } = mockDrive({ root: [] });
     const out = await runFetchDriveVideo(deps, baseInput(dir), () => {});
     assert.equal(out.exitCode, 0);
     assert.equal(out.output.action, "exists");
-    assert.equal(calls.length, 0);
+    assert.equal(calls.length, 2);
   }),
 );
 
@@ -471,7 +471,7 @@ test(
     assert.equal(out.exitCode, 0);
     assert.equal(out.output.action, "exists");
     if (out.output.action === "exists") assert.equal(out.output.next_command, "npx tsx scripts/publish-shorts.ts 261025");
-    assert.equal(calls.length, 0);
+    assert.equal(calls.length, 2);
   }),
 );
 

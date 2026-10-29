@@ -30,6 +30,10 @@ npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
 
 Ao terminar, sugerir o próximo comando (`/diaria-5-publicacao {AAMMDD}`) sem rodá-lo.
 
+**Capa do Drive (#11542):** antes de A1/A2 e B1, rodar `fetch-drive-video.ts --edition {AAMMDD} --orientation horizontal` e depois `--orientation vertical` (primeiro com `--dry-run` para conferir; sem a flag para baixar). O fetch procura imagens JPG/JPEG/PNG com **Still** no nome em `Final/` e `Editado(s)/` da edição, nunca em outras edições ou na raiz. Sequência YouTube serve o horizontal; Instagram/Outras redes serve todos os verticais, inclusive nomes antigos como `261027 Vertical (Instagram).00_00_03_08.Still001.jpg`. Dois candidatos da mesma orientação, mesmo nome ou pastas diferentes, dão `needs-editor` com id/nome/modifiedTime: parar e registrar bloqueio, nunca desempatar por timecode. O JSON `cover` informa arquivo, origem e caminho. Baixa JPEG real em `04-youtube-thumb.jpg` / `04-youtube-short-capa.jpg`, substituindo capa gerada. Com `cover.source: "drive"`, **pular A2 inteiro, inclusive check-video-env**. Com capa local, preservá-la; sem capa, seguir o fallback de geração abaixo. Precedência: Drive > local gerada > frame automático. Relatar origem e destinos no fim.
+
+O plano de `publish-shorts.ts` inclui `cover.path` e `cover.destinations`: Instagram usa `cover_url` (imagem pública no R2, inclusive no timer e na fila do Worker); sem R2, avisa no plano e usa frame automático. YouTube Shorts fica `unsupported` na API: a [ajuda oficial](https://support.google.com/youtube/answer/72431) limita a capa personalizada de Shorts ao Studio no computador; disponibilizar o JPEG para esse passo guiado. Facebook Reels também fica `unsupported` no contrato de Reels usado aqui, mantendo frame automático. Não chamar `thumbnails.set` do horizontal para prometer capa na prateleira de Shorts.
+
 **Máquina (#11223):** a skill roda no Neo ou no `300` (comandada do celular, durante a viagem do editor). Antes da Parte A, saber se a capa sai nesta máquina:
 
 ```bash

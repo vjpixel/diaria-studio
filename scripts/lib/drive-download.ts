@@ -165,7 +165,8 @@ export function claimPartFile(tmp: string, staleMs: number, now: number = Date.n
 
 /**
  * Baixa `alt=media` em `{dest}.part` (streaming) e renomeia no fim. Devolve os
- * bytes gravados. Lança em falha, sem deixar `.part`. O `.part` é criado com
+ * bytes gravados. `acceptsContentType` permite ao fetch de capas validar imagens
+ * (#11542); por padrão continua restrito a MP4. Lança em falha, sem deixar `.part`. O `.part` é criado com
  * O_EXCL (#11432): se outro processo está baixando o mesmo arquivo, lança
  * `DriveDownloadInProgressError` sem tocar no `.part` dele.
  */
@@ -175,6 +176,7 @@ export async function downloadDriveFile(
   dest: string,
   timeouts: Pick<DriveDownloadTimeouts, "downloadMs" | "idleMs"> = DEFAULT_DRIVE_DOWNLOAD_TIMEOUTS,
   log: (line: string) => void = () => {},
+  acceptsContentType = isAcceptableDownloadContentType,
 ): Promise<number> {
   const idle = new AbortController();
   const signal = AbortSignal.any([AbortSignal.timeout(timeouts.downloadMs), idle.signal]);
@@ -203,8 +205,8 @@ export async function downloadDriveFile(
     );
     if (!res.ok) throw new Error(`download do Drive falhou (${res.status}): ${(await res.text()).slice(0, 300)}`);
     const type = res.headers.get("content-type") ?? "";
-    if (!isAcceptableDownloadContentType(type, file.name)) {
-      throw new Error(`o arquivo ${file.id} do Drive não é .mp4 (content-type "${type}") — nada gravado`);
+    if (!acceptsContentType(type, file.name)) {
+      throw new Error(`o arquivo ${file.id} do Drive ${acceptsContentType === isAcceptableDownloadContentType ? "não é .mp4" : "tem formato inesperado"} (content-type "${type}") — nada gravado`);
     }
     if (!res.body) throw new Error(`download do Drive sem corpo (${file.id}) — nada gravado`);
     const watchdog = new Transform({
