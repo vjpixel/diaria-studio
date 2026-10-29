@@ -42,7 +42,6 @@ const base = {
   published: { aammdd: "261022", entries: [] },
   video: { path: "v.mp4", exists: true, sizeBytes: 10 },
   editionUrl: "https://diar.ia.br/p/voce-ja-viu-ia-mentir-ja-viu-roubar",
-  youtubeVideoUrl: "https://youtu.be/MMyBVHVQELI",
   threadsPersonal: { ready: true } as const,
   linkedinPersonal: { ready: true } as const,
   publicVideo: { ready: true } as const,

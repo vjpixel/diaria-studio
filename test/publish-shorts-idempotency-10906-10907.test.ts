@@ -120,7 +120,6 @@ describe("#10907 repost da página com o vídeo do perfil em send_unknown", () =
     ...base,
     linkedinPersonal: { ready: true } as const,
     publicVideo: { ready: true } as const,
-    youtubeVideoUrl: "https://youtu.be/x",
   };
   const by = (p: ReturnType<typeof planShortsPublish>) => Object.fromEntries(p.items.map((i) => [i.destination, i])) as Record<string, any>;
 

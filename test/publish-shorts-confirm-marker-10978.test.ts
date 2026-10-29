@@ -24,7 +24,7 @@ const D1 = {
   title: "OpenAI lança modelo que lê planilhas",
   body: "A empresa disse que o modelo entende fórmulas e gráficos sem instrução extra. Segunda frase do destaque.",
 };
-const CAPTION = buildReelsCaption({ platform: "instagram", aammdd: AAMMDD, d1: D1, editionUrl: "https://diar.ia.br/p/x" });
+const CAPTION = buildReelsCaption({ platform: "instagram", d1: D1 });
 const MARKERS = instagramEditionMarkers({ aammdd: AAMMDD, d1Title: D1.title, d1Body: D1.body, editionUrl: "https://diar.ia.br/p/x" });
 const SINCE = "2026-10-28T03:00:00.000Z"; // 00:00 BRT
 const EXPECTED = "2026-10-28T11:00:00.000Z"; // 08:00 BRT
