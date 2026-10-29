@@ -210,7 +210,10 @@ import { gFetch } from "./google-auth.ts";
 import {
   DEFAULT_DRIVE_ROOT,
   changedFiles,
+  driveCacheDir,
+  driveModeFor,
   ensureCachedFile,
+  workDirDefault,
   fetchFileMeta,
   finalFolders,
   findByName,
@@ -227,6 +230,7 @@ import {
   type DriveEntry,
   type MontageDriveDeps,
 } from "./lib/diaria/video-montage-drive.ts";
+export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -1216,33 +1220,6 @@ export const DRIVE_UPLOAD_COMMANDS: readonly Subcommand[] = ["build", "srt", "pr
 const DRIVE_COMMANDS: ReadonlySet<Subcommand> = new Set<Subcommand>(["transcribe", "frame", "preview", "review-final", "upload", ...DRIVE_UPLOAD_COMMANDS]);
 const isSubcommand = (c: string): c is Subcommand => (SUBCOMMANDS as readonly string[]).includes(c);
 
-/**
- * Como esta execução chega na pasta da edição (#11639): `local` (Drive for
- * desktop, o Neo) ou `api` (o 300). `--from-drive` força a API; `--no-drive-api`
- * a desliga. Sem flag, decide a RAIZ (a pasta YouTube), nunca a pasta da
- * edição: no Neo com `G:` montado e `{AAMMDD}/` ainda não sincronizada o modo
- * continua local (o `transcribe` para dizendo isso), em vez de baixar 7 GB pela
- * API em silêncio. `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` explícito também é
- * local (a raiz foi pedida). Só a raiz padrão ausente (esta máquina não tem `G:`)
- * vira api.
- */
-export function driveModeFor(o: { driveRootExists: boolean; fromDrive: boolean; noDriveApi: boolean; explicitRoot: boolean }): "local" | "api" {
-  if (o.fromDrive && o.noDriveApi) throw new Error("--from-drive e --no-drive-api juntos: escolha um");
-  if (o.fromDrive) return "api";
-  if (o.noDriveApi || o.driveRootExists || o.explicitRoot) return "local";
-  return "api";
-}
-
-/** Cache em DISCO do modo API (o `/tmp` do 300 é tmpfs): `--cache-dir`, `DIARIA_VIDEO_CACHE_DIR` ou `~/.cache/diaria-video-montagem`. */
-export function driveCacheDir(edition: string, flag: string | undefined, env: string | undefined, home: string): string {
-  return resolve(join(flag ?? env ?? join(home, ".cache", "diaria-video-montagem"), edition));
-}
-
-/** Work dir (áudio 16 kHz, clipes da prévia): no modo API também em disco, no cache; no Neo o `tmp` de sempre. */
-export function workDirDefault(mode: "local" | "api", cacheDir: string, tmp: string, edition: string): string {
-  return mode === "api" ? join(cacheDir, "work") : join(tmp, "diaria-video-montagem", edition);
-}
-
 export interface DriveSession {
   deps: MontageDriveDeps;
   edition: string;
@@ -1323,8 +1300,13 @@ export async function ensureBrutoLocal(ctx: Pick<Ctx, "stateDir" | "edition">, d
   if ((info.size !== null && metaSize !== null && metaSize !== info.size) || (info.modifiedTime && meta.modifiedTime && meta.modifiedTime !== info.modifiedTime)) {
     throw new Error(`o bruto ${info.name} mudou no Drive desde o transcribe (tamanho/modifiedTime): rode transcribe --force`);
   }
+  // O cache gravado é de outra máquina (o state dir sincroniza): baixar lá não serve aqui.
+  if (!toPosix(info.localPath).startsWith(toPosix(d.cacheDir) + "/")) {
+    throw new Error(`bruto registrado no cache ${info.localPath}, fora do cache desta máquina (${d.cacheDir}): rode transcribe --force aqui para baixar e transcrever de novo`);
+  }
   log(`[drive] bruto ausente do cache (${source.path}); baixando de novo do Drive`);
-  await ensureCachedFile(d.deps, meta, dirname(info.localPath), log);
+  // Pelo nome registrado: um rename no Drive não pode mudar o caminho que o source.json aponta.
+  await ensureCachedFile(d.deps, { ...meta, name: info.name }, dirname(info.localPath), log);
 }
 
 /**
@@ -1339,7 +1321,7 @@ export function localBrutoMissing(ctx: Pick<Ctx, "stateDir" | "edition">): strin
   if (existsSync(source.path)) return null;
   const info = readBrutoDrive(ctx);
   const origin = info && info.localPath === toPosix(source.path) ? ` (o cache do modo API de outra máquina; o bruto no Drive é ${info.name})` : "";
-  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode com --from-drive para baixar pelo Drive, ou transcribe --force para trocar o bruto`;
+  return `bruto do source.json não existe nesta máquina: ${source.path}${origin}. Rode transcribe --force aqui (com o bruto em G:, ou --from-drive para baixá-lo pela API)`;
 }
 
 /** Um arquivo pelo nome na pasta da edição (`--from-audio`) ou em `Final/` (`review-final --file`), baixado para o cache. */

@@ -133,12 +133,11 @@ describe("#11639 bruto pela API do Drive", () => {
     assert.equal(parseDriveSize("abc"), null);
   });
 
-  it("espaço: tamanho + 10%, descontado o arquivo velho que vai ser substituído; sem medida = não confere", () => {
-    assert.equal(spaceShortfall(20 * GB, 6.87 * GB, 0), 0);
-    assert.ok((spaceShortfall(7 * GB, 6.87 * GB, 0) ?? 0) > 0);
-    assert.equal(spaceShortfall(7 * GB, 6.87 * GB, 6 * GB), 0);
-    assert.equal(spaceShortfall(null, 6.87 * GB, 0), null);
-    assert.equal(spaceShortfall(1, null, 0), null);
+  it("espaço: tamanho + 10%, sem descontar o arquivo velho (o .part coexiste com ele até o rename); sem medida = não confere", () => {
+    assert.equal(spaceShortfall(20 * GB, 6.87 * GB), 0);
+    assert.ok((spaceShortfall(7 * GB, 6.87 * GB) ?? 0) > 0);
+    assert.equal(spaceShortfall(null, 6.87 * GB), null);
+    assert.equal(spaceShortfall(1, null), null);
   });
 
   it("nomes repetidos entre os candidatos saem em duplicateNames, e o id é o do maior", () => {
@@ -258,6 +257,7 @@ describe("#11640 saídas sobem para a pasta da edição", () => {
     const { deps, calls } = fakeDeps([
       () => json({ files: [] }),
       () => new Response("", { status: 200, headers: { location: "https://upload.example/s1" } }),
+      () => json({ files: [] }), // procura de novo: o 503 não gravou nada
       () => new Response("", { status: 200, headers: { location: "https://upload.example/s2" } }),
     ]);
     const putResponses = [() => new Response("oops", { status: 503 }), () => json({ id: "ok", name: "261030 - previa outras-redes.mp4" })];
@@ -270,6 +270,39 @@ describe("#11640 saídas sobem para a pasta da edição", () => {
     assert.deepEqual(puts.map((p) => p.url), ["https://upload.example/s1", "https://upload.example/s2"]);
     assert.equal(calls.filter((c) => c.method === "POST").length, 2, "uma sessão por tentativa");
     assert.equal(puts[0].headers?.["Content-Length"], undefined);
+  });
+
+  it("falha de rede no PUT de arquivo NOVO: a nova tentativa acha o arquivo que o Drive gravou e atualiza, não duplica", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-up-"));
+    const file = join(dir, "novo.xml");
+    writeFileSync(file, "<x/>");
+    const { deps, calls } = fakeDeps([
+      () => json({ files: [] }),
+      () => new Response("", { status: 200, headers: { location: "https://u/s1" } }),
+      () => json({ files: [{ ...entry("novo.xml", 4, "application/xml"), id: "gravado" }] }),
+      () => new Response("", { status: 200, headers: { location: "https://u/s2" } }),
+    ]);
+    const outcomes: Array<() => Response> = [
+      () => {
+        throw new Error("socket hang up");
+      },
+      () => json({ id: "gravado", name: "novo.xml" }),
+    ];
+    deps.uploadFetch = async () => outcomes.shift()!();
+    const r = await uploadToFolder(deps, "p", file);
+    assert.equal(r.id, "gravado");
+    assert.equal(calls[3].method, "PATCH");
+    assert.match(calls[3].url, /files\/gravado\?uploadType=resumable/);
+  });
+
+  it("3 tentativas esgotadas: erro com a última causa", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-up-"));
+    const file = join(dir, "a.mp4");
+    writeFileSync(file, "x");
+    const session = () => new Response("", { status: 200, headers: { location: "https://u/s" } });
+    const { deps } = fakeDeps([() => json({ files: [] }), session, () => json({ files: [] }), session, () => json({ files: [] }), session]);
+    deps.uploadFetch = async () => new Response("down", { status: 503 });
+    await assert.rejects(uploadToFolder(deps, "p", file), /falhou 3 vezes \(HTTP 503/);
   });
 
   it("4xx no PUT é erro na hora, sem nova tentativa", async () => {
@@ -502,5 +535,14 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
 
   it("DRIVE_UPLOAD_COMMANDS", () => {
     assert.deepEqual([...DRIVE_UPLOAD_COMMANDS], ["build", "srt", "preview"]);
+  });
+});
+
+describe("#11639 bruto na lixeira e cache sem procedência", () => {
+  it("cache de antes do sidecar, conferido pelo tamanho, ganha o sidecar", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-drive-"));
+    writeFileSync(join(dir, "b.mp4"), Buffer.alloc(3));
+    await ensureCachedFile(fakeDeps([]).deps, { id: "B", name: "b.mp4", size: "3", modifiedTime: "t" }, dir, () => {});
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "b.mp4.drive.json"), "utf8")), { id: "B", size: 3, modifiedTime: "t" });
   });
 });

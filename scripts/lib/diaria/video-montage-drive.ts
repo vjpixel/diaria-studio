@@ -20,7 +20,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, statSync, statfsSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { DRIVE_API, DRIVE_UPLOAD } from "../drive-constants.ts";
 import { escapeDriveQueryString } from "../drive-helpers.ts";
 import { downloadDriveFile, type DriveDownloadDeps } from "../drive-download.ts";
@@ -140,10 +140,14 @@ export function cacheState(localSize: number | null, sidecar: CacheSidecar | nul
   return "fresh";
 }
 
-/** Quanto espaço o download pede além do que já está livre: o tamanho + 10%, descontado o arquivo velho que ele substitui. */
-export function spaceShortfall(free: number | null, size: number | null, replacingBytes: number): number | null {
+/**
+ * Quanto espaço o download pede além do que já está livre: o tamanho + 10%.
+ * Sem desconto do arquivo velho: o download escreve num `.part` e só renomeia
+ * no fim, então os dois coexistem no pico.
+ */
+export function spaceShortfall(free: number | null, size: number | null): number | null {
   if (free === null || size === null || size <= 0) return null;
-  const need = size * 1.1 - replacingBytes;
+  const need = size * 1.1;
   return free >= need ? 0 : need - free;
 }
 
@@ -243,6 +247,33 @@ export function freeBytes(dir: string): number | null {
   }
 }
 
+/**
+ * Como esta execução chega na pasta da edição (#11639): `local` (Drive for
+ * desktop, o Neo) ou `api` (o 300). `--from-drive` força a API; `--no-drive-api`
+ * a desliga. Sem flag, decide a RAIZ (a pasta YouTube), nunca a pasta da
+ * edição: no Neo com `G:` montado e `{AAMMDD}/` ainda não sincronizada o modo
+ * continua local (o `transcribe` para dizendo isso), em vez de baixar 7 GB pela
+ * API em silêncio. `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` explícito também é
+ * local (a raiz foi pedida). Só a raiz padrão ausente (esta máquina não tem `G:`)
+ * vira api.
+ */
+export function driveModeFor(o: { driveRootExists: boolean; fromDrive: boolean; noDriveApi: boolean; explicitRoot: boolean }): "local" | "api" {
+  if (o.fromDrive && o.noDriveApi) throw new Error("--from-drive e --no-drive-api juntos: escolha um");
+  if (o.fromDrive) return "api";
+  if (o.noDriveApi || o.driveRootExists || o.explicitRoot) return "local";
+  return "api";
+}
+
+/** Cache em DISCO do modo API (o `/tmp` do 300 é tmpfs): `--cache-dir`, `DIARIA_VIDEO_CACHE_DIR` ou `~/.cache/diaria-video-montagem`. */
+export function driveCacheDir(edition: string, flag: string | undefined, env: string | undefined, home: string): string {
+  return resolve(join(flag ?? env ?? join(home, ".cache", "diaria-video-montagem"), edition));
+}
+
+/** Work dir (áudio 16 kHz, clipes da prévia): no modo API também em disco, no cache; no Neo o `tmp` de sempre. */
+export function workDirDefault(mode: "local" | "api", cacheDir: string, tmp: string, edition: string): string {
+  return mode === "api" ? join(cacheDir, "work") : join(tmp, "diaria-video-montagem", edition);
+}
+
 // ── Drive ────────────────────────────────────────────────────────────────
 
 async function okJson<T>(res: Response, what: string): Promise<T> {
@@ -291,11 +322,20 @@ export async function findEditionFolder(deps: MontageDriveDeps, rootFolderId: st
 
 /** Metadado atual de um arquivo pelo id (para conferir se o bruto mudou no Drive). */
 export async function fetchFileMeta(deps: MontageDriveDeps, id: string): Promise<DriveEntry> {
-  const params = new URLSearchParams({ fields: "id,name,mimeType,size,modifiedTime", supportsAllDrives: "true" });
-  return okJson<DriveEntry>(await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, { signal: AbortSignal.timeout(30_000) }), `metadado do arquivo ${id} no Drive`);
+  const params = new URLSearchParams({ fields: "id,name,mimeType,size,modifiedTime,trashed", supportsAllDrives: "true" });
+  const meta = await okJson<DriveEntry & { trashed?: boolean }>(
+    await deps.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(id)}?${params}`, { signal: AbortSignal.timeout(30_000) }),
+    `metadado do arquivo ${id} no Drive`,
+  );
+  if (meta.trashed) throw new Error(`o arquivo ${meta.name} (${id}) está na lixeira do Drive`);
+  return meta;
 }
 
 const sidecarPath = (localPath: string) => `${localPath}.drive.json`;
+
+function writeSidecar(localPath: string, sidecar: CacheSidecar): void {
+  writeFileSync(sidecarPath(localPath), JSON.stringify(sidecar, null, 2) + "\n");
+}
 
 function readSidecar(localPath: string): CacheSidecar | null {
   const p = sidecarPath(localPath);
@@ -324,6 +364,8 @@ export async function ensureCachedFile(
   const localSize = existsSync(localPath) ? statSync(localPath).size : null;
   const state = cacheState(localSize, readSidecar(localPath), file);
   if (state === "fresh") {
+    // Cache de antes do sidecar, conferido pelo tamanho: passa a ter procedência.
+    if (!existsSync(sidecarPath(localPath))) writeSidecar(localPath, { id: file.id, size: localSize, modifiedTime: file.modifiedTime ?? null });
     log(`[drive] ${file.name} já no cache (${localPath})`);
     return { localPath, downloaded: false, bytes: localSize ?? 0 };
   }
@@ -333,7 +375,7 @@ export async function ensureCachedFile(
   const free = (opts.freeBytes ?? freeBytes)(cacheDir);
   if (free === null) log(`[aviso] espaço livre não medido em ${cacheDir}: baixando sem conferir`);
   if (size === null) log(`[aviso] o Drive não informou o tamanho de ${file.name}: baixando sem conferir o espaço nem o tamanho final`);
-  const short = spaceShortfall(free, size, state === "stale" ? (localSize ?? 0) : 0);
+  const short = spaceShortfall(free, size);
   if (short) {
     throw new Error(`sem espaço para baixar ${file.name} (${((size ?? 0) / 1e9).toFixed(2)} GB) em ${cacheDir}: ${((free ?? 0) / 1e9).toFixed(2)} GB livres, faltam ${(short / 1e9).toFixed(2)} GB`);
   }
@@ -342,8 +384,7 @@ export async function ensureCachedFile(
   const t0 = Date.now();
   const dl: DriveDownloadDeps = { driveFetch: (url, init) => deps.driveFetch(url, init) };
   const bytes = await downloadDriveFile(dl, file, localPath, { downloadMs: budget, idleMs: 60_000 }, log, isAcceptableMediaContentType);
-  const sidecar: CacheSidecar = { id: file.id, size: size ?? bytes, modifiedTime: file.modifiedTime ?? null };
-  writeFileSync(sidecarPath(localPath), JSON.stringify(sidecar, null, 2) + "\n");
+  writeSidecar(localPath, { id: file.id, size: size ?? bytes, modifiedTime: file.modifiedTime ?? null });
   const s = (Date.now() - t0) / 1000;
   log(`[drive] ${file.name}: ${(bytes / 1e9).toFixed(2)} GB em ${s.toFixed(0)} s (${(bytes / 1e6 / Math.max(s, 1)).toFixed(1)} MB/s)`);
   return { localPath, downloaded: true, bytes };
@@ -368,9 +409,10 @@ export const UPLOAD_ATTEMPTS = 3;
  * mesmo nome que já esteja lá (sem duplicar) ou cria. Upload resumable em duas
  * chamadas (sessão + conteúdo): serve para a prévia de centenas de MB (o
  * arquivo vai inteiro na memória; as prévias de 720x1280 ficam bem abaixo do
- * limite de Buffer) e para o XML de poucos KB. 5xx ou falha de rede no PUT
- * abre uma sessão NOVA e reenvia (até `UPLOAD_ATTEMPTS`), cada tentativa com o
- * seu próprio timeout; 4xx é erro na hora.
+ * limite de Buffer) e para o XML de poucos KB. 5xx, 429 ou falha de rede no
+ * PUT abre uma sessão NOVA e reenvia (até `UPLOAD_ATTEMPTS`), cada tentativa
+ * com o seu próprio timeout, e antes procura de novo o arquivo pelo nome (o PUT
+ * pode ter gravado sem a resposta chegar); outro 4xx é erro na hora.
  */
 export async function uploadToFolder(
   deps: MontageDriveDeps,
@@ -382,15 +424,17 @@ export async function uploadToFolder(
   const content = readFileSync(localPath);
   const mime = uploadMimeFor(name);
   const found = await findByName(deps, folderId, name);
-  const existing = found.file;
   if (found.file && found.duplicates) log(`[aviso] ${found.duplicates + 1} arquivos "${name}" na pasta do Drive: atualizando o mais recente (${found.file.id})`);
+  let existing = found.file;
   const fields = "id,name,webViewLink";
-  const sessionUrl = existing
-    ? `${DRIVE_UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=resumable&supportsAllDrives=true&fields=${fields}`
-    : `${DRIVE_UPLOAD}/files?uploadType=resumable&supportsAllDrives=true&fields=${fields}`;
   const put = deps.uploadFetch ?? deps.driveFetch;
   let lastError = "";
   for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt++) {
+    // Um PUT que o Drive gravou mas cuja resposta se perdeu já criou o arquivo: a nova tentativa atualiza, não duplica.
+    if (attempt > 1 && !existing) existing = (await findByName(deps, folderId, name)).file;
+    const sessionUrl = existing
+      ? `${DRIVE_UPLOAD}/files/${encodeURIComponent(existing.id)}?uploadType=resumable&supportsAllDrives=true&fields=${fields}`
+      : `${DRIVE_UPLOAD}/files?uploadType=resumable&supportsAllDrives=true&fields=${fields}`;
     const session = await deps.driveFetch(sessionUrl, {
       method: existing ? "PATCH" : "POST",
       headers: {
@@ -417,7 +461,7 @@ export async function uploadToFolder(
       log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} falhou na rede (${lastError})`);
       continue;
     }
-    if (res.status >= 500) {
+    if (res.status >= 500 || res.status === 429) {
       lastError = `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
       log(`[aviso] upload de ${name}: tentativa ${attempt}/${UPLOAD_ATTEMPTS} recebeu ${res.status}; sessão nova`);
       continue;

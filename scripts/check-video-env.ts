@@ -56,6 +56,7 @@ import {
 import {
   DEFAULT_DRIVE_ROOT,
   EditionFolderError,
+  driveModeFor,
   findEditionFolder,
   freeBytes,
   listChildren,
@@ -64,7 +65,6 @@ import {
   youtubeFolderIdFrom,
   type MontageDriveDeps,
 } from "./lib/diaria/video-montage-drive.ts";
-import { driveModeFor } from "./video-montagem.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { DRIVE_API } from "./lib/drive-constants.ts";
 
@@ -197,10 +197,11 @@ async function probeDrive(edition: string | undefined): Promise<DriveProbe> {
     if (caps && caps.canAddChildren === false) {
       return { mode, bruto: null, probe: { ok: false, detail: `a conta OAuth não pode gravar em ${edition}/ (${folder.id})`, fix: "dar permissão de edição na pasta YouTube à conta OAuth do projeto (as saídas sobem para lá)" } };
     }
+    const writeNote = caps ? "" : ` (permissão de escrita não conferida: HTTP ${capRes.status})`;
     const raw = pickDriveBruto(await listChildren(deps, folder.id));
-    if (!raw) return { mode, bruto: null, probe: { ok: true, detail: `API do Drive, modo API; ${edition}/ sem bruto ainda` } };
+    if (!raw) return { mode, bruto: null, probe: { ok: true, detail: `API do Drive, modo API; ${edition}/ sem bruto ainda${writeNote}` } };
     const bytes = parseDriveSize(raw.pick.size);
-    return { mode, bruto: { name: raw.pick.name, bytes }, probe: { ok: true, detail: `API do Drive, modo API; bruto ${raw.pick.name} (${((bytes ?? 0) / 1e9).toFixed(2)} GB)` } };
+    return { mode, bruto: { name: raw.pick.name, bytes }, probe: { ok: true, detail: `API do Drive, modo API; bruto ${raw.pick.name} (${((bytes ?? 0) / 1e9).toFixed(2)} GB)${writeNote}` } };
   } catch (e) {
     if (e instanceof EditionFolderError) return { mode, bruto: null, probe: { ok: false, detail: e.message, fix: `subir o bruto para a pasta ${edition}/ da pasta YouTube no Drive (uma pasta só com esse nome)` } };
     return { mode, bruto: null, probe: { ok: false, detail: `API do Drive: ${(e as Error).message}` } };
