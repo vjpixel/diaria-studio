@@ -158,6 +158,24 @@ describe("#11618 runLinkedinTimer: vertical ausente no disco e no Drive", () => 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  it("#11633: mudança de motivo na mesma edição avisa uma vez por motivo", async () => {
+    const dir = edition();
+    try {
+      const gh = fakeGh();
+      const now = new Date(Date.parse(AT) + 90 * 60_000);
+      const missing = deps(now, DRIVE_NONE, gh.notify);
+      const ambiguous = deps(now, JSON.stringify({ action: "needs-editor", selection: "duplicate-edition-folder" }), gh.notify);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, missing), 0);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, ambiguous), 0);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, missing), 0);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, ambiguous), 0);
+      assert.equal(gh.issues.length, 2);
+      assert.equal(gh.sent.length, 2);
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE), "utf8")).alarmed, ["missing-video", "drive-needs-editor"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("antes de 1 h depois do horário: espera calada (o export pode estar subindo)", async () => {
     const dir = edition();
     try {

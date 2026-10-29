@@ -578,7 +578,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // link derivado aqui é o mesmo que o Stage 5 vai gravar, não um palpite.
     premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5 com backend kit, #7420)`);
   } else {
-    warnings.push(`link da edição derivado do slug do título do D1: ${editionUrl} — confira; passe --edition-url se o publicado divergir`);
+    premises.push(`link da edição derivado do slug do título do D1: ${editionUrl} (metadado do plano; não usado no texto do vertical)`);
   }
   const d1In = { title: d1.title, body: d1.body };
   const youtube = buildYouTubeShortMetadata({ d1: d1In });

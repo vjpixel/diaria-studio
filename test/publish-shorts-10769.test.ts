@@ -266,14 +266,13 @@ describe("#10769 plano do publish-shorts", () => {
     assert.throws(() => planShortsPublish({ ...base, now: new Date(), only: ["facebook:vjpxel"] }), /desconhecido: facebook:vjpxel/);
   });
 
-  it("sem --edition-url, backend beehiiv (legado): o link derivado do título vira AVISO (não premissa silenciosa)", () => {
-    // O `base` não tem `publishing.newsletter.backend` — desde o #11225 isso
-    // é "kit" (premissa, ver publish-shorts-edition-url-kit-10943); o aviso
-    // só sobra no ramo legado explícito.
+  it("sem --edition-url, backend beehiiv: link sem uso no texto é só premissa (#11633)", () => {
+    // Desde #11617 o texto do vertical não leva o link da edição.
     const config = { publishing: { ...base.config.publishing, newsletter: { backend: "beehiiv" } } };
     const plan = planShortsPublish({ ...base, config, now: new Date("2026-10-22T12:00:00Z"), editionUrl: undefined });
     assert.equal(plan.editionUrl, EDITION_URL);
-    assert.ok(plan.warnings.some((w) => w.includes("derivado do slug")));
+    assert.ok(!plan.warnings.some((w) => w.includes("derivado do slug")));
+    assert.ok(plan.premises.some((m) => m.includes("não usado no texto do vertical")));
   });
 
   it("#10790: motivo de Instagram não pronto vira o aviso do plano", () => {

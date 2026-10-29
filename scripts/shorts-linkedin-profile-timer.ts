@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 /**
  * scripts/shorts-linkedin-profile-timer.ts (#10982)
  *
@@ -280,8 +281,6 @@ export async function linkedinAlarm(
   notifyDeps: NotifyEditorDeps = { cwd: ROOT },
   selection?: string,
 ): Promise<boolean> {
-  // Import tardio: o timer do Instagram importa `acquireTimerLock` deste módulo (ciclo no load).
-  const { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } = await import("./shorts-instagram-timer.ts");
   const statePath = join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE);
   const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
   const state = parseAlarmState(stateRaw);
