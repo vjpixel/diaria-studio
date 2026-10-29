@@ -69,6 +69,7 @@ import {
   writeWriterInputsRecord,
   type WriterInputGap,
 } from "./lib/writer-inputs-record.ts";
+import { syncExtraSources, type ExtraSourceEntry } from "./lib/fact-check-extra-sources.ts";
 
 export interface RefreshResult {
   /** true se as URLs do manifest em disco NÃO correspondiam às dos destaques atuais (ou manifest/txt ausente). */
@@ -82,6 +83,10 @@ export interface RefreshResult {
   writer_inputs?: { path: string; gaps: WriterInputGap[] };
   /** (#9648) Falha ao gravar o registro (fail-soft). */
   writer_inputs_error?: string;
+  /** (#11531) Fontes adicionais sincronizadas (`fact-check-sources/extras.json`). Ausente no --check. */
+  extra_sources?: ExtraSourceEntry[];
+  /** (#11531) Falha ao sincronizar as fontes adicionais (fail-soft). */
+  extra_sources_error?: string;
 }
 
 /**
@@ -141,6 +146,18 @@ export async function refreshDestaqueSources(
   const refetched = !isHighlightSourcesCacheFresh(approved, internalDir);
   const sources = await prefetchHighlightSources(approved, internalDir, opts.fetchImpl ?? fetch);
   const result: RefreshResult = { stale_before: stale, refetched, failed: failedDestaques(internalDir), sources };
+  // #11531: fontes adicionais (cluster_sources, Aprofunde, editor). Fail-soft:
+  // a fonte primária já está em disco; falha aqui só tira as extras da conta.
+  try {
+    const reviewedPath = join(editionDir, "02-reviewed.md");
+    result.extra_sources = await syncExtraSources(approved, highlightSourceUrls(approved), internalDir, {
+      reviewedMd: existsSync(reviewedPath) ? readFileSync(reviewedPath, "utf8") : undefined,
+      fetchImpl: opts.fetchImpl,
+    });
+  } catch (e) {
+    result.extra_sources_error = (e as Error).message;
+    console.error(`refresh-destaque-sources: WARN — fontes adicionais não sincronizadas: ${result.extra_sources_error}`);
+  }
   if (opts.recordWriterInputs) {
     // Fail-soft: o registro é auditoria — falha ao gravá-lo nunca derruba o
     // download das fontes nem o dispatch dos writers. Vira `error` no stdout.
