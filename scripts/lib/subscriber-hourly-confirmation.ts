@@ -95,6 +95,34 @@ function percentile(sortedAsc: number[], p: number): number | null {
   return sortedAsc[Math.max(0, Math.min(sortedAsc.length - 1, Math.ceil(p * sortedAsc.length) - 1))];
 }
 
+/**
+ * Retenção das observações horárias em `kit-recent/` (#11521). Com a task
+ * horária armada, o diretório ganha ~24 arquivos/dia e o relatório lê todos
+ * a cada execução. 35 dias cobrem com folga a maior janela medida (24h), o
+ * lag de 1ª observação e uma coorte de cadastro de 30 dias.
+ */
+export const RECENT_RETENTION_DAYS = 35;
+
+/**
+ * Nomes de observação horária mais velhos que `retentionDays` em relação a
+ * `now` (pelo instante no próprio nome). Arquivo cujo nome não casa o padrão
+ * nunca entra (não é nosso, não se apaga). @pure
+ */
+export function expiredHourlyObservationFiles(
+  names: readonly string[],
+  now: Date,
+  retentionDays = RECENT_RETENTION_DAYS,
+): string[] {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) {
+    throw new Error(`retentionDays inválido: ${retentionDays}`);
+  }
+  const min = now.getTime() - retentionDays * 24 * HOUR_MS;
+  return names.filter((name) => {
+    const at = parseHourlyObservationFileName(name);
+    return at !== null && at.getTime() < min;
+  });
+}
+
 /** Filtra os records de um dump ao que cabe na janela recente (`created_at`
  *  >= `now - lookbackHours`). @pure */
 export function filterRecent(

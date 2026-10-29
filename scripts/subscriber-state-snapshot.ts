@@ -28,6 +28,8 @@
  *              gravados em data/subscriber-state-snapshots/kit-recent/
  *              {AAAA-MM-DDTHHMMZ}.jsonl — insumo da taxa de confirmação em
  *              1h/6h/24h (`scripts/lib/subscriber-hourly-confirmation.ts`).
+ *              Cada rodada poda as observações com mais de
+ *              `RECENT_RETENTION_DAYS` (35) dias (#11521); --dry-run só conta.
  *
  * (O modo --recent NÃO lê o form DOI: status=all do form pode devolver a base
  * inteira a cada hora, e a análise horária não usa `doi_form`.)
@@ -40,7 +42,7 @@
  * camada Kit). Stdout: JSON summary. Stderr: progresso.
  */
 
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
@@ -52,7 +54,9 @@ import { listSubscribers } from "./lib/kit-client.ts";
 import {
   hourlyObservationFileName,
   filterRecent,
+  expiredHourlyObservationFiles,
   RECENT_LOOKBACK_HOURS,
+  RECENT_RETENTION_DAYS,
 } from "./lib/subscriber-hourly-confirmation.ts";
 import {
   snapshotRootDefault,
@@ -111,6 +115,36 @@ async function doiFormIds(config: ReturnType<typeof loadKitConfig>): Promise<Set
   }
 }
 
+/**
+ * Poda de `kit-recent/` (#11521): apaga as observações horárias mais velhas
+ * que `retentionDays`. Só toca arquivos com nome de observação
+ * (`AAAA-MM-DDTHHMMZ.jsonl`). `dryRun` só lista. Dir ausente = nada.
+ * Falha ao apagar um arquivo vira aviso e segue (a observação da hora já foi
+ * gravada; a poda é manutenção, não pode derrubar a captura).
+ */
+export function pruneHourlyObservations(
+  root: string,
+  now: Date,
+  opts: { retentionDays?: number; dryRun?: boolean } = {},
+): { expired: string[]; removed: string[]; failed: string[] } {
+  if (!existsSync(root)) return { expired: [], removed: [], failed: [] };
+  const expired = expiredHourlyObservationFiles(readdirSync(root), now, opts.retentionDays ?? RECENT_RETENTION_DAYS);
+  const removed: string[] = [];
+  const failed: string[] = [];
+  if (!opts.dryRun) {
+    for (const name of expired) {
+      try {
+        unlinkSync(resolve(root, name));
+        removed.push(name);
+      } catch (err) {
+        failed.push(name);
+        console.error(`${LOG_PREFIX} AVISO: falha podando ${name}: ${(err as Error).message}`);
+      }
+    }
+  }
+  return { expired, removed, failed };
+}
+
 /** Modo horário (#8552 b): só cadastros das últimas 48h. */
 async function runRecent(config: ReturnType<typeof loadKitConfig>, isDryRun: boolean, rootArg: string | undefined): Promise<void> {
   const now = new Date();
@@ -137,7 +171,19 @@ async function runRecent(config: ReturnType<typeof loadKitConfig>, isDryRun: boo
   } else {
     console.error(`${LOG_PREFIX} --dry-run: observação horária NÃO gravada (${out.length} linha(s)).`);
   }
-  console.log(JSON.stringify({ mode: "recent", written: !isDryRun, count: out.length, file }, null, 2));
+  const prune = pruneHourlyObservations(root, now, { dryRun: isDryRun });
+  if (prune.expired.length > 0) {
+    console.error(
+      `${LOG_PREFIX} poda (>${RECENT_RETENTION_DAYS}d): ${isDryRun ? `${prune.expired.length} a apagar (--dry-run, nada apagado)` : `${prune.removed.length} apagada(s)`}${prune.failed.length ? `, ${prune.failed.length} falha(s)` : ""}.`,
+    );
+  }
+  console.log(
+    JSON.stringify(
+      { mode: "recent", written: !isDryRun, count: out.length, file, pruned: prune.removed.length, prune_failed: prune.failed.length },
+      null,
+      2,
+    ),
+  );
 }
 
 async function main(): Promise<void> {
