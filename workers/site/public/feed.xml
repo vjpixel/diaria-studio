@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Wed, 28 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Thu, 29 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Lula promete uma IA brasileira</title>
+      <link>https://diar.ia.br/p/lula-promete-uma-ia-brasileira</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/lula-promete-uma-ia-brasileira</guid>
+      <pubDate>Thu, 29 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Genie 4 cria mundos que você comanda por texto | Apagou a conversa? O Android ainda guarda</description>
+    </item>
     <item>
       <title>OpenAI lança GPT-6.1 Terra pela metade do preço</title>
       <link>https://diar.ia.br/p/openai-lanca-gpt-6-1-terra-pela-metade-do-preco</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia</guid>
       <pubDate>Wed, 19 Aug 2026 09:00:00 GMT</pubDate>
       <description>Grupo hacker usou Claude em 8 invasões | ChatGPT for Teens chega com proteções extras</description>
-    </item>
-    <item>
-      <title>Anthropic: só curar câncer convence público</title>
-      <link>https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/anthropic-so-curar-cancer-convence-publico</guid>
-      <pubDate>Tue, 18 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Oito agentes autônomos mapearam Taiwan sozinhos | Excel perde função COPILOT em setembro</description>
     </item>
   </channel>
 </rss>
