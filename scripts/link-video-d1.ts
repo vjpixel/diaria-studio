@@ -17,7 +17,10 @@
  *     `publish-youtube.ts --upload`);
  *   - recusa (exit 1, nada gravado) vídeo que o leitor não abre (#10858): se o
  *     registro do upload é deste vídeo e o estado relido é privado sem
- *     agendamento, indeterminado, ou agendado para depois do post do D1. O
+ *     agendamento, indeterminado, ou agendado para depois do post do D1. Sem
+ *     a auditoria do YouTube API Services, o agendado até o envio da
+ *     newsletter do D1 (06:00 BRT, ou o `scheduled_at` do broadcast) grava com
+ *     `[aviso]`, sem `--assume-public` (#11548); depois do envio, recusa. O
  *     estado do registro é o da releitura no upload — se o editor publicou à
  *     mão no Studio depois, `--assume-public` libera;
  *   - `--save` grava `_internal/05-video-url.txt`. Com o arquivo presente
@@ -49,7 +52,13 @@ import {
   planD1VideoLink,
   type D1PostEntryLike,
 } from "./lib/diaria/d1-video-link.ts";
-import { d1SocialSlotAt, gateVideoLink, readYouTubeRecordSummary, videoLinkRemedy } from "./lib/diaria/youtube-video-link-gate.ts";
+import {
+  d1SocialSlotAt,
+  gateVideoLink,
+  newsletterSendAt,
+  readYouTubeRecordSummary,
+  videoLinkRemedy,
+} from "./lib/diaria/youtube-video-link-gate.ts";
 import { YOUTUBE_API_PROJECT_AUDITED } from "./lib/diaria/youtube-video.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -99,7 +108,15 @@ async function main(): Promise<number> {
     return 2;
   }
   const videoUrl = normalizeYouTubeVideoUrl(rawUrl);
-  const gate = gateVideoLink({ videoUrl, record, d1SlotAt: d1SocialSlotAt(aammdd, loadSocialConfig()) });
+  // #11548: sem a auditoria, o vídeo agendado até o envio da newsletter do D1 passa com aviso.
+  const send = newsletterSendAt(dir, aammdd);
+  const gate = gateVideoLink({
+    videoUrl,
+    record,
+    d1SlotAt: d1SocialSlotAt(aammdd, loadSocialConfig()),
+    newsletterSendAt: send.at,
+  });
+  if (gate.warning) console.error(`[aviso] ${gate.warning} (envio do D1: ${send.source})`);
   if (!gate.ok) {
     if (!flags.has("assume-public")) {
       // #10881 item 2: a mesma premissa de auditoria que o gate usou (o

@@ -284,13 +284,15 @@ describe("link-video-d1.ts lê o registro do upload (#10858)", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.equal(readFileSync(urlFile(), "utf8").trim(), VIDEO_URL);
   });
-  it("vídeo agendado antes do D1 no registro: recusa enquanto o projeto não é auditado (#10865)", { skip: YOUTUBE_API_PROJECT_AUDITED }, () => {
+  // #11548: agendado até o envio da newsletter (06:00 BRT) passa com aviso;
+  // a recusa sem auditoria vale para o agendado DEPOIS do envio.
+  it("vídeo agendado depois do envio do D1 no registro: recusa enquanto o projeto não é auditado (#10865)", { skip: YOUTUBE_API_PROJECT_AUDITED }, () => {
     writeRecord({
       aammdd: "261022",
       videoId: VIDEO_ID,
       url: VIDEO_URL,
       state: "scheduled",
-      rereadStatus: { privacyStatus: "private", publishAt: PUBLISH_AT },
+      rereadStatus: { privacyStatus: "private", publishAt: "2026-10-22T10:00:00.000Z" },
     });
     const r = cli(["--save"]);
     assert.equal(r.status, 1, r.stderr);

@@ -18,12 +18,14 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { isBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import {
   assessVideoEnv,
+  codexCandidatePaths,
   formatVideoEnvReport,
   rembgVenvPython,
   type ProbeResult,
@@ -62,10 +64,26 @@ async function probeGeorgia(): Promise<ProbeResult> {
   }
 }
 
+/**
+ * #11532: `codex` pelo PATH; se não resolver, os caminhos de instalação
+ * conhecidos (`codexCandidatePaths`), que o `codex-image.js` também usa. Achar
+ * fora do PATH conta como ok (o outpaint roda) e o detalhe diz onde.
+ */
+function probeCodex(): ProbeResult {
+  const viaPath = probeCommand("codex", ["--version"]);
+  if (viaPath.ok) return viaPath;
+  for (const p of codexCandidatePaths(process.platform, homedir())) {
+    if (!existsSync(p)) continue;
+    const r = probeCommand(p, ["--version"]);
+    if (r.ok) return { ok: true, detail: `${r.detail ?? "codex"} — fora do PATH, em ${p} (o codex-image.js usa este caminho, #11532)` };
+  }
+  return viaPath;
+}
+
 export async function runVideoEnvCheck(): Promise<VideoEnvReport> {
   const probes: VideoEnvProbes = {
     ffmpeg: probeCommand("ffmpeg", ["-version"]),
-    codex: probeCommand("codex", ["--version"]),
+    codex: probeCodex(),
     georgia: await probeGeorgia(),
     rembg: probeRembg(),
   };
