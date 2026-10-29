@@ -54,6 +54,51 @@ describe("classifyFindingSeverity (#11461)", () => {
     assert.equal(classifyFindingSeverity(undefined), "untagged");
     assert.equal(classifyFindingSeverity("HTTP3 e SP33"), "untagged");
   });
+  // #11575: confiança alta fora da forma literal `confiança[:] alta` virava `low`
+  // e `--low-severity-only` resolvia a thread (fail-open no gate de merge).
+  it("#11575: confiança alta em qualquer redação real é high", () => {
+    const variants = [
+      "**Confiança:** alta, P3 — o guard X não cobre o caso Y",
+      "**Confiança:** alta · P3 — o guard X não cobre o caso Y",
+      "Confiança `alta`, P2: formato do dev-revisor.md",
+      "Alta confiança, P2: ordem invertida",
+      "[P2 | alta] finding do fleet review",
+      "P3 (high confidence): fleet review em inglês",
+      "Confidence: High, severity P2",
+      "**P2** · confiança **alta**",
+      "Confiança _alta_ / P3",
+      "confiança é alta, P3",
+      "[alta | P3] x",
+    ];
+    for (const v of variants) assert.equal(classifyFindingSeverity(v), "high", v);
+  });
+  it("#11575: P2/P3 sem confiança média/baixa legível fica retido (untagged)", () => {
+    assert.equal(classifyFindingSeverity("P3: sem confiança declarada"), "untagged");
+    assert.equal(classifyFindingSeverity("P2 — confiança: ??? "), "untagged");
+  });
+  it("#11575: confiança média/baixa nas mesmas redações continua low", () => {
+    const variants = [
+      "**Confiança:** média, P3 — nit",
+      "Confiança `baixa`, P2: nit",
+      "Média confiança, P3: nit",
+      "[P2 | média] nit",
+      "P3 (medium confidence): nit",
+      "Confidence: low, P3",
+    ];
+    for (const v of variants) assert.equal(classifyFindingSeverity(v), "low", v);
+  });
+  it("#11575: 'alta' solto no texto, longe da tag, não vira high", () => {
+    assert.equal(classifyFindingSeverity("Confiança média, P3: a latência fica alta no pior caso"), "low");
+  });
+  it("#11575: cenário da issue resolvido ponta a ponta fica em held", () => {
+    const body = "**Confiança:** alta · P3 — o guard X não cobre o caso Y";
+    const t = [{ id: "a", isResolved: false, viewerCanResolve: true, comments: auto(body) }];
+    const gh = fakeGh([threadsJson(t), threadsJson(t)]);
+    const r = resolveReviewThreads("vjpixel/diaria-studio", 1, gh.run, null, { lowSeverityOnly: true });
+    assert.deepEqual(gh.mutated, []);
+    assert.deepEqual(r.held, ["a"]);
+    assert.equal(r.exitCode, EXIT_BLOCKING);
+  });
   it("findingExcerpt tira o marcador e corta em 200", () => {
     assert.equal(findingExcerpt(`a\n b\n\n${AUTO_REVIEW_MARKER}`), "a b");
     assert.equal(findingExcerpt("x".repeat(300)).length, 200);
