@@ -43,6 +43,7 @@ import {
   partitionRetidoCandidates,
   trainHasRealFailure,
   checkStudioTrainPr,
+  syncLocalCheckoutAfterMerge,
   type TrainRunner,
   type ExecResult,
 } from "../scripts/lib/merge-train-live.ts";
@@ -110,6 +111,14 @@ class FakeTrainRunner implements TrainRunner {
 
   withLockOk(): this {
     return this.on("npx", (a) => a.includes("merge-lock-acquire"), () => ok()).on("npx", (a) => a.includes("merge-lock-release"), () => ok());
+  }
+
+  /** Atualização local pós-merge (#11615): `git fetch origin master` no
+   * checkout principal (cwd default) e checkout em master. O `git pull`
+   * fica a cargo de cada teste. */
+  withLocalOnMaster(branch = "master"): this {
+    return this.on("git", (a, cwd) => a[0] === "fetch" && a[1] === "origin" && a[2] === "master" && cwd === undefined, () => ok())
+      .on("git", (a) => a[0] === "rev-parse" && a.includes("--abbrev-ref"), () => ok(`${branch}\n`));
   }
 
   /** Avança o relógio simulado em cada sleep() — usado por pollTrainCi/retry pra checar timeout sem esperar de verdade. */
@@ -471,7 +480,7 @@ describe("mergeTrainBatch", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
     runner
       .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
-      .on("git", (a) => a[0] === "pull", () => ok())
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok())
       .on("gh", (a) => a[0] === "pr" && a[1] === "comment", () => ok())
       .on("gh", (a) => a[0] === "pr" && a[1] === "close", () => ok());
 
@@ -525,7 +534,7 @@ describe("mergeTrainBatch", () => {
     runner
       .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => fail("timeout local, mas pode ter ido"))
       .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-08-26T12:00:00Z" })))
-      .on("git", (a) => a[0] === "pull", () => ok())
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok())
       .on("gh", (a) => a[0] === "pr" && (a[1] === "comment" || a[1] === "close"), () => ok());
 
     const result = mergeTrainBatch(runner, 6400, batch, prInfos, { sessionId: "s", kind: "develop", commitTitle: "t", commitBody: "b" });
@@ -536,7 +545,7 @@ describe("mergeTrainBatch", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
     runner
       .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
-      .on("git", (a) => a[0] === "pull", () => fail("network blip"))
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => fail("network blip"))
       .on("gh", (a) => a[0] === "pr" && (a[1] === "comment" || a[1] === "close"), () => ok());
 
     const result = mergeTrainBatch(runner, 6400, batch, prInfos, { sessionId: "s", kind: "develop", commitTitle: "t", commitBody: "b" });
@@ -545,10 +554,52 @@ describe("mergeTrainBatch", () => {
   });
 });
 
+describe("syncLocalCheckoutAfterMerge — checkout principal fora de master (#11615)", () => {
+  const noTracking = "There is no tracking information for the current branch.\nPlease specify which branch you want to merge with.";
+
+  it("checkout em branch alheia sem upstream: busca origin/master, NÃO roda git pull e devolve uma linha curta", () => {
+    const runner = new FakeTrainRunner()
+      .withLocalOnMaster("continuo/fix-11542-drive-cover")
+      .on("git", (a) => a[0] === "pull", () => fail(noTracking));
+
+    const note = syncLocalCheckoutAfterMerge(runner);
+    assert.ok(note);
+    assert.match(note, /checkout local em continuo\/fix-11542-drive-cover, não em master: atualização local pulada/);
+    assert.doesNotMatch(note, /tracking information/);
+    assert.ok(!note.includes("\n"), "aviso de uma linha só");
+    assert.ok(runner.calls.some((c) => c.cmd === "git" && c.args.join(" ") === "fetch origin master"), "fetch de master acontece sempre");
+    assert.equal(runner.calls.some((c) => c.cmd === "git" && c.args[0] === "pull"), false, "nunca puxa sobre a branch de outra sessão");
+  });
+
+  it("checkout em master: fetch + pull --ff-only origin master, sem aviso", () => {
+    const runner = new FakeTrainRunner().withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok());
+    assert.equal(syncLocalCheckoutAfterMerge(runner), null);
+    const pull = runner.calls.find((c) => c.cmd === "git" && c.args[0] === "pull");
+    assert.deepEqual(pull?.args, ["pull", "--ff-only", "origin", "master"]);
+  });
+
+  it("fetch falhando fora de master: ainda pula sem erro, citando só a 1ª linha do stderr", () => {
+    const runner = new FakeTrainRunner()
+      .on("git", (a) => a[0] === "fetch", () => fail("fatal: unable to access\nlinha 2"))
+      .on("git", (a) => a[0] === "rev-parse", () => ok("outra\n"));
+    const note = syncLocalCheckoutAfterMerge(runner);
+    assert.match(note ?? "", /checkout local em outra.*git fetch origin master também falhou: fatal: unable to access\)$/);
+  });
+
+  it("mergeSoloPr com checkout em branch alheia: merge ok:true e o detail traz o aviso curto, não o erro do git", () => {
+    const runner = new FakeTrainRunner().withGate2Green().withLockOk().withLocalOnMaster("continuo/fix-11542-drive-cover");
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok()).on("git", (a) => a[0] === "pull", () => fail(noTracking));
+    const result = mergeSoloPr(runner, 100, { sessionId: "s", kind: "overnight" });
+    assert.equal(result.ok, true);
+    assert.match(result.error ?? "", /^merge OK \(confirmado\); checkout local em continuo\/fix-11542-drive-cover/);
+    assert.doesNotMatch(result.error ?? "", /tracking information|pull local falhou/);
+  });
+});
+
 describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => {
   it("caminho feliz: revalida Gate 2 → lock → squash merge com título/body atuais da PR → pull → release", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
-    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok()).on("git", (a) => a[0] === "pull", () => ok());
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok()).withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok());
 
     const result = mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" });
     assert.equal(result.ok, true);
@@ -565,7 +616,7 @@ describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => 
     runner
       .on("gh", (a) => a.includes("title,body,commits"), () => ok(JSON.stringify({ title: "fix: x (#100)", body: "Closes #10" })))
       .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
-      .on("git", (a) => a[0] === "pull", () => ok());
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok());
     assert.equal(mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" }).ok, true);
     const mergeCall = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge");
     assert.ok(mergeCall);
@@ -583,7 +634,7 @@ describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => 
           commits: [{ messageHeadline: 'Revert "fix: y"', messageBody: `This reverts commit ${sha}.` }],
         })))
       .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok())
-      .on("git", (a) => a[0] === "pull", () => ok());
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok());
     assert.equal(mergeSoloPr(runner, 200, { sessionId: "s", kind: "develop" }).ok, true);
     const mergeCall = runner.calls.find((c) => c.cmd === "gh" && c.args[1] === "merge");
     assert.ok(mergeCall);
@@ -602,7 +653,7 @@ describe("mergeSoloPr — piso da bissecção, caminho de hoje sem trem", () => 
         assert.equal(squashBody, body);
         return ok();
       })
-      .on("git", (a) => a[0] === "pull", () => ok());
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok());
     assert.equal(mergeSoloPr(runner, 100, { sessionId: "s", kind: "develop" }).ok, true);
     const lockIndex = runner.calls.findIndex((c) => c.args.includes("merge-lock-acquire"));
     const readIndex = runner.calls.findIndex((c) => c.args.includes("title,body,commits"));
@@ -643,7 +694,7 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       .on("git", (a, cwd) => a[0] === "push" && !a.includes("--delete") && cwd !== MAIN_CWD, () => ok())
       .on("git", (a, cwd) => a[0] === "push" && a.includes("--delete") && cwd === MAIN_CWD, () => ok())
       .on("git", (a, cwd) => a[0] === "branch" && a.includes("-D") && cwd === MAIN_CWD, () => ok())
-      .on("git", (a) => a[0] === "pull", () => ok())
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok())
       .withLockOk()
       .withGate2Green()
       .on("gh", (a) => a[0] === "pr" && (a[1] === "comment" || a[1] === "close"), () => ok());
@@ -731,7 +782,7 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
       })
       .on("git", (a, cwd) => a[0] === "push" && a.includes("--delete") && cwd === MAIN_CWD, () => ok())
       .on("git", (a, cwd) => a[0] === "branch" && a.includes("-D") && cwd === MAIN_CWD, () => ok())
-      .on("git", (a) => a[0] === "pull", () => ok())
+      .withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok())
       .withLockOk()
       .withGate2Green()
       .on("gh", (a) => a[0] === "pr" && (a[1] === "comment" || a[1] === "close"), () => ok())
@@ -747,7 +798,7 @@ describe("runMergeTrain — máquina de estados de ponta a ponta", () => {
 
   it("lote de 1 desde o início vai direto pro merge solo — nunca monta integração/PR-trem/worktree", async () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
-    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok()).on("git", (a) => a[0] === "pull", () => ok());
+    runner.on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => ok()).withLocalOnMaster().on("git", (a) => a[0] === "pull", () => ok());
 
     const outcomes = await runMergeTrain(runner, { prs: [100] }, [prInfos3[0]], { sessionId: "s", kind: "develop", mainCwd: MAIN_CWD });
     assert.equal(outcomes.length, 1);

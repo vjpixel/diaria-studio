@@ -603,12 +603,45 @@ export function confirmMerged(runner: TrainRunner, prNumber: number): boolean {
 }
 
 /**
+ * Atualiza o checkout principal depois de um merge confirmado (#11615).
+ *
+ * Antes era um `git pull` cru: com o checkout principal numa branch de outra
+ * sessão sem upstream (visto no overnight 261029, `continuo/fix-11542-…`), o
+ * git falhava com "There is no tracking information for the current branch"
+ * e o trem transcrevia o erro inteiro. Agora:
+ *   1. `git fetch origin master` sempre (seguro em qualquer branch — só
+ *      atualiza `origin/master`, que é o que a coordenadora seguinte lê);
+ *   2. só faz `git pull --ff-only origin master` se o checkout está em master;
+ *   3. fora de master, devolve uma linha curta de aviso, sem tocar a branch
+ *      alheia.
+ *
+ * Nunca bloqueia: o merge no GitHub já é fato consumado. Devolve `null`
+ * quando tudo foi atualizado, ou o aviso (uma linha) a reportar.
+ */
+export function syncLocalCheckoutAfterMerge(runner: TrainRunner, baseBranch: string = TRAIN_BASE_BRANCH): string | null {
+  const firstLine = (s: string): string => s.trim().split(/\r?\n/)[0] ?? "";
+  const fetch = runner.exec("git", ["fetch", "origin", baseBranch]);
+  const fetchNote = fetch.ok ? "" : ` (git fetch origin ${baseBranch} também falhou: ${firstLine(fetch.stderr)})`;
+  const head = runner.exec("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = head.ok ? head.stdout.trim() : "";
+  if (!head.ok || !branch) {
+    return `branch do checkout local ilegível, atualização local pulada${fetchNote}`;
+  }
+  if (branch !== baseBranch) {
+    return `checkout local em ${branch}, não em ${baseBranch}: atualização local pulada${fetch.ok ? ` (origin/${baseBranch} atualizado)` : fetchNote}`;
+  }
+  const pull = runner.exec("git", ["pull", "--ff-only", "origin", baseBranch]);
+  if (!pull.ok) return `git pull local falhou: ${firstLine(pull.stderr)}`;
+  return null;
+}
+
+/**
  * Merge de verdade: revalida o Gate 2 de CADA PR original do lote
  * (`revalidateGate2` — estado pode ter mudado desde a descoberta), adquire
  * o merge lock cross-sessão (`session-registry.ts merge-lock-acquire`),
  * squash-merge do PR-trem com 1 commit fechando todas as issues do lote,
- * confirma o merge via estado real (`confirmMerged`, #573), `git pull`
- * (janela protegida do lock — só isso, ver docstring de
+ * confirma o merge via estado real (`confirmMerged`, #573), atualiza o
+ * checkout local (`syncLocalCheckoutAfterMerge`, #11615) (janela protegida do lock — só isso, ver docstring de
  * `merge-lock-acquire` em `session-registry.ts`), libera o lock, e fecha
  * cada PR ORIGINAL do lote com um comentário apontando pro commit squash
  * (GitHub não teria como auto-fechá-los sozinho — o código deles chegou
@@ -673,15 +706,15 @@ export function mergeTrainBatch(
       return { ok: false, error: `gh pr merge --squash falhou (confirmado via gh pr view --json state,mergedAt): ${merge.stderr}` };
     }
 
-    const pull = runner.exec("git", ["pull"]);
-    if (!pull.ok) {
+    const syncNote = syncLocalCheckoutAfterMerge(runner);
+    if (syncNote) {
       // O merge JÁ aconteceu no remoto (confirmado acima) — não é um
       // "ok: false" no sentido de "nada mudou"; é um estado local
       // defasado. Reporta, mas trata como sucesso pro fluxo de fechar as
       // PRs originais (o commit squash já existe no GitHub, é o que os
       // comentários de fechamento referenciam — não depende do checkout
       // local estar sincronizado).
-      return { ok: true, error: `merge OK (confirmado), mas git pull local falhou (não bloqueante): ${pull.stderr}` };
+      return { ok: true, error: `merge OK (confirmado); ${syncNote} (não bloqueante)` };
     }
   } finally {
     runner.exec("npx", ["tsx", "scripts/lib/session-registry.ts", "merge-lock-release", "--kind", opts.kind, "--session-id", opts.sessionId]);
@@ -824,8 +857,8 @@ export function mergeSoloPr(runner: TrainRunner, prNumber: number, opts: MergeSo
     ]);
     const mergeOk = merge.ok || confirmMerged(runner, prNumber);
     if (!mergeOk) return { ok: false, error: `gh pr merge --squash falhou (confirmado via gh pr view --json state,mergedAt): ${merge.stderr}` };
-    const pull = runner.exec("git", ["pull"]);
-    if (!pull.ok) return { ok: true, error: `merge OK (confirmado), mas git pull local falhou (não bloqueante): ${pull.stderr}` };
+    const syncNote = syncLocalCheckoutAfterMerge(runner);
+    if (syncNote) return { ok: true, error: `merge OK (confirmado); ${syncNote} (não bloqueante)` };
     return { ok: true };
   } finally {
     runner.exec("npx", ["tsx", "scripts/lib/session-registry.ts", "merge-lock-release", "--kind", opts.kind, "--session-id", opts.sessionId]);
