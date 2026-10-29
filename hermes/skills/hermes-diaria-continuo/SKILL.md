@@ -132,7 +132,10 @@ mais novo → reler, nunca `--override-newer` automático. Detalhe:
    com `--push` que falhou (exit ≠ 0) → **parar este tick e reportar como
    `Parada`** no relatório (não tentar `sync-code.ts`/dispatch neste tick —
    o checkout compartilhado pode estar num estado que outro comando `git`
-   piora).
+   piora). Rascunho de corpo de comentário (`--body-file`) vai em
+   `mktemp`/`$TMPDIR`, nunca na raiz do checkout (#11544): o rescue ignora
+   `.rv*.md`/`.review-*.md`/`.dr-*` untracked, mas qualquer outro nome vira
+   PR de rescue.
 1. `cd /home/vjpixel/diaria-studio && npx tsx scripts/sync-code.ts` — fail-soft:
    warning e segue; nunca forçar pull/reset/stash.
 1b. **Continuidade com o tick anterior (#7511):** `cat

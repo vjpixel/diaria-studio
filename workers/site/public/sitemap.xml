@@ -1225,26 +1225,10 @@
   <url>
     <loc>https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos</loc>
     <lastmod>2026-10-26</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-26T00:00:00.000Z</news:publication_date>
-      <news:title>Hackers usam Claude e Grok contra bancos</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/google-pode-usar-seus-dados-do-photos-para-direcionar</loc>
     <lastmod>2026-10-27</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-27T00:00:00.000Z</news:publication_date>
-      <news:title>Google pode usar seus dados do Photos para direcionar anúncios</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/openai-lanca-gpt-6-1-terra-pela-metade-do-preco</loc>
@@ -1256,6 +1240,18 @@
       </news:publication>
       <news:publication_date>2026-10-28T00:00:00.000Z</news:publication_date>
       <news:title>OpenAI lança GPT-6.1 Terra pela metade do preço</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/lula-promete-uma-ia-brasileira</loc>
+    <lastmod>2026-10-29</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-29T00:00:00.000Z</news:publication_date>
+      <news:title>Lula promete uma IA brasileira</news:title>
     </news:news>
   </url>
 </urlset>

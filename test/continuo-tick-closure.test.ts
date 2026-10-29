@@ -12,6 +12,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import {
   hasUncommittedWork,
   planRescueBranch,
@@ -21,10 +24,14 @@ import {
   rescueOrphanedMasterCommits,
   detectConflictMarkers,
   parseConflictMarkerFiles,
+  isReviewScratchPath,
+  splitReviewScratch,
   type SpawnFn,
   type SpawnResult,
   type SyncLock,
 } from "../scripts/lib/continuo-tick-closure.ts";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function ok(stdout = ""): SpawnResult {
   return { status: 0, stdout, stderr: "" };
@@ -574,5 +581,72 @@ describe("rescueOrphanedMasterCommits (#8588)", () => {
     };
     rescueOrphanedMasterCommits(spawn, "2026-09-21T23:20:00.000Z", trackedLock);
     assert.equal(released, true);
+  });
+});
+
+describe("#11544 rascunhos de review (.rv*.md) nunca viram PR de rescue", () => {
+  it("isReviewScratchPath casa só rascunho na raiz", () => {
+    for (const p of [".rv11490.md", ".rev9801.md", ".review-i1.md", ".dr-body.md", ".dr-steps.txt"]) {
+      assert.equal(isReviewScratchPath(p), true, p);
+    }
+    for (const p of ["docs/.rv1.md", "scripts/foo.ts", ".rv11490.txt", "rv1.md", ".gitignore"]) {
+      assert.equal(isReviewScratchPath(p), false, p);
+    }
+  });
+
+  it("splitReviewScratch: só untracked é rascunho; rastreado modificado com o mesmo nome é trabalho", () => {
+    const split = splitReviewScratch("?? .rv11490.md\n M .rv11493.md\n?? scripts/novo.ts\n");
+    assert.deepEqual(split.scratch, [".rv11490.md"]);
+    assert.deepEqual(split.work, [" M .rv11493.md", "?? scripts/novo.ts"]);
+  });
+
+  it("reprodução da PR #11514: árvore só com .rv*.md → clean, nenhuma branch/commit", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git status": [ok("?? .rv11490.md\n?? .rv11493.md\n?? .rv11510.md\n")],
+    });
+    const result = rescueOrphanedWork(spawn, "2026-10-28T20:40:35.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "clean");
+    assert.match(result.message, /\.rv11510\.md/);
+    assert.equal(calls.length, 1);
+  });
+
+  it("rascunho misturado com trabalho real → resgata o trabalho e tira o rascunho do índice antes do commit", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git status": [ok(" M scripts/foo.ts\n?? .rv11490.md\n")],
+      "git grep": [fail()],
+      "git checkout": [ok(), ok()],
+      "git add": [ok()],
+      "git reset": [ok()],
+      "git commit": [ok()],
+    });
+    const result = rescueOrphanedWork(spawn, "2026-10-28T20:40:35.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescued");
+    const addIdx = calls.findIndex((c) => c[1] === "add");
+    const resetIdx = calls.findIndex((c) => c[1] === "reset");
+    const commitIdx = calls.findIndex((c) => c[1] === "commit");
+    assert.deepEqual(calls[resetIdx], ["git", "reset", "-q", "--", ".rv11490.md"]);
+    assert.ok(addIdx < resetIdx && resetIdx < commitIdx);
+  });
+
+  it("falha no reset do rascunho → rescue_failed, nunca commita com o rascunho no índice", () => {
+    const { spawn, calls } = makeFakeSpawn({
+      "git status": [ok(" M scripts/foo.ts\n?? .rv11490.md\n")],
+      "git grep": [fail()],
+      "git checkout": [ok()],
+      "git add": [ok()],
+      "git reset": [fail("index.lock")],
+    });
+    const result = rescueOrphanedWork(spawn, "2026-10-28T20:40:35.000Z", NOOP_LOCK);
+    assert.equal(result.outcome, "rescue_failed");
+    assert.equal(calls.some((c) => c[1] === "commit"), false);
+  });
+
+  it("o .gitignore real ignora os rascunhos na raiz (git check-ignore)", () => {
+    for (const p of [".rv11490.md", ".rev9801.md", ".review-i1.md", ".dr-body.md"]) {
+      const r = spawnSync("git", ["check-ignore", "-q", "--no-index", p], { cwd: repoRoot });
+      assert.equal(r.status, 0, `${p} não está ignorado`);
+    }
+    const nested = spawnSync("git", ["check-ignore", "-q", "--no-index", "docs/.rv1.md"], { cwd: repoRoot });
+    assert.equal(nested.status, 1, "padrão deve ser ancorado na raiz");
   });
 });

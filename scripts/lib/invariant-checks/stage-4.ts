@@ -1264,6 +1264,16 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
 }
 
 /**
+ * (#11553) Comando de replantio sugerido na mensagem do
+ * `intentional-error-present-in-final` — o `--edition-dir` sai do diretório
+ * real checado, então dá pra colar direto.
+ */
+export function replantCommand(editionDir: string): string {
+  const dir = editionDir.replace(/[\\/]+$/, "");
+  return `npx tsx scripts/replant-intentional-error.ts --edition-dir ${dir}/`;
+}
+
+/**
  * #7243: detecta o item PORTADOR do erro intencional sumindo do texto final —
  * incidente real: edição 260902, item de RADAR com "Anthropik" (erro declarado
  * em `_internal/intentional-error.json`) foi removido pelo editor numa poda
@@ -1388,14 +1398,18 @@ function checkIntentionalErrorPresentInFinal(
         rule: "intentional-error-present-in-final",
         message:
           `ERRO INTENCIONAL: o valor plantado "${wrongValue}" (declarado em ${jsonPath}) NÃO ` +
-          `aparece mais em 02-reviewed.md — o item que carregava o erro foi removido ou reescrito ` +
-          `após a declaração, provavelmente numa poda do gate (incidente real: edição 260902, ` +
-          `RADAR podado de 7 pra 3 itens levou junto o item com "Anthropik" — #7243). Publicar ` +
-          `assim faz o reveal da PRÓXIMA edição afirmar um erro que não existe mais — desinformação ` +
-          `publicada, concurso "ache o erro" quebrado em silêncio. Fix: (a) replantar o erro em ` +
-          `outro item do texto atual e atualizar \`wrong_value\`/\`correct_value\`/\`location\` ` +
-          `de acordo, OU (b) declarar a edição sem erro — gravar {"no_error": true} em ${jsonPath} ` +
-          `(sobrescreve os demais campos). Repetir esta checagem até exit 0 antes de aprovar o gate.`,
+          `aparece mais em 02-reviewed.md. Causa provável: o item que continha o erro foi removido ` +
+          `(ou reescrito) depois da declaração, numa poda do gate ou na retirada de um item ` +
+          `duplicado (incidentes reais: edição 260902, RADAR podado levou junto "Anthropik" — ` +
+          `#7243; edição 261029, item duplicado de LANÇAMENTOS levou junto "DeepMinde" — #11553). ` +
+          `Publicar assim faz o reveal da PRÓXIMA edição afirmar um erro que não existe mais — ` +
+          `desinformação publicada, concurso "ache o erro" quebrado em silêncio. Fix: (a) replantar ` +
+          `com \`${replantCommand(editionDir)}\` — atualiza de uma vez 02-reviewed.md, ` +
+          `${jsonPath}, data/intentional-errors.jsonl e a frase "Nessa edição, …", rechecando a ` +
+          `regra dos últimos 30 dias (\`--entity <marca>\` escolhe a grafia/item, \`--dry-run\` ` +
+          `só mostra o candidato), OU (b) declarar a edição sem erro — gravar {"no_error": true} ` +
+          `em ${jsonPath} (sobrescreve os demais campos). Repetir esta checagem até exit 0 antes ` +
+          `de aprovar o gate.`,
         source_issue: "#7243",
         severity: "error",
         file: path,
