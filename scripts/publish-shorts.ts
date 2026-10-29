@@ -955,6 +955,22 @@ export type { WorkerInstagramAccount };
  * rodada repetida no mesmo horário caem na mesma entry, nunca numa 2ª que
  * publicaria o mesmo Reels de novo.
  */
+/**
+ * Capa do Reel é opcional: erro no upload vira aviso e o Reel sai com o frame
+ * automático, nunca derruba a publicação (review #11545).
+ */
+export async function uploadCoverOrFallback(
+  upload: () => Promise<string>,
+  log: (line: string) => void,
+): Promise<string | undefined> {
+  try {
+    return await upload();
+  } catch (e) {
+    log(`[aviso] capa não enviada ao R2 (${(e as Error).message}); o Reel segue com o frame automático`);
+    return undefined;
+  }
+}
+
 export function shortsReelsIdempotencyKey(aammdd: string, account: WorkerInstagramAccount): string {
   return `shorts-instagram-${aammdd}-${account}`;
 }
@@ -2906,11 +2922,15 @@ async function main(): Promise<number> {
     });
     return uploaded;
   };
-  let uploadedCover: Promise<string> | undefined;
+  let uploadedCover: Promise<string | undefined> | undefined;
   const uploadCover = async (): Promise<string | undefined> => {
     if (!plan.cover.path || !r2.ready) return undefined;
-    uploadedCover ??= reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
-      `shorts/${aammdd}-cover.jpg`, readFileSync(plan.cover.path), "image/jpeg").then((r) => r.url);
+    const coverPath = plan.cover.path;
+    uploadedCover ??= uploadCoverOrFallback(
+      () => reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
+        `shorts/${aammdd}-cover.jpg`, readFileSync(coverPath), "image/jpeg").then((r) => r.url),
+      (line) => console.error(line),
+    );
     return uploadedCover;
   };
   for (const item of plan.items) {

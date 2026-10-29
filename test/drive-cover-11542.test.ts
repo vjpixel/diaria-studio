@@ -6,7 +6,7 @@ import { join } from "node:path";
 import sharp from "sharp";
 import { runFetchDriveVideo, type FetchDriveVideoDeps } from "../scripts/fetch-drive-video.ts";
 import { driveCoverCandidates, type DriveVideoFile } from "../scripts/lib/diaria/drive-video-source.ts";
-import { planShortsPublish, publishInstagramReel, enqueueInstagramReel, type GraphDeps } from "../scripts/publish-shorts.ts";
+import { planShortsPublish, publishInstagramReel, enqueueInstagramReel, uploadCoverOrFallback, type GraphDeps } from "../scripts/publish-shorts.ts";
 
 const folder = (id: string, name: string) => ({ id, name, mimeType: "application/vnd.google-apps.folder" });
 const still = (id: string, name = "Diaria comentada_Youtube_V1.00_00_03_08.Still001.png"): DriveVideoFile =>
@@ -19,16 +19,17 @@ test("Still e extensão obrigatórios; sequência Instagram antiga serve todos o
   assert.deepEqual(driveCoverCandidates(files, "vertical").map((f) => f.id), ["v"]);
 });
 
-for (const mode of ["download", "dry-run", "ambiguous", "bad-image"] as const) {
+for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "bad-image", "drive-down"] as const) {
   test(`fetch capa ${mode}: escopo da edição, vídeo local e precedência Drive`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "cover-11542-"));
     try {
-      writeFileSync(join(dir, "diaria-comentada-261029.mp4"), "video local");
+      if (mode !== "ambiguous-sem-video") writeFileSync(join(dir, "diaria-comentada-261029.mp4"), "video local");
       const dest = join(dir, "04-youtube-thumb.jpg");
       writeFileSync(dest, "capa gerada");
       const bytes = mode === "bad-image" ? Buffer.from("not image") : await sharp({ create: { width: 16, height: 9, channels: 3, background: "red" } }).png().toBuffer();
       const mediaCalls: string[] = [];
       const deps: FetchDriveVideoDeps = { driveFetch: async (url) => {
+        if (mode === "drive-down") throw new Error("ENOTFOUND www.googleapis.com");
         const u = new URL(url);
         if (u.searchParams.has("alt")) { mediaCalls.push(url); return new Response(new Uint8Array(bytes), { headers: { "content-type": "image/png" } }); }
         if (u.pathname.endsWith("/root")) return Response.json(folder("root", "YouTube"));
@@ -36,11 +37,17 @@ for (const mode of ["download", "dry-run", "ambiguous", "bad-image"] as const) {
         if (q.startsWith("'root'")) return Response.json({ files: [folder("edition", "261029"), folder("other", "261028")] });
         if (q.startsWith("'edition'")) return Response.json({ files: [folder("final", "Final"), folder("edited", "Editados")] });
         if (q.startsWith("'final'")) return Response.json({ files: [still("one")] });
-        if (q.startsWith("'edited'")) return Response.json({ files: mode === "ambiguous" ? [still("two")] : [] });
+        if (q.startsWith("'edited'")) return Response.json({ files: mode.startsWith("ambiguous") ? [still("two")] : [] });
         throw new Error(`unexpected folder: ${url}`);
       } };
       const result = await runFetchDriveVideo(deps, { aammdd: "261029", orientation: "horizontal", folderId: "root", editionDir: dir, now: new Date(), windowHours: 36, force: false, dryRun: mode === "dry-run" }, () => {});
-      if (mode === "ambiguous") {
+      if (mode === "ambiguous" || mode === "drive-down") {
+        // Review #11545: com o vídeo já em disco, capa ambígua ou Drive fora do ar não barram o `exists`.
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.output.action, "exists");
+        assert.equal(mediaCalls.length, 0);
+        assert.equal(readFileSync(dest, "utf8"), "capa gerada");
+      } else if (mode === "ambiguous-sem-video") {
         assert.equal(result.exitCode, 3);
         assert.equal(result.output.action, "needs-editor");
         if (result.output.action === "needs-editor" && result.output.selection === "ambiguous-cover") {
@@ -48,7 +55,9 @@ for (const mode of ["download", "dry-run", "ambiguous", "bad-image"] as const) {
         } else assert.fail("expected ambiguous-cover");
         assert.equal(mediaCalls.length, 0);
       } else if (mode === "bad-image") {
-        assert.equal(result.exitCode, 1);
+        // Review #11545: capa é opcional — falha nela cai na capa local, o vídeo segue.
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.output.cover?.source, "local");
         assert.equal(readFileSync(dest, "utf8"), "capa gerada");
         assert.equal(readdirSync(dir).length, 2, "não deixa temporários");
       } else {
@@ -94,4 +103,11 @@ test("plano identifica capa, destinos suportados e fallback sem credenciais R2",
   assert.equal(ready.cover.destinations.instagram, "cover_url");
   assert.equal(ready.cover.destinations.youtube_shorts, "unsupported");
   assert.match(planShortsPublish(input).cover.destinations.instagram, /R2 credentials missing/);
+});
+
+test("review #11545: falha no upload da capa vira aviso e o Reel segue sem cover_url", async () => {
+  const lines: string[] = [];
+  assert.equal(await uploadCoverOrFallback(() => Promise.reject(new Error("R2 503")), (l) => lines.push(l)), undefined);
+  assert.match(lines.join("\n"), /R2 503.*frame automático/);
+  assert.equal(await uploadCoverOrFallback(async () => "https://r2/x.jpg", () => {}), "https://r2/x.jpg");
 });
