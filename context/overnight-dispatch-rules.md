@@ -150,7 +150,10 @@ linha "self-review: N findings"**.
 Cada finding abre com confiança e severidade, ex.: `Confiança média, P3: ...`
 (#11461). É essa tag que `resolve-review-threads.ts --low-severity-only` lê
 para resolver as P2/P3 sem confiança alta antes do trem; finding sem tag fica
-retido e segura o merge.
+retido e segura o merge. Desde o #11575, P2/P3 só sai resolvida com a
+confiança `média`/`baixa` declarada (confiança ausente ou ilegível = retida), e
+`alta`/`high` conta em qualquer redação colada a "confiança"/"confidence" ou à
+tag P0-P3 (`**Confiança:** alta`, `Alta confiança`, `[P2 | alta]`).
 
 Comentário inline sai por `npx tsx scripts/gh-pr-review-api.ts comment --pr N
 --path P --line L --body-file F` (resposta a um comentário, no fixer: `reply

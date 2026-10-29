@@ -101,20 +101,53 @@ export interface ReviewThread {
  * implementador marca cada finding com confiança (`alta`/`média`/`baixa`) e
  * severidade (`P0..P3`), ex.: "Confiança média, P3: ...".
  *
- * - `high`: P0/P1, ou confiança alta — o merge espera o editor/fixer (CLAUDE.md,
- *   #5251: finding de alta confiança pendente segura o merge);
- * - `low`: P2/P3 sem nenhum sinal de `high`;
- * - `untagged`: nenhuma severidade reconhecível — fail-closed, tratado como
- *   `high` pelo modo `--low-severity-only` (nunca resolvido às cegas).
+ * - `high`: P0/P1, ou confiança alta em qualquer redação reconhecível — o merge
+ *   espera o editor/fixer (CLAUDE.md, #5251: finding de alta confiança pendente
+ *   segura o merge);
+ * - `low`: P2/P3 com confiança média/baixa declarada e nenhum sinal de `high`;
+ * - `untagged`: sem severidade reconhecível, OU P2/P3 sem confiança média/baixa
+ *   reconhecível (#11575) — fail-closed, tratado como `high` pelo modo
+ *   `--low-severity-only` (nunca resolvido às cegas).
+ *
+ * #11575: a 1ª versão só via "alta" na forma literal `confiança[:] alta`, e
+ * `**Confiança:** alta, P3`, ``Confiança `alta`, P2``, `Alta confiança, P2`,
+ * `[P2 | alta]` e `P3 (high confidence)` viravam `low` e eram resolvidas. Agora
+ * a marcação markdown (`*`, crase, `_`) sai antes da leitura, a confiança é
+ * lida nos dois sentidos ao redor de "confiança"/"confidence" e colada à tag
+ * P0-P3, e `low` exige a confiança não-alta declarada: o que não se lê fica
+ * retido.
  */
 export type FindingSeverity = "high" | "low" | "untagged";
 
+/** Fronteira de token unicode (o `\b` do JS não trata "é"/"ç" como letra). */
+const NB = "(?<![\\p{L}\\p{N}])";
+const NA = "(?![\\p{L}\\p{N}])";
+/** Separador curto entre o rótulo e o valor: pontuação/espaço, sem quebra de linha. */
+const SEP = "[^\\p{L}\\p{N}\\n]{0,6}";
+const CONF_LABEL = `${NB}(?:confian[cç]a|confianca|confidence)${NA}`;
+const SEV_TAG = `${NB}P[0-3]${NA}`;
+const HIGH_VALUE = `${NB}(?:alta|alto|high)${NA}`;
+const LOWER_VALUE = `${NB}(?:m[eé]dia|medio|médio|baixa|baixo|medium|low)${NA}`;
+
+function confidenceNear(text: string, value: string): boolean {
+  const patterns = [
+    `${CONF_LABEL}${SEP}(?:(?:é|e|is|=)${SEP})?${value}`, // "Confiança: alta", "confiança é alta"
+    `${value}${SEP}${CONF_LABEL}`, // "Alta confiança", "high confidence"
+    `${SEV_TAG}${SEP}${value}`, // "[P2 | alta]", "P3 · alta"
+    `${value}${SEP}${SEV_TAG}`, // "[alta | P2]"
+  ];
+  return patterns.some((p) => new RegExp(p, "iu").test(text));
+}
+
 export function classifyFindingSeverity(body: string | undefined): FindingSeverity {
   if (typeof body !== "string") return "untagged";
-  if (/(^|[^\w])P[01]([^\w]|$)/.test(body)) return "high";
-  if (/confian[cç]a\s*:?\s*alta/i.test(body)) return "high";
-  if (/(^|[^\w])P[23]([^\w]|$)/.test(body)) return "low";
-  return "untagged";
+  // Markdown fora: `**Confiança:** alta`, ``Confiança `alta` `` e `_alta_` viram texto plano.
+  const text = body.replace(/[*`_~]/g, "");
+  if (new RegExp(`${NB}P[01]${NA}`, "u").test(text)) return "high";
+  if (confidenceNear(text, HIGH_VALUE)) return "high";
+  if (!new RegExp(`${NB}P[23]${NA}`, "u").test(text)) return "untagged";
+  // P2/P3: só é `low` com a confiança não-alta declarada; sem ela, retido.
+  return confidenceNear(text, LOWER_VALUE) ? "low" : "untagged";
 }
 
 export type ThreadsParse =
