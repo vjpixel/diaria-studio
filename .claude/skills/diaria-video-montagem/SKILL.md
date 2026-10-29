@@ -38,6 +38,8 @@ npx tsx scripts/video-montagem.ts transcribe {AAMMDD} [--source PATH] [--force]
 
 Acha o bruto (o maior `.mp4`/`.mov` solto na pasta da edição, fora de `Final/`, sem "final" nem "previa" no nome; com mais de um candidato sai `[aviso]` listando todos, e `--source PATH` escolhe outro), lê fps/resolução/duração (`source.json`, a fonte única do bruto), extrai o áudio em 16 kHz mono, mede o loudness (`loudness.json`), detecta os silêncios (`silencedetect`, 0,45 s: `silences.json`) e transcreve com tempo por palavra (`transcript.json`, alguns minutos). O limiar do silêncio é relativo ao loudness do bruto (#11351): o loudness integrado menos 25 dB, entre -45 dB (o piso, que serviu ao bruto baixo da 261027) e -25 dB; o bruto quente da 261028 (-9,9 LUFS) dá -35 dB, onde o -45 fixo achava 1 silêncio em 21 min. `--silence-db -35` sobrepõe; o limiar usado fica em `silences.meta.json` e mudar o limiar refaz só os silêncios. Transcrição sem nenhuma palavra é erro. Bruto abaixo de -24 LUFS sai `[aviso]` (a 261027 chegou a -31, contra -21 a -23 nos finais anteriores), e também bruto acima de -14 LUFS ou com true peak ≥ 0 dBTP (provável clipping, a 261028): relatar no fim, a prévia já sai normalizada.
 
+**Bruto só de áudio (#11552, edição 261029).** Sem stream de vídeo no bruto (ou, sem vídeo solto na pasta, um `.m4a`/`.mp3`/`.wav`, com `[premissa]`), o `transcribe` grava `source.json` com `audioOnly: true` e segue no **modo áudio**: transcrição, decupagem (Gate 1), `retranscribe` e roteiro (Gate 2) funcionam igual. `frame`, `build`, `srt`, `preview` e `review` saem exit 3 com `{"audio_only": true, "stopped": true, "reason": …}` no stdout: parar depois do Gate 2 e dizer ao editor o motivo (sem imagem não há XML nem prévia; a montagem no Premiere é à mão a partir do `roteiro.md`). Fala de outra pessoa no áudio (entrevistador) ainda sai na decupagem como "cortar", à mão: a diarização automática fica para outra issue.
+
 ## Passo 2 — Decupagem (Gate 1)
 
 ```bash
@@ -141,6 +143,16 @@ Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a fo
 3. Edição fina; logo no início se quiser (a 261023 tinha; não entra na montagem, ver Premissas).
 4. Exportar para **`{AAMMDD}/Final/`** com o destino no nome: `Diaria comentada_Youtube_V{n}.mp4`, `Diaria comentada_Instagram_V{n}.mp4`, `Diaria comentada_Outras redes_V{n}.mp4`. O Premiere sugere o nome da sequência, que já segue esse padrão (`videoTargetOf` em `scripts/lib/diaria/drive-video-source.ts`; o `blocks.json` recusa sequência cujo nome indique outro destino).
 5. Rodar `/diaria-publica-video {AAMMDD}` (sugerir, nunca rodar daqui).
+
+## Revisão do export final (#11557)
+
+Quando o editor pedir "revise o vídeo" sobre um export do Premiere (na 261029 foram 4 pedidos, um por versão), rodar uma vez por arquivo:
+
+```bash
+npx tsx scripts/video-montagem.ts review-final {AAMMDD} --file "{caminho do export}"
+```
+
+O destino sai do nome (`_Youtube_` = 16:9; `_Instagram_`/`_Outras redes_` = 9:16; `--seq` para outro). Confere formato (proporção, faixa preta pelo `cropdetect`, fps contra o bruto, vertical acima de 3:00), áudio (loudness contra -14 LUFS ±1, true peak acima de -1 dBTP, estalos curtos e isolados, fragmentos de menos de 0,2 s entre silêncios) e, com o `plan.json` em dia, transcreve o export e compara com o roteiro da versão (palavra faltando, hesitação ou falso começo, tomada duplicada), com o tempo no export e o aproximado no bruto (`--no-text` pula a transcrição). Devolve a tabela de correções (#, tempo no export, tempo no bruto, o que está, correção) no stdout e em `review-final-{destino}.md`. Mostrar a tabela ao editor; legenda queimada (OCR) e redundância de conteúdo ainda são leitura à mão.
 
 ## Premissas (registradas no PR da #11208)
 

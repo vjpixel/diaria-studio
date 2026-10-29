@@ -843,7 +843,17 @@ export interface SourceInfo {
   height: number;
   /** Bruto espelhado (a caneca aparece invertida). O `transcribe` grava true (premissa #11208); `blocks.json` sobrepõe. */
   mirrored: boolean;
+  /**
+   * Bruto só de áudio (#11552, edição 261029): sem stream de vídeo, `width` e
+   * `height` saem 0 e `fps` é o nominal `AUDIO_ONLY_FPS` (só a grade dos
+   * tempos do roteiro). Transcrição, decupagem e roteiro rodam; build, srt,
+   * prévia, review e frame param antes, dizendo o motivo. Ausente = vídeo.
+   */
+  audioOnly?: true;
 }
+
+/** fps nominal do modo áudio (#11552): o roteiro conta tempo em frames; 30 é o dos brutos de vídeo. */
+export const AUDIO_ONLY_FPS = 30;
 
 /** Centro do rosto, em fração do quadro JÁ desespelhado: x do centro, y da linha dos olhos. */
 export interface Framing {
@@ -1698,15 +1708,21 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
  * O bruto na pasta da edição: o maior vídeo solto nela (fora de `Final/`), que
  * não seja um final (`final` no nome) nem uma prévia nossa. `candidates` traz
  * todos os que serviriam: com mais de um, o CLI avisa listando-os (o editor
- * pode ter gravado em 2 arquivos; `--source` escolhe outro).
+ * pode ter gravado em 2 arquivos; `--source` escolhe outro). Sem nenhum vídeo,
+ * o maior áudio solto (`audioOnly: true`, #11552).
  */
-export function pickRawSource(files: Array<{ name: string; size: number }>): { pick: { name: string; size: number }; candidates: Array<{ name: string; size: number }> } | null {
-  const vids = files.filter(
-    (f) => /\.(mp4|mov)$/i.test(f.name) && !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name),
-  );
-  if (vids.length === 0) return null;
-  return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };
+export function pickRawSource(files: Array<{ name: string; size: number }>): { pick: { name: string; size: number }; candidates: Array<{ name: string; size: number }>; audioOnly?: true } | null {
+  const usable = (f: { name: string }) => !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name);
+  const vids = files.filter((f) => /\.(mp4|mov)$/i.test(f.name) && usable(f));
+  if (vids.length > 0) return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };
+  // #11552: sem vídeo solto, um arquivo de áudio (os comentários gravados à parte).
+  const audios = files.filter((f) => AUDIO_EXT.test(f.name) && usable(f));
+  if (audios.length === 0) return null;
+  return { pick: audios.reduce((a, b) => (b.size > a.size ? b : a)), candidates: audios, audioOnly: true };
 }
+
+/** Extensões de áudio aceitas como bruto quando não há vídeo solto (#11552). */
+const AUDIO_EXT = /\.(m4a|mp3|wav|aac|ogg|opus|flac)$/i;
 
 /** fps a partir do `r_frame_rate` do ffprobe ("30/1", "30000/1001"). */
 export function parseFrameRate(r: string): number {
@@ -1723,12 +1739,18 @@ export function parseFrameRate(r: string): number {
  */
 export function parseProbe(json: string, path: string): SourceInfo {
   const j = JSON.parse(json) as {
-    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string }>;
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string; disposition?: { attached_pic?: number } }>;
     format?: { duration?: string };
   };
-  const v = j.streams?.find((s) => s.codec_type === "video");
-  if (!v || !v.width || !v.height || !v.r_frame_rate) throw new Error("ffprobe sem stream de vídeo com largura/altura/fps");
+  // Capa embutida num .m4a/.mp3 vem como stream de vídeo `attached_pic`: não é vídeo.
+  const v = j.streams?.find((s) => s.codec_type === "video" && !s.disposition?.attached_pic);
   const durationS = Number(j.format?.duration);
+  if (!v && j.streams?.some((s) => s.codec_type === "audio")) {
+    // #11552: bruto só de áudio. Segue no modo áudio (transcrição, decupagem, roteiro).
+    if (!Number.isFinite(durationS) || durationS <= 0) throw new Error("ffprobe sem duração");
+    return { path, fps: AUDIO_ONLY_FPS, durationS: round3(durationS), width: 0, height: 0, mirrored: false, audioOnly: true };
+  }
+  if (!v || !v.width || !v.height || !v.r_frame_rate) throw new Error("ffprobe sem stream de vídeo com largura/altura/fps");
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error("ffprobe sem duração");
   const fps = parseFrameRate(v.r_frame_rate);
   if (!Number.isInteger(fps)) {
