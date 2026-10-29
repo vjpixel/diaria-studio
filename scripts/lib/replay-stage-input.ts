@@ -8,7 +8,8 @@
  * Escopo desta lib: preparar um FIXTURE de input congelado — copia os
  * `_internal/*.json` (+ companions) relevantes de uma EDIÇÃO DE REFERÊNCIA
  * real já publicada para um diretório de EDIÇÃO DE TESTE isolado, sob
- * `data/editions/replay-{label}/`. O prefixo `replay-` é estrutural (sempre
+ * `data/editions/replay-{label}/` por padrão, ou `outputRootDir` quando fornecido
+ * (o eval de PR usa uma raiz temporária, #11632). O prefixo `replay-` é estrutural (sempre
  * prepended por `buildReplayDirName`) — nenhum nome de diretório de teste
  * bate nos regexes `^\d{6}$` (flat) / `^\d{4}$` (nested top-level) que
  * `enumerateEditionDirs`/`findEditionsInProgress` (`scripts/lib/find-current-edition.ts`)
@@ -227,6 +228,8 @@ export interface CreateReplayFixtureOptions {
   /** Diretório raiz das edições (ex: resolve(cwd(), "data/editions")). Parametrizado para testabilidade. */
   editionsRootDir: string;
   referenceAammdd: string;
+  /** Raiz isolada de escrita; referências continuam sendo lidas de editionsRootDir. */
+  outputRootDir?: string;
   stage?: string;
   filesOverrideCsv?: string;
   label?: string;
@@ -257,7 +260,7 @@ export function createReplayFixture(opts: CreateReplayFixtureOptions): ReplayFix
 
   const files = planFileList(opts.stage, opts.filesOverrideCsv);
   const testDirName = buildReplayDirName(opts.label, opts.nowIso);
-  const testDir = join(opts.editionsRootDir, testDirName);
+  const testDir = join(opts.outputRootDir ?? opts.editionsRootDir, testDirName);
 
   if (existsSync(testDir)) {
     if (!opts.force) {
