@@ -94,6 +94,12 @@ describe("#2454 deriveEditionUrl — URL publica deterministica do slug", () => 
 // ── (b) Testes unitarios: findUnresolvedPlaceholders ─────────────────────────
 
 describe("#2454 findUnresolvedPlaceholders — guard anti-placeholder", () => {
+  it("#11563: ignora {quebra} do Use Melhor sem ocultar placeholders desconhecidos", () => {
+    const text = "## um\nPasso 1\n{quebra}\nPasso 2\n{quebra}\nPasso 3\n{quebra}\nFim";
+    assert.deepEqual(findUnresolvedPlaceholders(text), []);
+    assert.deepEqual(findUnresolvedPlaceholders(`${text}\n{campo_desconhecido}`), ["{campo_desconhecido}"]);
+  });
+
   it("texto sem placeholders → array vazio (OK para dispatch)", () => {
     const text = "Edicao completa com mais 12 destaques em https://diar.ia.br/p/meu-slug";
     assert.deepEqual(findUnresolvedPlaceholders(text), []);
