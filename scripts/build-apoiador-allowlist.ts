@@ -4,7 +4,7 @@
  *
  * Constrói a allowlist de e-mails com direito à **Retrospectiva do Mês** — o
  * recap mensal servido por `workers/artigo-mensal` (`artigo.diar.ia.br`).
- * Limiar: Mantenedor R$25+/mês do mês vigente (ver `RETROSPECTIVA_DO_MES_NIVEIS`
+ * Limiar: Conselho (id interno `mantenedor`) R$25+/mês do mês vigente (ver `RETROSPECTIVA_DO_MES_NIVEIS`
  * abaixo; era R$10+ até o #7658, que alinhou o gate à recompensa anunciada).
  *
  * NÃO reimplementa a checagem de apoio: reusa a MESMA maquinaria já testada
@@ -109,21 +109,22 @@ export const APOIADOR_ALLOWLIST_KV_KEY = "emails";
  * #7658).
  *
  * **Corrigido de R$10+ para R$25+ em 08/09/2026 (#7658).** A página pública
- * da campanha vende a Retrospectiva do Mês como recompensa de **Mantenedor
- * (R$25/mês)** — transcrito da apoia.se: "🚀 Mantenedor — R$ 25/mês […]
+ * da campanha vende a Retrospectiva do Mês como recompensa de **Conselho
+ * (R$25/mês, id interno `mantenedor`; o nível se chamava Mantenedor até o
+ * #11203)** — transcrito da apoia.se na época: "🚀 Mantenedor — R$ 25/mês […]
  * Retrospectiva do Mês - Recap conectando os principais acontecimentos do último
- * mês. Enviado na primeira semana do mês." O que o Apoiador (R$10) compra é
+ * mês. Enviado na primeira semana do mês." O que o Clube (R$10) compra é
  * outra coisa: o **Artigo Especial**, servido por `especial.diar.ia.br`
  * (`workers/artigos`, limiar próprio em `apoio-gate-config.ts`, que segue
  * correto em R$10+).
  *
  * O gate daqui nasceu em R$10+ (#3940, "paywall de apoiador R$10+") e nunca
  * acompanhou a recompensa anunciada — quem apoiava com R$10 lia na web um
- * conteúdo vendido como exclusivo de Mantenedor, esvaziando a diferença entre
+ * conteúdo vendido como exclusivo do Conselho, esvaziando a diferença entre
  * os dois níveis. Não era acesso negado indevidamente; era o contrário.
  *
  * O canal de E-MAIL do mesmo recap (`/diaria-mensal-apoiadores`) já mirava
- * Mantenedor/Patrono desde sempre — esta constante é o que faz web e e-mail
+ * Conselho/Núcleo desde sempre — esta constante é o que faz web e e-mail
  * finalmente concordarem.
  *
  * Mudar o limiar é mudar ESTA lista, e nada mais.
@@ -132,7 +133,7 @@ export const RETROSPECTIVA_DO_MES_NIVEIS: readonly RewardGroup[] = ["mantenedor"
 
 /**
  * Pure: filtra contatos com status "apoiando" no mês corrente E nível dentro
- * de `RETROSPECTIVA_DO_MES_NIVEIS` (Mantenedor/Patrono, R$25+). Cada contato pode ter
+ * de `RETROSPECTIVA_DO_MES_NIVEIS` (Conselho/Núcleo, R$25+). Cada contato pode ter
  * múltiplos e-mails cadastrados (#3500) — TODOS entram na allowlist, não só
  * o e-mail que casou com a apoia.se, pra que o apoiador consiga logar com
  * qualquer um dos e-mails que ele mesmo cadastrou.

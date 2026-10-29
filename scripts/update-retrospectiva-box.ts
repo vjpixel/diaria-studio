@@ -26,7 +26,7 @@
  *   - a Retrospectiva do Mês por e-mail, com a edição completa na web
  *   - o Artigo Especial mensal
  *   - voto no tema do próximo Artigo Especial
- *   - nome na página "Quem torna a Diar.ia possível" (opcional)
+ *   - nome na página "Apoiadores(as)" (opcional)
  *
  *   [Ler a Retrospectiva](https://retrospectiva.diar.ia.br/{AAMM})
  *
@@ -118,7 +118,7 @@ export const TIER_BLOCK = [
   "- a Retrospectiva do Mês por e-mail, com a edição completa na web",
   "- o Artigo Especial mensal",
   "- voto no tema do próximo Artigo Especial",
-  '- nome na página "Quem torna a Diar.ia possível" (opcional)',
+  '- nome na página "Apoiadores(as)" (opcional)',
 ].join("\n");
 
 /** Frase fixa que fecha o parágrafo dos temas (texto aprovado, #9845). */

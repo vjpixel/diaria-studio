@@ -190,6 +190,7 @@ import {
   type CheckBackerOptions,
 } from "../lib/apoia-se.ts";
 import { previousMonthKey } from "../lib/apoio-month-key.ts";
+import type { ApoioNivel } from "../lib/shared/apoio-nivel-types.ts";
 import {
   REWARD_TIER_AMIGO_MIN,
   REWARD_TIER_APOIADOR_MIN,
@@ -506,7 +507,12 @@ export function computeCampaignSummary(entries: ContactWithStatus[]): CampaignSu
 
 // ── visão por grupo / nível de recompensa (#3844 parte 2) ──────────────
 
-export type RewardGroup = "amigo" | "apoiador" | "mantenedor" | "patrono";
+/**
+ * Id interno do nível (#11205: alias de `ApoioNivel`, a união única em
+ * `lib/shared/apoio-nivel-types.ts`). O nome público de cada nível sai de
+ * `NIVEL_LABEL` (`lib/shared/apoio-nivel-label.ts`, #11203).
+ */
+export type RewardGroup = ApoioNivel;
 
 /**
  * Limiares valor (R$) → nível de recompensa — decisão do editor confirmada

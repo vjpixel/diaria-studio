@@ -90,7 +90,7 @@ Quem apoia a partir de R$25/mês recebe:
 - a Retrospectiva do Mês por e-mail, com a edição completa na web
 - o Artigo Especial mensal
 - voto no tema do próximo Artigo Especial
-- nome na página "Quem torna a Diar.ia possível" (opcional)
+- nome na página "Apoiadores(as)" (opcional)
 
 [Ler a Retrospectiva](https://retrospectiva.diar.ia.br/2609)
 `;
@@ -125,6 +125,9 @@ describe("snippet retrospectiva-apoiadores.md", () => {
     assert.ok(s.includes(TIER_BLOCK));
     assert.ok(!/ é: /.test(s), "o título da retrospectiva não entra no box");
     assert.ok(!s.includes("Mantenedor)"), 'sem "(plano Mantenedor)"');
+    // #11205: a página é a aba "Apoiadores(as)" do apoia.se; a marca nunca é "Diar.ia".
+    assert.ok(TIER_BLOCK.includes('nome na página "Apoiadores(as)" (opcional)'));
+    assert.ok(!/Diar\.ia\b|Quem torna/.test(s), 'sem o nome antigo da página nem a grafia "Diar.ia"');
   });
 
   it("temas: trim e ponto final removidos antes de montar o parágrafo", () => {
