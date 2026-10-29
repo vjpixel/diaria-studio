@@ -106,7 +106,8 @@ describe("item com targets entra só na sequência indicada (#11377)", () => {
 
   it("o respiro do fecho vai no último item que ENTRA na versão", () => {
     const lastIg = ig.clips[ig.clips.length - 1];
-    assert.equal(lastIg.block, "fecho");
+    // Comentário e fecho são contíguos no bruto: um clipe só desde o #11503, com o fecho no último pedaço.
+    assert.equal(lastIg.parts?.at(-1)?.block ?? lastIg.block, "fecho");
     // Sem o item 31–33 na vertical, o respiro sai do fim da palavra 30,9 s, preso antes da palavra seguinte do bruto.
     assert.ok(lastIg.srcOut > 30.9 && lastIg.srcOut <= 31.1, `srcOut ${lastIg.srcOut}`);
     assert.equal(inRange(yt, 31.2, 33), true);

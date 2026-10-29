@@ -25,8 +25,14 @@
  *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
- *   build AAMMDD [--allow-missing]
+ *   build AAMMDD [--allow-missing] [--no-audio-refine]
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
+ *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
+ *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
+ *       energia a ±0,4 s, som fora do roteiro na borda (bordas retranscritas sem VAD, cache em
+ *       `edge-retranscribe.json`), corte ainda em plena fala vira [aviso]; cada ajuste sai no
+ *       relato e em `plan.json` (`cutAdjustments`, `cutRefine`). Sem `audio.wav` nesta máquina,
+ *       ou com --no-audio-refine, os cortes ficam como os tempos do Whisper, com [aviso].
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
  *       corte só na vertical é um item com "skip"/"targets" no blocks.json.
@@ -81,6 +87,7 @@ import {
   SILENCE_DETECT,
   alignPunctuationToScript,
   applyVocabularyToWords,
+  assembleClips,
   buildSequencePlan,
   buildXmeml,
   clockTime,
@@ -91,6 +98,7 @@ import {
   effectiveSource,
   framingFor,
   loudnessWarning,
+  makeMatcher,
   mapWordsToSequence,
   offsetTranscript,
   parseBlocksFile,
@@ -109,8 +117,11 @@ import {
   transcriptWords,
   validateVocabRules,
   type BlocksFile,
+  type CutAdjustment,
   type Framing,
   type Interval,
+  type PlannedClip,
+  type RawClip,
   type Segment,
   type SequencePlan,
   type SequenceTarget,
@@ -143,12 +154,22 @@ import {
   detectClicks,
   detectFragments,
   exportTarget,
+  exportTimeToRaw,
   finalReviewTable,
   parseCropdetect,
   parsePeakWindows,
   type FinalReviewFinding,
 } from "./lib/diaria/video-final-review.ts";
 import { VIDEO_TARGETS, type VideoTarget } from "./lib/diaria/drive-video-source.ts";
+import {
+  edgeWindowsFor,
+  energyEnvelope,
+  parseWavPcm16,
+  snapClipEdges,
+  speechCutWarnings,
+  trimEdgeExtras,
+  type EdgeWindow,
+} from "./lib/diaria/video-cut-refine.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
@@ -319,6 +340,8 @@ interface PlanFile {
   framing: Framing;
   framingAssumed: boolean;
   plans: SequencePlan[];
+  /** O refino dos cortes pelo áudio (#11500); ausente em plano anterior a ele. */
+  cutRefine?: CutRefineInfo;
 }
 
 /** O plano do último build, recusado se o blocks.json ou o source.json mudaram depois dele. */
@@ -535,8 +558,119 @@ export function previewFileName(edition: string, target: SequenceTarget): string
   return `${edition} - previa ${target}.mp4`;
 }
 
-function cmdBuild(ctx: Ctx, allowMissing: boolean): number {
-  const { file, source, plans: ps, hash } = plans(ctx);
+/** O que o refino por áudio fez neste build (#11500), gravado no `plan.json`. */
+export interface CutRefineInfo {
+  applied: boolean;
+  /** Por que não rodou (ou rodou só a passada A). */
+  reason?: string;
+  thresholdDb?: number;
+  /** Bordas retranscritas (janelas únicas, as verticais dividem as mesmas). */
+  edgeWindows?: number;
+  edgesRetranscribed?: boolean;
+}
+
+/** Limiar do silêncio do bruto (o do último silencedetect, #11351); sem meta, o padrão. */
+function silenceThresholdDb(ctx: Ctx): number {
+  const p = f(ctx, "silences.meta.json");
+  const meta = existsSync(p) ? readJson<{ noiseDb?: number }>(p, "silences.meta.json") : null;
+  return typeof meta?.noiseDb === "number" ? meta.noiseDb : SILENCE_DETECT.noiseDb;
+}
+
+/**
+ * Retranscreve as janelas das bordas (#11500) numa chamada só do Python (o
+ * modelo carrega uma vez), sem VAD e sem `condition_on_previous_text`. Cache
+ * por janela em `edge-retranscribe.json`, válido para o MESMO `audio.wav`
+ * (tamanho + mtime): build repetido no loop da autorrevisão não retranscreve.
+ */
+function edgeTranscripts(ctx: Ctx, audio: string, windows: EdgeWindow[]): Map<string, Word[]> {
+  const cachePath = f(ctx, "edge-retranscribe.json");
+  const st = statSync(audio);
+  const id = { size: st.size, mtimeMs: st.mtimeMs };
+  type Cache = { audio: typeof id; windows: Record<string, Word[]> };
+  let cache: Cache = { audio: id, windows: {} };
+  if (existsSync(cachePath) && !ctx.force) {
+    const c = readJson<Cache>(cachePath, "edge-retranscribe.json");
+    if (c.audio?.size === id.size && c.audio?.mtimeMs === id.mtimeMs) cache = c;
+  }
+  const missing = windows.filter((w) => !(w.key in cache.windows));
+  if (missing.length) {
+    mkdirSync(ctx.workDir, { recursive: true });
+    const winFile = join(ctx.workDir, "edge-windows.json");
+    const out = join(ctx.workDir, "edge-retranscribe.raw.json");
+    writeFileSync(winFile, JSON.stringify(missing));
+    console.error(`[video-montagem] refino dos cortes: retranscrevendo ${missing.length} borda(s) de clipe (sem VAD)…`);
+    const vocab = loadVocab();
+    run(ctx.python, ["-P", PY_HELPER, audio, out, "--windows", winFile, "--no-condition", "--initial-prompt", vocab.whisper_prompt ?? ""], {
+      env: { ...process.env, HF_HUB_OFFLINE: "1" },
+      inheritStderr: true,
+    });
+    const raw = readJson<{ windows: Array<{ key: string; segments: Segment[] }> }>(out, "retranscrição das bordas");
+    for (const w of raw.windows) cache.windows[w.key] = transcriptWords({ segments: w.segments });
+    writeJson(cachePath, cache);
+  }
+  return new Map(windows.map((w) => [w.key, cache.windows[w.key] ?? []]));
+}
+
+/**
+ * Refino dos cortes pelo áudio do bruto (#11500), em todas as sequências:
+ * vale de energia (A), som fora do roteiro na borda pela retranscrição (B),
+ * emenda dos contíguos e zoom alternando só nos cortes (`assembleClips`).
+ * Sem `audio.wav` nesta máquina, ou com `--no-audio-refine`, sai como está e
+ * avisa; falha da retranscrição deixa só a passada A, também com aviso.
+ */
+function refineCuts(ctx: Ctx, ps: SequencePlan[], source: SourceInfo, enabled: boolean): { plans: SequencePlan[]; info: CutRefineInfo; warnings: string[] } {
+  if (!enabled) return { plans: ps, info: { applied: false, reason: "--no-audio-refine" }, warnings: ["refino dos cortes por áudio desligado (--no-audio-refine): os cortes seguem os tempos do Whisper"] };
+  const audio = join(ctx.workDir, "audio.wav");
+  if (!existsSync(audio)) {
+    const reason = `áudio do bruto ausente (${audio})`;
+    return { plans: ps, info: { applied: false, reason }, warnings: [`${reason}: cortes NÃO refinados pelo áudio; rode transcribe nesta máquina e build de novo`] };
+  }
+  const { sampleRate, samples } = parseWavPcm16(readFileSync(audio));
+  const env = energyEnvelope(samples, sampleRate);
+  const thresholdDb = silenceThresholdDb(ctx);
+  const words = nonEmptyWords(f(ctx, "transcript.json"), "transcript.json");
+  const match = makeMatcher(loadVocab().aliases);
+  const warnings: string[] = [];
+  // Passada A em todas as sequências.
+  const stageA = ps.map((p) => snapClipEdges(p.clips.map(rawOf), env, words, { thresholdDb, durationS: source.durationS }));
+  const windows = new Map<string, EdgeWindow>();
+  for (const a of stageA) for (const c of a.clips) for (const w of edgeWindowsFor(c, source.durationS)) windows.set(w.key, w);
+  let heard: Map<string, Word[]> | null = null;
+  try {
+    heard = edgeTranscripts(ctx, audio, [...windows.values()]);
+  } catch (e) {
+    warnings.push(`retranscrição das bordas falhou (${(e as Error).message}): só o vale de energia foi aplicado; som fora do roteiro na borda não conferido`);
+  }
+  const out = ps.map((p, i) => {
+    let clips = stageA[i].clips;
+    const adjustments: CutAdjustment[] = [...(p.cutAdjustments ?? []), ...stageA[i].adjustments];
+    if (heard) {
+      const b = trimEdgeExtras(clips, heard, words, env, { thresholdDb, durationS: source.durationS, match });
+      clips = b.clips;
+      adjustments.push(...b.adjustments);
+      for (const n of b.notes) warnings.push(`${p.spec.name}: ${n}`);
+    }
+    const assembled = assembleClips(p.spec, clips, source.fps);
+    adjustments.push(...assembled.merges);
+    for (const w of speechCutWarnings(assembled.clips, env, thresholdDb)) warnings.push(`${p.spec.name}: ${w}`);
+    return { ...p, clips: assembled.clips, durationFrames: assembled.durationFrames, cutAdjustments: adjustments };
+  });
+  return { plans: out, info: { applied: true, thresholdDb, edgeWindows: windows.size, edgesRetranscribed: heard !== null }, warnings };
+}
+
+const rawOf = (c: PlannedClip): RawClip => ({ block: c.block, srcIn: c.srcIn, srcOut: c.srcOut, ...(c.script ? { script: c.script } : {}), ...(c.parts ? { parts: c.parts } : {}) });
+
+/** Uma linha do relato por ajuste de corte (#11500). */
+export function adjustmentLine(a: CutAdjustment): string {
+  const edge = a.edge === "in" ? "entrada" : a.edge === "out" ? "saída" : "emenda";
+  return `   ajuste ${a.block} ${edge}: ${a.from.toFixed(2)} → ${a.to.toFixed(2)} s (${a.reason})`;
+}
+
+function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
+  const { file, source, plans: ps0, hash } = plans(ctx);
+  const refined = refineCuts(ctx, ps0, source, audioRefine);
+  const ps = refined.plans;
+  for (const w of refined.warnings) console.error(`[aviso] ${w}`);
   const { framing, assumed } = effectiveFraming(file);
   if (assumed) console.error("[premissa] blocks.json sem framing: usando o da 261027 (rosto em 48% da largura, olhos em 54% da altura)");
   let problems = 0;
@@ -545,6 +679,7 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean): number {
     console.error(`== ${p.spec.name}: ${p.clips.length} clipes, ${Math.floor(d / 60)}:${(d % 60).toFixed(1).padStart(4, "0")}`);
     if (p.missingBlocks.length) console.error(`   faltam no blocks.json: ${p.missingBlocks.join(", ")}`);
     for (const x of p.dropped) console.error(`   ${x}`);
+    for (const a of p.cutAdjustments ?? []) console.error(adjustmentLine(a));
     problems += p.missingBlocks.length + p.dropped.length;
     const over = shortsWarning(p, source.fps);
     if (over) console.error(`[aviso] ${over}`);
@@ -557,7 +692,7 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean): number {
   mkdirSync(ctx.outDir, { recursive: true });
   const xmlPath = join(ctx.outDir, xmlFileName(ctx.edition));
   writeFileAtomic(xmlPath, xml);
-  const pf: PlanFile = { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps };
+  const pf: PlanFile = { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info };
   writeJson(f(ctx, "plan.json"), pf);
   if (source.mirrored) console.error("[premissa] bruto espelhado: aplicar Horizontal Flip nos clipes no Premiere (o Premiere ignora o Flop do XML, #11358)");
   console.log(xmlPath);
@@ -663,7 +798,11 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   const durationS = Number(run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", preview]).stdout.trim());
   if (!Number.isFinite(durationS) || durationS <= 0) throw new Error(`duração da prévia ilegível no ffprobe (${preview})`);
   const words = nonEmptyWords(trPath, "transcrição da prévia");
-  const findings = reviewPreview({ words, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS, aliases: loadVocab().aliases });
+  // Cada achado leva também o tempo no BRUTO (#11500): é lá que o corte se corrige.
+  const findings = reviewPreview({ words, script: plan.script, cuts: cutPoints(plan, pf.source.fps), durationS, aliases: loadVocab().aliases }).map((x) => ({
+    ...x,
+    srcAt: exportTimeToRaw(x.at, plan, pf.source.fps),
+  }));
   writeJson(f(ctx, `review-${plan.spec.target}.json`), { preview, durationS, findings });
   console.log(JSON.stringify({ preview, durationS, findings }, null, 2));
   return 0;
@@ -794,7 +933,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }
-      return cmdBuild(ctx, flags.has("allow-missing"));
+      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"));
     case "srt":
       return cmdSrt(ctx, seq, flags.has("from-raw"));
     case "preview":

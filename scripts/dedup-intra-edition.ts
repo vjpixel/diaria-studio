@@ -62,11 +62,21 @@ import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/cluster-sources.ts";
 import { sameEvent, SAME_EDITION } from "./lib/event-dedup.ts";
 // #9360 padrão 2: agrupa coberturas da mesma história entre LANÇAMENTOS/RADAR.
-import { groupSameStory, LAUNCH_TITLE_RE } from "./lib/story-grouping.ts";
+import { groupSameStory } from "./lib/story-grouping.ts";
 import { isOfficialLancamentoUrl } from "./lib/launch-heuristics.ts";
 // #11496: par produto+versão ("genie 4", "ios 27.2") — o mesmo sinal do MESMO
 // FATO entre edições, aplicado aqui dentro da edição.
-import { extractVersionedProducts, extractProductVariants } from "./lib/same-fact-check.ts";
+// #11576: o par + segundo sinal vive em lib/product-version-story.ts, junto
+// com as listas de stopword, para o Pass-1f de dedup.ts usar o mesmo critério.
+import {
+  matchProductVersionStory,
+  hasStorySecondSignal,
+  COMPANY_STOPWORDS_INTRA,
+  PRODUCT_STOPWORDS_INTRA,
+  GENERIC_STOPWORDS_INTRA,
+  TOPIC_TOKEN_STOPWORDS_INTRA,
+  URL_COMPANY_TOPIC_STOPWORDS_INTRA,
+} from "./lib/product-version-story.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -115,52 +125,12 @@ export function stripVehicleSuffix(title: string): string {
   return title.replace(VEHICLE_SUFFIX_RE, "");
 }
 
-/** Nomes de EMPRESA de alta frequência (#2406). NUNCA contam como entidade
- *  discriminante de evento: em edições com 2+ itens da mesma empresa, "Microsoft"
- *  sozinho não distingue histórias diferentes. Excluídos em TODOS os contextos
- *  de entity-match — inclusive o segundo-sinal do domain-match (#2587), onde a
- *  empresa já está estabelecida pelo próprio domain-match. */
-const COMPANY_STOPWORDS_INTRA = new Set([
-  "microsoft", "google", "apple", "amazon", "meta", "nvidia",
-  "anthropic", "deepmind", "deepseek", "mistral", "cohere",
-  "openai", "perplexity",
-]);
-
-/** Nomes de PRODUTO/modelo de IA + termos genéricos do domínio + dias/meses.
- *  Excluídos do entity-match GERAL (2-entidade, #2406) porque um produto
- *  sozinho ("Gemini") cobre muitas histórias do dia. MAS, no segundo-sinal do
- *  domain-match (#2587), o nome do produto É o discriminador de evento que a
- *  issue pede ("≥1 entidade nomeada compartilhada ALÉM do nome da empresa"):
- *  a empresa já vem do domínio, então "Gemini"/"GPT" compartilhado confirma o
- *  mesmo lançamento. Por isso `extractProductEntitiesIntra` re-inclui estes. */
-const PRODUCT_STOPWORDS_INTRA = new Set([
-  "ia", "ai", "ml", "llm", "gpt", "chatgpt", "claude", "gemini",
-  "inteligencia", "artificial", "machine", "learning",
-  "diaria", "newsletter", "edicao",
-  "copilot", "alexa", "siri", "grok",
-  "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
-  "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
-  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
-]);
-
 /** Termos comuns no domínio IA que NÃO contam como entidade discriminante no
  *  entity-match GERAL (2-entidade). União de empresa + produto/genéricos.
  *  Mantém o comportamento histórico de `extractNamedEntitiesIntra` (#2406). */
 const ENTITY_STOPWORDS_INTRA = new Set([
   ...COMPANY_STOPWORDS_INTRA,
   ...PRODUCT_STOPWORDS_INTRA,
-]);
-
-/** Termos puramente genéricos (não-produto, não-empresa) — sempre excluídos,
- *  inclusive no segundo-sinal do domain-match. Evita que "IA"/dia-da-semana
- *  contem como produto-discriminador. Subconjunto de PRODUCT_STOPWORDS_INTRA. */
-const GENERIC_STOPWORDS_INTRA = new Set([
-  "ia", "ai", "ml", "llm",
-  "inteligencia", "artificial", "machine", "learning",
-  "diaria", "newsletter", "edicao",
-  "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo",
-  "janeiro", "fevereiro", "marco", "abril", "maio", "junho",
-  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 ]);
 
 /**
@@ -221,32 +191,6 @@ function stripAdjacentProductBigrams(
 }
 
 /**
- * #3099: termos genéricos de manchete (verbos de atribuição jornalística,
- * substantivos de sourcing, descritores de produto de altíssima frequência)
- * que NÃO contam como TÓPICO discriminante no cross-vehicle same-company
- * match (item d de `isIntraEditionDuplicate`). Sem isso, duas notícias
- * DIFERENTES da mesma empresa no mesmo dia colidiriam só por compartilharem
- * um verbo de atribuição comum ("revela", "dizem", "anuncia") ou um
- * substantivo genérico ("modelo", "novo"). Termos de produto ESPECÍFICO
- * (chip, satélite, processador, etc.) ficam de fora de propósito — são
- * exatamente o que deve discriminar o evento.
- */
-const TOPIC_TOKEN_STOPWORDS_INTRA = new Set([
-  // #3099 review: GENERIC_STOPWORDS_INTRA (ia/ai/ml/llm, dias/meses, etc.)
-  // precisa entrar aqui também — sem isso, "llm" (>=3 chars, sobrevive ao
-  // tokenizeForJaccard) ou um dia-da-semana poderiam contar como token de
-  // tópico compartilhado entre 2 histórias DIFERENTES da mesma empresa.
-  ...GENERIC_STOPWORDS_INTRA,
-  "novo", "nova", "novos", "novas",
-  "modelo", "modelos",
-  "empresa", "empresas",
-  "tecnologia", "ferramenta", "plataforma", "produto", "versao",
-  "revela", "revelam", "anuncia", "anunciam", "diz", "dizem", "afirma",
-  "afirmam", "aponta", "apontam", "informa", "informam", "confirma", "confirmam",
-  "portal", "fontes", "fonte",
-]);
-
-/**
  * #3099: nomes de empresa mencionados no título, SEM excluir via
  * COMPANY_STOPWORDS_INTRA — aqui a empresa É o sinal (ao contrário do
  * entity-match geral, onde ela é descartada por não discriminar sozinha
@@ -303,33 +247,12 @@ export function extractCompanyMentionsFromUrl(url: string | null | undefined): S
 }
 
 /**
- * #11496: termos genéricos de manchete em INGLÊS que não discriminam a
- * história quando a empresa compartilhada veio só da URL (página oficial
- * sem a empresa no título). `normalizeTitle` só remove artigos/preposições,
- * então "new", "our", "model" sobrevivem como token e casariam qualquer
- * anúncio da mesma empresa.
- */
-const URL_COMPANY_TOPIC_STOPWORDS_INTRA = new Set([
-  "new", "our", "your", "we", "model", "models", "introducing", "announcing",
-  "announces", "announced", "launch", "launches", "launching", "today",
-  "update", "updates", "now", "available", "more", "how", "what", "why",
-]);
-
-/**
  * #11496: mínimo de tokens de tópico compartilhados no path (d) quando a
  * empresa em comum só aparece na URL de um dos lados. Mais alto que o 1 do
  * caso título×título porque o host oficial (`blog.google`) cobre todos os
  * anúncios do dia da empresa.
  */
 export const URL_COMPANY_MIN_SHARED_TOPICS = 2;
-
-/**
- * #11496: tokens de produto+versão (`extractVersionedProducts`) do título,
- * para o path (b2) — mesmo produto e mesma versão nos dois títulos.
- */
-function versionedProductsOf(title: string): Set<string> {
-  return extractVersionedProducts(stripVehicleSuffix(title));
-}
 
 /**
  * Extrai entidades nomeadas para dedup INTRA-edição.
@@ -906,9 +829,8 @@ export function isIntraEditionDuplicate(
   // #2587: entidades de PRODUTO (inclui Gemini/GPT, exclui só empresa+genéricos)
   // pro segundo-sinal do domain-match — capturadas 1× fora do loop.
   const artProductEntities = extractProductEntitiesIntra(artTitle);
-  // #11496: produto+versão e empresas da URL, capturados 1× fora do loop.
-  const artVersioned = versionedProductsOf(artTitle);
-  const artVariants = extractProductVariants(stripVehicleSuffix(artTitle));
+  // #11496: título sem sufixo (para o b2) e empresas da URL, 1× fora do loop.
+  const artStripped = stripVehicleSuffix(artTitle);
   const artCompanies = extractCompanyMentionsIntra(artTitle);
   const artUrlCompanies = extractCompanyMentionsFromUrl(article.url);
 
@@ -999,36 +921,15 @@ export function isIntraEditionDuplicate(
     // × "GPT-6.1 ganha modo de voz" são histórias diferentes e não dividem
     // nenhum tópico. Variantes nomeadas diferentes ("GPT-6.1 Sol" × "GPT-6.1
     // Astra") descartam o par, como no MESMO FATO.
-    if (artVersioned.size > 0) {
-      const hVersioned = versionedProductsOf(hTitle);
-      const hVariants = extractProductVariants(stripVehicleSuffix(hTitle));
-      const sharedVersioned = [...artVersioned].filter((p) => {
-        if (!hVersioned.has(p)) return false;
-        const va = artVariants.get(p);
-        const vb = hVariants.get(p);
-        return !(va !== undefined && vb !== undefined && va !== vb);
-      });
-      if (sharedVersioned.length > 0) {
-        const productWords = new Set(sharedVersioned.flatMap((p) => p.split(" ")));
-        const sharedTopics = [...artTokens].filter(
-          (t) =>
-            hTokens.has(t) &&
-            !productWords.has(t) &&
-            !/^\d/.test(t) &&
-            !TOPIC_TOKEN_STOPWORDS_INTRA.has(t) &&
-            !URL_COMPANY_TOPIC_STOPWORDS_INTRA.has(t) &&
-            !COMPANY_STOPWORDS_INTRA.has(t) &&
-            !PRODUCT_STOPWORDS_INTRA.has(t),
-        );
-        const bothLaunch = LAUNCH_TITLE_RE.test(artTitle) && LAUNCH_TITLE_RE.test(hTitle);
-        if (sharedTopics.length >= 1 || bothLaunch) {
-          return {
-            match_type: "product_version",
-            matched_highlight: hTitle,
-            score: sharedVersioned.length + sharedTopics.length,
-          };
-        }
-      }
+    // O par e o segundo sinal vivem em lib/product-version-story.ts (#11576),
+    // compartilhados com o Pass-1f de dedup.ts (edições anteriores).
+    const pv = matchProductVersionStory(artStripped, stripVehicleSuffix(hTitle), artTokens, hTokens);
+    if (pv && hasStorySecondSignal(pv)) {
+      return {
+        match_type: "product_version",
+        matched_highlight: hTitle,
+        score: pv.products.length + pv.topics.length,
+      };
     }
 
     // (d) #3099: cross-vehicle cobertura da MESMA empresa/evento quando nem
