@@ -243,6 +243,15 @@ Só quando o item `instagram` do plano vem `guided` (vertical acima do teto da a
 
 **Corte do Instagram (#11222):** o editor já entrega o corte próprio na pasta `Final/` (`Diaria comentada_Instagram_V3.mp4`). `npx tsx scripts/fetch-drive-video.ts --edition {AAMMDD} --orientation vertical --target instagram` imprime o id dele (sem `next_command`: o `publish-shorts.ts` usa um vertical só, o "Outras redes", para os destinos de API). Para este passo guiado, preferir esse corte ao arquivo gerado abaixo quando ele existir; o editor escolhe o arquivo no diálogo.
 
+**Preparar o passo na máquina Windows (#11476):** o `.mp4` comprimido que o timer do `300` gera não chega pelo OneDrive (só o sidecar `.json`), e o vertical local costuma não existir. Um comando só prepara tudo a partir do corte `_Instagram_`:
+
+```bash
+npx tsx scripts/prepare-instagram-guided.ts {AAMMDD}            # acha e baixa o corte do Drive (mesma regra do timer)
+npx tsx scripts/prepare-instagram-guided.ts {AAMMDD} --video "G:/.../Final/Diaria comentada_Instagram_V1.mp4"   # arquivo local, sem Drive
+```
+
+Ele planeja só o `instagram` com a duração desse corte e aplica a mesma compressão do `--publish` (abaixo), em `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`. O JSON traz `upload`, `caption` e `at` (os mesmos campos do item guiado) e o `next_command` do registro. Nunca publica nem grava o registro do vertical. `action` diferente de `guided`: `already-registered` (não repostar), `fits-api` (o corte cabe na API, quem publica é o timer), `no-video` (sem corte no Drive nem vertical no disco), `needs-editor` (exit 3, Drive ambíguo) ou `error` (exit 1).
+
 O `--publish` do Passo B3, depois de publicar os destinos de API, gera a versão para o `file_upload` do Claude in Chrome: `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`, ffmpeg 2-pass em 720x1280, AAC 64k 48 kHz, `+faststart`, bitrate calculado pela duração mirando 9,5 MB (abaixo do limite de 10 MB do `file_upload`). Vídeos muito longos podem não caber nem no bitrate mínimo (250 kbps de vídeo: acima de ~4 min o arquivo passa dos 10 MB). O item traz `upload: { path, sizeBytes, fitsChromeUpload }` e a legenda pronta em `caption`. Se o ffmpeg falhar (ou passar de 15 min por passada), `upload.path` aponta pro original com `fitsChromeUpload: false` (sai `[aviso]`). Rodar de novo reaproveita o arquivo gerado só quando o sidecar `.json` ao lado dele bate com o vertical atual (caminho, tamanho, mtime) e com o bitrate.
 
 1. Carregar as ferramentas do Claude in Chrome e abrir `https://www.instagram.com/` numa aba nova. Conferir no avatar que a conta é @vjpixel.
