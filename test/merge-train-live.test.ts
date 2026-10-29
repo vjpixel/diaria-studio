@@ -541,6 +541,21 @@ describe("mergeTrainBatch", () => {
     assert.equal(result.ok, true, "confirmação via gh pr view --json state,mergedAt deve prevalecer sobre o exit code do gh pr merge");
   });
 
+  it("#11630 — merge confirmado via GitHub e fetch falho ainda fecha o lote e preserva os dois avisos", () => {
+    const runner = new FakeTrainRunner().withGate2Green().withLockOk()
+      .on("gh", (a) => a[0] === "pr" && a[1] === "merge", () => fail("timeout"))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "view" && a.includes("state,mergedAt"), () => ok(JSON.stringify({ state: "MERGED", mergedAt: "2026-10-29T12:00:00Z" })))
+      .withLocalOnMaster("continuo/fix-11630")
+      .on("git", (a) => a[0] === "fetch", () => fail("offline"))
+      .on("gh", (a) => a[0] === "pr" && a[1] === "comment", () => ok())
+      .on("gh", (a) => a[0] === "pr" && a[1] === "close", (a) => a[2] === "100" ? fail("close indisponível") : ok());
+    const result = mergeTrainBatch(runner, 6400, batch, prInfos, { sessionId: "s", kind: "develop", commitTitle: "t", commitBody: "b" });
+    assert.equal(result.ok, true);
+    assert.match(result.error ?? "", /offline/);
+    assert.match(result.error ?? "", /fechar PR #100 falhou: close indisponível/);
+    assert.deepEqual(runner.calls.filter((c) => c.cmd === "gh" && c.args[1] === "close").map((c) => c.args[2]), ["100", "101"]);
+  });
+
   it("git pull local falhando NÃO desfaz o merge — reporta ok:true com aviso (merge já é fato consumado no remoto)", () => {
     const runner = new FakeTrainRunner().withGate2Green().withLockOk();
     runner
@@ -551,6 +566,11 @@ describe("mergeTrainBatch", () => {
     const result = mergeTrainBatch(runner, 6400, batch, prInfos, { sessionId: "s", kind: "develop", commitTitle: "t", commitBody: "b" });
     assert.equal(result.ok, true);
     assert.match(result.error ?? "", /pull local falhou/);
+    assert.deepEqual(runner.calls.filter((c) => c.cmd === "gh" && c.args[1] === "comment").map((c) => c.args[2]), ["100", "101"]);
+    assert.deepEqual(runner.calls.filter((c) => c.cmd === "gh" && c.args[1] === "close").map((c) => c.args[2]), ["100", "101"]);
+    const release = runner.calls.findIndex((c) => c.cmd === "npx" && c.args.includes("merge-lock-release"));
+    const firstClose = runner.calls.findIndex((c) => c.cmd === "gh" && c.args[1] === "close");
+    assert.ok(release >= 0 && release < firstClose, "libera o lock antes de fechar as PRs originais");
   });
 });
 
