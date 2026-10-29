@@ -26,8 +26,10 @@ import { writeVoiceExcerpt } from "./lib/past-editions-voice.ts"; // #9978
 import { logEvent } from "./lib/run-log.ts"; // #3495: warn quando 01-approved.json falta numa edição que existe no disco
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
-import { extractUrlsFromBuckets, restrictToRenderedUrls } from "./lib/approved-urls.ts"; // #1678, #9867
+import { extractUrlsFromBuckets, restrictToRenderedUrls, usedUrlKey } from "./lib/approved-urls.ts"; // #1678, #9867
 import { FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #8298: filtro de boilerplate/rodapé JÁ EXISTENTE (usado por findMismatchedUrls pro mesmo propósito) — reuso, não duplico a lista de domínios aqui
+
+import { decodeHtmlEntities } from "./lib/clean-summary.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
@@ -585,11 +587,44 @@ function mergeById(existing: Post[], incoming: Post[]): Post[] {
   return [...byId.values()];
 }
 
-/**
- * #8298: `root` é opcional (default `ROOT`) só pro guard de divergência
- * logar via `logEvent` — tests passam um `root` isolado (tmpdir) pra nunca
- * tocar `data/run-log.jsonl` real.
- */
+/** #11511: títulos por URL; texto final vence o snapshot do Stage 1. */
+function itemTitles(post: Post, root: string, editionDirs: Map<string, string>): Map<string, string> {
+  const titles = new Map<string, string>();
+  const put = (url: string, title: string) => {
+    const clean = decodeHtmlEntities(title.replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
+    if (clean) titles.set(usedUrlKey(decodeHtmlEntities(url)), clean);
+  };
+  const aammdd = aammddFromIso(post.published_at);
+  const dir = editionDirs.get(aammdd) ?? resolve(root, "data/editions", aammdd.slice(0, 4), aammdd);
+  const approvedPath = resolve(dir, "_internal/01-approved.json");
+  if (existsSync(approvedPath)) {
+    try {
+      const approved = JSON.parse(readFileSync(approvedPath, "utf8"));
+      for (const bucket of ["highlights", "runners_up", "lancamento", "radar", "use_melhor", "video", "pesquisa", "noticias", "tutorial"]) {
+        if (!Array.isArray(approved?.[bucket])) continue;
+        for (const entry of approved[bucket]) {
+          const article = entry?.article ?? entry;
+          if (article?.url && typeof article.title === "string") put(article.url, article.title);
+        }
+      }
+    } catch (error) {
+      logEvent({ edition: aammdd, stage: null, agent: "refresh-past-editions", level: "warn",
+        message: "Não foi possível carregar títulos de 01-approved.json (#11511)",
+        details: { path: approvedPath, error: String(error) } }, root);
+    }
+  }
+  for (const m of (post.html ?? "").matchAll(/<a\b[^>]*href=["'](https?:\/\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    // Rótulos de navegação não substituem títulos conhecidos do approved.
+    const label = m[2].replace(/<[^>]*>/g, "").trim();
+    if (!/^(?:aprofunde|leia mais|fonte|saiba mais|https?:)/i.test(label)) put(m[1], label);
+  }
+  for (const md of [post.markdown ?? "", readReviewedMd(dir) ?? ""]) {
+    for (const m of md.matchAll(/\*\*\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)\*\*/g)) put(m[2], m[1]);
+  }
+  return titles;
+}
+
+/** `root` isola leitura das edições locais e logs nos testes. */
 export function renderMarkdown(posts: Post[], root: string = ROOT): string {
   const lines: string[] = [
     "# Últimas edições publicadas — para dedup",
@@ -603,6 +638,7 @@ export function renderMarkdown(posts: Post[], root: string = ROOT): string {
     "",
   ];
 
+  const editionDirs = enumerateEditionDirs(resolve(root, "data/editions"));
   for (const p of posts) {
     const date = p.published_at.slice(0, 10);
     // #8298: UNIÃO, não precedência — `p.links` (snapshot do gate da Etapa 1,
@@ -648,12 +684,13 @@ export function renderMarkdown(posts: Post[], root: string = ROOT): string {
       }
     }
 
+    const titles = itemTitles(p, root, editionDirs);
     lines.push(
       `## ${date} — "${p.title}"`,
       p.web_url ? `URL: ${p.web_url}` : "",
       "",
       "Links usados:",
-      ...links.map((u) => `- ${u}`),
+      ...links.map((u) => `- ${u}${titles.has(usedUrlKey(u)) ? ` — ${titles.get(usedUrlKey(u))}` : ""}`),
       ""
     );
     if (p.themes?.length) {
