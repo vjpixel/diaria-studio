@@ -56,7 +56,7 @@ export const MENSAL_UTM_MEDIUM = "email";
 
 /**
  * `utm_source`/`utm_medium` da variante BEEHIIV do digest mensal (#4482) —
- * envio EXTRA pra apoiadores Mantenedor/Patrono via Beehiiv (mesma
+ * envio EXTRA pra apoiadores Conselho/Núcleo via Beehiiv (mesma
  * plataforma da diária), distinto do envio Clarice/Brevo acima. Nunca
  * reusar `MENSAL_UTM_SOURCE` ("clarice") nesta variante: os dois envios têm
  * audiência e plataforma diferentes, e misturar a atribuição refaria o
@@ -78,7 +78,7 @@ export const MENSAL_BEEHIIV_UTM_MEDIUM = "email";
  * (#4593, follow-up do #4572/#4482). O envio extra migrou de canal — Beehiiv
  * bloqueia "Include and exclude segments" (audiência multi-segmento) atrás do
  * plano Scale, workspace é Launch/free (confirmado ao vivo 260804, #4572) —
- * mas a audiência (só Mantenedor/Patrono) e o conteúdo (mesmo `draft.md`)
+ * mas a audiência (só Conselho/Núcleo) e o conteúdo (mesmo `draft.md`)
  * continuam os mesmos do #4482, só a plataforma de envio muda de Beehiiv pra
  * Brevo. UTM PRÓPRIO, nunca `MENSAL_UTM_SOURCE` ("clarice") nem
  * `MENSAL_BEEHIIV_UTM_SOURCE` ("mensal-beehiiv", que nunca chegou a ser usado
@@ -93,7 +93,7 @@ export const MENSAL_APOIADORES_BREVO_UTM_MEDIUM = "email";
 
 /**
  * `utm_source`/`utm_medium` da variante KIT do envio extra pra apoiadores
- * (#7633) — 3º canal da MESMA audiência (Mantenedor/Patrono) e do MESMO
+ * (#7633) — 3º canal da MESMA audiência (Conselho/Núcleo) e do MESMO
  * conteúdo (`draft.md` do ciclo). Beehiiv (`mensal-beehiiv`) e Brevo
  * (`mensal-apoiadores-brevo`) precederam este. O Beehiiv nunca enviou
  * (bloqueio de plano, #4572); **o Brevo enviou uma vez** — ciclo 2607-08 em
@@ -297,7 +297,7 @@ export const SITE_NAV_UTM = {
 
 /**
  * `utm_source`/`utm_medium` da Retrospectiva do Mês (`retrospectiva.diar.ia.br/AAMM`,
- * gate de apoio Mantenedor R$25+, #7715). Link de saída = CTA "Apoiar a diar.ia.br"
+ * gate de apoio Conselho R$25+, #7715). Link de saída = CTA "Apoiar a diar.ia.br"
  * (apoia.se) no bloco de conversão do trecho e no paywall seco — os dois pontos
  * onde quem NÃO passou no gate pode converter.
  *
@@ -341,7 +341,7 @@ export const RETROSPECTIVA_MENSAL_CADASTRO_UTM_CONTENT = "cadastro-diaria";
  *
  * Fonte PRÓPRIA — não `retrospectiva-mensal` acima: misturar as duas apagaria
  * justamente a distinção que motivou a #7715 (dois produtos, dois públicos —
- * apoiador Mantenedor × leitor qualquer —, duas métricas de conversão).
+ * apoiador do Conselho × leitor qualquer —, duas métricas de conversão).
  *
  * Consumido por `workers/retrospectiva/src/render-anual.ts`.
  */
@@ -996,7 +996,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: `${MENSAL_BEEHIIV_UTM_SOURCE}-{ciclo}-{posicao}`,
     originFile: "scripts/lib/mensal/monthly-draft-filter.ts",
     description:
-      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Beehiiv (#4482) — " +
+      "Envio EXTRA do digest mensal pra apoiadores Conselho/Núcleo via Beehiiv (#4482) — " +
       "mesmo conteúdo/posições da entrada 'mensal-clarice' acima, `utm_source` distinto pra " +
       "não misturar a atribuição dos 2 canais (audiência e plataforma diferentes). " +
       "SUPERSEDIDO pelo canal Brevo ('mensal-apoiadores-brevo' abaixo, #4572/#4593) — este " +
@@ -1012,7 +1012,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: `${MENSAL_APOIADORES_BREVO_UTM_SOURCE}-{ciclo}-{posicao}`,
     originFile: "scripts/lib/mensal/monthly-apoiadores-brevo-render.ts",
     description:
-      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Brevo (#4572/#4593) — " +
+      "Envio EXTRA do digest mensal pra apoiadores Conselho/Núcleo via Brevo (#4572/#4593) — " +
       "sucessor do canal Beehiiv ('mensal-beehiiv' acima, aposentado sem nunca ter enviado ao " +
       "vivo): mesmo conteúdo/posições/audiência do #4482, canal trocado por bloqueio de plano da " +
       "Beehiiv. `utm_source` próprio pra não misturar atribuição com 'mensal-clarice' " +
@@ -1032,7 +1032,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: `${MENSAL_APOIADORES_KIT_UTM_SOURCE}-{ciclo}-{posicao}`,
     originFile: "scripts/lib/mensal/monthly-apoiadores-kit-render.ts",
     description:
-      "Envio EXTRA do digest mensal pra apoiadores Mantenedor/Patrono via Kit (#7633) — 3º canal " +
+      "Envio EXTRA do digest mensal pra apoiadores Conselho/Núcleo via Kit (#7633) — 3º canal " +
       "da mesma audiência/conteúdo, sucessor de 'mensal-apoiadores-brevo' (e este, do " +
       "'mensal-beehiiv'). Motivo da troca, diferente das anteriores: o backend da newsletter " +
       "virou \"kit\" (#7388) e a base inteira migrou (#7386) — manter um 2º ESP vivo só pra este " +
@@ -1079,7 +1079,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     originFile: "workers/retrospectiva/src/render-mensal.ts",
     description:
       "CTA \"Apoiar a diar.ia.br\" (apoia.se) no bloco de conversão do trecho e no paywall seco de " +
-      "`retrospectiva.diar.ia.br/AAMM` (#7715) — quem não passou no gate de apoio Mantenedor R$25+. " +
+      "`retrospectiva.diar.ia.br/AAMM` (#7715) — quem não passou no gate de apoio Conselho R$25+. " +
       "`utm_source` próprio, distinto de todo canal de e-mail: audiência e objetivo diferentes " +
       "(converter em apoio, não em leitura). Desde o #9499, o mesmo triplo marca também o CTA de " +
       "cadastro gratuito na diária (diar.ia.br/assinar) do bloco do trecho, com " +

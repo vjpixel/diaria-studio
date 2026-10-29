@@ -8,7 +8,7 @@
  *
  * Nasceu genérico porque o 2º canal desse formato apareceu (#7659, e-mail do
  * Artigo Especial pra apoio R$10+) e a única diferença em relação ao 1º
- * (#7633, envio mensal pra Mantenedor/Patrono) é o CONJUNTO DE NÍVEIS e o
+ * (#7633, envio mensal pra Conselho/Núcleo) é o CONJUNTO DE NÍVEIS e o
  * NOME DA TAG — todo o resto (por que tag e não segmento, como o diff casa,
  * quando o blast radius bloqueia) é idêntico e não deve ser reescrito por
  * canal.
@@ -34,7 +34,7 @@
  * grava `apoio_nivel` a partir do apoia.se com carência de 1 mês e guard de
  * blast radius próprio. Os syncs de tag só projetam esse campo em membresia
  * — não reimplementam carência nem consultam o apoia.se. Se a regra de quem é
- * Mantenedor mudar, ela muda LÁ, e as tags acompanham na próxima
+ * Conselho mudar, ela muda LÁ, e as tags acompanham na próxima
  * sincronização.
  *
  * ## Quem usa
@@ -44,9 +44,9 @@
  *
  *   - `lib/mensal/apoiadores-kit-channel.ts` (#7633) — envio extra mensal,
  *     tag `apoio-retrospectiva` (renomeada de `apoio-mensal` no #7867 item 4),
- *     Mantenedor/Patrono (R$25+).
+ *     Conselho/Núcleo (R$25+, ids `mantenedor`/`patrono`).
  *   - `lib/artigo-especial-kit-channel.ts` (#7659) — e-mail do Artigo
- *     Especial, tag `apoio-especial`, Apoiador+ (R$10+).
+ *     Especial, tag `apoio-especial`, Clube+ (R$10+, id `apoiador`).
  *
  * Enquanto as duas implementações conviveram (entre o #7659 e o #7681, porque
  * a #7651 estava em voo tocando o módulo mensal), um teste de paridade travava
