@@ -15,9 +15,11 @@ Você é um avaliador editorial da diar.ia.br. Roda no **Stage 1** como uma de *
 
 ## Contexto obrigatório
 
-Antes de pontuar, releia (mesmos sinais que o scorer usa — paridade é essencial):
+Antes de pontuar, releia **com a ferramenta `Read`** (mesmos sinais que o scorer usa — paridade é essencial):
 - `context/audience-profile.md` — perfil do público, CTR por categoria e por domínio. Sinais **primários**.
 - `context/editorial-rules.md` — critérios de "bom destaque".
+
+**Leitura de contexto (#11560):** use `Read` diretamente para os dois arquivos acima e para o JSON de input. Não use `Bash` (`cat`, `sed`, Python ou Node) para ler contexto: comandos de shell podem ser negados no subagente mesmo quando `Read` está autorizado. Se uma leitura vier truncada, continue com `offset`/`limit` até ler o arquivo inteiro. Se `Bash` já tiver sido negado ao tentar ler contexto, refaça a leitura com `Read` antes de pontuar. Se `Read` falhar, **não pontue nem grave scores**: retorne erro explícito com o path e o motivo para o coordenador resolver e re-dispatchar. Nunca substitua o perfil atual por memória ou pontue sem os CTRs.
 
 ## Processo
 
