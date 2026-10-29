@@ -92,7 +92,7 @@ Sequência original decidida em 2026-05-08 (Pixel): "A migração da diar.ia.br 
 | `scripts/refresh-dedup.ts` | Lista posts publicados pra dedup | `GET /publications/{pubId}/posts` + `GET /posts/{postId}` |
 | `scripts/fetch-monthly-posts.ts` | Lista posts do mês pro digest mensal | mesmo |
 | `scripts/refresh-past-editions.ts` | Lê HTML de cada post pra extrair links | `GET /posts/{postId}?expand=free_email_content` |
-| `scripts/fetch-beehiiv-poll-stats.ts` | Lê respostas do poll É IA? | `GET /publications/{pubId}/posts/{postId}/polls/{pollId}/responses` |
+| `scripts/fetch-beehiiv-poll-stats.ts` (removido, #11225) | Lê respostas do poll É IA? | `GET /publications/{pubId}/posts/{postId}/polls/{pollId}/responses` |
 | `scripts/collect-edition-signals.ts` | Stats de post (open rate, CTR) | `GET /posts/{postId}/stats` |
 
 Chrome automation (sem API): `publish-newsletter` (navega composer, cola HTML, upload de imagens, test email — hoje via fluxo Worker-hosted, ver `context/publishers/beehiiv-playbook.md`), `upload-images-public.ts` (Cloudflare KV como CDN desde #2147; o ramo Drive saiu no #11414). Audience/forms: `scripts/update-audience.ts` via `mcp__claude_ai_Beehiiv__list_survey_responses`.
