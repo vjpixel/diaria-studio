@@ -94,6 +94,7 @@ import {
   isFinalFolderName,
   isMp4VideoFile,
   isPromotedCopy,
+  isVerticalCutCandidate,
   selectDriveVideo,
   targetOrientation,
   type DriveVideoFile,
@@ -500,14 +501,21 @@ export async function runFetchDriveVideo(
       // Instagram só cai em Editado/ quando Final/ não tem .mp4 nenhum.
       // #11556: a cópia que o próprio fetch promoveu de Editados/ (o horizontal,
       // por exemplo) não diz nada sobre o corte do Instagram: não conta aqui.
-      const skipEdited = instagramCut && finalFiles.some((f) => isMp4VideoFile(f) && !isPromotedCopy(f));
+      // #11428: só um corte VERTICAL do editor em Final/ barra Editado/; o
+      // horizontal sozinho lá não diz nada sobre o corte do Instagram.
+      const skipEdited = instagramCut && finalFiles.some((f) => isVerticalCutCandidate(f) && !isPromotedCopy(f));
       if (probe.kind === "none" && skipEdited) {
         log(`[premissa] Final/ tem .mp4 e nenhum do destino instagram — sem corte próprio do Instagram; Editado/ não é consultada (#11419)`);
       }
-      if (probe.kind === "none" && !skipEdited) {
+      // #11577: a escolha em Final/ é a cópia que o fetch promoveu; uma
+      // exportação mais nova em Editados/ (V6 depois do V5) precisa ser vista.
+      const promotedPick = probe.kind === "found" && isPromotedCopy(probe.file) ? probe.file : null;
+      if ((probe.kind === "none" && !skipEdited) || promotedPick) {
         const edited = subfolders.filter((f) => isEditedFolderName(f.name));
         if (edited.length > 0) {
-          const why = finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
+          const why = promotedPick
+            ? `${promotedPick.name} em Final/ é cópia promovida; conferindo exportação mais nova`
+            : finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
           log(`[premissa] ${why} — procurando o vídeo pronto em ${edited.map((f) => `${f.name}/`).join(", ")} (#11385)`);
           finalFiles = [...finalFiles, ...(await listFinalLike(edited, true))];
         }
