@@ -8,7 +8,24 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  * Uso:
  *   npx tsx scripts/fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical
  *     [--target youtube|outras-redes|instagram]
- *     [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--dry-run] [--force]
+ *     [--folder-id ID] [--window-hours N] [--edition-dir DIR]
+ *     [--download [--max-mb N]] [--promote] [--dry-run] [--force]
+ *
+ * **Sem `--download`, só planeja (#11551).** Na 261029 uma checagem por ssh no
+ * 300 baixou 312 MB sem pedir. Agora o default lista, resolve o arquivo e
+ * imprime o plano (`action: "dry-run"`, com nome, id, tamanho e destino), sem
+ * gravar nada; `--dry-run` continua aceito e é o mesmo que omitir `--download`.
+ * Com `--download` o log diz tamanho e destino antes de baixar, e acima de
+ * `--max-mb` (default `publishing.youtube.drive_max_download_mb` ou 2048) sai
+ * exit 1 `phase: "size-limit"` sem baixar; `--force` passa do teto.
+ *
+ * **Versão mais alta em `Editados/` e promoção para `Final/` (#11556).** Com
+ * `_Youtube_V1`…`_V5` em `Editados/` (sem `Final/`), vale o maior `V{n}` e a
+ * escolha sai como `[premissa]` (`premise` no JSON). Com `--promote` (ou
+ * `--download`), o escolhido é copiado para `Final/` (criada se faltar) pela
+ * Drive API, para o timer do 300 ler o mesmo arquivo; a cópia leva
+ * `appProperties.diaria_promoted_from` e sai em `promoted`. Sem a flag, nada é
+ * escrito no Drive.
  *
  * Pasta `Final/` (#11222): dentro de `{AAMMDD}/`, a subpasta `Final/` é listada
  * e os `.mp4` dela contam como finais pelo LUGAR (o nome não leva "final":
@@ -73,8 +90,10 @@ import {
   VIDEO_TARGETS,
   defaultVideoTarget,
   isEditedFolderName,
+  PROMOTED_FROM_PROPERTY,
   isFinalFolderName,
   isMp4VideoFile,
+  isPromotedCopy,
   selectDriveVideo,
   targetOrientation,
   type DriveVideoFile,
@@ -90,7 +109,7 @@ import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FOLDER_MIME = "application/vnd.google-apps.folder";
 const LIST_FIELDS =
-  "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,size,videoMediaMetadata(width,height,durationMillis))";
+  "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,size,appProperties,videoMediaMetadata(width,height,durationMillis))";
 
 export interface FetchDriveVideoTimeouts {
   /** Cada chamada de metadado/listagem. */
@@ -107,9 +126,17 @@ export const DEFAULT_FETCH_DRIVE_VIDEO_TIMEOUTS: FetchDriveVideoTimeouts = {
   idleMs: 60_000,
 };
 
+export interface DriveFetchInit {
+  signal?: AbortSignal;
+  /** Default GET. POST só na promoção para `Final/` (#11556). */
+  method?: "GET" | "POST";
+  headers?: Record<string, string>;
+  body?: string;
+}
+
 export interface FetchDriveVideoDeps {
-  /** GET autenticado na Drive API (default: `gFetchRetry`, com refresh do token). */
-  driveFetch(url: string, init?: { signal?: AbortSignal }): Promise<Response>;
+  /** Chamada autenticada na Drive API (default: `gFetchRetry`, com refresh do token). */
+  driveFetch(url: string, init?: DriveFetchInit): Promise<Response>;
 }
 
 export const defaultFetchDriveVideoDeps: FetchDriveVideoDeps = {
@@ -127,8 +154,19 @@ export interface FetchDriveVideoInput {
   windowHours: number;
   dryRun: boolean;
   force: boolean;
+  /**
+   * Arquivo escolhido em `Editados/` é copiado para `Final/` (#11556), para o
+   * timer do 300 ler o mesmo arquivo. No CLI: `--promote`, ou implícito em
+   * `--download`. Ausente = não escreve nada no Drive.
+   */
+  promote?: boolean;
+  /** Teto do download em bytes (#11551); acima dele, sem `force`, nada é baixado. `null`/ausente = sem teto. */
+  maxBytes?: number | null;
   timeouts?: FetchDriveVideoTimeouts;
 }
+
+/** Teto default do download do horizontal (#11551), em MB; `publishing.youtube.drive_max_download_mb` sobrepõe. */
+export const DEFAULT_MAX_DOWNLOAD_MB = 2048;
 
 // ── Saída (união discriminada por `action`) ────────────────────────────────
 
@@ -156,7 +194,17 @@ interface OutputBase {
   local_path: string;
 }
 
+/** Cópia do escolhido em `Editados/` para `Final/` (#11556). */
+export type DrivePromotion =
+  | { status: "copied"; final_folder_id: string; file_id: string; created_folder: boolean }
+  | { status: "already"; final_folder_id: string; file_id: string }
+  | { status: "error"; error: string };
+
 interface OutputWithFolder extends OutputBase {
+  /** `[premissa]` da escolha (versão mais alta em `Editados/`, #11556). */
+  premise?: string;
+  /** Só quando o escolhido veio de `Editados/` e a promoção foi pedida. */
+  promoted?: DrivePromotion;
   edition_folder_id: string | null;
   /** Subpasta(s) `Final/` (ou `Editado/`, #11385) listadas dentro da da edição (#11222); vazio sem elas. */
   final_folder_ids: string[];
@@ -175,7 +223,8 @@ export type FetchDriveVideoOutput =
   | (OutputWithFolder & { action: "print-id"; selection: "found"; file: DescribedDriveFile; next_command: string | null })
   | (OutputWithFolder & { action: "dry-run"; selection: "found"; file: DescribedDriveFile })
   | (OutputWithFolder & { action: "downloaded"; selection: "found"; file: DescribedDriveFile; bytes: number })
-  | (OutputWithFolder & { action: "error"; phase: "download"; selection: "found"; file: DescribedDriveFile; error: string });
+  | (OutputWithFolder & { action: "error"; phase: "download"; selection: "found"; file: DescribedDriveFile; error: string })
+  | (OutputWithFolder & { action: "error"; phase: "size-limit"; selection: "found"; file: DescribedDriveFile; error: string; max_bytes: number });
 
 /** Exceção que nem o `runFetchDriveVideo` previu: o `main` ainda imprime JSON. */
 export interface FetchDriveVideoUnexpectedError {
@@ -242,6 +291,58 @@ export async function listDriveChildren(
     pageToken = data.nextPageToken;
   } while (pageToken);
   return out;
+}
+
+/**
+ * Copia (server-side, `files/{id}/copy`) o arquivo escolhido em `Editados/`
+ * para `Final/` (#11556), criando `Final/` dentro da pasta da edição quando ela
+ * não existe. Idempotente: nome igual já em `Final/`, ou cópia marcada com
+ * `appProperties.diaria_promoted_from` = id do original, é `already`. A cópia
+ * leva essa marca, para a regra do Instagram (#11419) não tomar a cópia do
+ * horizontal como "Final/ já tem .mp4". Falha volta `error`, nunca lança: a
+ * escolha continua valendo sem a cópia.
+ */
+export async function promoteToFinal(
+  deps: FetchDriveVideoDeps,
+  opts: { editionFolderId: string; finalFolderIds: string[]; finalFiles: DriveVideoFile[]; file: DriveVideoFile; timeoutMs: number },
+): Promise<DrivePromotion> {
+  const { file } = opts;
+  const existing = opts.finalFiles.find(
+    (f) => !f.editedFolder && (f.name === file.name || f.appProperties?.[PROMOTED_FROM_PROPERTY] === file.id),
+  );
+  if (existing && opts.finalFolderIds.length > 0) {
+    return { status: "already", final_folder_id: opts.finalFolderIds[0], file_id: existing.id };
+  }
+  const post = async (url: string, body: unknown): Promise<{ id: string }> => {
+    const res = await deps.driveFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(opts.timeoutMs),
+    });
+    if (!res.ok) throw new Error(`Drive ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const data = (await res.json()) as { id?: unknown };
+    if (typeof data.id !== "string" || !data.id) throw new Error("Drive: resposta sem id");
+    return { id: data.id };
+  };
+  try {
+    let folderId = opts.finalFolderIds[0];
+    let created = false;
+    if (!folderId) {
+      const params = new URLSearchParams({ fields: "id", supportsAllDrives: "true" });
+      folderId = (await post(`${DRIVE_API}/files?${params}`, { name: "Final", mimeType: FOLDER_MIME, parents: [opts.editionFolderId] })).id;
+      created = true;
+    }
+    const params = new URLSearchParams({ fields: "id", supportsAllDrives: "true" });
+    const copy = await post(`${DRIVE_API}/files/${encodeURIComponent(file.id)}/copy?${params}`, {
+      name: file.name,
+      parents: [folderId],
+      appProperties: { [PROMOTED_FROM_PROPERTY]: file.id },
+    });
+    return { status: "copied", final_folder_id: folderId, file_id: copy.id, created_folder: created };
+  } catch (e) {
+    return { status: "error", error: (e as Error).message };
+  }
 }
 
 /**
@@ -345,6 +446,9 @@ export async function runFetchDriveVideo(
   let files: DriveVideoFile[];
   let editionFolderId: string | null = null;
   const finalFolderIds: string[] = [];
+  /** Só as `Final/` de verdade (sem `Editados/`) e o que há nelas: destino da promoção (#11556). */
+  const finalOnlyIds: string[] = [];
+  let finalOnlyFiles: DriveVideoFile[] = [];
   try {
     const root = await listDriveChildren(deps, input.folderId, timeouts.listMs);
     const editionFolders = root.filter((f) => f.mimeType === FOLDER_MIME && f.name.trim() === aammdd);
@@ -362,17 +466,23 @@ export async function runFetchDriveVideo(
       );
       // #11222: o vídeo pronto mora em `{AAMMDD}/Final/`. Mais de uma `Final`
       // (raro) entra inteira: a ambiguidade aparece no nível do arquivo.
-      const listFinalLike = async (folders: DriveVideoFile[]): Promise<DriveVideoFile[]> => {
+      const listFinalLike = async (folders: DriveVideoFile[], edited: boolean): Promise<DriveVideoFile[]> => {
         const out: DriveVideoFile[] = [];
         for (const folder of folders) {
           finalFolderIds.push(folder.id);
+          if (!edited) finalOnlyIds.push(folder.id);
           const children = await listDriveChildren(deps, folder.id, timeouts.listMs);
-          out.push(...children.filter((f) => f.mimeType !== FOLDER_MIME).map((f) => ({ ...f, scope: "final-folder" as const })));
+          out.push(
+            ...children
+              .filter((f) => f.mimeType !== FOLDER_MIME)
+              .map((f) => ({ ...f, scope: "final-folder" as const, ...(edited ? { editedFolder: true } : {}) })),
+          );
         }
         return out;
       };
       const subfolders = inside.filter((f) => f.mimeType === FOLDER_MIME);
-      let finalFiles = await listFinalLike(subfolders.filter((f) => isFinalFolderName(f.name)));
+      let finalFiles = await listFinalLike(subfolders.filter((f) => isFinalFolderName(f.name)), false);
+      finalOnlyFiles = finalFiles;
       // #11385: sem candidato DESTE destino em Final/ (sem .mp4, ou só os
       // verticais quando se pede o horizontal), o vídeo pronto pode estar em
       // Editado/ (261028). Final/ com candidato mantém a precedência.
@@ -388,7 +498,9 @@ export async function runFetchDriveVideo(
       // que o vídeo pronto está em Editado/, onde costumam ficar exportações
       // intermediárias (um `_Instagram_V2` antigo viraria Reels público).
       // Instagram só cai em Editado/ quando Final/ não tem .mp4 nenhum.
-      const skipEdited = instagramCut && finalFiles.some(isMp4VideoFile);
+      // #11556: a cópia que o próprio fetch promoveu de Editados/ (o horizontal,
+      // por exemplo) não diz nada sobre o corte do Instagram: não conta aqui.
+      const skipEdited = instagramCut && finalFiles.some((f) => isMp4VideoFile(f) && !isPromotedCopy(f));
       if (probe.kind === "none" && skipEdited) {
         log(`[premissa] Final/ tem .mp4 e nenhum do destino instagram — sem corte próprio do Instagram; Editado/ não é consultada (#11419)`);
       }
@@ -397,7 +509,7 @@ export async function runFetchDriveVideo(
         if (edited.length > 0) {
           const why = finalFiles.some(isMp4VideoFile) ? `sem .mp4 do destino ${target} em Final/` : "sem .mp4 em Final/";
           log(`[premissa] ${why} — procurando o vídeo pronto em ${edited.map((f) => `${f.name}/`).join(", ")} (#11385)`);
-          finalFiles = [...finalFiles, ...(await listFinalLike(edited))];
+          finalFiles = [...finalFiles, ...(await listFinalLike(edited, true))];
         }
       }
       files.push(...finalFiles);
@@ -438,6 +550,25 @@ export async function runFetchDriveVideo(
 
   const file = sel.file;
   const described = describeFile(file);
+  if (sel.premise) {
+    log(`[premissa] ${sel.premise}`);
+    withFolder.premise = sel.premise;
+  }
+  if (file.editedFolder && input.promote && editionFolderId) {
+    const promoted = await promoteToFinal(deps, {
+      editionFolderId,
+      finalFolderIds: finalOnlyIds,
+      finalFiles: finalOnlyFiles,
+      file,
+      timeoutMs: timeouts.listMs,
+    });
+    withFolder.promoted = promoted;
+    if (promoted.status === "error") log(`[aviso] cópia de ${file.name} para Final/ falhou (${promoted.error}); a escolha vale assim mesmo (#11556)`);
+    else if (promoted.status === "already") log(`[ok] ${file.name} já está em Final/ (id ${promoted.file_id})`);
+    else log(`[ok] ${file.name} copiado para Final/${promoted.created_folder ? " (pasta criada)" : ""}: id ${promoted.file_id} (#11556)`);
+  } else if (file.editedFolder) {
+    log(`[premissa] ${file.name} veio de Editados/; não copiado para Final/ (sem --promote/--download)`);
+  }
   if (instagramCut) {
     // O publish-shorts.ts usa um vertical só para todos os destinos (o corte
     // "Outras redes"); o do Instagram é identificado para o passo guiado.
@@ -449,10 +580,22 @@ export async function runFetchDriveVideo(
     log(`[ok] vertical do dia: ${file.name} — próximo passo: ${next}`);
     return { exitCode: 0, output: { ...withFolder, action: "print-id", selection: "found", file: described, next_command: next } };
   }
+  const mb = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
+  const sizeTxt = described.size !== null ? mb(described.size) : "tamanho desconhecido";
   if (input.dryRun) {
-    log(`[dry-run] baixaria ${file.name} → ${localPath}`);
+    log(`[plano] baixaria ${file.name} (${sizeTxt}) → ${localPath}; nada gravado (download só com --download, #11551)`);
     return { exitCode: 0, output: { ...withFolder, action: "dry-run", selection: "found", file: described } };
   }
+  const maxBytes = input.maxBytes ?? null;
+  if (maxBytes !== null && described.size !== null && described.size > maxBytes && !input.force) {
+    const error = `${file.name} tem ${sizeTxt}, acima do teto de ${mb(maxBytes)} (--max-mb); nada baixado — conferir o arquivo ou rodar com --force`;
+    log(`fetch-drive-video: ${error}`);
+    return {
+      exitCode: 1,
+      output: { ...withFolder, action: "error", phase: "size-limit", selection: "found", file: described, error, max_bytes: maxBytes },
+    };
+  }
+  log(`[download] ${file.name} (${sizeTxt}) → ${localPath}`);
   try {
     const bytes = await downloadDriveFile(deps, file, localPath, timeouts, log);
     log(`[ok] ${file.name} (${(bytes / 1e6).toFixed(1)} MB) → ${localPath}`);
@@ -470,15 +613,17 @@ export async function runFetchDriveVideo(
 // ── CLI ───────────────────────────────────────────────────────────────────
 
 const USAGE =
-  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--target youtube|outras-redes|instagram] [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--dry-run] [--force]";
+  "uso: fetch-drive-video.ts --edition AAMMDD --orientation horizontal|vertical [--target youtube|outras-redes|instagram] [--folder-id ID] [--window-hours N] [--edition-dir DIR] [--download [--max-mb N]] [--promote] [--dry-run] [--force]";
 
-export function readYouTubeDriveConfig(config: unknown): { folderId: string | null; windowHours: number | null } {
-  const yt = (config as { publishing?: { youtube?: { drive_folder_id?: unknown; drive_window_hours?: unknown } } })
+export function readYouTubeDriveConfig(config: unknown): { folderId: string | null; windowHours: number | null; maxDownloadMb?: number | null } {
+  const yt = (config as { publishing?: { youtube?: { drive_folder_id?: unknown; drive_window_hours?: unknown; drive_max_download_mb?: unknown } } })
     ?.publishing?.youtube;
   const folderId = typeof yt?.drive_folder_id === "string" && yt.drive_folder_id.trim() ? yt.drive_folder_id.trim() : null;
   const windowHours =
     typeof yt?.drive_window_hours === "number" && yt.drive_window_hours > 0 ? yt.drive_window_hours : null;
-  return { folderId, windowHours };
+  const out: { folderId: string | null; windowHours: number | null; maxDownloadMb?: number | null } = { folderId, windowHours };
+  if (typeof yt?.drive_max_download_mb === "number" && yt.drive_max_download_mb > 0) out.maxDownloadMb = yt.drive_max_download_mb;
+  return out;
 }
 
 export type ParsedFetchDriveVideoArgs =
@@ -490,8 +635,13 @@ export type ParsedFetchDriveVideoArgs =
       folderId: string;
       windowHours: number;
       editionDir: string | null;
+      /** Sem `--download` o CLI só planeja (#11551): nenhum byte vai para o disco. */
       dryRun: boolean;
       force: boolean;
+      /** `--promote`, ou implícito em `--download` (#11556). */
+      promote: boolean;
+      /** Teto do download (#11551): `--max-mb`, `drive_max_download_mb` ou `DEFAULT_MAX_DOWNLOAD_MB`. */
+      maxBytes: number;
     }
   | { ok: false; error: string };
 
@@ -502,8 +652,8 @@ export function parseFetchDriveVideoArgs(
 ): ParsedFetchDriveVideoArgs {
   const { flags, values, positional } = parseArgs(argv);
   // `--dry-run 261025` engoliria a edição como valor da flag; e flag de valor sem valor vira flag solta.
-  const misused = ["dry-run", "force"].filter((f) => values[f] !== undefined);
-  const missingValue = ["edition", "orientation", "target", "folder-id", "window-hours", "edition-dir"].filter((f) => flags.has(f));
+  const misused = ["dry-run", "force", "download", "promote"].filter((f) => values[f] !== undefined);
+  const missingValue = ["edition", "orientation", "target", "folder-id", "window-hours", "edition-dir", "max-mb"].filter((f) => flags.has(f));
   if (positional.length || misused.length || missingValue.length) {
     const what = [...positional, ...misused.map((f) => `--${f} não leva valor`), ...missingValue.map((f) => `--${f} sem valor`)];
     return { ok: false, error: `argumentos inválidos (${what.join(", ")})` };
@@ -527,6 +677,11 @@ export function parseFetchDriveVideoArgs(
   const windowRaw = values["window-hours"];
   const windowHours = windowRaw !== undefined ? Number(windowRaw) : (cfg.windowHours ?? DRIVE_VIDEO_WINDOW_HOURS);
   if (!Number.isFinite(windowHours) || windowHours <= 0) return { ok: false, error: `--window-hours inválido (${windowRaw})` };
+  const download = flags.has("download");
+  if (download && flags.has("dry-run")) return { ok: false, error: "--download e --dry-run juntos se contradizem" };
+  const maxRaw = values["max-mb"];
+  const maxMb = maxRaw !== undefined ? Number(maxRaw) : (cfg.maxDownloadMb ?? DEFAULT_MAX_DOWNLOAD_MB);
+  if (!Number.isFinite(maxMb) || maxMb <= 0) return { ok: false, error: `--max-mb inválido (${maxRaw})` };
   return {
     ok: true,
     aammdd,
@@ -535,8 +690,10 @@ export function parseFetchDriveVideoArgs(
     folderId,
     windowHours,
     editionDir: values["edition-dir"] ?? null,
-    dryRun: flags.has("dry-run"),
+    dryRun: !download,
     force: flags.has("force"),
+    promote: download || flags.has("promote"),
+    maxBytes: Math.round(maxMb * 1e6),
   };
 }
 
@@ -566,6 +723,8 @@ async function main(): Promise<number> {
         windowHours: args.windowHours,
         dryRun: args.dryRun,
         force: args.force,
+        promote: args.promote,
+        maxBytes: args.maxBytes,
       },
       (line) => console.error(line),
     );

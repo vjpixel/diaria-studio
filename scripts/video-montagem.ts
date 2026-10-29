@@ -35,6 +35,14 @@
  *       identidade do áudio); --from-raw remapeia o transcript do bruto.
  *   preview AAMMDD [--seq instagram|outras-redes]   (default outras-redes; sempre refaz)
  *   review AAMMDD [--seq instagram|outras-redes]    (default outras-redes; sempre refaz)
+ *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes] [--no-text]
+ *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
+ *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos
+ *       nas emendas e, com `plan.json` válido, o texto contra o roteiro da versão
+ *       (transcreve o export; `--no-text` pula). Destino pelo nome do arquivo
+ *       (`_Youtube_`/`_Instagram_`/`_Outras redes_`) ou `--seq`. Saída: tabela
+ *       (#, tempo no export, tempo no bruto, o que está, correção) no stdout e em
+ *       `review-final-{destino}.md`/`.json` no state dir. Só lê o export.
  * srt, preview e review recusam um `plan.json` defasado (blocks.json ou
  * source.json mudaram depois do build); preview recusa um SRT mais velho que o
  * plano; review recusa uma prévia mais velha que o plano.
@@ -47,6 +55,12 @@
  *   --out-dir DIR      onde saem XML, SRT e prévia (default: a pasta da edição no Drive)
  *   --python EXE       Python com faster-whisper (default: env DIARIA_VIDEO_PYTHON ou "python")
  *
+ * Bruto só de áudio (#11552): sem stream de vídeo (ou, sem vídeo solto na
+ * pasta, um .m4a/.mp3/.wav), o `transcribe` grava `source.json` com
+ * `audioOnly: true` e segue; decupagem, retranscribe e roteiro funcionam igual.
+ * frame, build, srt, preview e review param com exit 3 e o motivo no stdout
+ * (`{audio_only: true, stopped: true}`): a montagem é à mão a partir do roteiro.
+ *
  * Nada aqui publica ou sobe arquivo: as saídas vão para a pasta local do Drive
  * for desktop, que sincroniza sozinha. O upload continua no `/diaria-publica-video`.
  */
@@ -55,7 +69,7 @@ import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -82,6 +96,7 @@ import {
   parseBlocksFile,
   retranscribeWindow,
   parseLoudnormJson,
+  parseFrameRate,
   parseProbe,
   parseSilenceDetect,
   pickRawSource,
@@ -120,13 +135,27 @@ import {
   suggestedDurations,
   type DecupagemPlan,
 } from "./lib/diaria/video-montage-docs.ts";
+import {
+  checkFormat,
+  checkLoudness,
+  checkText,
+  dedupeAudioFindings,
+  detectClicks,
+  detectFragments,
+  exportTarget,
+  finalReviewTable,
+  parseCropdetect,
+  parsePeakWindows,
+  type FinalReviewFinding,
+} from "./lib/diaria/video-final-review.ts";
+import { VIDEO_TARGETS, type VideoTarget } from "./lib/diaria/drive-video-source.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
 const VOCAB_FILE = join(ROOT, "context", "video-montagem", "vocabulario.json");
 export const DEFAULT_DRIVE_ROOT = "G:/Meu Drive/Work/Mentoria Fluxo VTSD/YouTube";
 
-const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|retranscribe|frame|roteiro|build|srt|preview|review> AAMMDD [opções]
+const USAGE = `uso: npx tsx scripts/video-montagem.ts <transcribe|decupagem|retranscribe|frame|roteiro|build|srt|preview|review|review-final> AAMMDD [opções]
   ver o cabeçalho de scripts/video-montagem.ts e .claude/skills/diaria-video-montagem/SKILL.md`;
 
 interface Ctx {
@@ -200,6 +229,28 @@ function nonEmptyWords(path: string, what: string): Word[] {
 
 function measuredSource(ctx: Ctx): SourceInfo {
   return readJson<SourceInfo>(f(ctx, "source.json"), "source.json (rode transcribe)");
+}
+
+/** Passos que precisam de imagem: no modo áudio (#11552) param antes, dizendo o motivo. */
+export const VIDEO_ONLY_COMMANDS = ["frame", "build", "srt", "preview", "review"] as const;
+
+/**
+ * Modo áudio (#11552): com `source.json` de bruto só de áudio, os passos que
+ * precisam de imagem (XML, legendas das verticais montadas, prévia, revisão,
+ * frame) não rodam. Imprime o motivo e devolve 3 (precisa do editor); `null`
+ * = seguir (bruto de vídeo, ou `source.json` ainda ausente).
+ */
+export function audioOnlyStop(ctx: Pick<Ctx, "stateDir">, cmd: string): number | null {
+  const path = join(ctx.stateDir, "source.json");
+  if (!existsSync(path)) return null;
+  const source = JSON.parse(readFileSync(path, "utf8")) as Partial<SourceInfo>;
+  if (!source.audioOnly) return null;
+  const reason =
+    `bruto só de áudio (${source.path}): ${cmd} precisa de stream de vídeo. O modo áudio vai até o roteiro ` +
+    "(transcribe, decupagem, retranscribe, roteiro); a montagem no Premiere é à mão a partir do roteiro.md";
+  console.error(`[modo áudio] ${reason} (#11552)`);
+  console.log(JSON.stringify({ audio_only: true, command: cmd, stopped: true, reason }, null, 2));
+  return 3;
 }
 
 function loadBlocks(ctx: Ctx): { file: BlocksFile; text: string } {
@@ -306,9 +357,10 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
       .filter((d) => d.isFile())
       .map((d) => ({ name: d.name, size: statSync(join(ctx.driveDir, d.name)).size }));
     const raw = pickRawSource(files);
-    if (!raw) throw new Error(`nenhum bruto (.mp4/.mov) solto em ${ctx.driveDir}; passe --source`);
+    if (!raw) throw new Error(`nenhum bruto (.mp4/.mov, ou áudio .m4a/.mp3/.wav) solto em ${ctx.driveDir}; passe --source`);
+    if (raw.audioOnly) console.error(`[premissa] nenhum vídeo solto em ${ctx.driveDir}; usando o áudio ${raw.pick.name} (modo áudio, #11552)`);
     if (raw.candidates.length > 1) {
-      console.error(`[aviso] ${raw.candidates.length} vídeos candidatos a bruto; usando o maior (${raw.pick.name}). Outro: --source. Candidatos: ${raw.candidates.map((c) => `${c.name} (${(c.size / 1e9).toFixed(2)} GB)`).join(", ")}`);
+      console.error(`[aviso] ${raw.candidates.length} ${raw.audioOnly ? "áudios" : "vídeos"} candidatos a bruto; usando o maior (${raw.pick.name}). Outro: --source. Candidatos: ${raw.candidates.map((c) => `${c.name} (${(c.size / 1e9).toFixed(2)} GB)`).join(", ")}`);
     }
     src = join(ctx.driveDir, raw.pick.name);
   }
@@ -326,7 +378,11 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
     writeJson(sourcePath, source);
     redo = true;
   }
-  console.error(`[video-montagem] bruto: ${source.path} (${source.width}x${source.height}, ${source.fps} fps, ${source.durationS.toFixed(1)} s)`);
+  if (source.audioOnly) {
+    console.error(`[video-montagem] bruto só de áudio: ${source.path} (${source.durationS.toFixed(1)} s) — modo áudio: transcrição, decupagem e roteiro; build/srt/prévia/review param antes (#11552)`);
+  } else {
+    console.error(`[video-montagem] bruto: ${source.path} (${source.width}x${source.height}, ${source.fps} fps, ${source.durationS.toFixed(1)} s)`);
+  }
 
   const audio = join(ctx.workDir, "audio.wav");
   const loudPath = f(ctx, "loudness.json");
@@ -613,6 +669,88 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   return 0;
 }
 
+/** Destino do `review-final`: `--seq` explícito ou o sufixo do nome do export. */
+export function reviewFinalTarget(file: string, seq: string | undefined): VideoTarget {
+  if (seq !== undefined) {
+    if (!(VIDEO_TARGETS as readonly string[]).includes(seq)) throw new Error(`--seq deve ser ${VIDEO_TARGETS.join(", ")} (veio ${seq})`);
+    return seq as VideoTarget;
+  }
+  const t = exportTarget(basename(file));
+  if (!t) throw new Error(`destino não reconhecido no nome ${basename(file)} (_Youtube_, _Instagram_, _Outras redes_): passe --seq`);
+  return t;
+}
+
+function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefined, withText: boolean): number {
+  if (!file) throw new Error("review-final exige --file PATH (o export do Premiere)");
+  const path = resolve(file);
+  if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
+  const target = reviewFinalTarget(path, seq);
+  const findings: FinalReviewFinding[] = [];
+
+  const probeJson = JSON.parse(run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path]).stdout) as {
+    streams?: Array<{ codec_type?: string; width?: number; height?: number; r_frame_rate?: string }>;
+    format?: { duration?: string };
+  };
+  const v = probeJson.streams?.find((s) => s.codec_type === "video");
+  if (!v?.width || !v.height || !v.r_frame_rate) throw new Error(`ffprobe sem stream de vídeo em ${path}`);
+  const probe = { width: v.width, height: v.height, fps: parseFrameRate(v.r_frame_rate), durationS: Number(probeJson.format?.duration) };
+  if (!Number.isFinite(probe.durationS) || probe.durationS <= 0) throw new Error(`duração ilegível no ffprobe (${path})`);
+
+  // Plano da montagem, quando existe e está em dia: fps esperado, roteiro e tempo no bruto.
+  let plan: SequencePlan | null = null;
+  let planFps: number | null = null;
+  try {
+    const pf = loadPlan(ctx);
+    plan = pf.plans.find((p) => p.spec.target === target) ?? null;
+    planFps = pf.source.audioOnly ? null : pf.source.fps;
+    if (!plan) console.error(`[aviso] plan.json sem a sequência ${target}: texto não comparado com o roteiro`);
+  } catch (e) {
+    console.error(`[aviso] sem plan.json válido (${(e as Error).message}): texto não comparado, sem tempo no bruto`);
+  }
+
+  const crop = parseCropdetect(
+    run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vf", "fps=1,cropdetect=limit=24:round=2:reset=0", "-an", "-f", "null", "-"]).stderr,
+  );
+  findings.push(...checkFormat(probe, target, { crop, expectedFps: planFps }));
+
+  const loud = parseLoudnormJson(
+    run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vn", "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json", "-f", "null", "-"]).stderr,
+  );
+  findings.push(...checkLoudness(loud));
+
+  const peaks = parsePeakWindows(
+    run("ffmpeg", [
+      "-hide_banner", "-nostats", "-v", "error", "-i", path, "-vn", "-ac", "1",
+      "-af", "aresample=48000,asetnsamples=n=480:p=0,astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.Peak_level:file=-",
+      "-f", "null", "-",
+    ]).stdout,
+  );
+  const clicks = detectClicks(peaks);
+
+  const sil = parseSilenceDetect(
+    run("ffmpeg", ["-hide_banner", "-nostats", "-i", path, "-vn", "-af", "silencedetect=noise=-40dB:d=0.08", "-f", "null", "-"]).stderr,
+    probe.durationS,
+  );
+  findings.push(...dedupeAudioFindings(clicks, detectFragments(sil)));
+
+  if (withText && plan) {
+    mkdirSync(ctx.workDir, { recursive: true });
+    const wav = join(ctx.workDir, `review-final-${target}.wav`);
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", wav]);
+    const trPath = f(ctx, `review-final-${target}.transcript.json`);
+    transcribeWithPython(ctx, wav, trPath, { vad: false });
+    findings.push(...checkText({ words: nonEmptyWords(trPath, "transcrição do export"), plan, fps: planFps ?? 30, durationS: probe.durationS, aliases: loadVocab().aliases }));
+  }
+
+  const table = finalReviewTable(findings);
+  mkdirSync(ctx.stateDir, { recursive: true });
+  writeFileAtomic(f(ctx, `review-final-${target}.md`), `# Revisão do export: ${basename(path)}\n\n${table}`);
+  writeJson(f(ctx, `review-final-${target}.json`), { file: path, target, probe, crop, loudness: loud, findings });
+  process.stdout.write(table);
+  console.error(`[video-montagem] review-final: ${findings.length} achado(s) em ${basename(path)} (destino ${target}); tabela em ${f(ctx, `review-final-${target}.md`)}`);
+  return 0;
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   const { values, flags, positional } = parseArgs(argv);
   const [cmd, edition] = positional;
@@ -636,6 +774,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     force: flags.has("force"),
   };
   const seq = values["seq"];
+  if ((VIDEO_ONLY_COMMANDS as readonly string[]).includes(cmd)) {
+    const stop = audioOnlyStop(ctx, cmd);
+    if (stop !== null) return stop;
+  }
   switch (cmd) {
     case "transcribe":
       return cmdTranscribe(ctx, values["source"], parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)));
@@ -659,6 +801,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return cmdPreview(ctx, seq);
     case "review":
       return cmdReview(ctx, seq);
+    case "review-final":
+      return cmdReviewFinal(ctx, values["file"], seq, !flags.has("no-text"));
     default:
       console.error(`video-montagem: subcomando desconhecido: ${cmd}\n${USAGE}`);
       return 2;

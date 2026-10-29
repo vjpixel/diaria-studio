@@ -61,6 +61,13 @@
  * subpasta `Editado/` (e variações: `isEditedFolderName`) e trata os arquivos
  * dela como os de `Final/` — na 261028 o vídeo veio em
  * `Editado/Diaria comentada_Youtube_FINAL.mp4`.
+ *
+ * **Versão mais alta em `Editados/` (#11556).** Na 261029 a pasta tinha
+ * `_Youtube_V1` … `_V5` e `_Instagram_V1`/`_V2`, sem `Final/`. Ali 2+ arquivos
+ * do mesmo destino não são ambíguos: vale o maior `V{n}` (`pickHighestVersion`,
+ * empate no `n` desfeito pelo `modifiedTime`), com a escolha devolvida como
+ * `premise`. `needs-editor` fica para nome sem versão ou empate que a data não
+ * desfaz. Em `Final/` nada muda: 2+ do mesmo destino seguem `ambiguous`.
  */
 
 export type VideoOrientation = "horizontal" | "vertical";
@@ -146,12 +153,71 @@ export interface DriveVideoFile {
   videoMediaMetadata?: { width?: number; height?: number; durationMillis?: string };
   /** Onde o arquivo foi listado. Default: `root`. `final-folder` = `{AAMMDD}/Final/` (#11222). */
   scope?: DriveVideoScope;
+  /**
+   * Listado em `Editado/`/`Editados/` (#11385), não em `Final/`: o scope é o
+   * mesmo `final-folder`, mas só aqui vale a versão mais alta (#11556).
+   */
+  editedFolder?: boolean;
+  /** `appProperties` do Drive; `diaria_promoted_from` marca a cópia que o fetch pôs em `Final/` (#11556). */
+  appProperties?: Record<string, string>;
+}
+
+/** Chave do `appProperties` que marca a cópia promovida para `Final/` (#11556). */
+export const PROMOTED_FROM_PROPERTY = "diaria_promoted_from";
+
+/** A cópia em `Final/` foi feita pelo fetch a partir de `Editados/` (#11556)? */
+export function isPromotedCopy(file: Pick<DriveVideoFile, "appProperties">): boolean {
+  return typeof file.appProperties?.[PROMOTED_FROM_PROPERTY] === "string";
+}
+
+/**
+ * Número da versão no nome (`_V5`, ` V2`, `-v12`), sem extensão; `null` sem
+ * versão ou com mais de uma (#11556). "FINAL" não é versão.
+ */
+export function videoVersionOf(name: string): number | null {
+  const stem = name.normalize("NFC").replace(/\.[a-z0-9]{2,4}$/i, "");
+  const found = [...stem.matchAll(/(?:^|[\s_.\-()])v(\d{1,3})(?=$|[\s_.\-()])/gi)].map((m) => Number(m[1]));
+  return found.length === 1 ? found[0] : null;
+}
+
+function modifiedMs(file: DriveVideoFile): number | null {
+  const t = file.modifiedTime ? Date.parse(file.modifiedTime) : NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Entre 2+ candidatos do mesmo destino em `Editados/` (#11556): o de maior
+ * `V{n}`. Empate no `n` cai no `modifiedTime` estritamente mais recente.
+ * `null` (o editor escolhe) quando algum nome não tem versão, ou quando o
+ * empate não se desfaz (mesmo `n` e mesma data, ou data ausente).
+ */
+export function pickHighestVersion(candidates: DriveVideoFile[]): { file: DriveVideoFile; premise: string } | null {
+  const versions = candidates.map((f) => videoVersionOf(f.name));
+  if (candidates.length < 2 || versions.some((v) => v === null)) return null;
+  const max = Math.max(...(versions as number[]));
+  const top = candidates.filter((_, i) => versions[i] === max);
+  const others = candidates.filter((_, i) => versions[i] !== max).map((f) => f.name);
+  if (top.length === 1) {
+    return {
+      file: top[0],
+      premise: `versão mais alta em Editados/: ${top[0].name} (V${max}); fora: ${others.join(", ")} (#11556)`,
+    };
+  }
+  const dated = top.map((f) => ({ f, ms: modifiedMs(f) }));
+  if (dated.some((d) => d.ms === null)) return null;
+  dated.sort((a, b) => (b.ms as number) - (a.ms as number));
+  if (dated[0].ms === dated[1].ms) return null;
+  const rest = [...dated.slice(1).map((d) => d.f.name), ...others];
+  return {
+    file: dated[0].f,
+    premise: `versão mais alta em Editados/ empatada em V${max}: ${dated[0].f.name} é a modificada por último (${dated[0].f.modifiedTime}); fora: ${rest.join(", ")} (#11556)`,
+  };
 }
 
 export type DriveVideoScope = "final-folder" | "edition-folder" | "root";
 
 export type DriveVideoSelection =
-  | { kind: "found"; orientation: VideoOrientation; file: DriveVideoFile }
+  | { kind: "found"; orientation: VideoOrientation; file: DriveVideoFile; premise?: string }
   | { kind: "none"; orientation: VideoOrientation; reason: string }
   | { kind: "ambiguous"; orientation: VideoOrientation; candidates: DriveVideoFile[] }
   | { kind: "orientation-unknown"; orientation: VideoOrientation; files: DriveVideoFile[] };
@@ -259,7 +325,13 @@ function pickFromFinalFolder(pool: DriveVideoFile[], orientation: VideoOrientati
     return o === null || o === orientation;
   };
   const byTarget = pool.filter((f) => videoTargetOf(f.name) === target && fitsOrientation(f));
-  if (byTarget.length > 1) return { kind: "ambiguous", orientation, candidates: byTarget };
+  if (byTarget.length > 1) {
+    // #11556: em Editados/ ficam todas as exportações (V1…V5); a mais alta é a
+    // final. Em Final/ o editor pôs as duas de propósito: segue ambíguo.
+    const highest = byTarget.every((f) => f.editedFolder) ? pickHighestVersion(byTarget) : null;
+    if (highest) return { kind: "found", orientation, file: highest.file, premise: highest.premise };
+    return { kind: "ambiguous", orientation, candidates: byTarget };
+  }
   if (byTarget.length === 1) return { kind: "found", orientation, file: byTarget[0] };
   return pick(pool.filter((f) => videoTargetOf(f.name) === null), orientation);
 }
