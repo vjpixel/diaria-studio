@@ -30,6 +30,13 @@
  *     carrossel, legado) removidas — a URL ainda era da arte antiga
  *   - `_internal/carousel-keep-art.json` (#11213): exceção "manter a arte" da
  *     posição removida — era da história rebaixada
+ *   - Artefatos do rebaixado (#11529): `02-dN-{draft,prompt}.md`, imagens
+ *     `04-dN-*`, sidecars e as chaves removidas de `06-public-images.json` são
+ *     MOVIDOS para `_internal/_forensic/swap-{aammdd-hhmm}-dN/` com um
+ *     `manifest.json` (url, título, bucket de origem), não apagados. Se o
+ *     editor trouxer o item de volta (novo swap promovendo-o à mesma posição),
+ *     `--restore dN` devolve arquivos e chaves; sobra só o re-upload
+ *     (`lib/swap-destaque-backup.ts`).
  *
  * O que o script NÃO faz (sinaliza claramente quais re-renders faltam, em
  * ORDEM, no `rerenders_needed` do JSON de saída):
@@ -70,6 +77,10 @@
  *   # final no TÍTULO/SUBTÍTULO e limpar o marcador (review PR #9666):
  *   npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir <path>
  *
+ *   # Depois de trazer o rebaixado de volta à mesma posição (#11529): devolver
+ *   # rascunho, prompt, imagens e chaves de 06-public-images.json do backup:
+ *   npx tsx scripts/swap-destaque.ts --restore d3 --edition-dir <path> [--from <dir>] [--force]
+ *
  *   # Custom edition-dir:
  *   npx tsx scripts/swap-destaque.ts \
  *     --edition 260623 \
@@ -87,7 +98,6 @@
 import {
   existsSync,
   readFileSync,
-  readdirSync,
   unlinkSync,
 } from "node:fs";
 import { resolve, dirname, join } from "node:path";
@@ -106,6 +116,19 @@ import { extractTitlesFromMd } from "./insert-titulo-subtitulo.ts"; // #9601
 import { useMelhorPostReselectStep } from "./lib/use-melhor-post.ts"; // #9755
 import { lintNewsletter, type ApprovedJson } from "./lib/lint-checks/url-bucket.ts"; // #9961
 import { urlsMatch } from "./lib/url-utils.ts"; // #11497
+import {
+  backupDemotedDestaque,
+  findSwapBackupForUrl,
+  listDestaqueImageFiles,
+  listDestaquePromptFiles,
+  listSwapBackups,
+  readPublicImagesForPosition,
+  restoreConflicts,
+  restoreSwapBackup,
+  SWAP_BACKUP_MANIFEST,
+  type FoundBackup,
+  type SwapBackupManifest,
+} from "./lib/swap-destaque-backup.ts"; // #11529
 import {
   replaceTitleInTituloSubtitulo,
   tituloPendingPath,
@@ -173,6 +196,11 @@ export interface SwapResult {
     deleted: string[];
   };
   rerenders_needed: string[];
+  /**
+   * #11529: para onde foram os artefatos do rebaixado (`dir: null` = não havia
+   * nada a guardar). Restaurar com `--restore dN`.
+   */
+  backup?: { dir: string | null; files: string[]; public_image_keys: string[] };
   /**
    * #11213: avisos fail-soft dos JSONs secundários (estado do Noite Estrelada,
    * `carousel-keep-art.json` malformado) — mesmo campo de `swap-destaques.ts`
@@ -651,13 +679,7 @@ export function deleteDestaqueImages(
   dryRun: boolean,
 ): Array<{ deleted: string }> {
   const deleted: Array<{ deleted: string }> = [];
-  if (!existsSync(editionDir)) return deleted;
-
-  const files = readdirSync(editionDir).filter((f) =>
-    new RegExp(`^04-d${position}-[a-z0-9-]+\\.(?:jpg|png|jpeg|json)$`, "i").test(f),
-  );
-
-  for (const f of files) {
+  for (const f of listDestaqueImageFiles(editionDir, position)) { // #11529: padrão na lib do backup
     if (!dryRun) {
       unlinkSync(join(editionDir, f));
     }
@@ -680,15 +702,7 @@ export function deleteDestaquePrompts(
   dryRun: boolean,
 ): Array<{ deleted: string }> {
   const deleted: Array<{ deleted: string }> = [];
-  if (!existsSync(internalDir)) return deleted;
-
-  const files = readdirSync(internalDir).filter((f) =>
-    new RegExp(
-      `^(?:02-d${position}-(?:prompt\\.md|sd-prompt\\.json|draft\\.md)|04-d${position}-(?:sd-prompt|generator)\\.json)$`,
-    ).test(f),
-  );
-
-  for (const f of files) {
+  for (const f of listDestaquePromptFiles(internalDir, position)) { // #11529: padrão na lib do backup
     if (!dryRun) {
       unlinkSync(join(internalDir, f));
     }
@@ -1062,9 +1076,135 @@ function finalizeTituloMain(argv: string[]): void {
   }
 }
 
+/**
+ * #11529: próximos passos depois do `--restore dN`. O `02-reviewed.md` não é
+ * tocado (o bloco do D{N} segue com o placeholder do swap de volta): o texto
+ * está no `02-dN-draft.md` restaurado.
+ *
+ * @pure
+ */
+export function buildRestoreSteps(editionDir: string, position: 1 | 2 | 3, hasDraft: boolean): string[] {
+  const dir = editionDir.replace(/\/+$/, "");
+  return [
+    hasDraft
+      ? `Trocar o placeholder do DESTAQUE ${position} em 02-reviewed.md pelo texto de _internal/02-d${position}-draft.md (restaurado) — sem re-rodar o writer-destaque`
+      : `Backup sem _internal/02-d${position}-draft.md: re-rodar o writer-destaque DESTAQUE ${position}`,
+    `Trocar o título provisório pelo final no TÍTULO/SUBTÍTULO: npx tsx scripts/swap-destaque.ts --finalize-titulo --edition-dir ${dir}`,
+    `Re-upload das imagens restauradas: npx tsx scripts/upload-images-public.ts --mode newsletter e --mode social (o cache reaproveita as chaves devolvidas quando o md5 bate)`,
+    `Splice do ## d${position} em 03-social.md (se o social já foi reescrito pro item que saiu) e npx tsx scripts/refresh-social-hash.ts --edition-dir ${dir}`,
+    `npx tsx scripts/check-invariants.ts --edition-dir ${dir} --stage 4`,
+  ];
+}
+
+/** Lê o manifest de um diretório de backup passado em `--from`. */
+function readBackupDir(dir: string): FoundBackup {
+  const manifest = JSON.parse(readFileSync(resolve(dir, SWAP_BACKUP_MANIFEST), "utf8")) as SwapBackupManifest;
+  return { dir: resolve(dir), manifest };
+}
+
+/**
+ * `--restore dN` (#11529): devolve à posição os artefatos de um backup do
+ * swap. Sem `--from`, usa o backup mais recente da posição cuja URL é a do
+ * destaque que está HOJE em dN no `01-approved.json` — ou seja, primeiro o
+ * item volta à posição (novo swap), depois o restore. Arquivo já existente no
+ * destino recusa sem `--force`.
+ */
+function restoreMain(argv: string[]): void {
+  const get = (k: string): string | undefined => {
+    const i = argv.indexOf(k);
+    return i >= 0 && i + 1 < argv.length ? argv[i + 1] : undefined;
+  };
+  const posRaw = get("--restore");
+  if (!posRaw || !["d1", "d2", "d3"].includes(posRaw)) {
+    console.error("Uso: swap-destaque.ts --restore d{1|2|3} (--edition-dir <path> | --edition AAMMDD) [--from <dir>] [--force]");
+    process.exit(2);
+  }
+  const position = Number(posRaw.slice(1)) as 1 | 2 | 3;
+  const editionDirArg = get("--edition-dir");
+  const edition = get("--edition");
+  if (!editionDirArg && !edition) {
+    console.error("Erro: --edition-dir <path> ou --edition AAMMDD é obrigatório");
+    process.exit(2);
+  }
+  const editionDir = editionDirArg
+    ? resolve(editionDirArg)
+    : resolveEditionDir(resolve(ROOT, "data", "editions"), edition as string);
+  const force = argv.includes("--force");
+
+  const approvedPath = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(approvedPath)) {
+    console.error(`Erro: ${approvedPath} não encontrado`);
+    process.exit(1);
+  }
+  const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as Record<string, unknown>;
+  const highlights = Array.isArray(approved.highlights) ? (approved.highlights as Record<string, unknown>[]) : [];
+  const current = highlights[position - 1];
+  const currentUrl = current ? extractUrl(current) : "";
+
+  const fromArg = get("--from");
+  let backup: FoundBackup | null;
+  if (fromArg) {
+    try {
+      backup = readBackupDir(fromArg);
+    } catch (e) {
+      console.error(`Erro: backup ${fromArg} ilegível: ${(e as Error).message}`);
+      process.exit(1);
+    }
+    if (backup.manifest.position !== position) {
+      console.error(`Erro: o backup é do D${backup.manifest.position}, não do D${position}`);
+      process.exit(1);
+    }
+    if (!urlsMatch(backup.manifest.url, currentUrl) && !force) {
+      console.error(
+        `Erro: o backup é de ${backup.manifest.url}, mas o D${position} hoje é ${currentUrl || "(vazio)"} — ` +
+          `traga o item de volta à posição primeiro, ou use --force`,
+      );
+      process.exit(1);
+    }
+  } else {
+    backup = currentUrl ? findSwapBackupForUrl(editionDir, position, currentUrl) : null;
+    if (!backup) {
+      const available = listSwapBackups(editionDir, position);
+      console.error(
+        `Erro: nenhum backup de swap do D${position} para ${currentUrl || "(D" + position + " vazio)"}.` +
+          (available.length > 0
+            ? `\n  Backups do D${position}:\n${available.map((b) => `    ${b.dir} — ${b.manifest.url} ("${b.manifest.title}")`).join("\n")}` +
+              `\n  Traga o item de volta à posição (swap-destaque.ts --promote ... --demote d${position}) ou passe --from <dir>.`
+            : ""),
+      );
+      process.exit(1);
+    }
+  }
+
+  const conflicts = restoreConflicts(editionDir, backup);
+  if (conflicts.length > 0 && !force) {
+    console.error(`Erro: já existem no destino (use --force para sobrescrever): ${conflicts.join(", ")}`);
+    process.exit(1);
+  }
+  const r = restoreSwapBackup(editionDir, backup, { force });
+  const out = {
+    restored_from: backup.dir,
+    position: `d${position}`,
+    url: backup.manifest.url,
+    title: backup.manifest.title,
+    ...r,
+    next_steps: buildRestoreSteps(editionDir, position, r.files_restored.includes(`_internal/02-d${position}-draft.md`)),
+  };
+  console.log(JSON.stringify(out, null, 2));
+  if (r.public_images_kept.length > 0) {
+    console.error(
+      `AVISO: chave(s) já presentes em 06-public-images.json mantidas como estavam: ${r.public_images_kept.join(", ")}`,
+    );
+  }
+}
+
 function main(): void {
   if (process.argv.includes("--finalize-titulo")) {
     finalizeTituloMain(process.argv.slice(2));
+    return;
+  }
+  if (process.argv.includes("--restore")) {
+    restoreMain(process.argv.slice(2));
     return;
   }
   const args = parseSwapArgs(process.argv.slice(2));
@@ -1233,8 +1373,8 @@ function main(): void {
             demoted_item: drop ? `descartado` : `devolvido a ${demoteTo}[0] (flat, #9601)`,
             social_hash: "NÃO regravado (#9169) — recarimbar via refresh-social-hash.ts depois do splice do social",
             md_block: `DESTAQUE ${demotePosition} em 02-reviewed.md substituído por placeholder; item promovido sai da seção de pool (seção esvaziada sai junto), TÍTULO/SUBTÍTULO e contagem da intro re-sincronizados (#9601)`,
-            images_deleted: `04-d${demotePosition}-*.{jpg,png,json} removidos, inclusive 4x5-nativo e carousel-* (#9755)`,
-            prompts_deleted: `_internal/02-d${demotePosition}-*.md/json e 04-d${demotePosition}-{sd-prompt,generator}.json removidos (precisam regenerar)`,
+            images_deleted: `04-d${demotePosition}-*.{jpg,png,json} saem da posição, inclusive 4x5-nativo e carousel-* (#9755) — movidos para _internal/_forensic/swap-{aammdd-hhmm}-d${demotePosition}/ (#11529)`,
+            prompts_deleted: `_internal/02-d${demotePosition}-*.md/json e 04-d${demotePosition}-{sd-prompt,generator}.json saem da posição (precisam regenerar) — movidos para o mesmo backup; --restore d${demotePosition} devolve (#11529)`,
             estilo_regen_state: estiloRegenPlan,
             carousel_keep_art: keepArtPlanText,
           },
@@ -1388,6 +1528,10 @@ function main(): void {
     }
   }
 
+  // #11529: guarda as entradas públicas da posição ANTES de o lote abaixo
+  // gravar o cache invalidado — vão para o manifest do backup.
+  const demotedPublicImages = readPublicImagesForPosition(editionDir, demotePosition);
+
   // #11252: as URLs públicas da posição trocada (hero 2:1, 4:5, carrossel)
   // ainda são da arte do destaque ANTIGO — remove do cache no mesmo lote.
   const publicPlan = planPublicImagesInvalidation(editionDir, [demotePosition]);
@@ -1421,17 +1565,27 @@ function main(): void {
     }
   }
 
-  // 4. Delete old images for the swapped position (new ones need Stage 3)
-  const deletedImages = deleteDestaqueImages(editionDir, demotePosition, false);
-  for (const d of deletedImages) {
-    result.modified.deleted.push(d.deleted);
-  }
-
-  // 5. Delete old prompts for the swapped position (new ones need Stage 3)
-  const deletedPrompts = deleteDestaquePrompts(internalDir, demotePosition, false);
-  for (const d of deletedPrompts) {
-    result.modified.deleted.push(d.deleted);
-  }
+  // 4+5. Tira da posição as imagens e os prompts/rascunho do rebaixado (os do
+  // promovido saem do Stage 3) — MOVIDOS para _internal/_forensic/ com
+  // manifest, nunca apagados (#11529): se o editor trouxer o item de volta,
+  // `--restore dN` devolve tudo.
+  const demotedHighlight = demotedItem as { bucket?: unknown; article?: { category?: unknown } };
+  const backup = backupDemotedDestaque({
+    editionDir,
+    position: demotePosition,
+    url: demotedUrl,
+    title: demotedTitle,
+    sourceBucket:
+      typeof demotedHighlight.bucket === "string"
+        ? demotedHighlight.bucket
+        : typeof demotedHighlight.article?.category === "string"
+          ? demotedHighlight.article.category
+          : null,
+    demotedTo: drop ? null : demoteTo,
+    publicImages: demotedPublicImages,
+  });
+  result.backup = backup;
+  for (const f of backup.files) result.modified.deleted.push(f.replace(/^_internal\//, ""));
 
   // 6. Zera o estado do plano de Noite Estrelada da posição (#10335): a
   // posição recebe outro item e imagem nova; um `pending` vivo da imagem
@@ -1478,6 +1632,9 @@ function main(): void {
       `✓ swap-destaque concluído (edição ${edition})`,
       `  Promovido:  [${promote.bucket}:${promote.idx}] "${promotedTitle}"  →  DESTAQUE ${demotePosition}`,
       `  Rebaixado:  [${demote}] "${demotedTitle}"  →  ${drop ? "DESCARTADO" : `${demoteTo}[0]`}`,
+      ...(backup.dir
+        ? [`  Backup do rebaixado: ${backup.dir} (voltando à posição: --restore ${demote}, #11529)`]
+        : []),
       "",
       "  Re-renders necessários (NESTA ordem):",
       ...result.rerenders_needed.map((r, i) => `    ${i + 1}. ${r}`),
