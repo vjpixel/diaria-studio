@@ -36,10 +36,35 @@
  * implementador da 261018d) — somar linha a linha contaria a mesma resposta
  * 1,8× em média. A convenção (soma de todos os turnos, cache incluído) é a
  * mesma do `coordinator_tokens_estimate`, então as categorias Implementação e
- * Coordenador ficam comparáveis entre si; NÃO é o mesmo número que o
- * `subagent_tokens` do bloco `<usage>` do retorno do `Agent` (aproximação do
- * turno final — ver docstring de `session-transcript.ts`). Por isso o evento
- * leva `source: "subagent_transcript"`, nunca `harness_usage`.
+ * Coordenador ficam comparáveis entre si. Por isso o evento leva
+ * `source: "subagent_transcript"`, nunca `harness_usage`.
+ *
+ * ### As duas definições, lado a lado (#11568)
+ *
+ * O `subagent_tokens` que o harness devolve no `<usage>` do `Agent` NÃO é
+ * este número: é o total (`input + cache_creation + cache_read + output`) do
+ * turno FINAL — o tamanho do contexto no fim, não a soma do que foi lido ao
+ * longo dos turnos. Medido em 29/10/2026 no `/diaria-develop` 261029
+ * (sessão 548bee0d): o implementador da #11205 teve notificação 183.426 e
+ * turno final 182.434; este script gravou 5.804.716, dos quais 5.604.082
+ * (96,5%) são `cache_read` — o mesmo prefixo relido em cada um dos 38 turnos.
+ * Os dois revisores: 118.007/112.119 no turno final contra 887.820/408.217 na
+ * soma. A razão soma/final cresce com o nº de turnos (~30× no implementador,
+ * 4–8× nos revisores), então nenhuma constante converte uma na outra.
+ *
+ * O número principal (`subagent_tokens`/`review_tokens`/`fleet_tokens`)
+ * continua sendo a soma — é o volume que a assinatura de fato processa e o
+ * que casa com o `coordinator_tokens_estimate`. Para não ler a soma como se
+ * fosse o número do harness, cada evento grava também (#11568):
+ *   - `final_turn_tokens`: total do último turno, equivalente ao
+ *     `subagent_tokens` da notificação do harness;
+ *   - `cache_read_tokens`: parte da soma que é releitura de cache (cobrada a
+ *     0,05–0,1× do input, ver `scripts/lib/pricing.ts`);
+ *   - `uncached_tokens`: `input + cache_creation + output` somados — a soma
+ *     sem a releitura de cache;
+ *   - `tokens_definition`: `"sum_all_turns_incl_cache_read"`, o rótulo da
+ *     convenção do número principal.
+ * Invariante: `uncached_tokens + cache_read_tokens` = número principal.
  *
  * ## Idempotência
  *
@@ -90,6 +115,8 @@ export const SUBAGENT_METRICS_MESSAGE = "subagent_metrics";
 export const REVIEW_METRICS_MESSAGE = "review_metrics";
 export const FLEET_REVIEW_METRICS_MESSAGE = "fleet_review_metrics";
 export const SUBAGENT_TRANSCRIPT_SOURCE = "subagent_transcript";
+/** Rótulo da convenção do número principal dos eventos (#11568, ver docstring). */
+export const TOKENS_DEFINITION = "sum_all_turns_incl_cache_read";
 
 export interface SubagentMeta {
   agentType: string;
@@ -171,8 +198,16 @@ export function extractIssueNumbers(description: string): number[] {
 }
 
 export interface TranscriptSummary {
-  /** `null` = nenhum turno com usage no transcript. */
+  /** `null` = nenhum turno com usage no transcript. Soma de todos os turnos, cache incluído. */
   tokens: number | null;
+  /** Parte de `tokens` que é `cache_read` (#11568). `null` junto com `tokens`. */
+  cacheReadTokens?: number | null;
+  /**
+   * Total do ÚLTIMO turno com usage (#11568) — equivalente ao
+   * `subagent_tokens` que o harness devolve no `<usage>` do `Agent`.
+   * `null` junto com `tokens`.
+   */
+  finalTurnTokens?: number | null;
   toolUses: number;
   firstTimestamp: string | null;
   lastTimestamp: string | null;
@@ -210,9 +245,11 @@ function usageTotal(u: UsageShape): number {
  * ignorada.
  */
 export function summarizeTranscript(content: string): TranscriptSummary {
-  const usageById = new Map<string, number>();
+  const usageById = new Map<string, { total: number; cacheRead: number }>();
   let anonymousTotal = 0;
+  let anonymousCacheRead = 0;
   let anonymousCount = 0;
+  let finalTurn: number | null = null;
   const toolUseIds = new Set<string>();
   let anonymousToolUses = 0;
   let first: string | null = null;
@@ -242,9 +279,14 @@ export function summarizeTranscript(content: string): TranscriptSummary {
     }
     if (message.usage && typeof message.usage === "object") {
       const total = usageTotal(message.usage);
-      if (typeof message.id === "string" && message.id) usageById.set(message.id, total);
+      const cacheRead = message.usage.cache_read_input_tokens ?? 0;
+      // Última linha com usage = turno final (as linhas repetidas da mesma
+      // resposta carregam o mesmo usage, então a ordem do arquivo basta).
+      finalTurn = total;
+      if (typeof message.id === "string" && message.id) usageById.set(message.id, { total, cacheRead });
       else {
         anonymousTotal += total;
+        anonymousCacheRead += cacheRead;
         anonymousCount += 1;
       }
     }
@@ -258,12 +300,19 @@ export function summarizeTranscript(content: string): TranscriptSummary {
   }
   const hasUsage = usageById.size > 0 || anonymousCount > 0;
   let tokens: number | null = null;
+  let cacheReadTokens: number | null = null;
   if (hasUsage) {
     tokens = anonymousTotal;
-    for (const v of usageById.values()) tokens += v;
+    cacheReadTokens = anonymousCacheRead;
+    for (const v of usageById.values()) {
+      tokens += v.total;
+      cacheReadTokens += v.cacheRead;
+    }
   }
   return {
     tokens,
+    cacheReadTokens,
+    finalTurnTokens: hasUsage ? finalTurn : null,
     toolUses: toolUseIds.size + anonymousToolUses,
     firstTimestamp: first,
     lastTimestamp: last,
@@ -446,9 +495,16 @@ function durationMs(summary: TranscriptSummary): number | null {
 }
 
 function sourceFields(summary: TranscriptSummary): Record<string, unknown> {
-  return summary.tokens === null
-    ? { source: "unavailable", reason: "no_usage_entries" }
-    : { source: SUBAGENT_TRANSCRIPT_SOURCE };
+  if (summary.tokens === null) return { source: "unavailable", reason: "no_usage_entries" };
+  // #11568: as duas definições lado a lado. Os campos só saem quando o
+  // resumo os traz (registro montado à mão em teste/legado não os tem).
+  const breakdown: Record<string, unknown> = { tokens_definition: TOKENS_DEFINITION };
+  if (typeof summary.cacheReadTokens === "number") {
+    breakdown.cache_read_tokens = summary.cacheReadTokens;
+    breakdown.uncached_tokens = summary.tokens - summary.cacheReadTokens;
+  }
+  if (typeof summary.finalTurnTokens === "number") breakdown.final_turn_tokens = summary.finalTurnTokens;
+  return { source: SUBAGENT_TRANSCRIPT_SOURCE, ...breakdown };
 }
 
 export interface PlanResult {
