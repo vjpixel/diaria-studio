@@ -15,12 +15,13 @@
 # demais. Ex (fictício):
 #   exemplo.com/launches/ferramenta-sem-keyword
 #
-# Dois tipos de entrada (#11554):
-#   - URL ESPECÍFICA (sem `/` no fim): diz "é ferramenta" E vale como
-#     confirmação de título/escopo de item extraído de newsletter (#9292).
-#   - PADRÃO DE CAMINHO (termina em `/`, ou só o domínio): diz só "é
-#     ferramenta" para tudo sob o caminho. Item extraído de newsletter sob o
-#     padrão continua exigindo summary + verify_verdict confirmados (#9250).
+# Entrada pode ser URL ESPECÍFICA ou PADRÃO DE CAMINHO (termina em `/`, ou só
+# o domínio, vale para tudo sob o caminho). As duas respondem só "é
+# ferramenta?" (#11554).
+#
+# Esta lista NÃO confirma título/escopo de item extraído de newsletter: esse
+# item continua exigindo summary + verify_verdict confirmados (#9250/#9292).
+# O escape-hatch do editor para isso é seed/lancamentos-extract-confirmed.txt.
 #
 # A allowlist só impede o REBAIXAMENTO de LANÇAMENTOS para RADAR; não promove
 # item que o categorizer pôs em outra seção.
@@ -30,8 +31,11 @@
 # "disponível") já passa sem entrada aqui.
 #
 # Padrões de caminho por decisão do editor (28/10/2026, #11530): blog oficial
-# da Replit é sempre lançamento. `blog.replit.com/` cobre os links antigos do
-# domínio que hoje redireciona pra `replit.com/blog/`.
+# da Replit é sempre lançamento. `replit.com/blog/` é o caminho atual;
+# `blog.replit.com/` cobre os links antigos do subdomínio, que hoje redireciona
+# pra `replit.com/blog/` e continua aceito em official-domains.ts. As duas
+# entradas só impedem o rebaixamento: não promovem post da Replit que o
+# categorizer pôs em RADAR (decisão do editor no briefing 261029b, #11554).
 blog.replit.com/
 cohere.com/blog/transcribe-arabic
 developers.googleblog.com/litertjs-googles-high-performance-web-ai-inference
