@@ -12,13 +12,29 @@
  *       refaz todos os derivados. O limiar do silencedetect é relativo ao
  *       loudness do bruto (#11351, `silenceNoiseDb`, gravado em
  *       `silences.meta.json`); `--silence-db -35` sobrepõe. Limiar diferente do
- *       da última detecção refaz só o `silences.json`.
- *   decupagem AAMMDD        sem `decupagem-plan.json`: lista numerada dos segmentos + molde do plano
+ *       da última detecção refaz só o `silences.json`. Um `transcript.json` existente
+ *       nunca é retranscrito sem --force, nem com `source.json` novo (#11504: avisa e mantém).
+ *   transcribe AAMMDD --from-audio ARQ [--audio-transcript JSON] [--source VIDEO]
+ *       (#11504) o vídeo chegou depois de o áudio separado (o mesmo som, com pausas
+ *       cortadas) já estar transcrito: alinha o áudio ao vídeo por correlação do
+ *       envelope em janelas (`lib/diaria/video-audio-align.ts`), remapeia as palavras
+ *       para o tempo do vídeo e retranscreve no vídeo só os trechos sem par. A
+ *       transcrição do áudio fica em `transcript-audio.json` (vem de --audio-transcript,
+ *       ou do `transcript.json` quando o `source.json` era o áudio); `audio-align.json`
+ *       guarda os deslocamentos e o que foi retranscrito.
+ *   decupagem AAMMDD [--pixel-f0 HZ]
+ *                           sem `decupagem-plan.json`: lista numerada dos segmentos + molde do plano
  *                           (a skill classifica); com ele: o Markdown do Doc da decupagem (gate 1, por
  *                           bloco, curado, com "Montagem sugerida") + `blocks.template.json` (sempre refaz).
  *                           A listagem traz a decisão por critério de cada tomada (#11364); o plano que
  *                           põe duas tomadas da mesma frase como "usar", ou "alternativa" onde a direção
  *                           já aprovou uma, é erro. Vertical acima de 3:00 sai como [aviso].
+ *                           Com duas vozes (entrevista, #11507), cada segmento sai com a voz
+ *                           provável pela F0 (`lib/diaria/video-voice.ts`, `voices.json`): a da
+ *                           entrevistadora com "cortar", a ambígua com "ouvir"; --pixel-f0 fixa a
+ *                           referência do Pixel (default: a voz com mais tempo de fala). Sem título
+ *                           nem resumo "usar", o molde sai com `format: "entrevista"` e as
+ *                           sequências abertura → comentário → CTA → fecho.
  *   retranscribe AAMMDD --from S --to S
  *                           retranscreve só o trecho (até 60 s; sem VAD, sem condition_on_previous_text)
  *                           antes de declarar dúvida (#11364); não mexe no transcript.json
@@ -94,6 +110,7 @@ import {
   cuesToSrt,
   cutPoints,
   defaultSequences,
+  effectiveFormat,
   effectiveFraming,
   effectiveSource,
   framingFor,
@@ -170,6 +187,8 @@ import {
   trimEdgeExtras,
   type EdgeWindow,
 } from "./lib/diaria/video-cut-refine.ts";
+import { classifyVoices, segmentF0s, type VoiceMark } from "./lib/diaria/video-voice.ts";
+import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
@@ -328,7 +347,9 @@ function plans(ctx: Ctx) {
   for (const w of warnings) console.error(`[aviso] ${w}`);
   if (errors.length) throw new Error(`blocks.json com problema:\n  - ${errors.join("\n  - ")}`);
   const sil = silences(ctx);
-  const specs = file.sequences ?? defaultSequences();
+  const fmt = effectiveFormat(file);
+  if (!file.sequences && fmt.inferred) console.error("[premissa] blocks.json sem título nem resumo: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` sobrepõem");
+  const specs = file.sequences ?? defaultSequences("V1", fmt.format);
   const ps = specs.map((s) => buildSequencePlan(s, blocks, sil, source, { holdBlocks: file.holdBlocks }));
   return { file, source, resolved: blocks, plans: ps, hash: planHash(ctx, text) };
 }
@@ -370,9 +391,119 @@ export function parseSilenceDbArg(raw: string | undefined): number | undefined {
   return n;
 }
 
-function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: number | undefined): number {
+const normPath = (p: string) => resolve(p).replace(/\\/g, "/");
+
+/**
+ * O aviso do `transcript.json` mantido (#11504): `source.json` novo não
+ * retranscreve por cima. Na 261029 o editor pôs no lugar a transcrição do áudio
+ * remapeada à mão, e o `transcribe` com `source.json` novo a sobrescreveu com a
+ * do vídeo inteiro. Duração do transcript diferente da do bruto (mais de 2 s)
+ * aponta para outro arquivo.
+ */
+export function keptTranscriptWarning(prev: Pick<Transcript, "duration">, durationS: number): string {
+  const other =
+    prev.duration !== undefined && Math.abs(prev.duration - durationS) > 2
+      ? ` ATENÇÃO: ele tem ${prev.duration.toFixed(1)} s e o bruto ${durationS.toFixed(1)} s; se é a transcrição do áudio separado, use --from-audio ARQ.`
+      : "";
+  return `transcript.json já existe: mantido, não retranscrevo por cima.${other} Para retranscrever o bruto inteiro: --force (#11504)`;
+}
+
+/**
+ * A transcrição do áudio separado (#11504), guardada em `transcript-audio.json`
+ * (com `transcript-audio.meta.json` dizendo de qual áudio é) antes de o
+ * `transcript.json` virar o do vídeo. Vem, nesta ordem: de `--audio-transcript`;
+ * do `transcript-audio.json` já guardado (do mesmo áudio); do `transcript.json`
+ * atual quando o `source.json` aponta para esse áudio (o editor transcreveu o
+ * áudio antes de o vídeo chegar).
+ */
+function stashAudioTranscript(ctx: Ctx, audioPath: string, explicit: string | undefined): Transcript {
+  const trAudio = f(ctx, "transcript-audio.json");
+  const metaPath = f(ctx, "transcript-audio.meta.json");
+  const keep = (from: string) => {
+    const t = readJson<Transcript>(from, "transcrição do áudio");
+    if (transcriptWords(t).length === 0) throw new Error(`transcrição do áudio sem nenhuma palavra: ${from}`);
+    writeJson(trAudio, t);
+    writeJson(metaPath, { audio: audioPath, from: from.replace(/\\/g, "/") });
+    return t;
+  };
+  if (explicit) return keep(resolve(explicit));
+  if (existsSync(trAudio)) {
+    const meta = existsSync(metaPath) ? readJson<{ audio?: string }>(metaPath, "transcript-audio.meta.json") : {};
+    if (meta.audio !== audioPath) throw new Error(`transcript-audio.json é de outro áudio (${meta.audio ?? "sem meta"}), não ${audioPath}; passe --audio-transcript`);
+    return readJson<Transcript>(trAudio, "transcript-audio.json");
+  }
+  const src = f(ctx, "source.json");
+  const tr = f(ctx, "transcript.json");
+  if (existsSync(src) && existsSync(tr) && readJson<SourceInfo>(src, "source.json").path === audioPath) return keep(tr);
+  throw new Error(`--from-audio ${audioPath}: nenhuma transcrição desse áudio (rode transcribe --source "${audioPath}" antes, ou passe --audio-transcript ARQ)`);
+}
+
+/**
+ * `transcribe --from-audio` (#11504): alinha o áudio separado ao do vídeo,
+ * remapeia as palavras dos trechos com par e retranscreve no vídeo só o que
+ * ficou sem par (as pausas que o áudio cortou, as bordas de cada corte e o
+ * que vem antes/depois do áudio). Grava `transcript.json` (no tempo do vídeo)
+ * e `audio-align.json` (deslocamentos, trechos, o que foi retranscrito).
+ */
+function alignFromAudio(ctx: Ctx, source: SourceInfo, videoWav: string, audioPath: string, audioTr: Transcript, trPath: string): void {
+  const fromWav = join(ctx.workDir, "from-audio.wav");
+  console.error(`[video-montagem] alinhando o áudio ${audioPath} ao vídeo (correlação do envelope em janelas de ${ALIGN_DEFAULTS.windowS} s, #11504)…`);
+  run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-i", audioPath, "-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", fromWav]);
+  const va = parseWavPcm16(readFileSync(videoWav));
+  const aa = parseWavPcm16(readFileSync(fromWav));
+  const ve = energyEnvelope(va.samples, va.sampleRate);
+  const ae = energyEnvelope(aa.samples, aa.sampleRate);
+  const al = alignEnvelopes(ae.db, ve.db, ve.hopS);
+  const audioDurS = aa.samples.length / aa.sampleRate;
+  if (al.coverage < ALIGN_DEFAULTS.minCoverage) {
+    writeJson(f(ctx, "audio-align.json"), { ok: false, audio: audioPath, video: source.path, ...al });
+    throw new Error(
+      `o áudio ${audioPath} não casa com o vídeo (${(al.coverage * 100).toFixed(0)}% com par, mínimo ${ALIGN_DEFAULTS.minCoverage * 100}%; detalhe em audio-align.json): ` +
+        "não é o mesmo som, ou foi editado demais. Transcrever o vídeo inteiro: transcribe --force",
+    );
+  }
+  const rm = remapToVideo(audioTr, al.runs, source.durationS, { audioDurS });
+  for (const r of al.runs) console.error(`[video-montagem]   áudio ${clockTime(r.audioStart)}–${clockTime(r.audioEnd)} → vídeo +${r.offset.toFixed(3)} s`);
+  const patches: Transcript[] = [];
+  for (const g of rm.uncovered) {
+    const a = Math.max(0, g.start - 0.5);
+    const b = Math.min(source.durationS, g.end + 0.5);
+    const tag = `${a.toFixed(1)}-${b.toFixed(1)}`;
+    const wav = join(ctx.workDir, `from-audio-gap-${tag}.wav`);
+    run("ffmpeg", ["-hide_banner", "-v", "error", "-y", "-ss", a.toFixed(3), "-to", b.toFixed(3), "-i", videoWav, "-ac", "1", "-ar", "16000", wav]);
+    const raw = join(ctx.workDir, `from-audio-gap-${tag}.json`);
+    transcribeWithPython(ctx, wav, raw, { vad: false, noCondition: true });
+    patches.push(offsetTranscript(readJson<Transcript>(raw, "retranscrição do trecho sem par"), a));
+  }
+  const merged = mergeRetranscribed(rm.segments, patches, rm.uncovered, source.durationS, audioTr.model);
+  const retranscribedS = rm.uncovered.reduce((n, g) => n + g.end - g.start, 0);
+  writeJson(trPath, { ...merged, aligned_from_audio: { audio: audioPath, video: source.path, runs: al.runs, retranscribed: rm.uncovered } });
+  writeJson(f(ctx, "audio-align.json"), {
+    ok: true,
+    audio: audioPath,
+    video: source.path,
+    audioDurS,
+    offsets: al.offsets,
+    coverage: al.coverage,
+    runs: al.runs,
+    windows: al.windows,
+    uncovered: rm.uncovered,
+    remappedWords: rm.words,
+    droppedWords: rm.dropped,
+  });
+  console.error(
+    `[video-montagem] transcript.json no tempo do vídeo: ${rm.words} palavra(s) do áudio remapeadas em ${al.runs.length} trecho(s); ` +
+      `${rm.dropped} na borda de corte descartada(s); ${rm.uncovered.length} trecho(s) do vídeo sem par retranscrito(s) (${retranscribedS.toFixed(1)} s)`,
+  );
+}
+
+function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: number | undefined, fromAudio?: { audio: string; transcript?: string }): number {
   mkdirSync(ctx.workDir, { recursive: true });
   mkdirSync(ctx.stateDir, { recursive: true });
+  // #11504: a transcrição do áudio separado é guardada antes de qualquer coisa mexer no transcript.json.
+  const audioPath = fromAudio ? normPath(fromAudio.audio) : undefined;
+  if (audioPath && !existsSync(audioPath)) throw new Error(`--from-audio: arquivo não encontrado: ${audioPath}`);
+  const audioTr = audioPath ? stashAudioTranscript(ctx, audioPath, fromAudio?.transcript) : null;
   let src = sourceArg ? resolve(sourceArg) : undefined;
   if (!src) {
     if (!existsSync(ctx.driveDir)) throw new Error(`pasta da edição no Drive não encontrada: ${ctx.driveDir} (Drive for desktop montado? --drive-root)`);
@@ -389,7 +520,10 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   }
   const srcPath = src.replace(/\\/g, "/");
   const sourcePath = f(ctx, "source.json");
-  const cached = existsSync(sourcePath) && !ctx.force ? readJson<SourceInfo>(sourcePath, "source.json") : null;
+  let cached = existsSync(sourcePath) && !ctx.force ? readJson<SourceInfo>(sourcePath, "source.json") : null;
+  if (audioPath && audioPath === srcPath) throw new Error("--from-audio aponta para o próprio bruto; o áudio separado é outro arquivo (o vídeo vai em --source ou solto na pasta)");
+  // --from-audio troca o bruto do áudio para o vídeo sem --force: a transcrição do áudio já está guardada.
+  if (cached && audioPath && cached.path === audioPath) cached = null;
   if (cached && cached.path !== srcPath) throw new Error(`source.json aponta para outro bruto (${cached.path}); rode com --force para trocar por ${srcPath}`);
   let source: SourceInfo;
   // source.json refeito = todos os derivados refeitos (áudio, loudness, silêncios, transcrição).
@@ -439,7 +573,18 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   console.error(`[video-montagem] silencedetect a ${threshold.noiseDb} dB (${threshold.how === "relative" ? "relativo ao loudness do bruto" : threshold.how === "override" ? "--silence-db" : "padrão, loudness não medido"})`);
 
   const trPath = f(ctx, "transcript.json");
-  if (redo || !existsSync(trPath)) transcribeWithPython(ctx, audio, trPath, { vad: true });
+  if (audioPath && audioTr) {
+    if (source.audioOnly) throw new Error("--from-audio precisa de um bruto de VÍDEO (o bruto achado é só de áudio): passe --source VIDEO");
+    const prev = existsSync(trPath) ? readJson<{ aligned_from_audio?: { audio?: string; video?: string } }>(trPath, "transcript.json") : null;
+    const done = !ctx.force && !redo && prev?.aligned_from_audio?.audio === audioPath && prev.aligned_from_audio.video === source.path;
+    if (done) console.error(`[video-montagem] transcript.json já alinhado do áudio ${audioPath}; --force refaz`);
+    else alignFromAudio(ctx, source, audio, audioPath, audioTr, trPath);
+  } else if (ctx.force || !existsSync(trPath)) transcribeWithPython(ctx, audio, trPath, { vad: true });
+  else if (redo) {
+    // #11504: source.json novo (ou áudio refeito nesta máquina) não retranscreve por cima de um transcript.json existente.
+    const prev = readJson<Transcript>(trPath, "transcript.json");
+    console.error(`[aviso] ${keptTranscriptWarning(prev, source.durationS)}`);
+  }
   const words = nonEmptyWords(trPath, "transcript.json");
   const warn = loudnessWarning(loud);
   if (warn) console.error(`[aviso] ${warn}`);
@@ -459,15 +604,51 @@ function loadDecupagemPlan(ctx: Ctx, segments: Segment[]): DecupagemPlan | null 
   return parsed.plan;
 }
 
-function cmdDecupagem(ctx: Ctx): number {
+/**
+ * Voz provável por segmento (#11507), pela F0 mediana no `audio.wav` do
+ * `transcribe`. Sem o áudio nesta máquina, [aviso] e nada marcado. Grava
+ * `voices.json` (a medida, para conferir) e devolve as marcas.
+ */
+function segmentVoices(ctx: Ctx, segments: Segment[], pixelF0: number | undefined): Array<VoiceMark | null> | undefined {
+  const audio = join(ctx.workDir, "audio.wav");
+  if (!existsSync(audio)) {
+    console.error(`[aviso] áudio do bruto ausente (${audio}): voz dos segmentos não medida (#11507); rode transcribe nesta máquina`);
+    return undefined;
+  }
+  const { sampleRate, samples } = parseWavPcm16(readFileSync(audio));
+  const f0s = segmentF0s(samples, sampleRate, segments);
+  const v = classifyVoices(f0s, segments.map((s) => s.end - s.start), { pixelHz: pixelF0 });
+  writeJson(f(ctx, "voices.json"), { ...v, segments: segments.map((s, i) => ({ n: i + 1, start: s.start, end: s.end, f0: f0s[i] })) });
+  const hz = (x: number | null) => (x === null ? "?" : `${Math.round(x)} Hz`);
+  if (!v.twoVoices) console.error(`[video-montagem] voz: uma só (F0 ~${hz(v.pixelHz)}); nada marcado`);
+  else {
+    const n = (l: string) => v.marks.filter((m) => m?.label === l).length;
+    console.error(
+      `[video-montagem] voz: duas (Pixel ~${hz(v.pixelHz)}${v.pixelFrom === "maior-tempo" ? ", a de mais tempo de fala [premissa]" : ", --pixel-f0"}; outra ~${hz(v.otherHz)}): ` +
+        `${n("outra")} segmento(s) da entrevistadora, ${n("ouvir")} para ouvir (#11507)`,
+    );
+  }
+  return v.twoVoices ? v.marks : undefined;
+}
+
+/** `--pixel-f0` (#11507): F0 de referência do Pixel em Hz; ausente = a voz de mais tempo de fala. */
+export function parsePixelF0Arg(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 60 || n > 400) throw new Error(`--pixel-f0 precisa ser a F0 em Hz entre 60 e 400 (ex.: 163), não ${raw}`);
+  return n;
+}
+
+function cmdDecupagem(ctx: Ctx, pixelF0?: number): number {
   const tr = readJson<Transcript>(f(ctx, "transcript.json"), "transcript.json (rode transcribe)");
   const segments = tr.segments;
   const plan = loadDecupagemPlan(ctx, segments);
   if (!plan) {
     // 1ª passada: a listagem numerada e o molde do plano, para a skill classificar (#11361).
+    const voices = segmentVoices(ctx, segments, pixelF0);
     const tplPath = f(ctx, "decupagem-plan.template.json");
-    writeJson(tplPath, decupagemPlanTemplate(ctx.edition, segments));
-    process.stdout.write(segmentListing(segments));
+    writeJson(tplPath, decupagemPlanTemplate(ctx.edition, segments, voices));
+    process.stdout.write(segmentListing(segments, voices));
     console.error(`[video-montagem] decupagem: classificar os segmentos acima em ${f(ctx, "decupagem-plan.json")} (molde: ${tplPath}) e rodar decupagem de novo`);
     return 0;
   }
@@ -477,7 +658,11 @@ function cmdDecupagem(ctx: Ctx): number {
   if (crit.errors.length) throw new Error(`decupagem-plan.json não decide por critério:\n  - ${crit.errors.join("\n  - ")}`);
   const doc = buildDecupagemDoc(plan, segments, loadVocab().rules);
   const source = measuredSource(ctx);
-  const sequences = defaultSequences();
+  // Sem título nem resumo "usar", é entrevista (#11507): sequências sem esses blocos.
+  const blocks = blocksFromDecupagem(doc);
+  const { format } = effectiveFormat({ blocks });
+  if (format === "entrevista") console.error("[premissa] nenhum título nem resumo na decupagem: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` no blocks.json sobrepõem");
+  const sequences = defaultSequences("V1", format);
   for (const d of suggestedDurations(doc, sequences)) {
     if (d.overS > 0) console.error(`[aviso] ${d.spec.name}: ~${d.totalS.toFixed(1)} s na montagem sugerida, ${d.overS.toFixed(1)} s acima do teto do Shorts (${SHORTS_MAX_S} s, antes de tirar os silêncios): propor o corte no Doc`);
   }
@@ -489,7 +674,8 @@ function cmdDecupagem(ctx: Ctx): number {
   const template: BlocksFile = {
     edition: ctx.edition,
     mirrored: source.mirrored,
-    blocks: blocksFromDecupagem(doc),
+    ...(format === "entrevista" ? { format } : {}),
+    blocks,
     sequences,
   };
   writeJson(tpl, template);
@@ -918,10 +1104,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (stop !== null) return stop;
   }
   switch (cmd) {
-    case "transcribe":
-      return cmdTranscribe(ctx, values["source"], parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)));
+    case "transcribe": {
+      if (flags.has("from-audio")) throw new Error('--from-audio exige o caminho do áudio separado (ex.: --from-audio "G:/…/Diaria comentada_Youtube.wav")');
+      const fromAudio = values["from-audio"] !== undefined ? { audio: values["from-audio"], transcript: values["audio-transcript"] } : undefined;
+      if (!fromAudio && values["audio-transcript"] !== undefined) throw new Error("--audio-transcript só vale com --from-audio");
+      return cmdTranscribe(ctx, values["source"], parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)), fromAudio);
+    }
     case "decupagem":
-      return cmdDecupagem(ctx);
+      return cmdDecupagem(ctx, parsePixelF0Arg(values["pixel-f0"]));
     case "frame":
       return cmdFrame(ctx, values["at"]);
     case "retranscribe":
