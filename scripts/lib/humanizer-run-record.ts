@@ -12,9 +12,13 @@
  * saíram de cada passo, endereçado por conteúdo (não por nome de seção, então
  * um reorder D1↔D3 não perde a prova):
  *
- *   - `humanizador`: hash de cada seção que o humanizador de fato alterou
- *     (pre ≠ post). Seção que saiu idêntica do passo não ganha prova: é o mesmo
- *     critério do `verify-scoped-humanization.ts` (`untouchedTargets`).
+ *   - `humanizador`: hash de cada seção do escopo que saiu do humanizador.
+ *     Seção que saiu idêntica também ganha prova (#11604): o humanizador leu o
+ *     texto e o manteve, e sem isso um ajuste pequeno do editor que ele não
+ *     altera prendia o `--write` em exit 4 sem saída fora do `--unproven-ok`.
+ *     Esses hashes ficam também em `humanizador_unchanged`, pra auditoria e
+ *     pro `--provenance` mostrar "texto mantido". O escopo continua sendo o
+ *     `--sections` pedido (ou o arquivo inteiro na passada full-file).
  *   - `clarice`: hash de cada seção que saiu da Clarice partindo de um texto
  *     já provado pelo humanizador. A Clarice pode não mudar nada; a prova vem
  *     de o texto de entrada ser humanizado.
@@ -38,13 +42,15 @@ export interface HumanizerRunRecord {
   version: 1;
   /** sha256 (mesma normalização de `computeSectionHashes`) de seções que saíram do humanizador. */
   humanizador: string[];
+  /** #11604: subconjunto de `humanizador` — seções que o humanizador devolveu idênticas. */
+  humanizador_unchanged: string[];
   /** sha256 de seções que saíram da Clarice a partir de texto já humanizado. */
   clarice: string[];
   runs: Array<{ at: string; step: RunStep; sections: string[] }>;
 }
 
 export function emptyRunRecord(): HumanizerRunRecord {
-  return { version: 1, humanizador: [], clarice: [], runs: [] };
+  return { version: 1, humanizador: [], humanizador_unchanged: [], clarice: [], runs: [] };
 }
 
 export function runRecordPath(editionDir: string): string {
@@ -60,6 +66,9 @@ export function readRunRecord(editionDir: string): HumanizerRunRecord {
     return {
       version: 1,
       humanizador: Array.isArray(raw.humanizador) ? raw.humanizador.filter((h) => typeof h === "string") : [],
+      humanizador_unchanged: Array.isArray(raw.humanizador_unchanged)
+        ? raw.humanizador_unchanged.filter((h) => typeof h === "string")
+        : [],
       clarice: Array.isArray(raw.clarice) ? raw.clarice.filter((h) => typeof h === "string") : [],
       runs: Array.isArray(raw.runs) ? raw.runs : [],
     };
@@ -91,6 +100,7 @@ export function planRunRecord(
   const post = computeSectionHashes(postMd);
   const only = sections && sections.length > 0 ? new Set(sections) : null;
   const humanizador = new Set(current.humanizador);
+  const unchanged = new Set(current.humanizador_unchanged);
   const clarice = new Set(current.clarice);
   const recorded: string[] = [];
   const skipped: RunRecordPlan["skipped"] = [];
@@ -99,10 +109,8 @@ export function planRunRecord(
     if (only && !only.has(name)) continue;
     const preHash = pre[name];
     if (step === "humanizador") {
-      if (preHash === postHash) {
-        skipped.push({ section: name, reason: "seção saiu idêntica do humanizador" });
-        continue;
-      }
+      // #11604: idêntica também é prova (o humanizador manteve o texto).
+      if (preHash === postHash) unchanged.add(postHash);
       humanizador.add(postHash);
       recorded.push(name);
     } else {
@@ -125,6 +133,7 @@ export function planRunRecord(
     record: {
       version: 1,
       humanizador: [...humanizador],
+      humanizador_unchanged: [...unchanged],
       clarice: [...clarice],
       runs: [...current.runs, { at: now.toISOString(), step, sections: recorded }],
     },
@@ -215,7 +224,17 @@ export function classifySealChanges(
   return { legacy, changed, unproven };
 }
 
-/** Proveniência de TODAS as seções do texto atual — o bloco do resumo do gate (#11534 item 4). */
-export function describeProvenance(currentMd: string, record: HumanizerRunRecord): Array<{ section: string; humanizador: boolean; clarice: boolean }> {
-  return Object.entries(computeSectionHashes(currentMd)).map(([section, hash]) => ({ section, ...sectionProof(hash, record) }));
+/**
+ * Proveniência de TODAS as seções do texto atual — o bloco do resumo do gate (#11534 item 4).
+ * `kept: true` (#11604) quando o humanizador devolveu esse texto idêntico.
+ */
+export function describeProvenance(
+  currentMd: string,
+  record: HumanizerRunRecord,
+): Array<{ section: string; humanizador: boolean; clarice: boolean; kept?: true }> {
+  return Object.entries(computeSectionHashes(currentMd)).map(([section, hash]) => ({
+    section,
+    ...sectionProof(hash, record),
+    ...(record.humanizador_unchanged.includes(hash) ? { kept: true as const } : {}),
+  }));
 }

@@ -370,7 +370,13 @@ export function remapToVideo(t: Transcript, runs: AlignRun[], videoDurS: number,
   let dropped = 0;
   const segments: Segment[] = [];
   for (const s of t.segments) {
-    const kept: Word[] = [];
+    // Segmento que atravessa um corte (#11602) sai em um pedaço por trecho: cada
+    // lado tem o seu deslocamento, e o trecho retranscrito do vão entra entre os
+    // dois pedaços na ordenação do `mergeRetranscribed`. Inteiro, ele ficaria com
+    // as palavras de depois do corte antes das do vão.
+    const pieces: Word[][] = [];
+    let lastRun: (typeof usable)[number] | undefined;
+    const total = (s.words ?? []).filter((w) => w.text.trim()).length;
     for (const w of s.words ?? []) {
       if (!w.text.trim()) continue;
       const mid = (w.start + w.end) / 2;
@@ -379,12 +385,15 @@ export function remapToVideo(t: Transcript, runs: AlignRun[], videoDurS: number,
         dropped++;
         continue;
       }
-      kept.push({ ...w, start: round3(w.start + r.offset), end: round3(w.end + r.offset) });
+      if (r !== lastRun) pieces.push([]);
+      lastRun = r;
+      pieces[pieces.length - 1].push({ ...w, start: round3(w.start + r.offset), end: round3(w.end + r.offset) });
     }
-    words += kept.length;
-    if (kept.length === 0) continue;
-    const all = kept.length === (s.words ?? []).filter((w) => w.text.trim()).length;
-    segments.push({ start: kept[0].start, end: kept[kept.length - 1].end, text: all ? s.text : joinWordTexts(kept.map((w) => w.text)), words: kept });
+    for (const kept of pieces) {
+      words += kept.length;
+      const all = pieces.length === 1 && kept.length === total;
+      segments.push({ start: kept[0].start, end: kept[kept.length - 1].end, text: all ? s.text : joinWordTexts(kept.map((w) => w.text)), words: kept });
+    }
   }
   const uncovered: Interval[] = [];
   let cur = 0;
