@@ -30,6 +30,11 @@
  *   `--frames-from-drive` extrai com `hflip` e grava `frames.json`; o
  *   `--pick-frame` só espelha se o aplicado na extração diferir do em vigor.
  *   As flags vão depois do AAMMDD.
+ *   Sem o bruto no Drive (#11532): `--frames-from-drive FILE_ID --from-final`
+ *   com o id do horizontal exportado em `Final/` (o que `fetch-drive-video.ts
+ *   --orientation horizontal --dry-run` lista). Fallback explícito: não
+ *   espelha (a exportação já vem desespelhada), avisa da resolução menor, e o
+ *   `--pick-frame` desses frames nunca espelha.
  *
  * Short → `{edição}/04-youtube-short-capa.jpg`, um frame do vertical dentro
  * da janela do lettering do título (0–3,5 s):
@@ -63,6 +68,7 @@ import {
   THUMB_FRAME_PICKED,
   buildFrameSheet,
   frameTimes,
+  framesSourceWarnings,
   pickFrameNeedsFlop,
   planDriveFrameArgs,
   redactFfmpegArgs,
@@ -74,7 +80,7 @@ import {
 
 const USAGE =
   "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" --portrait PNG [--background IMG] [--enhance-portrait] [--out PATH] [--edition-dir DIR]\n" +
-  "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
+  "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--from-final] [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --short-cover --at SEGUNDOS [--video MP4] [--out PATH] [--edition-dir DIR]";
 
@@ -87,6 +93,7 @@ async function framesFromDrive(
   fileId: string,
   values: Record<string, string>,
   mirror: { mirrored: boolean; from: MirroredOrigin },
+  fromFinal = false,
 ): Promise<number> {
   const { getAccessToken } = await import("./google-auth.ts");
   const { gFetchRetry } = await import("./lib/drive-helpers.ts");
@@ -102,6 +109,9 @@ async function framesFromDrive(
   if (!meta.mimeType?.startsWith("video/")) {
     console.error(`gen-youtube-thumb: ${fileId} (${meta.name ?? "?"}) não é vídeo (mimeType ${meta.mimeType ?? "?"})`);
     return 1;
+  }
+  for (const w of framesSourceWarnings({ fromFinal, width: meta.videoMediaMetadata?.width, height: meta.videoMediaMetadata?.height })) {
+    console.error(`[aviso] ${w}`);
   }
   const durationMs = Number(meta.videoMediaMetadata?.durationMillis);
   const durationS = Number.isFinite(durationMs) && durationMs > 0 ? durationMs / 1000 : null;
@@ -150,13 +160,14 @@ function readOptionalJson(path: string): unknown {
  * #11378: o `mirrored` em vigor para os frames da capa — a flag, ou o
  * `blocks.json`/`source.json` da montagem desta edição, ou o default dela.
  */
-function thumbMirrored(dir: string, flags: Set<string>, values: Record<string, string>): { mirrored: boolean; from: MirroredOrigin } {
+function thumbMirrored(dir: string, flags: Set<string>, values: Record<string, string>, fromFinal = false): { mirrored: boolean; from: MirroredOrigin } {
   for (const k of ["mirrored", "no-mirrored"]) {
     if (values[k] !== undefined) throw new Error(`--${k} não leva valor (recebeu ${JSON.stringify(values[k])}): ponha a flag depois do AAMMDD`);
   }
   if (flags.has("mirrored") && flags.has("no-mirrored")) throw new Error("--mirrored e --no-mirrored juntos");
   const flag = flags.has("mirrored") ? true : flags.has("no-mirrored") ? false : undefined;
   if (flag !== undefined) return resolveThumbMirrored({ flag });
+  if (fromFinal) return resolveThumbMirrored({ final: true });
   const state = join(dir, MONTAGEM_STATE_DIR);
   return resolveThumbMirrored({
     blocks: readOptionalJson(join(state, "blocks.json")),
@@ -184,9 +195,13 @@ async function main(): Promise<number> {
       console.error("gen-youtube-thumb: --frames-from-drive exige o FILE_ID do vídeo bruto no Drive");
       return 2;
     }
-    const mirror = thumbMirrored(dir, flags, values);
+    // #11532: --from-final = o FILE_ID é o horizontal exportado em Final/
+    // (fallback sem o bruto no Drive): não espelha e avisa da resolução menor.
+    const fromFinal = flags.has("from-final");
+    if (values["from-final"] !== undefined) throw new Error(`--from-final não leva valor (recebeu ${JSON.stringify(values["from-final"])}): ponha a flag depois do AAMMDD`);
+    const mirror = thumbMirrored(dir, flags, values, fromFinal);
     console.error(`[video] mirrored=${mirror.mirrored} (${mirror.from})${mirror.mirrored ? ": frames desespelhados (hflip)" : ""}`);
-    return framesFromDrive(dir, fileId, values, mirror);
+    return framesFromDrive(dir, fileId, values, mirror, fromFinal);
   }
 
   if (values["pick-frame"] !== undefined || flags.has("pick-frame")) {

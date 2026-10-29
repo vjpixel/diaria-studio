@@ -53,6 +53,38 @@ export function rembgSetupCommand(platform: NodeJS.Platform | string): string {
     : "uv python install 3.11.9 && $(uv python find 3.11.9) scripts/setup-rembg.py";
 }
 
+/**
+ * #11532: caminhos de instalação do Codex CLI fora do PATH de uma shell não
+ * interativa (no 300, `~/.npm-global/bin/codex`: `ssh 300 'codex'` não acha,
+ * a shell interativa acha). Só Unix. Mesma lista de `codexFallbackPaths` em
+ * `scripts/codex-image.js`, que usa o primeiro que existir quando `codex` não
+ * resolve no PATH (paridade em `test/codex-path-fallback-11532.test.ts`).
+ */
+export function codexCandidatePaths(platform: NodeJS.Platform | string, home: string): string[] {
+  if (platform === "win32" || !home) return [];
+  const base = home.replace(/\/+$/, "");
+  return [`${base}/.npm-global/bin/codex`, `${base}/.local/bin/codex`];
+}
+
+/**
+ * #11532 item 3: o que o `--dry-run` do `publish-youtube.ts` lista como
+ * pré-requisito da capa horizontal: cada item com o passo que ele bloqueia e,
+ * quando falta, como resolver. Puro, sobre o relatório de `assessVideoEnv`.
+ */
+export function coverPrerequisites(report: VideoEnvReport): {
+  ready: boolean;
+  items: { id: VideoEnvItemId; ok: boolean; blocks: string; fix: string | null; detail: string | null }[];
+  summary: string;
+} {
+  return {
+    ready: report.coverReady,
+    items: report.items.map((i) => ({ id: i.id, ok: i.ok, blocks: i.blocks, fix: i.fix, detail: i.detail })),
+    summary: report.coverReady
+      ? "pré-requisitos da capa (ffmpeg, codex, georgia, rembg) ok nesta máquina"
+      : `capa horizontal não sai nesta máquina (falta: ${report.missing.join(", ")}); o upload segue com a thumb automática do YouTube`,
+  };
+}
+
 const ORDER: VideoEnvItemId[] = ["ffmpeg", "codex", "georgia", "rembg"];
 
 function describe(id: VideoEnvItemId, platform: string): { blocks: string; fix: string } {
@@ -65,7 +97,9 @@ function describe(id: VideoEnvItemId, platform: string): { blocks: string; fix: 
     case "codex":
       return {
         blocks: "fundo da capa por outpaint (Passo A2.4)",
-        fix: "instalar o Codex CLI e `codex login` com a conta ChatGPT, nunca API key (docs/codex-image-setup.md)",
+        fix:
+          "instalar o Codex CLI e `codex login` com a conta ChatGPT, nunca API key (docs/codex-image-setup.md); " +
+          "se já está instalado mas fora do PATH, ponha o diretório dele no PATH (no 300: ~/.npm-global/bin, #11532)",
       };
     case "georgia":
       return {
