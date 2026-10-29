@@ -23,6 +23,7 @@
 import {
   BLOCK_KEYS,
   alignTokens,
+  clipSecondsOfBlock,
   clockTime,
   decideTakes,
   defaultSequences,
@@ -523,7 +524,8 @@ export function roteiroMarkdown(
         lines.push(`| ${label} | (nenhum item nesta versão: targets/skip) |  |`);
         continue;
       }
-      const secs = p.clips.filter((c) => c.block === key).reduce((acc, c) => acc + (c.frameOut - c.frameIn) / fps, 0);
+      // Clipe fundido de blocos diferentes (#11503) conta só o pedaço deste bloco.
+      const secs = p.clips.reduce((acc, c) => acc + clipSecondsOfBlock(c, key, fps), 0);
       const alts = opts.alternatives?.[key] ?? [];
       items.forEach((it, i) => {
         const head = i === 0 ? `${label}${alts.length ? ", opção A" : ""} (${secs.toFixed(1)} s)` : "";

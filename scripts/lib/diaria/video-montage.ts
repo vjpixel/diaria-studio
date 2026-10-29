@@ -21,7 +21,7 @@
  *     da seguinte (os dois bugs da 261027: tomada falsa duplicada e sílaba da
  *     tomada seguinte vazando no corte);
  *   - plano das sequências (`buildSequencePlan`) e o XML FCP7 xmeml v4
- *     (`buildXmeml`), 3 sequências com áudio linkado e zoom alternado;
+ *     (`buildXmeml`), 3 sequências com áudio linkado e zoom alternando só nos cortes (#11503);
  *   - enquadramento (`framingFor`): crop da prévia e Center do Basic Motion a
  *     partir do centro do rosto, olhos a ~40% da altura;
  *   - legendas (`segmentCues`, `cuesToSrt`, vocabulário, pontuação do roteiro);
@@ -358,7 +358,7 @@ export const TAKE_DEFAULTS = {
   postRollS: 0.25,
   /** Distância mínima até a palavra vizinha (fora da tomada). */
   guardS: 0.05,
-  /** Pausa maior que isso entre duas palavras encerra a tomada. */
+  /** Pausa maior que isso entre duas palavras encerra a tomada, salvo se a palavra seguinte é a esperada do roteiro (#11505). */
   maxGapS: 2.5,
   /** Fração mínima das palavras da frase que a tomada precisa casar. */
   minRatio: 0.8,
@@ -403,7 +403,8 @@ export interface TakeMatchOptions {
  *     2 ou 3 tokens concatenados, #11360);
  *   - a última palavra da frase omitida (completa com todas menos a última,
  *     se ainda casar `minRatio` das palavras).
- * Encerra numa pausa maior que `maxGapS`, numa palavra que não casa, ou
+ * Encerra numa pausa maior que `maxGapS` seguida de palavra que não é a
+ * esperada (#11505: pausa longa no meio da frase não quebra), numa palavra que não casa, ou
  * quando a frase RECOMEÇA: a palavra atual casa com a 1ª da frase (e não com a
  * esperada) E a seguinte casa com a 2ª — a tomada falsa, "Uma atualização de…
  * Uma atualização de privacidade". Um "o"/"a" repetido no meio da frase, sem a
@@ -443,7 +444,12 @@ export function findTakes(words: Word[], phrase: string, opts: TakeMatchOptions 
     // Frase curta: uma tolerância só, somando as três (#11362).
     const canTolerate = () => !short || swaps + skips + inserts === 0;
     while (p < P.length && k < W.length) {
-      if (k > i && words[k].start - words[k - 1].end > maxGap) break;
+      // Pausa longa só encerra a tomada quando a palavra depois dela NÃO segue o
+      // roteiro (#11505): fala pausada ("por exemplo, [4 s] a Anthropic", 261029)
+      // continua a mesma tomada se a palavra seguinte é a esperada, exata ou
+      // colada. Do outro lado da pausa nenhuma tolerância vale (palavra engolida,
+      // a mais ou trocada): aí a pausa encerra, como antes.
+      if (k > i && words[k].start - words[k - 1].end > maxGap && !(eq(W[k], P[p]) || glued(k, P[p]) > 0)) break;
       if (k > i && restarts(k, p)) break;
       const g = eq(W[k], P[p]) ? 0 : glued(k, P[p]);
       if (eq(W[k], P[p])) {
@@ -829,7 +835,7 @@ export interface SequenceSpec {
   height: number;
   /** Blocos, na ordem. */
   order: BlockKey[];
-  /** Escala (%) alternada entre os clipes: [base, punch-in]. */
+  /** Escala (%) alternada nos cortes (clipes contíguos fundidos antes, #11503): [base, punch-in]. */
   scales: [number, number];
 }
 
@@ -1170,6 +1176,109 @@ export interface PlannedClip {
   seqStart: number;
   seqEnd: number;
   scale: number;
+  /** Texto do roteiro que o clipe cobre (o do item, ou dos itens fundidos): a referência do refino das bordas (#11500). */
+  script?: string;
+  /** Clipe fundido de trechos de blocos DIFERENTES: o pedaço de cada bloco (a duração por bloco do roteiro sai daqui). */
+  parts?: Array<{ block: BlockKey; srcIn: number; srcOut: number }>;
+}
+
+/** Trecho do bruto antes de virar clipe (sem frames, sem posição na sequência, sem escala). */
+export interface RawClip {
+  block: BlockKey;
+  srcIn: number;
+  srcOut: number;
+  script?: string;
+  parts?: PlannedClip["parts"];
+}
+
+/** Segundos do clipe que são do bloco `key` (clipe fundido de blocos diferentes conta só o pedaço do bloco). */
+export function clipSecondsOfBlock(c: Pick<PlannedClip, "block" | "frameIn" | "frameOut" | "parts">, key: BlockKey, fps: number): number {
+  const a = c.frameIn / fps;
+  const b = c.frameOut / fps;
+  if (!c.parts?.length) return c.block === key ? b - a : 0;
+  // Bordas do clipe fora dos pedaços (refino, respiro do fecho) contam para o pedaço vizinho.
+  return c.parts.reduce((acc, p, i, all) => {
+    if (p.block !== key) return acc;
+    const lo = i === 0 ? a : Math.max(a, p.srcIn);
+    const hi = i === all.length - 1 ? b : Math.min(b, all[i + 1].srcIn);
+    return acc + Math.max(0, hi - lo);
+  }, 0);
+}
+
+/** Ajuste de um corte, no tempo do bruto (#11500): vai para o `plan.json` e para o relato do `build`. */
+export interface CutAdjustment {
+  block: BlockKey;
+  /** `in` = entrada do clipe, `out` = saída; `emenda` = dois clipes contíguos (ou sobrepostos) viraram um. */
+  edge: "in" | "out" | "emenda";
+  from: number;
+  to: number;
+  reason: string;
+}
+
+/**
+ * Clipes da sequência a partir dos trechos do bruto, na ordem (#11503, #11500):
+ *   1. trecho que começa colado no anterior (menos de 1 frame depois do fim
+ *      dele) ou por cima dele (sobreposição: o áudio sairia repetido) se funde
+ *      com o anterior num clipe só, que vai do começo do 1º ao fim mais tardio.
+ *      Fala contínua no bruto nunca vira dois clipes;
+ *   2. a escala alterna base/punch-in a cada clipe JÁ fundido.
+ * Resultado, as duas regras do zoom (decisão do editor, 28/10/2026): todo corte
+ * muda o zoom, e nenhuma mudança de zoom acontece sem corte. Trecho que volta
+ * no bruto (começa antes do começo do anterior) é corte de verdade, não funde.
+ * Clipe fundido de dois blocos leva o nome do 1º e guarda o pedaço de cada um
+ * em `parts` (`clipSecondsOfBlock`).
+ */
+export function assembleClips(
+  spec: Pick<SequenceSpec, "scales">,
+  raws: RawClip[],
+  fps: number,
+): { clips: PlannedClip[]; durationFrames: number; merges: CutAdjustment[] } {
+  const merged: RawClip[] = [];
+  const merges: CutAdjustment[] = [];
+  const frame = 1 / fps;
+  for (const r of raws) {
+    if (!(r.srcOut > r.srcIn)) continue;
+    const prev = merged[merged.length - 1];
+    if (prev && r.srcIn >= prev.srcIn - 1e-9 && r.srcIn - prev.srcOut < frame - 1e-9) {
+      merges.push({
+        block: r.block,
+        edge: "emenda",
+        from: prev.srcOut,
+        to: r.srcIn,
+        reason: r.srcIn < prev.srcOut ? `sobreposição de ${Math.round((prev.srcOut - r.srcIn) * 1000)} ms fundida (áudio repetido)` : "contíguos no bruto: um clipe só, sem troca de zoom",
+      });
+      if (prev.parts || r.parts || r.block !== prev.block) {
+        const own = (x: RawClip) => x.parts ?? [{ block: x.block, srcIn: x.srcIn, srcOut: x.srcOut }];
+        prev.parts = [...own(prev), ...own(r)];
+      }
+      prev.srcOut = Math.max(prev.srcOut, r.srcOut);
+      if (r.script) prev.script = prev.script ? `${prev.script} ${r.script}` : r.script;
+      continue;
+    }
+    merged.push({ ...r });
+  }
+  const clips: PlannedClip[] = [];
+  let t = 0;
+  for (const r of merged) {
+    const frameIn = Math.round(r.srcIn * fps);
+    const frameOut = Math.round(r.srcOut * fps);
+    if (frameOut <= frameIn) continue;
+    const scale = spec.scales[clips.length % 2];
+    clips.push({
+      block: r.block,
+      srcIn: round3(r.srcIn),
+      srcOut: round3(r.srcOut),
+      frameIn,
+      frameOut,
+      seqStart: t,
+      seqEnd: t + (frameOut - frameIn),
+      scale,
+      ...(r.script ? { script: r.script } : {}),
+      ...(r.parts ? { parts: r.parts } : {}),
+    });
+    t += frameOut - frameIn;
+  }
+  return { clips, durationFrames: t, merges };
 }
 
 export interface SequencePlan {
@@ -1185,6 +1294,8 @@ export interface SequencePlan {
   missingBlocks: BlockKey[];
   /** Itens que sumiram no corte (0 clipes) ou palavras que ficaram fora dos clipes. */
   dropped: string[];
+  /** Emendas de clipes contíguos e, depois do refino por áudio, os ajustes de corte (#11500, #11503). */
+  cutAdjustments?: CutAdjustment[];
 }
 
 /**
@@ -1212,7 +1323,9 @@ export function wordCoveredBySilence(w: Interval, parts: Interval[], silences: I
 
 /**
  * Clipes de uma sequência: cada item do bloco vira os trechos de fala dele
- * (`speechParts`), a escala alterna base/punch-in clipe a clipe. No bloco de
+ * (`speechParts`); trechos contíguos no bruto (itens do roteiro escritos frase a
+ * frase sobre uma fala contínua) se fundem e a escala alterna base/punch-in a
+ * cada clipe fundido, ou seja, exatamente nos cortes (`assembleClips`, #11503). No bloco de
  * fecho, o último trecho termina `FECHO_HOLD_S` depois da ÚLTIMA PALAVRA, preso
  * antes da palavra seguinte do bruto (`holdLimit`), e o descarte de clipe curto
  * vem depois desse respiro. Item que some no corte, ou palavra que fica de
@@ -1230,11 +1343,10 @@ export function buildSequencePlan(
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
   const fps = source.fps;
-  const clips: PlannedClip[] = [];
+  const raws: RawClip[] = [];
   const missingBlocks: BlockKey[] = [];
   const dropped: string[] = [];
   const scriptParts: string[] = [];
-  let t = 0;
   for (const key of spec.order) {
     const items = resolved[key];
     if (!items || items.length === 0) {
@@ -1262,17 +1374,12 @@ export function buildSequencePlan(
         (w) => !parts.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, parts, silences),
       );
       if (lost.length) dropped.push(`${key}[${idx}]: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
-      for (const p of parts) {
-        const frameIn = Math.round(p.start * fps);
-        const frameOut = Math.round(p.end * fps);
-        if (frameOut <= frameIn) continue;
-        const scale = spec.scales[clips.length % 2];
-        clips.push({ block: key, srcIn: p.start, srcOut: p.end, frameIn, frameOut, seqStart: t, seqEnd: t + (frameOut - frameIn), scale });
-        t += frameOut - frameIn;
-      }
+      for (const p of parts) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text });
     });
   }
-  return { spec, clips, durationFrames: t, script: scriptParts.join(" "), missingBlocks, dropped };
+  // Contíguos no bruto viram um clipe só antes de alternar a escala (#11503).
+  const { clips, durationFrames, merges } = assembleClips(spec, raws, fps);
+  return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges };
 }
 
 // ── Enquadramento ─────────────────────────────────────────────────────────
@@ -1565,6 +1672,8 @@ export interface ReviewFinding {
   /** Instante na prévia (s). */
   at: number;
   detail: string;
+  /** Instante no bruto (s), pelos clipes do plano (#11500): é onde se corrige. Ausente/null fora dos clipes. */
+  srcAt?: number | null;
 }
 
 /** O fecho precisa de ao menos isso depois da última palavra (a 261027 saiu "seca"). */
