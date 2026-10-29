@@ -89,7 +89,8 @@ VIRTUAL_ENV=~/.venv-video-montagem uv pip install -r scripts/video/montagem-requ
 O último comando baixa o modelo (~1,6 GB, uma vez, com rede). No 300, em
 29/10/2026, `python` resolvia para o venv do Hermes (que tinha faster-whisper
 por acaso) e o cache só tinha os modelos `base` e `small`: daí o venv próprio. O
-Neo segue com o Python do usuário (`python` do PATH).
+Neo segue com o Python do usuário (`python` do PATH); um `~/.venv-video-montagem`
+criado lá passa a ter prioridade sobre ele.
 
 O lock fixa `av==18.0.0`: com o PyAV 19 (o que o `pip install faster-whisper`
 puxava em 29/10/2026) o decode do áudio quebra com `TypeError: open() got an
@@ -97,7 +98,8 @@ unexpected keyword argument 'metadata_errors'`. Por isso o check do Passo 0
 decodifica um áudio de teste em vez de só importar o pacote.
 
 No 300 o bruto é baixado para `~/.cache/diaria-video-montagem/{AAMMDD}/bruto/`
-(em disco: o `/tmp` dele é tmpfs) e o check pede 3x o tamanho do bruto livre;
+e o work dir (áudio, clipes da prévia) fica em `.../{AAMMDD}/work/` (em disco: o
+`/tmp` dele é tmpfs); o check pede 3x o tamanho do bruto livre nesse disco;
 apagar a pasta da edição depois do `/diaria-publica-video` libera o espaço.
 Auth: o OAuth do projeto (`data/.credentials.json`), o mesmo do
 `fetch-drive-video.ts`.

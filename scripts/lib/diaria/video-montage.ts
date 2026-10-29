@@ -1958,7 +1958,7 @@ export function loudnessWarning(m: LoudnessMeasure | null): string | null {
  * pode ter gravado em 2 arquivos; `--source` escolhe outro). Sem nenhum vídeo,
  * o maior áudio solto (`audioOnly: true`, #11552).
  */
-export function pickRawSource(files: Array<{ name: string; size: number }>): { pick: { name: string; size: number }; candidates: Array<{ name: string; size: number }>; audioOnly?: true } | null {
+export function pickRawSource<T extends { name: string; size: number }>(files: T[]): { pick: T; candidates: T[]; audioOnly?: true } | null {
   const usable = (f: { name: string }) => !/(?<!\p{L})final(?!\p{L})/iu.test(f.name) && !/previa|prévia/i.test(f.name);
   const vids = files.filter((f) => /\.(mp4|mov)$/i.test(f.name) && usable(f));
   if (vids.length > 0) return { pick: vids.reduce((a, b) => (b.size > a.size ? b : a)), candidates: vids };

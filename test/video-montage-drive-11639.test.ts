@@ -16,7 +16,10 @@ import { join } from "node:path";
 import {
   DEFAULT_DRIVE_ROOT,
   FOLDER_MIME,
-  cacheIsFresh,
+  cacheState,
+  parseDriveSize,
+  spaceShortfall,
+  listChildren,
   changedFiles,
   downloadBudgetMs,
   ensureCachedFile,
@@ -33,7 +36,19 @@ import {
 } from "../scripts/lib/diaria/video-montage-drive.ts";
 import { assessMontageEnv, montageSetupCommand, montageVenvPython, requiredFreeBytes, resolveVideoPython, type MontageEnvProbes } from "../scripts/lib/diaria/video-montage-env.ts";
 import { buildSequencePlan, buildXmeml, defaultSequences, resolveBlocks, type BlocksFile, type SequenceSpec, type SourceInfo, type Word } from "../scripts/lib/diaria/video-montage.ts";
-import { DRIVE_UPLOAD_COMMANDS, driveCacheDir, driveModeFor } from "../scripts/video-montagem.ts";
+import {
+  BRUTO_DRIVE_FILE,
+  DRIVE_UPLOADS_FILE,
+  DRIVE_UPLOAD_COMMANDS,
+  driveCacheDir,
+  driveModeFor,
+  ensureBrutoLocal,
+  fetchBruto,
+  localBrutoMissing,
+  makeDriveSession,
+  uploadAll,
+  workDirDefault,
+} from "../scripts/video-montagem.ts";
 
 const GB = 1e9;
 const entry = (name: string, size?: number, mimeType = "video/mp4"): DriveEntry => ({
@@ -98,12 +113,38 @@ describe("#11639 bruto pela API do Drive", () => {
     assert.equal(pickDriveBruto([entry("Final", undefined, FOLDER_MIME)]), null);
   });
 
-  it("cache vale só com o tamanho do Drive", () => {
-    assert.equal(cacheIsFresh(null, "10"), false);
-    assert.equal(cacheIsFresh(0, "10"), false);
-    assert.equal(cacheIsFresh(10, "10"), true);
-    assert.equal(cacheIsFresh(9, "10"), false);
-    assert.equal(cacheIsFresh(9, undefined), true);
+  it("cache: sem arquivo = missing; tamanho diferente = stale; com sidecar, id e modifiedTime têm de bater", () => {
+    const file = { id: "A", name: "b.mp4", size: "10", modifiedTime: "2026-10-29T12:47:21Z" };
+    assert.equal(cacheState(null, null, file), "missing");
+    assert.equal(cacheState(0, null, file), "missing");
+    assert.equal(cacheState(10, null, file), "fresh");
+    assert.equal(cacheState(9, null, file), "stale");
+    assert.equal(cacheState(9, null, { ...file, size: undefined }), "fresh");
+    assert.equal(cacheState(10, { id: "A", size: 10, modifiedTime: file.modifiedTime }, file), "fresh");
+    // bruto trocado no Drive com o mesmo nome e tamanho
+    assert.equal(cacheState(10, { id: "A", size: 10, modifiedTime: "2026-10-28T00:00:00Z" }, file), "stale");
+    assert.equal(cacheState(10, { id: "OUTRO", size: 10, modifiedTime: file.modifiedTime }, file), "stale");
+  });
+
+  it("size da API: string int64 → número; ausente ou lixo = null, nunca NaN", () => {
+    assert.equal(parseDriveSize("6872647306"), 6872647306);
+    assert.equal(parseDriveSize(undefined), null);
+    assert.equal(parseDriveSize(""), null);
+    assert.equal(parseDriveSize("abc"), null);
+  });
+
+  it("espaço: tamanho + 10%, descontado o arquivo velho que vai ser substituído; sem medida = não confere", () => {
+    assert.equal(spaceShortfall(20 * GB, 6.87 * GB, 0), 0);
+    assert.ok((spaceShortfall(7 * GB, 6.87 * GB, 0) ?? 0) > 0);
+    assert.equal(spaceShortfall(7 * GB, 6.87 * GB, 6 * GB), 0);
+    assert.equal(spaceShortfall(null, 6.87 * GB, 0), null);
+    assert.equal(spaceShortfall(1, null, 0), null);
+  });
+
+  it("nomes repetidos entre os candidatos saem em duplicateNames, e o id é o do maior", () => {
+    const raw = pickDriveBruto([{ ...entry("b.mp4", 2 * GB), id: "pequeno" }, { ...entry("b.mp4", 7 * GB), id: "grande" }]);
+    assert.equal(raw?.pick.id, "grande");
+    assert.deepEqual(raw?.duplicateNames, ["b.mp4"]);
   });
 
   it("aceita vídeo e áudio no download, recusa HTML de página de erro", () => {
@@ -112,6 +153,33 @@ describe("#11639 bruto pela API do Drive", () => {
     assert.ok(isAcceptableMediaContentType("application/octet-stream", "x.mov"));
     assert.equal(isAcceptableMediaContentType("text/html", "x.mp4"), false);
     assert.equal(isAcceptableMediaContentType("application/octet-stream", "x.txt"), false);
+  });
+
+  it("ensureCachedFile recusa sem espaço antes de chamar o Drive", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-drive-"));
+    const none = fakeDeps([]);
+    await assert.rejects(ensureCachedFile(none.deps, entry("big.mp4", 7 * GB), dir, () => {}, { freeBytes: () => 1 * GB }), /sem espaço/);
+    assert.equal(none.calls.length, 0);
+  });
+
+  it("ensureCachedFile grava o sidecar e baixa de novo quando o arquivo do Drive mudou", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-drive-"));
+    const body = Buffer.from("v1");
+    const first = fakeDeps([() => new Response(body, { status: 200, headers: { "content-type": "video/mp4" } })]);
+    const f1 = { id: "X", name: "b.mp4", size: "2", modifiedTime: "2026-10-29T10:00:00Z" };
+    await ensureCachedFile(first.deps, f1, dir, () => {}, { freeBytes: () => 100 * GB });
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "b.mp4.drive.json"), "utf8")), { id: "X", size: 2, modifiedTime: "2026-10-29T10:00:00Z" });
+    const second = fakeDeps([() => new Response(Buffer.from("v2"), { status: 200, headers: { "content-type": "video/mp4" } })]);
+    const got = await ensureCachedFile(second.deps, { ...f1, modifiedTime: "2026-10-29T11:00:00Z" }, dir, () => {}, { freeBytes: () => 100 * GB });
+    assert.equal(got.downloaded, true);
+    assert.equal(readFileSync(got.localPath, "utf8"), "v2");
+  });
+
+  it("listChildren pagina até o fim", async () => {
+    const { deps, calls } = fakeDeps([() => json({ files: [entry("a.mp4", 1)], nextPageToken: "p2" }), () => json({ files: [entry("b.mp4", 2)] })]);
+    const all = await listChildren(deps, "pasta");
+    assert.deepEqual(all.map((x) => x.name), ["a.mp4", "b.mp4"]);
+    assert.match(calls[1].url, /pageToken=p2/);
   });
 
   it("ensureCachedFile reaproveita o cache em dia sem chamar o Drive e baixa quando falta", async () => {
@@ -182,6 +250,42 @@ describe("#11640 saídas sobem para a pasta da edição", () => {
     assert.equal(String(calls[1].body), "{}");
   });
 
+  it("5xx no PUT abre sessão NOVA e reenvia; o PUT vai por uploadFetch (sem retry), sem Content-Length manual", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-up-"));
+    const file = join(dir, "261030 - previa outras-redes.mp4");
+    writeFileSync(file, "mp4");
+    const puts: Call[] = [];
+    const { deps, calls } = fakeDeps([
+      () => json({ files: [] }),
+      () => new Response("", { status: 200, headers: { location: "https://upload.example/s1" } }),
+      () => new Response("", { status: 200, headers: { location: "https://upload.example/s2" } }),
+    ]);
+    const putResponses = [() => new Response("oops", { status: 503 }), () => json({ id: "ok", name: "261030 - previa outras-redes.mp4" })];
+    deps.uploadFetch = async (url, init) => {
+      puts.push({ url, method: init?.method ?? "GET", headers: init?.headers as Record<string, string> });
+      return putResponses.shift()!();
+    };
+    const r = await uploadToFolder(deps, "p", file);
+    assert.equal(r.id, "ok");
+    assert.deepEqual(puts.map((p) => p.url), ["https://upload.example/s1", "https://upload.example/s2"]);
+    assert.equal(calls.filter((c) => c.method === "POST").length, 2, "uma sessão por tentativa");
+    assert.equal(puts[0].headers?.["Content-Length"], undefined);
+  });
+
+  it("4xx no PUT é erro na hora, sem nova tentativa", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "vm-up-"));
+    const file = join(dir, "a.srt");
+    writeFileSync(file, "1");
+    const { deps } = fakeDeps([() => json({ files: [] }), () => new Response("", { status: 200, headers: { location: "https://u/s" } })]);
+    let n = 0;
+    deps.uploadFetch = async () => {
+      n++;
+      return new Response("bad", { status: 400 });
+    };
+    await assert.rejects(uploadToFolder(deps, "p", file), /falhou \(400\)/);
+    assert.equal(n, 1);
+  });
+
   it("sessão recusada é erro com o status, nada é dado como enviado", async () => {
     const dir = mkdtempSync(join(tmpdir(), "vm-up-"));
     const file = join(dir, "x.mp4");
@@ -202,8 +306,7 @@ describe("#11640 saídas sobem para a pasta da edição", () => {
     assert.equal(snapshotDir(join(dir, "nao-existe"), (d) => readdirSync(d)).size, 0);
   });
 
-  it("os subcomandos que sobem são build, srt e preview; MIME por extensão", () => {
-    assert.deepEqual([...DRIVE_UPLOAD_COMMANDS], ["build", "srt", "preview"]);
+  it("MIME por extensão; build, srt e preview são os que sobem", () => {
     assert.equal(uploadMimeFor("a.mp4"), "video/mp4");
     assert.equal(uploadMimeFor("a.SRT"), "application/x-subrip");
     assert.equal(uploadMimeFor("decupagem.md"), "text/markdown");
@@ -214,10 +317,12 @@ describe("#11641 pathurl do XML aponta o bruto no Neo", () => {
   const drive = { name: "20261029_093444.mp4", localPath: "/home/vjpixel/.cache/diaria-video-montagem/261030/bruto/20261029_093444.mp4" };
 
   it("bruto do cache → caminho G: do Neo; bruto local qualquer → o próprio caminho", () => {
-    assert.equal(xmlMediaPath(drive.localPath, { edition: "261030", drive }), `${DEFAULT_DRIVE_ROOT}/261030/20261029_093444.mp4`);
-    assert.equal(xmlMediaPath("G:/Meu Drive/x/261027/bruto.mp4", { edition: "261027", drive: null }), "G:/Meu Drive/x/261027/bruto.mp4");
-    assert.equal(xmlMediaPath("/outro/bruto.mp4", { edition: "261030", drive }), "/outro/bruto.mp4");
-    assert.equal(xmlMediaPath("/outro/bruto.mp4", { edition: "261030", xmlMediaRoot: "D:/YouTube/" }), "D:/YouTube/261030/bruto.mp4");
+    assert.deepEqual(xmlMediaPath(drive.localPath, { edition: "261030", drive }), { path: `${DEFAULT_DRIVE_ROOT}/261030/20261029_093444.mp4`, how: "cache" });
+    assert.deepEqual(xmlMediaPath("G:/Meu Drive/x/261027/bruto.mp4", { edition: "261027", drive: null }), { path: "G:/Meu Drive/x/261027/bruto.mp4", how: "source" });
+    assert.deepEqual(xmlMediaPath("/outro/bruto.mp4", { edition: "261030", drive }), { path: "/outro/bruto.mp4", how: "source" });
+    assert.deepEqual(xmlMediaPath("/outro/bruto.mp4", { edition: "261030", xmlMediaRoot: "D:/YouTube/" }), { path: "D:/YouTube/261030/bruto.mp4", how: "root" });
+    // modo API com --source fora do cache: o caminho Linux nunca vai para o XML
+    assert.deepEqual(xmlMediaPath("/home/u/bruto.mp4", { edition: "261030", drive, apiMode: true }), { path: `${DEFAULT_DRIVE_ROOT}/261030/bruto.mp4`, how: "api-guess" });
   });
 
   it("buildXmeml grava o caminho do Neo no pathurl e o nome do Drive, nunca o cache", () => {
@@ -228,7 +333,7 @@ describe("#11641 pathurl do XML aponta o bruto no Neo", () => {
     const [yt] = defaultSequences() as [SequenceSpec];
     const plan = buildSequencePlan({ ...yt, order: ["comentario"] }, blocks, [], { fps: 30, durationS: 60 });
     const source: SourceInfo = { path: drive.localPath, fps: 30, durationS: 60, width: 3840, height: 2160, mirrored: true };
-    const xml = buildXmeml([plan], source, { faceX: 0.5, eyeY: 0.5 }, { mediaPath: xmlMediaPath(source.path, { edition: "261030", drive }) });
+    const xml = buildXmeml([plan], source, { faceX: 0.5, eyeY: 0.5 }, { mediaPath: xmlMediaPath(source.path, { edition: "261030", drive }).path });
     assert.match(xml, /<pathurl>file:\/\/localhost\/G:\/Meu%20Drive\/Work\/Mentoria%20Fluxo%20VTSD\/YouTube\/261030\/20261029_093444\.mp4<\/pathurl>/);
     assert.match(xml, /<name>20261029_093444\.mp4<\/name>/);
     assert.ok(!xml.includes(".cache"), "o caminho do cache local não pode ir para o XML");
@@ -238,14 +343,19 @@ describe("#11641 pathurl do XML aponta o bruto no Neo", () => {
 });
 
 describe("#11639 modo de acesso ao Drive", () => {
-  it("G: ausente sem raiz explícita → API; pasta local → local; flags forçam", () => {
-    const base = { driveDirExists: false, fromDrive: false, noDriveApi: false, explicitRoot: false };
+  it("decide a RAIZ, não a pasta da edição: G: montado com {AAMMDD}/ ainda sem sincronizar continua local", () => {
+    const base = { driveRootExists: false, fromDrive: false, noDriveApi: false, explicitRoot: false };
     assert.equal(driveModeFor(base), "api");
-    assert.equal(driveModeFor({ ...base, driveDirExists: true }), "local");
+    assert.equal(driveModeFor({ ...base, driveRootExists: true }), "local");
     assert.equal(driveModeFor({ ...base, explicitRoot: true }), "local");
     assert.equal(driveModeFor({ ...base, noDriveApi: true }), "local");
-    assert.equal(driveModeFor({ ...base, driveDirExists: true, fromDrive: true }), "api");
+    assert.equal(driveModeFor({ ...base, driveRootExists: true, fromDrive: true }), "api");
     assert.throws(() => driveModeFor({ ...base, fromDrive: true, noDriveApi: true }), /juntos/);
+  });
+
+  it("work dir no modo API fica no cache em disco (o /tmp do 300 é tmpfs); no Neo, o tmp de sempre", () => {
+    assert.equal(workDirDefault("api", "/home/u/.cache/diaria-video-montagem/261030", "/tmp", "261030"), "/home/u/.cache/diaria-video-montagem/261030/work");
+    assert.equal(workDirDefault("local", "/x", "/tmp", "261030"), "/tmp/diaria-video-montagem/261030");
   });
 
   it("cache em disco: --cache-dir > DIARIA_VIDEO_CACHE_DIR > ~/.cache, por edição", () => {
@@ -270,11 +380,20 @@ describe("#11642 Python e ambiente da montagem", () => {
   it("modelo fora do cache (o 300 em 29/10/2026) = não roda, com o comando que baixa", () => {
     const ok = { ok: true };
     const probes: MontageEnvProbes = { ffmpeg: ok, python: ok, model: { ok: false, detail: "LocalEntryNotFoundError" }, drive: ok, disk: ok };
-    const r = assessMontageEnv(probes, "linux", "/home/u/.venv-video-montagem/bin/python");
+    const r = assessMontageEnv(probes, "linux", { python: "/home/u/.venv-video-montagem/bin/python", from: "venv" });
     assert.equal(r.ready, false);
     assert.deepEqual(r.missing, ["model"]);
-    assert.match(r.items.find((i) => i.id === "model")!.fix!, /large-v3-turbo/);
-    assert.equal(assessMontageEnv({ ...probes, model: ok }, "linux", "py").ready, true);
+    const fix = r.items.find((i) => i.id === "model")!.fix!;
+    assert.match(fix, /large-v3-turbo/);
+    // o comando sai executável: o executável puro, sem o rótulo de origem no meio
+    assert.match(fix, /^baixar o modelo uma vez, com rede: \/home\/u\/\.venv-video-montagem\/bin\/python -c /);
+    assert.equal(assessMontageEnv({ ...probes, model: ok }, "linux", { python: "py", from: "path" }).ready, true);
+  });
+
+  it("correção específica da sonda vence a genérica do item (pasta da edição ausente não é problema de OAuth)", () => {
+    const ok = { ok: true };
+    const r = assessMontageEnv({ ffmpeg: ok, python: ok, model: ok, drive: { ok: false, fix: "subir o bruto" }, disk: ok }, "linux", { python: "py", from: "path" });
+    assert.equal(r.items.find((i) => i.id === "drive")!.fix, "subir o bruto");
   });
 
   it("setup instala pelo lock, que fixa o PyAV 18 (o 19 quebra o decode do faster-whisper 1.2.1, 261030)", () => {
@@ -287,5 +406,101 @@ describe("#11642 Python e ambiente da montagem", () => {
   it("espaço exigido: 3x o bruto, 25 GB sem bruto conhecido", () => {
     assert.equal(requiredFreeBytes(6.87 * GB), 3 * 6.87 * GB);
     assert.equal(requiredFreeBytes(null), 25 * GB);
+  });
+});
+
+describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
+  const ED = "261030";
+  const folderList = () => json({ files: [{ ...entry(ED, undefined, FOLDER_MIME), id: "pasta-ed" }] });
+
+  it("fetchBruto baixa o maior .mp4 solto e grava bruto.drive.json com a procedência", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+    const body = Buffer.from("bruto!");
+    const { deps } = fakeDeps([
+      folderList,
+      () => json({ files: [{ ...entry("20261029_093444.mp4", body.length), id: "bruto-id", modifiedTime: "2026-10-29T12:47:21Z" }, entry("Final", undefined, FOLDER_MIME)] }),
+      () => new Response(body, { status: 200, headers: { "content-type": "video/mp4" } }),
+    ]);
+    const d = makeDriveSession(ED, cache, deps, () => "root");
+    const local = await fetchBruto({ stateDir: state, edition: ED }, d);
+    assert.equal(readFileSync(local, "utf8"), "bruto!");
+    const info = JSON.parse(readFileSync(join(state, BRUTO_DRIVE_FILE), "utf8"));
+    assert.deepEqual(info, {
+      edition: ED,
+      id: "bruto-id",
+      name: "20261029_093444.mp4",
+      size: body.length,
+      modifiedTime: "2026-10-29T12:47:21Z",
+      folderId: "pasta-ed",
+      localPath: local.replace(/\\/g, "/"),
+    });
+  });
+
+  it("ensureBrutoLocal baixa de novo o bruto que sumiu do cache, e recusa se ele mudou no Drive", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+    const localPath = join(cache, "bruto", "b.mp4").replace(/\\/g, "/");
+    writeFileSync(join(state, "source.json"), JSON.stringify({ path: localPath, fps: 30, durationS: 10, width: 1920, height: 1080, mirrored: false }));
+    writeFileSync(join(state, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "B", name: "b.mp4", size: 3, modifiedTime: "t1", folderId: "p", localPath }));
+    const ok = fakeDeps([() => json({ id: "B", name: "b.mp4", mimeType: "video/mp4", size: "3", modifiedTime: "t1" }), () => new Response(Buffer.from("abc"), { status: 200, headers: { "content-type": "video/mp4" } })]);
+    await ensureBrutoLocal({ stateDir: state, edition: ED }, makeDriveSession(ED, cache, ok.deps, () => "root"));
+    assert.equal(readFileSync(localPath, "utf8"), "abc");
+
+    const state2 = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const lp2 = join(cache, "bruto", "c.mp4").replace(/\\/g, "/");
+    writeFileSync(join(state2, "source.json"), JSON.stringify({ path: lp2, fps: 30, durationS: 10, width: 1920, height: 1080, mirrored: false }));
+    writeFileSync(join(state2, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "C", name: "c.mp4", size: 3, modifiedTime: "t1", folderId: "p", localPath: lp2 }));
+    const changed = fakeDeps([() => json({ id: "C", name: "c.mp4", mimeType: "video/mp4", size: "3", modifiedTime: "t2" })]);
+    await assert.rejects(ensureBrutoLocal({ stateDir: state2, edition: ED }, makeDriveSession(ED, cache, changed.deps, () => "root")), /mudou no Drive/);
+  });
+
+  it("no Neo (modo local) com source.json do cache do 300: mensagem clara, não o erro do ffmpeg", () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const lp = "/home/outra-maquina/.cache/diaria-video-montagem/261030/bruto/20261029_093444.mp4";
+    writeFileSync(join(state, "source.json"), JSON.stringify({ path: lp, fps: 30, durationS: 10, width: 1920, height: 1080, mirrored: false }));
+    writeFileSync(join(state, BRUTO_DRIVE_FILE), JSON.stringify({ edition: ED, id: "B", name: "20261029_093444.mp4", size: 3, modifiedTime: null, folderId: "p", localPath: lp }));
+    assert.match(localBrutoMissing({ stateDir: state, edition: ED }) ?? "", /cache do modo API de outra máquina.*--from-drive/);
+  });
+
+  it("uploadAll: falha no 2º arquivo deixa o 2º pendente, e a próxima rodada o sobe mesmo sem mudança", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const out = mkdtempSync(join(tmpdir(), "vm-out-"));
+    const a = join(out, "a.srt");
+    const b = join(out, "b.srt");
+    writeFileSync(a, "a");
+    writeFileSync(b, "b");
+    const session = () => new Response("", { status: 200, headers: { location: "https://u/s" } });
+    const fail = fakeDeps([folderList, () => json({ files: [] }), session, () => json({ files: [] }), () => new Response("quota", { status: 403 })]);
+    fail.deps.uploadFetch = async () => json({ id: "id-a", name: "a.srt" });
+    const r1 = await uploadAll({ stateDir: state, edition: ED }, makeDriveSession(ED, out, fail.deps, () => "root"), [a, b]);
+    assert.deepEqual(r1.uploaded, [a]);
+    assert.deepEqual(r1.pending, [b]);
+    assert.match(r1.error ?? "", /403/);
+    const reg1 = JSON.parse(readFileSync(join(state, DRIVE_UPLOADS_FILE), "utf8"));
+    assert.deepEqual(reg1.pending, [b]);
+    assert.equal(reg1.files["a.srt"].id, "id-a");
+
+    const retry = fakeDeps([folderList, () => json({ files: [] }), session]);
+    retry.deps.uploadFetch = async () => json({ id: "id-b", name: "b.srt" });
+    const r2 = await uploadAll({ stateDir: state, edition: ED }, makeDriveSession(ED, out, retry.deps, () => "root"), []);
+    assert.deepEqual(r2.uploaded, [b]);
+    assert.equal(r2.error, null);
+    assert.deepEqual(JSON.parse(readFileSync(join(state, DRIVE_UPLOADS_FILE), "utf8")).pending, []);
+  });
+
+  it("a sessão só lê a pasta YouTube quando vai à rede", async () => {
+    let read = 0;
+    const d = makeDriveSession(ED, "/tmp/x", fakeDeps([]).deps, () => {
+      read++;
+      throw new Error("sem config");
+    });
+    assert.equal(read, 0);
+    await assert.rejects(d.folder(), /sem config/);
+    assert.equal(read, 1);
+  });
+
+  it("DRIVE_UPLOAD_COMMANDS", () => {
+    assert.deepEqual([...DRIVE_UPLOAD_COMMANDS], ["build", "srt", "preview"]);
   });
 });

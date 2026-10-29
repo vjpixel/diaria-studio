@@ -15,6 +15,8 @@ export type MontageEnvItemId = "ffmpeg" | "python" | "model" | "drive" | "disk";
 export interface MontageProbe {
   ok: boolean;
   detail?: string;
+  /** Correção específica deste resultado (ex.: pasta da edição ausente ≠ OAuth); ausente = a do item. */
+  fix?: string;
 }
 
 export type MontageEnvProbes = Record<MontageEnvItemId, MontageProbe>;
@@ -28,7 +30,8 @@ export interface MontageEnvItem {
 
 export interface MontageEnvReport {
   platform: string;
-  python: string;
+  /** O Python usado e de onde veio (`resolveVideoPython`). */
+  python: { python: string; from: string };
   items: MontageEnvItem[];
   ready: boolean;
   missing: MontageEnvItemId[];
@@ -62,7 +65,12 @@ export function resolveVideoPython(opts: {
   return { python: "python", from: "path" };
 }
 
-/** Espaço livre exigido para o bruto: 3x o tamanho (bruto + áudio + clipes da prévia), piso de 25 GB sem tamanho conhecido. */
+/**
+ * Espaço livre exigido no disco do cache do modo API (bruto, e o work dir com o
+ * áudio e os clipes da prévia, que no modo API também fica no cache): 3x o
+ * bruto, piso de 25 GB sem tamanho conhecido. No modo local (o Neo) o cache não
+ * é usado e o item não se aplica.
+ */
 export function requiredFreeBytes(brutoBytes: number | null): number {
   return brutoBytes && brutoBytes > 0 ? 3 * brutoBytes : 25e9;
 }
@@ -70,11 +78,11 @@ export function requiredFreeBytes(brutoBytes: number | null): number {
 /** Comando de setup do venv (o mesmo de `docs/setup.md`, seção do vídeo). */
 export function montageSetupCommand(platform: NodeJS.Platform | string): string {
   return platform === "win32"
-    ? "uv venv --python 3.12 %USERPROFILE%\\.venv-video-montagem && set VIRTUAL_ENV=%USERPROFILE%\\.venv-video-montagem && uv pip install -r scripts/video/montagem-requirements.txt"
+    ? 'uv venv --python 3.12 %USERPROFILE%\\.venv-video-montagem && set "VIRTUAL_ENV=%USERPROFILE%\\.venv-video-montagem" && uv pip install -r scripts/video/montagem-requirements.txt'
     : "uv venv --python 3.12 ~/.venv-video-montagem && VIRTUAL_ENV=~/.venv-video-montagem uv pip install -r scripts/video/montagem-requirements.txt";
 }
 
-const ORDER: MontageEnvItemId[] = ["ffmpeg", "python", "model", "drive", "disk"];
+const ORDER = ["ffmpeg", "python", "model", "drive", "disk"] as const satisfies readonly MontageEnvItemId[];
 
 function fixFor(id: MontageEnvItemId, platform: string, python: string): string {
   switch (id) {
@@ -92,11 +100,11 @@ function fixFor(id: MontageEnvItemId, platform: string, python: string): string 
 }
 
 /** Puro: relatório a partir das sondas. */
-export function assessMontageEnv(probes: MontageEnvProbes, platform: NodeJS.Platform | string, python: string): MontageEnvReport {
+export function assessMontageEnv(probes: MontageEnvProbes, platform: NodeJS.Platform | string, python: { python: string; from: string }): MontageEnvReport {
   const items = ORDER.map((id): MontageEnvItem => ({
     id,
     ok: probes[id].ok,
-    fix: probes[id].ok ? null : fixFor(id, platform, python),
+    fix: probes[id].ok ? null : (probes[id].fix ?? fixFor(id, platform, python.python)),
     detail: probes[id].detail ?? null,
   }));
   const missing = items.filter((i) => !i.ok).map((i) => i.id);
@@ -104,7 +112,7 @@ export function assessMontageEnv(probes: MontageEnvProbes, platform: NodeJS.Plat
 }
 
 export function formatMontageEnvReport(r: MontageEnvReport): string {
-  const lines = [`Ambiente da montagem do vídeo (${r.platform}, python: ${r.python}):`];
+  const lines = [`Ambiente da montagem do vídeo (${r.platform}, python: ${r.python.python} (${r.python.from})):`];
   for (const i of r.items) {
     const d = i.detail ? ` (${i.detail})` : "";
     lines.push(i.ok ? `  [ok] ${i.id}${d}` : `  [falta] ${i.id}${d}. Resolver: ${i.fix}`);
