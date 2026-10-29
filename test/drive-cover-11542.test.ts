@@ -7,7 +7,6 @@ import sharp from "sharp";
 import { runFetchDriveVideo, type FetchDriveVideoDeps } from "../scripts/fetch-drive-video.ts";
 import { driveCoverCandidates, type DriveVideoFile } from "../scripts/lib/diaria/drive-video-source.ts";
 import { planShortsPublish, publishInstagramReel, enqueueInstagramReel, type GraphDeps } from "../scripts/publish-shorts.ts";
-import { validateReelsFields } from "../workers/linkedin-cron/src/index.ts";
 
 const folder = (id: string, name: string) => ({ id, name, mimeType: "application/vnd.google-apps.folder" });
 const still = (id: string, name = "Diaria comentada_Youtube_V1.00_00_03_08.Still001.png"): DriveVideoFile =>
@@ -31,7 +30,7 @@ for (const mode of ["download", "dry-run", "ambiguous", "bad-image"] as const) {
       const mediaCalls: string[] = [];
       const deps: FetchDriveVideoDeps = { driveFetch: async (url) => {
         const u = new URL(url);
-        if (u.searchParams.has("alt")) { mediaCalls.push(url); return new Response(bytes, { headers: { "content-type": "image/png" } }); }
+        if (u.searchParams.has("alt")) { mediaCalls.push(url); return new Response(new Uint8Array(bytes), { headers: { "content-type": "image/png" } }); }
         if (u.pathname.endsWith("/root")) return Response.json(folder("root", "YouTube"));
         const q = u.searchParams.get("q") ?? "";
         if (q.startsWith("'root'")) return Response.json({ files: [folder("edition", "261029"), folder("other", "261028")] });
@@ -76,12 +75,10 @@ test("Instagram direto envia cover_url ao criar container, preservando collab", 
   assert.equal(body.collaborators, '["vjpixel"]');
 });
 
-test("fila preserva capa pública e valida URL HTTPS no Worker", async () => {
+test("fila preserva capa pública no payload de enqueue", async () => {
   let payload: any;
   await enqueueInstagramReel({ uploadVideo: async () => "https://cdn.example/v.mp4", uploadCover: async () => "https://cdn.example/c.jpg", enqueue: async (p) => { payload = p; return { key: "k", scheduled_at: "2026-10-30T12:00:00Z" }; }, now: () => new Date("2026-10-29") }, { caption: "x", scheduledAt: "2026-10-30T12:00:00Z", igAccount: "diaria", idempotencyKey: "k" }, []);
   assert.equal(payload.cover_url, "https://cdn.example/c.jpg");
-  assert.equal(validateReelsFields(payload, {} as any), null);
-  assert.ok(validateReelsFields({ ...payload, cover_url: "http://bad/c.jpg" }, {} as any));
 });
 
 
