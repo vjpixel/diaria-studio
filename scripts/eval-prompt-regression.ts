@@ -167,6 +167,7 @@ function runSideForEdition(params: {
   side: string;
   agentBody: string;
   editionsRootDir: string;
+  fixtureRootDir?: string;
   repetitions: number;
   dryRun: boolean;
   live: boolean;
@@ -178,11 +179,12 @@ function runSideForEdition(params: {
   const manifest = createReplayFixture({
     editionsRootDir: params.editionsRootDir,
     referenceAammdd: params.edition,
+    outputRootDir: params.fixtureRootDir,
     stage: "2",
     label,
     force: true,
   });
-  const testDir = join(params.editionsRootDir, manifest.test_dir_name);
+  const testDir = join(params.fixtureRootDir ?? params.editionsRootDir, manifest.test_dir_name);
 
   // #8168 fleet review, finding 3: `newsletter-lint-gate-blocking`
   // (`gradeStage2LintReport`) exige `_internal/01-approved-capped.json`, que o preset "2" de
@@ -248,6 +250,7 @@ export function runPromptRegressionEval(params: {
   agent: PromptEvalAgent;
   referenceEditions: string[];
   editionsRootDir: string;
+  fixtureRootDir?: string;
   baselineRef: string;
   repetitions: number;
   dryRun: boolean;
@@ -298,6 +301,7 @@ export function runPromptRegressionEval(params: {
       model: baselineSpec.model,
       effort: baselineSpec.effort,
       editionsRootDir: params.editionsRootDir,
+      fixtureRootDir: params.fixtureRootDir,
       repetitions: params.repetitions,
       dryRun: params.dryRun,
       live: !params.dryRun,
@@ -311,6 +315,7 @@ export function runPromptRegressionEval(params: {
       model: candidateSpec.model,
       effort: candidateSpec.effort,
       editionsRootDir: params.editionsRootDir,
+      fixtureRootDir: params.fixtureRootDir,
       repetitions: params.repetitions,
       dryRun: params.dryRun,
       live: !params.dryRun,
@@ -328,6 +333,7 @@ export function runPromptRegressionEval(params: {
         side: `arm:${arm.model}${arm.effort ? `:${arm.effort}` : ""}`,
         agentBody: candidateBody,
         editionsRootDir: params.editionsRootDir,
+        fixtureRootDir: params.fixtureRootDir,
         repetitions: params.repetitions,
         dryRun: params.dryRun,
         live: !params.dryRun,

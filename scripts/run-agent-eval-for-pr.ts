@@ -101,11 +101,13 @@
  * nested — #11616, `deriveReferenceEditions`) que já têm
  * `_internal/01-approved.json` em disco. Worktree sem a junction `data/` cai
  * sozinho no `data/editions` do checkout principal (#11616,
- * `resolveEditionsRootDir`) — não precisa mais de symlink à mão — mesmo espírito de
+ * `resolveEditionsRootDir`) — somente leitura. Fixtures vão para um diretório
+ * temporário, removido em finally após coletar os custos (#11632). Mesmo espírito de
  * `find-current-edition.ts`, decisão automática com log explícito em vez de
  * exigir o operador digitar a lista toda vez (#5321, "perguntar é exceção").
  */
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -552,10 +554,21 @@ export function renderAgentEvalPrReport(input: AgentEvalPrReportInput): string {
 // Execução do eval por agent — injetável pra teste (#9043 item 3)
 // ---------------------------------------------------------------------------
 
+/** Fixtures de replay nunca entram no data/ sincronizado, inclusive em falhas. */
+export function withTemporaryEvalFixtures<T>(run: (dir: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "agent-eval-pr-"));
+  try {
+    return run(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export interface RunEvalsForTriggeringParams {
   triggering: Array<{ agent: PromptEvalAgent }>;
   referenceEditions: string[];
   editionsRootDir: string;
+  fixtureRootDir?: string;
   baselineRef: string;
   repetitions: number;
   live: boolean;
@@ -579,6 +592,7 @@ export function runEvalsForTriggering(params: RunEvalsForTriggeringParams): Part
       agent: t.agent,
       referenceEditions: params.referenceEditions,
       editionsRootDir: params.editionsRootDir,
+      fixtureRootDir: params.fixtureRootDir,
       baselineRef: params.baselineRef,
       repetitions: params.repetitions,
       dryRun: !params.live,
@@ -741,29 +755,34 @@ async function main(): Promise<void> {
     return;
   }
 
-  const reports = runEvalsForTriggering({
-    triggering,
-    referenceEditions,
-    editionsRootDir,
-    baselineRef,
-    repetitions,
-    live,
-    rootDir: ROOT,
-    arms,
-  });
-
   const costDeltas: CostDelta[] = [];
-  if (live) {
-    for (const t of triggering) {
-      const report = reports[t.agent];
-      if (!report) continue;
-      for (const e of report.editions) {
-        const baselineArtifact = readCostArtifactFromDisk(join(editionsRootDir, e.baseline.testDirName));
-        const candidateArtifact = readCostArtifactFromDisk(join(editionsRootDir, e.candidate.testDirName));
-        costDeltas.push(computeCostDelta(t.agent, e.edition, baselineArtifact?.aggregate.overall.subagent_tokens ?? null, candidateArtifact?.aggregate.overall.subagent_tokens ?? null));
+  const reports = withTemporaryEvalFixtures((fixtureRootDir) => {
+    const reports = runEvalsForTriggering({
+      triggering,
+      referenceEditions,
+      editionsRootDir,
+      fixtureRootDir,
+      baselineRef,
+      repetitions,
+      live,
+      rootDir: ROOT,
+      arms,
+    });
+
+    if (live) {
+      for (const t of triggering) {
+        const report = reports[t.agent];
+        if (!report) continue;
+        for (const e of report.editions) {
+          const baselineArtifact = readCostArtifactFromDisk(join(fixtureRootDir, e.baseline.testDirName));
+          const candidateArtifact = readCostArtifactFromDisk(join(fixtureRootDir, e.candidate.testDirName));
+          costDeltas.push(computeCostDelta(t.agent, e.edition, baselineArtifact?.aggregate.overall.subagent_tokens ?? null, candidateArtifact?.aggregate.overall.subagent_tokens ?? null));
+        }
       }
     }
-  }
+
+    return reports;
+  });
 
   const reportInput: AgentEvalPrReportInput = {
     prNumber: prMeta.number,
