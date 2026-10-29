@@ -10,7 +10,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -29,6 +29,8 @@ import {
   postComment,
   runEvalsForTriggering,
   resolveReportsRoot,
+  deriveReferenceEditions,
+  resolveEditionsRootDir,
   type CommandRunner,
   type CommandRunnerResult,
 } from "../scripts/run-agent-eval-for-pr.ts";
@@ -604,5 +606,57 @@ describe("resolveReportsRoot (#11462)", () => {
     assert.match(src, /const outDir = resolve\(reportsRoot\.root, "data", "reports", "agent-eval"\)/);
     assert.match(src, /registerReport\(\s*reportsRoot\.root,/);
     assert.doesNotMatch(src, /resolve\(ROOT, "data", "reports"/);
+  });
+});
+
+describe("deriveReferenceEditions (#11616 — layout nested)", () => {
+  it("acha edições no layout nested data/editions/AAMM/AAMMDD (antes devolvia nenhuma)", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-eval-editions-"));
+    try {
+      for (const d of ["261024", "261025", "261026"]) {
+        mkdirSync(join(root, "2610", d, "_internal"), { recursive: true });
+        writeFileSync(join(root, "2610", d, "_internal", "01-approved.json"), "{}");
+      }
+      // Sem 01-approved.json: não entra.
+      mkdirSync(join(root, "2610", "261027"), { recursive: true });
+      // Layout flat legado convive com o nested.
+      mkdirSync(join(root, "260901", "_internal"), { recursive: true });
+      writeFileSync(join(root, "260901", "_internal", "01-approved.json"), "{}");
+      assert.deepEqual(deriveReferenceEditions(root, 3), ["261024", "261025", "261026"]);
+      assert.deepEqual(deriveReferenceEditions(root, 5), ["260901", "261024", "261025", "261026"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("diretório inexistente: array vazio, sem lançar", () => {
+    assert.deepEqual(deriveReferenceEditions(join(tmpdir(), "nao-existe-11616-xyz"), 3), []);
+  });
+});
+
+describe("resolveEditionsRootDir (#11616)", () => {
+  const exists = (set: string[]) => (p: string) => set.includes(p);
+
+  it("--editions-dir explícito vence, resolvido contra o worktree", () => {
+    const r = resolveEditionsRootDir({ override: "x/ed", worktreeRoot: "/wt", resolveMainRoot: () => "/main", dirExists: () => true });
+    assert.equal(r.dir, resolve("/wt", "x/ed"));
+    assert.equal(r.note, undefined);
+  });
+
+  it("worktree com data/editions: usa o local", () => {
+    const r = resolveEditionsRootDir({ worktreeRoot: "/wt", resolveMainRoot: () => "/main", dirExists: exists([join("/wt", "data", "editions"), join("/main", "data", "editions")]) });
+    assert.equal(r.dir, join("/wt", "data", "editions"));
+  });
+
+  it("worktree SEM a junction data/: cai no checkout principal e avisa (cenário do overnight 261029)", () => {
+    const r = resolveEditionsRootDir({ worktreeRoot: "/wt", resolveMainRoot: () => "/main", dirExists: exists([join("/main", "data", "editions")]) });
+    assert.equal(r.dir, join("/main", "data", "editions"));
+    assert.match(r.note ?? "", /checkout principal/);
+  });
+
+  it("nenhum dos dois existe, ou o principal não resolve: devolve o path do worktree (caller aborta)", () => {
+    assert.equal(resolveEditionsRootDir({ worktreeRoot: "/wt", resolveMainRoot: () => "/main", dirExists: () => false }).dir, join("/wt", "data", "editions"));
+    const r = resolveEditionsRootDir({ worktreeRoot: "/wt", resolveMainRoot: () => { throw new Error("repo ausente"); }, dirExists: () => false });
+    assert.equal(r.dir, join("/wt", "data", "editions"));
   });
 });
