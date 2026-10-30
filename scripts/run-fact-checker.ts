@@ -94,6 +94,13 @@ export interface FactClaim {
    * NOT_FOUND_IN_SOURCE e superlativos NUNCA recebem suggested_fix.
    */
   suggested_fix?: string;
+  /**
+   * (#11691) Sinal ESTRUTURADO para claim sustentado só por fonte adicional:
+   * `not_found` = li a fonte principal (título) e o claim não está lá;
+   * `unavailable` = não consegui ler a principal (manifest status ≠ ok).
+   * Ausente = sem ressalva. Preferido ao texto livre de `note`.
+   */
+  primary_status?: "not_found" | "unavailable";
 }
 
 export interface FactCheckSummary {
@@ -276,16 +283,30 @@ function hostOf(url: string): string {
 }
 
 /**
- * (#11691) O agente declara em `note` que não confirmou o claim na fonte
- * principal (título) mesmo devolvendo SUSTAINED por uma fonte adicional. O
- * verdict continua verde (sem alarme falso em attention_items), mas o gate
- * destaca a linha com ⚠️ para o editor conferir.
+ * (#11691) Fallback por texto livre quando o agente não preenche
+ * `primary_status`: `note` com negação ("não/nunca/sem") perto de "fonte
+ * principal|primária|original|nova", "link do título" ou "matéria do título".
  */
 const NOT_CONFIRMED_IN_PRIMARY_RE =
-  /n[ãa]o\s+(?:foi\s+)?(?:confirmad[oa]|encontrad[oa]|verificad[oa])\s+(?:n[ao]\s+)?(?:fonte\s+(?:principal|prim[aá]ria|original)|link\s+do\s+t[ií]tulo)|n[ãa]o\s+(?:confirmei|encontrei)\s+(?:o\s+claim\s+)?(?:n[ao]\s+)?fonte\s+(?:principal|prim[aá]ria|original)/i;
+  /(?:n[ãa]o|nunca|sem)\b(?:(?!diverg|contradi)[^.;\n]){0,60}\b(?:fonte\s+(?:principal|prim[aá]ria|original|nova)|link\s+do\s+t[ií]tulo|mat[ée]ria\s+do\s+t[ií]tulo)|(?:fonte\s+(?:principal|prim[aá]ria|original|nova)|link\s+do\s+t[ií]tulo)\s+n[ãa]o\s+(?:confirma|cita|menciona|traz|cont[ée]m|mostra)/i;
 
-export function notConfirmedInPrimary(c: Pick<FactClaim, "note">): boolean {
-  return typeof c.note === "string" && NOT_CONFIRMED_IN_PRIMARY_RE.test(c.note);
+const PRIMARY_UNAVAILABLE_RE =
+  /(?:fonte\s+(?:principal|prim[aá]ria|original)|link\s+do\s+t[ií]tulo)[^.;\n]{0,40}(?:indispon[ií]vel|inacess[ií]vel|bloquead[ao]|n[ãa]o\s+(?:consegui|foi\s+poss[ií]vel)\s+(?:ler|acessar|baixar))/i;
+
+/** "unavailable" | "not_found" quando há ressalva sobre a principal; null caso contrário. */
+export function primaryCaveat(
+  c: Pick<FactClaim, "note" | "primary_status">,
+): "unavailable" | "not_found" | null {
+  if (c.primary_status === "unavailable" || c.primary_status === "not_found") {
+    return c.primary_status;
+  }
+  if (typeof c.note !== "string") return null;
+  if (PRIMARY_UNAVAILABLE_RE.test(c.note)) return "unavailable";
+  return NOT_CONFIRMED_IN_PRIMARY_RE.test(c.note) ? "not_found" : null;
+}
+
+export function notConfirmedInPrimary(c: Pick<FactClaim, "note" | "primary_status">): boolean {
+  return primaryCaveat(c) !== null;
 }
 
 /**
@@ -337,12 +358,18 @@ export function formatSourceAttribution(
       out.push(
         `      ${warn ? "⚠️ " : ""}${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}" ← ${c.source_url}`,
       );
-      if (warn) out.push(`         → ${c.note!.replace(/\s+/g, " ").slice(0, 300)}`);
+      if (warn) {
+        const kind = primaryCaveat(c) === "unavailable" ? "fonte principal indisponível" : "li a fonte principal e não achei o claim";
+        out.push(`         → [${kind}] ${(c.note ?? "").replace(/\s+/g, " ")}`);
+      }
     }
-    const unconfirmed = extraClaims.filter(notConfirmedInPrimary).length;
-    if (unconfirmed > 0) {
+    const unconfirmed = extraClaims.filter(notConfirmedInPrimary);
+    if (unconfirmed.length > 0) {
+      const unavail = unconfirmed.filter((c) => primaryCaveat(c) === "unavailable").length;
       out.push(
-        `    ⚠️  ${unconfirmed} claim(s) sem confirmação na fonte principal, sustentado(s) só por fonte adicional — conferir antes de aprovar.`,
+        `    ⚠️  ${unconfirmed.length} claim(s) sem confirmação na fonte principal, sustentado(s) só por fonte adicional — conferir antes de aprovar` +
+          (unavail > 0 ? ` (${unavail} com a principal indisponível, não lida)` : "") +
+          ".",
       );
     }
   }
@@ -372,7 +399,14 @@ export function formatGateSummary(
   lines.push(...formatSourceAttribution(claims, opts.primaryUrls));
 
   if (summary.attention_items === 0) {
-    lines.push("  ✅ Todos os claims verificados sem divergências.");
+    const unconfirmedExtra = formatSourceAttribution(claims, opts.primaryUrls).some((l) =>
+      l.includes("sem confirmação na fonte principal"),
+    );
+    lines.push(
+      unconfirmedExtra
+        ? "  ⚠️  Sem divergências, mas há claim(s) não confirmado(s) na fonte principal (acima) — não é verde pleno."
+        : "  ✅ Todos os claims verificados sem divergências.",
+    );
     lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     return lines.join("\n");
   }
