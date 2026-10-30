@@ -10,7 +10,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -34,6 +34,7 @@ import {
   type DriveEntry,
   type MontageDriveDeps,
 } from "../scripts/lib/diaria/video-montage-drive.ts";
+import { explicitDriveRoot } from "../scripts/check-video-env.ts";
 import { assessMontageEnv, montageSetupCommand, montageVenvPython, requiredFreeBytes, resolveVideoPython, type MontageEnvProbes } from "../scripts/lib/diaria/video-montage-env.ts";
 import { buildSequencePlan, buildXmeml, defaultSequences, resolveBlocks, type BlocksFile, type SequenceSpec, type SourceInfo, type Word } from "../scripts/lib/diaria/video-montage.ts";
 import {
@@ -46,6 +47,7 @@ import {
   fetchBruto,
   localBrutoMissing,
   makeDriveSession,
+  transcribePrecheck,
   uploadAll,
   workDirDefault,
 } from "../scripts/video-montagem.ts";
@@ -358,6 +360,17 @@ describe("#11641 pathurl do XML aponta o bruto no Neo", () => {
     assert.deepEqual(xmlMediaPath("/home/u/bruto.mp4", { edition: "261030", drive, apiMode: true }), { path: `${DEFAULT_DRIVE_ROOT}/261030/bruto.mp4`, how: "api-guess" });
   });
 
+  it("#11653 build no Neo com --drive-root: o XML usa essa raiz, não a padrão; --xml-media-root ainda vence", () => {
+    assert.deepEqual(xmlMediaPath(drive.localPath, { edition: "261030", drive, driveRoot: "H:/Drive/YouTube/" }), { path: "H:/Drive/YouTube/261030/20261029_093444.mp4", how: "cache" });
+    assert.deepEqual(xmlMediaPath(drive.localPath, { edition: "261030", drive, driveRoot: "H:/Drive/YouTube", xmlMediaRoot: "D:/YT" }), { path: "D:/YT/261030/20261029_093444.mp4", how: "cache" });
+  });
+
+  it("#11653 check-video-env: --drive-root vence DIARIA_VIDEO_DRIVE_ROOT", () => {
+    assert.deepEqual(explicitDriveRoot("D:/a", "E:/b"), { root: "D:/a", via: "--drive-root" });
+    assert.deepEqual(explicitDriveRoot(undefined, "E:/b"), { root: "E:/b", via: "DIARIA_VIDEO_DRIVE_ROOT" });
+    assert.equal(explicitDriveRoot(undefined, undefined), null);
+  });
+
   it("buildXmeml grava o caminho do Neo no pathurl e o nome do Drive, nunca o cache", () => {
     const words: Word[] = [];
     for (let t = 10; t < 20; t += 0.5) words.push({ start: t, end: t + 0.4, text: ` w${t}` });
@@ -531,6 +544,52 @@ describe("#11639/#11640 wiring do modo API (Drive falso)", () => {
     assert.equal(read, 0);
     await assert.rejects(d.folder(), /sem config/);
     assert.equal(read, 1);
+  });
+
+  it("#11653 transcribe com source.json de outro bruto: recusa sem baixar nem gravar bruto.drive.json", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+    const work = mkdtempSync(join(tmpdir(), "vm-work-"));
+    const brutoA = join(cache, "bruto", "A.mp4").replace(/\\/g, "/");
+    writeFileSync(join(state, "source.json"), JSON.stringify({ path: brutoA, fps: 30, durationS: 10, width: 1920, height: 1080, mirrored: false }));
+    // O editor pôs B, maior, na pasta: o fake só responde à listagem; um download quebraria com "chamada inesperada".
+    const { deps, calls } = fakeDeps([folderList, () => json({ files: [{ ...entry("B.mp4", 7 * GB), id: "B" }, { ...entry("A.mp4", 6 * GB), id: "A" }] })]);
+    const d = makeDriveSession(ED, cache, deps, () => "root");
+    await assert.rejects(fetchBruto({ stateDir: state, edition: ED, workDir: work, force: false }, d), /source\.json aponta para outro bruto.*A\.mp4.*--force/);
+    assert.equal(calls.length, 2, "só a pasta e a listagem; nenhum download");
+    assert.equal(existsSync(join(state, BRUTO_DRIVE_FILE)), false, "bruto.drive.json não é gravado");
+    assert.equal(existsSync(join(cache, "bruto", "B.mp4")), false);
+  });
+
+  it("#11653 transcrição pronta para o mesmo bruto: não baixa de novo (cache limpo), --force baixa", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+    const work = mkdtempSync(join(tmpdir(), "vm-work-"));
+    const brutoA = join(cache, "bruto", "A.mp4").replace(/\\/g, "/");
+    writeFileSync(join(state, "source.json"), JSON.stringify({ path: brutoA, fps: 30, durationS: 10, width: 1920, height: 1080, mirrored: false }));
+    const reg = JSON.stringify({ edition: ED, id: "A", name: "A.mp4", size: 3, modifiedTime: null, folderId: "pasta-ed", localPath: brutoA });
+    writeFileSync(join(state, BRUTO_DRIVE_FILE), reg);
+    for (const p of [join(work, "audio.wav"), join(state, "loudness.json"), join(state, "transcript.json")]) writeFileSync(p, "{}");
+    const listing = () => json({ files: [{ ...entry("A.mp4", 3), id: "A" }] });
+    const ready = fakeDeps([folderList, listing]);
+    const got = await fetchBruto({ stateDir: state, edition: ED, workDir: work, force: false }, makeDriveSession(ED, cache, ready.deps, () => "root"));
+    assert.equal(got.replace(/\\/g, "/"), brutoA);
+    assert.equal(ready.calls.length, 2);
+    assert.equal(readFileSync(join(state, BRUTO_DRIVE_FILE), "utf8"), reg, "registro intocado");
+
+    // --force refaz tudo: baixa.
+    const forced = fakeDeps([folderList, listing, () => new Response(Buffer.from("abc"), { status: 200, headers: { "content-type": "video/mp4" } })]);
+    await fetchBruto({ stateDir: state, edition: ED, workDir: work, force: true }, makeDriveSession(ED, cache, forced.deps, () => "root"));
+    assert.equal(readFileSync(brutoA, "utf8"), "abc");
+  });
+
+  it("#11653 --from-audio com source.json no áudio: troca para o vídeo sem --force, baixa", async () => {
+    const state = mkdtempSync(join(tmpdir(), "vm-state-"));
+    const cache = mkdtempSync(join(tmpdir(), "vm-cache-"));
+    const audio = join(cache, "bruto", "fala.wav").replace(/\\/g, "/");
+    writeFileSync(join(state, "source.json"), JSON.stringify({ path: audio, fps: 0, durationS: 10, width: 0, height: 0, mirrored: false, audioOnly: true }));
+    assert.deepEqual(transcribePrecheck({ stateDir: state, force: false }, join(cache, "bruto", "V.mp4"), audio), { action: "fetch" });
+    assert.equal(transcribePrecheck({ stateDir: state, force: false }, join(cache, "bruto", "V.mp4")).action, "conflict");
   });
 
   it("DRIVE_UPLOAD_COMMANDS", () => {
