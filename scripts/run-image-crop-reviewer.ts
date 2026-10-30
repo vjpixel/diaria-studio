@@ -46,6 +46,11 @@
  *   #    destaque (todos os ratios acusados, ou só `dN:4x5`), fora do veredito:
  *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --mark-false-positive d1[,d2:4x5]
  *
+ *   # 5. (#11672) Re-revisão parcial — só os pares de dN (ou dN:1x1); o persist
+ *   #    troca só as entradas desses alvos e mantém o resto do veredito:
+ *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --only d3:1x1
+ *   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir data/editions/AAMMDD/ --only d3:1x1 --input-json <path>
+ *
  * Output: data/editions/AAMMDD/_internal/04-crop-review.json
  *   + stdout: parâmetros de dispatch (modo descoberta) ou seção formatada (modo --input-json)
  *
@@ -74,6 +79,7 @@ import {
   clearEstiloRegenDestaques,
   updateEstiloRegenStateFile,
 } from "./lib/estilo-regen-state.ts";
+import { resolveSquareSource } from "./lib/square-source-marker.ts"; // #11672
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -180,7 +186,10 @@ export function discoverCropPairs(editionDir: string): CropPair[] {
   for (const destaque of DESTAQUE_IDS) {
     const cropPath1x1 = join(editionDir, `04-${destaque}-1x1.jpg`);
     if (existsSync(cropPath1x1)) {
-      const heroPath = join(editionDir, `04-${destaque}-2x1.jpg`);
+      // #11672: 1:1 derivado do 4:5 nativo (`derive-square-from-native.ts`)
+      // tem como fonte o nativo, não o 2:1 — o registro só vale enquanto o
+      // md5 do 1:1 for o que a derivação gravou.
+      const heroPath = resolveSquareSource(editionDir, destaque) ?? join(editionDir, `04-${destaque}-2x1.jpg`);
       pairs.push({
         destaque,
         ratio: "1x1",
@@ -623,6 +632,61 @@ export function selectFalsePositiveMarks(
     .map((r) => ({ image_md5: r.image_md5!, destaque: r.destaque, ratio: r.ratio }));
 }
 
+// ---------------------------------------------------------------------------
+// #11672: re-revisão parcial (`--only dN[:ratio]`)
+// ---------------------------------------------------------------------------
+
+/** Alvo de `--only` — mesmo formato do `--mark-false-positive`. */
+export type CropReviewTarget = FalsePositiveTarget;
+
+/** `"d3:1x1,d1"` → alvos do `--only` (#11672). Lança em entrada inválida. */
+export function parseOnlyTargets(raw: string): CropReviewTarget[] {
+  const out: CropReviewTarget[] = [];
+  for (const tok of raw.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean)) {
+    const m = /^(d[123])(?::(1x1|4x5))?$/.exec(tok);
+    if (!m) throw new Error(`--only: alvo inválido "${tok}" (esperado d1, d3:1x1, ...)`);
+    out.push({ destaque: m[1] as DestaqueId, ratio: (m[2] as CropReviewRatio | undefined) ?? null });
+  }
+  if (out.length === 0) throw new Error("--only: nenhum alvo");
+  return out;
+}
+
+function matchesTargets(entry: { destaque: DestaqueId; ratio: CropReviewRatio }, targets: CropReviewTarget[]): boolean {
+  return targets.some((t) => t.destaque === entry.destaque && (t.ratio === null || t.ratio === entry.ratio));
+}
+
+/** Pares da descoberta restritos aos alvos do `--only`. */
+export function filterPairsByTargets(pairs: CropPair[], targets: CropReviewTarget[]): CropPair[] {
+  return pairs.filter((p) => matchesTargets(p, targets));
+}
+
+/**
+ * Junta o veredito novo de uma re-revisão parcial ao veredito persistido
+ * (#11672): as entradas dos alvos são trocadas pelas novas, as demais ficam
+ * como estavam, com o carimbo de md5 original. Recarimbar as antigas faria um
+ * aviso de imagem já trocada parecer atual (#9598). Entradas novas fora dos
+ * alvos são descartadas: só os alvos foram revisados de propósito. Pure.
+ */
+export function mergeCropReviewResults(
+  existing: CropReviewResult | null,
+  incoming: CropReviewResult,
+  targets: CropReviewTarget[],
+): CropReviewResult {
+  const kept = (existing?.results ?? []).filter((r) => !matchesTargets(r, targets));
+  const fresh = incoming.results.filter((r) => matchesTargets(r, targets));
+  const results = [...kept, ...fresh];
+  return {
+    edition: incoming.edition,
+    checked_at: incoming.checked_at,
+    results,
+    summary: {
+      total: results.length,
+      ok: results.filter((r) => r.status === "ok").length,
+      warn: results.filter((r) => r.status === "warn").length,
+    },
+  };
+}
+
 /**
  * Comandos que regeneram um destaque inteiro, NESTA ordem: 2:1 (+ 1:1
  * derivado; o `--force` do 2:1 apaga o 4:5 nativo antigo, #6010), arte 4:5
@@ -719,6 +783,18 @@ async function main(): Promise<void> {
 
   mkdirSync(internalDir, { recursive: true });
 
+  // #11672: `--only dN[:ratio]` restringe a descoberta aos alvos e faz o
+  // persist (--input-json) trocar só as entradas deles no veredito.
+  let onlyTargets: CropReviewTarget[] | null = null;
+  if (args.only) {
+    try {
+      onlyTargets = parseOnlyTargets(args.only);
+    } catch (e) {
+      console.error(`[run-image-crop-reviewer] ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
+
   // Modo --estilo-regen-plan (#10312): lê o veredito JÁ persistido e decide
   // quais destaques regenerar por Noite Estrelada. Grava
   // `_internal/04-estilo-regen.json` sempre (a presença do arquivo prova que o
@@ -813,7 +889,25 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
-    const result = stampCropReviewImageHashes(normalizeCropReviewResult(raw, edition), editionDir);
+    const stamped = stampCropReviewImageHashes(normalizeCropReviewResult(raw, edition), editionDir);
+    let result = stamped;
+    if (onlyTargets) {
+      // Veredito persistido ilegível não pode ser apagado em silêncio por um
+      // persist parcial: sai 1 e o orchestrator refaz a revisão completa.
+      let existing: CropReviewResult | null = null;
+      if (existsSync(outPath)) {
+        try {
+          existing = normalizeCropReviewResult(JSON.parse(readFileSync(outPath, "utf8")) as unknown, edition);
+        } catch (e) {
+          console.error(
+            `[run-image-crop-reviewer] --only: veredito persistido ilegível (${outPath}): ${(e as Error).message} — ` +
+              `rodar a revisão completa (sem --only).`,
+          );
+          process.exit(1);
+        }
+      }
+      result = mergeCropReviewResults(existing, stamped, onlyTargets);
+    }
 
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
     console.log(formatGateSummary(result));
@@ -827,12 +921,15 @@ async function main(): Promise<void> {
 
   // Modo descoberta (default): escaneia o disco e imprime os pares encontrados
   // pro orchestrator montar a chamada Agent("image-crop-reviewer", {...}).
-  const pairs = discoverCropPairs(editionDir);
+  const allPairs = discoverCropPairs(editionDir);
+  const pairs = onlyTargets ? filterPairsByTargets(allPairs, onlyTargets) : allPairs;
 
   if (pairs.length === 0) {
     console.error(
-      `[run-image-crop-reviewer] Nenhum par de imagem encontrado em ${editionDir} ` +
-        `(esperava ao menos 04-d1-1x1.jpg). Rodar image-generate.ts antes.`,
+      onlyTargets
+        ? `[run-image-crop-reviewer] Nenhum par de imagem para --only ${args.only} em ${editionDir}.`
+        : `[run-image-crop-reviewer] Nenhum par de imagem encontrado em ${editionDir} ` +
+            `(esperava ao menos 04-d1-1x1.jpg). Rodar image-generate.ts antes.`,
     );
     process.exit(1);
   }
