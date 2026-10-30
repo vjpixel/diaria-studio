@@ -277,7 +277,14 @@ describe("runSwapLink — fluxo feliz", () => {
         url: newUrl,
         dryRun: false,
       };
-      const result = await runSwapLink(args);
+      // #11671: refresh das fontes do fact-check stubado (sem rede real) —
+      // coberto em test/fact-check-stale-link-swap-11671.test.ts.
+      const result = await runSwapLink(args, undefined, async () => ({
+        stale_before: true,
+        refetched: true,
+        failed: [],
+        sources: [],
+      }));
 
       assert.equal(result.old_url, OLD_URL);
       assert.equal(result.new_url, newUrl);

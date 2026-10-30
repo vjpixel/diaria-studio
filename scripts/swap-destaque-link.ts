@@ -22,6 +22,12 @@
  *   - `_internal/04-d{N}-sd-prompt.json` (campo `positive`, só se a URL antiga
  *     aparecer ali literalmente — o campo é documental/embutido no texto do
  *     prompt, não estruturado; #5458 pede isso como opcional/barato)
+ *   - `_internal/fact-check-sources/` (#11671): re-baixa a fonte do destaque
+ *     via `refresh-destaque-sources.ts` (#9102), pra o fact-checker não ler o
+ *     texto da URL antiga. Fail-soft: falha de download vira
+ *     `fact_check_sources.error`/`failed`, nunca desfaz a troca. O
+ *     `fact-check.json` anterior fica defasado sozinho (carimbo de conteúdo,
+ *     `lib/fact-check-staleness.ts`) — re-rodar o fact-checker depois.
  *
  * A NOVA url é verificada via `verify()` (scripts/verify-accessibility.ts)
  * ANTES de qualquer mutação — fail-fast se inacessível, nenhum arquivo é
@@ -50,6 +56,7 @@ import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: lay
 import { hashHighlights } from "./lib/social-source-hash.ts";
 import { verify as verifyUrl } from "./verify-accessibility.ts";
 import type { VerifyOptions } from "./lib/verify-options.ts";
+import { refreshDestaqueSources, type RefreshResult } from "./refresh-destaque-sources.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -75,6 +82,10 @@ export interface SwapLinkResult {
   new_url: string;
   modified: string[];
   skipped: Array<{ file: string; reason: string }>;
+  /** (#11671) Re-sincronização de `_internal/fact-check-sources/` (ausente no dry-run). */
+  fact_check_sources?:
+    | { refetched: boolean; failed: number[]; source_path?: string }
+    | { error: string };
 }
 
 /** Same "accessible enough to publish" bar used by verify-accessibility.ts main(). */
@@ -284,9 +295,12 @@ export function parseSwapLinkArgs(argv: string[]): SwapLinkArgs {
 
 export type VerifyFn = (url: string, opts?: VerifyOptions) => ReturnType<typeof verifyUrl>;
 
+export type RefreshSourcesFn = (editionDir: string) => Promise<RefreshResult>;
+
 export async function runSwapLink(
   args: SwapLinkArgs,
   verifyFn: VerifyFn = verifyUrl,
+  refreshFn: RefreshSourcesFn = (dir) => refreshDestaqueSources(dir),
 ): Promise<SwapLinkResult> {
   const { edition, editionDir, destaque, url: newUrl, dryRun } = args;
   const position = Number(destaque.slice(1)) as 1 | 2 | 3;
@@ -439,6 +453,23 @@ export async function runSwapLink(
     result.skipped.push({ file: sdPromptPath, reason: "arquivo não encontrado (Stage 3 ainda não rodou)" });
   }
 
+  // -------------------------------------------------------------------
+  // (f) #11671: fonte do fact-check segue a URL nova. O approved já foi
+  // regravado acima, então o refresh vê a URL divergente no manifest e
+  // re-baixa. Fail-soft: a troca já está feita; erro aqui só fica registrado.
+  // -------------------------------------------------------------------
+  try {
+    const refresh = await refreshFn(editionDir);
+    const source = refresh.sources.find((s) => s.destaque === position);
+    result.fact_check_sources = {
+      refetched: refresh.refetched,
+      failed: refresh.failed,
+      ...(source?.path ? { source_path: source.path } : {}),
+    };
+  } catch (e) {
+    result.fact_check_sources = { error: (e as Error).message };
+  }
+
   return result;
 }
 
@@ -462,6 +493,18 @@ async function main(): Promise<void> {
         ...result.modified.map((f) => `    • ${f}`),
         ...(result.skipped.length > 0
           ? ["", "  Arquivos pulados:", ...result.skipped.map((s) => `    • ${s.file} — ${s.reason}`)]
+          : []),
+        ...(result.fact_check_sources
+          ? [
+              "",
+              "error" in result.fact_check_sources
+                ? `  ⚠ Fonte do fact-check NÃO re-baixada (${result.fact_check_sources.error}) — rodar refresh-destaque-sources.ts --edition-dir ${args.editionDir}`
+                : `  Fonte do fact-check: ${result.fact_check_sources.refetched ? "re-baixada" : "já em dia"}` +
+                  (result.fact_check_sources.failed.length > 0
+                    ? ` (download falhou: ${result.fact_check_sources.failed.map((n) => `D${n}`).join(", ")})`
+                    : ""),
+              "  Re-rodar o fact-checker (§4c.6): o fact-check.json anterior checou o texto com o link antigo.",
+            ]
           : []),
       ].join("\n"),
     );

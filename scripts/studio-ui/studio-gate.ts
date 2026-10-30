@@ -62,6 +62,7 @@ import { readStage4Decision, type Stage4DecisionState } from "../lib/stage4-deci
 import { countTitlesPerHighlight } from "../lint-newsletter-md.ts";
 import type { ApprovedJson } from "../lib/lint-checks/url-bucket.ts";
 import { getBlockingClaims, type FactCheckResult } from "../run-fact-checker.ts";
+import { computeContentHash, factCheckStaleness, parseContentHash, partitionBlockingByContent } from "../lib/fact-check-staleness.ts";
 import type { AutofixResult } from "../apply-factcheck-autofix.ts";
 import type { SlotSelectionRecord } from "../select-boxes-by-clicks.ts";
 import type { RenderWarningEvent } from "../lib/newsletter-render-html.ts";
@@ -147,6 +148,9 @@ export type GateFactCheckState =
        * checklist; `attention_items` continua exposto pra exibição
        * informativa completa. */
       blockingCount: number;
+      /** #11671: 02-reviewed.md/03-social.md mudaram depois da checagem
+       * (carimbo `content_hash` divergente) — re-rodar o fact-checker. */
+      stale: boolean;
     }
   | { available: false; note: string };
 
@@ -329,8 +333,18 @@ function buildFactCheck(editionDir: string): GateFactCheckState {
   }
   // #9985: mesmo critério do `--check-blocking` — isenção de tempo de
   // leitura conferida contra o `02-reviewed.md` real.
-  const blockingCount = getBlockingClaims(result.claims ?? [], { newsletterMd: readReviewedMd(editionDir) }).length;
-  return { available: true, summary: result.summary, blockingCount };
+  const newsletterMd = readReviewedMd(editionDir);
+  const socialMd = readSocialMd(editionDir);
+  // #11671: mesmo critério do `--check-blocking` — com o fact-check
+  // defasado, claim cujo trecho sumiu do texto atual sai do bloqueio.
+  const stamp = parseContentHash(result.content_hash);
+  const staleness = factCheckStaleness(stamp, computeContentHash(newsletterMd, socialMd));
+  const { blocking } = partitionBlockingByContent(
+    getBlockingClaims(result.claims ?? [], { newsletterMd }),
+    staleness,
+    [newsletterMd, socialMd],
+  );
+  return { available: true, summary: result.summary, blockingCount: blocking.length, stale: staleness.stale };
 }
 
 function buildFactCheckAutofix(editionDir: string): GateFactCheckAutofixState {
@@ -434,9 +448,12 @@ export function buildChecklist(
   const factCheckOk = factCheck.available && factCheck.blockingCount === 0;
   const factCheckDetail = !factCheck.available
     ? factCheck.note
-    : factCheckOk
-    ? ""
-    : `${factCheck.blockingCount} claim(s) bloqueante(s)`;
+    : [
+        factCheckOk ? "" : `${factCheck.blockingCount} claim(s) bloqueante(s)`,
+        factCheck.stale ? "fact-check defasado (texto mudou depois da checagem) — re-rodar o fact-checker" : "",
+      ]
+        .filter(Boolean)
+        .join("; ");
 
   // #6449 achado ao vivo (editor, 260828): os labels antigos eram afirmações
   // positivas ("Sem violations bloqueantes", "Fact-check ok") que continuavam
