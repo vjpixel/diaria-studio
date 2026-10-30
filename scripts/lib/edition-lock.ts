@@ -58,6 +58,12 @@ export type EditionLockAction =
   | "took_stale"
   /** Havia trava viva de outra sessão e `force` foi passado: assumida. */
   | "taken_over"
+  /**
+   * Trava vencida mas de OUTRO host (#11690): heartbeat velho pode ser só
+   * `data/` defasado (OneDrive) — o outro host pode estar à frente. Nada
+   * gravado; `force` assume.
+   */
+  | "stale_other_host"
   /** Trava viva de outra sessão, sem `force`: nada gravado. */
   | "held_by_other";
 
@@ -110,7 +116,10 @@ export function decideEditionLock(
   // adiantado de outra máquina) conta como vivo — erra pro lado de avisar.
   const age = Number.isFinite(hb) ? opts.now - hb : Number.POSITIVE_INFINITY;
   const base = { previous: existing, previous_age_ms: age };
-  if (age > ttl) return { action: "took_stale", record: fresh(nowIso), ...base };
+  if (age > ttl) {
+    if (existing.host && existing.host !== host && !opts.force) return { action: "stale_other_host", ...base };
+    return { action: "took_stale", record: fresh(nowIso), ...base };
+  }
   if (opts.force) return { action: "taken_over", record: fresh(nowIso), ...base };
   return { action: "held_by_other", ...base };
 }

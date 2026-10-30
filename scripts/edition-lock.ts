@@ -10,7 +10,8 @@
  *
  * Exit codes: 0 ok (acquire: acquired|refreshed|took_stale|taken_over;
  * release: released|not_held) · 2 uso inválido / `--session-id` ausente ·
- * 3 a edição está com outra sessão viva (acquire/release sem `--force`).
+ * 3 a edição está com outra sessão viva (acquire/release sem `--force`) ·
+ * 4 trava vencida de OUTRO host (#11690): data/ possivelmente defasado.
  * Stdout: JSON com `action`/`result` e o detentor.
  */
 import { resolve } from "node:path";
@@ -67,6 +68,13 @@ function main(): void {
         `[edition-lock] edição em uso por outra sessão (${prev.session_id} em ${prev.host}, Stage ${prev.stage}, heartbeat há ${min} min).`,
       );
       process.exit(3);
+    }
+    if (d.action === "stale_other_host") {
+      const prev = d.previous!;
+      console.error(
+        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat há ${Math.round((d.previous_age_ms ?? 0) / 3600000)} h): data/ possivelmente defasado (OneDrive) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
+      );
+      process.exit(4);
     }
     return;
   }
