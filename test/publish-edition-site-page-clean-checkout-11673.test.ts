@@ -1,30 +1,38 @@
 /**
  * test/publish-edition-site-page-clean-checkout-11673.test.ts
  *
- * Regressão #11673: no caminho do worktree (#8636), a página `p/{slug}/`
- * (untracked) e `sitemap.xml`/`index.html` (modificados) ficavam sujos no
- * checkout compartilhado depois do push. Quando o PR da página mergeava, o
- * `sync-code.ts` da edição seguinte recusava o `merge --ff-only` por colisão
- * com esses mesmos arquivos e criava um autostash — um por edição.
+ * Regressão #11673 (30/10/2026): o `sync-code.ts` recusou o ff por colisão
+ * com `seed/lancamentos-tool-allowlist.txt` (edição local real),
+ * `workers/site/public/sitemap.xml` e `workers/site/public/p/{slug}/index.html`
+ * (artefatos da página da edição, idênticos ao que o PR do site mergeou).
+ * O descarte de cópias idênticas do #11562 é tudo-ou-nada (#11654), então a
+ * allowlist arrastava página e sitemap pro autostash — um por edição.
  *
- * Git real (subprocessos), `gh`/lock mockados — mesmo arranjo do
- * `publish-edition-site-page-8636-worktree-real-git.test.ts`.
+ * Agora, sem config protegida suja, os idênticos saem sem perda e só a
+ * edição local real vai pro stash direcionado.
+ *
+ * Ponta a ponta com git real: publica pelo caminho do worktree (#8636) com
+ * `commitAndPushSitePage`, simula o merge do PR da página e roda `syncCode`
+ * no checkout. `gh`/lock mockados.
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  cleanSharedCheckoutAfterPush,
-  commitAndPushSitePage,
-  homePageRelPathFromSitemap,
-} from "../scripts/publish-edition-site-page.ts";
-import type { GhRunner, GitRunner, LockRunner, SleepFn } from "../scripts/publish-edition-site-page.ts";
+import { commitAndPushSitePage, homePageRelPathFromSitemap } from "../scripts/publish-edition-site-page.ts";
+import type { GhRunner, LockRunner, SleepFn } from "../scripts/publish-edition-site-page.ts";
+import { syncCode, discardCollisionsIdenticalToUpstream, classifyFfRefusal, type SpawnFn, type SyncLock } from "../scripts/lib/git-sync.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString("utf8");
+}
+function realSpawn(cwd: string): SpawnFn {
+  return (cmd, args) => {
+    const r = spawnSync(cmd, args, { cwd, encoding: "utf8" });
+    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  };
 }
 
 const gh: GhRunner = (args) => {
@@ -34,6 +42,7 @@ const gh: GhRunner = (args) => {
 };
 const noopLock: LockRunner = () => ({ ok: true, stdout: "ok\n", stderr: "" });
 const noopSleep: SleepFn = () => {};
+const NOOP_SYNC_LOCK: SyncLock = { path: "(noop)", acquire: () => true, release: () => {} };
 
 const cleanupDirs: string[] = [];
 after(() => {
@@ -48,117 +57,125 @@ after(() => {
 
 const SITEMAP = "workers/site/public/sitemap.xml";
 const HOME = homePageRelPathFromSitemap(SITEMAP);
+const ALLOWLIST = "seed/lancamentos-tool-allowlist.txt";
+const SLUG = "lula-promete-uma-ia-brasileira";
+const PAGE = `workers/site/public/p/${SLUG}/index.html`;
 
-function setupRepo(): { rootDir: string; originBare: string } {
-  const rootDir = mkdtempSync(join(tmpdir(), "diaria-11673-root-"));
-  const originBare = mkdtempSync(join(tmpdir(), "diaria-11673-origin-"));
-  cleanupDirs.push(rootDir, originBare);
-  git(["init", "-b", "master"], rootDir);
-  git(["config", "user.email", "test@example.com"], rootDir);
-  git(["config", "user.name", "Test"], rootDir);
-  mkdirSync(join(rootDir, "workers", "site", "public", "p", "edicao-velha"), { recursive: true });
-  writeFileSync(join(rootDir, SITEMAP), "OLD_SITEMAP\n", "utf8");
-  writeFileSync(join(rootDir, HOME), "OLD_HOME\n", "utf8");
-  writeFileSync(join(rootDir, "workers/site/public/p/edicao-velha/index.html"), "VELHA\n", "utf8");
-  writeFileSync(join(rootDir, "README.md"), "readme\n", "utf8");
-  git(["add", "-A"], rootDir);
-  git(["commit", "-m", "init"], rootDir);
-  rmSync(originBare, { recursive: true, force: true });
-  git(["clone", "--bare", rootDir, originBare], rootDir);
-  git(["remote", "add", "origin", originBare], rootDir);
-  git(["fetch", "origin"], rootDir);
-  git(["branch", "--set-upstream-to=origin/master", "master"], rootDir);
-  return { rootDir, originBare };
-}
-
-/** O que `writePage` + `updateSitemapAndHome` deixam em `rootDir`. */
-function writeArtifacts(rootDir: string, slug: string): void {
-  mkdirSync(join(rootDir, "workers/site/public/p", slug), { recursive: true });
-  writeFileSync(join(rootDir, "workers/site/public/p", slug, "index.html"), `PAGE ${slug}\n`, "utf8");
-  writeFileSync(join(rootDir, SITEMAP), `NEW_SITEMAP ${slug}\n`, "utf8");
-  writeFileSync(join(rootDir, HOME), `NEW_HOME ${slug}\n`, "utf8");
-}
-
-function freshWorktreeDir(): string {
-  const d = mkdtempSync(join(tmpdir(), "diaria-11673-wt-"));
+function tmp(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
   cleanupDirs.push(d);
-  rmSync(d, { recursive: true, force: true });
   return d;
 }
+function write(root: string, rel: string, content: string): void {
+  mkdirSync(join(root, rel, ".."), { recursive: true });
+  writeFileSync(join(root, rel), content, "utf8");
+}
 
-/** Simula o merge do PR da página: a branch vira o master do remoto. */
-function mergePageBranch(rootDir: string, slug: string): void {
+function setupRepo(): string {
+  const rootDir = tmp("diaria-11673-root-");
+  const bare = tmp("diaria-11673-origin-");
+  git(["init", "-b", "master"], rootDir);
+  git(["config", "user.email", "t@example.com"], rootDir);
+  git(["config", "user.name", "T"], rootDir);
+  write(rootDir, SITEMAP, "OLD_SITEMAP\n");
+  write(rootDir, HOME, "OLD_HOME\n");
+  write(rootDir, ALLOWLIST, "# allowlist\n");
+  git(["add", "-A"], rootDir);
+  git(["commit", "-m", "init"], rootDir);
+  rmSync(bare, { recursive: true, force: true });
+  git(["clone", "--bare", rootDir, bare], rootDir);
+  git(["remote", "add", "origin", bare], rootDir);
   git(["fetch", "origin"], rootDir);
-  git(["push", "origin", `origin/site-publish/${slug}:refs/heads/master`], rootDir);
+  git(["branch", "--set-upstream-to=origin/master", "master"], rootDir);
+  return rootDir;
+}
+
+/** Publica pelo caminho do worktree e mergeia o PR da página no master do remoto. */
+function publishAndMerge(rootDir: string): void {
+  // O que `writePage` + `updateSitemapAndHome` deixam no checkout.
+  write(rootDir, PAGE, `PAGE ${SLUG}\n`);
+  write(rootDir, SITEMAP, `NEW_SITEMAP ${SLUG}\n`);
+  write(rootDir, HOME, `NEW_HOME ${SLUG}\n`);
+  const wt = tmp("diaria-11673-wt-");
+  rmSync(wt, { recursive: true, force: true });
+  const r = commitAndPushSitePage(rootDir, SLUG, git, SITEMAP, gh, noopLock, noopSleep, wt);
+  assert.equal(r.pushed, true);
+  git(["fetch", "origin"], rootDir);
+  git(["push", "origin", `refs/remotes/origin/site-publish/${SLUG}:refs/heads/master`], rootDir);
+}
+
+/** Outra PR mergeada depois mexe na allowlist (a colisão "real" do incidente). */
+function upstreamTouchesAllowlist(rootDir: string): void {
+  const other = tmp("diaria-11673-other-");
+  rmSync(other, { recursive: true, force: true });
+  const bare = git(["remote", "get-url", "origin"], rootDir).trim();
+  git(["clone", "-q", bare, other], rootDir);
+  git(["config", "user.email", "t@example.com"], other);
+  git(["config", "user.name", "T"], other);
+  write(other, ALLOWLIST, "# allowlist\nexemplo.com/upstream/\n");
+  write(other, "scripts/codigo-novo.ts", "export const X = 1;\n");
+  git(["add", "-A"], other);
+  git(["commit", "-qm", "upstream"], other);
+  git(["push", "-q", "origin", "master"], other);
   git(["fetch", "origin"], rootDir);
 }
 
-describe("#11673 — publicar via worktree deixa o checkout compartilhado limpo", () => {
-  it("depois do push, página/sitemap/home somem do status e o ff do PR mergeado passa sem stash", () => {
-    const { rootDir } = setupRepo();
-    const slug = "lula-promete-uma-ia-brasileira";
-    writeArtifacts(rootDir, slug);
-    // Sujeira alheia fora do pathspec da publicação: não pode ser tocada.
-    writeFileSync(join(rootDir, "README.md"), "edição local de outra sessão\n", "utf8");
+describe("#11673 — artefatos da página da edição não vão mais pro autostash", () => {
+  it("colisão mista (página/sitemap/home idênticos + allowlist editada): stash só com a allowlist, ff passa", () => {
+    const rootDir = setupRepo();
+    publishAndMerge(rootDir);
+    upstreamTouchesAllowlist(rootDir);
+    write(rootDir, ALLOWLIST, "# allowlist\nexemplo.com/local/\n"); // edição local real
 
-    const r = commitAndPushSitePage(rootDir, slug, git, SITEMAP, gh, noopLock, noopSleep, freshWorktreeDir());
-    assert.equal(r.pushed, true);
+    const r = syncCode(realSpawn(rootDir), NOOP_SYNC_LOCK, rootDir);
+    assert.equal(r.outcome, "synced_stash_preserved", r.message);
+    assert.deepEqual([...(r.discarded_identical_paths ?? [])].sort(), [HOME, PAGE, SITEMAP].sort());
 
-    const status = git(["status", "--porcelain", "--untracked-files=all"], rootDir);
-    assert.equal(status, " M README.md\n", `só a sujeira alheia deveria restar, veio:\n${status}`);
-    assert.equal(existsSync(join(rootDir, "workers/site/public/p", slug)), false, "diretório da página esvaziado sai");
-    assert.equal(existsSync(join(rootDir, "workers/site/public/p")), true, "p/ em si fica");
-    assert.equal(readFileSync(join(rootDir, "README.md"), "utf8"), "edição local de outra sessão\n");
+    // Código do master chegou, artefatos vieram pelo ff.
+    assert.ok(existsSync(join(rootDir, "scripts/codigo-novo.ts")));
+    assert.equal(readFileSync(join(rootDir, PAGE), "utf8"), `PAGE ${SLUG}\n`);
+    assert.equal(readFileSync(join(rootDir, SITEMAP), "utf8"), `NEW_SITEMAP ${SLUG}\n`);
 
-    // O conteúdo publicado está no commit da branch, não perdido.
-    git(["fetch", "origin"], rootDir);
-    assert.equal(
-      git(["show", `origin/site-publish/${slug}:workers/site/public/p/${slug}/index.html`], rootDir),
-      `PAGE ${slug}\n`,
-    );
-
-    // O sync-code da próxima edição: ff direto, sem colisão.
-    mergePageBranch(rootDir, slug);
-    git(["merge", "--ff-only", "origin/master"], rootDir);
-    assert.equal(readFileSync(join(rootDir, SITEMAP), "utf8"), `NEW_SITEMAP ${slug}\n`);
-    assert.equal(readFileSync(join(rootDir, "workers/site/public/p", slug, "index.html"), "utf8"), `PAGE ${slug}\n`);
+    // O autostash carrega só a edição local real.
+    const stashed = git(["stash", "show", "--include-untracked", "--name-only", "stash@{0}"], rootDir)
+      .split("\n")
+      .filter(Boolean);
+    assert.deepEqual(stashed, [ALLOWLIST], `stash deveria ter só a allowlist, veio: ${stashed.join(", ")}`);
+    assert.equal(git(["stash", "list"], rootDir).trim().split("\n").length, 1);
   });
 
-  it("arquivo alterado por outra sessão depois da cópia fica intacto (e é reportado)", () => {
-    const { rootDir } = setupRepo();
-    const slug = "edicao-concorrente";
-    writeArtifacts(rootDir, slug);
-    // Mexe no sitemap de rootDir no instante do push — depois da cópia pro worktree.
-    const racingGit: GitRunner = (args, cwd) => {
-      if (args[0] === "push") writeFileSync(join(rootDir, SITEMAP), "OUTRA SESSÃO\n", "utf8");
-      return git(args, cwd);
+  it("só artefatos idênticos (sem edição local): ff sem stash nenhum", () => {
+    const rootDir = setupRepo();
+    publishAndMerge(rootDir);
+    const r = syncCode(realSpawn(rootDir), NOOP_SYNC_LOCK, rootDir);
+    assert.equal(r.outcome, "synced", r.message);
+    assert.equal(r.preserved_stash, null);
+    assert.equal(git(["stash", "list"], rootDir), "");
+    assert.equal(git(["status", "--porcelain", "--untracked-files=all"], rootDir), "");
+  });
+
+  it("allowPartial descarta só os idênticos; sem a flag segue tudo-ou-nada (#11654)", () => {
+    const stderr =
+      `error: Your local changes to the following files would be overwritten by merge:\n\t${SITEMAP}\n\t${ALLOWLIST}\n` +
+      `Please commit your changes or stash them before you merge.\nAborting\n`;
+    const porcelain = ` M ${SITEMAP}\n M ${ALLOWLIST}\n`;
+    const mk = (calls: string[]): SpawnFn => (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      calls.push(key);
+      if (key === `git hash-object -- ${SITEMAP} ${ALLOWLIST}`) return { status: 0, stdout: "s1\na-local\n", stderr: "" };
+      if (key.startsWith("git ls-tree"))
+        return { status: 0, stdout: `100644 blob s1\t${SITEMAP}\x00100644 blob a-master\t${ALLOWLIST}\x00`, stderr: "" };
+      return { status: 0, stdout: "", stderr: "" };
     };
-    const r = commitAndPushSitePage(rootDir, slug, racingGit, SITEMAP, gh, noopLock, noopSleep, freshWorktreeDir());
-    assert.equal(r.pushed, true);
-    assert.equal(readFileSync(join(rootDir, SITEMAP), "utf8"), "OUTRA SESSÃO\n", "nunca sobrescreve trabalho alheio");
-    const status = git(["status", "--porcelain", "--untracked-files=all"], rootDir);
-    assert.equal(status, ` M ${SITEMAP}\n`, `página e home limpas, sitemap alheio fica:\n${status}`);
-  });
+    const partialCalls: string[] = [];
+    const partial = discardCollisionsIdenticalToUpstream(mk(partialCalls), classifyFfRefusal(stderr), porcelain, true);
+    assert.deepEqual(partial.discarded, [SITEMAP]);
+    assert.ok(partialCalls.includes(`git checkout -- :(literal)${SITEMAP}`));
+    assert.ok(!partialCalls.some((c) => c.includes(`:(literal)${ALLOWLIST}`)), "a edição local real nunca é descartada");
 
-  it("cleanSharedCheckoutAfterPush: só apaga/restaura o que bate byte a byte com a cópia commitada", () => {
-    const { rootDir } = setupRepo();
-    const wt = mkdtempSync(join(tmpdir(), "diaria-11673-copy-"));
-    cleanupDirs.push(wt);
-    const page = "workers/site/public/p/x";
-    mkdirSync(join(rootDir, page), { recursive: true });
-    mkdirSync(join(wt, page), { recursive: true });
-    writeFileSync(join(rootDir, page, "index.html"), "A\n");
-    writeFileSync(join(wt, page, "index.html"), "A\n");
-    writeFileSync(join(rootDir, page, "extra.txt"), "só local\n"); // sem cópia: fica
-    writeFileSync(join(rootDir, HOME), "H\n");
-    mkdirSync(join(wt, "workers/site/public"), { recursive: true });
-    writeFileSync(join(wt, HOME), "H\n");
-
-    const res = cleanSharedCheckoutAfterPush(rootDir, wt, [page, HOME, SITEMAP], git);
-    assert.deepEqual(res.removed, [`${page}/index.html`]);
-    assert.deepEqual(res.restored, [HOME]);
-    assert.deepEqual(res.kept, [`${page}/extra.txt`]);
-    assert.equal(readFileSync(join(rootDir, HOME), "utf8"), "OLD_HOME\n");
-    assert.equal(existsSync(join(rootDir, page, "extra.txt")), true, "diretório não vazio fica");
+    const strictCalls: string[] = [];
+    const strict = discardCollisionsIdenticalToUpstream(mk(strictCalls), classifyFfRefusal(stderr), porcelain);
+    assert.deepEqual(strict.discarded, []);
+    assert.ok(!strictCalls.some((c) => c.startsWith("git checkout") || c.startsWith("git clean")));
   });
 });
