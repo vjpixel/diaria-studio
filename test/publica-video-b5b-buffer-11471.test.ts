@@ -39,7 +39,12 @@ describe("#11471: Passo B5b — create_post da Buffer para o X", () => {
 
   it("assets vai como array JSON", () => {
     assert.match(B5B, /`assets` vai como \*\*array JSON\*\*/);
-    assert.match(B5B, /assets: \[\{ video: \{ url: videoUrl \} \}\]/);
+    assert.match(B5B, /assets: \[\{ video: \{ url: videoUrl, metadata: \{ thumbnailOffset \} \} \}\]/);
+  });
+
+  it("repassa o offset da capa inclusive zero e omite metadata sem offset (#11547)", () => {
+    assert.match(B5B, /`thumbnailOffset` de `results\[\]\.buffer` quando presente, inclusive zero, em milissegundos/);
+    assert.match(B5B, /omitir `metadata` quando ausente/);
   });
 
   it("o formato do asset de vídeo deixou de ser premissa não verificada", () => {
