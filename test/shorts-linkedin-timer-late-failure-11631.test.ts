@@ -146,6 +146,45 @@ describe("#11631 interpretLinkedinTimerOutput", () => {
 });
 
 describe("#11631 runLinkedinTimer: vertical no disco, publish-shorts não publica", () => {
+  it("#11649: post sem registro não chama publish-shorts na segunda execução", async () => {
+    const dir = edition();
+    try {
+      const gh = fakeGh();
+      const stdout = JSON.stringify({
+        items: [],
+        results: [{ destination: "linkedin_profile", ok: false, entry: { status: "published", id: "x", url: "u" }, error: "EACCES" }],
+      });
+      const d = deps(new Date(AT), { status: 1, stdout }, gh.notify);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, d), 1);
+      assert.equal(d.scripts.length, 1);
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE), "utf8")).alarmed, ["published-unregistered"]);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, d), 0);
+      assert.equal(d.scripts.length, 1, "não repete o runScript de publish-shorts");
+      assert.equal(gh.issues.length, 1);
+      assert.equal(existsSync(join(dir, TIMER_LOCK_FILE)), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  for (const key of ["published-unregistered", "send-unknown"]) {
+    for (const bucket of ["alarmed", "emailPending"]) {
+      it(`#11649: ${key} em ${bucket} bloqueia publicação mesmo sem vídeo local`, async () => {
+        const dir = edition();
+        try {
+          rmSync(join(dir, shortVideoFileName(AAMMDD)));
+          writeFileSync(join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE), JSON.stringify({ aammdd: AAMMDD, [bucket]: [key] }));
+          const gh = fakeGh();
+          const d = deps(new Date(AT), { status: 0, stdout: PUBLISHED_OUT }, gh.notify);
+          assert.equal(await runLinkedinTimer(AAMMDD, dir, false, d), 0);
+          assert.equal(d.scripts.length, 0, "não busca no Drive nem publica");
+          assert.equal(gh.issues.length, 0);
+          assert.equal(existsSync(join(dir, TIMER_LOCK_FILE)), false);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    }
+  }
   it("regressão: skip_late alarma (urgente) uma vez por edição e sai 0", async () => {
     const dir = edition();
     try {

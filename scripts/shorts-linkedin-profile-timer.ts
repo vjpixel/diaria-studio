@@ -392,8 +392,8 @@ export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTi
 }
 
 /**
- * Abre (ou reaproveita) a issue do alarme, manda o e-mail (`urgente`: o post
- * do dia não saiu) e grava o estado. Mesmas regras de estado dos timers do
+ * Abre (ou reaproveita) a issue do alarme, manda o e-mail conforme a severidade
+ * (`urgente` ou `acao`) e grava o estado. Mesmas regras de estado dos timers do
  * Instagram e do Threads: entregue não repete; e-mail pendente é reenviado.
  */
 export async function linkedinAlarm(
@@ -479,6 +479,16 @@ export async function runLinkedinTimer(aammdd: string, dir: string, dryRun: bool
     return 0;
   }
   try {
+    // #11649: sem registro, o alarme ainda prova que o post pode estar no ar.
+    const alarmPath = join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE);
+    const state = parseAlarmState(existsSync(alarmPath) ? readFileSync(alarmPath, "utf8") : null);
+    const maybePublished = [...state.alarmed, ...state.emailPending].find(
+      (key) => LINKEDIN_MAYBE_PUBLISHED_KEYS.has(key as LinkedinTimerAlarmKey),
+    );
+    if (maybePublished) {
+      console.log(`[shorts-linkedin-timer] ${aammdd}: alarme "${maybePublished}" — confira o perfil e registre o post antes de publicar novamente; sai sem publicar`);
+      return 0;
+    }
     const publishArgs = ["scripts/publish-shorts.ts", aammdd, "--only", "linkedin_profile", "--publish", "--linkedin-timer"];
     if (decision.fromDrive) {
       const busy = linkedinVerticalDownloadBusy(dir, videoPath);
