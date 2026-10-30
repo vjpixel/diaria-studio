@@ -82,7 +82,7 @@ export type ThumbnailOutcome = { ok: true } | { ok: false; error: string };
 
 type UploadResult =
   | { ok: true; videoUrn: string; thumbnail?: ThumbnailOutcome }
-  | { ok: false; reason: string; revoked?: boolean; thumbnail?: ThumbnailOutcome };
+  | { ok: false; reason: string; revoked?: boolean; thumbnail?: ThumbnailOutcome; coverSuspect?: boolean };
 
 const timeout = (ms: number, init: RequestInit = {}): RequestInit => ({ ...init, signal: AbortSignal.timeout(ms) });
 
@@ -131,7 +131,7 @@ export async function uploadLinkedInVideo(
   thumbnailJpeg: Uint8Array | null = null,
 ): Promise<UploadResult> {
   let thumbnail: ThumbnailOutcome | undefined;
-  const fail = (r: { reason: string; revoked?: boolean }): UploadResult => ({ ok: false, ...r, ...(thumbnail ? { thumbnail } : {}) });
+  const fail = (r: { reason: string; revoked?: boolean; coverSuspect?: boolean }): UploadResult => ({ ok: false, ...r, ...(thumbnail ? { thumbnail } : {}) });
   try {
     const init = await deps.fetchFn(
       LINKEDIN_VIDEOS_INIT_URL,
@@ -146,7 +146,10 @@ export async function uploadLinkedInVideo(
     if (init.status === 401 || init.status === 403) return { ok: false, reason: REVOKED_REASON, revoked: true };
     const { json, text } = await readJson(init);
     const value = json?.value;
-    if (!init.ok || typeof value?.video !== "string") return { ok: false, reason: `initializeUpload (vídeo) falhou (HTTP ${init.status}): ${text.slice(0, 200)}` };
+    // #11660: recusa do initializeUpload com `uploadThumbnail: true` pode ser a capa.
+    if (!init.ok || typeof value?.video !== "string") {
+      return { ok: false, reason: `initializeUpload (vídeo) falhou (HTTP ${init.status}): ${text.slice(0, 200)}`, ...(thumbnailJpeg ? { coverSuspect: true } : {}) };
+    }
     let parts: UploadInstruction[];
     try {
       parts = validateUploadInstructions(value.uploadInstructions, bytes.length);
@@ -183,7 +186,8 @@ export async function uploadLinkedInVideo(
         body: JSON.stringify({ finalizeUploadRequest: { video: value.video, uploadToken: value.uploadToken ?? "", uploadedPartIds: etags } }),
       }),
     );
-    if (!fin.ok) return fail({ reason: `finalizeUpload falhou (HTTP ${fin.status}): ${(await fin.text().catch(() => "")).slice(0, 200)}` });
+    // #11660: finalize/processamento recusado depois de a capa ter sido tentada é atribuível a ela.
+    if (!fin.ok) return fail({ reason: `finalizeUpload falhou (HTTP ${fin.status}): ${(await fin.text().catch(() => "")).slice(0, 200)}`, coverSuspect: thumbnail !== undefined });
     for (let i = 0; i < LINKEDIN_VIDEO_POLL_ATTEMPTS; i++) {
       let status: string | undefined;
       try {
@@ -193,7 +197,7 @@ export async function uploadLinkedInVideo(
         deps.log(`[aviso] linkedin_profile: status do vídeo falhou (${(e as Error).message}) — tentando de novo`);
       }
       if (status === "AVAILABLE") return { ok: true, videoUrn: value.video, ...(thumbnail ? { thumbnail } : {}) };
-      if (status === "PROCESSING_FAILED") return fail({ reason: `a LinkedIn recusou o vídeo ${value.video} no processamento (PROCESSING_FAILED)` });
+      if (status === "PROCESSING_FAILED") return fail({ reason: `a LinkedIn recusou o vídeo ${value.video} no processamento (PROCESSING_FAILED)`, coverSuspect: thumbnail?.ok === true });
       await deps.sleep(LINKEDIN_VIDEO_POLL_INTERVAL_MS);
     }
     // Sem AVAILABLE não posta: o post de um vídeo que nunca termina de processar fica quebrado no perfil.
@@ -206,8 +210,14 @@ export async function uploadLinkedInVideo(
 /**
  * Passos 1-5: sobe o vertical e posta no perfil pessoal. Nunca lança.
  * #11547: com `thumbnail`, tenta a capa; se o upload com capa falhar antes do
- * envio (nada no perfil), tenta uma vez sem a capa — a capa nunca derruba o
- * vídeo. `thumbnail` no retorno diz o que aconteceu com ela.
+ * envio (nada no perfil) POR CAUSA da capa, tenta uma vez sem ela — a capa
+ * nunca derruba o vídeo. `thumbnail` no retorno diz o que aconteceu com ela.
+ * #11660: só repete quando a falha é atribuível à capa (`coverSuspect`:
+ * `initializeUpload` recusado com `uploadThumbnail: true`, `finalizeUpload`
+ * recusado depois da capa tentada, `PROCESSING_FAILED` com a capa aceita).
+ * Parte que falhou, erro de rede e timeout do processamento não repetem: subir
+ * o vertical inteiro de novo sem capa não muda essas falhas e só gasta tempo
+ * do timer.
  */
 export async function postVideoToPersonalProfile(args: {
   deps: LinkedInVideoDeps;
@@ -220,7 +230,7 @@ export async function postVideoToPersonalProfile(args: {
 }): Promise<PostResult & { thumbnail?: ThumbnailOutcome }> {
   let up = await uploadLinkedInVideo(args.deps, args.creds, args.apiVersion, args.bytes, args.thumbnail ?? null);
   let thumbnail = up.thumbnail;
-  if (!up.ok && args.thumbnail && !up.revoked) {
+  if (!up.ok && args.thumbnail && !up.revoked && up.coverSuspect) {
     args.deps.log(`[aviso] linkedin_profile: upload com capa falhou (${up.reason}) — tentando de novo sem a capa`);
     thumbnail = { ok: false, error: thumbnail && !thumbnail.ok ? thumbnail.error : `upload com capa falhou: ${up.reason}` };
     up = await uploadLinkedInVideo(args.deps, args.creds, args.apiVersion, args.bytes, null);

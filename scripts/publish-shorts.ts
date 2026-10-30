@@ -260,6 +260,8 @@ import {
   parseShortCoverSource,
   planCoverDestination,
   withCoverRecord,
+  withMissingCoverRecord,
+  SHORT_COVER_MISSING_ERROR,
   type ShortCoverRecord,
 } from "./lib/diaria/short-cover.ts"; // #11547
 import {
@@ -3078,6 +3080,8 @@ async function main(): Promise<number> {
   const workerQueue = await loadWorkerQueueForGrid(workerUrl, workerToken, fetch, warnGrid);
 
   const shortCover = readShortCover(dir, (l) => console.error(l)); // #11547
+  // #11660: capa ausente nesta máquina é aviso explícito (e vai pro registro de cada destino), nunca silêncio.
+  if (!shortCover.path) console.error(`[aviso] capa do vertical: ${SHORT_COVER_MISSING_ERROR}`);
   let plan: ShortsPlan;
   try {
     plan = planShortsPublish({
@@ -3329,7 +3333,8 @@ async function main(): Promise<number> {
       console.error(`[erro] ${item.destination}: ${msg}`);
       continue;
     }
-    const { entry, unconfirmed } = outcome;
+    const { unconfirmed } = outcome;
+    const entry = withMissingCoverRecord(outcome.entry, shortCover.path !== null); // #11660
     // #573: o status do registro é o que o script fez; o estado normalizado é o que se relata.
     const state = resolveShortEntryState(entry, new Date());
     try {

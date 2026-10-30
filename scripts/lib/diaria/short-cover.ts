@@ -41,7 +41,8 @@ export const SHORT_COVER_DEFAULT_FPS = 30;
 
 /** Como cada destino recebeu (ou tentou receber) a capa — gravado em `06-shorts-published.json`. */
 export interface ShortCoverRecord {
-  method: "thumbnail_upload" | "cover_url" | "thumbnails_set" | "thumbnail_offset";
+  /** `missing_local` (#11660): a capa não estava na pasta da edição desta máquina — frame automático. */
+  method: "thumbnail_upload" | "cover_url" | "thumbnails_set" | "thumbnail_offset" | "missing_local";
   ok: boolean;
   /** Só no `thumbnail_offset`. */
   offset_ms?: number;
@@ -134,4 +135,23 @@ export function carryOverCover(next: ShortPublishedEntry, prior: ShortPublishedE
 /** Pure: anexa o registro da capa à entrada do registro (sem mutar). */
 export function withCoverRecord(entry: ShortPublishedEntry, cover: ShortCoverRecord | null | undefined): ShortPublishedEntry {
   return cover ? { ...entry, cover } : entry;
+}
+
+/** Destinos que recebem a capa por arquivo (o X usa só o offset; o Threads não tem capa). */
+const COVER_FILE_DESTINATIONS = (d: string): boolean =>
+  d === "instagram" || d === "linkedin_profile" || d === "youtube_shorts" || d.startsWith("facebook:");
+
+/** Texto do aviso/registro de capa ausente (#11660). */
+export const SHORT_COVER_MISSING_ERROR = `${SHORT_COVER_FILE} ausente na pasta da edição desta máquina — saiu com o frame automático`;
+
+/**
+ * Pure (#11660): sem a capa no disco, o destino que aceitaria capa por arquivo
+ * ganha `cover: { method: "missing_local", ok: false }` no registro, em vez de
+ * silêncio. Caso real: o timer do 300 publica antes de o OneDrive replicar a
+ * capa baixada no Neo. Entrada que já traz `cover` (ex.: veio de outro
+ * processo) fica como está.
+ */
+export function withMissingCoverRecord(entry: ShortPublishedEntry, coverPresent: boolean): ShortPublishedEntry {
+  if (coverPresent || entry.cover || !COVER_FILE_DESTINATIONS(entry.destination)) return entry;
+  return { ...entry, cover: { method: "missing_local", ok: false, error: SHORT_COVER_MISSING_ERROR } };
 }

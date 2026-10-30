@@ -18,6 +18,7 @@ import {
   parseShortCoverSource,
   planCoverDestination,
   stillTimecodeOffsetMs,
+  withMissingCoverRecord,
 } from "../scripts/lib/diaria/short-cover.ts";
 import {
   buildMarkEntry,
@@ -171,7 +172,7 @@ describe("#11547 Instagram: o registro diz que a capa foi (cover_url)", () => {
 });
 
 /** LinkedIn falsa com `thumbnailUploadUrl`. */
-function fakeLinkedIn(opts: { thumbStatus?: number; finalizeFailsWithThumb?: boolean } = {}) {
+function fakeLinkedIn(opts: { thumbStatus?: number; finalizeFailsWithThumb?: boolean; initFailsWithThumb?: boolean; partStatus?: number; neverAvailable?: boolean } = {}) {
   const calls: Array<{ url: string; method: string; body: any }> = [];
   let initBody: any = null;
   const fetchFn = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -180,6 +181,7 @@ function fakeLinkedIn(opts: { thumbStatus?: number; finalizeFailsWithThumb?: boo
     calls.push({ url, method, body });
     if (url === LINKEDIN_VIDEOS_INIT_URL) {
       initBody = body;
+      if (opts.initFailsWithThumb && body.initializeUploadRequest.uploadThumbnail) return new Response("bad thumbnail", { status: 400 });
       return Response.json({
         value: {
           video: "urn:li:video:V1",
@@ -190,11 +192,11 @@ function fakeLinkedIn(opts: { thumbStatus?: number; finalizeFailsWithThumb?: boo
       });
     }
     if (url === "https://up.example/thumb") return new Response(null, { status: opts.thumbStatus ?? 201 });
-    if (url.startsWith("https://up.example/")) return new Response(null, { status: 200, headers: { etag: "etag-1" } });
+    if (url.startsWith("https://up.example/")) return new Response(null, { status: opts.partStatus ?? 200, headers: { etag: "etag-1" } });
     if (url === LINKEDIN_VIDEOS_FINALIZE_URL) {
       return new Response(null, { status: opts.finalizeFailsWithThumb && initBody?.initializeUploadRequest.uploadThumbnail ? 400 : 200 });
     }
-    if (url.startsWith("https://api.linkedin.com/rest/videos/")) return Response.json({ status: "AVAILABLE" });
+    if (url.startsWith("https://api.linkedin.com/rest/videos/")) return Response.json({ status: opts.neverAvailable ? "PROCESSING" : "AVAILABLE" });
     if (url === LINKEDIN_POSTS_URL) return new Response(null, { status: 201, headers: { "x-restli-id": "urn:li:share:99" } });
     throw new Error(`URL inesperada ${url}`);
   };
@@ -231,6 +233,28 @@ describe("#11547 LinkedIn perfil: uploadThumbnail + PUT do JPEG", () => {
     assert.equal(li.calls.filter((c) => c.url === LINKEDIN_POSTS_URL).length, 1, "um post só");
     assert.equal(out.entry.status, "published");
     assert.equal(out.entry.cover?.ok, false);
+  });
+
+  it("#11660: initializeUpload recusado com uploadThumbnail:true → repete sem capa", async () => {
+    const li = fakeLinkedIn({ initFailsWithThumb: true });
+    const out = await publishLinkedInProfileVideo(li.deps, CREDS, "202608", Buffer.alloc(10), "Texto", "Título", JPEG);
+    const inits = li.calls.filter((c) => c.url === LINKEDIN_VIDEOS_INIT_URL);
+    assert.deepEqual(inits.map((c) => c.body.initializeUploadRequest.uploadThumbnail), [true, false]);
+    assert.equal(out.entry.status, "published");
+  });
+
+  it("#11660: parte do vídeo falhou (não é a capa) → NÃO sobe o vertical de novo", async () => {
+    const li = fakeLinkedIn({ partStatus: 500 });
+    await publishLinkedInProfileVideo(li.deps, CREDS, "202608", Buffer.alloc(10), "Texto", "Título", JPEG).catch(() => null);
+    assert.equal(li.calls.filter((c) => c.url === LINKEDIN_VIDEOS_INIT_URL).length, 1, "uma tentativa só");
+    assert.equal(li.calls.filter((c) => c.url === LINKEDIN_POSTS_URL).length, 0);
+  });
+
+  it("#11660: timeout do processamento (nunca AVAILABLE) → NÃO repete sem capa", async () => {
+    const li = fakeLinkedIn({ neverAvailable: true });
+    await publishLinkedInProfileVideo(li.deps, CREDS, "202608", Buffer.alloc(10), "Texto", "Título", JPEG).catch(() => null);
+    assert.equal(li.calls.filter((c) => c.url === LINKEDIN_VIDEOS_INIT_URL).length, 1, "uma tentativa só");
+    assert.equal(li.calls.filter((c) => c.url === LINKEDIN_POSTS_URL).length, 0);
   });
 
   it("sem capa: uploadThumbnail:false e sem campo cover (comportamento anterior)", async () => {
@@ -352,5 +376,24 @@ describe("#11547 leitura da capa + sidecar do fetch do Drive", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("#11660 capa ausente na pasta da edição vira registro explícito", () => {
+  const base = { status: "published", id: "x1", scheduled_at: null, at: "t" } as const;
+  it("destinos que aceitam capa por arquivo ganham cover missing_local ok=false", () => {
+    for (const destination of ["facebook:diaria", "instagram", "linkedin_profile", "youtube_shorts"]) {
+      const e = withMissingCoverRecord({ ...base, destination } as any, false);
+      assert.equal(e.cover?.method, "missing_local", destination);
+      assert.equal(e.cover?.ok, false);
+      assert.match(e.cover?.error ?? "", /04-youtube-short-capa\.jpg ausente/);
+    }
+  });
+  it("capa presente, X/Threads ou registro de capa já existente → intocado", () => {
+    assert.equal(withMissingCoverRecord({ ...base, destination: "linkedin_profile" } as any, true).cover, undefined);
+    assert.equal(withMissingCoverRecord({ ...base, destination: "x" } as any, false).cover, undefined);
+    assert.equal(withMissingCoverRecord({ ...base, destination: "threads_profile" } as any, false).cover, undefined);
+    const prior = { method: "thumbnail_upload", ok: true } as const;
+    assert.deepEqual(withMissingCoverRecord({ ...base, destination: "instagram", cover: prior } as any, false).cover, prior);
   });
 });
