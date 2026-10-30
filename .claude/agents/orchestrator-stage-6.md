@@ -61,6 +61,7 @@ npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --
   ```bash
   npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}
   ```
+  **Exit 2 (#11689): horário já passou ou está a <15 min.** Stdout vazio; stderr traz `next_viable=… next_viable_brt=HH:MM` (30 min de folga) ou `next_viable=none` quando não resta horário no dia da edição (virou a meia-noite BRT ou a edição já passou). Nunca trocar o horário sozinho; tratamento no gate em §6c e no `--no-gates` logo abaixo.
 - **Ler `_internal/brevo-diaria-published.json` (#5772), se existir** → extrair `campaign_id`, `status`. Ausente = canal Brevo pulado/falhou na Etapa 5 (`--skip brevo`, config ausente, store ausente) — nada a agendar aqui, pular §6d-brevo abaixo sem erro.
 
 **Timestamps (#716):** Timestamps apresentados ao editor usam BRT (America/Sao_Paulo, UTC-3) — formato `HH:MM (BRT)`. ISO UTC apenas em logs/JSON internos.
@@ -206,6 +207,8 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
   --message "Stage 6 auto-agendado via --no-gates: {scheduled_at_iso}" \
   --details '{"source":"auto_approve","scheduled_at":"{scheduled_at_iso}"}'
 ```
+**`--no-gates` e exit 2 do resolver (#11689):** sem editor pra escolher outro horário, NÃO agendar nem inventar horário: renderizar halt banner (`render-halt-banner.ts --stage "6 — Agendamento" --reason "scheduled_at já passou ou a <15 min ({next_viable_brt ou 'sem horário viável no dia da edição'})" --action "rodar /diaria-6-agendamento {AAMMDD} com editor presente e responder 'ok HH:MM'"`), `log-event.ts --level error` e encerrar o Stage 6 sem sentinel. Qualquer outro exit ≠ 0 do resolver (exit 1) também halta.
+
 Prosseguir direto para §6c-site (trava do PR do site, #10160) e só então §6d (executar Schedule).
 
 **Post pessoal vjpixel: APOSENTADO (#11398, pedido do editor 27/10/2026).** O 4º post (USE MELHOR, `## um`) não sai mais no LinkedIn PESSOAL do editor — nem automático (`publish-linkedin-personal.ts --arm`, antigo §6d-pessoal) nem por lembrete manual no gate. O Stage 6 **não** roda `resolve-post-pixel.ts` nem `publish-linkedin-personal.ts --check`/`--arm`, e o gate de §6c não tem bloco de lembrete do post pessoal. A página diar.ia.br segue recebendo o 4º post normalmente (Stage 5). Trava: `test/stage6-sem-linkedin-pessoal-11398.test.ts`.
@@ -246,7 +249,7 @@ Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com a newslett
 ```
 
 Aguardar resposta do editor. Interpretar — **`{AAMMDD}` (a data da edição), nunca "amanhã" pelo relógio (#8207)**: os dois ramos usam o MESMO comando de §6a, só variando `--hhmm` — `ok` (sem horario, default 06:00 BRT) → `scheduled_at` = `npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}`; `ok HH:MM` (validar HH 0-23, MM 0-59) → `... --aammdd {AAMMDD} --hhmm {HH:MM}`.
-  **Horário no passado (#11689):** o resolver sai com exit 2 (stdout vazio, stderr `next_viable=… next_viable_brt=HH:MM`) quando o horário já passou ou está a <15 min. Nunca agendar nem trocar o horário sozinho: exibir o aviso no gate ("06:00 BRT de {AAMMDD} já passou; próximo viável {next_viable_brt} BRT"), oferecer `ok {next_viable_brt}` e repetir o gate. Os 3 agendadores (Kit, Brevo, Kit diária) também recusam `--scheduled-at` passado (exit 6/6/5, sem override) como defesa final. No `--no-gates`, exit 2 vira halt banner, não agendamento.
+  **Horário no passado (#11689):** o resolver sai com exit 2 (stdout vazio, stderr `next_viable=… next_viable_brt=HH:MM`) quando o horário já passou ou está a <15 min. Nunca agendar nem trocar o horário sozinho: exibir o aviso no gate ("{HH:MM} BRT de {AAMMDD} já passou; próximo viável {next_viable_brt} BRT"), oferecer `ok {next_viable_brt}` e repetir o gate. **`next_viable=none`** (não resta horário no dia da edição: passou da meia-noite BRT ou a edição já passou): NÃO oferecer `ok HH:MM`, só `abortar` ou — sob pedido explícito do editor de outro dia — `--allow-other-date`. A defesa final dos 3 agendadores (Kit, Brevo, Kit diária) recusa só `--scheduled-at` de fato passado ou com margem <2 min (exit 6/6/5, sem override), roda também com `--edition-dir` de nome irreconhecível e vem DEPOIS do atalho idempotente (re-rodar um agendamento já feito segue sucesso). A margem do gate é maior (15 min) de propósito: os 3 canais agendam em sequência e um gate raspando o limite deixaria agendamento parcial entre canais. Exit 6/5 por passado nos agendadores: bloqueia, mesmo tratamento da linha de divergência de data abaixo (voltar ao gate, nunca retry cego).
 - `abortar` → logar warn, NAO escrever sentinel, encerrar Stage 6. Editor pode re-rodar `/diaria-6-agendamento {AAMMDD}` depois.
 - Qualquer outra coisa → exibir o gate novamente (fail-closed).
 

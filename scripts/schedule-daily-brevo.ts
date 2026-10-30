@@ -64,7 +64,7 @@ import {
   buildScheduledPublishedState,
   type BrevoDiariaPublished,
 } from "./publish-daily-brevo.ts";
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast, FINAL_GUARD_MIN_LEAD_MS } from "./lib/edition-scheduled-at.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { tercaScheduledAt } from "./lib/brevo-semanal-split.ts"; // #11286
 
@@ -127,12 +127,6 @@ export async function scheduleDailyBrevo(
     if (!dateCheck.ok) {
       return { ok: false, code: 6, reason: dateCheck.reason };
     }
-    // #11689 — hard guard: nunca agenda no passado (enviaria na hora pra base
-    // inteira). Sem override; o gate oferece o próximo horário viável.
-    const pastCheck = checkScheduledAtNotPast(scheduledAtIso, options.now);
-    if (!pastCheck.ok) {
-      return { ok: false, code: 6, reason: pastCheck.reason };
-    }
   }
 
   const published = deps.readPublished(editionDir);
@@ -145,7 +139,7 @@ export async function scheduleDailyBrevo(
         "diária foi pulado/falhou na Etapa 5, ou --skip brevo foi usado).",
     };
   }
-  const main = await scheduleMainCampaign(editionDir, published, scheduledAtIso, deps);
+  const main = await scheduleMainCampaign(editionDir, published, scheduledAtIso, deps, options.now);
   if (!main.ok) return main;
   const state = main.state;
   const mainResult: ScheduleDailyBrevoResult & { ok: true } = main.result;
@@ -168,7 +162,7 @@ export async function scheduleDailyBrevo(
 
 type CampaignScheduleOutcome =
   | { ok: true; state: BrevoDiariaPublished; result: ScheduleDailyBrevoResult & { ok: true } }
-  | { ok: false; code: 3 | 4 | 5; reason: string };
+  | { ok: false; code: 3 | 4 | 5 | 6; reason: string };
 
 /** PUT `scheduledAt` + GET de confirmação, comparando INSTANTES (#5851). */
 async function putAndVerify(
@@ -250,6 +244,7 @@ async function scheduleMainCampaign(
   published: BrevoDiariaPublished,
   scheduledAtIso: string,
   deps: ScheduleDailyBrevoDeps,
+  now?: Date,
 ): Promise<CampaignScheduleOutcome> {
   const campaignId = published.campaign_id;
 
@@ -273,6 +268,12 @@ async function scheduleMainCampaign(
       };
     }
   }
+
+  // #11689 — defesa final contra passado, DEPOIS do atalho idempotente e ANTES
+  // da cota/PUT; vale mesmo com basename de edição irreconhecível. Margem
+  // pequena (o gate já exigiu 15 min) pra não deixar agendamento parcial.
+  const pastCheck = checkScheduledAtNotPast(scheduledAtIso, now, { minLeadMs: FINAL_GUARD_MIN_LEAD_MS });
+  if (!pastCheck.ok) return { ok: false, code: 6, reason: pastCheck.reason };
 
   // #6146: checado DEPOIS do short-circuit de idempotência acima (uma
   // campanha já agendada não deve ser reprovada por cota — o compromisso já

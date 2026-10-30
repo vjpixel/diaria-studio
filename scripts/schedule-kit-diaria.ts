@@ -67,7 +67,7 @@ import {
 } from "./kit-diaria-stage5-dispatch.ts";
 import type { KitDiariaChannelConfig } from "./lib/kit-diaria-channel.ts";
 import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast, FINAL_GUARD_MIN_LEAD_MS } from "./lib/edition-scheduled-at.ts";
 import { resolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -119,12 +119,6 @@ export async function scheduleKitDiaria(
     const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAt, options.allowOtherDate);
     if (!dateCheck.ok) {
       return { code: 5, reason: dateCheck.reason };
-    }
-    // #11689 — hard guard: nunca agenda no passado (enviaria na hora pra base
-    // inteira). Sem override; o gate oferece o próximo horário viável.
-    const pastCheck = checkScheduledAtNotPast(scheduledAt, options.now);
-    if (!pastCheck.ok) {
-      return { code: 5, reason: pastCheck.reason };
     }
   }
 
@@ -201,6 +195,14 @@ export async function scheduleKitDiaria(
     // Cai pro PATCH abaixo — o alvo (`scheduledAt`) já é conhecido, então
     // reagendar é a ação certa (não um código de "estado defasado" que só
     // empurraria o problema pra quem lê o exit code decidir sozinho).
+  }
+
+  // #11689 — defesa final contra passado, DEPOIS do no-op idempotente e ANTES
+  // do PATCH; vale mesmo com basename de edição irreconhecível. Margem pequena
+  // (o gate já exigiu 15 min) pra não deixar agendamento parcial entre canais.
+  const pastCheck = checkScheduledAtNotPast(scheduledAt, options.now, { minLeadMs: FINAL_GUARD_MIN_LEAD_MS });
+  if (!pastCheck.ok) {
+    return { code: 5, reason: pastCheck.reason };
   }
 
   try {

@@ -16,8 +16,10 @@
  *   0 — ISO impresso no stdout
  *   1 — uso/erro (args ausentes, AAMMDD/HH:MM inválidos)
  *   2 — horário resolvido já no passado (ou < 15 min à frente, #11689): stdout
- *       vazio, stderr traz o próximo horário viável. O gate NÃO muda o horário
- *       sozinho: mostra o aviso e o editor responde `ok HH:MM`.
+ *       vazio, stderr traz o próximo horário viável (30 min de folga) ou
+ *       `next_viable=none` quando não resta horário no dia da edição (virou a
+ *       meia-noite BRT / edição passada) — aí NÃO se oferece HH:MM. O gate NÃO
+ *       muda o horário sozinho: mostra o aviso e o editor responde.
  *
  * `--now <ISO>` injeta o relógio (testes).
  */
@@ -38,11 +40,11 @@ export function main(): void {
   try {
     const iso = resolveEditionScheduledAt(aammdd, hhmm);
     const nowArg = getStringArg(argv, "now");
-    const check = checkScheduledAtNotPast(iso, nowArg ? new Date(nowArg) : new Date());
+    const check = checkScheduledAtNotPast(iso, nowArg ? new Date(nowArg) : new Date(), { editionAammdd: aammdd });
     if (!check.ok) {
       process.stderr.write(
         `[resolve-edition-scheduled-at] PASSADO: ${check.reason}\n` +
-          `next_viable=${check.nextViable} next_viable_brt=${check.nextViableBrt}\n`,
+          `next_viable=${check.nextViable ?? "none"} next_viable_brt=${check.nextViableBrt ?? "none"}\n`,
       );
       process.exitCode = 2;
       return;

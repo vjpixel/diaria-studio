@@ -64,7 +64,7 @@ import { hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilt
 import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast, FINAL_GUARD_MIN_LEAD_MS } from "./lib/edition-scheduled-at.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { runSemanalFrioAfterSchedule, summarizeSemanalFrioForSchedule } from "./publish-kit-semanal-frio.ts"; // #11221
 
@@ -124,12 +124,6 @@ export async function scheduleNewsletterKit(
     const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAtIso, options.allowOtherDate);
     if (!dateCheck.ok) {
       return { ok: false, code: 6, reason: dateCheck.reason };
-    }
-    // #11689 — hard guard: nunca agenda no passado (enviaria na hora pra base
-    // inteira). Sem override; o gate oferece o próximo horário viável.
-    const pastCheck = checkScheduledAtNotPast(scheduledAtIso, options.now);
-    if (!pastCheck.ok) {
-      return { ok: false, code: 6, reason: pastCheck.reason };
     }
   }
 
@@ -204,6 +198,15 @@ export async function scheduleNewsletterKit(
         alreadyScheduled: true,
       };
     }
+  }
+
+  // #11689 — defesa final contra passado, DEPOIS do atalho idempotente (re-rodar
+  // um agendamento já feito continua sucesso) e ANTES do PATCH. Roda mesmo com
+  // basename de edição irreconhecível. Margem pequena: o gate já exigiu 15 min,
+  // aqui só recusa passado de fato (evita agendamento parcial entre canais).
+  const pastCheck = checkScheduledAtNotPast(scheduledAtIso, options.now, { minLeadMs: FINAL_GUARD_MIN_LEAD_MS });
+  if (!pastCheck.ok) {
+    return { ok: false, code: 6, reason: pastCheck.reason };
   }
 
   try {
