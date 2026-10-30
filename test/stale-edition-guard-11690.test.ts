@@ -64,4 +64,15 @@ describe("CLI", () => {
     assert.equal(r.status, 4);
     assert.match(r.stderr, /Aguardar o sync/);
   });
+  it("lock de outro host: exit 4; --force sai 0", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "edition-lock.json"), JSON.stringify(lock("outro-host")));
+    const run = (extra: string[]) =>
+      spawnSync("npx", ["tsx", "scripts/stale-edition-guard.ts", "check", "--edition-dir", dir, "--step", "4", ...extra], {
+        cwd: ROOT, encoding: "utf8",
+      });
+    assert.equal(run([]).status, 4);
+    assert.equal(run(["--force"]).status, 0);
+  });
 });

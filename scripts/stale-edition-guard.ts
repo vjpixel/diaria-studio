@@ -3,6 +3,7 @@
  *
  * Uso (antes de re-rodar um stage porque o sentinel dele/do anterior sumiu):
  *   npx tsx scripts/stale-edition-guard.ts check --edition-dir DIR --step N
+ * `--force` (só com confirmação do editor): registra override e sai 0.
  * Exit 0 sem sinais · 4 outro host possivelmente à frente (halt: aguardar sync OneDrive).
  * Só lê; nunca escreve em data/.
  */
@@ -14,10 +15,10 @@ import { sentinelExists } from "./lib/pipeline-state.ts";
 import { assessStaleEdition, describeSignals } from "./lib/stale-edition-guard.ts";
 
 function main(): void {
-  const { positional, values } = parseArgs(process.argv.slice(2));
+  const { positional, values, flags } = parseArgs(process.argv.slice(2));
   const step = Number(values.step);
   if (positional[0] !== "check" || !values["edition-dir"] || !Number.isInteger(step)) {
-    console.error("Uso: stale-edition-guard.ts check --edition-dir DIR --step N");
+    console.error("Uso: stale-edition-guard.ts check --edition-dir DIR --step N [--force]");
     process.exit(2);
   }
   const dir = resolve(values["edition-dir"]);
@@ -29,9 +30,13 @@ function main(): void {
     localHost: hostname(),
   });
   console.log(JSON.stringify(verdict));
+  if (!verdict.ok && flags.has("force")) {
+    console.error(`[stale-edition-guard] --force: override com sinais (${describeSignals(verdict.signals)})`);
+    return;
+  }
   if (!verdict.ok) {
     console.error(
-      `[stale-edition-guard] data/ possivelmente defasado — outra máquina parece estar à frente (${describeSignals(verdict.signals)}). Aguardar o sync do OneDrive e tentar de novo; não re-rodar o stage.`,
+      `[stale-edition-guard] data/ possivelmente defasado — outra máquina parece estar à frente (${describeSignals(verdict.signals)}). Aguardar o sync do OneDrive e tentar de novo; não re-rodar o stage. Se a outra sessão morreu (trava órfã), o editor confirma e re-roda com --force.`,
     );
     process.exit(4);
   }
