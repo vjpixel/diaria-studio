@@ -12,7 +12,7 @@
  * - a lista de terça nunca fica com quem saiu da principal (unlink/supressão);
  * - a metade de terça acumula semanais no score (antes só segunda contava).
  */
-import { describe, it } from "node:test";
+import { describe, it, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSemanalEvaluationInput,
@@ -304,6 +304,10 @@ describe("schedule-daily-brevo: agenda a de terça 24h depois (#11286)", () => {
   const EDITION_DIR = "/fake/root/data/editions/2611/261102";
   const MONDAY = "2026-11-02T09:00:00.000Z";
   const TUESDAY = "2026-11-03T09:00:00.000Z";
+
+  // #11689 — relógio fixo: o guard "não agendar no passado" dos agendadores depende de "agora".
+  before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-01T00:00:00.000Z") }));
+  after(() => mock.timers.reset());
 
   function splitState(overrides: Partial<BrevoDiariaPublished> = {}): BrevoDiariaPublished {
     return {

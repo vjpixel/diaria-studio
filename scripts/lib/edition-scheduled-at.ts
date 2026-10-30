@@ -140,3 +140,94 @@ export function checkScheduledAtMatchesEditionDate(
   }
   return { ok: true };
 }
+
+/**
+ * Margem do GATE (resolver, #11689): o horário pedido precisa estar pelo menos
+ * 15 min à frente. Maior que a margem dos agendadores de propósito — os 3
+ * canais agendam em sequência (Kit, Brevo, Kit diária) e levam minutos; se o
+ * gate aceitasse 15 min "raspando", o último canal poderia já estar no passado
+ * e a edição ficaria agendada pela metade.
+ */
+export const MIN_SCHEDULE_LEAD_MS = 15 * 60 * 1000;
+
+/** Margem da defesa FINAL nos agendadores: recusa só passado de fato ou margem ínfima (< 2 min). */
+export const FINAL_GUARD_MIN_LEAD_MS = 2 * 60 * 1000;
+
+/** Folga do horário sugerido ao editor: bem acima da margem do gate pra o agendamento sequencial caber. */
+export const NEXT_VIABLE_LEAD_MS = 30 * 60 * 1000;
+
+/**
+ * Próximo horário viável (ISO UTC): `now + NEXT_VIABLE_LEAD_MS` arredondado PRA
+ * CIMA ao próximo múltiplo de 5 min. Puro (relógio injetado).
+ */
+export function nextViableScheduledAt(now: Date): string {
+  const step = 5 * 60 * 1000;
+  const target = now.getTime() + NEXT_VIABLE_LEAD_MS;
+  return new Date(Math.ceil(target / step) * step).toISOString();
+}
+
+/** ISO UTC → "HH:MM" em BRT (offset fixo), pra o gate oferecer `ok HH:MM`. */
+export function isoToBrtHhmm(iso: string): string {
+  const shifted = new Date(Date.parse(iso) - BRT_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+  return `${String(shifted.getUTCHours()).padStart(2, "0")}:${String(shifted.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+/** ISO UTC → AAMMDD do dia civil em BRT. */
+export function isoToBrtAammdd(iso: string): string {
+  const shifted = new Date(Date.parse(iso) - BRT_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+  return (
+    String(shifted.getUTCFullYear() - 2000).padStart(2, "0") +
+    String(shifted.getUTCMonth() + 1).padStart(2, "0") +
+    String(shifted.getUTCDate()).padStart(2, "0")
+  );
+}
+
+export type ScheduledAtFutureCheck =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: string;
+      /** `null` quando não resta horário viável no dia da edição (virou meia-noite BRT ou a edição já passou): nunca oferecer HH:MM impossível. */
+      nextViable: string | null;
+      nextViableBrt: string | null;
+    };
+
+export interface ScheduledAtFutureOptions {
+  /** Margem mínima em ms (default `MIN_SCHEDULE_LEAD_MS`, a do gate). */
+  minLeadMs?: number;
+  /** Se informado, o próximo viável só é oferecido se cair NO dia (BRT) desta edição. */
+  editionAammdd?: string;
+}
+
+/**
+ * Guard "não agendar no passado" (#11689). Sem override de propósito: um
+ * `send_at` passado pode disparar na hora pra base inteira. `scheduled_at`
+ * precisa estar pelo menos `minLeadMs` à frente de `now`: o gate usa a margem
+ * de 15 min; a defesa final dos agendadores usa `FINAL_GUARD_MIN_LEAD_MS`.
+ */
+export function checkScheduledAtNotPast(
+  scheduledAtIso: string,
+  now: Date = new Date(),
+  opts: ScheduledAtFutureOptions = {},
+): ScheduledAtFutureCheck {
+  const minLeadMs = opts.minLeadMs ?? MIN_SCHEDULE_LEAD_MS;
+  const ms = Date.parse(scheduledAtIso);
+  // ISO malformado não é "passado": este guard não o recusa. Quem reprova é
+  // a API do ESP / o GET de verificação (nada é agendado), não um exit dedicado.
+  if (Number.isNaN(ms)) return { ok: true };
+  if (ms - now.getTime() >= minLeadMs) return { ok: true };
+  let nextViable: string | null = nextViableScheduledAt(now);
+  if (opts.editionAammdd && isoToBrtAammdd(nextViable) !== opts.editionAammdd) nextViable = null;
+  const nextViableBrt = nextViable ? isoToBrtHhmm(nextViable) : null;
+  return {
+    ok: false,
+    reason:
+      `scheduled_at "${scheduledAtIso}" está no passado ou a menos de ${minLeadMs / 60000} min de agora ` +
+      `(${now.toISOString()}) — enviaria na hora ou seria recusado (#11689). ` +
+      (nextViable
+        ? `Próximo horário viável: ${nextViable} (${nextViableBrt} BRT).`
+        : `Não há horário viável restante no dia da edição${opts.editionAammdd ? ` (${opts.editionAammdd})` : ""} — decidir outro dia (--allow-other-date só sob pedido explícito do editor).`),
+    nextViable,
+    nextViableBrt,
+  };
+}

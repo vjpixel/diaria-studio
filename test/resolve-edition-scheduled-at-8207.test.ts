@@ -6,9 +6,14 @@
  * gate (`sim` default e `sim HH:MM`), em vez de duas rotas de cálculo
  * divergentes (a causa raiz do #8207).
  */
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { main } from "../scripts/resolve-edition-scheduled-at.ts";
+
+// #11689 — relógio fixo: os horários dos fixtures são de ago/2026 e o guard
+// "não agendar no passado" compararia com o relógio real.
+before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z") }));
+after(() => mock.timers.reset());
 
 describe("resolve-edition-scheduled-at CLI (#8207)", () => {
   let originalArgv: string[];
