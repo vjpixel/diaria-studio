@@ -131,7 +131,11 @@
  *      é idêntico ao de origin/master (página da edição + sitemap gerados no
  *      checkout e também mergeados pelo PR do site) são descartados sem perda
  *      e o ff é re-tentado — ver `discardCollisionsIdenticalToUpstream()`.
- *      Só quando TODAS as colisões são idênticas (#11654, tudo-ou-nada).
+ *      Só quando TODAS as colisões são idênticas (#11654, tudo-ou-nada) se há
+ *      config protegida suja (#9276, sem ff). Sem ela (#11673), o descarte é
+ *      parcial: os idênticos saem e só o resto vai pro stash direcionado —
+ *      antes, uma edição local real junto (ex.: a allowlist de LANÇAMENTOS)
+ *      arrastava página e sitemap da edição pro autostash a cada rodada.
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_partial_failure (ou sua variante
@@ -1507,6 +1511,13 @@ export function discardCollisionsIdenticalToUpstream(
   spawn: SpawnFn,
   refusal: FfRefusal,
   porcelainStdout: string,
+  // #11673: `true` quando o fluxo seguinte é o stash DIRECIONADO (nenhuma
+  // config protegida suja). Aí o descarte parcial é seguro: os idênticos saem
+  // sem perda e só o resto (edição local real) vai pro stash — o autostash
+  // deixa de carregar a página/sitemap da edição a cada rodada. Com config
+  // protegida suja o fluxo cai no #9276 sem ff, e o tudo-ou-nada do #11654
+  // continua valendo.
+  allowPartial = false,
 ): { discarded: string[]; warnings: string[] } {
   const none = { discarded: [] as string[], warnings: [] as string[] };
   if (refusal.kind !== "local_changes_collide" && refusal.kind !== "untracked_collide") return none;
@@ -1518,8 +1529,9 @@ export function discardCollisionsIdenticalToUpstream(
   // #9276 com arquivos já removidos/revertidos e o código ainda defasado. Se
   // algum caminho da recusa não é candidato (config protegida, staged, entre
   // aspas, edição local real) ou não é idêntico ao master, nada é descartado.
+  // #11673: exceto com `allowPartial` (ver parâmetro).
   const refusalPaths = new Set(refusal.paths.map((p) => p.trim()).filter((p) => p.length > 0));
-  if (candidates.length < refusalPaths.size) {
+  if (!allowPartial && candidates.length < refusalPaths.size) {
     return {
       ...none,
       warnings: [
@@ -1552,7 +1564,8 @@ export function discardCollisionsIdenticalToUpstream(
   }
   const upstream = parseLsTreeBlobs(treeRes.stdout);
   const identical = new Set(candidates.filter((p, i) => upstream.get(p) === hashes[i]));
-  if (identical.size < candidates.length) {
+  if (allowPartial && identical.size === 0) return none;
+  if (!allowPartial && identical.size < candidates.length) {
     const differing = candidates.filter((p) => !identical.has(p));
     return {
       ...none,
@@ -1925,7 +1938,11 @@ function syncCodeLocked(
     // guard de config (#9276) e de qualquer stash. Sem isso, config editada no
     // gate 4 + essa colisão deixavam o código defasado em silêncio.
     if (statusRes.status === 0) {
-      const identical =discardCollisionsIdenticalToUpstream(spawn, ffRefusal, statusRes.stdout);
+      // #11673: sem config protegida suja, o fluxo depois daqui é o stash
+      // direcionado — descarte parcial dos idênticos é seguro e tira a
+      // página/sitemap da edição do autostash.
+      const allowPartial = findDirtyProtectedConfig(statusRes.stdout).length === 0;
+      const identical = discardCollisionsIdenticalToUpstream(spawn, ffRefusal, statusRes.stdout, allowPartial);
       warnings.push(...identical.warnings);
       if (identical.discarded.length > 0) {
         ctx.discardedIdentical = identical.discarded;

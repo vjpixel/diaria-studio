@@ -51,6 +51,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type { FactClaim, FactCheckResult, ClaimDestaque } from "./run-fact-checker.ts";
+import { computeContentHash, factCheckStaleness, parseContentHash } from "./lib/fact-check-staleness.ts";
 import {
   destaqueFromLocation,
   loadIntentionalErrorJson,
@@ -637,6 +638,8 @@ async function main(): Promise<void> {
   let newsletter = readFileSync(newsletterPath, "utf8");
   const socialExists = existsSync(socialPath);
   let social = socialExists ? readFileSync(socialPath, "utf8") : "";
+  // #11671: hash do conteúdo ANTES do autofix, pra recarimbar o fact-check.
+  const hashBeforeAutofix = computeContentHash(newsletter, socialExists ? social : null);
 
   // Extrair destaque do erro intencional (#3222: _internal/intentional-error.json)
   const intentionalErrorRecord = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
@@ -762,6 +765,22 @@ async function main(): Promise<void> {
         writeSentinel(editionDir, socialSentinelBypassReason, { unprovenOk: socialSentinelBypassReason });
       } catch (e) {
         console.warn(`[apply-factcheck-autofix] WARN: falha ao regravar sentinel do humanizador social — ${(e as Error).message}`);
+      }
+    }
+    // #11671: a correção vem do próprio fact-check — se ele estava em dia com
+    // o texto antes do autofix, segue em dia depois. Recarimbar evita que o
+    // gate acuse "fact-check defasado" só por causa do autofix. Fact-check já
+    // defasado (editor mexeu antes) fica como está.
+    if (newsletterModified || socialModified) {
+      const stamp = parseContentHash((factCheck as { content_hash?: unknown }).content_hash);
+      if (stamp && !factCheckStaleness(stamp, hashBeforeAutofix).stale) {
+        try {
+          const rawFc = JSON.parse(readFileSync(factCheckPath, "utf8")) as Record<string, unknown>;
+          rawFc.content_hash = computeContentHash(newsletter, socialExists ? social : null);
+          writeFileSync(factCheckPath, JSON.stringify(rawFc, null, 2), "utf8");
+        } catch (e) {
+          console.warn(`[apply-factcheck-autofix] WARN: falha ao recarimbar fact-check.json — ${(e as Error).message}`);
+        }
       }
     }
   }
