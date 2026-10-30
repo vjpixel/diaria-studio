@@ -133,7 +133,7 @@ export function isEditedFolderName(name: string): boolean {
 }
 
 /**
- * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`, `_Instagram_`, `_Outras redes_` (separador
+ * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL`, `_Instagram_`, `_Outras redes_` (separador
  * `_`, `-`, espaço ou `.`; sem diferenciar maiúsculas). Mais de um destino no
  * mesmo nome, ou nenhum, é `null`.
  */
@@ -142,7 +142,7 @@ export function videoTargetOf(name: string): VideoTarget | null {
   const found: VideoTarget[] = [];
   if (/ you ?tube /.test(n)) found.push("youtube");
   if (/ instagram /.test(n)) found.push("instagram");
-  if (/ outras redes | vertical v\d+ /.test(n)) found.push("outras-redes");
+  if (/ outras redes | vertical (?:v\d+|final) /.test(n)) found.push("outras-redes");
   return found.length === 1 ? found[0] : null;
 }
 

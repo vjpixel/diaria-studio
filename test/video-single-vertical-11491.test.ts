@@ -22,6 +22,19 @@ test("#11491: todos os destinos preferem Vertical, depois Outras redes, depois I
   assert.equal(videoTargetOf("rascunho vertical.mp4"), null, "não promove rascunho de Editado/");
 });
 
+test("#11491: Vertical_FINAL em Editado/ é final para todos os destinos verticais", () => {
+  const final = { ...file("Vertical"), name: "Diaria comentada_Vertical_FINAL.mp4", editedFolder: true };
+  assert.equal(videoTargetOf(final.name), "outras-redes");
+  assert.equal(videoTargetOf("Diaria comentada_Vertical_FINALIZANDO.mp4"), null);
+  for (const target of [undefined, "outras-redes", "instagram"] as const) {
+    const picked = selectDriveVideo([final, file("Outras redes"), file("Instagram")], {
+      orientation: "vertical", target, now: new Date("2026-10-30"),
+    });
+    assert.equal(picked.kind, "found");
+    if (picked.kind === "found") assert.equal(picked.file, final);
+  }
+});
+
 test("#11491: monólogo e entrevista geram duas sequências, um CTA vertical e duas tabelas", () => {
   for (const format of ["monologo", "entrevista"] as const) {
     const specs = defaultSequences("V7", format);
