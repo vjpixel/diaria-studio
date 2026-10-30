@@ -7,7 +7,7 @@
  * `publish-daily-brevo-integration-4532.test.ts`: fixtures em disco +
  * `fetch` mockado, sem tocar `data/`/rede reais).
  */
-import { describe, it, after, beforeEach, afterEach } from "node:test";
+import { describe, it, after, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -557,6 +557,8 @@ describe("main() — integração", () => {
   });
 
   it("#9428: schedule-newsletter-kit preserva content_hash/source_hashes ao gravar scheduled_at", async () => {
+    // #11689 — relógio fixo: o guard "não agendar no passado" compararia 2026-10-03 com o relógio real.
+    mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-01T00:00:00.000Z") });
     const root = mkdtempSync(join(tmpdir(), "kit-main-"));
     try {
       const editionDir = writeEdition(root, "260995");
@@ -583,6 +585,7 @@ describe("main() — integração", () => {
       assert.deepEqual(written?.source_hashes, { "02-reviewed.md": "x" });
       assert.equal(written?.source_hashed_at, "2026-10-01T22:42:00Z");
     } finally {
+      mock.timers.reset();
       rmSync(root, { recursive: true, force: true });
     }
   });
