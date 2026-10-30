@@ -50,6 +50,8 @@
  *       dois.
  *   5 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
+ *       OU (#11689) `--scheduled-at` já passou / a <2 min de agora (sem
+ *       override; roda depois do atalho idempotente) — voltar ao gate do Stage 6
  *
  * Uso:
  *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z [--allow-other-date]

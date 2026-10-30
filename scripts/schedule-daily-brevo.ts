@@ -35,6 +35,8 @@
  *       aqui produziria uma campanha `suspended` no horário, em silêncio
  *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
+ *       OU (#11689) `--scheduled-at` já passou / a <2 min de agora (sem
+ *       override; roda depois do atalho idempotente) — voltar ao gate do Stage 6
  *
  * Semanal dividida (#11286): com `terca_campaign_id` no estado, depois da
  * campanha de segunda confirmada agenda também a de terça, 24h depois (mesmo

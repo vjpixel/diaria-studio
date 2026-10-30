@@ -45,6 +45,8 @@
  *   5 — GET de verificação pós-PATCH não confirma o agendamento esperado
  *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
+ *       OU (#11689) `--scheduled-at` já passou / a <2 min de agora (sem
+ *       override; roda depois do atalho idempotente) — voltar ao gate do Stage 6
  *   7 — (#10437) audiência não confirmada. Com `kit.diaria_exclusion_segment`
  *       ligado: segmento não resolvido, ou o broadcast relido ANTES do PATCH
  *       não mostra o filtro do segmento (nada agendado; se ele JÁ estava

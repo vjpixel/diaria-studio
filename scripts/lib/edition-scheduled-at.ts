@@ -212,8 +212,8 @@ export function checkScheduledAtNotPast(
 ): ScheduledAtFutureCheck {
   const minLeadMs = opts.minLeadMs ?? MIN_SCHEDULE_LEAD_MS;
   const ms = Date.parse(scheduledAtIso);
-  // ISO malformado não é "passado": cabe à validação própria de cada
-  // agendador recusar (exit dedicado), não a este guard.
+  // ISO malformado não é "passado": este guard não o recusa. Quem reprova é
+  // a API do ESP / o GET de verificação (nada é agendado), não um exit dedicado.
   if (Number.isNaN(ms)) return { ok: true };
   if (ms - now.getTime() >= minLeadMs) return { ok: true };
   let nextViable: string | null = nextViableScheduledAt(now);
