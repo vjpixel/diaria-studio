@@ -242,7 +242,16 @@ export type FetchDriveVideoOutput =
   | (OutputBase & { action: "already-published"; record_path: string; video_url: string | null })
   | (OutputBase & { action: "error"; phase: "folder" | "list"; error: string })
   | (OutputBase & { action: "needs-editor"; selection: "duplicate-edition-folder"; folders: DescribedDriveFolder[] })
-  | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous-cover"; candidates: DescribedDriveFile[] })
+  | (OutputWithFolder & {
+      action: "needs-editor";
+      selection: "ambiguous-cover";
+      candidates: DescribedDriveFile[];
+      /**
+       * #11650: como ficou a escolha do VÍDEO, apurada antes da capa travar.
+       * Só `found` permite dizer ao editor que "o vertical já é único".
+       */
+      video_selection: DriveVideoSelection["kind"];
+    })
   | (OutputWithFolder & { action: "error"; phase: "cover-download"; error: string })
   | (OutputWithFolder & { action: "none"; selection: "none"; reason: string })
   | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous"; candidates: DescribedDriveFile[] })
@@ -580,14 +589,24 @@ export async function runFetchDriveVideo(
 
   const coverPath = join(input.editionDir, orientation === "horizontal" ? "04-youtube-thumb.jpg" : "04-youtube-short-capa.jpg");
   const covers = driveCoverCandidates(coverFiles, orientation);
+  const localCoverExists = existsSync(coverPath) && statSync(coverPath).size > 0;
+  // #11650: a ambiguidade só importa quando a capa do Drive seria usada. Com a
+  // capa local presente e sem --force (#11636), o Still do Drive é ignorado de
+  // qualquer jeito, então não pode travar o download do vídeo.
+  const driveCoverWouldBeUsed = !localCoverExists || input.force;
   if (covers.length > 1 && localReady) {
     log(`[aviso] capas Still ambíguas (${covers.map(describeForLog).join(" | ")}); vídeo local mantido, capa do Drive ignorada — deixe uma só em Final/ e rode de novo`);
     covers.length = 0;
+  } else if (covers.length > 1 && !driveCoverWouldBeUsed) {
+    log(`[aviso] capas Still ambíguas (${covers.map(describeForLog).join(" | ")}); capa local mantida, Still do Drive ignorado — o vídeo segue (#11650)`);
+    covers.length = 0;
   } else if (covers.length > 1) {
     log(`[aviso] capas Still ambíguas: ${covers.map(describeForLog).join(" | ")}`);
-    return { exitCode: 3, output: { ...withFolder, action: "needs-editor", selection: "ambiguous-cover", candidates: covers.map(describeFile) } };
+    return {
+      exitCode: 3,
+      output: { ...withFolder, action: "needs-editor", selection: "ambiguous-cover", candidates: covers.map(describeFile), video_selection: sel.kind },
+    };
   }
-  const localCoverExists = existsSync(coverPath) && statSync(coverPath).size > 0;
   // #11636: preservar ajustes locais; trocar a capa exige --force.
   const cover = localCoverExists && !input.force ? undefined : covers[0];
   if (localCoverExists && !input.force && covers[0]) {

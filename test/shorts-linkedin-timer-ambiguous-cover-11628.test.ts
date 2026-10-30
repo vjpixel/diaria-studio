@@ -49,6 +49,7 @@ const DRIVE_AMBIGUOUS_COVER = JSON.stringify({
     { id: "c1", name: "Still 1.jpg" },
     { id: "c2", name: "Still 2.jpg" },
   ],
+  video_selection: "found",
 });
 
 function fakeGh() {
@@ -72,7 +73,7 @@ describe("#11628 alarme de capa ambígua orienta a capa, não o vertical", () =>
   });
 
   it("buildLinkedinTimerAlarm com ambiguous-cover pede uma só capa Still e não manda deixar um só vertical", () => {
-    const { body } = buildLinkedinTimerAlarm({ aammdd: AAMMDD, key: "drive-needs-editor", reason: "r", at: AT, selection: "ambiguous-cover" });
+    const { body } = buildLinkedinTimerAlarm({ aammdd: AAMMDD, key: "drive-needs-editor", reason: "r", at: AT, selection: "ambiguous-cover", videoSelection: "found" });
     assert.match(body, /uma só capa Still/);
     assert.doesNotMatch(body, /Deixe um só vertical/);
     // O B1 não escolhe capa (a skill para e registra bloqueio com duas capas Still).
@@ -102,6 +103,7 @@ describe("#11628 alarme de capa ambígua orienta a capa, não o vertical", () =>
       assert.equal(await runLinkedinTimer(AAMMDD, dir, false, deps), 0);
       assert.equal(gh.issues.length, 1);
       assert.match(gh.issues[0].body, /uma só capa Still/);
+      assert.match(gh.issues[0].body, /O vertical já é único/);
       assert.doesNotMatch(gh.issues[0].body, /Deixe um só vertical/);
     } finally {
       rmSync(dir, { recursive: true, force: true });

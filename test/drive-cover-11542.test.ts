@@ -19,13 +19,13 @@ test("Still e extensão obrigatórios; sequência Instagram antiga serve todos o
   assert.deepEqual(driveCoverCandidates(files, "vertical").map((f) => f.id), ["v"]);
 });
 
-for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "bad-image", "drive-down", "local-preserved", "forced", "empty"] as const) {
+for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "ambiguous-sem-video-sem-capa", "bad-image", "drive-down", "local-preserved", "forced", "empty"] as const) {
   test(`fetch capa ${mode}: escopo da edição, vídeo local e precedência Drive`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "cover-11542-"));
     try {
-      if (mode !== "ambiguous-sem-video") writeFileSync(join(dir, "diaria-comentada-261029.mp4"), "video local");
+      if (!mode.startsWith("ambiguous-sem-video")) writeFileSync(join(dir, "diaria-comentada-261029.mp4"), "video local");
       const dest = join(dir, "04-youtube-thumb.jpg");
-      if (mode !== "download" && mode !== "dry-run") writeFileSync(dest, mode === "empty" ? "" : "capa gerada");
+      if (mode !== "download" && mode !== "dry-run" && mode !== "ambiguous-sem-video-sem-capa") writeFileSync(dest, mode === "empty" ? "" : "capa gerada");
       const lines: string[] = [];
       const bytes = mode === "bad-image" ? Buffer.from("not image") : await sharp({ create: { width: 16, height: 9, channels: 3, background: "red" } }).png().toBuffer();
       const mediaCalls: string[] = [];
@@ -49,6 +49,15 @@ for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "
         assert.equal(mediaCalls.length, 0);
         assert.equal(readFileSync(dest, "utf8"), "capa gerada");
       } else if (mode === "ambiguous-sem-video") {
+        // #11650: capa local presente e sem --force, o Still do Drive nunca seria
+        // usado; a ambiguidade dele não pode virar needs-editor.
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.output.action, "none");
+        assert.equal(result.output.cover?.source, "local");
+        assert.equal(mediaCalls.length, 0);
+        assert.equal(readFileSync(dest, "utf8"), "capa gerada");
+      } else if (mode === "ambiguous-sem-video-sem-capa") {
+        // Sem capa local o Still do Drive seria usado: a ambiguidade segue com o editor.
         assert.equal(result.exitCode, 3);
         assert.equal(result.output.action, "needs-editor");
         if (result.output.action === "needs-editor" && result.output.selection === "ambiguous-cover") {

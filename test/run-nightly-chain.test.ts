@@ -21,6 +21,7 @@ import {
   EXIT_OVERNIGHT_FAILED,
   EXIT_OVERNIGHT_DELIVERY_ALARM,
   readDeliveryCounts,
+  pendingRoundIssues,
   EXIT_OVERNIGHT_NO_TRACE,
   EXIT_REVIEW_FAILED,
   REVIEW_OUTPUT_REL,
@@ -578,7 +579,7 @@ describe("run-nightly-chain — desfecho e rastro do overnight (#10808)", () => 
   it("o resultado do claude vai pro log da cadeia", () => {
     const { deps, logs } = harness({ status: 0 }, { status: 0, stdout: okResult });
     deps.findRoundTrace = () => ["261022/plan.json"];
-    assert.equal(main(makeRepo(), deps), EXIT_OVERNIGHT_DELIVERY_ALARM);
+    assert.equal(main(makeRepo(), deps), 6);
     assert.ok(
       logs.some((l) => /^overnight: resultado subtype=success is_error=false turns=4 duracao_s=29 tail=Fila vazia: 0 elegíveis/.test(l)),
       logs.join("\n"),
@@ -710,3 +711,40 @@ describe("alarme de entrega agendada (#11235)", () => {
     assert.match(skill, /inclusive código testado que ficou no worktree sem commit\/PR/);
   });
 });
+
+describe("rodada incompleta (#11665)", () => {
+  for (const turns of [1, 2, 38, 46]) {
+    for (const pr of [null, 11655]) {
+      it(`rejeita plano pendente com relatório zero, turns=${turns}, pr=${pr}`, () => {
+        const root = makeRepo();
+        const dir = join(root, "data/overnight/261030b");
+        mkdirSync(dir, { recursive: true });
+        const { deps, logs } = harness({ status: 0 }, { status: 0, stdout: JSON.stringify({ type: "result", num_turns: turns, is_error: false }) });
+        const spawn = deps.spawn;
+        deps.spawn = ((command, args, options) => {
+          if (command !== "bash") {
+            writeFileSync(join(dir, "plan.json"), JSON.stringify({ issues: [{ number: 11650, status: "elegivel", in_round: true, pr, timeline: {} }] }));
+            writeFileSync(join(dir, "report.md"), '<!-- overnight-delivery: {"implementedUnits":0,"openedPrs":0} -->');
+            if (turns === 2) utimesSync(join(dir, "plan.json"), new Date(0), new Date(0));
+          }
+          return spawn(command, args, options);
+        }) as typeof deps.spawn;
+        deps.findRoundTrace = findRoundTraceSince;
+        assert.equal(main(root, deps), 6);
+        assert.ok(logs.some(line => line.includes("overnight=rodada-incompleta exit=6")));
+      });
+    }
+  }
+});
+
+ it("plano final aceita fila vazia, terminais e exclusões; rejeita status desconhecido", () => {
+   assert.deepEqual(pendingRoundIssues('{"issues":[]}'), []);
+   for (const status of ["mergeada", "pulada", "draft-ci-vermelho", "retida-para-editor", "elegivel_especial"]) {
+     assert.deepEqual(pendingRoundIssues(JSON.stringify({ issues: { "1": { status } } })), []);
+   }
+   assert.deepEqual(pendingRoundIssues('{"issues":[{"in_round":false,"status":"bloqueada-externa"}]}'), []);
+   assert.equal(pendingRoundIssues('{"issues":[{"status":"novo-status"}]}').length, 1);
+   assert.equal(pendingRoundIssues('{}').length, 1);
+   assert.equal(pendingRoundIssues('{"issues":[null]}').length, 1);
+   assert.throws(() => pendingRoundIssues('invalid'));
+ });
