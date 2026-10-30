@@ -53,7 +53,7 @@ describe("#11604: seção que o humanizador devolve idêntica conta como provada
       const h = planRunRecord(readRunRecord(dir), "humanizador", edited, humanized, ["main_d1", "main_d3"]);
       assert.deepEqual(h.recorded.sort(), ["main_d1", "main_d3"]);
       assert.deepEqual(h.skipped, []);
-      const c = planRunRecord(h.record, "clarice", humanized, humanized);
+      const c = planRunRecord(h.record, "clarice", humanized, humanized, undefined, { note: "Clarice sem sugestões" });
       assert.ok(c.recorded.includes("main_d1"), "Clarice parte de texto provado");
       writeRunRecord(dir, c.record);
 
@@ -62,7 +62,7 @@ describe("#11604: seção que o humanizador devolve idêntica conta como provada
       assert.equal(checkSentinel(dir).ok, true);
 
       const row = describeProvenance(humanized, readRunRecord(dir)).find((r) => r.section === "main_d1");
-      assert.deepEqual(row, { section: "main_d1", humanizador: true, clarice: true, kept: true });
+      assert.deepEqual(row, { section: "main_d1", humanizador: true, clarice: true, kept: true, clarice_unchanged: true });
     } finally {
       cleanup();
     }
