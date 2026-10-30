@@ -57,7 +57,22 @@ describe("#11562 — identicalDiscardCandidates (puro)", () => {
 });
 
 describe("#11562 — discardCollisionsIdenticalToUpstream (mock)", () => {
-  it("só descarta o que bate com o blob de origin/master", () => {
+  it("todas idênticas → descarta todas (clean nos untracked, checkout nos rastreados)", () => {
+    const calls: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      calls.push(key);
+      if (key === `git hash-object -- ${SITEMAP} ${PAGE}`) return ok("s1\np1\n");
+      if (key.startsWith("git ls-tree")) return ok(`100644 blob s1\t${SITEMAP}\x00100644 blob p1\t${PAGE}\x00`);
+      return ok("");
+    };
+    const r = discardCollisionsIdenticalToUpstream(spawn, classifyFfRefusal(REFUSAL_STDERR), PORCELAIN);
+    assert.deepEqual([...r.discarded].sort(), [PAGE, SITEMAP].sort());
+    assert.ok(calls.includes(`git checkout -- :(literal)${SITEMAP}`));
+    assert.ok(calls.includes(`git clean -f -q -- :(literal)${PAGE}`));
+  });
+
+  it("#11654: uma colisão idêntica e outra diferente → nada descartado (tudo-ou-nada)", () => {
     const calls: string[] = [];
     const spawn: SpawnFn = (cmd, args) => {
       const key = [cmd, ...args].join(" ");
@@ -67,9 +82,23 @@ describe("#11562 — discardCollisionsIdenticalToUpstream (mock)", () => {
       return ok("");
     };
     const r = discardCollisionsIdenticalToUpstream(spawn, classifyFfRefusal(REFUSAL_STDERR), PORCELAIN);
-    assert.deepEqual(r.discarded, [SITEMAP]);
-    assert.ok(calls.includes(`git checkout -- :(literal)${SITEMAP}`));
-    assert.ok(!calls.some((c) => c.startsWith("git clean")), "página diferente do master nunca é apagada");
+    assert.deepEqual(r.discarded, []);
+    assert.ok(!calls.some((c) => c.startsWith("git clean") || c.startsWith("git checkout")), "sitemap idêntico NÃO é revertido");
+    assert.ok(r.warnings.some((w) => w.includes("#11654") && w.includes(PAGE)));
+  });
+
+  it("#11654: colisão não-candidata (config protegida) → nada medido nem descartado", () => {
+    const calls: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      calls.push([cmd, ...args].join(" "));
+      return ok("");
+    };
+    const stderr =
+      `error: Your local changes to the following files would be overwritten by merge:\n\tplatform.config.json\n\t${SITEMAP}\n` +
+      `Please commit your changes or stash them before you merge.\nAborting\n`;
+    const r = discardCollisionsIdenticalToUpstream(spawn, classifyFfRefusal(stderr), PORCELAIN);
+    assert.deepEqual(r.discarded, []);
+    assert.equal(calls.length, 0);
   });
 
   it("falha de medição → nada descartado, nenhum clean/checkout", () => {
@@ -174,6 +203,45 @@ describe("#11562 — syncCode com git real", () => {
       assert.equal(r.outcome, "protected_config_dirty", r.message);
       assert.equal(r.discarded_identical_paths, undefined);
       assert.equal(fs.readFileSync(join(local, PAGE), "utf8"), "<html>versao local editada</html>\n");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#11654: página idêntica + sitemap com edição local real + config editada → nada descartado, mensagem verdadeira", () => {
+    const { tmp, local } = setupRepos();
+    try {
+      write(local, PAGE, "<html>edicao</html>\n");
+      write(local, SITEMAP, "<urlset>edicao local</urlset>\n");
+      write(local, "platform.config.json", '{"a":2}\n');
+      const r = syncCode(realSpawn(local), NOOP_LOCK, local);
+      assert.equal(r.outcome, "protected_config_dirty", r.message);
+      assert.equal(r.discarded_identical_paths, undefined);
+      assert.ok(fs.existsSync(join(local, PAGE)), "página idêntica continua no checkout (antes: apagada)");
+      assert.equal(fs.readFileSync(join(local, SITEMAP), "utf8"), "<urlset>edicao local</urlset>\n");
+      assert.match(r.message, /Working tree e HEAD intocados/);
+      assert.ok(!fs.existsSync(join(local, "scripts/lib/official-domains.ts")), "ff não rodou");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("#11654: descarte parcial (checkout falhou) + retry recusado → mensagem lista o que saiu, sem 'intocados'", () => {
+    const { tmp, local } = setupRepos();
+    try {
+      write(local, SITEMAP, "<urlset>v2</urlset>\n");
+      write(local, PAGE, "<html>edicao</html>\n");
+      write(local, "platform.config.json", '{"a":2}\n');
+      const base = realSpawn(local);
+      const spawn: SpawnFn = (cmd, args) =>
+        cmd === "git" && args[0] === "checkout" && args[1] === "--" ? fail("simulado: checkout travado") : base(cmd, args);
+      const r = syncCode(spawn, NOOP_LOCK, local);
+      assert.equal(r.outcome, "protected_config_dirty", r.message);
+      assert.deepEqual(r.discarded_identical_paths, [PAGE]);
+      assert.ok(!fs.existsSync(join(local, PAGE)), "página foi de fato removida");
+      assert.doesNotMatch(r.message, /Working tree e HEAD intocados/);
+      assert.ok(r.message.includes(PAGE), r.message);
+      assert.match(r.message, /HEAD intocado/);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

@@ -2102,21 +2102,28 @@ export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolat
   const seen = new Set<string>();
   for (const w of warnings) {
     if (!w || typeof w !== "object") continue;
-    const { cross_source_match, candidate_url, candidate_title, matched_edition, matched_title, jaccard } = w as Record<string, unknown>;
+    const { cross_source_match, candidate_url, candidate_title, matched_edition, matched_title, jaccard, effective_threshold } = w as Record<string, unknown>;
     if (cross_source_match !== true || typeof candidate_url !== "string") continue;
     const url = canonicalize(candidate_url);
     if (!inEdition.has(url) || sameFactUrls.has(url) || seen.has(url)) continue;
     // #11517: gradua pelo jaccard SEM palavras de anúncio genéricas
-    // ("introducing", "update"...), recalculado dos dois títulos. Abaixo do
-    // piso do sinal o par só casava por palavra genérica: não sobe. Entre o
-    // piso e THEME_CROSS_SOURCE_CUT_MIN_JACCARD sobe sem 🚨, como conferência;
+    // ("introducing", "update"...), recalculado dos dois títulos. O piso é o
+    // MESMO que o Stage 1 usou para aceitar o par (`effective_threshold`: 0.20,
+    // ou 0.15 quando os títulos têm entidade nomeada em comum, #11652); sem o
+    // campo (arquivo antigo), 0.20. Abaixo desse piso o par só tinha casado
+    // por palavra genérica: não sobe. Entre o piso e
+    // THEME_CROSS_SOURCE_CUT_MIN_JACCARD sobe sem 🚨, como conferência;
     // "Cortar no gate" fica para o par com sobreposição de conteúdo real.
     // Sem os dois títulos, cai no jaccard gravado pelo Stage 1.
     const contentSim =
       typeof candidate_title === "string" && typeof matched_title === "string"
         ? contentJaccard(candidate_title, matched_title)
         : typeof jaccard === "number" ? jaccard : THEME_CROSS_SOURCE_CUT_MIN_JACCARD;
-    if (contentSim < REPEAT_THEME_WARN_THRESHOLD) continue;
+    const floor =
+      typeof effective_threshold === "number" && Number.isFinite(effective_threshold)
+        ? effective_threshold
+        : REPEAT_THEME_WARN_THRESHOLD;
+    if (contentSim < floor) continue;
     seen.add(url);
     const pair = `“${String(candidate_title ?? "")}” (${candidate_url}) × ${String(matched_edition ?? "?")} “${String(matched_title ?? "")}” (jaccard=${String(jaccard ?? "?")}, sem palavras genéricas=${Math.round(contentSim * 100) / 100}, gatilho cross-source do Stage 1)`;
     out.push({

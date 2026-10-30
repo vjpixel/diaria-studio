@@ -253,6 +253,8 @@ interface Ctx {
   mode: "local" | "api";
   /** #11641: raiz do bruto no XML (`--xml-media-root`); ver `xmlMediaPath`. */
   xmlMediaRoot?: string;
+  /** #11653: raiz do Drive no Neo pedida por `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` (só no modo local); vai para o XML. */
+  driveRoot?: string;
 }
 
 const f = (ctx: Pick<Ctx, "stateDir">, name: string) => join(ctx.stateDir, name);
@@ -595,6 +597,34 @@ export function setAsideOnTranscriptChange(ctx: Pick<Ctx, "stateDir">, before: B
   return moved;
 }
 
+const sourceConflictMessage = (cachedPath: string, srcPath: string) =>
+  `source.json aponta para outro bruto (${cachedPath}); rode com --force para trocar por ${srcPath}`;
+
+/**
+ * #11653: o que o `transcribe` faria com o bruto `srcPath`, decidido ANTES de
+ * baixá-lo no modo API. `conflict` = o `source.json` aponta para outro bruto e
+ * não há --force (a mesma recusa do `cmdTranscribe`, sem os GB do download nem
+ * o `bruto.drive.json` regravado com o bruto novo); `ready` = o `source.json` já
+ * é este bruto e o áudio, o loudness e a transcrição estão prontos (o
+ * `cmdTranscribe` não lê o bruto, então não há o que baixar); senão `fetch`.
+ * Com `--from-audio` nunca é `ready` (o alinhamento confere o próprio estado).
+ */
+export function transcribePrecheck(
+  ctx: Pick<Ctx, "stateDir"> & Partial<Pick<Ctx, "workDir" | "force">>,
+  srcPath: string,
+  audioPath?: string,
+): { action: "conflict"; message: string } | { action: "ready" } | { action: "fetch" } {
+  const sourcePath = f(ctx, "source.json");
+  if (ctx.force || !existsSync(sourcePath)) return { action: "fetch" };
+  const cached = readJson<SourceInfo>(sourcePath, "source.json");
+  const src = normPath(srcPath);
+  if (audioPath !== undefined && cached.path === normPath(audioPath)) return { action: "fetch" };
+  if (cached.path !== src) return { action: "conflict", message: sourceConflictMessage(cached.path, src) };
+  // Sem work dir conhecido não há como saber se o áudio existe: baixa.
+  const done = audioPath === undefined && ctx.workDir !== undefined && [join(ctx.workDir, "audio.wav"), f(ctx, "loudness.json"), f(ctx, "transcript.json")].every((p) => existsSync(p));
+  return done ? { action: "ready" } : { action: "fetch" };
+}
+
 function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: number | undefined, fromAudio?: { audio: string; transcript?: string }): number {
   mkdirSync(ctx.workDir, { recursive: true });
   mkdirSync(ctx.stateDir, { recursive: true });
@@ -630,7 +660,7 @@ function cmdTranscribe(ctx: Ctx, sourceArg: string | undefined, silenceDb: numbe
   if (audioPath && audioPath === srcPath) throw new Error("--from-audio aponta para o próprio bruto; o áudio separado é outro arquivo (o vídeo vai em --source ou solto na pasta)");
   // --from-audio troca o bruto do áudio para o vídeo sem --force: a transcrição do áudio já está guardada.
   if (cached && audioPath && cached.path === audioPath) cached = null;
-  if (cached && cached.path !== srcPath) throw new Error(`source.json aponta para outro bruto (${cached.path}); rode com --force para trocar por ${srcPath}`);
+  if (cached && cached.path !== srcPath) throw new Error(sourceConflictMessage(cached.path, srcPath));
   let source: SourceInfo;
   // source.json refeito = todos os derivados refeitos (áudio, loudness, silêncios, transcrição).
   let redo = ctx.force;
@@ -997,7 +1027,7 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
     return 1;
   }
   // #11641: no XML vai o caminho do bruto no Neo, não o do cache local do modo API.
-  const media = xmlMediaPath(source.path, { edition: ctx.edition, drive: readBrutoDrive(ctx), xmlMediaRoot: ctx.xmlMediaRoot, apiMode: ctx.mode === "api" });
+  const media = xmlMediaPath(source.path, { edition: ctx.edition, drive: readBrutoDrive(ctx), xmlMediaRoot: ctx.xmlMediaRoot, driveRoot: ctx.driveRoot, apiMode: ctx.mode === "api" });
   const mediaPath = media.path;
   if (media.how === "api-guess") console.error(`[premissa] bruto lido de ${source.path} (fora do cache do Drive): o XML aponta ${mediaPath} no Neo; outro caminho: --xml-media-root (#11641)`);
   else if (mediaPath !== source.path) console.error(`[video-montagem] XML aponta o bruto em ${mediaPath} (lido de ${source.path}, #11641)`);
@@ -1245,8 +1275,16 @@ function configRootFolderId(flag: string | undefined): () => string {
 
 const log = (line: string) => console.error(line);
 
-/** transcribe sem --source no modo API: escolhe o bruto na pasta da edição, baixa para o cache e registra a procedência (#11639). */
-export async function fetchBruto(ctx: Pick<Ctx, "stateDir" | "edition">, d: DriveSession): Promise<string> {
+/**
+ * transcribe sem --source no modo API: escolhe o bruto na pasta da edição, baixa para o cache e registra a procedência (#11639).
+ * #11653: antes do download, `transcribePrecheck` — conflito com o `source.json` lança sem baixar nem tocar no
+ * `bruto.drive.json`; transcrição já pronta para este bruto devolve o caminho do cache sem baixar.
+ */
+export async function fetchBruto(
+  ctx: Pick<Ctx, "stateDir" | "edition"> & Partial<Pick<Ctx, "workDir" | "force">>,
+  d: DriveSession,
+  opts: { fromAudio?: string } = {},
+): Promise<string> {
   const folder = await d.folder();
   const raw = pickDriveBruto(await listChildren(d.deps, folder.id));
   if (!raw) throw new Error(`nenhum bruto (.mp4/.mov, ou áudio .m4a/.mp3/.wav) solto na pasta ${d.edition}/ do Drive (${folder.id}); passe --source`);
@@ -1255,7 +1293,16 @@ export async function fetchBruto(ctx: Pick<Ctx, "stateDir" | "edition">, d: Driv
     log(`[aviso] ${raw.candidates.length} candidatos a bruto no Drive; usando o maior (${raw.pick.name}, id ${raw.pick.id}). Outro: --source. Candidatos: ${raw.candidates.map((c) => `${c.name} (${((parseDriveSize(c.size) ?? 0) / 1e9).toFixed(2)} GB)`).join(", ")}`);
   }
   if (raw.duplicateNames.length) log(`[aviso] nomes repetidos entre os candidatos no Drive (${raw.duplicateNames.join(", ")}): renomeie para não confundir o cache`);
-  const got = await ensureCachedFile(d.deps, raw.pick, join(d.cacheDir, "bruto"), log);
+  const brutoDir = join(d.cacheDir, "bruto");
+  // Mesmo caminho que o ensureCachedFile grava: `{cache}/bruto/{nome}`.
+  const target = join(brutoDir, raw.pick.name);
+  const pre = transcribePrecheck(ctx, target, opts.fromAudio);
+  if (pre.action === "conflict") throw new Error(pre.message);
+  if (pre.action === "ready") {
+    log(`[drive] transcrição de ${raw.pick.name} já pronta (source.json, áudio, loudness e transcript.json): nada a baixar; --force refaz`);
+    return target;
+  }
+  const got = await ensureCachedFile(d.deps, raw.pick, brutoDir, log);
   const info: BrutoDriveInfo = {
     edition: ctx.edition,
     id: raw.pick.id,
@@ -1437,6 +1484,8 @@ export async function main(argv = process.argv.slice(2), deps?: MontageDriveDeps
     force: flags.has("force"),
     mode,
     xmlMediaRoot: values["xml-media-root"],
+    // A raiz explícita é a do Neo só no modo local; no modo API ela não existe aqui (#11653).
+    driveRoot: mode === "local" ? explicitRoot : undefined,
   };
   const seq = values["seq"];
   if ((VIDEO_ONLY_COMMANDS as readonly string[]).includes(cmd)) {
@@ -1485,7 +1534,7 @@ async function runCommand(
       if (d && audio !== undefined && !existsSync(audio)) audio = await fetchNamed(d, audio, "edition");
       const fromAudio = audio !== undefined ? { audio, transcript: values["audio-transcript"] } : undefined;
       if (!fromAudio && values["audio-transcript"] !== undefined) throw new Error("--audio-transcript só vale com --from-audio");
-      const source = values["source"] ?? (d ? await fetchBruto(ctx, d) : undefined);
+      const source = values["source"] ?? (d ? await fetchBruto(ctx, d, { fromAudio: audio }) : undefined);
       return cmdTranscribe(ctx, source, parseSilenceDbArg(values["silence-db"] ?? (flags.has("silence-db") ? "" : undefined)), fromAudio);
     }
     case "decupagem":
