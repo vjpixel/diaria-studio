@@ -61,9 +61,10 @@ describe("#10943 item 3: link da edição no vertical antes da Etapa 5", () => {
     assert.ok(p.premises.some((m) => m.includes(p.editionUrl) && m.includes("#7420")), p.premises.join("\n"));
   });
 
-  it("backend beehiiv: link derivado segue AVISO (slug do wizard pode divergir)", () => {
+  it("backend beehiiv: link sem uso no texto é premissa, sem pedir conferência (#11633)", () => {
     const p = plan({ backend: "beehiiv" });
-    assert.ok(p.warnings.some((w) => w.includes("derivado do slug")));
+    assert.ok(!p.warnings.some((w) => w.includes("link da edição")));
+    assert.ok(p.premises.some((m) => m.includes("não usado no texto do vertical")));
   });
 
   it("chave ausente cai no default kit (premissa, sem aviso) — #11225", () => {
