@@ -18,6 +18,11 @@
  *
  * `--status` ∈ {published, scheduled, draft, failed}. `--url`/`--buffer-post-id`
  * fazem sentido pra published/scheduled/draft; `--reason` pra failed.
+ * `--url` é OPCIONAL (#11692): o `create_post` do Buffer em `customScheduled`
+ * devolve só o `id` — a URL pública do tweet só existe após o envio. Sem
+ * `--url`, grava `url: null`; `verify-twitter-posts.ts` preenche com o
+ * `externalLink` do Buffer quando o post sai. NUNCA passar placeholder
+ * (ex: `https://x.com/i/status/pending`) — o script recusa.
  * `--scheduled-at` (#4103) — o `dueAt` que foi passado ao `create_post` (Buffer,
  * `mode: customScheduled`); grava em `scheduled_at` pra auditoria/paridade com
  * os demais canais (que sempre gravam o horário agendado, nunca `null`).
@@ -45,10 +50,18 @@ function main() {
     process.exit(1);
   }
 
+  const url = values["url"];
+  if (url !== undefined && !/^https?:\/\/(www\.)?(x|twitter)\.com\/[^/]+\/status\/\d+/.test(url)) {
+    console.error(
+      `ERRO: --url não é uma URL real de tweet: ${url}. Omita --url quando o Buffer não devolveu a URL (status scheduled) — grava null.`,
+    );
+    process.exit(1);
+  }
+
   const entry: PostEntry = {
     platform: "twitter",
     destaque,
-    url: values["url"] ?? null,
+    url: url ?? null,
     status: status as PostEntry["status"],
     scheduled_at: values["scheduled-at"] ?? null,
     ...(values["reason"] ? { reason: values["reason"] } : {}),
