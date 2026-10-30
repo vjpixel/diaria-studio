@@ -112,6 +112,44 @@ describe("append-twitter-published.ts", () => {
     }
   });
 
+  it("scheduled sem --url grava url: null (#11692)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-append-twitter-nourl-"));
+    const publishedPath = join(tmpDir, "06-social-published.json");
+    try {
+      const r = run([
+        "--published-path", publishedPath,
+        "--destaque", "d1",
+        "--status", "scheduled",
+        "--buffer-post-id", "abc",
+        "--scheduled-at", "2026-10-31T09:45:00-03:00",
+      ]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const entry = JSON.parse(readFileSync(publishedPath, "utf8")).posts[0];
+      assert.equal(entry.url, null);
+      assert.equal(entry.status, "scheduled");
+      assert.equal(entry.buffer_post_id, "abc");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejeita --url placeholder e não grava nada (#11692)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-append-twitter-ph-"));
+    const publishedPath = join(tmpDir, "06-social-published.json");
+    try {
+      const r = run([
+        "--published-path", publishedPath,
+        "--destaque", "d1",
+        "--status", "scheduled",
+        "--url", "https://x.com/i/status/pending",
+      ]);
+      assert.notEqual(r.status, 0);
+      assert.ok(!existsSync(publishedPath));
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejeita --status inválido", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "diaria-append-twitter-badstatus-"));
     const publishedPath = join(tmpDir, "06-social-published.json");
