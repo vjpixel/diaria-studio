@@ -10,7 +10,9 @@ import { join, resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assessStaleEdition } from "../scripts/lib/stale-edition-guard.ts";
-import { decideEditionLock, EDITION_LOCK_TTL_MS } from "../scripts/lib/edition-lock.ts";
+import {
+  acquireEditionLock, decideEditionLock, EDITION_LOCK_TTL_MS, formatLockAge, readEditionLock, releaseEditionLock,
+} from "../scripts/lib/edition-lock.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const lock = (host: string, stage = 4) => ({
@@ -74,6 +76,78 @@ describe("CLI", () => {
       });
     assert.equal(run([]).status, 4);
     assert.equal(run(["--force"]).status, 0);
+  });
+});
+
+describe("tombstone de conclusão (release --complete-stage)", () => {
+  const tomb = (host: string, completed_stage = 4) => ({
+    ...lock(host), released_at: "2026-10-30T15:00:00Z", completed_stage,
+  });
+  const guard = (dir: string, extra: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", "scripts/stale-edition-guard.ts", "check", "--edition-dir", dir, "--step", "4", ...extra], {
+      cwd: ROOT, encoding: "utf8",
+    });
+  it("tombstone de outro host + sentinel ausente → remote_completed", () => {
+    const v = assessStaleEdition({ step: 4, sentinelSteps: [1, 2, 3], lock: tomb("neo"), localHost: "300" });
+    assert.equal(v.ok, false);
+    assert.equal(v.signals[0].kind, "remote_completed");
+  });
+  it("tombstone da mesma máquina, ou de stage anterior, não bloqueia", () => {
+    assert.equal(assessStaleEdition({ step: 4, sentinelSteps: [1, 2, 3], lock: tomb("300"), localHost: "300" }).ok, true);
+    assert.equal(assessStaleEdition({ step: 4, sentinelSteps: [1, 2, 3], lock: tomb("neo", 3), localHost: "300" }).ok, true);
+  });
+  it("sentinel presente sem outputs: tombstone remoto bloqueia só com outputsMissing", () => {
+    const base = { step: 4, sentinelSteps: [1, 2, 3, 4], lock: tomb("neo"), localHost: "300" };
+    assert.equal(assessStaleEdition(base).ok, true);
+    assert.equal(assessStaleEdition({ ...base, outputsMissing: true }).ok, false);
+  });
+  it("release com completedStage regrava tombstone; acquire o trata como ausente", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    acquireEditionLock(dir, { sessionId: "a", stage: 4, host: "neo" });
+    assert.equal(releaseEditionLock(dir, { sessionId: "a", completedStage: 4, host: "neo" }), "released");
+    const r = readEditionLock(dir)!;
+    assert.equal(r.completed_stage, 4);
+    assert.ok(r.released_at);
+    assert.equal(acquireEditionLock(dir, { sessionId: "b", stage: 4, host: "300" }).action, "acquired");
+    assert.equal(readEditionLock(dir)!.released_at, undefined);
+  });
+  it("release sem completedStage segue apagando", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    acquireEditionLock(dir, { sessionId: "a", stage: 4 });
+    releaseEditionLock(dir, { sessionId: "a" });
+    assert.equal(readEditionLock(dir), null);
+  });
+  it("CLI: tombstone de outro host → exit 4; sentinel presente só bloqueia com --outputs-missing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "edition-lock.json"), JSON.stringify(tomb("outro-host")));
+    assert.equal(guard(dir, []).status, 4);
+    writeFileSync(join(dir, "_internal", ".step-4-done.json"), "{}");
+    assert.equal(guard(dir, []).status, 0);
+    assert.equal(guard(dir, ["--outputs-missing"]).status, 4);
+  });
+});
+
+describe("lock malformado e idade", () => {
+  it("host não-string na trava lida vira host desconhecido e bloqueia (fail-closed)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    writeFileSync(join(dir, "_internal", "edition-lock.json"), JSON.stringify({ ...lock("x"), host: 42, stage: "4" }));
+    const l = readEditionLock(dir)!;
+    assert.equal(l.host, "");
+    assert.equal(assessStaleEdition({ step: 4, sentinelSteps: [], lock: l, localHost: "300" }).ok, false);
+  });
+  it("trava vencida de host desconhecido → stale_other_host", () => {
+    const l = { ...lock("x"), host: "" };
+    const d = decideEditionLock(l, { stage: 4, now: Date.parse("2026-10-30T10:00:00Z") + EDITION_LOCK_TTL_MS + 1, sessionId: "n", host: "300" });
+    assert.equal(d.action, "stale_other_host");
+  });
+  it("formatLockAge: Infinity/negativo/curto não viram número enganoso", () => {
+    assert.equal(formatLockAge(Number.POSITIVE_INFINITY), "ilegível");
+    assert.match(formatLockAge(-5000), /futuro/);
+    assert.equal(formatLockAge(20_000), "há menos de 1 min");
+    assert.equal(formatLockAge(10 * 60_000), "há 10 min");
+    assert.equal(formatLockAge(5 * 3_600_000 + 1), "há 5 h");
   });
 });
 

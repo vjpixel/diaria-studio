@@ -2,7 +2,7 @@
  * stale-edition-guard.ts (#11690) — CLI. Lógica em `scripts/lib/stale-edition-guard.ts`.
  *
  * Uso (antes de re-rodar um stage porque o sentinel dele/do anterior sumiu):
- *   npx tsx scripts/stale-edition-guard.ts check --edition-dir DIR --step N
+ *   npx tsx scripts/stale-edition-guard.ts check --edition-dir DIR --step N [--outputs-missing]
  * `--force` (só com confirmação do editor): registra override e sai 0.
  * Exit 0 sem sinais · 4 outro host possivelmente à frente (halt: aguardar sync OneDrive).
  * Só lê; nunca escreve em data/.
@@ -18,7 +18,7 @@ function main(): void {
   const { positional, values, flags } = parseArgs(process.argv.slice(2));
   const step = Number(values.step);
   if (positional[0] !== "check" || !values["edition-dir"] || !Number.isInteger(step)) {
-    console.error("Uso: stale-edition-guard.ts check --edition-dir DIR --step N [--force]");
+    console.error("Uso: stale-edition-guard.ts check --edition-dir DIR --step N [--outputs-missing] [--force]");
     process.exit(2);
   }
   const dir = resolve(values["edition-dir"]);
@@ -28,6 +28,7 @@ function main(): void {
     sentinelSteps,
     lock: readEditionLock(dir),
     localHost: hostname(),
+    outputsMissing: flags.has("outputs-missing"),
   });
   console.log(JSON.stringify(verdict));
   if (!verdict.ok && flags.has("force")) {

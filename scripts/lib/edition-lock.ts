@@ -47,6 +47,16 @@ export interface EditionLockRecord {
   stage: number;
   acquired_at: string;
   heartbeat_at: string;
+  /**
+   * Tombstone de conclusão (#11690): o release de uma aprovação NORMAL não
+   * apaga o arquivo, regrava-o com estes campos. Apagar deixava "sem trava e
+   * sem sentinel" indistinguível de "nunca rodou" quando o sync da remoção
+   * chegava antes do `.step-N-done.json`. Como é o MESMO arquivo, o sync
+   * entrega o tombstone no lugar da trava, nunca um vazio. Para `acquire`
+   * conta como ausente; só o `stale-edition-guard` o lê.
+   */
+  released_at?: string;
+  completed_stage?: number;
 }
 
 export type EditionLockAction =
@@ -107,7 +117,7 @@ export function decideEditionLock(
     heartbeat_at: nowIso,
   });
 
-  if (!existing) return { action: "acquired", record: fresh(nowIso) };
+  if (!existing || existing.released_at) return { action: "acquired", record: fresh(nowIso) };
   if (existing.session_id === opts.sessionId) {
     return { action: "refreshed", record: fresh(existing.acquired_at || nowIso) };
   }
@@ -117,7 +127,8 @@ export function decideEditionLock(
   const age = Number.isFinite(hb) ? opts.now - hb : Number.POSITIVE_INFINITY;
   const base = { previous: existing, previous_age_ms: age };
   if (age > ttl) {
-    if (existing.host && existing.host !== host && !opts.force) return { action: "stale_other_host", ...base };
+    // Host ausente/ilegível conta como OUTRO host (fail-closed, #11690).
+    if (existing.host !== host && !opts.force) return { action: "stale_other_host", ...base };
     return { action: "took_stale", record: fresh(nowIso), ...base };
   }
   if (opts.force) return { action: "taken_over", record: fresh(nowIso), ...base };
@@ -129,7 +140,19 @@ export function readEditionLock(editionDir: string): EditionLockRecord | null {
   if (!existsSync(p)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(p, "utf8"));
-    return isRecord(parsed) ? parsed : null;
+    if (!isRecord(parsed)) return null;
+    // host/stage malformados não derrubam a leitura (a trava segue valendo),
+    // mas viram "" / NaN pra o guard tratá-los como desconhecidos, não como
+    // ausentes (#11690: antes um host não-string fazia o guard ignorar a trava).
+    const r = parsed as unknown as Record<string, unknown>;
+    return {
+      ...parsed,
+      host: typeof r.host === "string" ? r.host : "",
+      stage: typeof r.stage === "number" && Number.isFinite(r.stage) ? r.stage : Number.NaN,
+      completed_stage:
+        typeof r.completed_stage === "number" && Number.isFinite(r.completed_stage) ? r.completed_stage : undefined,
+      released_at: typeof r.released_at === "string" ? r.released_at : undefined,
+    };
   } catch {
     return null;
   }
@@ -153,18 +176,48 @@ export function acquireEditionLock(
 
 export type EditionLockReleaseResult = "released" | "not_held" | "held_by_other";
 
-/** Remove a trava só se for desta sessão (ou com `force`). */
+/**
+ * Remove a trava só se for desta sessão (ou com `force`). Com `completedStage`
+ * (aprovação normal do stage, #11690) regrava o arquivo como tombstone em vez
+ * de apagar — ver `released_at`. Sem trava legível e com `completedStage`,
+ * grava o tombstone mesmo assim (resultado segue `not_held`).
+ */
 export function releaseEditionLock(
   editionDir: string,
-  opts: { sessionId: string; force?: boolean },
+  opts: { sessionId: string; force?: boolean; completedStage?: number; now?: number; host?: string },
 ): EditionLockReleaseResult {
   const existing = readEditionLock(editionDir);
   const p = editionLockPath(editionDir);
-  if (!existing) {
-    if (existsSync(p)) unlinkSync(p); // arquivo corrompido: limpar
+  const tombstone = (base: EditionLockRecord | null): void => {
+    const nowIso = new Date(opts.now ?? Date.now()).toISOString();
+    const rec: EditionLockRecord = {
+      session_id: base?.session_id || opts.sessionId,
+      host: opts.host ?? hostname(),
+      stage: opts.completedStage as number,
+      acquired_at: base?.acquired_at ?? nowIso,
+      heartbeat_at: nowIso,
+      released_at: nowIso,
+      completed_stage: opts.completedStage,
+    };
+    writeAtomic(p, JSON.stringify(rec, null, 2) + "\n");
+  };
+  const wantsTombstone = Number.isInteger(opts.completedStage);
+  if (!existing || existing.released_at) {
+    if (wantsTombstone) tombstone(null);
+    else if (existsSync(p)) unlinkSync(p); // corrompido ou tombstone antigo: limpar
     return "not_held";
   }
   if (existing.session_id !== opts.sessionId && !opts.force) return "held_by_other";
-  unlinkSync(p);
+  if (wantsTombstone) tombstone(existing);
+  else unlinkSync(p);
   return "released";
+}
+
+/** Idade legível: `NaN`/Infinity → "ilegível"; negativa → relógio adiantado; sem arredondar pra 0. */
+export function formatLockAge(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms)) return "ilegível";
+  if (ms < 0) return "no futuro (relógio adiantado de outra máquina)";
+  if (ms < 60_000) return "há menos de 1 min";
+  if (ms < 2 * 3_600_000) return `há ${Math.floor(ms / 60_000)} min`;
+  return `há ${Math.floor(ms / 3_600_000)} h`;
 }

@@ -5,7 +5,7 @@
  * Uso (sempre STANDALONE, nunca encadeado: o hook `inject-session-id.mjs`
  * só injeta `--session-id` em comando sem `&&`/`;`/`|`):
  *   npx tsx scripts/edition-lock.ts acquire --edition-dir DIR --stage 4 [--force]
- *   npx tsx scripts/edition-lock.ts release --edition-dir DIR [--force]
+ *   npx tsx scripts/edition-lock.ts release --edition-dir DIR [--force] [--complete-stage N]
  *   npx tsx scripts/edition-lock.ts status  --edition-dir DIR
  *
  * Exit codes: 0 ok (acquire: acquired|refreshed|took_stale|taken_over;
@@ -19,13 +19,14 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import {
   EDITION_LOCK_TTL_MS,
   acquireEditionLock,
+  formatLockAge,
   readEditionLock,
   releaseEditionLock,
 } from "./lib/edition-lock.ts";
 
 const USAGE =
   "Uso: edition-lock.ts acquire --edition-dir DIR --stage N [--force] [--session-id ID]\n" +
-  "     edition-lock.ts release --edition-dir DIR [--force] [--session-id ID]\n" +
+  "     edition-lock.ts release --edition-dir DIR [--force] [--complete-stage N] [--session-id ID]\n" +
   "     edition-lock.ts status  --edition-dir DIR";
 
 function fail(msg: string, code: number): never {
@@ -63,16 +64,15 @@ function main(): void {
     console.log(JSON.stringify(d));
     if (d.action === "held_by_other") {
       const prev = d.previous!;
-      const min = Math.round((d.previous_age_ms ?? 0) / 60000);
       console.error(
-        `[edition-lock] edição em uso por outra sessão (${prev.session_id} em ${prev.host}, Stage ${prev.stage}, heartbeat há ${min} min).`,
+        `[edition-lock] edição em uso por outra sessão (${prev.session_id} em ${prev.host}, Stage ${prev.stage}, heartbeat ${formatLockAge(d.previous_age_ms)}).`,
       );
       process.exit(3);
     }
     if (d.action === "stale_other_host") {
       const prev = d.previous!;
       console.error(
-        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat ${Number.isFinite(d.previous_age_ms) ? `há ${Math.floor((d.previous_age_ms as number) / 3600000)} h` : "ilegível"}): data/ possivelmente defasado (OneDrive) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
+        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat ${formatLockAge(d.previous_age_ms)}): data/ possivelmente defasado (OneDrive) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
       );
       process.exit(4);
     }
@@ -80,7 +80,13 @@ function main(): void {
   }
   if (sub === "release") {
     const sessionId = requireSession(values);
-    const result = releaseEditionLock(editionDir, { sessionId, force });
+    const cs = values["complete-stage"];
+    if (cs !== undefined && !Number.isInteger(Number(cs))) fail(`--complete-stage inválido: ${cs}\n${USAGE}`, 2);
+    const result = releaseEditionLock(editionDir, {
+      sessionId,
+      force,
+      completedStage: cs === undefined ? undefined : Number(cs),
+    });
     console.log(JSON.stringify({ result }));
     if (result === "held_by_other") process.exit(3);
     return;
