@@ -35,7 +35,9 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
     if (s > f.step) signals.push({ kind: "later_sentinel", step: s });
   }
   // Trava de outro host (qualquer idade: heartbeat velho = data/ velho, não host morto).
-  if (f.lock && f.lock.host && f.lock.host !== f.localHost && f.lock.stage >= f.step) {
+  // `stage` ilegível (não numérico) conta como à frente: fail-closed.
+  const lockStage = Number.isFinite(f.lock?.stage) ? f.lock!.stage : Number.POSITIVE_INFINITY;
+  if (f.lock && typeof f.lock.host === "string" && f.lock.host && f.lock.host !== f.localHost && lockStage >= f.step) {
     signals.push({
       kind: "remote_lock",
       host: f.lock.host,

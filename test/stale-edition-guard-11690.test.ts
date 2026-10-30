@@ -55,7 +55,7 @@ describe("CLI", () => {
     const dir = mkdtempSync(join(tmpdir(), "stale-"));
     mkdirSync(join(dir, "_internal"), { recursive: true });
     const run = () =>
-      spawnSync("npx", ["tsx", "scripts/stale-edition-guard.ts", "check", "--edition-dir", dir, "--step", "4"], {
+      spawnSync(process.execPath, ["--import", "tsx", "scripts/stale-edition-guard.ts", "check", "--edition-dir", dir, "--step", "4"], {
         cwd: ROOT, encoding: "utf8",
       });
     assert.equal(run().status, 0);
@@ -69,10 +69,17 @@ describe("CLI", () => {
     mkdirSync(join(dir, "_internal"), { recursive: true });
     writeFileSync(join(dir, "_internal", "edition-lock.json"), JSON.stringify(lock("outro-host")));
     const run = (extra: string[]) =>
-      spawnSync("npx", ["tsx", "scripts/stale-edition-guard.ts", "check", "--edition-dir", dir, "--step", "4", ...extra], {
+      spawnSync(process.execPath, ["--import", "tsx", "scripts/stale-edition-guard.ts", "check", "--edition-dir", dir, "--step", "4", ...extra], {
         cwd: ROOT, encoding: "utf8",
       });
     assert.equal(run([]).status, 4);
     assert.equal(run(["--force"]).status, 0);
+  });
+});
+
+describe("assessStaleEdition: lock com stage ilegível", () => {
+  it("stage não numérico de outro host bloqueia (fail-closed)", () => {
+    const l = { ...lock("outro-host"), stage: "x" as unknown as number };
+    assert.equal(assessStaleEdition({ step: 4, sentinelSteps: [], lock: l, localHost: "300" }).ok, false);
   });
 });

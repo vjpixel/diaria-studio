@@ -72,7 +72,7 @@ function main(): void {
     if (d.action === "stale_other_host") {
       const prev = d.previous!;
       console.error(
-        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat há ${Math.round((d.previous_age_ms ?? 0) / 3600000)} h): data/ possivelmente defasado (OneDrive) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
+        `[edition-lock] trava vencida de OUTRO host (${prev.host}, Stage ${prev.stage}, heartbeat ${Number.isFinite(d.previous_age_ms) ? `há ${Math.floor((d.previous_age_ms as number) / 3600000)} h` : "ilegível"}): data/ possivelmente defasado (OneDrive) — aguardar sync antes de re-rodar o stage. --force só se o editor confirmar.`,
       );
       process.exit(4);
     }
