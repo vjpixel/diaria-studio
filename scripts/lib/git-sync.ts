@@ -131,6 +131,7 @@
  *      é idêntico ao de origin/master (página da edição + sitemap gerados no
  *      checkout e também mergeados pelo PR do site) são descartados sem perda
  *      e o ff é re-tentado — ver `discardCollisionsIdenticalToUpstream()`.
+ *      Só quando TODAS as colisões são idênticas (#11654, tudo-ou-nada).
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_partial_failure (ou sua variante
@@ -1494,8 +1495,10 @@ export function parseLsTreeBlobs(stdoutZ: string): Map<string, string> {
  * blob) contra o blob de origin/master em `git ls-tree`. Descarte: `git clean
  * -f` para untracked e `git checkout --` (restaura do índice, == HEAD pelo
  * critério de `identicalDiscardCandidates`) para rastreado. Qualquer falha de
- * medição → não descarta nada daquele grupo (comportamento anterior). Nunca
- * toca stash (#8719).
+ * medição → não descarta nada (comportamento anterior). Tudo-ou-nada (#11654):
+ * se algum caminho da recusa não for descartável ou diferir do master, nada é
+ * descartado — descarte parcial não destrava o ff e deixava o checkout sem
+ * os artefatos com o código ainda defasado. Nunca toca stash (#8719).
  *
  * Spawns: hash-object + ls-tree + clean + checkout = até 4 (refletidos em
  * `MAX_SEQUENTIAL_GIT_SPAWNS`). Nunca lança.
@@ -1510,6 +1513,21 @@ export function discardCollisionsIdenticalToUpstream(
   const { tracked, untracked } = identicalDiscardCandidates(refusal.paths, porcelainStdout);
   const candidates = [...tracked, ...untracked];
   if (candidates.length === 0 || candidates.length > TARGETED_STASH_MAX_PATHS) return none;
+  // #11654: tudo-ou-nada. Descartar só parte das colisões não destrava o ff
+  // (o caminho restante segue colidindo), e o retry recusado cai no guard do
+  // #9276 com arquivos já removidos/revertidos e o código ainda defasado. Se
+  // algum caminho da recusa não é candidato (config protegida, staged, entre
+  // aspas, edição local real) ou não é idêntico ao master, nada é descartado.
+  const refusalPaths = new Set(refusal.paths.map((p) => p.trim()).filter((p) => p.length > 0));
+  if (candidates.length < refusalPaths.size) {
+    return {
+      ...none,
+      warnings: [
+        `[git-sync] INFO: ${refusalPaths.size - candidates.length} caminho(s) em colisão não são descartáveis ` +
+          `(config protegida, staged ou mudança fora do critério) — nada descartado, o ff não destravaria (#11654).`,
+      ],
+    };
+  }
 
   const hashRes = spawn("git", ["hash-object", "--", ...candidates]);
   const hashes = hashRes.stdout.split("\n").map((h) => h.trim()).filter((h) => h.length > 0);
@@ -1534,6 +1552,17 @@ export function discardCollisionsIdenticalToUpstream(
   }
   const upstream = parseLsTreeBlobs(treeRes.stdout);
   const identical = new Set(candidates.filter((p, i) => upstream.get(p) === hashes[i]));
+  if (identical.size < candidates.length) {
+    const differing = candidates.filter((p) => !identical.has(p));
+    return {
+      ...none,
+      warnings: [
+        `[git-sync] INFO: ${differing.length} caminho(s) em colisão diferem de origin/master ` +
+          `(${differing.slice(0, 10).join(", ")}${differing.length > 10 ? ` (+${differing.length - 10})` : ""}) — ` +
+          `nada descartado: descartar só os idênticos não destravaria o ff (#11654).`,
+      ],
+    };
+  }
   const identicalUntracked = untracked.filter((p) => identical.has(p));
   const identicalTracked = tracked.filter((p) => identical.has(p));
 
@@ -1945,10 +1974,20 @@ function syncCodeLocked(
             ` A config NÃO é a colisão — o bloqueio está em: ${others.join(", ")}. ` +
             `Resolva esses arquivos e rode o sync de novo; a config pode continuar editada.`
           : ` Motivo da recusa: ${describeFfRefusal(ffRefusal)}.`;
+      // #11654: se o #11562 já descartou cópias idênticas (ex.: `git clean`
+      // ok e `git checkout` falhou, ou a recusa do retry trouxe caminho novo),
+      // o working tree NÃO está intocado — dizer o que saiu.
+      const discardedNow = ctx.discardedIdentical ?? [];
+      const treeState =
+        discardedNow.length > 0
+          ? `HEAD intocado; do working tree saíram só ${discardedNow.length} cópia(s) idêntica(s) a ` +
+            `origin/master (#11562, sem perda — voltam no próximo sync bem-sucedido): ` +
+            `${discardedNow.slice(0, 10).join(", ")}${discardedNow.length > 10 ? ` (+${discardedNow.length - 10})` : ""}`
+          : "Working tree e HEAD intocados";
       const msg =
         `[git-sync] WARN: ff-only recusou com config local editada (${dirtyConfig.join(", ")}) — ` +
-        `sync PULADO para não stashar config de que a edição depende (#9276). Working tree e HEAD ` +
-        `intocados; o código segue defasado de origin/master.${hint}`;
+        `sync PULADO para não stashar config de que a edição depende (#9276). ${treeState}; ` +
+        `o código segue defasado de origin/master.${hint}`;
       warnings.push(msg);
       return {
         outcome: "protected_config_dirty",
