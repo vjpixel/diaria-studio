@@ -63,6 +63,13 @@ const DRIVE_NONE = JSON.stringify({
 /** Dia sem vídeo: nem a pasta da edição existe no Drive. */
 const DRIVE_NONE_NO_FOLDER = JSON.stringify({ edition: AAMMDD, orientation: "vertical", folder_id: "root", local_path: "x", edition_folder_id: null, final_folder_ids: [], target: "generic", action: "none", selection: "none", reason: "sem pasta" });
 
+/** #11631: saída do publish-shorts com o linkedin_profile publicado (o timer passou a ler o JSON). */
+const PUBLISHED_OUT = JSON.stringify({
+  dry_run: false,
+  items: [{ destination: "linkedin_profile", mode: "api", action: "publish", detail: "" }],
+  results: [{ destination: "linkedin_profile", ok: true, entry: { destination: "linkedin_profile", status: "published", id: "urn:li:share:1", url: "https://www.linkedin.com/feed/update/urn:li:share:1", at: "t" } }],
+});
+
 function edition(): string {
   const dir = mkdtempSync(join(tmpdir(), "li-timer-11618-"));
   mkdirSync(join(dir, "_internal"), { recursive: true });
@@ -94,7 +101,7 @@ function deps(now: Date, driveStdout: string, notify: LinkedinTimerRunDeps["noti
     runScript: (args: string[]) => {
       scripts.push(args);
       if (args[0] === "scripts/fetch-drive-video.ts") return { status: 0, stdout: driveStdout };
-      return { status: 0, stdout: "" };
+      return { status: 0, stdout: PUBLISHED_OUT };
     },
     notify,
     scripts,
