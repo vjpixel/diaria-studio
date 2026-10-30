@@ -61,6 +61,8 @@ import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, 
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
+import { normalizeIssues } from "../lib/plan-issues-normalize.ts";
+import { isTerminalForBar } from "../overnight-statusline.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
 import { getScheduledTaskByName } from "../lib/scheduled-tasks.ts";
 import { hasActiveSessionOfKind } from "../lib/session-registry.ts";
@@ -110,12 +112,16 @@ export const EXIT_OVERNIGHT_NO_TRACE = 4;
 
 export const EXIT_OVERNIGHT_DELIVERY_ALARM = 5;
 
+/** Rodada terminou com trabalho pendente ou plano ilegível (#11665). */
+export const EXIT_OVERNIGHT_INCOMPLETE = 6;
+
 export type ReviewStatus = "ok" | "noop" | "failed" | "timeout";
 export type OvernightStatus =
   | "ok"
   | "failed"
   | "no-trace"
   | "delivery-alarm"
+  | "rodada-incompleta"
   | "skipped-active-session"
   /** Repo sem `hasTrustDialogAccepted` em `~/.claude.json`, ou o CLI disse isso no stderr (#11383). */
   | "untrusted-workspace";
@@ -361,6 +367,17 @@ export function readDeliveryCounts(report: string): { implementedUnits: number; 
   } catch { return null; }
 }
 
+/** Pendências finais; schema inválido falha fechado, issues: [] é fila vazia. */
+export function pendingRoundIssues(text: string): string[] {
+  const plan = JSON.parse(text);
+  if (!plan || typeof plan !== "object" || !plan.issues || typeof plan.issues !== "object") {
+    return ["schema de issues ausente/inválido"];
+  }
+  return normalizeIssues<{ number?: number; status?: string; in_round?: boolean }>(plan)
+    .filter(issue => !issue || (issue.in_round !== false && !isTerminalForBar(issue.status ?? "")))
+    .map(issue => `#${issue?.number ?? "?"}:${issue?.status ?? "status ausente"}`);
+}
+
 /**
  * Exit code final da cadeia. Falha do overnight vence (é a parte cara e a
  * que o editor precisa ver primeiro); review falho com overnight ok/pulado →
@@ -374,6 +391,7 @@ export function chainExitCode(review: ReviewStatus, overnight: OvernightOutcome)
   if (overnight.status === "untrusted-workspace") return EXIT_WORKSPACE_UNTRUSTED;
   if (overnight.status === "failed") return EXIT_OVERNIGHT_FAILED;
   if (overnight.status === "no-trace") return EXIT_OVERNIGHT_NO_TRACE;
+  if (overnight.status === "rodada-incompleta") return EXIT_OVERNIGHT_INCOMPLETE;
   if (overnight.status === "delivery-alarm") return EXIT_OVERNIGHT_DELIVERY_ALARM;
   if (review === "failed" || review === "timeout") return EXIT_REVIEW_FAILED;
   return 0;
@@ -621,6 +639,23 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
     return { status: "no-trace", exitCode: 0 };
   } else {
     deps.log(`overnight: rastro ${trace.join(", ")}`);
+    // Independe de turns e da chegada tardia de PRs dos subagentes (#11665).
+    const plans = new Set(trace.filter(path => path.endsWith("/plan.json")));
+    // Report atualizado não pode esconder um plano pendente cujo mtime ficou antigo.
+    for (const path of trace) {
+      const plan = `${dirname(path)}/plan.json`;
+      if (existsSync(join(repoRootAbs, "data", "overnight", plan))) plans.add(plan);
+    }
+    for (const path of plans) {
+      let pending: string[];
+      try {
+        pending = pendingRoundIssues(readFileSync(join(repoRootAbs, "data", "overnight", path), "utf8"));
+      } catch { pending = ["plano ausente/ilegível"]; }
+      if (pending.length > 0) {
+        deps.log(`overnight: RODADA INCOMPLETA — ${path}: ${pending.join(", ")}; turns=${result?.numTurns ?? "?"}; verificar worktrees e PRs overnight antes de retomar; alarme via exit 6`);
+        return { status: "rodada-incompleta", exitCode: 0 };
+      }
+    }
     const reports = trace.filter((path) => path.endsWith("/report.md"));
     let alarm = reports.length === 0;
     for (const path of reports) {
