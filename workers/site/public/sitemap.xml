@@ -1233,14 +1233,6 @@
   <url>
     <loc>https://diar.ia.br/p/openai-lanca-gpt-6-1-terra-pela-metade-do-preco</loc>
     <lastmod>2026-10-28</lastmod>
-    <news:news>
-      <news:publication>
-        <news:name>diar.ia.br</news:name>
-        <news:language>pt</news:language>
-      </news:publication>
-      <news:publication_date>2026-10-28T00:00:00.000Z</news:publication_date>
-      <news:title>OpenAI lança GPT-6.1 Terra pela metade do preço</news:title>
-    </news:news>
   </url>
   <url>
     <loc>https://diar.ia.br/p/lula-promete-uma-ia-brasileira</loc>
@@ -1252,6 +1244,18 @@
       </news:publication>
       <news:publication_date>2026-10-29T00:00:00.000Z</news:publication_date>
       <news:title>Lula promete uma IA brasileira</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>https://diar.ia.br/p/pais-acusam-chatgpt-de-matar-sua-filha</loc>
+    <lastmod>2026-10-30</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>diar.ia.br</news:name>
+        <news:language>pt</news:language>
+      </news:publication>
+      <news:publication_date>2026-10-30T00:00:00.000Z</news:publication_date>
+      <news:title>Pais acusam ChatGPT de matar sua filha</news:title>
     </news:news>
   </url>
 </urlset>
