@@ -140,3 +140,52 @@ export function checkScheduledAtMatchesEditionDate(
   }
   return { ok: true };
 }
+
+/** Margem mínima entre "agora" e o `scheduled_at` — abaixo disso o ESP pode enviar na hora ou recusar (#11689). Mesmo piso de 15 min do past-slot guard social (`compute-social-schedule.ts`). */
+export const MIN_SCHEDULE_LEAD_MS = 15 * 60 * 1000;
+
+/**
+ * Próximo horário viável (ISO UTC): `now + MIN_SCHEDULE_LEAD_MS` arredondado
+ * PRA CIMA ao próximo múltiplo de 5 min. Puro (relógio injetado).
+ */
+export function nextViableScheduledAt(now: Date): string {
+  const step = 5 * 60 * 1000;
+  const target = now.getTime() + MIN_SCHEDULE_LEAD_MS;
+  return new Date(Math.ceil(target / step) * step).toISOString();
+}
+
+/** ISO UTC → "HH:MM" em BRT (offset fixo), pra o gate oferecer `ok HH:MM`. */
+export function isoToBrtHhmm(iso: string): string {
+  const shifted = new Date(Date.parse(iso) - BRT_UTC_OFFSET_HOURS * 60 * 60 * 1000);
+  return `${String(shifted.getUTCHours()).padStart(2, "0")}:${String(shifted.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+export type ScheduledAtFutureCheck =
+  | { ok: true }
+  | { ok: false; reason: string; nextViable: string; nextViableBrt: string };
+
+/**
+ * Guard "não agendar no passado" (#11689). Sem override de propósito: um
+ * `send_at` passado pode disparar na hora pra base inteira. `scheduled_at`
+ * precisa estar pelo menos `MIN_SCHEDULE_LEAD_MS` à frente de `now`.
+ */
+export function checkScheduledAtNotPast(
+  scheduledAtIso: string,
+  now: Date = new Date(),
+): ScheduledAtFutureCheck {
+  const nextViable = nextViableScheduledAt(now);
+  const nextViableBrt = isoToBrtHhmm(nextViable);
+  const ms = Date.parse(scheduledAtIso);
+  // ISO malformado não é "passado": cabe à validação própria de cada
+  // agendador recusar (exit dedicado), não a este guard.
+  if (Number.isNaN(ms)) return { ok: true };
+  if (ms - now.getTime() >= MIN_SCHEDULE_LEAD_MS) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      `scheduled_at "${scheduledAtIso}" está no passado ou a menos de ${MIN_SCHEDULE_LEAD_MS / 60000} min de agora ` +
+      `(${now.toISOString()}) — enviaria na hora ou seria recusado (#11689). Próximo horário viável: ${nextViable} (${nextViableBrt} BRT).`,
+    nextViable,
+    nextViableBrt,
+  };
+}

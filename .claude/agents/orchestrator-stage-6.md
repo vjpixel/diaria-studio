@@ -246,6 +246,7 @@ Brevo diária (rascunho, campaign_id {campaign_id}): agenda junto com a newslett
 ```
 
 Aguardar resposta do editor. Interpretar — **`{AAMMDD}` (a data da edição), nunca "amanhã" pelo relógio (#8207)**: os dois ramos usam o MESMO comando de §6a, só variando `--hhmm` — `ok` (sem horario, default 06:00 BRT) → `scheduled_at` = `npx tsx scripts/resolve-edition-scheduled-at.ts --aammdd {AAMMDD}`; `ok HH:MM` (validar HH 0-23, MM 0-59) → `... --aammdd {AAMMDD} --hhmm {HH:MM}`.
+  **Horário no passado (#11689):** o resolver sai com exit 2 (stdout vazio, stderr `next_viable=… next_viable_brt=HH:MM`) quando o horário já passou ou está a <15 min. Nunca agendar nem trocar o horário sozinho: exibir o aviso no gate ("06:00 BRT de {AAMMDD} já passou; próximo viável {next_viable_brt} BRT"), oferecer `ok {next_viable_brt}` e repetir o gate. Os 3 agendadores (Kit, Brevo, Kit diária) também recusam `--scheduled-at` passado (exit 6/6/5, sem override) como defesa final. No `--no-gates`, exit 2 vira halt banner, não agendamento.
 - `abortar` → logar warn, NAO escrever sentinel, encerrar Stage 6. Editor pode re-rodar `/diaria-6-agendamento {AAMMDD}` depois.
 - Qualquer outra coisa → exibir o gate novamente (fail-closed).
 

@@ -64,7 +64,7 @@ import {
   buildScheduledPublishedState,
   type BrevoDiariaPublished,
 } from "./publish-daily-brevo.ts";
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast } from "./lib/edition-scheduled-at.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { tercaScheduledAt } from "./lib/brevo-semanal-split.ts"; // #11286
 
@@ -116,7 +116,7 @@ export async function scheduleDailyBrevo(
   editionDir: string,
   scheduledAtIso: string,
   deps: ScheduleDailyBrevoDeps,
-  options: { allowOtherDate?: boolean } = {},
+  options: { allowOtherDate?: boolean; now?: Date } = {},
 ): Promise<ScheduleDailyBrevoResult> {
   // #8207 item 2 — mesmo guard de `schedule-newsletter-kit.ts`: recusa
   // `--scheduled-at` cuja data-calendário em BRT diverge da data da edição,
@@ -126,6 +126,12 @@ export async function scheduleDailyBrevo(
     const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAtIso, options.allowOtherDate);
     if (!dateCheck.ok) {
       return { ok: false, code: 6, reason: dateCheck.reason };
+    }
+    // #11689 — hard guard: nunca agenda no passado (enviaria na hora pra base
+    // inteira). Sem override; o gate oferece o próximo horário viável.
+    const pastCheck = checkScheduledAtNotPast(scheduledAtIso, options.now);
+    if (!pastCheck.ok) {
+      return { ok: false, code: 6, reason: pastCheck.reason };
     }
   }
 

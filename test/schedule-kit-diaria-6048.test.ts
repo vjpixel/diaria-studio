@@ -9,10 +9,15 @@
  * Daí a asserção que se repete: quando a verificação não confirma, o
  * resultado é `code: 4` e o estado NÃO é gravado como `scheduled`.
  */
-import { describe, it } from "node:test";
+import { describe, it, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { scheduleKitDiaria, type ScheduleKitDiariaDeps } from "../scripts/schedule-kit-diaria.ts";
 import type { KitDiariaPublished } from "../scripts/lib/kit-diaria-channel.ts";
+
+// #11689 — relógio fixo: os horários dos fixtures são de ago/2026 e o guard
+// "não agendar no passado" compararia com o relógio real.
+before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z") }));
+after(() => mock.timers.reset());
 
 const EDITION = "/tmp/edicao-fake-6048";
 const WHEN = "2026-08-26T09:00:00Z";

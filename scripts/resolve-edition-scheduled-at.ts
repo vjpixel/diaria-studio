@@ -15,9 +15,14 @@
  * Exit codes:
  *   0 — ISO impresso no stdout
  *   1 — uso/erro (args ausentes, AAMMDD/HH:MM inválidos)
+ *   2 — horário resolvido já no passado (ou < 15 min à frente, #11689): stdout
+ *       vazio, stderr traz o próximo horário viável. O gate NÃO muda o horário
+ *       sozinho: mostra o aviso e o editor responde `ok HH:MM`.
+ *
+ * `--now <ISO>` injeta o relógio (testes).
  */
 import { getStringArg, isMainModule } from "./lib/cli-args.ts";
-import { resolveEditionScheduledAt, DEFAULT_EDITION_SCHEDULE_HHMM } from "./lib/edition-scheduled-at.ts";
+import { resolveEditionScheduledAt, checkScheduledAtNotPast, DEFAULT_EDITION_SCHEDULE_HHMM } from "./lib/edition-scheduled-at.ts";
 
 export function main(): void {
   const argv = process.argv.slice(2);
@@ -31,7 +36,18 @@ export function main(): void {
     return;
   }
   try {
-    process.stdout.write(resolveEditionScheduledAt(aammdd, hhmm));
+    const iso = resolveEditionScheduledAt(aammdd, hhmm);
+    const nowArg = getStringArg(argv, "now");
+    const check = checkScheduledAtNotPast(iso, nowArg ? new Date(nowArg) : new Date());
+    if (!check.ok) {
+      process.stderr.write(
+        `[resolve-edition-scheduled-at] PASSADO: ${check.reason}\n` +
+          `next_viable=${check.nextViable} next_viable_brt=${check.nextViableBrt}\n`,
+      );
+      process.exitCode = 2;
+      return;
+    }
+    process.stdout.write(iso);
   } catch (e) {
     process.stderr.write(`[resolve-edition-scheduled-at] ${(e as Error).message}\n`);
     process.exitCode = 1;

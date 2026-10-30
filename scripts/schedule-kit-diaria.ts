@@ -67,7 +67,7 @@ import {
 } from "./kit-diaria-stage5-dispatch.ts";
 import type { KitDiariaChannelConfig } from "./lib/kit-diaria-channel.ts";
 import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast } from "./lib/edition-scheduled-at.ts";
 import { resolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -108,7 +108,7 @@ export async function scheduleKitDiaria(
   editionDir: string,
   scheduledAt: string,
   deps: ScheduleKitDiariaDeps,
-  options: { allowOtherDate?: boolean } = {},
+  options: { allowOtherDate?: boolean; now?: Date } = {},
 ): Promise<ScheduleKitDiariaResult> {
   // #8207 item 2 — mesmo guard de `schedule-newsletter-kit.ts`/
   // `schedule-daily-brevo.ts`: recusa `--scheduled-at` cuja data-calendário
@@ -119,6 +119,12 @@ export async function scheduleKitDiaria(
     const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAt, options.allowOtherDate);
     if (!dateCheck.ok) {
       return { code: 5, reason: dateCheck.reason };
+    }
+    // #11689 — hard guard: nunca agenda no passado (enviaria na hora pra base
+    // inteira). Sem override; o gate oferece o próximo horário viável.
+    const pastCheck = checkScheduledAtNotPast(scheduledAt, options.now);
+    if (!pastCheck.ok) {
+      return { code: 5, reason: pastCheck.reason };
     }
   }
 

@@ -64,7 +64,7 @@ import { hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilt
 import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast } from "./lib/edition-scheduled-at.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { runSemanalFrioAfterSchedule, summarizeSemanalFrioForSchedule } from "./publish-kit-semanal-frio.ts"; // #11221
 
@@ -102,6 +102,8 @@ export async function scheduleNewsletterKit(
   deps: ScheduleNewsletterKitDeps,
   options: {
     allowOtherDate?: boolean;
+    /** Relógio injetável (testes, #11689). */
+    now?: Date;
     /**
      * #10437 — presente só com `kit.diaria_exclusion_segment` ligado: o filtro
      * de segmento que o broadcast PRECISA ter. Relido antes do PATCH (aborta
@@ -122,6 +124,12 @@ export async function scheduleNewsletterKit(
     const dateCheck = checkScheduledAtMatchesEditionDate(editionAammdd, scheduledAtIso, options.allowOtherDate);
     if (!dateCheck.ok) {
       return { ok: false, code: 6, reason: dateCheck.reason };
+    }
+    // #11689 — hard guard: nunca agenda no passado (enviaria na hora pra base
+    // inteira). Sem override; o gate oferece o próximo horário viável.
+    const pastCheck = checkScheduledAtNotPast(scheduledAtIso, options.now);
+    if (!pastCheck.ok) {
+      return { ok: false, code: 6, reason: pastCheck.reason };
     }
   }
 
