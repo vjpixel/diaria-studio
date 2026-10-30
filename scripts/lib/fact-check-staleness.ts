@@ -10,7 +10,7 @@
  * Política: carimbo divergente = fact-check DEFASADO. Isso é aviso, nunca
  * bloqueio por si só. O bloqueio passa a valer só para os claims cujo texto
  * ainda aparece no conteúdo atual; claim cujo trecho sumiu sai do bloqueio e
- * vira aviso ("re-rodar o fact-checker"). Claim ainda presente continua
+ * (`text` e `context` ausentes) vira aviso ("re-rodar o fact-checker"). Claim ainda presente continua
  * bloqueando: o texto não mudou, então o veredito segue valendo.
  *
  * Carimbo ausente (fact-check.json anterior ao #11671) = não dá pra saber;
@@ -95,10 +95,16 @@ export function claimStillPresent(claimText: string, contents: Array<string | nu
 
 /**
  * Separa os claims bloqueantes em `blocking` (seguem bloqueando) e
- * `vanished` (fact-check defasado E trecho não aparece mais no texto atual —
- * só aviso). Sem defasagem, tudo continua em `blocking`.
+ * `vanished` (fact-check defasado E claim sumido do texto atual — só aviso).
+ * Sem defasagem, tudo continua em `blocking`.
+ *
+ * "Sumido" exige que `text` E `context` tenham saído do texto atual (PR
+ * #11683, self-review P2): o agente às vezes grava em `text` uma paráfrase
+ * ("500 milhões de reais" contra "R$ 500 milhões" no MD), e só o `text`
+ * deixaria um claim que continua no texto sair do bloqueio. `context`
+ * ausente/vazio conta como presente (conservador: o bloqueio fica).
  */
-export function partitionBlockingByContent<T extends { text: string }>(
+export function partitionBlockingByContent<T extends { text: string; context?: string }>(
   blocking: T[],
   staleness: StalenessReport,
   contents: Array<string | null | undefined>,
@@ -106,7 +112,10 @@ export function partitionBlockingByContent<T extends { text: string }>(
   if (!staleness.stale) return { blocking, vanished: [] };
   const still: T[] = [];
   const vanished: T[] = [];
-  for (const c of blocking) (claimStillPresent(c.text, contents) ? still : vanished).push(c);
+  for (const c of blocking) {
+    const present = claimStillPresent(c.text, contents) || claimStillPresent(c.context ?? "", contents);
+    (present ? still : vanished).push(c);
+  }
   return { blocking: still, vanished };
 }
 

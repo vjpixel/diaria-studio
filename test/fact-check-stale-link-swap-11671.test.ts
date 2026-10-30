@@ -212,6 +212,37 @@ describe("#11671 item 2 — fact-check.json carimbado com o hash do conteúdo", 
     }
   });
 
+  it("paráfrase em `text` com `context` ainda no texto atual: segue bloqueando (self-review P2 da #11683)", () => {
+    const stale = factCheckStaleness(computeContentHash("x", "b"), computeContentHash("y", "b"));
+    const md = `Corpo do D1. ${REMOVED_SENTENCE} Por que isso importa.`;
+    const parafrase = { text: "500 milhões de reais", context: REMOVED_SENTENCE };
+    const r = partitionBlockingByContent([parafrase], stale, [md, ""]);
+    assert.deepEqual(r.blocking, [parafrase]);
+    assert.deepEqual(r.vanished, []);
+    // Sem o context (vazio), o conservador também é bloquear.
+    const semContext = { text: "500 milhões de reais", context: "" };
+    assert.deepEqual(partitionBlockingByContent([semContext], stale, [md]).blocking, [semContext]);
+    // text e context sumidos: sai do bloqueio.
+    const sumido = { text: "500 milhões de reais", context: "Frase que não existe mais." };
+    assert.deepEqual(partitionBlockingByContent([sumido], stale, [md]).vanished, [sumido]);
+  });
+
+  it("paráfrase em `text` + frase ainda no MD via CLI: --check-blocking segue saindo 2", () => {
+    const dir = setupEdition();
+    try {
+      const fcPath = join(dir, "_internal", "fact-check.json");
+      const fc = { ...BLOCKING_FC, claims: [{ ...BLOCKING_FC.claims[0], text: "500 milhões de reais" }] };
+      writeFileSync(fcPath, JSON.stringify(fc), "utf8");
+      assert.equal(runCli(dir, ["--input-json", fcPath, "--check-blocking"]).status, 2);
+      // Muda outro trecho (social), a frase do claim continua no MD.
+      writeFileSync(join(dir, "03-social.md"), "# Social\n\n## d1\n\nOutro texto.\n", "utf8");
+      const r = runCli(dir, ["--input-json", fcPath, "--check-blocking"]);
+      assert.equal(r.status, 2, r.stderr);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   it("texto mudou em outro ponto mas o claim continua lá: segue bloqueando", () => {
     const dir = setupEdition();
     try {
@@ -298,7 +329,14 @@ describe("#11671 item 2 — fact-check.json carimbado com o hash do conteúdo", 
     assert.equal(claimStillPresent("R$ 500 milhões", ["investiu R$ 400 milhões"]), false);
     assert.equal(claimStillPresent("", ["qualquer"]), true);
     const stale = factCheckStaleness(computeContentHash("x", "b"), cur);
-    const part = partitionBlockingByContent([{ text: "foo" }, { text: "bar" }], stale, ["tem foo aqui"]);
+    const part = partitionBlockingByContent(
+      [
+        { text: "foo", context: "frase com foo" },
+        { text: "bar", context: "frase com bar" },
+      ],
+      stale,
+      ["tem foo aqui"],
+    );
     assert.deepEqual(part.blocking.map((c) => c.text), ["foo"]);
     assert.deepEqual(part.vanished.map((c) => c.text), ["bar"]);
     const fresh = partitionBlockingByContent([{ text: "bar" }], factCheckStaleness(cur, cur), ["nada"]);
