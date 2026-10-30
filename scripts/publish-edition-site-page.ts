@@ -105,6 +105,12 @@
 * preservado byte a byte: os testes existentes de `commitAndPushSitePage`
 * não mudam.
 *
+* **#11673: o checkout compartilhado volta limpo.** Depois do push,
+* `cleanSharedCheckoutAfterPush` apaga de `rootDir` a página e devolve
+* sitemap/home ao índice — só o que bate byte a byte com o commit. Sem isso,
+* cada edição deixava esses arquivos sujos e o `sync-code.ts` seguinte
+* criava um autostash quando o PR da página mergeava.
+*
 * **Quando usar.** Default do `main` (sem `--skip-publish` e sem
 * `--worktree-dir` explícito) é SEMPRE o worktree — o checkout compartilhado
 * nunca mais é o cwd do commit/push. `--skip-publish` (testes, ou rodada
@@ -2244,6 +2250,28 @@ export function commitAndPushSitePage(
     git(["push", "--force-with-lease", "-u", "origin", branchName], gitCwd);
     pushed = true;
 
+    // #11673: no caminho do worktree, a página/sitemap/home escritos em
+    // `rootDir` já estão no commit pushado — a cópia no checkout
+    // compartilhado virou sujeira que faz o `sync-code.ts` da próxima edição
+    // recusar o ff e criar um autostash por edição. Fail-soft: nunca derruba
+    // a publicação.
+    if (worktreeDir) {
+      try {
+        const res = cleanSharedCheckoutAfterPush(rootDir, worktreeDir, stagedPathspecs, git);
+        if (res.kept.length > 0) {
+          process.stderr.write(
+            `[site-page] aviso: ${res.kept.length} arquivo(s) seguem sujos no checkout compartilhado ` +
+              `(conteúdo difere do commit ou estado git inesperado, #11673): ${res.kept.join(", ")}\n`,
+          );
+        }
+      } catch (e) {
+        process.stderr.write(
+          `[site-page] aviso: limpeza do checkout compartilhado após o push falhou (${(e as Error).message}) — ` +
+            `os artefatos da página seguem sujos lá e o próximo sync-code pode criar autostash (#11673).\n`,
+        );
+      }
+    }
+
     renewSitePublishLock(rootDir, lockSessionId, lock);
     const existingRaw = gh(
       ["pr", "list", "--head", branchName, "--state", "open", "--json", "number,url"],
@@ -2349,6 +2377,111 @@ export function commitAndPushSitePage(
 }
 
 /** Regenera no checkout que será staged, com a mesma política fail-soft. */
+/**
+ * #11673: devolve o checkout compartilhado (`rootDir`) ao estado de antes da
+ * publicação, para os paths que o caminho do worktree (#8636) copiou de lá e
+ * já commitou/pushou.
+ *
+ * ## Por que existe
+ *
+ * `writePage`/`updateSitemapAndHome` escrevem em `rootDir`; o commit sai do
+ * worktree temporário. Sem esta limpeza, `p/{slug}/` (untracked) e
+ * `sitemap.xml`/`index.html` (modificados) ficavam sujos no checkout depois
+ * do push. Quando o PR da página mergeava, o `sync-code.ts` da edição
+ * seguinte recusava o ff por colisão com esses mesmos arquivos e criava um
+ * autostash `diaria-git-sync-autostash` — um por edição (30/10/2026: 4
+ * empilhados, alarme de pileup ativo).
+ *
+ * ## Só desfaz o que é NOSSO
+ *
+ * O checkout é compartilhado (#5156): um arquivo só sai/volta ao índice
+ * quando o conteúdo em `rootDir` é byte a byte igual à cópia commitada no
+ * worktree — ou seja, quando o que está ali é exatamente o que esta chamada
+ * publicou. Qualquer divergência (outra sessão mexeu depois) fica intacta e
+ * volta em `kept`. Só dois estados são tratados:
+ *   - `??` (untracked, a página nova): o arquivo é apagado, e os diretórios
+ *     que ficarem vazios dentro do path publicado também.
+ *   - ` M` (modificado só no working tree, índice limpo — sitemap/home):
+ *     `git checkout -- <arquivo>` volta ao índice (== HEAD).
+ * Qualquer outro código (staged, deleção, conflito) fica como está, em `kept`.
+ * Deleção local (` D`) nem precisa: o ff não colide com arquivo ausente.
+ *
+ * Roda depois do push e antes da remoção do worktree (precisa da cópia dele
+ * para comparar). O que o checkout perde aqui volta pelo ff do próximo
+ * `sync-code.ts`, já com o PR da página mergeado.
+ */
+export function cleanSharedCheckoutAfterPush(
+  rootDir: string,
+  worktreeDir: string,
+  publishedPaths: readonly string[],
+  git: GitRunner,
+): { restored: string[]; removed: string[]; kept: string[] } {
+  const restored: string[] = [];
+  const removed: string[] = [];
+  const kept: string[] = [];
+  if (publishedPaths.length === 0) return { restored, removed, kept };
+
+  const status = git(
+    ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...publishedPaths],
+    rootDir,
+  );
+  // `-z`: entradas separadas por NUL, path cru (sem aspas/escape). Rename
+  // (`R`/`C`) traz um 2º campo com o path de origem — pulado.
+  const fields = status.split("\0");
+  const emptiedDirs = new Set<string>();
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue;
+    const code = entry.slice(0, 2);
+    const rel = entry.slice(3);
+    if (code[0] === "R" || code[0] === "C") {
+      i++;
+      kept.push(rel);
+      continue;
+    }
+    const src = resolve(rootDir, rel);
+    const committed = resolve(worktreeDir, rel);
+    const sameAsCommitted = (): boolean => {
+      try {
+        if (!statSync(src).isFile() || !statSync(committed).isFile()) return false;
+        return readFileSync(src).equals(readFileSync(committed));
+      } catch {
+        return false;
+      }
+    };
+    if (code === "??" && sameAsCommitted()) {
+      unlinkSync(src);
+      removed.push(rel);
+      emptiedDirs.add(dirname(rel));
+    } else if (code === " M" && sameAsCommitted()) {
+      git(["checkout", "--", rel], rootDir);
+      restored.push(rel);
+    } else if (code !== " D") {
+      kept.push(rel);
+    }
+  }
+
+  // Diretórios esvaziados (ex.: `p/{slug}/`), sem subir acima do path
+  // publicado — `p/` em si nunca é removido.
+  const roots = publishedPaths.map((p) => p.replace(/\/+$/, ""));
+  for (const start of emptiedDirs) {
+    let rel = start;
+    while (roots.some((r) => rel === r || rel.startsWith(r + "/"))) {
+      const abs = resolve(rootDir, rel);
+      try {
+        rmdirSync(abs); // só remove se vazio; lança ENOTEMPTY/ENOENT caso contrário
+      } catch {
+        break;
+      }
+      const parent = dirname(rel);
+      if (parent === rel) break;
+      rel = parent;
+    }
+  }
+
+  return { restored, removed, kept };
+}
+
 function regenerateArchiveIndex(rootDir: string, sitemapRelPath: string): boolean {
   const sitemapAbsPath = resolve(rootDir, sitemapRelPath);
   const pagesDirAbs = resolve(rootDir, "workers", "site", "public", "p");
