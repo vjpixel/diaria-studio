@@ -83,7 +83,7 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  */
 
 import sharp from "sharp";
-import { existsSync, readFileSync, statSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -114,6 +114,21 @@ import {
 import { youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
 import { shortVideoFileName } from "./lib/diaria/short-video.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
+import { SHORT_COVER_SOURCE_FILE, buildShortCoverSource } from "./lib/diaria/short-cover.ts";
+
+/**
+ * #11547: grava qual Still virou `04-youtube-short-capa.jpg` (o nome traz o
+ * timecode que vira o `thumbnailOffset` da Buffer). Opcional: falha só avisa.
+ */
+export function writeShortCoverSourceSidecar(editionDir: string, stillName: string, bytes: number, log: (line: string) => void): void {
+  const path = join(editionDir, SHORT_COVER_SOURCE_FILE);
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(buildShortCoverSource(stillName, bytes))}\n`);
+  } catch (e) {
+    log(`[aviso] origem da capa não registrada (${(e as Error).message}); o X sai sem thumbnailOffset`);
+  }
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -618,6 +633,7 @@ export async function runFetchDriveVideo(
       renameSync(converted, coverPath);
       if (replacingLocalCover) log("[premissa] capa local substituída pelo Still do Drive");
       log(`[ok] capa do Drive: ${describeForLog(cover)} → ${coverPath}`);
+      if (orientation === "vertical") writeShortCoverSourceSidecar(input.editionDir, cover.name, statSync(coverPath).size, log);
     } catch (e) {
       // A capa é opcional: cai na local/automática em vez de barrar o vídeo (review #11545).
       const fallback = existsSync(coverPath) && statSync(coverPath).size > 0 ? "local" : "automatic";

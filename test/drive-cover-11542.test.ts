@@ -118,7 +118,8 @@ test("plano identifica capa, destinos suportados e fallback sem credenciais R2",
   const ready = planShortsPublish({ ...input, coverUploadReady: true });
   assert.equal(ready.cover.path, input.coverPath);
   assert.equal(ready.cover.destinations.instagram, "cover_url");
-  assert.equal(ready.cover.destinations.youtube_shorts, "unsupported");
+  // #11547: sem a API do YouTube o Short é guiado — a capa vai pelo Studio.
+  assert.match(ready.cover.destinations.youtube_shorts, /^guided/);
   assert.match(planShortsPublish(input).cover.destinations.instagram, /R2 credentials missing/);
 });
 
