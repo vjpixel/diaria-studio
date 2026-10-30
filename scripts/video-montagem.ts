@@ -133,6 +133,7 @@ import {
   loudnessWarning,
   makeMatcher,
   mapWordsToSequence,
+  trimWordsToSilences,
   offsetTranscript,
   parseBlocksFile,
   retranscribeWindow,
@@ -391,14 +392,15 @@ function plans(ctx: Ctx) {
   const { file, text } = loadBlocks(ctx);
   const source = sourceFor(ctx, file);
   const vocab = loadVocab();
+  const sil = silences(ctx);
   const { blocks, errors, warnings } = resolveBlocks(file, nonEmptyWords(f(ctx, "transcript.json"), "transcript.json (rode transcribe)"), {
     durationS: source.durationS,
+    silences: sil,
     rules: vocab.rules,
     aliases: vocab.aliases,
   });
   for (const w of warnings) console.error(`[aviso] ${w}`);
   if (errors.length) throw new Error(`blocks.json com problema:\n  - ${errors.join("\n  - ")}`);
-  const sil = silences(ctx);
   const fmt = effectiveFormat(file);
   if (!file.sequences && fmt.inferred) console.error("[premissa] blocks.json sem título nem resumo: formato entrevista, sequências abertura → comentário → CTA → fecho (#11507); `format`/`sequences` sobrepõem");
   const specs = file.sequences ?? defaultSequences("V1", fmt.format);
@@ -1044,7 +1046,7 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
 
 function seqWords(ctx: Ctx, plan: SequencePlan, source: SourceInfo, fromRaw: boolean): Word[] {
   if (fromRaw) {
-    const words = mapWordsToSequence(nonEmptyWords(f(ctx, "transcript.json"), "transcript.json"), plan.clips, source.fps);
+    const words = mapWordsToSequence(trimWordsToSilences(nonEmptyWords(f(ctx, "transcript.json"), "transcript.json"), silences(ctx)), plan.clips, source.fps);
     if (words.length === 0) throw new Error(`nenhuma palavra do bruto dentro dos clipes de ${plan.spec.name}`);
     return words;
   }

@@ -1122,10 +1122,24 @@ export type ResolvedItem = {
 const scopeOf = (it: ItemScope): ItemScope => ({ ...(it.targets ? { targets: it.targets } : {}), ...(it.skip ? { skip: it.skip } : {}) });
 
 export interface ResolveOptions {
+  silences?: Interval[];
   durationS: number;
   /** Vocabulário aplicado às palavras do bruto antes de casar as frases. */
   rules?: VocabRule[];
   aliases?: VocabAlias[];
+}
+
+/** Apara só as bordas dentro de silêncio; preserva palavras sem núcleo audível. */
+export function trimWordsToSilences(words: Word[], silences: Interval[]): Word[] {
+  const sorted = [...silences].sort((a, b) => a.start - b.start);
+  return words.map((w) => {
+    let { start, end } = w;
+    for (const s of sorted) {
+      if (start >= s.start && start < s.end) start = Math.min(end, s.end);
+      if (end > s.start && end <= s.end) end = Math.max(start, s.start);
+    }
+    return end > start ? { ...w, start, end } : { ...w };
+  });
 }
 
 /**
@@ -1140,7 +1154,7 @@ export function resolveBlocks(
   opts: ResolveOptions,
 ): { blocks: Partial<Record<BlockKey, ResolvedItem[]>>; errors: string[]; warnings: string[] } {
   const warnings: string[] = [];
-  const words = applyVocabularyToWords(rawWords, [...(opts.rules ?? []), ...(file.vocabulary ?? [])], undefined, (w) => warnings.push(w));
+  const words = applyVocabularyToWords(trimWordsToSilences(rawWords, opts.silences ?? []), [...(opts.rules ?? []), ...(file.vocabulary ?? [])], undefined, (w) => warnings.push(w));
   const match = makeMatcher(opts.aliases);
   const guard = TAKE_DEFAULTS.guardS;
   const blocks: Partial<Record<BlockKey, ResolvedItem[]>> = {};
@@ -1382,6 +1396,7 @@ export function buildSequencePlan(
   const missingBlocks: BlockKey[] = [];
   const dropped: string[] = [];
   const scriptParts: string[] = [];
+  const wordChecks: Array<{ label: string; words: Word[] }> = [];
   for (const key of spec.order) {
     const items = resolved[key];
     if (!items || items.length === 0) {
@@ -1405,15 +1420,18 @@ export function buildSequencePlan(
         dropped.push(`${key}[${idx}]: some no corte (fala abaixo de ${minClip} s depois de tirar os silêncios)`);
         return;
       }
-      const lost = it.words.filter(
-        (w) => !parts.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, parts, silences),
-      );
-      if (lost.length) dropped.push(`${key}[${idx}]: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
+      wordChecks.push({ label: `${key}[${idx}]`, words: trimWordsToSilences(it.words, silences) });
       for (const p of parts) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text });
     });
   }
   // Contíguos no bruto viram um clipe só antes de alternar a escala (#11503).
   const { clips, durationFrames, merges } = assembleClips(spec, raws, fps);
+  // Na emenda, o núcleo pode estar no clipe do item vizinho; validar a sequência mantida.
+  const kept = clips.map((c) => ({ start: c.frameIn / fps, end: c.frameOut / fps }));
+  for (const { label, words } of wordChecks) {
+    const lost = words.filter((w) => !kept.some((p) => (w.start + w.end) / 2 >= p.start && (w.start + w.end) / 2 <= p.end) && !wordCoveredBySilence(w, kept, silences));
+    if (lost.length) dropped.push(`${label}: palavra(s) fora dos clipes: "${lost.map((w) => w.text.trim()).join(" ")}"`);
+  }
   return { spec, clips, durationFrames, script: scriptParts.join(" "), missingBlocks, dropped, cutAdjustments: merges };
 }
 
