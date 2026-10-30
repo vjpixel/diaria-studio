@@ -73,7 +73,10 @@ for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "
         assert.equal(result.output.action, mode === "forced" ? "none" : "exists");
         assert.equal(result.output.cover?.source, "drive");
         assert.equal(mediaCalls.length, mode === "dry-run" ? 0 : 1);
-        if (mode !== "dry-run") assert.equal((await sharp(dest).metadata()).format, "jpeg");
+        if (mode !== "dry-run") {
+          assert.equal((await sharp(dest).metadata()).format, "jpeg");
+          assert.equal(JSON.parse(readFileSync(`${dest}.source.json`, "utf8")).name, still("one").name);
+        }
         assert.equal(lines.includes("[premissa] capa local substituída pelo Still do Drive"), mode === "forced");
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }

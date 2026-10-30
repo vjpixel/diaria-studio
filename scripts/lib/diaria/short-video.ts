@@ -458,6 +458,7 @@ export function knownDestinationIds(cfg: ShortsConfig): Set<string> {
 
 /** Entrada de `_internal/06-shorts-published.json`. */
 export interface ShortPublishedEntry {
+  cover?: { method: string; status: "uploaded" | "failed" | "requested"; error?: string; thumbnailOffset?: number };
   destination: string;
   /**
    * `send_unknown` (#10772): o envio pode ter sido aceito (timeout/5xx na

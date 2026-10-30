@@ -83,7 +83,7 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  */
 
 import sharp from "sharp";
-import { existsSync, readFileSync, statSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, statSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -597,6 +597,7 @@ export async function runFetchDriveVideo(
       await sharp(source).rotate().jpeg({ quality: 95 }).toFile(converted);
       const replacingLocalCover = existsSync(coverPath) && statSync(coverPath).size > 0;
       renameSync(converted, coverPath);
+      writeFileSync(`${coverPath}.source.json`, JSON.stringify({ name: cover.name }));
       if (replacingLocalCover) log("[premissa] capa local substituída pelo Still do Drive");
       log(`[ok] capa do Drive: ${describeForLog(cover)} → ${coverPath}`);
     } catch (e) {

@@ -1013,7 +1013,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
 
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination,
     i.destination === "instagram" ? (input.coverPath ? (input.coverUploadReady ? "cover_url" : "unavailable: R2 credentials missing; automatic frame") : "automatic")
-      : "unsupported",
+      : i.destination.startsWith("facebook:") || i.destination === "linkedin_profile" || i.destination === "x" ? (input.coverPath ? (i.destination === "x" ? "thumbnailOffset" : i.destination === "linkedin_profile" ? "uploadThumbnail" : "thumbnails") : "automatic") : "unsupported",
   ])) };
   const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
@@ -1268,6 +1268,7 @@ export async function publishFacebookReel(
   file: Buffer,
   caption: string,
   plannedScheduledAt: string | null,
+  cover?: Buffer,
 ): Promise<PublishOutcome> {
   const scheduledAt = stillSchedulable(plannedScheduledAt, deps.now());
   if (plannedScheduledAt && !scheduledAt) deps.log(`[premissa] ${facebookDestinationId(page.slug)}: menos de 10 min pro horário — publicando na hora`);
@@ -1293,9 +1294,26 @@ export async function publishFacebookReel(
   }
 
   const confirmed = await waitFacebookProcessing(deps, videoId, page.token, apiVersion);
+  let coverResult: ShortPublishedEntry["cover"];
+  if (cover) {
+    try {
+      const form = new FormData();
+      form.append("access_token", page.token);
+      form.append("is_preferred", "true");
+      form.append("source", new Blob([new Uint8Array(cover)], { type: "image/jpeg" }), "cover.jpg");
+      const res = await deps.fetch(`${GRAPH}/${apiVersion}/${videoId}/thumbnails`, { method: "POST", body: form });
+      const json = await readJson(res);
+      if (!res.ok || json.error || json.success === false) throw new Error(`thumbnail: HTTP ${res.status} ${JSON.stringify(json.error ?? json)}`);
+      coverResult = { method: "thumbnails", status: "uploaded" };
+    } catch (e) {
+      coverResult = { method: "thumbnails", status: "failed", error: (e as Error).message };
+      deps.log(`[aviso] capa Facebook: ${coverResult.error}`);
+    }
+  }
   return {
     entry: {
       destination: facebookDestinationId(page.slug),
+      ...(coverResult ? { cover: coverResult } : {}),
       status: scheduledAt ? "scheduled" : "published",
       id: videoId,
       url: route === "video_reels" ? `https://www.facebook.com/reel/${videoId}` : `https://www.facebook.com/${page.pageId}/videos/${videoId}`,
@@ -2330,22 +2348,23 @@ export async function publishLinkedInProfileVideo(
   file: Buffer,
   text: string,
   title: string,
+  thumbnail?: Buffer,
 ): Promise<PublishOutcome> {
   // CONFERIR NA 1ª EXECUÇÃO REAL (#10772 F3): `new Uint8Array(file)` copia o
   // vertical inteiro (275 MB em 261022). Se a memória do processo apertar, trocar
   // por `new Uint8Array(file.buffer, file.byteOffset, file.length)` (sem cópia).
-  const r = await postVideoToPersonalProfile({ deps, creds, apiVersion, text, title, bytes: new Uint8Array(file) });
+  const r = await postVideoToPersonalProfile({ deps, creds, apiVersion, text, title, bytes: new Uint8Array(file), thumbnail });
   const at = deps.now().toISOString();
   if (r.ok) {
     const url = postUrlFromUrn(r.postUrn);
     return {
-      entry: { destination: "linkedin_profile", status: "published", id: r.postUrn ?? `sem-urn-${at}`, ...(url ? { url } : {}), scheduled_at: null, at },
+      entry: { destination: "linkedin_profile", ...(thumbnail ? { cover: { method: "uploadThumbnail", status: "uploaded" as const } } : {}), status: "published", id: r.postUrn ?? `sem-urn-${at}`, ...(url ? { url } : {}), scheduled_at: null, at },
       ...(r.postUrn ? {} : { warnings: ["a LinkedIn aceitou o post sem devolver a URN (x-restli-id) — confira o perfil"] }),
     };
   }
   if (r.phase === "ambiguous") {
     return {
-      entry: { destination: "linkedin_profile", status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at },
+      entry: { destination: "linkedin_profile", ...(thumbnail ? { cover: { method: "uploadThumbnail", status: "uploaded" as const } } : {}), status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at },
       warnings: [`envio ambíguo (${r.reason}) — confira o perfil antes de qualquer nova tentativa e registre com --mark linkedin_profile=URL`],
     };
   }
@@ -2641,12 +2660,29 @@ export function buildMarkEntry(
   return { ok: true, entry: { destination: mark.destination, status: "published", id: mark.url!, url: mark.url!, at } };
 }
 
-/** O que o `--publish` devolve pro destino do X (#10772): a URL pública do vertical pra Buffer, ou o erro. */
+/** Premiere timecode in milliseconds; montage uses the source frame rate (30 by default). */
+export function shortCoverOffset(name: string, fps = 30): number {
+  const tc = name.match(/(?:^|[._ ])(\d{2})_(\d{2})_(\d{2})_(\d{2})(?:[._ ]|$)/);
+  return tc ? Math.round((Number(tc[1]) * 3600 + Number(tc[2]) * 60 + Number(tc[3]) + Number(tc[4]) / fps) * 1000) : 0;
+}
+
+export function readShortCoverOffset(path: string): number {
+  try {
+    let fps = 30;
+    try {
+      const source = JSON.parse(readFileSync(join(dirname(path), "_internal", "video-montagem", "source.json"), "utf8"));
+      if (Number.isFinite(source.fps) && source.fps > 0) fps = source.fps;
+    } catch { /* 30 fps is the default export. */ }
+    return shortCoverOffset(JSON.parse(readFileSync(`${path}.source.json`, "utf8")).name ?? "", fps);
+  } catch { return 0; } // Local/generated cover: first frame by default.
+}
+
+/** URL pública e metadados que a skill passa para a Buffer. */
 export interface BufferPrepResult {
   destination: string;
   ok: boolean;
   error?: string;
-  buffer?: { text: string; dueAt: string | null; videoUrl: string };
+  buffer?: { text: string; dueAt: string | null; videoUrl: string; thumbnailOffset?: number };
 }
 
 /**
@@ -2657,10 +2693,11 @@ export interface BufferPrepResult {
 export async function prepareBufferItem(
   item: Extract<ShortsPlanItem, { action: "buffer" }>,
   uploadVideo: () => Promise<string>,
+  thumbnailOffset?: number,
 ): Promise<BufferPrepResult> {
   try {
     const videoUrl = await uploadVideo();
-    return { destination: item.destination, ok: true, buffer: { text: item.caption, dueAt: item.scheduledAt, videoUrl } };
+    return { destination: item.destination, ok: true, buffer: { text: item.caption, dueAt: item.scheduledAt, videoUrl, ...(thumbnailOffset !== undefined ? { thumbnailOffset } : {}) } };
   } catch (e) {
     return { destination: item.destination, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -2820,6 +2857,9 @@ async function main(): Promise<number> {
     if (!built.ok) {
       console.error(built.error);
       return 2;
+    }
+    if (mark.bufferId && existsSync(join(dir, "04-youtube-short-capa.jpg"))) {
+      built.entry.cover = { method: "thumbnailOffset", status: "requested", thumbnailOffset: readShortCoverOffset(join(dir, "04-youtube-short-capa.jpg")) };
     }
     published = persist(built.entry);
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
@@ -3042,7 +3082,7 @@ async function main(): Promise<number> {
     }
     if (item.action === "buffer") {
       // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
-      const r = await prepareBufferItem(item, uploadVideo);
+      const r = await prepareBufferItem(item, uploadVideo, plan.cover.path ? readShortCoverOffset(plan.cover.path) : undefined);
       results.push(r);
       console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
       continue;
@@ -3070,6 +3110,7 @@ async function main(): Promise<number> {
           file,
           item.caption,
           item.title ?? plan.youtube.title,
+          plan.cover.path ? readFileSync(plan.cover.path) : undefined,
         );
       } else if (item.destination === "youtube_shorts") {
         outcome = await publishYouTubeShort({
@@ -3167,7 +3208,7 @@ async function main(): Promise<number> {
         }
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
-        outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt);
+        outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt, plan.cover.path ? readFileSync(plan.cover.path) : undefined);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

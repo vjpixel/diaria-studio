@@ -91,7 +91,7 @@ async function readJson(res: Response): Promise<any> {
 }
 
 /** Passos 1-4. Nunca lança: falha é sempre `before_send` (nada no perfil ainda). */
-export async function uploadLinkedInVideo(deps: LinkedInVideoDeps, creds: PersonalCreds, apiVersion: string, bytes: Uint8Array): Promise<UploadResult> {
+export async function uploadLinkedInVideo(deps: LinkedInVideoDeps, creds: PersonalCreds, apiVersion: string, bytes: Uint8Array, thumbnail?: Uint8Array): Promise<UploadResult> {
   try {
     const init = await deps.fetchFn(
       LINKEDIN_VIDEOS_INIT_URL,
@@ -99,7 +99,7 @@ export async function uploadLinkedInVideo(deps: LinkedInVideoDeps, creds: Person
         method: "POST",
         headers: restHeaders(creds.accessToken, apiVersion),
         body: JSON.stringify({
-          initializeUploadRequest: { owner: creds.personUrn, fileSizeBytes: bytes.length, uploadCaptions: false, uploadThumbnail: false },
+          initializeUploadRequest: { owner: creds.personUrn, fileSizeBytes: bytes.length, uploadCaptions: false, uploadThumbnail: !!thumbnail },
         }),
       }),
     );
@@ -112,6 +112,15 @@ export async function uploadLinkedInVideo(deps: LinkedInVideoDeps, creds: Person
       parts = validateUploadInstructions(value.uploadInstructions, bytes.length);
     } catch (e) {
       return { ok: false, reason: (e as Error).message };
+    }
+    if (thumbnail) {
+      if (typeof value.thumbnailUploadUrl !== "string" || !value.thumbnailUploadUrl.startsWith("https://")) return { ok: false, reason: "initializeUpload sem thumbnailUploadUrl" };
+      const thumb = await deps.fetchFn(value.thumbnailUploadUrl, timeout(HTTP_TIMEOUT_MS, {
+        method: "PUT",
+        headers: { "media-type-family": "STILLIMAGE", "Content-Type": "application/octet-stream" },
+        body: thumbnail as unknown as BodyInit,
+      }));
+      if (!thumb.ok) return { ok: false, reason: `upload da capa falhou (HTTP ${thumb.status})` };
     }
     const etags: string[] = [];
     for (const [i, p] of parts.entries()) {
@@ -167,8 +176,9 @@ export async function postVideoToPersonalProfile(args: {
   text: string;
   title: string;
   bytes: Uint8Array;
+  thumbnail?: Uint8Array;
 }): Promise<PostResult> {
-  const up = await uploadLinkedInVideo(args.deps, args.creds, args.apiVersion, args.bytes);
+  const up = await uploadLinkedInVideo(args.deps, args.creds, args.apiVersion, args.bytes, args.thumbnail);
   if (!up.ok) return { ok: false, phase: "before_send", reason: up.reason, ...(up.revoked ? { revoked: true } : {}) };
   return postToPersonalProfile({
     fetchFn: args.deps.fetchFn,
