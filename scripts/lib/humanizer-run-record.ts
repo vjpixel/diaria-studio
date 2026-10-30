@@ -22,8 +22,11 @@
  *     `--provenance` mostrar "texto mantido". O escopo continua sendo o
  *     `--sections` pedido (ou o arquivo inteiro na passada full-file).
  *   - `clarice`: hash de cada seção que saiu da Clarice partindo de um texto
- *     já provado pelo humanizador. A Clarice pode não mudar nada; a prova vem
- *     de o texto de entrada ser humanizado.
+ *     já provado pelo humanizador. A Clarice pode não mudar nada, mas aí
+ *     `--pre` e `--post` iguais não distinguem "rodou sem sugestões" de "não
+ *     rodou" (#11674): run da Clarice em que nenhuma seção do escopo mudou só
+ *     vira prova com `--note "<motivo>"`, gravado no run e em
+ *     `clarice_unchanged` (prova mais fraca, "sem sugestões" no `--provenance`).
  *
  * `--write --bypass-reason` passa a aceitar só (a) seção com o hash atual no
  * registro dos dois passos ou (b) seção cuja mudança é só de formatação
@@ -48,11 +51,13 @@ export interface HumanizerRunRecord {
   humanizador_unchanged: string[];
   /** sha256 de seções que saíram da Clarice a partir de texto já humanizado. */
   clarice: string[];
-  runs: Array<{ at: string; step: RunStep; sections: string[] }>;
+  /** #11674: subconjunto de `clarice` — run sem mudança, aceito só com `--note`. */
+  clarice_unchanged: string[];
+  runs: Array<{ at: string; step: RunStep; sections: string[]; note?: string }>;
 }
 
 export function emptyRunRecord(): HumanizerRunRecord {
-  return { version: 1, humanizador: [], humanizador_unchanged: [], clarice: [], runs: [] };
+  return { version: 1, humanizador: [], humanizador_unchanged: [], clarice: [], clarice_unchanged: [], runs: [] };
 }
 
 export function runRecordPath(editionDir: string): string {
@@ -72,6 +77,9 @@ export function readRunRecord(editionDir: string): HumanizerRunRecord {
         ? raw.humanizador_unchanged.filter((h) => typeof h === "string")
         : [],
       clarice: Array.isArray(raw.clarice) ? raw.clarice.filter((h) => typeof h === "string") : [],
+      clarice_unchanged: Array.isArray(raw.clarice_unchanged)
+        ? raw.clarice_unchanged.filter((h) => typeof h === "string")
+        : [],
       runs: Array.isArray(raw.runs) ? raw.runs : [],
     };
   } catch {
@@ -83,7 +91,26 @@ export interface RunRecordPlan {
   record: HumanizerRunRecord;
   recorded: string[];
   skipped: Array<{ section: string; reason: string }>;
+  /**
+   * #11674: nenhuma seção do escopo mudou entre `--pre` e `--post` (inclusive o
+   * mesmo arquivo passado nos dois). O CLI recusa esse run sem `--note`.
+   */
+  noop: boolean;
 }
+
+export interface PlanRunOptions {
+  now?: Date;
+  /**
+   * #11674: só para a Clarice — motivo de um run sem mudança ("Clarice sem
+   * sugestões"). Sem ele, run da Clarice sem mudança não prova nada.
+   */
+  note?: string;
+}
+
+/** Dica comum às mensagens de "seção ausente": `--pre`/`--post` são o arquivo inteiro. */
+export const WHOLE_FILE_HINT =
+  "--pre e --post precisam ser o 03-social.md INTEIRO (com o cabeçalho `# Social`), não o trecho da seção; " +
+  "para restringir o registro use --sections";
 
 /**
  * Pure: acrescenta ao registro as seções provadas por um passo. `preMd` é o
@@ -96,14 +123,17 @@ export function planRunRecord(
   preMd: string,
   postMd: string,
   sections?: string[],
-  now: Date = new Date(),
+  opts: PlanRunOptions = {},
 ): RunRecordPlan {
+  const now = opts.now ?? new Date();
+  const note = opts.note?.trim() || undefined;
   const pre = computeSectionHashes(preMd);
   const post = computeSectionHashes(postMd);
   const only = sections && sections.length > 0 ? new Set(sections) : null;
   const humanizador = new Set(current.humanizador);
   const unchanged = new Set(current.humanizador_unchanged);
   const clarice = new Set(current.clarice);
+  const clariceUnchanged = new Set(current.clarice_unchanged);
   const recorded: string[] = [];
   const skipped: RunRecordPlan["skipped"] = [];
 
@@ -114,6 +144,7 @@ export function planRunRecord(
   // passo de fato reescreveu o arquivo. Run em que nada mudou não prova nada.
   const inScope = Object.entries(post).filter(([name]) => !only || only.has(name));
   const runChangedSomething = inScope.some(([name, postHash]) => pre[name] !== postHash);
+  const noop = inScope.length > 0 && !runChangedSomething;
 
   for (const [name, postHash] of inScope) {
     const preHash = pre[name];
@@ -133,18 +164,37 @@ export function planRunRecord(
       humanizador.add(postHash);
       recorded.push(name);
     } else {
-      const inputProven = preHash !== undefined && (humanizador.has(preHash) || clarice.has(preHash));
+      if (preHash === undefined) {
+        skipped.push({ section: name, reason: `seção ausente no texto pré-passo — ${WHOLE_FILE_HINT}` });
+        continue;
+      }
+      const inputProven = humanizador.has(preHash) || clarice.has(preHash);
       if (!inputProven) {
         skipped.push({ section: name, reason: "texto de entrada da Clarice não passou pelo humanizador" });
         continue;
       }
+      // #11674: --pre e --post iguais em todo o escopo não distinguem "a Clarice
+      // rodou sem sugestões" de "a Clarice não rodou". Só com --note explícito.
+      if (noop && !note) {
+        skipped.push({
+          section: name,
+          reason:
+            "--pre e --post idênticos em todo o escopo — sem sinal de que a Clarice rodou; " +
+            'se ela rodou e não sugeriu nada, repita com --note "<motivo>" (#11674)',
+        });
+        continue;
+      }
+      if (noop) clariceUnchanged.add(postHash);
       clarice.add(postHash);
       recorded.push(name);
     }
   }
+  if (!only && Object.keys(post).length === 0) {
+    skipped.push({ section: "(nenhuma)", reason: `nenhuma seção reconhecida no texto pós-passo — ${WHOLE_FILE_HINT}` });
+  }
   if (only) {
     for (const name of only) {
-      if (!(name in post)) skipped.push({ section: name, reason: "seção ausente no texto pós-passo" });
+      if (!(name in post)) skipped.push({ section: name, reason: `seção ausente no texto pós-passo — ${WHOLE_FILE_HINT}` });
     }
   }
 
@@ -154,10 +204,15 @@ export function planRunRecord(
       humanizador: [...humanizador],
       humanizador_unchanged: [...unchanged],
       clarice: [...clarice],
-      runs: [...current.runs, { at: now.toISOString(), step, sections: recorded }],
+      clarice_unchanged: [...clariceUnchanged],
+      runs: [
+        ...current.runs,
+        { at: now.toISOString(), step, sections: recorded, ...(note && noop && step === "clarice" ? { note } : {}) },
+      ],
     },
     recorded,
     skipped,
+    noop,
   };
 }
 
@@ -250,10 +305,12 @@ export function classifySealChanges(
 export function describeProvenance(
   currentMd: string,
   record: HumanizerRunRecord,
-): Array<{ section: string; humanizador: boolean; clarice: boolean; kept?: true }> {
+): Array<{ section: string; humanizador: boolean; clarice: boolean; kept?: true; clarice_unchanged?: true }> {
   return Object.entries(computeSectionHashes(currentMd)).map(([section, hash]) => ({
     section,
     ...sectionProof(hash, record),
     ...(record.humanizador_unchanged.includes(hash) ? { kept: true as const } : {}),
+    // #11674: Clarice registrada sem mudança, por --note (prova mais fraca).
+    ...(record.clarice_unchanged.includes(hash) ? { clarice_unchanged: true as const } : {}),
   }));
 }

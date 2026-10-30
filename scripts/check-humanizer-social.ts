@@ -36,6 +36,14 @@
  *             (#11604, marcada "texto mantido" no --provenance). `clarice`: --pre = snapshot
  *             pós-humanizador, --post = `03-social.md` pós-Clarice; só seção cujo
  *             texto de entrada já tinha prova do humanizador.
+ *             --pre/--post são sempre o `03-social.md` INTEIRO (trecho de uma
+ *             seção não tem o cabeçalho `# Social` e sai "seção ausente").
+ *             #11674: run da Clarice em que --pre e --post são iguais em todo o
+ *             escopo (inclusive o mesmo arquivo nos dois) é RECUSADO (exit 1, nada
+ *             gravado) — não distingue "rodou sem sugestões" de "não rodou". Se a
+ *             Clarice rodou e não sugeriu nada, `--note "<motivo>"` registra a prova
+ *             como mais fraca ("sem sugestões" no --provenance, motivo no run).
+ *             `--note` não vale para o humanizador (#11609).
  *
  *   --provenance  (#11534) Imprime, por seção do `03-social.md` atual, se o texto
  *             passou pelo humanizador e pela Clarice (bloco do resumo do gate).
@@ -419,7 +427,7 @@ function main(): void {
   if (!editionDirArg) {
     console.error(
       "Uso: check-humanizer-social.ts [--write|--check|--record-run|--provenance] --edition-dir data/editions/AAMMDD/ " +
-        "[--bypass-reason <motivo>] [--unproven-ok <motivo>] [--step humanizador|clarice --pre <arq> --post <arq> [--sections a,b]]",
+        "[--bypass-reason <motivo>] [--unproven-ok <motivo>] [--step humanizador|clarice --pre <arq> --post <arq> [--sections a,b] [--note <motivo>]]",
     );
     process.exit(1);
   }
@@ -433,7 +441,16 @@ function main(): void {
     const pre = values["pre"];
     const post = values["post"];
     if ((step !== "humanizador" && step !== "clarice") || !pre || !post) {
-      console.error("Uso: --record-run --step humanizador|clarice --pre <arquivo> --post <arquivo> [--sections a,b] --edition-dir DIR");
+      console.error("Uso: --record-run --step humanizador|clarice --pre <arquivo> --post <arquivo> [--sections a,b] [--note <motivo>] --edition-dir DIR");
+      process.exit(1);
+    }
+    const note = values["note"]?.trim() || undefined;
+    if (note && step === "humanizador") {
+      // #11609: snapshots idênticos não provam o humanizador nem com motivo — o caminho é --unproven-ok no --write.
+      console.error(
+        "[check-humanizer-social] ERRO: --note só vale para --step clarice (#11674). Humanizador que devolveu tudo idêntico " +
+          'não gera prova (#11609); use --unproven-ok "<motivo>" no --write.',
+      );
       process.exit(1);
     }
     const prePath = resolve(ROOT, pre);
@@ -449,7 +466,24 @@ function main(): void {
       readFileSync(prePath, "utf8"),
       readFileSync(postPath, "utf8"),
       sections,
+      { note },
     );
+    if (plan.noop && step === "clarice" && !note) {
+      // #11674: recusa sem gravar — --pre igual a --post não prova que a Clarice rodou.
+      console.error(
+        "[check-humanizer-social] RECUSADO — --pre e --post são idênticos em todo o escopo: nada prova que a Clarice rodou. " +
+          'Se ela rodou e não sugeriu nada, repita com --note "<motivo>" (fica gravado no run e aparece como ' +
+          '"sem sugestões" no --provenance). Nada foi gravado (#11674).',
+      );
+      for (const s of plan.skipped) {
+        console.error(`[check-humanizer-social] sem prova (${step}): ${s.section} — ${s.reason}`);
+      }
+      console.log(JSON.stringify({ ok: false, step, reason: "noop_without_note", recorded: [], skipped: plan.skipped }));
+      process.exit(1);
+    }
+    if (note && !plan.noop) {
+      console.error("[check-humanizer-social] WARN: --note ignorado — houve mudança entre --pre e --post (#11674).");
+    }
     const recordPath = writeRunRecord(editionDir, plan.record);
     for (const s of plan.skipped) {
       console.error(`[check-humanizer-social] sem prova (${step}): ${s.section} — ${s.reason}`);
@@ -478,7 +512,10 @@ function main(): void {
     for (const r of rows) {
       const extra = unprovenSections.includes(r.section) ? " · aceita sem prova (--unproven-ok)" : "";
       const kept = r.kept ? " (texto mantido)" : ""; // #11604
-      console.error(`  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"}${kept} · Clarice ${r.clarice ? "sim" : "NÃO"}${extra}`);
+      const claricePlain = r.clarice_unchanged ? " (sem sugestões, --note)" : ""; // #11674
+      console.error(
+        `  ${r.section}: humanizador ${r.humanizador ? "sim" : "NÃO"}${kept} · Clarice ${r.clarice ? "sim" : "NÃO"}${claricePlain}${extra}`,
+      );
     }
     console.log(JSON.stringify({ ok: true, sections: rows, unproven_sections: unprovenSections }));
     process.exit(0);
