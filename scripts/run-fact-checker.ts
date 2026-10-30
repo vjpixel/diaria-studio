@@ -276,6 +276,19 @@ function hostOf(url: string): string {
 }
 
 /**
+ * (#11691) O agente declara em `note` que não confirmou o claim na fonte
+ * principal (título) mesmo devolvendo SUSTAINED por uma fonte adicional. O
+ * verdict continua verde (sem alarme falso em attention_items), mas o gate
+ * destaca a linha com ⚠️ para o editor conferir.
+ */
+const NOT_CONFIRMED_IN_PRIMARY_RE =
+  /n[ãa]o\s+(?:foi\s+)?(?:confirmad[oa]|encontrad[oa]|verificad[oa])\s+(?:n[ao]\s+)?(?:fonte\s+(?:principal|prim[aá]ria|original)|link\s+do\s+t[ií]tulo)|n[ãa]o\s+(?:confirmei|encontrei)\s+(?:o\s+claim\s+)?(?:n[ao]\s+)?fonte\s+(?:principal|prim[aá]ria|original)/i;
+
+export function notConfirmedInPrimary(c: Pick<FactClaim, "note">): boolean {
+  return typeof c.note === "string" && NOT_CONFIRMED_IN_PRIMARY_RE.test(c.note);
+}
+
+/**
  * (#11531) Linhas do resumo do gate que dizem de qual fonte veio cada claim
  * sustentado (SUSTAINED/INFERRED com `source_url`). Por destaque, uma linha de
  * contagem por host; claims sustentados por fonte ADICIONAL (URL diferente da
@@ -283,19 +296,6 @@ function hostOf(url: string): string {
  * conferir. Sem `primaryUrls` não há como separar primária de adicional:
  * retorna `[]` (resumo idêntico ao de antes).
  */
-/**
- * (#11691) O agente declara em `note` que não confirmou o claim na fonte
- * principal (título) mesmo devolvendo SUSTAINED por uma fonte adicional. O
- * verdict continua verde (sem alarme falso em attention_items), mas o gate
- * destaca a linha com ⚠️ para o editor conferir.
- */
-const NOT_CONFIRMED_IN_PRIMARY_RE =
-  /n[ãa]o\s+(?:foi\s+)?(?:confirm|encontr|consta|aparece|verific)[^.;]*\bfonte\s+(?:principal|prim[aá]ria|do\s+t[ií]tulo|original)/i;
-
-export function notConfirmedInPrimary(c: Pick<FactClaim, "note">): boolean {
-  return typeof c.note === "string" && NOT_CONFIRMED_IN_PRIMARY_RE.test(c.note);
-}
-
 export function formatSourceAttribution(
   claims: FactClaim[],
   primaryUrls: Array<string | undefined> | undefined,
@@ -337,7 +337,7 @@ export function formatSourceAttribution(
       out.push(
         `      ${warn ? "⚠️ " : ""}${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}" ← ${c.source_url}`,
       );
-      if (warn) out.push(`         → ${c.note}`);
+      if (warn) out.push(`         → ${c.note!.replace(/\s+/g, " ").slice(0, 300)}`);
     }
     const unconfirmed = extraClaims.filter(notConfirmedInPrimary).length;
     if (unconfirmed > 0) {

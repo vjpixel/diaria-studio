@@ -258,6 +258,11 @@ describe("fonte adicional sem confirmação na principal (#11691)", () => {
     assert.doesNotMatch(out, /⚠️/);
   });
 
+  it("nota que apenas cita a fonte principal sem ressalva não gera ⚠️", () => {
+    const out = formatSourceAttribution([mk("não encontrei divergência com a fonte principal", PODER)], [CNN]).join("\n");
+    assert.doesNotMatch(out, /⚠️/);
+  });
+
   it("fonte do título nunca é marcada, mesmo com a frase na nota", () => {
     const out = formatSourceAttribution(
       [mk("não confirmado na fonte principal", CNN)],
