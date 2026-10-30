@@ -155,8 +155,10 @@ export type DriveLookup =
    * `Final/` moram); sem ela, dia sem vídeo, nada a avisar. `selection`
    * (#11628): o `selection` do `needs-editor` (ex.: `ambiguous-cover`, que é a
    * capa Still, não o vertical), para o alarme orientar o passo certo.
+   * `videoSelection` (#11650): no `ambiguous-cover`, como ficou a escolha do
+   * vertical (`found` = único); ausente = desconhecido.
    */
-  | { kind: "wait"; reason: string; why: "none" | "needs-editor"; editionFolderSeen: boolean; selection?: string }
+  | { kind: "wait"; reason: string; why: "none" | "needs-editor"; editionFolderSeen: boolean; selection?: string; videoSelection?: string }
   | { kind: "error"; reason: string };
 
 /** Puro: lê a saída do `fetch-drive-video.ts --orientation vertical`. */
@@ -181,6 +183,7 @@ export function interpretDriveLookup(exitCode: number | null, stdout: string): D
       why: "needs-editor",
       editionFolderSeen: editionFolderSeen || out.selection === "duplicate-edition-folder",
       ...(typeof out.selection === "string" ? { selection: out.selection } : {}),
+      ...(typeof out.video_selection === "string" ? { videoSelection: out.video_selection } : {}),
       reason: `o Drive tem mais de um candidato (${out.selection}) — o editor escolhe no /diaria-publica-video (Passo B1); o timer não escolhe`,
     };
   }
@@ -253,6 +256,19 @@ export type LinkedinTimerOutcome =
 
 type PlanAction = ShortsPlanItem["action"];
 
+const LATE_FALLBACK_REASON = "passou do teto de 3 h depois do horário do vertical";
+
+/**
+ * Puro (#11651): do `detail` do `skip_late` fica só o atraso
+ * (`08:00 BRT passou há 200 min (teto 3 h)`). O resto foi escrito para o agente
+ * da skill e oferece um comando que não publica quando o timer é o dono.
+ */
+export function lateReason(detail: string): string {
+  const head = detail.split(" — ")[0].trim();
+  if (!head || /agente|--only|--publish|--now|--mark/.test(head)) return LATE_FALLBACK_REASON;
+  return head;
+}
+
 /**
  * Puro (#11631): lê a saída do `publish-shorts.ts --only linkedin_profile
  * --publish --linkedin-timer`. Antes o timer só olhava o exit code: `skip_late`
@@ -290,7 +306,11 @@ export function interpretLinkedinTimerOutput(exitCode: number | null, stdout: st
     case "pending_schedule":
       return { kind: "wait", detail: detail || "antes do horário" };
     case "skip_late":
-      return { kind: "alarm", key: "late", failed: false, detail };
+      // #11651: o `detail` do planner foi escrito para o agente da skill
+      // ("O agente publica com --only linkedin_profile --publish --now …"), e
+      // esse comando cai em skip_delegated com o timer dono do destino. O
+      // alarme leva só o atraso; o remédio certo está no corpo do alarme.
+      return { kind: "alarm", key: "late", failed: false, detail: lateReason(detail) };
     case "skip_missing_credentials":
       return { kind: "alarm", key: "credentials", failed: true, detail: `sem credencial do LinkedIn pessoal no 300: ${detail}` };
     case "skip_invalid":
@@ -348,10 +368,22 @@ function hhmmBrt(ms: number): string {
 }
 
 /** Puro: corpo do alarme, com os comandos já com a edição. */
-export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTimerAlarmKey; reason: string; at: string; selection?: string }): { subject: string; body: string } {
-  const { aammdd, key, reason, at, selection } = input;
+export function buildLinkedinTimerAlarm(input: {
+  aammdd: string;
+  key: LinkedinTimerAlarmKey;
+  reason: string;
+  at: string;
+  selection?: string;
+  /** #11650: escolha do vertical no `ambiguous-cover`; só `found` permite dizer "o vertical já é único". */
+  videoSelection?: string;
+}): { subject: string; body: string } {
+  const { aammdd, key, reason, at, selection, videoSelection } = input;
   const deadline = hhmmBrt(Date.parse(at) + MAX_FIRE_LATENESS_MS);
   const mark = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --mark linkedin_profile=URL\``;
+  // #11651: com `linkedin_profile_via_timer` (o único caso em que o timer roda),
+  // só a rodada `--linkedin-timer` publica o destino; o `/diaria-publica-video`
+  // e o comando sem a flag caem em skip_delegated. `--now` passa do teto de 3 h.
+  const publishNow = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only linkedin_profile --publish --linkedin-timer --now\``;
   const lines = [
     "Achado automático da task `Diaria-Shorts-LinkedIn-Profile`",
     "(`scripts/shorts-linkedin-profile-timer.ts`, #10982/#11618/#11631).",
@@ -377,8 +409,14 @@ export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTi
   } else if (key === "missing-video") {
     lines.push(`O vertical "Outras redes" não está no disco do 300 nem em \`${aammdd}/Final/\` no Drive. Salve-o lá; a próxima execução (de hora em hora) baixa e publica até ${deadline} BRT (3 h depois do horário do vertical).`);
   } else if (selection === "ambiguous-cover") {
-    // #11628: o vertical já é único; o que trava o download é a capa Still (que o LinkedIn nem usa).
-    lines.push(`O vertical já é único; o bloqueio é a capa: há mais de uma capa Still em \`${aammdd}/Final/\` no Drive. Deixe uma só capa Still lá; a próxima execução publica até ${deadline} BRT.`);
+    // #11628: o que trava o download é a capa Still (que o LinkedIn nem usa).
+    // #11650: "o vertical já é único" só quando o fetch apurou a escolha como única.
+    const coverFix = `há mais de uma capa Still em \`${aammdd}/Final/\` (ou \`Editados/\`) no Drive. Deixe uma só capa Still lá; a próxima execução publica até ${deadline} BRT.`;
+    lines.push(
+      videoSelection === "found"
+        ? `O vertical já é único; o bloqueio é a capa: ${coverFix}`
+        : `O bloqueio agora é a capa: ${coverFix} A escolha do vertical ainda não está resolvida (${videoSelection ?? "não informada"}): confira também que há um só vertical "final" em \`${aammdd}/Final/\`.`,
+    );
   } else {
     lines.push(`Deixe um só vertical "final" em \`${aammdd}/Final/\` no Drive (ou escolha no Passo B1 do \`/diaria-publica-video\`); a próxima execução publica até ${deadline} BRT.`);
   }
@@ -386,7 +424,7 @@ export function buildLinkedinTimerAlarm(input: { aammdd: string; key: LinkedinTi
     "",
     key === "late" ? "O que fazer:" : "Depois desse horário o timer não publica mais sozinho. O que fazer então:",
     `- Postar o vertical à mão no LinkedIn pessoal e registrar com ${mark}.`,
-    `- Ou rodar \`/diaria-publica-video ${aammdd} --so vertical\`.`,
+    `- Ou, no 300 (onde o vertical está no disco), publicar fora da janela com ${publishNow}. O \`/diaria-publica-video\` não serve aqui: com o timer dono do LinkedIn pessoal ele devolve \`skip_delegated\` e não publica.`,
   );
   return { subject: `[diar.ia.br] Vertical no LinkedIn pessoal de ${aammdd} não saiu pelo timer do 300 (${key})`, body: lines.join("\n") };
 }
@@ -403,7 +441,7 @@ export async function linkedinAlarm(
   reason: string,
   at: string,
   notifyDeps: NotifyEditorDeps = { cwd: ROOT },
-  selection?: string,
+  drive: { selection?: string; videoSelection?: string } = {},
 ): Promise<boolean> {
   const statePath = join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE);
   const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
@@ -411,7 +449,7 @@ export async function linkedinAlarm(
     console.log(`[shorts-linkedin-timer] ${aammdd}: alarme "${key}" já coberto nesta edição${key === "late" && !alreadyAlarmed(stateRaw, key) ? " (por um motivo que diz que o post pode estar no ar)" : ""} — não repete`);
     return true;
   }
-  const { subject, body } = buildLinkedinTimerAlarm({ aammdd, key, reason, at, selection });
+  const { subject, body } = buildLinkedinTimerAlarm({ aammdd, key, reason, at, ...drive });
   const res = await notifyEditor(
     { check: "shorts-linkedin-timer", fingerprint: `${aammdd}:${key}`, severity: linkedinAlarmSeverity(key), family: "evento", subject, body, forceEmail: emailPending(stateRaw, key) },
     notifyDeps,
@@ -499,7 +537,7 @@ export async function runLinkedinTimer(aammdd: string, dir: string, dryRun: bool
         const { at } = linkedinVerticalTime(config, aammdd);
         const key = linkedinWaitAlarm({ why: lookup.why, videoSeen: lookup.editionFolderSeen || registrySeen, now, at });
         if (key === null) return 0;
-        return (await linkedinAlarm(dir, aammdd, key, lookup.reason, at, deps.notify, lookup.selection)) ? 0 : 1;
+        return (await linkedinAlarm(dir, aammdd, key, lookup.reason, at, deps.notify, { selection: lookup.selection, videoSelection: lookup.videoSelection })) ? 0 : 1;
       }
       if (lookup.kind === "error") {
         console.error(`[shorts-linkedin-timer] ${aammdd}: ${lookup.reason}`);
