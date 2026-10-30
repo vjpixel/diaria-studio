@@ -235,3 +235,45 @@ describe("formatSourceAttribution (#11531)", () => {
     assert.match(formatGateSummary(result, { primaryUrls: [CNN] }), /Fonte dos claims sustentados/);
   });
 });
+
+describe("fonte adicional sem confirmação na principal (#11691)", () => {
+  const mk = (note: string | undefined, url: string) => ({
+    destaque: 1, claim_type: "number" as const, text: "270 mil mensagens", context: "",
+    sources: ["newsletter" as const], verdict: "SUSTAINED" as const, source_url: url, note,
+  });
+
+  it("claim só da fonte adicional com ressalva do agente sai com ⚠️ e a nota", () => {
+    const out = formatSourceAttribution(
+      [mk("não confirmado na fonte principal; consta na matéria do Poder360", PODER)],
+      [CNN],
+    ).join("\n");
+    assert.match(out, /⚠️ D1 \[number\] "270 mil mensagens"/);
+    assert.match(out, /→ não confirmado na fonte principal/);
+    assert.match(out, /1 claim\(s\) sem confirmação na fonte principal/);
+  });
+
+  it("fonte adicional sem ressalva não gera alarme falso", () => {
+    const out = formatSourceAttribution([mk("confirmado na matéria", PODER)], [CNN]).join("\n");
+    assert.match(out, /ADICIONAL/);
+    assert.doesNotMatch(out, /⚠️/);
+  });
+
+  it("fonte do título nunca é marcada, mesmo com a frase na nota", () => {
+    const out = formatSourceAttribution(
+      [mk("não confirmado na fonte principal", CNN)],
+      [CNN],
+    ).join("\n");
+    assert.doesNotMatch(out, /⚠️/);
+  });
+
+  it("não vira divergente nem atenção no resumo", () => {
+    const r: FactCheckResult = {
+      edition: "261030", checked_at: "2026-10-30T12:00:00Z",
+      claims: [mk("não confirmado na fonte principal", PODER)],
+      summary: { total: 1, sustained: 1, divergent: 0, not_found_in_source: 0, source_unreachable: 0, inferred: 0, attention_items: 0 },
+    };
+    const out = formatGateSummary(r, { primaryUrls: [CNN] });
+    assert.match(out, /✅ 0 divergentes/);
+    assert.match(out, /⚠️  1 claim\(s\) sem confirmação/);
+  });
+});
