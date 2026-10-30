@@ -16,7 +16,8 @@
  * Uso: npx tsx scripts/check-video-env.ts [--json]   (capa; --montagem: ver abaixo)
  * Exit: 0 = a capa sai nesta máquina; 1 = falta algo (o relatório diz o quê).
  *
- * `--montagem [--edition AAMMDD] [--python EXE]` (#11642): o ambiente do
+ * `--montagem [--edition AAMMDD] [--python EXE] [--drive-root DIR]` (#11642;
+ * `--drive-root` como no `video-montagem.ts`, sobre DIARIA_VIDEO_DRIVE_ROOT, #11653): o ambiente do
  * `/diaria-video-montagem` (Passo 0 da skill), no lugar da capa: ffmpeg; o
  * Python com faster-whisper (o mesmo que o `video-montagem.ts` usaria,
  * `resolveVideoPython`) decodificando um áudio de teste; o modelo
@@ -168,12 +169,19 @@ interface DriveProbe {
  * permissão de escrita nela (as saídas sobem para lá). Cada falha com a sua
  * correção, nunca a do OAuth para tudo.
  */
-async function probeDrive(edition: string | undefined): Promise<DriveProbe> {
-  const explicitRoot = process.env.DIARIA_VIDEO_DRIVE_ROOT;
-  const root = explicitRoot ?? DEFAULT_DRIVE_ROOT;
-  const mode = driveModeFor({ driveRootExists: existsSync(root), fromDrive: false, noDriveApi: false, explicitRoot: explicitRoot !== undefined });
+export function explicitDriveRoot(flag: string | undefined, env: string | undefined): { root: string; via: string } | null {
+  // Mesma precedência do video-montagem.ts (#11653): --drive-root > DIARIA_VIDEO_DRIVE_ROOT.
+  if (flag !== undefined) return { root: flag, via: "--drive-root" };
+  if (env !== undefined) return { root: env, via: "DIARIA_VIDEO_DRIVE_ROOT" };
+  return null;
+}
+
+async function probeDrive(edition: string | undefined, driveRootFlag?: string): Promise<DriveProbe> {
+  const explicit = explicitDriveRoot(driveRootFlag, process.env.DIARIA_VIDEO_DRIVE_ROOT);
+  const root = explicit?.root ?? DEFAULT_DRIVE_ROOT;
+  const mode = driveModeFor({ driveRootExists: existsSync(root), fromDrive: false, noDriveApi: false, explicitRoot: explicit !== null });
   if (mode === "local") {
-    if (!existsSync(root)) return { mode, bruto: null, probe: { ok: false, detail: `DIARIA_VIDEO_DRIVE_ROOT=${root} não existe`, fix: "montar o Drive for desktop nesse caminho ou desfazer DIARIA_VIDEO_DRIVE_ROOT" } };
+    if (!existsSync(root)) return { mode, bruto: null, probe: { ok: false, detail: `${explicit?.via ?? "raiz do Drive"}=${root} não existe`, fix: `montar o Drive for desktop nesse caminho ou desfazer ${explicit?.via ?? "a raiz explícita"}` } };
     if (edition && !existsSync(join(root, edition))) {
       return { mode, bruto: null, probe: { ok: false, detail: `Drive for desktop em ${root}, sem a pasta ${edition}/`, fix: `esperar o Drive for desktop sincronizar ${edition}/ (ou rodar com --from-drive para baixar pela API)` } };
     }
@@ -208,14 +216,14 @@ async function probeDrive(edition: string | undefined): Promise<DriveProbe> {
   }
 }
 
-export async function runMontageEnvCheck(edition?: string, pythonFlag?: string): Promise<MontageEnvReport> {
+export async function runMontageEnvCheck(edition?: string, pythonFlag?: string, driveRootFlag?: string): Promise<MontageEnvReport> {
   const py = resolveVideoPython({ flag: pythonFlag, env: process.env.DIARIA_VIDEO_PYTHON, platform: process.platform, home: homedir(), exists: existsSync });
   const python = probeWhisperDecode(py.python);
   // Carrega o modelo de verdade (offline): download interrompido passa no "existe", não no load.
   const model = python.ok
     ? probePython(py.python, `from faster_whisper import WhisperModel; WhisperModel('${WHISPER_MODEL}', device='cpu', compute_type='int8', local_files_only=True); print('${WHISPER_MODEL} carrega offline')`, 180_000)
     : { ok: false, detail: "sem Python com faster-whisper" };
-  const drive = await probeDrive(edition);
+  const drive = await probeDrive(edition, driveRootFlag);
   let disk: MontageProbe;
   if (drive.mode === "local") disk = { ok: true, detail: "não se aplica no modo local (o Drive for desktop guarda o bruto; o cache não é usado)" };
   else {
@@ -237,7 +245,7 @@ export async function runMontageEnvCheck(edition?: string, pythonFlag?: string):
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if (args.flags.has("montagem")) {
-    const r = await runMontageEnvCheck(args.values["edition"], args.values["python"]);
+    const r = await runMontageEnvCheck(args.values["edition"], args.values["python"], args.values["drive-root"]);
     console.log(args.flags.has("json") ? JSON.stringify(r, null, 2) : formatMontageEnvReport(r));
     process.exitCode = r.ready ? 0 : 1;
     return;

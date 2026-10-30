@@ -158,15 +158,19 @@ export function spaceShortfall(free: number | null, size: number | null): number
  * - modo API com um bruto local fora do cache (`--source`) → a raiz do Neo com o
  *   nome do arquivo, como premissa (`api-guess`): o caminho de leitura é desta máquina;
  * - senão (o Neo lendo de `G:`) → o próprio caminho de leitura (`source`).
+ *
+ * A raiz é `xmlMediaRoot`, senão `driveRoot` (#11653: a raiz do Drive no Neo
+ * passada por `--drive-root`/`DIARIA_VIDEO_DRIVE_ROOT` no modo local), senão
+ * `DEFAULT_DRIVE_ROOT`.
  */
 export function xmlMediaPath(
   sourcePath: string,
-  opts: { edition: string; drive?: Pick<BrutoDriveInfo, "name" | "localPath"> | null; xmlMediaRoot?: string; apiMode?: boolean },
+  opts: { edition: string; drive?: Pick<BrutoDriveInfo, "name" | "localPath"> | null; xmlMediaRoot?: string; driveRoot?: string; apiMode?: boolean },
 ): { path: string; how: "cache" | "root" | "api-guess" | "source" } {
   const fromCache = Boolean(opts.drive) && toPosix(sourcePath) === toPosix(opts.drive!.localPath);
   const how = fromCache ? "cache" : opts.xmlMediaRoot !== undefined ? "root" : opts.apiMode ? "api-guess" : "source";
   if (how === "source") return { path: sourcePath, how };
-  const root = toPosix(opts.xmlMediaRoot ?? DEFAULT_DRIVE_ROOT).replace(/\/+$/, "");
+  const root = toPosix(opts.xmlMediaRoot ?? opts.driveRoot ?? DEFAULT_DRIVE_ROOT).replace(/\/+$/, "");
   const name = fromCache ? opts.drive!.name : basename(toPosix(sourcePath));
   return { path: `${root}/${opts.edition}/${name}`, how };
 }
@@ -349,8 +353,9 @@ function readSidecar(localPath: string): CacheSidecar | null {
 
 /**
  * Baixa `file` para `{cacheDir}/{nome}` se o cache não for a cópia dele
- * (`cacheState`, #11639). Confere o espaço livre antes (tamanho + 10%,
- * descontado o arquivo velho que vai ser substituído) e escala o teto do
+ * (`cacheState`, #11639). Confere o espaço livre antes (tamanho + 10%, sem
+ * descontar o arquivo velho: o `.part` coexiste com ele até o rename, ver
+ * `spaceShortfall`) e escala o teto do
  * download. Grava o sidecar com a procedência ao terminar.
  */
 export async function ensureCachedFile(
