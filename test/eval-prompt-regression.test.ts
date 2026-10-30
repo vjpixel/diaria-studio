@@ -12,10 +12,11 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPromptRegressionEval, DEFAULT_REPETITIONS, DEFAULT_BASELINE_REF } from "../scripts/eval-prompt-regression.ts";
+import { runEvalsForTriggering, withTemporaryEvalFixtures } from "../scripts/run-agent-eval-for-pr.ts";
 
 function withTmpDir<T>(prefix: string, fn: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -227,3 +228,40 @@ describe("runPromptRegressionEval — múltiplas edições (#8143 — critério 
     });
   });
 });
+
+for (const fail of [false, true]) {
+  it(`isola fixtures do checkout principal e limpa após ${fail ? "falha" : "sucesso"} (#11632)`, () => {
+    withTmpDir("eval-source-", (root) => {
+      const editionsRootDir = join(root, "data", "editions");
+      writeReferenceEdition(editionsRootDir, "260401");
+      const sourcePath = join(editionsRootDir, "260401", "_internal", "01-approved.json");
+      const sourceBefore = readFileSync(sourcePath, "utf8");
+      let temporary = "";
+      const run = () => withTemporaryEvalFixtures((fixtureRootDir) => {
+        temporary = fixtureRootDir;
+        const reports = runEvalsForTriggering({
+          triggering: [{ agent: "social-writer" }], referenceEditions: ["260401"],
+          editionsRootDir, fixtureRootDir, baselineRef: "origin/master",
+          repetitions: 1, live: false, rootDir: root,
+          arms: [{ model: "test-model" }],
+          runEvalFn: (params) => runPromptRegressionEval({
+            ...params,
+            readAgentBodyFromDiskFn: () => "candidate",
+            readAgentBodyAtGitRefFn: () => "baseline",
+          }),
+        });
+        const edition = reports["social-writer"]!.editions[0];
+        for (const side of [edition.baseline, edition.candidate, ...edition.arms.map(a => a.outcome)]) {
+          assert.ok(existsSync(join(fixtureRootDir, side.testDirName, "_internal", "01-approved.json")));
+        }
+        assert.deepEqual(readdirSync(editionsRootDir), ["260401"]);
+        if (fail) throw new Error("simulated eval failure");
+      });
+      if (fail) assert.throws(run, /simulated eval failure/);
+      else run();
+      assert.equal(existsSync(temporary), false);
+      assert.equal(readFileSync(sourcePath, "utf8"), sourceBefore);
+      assert.deepEqual(readdirSync(editionsRootDir), ["260401"]);
+    });
+  });
+}

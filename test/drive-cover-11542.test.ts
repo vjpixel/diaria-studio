@@ -19,13 +19,14 @@ test("Still e extensão obrigatórios; sequência Instagram antiga serve todos o
   assert.deepEqual(driveCoverCandidates(files, "vertical").map((f) => f.id), ["v"]);
 });
 
-for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "bad-image", "drive-down"] as const) {
+for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "bad-image", "drive-down", "local-preserved", "forced", "empty"] as const) {
   test(`fetch capa ${mode}: escopo da edição, vídeo local e precedência Drive`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "cover-11542-"));
     try {
       if (mode !== "ambiguous-sem-video") writeFileSync(join(dir, "diaria-comentada-261029.mp4"), "video local");
       const dest = join(dir, "04-youtube-thumb.jpg");
-      writeFileSync(dest, "capa gerada");
+      if (mode !== "download" && mode !== "dry-run") writeFileSync(dest, mode === "empty" ? "" : "capa gerada");
+      const lines: string[] = [];
       const bytes = mode === "bad-image" ? Buffer.from("not image") : await sharp({ create: { width: 16, height: 9, channels: 3, background: "red" } }).png().toBuffer();
       const mediaCalls: string[] = [];
       const deps: FetchDriveVideoDeps = { driveFetch: async (url) => {
@@ -40,7 +41,7 @@ for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "
         if (q.startsWith("'edited'")) return Response.json({ files: mode.startsWith("ambiguous") ? [still("two")] : [] });
         throw new Error(`unexpected folder: ${url}`);
       } };
-      const result = await runFetchDriveVideo(deps, { aammdd: "261029", orientation: "horizontal", folderId: "root", editionDir: dir, now: new Date(), windowHours: 36, force: false, dryRun: mode === "dry-run" }, () => {});
+      const result = await runFetchDriveVideo(deps, { aammdd: "261029", orientation: "horizontal", folderId: "root", editionDir: dir, now: new Date(), windowHours: 36, force: mode === "forced" || mode === "bad-image", dryRun: mode === "dry-run" }, (line) => lines.push(line));
       if (mode === "ambiguous" || mode === "drive-down") {
         // Review #11545: com o vídeo já em disco, capa ambígua ou Drive fora do ar não barram o `exists`.
         assert.equal(result.exitCode, 0);
@@ -54,6 +55,13 @@ for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "
           assert.deepEqual(result.output.candidates.map((f) => [f.id, f.modifiedTime]), [["one", "2026-10-29T01:33:00Z"], ["two", "2026-10-29T01:33:00Z"]]);
         } else assert.fail("expected ambiguous-cover");
         assert.equal(mediaCalls.length, 0);
+      } else if (mode === "local-preserved") {
+        assert.equal(result.exitCode, 0);
+        assert.equal(result.output.cover?.source, "local");
+        assert.equal(result.output.cover?.file, undefined);
+        assert.equal(mediaCalls.length, 0);
+        assert.equal(readFileSync(dest, "utf8"), "capa gerada");
+        assert.ok(!lines.some((line) => line.includes("[premissa] capa local substituída")));
       } else if (mode === "bad-image") {
         // Review #11545: capa é opcional — falha nela cai na capa local, o vídeo segue.
         assert.equal(result.exitCode, 0);
@@ -62,11 +70,11 @@ for (const mode of ["download", "dry-run", "ambiguous", "ambiguous-sem-video", "
         assert.equal(readdirSync(dir).length, 2, "não deixa temporários");
       } else {
         assert.equal(result.exitCode, 0);
-        assert.equal(result.output.action, "exists");
+        assert.equal(result.output.action, mode === "forced" ? "none" : "exists");
         assert.equal(result.output.cover?.source, "drive");
-        assert.equal(mediaCalls.length, mode === "download" ? 1 : 0);
-        if (mode === "download") assert.equal((await sharp(dest).metadata()).format, "jpeg");
-        else assert.equal(readFileSync(dest, "utf8"), "capa gerada");
+        assert.equal(mediaCalls.length, mode === "dry-run" ? 0 : 1);
+        if (mode !== "dry-run") assert.equal((await sharp(dest).metadata()).format, "jpeg");
+        assert.equal(lines.includes("[premissa] capa local substituída pelo Still do Drive"), mode === "forced");
       }
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

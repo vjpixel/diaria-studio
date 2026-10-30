@@ -41,6 +41,7 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  * da edição. Sequência YouTube = horizontal; sequência vertical = todos os
  * verticais. 2+ capas por orientação dão needs-editor; nunca desempata por data.
  * O plano inclui `cover`; sem dry-run baixa JPEG real no caminho do publisher.
+ * #11636: capa local não vazia é preservada; --force autoriza substituição logada.
  *
  * - horizontal: baixa para `{editionDir}/diaria-comentada-{AAMMDD}.mp4`
  *   (`youtubeVideoFileName`), o default do `publish-youtube.ts`.
@@ -571,7 +572,12 @@ export async function runFetchDriveVideo(
     log(`[aviso] capas Still ambíguas: ${covers.map(describeForLog).join(" | ")}`);
     return { exitCode: 3, output: { ...withFolder, action: "needs-editor", selection: "ambiguous-cover", candidates: covers.map(describeFile) } };
   }
-  const cover = covers[0];
+  const localCoverExists = existsSync(coverPath) && statSync(coverPath).size > 0;
+  // #11636: preservar ajustes locais; trocar a capa exige --force.
+  const cover = localCoverExists && !input.force ? undefined : covers[0];
+  if (localCoverExists && !input.force && covers[0]) {
+    log("[ok] capa local mantida — use --force para substituir pelo Still do Drive");
+  }
   const coverPlan: NonNullable<OutputBase["cover"]> = {
     source: cover ? "drive" : existsSync(coverPath) && statSync(coverPath).size > 0 ? "local" : "automatic",
     local_path: coverPath,
@@ -589,7 +595,9 @@ export async function runFetchDriveVideo(
       });
       // Os publishers esperam JPEG real, inclusive quando o Still no Drive é PNG.
       await sharp(source).rotate().jpeg({ quality: 95 }).toFile(converted);
+      const replacingLocalCover = existsSync(coverPath) && statSync(coverPath).size > 0;
       renameSync(converted, coverPath);
+      if (replacingLocalCover) log("[premissa] capa local substituída pelo Still do Drive");
       log(`[ok] capa do Drive: ${describeForLog(cover)} → ${coverPath}`);
     } catch (e) {
       // A capa é opcional: cai na local/automática em vez de barrar o vídeo (review #11545).

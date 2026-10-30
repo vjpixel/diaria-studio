@@ -690,6 +690,7 @@ export function mergeTrainBatch(
   }
 
   let mergeOk: boolean;
+  let syncWarning: string | undefined;
   try {
     const merge = runner.exec("gh", [
       "pr",
@@ -714,7 +715,7 @@ export function mergeTrainBatch(
       // PRs originais (o commit squash já existe no GitHub, é o que os
       // comentários de fechamento referenciam — não depende do checkout
       // local estar sincronizado).
-      return { ok: true, error: `merge OK (confirmado); ${syncNote} (não bloqueante)` };
+      syncWarning = `merge OK (confirmado); ${syncNote} (não bloqueante)`;
     }
   } finally {
     runner.exec("npx", ["tsx", "scripts/lib/session-registry.ts", "merge-lock-release", "--kind", opts.kind, "--session-id", opts.sessionId]);
@@ -738,7 +739,8 @@ export function mergeTrainBatch(
     if (!close.ok) closeFailures.push(`fechar PR #${pr} falhou: ${close.stderr}`);
   }
 
-  return closeFailures.length > 0 ? { ok: true, error: closeFailures.join("; ") } : { ok: true };
+  const warnings = [...(syncWarning ? [syncWarning] : []), ...closeFailures];
+  return warnings.length > 0 ? { ok: true, error: warnings.join("; ") } : { ok: true };
 }
 
 export interface CleanupResult {
