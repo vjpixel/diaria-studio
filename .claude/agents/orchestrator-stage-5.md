@@ -46,7 +46,7 @@ npx tsx scripts/pipeline-sentinel.ts assert \
 Exit code handling:
 - `0` → continuar.
 - `1` → **ANTES do FATAL (#11690):** rodar `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 4`; exit 4 (outra máquina à frente, data/ defasado) → halt banner "data/ possivelmente defasado, aguardar o sync do OneDrive" e NÃO mandar re-rodar `/diaria-4-revisao`. Exit 0 → **FATAL:** "Etapa 4 (Revisao) nao completou (sentinel ausente). Re-rodar `/diaria-4-revisao {AAMMDD}` antes de continuar." Parar.
-- `2` → **FATAL:** "Outputs do Stage 4 ausentes. Re-rodar Etapa 4." Parar.
+- `2` → **ANTES do FATAL (#11690):** rodar `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 4 --outputs-missing`; exit 4 → halt banner "data/ possivelmente defasado, aguardar o sync do OneDrive" e NÃO recomendar re-rodar Stage 4. Exit 0 → **FATAL:** "Outputs do Stage 4 ausentes. Re-rodar Etapa 4." Parar.
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message "stage4_sentinel_missing_legacy"`), continuar.
 
 ### 5a. Pre-requisitos + sync

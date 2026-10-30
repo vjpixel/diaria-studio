@@ -4,7 +4,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -125,6 +125,16 @@ describe("tombstone de conclusão (release --complete-stage)", () => {
     writeFileSync(join(dir, "_internal", ".step-4-done.json"), "{}");
     assert.equal(guard(dir, []).status, 0);
     assert.equal(guard(dir, ["--outputs-missing"]).status, 4);
+  });
+});
+
+describe("playbooks guardam re-run após aprovação remota (#11690)", () => {
+  it("Stage 4 preserva tombstone no release e Stage 5 guarda outputs ausentes", () => {
+    const stage4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+    const stage5 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-5.md"), "utf8");
+    assert.match(stage4, /edition-lock\.ts release --edition-dir \{EDITION_DIR\} --complete-stage 4/);
+    assert.match(stage5, /stale-edition-guard\.ts check --edition-dir \{EDITION_DIR\} --step 4 --outputs-missing/);
+    assert.match(stage5, /exit 4 → halt banner/);
   });
 });
 

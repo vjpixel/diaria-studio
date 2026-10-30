@@ -952,7 +952,7 @@ npx tsx scripts/pipeline-sentinel.ts write \
 ```bash
 npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --status done
 ```
-Liberar a trava da edição (#10309, standalone, exit ≠ 0 é log-only): `npx tsx scripts/edition-lock.ts release --edition-dir {EDITION_DIR}`.
+Liberar a trava da edição (#10309, standalone, exit ≠ 0 é log-only): `npx tsx scripts/edition-lock.ts release --edition-dir {EDITION_DIR} --complete-stage 4`. O tombstone preserva o sinal de conclusão até o sentinel sincronizar nos outros hosts.
 
 **Derivar pedidos editoriais do diff (#5731).** No gate de aprovação (`sim` ou `auto_approve`), derivar os pedidos comparando snapshots pós-Stage 2 vs estado atual:
 ```bash
