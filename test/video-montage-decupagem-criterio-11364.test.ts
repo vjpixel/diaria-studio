@@ -291,7 +291,7 @@ describe("restrição de duração resolvida na decupagem (#11364)", () => {
   it("vertical acima de 3:00 aponta quanto passa; horizontal não tem teto", () => {
     const d = suggestedDurations(doc);
     const yt = d.find((x) => x.spec.target === "youtube")!;
-    const ig = d.find((x) => x.spec.target === "instagram")!;
+    const ig = d.find((x) => x.spec.target === "outras-redes")!;
     assert.equal(yt.overS, 0);
     assert.equal(ig.totalS, 207);
     assert.equal(ig.overS, 207 - SHORTS_MAX_S);
@@ -299,9 +299,9 @@ describe("restrição de duração resolvida na decupagem (#11364)", () => {
 
   it("a Montagem sugerida pede a proposta de corte, não repassa a restrição", () => {
     const md = decupagemMarkdown("261028", doc);
-    const ig = md.slice(md.indexOf("### Vertical Instagram"), md.indexOf("### Vertical outras redes"));
+    const ig = md.slice(md.indexOf("### Vertical"));
     assert.match(ig, /\*\*Passa de 3:00 \(Shorts\) em ~27\.0 s\*\*.*propõe o corte/);
-    const yt = md.slice(md.indexOf("### Horizontal YouTube"), md.indexOf("### Vertical Instagram"));
+    const yt = md.slice(md.indexOf("### Horizontal YouTube"), md.indexOf("### Vertical"));
     assert.doesNotMatch(yt, /Passa de/);
   });
 });

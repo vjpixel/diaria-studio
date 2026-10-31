@@ -690,7 +690,7 @@ export async function runFetchDriveVideo(
   if (instagramCut) {
     // O publish-shorts.ts usa um vertical só para todos os destinos (o corte
     // "Outras redes"); o do Instagram é identificado para o passo guiado.
-    log(`[ok] corte do Instagram: ${file.name} (id ${file.id}) — o publish-shorts.ts não o usa sozinho; vale para o Instagram guiado`);
+    log(`[ok] vertical para o Instagram: ${file.name} (id ${file.id}) — o publish-shorts.ts não o usa sozinho; vale para o Instagram guiado`);
     return { exitCode: 0, output: { ...withFolder, action: "print-id", selection: "found", file: described, next_command: null } };
   }
   if (orientation === "vertical") {

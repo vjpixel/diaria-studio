@@ -43,12 +43,10 @@
  *   como finais pelo lugar, sem exigir "final" no nome.
  * - Com algum `.mp4` em `Final/`, só ela conta (precede a regra do nome na
  *   subpasta da edição). Sem `.mp4` lá, cai na regra antiga da subpasta.
- * - Escolha por DESTINO (`videoTargetOf`): horizontal = `_Youtube_`; vertical
- *   = `_Outras redes_` por padrão (Shorts, Reels das páginas, LinkedIn,
- *   Threads, X), `_Instagram_` só quando pedido (`target: "instagram"`). Esta
- *   é a convenção que faltava para os DOIS verticais da pasta (premissa
- *   registrada em #11222: o corte "Outras redes" é o genérico; o do Instagram
- *   é o recorte para o teto de duração dele).
+ * - Horizontal = `_Youtube_`; uma única vertical `_Vertical_V{n}` atende
+ *   todos os destinos (#11491). O target técnico segue `outras-redes`.
+ *   Fallback histórico, inclusive para `target: "instagram"`: `_Outras redes_`,
+ *   depois `_Instagram_`. Empate no mesmo padrão continua ambíguo.
  * - O sufixo decide sem precisar da proporção (o Drive pode ainda não ter
  *   processado o vídeo). Proporção conhecida e contrária ao destino exclui o
  *   arquivo (um `_Youtube_` vertical não sobe como horizontal).
@@ -135,7 +133,7 @@ export function isEditedFolderName(name: string): boolean {
 }
 
 /**
- * Destino pelo nome: `_Youtube_`, `_Instagram_`, `_Outras redes_` (separador
+ * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL`, `_Instagram_`, `_Outras redes_` (separador
  * `_`, `-`, espaço ou `.`; sem diferenciar maiúsculas). Mais de um destino no
  * mesmo nome, ou nenhum, é `null`.
  */
@@ -144,7 +142,7 @@ export function videoTargetOf(name: string): VideoTarget | null {
   const found: VideoTarget[] = [];
   if (/ you ?tube /.test(n)) found.push("youtube");
   if (/ instagram /.test(n)) found.push("instagram");
-  if (/ outras redes /.test(n)) found.push("outras-redes");
+  if (/ outras redes | vertical (?:v\d+|final) /.test(n)) found.push("outras-redes");
   return found.length === 1 ? found[0] : null;
 }
 
@@ -338,7 +336,16 @@ function pickFromFinalFolder(allFiles: DriveVideoFile[], orientation: VideoOrien
   // empatariam no `n`).
   const promotedSources = new Set(allFiles.filter(isPromotedCopy).map((f) => f.appProperties?.[PROMOTED_FROM_PROPERTY]));
   const pool = allFiles.filter((f) => !(f.editedFolder && promotedSources.has(f.id)));
-  const byTarget = pool.filter((f) => videoTargetOf(f.name) === target && fitsOrientation(f));
+  // #11491: uma vertical para todos os destinos. Nunca desempatar arquivos
+  // do mesmo padrão pela data: preserve a ambiguidade e a regra de versões.
+  const verticalRank = (f: DriveVideoFile): number => {
+    const t = videoTargetOf(f.name);
+    if (t === "outras-redes") return /(?:^|[_.\s-])vertical(?:[_.\s-]|$)/i.test(f.name) ? 0 : 1;
+    return t === "instagram" ? 2 : 3;
+  };
+  const candidates = pool.filter((f) => fitsOrientation(f) && (orientation === "vertical" ? verticalRank(f) < 3 : videoTargetOf(f.name) === target));
+  const rank = orientation === "vertical" ? Math.min(...candidates.map(verticalRank)) : 0;
+  const byTarget = candidates.filter((f) => orientation !== "vertical" || verticalRank(f) === rank);
   if (byTarget.length > 1) {
     // #11556: em Editados/ ficam todas as exportações (V1…V5); a mais alta é a
     // final. Em Final/ o editor pôs as duas de propósito: segue ambíguo.

@@ -66,12 +66,12 @@ test("pasta Final/: arquivos sem 'final' no nome valem; horizontal = _Youtube_, 
   const v = selectDriveVideo(files, { orientation: "vertical", now: NOW, editionFolderPresent: true });
   assert.equal(h.kind, "found");
   if (h.kind === "found") assert.equal(h.file.name, YT);
-  // Os DOIS verticais (Instagram e Outras redes) não são ambíguos: o destino decide.
+  // Os DOIS verticais (Instagram e Outras redes) não são ambíguos: a prioridade histórica decide para todos os destinos.
   assert.equal(v.kind, "found");
   if (v.kind === "found") assert.equal(v.file.name, OR);
   const ig = selectDriveVideo(files, { orientation: "vertical", now: NOW, editionFolderPresent: true, target: "instagram" });
   assert.equal(ig.kind, "found");
-  if (ig.kind === "found") assert.equal(ig.file.name, IG);
+  if (ig.kind === "found") assert.equal(ig.file.name, OR);
 });
 
 test("pasta Final/: o sufixo decide mesmo sem proporção no Drive; proporção contrária exclui", () => {
@@ -191,7 +191,7 @@ test("CLI vertical: imprime o id do _Outras redes_ e o comando do publish-shorts
     }
   }));
 
-test("CLI --target instagram: identifica o corte do Instagram sem next_command, mesmo com o short local presente", () =>
+test("CLI --target instagram: prefere Outras redes para Instagram sem next_command, mesmo com o short local presente", () =>
   withDir(async (dir) => {
     writeFileSync(join(dir, "diaria-comentada-261027-short.mp4"), "outras redes já baixado");
     const { deps } = mockDrive(FINAL_SET);
@@ -199,7 +199,7 @@ test("CLI --target instagram: identifica o corte do Instagram sem next_command, 
     assert.equal(out.exitCode, 0);
     assert.equal(out.output.action, "print-id");
     if (out.output.action === "print-id") {
-      assert.equal(out.output.file.id, "ig");
+      assert.equal(out.output.file.id, "or");
       assert.equal(out.output.next_command, null);
     }
   }));

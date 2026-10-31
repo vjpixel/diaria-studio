@@ -126,10 +126,10 @@ describe("decupagem por bloco (#11361)", () => {
     assert.match(tail, /### Horizontal YouTube 1920x1080: Diaria comentada_Youtube_V1/);
     assert.match(tail, /\| Título \| 00:11\.0–00:13\.1 \|/);
     assert.match(tail, /\| Abertura \| 00:05\.0–00:07\.7 \|/);
-    // A vertical não leva abertura nem resumo; a falta de CTA Instagram aparece.
-    const ig = tail.slice(tail.indexOf("Vertical Instagram"), tail.indexOf("Vertical outras redes"));
+    // A vertical não leva abertura nem resumo; a falta de CTA vertical aparece.
+    const ig = tail.slice(tail.indexOf("Vertical"));
     assert.doesNotMatch(ig, /Abertura/);
-    assert.match(ig, /\| CTA Instagram \| \(nenhuma tomada com "usar"\) \|/);
+    assert.match(ig, /\| CTA vertical \| \(nenhuma tomada com "usar"\) \|/);
     // A alternativa e o corte não entram na montagem.
     assert.doesNotMatch(tail, /00:25\.0/);
     assert.doesNotMatch(tail, /00:15\.0/);
@@ -194,7 +194,7 @@ describe("plano da decupagem: validação (#11361)", () => {
     assert.match(list, /^5\. .*\(tomada 2 de 2: usar \(2ª tomada, a última completa\)\)$/m);
     const tpl = decupagemPlanTemplate("261028", SEGMENTS) as { blocks: Array<{ key: string; rows: unknown[] }>; _segmentos: string[] };
     assert.equal(tpl._segmentos.length, SEGMENTS.length);
-    assert.equal(tpl.blocks.length, 9);
+    assert.equal(tpl.blocks.length, 8);
     // O molde preenchido com uma linha passa na validação (as notas `_` são ignoradas).
     tpl.blocks[0].rows.push({ segments: [5], suggestion: "usar" });
     assert.equal(parseDecupagemPlan(tpl, SEGMENTS.length).ok, true);
@@ -226,15 +226,15 @@ describe("roteiro final por versão (#11361)", () => {
   });
 
   it("uma tabela Bloco | Fala | Bruto por versão, com a duração no título", () => {
-    assert.equal(md.match(/\| Bloco \| Fala \| Bruto \|/g)?.length, 3);
+    assert.equal(md.match(/\| Bloco \| Fala \| Bruto \|/g)?.length, 2);
     assert.match(md, /^## Horizontal YouTube 1920x1080: Diaria comentada_Youtube_V1 \(\d\d:\d\d\.\d\)$/m);
-    assert.match(md, /^## Vertical Instagram 1080x1920: Diaria comentada_Instagram_V1 \(\d\d:\d\d\.\d\)$/m);
+    assert.match(md, /^## Vertical 1080x1920: Diaria comentada_Vertical_V1 \(\d\d:\d\d\.\d\)$/m);
   });
 
   it("parágrafo inicial diz o que muda entre as versões", () => {
-    assert.match(md, /Comum às 3 versões: Título, Comentário, Encerramento\./);
+    assert.match(md, /Comum às 2 versões: Título, Comentário, Encerramento\./);
     assert.match(md, /Horizontal YouTube leva ainda Abertura, Resumo, CTA YouTube\./);
-    assert.match(md, /Vertical Instagram leva ainda Resumo curto, CTA Instagram\./);
+    assert.match(md, /Vertical leva ainda Resumo curto, CTA vertical\./);
     assert.equal(versionsDiffParagraph(specs.slice(0, 1)), "");
   });
 
@@ -247,11 +247,11 @@ describe("roteiro final por versão (#11361)", () => {
     assert.match(md, /\| Comentário, opção A \([\d.]+ s\) \| O PIB da IA cresce no Brasil\. \| 00:19\.0–00:21\.4 \|/);
     assert.match(md, /\| Comentário, opção B \| O PIB da IA cresceu no Brasil\. \| 00:25\.0–00:27\.4 \|/);
     // Em todas as versões que levam o comentário.
-    assert.equal(md.match(/Comentário, opção B/g)?.length, 3);
+    assert.equal(md.match(/Comentário, opção B/g)?.length, 2);
   });
 
   it("bloco que falta aparece na tabela e no rodapé da versão", () => {
-    assert.match(md, /\| CTA Instagram \| \(falta no blocks\.json\) \|  \|/);
-    assert.match(md, /Faltam no blocks\.json: CTA Instagram\./);
+    assert.match(md, /\| CTA vertical \| \(falta no blocks\.json\) \|  \|/);
+    assert.match(md, /Faltam no blocks\.json: CTA vertical\./);
   });
 });

@@ -207,5 +207,6 @@ test("Final/ com .mp4 do próprio editor (não promovido) segue barrando Editado
     orientation: "vertical",
     target: "instagram",
   });
-  assert.equal(out.output.action, "none");
+  assert.equal(out.output.action, "print-id");
+  if (out.output.action === "print-id") assert.equal(out.output.file.id, "o");
 });

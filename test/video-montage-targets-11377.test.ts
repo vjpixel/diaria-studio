@@ -32,7 +32,8 @@ function wordsIn(a: number, b: number, prefix: string): Word[] {
   return out;
 }
 
-const [YT, IG, OUT] = defaultSequences() as [SequenceSpec, SequenceSpec, SequenceSpec];
+const [YT, OUT] = defaultSequences();
+const IG: SequenceSpec = { ...OUT, target: "instagram", name: "Diaria comentada_Instagram_V1" };
 
 describe("itemInTarget (#11377)", () => {
   it("sem targets nem skip, entra em todas", () => {

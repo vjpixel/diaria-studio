@@ -55,8 +55,8 @@
  *   srt AAMMDD [--seq instagram|outras-redes] [--from-raw] [--force]
  *       legendas das verticais. Retranscreve o áudio montado (cache por trechos +
  *       identidade do áudio); --from-raw remapeia o transcript do bruto.
- *   preview AAMMDD [--seq instagram|outras-redes]   (default outras-redes; sempre refaz)
- *   review AAMMDD [--seq instagram|outras-redes]    (default outras-redes; sempre refaz)
+ *   preview AAMMDD [--seq instagram|outras-redes]   (default única vertical; sempre refaz)
+ *   review AAMMDD [--seq instagram|outras-redes]    (default única vertical; sempre refaz)
  *   review-final AAMMDD --file PATH [--seq youtube|instagram|outras-redes] [--no-text]
  *       revisão do EXPORT do Premiere (#11557): formato contra o destino (proporção,
  *       faixa preta, fps, teto do vertical), loudness/true peak, estalos e fragmentos

@@ -306,7 +306,7 @@ export const LINKEDIN_TIMER_DETAIL =
  */
 export const INSTAGRAM_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-Instagram, publishing.shorts.instagram_backend = timer-300) no horário do vertical, " +
-  "com o corte _Instagram_ do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
+  "com o vertical único do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
   "e, se ainda assim o Reels não sair (acima do teto da API, credencial, falha), abre um alarme para o editor. " +
   "Para publicar pela API mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor: o lock do timer não cruza máquina e o Reels sai duplicado) " +
   "só esse destino com --only instagram --instagram-timer --publish " +

@@ -52,6 +52,7 @@ export const BLOCK_LABELS: Readonly<Record<BlockKey, string>> = {
   resumo_curto: "Resumo curto",
   comentario: "Comentário",
   cta_yt: "CTA YouTube",
+  cta_vertical: "CTA vertical",
   cta_ig: "CTA Instagram",
   cta_out: "CTA outras redes",
   fecho: "Encerramento",
@@ -60,7 +61,7 @@ export const BLOCK_LABELS: Readonly<Record<BlockKey, string>> = {
 const TARGET_LABELS: Readonly<Record<SequenceTarget, string>> = {
   youtube: "Horizontal YouTube",
   instagram: "Vertical Instagram",
-  "outras-redes": "Vertical outras redes",
+  "outras-redes": "Vertical",
 };
 
 /** "Horizontal YouTube 1920x1080" etc. */
@@ -291,7 +292,7 @@ export function decupagemPlanTemplate(edition: string, segments: Segment[], voic
       "Uma tomada por frase, decidida nesta ordem: (1) a aprovada pela direção; (2) a que emenda com a frase seguinte do roteiro; (3) a última completa. As outras 'cortar' com o motivo. 'alternativa' só quando nenhum critério decide, depois de retranscrever o trecho (retranscribe --from --to), com a justificativa.",
     _segmentos: segmentLines(segments, voices),
     edition,
-    blocks: BLOCK_KEYS.map((key) => ({ key, rows: [] })),
+    blocks: BLOCK_KEYS.filter((key) => key !== "cta_ig" && key !== "cta_out").map((key) => ({ key, rows: [] })),
     vocabulary: [],
   };
 }
@@ -496,7 +497,7 @@ export function versionsDiffParagraph(specs: SequenceSpec[]): string {
 const LETTERS = "ABCDEFGH";
 
 /**
- * O Doc do roteiro final ("Roteiro final {AAMMDD} (3 versões)"): uma tabela
+ * O Doc do roteiro final ("Roteiro final {AAMMDD} (2 versões)"): uma tabela
  * por versão (`Bloco | Fala | Bruto`), duração da versão no título, texto
  * integral de cada item com o timecode do bruto e a tomada. Bloco com tomadas
  * alternativas (as "alternativa" da decupagem) mostra a escolhida como
