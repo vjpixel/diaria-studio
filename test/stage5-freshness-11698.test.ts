@@ -144,6 +144,16 @@ describe("sha256 dos outputs no sentinel (#11698 P1)", () => {
     assert.equal(r.ok, false);
     assert.match(r.problems.join(), /02-reviewed\.md: conteúdo difere/);
   });
+  it("playbook libera --accept-newer para a mensagem real de sha256 e para a de mtime (#11698)", () => {
+    const md = readFileSync(new URL("../.claude/agents/orchestrator-stage-5.md", import.meta.url), "utf8");
+    const strip = (t: string) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const d = hashed();
+    writeFileSync(join(d, "02-reviewed.md"), "editado no Studio depois do gate");
+    const shaMsg = checkStage5Freshness(d).problems[0].replace(/^[^:]+: /, "").replace(/ — .*$/, "");
+    assert.match(shaMsg, /conteúdo difere do aprovado no gate 4 \(sha256\)/);
+    assert.ok(strip(md).includes(strip(shaMsg)), `playbook não cobre: ${shaMsg}`);
+    assert.match(md, /"modificado apos o sentinel"/);
+  });
   it("conteúdo igual → ok, sem warning", () => {
     assert.deepEqual(checkStage5Freshness(hashed()), { ok: true, problems: [] });
   });
