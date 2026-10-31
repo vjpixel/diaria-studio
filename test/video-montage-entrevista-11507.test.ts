@@ -122,12 +122,12 @@ describe("vozes por segmento (#11507)", () => {
     const r = classifyVoices([215, 220, 163, 210], [10, 10, 2, 8], { pixelHz: 163 });
     assert.equal(r.pixelFrom, "referencia");
     assert.deepEqual(r.marks.map((m) => m?.label), ["outra", "outra", "pixel", "outra"]);
-    const sem = classifyVoices([215, 220, 163, 210], [10, 10, 2, 8]);
+    const sem = classifyVoices([215, 220, 163, 210], [10, 10, 4, 8]);
     assert.equal(sem.marks[2]?.label, "outra", "sem a referência, a voz de mais tempo vira o Pixel (premissa)");
   });
 
   it("segmento sem F0 medida, com duas vozes, é 'ouvir'", () => {
-    const r = classifyVoices([163, 220, null], [5, 2, 1]);
+    const r = classifyVoices([163, 220, null], [5, 4, 1]);
     assert.equal(r.marks[2]?.label, "ouvir");
     assert.equal(voiceHint(r.marks[2]), "voz: ouvir, F0 não medida");
   });

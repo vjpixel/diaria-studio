@@ -114,16 +114,34 @@ export interface DecupagemPlan {
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 
 /**
+ * Blocos que podem repetir o mesmo segmento "usar" (#11676): nenhuma sequência
+ * leva dois blocos do mesmo grupo. O resumo curto das verticais é, por
+ * definição, um subconjunto das falas do resumo; o CTA gravado uma vez serve a
+ * mais de uma versão. Fora destes grupos (e dentro do mesmo bloco), segmento
+ * repetido continua erro.
+ */
+export const SHARED_SEGMENT_GROUPS: ReadonlyArray<readonly BlockKey[]> = [
+  ["resumo", "resumo_curto"],
+  BLOCK_KEYS.filter((k) => k.startsWith("cta_")),
+];
+
+/** Os dois blocos podem ter o mesmo segmento "usar" (#11676). */
+export function blocksMayShareSegment(a: BlockKey, b: BlockKey): boolean {
+  return a !== b && SHARED_SEGMENT_GROUPS.some((g) => g.includes(a) && g.includes(b));
+}
+
+/**
  * Valida o plano contra o transcript, juntando todos os erros: bloco conhecido
- * e não repetido, segmento existente e em uma linha só, sugestão conhecida,
- * motivo em cortar/alternativa. Chaves que começam com `_` (as notas do molde)
- * são ignoradas.
+ * e não repetido, segmento existente e em uma linha só (exceto "usar" repetido
+ * entre blocos de `SHARED_SEGMENT_GROUPS`, #11676), sugestão conhecida, motivo
+ * em cortar/alternativa. Chaves que começam com `_` (as notas do molde) são
+ * ignoradas.
  */
 export function parseDecupagemPlan(raw: unknown, segmentCount: number): { ok: true; plan: DecupagemPlan } | { ok: false; errors: string[] } {
   const errors: string[] = [];
   if (!isObj(raw)) return { ok: false, errors: ["decupagem-plan.json precisa ser um objeto"] };
   if (typeof raw.edition !== "string" || !/^\d{6}$/.test(raw.edition)) errors.push("edition precisa ser AAMMDD");
-  const seenSeg = new Map<number, string>();
+  const seenSeg = new Map<number, Array<{ label: string; key: BlockKey; usar: boolean }>>();
   const seenKey = new Set<string>();
   let used = 0;
   if (!Array.isArray(raw.blocks)) errors.push("blocks precisa ser uma lista de { key, rows }");
@@ -145,9 +163,13 @@ export function parseDecupagemPlan(raw: unknown, segmentCount: number): { ok: tr
               errors.push(`${label}: segmento ${String(s)} fora de 1..${segmentCount}`);
               continue;
             }
-            const prev = seenSeg.get(s as number);
-            if (prev) errors.push(`${label}: segmento ${s} já está em ${prev}`);
-            else seenSeg.set(s as number, label);
+            const occ = seenSeg.get(s as number) ?? [];
+            const here = { label, key: b.key as BlockKey, usar: r.suggestion === "usar" };
+            // Repetido só vale com "usar" nas duas pontas e entre blocos de um grupo compartilhável (#11676).
+            const clash = occ.find((o) => !(here.usar && o.usar && blocksMayShareSegment(o.key, here.key)));
+            if (clash) errors.push(`${label}: segmento ${s} já está em ${clash.label}`);
+            occ.push(here);
+            seenSeg.set(s as number, occ);
             used++;
           }
         }
@@ -273,7 +295,8 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
       for (let k = i + 1; k < list.length; k++) {
         const a = list[i];
         const c = list[k];
-        if (!duplicate(a.seg, c.seg)) continue;
+        // O MESMO segmento em resumo e resumo_curto (ou em dois CTAs) é a mesma tomada, não duas (#11676).
+        if (a.seg === c.seg || !duplicate(a.seg, c.seg)) continue;
         errors.push(
           `segmentos ${a.seg + 1} (${a.label}) e ${c.seg + 1} (${c.label}) são tomadas da mesma frase, as duas "usar": decidir uma (a outra "cortar", ou "alternativa" só se nenhum critério decide)`,
         );
@@ -286,7 +309,7 @@ export function checkDecupagemCriteria(plan: DecupagemPlan, segments: Segment[])
 /** Molde do plano: todos os blocos vazios e a listagem dos segmentos como nota (`_segmentos`), para a skill classificar. */
 export function decupagemPlanTemplate(edition: string, segments: Segment[], voices?: Array<VoiceMark | null>): Record<string, unknown> {
   return {
-    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou.",
+    _como: "Cada linha: { segments: [n, ...], suggestion: usar|cortar|alternativa, reason?, text? }. Segmento fora de toda linha vira 'cortar (bastidor)'. text = fala limpa quando o Whisper errou. Um segmento fica numa linha só, exceto 'usar' repetido entre resumo e resumo_curto ou entre os CTAs.",
     _criterio:
       "Uma tomada por frase, decidida nesta ordem: (1) a aprovada pela direção; (2) a que emenda com a frase seguinte do roteiro; (3) a última completa. As outras 'cortar' com o motivo. 'alternativa' só quando nenhum critério decide, depois de retranscrever o trecho (retranscribe --from --to), com a justificativa.",
     _segmentos: segmentLines(segments, voices),
