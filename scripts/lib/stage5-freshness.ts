@@ -11,15 +11,41 @@
  *   - `06-public-images.json` ausente (imagens do Stage 3/5c-pre não chegaram).
  * Não altera nada na edição.
  */
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { normalizeSelfUrls } from "./manual-edit-diff.ts";
 
 export const FRESHNESS_SLACK_MS = 2 * 60 * 1000;
 
 export interface FreshnessResult {
   ok: boolean;
   problems: string[];
+  /** Avisos que não bloqueiam (ex.: sentinel antigo sem hashes). */
+  warnings?: string[];
+}
+
+// Sempre vigiados, mesmo se o sentinel vier com `outputs` vazio/inválido (fail-closed).
+const ALWAYS_WATCHED = ["02-reviewed.md", "03-social.md"];
+
+/**
+ * sha256 do conteúdo aprovado. Em 03-social.md a URL própria resolvida pelo Stage 5
+ * (§5c-2) volta ao placeholder `{edition_url}` antes do hash, senão a retomada divergiria.
+ */
+export function hashOutput(rel: string, content: Buffer): string {
+  const data = rel === "03-social.md" ? Buffer.from(normalizeSelfUrls(content.toString("utf8")), "utf8") : content;
+  return createHash("sha256").update(data).digest("hex");
+}
+
+/** Hashes dos outputs existentes, gravados no sentinel do Stage 4 (`output_hashes`). */
+export function computeOutputHashes(editionDir: string, outputs: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rel of outputs) {
+    const p = join(editionDir, rel);
+    if (existsSync(p) && statSync(p).isFile()) out[rel] = hashOutput(rel, readFileSync(p));
+  }
+  return out;
 }
 
 // Só existência/tamanho: o próprio Stage 5 (5c-pre) regrava este arquivo depois do sentinel.
@@ -56,16 +82,29 @@ export function checkStage5Freshness(
     return { ok: false, problems: ["sentinel do Stage 4 ausente (ainda sincronizando?)"] };
   }
   let outputs: string[] = [];
+  let hashes: Record<string, string> = {};
   let completedMs = NaN;
+  const warnings: string[] = [];
   try {
-    const s = JSON.parse(readFileSync(sentinelPath, "utf8")) as { outputs?: string[]; completed_at?: string };
-    outputs = Array.isArray(s.outputs) ? s.outputs : [];
+    const s = JSON.parse(readFileSync(sentinelPath, "utf8")) as {
+      outputs?: unknown;
+      completed_at?: string;
+      output_hashes?: unknown;
+    };
+    if (Array.isArray(s.outputs) && s.outputs.every((x) => typeof x === "string")) outputs = s.outputs as string[];
+    else problems.push("sentinel do Stage 4 com `outputs` inválido (não é lista de caminhos)");
+    if (s.output_hashes && typeof s.output_hashes === "object" && !Array.isArray(s.output_hashes)) {
+      hashes = s.output_hashes as Record<string, string>;
+    }
     completedMs = Date.parse(s.completed_at ?? "");
   } catch {
     return { ok: false, problems: ["sentinel do Stage 4 ilegível"] };
   }
   if (!Number.isFinite(completedMs)) problems.push("sentinel do Stage 4 sem completed_at válido");
-  const watched = new Set<string>([...outputs, ...EXTRA_REQUIRED]);
+  if (Object.keys(hashes).length === 0) {
+    warnings.push("sentinel do Stage 4 sem output_hashes (gravado antes do #11698): só o mtime vigia o conteúdo");
+  }
+  const watched = new Set<string>([...ALWAYS_WATCHED, ...outputs, ...EXTRA_REQUIRED]);
   for (const rel of watched) {
     const p = join(editionDir, rel);
     if (!existsSync(p)) {
@@ -73,8 +112,18 @@ export function checkStage5Freshness(
       continue;
     }
     const st = statSync(p);
-    if (st.size === 0) problems.push(`${rel}: vazio`);
-    else if (!opts.acceptNewer && !EXTRA_REQUIRED.includes(rel) && !REWRITTEN_BY_STAGE5.includes(rel) && Number.isFinite(completedMs) && st.mtimeMs > completedMs + slack) {
+    if (st.size === 0) {
+      problems.push(`${rel}: vazio`);
+      continue;
+    }
+    if (EXTRA_REQUIRED.includes(rel)) continue;
+    const expected = hashes[rel];
+    if (typeof expected === "string") {
+      // Hash vale mais que mtime: pega cópia pré-gate (mtime antigo) e dispensa isenção de 03-social.md.
+      if (!opts.acceptNewer && hashOutput(rel, readFileSync(p)) !== expected) {
+        problems.push(`${rel}: conteúdo difere do aprovado no gate 4 (sha256) — versão pré-gate ou editado depois`);
+      }
+    } else if (!opts.acceptNewer && !REWRITTEN_BY_STAGE5.includes(rel) && Number.isFinite(completedMs) && st.mtimeMs > completedMs + slack) {
       problems.push(`${rel}: modificado após o sentinel do Stage 4`);
     }
   }
@@ -89,5 +138,5 @@ export function checkStage5Freshness(
       }
     }
   }
-  return { ok: problems.length === 0, problems };
+  return { ok: problems.length === 0, problems, ...(warnings.length ? { warnings } : {}) };
 }

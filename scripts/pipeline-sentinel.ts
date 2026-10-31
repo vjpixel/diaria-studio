@@ -41,6 +41,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { computeOutputHashes } from "./lib/stage5-freshness.ts";
 import { resolve } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveEditionDir as resolveFindEditionDir } from "./lib/find-current-edition.ts";
@@ -454,7 +455,7 @@ function main(): void {
         }
       }
       try {
-        writeSentinel(editionDir, step, outputs);
+        writeSentinel(editionDir, step, outputs, step === 4 ? computeOutputHashes(editionDir, outputs) : undefined);
         console.log(`sentinel step ${step} escrito em ${editionDir}/_internal/.step-${step}-done.json`);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);

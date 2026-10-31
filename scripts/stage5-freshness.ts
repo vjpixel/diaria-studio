@@ -15,9 +15,15 @@ if (isMainModule(import.meta.url)) {
     console.error("Uso: stage5-freshness.ts --edition-dir DIR");
     process.exit(2);
   }
-  const r = checkStage5Freshness(resolve(values["edition-dir"]), {
-    acceptNewer: flags.has("accept-newer") || values["accept-newer"] === "true",
-  });
+  let r: ReturnType<typeof checkStage5Freshness>;
+  try {
+    r = checkStage5Freshness(resolve(values["edition-dir"]), {
+      acceptNewer: flags.has("accept-newer") || values["accept-newer"] === "true",
+    });
+  } catch (e) {
+    // Fail-closed: arquivo sumindo no meio do sync/placeholder do OneDrive vira exit 4, nunca exceção solta.
+    r = { ok: false, problems: [`erro ao ler a edição: ${e instanceof Error ? e.message : String(e)}`] };
+  }
   console.log(JSON.stringify(r));
   process.exit(r.ok ? 0 : 4);
 }

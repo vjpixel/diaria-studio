@@ -14,6 +14,8 @@ export interface StepSentinel {
   step: number;
   completed_at: string;
   outputs: string[]; // relative paths from editionDir
+  /** sha256 por output (só Stage 4, #11698); ausente em sentinel antigo. */
+  output_hashes?: Record<string, string>;
 }
 
 export type AssertResult =
@@ -29,6 +31,7 @@ export function writeSentinel(
   editionDir: string,
   step: number,
   outputs: string[],
+  outputHashes?: Record<string, string>,
 ): void {
   const internalDir = resolve(editionDir, "_internal");
   mkdirSync(internalDir, { recursive: true });
@@ -36,6 +39,7 @@ export function writeSentinel(
     step,
     completed_at: new Date().toISOString(),
     outputs,
+    ...(outputHashes && Object.keys(outputHashes).length ? { output_hashes: outputHashes } : {}),
   };
   writeFileSync(sentinelPath(editionDir, step), JSON.stringify(sentinel, null, 2) + "\n", "utf8");
 }
