@@ -24,9 +24,12 @@ export interface StaleEditionFacts {
    * o stage vale como sinal mesmo com o sentinel local presente.
    */
   outputsMissing?: boolean;
+  /** Arquivo `edition-lock` existe mas está corrompido/ilegível (sync em trânsito): fail-closed. */
+  lockUnreadable?: boolean;
 }
 
 export type StaleSignal =
+  | { kind: "unreadable_lock" }
   | { kind: "later_sentinel"; step: number }
   | { kind: "remote_lock"; host: string; stage: number; heartbeat_at: string }
   /** Tombstone de release (aprovação normal) de outro host, sentinel do stage não chegou. */
@@ -52,6 +55,7 @@ export function assessStaleEdition(f: StaleEditionFacts): StaleEditionVerdict {
   for (const s of [...f.sentinelSteps].sort((a, b) => a - b)) {
     if (s > f.step) signals.push({ kind: "later_sentinel", step: s });
   }
+  if (f.lockUnreadable) signals.push({ kind: "unreadable_lock" });
   const l = f.lock;
   const otherHost = !!l && (typeof l.host !== "string" || l.host === "" || l.host !== f.localHost);
   if (l && otherHost) {
@@ -77,7 +81,9 @@ export function describeSignals(signals: StaleSignal[]): string {
     .map((s) =>
       s.kind === "later_sentinel"
         ? `sentinel do Stage ${s.step} já existe`
-        : s.kind === "remote_completed"
+        : s.kind === "unreadable_lock"
+          ? "edition-lock corrompido/ilegível (sync em trânsito?)"
+          : s.kind === "remote_completed"
           ? `outro host (${s.host}) concluiu o Stage ${Number.isFinite(s.stage) ? s.stage : "?"} em ${s.released_at}, sentinel/outputs ainda não sincronizados`
           : `edition-lock de outro host (${s.host}, Stage ${Number.isFinite(s.stage) ? s.stage : "?"}, heartbeat ${s.heartbeat_at})`,
     )

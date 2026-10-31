@@ -174,6 +174,16 @@ export function acquireEditionLock(
   return decision;
 }
 
+/**
+ * Arquivo de trava existe mas não é legível (JSON truncado pelo sync, sem
+ * `session_id`/`heartbeat_at`). `readEditionLock` devolve `null` nesse caso —
+ * o `acquire` o trata como ausente —, mas o stale-edition-guard precisa
+ * distinguir "ausente" de "ilegível" (#11690, fail-closed).
+ */
+export function editionLockUnreadable(editionDir: string): boolean {
+  return existsSync(editionLockPath(editionDir)) && readEditionLock(editionDir) === null;
+}
+
 export type EditionLockReleaseResult = "released" | "not_held" | "held_by_other";
 
 /**
@@ -202,6 +212,11 @@ export function releaseEditionLock(
     writeAtomic(p, JSON.stringify(rec, null, 2) + "\n");
   };
   const wantsTombstone = Number.isInteger(opts.completedStage);
+  if (existing?.released_at && !wantsTombstone && existing.host !== (opts.host ?? hostname())) {
+    // Tombstone de OUTRO host: sinal de que a edição foi aprovada lá; apagá-lo
+    // reabriria o clobber (#11690). Só release com completedStage (ou o próprio host) mexe nele.
+    return "not_held";
+  }
   if (!existing || existing.released_at) {
     if (wantsTombstone) tombstone(null);
     else if (existsSync(p)) unlinkSync(p); // corrompido ou tombstone antigo: limpar

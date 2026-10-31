@@ -167,3 +167,46 @@ describe("assessStaleEdition: lock com stage ilegível", () => {
     assert.equal(assessStaleEdition({ step: 4, sentinelSteps: [], lock: l, localHost: "300" }).ok, false);
   });
 });
+
+describe("follow-ups de review (#11697)", () => {
+  const run = (args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", "scripts/stale-edition-guard.ts", ...args], { cwd: ROOT, encoding: "utf8" });
+  const guard = (dir: string, extra: string[]) => run(["check", "--edition-dir", dir, "--step", "4", ...extra]);
+  it("release sem completedStage preserva tombstone de OUTRO host; apaga o do próprio", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    acquireEditionLock(dir, { sessionId: "a", stage: 4, host: "neo" });
+    releaseEditionLock(dir, { sessionId: "a", completedStage: 4, host: "neo" });
+    assert.equal(releaseEditionLock(dir, { sessionId: "b", host: "300" }), "not_held");
+    assert.equal(readEditionLock(dir)!.host, "neo");
+    assert.equal(releaseEditionLock(dir, { sessionId: "a", host: "neo" }), "not_held");
+    assert.equal(readEditionLock(dir), null);
+  });
+  it("lock corrompido/sem session_id → unreadable_lock bloqueia; ausente não", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stale-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    assert.equal(guard(dir, []).status, 0);
+    const p = join(dir, "_internal", "edition-lock.json");
+    writeFileSync(p, '{"host":"neo","stage":4,');
+    assert.equal(guard(dir, []).status, 4);
+    writeFileSync(p, JSON.stringify({ host: "neo", stage: 4 }));
+    assert.equal(guard(dir, []).status, 4);
+    assert.equal(guard(dir, ["--force"]).status, 0);
+    assert.equal(
+      assessStaleEdition({ step: 4, sentinelSteps: [], lock: null, localHost: "300", lockUnreadable: true }).signals[0].kind,
+      "unreadable_lock",
+    );
+  });
+  it("uso inválido do guard sai ≠ 0 (nunca 0 = sem sinais)", () => {
+    assert.equal(run([]).status === 0, false);
+  });
+  it("playbooks: exit ≠ 0 é halt, --force documentado, guard fora do release do §4a, Stage 5 exit 1 e 2 guardados", () => {
+    const stage4 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-4.md"), "utf8");
+    const stage5 = readFileSync(join(ROOT, ".claude/agents/orchestrator-stage-5.md"), "utf8");
+    assert.match(stage4, /Qualquer exit ≠ 0 do guard/);
+    assert.match(stage4, /halt do guard #11690, que não escreve nada/);
+    assert.match(stage4, /--force/);
+    assert.match(stage5, /--step 4`; exit 4/);
+    assert.equal((stage5.match(/Qualquer outro exit ≠ 0 \(2, crash\) = mesmo halt/g) ?? []).length, 2);
+    assert.equal((stage5.match(/`--force`/g) ?? []).length >= 2, true);
+  });
+});
