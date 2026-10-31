@@ -168,6 +168,20 @@ describe("sha256 dos outputs no sentinel (#11698 P1)", () => {
     writeFileSync(join(d, "03-social.md"), "leia https://diar.ia.br/p/abc-123 agora");
     assert.equal(checkStage5Freshness(d).ok, true);
   });
+  it("03-social.md com {edition_url} seguido de pontuação, resolvida pelo Stage 5 → ok (P2 review)", () => {
+    const d = edition();
+    const outs = ["02-reviewed.md", "03-social.md"];
+    writeFileSync(join(d, "03-social.md"), "em {edition_url}. Mas {edition_url}, veja ({edition_url}) e {edition_url}");
+    writeFileSync(
+      join(d, "_internal", ".step-4-done.json"),
+      JSON.stringify({ outputs: outs, completed_at: new Date(DONE).toISOString(), output_hashes: computeOutputHashes(d, outs) }),
+    );
+    writeFileSync(
+      join(d, "03-social.md"),
+      "em https://diar.ia.br/p/abc-123. Mas https://diar.ia.br/p/abc-123, veja (https://diar.ia.br/p/abc-123) e https://diar.ia.br/p/abc-123",
+    );
+    assert.equal(checkStage5Freshness(d).ok, true);
+  });
   it("03-social.md alterado de verdade (outra máquina/edição) → bloqueia; --accept-newer libera", () => {
     const d = hashed();
     writeFileSync(join(d, "03-social.md"), "texto diferente");

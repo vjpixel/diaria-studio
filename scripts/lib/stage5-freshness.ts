@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { normalizeSelfUrls } from "./manual-edit-diff.ts";
+import { BEEHIIV_BASE_URL } from "./edition-url.ts";
 
 export const FRESHNESS_SLACK_MS = 2 * 60 * 1000;
 
@@ -28,6 +28,13 @@ export interface FreshnessResult {
 
 // Sempre vigiados, mesmo se o sentinel vier com `outputs` vazio/inválido (fail-closed).
 const ALWAYS_WATCHED = ["02-reviewed.md", "03-social.md"];
+
+// URL própria resolvida; a pontuação final da frase (`. , ; : ! ?`) não faz parte da URL.
+const SELF_URL_RE = new RegExp(
+  `${BEEHIIV_BASE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^\\s)]*?(?=[.,;:!?]*(?:\\s|\\)|$))`,
+  "g",
+);
+const normalizeSelfUrls = (c: string) => c.replace(SELF_URL_RE, "{edition_url}");
 
 /**
  * sha256 do conteúdo aprovado. Em 03-social.md a URL própria resolvida pelo Stage 5

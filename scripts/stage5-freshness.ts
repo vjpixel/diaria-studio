@@ -2,8 +2,8 @@
  * stage5-freshness.ts (#11698) — CLI. Exit 0 = fresca; exit 4 = possivelmente
  * defasada (fail-closed; stdout JSON com os problemas). Somente leitura.
  *   npx tsx scripts/stage5-freshness.ts --edition-dir DIR [--accept-newer]
- *   --accept-newer: editor confirma edição pós-gate; ignora só o teste de mtime
- *   (ausente/vazio/conflito continuam bloqueando).
+ *   --accept-newer: editor confirma edição pós-gate; ignora o teste de mtime e a
+ *   divergência de sha256 (ausente/vazio/conflito continuam bloqueando).
  */
 import { resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
