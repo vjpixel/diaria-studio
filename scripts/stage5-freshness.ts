@@ -1,0 +1,19 @@
+/**
+ * stage5-freshness.ts (#11698) — CLI. Exit 0 = fresca; exit 4 = possivelmente
+ * defasada (fail-closed; stdout JSON com os problemas). Somente leitura.
+ *   npx tsx scripts/stage5-freshness.ts --edition-dir DIR
+ */
+import { resolve } from "node:path";
+import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import { checkStage5Freshness } from "./lib/stage5-freshness.ts";
+
+if (isMainModule(import.meta.url)) {
+  const { values } = parseArgs(process.argv.slice(2));
+  if (!values["edition-dir"]) {
+    console.error("Uso: stage5-freshness.ts --edition-dir DIR");
+    process.exit(2);
+  }
+  const r = checkStage5Freshness(resolve(values["edition-dir"]));
+  console.log(JSON.stringify(r));
+  process.exit(r.ok ? 0 : 4);
+}

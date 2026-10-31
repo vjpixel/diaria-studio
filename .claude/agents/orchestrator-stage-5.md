@@ -51,6 +51,8 @@ Exit code handling:
 
 ### 5a. Pre-requisitos + sync
 
+**Trava da edicao + frescor entre maquinas (#11698)** — ANTES do `update-stage-status` abaixo e de qualquer escrita/dispatch: (1) rodar STANDALONE (o hook injeta `--session-id`; encadeado sai exit 2) `npx tsx scripts/edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5`. Exit 3 = outra sessao/maquina viva na edicao → halt banner `edition_lock_held_by_other` (nao dispatchar; `--force` so se o editor pedir). Exit 2 → warn e seguir (fail-soft, como no Stage 4). (2) `npx tsx scripts/stage5-freshness.ts --edition-dir {EDITION_DIR}` (somente leitura). **Exit 4 = edicao possivelmente defasada (OneDrive ainda sincronizando, output mais novo que o sentinel, copia de conflito): FAIL-CLOSED** — liberar a trava (`edition-lock.ts release`, standalone), halt banner com os `problems` do JSON e acao "aguarde a sincronizacao do OneDrive, confira os arquivos listados e rode `/diaria-5-publicacao {AAMMDD}` de novo". Nunca dispatchar, nunca alterar arquivos editoriais. Liberar a trava tambem ao fim do §5h e em todo halt banner deste stage.
+
 **Marcar Stage 5 `running` no inicio (#1783).** Garante o `start` pra que o `done` do §5h feche a duracao no relatorio. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
 ```bash
 npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status running
