@@ -10,13 +10,13 @@ import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { checkStage5Freshness } from "./lib/stage5-freshness.ts";
 
 if (isMainModule(import.meta.url)) {
-  const { values } = parseArgs(process.argv.slice(2));
+  const { values, flags } = parseArgs(process.argv.slice(2));
   if (!values["edition-dir"]) {
     console.error("Uso: stage5-freshness.ts --edition-dir DIR");
     process.exit(2);
   }
   const r = checkStage5Freshness(resolve(values["edition-dir"]), {
-    acceptNewer: values["accept-newer"] === true || values["accept-newer"] === "true",
+    acceptNewer: flags.has("accept-newer") || values["accept-newer"] === "true",
   });
   console.log(JSON.stringify(r));
   process.exit(r.ok ? 0 : 4);
