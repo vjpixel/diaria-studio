@@ -50,6 +50,22 @@ describe("checkStage5Freshness (#11698)", () => {
     writeFileSync(join(d, "02-reviewed-NEO.md"), "y");
     assert.match(checkStage5Freshness(d).problems.join(), /conflito/);
   });
+  it("retomada: 06-public-images.json mais novo que o sentinel → ok", () => {
+    const d = edition();
+    const t = new Date(DONE + 3600_000);
+    utimesSync(join(d, "06-public-images.json"), t, t);
+    assert.equal(checkStage5Freshness(d).ok, true);
+  });
+  it("irmão legítimo 03-social-pre-humanizador.md não é conflito", () => {
+    const d = edition();
+    writeFileSync(join(d, "03-social-pre-humanizador.md"), "y");
+    assert.equal(checkStage5Freshness(d).ok, true);
+  });
+  it("sentinel sem completed_at → fail-closed", () => {
+    const d = edition();
+    writeFileSync(join(d, "_internal", ".step-4-done.json"), JSON.stringify({ outputs: [] }));
+    assert.equal(checkStage5Freshness(d).ok, false);
+  });
   it("não altera arquivos", () => {
     const d = edition();
     checkStage5Freshness(d);

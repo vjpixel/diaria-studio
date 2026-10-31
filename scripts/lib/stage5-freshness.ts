@@ -21,6 +21,7 @@ export interface FreshnessResult {
   problems: string[];
 }
 
+// Só existência/tamanho: o próprio Stage 5 (5c-pre) regrava este arquivo depois do sentinel.
 const EXTRA_REQUIRED = ["06-public-images.json"];
 
 export function checkStage5Freshness(editionDir: string, opts: { slackMs?: number } = {}): FreshnessResult {
@@ -39,6 +40,7 @@ export function checkStage5Freshness(editionDir: string, opts: { slackMs?: numbe
   } catch {
     return { ok: false, problems: ["sentinel do Stage 4 ilegível"] };
   }
+  if (!Number.isFinite(completedMs)) problems.push("sentinel do Stage 4 sem completed_at válido");
   const watched = new Set<string>([...outputs, ...EXTRA_REQUIRED]);
   for (const rel of watched) {
     const p = join(editionDir, rel);
@@ -48,20 +50,26 @@ export function checkStage5Freshness(editionDir: string, opts: { slackMs?: numbe
     }
     const st = statSync(p);
     if (st.size === 0) problems.push(`${rel}: vazio`);
-    else if (Number.isFinite(completedMs) && st.mtimeMs > completedMs + slack) {
+    else if (!EXTRA_REQUIRED.includes(rel) && Number.isFinite(completedMs) && st.mtimeMs > completedMs + slack) {
       problems.push(`${rel}: modificado após o sentinel do Stage 4`);
     }
   }
-  const dirs = [editionDir, join(editionDir, "_internal")];
-  for (const d of dirs) {
+  // Cópia de conflito do OneDrive: "<nome>-<HOST>[-N].<ext>" com HOST capitalizado
+  // (ex.: 06-public-images-Neo.json); irmãos legítimos como 03-social-pre-humanizador.md não casam.
+  for (const d of [editionDir, join(editionDir, "_internal")]) {
     if (!existsSync(d)) continue;
     for (const name of readdirSync(d)) {
-      const base = name.replace(/\.[^.]+$/, "");
       const conflict = [...watched].some((w) => {
-        const wb = w.replace(/\.[^.]+$/, "");
-        return name !== w && base.startsWith(`${wb}-`) && name.endsWith(w.slice(wb.length));
+        const base = w.split("/").pop()!;
+        const dot = base.lastIndexOf(".");
+        const stem = dot < 0 ? base : base.slice(0, dot);
+        const ext = dot < 0 ? "" : base.slice(dot);
+        const re = new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-[A-Z][A-Za-z0-9]*(-\\d+)?(${ext.replace(".", "\\.")}|${ext.replace(".", "\\.")}\\.tmp)$`);
+        return re.test(name);
       });
-      if (conflict || /\.tmp$/.test(name)) problems.push(`${name}: cópia de conflito/temporário`);
+      if (conflict) {
+        problems.push(`${name}: cópia de conflito — confira e mova para _internal/_forensic/ se for descartável`);
+      }
     }
   }
   return { ok: problems.length === 0, problems };
