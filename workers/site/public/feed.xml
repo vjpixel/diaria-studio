@@ -6,7 +6,14 @@
     <description>5 minutos diários pra se manter atualizado e usar melhor as IAs — resumo diário de IA, grátis, por e-mail.</description>
     <language>pt-BR</language>
     <atom:link href="https://diar.ia.br/feed.xml" rel="self" type="application/rss+xml"/>
-    <lastBuildDate>Thu, 29 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <lastBuildDate>Fri, 30 Oct 2026 09:00:00 GMT</lastBuildDate>
+    <item>
+      <title>Pais acusam ChatGPT de matar sua filha</title>
+      <link>https://diar.ia.br/p/pais-acusam-chatgpt-de-matar-sua-filha</link>
+      <guid isPermaLink="true">https://diar.ia.br/p/pais-acusam-chatgpt-de-matar-sua-filha</guid>
+      <pubDate>Fri, 30 Oct 2026 09:00:00 GMT</pubDate>
+      <description>Baixou o Claude por anúncio? Sua senha pode ter ido | Vai gravar a aula no celular? O Gemini transcreve</description>
+    </item>
     <item>
       <title>Lula promete uma IA brasileira</title>
       <link>https://diar.ia.br/p/lula-promete-uma-ia-brasileira</link>
@@ -349,13 +356,6 @@
       <guid isPermaLink="true">https://diar.ia.br/p/openai-pausa-treinamento-apos-invasao-critica</guid>
       <pubDate>Thu, 20 Aug 2026 09:00:00 GMT</pubDate>
       <description>OpenAI chega ao Brasil com foco em empresas | Promessa de menos trabalho esbarra em 90h</description>
-    </item>
-    <item>
-      <title>TSE exige aviso em propaganda eleitoral com IA</title>
-      <link>https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia</link>
-      <guid isPermaLink="true">https://diar.ia.br/p/tse-exige-aviso-em-propaganda-eleitoral-com-ia</guid>
-      <pubDate>Wed, 19 Aug 2026 09:00:00 GMT</pubDate>
-      <description>Grupo hacker usou Claude em 8 invasões | ChatGPT for Teens chega com proteções extras</description>
     </item>
   </channel>
 </rss>
