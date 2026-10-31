@@ -172,7 +172,17 @@ describe("#11547 Instagram: o registro diz que a capa foi (cover_url)", () => {
 });
 
 /** LinkedIn falsa com `thumbnailUploadUrl`. */
-function fakeLinkedIn(opts: { thumbStatus?: number; finalizeFailsWithThumb?: boolean; initFailsWithThumb?: boolean; partStatus?: number; neverAvailable?: boolean } = {}) {
+function fakeLinkedIn(
+  opts: {
+    thumbStatus?: number;
+    finalizeFailsWithThumb?: boolean;
+    initFailsWithThumb?: boolean;
+    partStatus?: number;
+    neverAvailable?: boolean;
+    /** #11702: status do vídeo enquanto o upload declarou `uploadThumbnail: true`. */
+    statusWithThumb?: "PROCESSING_FAILED" | "PROCESSING";
+  } = {},
+) {
   const calls: Array<{ url: string; method: string; body: any }> = [];
   let initBody: any = null;
   const fetchFn = async (url: string, init?: RequestInit): Promise<Response> => {
@@ -196,7 +206,10 @@ function fakeLinkedIn(opts: { thumbStatus?: number; finalizeFailsWithThumb?: boo
     if (url === LINKEDIN_VIDEOS_FINALIZE_URL) {
       return new Response(null, { status: opts.finalizeFailsWithThumb && initBody?.initializeUploadRequest.uploadThumbnail ? 400 : 200 });
     }
-    if (url.startsWith("https://api.linkedin.com/rest/videos/")) return Response.json({ status: opts.neverAvailable ? "PROCESSING" : "AVAILABLE" });
+    if (url.startsWith("https://api.linkedin.com/rest/videos/")) {
+      if (opts.statusWithThumb && initBody?.initializeUploadRequest.uploadThumbnail) return Response.json({ status: opts.statusWithThumb });
+      return Response.json({ status: opts.neverAvailable ? "PROCESSING" : "AVAILABLE" });
+    }
     if (url === LINKEDIN_POSTS_URL) return new Response(null, { status: 201, headers: { "x-restli-id": "urn:li:share:99" } });
     throw new Error(`URL inesperada ${url}`);
   };
@@ -252,6 +265,32 @@ describe("#11547 LinkedIn perfil: uploadThumbnail + PUT do JPEG", () => {
 
   it("#11660: timeout do processamento (nunca AVAILABLE) → NÃO repete sem capa", async () => {
     const li = fakeLinkedIn({ neverAvailable: true });
+    await publishLinkedInProfileVideo(li.deps, CREDS, "202608", Buffer.alloc(10), "Texto", "Título", JPEG).catch(() => null);
+    assert.equal(li.calls.filter((c) => c.url === LINKEDIN_VIDEOS_INIT_URL).length, 1, "uma tentativa só");
+    assert.equal(li.calls.filter((c) => c.url === LINKEDIN_POSTS_URL).length, 0);
+  });
+
+  it("#11702: PUT da miniatura falhou + PROCESSING_FAILED → repete sem capa e publica", async () => {
+    const li = fakeLinkedIn({ thumbStatus: 500, statusWithThumb: "PROCESSING_FAILED" });
+    const out = await publishLinkedInProfileVideo(li.deps, CREDS, "202608", Buffer.alloc(10), "Texto", "Título", JPEG);
+    const inits = li.calls.filter((c) => c.url === LINKEDIN_VIDEOS_INIT_URL);
+    assert.deepEqual(inits.map((c) => c.body.initializeUploadRequest.uploadThumbnail), [true, false]);
+    assert.equal(li.calls.filter((c) => c.url === LINKEDIN_POSTS_URL).length, 1, "um post só");
+    assert.equal(out.entry.status, "published");
+    assert.equal(out.entry.cover?.ok, false);
+  });
+
+  it("#11702: PUT da miniatura falhou + nunca AVAILABLE → repete sem capa e publica", async () => {
+    const li = fakeLinkedIn({ thumbStatus: 500, statusWithThumb: "PROCESSING" });
+    const out = await publishLinkedInProfileVideo(li.deps, CREDS, "202608", Buffer.alloc(10), "Texto", "Título", JPEG);
+    const inits = li.calls.filter((c) => c.url === LINKEDIN_VIDEOS_INIT_URL);
+    assert.deepEqual(inits.map((c) => c.body.initializeUploadRequest.uploadThumbnail), [true, false]);
+    assert.equal(out.entry.status, "published");
+    assert.match(out.entry.cover?.error ?? "", /PUT da miniatura/);
+  });
+
+  it("#11702: capa ACEITA + nunca AVAILABLE segue sem repetir (decisão da #11660)", async () => {
+    const li = fakeLinkedIn({ statusWithThumb: "PROCESSING" });
     await publishLinkedInProfileVideo(li.deps, CREDS, "202608", Buffer.alloc(10), "Texto", "Título", JPEG).catch(() => null);
     assert.equal(li.calls.filter((c) => c.url === LINKEDIN_VIDEOS_INIT_URL).length, 1, "uma tentativa só");
     assert.equal(li.calls.filter((c) => c.url === LINKEDIN_POSTS_URL).length, 0);

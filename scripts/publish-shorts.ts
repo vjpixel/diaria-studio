@@ -256,6 +256,7 @@ import {
   SHORT_COVER_FILE,
   SHORT_COVER_SOURCE_FILE,
   bufferThumbnailOffsetMs,
+  clampBufferThumbnailOffsetMs,
   carryOverCover,
   parseShortCoverSource,
   planCoverDestination,
@@ -430,6 +431,23 @@ export const SHORTS_TIMER_TASKS: Readonly<Record<string, string>> = {
   [THREADS_PROFILE_DESTINATION]: "Diaria-Shorts-Threads-Profile",
 };
 
+/** Flag de timer que faz a rodada ser a dona do destino (sem ela o destino delegado cai em `skip_delegated`). */
+const TIMER_FLAG_OF: Partial<Record<ShortsRegistryWriter, { destination: string; flag: string }>> = {
+  "linkedin-timer": { destination: "linkedin_profile", flag: "--linkedin-timer" },
+  "threads-timer": { destination: THREADS_PROFILE_DESTINATION, flag: "--threads-timer" },
+  "instagram-timer": { destination: "instagram", flag: "--instagram-timer" },
+};
+
+/**
+ * Pure (#11679 item 3): argumentos que publicam um destino em `skip_late` já.
+ * Na rodada do timer dono do destino, `--only X --publish --now` sem a flag do
+ * timer cai em `skip_delegated` e não publica — a flag vai junto.
+ */
+export function lateNowArgs(destination: string, writer?: ShortsRegistryWriter): string {
+  const timer = writer ? TIMER_FLAG_OF[writer] : undefined;
+  return `--only ${destination} --publish${timer?.destination === destination ? ` ${timer.flag}` : ""} --now`;
+}
+
 /** Antecedência mínima para valer a pena agendar em vez de executar já (mesmo limiar de `resolveReelsSchedule`). */
 const OWNER_SCHEDULE_MIN_LEAD_MS = 10 * 60_000;
 
@@ -442,7 +460,7 @@ const OWNER_SCHEDULE_MIN_LEAD_MS = 10 * 60_000;
  */
 export function assignShortsDestinationOwners(
   items: readonly ShortsPlanItem[],
-  ctx: { aammdd: string; now: Date; instagramViaTimer: boolean },
+  ctx: { aammdd: string; now: Date; instagramViaTimer: boolean; writer?: ShortsRegistryWriter },
 ): ShortsDestinationOwner[] {
   const base = `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
   const owners: ShortsDestinationOwner[] = [];
@@ -471,7 +489,7 @@ export function assignShortsDestinationOwners(
         destination,
         action,
         by: "agent",
-        command: `${base} --only ${destination} --publish --now`,
+        command: `${base} ${lateNowArgs(destination, ctx.writer)}`,
         note: "horário passou do teto: o agente publica nesta rodada com --now (ou registra com --mark se já saiu); nunca volta ao editor",
       });
     } else if (action === "guided") {
@@ -791,9 +809,10 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
       if (profileLate) {
+        const nowCmd = lateNowArgs(dest.id, input.writer);
         const detail =
           `${profileLate} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
-          `O agente publica com --only linkedin_profile --publish --now (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
+          `O agente publica com ${nowCmd} (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`linkedin_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -885,7 +904,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (late) {
         const detail =
           `${late} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
-          `O agente publica com --only threads_profile --publish --now (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
+          `O agente publica com ${lateNowArgs(dest.id, input.writer)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`threads_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -1030,7 +1049,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
   const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
-  const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer });
+  const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer, writer: input.writer });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
 
@@ -1069,13 +1088,34 @@ export type { WorkerInstagramAccount };
 export async function uploadCoverOrFallback(
   upload: () => Promise<string>,
   log: (line: string) => void,
-): Promise<string | undefined> {
+): Promise<ReelCoverUpload> {
   try {
     return await upload();
   } catch (e) {
-    log(`[aviso] capa não enviada ao R2 (${(e as Error).message}); o Reel segue com o frame automático`);
-    return undefined;
+    const error = `capa não enviada ao R2: ${(e as Error).message}`;
+    log(`[aviso] ${error}; o Reel segue com o frame automático`);
+    // #11679 item 1: a falha volta como valor, e não `undefined`, para o registro gravar `cover.ok: false`.
+    return { error };
   }
+}
+
+/**
+ * Resultado do upload da capa do Reel (#11679): a URL pública, a falha do
+ * upload (o Reel sai com o frame automático e o registro diz que a capa não
+ * foi) ou `undefined` (rodada sem capa a enviar).
+ */
+export type ReelCoverUpload = string | { error: string } | undefined;
+
+/** Pure (#11679): URL que vai no `cover_url` do Reel; falha ou ausência = frame automático. */
+export function reelCoverUrl(cover: ReelCoverUpload): string | undefined {
+  return typeof cover === "string" ? cover : undefined;
+}
+
+/** Pure (#11547/#11679): registro da capa do Reel — `ok: false` com o erro quando o upload falhou. */
+export function reelCoverRecord(cover: ReelCoverUpload): ShortCoverRecord | null {
+  if (typeof cover === "string") return { method: "cover_url", ok: true };
+  if (cover) return { method: "cover_url", ok: false, error: cover.error };
+  return null;
 }
 
 export function shortsReelsIdempotencyKey(aammdd: string, account: WorkerInstagramAccount): string {
@@ -1464,8 +1504,9 @@ export async function publishInstagramReel(
   file: Buffer,
   caption: string,
   collaborators: string[] = [],
-  coverUrl?: string,
+  cover?: ReelCoverUpload,
 ): Promise<PublishOutcome> {
+  const coverUrl = reelCoverUrl(cover);
   const params: Record<string, string> = { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token };
   // #10790: collab — a Graph API recebe a lista como JSON; cada conta aceita o convite no app.
   if (coverUrl) params.cover_url = coverUrl;
@@ -1517,7 +1558,7 @@ export async function publishInstagramReel(
   return {
     entry: withCoverRecord(
       { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: deps.now().toISOString() },
-      coverUrl ? { method: "cover_url", ok: true } : null, // #11547
+      reelCoverRecord(cover), // #11547, #11679
     ),
     ...(warnings.length ? { warnings } : {}),
   };
@@ -2326,7 +2367,7 @@ export function attachChromeUploadToPlan(
 export interface InstagramEnqueueDeps {
   /** Sobe o vertical e devolve a URL pública (R2). */
   uploadVideo: () => Promise<string>;
-  uploadCover?: () => Promise<string | undefined>;
+  uploadCover?: () => Promise<ReelCoverUpload>;
   /** `POST /queue` do Worker. */
   enqueue: (payload: WorkerQueuePayload) => Promise<{ key: string; scheduled_at: string }>;
   now: () => Date;
@@ -2344,7 +2385,8 @@ export async function enqueueInstagramReel(
   collaborators: string[],
 ): Promise<PublishOutcome> {
   const videoUrl = await deps.uploadVideo();
-  const coverUrl = await deps.uploadCover?.();
+  const cover = await deps.uploadCover?.();
+  const coverUrl = reelCoverUrl(cover);
   let queued: { key: string; scheduled_at: string };
   try {
     queued = await deps.enqueue(
@@ -2371,7 +2413,7 @@ export async function enqueueInstagramReel(
     // #11547: a capa vai no payload; o Worker é quem a aplica — `ok` aqui é "enviada à fila".
     entry: withCoverRecord(
       { destination: "instagram", status: "scheduled", id: queued.key, scheduled_at: queued.scheduled_at, at: deps.now().toISOString() },
-      coverUrl ? { method: "cover_url", ok: true } : null,
+      reelCoverRecord(cover),
     ),
     ...(state === "scheduled" ? {} : { warnings: [`fila do Worker devolveu scheduled_at ${queued.scheduled_at} (estado ${state}) — confira se a entry não disparou na hora`] }),
   };
@@ -3082,13 +3124,18 @@ async function main(): Promise<number> {
   const shortCover = readShortCover(dir, (l) => console.error(l)); // #11547
   // #11660: capa ausente nesta máquina é aviso explícito (e vai pro registro de cada destino), nunca silêncio.
   if (!shortCover.path) console.error(`[aviso] capa do vertical: ${SHORT_COVER_MISSING_ERROR}`);
+  // #11679 item 2: offset do X fora do vertical (sequência do Premiere que não começa em 00:00:00:00) não vai à Buffer.
+  const bufferOffsetMs = clampBufferThumbnailOffsetMs(shortCover.bufferOffsetMs, duration);
+  if (shortCover.bufferOffsetMs !== null && bufferOffsetMs === null) {
+    console.error(`[aviso] capa do X: offset ${shortCover.bufferOffsetMs} ms do timecode do Still fica fora do vertical — a Buffer escolhe o frame`);
+  }
   let plan: ShortsPlan;
   try {
     plan = planShortsPublish({
       aammdd,
       coverPath: shortCover.path,
       coverUploadReady: r2.ready,
-      coverBufferOffsetMs: shortCover.bufferOffsetMs,
+      coverBufferOffsetMs: bufferOffsetMs,
       reviewedMd: readFileSync(reviewedPath, "utf8"),
       now: new Date(),
       config,
@@ -3159,9 +3206,11 @@ async function main(): Promise<number> {
     });
     return uploaded;
   };
-  let uploadedCover: Promise<string | undefined> | undefined;
-  const uploadCover = async (): Promise<string | undefined> => {
-    if (!plan.cover.path || !r2.ready) return undefined;
+  let uploadedCover: Promise<ReelCoverUpload> | undefined;
+  const uploadCover = async (): Promise<ReelCoverUpload> => {
+    if (!plan.cover.path) return undefined;
+    // #11679: capa local presente e R2 indisponível também fica no registro (`cover.ok: false`).
+    if (!r2.ready) return { error: `capa não enviada ao R2: R2 não configurado (${r2.missing.join(", ")})` };
     const coverPath = plan.cover.path;
     uploadedCover ??= uploadCoverOrFallback(
       () => reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
@@ -3190,7 +3239,7 @@ async function main(): Promise<number> {
     }
     if (item.action === "buffer") {
       // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
-      const r = await prepareBufferItem(item, uploadVideo, shortCover.bufferOffsetMs);
+      const r = await prepareBufferItem(item, uploadVideo, bufferOffsetMs);
       results.push(r);
       console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
       continue;
@@ -3379,7 +3428,7 @@ async function main(): Promise<number> {
     for (const w of attached.warnings) console.error(`[aviso] ${w}`);
   }
   // #11550: os itens podem ter mudado depois do plano (repost bloqueado, upload do Chrome) — os donos acompanham.
-  plan = { ...plan, owners: assignShortsDestinationOwners(plan.items, { aammdd, now: new Date(), instagramViaTimer: shortsCfg.instagramBackend === "timer-300" }) };
+  plan = { ...plan, owners: assignShortsDestinationOwners(plan.items, { aammdd, now: new Date(), instagramViaTimer: shortsCfg.instagramBackend === "timer-300", writer }) };
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,
     scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,
