@@ -45,6 +45,8 @@
  *   5 — GET de verificação pós-PATCH não confirma o agendamento esperado
  *   6 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
+ *       OU (#11689) `--scheduled-at` já passou / a <2 min de agora (sem
+ *       override; roda depois do atalho idempotente) — voltar ao gate do Stage 6
  *   7 — (#10437) audiência não confirmada. Com `kit.diaria_exclusion_segment`
  *       ligado: segmento não resolvido, ou o broadcast relido ANTES do PATCH
  *       não mostra o filtro do segmento (nada agendado; se ele JÁ estava
@@ -64,7 +66,7 @@ import { hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilt
 import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
 import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast, FINAL_GUARD_MIN_LEAD_MS } from "./lib/edition-scheduled-at.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { runSemanalFrioAfterSchedule, summarizeSemanalFrioForSchedule } from "./publish-kit-semanal-frio.ts"; // #11221
 
@@ -102,6 +104,8 @@ export async function scheduleNewsletterKit(
   deps: ScheduleNewsletterKitDeps,
   options: {
     allowOtherDate?: boolean;
+    /** Relógio injetável (testes, #11689). */
+    now?: Date;
     /**
      * #10437 — presente só com `kit.diaria_exclusion_segment` ligado: o filtro
      * de segmento que o broadcast PRECISA ter. Relido antes do PATCH (aborta
@@ -196,6 +200,15 @@ export async function scheduleNewsletterKit(
         alreadyScheduled: true,
       };
     }
+  }
+
+  // #11689 — defesa final contra passado, DEPOIS do atalho idempotente (re-rodar
+  // um agendamento já feito continua sucesso) e ANTES do PATCH. Roda mesmo com
+  // basename de edição irreconhecível. Margem pequena: o gate já exigiu 15 min,
+  // aqui só recusa passado de fato (evita agendamento parcial entre canais).
+  const pastCheck = checkScheduledAtNotPast(scheduledAtIso, options.now, { minLeadMs: FINAL_GUARD_MIN_LEAD_MS });
+  if (!pastCheck.ok) {
+    return { ok: false, code: 6, reason: pastCheck.reason };
   }
 
   try {

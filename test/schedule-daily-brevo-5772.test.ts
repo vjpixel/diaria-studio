@@ -6,10 +6,15 @@
  * agendamento na 6). `putSchedule`/`getCampaign`/`readPublished`/
  * `writePublished` injetados — nenhuma chamada de rede/I/O real.
  */
-import { describe, it } from "node:test";
+import { describe, it, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { scheduleDailyBrevo, type ScheduleDailyBrevoDeps } from "../scripts/schedule-daily-brevo.ts";
 import type { BrevoDiariaPublished } from "../scripts/publish-daily-brevo.ts";
+
+// #11689 — relógio fixo: os horários dos fixtures são de ago/2026 e o guard
+// "não agendar no passado" compararia com o relógio real.
+before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z") }));
+after(() => mock.timers.reset());
 
 // #8207: EDITION_DIR precisa datar (BRT) o MESMO dia de SCHEDULED_AT — o guard
 // novo (checkScheduledAtMatchesEditionDate) recusaria a divergência.

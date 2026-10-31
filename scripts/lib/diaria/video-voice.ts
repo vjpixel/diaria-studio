@@ -106,13 +106,15 @@ export function medianF0(samples: Int16Array, sampleRate: number, start: number,
   return medianF0Of(x, rate, start, end);
 }
 
-function medianF0Of(x: Float64Array, rate: number, start: number, end: number): number | null {
+function medianF0Of(x: Float64Array, rate: number, start: number, end: number, ranges?: Array<[number, number]>): number | null {
   const len = Math.round(VOICE.frameS * rate);
   const hop = Math.max(1, Math.round(VOICE.hopS * rate));
   const f0s: number[] = [];
-  for (let i = Math.max(0, Math.round(start * rate)); i + len <= Math.min(x.length, Math.round(end * rate)); i += hop) {
-    const f = frameF0(x, i, len, rate);
-    if (f !== null) f0s.push(f);
+  for (const [a, b] of ranges ?? [[start, end]]) {
+    for (let i = Math.max(0, Math.round(a * rate)); i + len <= Math.min(x.length, Math.round(b * rate)); i += hop) {
+      const f = frameF0(x, i, len, rate);
+      if (f !== null) f0s.push(f);
+    }
   }
   if (f0s.length < VOICE.minVoicedFrames) return null;
   f0s.sort((a, b) => a - b);
@@ -120,10 +122,32 @@ function medianF0Of(x: Float64Array, rate: number, start: number, end: number): 
   return f0s.length % 2 ? f0s[m] : (f0s[m - 1] + f0s[m]) / 2;
 }
 
-/** F0 mediana de cada segmento (decima o áudio uma vez só). */
-export function segmentF0s(samples: Int16Array, sampleRate: number, segments: Array<Pick<Segment, "start" | "end">>): Array<number | null> {
+type SegmentSpan = Pick<Segment, "start" | "end"> & { words?: Array<{ start: number; end: number }> };
+
+/** Intervalos das palavras do segmento (#11675); undefined sem palavras com tempo, e aí vale o intervalo inteiro. */
+function wordRanges(s: SegmentSpan): Array<[number, number]> | undefined {
+  const r = (s.words ?? []).filter((w) => w.end > w.start).map((w): [number, number] => [w.start, w.end]);
+  return r.length ? r : undefined;
+}
+
+/**
+ * Tempo de fala do segmento (s): soma das palavras (#11675). Whisper devolve
+ * segmentos de 20–30 s para uma frase de 3 s (silêncio + fala); a duração do
+ * segmento inflaria o peso da voz. Sem palavras, a duração do segmento.
+ */
+export function speechSeconds(s: SegmentSpan): number {
+  const r = wordRanges(s);
+  return r ? r.reduce((n, [a, b]) => n + (b - a), 0) : Math.max(0, s.end - s.start);
+}
+
+/**
+ * F0 mediana de cada segmento (decima o áudio uma vez só). Com o tempo por
+ * palavra, mede só dentro das palavras (#11675): a F0 do silêncio/respiro do
+ * resto do segmento não entra na mediana.
+ */
+export function segmentF0s(samples: Int16Array, sampleRate: number, segments: SegmentSpan[]): Array<number | null> {
   const { x, rate } = decimate(samples, sampleRate);
-  return segments.map((s) => medianF0Of(x, rate, s.start, s.end));
+  return segments.map((s) => medianF0Of(x, rate, s.start, s.end, wordRanges(s)));
 }
 
 export type VoiceLabel = "pixel" | "outra" | "ouvir";

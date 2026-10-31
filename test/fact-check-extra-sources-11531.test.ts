@@ -24,7 +24,7 @@ import {
   syncExtraSources,
 } from "../scripts/lib/fact-check-extra-sources.ts";
 import { refreshDestaqueSources } from "../scripts/refresh-destaque-sources.ts";
-import { formatGateSummary, formatSourceAttribution, type FactCheckResult } from "../scripts/run-fact-checker.ts";
+import { formatGateSummary, formatSourceAttribution, notConfirmedInPrimary, primaryCaveat, type FactCheckResult, type FactClaim } from "../scripts/run-fact-checker.ts";
 
 const CNN = "https://www.cnnbrasil.com.br/tecnologia/plano-ia";
 const PODER = "https://www.poder360.com.br/governo/plano-brasileiro-de-ia-23-bilhoes";
@@ -233,5 +233,111 @@ describe("formatSourceAttribution (#11531)", () => {
     assert.deepEqual(formatSourceAttribution(result.claims, undefined), []);
     assert.doesNotMatch(formatGateSummary(result), /Fonte dos claims sustentados/);
     assert.match(formatGateSummary(result, { primaryUrls: [CNN] }), /Fonte dos claims sustentados/);
+  });
+});
+
+describe("fonte adicional sem confirmação na principal (#11691)", () => {
+  const mk = (note: string | undefined, url: string) => ({
+    destaque: 1, claim_type: "number" as const, text: "270 mil mensagens", context: "",
+    sources: ["newsletter" as const], verdict: "SUSTAINED" as const, source_url: url, note,
+  });
+
+  it("claim só da fonte adicional com ressalva do agente sai com ⚠️ e a nota", () => {
+    const out = formatSourceAttribution(
+      [mk("não confirmado na fonte principal; consta na matéria do Poder360", PODER)],
+      [CNN],
+    ).join("\n");
+    assert.match(out, /⚠️ D1 \[number\] "270 mil mensagens"/);
+    assert.match(out, /→ \[li a fonte principal e não achei o claim\] não confirmado na fonte principal/);
+    assert.match(out, /1 claim\(s\) sem confirmação na fonte principal/);
+  });
+
+  it("fonte adicional sem ressalva não gera alarme falso", () => {
+    const out = formatSourceAttribution([mk("confirmado na matéria", PODER)], [CNN]).join("\n");
+    assert.match(out, /ADICIONAL/);
+    assert.doesNotMatch(out, /⚠️/);
+  });
+
+  it("nota que apenas cita a fonte principal sem ressalva não gera ⚠️", () => {
+    const out = formatSourceAttribution([mk("não encontrei divergência com a fonte principal", PODER)], [CNN]).join("\n");
+    assert.doesNotMatch(out, /⚠️/);
+  });
+
+  it("fonte do título nunca é marcada, mesmo com a frase na nota", () => {
+    const out = formatSourceAttribution(
+      [mk("não confirmado na fonte principal", CNN)],
+      [CNN],
+    ).join("\n");
+    assert.doesNotMatch(out, /⚠️/);
+  });
+
+  it("não vira divergente nem atenção no resumo", () => {
+    const r: FactCheckResult = {
+      edition: "261030", checked_at: "2026-10-30T12:00:00Z",
+      claims: [mk("não confirmado na fonte principal", PODER)],
+      summary: { total: 1, sustained: 1, divergent: 0, not_found_in_source: 0, source_unreachable: 0, inferred: 0, attention_items: 0 },
+    };
+    const out = formatGateSummary(r, { primaryUrls: [CNN] });
+    assert.match(out, /✅ 0 divergentes/);
+    assert.match(out, /⚠️  1 claim\(s\) sem confirmação/);
+  });
+});
+
+describe("gate sem falso verde e sinal estruturado (#11691 review)", () => {
+  const mk = (over: Record<string, unknown>) => ({
+    destaque: 1, claim_type: "number" as const, text: "270 mil mensagens", context: "",
+    sources: ["newsletter" as const], verdict: "SUSTAINED" as const, source_url: PODER, ...over,
+  });
+  const res = (claims: FactClaim[]): FactCheckResult => ({
+    edition: "261030", checked_at: "2026-10-30T12:00:00Z", claims,
+    summary: { total: claims.length, sustained: claims.length, divergent: 0, not_found_in_source: 0, source_unreachable: 0, inferred: 0, attention_items: 0 },
+  });
+
+  it("com ressalva, NÃO imprime o ✅ 'Todos os claims verificados'", () => {
+    const out = formatGateSummary(res([mk({ primary_status: "not_found" })]), { primaryUrls: [CNN] });
+    assert.doesNotMatch(out, /✅ Todos os claims verificados/);
+    assert.match(out, /não é verde pleno/);
+  });
+
+  it("sem ressalva mantém o ✅", () => {
+    const out = formatGateSummary(res([mk({ note: "confirmado" })]), { primaryUrls: [CNN] });
+    assert.match(out, /✅ Todos os claims verificados/);
+  });
+
+  it("campo estruturado funciona sem texto na nota", () => {
+    assert.equal(notConfirmedInPrimary({ primary_status: "not_found" }), true);
+    assert.equal(notConfirmedInPrimary({ note: undefined }), false);
+  });
+
+  for (const note of [
+    "não consta na fonte principal",
+    "não aparece na fonte principal",
+    "não localizado na fonte principal",
+    "a fonte principal não confirma o número",
+    "não confirmado no texto da fonte principal",
+    "não confirmado na fonte nova",
+    "Não foi encontrado no link do título",
+  ]) {
+    it(`variante de texto livre: ${note}`, () => {
+      assert.equal(notConfirmedInPrimary({ note }), true);
+    });
+  }
+
+  it("nota com 'divergência' + fonte principal não gera alarme", () => {
+    assert.equal(notConfirmedInPrimary({ note: "não encontrei divergência com a fonte principal" }), false);
+  });
+
+  it("principal indisponível é distinguida de 'li e não achei'", () => {
+    assert.equal(primaryCaveat({ primary_status: "unavailable" }), "unavailable");
+    assert.equal(primaryCaveat({ note: "fonte principal indisponível (451); consta na matéria X" }), "unavailable");
+    const out = formatSourceAttribution([mk({ primary_status: "unavailable", note: "x" }) as FactClaim], [CNN]).join("\n");
+    assert.match(out, /fonte principal indisponível\] x/);
+    assert.match(out, /1 com a principal indisponível/);
+  });
+
+  it("nota longa não é truncada", () => {
+    const long = "não confirmado na fonte principal; " + "a".repeat(400) + " FIM";
+    const out = formatSourceAttribution([mk({ note: long }) as FactClaim], [CNN]).join("\n");
+    assert.match(out, /a FIM/);
   });
 });

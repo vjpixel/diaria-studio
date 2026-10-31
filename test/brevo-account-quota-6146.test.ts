@@ -6,7 +6,7 @@
  * transacional do #6042 já tinha consumido os 300 e-mails/dia do plano free.
  * Nenhum guard do repo olhava a cota da CONTA — só o tamanho da LISTA.
  */
-import { describe, it, mock, after } from "node:test";
+import { describe, it, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 import {
@@ -41,6 +41,10 @@ function tmp(prefix: string): string {
   TMP_DIRS.push(d);
   return d;
 }
+// #11689: o guard de horário passado dos agendadores usa o relógio real; fixtures
+// com datas de agosto/2026 precisam de relógio fixo.
+before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z") }));
+after(() => mock.timers.reset());
 after(() => {
   for (const d of TMP_DIRS) rmSync(d, { recursive: true, force: true });
 });

@@ -10,7 +10,7 @@
  *   - broadcast do Kit não sai com filtro não resolvido;
  *   - flags `false` = comportamento idêntico ao atual.
  */
-import { describe, it } from "node:test";
+import { describe, it, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -566,6 +566,9 @@ describe("audiência do broadcast principal (#10437)", () => {
 });
 
 describe("schedule-newsletter-kit com audiência por segmento (#10437)", () => {
+  // #11689: guard de horário passado usa o relógio real; fixa antes das datas do fixture.
+  before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-01T00:00:00.000Z") }));
+  after(() => mock.timers.reset());
   const published: KitNewsletterPublished = { broadcast_id: 7, subject: "s", preview_text: "p", status: "test_sent" };
   function deps(filterBefore: unknown, filterAfter: unknown) {
     const patches: (string | null)[] = [];

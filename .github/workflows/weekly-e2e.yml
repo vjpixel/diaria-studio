@@ -57,6 +57,12 @@ jobs:
         id: tests
         run: npm test
         continue-on-error: true
+        env:
+          # #11686: mesmo teto do ci.yml (#8702/#8703/#8705). Sem ele o run-tests
+          # usa o teto de 300s por batch SEM limitar processos concorrentes: em
+          # 30/10/2026 (e na re-run) os mesmos 2 batches de 150 arquivos estouraram
+          # 300s — 61091 testes passaram, 0 falharam, cobertura incompleta, exit 1.
+          RUN_TESTS_MAX_PROCS: 4
 
       - name: Auto-issue on failure
         if: |

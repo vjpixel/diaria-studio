@@ -50,6 +50,8 @@
  *       dois.
  *   5 — `--scheduled-at` diverge da data da edição (#8207) — recusado salvo
  *       `--allow-other-date`; ver `scripts/lib/edition-scheduled-at.ts`
+ *       OU (#11689) `--scheduled-at` já passou / a <2 min de agora (sem
+ *       override; roda depois do atalho idempotente) — voltar ao gate do Stage 6
  *
  * Uso:
  *   npx tsx scripts/schedule-kit-diaria.ts --edition-dir data/editions/AAMMDD/ --scheduled-at 2026-08-26T09:00:00Z [--allow-other-date]
@@ -67,7 +69,7 @@ import {
 } from "./kit-diaria-stage5-dispatch.ts";
 import type { KitDiariaChannelConfig } from "./lib/kit-diaria-channel.ts";
 import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
-import { editionAammddFromDir, checkScheduledAtMatchesEditionDate } from "./lib/edition-scheduled-at.ts";
+import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast, FINAL_GUARD_MIN_LEAD_MS } from "./lib/edition-scheduled-at.ts";
 import { resolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -108,7 +110,7 @@ export async function scheduleKitDiaria(
   editionDir: string,
   scheduledAt: string,
   deps: ScheduleKitDiariaDeps,
-  options: { allowOtherDate?: boolean } = {},
+  options: { allowOtherDate?: boolean; now?: Date } = {},
 ): Promise<ScheduleKitDiariaResult> {
   // #8207 item 2 — mesmo guard de `schedule-newsletter-kit.ts`/
   // `schedule-daily-brevo.ts`: recusa `--scheduled-at` cuja data-calendário
@@ -195,6 +197,14 @@ export async function scheduleKitDiaria(
     // Cai pro PATCH abaixo — o alvo (`scheduledAt`) já é conhecido, então
     // reagendar é a ação certa (não um código de "estado defasado" que só
     // empurraria o problema pra quem lê o exit code decidir sozinho).
+  }
+
+  // #11689 — defesa final contra passado, DEPOIS do no-op idempotente e ANTES
+  // do PATCH; vale mesmo com basename de edição irreconhecível. Margem pequena
+  // (o gate já exigiu 15 min) pra não deixar agendamento parcial entre canais.
+  const pastCheck = checkScheduledAtNotPast(scheduledAt, options.now, { minLeadMs: FINAL_GUARD_MIN_LEAD_MS });
+  if (!pastCheck.ok) {
+    return { code: 5, reason: pastCheck.reason };
   }
 
   try {
