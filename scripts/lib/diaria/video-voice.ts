@@ -10,9 +10,12 @@
  *
  * Sem dependência nova: F0 por autocorrelação normalizada, em quadros de
  * 40 ms do áudio de 16 kHz do `transcribe` (decimado para 8 kHz), mediana dos
- * quadros com voz do segmento. As vozes saem de um 2-means no log da F0,
- * pesado pela duração; com os centros a menos de `VOICE.minRatio` (~3
- * semitons), é uma voz só e nada é marcado (monólogo). O Pixel é a voz com
+ * quadros com voz do segmento, só dentro das palavras dele (#11675). As vozes
+ * saem de um 2-means no log da F0, pesado pelos segundos de FALA (não pela
+ * duração do segmento, #11675); com os centros a menos de `VOICE.minRatio` (~3
+ * semitons), a outra voz com pouca fala, ou os dois grupos sem vão entre eles
+ * (`VOICE.minSeparation`), é uma voz só e nada é marcado (monólogo; a 261030
+ * saiu como entrevista, com "cortar" em fala do roteiro). O Pixel é a voz com
  * mais tempo de fala (premissa: na entrevista é ele quem responde), ou a
  * referência `--pixel-f0` quando o editor passa.
  *
@@ -32,12 +35,21 @@ export const VOICE = {
   minClarity: 0.6,
   /** Quadro abaixo disto (dBFS) é silêncio, não analisado. */
   minDb: -45,
-  /** Quadros com voz para a mediana valer (~0,2 s de voz). */
-  minVoicedFrames: 10,
+  /** Quadros com voz para a mediana valer (~0,4 s de voz; era 0,2 s até #11675). */
+  minVoicedFrames: 20,
   /** Razão mínima entre os centros das duas vozes (~3 semitons). Abaixo, uma voz só. */
   minRatio: 1.18,
-  /** Outra voz precisa de pelo menos esta fração do tempo medido. */
-  minShare: 0.03,
+  /** Outra voz precisa de pelo menos esta fração do tempo de FALA medido (#11675: era 3% do tempo de segmento). */
+  minShare: 0.05,
+  /** E de pelo menos estes segundos de fala, somados (#11675). */
+  minOtherSpeechS: 3,
+  /**
+   * Separação mínima entre as duas vozes, em desvios-padrão da F0 dentro de
+   * cada uma (#11675). Partir em duas uma voz só dá ~2,6 (uma gaussiana
+   * cortada ao meio); a 261030, monólogo, deu 2,6 pesada pela fala. Duas
+   * vozes de verdade ficam separadas por um vão, acima disto.
+   */
+  minSeparation: 3.5,
   /** Faixa ambígua em torno do meio das duas vozes, em fração da distância (log) entre elas. */
   ambiguousBand: 0.15,
 } as const;
@@ -106,11 +118,16 @@ export function medianF0(samples: Int16Array, sampleRate: number, start: number,
   return medianF0Of(x, rate, start, end);
 }
 
-function medianF0Of(x: Float64Array, rate: number, start: number, end: number): number | null {
+function medianF0Of(x: Float64Array, rate: number, start: number, end: number, spans?: Array<[number, number]>): number | null {
   const len = Math.round(VOICE.frameS * rate);
   const hop = Math.max(1, Math.round(VOICE.hopS * rate));
   const f0s: number[] = [];
   for (let i = Math.max(0, Math.round(start * rate)); i + len <= Math.min(x.length, Math.round(end * rate)); i += hop) {
+    if (spans) {
+      // Só quadros cujo centro cai numa palavra (#11675).
+      const c = (i + len / 2) / rate;
+      if (!spans.some(([a, b]) => c >= a && c <= b)) continue;
+    }
     const f = frameF0(x, i, len, rate);
     if (f !== null) f0s.push(f);
   }
@@ -120,10 +137,37 @@ function medianF0Of(x: Float64Array, rate: number, start: number, end: number): 
   return f0s.length % 2 ? f0s[m] : (f0s[m - 1] + f0s[m]) / 2;
 }
 
-/** F0 mediana de cada segmento (decima o áudio uma vez só). */
-export function segmentF0s(samples: Int16Array, sampleRate: number, segments: Array<Pick<Segment, "start" | "end">>): Array<number | null> {
+/**
+ * Os intervalos de fala do segmento (#11675): as palavras do transcript,
+ * recortadas ao segmento e fundidas onde se sobrepõem. Sem palavras com tempo,
+ * o segmento inteiro. O Whisper estica o segmento sobre o silêncio antes da
+ * frase (na 261030, 20–30 s para uma frase de 3 s), e a F0 desse trecho sem
+ * fala (ruído, respiro) puxava a mediana para ~90–120 Hz.
+ */
+export function speechSpans(s: Pick<Segment, "start" | "end" | "words">): Array<[number, number]> {
+  const ws = (s.words ?? [])
+    .map((w): [number, number] => [Math.max(s.start, w.start), Math.min(s.end, w.end)])
+    .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
+    .sort((p, q) => p[0] - q[0]);
+  if (ws.length === 0) return s.end > s.start ? [[s.start, s.end]] : [];
+  const out: Array<[number, number]> = [ws[0]];
+  for (const [a, b] of ws.slice(1)) {
+    const last = out[out.length - 1];
+    if (a <= last[1]) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
+}
+
+/** Segundos de fala do segmento (soma de `speechSpans`), o peso de cada um na separação das vozes (#11675). */
+export function speechSeconds(s: Pick<Segment, "start" | "end" | "words">): number {
+  return speechSpans(s).reduce((n, [a, b]) => n + (b - a), 0);
+}
+
+/** F0 mediana de cada segmento, só nas palavras dele quando têm tempo (#11675); decima o áudio uma vez só. */
+export function segmentF0s(samples: Int16Array, sampleRate: number, segments: Array<Pick<Segment, "start" | "end" | "words">>): Array<number | null> {
   const { x, rate } = decimate(samples, sampleRate);
-  return segments.map((s) => medianF0Of(x, rate, s.start, s.end));
+  return segments.map((s) => medianF0Of(x, rate, s.start, s.end, speechSpans(s)));
 }
 
 export type VoiceLabel = "pixel" | "outra" | "ouvir";
@@ -193,8 +237,13 @@ export function classifyVoices(f0s: Array<number | null>, durations: number[], o
     from = "maior-tempo";
   }
   const total = w1 + w2;
-  const otherShare = opts.pixelHz !== undefined ? 1 : Math.min(w1, w2) / total;
-  if (Math.abs(other - pixel) < Math.log(VOICE.minRatio) || otherShare < VOICE.minShare) {
+  // Sem a referência do editor, só é entrevista com a outra voz falando de
+  // verdade (fração e segundos de fala) e separada da do Pixel por um vão, não
+  // a cauda de uma voz só cortada pelo 2-means (#11675).
+  const weak =
+    opts.pixelHz === undefined &&
+    (Math.min(w1, w2) / total < VOICE.minShare || Math.min(w1, w2) < VOICE.minOtherSpeechS || clusterSeparation(pts, c1, c2) < VOICE.minSeparation);
+  if (Math.abs(other - pixel) < Math.log(VOICE.minRatio) || weak) {
     return { ...none, pixelHz: Math.exp(pixel), pixelFrom: from };
   }
   const mid = (pixel + other) / 2;
@@ -206,6 +255,22 @@ export function classifyVoices(f0s: Array<number | null>, durations: number[], o
     return { label: Math.abs(l - pixel) < Math.abs(l - other) ? "pixel" : "outra", f0: f };
   });
   return { twoVoices: true, pixelHz: Math.exp(pixel), otherHz: Math.exp(other), pixelFrom: from, marks };
+}
+
+/**
+ * Distância entre os dois centros (log da F0) em desvios-padrão da F0 dentro
+ * dos grupos, pesada pela fala (#11675). Infinito quando os grupos não variam.
+ */
+export function clusterSeparation(pts: Array<{ l: number; w: number }>, c1: number, c2: number): number {
+  let v = 0;
+  let w = 0;
+  for (const p of pts) {
+    const c = Math.abs(p.l - c1) <= Math.abs(p.l - c2) ? c1 : c2;
+    v += p.w * (p.l - c) ** 2;
+    w += p.w;
+  }
+  const sd = w > 0 ? Math.sqrt(v / w) : 0;
+  return sd > 0 ? Math.abs(c2 - c1) / sd : Number.POSITIVE_INFINITY;
 }
 
 function weightedMean(pts: Array<{ l: number; w: number }>): number {
