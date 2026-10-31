@@ -28,6 +28,7 @@ import {
   replaceUrlInSdPromptPositive,
   parseSwapLinkArgs,
   runSwapLink,
+  isHeadOnlyRejection,
   type SwapLinkArgs,
 } from "../scripts/swap-destaque-link.ts";
 
@@ -48,6 +49,16 @@ function startServer(): Promise<void> {
         res.end(
           `<!DOCTYPE html><html><head><title>Anúncio Oficial</title></head><body><article>${filler}</article></body></html>`,
         );
+      } else if (url === "/head-blocked") {
+        // #11688: site que recusa HEAD (404) mas serve o GET (thenextweb.com).
+        if (req.method === "HEAD") {
+          res.writeHead(404);
+          res.end();
+        } else {
+          const filler = "<p>pais processam a OpenAI por conselho do ChatGPT</p>".repeat(50);
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end(`<!DOCTYPE html><html><head><title>Parents sue OpenAI</title></head><body>${filler}</body></html>`);
+        }
       } else if (url === "/gone") {
         res.writeHead(404, { "Content-Type": "text/html" });
         res.end("<html><body>not found</body></html>");
@@ -376,5 +387,111 @@ describe("runSwapLink — fail-fast em URL inacessível", () => {
     } finally {
       cleanup(dir);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #11688: HEAD recusado + GET ok, e bypass --skip-verify
+// ---------------------------------------------------------------------------
+
+const noRefresh = async () => ({ stale_before: false, refetched: false, failed: [], sources: [] });
+
+describe("swap-destaque-link — recusa só do HEAD (#11688)", () => {
+  it("isHeadOnlyRejection reconhece só a nota de HEAD", () => {
+    assert.equal(isHeadOnlyRejection("HEAD 404"), true);
+    assert.equal(isHeadOnlyRejection("HEAD 403"), true);
+    assert.equal(isHeadOnlyRejection("GET 404"), false);
+    assert.equal(isHeadOnlyRejection("marker: subscribe"), false);
+    assert.equal(isHeadOnlyRejection(undefined), false);
+  });
+
+  it("HEAD 404 com GET 200: troca aceita via GET de navegador (cenário thenextweb 261030)", async () => {
+    const dir = makeTempEdition();
+    try {
+      const newUrl = `http://127.0.0.1:${port}/head-blocked`;
+      const result = await runSwapLink(
+        { edition: "260817", editionDir: dir, destaque: "d1", url: newUrl, dryRun: false },
+        undefined,
+        noRefresh,
+      );
+      assert.equal(result.verification.mode, "get-fallback");
+      assert.equal(result.verification.verdict, "blocked");
+      assert.equal(result.verification.note, "HEAD 404");
+      assert.equal(result.verification.get_status, 200);
+      const approved = JSON.parse(readFileSync(join(dir, "_internal/01-approved.json"), "utf8"));
+      assert.equal(approved.highlights[0].url, newUrl);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("HEAD 404 e GET 404: continua recusando, sem tocar arquivo, e sugere --skip-verify", async () => {
+    const dir = makeTempEdition();
+    try {
+      const approvedBefore = readFileSync(join(dir, "_internal/01-approved.json"), "utf8");
+      await assert.rejects(
+        () =>
+          runSwapLink(
+            { edition: "260817", editionDir: dir, destaque: "d1", url: `http://127.0.0.1:${port}/gone`, dryRun: false },
+            undefined,
+            noRefresh,
+          ),
+        (e: Error) => /URL inacessível/.test(e.message) && /GET 404/.test(e.message) && /--skip-verify/.test(e.message),
+      );
+      assert.equal(readFileSync(join(dir, "_internal/01-approved.json"), "utf8"), approvedBefore);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("recusa que não veio do HEAD (paywall) não tenta GET", async () => {
+    const dir = makeTempEdition();
+    try {
+      let probed = false;
+      await assert.rejects(
+        () =>
+          runSwapLink(
+            { edition: "260817", editionDir: dir, destaque: "d1", url: "https://example.com/x", dryRun: false },
+            async () => ({ verdict: "paywall", finalUrl: "https://example.com/x", note: "marker: subscribe" }),
+            noRefresh,
+            async () => {
+              probed = true;
+              return { ok: true, status: 200 };
+            },
+          ),
+        /URL inacessível/,
+      );
+      assert.equal(probed, false);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("--skip-verify troca sem chamar verify nem GET e registra mode=skipped", async () => {
+    const dir = makeTempEdition();
+    try {
+      const newUrl = "https://thenextweb.com/news/parents-sue-openai-chatgpt-seizure-medication";
+      const result = await runSwapLink(
+        { edition: "260817", editionDir: dir, destaque: "d1", url: newUrl, dryRun: false, skipVerify: true },
+        async () => {
+          throw new Error("verify não deveria rodar com --skip-verify");
+        },
+        noRefresh,
+        async () => {
+          throw new Error("GET não deveria rodar com --skip-verify");
+        },
+      );
+      assert.deepEqual(result.verification, { mode: "skipped" });
+      const approved = JSON.parse(readFileSync(join(dir, "_internal/01-approved.json"), "utf8"));
+      assert.equal(approved.highlights[0].url, newUrl);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  it("parseSwapLinkArgs lê --skip-verify (default false)", () => {
+    const base = ["--edition", "260817", "--destaque", "d1", "--url", "https://example.com/a", "--edition-dir", "/tmp/x"];
+    assert.equal(parseSwapLinkArgs(base).skipVerify, false);
+    assert.equal(parseSwapLinkArgs([...base, "--skip-verify"]).skipVerify, true);
   });
 });
