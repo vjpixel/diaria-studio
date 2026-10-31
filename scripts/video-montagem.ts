@@ -204,7 +204,7 @@ import {
   trimEdgeExtras,
   type EdgeWindow,
 } from "./lib/diaria/video-cut-refine.ts";
-import { classifyVoices, segmentF0s, type VoiceMark } from "./lib/diaria/video-voice.ts";
+import { classifyVoices, segmentF0s, speechSeconds, type VoiceMark } from "./lib/diaria/video-voice.ts";
 import { ALIGN_DEFAULTS, alignEnvelopes, mergeRetranscribed, remapToVideo } from "./lib/diaria/video-audio-align.ts";
 import { gFetchRetry } from "./lib/drive-helpers.ts";
 import { gFetch } from "./google-auth.ts";
@@ -771,7 +771,7 @@ function segmentVoices(ctx: Ctx, segments: Segment[], pixelF0: number | undefine
   }
   const { sampleRate, samples } = parseWavPcm16(readFileSync(audio));
   const f0s = segmentF0s(samples, sampleRate, segments);
-  const v = classifyVoices(f0s, segments.map((s) => s.end - s.start), { pixelHz: pixelF0 });
+  const v = classifyVoices(f0s, segments.map(speechSeconds), { pixelHz: pixelF0 });
   writeJson(f(ctx, "voices.json"), { ...v, segments: segments.map((s, i) => ({ n: i + 1, start: s.start, end: s.end, f0: f0s[i] })) });
   const hz = (x: number | null) => (x === null ? "?" : `${Math.round(x)} Hz`);
   if (!v.twoVoices) console.error(`[video-montagem] voz: uma só (F0 ~${hz(v.pixelHz)}); nada marcado`);
