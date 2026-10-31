@@ -56,6 +56,44 @@ describe("checkStage5Freshness (#11698)", () => {
     utimesSync(join(d, "06-public-images.json"), t, t);
     assert.equal(checkStage5Freshness(d).ok, true);
   });
+  it("retomada: 03-social.md regravado pelo Stage 5 (mtime pós-sentinel) → ok (P1 review)", () => {
+    const d = edition();
+    const t = new Date(DONE + 3600_000);
+    utimesSync(join(d, "03-social.md"), t, t);
+    assert.equal(checkStage5Freshness(d).ok, true);
+  });
+  it("03-social.md vazio ainda bloqueia", () => {
+    const d = edition();
+    writeFileSync(join(d, "03-social.md"), "");
+    assert.equal(checkStage5Freshness(d).ok, false);
+  });
+  it("--accept-newer: edição pós-gate liberada; ausente continua bloqueando", () => {
+    const d = edition();
+    const t = new Date(DONE + 3600_000);
+    utimesSync(join(d, "02-reviewed.md"), t, t);
+    assert.equal(checkStage5Freshness(d).ok, false);
+    assert.equal(checkStage5Freshness(d, { acceptNewer: true }).ok, true);
+    const e = edition({ skip: ["02-reviewed.md"] });
+    assert.equal(checkStage5Freshness(e, { acceptNewer: true }).ok, false);
+  });
+  for (const name of [
+    "02-reviewed-predator-safeBackup-0001.md",
+    "02-reviewed-NEO-safeBackup-0001.md",
+    "02-reviewed-neo.md",
+    "02-reviewed.md.tmp",
+    "02-reviewed-NEO.md",
+  ]) {
+    it(`conflito OneDrive real detectado: ${name} (P2 review)`, () => {
+      const d = edition();
+      writeFileSync(join(d, name), "y");
+      assert.match(checkStage5Freshness(d).problems.join(), /conflito/);
+    });
+  }
+  it("irmão legítimo 02-reviewed-final.md não é conflito", () => {
+    const d = edition();
+    writeFileSync(join(d, "02-reviewed-final.md"), "y");
+    assert.equal(checkStage5Freshness(d).ok, true);
+  });
   it("irmão legítimo 03-social-pre-humanizador.md não é conflito", () => {
     const d = edition();
     writeFileSync(join(d, "03-social-pre-humanizador.md"), "y");
