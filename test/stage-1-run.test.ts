@@ -880,6 +880,25 @@ describe("runStage1 --phase post-score", () => {
     assert.equal(result.mergeCatastrophic, true);
   });
 
+  // #11749: o Agent voltou assíncrono e o merge leu um chunk válido ainda em
+  // correção. O runner passa --require-done; chunk sem marcador → exit 3.
+  it("#11749: merge passa --require-done; exit 3 (chunk pendente) -> code 1, mergePending, sem scorer-select", async () => {
+    const pending = [{ path: "x/scored-chunk-2.json", reason: "reescrito-depois-do-marcador" }];
+    const { exec, calls } = makeFakeExec({
+      "find-current-edition.ts": () => ok("data/editions/2604/260423\n"),
+      "merge-scored-chunks.ts": () => ({ code: 3, stdout: JSON.stringify({ pending: true, pending_chunks: pending }), stderr: "WARN pendente" }),
+    });
+    const result = await runStage1(["--phase", "post-score", "--edition", "260423", "--chunk-count", "3"], baseDeps({ exec }));
+    const mergeCall = calls.find((c) => c.script.endsWith("merge-scored-chunks.ts"));
+    assert.ok(mergeCall!.args.includes("--require-done"), "o runner exige o marcador de conclusão de cada chunk");
+    assert.equal(result.code, 1);
+    assert.equal(result.mergePending, true);
+    assert.deepEqual(result.pendingChunks, pending);
+    assert.equal(result.pendingAgentDispatch.length, 0);
+    assert.equal(calls.some((c) => c.script.endsWith("verify-summary-integrity.ts")), false);
+    assert.ok(result.notes.some((n) => n.includes("scored-chunk-2.json")));
+  });
+
   it("merge exit 1 (erro de invocação) -> Stage1Abort, code 1", async () => {
     const deps = baseDeps({
       exec: makeFakeExec({
@@ -1503,6 +1522,34 @@ describe("runStage1 --phase post-gate", () => {
       const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
       return runStage1(["--phase", "post-gate", "--edition", "260423", "--auto"], deps).then((result) => {
         assert.equal(result.code, 0);
+        assert.ok(calls.some((c) => c.script.endsWith("pipeline-sentinel.ts") && c.args[0] === "write"));
+      });
+    });
+  });
+
+  // #11748: lançamento sem sinal de produto virou warning (não trava o
+  // sentinel); o aviso sobe pro relatório do post-gate.
+  it("#11748 --auto: warning lancamento-has-product-signal vira nota e o sentinel é escrito", async () => {
+    return withTmpRoot("stage-1-run-p5-lanc-signal-", (root, editionDir) => {
+      const { exec, calls } = makeFakeExec(
+        happyHandlers({
+          "check-invariants.ts": () =>
+            ok(
+              JSON.stringify(
+                {
+                  passed: true,
+                  violations: [{ rule: "lancamento-has-product-signal", severity: "warning", message: "1 item(ns) em lancamento[] sem sinal POSITIVO — https://blog.google/x" }],
+                },
+                null,
+                2,
+              ),
+            ),
+        }),
+      );
+      const deps = { ...baseDeps(), ...tmpDeps(root, editionDir, { exec }) } as Stage1RunDeps;
+      return runStage1(["--phase", "post-gate", "--edition", "260423", "--auto"], deps).then((result) => {
+        assert.equal(result.code, 0);
+        assert.ok(result.notes.some((n) => n.includes("https://blog.google/x") && n.includes("#11748")));
         assert.ok(calls.some((c) => c.script.endsWith("pipeline-sentinel.ts") && c.args[0] === "write"));
       });
     });

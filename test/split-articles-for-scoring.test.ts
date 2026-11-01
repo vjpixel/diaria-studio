@@ -256,6 +256,27 @@ describe("#2287 — split-articles-for-scoring limpa scoring-chunks/ antes de es
     }
   });
 
+  // #11749: marcador órfão de run anterior faria o merge --require-done aceitar
+  // um chunk novo ainda em gravação; ele segue o destino do scored-chunk.
+  it("#11749: marcador scored-chunk-*.json.done removido junto com o chunk quando merge completou", () => {
+    const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-test-"));
+    const chunksDir = join(tmpBase, "scoring-chunks");
+    const categorizedPath = join(tmpBase, "categorized.json");
+    mkdirSync(chunksDir, { recursive: true });
+    try {
+      writeFileSync(join(chunksDir, "scored-chunk-0.json"), '{"scored":"stale-0"}');
+      writeFileSync(join(chunksDir, "scored-chunk-0.json.done"), "{}");
+      writeFileSync(join(tmpBase, "tmp-allscored.json"), '{"all_scored":[]}');
+      writeFileSync(categorizedPath, JSON.stringify(MINIMAL_CATEGORIZED));
+
+      runSplitMain({ categorizedPath, outDir: chunksDir });
+
+      assert.ok(!existsSync(join(chunksDir, "scored-chunk-0.json.done")), "marcador órfão removido (#11749)");
+    } finally {
+      rmSync(tmpBase, { recursive: true, force: true });
+    }
+  });
+
   it("stdout: manifest JSON válido após limpeza", () => {
     const tmpBase = mkdtempSync(join(tmpdir(), "diaria-split-test-"));
     const chunksDir = join(tmpBase, "scoring-chunks");
