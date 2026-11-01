@@ -49,6 +49,17 @@ Exit code handling:
 - `2` → **ANTES do FATAL (#11690):** rodar `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 4 --outputs-missing`; exit 4 → halt banner "data/ possivelmente defasado, aguardar o sync do OneDrive" (saída: editor confirma e re-roda o guard com `--force`) e NÃO recomendar re-rodar Stage 4. Qualquer outro exit ≠ 0 (2, crash) = mesmo halt. Exit 0 → **FATAL:** "Outputs do Stage 4 ausentes. Re-rodar Etapa 4." Parar.
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message "stage4_sentinel_missing_legacy"`), continuar.
 
+### Trava da edicao + frescor entre hosts (#11698) — ANTES de qualquer escrita
+
+`data/` sincroniza por OneDrive: o sentinel do Stage 4 pode chegar antes da versao aprovada de `02-reviewed.md`/`03-social.md` (que existem em todo host desde a Etapa 2), e duas sessoes em hosts diferentes podem rodar a Etapa 5 da mesma edicao. Os 3 comandos abaixo rodam nesta ordem, **antes** do `update-stage-status --status running` do §5a (que ja escreve na edicao), cada um STANDALONE (o hook so injeta `--session-id` em comando sem `&&`/`;`/`|`). **Fail-closed: qualquer exit != 0 dos tres e halt — nunca seguir como "sem sinais", e nada e despachado.** O halt usa `render-halt-banner.ts --stage "5 — Publicacao"` com o stderr do comando no `--reason` e a acao indicada; estes halts NAO liberam a trava (ou ela nao e desta sessao, ou ainda nao foi adquirida). `--force` em qualquer dos tres so com confirmacao explicita do editor, nunca por conta propria.
+1. `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 5 --edition {AAMMDD}` — exit 4 = outra maquina parece a frente (sentinel do Stage 6 ja existe aqui, trava de OUTRO host no Stage 5+, ou tombstone de outro host que concluiu/soltou o Stage 5 sem o sentinel ter chegado). Acao: "aguardar o sync do OneDrive e re-rodar /diaria-5-publicacao {AAMMDD}; se a outra sessao morreu ou a Etapa 5 precisa mesmo rodar de novo aqui, o editor confirma e re-roda o guard com --force".
+2. `npx tsx scripts/stage5-freshness.ts check --edition-dir {EDITION_DIR} --edition {AAMMDD}` — compara `02-reviewed.md`/`03-social.md` com o `output_hashes` (sha256) gravado pelo `pipeline-sentinel.ts write --step 4`; em `03-social.md` a URL que o §5c-2 resolveu volta a `{edition_url}` antes, entao a retomada passa. Exit 4 = ausente, vazio ou diferente do aprovado no gate 4 (versao anterior ainda sincronizando, ou ajuste depois do gate). Acao: "aguardar o sync do OneDrive e re-rodar; se o editor ajustou o arquivo depois do gate 4 de proposito, ele confirma e re-roda o check com --force (fica no run-log)". Sentinel do Stage 4 anterior ao #11698 (sem `output_hashes`) sai 0 com aviso no stderr: levar ao resumo final ("frescor nao conferido: sentinel legado").
+3. `npx tsx scripts/edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5` — exit 0 segue (`took_stale`/`taken_over` no JSON: avisar `ℹ️ Sessao assumiu a edicao {AAMMDD} de {previous.session_id} ({previous.host}, heartbeat ha {N} min)`). Exit 3 = outra sessao viva nesta edicao (Etapa 5 em dobro despacharia duas vezes); 4 = trava vencida de OUTRO host (data/ possivelmente defasado); 2 = `--session-id` ausente (re-rodar standalone; persistindo, halt). Override: `acquire --force`.
+
+**Limite conhecido:** a trava e um arquivo em `data/`, sincronizado pelo mesmo OneDrive; dois hosts que adquirem dentro da janela de sync recebem `acquired` os dois. O que cobre esse caso e o frescor por hash (passo 2) e o tombstone de conclusao do §5h (o passo 1 do outro host acusa a Etapa 5 ja concluida aqui).
+
+**Liberar a trava em todo ramo terminal depois do acquire (#10326):** antes de QUALQUER halt, pausa ou FATAL deste stage a partir daqui (MCP fail-fast, staleness, invariants, poll, upload de imagens, header duplicado, exit 13 do Kit etc.), rodar standalone `npx tsx scripts/edition-lock.ts release --edition-dir {EDITION_DIR}` (exit != 0 e log-only). Grava tombstone de interrupcao (#11713), que o passo 1 do outro host le por ate 6 h. Quem voltar com `retry` re-roda o passo 3. A conclusao normal libera no §5h com `--complete-stage 5`.
+
 ### 5a. Pre-requisitos + sync
 
 **Marcar Stage 5 `running` no inicio (#1783).** Garante o `start` pra que o `done` do §5h feche a duracao no relatorio. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
@@ -204,6 +215,8 @@ npx tsx scripts/render-halt-banner.ts \
 Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b.
 
 ### 5c. Dispatch newsletter — primeiro, antes do social (#2454)
+
+**Renovar a trava antes do dispatch (#11698):** rodar de novo, standalone, `npx tsx scripts/edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5` (renova o heartbeat, TTL 45 min, e acusa outra sessao que tenha assumido a edicao desde o inicio do stage). Mesmo tratamento do passo 3 de "Trava da edicao + frescor entre hosts": exit != 0 = halt sem despachar.
 
 **So dispatchar se o canal foi autorizado em 5b.** Canal manual fica com `status: pending_manual`.
 
@@ -470,6 +483,8 @@ npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 5 \
   --outputs "_internal/newsletter-kit-published.json"
 ```
+
+**Liberar a trava com tombstone de conclusao (#11698), logo depois do sentinel** (standalone, exit != 0 e log-only): `npx tsx scripts/edition-lock.ts release --edition-dir {EDITION_DIR} --complete-stage 5`. O tombstone fica no lugar da trava ate o `.step-5-done.json` sincronizar nos outros hosts, e o guard do inicio deste stage acusa la uma Etapa 5 ja concluida aqui. **Limite:** a Etapa 6, que segue nesta mesma sessao (#7983), roda sem trava propria.
 
 **Marcar Stage 5 `done` AQUI (#1783).** Este e o mark-done canônico do Stage 5 é o §5i — acontece **antes** do Stage 6. Auto-carimbo de `end` via #1789:
 

@@ -7,13 +7,42 @@
  * decida o exit code. Logging é responsabilidade do caller.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export interface StepSentinel {
   step: number;
   completed_at: string;
   outputs: string[]; // relative paths from editionDir
+  /**
+   * sha256 (hex) do conteúdo de cada output no instante do write (#11698).
+   * Liga o sentinel ao conteúdo aprovado: com `data/` sincronizado por
+   * OneDrive, o sentinel pode chegar a outro host antes da versão nova dos
+   * outputs, e só o hash distingue "versão aprovada" de "cópia pré-gate".
+   * Ausente em sentinels gravados antes do #11698. Output inexistente ou que
+   * não é arquivo fica fora do mapa.
+   */
+  output_hashes?: Record<string, string>;
+}
+
+/** sha256 hex de um conteúdo. Fonte única do hash de `output_hashes` (#11698). */
+export function sha256Hex(content: Buffer | string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+/** Hashes dos outputs que existem como arquivo (os demais ficam fora). */
+export function computeOutputHashes(editionDir: string, outputs: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rel of outputs) {
+    const p = resolve(editionDir, rel);
+    try {
+      if (existsSync(p) && statSync(p).isFile()) out[rel] = sha256Hex(readFileSync(p));
+    } catch {
+      // Arquivo sumindo no meio do sync: fica sem hash (o consumidor trata ausência).
+    }
+  }
+  return out;
 }
 
 export type AssertResult =
@@ -36,6 +65,7 @@ export function writeSentinel(
     step,
     completed_at: new Date().toISOString(),
     outputs,
+    output_hashes: computeOutputHashes(editionDir, outputs),
   };
   writeFileSync(sentinelPath(editionDir, step), JSON.stringify(sentinel, null, 2) + "\n", "utf8");
 }

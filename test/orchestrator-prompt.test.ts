@@ -315,7 +315,11 @@ describe("orchestrator-prompt (#634)", () => {
       // #10659 (25/10): +11 linhas — §5b-youtube nova (baixa do Drive o
       // horizontal com "final" no nome e sobe agendado, fail-soft, antes do
       // dispatch social). Passo EXECUTADO. Teto 540→555.
-      "orchestrator-stage-5.md": 555,
+      // #11698 (01/11): +15 linhas — guard de data/ defasado (--step 5),
+      // frescor por sha256 e trava da edição antes da 1ª escrita, renovação
+      // da trava antes do §5c e release com tombstone no §5h. Passos
+      // EXECUTADOS (fail-closed). Teto 555→570.
+      "orchestrator-stage-5.md": 570,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
       // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +
