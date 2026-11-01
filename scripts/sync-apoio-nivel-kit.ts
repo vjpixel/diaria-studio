@@ -130,7 +130,7 @@ export function extractApoioNivelValueKit(fields: Record<string, string> | undef
  * I/O: lista todos os assinantes Kit (`listAllKitSubscribers`, #6091 —
  * cursor, sem filtro server-side por `state`) e converte pro shape genérico
  * reusado da Beehiiv, filtrando só `state === "active"` (client-side, mesmo
- * padrão de `sync-beehiiv-subscribers-kit.ts`).
+ * padrão de `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225)).
  */
 export async function fetchCurrentKitState(config?: KitConfig): Promise<ApoioLevelSnapshot[]> {
   const subs = await listAllKitSubscribers(config);

@@ -20,8 +20,9 @@
  * clicks via MCP `mcp__claude_ai_Beehiiv__list_post_clicks` — que **só é
  * chamável do top-level Claude** (não de scripts ou subagents). Este sync,
  * por isso, **não busca clicks**; só popula metadata + content + aggregate
- * stats. Emite `posts_needing_clicks` no resultado pra orchestrator
- * top-level enriquecer via MCP + `scripts/apply-mcp-clicks.ts`.
+ * stats. Ainda emite `posts_needing_clicks` no resultado, mas desde o
+ * #11225 ninguém o consome para enriquecer (o `beehiiv-clicks-enricher` e o
+ * `apply-mcp-clicks.ts` foram aposentados; a Beehiiv é arquivo histórico).
  *
  * Uso:
  *   npx tsx scripts/beehiiv-sync.ts              # incremental (default)
@@ -91,8 +92,8 @@ export interface SyncResult {
   /**
    * Posts publicados há > MIN_AGE_DAYS_FOR_CLICKS dias, com aggregate
    * `email.clicks > 0` mas `stats.clicks` incompleto no cache (ver
-   * `isClickCacheComplete`). Orchestrator top-level deve enriquecê-los via
-   * MCP `list_post_clicks` + pipe pra `apply-mcp-clicks.ts`. Cap em
+   * `isClickCacheComplete`). Só informativo desde o #11225 (o enriquecimento
+   * via MCP foi aposentado; o Stage 0 descarta o manifest). Cap em
    * CLICKS_FETCH_BUDGET pra evitar bursts grandes em runs incrementais.
    */
   posts_needing_clicks: PostNeedingClicks[];
@@ -102,11 +103,9 @@ export interface SyncResult {
 // mesmo cutoff usado por build-link-ctr.ts e pelo Worker diaria-dashboard,
 // ver comentário no arquivo compartilhado).
 
-/** Cap defensivo no manifest pra incremental runs. Mantido como sanity check
- *  caso o agent enricher fique indisponível e cair fallback no top-level —
- *  antes (#1357 followup) este cap protegia o contexto da conversa parent;
- *  com o agent `beehiiv-clicks-enricher` (#1361) o cap virou apenas safety
- *  net pra casos de erro. Pode subir significativamente sem custo. */
+/** Cap defensivo no tamanho do manifest em runs incrementais (histórico:
+ *  #1357/#1361 — protegia o contexto do enriquecimento, aposentado no
+ *  #11225; hoje só limita o tamanho do JSON informativo). */
 const CLICKS_FETCH_BUDGET_INCREMENTAL = 50;
 
 // #2104: delegado ao helper centralizado em scripts/lib/beehiiv-config.ts

@@ -26,6 +26,8 @@
  * (exclui). Critério, nesta ordem:
  *
  * 1. `origem_cadastro === "beehiiv-sync"` (`KIT_BEEHIIV_SYNC_SIGNUP_MARKER`,
+ *    gravado pela auto-confirmação Beehiiv de `evaluate-brevo-diaria.ts`
+ *    desde o #11225; antes, pelo sync em lote aposentado
  *    `sync-beehiiv-subscribers-kit.ts`) → migrada, exclui.
  * 2. `origem_cadastro` é `"kit-nativo"` ou `"brevo-diaria-score"` (os 2
  *    outros marcadores de `kit-signup-origin.ts`) → nativa, conta.

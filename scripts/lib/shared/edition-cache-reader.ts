@@ -33,9 +33,10 @@
  * - Não decide QUANDO usar Kit vs Beehiiv pra escrita/publicação — isso é
  *   `platform.config.json` → `publishing.newsletter.backend` (#464),
  *   ortogonal a este módulo de LEITURA histórica.
- * - Não BUSCA cliques por link em nenhuma API — isso continua sendo
- *   `beehiiv-clicks-enricher` (via MCP) do lado Beehiiv e
- *   `getBroadcastClicks` (`kit-client.ts`) do lado Kit. Este módulo só
+ * - Não BUSCA cliques por link em nenhuma API — do lado Kit isso é
+ *   `getBroadcastClicks` (`kit-client.ts`); do lado Beehiiv, ninguém busca
+ *   mais desde o #11225 (o `beehiiv-clicks-enricher` foi aposentado e o
+ *   cache é arquivo histórico). Este módulo só
  *   NORMALIZA o que já está em disco pro shape unificado — ver `stats`
  *   abaixo (#6185, item 2 reescrito).
  *

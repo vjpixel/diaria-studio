@@ -8,7 +8,7 @@
  * Brevo. Medido ao vivo em 28/08/2026 (#6485): 7 e-mails na interseção, 5
  * `EDITOR_SEED_EMAILS` (sondas propositais nas duas pontas, isentas) + 2
  * assinantes reais (`sumaya.lima@gmail.com`, `eduardo.britto@wero.com.br`)
- * que entraram no Kit via `sync-beehiiv-subscribers-kit.ts` sem terem sido
+ * que entraram no Kit via `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) sem terem sido
  * retirados da fila de reativação Brevo.
  *
  * ## Design: pura + I/O separados (mesmo padrão do resto do repo)

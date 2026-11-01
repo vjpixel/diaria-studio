@@ -20,9 +20,9 @@
  * **`--manifest-only`**: só resolve a janela + cruza com o cache pra emitir
  * o manifest de posts que precisam de enriquecimento de clicks via MCP
  * (mesmo shape de `posts_needing_clicks` do `beehiiv-sync.ts`) — NÃO calcula
- * seleção. A skill usa isso pra decidir se despacha o agent
- * `beehiiv-clicks-enricher` ANTES de rodar a seleção de verdade (sem isso, a
- * 1ª passada rodaria com clicks todos zerados).
+ * seleção. Desde o #11225 é só diagnóstico: o agent `beehiiv-clicks-enricher`
+ * que consumia o manifest foi aposentado (a semana sai pelo Kit, cujos
+ * clicks vêm de `kit-sync.ts`).
  *
  * **`--picks url1,url2,...`** (#5109): resolve o `pendingGroup` de uma
  * invocação anterior — quando `selectHeadlines` (`weekly-linkedin-select.ts`)
@@ -359,7 +359,7 @@ export function main(rootDirOverride?: string) {
   const manifest = identifyWeeklyPostsNeedingClicks(windowPosts);
   if (manifest.length > 0) {
     warnings.push(
-      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache — rode beehiiv-clicks-enricher e re-rode este script antes de confiar na seleção.`,
+      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache (posts antigos da Beehiiv; o beehiiv-clicks-enricher foi aposentado no #11225, então eles não serão mais enriquecidos).`,
     );
   }
   const missingD1 = editionsFound.filter((e) => !e.d1Title);
@@ -556,7 +556,7 @@ function emitIncompleteClickDataBanner(args: {
     "",
     "Antes de aprovar no gate do Passo 3:",
     "  npx tsx scripts/kit-sync.ts        # cache Kit (é o canal vivo desde 04/09)",
-    "  npx tsx scripts/select-linkedin-weekly.ts --manifest-only   # + beehiiv-clicks-enricher",
+    "  npx tsx scripts/select-linkedin-weekly.ts --manifest-only   # diagnóstico (enricher aposentado, #11225)",
     "e re-rode este script.",
     "",
     "A seleção FOI escrita mesmo assim — este script não publica nada, e o gate",
