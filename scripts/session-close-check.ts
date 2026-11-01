@@ -15,12 +15,34 @@ export interface CloseReport {
   errors: string[];
   checkedWorktrees: string[];
   manualChecks: string[];
+  /** Dirty entries that do not block closure (#11733): line-ending-only diffs and routine audience snapshots. */
+  ignored: string[];
 }
+
+/** Routine Stage 0 audience snapshots, committed by `chore: snapshot de audiência`, never by the session (#11733). */
+export function isRoutineAudienceSnapshot(path: string): boolean {
+  return path === "context/audience-profile.md" || /^docs\/audience-history\/[^/]+\.md$/.test(path);
+}
+
+interface StatusEntry { code: string; path: string; line: string }
+
+/** Parses `git status --porcelain=v1`; renames keep the destination path. Quoted paths stay as-is (never filtered). */
+export function parsePorcelainStatus(status: string): StatusEntry[] {
+  return status.split("\n").filter(Boolean).map(line => {
+    const code = line.slice(0, 2);
+    const rest = line.slice(3);
+    const arrow = rest.indexOf(" -> ");
+    return { code, path: arrow >= 0 ? rest.slice(arrow + 4) : rest, line };
+  });
+}
+
+/** Only plain modifications (M in index and/or worktree, nothing else) can be line-ending-only. */
+const isPlainModification = (code: string): boolean => /^[M ][M ]$/.test(code) && code !== "  ";
 
 /** Does not infer process liveness from registry.pid (an ephemeral beacon PID). */
 export function checkSessionClose(root: string, session: SessionRecord | undefined,
   extraWorktrees: string[] = [], run: Run = runCommand): CloseReport {
-  const report: CloseReport = { canClose: false, pending: [], errors: [], checkedWorktrees: [],
+  const report: CloseReport = { canClose: false, pending: [], errors: [], checkedWorktrees: [], ignored: [],
     manualChecks: ["tasks/agents em segundo plano", "promessas e follow-ups no transcript"] };
   if (!session) {
     report.errors.push("Sessão não encontrada no registry; confirme a identidade antes de encerrar.");
@@ -45,7 +67,26 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
   for (const path of paths) {
     report.checkedWorktrees.push(path);
     const status = query("git", ["status", "--porcelain=v1", "--untracked-files=normal"], path);
-    if (status?.trim()) report.pending.push(`mudanças não commitadas: ${path}\n${status.trimEnd()}`);
+    if (status?.trim()) {
+      const entries = parsePorcelainStatus(status);
+      // Content diff ignoring CR at EOL: a CRLF-only working copy (core.autocrlf, Windows editor) has
+      // no entry here. Any failure keeps every modification blocking (conservative, #11733).
+      let contentChanged: Set<string> | undefined;
+      if (entries.some(e => isPlainModification(e.code))) {
+        const names = query("git", ["diff", "--ignore-space-at-eol", "--name-only", "HEAD"], path);
+        if (names !== undefined) contentChanged = new Set(names.split("\n").filter(Boolean));
+      }
+      const blocking: string[] = [];
+      for (const entry of entries) {
+        if (isRoutineAudienceSnapshot(entry.path)) {
+          report.ignored.push(`snapshot de audiência rotineiro (não bloqueia): ${path}: ${entry.line}`);
+        } else if (contentChanged && isPlainModification(entry.code) && !entry.path.startsWith("\"")
+          && !contentChanged.has(entry.path)) {
+          report.ignored.push(`só fim de linha (CRLF/LF, não bloqueia): ${path}: ${entry.line}`);
+        } else blocking.push(entry.line);
+      }
+      if (blocking.length) report.pending.push(`mudanças não commitadas: ${path}\n${blocking.join("\n")}`);
+    }
     const branch = query("git", ["branch", "--show-current"], path)?.trim();
     if (branch) branches.add(branch);
     else if (branch === "") report.errors.push(`HEAD detached: ${path}; conferir commits da sessão.`);
