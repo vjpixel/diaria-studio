@@ -713,6 +713,24 @@ describe("alarme de entrega agendada (#11235)", () => {
 });
 
 describe("rodada incompleta (#11665)", () => {
+  it("#11726: plano só na cópia de conflito do OneDrive também alarma rodada incompleta", () => {
+    const root = makeRepo();
+    const dir = join(root, "data/overnight/261031b");
+    mkdirSync(dir, { recursive: true });
+    const { deps, logs } = harness({ status: 0 }, { status: 0, stdout: JSON.stringify({ type: "result", num_turns: 40, is_error: false }) });
+    const spawn = deps.spawn;
+    deps.spawn = ((command, args, options) => {
+      if (command !== "bash") {
+        writeFileSync(join(dir, "plan-300-safeBackup-0001.json"), JSON.stringify({ issues: [{ number: 11726, status: "elegivel", in_round: true, timeline: {} }] }));
+        writeFileSync(join(dir, "report.md"), '<!-- overnight-delivery: {"implementedUnits":0,"openedPrs":0} -->');
+      }
+      return spawn(command, args, options);
+    }) as typeof deps.spawn;
+    deps.findRoundTrace = findRoundTraceSince;
+    assert.equal(main(root, deps), 6);
+    assert.ok(logs.some(line => line.includes("#11726:elegivel")));
+  });
+
   for (const turns of [1, 2, 38, 46]) {
     for (const pr of [null, 11655]) {
       it(`rejeita plano pendente com relatório zero, turns=${turns}, pr=${pr}`, () => {

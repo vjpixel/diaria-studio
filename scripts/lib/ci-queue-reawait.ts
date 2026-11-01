@@ -21,9 +21,9 @@
  *                  daquele exit (CLI exit 0).
  * Erro de leitura/escrita do plano → CLI exit 2 (nunca vira `reawait` mudo).
  */
-import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "./atomic-write.ts";
 import { isMainModule, parseArgs } from "./cli-args.ts";
+import { readPlanJson } from "./plan-safe-backup.ts";
 
 /** Exit do `wait-pr-checks.sh` pra "ainda em fila de runner" (#10578). */
 export const QUEUE_EXIT_CODE = 7;
@@ -70,11 +70,12 @@ export function decideQueueReawait(
 
 /** Lê o plano, aplica a decisão e grava de volta (atômico). Lança em erro de I/O ou JSON. */
 export function applyQueueReawait(planPath: string, pr: number, exitCode: number): ReawaitDecision {
-  if (!existsSync(planPath)) throw new Error(`plano não encontrado: ${planPath}`);
-  const plan = JSON.parse(readFileSync(planPath, "utf8")) as Record<string, unknown>;
-  if (plan === null || typeof plan !== "object" || Array.isArray(plan)) {
-    throw new Error(`plano não é um objeto JSON: ${planPath}`);
-  }
+  // #11726: leitor único — recupera a cópia de conflito do OneDrive antes de
+  // concluir que o plano sumiu (senão o contador de re-espera se perderia).
+  const read = readPlanJson(planPath);
+  if (read.status === "missing") throw new Error(`plano não encontrado: ${read.message}`);
+  if (read.status !== "ok") throw new Error(read.message);
+  const plan = read.plan;
   const raw = plan.ci_queue_reawaits;
   const counters: ReawaitCounters =
     raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as ReawaitCounters) : {};
