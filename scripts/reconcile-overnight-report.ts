@@ -23,12 +23,15 @@
  *
  * Exit: 0 ok (gravado, ou `--check` em dia) · 1 `--check` defasado · 2 uso
  * inválido · 3 erro de leitura (relatório/plano/gh). Falha de `gh` nunca vira
- * "nenhuma PR": sai 3 sem tocar no arquivo.
+ * "nenhuma PR": sai 3 sem tocar no arquivo. Plano ausente também não (#11721):
+ * antes de ler, a cópia de conflito do OneDrive (`plan-*-safeBackup-*.json`) é
+ * restaurada; sem plano nenhum, sai 3 sem gravar o bloco.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { spawnGhSync } from "./lib/shared/gh-run.ts";
+import { readPlanJson } from "./lib/plan-safe-backup.ts";
 import {
   classifyPr,
   discoverRoundPrs,
@@ -86,18 +89,24 @@ export function reconcileReport(params: {
   check: boolean;
   gh: GhJson;
   now?: () => string;
+  /** Destino do aviso de cópia de conflito do OneDrive (default stderr). */
+  warn?: (msg: string) => void;
 }): ReconcileResult {
   const fail = (message: string): ReconcileResult => ({ exitCode: 3, message, prs: [] });
   if (!existsSync(params.reportPath)) return fail(`relatório não encontrado: ${params.reportPath}`);
   const report = readFileSync(params.reportPath, "utf8");
-  let plan: unknown = null;
-  if (existsSync(params.planPath)) {
-    try {
-      plan = JSON.parse(readFileSync(params.planPath, "utf8"));
-    } catch (err) {
-      return fail(`plan.json ilegível (${params.planPath}): ${(err as Error).message}`);
-    }
+  // #11721: plano ausente nunca vira "nenhuma PR da rodada". Na rodada 261030c
+  // o OneDrive renomeou o plan.json para plan-300-safeBackup-0001.json e o
+  // bloco saiu "0 PRs" com 9 unidades mergeadas. O leitor único restaura a
+  // cópia de conflito; se nem assim houver plano, falha sem tocar no relatório.
+  const read = readPlanJson(params.planPath, { warn: params.warn });
+  if (read.status !== "ok") {
+    return fail(
+      `${read.message} — reconcile abortado sem gravar (um plano ausente faria o bloco afirmar 0 PRs). ` +
+        `Aponte --plan para o plano da rodada (#11721).`,
+    );
   }
+  const plan: unknown = read.plan;
 
   const numbers = new Set<number>([...prsFromPlan(plan), ...params.extraPrs]);
   const startedAt = (plan as { started_at?: unknown } | null)?.started_at;
