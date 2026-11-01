@@ -40,12 +40,14 @@ Extrair `chromeMcp` do JSON retornado. **Com backend Kit (o default) a newslette
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 4 \
-  --outputs "02-reviewed.md,03-social.md"
+  --outputs "02-reviewed.md,03-social.md" --sync-hint
 ```
+
+`--sync-hint` (#11729): com sentinel ausente, o comando imprime no stderr uma linha `[aviso]` com "possível defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição nesta máquina. A mensagem do exit `1` abaixo repassa essa linha ao editor.
 
 Exit code handling:
 - `0` → continuar.
-- `1` → **ANTES do FATAL (#11690):** rodar `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 4`; exit 4 (outra máquina à frente, data/ defasado) → halt banner "data/ possivelmente defasado, aguardar o sync do OneDrive" (saída se a outra sessão morreu ou sentinel/outputs foram removidos de propósito: o editor confirma e re-roda o guard com `--force`) e NÃO mandar re-rodar `/diaria-4-revisao`. Qualquer outro exit ≠ 0 (2, crash) = mesmo halt. Exit 0 → **FATAL:** "Etapa 4 (Revisao) nao completou (sentinel ausente). Re-rodar `/diaria-4-revisao {AAMMDD}` antes de continuar." Parar.
+- `1` → **ANTES do FATAL (#11690):** rodar `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 4`; exit 4 (outra máquina à frente, data/ defasado) → halt banner "data/ possivelmente defasado, aguardar o sync do OneDrive" (saída se a outra sessão morreu ou sentinel/outputs foram removidos de propósito: o editor confirma e re-roda o guard com `--force`) e NÃO mandar re-rodar `/diaria-4-revisao`. Qualquer outro exit ≠ 0 (2, crash) = mesmo halt. Exit 0 → **FATAL:** "Etapa 4 (Revisao): sentinel ausente nesta maquina. Se o gate foi aprovado em outra maquina, aguardar o sync do OneDrive (ver a linha `[aviso]`); se nao, re-rodar `/diaria-4-revisao {AAMMDD}` antes de continuar." Parar.
 - `2` → **ANTES do FATAL (#11690):** rodar `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 4 --outputs-missing`; exit 4 → halt banner "data/ possivelmente defasado, aguardar o sync do OneDrive" (saída: editor confirma e re-roda o guard com `--force`) e NÃO recomendar re-rodar Stage 4. Qualquer outro exit ≠ 0 (2, crash) = mesmo halt. Exit 0 → **FATAL:** "Outputs do Stage 4 ausentes. Re-rodar Etapa 4." Parar.
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message "stage4_sentinel_missing_legacy"`), continuar.
 
