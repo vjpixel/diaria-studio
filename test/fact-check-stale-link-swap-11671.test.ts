@@ -188,7 +188,7 @@ const BLOCKING_FC = {
 };
 
 describe("#11671 item 2 — fact-check.json carimbado com o hash do conteúdo", () => {
-  it("frase removida depois da checagem: --check-blocking deixa de bloquear e avisa defasagem", () => {
+  it("frase removida depois da checagem: --check-blocking sai do exit 2 e pede re-checagem (exit 1, #11685)", () => {
     const dir = setupEdition();
     try {
       const fcPath = join(dir, "_internal", "fact-check.json");
@@ -202,9 +202,13 @@ describe("#11671 item 2 — fact-check.json carimbado com o hash do conteúdo", 
       // Editor remove a frase no gate; o fact-check.json NÃO é refeito.
       writeFileSync(join(dir, "02-reviewed.md"), reviewedMd(OLD_URL, false), "utf8");
       const second = runCli(dir, ["--input-json", fcPath, "--check-blocking"]);
-      assert.equal(second.status, 0, second.stderr);
+      // #11685 item 1: removido e reescrito são indistinguíveis — nem bloqueio
+      // (exit 2) nem liberação (exit 0): fact-check indisponível, re-despachar.
+      assert.equal(second.status, 1, second.stderr);
       assert.match(second.stdout, /Fact-check DEFASADO \(#11671\)/);
-      assert.match(second.stderr, /trecho removido/);
+      assert.match(second.stderr, /trecho sumiu do texto/);
+      assert.match(second.stderr, /FACT-CHECK DEFASADO \(#11685\)/);
+      assert.doesNotMatch(second.stderr, /GATE-BLOCKING/);
       // Carimbo preservado (não recarimba com o texto novo).
       assert.deepEqual(JSON.parse(readFileSync(fcPath, "utf8")).content_hash, stamped.content_hash);
     } finally {
@@ -258,7 +262,7 @@ describe("#11671 item 2 — fact-check.json carimbado com o hash do conteúdo", 
     }
   });
 
-  it("Studio gate usa o mesmo critério (frase removida → 0 bloqueantes, stale=true)", () => {
+  it("Studio gate usa o mesmo critério (frase removida → 0 bloqueantes, 1 sumido, item não-ok)", () => {
     const root = mkdtempSync(join(tmpdir(), "fc-11671-gate-"));
     try {
       const ed = join(root, "data", "editions", "261030");
@@ -280,10 +284,13 @@ describe("#11671 item 2 — fact-check.json carimbado com o hash do conteúdo", 
       assert.equal(summary.factCheck.available, true);
       if (summary.factCheck.available) {
         assert.equal(summary.factCheck.blockingCount, 0);
+        assert.equal(summary.factCheck.vanishedCount, 1);
         assert.equal(summary.factCheck.stale, true);
       }
       const item = summary.checklist.find((c) => c.id === "fact-check")!;
       assert.match(item.detail, /defasado/);
+      assert.match(item.detail, /sem re-checagem/);
+      assert.equal(item.ok, false, "#11685: claim sumido sem re-checagem não deixa o item ok");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
