@@ -51,7 +51,8 @@
  * LinkedIn (`utm_source=linkedin&utm_medium=organic_social&utm_campaign=company_page_cta`).
  */
 
-import { FACEBOOK_CTA_UTM } from "./shared/utm-registry.ts";
+import { FACEBOOK_CTA_UTM, FACEBOOK_EDITION_UTM, INSTAGRAM_EDITION_UTM } from "./shared/utm-registry.ts";
+import { USE_MELHOR_UTM_CONTENT } from "./use-melhor-post.ts";
 
 export type SocialChannel = "linkedin" | "facebook" | "instagram";
 
@@ -131,6 +132,62 @@ export const USE_MELHOR_ENGAGEMENT_LINES: Record<SocialChannel, string | null> =
   facebook: null,
   instagram: INSTAGRAM_USE_MELHOR_ENGAGEMENT_LINE,
 };
+
+/**
+ * #11724: permalink da edição no 4º post (USE MELHOR, `## um`). A chamada
+ * datada ("O guia completo está na edição de DD/MM.") já vai no texto
+ * (#11667, `context/editorial-rules.md` §"USE MELHOR no social"); o publish
+ * acrescenta o DESTINO nas redes com link:
+ *
+ * - Facebook: linha de canal com o permalink, no lugar do CTA de assinatura.
+ * - Instagram: legenda não linka, então o publish deixa um COMENTÁRIO com o
+ *   permalink logo depois do `media_publish` (Worker `diaria-linkedin-cron`,
+ *   `first_comment`). Não fixado: a Graph API não tem endpoint para fixar
+ *   comentário. A linha da legenda passa a apontar o comentário, não a bio.
+ *
+ * Sem `editionUrl` resolvida (`_internal/05-edition-url.txt` ausente), as
+ * duas redes caem nas linhas de sempre (`FACEBOOK_CTA_LINE`,
+ * `INSTAGRAM_CTA_LINE`): nunca uma linha que aponte para um link inexistente.
+ *
+ * `editionUrl` que não é URL absoluta (o placeholder `{edition_url}` do
+ * preview do gate 4, quando a URL ainda não existe) entra como está, sem UTM.
+ */
+function tagEditionUrl(editionUrl: string, utm: { source: string; medium: string; campaign: string }, content?: string): string {
+  let u: URL;
+  try {
+    u = new URL(editionUrl);
+  } catch {
+    return editionUrl;
+  }
+  u.searchParams.set("utm_source", utm.source);
+  u.searchParams.set("utm_medium", utm.medium);
+  u.searchParams.set("utm_campaign", utm.campaign);
+  if (content) u.searchParams.set("utm_content", content);
+  return u.toString();
+}
+
+/** Facebook, 4º post: linha de canal com o permalink da edição (#11724). O
+ * `utm_content=usemelhor` entra depois, em `finalizeUseMelhorTextChannelPostText`,
+ * como em todo link do projeto no `## um`. */
+export function facebookUseMelhorEditionLine(editionUrl: string): string {
+  return `Leia a edição em ${tagEditionUrl(editionUrl, FACEBOOK_EDITION_UTM)}.`;
+}
+
+/**
+ * Instagram, 4º post: linha da legenda quando o publish vai deixar o
+ * comentário com o permalink (#11724). Afirma onde o link está; não pede
+ * comentário nem promete entrega a quem comentar, então o guard
+ * `comment-delivery-promise` (#8681) não dispara (travado em teste).
+ */
+export const INSTAGRAM_USE_MELHOR_COMMENT_CTA_LINE =
+  `Link da edição no primeiro comentário. ${INSTAGRAM_FOLLOW_SENTENCE}`;
+
+/** Instagram, 4º post: texto do comentário com o permalink (#11724). Já sai
+ * com `utm_content=usemelhor` (o comentário não passa pelo
+ * `finalizeUseMelhorTextChannelPostText` da legenda). */
+export function instagramUseMelhorEditionComment(editionUrl: string): string {
+  return `Edição completa: ${tagEditionUrl(editionUrl, INSTAGRAM_EDITION_UTM, USE_MELHOR_UTM_CONTENT)}`;
+}
 
 /** Mapa canal → linha de CTA (`null` = nenhuma linha injetada para esse canal). */
 export const CHANNEL_CTA_LINES: Record<SocialChannel, string | null> = {
@@ -249,12 +306,34 @@ export function splitBodyAndTags(text: string): SplitBodyAndTags {
 export function injectChannelLine(
   genericText: string,
   channel: SocialChannel,
-  opts: { useMelhor?: boolean } = {},
+  opts: ChannelLineOpts = {},
 ): string {
   const { body, tags } = splitBodyAndTags(genericText);
   const parts = [body, ...channelPublishLines(channel, opts)];
   if (tags) parts.push(tags);
   return parts.join("\n\n");
+}
+
+export interface ChannelLineOpts {
+  /** 4º post (USE MELHOR, `## um`) — linhas próprias (#10201, #11724). */
+  useMelhor?: boolean;
+  /**
+   * #11724: permalink da edição (`_internal/05-edition-url.txt`, sem UTM). Só
+   * muda o 4º post: Facebook troca o CTA de assinatura pelo permalink e o
+   * Instagram aponta o comentário em vez da bio. Ausente/vazio = linhas de
+   * sempre. Destaques (d1/d2/d3) ignoram.
+   */
+  editionUrl?: string | null;
+}
+
+/** #11724: linha de CTA do canal, considerando o 4º post com permalink. */
+function ctaLineFor(channel: SocialChannel, opts: ChannelLineOpts): string | null {
+  const editionUrl = opts.editionUrl?.trim();
+  if (opts.useMelhor && editionUrl) {
+    if (channel === "facebook") return facebookUseMelhorEditionLine(editionUrl);
+    if (channel === "instagram") return INSTAGRAM_USE_MELHOR_COMMENT_CTA_LINE;
+  }
+  return CHANNEL_CTA_LINES[channel];
 }
 
 /**
@@ -266,9 +345,10 @@ export function injectChannelLine(
  * #6005 Parte A: linha de engajamento vem DEPOIS da linha de canal —
  * ordem final: {corpo} \n\n {CTA de canal} \n\n {engajamento} \n\n {tags}.
  * #10201: o 4º post (USE MELHOR, `opts.useMelhor`) tem linha própria.
+ * #11724: com `opts.editionUrl`, o 4º post aponta o permalink (ver `ctaLineFor`).
  */
-export function channelPublishLines(channel: SocialChannel, opts: { useMelhor?: boolean } = {}): string[] {
-  const ctaLine = CHANNEL_CTA_LINES[channel];
+export function channelPublishLines(channel: SocialChannel, opts: ChannelLineOpts = {}): string[] {
+  const ctaLine = ctaLineFor(channel, opts);
   const engagementLine = (opts.useMelhor ? USE_MELHOR_ENGAGEMENT_LINES : CHANNEL_ENGAGEMENT_LINES)[channel];
   return [ctaLine, engagementLine].filter((l): l is string => !!l);
 }

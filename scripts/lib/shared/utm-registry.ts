@@ -523,6 +523,26 @@ export const THREADS_EDITION_UTM = {
   campaign: EDICAO_DIARIA_UTM_CAMPAIGN,
 } as const;
 
+/** Facebook — permalink da edição na linha de canal do 4º post (`## um`,
+ * USE MELHOR, #11724) no lugar do CTA de assinatura. Mesma campanha do X/
+ * Threads (`edicao-diaria`); o `utm_content=usemelhor` entra depois, no
+ * `finalizeUseMelhorTextChannelPostText`. Montado em
+ * `scripts/lib/social-cta-lines.ts` (`facebookUseMelhorEditionLine`). */
+export const FACEBOOK_EDITION_UTM = {
+  source: "facebook",
+  medium: "organic_social",
+  campaign: EDICAO_DIARIA_UTM_CAMPAIGN,
+} as const;
+
+/** Instagram — permalink da edição no comentário que o publish deixa no 4º
+ * post (`## um`, #11724; não fixado: a Graph API não fixa comentário). Montado
+ * em `scripts/lib/social-cta-lines.ts` (`instagramUseMelhorEditionComment`). */
+export const INSTAGRAM_EDITION_UTM = {
+  source: "instagram",
+  medium: "organic_social",
+  campaign: EDICAO_DIARIA_UTM_CAMPAIGN,
+} as const;
+
 /** LinkedIn — CTA de `{edition_url}` no `## post_pixel` (post pessoal do
  * Pixel, #1690) — distinto do post principal do LinkedIn, que não leva
  * link/UTM no corpo por decisão preservada em #595/#3627 (ver
@@ -1350,6 +1370,30 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: THREADS_EDITION_UTM.campaign,
     originFile: "scripts/publish-threads.ts",
     description: "Mesmo CTA do X acima (twitter-edicao) — só `utm_source` distinto (#4295).",
+    status: "ativo",
+  },
+  {
+    id: "facebook-edicao-use-melhor",
+    label: "Facebook — permalink da edição no 4º post (USE MELHOR)",
+    source: FACEBOOK_EDITION_UTM.source,
+    medium: FACEBOOK_EDITION_UTM.medium,
+    campaignPattern: FACEBOOK_EDITION_UTM.campaign,
+    originFile: "scripts/lib/social-cta-lines.ts",
+    description:
+      "Linha de canal do `## um` no Facebook: o permalink da edição no lugar do CTA de " +
+      "assinatura (#11724). Sai com `utm_content=usemelhor`.",
+    status: "ativo",
+  },
+  {
+    id: "instagram-edicao-use-melhor",
+    label: "Instagram — comentário com o permalink da edição no 4º post",
+    source: INSTAGRAM_EDITION_UTM.source,
+    medium: INSTAGRAM_EDITION_UTM.medium,
+    campaignPattern: INSTAGRAM_EDITION_UTM.campaign,
+    originFile: "scripts/lib/social-cta-lines.ts",
+    description:
+      "Comentário (não fixado) que o publish deixa no post do `## um` logo depois do " +
+      "`media_publish` (#11724). Sai com `utm_content=usemelhor`.",
     status: "ativo",
   },
   {

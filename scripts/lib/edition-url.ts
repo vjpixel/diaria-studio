@@ -25,6 +25,8 @@
  * rejeita {outros_count} presente em 03-social.md antes do dispatch.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { seoSlug } from "./slug.ts";
 
 /** Base URL pública da diar.ia.br no Beehiiv. Não inclui trailing slash. */
@@ -183,4 +185,20 @@ export function tagEditionUrlInText(text: string, editionUrl: string, utm: Editi
   if (!editionUrl || !text.includes(editionUrl)) return text;
   const tagged = appendUtmToEditionUrl(editionUrl, utm);
   return text.replaceAll(editionUrl, () => tagged);
+}
+
+/**
+ * #11724: URL da edição gravada no Stage 5 (`_internal/05-edition-url.txt`,
+ * passo da newsletter, antes do dispatch social). `null` quando o arquivo
+ * não existe, está vazio ou não pode ser lido: o caller cai nas linhas de
+ * canal de sempre em vez de apontar para um link que não existe.
+ */
+export function readResolvedEditionUrl(editionDir: string): string | null {
+  const p = resolve(editionDir, "_internal", "05-edition-url.txt");
+  try {
+    if (!existsSync(p)) return null;
+    return readFileSync(p, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
 }

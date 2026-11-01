@@ -66,12 +66,18 @@ import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; /
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6005 Parte B
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { toSocialPostText } from "./lib/social-post-text.ts"; // #6862 — Instagram não renderiza markdown; #10441 ponto único do texto de post
-import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish; #4309 — proteger o CTA no truncamento
+import {
+  injectChannelLine,
+  INSTAGRAM_CTA_LINE,
+  INSTAGRAM_USE_MELHOR_COMMENT_CTA_LINE, // #11724
+  instagramUseMelhorEditionComment, // #11724
+} from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish; #4309 — proteger o CTA no truncamento
 import { readInstagramTestOverride } from "./lib/instagram-test-override.ts"; // #8681 — override de teste por edição
 import { detectCommentDeliveryPromise, commentDeliveryPromiseMessage } from "./lib/comment-delivery-promise.ts"; // #8681 — guard contra promessa de entrega via comentário
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { runCli } from "./lib/cli-exit.ts";
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import { readResolvedEditionUrl } from "./lib/edition-url.ts"; // #11724 — permalink da edição no 4º post
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import { destaqueScheduledIn, recordDailyRotationFailSoft, useMelhorScheduledIn } from "./lib/social-schedule-rotation-record.ts"; // #10305, #10541
 import { USE_MELHOR_POST_ID } from "./lib/use-melhor-post.ts"; // #10201
@@ -133,7 +139,12 @@ export function extractDestaquesFromSocialMd(socialMd: string, platform: "instag
  * legadas já eram consumidas do jeito antigo (texto/CTA embutidos no próprio
  * agent) e não devem ganhar uma 2ª linha por cima.
  */
-export function extractPostText(socialMd: string, destaque: string): string {
+export function extractPostText(
+  socialMd: string,
+  destaque: string,
+  /** #11724: permalink da edição — no `## um` a linha aponta o comentário, não a bio. */
+  editionUrl: string | null = null,
+): string {
   // Normalizar CRLF → LF
   socialMd = socialMd.replace(/\r\n/g, "\n");
 
@@ -147,7 +158,8 @@ export function extractPostText(socialMd: string, destaque: string): string {
     const dText = extractDestaqueBlock(socialMatch[1], destaque);
     if (dText !== null) {
       // #10201: `## um` (4º post, USE MELHOR) leva a linha de engajamento própria.
-      const text = injectChannelLine(dText.trim(), "instagram", { useMelhor: destaque === USE_MELHOR_POST_ID });
+      // #11724: com o permalink, o `## um` aponta o comentário que o publish deixa.
+      const text = injectChannelLine(dText.trim(), "instagram", { useMelhor: destaque === USE_MELHOR_POST_ID, editionUrl });
       assertNoScaffolding(text, `destaque '${destaque}' (instagram/Social)`);
       // #6862: Instagram não renderiza markdown — ver docstring de
       // lib/strip-markdown-emphasis.ts (nunca fazer isso na fonte).
@@ -189,7 +201,11 @@ export function extractPostText(socialMd: string, destaque: string): string {
 export function truncateCaption(caption: string, maxLen = 2200): string {
   if (caption.length <= maxLen) return caption;
 
-  const ctaIdx = caption.indexOf(INSTAGRAM_CTA_LINE);
+  // #11724: o 4º post com permalink troca a linha da bio pela do comentário —
+  // as duas são protegidas do corte.
+  const ctaIdx = [INSTAGRAM_CTA_LINE, INSTAGRAM_USE_MELHOR_COMMENT_CTA_LINE]
+    .map((line) => caption.indexOf(line))
+    .find((i) => i >= 0) ?? -1;
   if (ctaIdx >= 0) {
     const ellipsis = "...";
     const separator = "\n\n";
@@ -404,6 +420,50 @@ export async function fetchPermalink(
 }
 
 /**
+ * #11724: comentário com o permalink da edição no post recém-publicado (4º
+ * post, USE MELHOR). `POST /{ig-media-id}/comments` com `message`. Exige a
+ * permissão de comentário do token (`instagram_manage_comments` no fluxo
+ * Facebook Login, que é o deste repo — `graph.facebook.com`; no fluxo
+ * Instagram Login seria `instagram_business_manage_comments`). Não fixa: a
+ * Graph API não tem endpoint para fixar comentário.
+ *
+ * Fail-soft: NUNCA lança. O post já saiu; falha do comentário (permissão
+ * ausente, rede, HTTP de erro) volta como `{ ok: false, reason }` para o
+ * caller registrar e seguir.
+ */
+export async function postInstagramComment(
+  mediaId: string,
+  message: string,
+  accessToken: string,
+  apiVersion: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
+  try {
+    const url = `${INSTAGRAM_API_BASE}/${apiVersion}/${mediaId}/comments`;
+    // Token no header Authorization, nunca na query string (#7779).
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ message }).toString(),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } } = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { ok: false, reason: `comentário: resposta não-JSON HTTP ${res.status}: ${text.slice(0, 200)}` };
+    }
+    if (!res.ok || data.error) {
+      return { ok: false, reason: `comentário: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}` };
+    }
+    if (!data.id) return { ok: false, reason: `comentário: resposta sem id: ${text.slice(0, 200)}` };
+    return { ok: true, id: data.id };
+  } catch (e) {
+    return { ok: false, reason: `comentário: fetch falhou: ${(e as Error).message}` };
+  }
+}
+
+/**
  * Enfileira um post Instagram no Worker `diaria-linkedin-cron` (#3817 — Worker
  * generalizado pra suportar `channel: "instagram"` além de LinkedIn). O
  * cliente HTTP em si mora em `scripts/lib/worker-queue-client.ts` (#3944
@@ -440,10 +500,21 @@ export function buildUseMelhorInstagramPost(input: {
   plan: UseMelhorReadyPlan;
   images: Record<string, { url?: string }> | undefined;
   editionDir: string;
+  /** #11724: permalink da edição (`05-edition-url.txt`); ausente = linha da bio, sem comentário. */
+  editionUrl?: string | null;
   fileExists?: (p: string) => boolean;
 }):
-  | { ok: true; caption: string; imageUrl: string; imageUrls: string[]; imageFile: string }
+  | {
+      ok: true;
+      caption: string;
+      imageUrl: string;
+      imageUrls: string[];
+      imageFile: string;
+      /** #11724: comentário com o permalink, publicado logo depois do `media_publish`. `null` sem permalink. */
+      firstComment: string | null;
+    }
   | { ok: false; reason: string } {
+  const editionUrl = input.editionUrl?.trim() || null;
   // Corpo vazio: só sobraria a linha de CTA injetada — não publicar.
   if (!extractDestaqueBlock(extractSection(input.socialMd, "Social") ?? "", "um")?.trim()) {
     return { ok: false, reason: "'## um' vazio ou ausente em '# Social'" };
@@ -456,7 +527,7 @@ export function buildUseMelhorInstagramPost(input: {
     // LinkedIn/Facebook (antes saíam em pares, herdados dos cards).
     caption = truncateCaption(
       prependUseMelhorCaptionTitle(
-        finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "um")),
+        finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "um", editionUrl)),
         input.plan.captionTitle,
       ),
     );
@@ -474,7 +545,15 @@ export function buildUseMelhorInstagramPost(input: {
   if (!exists(resolve(input.editionDir, USE_MELHOR_COVER_FILE))) {
     return { ok: false, reason: `${USE_MELHOR_COVER_FILE} não encontrado na edição` };
   }
-  return { ok: true, caption, imageUrl: coverUrl, imageUrls: carouselUrls ?? [coverUrl], imageFile: USE_MELHOR_COVER_FILE };
+  return {
+    ok: true,
+    caption,
+    imageUrl: coverUrl,
+    imageUrls: carouselUrls ?? [coverUrl],
+    imageFile: USE_MELHOR_COVER_FILE,
+    // #11724: a legenda só aponta o comentário quando há permalink — os dois andam juntos.
+    firstComment: editionUrl ? instagramUseMelhorEditionComment(editionUrl) : null,
+  };
 }
 
 async function main(): Promise<number | void> {
@@ -655,6 +734,7 @@ async function main(): Promise<number | void> {
           plan: umPlan,
           images: (publicImages as { images?: Record<string, { url?: string }> }).images,
           editionDir,
+          editionUrl: readResolvedEditionUrl(editionDir), // #11724
         })
       : null;
   if (umPost && !umPost.ok) reportUseMelhorSkip("instagram", umPost.reason, { editionId: editionDate, rootDir: ROOT });
@@ -823,6 +903,8 @@ async function main(): Promise<number | void> {
           scheduled_at: scheduledIso,
           destaque: d,
           channel: "instagram",
+          // #11724: o Worker comenta o permalink logo depois do media_publish (fail-soft lá).
+          ...(umReady?.firstComment && { first_comment: umReady.firstComment }),
         });
         const entry: PostEntry = {
           platform: "instagram",
@@ -831,6 +913,7 @@ async function main(): Promise<number | void> {
           status: "scheduled",
           scheduled_at: scheduledIso,
           worker_queue_key: response.key,
+          ...(umReady?.firstComment && { first_comment_queued: true }), // #11724
         };
         tagAndAppend(entry);
         results.push(entry);
@@ -886,6 +969,17 @@ async function main(): Promise<number | void> {
           ig_media_id: mediaId,
           ig_container_id: containerId,
         };
+        // #11724: comentário com o permalink no 4º post. Fail-soft — o post já
+        // saiu; falha fica registrada na entry e no log, nunca derruba o canal.
+        if (umReady?.firstComment) {
+          const comment = await postInstagramComment(mediaId, umReady.firstComment, accessToken, apiVersion);
+          if (comment.ok) {
+            entry.ig_first_comment_id = comment.id;
+          } else {
+            entry.first_comment_error = comment.reason;
+            console.warn(`WARN instagram/${d}: post publicado, ${comment.reason} (#11724)`);
+          }
+        }
 
         tagAndAppend(entry);
         results.push(entry);

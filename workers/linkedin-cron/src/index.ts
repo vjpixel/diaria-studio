@@ -162,6 +162,8 @@ export const INSTAGRAM_ACCOUNTS: readonly InstagramAccount[] = ["diaria", "vjpix
 export const MAX_COLLABORATORS = 3;
 /** #10823 — username do Instagram: letras, dígitos, `.` e `_`, até 30. */
 export const IG_USERNAME_RE = /^[A-Za-z0-9._]{1,30}$/;
+/** #11724 — teto do texto de um comentário na Graph API do Instagram. */
+export const MAX_FIRST_COMMENT_LENGTH = 2_200;
 
 /** #10922 — container de Reels em processamento, retomável entre voltas. */
 export interface ReelsContainerRef {
@@ -202,6 +204,14 @@ export interface QueueEntry {
   collaborators?: string[];
   /** #10823 — conta do Instagram que publica (default "diaria"). Ver InstagramAccount. */
   ig_account?: InstagramAccount;
+  /**
+   * #11724 — comentário publicado no post logo depois do `media_publish` (só
+   * `channel: "instagram"`, imagem/carrossel, nunca Reels). Hoje: o permalink
+   * da edição no 4º post (USE MELHOR). Fail-soft no disparo: falha do
+   * comentário vira log, o post segue `fired`. Não fixado (a Graph API não
+   * fixa comentário).
+   */
+  first_comment?: string;
   /**
    * #10906 — chave idempotente do enqueue, quando o caller manda. Define o
    * segmento final da key (`idempotentQueueUuid`): o mesmo POST repetido cai
@@ -472,6 +482,7 @@ const IDEMPOTENT_CONTENT_FIELDS = [
   "cover_url",
   "collaborators",
   "ig_account",
+  "first_comment",
 ] as const satisfies readonly (keyof QueueEntry)[];
 
 /**
@@ -628,6 +639,24 @@ export function validateReelsFields(
   return null;
 }
 
+/**
+ * #11724 — valida `first_comment`: texto não-vazio de até
+ * `MAX_FIRST_COMMENT_LENGTH`, só em post de imagem/carrossel do Instagram.
+ * Devolve a mensagem do 400 ou `null`. Puro.
+ */
+export function validateFirstComment(body: Partial<QueueEntry>): string | null {
+  if (body.first_comment === undefined) return null;
+  if (typeof body.first_comment !== "string" || !body.first_comment.trim()) {
+    return "first_comment must be a non-empty string";
+  }
+  if (body.first_comment.length > MAX_FIRST_COMMENT_LENGTH) {
+    return `first_comment exceeds ${MAX_FIRST_COMMENT_LENGTH} chars`;
+  }
+  if (body.channel !== "instagram") return "first_comment only applies to channel='instagram'";
+  if (body.media_type === "REELS") return "first_comment is not supported with media_type='REELS'";
+  return null;
+}
+
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
     return json({ error: "unauthorized" }, 401);
@@ -739,6 +768,9 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   // falharia no disparo, horas depois, com o store local dizendo "agendado".
   const reelsError = validateReelsFields(body, env);
   if (reelsError) return json(reelsError.body, 400);
+  // #11724 — comentário pós-publicação: validado no enqueue pelo mesmo motivo.
+  const firstCommentError = validateFirstComment(body);
+  if (firstCommentError) return json({ error: firstCommentError }, 400);
 
   // #10906 — chave idempotente (opcional). Validada antes de qualquer escrita.
   if (body.idempotency_key !== undefined) {
@@ -856,6 +888,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.cover_url !== undefined && { cover_url: body.cover_url }),
     ...(body.collaborators !== undefined && { collaborators: body.collaborators }),
     ...(body.ig_account !== undefined && { ig_account: body.ig_account }),
+    // #11724 — omitido se undefined: sem comentário pós-publicação
+    ...(body.first_comment !== undefined && { first_comment: body.first_comment }),
     ...(body.idempotency_key !== undefined && { idempotency_key: body.idempotency_key }),
   };
   // #11133 — a reserva cobre cancel → KV put → arm; finally libera o

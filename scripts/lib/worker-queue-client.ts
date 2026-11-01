@@ -57,6 +57,11 @@ export interface WorkerQueuePayload {
   cover_url?: string;
   collaborators?: string[];
   ig_account?: "diaria" | "vjpixel";
+  // #11724 — comentário que o Worker publica no post logo depois do
+  // `media_publish` (só `channel: "instagram"`, post de imagem/carrossel). Hoje
+  // só o 4º post (USE MELHOR) manda, com o permalink da edição. Fail-soft no
+  // Worker: falha do comentário nunca derruba a publicação.
+  first_comment?: string;
   // #10906 — chave idempotente: o Worker deriva a key da fila dela, então o
   // MESMO POST repetido (retry do `postToWorkerQueue` depois de uma resposta
   // perdida) cai na mesma entry em vez de criar uma 2ª. Formato aceito:
