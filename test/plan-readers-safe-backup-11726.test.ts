@@ -1,19 +1,20 @@
 /**
  * #11726 — follow-up da #11721: os leitores restantes de `plan.json` de rodada
- * (statusline, gates de exec_track e surfaced-live, re-espera de CI) passam
- * pelo leitor único `readPlanJson`, que recupera a cópia de conflito do
+ * (gates de exec_track e surfaced-live, re-espera de CI) passam pelo leitor
+ * único `readPlanJson`, que recupera a cópia de conflito do
  * OneDrive (`plan-{máquina}-safeBackup-{NNNN}.json`, #10579) antes de concluir
- * que a rodada não existe. Cenário real: o plano vivo some e só o backup fica
+ * que a rodada não existe. A statusline lê o backup em modo somente leitura
+ * (`readLatestPlanSafeBackup`, #11768), sem restaurar. Cenário real: o plano vivo some e só o backup fica
  * no diretório — antes cada um desses leitores tratava como "sem plano".
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { readPlanFromDir } from "../scripts/overnight-statusline.ts";
+import { isStaleDevelopPlan, readPlanFromDir } from "../scripts/overnight-statusline.ts";
 import { applyQueueReawait } from "../scripts/lib/ci-queue-reawait.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,7 +54,51 @@ describe("readPlanFromDir (statusline) com plano só no safeBackup (#11726)", ()
     assert.ok(plan, "plano do backup deveria ser lido");
     assert.equal((plan as unknown as { issues: Array<{ number: number }> }).issues[0].number, 1);
     assert.deepEqual(errs, [], "statusline é caminho quente: nenhum aviso");
-    assert.ok(existsSync(planPath), "plan.json restaurado a partir do backup");
+  });
+
+  // #11768: a statusline roda a cada ~30s em toda máquina e varre rodadas de
+  // outras máquinas; gravar o plan.json restaurado viraria escrita concorrente
+  // no data/ sincronizado pelo OneDrive. Leitura do backup é somente leitura.
+  it("não grava plan.json nem altera o diretório da rodada (#11768)", () => {
+    const planPath = roundWithOnlySafeBackup({ issues: [{ number: 7, status: "elegivel" }] });
+    const before = readdirSync(dirname(planPath)).sort();
+    const plan = readPlanFromDir(planPath);
+    assert.equal((plan as unknown as { issues: Array<{ number: number }> }).issues[0].number, 7);
+    assert.equal(existsSync(planPath), false, "statusline não pode restaurar plan.json");
+    assert.deepEqual(readdirSync(dirname(planPath)).sort(), before, "nenhum arquivo criado/removido");
+  });
+
+  it("escolhe o backup válido mais recente e pula o ilegível, sem gravar (#11768)", () => {
+    const planPath = roundWithOnlySafeBackup({ issues: [{ number: 1 }] });
+    const dir = dirname(planPath);
+    writeFileSync(join(dir, "plan-300-safeBackup-0002.json"), JSON.stringify({ issues: [{ number: 2 }] }), "utf8");
+    writeFileSync(join(dir, "plan-300-safeBackup-0003.json"), "{truncado", "utf8");
+    const t = Date.now() / 1000;
+    utimesSync(join(dir, "plan-300-safeBackup-0001.json"), t - 30, t - 30);
+    utimesSync(join(dir, "plan-300-safeBackup-0002.json"), t - 20, t - 20);
+    utimesSync(join(dir, "plan-300-safeBackup-0003.json"), t - 10, t - 10);
+    const plan = readPlanFromDir(planPath);
+    assert.equal((plan as unknown as { issues: Array<{ number: number }> }).issues[0].number, 2);
+    assert.equal(existsSync(planPath), false);
+  });
+
+  it("isStaleDevelopPlan mede a idade pelo mtime do backup quando plan.json falta (#11768)", () => {
+    const planPath = roundWithOnlySafeBackup({ issues: [{ number: 1 }] });
+    const backup = join(dirname(planPath), "plan-300-safeBackup-0001.json");
+    const now = new Date();
+    const old = new Date(now.getTime() - 3 * 24 * 3600 * 1000);
+    utimesSync(backup, old, old);
+    assert.equal(isStaleDevelopPlan(planPath, now), true, "rodada abandonada só no backup expira");
+    utimesSync(backup, now, now);
+    assert.equal(isStaleDevelopPlan(planPath, now), false, "backup recente segue ativo");
+    assert.equal(existsSync(planPath), false);
+  });
+
+  it("plano presente continua lido do próprio plan.json (backup ao lado ignorado)", () => {
+    const planPath = roundWithOnlySafeBackup({ issues: [{ number: 1 }] });
+    writeFileSync(planPath, JSON.stringify({ issues: [{ number: 9 }] }), "utf8");
+    const plan = readPlanFromDir(planPath);
+    assert.equal((plan as unknown as { issues: Array<{ number: number }> }).issues[0].number, 9);
   });
 
   it("sem plano e sem backup continua null", () => {
