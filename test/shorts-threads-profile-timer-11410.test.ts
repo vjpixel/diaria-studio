@@ -87,9 +87,11 @@ const entry = (destination: string, status: ShortPublishedEntry["status"] = "pub
 const jsonRes = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("#11410 config publishing.shorts.threads_profile_via_timer", () => {
-  it("default false no código e no platform.config.json (registrado, não armado)", () => {
+  it("default false no código; true no platform.config.json desde o #11635 (ligado junto com as tasks)", () => {
     assert.equal(loadShortsConfig({}).threadsProfileViaTimer, false);
-    assert.equal(loadShortsConfig(platformConfig).threadsProfileViaTimer, false);
+    // #11635: tasks ligadas com o config em false = timer saindo `skip` todo dia e
+    // o Threads pessoal ainda dependendo do app desktop no Neo. O par anda junto.
+    assert.equal(loadShortsConfig(platformConfig).threadsProfileViaTimer, true);
     assert.equal(loadShortsConfig(CFG).threadsProfileViaTimer, true);
   });
   it("não-boolean lança", () => {
@@ -553,13 +555,14 @@ describe("#11410 runThreadsTimer de ponta a ponta (I/O falso)", () => {
   });
 });
 
-describe("#11410 tasks do 300: registradas, não armadas, cobrindo os horários do vertical", () => {
+describe("#11410/#11635 tasks do 300: ligadas, cobrindo os horários do vertical", () => {
   const daily = SCHEDULED_TASKS.find((t) => t.name === "Diaria-Shorts-Threads-Profile");
   const hourly = SCHEDULED_TASKS.find((t) => t.name === "Diaria-Shorts-Threads-Profile-Catchup");
-  it("as duas existem com enabled:false (armar é do editor), rodando o script do timer, com guard da junction data/", () => {
+  it("as duas existem ligadas (#11635: editor autorizou o arme), rodando o script do timer, com guard da junction data/", () => {
     for (const t of [daily, hourly]) {
       assert.ok(t);
-      assert.equal(t!.enabled, false);
+      // #11635: sem `enabled: false` o Remediate-Never-Armed-Tasks (#8153) arma no 300.
+      assert.notEqual(t!.enabled, false);
       assert.deepEqual(t!.steps.map((s) => s.script), ["scripts/shorts-threads-profile-timer.ts"]);
       assert.equal(t!.guard?.requiredFile, "editions");
     }
@@ -578,5 +581,12 @@ describe("#11410 tasks do 300: registradas, não armadas, cobrindo os horários 
   it("o registro em prosa documenta o comando de arme", () => {
     const doc = readFileSync(new URL("../docs/scheduled-tasks-registry.md", import.meta.url), "utf8");
     assert.match(doc, /arm-systemd-timers\.ts --task Diaria-Shorts-Threads-Profile/);
+  });
+  it("#11635: a prosa do registro não afirma mais que as tasks estão desligadas", () => {
+    const doc = readFileSync(new URL("../docs/scheduled-tasks-registry.md", import.meta.url), "utf8");
+    const para = doc.split("\n").find((l) => l.startsWith("**Vertical no Threads PESSOAL pelo `300`"));
+    assert.ok(para, "parágrafo do Threads pessoal no registro");
+    assert.doesNotMatch(para!, /N[ÃA]O ARMADA|hoje `false`/i);
+    assert.match(para!, /#11635/);
   });
 });
