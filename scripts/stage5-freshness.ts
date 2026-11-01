@@ -5,9 +5,11 @@
  *   npx tsx scripts/stage5-freshness.ts check --edition-dir DIR [--edition AAMMDD] [--force]
  *
  * Exit 0 = conteúdo local bate com o aprovado no gate 4 (ou sentinel legado,
- * com aviso) · 4 = possivelmente defasado (halt: aguardar o sync do OneDrive)
+ * anterior a `OUTPUT_HASHES_REQUIRED_SINCE`, com aviso) · 4 = possivelmente defasado (halt: aguardar o sync do OneDrive)
  * · 2 = uso inválido. Exceção de leitura (arquivo sumindo no meio do sync)
- * vira exit 4, nunca "sem problemas". Stdout: JSON com `problems`/`warnings`.
+ * vira exit 4, nunca "sem problemas". Stdout: JSON com `verification`,
+ * `problems` (tipados por `kind`) e `warnings`; stderr: uma linha por problema
+ * com a ação do tipo (`STAGE5_PROBLEM_ACTIONS`).
  *
  * `--force` (só com confirmação do editor, ex.: ajuste feito no Studio depois
  * do gate 4): sai 0 e registra o override em `data/run-log.jsonl` (`level:
@@ -17,7 +19,17 @@
 import { basename, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { logEvent } from "./lib/run-log.ts";
-import { checkStage5Freshness, type Stage5FreshnessResult } from "./lib/stage5-freshness.ts";
+import {
+  STAGE5_PROBLEM_ACTIONS,
+  checkStage5Freshness,
+  type Stage5FreshnessResult,
+  type Stage5Problem,
+} from "./lib/stage5-freshness.ts";
+
+/** Uma linha por problema, com o tipo e a ação daquele tipo. */
+export function describeProblems(problems: Stage5Problem[]): string {
+  return problems.map((p) => `[${p.kind}] ${p.message} → ${STAGE5_PROBLEM_ACTIONS[p.kind]}`).join("; ");
+}
 
 export interface FreshnessCliOpts {
   /** Raiz para resolver o run-log (default cwd). Injetável em teste. */
@@ -36,7 +48,17 @@ export function runStage5Freshness(argv: string[], opts: FreshnessCliOpts = {}):
   try {
     r = checkStage5Freshness(dir);
   } catch (e) {
-    r = { ok: false, problems: [`erro ao ler a edição: ${e instanceof Error ? e.message : String(e)}`], warnings: [] };
+    r = {
+      ok: false,
+      verification: "verified",
+      problems: [
+        {
+          kind: "sentinel_unreadable",
+          message: `erro ao ler a edição (arquivo sumindo no meio do sync?): ${e instanceof Error ? e.message : String(e)}`,
+        },
+      ],
+      warnings: [],
+    };
   }
   console.log(JSON.stringify(r));
   for (const w of r.warnings) console.error(`[stage5-freshness] aviso: ${w}`);
@@ -50,18 +72,18 @@ export function runStage5Freshness(argv: string[], opts: FreshnessCliOpts = {}):
         agent: "stage5-freshness",
         level: "warn",
         message: "stage5_freshness_forced",
-        details: { edition_dir: dir, problems: r.problems },
+        details: { edition_dir: dir, kinds: [...new Set(r.problems.map((p) => p.kind))], problems: r.problems },
       },
       opts.logRoot,
     );
     console.error(
-      `[stage5-freshness] --force: override com problemas (${r.problems.join("; ")})` +
+      `[stage5-freshness] --force: override com problemas (${describeProblems(r.problems)})` +
         (logged ? " — registrado no run-log." : " — ATENÇÃO: falha ao registrar no run-log, override sem rastro durável."),
     );
     return 0;
   }
   console.error(
-    `[stage5-freshness] edição possivelmente defasada neste host: ${r.problems.join("; ")}. Aguardar o sync do OneDrive e re-rodar a Etapa 5; não despachar. Se o editor ajustou o arquivo depois do gate 4 de propósito, ele confirma e re-roda com --force.`,
+    `[stage5-freshness] edição possivelmente defasada neste host — não despachar: ${describeProblems(r.problems)}. --force (qualquer tipo) só com confirmação do editor.`,
   );
   return 4;
 }

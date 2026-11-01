@@ -318,8 +318,10 @@ describe("orchestrator-prompt (#634)", () => {
       // #11698 (01/11): +15 linhas — guard de data/ defasado (--step 5),
       // frescor por sha256 e trava da edição antes da 1ª escrita, renovação
       // da trava antes do §5c e release com tombstone no §5h. Passos
-      // EXECUTADOS (fail-closed). Teto 555→570.
-      "orchestrator-stage-5.md": 570,
+      // EXECUTADOS (fail-closed). Teto 555→570. Fixer do review (+7):
+      // renovação da trava no §5f/§5h e aviso de hash nos ramos de correção.
+      // Teto 570→580.
+      "orchestrator-stage-5.md": 580,
       // #4574: 1º teto registrado pra este arquivo (nunca tinha entry —
       // ORCHESTRATOR_FILES não o incluía até esta PR). Arquivo tinha 491
       // linhas pós-fix do #4574 (guard de slug ganhou --out + log-event +

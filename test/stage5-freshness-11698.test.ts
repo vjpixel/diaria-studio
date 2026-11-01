@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeOutputHashes, readSentinel, sentinelExists, sha256Hex, writeSentinel } from "../scripts/lib/pipeline-state.ts";
-import { checkStage5Freshness } from "../scripts/lib/stage5-freshness.ts";
+import { OUTPUT_HASHES_REQUIRED_SINCE, checkStage5Freshness } from "../scripts/lib/stage5-freshness.ts";
 import { runStage5Freshness } from "../scripts/stage5-freshness.ts";
 import { acquireEditionLock, readEditionLock, releaseEditionLock } from "../scripts/lib/edition-lock.ts";
 import { assessStaleEdition } from "../scripts/lib/stale-edition-guard.ts";
@@ -60,14 +60,15 @@ describe("#11698 — sentinel grava o hash dos outputs", () => {
 });
 
 describe("#11698 — frescor do conteúdo entre hosts (sync fora de ordem)", () => {
-  it("sentinel chega antes da versão aprovada: cópia pré-gate (mtime ANTERIOR) é bloqueada", () => {
+  it("sentinel chega antes da versão aprovada: cópia pré-gate que já existia no host é bloqueada pelo hash", () => {
     const { a, b } = twoHostsAfterGate();
     sync(a, b, "_internal/.step-4-done.json"); // só o sentinel chegou
     const r = checkStage5Freshness(b);
     assert.equal(r.ok, false);
-    assert.equal(r.problems.length, 2);
-    assert.match(r.problems.join("\n"), /02-reviewed\.md: conteúdo difere do aprovado/);
-    assert.match(r.problems.join("\n"), /03-social\.md: conteúdo difere do aprovado/);
+    assert.deepEqual(
+      r.problems.map((p) => [p.file, p.kind]),
+      [["02-reviewed.md", "diverged"], ["03-social.md", "diverged"]],
+    );
   });
 
   it("só um dos arquivos sincronizou: o outro segue bloqueando", () => {
@@ -75,14 +76,15 @@ describe("#11698 — frescor do conteúdo entre hosts (sync fora de ordem)", () 
     sync(a, b, "_internal/.step-4-done.json");
     sync(a, b, "02-reviewed.md");
     const r = checkStage5Freshness(b);
-    assert.deepEqual(r.problems.map((p) => p.split(":")[0]), ["03-social.md"]);
+    assert.deepEqual(r.problems.map((p) => p.file), ["03-social.md"]);
   });
 
   it("tudo sincronizado: ok nos dois hosts", () => {
     const { a, b } = twoHostsAfterGate();
     for (const rel of [...OUTPUTS, "_internal/.step-4-done.json"]) sync(a, b, rel);
-    assert.deepEqual(checkStage5Freshness(a), { ok: true, problems: [], warnings: [] });
-    assert.deepEqual(checkStage5Freshness(b), { ok: true, problems: [], warnings: [] });
+    const ok = { ok: true, verification: "verified", problems: [], warnings: [] };
+    assert.deepEqual(checkStage5Freshness(a), ok);
+    assert.deepEqual(checkStage5Freshness(b), ok);
   });
 });
 
@@ -107,6 +109,17 @@ describe("#11698 — retomada depois do §5c-2 (03-social.md com a URL resolvida
     assert.equal(checkStage5Freshness(a).ok, false);
   });
 
+  it("URL resolvida é prefixo de outro link próprio do texto: a reversão o corrompe e bloqueia (falha fechada)", () => {
+    const dir = editionDir();
+    put(dir, "02-reviewed.md", "x");
+    put(dir, "03-social.md", `Mais em {edition_url} e ${URL}-parte-2\n`);
+    writeSentinel(dir, 4, OUTPUTS);
+    put(dir, "_internal/05-edition-url.txt", URL);
+    put(dir, "03-social.md", `Mais em ${URL} e ${URL}-parte-2\n`);
+    const r = checkStage5Freshness(dir);
+    assert.deepEqual(r.problems.map((p) => [p.file, p.kind]), [["03-social.md", "diverged"]]);
+  });
+
   it("02-reviewed.md não ganha a reversão de URL", () => {
     const dir = editionDir();
     put(dir, "02-reviewed.md", "Leia {edition_url}");
@@ -125,7 +138,7 @@ describe("#11698 — fail-closed nos casos degenerados", () => {
     put(dir, "03-social.md", "x");
     assert.equal(checkStage5Freshness(dir).ok, false);
     put(dir, "_internal/.step-4-done.json", "{truncado");
-    assert.match(checkStage5Freshness(dir).problems[0], /ilegível/);
+    assert.equal(checkStage5Freshness(dir).problems[0].kind, "sentinel_unreadable");
   });
 
   it("outputs vazio no sentinel não tira 02-reviewed.md/03-social.md da conferência", () => {
@@ -134,8 +147,10 @@ describe("#11698 — fail-closed nos casos degenerados", () => {
     put(dir, "_internal/.step-4-done.json", JSON.stringify({ step: 4, completed_at: "2026-11-01T00:00:00Z", outputs: [], output_hashes: {} }));
     const r = checkStage5Freshness(dir);
     assert.equal(r.ok, false);
-    assert.match(r.problems.join("\n"), /02-reviewed\.md: sem hash/);
-    assert.match(r.problems.join("\n"), /03-social\.md: ausente/);
+    assert.deepEqual(
+      r.problems.map((p) => [p.file, p.kind]),
+      [["02-reviewed.md", "no_hash"], ["03-social.md", "absent"]],
+    );
   });
 
   it("arquivo vazio e output_hashes inválido bloqueiam", () => {
@@ -144,8 +159,9 @@ describe("#11698 — fail-closed nos casos degenerados", () => {
     put(dir, "03-social.md", "x");
     put(dir, "_internal/.step-4-done.json", JSON.stringify({ step: 4, completed_at: "x", outputs: OUTPUTS, output_hashes: [] }));
     const r = checkStage5Freshness(dir);
-    assert.match(r.problems.join("\n"), /output_hashes` inválido/);
-    assert.match(r.problems.join("\n"), /02-reviewed\.md: vazio/);
+    const kinds = r.problems.map((p) => p.kind);
+    assert.ok(kinds.includes("sentinel_malformed"));
+    assert.deepEqual(r.problems.find((p) => p.kind === "empty")?.file, "02-reviewed.md");
   });
 
   it("sentinel legado (sem output_hashes) passa com aviso", () => {
@@ -155,7 +171,33 @@ describe("#11698 — fail-closed nos casos degenerados", () => {
     put(dir, "_internal/.step-4-done.json", JSON.stringify({ step: 4, completed_at: "2026-11-01T00:00:00Z", outputs: OUTPUTS }));
     const r = checkStage5Freshness(dir);
     assert.equal(r.ok, true);
+    assert.equal(r.verification, "unverified_legacy");
     assert.equal(r.warnings.length, 1);
+    // Via CLI: exit 0 com aviso.
+    assert.equal(runStage5Freshness(["check", "--edition-dir", dir]), 0);
+  });
+
+  it("sentinel SEM hash gravado depois do corte = código defasado: bloqueia (no_hash), também no CLI", () => {
+    const dir = editionDir();
+    put(dir, "02-reviewed.md", "x");
+    put(dir, "03-social.md", "y");
+    const after = new Date(Date.parse(OUTPUT_HASHES_REQUIRED_SINCE) + 3_600_000).toISOString();
+    put(dir, "_internal/.step-4-done.json", JSON.stringify({ step: 4, completed_at: after, outputs: OUTPUTS }));
+    const r = checkStage5Freshness(dir);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.problems.map((p) => p.kind), ["no_hash", "no_hash"]);
+    assert.equal(runStage5Freshness(["check", "--edition-dir", dir]), 4);
+    // completed_at ilegível sem hash também não vale como legado.
+    put(dir, "_internal/.step-4-done.json", JSON.stringify({ step: 4, completed_at: "x", outputs: OUTPUTS }));
+    assert.equal(checkStage5Freshness(dir).ok, false);
+  });
+
+  it("05-edition-url.txt presente mas inválido tem kind próprio", () => {
+    const { a } = twoHostsAfterGate();
+    put(a, "_internal/05-edition-url.txt", "diar.ia.br/p/sem-https");
+    const r = checkStage5Freshness(a);
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.problems.map((p) => [p.file, p.kind]), [["_internal/05-edition-url.txt", "edition_url_invalid"]]);
   });
 });
 
@@ -188,6 +230,14 @@ describe("#11698 — CLI stage5-freshness.ts", () => {
     assert.equal(ev.level, "warn");
     assert.equal(ev.edition, "261102");
     assert.equal(ev.details.problems.length, 2);
+    assert.deepEqual(ev.details.kinds, ["diverged"]);
+  });
+
+  it("--force sem problemas sai 0 e NÃO grava evento", () => {
+    const { a } = twoHostsAfterGate();
+    const logRoot = mkdtempSync(join(tmpdir(), "s5f-log-"));
+    assert.equal(runStage5Freshness(["check", "--edition-dir", a, "--force"], { logRoot }), 0);
+    assert.equal(existsSync(join(logRoot, "data", "run-log.jsonl")), false);
   });
 });
 
@@ -258,8 +308,14 @@ describe("#11698 — playbook do Stage 5 chama guard, frescor, trava e release",
   });
 
   it("acquire renovado antes do dispatch e release com --complete-stage 5 depois do sentinel", () => {
-    const dispatch = at("### 5c. Dispatch newsletter");
-    assert.ok(md.indexOf("edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5", dispatch) > dispatch);
+    const acquire = "edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5";
+    for (const heading of ["### 5c. Dispatch newsletter", "### 5f. Loop de review", "### 5h. Escrever sentinel"]) {
+      const h = at(heading);
+      const next = md.indexOf("\n### ", h + 1);
+      const i = md.indexOf(acquire, h);
+      assert.ok(i > h && i < next, `renovação da trava ausente em ${heading}`);
+    }
+    at("exit 3/4 = halt SEM liberar");
     const sentinel = at("--edition {AAMMDD} --step 5");
     assert.ok(at("edition-lock.ts release --edition-dir {EDITION_DIR} --complete-stage 5") > sentinel);
   });

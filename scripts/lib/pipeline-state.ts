@@ -20,8 +20,11 @@ export interface StepSentinel {
    * Liga o sentinel ao conteúdo aprovado: com `data/` sincronizado por
    * OneDrive, o sentinel pode chegar a outro host antes da versão nova dos
    * outputs, e só o hash distingue "versão aprovada" de "cópia pré-gate".
-   * Ausente em sentinels gravados antes do #11698. Output inexistente ou que
-   * não é arquivo fica fora do mapa.
+   * Output inexistente ou que não é arquivo fica fora do mapa. Consequência
+   * da ausência (`scripts/lib/stage5-freshness.ts`): no sentinel do Stage 4
+   * gravado antes de `OUTPUT_HASHES_REQUIRED_SINCE` a Etapa 5 segue com aviso
+   * (conteúdo não conferido); depois do corte, sentinel sem hash ou arquivo
+   * fora do mapa trava a Etapa 5 (`no_hash`) até o Stage 4 regravar o sentinel.
    */
   output_hashes?: Record<string, string>;
 }
@@ -38,8 +41,10 @@ export function computeOutputHashes(editionDir: string, outputs: string[]): Reco
     const p = resolve(editionDir, rel);
     try {
       if (existsSync(p) && statSync(p).isFile()) out[rel] = sha256Hex(readFileSync(p));
-    } catch {
-      // Arquivo sumindo no meio do sync: fica sem hash (o consumidor trata ausência).
+    } catch (e) {
+      // Arquivo sumindo no meio do sync: fica sem hash (o consumidor trata a
+      // ausência como `no_hash`); o sentinel continua sendo gravado.
+      console.warn(`[pipeline-state] hash de ${p} não calculado: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   return out;
