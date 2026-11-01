@@ -176,7 +176,8 @@ export interface R2UploadDeps {
  * objeto só precisa existir até a Graph API (Reels na fila do Worker) e a
  * Buffer baixarem o vídeo, o que acontece no horário do vertical, no mesmo
  * dia ou no seguinte; 7 dias dão folga para um reenfileiramento e mantêm o
- * bucket perto de 2 GB.
+ * bucket perto de 2 GB. O Reels por `video_url` (#11355) baixa o objeto logo
+ * depois do upload (pior caso medido: 72 s), bem dentro da janela.
  *
  * A limpeza roda no próprio upload, com a mesma chave de API (escrita no
  * bucket já inclui listar e apagar objetos). Uma regra de lifecycle no bucket

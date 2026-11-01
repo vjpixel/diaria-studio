@@ -133,7 +133,7 @@ describe("#11265 plano: o timer é o dono do Instagram", () => {
     assert.equal((ig(p) as { scheduledAt: string }).scheduledAt, AT);
     assert.ok(p.premises.some((x) => x.startsWith(`instagram: timer do 300 publica depois de ${AT}`)));
   });
-  it("rodada do timer depois do horário: publish na hora (upload resumível, sem URL pública)", () => {
+  it("rodada do timer depois do horário: publish na hora (video_url na @diar.ia.br, #11355)", () => {
     const p = planShortsPublish({ ...base, writer: "instagram-timer", now: new Date("2026-10-27T11:05:00Z") });
     assert.equal(ig(p).action, "publish");
   });

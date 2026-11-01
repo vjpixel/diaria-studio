@@ -41,7 +41,9 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     `instagram_collaborators` entram como collab (aceitam o convite no app);
  *     depois do publish o script relê os collaborators da mídia e avisa se o
  *     convite foi descartado (#10820). No dry-run confere também se o token da
- *     página tem `instagram_content_publish` (#10820). Acima do teto de
+ *     página tem `instagram_content_publish` (#10820). Na @diar.ia.br o
+ *     container é criado com `video_url` (R2) em vez do rupload, sem teto de
+ *     duração (#11355); as outras autoras seguem no rupload. Acima do teto de
  *     duração DA AUTORA (`instagram_api_max_seconds_by_account`, #10916) vira
  *     passo guiado no Chrome: o `--publish` gera a versão comprimida em
  *     `_internal/`, mirando 9,5 MB (abaixo do limite de 10 MB do file_upload;
@@ -109,9 +111,10 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * O Instagram não agenda Reels pela API. Desde #11265 (decisão do editor,
  * 27/10/2026) quem publica é o timer do 300 (`publishing.shorts.instagram_backend`
  * = "timer-300", default): `scripts/shorts-instagram-timer.ts` roda esta CLI com
- * `--only instagram --publish --instagram-timer` no horário do vertical, pelo
- * upload resumível da Graph API (sem URL pública), e as outras rodadas
- * devolvem o `instagram` como `skip_delegated`. A rodada do timer grava no
+ * `--only instagram --publish --instagram-timer` no horário do vertical, com
+ * o vídeo no R2 e o container por `video_url` (@diar.ia.br, #11355; o rupload
+ * para em ~32,5 s de processamento e recusa os verticais reais), e as outras
+ * rodadas devolvem o `instagram` como `skip_delegated`. A rodada do timer grava no
  * registro próprio (`06-shorts-published.instagram-timer.json`), confere
  * antes na conta (`/media`, só leitura) se o Reels da edição já saiu por fora,
  * e passadas 3 h do horário vira `skip_late` (o timer avisa o editor).
@@ -120,8 +123,7 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * `diaria-linkedin-cron`; sem Worker, sem R2 ou com autora que o Worker não
  * conhece, fica pendente até rodar de novo depois do horário (ou `--now`).
  * O R2 foi habilitado depois (#10772), mas o editor manteve o `timer-300`
- * (#11411: o timer funciona e o corte `_Instagram_` do Drive não chega ao R2;
- * racional em `docs/scheduled-tasks-registry.md`). X e Threads, que só
+ * (#11411: o timer funciona; racional em `docs/scheduled-tasks-registry.md`). X e Threads, que só
  * recebem o vídeo por URL pública, usam o R2 independente do
  * `instagram_backend` (`r2.ready`); só sem os secrets dele ficam pulados com
  * aviso (manuais).
@@ -160,7 +162,7 @@ loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -181,6 +183,9 @@ import {
   INSTAGRAM_ENV_ACCOUNT_KEY,
   REELS_NEWSLETTER_SENTENCE,
   instagramApiMaxSecondsPremise,
+  instagramReelUploadRoute,
+  shortInstagramVideoFileName,
+  type InstagramReelUploadRoute,
   instagramChromeRouteText,
   instagramReelsApiFit,
   isDestinationDone,
@@ -993,11 +998,21 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       warnings.push(`instagram: ${(e as Error).message}`);
       return { destination: dest.id, mode: "api", action: "skip_invalid", detail: (e as Error).message };
     }
+    // #11355: na @diar.ia.br o Reels depende da URL pública. Sem R2 o publish não
+    // chega a tentar: o timer lê como alarme `credentials`, com o motivo.
+    const publishOrBlocked = (text: string): ShortsPlanItem => {
+      if (instagramReelUploadRoute(cfg.instagramAuthorPage) === "video_url" && input.publicVideo?.ready === false) {
+        const detail = `o Reels da @diar.ia.br sobe por URL pública (video_url, #11355), indisponível nesta rodada: ${input.publicVideo.reason}`;
+        warnings.push(`instagram: ${detail}`);
+        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail };
+      }
+      return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null };
+    };
     const slot = slotOf.get(dest.id)!;
     const schedule = scheduleFor(slot);
     if (instagramViaTimer) {
       // #11265: rodada do timer do 300. Antes do horário espera; até 3 h depois
-      // publica (upload resumível, sem URL pública); depois disso não publica
+      // publica (`video_url` na @diar.ia.br, #11355); depois disso não publica
       // sozinho fora do horário do teste (#10831), mesmo teto do linkedin_profile.
       if (schedule.mode === "scheduled") {
         return {
@@ -1017,7 +1032,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         warnings.push(`instagram: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
-      return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
+      return publishOrBlocked(caption);
     }
     if (schedule.mode === "scheduled") {
       // #10823: a fila do Worker publica no horário (o Instagram não agenda Reels pela API).
@@ -1043,7 +1058,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         detail: `o Instagram não agenda Reels pela API — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550).${why}`,
       };
     }
-    return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
+    return publishOrBlocked(caption);
   }
 
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
@@ -1495,38 +1510,84 @@ export async function resolveInstagramAuthor(
   };
 }
 
-/** Reels no Instagram: container resumable → rupload → espera FINISHED → media_publish. */
+/** #11355: como o Reels chega à Meta: bytes pelo rupload ou URL pública que ela baixa. */
+export type InstagramReelSource = Buffer | { videoUrl: string };
+
+/**
+ * #11355: chave do vertical no R2 para o Reels. O arquivo genérico divide o
+ * objeto com X e Threads; o corte próprio do Instagram (o timer passa `--video`
+ * com ele) tem chave própria, senão o PUT trocaria o vídeo que a Buffer ainda
+ * vai baixar pro X.
+ */
+export function instagramR2VideoKey(aammdd: string, videoPath: string): string {
+  const generic = shortVideoFileName(aammdd);
+  return `shorts/${basename(videoPath) === generic ? generic : shortInstagramVideoFileName(aammdd)}`;
+}
+
+/**
+ * #11355: fonte e capa do Reels, pela rota da autora. Na rota `video_url` a capa
+ * sobe ANTES do vídeo: o upload da capa roda a poda de retenção de `shorts/`
+ * (#10923), que apagaria um vertical mais velho que 7 dias reaproveitado antes
+ * dela. Nesta ordem, o HEAD do vídeo vê o 404 da poda e sobe de novo. Falha no
+ * upload do vídeo lança antes de qualquer container.
+ */
+export async function resolveInstagramReelInputs(input: {
+  route: InstagramReelUploadRoute;
+  file: Buffer;
+  uploadCover: () => Promise<ReelCoverUpload>;
+  uploadVideo: () => Promise<string>;
+}): Promise<{ source: InstagramReelSource; cover: ReelCoverUpload }> {
+  const cover = await input.uploadCover();
+  if (input.route === "rupload") return { source: input.file, cover };
+  return { source: { videoUrl: await input.uploadVideo() }, cover };
+}
+
+/**
+ * Reels no Instagram → espera FINISHED → media_publish. Duas rotas de container
+ * (#11355): `video_url` (a Meta baixa e processa sem o prazo de uma requisição,
+ * mesmos parâmetros de `fireInstagramReels` no Worker) ou resumable + rupload.
+ * O poll de até 10 min cobre o pior caso medido na `video_url`, 72 s.
+ */
 export async function publishInstagramReel(
   deps: GraphDeps,
   igUserId: string,
   token: string,
   apiVersion: string,
-  file: Buffer,
+  source: InstagramReelSource,
   caption: string,
   collaborators: string[] = [],
   cover?: ReelCoverUpload,
 ): Promise<PublishOutcome> {
   const coverUrl = reelCoverUrl(cover);
-  const params: Record<string, string> = { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token };
+  const file = Buffer.isBuffer(source) ? source : null;
+  const params: Record<string, string> = {
+    media_type: "REELS",
+    ...(Buffer.isBuffer(source) ? { upload_type: "resumable" } : { video_url: source.videoUrl }),
+    caption,
+    share_to_feed: "true",
+    access_token: token,
+  };
   // #10790: collab — a Graph API recebe a lista como JSON; cada conta aceita o convite no app.
   if (coverUrl) params.cover_url = coverUrl;
   if (collaborators.length) params.collaborators = JSON.stringify(collaborators);
   const container = await graphPost(deps, `${igUserId}/media`, params, apiVersion);
   const containerId: string = container.id;
   if (!containerId) throw new Error(`media (REELS) sem id: ${JSON.stringify(container)}`);
-  try {
-    await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
-  } catch (e) {
-    const msg = (e as Error).message;
-    // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
-    if (/ProcessingFailedError/.test(msg)) {
-      throw new Error(
-        `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video) ou no app ` +
-          `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL ` +
-          `(ajuste o teto desta conta em publishing.shorts.instagram_api_max_seconds_by_account se ele mudou, #10916)`,
-      );
+  if (file) {
+    try {
+      await ruploadBinary(deps, container.uri ?? `${RUPLOAD}/ig-api-upload/${apiVersion}/${containerId}`, token, file);
+    } catch (e) {
+      const msg = (e as Error).message;
+      // #10893: é assim que o teto de duração aparece — o rupload aceita os bytes e recusa no processamento.
+      if (/ProcessingFailedError/.test(msg)) {
+        throw new Error(
+          `${msg} — padrão do teto de duração do Reels pela API (#10893); poste pelo instagram.com no Chrome (Passo B3b do /diaria-publica-video) ou no app ` +
+            `e registre com --confirm-instagram (lê a mídia pela API) ou --mark instagram=URL ` +
+            `(ajuste o teto desta conta em publishing.shorts.instagram_api_max_seconds_by_account se ele mudou, #10916)`,
+        );
+      }
+      throw e;
     }
-    throw e;
   }
   let last = "";
   for (let i = 0; ; i++) {
@@ -1543,7 +1604,11 @@ export async function publishInstagramReel(
     }
     last = st.status_code;
     if (st.status_code === "FINISHED") break;
-    if (st.status_code === "ERROR" || st.status_code === "EXPIRED") throw new Error(`container ${containerId}: ${st.status_code} ${st.status ?? ""}`);
+    if (st.status_code === "ERROR" || st.status_code === "EXPIRED") {
+      // #11355: o Reels não saiu; a rota à mão segue valendo.
+      const hint = file ? "" : " — pela rota video_url (#11355); se persistir, poste pelo Chrome (Passo B3b do /diaria-publica-video) e registre com --confirm-instagram";
+      throw new Error(`container ${containerId}: ${st.status_code} ${st.status ?? ""}${hint}`);
+    }
     await deps.sleep(10_000);
   }
   const pub = await graphPost(deps, `${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
@@ -3197,15 +3262,21 @@ async function main(): Promise<number> {
   }> = [];
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
   // #11410: objeto do dia já no bucket com o mesmo tamanho é reaproveitado (sem novo PUT).
-  let uploaded: Promise<string> | null = null;
-  const uploadVideo = () => {
+  // #11355: memo por chave, porque o corte do Instagram tem objeto próprio.
+  const uploadedByKey = new Map<string, Promise<string>>();
+  const uploadVideoAt = (key: string) => {
     if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
-    uploaded ??= reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, `shorts/${shortVideoFileName(aammdd)}`, file, "video/mp4").then((r) => {
-      console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo tamanho, sem novo upload)" : "enviado"}: ${r.url}`);
-      return r.url;
-    });
+    let uploaded = uploadedByKey.get(key);
+    if (!uploaded) {
+      uploaded = reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file, "video/mp4").then((r) => {
+        console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo tamanho, sem novo upload)" : "enviado"}: ${r.url}`);
+        return r.url;
+      });
+      uploadedByKey.set(key, uploaded);
+    }
     return uploaded;
   };
+  const uploadVideo = () => uploadVideoAt(`shorts/${shortVideoFileName(aammdd)}`);
   let uploadedCover: Promise<ReelCoverUpload> | undefined;
   const uploadCover = async (): Promise<ReelCoverUpload> => {
     if (!plan.cover.path) return undefined;
@@ -3320,7 +3391,15 @@ async function main(): Promise<number> {
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         const author = igAuthor;
-        const publishReel = async () => publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, file, item.caption, shortsCfg.instagramCollaborators, await uploadCover());
+        const publishReel = async () => {
+          const { source, cover } = await resolveInstagramReelInputs({
+            route: instagramReelUploadRoute(shortsCfg.instagramAuthorPage),
+            file,
+            uploadCover,
+            uploadVideo: async () => uploadVideoAt(instagramR2VideoKey(aammdd, videoPath)),
+          });
+          return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover);
+        };
         if (writer === "instagram-timer") {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.

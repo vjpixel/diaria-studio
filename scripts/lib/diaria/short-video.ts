@@ -80,8 +80,8 @@ export function shortInstagramVideoFileName(aammdd: string): string {
  * #11265: quem publica o Reels do Instagram com horário futuro.
  *   - `timer-300` (default, decisão do editor 27/10/2026): o timer do 300
  *     (`Diaria-Shorts-Instagram`) roda `publish-shorts.ts --only instagram
- *     --publish --instagram-timer` no horário do vertical e sobe pelo upload
- *     resumível da Graph API, sem URL pública. A rodada do `/diaria-shorts`
+ *     --publish --instagram-timer` no horário do vertical; na @diar.ia.br o
+ *     vídeo vai ao R2 e o container sai por `video_url` (#11355). A rodada do `/diaria-shorts`
  *     devolve `skip_delegated`, como o `linkedin_profile` (#10982).
  *   - `worker-r2` (#10823, opção antiga): sobe o vertical pro R2 e põe o
  *     Reels na fila do Worker `diaria-linkedin-cron`. Exige os 5 secrets do
@@ -900,6 +900,20 @@ export function instagramAccountKey(authorPage: string | null): InstagramAccount
   return authorPage ?? INSTAGRAM_ENV_ACCOUNT_KEY;
 }
 
+/** #11355: como o vídeo do Reels chega à Meta. */
+export type InstagramReelUploadRoute = "video_url" | "rupload";
+
+/**
+ * Pure (#11355): rota do Reels pela autora. Na @diar.ia.br é `video_url`: o
+ * rupload processa de forma síncrona e a Meta encerra a requisição em ~32,5 s
+ * (23 casos em 01/11/2026), enquanto a `video_url` deu 6/6 FINISHED de 45 a 75 s.
+ * A @vjpixel, sem medição nova na `video_url` (2207076 com 113,9 s, #10893),
+ * segue no rupload.
+ */
+export function instagramReelUploadRoute(authorPage: string | null): InstagramReelUploadRoute {
+  return instagramAccountKey(authorPage) === INSTAGRAM_ENV_ACCOUNT_KEY ? "video_url" : "rupload";
+}
+
 function validMaxSeconds(v: unknown, field: string): number | null {
   if (v === null) return null;
   if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
@@ -911,10 +925,9 @@ function validMaxSeconds(v: unknown, field: string): number | null {
 /**
  * Teto de duração do Reels pela API para a conta que publica (#10916). O teto
  * é POR CONTA: a @vjpixel aceita 40 s e recusa 42 s (#10893, 22/10/2026). Na
- * @diar.ia.br as medições divergem — sintéticos de até 55 s passaram em 23/10
- * (#10916), mas um sintético de 40 s (22/10) e o vertical REAL de 49,9 s (27/10)
- * foram recusados —, então o config usa 30 s, o maior valor sem recusa
- * registrada (#11281). Os valores vivem no config, não aqui. Ordem:
+ * @diar.ia.br o config usa `null`, sem teto: o limite medido era o tempo do
+ * rupload, e a conta publica por `video_url` (#11355,
+ * `instagramReelUploadRoute`). Os valores vivem no config, não aqui. Ordem:
  *   1. `publishing.shorts.instagram_api_max_seconds_by_account[chave]`, com a
  *      chave de `instagramAccountKey(authorPage)`;
  *   2. `publishing.shorts.instagram_api_max_seconds` (legado, vale pra
