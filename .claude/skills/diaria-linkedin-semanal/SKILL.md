@@ -192,35 +192,14 @@ seleção sairia com **0 cliques pra semana inteira, em silêncio** — o
 manifest do passo 1b NÃO cobre isso (é Beehiiv-only, ver abaixo). Foi
 exatamente o que aconteceu em 08/09/2026 (#7629).
 
-**1b. Checar o que falta enriquecer do lado Beehiiv:**
-
-```bash
-npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD} --manifest-only
-```
-
-Imprime `{cycle, contentWindow, editionsFound, posts_needing_clicks}`.
-**Por que este passo existe:** o gate de estabilização de CTR do pipeline
-diário (`MIN_AGE_DAYS_FOR_CLICKS = 7`, `scripts/lib/shared/ctr-config.ts`)
-NUNCA enriquece posts com menos de 7 dias — e os posts desta janela têm
-entre 2 e 6 dias no momento em que esta skill roda (domingo, semana que
-acabou de terminar). Sem este passo explícito, a seleção rodaria com
-clicks zerados pra toda a semana.
-
-Se `posts_needing_clicks` for não-vazio:
-
-```
-Agent(subagent_type="beehiiv-clicks-enricher", prompt=<manifest items uma por linha>)
-```
-
-Mesmo agent reusado do Stage 0 diário (0h.2) — cada item do prompt no
-formato `post_id=<id> title=<title>`, um por linha. **Não reinventar** um
-enricher próprio — MCP `list_post_clicks` só roda de subagent/top-level
-com a tool declarada, nunca de script TS standalone (ver docstring de
-`scripts/lib/weekly-linkedin-clicks.ts`).
-
-Se `posts_needing_clicks` já vier vazio (todos os posts da semana já
-enriquecidos — ex: alguém já rodou o Stage 0 de uma edição posterior que
-puxou esses posts pro gate normal), pule direto pro Passo 2.
+**1b. Lado Beehiiv: sem enrichment desde o #11225.** O agent
+`beehiiv-clicks-enricher` foi aposentado (a Beehiiv é só arquivo histórico e
+não publica edição nova; a semana inteira sai pelo Kit, coberto pelo 1a).
+`select-linkedin-weekly.ts --publish-monday {AAMMDD} --manifest-only` segue
+disponível como diagnóstico: `posts_needing_clicks` não-vazio só acontece se
+a janela pegar uma edição antiga publicada pela Beehiiv. Nesse caso, seguir
+com os cliques que já estão no cache e registrar o aviso no resumo, sem
+tentar enriquecer.
 
 ## Passo 2 — Rodar a seleção de verdade
 

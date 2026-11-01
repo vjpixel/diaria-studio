@@ -1106,7 +1106,7 @@ async function runOneMode(
   const manifest = mode === "clicked" ? identifyInstagramPostsNeedingClicks(windowPosts) : [];
   if (manifest.length > 0) {
     warnings.push(
-      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache — rode --manifest-only, dispatche beehiiv-clicks-enricher, e re-rode antes de confiar na seleção.`,
+      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache (posts antigos da Beehiiv; o beehiiv-clicks-enricher foi aposentado no #11225, então eles não serão mais enriquecidos).`,
     );
   }
   const suspiciousPicks = items.filter((c) => hasSuspiciousCommercialLanguage(`${c.title} ${c.body}`));
@@ -1149,7 +1149,7 @@ async function runOneMode(
       "",
       forceIncompleteClickData
         ? "--force-incomplete-click-data presente: prosseguindo mesmo assim (confirmação explícita do editor)."
-        : "Rode --manifest-only, dispatche beehiiv-clicks-enricher (Passo 1 do SKILL.md), e re-rode antes de confiar na seleção. Se esta incompletude for aceitável (edição genuinamente ainda não confirmada, etc.), rode de novo com --force-incomplete-click-data para confirmar e publicar assim mesmo. Sem a flag, o script aborta.",
+        : "Edição sem post no cache: rode `npx tsx scripts/kit-sync.ts` e re-rode. Post antigo da Beehiiv sem clicks por link não tem mais como ser enriquecido (o beehiiv-clicks-enricher foi aposentado no #11225). Se esta incompletude for aceitável, rode de novo com --force-incomplete-click-data para confirmar e publicar assim mesmo. Sem a flag, o script aborta.",
       "=".repeat(72),
       "",
     ].join("\n");

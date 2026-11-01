@@ -64,11 +64,7 @@ Design de 2 fases (o script é um processo Node puro — não alcança MCP):
 - `code: 2` → HALT obrigatório (`haltRequired`, banner já renderizado pelo
   próprio script) — parar mesmo com `auto_approve`, mesma regra do 0d.bis
   original (nunca bypassa).
-- `pendingAgentDispatch[]` (`0h.2`, `0h.4`) → `0h.2`: disparar
-  `Agent(subagent_type: entry.agent, prompt: <manifest em entry.manifestPath,
-  1 item por linha "post_id=<id> title=<title>">)` — mesmo fluxo de §0h.2
-  abaixo, incluindo a validação determinística pós-dispatch (`verify-clicks-
-  enrichment.ts`). `0h.4` (#10710): `Agent(subagent_type: "beehiiv-exit-history-drain", prompt: "retome do manifest")`, fail-soft (warn); some quando o manifest fica `complete` — conferir no disco (#573). **Os dois são leitura opcional do arquivo histórico da Beehiiv (#11225):** se o conector Beehiiv não responder, o agent falha, loga warn e o Stage 0 segue — nunca halt, nunca pergunta.
+- `pendingAgentDispatch[]` (`0h.4`) → `0h.4` (#10710): `Agent(subagent_type: "beehiiv-exit-history-drain", prompt: "retome do manifest")`, fail-soft (warn); some quando o manifest fica `complete` — conferir no disco (#573). **Leitura opcional do arquivo histórico da Beehiiv (#11225):** se o conector Beehiiv não responder, o agent falha, loga warn e o Stage 0 segue — nunca halt, nunca pergunta. (O `0h.2`, dispatch do `beehiiv-clicks-enricher`, foi aposentado no #11225.)
 - `pendingHumanDecision[]` (hoje `0g` freshness stale e `0j` drafts
   pendentes) → apresentar `detail`/`prompt`/`options` ao editor exatamente
   como as subseções correspondentes abaixo descrevem, e agir conforme a
@@ -223,7 +219,7 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   - Se `CHROME_MCP = false`, logar warn. **Em modo interativo** (não `auto_approve`), alertar editor e aguardar `[y/n]`. **Em `auto_approve`**, prosseguir silenciosamente.
   - **Na Etapa 5**: checar `CHROME_MCP`. Se `false`, gravar `_internal/05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
 - **Pre-flight Gmail MCP (#3451, espelha #143).** Tentar `mcp__claude_ai_Gmail__list_labels` (leitura barata, sem side-effect). Setar `GMAIL_MCP = true` se sucesso; se erro, `GMAIL_MCP = false` e logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message "mcp_disconnect: claude_ai_Gmail" --details '{"server":"claude_ai_Gmail","kind":"mcp_disconnect"}'` (mesmo evento estruturado que `collect-edition-signals.ts` já pareia com `mcp_reconnect:` pra medir duração, #766 — nada novo a instrumentar aqui). **Em modo interativo**, alertar editor e aguardar `[y/n]`; **em `auto_approve`**, prosseguir silenciosamente. Cobre só os passos que usam o MCP claude.ai Gmail (0n CI-failures, 0-replies) — 0b-bis (auto-capture de newsletters) usa a Gmail REST API direto via OAuth (`data/.credentials.json`), caminho de auth separado, não depende deste flag. 0n e 0-replies já tratam Gmail MCP indisponível como skip fail-soft individualmente — este preflight só antecipa o aviso pro editor antes de gastar tokens em pesquisa, não muda o comportamento de skip já existente.
-- **Sem pre-flight Beehiiv MCP (#11225, removido; era #3451).** Decisão do editor (27/10/2026): a Beehiiv é só arquivo histórico — não envia desde #7388, `read_backend`/`subscriber_backend` são `"kit"` — e o conector fora do ar nunca pode bloquear nem pausar a edição. Nada de `get_current_user`, nada de `[y/n]`. Os passos que ainda leem o histórico pelo MCP (0h.2 clicks enricher, 0h.4 exit-history, fallback remoto de 0-replies) tentam direto e são fail-soft individualmente; o dedup refresh (0d) lê do Kit (`read_backend`).
+- **Sem pre-flight Beehiiv MCP (#11225, removido; era #3451).** Decisão do editor (27/10/2026): a Beehiiv é só arquivo histórico — não envia desde #7388, `read_backend`/`subscriber_backend` são `"kit"` — e o conector fora do ar nunca pode bloquear nem pausar a edição. Nada de `get_current_user`, nada de `[y/n]`. Os passos que ainda leem o histórico pelo MCP (0h.4 exit-history, fallback remoto de 0-replies) tentam direto e são fail-soft individualmente; o dedup refresh (0d) lê do Kit (`read_backend`).
 - **Persistir os sinais acima em disco (#5414; `CLARICE_MCP` desde #11312; `BEEHIIV_MCP` não é mais apurado desde #11225 e fica `null`) — não confiar só na memória desta conversa.** Os checks acima (`CHROME_MCP`, `GMAIL_MCP`, `CLARICE_REST`, `CLARICE_MCP`, `CLOUDFLARE_TOKEN_OK`) só existiam "em sessão" até esta issue — um stage disparado depois como sessão NOVA (`/diaria-2-escrita`, `/diaria-5-publicacao`, a premissa do #5414 de rodar contexto limpo entre etapas) nunca rodou este Stage 0 na própria conversa, então não tem como "lembrar" desses valores. Gravar de uma vez, logo após o último dos checks:
   ```bash
   npx tsx scripts/lib/preflight-state.ts --edition-dir {EDITION_DIR} \
@@ -370,9 +366,9 @@ Se o script falhar:
 
 Saída fresh é silenciosa (logar `level: info` com `most_recent` + `age_hours`).
 
-### 0h. Link CTR refresh (3 sub-passos: sync, enrich-via-MCP, build) (→ 0h.1/0h.3 cobertos por `stage-0-run.ts`; 0h.2 (dispatch do subagent) vira `pendingAgentDispatch` no JSON — ver bloco acima; referência/fallback)
+### 0h. Link CTR refresh (2 sub-passos: sync, build) (→ 0h.1/0h.3 cobertos por `stage-0-run.ts`; referência/fallback)
 
-Roda em paralelo com 0e/0f/0g no nível do bloco, mas internamente é uma sequência de 3 sub-passos.
+Roda em paralelo com 0e/0f/0g no nível do bloco, mas internamente é uma sequência de 2 sub-passos. (O 0h.2, enrichment de clicks via subagent `beehiiv-clicks-enricher`, foi aposentado no #11225: a Beehiiv é só arquivo histórico e não publica edição nova.)
 
 **0h.1 — Sync metadata + stats agregados (REST)**
 
@@ -380,37 +376,7 @@ Roda em paralelo com 0e/0f/0g no nível do bloco, mas internamente é uma sequê
 npx tsx scripts/beehiiv-sync.ts
 ```
 
-`beehiiv-sync.ts` (#1357) sincroniza posts + content + aggregate stats + `publication.json` via REST. **Não busca per-link clicks** — o endpoint `/posts/{id}/clicks` foi removido da API pública do Beehiiv (confirmado via OpenAPI spec; 50 endpoints, zero menção a "click"). Em vez disso, emite no resultado JSON um campo `posts_needing_clicks: [{id, title, email_clicks}]` com posts que precisam de enriquecimento (>7d, status=confirmed, `email.clicks>0`, `stats.clicks` vazio). Default: cap em 5 posts/run incremental; bootstrap/full emite tudo.
-
-**0h.2 — Enriquece clicks via subagent (delegação pro `beehiiv-clicks-enricher`)**
-
-Se `posts_needing_clicks` é não-vazio no output anterior, **delegue** pro subagent dedicado em vez de chamar a MCP do top-level. Capturar o timestamp ISO **imediatamente antes** do dispatch (usado pelo validator determinístico abaixo):
-
-```
-dispatchedAt = new Date().toISOString()
-Agent(subagent_type="beehiiv-clicks-enricher", prompt=<manifest items uma por linha>)
-```
-
-Cada item do prompt no formato `post_id=<id> title=<title>`. O agent itera, chama `mcp__claude_ai_Beehiiv__list_post_clicks` por post, pagina, e pipa cada response pro `scripts/apply-mcp-clicks.ts`. Retorna JSON summary `{processed, ok, fail, total_clicks_applied, failed_posts}`.
-
-**Por que delegar pra subagent em vez de loop no top-level (mudou em #1361)**: tentamos a loop no top-level com `posts_needing_clicks` de 162 entries e o custo de contexto da conversa do editor foi insustentável (~200kb por batch de 20 posts). Subagents com MCP scope não consomem contexto da conversa parent — o pai só vê o summary final. Resolve backlog de 100+ posts em 1 invocação sem sacrificar usabilidade.
-
-**Field mapping**: `apply-mcp-clicks.ts` (chamado pelo agent) mapeia os field names modernos da API (`total_clicked_verified`, etc.) pros legacy (`verified_clicks`, `unique_verified_clicks`, etc.) que `build-link-ctr.ts` espera.
-
-**Manifest vazio**: skip 0h.2 inteiro (inclusive a verificação abaixo). Apenas log info "no posts need clicks enrichment".
-
-**Validação determinística pós-dispatch (#4732, regra #573):** o summary do agent é texto de um subagent Haiku sobre estado externo — nunca aceitar cego. Gravar o manifest (`posts_needing_clicks`) e o summary do agent em arquivos temporários e rodar:
-```bash
-npx tsx scripts/verify-clicks-enrichment.ts \
-  --manifest {tmp-manifest.json} \
-  --summary {tmp-agent-summary.json} \
-  --dispatched-at {dispatchedAt}
-```
-Cruza cada post_id que o manifest pediu e que o agent NÃO listou em `failed_posts` (ou seja, alegou sucesso) contra o mtime real de `data/beehiiv-cache/posts/{post_id}.json` — write atômico de `apply-mcp-clicks.ts` sempre atualiza o mtime, mesmo quando o array de clicks aplicado é `[]` (post sem clicks reais é resultado legítimo, não falha). Um post `ok` cujo cache não mudou desde `dispatchedAt` é sinal de mismatch entre o que o agent alegou e o que o disco mostra (histórico: `docs/orchestrator-stage-narrative-history.md#stage-0-clicks-enrichment-incidents`).
-
-**Segundo check, independente do mtime (#4836):** o script também cruza `stats.email.verified_clicks`/`unique_verified_clicks` contra `stats.clicks` do estado ATUAL em disco pra cada post claimed ok — `agregado > 0 ⟹ stats.clicks não-vazio`. Isso pega um caso que o mtime SOZINHO não pega: o cache foi tocado nesta run (mtime passa), mas o conteúdo escrito é um array vazio por cima de um agregado positivo (histórico do incidente: `docs/orchestrator-stage-narrative-history.md#stage-0-clicks-enrichment-incidents`). Aparece em `invariant_violations` no JSON de saída, separado de `mismatches`.
-
-Exit 1 do script (JSON `{ok:false, mismatches:[...], invariant_violations:[...]}`) → logar `level: warn` (evento real, **nunca** `--informational` — suprimiria o sinal do `collect-edition-signals.ts`, o próprio ponto cego que permitiu o #4732 passar despercebido) citando quantos posts o agent alegou processar vs. quantos de fato mudaram no disco, E quantos violam o invariante de conteúdo. **Não aborta o pipeline** — mesmo padrão fail-soft do resto do bloco 0h (CTR sem enrichment completo ainda funciona, só é menos preciso).
+`beehiiv-sync.ts` (#1357) sincroniza posts + content + aggregate stats + `publication.json` via REST. **Não busca per-link clicks** — o endpoint `/posts/{id}/clicks` foi removido da API pública do Beehiiv (confirmado via OpenAPI spec; 50 endpoints, zero menção a "click"). O campo `posts_needing_clicks` que ele ainda emite no JSON é ignorado desde o #11225 (o enricher que o consumia foi aposentado).
 
 **0h.3 — Build CTR table**
 
@@ -418,9 +384,9 @@ Exit 1 do script (JSON `{ok:false, mismatches:[...], invariant_violations:[...]}
 npx tsx scripts/build-link-ctr.ts
 ```
 
-Lê o cache enriquecido e regenera `data/link-ctr-table.csv`.
+Lê o cache e regenera `data/link-ctr-table.csv`.
 
-**Logging**: 0h.1 e 0h.3 silenciosos (warn-only). 0h.2 loga `info` quando processa posts, `warn` se MCP timeout/error em algum post (continua nos próximos) OU se `verify-clicks-enrichment.ts` (#4732) encontrar divergência entre o summary do agent e o disco. Falha de qualquer sub-passo não aborta pipeline.
+**Logging**: 0h.1 e 0h.3 silenciosos (warn-only). Falha de qualquer sub-passo não aborta pipeline.
 
 ### 0i. Audience profile refresh (→ coberto por `stage-0-run.ts`; referência/fallback)
 

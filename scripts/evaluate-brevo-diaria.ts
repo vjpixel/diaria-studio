@@ -425,7 +425,7 @@ import {
 } from "./lib/brevo-diaria-store.ts";
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #6699 — fonte única do prefixo `kit:`
-import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B
+import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER, KIT_BEEHIIV_SYNC_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B, #11225
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirmou-via.ts"; // #8438
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
@@ -1089,7 +1089,7 @@ export async function verifyPromotedToBeehiiv(
  * (`platform.config.json` → `publishing.newsletter.backend === "kit"`), a
  * Beehiiv não publica mais nada — a promoção só continuava chegando aos
  * assinantes promovidos por uma ponte de sync diária e temporária
- * (`scripts/sync-beehiiv-subscribers-kit.ts`, Beehiiv → Kit, até 24h de
+ * (`scripts/sync-beehiiv-subscribers-kit.ts` (aposentado no #11225), Beehiiv → Kit, até 24h de
  * atraso), não porque escrever na Beehiiv siga sendo o caminho certo.
  *
  * Estas duas funções são o par que escreve/verifica direto no backend que
@@ -1174,6 +1174,50 @@ export async function promoteKitSubscription(email: string, apiKey: string): Pro
 export async function verifyPromotedToKit(id: number, apiKey: string): Promise<boolean> {
   const subscriber = await getSubscriberById(id, { apiKey });
   return subscriber.state === "active";
+}
+
+/**
+ * promoteSelfConfirmedBeehiivToKit (#11225)
+ *
+ * Passo 1 (auto-confirmação) pra contato de origem BEEHIIV que confirmou o
+ * double opt-in da Beehiiv por conta própria (`beehiivStatus === "active"`).
+ * Até o #11225 este caminho só desvinculava o contato da fila Brevo e
+ * dependia da ponte `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) (task diária) pra
+ * colocá-lo no Kit, que é quem envia a diária. A ponte foi aposentada
+ * (decisão do editor de 28/10/2026: a Beehiiv é só arquivo histórico), então
+ * a escrita no Kit acontece aqui, na hora.
+ *
+ * Mesma regra de `decideKitPromotionAction` (#8728): só cria/confirma quem
+ * não existe no Kit ou já está `active`. Quem existe em outro estado
+ * (`inactive`, `cancelled`, `bounced`, `complained`) nunca é reativado por
+ * aqui: o POST seria aceito e ignorado, e reativar quem saiu do Kit sem o
+ * consentimento dele é justamente o que o #8728 proíbe. Nesse caso devolve
+ * `{ confirmed: false, reason }` e o caller mantém o contato `in_brevo`.
+ *
+ * Grava `origem_cadastro = beehiiv-sync` (o mesmo marcador que a ponte
+ * gravava), pra `acquisition-health-store.ts` seguir excluindo esse caminho
+ * da contagem de cadastro novo.
+ */
+export async function promoteSelfConfirmedBeehiivToKit(
+  email: string,
+  apiKey: string,
+): Promise<{ confirmed: true } | { confirmed: false; reason: string }> {
+  const existing = await getKitSubscriberByEmail(email, { apiKey });
+  if (decideKitPromotionAction(existing ? { state: existing.state } : null) === "await_self_confirmation") {
+    return { confirmed: false, reason: `já existe no Kit como '${existing!.state}' — não reativa (#8728)` };
+  }
+  const subscriber = await createOrUpdateSubscriber(
+    {
+      email_address: email,
+      state: "active",
+      fields: { [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER },
+    },
+    { apiKey },
+  );
+  if (!(await verifyPromotedToKit(subscriber.id, apiKey))) {
+    return { confirmed: false, reason: "releitura no Kit não confirmou state active" };
+  }
+  return { confirmed: true };
 }
 
 /**
@@ -3088,25 +3132,33 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           }
         }
 
-        // #6339, ESCOPO NÃO COBERTO: diferente da promoção por score logo
-        // abaixo (que já escreve direto no backend real via
-        // `newsletterBackend`), esta auto-confirmação continua dependendo da
-        // ponte `sync-beehiiv-subscribers-kit.ts` (Beehiiv → Kit, até 24h de
-        // atraso) pra o contato de fato receber a diária quando
-        // `newsletterBackend === "kit"` — `applySelfConfirmed` só desvincula
-        // da fila Brevo, nunca escreve no Kit. Risco aceito nesta unidade
-        // (ver PR body do #6339): o volume por este caminho é residual (só
-        // quem confirma o double opt-in Beehiiv de um pool que já não cresce,
-        // ver nota "Pool Pending é FINITO" em `sync-pending-to-brevo.ts`), e
-        // `test/sync-beehiiv-subscribers-kit-load-bearing-6339.test.ts` trava
-        // a ponte como load-bearing enquanto este caminho não for corrigido.
-        // **Este gap é DIFERENTE do #6340 item 4 acima**: aquele cobria a
-        // ausência de roteamento por origem (contato Kit sendo checado na
-        // Beehiiv — corrigido nesta unidade, `if` acima); este cobre um
-        // contato de origem BEEHIIV (`else`, aqui) cuja confirmação, mesmo
-        // check corretamente na Beehiiv, ainda depende da ponte de sync
-        // pra chegar ao Kit — os dois nunca se sobrepõem por contato.
+        // #11225: contato de origem BEEHIIV que confirmou o double opt-in da
+        // Beehiiv por conta própria. Com `newsletterBackend === "kit"` ele é
+        // escrito direto no Kit aqui (`promoteSelfConfirmedBeehiivToKit`)
+        // ANTES de sair da fila Brevo. Até o #11225 este caminho dependia da
+        // ponte `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) (task diária, até 24h de
+        // atraso), aposentada junto com o envio pela Beehiiv. Escrita não
+        // confirmada (ou Kit indisponível) mantém o contato `in_brevo` e
+        // conta em `failed` — nunca desvincula sem o Kit confirmar `active`.
         if (beehiivStatus === "active") {
+          if (push && newsletterBackend === "kit") {
+            let kitResult: Awaited<ReturnType<typeof promoteSelfConfirmedBeehiivToKit>>;
+            if (!kitApiKey) {
+              kitResult = { confirmed: false, reason: "KIT_API_KEY ausente" };
+            } else {
+              try {
+                kitResult = await promoteSelfConfirmedBeehiivToKit(contact.email, kitApiKey);
+              } catch (e) {
+                kitResult = { confirmed: false, reason: `falha no Kit: ${(e as Error).message}` };
+              }
+            }
+            if (!kitResult.confirmed) {
+              log(`warn: ${contact.email}: ativo na Beehiiv, mas a escrita no Kit não confirmou (${kitResult.reason}) — mantendo in_brevo (#11225).`);
+              failed++;
+              failedContacts.push({ email: contact.email, reason: `auto-confirmação Beehiiv não escrita no Kit: ${kitResult.reason}` });
+              continue;
+            }
+          }
           log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender da taxa de abertura.`);
           selfConfirmed++;
           if (push) {

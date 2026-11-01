@@ -228,8 +228,8 @@ export async function runOneMode(
             reason:
               `incomplete_click_data: ${editionsMissingClickData.length} edição(ões) sem post confirmado ` +
               `no cache Beehiiv/Kit, ${manifest.length} post(s) sem clicks enriquecidos por link — rode ` +
-              `--manifest-only em publish-weekly-social.ts (mesmo cache), dispatche beehiiv-clicks-enricher, ` +
-              `e re-rode, ou passe --force-incomplete-click-data pra prosseguir mesmo assim.`,
+              `kit-sync.ts e re-rode (post antigo da Beehiiv não é mais enriquecido, enricher aposentado no #11225), ` +
+              `ou passe --force-incomplete-click-data pra prosseguir mesmo assim.`,
           },
         ],
       };

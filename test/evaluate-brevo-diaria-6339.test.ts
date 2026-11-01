@@ -7,7 +7,7 @@
  * switchover do #6114 (`publishing.newsletter.backend === "kit"`) — a
  * Beehiiv não publica mais nada, então a promoção só chegava aos
  * assinantes de fato via a ponte temporária de sync
- * (`scripts/sync-beehiiv-subscribers-kit.ts`), até 24h de atraso, e some no
+ * (`scripts/sync-beehiiv-subscribers-kit.ts` (aposentado no #11225)), até 24h de atraso, e some no
  * dia em que alguém aposentar essa ponte.
  *
  * Este arquivo cobre o novo par `promoteKitSubscription`/

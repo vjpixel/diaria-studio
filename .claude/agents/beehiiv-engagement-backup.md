@@ -35,7 +35,7 @@ tratar isso na #7279, que é a issue dona do problema de nome de conector.
 
 O cruzamento assinante × edição — quem abriu/clicou em QUAL post, e quando — nunca foi capturado por nenhum backup do projeto. O backup semanal (`scripts/backup-beehiiv.ts`) cobre tudo que a API REST pública expõe, mas declara esse buraco explicitamente em `MCP_ONLY_GAPS`. A única forma de obter esse dado é via MCP (`list_post_subscriber_engagement`, e `list_post_click_subscribers` pra identidade por clique) — chamáveis só de dentro de uma sessão Claude com a tool no escopo, nunca de scripts TS standalone.
 
-Este agent é o molde de `beehiiv-clicks-enricher` (mesmo padrão pra `list_post_clicks`) aplicado ao gap de engagement: como subagent, NÃO consome contexto da conversa parent, permitindo drenar 100+ posts numa única invocação sem estourar a janela do editor.
+Este agent é o molde de `beehiiv-clicks-enricher` (aposentado no #11225; mesmo padrão pra `list_post_clicks`) aplicado ao gap de engagement: como subagent, NÃO consome contexto da conversa parent, permitindo drenar 100+ posts numa única invocação sem estourar a janela do editor.
 
 **Janela de urgência:** a conta Beehiiv é Launch/free (sem pressão de custo), mas o envio da diária já migrou pro Kit (#6114) — este dado só sobrevive enquanto o acesso Beehiiv existir. Não é incêndio, é irreversível se adiado demais.
 

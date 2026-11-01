@@ -40,7 +40,7 @@
  *
  * - `promoteKitSubscription` (`scripts/evaluate-brevo-diaria.ts`) — promoção
  *   AUTOMÁTICA por score de engajamento do canal Brevo Pending.
- * - `sync-beehiiv-subscribers-kit.ts` — sync unidirecional em LOTE, sem UTM
+ * - `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) — sync unidirecional em LOTE, sem UTM
  *   por assinante disponível no call site (a listagem da Beehiiv usada ali
  *   só devolve e-mail + status; recuperar o UTM real de quem entrou por
  *   este caminho é trabalho do backfill, #6318/`backfill-kit-attribution.ts`,
@@ -62,7 +62,7 @@ export const KIT_NATIVE_SIGNUP_MARKER = "kit-nativo";
 export const KIT_SCORE_PROMOTION_SIGNUP_MARKER = "brevo-diaria-score";
 
 /** #6425 Parte B — sync unidirecional em lote da Beehiiv
- *  (`scripts/sync-beehiiv-subscribers-kit.ts`). */
+ *  (`scripts/sync-beehiiv-subscribers-kit.ts` (aposentado no #11225)). */
 export const KIT_BEEHIIV_SYNC_SIGNUP_MARKER = "beehiiv-sync";
 
 /** Nome literal do custom field no Kit (mesmo valor de

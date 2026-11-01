@@ -314,7 +314,7 @@ both`: ao aplicá-lo, rode os 2 modos separados nos passos seguintes. O
 preview do Passo 2 repete o mesmo aviso no stderr, caso este passo tenha
 sido pulado.
 
-## Passo 1 — Aquecer o cache Kit + checar enriquecimento Beehiiv
+## Passo 1 — Aquecer o cache Kit
 
 **Só se aplica ao modo `clicked`** — `highlights` não ranqueia por clique,
 então `--manifest-only` sempre retorna `posts_needing_clicks: []` nesse modo
@@ -334,33 +334,13 @@ ou um dia sem edição) `data/kit-cache/broadcasts/` pode estar vazio. Aí a
 seleção sairia com **0 cliques pra semana inteira, em silêncio** — o
 manifest do passo 1b NÃO cobre isso (é Beehiiv-only, ver abaixo).
 
-**1b. Checar o que falta enriquecer do lado Beehiiv:**
-
-```bash
-npx tsx scripts/publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode clicked --manifest-only
-```
-
-Imprime `{saturday, mode, contentWindow, editionsFound, posts_needing_clicks}`.
-**Por que este passo existe:** o gate de estabilização de CTR do pipeline
-diário (`MIN_AGE_DAYS_FOR_CLICKS = 7`, `scripts/lib/shared/ctr-config.ts`)
-nunca enriquece posts com menos de 7 dias — e os posts desta janela têm
-entre 2 e 6 dias no momento em que esta skill roda (sábado, semana que
-acabou de terminar). Sem este passo explícito, a seleção rodaria com clicks
-zerados pra semana inteira.
-
-Se `posts_needing_clicks` for não-vazio:
-
-```
-Agent(subagent_type="beehiiv-clicks-enricher", prompt=<manifest items uma por linha>)
-```
-
-Mesmo agent reusado pelo Stage 0 diário e por `/diaria-linkedin-semanal`
-(#4456) — cada item do prompt no formato `post_id=<id> title=<title>`, um
-por linha. **Não reinventar** um enricher próprio — MCP `list_post_clicks`
-só roda de subagent/top-level com a tool declarada, nunca de script TS
-standalone (ver docstring de `scripts/lib/weekly-instagram-select.ts`).
-
-Se `posts_needing_clicks` já vier vazio, pule direto pro Passo 2.
+**1b. Lado Beehiiv: sem enrichment desde o #11225.** O agent
+`beehiiv-clicks-enricher` foi aposentado (a Beehiiv é só arquivo histórico e
+não publica edição nova; a semana sai pelo Kit, coberto pelo 1a).
+`publish-weekly-social.ts --saturday {AAMMDD-do-sabado} --mode clicked
+--manifest-only` segue disponível como diagnóstico: `posts_needing_clicks`
+não-vazio só acontece se a janela pegar uma edição antiga publicada pela
+Beehiiv, e aí o script exige `--force-incomplete-click-data` pra seguir.
 
 ## Passo 2 — Preview (sempre, sem `--schedule`)
 

@@ -359,7 +359,7 @@ export function main(rootDirOverride?: string) {
   const manifest = identifyWeeklyPostsNeedingClicks(windowPosts);
   if (manifest.length > 0) {
     warnings.push(
-      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache — rode beehiiv-clicks-enricher e re-rode este script antes de confiar na seleção.`,
+      `${manifest.length} post(s) da janela ainda sem clicks enriquecidos no cache (posts antigos da Beehiiv; o beehiiv-clicks-enricher foi aposentado no #11225, então eles não serão mais enriquecidos).`,
     );
   }
   const missingD1 = editionsFound.filter((e) => !e.d1Title);
@@ -556,7 +556,7 @@ function emitIncompleteClickDataBanner(args: {
     "",
     "Antes de aprovar no gate do Passo 3:",
     "  npx tsx scripts/kit-sync.ts        # cache Kit (é o canal vivo desde 04/09)",
-    "  npx tsx scripts/select-linkedin-weekly.ts --manifest-only   # + beehiiv-clicks-enricher",
+    "  npx tsx scripts/select-linkedin-weekly.ts --manifest-only   # diagnóstico (enricher aposentado, #11225)",
     "e re-rode este script.",
     "",
     "A seleção FOI escrita mesmo assim — este script não publica nada, e o gate",
