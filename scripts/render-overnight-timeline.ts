@@ -33,6 +33,7 @@ import { fmtTimeBrt } from "./lib/format.ts";
 import { EPIC_DEFERRED_STATUS } from "./overnight-statusline.ts"; // #3072 (review do #3071)
 import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860 (extraído daqui pelo #4817)
 import { issueKeyLabel, issueKeyOfPlanEntry } from "./lib/issue-key.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 
 /** #10618 (fatia 4): `#N` no studio, `owner/repo#N` em outro repo. */
 function issueRowLabel(issue: PlanIssue): string {
@@ -413,6 +414,8 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
   const absPath = resolve(process.cwd(), planPath);
+  // #11721: restaura a cópia de conflito do OneDrive (plan-*-safeBackup-*.json) antes de checar.
+  recoverPlanFromSafeBackupWithWarning(absPath);
   if (!existsSync(absPath)) {
     process.stderr.write(`Arquivo não encontrado: ${absPath}\n`);
     process.exit(1);
