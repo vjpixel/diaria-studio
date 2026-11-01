@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 128 invariants.
+**Total**: 129 invariants.
 
 ## Static (estrutura do repo)
 
@@ -131,6 +131,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `use-melhor-tempo` | cada item USE MELHOR tem estimativa de tempo na descrição (#2372) | #2372 |
 | `use-melhor-tempo-item-sem-medicao` | warning individual por item USE MELHOR com tempo estimado por título ou sem fonte de medição (#10765) | #10765 |
 | `use-melhor-tempo-title-heuristic-share` | itens USE MELHOR cuja estimativa veio de title-heuristic (body não cacheado) — sinal de qualidade, warning-only (#7668) | #7668 |
+| `use-melhor-um-isca` | 4º post (## um, USE MELHOR) fora do padrão de isca — diz quantos itens faltam, promete a lista inteira, chamada sem data ou fora do fim do 3º parágrafo, ou item com marcador de publieditorial sem confirmação no gate — warning-only (#11667) | #11667 |
 
 ## Stage 5 — Publicação (pós-dispatch)
 
