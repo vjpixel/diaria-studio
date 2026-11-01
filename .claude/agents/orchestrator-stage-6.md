@@ -29,13 +29,13 @@ EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
 ```bash
 npx tsx scripts/pipeline-sentinel.ts assert \
   --edition {AAMMDD} --step 5 \
-  --outputs "_internal/05-published.json"
+  --outputs "_internal/05-published.json" --sync-hint
 # Backend "kit": --outputs "_internal/newsletter-kit-published.json"
 ```
 
 Exit code handling:
 - `0` → continuar.
-- `1` → **FATAL:** "Etapa 5 (Publicacao) nao completou (sentinel ausente). Re-rodar `/diaria-5-publicacao {AAMMDD}` antes de continuar." Parar.
+- `1` → **FATAL:** "Etapa 5 (Publicacao): sentinel ausente nesta maquina. Se a Etapa 5 rodou em outra maquina, aguardar o sync do OneDrive (repassar a linha `[aviso]` do stderr, #11729: traz a idade do arquivo mais recente da edicao); se nao, re-rodar `/diaria-5-publicacao {AAMMDD}` antes de continuar." Parar.
 - `2` → **FATAL:** artefato do backend atual ausente (`05-published.json` pra Beehiiv, `newsletter-kit-published.json` pra Kit). "Re-rodar Etapa 5." Parar.
 - `3` → logar warn, continuar.
 
