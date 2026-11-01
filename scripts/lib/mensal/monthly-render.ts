@@ -1153,7 +1153,7 @@ export function renderEncerramento(body: string): string {
         })}`
       : `<p style="margin:0;font-family:${FONT_SANS};">${renderInline(last)}</p>`;
     parts.push(
-      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;">${inner}</td></tr></table>`,
+      `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;${icons ? "text-align:center;" : ""}">${inner}</td></tr></table>`,
     );
   }
 
