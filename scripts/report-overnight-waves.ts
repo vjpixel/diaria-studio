@@ -30,6 +30,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeIssues } from "./lib/plan-issues-normalize.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 import { aggregateWaveRounds, renderWavesReportMarkdown } from "./lib/overnight-waves-report.ts";
 import type { OvernightWaveRecord } from "./lib/overnight-waves.ts";
 import type { PlanIssue } from "./render-overnight-timeline.ts";
@@ -72,6 +73,8 @@ export function scanOvernightRounds(overnightDataDir: string, since?: string): S
  * (fail-soft, mesma regra do scan). `dir` default = nome do diretório do plano.
  */
 export function readRoundPlan(planPath: string, dir: string = basename(dirname(planPath))): ScannedRound | null {
+  // #11721: plano renomeado pelo OneDrive (plan-*-safeBackup-*.json) é restaurado antes da leitura.
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) return null;
   try {
     const plan = JSON.parse(readFileSync(planPath, "utf8"));

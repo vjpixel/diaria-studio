@@ -40,6 +40,7 @@ import {
   type LabelCandidateIssue,
   type PlanIssueLike,
 } from "./lib/overnight-comment-coverage.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 
 interface GhFetchResult<T> {
   value: T | null;
@@ -96,6 +97,8 @@ if (isMainModule(import.meta.url)) {
     console.error("[check-overnight-comment-coverage] uso: --plan {path} [--skip-gh-checks]");
     process.exit(2);
   }
+  // #11721: restaura a cópia de conflito do OneDrive (plan-*-safeBackup-*.json) antes de checar.
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) {
     console.error(`[check-overnight-comment-coverage] plan.json não encontrado: ${planPath}`);
     process.exit(2);
