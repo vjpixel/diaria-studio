@@ -137,6 +137,9 @@ function medianF0Of(x: Float64Array, rate: number, start: number, end: number, s
   return f0s.length % 2 ? f0s[m] : (f0s[m - 1] + f0s[m]) / 2;
 }
 
+/** Segmento com as palavras opcionais; só o tempo de cada palavra importa aqui (#11675). */
+type SegmentSpan = Pick<Segment, "start" | "end"> & { words?: Array<{ start: number; end: number; text?: string }> };
+
 /**
  * Os intervalos de fala do segmento (#11675): as palavras do transcript,
  * recortadas ao segmento e fundidas onde se sobrepõem. Sem palavras com tempo,
@@ -144,7 +147,7 @@ function medianF0Of(x: Float64Array, rate: number, start: number, end: number, s
  * frase (na 261030, 20–30 s para uma frase de 3 s), e a F0 desse trecho sem
  * fala (ruído, respiro) puxava a mediana para ~90–120 Hz.
  */
-export function speechSpans(s: Pick<Segment, "start" | "end" | "words">): Array<[number, number]> {
+export function speechSpans(s: SegmentSpan): Array<[number, number]> {
   const ws = (s.words ?? [])
     .map((w): [number, number] => [Math.max(s.start, w.start), Math.min(s.end, w.end)])
     .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
@@ -160,12 +163,12 @@ export function speechSpans(s: Pick<Segment, "start" | "end" | "words">): Array<
 }
 
 /** Segundos de fala do segmento (soma de `speechSpans`), o peso de cada um na separação das vozes (#11675). */
-export function speechSeconds(s: Pick<Segment, "start" | "end" | "words">): number {
+export function speechSeconds(s: SegmentSpan): number {
   return speechSpans(s).reduce((n, [a, b]) => n + (b - a), 0);
 }
 
 /** F0 mediana de cada segmento, só nas palavras dele quando têm tempo (#11675); decima o áudio uma vez só. */
-export function segmentF0s(samples: Int16Array, sampleRate: number, segments: Array<Pick<Segment, "start" | "end" | "words">>): Array<number | null> {
+export function segmentF0s(samples: Int16Array, sampleRate: number, segments: Array<SegmentSpan>): Array<number | null> {
   const { x, rate } = decimate(samples, sampleRate);
   return segments.map((s) => medianF0Of(x, rate, s.start, s.end, speechSpans(s)));
 }

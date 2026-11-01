@@ -197,11 +197,19 @@ export async function uploadLinkedInVideo(
         deps.log(`[aviso] linkedin_profile: status do vídeo falhou (${(e as Error).message}) — tentando de novo`);
       }
       if (status === "AVAILABLE") return { ok: true, videoUrn: value.video, ...(thumbnail ? { thumbnail } : {}) };
-      if (status === "PROCESSING_FAILED") return fail({ reason: `a LinkedIn recusou o vídeo ${value.video} no processamento (PROCESSING_FAILED)`, coverSuspect: thumbnail?.ok === true });
+      // #11702: capa declarada (`uploadThumbnail: true`) e tentada é suspeita tanto
+      // aceita quanto recusada — a miniatura prometida e não entregue é a causa
+      // mais provável de a LinkedIn reprovar o vídeo.
+      if (status === "PROCESSING_FAILED") return fail({ reason: `a LinkedIn recusou o vídeo ${value.video} no processamento (PROCESSING_FAILED)`, coverSuspect: thumbnail !== undefined });
       await deps.sleep(LINKEDIN_VIDEO_POLL_INTERVAL_MS);
     }
     // Sem AVAILABLE não posta: o post de um vídeo que nunca termina de processar fica quebrado no perfil.
-    return fail({ reason: `vídeo ${value.video} não ficou AVAILABLE em ${(LINKEDIN_VIDEO_POLL_ATTEMPTS * LINKEDIN_VIDEO_POLL_INTERVAL_MS) / 60_000} min — rode de novo (nada foi postado)` });
+    // #11702: timeout com a capa prometida e NÃO entregue repete sem capa (a LinkedIn
+    // pode segurar o vídeo à espera da miniatura); com a capa aceita segue sem repetir (#11660).
+    return fail({
+      reason: `vídeo ${value.video} não ficou AVAILABLE em ${(LINKEDIN_VIDEO_POLL_ATTEMPTS * LINKEDIN_VIDEO_POLL_INTERVAL_MS) / 60_000} min — rode de novo (nada foi postado)`,
+      coverSuspect: thumbnail?.ok === false,
+    });
   } catch (e) {
     return fail({ reason: `upload do vídeo: erro de rede: ${(e as Error).message}` });
   }
@@ -214,8 +222,10 @@ export async function uploadLinkedInVideo(
  * nunca derruba o vídeo. `thumbnail` no retorno diz o que aconteceu com ela.
  * #11660: só repete quando a falha é atribuível à capa (`coverSuspect`:
  * `initializeUpload` recusado com `uploadThumbnail: true`, `finalizeUpload`
- * recusado depois da capa tentada, `PROCESSING_FAILED` com a capa aceita).
- * Parte que falhou, erro de rede e timeout do processamento não repetem: subir
+ * recusado depois da capa tentada, `PROCESSING_FAILED` com a capa tentada —
+ * aceita ou não, #11702 — e timeout do processamento com a capa declarada e
+ * não entregue, #11702).
+ * Parte que falhou, erro de rede e timeout com a capa aceita não repetem: subir
  * o vertical inteiro de novo sem capa não muda essas falhas e só gasta tempo
  * do timer.
  */
