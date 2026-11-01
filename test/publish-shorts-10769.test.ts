@@ -452,7 +452,7 @@ describe("#10769 fluxos da Graph API (fetch falso)", () => {
   it("Instagram: container ERROR e media_publish sem id LANÇAM", async () => {
     const a = fakeDeps([() => ({ id: "c1" }), () => ({ success: true }), () => ({ status_code: "ERROR", status: "codec" })]);
     await assert.rejects(publishInstagramReel(a.deps, "ig", "tok", "v25.0", short, "x"), /ERROR/);
-    const b = fakeDeps([() => ({ id: "c1" }), () => ({ success: true }), () => ({ status_code: "FINISHED" }), () => ({})]);
+    const b = fakeDeps([() => ({ id: "c1" }), () => ({ success: true }), () => ({ status_code: "FINISHED" }), () => ({}), () => ({ status_code: "FINISHED" })]);
     await assert.rejects(publishInstagramReel(b.deps, "ig", "tok", "v25.0", short, "x"), /media_publish sem id/);
   });
 });

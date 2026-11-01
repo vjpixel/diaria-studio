@@ -175,8 +175,12 @@ export interface R2UploadDeps {
  * do plano gratuito do R2 em ~36 dias e passavam a custar em silêncio. O
  * objeto só precisa existir até a Graph API (Reels na fila do Worker) e a
  * Buffer baixarem o vídeo, o que acontece no horário do vertical, no mesmo
- * dia ou no seguinte; 7 dias dão folga para um reenfileiramento e mantêm o
- * bucket perto de 2 GB.
+ * dia ou no seguinte; 7 dias dão folga para um reenfileiramento. Conta de
+ * espaço, não medida no bucket: com um vertical por dia (~275 MB) são ~2 GB; no
+ * pior caso, com um corte `_Instagram_` diferente do genérico todo dia (#11355,
+ * chave própria com hash), ~550 MB/dia e ~4 GB, e cada troca de corte no mesmo
+ * dia soma um objeto. Corte idêntico ao genérico não ocupa nada a mais. O Reels
+ * por `video_url` baixa o objeto logo depois do upload (pior caso medido: 72 s).
  *
  * A limpeza roda no próprio upload, com a mesma chave de API (escrita no
  * bucket já inclui listar e apagar objetos). Uma regra de lifecycle no bucket
@@ -333,6 +337,10 @@ export async function uploadToR2(
   if (len !== null && Number(len) !== body.length) {
     throw new Error(`R2: ${url} serve ${len} bytes, o arquivo tem ${body.length} — upload incompleto ou cache velho`);
   }
+  // #11355: o tamanho não pega vídeo velho de mesmo tamanho servido na chave fixa.
+  if (etagConflictsBody(head.headers.get("etag"), body)) {
+    throw new Error(`R2: ${url} serve outro conteúdo (ETag ${head.headers.get("etag")} não é o MD5 do arquivo) — cache velho ou upload incompleto`);
+  }
 
   const policy = R2_RETENTION_POLICIES.find((p) => key.startsWith(p.prefix));
   if (policy) {
@@ -358,6 +366,32 @@ export function etagMatchesBody(etag: string | null, body: Buffer): boolean {
 }
 
 /**
+ * #11355: o ETag prova que o objeto é OUTRO conteúdo? Só um MD5 bem formado e
+ * diferente conta. ETag ausente ou em outro formato não prova nada, e o caller
+ * fica com a conferência de tamanho (o oposto de `etagMatchesBody`, que decide
+ * reaproveitar e por isso exige a prova positiva).
+ */
+export function etagConflictsBody(etag: string | null, body: Buffer): boolean {
+  if (!etag) return false;
+  const tag = etag.trim().replace(/^W\//, "").replace(/^"|"$/g, "").toLowerCase();
+  return /^[0-9a-f]{32}$/.test(tag) && !etagMatchesBody(etag, body);
+}
+
+/**
+ * #11355: a URL pública de `key` serve exatamente este `body` (tamanho e ETag)?
+ * HEAD que falha ou 404 = false: na dúvida, o caller sobe de novo.
+ */
+export async function r2ObjectHasBody(deps: R2UploadDeps, config: R2UploadConfig, key: string, body: Buffer): Promise<boolean> {
+  try {
+    const head = await deps.fetch(r2PublicUrl(config, key), { method: "HEAD" });
+    const len = head.headers.get("content-length");
+    return head.ok && len !== null && Number(len) === body.length && etagMatchesBody(head.headers.get("etag"), body);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * #11410: sobe o arquivo, ou reaproveita o objeto que já está no bucket com o
  * MESMO conteúdo (HEAD 200 na URL pública). O vertical do dia costuma já ter
  * subido numa rodada anterior (o `/diaria-publica-video` com o X, ou outra
@@ -375,13 +409,6 @@ export async function reuseOrUploadToR2(
   body: Buffer,
   contentType: string,
 ): Promise<{ url: string; reused: boolean }> {
-  const url = r2PublicUrl(config, key);
-  try {
-    const head = await deps.fetch(url, { method: "HEAD" });
-    const len = head.headers.get("content-length");
-    if (head.ok && len !== null && Number(len) === body.length && etagMatchesBody(head.headers.get("etag"), body)) return { url, reused: true };
-  } catch {
-    // HEAD falhou (rede): sobe de novo, e o upload confere a URL no fim.
-  }
+  if (await r2ObjectHasBody(deps, config, key, body)) return { url: r2PublicUrl(config, key), reused: true };
   return { url: await uploadToR2(deps, config, key, body, contentType), reused: false };
 }

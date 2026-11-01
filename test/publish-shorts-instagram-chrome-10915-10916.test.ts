@@ -4,8 +4,8 @@
  * #10916: o teto de duração do Reels pela API é POR CONTA (medido: @vjpixel
  * 40 s, @diar.ia.br 55 s em sintético). Antes era um teto global de 40 s. Os
  * cenários abaixo usam um mapa de fixture (`byAccount`) pra testar o mecanismo;
- * o valor de produção da @diar.ia.br caiu pra 30 s no #11281 (vertical real de
- * 49,9 s recusado), travado em test/publish-shorts-instagram-cap-11281.test.ts.
+ * a @diar.ia.br de produção não tem teto desde o #11355 (`null`, rota `video_url`),
+ * travado em test/publish-shorts-instagram-video-url-11355.test.ts.
  *
  * #10915: acima do teto, o Instagram vira passo guiado no Chrome com uma versão
  * ≤ 9,5 MB do vertical (file_upload do Claude in Chrome aceita 10 MB). Testa o
@@ -80,10 +80,11 @@ describe("#10916 teto de duração por conta", () => {
     assert.equal(loadInstagramApiMaxSeconds({}, null), 40);
   });
 
-  it("conta fora do mapa cai no legado; null no mapa desliga só aquela conta", () => {
-    const c = cfgWith({ instagram_api_max_seconds: 30, instagram_api_max_seconds_by_account: { vjpixel: null } });
-    assert.equal(loadInstagramApiMaxSeconds(c, "vjpixel"), null);
+  it("conta fora do mapa cai no legado; null no mapa desliga só aquela conta (e só na rota video_url, #11355)", () => {
+    const c = cfgWith({ instagram_api_max_seconds: 30, instagram_api_max_seconds_by_account: { diaria: null } });
+    assert.equal(loadInstagramApiMaxSeconds(c, null), null);
     assert.equal(loadInstagramApiMaxSeconds(c, "memelab"), 30);
+    assert.equal(loadInstagramApiMaxSeconds(cfgWith({ instagram_api_max_seconds_by_account: { vjpixel: null } }), "vjpixel"), 40);
   });
 
   it("mapa ou valor inválido lança", () => {
@@ -114,13 +115,13 @@ describe("#10916 teto de duração por conta", () => {
     assert.equal(instagramApiMaxSecondsPremise(resolveInstagramApiMaxSeconds(cfgWith({}), null)), null);
   });
 
-  it("platform.config.json real: o teto da autora configurada resolve sem lançar (30 s da @diar.ia.br desde #11281)", () => {
+  it("platform.config.json real: o teto da autora configurada resolve sem lançar (null na @diar.ia.br desde #11355)", () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), "..");
     const config = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
     const author = config.publishing.shorts.instagram_author_page ?? null;
     const r = resolveInstagramApiMaxSeconds(config, author);
     assert.equal(r.source, "by_account", "a autora configurada tem que estar no mapa por conta");
-    assert.equal(r.maxSeconds, 30);
+    assert.equal(r.maxSeconds, null);
     // A outra conta do mapa também resolve (validação do mapa inteiro).
     assert.equal(loadInstagramApiMaxSeconds(config, "vjpixel"), 40);
   });

@@ -1212,7 +1212,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Shorts-Instagram",
     description:
-      "publica o Reels do vertical no Instagram no horário do vertical, pelo upload resumível da Graph API (sem URL pública), com o corte _Instagram_ do Drive (#11265)",
+      "publica o Reels do vertical no Instagram no horário do vertical, com o vídeo no R2 e o container por video_url, com o corte _Instagram_ do Drive (#11265, #11355)",
     steps: [{ key: "post", script: "scripts/shorts-instagram-timer.ts" }],
     logPath: "shorts/.instagram-timer.log",
     // Diária 06:32 BRT (#11265, decisão do editor 27/10/2026: timer no 300 em

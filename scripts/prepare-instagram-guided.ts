@@ -23,7 +23,8 @@
  *      genérico só se ele já estiver no disco;
  *   2. o plano: `planShortsPublish` só com o `instagram` e a duração desse
  *      vídeo. Acima do teto da API ele vira `guided`, com a legenda e o horário
- *      (`at`) que o `publish-shorts.ts` daria;
+ *      (`at`) que o `publish-shorts.ts` daria. Na conta sem teto (`null`, #11355)
+ *      o arquivo sai sempre: é o plano B de quando o Reels falhar pela API;
  *   3. a compressão: a mesma do `--publish` (`prepareInstagramChromeUpload`,
  *      ffmpeg 2-pass 720x1280 mirando 9,5 MB) em
  *      `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`.
@@ -53,6 +54,7 @@ import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/face
 import { DRIVE_VIDEO_WINDOW_HOURS } from "./lib/diaria/drive-video-source.ts";
 import {
   isDestinationDone,
+  loadInstagramApiMaxSeconds,
   loadShortsConfig,
   mp4DurationSeconds,
   shortInstagramVideoFileName,
@@ -129,6 +131,10 @@ export interface PrepareInstagramGuidedOutcome {
   exitCode: number;
   output: PrepareInstagramGuidedOutput;
 }
+
+/** O `detail` do plano B na conta sem teto: o timer ainda pode publicar, e aí postar à mão duplica. */
+const NO_CAP_FALLBACK_REASON =
+  "plano B: esta conta não tem teto de duração na API e quem publica é o timer do 300 (#11355); use só se o Reels falhou, conferindo antes que ele não está na conta";
 
 /** Comando que registra o Reels depois do Share (Passo B3b, item 8). */
 export function confirmInstagramCommand(aammdd: string): string {
@@ -235,6 +241,7 @@ export async function runPrepareInstagramGuided(
       // Este comando nunca publica: a credencial da API não é conferida.
       instagramReady: false,
       instagramNotReadyReason: "não conferida (preparo do passo guiado, #11476)",
+      ...(loadInstagramApiMaxSeconds(deps.config, cfg.instagramAuthorPage) === null ? { instagramGuidedFallback: NO_CAP_FALLBACK_REASON } : {}),
       published,
       // Com o timer do 300 dono do Instagram, a rodada normal veria `skip_delegated`;
       // o passo guiado é o que a rodada do timer mostraria.
