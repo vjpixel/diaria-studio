@@ -1,5 +1,6 @@
 import { findFactRecurrences, findIntraEditionFactRecurrences, type IntraEditionItem } from "../fact-recurrence.ts";
 import { findStoryTwice, type PastStoryItem } from "../story-twice-in-edition.ts"; // #11496
+import { findStudySourceRecurrences } from "../study-source-recurrence.ts"; // #11763
 import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
 import { contentJaccard, REPEAT_THEME_WARN_THRESHOLD } from "../repeat-theme-check.ts"; // #11517
 import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
@@ -2080,11 +2081,12 @@ export function readPastStoryItems(
   editionsRoot: string,
   currentAammdd: string,
   window: number = STORY_TWICE_PAST_WINDOW,
+  withinDays?: number, // #11763: janela por data (~30 dias) em vez de contagem
 ): PastStoryItem[] {
   if (!existsSync(editionsRoot)) return [];
   const dirs = enumerateEditionDirs(editionsRoot);
   const out: PastStoryItem[] = [];
-  for (const aammdd of recentEditionDirs(editionsRoot, window, currentAammdd)) {
+  for (const aammdd of recentEditionDirs(editionsRoot, window, currentAammdd, withinDays)) {
     const dir = dirs.get(aammdd);
     if (!dir) continue;
     const file = resolve(dir, "02-reviewed.md");
@@ -2205,6 +2207,30 @@ export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolat
     });
   }
   return out;
+}
+
+/** #11763: janela (dias) de edições passadas para "mesmo estudo/relatório-fonte". */
+export const STUDY_RECURRENCE_WINDOW_DAYS = 30;
+
+/**
+ * #11763: item do `02-reviewed.md` final que é cobertura secundária (imprensa)
+ * de um estudo/relatório já publicado nos últimos 30 dias, com URL e redação
+ * novas (caso 261103: CNN "IA trabalha seis vezes mais que humanos" × D1 de
+ * 261020 sobre o relatório da Anthropic). Severity "warning": o editor decide
+ * no gate; nunca remove nada.
+ */
+export function checkStudySourceRecurrence(
+  editionDir: string,
+  editionsRoot: string = resolve(ROOT, "data/editions"),
+): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const { highlights, pool } = readIntraEditionItems(readFileSync(file, "utf8"));
+  const past = readPastStoryItems(editionsRoot, basename(editionDir), 0, STUDY_RECURRENCE_WINDOW_DAYS);
+  return findStudySourceRecurrences([...highlights, ...pool], past).map(w => ({
+    rule: "study-source-recurrence", source_issue: "#11763", severity: "warning" as const, file,
+    message: `🚨 Mesmo estudo/relatório já publicado: [${w.item_label}] “${w.item_title}” (${w.item_url}) cobre o relatório de ${w.publisher} de ${w.matched_edition} (${w.matched_label} “${w.matched_title}”; números em comum: ${w.shared_numbers.join(", ")}). Cortar no gate, salvo fato novo.`,
+  }));
 }
 
 export interface DuplicateUrlMatch {
@@ -4175,6 +4201,11 @@ export const STAGE_4_RULES: InvariantRule[] = [
     id: "theme-cross-source-repeat",
     description: "Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only)",
     source_issue: "#11496", stage: 4, run: checkThemeCrossSourceRepeat,
+  },
+  {
+    id: "study-source-recurrence",
+    description: "Item que é cobertura secundária de estudo/relatório já publicado nos últimos 30 dias (mesmo publicador + número-chave; heurístico, warning-only)",
+    source_issue: "#11763", stage: 4, run: (dir: string) => checkStudySourceRecurrence(dir),
   },
   {
     id: "no-duplicate-urls-vs-past-editions",
