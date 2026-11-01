@@ -921,7 +921,7 @@ describe("Stage 1 invariants", () => {
   // filtra esses dois casos específicos, mas esta invariante é a rede de
   // segurança pra qualquer item que escape a heurística de categorização
   // (ex: editor promove manualmente um item pro bucket lancamento no gate).
-  it("lancamento-has-product-signal falha (error) quando item não tem sinal positivo de produto", () => {
+  it("lancamento-has-product-signal avisa (warning, #11748) quando item não tem sinal positivo de produto", () => {
     writeFileSync(
       join(fixture, "_internal", "01-approved.json"),
       JSON.stringify({
@@ -940,7 +940,8 @@ describe("Stage 1 invariants", () => {
     const v = checkLancamentoHasProductSignal(fixture);
     assert.equal(v.length, 1, "1 violation agregada, não 1 por item");
     assert.equal(v[0].rule, "lancamento-has-product-signal");
-    assert.equal(v[0].severity, "error", "gate-blocking, defesa em profundidade do #1968");
+    // #11748: warning — o Stage 2 §2a auto-demove (#4339); error travava o sentinel do Stage 1 no --auto.
+    assert.equal(v[0].severity, "warning");
     assert.equal(v[0].source_issue, "#6440");
     assert.match(v[0].message, /bringing-chatgpt-for-teachers/);
     assert.match(v[0].message, /piloting-the-worlds-first-double-blind-ai-evaluations/);

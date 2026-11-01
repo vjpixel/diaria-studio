@@ -85,6 +85,11 @@ import {
   PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX,
 } from "./lib/edition-url.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
+import {
+  writeEditionUrlTransition,
+  clearEditionUrlTransition,
+  type EditionUrlTransition,
+} from "./lib/edition-url-transition.ts"; // #11751
 import { logEvent } from "./lib/run-log.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
@@ -119,6 +124,10 @@ export interface KitRefreshSocialEditionUrlDeps {
   writeEditionUrlFile: (editionDir: string, url: string) => void;
   readSocialMd: (editionDir: string) => string | null;
   writeSocialMd: (editionDir: string, content: string) => void;
+  /** #11751: marcador gravado antes de reescrever `03-social.md` e apagado
+   * depois de gravar `05-edition-url.txt` (`scripts/lib/edition-url-transition.ts`). */
+  writeTransition: (editionDir: string, t: EditionUrlTransition) => void;
+  clearTransition: (editionDir: string) => void;
 }
 
 /** Um `public_url` "resolvido" tem pelo menos um segmento de slug depois de
@@ -200,6 +209,9 @@ export async function kitRefreshSocialEditionUrl(
   // abaixo precisa pra corrigir `03-social.md`.
   const previousEditionUrl = deps.readEditionUrlFile(editionDir);
   if (previousEditionUrl === publicUrl) {
+    // #11751: queda entre gravar `05-edition-url.txt` e apagar o marcador
+    // deixa um marcador sobrando (inofensivo, `to` = URL atual); limpa aqui.
+    deps.clearTransition(editionDir);
     return { ok: true, resolved: false, reason: "already_resolved", editionUrl: publicUrl };
   }
 
@@ -240,18 +252,34 @@ export async function kitRefreshSocialEditionUrl(
     // (`.../posts/{slug}{slug}`). Rodar (a) primeiro elimina toda ocorrência
     // do stub ANTES de `publicUrl` entrar no texto, então (b) nunca tem
     // conteúdo novo pra re-corromper.
+    //
+    // #11751: a re-rodada depois de uma queda entre as duas escritas acha o
+    // texto JÁ com `publicUrl` e o arquivo de URL ainda com o stub. Como o
+    // stub é prefixo de `publicUrl`, o replace direto de (a) duplicaria o
+    // slug nessas ocorrências. Por isso `publicUrl` já presente volta antes
+    // a `{edition_url}` e (b) a restaura no fim: o resultado é o mesmo da
+    // 1ª chamada, idempotente de verdade.
     let updated = socialMd;
     if (previousEditionUrl && previousEditionUrl !== publicUrl) {
+      updated = updated.split(publicUrl).join("{edition_url}");
       updated = updated.split(previousEditionUrl).join(publicUrl);
     }
     updated = substituteEditionUrl(updated, publicUrl);
     if (updated !== socialMd) {
+      // #11751: nenhuma ordem das duas escritas deixa o par sempre coerente
+      // (ver o bloco acima). Se o processo cair depois desta escrita e antes
+      // da de `05-edition-url.txt`, o texto fica com `publicUrl` e o arquivo
+      // de URL com a antiga; a conferência de frescor do Stage 5
+      // (`stage5-freshness.ts`, #11698) lê este marcador e aceita também a
+      // reversão por `publicUrl`, em vez de parar com `diverged`.
+      deps.writeTransition(editionDir, { to: publicUrl });
       deps.writeSocialMd(editionDir, updated);
     }
     unresolvedPlaceholders = findUnresolvedPlaceholders(updated);
   }
 
   deps.writeEditionUrlFile(editionDir, publicUrl);
+  deps.clearTransition(editionDir);
 
   return { ok: true, resolved: true, editionUrl: publicUrl, unresolvedPlaceholders };
 }
@@ -279,6 +307,8 @@ export function productionDeps(): KitRefreshSocialEditionUrlDeps {
       const path = resolve(editionDir, "03-social.md");
       writeFileAtomic(path, content, { encoding: "utf8" });
     },
+    writeTransition: (editionDir, t) => writeEditionUrlTransition(editionDir, t),
+    clearTransition: (editionDir) => clearEditionUrlTransition(editionDir),
   };
 }
 

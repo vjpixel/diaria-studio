@@ -32,12 +32,26 @@
  *     --chunk-scores data/editions/{AAMMDD}/_internal/scoring-chunks/scored-chunk-0.json,...,scored-chunk-2.json \
  *     --allscored-out data/editions/{AAMMDD}/_internal/tmp-allscored.json \
  *     --finalists-out data/editions/{AAMMDD}/_internal/tmp-finalists.json \
- *     [--top 15]
+ *     [--top 15] [--require-done]
  *
  * Output stdout: JSON manifest { pool_size, scored_count, finalists_count, incomplete }.
+ *
+ * #11749 — `--require-done`: cada `scored-chunk-{i}.json` precisa do marcador
+ * de conclusão `scored-chunk-{i}.json.done`, que o `scorer-chunk` grava como
+ * ÚLTIMO passo (depois de validar e de qualquer correção no arquivo). JSON
+ * parseável não prova que o agente terminou: na edição 261103 o Agent voltou
+ * assíncrono, o merge leu um chunk válido que o agente ainda estava corrigindo
+ * e um artigo teria ficado com score 0 em silêncio (`incomplete` com gap ≤ 2
+ * não bloqueia). Chunk sem marcador, ou com marcador mais velho que o arquivo
+ * (o agente reescreveu depois de marcar), é PENDENTE: o merge não grava nada,
+ * imprime `{ pending: true, pending_chunks }` e sai com exit 3 — esperar os
+ * agentes terminarem e rodar de novo.
+ *
+ * Exit codes: 0 ok/incompleto-recuperável · 1 erro de args/input ·
+ * 2 catastrófico (#1669) · 3 chunk(s) pendente(s) (#11749, só com --require-done).
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   flattenCategorized,
@@ -148,6 +162,42 @@ export function loadChunks(
     }
   }
   return { chunks, failed };
+}
+
+/** #11749: sufixo do marcador de conclusão que o `scorer-chunk` grava por último. */
+export const DONE_MARKER_SUFFIX = ".done";
+
+export function doneMarkerPath(chunkPath: string): string {
+  return `${chunkPath}${DONE_MARKER_SUFFIX}`;
+}
+
+export interface PendingChunk {
+  path: string;
+  reason: "chunk-ausente" | "marcador-ausente" | "reescrito-depois-do-marcador";
+}
+
+/**
+ * #11749: chunks cujo agente ainda não terminou. `mtimeOf` devolve o mtime em
+ * ms ou `null` quando o arquivo não existe. Chunk ausente E sem marcador é
+ * pendente (o agente nem gravou ainda); chunk ausente COM marcador não é —
+ * o agente terminou sem arquivo, e o merge trata como chunk ilegível
+ * (catastrófico, exit 2), como antes.
+ */
+export function findPendingChunks(
+  paths: string[],
+  mtimeOf: (p: string) => number | null,
+): PendingChunk[] {
+  const pending: PendingChunk[] = [];
+  for (const p of paths) {
+    const chunkMtime = mtimeOf(p);
+    const markerMtime = mtimeOf(doneMarkerPath(p));
+    if (markerMtime == null) {
+      pending.push({ path: p, reason: chunkMtime == null ? "chunk-ausente" : "marcador-ausente" });
+    } else if (chunkMtime != null && chunkMtime > markerMtime) {
+      pending.push({ path: p, reason: "reescrito-depois-do-marcador" });
+    }
+  }
+  return pending;
 }
 
 /** Extrai os pares {url, score, score_base?, bonuses_applied?, negative_impact?} de um chunk (aceita `all_scored` ou `scored`). */
@@ -307,16 +357,18 @@ export function mergeChunks(
 }
 
 export function main(): void {
-  const args = parseCliArgs(process.argv.slice(2)).values;
+  const parsed = parseCliArgs(process.argv.slice(2));
+  const args = parsed.values;
   const categorizedPath = args.categorized;
   const chunkScoresArg = args["chunk-scores"];
   const allscoredOut = args["allscored-out"];
   const finalistsOut = args["finalists-out"];
   const topN = parseInt(args.top ?? "15", 10);
+  const requireDone = parsed.flags.has("require-done");
 
   if (!categorizedPath || !chunkScoresArg || !allscoredOut || !finalistsOut) {
     console.error(
-      "Uso: merge-scored-chunks.ts --categorized <tmp-scoring-pool.json> --chunk-scores <f1,f2,...> --allscored-out <file> --finalists-out <file> [--top 15]",
+      "Uso: merge-scored-chunks.ts --categorized <tmp-scoring-pool.json> --chunk-scores <f1,f2,...> --allscored-out <file> --finalists-out <file> [--top 15] [--require-done]",
     );
     process.exit(1);
   }
@@ -325,6 +377,28 @@ export function main(): void {
   const categorized: Categorized = raw.categorized ?? raw;
 
   const chunkFiles = chunkScoresArg.split(",").map((s) => s.trim()).filter(Boolean);
+
+  // #11749: com --require-done, nenhum output é gravado enquanto algum
+  // scorer-chunk não tiver marcado a conclusão.
+  if (requireDone) {
+    const pending = findPendingChunks(chunkFiles, (f) => {
+      try {
+        return statSync(resolve(ROOT, f)).mtimeMs;
+      } catch {
+        return null;
+      }
+    });
+    if (pending.length > 0) {
+      process.stderr.write(
+        `WARN [merge-scored-chunks]: ${pending.length} chunk(s) sem marcador de conclusão (#11749) — ` +
+          `o scorer-chunk ainda não terminou. Espere os agentes e rode o merge de novo:\n` +
+          pending.map((p) => `  ${p.path} (${p.reason})\n`).join(""),
+      );
+      process.stdout.write(JSON.stringify({ pending: true, pending_chunks: pending }) + "\n");
+      process.exitCode = 3;
+      return;
+    }
+  }
   const { chunks, failed } = loadChunks(chunkFiles, (f) =>
     readFileSync(resolve(ROOT, f), "utf8"),
   );
