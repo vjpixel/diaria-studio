@@ -102,8 +102,10 @@ describe("#10451 — preview mostra o que o publish acrescenta", () => {
   });
 
   it("um no Instagram: título + linha de engajamento PRÓPRIA, igual a buildUseMelhorInstagramPost", () => {
+    // #11750: sem escopo de comentário registrado, o publish sai sem permalink
+    // (linha da bio) — o preview mostra o mesmo.
     const b = blockFor("um", "Instagram", TITLE);
-    const r = buildUseMelhorInstagramPost({ socialMd: MD, plan, images, editionDir: "x", editionUrl: PREVIEW_EDITION_URL_PLACEHOLDER, fileExists: () => true });
+    const r = buildUseMelhorInstagramPost({ socialMd: MD, plan, images, editionDir: "x", editionUrl: null, fileExists: () => true });
     assert.ok(r.ok, JSON.stringify(r));
     if (!r.ok) return;
     assert.equal(previewPublished(b, "Instagram"), r.caption);

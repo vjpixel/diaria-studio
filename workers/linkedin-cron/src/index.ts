@@ -571,7 +571,13 @@ import { LinkedInScheduler, type DoStoredPayload } from "./durable-object";
 export * from "./dispatch";
 export * from "./maintenance";
 import { withRefreshedThreadsToken, maybeRefreshThreadsToken, alertNewDlqEntries, shouldSweepDlq } from "./maintenance";
-import { resolveInstagramCreds, resolveInstagramVjpixelCreds, resolveThreadsCreds, resolveLinkedInCreds } from "./dispatch";
+import {
+  resolveInstagramCreds,
+  resolveInstagramVjpixelCreds,
+  resolveThreadsCreds,
+  resolveLinkedInCreds,
+  probeInstagramCommentScope,
+} from "./dispatch";
 
 /**
  * #10823 — valida os campos de Reels (`media_type`, `video_url`,
@@ -1207,6 +1213,30 @@ async function handleHealth(env: Env): Promise<Response> {
   });
 }
 
+// ── GET /instagram/comment-scope — escopo de comentário do token (#11750) ──
+
+/**
+ * #11750 — diz se o `INSTAGRAM_ACCESS_TOKEN` DESTE Worker pode comentar
+ * (`instagram_manage_comments`). No `--schedule` é o Worker quem publica o 1º
+ * comentário do 4º post (USE MELHOR), com o próprio secret — o publish
+ * pergunta aqui antes de pôr na legenda "Link da edição no primeiro
+ * comentário.", em vez de inferir pelo token do `.env` local.
+ *
+ * Sempre 200 com `{ ok: true, granted }` ou `{ ok: false, reason }` (creds
+ * ausentes, sonda falhou) — o publish trata qualquer coisa que não seja
+ * `ok && granted` como "sem escopo". 401 sem `X-Diaria-Token`.
+ */
+async function handleInstagramCommentScope(request: Request, env: Env): Promise<Response> {
+  if (!isAuthorized(request, env)) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  const creds = resolveInstagramCreds(env);
+  if (!creds) {
+    return json({ ok: false, reason: "INSTAGRAM_BUSINESS_ACCOUNT_ID/INSTAGRAM_ACCESS_TOKEN ausentes no Worker" });
+  }
+  return json(await probeInstagramCommentScope(creds));
+}
+
 // ── GET /list — debug ───────────────────────────────────────────────────────
 
 async function handleList(request: Request, env: Env): Promise<Response> {
@@ -1502,6 +1532,10 @@ export default {
     if (path === "/list" && request.method === "GET") {
       return handleList(request, env);
     }
+    // #11750 — o publish pergunta se o token do Worker pode comentar.
+    if (path === "/instagram/comment-scope" && request.method === "GET") {
+      return handleInstagramCommentScope(request, env);
+    }
     if (path === "/dlq" && request.method === "GET") {
       return handleDlq(request, env);
     }
@@ -1541,6 +1575,7 @@ export default {
           "POST /fire-now (auth: X-Diaria-Token)",
           "GET /health",
           "GET /list (auth: X-Diaria-Token)",
+          "GET /instagram/comment-scope (auth: X-Diaria-Token) — token do Worker pode comentar? (#11750)",
           "GET /dlq (auth: X-Diaria-Token)",
           "DELETE /dlq/:key (auth: X-Diaria-Token)",
         ],
