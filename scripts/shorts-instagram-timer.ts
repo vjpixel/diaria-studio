@@ -464,6 +464,8 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
     case "skip_late":
       return { kind: "alarm", key: "late", failed: false, detail };
     case "skip_missing_credentials":
+      // #11355: sem R2 o Reels da @diar.ia.br não sobe, e o token do Instagram não tem culpa.
+      if (item.cause === "public_video") return { kind: "alarm", key: "credentials", failed: true, detail: `sem R2 no 300: ${detail}` };
       return { kind: "alarm", key: "credentials", failed: true, detail: `sem credencial do Instagram no 300: ${detail}` };
     case "skip_invalid":
       return { kind: "alarm", key: "publish-failed", failed: true, detail: `legenda/plano inválido: ${detail}` };

@@ -340,8 +340,17 @@ export const THREADS_TIMER_DETAIL =
  * editor postar à mão o que outra máquina vai publicar duplica o post.
  */
 export function publicVideoUnavailableReason(backend: InstagramBackend, r2Missing: readonly string[]): string {
+  const cause = publicVideoUnavailableCause(backend, r2Missing);
+  return backend === "timer-300" ? `${cause} — fica pendente; publica numa máquina com os secrets do R2 (ou à mão, registrando com --mark)` : cause;
+}
+
+/**
+ * Pure: só a causa, sem o "fica pendente" de X/Threads. É o que o Instagram do
+ * timer cita (#11355): ali quem responde é o alarme, com o que fazer no corpo.
+ */
+export function publicVideoUnavailableCause(backend: InstagramBackend, r2Missing: readonly string[]): string {
   return backend === "timer-300"
-    ? "sem URL pública do vertical: R2 não configurado nesta máquina (faltam os secrets R2_*/SHORTS_R2_*; o bucket existe desde 27/10/2026, #10772/#11265) — fica pendente; publica numa máquina com os secrets do R2 (ou à mão, registrando com --mark)"
+    ? "sem URL pública do vertical: R2 não configurado nesta máquina (faltam os secrets R2_*/SHORTS_R2_*; o bucket existe desde 27/10/2026, #10772/#11265)"
     : `falta ${r2Missing.join(", ")}`;
 }
 
@@ -532,6 +541,12 @@ export interface ShortsPlanInput {
   instagramReady: boolean;
   /** Por que o Instagram não está pronto (vira o aviso do plano). */
   instagramNotReadyReason?: string;
+  /**
+   * Plano B na conta sem teto (#11355): trata o Instagram como passo guiado com
+   * este motivo, sem olhar a duração. Só o `prepare-instagram-guided.ts` passa,
+   * e ele nunca publica; a rodada que publica segue pela API.
+   */
+  instagramGuidedFallback?: string;
   /** Avisos do Instagram pronto mas não totalmente conferido (ex.: escopo do token, #10820). */
   instagramWarnings?: string[];
   /**
@@ -554,7 +569,7 @@ export interface ShortsPlanInput {
    * #10772: dá pra servir o vertical por URL pública (R2)? O X (Buffer) só
    * recebe vídeo por URL. Ausente = não → X pulado com aviso.
    */
-  publicVideo?: { ready: true } | { ready: false; reason: string };
+  publicVideo?: { ready: true } | { ready: false; reason: string; cause?: string };
   /**
    * #11070: credencial do canal (`YOUTUBE_*`, `missingYouTubeCredentials`).
    * Pronta → o Short sobe pela Data API; ausente ou não pronta → passo guiado.
@@ -654,7 +669,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const igMaxPremise = instagramApiMaxSecondsPremise(igMaxRes);
   if (igMaxPremise && destinations.some((d) => d.id === "instagram")) premises.push(igMaxPremise);
   const igAccountLabel = cfg.instagramAuthorPage === null ? "da diar.ia.br (env)" : `vinculada à página ${cfg.instagramAuthorPage}`;
-  const igFit = instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax, igAccountLabel);
+  const igFit = input.instagramGuidedFallback
+    ? ({ fits: false, reason: input.instagramGuidedFallback } as const)
+    : instagramReelsApiFit(input.videoDurationSeconds ?? null, igMax, igAccountLabel);
   // Sem credencial (ou acima do teto, no Instagram) o destino não sai pela API — não disputa a grade nem gera premissa de horário.
   function publishable(d: ShortDestination): boolean {
     if (d.kind === "facebook_page") return !input.pages.find((p) => p.slug === d.slug)!.missing.length;
@@ -999,12 +1016,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       return { destination: dest.id, mode: "api", action: "skip_invalid", detail: (e as Error).message };
     }
     // #11355: na @diar.ia.br o Reels depende da URL pública. Sem R2 o publish não
-    // chega a tentar: o timer lê como alarme `credentials`, com o motivo.
+    // chega a tentar: o timer alarma citando o R2 (`cause`), e a limpeza do
+    // vertical não conta o destino como terminal (#11478).
     const publishOrBlocked = (text: string): ShortsPlanItem => {
       if (instagramReelUploadRoute(cfg.instagramAuthorPage) === "video_url" && input.publicVideo?.ready === false) {
-        const detail = `o Reels da @diar.ia.br sobe por URL pública (video_url, #11355), indisponível nesta rodada: ${input.publicVideo.reason}`;
+        const detail = `o Reels da @diar.ia.br sobe por URL pública (video_url, #11355), indisponível nesta rodada: ${input.publicVideo.cause ?? input.publicVideo.reason}`;
         warnings.push(`instagram: ${detail}`);
-        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail };
+        return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail, cause: "public_video" };
       }
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null };
     };
@@ -3211,7 +3229,7 @@ async function main(): Promise<number> {
       instagramQueue,
       linkedinPersonal: liCreds.ok ? { ready: true } : { ready: false, reason: liCreds.reason },
       threadsPersonal: threadsCreds.ready ? { ready: true } : { ready: false, reason: threadsCreds.reason },
-      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing) },
+      publicVideo: r2.ready ? { ready: true } : { ready: false, reason: publicVideoUnavailableReason(shortsCfg.instagramBackend, r2.missing), cause: publicVideoUnavailableCause(shortsCfg.instagramBackend, r2.missing) },
       youtubeApi: ytMissing.length ? { ready: false, reason: `faltam ${ytMissing.join(", ")} no ambiente` } : { ready: true },
       writer,
       published,

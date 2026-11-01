@@ -141,6 +141,28 @@ describe("#11476 prepare-instagram-guided", () => {
     assert.equal(calls.compress.length, 0);
   });
 
+  it("#11355 conta sem teto: vertical de 75 s gera o upload do plano B, sem publicar", async () => {
+    const noCap = { publishing: { shorts: { ...config.publishing.shorts, instagram_api_max_seconds_by_account: { diaria: null } } } };
+    const { deps, calls } = fakeDeps({ config: noCap });
+    const r = await runPrepareInstagramGuided(deps, { aammdd: AAMMDD, dir });
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.output.action, "guided");
+    if (r.output.action !== "guided") return;
+    assert.equal(calls.compress.length, 1);
+    assert.equal(r.output.upload.path, join(dir, "_internal", chromeUploadFileName(AAMMDD)));
+    assert.equal(r.output.upload.fitsChromeUpload, true);
+    assert.ok(r.output.caption?.includes("Título do D1"), "legenda pronta");
+    assert.ok(r.output.at, "horário do slot");
+    assert.match(r.output.detail, /plano B.*conferindo antes/);
+    assert.equal(existsSync(join(dir, "_internal", "06-shorts-published.instagram-timer.json")), false);
+  });
+
+  it("#11355 conta sem teto: corte curto também gera o plano B (o Reels pode falhar em qualquer duração)", async () => {
+    const noCap = { publishing: { shorts: { ...config.publishing.shorts, instagram_api_max_seconds_by_account: { diaria: null } } } };
+    const r = await runPrepareInstagramGuided(fakeDeps({ config: noCap, duration: 20 }).deps, { aammdd: AAMMDD, dir });
+    assert.equal(r.output.action, "guided");
+  });
+
   it("duração ilegível: exit 1, sem compressão", async () => {
     const { deps, calls } = fakeDeps({ duration: null });
     const r = await runPrepareInstagramGuided(deps, { aammdd: AAMMDD, dir });

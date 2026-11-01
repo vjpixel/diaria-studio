@@ -16,13 +16,17 @@ import { fileURLToPath } from "node:url";
 import { instagramReelUploadRoute, loadInstagramApiMaxSeconds, shortInstagramVideoFileName, shortVideoFileName } from "../scripts/lib/diaria/short-video.ts";
 import { R2_RETENTION_POLICIES } from "../scripts/lib/r2-object-upload.ts";
 import {
+  credentialSkippedItems,
   instagramR2VideoKey,
   planShortsPublish,
+  publicVideoUnavailableCause,
+  publicVideoUnavailableReason,
   publishInstagramReel,
   resolveInstagramReelInputs,
   type GraphDeps,
   type ShortsPlanInput,
 } from "../scripts/publish-shorts.ts";
+import { interpretInstagramTimerOutput } from "../scripts/shorts-instagram-timer.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const realConfig = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
@@ -106,6 +110,21 @@ describe("#11355 plano", () => {
     const ig = p.items.find((i) => i.destination === "instagram")! as { action: string; detail: string };
     assert.equal(ig.action, "skip_missing_credentials");
     assert.match(ig.detail, /video_url.*faltam os secrets/);
+  });
+
+  it("sem R2 o alarme cita o R2, não o token do Instagram, e não diz 'fica pendente'", () => {
+    const reason = publicVideoUnavailableReason("timer-300", ["R2_ACCOUNT_ID"]);
+    const cause = publicVideoUnavailableCause("timer-300", ["R2_ACCOUNT_ID"]);
+    assert.match(reason, /fica pendente/, "X e Threads seguem com o aviso do #11498");
+    const p = planDiaria({ publicVideo: { ready: false, reason, cause } });
+    const ig = p.items.find((i) => i.destination === "instagram")!;
+    assert.equal((ig as { cause?: string }).cause, "public_video");
+    assert.deepEqual(credentialSkippedItems(p.items).filter((i) => i.destination === "instagram"), [], "sem R2 não é terminal (#11478)");
+    const alarm = interpretInstagramTimerOutput(0, JSON.stringify({ items: p.items })) as { key: string; detail: string };
+    assert.equal(alarm.key, "credentials");
+    assert.match(alarm.detail, /^sem R2 no 300:/);
+    assert.match(alarm.detail, /R2_\*/);
+    assert.doesNotMatch(alarm.detail, /credencial do Instagram|fica pendente/);
   });
 
   it("sem R2, antes do horário segue esperando (não alarma cedo)", () => {
