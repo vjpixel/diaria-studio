@@ -22,7 +22,7 @@ import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarm
  *      espera; até 3 h depois → publica; depois → não publica, e alarma só se
  *      o dia teve vertical (`videoSeen`);
  *   3. o vídeo (`chooseInstagramVideo`): o Drive é SEMPRE consultado pelo
- *      corte `_Instagram_` da pasta `Final/` (#11222, `fetch-drive-video.ts
+ *      vertical único da pasta `Final/` (fallback: `_Outras redes_`, `_Instagram_`) (#11222, `fetch-drive-video.ts
  *      --target instagram`); o corte vai pra
  *      `diaria-comentada-{AAMMDD}-short-instagram.mp4` e é rebaixado quando
  *      o id ou o `modifiedTime` mudam (`_internal/.shorts-instagram-cut.json`).
@@ -324,7 +324,7 @@ export function interpretInstagramCutLookup(exitCode: number | null, stdout: str
   if (action === "print-id" && typeof out.file?.id === "string" && out.file.id) {
     return { kind: "found", fileId: out.file.id, name: String(out.file.name ?? ""), modifiedTime: typeof out.file.modifiedTime === "string" ? out.file.modifiedTime : null };
   }
-  if (action === "none") return { kind: "none", reason: `nenhum corte _Instagram_ no Drive (${out.reason ?? "sem motivo"})` };
+  if (action === "none") return { kind: "none", reason: `nenhum vertical no Drive (${out.reason ?? "sem motivo"})` };
   // `exists`/`already-published` não vêm com --target instagram (o corte não é
   // o arquivo local que o fetch confere); se vierem, não dizem nada do corte.
   if (action === "exists" || action === "already-published") return { kind: "none", reason: `fetch-drive-video.ts: ${action} (nada sobre o corte do Instagram)` };
@@ -572,11 +572,11 @@ export function buildInstagramTimerAlarm(input: {
   } else {
     if (key === "late") lines.push("Passadas 3 h do horário do vertical o timer NÃO publica mais sozinho.");
     if (key === "missing-video") {
-      lines.push(`Suba o corte \`_Instagram_\` em \`${aammdd}/Final/\` no Drive; até 3 h depois do horário do vertical${deadlineHhmm ? ` (${deadlineHhmm} BRT)` : ""} a próxima execução (de hora em hora) publica.`);
+      lines.push(`Suba o vertical \`_Vertical_\` em \`${aammdd}/Final/\` no Drive; até 3 h depois do horário do vertical${deadlineHhmm ? ` (${deadlineHhmm} BRT)` : ""} a próxima execução (de hora em hora) publica.`);
     }
     if (key === "drive-needs-editor") {
       lines.push(
-        `Deixe um só \`_Instagram_\` em \`${aammdd}/Final/\` no Drive (ou uma só pasta \`${aammdd}\`; se o Drive ainda não mostra a proporção do arquivo, confira se ele terminou de processar); a próxima execução publica.`,
+        `Deixe um só \`_Vertical_\` em \`${aammdd}/Final/\` no Drive (ou uma só pasta \`${aammdd}\`; se o Drive ainda não mostra a proporção do arquivo, confira se ele terminou de processar); a próxima execução publica.`,
       );
     }
     if (RETRY_KEYS.has(key)) {
