@@ -55,13 +55,14 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { readStage4CaptureState, type Stage4CaptureState } from "../lib/stage4-capture-state.ts";
 import { readStage4Decision, type Stage4DecisionState } from "../lib/stage4-decision.ts";
 import { countTitlesPerHighlight } from "../lint-newsletter-md.ts";
 import type { ApprovedJson } from "../lib/lint-checks/url-bucket.ts";
 import { getBlockingClaims, type FactCheckResult } from "../run-fact-checker.ts";
+import { computeContentHash, factCheckStaleness, parseContentHash, partitionBlockingByContent } from "../lib/fact-check-staleness.ts";
 import type { AutofixResult } from "../apply-factcheck-autofix.ts";
 import type { SlotSelectionRecord } from "../select-boxes-by-clicks.ts";
 import type { RenderWarningEvent } from "../lib/newsletter-render-html.ts";
@@ -147,6 +148,13 @@ export type GateFactCheckState =
        * checklist; `attention_items` continua exposto pra exibição
        * informativa completa. */
       blockingCount: number;
+      /** #11685 item 1: claims bloqueantes cujo trecho sumiu do texto com o
+       * fact-check defasado — removidos OU reescritos, sem re-checagem.
+       * Mantêm o item não-ok até o fact-checker rodar de novo. */
+      vanishedCount: number;
+      /** #11671: 02-reviewed.md/03-social.md mudaram depois da checagem
+       * (carimbo `content_hash` divergente) — re-rodar o fact-checker. */
+      stale: boolean;
     }
   | { available: false; note: string };
 
@@ -329,8 +337,50 @@ function buildFactCheck(editionDir: string): GateFactCheckState {
   }
   // #9985: mesmo critério do `--check-blocking` — isenção de tempo de
   // leitura conferida contra o `02-reviewed.md` real.
-  const blockingCount = getBlockingClaims(result.claims ?? [], { newsletterMd: readReviewedMd(editionDir) }).length;
-  return { available: true, summary: result.summary, blockingCount };
+  // #11703: aqui a leitura NÃO é fail-soft. `""` de uma leitura falha (EBUSY
+  // do OneDrive, ENOENT) divergia do carimbo e jogava todo claim bloqueante
+  // em "sumiu" — checklist verde com claim sem suporte no texto. O CLI lança
+  // na mesma situação; aqui o item fica indisponível (não-ok). Sem carimbo
+  // não há partição por conteúdo, e a leitura falha não muda a contagem.
+  const stamp = parseContentHash(result.content_hash);
+  const newsletter = readMdStrict(resolve(editionDir, "02-reviewed.md"));
+  const social = readMdStrict(resolve(editionDir, "03-social.md"));
+  if (stamp && (!newsletter.ok || !social.ok || !newsletter.text.trim())) {
+    const why = !newsletter.ok ? newsletter.error : !social.ok ? social.error : "02-reviewed.md vazio";
+    return {
+      available: false,
+      note: `não foi possível ler o texto da edição para conferir o fact-check (${why}) — atualize a página ou rode o --check-blocking.`,
+    };
+  }
+  const newsletterMd = newsletter.ok ? newsletter.text : "";
+  const socialMd = social.ok ? social.text : "";
+  // #11671: mesmo critério do `--check-blocking` — com o fact-check
+  // defasado, claim cujo trecho sumiu do texto atual sai do exit 2, mas
+  // (#11685 item 1) sem re-checagem não deixa o item ok.
+  const staleness = factCheckStaleness(stamp, computeContentHash(newsletterMd, socialMd));
+  const { blocking, vanished } = partitionBlockingByContent(
+    getBlockingClaims(result.claims ?? [], { newsletterMd }),
+    staleness,
+    [newsletterMd, socialMd],
+  );
+  return {
+    available: true,
+    summary: result.summary,
+    blockingCount: blocking.length,
+    vanishedCount: vanished.length,
+    stale: staleness.stale,
+  };
+}
+
+/** Leitura que distingue falha de conteúdo vazio (#11703). */
+function readMdStrict(path: string): { ok: true; text: string } | { ok: false; error: string } {
+  try {
+    return { ok: true, text: readFileSync(path, "utf8") };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") console.error(`studio-gate: falha ao ler ${path}: ${(err as Error).message}`);
+    return { ok: false, error: `${basename(path)}: ${code ?? (err as Error).message}` };
+  }
 }
 
 function buildFactCheckAutofix(editionDir: string): GateFactCheckAutofixState {
@@ -431,12 +481,18 @@ export function buildChecklist(
   // real, getBlockingClaims), não attention_items — este último é mais
   // amplo (inclui DIVERGENT já corrigida por autofix e superlativos, que
   // nunca bloqueiam de verdade) e gerava falso-negativo no checklist.
-  const factCheckOk = factCheck.available && factCheck.blockingCount === 0;
+  const factCheckOk = factCheck.available && factCheck.blockingCount === 0 && factCheck.vanishedCount === 0;
   const factCheckDetail = !factCheck.available
     ? factCheck.note
-    : factCheckOk
-    ? ""
-    : `${factCheck.blockingCount} claim(s) bloqueante(s)`;
+    : [
+        factCheck.blockingCount > 0 ? `${factCheck.blockingCount} claim(s) bloqueante(s)` : "",
+        factCheck.vanishedCount > 0
+          ? `${factCheck.vanishedCount} claim(s) bloqueante(s) sumiram do texto sem re-checagem (removidos ou reescritos)`
+          : "",
+        factCheck.stale ? "fact-check defasado (texto mudou depois da checagem) — re-rodar o fact-checker" : "",
+      ]
+        .filter(Boolean)
+        .join("; ");
 
   // #6449 achado ao vivo (editor, 260828): os labels antigos eram afirmações
   // positivas ("Sem violations bloqueantes", "Fact-check ok") que continuavam

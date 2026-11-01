@@ -417,9 +417,57 @@ async function fireInstagram(
     return { status: "dlq", reason: "image_url ausente — Instagram Graph API exige imagem" };
   }
   if (images.length === 1) {
-    return fireInstagramSingle(images[0], entry.text, creds);
+    return fireInstagramSingle(images[0], entry.text, creds, entry.first_comment);
   }
-  return fireInstagramCarousel(images, entry.text, creds);
+  return fireInstagramCarousel(images, entry.text, creds, entry.first_comment);
+}
+
+/**
+ * #11724 — publica `message` como comentário no post recém-publicado
+ * (`POST /{ig-media-id}/comments`). Hoje: o permalink da edição no 4º post
+ * (USE MELHOR). Exige a permissão de comentário no token do Worker
+ * (`instagram_manage_comments`, fluxo Facebook Login de `graph.facebook.com`).
+ * Não fixa (a Graph API não tem endpoint para isso).
+ *
+ * Fail-soft: NUNCA lança e nunca muda o outcome do disparo — o post já saiu,
+ * e refazer o disparo por causa do comentário duplicaria o post. Falha vira
+ * `console.warn` (Workers Logs). Devolve o motivo (ou `null` no sucesso) pra
+ * teste.
+ */
+export async function postInstagramFirstComment(
+  base: string,
+  mediaId: string,
+  message: string,
+  creds: InstagramCreds,
+): Promise<string | null> {
+  let reason: string | null = null;
+  try {
+    const res = await fetch(`${base}/${mediaId}/comments`, {
+      method: "POST",
+      // Token no header Authorization, nunca na query string (#7779).
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      body: new URLSearchParams({ message }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } } = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      reason = `resposta não-JSON HTTP ${res.status}: ${text.slice(0, 200)}`;
+    }
+    if (reason === null && (!res.ok || data.error)) {
+      reason = `HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`;
+    } else if (reason === null && !data.id) {
+      reason = `resposta sem id: ${text.slice(0, 200)}`;
+    }
+  } catch (e) {
+    reason = `fetch falhou: ${(e as Error).message}`;
+  }
+  if (reason !== null) {
+    console.warn(`[instagram] #11724: post ${mediaId} publicado, mas o comentário com o link falhou — ${reason}`);
+  }
+  return reason;
 }
 
 /**
@@ -438,7 +486,12 @@ async function fireInstagram(
  * `entry.text` diretamente, pra ser reusável tanto pro caminho `image_url`
  * legado quanto pro caminho `image_urls` com 1 item só.
  */
-async function fireInstagramSingle(imageUrl: string, caption: string, creds: InstagramCreds): Promise<FireOutcome> {
+async function fireInstagramSingle(
+  imageUrl: string,
+  caption: string,
+  creds: InstagramCreds,
+  firstComment?: string,
+): Promise<FireOutcome> {
   const base = `https://graph.facebook.com/${creds.apiVersion}`;
 
   // Passo 1: criar media container
@@ -531,6 +584,8 @@ async function fireInstagramSingle(imageUrl: string, caption: string, creds: Ins
     if (!data.id) {
       return { status: "failed", reason: `Instagram /media_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
     }
+    // #11724 — fail-soft: o outcome é `fired` com ou sem o comentário.
+    if (firstComment) await postInstagramFirstComment(base, data.id, firstComment, creds);
     return { status: "fired" };
   } catch (e) {
     const err = e as Error;
@@ -1099,6 +1154,7 @@ async function fireInstagramCarousel(
   imageUrls: string[],
   caption: string,
   creds: InstagramCreds,
+  firstComment?: string,
 ): Promise<FireOutcome> {
   // Defesa em profundidade: handleEnqueue já barra >CAROUSEL_MAX_ITEMS no
   // enqueue (#4153) — isto cobre entries legacy/inseridas fora do caminho
@@ -1263,6 +1319,8 @@ async function fireInstagramCarousel(
         reason: `Instagram carrossel: media_publish sem id: ${text.slice(0, 200)} (parent_id=${parentId})`,
       };
     }
+    // #11724 — fail-soft: o outcome é `fired` com ou sem o comentário.
+    if (firstComment) await postInstagramFirstComment(base, data.id, firstComment, creds);
     return { status: "fired" };
   } catch (e) {
     const err = e as Error;

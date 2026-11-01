@@ -26,6 +26,7 @@ import {
   checkOvernightPlanMotivos,
   OVERNIGHT_PULADA_MOTIVOS,
 } from "./lib/overnight-plan-motivo.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
@@ -35,6 +36,8 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
+  // #11721: restaura a cópia de conflito do OneDrive (plan-*-safeBackup-*.json) antes de checar.
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) {
     console.error(`[check-overnight-plan-motivo] plan.json não encontrado: ${planPath}`);
     process.exit(2);

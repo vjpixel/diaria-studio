@@ -55,6 +55,7 @@ import {
   type SlotRule,
 } from "../social-slot-planner.ts";
 import { YOUTUBE_TITLE_MAX_CHARS, sanitizeForYouTube, stripInlineMarkdown } from "./youtube-video.ts";
+import type { ShortCoverRecord } from "./short-cover.ts";
 
 /** Canal do YouTube que os Shorts/Reels divulgam. */
 export const DIARIA_YOUTUBE_CHANNEL_URL = "https://www.youtube.com/@diariabr";
@@ -470,6 +471,8 @@ export interface ShortPublishedEntry {
   url?: string;
   scheduled_at?: string | null;
   at: string;
+  /** #11547: a capa (Still) foi aplicada neste destino? Ausente = nenhuma tentativa. */
+  cover?: ShortCoverRecord;
 }
 
 export interface ShortsPublishedFile {

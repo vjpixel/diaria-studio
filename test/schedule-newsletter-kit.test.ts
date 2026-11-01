@@ -12,13 +12,18 @@
  * irmão `publish-newsletter-kit.ts` (que já testava seu próprio guard de
  * backend) — mesmo padrão de fixtures em disco + `fetch` mockado.
  */
-import { describe, it, beforeEach, afterEach, after } from "node:test";
+import { describe, it, beforeEach, afterEach, after, mock, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scheduleNewsletterKit, main, type ScheduleNewsletterKitDeps } from "../scripts/schedule-newsletter-kit.ts";
 import { readPublishedState, writePublishedState, type KitNewsletterPublished } from "../scripts/publish-newsletter-kit.ts";
+
+// #11689 — relógio fixo: os horários dos fixtures são de ago/2026 e o guard
+// "não agendar no passado" compararia com o relógio real.
+before(() => mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z") }));
+after(() => mock.timers.reset());
 
 // #8207: EDITION_DIR precisa datar (BRT) o MESMO dia de SCHEDULED_AT — o guard
 // novo (checkScheduledAtMatchesEditionDate) recusaria a divergência.

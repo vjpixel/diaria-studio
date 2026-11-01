@@ -251,3 +251,28 @@ Status (após #1568): implementado.
 - Stage 1 garante mínimo 3 candidatos em `01-approved.json` (scorer guardrail)
 - Template `context/templates/newsletter.md` tem bloco opcional
 - Writer renderiza quando selecionado, omite seção inteira caso contrário
+
+### USE MELHOR no social: o 4º post é a isca da edição (#11667)
+
+O 4º post social (`## um` em `03-social.md`, #9568) leva o leitor para a edição do dia. Decisões do editor (30/10/2026 e briefing overnight 261101b):
+
+- **Isca, não entrega completa.** Quando o item é uma lista ("15 funções", "10 dicas"), o post mostra uma parte dos itens e fecha apontando para a edição, **sem dizer quantas faltam** (nada de "mostramos 3 das 15", "faltam 12"). Tutorial com passos (`steps`, formato lista) segue com todos os passos, sem cortar (#9585).
+- **Não prometer mais do que a edição entrega.** Na newsletter o item segue com link e uma frase. O post nunca promete "a lista completa" nem "todas as 15" na edição.
+- **Chamada com data, nunca "de hoje".** Texto padrão: `O guia completo está na edição de DD/MM.` (DD/MM = data da edição, `useMelhorEditionCall` em `scripts/lib/use-melhor-isca.ts`). "Edição de hoje" envelhece: o post é lido dias depois e passa a apontar para o dia errado. Quando o item não é guia (anúncio, inscrição), trocar só o sujeito ("Os detalhes estão na edição de DD/MM."); a data fica.
+- **Posição.** No texto corrido (item sem `steps`, exatamente 3 parágrafos, `use-melhor-um-shape`), a chamada fecha o 3º parágrafo, com **uma única frase antes dela**. O slide divide o parágrafo na fronteira de frase mais perto do meio (`splitParagraphIntoTwoBlocks`), e assim a chamada fica sozinha no 2º bloco do card. Nunca num 4º parágrafo.
+- **Item patrocinado.** Item marcado pelo `sponsored-source-marker` (#10169) só é a isca principal se o editor confirmar no gate que não é anúncio; senão, troca-se o item do 4º post.
+
+**Link da edição por rede.** A chamada datada vai no texto (igual em todas as redes, inclusive no carrossel); o permalink da edição (`{edition_url}`, resolvido no Stage 5 por `resolve-edition-url.ts`) é o destino nas redes que aceitam link:
+
+| Rede | Chamada no texto | Link da edição |
+|---|---|---|
+| LinkedIn (página e perfil do Pixel) | `O guia completo está na edição de DD/MM.` | Sem URL no corpo do post principal (#595/#3627 seguem valendo) |
+| Facebook | idem | Permalink `{edition_url}` (linha de canal no publish) |
+| Instagram | idem (no 3º slide e na legenda) | Comentário com o permalink `{edition_url}`. A Instagram Graph API não tem endpoint para fixar comentário (o nó IG Comment só aceita `hide` na atualização, conferido em 01/11/2026), então o fallback é o **comentário não fixado**. O link na bio deixa de ser o mecanismo. |
+| X e Threads (Curto) | `Mais em {edition_url}` | Permalink no próprio post |
+
+Automatizado no publish desde o #11724 (`scripts/lib/social-cta-lines.ts`): com `_internal/05-edition-url.txt` resolvido, o Facebook leva a linha `Leia a edição em {edition_url}.` (UTM `edicao-diaria` + `utm_content=usemelhor`) no lugar do CTA de assinatura, e o Instagram leva na legenda `Link da edição no primeiro comentário.` no lugar da bio, com o comentário `Edição completa: {edition_url}` publicado logo depois do `media_publish` (Worker `diaria-linkedin-cron`, campo `first_comment`; no publish imediato, o próprio `publish-instagram.ts`). Falha do comentário (token sem `instagram_manage_comments`, rede) nunca derruba a publicação: vira aviso no log do Worker. Sem o arquivo da URL, as duas redes ficam com as linhas de sempre (bio e assinatura); a chamada datada no texto basta para o leitor achar a edição pelo arquivo.
+
+**Medição.** Comparar, depois de algumas edições, os cliques no item do USE MELHOR na edição com o tráfego vindo dos posts do 4º post (UTM), para ajustar a regra com dado.
+
+**Guard.** Invariante `use-melhor-um-isca` do Stage 4 (warning-only, `scripts/lib/invariant-checks/stage-4.ts`): acusa chamada relativa ("edição de hoje"), contagem do que falta, promessa de lista completa, lista citada ("15 funções") sem apontar para a edição, chamada sem data ou com data de outra edição, chamada fora do fim do 3º parágrafo e item com marcador de publieditorial.

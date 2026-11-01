@@ -55,8 +55,8 @@
  * @see .claude/skills/diaria-overnight/SKILL.md Fase 1 passo 1
  */
 
-import { existsSync, readFileSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { readPlanJson } from "./lib/plan-safe-backup.ts";
 import {
   checkConvergenceScan,
   recordConvergenceScan,
@@ -71,8 +71,11 @@ if (isMainModule(import.meta.url)) {
     console.error("[check-overnight-fila-convergence-gate] uso: --plan {path}");
     process.exit(2);
   }
-  if (!existsSync(planPath)) {
-    console.error(`[check-overnight-fila-convergence-gate] plan.json não encontrado: ${planPath}`);
+  // #11726: leitor único — recupera a cópia de conflito do OneDrive
+  // (`plan-*-safeBackup-*.json`) antes de concluir que o plano não existe.
+  const planRead = readPlanJson(planPath);
+  if (planRead.status === "missing") {
+    console.error(`[check-overnight-fila-convergence-gate] ${planRead.message}`);
     process.exit(2);
   }
 
@@ -91,16 +94,14 @@ if (isMainModule(import.meta.url)) {
     process.exit(0);
   }
 
-  let planRaw: unknown;
-  try {
-    planRaw = JSON.parse(readFileSync(planPath, "utf8"));
-  } catch (e) {
+  if (planRead.status !== "ok") {
     console.error(
-      `[check-overnight-fila-convergence-gate] plan.json malformado — re-scan NÃO executado (fail-soft, #738): ${(e as Error).message}`,
+      `[check-overnight-fila-convergence-gate] plan.json malformado — re-scan NÃO executado (fail-soft, #738): ${planRead.message}`,
     );
     console.log("ok (não verificado) — trate como convergência NÃO confirmada.");
     process.exit(0);
   }
+  const planRaw: unknown = planRead.plan;
 
   const convergence = checkConvergenceScan(planRaw as PlanWithGoal, fetched.issues);
   // #10618 (fatia 4): o diaria-design (e todo repo de `issue_repos`) entra

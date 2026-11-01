@@ -23,6 +23,8 @@
  * gate-blocking estreito para claims `NOT_FOUND_IN_SOURCE` não-superlativas
  * (ver `getBlockingClaims`) — exit 2 quando presentes. Sem o flag, o
  * comportamento é idêntico ao de antes do #4361 (sempre exit 0 neste modo).
+ * (#11685) Com o flag, fact-check defasado + claim bloqueante sumido do texto
+ * (removido ou reescrito, sem re-checagem) sai com exit 1: re-despachar o agente.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -32,6 +34,16 @@ import { sectionHeaderRegex, ALL_SECTION_NAMES_PATTERN } from "./lib/section-nam
 import { runCli } from "./lib/cli-exit.ts";
 import { fetchSourceText } from "./fetch-source-text.ts";
 import { syncExtraSources, urlKey } from "./lib/fact-check-extra-sources.ts";
+import {
+  computeContentHash,
+  factCheckStaleness,
+  formatStaleWarning,
+  parseContentHash,
+  partitionBlockingByContent,
+  type FactCheckContentHash,
+} from "./lib/fact-check-staleness.ts";
+import { extractDestaqueUrlsByNumber } from "./match-prompts-to-destaques.ts";
+import { canonicalize } from "./lib/url-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Types — exportados para teste
@@ -84,6 +96,13 @@ export interface FactClaim {
    * NOT_FOUND_IN_SOURCE e superlativos NUNCA recebem suggested_fix.
    */
   suggested_fix?: string;
+  /**
+   * (#11691) Sinal ESTRUTURADO para claim sustentado só por fonte adicional:
+   * `not_found` = li a fonte principal (título) e o claim não está lá;
+   * `unavailable` = não consegui ler a principal (manifest status ≠ ok).
+   * Ausente = sem ressalva. Preferido ao texto livre de `note`.
+   */
+  primary_status?: "not_found" | "unavailable";
 }
 
 export interface FactCheckSummary {
@@ -108,6 +127,13 @@ export interface FactCheckResult {
   checked_at: string;
   claims: FactClaim[];
   summary: FactCheckSummary;
+  /**
+   * (#11671) Hash de `02-reviewed.md`/`03-social.md` quando o resultado foi
+   * gravado pela 1ª vez (`--input-json`). Re-rodar `--input-json` sobre o
+   * MESMO arquivo preserva o carimbo, então uma checagem depois de o texto
+   * mudar sai como defasada. Ausente em fact-check.json anterior ao #11671.
+   */
+  content_hash?: FactCheckContentHash;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +285,33 @@ function hostOf(url: string): string {
 }
 
 /**
+ * (#11691) Fallback por texto livre quando o agente não preenche
+ * `primary_status`: `note` com negação ("não/nunca/sem") perto de "fonte
+ * principal|primária|original|nova", "link do título" ou "matéria do título".
+ */
+const NOT_CONFIRMED_IN_PRIMARY_RE =
+  /(?:n[ãa]o|nunca|sem)\b(?:(?!diverg|contradi)[^.;\n]){0,60}\b(?:fonte\s+(?:principal|prim[aá]ria|original|nova)|link\s+do\s+t[ií]tulo|mat[ée]ria\s+do\s+t[ií]tulo)|(?:fonte\s+(?:principal|prim[aá]ria|original|nova)|link\s+do\s+t[ií]tulo)\s+n[ãa]o\s+(?:confirma|cita|menciona|traz|cont[ée]m|mostra)/i;
+
+const PRIMARY_UNAVAILABLE_RE =
+  /(?:fonte\s+(?:principal|prim[aá]ria|original)|link\s+do\s+t[ií]tulo)[^.;\n]{0,40}(?:indispon[ií]vel|inacess[ií]vel|bloquead[ao]|n[ãa]o\s+(?:consegui|foi\s+poss[ií]vel)\s+(?:ler|acessar|baixar))/i;
+
+/** "unavailable" | "not_found" quando há ressalva sobre a principal; null caso contrário. */
+export function primaryCaveat(
+  c: Pick<FactClaim, "note" | "primary_status">,
+): "unavailable" | "not_found" | null {
+  if (c.primary_status === "unavailable" || c.primary_status === "not_found") {
+    return c.primary_status;
+  }
+  if (typeof c.note !== "string") return null;
+  if (PRIMARY_UNAVAILABLE_RE.test(c.note)) return "unavailable";
+  return NOT_CONFIRMED_IN_PRIMARY_RE.test(c.note) ? "not_found" : null;
+}
+
+export function notConfirmedInPrimary(c: Pick<FactClaim, "note" | "primary_status">): boolean {
+  return primaryCaveat(c) !== null;
+}
+
+/**
  * (#11531) Linhas do resumo do gate que dizem de qual fonte veio cada claim
  * sustentado (SUSTAINED/INFERRED com `source_url`). Por destaque, uma linha de
  * contagem por host; claims sustentados por fonte ADICIONAL (URL diferente da
@@ -303,7 +356,23 @@ export function formatSourceAttribution(
   if (extraClaims.length > 0) {
     out.push("    Sustentados por fonte ADICIONAL (não pelo link do título):");
     for (const c of extraClaims) {
-      out.push(`      ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}" ← ${c.source_url}`);
+      const warn = notConfirmedInPrimary(c);
+      out.push(
+        `      ${warn ? "⚠️ " : ""}${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}" ← ${c.source_url}`,
+      );
+      if (warn) {
+        const kind = primaryCaveat(c) === "unavailable" ? "fonte principal indisponível" : "li a fonte principal e não achei o claim";
+        out.push(`         → [${kind}] ${(c.note ?? "").replace(/\s+/g, " ")}`);
+      }
+    }
+    const unconfirmed = extraClaims.filter(notConfirmedInPrimary);
+    if (unconfirmed.length > 0) {
+      const unavail = unconfirmed.filter((c) => primaryCaveat(c) === "unavailable").length;
+      out.push(
+        `    ⚠️  ${unconfirmed.length} claim(s) sem confirmação na fonte principal, sustentado(s) só por fonte adicional — conferir antes de aprovar` +
+          (unavail > 0 ? ` (${unavail} com a principal indisponível, não lida)` : "") +
+          ".",
+      );
     }
   }
   return out;
@@ -332,7 +401,14 @@ export function formatGateSummary(
   lines.push(...formatSourceAttribution(claims, opts.primaryUrls));
 
   if (summary.attention_items === 0) {
-    lines.push("  ✅ Todos os claims verificados sem divergências.");
+    const unconfirmedExtra = formatSourceAttribution(claims, opts.primaryUrls).some((l) =>
+      l.includes("sem confirmação na fonte principal"),
+    );
+    lines.push(
+      unconfirmedExtra
+        ? "  ⚠️  Sem divergências, mas há claim(s) não confirmado(s) na fonte principal (acima) — não é verde pleno."
+        : "  ✅ Todos os claims verificados sem divergências.",
+    );
     lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     return lines.join("\n");
   }
@@ -701,12 +777,59 @@ export function normalizeFactCheckResult(raw: unknown, edition: string): FactChe
     attention_items: computeAttentionItems(claims),
   };
 
+  const contentHash = parseContentHash(obj.content_hash);
   return {
     edition,
     checked_at: typeof obj.checked_at === "string" ? obj.checked_at : new Date().toISOString(),
     claims,
     summary,
+    ...(contentHash ? { content_hash: contentHash } : {}),
   };
+}
+
+/**
+ * (#11671) Destaques cujo link do título em `02-reviewed.md` não é a URL de
+ * `highlights[N]` em `01-approved.json` — o rastro de uma troca de link feita
+ * à mão no gate. Nesse estado o pré-download do fact-check baixa a fonte
+ * ANTIGA (lê o approved). Correção: `swap-destaque-link.ts`, que atualiza os
+ * dois approved e re-baixa a fonte.
+ */
+export interface DestaqueUrlDrift {
+  destaque: number;
+  reviewed_url: string;
+  approved_url: string;
+}
+
+export function findDestaqueUrlDrift(reviewedMd: string, approved: unknown): DestaqueUrlDrift[] {
+  // #11685 item 3: por NÚMERO do bloco — bloco sem URL (placeholder do
+  // swap-destaques) não desloca o D3 para a posição do D2.
+  const mdUrls = extractDestaqueUrlsByNumber(reviewedMd);
+  const approvedUrls = highlightSourceUrls(approved);
+  const out: DestaqueUrlDrift[] = [];
+  for (let i = 0; i < Math.min(mdUrls.length, approvedUrls.length); i++) {
+    const md = mdUrls[i];
+    const ap = approvedUrls[i];
+    if (!md || !ap) continue;
+    if (canonicalize(md) !== canonicalize(ap)) out.push({ destaque: i + 1, reviewed_url: md, approved_url: ap });
+  }
+  return out;
+}
+
+export function formatDestaqueUrlDriftWarning(drift: DestaqueUrlDrift[], editionDir: string): string[] {
+  if (drift.length === 0) return [];
+  const edition = extractEditionId(editionDir);
+  const lines = [
+    `  ⚠️  Link de destaque trocado à mão (#11671): 02-reviewed.md e 01-approved.json divergem — ` +
+      "o fact-check baixaria a fonte ANTIGA.",
+  ];
+  for (const d of drift) {
+    lines.push(`    D${d.destaque}: 02-reviewed.md = ${d.reviewed_url} | 01-approved.json = ${d.approved_url}`);
+    lines.push(
+      `      Corrigir: npx tsx scripts/swap-destaque-link.ts --edition ${edition} --edition-dir ${editionDir} ` +
+        `--destaque d${d.destaque} --url ${d.reviewed_url}`,
+    );
+  }
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -959,6 +1082,14 @@ async function main(): Promise<number | void> {
     }
     const raw = JSON.parse(readFileSync(inputPath, "utf8")) as unknown;
     const result = normalizeFactCheckResult(raw, edition);
+    // #11671: carimbo do conteúdo checado. Preservado se já existe (re-rodar
+    // --check-blocking depois de editar o texto NÃO recarimba — senão a
+    // defasagem nunca apareceria); gravado na 1ª passada após o agente.
+    const newsletterMd = readFileSync(newsletterPath, "utf8");
+    const socialMd = readFileSync(socialPath, "utf8");
+    const currentHash = computeContentHash(newsletterMd, socialMd);
+    if (!result.content_hash) result.content_hash = currentHash;
+    const staleness = factCheckStaleness(result.content_hash, currentHash);
 
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
     let primaryUrls: Array<string | undefined> | undefined;
@@ -968,6 +1099,7 @@ async function main(): Promise<number | void> {
       primaryUrls = undefined; // sem approved legível: resumo sai sem a atribuição de fonte
     }
     console.log(formatGateSummary(result, { primaryUrls }));
+    if (staleness.stale) console.log(formatStaleWarning(staleness));
 
     // Exit code 0 sempre neste modo, SALVO --check-blocking (#2468 finding 4 + code-review):
     // A presença de attention_items em geral NÃO é um erro — o fact-check é
@@ -985,7 +1117,16 @@ async function main(): Promise<number | void> {
     // de antes do #4361 — nenhum caller existente é afetado.
     if (flags.has("check-blocking")) {
       // #9985: confere o marcador de tempo de leitura contra o MD real.
-      const blocking = getBlockingClaims(result.claims, { newsletterMd: readFileSync(newsletterPath, "utf8") });
+      const allBlocking = getBlockingClaims(result.claims, { newsletterMd });
+      // #11671: com o fact-check defasado, claim cujo trecho sumiu do texto
+      // atual sai do exit 2; o que ainda aparece segue bloqueando.
+      const { blocking, vanished } = partitionBlockingByContent(allBlocking, staleness, [newsletterMd, socialMd]);
+      if (vanished.length > 0) {
+        console.error(formatStaleWarning(staleness, vanished.length));
+        for (const c of vanished) {
+          console.error(`  (trecho sumiu do texto — sem re-checagem) ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}"`);
+        }
+      }
       if (blocking.length > 0) {
         console.error(
           `\n[run-fact-checker] GATE-BLOCKING (#4361): ${blocking.length} claim(s) NOT_FOUND_IN_SOURCE sem suporte na fonte primária:`,
@@ -1002,6 +1143,17 @@ async function main(): Promise<number | void> {
         );
         return 2;
       }
+      // #11685 item 1: "sumiu" também é o claim REESCRITO (número trocado,
+      // nunca checado). Sem re-despachar o agente, o resultado não vale pro
+      // texto atual: exit 1 (fact-check indisponível), nunca exit 0.
+      if (vanished.length > 0) {
+        console.error(
+          `\n[run-fact-checker] FACT-CHECK DEFASADO (#11685): ${vanished.length} claim(s) bloqueante(s) sumiram do texto ` +
+            "depois da checagem e não foram checados de novo. Re-despachar o fact-checker (§4c.6 passo 1) e rodar " +
+            "este check outra vez; em --no-gates, não seguir para a Etapa 5 sem isso.",
+        );
+        return 1;
+      }
     }
     return;
   }
@@ -1017,6 +1169,14 @@ async function main(): Promise<number | void> {
   console.log(`  Output:     ${outPath}`);
   try {
     const approved = JSON.parse(readFileSync(approvedPath, "utf8")) as unknown;
+    // #11671: link trocado à mão no gate → avisar ANTES do pré-download, que
+    // segue o approved (fonte antiga).
+    for (const line of formatDestaqueUrlDriftWarning(
+      findDestaqueUrlDrift(readFileSync(newsletterPath, "utf8"), approved),
+      args["edition-dir"],
+    )) {
+      console.log(line);
+    }
     const sources = await prefetchHighlightSources(approved, internalDir);
     console.log("  Fontes brutas pré-baixadas (#8595 — ler via Read antes de WebFetch):");
     for (const s of sources) {

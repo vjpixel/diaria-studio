@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 /**
  * scripts/shorts-instagram-timer.ts (#11265, #10940)
  *
@@ -87,9 +88,7 @@ import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import {
   notifyEditor,
-  notifyEditorResultReachedEditor,
   type NotifyEditorDeps,
-  type NotifyEditorResult,
   type NotifySeverity,
 } from "./lib/editor-notify.ts";
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
@@ -600,33 +599,6 @@ export function buildInstagramTimerAlarm(input: {
 }
 
 /**
- * Estado dos alarmes da edição: `alarmed` = motivos entregues ao editor;
- * `emailPending` = motivos com a issue aberta e o e-mail devido que NÃO saiu
- * (a próxima execução reenvia com `forceEmail`).
- */
-export interface InstagramTimerAlarmState {
-  alarmed: string[];
-  emailPending: string[];
-}
-
-/** Puro: lê o estado; ilegível = vazio (avisa de novo: melhor um alarme a mais do que nenhum). */
-export function parseAlarmState(stateRaw: string | null): InstagramTimerAlarmState {
-  if (!stateRaw) return { alarmed: [], emailPending: [] };
-  try {
-    const o = JSON.parse(stateRaw);
-    const list = (v: unknown) => (Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : []);
-    return { alarmed: list(o?.alarmed), emailPending: list(o?.emailPending) };
-  } catch {
-    return { alarmed: [], emailPending: [] };
-  }
-}
-
-/** Puro: o e-mail deste alarme (`alarmId`) ficou pendente numa execução anterior? */
-export function emailPending(stateRaw: string | null, id: string): boolean {
-  return parseAlarmState(stateRaw).emailPending.includes(id);
-}
-
-/**
  * Puro: este alarme já está coberto pelo estado da edição? O mesmo alarme
  * (`alarmId`: motivo, e a causa nos motivos que juntam causas) não repete
  * (salvo com o e-mail pendente: aí reenvia); e `late` não sai depois de um
@@ -641,35 +613,6 @@ export function alarmSuppressed(stateRaw: string | null, key: InstagramTimerAlar
   if (key === "late" && LATE_BLOCKER_KEYS.some((k) => seen.includes(k))) return true;
   if (state.emailPending.includes(id)) return false;
   return state.alarmed.includes(id);
-}
-
-export type AlarmDelivery =
-  /** Chegou ao editor (issue + e-mail, ou só a issue quando a política não manda e-mail): grava em `alarmed`. */
-  | { kind: "delivered" }
-  /** Issue aberta, e-mail devido que não saiu: grava em `emailPending` (a próxima execução reenvia). */
-  | { kind: "email-pending"; error: string }
-  /** Issue não aberta: não grava nada (a próxima execução tenta tudo de novo). */
-  | { kind: "retry"; error: string };
-
-/** Puro: o que gravar depois do `notifyEditor` (`notifyEditorResultReachedEditor` decide o "chegou"). */
-export function alarmDelivery(res: NotifyEditorResult): AlarmDelivery {
-  if (!res.issue || res.issue.action === "failed") return { kind: "retry", error: `issue não aberta (${res.issue?.error ?? "?"})` };
-  if (notifyEditorResultReachedEditor(res)) return { kind: "delivered" };
-  return { kind: "email-pending", error: `e-mail não enviado (${res.emailError ?? "?"})` };
-}
-
-/** Puro: o estado depois da entrega do alarme `id`; null = não grava (`retry`). */
-export function nextAlarmState(stateRaw: string | null, aammdd: string, id: string, delivery: AlarmDelivery): string | null {
-  if (delivery.kind === "retry") return null;
-  const state = parseAlarmState(stateRaw);
-  const alarmed = delivery.kind === "delivered" ? [...new Set([...state.alarmed, id])] : state.alarmed;
-  const pending = delivery.kind === "delivered" ? state.emailPending.filter((k) => k !== id) : [...new Set([...state.emailPending, id])];
-  return JSON.stringify({ aammdd, alarmed, emailPending: pending }, null, 2) + "\n";
-}
-
-/** Puro: o alarme (`alarmId`; a chave pura nos de causa única) já foi avisado nesta edição? */
-export function alreadyAlarmed(stateRaw: string | null, id: string): boolean {
-  return parseAlarmState(stateRaw).alarmed.includes(id);
 }
 
 /** Puro: lê o sidecar do corte; ilegível = desconhecido (rebaixa). */
@@ -1070,3 +1013,5 @@ async function main(): Promise<number> {
 if (isMainModule(import.meta.url)) {
   runCli(main, { onError: (e) => console.error("shorts-instagram-timer:", e instanceof Error ? e.message : e) });
 }
+
+export { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState, type AlarmDelivery, type ShortsTimerAlarmState as InstagramTimerAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";

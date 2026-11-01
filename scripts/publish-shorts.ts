@@ -58,7 +58,8 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     porque não há token de organização local (a página publica pelo Worker).
  *   - `x` (guiado, #10772) — X @diariabr pela Buffer (MCP, só a skill alcança).
  *     O plano traz texto (≤280 ponderado) e `dueAt`; com R2 configurado o
- *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl`.
+ *     `--publish` sobe o vertical e devolve `results[].buffer.videoUrl` (e
+ *     `thumbnailOffset` em ms, a capa do X, quando o Still traz timecode, #11547).
  *     O R2 está habilitado desde 27/10/2026 (#10772, bucket `diaria-shorts`);
  *     só numa máquina sem os secrets dele o X é pulado com aviso e fica
  *     PENDENTE (#11478/#11498): o `-short.mp4` fica no disco e uma máquina com
@@ -85,8 +86,8 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *   - `youtube_shorts` (API, #11070) — Short pela YouTube Data API
  *     (`publishYouTubeShort`, o mesmo upload do `publish-youtube.ts`), private
  *     + `publishAt` no horário do vertical (o agendado vira público sozinho sem
- *     a auditoria, medido em 23/10/2026), sem capa (`thumbnails.set` não vale
- *     pra Short). Confere o canal antes (Short da edição já lá vira registro;
+ *     a auditoria, medido em 23/10/2026), com a capa por `thumbnails.set` (vale
+ *     pra Short, medido em 28/10/2026, #11547). Confere o canal antes (Short da edição já lá vira registro;
  *     só pelo dia, pede `--mark` ou `--force-youtube`). Sem `YOUTUBE_*` ou com
  *     `publishing.shorts.youtube_shorts_api: false`, volta a ser guiado.
  *   - `facebook_profile` (guiado) — o JSON traz a legenda; o skill
@@ -251,6 +252,19 @@ import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type Worke
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
 import { postVideoToPersonalProfile, type LinkedInVideoDeps } from "./lib/linkedin-video.ts";
+import {
+  SHORT_COVER_FILE,
+  SHORT_COVER_SOURCE_FILE,
+  bufferThumbnailOffsetMs,
+  clampBufferThumbnailOffsetMs,
+  carryOverCover,
+  parseShortCoverSource,
+  planCoverDestination,
+  withCoverRecord,
+  withMissingCoverRecord,
+  SHORT_COVER_MISSING_ERROR,
+  type ShortCoverRecord,
+} from "./lib/diaria/short-cover.ts"; // #11547
 import {
   THREADS_PROFILE_DESTINATION,
   ThreadsTimerGateError,
@@ -417,6 +431,23 @@ export const SHORTS_TIMER_TASKS: Readonly<Record<string, string>> = {
   [THREADS_PROFILE_DESTINATION]: "Diaria-Shorts-Threads-Profile",
 };
 
+/** Flag de timer que faz a rodada ser a dona do destino (sem ela o destino delegado cai em `skip_delegated`). */
+const TIMER_FLAG_OF: Partial<Record<ShortsRegistryWriter, { destination: string; flag: string }>> = {
+  "linkedin-timer": { destination: "linkedin_profile", flag: "--linkedin-timer" },
+  "threads-timer": { destination: THREADS_PROFILE_DESTINATION, flag: "--threads-timer" },
+  "instagram-timer": { destination: "instagram", flag: "--instagram-timer" },
+};
+
+/**
+ * Pure (#11679 item 3): argumentos que publicam um destino em `skip_late` já.
+ * Na rodada do timer dono do destino, `--only X --publish --now` sem a flag do
+ * timer cai em `skip_delegated` e não publica — a flag vai junto.
+ */
+export function lateNowArgs(destination: string, writer?: ShortsRegistryWriter): string {
+  const timer = writer ? TIMER_FLAG_OF[writer] : undefined;
+  return `--only ${destination} --publish${timer?.destination === destination ? ` ${timer.flag}` : ""} --now`;
+}
+
 /** Antecedência mínima para valer a pena agendar em vez de executar já (mesmo limiar de `resolveReelsSchedule`). */
 const OWNER_SCHEDULE_MIN_LEAD_MS = 10 * 60_000;
 
@@ -429,7 +460,7 @@ const OWNER_SCHEDULE_MIN_LEAD_MS = 10 * 60_000;
  */
 export function assignShortsDestinationOwners(
   items: readonly ShortsPlanItem[],
-  ctx: { aammdd: string; now: Date; instagramViaTimer: boolean },
+  ctx: { aammdd: string; now: Date; instagramViaTimer: boolean; writer?: ShortsRegistryWriter },
 ): ShortsDestinationOwner[] {
   const base = `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
   const owners: ShortsDestinationOwner[] = [];
@@ -458,7 +489,7 @@ export function assignShortsDestinationOwners(
         destination,
         action,
         by: "agent",
-        command: `${base} --only ${destination} --publish --now`,
+        command: `${base} ${lateNowArgs(destination, ctx.writer)}`,
         note: "horário passou do teto: o agente publica nesta rodada com --now (ou registra com --mark se já saiu); nunca volta ao editor",
       });
     } else if (action === "guided") {
@@ -486,6 +517,8 @@ export function assignShortsDestinationOwners(
 export interface ShortsPlanInput {
   coverPath?: string | null;
   coverUploadReady?: boolean;
+  /** #11547: `thumbnailOffset` (ms) do X/Buffer, derivado do timecode do Still; null = a Buffer escolhe. */
+  coverBufferOffsetMs?: number | null;
   aammdd: string;
   reviewedMd: string;
   now: Date;
@@ -578,7 +611,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // link derivado aqui é o mesmo que o Stage 5 vai gravar, não um palpite.
     premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5 com backend kit, #7420)`);
   } else {
-    warnings.push(`link da edição derivado do slug do título do D1: ${editionUrl} — confira; passe --edition-url se o publicado divergir`);
+    premises.push(`link da edição derivado do slug do título do D1: ${editionUrl} (metadado do plano; não usado no texto do vertical)`);
   }
   const d1In = { title: d1.title, body: d1.body };
   const youtube = buildYouTubeShortMetadata({ d1: d1In });
@@ -776,9 +809,10 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
       if (profileLate) {
+        const nowCmd = lateNowArgs(dest.id, input.writer);
         const detail =
           `${profileLate} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
-          `O agente publica com --only linkedin_profile --publish --now (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
+          `O agente publica com ${nowCmd} (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`linkedin_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -845,7 +879,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
         detail:
           "Buffer create_post no canal @diariabr com o vídeo de results[].buffer.videoUrl (o --publish sobe o vertical pro R2); " +
-          "registre com --mark x=buffer:{id do post} --scheduled-at {dueAt}",
+          "com results[].buffer.thumbnailOffset presente, o asset vai como { video: { url, metadata: { thumbnailOffset } } } (ms, a capa do X, #11547); " +
+          "registre com --mark x=buffer:{id do post} --scheduled-at {dueAt} (+ --thumbnail-offset {ms} se passou o offset)",
       };
     }
     if (dest.kind === "threads_profile") {
@@ -869,7 +904,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (late) {
         const detail =
           `${late} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
-          `O agente publica com --only threads_profile --publish --now (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
+          `O agente publica com ${lateNowArgs(dest.id, input.writer)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`threads_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -1011,11 +1046,10 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     return { destination: dest.id, mode: "api", action: "publish", caption, scheduledAt: null };
   }
 
-  const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination,
-    i.destination === "instagram" ? (input.coverPath ? (input.coverUploadReady ? "cover_url" : "unavailable: R2 credentials missing; automatic frame") : "automatic")
-      : "unsupported",
-  ])) };
-  const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer });
+  // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
+  const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
+  const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
+  const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer, writer: input.writer });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
 
@@ -1054,13 +1088,34 @@ export type { WorkerInstagramAccount };
 export async function uploadCoverOrFallback(
   upload: () => Promise<string>,
   log: (line: string) => void,
-): Promise<string | undefined> {
+): Promise<ReelCoverUpload> {
   try {
     return await upload();
   } catch (e) {
-    log(`[aviso] capa não enviada ao R2 (${(e as Error).message}); o Reel segue com o frame automático`);
-    return undefined;
+    const error = `capa não enviada ao R2: ${(e as Error).message}`;
+    log(`[aviso] ${error}; o Reel segue com o frame automático`);
+    // #11679 item 1: a falha volta como valor, e não `undefined`, para o registro gravar `cover.ok: false`.
+    return { error };
   }
+}
+
+/**
+ * Resultado do upload da capa do Reel (#11679): a URL pública, a falha do
+ * upload (o Reel sai com o frame automático e o registro diz que a capa não
+ * foi) ou `undefined` (rodada sem capa a enviar).
+ */
+export type ReelCoverUpload = string | { error: string } | undefined;
+
+/** Pure (#11679): URL que vai no `cover_url` do Reel; falha ou ausência = frame automático. */
+export function reelCoverUrl(cover: ReelCoverUpload): string | undefined {
+  return typeof cover === "string" ? cover : undefined;
+}
+
+/** Pure (#11547/#11679): registro da capa do Reel — `ok: false` com o erro quando o upload falhou. */
+export function reelCoverRecord(cover: ReelCoverUpload): ShortCoverRecord | null {
+  if (typeof cover === "string") return { method: "cover_url", ok: true };
+  if (cover) return { method: "cover_url", ok: false, error: cover.error };
+  return null;
 }
 
 export function shortsReelsIdempotencyKey(aammdd: string, account: WorkerInstagramAccount): string {
@@ -1260,7 +1315,39 @@ export async function uploadFacebookVideoResumable(
   return videoId;
 }
 
-/** Reels numa Página. ≤90 s: `video_reels` (start → rupload → finish). >90 s: `/videos` resumable (#10815). */
+/**
+ * #11547: capa do vídeo da Página — `POST /{video-id}/thumbnails` com o JPEG
+ * (`source`) e `is_preferred=true`, o mesmo que o editor fez à mão na 261029
+ * (HTTP 200 nas duas páginas). Nunca lança: a capa é opcional e o vídeo já
+ * subiu; a falha volta no registro (`ok: false`).
+ */
+export async function setFacebookVideoThumbnail(
+  deps: GraphDeps,
+  videoId: string,
+  token: string,
+  apiVersion: string,
+  jpeg: Buffer,
+): Promise<ShortCoverRecord> {
+  try {
+    const form = new FormData();
+    form.append("access_token", token);
+    form.append("is_preferred", "true");
+    form.append("source", new Blob([new Uint8Array(jpeg)], { type: "image/jpeg" }), "capa.jpg");
+    const res = await deps.fetch(`${GRAPH}/${apiVersion}/${videoId}/thumbnails`, { method: "POST", body: form });
+    const json = await readJson(res);
+    if (!res.ok || json.error || json.success === false) {
+      return { method: "thumbnail_upload", ok: false, error: `POST ${videoId}/thumbnails: ${res.status} ${JSON.stringify(json.error ?? json)}` };
+    }
+    return { method: "thumbnail_upload", ok: true };
+  } catch (e) {
+    return { method: "thumbnail_upload", ok: false, error: `POST ${videoId}/thumbnails: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * Reels numa Página. ≤90 s: `video_reels` (start → rupload → finish). >90 s: `/videos` resumable (#10815).
+ * #11547: com `cover`, aplica a capa logo depois do upload (as duas rotas).
+ */
 export async function publishFacebookReel(
   deps: GraphDeps,
   page: ResolvedFacebookPage,
@@ -1268,6 +1355,7 @@ export async function publishFacebookReel(
   file: Buffer,
   caption: string,
   plannedScheduledAt: string | null,
+  cover: Buffer | null = null,
 ): Promise<PublishOutcome> {
   const scheduledAt = stillSchedulable(plannedScheduledAt, deps.now());
   if (plannedScheduledAt && !scheduledAt) deps.log(`[premissa] ${facebookDestinationId(page.slug)}: menos de 10 min pro horário — publicando na hora`);
@@ -1293,16 +1381,22 @@ export async function publishFacebookReel(
   }
 
   const confirmed = await waitFacebookProcessing(deps, videoId, page.token, apiVersion);
+  const coverRecord = cover ? await setFacebookVideoThumbnail(deps, videoId, page.token, apiVersion, cover) : null;
+  const warnings = coverRecord && !coverRecord.ok ? [`capa não aplicada (${coverRecord.error}) — o vídeo segue com o frame automático`] : [];
   return {
-    entry: {
-      destination: facebookDestinationId(page.slug),
-      status: scheduledAt ? "scheduled" : "published",
-      id: videoId,
-      url: route === "video_reels" ? `https://www.facebook.com/reel/${videoId}` : `https://www.facebook.com/${page.pageId}/videos/${videoId}`,
-      scheduled_at: scheduledAt,
-      at: deps.now().toISOString(),
-    },
+    entry: withCoverRecord(
+      {
+        destination: facebookDestinationId(page.slug),
+        status: scheduledAt ? "scheduled" : "published",
+        id: videoId,
+        url: route === "video_reels" ? `https://www.facebook.com/reel/${videoId}` : `https://www.facebook.com/${page.pageId}/videos/${videoId}`,
+        scheduled_at: scheduledAt,
+        at: deps.now().toISOString(),
+      },
+      coverRecord,
+    ),
     unconfirmed: !confirmed,
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 
@@ -1410,8 +1504,9 @@ export async function publishInstagramReel(
   file: Buffer,
   caption: string,
   collaborators: string[] = [],
-  coverUrl?: string,
+  cover?: ReelCoverUpload,
 ): Promise<PublishOutcome> {
+  const coverUrl = reelCoverUrl(cover);
   const params: Record<string, string> = { media_type: "REELS", upload_type: "resumable", caption, share_to_feed: "true", access_token: token };
   // #10790: collab — a Graph API recebe a lista como JSON; cada conta aceita o convite no app.
   if (coverUrl) params.cover_url = coverUrl;
@@ -1461,7 +1556,10 @@ export async function publishInstagramReel(
   }
   const warnings = collaborators.length ? await checkInstagramCollaborators(deps, pub.id, token, apiVersion, collaborators) : [];
   return {
-    entry: { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: deps.now().toISOString() },
+    entry: withCoverRecord(
+      { destination: "instagram", status: "published", id: pub.id, url, scheduled_at: null, at: deps.now().toISOString() },
+      reelCoverRecord(cover), // #11547, #11679
+    ),
     ...(warnings.length ? { warnings } : {}),
   };
 }
@@ -2269,7 +2367,7 @@ export function attachChromeUploadToPlan(
 export interface InstagramEnqueueDeps {
   /** Sobe o vertical e devolve a URL pública (R2). */
   uploadVideo: () => Promise<string>;
-  uploadCover?: () => Promise<string | undefined>;
+  uploadCover?: () => Promise<ReelCoverUpload>;
   /** `POST /queue` do Worker. */
   enqueue: (payload: WorkerQueuePayload) => Promise<{ key: string; scheduled_at: string }>;
   now: () => Date;
@@ -2287,13 +2385,15 @@ export async function enqueueInstagramReel(
   collaborators: string[],
 ): Promise<PublishOutcome> {
   const videoUrl = await deps.uploadVideo();
+  const cover = await deps.uploadCover?.();
+  const coverUrl = reelCoverUrl(cover);
   let queued: { key: string; scheduled_at: string };
   try {
     queued = await deps.enqueue(
       buildReelsQueuePayload({
         caption: item.caption,
         videoUrl,
-        coverUrl: await deps.uploadCover?.(),
+        coverUrl,
         scheduledAt: item.scheduledAt,
         account: item.igAccount,
         collaborators,
@@ -2310,7 +2410,11 @@ export async function enqueueInstagramReel(
   }
   const state = resolveWorkerQueueState({ key: queued.key, scheduled_at: queued.scheduled_at }, deps.now());
   return {
-    entry: { destination: "instagram", status: "scheduled", id: queued.key, scheduled_at: queued.scheduled_at, at: deps.now().toISOString() },
+    // #11547: a capa vai no payload; o Worker é quem a aplica — `ok` aqui é "enviada à fila".
+    entry: withCoverRecord(
+      { destination: "instagram", status: "scheduled", id: queued.key, scheduled_at: queued.scheduled_at, at: deps.now().toISOString() },
+      reelCoverRecord(cover),
+    ),
     ...(state === "scheduled" ? {} : { warnings: [`fila do Worker devolveu scheduled_at ${queued.scheduled_at} (estado ${state}) — confira se a entry não disparou na hora`] }),
   };
 }
@@ -2330,23 +2434,32 @@ export async function publishLinkedInProfileVideo(
   file: Buffer,
   text: string,
   title: string,
+  /** #11547: capa (JPEG) — `uploadThumbnail` na Videos API; falha nunca derruba o vídeo. */
+  cover: Buffer | null = null,
 ): Promise<PublishOutcome> {
   // CONFERIR NA 1ª EXECUÇÃO REAL (#10772 F3): `new Uint8Array(file)` copia o
   // vertical inteiro (275 MB em 261022). Se a memória do processo apertar, trocar
   // por `new Uint8Array(file.buffer, file.byteOffset, file.length)` (sem cópia).
-  const r = await postVideoToPersonalProfile({ deps, creds, apiVersion, text, title, bytes: new Uint8Array(file) });
+  const r = await postVideoToPersonalProfile({ deps, creds, apiVersion, text, title, bytes: new Uint8Array(file), thumbnail: cover ? new Uint8Array(cover) : null });
   const at = deps.now().toISOString();
+  const coverRecord: ShortCoverRecord | null = r.thumbnail
+    ? r.thumbnail.ok
+      ? { method: "thumbnail_upload", ok: true }
+      : { method: "thumbnail_upload", ok: false, error: r.thumbnail.error }
+    : null;
+  const coverWarnings = coverRecord && !coverRecord.ok ? [`capa não aplicada (${coverRecord.error}) — o vídeo segue com o frame automático`] : [];
   if (r.ok) {
     const url = postUrlFromUrn(r.postUrn);
+    const warnings = [...(r.postUrn ? [] : ["a LinkedIn aceitou o post sem devolver a URN (x-restli-id) — confira o perfil"]), ...coverWarnings];
     return {
-      entry: { destination: "linkedin_profile", status: "published", id: r.postUrn ?? `sem-urn-${at}`, ...(url ? { url } : {}), scheduled_at: null, at },
-      ...(r.postUrn ? {} : { warnings: ["a LinkedIn aceitou o post sem devolver a URN (x-restli-id) — confira o perfil"] }),
+      entry: withCoverRecord({ destination: "linkedin_profile", status: "published", id: r.postUrn ?? `sem-urn-${at}`, ...(url ? { url } : {}), scheduled_at: null, at }, coverRecord),
+      ...(warnings.length ? { warnings } : {}),
     };
   }
   if (r.phase === "ambiguous") {
     return {
-      entry: { destination: "linkedin_profile", status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at },
-      warnings: [`envio ambíguo (${r.reason}) — confira o perfil antes de qualquer nova tentativa e registre com --mark linkedin_profile=URL`],
+      entry: withCoverRecord({ destination: "linkedin_profile", status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at }, coverRecord),
+      warnings: [`envio ambíguo (${r.reason}) — confira o perfil antes de qualquer nova tentativa e registre com --mark linkedin_profile=URL`, ...coverWarnings],
     };
   }
   throw new Error(r.reason);
@@ -2360,8 +2473,8 @@ export function youtubeShortUrl(videoId: string): string {
 /**
  * #11070: Short pela YouTube Data API — o mesmo `uploadYouTubeVideo` do
  * horizontal (`publish-youtube.ts`), com `publishAt` no horário do vertical.
- * Sem capa: `thumbnails.set` não vale pra Short (a capa é um frame escolhido no
- * app). Antes de enviar confere o canal (`kind: "short"`): Short da edição já
+ * Capa (#11547): `thumbnails.set` com o Still depois do insert — vale pra Short
+ * (HTTP 200 medido pelo editor em 28/10/2026); falha só vira aviso. Antes de enviar confere o canal (`kind: "short"`): Short da edição já
  * lá (subido à mão) vira registro, sem novo upload; reconhecido só pelo dia,
  * lança pedindo confirmação (`--mark youtube_shorts=URL` ou `--force-youtube`).
  * Falha a partir do PUT dos bytes devolve `send_unknown` (o vídeo PODE
@@ -2380,6 +2493,8 @@ export async function publishYouTubeShort(input: {
   /** `--force-youtube`: pula a conferência do canal. */
   force: boolean;
   onBeforeBytes?: (entry: ShortPublishedEntry) => void;
+  /** #11547: capa (JPEG) — `thumbnails.set` depois do insert; falha não desfaz o Short. */
+  cover?: Buffer | null;
 }): Promise<PublishOutcome> {
   const missing = missingYouTubeCredentials(input.env);
   if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
@@ -2407,7 +2522,7 @@ export async function publishYouTubeShort(input: {
       request,
       video: input.file,
       contentType: "video/mp4",
-      thumbnail: null,
+      thumbnail: input.cover ?? null,
       ...(input.force ? {} : { existingVideoCheck: { aammdd: input.aammdd, title: input.title, kind: "short" as const } }),
       ...(input.onBeforeBytes ? { beforeVideoBytes: () => input.onBeforeBytes!(unknownEntry()) } : {}),
     });
@@ -2438,7 +2553,15 @@ export async function publishYouTubeShort(input: {
   const warnings: string[] = [];
   if (result.rereadError) warnings.push(`releitura do estado falhou: ${result.rereadError}`);
   const failed = failedUploadStatus(result.rereadStatus);
-  const base = { destination: "youtube_shorts", id: result.videoId, url: youtubeShortUrl(result.videoId), at: result.uploadedAt };
+  // #11547: `thumbnails.set` vale para Short (medido em 28/10/2026); falha só vira registro.
+  const thumb = result.thumbnail;
+  const cover: ShortCoverRecord | undefined = thumb?.attempted
+    ? thumb.ok
+      ? { method: "thumbnails_set", ok: true }
+      : { method: "thumbnails_set", ok: false, error: thumb.error ?? "sem detalhe" }
+    : undefined;
+  if (cover && !cover.ok) warnings.push(`capa não aplicada (${cover.error}) — troque no YouTube Studio (Miniatura → Enviar arquivo)`);
+  const base = { destination: "youtube_shorts", id: result.videoId, url: youtubeShortUrl(result.videoId), at: result.uploadedAt, ...(cover ? { cover } : {}) };
   if (failed) {
     warnings.push(`o YouTube marcou uploadStatus=${failed} — o Short não vai ao ar; confira no Studio (registro mantido para não re-enviar)`);
     return { entry: { ...base, status: "send_unknown", scheduled_at: null }, warnings };
@@ -2451,6 +2574,26 @@ export async function publishYouTubeShort(input: {
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
+
+/**
+ * #11547: a capa do vertical na pasta da edição (`04-youtube-short-capa.jpg`)
+ * e o offset da Buffer derivado do Still que a gerou (sidecar de
+ * `fetch-drive-video.ts`). Capa vazia/ausente → `path: null`. Nunca lança:
+ * leitura falha vira "sem capa" com aviso — a capa nunca barra o vídeo.
+ */
+export function readShortCover(dir: string, log: (line: string) => void = () => {}): { path: string | null; bytes: Buffer | null; bufferOffsetMs: number | null } {
+  const path = join(dir, SHORT_COVER_FILE);
+  try {
+    if (!existsSync(path) || statSync(path).size === 0) return { path: null, bytes: null, bufferOffsetMs: null };
+    const bytes = readFileSync(path);
+    const sidecar = join(dir, SHORT_COVER_SOURCE_FILE);
+    const source = parseShortCoverSource(existsSync(sidecar) ? readFileSync(sidecar, "utf8") : null, bytes.length);
+    return { path, bytes, bufferOffsetMs: bufferThumbnailOffsetMs(source) };
+  } catch (e) {
+    log(`[aviso] capa do vertical ilegível (${(e as Error).message}) — segue sem capa`);
+    return { path: null, bytes: null, bufferOffsetMs: null };
+  }
+}
 
 /**
  * #11157: destino que outro processo (o timer do 300, um `--mark` no neo)
@@ -2628,6 +2771,11 @@ export function buildMarkEntry(
   mark: ReturnType<typeof parseMarkArg>,
   scheduledAt: string | undefined,
   at: string,
+  /**
+   * #11547: `thumbnailOffset` (ms) que a skill passou no `create_post` da
+   * Buffer (`--thumbnail-offset`). O `--mark` só registra, não confere a Buffer.
+   */
+  bufferThumbnailOffset: number | null = null,
 ): { ok: true; entry: ShortPublishedEntry } | { ok: false; error: string } {
   if (scheduledAt !== undefined && (!mark.bufferId || Number.isNaN(Date.parse(scheduledAt)))) {
     return { ok: false, error: "--scheduled-at só vale com --mark x=buffer:{id} e precisa ser ISO 8601" };
@@ -2635,10 +2783,24 @@ export function buildMarkEntry(
   if (mark.bufferId) {
     return {
       ok: true,
-      entry: { destination: "x", status: "scheduled", id: `buffer:${mark.bufferId}`, scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null, at },
+      entry: withCoverRecord(
+        { destination: "x", status: "scheduled", id: `buffer:${mark.bufferId}`, scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null, at },
+        bufferThumbnailOffset === null ? null : { method: "thumbnail_offset", ok: true, offset_ms: bufferThumbnailOffset },
+      ),
     };
   }
   return { ok: true, entry: { destination: mark.destination, status: "published", id: mark.url!, url: mark.url!, at } };
+}
+
+/**
+ * Pure (#11547): `--thumbnail-offset MS` do `--mark x=buffer:{id}` — inteiro
+ * ≥ 0, só com `x=buffer`. Ausente = nenhuma capa registrada.
+ */
+export function parseThumbnailOffsetArg(raw: string | undefined, isBufferMark: boolean): { ok: true; value: number | null } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true, value: null };
+  if (!isBufferMark) return { ok: false, error: "--thumbnail-offset só vale com --mark x=buffer:{id}" };
+  if (!/^\d+$/.test(raw)) return { ok: false, error: `--thumbnail-offset espera milissegundos (inteiro ≥ 0), recebido ${JSON.stringify(raw)}` };
+  return { ok: true, value: Number(raw) };
 }
 
 /** O que o `--publish` devolve pro destino do X (#10772): a URL pública do vertical pra Buffer, ou o erro. */
@@ -2646,7 +2808,19 @@ export interface BufferPrepResult {
   destination: string;
   ok: boolean;
   error?: string;
-  buffer?: { text: string; dueAt: string | null; videoUrl: string };
+  buffer?: BufferPostInput;
+}
+
+/**
+ * O que a skill passa pra Buffer `create_post`. `thumbnailOffset` (#11547, ms)
+ * vai em `assets[0].video.metadata.thumbnailOffset`; ausente = a Buffer
+ * escolhe o frame (ela não aceita imagem de capa em vídeo).
+ */
+export interface BufferPostInput {
+  text: string;
+  dueAt: string | null;
+  videoUrl: string;
+  thumbnailOffset?: number;
 }
 
 /**
@@ -2657,10 +2831,15 @@ export interface BufferPrepResult {
 export async function prepareBufferItem(
   item: Extract<ShortsPlanItem, { action: "buffer" }>,
   uploadVideo: () => Promise<string>,
+  thumbnailOffsetMs: number | null = null,
 ): Promise<BufferPrepResult> {
   try {
     const videoUrl = await uploadVideo();
-    return { destination: item.destination, ok: true, buffer: { text: item.caption, dueAt: item.scheduledAt, videoUrl } };
+    return {
+      destination: item.destination,
+      ok: true,
+      buffer: { text: item.caption, dueAt: item.scheduledAt, videoUrl, ...(thumbnailOffsetMs === null ? {} : { thumbnailOffset: thumbnailOffsetMs }) },
+    };
   } catch (e) {
     return { destination: item.destination, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -2707,7 +2886,7 @@ const USAGE =
   "                       [--linkedin-timer | --instagram-timer | --threads-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
-  "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO]\n" +
+  "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO] [--thumbnail-offset MS]\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br e perfil do @vjpixel, #11390)\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)";
 
@@ -2816,12 +2995,19 @@ async function main(): Promise<number> {
       console.error(`publish-shorts: ${markScopeErr}`);
       return 2;
     }
-    const built = buildMarkEntry(mark, values["scheduled-at"], new Date().toISOString());
+    // #11547: a capa do X só entra no registro com o offset que a skill DE FATO passou à Buffer.
+    const offset = parseThumbnailOffsetArg(values["thumbnail-offset"], Boolean(mark.bufferId));
+    if (!offset.ok) {
+      console.error(offset.error);
+      return 2;
+    }
+    const built = buildMarkEntry(mark, values["scheduled-at"], new Date().toISOString(), offset.value);
     if (!built.ok) {
       console.error(built.error);
       return 2;
     }
-    published = persist(built.entry);
+    // #11547: a confirmação (`x=URL`) mantém o registro da capa do agendamento.
+    published = persist(carryOverCover(built.entry, published.entries.find((e) => e.destination === mark.destination)));
     console.log(JSON.stringify({ marked: mark.destination, url: mark.url, ...(mark.bufferId ? { buffer_id: mark.bufferId } : {}) }));
     cleanup();
     return 0;
@@ -2935,12 +3121,21 @@ async function main(): Promise<number> {
   const warnGrid = (m: string) => console.error(`[aviso] ${m}`);
   const workerQueue = await loadWorkerQueueForGrid(workerUrl, workerToken, fetch, warnGrid);
 
+  const shortCover = readShortCover(dir, (l) => console.error(l)); // #11547
+  // #11660: capa ausente nesta máquina é aviso explícito (e vai pro registro de cada destino), nunca silêncio.
+  if (!shortCover.path) console.error(`[aviso] capa do vertical: ${SHORT_COVER_MISSING_ERROR}`);
+  // #11679 item 2: offset do X fora do vertical (sequência do Premiere que não começa em 00:00:00:00) não vai à Buffer.
+  const bufferOffsetMs = clampBufferThumbnailOffsetMs(shortCover.bufferOffsetMs, duration);
+  if (shortCover.bufferOffsetMs !== null && bufferOffsetMs === null) {
+    console.error(`[aviso] capa do X: offset ${shortCover.bufferOffsetMs} ms do timecode do Still fica fora do vertical — a Buffer escolhe o frame`);
+  }
   let plan: ShortsPlan;
   try {
     plan = planShortsPublish({
       aammdd,
-      coverPath: existsSync(join(dir, "04-youtube-short-capa.jpg")) ? join(dir, "04-youtube-short-capa.jpg") : null,
+      coverPath: shortCover.path,
       coverUploadReady: r2.ready,
+      coverBufferOffsetMs: bufferOffsetMs,
       reviewedMd: readFileSync(reviewedPath, "utf8"),
       now: new Date(),
       config,
@@ -2995,7 +3190,7 @@ async function main(): Promise<number> {
     /** #11265: como a conferência do timer achou o Reels já no ar (`time-window` pede conferir o permalink). */
     matchedBy?: InstagramTimerAlreadyMatch;
     /** #10772: o que a skill passa pra Buffer `create_post` (nada é registrado até o `--mark`). */
-    buffer?: { text: string; dueAt: string | null; videoUrl: string };
+    buffer?: BufferPostInput;
     /** #11265: a falha veio da conferência da conta do timer (`instagramTimerGate`), não do publish. */
     cause?: "preflight";
     preflight?: InstagramTimerGateFailure | ThreadsTimerGateFailure;
@@ -3011,9 +3206,11 @@ async function main(): Promise<number> {
     });
     return uploaded;
   };
-  let uploadedCover: Promise<string | undefined> | undefined;
-  const uploadCover = async (): Promise<string | undefined> => {
-    if (!plan.cover.path || !r2.ready) return undefined;
+  let uploadedCover: Promise<ReelCoverUpload> | undefined;
+  const uploadCover = async (): Promise<ReelCoverUpload> => {
+    if (!plan.cover.path) return undefined;
+    // #11679: capa local presente e R2 indisponível também fica no registro (`cover.ok: false`).
+    if (!r2.ready) return { error: `capa não enviada ao R2: R2 não configurado (${r2.missing.join(", ")})` };
     const coverPath = plan.cover.path;
     uploadedCover ??= uploadCoverOrFallback(
       () => reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
@@ -3042,7 +3239,7 @@ async function main(): Promise<number> {
     }
     if (item.action === "buffer") {
       // #10772: só sobe o vídeo; a Buffer é chamada pela skill (MCP), que registra com --mark.
-      const r = await prepareBufferItem(item, uploadVideo);
+      const r = await prepareBufferItem(item, uploadVideo, bufferOffsetMs);
       results.push(r);
       console.error(r.ok ? `[ok] ${item.destination}: vídeo no R2 (${r.buffer!.videoUrl}) — falta o create_post na Buffer (skill)` : `[erro] ${item.destination}: ${r.error}`);
       continue;
@@ -3070,6 +3267,7 @@ async function main(): Promise<number> {
           file,
           item.caption,
           item.title ?? plan.youtube.title,
+          shortCover.bytes,
         );
       } else if (item.destination === "youtube_shorts") {
         outcome = await publishYouTubeShort({
@@ -3080,6 +3278,7 @@ async function main(): Promise<number> {
           description: item.caption,
           scheduledAt: item.scheduledAt,
           file,
+          cover: shortCover.bytes,
           force: flags.has("force-youtube"),
           // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
           onBeforeBytes: (marker) => {
@@ -3167,7 +3366,7 @@ async function main(): Promise<number> {
         }
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
-        outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt);
+        outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt, shortCover.bytes);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -3183,7 +3382,8 @@ async function main(): Promise<number> {
       console.error(`[erro] ${item.destination}: ${msg}`);
       continue;
     }
-    const { entry, unconfirmed } = outcome;
+    const { unconfirmed } = outcome;
+    const entry = withMissingCoverRecord(outcome.entry, shortCover.path !== null); // #11660
     // #573: o status do registro é o que o script fez; o estado normalizado é o que se relata.
     const state = resolveShortEntryState(entry, new Date());
     try {
@@ -3228,7 +3428,7 @@ async function main(): Promise<number> {
     for (const w of attached.warnings) console.error(`[aviso] ${w}`);
   }
   // #11550: os itens podem ter mudado depois do plano (repost bloqueado, upload do Chrome) — os donos acompanham.
-  plan = { ...plan, owners: assignShortsDestinationOwners(plan.items, { aammdd, now: new Date(), instagramViaTimer: shortsCfg.instagramBackend === "timer-300" }) };
+  plan = { ...plan, owners: assignShortsDestinationOwners(plan.items, { aammdd, now: new Date(), instagramViaTimer: shortsCfg.instagramBackend === "timer-300", writer }) };
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,
     scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,

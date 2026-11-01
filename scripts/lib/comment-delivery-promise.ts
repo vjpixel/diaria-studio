@@ -15,6 +15,15 @@
  * neste post." — pedido de comentário + promessa de entrega, sem nenhum
  * mecanismo do lado do projeto pra cumprir.
  *
+ * #11724: o projeto passou a PUBLICAR um comentário próprio — o permalink da
+ * edição no 4º post (USE MELHOR), postado pelo publish logo depois do
+ * `media_publish` — e a legenda desse post diz "Link da edição no primeiro
+ * comentário." (`INSTAGRAM_USE_MELHOR_COMMENT_CTA_LINE`). Isso continua fora
+ * do alvo deste guard, e assim deve ficar: a legenda não pede comentário ao
+ * leitor nem promete entregar algo a quem comentar; o link já está lá. O teste
+ * `test/use-melhor-permalink-11724.test.ts` trava que a linha não dispara o
+ * guard. Responder a comentário de leitor segue sem mecanismo.
+ *
  * Detecção: heurística por padrões em pt-BR, não NLP. Dispara quando o
  * texto tem (a) um pedido de comentário/ação em comentário E (b) uma
  * promessa de ENTREGA de algo em troca (receber/mandar/enviar + link/

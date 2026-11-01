@@ -33,10 +33,10 @@ import {
   normalizeForFormatting,
 } from "../scripts/lib/humanizer-run-record.ts";
 
-/** #11534: registra humanizador (pre→post) e Clarice (post→post, sem mudança). */
+/** #11534: registra humanizador (pre→post) e Clarice (post→post, sem mudança — com --note, #11674). */
 function recordProof(dir: string, preMd: string, postMd: string): void {
   const h = planRunRecord(readRunRecord(dir), "humanizador", preMd, postMd);
-  const c = planRunRecord(h.record, "clarice", postMd, postMd);
+  const c = planRunRecord(h.record, "clarice", postMd, postMd, undefined, { note: "Clarice sem sugestões" });
   writeRunRecord(dir, c.record);
 }
 
@@ -714,7 +714,7 @@ describe("--bypass-reason exige prova de humanizador + Clarice (#11534)", () => 
       const h = runCli(["--record-run", "--step", "humanizador", "--pre", pre, "--post", postH, "--sections", "main_d1", "--edition-dir", dir]);
       assert.equal(h.status, 0, h.stderr);
       assert.deepEqual(JSON.parse(h.stdout.trim()).recorded, ["main_d1"]);
-      const c = runCli(["--record-run", "--step", "clarice", "--pre", postH, "--post", join(dir, "03-social.md"), "--edition-dir", dir]);
+      const c = runCli(["--record-run", "--step", "clarice", "--pre", postH, "--post", join(dir, "03-social.md"), "--note", "Clarice sem sugestões", "--edition-dir", dir]);
       assert.equal(c.status, 0, c.stderr);
 
       const ok = runCli(["--write", "--bypass-reason", "x", "--edition-dir", dir]);
@@ -723,7 +723,7 @@ describe("--bypass-reason exige prova de humanizador + Clarice (#11534)", () => 
       const prov = runCli(["--provenance", "--edition-dir", dir]);
       assert.equal(prov.status, 0, prov.stderr);
       const rows = JSON.parse(prov.stdout.trim()).sections as Array<{ section: string; humanizador: boolean; clarice: boolean }>;
-      assert.deepEqual(rows.find((r) => r.section === "main_d1"), { section: "main_d1", humanizador: true, clarice: true });
+      assert.deepEqual(rows.find((r) => r.section === "main_d1"), { section: "main_d1", humanizador: true, clarice: true, clarice_unchanged: true });
       assert.deepEqual(rows.find((r) => r.section === "main_d2"), { section: "main_d2", humanizador: false, clarice: false });
     } finally {
       cleanup();
@@ -732,7 +732,7 @@ describe("--bypass-reason exige prova de humanizador + Clarice (#11534)", () => 
 });
 
 function readRunRecordEmpty() {
-  return { version: 1 as const, humanizador: [], humanizador_unchanged: [], clarice: [], runs: [] };
+  return { version: 1 as const, humanizador: [], humanizador_unchanged: [], clarice: [], clarice_unchanged: [], runs: [] };
 }
 
 // ---------------------------------------------------------------------------

@@ -69,7 +69,7 @@ import { loadShortScheduleConfig, loadShortsConfig, parseShortsPublishedFile, re
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { TIMER_LOCK_FILE as LINKEDIN_TIMER_LOCK_FILE, acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
 import { DOWNLOAD_PART_FRESH_MS, SHORTS_THREADS_TIMER_LOCK_FILE, verticalDownloadBusy } from "./lib/diaria/vertical-download-guard.ts";
-import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState } from "./shorts-instagram-timer.ts";
+import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
 

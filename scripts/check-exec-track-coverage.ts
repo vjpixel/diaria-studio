@@ -34,12 +34,13 @@
  * @see scripts/lib/overnight-prose-track-map.ts (tradução prosa↔ExecTrack, #6204 item 3)
  */
 
-import { existsSync } from "node:fs";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import {
-  checkExecTrackCoverage,
+  checkExecTrackCoverageFromPlan,
   EXEC_TRACK_VALUES,
+  type PlanWithIssues,
 } from "./lib/develop-exec-track-coverage.ts";
+import { readPlanJson } from "./lib/plan-safe-backup.ts";
 
 if (isMainModule(import.meta.url)) {
   const { values } = parseArgs(process.argv.slice(2));
@@ -49,12 +50,15 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
-  if (!existsSync(planPath)) {
-    console.error(`[check-exec-track-coverage] plan.json não encontrado: ${planPath}`);
+  // #11726: leitor único — recupera a cópia de conflito do OneDrive
+  // (`plan-*-safeBackup-*.json`) antes de concluir que o plano não existe.
+  const planRead = readPlanJson(planPath);
+  if (planRead.status !== "ok") {
+    console.error(`[check-exec-track-coverage] ${planRead.message}`);
     process.exit(2);
   }
 
-  const result = checkExecTrackCoverage(planPath);
+  const result = checkExecTrackCoverageFromPlan(planRead.plan as PlanWithIssues);
   if (result.status === "ok") {
     console.log("ok — toda entrada de issues[] tem exec_track_painel com valor válido");
     process.exit(0);

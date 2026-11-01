@@ -100,14 +100,18 @@ describe("acquire/release em disco", () => {
     assert.equal(acquireEditionLock(dir, { sessionId: "A", stage: 4, now: T0 }).action, "acquired");
   });
 
-  it("release só remove a trava da própria sessão", () => {
+  it("release só solta a trava da própria sessão (vira tombstone de interrupção, #11713)", () => {
     const dir = tmpEdition();
     acquireEditionLock(dir, { sessionId: "A", stage: 4, now: T0 });
     assert.equal(releaseEditionLock(dir, { sessionId: "B" }), "held_by_other");
-    assert.ok(existsSync(editionLockPath(dir)));
+    assert.equal(readEditionLock(dir)?.released_at, undefined);
     assert.equal(releaseEditionLock(dir, { sessionId: "A" }), "released");
-    assert.ok(!existsSync(editionLockPath(dir)));
+    assert.ok(readEditionLock(dir)?.released_at, "release simples regrava como tombstone, não apaga");
+    assert.equal(acquireEditionLock(dir, { sessionId: "B", stage: 4, now: T0 + 1000 }).action, "acquired");
+    assert.equal(releaseEditionLock(dir, { sessionId: "B" }), "released");
+    // Tombstone do próprio host sem trava: o release seguinte limpa o arquivo.
     assert.equal(releaseEditionLock(dir, { sessionId: "A" }), "not_held");
+    assert.ok(!existsSync(editionLockPath(dir)));
   });
 });
 

@@ -22,10 +22,24 @@
  *   - `_internal/04-d{N}-sd-prompt.json` (campo `positive`, só se a URL antiga
  *     aparecer ali literalmente — o campo é documental/embutido no texto do
  *     prompt, não estruturado; #5458 pede isso como opcional/barato)
+ *   - `_internal/fact-check-sources/` (#11671): re-baixa a fonte do destaque
+ *     via `refresh-destaque-sources.ts` (#9102), pra o fact-checker não ler o
+ *     texto da URL antiga. Fail-soft: falha de download vira
+ *     `fact_check_sources.error`/`failed`, nunca desfaz a troca. O
+ *     `fact-check.json` anterior fica defasado sozinho (carimbo de conteúdo,
+ *     `lib/fact-check-staleness.ts`) — re-rodar o fact-checker depois.
  *
  * A NOVA url é verificada via `verify()` (scripts/verify-accessibility.ts)
  * ANTES de qualquer mutação — fail-fast se inacessível, nenhum arquivo é
  * tocado (mesma disciplina de precondição-antes-de-mutar do #2499).
+ *
+ * #11688: site que recusa HEAD (ex: thenextweb.com devolve HEAD 404 e GET 200)
+ * fazia o `verify()` sair `blocked` sem nunca tentar GET. Quando a recusa veio
+ * só do HEAD (note `HEAD NNN`), o script confirma com um GET de User-Agent de
+ * navegador antes de desistir; GET < 400 sem soft 404 aceita a troca e
+ * registra o caminho em `verification`. Bypass explícito: `--skip-verify`
+ * (pula a checagem inteira, com aviso no stderr e `verification.mode:
+ * "skipped"` no JSON) — para site que nem o GET aceita.
  *
  * Uso:
  *   npx tsx scripts/swap-destaque-link.ts \
@@ -40,16 +54,22 @@
  *   # Custom edition-dir (mesma convenção de swap-destaque.ts):
  *   npx tsx scripts/swap-destaque-link.ts \
  *     --edition 260817 --destaque d1 --url <nova-url> --edition-dir /tmp/test
+ *
+ *   # Site que bloqueia até o GET do script, URL conferida à mão (#11688):
+ *   npx tsx scripts/swap-destaque-link.ts \
+ *     --edition 260817 --destaque d1 --url <nova-url> --skip-verify
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts"; // #9911: fetch + process.exit sai 127 no Windows
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { hashHighlights } from "./lib/social-source-hash.ts";
-import { verify as verifyUrl } from "./verify-accessibility.ts";
+import { verify as verifyUrl, BROWSER_UA, detectSoft404Title } from "./verify-accessibility.ts";
 import type { VerifyOptions } from "./lib/verify-options.ts";
+import { refreshDestaqueSources, type RefreshResult } from "./refresh-destaque-sources.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -65,6 +85,22 @@ export interface SwapLinkArgs {
   destaque: DestaquePosition;
   url: string;
   dryRun: boolean;
+  /** (#11688) `--skip-verify`: pula a checagem de acessibilidade da URL nova. */
+  skipVerify?: boolean;
+}
+
+/**
+ * (#11688) Como a URL nova foi aceita:
+ *   - `verify`: `verify()` deu `accessible`/`video`;
+ *   - `get-fallback`: `verify()` recusou só pelo HEAD e o GET com UA de
+ *     navegador respondeu ok (`verdict`/`note` guardam a recusa original);
+ *   - `skipped`: `--skip-verify`, nenhuma checagem.
+ */
+export interface SwapLinkVerification {
+  mode: "verify" | "get-fallback" | "skipped";
+  verdict?: string;
+  note?: string;
+  get_status?: number;
 }
 
 export interface SwapLinkResult {
@@ -75,6 +111,12 @@ export interface SwapLinkResult {
   new_url: string;
   modified: string[];
   skipped: Array<{ file: string; reason: string }>;
+  /** (#11688) Caminho pelo qual a URL nova foi aceita. */
+  verification: SwapLinkVerification;
+  /** (#11671) Re-sincronização de `_internal/fact-check-sources/` (ausente no dry-run). */
+  fact_check_sources?:
+    | { refetched: boolean; failed: number[]; source_path?: string }
+    | { error: string };
 }
 
 /** Same "accessible enough to publish" bar used by verify-accessibility.ts main(). */
@@ -230,10 +272,15 @@ export function replaceUrlInSdPromptPositive(
 export function parseSwapLinkArgs(argv: string[]): SwapLinkArgs {
   const args: Record<string, string> = {};
   let dryRun = false;
+  let skipVerify = false;
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") {
       dryRun = true;
+      continue;
+    }
+    if (argv[i] === "--skip-verify") {
+      skipVerify = true;
       continue;
     }
     if (argv[i].startsWith("--") && i + 1 < argv.length) {
@@ -245,21 +292,21 @@ export function parseSwapLinkArgs(argv: string[]): SwapLinkArgs {
   if (!args.edition) {
     console.error("Erro: --edition AAMMDD é obrigatório");
     console.error(
-      "Uso: swap-destaque-link.ts --edition AAMMDD --destaque d{1|2|3} --url <nova-url> [--dry-run] [--edition-dir <path>]",
+      "Uso: swap-destaque-link.ts --edition AAMMDD --destaque d{1|2|3} --url <nova-url> [--dry-run] [--skip-verify] [--edition-dir <path>]",
     );
-    process.exit(2);
+    throw new CliExit(2);
   }
   if (!args.destaque || !["d1", "d2", "d3"].includes(args.destaque)) {
     console.error('Erro: --destaque deve ser "d1", "d2" ou "d3"');
-    process.exit(2);
+    throw new CliExit(2);
   }
   if (!args.url) {
     console.error("Erro: --url <nova-url> é obrigatório");
-    process.exit(2);
+    throw new CliExit(2);
   }
   if (!/^https?:\/\//.test(args.url)) {
     console.error(`Erro: --url deve ser uma URL http(s) absoluta, recebido "${args.url}"`);
-    process.exit(2);
+    throw new CliExit(2);
   }
 
   const editionsRootDir = args["editions-dir"]
@@ -273,7 +320,56 @@ export function parseSwapLinkArgs(argv: string[]): SwapLinkArgs {
     destaque: args.destaque as DestaquePosition,
     url: args.url,
     dryRun,
+    skipVerify,
   };
+}
+
+// ---------------------------------------------------------------------------
+// (#11688) Confirmação por GET quando o verify() recusou só pelo HEAD
+// ---------------------------------------------------------------------------
+
+export interface GetProbeResult {
+  ok: boolean;
+  status?: number;
+  note?: string;
+}
+
+export type GetProbeFn = (url: string) => Promise<GetProbeResult>;
+
+/**
+ * Recusa do `verify()` que veio do HEAD (`HEAD 404`, `HEAD 403`...), sem o
+ * GET ter rodado. É o único caso em que vale confirmar com GET: recusa do GET,
+ * paywall, agregador ou soft 404 já olharam o conteúdo.
+ */
+export function isHeadOnlyRejection(note: string | undefined): boolean {
+  return typeof note === "string" && /^HEAD \d{3}\b/.test(note);
+}
+
+/**
+ * GET com User-Agent de navegador, seguindo redirect. Aceita status < 400 sem
+ * soft 404 no `<title>` (mesmo critério de `detectSoft404Title` do verify).
+ */
+export async function probeGetWithBrowserUa(url: string, timeoutMs = 15_000): Promise<GetProbeResult> {
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      headers: { "user-agent": BROWSER_UA },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.status >= 400) {
+      await res.body?.cancel().catch(() => {});
+      return { ok: false, status: res.status, note: `GET ${res.status}` };
+    }
+    const body = (await res.text()).slice(0, 50_000).toLowerCase();
+    const soft404 = detectSoft404Title(body);
+    if (soft404) {
+      return { ok: false, status: res.status, note: `possível soft 404 (title: "${soft404}")` };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    return { ok: false, note: `GET falhou: ${(e as Error).message}` };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -284,11 +380,15 @@ export function parseSwapLinkArgs(argv: string[]): SwapLinkArgs {
 
 export type VerifyFn = (url: string, opts?: VerifyOptions) => ReturnType<typeof verifyUrl>;
 
+export type RefreshSourcesFn = (editionDir: string) => Promise<RefreshResult>;
+
 export async function runSwapLink(
   args: SwapLinkArgs,
   verifyFn: VerifyFn = verifyUrl,
+  refreshFn: RefreshSourcesFn = (dir) => refreshDestaqueSources(dir),
+  getProbeFn: GetProbeFn = (url) => probeGetWithBrowserUa(url),
 ): Promise<SwapLinkResult> {
-  const { edition, editionDir, destaque, url: newUrl, dryRun } = args;
+  const { edition, editionDir, destaque, url: newUrl, dryRun, skipVerify = false } = args;
   const position = Number(destaque.slice(1)) as 1 | 2 | 3;
 
   if (!existsSync(editionDir)) {
@@ -309,13 +409,32 @@ export async function runSwapLink(
   // -------------------------------------------------------------------
   // (a) Fail-fast: verificar acessibilidade da NOVA url ANTES de tocar
   // qualquer arquivo (#5458, mesma disciplina de swap-destaque.ts).
+  // #11688: recusa só do HEAD é confirmada por GET; --skip-verify pula tudo.
   // -------------------------------------------------------------------
-  const verdict = await verifyFn(newUrl);
-  if (!OK_VERDICTS.has(verdict.verdict)) {
-    throw new Error(
-      `URL inacessível (verdict: ${verdict.verdict}${verdict.note ? `, ${verdict.note}` : ""}) — ` +
-        `nenhum arquivo foi modificado. Nova URL: ${newUrl}`,
-    );
+  let verification: SwapLinkVerification;
+  if (skipVerify) {
+    verification = { mode: "skipped" };
+  } else {
+    const verdict = await verifyFn(newUrl);
+    if (OK_VERDICTS.has(verdict.verdict)) {
+      verification = { mode: "verify", verdict: verdict.verdict };
+    } else {
+      const probe = isHeadOnlyRejection(verdict.note) ? await getProbeFn(newUrl) : null;
+      if (!probe?.ok) {
+        const probeNote = probe ? `; confirmação por GET: ${probe.note ?? "falhou"}` : "";
+        throw new Error(
+          `URL inacessível (verdict: ${verdict.verdict}${verdict.note ? `, ${verdict.note}` : ""}${probeNote}) — ` +
+            `nenhum arquivo foi modificado. Nova URL: ${newUrl}. ` +
+            `Se a URL abre no navegador, repita com --skip-verify.`,
+        );
+      }
+      verification = {
+        mode: "get-fallback",
+        verdict: verdict.verdict,
+        ...(verdict.note ? { note: verdict.note } : {}),
+        ...(probe.status !== undefined ? { get_status: probe.status } : {}),
+      };
+    }
   }
 
   const approvedData = JSON.parse(readFileSync(approvedPath, "utf8")) as Record<string, unknown>;
@@ -343,6 +462,7 @@ export async function runSwapLink(
     new_url: newUrl,
     modified: [],
     skipped: [],
+    verification,
   };
 
   if (dryRun) {
@@ -439,6 +559,23 @@ export async function runSwapLink(
     result.skipped.push({ file: sdPromptPath, reason: "arquivo não encontrado (Stage 3 ainda não rodou)" });
   }
 
+  // -------------------------------------------------------------------
+  // (f) #11671: fonte do fact-check segue a URL nova. O approved já foi
+  // regravado acima, então o refresh vê a URL divergente no manifest e
+  // re-baixa. Fail-soft: a troca já está feita; erro aqui só fica registrado.
+  // -------------------------------------------------------------------
+  try {
+    const refresh = await refreshFn(editionDir);
+    const source = refresh.sources.find((s) => s.destaque === position);
+    result.fact_check_sources = {
+      refetched: refresh.refetched,
+      failed: refresh.failed,
+      ...(source?.path ? { source_path: source.path } : {}),
+    };
+  } catch (e) {
+    result.fact_check_sources = { error: (e as Error).message };
+  }
+
   return result;
 }
 
@@ -446,7 +583,7 @@ export async function runSwapLink(
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseSwapLinkArgs(process.argv.slice(2));
   try {
     const result = await runSwapLink(args);
@@ -457,22 +594,42 @@ async function main(): Promise<void> {
         `${result.dry_run ? "[dry-run] " : ""}✓ swap-destaque-link concluído (edição ${result.edition}, ${result.destaque})`,
         `  URL antiga: ${result.old_url}`,
         `  URL nova:   ${result.new_url}`,
+        ...(result.verification.mode === "skipped"
+          ? ["  ⚠ Acessibilidade da URL nova NÃO verificada (--skip-verify)."]
+          : result.verification.mode === "get-fallback"
+            ? [
+                `  ⚠ verify recusou pelo HEAD (${result.verification.note ?? result.verification.verdict}); ` +
+                  `GET com UA de navegador respondeu ${result.verification.get_status ?? "ok"} — troca aceita.`,
+              ]
+            : []),
         "",
         result.dry_run ? "  Arquivos que SERIAM modificados:" : "  Arquivos modificados:",
         ...result.modified.map((f) => `    • ${f}`),
         ...(result.skipped.length > 0
           ? ["", "  Arquivos pulados:", ...result.skipped.map((s) => `    • ${s.file} — ${s.reason}`)]
           : []),
+        ...(result.fact_check_sources
+          ? [
+              "",
+              "error" in result.fact_check_sources
+                ? `  ⚠ Fonte do fact-check NÃO re-baixada (${result.fact_check_sources.error}) — rodar refresh-destaque-sources.ts --edition-dir ${args.editionDir}`
+                : `  Fonte do fact-check: ${result.fact_check_sources.refetched ? "re-baixada" : "já em dia"}` +
+                  (result.fact_check_sources.failed.length > 0
+                    ? ` (download falhou: ${result.fact_check_sources.failed.map((n) => `D${n}`).join(", ")})`
+                    : ""),
+              "  Re-rodar o fact-checker (§4c.6): o fact-check.json anterior checou o texto com o link antigo.",
+            ]
+          : []),
       ].join("\n"),
     );
   } catch (e) {
     console.error(`Erro: ${(e as Error).message}`);
-    process.exit(1);
+    return 1;
   }
 }
 
 // CLI guard — required per repo invariant: scripts that export helpers AND
 // call main() need this guard so tests that import helpers don't trigger main()
 if (isMainModule(import.meta.url)) {
-  main();
+  runCli(main);
 }

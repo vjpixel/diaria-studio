@@ -1064,5 +1064,17 @@
       "https://www.anthropic.com/research/claude-scorpion-toxin-binder-design"
     ],
     "editionTitle": "Claude projetou proteínas contra veneno de escorpião"
+  },
+  {
+    "date": "2026-10-26",
+    "editionSlug": "hackers-usam-claude-e-grok-contra-bancos",
+    "url": "https://diar.ia.br/p/hackers-usam-claude-e-grok-contra-bancos",
+    "matchedHeadlines": [
+      "Hackers usam Claude e Grok contra bancos"
+    ],
+    "primarySourceUrls": [
+      "https://www.straiker.ai/blog/inside-carliy0s-how-cybercartel-used-multiple-ai-models-to-attack-latin-american-banks"
+    ],
+    "editionTitle": "Hackers usam Claude e Grok contra bancos"
   }
 ]

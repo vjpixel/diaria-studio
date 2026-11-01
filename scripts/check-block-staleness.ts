@@ -103,6 +103,7 @@ import {
   repoOfIssueKey,
   type IssueKey,
 } from "./lib/issue-key.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 
 /** `-R owner/repo` para um repo que não é o diaria-studio; `[]` para o
  * studio (a chamada de sempre, que resolve pelo cwd). */
@@ -293,6 +294,8 @@ if (isMainModule(import.meta.url)) {
     console.error("[check-block-staleness] uso: --plan {path}");
     process.exit(2);
   }
+  // #11721: restaura a cópia de conflito do OneDrive (plan-*-safeBackup-*.json) antes de checar.
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) {
     console.error(`[check-block-staleness] plan.json não encontrado: ${planPath}`);
     process.exit(2);

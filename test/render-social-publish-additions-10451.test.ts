@@ -35,6 +35,7 @@ import {
   groupByDestaque,
   parsePlatforms,
   publishAdditionsFor,
+  PREVIEW_EDITION_URL_PLACEHOLDER, // #11724
   resolveUseMelhorCaptionTitle,
   useMelhorBlocksForSection,
   type GroupedBlock,
@@ -102,7 +103,7 @@ describe("#10451 — preview mostra o que o publish acrescenta", () => {
 
   it("um no Instagram: título + linha de engajamento PRÓPRIA, igual a buildUseMelhorInstagramPost", () => {
     const b = blockFor("um", "Instagram", TITLE);
-    const r = buildUseMelhorInstagramPost({ socialMd: MD, plan, images, editionDir: "x", fileExists: () => true });
+    const r = buildUseMelhorInstagramPost({ socialMd: MD, plan, images, editionDir: "x", editionUrl: PREVIEW_EDITION_URL_PLACEHOLDER, fileExists: () => true });
     assert.ok(r.ok, JSON.stringify(r));
     if (!r.ok) return;
     assert.equal(previewPublished(b, "Instagram"), r.caption);
@@ -112,9 +113,13 @@ describe("#10451 — preview mostra o que o publish acrescenta", () => {
   });
 
   it("um no Facebook e no LinkedIn: título no topo, igual aos publicadores", () => {
-    const fb = buildUseMelhorFacebookPost({ socialMd: MD, plan, images, editionDir: "x", fileExists: () => false });
+    // #11724: o preview mostra o placeholder onde o publish põe o permalink (com UTM).
+    const fb = buildUseMelhorFacebookPost({ socialMd: MD, plan, images, editionDir: "x", editionUrl: "https://diar.ia.br/p/x", fileExists: () => false });
     assert.ok(fb.ok, JSON.stringify(fb));
-    if (fb.ok) assert.equal(previewPublished(blockFor("um", "Facebook", TITLE), "Facebook"), fb.caption);
+    if (fb.ok) {
+      const withPlaceholder = fb.caption.replace(/https:\/\/diar\.ia\.br\/p\/x\?\S*?(?=\.(?:\s|$))/, PREVIEW_EDITION_URL_PLACEHOLDER);
+      assert.equal(previewPublished(blockFor("um", "Facebook", TITLE), "Facebook"), withPlaceholder);
+    }
     const li = buildUseMelhorLinkedInPost({ socialMd: MD, plan, images });
     assert.ok(li.ok, JSON.stringify(li));
     if (li.ok) assert.equal(previewPublished(blockFor("um", "LinkedIn", TITLE), "LinkedIn"), li.text);
@@ -213,7 +218,7 @@ describe("#10451 — achados do review da PR #10454", () => {
 
   it("Facebook e LinkedIn passam useMelhor ao injectChannelLine (preview assume a linha do 4º post)", () => {
     for (const f of ["scripts/publish-facebook.ts", "scripts/publish-linkedin.ts"]) {
-      assert.match(readFileSync(f, "utf8"), /injectChannelLine\([\s\S]{0,80}\{ useMelhor: destaque === USE_MELHOR_POST_ID \}\)/, f);
+      assert.match(readFileSync(f, "utf8"), /injectChannelLine\([\s\S]{0,80}\{ useMelhor: destaque === USE_MELHOR_POST_ID(?:, editionUrl)? \}\)/, f);
     }
   });
 });

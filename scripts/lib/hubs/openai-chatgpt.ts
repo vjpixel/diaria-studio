@@ -160,7 +160,7 @@ const PUBLISHED_DATE = "2026-08-09";
 // efeito é a janela de cobertura derivada do FAQ avançar até 16/09/2026.
 // 2026-10-01: `generate-hub-sources.ts` trouxe as edições de 29-30/09 pra
 // `sourceEditions`; bump pelo PISO de `validateHubContent` (mesmo caso do #5123).
-const UPDATED_DATE = "2026-09-30";
+const UPDATED_DATE = "2026-10-30";
 
 /** `matchedHeadlines` vem em NFD (mesmo achado de `anthropic-claude.ts`) —
  * ver a nota completa em `countMatching`, agora em

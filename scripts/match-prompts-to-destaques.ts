@@ -55,17 +55,38 @@ import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 const DESTAQUE_HEADER = /(?:\*\*)?DESTAQUE \d+\s*\|/;
 
 export function extractDestaqueUrls(reviewedMd: string): string[] {
+  return destaqueBlocks(reviewedMd)
+    .map((b) => b.url)
+    .filter((u): u is string => u !== undefined);
+}
+
+/**
+ * (#11685 item 3) URL de cada bloco DESTAQUE pelo NÚMERO do header
+ * (`DESTAQUE 2` → índice 1), com `undefined` no bloco sem URL — o
+ * placeholder `[RASCUNHO PENDENTE]` do `swap-destaques.ts`. Com
+ * `extractDestaqueUrls` (que pula esses blocos) o D3 subia para o índice do D2.
+ */
+export function extractDestaqueUrlsByNumber(reviewedMd: string): Array<string | undefined> {
+  const out: Array<string | undefined> = [];
+  for (const b of destaqueBlocks(reviewedMd)) {
+    if (b.n >= 1 && out[b.n - 1] === undefined) out[b.n - 1] = b.url;
+  }
+  return Array.from({ length: out.length }, (_, i) => out[i]);
+}
+
+function destaqueBlocks(reviewedMd: string): Array<{ n: number; url: string | undefined }> {
   const normalized = reviewedMd.replace(/\r\n/g, "\n");
   const blocks = normalized.split(
     new RegExp(`\\n(?=${DESTAQUE_HEADER.source})`),
   );
-  const urls: string[] = [];
+  const out: Array<{ n: number; url: string | undefined }> = [];
 
   for (const block of blocks) {
     const headerMatch = block.match(
       new RegExp(`^${DESTAQUE_HEADER.source}`),
     );
     if (!headerMatch) continue;
+    const n = Number(headerMatch[0].match(/\d+/)?.[0] ?? 0);
     // Primeira URL do block. Heurística calibrada pro formato real do título do
     // destaque: `**[Título](URL)**` em linha própria, terminado por `**` + EOL.
     //
@@ -83,12 +104,10 @@ export function extractDestaqueUrls(reviewedMd: string): string[] {
     // (`](url)(ver)` → `url)(ver`). O título sempre é bold-wrapped + EOL, então o
     // primeiro `https://` do block é o link do título e termina em `**`.
     const urlMatch = block.match(/https?:\/\/[^\s\]<>"]+/);
-    if (urlMatch) {
-      urls.push(stripUrlTrailingPunct(urlMatch[0].replace(/\*+$/, "")));
-    }
+    out.push({ n, url: urlMatch ? stripUrlTrailingPunct(urlMatch[0].replace(/\*+$/, "")) : undefined });
   }
 
-  return urls;
+  return out;
 }
 
 /**

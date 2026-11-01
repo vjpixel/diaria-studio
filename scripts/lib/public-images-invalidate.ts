@@ -51,21 +51,29 @@ export function invalidatePublicImagesForPositions(
   data: unknown,
   positions: readonly number[],
 ): PublicImagesInvalidation {
+  return invalidatePublicImageKeys(data, [...new Set(positions.flatMap(publicImageKeysForPosition))]);
+}
+
+/**
+ * #11672: chave de `06-public-images.json` do 1:1 de uma posição (`d{N}`,
+ * legada desde #7399 — o upload não a grava mais, mas caches antigos a têm).
+ * Trocar só o 1:1 invalida só ela: o hero 2:1, o card 4:5 e o carrossel não
+ * mudaram.
+ */
+export function squarePublicImageKey(pos: number): string {
+  return `d${pos}`;
+}
+
+/** Remove de `data.images` as chaves pedidas. Pure, mesmo contrato de `invalidatePublicImagesForPositions`. */
+export function invalidatePublicImageKeys(data: unknown, keys: readonly string[]): PublicImagesInvalidation {
   const rawImages = data && typeof data === "object" ? (data as { images?: unknown }).images : undefined;
   if (!rawImages || typeof rawImages !== "object" || Array.isArray(rawImages)) {
     return { changed: false, removedKeys: [], data };
   }
   const images = { ...(rawImages as Record<string, unknown>) };
-  const removedKeys: string[] = [];
-  for (const pos of positions) {
-    for (const key of publicImageKeysForPosition(pos)) {
-      if (key in images) {
-        delete images[key];
-        removedKeys.push(key);
-      }
-    }
-  }
+  const removedKeys = keys.filter((k) => k in images);
   if (removedKeys.length === 0) return { changed: false, removedKeys: [], data };
+  for (const k of removedKeys) delete images[k];
   return { changed: true, removedKeys, data: { ...(data as object), images } };
 }
 
@@ -90,6 +98,18 @@ export function planPublicImagesInvalidation(
   editionDir: string,
   positions: readonly number[],
 ): PublicImagesFilePlan {
+  return planPublicImagesInvalidationWith(editionDir, (data) => invalidatePublicImagesForPositions(data, positions));
+}
+
+/** #11672: mesmo plano de `planPublicImagesInvalidation`, para chaves avulsas. */
+export function planPublicImageKeysInvalidation(editionDir: string, keys: readonly string[]): PublicImagesFilePlan {
+  return planPublicImagesInvalidationWith(editionDir, (data) => invalidatePublicImageKeys(data, keys));
+}
+
+function planPublicImagesInvalidationWith(
+  editionDir: string,
+  invalidate: (data: unknown) => PublicImagesInvalidation,
+): PublicImagesFilePlan {
   const path = resolve(editionDir, "06-public-images.json");
   if (!existsSync(path)) return { path, removedKeys: [] };
   let data: unknown;
@@ -98,7 +118,7 @@ export function planPublicImagesInvalidation(
   } catch (e) {
     return { path, removedKeys: [], error: (e as Error).message ?? String(e) };
   }
-  const result = invalidatePublicImagesForPositions(data, positions);
+  const result = invalidate(data);
   if (!result.changed) return { path, removedKeys: [] };
   return { path, removedKeys: result.removedKeys, content: JSON.stringify(result.data, null, 2) + "\n" };
 }

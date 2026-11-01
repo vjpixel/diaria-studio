@@ -62,6 +62,7 @@ import {
 } from "../use-melhor-post.ts"; // #9568
 import { findOverflowingUseMelhorSlides, lintUseMelhorPostShape } from "../use-melhor-carousel.ts"; // #9568, #9789/#9791, #10246
 import { readUseMelhorCarouselStamp, staleUseMelhorImageKeys } from "../use-melhor-slide-files.ts"; // #9795
+import { lintUseMelhorIsca } from "../use-melhor-isca.ts"; // #11667
 import { gatherUseMelhorStatusInput } from "../use-melhor-status.ts"; // #10879
 import { readInstagramTestOverride, instagramTestOverridePath, type CarouselCtaOverride, type InstagramTestOverride } from "../instagram-test-override.ts"; // #8681
 import { readCarouselKeepArtSafe, carouselKeepArtPath, CAROUSEL_KEEP_ART_FILENAME } from "../carousel-keep-art.ts"; // #11210
@@ -825,6 +826,76 @@ export function checkSponsoredSourceMarkers(editionDir: string): InvariantViolat
       file: reviewedPath,
       line,
     });
+  }
+  return out;
+}
+
+/**
+ * #11667: WARN-only — o 4º post (`## um`, item USE MELHOR) é a isca da
+ * edição: mostra parte dos itens, nunca diz quantos faltam, nunca promete a
+ * lista inteira e fecha com a chamada DATADA ("na edição de DD/MM"; no texto
+ * corrido, no fim do 3º parágrafo, com uma única frase antes). Regras em
+ * `context/editorial-rules.md` §"USE MELHOR no social"; lógica pura em
+ * `scripts/lib/use-melhor-isca.ts`. Também avisa quando o item vem marcado
+ * como possível publieditorial (#10169): só vira isca se o editor confirmar
+ * no gate que não é anúncio. Inerte com o 4º post desligado ou sem item.
+ */
+export function checkUseMelhorIsca(
+  editionDir: string,
+  /** Injetável pra teste; default = `platform.config.json` do repo. */
+  useMelhorConfig?: UseMelhorPostConfigState,
+): InvariantViolation[] {
+  const config = useMelhorConfig ?? loadUseMelhorPostConfigState(ROOT);
+  if (!config.enabled) return [];
+  const state = readUseMelhorPostState(editionDir);
+  if (!state?.item) return [];
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) return [];
+  const section = extractSection(readFileSync(socialPath, "utf8"), "Social");
+  const umText = section ? extractDestaqueBlock(section, USE_MELHOR_POST_ID) : null;
+  const out: InvariantViolation[] = [];
+  if (umText && umText.trim()) {
+    const problems = lintUseMelhorIsca(umText.trim(), {
+      format: useMelhorUmFormat(state.item),
+      editionId: basename(editionDir),
+    });
+    if (problems.length > 0) {
+      out.push({
+        rule: "use-melhor-um-isca",
+        message:
+          `'## ${USE_MELHOR_POST_ID}' (4º post, USE MELHOR) fora do padrão de isca da edição (#11667): ` +
+          problems.join("; ") +
+          `. Ajustar em 03-social.md (edição cirúrgica, #495); o 4º post é fail-soft, não bloqueia a edição.`,
+        source_issue: "#11667",
+        severity: "warning",
+        file: socialPath,
+      });
+    }
+  }
+  const url = state.item.url;
+  if (url) {
+    let host: string | null = null;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      host = null;
+    }
+    if (host && !isNonEditorialHost(host)) {
+      const bodiesDir = resolve(editionDir, "_internal", "_forensic", "link-verify-bodies");
+      const markers = detectSponsoredMarkers(url, loadCachedBody(bodiesDir, url));
+      if (markers.length > 0) {
+        out.push({
+          rule: "use-melhor-um-isca",
+          message:
+            `item do 4º post (USE MELHOR) com marcador de publieditorial (${markers.join(", ")}) em ${url} — ` +
+            `só pode ser a isca principal do dia se o editor confirmar no gate que NÃO é anúncio; ` +
+            `senão, trocar o item do 4º post (#11667, #10169).`,
+          source_issue: "#11667",
+          severity: "warning",
+          file: useMelhorPostStatePath(editionDir),
+        });
+      }
+    }
   }
   return out;
 }
@@ -2102,21 +2173,28 @@ export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolat
   const seen = new Set<string>();
   for (const w of warnings) {
     if (!w || typeof w !== "object") continue;
-    const { cross_source_match, candidate_url, candidate_title, matched_edition, matched_title, jaccard } = w as Record<string, unknown>;
+    const { cross_source_match, candidate_url, candidate_title, matched_edition, matched_title, jaccard, effective_threshold } = w as Record<string, unknown>;
     if (cross_source_match !== true || typeof candidate_url !== "string") continue;
     const url = canonicalize(candidate_url);
     if (!inEdition.has(url) || sameFactUrls.has(url) || seen.has(url)) continue;
     // #11517: gradua pelo jaccard SEM palavras de anúncio genéricas
-    // ("introducing", "update"...), recalculado dos dois títulos. Abaixo do
-    // piso do sinal o par só casava por palavra genérica: não sobe. Entre o
-    // piso e THEME_CROSS_SOURCE_CUT_MIN_JACCARD sobe sem 🚨, como conferência;
+    // ("introducing", "update"...), recalculado dos dois títulos. O piso é o
+    // MESMO que o Stage 1 usou para aceitar o par (`effective_threshold`: 0.20,
+    // ou 0.15 quando os títulos têm entidade nomeada em comum, #11652); sem o
+    // campo (arquivo antigo), 0.20. Abaixo desse piso o par só tinha casado
+    // por palavra genérica: não sobe. Entre o piso e
+    // THEME_CROSS_SOURCE_CUT_MIN_JACCARD sobe sem 🚨, como conferência;
     // "Cortar no gate" fica para o par com sobreposição de conteúdo real.
     // Sem os dois títulos, cai no jaccard gravado pelo Stage 1.
     const contentSim =
       typeof candidate_title === "string" && typeof matched_title === "string"
         ? contentJaccard(candidate_title, matched_title)
         : typeof jaccard === "number" ? jaccard : THEME_CROSS_SOURCE_CUT_MIN_JACCARD;
-    if (contentSim < REPEAT_THEME_WARN_THRESHOLD) continue;
+    const floor =
+      typeof effective_threshold === "number" && Number.isFinite(effective_threshold)
+        ? effective_threshold
+        : REPEAT_THEME_WARN_THRESHOLD;
+    if (contentSim < floor) continue;
     seen.add(url);
     const pair = `“${String(candidate_title ?? "")}” (${candidate_url}) × ${String(matched_edition ?? "?")} “${String(matched_title ?? "")}” (jaccard=${String(jaccard ?? "?")}, sem palavras genéricas=${Math.round(contentSim * 100) / 100}, gatilho cross-source do Stage 1)`;
     out.push({
@@ -4267,6 +4345,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#10169",
     stage: 4,
     run: checkSponsoredSourceMarkers,
+  },
+  {
+    id: "use-melhor-um-isca",
+    description: "4º post (## um, USE MELHOR) fora do padrão de isca — diz quantos itens faltam, promete a lista inteira, chamada sem data ou fora do fim do 3º parágrafo, ou item com marcador de publieditorial sem confirmação no gate — warning-only (#11667)",
+    source_issue: "#11667",
+    stage: 4,
+    run: checkUseMelhorIsca,
   },
   {
     id: "approved-item-removed",

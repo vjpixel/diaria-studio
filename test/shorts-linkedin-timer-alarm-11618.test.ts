@@ -63,6 +63,13 @@ const DRIVE_NONE = JSON.stringify({
 /** Dia sem vídeo: nem a pasta da edição existe no Drive. */
 const DRIVE_NONE_NO_FOLDER = JSON.stringify({ edition: AAMMDD, orientation: "vertical", folder_id: "root", local_path: "x", edition_folder_id: null, final_folder_ids: [], target: "generic", action: "none", selection: "none", reason: "sem pasta" });
 
+/** #11631: saída do publish-shorts com o linkedin_profile publicado (o timer passou a ler o JSON). */
+const PUBLISHED_OUT = JSON.stringify({
+  dry_run: false,
+  items: [{ destination: "linkedin_profile", mode: "api", action: "publish", detail: "" }],
+  results: [{ destination: "linkedin_profile", ok: true, entry: { destination: "linkedin_profile", status: "published", id: "urn:li:share:1", url: "https://www.linkedin.com/feed/update/urn:li:share:1", at: "t" } }],
+});
+
 function edition(): string {
   const dir = mkdtempSync(join(tmpdir(), "li-timer-11618-"));
   mkdirSync(join(dir, "_internal"), { recursive: true });
@@ -94,7 +101,7 @@ function deps(now: Date, driveStdout: string, notify: LinkedinTimerRunDeps["noti
     runScript: (args: string[]) => {
       scripts.push(args);
       if (args[0] === "scripts/fetch-drive-video.ts") return { status: 0, stdout: driveStdout };
-      return { status: 0, stdout: "" };
+      return { status: 0, stdout: PUBLISHED_OUT };
     },
     notify,
     scripts,
@@ -154,6 +161,24 @@ describe("#11618 runLinkedinTimer: vertical ausente no disco e no Drive", () => 
       assert.deepEqual(JSON.parse(readFileSync(join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE), "utf8")).alarmed, ["missing-video"]);
       assert.ok(d.scripts.every((a) => a[0] === "scripts/fetch-drive-video.ts"), "nunca roda o publish-shorts sem vídeo");
       assert.equal(existsSync(join(dir, TIMER_LOCK_FILE)), false, "solta o lock");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("#11633: mudança de motivo na mesma edição avisa uma vez por motivo", async () => {
+    const dir = edition();
+    try {
+      const gh = fakeGh();
+      const now = new Date(Date.parse(AT) + 90 * 60_000);
+      const missing = deps(now, DRIVE_NONE, gh.notify);
+      const ambiguous = deps(now, JSON.stringify({ action: "needs-editor", selection: "duplicate-edition-folder" }), gh.notify);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, missing), 0);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, ambiguous), 0);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, missing), 0);
+      assert.equal(await runLinkedinTimer(AAMMDD, dir, false, ambiguous), 0);
+      assert.equal(gh.issues.length, 2);
+      assert.equal(gh.sent.length, 2);
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, LINKEDIN_TIMER_ALARM_STATE_FILE), "utf8")).alarmed, ["missing-video", "drive-needs-editor"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

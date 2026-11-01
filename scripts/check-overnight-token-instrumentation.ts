@@ -56,6 +56,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 
 /** Os 3 tipos de evento mandatados pelo SKILL.md (#3453 Rec 1, #4815). */
 export const TRACKED_TOKEN_INSTRUMENTATION_MESSAGES = [
@@ -358,7 +359,10 @@ export function checkOvernightTokenInstrumentation(
  */
 export function resolveSessionScopeFromArgs(
   values: Record<string, string>,
-  readPlan: (path: string) => string = (p) => readFileSync(p, "utf8"),
+  readPlan: (path: string) => string = (p) => {
+    recoverPlanFromSafeBackupWithWarning(p); // #11721: cópia de conflito do OneDrive
+    return readFileSync(p, "utf8");
+  },
 ): TokenInstrumentationScope {
   const explicit = values["session-id"]?.trim();
   if (explicit) return { sessionId: explicit };

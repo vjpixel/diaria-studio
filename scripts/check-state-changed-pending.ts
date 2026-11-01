@@ -77,6 +77,7 @@ import {
 } from "./lib/state-changed-tracker.ts";
 import { formatIssueRef, ISSUE_REPOS_CONFIG_ROOT, legacyIssueNumber, loadIssueRepos, parseIssueRef } from "./lib/issue-repos.ts";
 import type { IssueKey } from "./lib/issue-key.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 
 /** #10407 — `claimed-por-outra-sessao` só conta na re-classificação numa
  * sessão develop (overnight/continuo não pegam develop/bloqueada, seria
@@ -249,6 +250,8 @@ if (isMainModule(import.meta.url)) {
     process.exit(2);
   }
 
+  // #11721: restaura a cópia de conflito do OneDrive (plan-*-safeBackup-*.json) antes de checar.
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) {
     console.error(`[check-state-changed-pending] plan.json não encontrado: ${planPath}`);
     process.exit(2);

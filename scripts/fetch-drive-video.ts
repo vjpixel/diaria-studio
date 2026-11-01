@@ -83,7 +83,7 @@ import { loadShortsConfig } from "./lib/diaria/short-video.ts";
  */
 
 import sharp from "sharp";
-import { existsSync, readFileSync, statSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -114,6 +114,21 @@ import {
 import { youtubeVideoFileName } from "./lib/diaria/youtube-video.ts";
 import { shortVideoFileName } from "./lib/diaria/short-video.ts";
 import { YOUTUBE_PUBLISHED_FILE } from "./lib/diaria/youtube-upload.ts";
+import { SHORT_COVER_SOURCE_FILE, buildShortCoverSource } from "./lib/diaria/short-cover.ts";
+
+/**
+ * #11547: grava qual Still virou `04-youtube-short-capa.jpg` (o nome traz o
+ * timecode que vira o `thumbnailOffset` da Buffer). Opcional: falha só avisa.
+ */
+export function writeShortCoverSourceSidecar(editionDir: string, stillName: string, bytes: number, log: (line: string) => void): void {
+  const path = join(editionDir, SHORT_COVER_SOURCE_FILE);
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(buildShortCoverSource(stillName, bytes))}\n`);
+  } catch (e) {
+    log(`[aviso] origem da capa não registrada (${(e as Error).message}); o X sai sem thumbnailOffset`);
+  }
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -227,7 +242,16 @@ export type FetchDriveVideoOutput =
   | (OutputBase & { action: "already-published"; record_path: string; video_url: string | null })
   | (OutputBase & { action: "error"; phase: "folder" | "list"; error: string })
   | (OutputBase & { action: "needs-editor"; selection: "duplicate-edition-folder"; folders: DescribedDriveFolder[] })
-  | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous-cover"; candidates: DescribedDriveFile[] })
+  | (OutputWithFolder & {
+      action: "needs-editor";
+      selection: "ambiguous-cover";
+      candidates: DescribedDriveFile[];
+      /**
+       * #11650: como ficou a escolha do VÍDEO, apurada antes da capa travar.
+       * Só `found` permite dizer ao editor que "o vertical já é único".
+       */
+      video_selection: DriveVideoSelection["kind"];
+    })
   | (OutputWithFolder & { action: "error"; phase: "cover-download"; error: string })
   | (OutputWithFolder & { action: "none"; selection: "none"; reason: string })
   | (OutputWithFolder & { action: "needs-editor"; selection: "ambiguous"; candidates: DescribedDriveFile[] })
@@ -565,14 +589,24 @@ export async function runFetchDriveVideo(
 
   const coverPath = join(input.editionDir, orientation === "horizontal" ? "04-youtube-thumb.jpg" : "04-youtube-short-capa.jpg");
   const covers = driveCoverCandidates(coverFiles, orientation);
+  const localCoverExists = existsSync(coverPath) && statSync(coverPath).size > 0;
+  // #11650: a ambiguidade só importa quando a capa do Drive seria usada. Com a
+  // capa local presente e sem --force (#11636), o Still do Drive é ignorado de
+  // qualquer jeito, então não pode travar o download do vídeo.
+  const driveCoverWouldBeUsed = !localCoverExists || input.force;
   if (covers.length > 1 && localReady) {
     log(`[aviso] capas Still ambíguas (${covers.map(describeForLog).join(" | ")}); vídeo local mantido, capa do Drive ignorada — deixe uma só em Final/ e rode de novo`);
     covers.length = 0;
+  } else if (covers.length > 1 && !driveCoverWouldBeUsed) {
+    log(`[aviso] capas Still ambíguas (${covers.map(describeForLog).join(" | ")}); capa local mantida, Still do Drive ignorado — o vídeo segue (#11650)`);
+    covers.length = 0;
   } else if (covers.length > 1) {
     log(`[aviso] capas Still ambíguas: ${covers.map(describeForLog).join(" | ")}`);
-    return { exitCode: 3, output: { ...withFolder, action: "needs-editor", selection: "ambiguous-cover", candidates: covers.map(describeFile) } };
+    return {
+      exitCode: 3,
+      output: { ...withFolder, action: "needs-editor", selection: "ambiguous-cover", candidates: covers.map(describeFile), video_selection: sel.kind },
+    };
   }
-  const localCoverExists = existsSync(coverPath) && statSync(coverPath).size > 0;
   // #11636: preservar ajustes locais; trocar a capa exige --force.
   const cover = localCoverExists && !input.force ? undefined : covers[0];
   if (localCoverExists && !input.force && covers[0]) {
@@ -599,6 +633,7 @@ export async function runFetchDriveVideo(
       renameSync(converted, coverPath);
       if (replacingLocalCover) log("[premissa] capa local substituída pelo Still do Drive");
       log(`[ok] capa do Drive: ${describeForLog(cover)} → ${coverPath}`);
+      if (orientation === "vertical") writeShortCoverSourceSidecar(input.editionDir, cover.name, statSync(coverPath).size, log);
     } catch (e) {
       // A capa é opcional: cai na local/automática em vez de barrar o vídeo (review #11545).
       const fallback = existsSync(coverPath) && statSync(coverPath).size > 0 ? "local" : "automatic";
