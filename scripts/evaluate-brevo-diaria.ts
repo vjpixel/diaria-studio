@@ -1182,7 +1182,7 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
  * Passo 1 (auto-confirmação) pra contato de origem BEEHIIV que confirmou o
  * double opt-in da Beehiiv por conta própria (`beehiivStatus === "active"`).
  * Até o #11225 este caminho só desvinculava o contato da fila Brevo e
- * dependia da ponte `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) (task diária) pra
+ * dependia da ponte `sync-beehiiv-subscribers-kit.ts` (task diária) pra
  * colocá-lo no Kit, que é quem envia a diária. A ponte foi aposentada
  * (decisão do editor de 28/10/2026: a Beehiiv é só arquivo histórico), então
  * a escrita no Kit acontece aqui, na hora.
@@ -1192,7 +1192,10 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
  * (`inactive`, `cancelled`, `bounced`, `complained`) nunca é reativado por
  * aqui: o POST seria aceito e ignorado, e reativar quem saiu do Kit sem o
  * consentimento dele é justamente o que o #8728 proíbe. Nesse caso devolve
- * `{ confirmed: false, reason }` e o caller mantém o contato `in_brevo`.
+ * `{ outcome: "await_self_confirmation", state }`: não é falha (contá-la
+ * como `failed` toda rodada reabriria o bloqueio de dispatch do #8728), e o
+ * caller deixa o contato seguir pra avaliação normal (Passo 2), igual a
+ * qualquer contato ainda não confirmado no Kit. Erro de rede propaga.
  *
  * Grava `origem_cadastro = beehiiv-sync` (o mesmo marcador que a ponte
  * gravava), pra `acquisition-health-store.ts` seguir excluindo esse caminho
@@ -1201,10 +1204,14 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
 export async function promoteSelfConfirmedBeehiivToKit(
   email: string,
   apiKey: string,
-): Promise<{ confirmed: true } | { confirmed: false; reason: string }> {
+): Promise<
+  | { outcome: "confirmed" }
+  | { outcome: "await_self_confirmation"; state: string }
+  | { outcome: "not_confirmed"; reason: string }
+> {
   const existing = await getKitSubscriberByEmail(email, { apiKey });
   if (decideKitPromotionAction(existing ? { state: existing.state } : null) === "await_self_confirmation") {
-    return { confirmed: false, reason: `já existe no Kit como '${existing!.state}' — não reativa (#8728)` };
+    return { outcome: "await_self_confirmation", state: existing!.state };
   }
   const subscriber = await createOrUpdateSubscriber(
     {
@@ -1215,9 +1222,9 @@ export async function promoteSelfConfirmedBeehiivToKit(
     { apiKey },
   );
   if (!(await verifyPromotedToKit(subscriber.id, apiKey))) {
-    return { confirmed: false, reason: "releitura no Kit não confirmou state active" };
+    return { outcome: "not_confirmed", reason: "releitura no Kit não confirmou state active" };
   }
-  return { confirmed: true };
+  return { outcome: "confirmed" };
 }
 
 /**
@@ -3140,25 +3147,39 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         // atraso), aposentada junto com o envio pela Beehiiv. Escrita não
         // confirmada (ou Kit indisponível) mantém o contato `in_brevo` e
         // conta em `failed` — nunca desvincula sem o Kit confirmar `active`.
-        if (beehiivStatus === "active") {
-          if (push && newsletterBackend === "kit") {
-            let kitResult: Awaited<ReturnType<typeof promoteSelfConfirmedBeehiivToKit>>;
-            if (!kitApiKey) {
-              kitResult = { confirmed: false, reason: "KIT_API_KEY ausente" };
-            } else {
-              try {
-                kitResult = await promoteSelfConfirmedBeehiivToKit(contact.email, kitApiKey);
-              } catch (e) {
-                kitResult = { confirmed: false, reason: `falha no Kit: ${(e as Error).message}` };
+        let awaitingKitSelfConfirmation = false;
+        if (beehiivStatus === "active" && push && newsletterBackend === "kit") {
+          let kitFailure: { reason: string; rateLimited: boolean } | undefined;
+          if (!kitApiKey) {
+            kitFailure = { reason: "KIT_API_KEY ausente", rateLimited: false };
+          } else {
+            try {
+              const kitResult = await promoteSelfConfirmedBeehiivToKit(contact.email, kitApiKey);
+              if (kitResult.outcome === "await_self_confirmation") {
+                log(
+                  `${contact.email}: ativo na Beehiiv, mas já existe no Kit como '${kitResult.state}' — não reativa (#8728); ` +
+                    "segue pra avaliação normal (#11225).",
+                );
+                awaitingKitSelfConfirmation = true;
+              } else if (kitResult.outcome === "not_confirmed") {
+                kitFailure = { reason: kitResult.reason, rateLimited: false };
               }
-            }
-            if (!kitResult.confirmed) {
-              log(`warn: ${contact.email}: ativo na Beehiiv, mas a escrita no Kit não confirmou (${kitResult.reason}) — mantendo in_brevo (#11225).`);
-              failed++;
-              failedContacts.push({ email: contact.email, reason: `auto-confirmação Beehiiv não escrita no Kit: ${kitResult.reason}` });
-              continue;
+            } catch (e) {
+              kitFailure = { reason: `falha no Kit: ${(e as Error).message}`, rateLimited: isKitRateLimitError(e) };
             }
           }
+          if (kitFailure) {
+            log(`warn: ${contact.email}: ativo na Beehiiv, mas a escrita no Kit não confirmou (${kitFailure.reason}) — mantendo in_brevo (#11225).`);
+            failed++;
+            failedContacts.push({
+              email: contact.email,
+              reason: `auto-confirmação Beehiiv não escrita no Kit: ${kitFailure.reason}`,
+              kitRateLimited: kitFailure.rateLimited,
+            });
+            continue;
+          }
+        }
+        if (beehiivStatus === "active" && !awaitingKitSelfConfirmation) {
           log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender da taxa de abertura.`);
           selfConfirmed++;
           if (push) {

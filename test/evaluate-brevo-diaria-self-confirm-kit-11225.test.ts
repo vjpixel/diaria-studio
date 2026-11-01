@@ -122,14 +122,16 @@ describe("auto-confirmação Beehiiv escreve direto no Kit (#11225)", () => {
     }
   });
 
-  it("já existe no Kit como cancelled → não reativa (#8728), mantém in_brevo", async () => {
+  it("já existe no Kit como cancelled → não reativa (#8728), NÃO conta como failed, segue pra avaliação normal", async () => {
     const fake: KitFake = { existing: { id: 900, state: "cancelled" }, afterPostState: "cancelled", posts: [], unlinked: false };
     const restore = installFetch(fake);
     try {
       const result = await run(fake);
       assert.equal(fake.posts.length, 0, "nenhum POST pra quem saiu do Kit");
-      assert.equal(result.failed, 1);
+      assert.equal(result.selfConfirmed, 0);
+      assert.equal(result.failed, 0, "await_self_confirmation não é falha — contar toda rodada reabriria o bloqueio do #8728");
       assert.equal(fake.unlinked, false);
+      assert.equal(findContact(result.store, "auto@b.com")!.status, "in_brevo");
     } finally {
       restore();
     }
@@ -152,7 +154,7 @@ describe("auto-confirmação Beehiiv escreve direto no Kit (#11225)", () => {
     const fake: KitFake = { existing: { id: 900, state: "active" }, afterPostState: "active", posts: [], unlinked: false };
     const restore = installFetch(fake);
     try {
-      assert.deepEqual(await promoteSelfConfirmedBeehiivToKit("auto@b.com", "kkey"), { confirmed: true });
+      assert.deepEqual(await promoteSelfConfirmedBeehiivToKit("auto@b.com", "kkey"), { outcome: "confirmed" });
     } finally {
       restore();
     }
