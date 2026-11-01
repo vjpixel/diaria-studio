@@ -28,9 +28,11 @@ import { writeFileAtomic } from "./atomic-write.ts";
 export const EDITION_URL_TRANSITION_REL = "_internal/05-edition-url.transition.json";
 
 export interface EditionUrlTransition {
-  /** URL que estava em `05-edition-url.txt` antes da troca (null = arquivo ausente). */
-  from: string | null;
-  /** URL que vai entrar em `03-social.md` e `05-edition-url.txt`. */
+  /**
+   * URL que vai entrar em `03-social.md` e `05-edition-url.txt`. A URL
+   * anterior não é gravada: no estado intermediário ela continua em
+   * `05-edition-url.txt`, de onde o checker já a lê.
+   */
   to: string;
 }
 
@@ -40,21 +42,36 @@ export function writeEditionUrlTransition(editionDir: string, t: EditionUrlTrans
   writeFileAtomic(join(editionDir, EDITION_URL_TRANSITION_REL), JSON.stringify(t) + "\n", { encoding: "utf8" });
 }
 
-export function clearEditionUrlTransition(editionDir: string): void {
+/**
+ * Apaga o marcador. Fail-soft: o marcador sobrando é inofensivo (`to` = URL
+ * atual), então um EPERM/EBUSY (OneDrive segurando o arquivo no Windows) vira
+ * aviso no stderr, nunca exceção — senão o `kit-refresh`, que já gravou os
+ * dois arquivos, sairia com exit 1 e o §6d-kit leria como falha do refresh.
+ */
+export function clearEditionUrlTransition(
+  editionDir: string,
+  unlink: (path: string) => void = unlinkSync,
+): void {
   const p = join(editionDir, EDITION_URL_TRANSITION_REL);
-  if (existsSync(p)) unlinkSync(p);
+  if (!existsSync(p)) return;
+  try {
+    unlink(p);
+  } catch (err) {
+    process.stderr.write(
+      `[edition-url-transition] aviso: não consegui apagar ${p} (${(err as Error).message}); marcador sobrando é inofensivo.\n`,
+    );
+  }
 }
 
 export function readEditionUrlTransition(editionDir: string): EditionUrlTransition | null {
   const p = join(editionDir, EDITION_URL_TRANSITION_REL);
   if (!existsSync(p)) return null;
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8")) as { from?: unknown; to?: unknown };
+    const raw = JSON.parse(readFileSync(p, "utf8")) as { to?: unknown };
     if (!raw || typeof raw !== "object") return null;
     const to = typeof raw.to === "string" ? raw.to.trim() : "";
     if (!HTTPS_URL.test(to)) return null;
-    const from = typeof raw.from === "string" && HTTPS_URL.test(raw.from.trim()) ? raw.from.trim() : null;
-    return { from, to };
+    return { to };
   } catch {
     return null;
   }

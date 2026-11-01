@@ -17,6 +17,7 @@ import { writeSentinel } from "../scripts/lib/pipeline-state.ts";
 import { checkStage5Freshness } from "../scripts/lib/stage5-freshness.ts";
 import {
   EDITION_URL_TRANSITION_REL,
+  clearEditionUrlTransition,
   readEditionUrlTransition,
 } from "../scripts/lib/edition-url-transition.ts";
 import {
@@ -68,7 +69,7 @@ describe("#11751 — queda entre as duas escritas do kit-refresh", () => {
 
     assert.match(read(dir, "03-social.md"), /titulo-da-edicao/);
     assert.equal(read(dir, "_internal/05-edition-url.txt"), STUB);
-    assert.deepEqual(readEditionUrlTransition(dir), { from: STUB, to: RESOLVED });
+    assert.deepEqual(readEditionUrlTransition(dir), { to: RESOLVED });
 
     const r = checkStage5Freshness(dir);
     assert.deepEqual(r.problems, []);
@@ -140,7 +141,7 @@ describe("#11751 — queda entre as duas escritas do kit-refresh", () => {
   it("marcador ilegível ou com URL não-https é ignorado (falha fechada)", () => {
     const dir = editionAfterStage5();
     writeFileSync(join(dir, "03-social.md"), APPROVED_SOCIAL.replaceAll("{edition_url}", RESOLVED), "utf8");
-    for (const raw of ["{nao-json", JSON.stringify({ from: STUB, to: "diariabr.kit.com/posts/x" })]) {
+    for (const raw of ["{nao-json", JSON.stringify({ to: "diariabr.kit.com/posts/x" })]) {
       writeFileSync(join(dir, EDITION_URL_TRANSITION_REL), raw, "utf8");
       assert.equal(readEditionUrlTransition(dir), null);
       assert.deepEqual(checkStage5Freshness(dir).problems.map((p) => p.kind), ["diverged"]);
@@ -162,5 +163,27 @@ describe("#11751 — queda entre as duas escritas do kit-refresh", () => {
     );
     writeFileSync(join(dir, "03-social.md"), read(dir, "03-social.md").replace("aprovado", "EDITADO"), "utf8");
     assert.deepEqual(checkStage5Freshness(dir).problems.map((p) => p.kind), ["diverged"]);
+  });
+
+  it("falha ao apagar o marcador (EPERM do OneDrive) é fail-soft: avisa e não lança", () => {
+    const dir = editionAfterStage5();
+    writeFileSync(join(dir, EDITION_URL_TRANSITION_REL), JSON.stringify({ to: RESOLVED }), "utf8");
+    const origWrite = process.stderr.write.bind(process.stderr);
+    let stderr = "";
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderr += String(chunk);
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      assert.doesNotThrow(() =>
+        clearEditionUrlTransition(dir, () => {
+          throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+        }),
+      );
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    assert.match(stderr, /EPERM/);
+    assert.equal(existsSync(join(dir, EDITION_URL_TRANSITION_REL)), true);
   });
 });

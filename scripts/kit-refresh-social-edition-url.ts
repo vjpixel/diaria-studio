@@ -272,7 +272,7 @@ export async function kitRefreshSocialEditionUrl(
       // de URL com a antiga; a conferência de frescor do Stage 5
       // (`stage5-freshness.ts`, #11698) lê este marcador e aceita também a
       // reversão por `publicUrl`, em vez de parar com `diverged`.
-      deps.writeTransition(editionDir, { from: previousEditionUrl, to: publicUrl });
+      deps.writeTransition(editionDir, { to: publicUrl });
       deps.writeSocialMd(editionDir, updated);
     }
     unresolvedPlaceholders = findUnresolvedPlaceholders(updated);
