@@ -337,8 +337,8 @@ describe("plano das sequências e xmeml (#11208)", () => {
     assert.match(xml, /^<\?xml version="1\.0" encoding="UTF-8"\?>\n<!DOCTYPE xmeml>\n<xmeml version="4">/);
     const doc = new XMLParser({ ignoreAttributes: false, isArray: (n) => ["sequence", "clipitem", "parameter", "link", "filter"].includes(n) }).parse(xml);
     const seqs = doc.xmeml.sequence as Array<Record<string, any>>;
-    assert.equal(seqs.length, 3);
-    assert.equal(new Set(seqs.map((s) => s["@_id"])).size, 3, "ids de sequência únicos");
+    assert.equal(seqs.length, 2);
+    assert.equal(new Set(seqs.map((s) => s["@_id"])).size, 2, "ids de sequência únicos");
     assert.equal((xml.match(/<pathurl>/g) ?? []).length, 1, "o bruto é definido uma vez só");
     assert.match(xml, /<pathurl>file:\/\/localhost\/G:\/Meu%20Drive\/Work\/Mentoria%20Fluxo%20VTSD\/YouTube\/261027\/20261026_191548\.mp4<\/pathurl>/);
     seqs.forEach((s, si) => {
@@ -376,7 +376,7 @@ describe("plano das sequências e xmeml (#11208)", () => {
 
   it("nomes das sequências casam com o destino da pasta Final/ (#11222)", () => {
     const targets = defaultSequences().map((s) => videoTargetOf(`${s.name}.mp4`));
-    assert.deepEqual(targets, ["youtube", "instagram", "outras-redes"]);
+    assert.deepEqual(targets, ["youtube", "outras-redes"]);
     for (const s of defaultSequences()) {
       assert.ok(!/por que isso importa/i.test(s.order.join(" ")), "nenhuma versão leva 'Por que isso importa?' (26/10/2026)");
     }
