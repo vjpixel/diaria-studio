@@ -4,7 +4,7 @@
  *
  * Subcomandos (step-level — gate approvals):
  *   write  --edition AAMMDD --step N --outputs "file1,file2"
- *   assert --edition AAMMDD --step N [--outputs "file1,file2"]
+ *   assert --edition AAMMDD --step N [--outputs "file1,file2"] [--sync-hint]
  *   exists --edition AAMMDD --step N
  *
  * Subcomandos (sub-step markers — invariantes intra-stage, #1330):
@@ -31,6 +31,13 @@
  * Exit codes para `write` / `write-marker`:  0 = ok, 1 = erro
  * Exit codes para `exists`: 0 = presente, 1 = ausente
  *
+ * Sentinel ausente pode ser defasagem de sync do OneDrive, não etapa não
+ * aprovada (#11729): `exists` com sentinel ausente imprime no stderr uma dica
+ * com a idade do arquivo mais recente da edição (`scripts/lib/
+ * sentinel-absence-hint.ts`). Em `assert`, a mesma dica sai só com
+ * `--sync-hint` (o `assert` também é o resume check do orchestrator, onde
+ * sentinel ausente é o caso normal de "stage ainda não rodou").
+ *
  * `write` (#6009): antes de gravar o sentinel de um stage 1-6 no layout
  * padrão da diária (sem `--dir`, `--edition` AAMMDD), roda as regras de
  * `check-invariants --stage N` (via `checkStageInvariantsForWrite`) e recusa
@@ -54,6 +61,7 @@ import {
 import { captureStage2Baseline, type CaptureOutcome } from "./lib/editor-request-snapshots.ts";
 import { captureStage1Records, type CaptureStage1Result } from "./lib/stage1-funnel.ts";
 import { ensureHandoffClosed } from "./lib/session-handoff.ts";
+import { describeSentinelAbsence } from "./lib/sentinel-absence-hint.ts";
 import {
   assertMarker,
   assertSentinel,
@@ -373,7 +381,8 @@ export function closeSessionHandoffOnStage4Sentinel(
 
 function main(): void {
   const [, , subcmd, ...rest] = process.argv;
-  const args = parseCliArgs(rest).values;
+  const parsedArgs = parseCliArgs(rest);
+  const args = parsedArgs.values;
 
   if (!args.edition) {
     console.error("[error] --edition é obrigatório");
@@ -479,6 +488,9 @@ function main(): void {
     }
 
     case "assert": {
+      // #11729: dica de defasagem de sync do OneDrive só com --sync-hint
+      // (o assert também é o resume check, onde ausência é o caso normal).
+      const syncHint = parsedArgs.flags.has("sync-hint");
       const result = assertSentinel(editionDir, step);
       if (result.ok) {
         // #2374: resume path — sentinel exists but stage-status may still be
@@ -525,15 +537,26 @@ function main(): void {
             console.error(
               `[error] sentinel step ${step} ausente mas outputs encontrados em disco — edição ${args.edition} é posterior à data de corte do mecanismo de sentinel (${SENTINEL_MECHANISM_CUTOFF_AAMMDD}, #1216) e não pode usar o fallback legado. Stage provavelmente rodou fora do playbook (dispatch direto em vez de /diaria-N-*) — rode o stage completo pelo fluxo padrão.`,
             );
+            if (syncHint) {
+              console.error(`[aviso] ${describeSentinelAbsence(editionDir, args.edition, [`_internal/.step-${step}-done.json`])}`);
+            }
             process.exit(1);
           }
           // Some outputs missing — list them for actionable diagnosis
           console.error(
             `[error] sentinel step ${step} ausente e outputs faltando: ${missingFiles.join(", ")}`,
           );
+          if (syncHint) {
+            console.error(
+              `[aviso] ${describeSentinelAbsence(editionDir, args.edition, [`_internal/.step-${step}-done.json`, ...missingFiles])}`,
+            );
+          }
           process.exit(1);
         }
         console.error(`[error] sentinel step ${step} ausente em ${editionDir}`);
+        if (syncHint) {
+          console.error(`[aviso] ${describeSentinelAbsence(editionDir, args.edition, [`_internal/.step-${step}-done.json`])}`);
+        }
         process.exit(1);
       }
       // outputs_missing
@@ -543,7 +566,11 @@ function main(): void {
     }
 
     case "exists": {
-      process.exit(sentinelExists(editionDir, step) ? 0 : 1);
+      if (sentinelExists(editionDir, step)) process.exit(0);
+      // #11729: ausência aqui pode ser sync do OneDrive atrasado (etapa
+      // aprovada em outra máquina), não etapa não aprovada.
+      console.error(`[aviso] ${describeSentinelAbsence(editionDir, args.edition, [`_internal/.step-${step}-done.json`])}`);
+      process.exit(1);
     }
 
     case "write-marker": {
