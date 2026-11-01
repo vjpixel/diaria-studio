@@ -10,6 +10,7 @@ import { join, resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assessStaleEdition } from "../scripts/lib/stale-edition-guard.ts";
+import { runStaleEditionGuard } from "../scripts/stale-edition-guard.ts";
 import {
   acquireEditionLock, decideEditionLock, EDITION_LOCK_TTL_MS, formatLockAge, readEditionLock, releaseEditionLock,
 } from "../scripts/lib/edition-lock.ts";
@@ -75,7 +76,9 @@ describe("CLI", () => {
         cwd: ROOT, encoding: "utf8",
       });
     assert.equal(run([]).status, 4);
-    assert.equal(run(["--force"]).status, 0);
+    // --force em processo, com run-log num tmpdir (#11714: o --force grava no run-log).
+    const logRoot = mkdtempSync(join(tmpdir(), "stale-log-"));
+    assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--force"], { logRoot }), 0);
   });
 });
 
@@ -111,11 +114,14 @@ describe("tombstone de conclusão (release --complete-stage)", () => {
     assert.equal(acquireEditionLock(dir, { sessionId: "b", stage: 4, host: "300" }).action, "acquired");
     assert.equal(readEditionLock(dir)!.released_at, undefined);
   });
-  it("release sem completedStage segue apagando", () => {
+  it("release sem completedStage regrava como tombstone de interrupção (#11713)", () => {
     const dir = mkdtempSync(join(tmpdir(), "stale-"));
     acquireEditionLock(dir, { sessionId: "a", stage: 4 });
     releaseEditionLock(dir, { sessionId: "a" });
-    assert.equal(readEditionLock(dir), null);
+    const r = readEditionLock(dir)!;
+    assert.ok(r.released_at);
+    assert.equal(r.interrupted_stage, 4);
+    assert.equal(r.completed_stage, undefined);
   });
   it("CLI: tombstone de outro host → exit 4; sentinel presente só bloqueia com --outputs-missing", () => {
     const dir = mkdtempSync(join(tmpdir(), "stale-"));
@@ -190,7 +196,8 @@ describe("follow-ups de review (#11697)", () => {
     assert.equal(guard(dir, []).status, 4);
     writeFileSync(p, JSON.stringify({ host: "neo", stage: 4 }));
     assert.equal(guard(dir, []).status, 4);
-    assert.equal(guard(dir, ["--force"]).status, 0);
+    const logRoot = mkdtempSync(join(tmpdir(), "stale-log-"));
+    assert.equal(runStaleEditionGuard(["check", "--edition-dir", dir, "--step", "4", "--force"], { logRoot }), 0);
     assert.equal(
       assessStaleEdition({ step: 4, sentinelSteps: [], lock: null, localHost: "300", lockUnreadable: true }).signals[0].kind,
       "unreadable_lock",

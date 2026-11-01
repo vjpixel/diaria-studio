@@ -57,6 +57,16 @@ export interface EditionLockRecord {
    */
   released_at?: string;
   completed_stage?: number;
+  /**
+   * Tombstone de release SIMPLES (#11713): `editar`, `abortar` e halt do gate
+   * soltam a trava sem concluir o stage. Até o #11713 esse release apagava o
+   * arquivo, e a remoção podia sincronizar antes do `02-reviewed.md` editado:
+   * no outro host o guard via "sem trava e sem sentinel" e dava ok. Agora o
+   * release regrava o arquivo com o stage que estava em andamento aqui. Para
+   * `acquire` conta como ausente (igual ao de conclusão); o guard o lê como
+   * "stage em andamento em outro host" por `INTERRUPTED_TOMBSTONE_WINDOW_MS`.
+   */
+  interrupted_stage?: number;
 }
 
 export type EditionLockAction =
@@ -152,6 +162,13 @@ export function readEditionLock(editionDir: string): EditionLockRecord | null {
       completed_stage:
         typeof r.completed_stage === "number" && Number.isFinite(r.completed_stage) ? r.completed_stage : undefined,
       released_at: typeof r.released_at === "string" ? r.released_at : undefined,
+      // Presente mas ilegível vira NaN (o guard trata como "à frente", fail-closed).
+      interrupted_stage:
+        r.interrupted_stage === undefined
+          ? undefined
+          : typeof r.interrupted_stage === "number" && Number.isFinite(r.interrupted_stage)
+            ? r.interrupted_stage
+            : Number.NaN,
     };
   } catch {
     return null;
@@ -187,10 +204,14 @@ export function editionLockUnreadable(editionDir: string): boolean {
 export type EditionLockReleaseResult = "released" | "not_held" | "held_by_other";
 
 /**
- * Remove a trava só se for desta sessão (ou com `force`). Com `completedStage`
- * (aprovação normal do stage, #11690) regrava o arquivo como tombstone em vez
- * de apagar — ver `released_at`. Sem trava legível e com `completedStage`,
- * grava o tombstone mesmo assim (resultado segue `not_held`).
+ * Solta a trava só se for desta sessão (ou com `force`). Nunca apaga uma trava
+ * detida: regrava o arquivo como tombstone (ver `released_at`). Com
+ * `completedStage` (aprovação normal do stage, #11690) o tombstone é de
+ * conclusão; sem ele (`editar`, `abortar`, halt — #11713) é de interrupção,
+ * com `interrupted_stage` = stage da trava. Sem trava legível e com
+ * `completedStage`, grava o tombstone de conclusão mesmo assim (resultado
+ * segue `not_held`); sem trava e sem `completedStage`, limpa o arquivo
+ * (corrompido ou tombstone do próprio host).
  */
 export function releaseEditionLock(
   editionDir: string,
@@ -200,14 +221,15 @@ export function releaseEditionLock(
   const p = editionLockPath(editionDir);
   const tombstone = (base: EditionLockRecord | null): void => {
     const nowIso = new Date(opts.now ?? Date.now()).toISOString();
+    const completed = Number.isInteger(opts.completedStage);
     const rec: EditionLockRecord = {
       session_id: base?.session_id || opts.sessionId,
       host: opts.host ?? hostname(),
-      stage: opts.completedStage as number,
+      stage: completed ? (opts.completedStage as number) : (base?.stage ?? Number.NaN),
       acquired_at: base?.acquired_at ?? nowIso,
       heartbeat_at: nowIso,
       released_at: nowIso,
-      completed_stage: opts.completedStage,
+      ...(completed ? { completed_stage: opts.completedStage } : { interrupted_stage: base?.stage ?? Number.NaN }),
     };
     writeAtomic(p, JSON.stringify(rec, null, 2) + "\n");
   };
@@ -223,8 +245,10 @@ export function releaseEditionLock(
     return "not_held";
   }
   if (existing.session_id !== opts.sessionId && !opts.force) return "held_by_other";
-  if (wantsTombstone) tombstone(existing);
-  else unlinkSync(p);
+  // Release simples também regrava (tombstone de interrupção, #11713): apagar
+  // deixava o outro host sem sinal nenhum se a remoção sincronizasse antes
+  // dos arquivos editados.
+  tombstone(existing);
   return "released";
 }
 
