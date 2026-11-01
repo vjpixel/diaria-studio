@@ -314,6 +314,9 @@ export interface PublishAddition {
   lines: string[];
 }
 
+/** #11724: o permalink da edição ainda não existe no gate 4 (Stage 5 o resolve). */
+export const PREVIEW_EDITION_URL_PLACEHOLDER = "{edition_url}";
+
 /**
  * #10451: canais que recebem `injectChannelLine` no publish, por seção:
  * `# Social` (texto único) → LinkedIn/Facebook/Instagram; `# Facebook` legado
@@ -345,7 +348,12 @@ export function publishAdditionsFor(
   for (const key of channelKeys) {
     const channel = injected.find((c) => c === key);
     if (!channel) continue;
-    const lines = channelPublishLines(channel, { useMelhor: isUseMelhor });
+    // #11724: no 4º post o publish aponta o permalink da edição (resolvido só no
+    // Stage 5, `05-edition-url.txt`) — o preview mostra o placeholder no lugar.
+    const lines = channelPublishLines(channel, {
+      useMelhor: isUseMelhor,
+      ...(isUseMelhor && { editionUrl: PREVIEW_EDITION_URL_PLACEHOLDER }),
+    });
     if (lines.length) out.push({ channel: formatChannelLabels([key]), lines });
   }
   return out;

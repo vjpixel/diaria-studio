@@ -63,6 +63,7 @@ import { insertVideoLinkLine } from "./lib/diaria/d1-video-link.ts"; // #10772
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772
 import { resolveCarouselImageUrls } from "./lib/daily-carousel-card.ts"; // #6095 — carrossel diário reusado (Instagram já usa este helper)
 import { resolveEditionDirArgOrExit } from "./lib/resolve-edition-dir-arg.ts"; // #9427
+import { readResolvedEditionUrl } from "./lib/edition-url.ts"; // #11724 — permalink da edição no 4º post
 import {
   USE_MELHOR_COVER_FILE,
   finalizeUseMelhorTextChannelPostText, // #9999
@@ -168,7 +169,13 @@ export function extractDestaquesFromSocialMd(socialMd: string, platform: string)
  * nunca em `03-social.md`. Outras plataformas (ex: chamadas de teste com
  * "twitter") seguem o comportamento legado inalterado.
  */
-export function extractPostText(socialMd: string, platform: string, destaque: string): string {
+export function extractPostText(
+  socialMd: string,
+  platform: string,
+  destaque: string,
+  /** #11724: permalink da edição — no `## um` vira a linha de canal no lugar do CTA de assinatura. */
+  editionUrl: string | null = null,
+): string {
   // Normalizar CRLF → LF (arquivo pode vir do Drive com Windows line endings)
   socialMd = socialMd.replace(/\r\n/g, '\n');
 
@@ -195,7 +202,7 @@ export function extractPostText(socialMd: string, platform: string, destaque: st
 
   const text =
     platform === "facebook"
-      ? injectChannelLine(dText.trim(), "facebook", { useMelhor: destaque === USE_MELHOR_POST_ID })
+      ? injectChannelLine(dText.trim(), "facebook", { useMelhor: destaque === USE_MELHOR_POST_ID, editionUrl })
       : dText.trim();
   assertNoScaffolding(text, `destaque '${destaque}' (${platform})`);
   // #6862: nenhuma plataforma social renderiza markdown — remover `**`/`__`/
@@ -219,6 +226,8 @@ export function buildUseMelhorFacebookPost(input: {
   plan: UseMelhorReadyPlan;
   images: Record<string, { url?: string }> | undefined;
   editionDir: string;
+  /** #11724: permalink da edição (`05-edition-url.txt`); ausente = CTA de assinatura de sempre. */
+  editionUrl?: string | null;
   fileExists?: (p: string) => boolean;
 }):
   | { ok: true; caption: string; carouselUrls: string[] | null; imageFile: string }
@@ -227,7 +236,7 @@ export function buildUseMelhorFacebookPost(input: {
   try {
     // #10201: título do item como 1ª linha da legenda.
     caption = prependUseMelhorCaptionTitle(
-      finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "facebook", "um")),
+      finalizeUseMelhorTextChannelPostText(extractPostText(input.socialMd, "facebook", "um", input.editionUrl ?? null)),
       input.plan.captionTitle,
     );
   } catch (e) {
@@ -976,7 +985,13 @@ async function main(): Promise<number | void> {
   reportUseMelhorPlan("facebook", umPlan, { editionId: editionDate, rootDir: ROOT });
   const umPost =
     umPlan.status === "ready"
-      ? buildUseMelhorFacebookPost({ socialMd, plan: umPlan, images: publicImages.images, editionDir })
+      ? buildUseMelhorFacebookPost({
+          socialMd,
+          plan: umPlan,
+          images: publicImages.images,
+          editionDir,
+          editionUrl: readResolvedEditionUrl(editionDir), // #11724
+        })
       : null;
   if (umPost && !umPost.ok) reportUseMelhorSkip("facebook", umPost.reason, { editionId: editionDate, rootDir: ROOT });
   if (umPlan.status === "ready" && umPost?.ok) {
