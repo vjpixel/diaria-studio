@@ -9,7 +9,9 @@
  *
  * O registro vale só para o arquivo que o gerou: guarda o md5 do 1:1 gravado.
  * Se o 1:1 for regerado depois (image-generate, swap, reorder), o md5 não bate
- * e o registro é ignorado, sem precisar de limpeza.
+ * e o registro é ignorado, sem precisar de limpeza. Se o 1:1 só mudou de
+ * posição (reorder renomeia os arquivos), o md5 acha o registro na chave
+ * antiga (#11685 item 4).
  *
  * Arquivo: `{editionDir}/_internal/04-square-source.json`
  *   { "d3": { "source": "04-d3-4x5-nativo.jpg", "image_md5": "...", "derived_at": "..." } }
@@ -71,10 +73,28 @@ export function writeSquareSourceEntry(editionDir: string, destaque: string, ent
  * sumiu do disco.
  */
 export function resolveSquareSource(editionDir: string, destaque: string): string | null {
-  const entry = readSquareSourceMarker(editionDir)[destaque];
-  if (!entry) return null;
+  const marker = readSquareSourceMarker(editionDir);
   const squarePath = join(editionDir, `04-${destaque}-1x1.jpg`);
-  const sourcePath = join(editionDir, entry.source);
-  if (!existsSync(squarePath) || !existsSync(sourcePath)) return null;
-  return md5OfFile(squarePath) === entry.image_md5 ? sourcePath : null;
+  if (!existsSync(squarePath)) return null;
+  const squareMd5 = md5OfFile(squarePath);
+
+  const own = marker[destaque];
+  if (own && own.image_md5 === squareMd5) {
+    const sourcePath = join(editionDir, own.source);
+    return existsSync(sourcePath) ? sourcePath : null;
+  }
+
+  // #11685 item 4: o registro é indexado pela posição, mas `reorder-destaques`
+  // renomeia `04-d{N}-*.jpg` (1x1 e 4x5-nativo juntos) sem tocar neste
+  // arquivo. Depois de D1↔D3, o quadrado derivado do D3 está em
+  // `04-d1-1x1.jpg` e o registro dele continua em `d3`. O md5 identifica o
+  // arquivo; a fonte acompanhou o rename, então troca o `d{N}` do nome.
+  for (const [key, entry] of Object.entries(marker)) {
+    if (key === destaque || entry.image_md5 !== squareMd5) continue;
+    const prefix = `04-${key}-`;
+    if (!entry.source.startsWith(prefix)) continue;
+    const sourcePath = join(editionDir, `04-${destaque}-${entry.source.slice(prefix.length)}`);
+    if (existsSync(sourcePath)) return sourcePath;
+  }
+  return null;
 }

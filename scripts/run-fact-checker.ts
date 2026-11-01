@@ -23,6 +23,8 @@
  * gate-blocking estreito para claims `NOT_FOUND_IN_SOURCE` não-superlativas
  * (ver `getBlockingClaims`) — exit 2 quando presentes. Sem o flag, o
  * comportamento é idêntico ao de antes do #4361 (sempre exit 0 neste modo).
+ * (#11685) Com o flag, fact-check defasado + claim bloqueante sumido do texto
+ * (removido ou reescrito, sem re-checagem) sai com exit 1: re-despachar o agente.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -40,7 +42,7 @@ import {
   partitionBlockingByContent,
   type FactCheckContentHash,
 } from "./lib/fact-check-staleness.ts";
-import { extractDestaqueUrls } from "./match-prompts-to-destaques.ts";
+import { extractDestaqueUrlsByNumber } from "./match-prompts-to-destaques.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 
 // ---------------------------------------------------------------------------
@@ -799,7 +801,9 @@ export interface DestaqueUrlDrift {
 }
 
 export function findDestaqueUrlDrift(reviewedMd: string, approved: unknown): DestaqueUrlDrift[] {
-  const mdUrls = extractDestaqueUrls(reviewedMd);
+  // #11685 item 3: por NÚMERO do bloco — bloco sem URL (placeholder do
+  // swap-destaques) não desloca o D3 para a posição do D2.
+  const mdUrls = extractDestaqueUrlsByNumber(reviewedMd);
   const approvedUrls = highlightSourceUrls(approved);
   const out: DestaqueUrlDrift[] = [];
   for (let i = 0; i < Math.min(mdUrls.length, approvedUrls.length); i++) {
@@ -1115,12 +1119,12 @@ async function main(): Promise<number | void> {
       // #9985: confere o marcador de tempo de leitura contra o MD real.
       const allBlocking = getBlockingClaims(result.claims, { newsletterMd });
       // #11671: com o fact-check defasado, claim cujo trecho sumiu do texto
-      // atual não bloqueia mais (aviso); o que ainda aparece segue bloqueando.
+      // atual sai do exit 2; o que ainda aparece segue bloqueando.
       const { blocking, vanished } = partitionBlockingByContent(allBlocking, staleness, [newsletterMd, socialMd]);
       if (vanished.length > 0) {
         console.error(formatStaleWarning(staleness, vanished.length));
         for (const c of vanished) {
-          console.error(`  (fora do bloqueio — trecho removido) ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}"`);
+          console.error(`  (trecho sumiu do texto — sem re-checagem) ${destaqueLabel(c.destaque)} [${c.claim_type}] "${c.text}"`);
         }
       }
       if (blocking.length > 0) {
@@ -1138,6 +1142,17 @@ async function main(): Promise<number | void> {
           "check antes de aprovar o gate.",
         );
         return 2;
+      }
+      // #11685 item 1: "sumiu" também é o claim REESCRITO (número trocado,
+      // nunca checado). Sem re-despachar o agente, o resultado não vale pro
+      // texto atual: exit 1 (fact-check indisponível), nunca exit 0.
+      if (vanished.length > 0) {
+        console.error(
+          `\n[run-fact-checker] FACT-CHECK DEFASADO (#11685): ${vanished.length} claim(s) bloqueante(s) sumiram do texto ` +
+            "depois da checagem e não foram checados de novo. Re-despachar o fact-checker (§4c.6 passo 1) e rodar " +
+            "este check outra vez; em --no-gates, não seguir para a Etapa 5 sem isso.",
+        );
+        return 1;
       }
     }
     return;

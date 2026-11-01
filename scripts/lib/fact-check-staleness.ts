@@ -9,9 +9,15 @@
  *
  * Política: carimbo divergente = fact-check DEFASADO. Isso é aviso, nunca
  * bloqueio por si só. O bloqueio passa a valer só para os claims cujo texto
- * ainda aparece no conteúdo atual; claim cujo trecho sumiu sai do bloqueio e
- * (`text` e `context` ausentes) vira aviso ("re-rodar o fact-checker"). Claim ainda presente continua
+ * ainda aparece no conteúdo atual; claim cujo trecho sumiu (`text` e
+ * `context` ausentes) sai do bloqueio. Claim ainda presente continua
  * bloqueando: o texto não mudou, então o veredito segue valendo.
+ *
+ * #11685 item 1: "sumiu" não distingue frase REMOVIDA de frase REESCRITA (o
+ * número trocado pode continuar sem suporte). Por isso claim sumido com o
+ * fact-check defasado não libera o gate: `--check-blocking` sai com exit 1
+ * (fact-check indisponível — re-despachar o fact-checker) e o checklist do
+ * Studio marca o item como pendente.
  *
  * Carimbo ausente (fact-check.json anterior ao #11671) = não dá pra saber;
  * comportamento idêntico ao de antes (nunca defasado).
@@ -83,14 +89,38 @@ export function normalizeForClaimMatch(text: string): string {
 }
 
 /**
+ * Reticências (`...` ou `…`) que o fact-checker usa pra truncar o `context`
+ * (`.claude/agents/fact-checker.md`: "trecho ... (truncar com ...)").
+ */
+const ELLIPSIS = /\.{3,}|…/;
+
+/**
  * true se o trecho do claim (`text`) ainda aparece em algum dos textos
  * atuais. Trecho vazio conta como presente (conservador: na dúvida, o
  * bloqueio fica).
+ *
+ * #11701: o `context` pode vir truncado com reticências. Elas nunca estão no
+ * MD, então entrar na agulha fazia um claim intacto parecer sumido. As
+ * reticências das pontas saem; as do meio separam segmentos, e todos precisam
+ * aparecer no MESMO texto, na ordem.
  */
 export function claimStillPresent(claimText: string, contents: Array<string | null | undefined>): boolean {
-  const needle = normalizeForClaimMatch(claimText ?? "");
-  if (!needle) return true;
-  return contents.some((c) => typeof c === "string" && normalizeForClaimMatch(c).includes(needle));
+  const segments = normalizeForClaimMatch(claimText ?? "")
+    .split(ELLIPSIS)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.length === 0) return true;
+  return contents.some((c) => {
+    if (typeof c !== "string") return false;
+    const hay = normalizeForClaimMatch(c);
+    let from = 0;
+    for (const seg of segments) {
+      const at = hay.indexOf(seg, from);
+      if (at < 0) return false;
+      from = at + seg.length;
+    }
+    return true;
+  });
 }
 
 /**
@@ -123,7 +153,8 @@ export function formatStaleWarning(staleness: StalenessReport, vanishedCount = 0
   const files = staleness.changed.join(" e ");
   const tail =
     vanishedCount > 0
-      ? ` ${vanishedCount} claim(s) bloqueante(s) não aparece(m) mais no texto atual e saíram do bloqueio.`
+      ? ` ${vanishedCount} claim(s) bloqueante(s) não aparece(m) mais no texto atual — removido(s) ou ` +
+        "reescrito(s), não dá pra saber sem checar de novo (#11685)."
       : "";
   return (
     `  ⚠️  Fact-check DEFASADO (#11671): ${files} mudou(aram) depois da checagem.${tail} ` +
