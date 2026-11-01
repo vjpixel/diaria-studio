@@ -138,6 +138,7 @@ npx tsx scripts/render-halt-banner.ts \
 
 3. Pre-render do social preview HTML + servir localmente (mesmo padrão do step 2b acima):
    ```bash
+   npx tsx scripts/probe-instagram-comment-scope.ts --edition-dir {EDITION_DIR}/  # #11750: só leitura, fail-soft — o token do Worker comenta? grava _internal/instagram-comment-scope.json; sem prova, preview do 4º post do Instagram mostra a linha da bio (igual ao publish)
    # #1800: --images é OBRIGATÓRIO — sem ele o preview sai sem imagens.
    npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
 
