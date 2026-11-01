@@ -45,6 +45,11 @@ também: repita com `--worktree '<caminho>'` para cada um, inclusive o checkout
 atual se foi usado. Não use `known_worktrees` como prova de autoria: é mapa global.
 Erro, upstream ausente, identidade ausente ou resultado incompleto impedem atestar
 encerramento; não trate falha do GitHub como “nenhuma PR”.
+Arquivo modificado só no fim de linha (CRLF/LF, sem diferença de conteúdo com
+`--ignore-space-at-eol`) e snapshots de audiência rotineiros
+(`context/audience-profile.md`, `docs/audience-history/*.md`) saem em `ignored`,
+sem bloquear `canClose` (#11733): são sujeira pré-existente de terceiros, não
+pendência da sessão. Cite-os no resumo, mas não os limpe.
 
 Confira explicitamente as `manualChecks`: tasks e agents disparados pela sessão
 nas ferramentas do runtime (não pelo PID efêmero do registry), promessas feitas,
