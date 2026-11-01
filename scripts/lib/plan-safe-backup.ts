@@ -158,3 +158,49 @@ export function recoverPlanFromSafeBackupWithWarning(planPath: string): PlanSafe
   if (msg) console.error(msg);
   return r;
 }
+
+/**
+ * Resultado de `readPlanJson` (#11721). `missing` e `unreadable` nunca se
+ * confundem com "plano vazio": quem consome decide falhar alto ou seguir
+ * fail-soft, mas não pode tratar a ausência como "rodada sem PRs".
+ */
+export type PlanJsonRead =
+  | { status: "ok"; plan: Record<string, unknown>; recovery: PlanSafeBackupRecovery }
+  | { status: "missing"; message: string; recovery: PlanSafeBackupRecovery }
+  | { status: "unreadable"; message: string; recovery: PlanSafeBackupRecovery };
+
+/**
+ * Leitor único de `plan.json` de rodada (#11721, recorrência da #10579 na
+ * rodada 261030c). Antes de ler, tenta recuperar a cópia de conflito do
+ * OneDrive (`plan-*-safeBackup-*.json`) e emite o aviso pelo `warn` (default
+ * stderr). Depois:
+ *
+ * - plano presente e objeto JSON → `ok`;
+ * - plano ausente (sem backup, ou backup irrecuperável) → `missing`, com a
+ *   lista de backups na mensagem quando houver;
+ * - JSON inválido ou não-objeto → `unreadable`.
+ */
+export function readPlanJson(
+  planPath: string,
+  opts: { warn?: (msg: string) => void } = {},
+): PlanJsonRead {
+  const warn = opts.warn ?? ((m: string) => console.error(m));
+  const recovery = recoverPlanFromSafeBackup(planPath);
+  const note = describePlanSafeBackupRecovery(planPath, recovery);
+  if (note) warn(note);
+
+  if (!existsSync(planPath)) {
+    const backups = recovery.status === "unrecoverable" ? ` (cópias de conflito ilegíveis: ${recovery.backups.join(", ")})` : "";
+    return { status: "missing", message: `plan.json não encontrado: ${planPath}${backups}`, recovery };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(planPath, "utf8"));
+  } catch (err) {
+    return { status: "unreadable", message: `plan.json ilegível (${planPath}): ${(err as Error).message}`, recovery };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { status: "unreadable", message: `plan.json não é um objeto JSON (${planPath})`, recovery };
+  }
+  return { status: "ok", plan: parsed as Record<string, unknown>, recovery };
+}

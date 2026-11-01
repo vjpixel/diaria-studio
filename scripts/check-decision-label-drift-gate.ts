@@ -36,6 +36,7 @@ import {
 } from "./lib/decision-label-drift.ts";
 import { buildGateEvaluations, type GatePlanIssue } from "./lib/decision-label-drift-gate.ts";
 import { trustedCommentBodies } from "./lib/trusted-comment-author.ts";
+import { recoverPlanFromSafeBackupWithWarning } from "./lib/plan-safe-backup.ts";
 
 interface GhIssueListItem {
   number: number;
@@ -124,6 +125,8 @@ if (isMainModule(import.meta.url)) {
     console.error("[check-decision-label-drift-gate] uso: --plan {path} [--skip-gh-checks]");
     process.exit(2);
   }
+  // #11721: restaura a cópia de conflito do OneDrive (plan-*-safeBackup-*.json) antes de checar.
+  recoverPlanFromSafeBackupWithWarning(planPath);
   if (!existsSync(planPath)) {
     console.error(`[check-decision-label-drift-gate] plan.json não encontrado: ${planPath}`);
     process.exit(2);

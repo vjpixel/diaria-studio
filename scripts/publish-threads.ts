@@ -89,6 +89,7 @@ import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 import { injectVideoLinkWithinLimit } from "./lib/diaria/d1-video-link.ts"; // #10772
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts"; // #10772
+import { chooseThreadsTopicTag } from "./lib/threads-topic-tag.ts"; // #11664 — 1ª hashtag = topic tag escolhido
 import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
 import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import {
@@ -944,6 +945,18 @@ async function main(): Promise<number | void> {
         if (inj.droppedHashtags) console.warn(`AVISO threads/d1: hashtags removidas para o link do vídeo caber em ${THREADS_CHAR_LIMIT} (#11402)`);
       } else console.warn(`AVISO threads/d1: link do vídeo não entrou no texto — ${inj.reason}`);
     }
+
+    // #11664: a 1ª hashtag vira o topic tag do Threads (sem `#`, no
+    // cabeçalho). Escolhe de propósito qual ocupa essa posição; só reordena o
+    // bloco final, nunca acrescenta tag. Depois do link do vídeo, que pode
+    // tirar as hashtags (#11402).
+    const topic = chooseThreadsTopicTag(text);
+    if (topic.inlineHashtag) {
+      console.warn(`AVISO threads/${d}: hashtag no meio do texto vira o topic tag antes do bloco final (#11664)`);
+    } else if (topic.reordered) {
+      console.log(`threads/${d}: topic tag = ${topic.topicTag} (hashtags reordenadas, #11664)`);
+    }
+    text = topic.text;
 
     // Dividir em chunks de 500 chars se necessário
     const chunks = splitIntoThreadChunks(text, THREADS_CHAR_LIMIT);
