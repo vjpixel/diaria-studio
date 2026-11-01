@@ -26,7 +26,7 @@ npx tsx scripts/pipeline-sentinel.ts exists --edition {AAMMDD} --step 4
 ```
 
 - exit 0 → seguir.
-- exit 1 → **parar**: "Etapa 4 (Revisão) da edição {AAMMDD} não aprovada (`_internal/.step-4-done.json` ausente). O D1 ainda pode mudar; aprove o gate (`/diaria-4-revisao {AAMMDD}` ou `/diaria-edicao {AAMMDD}`) e rode `/diaria-publica-video` depois." Vale para as duas partes, em dry-run ou não.
+- exit 1 → **parar**, sem concluir "etapa não aprovada" (#11729): o sentinel pode ter sido escrito em outra máquina (gate aprovado no Neo) e o OneDrive ainda não ter trazido `data/` para esta. Repassar ao editor a linha `[aviso]` que o comando imprime no stderr (traz "possível defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição nesta máquina) e as duas saídas: se o gate já foi aprovado em outra máquina, esperar o sync e rodar `/diaria-publica-video` de novo; se não foi, aprovar o gate (`/diaria-4-revisao {AAMMDD}` ou `/diaria-edicao {AAMMDD}`) antes, porque o D1 ainda pode mudar. Vale para as duas partes, em dry-run ou não.
 
 Ao terminar, sugerir o próximo comando (`/diaria-5-publicacao {AAMMDD}`) sem rodá-lo.
 
