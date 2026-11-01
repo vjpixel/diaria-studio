@@ -768,18 +768,17 @@ export async function main(
       process.exit(1);
       return;
     }
-    // stdout só com o JSON (o Passo 2c redireciona pra arquivo): o log
-    // narrativo da seleção vai pro stderr enquanto este modo roda.
-    const originalLog = console.log;
-    emitJson = (text) => originalLog(text);
-    console.log = (...args: unknown[]) => console.error(...args);
-    try {
-      const okManifest = await runOneMode(mode, saturday, flags, values, dataRoot, opts);
-      if (!okManifest) process.exit(1);
-    } finally {
-      console.log = originalLog;
-      emitJson = (text) => console.log(text);
-    }
+    // stdout só com o JSON (o Passo 2c redireciona pra arquivo).
+    const okManifest = await withJsonOnlyStdout(() => runOneMode(mode, saturday, flags, values, dataRoot, opts));
+    if (!okManifest) process.exit(1);
+    return;
+  }
+  // #11738: --images-only também é consumido via JSON.parse(stdout) — a
+  // narrativa da seleção (e qualquer console.log dos geradores de card) vai
+  // pro stderr, stdout fica só com o objeto JSON final.
+  if (flags.has("images-only")) {
+    const okImages = await withJsonOnlyStdout(() => runOneMode(mode, saturday, flags, values, dataRoot, opts));
+    if (!okImages) process.exit(1);
     return;
   }
   const ok = await runOneMode(mode, saturday, flags, values, dataRoot, opts);
@@ -788,8 +787,28 @@ export async function main(
   }
 }
 
-/** Saída de JSON puro no stdout em `--summary-manifest` (#11062) — o resto do log vai pro stderr nesse modo. */
+/**
+ * Saída de JSON puro no stdout em `--summary-manifest` (#11062) e
+ * `--images-only` (#11738) — o resto do log vai pro stderr nesses modos.
+ */
 let emitJson: (text: string) => void = (text) => console.log(text);
+
+/**
+ * Roda `fn` com `console.log` redirecionado pro stderr; só `emitJson` escreve
+ * no stdout (pelo `console.log` original). Restaura os dois no fim, mesmo em
+ * exceção.
+ */
+async function withJsonOnlyStdout<T>(fn: () => Promise<T>): Promise<T> {
+  const originalLog = console.log;
+  emitJson = (text) => originalLog(text);
+  console.log = (...args: unknown[]) => console.error(...args);
+  try {
+    return await fn();
+  } finally {
+    console.log = originalLog;
+    emitJson = (text) => console.log(text);
+  }
+}
 
 /** `platform.config.json` — leitura apenas, nunca escrito por este script. */
 function readPlatformConfig(): any {
@@ -1643,7 +1662,7 @@ async function runOneMode(
   // (mesmo contrato de `--manifest-only`, pra caller fazer JSON.parse
   // direto): ordem = capa, item 1..N na ordem de publicação, CTA.
   if (imagesOnly) {
-    console.log(
+    emitJson(
       JSON.stringify(
         {
           saturday,

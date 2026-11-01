@@ -18,6 +18,9 @@
  * se a mesma URL já estava colada literalmente antes do gate (ou é prefixo de
  * outro link próprio no texto), a reversão a transforma também e o resultado
  * acusa divergência — falha fechada, saída `--force` com o editor.
+ * Com troca de URL do Stage 6 interrompida (#11751), a URL de destino do
+ * marcador `_internal/05-edition-url.transition.json` também é candidata
+ * (`edition-url-transition.ts`).
  *
  * Sentinel sem `output_hashes`: gravado antes de `OUTPUT_HASHES_REQUIRED_SINCE`
  * é legado (aviso, `verification: "unverified_legacy"`); gravado depois é
@@ -26,6 +29,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256Hex } from "./pipeline-state.ts";
+import { readEditionUrlTransition } from "./edition-url-transition.ts";
 
 /** Sempre conferidos, mesmo com `outputs` do sentinel vazio ou inválido. */
 export const STAGE5_ALWAYS_WATCHED = ["02-reviewed.md", "03-social.md"] as const;
@@ -99,17 +103,21 @@ function readEditionUrl(editionDir: string): { url: string | null; problem?: Sta
 /**
  * O conteúdo local bate com o hash aprovado? Em `03-social.md`, aceita também
  * a versão com a URL resolvida pelo Stage 5 revertida ao placeholder.
+ *
+ * `editionUrls` são as candidatas à reversão, cada uma tentada sozinha: a de
+ * `_internal/05-edition-url.txt` e, com troca de URL em curso (#11751,
+ * `edition-url-transition.ts`), a de destino do marcador.
  */
 export function matchesApprovedHash(
   rel: string,
   content: Buffer,
   expected: string,
-  editionUrl: string | null,
+  editionUrls: readonly string[],
 ): boolean {
   if (sha256Hex(content) === expected) return true;
-  if (rel !== URL_REWRITTEN || !editionUrl) return false;
-  const reverted = content.toString("utf8").replaceAll(editionUrl, "{edition_url}");
-  return sha256Hex(reverted) === expected;
+  if (rel !== URL_REWRITTEN) return false;
+  const text = content.toString("utf8");
+  return editionUrls.some((url) => url.length > 0 && sha256Hex(text.replaceAll(url, "{edition_url}")) === expected);
 }
 
 export function checkStage5Freshness(editionDir: string): Stage5FreshnessResult {
@@ -159,6 +167,10 @@ export function checkStage5Freshness(editionDir: string): Stage5FreshnessResult 
 
   const { url: editionUrl, problem: urlProblem } = readEditionUrl(editionDir);
   if (urlProblem) problems.push(urlProblem);
+  // #11751: queda no meio da troca de URL do Stage 6 deixa `03-social.md` com
+  // a URL de destino e `05-edition-url.txt` com a anterior; o marcador diz qual.
+  const transition = readEditionUrlTransition(editionDir);
+  const editionUrls = [...new Set([editionUrl, transition?.to].filter((u): u is string => !!u))];
 
   const watched = [...new Set<string>([...STAGE5_ALWAYS_WATCHED, ...outputs])];
   for (const rel of watched) {
@@ -182,7 +194,7 @@ export function checkStage5Freshness(editionDir: string): Stage5FreshnessResult 
       });
       continue;
     }
-    if (!matchesApprovedHash(rel, content, expected, editionUrl)) {
+    if (!matchesApprovedHash(rel, content, expected, editionUrls)) {
       problems.push({
         file: rel,
         kind: "diverged",

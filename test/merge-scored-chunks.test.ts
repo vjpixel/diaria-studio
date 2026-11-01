@@ -5,11 +5,13 @@ import {
   mergeChunks,
   loadChunks,
   MAX_BENIGN_MISSING,
+  findPendingChunks,
+  doneMarkerPath,
   type ChunkScoreFile,
 } from "../scripts/merge-scored-chunks.ts";
 import type { Categorized } from "../scripts/split-articles-for-scoring.ts";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -251,6 +253,90 @@ describe("main() CLI — exit code determinístico (#1669)", () => {
       ],
     });
     assert.equal(runMerge([valid]).status, 0);
+  });
+});
+
+// #11749 — o Agent voltou assíncrono (edição 261103) e o merge leu um chunk
+// com JSON válido que o scorer-chunk ainda estava corrigindo; 343/344
+// pontuados com `incomplete` (gap ≤ 2) seguia sem erro e o artigo ficava com
+// score 0 em silêncio. `--require-done` exige o marcador `.done`, gravado por
+// último pelo agente, mais novo que o chunk.
+describe("#11749 — marcador de conclusão por chunk", () => {
+  it("findPendingChunks: sem marcador, marcador velho e chunk ausente", () => {
+    const mtimes: Record<string, number> = {
+      "c0.json": 100, [doneMarkerPath("c0.json")]: 110, // ok
+      "c1.json": 100, // sem marcador
+      "c2.json": 200, [doneMarkerPath("c2.json")]: 150, // reescrito depois do marcador (o caso 261103)
+      // c3: nem chunk nem marcador
+      [doneMarkerPath("c4.json")]: 100, // marcador sem chunk: não é pendente (vira ilegível/catastrófico)
+      "c5.json": 100, [doneMarkerPath("c5.json")]: 100, // mesmo ms: ok
+    };
+    const pending = findPendingChunks(
+      ["c0.json", "c1.json", "c2.json", "c3.json", "c4.json", "c5.json"],
+      (p) => mtimes[p] ?? null,
+    );
+    assert.deepEqual(pending, [
+      { path: "c1.json", reason: "marcador-ausente" },
+      { path: "c2.json", reason: "reescrito-depois-do-marcador" },
+      { path: "c3.json", reason: "chunk-ausente" },
+    ]);
+  });
+
+  const ROOT = resolve(import.meta.dirname, "..");
+  const POOL = { lancamento: [mk("l1", "lancamento")], radar: [mk("p1", "radar")], use_melhor: [] };
+  const VALID = JSON.stringify({ scored: [{ url: "l1", score: 9 }, { url: "p1", score: 8 }] });
+
+  function runMerge(opts: { marker: "none" | "fresh" | "stale" }): { status: number; stdout: string; wroteOutputs: boolean } {
+    const dir = mkdtempSync(join(tmpdir(), "msc-done-"));
+    try {
+      const catPath = join(dir, "cat.json");
+      writeFileSync(catPath, JSON.stringify({ categorized: POOL }));
+      const chunk = join(dir, "scored-chunk-0.json");
+      writeFileSync(chunk, VALID);
+      if (opts.marker !== "none") {
+        writeFileSync(doneMarkerPath(chunk), "{}");
+        const t = Date.now() / 1000;
+        // stale: o agente reescreveu o chunk DEPOIS de marcar.
+        utimesSync(doneMarkerPath(chunk), t - 60, t - 60);
+        utimesSync(chunk, opts.marker === "stale" ? t : t - 120, opts.marker === "stale" ? t : t - 120);
+      }
+      const all = join(dir, "all.json");
+      const r = spawnSync(
+        "npx",
+        [
+          "tsx", "scripts/merge-scored-chunks.ts",
+          "--categorized", catPath,
+          "--chunk-scores", chunk,
+          "--allscored-out", all,
+          "--finalists-out", join(dir, "fin.json"),
+          "--top", "15",
+          "--require-done",
+        ],
+        { cwd: ROOT, encoding: "utf8", shell: true },
+      );
+      return { status: r.status ?? -1, stdout: r.stdout ?? "", wroteOutputs: existsSync(all) };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("--require-done sem marcador → exit 3, nada gravado", () => {
+    const r = runMerge({ marker: "none" });
+    assert.equal(r.status, 3);
+    assert.match(r.stdout, /"pending":true/);
+    assert.equal(r.wroteOutputs, false, "nenhum output enquanto houver chunk pendente");
+  });
+
+  it("--require-done com chunk reescrito depois do marcador → exit 3", () => {
+    const r = runMerge({ marker: "stale" });
+    assert.equal(r.status, 3);
+    assert.match(r.stdout, /reescrito-depois-do-marcador/);
+  });
+
+  it("--require-done com marcador mais novo que o chunk → exit 0", () => {
+    const r = runMerge({ marker: "fresh" });
+    assert.equal(r.status, 0);
+    assert.equal(r.wroteOutputs, true);
   });
 });
 

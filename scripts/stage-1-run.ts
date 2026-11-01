@@ -150,7 +150,8 @@
  *   0 — sucesso (mesmo com `pendingAgentDispatch` pendente — isso não é
  *       erro do script, é trabalho que o orchestrator ainda precisa fazer)
  *   1 — erro duro (sub-script obrigatório falhou, args inválidos, merge
- *       catastrófico sem retry possível aqui)
+ *       catastrófico sem retry possível aqui, ou chunk ainda sem marcador de
+ *       conclusão — `mergePending: true`, re-chamar post-score, #11749)
  *   2 — HALT obrigatório (validate-stage-1-completeness/-output blocker,
  *       check-invariants gate-crítico, marker ausente — banner já
  *       renderizado, incluído em `haltRequired` no JSON de saída)
@@ -1284,9 +1285,20 @@ async function runPostScore(deps: Stage1RunDeps, opts: Stage1RunOptions, report:
     internalPath(editionDir, "tmp-finalists.json"),
     "--top",
     "15",
+    // #11749: só mergeia chunk cujo scorer-chunk gravou o marcador de conclusão.
+    "--require-done",
   ]);
   if (mergeResult.stderr.trim()) console.error(mergeResult.stderr.trim());
-  const mergeParsed = parseStepJson<{ catastrophic?: boolean; incomplete?: boolean; failed_chunks?: unknown[] }>(mergeResult.stdout);
+  const mergeParsed = parseStepJson<{ catastrophic?: boolean; incomplete?: boolean; failed_chunks?: unknown[]; pending_chunks?: unknown[] }>(mergeResult.stdout);
+
+  if (mergeResult.code === 3) {
+    // #11749: Agent pode voltar assíncrono — chunk com JSON válido ainda em
+    // correção pelo agente. Nada foi gravado; esperar e re-invocar a fase.
+    logEvent(deps, opts.edition, "warn", "merge_scored_chunks_pending", { details: mergeParsed });
+    report.note(`⏳ merge-scored-chunks: chunk(s) sem marcador de conclusão (#11749) — ${JSON.stringify(mergeParsed?.pending_chunks ?? [])}.`);
+    report.note("   Esperar TODOS os scorer-chunk terminarem (notificação de conclusão do agente) e re-chamar --phase post-score. Agente que já terminou sem gravar o marcador: re-disparar só esse chunk.");
+    return baseResult("post-score", 1, report, { editionDir, mergePending: true, pendingChunks: mergeParsed?.pending_chunks ?? [] });
+  }
 
   if (mergeResult.code === 2) {
     logEvent(deps, opts.edition, "error", "merge_scored_chunks_catastrophic", { details: mergeParsed });
@@ -1646,6 +1658,14 @@ async function runPostGate(deps: Stage1RunDeps, opts: Stage1RunOptions, report: 
   if (invariants.code === 1) {
     report.note("⚠️  check-invariants --stage 1 (pós-gate) falhou — bug downstream, seguindo (sentinel ainda é escrito).");
     logEvent(deps, opts.edition, "warn", "stage1_post_gate_invariants_failed", { details: parseStepJson(invariants.stdout) });
+  }
+  // #11748: lançamento sem sinal de produto é warning (não trava o sentinel);
+  // sobe pro relatório porque quem resolve é o Stage 2 §2a, não este passo.
+  const invariantsJson = parseStepJson<{ violations?: Array<{ rule?: string; message?: string }> }>(invariants.stdout);
+  for (const v of invariantsJson?.violations ?? []) {
+    if (v.rule === "lancamento-has-product-signal") {
+      report.note(`ℹ️  ${v.message ?? "lançamento sem sinal de produto"} (#11748)`);
+    }
   }
 
   // --- experimento D3-radar (opt-in, off por padrão) ---
