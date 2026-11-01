@@ -51,6 +51,17 @@ Exit code handling:
 - `2` → **ANTES do FATAL (#11690):** rodar `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 4 --outputs-missing`; exit 4 → halt banner "data/ possivelmente defasado, aguardar o sync do OneDrive" (saída: editor confirma e re-roda o guard com `--force`) e NÃO recomendar re-rodar Stage 4. Qualquer outro exit ≠ 0 (2, crash) = mesmo halt. Exit 0 → **FATAL:** "Outputs do Stage 4 ausentes. Re-rodar Etapa 4." Parar.
 - `3` → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 5 --agent orchestrator --level warn --message "stage4_sentinel_missing_legacy"`), continuar.
 
+### Trava da edicao + frescor entre hosts (#11698) — ANTES de qualquer escrita
+
+`data/` sincroniza por OneDrive: o sentinel do Stage 4 pode chegar antes da versao aprovada de `02-reviewed.md`/`03-social.md` (que existem em todo host desde a Etapa 2), e duas sessoes em hosts diferentes podem rodar a Etapa 5 da mesma edicao. Os 3 comandos abaixo rodam nesta ordem, **antes** do `update-stage-status --status running` do §5a (que ja escreve na edicao), cada um STANDALONE (o hook so injeta `--session-id` em comando sem `&&`/`;`/`|`). **Fail-closed: qualquer exit != 0 dos tres e halt — nunca seguir como "sem sinais", e nada e despachado.** O halt usa `render-halt-banner.ts --stage "5 — Publicacao"` com o stderr do comando no `--reason` e a acao indicada; estes halts NAO liberam a trava (ou ela nao e desta sessao, ou ainda nao foi adquirida). `--force` em qualquer dos tres so com confirmacao explicita do editor, nunca por conta propria.
+1. `npx tsx scripts/stale-edition-guard.ts check --edition-dir {EDITION_DIR} --step 5 --edition {AAMMDD}` — exit 4 = outra maquina parece a frente: sentinel do Stage 6 ja presente aqui (gravado neste host ou sincronizado de outro), trava viva/vencida de OUTRO host no Stage 5+, tombstone de conclusao do Stage 5 de outro host com o sentinel 5 ainda nao sincronizado aqui, ou tombstone de interrupcao do Stage 5 de outro host solto ha menos de 6 h. Acao: "aguardar o sync do OneDrive e re-rodar /diaria-5-publicacao {AAMMDD}; se a outra sessao morreu ou a Etapa 5 precisa mesmo rodar de novo aqui, o editor confirma e re-roda o guard com --force".
+2. `npx tsx scripts/stage5-freshness.ts check --edition-dir {EDITION_DIR} --edition {AAMMDD}` — compara `02-reviewed.md`/`03-social.md` com o `output_hashes` (sha256) gravado pelo `pipeline-sentinel.ts write --step 4`; em `03-social.md` a URL que o §5c-2 resolveu volta a `{edition_url}` antes, entao a retomada passa. Exit 4 lista cada problema com `kind` e a acao do tipo (stderr): `sentinel_missing`/`sentinel_unreadable`/`absent`/`empty` = sync em transito, aguardar e re-rodar; `no_hash` (sentinel gravado depois do corte por codigo defasado) = atualizar o codigo no host que aprovou e re-rodar a Etapa 4; `diverged` = aguardar o sync ou, se o editor ajustou depois do gate de proposito, `--force` com a confirmacao dele (ou re-rodar a Etapa 4); `sentinel_malformed`/`edition_url_invalid` = corrigir o arquivo citado. Usar a acao do stderr no `--action` do banner. `--force` vale para qualquer tipo e fica no run-log. Sentinel do Stage 4 anterior ao corte (`verification: "unverified_legacy"`) sai 0 com aviso: levar ao resumo final ("frescor nao conferido: sentinel legado").
+3. `npx tsx scripts/edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5` — exit 0 segue (`took_stale`/`taken_over` no JSON: avisar `ℹ️ Sessao assumiu a edicao {AAMMDD} de {previous.session_id} ({previous.host}, heartbeat ha {N} min)`). Exit 3 = outra sessao viva nesta edicao (Etapa 5 em dobro despacharia duas vezes); 4 = trava vencida de OUTRO host (data/ possivelmente defasado); 2 = `--session-id` ausente (re-rodar standalone; persistindo, halt). Override: `acquire --force`. **Renovacao** (mesmo comando, nos pontos marcados abaixo: §5c, §5f, §5h): exit 3/4 = halt SEM liberar (a trava nao e mais desta sessao); exit 2 ou crash = liberar (release abaixo) e halt.
+
+**Limite conhecido:** a trava e um arquivo em `data/`, sincronizado pelo mesmo OneDrive; dois hosts que adquirem dentro da janela de sync recebem `acquired` os dois, e a trava vence 45 min depois da ultima renovacao, inclusive no meio do Stage 5 (por isso as renovacoes). O que cobre esse caso e o frescor por hash (passo 2) e o tombstone de conclusao do §5h (o passo 1 do outro host acusa a Etapa 5 ja concluida aqui).
+
+**Liberar a trava em todo ramo terminal depois do acquire (#10326):** antes de QUALQUER halt, pausa ou FATAL deste stage a partir daqui (MCP fail-fast, staleness, invariants, poll, upload de imagens, header duplicado, exit 13 do Kit etc.), rodar standalone `npx tsx scripts/edition-lock.ts release --edition-dir {EDITION_DIR}` (exit != 0 e log-only). Grava tombstone de interrupcao (#11713), que o passo 1 do outro host le por ate 6 h. Quem voltar com `retry` re-roda o passo 3. A conclusao normal libera no §5h com `--complete-stage 5`.
+
 ### 5a. Pre-requisitos + sync
 
 **Marcar Stage 5 `running` no inicio (#1783).** Garante o `start` pra que o `done` do §5h feche a duracao no relatorio. Sem `--start` — auto-carimbo (#1789) preserva o original em resume:
@@ -207,6 +218,8 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b
 
 ### 5c. Dispatch newsletter — primeiro, antes do social (#2454)
 
+**Renovar a trava antes do dispatch (#11698):** rodar de novo, standalone, `npx tsx scripts/edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5` (renova o heartbeat, TTL 45 min, e acusa outra sessao que tenha assumido a edicao desde o inicio do stage). Tratamento da **Renovacao** (passo 3 de "Trava da edicao + frescor entre hosts"); qualquer exit != 0 = halt sem despachar.
+
 **So dispatchar se o canal foi autorizado em 5b.** Canal manual fica com `status: pending_manual`.
 
 **ORDEM OBRIGATORIA (#2454): newsletter ANTES do social.** `{edition_url}` e gravada em `_internal/05-edition-url.txt` pelo passo da newsletter — com backend Kit, `publish-newsletter-kit.ts` grava `https://diar.ia.br/p/{seoSlug(titulo do D1)}` (#7420, a pagina propria do site, publicada por `publish-edition-site-page.ts` no §5b-site; nunca o `public_url` do broadcast Kit; backstop `resolve-edition-url.ts` no 5c-2). Na era Beehiiv ela vinha do slug do draft — por isso a ordem nasceu. O passo 5c-2 (abaixo) reescreve `03-social.md` inteiro substituindo `{edition_url}` — inclusive dentro do `## post_pixel`. **#3646:** o dispatch de Stage 5 (`publish-linkedin.ts`/`publish-facebook.ts`) em si nao consome mais `{edition_url}` pra nada — o main post do LinkedIn nao carrega URL (#595) e o `comment_diaria` que antes precisava dela foi aposentado (#3627). Os consumidores reais de `05-edition-url.txt` sao o `# Curto` (X/Threads, inclusive o `## um` do 4º post, #9568), o `## um` no Facebook (linha com o permalink no lugar do CTA de assinatura) e no Instagram (comentario com o permalink logo depois do `media_publish`, fail-soft, #11724) e o `## post_pixel` de edicoes ANTIGAS (aposentado na #9568; o post pessoal inteiro saiu do Stage 6 na #11398). Disparo em paralelo causava fallback silencioso pra `https://diar.ia.br` (raiz) quando `05-edition-url.txt` ainda nao existia. A partir de #2454, o fluxo e sequencial: rascunho da newsletter → resolve URL → dispatch social.
@@ -243,7 +256,9 @@ Se o script sair com código != 0, tratar como falha do dispatch newsletter
 Schedule (Stage 6) sem investigar; **não** existe modo "fix" automático
 pra este caminho (ver nota no Passo 5f abaixo) — qualquer problema de
 conteúdo precisa ser corrigido em `02-reviewed.md` e o script re-rodado
-(idempotente, `updateBroadcast` no mesmo `broadcast_id`).
+(idempotente, `updateBroadcast` no mesmo `broadcast_id`). Corrigir `02-reviewed.md`
+muda o hash aprovado: numa sessao nova o frescor (#11698) trava — re-rodar a
+Etapa 4 (regrava o hash) ou `stage5-freshness.ts --force` com confirmacao do editor.
 
 **Nenhum dos dois caminhos de teste (Send test da UI ou `--send-test`) é o review — eles só ENVIAM o e-mail (#9594, #10395).** O loop do §5f (`review-test-email` com `platform: "kit"`) roda TAMBÉM neste backend, depois do dispatch social, e termina SEMPRE em `npx tsx scripts/record-kit-review.ts` (ver §5f). Na edição 261005 o §5f foi pulado no Kit e nada acusou; desde o #9594 o invariante `stage-5-review-completed` (§5i) dá warning sem `_internal/05-review-kit.json`, e o gate do Stage 6 avisa o editor.
 
@@ -294,6 +309,7 @@ npx tsx scripts/render-halt-banner.ts \
   --reason "03-social.md tem header de plataforma duplicado (# Social, ou # LinkedIn/# Facebook em edicao legado, aparece >1x) — os publishers vao parsear so ate o 2o header e reportar destaque nao encontrado" \
   --action "remova o header duplicado em {EDITION_DIR}/03-social.md (ver linhas no output do lint) e rode novamente"
 ```
+Corrigir `03-social.md` muda o hash aprovado: numa sessao nova, re-rodar a Etapa 4 ou `stage5-freshness.ts --force` com confirmacao do editor (#11698).
 
 **Em uma unica mensagem, disparar simultaneamente** (so apos o guard acima E o passo 5c-2 retornarem exit 0):
 
@@ -353,6 +369,8 @@ Se uma chamada `mcp__claude-in-chrome__*` retornar `chrome_disconnected`:
   4. **Nao prosseguir para o loop de review** enquanto o template nao estiver correto.
 
 ### 5f. Loop de review do email de teste (apos newsletter retornar)
+
+Antes do loop, renovar a trava (**Renovacao**, #11698): standalone `npx tsx scripts/edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5`.
 
 > NOTA: este loop **nao bloqueia social** — `publish-facebook.ts` e `publish-linkedin.ts` ja completaram em 5c. O loop so toca o draft do Beehiiv/Kit (newsletter).
 
@@ -455,6 +473,8 @@ npx tsx scripts/smoke-test-vote.ts --edition {AAMMDD}  # exit 2 (410/403) ou 3 (
 
 ### 5h. Escrever sentinel de conclusao (#978)
 
+No inicio, renovar a trava (**Renovacao**, #11698): standalone `npx tsx scripts/edition-lock.ts acquire --edition-dir {EDITION_DIR} --stage 5`.
+
 **Sempre** ao fim do Stage 5 — mesmo se publicacao foi manual ou algum canal ficou `pending_manual`:
 
 **Backend-aware (#464, achado do review — sem isso o Stage 6 nunca roda com `backend: "kit"`):** `--outputs` referencia o artefato que o passo 5c-1/5c-1-kit de fato escreveu — `assertSentinel` (Stage 6, pré-condição) checa exatamente os paths gravados aqui, não um path fixo. **Desde #7963 isto também é um gate MECÂNICO, não só prosa:** `pipeline-sentinel.ts write --step 5` recusa (exit 1, SEM `--bypass-reason`) gravar o sentinel se `--outputs` citar o artefato do backend OPOSTO ao ativo em `platform.config.json` (ex: `05-published.json` sob backend `"kit"`) — mesmo assim, seguir o branch certo abaixo evita o erro de largada. Backend `"beehiiv"` (default):
@@ -472,6 +492,8 @@ npx tsx scripts/pipeline-sentinel.ts write \
   --edition {AAMMDD} --step 5 \
   --outputs "_internal/newsletter-kit-published.json"
 ```
+
+**Liberar a trava com tombstone de conclusao (#11698), logo depois do sentinel** (standalone, exit != 0 e log-only): `npx tsx scripts/edition-lock.ts release --edition-dir {EDITION_DIR} --complete-stage 5`. O tombstone fica no lugar da trava ate o `.step-5-done.json` sincronizar nos outros hosts, e o guard do inicio deste stage acusa la uma Etapa 5 ja concluida aqui. **Limite:** a Etapa 6, que segue nesta mesma sessao (#7983), roda sem trava propria.
 
 **Marcar Stage 5 `done` AQUI (#1783).** Este e o mark-done canônico do Stage 5 é o §5i — acontece **antes** do Stage 6. Auto-carimbo de `end` via #1789:
 
