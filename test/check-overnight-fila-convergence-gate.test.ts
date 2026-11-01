@@ -10,7 +10,7 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, copyFileSync, chmodSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,6 +124,17 @@ describe("check-overnight-fila-convergence-gate CLI (#6435)", () => {
     assert.match(r.stderr, /classifique/);
     const written = JSON.parse(readFileSync(planPath, "utf8"));
     assert.equal(written.goal.last_convergence_scan.novas_encontradas, 1);
+  });
+
+  it("#11726: plano só na cópia de conflito do OneDrive → recupera e roda o re-scan", () => {
+    const { planPath, env } = setupFakeGh({ stdout: "[]" });
+    renameSync(planPath, join(dirname(planPath), "plan-300-safeBackup-0001.json"));
+    const r = run(["--plan", planPath], env);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /safeBackup/);
+    assert.match(r.stdout, /convergência confirmada/);
+    const written = JSON.parse(readFileSync(planPath, "utf8"));
+    assert.equal(written.goal.last_convergence_scan.novas_encontradas, 0);
   });
 
   it("gh (fake) sem novidade → exit 0, convergência confirmada, grava last_convergence_scan", () => {

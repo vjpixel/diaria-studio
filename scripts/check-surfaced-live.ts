@@ -28,10 +28,11 @@
  * @see .claude/skills/diaria-develop/SKILL.md (Fase 2)
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { normalizeIssues, type IssuesBearing } from "./lib/plan-issues-normalize.ts";
+import { readPlanJson } from "./lib/plan-safe-backup.ts";
 import {
   SURFACED_LIVE_AT_FIELD,
   SURFACED_LIVE_FIELD,
@@ -83,14 +84,17 @@ if (isMainModule(import.meta.url)) {
     console.error("[check-surfaced-live] uso: --plan <path|data/develop/*/plan.json> | --edition AAMMDD [--strict]");
     process.exit(2);
   }
-  if (!existsSync(planPath)) {
-    console.error(`[check-surfaced-live] plan.json não encontrado: ${planPath}`);
+  // #11726: leitor único — recupera a cópia de conflito do OneDrive
+  // (`plan-*-safeBackup-*.json`) antes de concluir que o plano não existe.
+  const planRead = readPlanJson(planPath);
+  if (planRead.status !== "ok") {
+    console.error(`[check-surfaced-live] ${planRead.message}`);
     process.exit(2);
   }
 
   let entries: SurfacedLiveIssueEntry[];
   try {
-    const parsed = JSON.parse(readFileSync(planPath, "utf8")) as IssuesBearing<SurfacedLiveIssueEntry>;
+    const parsed = planRead.plan as IssuesBearing<SurfacedLiveIssueEntry>;
     // plan.json.issues aceita array (overnight) OU dict chaveado por número
     // (develop, #4817/#4860) — normalizeIssues resolve os dois shapes. Ler
     // parsed.issues direto aqui quebrava com TypeError em todo plan.json de
