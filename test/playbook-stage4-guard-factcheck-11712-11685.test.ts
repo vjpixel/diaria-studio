@@ -54,6 +54,7 @@ describe("Stage 2: Clarice sem sugestões no social usa --note (#11685 item 2)",
     assert.ok(record >= 0, "registro da Clarice do social ausente no Stage 2");
     assert.ok(note > record, "--note ausente depois do registro da Clarice");
     assert.ok(write > record, "--write ausente");
+    assert.ok(note < write, "--note precisa vir antes do --write");
   });
 });
 
@@ -68,6 +69,12 @@ describe("Stage 4 §4c.6: exit 1 DEFASADO re-despacha o fact-checker (#11685 ite
     assert.ok(bullet, "bullet do exit 1 DEFASADO ausente em §4c.6");
     assert.match(bullet, /re-despachar o subagente `fact-checker`/);
     assert.match(bullet, /NÃO montar o gate ainda/);
+    // re-despacho limitado a 1 tentativa, sem loop; falha de dispatch cai no #8996
+    assert.match(bullet, /uma única vez/);
+    assert.match(bullet, /Fact-check defasado — verificar manualmente/);
+    assert.match(bullet, /#8996/);
+    const exit2 = sec.split("\n").find((l) => l.startsWith("- `2` →"));
+    assert.ok(exit2?.includes("até sair `0` ou `1` sem o marcador `FACT-CHECK DEFASADO`"), "exit 2 não exclui o 1 DEFASADO");
     // em --no-gates não segue para a Etapa 5
     const noGates = sec.slice(sec.indexOf("**Comportamento em `auto_approve = true`"));
     assert.ok(noGates.includes(marker), "parágrafo --no-gates não cita o exit 1 DEFASADO");

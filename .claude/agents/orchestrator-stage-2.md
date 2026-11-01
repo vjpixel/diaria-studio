@@ -444,10 +444,11 @@ npx tsx scripts/clarice-diff.ts \
 ```bash
 npx tsx scripts/check-humanizer-social.ts --record-run --step humanizador --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md --post {EDITION_DIR}/_internal/03-social-post-humanizador.md --edition-dir {EDITION_DIR}/
 npx tsx scripts/check-humanizer-social.ts --record-run --step clarice --pre {EDITION_DIR}/_internal/03-social-post-humanizador.md --post {EDITION_DIR}/03-social.md --edition-dir {EDITION_DIR}/
+```
+Se a Clarice rodou e não sugeriu nada no social, `--pre` e `--post` do `--record-run --step clarice` saem iguais e o registro é recusado (exit 1, #11674): repetir com `--note "Clarice sem sugestões"` (prova mais fraca, aparece como "sem sugestões" no `--provenance`) antes do `--write` abaixo (#11685). Nunca passar o mesmo arquivo nos dois sem ter chamado a Clarice.
+```bash
 npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
 ```
-Se a Clarice rodou e não sugeriu nada no social, `--pre` e `--post` do `--record-run --step clarice` saem iguais e o registro é recusado (exit 1, #11674): repetir com `--note "Clarice sem sugestões"` (prova mais fraca, aparece como "sem sugestões" no `--provenance`) antes do `--write` (#11685). Nunca passar o mesmo arquivo nos dois sem ter chamado a Clarice.
-
 O `--write` grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar.
 
 **Não é mais só um passo em prosa (#6305).** Caso real (edição 260827): o humanizador rodou de fato (snapshot `03-social-pre-humanizador.md` presente, diff confirmando reescrita), mas esta chamada `--write` nunca aconteceu numa sessão via `run-edition-stages.ts` — e o `humanizer-ran` (guard mecânico de #6009 que já bloqueava o `write` do sentinel de Stage 2) não capturava isso, porque ele só prova que a skill `humanizador` rodou (via snapshot), não que este passo seguinte rodou. O Stage 4 só descobriu no `check-humanizer-social.ts --check`, exit 1, tarde demais pra ser barato de corrigir. A regra `social-humanizer-sentinel-written` (`scripts/lib/invariant-checks/stage-2.ts`) fecha essa lacuna: `pipeline-sentinel.ts write --step 2` (mesmo gate do `humanizer-ran`) agora também recusa gravar o sentinel do Stage 2 se `_internal/.humanizer-social-done.json` estiver ausente ou com hash divergente do `03-social.md` atual — pular esta chamada não passa mais silenciosamente.
