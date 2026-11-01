@@ -464,6 +464,92 @@ export async function postInstagramComment(
 }
 
 /**
+ * #11731: permissões que autorizam `POST /{ig-media-id}/comments`. Facebook
+ * Login (o fluxo deste repo, `graph.facebook.com`) usa
+ * `instagram_manage_comments`; Instagram Login usaria
+ * `instagram_business_manage_comments`. Qualquer uma das duas basta.
+ */
+export const INSTAGRAM_COMMENT_PERMISSIONS: readonly string[] = [
+  "instagram_manage_comments",
+  "instagram_business_manage_comments",
+];
+
+/**
+ * #11731: decide, a partir da resposta de `GET /me/permissions`
+ * (`{ data: [{ permission, status }] }`), se o token pode comentar. Pure.
+ * Formato inesperado = `false` (fail-closed: sem prova do escopo, o post não
+ * promete comentário).
+ */
+export function hasInstagramCommentPermission(permissionsJson: unknown): boolean {
+  const data = (permissionsJson as { data?: unknown } | null | undefined)?.data;
+  if (!Array.isArray(data)) return false;
+  return data.some((p) => {
+    if (!p || typeof p !== "object") return false;
+    const { permission, status } = p as { permission?: unknown; status?: unknown };
+    return typeof permission === "string" && INSTAGRAM_COMMENT_PERMISSIONS.includes(permission) && status === "granted";
+  });
+}
+
+export type InstagramCommentScopeProbe = { ok: true; granted: boolean } | { ok: false; reason: string };
+
+/**
+ * #11731: sonda (só leitura) as permissões do token. NUNCA lança: falha de
+ * rede, HTTP de erro ou JSON inválido voltam como `{ ok: false, reason }`.
+ * Token no header Authorization, nunca na query string (#7779) — o motivo
+ * devolvido não carrega a URL nem o token.
+ */
+export async function probeInstagramCommentPermission(
+  accessToken: string,
+  apiVersion: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<InstagramCommentScopeProbe> {
+  try {
+    const url = `${INSTAGRAM_API_BASE}/${apiVersion}/me/permissions`;
+    const res = await fetchImpl(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
+    const text = await res.text();
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { ok: false, reason: `permissões: resposta não-JSON HTTP ${res.status}` };
+    }
+    const apiError = (data as { error?: { message?: unknown } } | null)?.error;
+    if (!res.ok || apiError) {
+      const msg = typeof apiError?.message === "string" ? apiError.message : `HTTP ${res.status}`;
+      return { ok: false, reason: `permissões: ${msg}` };
+    }
+    return { ok: true, granted: hasInstagramCommentPermission(data) };
+  } catch (e) {
+    return { ok: false, reason: `permissões: fetch falhou: ${(e as Error).message}` };
+  }
+}
+
+/**
+ * #11731: só deixa o permalink seguir para o 4º post (legenda "Link da edição
+ * no primeiro comentário." + `firstComment`) quando o token comprovadamente
+ * pode comentar. Sem escopo ou sonda falha → `editionUrl: null` (linha da bio,
+ * sem comentário) + aviso. Pure.
+ */
+export function gateEditionUrlOnCommentScope(
+  editionUrl: string | null,
+  probe: InstagramCommentScopeProbe | null,
+): { editionUrl: string | null; warning: string | null } {
+  if (!editionUrl) return { editionUrl: null, warning: null };
+  if (probe?.ok && probe.granted) return { editionUrl, warning: null };
+  const motivo = !probe
+    ? "sonda de permissões não rodou"
+    : probe.ok
+      ? `token sem ${INSTAGRAM_COMMENT_PERMISSIONS.join("/")}`
+      : `sonda de permissões falhou (${probe.reason})`;
+  return {
+    editionUrl: null,
+    warning:
+      `[publish-instagram] #11731: ${motivo} — 4º post (USE MELHOR) sai com a linha da bio e sem 1º comentário. ` +
+      "Renove o INSTAGRAM_ACCESS_TOKEN com instagram_manage_comments (.env e secret do Worker) para reativar o comentário.",
+  };
+}
+
+/**
  * Enfileira um post Instagram no Worker `diaria-linkedin-cron` (#3817 — Worker
  * generalizado pra suportar `channel: "instagram"` além de LinkedIn). O
  * cliente HTTP em si mora em `scripts/lib/worker-queue-client.ts` (#3944
@@ -644,7 +730,7 @@ async function main(): Promise<number | void> {
       `SKIP: ${missing} ausente(s) — Instagram não publicado nesta edição.\n` +
         "Configure em .env para habilitar o Instagram.\n" +
         "  INSTAGRAM_BUSINESS_ACCOUNT_ID: developers.facebook.com/apps/ → Instagram → Business Account ID\n" +
-        "  INSTAGRAM_ACCESS_TOKEN: developers.facebook.com/tools/explorer/ (escopos: instagram_basic, instagram_content_publish)",
+        "  INSTAGRAM_ACCESS_TOKEN: developers.facebook.com/tools/explorer/ (escopos: instagram_basic, instagram_content_publish; instagram_manage_comments para o 1º comentário do 4º post, #11731)",
     );
     return 0;
   }
@@ -727,6 +813,19 @@ async function main(): Promise<number | void> {
   // (motivo logado), D1/D2/D3 seguem idênticos.
   const umPlan = planUseMelhorDispatch(editionDir, platformConfig);
   reportUseMelhorPlan("instagram", umPlan, { editionId: editionDate, rootDir: ROOT });
+  // #11731: o comentário com o permalink (#11724) só é prometido na legenda
+  // quando o token pode comentar. A sonda é só leitura e roda também em
+  // --test-mode; só quando há 4º post pronto E permalink (senão não há o que
+  // decidir). No --schedule o Worker usa o PRÓPRIO secret
+  // INSTAGRAM_ACCESS_TOKEN: a sonda do token local é proxy desse.
+  let umEditionUrl: string | null = null;
+  if (umPlan.status === "ready") {
+    const resolvedEditionUrl = readResolvedEditionUrl(editionDir); // #11724
+    const probe = resolvedEditionUrl ? await probeInstagramCommentPermission(accessToken, apiVersion) : null;
+    const gated = gateEditionUrlOnCommentScope(resolvedEditionUrl, probe);
+    if (gated.warning) console.warn(gated.warning);
+    umEditionUrl = gated.editionUrl;
+  }
   const umPost =
     umPlan.status === "ready"
       ? buildUseMelhorInstagramPost({
@@ -734,7 +833,7 @@ async function main(): Promise<number | void> {
           plan: umPlan,
           images: (publicImages as { images?: Record<string, { url?: string }> }).images,
           editionDir,
-          editionUrl: readResolvedEditionUrl(editionDir), // #11724
+          editionUrl: umEditionUrl, // #11724, gated por escopo de comentário (#11731)
         })
       : null;
   if (umPost && !umPost.ok) reportUseMelhorSkip("instagram", umPost.reason, { editionId: editionDate, rootDir: ROOT });
