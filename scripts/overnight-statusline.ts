@@ -93,7 +93,7 @@ import { sentinelExists, readSentinel } from "./lib/pipeline-state.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #3054: rejeita sentinels calendário-inválidos (ex: 260999)
-import { readLatestPlanSafeBackup } from "./lib/plan-safe-backup.ts";
+import { findLatestValidPlanSafeBackup, readLatestPlanSafeBackup } from "./lib/plan-safe-backup.ts";
 import { getMachineId } from "./lib/machine-id.ts"; // #3033: filtra plan.json de develop de OUTRA máquina
 import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860: plan.issues também pode ser dict (develop)
 
@@ -711,18 +711,25 @@ export interface DevelopPlanEntry {
  *
  * Fail-open: `statSync` falhar (arquivo sumiu entre o `existsSync` do caller e
  * aqui, permissão, etc.) → false (nunca esconde um plan por erro de leitura).
+ *
+ * #11768: com `plan.json` ausente e o plano lido do safeBackup em modo
+ * somente leitura, a idade é o mtime da cópia de conflito lida — senão uma
+ * rodada abandonada que só sobrou no backup nunca expiraria da barra.
  */
 export function isStaleDevelopPlan(
   planPath: string,
   now: Date,
   thresholdMs: number = EDITION_STALE_THRESHOLD_MS,
 ): boolean {
+  let mtimeMs: number;
   try {
-    const stat = statSync(planPath);
-    return now.getTime() - stat.mtimeMs > thresholdMs;
+    mtimeMs = statSync(planPath).mtimeMs;
   } catch {
-    return false;
+    const backup = findLatestValidPlanSafeBackup(planPath);
+    if (!backup) return false;
+    mtimeMs = backup.mtimeMs;
   }
+  return now.getTime() - mtimeMs > thresholdMs;
 }
 
 /**

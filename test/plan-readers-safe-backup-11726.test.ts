@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { readPlanFromDir } from "../scripts/overnight-statusline.ts";
+import { isStaleDevelopPlan, readPlanFromDir } from "../scripts/overnight-statusline.ts";
 import { applyQueueReawait } from "../scripts/lib/ci-queue-reawait.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,6 +79,18 @@ describe("readPlanFromDir (statusline) com plano só no safeBackup (#11726)", ()
     utimesSync(join(dir, "plan-300-safeBackup-0003.json"), t - 10, t - 10);
     const plan = readPlanFromDir(planPath);
     assert.equal((plan as unknown as { issues: Array<{ number: number }> }).issues[0].number, 2);
+    assert.equal(existsSync(planPath), false);
+  });
+
+  it("isStaleDevelopPlan mede a idade pelo mtime do backup quando plan.json falta (#11768)", () => {
+    const planPath = roundWithOnlySafeBackup({ issues: [{ number: 1 }] });
+    const backup = join(dirname(planPath), "plan-300-safeBackup-0001.json");
+    const now = new Date();
+    const old = new Date(now.getTime() - 3 * 24 * 3600 * 1000);
+    utimesSync(backup, old, old);
+    assert.equal(isStaleDevelopPlan(planPath, now), true, "rodada abandonada só no backup expira");
+    utimesSync(backup, now, now);
+    assert.equal(isStaleDevelopPlan(planPath, now), false, "backup recente segue ativo");
     assert.equal(existsSync(planPath), false);
   });
 

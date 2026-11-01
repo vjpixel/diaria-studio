@@ -139,10 +139,22 @@ export function recoverPlanFromSafeBackup(planPath: string): PlanSafeBackupRecov
  * objeto JSON válido.
  */
 export function readLatestPlanSafeBackup(planPath: string): Record<string, unknown> | null {
+  return findLatestValidPlanSafeBackup(planPath)?.plan ?? null;
+}
+
+/**
+ * Mesmo critério de `readLatestPlanSafeBackup`, devolvendo também o arquivo e
+ * o mtime da cópia lida — a statusline mede a idade da rodada pelo mtime
+ * (`isStaleDevelopPlan`); sem `plan.json` em disco, a idade é a do backup
+ * (o que o restauro de `recoverPlanFromSafeBackup` preservaria). Só leitura.
+ */
+export function findLatestValidPlanSafeBackup(
+  planPath: string,
+): { path: string; mtimeMs: number; plan: Record<string, unknown> } | null {
   if (basename(planPath) !== "plan.json") return null;
   for (const b of findPlanSafeBackups(dirname(planPath))) {
     const raw = isValidPlanJson(b.path);
-    if (raw !== null) return JSON.parse(raw) as Record<string, unknown>;
+    if (raw !== null) return { path: b.path, mtimeMs: b.mtimeMs, plan: JSON.parse(raw) as Record<string, unknown> };
   }
   return null;
 }
