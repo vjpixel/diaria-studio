@@ -58,7 +58,7 @@ const WORD_NUM: Record<string, string> = {
 
 export function detectPublishers(text: string): Set<string> {
   const t = norm(text);
-  return new Set(PUBLISHERS.filter((p) => new RegExp(`\\b${p}\\b`).test(t)));
+  return new Set(PUBLISHERS.filter((p) => new RegExp(`(?<![\\p{L}-])${p}(?![\\p{L}-])`, "u").test(t)));
 }
 
 /** Razões ("6x") e percentuais ("27%") citados no texto. */
@@ -68,18 +68,30 @@ export function extractKeyNumbers(text: string): { ratios: Set<string>; percents
   const percents = new Set<string>();
   for (const m of t.matchAll(/\b(\d+(?:[.,]\d+)?|[a-z]+)\s*(?:x\b|vezes\b|times\b)/g)) {
     const n = /^\d/.test(m[1]) ? m[1].replace(",", ".") : WORD_NUM[m[1]];
-    if (n && Number(n) >= 2) ratios.add(`${Number(n)}x`);
+    if (n && Number(n) >= 2 && Number(n) <= 100) ratios.add(`${Number(n)}x`);
   }
   for (const m of t.matchAll(/\b(\d+(?:[.,]\d+)?)\s*(?:%|por cento\b)/g)) percents.add(`${Number(m[1].replace(",", "."))}%`);
   return { ratios, percents };
 }
 
-function hostMentions(url: string, publisher: string): boolean {
+/** Domínios próprios por publicador quando o rótulo difere do nome (extensível). */
+const HOST_ALIASES: Record<string, string[]> = {
+  google: ["withgoogle"], deepmind: ["google"], meta: ["facebook", "fb"], microsoft: ["msft"],
+  amazon: ["aws"], mit: [], fmi: ["imf"], ocde: ["oecd"],
+};
+
+function hostLabels(url: string): string[] {
   try {
-    return new URL(url).hostname.toLowerCase().includes(publisher);
+    return new URL(url).hostname.toLowerCase().split(".");
   } catch {
-    return false;
+    return [];
   }
+}
+
+/** Compara por RÓTULO do host (anthropic.com sim; metropoles.com.br não é "meta"). */
+function hostMentions(url: string, publisher: string): boolean {
+  const labels = hostLabels(url);
+  return labels.includes(publisher) || (HOST_ALIASES[publisher] ?? []).some((a) => labels.includes(a));
 }
 
 /**
@@ -90,7 +102,7 @@ function hostMentions(url: string, publisher: string): boolean {
 export function findStudySourceRecurrences(items: StudyItem[], past: PastStudyItem[]): StudyRecurrenceWarning[] {
   const prepared = past.map((p) => {
     const text = `${p.title}\n${p.summary ?? ""}`;
-    return { p, text, pubs: detectPublishers(text), doc: DOC_RE.test(norm(text)), nums: extractKeyNumbers(text) };
+    return { p, text, pubs: new Set([...detectPublishers(text), ...PUBLISHERS.filter((pb) => hostMentions(p.url, pb))]), doc: DOC_RE.test(norm(text)), nums: extractKeyNumbers(text) };
   });
   const out: StudyRecurrenceWarning[] = [];
   for (const it of items) {

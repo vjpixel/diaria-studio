@@ -68,11 +68,42 @@ test("#11763 Stage 4: invariante no 02-reviewed.md, janela de 30 dias, warning-o
     assert.equal(v.length, 1, v.map((x) => x.message).join("\n"));
     assert.equal(v[0].severity, "warning");
     assert.ok(v[0].message.includes("261020") && v[0].message.includes(CNN_URL));
-    // edição antiga fora da janela de 30 dias não conta
-    mkdirSync(join(root, "2609", "260915"), { recursive: true });
-    writeFileSync(join(root, "2609", "260915", "02-reviewed.md"), "x");
-    assert.deepEqual(checkStudySourceRecurrence(join(root, "2610", "261020"), root), []);
+    // janela real: o mesmo D1 a 31 dias (261003) não avisa; a 29 dias (261005) avisa
+    const cur = (ed: string) => {
+      mkdirSync(join(root, "2611", ed), { recursive: true });
+      writeFileSync(join(root, "2611", ed, "02-reviewed.md"), `**RADAR**\n\n[${CNN_TITLE}](${CNN_URL})\n${CNN_DESC}\n`);
+      return join(root, "2611", ed);
+    };
+    const old = (ed: string) => {
+      mkdirSync(join(root, "2610", ed), { recursive: true });
+      writeFileSync(join(root, "2610", ed, "02-reviewed.md"),
+        `**DESTAQUE 1 | IA**\n\n[${D1_TITLE}](https://www.anthropic.com/research/junior-hiring)\n\n${D1_BODY}\n\nPor que isso importa:\nTexto.\n\n---\n`);
+    };
+    rmSync(join(root, "2610", "261020"), { recursive: true });
+    old("261003");
+    assert.deepEqual(checkStudySourceRecurrence(cur("261103"), root), []);
+    old("261005");
+    const v29 = checkStudySourceRecurrence(cur("261103"), root);
+    assert.equal(v29.length, 1);
+    assert.ok(v29[0].message.includes("261005"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("#11763: metropoles.com.br não é domínio da Meta; meta-análise não é a Meta", () => {
+  const metaPast = [{ label: "D1", title: "Estudo da Meta mostra 4x mais cliques", url: "https://ai.meta.com/x", aammdd: "261020" }];
+  const w = findStudySourceRecurrences(
+    [{ label: "RADAR", title: "Estudo da Meta mostra 4x mais cliques", url: "https://www.metropoles.com/tec/a" }], metaPast);
+  assert.equal(w.length, 1);
+  const prim = findStudySourceRecurrences(
+    [{ label: "RADAR", title: "Estudo da Meta mostra 4x mais cliques", url: "https://about.meta.com/x" }], metaPast);
+  assert.deepEqual(prim, []);
+  const mm = findStudySourceRecurrences(
+    [{ label: "RADAR", title: "Meta-análise: estudo aponta 4x mais cliques", url: "https://x.example/c" }], metaPast);
+  assert.deepEqual(mm, []);
+});
+
+test("#11763: razão absurda (2026 vezes) é ignorada", () => {
+  assert.equal(extractKeyNumbers("em 2026 vezes").ratios.size, 0);
 });
