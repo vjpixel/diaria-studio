@@ -502,10 +502,16 @@ export async function probeInstagramCommentPermission(
   accessToken: string,
   apiVersion: string,
   fetchImpl: typeof fetch = fetch,
+  /** Roda antes de D1/D2/D3: fetch pendurado não pode segurar a publicação. Timeout = fail-closed. */
+  timeoutMs = 10_000,
 ): Promise<InstagramCommentScopeProbe> {
   try {
     const url = `${INSTAGRAM_API_BASE}/${apiVersion}/me/permissions`;
-    const res = await fetchImpl(url, { method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
+    const res = await fetchImpl(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     const text = await res.text();
     let data: unknown;
     try {

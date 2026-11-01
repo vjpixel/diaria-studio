@@ -161,6 +161,36 @@ describe("#11731 — sonda + 4º post do Instagram", () => {
     });
   }
 
+  it("sonda pendurada → timeout → fail-closed (linha da bio, sem comentário, aviso #11731)", async () => {
+    let sawSignal = false;
+    const hangingFetch = ((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        sawSignal = !!signal;
+        signal?.addEventListener("abort", () => reject(signal.reason));
+      })) as typeof fetch;
+    const started = Date.now();
+    const probe = await probeInstagramCommentPermission(TOKEN, "v21.0", hangingFetch, 50);
+    assert.ok(sawSignal, "a sonda passa AbortSignal ao fetch");
+    assert.ok(Date.now() - started < 5_000, "não espera além do timeout");
+    assert.equal(probe.ok, false);
+    const gated = gateEditionUrlOnCommentScope(EDITION_URL, probe);
+    assert.equal(gated.editionUrl, null);
+    assert.match(gated.warning ?? "", /#11731/);
+    assert.match(gated.warning ?? "", /sonda de permissões falhou/);
+    const post = buildUseMelhorInstagramPost({
+      socialMd: MD,
+      plan,
+      images,
+      editionDir: "x",
+      editionUrl: gated.editionUrl,
+      fileExists: () => true,
+    });
+    assert.ok(post.ok);
+    assert.equal(post.firstComment, null);
+    assert.ok(post.caption.includes(INSTAGRAM_CTA_LINE));
+  });
+
   it("sem permalink: nada a decidir, sem aviso", () => {
     const granted: InstagramCommentScopeProbe = { ok: true, granted: true };
     assert.deepEqual(gateEditionUrlOnCommentScope(null, granted), { editionUrl: null, warning: null });
