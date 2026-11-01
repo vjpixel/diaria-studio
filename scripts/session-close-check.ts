@@ -1,5 +1,6 @@
 /** Read-only evidence for /diaria-encerra (#11524). Unknown checks block closure. */
 import { execFileSync } from "node:child_process";
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { listActiveSessions, resolveRepoRoot, type SessionRecord } from "./lib/session-registry.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
@@ -39,9 +40,15 @@ export function parsePorcelainStatus(status: string): StatusEntry[] {
 /** Only plain modifications (M in index and/or worktree, nothing else) can be line-ending-only. */
 const isPlainModification = (code: string): boolean => /^[M ][M ]$/.test(code) && code !== "  ";
 
+/** Latest of mtime/ctime (ms; ctime moves on rename/chmod and cannot be set by `touch -d`) of a regular file; undefined for missing files, directories or errors (never ignorable). */
+const fileMtimeMs = (abs: string): number | undefined => {
+  try { const st = statSync(abs); return st.isFile() ? Math.max(st.mtimeMs, st.ctimeMs) : undefined; } catch { return undefined; }
+};
+
 /** Does not infer process liveness from registry.pid (an ephemeral beacon PID). */
 export function checkSessionClose(root: string, session: SessionRecord | undefined,
-  extraWorktrees: string[] = [], run: Run = runCommand): CloseReport {
+  extraWorktrees: string[] = [], run: Run = runCommand,
+  mtimeMs: (abs: string) => number | undefined = fileMtimeMs): CloseReport {
   const report: CloseReport = { canClose: false, pending: [], errors: [], checkedWorktrees: [], ignored: [],
     manualChecks: ["tasks/agents em segundo plano", "promessas e follow-ups no transcript"] };
   if (!session) {
@@ -76,6 +83,16 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
         const names = query("git", ["diff", "--ignore-space-at-eol", "--name-only", "HEAD"], path);
         if (names !== undefined) contentChanged = new Set(names.split("\n").filter(Boolean));
       }
+      // Initial-state signal (#11733): a file last written BEFORE the session started is very unlikely to have been
+      // touched by it (best-effort: mtime/ctime), so it is third-party/pre-existing dirt. Unknown mtime, directories, quoted paths
+      // and deletions stay blocking; nothing is restored or removed.
+      const startedMs = Date.parse(session.startedAt);
+      const preExisting = (e: StatusEntry): boolean => {
+        if (!Number.isFinite(startedMs) || e.path.startsWith("\"") || e.path.endsWith("/")) return false;
+        if (!(e.code === "??" || e.code === " M")) return false; // staged entries are a session action
+        const m = mtimeMs(resolve(path, e.path));
+        return m !== undefined && m < startedMs;
+      };
       const blocking: string[] = [];
       for (const entry of entries) {
         if (isRoutineAudienceSnapshot(entry.path)) {
@@ -83,6 +100,8 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
         } else if (contentChanged && isPlainModification(entry.code) && !entry.path.startsWith("\"")
           && !contentChanged.has(entry.path)) {
           report.ignored.push(`só fim de linha (CRLF/LF, não bloqueia): ${path}: ${entry.line}`);
+        } else if (preExisting(entry)) {
+          report.ignored.push(`sujeira pré-existente, modificada antes do início da sessão (não bloqueia): ${path}: ${entry.line}`);
         } else blocking.push(entry.line);
       }
       if (blocking.length) report.pending.push(`mudanças não commitadas: ${path}\n${blocking.join("\n")}`);

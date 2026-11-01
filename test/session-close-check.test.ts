@@ -132,4 +132,18 @@ describe("session closure evidence", () => {
       assert.deepEqual(result.errors, []);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+  it("ignores dirty files last written before the session started, never ones written after or unknown (#11733)", () => {
+    const started = Date.parse(session.startedAt);
+    const run = (cmd: string, args: string[]) =>
+      args[0] === "status" ? "?? old.ts\n?? new.ts\n M mod-old.ts\n?? unknown.ts\n?? dir/\n" : clean(cmd, args);
+    const mtimes: Record<string, number> = {
+      "/repo/own/old.ts": started - 1000, "/repo/own/new.ts": started + 1000, "/repo/own/mod-old.ts": started - 1,
+    };
+    const result = checkSessionClose("/repo", session, [], run, abs => mtimes[abs]);
+    assert.equal(result.ignored.length, 2);
+    const pending = result.pending.join("\n");
+    assert.ok(pending.includes("new.ts") && pending.includes("unknown.ts") && pending.includes("dir/"));
+    assert.ok(!/\?\? old\.ts/.test(pending) && !pending.includes("mod-old.ts"));
+    assert.equal(result.canClose, false);
+  });
 });
