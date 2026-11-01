@@ -648,11 +648,11 @@ describe("parseKitFrio (#11221 review — leitor único das flags)", () => {
     assert.ok("error" in parseKitFrio({ frio: { enabled: false, semanal_enabled: false, segmento_exclui_frio_confirmado: 1 } }));
     assert.ok("error" in parseKitFrio({ frio: "sim" }));
   });
-  it("config real do repo parseia (e está desligada no merge)", () => {
+  it("config real do repo parseia (ligada por inteiro desde o rollout de 01/11, #11226)", () => {
     const cfg = JSON.parse(readFileSync(resolve(import.meta.dirname, "..", "platform.config.json"), "utf8")) as { kit: unknown };
     const p = parseKitFrio(cfg.kit);
     assert.ok(!("error" in p));
-    assert.equal(p.enabled, false);
+    assert.equal(p.fullyOn, true);
   });
   it("janela de volta <= menor janela de esfriar (regra sem estado)", () => {
     assert.ok(KIT_FRIO_RETURN_WINDOW_DAYS <= KIT_FRIO_WINDOW_NEW_DAYS);
