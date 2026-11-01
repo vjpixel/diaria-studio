@@ -64,6 +64,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { CliExit, runCli } from "./lib/cli-exit.ts"; // #9911: fetch + process.exit sai 127 no Windows
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import { hashHighlights } from "./lib/social-source-hash.ts";
 import { verify as verifyUrl, BROWSER_UA, detectSoft404Title } from "./verify-accessibility.ts";
@@ -293,19 +294,19 @@ export function parseSwapLinkArgs(argv: string[]): SwapLinkArgs {
     console.error(
       "Uso: swap-destaque-link.ts --edition AAMMDD --destaque d{1|2|3} --url <nova-url> [--dry-run] [--skip-verify] [--edition-dir <path>]",
     );
-    process.exit(2);
+    throw new CliExit(2);
   }
   if (!args.destaque || !["d1", "d2", "d3"].includes(args.destaque)) {
     console.error('Erro: --destaque deve ser "d1", "d2" ou "d3"');
-    process.exit(2);
+    throw new CliExit(2);
   }
   if (!args.url) {
     console.error("Erro: --url <nova-url> é obrigatório");
-    process.exit(2);
+    throw new CliExit(2);
   }
   if (!/^https?:\/\//.test(args.url)) {
     console.error(`Erro: --url deve ser uma URL http(s) absoluta, recebido "${args.url}"`);
-    process.exit(2);
+    throw new CliExit(2);
   }
 
   const editionsRootDir = args["editions-dir"]
@@ -582,7 +583,7 @@ export async function runSwapLink(
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+async function main(): Promise<number | void> {
   const args = parseSwapLinkArgs(process.argv.slice(2));
   try {
     const result = await runSwapLink(args);
@@ -623,12 +624,12 @@ async function main(): Promise<void> {
     );
   } catch (e) {
     console.error(`Erro: ${(e as Error).message}`);
-    process.exit(1);
+    return 1;
   }
 }
 
 // CLI guard — required per repo invariant: scripts that export helpers AND
 // call main() need this guard so tests that import helpers don't trigger main()
 if (isMainModule(import.meta.url)) {
-  main();
+  runCli(main);
 }

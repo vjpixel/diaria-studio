@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CliExit } from "../scripts/lib/cli-exit.ts";
 import {
   replaceDestaqueLinkInMd,
   extractHighlightUrl,
@@ -254,21 +255,11 @@ describe("replaceUrlInSdPromptPositive", () => {
 
 describe("parseSwapLinkArgs", () => {
   it("rejeita --url sem esquema http(s)", () => {
-    const originalExit = process.exit;
-    let exitCode: number | undefined;
-    // @ts-expect-error — stub temporário
-    process.exit = (code?: number) => {
-      exitCode = code;
-      throw new Error("exit");
-    };
-    try {
-      assert.throws(() =>
-        parseSwapLinkArgs(["--edition", "260817", "--destaque", "d1", "--url", "not-a-url"]),
-      );
-      assert.equal(exitCode, 2);
-    } finally {
-      process.exit = originalExit;
-    }
+    // #9911: o script usa fetch, então sai via CliExit/runCli, nunca process.exit.
+    assert.throws(
+      () => parseSwapLinkArgs(["--edition", "260817", "--destaque", "d1", "--url", "not-a-url"]),
+      (e: unknown) => e instanceof CliExit && e.code === 2,
+    );
   });
 });
 
