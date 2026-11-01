@@ -75,7 +75,6 @@ npx tsx scripts/pipeline-sentinel.ts write --edition $SLUG --step N --dir "data/
 
 - `context/templates/newsletter-anual.md` e `context/editorial-rules.md` existem e não são placeholder.
 - O cache de edições cobre a janela: `data/beehiiv-cache/posts/` (histórico) e `data/kit-cache/broadcasts/` (do cutover de 04/09/2026 em diante). A Etapa 1 acusa mês vazio — **mês sem edição nenhuma é sinal de cache faltando, não de mês sem newsletter**.
-- `publishing.newsletter.backend` para a Etapa 5 (hoje `"kit"`, #7388).
 
 Sem gate, sem checkpoint.
 

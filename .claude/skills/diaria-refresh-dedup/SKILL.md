@@ -27,7 +27,7 @@ Flags opcionais: `--dry-run` (não grava nada), `--no-resolve-tracking` (pula os
 
 ## Backend
 
-O script (`#895` — substitui o subagente legado `refresh-dedup-runner`) lê as edições via `listRecentNewsletterPosts` (`scripts/lib/shared/newsletter-read-source.ts`), que segue `publishing.newsletter.backend` em `platform.config.json` — hoje `"kit"` (broadcasts do Kit); `"beehiiv"` usa a REST API da Beehiiv. Credencial faltando para o backend configurado → exit 2 com o motivo.
+O script (`#895` — substitui o subagente legado `refresh-dedup-runner`) lê as edições via `listRecentNewsletterPosts` (`scripts/lib/shared/newsletter-read-source.ts`), que segue `publishing.newsletter.read_backend` em `platform.config.json` — hoje `"kit"` (broadcasts do Kit); `"beehiiv"` usa a REST API da Beehiiv. Credencial faltando para o backend configurado → exit 2 com o motivo.
 
 ## Modos
 

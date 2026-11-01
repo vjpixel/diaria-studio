@@ -276,7 +276,7 @@ describe("playbooks: PR do site é a 1ª ação do dispatch e o merge trava o fi
     const sixBSite = stage6.indexOf("### 6b-site.");
     const sixC = stage6.indexOf("### 6c.");
     const lockIdx = stage6.indexOf("### 6c-site.");
-    const sixD = stage6.indexOf("### 6d.");
+    const sixD = stage6.indexOf("### 6d-kit.");
     assert.ok(sixBSite !== -1 && sixC !== -1 && lockIdx !== -1 && sixD !== -1);
     assert.ok(sixBSite < sixC && sixC < lockIdx && lockIdx < sixD, "ordem esperada: 6b-site < 6c < 6c-site < 6d");
     assert.match(stage6.slice(sixBSite, sixC), /check-site-page-pr-gate\.ts/);

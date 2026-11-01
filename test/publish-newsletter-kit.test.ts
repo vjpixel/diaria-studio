@@ -16,7 +16,6 @@ import {
   buildKitSubject,
   buildKitPreviewText,
   checkSubjectNotEmpty,
-  checkKitBackendEnabled,
   buildKitHtml,
   resolvePublishedStatePath,
   readPublishedState,
@@ -51,20 +50,6 @@ describe("checkSubjectNotEmpty", () => {
   });
   it("assunto presente: ok:true", () => {
     assert.deepEqual(checkSubjectNotEmpty("Título"), { ok: true });
-  });
-});
-
-describe("checkKitBackendEnabled", () => {
-  // REGRESSÃO #11225: Beehiiv é só arquivo histórico — chave ausente é Kit.
-  it("backend ausente (default kit, #11225): ok:true", () => {
-    assert.deepEqual(checkKitBackendEnabled({}), { ok: true });
-  });
-  it('backend explícito "beehiiv": ok:false', () => {
-    const result = checkKitBackendEnabled({ publishing: { newsletter: { backend: "beehiiv" } } });
-    assert.equal(result.ok, false);
-  });
-  it('backend "kit": ok:true', () => {
-    assert.deepEqual(checkKitBackendEnabled({ publishing: { newsletter: { backend: "kit" } } }), { ok: true });
   });
 });
 
@@ -377,24 +362,6 @@ function writePlatformConfig(root: string, backend: string): void {
 }
 
 describe("main() — integração", () => {
-  it("backend != kit: exitCode 2, nenhuma chamada de rede", async () => {
-    const root = mkdtempSync(join(tmpdir(), "kit-main-"));
-    try {
-      writePlatformConfig(root, "beehiiv");
-      const editionDir = writeEdition(root, "260998");
-      mockFetch(() => {
-        throw new Error("não deveria chamar fetch");
-      });
-      process.argv = ["node", "publish-newsletter-kit.ts", editionDir];
-      process.exitCode = undefined;
-      await main(root);
-      assert.equal(process.exitCode, 2);
-    } finally {
-      process.exitCode = undefined;
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("--dry-run: nenhuma chamada de rede, sem estado escrito", async () => {
     const root = mkdtempSync(join(tmpdir(), "kit-main-"));
     try {
@@ -465,7 +432,7 @@ describe("main() — integração", () => {
     try {
       writePlatformConfig(root, "kit");
       const editionDir = writeEdition(root, "260997");
-      const opts = { backend: "kit", rootDir: root };
+      const opts = { rootDir: root };
       mockFetch((call) => {
         if (call.method === "POST" && call.pathname === "/v4/broadcasts") {
           return jsonRes(201, { broadcast: { id: 9428, status: "draft", public_url: "https://news.diar.ia.br/p/9428" } });
@@ -549,7 +516,7 @@ describe("main() — integração", () => {
       await main(root);
       assert.equal(process.exitCode, 10);
       assert.equal(readPublishedState(editionDir)?.content_hash, "hash-antigo");
-      assert.equal(checkKitDraftFresh(editionDir, { backend: "kit", rootDir: root }).length, 1);
+      assert.equal(checkKitDraftFresh(editionDir, { rootDir: root }).length, 1);
     } finally {
       process.exitCode = undefined;
       rmSync(root, { recursive: true, force: true });

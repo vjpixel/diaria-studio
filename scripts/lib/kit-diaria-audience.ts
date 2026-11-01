@@ -217,3 +217,25 @@ export function hasBrevoDiariaCampaign(editionDir: string): boolean {
     return false;
   }
 }
+
+export type TagResolution =
+  | { ok: true; tagId: number }
+  | { ok: false; reason: string };
+
+/**
+ * Valida o id de tag resolvido antes de virar `subscriber_filter` (#6126). É o
+ * guard que separa "não envia" de "envia pra base inteira": no Kit, filtro não
+ * resolvido vira audiência INTEIRA.
+ */
+export function resolveAudienceTagId(tagName: string, tagId: number | null): TagResolution {
+  if (tagId === null) {
+    return {
+      ok: false,
+      reason: `tag "${tagName}" não existe no Kit. Recusando dispatch: filtro não resolvido no Kit vira audiência INTEIRA.`,
+    };
+  }
+  if (!Number.isInteger(tagId) || tagId <= 0) {
+    return { ok: false, reason: `id de tag inválido para "${tagName}": ${String(tagId)}.` };
+  }
+  return { ok: true, tagId };
+}

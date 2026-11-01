@@ -38,7 +38,6 @@ import { fileURLToPath } from "node:url";
 import { checkBackendOutputsForWrite } from "../scripts/pipeline-sentinel.ts";
 import {
   findWrongBackendNewsletterOutputs,
-  loadNewsletterBackend,
 } from "../scripts/lib/newsletter-backend.ts";
 import { assertSentinel } from "../scripts/lib/pipeline-state.ts";
 
@@ -64,8 +63,7 @@ describe("findWrongBackendNewsletterOutputs (#7963) — pure", () => {
   it("backend kit: casa 05-published.json (com ou sem prefixo de diretório)", () => {
     assert.deepEqual(
       findWrongBackendNewsletterOutputs(
-        ["05-published.json", "_internal/05-published.json", "06-social-published.json"],
-        "kit",
+        ["05-published.json", "_internal/05-published.json", "06-social-published.json"]
       ),
       ["05-published.json", "_internal/05-published.json"],
     );
@@ -73,28 +71,18 @@ describe("findWrongBackendNewsletterOutputs (#7963) — pure", () => {
 
   it("backend kit: newsletter-kit-published.json não é wrong-backend (é o certo)", () => {
     assert.deepEqual(
-      findWrongBackendNewsletterOutputs(["_internal/newsletter-kit-published.json"], "kit"),
+      findWrongBackendNewsletterOutputs(["_internal/newsletter-kit-published.json"]),
       [],
-    );
-  });
-
-  it("backend beehiiv: casa newsletter-kit-published.json, não casa 05-published.json", () => {
-    assert.deepEqual(
-      findWrongBackendNewsletterOutputs(
-        ["_internal/newsletter-kit-published.json", "_internal/05-published.json"],
-        "beehiiv",
-      ),
-      ["_internal/newsletter-kit-published.json"],
     );
   });
 
   it("lista sem nenhum artefato de newsletter → sempre vazio", () => {
     assert.deepEqual(
-      findWrongBackendNewsletterOutputs(["06-social-published.json"], "kit"),
+      findWrongBackendNewsletterOutputs(["06-social-published.json"]),
       [],
     );
     assert.deepEqual(
-      findWrongBackendNewsletterOutputs(["06-social-published.json"], "beehiiv"),
+      findWrongBackendNewsletterOutputs(["06-social-published.json"]),
       [],
     );
   });
@@ -104,8 +92,7 @@ describe("checkBackendOutputsForWrite (#7963) — unit", () => {
   it("Stage 5, backend kit, outputs com 05-published.json → falha", () => {
     const result = checkBackendOutputsForWrite(
       5,
-      ["05-published.json", "newsletter-kit-published.json", "06-social-published.json"],
-      "kit",
+      ["05-published.json", "newsletter-kit-published.json", "06-social-published.json"]
     );
     assert.equal(result.passed, false);
     assert.deepEqual(result.wrongOutputs, ["05-published.json"]);
@@ -114,30 +101,19 @@ describe("checkBackendOutputsForWrite (#7963) — unit", () => {
   it("Stage 5, backend kit, outputs só com newsletter-kit-published.json → passa", () => {
     const result = checkBackendOutputsForWrite(
       5,
-      ["_internal/newsletter-kit-published.json", "_internal/06-social-published.json"],
-      "kit",
+      ["_internal/newsletter-kit-published.json", "_internal/06-social-published.json"]
     );
     assert.equal(result.passed, true);
     assert.deepEqual(result.wrongOutputs, []);
   });
 
-  it("Stage 5, backend beehiiv, outputs com newsletter-kit-published.json → falha", () => {
-    const result = checkBackendOutputsForWrite(
-      5,
-      ["_internal/newsletter-kit-published.json"],
-      "beehiiv",
-    );
-    assert.equal(result.passed, false);
-    assert.deepEqual(result.wrongOutputs, ["_internal/newsletter-kit-published.json"]);
-  });
-
   it("Stage 6 também é coberto (mesmo guard do Stage 5)", () => {
-    const result = checkBackendOutputsForWrite(6, ["_internal/05-published.json"], "kit");
+    const result = checkBackendOutputsForWrite(6, ["_internal/05-published.json"]);
     assert.equal(result.passed, false);
   });
 
   it("Stage fora de 5/6 (ex: Stage 2) → sempre passa, guard não se aplica", () => {
-    const result = checkBackendOutputsForWrite(2, ["05-published.json"], "kit");
+    const result = checkBackendOutputsForWrite(2, ["05-published.json"]);
     assert.equal(result.passed, true);
     assert.deepEqual(result.wrongOutputs, []);
   });
@@ -168,7 +144,7 @@ describe("pipeline-sentinel write — guard de backend do Stage 5 (#7963) — CL
       );
 
       assert.equal(status, 1);
-      assert.match(stderr, /backend ERRADO/);
+      assert.match(stderr, /artefato legado da Beehiiv/);
       assert.match(stderr, /#7963/);
       assert.equal(
         existsSync(join(editionDir, "_internal", ".step-5-done.json")),
@@ -200,7 +176,7 @@ describe("pipeline-sentinel write — guard de backend do Stage 5 (#7963) — CL
         isolatedCwd,
       );
 
-      assert.doesNotMatch(stderr, /backend ERRADO/);
+      assert.doesNotMatch(stderr, /artefato legado da Beehiiv/);
       assert.equal(status, 0, `esperava write bem-sucedido (--bypass-reason cobre invariantes); stderr: ${stderr}`);
       assert.equal(existsSync(join(editionDir, "_internal", ".step-5-done.json")), true);
     } finally {
@@ -222,8 +198,7 @@ describe("pipeline-sentinel write — guard de backend do Stage 5 (#7963) — CL
       // artefato que o backend Kit de fato escreve.
       const backendCheck = checkBackendOutputsForWrite(
         5,
-        ["_internal/newsletter-kit-published.json", "_internal/06-social-published.json"],
-        "kit",
+        ["_internal/newsletter-kit-published.json", "_internal/06-social-published.json"]
       );
       assert.equal(backendCheck.passed, true);
 
@@ -282,40 +257,5 @@ describe("pipeline-sentinel write — guard de backend do Stage 5 (#7963) — CL
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("loadNewsletterBackend (#7963) — smoke", () => {
-  it("nunca lança e sempre devolve 'beehiiv' ou 'kit'", () => {
-    const backend = loadNewsletterBackend();
-    assert.ok(backend === "beehiiv" || backend === "kit");
-  });
-
-  it("config path override (só teste): lê backend de um platform.config.json arbitrário", () => {
-    const dir = mkdtempSync(join(tmpdir(), "newsletter-backend-cfg-"));
-    try {
-      const cfgPath = join(dir, "platform.config.json");
-      writeFileSync(cfgPath, JSON.stringify({ publishing: { newsletter: { backend: "kit" } } }));
-      assert.equal(loadNewsletterBackend(cfgPath), "kit");
-
-      writeFileSync(cfgPath, JSON.stringify({ publishing: { newsletter: { backend: "beehiiv" } } }));
-      assert.equal(loadNewsletterBackend(cfgPath), "beehiiv");
-
-      // #11225: chave ausente = "kit" (Beehiiv só como arquivo histórico).
-      writeFileSync(cfgPath, JSON.stringify({}));
-      assert.equal(loadNewsletterBackend(cfgPath), "kit");
-
-      writeFileSync(cfgPath, JSON.stringify({ publishing: { newsletter: { backend: "bee" } } }));
-      assert.equal(loadNewsletterBackend(cfgPath), "kit");
-
-      writeFileSync(cfgPath, "{ not json");
-      assert.equal(loadNewsletterBackend(cfgPath), "kit");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("config ausente → default kit (#11225)", () => {
-    assert.equal(loadNewsletterBackend("/path/that/does/not/exist/platform.config.json"), "kit");
   });
 });

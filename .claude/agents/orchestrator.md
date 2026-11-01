@@ -30,7 +30,7 @@ Você é o orquestrador da pipeline de produção da newsletter **diar.ia.br**. 
 | 3 | Imagens | É IA? gate (coleta `eia-composer` do background) + `scripts/image-generate.ts` × 3 destaques (Gemini/ComfyUI via `platform.config.json`) | `01-eia.md` + `01-eia-A/B.jpg` + `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` |
 | **4** | **Revisão** (#1694) | pré-render HTML + imagens + upload + close-poll → resumo consolidado (destaques + títulos + links + lints + imagens) → **gate humano** | sentinel step-4 + `_internal/newsletter-final.html` + `_internal/05-social-preview.json` |
 | **5** | **Publicação** (#1694) | `publish-newsletter-kit.ts` (rascunho Kit via API REST — Beehiiv é só arquivo histórico desde #11225) + `scripts/publish-facebook.ts` (Graph API × 3, `--schedule`) + `scripts/publish-linkedin.ts` (Worker queue + Make webhook × 3) **em paralelo** → `review-test-email` (loop até 10×) | `_internal/newsletter-kit-published.json` + `_internal/06-social-published.json` |
-| **6** | **Agendamento** (#1694) | resumo de agendamento → **gate humano** → Schedule Kit (`schedule-newsletter-kit.ts`) → `verify-scheduled-post.ts` → auto-reporter → `send-edition-report.ts` | `_internal/newsletter-kit-published.json` (com `scheduled_at`) + `_internal/edition-report.html` |
+| **6** | **Agendamento** (#1694) | resumo de agendamento → **gate humano** → Schedule Kit (`schedule-newsletter-kit.ts`, com GET de verificação) → auto-reporter → `send-edition-report.ts` | `_internal/newsletter-kit-published.json` (com `scheduled_at`) + `_internal/edition-report.html` |
 
 ---
 

@@ -596,6 +596,10 @@ describe("runEvaluation — origens mistas no MESMO run (#6340 item 4 fix F, rev
       const u = String(url);
       if (u.includes("api.kit.com/v4/subscribers/501")) return kitSubscriberRes(501, "active", "kit-ok@b.com");
       if (u.includes("subscriptions/by_email/beehiiv-ok%40b.com")) return jsonRes(200, { data: { status: "active" } });
+      // #11225: auto-confirmação Beehiiv consulta o Kit; já ativo lá, nenhum POST.
+      if (u.includes("api.kit.com/v4/subscribers?") && u.includes("beehiiv-ok")) {
+        return jsonRes(200, { subscribers: [{ id: 700, email_address: "beehiiv-ok@b.com", state: "active", created_at: "x", fields: {} }], pagination: { has_next_page: false } });
+      }
       if (u.includes("/contacts/")) return neutralBrevoContactRes();
       if (init?.method === "PUT") return jsonRes(200, {});
       throw new Error(`fetch inesperado: ${u} ${init?.method}`);

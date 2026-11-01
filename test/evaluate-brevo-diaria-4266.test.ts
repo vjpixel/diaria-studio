@@ -22,11 +22,9 @@ import {
   evaluateContact,
   fetchBrevoContactState,
   fetchBeehiivSubscriptionStatus,
-  verifyPromotedToBeehiiv,
   verifySuppressedInBrevo,
   suppressInBrevo,
   unlinkFromBrevoList,
-  promoteBeehiivSubscription,
   unsubscribeInBeehiiv,
   verifyUnsubscribedInBeehiiv,
   BeehiivHttpError,
@@ -362,59 +360,10 @@ describe("fetchBeehiivSubscriptionStatus — auto-confirmação (#4266)", () => 
   });
 });
 
-describe("verifyPromotedToBeehiiv — fail-safe se ainda pending (#4266, corrigido pro caso 'invalid' no #4476 item 3)", () => {
-  it("status active → true (promoção confirmada)", async () => {
-    const fetchImpl = (async () => jsonRes(200, { data: { status: "active" } })) as typeof fetch;
-    assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), true);
-  });
-
-  it("status ainda pending → false (fail-safe: NÃO confirma promoção)", async () => {
-    const fetchImpl = (async () => jsonRes(200, { data: { status: "pending" } })) as typeof fetch;
-    assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
-  });
-
-  it('status "invalid" → false (#4476 item 3, achado do teste ao vivo: reactivate_existing:true pode retornar 201 mas deixar status="invalid" — NÃO é confirmação, mesmo não sendo "pending")', async () => {
-    const fetchImpl = (async () => jsonRes(200, { data: { status: "invalid" } })) as typeof fetch;
-    assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
-  });
-
-  it("404 (subscription sumiu) → false", async () => {
-    const fetchImpl = (async () => jsonRes(404, {})) as typeof fetch;
-    assert.equal(await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl), false);
-  });
-
-  it('status "validating" (estado transitório, achado ao vivo 260802) → 1 retry após espera, releitura "active" → true', async () => {
-    let calls = 0;
-    const fetchImpl = (async () => {
-      calls++;
-      return jsonRes(200, { data: { status: calls === 1 ? "validating" : "active" } });
-    }) as typeof fetch;
-    let sleptMs = -1;
-    const sleepImpl = async (ms: number) => {
-      sleptMs = ms;
-    };
-    const result = await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl, sleepImpl);
-    assert.equal(result, true);
-    assert.equal(calls, 2, "GET inicial + 1 releitura após o retry");
-    assert.equal(sleptMs, 2000);
-  });
-
-  it('status "validating" → retry, mas releitura AINDA não confirma → false (nunca 2º retry)', async () => {
-    let calls = 0;
-    const fetchImpl = (async () => {
-      calls++;
-      return jsonRes(200, { data: { status: "validating" } });
-    }) as typeof fetch;
-    const result = await verifyPromotedToBeehiiv("pub_1", "key", "a@b.com", fetchImpl, async () => {});
-    assert.equal(result, false);
-    assert.equal(calls, 2, "só 1 retry, nunca fica reesperando indefinidamente");
-  });
-});
-
 // ── #4398 review: fixes 1-4 (silent-failure-hunter, code-reviewer,
 // pr-test-analyzer convergiram nestes pontos) ────────────────────────────
 
-describe("suppressInBrevo / unlinkFromBrevoList / promoteBeehiivSubscription — branches de erro (#4398 item 8)", () => {
+describe("suppressInBrevo / unlinkFromBrevoList — branches de erro (#4398 item 8)", () => {
   const origFetch = globalThis.fetch;
   function restore() {
     globalThis.fetch = origFetch;
@@ -485,103 +434,6 @@ describe("suppressInBrevo / unlinkFromBrevoList / promoteBeehiivSubscription —
     return { fetchImpl, calls };
   }
 
-  it("promoteBeehiivSubscription: busca o id ATUAL via GET by_email (não confia em id armazenado, #4488 review), deleta e cria sem reactivate_existing", async () => {
-    const { fetchImpl, calls } = routedPromoteFetch({
-      get: () => jsonRes(200, { data: { id: "sub_atual", status: "pending" } }),
-      post: (body) => {
-        // #4530: atribuição — utm_source/medium/campaign + referring_site do
-        // registry, não mais só {email, send_welcome_email}.
-        assert.deepEqual(body, {
-          email: "a@b.com",
-          send_welcome_email: false,
-          // #5095: sem este campo, o DELETE+POST desta promoção rebaixaria o
-          // assinante pra `pending` assim que o double opt-in da publicação
-          // for ligado — e este script roda desassistido todo dia às 05:30.
-          double_opt_override: "off",
-          utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
-          utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
-          utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
-          referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
-        });
-        return jsonRes(200, {});
-      },
-    });
-    await promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl);
-    assert.deepEqual(calls.map((c) => c.method), ["GET", "DELETE", "POST"]);
-    assert.equal(calls[0].url, "https://api.beehiiv.com/v2/publications/pub_1/subscriptions/by_email/a%40b.com");
-    assert.equal(
-      calls[1].url,
-      "https://api.beehiiv.com/v2/publications/pub_1/subscriptions/sub_atual",
-      "DELETE mira o id vindo do GET, nunca um id armazenado que pode estar obsoleto",
-    );
-  });
-
-  it("promoteBeehiivSubscription: GET 404 (nunca existiu, ou já foi deletado por uma tentativa anterior) → pula DELETE, cria direto", async () => {
-    let postCalled = false;
-    const { fetchImpl, calls } = routedPromoteFetch({
-      get: () => new Response(null, { status: 404 }),
-      post: () => {
-        postCalled = true;
-        return jsonRes(200, {});
-      },
-    });
-    await promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl);
-    assert.equal(postCalled, true);
-    assert.deepEqual(calls.map((c) => c.method), ["GET", "POST"]);
-  });
-
-  it("promoteBeehiivSubscription: GET com corpo não-parseável → lança (nunca trata como 'não existe' em silêncio, #4488 review silent-failure-hunter)", async () => {
-    const { fetchImpl } = routedPromoteFetch({ get: () => new Response("<html>gateway error</html>", { status: 200 }) });
-    await assert.rejects(() => promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl), /corpo não-parseável/);
-  });
-
-  it("promoteBeehiivSubscription: GET erro não-404 → lança, nunca chega no DELETE/CREATE", async () => {
-    const { fetchImpl, calls } = routedPromoteFetch({ get: () => new Response("boom", { status: 500 }) });
-    await assert.rejects(() => promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl), /GET.*by_email.*HTTP 500/);
-    assert.deepEqual(calls.map((c) => c.method), ["GET"]);
-  });
-
-  it("promoteBeehiivSubscription: DELETE 404 (registro já sumiu entre o GET e o DELETE) → segue pro CREATE mesmo assim", async () => {
-    let postCalled = false;
-    const { fetchImpl } = routedPromoteFetch({
-      get: () => jsonRes(200, { data: { id: "sub_sumiu", status: "pending" } }),
-      del: () => new Response(null, { status: 404 }),
-      post: () => {
-        postCalled = true;
-        return jsonRes(200, {});
-      },
-    });
-    await promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl);
-    assert.equal(postCalled, true);
-  });
-
-  it("promoteBeehiivSubscription: DELETE falha (não-404) → lança, nunca chega no CREATE", async () => {
-    let postCalled = false;
-    const { fetchImpl } = routedPromoteFetch({
-      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
-      del: () => new Response("locked", { status: 423 }),
-      post: () => {
-        postCalled = true;
-        return jsonRes(200, {});
-      },
-    });
-    await assert.rejects(
-      () => promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl),
-      /DELETE.*sub_old.*a@b\.com.*\(HTTP 423\)/,
-    );
-    assert.equal(postCalled, false);
-  });
-
-  it("promoteBeehiivSubscription: CREATE !ok lança com status e email na mensagem", async () => {
-    const { fetchImpl } = routedPromoteFetch({
-      get: () => jsonRes(200, { data: { id: "sub_old", status: "pending" } }),
-      post: () => new Response("conflict", { status: 409 }),
-    });
-    await assert.rejects(
-      () => promoteBeehiivSubscription("pub_1", "key", "a@b.com", fetchImpl),
-      /a@b\.com.*\(HTTP 409\)/,
-    );
-  });
 });
 
 describe("unsubscribeInBeehiiv / verifyUnsubscribedInBeehiiv — propagação do descadastro nativo (#4538)", () => {
@@ -975,6 +827,10 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
     globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
       if (u.includes("subscriptions/by_email/")) return jsonRes(200, { data: { status: "active" } });
+      // #11225: a auto-confirmação Beehiiv consulta o Kit; já ativo lá, nenhum POST.
+      if (u.includes("api.kit.com")) {
+        return jsonRes(200, { subscribers: [{ id: 1, email_address: "bounce-mas-ativo2@b.com", state: "active", created_at: "x", fields: {} }], pagination: { has_next_page: false } });
+      }
       if (init?.method === "PUT") {
         unlinkBody = JSON.parse(init.body as string);
         return jsonRes(200, {});
@@ -996,6 +852,7 @@ describe("runEvaluation — descadastro nativo (#4476 item 7), passo 0 (reescrit
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
+        kitApiKey: "kkey",
       });
       assert.equal(result.selfConfirmed, 1);
       assert.deepEqual(unlinkBody, { unlinkListIds: [7] });
@@ -1481,71 +1338,6 @@ describe("runEvaluation — fail-safe por contato, nunca aborta o run (#4398 fix
     }
   });
 
-  it("push: promote bem-sucedido continua funcionando após o refactor de runEvaluation (regressão, #4488: promoteBeehiivSubscription agora busca o id via GET também)", async () => {
-    let byEmailCalls = 0;
-    const deleteUrls: string[] = [];
-    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-      const u = String(url);
-      if (u.includes("api.kit.com")) {
-        // #7382 — checagem cross-plataforma antes de promover pra Beehiiv:
-        // contato NÃO existe no Kit (nunca migrou), promoção segue normal.
-        return jsonRes(200, { subscribers: [], pagination: {} });
-      }
-      if (u.includes("subscriptions/by_email/")) {
-        byEmailCalls++;
-        // 1ª chamada: auto-confirmação (passo 1, ainda "pending", cai no
-        // caminho de score). 2ª chamada: o GET interno de
-        // promoteBeehiivSubscription (#4488) buscando o id atual pra
-        // deletar — também "pending", com um id pra DELETE mirar. 3ª
-        // chamada: verifyPromotedToBeehiiv pós-promoção (já "active", confirma).
-        if (byEmailCalls === 1) return jsonRes(200, { data: { status: "pending" } });
-        if (byEmailCalls === 2) return jsonRes(200, { data: { id: "sub_promo_atual", status: "pending" } });
-        return jsonRes(200, { data: { status: "active" } });
-      }
-      if (init?.method === "DELETE") {
-        // promoteBeehiivSubscription: deleta o registro pending travado antes
-        // de recriar (#4476/#4488, mecânica corrigida — não mais reactivate_existing).
-        deleteUrls.push(u);
-        return new Response(null, { status: 204 });
-      }
-      if (u.includes("/publications/pub_1/subscriptions") && init?.method === "POST") {
-        return jsonRes(200, {});
-      }
-      if (init?.method === "PUT") {
-        return jsonRes(200, {});
-      }
-      // GET /contacts/{email} (passo 0, reusado no passo 2) — 3 enviados/3
-      // abertos → openRate 1.0, sends_count=3 >= 3 → promote
-      return jsonRes(200, {
-        statistics: {
-          messagesSent: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],
-          opened: [{ campaignId: 1 }, { campaignId: 2 }, { campaignId: 3 }],
-        },
-      });
-    }) as typeof fetch;
-
-    try {
-      const contacts = [contact("promo@b.com")];
-      const result = await runEvaluation({
-        contacts,
-        store: { contacts },
-        push: true,
-        publicationId: "pub_1",
-        beehiivApiKey: "bkey",
-        brevoApiKey: "brkey",
-        listId: 7,
-        log: () => {},
-        kitApiKey: "kkey", // #7382 — necessário pra checagem cross-plataforma antes de promover
-      });
-      assert.equal(result.failed, 0);
-      assert.equal(result.promoted, 1);
-      assert.equal(result.skippedActiveOnKit, 0, "#7382 — contato não está no Kit, promoção segue normal");
-      assert.equal(findContact(result.store, "promo@b.com")!.status, "promoted_beehiiv");
-      assert.deepEqual(deleteUrls, ["https://api.beehiiv.com/v2/publications/pub_1/subscriptions/sub_promo_atual"], "DELETE mira o id vindo do GET interno, nunca um id armazenado");
-    } finally {
-      restore();
-    }
-  });
 });
 
 describe("evaluate-brevo-diaria.ts exit semantics (#4651, mesma classe do #4638/#1401)", () => {

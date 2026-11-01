@@ -113,7 +113,6 @@ async function run(c: BrevoDiariaContact | BrevoDiariaContact[], opts: { push?: 
     brevoApiKey: "brkey",
     listId: 7,
     log: opts.log ?? (() => {}),
-    newsletterBackend: "kit",
     kitApiKey: "kkey",
     kitDoiFormId: "kitDoiFormId" in opts ? opts.kitDoiFormId : DOI_FORM,
   });

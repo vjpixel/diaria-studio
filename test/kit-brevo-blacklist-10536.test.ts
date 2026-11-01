@@ -192,7 +192,6 @@ describe("evaluate: blacklist anterior à entrada não descadastra no Kit (#1053
           kitApiKey: "k",
           listId: 7,
           log: () => {},
-          newsletterBackend: "kit",
           unsubscribeKitSemAberturaDeps: {
             unsubscribe: async (id: number) => {
               kit.push(`unsubscribe:${id}`);

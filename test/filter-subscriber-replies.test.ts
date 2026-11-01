@@ -950,7 +950,7 @@ describe("#9792: --exclude-captured / previouslyCaptured (2ª passada de §0-rep
   it("#9807 regressão: o filtro do §6b-replies no playbook não grava ledger; o registro vem depois do passo 4", () => {
     const md = readFileSync(".claude/agents/orchestrator-stage-6.md", "utf8");
     const start = md.indexOf("### 6b-replies.");
-    const end = md.indexOf("### 6b-slug.");
+    const end = md.indexOf("### 6b-site.");
     assert.ok(start >= 0 && end > start, "seção §6b-replies não encontrada");
     const section = md.slice(start, end);
     const blocks = [...section.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);

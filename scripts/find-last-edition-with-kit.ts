@@ -3,7 +3,7 @@
  *
  * Encontra o diretório da edição mais recente **antes** da atual que tenha
  * `_internal/kit-diaria-published.json` (broadcast do canal Kit paralelo,
- * `kit-diaria-stage5-dispatch.ts`) OU `_internal/newsletter-kit-published.json`
+ * `kit-diaria-stage5-dispatch.ts` (removido no #11225)) OU `_internal/newsletter-kit-published.json`
  * (broadcast do backend Kit PRIMÁRIO, `publish-newsletter-kit.ts`) —
  * mesmo padrão de `find-last-edition-with-fb.ts`, usado pelo passo 0o do
  * Stage 0 (#7021, reduzido em #7402) pra localizar a edição cujo broadcast

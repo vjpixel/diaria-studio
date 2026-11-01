@@ -64,7 +64,7 @@ const LOG_PREFIX = "[audit-kit-diaria-exclusivity]";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Lê `kit_diaria.audience_tag` de `platform.config.json` — mesmo default
- *  (`"kit-nativo"`) de `kit-diaria-channel.ts`/`kit-diaria-stage5-dispatch.ts`
+ *  (`"kit-nativo"`) de `kit-diaria-channel.ts` (removido no #11225)/`kit-diaria-stage5-dispatch.ts` (removido no #11225)
  *  quando ausente. `--tag` na CLI sobrepõe (útil pra auditar uma tag
  *  diferente sem editar o config, ex: rollout escalonado). */
 function resolveConfiguredAudienceTag(): string {

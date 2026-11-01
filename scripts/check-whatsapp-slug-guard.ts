@@ -1,8 +1,9 @@
 /**
  * check-whatsapp-slug-guard.ts (#4570)
  *
- * Guard determinístico que o orchestrator (Stage 6, §6d) chama depois do
- * Schedule ser confirmado — se o slug REAL do post Beehiiv divergir do slug
+ * **Nenhum passo do pipeline chama este script desde o #11225** (a Etapa 6 só
+ * agenda pelo Kit): nada bloqueia por slug depois do Stage 4. Sobra como
+ * comparação avulsa para post antigo da Beehiiv. Se o slug REAL do post divergir do slug
  * que a URL do bloco WhatsApp (dentro do D1, #5152) já prevê (`seoSlug(D1)`), o link
  * já enviado no corpo do e-mail 404. Ver `scripts/lib/whatsapp-slug-guard.ts`
  * pra racional completo.
@@ -28,10 +29,8 @@
  *   Stage 6 "lembrar" que o guard rodou e passou é o agente LLM ter lido e
  *   seguido a prosa do orchestrator corretamente — nada em código verificava
  *   isso (achado do review consolidado da PR #4574, que introduziu o guard
- *   em #4570 sem esse backstop). O orchestrator passa `{EDITION_DIR}/_internal/
- *   whatsapp-slug-check.json`; `scripts/lib/invariant-checks/stage-6.ts`
- *   (regra `whatsapp-slug-guard-ok`) exige esse arquivo com `ok: true` antes
- *   de aceitar o Stage 6 como íntegro.
+ *   em #4570 sem esse backstop). A regra `whatsapp-slug-guard-ok`, que lia esse
+ *   arquivo, saiu no #11225.
  *
  * Stdout: sempre o JSON de `WhatsappSlugCheckResult` (`ok`/`expectedSlug`/
  * `actualSlug`/`message?`) — consumível por script ou lido por um agente.
@@ -40,11 +39,8 @@
  * erro, JSON estruturado no stdout).
  *
  * Exit codes:
- *   0 = slug bate — nada a fazer, Stage 6 pode prosseguir.
- *   1 = slug diverge — GATE-BLOCKING no orchestrator (ver
- *       `.claude/agents/orchestrator-stage-6.md` §6d e
- *       `context/publishers/beehiiv-playbook.md` §9): não marcar
- *       `05-published.json`/sentinel do Stage 6 enquanto isso não sair 0.
+ *   0 = slug bate.
+ *   1 = slug diverge (só relata; nada no pipeline lê este exit).
  *   2 = args inválidos (`--post-id`/`--d1-title` ausentes).
  */
 

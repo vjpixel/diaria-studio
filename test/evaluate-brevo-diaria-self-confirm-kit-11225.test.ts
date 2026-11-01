@@ -87,7 +87,7 @@ function installFetch(f: KitFake): () => void {
 }
 
 async function run(
-  opts: { kitApiKey?: string; push?: boolean; newsletterBackend?: "beehiiv" | "kit" } = {},
+  opts: { kitApiKey?: string; push?: boolean } = {},
 ) {
   const contacts = [contact("auto@b.com")];
   return runEvaluation({
@@ -99,7 +99,6 @@ async function run(
     brevoApiKey: "brkey",
     listId: 7,
     log: () => {},
-    newsletterBackend: opts.newsletterBackend ?? "kit",
     kitApiKey: "kitApiKey" in opts ? opts.kitApiKey : "kkey",
   });
 }
@@ -217,18 +216,6 @@ describe("auto-confirmação Beehiiv escreve direto no Kit (#11225)", () => {
       assert.equal(f.posts.length, 0);
       assert.equal(f.unlinked, false);
       assert.equal(result.selfConfirmed, 1, "dry-run segue contando a auto-confirmação");
-    } finally {
-      restore();
-    }
-  });
-
-  it("newsletterBackend beehiiv (legado) → zero escrita no Kit", async () => {
-    const f = fake();
-    const restore = installFetch(f);
-    try {
-      const result = await run({ newsletterBackend: "beehiiv" });
-      assert.equal(f.posts.length, 0);
-      assert.equal(result.selfConfirmed, 1);
     } finally {
       restore();
     }

@@ -344,7 +344,7 @@ describe("kitDiariaPublishedPath / readEditionKitBroadcastId", () => {
     };
     assert.throws(
       () => readEditionKitBroadcastId("data/editions/2608/260828", fakeRead),
-      /não encontrado.*kit-diaria-stage5-dispatch/,
+      /não encontrado.*publish-newsletter-kit\.ts/,
     );
   });
 
@@ -399,7 +399,7 @@ describe("kitDiariaPublishedPath / readEditionKitBroadcastId", () => {
     };
     assert.throws(
       () => readEditionKitBroadcastId("data/editions/2609/260904", fakeRead),
-      /não encontrado.*kit-diaria-stage5-dispatch.*newsletter-kit-published\.json/s,
+      /não encontrado.*newsletter-kit-published\.json.*kit-diaria-published\.json/s,
     );
   });
 });

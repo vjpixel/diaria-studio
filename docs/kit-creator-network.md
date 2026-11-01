@@ -68,15 +68,11 @@ confirmou parcialmente:
   sem tocar no fluxo de cadastro. **Não foi necessário para o `/subscribe`**, que já
   aterrissa na página hospedada.
 
-### ⚠️ O backend de ENVIO está na Beehiiv, não na Kit
+### O backend de ENVIO é a Kit
 
-Desde 28/08/2026 o envio da diária voltou pra Beehiiv por incidente de entregabilidade no
-Gmail (`platform.config.json` → `publishing.newsletter.backend_note`). Isso **não** bloqueia
-o Creator Network — a rede opera sobre o perfil/formulários da publicação na Kit, não sobre
-de onde a edição é disparada —, mas significa que assinante captado pela rede entra numa
-conta que hoje não é a que envia. A rampa `kit_diaria` (`audience_tag: rampa-kit`) é o
-mecanismo que move gente pro envio via Kit; assinante novo vindo da rede precisa cair num
-dos dois lados de forma explícita, nunca em nenhum.
+O envio da diária voltou pra Beehiiv em 28/08/2026, por incidente de entregabilidade no
+Gmail, e foi pra Kit de vez em 04/09/2026 (#7388). Desde o #11225 a Beehiiv é só arquivo
+histórico: assinante captado pela rede entra direto na conta que envia.
 
 ---
 

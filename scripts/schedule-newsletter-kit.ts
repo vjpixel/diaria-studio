@@ -10,15 +10,8 @@
  * "agendado" a partir só da resposta do PATCH.
  *
  * **Chamado pelo orchestrator desde #464/PR #6096** — `orchestrator-stage-6.md`
- * §6d-kit dispatcha este script quando `publishing.newsletter.backend ===
- * "kit"` (mesma flag que `publish-newsletter-kit.ts` já lia sozinho antes
- * dessa PR, agora também lida pelo playbook — ver §"Branch por backend" em
- * `orchestrator-stage-5.md`/`orchestrator-stage-6.md`). O guard abaixo
- * (`checkKitBackendEnabled`, reusado de `publish-newsletter-kit.ts`)
- * continua existindo como defesa contra invocação standalone acidental —
- * não é mais o único motivo de o script nunca rodar, já que o default do
- * flag segue `"beehiiv"` e o dispatch do orchestrator só chama isto quando
- * o flag já confirmou `"kit"`.
+ * §6d-kit dispatcha este script em toda edição: o envio é só Kit (#11225), sem
+ * guard de backend.
  *
  * ## Por que um script separado do `--send-test`
  *
@@ -38,7 +31,6 @@
  *       correto NESTA chamada, ou já confirmado em invocação anterior —
  *       idempotente, ver `alreadyScheduled` no resultado)
  *   1 — uso/erro genérico (args ausentes/inválidos)
- *   2 — `publishing.newsletter.backend` != "kit" (guard contra invocação fora do switchover)
  *   3 — `_internal/newsletter-kit-published.json` ausente ou sem broadcast_id
  *       (nada a agendar — Etapa 5 não rodou o publisher Kit ainda)
  *   4 — PATCH falhou (erro de API)
@@ -65,7 +57,7 @@ import { updateBroadcast, listSegments, type KitSubscriberFilter } from "./lib/k
 import { hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437
 import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
-import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
+import { readPublishedState, writePublishedState, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast, FINAL_GUARD_MIN_LEAD_MS } from "./lib/edition-scheduled-at.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { runSemanalFrioAfterSchedule, summarizeSemanalFrioForSchedule } from "./publish-kit-semanal-frio.ts"; // #11221
@@ -73,7 +65,6 @@ import { runSemanalFrioAfterSchedule, summarizeSemanalFrioForSchedule } from "./
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 interface PlatformConfig {
-  publishing?: { newsletter?: { backend?: string } };
   kit?: { diaria_exclusion_segment?: DiariaExclusionSegmentConfig };
 }
 
@@ -85,9 +76,7 @@ export type ScheduleNewsletterKitResult =
  * Pura o suficiente pra ser testável — `deps.readPublished`/`deps.writePublished`/
  * `deps.patchSchedule`/`deps.getBroadcastStatus` são injetáveis (nenhuma
  * chamada de rede/I/O real em teste). Mesmo padrão de `ScheduleDailyBrevoDeps`
- * (`schedule-daily-brevo.ts`, #5772) — o guard de backend (`checkKitBackendEnabled`)
- * fica FORA desta função, só em `main()`, porque é uma checagem de config
- * de arquivo, não parte do fluxo de agendamento em si.
+ * (`schedule-daily-brevo.ts`, #5772).
  */
 export interface ScheduleNewsletterKitDeps {
   readPublished: (editionDir: string) => KitNewsletterPublished | null;
@@ -183,7 +172,7 @@ export async function scheduleNewsletterKit(
   // pra confirmar sucesso mais abaixo (compara instantes via `Date.parse`,
   // não strings: dois formatos podem representar o mesmo instante). Pedido
   // com horário DIFERENTE cai pro PATCH normal abaixo — mesmo padrão de
-  // `schedule-kit-diaria.ts` (#7285), que já reagenda em vez de confiar
+  // `schedule-kit-diaria.ts` (removido no #11225) (#7285), que já reagenda em vez de confiar
   // cegamente no cache quando o alvo diverge. Broadcast Kit `completed`
   // (já enviado, 422 "Broadcast has already been sent.", ver docstring de
   // `kit-broadcasts.ts`) segue coberto — reagendar tenta o PATCH e o erro
@@ -297,9 +286,7 @@ export function productionDeps(): ScheduleNewsletterKitDeps {
  * (`rootDirOverride` testável, mesmo padrão de `publish-newsletter-kit.ts::main`)
  * — antes vivia inline no bloco `isMainModule`, usando `process.exit()`
  * direto (mata o processo, inviável de testar) em vez de `process.exitCode`
- * + `return`. Fecha a assimetria de cobertura de CLI apontada pelo
- * pr-test-analyzer: o guard de backend != "kit" agora tem teste dedicado,
- * como o do script irmão já tinha.
+ * + `return`.
  */
 export async function main(rootDirOverride?: string): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
@@ -316,12 +303,6 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
 
   const platformConfig = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as PlatformConfig;
-  const backendCheck = checkKitBackendEnabled(platformConfig);
-  if (!backendCheck.ok) {
-    process.stderr.write(`[schedule-newsletter-kit] ERRO: ${backendCheck.reason}\n`);
-    process.exitCode = 2;
-    return;
-  }
 
   const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: rootDir }); // #9427 (antes: cwd)
   if (!resolvedArg.ok) {

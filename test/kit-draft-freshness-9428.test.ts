@@ -89,23 +89,13 @@ describe("invariante kit-draft-fresh — registro e casos-limite (#9428)", () =>
     assert.equal(entry!.source_issue, "#9428");
   });
 
-  it("backend beehiiv → nunca acusa", () => {
-    const dir = makeEdition();
-    try {
-      writeStateRaw(dir, JSON.stringify({ broadcast_id: 1, content_hash: "deadbeef" }));
-      assert.deepEqual(checkKitDraftFresh(dir, { backend: "beehiiv" }), []);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it("estado ausente, ilegível, JSON null/array, ou legado sem content_hash → sem violação e sem lançar", () => {
     const dir = makeEdition();
     try {
-      assert.deepEqual(checkKitDraftFresh(dir, { backend: "kit" }), [], "ausente: scheduled-at-present já acusa");
+      assert.deepEqual(checkKitDraftFresh(dir), [], "ausente: scheduled-at-present já acusa");
       for (const raw of ["{nope", "null", "[]", "42", JSON.stringify({ broadcast_id: 1, status: "draft" })]) {
         writeStateRaw(dir, raw);
-        assert.deepEqual(checkKitDraftFresh(dir, { backend: "kit" }), [], `estado ${raw}`);
+        assert.deepEqual(checkKitDraftFresh(dir), [], `estado ${raw}`);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -116,7 +106,7 @@ describe("invariante kit-draft-fresh — registro e casos-limite (#9428)", () =>
     const dir = makeEdition();
     try {
       writeStateRaw(dir, JSON.stringify({ broadcast_id: 1, content_hash: "abc" }));
-      const v = checkKitDraftFresh(dir, { backend: "kit" });
+      const v = checkKitDraftFresh(dir);
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "kit-draft-fresh");
       assert.equal(v[0].severity, "warning");

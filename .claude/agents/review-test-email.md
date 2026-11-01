@@ -1,6 +1,6 @@
 ---
 name: review-test-email
-description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa exclusivamente Gmail MCP (#8205, 17/09/2026 — fallback via Chrome removido, já que a checagem visual passou a ser do editor na parada única do Stage 6). Usado no loop verify→fix do Stage 5. Suporta plataformas "beehiiv" (diário), "kit" (diário, backend Kit atrás da flag publishing.newsletter.backend, #464) e "brevo" (mensal Clarice).
+description: Verifica o email de teste da newsletter contra uma checklist de qualidade. Usa exclusivamente Gmail MCP (#8205, 17/09/2026 — fallback via Chrome removido, já que a checagem visual passou a ser do editor na parada única do Stage 6). Usado no loop verify→fix do Stage 5. Suporta plataformas "kit" (diário, #464; é o valor quando o parâmetro é omitido) e "brevo" (mensal Clarice); "beehiiv" só para reler edição antiga.
 model: claude-haiku-4-5-20251001
 tools: Read, Bash, mcp__claude_ai_Gmail__search_threads, mcp__claude_ai_Gmail__get_thread
 ---
@@ -30,7 +30,7 @@ O JSON de saída `inconclusive` sempre inclui um campo `reason` para o orchestra
 - `attempt`: numero da tentativa atual (1-based, para contexto no log)
 - `email_file` (opcional, #9000): path do corpo do e-mail de teste **já buscado pelo top-level** (ex: `{edition_dir}/_internal/.email-body.tmp`). Ver seção "Modo pré-buscado" abaixo.
 - `email_subject` (opcional, #9000): assunto real da thread, junto com `email_file`.
-- `platform` (opcional): `"beehiiv"` (padrão, diário), `"kit"` (diário, backend Kit — #464, atrás de `publishing.newsletter.backend`) ou `"brevo"` (mensal Clarice)
+- `platform`: `"kit"` (diário, #464; o Stage 5 sempre passa, e omitido vale `"kit"`, #11225) ou `"brevo"` (mensal Clarice). `"beehiiv"` só para reler edição antiga, sempre explícito.
 
 ## Modo pré-buscado — `email_file` (#9000, caminho preferido)
 
@@ -46,11 +46,13 @@ O conector Gmail chega às vezes com prefixo UUID (`mcp__<uuid>__search_threads`
 
 **Se `platform = "kit"`** → executar apenas o **Processo Kit** (seção separada abaixo). Pular todo o processo Beehiiv (seções 0-4) — o test-send do Kit não passa por `publish-newsletter` (script `publish-newsletter-kit.ts`), então não há `unfixed_issues[]` pra coletar no passo 0.
 
-**Se `platform` ausente ou `"beehiiv"`** → executar o processo Beehiiv padrão abaixo.
+**Se `platform` ausente** → tratar como `"kit"` (#11225): a diária só sai pelo Kit.
+
+**Se `platform = "beehiiv"`** (só explícito, para reler edição antiga) → executar o processo Beehiiv abaixo.
 
 ---
 
-## Processo Beehiiv (diário — padrão)
+## Processo Beehiiv (só edição antiga, com `platform: "beehiiv"` explícito)
 
 ### 0. Coletar unfixed_issues do publish-newsletter (#85)
 

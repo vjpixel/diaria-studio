@@ -20,17 +20,16 @@
  * Este script mede, para as 3 plataformas que hoje compõem o envio da
  * edição diária:
  *   1. **Audiência de envio** — quem RECEBERIA a próxima edição:
- *      - Kit: membros da tag `kit_diaria.audience_tag` (default `rampa-kit`).
- *      - Beehiiv: assinantes `active` (ainda é a audiência de envio real do
- *        post principal — todo `active` recebe, salvo o gap constante
- *        medido no item 2).
+ *      - Kit: todo ativo (`buildAllSubscribersFilter`), menos a tag `envio-brevo`
+ *        com `kit.diaria_exclusion_segment` ligado.
+ *      - Beehiiv: nada — só arquivo histórico (#11225); ativos residuais lá
+ *        ainda entram nas fontes de órfãos.
  *      - Brevo: contatos da lista `brevo_diaria.list_id` (a campanha diária
  *        mira a lista inteira).
  *   2. **Destinatários reais do último envio** de cada plataforma —
  *      informativo, sujeito às 2 armadilhas de medição documentadas no
  *      corpo da issue (ver `scripts/lib/beehiiv-kit-reconcile.ts`):
- *      `checkBeehiivDeliveryGap` tolera o gap constante da Beehiiv (~3
- *      abaixo do total ativo); `resolveBrevoCampaignRecipients` recusa ler
+ *      `resolveBrevoCampaignRecipients` recusa ler
  *      `statistics.globalStats.sent` sem o parâmetro `?statistics=
  *      globalStats` (a chamada de rede — `brevoGetCampaignGlobalStats` —
  *      já o inclui de forma hardcoded, então esta armadilha é evitada
@@ -89,7 +88,6 @@ import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { parseDiariaExclusionSegment, KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { kitSemAberturaExemptEmails } from "./lib/brevo-kit-active-exclusion.ts"; // #10437
 import { readStore, DEFAULT_STORE_PATH, normalizeEmail } from "./lib/brevo-diaria-store.ts"; // #10437
-import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import {
   applyAlarmReconciliation,
   loadAlarmIssuesState,
@@ -102,14 +100,12 @@ import {
   maskSendAudiencesResultForJson,
   findOrphans,
   maskOrphansForJson,
-  checkBeehiivDeliveryGap,
   resolveBrevoCampaignRecipients,
   type EmailSource,
 } from "./lib/beehiiv-kit-reconcile.ts";
 
 const LOG_PREFIX = "[reconcile-send-audiences]";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const KIT_DEFAULT_AUDIENCE_TAG = "rampa-kit";
 const ALARM_CHECK = "reconcile-send-audiences";
 const ALARM_STATE_PATH = join(ROOT, "data", "reconcile-send-audiences", ".alarm-issues.json");
 const CLOSE_AFTER_RUNS = 2;
@@ -117,9 +113,7 @@ const CLOSE_AFTER_RUNS = 2;
 const ISSUE_LIST_LIMIT = 20;
 
 interface PlatformConfig {
-  kit_diaria?: { audience_tag?: string };
   brevo_diaria?: { api_key_env?: string; list_id?: number };
-  publishing?: { newsletter?: { backend?: string } };
   kit?: { diaria_exclusion_segment?: unknown };
 }
 
@@ -263,56 +257,12 @@ export interface GuardOutcome {
   audience: ReturnType<typeof reconcileSendAudiences>;
   orphans: ReturnType<typeof findOrphans>;
   recentDelivery: RecentDeliveryMeasurement[];
-  beehiivDeliveryGap: ReturnType<typeof checkBeehiivDeliveryGap> | null;
-  /** #7482: `true` quando o gap não foi calculado de propósito (backend=kit
-   *  — a Beehiiv não envia mais a diária) — distingue de "não deu pra
-   *  medir" (measured=false). */
-  beehiivGapSkippedPostMigration: boolean;
   /** #7482 (16/09/2026): sobreposições descartadas por serem as sondas do
    *  editor (`EDITOR_SEED_EMAILS`), que ficam nas duas pontas de propósito —
    *  mesma isenção de `brevo-kit-active-exclusion.ts` (#6485).
    *  `audience.overlaps`/`overlapCount` já vêm SEM elas. */
   seedOverlapsExempted: number;
-  /** #7482 (achado do fleet review, 16/09/2026): `true` quando a audiência
-   *  de envio do Kit foi medida como "todo ativo" em vez da tag `rampa-kit`
-   *  — espelha `beehiivGapSkippedPostMigration` acima. Sem este campo, um
-   *  consumidor do `--json` não conseguia distinguir "órfãos=0 porque a tag
-   *  bateu de verdade" de "órfãos=0 porque pulei a tag e usei todo-ativo"
-   *  sem reler `platform.config.json` por fora. */
-  kitAudienceIsAllActive: boolean;
   blocking: boolean;
-}
-
-/**
- * Pura: decide se a audiência de ENVIO do Kit deve ser medida como "todo
- * assinante active" (`true`) em vez de "membros da tag `rampa-kit`"
- * (`false`) — #7482, achado 16/09/2026, ver comentário completo no call
- * site. A tag só reflete a audiência real enquanto o canal paralelo
- * `kit_diaria` (rampa incremental) está ligado; desde que o backend
- * principal virou "kit" (#7388, 04/09/2026), `publish-newsletter-kit.ts`
- * manda pra `buildAllSubscribersFilter()` — todo `active`, sem tag — e
- * nada mais alimenta a tag pra gente nova, então ela fica congelada
- * enquanto a base cresce, produzindo "órfãos" que na verdade recebem
- * normalmente.
- *
- * #11225: `newsletterBackend` cru do config passa por `parseNewsletterBackend`
- * — chave ausente/typo conta como `"kit"`; só o literal `"beehiiv"` cai no
- * ramo legado (a Beehiiv é só arquivo histórico desde 27/10/2026).
- */
-export function shouldUseAllActiveAsKitAudience(newsletterBackend?: unknown): boolean {
-  return parseNewsletterBackend(newsletterBackend) === "kit";
-}
-
-/**
- * Pura: audiência de ENVIO da Beehiiv (#7482, 16/09/2026). Com backend=kit
- * a Beehiiv não envia a diária — um ativo residual lá não recebe nada por
- * ela, então não entra na audiência de envio (senão vira "sobreposição
- * Beehiiv×Kit" falsa, medida ao vivo: 1 residual também ativo no Kit). Os
- * ativos da Beehiiv continuam em `activeSources`: quem estiver ativo SÓ na
- * Beehiiv aparece como órfão, que é o sinal correto.
- */
-export function beehiivSendAudience(newsletterBackend: unknown, beehiivActiveEmails: string[]): string[] {
-  return parseNewsletterBackend(newsletterBackend) === "kit" ? [] : beehiivActiveEmails;
 }
 
 /**
@@ -337,8 +287,6 @@ export function decideOutcome(
   audience: ReturnType<typeof reconcileSendAudiences>,
   orphans: ReturnType<typeof findOrphans>,
   recentDelivery: RecentDeliveryMeasurement[],
-  beehiivActiveCount: number,
-  newsletterBackend?: string,
   seedEmails: readonly string[] = EDITOR_SEED_EMAILS,
 ): GuardOutcome {
   // #7482: as sondas do editor ficam na lista Brevo E no Kit de propósito
@@ -348,33 +296,12 @@ export function decideOutcome(
   const realOverlaps = audience.overlaps.filter((o) => !seeds.has(o.email.trim().toLowerCase()));
   const seedOverlapsExempted = audience.overlaps.length - realOverlaps.length;
   const audienceSemSondas = { ...audience, overlaps: realOverlaps, overlapCount: realOverlaps.length };
-  const beehiivDelivery = recentDelivery.find((r) => r.platform === "beehiiv");
-  // #7482 (decisão do editor, 10/09/2026): com o canal principal já em
-  // "kit", 0 ativos na Beehiiv é o estado ESPERADO pós-migração — não uma
-  // divergência a investigar. O "destinatários reais" que ainda aparece
-  // positivo é sempre resíduo do ÚLTIMO envio real feito antes da migração
-  // terminar (dado histórico, não uma medição de canal errado) — comparar
-  // esse resíduo contra 0 ativos vai gerar sempre o mesmo alarme falso, sem
-  // nunca convergir sozinho. Pular o check inteiro nesse caso.
-  // 16/09/2026: a condição era `&& beehiivActiveCount === 0` e quebrou no
-  // dia em que a Beehiiv passou a contar 1 ativo residual ("314 > 1,
-  // inesperado"). Com backend=kit a Beehiiv não envia a diária — o gap não
-  // mede nada, qualquer que seja a contagem.
-  // #11225: chave ausente conta como "kit" (ver `parseNewsletterBackend`).
-  const skipBeehiivGap = parseNewsletterBackend(newsletterBackend) === "kit";
-  const beehiivDeliveryGap =
-    !skipBeehiivGap && beehiivDelivery?.measured && typeof beehiivDelivery.recipients === "number"
-      ? checkBeehiivDeliveryGap(beehiivActiveCount, beehiivDelivery.recipients)
-      : null;
   const blocking = audienceSemSondas.overlapCount > 0 || orphans.length > 0;
   return {
     audience: audienceSemSondas,
     orphans,
     recentDelivery,
-    beehiivDeliveryGap,
-    beehiivGapSkippedPostMigration: skipBeehiivGap,
     seedOverlapsExempted,
-    kitAudienceIsAllActive: shouldUseAllActiveAsKitAudience(newsletterBackend),
     blocking,
   };
 }
@@ -411,18 +338,6 @@ function formatReport(outcome: GuardOutcome): string {
         : `    ${r.platform}: não medido (${r.reason})`,
     );
   }
-  if (outcome.beehiivGapSkippedPostMigration) {
-    lines.push(
-      "  gap de entrega Beehiiv: não checado — backend=kit, a Beehiiv não envia mais a diária (decisão do editor, #7482).",
-    );
-  } else if (outcome.beehiivDeliveryGap) {
-    const g = outcome.beehiivDeliveryGap;
-    lines.push(
-      g.ok
-        ? `  gap de entrega Beehiiv: ${g.gap} (dentro da tolerância ${g.tolerated}) — normal.`
-        : `  aviso: gap de entrega Beehiiv fora do normal — ${g.reason}`,
-    );
-  }
   lines.push(outcome.blocking ? "  VEREDITO: DIVERGE (bloqueante)." : "  VEREDITO: OK.");
   return lines.join("\n");
 }
@@ -453,7 +368,6 @@ export function buildDivergenceFindings(outcome: GuardOutcome): AlarmFinding[] {
     `| sobreposição (mesmo e-mail em >1 canal — recebe 2×) | ${outcome.audience.overlapCount} |`,
     `| órfãos (ativo, fora de toda audiência — não recebe) | ${outcome.orphans.length} |`,
     `| sondas do editor isentas | ${outcome.seedOverlapsExempted} |`,
-    `| audiência Kit = todo ativo (backend=kit) | ${outcome.kitAudienceIsAllActive ? "sim" : "não (tag)"} |`,
     "",
   ];
   if (overlaps.length > 0) {
@@ -531,29 +445,6 @@ async function main(): Promise<void> {
     emitError(asJson, `${LOG_PREFIX} config Brevo inválida: platform.config.json → brevo_diaria.list_id ausente.`, "config");
     return;
   }
-  const kitAudienceTag = platformConfig.kit_diaria?.audience_tag?.trim() || KIT_DEFAULT_AUDIENCE_TAG;
-  const newsletterBackend = platformConfig.publishing?.newsletter?.backend;
-  // #7482, achado 16/09/2026: a tag `rampa-kit` era a audiência de envio
-  // REAL do Kit só enquanto `kit_diaria.enabled` estava `true` — a rampa
-  // incremental por ondas, DESLIGADA em 04/09/2026 (#7388) quando o
-  // backend principal virou "kit". Desde então, `publish-newsletter-kit.ts`
-  // manda a edição pra `buildAllSubscribersFilter()` — TODO assinante
-  // `active`, sem filtro de tag nenhum. Como nada mais taggeia gente nova
-  // em `rampa-kit` (só `kit-diaria-stage5-dispatch.ts` fazia isso, e só
-  // roda com `kit_diaria.enabled: true`), a tag ficou CONGELADA no
-  // tamanho de 04/09 enquanto a base ativa cresce — o guard media
-  // "órfãos" (ativo fora da audiência de envio) contra uma audiência que
-  // não é mais a real, e o número só cresce (37 em 05/09, 299 em 16/09,
-  // sempre a MESMA divergência, nunca resolvida por nenhum PR porque
-  // nenhum PR jamais tocou este ponto — as duas rodadas anteriores
-  // trataram isso como pendência de produto/mutação de audiência viva,
-  // quando na verdade é o guard medindo a coisa errada). Com backend=kit,
-  // a audiência de envio do Kit é `kitActiveEmails` (medido de qualquer
-  // forma, ver comentário abaixo) — não a tag, que fica só como registro
-  // histórico das ondas (mesmo racional do `kit_diaria.audience_tag_note`
-  // em platform.config.json).
-  const kitAudienceIsAllActive = shouldUseAllActiveAsKitAudience(newsletterBackend);
-
   let beehiivActiveEmails: string[];
   let kitAudienceEmails: string[];
   let kitActiveEmails: string[];
@@ -562,48 +453,21 @@ async function main(): Promise<void> {
     process.stderr.write(`${LOG_PREFIX} buscando ativos na Beehiiv…\n`);
     beehiivActiveEmails = await fetchActiveBeehiivEmails(beehiivConfig.config.apiKey, beehiivConfig.config.publicationId);
 
-    // #7385 review: a base de ATIVOS do Kit (todo `state: "active"`, não só
-    // a tag) é buscada À PARTE da audiência de envio (a tag) — é essa
-    // DIFERENÇA entre as duas que `findOrphans` precisa pra achar o
-    // cenário exato da issue (629 ativos, 280 na tag, 349 órfãos). Usar a
-    // MESMA lista pras duas coisas (erro do 1º rascunho deste PR, achado no
-    // self-review) faz `findOrphans` nunca encontrar órfão nenhum do lado
-    // Kit — por construção, todo elemento de `activeIn` já estaria em
-    // `sendUnion`, porque as duas listas seriam idênticas. **Isso segue
-    // valendo com backend != "kit"** (ou se a rampa for religada, ver
-    // `kit_diaria.enabled_note`) — só o caso `kitAudienceIsAllActive` acima
-    // faz as duas listas convergirem de propósito, porque aí é a REALIDADE
-    // que convergiu, não um bug de medição.
     process.stderr.write(`${LOG_PREFIX} buscando ativos no Kit…\n`);
     const kitActiveSubscribers = await listAllKitSubscribers(undefined, { status: "active" });
     kitActiveEmails = kitActiveSubscribers.map((s) => s.email_address);
 
     const exclusionSegment = parseDiariaExclusionSegment(platformConfig.kit?.diaria_exclusion_segment);
-    if (kitAudienceIsAllActive && "enabled" in exclusionSegment && exclusionSegment.enabled) {
+    if ("enabled" in exclusionSegment && exclusionSegment.enabled) {
       // #10437 — o broadcast mira o segmento "ativos sem a tag envio-brevo".
-      process.stderr.write(`${LOG_PREFIX} backend=kit com o segmento de exclusão ligado — audiência do Kit = ativos menos a tag "${KIT_ENVIO_BREVO_TAG_NAME}"…
+      process.stderr.write(`${LOG_PREFIX} segmento de exclusão ligado — audiência do Kit = ativos menos a tag "${KIT_ENVIO_BREVO_TAG_NAME}"…
 `);
       const envioTagId = await findTagIdByName(KIT_ENVIO_BREVO_TAG_NAME);
       const tagged = envioTagId === null ? [] : await listAllTagSubscriberEmails(envioTagId);
       kitAudienceEmails = kitSendAudienceWithExclusionSegment(kitActiveEmails, tagged, kitSemAberturaExemptEmails(readStore(DEFAULT_STORE_PATH)));
-    } else if (kitAudienceIsAllActive) {
-      process.stderr.write(
-        `${LOG_PREFIX} backend=kit — audiência de envio do Kit é TODO ativo (buildAllSubscribersFilter), não a tag "${kitAudienceTag}" — pulando lookup de tag.\n`,
-      );
-      kitAudienceEmails = kitActiveEmails;
     } else {
-      process.stderr.write(`${LOG_PREFIX} resolvendo tag "${kitAudienceTag}" no Kit…\n`);
-      const tagId = await findTagIdByName(kitAudienceTag);
-      if (tagId === null) {
-        emitError(
-          asJson,
-          `${LOG_PREFIX} tag "${kitAudienceTag}" não existe no Kit — não foi possível medir a audiência de envio do Kit.`,
-          "config",
-        );
-        return;
-      }
-      process.stderr.write(`${LOG_PREFIX} listando membros da tag "${kitAudienceTag}"…\n`);
-      kitAudienceEmails = await listAllTagSubscriberEmails(tagId);
+      // Sem o segmento, o broadcast vai pra todo ativo (`buildAllSubscribersFilter`, #7482).
+      kitAudienceEmails = kitActiveEmails;
     }
 
     process.stderr.write(`${LOG_PREFIX} listando contatos da lista Brevo ${brevoListId}…\n`);
@@ -615,16 +479,14 @@ async function main(): Promise<void> {
 
   const sources: EmailSource[] = [
     { name: "kit", emails: kitAudienceEmails },
-    { name: "beehiiv", emails: beehiivSendAudience(newsletterBackend, beehiivActiveEmails) },
     { name: "brevo", emails: brevoAudienceEmails },
   ];
   const audience = reconcileSendAudiences(sources);
   // Órfãos: ativo em alguma plataforma × audiência de ENVIO de cada
   // plataforma — as duas listas do lado Kit são DIFERENTES de propósito
-  // (`kitActiveEmails` = todo `state: active`; `kitAudienceEmails` = só a
-  // tag). Beehiiv usa a MESMA lista dos dois lados porque ali "ativo" JÁ É
-  // "audiência de envio" por design (todo `active` recebe o post
-  // principal, ver docstring do módulo) — não há um recorte menor.
+  // (`kitActiveEmails` = todo `state: active`; `kitAudienceEmails` = menos a
+  // tag de exclusão). Ativo residual na Beehiiv fica de fora do envio e entra
+  // aqui: quem estiver ativo SÓ lá aparece como órfão, que é o sinal correto.
   const activeSources: EmailSource[] = [
     { name: "kit", emails: kitActiveEmails },
     { name: "beehiiv", emails: beehiivActiveEmails },
@@ -642,8 +504,6 @@ async function main(): Promise<void> {
     audience,
     orphans,
     recentDelivery,
-    beehiivActiveEmails.length,
-    platformConfig.publishing?.newsletter?.backend,
   );
 
   if (asJson) {
@@ -653,9 +513,6 @@ async function main(): Promise<void> {
           audience: maskSendAudiencesResultForJson(outcome.audience),
           orphans: maskOrphansForJson(outcome.orphans),
           recentDelivery: outcome.recentDelivery,
-          beehiivDeliveryGap: outcome.beehiivDeliveryGap,
-          beehiivGapSkippedPostMigration: outcome.beehiivGapSkippedPostMigration,
-          kitAudienceIsAllActive: outcome.kitAudienceIsAllActive,
           seedOverlapsExempted: outcome.seedOverlapsExempted,
           decision: { exitCode: 0, blocking: outcome.blocking },
         },

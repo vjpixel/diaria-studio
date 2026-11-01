@@ -9,7 +9,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { newsletterBackendOf, planShortsPublish } from "../scripts/publish-shorts.ts";
+import { planShortsPublish } from "../scripts/publish-shorts.ts";
 import { deriveEditionUrl } from "../scripts/lib/edition-url.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
@@ -61,30 +61,10 @@ describe("#10943 item 3: link da edição no vertical antes da Etapa 5", () => {
     assert.ok(p.premises.some((m) => m.includes(p.editionUrl) && m.includes("#7420")), p.premises.join("\n"));
   });
 
-  it("backend beehiiv: link sem uso no texto é premissa, sem pedir conferência (#11633)", () => {
-    const p = plan({ backend: "beehiiv" });
-    assert.ok(!p.warnings.some((w) => w.includes("link da edição")));
-    assert.ok(p.premises.some((m) => m.includes("não usado no texto do vertical")));
-  });
-
-  it("chave ausente cai no default kit (premissa, sem aviso) — #11225", () => {
-    const p = plan(undefined);
-    assert.ok(!p.warnings.some((w) => w.includes("derivado do slug")), p.warnings.join("\n"));
-    assert.ok(p.premises.some((m) => m.includes("#7420")), p.premises.join("\n"));
-  });
-
   it("--edition-url / 05-edition-url.txt vencem o backend", () => {
     const p = plan({ backend: "kit" }, "https://diar.ia.br/p/outro");
     assert.equal(p.editionUrl, "https://diar.ia.br/p/outro");
     assert.ok(p.premises.some((m) => m.includes("https://diar.ia.br/p/outro")));
   });
 
-  it("newsletterBackendOf: default kit, só o literal 'beehiiv' é beehiiv (#11225)", () => {
-    assert.equal(newsletterBackendOf({ publishing: { newsletter: { backend: "kit" } } }), "kit");
-    assert.equal(newsletterBackendOf({ publishing: { newsletter: { backend: "KIT" } } }), "kit");
-    assert.equal(newsletterBackendOf({ publishing: { newsletter: { backend: "beehiiv" } } }), "beehiiv");
-    assert.equal(newsletterBackendOf(null), "kit");
-    assert.equal(newsletterBackendOf(undefined), "kit");
-    assert.equal(newsletterBackendOf({}), "kit");
-  });
 });

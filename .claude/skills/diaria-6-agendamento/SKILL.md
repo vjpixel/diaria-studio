@@ -60,7 +60,7 @@ Se `--no-gates`: pular o gate e auto-agendar com o default (06:00 BRT **da data 
 
 ### Etapa 6c — Schedule (Beehiiv ou Kit) + verificacao
 
-Executar Schedule seguindo `context/publishers/beehiiv-playbook.md` §9-10 (backend Beehiiv) ou `schedule-newsletter-kit.ts` (backend Kit). Verificar estado via `scripts/verify-scheduled-post.ts` (#2074). O guard de slug do bloco WhatsApp já rodou ANTES do gate (§6b-slug) — se divergiu, o editor já viu o aviso no gate e decidiu seguir; não há um 2º ponto de parada aqui (#8205).
+Executar Schedule com `schedule-newsletter-kit.ts`, que só declara sucesso depois de um GET confirmar o `send_at` (§6d-kit). Não há um 2º ponto de parada aqui (#8205).
 
 ### Etapa 6d — Auto-reporter (sem gate, #8205) + relatorio
 
