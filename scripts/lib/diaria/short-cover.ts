@@ -99,6 +99,22 @@ export function bufferThumbnailOffsetMs(source: ShortCoverSource | null): number
   return source ? stillTimecodeOffsetMs(source.name) : null;
 }
 
+/** Teto do offset quando a duração do vertical é desconhecida: nenhum Short passa de 10 min (#11679). */
+export const SHORT_COVER_OFFSET_FALLBACK_MAX_MS = 10 * 60_000;
+
+/**
+ * Pure (#11679 item 2): o timecode do Still assume sequência do Premiere
+ * começando em 00:00:00:00. Sequência com início 01:00:00:00 dá offset ≥ 1 h,
+ * fora do vertical — a Buffer pode rejeitar o post ou ignorar o campo. Offset
+ * fora do vídeo (ou, com duração desconhecida, acima de 10 min) vira null: a
+ * Buffer escolhe o frame, como sem timecode.
+ */
+export function clampBufferThumbnailOffsetMs(offsetMs: number | null, durationSeconds: number | null): number | null {
+  if (offsetMs === null) return null;
+  const maxMs = durationSeconds !== null && Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds * 1000 : SHORT_COVER_OFFSET_FALLBACK_MAX_MS;
+  return offsetMs < maxMs ? offsetMs : null;
+}
+
 /**
  * Pure: o que o plano (dry-run) promete por destino. Fonte do
  * `plan.cover.destinations`.

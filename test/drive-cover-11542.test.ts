@@ -125,7 +125,8 @@ test("plano identifica capa, destinos suportados e fallback sem credenciais R2",
 
 test("review #11545: falha no upload da capa vira aviso e o Reel segue sem cover_url", async () => {
   const lines: string[] = [];
-  assert.equal(await uploadCoverOrFallback(() => Promise.reject(new Error("R2 503")), (l) => lines.push(l)), undefined);
+  // #11679: a falha volta como valor (o registro grava cover.ok=false), nunca como cover_url.
+  assert.deepEqual(await uploadCoverOrFallback(() => Promise.reject(new Error("R2 503")), (l) => lines.push(l)), { error: "capa não enviada ao R2: R2 503" });
   assert.match(lines.join("\n"), /R2 503.*frame automático/);
   assert.equal(await uploadCoverOrFallback(async () => "https://r2/x.jpg", () => {}), "https://r2/x.jpg");
 });
