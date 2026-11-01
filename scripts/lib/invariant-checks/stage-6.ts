@@ -20,29 +20,8 @@ import { changedSourceFilesOnDisk, kitContentHash, type SourceHashes } from "../
 import { renderKitPayload, loadPlatformConfig } from "../../publish-newsletter-kit.ts"; // #9428
 import { deriveSlugFromD1, sitePageSourceDigest } from "../../publish-edition-site-page.ts"; // #10207
 import { recordedExpectedSlug, sitePageStaleness } from "../site-page-staleness.ts"; // #10207
-import { parseNewsletterBackend } from "../newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-
-/**
- * #464 (achado do review, PR #6096) — mesmo helper de
- * `invariant-checks/stage-5.ts::loadNewsletterBackend`, duplicado aqui (não
- * extraído pra um módulo compartilhado só por 2 call sites de 4 linhas cada
- * — extrair se um 3º aparecer).
- */
-function loadNewsletterBackend(): string {
-  const configPath = resolve(ROOT, "platform.config.json");
-  // Default "kit" desde o #11225 (Beehiiv só como arquivo histórico).
-  if (!existsSync(configPath)) return "kit";
-  try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-      publishing?: { newsletter?: { backend?: unknown } };
-    };
-    return parseNewsletterBackend(cfg.publishing?.newsletter?.backend);
-  } catch {
-    return "kit";
-  }
-}
 
 /**
  * `.step-5-done.json` deve existir — Stage 5 completou o dispatch.
@@ -66,19 +45,11 @@ function checkStep5Sentinel(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * `05-published.json` (Beehiiv) ou `newsletter-kit-published.json` (Kit —
- * #464, achado do review PR #6096: hardcoded só em Beehiiv originalmente,
- * fazia este invariant bloquear TODA edição com `publishing.newsletter.backend:
- * "kit"`, mesmo com o Schedule do Kit tendo funcionado normalmente) deve ter
- * `scheduled_at` (ou `status: "published"`/`"scheduled"` conforme o backend
- * — envio imediato detectado e reconciliado no caso Beehiiv). Sem isso,
- * Stage 6 completou sem agendar.
+ * `newsletter-kit-published.json` deve ter `scheduled_at` (ou `status: "scheduled"`).
+ * Sem isso, Stage 6 completou sem agendar.
  */
-// #464 (achado do review, PR #6096): `backendOverride` opcional, só pra
-// teste — mesma justificativa de `checkConsentBinding` em invariant-checks/stage-5.ts.
-function checkScheduledAt(editionDir: string, backendOverride?: string): InvariantViolation[] {
-  const isKit = (backendOverride ?? loadNewsletterBackend()) === "kit";
-  const filename = isKit ? "newsletter-kit-published.json" : "05-published.json";
+function checkScheduledAt(editionDir: string): InvariantViolation[] {
+  const filename = "newsletter-kit-published.json";
   const path = resolve(editionDir, "_internal", filename);
   if (!existsSync(path)) {
     return [
@@ -105,18 +76,16 @@ function checkScheduledAt(editionDir: string, backendOverride?: string): Invaria
       },
     ];
   }
-  // #464: `KitNewsletterPublished.status` usa "scheduled" (não "published")
-  // pro caso feliz — Kit não tem o conceito de "envio imediato detectado e
-  // reconciliado" do Beehiiv (schedule-newsletter-kit.ts só grava `status:
-  // "scheduled"` depois de um GET confirmando `send_at`, nunca antes).
-  const okStatuses = isKit ? ["scheduled"] : ["published"];
+  // #464: schedule-newsletter-kit.ts só grava `status: "scheduled"` depois de
+  // um GET confirmando `send_at`, nunca antes.
+  const okStatuses = ["scheduled"];
   if (!data.scheduled_at && !okStatuses.includes(data.status ?? "")) {
     return [
       {
         rule: "scheduled-at-present",
         message:
           `${filename} não tem scheduled_at (status=${data.status ?? "missing"}). ` +
-          `Stage 6 (Agendamento) não concluiu o Schedule ${isKit ? "do Kit" : "do Beehiiv"}. ` +
+          `Stage 6 (Agendamento) não concluiu o Schedule do Kit. ` +
           `Re-rodar \`/diaria-6-agendamento {AAMMDD}\`.`,
         source_issue: "#1694",
         severity: "error",
@@ -149,19 +118,16 @@ function checkScheduledAt(editionDir: string, backendOverride?: string): Invaria
  * - `scheduled_at` no passado → mensagem muda: o broadcast já saiu, re-publicar
  *   não alcança quem recebeu (e PATCH em broadcast enviado é recusado pelo Kit).
  *
- * `opts` só pra teste (mesmo padrão de `backendOverride` em `checkScheduledAt`).
+ * `opts` só pra teste.
  */
 function checkKitDraftFresh(
   editionDir: string,
   opts: {
-    backend?: string;
     rootDir?: string;
     now?: number;
     brevoDiariaEnabled?: boolean;
-    kitDiaria?: { broadcastId: number | null } | null;
   } = {},
 ): InvariantViolation[] {
-  if ((opts.backend ?? loadNewsletterBackend()) !== "kit") return [];
   const path = resolve(editionDir, "_internal", "newsletter-kit-published.json");
   if (!existsSync(path)) return [];
   let data: unknown;
@@ -210,8 +176,7 @@ function checkKitDraftFresh(
         `A correção vale só pro acervo/site.`,
     );
   }
-  const kitDiaria = opts.kitDiaria !== undefined ? opts.kitDiaria : readKitDiariaState(editionDir);
-  return warn(buildKitDraftStaleMessage({ what, when, editionDir, brevoDiariaEnabled, kitDiaria }));
+  return warn(buildKitDraftStaleMessage({ what, when, editionDir, brevoDiariaEnabled }));
 }
 
 /**
@@ -224,20 +189,6 @@ function checkKitDraftFresh(
  */
 export function isBrevoDiariaActiveForEdition(editionDir: string): boolean {
   return existsSync(resolve(editionDir, "_internal", "brevo-diaria-published.json"));
-}
-
-/** #9445: estado da Kit diária (canal paralelo, `kit-diaria-stage5-dispatch.ts`)
- *  nesta edição. `null` = o canal não participou (arquivo ausente/ilegível). */
-export function readKitDiariaState(editionDir: string): { broadcastId: number | null } | null {
-  const p = resolve(editionDir, "_internal", "kit-diaria-published.json");
-  if (!existsSync(p)) return null;
-  try {
-    const d = JSON.parse(readFileSync(p, "utf8")) as { broadcast_id?: unknown } | null;
-    return { broadcastId: d && typeof d.broadcast_id === "number" ? d.broadcast_id : null };
-  } catch {
-    // Ilegível mas presente: o canal participou — melhor nomear sem id que omitir.
-    return { broadcastId: null };
-  }
 }
 
 /**
@@ -260,8 +211,7 @@ export function buildKitDraftRefreshInstructions(editionDir: string): string {
 /**
  * #9442 — mensagem do `kit-draft-fresh` quando o rascunho ainda não saiu.
  * Nomeia o Kit sempre, e a Brevo diária quando ela participou da edição
- * (`isBrevoDiariaActiveForEdition`). Kit diária (#6114) também, quando
- * seu estado existe (#9445 — `readKitDiariaState`). (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
+ * (`isBrevoDiariaActiveForEdition`). (`publish-daily-brevo.ts` reaproveita o `campaign_id` registrado e faz PUT
  * com o conteúdo recalculado — re-rodar é idempotente). Sem isso o editor
  * corrigia o Kit seguindo o aviso e a campanha Brevo saía com o texto velho.
  * Pura, exportada pra teste.
@@ -271,32 +221,17 @@ export function buildKitDraftStaleMessage(args: {
   when: string;
   editionDir: string;
   brevoDiariaEnabled: boolean;
-  /** #9445: estado da Kit diária quando ela participou da edição. */
-  kitDiaria?: { broadcastId: number | null } | null;
 }): string {
-  const { what, when, editionDir, brevoDiariaEnabled, kitDiaria } = args;
+  const { what, when, editionDir, brevoDiariaEnabled } = args;
   // #10411: o caminho preferido desde o #10395 é o Send test da UI sobre o
   // rascunho real — `--send-test` virou fallback (cria broadcast descartável,
   // que vira `completed` e não se apaga, e troca `test_mode` pra "broadcast").
   const kitCmd = buildKitDraftRefreshInstructions(editionDir);
-  // #9445: a Kit diária NÃO atualiza no re-run — com o estado gravado,
-  // `decideKitChannelDispatch` devolve `already_done`. Pra refletir o texto
-  // novo é preciso apagar o broadcast velho no Kit E o arquivo de estado (só
-  // o arquivo, sem apagar o broadcast, criaria um 2º = envio em dobro).
-  const kitDiariaPart = kitDiaria
-    ? ` Kit diária (canal paralelo): re-rodar sozinho NÃO atualiza (o estado gravado vira ` +
-      `\`already_done\`) — apagar o broadcast${kitDiaria.broadcastId != null ? ` ${kitDiaria.broadcastId}` : ""} ` +
-      `no Kit, depois remover \`${editionDir}/_internal/kit-diaria-published.json\` e rodar ` +
-      `\`npx tsx scripts/kit-diaria-stage5-dispatch.ts ${editionDir}\` SEM \`--send-test\` (é o que ` +
-      `recria o broadcast real + estado; \`--send-test\` é descartável, não grava estado — opcional antes, ` +
-      `só pra prévia). Nunca remover só o arquivo: criaria um 2º broadcast, envio em dobro.`
-    : "";
   if (!brevoDiariaEnabled) {
     return (
       `${what} mudou depois que o rascunho Kit foi publicado (${when}) — o broadcast e o e-mail de ` +
       `teste estão com o conteúdo VELHO. Atualizar o Kit — ${kitCmd} — e conferir o novo e-mail ` +
-      `antes de aprovar o agendamento.` +
-      kitDiariaPart
+      `antes de aprovar o agendamento.`
     );
   }
   const brevoCmd =
@@ -306,8 +241,7 @@ export function buildKitDraftStaleMessage(args: {
     `mesmo conteúdo (broadcast Kit e campanha Brevo diária) e os e-mails de teste estão com o ` +
     `conteúdo VELHO. Re-rodar os 2 canais: Kit — ${kitCmd} — ` +
     `e Brevo diária ${brevoCmd} (idempotente: reaproveita a campanha registrada e atualiza via PUT); ` +
-    `conferir os novos e-mails de teste antes de aprovar o agendamento.` +
-    kitDiariaPart
+    `conferir os novos e-mails de teste antes de aprovar o agendamento.`
   );
 }
 
@@ -345,88 +279,6 @@ function checkStep6Sentinel(editionDir: string): InvariantViolation[] {
           `_internal/.step-6-done.json ausente — pipeline-sentinel.ts não foi chamado. ` +
           `Stage 6 não ficou marcado como concluído.`,
         source_issue: "#1694",
-        severity: "error",
-        file: path,
-      },
-    ];
-  }
-  return [];
-}
-
-/**
- * `_internal/whatsapp-slug-check.json` deve existir com `ok: true` — o guard
- * determinístico de slug do bloco WhatsApp (#4570) precisa ter RODADO e
- * PASSADO antes do Stage 6 ser aceito como íntegro (#4574).
- *
- * Sem esta regra, o mecanismo GATE-BLOCKING documentado em
- * `.claude/agents/orchestrator-stage-6.md` §6d dependia 100% de um agente
- * LLM ler e seguir a prosa — nada em código verificava que o guard rodou,
- * rodou corretamente, ou passou antes do Stage 6 avançar. Achado do review
- * consolidado da PR #4574 (pr-test-analyzer + silent-failure-hunter,
- * convergentes): exatamente o anti-padrão que este módulo (`check-invariants.ts`)
- * existe pra eliminar.
- *
- * O arquivo é escrito por `scripts/check-whatsapp-slug-guard.ts --out` — o
- * orchestrator passa `{EDITION_DIR}/_internal/whatsapp-slug-check.json` como
- * `--out` na chamada de §6d.
- *
- * Backend `"kit"` (#7388, achado ao vivo na edição 260904): §6d do
- * orchestrator-stage-6.md instrui pular a seção INTEIRA (incluindo esta
- * checagem) quando o backend é Kit — o problema de slug da UI da Beehiiv
- * não tem equivalente lá (`public_url` do broadcast já é a URL final, sem
- * etapa manual de slug que possa divergir dela). Sem este guard de backend,
- * `whatsapp-slug-check.json` nunca é escrito por uma edição Kit e este check
- * bloqueava o Stage 6 incondicionalmente todo dia desde a migração de
- * backend em #7388 — falso positivo estrutural, não uma falha real.
- * `backendOverride` opcional, só pra teste (mesmo padrão de `checkScheduledAt`
- * acima) — produção sempre lê `platform.config.json` de verdade.
- */
-function checkWhatsappSlugGuard(
-  editionDir: string,
-  backendOverride?: string,
-): InvariantViolation[] {
-  if ((backendOverride ?? loadNewsletterBackend()) === "kit") return [];
-  const path = resolve(editionDir, "_internal", "whatsapp-slug-check.json");
-  if (!existsSync(path)) {
-    return [
-      {
-        rule: "whatsapp-slug-guard-ok",
-        message:
-          `_internal/whatsapp-slug-check.json ausente — o guard de slug do bloco WhatsApp ` +
-          `(#4570) não rodou (ou rodou sem \`--out\`). GATE-BLOCKING: o link do bloco WhatsApp ` +
-          `(dentro do D1, #5152) já está BAKED IN no corpo do e-mail — sem essa checagem, um slug ` +
-          `divergente 404 pra quem abrir o e-mail. Rodar \`npx tsx scripts/check-whatsapp-slug-guard.ts\` ` +
-          `(ver \`.claude/agents/orchestrator-stage-6.md\` §6d) antes de aceitar o Stage 6.`,
-        source_issue: "#4574",
-        severity: "error",
-        file: path,
-      },
-    ];
-  }
-  let data: { ok?: boolean; expectedSlug?: string; actualSlug?: string | null };
-  try {
-    data = JSON.parse(readFileSync(path, "utf8"));
-  } catch (e) {
-    return [
-      {
-        rule: "whatsapp-slug-guard-parseable",
-        message: `whatsapp-slug-check.json não parseável: ${(e as Error).message}`,
-        source_issue: "#4574",
-        severity: "error",
-        file: path,
-      },
-    ];
-  }
-  if (data.ok !== true) {
-    return [
-      {
-        rule: "whatsapp-slug-guard-ok",
-        message:
-          `whatsapp-slug-check.json registra ok=${String(data.ok)} — o slug do post diverge ` +
-          `do previsto pelo bloco WhatsApp (esperado "${data.expectedSlug ?? "?"}", atual ` +
-          `"${data.actualSlug ?? "(ausente)"}"). GATE-BLOCKING (#4570): corrigir o slug manualmente ` +
-          `(Settings → SEO/URL slug) e re-rodar \`scripts/check-whatsapp-slug-guard.ts\` até \`ok: true\`.`,
-        source_issue: "#4574",
         severity: "error",
         file: path,
       },
@@ -831,13 +683,6 @@ export const STAGE_6_RULES: InvariantRule[] = [
     run: checkEditionReport,
   },
   {
-    id: "whatsapp-slug-guard-ok",
-    description: "_internal/whatsapp-slug-check.json presente com ok:true (#4570, backstop #4574)",
-    source_issue: "#4574",
-    stage: 6,
-    run: checkWhatsappSlugGuard,
-  },
-  {
     id: "step-6-sentinel-exists",
     description: "_internal/.step-6-done.json escrito pelo pipeline-sentinel (#1694)",
     source_issue: "#1694",
@@ -889,7 +734,6 @@ export {
   checkScheduledAt,
   checkKitDraftFresh,
   checkEditionReport,
-  checkWhatsappSlugGuard,
   checkStep6Sentinel,
   checkSitePagePublished,
   checkSitePagePrMerged,

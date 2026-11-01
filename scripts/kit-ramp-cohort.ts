@@ -95,7 +95,7 @@ import { kitFetch } from "./lib/kit-client.ts";
 import type { KitPagination } from "./lib/kit-client.ts";
 import { createOrUpdateSubscriber, type KitSubscriberSummary } from "./lib/kit-subscribers.ts";
 import { tagSubscriber, findTagIdByName } from "./lib/kit-broadcasts.ts";
-import { resolveAudienceTagId } from "./lib/kit-diaria-channel.ts";
+import { resolveAudienceTagId } from "./lib/kit-diaria-audience.ts";
 import { fetchCurrentBeehiivState } from "./sync-apoio-nivel-beehiiv.ts";
 import { toNormalizedEmailSet, maskEmail } from "./lib/beehiiv-kit-reconcile.ts";
 

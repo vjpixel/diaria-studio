@@ -171,25 +171,11 @@ describe("agendadores: defesa final contra passado (#11689)", () => {
       if (!r.ok) assert.equal(r.code, 6);
     });
 
-    it(`kit-diaria: passado -> code 5, sem PATCH (${dir})`, async () => {
-      const { scheduleKitDiaria } = await import("../scripts/schedule-kit-diaria.ts");
-      const deps = {
-        readPlatformConfig: () => ({ kit_diaria: { enabled: true }, publishing: { newsletter: { backend: "beehiiv" } } }),
-        readState: () => ({ broadcast_id: 1, status: "draft" }),
-        writeState: boom,
-        patch: boom,
-        verify: boom,
-        log: () => {},
-      };
-      const r = await scheduleKitDiaria(dir, PAST, deps as never, { now: NOW, allowOtherDate: true });
-      assert.equal(r.code, 5);
-    });
   }
 
   it("idempotência: reagendar o MESMO instante já agendado segue sucesso mesmo depois que passou", async () => {
     const { scheduleNewsletterKit } = await import("../scripts/schedule-newsletter-kit.ts");
     const { scheduleDailyBrevo } = await import("../scripts/schedule-daily-brevo.ts");
-    const { scheduleKitDiaria } = await import("../scripts/schedule-kit-diaria.ts");
     const dir = "/fake/data/editions/2610/261030";
     const kit = await scheduleNewsletterKit(
       dir,
@@ -216,20 +202,6 @@ describe("agendadores: defesa final contra passado (#11689)", () => {
       { now: NOW, allowOtherDate: true },
     );
     assert.equal(brevo.ok, true);
-    const diaria = await scheduleKitDiaria(
-      dir,
-      PAST,
-      {
-        readPlatformConfig: () => ({ kit_diaria: { enabled: true }, publishing: { newsletter: { backend: "beehiiv" } } }),
-        readState: () => ({ broadcast_id: 1, status: "scheduled", scheduled_at: PAST }),
-        writeState: boom,
-        patch: boom,
-        verify: async () => ({ send_at: PAST }),
-        log: () => {},
-      } as never,
-      { now: NOW, allowOtherDate: true },
-    );
-    assert.equal(diaria.code, 0);
   });
 
   it("margem final: agendador aceita 5 min à frente (o gate de 15 min já filtrou antes)", async () => {

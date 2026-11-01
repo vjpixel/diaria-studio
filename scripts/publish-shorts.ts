@@ -273,7 +273,6 @@ import {
   threadsProfilePreflight,
   type ThreadsTimerGateFailure,
 } from "./lib/threads-personal-video.ts";
-import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import {
   CHROME_UPLOAD_MAX_BYTES,
   buildChromeUploadFfmpegPasses,
@@ -584,16 +583,6 @@ export interface ShortsPlanInput {
   grid?: ScheduledSlot[];
 }
 
-/**
- * Pure (#10943): `publishing.newsletter.backend` do config já carregado. Mesmo
- * fallback de `loadNewsletterBackend` (lib/newsletter-backend.ts): default
- * "kit" desde o #11225 — só o literal "beehiiv" é "beehiiv".
- */
-export function newsletterBackendOf(config: unknown): "kit" | "beehiiv" {
-  const backend = (config as { publishing?: { newsletter?: { backend?: unknown } } } | null)?.publishing?.newsletter?.backend;
-  return parseNewsletterBackend(backend);
-}
-
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
 export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const premises: string[] = [];
@@ -604,14 +593,12 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const editionUrl: string = input.editionUrl ?? deriveEditionUrl(d1.title);
   if (input.editionUrl) {
     premises.push(`link da edição: ${editionUrl} (${input.editionUrlSource ?? "--edition-url"})`);
-  } else if (newsletterBackendOf(input.config) === "kit") {
-    // #10943 item 3: no fluxo novo o vertical sai ANTES da Etapa 5, então
-    // `05-edition-url.txt` ainda não existe. Com backend "kit" o Stage 5 grava
-    // exatamente `deriveEditionUrl(D1)` (publish-newsletter-kit.ts, #7420): o
-    // link derivado aqui é o mesmo que o Stage 5 vai gravar, não um palpite.
-    premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5 com backend kit, #7420)`);
   } else {
-    premises.push(`link da edição derivado do slug do título do D1: ${editionUrl} (metadado do plano; não usado no texto do vertical)`);
+    // #10943 item 3: no fluxo novo o vertical sai ANTES da Etapa 5, então
+    // `05-edition-url.txt` ainda não existe. O Stage 5 grava exatamente
+    // `deriveEditionUrl(D1)` (publish-newsletter-kit.ts, #7420): o link derivado
+    // aqui é o mesmo que o Stage 5 vai gravar, não um palpite.
+    premises.push(`link da edição: ${editionUrl} (derivado do título do D1 — mesma regra do Stage 5, #7420)`);
   }
   const d1In = { title: d1.title, body: d1.body };
   const youtube = buildYouTubeShortMetadata({ d1: d1In });

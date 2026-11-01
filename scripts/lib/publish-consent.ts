@@ -24,9 +24,6 @@ export interface PublishConsent {
   twitter: Mode;
   /** #5772 — canal Brevo diária (segmento Pending, reativação). Default "auto" como os demais. */
   brevo: Mode;
-  /** #6162 — canal Kit PARALELO (#6126/#6048). Gate duplo: além deste
-   *  consent, só roda se `kit_diaria.enabled === true` em platform.config. */
-  kit: Mode;
   /** #10659 — vídeo horizontal do dia (Drive → YouTube, §5b-youtube do Stage 5).
    *  Opcional só pela leitura de consent gravado antes do #10659: ausente = "auto".
    *  Fora de `hasAnyAutoChannel`/`allChannelsSkipped` (não depende de imagem
@@ -49,7 +46,6 @@ export function autoApproveConsent(): PublishConsent {
     threads: "auto",
     twitter: "auto",
     brevo: "auto",
-      kit: "auto",
     youtube: "auto",
     source: "auto_approve_default",
   };
@@ -69,7 +65,6 @@ export function defaultAutoConsent(): PublishConsent {
     threads: "auto",
     twitter: "auto",
     brevo: "auto",
-      kit: "auto",
     youtube: "auto",
     source: "default_auto",
   };
@@ -89,7 +84,6 @@ export function defaultManualConsent(): PublishConsent {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
-      kit: "manual",
     youtube: "manual",
     source: "default_manual",
   };
@@ -126,7 +120,6 @@ export function parseSkipFlag(input: string): PublishConsent | null {
     threads: skipped.has("threads") ? "manual" : "auto",
     twitter: skipped.has("twitter") ? "manual" : "auto",
     brevo: skipped.has("brevo") ? "manual" : "auto",
-    kit: skipped.has("kit") ? "manual" : "auto",
     youtube: skipped.has("youtube") ? "manual" : "auto",
     source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
@@ -163,7 +156,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       threads: "auto",
       twitter: "auto",
       brevo: "auto",
-      kit: "auto",
       youtube: "auto",
       source: "editor_response_all",
     };
@@ -177,7 +169,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       threads: "skipped",
       twitter: "skipped",
       brevo: "skipped",
-      kit: "skipped",
       youtube: "skipped",
       source: "editor_response_none",
     };
@@ -206,7 +197,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     threads: "manual",
     twitter: "manual",
     brevo: "manual",
-      kit: "manual",
     youtube: "manual",
     source: `editor_response_${nums.join("_")}`,
   };
@@ -225,8 +215,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     else if (n === 12) out.twitter = "manual";
     else if (n === 13) out.brevo = "auto";
     else if (n === 14) out.brevo = "manual";
-    else if (n === 15) out.kit = "auto";
-    else if (n === 16) out.kit = "manual";
   }
   return out;
 }
@@ -245,8 +233,7 @@ export function hasAnyAutoChannel(consent: PublishConsent): boolean {
     consent.instagram === "auto" ||
     consent.threads === "auto" ||
     consent.twitter === "auto" ||
-    consent.brevo === "auto" ||
-    consent.kit === "auto"
+    consent.brevo === "auto"
   );
 }
 
@@ -273,7 +260,6 @@ export function allChannelsSkipped(consent: PublishConsent): boolean {
     consent.instagram === "skipped" &&
     consent.threads === "skipped" &&
     consent.twitter === "skipped" &&
-    consent.brevo === "skipped" &&
-    consent.kit === "skipped"
+    consent.brevo === "skipped"
   );
 }

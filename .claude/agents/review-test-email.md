@@ -30,7 +30,7 @@ O JSON de saída `inconclusive` sempre inclui um campo `reason` para o orchestra
 - `attempt`: numero da tentativa atual (1-based, para contexto no log)
 - `email_file` (opcional, #9000): path do corpo do e-mail de teste **já buscado pelo top-level** (ex: `{edition_dir}/_internal/.email-body.tmp`). Ver seção "Modo pré-buscado" abaixo.
 - `email_subject` (opcional, #9000): assunto real da thread, junto com `email_file`.
-- `platform` (opcional): `"beehiiv"` (padrão, diário), `"kit"` (diário, backend Kit — #464, atrás de `publishing.newsletter.backend`) ou `"brevo"` (mensal Clarice)
+- `platform`: `"kit"` (diário, #464; o Stage 5 sempre passa) ou `"brevo"` (mensal Clarice). `"beehiiv"` só para reler edição antiga.
 
 ## Modo pré-buscado — `email_file` (#9000, caminho preferido)
 

@@ -24,7 +24,6 @@ import {
   type FacebookCredentialsFile,
   type FacebookPageConfig,
 } from "../facebook-pages.ts"; // #10458
-import { parseNewsletterBackend } from "../newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -61,30 +60,6 @@ function loadSocialsFromConfig(): string[] {
  * obrigatórias (LinkedIn/Facebook) continuam ERROR.
  */
 const BEST_EFFORT_SOCIALS = new Set(["instagram", "threads", "twitter"]);
-
-/**
- * #464 (achado do review, PR #6096) — `checkConsentBinding` (newsletter)
- * checava só `_internal/05-published.json` (artefato do dispatch Beehiiv),
- * o que faria um `consent.newsletter="auto"` real virar falso-positivo
- * `severity: "error"` pra edição com `publishing.newsletter.backend: "kit"`
- * (publish-newsletter-kit.ts escreve `newsletter-kit-published.json`, nunca
- * `05-published.json`) — bloqueando `pipeline-sentinel.ts write` via
- * `checkStageInvariantsForWrite` mesmo com o dispatch Kit tendo funcionado
- * normalmente. Mesmo fallback (`"beehiiv"`) usado em `publish-newsletter-kit.ts::checkKitBackendEnabled`.
- */
-function loadNewsletterBackend(): string {
-  const configPath = resolve(ROOT, "platform.config.json");
-  // Default "kit" desde o #11225 (Beehiiv só como arquivo histórico).
-  if (!existsSync(configPath)) return "kit";
-  try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf8")) as {
-      publishing?: { newsletter?: { backend?: unknown } };
-    };
-    return parseNewsletterBackend(cfg.publishing?.newsletter?.backend);
-  } catch {
-    return "kit";
-  }
-}
 
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
@@ -569,39 +544,9 @@ function checkKitReviewRecorded(editionDir: string): InvariantViolation[] {
  * Sentinel + auto-reporter rodaram, edition-report gerado, MAS o loop
  * verify→fix nunca foi disparado.
  */
-function checkStage4ReviewCompleted(editionDir: string, backendOverride?: string): InvariantViolation[] {
-  // #9594: backend Kit nunca escreve 05-published.json — antes este check
-  // devolvia [] em silêncio e o gate do Stage 6 apresentava "review
-  // automático" sem dado nenhum (edição 261005). No Kit o resultado do §5f
-  // vive em `_internal/05-review-kit.json` (gravado por record-kit-review.ts).
-  if ((backendOverride ?? loadNewsletterBackend()) === "kit") {
-    return checkKitReviewRecorded(editionDir);
-  }
-  const path = resolve(editionDir, "_internal", "05-published.json");
-  if (!existsSync(path)) return [];
-  let data: { review_completed?: boolean; review_status?: string };
-  try {
-    data = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return []; // outro rule pega
-  }
-  const explicitTerminal =
-    data.review_status === "issues_unfixable" ||
-    data.review_status === "inconclusive";
-  if (data.review_completed || explicitTerminal) return [];
-  return [
-    {
-      rule: "stage-5-review-completed",
-      message:
-        `05-published.json marca review_completed=${data.review_completed ?? "missing"} ` +
-        `+ review_status=${data.review_status ?? "missing"}. ` +
-        `Loop verify→fix do test email não rodou (ou não terminou). ` +
-        `Run Agent(review-test-email) ANTES de fechar stage 5 (Publicação) / escrever sentinel.`,
-      source_issue: "#1577",
-      severity: "error",
-      file: path,
-    },
-  ];
+function checkStage4ReviewCompleted(editionDir: string): InvariantViolation[] {
+  // #9594: o resultado do §5f vive em `_internal/05-review-kit.json`.
+  return checkKitReviewRecorded(editionDir);
 }
 
 function checkStage4ReviewLoop(editionDir: string): InvariantViolation[] {
@@ -763,12 +708,7 @@ function checkStep5Sentinel(editionDir: string): InvariantViolation[] {
  * #2488: canais sociais derivados de `platform.config.json#socials` — não
  * hard-coded. Adicionar canal ao config propaga aqui sem editar este arquivo.
  */
-// #464 (achado do review, PR #6096): `backendOverride` opcional, só pra
-// teste — `loadNewsletterBackend()` lê `platform.config.json` do ROOT real
-// do repo, sem seam nenhum pra apontar pra um config fake, então testar o
-// branch "kit" sem este parâmetro exigiria mutar o config real do projeto.
-// Produção nunca passa este argumento (cai no `?? loadNewsletterBackend()`).
-function checkConsentBinding(editionDir: string, backendOverride?: string): InvariantViolation[] {
+function checkConsentBinding(editionDir: string): InvariantViolation[] {
   const consentPath = resolve(editionDir, "_internal", "05-publish-consent.json");
   if (!existsSync(consentPath)) return [];
   let consent: Record<string, string>;
@@ -789,25 +729,18 @@ function checkConsentBinding(editionDir: string, backendOverride?: string): Inva
 
   // Newsletter check
   if (consent["newsletter"] === "auto") {
-    // #464: qual artefato prova o dispatch depende do backend selecionado
-    // (ver docstring de loadNewsletterBackend acima) — Beehiiv escreve
-    // 05-published.json, Kit escreve newsletter-kit-published.json. Nunca
-    // os dois nem nenhum dos dois numa edição bem-sucedida.
-    const isKit = (backendOverride ?? loadNewsletterBackend()) === "kit";
-    const publishedPath = resolve(editionDir, "_internal", isKit ? "newsletter-kit-published.json" : "05-published.json");
+    const publishedPath = resolve(editionDir, "_internal", "newsletter-kit-published.json");
     if (!existsSync(publishedPath)) {
       violations.push({
         rule: "consent-binding-newsletter",
-        message: isKit
-          ? `consent.newsletter="auto" mas newsletter-kit-published.json ausente — dispatch ` +
-            `Kit (publish-newsletter-kit.ts) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`
-          : `consent.newsletter="auto" mas 05-published.json ausente — dispatch ` +
-            `Beehiiv (Chrome MCP) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`,
+        message:
+          `consent.newsletter="auto" mas newsletter-kit-published.json ausente — dispatch ` +
+          `Kit (publish-newsletter-kit.ts) não rodou. Editor escolheu auto; bypass pra manual paste viola contrato.`,
         source_issue: "#1575",
         severity: "error",
         file: publishedPath,
       });
-    } else if (isKit) {
+    } else {
       try {
         const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as { status?: string; broadcast_id?: number };
         if (typeof pub.broadcast_id !== "number") {
@@ -823,33 +756,6 @@ function checkConsentBinding(editionDir: string, backendOverride?: string): Inva
         violations.push({
           rule: "consent-binding-newsletter",
           message: `newsletter-kit-published.json não parseável: ${(e as Error).message}`,
-          source_issue: "#1575",
-          severity: "error",
-          file: publishedPath,
-        });
-      }
-    } else {
-      try {
-        const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as {
-          status?: string;
-          draft_url?: string;
-          post_id?: string;
-        };
-        if (pub.status === "pending_manual" || (!pub.draft_url && !pub.post_id)) {
-          violations.push({
-            rule: "consent-binding-newsletter",
-            message:
-              `consent.newsletter="auto" mas 05-published.json tem status="${pub.status ?? "?"}" ` +
-              `sem draft_url/post_id — dispatch automático não aconteceu.`,
-            source_issue: "#1575",
-            severity: "error",
-            file: publishedPath,
-          });
-        }
-      } catch (e) {
-        violations.push({
-          rule: "consent-binding-newsletter",
-          message: `05-published.json não parseável: ${(e as Error).message}`,
           source_issue: "#1575",
           severity: "error",
           file: publishedPath,
@@ -1110,134 +1016,6 @@ function checkStageUsageCaptured(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * #6582 — GATE-BLOCKING: quando o canal Kit paralelo (`kit_diaria`) está
- * `enabled: true`, ele deixou de ser um canal ADITIVO (que também recebia
- * pela Beehiiv) — desde a migração das ondas 0/1 (#6504) ele é o ÚNICO canal
- * alcançável para quem está na tag (ver `platform.config.json` →
- * `kit_diaria.audience_tag_note`). O playbook antigo tratava
- * `"skipped"`/`"failed"` do dispatch (`kit-diaria-stage5-dispatch.ts`) como
- * WARNING não-bloqueante, mesma severidade de sempre — correto enquanto o
- * canal era aditivo, silenciosamente errado depois da migração: a edição
- * seguia pro gate 6, o editor aprovava sem nenhum sinal, e as 92 pessoas da
- * tag não recebiam nada.
- *
- * Esta regra fecha essa lacuna mecanicamente: com o canal ligado, exige que
- * `_internal/kit-diaria-published.json` exista E tenha `broadcast_id`
- * numérico (o dispatch resultou em `status: "ok"`/`"already_done"`) antes do
- * Stage 6 (gate de agendamento) ser aceito como íntegro. `postDispatchOnly`
- * porque o arquivo só existe DEPOIS que o dispatch da Etapa 5 rodou — checar
- * em `--phase pre-dispatch` daria erro sempre, mesmo padrão de
- * `step-5-sentinel-exists`/`social-published-complete` acima.
- *
- * Canal desligado (`enabled` ausente/`false`, o default) ⇒ [] — nada a
- * checar, o canal nunca deveria ter despachado nada.
- *
- * `configOverride` opcional, só pra teste (mesmo padrão de
- * `checkScheduledAt(editionDir, backendOverride)` em `invariant-checks/stage-6.ts`)
- * — sem isso o teste dependeria do `platform.config.json` REAL do repo, que
- * pode mudar de estado (`kit_diaria.enabled`) independente desta suíte.
- *
- * #6692 (achado do review consolidado sobre #6582): esta regra decidia
- * sozinha "o canal Kit deveria ter despachado?" olhando só
- * `kit_diaria.enabled === true`, ignorando a precedência real de
- * `decideKitChannelDispatch` (`kit-diaria-channel.ts`) — que tem uma checagem
- * ANTERIOR: `publishing.newsletter.backend === "kit"` sempre vira `skip`
- * (motivo: o switchover #6114 já cobre a audiência inteira; rodar o canal
- * paralelo junto entregaria a edição em dobro). Uma config com
- * `backend: "kit"` E `kit_diaria.enabled: true` simultâneos fazia esta regra
- * exigir um `kit-diaria-published.json` que o dispatch real nunca escreveria
- * (ele decide `skip` antes de tentar) — travando o Gate 6 num loop sem saída.
- * Corrigido reusando `decideKitChannelDispatch` em vez de reimplementar a
- * regra parcialmente.
- */
-function checkKitDiariaExclusiveAudienceDispatched(
-  editionDir: string,
-  configOverride?: {
-    kit_diaria?: { enabled?: boolean; audience_tag?: string };
-    publishing?: { newsletter?: { backend?: string } };
-  },
-): InvariantViolation[] {
-  let kitDiariaEnabled = false;
-  let audienceTag = "?";
-  let newsletterBackend: string | undefined;
-  try {
-    const cfg =
-      configOverride ??
-      (existsSync(resolve(ROOT, "platform.config.json"))
-        ? (JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as {
-            kit_diaria?: { enabled?: boolean; audience_tag?: string };
-            publishing?: { newsletter?: { backend?: string } };
-          })
-        : {});
-    kitDiariaEnabled = cfg.kit_diaria?.enabled === true;
-    audienceTag = cfg.kit_diaria?.audience_tag ?? "kit-nativo";
-    newsletterBackend = cfg.publishing?.newsletter?.backend;
-  } catch {
-    // platform.config.json malformado: outras regras (ex: consent-binding)
-    // já cobrem isso via seus próprios helpers. Aqui, fail-soft — não é o
-    // papel desta regra denunciar config quebrada, e denunciar "canal
-    // desligado" por engano seria pior que silenciar (falso-positivo
-    // bloqueando gate 6 por um problema não-relacionado).
-    return [];
-  }
-  if (!kitDiariaEnabled) return [];
-  // #6692: `backend: "kit"` vence sobre `kit_diaria.enabled` — mesma
-  // precedência de `decideKitChannelDispatch`. Se o dispatch real decidiria
-  // `skip` por este motivo, esta regra não deve exigir um estado que o
-  // dispatch nunca produziria.
-  if (newsletterBackend === "kit") return [];
-
-  const statePath = resolve(editionDir, "_internal", "kit-diaria-published.json");
-  if (!existsSync(statePath)) {
-    return [
-      {
-        rule: "kit-diaria-exclusive-audience-dispatched",
-        message:
-          `kit_diaria.enabled=true mas _internal/kit-diaria-published.json ausente — o canal Kit ` +
-          `(audiência possivelmente EXCLUSIVA: quem está na tag "${audienceTag}" pode não estar ` +
-          `ativo na Beehiiv — ver platform.config.json → kit_diaria.audience_tag_note) não foi ` +
-          `despachado. "skipped"/ausente deixou de ser normal desde a migração das ondas 0/1 ` +
-          `(#6504/#6582). Rodar \`npx tsx scripts/kit-diaria-stage5-dispatch.ts {EDITION_DIR}/\` ` +
-          `antes de aceitar o Stage 6.`,
-        source_issue: "#6582",
-        severity: "error",
-        file: statePath,
-      },
-    ];
-  }
-  let data: { broadcast_id?: unknown };
-  try {
-    data = JSON.parse(readFileSync(statePath, "utf8"));
-  } catch (e) {
-    return [
-      {
-        rule: "kit-diaria-exclusive-audience-dispatched",
-        message: `kit-diaria-published.json não parseável: ${(e as Error).message}`,
-        source_issue: "#6582",
-        severity: "error",
-        file: statePath,
-      },
-    ];
-  }
-  if (typeof data.broadcast_id !== "number") {
-    return [
-      {
-        rule: "kit-diaria-exclusive-audience-dispatched",
-        message:
-          `kit-diaria-published.json sem broadcast_id numérico — o dispatch do canal Kit não ` +
-          `completou (tag "${audienceTag}" possivelmente sem membros, ou o dispatch falhou). A ` +
-          `audiência exclusiva deste canal ficaria sem a edição. Ver #6582 — não é mais um estado ` +
-          `normal para "skipped".`,
-        source_issue: "#6582",
-        severity: "error",
-        file: statePath,
-      },
-    ];
-  }
-  return [];
-}
-
-/**
  * #10659: o §5b-youtube rodou? Na 261026 o passo (então dois comandos e um
  * `log-event` em prosa) não rodou e nada acusou. Desde então ele é um comando
  * só (`scripts/stage5-youtube.ts`), que SEMPRE grava `05-youtube-step.json` —
@@ -1455,17 +1233,6 @@ export const STAGE_5_RULES: InvariantRule[] = [
     postDispatchOnly: true,
     run: checkStageUsageCaptured,
   },
-  {
-    id: "kit-diaria-exclusive-audience-dispatched",
-    description:
-      "canal Kit paralelo (kit_diaria.enabled=true) precisa ter despachado com broadcast_id — audiência pode ser EXCLUSIVA (#6582/#6504)",
-    source_issue: "#6582",
-    stage: 5,
-    // O estado só existe DEPOIS que o dispatch da Etapa 5 rodou — mesmo
-    // motivo de step-5-sentinel-exists/social-published-complete acima.
-    postDispatchOnly: true,
-    run: checkKitDiariaExclusiveAudienceDispatched,
-  },
 ];
 
 export {
@@ -1490,5 +1257,4 @@ export {
   checkTwitterCredsSet,
   checkStageUsageCaptured,
   checkPendingResearchUnresolved,
-  checkKitDiariaExclusiveAudienceDispatched,
 };

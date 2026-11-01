@@ -62,7 +62,7 @@ describe("#10465: --verify-ui-test-draft ligado nos playbooks dos Stages 5 e 6",
 
   it("§5f: exit 5 (ui_test_not_marked) relê o broadcast antes de gravar inconclusive", () => {
     const line = stage5.split("\n").find((l) => l.includes("Pré-buscar o e-mail de teste no top-level (#9000)")) ?? "";
-    const exit5 = line.indexOf("exit 5 (só Kit");
+    const exit5 = line.indexOf("exit 5 (#10395");
     const verify = line.indexOf("--verify-ui-test-draft", exit5);
     const inconclusive = line.indexOf("`reason: \"ui_test_not_marked\"`", exit5);
     assert.ok(exit5 >= 0 && verify > exit5 && inconclusive > verify);

@@ -266,15 +266,6 @@ describe("#10769 plano do publish-shorts", () => {
     assert.throws(() => planShortsPublish({ ...base, now: new Date(), only: ["facebook:vjpxel"] }), /desconhecido: facebook:vjpxel/);
   });
 
-  it("sem --edition-url, backend beehiiv: link sem uso no texto é só premissa (#11633)", () => {
-    // Desde #11617 o texto do vertical não leva o link da edição.
-    const config = { publishing: { ...base.config.publishing, newsletter: { backend: "beehiiv" } } };
-    const plan = planShortsPublish({ ...base, config, now: new Date("2026-10-22T12:00:00Z"), editionUrl: undefined });
-    assert.equal(plan.editionUrl, EDITION_URL);
-    assert.ok(!plan.warnings.some((w) => w.includes("derivado do slug")));
-    assert.ok(plan.premises.some((m) => m.includes("não usado no texto do vertical")));
-  });
-
   it("#10790: motivo de Instagram não pronto vira o aviso do plano", () => {
     const plan = planShortsPublish({ ...base, now: new Date("2026-10-22T12:00:00Z"), instagramReady: false, instagramNotReadyReason: "nenhuma conta do Instagram vinculada à página vjpixel" });
     assert.ok(plan.warnings.some((w) => w === "instagram: nenhuma conta do Instagram vinculada à página vjpixel"));

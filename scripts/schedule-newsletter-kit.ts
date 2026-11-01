@@ -38,7 +38,6 @@
  *       correto NESTA chamada, ou já confirmado em invocação anterior —
  *       idempotente, ver `alreadyScheduled` no resultado)
  *   1 — uso/erro genérico (args ausentes/inválidos)
- *   2 — `publishing.newsletter.backend` != "kit" (guard contra invocação fora do switchover)
  *   3 — `_internal/newsletter-kit-published.json` ausente ou sem broadcast_id
  *       (nada a agendar — Etapa 5 não rodou o publisher Kit ainda)
  *   4 — PATCH falhou (erro de API)
@@ -65,7 +64,7 @@ import { updateBroadcast, listSegments, type KitSubscriberFilter } from "./lib/k
 import { hasBrevoDiariaCampaign, resolveDiariaAudience, verifyDiariaAudienceFilter, type DiariaExclusionSegmentConfig } from "./lib/kit-diaria-audience.ts"; // #10437
 import { readKitSemAberturaInBrevoCount } from "./lib/kit-sem-abertura.ts"; // #10437
 import { getBroadcast } from "./lib/kit-client.ts";
-import { readPublishedState, writePublishedState, checkKitBackendEnabled, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
+import { readPublishedState, writePublishedState, type KitNewsletterPublished } from "./publish-newsletter-kit.ts";
 import { editionAammddFromDir, checkScheduledAtMatchesEditionDate, checkScheduledAtNotPast, FINAL_GUARD_MIN_LEAD_MS } from "./lib/edition-scheduled-at.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { runSemanalFrioAfterSchedule, summarizeSemanalFrioForSchedule } from "./publish-kit-semanal-frio.ts"; // #11221
@@ -316,12 +315,6 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
 
   const platformConfig = JSON.parse(readFileSync(resolve(rootDir, "platform.config.json"), "utf8")) as PlatformConfig;
-  const backendCheck = checkKitBackendEnabled(platformConfig);
-  if (!backendCheck.ok) {
-    process.stderr.write(`[schedule-newsletter-kit] ERRO: ${backendCheck.reason}\n`);
-    process.exitCode = 2;
-    return;
-  }
 
   const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: rootDir }); // #9427 (antes: cwd)
   if (!resolvedArg.ok) {

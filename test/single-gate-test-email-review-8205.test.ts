@@ -41,7 +41,7 @@ describe("#8205 — parada única: orchestrator-stage-6.md tem exatamente 1 gate
 
   it("nenhuma outra seção do arquivo contém a string \"Aguardar resposta do editor\" fora de §6c", () => {
     const sixCIdx = stage6.indexOf("### 6c.");
-    const sixDIdx = stage6.indexOf("### 6d.");
+    const sixDIdx = stage6.indexOf("### 6d-kit.");
     assert.ok(sixCIdx !== -1 && sixDIdx !== -1);
     const before = stage6.slice(0, sixCIdx);
     const after = stage6.slice(sixDIdx);
@@ -51,7 +51,7 @@ describe("#8205 — parada única: orchestrator-stage-6.md tem exatamente 1 gate
 
   it("§6b2 (pedidos editoriais) nunca pede confirmação — aceita e loga direto, em qualquer modo", () => {
     const idx = stage6.indexOf("### 6b2.");
-    const idxNext = stage6.indexOf("### 6b-slug.");
+    const idxNext = stage6.indexOf("### 6b-site.");
     assert.ok(idx !== -1 && idxNext !== -1);
     const section = stage6.slice(idx, idxNext);
     assert.ok(!/Se modo interativo/.test(section), "§6b2 não deve mais bifurcar por modo interativo");
@@ -69,7 +69,7 @@ describe("#8205 — parada única: orchestrator-stage-6.md tem exatamente 1 gate
 
   it("o gate único (§6c) menciona explicitamente a revisão do e-mail de teste, não só o Schedule", () => {
     const idx = stage6.indexOf("### 6c.");
-    const idxNext = stage6.indexOf("### 6d.");
+    const idxNext = stage6.indexOf("### 6d-kit.");
     const section = stage6.slice(idx, idxNext);
     assert.match(section, /REVISE O E-MAIL DE TESTE|Confira o e-mail de teste/i);
   });

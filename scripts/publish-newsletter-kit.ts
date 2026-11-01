@@ -2,17 +2,10 @@
 /**
  * scripts/publish-newsletter-kit.ts (#464 — reescrever publish-newsletter para Kit API, #461)
  *
- * Publisher da newsletter diária via Kit REST API — pensado pra eventualmente
- * substituir, atrás da flag `platform.publishing.newsletter.backend`
- * (`platform.config.json`, default `"beehiiv"`), o playbook Chrome-automation
- * de `context/publishers/beehiiv-playbook.md`. A flag é lida em dois
- * lugares: por `checkKitBackendEnabled` AQUI DENTRO (guard contra invocação
- * acidental fora do backend Kit) e pelo §5c-1-kit do Stage 5
- * (`.claude/agents/orchestrator-stage-5.md`), que dispatcha este script com
- * `--draft-only-for-ui-test` + `--mark-ui-test-sent` (caminho preferido,
- * #10395) ou `--send-test` (fallback) quando `backend === "kit"`. (O texto
- * original do #6080 dizia que o orchestrator não lia a flag — era verdade
- * na época, deixou de ser quando o backend Kit virou o default, #7388.)
+ * Publisher da newsletter diária via Kit REST API, único caminho de envio desde
+ * o #11225. O §5c-1-kit do Stage 5 (`.claude/agents/orchestrator-stage-5.md`)
+ * dispatcha este script com `--draft-only-for-ui-test` + `--mark-ui-test-sent`
+ * (caminho preferido, #10395) ou `--send-test` (fallback).
  *
  * ## Por que isto é possível (achado do #6047/#464)
  *
@@ -227,7 +220,6 @@ import { getBroadcast } from "./lib/kit-client.ts";
 import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #9427
 import { computeKitDraftSourceHashes, kitContentHash, type SourceHashes } from "./lib/kit-draft-freshness.ts"; // #9428
 import { KIT_TEST_SUBJECT_PREFIX } from "./lib/shared/kit-test-broadcast.ts"; // #10395
-import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -656,21 +648,6 @@ export interface PlatformConfig {
   kit?: KitAffiliateConfig & { diaria_exclusion_segment?: DiariaExclusionSegmentConfig };
 }
 
-export type BackendCheck = { ok: true } | { ok: false; reason: string };
-
-/** Pura — recusa rodar se a flag não estiver em "kit" (achado #464: script
- *  standalone pode ser invocado por engano fora do switchover). */
-export function checkKitBackendEnabled(platformConfig: PlatformConfig): BackendCheck {
-  const backend = parseNewsletterBackend(platformConfig.publishing?.newsletter?.backend); // default "kit" (#11225)
-  if (backend !== "kit") {
-    return {
-      ok: false,
-      reason: `platform.config.json → publishing.newsletter.backend = "${backend}", não "kit" — este script só roda com o backend Kit selecionado.`,
-    };
-  }
-  return { ok: true };
-}
-
 // ── PATCH do draft existente (rede, defesa em profundidade #8208) ───────
 
 /**
@@ -953,12 +930,6 @@ export async function main(rootDirOverride?: string): Promise<void> {
   }
 
   const platformConfig = loadPlatformConfig(rootDir);
-  const backendCheck = checkKitBackendEnabled(platformConfig);
-  if (!backendCheck.ok) {
-    log(`ERRO: ${backendCheck.reason}`);
-    process.exitCode = 2;
-    return;
-  }
 
   const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: rootDir }); // #9427
   if (!resolvedArg.ok) {

@@ -80,57 +80,6 @@ describe("checkConsentBinding (#1575)", () => {
     }
   });
 
-  // #6114 (switchover, 26/08/2026): os 3 casos `newsletter: "auto"` abaixo
-  // exercitam o caminho BEEHIIV (05-published.json, draft_url do app.beehiiv).
-  // Eles chamavam `checkConsentBinding(dir)` sem override e herdavam
-  // `platform.config.json` REAL — verdes só enquanto o default do repo fosse
-  // "beehiiv". Virar a chave pro Kit os quebrou sem que nada em
-  // `checkConsentBinding` mudasse: teste acoplado à forma do ambiente (#6222).
-  // Agora injetam o backend, como o caso "kit" deste mesmo arquivo já fazia.
-  it("consent.newsletter=auto + 05-published.json ausente → violation", () => {
-    const dir = makeEditionDir();
-    try {
-      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
-      const violations = checkConsentBinding(dir, "beehiiv");
-      assert.ok(violations.length > 0);
-      const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
-      assert.ok(nl);
-      assert.match(nl!.message, /05-published\.json ausente/);
-    } finally {
-      rmSync(dir, { recursive: true });
-    }
-  });
-
-  it("consent.newsletter=auto + 05-published.json com pending_manual → violation", () => {
-    const dir = makeEditionDir();
-    try {
-      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
-      writePublished(dir, { status: "pending_manual" });
-      const violations = checkConsentBinding(dir, "beehiiv");
-      assert.ok(violations.length > 0);
-      const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
-      assert.ok(nl);
-      assert.match(nl!.message, /pending_manual/);
-    } finally {
-      rmSync(dir, { recursive: true });
-    }
-  });
-
-  it("consent.newsletter=auto + 05-published.json com draft_url → ok", () => {
-    const dir = makeEditionDir();
-    try {
-      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
-      writePublished(dir, {
-        status: "draft",
-        draft_url: "https://app.beehiiv.com/posts/abc/edit",
-      });
-      const violations = checkConsentBinding(dir, "beehiiv");
-      assert.equal(violations.length, 0);
-    } finally {
-      rmSync(dir, { recursive: true });
-    }
-  });
-
   it("consent.newsletter=manual → não exige dispatch (sem violation)", () => {
     const dir = makeEditionDir();
     try {
@@ -147,7 +96,7 @@ describe("checkConsentBinding (#1575)", () => {
     const dir = makeEditionDir();
     try {
       writeConsent(dir, { newsletter: "manual", linkedin: "manual", facebook: "manual" });
-      const violations = checkConsentBinding(dir, "kit");
+      const violations = checkConsentBinding(dir);
       assert.equal(violations.length, 0);
     } finally {
       rmSync(dir, { recursive: true });
@@ -564,7 +513,7 @@ describe("checkConsentBinding — backend Kit (#464)", () => {
     const dir = makeEditionDir();
     try {
       writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
-      const violations = checkConsentBinding(dir, "kit");
+      const violations = checkConsentBinding(dir);
       const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
       assert.ok(nl, "esperava consent-binding-newsletter");
       assert.match(nl!.message, /newsletter-kit-published\.json ausente/);
@@ -579,7 +528,7 @@ describe("checkConsentBinding — backend Kit (#464)", () => {
     try {
       writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
       writeFileSync(resolve(dir, "_internal", "newsletter-kit-published.json"), JSON.stringify({ status: "draft" }));
-      const violations = checkConsentBinding(dir, "kit");
+      const violations = checkConsentBinding(dir);
       const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
       assert.ok(nl, "esperava consent-binding-newsletter");
       assert.match(nl!.message, /broadcast_id/);
@@ -596,7 +545,7 @@ describe("checkConsentBinding — backend Kit (#464)", () => {
         resolve(dir, "_internal", "newsletter-kit-published.json"),
         JSON.stringify({ broadcast_id: 555, status: "draft" }),
       );
-      const violations = checkConsentBinding(dir, "kit");
+      const violations = checkConsentBinding(dir);
       assert.equal(violations.filter((v) => v.rule === "consent-binding-newsletter").length, 0);
     } finally {
       rmSync(dir, { recursive: true });
@@ -611,7 +560,7 @@ describe("checkConsentBinding — backend Kit (#464)", () => {
       // de dispatch Kit (ex: resíduo de uma rodada anterior com o backend
       // antigo, ou config alternada no meio de um resume).
       writePublished(dir, { status: "draft", draft_url: "https://app.beehiiv.com/posts/abc/edit" });
-      const violations = checkConsentBinding(dir, "kit");
+      const violations = checkConsentBinding(dir);
       const nl = violations.find((v) => v.rule === "consent-binding-newsletter");
       assert.ok(nl, "05-published.json presente não deve satisfazer o backend kit");
     } finally {
@@ -619,15 +568,4 @@ describe("checkConsentBinding — backend Kit (#464)", () => {
     }
   });
 
-  it("consent.newsletter=auto + backend beehiiv explícito (via override) → mesmo comportamento do default sem override", () => {
-    const dir = makeEditionDir();
-    try {
-      writeConsent(dir, { newsletter: "auto", linkedin: "manual", facebook: "manual" });
-      writePublished(dir, { status: "draft", draft_url: "https://app.beehiiv.com/posts/abc/edit" });
-      const violations = checkConsentBinding(dir, "beehiiv");
-      assert.equal(violations.filter((v) => v.rule === "consent-binding-newsletter").length, 0);
-    } finally {
-      rmSync(dir, { recursive: true });
-    }
-  });
 });

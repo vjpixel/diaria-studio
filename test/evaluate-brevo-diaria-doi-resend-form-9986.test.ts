@@ -96,7 +96,6 @@ async function run(
     brevoApiKey: "brkey",
     listId: 7,
     log: opts.log ?? (() => {}),
-    newsletterBackend: "kit",
     kitApiKey: "kkey",
     kitDoiFormId: PRIMARY,
     kitDoiResendFormId: "resendForm" in opts ? opts.resendForm : RESEND,

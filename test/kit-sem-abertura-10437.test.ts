@@ -432,7 +432,6 @@ describe("runEvaluation com origem kit-sem-abertura: (#10437)", () => {
         kitApiKey: "k",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
       });
       assert.equal(r.selfConfirmed, 0);
       assert.equal(r.failed, 0);
@@ -472,7 +471,6 @@ describe("runEvaluation com origem kit-sem-abertura: (#10437)", () => {
         kitApiKey: "k",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
       });
       const stored = findContact(r.store, "m@x.com")!;
       assert.equal(stored.status, "promoted_beehiiv");
@@ -1114,7 +1112,6 @@ function evalParams(contacts: BrevoDiariaContact[], extra: Partial<Parameters<ty
     kitApiKey: "k",
     listId: 7,
     log: () => {},
-    newsletterBackend: "kit",
     ...extra,
   };
 }

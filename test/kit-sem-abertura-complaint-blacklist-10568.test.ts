@@ -91,7 +91,6 @@ async function evaluate(statistics: Record<string, unknown>) {
       kitApiKey: "k",
       listId: 7,
       log: () => {},
-      newsletterBackend: "kit",
       appendKitSemAberturaLog: () => {},
       unsubscribeKitSemAberturaDeps: {
         unsubscribe: async (id: number) => {

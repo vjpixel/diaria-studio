@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 129 invariants.
+**Total**: 127 invariants.
 
 ## Static (estrutura do repo)
 
@@ -143,7 +143,6 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `facebook-page-id-set` | Page ID de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ID na diaria, #10458) | #facebook |
 | `facebook-token-set` | Token de cada página Facebook habilitada presente no env (FACEBOOK_PAGE_ACCESS_TOKEN na diaria, #10458) | #facebook |
 | `instagram-creds-set` | INSTAGRAM_BUSINESS_ACCOUNT_ID + INSTAGRAM_ACCESS_TOKEN presentes — ausente pula Instagram (#49) | #49 |
-| `kit-diaria-exclusive-audience-dispatched` | canal Kit paralelo (kit_diaria.enabled=true) precisa ter despachado com broadcast_id — audiência pode ser EXCLUSIVA (#6582/#6504) | #6582 |
 | `linkedin-worker-token-set` | DIARIA_LINKEDIN_CRON_TOKEN env var presente (#971) | #971 |
 | `linkedin-worker-url-https` | DIARIA_LINKEDIN_CRON_URL deve ser HTTPS quando presente (#971) | #971 |
 | `linkedin-worker-url-set` | DIARIA_LINKEDIN_CRON_URL env var presente — ausente degrada pra Make webhook (#971) | #971 |
@@ -173,7 +172,6 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `step-5-sentinel-exists` | _internal/.step-5-done.json escrito pelo Stage 5 (#1694) | #1694 |
 | `step-6-sentinel-exists` | _internal/.step-6-done.json escrito pelo pipeline-sentinel (#1694) | #1694 |
 | `sync-code-ran` | marker de sync-code.ts presente e em dia — /diaria-6-agendamento standalone (retomada, #7983) nunca passa pelo Passo -3 de /diaria-5-publicacao quando o editor não a encadeou; sem isso §6b-site pode rodar com código defasado e reproduzir o exit 3 do #8786/#8684 mesmo já tendo o fix de #8636 em origin/master. | #8786 |
-| `whatsapp-slug-guard-ok` | _internal/whatsapp-slug-check.json presente com ok:true (#4570, backstop #4574) | #4574 |
 
 ---
 

@@ -115,7 +115,6 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         kitApiKey: "kkey",
       });
 
@@ -155,7 +154,6 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         kitApiKey: "kkey",
       });
 
@@ -196,7 +194,6 @@ describe("runEvaluation — promoção pro Kit checa o estado ANTES do POST (#87
         brevoApiKey: "brkey",
         listId: 7,
         log: () => {},
-        newsletterBackend: "kit",
         kitApiKey: "kkey",
       });
 

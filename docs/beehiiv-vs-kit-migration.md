@@ -213,9 +213,8 @@ o canal paralelo Kit diária do #6114, com o Passo 5c-1 do Stage 5 e com o
 seam `newsletterBackend` de `evaluate-brevo-diaria.ts`).
 
 Fora das fatias já feitas: plano/assinatura da conta (item 6, ação do
-editor depois de um export completo) e a remoção do ramo legado e dos
-`sync-apoio-*-beehiiv.ts` (acima). Alarmes que tratam "Beehiiv sem post
-novo" como falha (item 5) não foram revisados aqui.
+editor depois de um export completo) e `sync-apoio-*-beehiiv.ts`. O ramo
+`publishing.newsletter.backend` e o canal Kit diária saíram no #11225.
 
 ### Refs
 

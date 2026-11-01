@@ -316,30 +316,12 @@ import { acquireMergeLock, releaseMergeLock } from "./lib/session-registry.ts";
 // deste próprio publish, ANTES do commit único (ver `backfillAndReindexArchive`).
 import { runBackfill } from "./backfill-archive-page-links-seo.ts";
 import { main as genArchiveIndexMain } from "./gen-archive-index.ts";
-import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SITE_PAGES_DIR = resolve(ROOT, "workers", "site", "public", "p");
 
 /** Sinaliza "artefato PRESENTE mas com conteúdo inválido" — vira `code: 4`. */
 export class EditionInputsInvalid extends Error {}
-
-/**
- * Lê `publishing.newsletter.backend` de `platform.config.json` (default
- * `"kit"` desde o #11225 — mesmo default de `publish-newsletter-kit.ts`).
- * Fail-soft: config ausente/ilegível nunca lança, cai no default — este
- * helper só é chamado dentro de um caminho que já é `code: 2` benigno por
- * padrão, então uma falha de leitura aqui não deve regredir isso pra pior.
- */
-function readNewsletterBackend(rootDir: string): string {
-  try {
-    const raw = readFileSync(join(rootDir, "platform.config.json"), "utf8");
-    const cfg = JSON.parse(raw) as { publishing?: { newsletter?: { backend?: string } } };
-    return parseNewsletterBackend(cfg.publishing?.newsletter?.backend);
-  } catch {
-    return "kit";
-  }
-}
 
 /**
  * #7437: deriva um `publishedAtIso` pro caminho `--slug` (usado pelo backend
@@ -495,16 +477,10 @@ export type PublishPageResult =
  * Retorna `null` só quando os ARQUIVOS estão ausentes (`code: 2`, benigno).
  * Lança `EditionInputsInvalid` quando os arquivos existem mas o conteúdo é
  * inválido/inesperado (`code: 4` — ex: sem `post_url` e sem `slugOverride`).
- *
- * @param rootDirForBackend Raiz onde ler `platform.config.json` pra detectar
- *   `publishing.newsletter.backend` (ver P2-F abaixo). Default `ROOT` (raiz
- *   real do projeto); parâmetro só existe pra permitir teste isolado sem
- *   depender/mutar o `platform.config.json` real do repo.
  */
 export function readEditionInputs(
   editionDir: string,
   slugOverride?: string,
-  rootDirForBackend: string = ROOT,
 ): EditionPageInputs | null {
   const htmlPath = join(editionDir, "_internal", "newsletter-final.html");
   const publishedPath = join(editionDir, "_internal", "05-published.json");
@@ -556,14 +532,11 @@ export function readEditionInputs(
     // sempre no `code: 2` benigno ("nada a publicar ainda"), indistinguível
     // do caso normal "edição ainda não chegou no Stage 4/6" — a mesma doença
     // do P0 original, só que no outro backend.
-    if (readNewsletterBackend(rootDirForBackend) === "kit") {
-      throw new EditionInputsInvalid(
-        "backend Kit selecionado (publishing.newsletter.backend) — newsletter-final.html existe, mas " +
-          "05-published.json (única fonte de slug do caminho Beehiiv) nunca é escrito por edições Kit, " +
-          "e nenhum --slug foi passado. Passe --slug explicitamente (ver §6b-site em orchestrator-stage-6.md).",
-      );
-    }
-    return null;
+    throw new EditionInputsInvalid(
+      "newsletter-final.html existe, mas 05-published.json (slug só de edições antigas da Beehiiv) nunca " +
+        "é escrito por edições Kit, e nenhum --slug foi passado. Passe --slug explicitamente " +
+        "(ver §6b-site em orchestrator-stage-6.md).",
+    );
   }
 
   const published = JSON.parse(readFileSync(publishedPath, "utf8")) as {

@@ -94,7 +94,7 @@
  *
  * `unsubscribeInBeehiiv` (PUT) + `verifyUnsubscribedInBeehiiv` (releitura,
  * exige `status==="inactive"` explícito) seguem a MESMA disciplina de
- * escrita+releitura de `applyApoioTagEntry`/`verifyPromotedToBeehiiv` — a API
+ * escrita+releitura de `applyApoioTagEntry` — a API
  * já provou (endpoint de `tags`) que aceita PUT com 2xx e ignora o campo em
  * silêncio. A combinação exata "`unsubscribe:true` contra um registro
  * Pending" nunca foi testada ao vivo antes desta unidade — a 1ª execução real
@@ -159,7 +159,7 @@
  * duas bases"); esta rotina fecha o gap na primeira oportunidade (próxima
  * avaliação), não deixando o duplo envio se perpetuar indefinidamente.
  *
- * Com `newsletterBackend === "kit"` (#11225), a auto-confirmação de origem
+ * Desde o #11225, a auto-confirmação de origem
  * Beehiiv escreve no Kit antes de sair da fila Brevo
  * (`promoteSelfConfirmedBeehiivToKit`): cria quem não existe, não toca quem
  * já está `active`, e deixa quem está não-active no Kit (#8728) seguir pra
@@ -220,34 +220,18 @@
  * intervalo exato, ambas poderiam disparar DELETE+CREATE concorrentemente.
  * Ambas as implementações já são auto-suficientes (buscam o id atual via
  * GET antes de decidir o que deletar, nunca confiam num id armazenado — ver
- * `promoteBeehiivSubscription`/`activateSubscription`), então o pior caso é
+ * `activateSubscription`), então o pior caso é
  * uma criação duplicada/redundante nessa janela estreita, não um crash — mas
  * não é literalmente "nunca colide". Risco aceito dado o volume baixo e a
  * janela curta; não verificado ao vivo.
  *
- * ## Promoção pra Beehiiv — DELETE + CREATE, confirmado ao vivo (260802)
+ * ## Promoção vai pro Kit
  *
- * `promoteBeehiivSubscription` busca o id atual via `GET by_email`, deleta
- * a subscription Pending travada que encontrar (nunca confia num id
- * armazenado — #4488 review) e cria uma NOVA do zero — não mais
- * `POST {reactivate_existing:true}`. Teste ao vivo (260802, sessão de
- * design com o editor, autorizado explicitamente) contra um contato Pending
- * REAL (não sintético, ao contrário do teste anterior — ver histórico da
- * issue #4476): `reactivate_existing:true` **não mudou o status** (ficou
- * `pending`); deletar o registro e criar do zero **ativou direto**
- * (`validating` → `active` em segundos, sem exigir confirmação). Isso fecha
- * a lacuna que o teste anterior (2 contatos sintéticos, caíram em
- * `status:"invalid"` por domínio disposable) tinha deixado inconclusiva — a
- * hipótese central agora está confirmada, e é essa a mecânica correta.
- *
- * Se a verificação pós-escrita (`verifyPromotedToBeehiiv`, releitura de
- * `by_email`, exige `status==="active"` explícito) mostrar que não
- * confirmou, o script LOGA um warning e NÃO remove o contato da Brevo
- * (mantém `in_brevo`) — fail-safe: mais vale continuar entregando pelo canal
- * que funciona do que assumir sucesso e cortar a única entrega confirmada.
- *
- * **Vale pras duas vias (score E clique, #4476 item 2)** — o Worker
- * `workers/reativar/` (via clique) usa a mesma mecânica DELETE+CREATE.
+ * Score escreve direto no Kit (`promoteKitSubscription`), com releitura
+ * (`verifyPromotedToKit`). Sem `active` confirmado, o script LOGA um warning e
+ * NÃO remove o contato da Brevo (mantém `in_brevo`) — fail-safe: mais vale
+ * continuar entregando pelo canal que funciona. A mecânica antiga na Beehiiv
+ * (DELETE + CREATE, #4476) saiu no #11225 e está no histórico do git.
  *
  * ## Falha por contato não aborta o run (#4398 review — silent-failure-hunter
  * + code-reviewer + pr-test-analyzer convergiram independentemente)
@@ -434,7 +418,6 @@ import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #6699 �
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER, KIT_BEEHIIV_SYNC_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B, #11225
 import { buildAttributionFields, type BeehiivSubscriberRecord } from "./lib/kit-attribution.ts"; // #8060, #11225
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirmou-via.ts"; // #8438
-import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
 import { createOrUpdateSubscriber, getSubscriberById, getKitSubscriberByEmail, unsubscribeKitSubscriber } from "./lib/kit-subscribers.ts"; // #6339, #6340 item 4, #7382, #10437
 import { KitApiError } from "./lib/kit-client.ts"; // #9291
@@ -444,7 +427,6 @@ import { findTagIdByName, untagSubscriber, listSubscriberTags, tagSubscriber, ty
 import { KIT_ENVIO_BREVO_TAG_NAME } from "./lib/kit-diaria-audience.ts"; // #10437
 import { formatKitSemAberturaLogLine, DEFAULT_KIT_SEM_ABERTURA_LOG_PATH } from "./lib/kit-sem-abertura.ts"; // #10437
 import { appendFileWithRetry } from "./lib/source-runs.ts"; // #10437
-import { parseNewsletterBackend } from "./lib/newsletter-backend.ts"; // #11225
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #11420
 import { readBrevoDiariaPublished } from "./publish-daily-brevo.ts"; // #11420
 
@@ -460,9 +442,6 @@ interface PlatformConfig {
    *  #9986 — `kit.doiResendFormId`: 2º designer form de DOI, usado só pra
    *  quem já respondeu 200 no `doiFormId` (ver `doiResendTargetForm`). */
   kit?: { doiFormId?: string; doiResendFormId?: string; activateFormId?: string; frio?: unknown; diaria_exclusion_segment?: unknown };
-  /** #6339 — `publishing.newsletter.backend` decide se a promoção por score
-   *  escreve na Beehiiv ou no Kit (ver `promoteKitSubscription`). */
-  publishing?: { newsletter?: { backend?: string } };
 }
 
 // ── contadores a partir da estatística de contato da Brevo (puro) ─────────
@@ -922,15 +901,13 @@ export async function unsubscribeInBeehiiv(
  * explicitamente, nunca só o 2xx do PUT (mesma armadilha do endpoint de
  * `tags` da Beehiiv, que aceita o PUT e ignora o campo em silêncio — ver
  * `sync-apoio-nivel-beehiiv.ts`). Reusa `fetchBeehiivSubscriptionStatus`
- * (mesmo helper de `verifyPromotedToBeehiiv`/passo 1).
+ * (mesmo helper do passo 1).
  *
  * Retry curto (#4545 review — silent-failure-hunter): se a releitura
  * imediata não mostrar `"inactive"`, espera `PROMOTION_VERIFY_RETRY_DELAY_MS`
- * e releê mais uma vez antes de declarar não-confirmado — mesmo racional de
- * `verifyPromotedToBeehiiv` (eventual consistency da Beehiiv, já documentada
- * no cabeçalho do módulo). Diferente de `verifyPromotedToBeehiiv`, que só
- * retenta quando o status intermediário vem nomeado como `"validating"`,
- * aqui o retry é INCONDICIONAL — esta combinação exata (`unsubscribe:true`
+ * e releê mais uma vez antes de declarar não-confirmado — mesma eventual consistency da Beehiiv documentada
+ * no cabeçalho do módulo. Aqui o retry é INCONDICIONAL — esta combinação exata
+ * (`unsubscribe:true`
  * contra um registro Pending) nunca rodou ao vivo antes desta unidade, então
  * não há confirmação de que produza um status transitório nomeado
  * equivalente; mais seguro assumir que pode haver atraso e sempre dar 1
@@ -950,195 +927,17 @@ export async function verifyUnsubscribedInBeehiiv(
   return recheck === "inactive";
 }
 
-/**
- * Promove pra Beehiiv via DELETE + CREATE — não mais `reactivate_existing`
- * (#4476, achado ao vivo 260802): testado contra um contato Pending REAL
- * (não sintético) — `POST /subscriptions {reactivate_existing:true}` NÃO
- * ativa um registro legado (status ficou `pending`, sem mudança). Deletar o
- * registro travado e criar do zero SIM ativa direto (`validating` → `active`
- * em segundos, sem exigir confirmação) — bate com a mudança de fluxo da
- * publicação (cadastro novo não exige mais double opt-in; só registros
- * legados, criados sob o fluxo antigo, ficam presos).
- *
- * #4488 review (3 agentes convergiram independentemente no mesmo achado):
- * NÃO confia mais num `subscriptionId` armazenado (`contact.beehiiv_subscription_id`,
- * capturado na ingestão) — busca o id ATUAL via `GET .../subscriptions/by_email`
- * antes de decidir o que deletar, mesmo padrão de `activateSubscription`
- * (`workers/reativar/`). Um id armazenado pode ficar obsoleto (ex: uma
- * tentativa anterior de promoção já deletou+recriou o registro mas a
- * verificação pós-escrita falhou antes do store ser atualizado — a próxima
- * tentativa reusaria um id já morto) — e um id vazio/malformado faria a URL
- * do DELETE cair no endpoint de COLEÇÃO (`/subscriptions/` sem id), que pode
- * não 404 e passar batido pela tolerância a "já sumiu". Buscar o id fresco
- * fecha as duas classes de bug de uma vez. Sem registro existente (`null`),
- * pula direto pro CREATE.
- *
- * #5231: o mesmo corpo do GET acima também alimenta
- * `buildOrigemOriginalCustomFields` (`lib/shared/beehiiv-origem-original.ts`)
- * — preserva `utm_source`/`utm_medium`/`utm_campaign`/`referring_site`/
- * `created` originais num custom field do CREATE, em vez de deixá-los serem
- * sobrescritos silenciosamente pela UTM constante de reativação abaixo.
- * Fail-soft: GET sem esses campos (ou corpo malformado) nunca bloqueia a
- * promoção, só resulta em nenhum custom field extra no CREATE.
- */
-export async function promoteBeehiivSubscription(
-  publicationId: string,
-  apiKey: string,
-  email: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<void> {
-  const base = beehiivApiBase();
-  const authHeaders = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
-
-  const getRes = await fetchImpl(`${base}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}`, {
-    headers: authHeaders,
-  });
-  let existingId: string | null = null;
-  // #5231: origem original (utm_source/medium/campaign/referring_site/created)
-  // lida do MESMO corpo do GET — hoje só se extraía `data.id`. `undefined`
-  // (nunca lança) quando o corpo não tem `data` ou nenhum campo de origem
-  // reconhecível — fail-soft, a promoção segue com a UTM constante de sempre.
-  // Gated por `BEEHIIV_ORIGEM_ORIGINAL_FIELD` (ver docstring de
-  // `beehiiv-origem-original.ts`): env var ausente = `undefined` sempre,
-  // mesmo com origem no GET — o editor liga só depois de criar o custom
-  // field na Beehiiv (#5231 item 1).
-  let origemOriginalCustomFields: ReturnType<typeof buildOrigemOriginalCustomFields> = undefined;
-  if (getRes.status === 404) {
-    await getRes.body?.cancel().catch(() => {});
-    existingId = null;
-  } else if (!getRes.ok) {
-    await getRes.body?.cancel().catch(() => {});
-    throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} falhou (HTTP ${getRes.status})`);
-  } else {
-    const body = await getRes.json().catch((e) => {
-      throw new Error(`Beehiiv API GET /subscriptions/by_email/${email} corpo não-parseável: ${e}`);
-    });
-    existingId = (body as { data?: { id?: string } })?.data?.id || null;
-    origemOriginalCustomFields = buildOrigemOriginalCustomFields(
-      body as Parameters<typeof buildOrigemOriginalCustomFields>[0],
-      process.env.BEEHIIV_ORIGEM_ORIGINAL_FIELD,
-    );
-  }
-
-  if (existingId) {
-    const delRes = await fetchImpl(`${base}/publications/${publicationId}/subscriptions/${existingId}`, {
-      method: "DELETE",
-      headers: authHeaders,
-    });
-    if (!delRes.ok && delRes.status !== 404) {
-      const text = await delRes.text().catch(() => "");
-      throw new Error(`Beehiiv API DELETE /subscriptions/${existingId} falhou pra ${email} APÓS localizar o registro (HTTP ${delRes.status}): ${text}`);
-    }
-  }
-
-  const res = await fetchImpl(`${base}/publications/${publicationId}/subscriptions`, {
-    method: "POST",
-    headers: { ...authHeaders, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email,
-      send_welcome_email: false,
-      // #5095: ISENÇÃO OBRIGATÓRIA, mesmo motivo do `workers/reativar` — este
-      // caminho também DELETA e recria o registro. Com double opt-in ligado na
-      // publicação e sem override, a promoção por score rebaixaria o assinante
-      // pra `pending` em vez de promovê-lo, sem volta programática. Agrava:
-      // este script roda DESASSISTIDO todo dia às 05:30 BRT
-      // (`Diaria-Brevo-Diaria-Evaluate`), então a regressão seria silenciosa e
-      // diária.
-      double_opt_override: "off",
-      // #4530: atribuição — sem isto, todo cadastro promovido por score caía
-      // como "api: direct / (none)" na Beehiiv, indistinguível de qualquer
-      // outro cadastro via API.
-      utm_source: BREVO_DIARIA_PROMOCAO_SCORE_UTM.source,
-      utm_medium: BREVO_DIARIA_PROMOCAO_SCORE_UTM.medium,
-      utm_campaign: BREVO_DIARIA_PROMOCAO_SCORE_UTM.campaign,
-      referring_site: BREVO_DIARIA_PROMOCAO_SCORE_UTM.referringSite,
-      // #5231: preserva a origem de aquisição ORIGINAL (lida do GET acima)
-      // num custom field — sem isto, o DELETE+CREATE acima sobrescreve
-      // utm_source/medium/campaign/referring_site com a constante fixa
-      // acima, perdendo pra sempre a origem real do contato. GATED por
-      // `BEEHIIV_ORIGEM_ORIGINAL_FIELD` (off por padrão) — só tem efeito
-      // real (e só é enviado) depois que o editor criar o custom field
-      // `origem_original` na Beehiiv (#5231 item 1) E ligar o env var; até
-      // lá `origemOriginalCustomFields` é sempre `undefined`, comportamento
-      // idêntico a antes desta feature.
-      ...(origemOriginalCustomFields ? { custom_fields: origemOriginalCustomFields } : {}),
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const deleteNote = existingId ? `APÓS deletar ${existingId}` : "sem registro anterior pra deletar";
-    throw new Error(`Beehiiv API POST /subscriptions falhou pra ${email} ${deleteNote} (HTTP ${res.status}): ${text}`);
-  }
-}
-
-/** Espera antes de 1 releitura, só quando o status vier `"validating"` — ver
- * `CONFIRM_RETRY_DELAY_MS` em `workers/reativar/src/index.ts` (mesmo achado
- * ao vivo 260802, duplicado aqui por serem deployables separados: este
- * script Node não importa do Worker Cloudflare). */
+/** Espera antes de 1 releitura de status transitório na Beehiiv — ver
+ * `CONFIRM_RETRY_DELAY_MS` em `workers/reativar/src/index.ts` (duplicado aqui
+ * por serem deployables separados). */
 export const PROMOTION_VERIFY_RETRY_DELAY_MS = 2000;
-
-/**
- * Releitura pós-promoção — `true` só se o status for `active` (direto, ou
- * após 1 retry curto quando vier `validating`, ver abaixo). Fail-safe: se
- * ainda `pending`, `invalid`, ou qualquer outro status não-`active` mesmo
- * após o retry, o caller mantém o contato `in_brevo` em vez de cortar a
- * única entrega confirmada (ver disclaimer no cabeçalho).
- *
- * Duas correções acumuladas aqui, ambas de testes ao vivo (#4476/#4488):
- * (1) a checagem original (`status !== "pending"`) tratava QUALQUER status
- * diferente de "pending" como confirmado — incluindo `"invalid"` (Beehiiv
- * pode aceitar o POST com 2xx mesmo quando a validação de e-mail/domínio
- * rejeita o contato) — corrigido pra exigir `"active"` explícito. (2) o
- * status pode vir `"validating"` (transitório — a Beehiiv processa a
- * validação de e-mail de forma assíncrona e resolve pra `active` em poucos
- * segundos, confirmado ao vivo) — sem o retry abaixo, o contato ficaria
- * preso em `in_brevo` até a PRÓXIMA rodada notar por acidente, mesmo já
- * estando `active` de fato segundos depois.
- */
-
-export async function verifyPromotedToBeehiiv(
-  publicationId: string,
-  apiKey: string,
-  email: string,
-  fetchImpl: typeof fetch = fetch,
-  sleepImpl: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
-): Promise<boolean> {
-  const status = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
-  if (status === "active") return true;
-  // #4476, achado ao vivo 260802: logo após DELETE+CREATE (promoteBeehiivSubscription),
-  // a subscription pode estar "validating" (transitório, a Beehiiv processa a
-  // validação de e-mail de forma assíncrona) — sem este retry, o contato ficaria
-  // preso em in_brevo até a PRÓXIMA rodada de evaluate-brevo-diaria.ts notar por
-  // acidente, mesmo já estando active de fato segundos depois.
-  if (status === "validating") {
-    await sleepImpl(PROMOTION_VERIFY_RETRY_DELAY_MS);
-    const recheck = await fetchBeehiivSubscriptionStatus(publicationId, apiKey, email, fetchImpl);
-    return recheck === "active";
-  }
-  return false;
-}
 
 /**
  * promoteKitSubscription / verifyPromotedToKit (#6339)
  *
- * `promoteBeehiivSubscription`/`verifyPromotedToBeehiiv` acima escrevem e
- * verificam na Beehiiv — mecânica desenhada quando a Beehiiv era o backend
- * de ENVIO da diária. Desde o switchover do #6114
- * (`platform.config.json` → `publishing.newsletter.backend === "kit"`), a
- * Beehiiv não publica mais nada — a promoção só continuava chegando aos
- * assinantes promovidos por uma ponte de sync diária e temporária
- * (`scripts/sync-beehiiv-subscribers-kit.ts`, Beehiiv → Kit, até 24h de
- * atraso, aposentada no #11225), não porque escrever na Beehiiv siga sendo
- * o caminho certo.
- *
- * Estas duas funções são o par que escreve/verifica direto no backend que
- * de fato publica hoje (Kit) — usadas pelo `runEvaluation` quando
- * `newsletterBackend === "kit"` (que é sempre, em produção, desde o
- * #6114). Se o backend voltar a mudar (rollback do #6114, ou uma 3ª
- * plataforma no futuro), quem mexer aqui precisa revisitar qual das duas
- * funções (`*ToBeehiiv`/`*ToKit`) o `newsletterBackend` deve escolher — a
- * ramificação em si (não qual backend é o "certo") é o que sobrevive a
- * trocas futuras.
+ * Par que escreve/verifica direto no backend que publica a diária. O par
+ * equivalente na Beehiiv (`promoteBeehiivSubscription`, DELETE + CREATE) saiu
+ * no #11225: a Beehiiv é só arquivo histórico e o envio é 100% Kit.
  *
  * Mecânica, mais simples que o par Beehiiv: `POST /v4/subscribers` do Kit é
  * idempotente por e-mail e `state: "active"` bypassa qualquer fluxo de
@@ -1653,39 +1452,6 @@ export async function resendKitDoi(params: {
   return { ok: false, reason: logged.join(" | ") || `status ${seen.status ?? "desconhecido"}`, status: seen.status ?? undefined };
 }
 
-/**
- * decidePromoteToBeehiivAction (#7382)
- *
- * Achado ao vivo (03/09/2026): a promoção por score pra Beehiiv escolhia o
- * destino só por `newsletterBackend`, sem NUNCA checar se a pessoa já
- * estava `active` no Kit — 4 casos confirmados de contato recebendo a
- * edição em dobro (Kit + Beehiiv), com janelas de até 14 dias entre a
- * promoção e a limpeza manual. Mesma disciplina de duas metades de
- * `decideBeehiivDeactivateAction` em `kit-ramp-cohort.ts` (tagueia de um
- * lado, decide o outro por resultado REAL, não planejado) — aqui invertida:
- * antes de ESCREVER na Beehiiv, checar se a pessoa já recebe pelo Kit.
- *
- * Pura — recebe o resultado JÁ RESOLVIDO da checagem Kit (nunca faz I/O),
- * mesmo padrão do par citado acima. Só se aplica quando `newsletterBackend
- * !== "kit"` (o caminho que ESCREVE na Beehiiv) — quando o backend é o
- * próprio Kit, a promoção já vai pro Kit, e o par oposto (Beehiiv×Kit
- * timing) é escopo do #6705/#7357, não deste guard.
- *
- * Fail-safe pro lado do NUNCA duplicar: `kitCheckAvailable: false` (sem
- * `KIT_API_KEY`, ou falha transitória de API) decide `skip_kit_check_unavailable`
- * — o caller mantém o contato `in_brevo` pra reavaliar na próxima rodada,
- * em vez de arriscar promover sem saber se já está ativo no Kit. Mesmo
- * espírito de "verificação não confirmada → mantém in_brevo" já usado no
- * restante deste módulo (`verifyPromotedToBeehiiv`/`verifySuppressedInBrevo`).
- */
-export type PromoteToBeehiivAction = "promote" | "skip_active_on_kit" | "skip_kit_check_unavailable";
-
-export function decidePromoteToBeehiivAction(input: { kitCheckAvailable: boolean; kitActive: boolean }): PromoteToBeehiivAction {
-  if (!input.kitCheckAvailable) return "skip_kit_check_unavailable";
-  if (input.kitActive) return "skip_active_on_kit";
-  return "promote";
-}
-
 /** Prefixo sintético de `beehiiv_subscription_id` pra contato ingerido a
  *  partir do cohort `inactive` do Kit — convenção de
  *  `sync-kit-inactive-to-brevo.ts` (#6340 item 3), mesmo padrão de
@@ -1858,15 +1624,15 @@ export function parseKitSubscriberId(beehiivSubscriptionId: string): KitOriginPa
 
 /**
  * Releitura pós-supressão (#4398 review: `suppressInBrevo`/`unlinkFromBrevoList`
- * dependiam só do PUT não lançar, diferente de `ingestContactToBrevo`/
- * `verifyPromotedToBeehiiv`, que sempre releem antes de confiar no sucesso —
+ * dependiam só do PUT não lançar, diferente de `ingestContactToBrevo`,
+ * que sempre relê antes de confiar no sucesso —
  * precedente documentado: a Beehiiv já aceitou um PATCH com 200 ignorando a
  * escrita silenciosamente, ver `sync-apoio-nivel-beehiiv.ts`). Como
  * `applyEvaluation` move o contato pra um status TERMINAL (`suppressed`) que
  * o loop nunca mais reavalia, uma falha silenciosa aqui seria permanente —
  * `true` só se `emailBlacklisted` estiver confirmado E o contato não constar
  * mais na lista (`listId`). O caller mantém o contato em `in_brevo`
- * (fail-safe, mesmo padrão de `verifyPromotedToBeehiiv`) se isto retornar
+ * (fail-safe) se isto retornar
  * `false`.
  */
 export async function verifySuppressedInBrevo(apiKey: string, listId: number, email: string): Promise<boolean> {
@@ -2074,52 +1840,16 @@ export interface RunEvaluationParams {
   listId: number;
   log: (msg: string) => void;
   /**
-   * Backend real de ENVIO da diária (#6339, ver `promoteKitSubscription`) —
-   * decide se a promoção por SCORE escreve na Beehiiv ou no Kit. **Não**
-   * decide a auto-confirmação (Passo 1, `applySelfConfirmed`) — esse
-   * caminho é roteado pela ORIGEM do contato (#6340 item 4,
-   * `parseKitSubscriberId`), não por este parâmetro: contato de origem Kit
-   * (`beehiiv_subscription_id` prefixado `kit:...`) SEMPRE confirma no Kit,
-   * contato de origem Beehiiv continua escrevendo só na Beehiiv — ver o
-   * comentário `#6339, ESCOPO NÃO COBERTO` logo acima dele, que descreve um
-   * gap DIFERENTE (Beehiiv→Kit, ainda não fechado) e não muda com este
-   * parâmetro nem com o #6340 item 4. Default `"beehiiv"` preserva o
-   * comportamento de todo chamador que não passa este campo (inclusive a
-   * suíte de testes pré-#6339) — `main()` sempre passa o valor lido de
-   * `platform.config.json` → `publishing.newsletter.backend`, que em
-   * produção é `"kit"` desde o switchover do #6114.
-   */
-  newsletterBackend?: "beehiiv" | "kit";
-  /**
-   * Obrigatória quando `newsletterBackend === "kit"` E `push === true`
-   * (promoção por score, #6339). Desde #6340 item 4, também consultada
-   * (sempre, independente de `push`/`newsletterBackend`) pelo Passo 0
+   * Obrigatória quando `push === true` (promoção por score, #6339). Desde
+   * #6340 item 4, também consultada (sempre, independente de `push`) pelo
+   * Passo 0
    * (descadastro nativo de contato de origem Kit — fix B) e pela
    * auto-confirmação de contatos de origem Kit (Passo 1) — mas
    * `runEvaluation` em si NUNCA lança na ausência: degrada pra "ainda não
    * decidido nesta rodada" com log de warn e incrementa `kitAutoConfirmSkipped`
-   * (ver `RunEvaluationResult`), porque um contato de origem Kit pode existir
-   * no store mesmo quando `newsletterBackend === "beehiiv"` (rollback) ou em
-   * dry-run local sem `KIT_API_KEY` configurada — nenhum desses cenários
-   * pode abortar a rodada inteira DENTRO de `runEvaluation`.
-   *
-   * **Correção (fix A, review pós-merge do #6340 item 4) — a analogia com
-   * `brevoApiKey` do Passo 0 que este comentário fazia antes era enganosa e
-   * levou a uma lacuna real.** `brevoApiKey` ausente em `push` SEMPRE aborta
-   * em `main()` ANTES de avaliar qualquer contato (precondição dura, ver o
-   * `return 2` logo no início de `main()`) — não existe caminho onde
-   * `runEvaluation` roda sem ela em `push`. `kitApiKey`, antes deste fix, só
-   * era exigida por `main()` quando `newsletterBackend === "kit"` — mas o
-   * roteamento por ORIGEM do Passo 0/1 é INDEPENDENTE de
-   * `newsletterBackend`: com `newsletterBackend === "beehiiv"` (rollback) e
-   * `push: true`, o script rodava sem `KIT_API_KEY`, e todo contato `kit:`
-   * caía no ramo `!kitApiKey` — que incrementava zero contadores e reportava
-   * `exitCode` 0, deixando o contato preso `in_brevo` indefinidamente sem
-   * sinal em cron algum (o próprio envio duplicado Kit+Brevo que o item 4
-   * existe pra impedir). `main()` agora exige `KIT_API_KEY` sempre que há
-   * ≥1 contato de origem Kit no conjunto avaliado, não só quando
-   * `newsletterBackend === "kit"` — a condição correta é "existe trabalho
-   * que depende da key", não "o backend atual é kit".
+   * (ver `RunEvaluationResult`), porque dry-run local sem `KIT_API_KEY` não
+   * pode abortar a rodada inteira DENTRO de `runEvaluation`. `main()` exige a
+   * key em todo `--push`.
    */
   kitApiKey?: string;
   /**
@@ -2369,12 +2099,12 @@ export interface RunEvaluationResult {
    * corrompido — é uma precondição de ambiente ausente (mesmo espírito da
    * exceção documentada em `failed` acima), mas ainda assim PRECISA ser
    * visível pro caller: antes deste fix, `kitApiKey` ausente em `push:true`
-   * com `newsletterBackend==="beehiiv"` (rollback) fazia TODO contato `kit:`
-   * cair neste ramo silenciosamente — `exitCode` 0, nenhum contador
+   * fazia TODO contato `kit:` cair neste ramo silenciosamente — `exitCode` 0,
+   * nenhum contador
    * incrementado, contato preso `in_brevo` indefinidamente sem que nenhum
    * monitor de cron percebesse (exatamente o envio duplicado Kit+Brevo que o
    * item 4 existe pra impedir). `main()` agora (a) exige `KIT_API_KEY`
-   * sempre que há ≥1 contato de origem Kit no conjunto avaliado, e (b) trata
+   * em todo `--push`, e (b) trata
    * `kitAutoConfirmSkipped > 0` como saída não-zero (mesmo caminho de
    * `failed > 0`) pro caso em que a rodada roda mesmo assim (dry-run, ou uma
    * 2ª rodada concorrente sem a env var) — "algo não pôde ser confirmado"
@@ -2407,16 +2137,8 @@ export interface RunEvaluationResult {
    */
   kitSemAberturaBlacklistUndated: number;
   /**
-   * #7382 — quantos contatos seriam promovidos pra Beehiiv (threshold de
-   * score) mas já estavam `active` no Kit no momento da checagem: a
-   * promoção pra Beehiiv foi PULADA (nunca duplicada) e o contato saiu da
-   * fila Brevo marcado `converted_to_kit` (mesmo status/semântica do guard
-   * pré-dispatch #6485 — "o Kit já assumiu o envio pra esse e-mail").
-   */
-  skippedActiveOnKit: number;
-  /**
    * #8728 — quantos contatos seriam promovidos pro Kit (threshold de
-   * score, `newsletterBackend === "kit"`) mas já existem lá em estado
+   * score) mas já existem lá em estado
    * NÃO-`active` (`inactive`/`cancelled`/`bounced`/`complained`) — a
    * promoção por API foi PULADA (nunca reativa por consentimento, ver
    * `decideKitPromotionAction`) e o contato PERMANECE `in_brevo`, aguardando
@@ -2596,7 +2318,6 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     brevoApiKey,
     listId,
     log,
-    newsletterBackend = "beehiiv",
     kitApiKey,
     appendDuplicateWindowLog,
     kitDoiFormId,
@@ -2672,7 +2393,6 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let kitSemAberturaPreexistingBlacklist = 0; // #10536
   let kitSemAberturaBlacklistReverted = 0; // #10557
   let kitSemAberturaBlacklistUndated = 0; // #10568
-  let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
   let beehiivSelfConfirmedAwaitingKit = 0; // #11225
   let doiResent = 0; // #9835
@@ -3130,14 +2850,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             case "kit-valid":
               if (!kitApiKey) {
                 // Ausência de KIT_API_KEY nunca aborta `runEvaluation` em si
-                // (dry-run local sem a env configurada, ou
-                // `newsletterBackend === "beehiiv"` — rollback — com contato
-                // Kit ainda no store) — degrada pra "ainda não confirmado
+                // (dry-run local sem a env configurada) — degrada pra "ainda não confirmado
                 // nesta rodada". NÃO conta como `failed` (não é falha
                 // transitória de API nem dado corrompido) — conta em
                 // `kitAutoConfirmSkipped` (fix A, review pós-merge): `main()`
-                // agora exige `KIT_API_KEY` sempre que há ≥1 contato de
-                // origem Kit no conjunto avaliado, então este ramo só é
+                // exige `KIT_API_KEY` em todo `--push`, então este ramo só é
                 // alcançado em dry-run/chamada direta sem a env — mas quando
                 // é alcançado em `push` (chamador que ignora `main()`), o
                 // contador dedicado garante que a lacuna fique visível, ver
@@ -3229,7 +2946,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         }
 
         // #11225: contato de origem BEEHIIV que confirmou o double opt-in da
-        // Beehiiv por conta própria. Com `newsletterBackend === "kit"` ele é
+        // Beehiiv por conta própria. Ele é
         // escrito direto no Kit aqui (`promoteSelfConfirmedBeehiivToKit`)
         // ANTES de sair da fila Brevo (antes dependia da ponte
         // `sync-beehiiv-subscribers-kit.ts`, aposentada no #11225). Escrita
@@ -3237,7 +2954,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         // desvincula sem o Kit confirmar `active`. Já existente em estado
         // não-active (#8728) → segue pra avaliação normal, sem `failed`.
         let awaitingKitSelfConfirmation = false;
-        if (beehiivStatus === "active" && push && newsletterBackend === "kit") {
+        if (beehiivStatus === "active" && push) {
           let kitFailure: { reason: string; rateLimited: boolean } | undefined;
           if (!kitApiKey) {
             kitFailure = { reason: "KIT_API_KEY ausente", rateLimited: false };
@@ -3382,254 +3099,206 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           resolutionReason: "score_threshold_kit_tag_removed",
         });
       } else if (evalResult.action === "promote_to_beehiiv") {
-        // #6339: qual backend recebe a promoção depende de `newsletterBackend`
-        // (default "beehiiv", preservando o caminho pré-#6339 — main() sempre
-        // passa o valor real de platform.config.json). Ver docstring de
-        // `promoteKitSubscription` acima pro racional completo.
+        // #6339: promoção por score escreve direto no Kit (ver docstring de
+        // `promoteKitSubscription`).
         let confirmed: boolean;
-        if (newsletterBackend === "kit") {
-          if (!kitApiKey) {
-            throw new Error(`newsletterBackend === "kit" mas kitApiKey ausente — necessário pra promover ${contact.email} (#6339).`);
-          }
-          // #8728 — antes de promover, checar se o contato já existe no Kit
-          // em estado NÃO-`active`: promover sem essa checagem é exatamente
-          // o bug (POST com state=active aceito com 200 mas ignorado pra
-          // quem já está inactive/cancelled/bounced/complained — releitura
-          // nunca confirma, e o `failed` resultante bloqueava o dispatch da
-          // edição inteira). Ver docstring de `decideKitPromotionAction`.
-          let existingKitSubscriber: Awaited<ReturnType<typeof getKitSubscriberByEmail>>;
-          try {
-            existingKitSubscriber = await getKitSubscriberByEmail(contact.email, { apiKey: kitApiKey });
-          } catch (e) {
-            log(`warn: falha ao checar estado Kit de ${contact.email} antes de promover (#8728): ${(e as Error).message}`);
-            failed++;
-            failedContacts.push({ email: contact.email, reason: `falha ao checar estado Kit antes de promover: ${(e as Error).message}`, kitRateLimited: isKitRateLimitError(e) });
-            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
-            continue;
-          }
-          const kitPromotionAction = decideKitPromotionAction(
-            existingKitSubscriber ? { state: existingKitSubscriber.state } : null,
+        if (!kitApiKey) {
+          throw new Error(`kitApiKey ausente — necessário pra promover ${contact.email} (#6339).`);
+        }
+        // #8728 — antes de promover, checar se o contato já existe no Kit
+        // em estado NÃO-`active`: promover sem essa checagem é exatamente
+        // o bug (POST com state=active aceito com 200 mas ignorado pra
+        // quem já está inactive/cancelled/bounced/complained — releitura
+        // nunca confirma, e o `failed` resultante bloqueava o dispatch da
+        // edição inteira). Ver docstring de `decideKitPromotionAction`.
+        let existingKitSubscriber: Awaited<ReturnType<typeof getKitSubscriberByEmail>>;
+        try {
+          existingKitSubscriber = await getKitSubscriberByEmail(contact.email, { apiKey: kitApiKey });
+        } catch (e) {
+          log(`warn: falha ao checar estado Kit de ${contact.email} antes de promover (#8728): ${(e as Error).message}`);
+          failed++;
+          failedContacts.push({ email: contact.email, reason: `falha ao checar estado Kit antes de promover: ${(e as Error).message}`, kitRateLimited: isKitRateLimitError(e) });
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          continue;
+        }
+        const kitPromotionAction = decideKitPromotionAction(
+          existingKitSubscriber ? { state: existingKitSubscriber.state } : null,
+        );
+        if (
+          kitPromotionAction === "await_self_confirmation" &&
+          clickPromotion &&
+          existingKitSubscriber!.state === "inactive" &&
+          kitActivateFormId === undefined &&
+          !warnedMissingActivateForm
+        ) {
+          warnedMissingActivateForm = true;
+          log(
+            "warn: clique na Brevo de quem está inactive no Kit, mas kit.activateFormId ausente/inválido — " +
+              "cai no reenvio do DOI de sempre (aviso único por rodada, #11226).",
           );
-          if (
-            kitPromotionAction === "await_self_confirmation" &&
-            clickPromotion &&
-            existingKitSubscriber!.state === "inactive" &&
-            kitActivateFormId === undefined &&
-            !warnedMissingActivateForm
-          ) {
-            warnedMissingActivateForm = true;
-            log(
-              "warn: clique na Brevo de quem está inactive no Kit, mas kit.activateFormId ausente/inválido — " +
-                "cai no reenvio do DOI de sempre (aviso único por rodada, #11226).",
-            );
+        }
+        if (
+          kitPromotionAction === "await_self_confirmation" &&
+          clickPromotion &&
+          existingKitSubscriber!.state === "inactive" &&
+          kitActivateFormId !== undefined
+        ) {
+          // #11226 — CLIQUE na Brevo (botão "Confirmar e receber a diária"
+          // ou qualquer link) é consentimento explícito: ativa direto pelo
+          // form de sistema (mesmo efeito do clique com token no worker
+          // `reativar`, #8194). Só `inactive` (nunca confirmou); quem
+          // cancelou/bounced/complained no Kit nunca é reativado aqui.
+          let activated = false;
+          try {
+            await activateKitViaForm(kitActivateFormId, existingKitSubscriber!.id, kitApiKey);
+            activated = await verifyPromotedToKit(existingKitSubscriber!.id, kitApiKey);
+          } catch (e) {
+            log(`warn: ${contact.email} — ativação no Kit pelo clique falhou (${(e as Error).message}) — mantendo in_brevo (#11226).`);
           }
-          if (
-            kitPromotionAction === "await_self_confirmation" &&
-            clickPromotion &&
-            existingKitSubscriber!.state === "inactive" &&
-            kitActivateFormId !== undefined
-          ) {
-            // #11226 — CLIQUE na Brevo (botão "Confirmar e receber a diária"
-            // ou qualquer link) é consentimento explícito: ativa direto pelo
-            // form de sistema (mesmo efeito do clique com token no worker
-            // `reativar`, #8194). Só `inactive` (nunca confirmou); quem
-            // cancelou/bounced/complained no Kit nunca é reativado aqui.
-            let activated = false;
-            try {
-              await activateKitViaForm(kitActivateFormId, existingKitSubscriber!.id, kitApiKey);
-              activated = await verifyPromotedToKit(existingKitSubscriber!.id, kitApiKey);
-            } catch (e) {
-              log(`warn: ${contact.email} — ativação no Kit pelo clique falhou (${(e as Error).message}) — mantendo in_brevo (#11226).`);
-            }
-            if (!activated) {
-              failed++;
-              failedContacts.push({ email: contact.email, reason: "ativação no Kit pelo clique não confirmada (#11226)" });
-              store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
-              continue;
-            }
-            log(`${contact.email}: clicou na Brevo → ativado no Kit pelo form ${kitActivateFormId} (releitura confirma active, #11226).`);
-            await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
-            store = applyEvaluation(store, contact.email, {
-              ...counts.instant,
-              open_rate: evalResult.open_rate,
-              action: "promote_to_beehiiv",
-              resolutionReason: "click_kit_activated",
-            });
+          if (!activated) {
+            failed++;
+            failedContacts.push({ email: contact.email, reason: "ativação no Kit pelo clique não confirmada (#11226)" });
+            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
             continue;
           }
-          if (kitPromotionAction === "await_self_confirmation") {
+          log(`${contact.email}: clicou na Brevo → ativado no Kit pelo form ${kitActivateFormId} (releitura confirma active, #11226).`);
+          await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+          store = applyEvaluation(store, contact.email, {
+            ...counts.instant,
+            open_rate: evalResult.open_rate,
+            action: "promote_to_beehiiv",
+            resolutionReason: "click_kit_activated",
+          });
+          continue;
+        }
+        if (kitPromotionAction === "await_self_confirmation") {
+          log(
+            `${contact.email}: já existe no Kit como '${existingKitSubscriber!.state}' — promoção por API não reativa ` +
+              "(aguarda auto-confirmação; #8728).",
+          );
+          awaitingKitConfirmation++;
+          store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
+          store = markAwaitingKitConfirmation(store, contact.email); // #8753
+          // #9835 — reenvia o double opt-in pra quem qualifica por abertura
+          // e está `inactive` (sem cancelamento), no máximo 1 TENTATIVA a
+          // cada DOI_RESEND_INTERVAL_DAYS. #9986 — só o 201 envia e-mail;
+          // depois do 1º 201 (ou pra quem entrou pelo mesmo form nos
+          // workers) toda tentativa responde 200 e nada sai, então o
+          // esperado (não medido, #10023) é uma vez na vida. Nunca mexe em `state`: quem ativa é a
+          // pessoa clicando, e o Passo 1 converte na rodada seguinte.
+          // Só roda em push (este ramo já está depois do `if (!push)`).
+          const storedContact = findContact(store, contact.email) ?? contact;
+          const resendAllowed =
+            doiFormForResend !== undefined &&
+            shouldResendKitDoi({
+              qualifiesByOpenRate: evalResult.action === "promote_to_beehiiv",
+              kitState: existingKitSubscriber!.state,
+              contact: storedContact,
+            });
+          if (doiFormForResend !== undefined && !resendAllowed) {
             log(
-              `${contact.email}: já existe no Kit como '${existingKitSubscriber!.state}' — promoção por API não reativa ` +
-                "(aguarda auto-confirmação; #8728).",
+              `${contact.email}: double opt-in NÃO reenviado (#9835) — ` +
+                (existingKitSubscriber!.state !== "inactive"
+                  ? `estado '${existingKitSubscriber!.state}' no Kit nunca recebe reenvio.`
+                  : storedContact.doi_resend_exhausted_at
+                    ? `vinculado aos dois forms de DOI desde ${storedContact.doi_resend_exhausted_at}, reenvio encerrado (#9986).`
+                    : `última tentativa em ${lastDoiResendAttemptAt(storedContact)} (intervalo ${DOI_RESEND_INTERVAL_DAYS}d).`),
             );
-            awaitingKitConfirmation++;
-            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
-            store = markAwaitingKitConfirmation(store, contact.email); // #8753
-            // #9835 — reenvia o double opt-in pra quem qualifica por abertura
-            // e está `inactive` (sem cancelamento), no máximo 1 TENTATIVA a
-            // cada DOI_RESEND_INTERVAL_DAYS. #9986 — só o 201 envia e-mail;
-            // depois do 1º 201 (ou pra quem entrou pelo mesmo form nos
-            // workers) toda tentativa responde 200 e nada sai, então o
-            // esperado (não medido, #10023) é uma vez na vida. Nunca mexe em `state`: quem ativa é a
-            // pessoa clicando, e o Passo 1 converte na rodada seguinte.
-            // Só roda em push (este ramo já está depois do `if (!push)`).
-            const storedContact = findContact(store, contact.email) ?? contact;
-            const resendAllowed =
-              doiFormForResend !== undefined &&
-              shouldResendKitDoi({
-                qualifiesByOpenRate: evalResult.action === "promote_to_beehiiv",
-                kitState: existingKitSubscriber!.state,
-                contact: storedContact,
-              });
-            if (doiFormForResend !== undefined && !resendAllowed) {
-              log(
-                `${contact.email}: double opt-in NÃO reenviado (#9835) — ` +
-                  (existingKitSubscriber!.state !== "inactive"
-                    ? `estado '${existingKitSubscriber!.state}' no Kit nunca recebe reenvio.`
-                    : storedContact.doi_resend_exhausted_at
-                      ? `vinculado aos dois forms de DOI desde ${storedContact.doi_resend_exhausted_at}, reenvio encerrado (#9986).`
-                      : `última tentativa em ${lastDoiResendAttemptAt(storedContact)} (intervalo ${DOI_RESEND_INTERVAL_DAYS}d).`),
-              );
-            }
-            if (resendAllowed) {
-              const subscriberId = existingKitSubscriber!.id;
-              // Uma tentativa num form de DOI; contabiliza e devolve o desfecho.
-              const attempt = async (formId: string, target: DoiResendTarget): Promise<"sent" | "noop" | "failed"> => {
-                let resend: Awaited<ReturnType<typeof resendKitDoi>>;
-                try {
-                  resend = await resendKitDoi({ subscriberId, apiKey: kitApiKey, formId });
-                } catch (e) {
-                  resend = { ok: false, reason: (e as Error).message };
-                }
-                // #10023 — 2xx prova que o form existe (contado por form, #9986).
-                if (resend.ok) doiResendAttempts2xx.set(formId, (doiResendAttempts2xx.get(formId) ?? 0) + 1);
-                // #9986 — premissa NÃO medida: 201 no 2º form conta como e-mail
-                // enviado porque o form 10062841 tem "Send confirmation email"
-                // ligado (cópia do Cadastro). Se o Kit só mandar o Incentive
-                // Email pra quem é novo NA CONTA (e não só no form), este
-                // contador infla sem e-mail — conferir na 1ª rodada real.
-                if (resend.ok && isKitDoiResendCounted(resend.status)) {
-                  log(
-                    `${contact.email}: double opt-in do Kit reenviado (form ${formId}` +
-                      (target === "resend" ? ", 2º form de DOI, #9986" : "") +
-                      `, HTTP ${resend.status}, #9835).`,
-                  );
-                  doiResent++;
-                  if (target === "resend") doiResentViaResendForm++;
-                  store = markDoiResent(store, contact.email);
-                  return "sent";
-                }
-                if (resend.ok) {
-                  // #9945 — 2xx que não é 201 (na prática 200, "já vinculado ao
-                  // form"): o Kit não reenvia o e-mail. Não conta como reenvio
-                  // nem grava `doi_resent_at` (decisão do editor: só 201 conta).
-                  // Também não é falha.
-                  if (target === "primary") {
-                    // #9979 — grava `doi_resend_noop_at` pro intervalo valer
-                    // também aqui; #9986 — é ele que manda o contato pro 2º form.
-                    store = markDoiResendNoop(store, contact.email);
-                    doiResendNoop++; // #9986
-                  } else {
-                    // #9986 — 200 também no 2º form: vinculado aos dois, terminal.
-                    store = markDoiResendExhausted(store, contact.email);
-                    doiResendExhausted++;
-                  }
-                  log(
-                    `${contact.email}: double opt-in NÃO reenviado (#9945) — Kit respondeu HTTP ${resend.status} ` +
-                      `(já vinculado ao form ${formId}, nenhum e-mail sai); não conta como reenvio.` +
-                      (target === "resend" ? " Vinculado aos dois forms de DOI: reenvio encerrado para este contato (#9986)." : ""),
-                  );
-                  return "noop";
-                }
-                // #9986 — falha permanente (404/422) grava o marcador de
-                // backoff: o contato só volta a ser tentado depois de
-                // DOI_RESEND_INTERVAL_DAYS, em vez de failed++ + warn em toda
-                // rodada. Transitória (5xx, 408, 429, rede) e de
-                // credencial/config (401/403) não gravam. #10023 — o marcador
-                // só é gravado no fim da rodada, depois de descartar falha
-                // global do form (`decideDoiPermanentFailureScope`).
-                const permanent = isPermanentKitDoiFailure(resend.status);
-                if (permanent) pendingDoiPermanentFailures.push({ email: contact.email, status: resend.status!, formId });
+          }
+          if (resendAllowed) {
+            const subscriberId = existingKitSubscriber!.id;
+            // Uma tentativa num form de DOI; contabiliza e devolve o desfecho.
+            const attempt = async (formId: string, target: DoiResendTarget): Promise<"sent" | "noop" | "failed"> => {
+              let resend: Awaited<ReturnType<typeof resendKitDoi>>;
+              try {
+                resend = await resendKitDoi({ subscriberId, apiKey: kitApiKey, formId });
+              } catch (e) {
+                resend = { ok: false, reason: (e as Error).message };
+              }
+              // #10023 — 2xx prova que o form existe (contado por form, #9986).
+              if (resend.ok) doiResendAttempts2xx.set(formId, (doiResendAttempts2xx.get(formId) ?? 0) + 1);
+              // #9986 — premissa NÃO medida: 201 no 2º form conta como e-mail
+              // enviado porque o form 10062841 tem "Send confirmation email"
+              // ligado (cópia do Cadastro). Se o Kit só mandar o Incentive
+              // Email pra quem é novo NA CONTA (e não só no form), este
+              // contador infla sem e-mail — conferir na 1ª rodada real.
+              if (resend.ok && isKitDoiResendCounted(resend.status)) {
                 log(
-                  `warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (form ${formId}, #9835): ${resend.reason}` +
-                    (permanent ? ` — possível falha permanente (HTTP ${resend.status}); backoff decidido no fim da rodada (#9986/#10023)` : ""),
+                  `${contact.email}: double opt-in do Kit reenviado (form ${formId}` +
+                    (target === "resend" ? ", 2º form de DOI, #9986" : "") +
+                    `, HTTP ${resend.status}, #9835).`,
                 );
-                failed++;
-                failedContacts.push({
-                  email: contact.email,
-                  reason: `falha ao reenviar double opt-in do Kit: ${resend.reason}`,
-                  kitRateLimited: resend.status === 429, // #9291 — 429 sem decisão volta na próxima rodada
-                });
-                return "failed";
-              };
-              // #9986 — quem já respondeu 200 no principal vai direto pro 2º
-              // form; quem responde 200 no principal NESTA rodada segue pro 2º
-              // na mesma rodada (sem esperar outros DOI_RESEND_INTERVAL_DAYS).
-              // Escolha de desenho: dobra as chamadas ao Kit só pra esses
-              // contatos (dezenas); 429 já é transitório (#9291).
-              const target = doiResendTargetForm(storedContact, doiResendFormForNoop !== undefined);
-              if (target === "resend") {
-                await attempt(doiResendFormForNoop!, "resend");
-              } else {
-                const outcome = await attempt(doiFormForResend!, "primary");
-                if (outcome === "noop" && doiResendFormForNoop !== undefined) {
-                  await attempt(doiResendFormForNoop, "resend");
+                doiResent++;
+                if (target === "resend") doiResentViaResendForm++;
+                store = markDoiResent(store, contact.email);
+                return "sent";
+              }
+              if (resend.ok) {
+                // #9945 — 2xx que não é 201 (na prática 200, "já vinculado ao
+                // form"): o Kit não reenvia o e-mail. Não conta como reenvio
+                // nem grava `doi_resent_at` (decisão do editor: só 201 conta).
+                // Também não é falha.
+                if (target === "primary") {
+                  // #9979 — grava `doi_resend_noop_at` pro intervalo valer
+                  // também aqui; #9986 — é ele que manda o contato pro 2º form.
+                  store = markDoiResendNoop(store, contact.email);
+                  doiResendNoop++; // #9986
+                } else {
+                  // #9986 — 200 também no 2º form: vinculado aos dois, terminal.
+                  store = markDoiResendExhausted(store, contact.email);
+                  doiResendExhausted++;
                 }
+                log(
+                  `${contact.email}: double opt-in NÃO reenviado (#9945) — Kit respondeu HTTP ${resend.status} ` +
+                    `(já vinculado ao form ${formId}, nenhum e-mail sai); não conta como reenvio.` +
+                    (target === "resend" ? " Vinculado aos dois forms de DOI: reenvio encerrado para este contato (#9986)." : ""),
+                );
+                return "noop";
+              }
+              // #9986 — falha permanente (404/422) grava o marcador de
+              // backoff: o contato só volta a ser tentado depois de
+              // DOI_RESEND_INTERVAL_DAYS, em vez de failed++ + warn em toda
+              // rodada. Transitória (5xx, 408, 429, rede) e de
+              // credencial/config (401/403) não gravam. #10023 — o marcador
+              // só é gravado no fim da rodada, depois de descartar falha
+              // global do form (`decideDoiPermanentFailureScope`).
+              const permanent = isPermanentKitDoiFailure(resend.status);
+              if (permanent) pendingDoiPermanentFailures.push({ email: contact.email, status: resend.status!, formId });
+              log(
+                `warn: falha ao reenviar double opt-in do Kit pra ${contact.email} (form ${formId}, #9835): ${resend.reason}` +
+                  (permanent ? ` — possível falha permanente (HTTP ${resend.status}); backoff decidido no fim da rodada (#9986/#10023)` : ""),
+              );
+              failed++;
+              failedContacts.push({
+                email: contact.email,
+                reason: `falha ao reenviar double opt-in do Kit: ${resend.reason}`,
+                kitRateLimited: resend.status === 429, // #9291 — 429 sem decisão volta na próxima rodada
+              });
+              return "failed";
+            };
+            // #9986 — quem já respondeu 200 no principal vai direto pro 2º
+            // form; quem responde 200 no principal NESTA rodada segue pro 2º
+            // na mesma rodada (sem esperar outros DOI_RESEND_INTERVAL_DAYS).
+            // Escolha de desenho: dobra as chamadas ao Kit só pra esses
+            // contatos (dezenas); 429 já é transitório (#9291).
+            const target = doiResendTargetForm(storedContact, doiResendFormForNoop !== undefined);
+            if (target === "resend") {
+              await attempt(doiResendFormForNoop!, "resend");
+            } else {
+              const outcome = await attempt(doiFormForResend!, "primary");
+              if (outcome === "noop" && doiResendFormForNoop !== undefined) {
+                await attempt(doiResendFormForNoop, "resend");
               }
             }
-            continue;
           }
-          const { id } = await promoteKitSubscription(contact.email, kitApiKey);
-          confirmed = await verifyPromotedToKit(id, kitApiKey);
-        } else {
-          // #7382 — antes de escrever na Beehiiv, checar se a pessoa já está
-          // `active` no Kit: promover sem essa checagem é exatamente o que
-          // produziu envio duplicado ao vivo (4 casos confirmados,
-          // 03/09/2026). Mesma disciplina de duas metades de
-          // `decideBeehiivDeactivateAction` (kit-ramp-cohort.ts) — ver
-          // docstring de `decidePromoteToBeehiivAction` acima.
-          let kitActive = false;
-          let kitCheckAvailable = true;
-          let kitCheckRateLimited = false; // #9291
-          if (!kitApiKey) {
-            kitCheckAvailable = false;
-          } else {
-            try {
-              const kitSubscriber = await getKitSubscriberByEmail(contact.email, { apiKey: kitApiKey });
-              kitActive = kitSubscriber?.state === "active";
-            } catch (e) {
-              log(`warn: falha ao checar status Kit de ${contact.email} antes de promover pra Beehiiv (#7382): ${(e as Error).message}`);
-              kitCheckAvailable = false;
-              kitCheckRateLimited = isKitRateLimitError(e); // #9291
-            }
-          }
-          const crossPlatformDecision = decidePromoteToBeehiivAction({ kitCheckAvailable, kitActive });
-          if (crossPlatformDecision === "skip_active_on_kit") {
-            log(`${contact.email}: já ativo no Kit — pulando promoção pra Beehiiv (evita envio duplicado, #7382); desvinculando da fila Brevo.`);
-            skippedActiveOnKit++;
-            await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
-            store = applyConvertedToKit(store, contact.email);
-            continue;
-          }
-          if (crossPlatformDecision === "skip_kit_check_unavailable") {
-            log(
-              `warn: ${contact.email} — checagem Kit indisponível antes de promover pra Beehiiv (#7382${
-                kitApiKey ? "" : ", KIT_API_KEY ausente"
-              }) — mantendo in_brevo (fail-safe, nunca promove sem saber se já está ativo no Kit).`,
-            );
-            failed++;
-            failedContacts.push({ email: contact.email, reason: "checagem Kit indisponível antes de promover pra Beehiiv (#7382)", kitRateLimited: kitCheckRateLimited });
-            store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
-            continue;
-          }
-          await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email);
-          confirmed = await verifyPromotedToBeehiiv(publicationId, beehiivApiKey, contact.email);
+          continue;
         }
+        const { id } = await promoteKitSubscription(contact.email, kitApiKey);
+        confirmed = await verifyPromotedToKit(id, kitApiKey);
         if (!confirmed) {
-          const backendLabel = newsletterBackend === "kit" ? "ativo no Kit" : "\"pending\" na Beehiiv";
-          log(`warn: ${contact.email} continua não confirmado como ${backendLabel} após promoção — mantendo in_brevo (fail-safe).`);
+          log(`warn: ${contact.email} continua não confirmado como ativo no Kit após promoção — mantendo in_brevo (fail-safe).`);
           failed++;
-          failedContacts.push({ email: contact.email, reason: `promoção não confirmada (${backendLabel})` });
+          failedContacts.push({ email: contact.email, reason: "promoção não confirmada (ativo no Kit)" });
           store = applyEvaluation(store, contact.email, { ...counts.instant, open_rate: evalResult.open_rate, action: "keep" });
           continue;
         }
@@ -3638,7 +3307,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           ...counts.instant,
           open_rate: evalResult.open_rate,
           action: "promote_to_beehiiv",
-          resolutionReason: newsletterBackend === "kit" ? "score_threshold_kit" : "score_threshold",
+          resolutionReason: "score_threshold_kit",
         });
       } else if (evalResult.action === "suppress" && isKitSemAberturaOrigin && !kitFrioFullyOn) {
         // #11221, premissa B do review — frio ainda não plenamente ligado:
@@ -3801,7 +3470,6 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitSemAberturaPreexistingBlacklist,
     kitSemAberturaBlacklistReverted,
     kitSemAberturaBlacklistUndated,
-    skippedActiveOnKit,
     awaitingKitConfirmation,
     beehiivSelfConfirmedAwaitingKit,
     doiResent,
@@ -3857,14 +3525,6 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  // #6339: qual backend recebe a promoção por score — lido de
-  // `publishing.newsletter.backend`, não hardcoded, pra este script
-  // acompanhar automaticamente um eventual rollback do switchover do
-  // #6114 (ver docstring de `promoteKitSubscription`). Default "beehiiv"
-  // só protege contra `platform.config.json` sem a chave `publishing`
-  // (nunca deveria acontecer em produção, mas evita `undefined` virar
-  // `"kit"` por engano numa comparação futura).
-  const newsletterBackend = parseNewsletterBackend(platformConfig.publishing?.newsletter?.backend); // default "kit" (#11225)
   const kitApiKey = process.env.KIT_API_KEY;
 
   // readStore/filter são I/O local síncrono (mesma classe do
@@ -3874,45 +3534,11 @@ async function main(): Promise<number> {
   const store = readStore(DEFAULT_STORE_PATH);
   const inBrevo: BrevoDiariaContact[] = store.contacts.filter((c) => c.status === "in_brevo");
 
-  // #6340 item 4 fix A (review pós-merge) — o guard original só exigia
-  // KIT_API_KEY quando `newsletterBackend === "kit"`, mas o roteamento por
-  // ORIGEM do Passo 0/1 de `runEvaluation` é INDEPENDENTE de
-  // `newsletterBackend`: com `newsletterBackend === "beehiiv"` (rollback) e
-  // `push: true`, o script rodava sem a key, e TODO contato de origem Kit
-  // caía no ramo `!kitApiKey` sem incrementar nenhum contador visível —
-  // `exitCode` 0, contato preso `in_brevo` indefinidamente, invisível pra
-  // qualquer monitor de cron (exatamente o envio duplicado Kit+Brevo que o
-  // item 4 existe pra impedir). A condição correta é "existe trabalho que
-  // depende da key" — ≥1 contato de origem Kit no conjunto que será
-  // avaliado nesta rodada (`inBrevo`) — não "o backend atual é kit". O
-  // guard `newsletterBackend === "kit"` original é mantido explicitamente
-  // (a promoção por score em si SEMPRE precisa da key nesse backend, mesmo
-  // sem nenhum contato Kit ainda no store).
-  //
-  // #7382: este guard NÃO foi estendido pra exigir `KIT_API_KEY` sempre que
-  // há CANDIDATO a promoção pra Beehiiv (impossível saber antecipadamente
-  // aqui — a decisão de score só acontece dentro de `runEvaluation`, por
-  // contato). Em vez disso, `decidePromoteToBeehiivAction` degrada
-  // fail-safe por contato quando `kitApiKey` está ausente no momento da
-  // promoção (`skip_kit_check_unavailable` → conta em `failed`, mantém
-  // `in_brevo`, nunca promove sem checar o Kit primeiro) — ver docstring da
-  // função. `KIT_API_KEY` é uma env var sempre presente em produção (ver
-  // `.env.example`/Doppler), então este caminho fail-safe é o caso raro
-  // (dev local sem a env), não o esperado.
-  // #10437 — origem `kit-sem-abertura:` também precisa do Kit (promoção = remover a tag).
-  const hasKitOriginContacts = inBrevo.some(
-    (c) =>
-      c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX) ||
-      c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA),
-  );
-  if (push && (newsletterBackend === "kit" || hasKitOriginContacts) && !kitApiKey) {
-    const kitOriginCount = inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(KIT_ORIGIN_ID_PREFIX)).length;
-    const kitSemAberturaCount = inBrevo.filter((c) => c.beehiiv_subscription_id.startsWith(ORIGIN_PREFIX.KIT_SEM_ABERTURA)).length;
-    const why =
-      newsletterBackend === "kit"
-        ? "newsletterBackend=kit"
-        : `${kitOriginCount} contato(s) de origem kit: e ${kitSemAberturaCount} de origem kit-sem-abertura: no store`;
-    log(`ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push — ${why}, #6340 item 4 fix A).`);
+  // #6339 + #6340 item 4 fix A + #10437: promoção por score, Passo 0/1 de
+  // contatos de origem Kit e promoção de `kit-sem-abertura:` escrevem no Kit.
+  // `--push` sem a key abortaria tudo isso contato a contato; aborta antes.
+  if (push && !kitApiKey) {
+    log("ERRO: KIT_API_KEY não definido no ambiente (necessário pra --push, #6339).");
     return 2;
   }
 
@@ -3934,7 +3560,7 @@ async function main(): Promise<number> {
     log(`reconciliação de órfãos (#4579) pulada — ${brevoDiaria.api_key_env} ausente no ambiente.`);
   }
 
-  if (push && newsletterBackend === "kit" && !platformConfig.kit?.doiFormId) {
+  if (push && !platformConfig.kit?.doiFormId) {
     log("warn: platform.config.json > kit.doiFormId ausente — reenvio do double opt-in (#9835) desligado; contatos inactive no Kit só aguardam.");
   }
   log(`${inBrevo.length} contato(s) in_brevo a avaliar.`);
@@ -3948,7 +3574,6 @@ async function main(): Promise<number> {
     brevoApiKey,
     listId: brevoDiaria.list_id as number,
     log,
-    newsletterBackend,
     kitApiKey,
     appendDuplicateWindowLog: appendBrevoKitDuplicateWindowLog, // #6705
     appendKitSemAberturaLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line), // #10437
@@ -3981,7 +3606,6 @@ async function main(): Promise<number> {
       `${result.kitSemAberturaPreexistingBlacklist} kit-sem-abertura com blacklist anterior à entrada ` +
       `(${result.kitSemAberturaBlacklistReverted} devolvido(s) ao Kit, tag ${KIT_ENVIO_BREVO_TAG_NAME} removida, #10536/#10557), ` +
       `${result.kitSemAberturaBlacklistUndated} kit-sem-abertura com blacklist sem data (intocado(s), checar à mão, #10568), ` +
-      `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
       `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
       `${result.beehiivSelfConfirmedAwaitingKit} confirmado(s) na Beehiiv mas não-active no Kit (não reativado(s), #11225), ` +
       `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +
