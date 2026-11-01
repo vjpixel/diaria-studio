@@ -62,6 +62,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "../lib/cli-args.ts";
 import { normalizeIssues } from "../lib/plan-issues-normalize.ts";
+import { findPlanSafeBackups, readPlanJson } from "../lib/plan-safe-backup.ts";
 import { isTerminalForBar } from "../overnight-statusline.ts";
 import { resolveClaudeBin } from "../lib/resolve-claude-bin.ts";
 import { getScheduledTaskByName } from "../lib/scheduled-tasks.ts";
@@ -644,12 +645,16 @@ export function runOvernight(repoRootAbs: string, claudeBin: string, deps: Night
     // Report atualizado não pode esconder um plano pendente cujo mtime ficou antigo.
     for (const path of trace) {
       const plan = `${dirname(path)}/plan.json`;
-      if (existsSync(join(repoRootAbs, "data", "overnight", plan))) plans.add(plan);
+      const abs = join(repoRootAbs, "data", "overnight", plan);
+      // #11726: plano renomeado pelo OneDrive (`plan-*-safeBackup-*.json`,
+      // #10579) também conta — senão a rodada pendente passava sem alarme.
+      if (existsSync(abs) || findPlanSafeBackups(dirname(abs)).length > 0) plans.add(plan);
     }
     for (const path of plans) {
       let pending: string[];
+      const read = readPlanJson(join(repoRootAbs, "data", "overnight", path), { warn: (m) => deps.log(`overnight: ${m}`) });
       try {
-        pending = pendingRoundIssues(readFileSync(join(repoRootAbs, "data", "overnight", path), "utf8"));
+        pending = read.status === "ok" ? pendingRoundIssues(JSON.stringify(read.plan)) : ["plano ausente/ilegível"];
       } catch { pending = ["plano ausente/ilegível"]; }
       if (pending.length > 0) {
         deps.log(`overnight: RODADA INCOMPLETA — ${path}: ${pending.join(", ")}; turns=${result?.numTurns ?? "?"}; verificar worktrees e PRs overnight antes de retomar; alarme via exit 6`);
