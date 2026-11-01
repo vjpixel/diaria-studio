@@ -46,6 +46,8 @@ function makeDeps(overrides: Partial<KitRefreshSocialEditionUrlDeps> = {}): KitR
     readSocialMd:
       overrides.readSocialMd ?? ((dir) => files.get(`${dir}:social`) ?? `## d1\n\nTexto do post. Mais em ${STUB_URL} #IA\n`),
     writeSocialMd: overrides.writeSocialMd ?? ((dir, content) => files.set(`${dir}:social`, content)),
+    writeTransition: overrides.writeTransition ?? (() => {}),
+    clearTransition: overrides.clearTransition ?? (() => {}),
   };
 }
 
