@@ -114,6 +114,7 @@ describe("#11265 plano: o timer é o dono do Instagram", () => {
     video: { path: "v.mp4", exists: true, sizeBytes: 10 },
     videoDurationSeconds: 20,
     editionUrl: "https://diar.ia.br/p/x",
+    publicVideo: { ready: true }, // #11355: o Reels da @diar.ia.br depende do R2
   };
   const ig = (p: ReturnType<typeof planShortsPublish>) => p.items.find((i) => i.destination === "instagram")!;
 
@@ -350,7 +351,7 @@ describe("#11265 interpretInstagramTimerOutput", () => {
     assert.equal(r.kind, "done");
   });
   it("já na conta pelo marcador → done; só pela janela de horário → alarme check-permalink (registrado)", () => {
-    const r = interpretInstagramTimerOutput(0, out({ items: [], results: [{ destination: "instagram", ok: true, alreadyRegistered: true, matchedBy: "marker", entry: { status: "published", id: "m1" } }] }));
+    const r = interpretInstagramTimerOutput(0, out({ items: [], results: [{ destination: "instagram", ok: true, alreadyRegistered: true, matchedBy: "marker", entry: { status: "published", id: "m1", url: "https://i/m1" } }] }));
     assert.equal(r.kind, "done");
     const w = interpretInstagramTimerOutput(0, out({ items: [], results: [{ destination: "instagram", ok: true, alreadyRegistered: true, matchedBy: "time-window", entry: { status: "published", id: "m1", url: "https://i/m1" } }] }));
     assert.deepEqual([w.kind, (w as { key: string }).key, (w as { failed: boolean }).failed], ["alarm", "check-permalink", false]);

@@ -10,14 +10,18 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { instagramReelUploadRoute, loadInstagramApiMaxSeconds, shortInstagramVideoFileName, shortVideoFileName } from "../scripts/lib/diaria/short-video.ts";
-import { R2_RETENTION_POLICIES } from "../scripts/lib/r2-object-upload.ts";
+import { instagramApiMaxSecondsPremise, instagramReelUploadRoute, loadInstagramApiMaxSeconds, resolveInstagramApiMaxSeconds, shortInstagramVideoFileName, shortVideoFileName, type ShortPublishedEntry, type ShortsPublishedFile } from "../scripts/lib/diaria/short-video.ts";
+import { etagConflictsBody, R2_RETENTION_POLICIES, uploadToR2 } from "../scripts/lib/r2-object-upload.ts";
 import {
   credentialSkippedItems,
+  instagramPublishRecheck,
   instagramR2VideoKey,
+  instagramReelRouteChoice,
+  instagramReelVideoUrl,
   planShortsPublish,
   publicVideoUnavailableCause,
   publicVideoUnavailableReason,
@@ -26,7 +30,7 @@ import {
   type GraphDeps,
   type ShortsPlanInput,
 } from "../scripts/publish-shorts.ts";
-import { interpretInstagramTimerOutput } from "../scripts/shorts-instagram-timer.ts";
+import { alarmSeverity, alarmSuppressed, buildInstagramTimerAlarm, interpretInstagramTimerOutput } from "../scripts/shorts-instagram-timer.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const realConfig = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
@@ -187,9 +191,11 @@ describe("#11355 R2", () => {
   it("corte do Instagram tem chave própria; o genérico reaproveita o objeto de X e Threads", () => {
     const aammdd = "261102";
     const dir = "data/editions/2611/261102";
-    assert.equal(instagramR2VideoKey(aammdd, `${dir}/${shortVideoFileName(aammdd)}`), `shorts/${shortVideoFileName(aammdd)}`);
-    const cutKey = instagramR2VideoKey(aammdd, `${dir}/${shortInstagramVideoFileName(aammdd)}`);
-    assert.equal(cutKey, `shorts/${shortInstagramVideoFileName(aammdd)}`);
+    const a = Buffer.from("corte A");
+    assert.equal(instagramR2VideoKey(aammdd, `${dir}/${shortVideoFileName(aammdd)}`, a), `shorts/${shortVideoFileName(aammdd)}`);
+    const cutKey = instagramR2VideoKey(aammdd, `${dir}/${shortInstagramVideoFileName(aammdd)}`, a);
+    assert.match(cutKey, /^shorts\/diaria-comentada-261102-short-instagram-[0-9a-f]{12}\.mp4$/);
+    assert.notEqual(instagramR2VideoKey(aammdd, `${dir}/${shortInstagramVideoFileName(aammdd)}`, Buffer.from("corte B")), cutKey, "corte trocado muda a URL: cache nenhum serve o velho");
     assert.notEqual(cutKey, `shorts/${shortVideoFileName(aammdd)}`);
     assert.ok(R2_RETENTION_POLICIES.some((p) => cutKey.startsWith(p.prefix)), "a chave própria continua sob a retenção de shorts/");
   });
@@ -232,5 +238,205 @@ describe("#11355 R2", () => {
       uploadVideo: async () => assert.fail("rupload não usa o R2"),
     });
     assert.equal(out.source, file);
+  });
+});
+
+const entry = (extra: Partial<ShortPublishedEntry> = {}): ShortPublishedEntry => ({ destination: "instagram", status: "published", id: "m0", url: "https://instagram.com/reel/m0", scheduled_at: null, at: "2026-11-02T15:00:00Z", ...extra });
+
+describe("#11355 null só na rota video_url", () => {
+  const cfg = (shorts: object) => ({ publishing: { shorts } });
+
+  it("null por conta: vale na diaria, vira o teto padrão com premissa na vjpixel", () => {
+    const c = cfg({ instagram_api_max_seconds_by_account: { diaria: null, vjpixel: null } });
+    assert.equal(loadInstagramApiMaxSeconds(c, null), null);
+    assert.equal(loadInstagramApiMaxSeconds(c, "diaria"), null);
+    const r = resolveInstagramApiMaxSeconds(c, "vjpixel");
+    assert.equal(r.maxSeconds, 40);
+    assert.match(instagramApiMaxSecondsPremise(r)!, /rupload.*#11355/);
+    assert.equal(instagramApiMaxSecondsPremise(resolveInstagramApiMaxSeconds(c, null)), null);
+  });
+
+  it("null legado global também não libera a conta do rupload", () => {
+    const c = cfg({ instagram_api_max_seconds: null });
+    assert.equal(loadInstagramApiMaxSeconds(c, "vjpixel"), 40);
+    assert.equal(loadInstagramApiMaxSeconds(c, null), null);
+  });
+
+  it("no plano: vjpixel com null e 75 s vai pro guiado, nunca pro rupload que falha", () => {
+    const pages = [{ slug: "vjpixel", enabled: true, pageId: "1", token: "t", missing: [], utmContent: null }];
+    const p = planDiaria(
+      {
+        pages,
+        config: { publishing: { shorts: { schedule: SCHEDULE, facebook_pages: [], instagram: true, instagram_author_page: "vjpixel", instagram_api_max_seconds_by_account: { vjpixel: null } } } },
+      },
+      "vjpixel",
+    );
+    assert.equal(p.items.find((i) => i.destination === "instagram")!.action, "guided");
+  });
+});
+
+describe("#11355 guarda de R2 igual à de X e Threads", () => {
+  it("publicVideo ausente não vira publish na conta da video_url", () => {
+    const ig = planDiaria({ publicVideo: undefined }).items.find((i) => i.destination === "instagram")! as { action: string; detail: string; cause?: string };
+    assert.equal(ig.action, "skip_missing_credentials");
+    assert.equal(ig.cause, "public_video");
+    assert.match(ig.detail, /não conferido/);
+  });
+});
+
+describe("#11355 falha no media_publish", () => {
+  const source = { videoUrl: "https://r2.example/shorts/v.mp4" };
+
+  /** Graph falsa em que o media_publish falha e a consulta depois dele devolve `afterPublish`. */
+  function failingPublish(afterPublish: string | Error) {
+    const calls: string[] = [];
+    let failed = false;
+    const deps: GraphDeps = {
+      fetch: async (url) => {
+        calls.push(url);
+        if (url.includes("/media_publish")) {
+          failed = true;
+          throw new Error("timeout");
+        }
+        if (url.endsWith("/ig/media")) return new Response(JSON.stringify({ id: "c1" }), { status: 200 });
+        if (failed && afterPublish instanceof Error) throw afterPublish;
+        return new Response(JSON.stringify({ status_code: failed ? afterPublish : "FINISHED" }), { status: 200 });
+      },
+      sleep: async () => {},
+      now: () => new Date("2026-11-02T15:05:00Z"),
+      log: () => {},
+    };
+    return { deps, calls };
+  }
+
+  it("regressão: timeout com container PUBLISHED não vira falha nem publica de novo", async () => {
+    const { deps, calls } = failingPublish("PUBLISHED");
+    const out = await publishInstagramReel(deps, "ig", "tok", "v25.0", source, "x", ["vjpixel"]);
+    assert.equal(out.entry.status, "published");
+    assert.equal(out.entry.id, "c1");
+    assert.equal(out.entry.url, undefined);
+    assert.match(out.warnings![0], /PUBLISHED.*não reposte/);
+    assert.equal(calls.filter((u) => u.includes("/media_publish")).length, 1);
+    const alarm = interpretInstagramTimerOutput(0, JSON.stringify({ results: [{ destination: "instagram", ok: true, entry: out.entry, warnings: out.warnings }] })) as { kind: string; key: string };
+    assert.equal(alarm.key, "check-permalink");
+  });
+
+  it("consulta também falha: grava send_unknown, e o timer alarma sem pedir repost", async () => {
+    const { deps } = failingPublish(new Error("rede"));
+    const out = await publishInstagramReel(deps, "ig", "tok", "v25.0", source, "x");
+    assert.equal(out.entry.status, "send_unknown");
+    const alarm = interpretInstagramTimerOutput(0, JSON.stringify({ results: [{ destination: "instagram", ok: true, entry: out.entry, warnings: out.warnings }] })) as { key: string; failed: boolean };
+    assert.equal(alarm.key, "send-unknown");
+    assert.equal(alarm.failed, false);
+    assert.equal(alarmSeverity("send-unknown"), "acao");
+    const body = buildInstagramTimerAlarm({ aammdd: "261102", key: "send-unknown", reason: "x", videoArg: "v.mp4" }).body;
+    assert.match(body, /PODE estar no ar/);
+    assert.doesNotMatch(body, /--publish/);
+    assert.equal(alarmSuppressed(JSON.stringify({ aammdd: "261102", alarmed: ["send-unknown"], emailPending: [] }), "late"), true, "late não manda publicar depois dele");
+  });
+
+  it("container ainda FINISHED: a falha é real e lança", async () => {
+    const { deps } = failingPublish("FINISHED");
+    await assert.rejects(publishInstagramReel(deps, "ig", "tok", "v25.0", source, "x"), /timeout/);
+  });
+});
+
+describe("#11355 alarme de registro sem permalink", () => {
+  it("published sem url não é done silencioso; com url segue done", () => {
+    const run = (e: ShortPublishedEntry) => interpretInstagramTimerOutput(0, JSON.stringify({ results: [{ destination: "instagram", ok: true, entry: e }] }));
+    const noUrl = run(entry({ url: undefined })) as { kind: string; key: string; failed: boolean };
+    assert.equal(noUrl.kind, "alarm");
+    assert.equal(noUrl.key, "check-permalink");
+    assert.equal(noUrl.failed, false);
+    assert.equal(run(entry()).kind, "done");
+  });
+});
+
+describe("#11355 reconferência antes do media_publish", () => {
+  const source = { videoUrl: "https://r2.example/shorts/v.mp4" };
+  const file = (entries: ShortPublishedEntry[]): ShortsPublishedFile => ({ aammdd: "261102", entries });
+
+  it("destino registrado durante o processamento: não publica e devolve o registro", async () => {
+    const { deps, calls } = fakeGraph();
+    let fresh: ShortsPublishedFile | null = null;
+    const registered = file([entry()]);
+    const beforePublish = instagramPublishRecheck("d", "261102", (f) => (fresh = f), () => registered);
+    const out = await publishInstagramReel(deps, "ig", "tok", "v25.0", source, "x", [], undefined, { beforePublish });
+    assert.equal(out.alreadyRegistered, true);
+    assert.equal(out.entry.id, "m0");
+    assert.equal(fresh, registered);
+    assert.ok(!calls.some((c) => c.url.includes("/media_publish")));
+  });
+
+  it("registro ilegível não publica; sem registro segue", async () => {
+    const a = fakeGraph();
+    const broken = instagramPublishRecheck("d", "261102", () => {}, () => {
+      throw new Error("json quebrado");
+    });
+    await assert.rejects(publishInstagramReel(a.deps, "ig", "tok", "v25.0", source, "x", [], undefined, { beforePublish: broken }), /registro ilegível/);
+    assert.ok(!a.calls.some((c) => c.url.includes("/media_publish")));
+    const b = fakeGraph();
+    const empty = instagramPublishRecheck("d", "261102", () => assert.fail("nada a atualizar"), () => file([]));
+    const out = await publishInstagramReel(b.deps, "ig", "tok", "v25.0", source, "x", [], undefined, { beforePublish: empty });
+    assert.equal(out.entry.id, "m1");
+  });
+});
+
+describe("#11355 escolha de rota e objeto", () => {
+  const aammdd = "261102";
+  const file = Buffer.from("corte");
+  const dir = "data/editions/2611/261102";
+
+  it("autora diaria: video_url; corte tem hash e aponta o genérico, genérico não duplica", () => {
+    const cut = instagramReelRouteChoice({ authorPage: null, aammdd, videoPath: `${dir}/${shortInstagramVideoFileName(aammdd)}`, file });
+    assert.equal(cut.route, "video_url");
+    if (cut.route !== "video_url") return;
+    assert.match(cut.key, /short-instagram-[0-9a-f]{12}\.mp4$/);
+    assert.equal(cut.genericKey, `shorts/${shortVideoFileName(aammdd)}`);
+    const generic = instagramReelRouteChoice({ authorPage: null, aammdd, videoPath: `${dir}/${shortVideoFileName(aammdd)}`, file });
+    assert.deepEqual(generic, { route: "video_url", key: `shorts/${shortVideoFileName(aammdd)}`, genericKey: null });
+  });
+
+  it("autora vjpixel: rupload, sem chave no R2", () => {
+    assert.deepEqual(instagramReelRouteChoice({ authorPage: "vjpixel", aammdd, videoPath: "v.mp4", file }), { route: "rupload" });
+  });
+
+  it("corte idêntico ao genérico reaproveita o objeto; diferente sobe na própria chave", async () => {
+    const choice = { route: "video_url" as const, key: "shorts/cut-abc.mp4", genericKey: "shorts/gen.mp4" };
+    const same = await instagramReelVideoUrl(choice, { urlIfSameContent: async (k) => `https://r2/${k}`, upload: async () => assert.fail("não sobe") });
+    assert.equal(same, "https://r2/shorts/gen.mp4");
+    const uploaded: string[] = [];
+    const other = await instagramReelVideoUrl(choice, {
+      urlIfSameContent: async () => null,
+      upload: async (k) => {
+        uploaded.push(k);
+        return `https://r2/${k}`;
+      },
+    });
+    assert.equal(other, "https://r2/shorts/cut-abc.mp4");
+    assert.deepEqual(uploaded, ["shorts/cut-abc.mp4"]);
+  });
+});
+
+describe("#11355 ETag depois do PUT", () => {
+  const cfg = { accountId: "a", accessKeyId: "k", secretAccessKey: "s", bucket: "b", publicBase: "https://media.example" };
+  const body = Buffer.from("video");
+  const md5 = createHash("md5").update(body).digest("hex");
+  const put = (etag: string | null) => ({
+    now: () => new Date("2026-11-02T15:05:00Z"),
+    warn: () => {},
+    fetch: async (_u: string, init?: RequestInit) =>
+      init?.method === "HEAD" ? new Response(null, { status: 200, headers: { "content-length": String(body.length), ...(etag ? { etag } : {}) } }) : new Response("", { status: 200 }),
+  });
+
+  it("mesmo tamanho com ETag de outro conteúdo lança", async () => {
+    await assert.rejects(uploadToR2(put(`"${"0".repeat(32)}"`), cfg, "img/a.mp4", body, "video/mp4"), /outro conteúdo/);
+  });
+
+  it("ETag certo, fraco, ausente ou fora do formato MD5 não bloqueia", async () => {
+    for (const etag of [`"${md5}"`, `W/"${md5}"`, null, '"abc-2"']) {
+      assert.equal(await uploadToR2(put(etag), cfg, "img/a.mp4", body, "video/mp4"), "https://media.example/img/a.mp4");
+    }
+    assert.equal(etagConflictsBody(null, body), false);
   });
 });

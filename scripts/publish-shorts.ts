@@ -161,6 +161,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -252,7 +253,7 @@ import {
   mergeGrids,
   type ScheduledSlot,
 } from "./lib/social-slot-planner.ts";
-import { loadR2UploadConfig, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
+import { loadR2UploadConfig, r2ObjectHasBody, r2PublicUrl, reuseOrUploadToR2 } from "./lib/r2-object-upload.ts";
 import { buildReelsQueuePayload, postToWorkerQueue, WorkerQueueError, type WorkerQueuePayload } from "./lib/worker-queue-client.ts";
 import { resolveShortEntryState, resolveWorkerQueueState } from "./lib/publish-state.ts";
 import { LINKEDIN_PERSONAL_ENV, MAX_FIRE_LATENESS_MS, PERSONAL_INTENT_FILE, defaultLinkedInApiVersion, postUrlFromUrn, readPersonalCreds, type PersonalCreds } from "./lib/linkedin-personal.ts";
@@ -1019,8 +1020,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     // chega a tentar: o timer alarma citando o R2 (`cause`), e a limpeza do
     // vertical não conta o destino como terminal (#11478).
     const publishOrBlocked = (text: string): ShortsPlanItem => {
-      if (instagramReelUploadRoute(cfg.instagramAuthorPage) === "video_url" && input.publicVideo?.ready === false) {
-        const detail = `o Reels da @diar.ia.br sobe por URL pública (video_url, #11355), indisponível nesta rodada: ${input.publicVideo.cause ?? input.publicVideo.reason}`;
+      if (instagramReelUploadRoute(cfg.instagramAuthorPage) === "video_url" && input.publicVideo?.ready !== true) {
+        const why = input.publicVideo?.ready === false ? (input.publicVideo.cause ?? input.publicVideo.reason) : "não conferido";
+        const detail = `o Reels da @diar.ia.br sobe por URL pública (video_url, #11355), indisponível nesta rodada: ${why}`;
         warnings.push(`instagram: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail, cause: "public_video" };
       }
@@ -1281,6 +1283,8 @@ export interface PublishOutcome {
   unconfirmed?: boolean;
   /** Avisos pós-publicação (ex.: convite de collab descartado, #10820). */
   warnings?: string[];
+  /** #11355: outro processo registrou o destino antes do publish; nada saiu nesta rodada e `entry` é o registro dele. */
+  alreadyRegistered?: true;
 }
 
 /** Teto de blocos do upload resumable — só existe pra nunca virar loop infinito (o servidor dita o tamanho do bloco). */
@@ -1535,11 +1539,75 @@ export type InstagramReelSource = Buffer | { videoUrl: string };
  * #11355: chave do vertical no R2 para o Reels. O arquivo genérico divide o
  * objeto com X e Threads; o corte próprio do Instagram (o timer passa `--video`
  * com ele) tem chave própria, senão o PUT trocaria o vídeo que a Buffer ainda
- * vai baixar pro X.
+ * vai baixar pro X. A chave do corte leva o hash do conteúdo: trocado o corte no
+ * Drive, a URL muda e nenhum cache serve o vídeo velho para a Meta.
  */
-export function instagramR2VideoKey(aammdd: string, videoPath: string): string {
+export function instagramR2VideoKey(aammdd: string, videoPath: string, file: Buffer): string {
   const generic = shortVideoFileName(aammdd);
-  return `shorts/${basename(videoPath) === generic ? generic : shortInstagramVideoFileName(aammdd)}`;
+  if (basename(videoPath) === generic) return `shorts/${generic}`;
+  const hash = createHash("sha256").update(file).digest("hex").slice(0, 12);
+  return `shorts/${shortInstagramVideoFileName(aammdd).replace(/\.mp4$/, "")}-${hash}.mp4`;
+}
+
+/** #11355: a rota do Reels nesta rodada e, na `video_url`, onde o vídeo fica no R2. */
+export type InstagramReelRouteChoice =
+  | { route: "rupload" }
+  /** `genericKey`: objeto do vertical genérico, que serve se o corte for idêntico a ele; null quando `key` já é ele. */
+  | { route: "video_url"; key: string; genericKey: string | null };
+
+/** Pure (#11355): a ligação entre a autora, o arquivo e a rota, fora do `main()` para ter teste. */
+export function instagramReelRouteChoice(input: { authorPage: string | null; aammdd: string; videoPath: string; file: Buffer }): InstagramReelRouteChoice {
+  if (instagramReelUploadRoute(input.authorPage) === "rupload") return { route: "rupload" };
+  const key = instagramR2VideoKey(input.aammdd, input.videoPath, input.file);
+  const generic = `shorts/${shortVideoFileName(input.aammdd)}`;
+  return { route: "video_url", key, genericKey: key === generic ? null : generic };
+}
+
+/**
+ * #11355: URL do vídeo do Reels. Corte idêntico ao vertical genérico já no
+ * bucket reaproveita aquele objeto, sem duplicar o conteúdo em duas chaves.
+ */
+export async function instagramReelVideoUrl(
+  choice: Extract<InstagramReelRouteChoice, { route: "video_url" }>,
+  deps: { urlIfSameContent: (key: string) => Promise<string | null>; upload: (key: string) => Promise<string> },
+): Promise<string> {
+  const reused = choice.genericKey ? await deps.urlIfSameContent(choice.genericKey) : null;
+  return reused ?? deps.upload(choice.key);
+}
+
+/**
+ * #11355: reconferência do registro logo antes do `media_publish`, sem custo de
+ * rede (o processamento leva até 72 s, e o `--mark` ou `--confirm-instagram` de
+ * outro processo pode ter entrado nesse meio tempo). Registro ilegível lança.
+ */
+export function instagramPublishRecheck(
+  dir: string,
+  aammdd: string,
+  onFresh: (fresh: ShortsPublishedFile) => void,
+  read: (dir: string, aammdd: string) => ShortsPublishedFile = readShortsRegistry,
+): () => ShortPublishedEntry | null {
+  return () => {
+    const recheck = recheckBeforePublish(dir, aammdd, "instagram", read);
+    if (recheck.kind === "unreadable") throw new Error(recheck.error);
+    if (recheck.kind === "proceed") return null;
+    onFresh(recheck.fresh);
+    return recheck.entry;
+  };
+}
+
+/**
+ * #11355 (porta `containerWasPublished` do Worker, #10877): o que o container diz
+ * depois de uma falha no `media_publish`. Timeout ou 5xx não provam que o Reels
+ * não saiu. `unknown` = a consulta falhou ou não trouxe o estado.
+ */
+async function instagramContainerPublishState(deps: GraphDeps, containerId: string, token: string, apiVersion: string): Promise<"published" | "not_published" | "unknown"> {
+  try {
+    const code = (await graphGet(deps, containerId, { fields: "status_code", access_token: token }, apiVersion)).status_code;
+    if (typeof code !== "string" || !code) return "unknown";
+    return code === "PUBLISHED" ? "published" : "not_published";
+  } catch {
+    return "unknown";
+  }
 }
 
 /**
@@ -1575,6 +1643,8 @@ export async function publishInstagramReel(
   caption: string,
   collaborators: string[] = [],
   cover?: ReelCoverUpload,
+  /** `beforePublish`: devolve o registro de outro processo (não publica) ou null; lançar também não publica. */
+  opts: { beforePublish?: () => ShortPublishedEntry | null } = {},
 ): Promise<PublishOutcome> {
   const coverUrl = reelCoverUrl(cover);
   const file = Buffer.isBuffer(source) ? source : null;
@@ -1629,8 +1699,29 @@ export async function publishInstagramReel(
     }
     await deps.sleep(10_000);
   }
-  const pub = await graphPost(deps, `${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
-  if (!pub.id) throw new Error(`media_publish sem id: ${JSON.stringify(pub)}`);
+  const registered = opts.beforePublish?.() ?? null;
+  if (registered) return { entry: registered, alreadyRegistered: true };
+  let pub: any;
+  try {
+    pub = await graphPost(deps, `${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
+    if (!pub.id) throw new Error(`media_publish sem id: ${JSON.stringify(pub)}`);
+  } catch (e) {
+    const failure = (e as Error).message;
+    const state = await instagramContainerPublishState(deps, containerId, token, apiVersion);
+    if (state === "not_published") throw e;
+    const at = deps.now().toISOString();
+    if (state === "published") {
+      // Sem o id da mídia não há permalink: o registro sai sem `url` e o timer pede a conferência.
+      return {
+        entry: withCoverRecord({ destination: "instagram", status: "published", id: containerId, scheduled_at: null, at }, reelCoverRecord(cover)),
+        warnings: [`media_publish falhou (${failure}), mas o container ${containerId} está PUBLISHED: o Reels está no ar, sem permalink no registro — não reposte; registre com --mark instagram=URL`],
+      };
+    }
+    return {
+      entry: withCoverRecord({ destination: "instagram", status: "send_unknown", id: `send_unknown-${at}`, scheduled_at: null, at }, reelCoverRecord(cover)),
+      warnings: [`media_publish falhou (${failure}) e a consulta do container ${containerId} também: o Reels PODE estar no ar — confira a conta antes de repostar; registre com --mark instagram=URL`],
+    };
+  }
   let url: string | undefined;
   try {
     url = (await graphGet(deps, pub.id, { fields: "permalink", access_token: token }, apiVersion)).permalink;
@@ -3189,8 +3280,8 @@ async function main(): Promise<number> {
   const threadsCreds = readThreadsPersonalCreds(process.env);
   // #11070: Short pela Data API com a credencial do horizontal (YOUTUBE_*, youtube-oauth-setup.ts).
   const ytMissing = missingYouTubeCredentials(process.env);
-  // #11265: a fila do Worker (e o R2) só entra com o backend antigo; com o
-  // timer do 300 nada aqui cobra os secrets do R2.
+  // #11265: a fila do Worker só entra com o backend antigo. O R2 é cobrado no
+  // plano: X, Threads e, desde o #11355, o Reels da @diar.ia.br dependem dele.
   const instagramQueue =
     shortsCfg.instagramBackend === "worker-r2"
       ? resolveInstagramQueueReadiness({
@@ -3279,7 +3370,7 @@ async function main(): Promise<number> {
     preflight?: InstagramTimerGateFailure | ThreadsTimerGateFailure;
   }> = [];
   // Sobe o vertical no máximo uma vez por rodada (Instagram agendado, X e Threads pessoal usam).
-  // #11410: objeto do dia já no bucket com o mesmo tamanho é reaproveitado (sem novo PUT).
+  // #11410/#11432: objeto do dia já no bucket com o mesmo conteúdo (tamanho e ETag) é reaproveitado (sem novo PUT).
   // #11355: memo por chave, porque o corte do Instagram tem objeto próprio.
   const uploadedByKey = new Map<string, Promise<string>>();
   const uploadVideoAt = (key: string) => {
@@ -3287,7 +3378,7 @@ async function main(): Promise<number> {
     let uploaded = uploadedByKey.get(key);
     if (!uploaded) {
       uploaded = reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file, "video/mp4").then((r) => {
-        console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo tamanho, sem novo upload)" : "enviado"}: ${r.url}`);
+        console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo conteúdo, sem novo upload)" : "enviado"}: ${r.url}`);
         return r.url;
       });
       uploadedByKey.set(key, uploaded);
@@ -3410,13 +3501,28 @@ async function main(): Promise<number> {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         const author = igAuthor;
         const publishReel = async () => {
+          const choice = instagramReelRouteChoice({ authorPage: shortsCfg.instagramAuthorPage, aammdd, videoPath, file });
           const { source, cover } = await resolveInstagramReelInputs({
-            route: instagramReelUploadRoute(shortsCfg.instagramAuthorPage),
+            route: choice.route,
             file,
             uploadCover,
-            uploadVideo: async () => uploadVideoAt(instagramR2VideoKey(aammdd, videoPath)),
+            uploadVideo: async () => {
+              if (choice.route !== "video_url") throw new Error("a rota rupload não usa o R2");
+              return instagramReelVideoUrl(choice, {
+                urlIfSameContent: async (key) => {
+                  if (!r2.ready) return null;
+                  const same = await r2ObjectHasBody({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file);
+                  if (same) console.error(`[ok] corte do Instagram igual ao vertical genérico: reaproveita ${key}`);
+                  return same ? r2PublicUrl(r2.config, key) : null;
+                },
+                upload: uploadVideoAt,
+              });
+            },
           });
-          return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover);
+          const beforePublish = instagramPublishRecheck(dir, aammdd, (fresh) => {
+            published = fresh;
+          });
+          return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover, { beforePublish });
         };
         if (writer === "instagram-timer") {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
@@ -3477,6 +3583,11 @@ async function main(): Promise<number> {
         results.push({ destination: item.destination, ok: false, error: msg });
       }
       console.error(`[erro] ${item.destination}: ${msg}`);
+      continue;
+    }
+    if (outcome.alreadyRegistered) {
+      results.push({ destination: item.destination, ok: true, entry: outcome.entry, alreadyRegistered: true });
+      console.error(`[aviso] ${item.destination}: registrado por outro processo antes do publish (${outcome.entry.status}${outcome.entry.url ? `, ${outcome.entry.url}` : ""}) — não publica de novo`);
       continue;
     }
     const { unconfirmed } = outcome;

@@ -5,12 +5,13 @@ import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarm
  *
  * Passo do timer do `300` (`Diaria-Shorts-Instagram` e o `-Catchup`,
  * `scripts/lib/scheduled-tasks.ts`) que publica o Reels do vertical no
- * Instagram no horário do vertical, sem tarefa manual por edição e sem URL
- * pública: o Instagram não agenda Reels pela API, então alguém precisa rodar
- * o `--publish` depois do horário (decisão do editor 27/10/2026: timer no
- * 300; o túnel #11307 caiu pelo risco de ToS da Cloudflare e o R2 ainda não
- * estava habilitado. Ele foi habilitado depois, em 27/10/2026, #10772, e o
- * editor manteve o timer, #11411).
+ * Instagram no horário do vertical, sem tarefa manual por edição: o Instagram
+ * não agenda Reels pela API, então alguém precisa rodar o `--publish` depois do
+ * horário (decisão do editor 27/10/2026: timer no 300; o túnel #11307 caiu pelo
+ * risco de ToS da Cloudflare e o R2 ainda não estava habilitado. Ele foi
+ * habilitado depois, em 27/10/2026, #10772, e o editor manteve o timer, #11411).
+ * Desde o #11355 o publish sobe o vídeo pro R2 e cria o container da @diar.ia.br
+ * por `video_url`; sem os secrets do R2 o Reels não sai e o timer alarma.
  *
  *   1. edição = hoje em BRT (o vertical sai no dia da própria edição);
  *   2. `decideInstagramTimerRun` (puro): Instagram desligado, backend que não
@@ -51,7 +52,8 @@ import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarm
  * vertical". I/O injetável em `runInstagramTimer` (testes de ponta a ponta).
  *
  * #11389: vertical acima do teto de duração da API na conta autora
- * (`instagram_api_max_seconds_by_account`, #10916) é limite CONHECIDO, não
+ * (`instagram_api_max_seconds_by_account`, #10916; a @diar.ia.br não tem teto
+ * desde o #11355, então isto só vale com outra autora) é limite CONHECIDO, não
  * falha: o Reels sai pelo Chrome (Passo B3b, @vjpixel autor com a @diar.ia.br
  * em collab, #11390). O timer manda um lembrete (`guided`, uma vez por
  * edição) já antes do horário quando o corte do Instagram está no disco, e
@@ -146,6 +148,8 @@ export type InstagramTimerAlarmKey =
   | "publish-failed"
   | "published-unregistered"
   | "check-permalink"
+  /** #11355: o `media_publish` falhou e a consulta do container também: o Reels pode estar no ar. */
+  | "send-unknown"
   /** A conferência da conta não deixou publicar: pode já haver Reels da edição na conta. */
   | "preflight-blocked"
   /** A leitura da conta falhou (token expirado, 5xx no `/media`): o Reels não sai até a conta voltar a responder. */
@@ -164,7 +168,7 @@ export type InstagramTimerAlarmKey =
   | "cut-unverified";
 
 /** O Reels ainda está no ar? Esses avisam com `acao`; o resto é "não saiu hoje" (`urgente`). */
-const PUBLISHED_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["published-unregistered", "check-permalink"]);
+const PUBLISHED_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["published-unregistered", "check-permalink", "send-unknown"]);
 
 /**
  * Motivos em que publicar pela API resolve (o comando manual com `--publish`
@@ -180,7 +184,7 @@ const RETRY_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["publish-failed
  * Motivos que dizem "não reposte" (o Reels pode estar no ar): depois de um
  * deles, `late` não sai — o corpo dele manda publicar.
  */
-const LATE_BLOCKER_KEYS: ReadonlyArray<InstagramTimerAlarmKey> = ["guided", "preflight-blocked", "author-unchecked", "published-unregistered", "check-permalink"];
+const LATE_BLOCKER_KEYS: ReadonlyArray<InstagramTimerAlarmKey> = ["guided", "preflight-blocked", "author-unchecked", "published-unregistered", "check-permalink", "send-unknown"];
 
 /** O Reels saiu (ou pode ter saído) e o editor só confere: `acao`, nunca `urgente`. */
 const ACAO_KEYS: ReadonlySet<InstagramTimerAlarmKey> = new Set(["preflight-blocked", "author-unchecked", "collab", "cut-unverified"]);
@@ -430,6 +434,14 @@ export function interpretInstagramTimerOutput(exitCode: number | null, stdout: s
       }
       // #11368: aviso do publish (convite de collab descartado) não fica só no journal.
       const warnings: string[] = Array.isArray(result.warnings) ? result.warnings.filter((w: unknown): w is string => typeof w === "string" && w.length > 0) : [];
+      const warned = warnings.length ? `: ${warnings.join("; ")}` : "";
+      // #11355: registro que não diz onde o Reels está nunca vira `done` em silêncio.
+      if (e.status === "send_unknown") {
+        return { kind: "alarm", key: "send-unknown", failed: false, detail: `envio sem confirmação (${where})${warned}` };
+      }
+      if (e.status === "published" && !e.url) {
+        return { kind: "alarm", key: "check-permalink", failed: false, detail: `Reels registrado sem permalink (id ${e.id})${warned}` };
+      }
       if (!result.alreadyRegistered && warnings.length) {
         return { kind: "alarm", key: "collab", failed: false, detail: `Reels publicado (${e.status} ${where}) com aviso: ${warnings.join("; ")}` };
       }
@@ -537,10 +549,17 @@ export function buildInstagramTimerAlarm(input: {
       "Se você trocou ou apagou o corte no Drive depois do download, confira o Reels publicado; o timer não reposta sozinho.",
     );
     subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: publicado sem conferir o corte no Drive (${key})`;
+  } else if (key === "send-unknown") {
+    lines.push(
+      "O Reels PODE estar no ar: o `media_publish` falhou e a consulta do container também, então o timer não repete o envio e não volta a tentar.",
+      `- Se está na conta: registre com ${confirm} ou \`--mark instagram=URL\`.`,
+      "- Se não está: poste pelo Chrome (Passo B3b do `/diaria-publica-video`) e registre do mesmo jeito.",
+    );
+    subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir se saiu (${key})`;
   } else if (published) {
     lines.push(
       key === "check-permalink"
-        ? "O Reels está registrado. Confira se o permalink é mesmo o desta edição; se não for, corrija o registro com `--mark instagram=URL`."
+        ? "O Reels está registrado. Confira se o permalink é mesmo o desta edição (ou, se o registro saiu sem permalink, ache o Reels na conta); se não for, ou se faltar, corrija o registro com `--mark instagram=URL`."
         : `O Reels está no ar. NÃO reposte: registre com \`npx tsx scripts/publish-shorts.ts ${aammdd} --mark instagram=URL\` (ou ${confirm}).`,
     );
     subject = `[diar.ia.br] Reels do Instagram de ${aammdd}: conferir registro (${key})`;

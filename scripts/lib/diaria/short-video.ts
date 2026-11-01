@@ -933,7 +933,11 @@ function validMaxSeconds(v: unknown, field: string): number | null {
  *   2. `publishing.shorts.instagram_api_max_seconds` (legado, vale pra
  *      qualquer conta);
  *   3. `INSTAGRAM_REELS_API_MAX_SECONDS` (40 s).
- * Em 1 e 2, `null` desliga o teto (a API decide). Valor inválido LANÇA, em
+ * Em 1 e 2, `null` desliga o teto (a API decide), mas só na conta da rota
+ * `video_url`. Na rota `rupload` o limite existe de qualquer forma (a Meta
+ * encerra a requisição, #11355): lá `null` vale o teto padrão, com premissa no
+ * log (`nullIgnored`), e o vídeo longo vai pro passo guiado em vez de falhar.
+ * Valor inválido LANÇA, em
  * QUALQUER entrada do mapa (não só na da conta ativa): um teto quebrado
  * mandaria o Reels pro rupload que já sabemos que falha, ou tiraria da API um
  * vídeo que caberia — e um typo na conta inativa não pode esperar a troca de
@@ -950,9 +954,19 @@ export interface InstagramApiMaxSecondsResolution {
   source: "by_account" | "legacy" | "default";
   /** O mapa por conta existe (mesmo que sem esta conta). */
   hasMap: boolean;
+  /** O config pediu `null` numa conta da rota `rupload`: vale o teto padrão (#11355). */
+  nullIgnored?: true;
 }
 
 export function resolveInstagramApiMaxSeconds(config: unknown, authorPage: string | null): InstagramApiMaxSecondsResolution {
+  const res = resolveConfiguredInstagramMaxSeconds(config, authorPage);
+  if (res.maxSeconds === null && instagramReelUploadRoute(authorPage) === "rupload") {
+    return { ...res, maxSeconds: INSTAGRAM_REELS_API_MAX_SECONDS, nullIgnored: true };
+  }
+  return res;
+}
+
+function resolveConfiguredInstagramMaxSeconds(config: unknown, authorPage: string | null): InstagramApiMaxSecondsResolution {
   const key = instagramAccountKey(authorPage);
   const shorts = (config as any)?.publishing?.shorts;
   if (!shorts || typeof shorts !== "object") return { maxSeconds: INSTAGRAM_REELS_API_MAX_SECONDS, key, source: "default", hasMap: false };
@@ -979,6 +993,9 @@ export function resolveInstagramApiMaxSeconds(config: unknown, authorPage: strin
  * aparecer no log em vez de passar calado. null = nada a declarar.
  */
 export function instagramApiMaxSecondsPremise(r: InstagramApiMaxSecondsResolution): string | null {
+  if (r.nullIgnored) {
+    return `teto do Reels pela API: ${r.maxSeconds} s na conta "${r.key}" — o config pede null (sem teto), que só vale na rota video_url, e esta conta sobe pelo rupload (#11355)`;
+  }
   if (!r.hasMap || r.source === "by_account") return null;
   const value = r.maxSeconds === null ? "sem teto" : `${r.maxSeconds} s`;
   const from =
