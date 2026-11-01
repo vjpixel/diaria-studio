@@ -19,7 +19,7 @@
  *
  * `checkScheduledAtMatchesEditionDate` é o guard consumido pelos 3 scripts de
  * agendamento (`schedule-newsletter-kit.ts`, `schedule-daily-brevo.ts`,
- * `schedule-kit-diaria.ts`, item 2 da correção proposta em #8207): recusa
+ * `schedule-kit-diaria.ts` (removido no #11225), item 2 da correção proposta em #8207): recusa
  * `--scheduled-at` cuja data-calendário EM BRT diverge da data da edição,
  * salvo `--allow-other-date` explícito.
  */

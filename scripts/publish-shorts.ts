@@ -138,10 +138,9 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  * posts que as skills de divulgação agendaram pro mesmo dia.
  *
  * Link da edição: `--edition-url` > `_internal/05-edition-url.txt` (gravado no
- * Stage 5) > slug derivado do título do D1. Com `publishing.newsletter.backend`
- * = "kit" o derivado é premissa, não aviso: é a mesma regra com que o Stage 5
- * grava `05-edition-url.txt` (#7420), então o vertical pode sair antes da
- * Etapa 5 (fluxo do #10943). Com "beehiiv" segue aviso (o slug pode divergir).
+ * Stage 5) > slug derivado do título do D1. O derivado é premissa, não aviso: é
+ * a mesma regra com que o Stage 5 grava `05-edition-url.txt` (#7420), então o
+ * vertical pode sair antes da Etapa 5 (fluxo do #10943).
  *
  * Registro por destino em `{edição}/_internal/06-shorts-published.json`
  * (escrita atômica, logo após cada destino). Destino registrado é pulado.

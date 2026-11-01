@@ -458,7 +458,7 @@ export async function findTagIdByName(name: string, config?: KitConfig): Promise
  *  "Only `segment` or `tag` filters allowed"). Confirmado na doc oficial
  *  (developers.kit.com/api-reference/broadcasts/create-a-broadcast): "If
  *  nothing is provided, will default to all of your subscribers" — e o
- *  próprio #6126 já documentava esse entendimento em `kit-diaria-channel.ts`,
+ *  próprio #6126 já documentava esse entendimento em `kit-diaria-channel.ts` (removido no #11225),
  *  só o builder aqui divergia.
  *
  *  #7651: o retorno virou `AllSubscribersFilter` — mesmo `[]` na

@@ -89,6 +89,23 @@ export function defaultManualConsent(): PublishConsent {
   };
 }
 
+const SKIP_CHANNELS = ["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo", "youtube"] as const;
+
+/**
+ * #11225: `--skip kit` desligava o canal paralelo Kit diária, que saiu. Aceitar
+ * o token sem efeito daria falsa segurança: o editor acharia que segurou o
+ * e-mail, e o Kit é o único canal da diária.
+ */
+const RETIRED_KIT_SKIP_MESSAGE =
+  "`--skip kit` saiu no #11225: o e-mail da diária é o canal `newsletter`, use --skip newsletter.";
+
+/** Mensagem de erro de `--skip` inválido, nomeando o caso do token `kit`. */
+export function describeInvalidSkip(input: string): string {
+  const tokens = input.trim().toLowerCase().split(/[,\s]+/).filter(Boolean);
+  const hint = tokens.includes("kit") ? `${RETIRED_KIT_SKIP_MESSAGE} ` : "";
+  return `--skip inválido: ${JSON.stringify(input)}. ${hint}Use lista CSV de canais: ${SKIP_CHANNELS.join(", ")}.`;
+}
+
 /**
  * Parseia lista de canais via flag `--skip` (#1326). Cada canal listado
  * fica `manual` no consent; canais não-listados ficam `auto`.
@@ -99,14 +116,15 @@ export function defaultManualConsent(): PublishConsent {
  *   - "linkedin,facebook" → linkedin + facebook manual
  *   - "newsletter,linkedin,facebook,instagram" → tudo manual
  *
- * Retorna null pra input inválido (tokens não reconhecidos).
+ * Retorna null pra input inválido (tokens não reconhecidos), inclusive o token
+ * `kit` (#11225), que `describeInvalidSkip` explica.
  */
 export function parseSkipFlag(input: string): PublishConsent | null {
   const trimmed = input.trim().toLowerCase();
   if (!trimmed) {
     return { ...defaultAutoConsent(), source: "skip_flag_empty" };
   }
-  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter", "brevo", "kit", "youtube"]);
+  const VALID = new Set<string>(SKIP_CHANNELS);
   const tokens = trimmed
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -129,15 +147,14 @@ export function parseSkipFlag(input: string): PublishConsent | null {
  * Parseia a resposta do editor no gate 4b. Aceita:
  *   - "all" → tudo auto
  *   - "none" → tudo skipped
- *   - Lista CSV de números 1-12:
- *     1=Beehiiv auto, 2=Beehiiv manual
+ *   - Lista CSV de números 1-14:
+ *     1=Newsletter auto, 2=Newsletter manual
  *     3=LinkedIn auto, 4=LinkedIn manual
  *     5=Facebook auto, 6=Facebook manual
  *     7=Instagram auto, 8=Instagram manual
  *     9=Threads auto, 10=Threads manual
  *     11=Twitter/X auto, 12=Twitter/X manual
  *     13=Brevo diária auto, 14=Brevo diária manual
- *     15=Kit auto, 16=Kit manual
  *
  * Números conflitantes (1 e 2 ambos, etc) usam o último que aparece.
  * Canais não-mencionados na resposta ficam manual (default conservador).
@@ -179,7 +196,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     .split(/[,\s]+/)
     .filter(Boolean)
     .map((s) => parseInt(s, 10));
-  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 16)) {
+  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 14)) {
     return null;
   }
 
@@ -188,7 +205,6 @@ export function parseEditorResponse(input: string): PublishConsent | null {
   // #2479: Threads = 9 (auto) / 10 (manual).
   // #3994: Twitter/X = 11 (auto) / 12 (manual).
   // #5772: Brevo diária = 13 (auto) / 14 (manual).
-  // #6179: Kit = 15 (auto) / 16 (manual).
   const out: PublishConsent = {
     newsletter: "manual",
     linkedin: "manual",

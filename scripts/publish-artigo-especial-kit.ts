@@ -26,7 +26,7 @@
  *      da criação não é prova de que o filtro pegou, e o erro que passaria
  *      batido aqui é o pior do domínio (rascunho mirando a base inteira).
  *      Mesma disciplina de `publish-monthly-apoiadores-kit.ts` (#7633) e
- *      `kit-diaria-stage5-dispatch.ts` (#6582).
+ *      `kit-diaria-stage5-dispatch.ts` (removido no #11225) (#6582).
  *
  * ## `public: false`, ao contrário da diária e da anual
  *

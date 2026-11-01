@@ -195,20 +195,9 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(parseEditorResponse("   "), null);
   });
 
-  it("número fora do range 1-16 → null (#6179: range estendido pro Kit)", () => {
-    assert.equal(parseEditorResponse("17"), null);
-    assert.equal(parseEditorResponse("0,1"), null);
-  });
-
-  it("'15' → Kit auto (canais não mencionados ficam manual) (#6179)", () => {
-    const c = parseEditorResponse("15");
-    assert.ok(c);
-    assert.equal(c.newsletter, "manual");
-  });
-
-  it("'16' → Kit manual (#6179)", () => {
-    const c = parseEditorResponse("16");
-    assert.ok(c);
+  it("número fora do range 1-14 → null (#11225: 15/16 eram do canal Kit paralelo)", () => {
+    for (const fora of ["15", "16", "17", "0,1"]) assert.equal(parseEditorResponse(fora), null, fora);
+    assert.ok(parseEditorResponse("14"));
   });
 
   it("'7' → Instagram auto (canais não mencionados ficam manual) (#49)", () => {
@@ -401,8 +390,6 @@ describe("canal Brevo diária (#5772)", () => {
   });
 });
 
-describe("canal Kit (#6162/#6179)", () => {
-});
 
 describe("canal YouTube (#10659, §5b-youtube)", () => {
   it("'youtube' é canal válido em --skip e só ele vira manual", () => {

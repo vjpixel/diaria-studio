@@ -3488,7 +3488,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
 
 // ── main ─────────────────────────────────────────────────────────────────
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   loadProjectEnv(ROOT);
   const argv = process.argv.slice(2);
   const push = hasFlag(argv, "push");

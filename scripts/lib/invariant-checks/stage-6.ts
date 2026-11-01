@@ -655,7 +655,7 @@ export const STAGE_6_RULES: InvariantRule[] = [
   },
   {
     id: "scheduled-at-present",
-    description: "05-published.json tem scheduled_at ou status=published (#1694)",
+    description: "newsletter-kit-published.json tem scheduled_at ou status=published (#1694)",
     source_issue: "#1694",
     stage: 6,
     run: checkScheduledAt,
@@ -663,7 +663,7 @@ export const STAGE_6_RULES: InvariantRule[] = [
   {
     id: "kit-draft-fresh",
     description:
-      "backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); " +
+      "o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); " +
       "o aviso nomeia também o re-run da Brevo diária quando ela participou da edição (#9442)",
     source_issue: "#9428",
     stage: 6,

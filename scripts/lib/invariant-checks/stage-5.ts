@@ -884,9 +884,8 @@ function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
       {
         rule: "edition-url-file-exists",
         message:
-          `_internal/05-edition-url.txt ausente — playbook Beehiiv nao gravou a URL publica. ` +
-          `resolve-post-pixel.ts (Stage 6) vai cair no fallback https://diar.ia.br (raiz) ` +
-          `no \`## post_pixel\`, em vez do link direto da edicao. ` +
+          `_internal/05-edition-url.txt ausente — publish-newsletter-kit.ts (§5c-1-kit) nao gravou a URL publica. ` +
+          `Os posts sociais e o resumo do gate da Etapa 6 ficam sem o link direto da edicao. ` +
           `Gravar manualmente: \`npx tsx scripts/resolve-edition-url.ts --edition-dir ... --title "TITULO"\`.`,
         source_issue: "#2454",
         severity: "warning",

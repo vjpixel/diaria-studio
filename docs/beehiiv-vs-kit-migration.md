@@ -174,12 +174,10 @@ da página hospedada, ou decidir usar a própria página hospedada como `src` do
 
 Decisão do editor (27-28/10/2026): a Beehiiv não envia mais nada, mas a conta
 segue ativa como arquivo (posts, site, estatísticas, assinantes arquivados). O
-pipeline diário não depende dela: chave `publishing.newsletter.backend` ausente
-ou inválida vale `"kit"` (`parseNewsletterBackend` em
-`scripts/lib/newsletter-backend.ts`), e o conector Beehiiv fora do ar é warn,
-nunca halt. O ramo `backend = "beehiiv"` fica como legado, ativado só com o
-literal explícito (remoção pendente, ver abaixo). Nenhuma configuração da
-conta foi alterada.
+pipeline diário não depende dela: o envio é só Kit, a chave
+`publishing.newsletter.backend` saiu do config (o ramo Beehiiv e o canal Kit
+diária saíram no #11225), e o conector Beehiiv fora do ar é warn, nunca halt.
+Nenhuma configuração da conta foi alterada.
 
 Classificação dos pontos de contato do item 4 da issue (proposta; remover
 qualquer um deles é decisão à parte):
@@ -208,9 +206,7 @@ e `diaria-retro-semanal`, `verify-clicks-enrichment.ts`, `apply-mcp-clicks.ts`).
 `sync-apoio-*-beehiiv.ts` (o `apoios-diff-alarm.ts`, o `kit-ramp-cohort.ts`,
 o painel Apoios do Studio e a skill `/diaria-apoios-sync` dependem deles, e
 o `sync-apoio-nivel-beehiiv.ts` ainda hospeda a lógica pura de nível que os
-syncs Kit/Brevo/KV importam) e o ramo `backend = "beehiiv"` (entrelaçado com
-o canal paralelo Kit diária do #6114, com o Passo 5c-1 do Stage 5 e com o
-seam `newsletterBackend` de `evaluate-brevo-diaria.ts`).
+syncs Kit/Brevo/KV importam).
 
 Fora das fatias já feitas: plano/assinatura da conta (item 6, ação do
 editor depois de um export completo) e `sync-apoio-*-beehiiv.ts`. O ramo

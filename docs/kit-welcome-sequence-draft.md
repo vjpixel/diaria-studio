@@ -26,8 +26,8 @@ editor, espaçados **D0 (imediato) → D+3 → D+6 → D+10**. Justificativa:
    de dinheiro antes da pessoa ter lido uma edição sequer.
 2. **Aquecimento de domínio (motivo #2 da issue) se beneficia de envios
    distribuídos, não de um pico único.** O incidente do #6096/#6114 (rampa Kit,
-   revertida em 28/08 por queda de abertura no Gmail — ver nota em
-   `platform.config.json` → `publishing.newsletter.backend_note`) mostrou na
+   revertida em 28/08 por queda de abertura no Gmail; o Kit voltou a enviar em
+   04/09, #7388) mostrou na
    prática que domínio novo sem histórico de reputação sofre justamente em
    Gmail. Uma sequência de 4 envios de baixo volume ao longo de ~10 dias por
    assinante gera sinal de engajamento contínuo (abertura + clique

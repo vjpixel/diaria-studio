@@ -69,7 +69,7 @@ Compor o resumo que sera exibido no gate único de §6c — inclui o pedido de r
 - **Newsletter Kit:**
   - Link: `_internal/05-edition-url.txt`.
   - Test email: `test_sent_at` de `newsletter-kit-published.json`, formatado em BRT.
-  - Status do review: se `review_completed: true` → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo ({review_reason})` (desde #8902, `review_reason` distingue `mcp_unavailable` — conector Gmail indisponível/renomeado, checagem automática ficou OFF, ver #7279 — de `not_found_timeout`/`truncated_fetch` — Gmail respondeu, email só não foi localizado/veio truncado; `ui_test_not_marked` (#10395, só Kit) → `⚠ teste pela UI não registrado: o e-mail pode nunca ter saído`; ausência de `review_reason` em edições pré-#8902 → mostrar só `⚠ review inconclusivo`); se issues → listar.
+  - Status do review: se `review_status === "ok"` em `05-review-kit.json` (`KitReviewRecord`) → `✓ review ok`; se `review_status: "inconclusive"` → `⚠ review inconclusivo ({review_reason})` (desde #8902, `review_reason` distingue `mcp_unavailable` — conector Gmail indisponível/renomeado, checagem automática ficou OFF, ver #7279 — de `not_found_timeout`/`truncated_fetch` — Gmail respondeu, email só não foi localizado/veio truncado; `ui_test_not_marked` (#10395, só Kit) → `⚠ teste pela UI não registrado: o e-mail pode nunca ter saído`; ausência de `review_reason` em edições pré-#8902 → mostrar só `⚠ review inconclusivo`); se issues → listar.
 - **Social agendado:** horarios LinkedIn + Facebook por destaque (D1/D2/D3).
 - **Achados do review-test-email** (se `review_final_issues` nao vazio ou `review_status !== "ok"`) **+ achados dos lints determinísticos `lint-test-email-*`** que o `review-test-email` já roda internamente (link tracking, structure, encoding, image freshness — ver `.claude/agents/review-test-email.md`) **+ `issues[]` de `_internal/lint-size-{AAMMDD}.json`** (gravado no §5f passo 0 do Stage 5 mesmo quando o agente não é despachado — inclui o alarme `delivered_size_near_clip`, e-mail acima de 95 KB, perto do corte de 102 KB do Gmail, #9823).
 - **Broadcast real ainda em rascunho depois do teste pela UI (#10465):** rodar `npx tsx scripts/publish-newsletter-kit.ts {EDITION_DIR}/ --verify-ui-test-draft` ANTES do gate e de qualquer Schedule — só leitura, nunca grava nada; não se aplica sozinho (exit 0, `checked: false`) sem teste pela UI ou com `status: "scheduled"` no estado. Rede de segurança pro caso em que o Stage 5 pulou o `--mark-ui-test-sent` (clique errado na UI) e ninguém releu o broadcast. **Exit 11 → halt banner (`render-halt-banner.ts`, motivo "broadcast Kit {id} saiu do rascunho durante o teste pela UI", ação "conferir no Kit se a edição foi enviada/agendada para a base") e parar a Etapa 6, sem gate nem Schedule**; exit 12 → aviso destacado no gate de §6c ("não deu pra confirmar que o broadcast Kit segue em rascunho — conferir na UI antes do ok"); exit 0 segue.
@@ -77,6 +77,12 @@ Compor o resumo que sera exibido no gate único de §6c — inclui o pedido de r
 - **Brevo diária (#5772):** se `_internal/brevo-diaria-published.json` existe, `campaign_id` + status atual ("rascunho pronto pra agendar"). Se ausente, omitir esta linha (canal pulado/falhou na Etapa 5).
 
 ### 6b2. Pedidos editoriais registrados — aceitos direto, sem gate (#4966, #8205)
+
+**Antes de ler a lista, derivar os pedidos do diff (#5731).** Compara os snapshots com o estado atual e acrescenta em `editor-requests.jsonl` o que mudou depois do Stage 4. Roda em qualquer modo, inclusive `--no-gates`, e re-rodar não duplica:
+```bash
+npx tsx scripts/derive-editor-requests.ts derive-stage6 --edition {AAMMDD}
+```
+Exit `0` = derivação concluída (contagem no stdout); `!=0` = logar warn, não bloquear.
 
 Ler `{EDITION_DIR}/_internal/editor-requests.jsonl` (escrito ao longo da edicao via `npx tsx scripts/log-editor-request.ts`, ver `.claude/agents/orchestrator.md` secao "Pedidos editoriais do editor"). **Se o arquivo nao existir ou estiver vazio, pular esta secao inteira** — nada a revisar.
 
@@ -288,7 +294,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 6 --agent orchestrator -
 ```
 
 `resolved:false` (`already_own_domain` — caminho feliz desde o #7420 —,
-`backend_not_kit`/`no_slug_yet`/`already_resolved` — só edições pré-#7420) →
+`no_slug_yet`/`already_resolved` — só edições pré-#7420) →
 nada a fazer, seguir (sem retry adicional — evita loop). `ok:false` (code 3/4)
 → logar erro, não bloqueia. **Só `resolved:true`** (só alcançável em edição
 legada pré-#7420, arquivos regravados) → re-dispatchar os 2 canais:

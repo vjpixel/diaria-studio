@@ -539,9 +539,8 @@ Se o template "HTML" não estiver na library (heading "HTML" não encontrada), a
 > BAKED IN — texto literal, não um link dinâmico. Se o slug real do post
 > divergir disso (mangling PT-BR do Beehiiv, #1989, ou o wizard de Schedule
 > re-derivando o slug do título, #2011), esse link já enviado no corpo do
-> e-mail 404 pra quem abrir. `scripts/check-whatsapp-slug-guard.ts` (§9) é o
-> guard que confere isso e bloqueia o Stage 6 — mas conferir aqui, antes do
-> paste, evita descobrir o problema só depois do Schedule.
+> e-mail 404 pra quem abrir. Nada confere isso depois do Stage 4 (o guard de
+> slug saiu da Etapa 6 no #11225): esta conferência, antes do paste, é a única.
 
 **Status técnico** (2026-05-10): caminho deterministic validado live; falta apenas otimização de tokens via Cloudflare Worker host (decisão pendente em #1054).
 
@@ -1096,11 +1095,11 @@ Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não 
 
 `unfixed_issues[]` agrega problemas detectados no passo 5.3 (Verificação pós-paste) que o agent não conseguiu auto-corrigir. Formato por entrada: `{ "reason": "<code>", "section": "<where>", "details": "<optional>" }`. Se não-vazio, o editor deve revisar antes de publicar (o `review-test-email` loop pode pegar alguns mas nem todos).
 
-### 9. Verificar slug pós-Schedule (#2011, #3449) — GATE-BLOCKING desde #4570
+### 9. Verificar slug pós-Schedule (#2011, #3449)
 
 **⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule é automatizado desde #6098 (fallback manual) — depois que o clique confirmar, verificar e corrigir o slug. O mangling independe de quem clicou.
 
-**#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (dentro do D1 desde #5152) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. `orchestrator-stage-6.md` §6d roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`) e trata divergência como **GATE-BLOCKING** — não prossegue pro resto do Stage 6 até o slug bater. Os passos 1-3 abaixo continuam sendo o MECANISMO de verificação/correção; o que mudou é que o orchestrator agora se recusa a seguir em frente sem essa confirmação.
+**#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (dentro do D1 desde #5152) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. Desde o #11225 nada bloqueia por isso depois do Stage 4: a Etapa 6 só agenda pelo Kit e não roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`), que sobra como comparação avulsa. Os passos 1-3 abaixo são o mecanismo manual de verificação/correção num post da Beehiiv.
 
 **⚠️ #3449 (confirmado 260714, edição real): a correção via API está permanentemente bloqueada no plano atual.** `fix-post-slug.ts --execute` retornou `403 SEND_API_NOT_ENTERPRISE_PLAN` — o mesmo gate de plano que já bloqueava `edit_post` via MCP (#1705) cobre o PATCH direto de `web_settings.slug` também. **Não é transitório** — não vale a pena re-tentar via API em edições futuras até um eventual upgrade de plano (ver #2501 pra decisão de custo). O caminho viável é a correção manual via UI (passo 3 abaixo), direto — sem passar pela tentativa de API primeiro.
 

@@ -9,10 +9,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolveAudienceTagId } from "../scripts/lib/kit-diaria-audience.ts";
-import { parseSkipFlag } from "../scripts/lib/publish-consent.ts";
+import { describeInvalidSkip, parseSkipFlag } from "../scripts/lib/publish-consent.ts";
+import { mainCli } from "../scripts/build-publish-consent.ts";
 
-const read = (p: string) => readFileSync(p, "utf8");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");
 
 describe("#11225 canal Kit diária e ramo Beehiiv aposentados", () => {
   it("os scripts do canal paralelo não existem mais", () => {
@@ -21,7 +25,7 @@ describe("#11225 canal Kit diária e ramo Beehiiv aposentados", () => {
       "scripts/schedule-kit-diaria.ts",
       "scripts/lib/kit-diaria-channel.ts",
     ]) {
-      assert.equal(existsSync(p), false, p);
+      assert.equal(existsSync(resolve(ROOT, p)), false, p);
     }
   });
 
@@ -44,11 +48,53 @@ describe("#11225 canal Kit diária e ramo Beehiiv aposentados", () => {
     assert.match(stage6, /schedule-newsletter-kit\.ts/);
   });
 
-  it("`--skip kit` antigo continua aceito, sem efeito em canal nenhum", () => {
-    const c = parseSkipFlag("kit");
-    assert.ok(c);
-    assert.equal(c!.newsletter, "auto", "o e-mail da diária é o canal `newsletter`");
-    assert.equal("kit" in c!, false);
+  it("`--skip kit` é recusado, apontando `--skip newsletter`, inclusive no meio de uma lista", () => {
+    assert.equal(parseSkipFlag("kit"), null);
+    assert.equal(parseSkipFlag("brevo,kit"), null);
+    assert.match(describeInvalidSkip("brevo,kit"), /use --skip newsletter/);
+    assert.doesNotMatch(describeInvalidSkip("xpto"), /use --skip newsletter/);
+    assert.equal(parseSkipFlag("newsletter")?.newsletter, "manual");
+  });
+
+  it("CLI: `--skip kit` sai 1 sem gravar consent e explica no stderr", () => {
+    const out = resolve(ROOT, "test", "_nao-deve-existir-skip-kit-11225.json");
+    const original = console.error;
+    const errors: string[] = [];
+    console.error = (m: string) => void errors.push(m);
+    try {
+      assert.equal(mainCli(["--edition", "260101", "--skip", "kit", "--out", out]), 1);
+    } finally {
+      console.error = original;
+    }
+    assert.match(errors.join("\n"), /use --skip newsletter/);
+    assert.equal(existsSync(out), false);
+  });
+
+  it("nenhum playbook oferece `--skip kit` como canal", () => {
+    const skill = read(".claude/skills/diaria-5-publicacao/SKILL.md");
+    assert.doesNotMatch(skill, /`kit`, `youtube`|brevo,kit|twitter, brevo, kit/);
+  });
+
+  it("gate do Stage 6 lê `review_status`, que existe em KitReviewRecord; `review_completed` não", () => {
+    const stage6 = read(".claude/agents/orchestrator-stage-6.md");
+    assert.doesNotMatch(stage6, /review_completed/);
+    assert.match(stage6, /`review_status === "ok"`/);
+    assert.doesNotMatch(read("scripts/lib/kit-review-record.ts"), /review_completed/);
+  });
+
+  it("review-test-email: `platform` ausente vale kit, e o Stage 5 passa explícito", () => {
+    const agent = read(".claude/agents/review-test-email.md");
+    assert.match(agent, /Se `platform` ausente\*\* → tratar como `"kit"`/);
+    assert.doesNotMatch(agent, /newsletter\.backend/);
+    assert.doesNotMatch(agent, /ausente ou `"beehiiv"`/);
+    assert.match(read(".claude/agents/orchestrator-stage-5.md"), /Disparar `review-test-email` passando `platform: "kit"`/);
+  });
+
+  it("nada promete mais o bloqueio do guard de slug do WhatsApp depois do Stage 4", () => {
+    assert.doesNotMatch(read(".claude/agents/orchestrator-stage-4.md"), /o guard que de fato BLOQUEIA/);
+    assert.doesNotMatch(read("context/publishers/beehiiv-playbook.md"), /GATE-BLOCKING/);
+    assert.doesNotMatch(read("scripts/check-whatsapp-slug-guard.ts"), /GATE-BLOCKING/);
+    assert.doesNotMatch(read(".claude/skills/diaria-5-publicacao/SKILL.md"), /guard de slug do bloco WhatsApp/);
   });
 });
 

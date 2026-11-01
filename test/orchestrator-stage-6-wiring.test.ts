@@ -1,24 +1,15 @@
 /**
- * test/orchestrator-stage-6-wiring.test.ts (#4574, revisado #8205)
+ * test/orchestrator-stage-6-wiring.test.ts (#4574, revisado #8205 e #11225)
  *
- * Grep tests pra garantir que orchestrator-stage-6.md referencia
- * corretamente o guard determinístico de slug do bloco WhatsApp (#4570) e o
- * backstop determinístico que o fecha (#4574) — sem isso, o mecanismo
- * mais crítico do Stage 6 dependia 100% de prosa lida por um agente LLM,
- * sem nenhuma verificação em código de que o guard rodou, rodou
- * corretamente, ou passou antes do pipeline marcar o Stage 6 como concluído
- * (achado convergente pr-test-analyzer + silent-failure-hunter, review
- * consolidado da PR #4574). Mesmo padrão de `test/beehiiv-playbook-wiring.test.ts`
- * (#1433) — helpers/scripts órfãos no prompt quebram em runtime sem esse
- * guard falhar antes.
+ * Grep tests do playbook da Etapa 6. Mesmo padrão de
+ * `test/beehiiv-playbook-wiring.test.ts` (#1433): helpers/scripts órfãos no
+ * prompt quebram em runtime sem esse guard falhar antes.
  *
- * #8205 (17/09/2026): a issue tornou a revisão visual do e-mail de teste
- * pelo editor a ÚNICA parada de `/diaria-5-publicacao`. O guard de slug
- * deixou de ser um 2º ponto de parada (halt banner + "responda 'corrigido'")
- * — agora roda ANTES do gate único (§6b-slug) e, se divergir, vira aviso
- * destacado dentro do gate, nunca um halt separado. Este arquivo foi
- * atualizado para refletir esse comportamento; os testes que checavam a
- * antiga semântica "GATE-BLOCKING com halt banner" foram substituídos.
+ * #8205 (17/09/2026): a revisão visual do e-mail de teste pelo editor é a ÚNICA
+ * parada de `/diaria-5-publicacao`. #11225: o guard de slug do bloco WhatsApp
+ * (§6b-slug, Beehiiv) saiu da Etapa 6, junto com o §6d e o §6e; os testes dele
+ * saíram junto. O passo vivo que estava dentro do §6e (`derive-stage6`) voltou
+ * no §6b2.
  */
 
 import { describe, it } from "node:test";
@@ -32,6 +23,27 @@ const STAGE_6 = resolve(ROOT, ".claude/agents/orchestrator-stage-6.md");
 
 describe("orchestrator-stage-6.md — parada única do pipeline (#8205)", () => {
   const stage6 = readFileSync(STAGE_6, "utf8");
+
+  it("o gate único (§6c) usa a wording ok/ok HH:MM/abortar (não mais sim/sim HH:MM)", () => {
+    const sixC = stage6.slice(stage6.indexOf("### 6c."), stage6.indexOf("### 6d-kit."));
+    assert.match(sixC, /ok\s+HH:MM/);
+    assert.match(sixC, /\bok\b.*→ agenda/);
+  });
+
+  it("o gate único (§6c) pede explicitamente a revisão visual do e-mail de teste", () => {
+    const sixC = stage6.slice(stage6.indexOf("### 6c."), stage6.indexOf("### 6d-kit."));
+    assert.match(sixC, /Confira o e-mail de teste/i);
+    assert.match(sixC, /test_email/);
+  });
+
+  it("#5731/#11225: derive-stage6 roda no §6b2, antes de ler a lista e do gate", () => {
+    const idx6b2 = stage6.indexOf("### 6b2.");
+    const idxDerive = stage6.indexOf("derive-editor-requests.ts derive-stage6 --edition {AAMMDD}");
+    const idxRead = stage6.indexOf("Ler `{EDITION_DIR}/_internal/editor-requests.jsonl`");
+    const idxGate = stage6.indexOf("### 6c.");
+    assert.ok(idx6b2 !== -1 && idxDerive !== -1 && idxRead !== -1, "§6b2, derive-stage6 e a leitura da lista devem existir");
+    assert.ok(idx6b2 < idxDerive && idxDerive < idxRead && idxRead < idxGate, "ordem: §6b2 → derive-stage6 → leitura → gate");
+  });
 
   it("§6b2 (pedidos editoriais) não tem mais loop de confirmação interativa", () => {
     const idx6b2 = stage6.indexOf("### 6b2.");

@@ -101,7 +101,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `intra-edition-fact-recurrence` | Item do pool com a mesma história de um destaque ou de outro item da edição (heurístico, warning-only) | #11173 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `kit-fixture-audit` | assinante de fixture de teste (ex: ana@example.com) ATIVO na base Kit de produção (#6336) | #6336 |
-| `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá) | #6506 |
+| `kit-html-too-large` | _internal/newsletter-final-kit.html acima de 104448 bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506) | #6506 |
 | `max-content-items` | rascunho do Gate 4 com no máximo 13 conteúdos (destaques + seções secundárias) (#9785) | #9785 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `newsletter-html-not-behind-reviewed` | newsletter-final.html não ficou atrás de 02-reviewed.md — replant/edição no gate sem re-render (#10245; error desde #10258 — bloqueia o sentinel do Stage 4; reviewed só tocado, com sha256 igual ao carimbo do render, não acusa) | #10245 |
@@ -164,8 +164,8 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | id | descrição | issue |
 |---|---|---|
 | `edition-report-exists` | _internal/edition-report.html escrito pelo send-edition-report.ts (#1510) | #1510 |
-| `kit-draft-fresh` | backend Kit: o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); o aviso nomeia também o re-run da Brevo diária quando ela participou da edição (#9442) | #9428 |
-| `scheduled-at-present` | 05-published.json tem scheduled_at ou status=published (#1694) | #1694 |
+| `kit-draft-fresh` | o e-mail re-renderizado do disco bate com o content_hash gravado no publish do rascunho (#9428); o aviso nomeia também o re-run da Brevo diária quando ela participou da edição (#9442) | #9428 |
+| `scheduled-at-present` | newsletter-kit-published.json tem scheduled_at ou status=published (#1694) | #1694 |
 | `site-page-pr-merged` | PR da página do site registrado em _internal/site-page-published.json está MERGED e a página não está defasada (slug/insumos, #10207) — GATE-BLOCKING: a Etapa 6 não termina sem o merge, o PR é aberto no início da Etapa 5 sem esperar (#10160) | #10160 |
 | `site-page-published` | _internal/site-page-published.json registra published:true — GATE-BLOCKING desde #7578 (era warning, #7283) | #7578 |
 | `site-sitemap-no-orphans` | toda página em workers/site/public/p/ tem entrada no sitemap.xml — sem isso a página é invisível no buscador E no arquivo (#7578) | #7578 |

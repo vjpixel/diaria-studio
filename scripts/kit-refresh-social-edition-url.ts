@@ -2,8 +2,7 @@
 /**
  * scripts/kit-refresh-social-edition-url.ts (#7405)
  *
- * Fecha o gap achado ao vivo na edição 260904: com
- * `publishing.newsletter.backend === "kit"`, o Kit só atribui slug real ao
+ * Fecha o gap achado ao vivo na edição 260904: o Kit só atribui slug real ao
  * `public_url` do broadcast depois que ele sai do status `"draft"` de
  * verdade (agendado — `schedule-newsletter-kit.ts`, Stage 6, §6d-kit) —
  * `public: true` sozinho na Etapa 5 NÃO basta (medido ao vivo: broadcast
@@ -95,16 +94,12 @@ import { tryResolveEditionDirArg } from "./lib/resolve-edition-dir-arg.ts"; // #
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-interface PlatformConfig {
-  publishing?: { newsletter?: { backend?: string } };
-}
-
 export type KitRefreshSocialEditionUrlResult =
   | { ok: true; resolved: true; editionUrl: string; unresolvedPlaceholders: string[] }
   | {
       ok: true;
       resolved: false;
-      reason: "backend_not_kit" | "no_slug_yet" | "already_resolved" | "already_own_domain";
+      reason: "no_slug_yet" | "already_resolved" | "already_own_domain";
       editionUrl?: string;
     }
   | { ok: false; code: 3 | 4; reason: string };
@@ -362,9 +357,6 @@ export async function main(rootDirOverride?: string): Promise<void> {
     return;
   }
 
-  const platformConfig = JSON.parse(
-    readFileSync(resolve(rootDir, "platform.config.json"), "utf8"),
-  ) as PlatformConfig;
   const resolvedArg = tryResolveEditionDirArg(editionDirArg, { root: rootDir }); // #9427 (antes: cwd)
   if (!resolvedArg.ok) {
     process.stderr.write(`ERRO: ${resolvedArg.error}\n`);

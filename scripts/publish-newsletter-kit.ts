@@ -161,8 +161,7 @@
  * (resolver o subscriber por e-mail + tagueá-lo se ainda não estiver) é
  * trabalho futuro, não coberto nesta PR.
  *
- * Exit codes: 1 uso/erro fatal genérico; 2 config/flag ausente ou backend
- * != "kit"; 7 assunto vazio (`content.title` ausente); 8 o HTML Kit ainda
+ * Exit codes: 1 uso/erro fatal genérico; 7 assunto vazio (`content.title` ausente); 8 o HTML Kit ainda
  * menciona a Beehiiv (crédito de plataforma não substituído, #6195); 10
  * PATCH do draft existente zerou `send_at` de um broadcast já agendado e o
  * reagendamento automático de defesa em profundidade também falhou — ver

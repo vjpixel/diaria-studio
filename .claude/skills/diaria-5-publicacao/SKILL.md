@@ -17,7 +17,7 @@ Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o S
 
 **O que continua separado, de propósito:** os números dos stages, os dois sentinels (`.step-5-done.json`/`.step-6-done.json`), os invariants por stage, `find-current-edition --stage 5|6`, a statusline e o Studio. A fusão é de **invocação**, nunca de estado.
 
-**O gate NÃO sai — e desde #8205 é a ÚNICA parada da skill inteira.** O gate de agendamento (§6c do playbook do Stage 6) é um dos dois gates de projeto do CLAUDE.md — critério 1, irreversível pra terceiros — e agora também pede explicitamente a revisão visual do e-mail de teste pelo editor. Tudo que antes tinha parada própria (pedidos editoriais registrados, guard de slug do bloco WhatsApp, auto-reporter) virou contexto dentro deste único gate ou execução automática sem pergunta — nunca uma 2ª parada.
+**O gate NÃO sai — e desde #8205 é a ÚNICA parada da skill inteira.** O gate de agendamento (§6c do playbook do Stage 6) é um dos dois gates de projeto do CLAUDE.md — critério 1, irreversível pra terceiros — e agora também pede explicitamente a revisão visual do e-mail de teste pelo editor. Tudo que antes tinha parada própria (pedidos editoriais registrados, auto-reporter) virou contexto dentro deste único gate ou execução automática sem pergunta — nunca uma 2ª parada.
 
 **Exceção nomeada ao princípio #5578.** Esta é a única transição `/diaria-N-*` que encadeia sozinha. O princípio segue valendo em todas as outras — inclusive na fronteira pós-gate 4 (#6171), que é quem garante que esta skill sempre começa em sessão nova.
 
@@ -25,7 +25,7 @@ Este comando leva a edição do dispatch até o fim do pipeline. Ao terminar o S
 
 ## Canais (#6610)
 
-Stage 5 dispatcha, hoje, **8 canais** — lista completa em `.claude/agents/orchestrator-stage-5.md` §5c-3/5c-3b (fonte de verdade operacional; não duplicar os detalhes de cada script aqui):
+Stage 5 dispatcha, hoje, **7 canais** — lista completa em `.claude/agents/orchestrator-stage-5.md` §5c-3/5c-3b (fonte de verdade operacional; não duplicar os detalhes de cada script aqui):
 
 1. **Newsletter** — Kit (`publish-newsletter-kit.ts` — teste preferencialmente pelo "Send test email" da UI do Kit via `--draft-only-for-ui-test` + `--mark-ui-test-sent --at`, com fallback `--send-test` sem Chrome, #10395; detalhes no §5c-1-kit). A Beehiiv é só arquivo histórico (#11225).
 2. **LinkedIn** — `publish-linkedin.ts --schedule` (Worker `diaria-linkedin-cron` + fallback Make webhook).
@@ -38,14 +38,14 @@ Stage 5 dispatcha, hoje, **8 canais** — lista completa em `.claude/agents/orch
 ## Argumentos
 
 - `/diaria-5-publicacao all AAMMDD` — roda publicação paralela (todos os canais acima) + auto-reporter
-- `/diaria-5-publicacao newsletter AAMMDD` — re-dispara só a newsletter (Beehiiv ou Kit, conforme backend); útil pra fix isolado após template errado
+- `/diaria-5-publicacao newsletter AAMMDD` — re-dispara só a newsletter (Kit); útil pra fix isolado após template errado
 - `/diaria-5-publicacao social AAMMDD` — re-dispara só os canais sociais (LinkedIn, Facebook, Instagram, Threads, Twitter/X); útil pra retry de social falhado sem regerar a newsletter
 
-**Opt-out por canal (#1326):** flag `--skip {canal[,canal...]}` (CSV) ignora dispatch dos canais listados. Canais válidos: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo`, `kit`, `youtube` (#10659, §5b-youtube; ver `VALID` em `scripts/lib/publish-consent.ts`). Default = tudo auto. Exemplos:
-- `/diaria-5-publicacao AAMMDD --skip newsletter` — só canais sociais/Brevo/Kit automáticos, newsletter manual
-- `/diaria-5-publicacao AAMMDD --skip linkedin,facebook,instagram,threads,twitter` — só newsletter (+Brevo/Kit) automático
-- `/diaria-5-publicacao AAMMDD --skip brevo,kit` — pula os canais de reativação/parceiro nesta edição
-- `/diaria-5-publicacao AAMMDD --skip newsletter,linkedin,facebook,instagram,threads,twitter,brevo,kit` — tudo manual
+**Opt-out por canal (#1326):** flag `--skip {canal[,canal...]}` (CSV) ignora dispatch dos canais listados. Canais válidos: `newsletter`, `linkedin`, `facebook`, `instagram`, `threads`, `twitter`, `brevo`, `youtube` (#10659, §5b-youtube; ver `VALID` em `scripts/lib/publish-consent.ts`). Default = tudo auto. Exemplos:
+- `/diaria-5-publicacao AAMMDD --skip newsletter` — só canais sociais/Brevo automáticos, newsletter manual
+- `/diaria-5-publicacao AAMMDD --skip linkedin,facebook,instagram,threads,twitter` — só newsletter (+Brevo) automático
+- `/diaria-5-publicacao AAMMDD --skip brevo` — pula o canal de reativação nesta edição. O token `kit` é recusado desde o #11225: o e-mail da diária é o canal `newsletter`
+- `/diaria-5-publicacao AAMMDD --skip newsletter,linkedin,facebook,instagram,threads,twitter,brevo` — tudo manual
 
 Se não passar data, rodar `npx tsx scripts/lib/find-current-edition.ts --stage 5` e parsear `candidates[]` do JSON de saída (#583):
   - **Se `candidates.length === 1`**: assumir essa edição. Logar info: `Assumindo edição em curso: {AAMMDD}`. Editor pode interromper se errado.
@@ -102,7 +102,7 @@ npx tsx scripts/check-worker-cors.ts --worker-url https://eia.diar.ia.br
 
 ## Passo 0 — Confirmar modo de publicação antes de qualquer dispatch (#336, invertido em #1326)
 
-**Default = tudo automático** (#1326). Editor pode opt-out por canal via flag `--skip` — o gate interativo (menu numérico) que existia aqui foi **removido (#5321, "Perguntar é exceção")**: o gate do Stage 4 já aconteceu, o editor já revisou o conteúdo, e nenhuma opção do menu passava no rubrico (nada irreversível — o Kit sai como rascunho, LinkedIn/Facebook/Instagram/Threads/X saem agendados 24h+ à frente, Brevo/Kit diária saem como rascunho, tudo reversível no dashboard de cada plataforma antes de ir ao ar).
+**Default = tudo automático** (#1326). Editor pode opt-out por canal via flag `--skip` — o gate interativo (menu numérico) que existia aqui foi **removido (#5321, "Perguntar é exceção")**: o gate do Stage 4 já aconteceu, o editor já revisou o conteúdo, e nenhuma opção do menu passava no rubrico (nada irreversível — o Kit sai como rascunho, LinkedIn/Facebook/Instagram/Threads/X saem agendados 24h+ à frente, Brevo diária sai como rascunho, tudo reversível no dashboard de cada plataforma antes de ir ao ar).
 
 **Path 1 — flag `--skip` foi passado:**
 ```bash
@@ -121,12 +121,12 @@ npx tsx scripts/build-publish-consent.ts --edition {AAMMDD} --default-auto
 Imprimir banner e seguir direto pro dispatch — sem esperar resposta:
 ```
 Modo de publicação: TUDO AUTOMÁTICO (default, #1326/#5321).
-Newsletter (Beehiiv/Kit) sai como rascunho; LinkedIn, Facebook, Instagram,
+Newsletter (Kit) sai como rascunho; LinkedIn, Facebook, Instagram,
 Threads e X saem agendados 24h+ à frente; Brevo diária sai
 como rascunho — tudo reversível no dashboard de cada plataforma antes de ir
 ao ar. Pra excluir um canal desta edição, rode de novo com
 --skip {canal[,canal...]} (newsletter, linkedin, facebook, instagram,
-threads, twitter, brevo, kit, youtube).
+threads, twitter, brevo, youtube).
 ```
 
 ## Passo 0b — Aviso de vídeo do D1 (#10943, aviso, não gate)
@@ -168,7 +168,7 @@ npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode soci
 6. Twitter/X via Buffer MCP — `prep-twitter-posts.ts` + `mcp__claude_ai_Buffer__create_post` por post, conduzido pelo orchestrator diretamente (fora do dispatch paralelo de scripts Bash — só alcançável via sessão de agente)
 7. `brevo-diaria-stage5-dispatch.ts` — só se `consent.brevo === "auto"`; cria só o RASCUNHO
 
-Após todos retornarem, **loop de review-test-email** roda em cima do draft da newsletter (Beehiiv ou Kit) — só via Gmail MCP, sem fallback via Chrome (#8205).
+Após todos retornarem, **loop de review-test-email** roda em cima do draft da newsletter (Kit) — só via Gmail MCP, sem fallback via Chrome (#8205).
 
 **Stage 5 não tem gate próprio** — dispatch puro (#1326). A única parada de toda a skill é o gate único do Stage 6 (§6c) — revisão visual do e-mail de teste pelo editor + agendamento (#8205).
 
@@ -178,7 +178,7 @@ Stage 5 encerra o dispatch (newsletter draft + todos os canais sociais agendados
 
 ## Output
 
-- `_internal/05-published.json` — `draft_url`, `test_email_sent_at`, `template_used`, `review_completed` (newsletter Beehiiv) ou `_internal/newsletter-kit-published.json` (backend Kit)
+- `_internal/newsletter-kit-published.json` — `broadcast_id`, `subject`, `status` — e `_internal/05-review-kit.json` — `review_status` (newsletter)
 - `_internal/06-social-published.json` — posts com `platform`, `destaque`, `url`, `status`, `scheduled_at` (LinkedIn, Facebook, Instagram, Threads, Twitter/X)
 - `_internal/brevo-diaria-published.json` — canal Brevo diária
 - `_internal/.step-5-done.json` — sentinel de conclusao do Stage 5

@@ -44,7 +44,7 @@
  *      Divergência aborta ALTO, depois de gravar o id no state pra que uma
  *      reexecução não crie um 2º rascunho por cima do problema; falha de rede
  *      na releitura é fail-soft (vira `kitAudienceVerified: null` + aviso).
- *      Mesma disciplina de `kit-diaria-stage5-dispatch.ts` (#6582).
+ *      Mesma disciplina de `kit-diaria-stage5-dispatch.ts` (removido no #11225) (#6582).
  *
  * ## Duas escolhas de payload que não são detalhe
  *
@@ -189,7 +189,7 @@ export interface ApoiadoresKitDeps {
   /**
    * Releitura pós-criação (#7633) — o 2xx da criação NÃO é prova de que o
    * `subscriber_filter` pegou. Mesmo dep e mesma disciplina de
-   * `kit-diaria-stage5-dispatch.ts` (#6582), o canal irmão de mesmo perfil de
+   * `kit-diaria-stage5-dispatch.ts` (removido no #11225) (#6582), o canal irmão de mesmo perfil de
    * risco. Tipado como `{ subscriber_filter?: unknown }` de propósito: só
    * este campo importa aqui, e a API pode não ecoá-lo.
    */
@@ -291,7 +291,7 @@ export type AudienceVerification =
 
 /**
  * Pura: compara o `subscriber_filter` relido contra o esperado (#7633, achado
- * do silent-failure-hunter; espelha `kit-diaria-stage5-dispatch.ts` #6582).
+ * do silent-failure-hunter; espelha `kit-diaria-stage5-dispatch.ts` (removido no #11225) #6582).
  *
  * Três resultados, e a distinção entre os dois últimos importa:
  *   - `true` — a API ecoou exatamente o filtro enviado.
@@ -469,7 +469,7 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   // #7633 (achado do silent-failure-hunter) — o 2xx da criação NÃO é prova de
   // que o `subscriber_filter` pegou, e aqui o erro que passaria batido é o
   // pior do domínio: rascunho com a base INTEIRA em vez da tag de apoiadores.
-  // Mesma releitura que `kit-diaria-stage5-dispatch.ts` faz desde o #6582.
+  // Mesma releitura que `kit-diaria-stage5-dispatch.ts` (removido no #11225) faz desde o #6582.
   // Fail-soft na REDE (a releitura é camada adicional; o broadcast já existe
   // de qualquer jeito), fail-loud na DIVERGÊNCIA.
   let verification: AudienceVerification;

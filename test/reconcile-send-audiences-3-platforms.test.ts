@@ -118,6 +118,18 @@ describe("findOrphans (#7385) — ativo em alguma plataforma, fora de toda audi�
     assert.equal(orphans.length, 0);
   });
 
+  it("#11225: ativo só na Beehiiv, que não envia mais, é órfão", () => {
+    const active: EmailSource[] = [
+      { name: "kit", emails: ["k@x.com"] },
+      { name: "beehiiv", emails: ["so-beehiiv@x.com"] },
+    ];
+    const sendAudience: EmailSource[] = [
+      { name: "kit", emails: ["k@x.com"] },
+      { name: "brevo", emails: [] },
+    ];
+    assert.deepEqual(findOrphans(active, sendAudience), [{ email: "so-beehiiv@x.com", activeIn: ["beehiiv"] }]);
+  });
+
   it("nenhum ativo em nenhuma plataforma — nenhum órfão (não confundir ausente com órfão)", () => {
     const orphans = findOrphans([{ name: "kit", emails: [] }], [{ name: "kit", emails: [] }]);
     assert.equal(orphans.length, 0);

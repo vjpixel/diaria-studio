@@ -6,9 +6,9 @@
  * observabilidade descrito na issue #5494 item 3: se o backup não gerar o
  * snapshot da semana, `check-acquisition-health.ts` cai silenciosamente no
  * guard de idempotência ("já avaliado nesta semana") — journal de servidor,
- * exit 0, sem e-mail. A perda é irrecuperável (`promoteBeehiivSubscription`
- * faz DELETE+CREATE diário e sobrescreve a origem — o snapshot é a única
- * cópia da origem antes da destruição).
+ * exit 0, sem e-mail. A perda é irrecuperável (o DELETE+CREATE da reativação
+ * na Beehiiv, hoje só pelo Worker `reativar`, sobrescreve a origem — o snapshot
+ * é a única cópia dela).
  *
  * Mesmo padrão dos outros `*-Alarm` deste lote (#5111
  * `linkedin-weekly-staleness-alarm.ts`, #4755 `geo-citation-staleness-alarm.ts`):
@@ -289,8 +289,8 @@ export function buildBeehiivBackupStalenessAlarmEmail(
     "",
     VERDICT_REASON[evaluation.verdict],
     "",
-    "Por que importa: promoteBeehiivSubscription (scripts/evaluate-brevo-diaria.ts) faz DELETE+CREATE diário e " +
-      "sobrescreve o utm_source original — o snapshot semanal é a única cópia da origem antes da destruição. Um " +
+    "Por que importa: o DELETE+CREATE da reativação na Beehiiv (Worker reativar; até o #11225, também " +
+      "evaluate-brevo-diaria.ts) sobrescreve o utm_source original — o snapshot semanal é a única cópia da origem. Um " +
       "domingo perdido em silêncio não volta.",
     "",
     "Rode manualmente: npx tsx scripts/backup-beehiiv.ts",

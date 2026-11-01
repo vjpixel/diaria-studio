@@ -4261,7 +4261,7 @@ export const STAGE_4_RULES: InvariantRule[] = [
   },
   {
     id: "kit-html-too-large",
-    description: `_internal/newsletter-final-kit.html acima de ${KIT_HTML_SIZE_ERROR_BYTES} bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506, error só quando backend ativo é "kit"; warning até lá)`,
+    description: `_internal/newsletter-final-kit.html acima de ${KIT_HTML_SIZE_ERROR_BYTES} bytes (102 KB) — limite de clipping do Gmail, pixel de abertura do Kit ficaria abaixo do corte (#6506)`,
     source_issue: "#6506",
     stage: 4,
     run: checkKitHtmlSize,

@@ -155,7 +155,7 @@ function isRetriableStatusNonIdempotent(status: number): boolean {
  *    re-rodar, não caçar bug. O caller pula o envio (falha segura), mas o
  *    estado confunde: "canal ligado, tag criada, e mesmo assim inativo".
  * 4. **Editar broadcast agendado desagenda.** Qualquer `PATCH` num broadcast
- *    com `send_at` exige reagendar depois — ver `schedule-kit-diaria.ts`.
+ *    com `send_at` exige reagendar depois — ver `schedule-kit-diaria.ts` (removido no #11225).
  *    Esta foi a mais cara: no piloto dos Patronos, mudar o assunto cancelou o
  *    envio do dia seguinte sem erro nenhum. **2ª ocorrência confirmada ao vivo
  *    (#8208, edição 260917):** o mesmo aconteceu no broadcast de PRODUÇÃO da
@@ -357,7 +357,7 @@ export interface KitBroadcastDetail extends KitBroadcastSummary {
   email_address: string;
   email_template: { id: number; name: string };
   // #6582 — usado pela verificação pós-dispatch do canal Kit paralelo
-  // (`kit-diaria-stage5-dispatch.ts`): confirma que o `subscriber_filter`
+  // (`kit-diaria-stage5-dispatch.ts` (removido no #11225)): confirma que o `subscriber_filter`
   // enviado em `POST /broadcasts` "pegou" de verdade, mesma disciplina do
   // #573 (2xx não implica efeito) já aplicada ao resto deste módulo. **NÃO
   // confirmado ao vivo se `GET /broadcasts/{id}` ecoa este campo de volta**
@@ -377,7 +377,7 @@ export async function getBroadcast(id: number, config?: KitConfig): Promise<KitB
 
 // ---------------------------------------------------------------------------
 // Subscribers — leitura (#7357: `created_after` alimenta o resgate por data
-// do canal `kit_diaria`, ver docstring de `kit-diaria-channel.ts`)
+// do canal `kit_diaria`, ver docstring de `kit-diaria-channel.ts` (removido no #11225))
 // ---------------------------------------------------------------------------
 
 /** Shape de `GET /v4/subscribers` com `include=tags` — só os campos que

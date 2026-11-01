@@ -548,8 +548,8 @@ export function readEditionInputs(
   if (!published.post_url) {
     throw new EditionInputsInvalid(
       "05-published.json existe mas não tem post_url, e nenhum --slug foi passado — " +
-        "no Stage 6 normal, §6b-site deve receber --slug com o valor confirmado via " +
-        "get_post em §6b-slug (o mesmo slug que o guard do bloco WhatsApp já verificou).",
+        "a edição nova usa --slug-from-d1 (§5b-site e §6b-site); edição antiga da Beehiiv, " +
+        "passe --slug com o slug real do post.",
     );
   }
 
