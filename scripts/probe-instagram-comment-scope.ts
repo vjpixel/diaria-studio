@@ -1,6 +1,8 @@
 /**
  * probe-instagram-comment-scope.ts (#11750)
  *
+ * @one-off-validity: permanente motivo="roda no Stage 4 de toda edição; só o nome coincide com o padrão probe-*"
+ *
  * Grava em `{edition}/_internal/instagram-comment-scope.json` se o token que
  * vai comentar no Instagram tem `instagram_manage_comments`, para o preview
  * do Stage 4 (`render-social-html.ts`) mostrar no 4º post (USE MELHOR) a
