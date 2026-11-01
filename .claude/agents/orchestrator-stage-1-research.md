@@ -41,7 +41,7 @@ Design de 5 fases (o script é um processo Node puro — não alcança MCP, Skil
    npx tsx scripts/stage-1-run.ts --phase post-research-pre-score --edition {AAMMDD}
    ```
 
-3. **Fase `post-score`** (SÓ no caminho chunked) — §1q.3 (merge-scored-chunks, lendo os `scored-chunk-{i}.json` que o orchestrator escreveu nos paths canônicos após os dispatches scorer-chunk) → branch pelo exit code (#1669) → §1q.3-bis (integrity checkpoint) → devolve `pendingAgentDispatch` pro scorer-select.
+3. **Fase `post-score`** (SÓ no caminho chunked, e só depois que TODOS os `scorer-chunk` concluíram — o Agent pode voltar assíncrono, #11749) — §1q.3 (merge-scored-chunks `--require-done`, lendo os `scored-chunk-{i}.json` que o orchestrator escreveu nos paths canônicos após os dispatches scorer-chunk; `mergePending: true` = chunk sem marcador de conclusão, esperar e re-chamar) → branch pelo exit code (#1669) → §1q.3-bis (integrity checkpoint) → devolve `pendingAgentDispatch` pro scorer-select.
    ```bash
    npx tsx scripts/stage-1-run.ts --phase post-score --edition {AAMMDD} --chunk-count N
    ```
@@ -536,6 +536,8 @@ O manifest stdout traz `chunk_count` + `chunk_files[]` + `pool_out` (quando `--p
 
 **1q.2 — Pontuar em paralelo.** Disparar `chunk_count` agents `scorer-chunk` **EM PARALELO** (uma chamada `Agent` por chunk, todas no MESMO bloco de tool calls). Cada um: input = `scoring-chunks/scoring-chunk-{i}.json`, out_path = `scoring-chunks/scored-chunk-{i}.json`.
 
+**Esperar a CONCLUSÃO de cada agente, não o arquivo (#11749).** A chamada `Agent` pode voltar assíncrona mesmo quando o driver da sessão diz que é síncrona (edição 261103: `scorer-chunk` e `scorer-select` voltaram em background). JSON parseável em `scored-chunk-{i}.json` não prova que o agente terminou — ele pode estar corrigindo o arquivo. Só seguir pro 1q.3 depois da notificação de conclusão de TODOS os `scorer-chunk`; o guard mecânico é o marcador `scored-chunk-{i}.json.done`, gravado por último pelo agente e exigido pelo merge (`--require-done`, exit 3 = pendente). Mesma regra pro `scorer-select` (1q.4): esperar a conclusão do agente antes da fase `post-select-render`.
+
 **1q.3 — Merge.**
 ```bash
 # #2496: usar tmp-scoring-pool.json (pool capado emitido pelo split) como --categorized,
@@ -547,12 +549,14 @@ npx tsx scripts/merge-scored-chunks.ts \
   --chunk-scores {EDITION_DIR}/_internal/scoring-chunks/scored-chunk-0.json,...,scored-chunk-{N-1}.json \
   --allscored-out {EDITION_DIR}/_internal/tmp-allscored.json \
   --finalists-out {EDITION_DIR}/_internal/tmp-finalists.json \
-  --top 15
+  --top 15 \
+  --require-done
 MERGE_EXIT=$?   # capturar ANTES do echo (echo zera o $?)
-echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável · 1 = erro de args/input · 2 = CATASTRÓFICO (#1669)
+echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável · 1 = erro de args/input · 2 = CATASTRÓFICO (#1669) · 3 = chunk pendente (#11749)
 ```
 
-**Ramificar pelo EXIT CODE em `$MERGE_EXIT` (#1669 — determinístico; NÃO dependa de parsear `catastrophic` do manifest stdout).** Split é round-robin, então um chunk perdido leva uma fatia dos MELHORES artigos, não os piores — sem o guard o #1 highlight some silenciosamente. **Os 3 códigos são exaustivos — não há catch-all "seguir":**
+**Ramificar pelo EXIT CODE em `$MERGE_EXIT` (#1669 — determinístico; NÃO dependa de parsear `catastrophic` do manifest stdout).** Split é round-robin, então um chunk perdido leva uma fatia dos MELHORES artigos, não os piores — sem o guard o #1 highlight some silenciosamente. **Os 4 códigos são exaustivos — não há catch-all "seguir":**
+- **exit 3** (#11749 — algum `scored-chunk-{i}.json` sem marcador `.done`, ou reescrito depois dele; `pending_chunks` no stdout; **nada foi gravado**): o agente daquele chunk ainda não terminou. Esperar a conclusão e re-rodar o merge. Se o agente já retornou e o marcador não existe, re-disparar só aquele chunk. Na fase `post-score` do `stage-1-run.ts` isso volta como `code: 1` + `mergePending: true`.
 - **exit 2** (= `catastrophic: true` — um chunk inteiro ilegível `failed_chunks > 0`, ou `missing_count > 2`): **NÃO seguir com o resultado degradado** (os arquivos `tmp-allscored.json`/`tmp-finalists.json` foram escritos só pra diagnóstico). (a) **Retry** o(s) `scorer-chunk` que falhou(aram) — re-disparar o agent só pros `scored-chunk-{i}.json` ausentes/inválidos — e re-rodar o merge (1q.3). (b) Se ainda sair 2 após o retry, **cair no 1q-fallback** (single-call `scorer` sobre o `tmp-scoring-pool.json` quando existir, preservando as anotações determinísticas; usar `tmp-dates-reviewed.json` apenas se o pool não existir), descartando o resultado chunked. Logar `level: error`.
 - **exit 1** (erro de invocação — args malformados — ou `tmp-scoring-pool.json` ausente/corrompido, ex: split rodou sem `--pool-out`; **nenhum output novo foi escrito**): **HALT — NÃO seguir.** Os `tmp-finalists.json`/`tmp-allscored.json` podem estar stale de um run anterior; **não** consumir em 1q.4/1q.5. Corrigir os args/input (confirmar que 1q.1 passou `--pool-out`) e re-rodar, ou cair no 1q-fallback. Logar `level: error`.
 - **exit 0 + `incomplete: true`** (gap ≤ 2 artigos): logar `level: warn` e seguir — os artigos sem score viraram 0 e serão filtrados em 1s (ruído recuperável).
