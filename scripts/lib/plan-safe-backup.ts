@@ -128,6 +128,25 @@ export function recoverPlanFromSafeBackup(planPath: string): PlanSafeBackupRecov
   return { status: "unrecoverable", backups: backupPaths };
 }
 
+/**
+ * Leitura SOMENTE LEITURA da cópia de conflito (#11768): devolve o conteúdo
+ * do `plan-*-safeBackup-*.json` válido mais recente ao lado de `planPath`,
+ * sem gravar nada no disco. Para exibidores (statusline) que rodam a cada
+ * ~30s em toda máquina e não podem virar escritores no `data/` sincronizado
+ * pelo OneDrive — o restauro (`recoverPlanFromSafeBackup`) fica com os
+ * leitores da própria rodada (coordenador, gates, run-nightly-chain).
+ * `null` quando o basename não é `plan.json`, não há backup ou nenhum é um
+ * objeto JSON válido.
+ */
+export function readLatestPlanSafeBackup(planPath: string): Record<string, unknown> | null {
+  if (basename(planPath) !== "plan.json") return null;
+  for (const b of findPlanSafeBackups(dirname(planPath))) {
+    const raw = isValidPlanJson(b.path);
+    if (raw !== null) return JSON.parse(raw) as Record<string, unknown>;
+  }
+  return null;
+}
+
 /** Mensagem humana (stderr) para os status que exigem atenção; `null` em `clean`. */
 export function describePlanSafeBackupRecovery(planPath: string, r: PlanSafeBackupRecovery): string | null {
   switch (r.status) {

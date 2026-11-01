@@ -93,7 +93,7 @@ import { sentinelExists, readSentinel } from "./lib/pipeline-state.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#3025: layout flat+nested
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #3054: rejeita sentinels calendário-inválidos (ex: 260999)
-import { readPlanJson } from "./lib/plan-safe-backup.ts";
+import { readLatestPlanSafeBackup } from "./lib/plan-safe-backup.ts";
 import { getMachineId } from "./lib/machine-id.ts"; // #3033: filtra plan.json de develop de OUTRA máquina
 import { normalizeIssues } from "./lib/plan-issues-normalize.ts"; // #4860: plan.issues também pode ser dict (develop)
 
@@ -581,13 +581,15 @@ export function readPlanFromDir(planPath: string, readers: PlanFileReaders = def
   try {
     if (!readers.existsSync(planPath)) {
       // #11726: plano ausente pode ser só o OneDrive tendo renomeado o plano
-      // vivo para `plan-{máquina}-safeBackup-{NNNN}.json` (#10579). O leitor
-      // único recupera a cópia; o aviso é engolido de propósito — a statusline
-      // roda a cada 30s e não pode imprimir nada além da barra. Só no leitor
-      // real (readers injetados nos testes de #3264 não tocam o disco).
+      // vivo para `plan-{máquina}-safeBackup-{NNNN}.json` (#10579). A
+      // statusline lê a cópia mais recente em modo SOMENTE LEITURA (#11768):
+      // roda a cada 30s em toda máquina e varre rodadas de outras máquinas,
+      // então gravar o plan.json restaurado aqui viraria escrita concorrente
+      // no data/ sincronizado (nova cópia de conflito). O restauro fica com
+      // os leitores da própria rodada (readPlanJson). Só no leitor real
+      // (readers injetados nos testes de #3264 não tocam o disco).
       if (readers !== defaultPlanFileReaders) return null;
-      const read = readPlanJson(planPath, { warn: () => {} });
-      return read.status === "ok" ? (read.plan as Plan) : null;
+      return readLatestPlanSafeBackup(planPath) as Plan | null;
     }
   } catch {
     return null;
