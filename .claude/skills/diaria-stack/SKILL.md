@@ -124,14 +124,33 @@ Re-renderiza com o texto novo (a seleção é reusada). Mostrar ao editor:
 - os avisos da seleção (títulos traduzidos, link fora das regras, edição
   faltando) e o estado do ciclo na Stack (`draft`/`published`/`unknown`).
 
-Sem `--publish`: terminar aqui, imprimindo o comando de envio
-(`npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD} --publish`)
-e lembrando que o post sai publicado na hora.
+### Prévia em Artifact (#11769, sempre)
+
+Publicar a prévia com `Artifact` (só o top-level tem a ferramenta), com ou sem
+`--publish`, e pôr o link na mensagem ao editor. Conteúdo, sem texto novo:
+
+- o post inteiro com os links, o texto escrito para a Stack (abertura e
+  descrições) em destaque visual;
+- o título do webhook (`payload.titulo`) e o estado do ciclo na Stack;
+- os avisos da seleção: títulos traduzidos com o original ao lado, título que
+  bloqueia o `--publish`, edição faltando;
+- o comando de envio
+  (`npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD} --publish`)
+  e o aviso de que o post sai publicado na hora.
+
+Caminho fixo por ciclo, `stack-{cycle}`, pra rerrodada atualizar o mesmo
+artefato em vez de criar outro. Em sessão nova a URL anterior não está à mão:
+recuperar a do artefato existente do ciclo (ou, sem achar, criar e dizer isso).
+Gravar a URL em `data/weekly/{cycle}/_internal/circle-stack-artifact.txt` pra
+rerrodadas a reaproveitarem.
+
+Sem `--publish`: terminar aqui com o link do artefato.
 
 ## Passo 6 — Envio (só com `--publish`)
 
 Publicar é irreversível para terceiros (critério 1 de "Perguntar é exceção"),
-então a skill para UMA vez: `AskUserQuestion` com a prévia do Passo 5 à mão —
+então a skill para UMA vez, com o artefato do Passo 5 já publicado (o editor
+decide olhando a prévia): `AskUserQuestion` —
 "Publicar agora no Radar de Notícias Stack?" (opções: publicar / não
 publicar). `AskUserQuestion` falhando = halt banner (#3938), nunca publicar
 sem a resposta. Com o "publicar":
