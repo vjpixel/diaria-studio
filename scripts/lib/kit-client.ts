@@ -443,11 +443,10 @@ export async function listSubscribers(
  * `test/fixtures/kit-broadcast-click-6185.json`.
  *
  * O que isto destrava vai além do tipo: na Beehiiv, cliques por link só
- * existem via MCP (`list_post_clicks`) — é a razão de o agente
- * `beehiiv-clicks-enricher` existir. No Kit é REST comum. **O agente
- * continua necessário para o caminho Beehiiv** (decisão do editor, 26/08:
- * "por enquanto, a gente quer Beehiiv e Kit funcionando"), mas deixa de ser
- * o único caminho possível.
+ * existiam via MCP (`list_post_clicks`) — era a razão de o agente
+ * `beehiiv-clicks-enricher` existir. No Kit é REST comum. O agente foi
+ * aposentado no #11225 (a Beehiiv é só arquivo histórico e não publica
+ * edição nova), então o Kit é o único caminho de clique por link.
  */
 export interface KitBroadcastClick {
   /**

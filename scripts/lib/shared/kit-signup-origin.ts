@@ -4,7 +4,9 @@
  * Marcador aplicado por todo cadastro que passa pelo caminho Kit-nativo
  * (`subscribeToKit`/`activateSubscriptionKit`, os 3 funis — poll/cursos/
  * reativar) — distingue quem entrou pelo FUNIL do que foi só copiado da
- * Beehiiv pelo sync unidirecional (`Diaria-Kit-Subscriber-Sync`, #6091/#6093).
+ * Beehiiv pelo sync unidirecional (`Diaria-Kit-Subscriber-Sync`, #6091/#6093,
+ * aposentado no #11225) ou pela auto-confirmação Beehiiv de
+ * `evaluate-brevo-diaria.ts` (`promoteSelfConfirmedBeehiivToKit`, #11225).
  *
  * Sem esta distinção, segmentar o envio do Kit por "quem recebe pelo Kit"
  * não teria como excluir os já-copiados sem entrega duplicada com a Beehiiv
@@ -40,13 +42,14 @@
  *
  * - `promoteKitSubscription` (`scripts/evaluate-brevo-diaria.ts`) — promoção
  *   AUTOMÁTICA por score de engajamento do canal Brevo Pending.
- * - `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) — sync unidirecional em LOTE, sem UTM
- *   por assinante disponível no call site (a listagem da Beehiiv usada ali
- *   só devolve e-mail + status; recuperar o UTM real de quem entrou por
- *   este caminho é trabalho do backfill, #6318/`backfill-kit-attribution.ts`,
- *   não deste marcador).
+ * - `promoteSelfConfirmedBeehiivToKit` (`scripts/evaluate-brevo-diaria.ts`,
+ *   #11225) — quem confirmou o double opt-in da Beehiiv e não existia no Kit.
+ *   Grava `beehiiv-sync` + a atribuição da Beehiiv (`buildBeehiivSyncKitFields`).
+ *   Até o #11225 quem gravava este marcador era o sync em lote
+ *   `sync-beehiiv-subscribers-kit.ts`, aposentado; os assinantes que ele
+ *   criou continuam com o marcador.
  *
- * Estes 2 scripts rodam em Node (não em Worker) e conhecem o nome literal
+ * Estes 2 caminhos rodam em Node (não em Worker) e conhecem o nome literal
  * do custom field — `KIT_ORIGEM_CADASTRO_FIELD_NAME` abaixo evita retypar
  * a string em cada call site, sem reintroduzir a indireção via `env` que só
  * faz sentido pro mundo Worker (`applyKitSignupOriginField`).
@@ -61,8 +64,9 @@ export const KIT_NATIVE_SIGNUP_MARKER = "kit-nativo";
  *  `scripts/evaluate-brevo-diaria.ts`). */
 export const KIT_SCORE_PROMOTION_SIGNUP_MARKER = "brevo-diaria-score";
 
-/** #6425 Parte B — sync unidirecional em lote da Beehiiv
- *  (`scripts/sync-beehiiv-subscribers-kit.ts` (aposentado no #11225)). */
+/** #6425 Parte B — veio da Beehiiv. Escritor vivo desde o #11225:
+ *  `promoteSelfConfirmedBeehiivToKit` (`scripts/evaluate-brevo-diaria.ts`);
+ *  antes, o sync em lote `sync-beehiiv-subscribers-kit.ts` (aposentado). */
 export const KIT_BEEHIIV_SYNC_SIGNUP_MARKER = "beehiiv-sync";
 
 /** Nome literal do custom field no Kit (mesmo valor de

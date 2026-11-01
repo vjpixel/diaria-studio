@@ -16,8 +16,8 @@
  *
  * Este script é puramente de LEITURA local — nenhuma chamada MCP/rede.
  * Quem de fato drena via MCP é o agent `beehiiv-engagement-backup`, que
- * consome a lista impressa aqui no mesmo formato de input que
- * `beehiiv-clicks-enricher` já usa (`post_id=<id> title=<title>` por linha).
+ * consome a lista impressa aqui no formato `post_id=<id> title=<title>` por
+ * linha (herdado do `beehiiv-clicks-enricher`, aposentado no #11225).
  *
  * Uso:
  *   npx tsx scripts/list-posts-for-engagement-backup.ts

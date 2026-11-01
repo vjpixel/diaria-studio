@@ -154,15 +154,14 @@ O **ciclo** (`{YY}w{WW}`, ex: `26w31`) é derivado da semana de CONTEÚDO
     daqui que vem o clique que conta hoje.** O envio migrou pro Kit em
     04/09/2026 (#7388/#7386) e a Beehiiv ficou com 0 assinantes ativos.
   - `data/beehiiv-cache/posts/*.json` (`scripts/beehiiv-sync.ts`) — arquivo
-    histórico, e a única origem que o Passo 1 abaixo consegue enriquecer.
+    histórico. Não é mais enriquecido: o `beehiiv-clicks-enricher` foi
+    aposentado no #11225.
 
-  **A seleção por clique (Passo 2) lê os DOIS unificados; o manifest de
-  enriquecimento do Passo 1 é Beehiiv-only de propósito** — "precisa de
-  enriquecimento via MCP `list_post_clicks`" é um conceito que só existe do
-  lado Beehiiv (o Kit é REST comum, `kit-sync.ts` já traz cliques e
-  aberturas junto). Não confundir os dois caminhos: um manifest vazio no
-  Passo 1 **não** significa "sem dado de clique" — significa que não há nada
-  Beehiiv a enriquecer.
+  **A seleção por clique (Passo 2) lê os DOIS unificados.** O manifest do
+  `--manifest-only` (passo 1b) é Beehiiv-only e hoje só diagnóstico: um
+  manifest vazio **não** significa "sem dado de clique" (o Kit é REST comum,
+  `kit-sync.ts` já traz cliques e aberturas junto), e um não-vazio aponta
+  post antigo da Beehiiv que não será mais enriquecido.
 
   Quando a mesma data tem post nas duas origens (janela de rampa,
   ~260817–260903), **o Kit vence** e o script avisa que o sinal do

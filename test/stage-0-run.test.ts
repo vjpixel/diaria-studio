@@ -492,7 +492,7 @@ describe("runStage0 --phase continue — caminho feliz", () => {
 
   it("0h.2 aposentado (#11225) — posts_needing_clicks não-vazio NÃO gera dispatch do beehiiv-clicks-enricher nem grava manifest", async () => {
     const manifest = [{ id: "post_1", title: "Título A" }];
-    const { exec } = makeFakeExec(
+    const { exec, calls: execCalls } = makeFakeExec(
       happyExecHandlers({
         "beehiiv-sync.ts": () => ok(JSON.stringify({ posts_needing_clicks: manifest })),
       }),
@@ -526,6 +526,10 @@ describe("runStage0 --phase continue — caminho feliz", () => {
       "o enricher foi aposentado — Stage 0 nunca mais pede o dispatch",
     );
     assert.ok(!written.some((p) => p.includes("posts-needing-clicks.json")), "manifest de clicks não é mais gravado");
+    assert.ok(
+      execCalls.some((c) => c.script.endsWith("log-event.ts") && c.args.includes("info") && c.args.some((a) => a.includes("posts_needing_clicks descartado"))),
+      "descarte do manifest fica registrado em log info",
+    );
   });
 
   it("0h.1-kit (#7570) — kit-sync roda no mesmo batch de beehiiv-sync e é fail-soft (falha não aborta Stage 0)", async () => {

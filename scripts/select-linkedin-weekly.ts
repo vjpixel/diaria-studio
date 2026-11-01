@@ -20,9 +20,9 @@
  * **`--manifest-only`**: só resolve a janela + cruza com o cache pra emitir
  * o manifest de posts que precisam de enriquecimento de clicks via MCP
  * (mesmo shape de `posts_needing_clicks` do `beehiiv-sync.ts`) — NÃO calcula
- * seleção. A skill usa isso pra decidir se despacha o agent
- * `beehiiv-clicks-enricher` ANTES de rodar a seleção de verdade (sem isso, a
- * 1ª passada rodaria com clicks todos zerados).
+ * seleção. Desde o #11225 é só diagnóstico: o agent `beehiiv-clicks-enricher`
+ * que consumia o manifest foi aposentado (a semana sai pelo Kit, cujos
+ * clicks vêm de `kit-sync.ts`).
  *
  * **`--picks url1,url2,...`** (#5109): resolve o `pendingGroup` de uma
  * invocação anterior — quando `selectHeadlines` (`weekly-linkedin-select.ts`)

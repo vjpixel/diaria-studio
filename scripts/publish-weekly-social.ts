@@ -132,8 +132,9 @@
  * um post não-enriquecido entra no ranking com `ratePct: 0` E
  * `hasClickData: true`, indistinguível de "genuinamente zero cliques" — a
  * seleção por clique silenciosamente deixa de competir de verdade pra esses
- * itens. Rode `--manifest-only` + `beehiiv-clicks-enricher` (Passo 1 do
- * SKILL.md) antes de recorrer à flag.
+ * itens. Desde o #11225 o `beehiiv-clicks-enricher` foi aposentado: post
+ * antigo da Beehiiv sem clicks por link não é mais enriquecido, e a flag é
+ * a única saída quando a janela pega um deles.
  *
  * **Origem Beehiiv/Kit (#6185):** a SELEÇÃO por clique (ranking dos
  * candidatos, `windowPostsUnified` abaixo) lê o cache unificado Beehiiv+Kit
@@ -931,12 +932,11 @@ async function runOneMode(
 
   // #4456-style manifest mode (mesmo padrão de `select-linkedin-weekly.ts
   // --manifest-only`): resolvido ANTES de qualquer console.log narrativo,
-  // pra stdout ficar JSON puro e parseável pelo caller (a skill dispatcha
-  // `beehiiv-clicks-enricher` a partir deste output).
+  // pra stdout ficar JSON puro e parseável pelo caller (diagnóstico desde o
+  // #11225, que aposentou o `beehiiv-clicks-enricher` que consumia isto).
   if (manifestOnly) {
     // #5330: "highlights" não ranqueia por clique — não há nada pra
-    // enriquecer, o manifest sai sempre vazio (evita rodar
-    // beehiiv-clicks-enricher à toa quando o modo nem usa esse dado).
+    // enriquecer, o manifest sai sempre vazio.
     const manifest = mode === "highlights" ? [] : identifyInstagramPostsNeedingClicks(windowPosts);
     console.log(
       JSON.stringify(

@@ -178,7 +178,7 @@ pipeline diário não depende dela: chave `publishing.newsletter.backend` ausent
 ou inválida vale `"kit"` (`parseNewsletterBackend` em
 `scripts/lib/newsletter-backend.ts`), e o conector Beehiiv fora do ar é warn,
 nunca halt. O ramo `backend = "beehiiv"` fica como legado, ativado só com o
-literal explícito. Nada foi removido nesta fatia, e nenhuma configuração da
+literal explícito (remoção pendente, ver abaixo). Nenhuma configuração da
 conta foi alterada.
 
 Classificação dos pontos de contato do item 4 da issue (proposta; remover
@@ -188,7 +188,7 @@ qualquer um deles é decisão à parte):
 |---|---|---|
 | `beehiiv-engagement-backup` (agent) | manter | backup do único dado que some com o acesso (#6465) |
 | `beehiiv-exit-history-drain` (agent) | manter | data real de saída dos `inactive` (#7248); some quando o manifest fica `complete` |
-| `beehiiv-clicks-enricher` (agent) | **aposentado** (removido, #11225) | só enriquecia post novo da Beehiiv; o Stage 0h.2, o `verify-clicks-enrichment.ts` e o passo 1b das skills semanais saíram junto |
+| `beehiiv-clicks-enricher` (agent) | **aposentado** (removido, #11225) | só enriquecia post novo da Beehiiv; o Stage 0h.2, o `verify-clicks-enrichment.ts`, o `apply-mcp-clicks.ts` e o passo 1b das skills semanais saíram junto |
 | `backup-beehiiv.ts` + `beehiiv-backup-staleness-alarm.ts` | manter | backup do arquivo; o alarme é leitura local, não depende de post novo |
 | `diaria-subscribers-ingest-beehiiv.ts` | manter | lê o backup local, sem rede |
 | `fetch-beehiiv-poll-stats.ts` | **aposentado** (removido, #11225) | o "É IA?" é infra própria (`workers/poll`, `fetch-poll-stats.ts`); só servia a edições antigas |
@@ -204,7 +204,7 @@ removeu `sync-beehiiv-subscribers-kit.ts` (com a task
 `evaluate-brevo-diaria.ts` agora escreve direto no Kit, coberta por
 `test/evaluate-brevo-diaria-self-confirm-kit-11225.test.ts`) e o
 `beehiiv-clicks-enricher` (Stage 0h.2, passo 1b de `diaria-linkedin-semanal`
-e `diaria-retro-semanal`, `verify-clicks-enrichment.ts`). Ainda saem: os
+e `diaria-retro-semanal`, `verify-clicks-enrichment.ts`, `apply-mcp-clicks.ts`). Ainda saem: os
 `sync-apoio-*-beehiiv.ts` (o `apoios-diff-alarm.ts`, o `kit-ramp-cohort.ts`,
 o painel Apoios do Studio e a skill `/diaria-apoios-sync` dependem deles, e
 o `sync-apoio-nivel-beehiiv.ts` ainda hospeda a lógica pura de nível que os
@@ -212,9 +212,10 @@ syncs Kit/Brevo/KV importam) e o ramo `backend = "beehiiv"` (entrelaçado com
 o canal paralelo Kit diária do #6114, com o Passo 5c-1 do Stage 5 e com o
 seam `newsletterBackend` de `evaluate-brevo-diaria.ts`).
 
-Fora desta fatia, aguardando o editor: plano/assinatura da conta (item 6) e a
-remoção do ramo legado e dos scripts marcados como aposentar. Alarmes que
-tratam "Beehiiv sem post novo" como falha (item 5) não foram revisados aqui.
+Fora das fatias já feitas: plano/assinatura da conta (item 6, ação do
+editor depois de um export completo) e a remoção do ramo legado e dos
+`sync-apoio-*-beehiiv.ts` (acima). Alarmes que tratam "Beehiiv sem post
+novo" como falha (item 5) não foram revisados aqui.
 
 ### Refs
 

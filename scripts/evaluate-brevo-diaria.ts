@@ -159,6 +159,12 @@
  * duas bases"); esta rotina fecha o gap na primeira oportunidade (próxima
  * avaliação), não deixando o duplo envio se perpetuar indefinidamente.
  *
+ * Com `newsletterBackend === "kit"` (#11225), a auto-confirmação de origem
+ * Beehiiv escreve no Kit antes de sair da fila Brevo
+ * (`promoteSelfConfirmedBeehiivToKit`): cria quem não existe, não toca quem
+ * já está `active`, e deixa quem está não-active no Kit (#8728) seguir pra
+ * avaliação normal (contador `beehiivSelfConfirmedAwaitingKit`).
+ *
  * ## Passo 2: score (taxa de abertura + piso de amostra, 2 variantes)
  *
  * `GET /v3/contacts/{email}` da Brevo retorna `statistics.messagesSent` e
@@ -426,6 +432,7 @@ import {
 import { BREVO_DIARIA_PROMOCAO_SCORE_UTM } from "./lib/shared/utm-registry.ts"; // #4530
 import { ORIGIN_PREFIX } from "./lib/shared/brevo-diaria-origin.ts"; // #6699 — fonte única do prefixo `kit:`
 import { KIT_ORIGEM_CADASTRO_FIELD_NAME, KIT_SCORE_PROMOTION_SIGNUP_MARKER, KIT_BEEHIIV_SYNC_SIGNUP_MARKER } from "./lib/shared/kit-signup-origin.ts"; // #6425 Parte B, #11225
+import { buildAttributionFields, type BeehiivSubscriberRecord } from "./lib/kit-attribution.ts"; // #8060, #11225
 import { REATIVAR_CONFIRMOU_VIA_FIELD_NAME } from "./lib/shared/reativar-confirmou-via.ts"; // #8438
 import { buildOrigemOriginalCustomFields } from "./lib/shared/beehiiv-origem-original.ts"; // #5231
 import { EDITOR_SEED_EMAILS } from "./lib/editor-copy.ts";
@@ -744,12 +751,43 @@ export async function fetchBrevoContactState(
 // ── status Beehiiv atual (auto-confirmação) ────────────────────────────────
 
 /** I/O — status atual da subscription na Beehiiv (`null` se 404 — não encontrada). */
+/** Subscription crua da Beehiiv (`GET subscriptions/by_email`): status +
+ *  campos de atribuição que a mesma resposta já traz (#8060, #11225). */
+export interface BeehiivSubscriptionRaw {
+  email?: string;
+  status?: string;
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  utm_channel?: string;
+  utm_term?: string;
+  utm_content?: string;
+  referring_site?: string;
+  acquisition_source?: string;
+  acquisition_channel?: string;
+}
+
 export async function fetchBeehiivSubscriptionStatus(
   publicationId: string,
   apiKey: string,
   email: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<string | null> {
+  const sub = await fetchBeehiivSubscription(publicationId, apiKey, email, fetchImpl);
+  return sub?.status ?? null;
+}
+
+/**
+ * Mesma chamada de `fetchBeehiivSubscriptionStatus`, devolvendo a
+ * subscription inteira (`null` em 404) — o Passo 1 usa os campos de
+ * atribuição ao escrever no Kit sem pagar um 2º GET (#11225).
+ */
+export async function fetchBeehiivSubscription(
+  publicationId: string,
+  apiKey: string,
+  email: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<BeehiivSubscriptionRaw | null> {
   const res = await fetchImpl(
     `${beehiivApiBase()}/publications/${publicationId}/subscriptions/by_email/${encodeURIComponent(email)}?`,
     { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
@@ -762,8 +800,8 @@ export async function fetchBeehiivSubscriptionStatus(
     await res.body?.cancel().catch(() => {});
     throw new Error(`Beehiiv API ${res.status} em subscriptions/by_email/${email}`);
   }
-  const body = (await res.json()) as { data?: { status?: string } };
-  return body.data?.status ?? null;
+  const body = (await res.json()) as { data?: BeehiivSubscriptionRaw };
+  return body.data ?? null;
 }
 
 // ── decisão pura por contato ────────────────────────────────────────────
@@ -1089,8 +1127,9 @@ export async function verifyPromotedToBeehiiv(
  * (`platform.config.json` → `publishing.newsletter.backend === "kit"`), a
  * Beehiiv não publica mais nada — a promoção só continuava chegando aos
  * assinantes promovidos por uma ponte de sync diária e temporária
- * (`scripts/sync-beehiiv-subscribers-kit.ts` (aposentado no #11225), Beehiiv → Kit, até 24h de
- * atraso), não porque escrever na Beehiiv siga sendo o caminho certo.
+ * (`scripts/sync-beehiiv-subscribers-kit.ts`, Beehiiv → Kit, até 24h de
+ * atraso, aposentada no #11225), não porque escrever na Beehiiv siga sendo
+ * o caminho certo.
  *
  * Estas duas funções são o par que escreve/verifica direto no backend que
  * de fato publica hoje (Kit) — usadas pelo `runEvaluation` quando
@@ -1177,6 +1216,53 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
 }
 
 /**
+ * Pura (#8060, movida de `sync-beehiiv-subscribers-kit.ts` no #11225) —
+ * resolve a atribuição a partir da subscription crua da Beehiiv:
+ * `utm_source` de topo tem prioridade, `acquisition_source` é o último
+ * fallback (idem `utm_channel` ← `acquisition_channel`), mesma precedência de
+ * `ingestBeehiivRoster`.
+ */
+export function resolveBeehiivAttribution(email: string, sub: BeehiivSubscriptionRaw): BeehiivSubscriberRecord {
+  const utmSource = (sub.utm_source?.trim() || sub.acquisition_source?.trim()) || undefined;
+  const utmChannel = (sub.utm_channel?.trim() || sub.acquisition_channel?.trim()) || undefined;
+  return {
+    email,
+    utm_source: utmSource,
+    utm_medium: sub.utm_medium,
+    utm_campaign: sub.utm_campaign,
+    utm_channel: utmChannel,
+    utm_term: sub.utm_term,
+    utm_content: sub.utm_content,
+    referring_site: sub.referring_site,
+  };
+}
+
+/**
+ * Pura (#6425 Parte B + #8060, movida de `sync-beehiiv-subscribers-kit.ts`
+ * no #11225) — `fields` do `POST /v4/subscribers` de quem vem da Beehiiv:
+ * o marcador `origem_cadastro = beehiiv-sync` e, quando há, a atribuição
+ * (`buildAttributionFields`, que também grava `atribuicao_fonte` e faz o
+ * backfill pular o assinante). Sem atribuição, só o marcador.
+ */
+export function buildBeehiivSyncKitFields(attribution?: BeehiivSubscriberRecord): Record<string, string> {
+  const base: Record<string, string> = { [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER };
+  if (!attribution) return base;
+  const attributionFields = buildAttributionFields(attribution);
+  return attributionFields ? { ...base, ...attributionFields } : base;
+}
+
+/** Desfecho de `promoteSelfConfirmedBeehiivToKit` (#11225). */
+export type SelfConfirmedKitOutcome =
+  /** Não existia no Kit: criado `active` e confirmado na releitura. */
+  | { outcome: "created" }
+  /** Já estava `active` no Kit: nada escrito (preserva `origem_cadastro`). */
+  | { outcome: "already_active" }
+  /** Existe no Kit em estado não-active: não reativa (#8728). */
+  | { outcome: "kept_non_active"; state: string }
+  /** POST feito, mas a releitura não confirmou `active`. */
+  | { outcome: "not_confirmed"; reason: string };
+
+/**
  * promoteSelfConfirmedBeehiivToKit (#11225)
  *
  * Passo 1 (auto-confirmação) pra contato de origem BEEHIIV que confirmou o
@@ -1187,44 +1273,36 @@ export async function verifyPromotedToKit(id: number, apiKey: string): Promise<b
  * (decisão do editor de 28/10/2026: a Beehiiv é só arquivo histórico), então
  * a escrita no Kit acontece aqui, na hora.
  *
- * Mesma regra de `decideKitPromotionAction` (#8728): só cria/confirma quem
- * não existe no Kit ou já está `active`. Quem existe em outro estado
- * (`inactive`, `cancelled`, `bounced`, `complained`) nunca é reativado por
- * aqui: o POST seria aceito e ignorado, e reativar quem saiu do Kit sem o
- * consentimento dele é justamente o que o #8728 proíbe. Nesse caso devolve
- * `{ outcome: "await_self_confirmation", state }`: não é falha (contá-la
- * como `failed` toda rodada reabriria o bloqueio de dispatch do #8728), e o
- * caller deixa o contato seguir pra avaliação normal (Passo 2), igual a
- * qualquer contato ainda não confirmado no Kit. Erro de rede propaga.
+ * - Inexistente no Kit → `POST /v4/subscribers` `active` com
+ *   `buildBeehiivSyncKitFields(attribution)` (marcador `beehiiv-sync` + UTM
+ *   da Beehiiv, como a ponte gravava) e releitura (`created`/`not_confirmed`).
+ * - Já `active` → `already_active`, SEM POST: o upsert sobrescreveria o
+ *   `origem_cadastro` real com `beehiiv-sync` e tiraria o assinante da
+ *   contagem de aquisição (`acquisition-health-store.ts`).
+ * - Outro estado (`inactive`, `cancelled`, `bounced`, `complained`) →
+ *   `kept_non_active`: nunca reativa (#8728); o caller deixa o contato seguir
+ *   pra avaliação normal, sem contar como falha.
  *
- * Grava `origem_cadastro = beehiiv-sync` (o mesmo marcador que a ponte
- * gravava), pra `acquisition-health-store.ts` seguir excluindo esse caminho
- * da contagem de cadastro novo.
+ * Erro de rede propaga ao caller.
  */
 export async function promoteSelfConfirmedBeehiivToKit(
   email: string,
   apiKey: string,
-): Promise<
-  | { outcome: "confirmed" }
-  | { outcome: "await_self_confirmation"; state: string }
-  | { outcome: "not_confirmed"; reason: string }
-> {
+  attribution?: BeehiivSubscriberRecord,
+): Promise<SelfConfirmedKitOutcome> {
   const existing = await getKitSubscriberByEmail(email, { apiKey });
-  if (decideKitPromotionAction(existing ? { state: existing.state } : null) === "await_self_confirmation") {
-    return { outcome: "await_self_confirmation", state: existing!.state };
+  if (existing !== null) {
+    if (existing.state === "active") return { outcome: "already_active" };
+    return { outcome: "kept_non_active", state: existing.state };
   }
   const subscriber = await createOrUpdateSubscriber(
-    {
-      email_address: email,
-      state: "active",
-      fields: { [KIT_ORIGEM_CADASTRO_FIELD_NAME]: KIT_BEEHIIV_SYNC_SIGNUP_MARKER },
-    },
+    { email_address: email, state: "active", fields: buildBeehiivSyncKitFields(attribution) },
     { apiKey },
   );
   if (!(await verifyPromotedToKit(subscriber.id, apiKey))) {
     return { outcome: "not_confirmed", reason: "releitura no Kit não confirmou state active" };
   }
-  return { outcome: "confirmed" };
+  return { outcome: "created" };
 }
 
 /**
@@ -2351,6 +2429,12 @@ export interface RunEvaluationResult {
    */
   awaitingKitConfirmation: number;
   /**
+   * #11225 — confirmaram o DOI da Beehiiv, mas já existem no Kit em estado
+   * não-active (`kept_non_active`): não reativados (#8728), seguem pra
+   * avaliação normal. Não é falha.
+   */
+  beehiivSelfConfirmedAwaitingKit: number;
+  /**
    * #9835 — subconjunto de `awaitingKitConfirmation`: contatos `inactive` no
    * Kit que qualificam por abertura e receberam nesta rodada o reenvio do
    * double opt-in (vínculo NOVO ao form DOI, HTTP 201, #9945; não prova
@@ -2590,6 +2674,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
   let kitSemAberturaBlacklistUndated = 0; // #10568
   let skippedActiveOnKit = 0; // #7382
   let awaitingKitConfirmation = 0; // #8728
+  let beehiivSelfConfirmedAwaitingKit = 0; // #11225
   let doiResent = 0; // #9835
   let doiResendNoop = 0; // #9986
   // #10023 — falhas permanentes do reenvio DOI ficam PENDENTES até o fim da
@@ -2685,6 +2770,8 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
       // não buscado nesta iteração. Só se aplica a contato de origem
       // Beehiiv — ver `isKitOrigin` acima (#6340 item 4 fix B).
       let beehiivStatus: string | null | undefined;
+      // #11225 — subscription inteira do mesmo GET (atribuição pro Kit no Passo 1).
+      let beehiivSubscription: BeehiivSubscriptionRaw | null | undefined;
       let statusCheckFailed = false;
       if (brevoApiKey) {
         try {
@@ -2898,11 +2985,12 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
           // genuíno (`userUnsubscribed`) e ruído admin/bounce. Só se aplica a
           // contato de origem Beehiiv (`!isKitOrigin` — ver o `if` gêmeo
           // acima, #6340 item 4 fix B).
-          beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
+          beehiivSubscription = await fetchBeehiivSubscription(publicationId, beehiivApiKey, contact.email).catch((e) => {
             log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
             statusCheckFailed = true;
             return undefined;
           });
+          beehiivStatus = beehiivSubscription === undefined ? undefined : (beehiivSubscription?.status ?? null);
           if (statusCheckFailed) {
             failed++;
             failedContacts.push({ email: contact.email, reason: "falha ao checar status Beehiiv (Passo 0)" });
@@ -3128,11 +3216,12 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         // `emailBlacklisted`) — nunca um 2º GET pro mesmo contato no mesmo
         // run.
         if (beehiivStatus === undefined) {
-          beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
+          beehiivSubscription = await fetchBeehiivSubscription(publicationId, beehiivApiKey, contact.email).catch((e) => {
             log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
             statusCheckFailed = true;
             return undefined;
           });
+          beehiivStatus = beehiivSubscription === undefined ? undefined : (beehiivSubscription?.status ?? null);
           if (statusCheckFailed) {
             failed++;
             failedContacts.push({ email: contact.email, reason: "falha ao checar status Beehiiv (Passo 1)" });
@@ -3142,11 +3231,11 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
         // #11225: contato de origem BEEHIIV que confirmou o double opt-in da
         // Beehiiv por conta própria. Com `newsletterBackend === "kit"` ele é
         // escrito direto no Kit aqui (`promoteSelfConfirmedBeehiivToKit`)
-        // ANTES de sair da fila Brevo. Até o #11225 este caminho dependia da
-        // ponte `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225) (task diária, até 24h de
-        // atraso), aposentada junto com o envio pela Beehiiv. Escrita não
-        // confirmada (ou Kit indisponível) mantém o contato `in_brevo` e
-        // conta em `failed` — nunca desvincula sem o Kit confirmar `active`.
+        // ANTES de sair da fila Brevo (antes dependia da ponte
+        // `sync-beehiiv-subscribers-kit.ts`, aposentada no #11225). Escrita
+        // não confirmada ou Kit indisponível → `in_brevo` + `failed`, nunca
+        // desvincula sem o Kit confirmar `active`. Já existente em estado
+        // não-active (#8728) → segue pra avaliação normal, sem `failed`.
         let awaitingKitSelfConfirmation = false;
         if (beehiivStatus === "active" && push && newsletterBackend === "kit") {
           let kitFailure: { reason: string; rateLimited: boolean } | undefined;
@@ -3154,12 +3243,14 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
             kitFailure = { reason: "KIT_API_KEY ausente", rateLimited: false };
           } else {
             try {
-              const kitResult = await promoteSelfConfirmedBeehiivToKit(contact.email, kitApiKey);
-              if (kitResult.outcome === "await_self_confirmation") {
+              const attribution = beehiivSubscription ? resolveBeehiivAttribution(contact.email, beehiivSubscription) : undefined;
+              const kitResult = await promoteSelfConfirmedBeehiivToKit(contact.email, kitApiKey, attribution);
+              if (kitResult.outcome === "kept_non_active") {
                 log(
                   `${contact.email}: ativo na Beehiiv, mas já existe no Kit como '${kitResult.state}' — não reativa (#8728); ` +
                     "segue pra avaliação normal (#11225).",
                 );
+                beehiivSelfConfirmedAwaitingKit++;
                 awaitingKitSelfConfirmation = true;
               } else if (kitResult.outcome === "not_confirmed") {
                 kitFailure = { reason: kitResult.reason, rateLimited: false };
@@ -3712,6 +3803,7 @@ export async function runEvaluation(params: RunEvaluationParams): Promise<RunEva
     kitSemAberturaBlacklistUndated,
     skippedActiveOnKit,
     awaitingKitConfirmation,
+    beehiivSelfConfirmedAwaitingKit,
     doiResent,
     doiResendNoop,
     doiResentViaResendForm,
@@ -3891,6 +3983,7 @@ async function main(): Promise<number> {
       `${result.kitSemAberturaBlacklistUndated} kit-sem-abertura com blacklist sem data (intocado(s), checar à mão, #10568), ` +
       `${result.skippedActiveOnKit} promoção(ões) pra Beehiiv pulada(s) por já ativo no Kit (#7382), ` +
       `${result.awaitingKitConfirmation} aguardando auto-confirmação no Kit (já inactive/cancelled/bounced/complained, #8728), ` +
+      `${result.beehiivSelfConfirmedAwaitingKit} confirmado(s) na Beehiiv mas não-active no Kit (não reativado(s), #11225), ` +
       `${result.doiResent} com double opt-in do Kit reenviado (#9835), ` +
       `${result.doiResendNoop} tentativa(s) de reenvio sem e-mail (Kit respondeu 200, já vinculado ao form, #9986), ` +
       `${result.doiResentViaResendForm} reenviado(s) pelo 2º form de DOI (subconjunto dos reenviados, #9986), ` +

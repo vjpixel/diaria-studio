@@ -987,6 +987,14 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   // é ignorado aqui.
   if (beehiivSyncRes.code !== 0) {
     logEvent(deps, opts.edition, "warn", "beehiiv-sync falhou — CTR pode ficar desatualizado");
+  } else {
+    const discarded =
+      parseStepJson<{ posts_needing_clicks?: unknown[] }>(beehiivSyncRes.stdout)?.posts_needing_clicks?.length ?? 0;
+    if (discarded > 0) {
+      logEvent(deps, opts.edition, "info", "0h.2 aposentado (#11225) — posts_needing_clicks descartado", {
+        details: { posts_needing_clicks: discarded },
+      });
+    }
   }
 
   // 0h.4 — exit-history da Beehiiv (#10710). O agent `beehiiv-exit-history-drain`

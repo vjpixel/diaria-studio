@@ -3,12 +3,13 @@
  *
  * Cruza os candidatos extraídos de `02-reviewed.md` (weekly-linkedin-parse.ts)
  * com o cache local de cliques do Beehiiv (`data/beehiiv-cache/posts/*.json`,
- * populado por `scripts/beehiiv-sync.ts` + enriquecido via MCP
- * `list_post_clicks` pelo agent `beehiiv-clicks-enricher`).
+ * populado por `scripts/beehiiv-sync.ts`; era enriquecido via MCP
+ * `list_post_clicks` pelo agent `beehiiv-clicks-enricher`, aposentado no
+ * #11225).
  *
  * **Por que não chama a MCP direto:** MCP não roda de script TS standalone —
  * só de subagent/top-level com a tool declarada (ver docstring de
- * `beehiiv-sync.ts` e do agent `beehiiv-clicks-enricher`). Este módulo (e o
+ * `beehiiv-sync.ts`). Este módulo (e o
  * script `select-linkedin-weekly.ts` que o usa) só LÊ o cache já enriquecido —
  * mesmo padrão de `monthly-click-sections.ts`, que também nunca chama a MCP,
  * só lê `data/beehiiv-cache/posts/*.json`.
@@ -49,9 +50,9 @@ import type { ClickWindowPostBase } from "./shared/click-window-resolution.ts";
  * aqui de propósito (não importado) pra este módulo não puxar os efeitos
  * colaterais de módulo de `beehiiv-sync.ts` (`import "dotenv/config"`, etc.)
  * só por causa de um tipo. `scripts/select-linkedin-weekly.ts` emite este
- * shape pro MESMO caller (`beehiiv-clicks-enricher`) que já consome o
- * manifest de `beehiiv-sync.ts` — drift entre os dois é coberto por
- * `test/weekly-linkedin-clicks.test.ts`.
+ * shape no `--manifest-only` (diagnóstico desde o #11225, que aposentou o
+ * `beehiiv-clicks-enricher` que o consumia) — drift com o manifest de
+ * `beehiiv-sync.ts` é coberto por `test/weekly-linkedin-clicks.test.ts`.
  */
 export interface WeeklyPostNeedingClicks {
   id: string;
@@ -132,8 +133,9 @@ export {
  * em 260802, fleet review #4383 achado 1, ver docstring de
  * `click-cache-completeness.ts`). SEM corte de idade (ver docstring do
  * arquivo) — diferente de `identifyPostsNeedingClicks` de `beehiiv-sync.ts`.
- * Formato de saída idêntico ao `PostNeedingClicks` de lá, pro mesmo caller
- * (dispatch do agent `beehiiv-clicks-enricher`) funcionar sem adaptação.
+ * Formato de saída idêntico ao `PostNeedingClicks` de lá. Desde o #11225
+ * serve de diagnóstico e de gate dos scripts semanais
+ * (`--force-incomplete-click-data`); ninguém mais o enriquece.
  */
 export function identifyWeeklyPostsNeedingClicks(
   windowPosts: Map<string, BeehiivCachePost>,
