@@ -1,0 +1,191 @@
+/**
+ * scripts/lib/diaria/extra-verticals.ts (#11900)
+ *
+ * Miolo PURO do plano de publicação das verticais EXTRAS de uma edição: as
+ * sequências de corte do `blocks.json` (#11898), cada uma uma vertical com
+ * roteiro próprio gravada no mesmo bruto da edição.
+ *
+ * Decisões do editor (02/11/2026, comentário na #11900):
+ *   - mais de uma vertical por edição vira o padrão;
+ *   - a extra sai em todos os destinos da principal, automaticamente (o modo
+ *     corte do `publish-shorts.ts` + o timer do 300, `Diaria-Shorts-Cortes`,
+ *     com `publishing.shorts.corte_via_timer`);
+ *   - em DIAS diferentes: a principal no dia da edição e a k-ésima extra no
+ *     k-ésimo dia útil seguinte (edições só seg–sex), no horário da grade
+ *     daquele dia;
+ *   - a extra não entra no D1, no site nem nos relatórios da edição. O modo
+ *     corte já garante isso: registro em `data/cortes/{slug}/`, fora de
+ *     `data/editions/`.
+ *
+ * Premissa do horário (registrada no plano): no dia da extra também sai a
+ * vertical principal da edição DAQUELE dia, nas mesmas contas, no horário do
+ * teste (#10831, `resolveShortTime`). A extra usa o horário seguinte da mesma
+ * lista (`rotation_times`, em ciclo), nunca o mesmo da principal do dia.
+ *
+ * Feriado não é conhecido aqui: "dia útil" = segunda a sexta.
+ */
+
+import { resolveShortTime, type ShortScheduleConfig } from "./short-video.ts";
+import { corteSuffixOf } from "./drive-video-source.ts";
+import { itemInTarget, type BlockItem, type BlocksFile, type SequenceSpec } from "./video-montage.ts";
+
+const AAMMDD_RE = /^(\d{2})(\d{2})(\d{2})$/;
+
+function toUtcDate(aammdd: string): Date {
+  const m = AAMMDD_RE.exec(aammdd);
+  if (!m) throw new Error(`AAMMDD inválido: ${JSON.stringify(aammdd)}`);
+  const d = new Date(Date.UTC(2000 + Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  if (d.getUTCMonth() !== Number(m[2]) - 1 || d.getUTCDate() !== Number(m[3])) throw new Error(`AAMMDD inválido: ${JSON.stringify(aammdd)}`);
+  return d;
+}
+
+function toAammdd(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getUTCFullYear() % 100)}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`;
+}
+
+/** O `k`-ésimo dia útil (seg–sex) DEPOIS de `aammdd` (k ≥ 1). */
+export function nthBusinessDayAfter(aammdd: string, k: number): string {
+  if (!Number.isInteger(k) || k < 1) throw new Error(`k precisa ser inteiro ≥ 1 (veio ${k})`);
+  const d = toUtcDate(aammdd);
+  let left = k;
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const wd = d.getUTCDay();
+    if (wd !== 0 && wd !== 6) left--;
+  }
+  return toAammdd(d);
+}
+
+/** As sequências de corte do `blocks.json`, na ordem do arquivo (a 1ª é a extra do dia útil seguinte). */
+export function extraVerticalSpecs(file: Pick<BlocksFile, "sequences">): SequenceSpec[] {
+  return (file.sequences ?? []).filter((s) => typeof s.corte === "string");
+}
+
+/** Slug do corte na publicação: `{corte}-{AAMMDD}` (pasta `data/cortes/{slug}/`, convenção da #11898). */
+export function extraVerticalSlug(corte: string, edition: string): string {
+  return `${corte}-${edition}`;
+}
+
+const itemText = (it: BlockItem): string => (typeof it.text === "string" ? it.text.replace(/\s+/g, " ").trim() : "");
+
+/**
+ * Gancho da publicação: o `hook` da sequência; sem ele, o texto do
+ * `resumo_curto` que entra nesta vertical (ou do `resumo`, se ela não tem
+ * `resumo_curto`). `null` = nada para usar.
+ */
+export function extraVerticalHook(file: Pick<BlocksFile, "blocks">, spec: SequenceSpec): { text: string; how: "hook" | "resumo_curto" | "resumo" } | null {
+  if (typeof spec.hook === "string" && spec.hook.trim()) return { text: spec.hook.replace(/\s+/g, " ").trim(), how: "hook" };
+  for (const key of ["resumo_curto", "resumo"] as const) {
+    if (!spec.order.includes(key)) continue;
+    const text = (file.blocks[key] ?? [])
+      .filter((it) => itemInTarget(it, spec.target))
+      .map(itemText)
+      .filter(Boolean)
+      .join(" ");
+    if (text) return { text, how: key };
+  }
+  return null;
+}
+
+/** Horário da extra no dia `date`: o seguinte ao da principal daquele dia em `rotation_times` (ciclo). */
+export function extraVerticalTime(sched: ShortScheduleConfig, date: string): { hhmm: string; principal: string; reason: string; collides: boolean } {
+  const principal = resolveShortTime(sched, date).hhmm;
+  const times = sched.rotationTimes;
+  const i = times.indexOf(principal);
+  for (let step = 1; step <= times.length; step++) {
+    const t = times[((i < 0 ? -1 : i) + step + times.length) % times.length];
+    if (t !== principal) {
+      return { hhmm: t, principal, collides: false, reason: `a vertical principal de ${date} sai às ${principal}; a extra usa o horário seguinte de rotation_times (${times.join("/")})` };
+    }
+  }
+  return { hhmm: principal, principal, collides: true, reason: `rotation_times só tem ${principal}: a extra cai no mesmo horário da vertical principal de ${date}` };
+}
+
+/** Aspas simples de shell POSIX. */
+export function shellQuote(s: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'"'"'`)}'`;
+}
+
+export interface ExtraVerticalPlan {
+  corte: string;
+  /** Slug do modo corte (`--corte`). */
+  slug: string;
+  /** Nome da sequência = nome do export no Drive (`…_V1-{corte}.mp4`). */
+  sequenceName: string;
+  /** Dia da publicação, AAMMDD. */
+  date: string;
+  hhmm: string;
+  title: string | null;
+  hook: string | null;
+  video: string | null;
+  premises: string[];
+  /** O que impede o comando; vazio = `command` pronto. */
+  problems: string[];
+  warnings: string[];
+  /** Dry-run do modo corte (registra `data/cortes/{slug}/corte.json`); publica só com `--publish` e o "pode publicar". */
+  command: string | null;
+}
+
+/**
+ * Pure: o plano de cada vertical extra da edição. `videos` = export local de
+ * cada corte (chave = `corte`), quando conhecido.
+ */
+export function planExtraVerticals(input: {
+  edition: string;
+  file: Pick<BlocksFile, "blocks" | "sequences">;
+  sched: ShortScheduleConfig;
+  videos?: Readonly<Record<string, string>>;
+}): ExtraVerticalPlan[] {
+  return extraVerticalSpecs(input.file).map((spec, idx) => {
+    const corte = spec.corte as string;
+    const date = nthBusinessDayAfter(input.edition, idx + 1);
+    const time = extraVerticalTime(input.sched, date);
+    const premises = [
+      `${idx + 1}ª extra da edição ${input.edition}: ${idx + 1}º dia útil seguinte (${date}), decisão do editor de 02/11/2026 (#11900); feriado não é considerado`,
+      `horário ${time.hhmm} BRT: ${time.reason}`,
+    ];
+    const warnings: string[] = [];
+    if (time.collides) warnings.push(time.reason);
+    const problems: string[] = [];
+    const titleRaw = typeof spec.screenTitle === "string" ? spec.screenTitle.replace(/\s+/g, " ").trim() : "";
+    const title = titleRaw || null;
+    if (!title) problems.push(`sequência do corte "${corte}" sem screenTitle: é o título da publicação (--title); informe na sequência do blocks.json`);
+    const hook = extraVerticalHook(input.file, spec);
+    if (!hook) problems.push(`corte "${corte}" sem gancho: informe "hook" na sequência ou um resumo_curto com texto nesta vertical`);
+    else if (hook.how !== "hook") premises.push(`gancho do ${hook.how} desta vertical (o "hook" da sequência sobrepõe)`);
+    const video = input.videos?.[corte] ?? null;
+    if (!video) problems.push(`export do corte ("${spec.name}.mp4") não encontrado: passe --video-dir com a pasta Final/ local, ou rode o comando com --from-drive {id}`);
+    const slug = extraVerticalSlug(corte, input.edition);
+    const command = problems.length
+      ? null
+      : [
+          "npx tsx scripts/publish-shorts.ts",
+          `--corte ${shellQuote(slug)}`,
+          `--date ${date}`,
+          `--at ${time.hhmm}`,
+          `--title ${shellQuote(title as string)}`,
+          `--hook ${shellQuote(hook!.text)}`,
+          `--video ${shellQuote(video as string)}`,
+        ].join(" ");
+    return { corte, slug, sequenceName: spec.name, date, hhmm: time.hhmm, title, hook: hook?.text ?? null, video, premises, problems, warnings, command };
+  });
+}
+
+/**
+ * Pure: o export de cada corte numa listagem de arquivos (nome → caminho). Um
+ * corte com 2+ arquivos é ambíguo (fica fora, com o motivo).
+ */
+export function matchCorteExports(
+  cortes: readonly string[],
+  files: ReadonlyArray<{ name: string; path: string }>,
+): { videos: Record<string, string>; ambiguous: Record<string, string[]> } {
+  const videos: Record<string, string> = {};
+  const ambiguous: Record<string, string[]> = {};
+  for (const corte of cortes) {
+    const hits = files.filter((f) => /\.mp4$/i.test(f.name) && corteSuffixOf(f.name) === corte);
+    if (hits.length === 1) videos[corte] = hits[0].path;
+    else if (hits.length > 1) ambiguous[corte] = hits.map((h) => h.name);
+  }
+  return { videos, ambiguous };
+}
