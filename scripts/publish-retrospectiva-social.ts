@@ -151,8 +151,14 @@ import {
   renderRetrospectivaCards,
   retrospectivaCoverFontSize,
   retrospectivaCoverTitleFits,
+  retrospectivaCardPaths,
   type RetrospectivaCardSet,
 } from "./lib/mensal/retrospectiva-cards.ts";
+import {
+  buildRetrospectivaSocialHtml,
+  type RetrospectivaPreviewHistoria,
+  type RetrospectivaPreviewInput,
+} from "./render-social-html.ts"; // #11800: gate no artefato Social Preview
 import { logEvent } from "./lib/run-log.ts";
 import { editionDir } from "./lib/edition-paths.ts";
 
@@ -902,6 +908,99 @@ export function unknownFacebookPageSlugs(keys: Iterable<string>, knownSlugs: rea
  * flag sem valor, valor vazio ou repetida LANÇA (nunca vira "não pula nada" em
  * silêncio), igual ao gate `check-retrospectiva-divulgacao.ts`.
  */
+/** #11800: arquivo do preview do gate (Passo 2), gerado pelo `--dry-run`. */
+export const RETROSPECTIVA_SOCIAL_PREVIEW_FILENAME = "social-preview.html";
+
+const PREVIEW_CHANNEL_LABEL: Record<RetrospectivaPostChannel, string> = {
+  linkedin_pagina: "💼 LinkedIn página",
+  facebook: "📘 Facebook",
+  instagram: "📷 Instagram",
+  threads: "Threads",
+  x: "𝕏 X (via Buffer)",
+};
+
+/** Pura: que imagem a rede leva — derivado de `imageUrlsFor`, a mesma regra do dispatch. */
+export function previewImageDescription(channel: RetrospectivaPostChannel): string {
+  const probe = Object.fromEntries(RETROSPECTIVA_CARD_SLOTS.map((s) => [s, s])) as RetrospectivaCardSet;
+  const n = imageUrlsFor(channel, probe).length;
+  if (n === 1) return "capa 4:5";
+  if (n === RETROSPECTIVA_CARD_SLOTS.length) return `carrossel de ${n} (capa + ${n - 2} parágrafos + CTA)`;
+  return `${n} imagens (capa + ${n - 1} slides, sem o CTA)`;
+}
+
+export interface RetrospectivaPreviewOptions {
+  cycle: string;
+  cycleDir: string;
+  result: Pick<RunRetrospectivaSocialResult, "results" | "warnings" | "legacyLinkedin">;
+  titles: Partial<Record<RetrospectivaHistoria, string | null>>;
+  /** Texto do post manual do perfil (`divulgacao/linkedin-perfil.md`); ausente/`null` = sem bloco. */
+  perfilText?: string | null;
+  /** Horário do perfil resolvido pelo planner; `null` = não resolvido. */
+  perfilAt?: string | null;
+  /** Path local → URL embutível no artefato (data URI). Path ausente devolve `null`. */
+  toImageUrl: (path: string) => string | null;
+}
+
+/**
+ * Pura (#11800): entrada do preview do gate a partir do resultado do
+ * `--dry-run` — texto final, horário efetivo e imagem de cada rede, por
+ * história, mais o post manual do perfil. Pulados/falhos e avisos viram notas
+ * no topo.
+ */
+export function buildRetrospectivaPreviewInput(o: RetrospectivaPreviewOptions): RetrospectivaPreviewInput {
+  const notices: string[] = [];
+  const byHistoria = new Map<RetrospectivaHistoria, RetrospectivaPreviewHistoria>();
+  const historia = (h: RetrospectivaHistoria): RetrospectivaPreviewHistoria => {
+    let entry = byHistoria.get(h);
+    if (!entry) {
+      const cards = retrospectivaCardPaths(o.cycleDir, h);
+      const slides = RETROSPECTIVA_CARD_SLOTS.map((s, i) => ({
+        label: `${i + 1}/${RETROSPECTIVA_CARD_SLOTS.length}${s === "cover" ? " · Capa" : s === "cta" ? " · CTA" : ""}`,
+        url: o.toImageUrl(cards[s]),
+      }));
+      const missing = slides.filter((s) => !s.url).length;
+      if (missing > 0) notices.push(`${h}: ${missing} imagem(ns) do carrossel não encontrada(s) em divulgacao/ — galeria omitida`);
+      entry = {
+        key: h,
+        title: o.titles[h] ?? `(título do DESTAQUE ${h.slice(1)} não encontrado no draft.md)`,
+        slides: missing > 0 ? [] : slides.map((s) => ({ label: s.label, url: s.url! })),
+        posts: [],
+      };
+      byHistoria.set(h, entry);
+    }
+    return entry;
+  };
+  for (const r of o.result.results) {
+    const pageSuffix = r.channel === "facebook" && r.page && r.page !== DEFAULT_FACEBOOK_PAGE_SLUG ? ` (${r.page})` : "";
+    const label = `${PREVIEW_CHANNEL_LABEL[r.channel]}${pageSuffix}`;
+    if (r.action === "dry-run") {
+      historia(r.historia).posts.push({ channel: label, scheduledAt: r.scheduledAt, image: previewImageDescription(r.channel), text: r.text });
+    } else if (r.action === "x-payload") {
+      historia(r.historia).posts.push({ channel: label, scheduledAt: r.payload.dueAt, image: previewImageDescription("x"), text: r.payload.text });
+    } else if (r.action === "skipped" || r.action === "failed") {
+      notices.push(`${label} ${r.historia}: ${r.action === "skipped" ? "pulado" : "FALHA"} — ${r.reason}`);
+    }
+  }
+  if (o.result.legacyLinkedin.action === "would-cancel") {
+    notices.push(`Post único legado da página LinkedIn (${o.result.legacyLinkedin.key}) será cancelado e substituído (--replace-linkedin-single).`);
+  }
+  for (const w of o.result.warnings) notices.push(`Aviso: ${w}`);
+  const historias = RETROSPECTIVA_HISTORIAS.filter((h) => byHistoria.has(h)).map((h) => byHistoria.get(h)!);
+  return {
+    heading: `Retrospectiva de ${contentMonthLabel(o.cycle)} — posts públicos`,
+    notices,
+    historias,
+    linkedinPerfil: o.perfilText ? { text: o.perfilText, scheduledAt: o.perfilAt ?? null } : null,
+  };
+}
+
+/** Lê um arquivo local como data URI (o artefato roda sob CSP que bloqueia imagem remota, #3214). */
+export function localImageDataUri(path: string): string | null {
+  if (!existsSync(path)) return null;
+  const mime = /\.png$/i.test(path) ? "image/png" : "image/jpeg";
+  return `data:${mime};base64,${readFileSync(path).toString("base64")}`;
+}
+
 export function parseSocialListArgs(argv: string[]): {
   skip: Set<string>;
   force: Set<RetrospectivaPostKey | RetrospectivaFacebookPageKey>;
@@ -971,6 +1070,7 @@ async function main(): Promise<void> {
     rule: resolveMonthlySendSchedule(config.monthly_send_schedule),
   });
   let schedule: RetrospectivaPostSchedule | null = null;
+  let perfilAt: string | null = null; // #11800: horário do post manual do perfil, pro preview
   const resolveScheduledAts = async (active: readonly RetrospectivaPostKey[] = []): Promise<RetrospectivaPostSchedule> => {
     const s = resolveRetrospectivaPostScheduledAts(config, { at: values["at"], baseDate });
     const grid = await loadDivulgacaoGrid(config, [s.d1.linkedin_pagina.slice(0, 10)]);
@@ -998,6 +1098,7 @@ async function main(): Promise<void> {
       perfil = resolveRetrospectivaScheduledAts(config, { at: values["at"], baseDate }).perfil;
       const personalGrid = await loadDivulgacaoGrid(config, [perfil.slice(0, 10)]);
       perfil = planDivulgacao(personalGrid, [{ key: "perfil", account: "linkedin:pessoal", preferredAt: perfil }])[0].at;
+      perfilAt = perfil;
     } catch (e) {
       perfil = `(não resolvido: ${(e as Error).message})`;
     }
@@ -1220,12 +1321,32 @@ async function main(): Promise<void> {
       ROOT,
     );
   }
+  // #11800: o --dry-run grava o preview do gate (mesmo artefato Social Preview
+  // da diária, imagens embutidas) — a skill publica com a Artifact tool.
+  let previewHtml: string | null = null;
+  let previewError: string | null = null;
+  if (dryRun) {
+    try {
+      const perfilPath = resolve(cycleDir, "divulgacao", "linkedin-perfil.md");
+      const perfilText = !skip.has("linkedin_perfil") && existsSync(perfilPath) ? readFileSync(perfilPath, "utf8").trim() : null;
+      const input = buildRetrospectivaPreviewInput({ cycle, cycleDir, result: r, titles, perfilText, perfilAt, toImageUrl: localImageDataUri });
+      previewHtml = resolve(cycleDir, "_internal", RETROSPECTIVA_SOCIAL_PREVIEW_FILENAME);
+      mkdirSync(dirname(previewHtml), { recursive: true });
+      writeFileSync(previewHtml, buildRetrospectivaSocialHtml(input), "utf8");
+    } catch (e) {
+      previewHtml = null;
+      previewError = (e as Error).message;
+      console.error(`AVISO: preview do gate (#11800) não gerado: ${previewError}`);
+    }
+  }
   console.log(
     JSON.stringify(
       {
         cycle,
         dry_run: dryRun,
         legacy_linkedin: r.legacyLinkedin,
+        preview_html: previewHtml,
+        preview_error: previewError,
         warnings: r.warnings,
         results: r.results,
         verify_error: r.verifyError,
