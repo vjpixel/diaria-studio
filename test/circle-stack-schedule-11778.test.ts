@@ -43,6 +43,9 @@ const CYCLE = resolveWeeklyLinkedinCycle(MONDAY)!.cycle;
 // Segunda 09/11/2026 06:00 BRT, em horário local da máquina de teste.
 const mondayAt6 = () => new Date(2026, 10, 9, 6, 0, 0);
 const tuesdayAt6 = () => new Date(2026, 10, 10, 6, 0, 0);
+// Aprovação roda no fim de semana, antes do envio: a partir das 06:00 da
+// própria segunda o `--approve` recusa (#11877).
+const saturdayBefore = () => new Date(2026, 10, 7, 15, 0, 0);
 // Carimbo que o publicador simulado grava: segundos depois do início da run.
 const DURING_RUN = new Date(2026, 10, 9, 6, 0, 5).toISOString();
 
@@ -302,7 +305,7 @@ describe("--approve / --revoke (#11778)", () => {
   it("--approve grava o hash da seleção atual e o envio passa a sair", async () => {
     const { dataRoot, paths } = setup();
     const code = await runScheduledCircleStack(["--approve", "--publish-monday", MONDAY, "--data-root", dataRoot], {
-      rootDir: dataRoot, platformConfig: {}, env: {}, now: mondayAt6,
+      rootDir: dataRoot, platformConfig: {}, env: {}, now: saturdayBefore,
     });
     assert.equal(code, 0);
     const approval = JSON.parse(readFileSync(paths.approvalPath, "utf8"));
@@ -316,14 +319,14 @@ describe("--approve / --revoke (#11778)", () => {
       lancamentos: [{ editionDate: "261103", url: "https://www.theverge.com/x", title: "Lançamento novo da empresa", body: "b", why: "w" }],
     });
     const { paths } = setup({ selection: bad });
-    assert.throws(() => approveCircleStackCycle(paths, mondayAt6()), /não pode ser aprovada/);
+    assert.throws(() => approveCircleStackCycle(paths, saturdayBefore()), /não pode ser aprovada/);
     assert.equal(existsSync(paths.approvalPath), false);
   });
 
   it("--approve recusa ciclo já publicado", () => {
     const { paths } = setup();
     writeState(paths.statePath, { cycle: CYCLE, attempted_at: "2026-11-09T09:00:00Z", published_at: "2026-11-09T09:00:01Z" });
-    assert.throws(() => approveCircleStackCycle(paths, mondayAt6()), /já publicado/);
+    assert.throws(() => approveCircleStackCycle(paths, saturdayBefore()), /já publicado/);
   });
 
   it("--revoke apaga a aprovação", async () => {

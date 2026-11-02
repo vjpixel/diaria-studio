@@ -44,4 +44,17 @@ describe("diaria-stack: prévia em Artifact (#11769)", () => {
     assert.match(skill, /Passo 5 publica um Artifact, que é\s+rede/);
     assert.doesNotMatch(skill, /Passos 1 a 5 só leem/);
   });
+
+  it("atualiza o artefato lendo antes e passando a url, com icon e sem favicon (#11878)", () => {
+    const p = passo(5);
+    assert.doesNotMatch(p, /favicon/);
+    assert.match(p, /icon: "news"/);
+    const read = p.indexOf('Artifact(action: "read", url:');
+    const republish = p.indexOf('url: "{URL do .txt}", description:');
+    assert.ok(read > 0, "lê o artefato gravado com action read + url");
+    assert.ok(republish > read, "republica no mesmo url depois da leitura");
+    // Criar novo só sem URL ou com a LEITURA falhando; republicação falhando não cria um 2º.
+    assert.match(p, /se a LEITURA falhar/);
+    assert.match(p, /republicação falhando:\*\* não criar outro artefato/);
+  });
 });

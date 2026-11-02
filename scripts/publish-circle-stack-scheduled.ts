@@ -18,7 +18,8 @@
  *   --revoke    apaga a aprovação do ciclo (a task de segunda não envia).
  *
  * `--publish-monday AAMMDD` opcional. Sem ele: `--approve`/`--revoke` miram a
- * próxima segunda (a própria data, se hoje é segunda); a execução da task mira
+ * próxima segunda (a própria data, se hoje é segunda; `--approve` recusa a
+ * segunda de hoje a partir das 06:00, #11877); a execução da task mira
  * a segunda de hoje ou a anterior e só envia se hoje FOR essa segunda.
  *
  * E-mail: `sendPushNotification` (`lib/push-notify.ts`) direto, não o
@@ -54,7 +55,9 @@ import {
   circleStackScheduledExitCode,
   classifyCircleStackRun,
   CIRCLE_STACK_APPROVAL_FILE,
+  CIRCLE_STACK_PUBLISH_HOUR,
   isCircleStackPublishWindow,
+  isCircleStackScheduledRunPast,
   type CircleStackScheduledOutcome,
 } from "./lib/circle-stack-schedule.ts";
 import {
@@ -114,6 +117,16 @@ export function approveCircleStackCycle(paths: CyclePaths, now: Date): { approva
       `Segunda ${paths.publishMonday} (ciclo ${paths.cycle}) já passou — a task de segunda 06:00 só envia o ciclo da própria segunda, ` +
         `então esta aprovação nunca seria usada. Aprove a próxima segunda (${earliest}) ou publique o ciclo atrasado à mão ` +
         `(publish-circle-stack.ts --publish-monday ${paths.publishMonday} --publish).`,
+    );
+  }
+  // #11877: na própria segunda, depois das 06:00, a execução do dia já saiu
+  // (Publicado ou "Não enviado") e o timer não roda de novo — mesma aprovação
+  // sem consumidor que o #11868 fechou para a segunda vencida.
+  if (isCircleStackScheduledRunPast(now, paths.publishMonday)) {
+    throw new Error(
+      `O envio agendado de ${paths.publishMonday} às ${String(CIRCLE_STACK_PUBLISH_HOUR).padStart(2, "0")}:00 (ciclo ${paths.cycle}) já rodou hoje ` +
+        `e o timer não roda de novo, então esta aprovação nunca seria usada. Publique à mão ` +
+        `(publish-circle-stack.ts --publish-monday ${paths.publishMonday} --publish, ou /diaria-stack ${paths.publishMonday} --publish).`,
     );
   }
   const raw = readIfExists(paths.selectionPath);
