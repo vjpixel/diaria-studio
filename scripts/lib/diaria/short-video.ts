@@ -869,7 +869,8 @@ export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
  * AUTORA e a @vjpixel entra em collab, igual à rota da API (#11223). `authorPage`
  * = slug de `publishing.social.facebook.pages` da conta autora; com
  * `instagram_author_page: null` (a conta do env) ela é a própria conta da API
- * (`instagramAccountKey`), e o post à mão aparece nela assim que sai.
+ * (`instagramAccountKey`), e o post à mão aparece nela depois do processamento
+ * (30 a 60 s depois do Share).
  */
 export const INSTAGRAM_CHROME_ROUTE = {
   authorUsername: "diar.ia.br",

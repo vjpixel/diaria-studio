@@ -7,7 +7,8 @@
  * vira `read-failed` (urgente, com nova tentativa); `author-unchecked` fica só
  * para credencial ausente de verdade. Desde #11794 a autora à mão é a @diar.ia.br
  * (página `diaria`), então estes cenários usam uma conta de API em OUTRA página
- * (`vjpixel`); na produção (`null`) é a mesma conta, coberto no fim do arquivo.
+ * (`vjpixel`); na produção (`null`) é a mesma conta, coberto em
+ * `test/shorts-instagram-manual-route-author-11794.test.ts`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

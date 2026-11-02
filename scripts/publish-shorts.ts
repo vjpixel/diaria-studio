@@ -2158,7 +2158,9 @@ export function timerChromeAuthorDeps(
  * #11389/#11390 (fix do review do PR #11395): a conferência da conta ANTES de o
  * timer publicar olha também o perfil do autor da rota do Chrome, quando ele é
  * outra conta. Na config de produção (#11794) a autora à mão é a própria conta da
- * API: o Reels aparece nela assim que sai, e a leitura da API basta. Com
+ * API: o Reels aparece nela depois do processamento (30 a 60 s), e a leitura da
+ * API basta; uma rodada dentro desses segundos não o vê e publica. Reel só na
+ * @vjpixel não é lido, risco aceito (#11794: nunca postar por essa conta). Com
  * `instagram_author_page` em outra página, um Reels à mão não apareceria na conta
  * da API e o timer publicaria de novo, em conta pública. Regras:
  * - a conta da API acha o Reels, ou bloqueia (ambíguo/janela) → vale ela;
@@ -3755,7 +3757,7 @@ function instagramConfirmContext(
  * e só vale o Reels com o marcador desta edição na legenda
  * (`decideInstagramConfirm`); ambíguo → recusa e pede `--media-id`.
  */
-async function confirmInstagram(
+export async function confirmInstagram(
   aammdd: string,
   dir: string,
   persist: (entry: ShortPublishedEntry) => ShortsPublishedFile,
@@ -3764,7 +3766,10 @@ async function confirmInstagram(
   mediaIdFlag: string | undefined,
   editionUrlFlag: string | undefined,
   urlFlag?: string,
+  /** #11794: I/O injetável para testar o wiring; o default é a Graph real e o config do repo. */
+  io: { graph?: GraphDeps; config?: unknown } = {},
 ): Promise<number> {
+  const graph = io.graph ?? defaultGraphDeps;
   const already = instagramAlreadyRegistered(published);
   if (already) {
     const e = already.entry;
@@ -3792,11 +3797,11 @@ async function confirmInstagram(
     console.error(`publish-shorts: --since inválido: ${sinceFlag}`);
     return 2;
   }
-  const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  const config: any = io.config ?? JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
   const igApiVersion = process.env.INSTAGRAM_API_VERSION || apiVersion;
   const cfg = loadShortsConfig(config);
-  const author = await resolveInstagramAuthor(defaultGraphDeps, cfg.instagramAuthorPage, pages, igApiVersion, {
+  const author = await resolveInstagramAuthor(graph, cfg.instagramAuthorPage, pages, igApiVersion, {
     igUserId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? "",
     token: process.env.INSTAGRAM_ACCESS_TOKEN ?? "",
   });
@@ -3817,11 +3822,11 @@ async function confirmInstagram(
   };
   // #11794: o Reels do B3b é postado pela @diar.ia.br com a @vjpixel em collab.
   // Na config de produção ela é a conta da API; outro perfil só com outra autora no config.
-  const chrome = await resolveChromeAuthorReader(cfg.instagramAuthorPage, pages, igApiVersion);
+  const chrome = await resolveChromeAuthorReader(cfg.instagramAuthorPage, pages, igApiVersion, graph);
   const chromeReader = chrome.reader;
   const across = await decideInstagramConfirmAcrossAccounts({
-    primary: () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId: author.igUserId, token: author.token }),
-    ...confirmChromeAuthorDeps(chrome, (igUserId, token) => () => readAndDecideInstagramConfirm(defaultGraphDeps, { ...readInput, igUserId, token })),
+    primary: () => readAndDecideInstagramConfirm(graph, { ...readInput, igUserId: author.igUserId, token: author.token }),
+    ...confirmChromeAuthorDeps(chrome, (igUserId, token) => () => readAndDecideInstagramConfirm(graph, { ...readInput, igUserId, token })),
   });
   const decision = across.decision;
   const reader = across.account === "chrome-author" && chromeReader ? chromeReader : author;
@@ -3850,7 +3855,7 @@ async function confirmInstagram(
   }
   if (expectedCollabs.length) {
     try {
-      const collab = await graphGet(defaultGraphDeps, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: reader.token }, igApiVersion);
+      const collab = await graphGet(graph, `${entry.id}/collaborators`, { fields: "username,invite_status", access_token: reader.token }, igApiVersion);
       warnings.push(...collabInviteWarnings(collab?.data, expectedCollabs, { reportPending: true }));
     } catch (e) {
       warnings.push(`não deu pra conferir o collab (${(e as Error).message}) — confira no app`);

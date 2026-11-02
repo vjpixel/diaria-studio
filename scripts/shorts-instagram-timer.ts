@@ -605,7 +605,11 @@ export function buildInstagramTimerAlarm(input: {
         `O timer volta a tentar sozinho de hora em hora${deadlineHhmm ? ` até ${deadlineHhmm} BRT (3 h depois do horário do vertical)` : " até 3 h depois do horário do vertical"}; resolvida a causa, não precisa fazer nada.`,
       );
     }
-    lines.push("O que fazer:", `- Postar no instagram.com (Passo B3b do \`/diaria-publica-video\`) e registrar com ${confirm}.`);
+    lines.push("O que fazer:", `- Postar no instagram.com (Passo B3b do \`/diaria-publica-video\`), ${instagramChromeRouteText()}, e registrar com ${confirm}.`);
+    if (key !== "late") {
+      // #11794: a próxima rodada ainda pode publicar, e o Reel à mão leva 30 a 60 s para aparecer na conta.
+      lines.push("  Cuidado: postar à mão perto da hora cheia pode duplicar o Reels. O timer tenta de novo de hora em hora e o Reel leva de 30 a 60 s para aparecer na conta. Afaste o post da hora cheia e registre logo depois.");
+    }
     if (API_OPTION_KEYS.has(key) && !manual) {
       lines.push("- Pela API, daqui não: não há vídeo do Instagram no disco do 300 nem o id do corte no Drive (baixe antes, Passo B1 do `/diaria-publica-video`).");
     } else if (API_OPTION_KEYS.has(key)) {
