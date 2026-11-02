@@ -27,6 +27,7 @@
  */
 import { createHash } from "node:crypto";
 import type { CircleStackPublishedLike } from "./publish-state.ts";
+import { formatAAMMDD } from "./weekly-linkedin-cycle.ts";
 
 export const CIRCLE_STACK_APPROVAL_FILE = "circle-stack-approval.json";
 export const CIRCLE_STACK_RADAR_URL = "https://plataforma.stack.com.br/c/radar-de-noticias-stack";
@@ -94,6 +95,22 @@ export function checkCircleStackApproval(
 /** Pure: a execução cai na própria segunda de publicação? */
 export function isCircleStackPublishWindow(todayAAMMDD: string, publishMonday: string): boolean {
   return todayAAMMDD === publishMonday;
+}
+
+/** Hora (BRT, relógio local do `300`) da task `Diaria-Circle-Stack-Weekly-Publish`. */
+export const CIRCLE_STACK_PUBLISH_HOUR = 6;
+
+/**
+ * Pure (#11877): a execução agendada da segunda `publishMonday` já passou?
+ * Verdadeiro em qualquer dia depois dela e na própria segunda a partir das
+ * 06:00 (relógio local, mesmo de `formatAAMMDD`). Depois disso o timer não
+ * roda de novo (o catch-up do `Persistent=true` só cobre execução perdida),
+ * então uma aprovação desse ciclo não teria consumidor.
+ */
+export function isCircleStackScheduledRunPast(now: Date, publishMonday: string): boolean {
+  const today = formatAAMMDD(now);
+  if (today !== publishMonday) return today > publishMonday;
+  return now.getHours() >= CIRCLE_STACK_PUBLISH_HOUR;
 }
 
 export type CircleStackScheduledOutcome =

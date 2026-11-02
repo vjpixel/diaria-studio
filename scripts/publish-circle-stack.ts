@@ -100,6 +100,7 @@ import {
   type PublishState,
 } from "./lib/publish-state.ts";
 import { notifyEditor, type NotifyEditorFinding } from "./lib/editor-notify.ts";
+import { CIRCLE_STACK_PUBLISH_HOUR, isCircleStackScheduledRunPast } from "./lib/circle-stack-schedule.ts";
 import {
   ALARM_LABEL,
   defaultAlarmGhRun,
@@ -734,6 +735,12 @@ export interface SkillDefaultMonday {
   baseState: PublishState;
   /** true = a skill passou para a segunda seguinte (sexta a domingo, #11868). */
   advanced: boolean;
+  /**
+   * true = a execução agendada de `publishMonday` (06:00) já rodou (#11877):
+   * na própria segunda a partir das 06:00 e de terça a quinta. A aprovação do
+   * Passo 6 seria recusada; o ciclo só sai na hora, com `--publish`.
+   */
+  scheduledRunPast: boolean;
   banner: string;
 }
 
@@ -746,7 +753,9 @@ export interface SkillDefaultMonday {
  * uma aprovação que nada consome (#11868 — o editor acha que aprovou e o
  * post não sai). Caso de origem do #11784: domingo 01/11/2026 sem data caiu
  * em 261026, publicado desde 26/10. Envio atrasado do ciclo base continua
- * possível passando `AAMMDD` explícito. O publicador sem `--publish-monday`
+ * possível passando `AAMMDD` explícito. Na segunda a partir das 06:00 e de
+ * terça a quinta, `scheduledRunPast` marca que a task deste ciclo já rodou
+ * (#11877): o banner diz que só o `--publish` envia. O publicador sem `--publish-monday`
  * NÃO usa isto: o catch-up do timer (Persistent=true) precisa da regra antiga.
  */
 export function resolveSkillDefaultMonday(now: Date, stateOf: (cycle: string) => PublishState): SkillDefaultMonday {
@@ -772,13 +781,19 @@ export function resolveSkillDefaultMonday(now: Date, stateOf: (cycle: string) =>
       baseCycle: base.cycle,
       baseState,
       advanced: true,
+      scheduledRunPast: false,
       banner: `Data não informada — assumindo ${nextMonday} (segunda de publicação; ${why}). Passe AAMMDD explicitamente para outra semana.`,
     };
   }
+  // #11877: na segunda a partir das 06:00 (e de terça a quinta) a execução
+  // agendada deste ciclo já rodou e não roda de novo.
+  const scheduledRunPast = isCircleStackScheduledRunPast(now, baseMonday);
   const note =
     baseState === "published"
       ? ` O ciclo ${base.cycle} já está publicado na Stack, e a semana seguinte ainda não fechou.`
-      : "";
+      : scheduledRunPast
+        ? ` O envio agendado de ${baseMonday} às ${String(CIRCLE_STACK_PUBLISH_HOUR).padStart(2, "0")}:00 já rodou e não roda de novo: aprovar este ciclo não serve, ele só sai na hora com --publish.`
+        : "";
   return {
     publishMonday: baseMonday,
     cycle: base.cycle,
@@ -786,6 +801,7 @@ export function resolveSkillDefaultMonday(now: Date, stateOf: (cycle: string) =>
     baseCycle: base.cycle,
     baseState,
     advanced: false,
+    scheduledRunPast,
     banner: `Data não informada — assumindo ${baseMonday} (segunda de publicação).${note} Passe AAMMDD explicitamente para outra semana.`,
   };
 }
