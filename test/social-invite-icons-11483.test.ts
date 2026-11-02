@@ -23,6 +23,7 @@ import {
 import { renderEncerrar, mdInlineToHtml } from "../scripts/lib/newsletter-render-html.ts";
 import { renderEncerramento } from "../scripts/lib/mensal/monthly-render.ts";
 import { draftToWebArticle } from "../scripts/lib/mensal/monthly-web-render.ts";
+import { APOIADORES_KIT_UTM_PROFILE } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
 import { buildParaEncerrar } from "../scripts/stitch-newsletter.ts";
 import { recolorSvg } from "../scripts/gen-social-invite-icons.ts";
 
@@ -188,7 +189,7 @@ describe("página da retrospectiva usa os mesmos ícones do e-mail", () => {
   const draft = `**ASSUNTO (3 OPÇÕES)**\n\n1. Assunto\n\n**PREVIEW**\n\nPrévia\n\n**PARA ENCERRAR**\n\nTexto de apoio.\n\n${SOCIAL_INVITE}\n`;
 
   it("convite vira ícones centralizados, sem links de texto das redes", () => {
-    const { bodyHtml } = draftToWebArticle({ draft, yymm: "2610" });
+    const { bodyHtml } = draftToWebArticle({ draft, yymm: "2610", utmProfile: APOIADORES_KIT_UTM_PROFILE, leaderboardBrand: "clarice" });
     assert.equal((bodyHtml.match(/<img src="https:\/\/diar\.ia\.br\/icons\/social\//g) ?? []).length, 6);
     assert.match(bodyHtml, /panel-body" style="text-align:center;"/);
     assert.doesNotMatch(bodyHtml, />LinkedIn<\/a>/);
