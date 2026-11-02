@@ -469,19 +469,27 @@ export function deriveVinculo(contact: ApoioContact, cache: VinculoCache): Vincu
 
 /**
  * Deriva os segmentos Kit de um contato cruzando TODOS os seus emails
- * contra o cache (#4437 Entrega 2). Mais simples que `deriveVinculo`/
- * `deriveOpenRate` (que têm critério de desempate entre múltiplos hits) — não
- * há um "melhor" match aqui, o primeiro email do contato encontrado no cache
- * decide. `null` quando NENHUM email do contato aparece no cache (nunca
- * consultado — não confundir com `{ segments: [], ... }`, que significa
- * "consultado, nenhum segmento Apoio — * encontrado").
+ * contra o cache (#4437 Entrega 2). Como em `deriveVinculo`, vence o email
+ * com informação: a entrada com `segments` não vazio; na falta dela, a com
+ * `apoioNivel` preenchido; só então a primeira encontrada (#11832). O cache
+ * grava `{ segments: [], apoioNivel: "" }` para todo email de contato fora
+ * da base ativa, então "primeiro hit decide" fazia o contato com um email
+ * inativo listado antes do ativo aparecer como não assinante. `null` quando
+ * NENHUM email do contato aparece no cache (nunca consultado — não
+ * confundir com `{ segments: [], ... }`, que significa "consultado, nenhum
+ * segmento Apoio — * encontrado").
  */
 export function deriveSegments(contact: ApoioContact, cache: SegmentsCache): SegmentsInfo | null {
+  let withNivel: SegmentsInfo | null = null;
+  let fallback: SegmentsInfo | null = null;
   for (const email of normalizeEmailList(contact.emails)) {
     const info = cache[email];
-    if (info) return info;
+    if (!info) continue;
+    if (info.segments.length > 0) return info;
+    if (!withNivel && info.apoioNivel) withNivel = info;
+    if (!fallback) fallback = info;
   }
-  return null;
+  return withNivel ?? fallback;
 }
 
 // ── agregação de campanha (puro) ────────────────────────────────────────
