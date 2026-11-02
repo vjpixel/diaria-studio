@@ -17,6 +17,7 @@ import { join } from "node:path";
 import {
   EXIT_AUTH_NOT_SUBSCRIPTION,
   authBlocksRun,
+  authBlocksScheduledEdicao,
   checkClaudeAuthMethod,
   classifyClaudeAuthStatus,
   collectClaudeAuthEvidence,
@@ -73,11 +74,34 @@ describe("classifyClaudeAuthStatus (#11887)", () => {
     assert.doesNotMatch(r.message, /pessoa@example|Org Secreta/);
   });
 
-  it("api_key_helper, third_party e rótulo desconhecido também bloqueiam (estrito)", () => {
+  it("api_key_helper, third_party e rótulo desconhecido também bloqueiam a cadeia (estrito)", () => {
     for (const authMethod of ["api_key_helper", "third_party", "algo_novo"]) {
       const r = classifyClaudeAuthStatus(JSON.stringify({ loggedIn: true, authMethod, apiProvider: "firstParty" }));
       assert.equal(r.status, "not-subscription", authMethod);
+      assert.equal(authBlocksRun(r), true, authMethod);
     }
+  });
+
+  it("edição agendada: só o rótulo DESCONHECIDO é fail-soft; fontes de API explícitas seguem bloqueando", () => {
+    const novo = classifyClaudeAuthStatus(JSON.stringify({ loggedIn: true, authMethod: "claude_ai_v2", apiProvider: "firstParty" }));
+    assert.equal(novo.unrecognizedAuthMethod, true);
+    assert.equal(authBlocksScheduledEdicao(novo), false);
+    assert.match(novo.message, /rótulo de authMethod desconhecido/);
+    for (const authMethod of ["api_key", "api_key_helper", "third_party", "oauth_token"]) {
+      const r = classifyClaudeAuthStatus(JSON.stringify({ loggedIn: true, authMethod, apiProvider: "firstParty" }));
+      assert.equal(r.unrecognizedAuthMethod, undefined, authMethod);
+      assert.equal(authBlocksScheduledEdicao(r), true, authMethod);
+    }
+    // Rótulo novo MAS com apiKeySource: é key, bloqueia.
+    const novoComKey = classifyClaudeAuthStatus(
+      JSON.stringify({ loggedIn: true, authMethod: "algo_novo", apiProvider: "firstParty", apiKeySource: "ANTHROPIC_API_KEY" }),
+    );
+    assert.equal(authBlocksScheduledEdicao(novoComKey), true);
+    // Provider de terceiro com rótulo novo: bloqueia.
+    const novoTerceiro = classifyClaudeAuthStatus(JSON.stringify({ loggedIn: true, authMethod: "algo_novo", apiProvider: "bedrock" }));
+    assert.equal(authBlocksScheduledEdicao(novoTerceiro), true);
+    assert.equal(authBlocksScheduledEdicao(classifyClaudeAuthStatus(JSON.stringify({ loggedIn: false }))), true);
+    assert.equal(authBlocksScheduledEdicao(api()), true);
   });
 
   it("provider de terceiro bloqueia mesmo com authMethod claude.ai", () => {
@@ -178,6 +202,7 @@ describe("collectClaudeAuthEvidence (#11887)", () => {
       { path: "/repo/.claude/settings.local.json", apiKeyHelper: true, envVars: [] },
     ]);
     assert.equal(e.credentialsFile, true);
+    assert.equal(e.configDirOverride, false);
     const line = formatClaudeAuthEvidence(e);
     assert.doesNotMatch(`${line}${JSON.stringify(e)}`, /NAO-PODE-APARECER|gateway\.example|echo-key/);
     assert.match(line, /primaryApiKey=true/);
@@ -195,6 +220,21 @@ describe("collectClaudeAuthEvidence (#11887)", () => {
     assert.equal(e.globalConfigApprovedEnvKeys, null);
     assert.deepEqual(e.settings, []);
     assert.equal(e.credentialsFile, false);
+    assert.equal(e.configDirOverride, true);
+  });
+
+  it("CLAUDE_CONFIG_DIR não aparece como var de auth em env=[...] — sai separado (review #11887)", () => {
+    const e = collectClaudeAuthEvidence({
+      env: { CLAUDE_CONFIG_DIR: "/cfg", ANTHROPIC_API_KEY: "x" },
+      repoRootAbs: "/repo",
+      home: "/h",
+      exists: () => false,
+      readFile: () => "",
+    });
+    assert.deepEqual(e.envVars, ["ANTHROPIC_API_KEY"]);
+    const line = formatClaudeAuthEvidence(e);
+    assert.match(line, /env=\[ANTHROPIC_API_KEY\] /);
+    assert.match(line, /configDirOverride=true/);
   });
 });
 
@@ -311,8 +351,25 @@ describe("run-scheduled-edicao: preflight de auth (#11887)", () => {
     assert.equal("ANTHROPIC_API_KEY" in envs[0], false, "sondagem com o env do filho");
     const log = readFileSync(join(repo, "data", "overnight-schedule.log"), "utf8");
     assert.match(log, /FAIL\s+edition=260812 reason=auth-not-subscription exit=7/);
-    assert.match(log, /env=\[ANTHROPIC_API_KEY[,\]]/, "a evidência nomeia a var do ambiente cru");
+    assert.match(log, /env=\[ANTHROPIC_API_KEY\]/, "a evidência nomeia a var do ambiente cru, sem CLAUDE_CONFIG_DIR");
+    assert.match(log, /configDirOverride=true/);
     assert.doesNotMatch(log, /sk-ant-do-env-11887/);
+  });
+
+  it("rótulo de authMethod desconhecido: só alerta (WARN no log), os stages sobem", () => {
+    const repo = edicaoRepo();
+    let spawned = 0;
+    const exec = (() => {
+      spawned++;
+      return "";
+    }) as unknown as ExecFn;
+    const code = edicaoMain(repo, exec, AAMMDD, () => "/fake/claude", notDone, trusted, () =>
+      classifyClaudeAuthStatus(JSON.stringify({ loggedIn: true, authMethod: "claude_ai_v2", apiProvider: "firstParty" })),
+    );
+    assert.notEqual(code, EXIT_AUTH_NOT_SUBSCRIPTION);
+    assert.ok(spawned > 0);
+    const log = readFileSync(join(repo, "data", "overnight-schedule.log"), "utf8");
+    assert.match(log, /WARN\s+edition=260812 reason=auth-unrecognized-method/);
   });
 
   it("assinatura: os stages sobem", () => {

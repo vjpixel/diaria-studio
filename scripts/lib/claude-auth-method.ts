@@ -37,6 +37,12 @@
  *     Estrito de propósito: um rótulo renomeado numa versão futura do CLI
  *     para a cadeia com um alarme legível, e o conserto é acrescentar o rótulo
  *     aqui; aceitar o desconhecido deixaria passar justamente o caso da issue.
+ *     O rótulo DESCONHECIDO (fora de `KNOWN_AUTH_METHODS` e sem `apiKeySource`)
+ *     sai marcado com `unrecognizedAuthMethod: true`: a cadeia noturna bloqueia
+ *     nele (`authBlocksRun`), a edição agendada só alerta
+ *     (`authBlocksScheduledEdicao`) — parar a edição do dia por um rename do
+ *     CLI custa mais que uma sessão a verificar; api_key/api_key_helper/
+ *     third_party explícitos bloqueiam nos dois.
  *   - `loggedIn: false` / `authMethod: none` → `logged-out`.
  *   - binário ausente, timeout, saída que não é JSON, JSON sem `authMethod`
  *     → `unknown` (o runner só avisa: o preflight não pode virar causa de
@@ -59,10 +65,15 @@ export const EXIT_AUTH_NOT_SUBSCRIPTION = 7;
 /** Único `authMethod` aceito sem condição (capturado ao vivo em 20/10/2026, #10597, e de novo em 02/11/2026). */
 export const SUBSCRIPTION_AUTH_METHOD = "claude.ai";
 
+/** Rótulos de `authMethod` conhecidos no CLI 2.1.310 (ver docstring do módulo). */
+export const KNOWN_AUTH_METHODS = ["claude.ai", "oauth_token", "api_key", "api_key_helper", "third_party", "none"] as const;
+
 /**
  * Vars cuja PRESENÇA (nunca o valor) entra na evidência: as de
  * `CLAUDE_CLI_STRIPPED_ENV_VARS` que mexem em auth + as que o bundle do CLI
- * consulta para escolher a fonte de credencial.
+ * consulta para escolher a fonte de credencial. `CLAUDE_CONFIG_DIR` fica de
+ * fora: não é fonte de auth, só muda ONDE o CLI procura a credencial — sai
+ * separado na evidência (`configDirOverride`).
  */
 export const AUTH_ENV_VAR_NAMES = [
   "ANTHROPIC_API_KEY",
@@ -74,7 +85,6 @@ export const AUTH_ENV_VAR_NAMES = [
   "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
-  "CLAUDE_CONFIG_DIR",
 ] as const;
 
 export type ClaudeAuthStatus = "subscription" | "not-subscription" | "logged-out" | "unknown";
@@ -93,11 +103,27 @@ export interface ClaudeAuthResult {
   fields: ClaudeAuthFields;
   /** Linha pronta pro log do runner. */
   message: string;
+  /**
+   * `not-subscription` só porque o rótulo de `authMethod` é desconhecido (fora
+   * de `KNOWN_AUTH_METHODS`, sem `apiKeySource`, provider firstParty). Pode ser
+   * um rename do CLI; a edição agendada só alerta nesse caso.
+   */
+  unrecognizedAuthMethod?: boolean;
 }
 
 /** true = o runner NÃO sobe a sessão. */
 export function authBlocksRun(r: ClaudeAuthResult): boolean {
   return r.status === "not-subscription" || r.status === "logged-out";
+}
+
+/**
+ * Variante da edição agendada: igual a `authBlocksRun`, mas rótulo de
+ * `authMethod` DESCONHECIDO só alerta (#11887, review). Fonte de API explícita
+ * (api_key, api_key_helper, third_party, provider de terceiro, apiKeySource)
+ * e sem sessão continuam bloqueando.
+ */
+export function authBlocksScheduledEdicao(r: ClaudeAuthResult): boolean {
+  return authBlocksRun(r) && r.unrecognizedAuthMethod !== true;
 }
 
 function pickFields(parsed: Record<string, unknown>): ClaudeAuthFields {
@@ -169,6 +195,17 @@ export function classifyClaudeAuthStatus(raw: string, envNames: ReadonlySet<stri
       status: "subscription",
       fields: f,
       message: `auth do CLI: token de assinatura via CLAUDE_CODE_OAUTH_TOKEN (${describe(f)})`,
+    };
+  }
+  const unrecognized = !(KNOWN_AUTH_METHODS as readonly string[]).includes(f.authMethod) && !f.apiKeySource;
+  if (unrecognized) {
+    return {
+      status: "not-subscription",
+      fields: f,
+      unrecognizedAuthMethod: true,
+      message:
+        `auth do CLI NÃO É A ASSINATURA (${describe(f)}): rótulo de authMethod desconhecido — se for rename do CLI, ` +
+        `acrescente-o em scripts/lib/claude-auth-method.ts; senão, ${FIX_HINT} (#11887)`,
     };
   }
   return {
@@ -248,6 +285,8 @@ export interface ClaudeAuthEvidence {
   settings: Array<{ path: string; apiKeyHelper: boolean; envVars: string[] }>;
   /** `.credentials.json` existe (só existência; o conteúdo é token). */
   credentialsFile: boolean;
+  /** `CLAUDE_CONFIG_DIR` definido: o CLI procura a credencial fora de `~/.claude` (não é fonte de auth). */
+  configDirOverride: boolean;
 }
 
 export interface CollectEvidenceOptions {
@@ -275,7 +314,7 @@ export function collectClaudeAuthEvidence(opts: CollectEvidenceOptions): ClaudeA
   const read = opts.readFile ?? ((p: string) => readFileSync(p, "utf8"));
   const exists = opts.exists ?? existsSync;
   const home = opts.home ?? homedir();
-  const configDir = opts.env.CLAUDE_CONFIG_DIR;
+  const configDir = opts.env.CLAUDE_CONFIG_DIR || undefined;
   const claudeDir = configDir ?? join(home, ".claude");
   const globalConfigPath = configDir ? join(configDir, ".claude.json") : join(home, ".claude.json");
 
@@ -310,6 +349,7 @@ export function collectClaudeAuthEvidence(opts: CollectEvidenceOptions): ClaudeA
     globalConfigApprovedEnvKeys: approved,
     settings,
     credentialsFile: exists(join(claudeDir, ".credentials.json")),
+    configDirOverride: typeof configDir === "string" && configDir !== "",
   };
 }
 
@@ -322,6 +362,6 @@ export function formatClaudeAuthEvidence(e: ClaudeAuthEvidence): string {
     `evidência de auth: env=[${e.envVars.join(",") || "nenhuma"}] ` +
     `primaryApiKey=${e.globalConfigPrimaryApiKey ?? "?"} ` +
     `keysAprovadas=${e.globalConfigApprovedEnvKeys ?? "?"} ` +
-    `settings=${s} credentialsFile=${e.credentialsFile}`
+    `settings=${s} credentialsFile=${e.credentialsFile} configDirOverride=${e.configDirOverride}`
   );
 }

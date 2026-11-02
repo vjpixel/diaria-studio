@@ -68,7 +68,7 @@ import {
 } from "../lib/claude-workspace-trust.ts";
 import {
   EXIT_AUTH_NOT_SUBSCRIPTION,
-  authBlocksRun,
+  authBlocksScheduledEdicao,
   checkClaudeAuthMethod,
   collectClaudeAuthEvidence,
   formatClaudeAuthEvidence,
@@ -354,7 +354,10 @@ export function main(
   // -------------------------------------------------------------------
   // Preflight de auth do CLI (#11887), com o MESMO ambiente que os stages
   // recebem (`claudeCliEnv`). Fora da assinatura claude.ai (#5608) nenhum
-  // stage sobe. Binário não resolvido: pula o preflight, e o runner falha
+  // stage sobe. Rótulo de authMethod DESCONHECIDO (rename possível do CLI)
+  // só alerta aqui: parar a edição do dia custa mais que a sessão a
+  // verificar; a cadeia noturna segue estrita (`authBlocksRun`).
+  // Binário não resolvido: pula o preflight, e o runner falha
   // adiante com a mensagem legível de sempre.
   // -------------------------------------------------------------------
   let authBin: string | null = null;
@@ -371,7 +374,7 @@ export function main(
     } catch (e) {
       auth = { status: "unknown", fields: {}, message: `auth do CLI NÃO VERIFICÁVEL — erro no preflight (${(e as Error).message}) (#11887)` };
     }
-    if (authBlocksRun(auth)) {
+    if (authBlocksScheduledEdicao(auth)) {
       let evidence = "";
       try {
         evidence = formatClaudeAuthEvidence(collectClaudeAuthEvidence({ env: process.env, repoRootAbs }));
@@ -392,6 +395,18 @@ export function main(
       return EXIT_AUTH_NOT_SUBSCRIPTION;
     }
     if (auth.status === "unknown") console.warn(`[${nowIso()}] AVISO: ${auth.message}`);
+    if (auth.unrecognizedAuthMethod) {
+      console.warn(`[${nowIso()}] AVISO: ${auth.message} — edição segue (rótulo desconhecido só alerta)`);
+      log(
+        repoRootAbs,
+        dataDir,
+        aammdd,
+        `WARN  edition=${aammdd} reason=auth-unrecognized-method detail=${auth.message}`,
+        "warn",
+        `scheduled-edicao: authMethod desconhecido (${auth.fields.authMethod ?? "?"}) — edição segue, conferir o rótulo`,
+        JSON.stringify({ edition: aammdd, reason: "auth-unrecognized-method", auth: auth.fields }),
+      );
+    }
   }
 
   // -------------------------------------------------------------------
