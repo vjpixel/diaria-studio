@@ -102,6 +102,15 @@ export function corteShortTime(hhmm: string): ShortTime {
   return { hhmm, source: "explicit", reason: "corte avulso: horário explícito (--at), fora do teste de horário do vertical (#10831, #11795)" };
 }
 
+/**
+ * Task do 300 que publica os destinos do corte que a API não agenda (#11795,
+ * `scripts/shorts-corte-timer.ts`), com `publishing.shorts.corte_via_timer`.
+ */
+export const CORTE_TIMER_TASK = "Diaria-Shorts-Cortes";
+
+/** Destinos do corte que ficam `pending_schedule` antes do horário: a API deles não agenda. */
+export const CORTE_TIMER_DESTINATIONS: readonly string[] = ["linkedin_profile", "threads_profile", "instagram"];
+
 /** Comando base das re-execuções (`owners` do plano): o resto vem do `corte.json`. */
 export function corteBaseCommand(slug: string): string {
   return `npx tsx scripts/publish-shorts.ts --corte ${slug}`;

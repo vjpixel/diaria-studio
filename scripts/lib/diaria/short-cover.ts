@@ -125,7 +125,8 @@ export function planCoverDestination(
 ): string {
   const d = item.destination;
   if (d === "threads_profile") return "unsupported (a Threads API não tem parâmetro de capa)";
-  if (d === "x") {
+  // #11515: o TikTok sai pela Buffer como o X: a capa é só o `thumbnailOffset`.
+  if (d === "x" || d === "tiktok") {
     if (!ctx.coverPath) return "automatic";
     return ctx.bufferOffsetMs === null
       ? "automatic (sem timecode do Still no nome: a Buffer escolhe o frame)"

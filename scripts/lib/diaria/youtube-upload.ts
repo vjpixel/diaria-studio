@@ -414,6 +414,63 @@ export async function setThumbnail(deps: YouTubeUploadDeps, token: string, video
   if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "thumbnail"));
 }
 
+/** Campos do snippet que o `videos.update` preserva além de título e descrição. */
+export const YOUTUBE_WRITABLE_SNIPPET_FIELDS = ["categoryId", "tags", "defaultLanguage", "defaultAudioLanguage"] as const;
+
+/**
+ * #11795: troca título, descrição e (opcionalmente) a capa de um vídeo AINDA
+ * agendado (private + `publishAt` no futuro). Relê `snippet,status` antes:
+ * vídeo que já foi ao ar (ou sem `publishAt`) não é tocado, porque a troca
+ * deixaria de ser "antes de publicar" e o editor decide isso no Studio. O
+ * `videos.update` reenvia os campos graváveis do snippet
+ * (`YOUTUBE_WRITABLE_SNIPPET_FIELDS`; `categoryId` é obrigatório), com só o
+ * título e a descrição trocados. Capa é opcional: a falha volta em
+ * `thumbnailError`, nunca desfaz o texto.
+ */
+export async function updateScheduledVideo(
+  deps: YouTubeUploadDeps,
+  creds: YouTubeCredentials,
+  videoId: string,
+  input: { title: string; description: string; thumbnail: Buffer | null },
+): Promise<{ thumbnail: { attempted: boolean; ok: boolean; error: string | null }; publishAt: string }> {
+  const token = await refreshYouTubeAccessToken(deps, creds);
+  await assertExpectedChannel(deps, token, creds.channelId);
+  const res = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet,status&id=${encodeURIComponent(videoId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "reread"));
+  const json = (await readJson(res)) as { items?: Array<{ id?: string; snippet?: Record<string, unknown>; status?: UploadedVideoResource["status"] }> } | null | undefined;
+  if (json === undefined) throw new Error(`videos.list devolveu corpo não-JSON (HTTP ${res.status})`);
+  const item = json?.items?.find((i) => i.id === videoId);
+  if (!item?.snippet) throw new Error(`o vídeo ${videoId} não está no canal (videos.list sem o item)`);
+  const publishAt = item.status?.publishAt ?? null;
+  if (item.status?.privacyStatus !== "private" || !publishAt || Date.parse(publishAt) <= deps.now().getTime()) {
+    throw new Error(`o vídeo ${videoId} não está mais agendado (privacy ${item.status?.privacyStatus ?? "?"}, publishAt ${publishAt ?? "nenhum"}) — nada alterado; troque no YouTube Studio`);
+  }
+  // Só os campos graváveis do snippet (review do PR #11894): reenviar o que o
+  // `videos.list` devolve só para leitura (`publishedAt`, `channelId`,
+  // `channelTitle`, `thumbnails`, `localized`) dependeria da API ignorá-los.
+  const snippet: Record<string, unknown> = { title: input.title, description: input.description };
+  for (const k of YOUTUBE_WRITABLE_SNIPPET_FIELDS) if (item.snippet[k] !== undefined) snippet[k] = item.snippet[k];
+  const put = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: videoId, snippet }),
+  });
+  if (!put.ok) throw new Error(explainYouTubeUploadError(put.status, await errorSnippet(put), "insert"));
+  const thumbnail = { attempted: false, ok: false, error: null as string | null };
+  if (input.thumbnail) {
+    thumbnail.attempted = true;
+    try {
+      await setThumbnail(deps, token, videoId, input.thumbnail);
+      thumbnail.ok = true;
+    } catch (e) {
+      thumbnail.error = (e as Error).message;
+    }
+  }
+  return { thumbnail, publishAt };
+}
+
 /** Relê `status` do vídeo. `null` se a API não devolver o item. */
 export async function fetchVideoStatus(
   deps: YouTubeUploadDeps,

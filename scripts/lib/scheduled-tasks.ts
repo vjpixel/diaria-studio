@@ -1324,6 +1324,26 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     issue: "#11410",
   },
   {
+    name: "Diaria-Shorts-Cortes",
+    description:
+      "de hora em hora: publica os destinos do corte avulso (publish-shorts --corte, data/cortes/) que a API não agenda — LinkedIn e Threads pessoais e Instagram — depois do horário do corte, até 3 h, e avisa o editor quando um destino falha (#11795)",
+    steps: [{ key: "post", script: "scripts/shorts-corte-timer.ts" }],
+    logPath: "shorts/.corte-timer.log",
+    // #11795: o corte tem horário explícito (`--at`), sem a rotação do teste
+    // do #10831, então não há horário diário fixo: só a execução de hora em
+    // hora, que publica na 1ª passagem depois do `--at` (corte fora da hora
+    // cheia sai até 59 min depois). Só age com
+    // `publishing.shorts.corte_via_timer: true`. Sem `enabled: false`: o
+    // `Diaria-Remediate-Never-Armed-Tasks` (#8153) arma no 300 depois do merge.
+    schedule: { kind: "interval", hours: 1 },
+    guard: {
+      requiredFile: "editions",
+      abortMessage:
+        "data/editions nao encontrado -- provavel junction data/ nao montada; abortando sem ler os registros dos cortes.",
+    },
+    issue: "#11795",
+  },
+  {
     name: "Diaria-Threads-Personal-Token",
     description:
       "renova o token de 60 dias do Threads PESSOAL do editor (vertical da edição, #10772) e grava o novo no Doppler + .env",
