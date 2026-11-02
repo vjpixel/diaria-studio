@@ -61,7 +61,7 @@ describe("#11788 — CLARICE — DIVULGAÇÃO é texto fixo; só o TUTORIAL é p
     assert.ok(!/placeholder/i.test(tpl), "DIVULGAÇÃO não pode voltar a ser placeholder");
     assert.ok(tpl.includes("Escreva melhor em português com a Clarice"));
     assert.ok(tpl.includes("A única IA criada por brasileiros para brasileiros."));
-    assert.ok(tpl.includes("acumulando até 67% de desconto."));
+    assert.ok(tpl.includes("acumulando até 63% de desconto."));
     assert.ok(tpl.includes("→ [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)"));
   });
 

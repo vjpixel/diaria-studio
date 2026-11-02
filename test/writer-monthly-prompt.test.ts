@@ -47,7 +47,7 @@ describe("clarice-divulgacao.md — fluência da frase de cupom (#2866)", () => 
     // protegia era a FLUÊNCIA da emenda entre as duas frases — sem a segunda,
     // o que resta a garantir é que a primeira fecha limpa e o CTA de cupom
     // continua logo abaixo.
-    assert.match(content, /acumulando até 67% de desconto\./);
+    assert.match(content, /acumulando até 63% de desconto\./);
     assert.match(content, /cupons NEWS25 ou NEWS50/);
   });
 
