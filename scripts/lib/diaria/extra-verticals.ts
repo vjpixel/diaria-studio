@@ -177,7 +177,7 @@ export function planExtraVerticals(input: {
     if (driveId) {
       premises.push(`vídeo pelo --from-drive ${driveId}: baixa para data/cortes/${slug}/, que o timer do 300 alcança`);
     } else if (!video) {
-      problems.push(`export do corte ("${spec.name}.mp4") não encontrado: passe --drive-ids ${corte}=ID (id do arquivo em Final/ no Drive, preferido) ou --video-dir com a pasta Final/ local`);
+      problems.push(`export do corte ("${spec.name}.mp4") não encontrado: passe --drive-ids ${corte}=ID (id do arquivo em Final/ no Drive, preferido; sai pronto de \`npx tsx scripts/fetch-drive-video.ts --edition ${input.edition} --corte ${corte}\`) ou --video-dir com a pasta Final/ local`);
     } else if (input.dataDir) {
       const portability = corteVideoPortabilityWarning(video, input.dataDir);
       if (portability) {
