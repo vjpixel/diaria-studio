@@ -53,7 +53,7 @@
  *   npx tsx scripts/sync-cursos-subscribers-kv.ts --force-empty-guard # ignora o guard de fonte suspeita-vazia (#7338)
  *
  * Env:
- *   BEEHIIV_API_KEY          obrigatório se subscriber_backend="beehiiv" (default)
+ *   BEEHIIV_API_KEY          obrigatório se subscriber_backend="beehiiv" (arquivo; default "kit" desde o #11225)
  *   BEEHIIV_PUBLICATION_ID   opcional — fallback platform.config.json
  *   KIT_API_KEY              obrigatório se subscriber_backend="kit"
  *   CLOUDFLARE_ACCOUNT_ID    obrigatório pro write real (não pro --dry-run)

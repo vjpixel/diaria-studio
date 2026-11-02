@@ -167,8 +167,8 @@ export class WouldDeleteUnknownPagesError extends Error {
       `gen-archive-pages recusou regenerar: ${slugs.length} página(s) em disco não estão na fonte deste ` +
         `gerador e seriam APAGADAS — ${slugs.slice(0, 10).join(", ")}${slugs.length > 10 ? ", …" : ""}. ` +
         `Causa provável: foram publicadas por um backend que este gerador não lê. Ele monta o acervo do ` +
-        `cache Beehiiv (o caminho Kit é gated por 'read_backend', hoje "beehiiv"), enquanto ` +
-        `'publishing.newsletter.backend' é "kit" desde 04/09/2026 (#7388) — toda edição nova nasce fora ` +
+        `cache Beehiiv (o caminho Kit depende de 'data/kit-cache/broadcasts/' populado), enquanto ` +
+        `o envio é Kit desde 04/09/2026 (#7388; só Kit desde o #11225) — toda edição nova nasce fora ` +
         `da fonte dele. Se a remoção for MESMO desejada (despublicação real), rode com --allow-prune.`,
     );
     this.name = "WouldDeleteUnknownPagesError";

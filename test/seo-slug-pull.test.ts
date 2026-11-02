@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { slugify, seoSlug, seoMetaDescription, formatManualSlugFixInstructions } from "../scripts/lib/slug.ts";
+import { slugify, seoSlug, seoMetaDescription } from "../scripts/lib/slug.ts";
 import { scoreOpportunities, parseGscResponse, isoDate, buildSeoPullOutput, type GscRow } from "../scripts/seo-pull.ts";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -134,23 +134,6 @@ describe("slug acent-correto (#1989)", () => {
         `seoSlug("${titulo}") não pode reproduzir o padrão corrompido observado no acervo`,
       );
     }
-  });
-});
-
-describe("formatManualSlugFixInstructions (#3449)", () => {
-  it("inclui post_id, slug alvo e localização do campo na UI Beehiiv", () => {
-    const msg = formatManualSlugFixInstructions("post_abc123", "ia-do-google-detecta-cancer-raro-no-sus");
-    assert.match(msg, /post_abc123/);
-    assert.match(msg, /ia-do-google-detecta-cancer-raro-no-sus/);
-    assert.match(msg, /#text-input-slug/);
-    assert.match(msg, /SEO/i);
-    assert.match(msg, /app\.beehiiv\.com\/posts\/post_abc123\/edit/);
-  });
-
-  it("é determinística (mesma entrada → mesma saída)", () => {
-    const a = formatManualSlugFixInstructions("post_x", "slug-x");
-    const b = formatManualSlugFixInstructions("post_x", "slug-x");
-    assert.equal(a, b);
   });
 });
 
