@@ -72,6 +72,8 @@ import {
   shortVideoFileName,
 } from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
+import { watchCortesWithoutOwner } from "./lib/diaria/corte-owner-watch.ts";
+import { CORTES_REL_DIR } from "./lib/diaria/short-corte.ts";
 import {
   SHORTS_LINKEDIN_TIMER_LOCK_FILE,
   SHORTS_THREADS_TIMER_LOCK_FILE,
@@ -487,13 +489,28 @@ export interface LinkedinTimerRunDeps {
   /** Roda `npx tsx <args>`; `capture` devolve o stdout (o fetch-drive-video). */
   runScript: (args: string[], capture: boolean) => { status: number | null; stdout: string };
   notify: NotifyEditorDeps;
+  /**
+   * #11911: `data/cortes` do repo. Presente = toda execução também vigia os
+   * cortes avulsos sem dono deste destino (`watchCortesWithoutOwner`). Ausente
+   * (testes que não a exercitam) = sem vigia.
+   */
+  cortesDir?: string;
 }
 
 function defaultRunDeps(): LinkedinTimerRunDeps {
-  return { config: JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")), now: new Date(), runScript: runTsx, notify: { cwd: ROOT } };
+  return { config: JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8")), now: new Date(), runScript: runTsx, notify: { cwd: ROOT }, cortesDir: join(ROOT, CORTES_REL_DIR) };
 }
 
+/** Uma execução: a vigia dos cortes avulsos sem dono (#11911, todo dia) e o vídeo do perfil da edição do dia. */
 export async function runLinkedinTimer(aammdd: string, dir: string, dryRun: boolean, deps: LinkedinTimerRunDeps = defaultRunDeps()): Promise<number> {
+  const watchOk = deps.cortesDir
+    ? await watchCortesWithoutOwner("linkedin_profile", dryRun, { config: deps.config, now: deps.now, cortesDir: deps.cortesDir, notify: deps.notify, checkTask: "Diaria-Shorts-LinkedIn-Profile" })
+    : true;
+  const code = await runLinkedinTimerEdition(aammdd, dir, dryRun, deps);
+  return watchOk ? code : Math.max(code, 1);
+}
+
+async function runLinkedinTimerEdition(aammdd: string, dir: string, dryRun: boolean, deps: LinkedinTimerRunDeps): Promise<number> {
   const { config, now } = deps;
   const publishedPath = join(dir, SHORTS_PUBLISHED_FILE);
   const videoPath = join(dir, shortVideoFileName(aammdd));

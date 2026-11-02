@@ -52,6 +52,9 @@ export function validateCorteSlug(slug: string): string | null {
   return SLUG_RE.test(slug) ? null : `--corte espera um slug em minúsculas, dígitos e hífen (2 a 64 caracteres), recebeu ${JSON.stringify(slug)}`;
 }
 
+/** Pasta dos cortes, relativa à raiz do repo. */
+export const CORTES_REL_DIR = "data/cortes";
+
 /** Pasta do corte, relativa à raiz do repo. */
 export function corteRelDir(slug: string): string {
   return `data/cortes/${slug}`;
