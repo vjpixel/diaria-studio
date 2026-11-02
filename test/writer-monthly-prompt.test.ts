@@ -125,14 +125,13 @@ describe("writer-monthly.md — passo 8 usa a fonte autoritativa do É IA? (#290
     );
   });
 
-  it("distingue os 3 casos de selection (criterion / fallback_last / ausente) sem afirmar 'mais dividida' em fallback", () => {
-    assert.match(content, /selection == "criterion"/);
-    assert.match(content, /selection == "fallback_last"/);
-    assert.match(
-      content,
-      /SEM afirmar que foi "a mais dividida\/ambígua"/,
-      "writer-monthly.md deve instruir a NÃO alegar 'mais dividida' quando a edição veio de fallback (#2869 — nunca escolher/afirmar errado calado)",
-    );
+  // #11790 (decisão do editor 02/11/2026): o recap saiu do draft — o render
+  // mostra só a legenda do 01-eia.md. Os 3 casos de `selection` deixaram de
+  // existir no prompt; o guard agora é que NÃO voltem a mandar escrever recap.
+  it("não distingue mais casos de selection nem manda escrever recap (#11790)", () => {
+    assert.doesNotMatch(content, /selection == "criterion"/);
+    assert.doesNotMatch(content, /selection == "fallback_last"/);
+    assert.match(content, /Sem texto de recap \(#11790/);
   });
 });
 
