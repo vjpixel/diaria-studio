@@ -335,8 +335,14 @@ describe("#11355 falha no media_publish", () => {
     assert.equal(alarmSuppressed(JSON.stringify({ aammdd: "261102", alarmed: ["send-unknown"], emailPending: [] }), "late"), true, "late não manda publicar depois dele");
   });
 
-  it("container ainda FINISHED: a falha é real e lança", async () => {
+  it("#11774: timeout com o container ainda FINISHED não prova nada — send_unknown, não relança", async () => {
     const { deps } = failingPublish("FINISHED");
+    const out = await publishInstagramReel(deps, "ig", "tok", "v25.0", source, "x");
+    assert.equal(out.entry.status, "send_unknown");
+  });
+
+  it("container que não ficou PUBLISHED nem FINISHED (ERROR): a falha é real e lança", async () => {
+    const { deps } = failingPublish("ERROR");
     await assert.rejects(publishInstagramReel(deps, "ig", "tok", "v25.0", source, "x"), /timeout/);
   });
 });
