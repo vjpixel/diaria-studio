@@ -2435,6 +2435,21 @@ export async function instagramTimerPublishStep<T>(deps: {
 }
 
 /**
+ * #11828: o timer achou o Reels feito à mão na conta e o registrou sem publicar.
+ * Relê `/{media}/collaborators` e devolve um aviso quando falta um collab
+ * esperado (a @vjpixel, na rota do Chrome). Nunca lança nem bloqueia: o registro
+ * já foi gravado e o Reels está no ar. `registry` não relê, porque nada foi
+ * gravado nesta rodada (o registro veio de antes).
+ */
+export async function instagramTimerAlreadyCollabWarnings(
+  deps: Pick<GraphDeps, "fetch">,
+  input: { matchedBy: InstagramTimerAlreadyMatch; mediaId: string; token: string; apiVersion: string; expected: string[] },
+): Promise<string[]> {
+  if (input.matchedBy === "registry" || input.expected.length === 0) return [];
+  return checkInstagramCollaborators(deps, input.mediaId, input.token, input.apiVersion, input.expected);
+}
+
+/**
  * #11774: a reconferência logo antes do `media_publish` na rodada do timer. O
  * gate da conta roda antes do upload no R2; o upload e o processamento levam
  * minutos, e um Share feito por fora nesse meio tempo não está no registro
@@ -3850,12 +3865,19 @@ async function main(): Promise<number> {
               nowIso: new Date().toISOString(),
               expectedAtIso: ctx.expectedAtIso,
             });
+          // #11828: em qual conta o gate achou o Reels (e com que token reler os collabs).
+          let foundIn: { account: "primary" | "chrome-author"; token: string } = { account: "primary", token: author.token };
+          const tagged = (account: "primary" | "chrome-author", token: string, read: () => Promise<InstagramConfirmDecision>) => async () => {
+            const d = await read();
+            if (d.kind === "register") foundIn = { account, token };
+            return d;
+          };
           const accountGate = () =>
             instagramTimerGate({
               decide: () =>
                 decideInstagramTimerAcrossAccounts({
-                  primary: readFor(author.igUserId, author.token),
-                  ...timerChromeAuthorDeps(chrome, readFor),
+                  primary: tagged("primary", author.token, readFor(author.igUserId, author.token)),
+                  ...timerChromeAuthorDeps(chrome, (igUserId, token) => tagged("chrome-author", token, readFor(igUserId, token))),
                 }),
               persist: (entry) => {
                 published = persist(entry);
@@ -3867,8 +3889,17 @@ async function main(): Promise<number> {
             publish: () => publishReel(accountGate),
           });
           if (step.kind === "already") {
-            results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy });
+            // #11828: o Reels feito à mão pode ter saído sem o convite da @vjpixel; avisa sem bloquear o registro.
+            const collabWarnings = await instagramTimerAlreadyCollabWarnings(deps, {
+              matchedBy: step.matchedBy,
+              mediaId: step.entry.id,
+              token: foundIn.token,
+              apiVersion: igApiVersion,
+              expected: instagramConfirmExpectedCollabs({ account: foundIn.account, sameAccount: chrome.sameAccount === true, configCollaborators: shortsCfg.instagramCollaborators }),
+            });
+            results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy, ...(collabWarnings.length ? { warnings: collabWarnings } : {}) });
             console.error(`[aviso] instagram: o Reels da edição já está na conta (${step.matchedBy}, ${step.entry.url ?? step.entry.id}) — registrado, não publica de novo`);
+            for (const w of collabWarnings) console.error(`[aviso] instagram: ${w}`);
             continue;
           }
           outcome = step.outcome;
