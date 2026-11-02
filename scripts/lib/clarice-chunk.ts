@@ -32,6 +32,7 @@
  */
 
 import { countOccurrences } from "../clarice-apply.ts";
+import { classifyClariceNoise } from "./clarice-suggestion-guard.ts";
 import type { ClariceSuggestion } from "./schemas/clarice-suggestions.ts";
 
 export interface TextChunk {
@@ -194,6 +195,15 @@ export function applyChunkSuggestions(
     // Guarda whitespace-only além de vazio (paridade com clarice-apply.ts).
     if (!from || !from.trim() || from === to) {
       skipped.push({ ...suggestion, reason: "sugestão vazia ou no-op" });
+      continue;
+    }
+
+    // Ruído do servidor (#11798): só whitespace, ou `to` injetando quebra de
+    // linha/caractere de código. Paridade com clarice-apply.ts.
+    const noise = classifyClariceNoise(from, to);
+    if (noise) {
+      log(`[clarice-chunk] SKIP: ${JSON.stringify(from)} → ${JSON.stringify(to)} (${noise})`);
+      skipped.push({ ...suggestion, reason: noise });
       continue;
     }
 
