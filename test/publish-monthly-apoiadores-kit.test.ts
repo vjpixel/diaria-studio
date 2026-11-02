@@ -1046,14 +1046,31 @@ describe("#11813 — helpers puros do --update", () => {
  */
 function makeFakeKit(
   initial: RereadBroadcast,
-  opts: { zeroSendAtOnContentPatch?: boolean; sendAtNeverSticks?: boolean; filterOverride?: unknown } = {},
+  opts: {
+    zeroSendAtOnContentPatch?: boolean;
+    sendAtNeverSticks?: boolean;
+    filterOverride?: unknown;
+    /** A releitura ANTES do update (1ª chamada a getBroadcast) lança. */
+    initialReadThrows?: boolean;
+    /** O PATCH lança sem alterar nada no Kit (rede/4xx). */
+    patchThrows?: boolean;
+    /** Toda releitura DEPOIS do 1º PATCH lança. */
+    rereadThrowsAfterPatch?: boolean;
+  } = {},
 ) {
   const live: RereadBroadcast = { ...initial };
   const patches: { id: number; input: UpdateBroadcastInput }[] = [];
+  let reads = 0;
   const overrides: Partial<ApoiadoresKitDeps> = {
-    getBroadcast: async () => ({ ...live }),
+    getBroadcast: async () => {
+      reads++;
+      if (opts.initialReadThrows && reads === 1) throw new Error("Kit 503 na releitura inicial");
+      if (opts.rereadThrowsAfterPatch && patches.length > 0) throw new Error("Kit 502 na releitura");
+      return { ...live };
+    },
     updateBroadcast: async (id, input) => {
       patches.push({ id, input });
+      if (opts.patchThrows) throw new Error("Kit 422 no PATCH");
       if (input.subject !== undefined) live.subject = input.subject;
       if (input.content !== undefined) live.content = input.content;
       if (input.subscriber_filter !== undefined) {
@@ -1185,6 +1202,42 @@ describe("#11813 — main() --update", () => {
     assert.equal(kit.patches.length, 0);
     assert.equal(spy.written.length, 0);
     assert.equal(spy.created.length, 0);
+  });
+
+  it("releitura PRÉ-update falhando: exit 2, nenhum PATCH, state intocado", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED, { initialReadThrows: true });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.match(String(error), /__mocked_exit__/);
+    assert.equal(exitCode, 2);
+    assert.equal(kit.patches.length, 0);
+    assert.equal(spy.written.length, 0);
+    assert.equal(spy.created.length, 0);
+  });
+
+  it("PATCH lançando erro: lança e PRESERVA o state anterior (não rebaixa 'sent' a rascunho)", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED, { patchThrows: true });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.match(String(error), /PATCH \/broadcasts\/555 falhou/);
+    assert.match(String(error), /Kit 422 no PATCH/);
+    assert.equal(exitCode, null);
+    assert.equal(kit.patches.length, 1);
+    assert.equal(kit.live.send_at, "2030-02-02T09:00:00.000Z", "o Kit falso não mudou nada");
+    assert.equal(spy.written.length, 0, "PATCH recusado não regrava o state");
+    assert.equal(spy.created.length, 0);
+  });
+
+  it("releitura pós-PATCH falhando: lança e grava draft_prepared (horário/audiência não conferidos)", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED, { rereadThrowsAfterPatch: true });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.match(String(error), /o PATCH foi aceito, mas a releitura falhou/);
+    assert.match(String(error), /Kit 502 na releitura/);
+    assert.equal(exitCode, null);
+    assert.equal(kit.patches.length, 1);
+    assert.equal(spy.created.length, 0);
+    assert.equal(spy.written.length, 1);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+    assert.equal(spy.written[0].state.kitBroadcastId, 555);
+    assert.equal(spy.written[0].state.kitAudienceVerified, null);
   });
 
   it("agendado com send_at já no passado: exit 2, nenhum PATCH", async () => {

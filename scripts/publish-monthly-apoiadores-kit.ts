@@ -500,6 +500,12 @@ export type UpdateApoiadoresKitResult =
       broadcastId: number;
       /** `true` = nada foi alterado no Kit (recusa antes do PATCH). */
       untouched: boolean;
+      /**
+       * `true` = o próprio PATCH principal lançou (rede/4xx): o Kit
+       * provavelmente não mudou nada, então o state anterior é preservado em
+       * vez de rebaixado para `draft_prepared` (review do #11861).
+       */
+      patchRejected?: true;
       /** Audiência relida (só quando o PATCH aconteceu). */
       audience?: AudienceVerification;
       reason: string;
@@ -575,6 +581,7 @@ export async function updateApoiadoresKitBroadcast(opts: {
       ok: false,
       broadcastId,
       untouched: false,
+      patchRejected: true,
       reason:
         `PATCH /broadcasts/${broadcastId} falhou (${(e as Error).message}). O estado no Kit é incerto — confira ` +
         "no painel se o conteúdo e o agendamento ficaram como antes.",
@@ -665,7 +672,8 @@ export async function updateApoiadoresKitBroadcast(opts: {
  * Orquestra o `--update` (#11813) a partir do `main()`: chama
  * `updateApoiadoresKitBroadcast` e grava o state. Mesmo id de broadcast,
  * nunca um novo. Recusa antes do PATCH sai com exit 2 sem tocar o state;
- * falha depois do PATCH grava `draft_prepared` (o state não pode continuar
+ * PATCH principal recusado lança preservando o state; falha depois de um
+ * PATCH aceito grava `draft_prepared` (o state não pode continuar
  * dizendo "agendado/sent" quando o horário ou a audiência ficaram incertos) e
  * lança.
  */
@@ -714,6 +722,12 @@ async function runUpdate(opts: {
   }
 
   const nowIso = new Date().toISOString();
+  if (!result.ok && result.patchRejected) {
+    // O PATCH principal não foi aceito: nada indica mudança no Kit, então o
+    // state anterior (inclusive `sent` de um agendado) continua o mais fiel.
+    log("AVISO: o PATCH não foi aceito — state do ciclo preservado como estava.");
+    throw new Error(`--update do broadcast Kit id=${broadcastId} NÃO confere: ${result.reason}`);
+  }
   if (!result.ok) {
     try {
       deps.writeState(
