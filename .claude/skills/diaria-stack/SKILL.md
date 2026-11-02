@@ -1,6 +1,6 @@
 ---
 name: diaria-stack
-description: Escreve o texto PRÓPRIO do post semanal do Radar de Notícias Stack (comunidade Circle da Stack, #11184) — abertura e descrição de cada item de Lançamentos, Use melhor e Radar, no ângulo de quem constrói com Lovable, Cursor, Claude Code, n8n e Replit, partindo da seleção da semana e das fontes oficiais dessas ferramentas (#10952). Agente `stack-writer` + humanizador + Clarice + validação mecânica, gravado na seleção que `scripts/publish-circle-stack.ts` publica. DRY-RUN por padrão; `--publish` envia (o post sai PUBLICADO na hora, sem rascunho) só depois da confirmação do editor sobre a prévia. Uso — `/diaria-stack [AAMMDD-da-segunda] [--publish] [--reselect]`.
+description: Escreve o texto PRÓPRIO do post semanal do Radar de Notícias Stack (comunidade Circle da Stack, #11184) — abertura e descrição de cada item de Lançamentos, Use melhor e Radar, no ângulo de quem constrói com Lovable, Cursor, Claude Code, n8n e Replit, partindo da seleção da semana e das fontes oficiais dessas ferramentas (#10952). Agente `stack-writer` + humanizador + Clarice + validação mecânica, gravado na seleção que `scripts/publish-circle-stack.ts` publica. Termina APROVANDO o ciclo, com confirmação do editor, para o envio automático de segunda 06:00 BRT (task `Diaria-Circle-Stack-Weekly-Publish`, #11778); `--publish` envia na hora (o post sai PUBLICADO, sem rascunho), também só depois da confirmação do editor sobre a prévia. Uso — `/diaria-stack [AAMMDD-da-segunda] [--publish] [--reselect]`.
 disable-model-invocation: true
 ---
 
@@ -10,9 +10,13 @@ Post semanal da diar.ia.br no espaço "Radar de Notícias Stack" da comunidade
 Circle da Stack (`plataforma.stack.com.br/c/radar-de-noticias-stack`). O
 transporte já existe (#10904): `scripts/publish-circle-stack.ts` monta a
 seleção da semana a partir das edições diárias, renderiza a prévia e, só com
-`--publish`, envia ao webhook n8n da Stack. A task de segunda
+`--publish`, envia ao webhook n8n da Stack. A task de sábado 09:25 BRT
 `Diaria-Circle-Stack-Weekly-Preview` (servidor `300`) roda esse publicador em
-dry-run e abre uma issue `bloqueio-execucao` avisando que a prévia está pronta.
+dry-run para a próxima segunda e abre uma issue `bloqueio-execucao` avisando
+que a prévia está pronta. A task de segunda 06:00 BRT
+`Diaria-Circle-Stack-Weekly-Publish` (#11778) envia o ciclo, mas só se ele foi
+aprovado nesta skill (Passo 6), e manda e-mail ao editor com o resultado em
+todos os casos.
 
 Esta skill escreve o que faltava (decisão do editor de 22/10/2026 na #10904:
 o público da Stack é específico e o conteúdo é **próprio, diferente do
@@ -42,21 +46,26 @@ prévia, envio).
   ciclo já está `published` na Stack e a semana de conteúdo da segunda
   seguinte já fechou ou está perto disso (de sexta a domingo), assume a
   segunda seguinte (#11784). Imprimir o `banner` do JSON, que diz quando
-  pulou o ciclo publicado. Nunca parar para confirmar a data. O publicador,
-  chamado sem `--publish-monday`, segue com a regra antiga: o catch-up do
-  timer depende dela.
-- `--publish` — depois da prévia e da confirmação do editor (Passo 6), envia
-  o post. Sem a flag, a skill para na prévia e imprime o comando de envio.
+  pulou o ciclo publicado. Nunca parar para confirmar a data. Como a skill
+  roda no fim de semana, antes do envio de segunda 06:00 (#11778), o caso
+  normal é cair na próxima segunda (a semana anterior já saiu pela task); na
+  própria segunda antes do envio, cai na data de hoje. O publicador, chamado
+  sem `--publish-monday`, segue com a regra antiga: o catch-up do timer
+  depende dela.
+- `--publish` — depois da prévia e da confirmação do editor (Passo 7), envia
+  o post NA HORA. Sem a flag, a skill termina na aprovação do Passo 6 e o
+  envio fica para a task de segunda 06:00.
 - `--reselect` — refaz a seleção da semana do zero (repassado ao Passo 1).
   Apaga os ajustes manuais da seleção anterior, inclusive o texto desta skill.
 
 ## Guard de execução
 
-- **Nunca** rodar o Passo 6 sem `--publish` passado pelo editor NESTA
-  invocação, e nunca dentro de `/diaria-overnight`, `/diaria-continuo` ou
-  `/diaria-develop`: o webhook publica na hora numa comunidade de terceiro e
-  não há como apagar pela API. Rodadas autônomas podem mexer no código desta
-  skill, nunca executar o envio.
+- **Nunca** rodar o Passo 7 sem `--publish` passado pelo editor NESTA
+  invocação, e nunca rodar o Passo 6 nem o 7 dentro de `/diaria-overnight`,
+  `/diaria-continuo` ou `/diaria-develop`: o webhook publica na hora numa
+  comunidade de terceiro e não há como apagar pela API, e a aprovação do
+  Passo 6 autoriza esse envio na segunda. Rodadas autônomas podem mexer no
+  código desta skill, nunca aprovar nem executar o envio.
 - Os Passos 1 a 5 só leem e gravam arquivos locais do ciclo
   (`data/weekly/{cycle}/`); o dry-run do publicador não chama a rede além do
   agente de tradução de títulos (#11005).
@@ -130,11 +139,31 @@ Re-renderiza com o texto novo (a seleção é reusada). Mostrar ao editor:
 - os avisos da seleção (títulos traduzidos, link fora das regras, edição
   faltando) e o estado do ciclo na Stack (`draft`/`published`/`unknown`).
 
-Sem `--publish`: terminar aqui, imprimindo o comando de envio
-(`npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD} --publish`)
-e lembrando que o post sai publicado na hora.
+## Passo 6 — Aprovação para o envio de segunda 06:00 (#11778)
 
-## Passo 6 — Envio (só com `--publish`)
+A aprovação autoriza um envio irreversível para terceiros (critério 1 de
+"Perguntar é exceção"), então a skill para UMA vez: `AskUserQuestion` com a
+prévia do Passo 5 à mão — "Aprovar o ciclo {cycle} para o envio automático de
+segunda {AAMMDD} às 06:00?" (opções: aprovar / não aprovar). Com `--publish`,
+pular este passo e ir ao Passo 7. `AskUserQuestion` falhando = halt banner
+(#3938), nunca aprovar sem a resposta. Com o "aprovar":
+
+```bash
+npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday {AAMMDD}
+```
+
+Grava `data/weekly/{cycle}/_internal/circle-stack-approval.json` com o sha256
+da seleção atual. Recusa seleção com link fora das regras do canal ou título
+sem sinal de português não revisado, e ciclo já publicado. Editar a seleção
+depois da aprovação a invalida (a task não envia e manda "Não enviado"):
+aprovar de novo. Desfazer: `--revoke --publish-monday {AAMMDD}`.
+
+Na segunda às 06:00 a task envia e manda e-mail ao editor com o resultado:
+Publicado, Ambíguo (conferir no Radar), Falhou (erro literal) ou Não enviado
+(sem aprovação, fora da segunda ou trava da seleção). Ela nunca repete o envio
+nem usa `--force`.
+
+## Passo 7 — Envio na hora (só com `--publish`)
 
 Publicar é irreversível para terceiros (critério 1 de "Perguntar é exceção"),
 então a skill para UMA vez: `AskUserQuestion` com a prévia do Passo 5 à mão —
@@ -159,4 +188,4 @@ webhook; sem `published_at` = ambíguo, conferir no Radar.
 - Formato do corpo aceito pela Stack e tratamento do `titulo` no n8n (#11237
   item 1): dependem de resposta da Stack.
 - Capa por destaque: o webhook não aceita imagem no texto (#11186).
-- Publicação automática: segue manual até o editor decidir automatizar.
+- Publicação sem aprovação do editor: a task de segunda só envia ciclo aprovado (#11778).
