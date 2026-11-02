@@ -212,19 +212,28 @@ Se falhar: warning, seguir com o arquivo original (não bloqueia).
 
 ### 2d. Clarice
 
-1. Ler `data/monthly/$CYCLE/draft.md`.
-2. Chamar `mcp__clarice__correct_text` passando o texto completo.
-3. Salvar sugestões: `data/monthly/$CYCLE/_internal/02-clarice-suggestions.json`.
-4. Aplicar:
+**Nunca mandar o draft inteiro numa chamada só (#11812):** o cliente MCP corta em 30s e o draft mensal inteiro estoura esse teto (01/11/2026). O draft vai em blocos, todas as seções incluídas (APRESENTAÇÃO, destaques, USE MELHOR, RADAR, rodapé), sem tirar URLs à mão.
+
+1. Dividir em blocos de até 2.500 chars (`CLARICE_MCP_CHUNK_MAX_CHARS`):
 ```bash
-npx tsx scripts/clarice-apply.ts \
-  --text-file data/monthly/$CYCLE/draft.md \
-  --suggestions data/monthly/$CYCLE/_internal/02-clarice-suggestions.json \
+npx tsx scripts/clarice-mcp-chunks.ts split \
+  --in data/monthly/$CYCLE/draft.md \
+  --out-dir data/monthly/$CYCLE/_internal/clarice-chunks
+```
+   O stdout lista os blocos a enviar (`send`), cada um com `file` e `suggestionsFile`.
+2. Para cada bloco, **um de cada vez** (nunca em paralelo, #4952): ler o `file`, chamar `mcp__clarice__correct_text` com esse conteúdo e gravar a resposta (array de `{from, to, ...}`) em `suggestionsFile` via `Write` com `JSON.stringify(sugestoes, null, 2)`. Bloco que estourar o tempo ou der erro: seguir para o próximo sem gravar o arquivo (o merge registra o bloco em `missing_chunks`). Se for repetido, `split --max-chars 1500` divide mais fino.
+3. Juntar e aplicar (apply no próprio bloco, âncora única por bloco; o ruído de quebra de parágrafo e resto de código do #11798 é recusado sozinho):
+```bash
+npx tsx scripts/clarice-mcp-chunks.ts merge \
+  --in data/monthly/$CYCLE/draft.md \
+  --out-dir data/monthly/$CYCLE/_internal/clarice-chunks \
   --out data/monthly/$CYCLE/draft.md \
+  --suggestions-out data/monthly/$CYCLE/_internal/02-clarice-suggestions.json \
   --report data/monthly/$CYCLE/_internal/02-clarice-report.json
 ```
+   Não re-aplicar `02-clarice-suggestions.json` com `clarice-apply.ts` no texto inteiro: âncora única no bloco pode ser ambígua no texto todo. Exit 3 = o `draft.md` mudou depois do split: refazer os passos 1-3.
 
-Se `clarice-apply.ts` falhar: warning, seguir com o arquivo original (não bloqueia).
+Se o MCP falhar em todos os blocos, ou `clarice-mcp-chunks.ts` falhar: warning, seguir com o arquivo original (não bloqueia).
 
 ### Checkpoint Etapa 2 (#5321 — deixou de ser gate interativo)
 

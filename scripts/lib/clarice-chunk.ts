@@ -88,6 +88,17 @@ export interface ApplyResult {
 export const CLARICE_CHUNK_THRESHOLD = 4_500;
 
 /**
+ * Teto de chars por bloco no caminho MCP (`mcp__clarice__correct_text`) da
+ * mensal (#11812). O cliente MCP corta a chamada em 30s; em 01/11/2026 o
+ * draft mensal inteiro (e blocos longos dele) estourou esse teto repetidas
+ * vezes, enquanto blocos menores passaram. O REST tem retry e fallback por
+ * parágrafo (#5082) e pode ficar nos 4.500 de `CLARICE_CHUNK_THRESHOLD`; o
+ * MCP não tem nenhum dos dois, então o bloco fica menor. Usado por
+ * `scripts/clarice-mcp-chunks.ts`.
+ */
+export const CLARICE_MCP_CHUNK_MAX_CHARS = 2_500;
+
+/**
  * Divide o texto em chunks de no máximo `maxChars` chars, em fronteiras seguras:
  * - Prioridade 1: linha separadora `---` (seção editorial)
  * - Prioridade 2: parágrafo vazio (linha em branco entre parágrafos)
