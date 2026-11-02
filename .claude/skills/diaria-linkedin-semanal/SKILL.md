@@ -279,6 +279,21 @@ Outros destaques da semana: {N} edições na seleção (o render tira o que já 
 Aprovar seleção? sim / trocar {N} por outro candidato / abortar
 ```
 
+**Trocar o Use Melhor (#11777).** Se o editor pedir outro Use Melhor, re-rode
+a seleção com a URL do candidato escolhido (precisa estar entre os itens
+`use_melhor` da janela; fora deles é erro explícito, exit 2, igual ao
+`--picks`):
+
+```bash
+npx tsx scripts/select-linkedin-weekly.ts --publish-monday {AAMMDD} \
+  --use-melhor-url {url}
+```
+
+A escolha fica gravada em `useMelhorOverride` no `ln-selection.json` e é
+reaplicada em toda re-rodada sem a flag (inclusive a do `--picks`). Nunca
+edite o `ln-selection.json` à mão para isso. Para voltar ao automático (maior
+taxa), re-rode com `--use-melhor-auto`.
+
 **Abertura e fecho têm TEXTO PADRÃO fixo, sem pergunta (#8025, decisão do
 editor 12/09/2026).** Antes deste ponto a skill pedia ao editor 1 parágrafo
 de abertura e 1 de fecho a cada rodada — o mesmo texto saiu, idêntico, em 4

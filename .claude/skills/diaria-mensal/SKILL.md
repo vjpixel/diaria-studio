@@ -581,10 +581,11 @@ Fact-check (_internal/04-fact-check.json):
 [se LIVROS_PROMO_PRESENT != "1" — #7862]
 ⚠️ Box LIVROS sem imagem — 04-livros-promo.jpg ausente/não capturado neste ciclo (`scripts/capture-livros-promo.ts`, requer Chrome, roda só no `neo`). O box sai só-texto (título/descrição/link intactos, sem `<img>` quebrado) — nunca bloqueia o envio. Rodar a captura manualmente antes do gate se quiser a imagem neste ciclo.
 
-⚠️  Seções CLARICE — DIVULGAÇÃO e CLARICE — TUTORIAL são PLACEHOLDERS
-    ([Placeholder — inserir aqui...]) — preenchidas manualmente pela Clarice
-    antes do envio real, NÃO pelo pipeline. O preview acima mostra o
-    placeholder literal, não o conteúdo final dessas 2 seções.
+⚠️  Seção CLARICE — TUTORIAL é PLACEHOLDER ([Placeholder — inserir aqui...]):
+    preencher com o próximo tutorial do Doc "Laboratório Clarice" no Drive
+    (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY) — título e passos mudam
+    a cada ciclo — e registrar no Doc qual saiu. O preview acima mostra o
+    placeholder literal. (CLARICE — DIVULGAÇÃO é texto fixo desde #11788.)
 
 Aprovar? sim / editar / retry
 ```
