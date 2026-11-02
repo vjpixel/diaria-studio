@@ -237,7 +237,8 @@ export function decideThreadsProfileDuplicate(
     /**
      * #11742: ids de posts já registrados por OUTRO vertical do mesmo dia (o
      * corte avulso ignora o vídeo da edição do dia, que já está no registro
-     * dela). Não contam nem como achado nem como bloqueio.
+     * dela; e a edição ignora o dos cortes do dia, #11913). Não contam nem
+     * como achado nem como bloqueio.
      */
     ignoreIds?: readonly string[];
   },
