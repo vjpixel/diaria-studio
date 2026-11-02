@@ -27,8 +27,12 @@
  *      gravado no `corte.json` pelo `--publish` confirmado (#11741, #11912), e
  *      os pendentes são só os destinos que ele autorizou. Antes, vídeo e capa
  *      são conferidos contra o sha256 aprovado (diferente → alarme
- *      `content-changed`, nada publicado), e o filho roda com
- *      `--require-corte-authorization`: só confere, nunca grava autorização;
+ *      `content-changed`, nada publicado; vídeo ou capa aprovada ausente →
+ *      `missing-video`), e o filho roda com `--require-corte-authorization`:
+ *      só confere e nunca grava nada no `corte.json`; a recusa dele sai em
+ *      JSON (`authorization_refused`) e vira o alarme do motivo. Destino
+ *      derrubado e pendente (mesmo com outros autorizados) alarma `revoked`, e
+ *      destino autorizado fora da config, `unknown-destination`;
  *   4. `interpretCorteTimerOutput` (puro) lê o JSON e devolve um desfecho por
  *      destino; cada falha vira um alarme ao editor (`notifyEditor`, issue +
  *      e-mail), um por destino e motivo, sem repetir a cada hora
@@ -62,9 +66,9 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
 import { MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
-import { loadShortsConfig, parseShortsPublishedFile } from "./lib/diaria/short-video.ts";
+import { knownDestinationIds, loadShortsConfig, parseShortsPublishedFile } from "./lib/diaria/short-video.ts";
 import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
-import { corteAuthorizedDestinations, corteContentMismatch } from "./lib/diaria/short-corte.ts";
+import { corteAuthorizedDestinations, corteContentCheck, corteRevokedDestinations, type CorteContentFingerprint } from "./lib/diaria/short-corte.ts";
 import { corteContentFingerprint } from "./lib/diaria/corte-content.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
@@ -103,7 +107,9 @@ export type CorteTimerAlarmKey =
   /** #11912: vídeo ou capa mudou depois do "pode publicar": o timer não publica o arquivo novo. */
   | "content-changed"
   /** #11912: o corte tinha "pode publicar", ele caiu (plano/conteúdo mudou) e o horário chegou com destinos pendentes. */
-  | "revoked";
+  | "revoked"
+  /** #11912: o "pode publicar" cita um destino que a config atual não conhece: nunca filtrado em silêncio. */
+  | "unknown-destination";
 
 /** O post pode estar (ou está) no ar: `acao`, e o corpo nunca manda publicar de novo. */
 const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check"]);
@@ -112,20 +118,30 @@ const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unk
 const RETRY_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["missing-video", "credentials", "public-video", "publish-failed", "account-read-failed", "no-output", "crash"]);
 
 export function corteAlarmSeverity(key: CorteTimerAlarmKey): NotifySeverity {
-  // #11912: autorização derrubada é decisão pendente do editor, não falha: urgência normal.
-  return MAYBE_PUBLISHED_KEYS.has(key) || key === "revoked" ? "acao" : "urgente";
+  // #11912: autorização derrubada ou com destino desconhecido é decisão pendente do editor, não falha: urgência normal.
+  return MAYBE_PUBLISHED_KEYS.has(key) || key === "revoked" || key === "unknown-destination" ? "acao" : "urgente";
 }
 
 /** Destinos do timer que o config liga (#11911: a mesma lista que a vigia dos timers da edição usa). */
 export const corteTimerDestinations = corteUnscheduledDestinations;
 
+/**
+ * #11912: alarme que acompanha a decisão, independente de publicar: destino
+ * cujo "pode publicar" caiu e segue pendente (`revoked`) ou destino autorizado
+ * que a config não conhece (`unknown-destination`). Só no horário (até o
+ * horizonte), como o `late`.
+ */
+export interface CorteTimerSideAlarm {
+  destination: string;
+  key: "revoked" | "unknown-destination";
+  reason: string;
+}
+
 export type CorteTimerDecision =
-  | { kind: "skip"; reason: string }
+  | { kind: "skip"; reason: string; alarms?: CorteTimerSideAlarm[] }
   | { kind: "wait"; reason: string; at: string }
-  | { kind: "late"; reason: string; at: string; pending: string[] }
-  /** #11912: o "pode publicar" caiu e o horário chegou com destinos que estavam autorizados pendentes. */
-  | { kind: "revoked"; reason: string; at: string; pending: string[] }
-  | { kind: "publish"; at: string; pending: string[] };
+  | { kind: "late"; reason: string; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[] }
+  | { kind: "publish"; at: string; pending: string[]; alarms?: CorteTimerSideAlarm[] };
 
 /** Puro: o que fazer com um corte nesta execução, antes de tocar em qualquer API. */
 export function decideCorteTimerRun(input: {
@@ -137,56 +153,66 @@ export function decideCorteTimerRun(input: {
 }): CorteTimerDecision {
   const cfg = loadShortsConfig(input.config);
   if (!cfg.corteViaTimer) return { kind: "skip", reason: "publishing.shorts.corte_via_timer = false (a skill agenda a re-execução)" };
+  const { spec } = input;
   // #11912: sem o "pode publicar" (gravado só pelo --publish --confirm-publish do corte) o
   // timer não publica nem alarma `late`: corte nunca aprovado não está atrasado.
-  const authorized = corteAuthorizedDestinations(input.spec);
+  const authorized = corteAuthorizedDestinations(spec) ?? [];
+  const revoked = corteRevokedDestinations(spec);
   const done = new Set<string>();
   for (const { path, raw } of input.registryRaws) {
     // Registro ilegível lança: nunca vira "nada publicado" (duplicaria o post).
-    for (const e of parseShortsPublishedFile(raw, input.spec.date, path).entries) done.add(e.destination);
+    for (const e of parseShortsPublishedFile(raw, spec.date, path).entries) done.add(e.destination);
   }
   const enabled = corteTimerDestinations(input.config);
-  if (!authorized) {
+  const at = resolveEditionScheduledAt(spec.date, spec.hhmm);
+  const deltaMs = input.now.getTime() - Date.parse(at);
+  const inWindow = deltaMs >= 0 && deltaMs <= CORTE_TIMER_HORIZON_MS;
+  // #11912: lidos SEMPRE, mesmo com autorização (um --only menor depois da queda não silencia os outros).
+  const alarms: CorteTimerSideAlarm[] = [];
+  if (inWindow) {
+    const known = knownDestinationIds(cfg);
+    for (const d of authorized.filter((x) => !known.has(x))) {
+      alarms.push({ destination: d, key: "unknown-destination", reason: `o "pode publicar" do corte cita ${d}, que a config atual não conhece: o timer não publica nada nele` });
+    }
+    const lost = enabled.filter((d) => revoked.includes(d) && !authorized.includes(d) && !done.has(d));
+    for (const d of lost) {
+      alarms.push({
+        destination: d,
+        key: "revoked",
+        reason: `o "pode publicar" do ${d} caiu em ${spec.publish_revoked_at} (${spec.publish_revoked_reason_kind === "plan" ? "o plano mudou" : "o vídeo/capa mudou"}) e ele não saiu: o timer não publica sem um novo --publish --confirm-publish`,
+      });
+    }
+  }
+  const withAlarms = alarms.length ? { alarms } : {};
+  if (!authorized.length) {
     const noAuth = 'sem o "pode publicar": o corte.json não tem publish_confirmed_at (só o --publish --confirm-publish do corte grava; o dry-run nunca autoriza, #11912)';
-    // #11912: autorização que EXISTIU e caiu (plano/conteúdo mudou) com destinos pendentes vira alarme no horário, nunca skip silencioso.
-    const revoked = input.spec.publish_revoked_at ? input.spec.publish_revoked_destinations : undefined;
-    if (revoked === undefined) return { kind: "skip", reason: noAuth };
-    const lost = (revoked === "all" ? enabled : enabled.filter((d) => revoked.includes(d))).filter((d) => !done.has(d));
-    if (!lost.length) return { kind: "skip", reason: `${noAuth}; a autorização anterior caiu em ${input.spec.publish_revoked_at}, sem destino do timer pendente` };
-    const at = resolveEditionScheduledAt(input.spec.date, input.spec.hhmm);
-    const deltaMs = input.now.getTime() - Date.parse(at);
-    if (deltaMs < 0) return { kind: "skip", reason: `${noAuth}; a autorização anterior caiu em ${input.spec.publish_revoked_at}: alarma no horário (${input.spec.hhmm} BRT) se não vier um novo "pode publicar"` };
-    if (deltaMs > CORTE_TIMER_HORIZON_MS) return { kind: "skip", reason: `horário do corte passou há mais de ${CORTE_TIMER_HORIZON_MS / 3_600_000} h` };
-    return {
-      kind: "revoked",
-      at,
-      pending: lost,
-      reason: `o "pode publicar" do corte caiu em ${input.spec.publish_revoked_at} (o plano ou o vídeo/capa mudou) e ${lost.join(", ")} não saiu: o timer não publica sem um novo --publish --confirm-publish`,
-    };
+    if (!revoked.length) return { kind: "skip", reason: noAuth };
+    if (deltaMs < 0) return { kind: "skip", reason: `${noAuth}; a autorização anterior caiu em ${spec.publish_revoked_at}: alarma no horário (${spec.hhmm} BRT) se não vier um novo "pode publicar"` };
+    return { kind: "skip", reason: `${noAuth}; a autorização anterior caiu em ${spec.publish_revoked_at}`, ...withAlarms };
   }
   // #11912: só os destinos do --only autorizado; os deixados de fora nunca saem pelo timer.
-  const allowed = authorized === "all" ? enabled : enabled.filter((d) => authorized.includes(d));
+  const allowed = enabled.filter((d) => authorized.includes(d));
   const pending = allowed.filter((d) => !done.has(d));
   if (!pending.length) {
     const left = enabled.filter((d) => !allowed.includes(d) && !done.has(d));
     return {
       kind: "skip",
       reason: `nenhum destino do timer pendente (todos registrados ou desligados no config)${left.length ? `; fora do "pode publicar" (--only autorizado): ${left.join(", ")}` : ""}`,
+      ...withAlarms,
     };
   }
-  const at = resolveEditionScheduledAt(input.spec.date, input.spec.hhmm);
-  const deltaMs = input.now.getTime() - Date.parse(at);
-  if (deltaMs < 0) return { kind: "wait", reason: `antes do horário do corte (${input.spec.hhmm} BRT de ${input.spec.date})`, at };
+  if (deltaMs < 0) return { kind: "wait", reason: `antes do horário do corte (${spec.hhmm} BRT de ${spec.date})`, at };
   if (deltaMs > CORTE_TIMER_HORIZON_MS) return { kind: "skip", reason: `horário do corte passou há mais de ${CORTE_TIMER_HORIZON_MS / 3_600_000} h` };
   if (deltaMs > MAX_FIRE_LATENESS_MS) {
     return {
       kind: "late",
       at,
       pending,
-      reason: `${input.spec.hhmm} BRT de ${input.spec.date} passou há ${Math.round(deltaMs / 60_000)} min (teto ${MAX_FIRE_LATENESS_MS / 3_600_000} h) e ${pending.join(", ")} não está registrado`,
+      reason: `${spec.hhmm} BRT de ${spec.date} passou há ${Math.round(deltaMs / 60_000)} min (teto ${MAX_FIRE_LATENESS_MS / 3_600_000} h) e ${pending.join(", ")} não está registrado`,
+      ...withAlarms,
     };
   }
-  return { kind: "publish", at, pending };
+  return { kind: "publish", at, pending, ...withAlarms };
 }
 
 /**
@@ -215,6 +241,13 @@ export function interpretCorteTimerOutput(exitCode: number | null, stdout: strin
   } catch {
     const detail = `publish-shorts.ts sem JSON (exit ${exitCode})${stderrTail ? `. Fim do stderr:\n${stderrTail}` : ""}`;
     return pending.map((destination) => ({ destination, kind: "alarm", key: "no-output", detail }));
+  }
+  // #11912: o filho (`--require-corte-authorization`) recusou sem publicar nada: o motivo vira o alarme certo.
+  if (typeof out?.authorization_refused === "string") {
+    const refused: Record<string, CorteTimerAlarmKey> = { revoked: "revoked", "content-changed": "content-changed", "missing-content": "missing-video" };
+    const key = refused[out.authorization_refused] ?? "revoked";
+    const detail = `o publish-shorts recusou sem publicar (${out.authorization_refused}): ${String(out.reason ?? "sem motivo")}`;
+    return pending.map((destination) => ({ destination, kind: "alarm", key, detail }));
   }
   return pending.map((destination): CorteDestinationOutcome => {
     const result = Array.isArray(out?.results) ? out.results.find((r: any) => r?.destination === destination) : undefined;
@@ -295,6 +328,13 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
       lines.push(
         'O corte tinha o "pode publicar", mas ele caiu quando o plano (título, gancho, horário, data, vídeo) ou o conteúdo (vídeo/capa) mudou, e o timer não publica o plano novo sem uma nova confirmação.',
         `Se o plano atual está certo, dê o "pode publicar" de novo: \`${base} --only ${destination} --publish --confirm-publish ${spec.date}\` (publica o que a API publica na hora; o resto fica com o timer, até 3 h depois do horário).`,
+        `Passadas 3 h do horário o timer não publica mais, nem com o "pode publicar" novo: publique à mão com \`${base} --only ${destination} --publish --now --confirm-publish ${spec.date}\` (no 300), ou poste à mão e registre com ${mark}.`,
+      );
+    }
+    if (key === "unknown-destination") {
+      lines.push(
+        `O "pode publicar" do corte cita ${destination}, que não existe na config atual (\`publishing.shorts\`): o timer não publica nada nele.`,
+        `Se o destino mudou de nome, dê o "pode publicar" com o nome atual (\`${base} --only {destino} --publish --confirm-publish ${spec.date}\`).`,
       );
     }
     if (key === "content-changed") {
@@ -303,7 +343,7 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
         `Confira o arquivo. Se o novo está certo, dê o "pode publicar" de novo: \`${base} --only ${destination} --publish --confirm-publish ${spec.date}\`. Se não, volte o arquivo aprovado: o timer confere de novo a cada hora, até 3 h depois do horário.`,
       );
     }
-    if (key === "missing-video") lines.push(`O vídeo do corte não está nesta máquina (${spec.video}): copie para a pasta do corte em data/cortes/${spec.slug}/ ou rode de novo com --from-drive.`);
+    if (key === "missing-video") lines.push(`O vídeo do corte (${spec.video}) ou a capa aprovada não está nesta máquina (cópia do OneDrive atrasada?): copie para a pasta do corte em data/cortes/${spec.slug}/ ou rode de novo com --from-drive.`);
     if (key === "public-video") lines.push("O destino recebe o vídeo por URL pública: confira os secrets do R2 (`SHORTS_R2_*`) no `.env` do 300.");
     if (key === "credentials") lines.push("Confira a credencial do destino no `.env` do 300 (LINKEDIN_PERSONAL_*, THREADS_PERSONAL_*, INSTAGRAM_*).");
     if (RETRY_KEYS.has(key)) lines.push("O timer volta a tentar sozinho de hora em hora até 3 h depois do horário do corte; resolvida a causa, não precisa fazer nada.");
@@ -313,11 +353,36 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
   return { subject, body: lines.join("\n") };
 }
 
+/**
+ * #11912 (E): id do alarme (dedup e fingerprint). `revoked` e
+ * `content-changed` levam a variante (a data da queda; o sha256 do arquivo
+ * atual): uma 2ª queda, ou um 2º arquivo trocado, avisa de novo em vez de
+ * cair no "já avisado" da 1ª.
+ */
+export function corteAlarmId(destination: string, key: CorteTimerAlarmKey, variant?: string): string {
+  return variant ? `${destination}:${key}:${variant}` : `${destination}:${key}`;
+}
+
+/** Puro (#11912): a variante do id do alarme por motivo (ver `corteAlarmId`). */
+export function corteAlarmVariant(key: CorteTimerAlarmKey, spec: CorteSpec, content: CorteContentFingerprint | null): string | undefined {
+  if (key === "revoked") return spec.publish_revoked_at ?? spec.publish_confirmed_at;
+  if (key === "content-changed" && content) return `${(content.video_sha256 ?? "sem-video").slice(0, 12)}-${(content.cover_sha256 ?? "sem-capa").slice(0, 12)}`;
+  return undefined;
+}
+
 /** Abre (ou reaproveita) a issue do alarme, manda o e-mail e grava o estado. `true` = entregue (ou já coberto). */
-export async function corteAlarm(dir: string, spec: CorteSpec, destination: string, key: CorteTimerAlarmKey, reason: string, notifyDeps: NotifyEditorDeps): Promise<boolean> {
+export async function corteAlarm(
+  dir: string,
+  spec: CorteSpec,
+  destination: string,
+  key: CorteTimerAlarmKey,
+  reason: string,
+  notifyDeps: NotifyEditorDeps,
+  variant?: string,
+): Promise<boolean> {
   const statePath = join(dir, CORTE_TIMER_ALARM_STATE_FILE);
   const stateRaw = existsSync(statePath) ? readFileSync(statePath, "utf8") : null;
-  const id = `${destination}:${key}`;
+  const id = corteAlarmId(destination, key, variant);
   const state = parseAlarmState(stateRaw);
   if (state.alarmed.includes(id) && !state.emailPending.includes(id)) {
     console.log(`${LOG_PREFIX} ${spec.slug}: alarme "${id}" já avisado — não repete`);
@@ -349,8 +414,8 @@ export interface CorteTimerRunDeps {
   /** Roda `npx tsx <args>` (o publish-shorts). */
   runScript: (args: string[]) => { status: number | null; stdout: string; stderr: string };
   notify: NotifyEditorDeps;
-  /** Teste: troca o alarme real (notifyEditor). */
-  alarm?: (dir: string, spec: CorteSpec, destination: string, key: CorteTimerAlarmKey, reason: string) => Promise<boolean>;
+  /** Teste: troca o alarme real (notifyEditor). `variant`: ver `corteAlarmId`. */
+  alarm?: (dir: string, spec: CorteSpec, destination: string, key: CorteTimerAlarmKey, reason: string, variant?: string) => Promise<boolean>;
 }
 
 function runTsx(args: string[]): { status: number | null; stdout: string; stderr: string } {
@@ -362,25 +427,35 @@ function runTsx(args: string[]): { status: number | null; stdout: string; stderr
 
 /** Um corte: decide, publica os pendentes e alarma cada falha. Devolve o exit code parcial (0/1). */
 export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: CorteTimerRunDeps): Promise<number> {
-  const alarm = deps.alarm ?? ((d, s, dest, key, reason) => corteAlarm(d, s, dest, key, reason, deps.notify));
+  const alarm = deps.alarm ?? ((d, s, dest, key, reason, variant) => corteAlarm(d, s, dest, key, reason, deps.notify, variant));
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
   const decision = decideCorteTimerRun({ config: deps.config, spec, registryRaws: readShortsRegistryRaws(dir), now: deps.now });
-  if (decision.kind === "skip" || decision.kind === "wait") {
-    console.log(`${LOG_PREFIX} ${spec.slug}: ${decision.kind === "skip" ? "nada a fazer" : "esperando"} — ${decision.reason}`);
+  if (decision.kind === "wait") {
+    console.log(`${LOG_PREFIX} ${spec.slug}: esperando — ${decision.reason}`);
     return 0;
   }
-  if (decision.kind === "late" || decision.kind === "revoked") {
+  // #11912: destinos que perderam o "pode publicar" (ou com nome desconhecido) alarmam em toda decisão, nunca silêncio.
+  let sideOk = true;
+  for (const a of decision.alarms ?? []) {
+    console.log(`${LOG_PREFIX} ${spec.slug} ${a.destination}: ${a.key} — ${a.reason}`);
+    if (!dryRun) sideOk = (await alarm(dir, spec, a.destination, a.key, a.reason, corteAlarmVariant(a.key, spec, null))) && sideOk;
+  }
+  if (decision.kind === "skip") {
+    console.log(`${LOG_PREFIX} ${spec.slug}: nada a publicar — ${decision.reason}`);
+    return sideOk ? 0 : 1;
+  }
+  if (decision.kind === "late") {
     console.log(`${LOG_PREFIX} ${spec.slug}: ${decision.reason}`);
     if (dryRun) return 0;
-    let ok = true;
-    for (const d of decision.pending) ok = (await alarm(dir, spec, d, decision.kind, decision.reason)) && ok;
+    let ok = sideOk;
+    for (const d of decision.pending) ok = (await alarm(dir, spec, d, "late", decision.reason)) && ok;
     return ok ? 0 : 1;
   }
   const release = dryRun ? () => {} : acquireTimerLock(join(dir, CORTE_TIMER_LOCK_FILE), deps.now.getTime());
   if (!release) {
     console.log(`${LOG_PREFIX} ${spec.slug}: outra execução está no meio (${CORTE_TIMER_LOCK_FILE}) — sai sem publicar`);
-    return 0;
+    return sideOk ? 0 : 1;
   }
   try {
     const video = resolveCorteVideo(dir, spec.video);
@@ -388,18 +463,21 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
       const reason = `vídeo do corte ausente nesta máquina: ${video}`;
       console.error(`${LOG_PREFIX} ${spec.slug}: ${reason}`);
       if (dryRun) return 0;
-      let ok = true;
+      let ok = sideOk;
       for (const d of decision.pending) ok = (await alarm(dir, spec, d, "missing-video", reason)) && ok;
       return ok ? 0 : 1;
     }
-    // #11912: vídeo/capa trocados depois do "pode publicar" não saem (alarme, não silêncio).
-    const mismatch = corteContentMismatch(spec.publish_confirmed_content, corteContentFingerprint(dir, spec));
-    if (mismatch) {
-      const reason = `${mismatch}: o timer não publica conteúdo que o editor não aprovou`;
+    // #11912: vídeo/capa trocados depois do "pode publicar" não saem (alarme, não silêncio); capa
+    // aprovada ausente (cópia do OneDrive atrasada) alarma como o vídeo ausente e tenta de novo.
+    const content = corteContentFingerprint(dir, spec);
+    const check = corteContentCheck(spec.publish_confirmed_content, content);
+    if (check.kind !== "ok") {
+      const key: CorteTimerAlarmKey = check.kind === "missing" ? "missing-video" : "content-changed";
+      const reason = check.kind === "missing" ? check.reason : `${check.reason}: o timer não publica conteúdo que o editor não aprovou`;
       console.error(`${LOG_PREFIX} ${spec.slug}: ${reason}`);
       if (dryRun) return 0;
-      let ok = true;
-      for (const d of decision.pending) ok = (await alarm(dir, spec, d, "content-changed", reason)) && ok;
+      let ok = sideOk;
+      for (const d of decision.pending) ok = (await alarm(dir, spec, d, key, reason, corteAlarmVariant(key, spec, content))) && ok;
       return ok ? 0 : 1;
     }
     const args = cortePublishArgs(spec, decision.pending);
@@ -410,11 +488,15 @@ export async function runCorteTimerFor(dir: string, dryRun: boolean, deps: Corte
     const r = deps.runScript(args);
     if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`);
     const outcomes = interpretCorteTimerOutput(r.status, r.stdout, decision.pending, r.stderr.trimEnd().split("\n").slice(-15).join("\n"));
-    let failed = false;
+    let failed = !sideOk;
     for (const o of outcomes) {
       console.log(`${LOG_PREFIX} ${spec.slug} ${o.destination}: ${o.kind}${o.kind === "alarm" ? ` (${o.key})` : ""} — ${o.detail}`);
       if (o.kind !== "alarm") continue;
-      const delivered = await alarm(dir, spec, o.destination, o.key, o.detail);
+      // A recusa do filho relê o corte: a variante é a da queda/arquivo de agora.
+      const variant = o.key === "revoked" || o.key === "content-changed"
+        ? corteAlarmVariant(o.key, parseCorteSpec(readFileSync(specPath, "utf8"), specPath), corteContentFingerprint(dir, spec))
+        : undefined;
+      const delivered = await alarm(dir, spec, o.destination, o.key, o.detail, variant);
       if (!delivered || o.key !== "late") failed = true;
     }
     return failed ? 1 : 0;

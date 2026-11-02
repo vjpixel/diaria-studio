@@ -21,7 +21,10 @@
  *   - horário explícito (`--at HH:MM`), fora da rotação do #10831;
  *   - sem delegar aos timers do 300 (eles procuram a pasta da edição e não
  *     enxergam o corte): o que a API não agenda fica `pending_schedule`, com o
- *     comando de re-execução no `owners` do plano.
+ *     comando de re-execução no `owners` do plano;
+ *   - #11912: o que o timer do 300 (`Diaria-Shorts-Cortes`) publica depende do
+ *     "pode publicar" do editor gravado no `corte.json` (destinos e sha256 do
+ *     vídeo e da capa), nunca da simples existência do arquivo.
  */
 
 import { isAbsolute, join, relative, sep } from "node:path";
@@ -41,28 +44,49 @@ export interface CorteSpec {
   video: string;
   /**
    * #11912: o "pode publicar" do editor. Só o `--publish --confirm-publish`
-   * do corte grava (`withCortePublishAuthorization`); o dry-run nunca. Sem
-   * ele, o timer do 300 (`Diaria-Shorts-Cortes`) não publica nada.
+   * do corte grava (`withCortePublishAuthorization`); o dry-run nunca. O
+   * `--update-scheduled --publish --confirm-publish` do corte devolve uma
+   * autorização derrubada por mudança de PLANO (`planCorteAuthorizationRestore`),
+   * nunca uma derrubada por conteúdo. Sem ele, o timer do 300
+   * (`Diaria-Shorts-Cortes`) não publica nada.
    */
   publish_confirmed_at?: string;
   /**
    * #11912: destinos que o `--publish` confirmado autorizou: o `--only` usado,
    * ou, sem `--only`, a lista concreta dos destinos da config naquele momento
-   * (destino ligado depois não entra). `"all"` só é lido (formato da 1ª versão
-   * do #11912), nunca mais gravado.
+   * (destino ligado depois não entra).
    */
-  publish_confirmed_destinations?: "all" | string[];
+  publish_confirmed_destinations?: string[];
   /**
-   * #11912: impressão digital (sha256) do vídeo e da capa aprovados. Trocar o
-   * arquivo depois do "pode publicar" (re-export no mesmo `--video`, outro
-   * `--from-drive`, outra `--cover`) não herda a autorização.
+   * #11912: impressão digital (sha256) do vídeo e da capa aprovados,
+   * obrigatória com a autorização. Trocar o arquivo depois do "pode publicar"
+   * (re-export no mesmo `--video`, outro `--from-drive`, outra `--cover`) não
+   * herda a autorização.
    */
   publish_confirmed_content?: CorteContentFingerprint;
-  /** #11912: quando uma autorização existente caiu (plano ou conteúdo mudou). Some no próximo "pode publicar". */
+  /**
+   * #11912: quando a última autorização caiu (plano ou conteúdo mudou). Os
+   * quatro `publish_revoked_*` andam juntos e convivem com uma autorização
+   * parcial (destinos diferentes): o "pode publicar" de um `--only` menor tira
+   * da lista só os destinos que concedeu; a lista vazia apaga o registro.
+   */
   publish_revoked_at?: string;
-  /** #11912: os destinos que estavam autorizados quando a autorização caiu (o timer alarma se ficarem pendentes). */
-  publish_revoked_destinations?: "all" | string[];
+  /** #11912: os destinos que estavam autorizados e caíram (o timer alarma `revoked` se ficarem pendentes). */
+  publish_revoked_destinations?: string[];
+  /**
+   * #11912: por que caiu. `plan` (título, gancho, data, horário): o
+   * `--update-scheduled --publish --confirm-publish` pode restaurar, desde que
+   * o vídeo e a capa sejam os aprovados (`publish_revoked_content`). `content`
+   * (vídeo ou capa, inclusive outro `--video`): só um `--publish
+   * --confirm-publish` explícito, sem `--update-scheduled`, autoriza de novo.
+   */
+  publish_revoked_reason_kind?: CorteRevocationKind;
+  /** #11912: a impressão digital aprovada antes da queda `plan` (o restore confere contra ela). */
+  publish_revoked_content?: CorteContentFingerprint;
 }
+
+/** #11912: motivo da queda do "pode publicar" (ver `publish_revoked_reason_kind`). */
+export type CorteRevocationKind = "plan" | "content";
 
 /** #11912: sha256 (hex) do vídeo e da capa do corte; `null` = arquivo ausente. */
 export interface CorteContentFingerprint {
@@ -180,28 +204,39 @@ function corteSpecProblems(data: unknown): string[] {
   if (!(str("hook") ?? "").trim()) problems.push("hook vazio (--hook)");
   if (!(str("video") ?? "").trim()) problems.push("video vazio (--video ou --from-drive)");
   // #11912: autorização malformada lança (nunca vira "autorizado", nem some em silêncio).
+  const iso = (v: unknown) => typeof v === "string" && !Number.isNaN(Date.parse(v));
+  const destList = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x.trim() !== "");
+  const sha = (v: unknown) => typeof v === "string" && SHA256_RE.test(v);
+  const fingerprint = (v: unknown) => {
+    const c = v as Record<string, unknown> | null;
+    return !!c && typeof c === "object" && sha(c["video_sha256"]) && (c["cover_sha256"] === null || sha(c["cover_sha256"]));
+  };
   const at = d["publish_confirmed_at"];
   const dests = d["publish_confirmed_destinations"];
-  if ((at === undefined) !== (dests === undefined)) problems.push("publish_confirmed_at e publish_confirmed_destinations andam juntos");
-  if (at !== undefined && (typeof at !== "string" || Number.isNaN(Date.parse(at)))) problems.push("publish_confirmed_at precisa ser data ISO");
-  if (dests !== undefined && dests !== "all" && !(Array.isArray(dests) && dests.length > 0 && dests.every((x) => typeof x === "string" && x.trim()))) {
-    problems.push('publish_confirmed_destinations precisa ser "all" ou lista de destinos');
-  }
   const content = d["publish_confirmed_content"];
-  if (content !== undefined) {
-    if (at === undefined) problems.push("publish_confirmed_content sem publish_confirmed_at");
-    const c = content as Record<string, unknown> | null;
-    const hash = (v: unknown) => v === null || (typeof v === "string" && SHA256_RE.test(v));
-    if (!c || typeof c !== "object" || !hash(c["video_sha256"]) || !hash(c["cover_sha256"])) {
-      problems.push("publish_confirmed_content precisa de video_sha256 e cover_sha256 (sha256 hex ou null)");
-    }
+  if ((at === undefined) !== (dests === undefined)) problems.push("publish_confirmed_at e publish_confirmed_destinations andam juntos");
+  if (at !== undefined && !iso(at)) problems.push("publish_confirmed_at precisa ser data ISO");
+  if (dests !== undefined && !destList(dests)) problems.push("publish_confirmed_destinations precisa ser lista de destinos");
+  if (content !== undefined && at === undefined) problems.push("publish_confirmed_content sem publish_confirmed_at");
+  if (at !== undefined && !fingerprint(content)) {
+    problems.push("publish_confirmed_content obrigatório com a autorização: video_sha256 (sha256 hex) e cover_sha256 (sha256 hex ou null)");
   }
   const revokedAt = d["publish_revoked_at"];
   const revokedDests = d["publish_revoked_destinations"];
-  if ((revokedAt === undefined) !== (revokedDests === undefined)) problems.push("publish_revoked_at e publish_revoked_destinations andam juntos");
-  if (revokedAt !== undefined && (typeof revokedAt !== "string" || Number.isNaN(Date.parse(revokedAt)))) problems.push("publish_revoked_at precisa ser data ISO");
-  if (revokedDests !== undefined && revokedDests !== "all" && !(Array.isArray(revokedDests) && revokedDests.every((x) => typeof x === "string" && x.trim()))) {
-    problems.push('publish_revoked_destinations precisa ser "all" ou lista de destinos');
+  const revokedKind = d["publish_revoked_reason_kind"];
+  const revokedContent = d["publish_revoked_content"];
+  if ((revokedAt === undefined) !== (revokedDests === undefined) || (revokedAt === undefined) !== (revokedKind === undefined)) {
+    problems.push("publish_revoked_at, publish_revoked_destinations e publish_revoked_reason_kind andam juntos");
+  }
+  if (revokedAt !== undefined && !iso(revokedAt)) problems.push("publish_revoked_at precisa ser data ISO");
+  if (revokedDests !== undefined && !destList(revokedDests)) problems.push("publish_revoked_destinations precisa ser lista de destinos");
+  if (revokedKind !== undefined && revokedKind !== "plan" && revokedKind !== "content") problems.push('publish_revoked_reason_kind precisa ser "plan" ou "content"');
+  if (revokedKind === "plan" && !fingerprint(revokedContent)) problems.push('publish_revoked_content obrigatório com publish_revoked_reason_kind "plan"');
+  if (revokedContent !== undefined && revokedKind !== "plan") problems.push('publish_revoked_content só com publish_revoked_reason_kind "plan"');
+  // Autorizado e derrubado convivem (destinos diferentes), nunca o mesmo destino nos dois.
+  if (destList(dests) && destList(revokedDests)) {
+    const both = dests.filter((x) => revokedDests.includes(x));
+    if (both.length) problems.push(`destino autorizado e derrubado ao mesmo tempo: ${both.join(", ")}`);
   }
   return problems;
 }
@@ -257,22 +292,34 @@ export function mergeCorteSpec(
  * `null` quando o `corte.json` não tem autorização (só dry-run): aí o timer
  * do 300 não publica nada.
  */
-export function corteAuthorizedDestinations(spec: CorteSpec): "all" | string[] | null {
-  if (!spec.publish_confirmed_at || spec.publish_confirmed_destinations === undefined) return null;
+export function corteAuthorizedDestinations(spec: CorteSpec): string[] | null {
+  if (!spec.publish_confirmed_at || !spec.publish_confirmed_destinations?.length) return null;
   return spec.publish_confirmed_destinations;
+}
+
+/** #11912: destinos cujo "pode publicar" caiu e não voltou (`[]` = nenhum). */
+export function corteRevokedDestinations(spec: CorteSpec): string[] {
+  return spec.publish_revoked_at ? spec.publish_revoked_destinations ?? [] : [];
+}
+
+function withoutRevocation(spec: CorteSpec): CorteSpec {
+  const { publish_revoked_at: _a, publish_revoked_destinations: _d, publish_revoked_reason_kind: _k, publish_revoked_content: _c, ...rest } = spec;
+  return rest;
 }
 
 /**
  * Pure (#11912): grava a autorização do `--publish --confirm-publish` do
  * corte. `only` é a lista CONCRETA de destinos da rodada (o `--only`, ou os
- * destinos da config quando não há `--only`; nunca `"all"`), `content` é a
- * impressão digital do vídeo e da capa naquele momento.
+ * destinos da config quando não há `--only`), `content` é a impressão digital
+ * do vídeo e da capa que esta rodada publica.
  *
  * Mesmo conteúdo já autorizado: soma destinos (o "pode publicar" anterior,
- * sobre o mesmo plano e o mesmo arquivo, segue valendo); `changed` só quando o
- * conjunto cresce. Conteúdo diferente: a autorização antiga não se estende ao
- * arquivo novo, então os destinos são só os desta rodada. Toda gravação apaga
- * o registro de autorização derrubada (`publish_revoked_*`).
+ * sobre o mesmo plano e o mesmo arquivo, segue valendo); `changed` só quando
+ * algo muda. Conteúdo diferente: a autorização antiga não se estende ao
+ * arquivo novo, então os destinos são só os desta rodada, e os antigos que
+ * ficaram de fora vão para o registro de derrubada (`content`), para o timer
+ * alarmar em vez de esquecê-los. Da derrubada anterior saem só os destinos
+ * concedidos agora; o registro some quando a lista fica vazia.
  */
 export function withCortePublishAuthorization(
   spec: CorteSpec,
@@ -282,40 +329,109 @@ export function withCortePublishAuthorization(
 ): { spec: CorteSpec; changed: boolean } {
   if (only.length === 0) return { spec, changed: false };
   const current = corteAuthorizedDestinations(spec);
-  const sameContent = current !== null && corteContentMismatch(spec.publish_confirmed_content, content) === null;
-  if (sameContent && current === "all") return { spec, changed: false }; // leitura legada: já cobre tudo
-  const base = sameContent && current !== "all" ? current ?? [] : [];
+  const sameContent = current !== null && corteContentCheck(spec.publish_confirmed_content, content).kind === "ok";
+  const base = sameContent ? current : [];
+  const dropped = current && !sameContent ? current.filter((d) => !only.includes(d)) : [];
   const next = [...base, ...only.filter((d) => !base.includes(d))];
-  if (sameContent && next.length === base.length) return { spec, changed: false };
-  const { publish_revoked_at: _a, publish_revoked_destinations: _d, ...rest } = spec;
+  const revokedBefore = corteRevokedDestinations(spec);
+  const revokedLeft = [...revokedBefore.filter((d) => !next.includes(d)), ...dropped.filter((d) => !revokedBefore.includes(d))];
+  const revokedSame = revokedLeft.length === revokedBefore.length && revokedLeft.every((d) => revokedBefore.includes(d));
+  if (sameContent && next.length === base.length && revokedSame) return { spec, changed: false };
+  let revocation: Partial<CorteSpec> = {};
+  if (revokedLeft.length) {
+    // Destino antigo derrubado aqui caiu por conteúdo; misturado com uma queda `plan`, vale o mais restrito.
+    const kind: CorteRevocationKind = dropped.length || spec.publish_revoked_reason_kind === "content" ? "content" : "plan";
+    revocation = {
+      publish_revoked_at: dropped.length ? nowIso : spec.publish_revoked_at ?? nowIso,
+      publish_revoked_destinations: revokedLeft,
+      publish_revoked_reason_kind: kind,
+      ...(kind === "plan" && spec.publish_revoked_content ? { publish_revoked_content: spec.publish_revoked_content } : {}),
+    };
+  }
   return {
-    spec: { ...rest, publish_confirmed_at: nowIso, publish_confirmed_destinations: next, publish_confirmed_content: { video_sha256: content.video_sha256, cover_sha256: content.cover_sha256 } },
+    spec: {
+      ...withoutRevocation(spec),
+      publish_confirmed_at: nowIso,
+      publish_confirmed_destinations: next,
+      publish_confirmed_content: { video_sha256: content.video_sha256, cover_sha256: content.cover_sha256 },
+      ...revocation,
+    },
     changed: true,
   };
 }
 
 /**
  * Pure (#11912): derruba a autorização do corte (plano ou conteúdo mudou) e
- * guarda quando e quais destinos estavam autorizados (`publish_revoked_*`),
- * para o timer alarmar em vez de pular em silêncio. Sem autorização, devolve
- * a spec como está (`revoked: null`), preservando um registro anterior.
+ * soma os destinos que estavam autorizados ao registro de derrubada
+ * (`publish_revoked_*`), para o timer alarmar em vez de pular em silêncio.
+ * `publish_revoked_at` vira `nowIso` a cada queda (o alarme `revoked` usa a
+ * data para avisar de novo). Queda `plan` guarda a impressão digital aprovada
+ * (o restore do `--update-scheduled` confere contra ela); qualquer queda
+ * `content`, agora ou antes, torna o registro inteiro `content`. Sem
+ * autorização, devolve a spec como está (`revoked: null`).
  */
-export function withoutCortePublishAuthorization(spec: CorteSpec, nowIso: string): { spec: CorteSpec; revoked: "all" | string[] | null } {
+export function withoutCortePublishAuthorization(
+  spec: CorteSpec,
+  nowIso: string,
+  kind: CorteRevocationKind,
+): { spec: CorteSpec; revoked: string[] | null } {
   const current = corteAuthorizedDestinations(spec);
   if (!current) return { spec, revoked: null };
-  const { publish_confirmed_at: _a, publish_confirmed_destinations: _d, publish_confirmed_content: _c, ...rest } = spec;
-  return { spec: { ...rest, publish_revoked_at: nowIso, publish_revoked_destinations: current }, revoked: current };
+  const { publish_confirmed_at: _a, publish_confirmed_destinations: _d, publish_confirmed_content: approved, ...rest } = spec;
+  const prev = corteRevokedDestinations(spec);
+  const prevContent = spec.publish_revoked_content;
+  const samePrevContent = !prev.length || (spec.publish_revoked_reason_kind === "plan" && !!prevContent && !!approved && corteContentCheck(prevContent, approved).kind === "ok");
+  const merged: CorteRevocationKind = kind === "plan" && samePrevContent ? "plan" : "content";
+  return {
+    spec: {
+      ...withoutRevocation(rest),
+      publish_revoked_at: nowIso,
+      publish_revoked_destinations: [...prev, ...current.filter((d) => !prev.includes(d))],
+      publish_revoked_reason_kind: merged,
+      ...(merged === "plan" && approved ? { publish_revoked_content: approved } : {}),
+    },
+    revoked: current,
+  };
 }
 
 /**
- * Pure (#11912): o conteúdo atual bate com o aprovado? `null` = bate; senão o
- * motivo, em português, para o alarme e para a recusa do `publish-shorts`.
+ * Pure (#11912): o conteúdo atual bate com o aprovado? `ok`; `missing` quando
+ * o vídeo, ou a capa que foi aprovada, não está nesta máquina (cópia do
+ * OneDrive atrasada: alarme, nunca derrubada); `changed` quando o arquivo é
+ * outro. `reason` em português, para o alarme e para a recusa do
+ * `publish-shorts`.
  */
-export function corteContentMismatch(approved: CorteContentFingerprint | undefined, current: CorteContentFingerprint): string | null {
-  if (!approved) return 'a autorização não tem a impressão digital do vídeo e da capa: dê o "pode publicar" de novo';
-  if (current.video_sha256 === null) return "vídeo do corte ausente nesta máquina";
+export type CorteContentCheck = { kind: "ok" } | { kind: "missing" | "changed"; reason: string };
+
+export function corteContentCheck(approved: CorteContentFingerprint | undefined, current: CorteContentFingerprint): CorteContentCheck {
+  if (!approved) return { kind: "changed", reason: 'a autorização não tem a impressão digital do vídeo e da capa: dê o "pode publicar" de novo' };
+  if (current.video_sha256 === null) return { kind: "missing", reason: "vídeo do corte ausente nesta máquina" };
+  if (approved.cover_sha256 !== null && current.cover_sha256 === null) return { kind: "missing", reason: "capa aprovada do corte ausente nesta máquina" };
   const changed: string[] = [];
   if (approved.video_sha256 !== current.video_sha256) changed.push("o vídeo");
-  if (approved.cover_sha256 !== current.cover_sha256) changed.push(current.cover_sha256 === null ? "a capa (sumiu)" : "a capa");
-  return changed.length ? `${changed.join(" e ")} do corte mudou depois do "pode publicar"` : null;
+  if (approved.cover_sha256 !== current.cover_sha256) changed.push("a capa");
+  return changed.length ? { kind: "changed", reason: `${changed.join(" e ")} do corte mudou depois do "pode publicar"` } : { kind: "ok" };
+}
+
+/**
+ * Pure (#11912): o `--update-scheduled --publish --confirm-publish` do corte
+ * pode devolver o "pode publicar"? Só para queda `plan` (título, gancho, data,
+ * horário corrigidos: a confirmação desta rodada é sobre o plano novo), só
+ * para destinos que a config conhece e, com `--only`, só os dele. Queda
+ * `content` exige `--publish --confirm-publish` explícito. O conteúdo atual é
+ * conferido por quem chama (`publish_revoked_content`).
+ */
+export function planCorteAuthorizationRestore(
+  spec: CorteSpec,
+  only: readonly string[] | null,
+  known: ReadonlySet<string>,
+): { ok: true; destinations: string[] } | { ok: false; reason: string } {
+  const revoked = corteRevokedDestinations(spec);
+  if (!revoked.length) return { ok: false, reason: 'nenhum "pode publicar" derrubado a restaurar' };
+  if (spec.publish_revoked_reason_kind !== "plan") {
+    return { ok: false, reason: 'o "pode publicar" caiu porque o vídeo ou a capa mudou: o --update-scheduled não o devolve; dê o "pode publicar" explícito com --publish --confirm-publish (sem --update-scheduled)' };
+  }
+  const destinations = revoked.filter((d) => known.has(d) && (!only || only.includes(d)));
+  if (!destinations.length) return { ok: false, reason: `nenhum destino derrubado (${revoked.join(", ")}) está na config atual${only ? " e no --only desta rodada" : ""}` };
+  return { ok: true, destinations };
 }

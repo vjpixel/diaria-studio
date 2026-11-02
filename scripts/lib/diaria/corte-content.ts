@@ -13,7 +13,7 @@
  * o vertical (dezenas de MB) uma vez por execução que publica, em blocos.
  */
 
-import { closeSync, existsSync, openSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { resolveCorteVideo, type CorteContentFingerprint, type CorteSpec } from "./short-corte.ts";
@@ -37,10 +37,29 @@ export function sha256File(path: string): string | null {
   return hash.digest("hex");
 }
 
-/** Impressão digital do vídeo e da capa do corte nesta máquina. */
+/** sha256 hex de bytes já lidos; `null` = sem arquivo. */
+export function sha256Bytes(bytes: Buffer | null): string | null {
+  return bytes ? createHash("sha256").update(bytes).digest("hex") : null;
+}
+
+/**
+ * Impressão digital do vídeo e da capa do corte nesta máquina, lida do disco
+ * (o timer do 300 confere antes de chamar o filho). Capa vazia conta como
+ * ausente, como no `readShortCover` do `publish-shorts`.
+ */
 export function corteContentFingerprint(dir: string, spec: Pick<CorteSpec, "video">): CorteContentFingerprint {
+  const cover = join(dir, SHORT_COVER_FILE);
   return {
     video_sha256: sha256File(resolveCorteVideo(dir, spec.video)),
-    cover_sha256: sha256File(join(dir, SHORT_COVER_FILE)),
+    cover_sha256: existsSync(cover) && statSync(cover).size > 0 ? sha256File(cover) : null,
   };
+}
+
+/**
+ * #11912: impressão digital dos bytes que a rodada de fato publica (o vídeo
+ * já lido e a capa do `readShortCover`), sem reler o disco: o que o
+ * `publish-shorts` confere e grava é exatamente o que sobe.
+ */
+export function corteContentFingerprintFromBytes(video: Buffer | null, cover: Buffer | null): CorteContentFingerprint {
+  return { video_sha256: sha256Bytes(video), cover_sha256: sha256Bytes(cover) };
 }

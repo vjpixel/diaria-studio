@@ -1326,7 +1326,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
   {
     name: "Diaria-Shorts-Cortes",
     description:
-      "de hora em hora: publica os destinos do corte avulso (publish-shorts --corte, data/cortes/) que a API não agenda — LinkedIn e Threads pessoais e Instagram — depois do horário do corte, até 3 h, e avisa o editor quando um destino falha (#11795)",
+      "de hora em hora: publica os destinos do corte avulso (publish-shorts --corte, data/cortes/) que a API não agenda — LinkedIn e Threads pessoais e Instagram — depois do horário do corte, até 3 h, só os destinos e o conteúdo (sha256 do vídeo e da capa) que o “pode publicar” do editor gravou no corte.json, e avisa o editor quando um destino falha ou perde a autorização (#11795, #11912)",
     steps: [{ key: "post", script: "scripts/shorts-corte-timer.ts" }],
     logPath: "shorts/.corte-timer.log",
     // #11795: o corte tem horário explícito (`--at`), sem a rotação do teste
