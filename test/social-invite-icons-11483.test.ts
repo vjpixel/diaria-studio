@@ -160,3 +160,25 @@ describe("#11483 — assets dos ícones", () => {
     assert.equal(out, '<svg fill="#171411" role="img" viewBox="0 0 24 24"><path d="M0 0"/></svg>');
   });
 });
+
+describe("mensal — convite com ícones sai centralizado", () => {
+  const caixa = (html: string) => html.slice(html.lastIndexOf('<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:'));
+
+  it("o box do convite centraliza o texto junto com os ícones", () => {
+    const html = renderEncerramento(`Texto de apoio.
+
+${CURADORIA_PILLS}
+
+${SOCIAL_INVITE}`);
+    assert.match(caixa(html), /border-radius:12px[^>]*><tr><td style="[^"]*text-align:s*center/);
+  });
+
+  it("texto corrido legado não ganha centralização", () => {
+    const html = renderEncerramento(`Texto de apoio.
+
+${CURADORIA_PILLS}
+
+${SOCIAL_INVITE_LEGACY}`);
+    assert.doesNotMatch(caixa(html), /text-align:s*center/);
+  });
+});
