@@ -147,6 +147,7 @@ import {
   makeMatcher,
   mapWordsToSequence,
   trimWordsToSilences,
+  isVerticalSpec,
   offsetTranscript,
   parseBlocksFile,
   retranscribeWindow,
@@ -1112,14 +1113,14 @@ export function resolveScreenTitle(input: { blocksTitle?: string; d1Title?: stri
 }
 
 /** PNG do título (fallback do gerador de texto, #11756): sai no out dir, ao lado do XML. */
-export function titlePngFileName(edition: string): string {
-  return `${edition}_titulo_vertical.png`;
+export function titlePngFileName(edition: string, corte?: string): string {
+  return corte ? `${edition}_titulo_vertical-${corte}.png` : `${edition}_titulo_vertical.png`;
 }
 
-/** Caminho do PNG no XML: a mesma pasta do bruto no XML (a pasta da edição, para onde o out dir sobe). */
-export function titlePngXmlPath(mediaPath: string, edition: string): string {
+/** Caminho do PNG no XML: a mesma pasta do bruto no XML (a pasta da edição, para onde o out dir sobe). `corte` = o PNG do título daquele corte (#11900). */
+export function titlePngXmlPath(mediaPath: string, edition: string, corte?: string): string {
   const p = mediaPath.replace(/\\/g, "/");
-  return `${p.slice(0, p.lastIndexOf("/") + 1)}${titlePngFileName(edition)}`;
+  return `${p.slice(0, p.lastIndexOf("/") + 1)}${titlePngFileName(edition, corte)}`;
 }
 
 /** Título do D1 em `02-reviewed.md` da edição; ausente ou sem D1 = null. */
@@ -1191,7 +1192,28 @@ async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, aud
       );
     } else if (t.how === "missing") console.error("[aviso] vertical sem título: sem screenTitle no blocks.json e sem D1 em 02-reviewed.md (#11756)");
   }
-  const xml = buildXmeml(ps, source, framing, { mediaPath, audioGain: gain, screenTitle });
+  // #11900: o corte (2ª vertical, outro roteiro) leva o título dele, nunca o da notícia.
+  const screenTitleByCorte: Record<string, ScreenTitleXml | null> = {};
+  if (titleMode !== "off") {
+    for (const p of ps) {
+      const corte = p.spec.corte;
+      if (corte === undefined || !isVerticalSpec(p.spec)) continue;
+      if (p.spec.screenTitle === undefined) {
+        console.error(`[aviso] corte "${corte}" sem screenTitle na sequência: sai com o título da vertical da edição; informe "screenTitle" na sequência do corte (#11900)`);
+        continue;
+      }
+      const t = resolveScreenTitle({ blocksTitle: p.spec.screenTitle });
+      if (!t.text) {
+        screenTitleByCorte[corte] = null;
+        continue;
+      }
+      const png = join(ctx.outDir, titlePngFileName(ctx.edition, corte));
+      await sharp(Buffer.from(screenTitleSvg(t.text, p.spec.width, p.spec.height))).png().toFile(png);
+      screenTitleByCorte[corte] = titleMode === "png" ? { text: t.text, mode: "png", pngPath: titlePngXmlPath(mediaPath, ctx.edition, corte) } : { text: t.text, mode: "text" };
+      console.error(`[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}" (#11900)`);
+    }
+  }
+  const xml = buildXmeml(ps, source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte });
   const xmlPath = join(ctx.outDir, xmlFileName(ctx.edition));
   writeFileAtomic(xmlPath, xml);
   const pf: PlanFile = { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info };
