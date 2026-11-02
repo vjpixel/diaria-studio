@@ -589,4 +589,11 @@ describe("#11410/#11635 tasks do 300: ligadas, cobrindo os horários do vertical
     assert.doesNotMatch(para!, /N[ÃA]O ARMADA|hoje `false`/i);
     assert.match(para!, /#11635/);
   });
+  it("#11635: a prosa registra o arme no 300 com o touch do carimbo antes do enable", () => {
+    const doc = readFileSync(new URL("../docs/scheduled-tasks-registry.md", import.meta.url), "utf8");
+    const para = doc.split("\n").find((l) => l.startsWith("**Vertical no Threads PESSOAL pelo `300`"));
+    assert.ok(para, "parágrafo do Threads pessoal no registro");
+    assert.match(para!, /ARMADA no `300` em 02\/11\/2026/);
+    assert.match(para!, /stamp-diaria-shorts-threads-profile/);
+  });
 });

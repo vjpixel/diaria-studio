@@ -181,6 +181,7 @@ import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts";
 import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts";
 import { loadSearchDemandIdeas, pickSearchDemandDiscoveryQueries } from "./lib/search-demand-curation.ts"; // #8370 Peça 1
 import { formatHighlightSameFactNotes } from "./lib/same-fact-check.ts"; // #9595
+import { formatStudySourceNotes } from "./lib/study-source-recurrence.ts"; // #11763
 
 // Mesma disciplina do #4983 — carregar .env ANTES de qualquer outro código.
 loadProjectEnv();
@@ -782,14 +783,18 @@ function internalPath(editionDir: string, file: string): string {
 /**
  * #9595: avisos de MESMO FATO nos destaques aprovados, lidos de
  * `01-highlight-theme-check.json` × `01-approved.json`. Fail-soft: arquivo
- * ausente/ilegível → nenhuma linha (o check em si já é fail-soft).
+ * ausente/ilegível → nenhuma linha (o check em si já é fail-soft). Desde
+ * #11763 inclui também `study_source_warnings` (mesmo estudo já publicado).
  */
 function highlightSameFactNotes(deps: Stage1RunDeps, editionDir: string, approvedPath: string): string[] {
   const themePath = resolve(deps.rootDir, internalPath(editionDir, "01-highlight-theme-check.json"));
   const approvedAbs = resolve(deps.rootDir, approvedPath);
   try {
     if (!deps.existsSync(themePath) || !deps.existsSync(approvedAbs)) return [];
-    return formatHighlightSameFactNotes(JSON.parse(deps.readFile(themePath)), JSON.parse(deps.readFile(approvedAbs)));
+    const themeCheck = JSON.parse(deps.readFile(themePath));
+    const approved = JSON.parse(deps.readFile(approvedAbs));
+    // #11763: + cobertura secundária de estudo/relatório já publicado (destaque ou pool).
+    return [...formatHighlightSameFactNotes(themeCheck, approved), ...formatStudySourceNotes(themeCheck, approved)];
   } catch (err) {
     console.error(`⚠️  #9595: aviso de MESMO FATO nos destaques não lido (${(err as Error).message}) — fail-soft.`);
     return [];
