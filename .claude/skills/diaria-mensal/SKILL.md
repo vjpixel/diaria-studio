@@ -79,7 +79,7 @@ npx tsx scripts/fetch-monthly-posts.ts --cycle $CYCLE
 ```
 Grava `data/monthly/$CYCLE/raw-posts/post_{id8}_{AAMMDD}.txt` por broadcast do mês (pula os que já existem, resume). Os raw-posts são obrigatórios mesmo quando `collect-monthly.ts` parseia tudo em modo local: é deles que `kit-clicks-enrich.ts` tira a lista de broadcasts e que `monthly-click-sections.ts` (1d) tira as edições do mês. Sem raw-posts, o enrich devolve lista vazia e a 1d aborta, com o parse OK.
 
-Se `posts_found = 0`, abortar. `posts_with_html_fallback` alto é esperado no Kit: o conversor não acha os destaques no HTML do Kit e grava o HTML bruto (#11817). Isso não trava nada enquanto as edições estiverem em `data/editions/` (o parse vem do `02-reviewed.md`, modo local); só a edição sem pasta local depende do raw-post e pode sair com 0 destaques (warning do `collect-monthly.ts`).
+Se `posts_found = 0`, abortar. `posts_with_html_fallback` conta só os posts gravados como HTML bruto (conversão sem nenhum destaque) e deve ficar em 0 num ciclo Kit desde o #11817. Valor acima de 0 é sinal de template novo que o conversor não reconhece: ler os warnings do post. Não trava nada enquanto as edições estiverem em `data/editions/` (o parse vem do `02-reviewed.md`, modo local); só a edição sem pasta local depende do raw-post e pode sair com 0 destaques (warning do `collect-monthly.ts`).
 
 **Cliques (antes da 1d):** `npx tsx scripts/kit-clicks-enrich.ts --cycle $CYCLE` (lista derivada dos raw-posts).
 

@@ -37,8 +37,24 @@ export interface HtmlConvertResult {
   warnings: string[];
 }
 
+// Entidades numéricas (`&#9679;`, `&#x25CF;`). O HTML dos broadcasts do Kit
+// (#11817) serializa o marcador ● do tealDot() como `&#9679;` — sem decodificar,
+// a linha "&#9679; LANÇAMENTO" nunca batia no CATEGORY_LINE_RE e o post inteiro
+// saía com 0 destaques (fallback de HTML bruto no ciclo 2610-11). Code point
+// inválido fica como está, em vez de lançar.
+function decodeNumericEntity(match: string, code: number): string {
+  if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return match;
+  try {
+    return String.fromCodePoint(code);
+  } catch {
+    return match;
+  }
+}
+
 function decodeEntities(s: string): string {
   return s
+    .replace(/&#x([0-9a-f]+);/gi, (m, hex) => decodeNumericEntity(m, parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (m, dec) => decodeNumericEntity(m, parseInt(dec, 10)))
     .replace(/&nbsp;/gi, " ")
     .replace(/&mdash;/gi, "—")
     .replace(/&ndash;/gi, "–")
@@ -122,6 +138,13 @@ function isWhyLine(line: string): boolean {
   return WHY_LINE_RE.test(stripBullet(line));
 }
 
+/** Fim do bloco "Por que isso importa" além da próxima categoria (#11817):
+ *  label de seção com marcador ● ("● Aprofunde", "● Divulgação") ou linha que
+ *  é só um link (botão de compartilhar). */
+function isWhyTerminator(line: string): boolean {
+  return BULLET_PREFIX_RE.test(line) || LINK_LINE_RE.test(line);
+}
+
 /**
  * Converte o HTML de um post Beehiiv pro pseudo-markdown que `parsePost`
  * (collect-monthly.ts) já sabe parsear. `label` (ex: nome do arquivo) só
@@ -179,9 +202,14 @@ export function convertBeehiivHtmlToMarkdown(html: string, label = "post"): Html
     }
 
     // Why: da linha após o delimitador até a próxima categoria (ou fim).
+    // Também fecha em qualquer outro label de seção com marcador ● e em
+    // linha que é só um link (#11817): no HTML do Kit o porquê é seguido do
+    // botão "[Compartilhar no WhatsApp →](...)", de "● Aprofunde" e de caixas
+    // como "● Divulgação"/"● Artigo Especial", que não são categoria
+    // (caixa mista) e antes eram engolidos pelo porquê até o próximo destaque.
     let w = k + 1;
     const whyLines: string[] = [];
-    while (w < lines.length && !isCategoryLine(lines[w])) {
+    while (w < lines.length && !isCategoryLine(lines[w]) && !isWhyTerminator(lines[w])) {
       whyLines.push(lines[w]);
       w++;
     }
