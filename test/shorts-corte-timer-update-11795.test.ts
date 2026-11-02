@@ -13,7 +13,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -29,6 +29,7 @@ import {
 import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { assignShortsDestinationOwners, executeScheduledUpdates, planShortsPublish } from "../scripts/publish-shorts.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
+import { updateScheduledVideo } from "../scripts/lib/diaria/youtube-upload.ts";
 import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
@@ -270,5 +271,49 @@ describe("#11795 --update-scheduled", () => {
     assert.equal(persisted[0].destination, "youtube_shorts");
     assert.equal(persisted[0].updated_at, NOW.toISOString());
     assert.deepEqual(persisted[0].cover, { method: "thumbnails_set", ok: true });
+  });
+});
+
+describe("review do PR #11894", () => {
+  const entries: ShortPublishedEntry[] = [{ destination: "youtube_shorts", status: "scheduled", id: "yt1", scheduled_at: AT, at: "t" }];
+  const D1 = { title: "T", body: "G. R." };
+  const NOW = new Date("2026-11-02T03:00:00Z");
+
+  it("--update-scheduled --only com destino desconhecido lança, em vez de plano vazio", () => {
+    const known = new Set(["youtube_shorts", "facebook:diaria"]);
+    assert.throws(() => planScheduledUpdates({ entries, d1: D1, now: NOW, coverPresent: false, only: ["youtube_short"], known }), /--only com destino desconhecido: youtube_short/);
+    // Destino registrado vale mesmo fora do config atual; conhecido sem registro dá plano vazio sem erro.
+    assert.equal(planScheduledUpdates({ entries, d1: D1, now: NOW, coverPresent: false, only: ["youtube_shorts"], known: new Set() }).length, 1);
+    assert.deepEqual(planScheduledUpdates({ entries, d1: D1, now: NOW, coverPresent: false, only: ["facebook:diaria"], known }), []);
+  });
+
+  it("videos.update manda só os campos graváveis do snippet", async () => {
+    const puts: unknown[] = [];
+    const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
+    const fetch = async (url: string, init?: RequestInit) => {
+      if (url.includes("oauth2")) return json({ access_token: "tok" });
+      if (url.includes("/channels")) return json({ items: [{ id: "CH" }] });
+      if (init?.method === "PUT") {
+        puts.push(JSON.parse(String(init.body)));
+        return json({});
+      }
+      return json({
+        items: [
+          {
+            id: "yt1",
+            snippet: { title: "velho", description: "d", categoryId: "22", tags: ["a"], defaultLanguage: "pt-BR", publishedAt: "x", channelId: "CH", channelTitle: "c", thumbnails: {}, localized: {} },
+            status: { privacyStatus: "private", publishAt: AT },
+          },
+        ],
+      });
+    };
+    await updateScheduledVideo({ fetch, now: () => NOW }, { clientId: "i", clientSecret: "s", refreshToken: "r", channelId: "CH" }, "yt1", { title: "novo", description: "nova", thumbnail: null });
+    assert.equal(puts.length, 1);
+    assert.deepEqual(puts[0], { id: "yt1", snippet: { title: "novo", description: "nova", categoryId: "22", tags: ["a"], defaultLanguage: "pt-BR" } });
+  });
+
+  it("corte_via_timer entra false no platform.config.json: armar a task antes de ligar", () => {
+    const real = JSON.parse(readFileSync(new URL("../platform.config.json", import.meta.url), "utf8"));
+    assert.equal(real.publishing.shorts.corte_via_timer, false);
   });
 });

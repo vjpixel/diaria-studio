@@ -27,6 +27,12 @@
  *
  * Lock O_EXCL por corte em `_internal/.shorts-corte-timer.lock`.
  *
+ * Limite conhecido (review do PR #11894): o Instagram do corte NÃO passa pela
+ * conferência da conta do timer da edição (`instagramTimerGate`, #11265), que
+ * depende dos marcadores da edição e do writer `instagram-timer`. Só o registro
+ * local conta: Reels do corte postado à mão sem `--mark instagram=URL` sai
+ * duplicado.
+ *
  * Uso: npx tsx scripts/shorts-corte-timer.ts [--corte SLUG] [--dry-run]
  *   --dry-run: decide e imprime os comandos, sem publicar e sem alarme.
  *

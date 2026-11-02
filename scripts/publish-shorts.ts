@@ -3670,7 +3670,8 @@ async function runUpdateScheduled(input: {
   const cover = readShortCover(dir, (l) => console.error(l));
   let items: ScheduledUpdateItem[];
   try {
-    items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, only: input.only });
+    const known = knownDestinationIds(loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))));
+    items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, only: input.only, known });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
     return 2;

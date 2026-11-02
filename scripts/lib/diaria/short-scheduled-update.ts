@@ -45,8 +45,19 @@ export function planScheduledUpdates(input: {
   now: Date;
   coverPresent: boolean;
   only?: readonly string[] | null;
+  /**
+   * Ids de destino que o config conhece (`knownDestinationIds`). Com ele, um
+   * `--only` com nome que não é destino conhecido nem registrado lança, em vez
+   * de virar um plano vazio sem erro (review do PR #11894).
+   */
+  known?: ReadonlySet<string>;
 }): ScheduledUpdateItem[] {
   const only = input.only && input.only.length ? new Set(input.only) : null;
+  if (only && input.known) {
+    const valid = new Set([...input.known, ...input.entries.map((e) => e.destination)]);
+    const unknown = [...only].filter((d) => !valid.has(d));
+    if (unknown.length) throw new Error(`--only com destino desconhecido: ${unknown.join(", ")} (válidos: ${[...valid].join(", ")})`);
+  }
   const out: ScheduledUpdateItem[] = [];
   for (const e of input.entries) {
     if (only && !only.has(e.destination)) continue;

@@ -414,13 +414,17 @@ export async function setThumbnail(deps: YouTubeUploadDeps, token: string, video
   if (!res.ok) throw new Error(explainYouTubeUploadError(res.status, await errorSnippet(res), "thumbnail"));
 }
 
+/** Campos do snippet que o `videos.update` preserva além de título e descrição. */
+export const YOUTUBE_WRITABLE_SNIPPET_FIELDS = ["categoryId", "tags", "defaultLanguage", "defaultAudioLanguage"] as const;
+
 /**
  * #11795: troca título, descrição e (opcionalmente) a capa de um vídeo AINDA
  * agendado (private + `publishAt` no futuro). Relê `snippet,status` antes:
  * vídeo que já foi ao ar (ou sem `publishAt`) não é tocado, porque a troca
  * deixaria de ser "antes de publicar" e o editor decide isso no Studio. O
- * `videos.update` reenvia o snippet inteiro (`categoryId` é obrigatório),
- * com só o título e a descrição trocados. Capa é opcional: a falha volta em
+ * `videos.update` reenvia os campos graváveis do snippet
+ * (`YOUTUBE_WRITABLE_SNIPPET_FIELDS`; `categoryId` é obrigatório), com só o
+ * título e a descrição trocados. Capa é opcional: a falha volta em
  * `thumbnailError`, nunca desfaz o texto.
  */
 export async function updateScheduledVideo(
@@ -443,9 +447,11 @@ export async function updateScheduledVideo(
   if (item.status?.privacyStatus !== "private" || !publishAt || Date.parse(publishAt) <= deps.now().getTime()) {
     throw new Error(`o vídeo ${videoId} não está mais agendado (privacy ${item.status?.privacyStatus ?? "?"}, publishAt ${publishAt ?? "nenhum"}) — nada alterado; troque no YouTube Studio`);
   }
-  const snippet = { ...item.snippet, title: input.title, description: input.description };
-  delete (snippet as Record<string, unknown>).thumbnails;
-  delete (snippet as Record<string, unknown>).localized;
+  // Só os campos graváveis do snippet (review do PR #11894): reenviar o que o
+  // `videos.list` devolve só para leitura (`publishedAt`, `channelId`,
+  // `channelTitle`, `thumbnails`, `localized`) dependeria da API ignorá-los.
+  const snippet: Record<string, unknown> = { title: input.title, description: input.description };
+  for (const k of YOUTUBE_WRITABLE_SNIPPET_FIELDS) if (item.snippet[k] !== undefined) snippet[k] = item.snippet[k];
   const put = await deps.fetch(`${YOUTUBE_API_BASE}/videos?part=snippet`, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
