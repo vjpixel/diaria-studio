@@ -42,12 +42,12 @@
 
 import { classifyProvider } from "./provider-split.ts";
 import type { RampaVeredito } from "./provider-split.ts";
-import type { ApoioNivel } from "../sync-apoio-nivel-beehiiv.ts";
+import type { ApoioNivel } from "./shared/apoio-nivel-types.ts";
 
 /** Ordem de prioridade dos níveis de apoio na rampa (#6504, pedido do editor
  *  28/08: "pegue os apoiadores" — apoiadores recusados pelo Gmail furam a
  *  fila alfabética em vez de esperar a vez normal). Menor = prioridade maior.
- *  Mesmos 4 níveis de `ApoioNivel` (`sync-apoio-nivel-beehiiv.ts`), fonte
+ *  Mesmos 4 níveis de `ApoioNivel` (`shared/apoio-nivel-types.ts`), fonte
  *  única — não redeclarar a union aqui. */
 const APOIO_NIVEL_PRIORITY_RANK: Record<ApoioNivel, number> = {
   patrono: 0,

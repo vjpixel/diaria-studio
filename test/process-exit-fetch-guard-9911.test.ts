@@ -237,7 +237,6 @@ const BATCH_3 = [
   "scripts/clarice-stripe-delta.ts",
   "scripts/delete-test-schedules.ts",
   "scripts/inject-poll-token.ts",
-  "scripts/sync-apoio-nivel-beehiiv.ts",
   "scripts/sync-cursos-subscribers-kv.ts",
 ];
 

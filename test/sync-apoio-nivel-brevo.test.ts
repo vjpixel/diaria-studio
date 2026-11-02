@@ -2,7 +2,7 @@
  * test/sync-apoio-nivel-brevo.test.ts (#4572)
  *
  * Testa as funções PURAS de `scripts/sync-apoio-nivel-brevo.ts` — paridade
- * Brevo de `test/sync-apoio-nivel-beehiiv.test.ts` (#4273/#4436), adaptada ao
+ * Brevo de `test/apoio-nivel-sync.test.ts` (#4273/#4436), adaptada ao
  * modelo de estado atual daqui (membresia de LISTA Brevo, não custom field
  * por assinatura): `diffApoioBrevo` (desejado × membresia atual → adiciona/
  * troca/remove), `evaluateBrevoBlastRadiusGuard` (guard de magnitude de
@@ -12,7 +12,7 @@
  * bate na API real.
  *
  * `computeDesiredApoioLevels` (a fonte de "quem é apoiador") já tem cobertura
- * própria e completa em `test/sync-apoio-nivel-beehiiv.test.ts` (carência de
+ * própria e completa em `test/apoio-nivel-sync.test.ts` (carência de
  * 1 mês, sem_dados, múltiplos e-mails) — não duplicada aqui, já que este
  * arquivo importa a MESMA função sem reimplementá-la (ver docstring do
  * módulo). Os testes abaixo focam no que é NOVO/diferente pra Brevo:
@@ -52,7 +52,7 @@ import {
   APOIO_NIVEL_ATTR_NAME,
   type BrevoApoiadorMember,
 } from "../scripts/sync-apoio-nivel-brevo.ts";
-import { computeDesiredApoioLevels } from "../scripts/sync-apoio-nivel-beehiiv.ts";
+import { computeDesiredApoioLevels } from "../scripts/lib/apoio-nivel-sync.ts";
 import type { ContactWithStatus } from "../scripts/studio-ui/studio-apoios.ts";
 
 const NO_HISTORY_MONTH = "2026-08";

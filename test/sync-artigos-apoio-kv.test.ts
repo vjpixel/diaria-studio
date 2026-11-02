@@ -21,7 +21,7 @@ import {
   type KvSyncOps,
 } from "../scripts/sync-artigos-apoio-kv.ts";
 import { apoioLevelKvKey } from "../scripts/lib/shared/apoio-level-verify.ts";
-import type { DesiredApoioLevel } from "../scripts/sync-apoio-nivel-beehiiv.ts";
+import type { DesiredApoioLevel } from "../scripts/lib/apoio-nivel-sync.ts";
 
 function desired(over: Partial<DesiredApoioLevel>): DesiredApoioLevel {
   return { contactId: "c", contactName: "n", emails: [], level: null, unresolved: false, ...over };

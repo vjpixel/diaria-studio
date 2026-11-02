@@ -192,7 +192,7 @@ qualquer um deles é decisão à parte):
 | `fetch-beehiiv-poll-stats.ts` | **aposentado** (removido, #11225) | o "É IA?" é infra própria (`workers/poll`, `fetch-poll-stats.ts`); só servia a edições antigas |
 | `sync-beehiiv-subscribers-kit.ts` | **aposentado** (removido, #11225) | só fazia sentido com cadastro entrando na Beehiiv (0 ativos desde #7386); a task `Diaria-Kit-Subscriber-Sync` foi para `RETIRED_TASK_NAMES` e a auto-confirmação de `evaluate-brevo-diaria.ts` passou a escrever direto no Kit |
 | `reconcile-beehiiv-kit.ts` | **aposentado** (removido, #11225) | guard de pré-switchover (#6269), já cumprido; `fetchActiveBeehiivEmails` foi para `scripts/lib/beehiiv-active-subscriptions.ts` (3 consumidores vivos) |
-| `sync-apoio-nivel-beehiiv.ts`, `sync-apoio-segments-beehiiv.ts` | migrar/aposentar | o par Kit (`sync-apoio-nivel-kit.ts`, tag) já é o caminho da audiência de apoio |
+| `sync-apoio-nivel-beehiiv.ts`, `sync-apoio-segments-beehiiv.ts` | **aposentados** (removidos, #11225) | o par Kit (`sync-apoio-nivel-kit.ts`, tag) já era o caminho da audiência de apoio; a lógica de nível foi para `scripts/lib/apoio-nivel-sync.ts`, o alarme e a `/diaria-apoios-sync` leem e gravam no Kit, e o painel Apoios usa `sync-apoio-segments-kit.ts` |
 
 Decisão do editor de 28/10/2026 (itens 4 e 6): ficam o backup e os drains
 de histórico; saem os scripts que só serviam ao envio. A 2ª fatia (#11225)
@@ -202,14 +202,14 @@ removeu `sync-beehiiv-subscribers-kit.ts` (com a task
 `evaluate-brevo-diaria.ts` agora escreve direto no Kit, coberta por
 `test/evaluate-brevo-diaria-self-confirm-kit-11225.test.ts`) e o
 `beehiiv-clicks-enricher` (Stage 0h.2, passo 1b de `diaria-linkedin-semanal`
-e `diaria-retro-semanal`, `verify-clicks-enrichment.ts`, `apply-mcp-clicks.ts`). Ainda saem: os
-`sync-apoio-*-beehiiv.ts` (o `apoios-diff-alarm.ts`, o `kit-ramp-cohort.ts`,
-o painel Apoios do Studio e a skill `/diaria-apoios-sync` dependem deles, e
-o `sync-apoio-nivel-beehiiv.ts` ainda hospeda a lógica pura de nível que os
-syncs Kit/Brevo/KV importam).
+e `diaria-retro-semanal`, `verify-clicks-enrichment.ts`, `apply-mcp-clicks.ts`). A 4ª
+removeu os `sync-apoio-*-beehiiv.ts` e `apoio-segments-canonical.ts`: a lógica
+de nível foi para `scripts/lib/apoio-nivel-sync.ts`, o alarme, a
+`/diaria-apoios-sync` e o painel Apoios passaram para o Kit, e o
+`kit-ramp-cohort.ts` ficou, lendo os ativos por `fetchActiveBeehiivEmails`.
 
 Fora das fatias já feitas: plano/assinatura da conta (item 6, ação do
-editor depois de um export completo) e `sync-apoio-*-beehiiv.ts`. O ramo
+editor depois de um export completo). O ramo
 `publishing.newsletter.backend` e o canal Kit diária saíram no #11225.
 
 ### Refs
