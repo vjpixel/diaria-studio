@@ -18,8 +18,8 @@ import { loadDivulgacaoGrid, planDivulgacao } from "./divulgacao-slot-planner.ts
  *
  * Por que não rodar os CLIs da diária: eles exigem diretório de edição e
  * INJETAM a linha de canal com a URL da edição (`injectChannelLine`) — aqui
- * isso publicaria a URL da retrospectiva paywalled, justamente o que o post
- * público não pode citar (#9474). Até o #9508 a página LinkedIn tinha 1 post
+ * a URL da edição não existe, e o CTA é a linha da página da retrospectiva do
+ * ciclo (#11802; até então, o apoia.se, #9474). Até o #9508 a página LinkedIn tinha 1 post
  * único, em script próprio — ver "Post ÚNICO legado" abaixo.
  *
  * ## Texto, imagens, agenda
@@ -495,7 +495,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     if (t.corpo === undefined) {
       errors.push(`${h}: divulgacao/${files.corpo} ausente — o Passo 1 da skill precisa rodar antes`);
     } else {
-      const problems = retrospectivaHistoriaBodyProblems(t.corpo);
+      const problems = retrospectivaHistoriaBodyProblems(t.corpo, o.cycle);
       if (problems.length > 0) errors.push(`${h} (${files.corpo}): ${problems.join("; ")}`);
     }
     const title = o.titles[h];
@@ -510,11 +510,11 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     if (isShortChannel(channel)) {
       if (t.curto === undefined) errors.push(`${key}: divulgacao/${retrospectivaHistoriaFiles(historia).curto} ausente`);
       else {
-        const problems = retrospectivaSocialPostProblems(channel, t.curto);
+        const problems = retrospectivaSocialPostProblems(channel, t.curto, o.cycle);
         if (problems.length > 0) errors.push(`${key}: ${problems.join("; ")}`);
       }
     } else if (t.corpo !== undefined) {
-      const problems = retrospectivaSocialPostProblems(channel, retrospectivaPostText(channel, t)!);
+      const problems = retrospectivaSocialPostProblems(channel, retrospectivaPostText(channel, t, o.cycle)!, o.cycle);
       if (problems.length > 0) errors.push(`${key}: ${problems.join("; ")}`);
     }
     const at = schedule[historia][channel];
@@ -609,7 +609,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
     return {
       historia: h,
       channelId: o.xChannelId!,
-      text: retrospectivaPostText("x", o.texts[h]!)!, // o mesmo texto (CRLF normalizado) que o pré-voo mediu
+      text: retrospectivaPostText("x", o.texts[h]!, o.cycle)!, // o mesmo texto (CRLF normalizado) que o pré-voo mediu
       dueAt: schedule[h].x,
       images: img.pendingUpload
         ? []
@@ -623,7 +623,7 @@ export async function runRetrospectivaSocialDispatch(o: RunRetrospectivaSocialOp
   // Texto final do post: o do post lógico, com a tag `utm_content` da página
   // no Facebook (#10458 — compõe com uma tag já presente; `null` = intacto).
   const unitText = (u: DispatchUnit): string => {
-    const text = retrospectivaPostText(u.channel, o.texts[u.historia]!)!;
+    const text = retrospectivaPostText(u.channel, o.texts[u.historia]!, o.cycle)!;
     return u.page ? applyFacebookPageUtm(text, { utmContent: u.page.utmContent ?? null }) : text;
   };
 
@@ -1060,7 +1060,7 @@ async function main(): Promise<void> {
     const kicker = `Retrospectiva de ${contentMonthLabel(cycle)}`;
     const out: Partial<Record<RetrospectivaHistoria, HistoriaImages>> = {};
     for (const h of historias) {
-      const local = await renderRetrospectivaCards({ cycleDir, historia: h, title: titles[h]!, corpo: texts[h]!.corpo!, kicker, fontSize });
+      const local = await renderRetrospectivaCards({ cycleDir, cycle, historia: h, title: titles[h]!, corpo: texts[h]!.corpo!, kicker, fontSize });
       if (dryRun) {
         out[h] = { cards: local, pendingUpload: true };
         continue;

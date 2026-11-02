@@ -97,6 +97,8 @@ describe("#9872 — o e-mail sai byte a byte igual (golden pré-refatoração)",
     assert.equal(html, readFileSync(resolve(DIR, "email-clarice.golden.html"), "utf8"));
   });
 
+  // #11806: golden do Kit regenerado — o canal dos apoiadores perdeu as
+  // caixas DIVULGAÇÃO e LIVROS (o resto do HTML segue byte a byte igual).
   it("e-mail dos apoiadores (Kit)", () => {
     assert.equal(emailKit(), readFileSync(resolve(DIR, "email-kit.golden.html"), "utf8"));
   });

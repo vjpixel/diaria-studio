@@ -11,7 +11,8 @@
  *     sem data (o diretório do ciclo, `AAMM-MM`, não vira data no rodapé);
  *   - 3 slides de parágrafo + slide de CTA (`renderCarouselSlides` de
  *     `daily-carousel-card.ts`), texto = `divulgacao/d{N}.md`, slide de CTA
- *     com `RETROSPECTIVA_CAROUSEL_CTA` (override do #8681).
+ *     com `retrospectivaCarouselCta(ciclo)` (override do #8681; a URL do
+ *     CTA é a da página do ciclo, #11802).
  *
  * Saída local em `data/monthly/{ciclo}/divulgacao/` com os nomes da diária
  * (`04-d{N}-4x5.jpg`, `04-d{N}-carousel-{p1,p2,p3,cta}-4x5.jpg`) — fora da
@@ -28,7 +29,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { generateCard, overlayWrapLines, computeCarouselTitleFontSize } from "../../gen-social-card-4x5.ts";
 import { CAROUSEL_SLIDE_SLOTS, carouselCoverFilename, carouselSlideFilename, renderCarouselSlides } from "../daily-carousel-card.ts";
-import { RETROSPECTIVA_CAROUSEL_CTA } from "./retrospectiva-social.ts";
+import { retrospectivaCarouselCta } from "./retrospectiva-social.ts";
 import type { RetrospectivaHistoria } from "./retrospectiva-divulgacao.ts";
 
 /** Ordem do carrossel: capa → p1 → p2 → p3 → cta. */
@@ -68,6 +69,8 @@ export function retrospectivaCoverFontSize(titles: string[]): number {
  */
 export async function renderRetrospectivaCards(o: {
   cycleDir: string;
+  /** #11802: o slide de CTA leva a URL da página deste ciclo. */
+  cycle: string;
   historia: RetrospectivaHistoria;
   title: string;
   corpo: string;
@@ -85,6 +88,6 @@ export async function renderRetrospectivaCards(o: {
   });
   if (!cover) throw new Error(`${o.historia}: capa não gerada (imagem de origem ausente)`);
   const { cover: _c, ...slides } = paths;
-  await renderCarouselSlides(o.corpo.replace(/\r\n/g, "\n").trim(), slides, RETROSPECTIVA_CAROUSEL_CTA);
+  await renderCarouselSlides(o.corpo.replace(/\r\n/g, "\n").trim(), slides, retrospectivaCarouselCta(o.cycle));
   return paths;
 }
