@@ -21,7 +21,7 @@
  * `sync-cursos-subscribers-kv.ts`).
  *
  * **Carência já embutida na fonte:** o sync usa `computeDesiredApoioLevels`
- * (`sync-apoio-nivel-beehiiv.ts`, #4436 — `maxLevel(currentLevel,
+ * (`lib/apoio-nivel-sync.ts`, #4436 — `maxLevel(currentLevel,
  * previousLevel)`) — este módulo herda essa política por construção, sem
  * reimplementá-la. Uma política DIFERENTE pro gate (estrita, ou "apoiou uma
  * vez, acesso permanente" — as outras 2 opções da #7030) se muda em
@@ -32,7 +32,7 @@
  */
 import { sha256Hex } from "./subscriber-verify.ts";
 // #7030 hotfix (master vermelho c8fcdc9b): `import type` de
-// `../../sync-apoio-nivel-beehiiv.ts` É apagado na compilação (runtime nunca
+// `../../lib/apoio-nivel-sync.ts` É apagado na compilação (runtime nunca
 // puxa o módulo pesado Node-only, `env-loader.ts`/`apoia-se.ts`/etc.), mas o
 // guard estático `test/worker-bundle-node-only-imports.test.ts` (#4318) faz
 // scan de TEXTO — não distingue `import type` de `import` comum, e segue a
@@ -44,13 +44,13 @@ import type { ApoioNivel } from "./apoio-nivel-types.ts";
 
 export type { ApoioNivel };
 
-/** Ordinal de faixa — mesma ordem de `sync-apoio-nivel-beehiiv.ts`
+/** Ordinal de faixa — mesma ordem de `lib/apoio-nivel-sync.ts`
  * `LEVEL_RANK`, duplicada aqui de propósito (não importada em runtime, ver
  * nota do `import type` acima) porque é um array de 4 literais estável, sem
  * lógica — o custo de duplicar é menor que o de puxar o módulo pesado. */
 const LEVEL_RANK: Record<ApoioNivel, number> = { amigo: 1, apoiador: 2, mantenedor: 3, patrono: 4 };
 
-/** Duplicata pequena e estável de `isApoioNivel` (`sync-apoio-nivel-beehiiv.ts`)
+/** Duplicata pequena e estável de `isApoioNivel` (`lib/apoio-nivel-sync.ts`)
  * pelo mesmo motivo — evita puxar o módulo pesado pro bundle do Worker só
  * por esta checagem de 4 literais. */
 export function isApoioNivelValue(v: string): v is ApoioNivel {

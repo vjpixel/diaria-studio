@@ -2,7 +2,7 @@
  * scripts/lib/apoio-segments-canonical-kit.ts (#6049)
  *
  * Fonte única de verdade dos 6 segmentos `Apoio — {Amigo,Apoiador,Mantenedor,
- * Patrono,Todos,Nenhum}` no Kit — espelho de `apoio-segments-canonical.ts`
+ * Patrono,Todos,Nenhum}` no Kit — espelho do antigo `apoio-segments-canonical.ts` da Beehiiv (removido no #11225)
  * (Beehiiv), mas com um desenho DIFERENTE: o Kit não expõe a condição do
  * segmento via API em lugar nenhum (nem REST, nem MCP `list_segments`, que só
  * devolve `id`+`name`), então não existe um `get_segment`/`where` pra
@@ -40,7 +40,7 @@
  * As 4 faixas de valor mensal pago no apoia.se, fonte única
  * `computeRewardGroup` em `scripts/studio-ui/studio-apoios.ts`
  * (`REWARD_TIER_*_MIN`) — é o que decide `nivel` acima e o custom field
- * `apoio_nivel` sincronizado pelo `sync-apoio-nivel-beehiiv.ts`:
+ * `apoio_nivel` sincronizado pelo `sync-apoio-nivel-kit.ts`:
  *
  * | nível        | faixa de valor mensal |
  * |--------------|------------------------|
@@ -59,7 +59,7 @@
  * correspondência valor↔nível em outro lugar do repo.
  */
 
-import type { ApoioNivel } from "../sync-apoio-nivel-beehiiv.ts";
+import type { ApoioNivel } from "./shared/apoio-nivel-types.ts";
 
 /** Custom field `apoio_nivel` — criado pelo import do #6047 (não por este
  *  módulo). Nenhum script deste arquivo cria o campo, só referencia o id/key
@@ -68,7 +68,7 @@ export const KIT_APOIO_NIVEL_FIELD_ID = 1347084;
 export const KIT_APOIO_NIVEL_FIELD_KEY = "apoio_nivel";
 
 /** Reexportado pra quem importar só este módulo não precisar saber que o
- *  tipo canônico vive em `sync-apoio-nivel-beehiiv.ts` (mesmos 4 valores,
+ *  tipo canônico vive em `shared/apoio-nivel-types.ts` (mesmos 4 valores,
  *  fonte única — nunca redeclarar essa union aqui). */
 export type { ApoioNivel };
 

@@ -389,7 +389,7 @@ describe("loadOpenRateCache (#3612)", () => {
   });
 });
 
-// ─── confirmação de vínculo Beehiiv (#4273 parte 3) ─────────────────────
+// ─── confirmação de vínculo Kit (#4273 parte 3) ─────────────────────
 
 function makeVinculoInfo(overrides: Partial<VinculoInfo> = {}): VinculoInfo {
   return {
@@ -520,7 +520,7 @@ describe("loadVinculoCache (#4273 parte 3)", () => {
   });
 });
 
-// ─── segmentos Beehiiv (#4437 Entrega 2) ────────────────────────────────
+// ─── segmentos Kit (#4437 Entrega 2) ────────────────────────────────
 
 function makeSegmentsInfo(overrides: Partial<SegmentsInfo> = {}): SegmentsInfo {
   return {
@@ -1147,7 +1147,7 @@ describe("buildApoiosData (#3602)", () => {
     }
   });
 
-  // ── #4273 parte 3: confirmação de vínculo Beehiiv é ortogonal ao status de
+  // ── #4273 parte 3: confirmação de vínculo Kit é ortogonal ao status de
   // apoio e à taxa de abertura — mesma disciplina de injeção via
   // `vinculoCache` + fail-soft, cobrindo os mesmos 2 caminhos de retorno.
 

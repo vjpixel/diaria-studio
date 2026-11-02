@@ -65,7 +65,7 @@ import {
   computeDesiredApoioLevels,
   isPreviousMonthSnapshotMissing,
   type DesiredApoioLevel,
-} from "./sync-apoio-nivel-beehiiv.ts";
+} from "./lib/apoio-nivel-sync.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKER_DIR = resolve(ROOT, "workers", "artigos");

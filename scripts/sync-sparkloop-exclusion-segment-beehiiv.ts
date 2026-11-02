@@ -33,7 +33,7 @@
  *
  * ## Mecanismo — endpoint REST, não a UI (diferente do desenho de #4436)
  *
- * `scripts/lib/apoio-segments-canonical.ts` documenta que os 6 segmentos
+ * `apoio-segments-canonical` (removido no #11225) documenta que os 6 segmentos
  * `Apoio — *` foram criados/corrigidos manualmente pela UI da Beehiiv — na
  * época (260802), a leitura era que segmentos não eram programáveis via API
  * pública. Confirmado por leitura da documentação pública AGORA (260812,
@@ -148,7 +148,7 @@ function log(msg: string): void {
   process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
 }
 
-/** Nome do segmento — mesma convenção de `apoio-segments-canonical.ts`
+/** Nome do segmento — mesma convenção de `apoio-segments-canonical` (removido no #11225)
  * ("{Categoria} — {detalhe}", em dash), escopado ao NOME DA INTEGRAÇÃO
  * (não ao parceiro individual — ver cabeçalho do módulo). */
 export const EXCLUSION_SEGMENT_NAME = "Exclusão — SparkLoop Upscribe";
@@ -269,7 +269,7 @@ export interface ExistingSegmentMatch {
 
 /** Pure: procura `EXCLUSION_SEGMENT_NAME` numa lista de segmentos já lida da
  * Beehiiv (`GET /segments`). Casamento exato de nome — mesmo padrão de
- * `apoio-segments-canonical.ts` (nome é o identificador estável, a API não
+ * `apoio-segments-canonical` (removido no #11225) (nome é o identificador estável, a API não
  * expõe "get segment by name"). */
 export function findExistingExclusionSegment(
   segments: readonly { id: string; name: string; totalResults: number | null }[],

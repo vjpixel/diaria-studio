@@ -81,7 +81,7 @@
  * Os segmentos "Apoio — Mantenedor" e "Apoio — Patrono" já existem na conta
  * Brevo dedicada (`platform.config.json` → `brevo_apoiadores`), convergidos
  * por `scripts/sync-apoio-nivel-brevo.ts` (#4572, ver
- * `scripts/lib/apoio-segments-canonical.ts`). Este módulo NÃO recalcula
+ * `scripts/lib/apoio-segments-canonical-kit.ts`). Este módulo NÃO recalcula
  * "quem é apoiador" — o envio mira a lista já convergida.
  */
 import { splitByLabels, normalizeLabel } from "./monthly-render.ts";

@@ -26,10 +26,7 @@
  * `scripts/lib/shared/subscriber-verify.ts` já usa pro par
  * assinante-ativo/`workers/cursos` (#4052).
  *
- * `sync-apoio-nivel-beehiiv.ts` reexporta os dois símbolos daqui — os
- * consumidores existentes (`kit-gmail-warmup-ramp.ts`,
- * `sync-artigos-apoio-kv.ts`, etc.) continuam importando de
- * `./sync-apoio-nivel-beehiiv.ts` sem nenhuma mudança.
+ * O script de origem foi aposentado no #11225; este é o lugar canônico.
  */
 
 export type ApoioNivel = "amigo" | "apoiador" | "mantenedor" | "patrono";

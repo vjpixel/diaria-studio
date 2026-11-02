@@ -52,8 +52,7 @@ state file) ou `--so-divulgacao` → pular direto pro Passo 0, como antes.
 
 ## Classificação de execução
 
-`windows` → **Develop**, nunca Overnight (mesma regra de `/diaria-apoios-sync`
-e do próprio #5751 documentado em `CLAUDE.md`). O Passo 3 (apoia.se) exige
+`windows` → **Develop**, nunca Overnight (mesma regra do #5751 documentado em `CLAUDE.md`). O Passo 3 (apoia.se) exige
 Claude in Chrome com o editor logado — sem navegador utilizável, a skill
 inteira não fecha de ponta a ponta.
 As Etapas A-E (produção) não precisam de navegador logado, mas têm gates
@@ -344,8 +343,7 @@ fluxo é o mesmo de antes do #9099.
 
 ## Passo 0 — preflight
 
-1. **Capacidade de navegador** (mesmo padrão de `/diaria-apoios-sync` Passo
-   0, #5209): `npx tsx scripts/lib/browser-capability.ts`.
+1. **Capacidade de navegador** (#5209): `npx tsx scripts/lib/browser-capability.ts`.
    - `unavailable`/`unknown` → HALT (a menos que `--skip apoiase` cubra o
      único canal que precisa de Chrome):
      ```

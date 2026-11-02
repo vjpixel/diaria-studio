@@ -145,7 +145,7 @@ export function diffApoiadoresTagMembership(
   return diffTagMembership(desiredEmails, currentEmails);
 }
 
-/** Mesma proporção do guard de `sync-apoio-nivel-beehiiv.ts` — remover mais de
+/** Mesma proporção do guard de `lib/apoio-nivel-sync.ts` — remover mais de
  *  30% da audiência numa rodada é sinal de dado parcial, não de 30% dos
  *  apoiadores terem cancelado no mesmo dia. */
 export const APOIADORES_TAG_BLAST_RADIUS_THRESHOLD = APOIO_TAG_BLAST_RADIUS_THRESHOLD;

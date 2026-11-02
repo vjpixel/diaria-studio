@@ -5,7 +5,7 @@
  * `extractApoioNivelValueKit`, `fetchCurrentKitState`, `applyApoioTagEntryKit`.
  * A lógica pura reusada (`computeDesiredApoioLevels`, `diffApoioTags`,
  * `evaluateBlastRadiusGuard`, etc.) já está travada em
- * `test/sync-apoio-nivel-beehiiv.test.ts` — reimportar e re-testar aqui
+ * `test/apoio-nivel-sync.test.ts` — reimportar e re-testar aqui
  * seria duplicação sem sinal novo (o shape que ela consome é genérico, não
  * muda por ser alimentado pelo Kit).
  *
@@ -19,7 +19,7 @@ import {
   fetchCurrentKitState,
   applyApoioTagEntryKit,
 } from "../scripts/sync-apoio-nivel-kit.ts";
-import type { ApoioTagDiffEntry } from "../scripts/sync-apoio-nivel-beehiiv.ts";
+import type { ApoioTagDiffEntry } from "../scripts/lib/apoio-nivel-sync.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

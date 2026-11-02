@@ -8,7 +8,7 @@
  * já sabem drenar promessas e criar um contato PENDENTE a partir delas
  * (`importPendingApoiadoresFromGmail`, #3912) — mas isso só roda dentro de
  * `refreshApoiosData`, usado pelo botão "Atualizar status" do painel Apoios
- * (ação MANUAL do editor). Nem `scripts/sync-apoio-nivel-beehiiv.ts` nem
+ * (ação MANUAL do editor). Nem `scripts/lib/apoio-nivel-sync.ts` nem
  * `scripts/apoios-diff-alarm.ts` (a task diária PRETENDIDA pra rodar
  * automaticamente — `Diaria-Apoios-Diff-Alarm`, #4485 item 2; registro no
  * Task Scheduler + 1ª execução ao vivo ainda são ação PENDENTE do editor,
@@ -23,9 +23,9 @@
  * Fix: este módulo guarda as promessas NUM ARQUIVO PRÓPRIO
  * (`data/apoia-se/{campaign}/pending-promises.jsonl`) e
  * `reconcilePendingPromises` (`scripts/lib/apoio-reconciliation-cycle.ts`,
- * reexportada de `scripts/sync-apoio-nivel-beehiiv.ts` — movida pra lá no
+ * reexportada de `scripts/lib/apoio-nivel-sync.ts` — movida pra lá no
  * self-review consolidado do PR #4503 junto com `runApoioReconciliationCycle`,
- * a orquestração inteira chamada tanto de `sync-apoio-nivel-beehiiv.ts`
+ * a orquestração inteira chamada tanto de `lib/apoio-nivel-sync.ts`
  * quanto de `scripts/apoios-diff-alarm.ts` — a task diária real precisa da
  * MESMA reconciliação, não só a invocação manual) reconsulta `checkBacker`
  * (forceRefresh) pra cada uma A CADA RODADA — se confirmar pagamento no mês

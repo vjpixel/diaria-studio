@@ -2,7 +2,7 @@
  * test/send-monthly-apoiadores.test.ts (#4521)
  *
  * `APOIADORES_TARGET_SEGMENT_NAMES` é derivado de `APOIO_SEGMENTS_CANONICAL`
- * (`scripts/lib/apoio-segments-canonical.ts`, #4436) em vez de strings
+ * (`scripts/lib/apoio-segments-canonical-kit.ts`, #4436) em vez de strings
  * hardcoded de novo — este teste trava que o filtro continua pegando
  * EXATAMENTE os 2 segmentos-alvo (decisão 2 do #4482: só Mantenedor/Patrono,
  * nunca Amigo/Apoiador/Todos/Nenhum nem a base inteira) mesmo se a lista

@@ -12,7 +12,7 @@
  * `studio-apoios.ts` REEXPORTA tudo que moveu pra cá — rotas do server e
  * testes existentes continuam importando de lá sem mudança. Mesmo padrão da
  * extração do `apoio-month-key.ts` (que já tinha quebrado um ciclo
- * studio-apoios ↔ sync-apoio-nivel-beehiiv).
+ * studio-apoios ↔ sync-apoio-nivel-kit).
  *
  * LGPD inalterado: contatos vivem SÓ em `data/apoia-se/contacts.jsonl`
  * (junction OneDrive local, blanket-gitignored — nunca no repo, nunca em KV).

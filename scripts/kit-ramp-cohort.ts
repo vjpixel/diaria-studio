@@ -55,7 +55,7 @@
  * Mesmo padrão/limiar (30%, `--force-blast-radius` como escape hatch
  * explícito, sempre logado) de `sync-apoio-nivel-brevo.ts` (#4572) —
  * denominador aqui é quantos assinantes estão ATIVOS hoje na Beehiiv
- * (`fetchCurrentBeehiivState`, reusado de `sync-apoio-nivel-beehiiv.ts`).
+ * (`fetchActiveBeehiivEmails`, `lib/beehiiv-active-subscriptions.ts`).
  *
  * ## `--audit` — o invariante, verificável a qualquer momento sem side-effect
  *
@@ -96,7 +96,7 @@ import type { KitPagination } from "./lib/kit-client.ts";
 import { createOrUpdateSubscriber, type KitSubscriberSummary } from "./lib/kit-subscribers.ts";
 import { tagSubscriber, findTagIdByName } from "./lib/kit-broadcasts.ts";
 import { resolveAudienceTagId } from "./lib/kit-diaria-audience.ts";
-import { fetchCurrentBeehiivState } from "./sync-apoio-nivel-beehiiv.ts";
+import { fetchActiveBeehiivEmails } from "./lib/beehiiv-active-subscriptions.ts";
 import { toNormalizedEmailSet, maskEmail } from "./lib/beehiiv-kit-reconcile.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -745,8 +745,8 @@ async function main(): Promise<void> {
     }
     log(`auditando tag "${tagName}" (id ${resolution.tagId})…`);
     const kitTaggedEmails = await listAllSubscribersForTag(resolution.tagId, kitResolved.config);
-    const beehiivActive = await fetchCurrentBeehiivState(beehiivResolved.config.publicationId, beehiivResolved.config.apiKey);
-    const divergence = computeKitRampDivergence(kitTaggedEmails, beehiivActive.map((s) => s.email));
+    const beehiivActive = await fetchActiveBeehiivEmails(beehiivResolved.config.apiKey, beehiivResolved.config.publicationId);
+    const divergence = computeKitRampDivergence(kitTaggedEmails, beehiivActive);
     process.stdout.write(formatAuditReport(tagName, divergence) + "\n");
     process.exitCode = divergence.divergent.length > 0 ? 1 : 0;
     return;
@@ -800,8 +800,7 @@ async function main(): Promise<void> {
   let activeBeehiivEmails: string[] = [];
   if (beehiivResolved.ok) {
     log("buscando assinantes ATIVOS atuais na Beehiiv…");
-    const snapshots = await fetchCurrentBeehiivState(beehiivResolved.config.publicationId, beehiivResolved.config.apiKey);
-    activeBeehiivEmails = snapshots.map((s) => s.email);
+    activeBeehiivEmails = await fetchActiveBeehiivEmails(beehiivResolved.config.apiKey, beehiivResolved.config.publicationId);
     log(`${activeBeehiivEmails.length} assinante(s) ativo(s) na Beehiiv hoje.`);
   } else {
     log(`aviso: Beehiiv sem credencial (${beehiivResolved.reason}) — guard de blast radius e desativação ficam indisponíveis.`);
