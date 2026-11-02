@@ -185,7 +185,10 @@ import {
   corteShortTime,
   corteTextInput,
   corteVideoFileName,
+  corteVideoPortabilityWarning,
+  corteVideoRef,
   mergeCorteSpec,
+  resolveCorteVideo,
   parseCorteSpec,
   type CorteSpec,
 } from "./lib/diaria/short-corte.ts";
@@ -536,6 +539,21 @@ export function assignShortsDestinationOwners(
     } else if (action === "guided") {
       const at = item.at;
       const later = at !== undefined && Date.parse(at) - ctx.now.getTime() > OWNER_SCHEDULE_MIN_LEAD_MS;
+      if (ctx.baseCommand) {
+        // #11795: o corte não tem skill de re-execução (a `/diaria-publica-video` só conhece edição) e o
+        // comando do corte só imprime o plano de um passo guiado: o agente desta rodada é o dono real.
+        owners.push({
+          destination,
+          action,
+          by: "agent",
+          ...(at !== undefined ? { at } : {}),
+          note:
+            `passo guiado (Chrome) do corte, executado pelo agente nesta rodada` +
+            (later ? `: agendar na própria plataforma para ${at}, ou publicar e registrar com --mark` : "") +
+            ` (re-executar ${ctx.baseCommand} só reimprime o plano)`,
+        });
+        continue;
+      }
       owners.push(
         later
           ? {
@@ -643,6 +661,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const premises: string[] = [];
   const warnings: string[] = [];
   const corte = input.corte;
+  // #11795: o corte está fora do teste de horário por definição; o texto do skip_late não pode citá-lo.
+  const lateReason = corte ? "passou do horário do corte (--at)" : "fora do horário do teste (#10831)";
   const d1 = corte ? { n: 1, ...corteTextInput(corte) } : parseDestaques(input.reviewedMd).find((d) => d.n === 1);
   if (!d1) throw new Error("02-reviewed.md sem DESTAQUE 1 — nada para derivar o vídeo curto");
 
@@ -860,7 +880,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (profileLate) {
         const nowCmd = lateNowArgs(dest.id, input.writer);
         const detail =
-          `${profileLate} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
+          `${profileLate} — ${lateReason}, esta rodada não publica sozinha. ` +
           `O agente publica com ${nowCmd} (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`linkedin_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
@@ -952,7 +972,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       const late = lateFor(dest.id);
       if (late) {
         const detail =
-          `${late} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
+          `${late} — ${lateReason}, esta rodada não publica sozinha. ` +
           `O agente publica com ${lateNowArgs(dest.id, input.writer)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`threads_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
@@ -1073,7 +1093,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       const late = lateFor(dest.id);
       if (late) {
         const detail =
-          `${late} — fora do horário do teste (#10831), não publica sozinho. ` +
+          `${late} — ${lateReason}, não publica sozinho. ` +
           `Publique à mão (Passo B3b) e registre com --confirm-instagram ou --mark instagram=URL, ou rode com --now para publicar mesmo assim`;
         warnings.push(`instagram: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
@@ -3131,7 +3151,8 @@ const USAGE =
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br e perfil do @vjpixel, #11390)\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)\n" +
   "     publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H (--video PATH | --from-drive ID) [--cover JPG] [--publish] [--only ...] [--now]\n" +
-  "                                                                                 # corte avulso fora de edição (#11795): registro em data/cortes/SLUG/, re-execução só com --corte SLUG";
+  "                                                                                 # corte avulso fora de edição (#11795): registro em data/cortes/SLUG/, re-execução só com --corte SLUG\n" +
+  "                                                                                 # (o dry-run também grava data/cortes/SLUG/corte.json: registra o corte; --from-drive baixa sempre para essa pasta)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
 export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video"] as const;
@@ -3212,10 +3233,18 @@ export function prepareCorteRun(input: {
   const specPath = join(input.dir, CORTE_SPEC_FILE);
   const existing = existsSync(specPath) ? parseCorteSpec(readFileSync(specPath, "utf8"), specPath) : null;
   const { values } = input;
+  if (values["video"] !== undefined && values["from-drive"] !== undefined) {
+    throw new Error("--corte: passe --video OU --from-drive, não os dois (o --from-drive baixa sempre para a pasta do corte)");
+  }
+  if (values["date"] !== undefined && input.positionalDate && values["date"] !== input.positionalDate) {
+    throw new Error(`data ambígua: --date ${values["date"]} e AAMMDD ${input.positionalDate}`);
+  }
+  // #11825: o --from-drive baixa SEMPRE para data/cortes/{slug}/corte-{slug}.mp4, nunca para o `video`
+  // já registrado (que pode ser o arquivo original do editor); o caminho fica relativo à pasta do corte.
   const video = values["video"] !== undefined
-    ? resolve(values["video"])
-    : values["from-drive"] !== undefined && !existing
-      ? join(input.dir, corteVideoFileName(input.slug))
+    ? corteVideoRef(input.dir, resolve(values["video"]))
+    : values["from-drive"] !== undefined
+      ? corteVideoFileName(input.slug)
       : undefined;
   const merged = mergeCorteSpec(input.slug, existing, {
     date: values["date"] ?? (input.positionalDate || undefined),
@@ -3270,7 +3299,9 @@ async function main(): Promise<number> {
       return 2;
     }
     aammdd = corte.date;
-    console.error(`[premissa] corte avulso "${corte.slug}": ${corte.date} às ${corte.hhmm} BRT, vídeo ${corte.video}, registro em ${corteDir}`);
+    console.error(`[premissa] corte avulso "${corte.slug}": ${corte.date} às ${corte.hhmm} BRT, vídeo ${resolveCorteVideo(corteDir, corte.video)}, registro em ${corteDir}`);
+    const portability = corteVideoPortabilityWarning(resolveCorteVideo(corteDir, corte.video), join(ROOT, "data"));
+    if (portability) console.error(`[aviso] ${portability}`);
   }
   const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
@@ -3355,7 +3386,7 @@ async function main(): Promise<number> {
     console.error(`publish-shorts: ${reviewedPath} não existe`);
     return 1;
   }
-  const videoPath = corte ? corte.video : resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
+  const videoPath = corte ? resolveCorteVideo(dir, corte.video) : resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
   if (values["from-drive"] && !existsSync(videoPath) && shortsVideoTerminal(dir, aammdd,
     loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
     cleanup();

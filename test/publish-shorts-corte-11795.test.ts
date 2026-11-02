@@ -18,6 +18,7 @@ import { join } from "node:path";
 import {
   CORTE_FORBIDDEN_FLAGS,
   DIARIA_HOME_URL,
+  assignShortsDestinationOwners,
   instagramReelRouteChoice,
   loadEditionDayGrid,
   parseShortsCliArgs,
@@ -29,7 +30,10 @@ import {
   corteBaseCommand,
   corteR2Key,
   corteShortTime,
+  corteVideoPortabilityWarning,
+  corteVideoRef,
   mergeCorteSpec,
+  resolveCorteVideo,
   parseCorteSpec,
   validateCorteSlug,
 } from "../scripts/lib/diaria/short-corte.ts";
@@ -105,6 +109,17 @@ describe("#11795 planShortsPublish com corte avulso", () => {
       assert.equal(owner.by, "agent-scheduled-task", d);
       assert.equal(owner.command, `npx tsx scripts/publish-shorts.ts --corte ${CORTE.slug} --only ${d} --publish`);
     }
+  });
+
+  it("#11825: passo guiado futuro do corte fica com o agente desta rodada, nunca com um comando que só imprime o plano", () => {
+    const items = [{ destination: "facebook_profile", action: "guided", at: "2026-11-02T22:30:00.000Z" }] as any;
+    const [owner] = assignShortsDestinationOwners(items, { aammdd: "261102", now: BEFORE, instagramViaTimer: false, baseCommand: corteBaseCommand("abc") });
+    assert.equal(owner.by, "agent");
+    assert.equal(owner.command, undefined);
+    assert.match(owner.note, /2026-11-02T22:30/);
+    const [edition] = assignShortsDestinationOwners(items, { aammdd: "261102", now: BEFORE, instagramViaTimer: false });
+    assert.equal(edition.by, "agent-scheduled-task", "na edição a skill segue dona da re-execução");
+    assert.equal(edition.command, "/diaria-publica-video 261102 --so vertical");
   });
 
   it("sem corte, a mesma config segue delegando (regressão do caminho da edição)", () => {
@@ -202,8 +217,36 @@ describe("#11795 corte.json (registro próprio)", () => {
   it("--from-drive sem --video baixa na pasta do corte", () => {
     const dir = mkdtempSync(join(tmpdir(), "corte-11795-"));
     const spec = prepareCorteRun({ slug: "abc", dir, values: { at: "08:00", title: "T", hook: "H.", "from-drive": "1234567890abc" }, positionalDate: "261102", log: () => {} });
-    assert.equal(spec.video, join(dir, "corte-abc.mp4"));
+    assert.equal(spec.video, "corte-abc.mp4", "relativo à pasta do corte (data/ sincroniza entre máquinas, #11825)");
+    assert.equal(resolveCorteVideo(dir, spec.video), join(dir, "corte-abc.mp4"));
     assert.equal(spec.date, "261102");
+  });
+
+  it("#11825: --from-drive numa rodada posterior nunca baixa por cima do vídeo original do editor", () => {
+    const dir = mkdtempSync(join(tmpdir(), "corte-11825-"));
+    const original = "/editor/Cortes para as redes/original.mp4";
+    prepareCorteRun({ slug: "abc", dir, values: { date: "261102", at: "08:00", title: "T", hook: "H.", video: original }, positionalDate: "", log: () => {} });
+    const again = prepareCorteRun({ slug: "abc", dir, values: { "from-drive": "1234567890abc" }, positionalDate: "", log: () => {} });
+    assert.equal(again.video, "corte-abc.mp4");
+    assert.notEqual(resolveCorteVideo(dir, again.video), original);
+    assert.equal(JSON.parse(readFileSync(join(dir, CORTE_SPEC_FILE), "utf8")).video, "corte-abc.mp4");
+  });
+
+  it("#11825: --video e --from-drive juntos, e --date diferente do AAMMDD posicional, recusam", () => {
+    const dir = mkdtempSync(join(tmpdir(), "corte-11825-"));
+    const values = { date: "261102", at: "08:00", title: "T", hook: "H." };
+    assert.throws(() => prepareCorteRun({ slug: "abc", dir, values: { ...values, video: "/v.mp4", "from-drive": "1234567890abc" }, positionalDate: "", log: () => {} }), /OU --from-drive/);
+    assert.throws(() => prepareCorteRun({ slug: "abc", dir, values: { ...values, video: "/v.mp4" }, positionalDate: "261103", log: () => {} }), /data ambígua/);
+    assert.equal(prepareCorteRun({ slug: "abc", dir, values: { ...values, video: "/v.mp4" }, positionalDate: "261102", log: () => {} }).date, "261102");
+  });
+
+  it("#11825: vídeo dentro da pasta do corte vira relativo; fora dela segue absoluto e fora de data/ avisa", () => {
+    const dir = join("/repo", "data", "cortes", "abc");
+    assert.equal(corteVideoRef(dir, join(dir, "x.mp4")), "x.mp4");
+    assert.equal(corteVideoRef(dir, "/videos/x.mp4"), "/videos/x.mp4");
+    assert.equal(resolveCorteVideo(dir, "/videos/x.mp4"), "/videos/x.mp4");
+    assert.equal(corteVideoPortabilityWarning(join(dir, "x.mp4"), "/repo/data"), null);
+    assert.match(corteVideoPortabilityWarning("/videos/x.mp4", "/repo/data") ?? "", /fora de data\//);
   });
 });
 

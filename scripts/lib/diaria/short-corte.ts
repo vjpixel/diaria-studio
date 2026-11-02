@@ -24,6 +24,7 @@
  *     comando de re-execução no `owners` do plano.
  */
 
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { ShortTime } from "./short-video.ts";
 
 /** Especificação do corte, gravada em `data/cortes/{slug}/corte.json`. */
@@ -36,7 +37,7 @@ export interface CorteSpec {
   title: string;
   /** Gancho: a 1ª frase vai no texto de cada rede (mesmo papel do corpo do D1). */
   hook: string;
-  /** Caminho do vertical (absoluto). */
+  /** Caminho do vertical: relativo à pasta do corte quando está nela (`corteVideoRef`), senão absoluto. */
   video: string;
 }
 
@@ -59,6 +60,33 @@ export function corteRelDir(slug: string): string {
 /** Nome do vertical baixado na pasta do corte (`--from-drive` sem `--video`). */
 export function corteVideoFileName(slug: string): string {
   return `corte-${slug}.mp4`;
+}
+
+/**
+ * Como o `video` vai para o `corte.json`: RELATIVO à pasta do corte quando o
+ * arquivo está dentro dela (caso `--from-drive`), senão o caminho absoluto.
+ * `data/` sincroniza entre as máquinas; um absoluto de uma máquina não existe
+ * na outra, então a re-execução dos `owners` cairia em "vídeo curto ausente".
+ */
+export function corteVideoRef(corteDir: string, absVideo: string): string {
+  const rel = relative(corteDir, absVideo);
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel.split(sep).join("/") : absVideo;
+}
+
+/** Caminho do vertical a partir do `video` do `corte.json` (relativo = dentro da pasta do corte). */
+export function resolveCorteVideo(corteDir: string, video: string): string {
+  return isAbsolute(video) ? video : join(corteDir, video);
+}
+
+/**
+ * Aviso quando o vídeo do corte está fora de `data/` (não sincroniza entre as
+ * máquinas): a re-execução em outra máquina não vai achar o arquivo.
+ */
+export function corteVideoPortabilityWarning(video: string, dataDir: string): string | null {
+  if (!isAbsolute(video)) return null;
+  const rel = relative(dataDir, video);
+  if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return null;
+  return `vídeo do corte fora de data/ (${video}): re-execução em outra máquina não acha o arquivo — use --from-drive ou copie o vídeo para a pasta do corte`;
 }
 
 /**
