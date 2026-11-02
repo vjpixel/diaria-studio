@@ -1266,14 +1266,30 @@ def other_kind_claims_in_window(
                 out.add(int(n))
             except (TypeError, ValueError):
                 continue
+        out.update(_foreign_keys(event.get("claimed_foreign_issues_ever")))
+        out.update(_foreign_keys(event.get("claimed_foreign_issues")))
     return out
 
 
-def _with_other_kind_claims(
-    snapshot: set[int | str] | None, other: set[int | str]
-) -> set[int | str] | None:
-    """#11922: None (indeterminado) permanece None; senao une as claims."""
-    return None if snapshot is None else snapshot | other
+def other_kind_live_claims(sessions_dir: Path) -> set[int | str]:
+    """#11922: `claimed_issues` de registros vivos de overnight/develop."""
+    out: set[int | str] = set()
+    if not sessions_dir.is_dir():
+        return out
+    for f in sessions_dir.glob("*.json"):
+        try:
+            record = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict) or record.get("kind") in (None, "continuo"):
+            continue
+        for n in record.get("claimed_issues") or []:
+            try:
+                out.add(int(n))
+            except (TypeError, ValueError):
+                pass
+        out.update(_foreign_keys(record.get("claimed_foreign_issues")))
+    return out
 
 
 def _snapshot_from_events(events: list[dict]) -> set[int | str] | None:
@@ -1707,6 +1723,14 @@ def run(
     ended_events = ended_continuo_events_in_window(
         resolved_lifecycle_log, tick_window_start, tick_window_end
     )
+    # #11922: claim real de sessao concorrente de outro kind (overnight/develop),
+    # viva ou encerrada, nao e fabricacao do tick. Vale com ou sem sessao
+    # continuo encerrada. Limite: nao verifica se o relatorio credita a sessao certa.
+    claimed_in_registry = (
+        claimed_in_registry
+        | other_kind_live_claims(sessions_dir)
+        | other_kind_claims_in_window(resolved_lifecycle_log, tick_window_start, tick_window_end)
+    )
 
     # #8739 (revisado no review da PR #8745): "alguma sessao correlacionou
     # com esta janela" precisa contar TANTO sessao viva (`session`) QUANTO
@@ -1733,12 +1757,7 @@ def run(
             report_text, claimed_in_registry, sessions_dir.is_dir(),
             session_correlated=any_session_in_window,
             ended_session_in_window=bool(ended_events),
-            ended_claimed_snapshot=_with_other_kind_claims(
-                _snapshot_from_events(ended_events),
-                other_kind_claims_in_window(
-                    resolved_lifecycle_log, tick_window_start, tick_window_end
-                ),
-            ),
+            ended_claimed_snapshot=_snapshot_from_events(ended_events),
         ),
     ]
 
