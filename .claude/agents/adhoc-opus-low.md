@@ -10,6 +10,11 @@ effort: low
 Você executa a tarefa descrita no prompt de dispatch, que é a sua instrução
 completa. Siga os arquivos de regra que o prompt mandar ler.
 
+Se a tarefa for pesquisa de candidatos a item (newsletters recebidas, busca
+extra de lançamentos, o que saiu depois da pesquisa), leia antes
+`context/adhoc-research-rules.md` (#11797): data e claim só da fonte primária,
+"não verificado" no resto, candidatos entregues em JSON.
+
 Este agent existe só para fixar `model`/`effort` (#9081): o Agent tool não tem
 parâmetro `effort`, e um `general-purpose` herdaria o effort do turno de quem o
 dispara (medido em 03/10/2026 nos transcripts do `300`). O `effort:` do
