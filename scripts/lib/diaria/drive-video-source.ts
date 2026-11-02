@@ -135,15 +135,28 @@ export function isEditedFolderName(name: string): boolean {
 /**
  * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL`, `_Instagram_`, `_Outras redes_` (separador
  * `_`, `-`, espaço ou `.`; sem diferenciar maiúsculas). Mais de um destino no
- * mesmo nome, ou nenhum, é `null`.
+ * mesmo nome, ou nenhum, é `null`. Nome de corte (`…_V1-soberana`, ver
+ * `corteSuffixOf`) também é `null`: é uma 2ª vertical que sai pelo modo corte,
+ * nunca a vertical da edição.
  */
 export function videoTargetOf(name: string): VideoTarget | null {
+  if (corteSuffixOf(name)) return null;
   const n = ` ${name.normalize("NFC").toLowerCase().replace(/[_.\-]+/g, " ").replace(/\s+/g, " ")} `;
   const found: VideoTarget[] = [];
   if (/ you ?tube /.test(n)) found.push("youtube");
   if (/ instagram /.test(n)) found.push("instagram");
   if (/ outras redes | vertical (?:v\d+|final) /.test(n)) found.push("outras-redes");
   return found.length === 1 ? found[0] : null;
+}
+
+/**
+ * O slug do corte no fim do nome (`Diaria comentada_Vertical_V1-soberana.mp4`
+ * → `soberana`), ou `null`. Corte = sequência extra da montagem com `corte` no
+ * `blocks.json` (261103): o nome é o da vertical normal + `-{slug}`.
+ */
+export function corteSuffixOf(name: string): string | null {
+  const m = /_v\d+-([a-z0-9]+(?:-[a-z0-9]+)*)(?:\.[a-z0-9]+)?$/i.exec(name.normalize("NFC"));
+  return m ? m[1].toLowerCase() : null;
 }
 
 /** Janela default para arquivos soltos na raiz da pasta (decisão de 25/10). */

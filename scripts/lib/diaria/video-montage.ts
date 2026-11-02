@@ -28,7 +28,7 @@
  *   - autorrevisão (`reviewPreview`): diff de palavras prévia × roteiro.
  */
 
-import { videoTargetOf } from "./drive-video-source.ts";
+import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 
 // ── Tipos básicos ─────────────────────────────────────────────────────────
 
@@ -1026,12 +1026,13 @@ export interface SequenceSpec {
   /** Escala (%) alternada nos cortes (clipes contíguos fundidos antes, #11503): [base, punch-in]. */
   scales: [number, number];
   /**
-   * Vertical extra que sai pelo modo corte do `publish-shorts.ts`, não pelo
-   * fluxo da edição (261103: a 2ª vertical, sobre IA soberana). O nome é o da
-   * vertical normal com `-{corte}` no fim (`Diaria comentada_Vertical_V1-soberana`);
-   * o `target` é só a chave interna (único por plano) e não precisa casar com o
-   * nome. O export não vai para `Final/`: lá, 2 verticais do mesmo destino
-   * deixam o publicador da edição `ambiguous`.
+   * Vertical extra, fora do fluxo da edição (261103: a 2ª vertical, sobre IA
+   * soberana); o editor publica com `publish-shorts.ts --corte {slug} --video …`.
+   * O nome é o da vertical normal com `-{corte}` no fim
+   * (`Diaria comentada_Vertical_V1-soberana`), que `videoTargetOf` lê como
+   * `null`: o fetch da edição nunca a confunde com a vertical do dia. O
+   * `target` é só a chave interna (único por plano, `instagram` ou
+   * `outras-redes`), e os `targets`/`skip` dos itens usam essa chave.
    */
   corte?: string;
 }
@@ -1200,7 +1201,9 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         if (s.corte !== undefined && (typeof s.corte !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s.corte))) errors.push(`${label}: corte precisa ser um slug (minúsculas, dígitos e hífen)`);
         if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
         else if (typeof s.corte === "string") {
-          if (!s.name.endsWith(`-${s.corte}`)) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em -${s.corte}`);
+          if (corteSuffixOf(s.name) !== s.corte) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em _V{n}-${s.corte}`);
+          if (s.target === "youtube") errors.push(`${label}: corte é vertical; target instagram ou outras-redes`);
+          if (Number.isInteger(s.width) && Number.isInteger(s.height) && (s.height as number) <= (s.width as number)) errors.push(`${label}: corte é vertical (height > width)`);
         } else if (videoTargetOf(s.name) !== s.target) {
           errors.push(`${label}: o nome "${s.name}" não indica o destino ${s.target} (export cairia no destino errado da pasta Final/)`);
         }

@@ -174,6 +174,7 @@ import {
   type ScreenTitleXml,
   type Segment,
   type SequencePlan,
+  type SequenceSpec,
   type SequenceTarget,
   type SourceInfo,
   type Transcript,
@@ -212,7 +213,7 @@ import {
   parsePeakWindows,
   type FinalReviewFinding,
 } from "./lib/diaria/video-final-review.ts";
-import { VIDEO_TARGETS, type VideoTarget } from "./lib/diaria/drive-video-source.ts";
+import { corteSuffixOf, VIDEO_TARGETS, type VideoTarget } from "./lib/diaria/drive-video-source.ts";
 import {
   edgeWindowsFor,
   energyEnvelope,
@@ -966,8 +967,9 @@ export function xmlFileName(edition: string): string {
 export function srtFileName(seqName: string): string {
   return `${seqName} - legendas.srt`;
 }
-export function previewFileName(edition: string, target: SequenceTarget): string {
-  return `${edition} - previa ${target}.mp4`;
+/** `label` = o destino, ou o slug do corte (`previa soberana`, não `previa instagram`). */
+export function previewFileName(edition: string, label: SequenceTarget | string): string {
+  return `${edition} - previa ${label}.mp4`;
 }
 
 /** O que o refino por áudio fez neste build (#11500), gravado no `plan.json`. */
@@ -1270,7 +1272,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
     vf.push("-vf", `subtitles=leg.srt:force_style='${PREVIEW_SUBTITLE_STYLE}'`);
   } else console.error(`[aviso] sem ${srt}: a prévia sai sem legenda (rode srt antes)`);
   mkdirSync(ctx.outDir, { recursive: true });
-  const out = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.target));
+  const out = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.corte ?? plan.spec.target));
   run("ffmpeg", [
     "-y", "-v", "error", "-i", "joined.mp4", ...vf, "-af", LOUDNORM_TARGET,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "previa.mp4",
@@ -1287,7 +1289,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
 function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
   const [plan] = pickPlan(pf.plans, target ?? "outras-redes", true);
-  const preview = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.target));
+  const preview = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.corte ?? plan.spec.target));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
   if (mtime(preview) < mtime(f(ctx, "plan.json"))) throw new Error(`${preview} é mais velha que o plan.json: rode preview de novo`);
   mkdirSync(ctx.workDir, { recursive: true });
@@ -1308,11 +1310,21 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   return 0;
 }
 
-/** Destino do `review-final`: `--seq` explícito ou o sufixo do nome do export. */
-export function reviewFinalTarget(file: string, seq: string | undefined): VideoTarget {
+/**
+ * Destino do `review-final`: `--seq` explícito ou o sufixo do nome do export.
+ * Export de corte (`…_V1-soberana.mp4`) vai para a sequência com esse `corte`
+ * no plano; sem ela, erro (nunca a vertical da edição, que tem outro roteiro).
+ */
+export function reviewFinalTarget(file: string, seq: string | undefined, specs: Array<Pick<SequenceSpec, "target" | "corte">> = []): VideoTarget {
   if (seq !== undefined) {
     if (!(VIDEO_TARGETS as readonly string[]).includes(seq)) throw new Error(`--seq deve ser ${VIDEO_TARGETS.join(", ")} (veio ${seq})`);
     return seq as VideoTarget;
+  }
+  const corte = corteSuffixOf(basename(file));
+  if (corte) {
+    const hit = specs.find((s) => s.corte === corte);
+    if (!hit) throw new Error(`${basename(file)} é o corte "${corte}", sem sequência com esse corte no plan.json: rode build ou passe --seq`);
+    return hit.target;
   }
   const t = exportTarget(basename(file));
   if (!t) throw new Error(`destino não reconhecido no nome ${basename(file)} (_Youtube_, _Instagram_, _Outras redes_): passe --seq`);
@@ -1323,7 +1335,13 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   if (!file) throw new Error("review-final exige --file PATH (o export do Premiere)");
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
-  const target = reviewFinalTarget(path, seq);
+  let planSpecs: SequenceSpec[] = [];
+  try {
+    planSpecs = loadPlan(ctx).plans.map((p) => p.spec);
+  } catch {
+    // sem plano válido: o aviso sai abaixo, onde o plano é lido de novo
+  }
+  const target = reviewFinalTarget(path, seq, planSpecs);
   const findings: FinalReviewFinding[] = [];
 
   const probeJson = JSON.parse(run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path]).stdout) as {
