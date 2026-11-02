@@ -103,9 +103,12 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     publica é o timer do 300 (`scripts/shorts-threads-profile-timer.ts`,
  *     `--only threads_profile --publish --threads-timer`), no horário do
  *     vertical; as outras rodadas devolvem `skip_delegated`. A rodada do timer
- *     confere o perfil antes (`threadsProfilePreflight`, só leitura), grava no
- *     registro próprio (`06-shorts-published.threads-timer.json`) e
- *     reaproveita o objeto do vertical já no R2 (`reuseOrUploadToR2`).
+ *     grava no registro próprio (`06-shorts-published.threads-timer.json`) e
+ *     reaproveita o objeto do vertical já no R2 (`reuseOrUploadToR2`). Toda
+ *     rodada que publica o destino (a do timer, a da skill, a task one-shot do
+ *     app desktop, o corte avulso) confere o perfil antes
+ *     (`threadsProfilePreflight`, só leitura, #11742): o config em `false` num
+ *     checkout defasado não abre mais a corrida com o timer.
  *   - `youtube_shorts` (API, #11070) — Short pela YouTube Data API
  *     (`publishYouTubeShort`, o mesmo upload do `publish-youtube.ts`), private
  *     + `publishAt` no horário do vertical (o agendado vira público sozinho sem
@@ -2548,7 +2551,14 @@ export class InstagramTimerGateError extends Error {
 export async function instagramTimerGate(deps: {
   decide: () => Promise<InstagramConfirmDecision>;
   persist: (entry: ShortPublishedEntry) => void;
+  /**
+   * #11795: como registrar o Reels achado (a mensagem do bloqueio). Default: o
+   * `--confirm-instagram --media-id` da edição; o corte avulso, que não tem
+   * `--confirm-instagram`, passa o `--mark instagram=URL` do comando dele.
+   */
+  registerHint?: (mediaId?: string) => string;
 }): Promise<{ kind: "publish" } | { kind: "already"; entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }> {
+  const hint = deps.registerHint ?? ((mediaId?: string) => `--confirm-instagram --media-id ${mediaId ?? "ID"}`);
   let decision: InstagramConfirmDecision;
   try {
     decision = await deps.decide();
@@ -2558,7 +2568,7 @@ export async function instagramTimerGate(deps: {
   }
   const pre = instagramTimerPreflight(decision);
   if (pre.kind === "block") {
-    throw new InstagramTimerGateError(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com --confirm-instagram --media-id ID`, "blocked");
+    throw new InstagramTimerGateError(`a conta pode já ter o Reels da edição (${pre.reason}) — o timer não publica; confira e registre com ${hint()}`, "blocked");
   }
   if (pre.kind === "already" && pre.matchedBy === "time-window") {
     // #11368: achado só pela janela de ±90 min, sem o marcador da edição — pode
@@ -2566,7 +2576,7 @@ export async function instagramTimerGate(deps: {
     // registro errado esconderia o Reels de hoje) nem publica: o editor confere.
     const where = pre.entry.url ?? pre.entry.id;
     throw new InstagramTimerGateError(
-      `um Reels sem o marcador da edição está perto do horário (${where}, só pela janela de horário) — pode ser de outra edição; o timer não registra nem publica. Se for o desta edição, registre com --confirm-instagram --media-id ${pre.entry.id}`,
+      `um Reels sem o marcador da edição está perto do horário (${where}, só pela janela de horário) — pode ser de outra edição; o timer não registra nem publica. Se for o desta edição, registre com ${hint(pre.entry.id)}`,
       "blocked",
     );
   }
@@ -2716,14 +2726,18 @@ export async function readAndDecideInstagramConfirm(
     maxPages?: number;
     /** #10978 item 5: horário planejado do Reels (ver `decideInstagramConfirm`). */
     expectedAtIso?: string | null;
+    /** #11795: mídias de outro vertical do dia já registradas (o Reels da edição, visto pelo corte): saem da decisão. */
+    ignoreIds?: readonly string[];
   },
 ): Promise<InstagramConfirmDecision> {
   if (Number.isNaN(Date.parse(input.sinceIso))) throw new Error(`--since inválido: ${input.sinceIso}`);
-  const media = await fetchInstagramRecentMedia(deps, input.igUserId, input.token, input.apiVersion, {
+  const read = await fetchInstagramRecentMedia(deps, input.igUserId, input.token, input.apiVersion, {
     sinceIso: input.sinceIso,
     mediaId: input.mediaId ?? null,
     maxPages: input.maxPages,
   });
+  const ignore = new Set(input.ignoreIds ?? []);
+  const media = ignore.size ? { ...read, data: read.data.filter((m: any) => !ignore.has(m?.id)) } : read;
   return decideInstagramConfirm({
     published: input.published,
     media,
@@ -4136,15 +4150,21 @@ async function main(): Promise<number> {
         });
       } else if (item.destination === THREADS_PROFILE_DESTINATION) {
         if (!threadsCreds.ready) throw new Error(threadsCreds.reason); // o plano não marca publish sem credencial
-        if (writer === "threads-timer") {
-          // #11410: o timer confere o perfil antes — um post à mão (depois de um
+        {
+          // #11410: confere o perfil antes — um post à mão (depois de um
           // skip_late) ou de uma rodada sem registro sincronizado não está no
           // registro, mas está no perfil. Falha de leitura nunca vira "não está lá".
+          // #11742: em TODA rodada, não só na do timer: a task one-shot do app
+          // desktop com o config defasado corria com o timer do 300 no mesmo minuto.
           const pre = await threadsProfilePreflight({
             creds: threadsCreds.creds,
-            sinceIso: resolveEditionScheduledAt(aammdd, "00:00"),
-            // 1ª linha do texto = o título do D1 como o post o leva (cortado com … se não coube).
-            markers: threadsEditionMarkers(aammdd, item.caption.split("\n")[0] ?? ""),
+            ...threadsProfilePreflightInput({
+              aammdd,
+              // 1ª linha do texto = o título do D1 (ou do corte) como o post o leva (cortado com … se não coube).
+              caption: item.caption,
+              corte: corte !== null,
+              editionDayIds: corte ? editionDayRegisteredIds(editionDirFor(aammdd), aammdd, THREADS_PROFILE_DESTINATION, (m) => console.error(`[aviso] ${m}`)) : [],
+            }),
             now: () => new Date(),
           });
           if (pre.kind === "already") {
@@ -4207,10 +4227,13 @@ async function main(): Promise<number> {
           const beforePublish = accountGate ? instagramTimerBeforePublish({ local: localRecheck, gate: accountGate, onAlready: onRecheckAlready }) : localRecheck;
           return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover, { beforePublish });
         };
-        if (writer === "instagram-timer") {
+        if (instagramAccountGateApplies(writer, corte !== null)) {
           // #11265: o timer confere a conta antes — um Share feito por fora sem
           // --confirm-instagram não está no registro, mas está no /media.
-          const ctx = instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
+          // #11795: o corte avulso também (o Reels do corte postado à mão), com o
+          // título e o gancho do corte e sem contar o Reels da edição do dia.
+          const ctx = corte ? corteInstagramConfirmContext(corte) : instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
+          const ignoreIds = corte ? editionDayRegisteredIds(editionDirFor(aammdd), aammdd, "instagram", (m) => console.error(`[aviso] ${m}`)) : [];
           // Fix do review do PR #11395: o gate olha também o perfil do autor à mão, se for outra conta (#11794: na produção, é a mesma).
           const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
           // #11421: sem a credencial da página do autor, o gate não publica (fail-closed) se a conta da API não tiver o Reels.
@@ -4226,6 +4249,7 @@ async function main(): Promise<number> {
               markers: ctx.markers,
               nowIso: new Date().toISOString(),
               expectedAtIso: ctx.expectedAtIso,
+              ignoreIds,
             });
           // #11828: em qual conta o gate achou o Reels (e com que token reler os collabs).
           let foundIn: { account: "primary" | "chrome-author"; token: string } = { account: "primary", token: author.token };
@@ -4244,6 +4268,7 @@ async function main(): Promise<number> {
               persist: (entry) => {
                 published = persist(entry);
               },
+              ...(corte ? { registerHint: () => `${corteBaseCommand(corte.slug)} --mark instagram=URL` } : {}),
             });
           // #11870: o gate re-rodado antes do media_publish também pode achar o Reels; guarda o matchedBy dele.
           const recheck: { hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch } | null } = { hit: null };
@@ -4279,7 +4304,7 @@ async function main(): Promise<number> {
           if (step.kind !== "published") { clearSending(); continue; } // inalcançável: `already` acima cobre esse caso
           outcome = step.outcome;
         } else {
-          outcome = await publishReel(); // sem gate da conta fora do timer (o registro local segue valendo)
+          outcome = await publishReel(); // sem gate da conta fora do timer e do corte (o registro local segue valendo)
         }
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
@@ -4406,6 +4431,84 @@ async function main(): Promise<number> {
 export function threadsEditionMarkers(aammdd: string, d1Title: string): string[] {
   const title = stripInlineMarkdown(d1Title).replace(/\s+/g, " ").replace(/…$/, "").trim();
   return [`utm_campaign=${aammdd}`, ...(title ? [title] : [])];
+}
+
+/** #11742/#11795: o `utm_campaign={AAMMDD}` é da EDIÇÃO; no corte avulso ele casaria com o vertical da edição do mesmo dia. */
+function withoutEditionUtmMarker(markers: string[]): string[] {
+  return markers.filter((m) => !m.startsWith("utm_campaign="));
+}
+
+/**
+ * Pure (#11742): a entrada da conferência do perfil do Threads antes de QUALQUER
+ * rodada publicar `threads_profile` — a do timer (`--threads-timer`), a da
+ * skill, a task one-shot do app desktop (que com o config em `false` num
+ * checkout defasado corria com o timer do 300 no mesmo minuto) e o corte
+ * avulso. Marcadores: o título como a 1ª linha do texto o leva (+ o
+ * `utm_campaign` só na edição). No corte, o vídeo da edição do dia já
+ * registrado (`editionDayIds`) não conta: sem isso todo corte num dia com
+ * vertical publicado bloquearia.
+ */
+export function threadsProfilePreflightInput(input: {
+  aammdd: string;
+  caption: string;
+  corte: boolean;
+  editionDayIds: readonly string[];
+}): { sinceIso: string; markers: string[]; ignoreIds: string[] } {
+  const markers = threadsEditionMarkers(input.aammdd, input.caption.split("\n")[0] ?? "");
+  return {
+    sinceIso: resolveEditionScheduledAt(input.aammdd, "00:00"),
+    markers: input.corte ? withoutEditionUtmMarker(markers) : markers,
+    ignoreIds: input.corte ? [...input.editionDayIds] : [],
+  };
+}
+
+/**
+ * Pure (#11795): a conferência da conta do Instagram antes de publicar o Reels
+ * (`instagramTimerGate`, #11265) vale na rodada do timer da edição e em TODA
+ * rodada do corte avulso (o timer `Diaria-Shorts-Cortes` roda sem
+ * `--instagram-timer`, e o `--confirm-instagram` não existe no corte): um Reels
+ * do corte postado à mão e não registrado sairia duplicado.
+ */
+export function instagramAccountGateApplies(writer: ShortsRegistryWriter, corte: boolean): boolean {
+  return writer === "instagram-timer" || corte;
+}
+
+/**
+ * Pure (#11795): marcadores, início da leitura e horário planejado do Reels do
+ * corte avulso — o título e o gancho do `corte.json` (nunca o D1 da edição), o
+ * dia do corte desde 00:00 BRT e o `--at`. Sem `utm_campaign` nem URL: o
+ * vertical não leva link (#11617) e o utm do dia é o da edição.
+ */
+export function corteInstagramConfirmContext(corte: Pick<CorteSpec, "date" | "hhmm" | "title" | "hook">): { markers: string[]; sinceIso: string; expectedAtIso: string } {
+  return {
+    markers: withoutEditionUtmMarker(instagramEditionMarkers({ aammdd: corte.date, d1Title: corte.title, d1Body: corte.hook, editionUrl: null })),
+    sinceIso: resolveEditionScheduledAt(corte.date, "00:00"),
+    expectedAtIso: resolveEditionScheduledAt(corte.date, corte.hhmm),
+  };
+}
+
+/**
+ * #11742/#11795: ids que o registro do vertical da EDIÇÃO do dia já tem para o
+ * destino. O corte avulso não os confunde com o próprio post na conferência da
+ * conta. Registro ilegível → aviso e lista vazia (a conferência fica mais
+ * restritiva, nunca menos).
+ */
+export function editionDayRegisteredIds(
+  editionDir: string,
+  aammdd: string,
+  destination: string,
+  warn: (m: string) => void,
+  read: (dir: string, aammdd: string) => ShortsPublishedFile = readShortsRegistry,
+): string[] {
+  if (!existsSync(editionDir)) return [];
+  try {
+    return read(editionDir, aammdd)
+      .entries.filter((e) => e.destination === destination && typeof e.id === "string" && e.id.length > 0)
+      .map((e) => e.id as string);
+  } catch (e) {
+    warn(`registro do vertical da edição ${aammdd} ilegível (${(e as Error).message}) — a conferência da conta do corte não o desconta`);
+    return [];
+  }
 }
 
 /**
