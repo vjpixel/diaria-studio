@@ -2,6 +2,8 @@
 /**
  * scripts/diagnose-claude-auth.ts (#11887)
  *
+ * @one-off-validity: permanente motivo="ferramenta de investigação do preflight de auth das rodadas agendadas; usada sempre que o guard alarmar, não é análise de uma vez"
+ *
  * Diagnóstico manual do método de auth do CLI `claude` neste host, sem expor
  * segredo. Mostra o veredito de `claude auth status` em DOIS ambientes:
  *
