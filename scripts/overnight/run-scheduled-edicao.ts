@@ -66,6 +66,14 @@ import {
   stderrSaysWorkspaceUntrusted,
   type WorkspaceTrustResult,
 } from "../lib/claude-workspace-trust.ts";
+import {
+  EXIT_AUTH_NOT_SUBSCRIPTION,
+  authBlocksRun,
+  checkClaudeAuthMethod,
+  collectClaudeAuthEvidence,
+  formatClaudeAuthEvidence,
+  type ClaudeAuthResult,
+} from "../lib/claude-auth-method.ts";
 
 /**
  * `STAGE_PLAN` e `HEADLESS_FLAGS` mudaram de casa no #5744.
@@ -248,6 +256,10 @@ export function main(
   // Preflight de confiança do workspace (#11383). Injetável: o default lê o
   // `~/.claude.json` real (HOME/CLAUDE_CONFIG_DIR do processo).
   checkTrustFn: (repoRootAbs: string) => WorkspaceTrustResult = (root) => checkWorkspaceTrust(root, { env: process.env }),
+  // Preflight de método de auth do CLI (#11887). Injetável; o default roda
+  // `claude auth status` no binário resolvido — nos testes ele é um caminho
+  // fake, a sondagem dá ENOENT e vira `unknown` (só aviso, nunca bloqueia).
+  checkAuthFn: (claudeBin: string, env: NodeJS.ProcessEnv) => ClaudeAuthResult = (bin, env) => checkClaudeAuthMethod(bin, env),
 ): number {
   const dataDir = join(repoRootAbs, "data");
   const aammdd = aammddOverride ?? nextEditionDate();
@@ -337,6 +349,49 @@ export function main(
       JSON.stringify({ edition: aammdd, exit_code: EXIT_WORKSPACE_UNTRUSTED, reason: `workspace-${trust.status}`, config_path: trust.configPath }),
     );
     return EXIT_WORKSPACE_UNTRUSTED;
+  }
+
+  // -------------------------------------------------------------------
+  // Preflight de auth do CLI (#11887), com o MESMO ambiente que os stages
+  // recebem (`claudeCliEnv`). Fora da assinatura claude.ai (#5608) nenhum
+  // stage sobe. Binário não resolvido: pula o preflight, e o runner falha
+  // adiante com a mensagem legível de sempre.
+  // -------------------------------------------------------------------
+  let authBin: string | null = null;
+  try {
+    authBin = resolveClaudeBinFn();
+  } catch {
+    authBin = null;
+  }
+  if (authBin) {
+    const childEnv = claudeCliEnv(process.env);
+    let auth: ClaudeAuthResult;
+    try {
+      auth = checkAuthFn(authBin, childEnv);
+    } catch (e) {
+      auth = { status: "unknown", fields: {}, message: `auth do CLI NÃO VERIFICÁVEL — erro no preflight (${(e as Error).message}) (#11887)` };
+    }
+    if (authBlocksRun(auth)) {
+      let evidence = "";
+      try {
+        evidence = formatClaudeAuthEvidence(collectClaudeAuthEvidence({ env: process.env, repoRootAbs }));
+      } catch (e) {
+        evidence = `evidência de auth indisponível (${(e as Error).message})`;
+      }
+      console.error(`[${nowIso()}] ${auth.message}`);
+      console.error(`[${nowIso()}] ${evidence}`);
+      log(
+        repoRootAbs,
+        dataDir,
+        aammdd,
+        `FAIL  edition=${aammdd} reason=auth-${auth.status} exit=${EXIT_AUTH_NOT_SUBSCRIPTION} end=${nowIso()} detail=${auth.message} ${evidence}`,
+        "error",
+        `scheduled-edicao: CLI fora da assinatura claude.ai (${auth.status}) — nenhum stage disparado`,
+        JSON.stringify({ edition: aammdd, exit_code: EXIT_AUTH_NOT_SUBSCRIPTION, reason: `auth-${auth.status}`, auth: auth.fields }),
+      );
+      return EXIT_AUTH_NOT_SUBSCRIPTION;
+    }
+    if (auth.status === "unknown") console.warn(`[${nowIso()}] AVISO: ${auth.message}`);
   }
 
   // -------------------------------------------------------------------
