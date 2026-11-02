@@ -11,7 +11,7 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,6 +26,8 @@ import {
   parseIssuesFlag,
   resolveExpectedIssues,
   setPrBodyRest,
+  VERIFY_BODY_READ_ONLY_NOTICE,
+  verifyBodyConflictError,
   type GhRunFn,
 } from "../scripts/lib/gh-pr-safe-edit.ts";
 import type { GhSpawnResult } from "../scripts/lib/shared/gh-run.ts";
@@ -456,5 +458,61 @@ describe("checkPrHeadMatchesLocal (#11566) — com git real", () => {
     );
     assert.equal(r.ok, false);
     assert.ok(calls[0].includes("-R") && calls[0].includes("vjpixel/diaria-design"));
+  });
+});
+
+// #11930: `--verify-body` só confere; combinado com texto novo a edição sumia
+// em silêncio (rodada 261102b, PR #11915: `removal-declaration:` "editada"
+// com `--verify-body`, exit 0, corpo intocado).
+describe("--verify-body não grava (#11930)", () => {
+  // cwd do spawn = raiz do repo (o `--import tsx` resolve pelo cwd).
+  const SCRIPT = "scripts/lib/gh-pr-safe-edit.ts";
+  const tmp = mkdtempSync(join(tmpdir(), "safe-edit-11930-"));
+  after(() => rmSync(tmp, { recursive: true, force: true }));
+  // `gh` falso primeiro no PATH: registra a chamada e falha — nenhum teste
+  // aqui alcança o GitHub de verdade.
+  const binDir = join(tmp, "bin");
+  const ghLog = join(tmp, "gh-calls.log");
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(join(binDir, "gh"), `#!/bin/sh\necho "$@" >> "${ghLog}"\necho "gh falso" >&2\nexit 1\n`);
+  chmodSync(join(binDir, "gh"), 0o755);
+  const bodyFile = join(tmp, "body.md");
+  writeFileSync(bodyFile, "Closes #11930\n\nremoval-declaration: x\n");
+
+  function runCli(args: string[]) {
+    rmSync(ghLog, { force: true });
+    const r = spawnSync(process.execPath, ["--import", "tsx", SCRIPT, ...args], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    });
+    return { ...r, ghCalled: existsSync(ghLog) };
+  }
+
+  it("helper puro: --verify-body + --body-file / --body é conflito; cada um sozinho não", () => {
+    assert.match(verifyBodyConflictError({ "body-file": "x.md" }, new Set(["verify-body"]))!, /NÃO grava.*--body-file/);
+    assert.match(verifyBodyConflictError({ body: "texto" }, new Set(["verify-body"]))!, /--body\b/);
+    assert.match(verifyBodyConflictError({}, new Set(["verify-body", "body"]))!, /--body/);
+    assert.equal(verifyBodyConflictError({}, new Set(["verify-body"])), null);
+    assert.equal(verifyBodyConflictError({ "body-file": "x.md" }, new Set()), null);
+  });
+
+  it("CLI: --verify-body --body-file sai 1 com mensagem clara, sem chamar o gh", () => {
+    for (const args of [
+      ["--pr", "11915", "--verify-body", "--body-file", bodyFile],
+      ["--pr", "11915", "--body-file", bodyFile, "--verify-body"],
+      ["--pr", "11915", "--verify-body", "--body", "removal-declaration: x"],
+    ]) {
+      const r = runCli(args);
+      assert.equal(r.status, 1, `${args.join(" ")}: ${r.stderr}`);
+      assert.match(r.stderr, /--verify-body só confere o corpo atual da PR e NÃO grava/);
+      assert.equal(r.ghCalled, false, `não devia chamar o gh: ${args.join(" ")}`);
+    }
+  });
+
+  it("CLI: --verify-body sozinho avisa em stderr que não grava", () => {
+    const r = runCli(["--pr", "11915", "--verify-body", "--issues", "11930"]);
+    assert.ok(r.stderr.includes(VERIFY_BODY_READ_ONLY_NOTICE), r.stderr);
+    // o gh falso falha → o helper segue fail-closed (exit 1), mas o aviso já saiu.
+    assert.equal(r.status, 1);
   });
 });

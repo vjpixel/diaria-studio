@@ -387,6 +387,29 @@ export function parseIssuesFlag(raw: string | undefined): number[] | null {
   });
 }
 
+/**
+ * #11930: `--verify-body` só CONFERE o corpo atual da PR — nunca grava. Na
+ * rodada 261102b (PR #11915) uma linha `removal-declaration:` foi "editada"
+ * com `--verify-body`, o helper saiu com sucesso e a edição não persistiu.
+ * Combinar `--verify-body` com texto novo (`--body-file`/`--body`) é sempre
+ * engano de modo: recusa com erro em vez de conferir o corpo velho e sair 0.
+ * Devolve a mensagem de erro, ou `null` se a combinação é válida.
+ */
+export function verifyBodyConflictError(values: Record<string, string>, flags: Set<string>): string | null {
+  if (!flags.has("verify-body") && values["verify-body"] === undefined) return null;
+  const novos = ["body-file", "body"].filter((k) => values[k] !== undefined || flags.has(k));
+  if (novos.length === 0) return null;
+  return (
+    `--verify-body só confere o corpo atual da PR e NÃO grava; não combina com ${novos.map((k) => `--${k}`).join("/")}. ` +
+    `Para gravar o corpo novo, rode só com --body-file arquivo.md (que já faz a mesma conferência antes de escrever); ` +
+    `depois, se quiser, --verify-body sozinho (#11930).`
+  );
+}
+
+/** Aviso em stderr do modo `--verify-body` sozinho (#11930). */
+export const VERIFY_BODY_READ_ONLY_NOTICE =
+  "[gh-pr-safe-edit] --verify-body só confere o corpo atual da PR, não grava nada; para editar o corpo use --body-file arquivo.md (#11930).";
+
 // ─── CLI ────────────────────────────────────────────────────────────────
 
 function usage(): string {
@@ -399,6 +422,7 @@ function usage(): string {
     "Substitui `gh pr edit --body`/`--add-label` (falha em silêncio, #6292) por REST + verificação pós-escrita.\n" +
     "--body-file recusa corpo que não cita (Closes/REFS) as issues da PR — da branch, ou de --issues (#10698).\n" +
     "--verify-body confere o corpo ATUAL da PR do mesmo jeito; rodar logo após `gh pr create`.\n" +
+    "  SÓ CONFERE, NÃO GRAVA (#11930): para editar o corpo use --body-file; os dois juntos (ou com --body) são recusados.\n" +
     "  Também confere que o headRefOid da PR é o HEAD local (#11566) — do checkout em --worktree (default cwd);\n" +
     "  checkout em outra branch, fora do git ou só ATRÁS da PR (HEAD local ancestral do da PR) só gera aviso."
   );
@@ -450,7 +474,15 @@ async function main() {
     return check.ok ? null : check;
   };
 
+  const conflict = verifyBodyConflictError(values, flags);
+  if (conflict) {
+    console.error(`[gh-pr-safe-edit] ${conflict}\n\n${usage()}`);
+    process.exitCode = 1;
+    return;
+  }
+
   if (flags.has("verify-body")) {
+    console.error(VERIFY_BODY_READ_ONLY_NOTICE);
     const view = spawnGhSync(["pr", "view", String(pr), ...repoArgs(repo), "--json", "body", "--jq", ".body"], cwd);
     if (view.status !== 0) {
       console.log(JSON.stringify({ ok: false, error: `gh pr view falhou: ${view.stderr.trim() || "sem saída"}` }));
