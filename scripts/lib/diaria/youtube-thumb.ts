@@ -22,6 +22,10 @@
  *   do retrato; o retrato pode receber o realce de contraste aprovado pelo
  *   editor (`enhancePortrait`, +25% com o alfa do rembg preservado).
  *
+ *   Desde a edição 261030 (#11740): o gancho aceita quebra explícita (`|`,
+ *   `\n` literal ou quebra real) em até 2 linhas alinhadas à direita, com até
+ *   4 palavras POR LINHA ("Confiou no chatbot|e morreu").
+ *
  *   Short (capa vertical): um frame do próprio vídeo vertical dentro da janela
  *   do lettering do título (~3,5 s iniciais) — `ffmpeg -ss {t}`; aqui só os
  *   argumentos e a checagem da janela.
@@ -59,6 +63,8 @@ const HOOK_MAX_FONT = 130;
 const HOOK_MIN_FONT = 64;
 /** Largura média por caractere do Georgia bold, em em (conservador). */
 const GEORGIA_BOLD_CHAR_EM = 0.56;
+/** Entrelinha do gancho em 2 linhas (#11740), em em. */
+const HOOK_LINE_HEIGHT_EM = 1.08;
 /** Retrato ocupa até 94% da altura e até metade da largura. */
 const PORTRAIT_MAX_H_RATIO = 0.94;
 const PORTRAIT_MAX_W_RATIO = 0.5;
@@ -70,10 +76,30 @@ export const GRADIENT_END_RATIO = 0.45;
 export const GRADIENT_MAX_OPACITY = 0.6;
 
 export interface HookParts {
-  /** Texto em cor papel (sem o `?` final). */
+  /** Texto em cor papel (sem o `?` final). Com quebra, as linhas unidas por espaço. */
   body: string;
   /** `?` final em teal, ou "" quando o gancho não termina em pergunta. */
   mark: string;
+  /**
+   * Linhas do gancho (sem o `?` final, que vai no fim da última), só quando o
+   * `--hook` traz quebra explícita (#11740). Ausente = uma linha só.
+   */
+  lines?: string[];
+}
+
+/** Quebra explícita no gancho (#11740): no máximo 2 linhas, cada uma alinhada à direita. */
+export const HOOK_MAX_LINES = 2;
+/** Por linha, com quebra explícita (#11740): até 4 palavras; total até 8. */
+export const HOOK_MAX_WORDS_PER_LINE = 4;
+
+/**
+ * Separador de linha aceito no `--hook` (#11740): quebra de linha real, o
+ * `\n` literal que o shell passa sem interpretar, ou `|`.
+ */
+const HOOK_LINE_BREAK_RE = /\r?\n|\\n|\|/;
+
+function hookWords(s: string): string[] {
+  return s.replace(/[?!.…]+$/u, "").split(" ").filter(Boolean);
 }
 
 /**
@@ -81,23 +107,61 @@ export interface HookParts {
  * pelo editor em 261027, #11228) e separa o `?` final, que vai em teal. A
  * largura é controlada pelo tamanho da fonte e pelo encolhimento perto do
  * retrato, não pela contagem. Lança com mensagem acionável fora da regra.
+ *
+ * Quebra explícita (#11740, capa de 261030: "Confiou no chatbot|e morreu"):
+ * até 2 linhas, cada uma com 1 a 4 palavras, e o total segue com o piso de 2.
+ * O limite de 4 vale POR LINHA, não para o gancho inteiro.
  */
 export function splitHook(hook: string): HookParts {
-  const clean = hook.replace(/\s+/g, " ").trim();
-  if (!clean) throw new Error("gancho vazio — passe --hook \"IA ladra?\" (2 a 4 palavras)");
-  const words = clean.replace(/[?!.…]+$/u, "").split(" ").filter(Boolean);
-  if (words.length < HOOK_MIN_WORDS || words.length > HOOK_MAX_WORDS) {
-    throw new Error(
-      `gancho ${JSON.stringify(clean)} tem ${words.length} palavra(s); a regra é 2 a 4 (ex.: "IA antiveneno?", "Google Photos te vigia?")`,
-    );
+  const rawLines = hook.split(HOOK_LINE_BREAK_RE).map((l) => l.replace(/\s+/g, " ").trim());
+  const lines = rawLines.filter(Boolean);
+  if (lines.length > 0 && lines.length !== rawLines.length) {
+    throw new Error(`gancho ${JSON.stringify(hook)} tem linha vazia — use a quebra só entre as linhas (ex.: "Confiou no chatbot|e morreu")`);
   }
-  if (clean.endsWith("?")) return { body: clean.slice(0, -1).trimEnd(), mark: "?" };
-  return { body: clean, mark: "" };
+  if (lines.length === 0) throw new Error("gancho vazio — passe --hook \"IA ladra?\" (2 a 4 palavras)");
+  if (lines.length === 1) {
+    const clean = lines[0];
+    const words = hookWords(clean);
+    if (words.length < HOOK_MIN_WORDS || words.length > HOOK_MAX_WORDS) {
+      throw new Error(
+        `gancho ${JSON.stringify(clean)} tem ${words.length} palavra(s); a regra é 2 a 4 (ex.: "IA antiveneno?", "Google Photos te vigia?"). ` +
+          `Mais de 4 só em 2 linhas, com quebra explícita: "Confiou no chatbot|e morreu" (#11740)`,
+      );
+    }
+    if (clean.endsWith("?")) return { body: clean.slice(0, -1).trimEnd(), mark: "?" };
+    return { body: clean, mark: "" };
+  }
+  if (lines.length > HOOK_MAX_LINES) {
+    throw new Error(`gancho ${JSON.stringify(hook)} tem ${lines.length} linhas; o máximo é ${HOOK_MAX_LINES} (#11740)`);
+  }
+  for (const [i, line] of lines.entries()) {
+    const n = hookWords(line).length;
+    if (n < 1 || n > HOOK_MAX_WORDS_PER_LINE) {
+      throw new Error(`linha ${i + 1} do gancho (${JSON.stringify(line)}) tem ${n} palavra(s); a regra é 1 a ${HOOK_MAX_WORDS_PER_LINE} por linha (#11740)`);
+    }
+  }
+  const total = lines.reduce((acc, l) => acc + hookWords(l).length, 0);
+  if (total < HOOK_MIN_WORDS) {
+    throw new Error(`gancho ${JSON.stringify(hook)} tem ${total} palavra(s); o mínimo é ${HOOK_MIN_WORDS}`);
+  }
+  const last = lines[lines.length - 1];
+  const mark = last.endsWith("?") ? "?" : "";
+  const bodyLines = [...lines.slice(0, -1), mark ? last.slice(0, -1).trimEnd() : last];
+  return { body: bodyLines.join(" "), mark, lines: bodyLines };
 }
 
-/** Tamanho do gancho: o maior que cabe em HOOK_MAX_WIDTH, entre 64 e 130 px. */
+/** Linhas do gancho como desenhadas (o `?` só no fim da última). */
+function hookDrawnLines(hook: HookParts): string[] {
+  const lines = hook.lines ?? [hook.body];
+  return lines.map((l, i) => (i === lines.length - 1 ? l + hook.mark : l));
+}
+
+/**
+ * Tamanho do gancho: o maior que cabe em HOOK_MAX_WIDTH, entre 64 e 130 px.
+ * Com 2 linhas (#11740), quem manda é a linha mais longa.
+ */
 export function hookFontSize(hook: HookParts): number {
-  const chars = Array.from(hook.body + hook.mark).length;
+  const chars = Math.max(...hookDrawnLines(hook).map((l) => Array.from(l).length));
   const fit = Math.floor(HOOK_MAX_WIDTH / (chars * GEORGIA_BOLD_CHAR_EM));
   return Math.max(HOOK_MIN_FONT, Math.min(HOOK_MAX_FONT, fit));
 }
@@ -138,18 +202,35 @@ export function buildGradientSvg(w = YOUTUBE_THUMB_W, h = YOUTUBE_THUMB_H): stri
 export function buildHookSvg(hook: string): string {
   const parts = splitHook(hook);
   const size = hookFontSize(parts);
-  const chars = Array.from(parts.body + parts.mark).length;
-  // Canvas folgado: o texto real é recortado por `trim` na composição.
-  const w = Math.ceil(chars * size * 0.9) + 2 * size;
-  const h = Math.ceil(size * 1.6);
+  const textAttrs = `font-family="${escapeXml(FONTS.serif)}" font-weight="700" font-size="${size}" fill="${COLORS.onInk}"`;
   const mark = parts.mark ? `<tspan fill="${COLORS.brand}">${escapeXml(parts.mark)}</tspan>` : "";
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
-    `<text x="${size}" y="${Math.round(size * 1.2)}" font-family="${escapeXml(FONTS.serif)}" ` +
-    `font-weight="700" font-size="${size}" fill="${COLORS.onInk}">` +
-    `${escapeXml(parts.body)}${mark}</text>` +
-    `</svg>`
-  );
+  if (!parts.lines) {
+    const chars = Array.from(parts.body + parts.mark).length;
+    // Canvas folgado: o texto real é recortado por `trim` na composição.
+    const w = Math.ceil(chars * size * 0.9) + 2 * size;
+    const h = Math.ceil(size * 1.6);
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+      `<text x="${size}" y="${Math.round(size * 1.2)}" ${textAttrs}>` +
+      `${escapeXml(parts.body)}${mark}</text>` +
+      `</svg>`
+    );
+  }
+  // #11740: uma <text> por linha, todas ancoradas no MESMO x à direita
+  // (`text-anchor="end"`), então as linhas saem alinhadas à direita entre si; o
+  // `trim` da composição recorta a caixa do bloco e o encaixe no canto segue
+  // pela caixa real, como na linha única.
+  const chars = Math.max(...hookDrawnLines(parts).map((l) => Array.from(l).length));
+  const lineHeight = Math.round(size * HOOK_LINE_HEIGHT_EM);
+  const w = Math.ceil(chars * size * 0.9) + 2 * size;
+  const h = Math.ceil(size * 1.6) + lineHeight * (parts.lines.length - 1);
+  const xEnd = w - size;
+  const rows = parts.lines.map((line, i) => {
+    const isLast = i === parts.lines!.length - 1;
+    const y = Math.round(size * 1.2) + i * lineHeight;
+    return `<text x="${xEnd}" y="${y}" text-anchor="end" ${textAttrs}>${escapeXml(line)}${isLast ? mark : ""}</text>`;
+  });
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">${rows.join("")}</svg>`;
 }
 
 /**
