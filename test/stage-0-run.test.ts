@@ -407,6 +407,10 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     // 0i, 0z rodaram.
     assert.ok(calls.some((c) => c.script.includes("update-audience")));
     assert.ok(calls.some((c) => c.script.includes("snapshot-audience-profile")));
+    // #11733: o snapshot do 0i vira PR logo depois de gerado.
+    const updateIdx = calls.findIndex((c) => c.script.includes("update-audience"));
+    const commitIdx = calls.findIndex((c) => c.script.includes("commit-audience-snapshot"));
+    assert.ok(commitIdx > updateIdx && updateIdx >= 0, "commit-audience-snapshot roda depois de update-audience");
     assert.ok(calls.some((c) => c.script.includes("check-invariants")));
     const statusDoneCall = calls.find(
       (c) => c.script.includes("update-stage-status") && c.args.includes("done"),
