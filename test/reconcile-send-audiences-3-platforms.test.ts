@@ -9,8 +9,8 @@
  * Cobre, ponto a ponto, o que o corpo da issue pede:
  *   - a comparação usa audiência de ENVIO (não presença na base) nas 3
  *     plataformas;
- *   - a folga constante da Beehiiv (~3 abaixo do total ativo, medida em
- *     485/488, 463/466, 415/418, 314/317) não dispara alarme;
+ *   - (a folga constante da Beehiiv, `checkBeehiivDeliveryGap`, saiu no
+ *     #11775: a Beehiiv não envia desde o #11225);
  *   - `globalStats` zerado por falta do parâmetro `?statistics=globalStats`
  *     é DETECTADO e tratado como "não medido", nunca confundido com "zero
  *     enviado real".
@@ -23,8 +23,6 @@ import {
   maskSendAudiencesResultForJson,
   findOrphans,
   maskOrphansForJson,
-  checkBeehiivDeliveryGap,
-  BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS,
   looksLikeMissingGlobalStatsParam,
   resolveBrevoCampaignRecipients,
   type EmailSource,
@@ -140,51 +138,6 @@ describe("findOrphans (#7385) — ativo em alguma plataforma, fora de toda audi�
     const masked = maskOrphansForJson(orphans);
     assert.equal(masked[0].email, "j***@example.com");
     assert.deepEqual(masked[0].activeIn, ["kit"]);
-  });
-});
-
-describe("checkBeehiivDeliveryGap (#7385) — armadilha de medição #2: folga constante NÃO alarma", () => {
-  const measured: Array<[number, number]> = [
-    [488, 485],
-    [466, 463],
-    [418, 415],
-    [317, 314],
-  ];
-  for (const [active, recipients] of measured) {
-    it(`gap medido real ${active}/${recipients} — ok, não alarma`, () => {
-      const check = checkBeehiivDeliveryGap(active, recipients);
-      assert.equal(check.ok, true);
-      assert.equal(check.gap, active - recipients);
-    });
-  }
-
-  it("gap zero (entrega perfeita) — ok", () => {
-    const check = checkBeehiivDeliveryGap(100, 100);
-    assert.equal(check.ok, true);
-    assert.equal(check.gap, 0);
-  });
-
-  it("gap muito acima do tolerado — não-ok, investigar", () => {
-    const check = checkBeehiivDeliveryGap(500, 400); // gap=100, bem acima da tolerância
-    assert.equal(check.ok, false);
-    assert.match(check.reason ?? "", /excede a tolerância/);
-  });
-
-  it("recipients > active — inesperado, não-ok", () => {
-    const check = checkBeehiivDeliveryGap(100, 105);
-    assert.equal(check.ok, false);
-    assert.match(check.reason ?? "", /inesperado/);
-  });
-
-  it("entrada inválida (negativo/não-inteiro) — não-ok, mensagem explica", () => {
-    assert.equal(checkBeehiivDeliveryGap(-1, 0).ok, false);
-    assert.equal(checkBeehiivDeliveryGap(10, -1).ok, false);
-    assert.equal(checkBeehiivDeliveryGap(10.5, 5).ok, false);
-  });
-
-  it("tolerância nunca cai abaixo do piso absoluto mesmo pra base pequena", () => {
-    const check = checkBeehiivDeliveryGap(10, 10 - BEEHIIV_DELIVERY_GAP_TOLERANCE_ABS);
-    assert.equal(check.ok, true);
   });
 });
 

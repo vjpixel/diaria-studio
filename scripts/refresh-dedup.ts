@@ -71,7 +71,7 @@ const MD_PATH = resolve(ROOT, "data/past-editions.md");
 
 export interface RefreshConfig {
   /** Backend + credenciais resolvidas (Beehiiv ou Kit, atrás de
-   *  `platform.config.json` → `publishing.newsletter.backend` — #6184). */
+   *  `platform.config.json` → `publishing.newsletter.read_backend` — #6184). */
   readConfig: NewsletterReadConfig;
   dedupEditionCount: number;
 }
@@ -87,7 +87,7 @@ export interface RefreshResult {
 
 /**
  * #6184: resolve backend (Beehiiv ou Kit, `platform.config.json` →
- * `publishing.newsletter.backend`) + credenciais via
+ * `publishing.newsletter.read_backend`) + credenciais via
  * `resolveNewsletterReadConfig` (delega pra `resolveBeehiivConfig`/
  * `resolveKitConfig` — não reimplementa validação de credencial). Mantém o
  * mesmo contrato de saída (`process.exit(2)` em config inválida) que a

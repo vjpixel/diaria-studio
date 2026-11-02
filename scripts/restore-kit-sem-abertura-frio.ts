@@ -24,23 +24,38 @@
  * o segmento, deixaria a pessoa sem edição ou com a de segunda em dobro.
  * O dry-run roda sempre.
  *
- * ## Reativar `cancelled` pela API: NÃO
+ * ## Reativar `cancelled`: pelo vínculo ao form de sistema, nunca pelo upsert
  *
- * A doc do Kit v4 (`POST /v4/subscribers`, lida em 27/10/2026) diz que o
- * upsert de um e-mail existente "updates the first name" e que "Updating the
- * subscriber state with this endpoint is not supported"; o #8728 mediu ao
- * vivo que `state: "active"` é ignorado pra quem já existe não-ativo. A doc do
- * vínculo a form não promete reativar `cancelled`. Este script não tenta:
- * quem está `cancelled` vai pra lista `data/kit-frio/reativar-no-painel.csv`
- * (reativar à mão no painel do Kit) e, rodado de novo depois, o script
- * encontra o assinante `active` e aplica as tags. Idempotente. O CSV só é
- * gravado com `--apply` (o dry-run só informa a contagem no log).
+ * O upsert NÃO reativa: a doc do Kit v4 (`POST /v4/subscribers`, lida em
+ * 27/10/2026) diz que o upsert de um e-mail existente "updates the first
+ * name" e que "Updating the subscriber state with this endpoint is not
+ * supported"; o #8728 mediu ao vivo que `state: "active"` é ignorado pra quem
+ * já existe não-ativo, e segue assim.
  *
- * Só entra no CSV o `cancelled` que NÓS fizemos (`descadastrado_por_supressao`,
- * #11430). Nas origens `in_brevo`/`suprimido_aguardando_frio` o nosso fluxo
- * deixou a pessoa `active` no Kit: `cancelled` ali é opt-out da própria
- * pessoa (rodapé/preferências do Kit), e reativá-la seria voltar a enviar pra
- * quem pediu pra sair. Esses saem como `descadastro_proprio`, só no log.
+ * O que reativa (medido em 02/11/2026, #11801): vincular o assinante ao form
+ * de SISTEMA `kit.activateFormId` (9839463, "Newsletter site") com
+ * `POST /v4/forms/9839463/subscribers/{id}` leva `cancelled` a `active` — 208
+ * de 208, relidos por GET, sem e-mail nenhum no endereço de teste (o mesmo
+ * form que o botão "reativar" usa pra `inactive`, ver
+ * `scripts/lib/kit-inactive-reativacao.ts`). O painel do Kit, ao contrário do
+ * que esta docstring dizia, NÃO tem caminho pra reativar `cancelled`.
+ *
+ * Este script não faz o vínculo sozinho: quem está `cancelled` vai pra lista
+ * `data/kit-frio/reativar-no-painel.csv` (o nome do arquivo é histórico; o
+ * caminho é o vínculo acima, rodado à parte pra cada linha) e, rodado de novo
+ * depois, o script encontra o assinante `active` e aplica as tags.
+ * Idempotente. O CSV só é gravado com `--apply` (o dry-run só informa a
+ * contagem no log). Os 208 de 25/10/2026 já foram reativados assim.
+ *
+ * ## O vínculo exige consentimento: nunca em opt-out da própria pessoa
+ *
+ * Reativar pelo form é reinscrever sem e-mail de confirmação. Só vale pra
+ * `cancelled` que NÓS fizemos (`descadastrado_por_supressao`, #11430), e só
+ * esses entram no CSV. Nas origens `in_brevo`/`suprimido_aguardando_frio` o
+ * nosso fluxo deixou a pessoa `active` no Kit: `cancelled` ali é opt-out da
+ * própria pessoa (rodapé/preferências do Kit), e vinculá-la ao form seria
+ * voltar a enviar pra quem pediu pra sair. Esses saem como
+ * `descadastro_proprio`, só no log, e nunca vão pro form.
  *
  * Ordem por assinante (nunca sem canal): `frio` aplicada e RELIDA antes de
  * tirar `envio-brevo` (relida também). Nunca descadastra ninguém.
@@ -138,9 +153,10 @@ export type RestoreStep = "ja_ok" | "tags" | "painel" | "descadastro_proprio" | 
 
 /**
  * Pura — o que fazer com o assinante, pelo estado e tags atuais no Kit e pela
- * origem do alvo. `cancelled` só vai pro painel quando o descadastro foi nosso
- * (`descadastrado_por_supressao`); nas outras origens é opt-out da pessoa e
- * nunca se reativa (#11430).
+ * origem do alvo. `cancelled` só vai pra lista de reativação (passo "painel",
+ * nome histórico: o caminho é o vínculo ao form de sistema, #11801) quando o
+ * descadastro foi nosso (`descadastrado_por_supressao`); nas outras origens é
+ * opt-out da pessoa e nunca se reativa (#11430).
  */
 export function decideKitRestore(state: string, tagNames: readonly string[], source: RestoreTarget["source"]): RestoreStep {
   if (state === "cancelled") return source === "descadastrado_por_supressao" ? "painel" : "descadastro_proprio";
@@ -245,7 +261,11 @@ export async function runKitSemAberturaRestore(
     }
   }
   if (panel.length > 0) {
-    log(`${panel.length} assinante(s) cancelled no Kit: a API não reativa — reativar no PAINEL do Kit e rodar este script de novo.`);
+    log(
+      `${panel.length} assinante(s) cancelled no Kit por descadastro NOSSO (supressão, #11430): o upsert não reativa e o painel não tem o caminho — ` +
+        "reativar com POST /v4/forms/{kit.activateFormId}/subscribers/{id} (form de sistema, sem e-mail, #11801) e rodar este script de novo. " +
+        "Só para estes: nunca em opt-out da própria pessoa.",
+    );
     if (opts.apply) deps.writePanelList(panel);
   }
   log(`${opts.apply ? "" : "[dry-run] "}${JSON.stringify(counts)}`);
@@ -316,7 +336,7 @@ async function main(): Promise<void> {
     writePanelList: (rows) => {
       mkdirSync(dirname(PANEL_LIST_PATH), { recursive: true });
       writeFileSync(PANEL_LIST_PATH, "email,kit_subscriber_id\n" + rows.map((r) => `${r.email},${r.kitSubscriberId}`).join("\n") + "\n");
-      log(`lista pra reativação no painel: ${PANEL_LIST_PATH}`);
+      log(`lista pra reativação pelo form de sistema (só descadastro nosso): ${PANEL_LIST_PATH}`);
     },
     appendLog: (line) => appendFileWithRetry(DEFAULT_KIT_SEM_ABERTURA_LOG_PATH, line),
     nowIso: () => new Date().toISOString(),

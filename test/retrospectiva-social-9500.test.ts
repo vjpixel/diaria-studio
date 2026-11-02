@@ -5,8 +5,8 @@
  * (`/diaria-mensal-apoiadores`). Desde o #9508: 3 posts por rede, um por
  * história (D1/D2/D3), no formato dos destaques diários — state/`--skip`/
  * `--force` por (rede × história), regra do texto dos slides (exatamente 3
- * parágrafos, ≤260, sem transbordar o card), CTA (apoia.se, nunca a URL
- * paywalled) com o teto de cada rede, agenda dos 15 posts no mesmo dia sem
+ * parágrafos, ≤260, sem transbordar o card), CTA (desde o #11802, a página
+ * da retrospectiva do ciclo; antes, o apoia.se) com o teto de cada rede, agenda dos 15 posts no mesmo dia sem
  * colidir com a diária, recorte de imagens por rede (X sem o slide de CTA) e
  * o adaptador `publish-retrospectiva-social.ts` (pré-voo tudo-ou-nada, stores
  * por história, cancelamento do post único legado da página LinkedIn,
@@ -19,8 +19,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   RETROSPECTIVA_DIVULGACAO_CHANNELS,
-  RETROSPECTIVA_PUBLIC_CTA,
   parseRetrospectivaSkip,
+  retrospectivaPublicCta,
   readRetrospectivaDivulgacaoState,
   retrospectivaDivulgacaoStatePath,
   writeRetrospectivaDivulgacaoState,
@@ -28,9 +28,9 @@ import {
   type RetrospectivaPostKey,
 } from "../scripts/lib/mensal/retrospectiva-divulgacao.ts";
 import {
-  RETROSPECTIVA_CAROUSEL_CTA,
-  RETROSPECTIVA_PUBLIC_CTA_CURTO,
   composeRetrospectivaLongCaption,
+  retrospectivaCarouselCta,
+  retrospectivaPublicCtaCurto,
   retrospectivaHistoriaBodyProblems,
   retrospectivaPostTextFile,
   retrospectivaSocialPostProblems,
@@ -75,6 +75,11 @@ const CONFIG = {
   },
 };
 const NOW = Date.parse("2026-10-02T12:00:00Z");
+// #11802: o CTA é função do ciclo (a URL da página muda por mês).
+const CICLO = "2609-10";
+const RETROSPECTIVA_PUBLIC_CTA = retrospectivaPublicCta(CICLO);
+const RETROSPECTIVA_PUBLIC_CTA_CURTO = retrospectivaPublicCtaCurto(CICLO);
+const RETROSPECTIVA_CAROUSEL_CTA = retrospectivaCarouselCta(CICLO);
 const H: RetrospectivaHistoria[] = ["d1", "d2", "d3"];
 
 let tmp: string;
@@ -138,22 +143,24 @@ describe("state e --skip/--force por (rede × história)", () => {
 
 describe("texto dos slides (d{N}.md): exatamente 3 parágrafos, ≤260, sem transbordar", () => {
   it("corpo certo passa; 2 ou 4 parágrafos reprovam", () => {
-    assert.deepEqual(retrospectivaHistoriaBodyProblems(CORPO), []);
-    assert.match(retrospectivaHistoriaBodyProblems(`${P1}\n\n${P2}`).join(), /2 parágrafo\(s\) — são exatamente 3/);
-    assert.match(retrospectivaHistoriaBodyProblems(`${CORPO}\n\n${P1}`).join(), /4 parágrafo/);
+    assert.deepEqual(retrospectivaHistoriaBodyProblems(CORPO, CICLO), []);
+    assert.match(retrospectivaHistoriaBodyProblems(`${P1}\n\n${P2}`, CICLO).join(), /2 parágrafo\(s\) — são exatamente 3/);
+    assert.match(retrospectivaHistoriaBodyProblems(`${CORPO}\n\n${P1}`, CICLO).join(), /4 parágrafo/);
   });
   it("parágrafo acima de 260 reprova pedindo REESCRITA; acima do que o card comporta, aponta o slide", () => {
     const longo = `${"palavra ".repeat(33)}fim.`; // 268 chars
-    assert.match(retrospectivaHistoriaBodyProblems(`${P1}\n\n${longo}\n\n${P3}`).join(), /parágrafo 2: 268 caracteres — teto 260; REESCREVA/);
+    assert.match(retrospectivaHistoriaBodyProblems(`${P1}\n\n${longo}\n\n${P3}`, CICLO).join(), /parágrafo 2: 268 caracteres — teto 260; REESCREVA/);
     const enorme = `${"palavra ".repeat(60)}fim.`; // ~484 chars: não cabe a 62px
-    assert.match(retrospectivaHistoriaBodyProblems(`${P1}\n\n${P2}\n\n${enorme}`).join(), /slide p3 não cabe no card/);
+    assert.match(retrospectivaHistoriaBodyProblems(`${P1}\n\n${P2}\n\n${enorme}`, CICLO).join(), /slide p3 não cabe no card/);
   });
   it("CTA, URL paywalled, markdown e mais de 5 hashtags reprovam; até 5 hashtags passam", () => {
-    assert.match(retrospectivaHistoriaBodyProblems(`${CORPO}\n${RETROSPECTIVA_PUBLIC_CTA}`).join(), /não inclua o CTA/);
-    assert.match(retrospectivaHistoriaBodyProblems(CORPO.replace("site alemão", "retrospectiva.diar.ia.br/2609")).join(), /paywalled/);
-    assert.match(retrospectivaHistoriaBodyProblems(CORPO.replace("site alemão", "**site alemão**")).join(), /markdown/);
-    assert.deepEqual(retrospectivaHistoriaBodyProblems(`${CORPO}\n#IA #agentes #setembro #tecnologia #retrospectiva`), []);
-    assert.match(retrospectivaHistoriaBodyProblems(`${CORPO}\n#a #b #c #d #e #f`).join(), /6 hashtags/);
+    assert.match(retrospectivaHistoriaBodyProblems(`${CORPO}\n${RETROSPECTIVA_PUBLIC_CTA}`, CICLO).join(), /não inclua a URL da retrospectiva/);
+    assert.match(retrospectivaHistoriaBodyProblems(CORPO.replace("site alemão", "retrospectiva.diar.ia.br/2609"), CICLO).join(), /não inclua a URL da retrospectiva/);
+    // #11802: o CTA antigo (apoia.se) também não entra no corpo.
+    assert.match(retrospectivaHistoriaBodyProblems(CORPO.replace("site alemão", "apoia.se/diaria"), CICLO).join(), /não inclua apoia\.se/);
+    assert.match(retrospectivaHistoriaBodyProblems(CORPO.replace("site alemão", "**site alemão**"), CICLO).join(), /markdown/);
+    assert.deepEqual(retrospectivaHistoriaBodyProblems(`${CORPO}\n#IA #agentes #setembro #tecnologia #retrospectiva`, CICLO), []);
+    assert.match(retrospectivaHistoriaBodyProblems(`${CORPO}\n#a #b #c #d #e #f`, CICLO).join(), /6 hashtags/);
   });
   it("o slide de CTA do carrossel diz a linha longa de CTA e a faixa de apoio (nunca o 'Assine grátis' da diária)", () => {
     const slides = buildCarouselSlideTexts(CORPO, RETROSPECTIVA_CAROUSEL_CTA);
@@ -166,9 +173,9 @@ describe("texto dos slides (d{N}.md): exatamente 3 parágrafos, ≤260, sem tran
 
 describe("CTA e teto de cada rede", () => {
   it("legenda longa = corpo + linha longa de CTA; passa em LinkedIn/Facebook/Instagram", () => {
-    const cap = composeRetrospectivaLongCaption(CORPO);
+    const cap = composeRetrospectivaLongCaption(CORPO, CICLO);
     assert.ok(cap.endsWith(`\n\n${RETROSPECTIVA_PUBLIC_CTA}`));
-    for (const ch of ["linkedin_pagina", "facebook", "instagram"] as const) assert.deepEqual(retrospectivaSocialPostProblems(ch, cap), [], ch);
+    for (const ch of ["linkedin_pagina", "facebook", "instagram"] as const) assert.deepEqual(retrospectivaSocialPostProblems(ch, cap, CICLO), [], ch);
   });
   it("arquivo de cada rede: LinkedIn/Facebook/Instagram leem d{N}.md, Threads/X leem d{N}-curto.md", () => {
     assert.equal(retrospectivaPostTextFile("instagram", "d2"), "d2.md");
@@ -176,27 +183,34 @@ describe("CTA e teto de cada rede", () => {
     assert.equal(retrospectivaPostTextFile("x", "d3"), "d3-curto.md");
     assert.equal(retrospectivaPostTextFile("threads", "d3"), "d3-curto.md");
   });
-  it("curto: Threads/X aceitam a curta ou a longa; sem CTA reprova; URL paywalled reprova", () => {
-    assert.deepEqual(retrospectivaSocialPostProblems("threads", CURTO), []);
-    assert.deepEqual(retrospectivaSocialPostProblems("x", CURTO), []);
-    assert.deepEqual(retrospectivaSocialPostProblems("threads", `Curto.\n\n${RETROSPECTIVA_PUBLIC_CTA}`), []);
-    assert.match(retrospectivaSocialPostProblems("x", "Curto, sem CTA nenhum.").join(), /falta a linha literal/);
-    assert.match(retrospectivaSocialPostProblems("x", `retrospectiva.diar.ia.br/2609\n${CURTO}`).join(), /paywalled/);
-    assert.match(retrospectivaSocialPostProblems("instagram", CURTO).join(), /falta a linha literal/);
+  it("curto: Threads/X aceitam a curta ou a longa; sem CTA reprova; URL de outro ciclo reprova", () => {
+    assert.deepEqual(retrospectivaSocialPostProblems("threads", CURTO, CICLO), []);
+    assert.deepEqual(retrospectivaSocialPostProblems("x", CURTO, CICLO), []);
+    assert.deepEqual(retrospectivaSocialPostProblems("threads", `Curto.\n\n${RETROSPECTIVA_PUBLIC_CTA}`, CICLO), []);
+    assert.match(retrospectivaSocialPostProblems("x", "Curto, sem CTA nenhum.", CICLO).join(), /falta a linha literal/);
+    assert.match(retrospectivaSocialPostProblems("x", `retrospectiva.diar.ia.br/2608\n${CURTO}`, CICLO).join(), /não é a página do ciclo/);
+    // #11802: o CTA curto antigo (apoia.se) não serve mais.
+    assert.match(
+      retrospectivaSocialPostProblems("x", "Curto.\n\nApoie e leia a retrospectiva completa: apoia.se/diaria", CICLO).join(),
+      /falta a linha literal/,
+    );
+    assert.match(retrospectivaSocialPostProblems("instagram", CURTO, CICLO).join(), /falta a linha literal/);
   });
-  it("X e Threads: acima de 280 reprova; X conta apoia.se/diaria como link (23)", () => {
+  it("X e Threads: acima de 280 reprova; X conta domínio nu como link (23), nunca abaixo do literal", () => {
     const corpo = (n: number) => "a".repeat(n);
     const cta = `\n\n${RETROSPECTIVA_PUBLIC_CTA_CURTO}`;
-    assert.deepEqual(retrospectivaSocialPostProblems("threads", corpo(280 - cta.length) + cta), []);
-    assert.match(retrospectivaSocialPostProblems("threads", corpo(281 - cta.length) + cta).join(), /teto do threads é 280/);
-    assert.equal(xWeightedLength(RETROSPECTIVA_PUBLIC_CTA_CURTO), RETROSPECTIVA_PUBLIC_CTA_CURTO.length + 8);
-    assert.match(retrospectivaSocialPostProblems("x", corpo(280 - cta.length) + cta).join(), /ponderado/);
-    assert.deepEqual(retrospectivaSocialPostProblems("x", corpo(272 - cta.length) + cta), []);
+    assert.deepEqual(retrospectivaSocialPostProblems("threads", corpo(280 - cta.length) + cta, CICLO), []);
+    assert.match(retrospectivaSocialPostProblems("threads", corpo(281 - cta.length) + cta, CICLO).join(), /teto do threads é 280/);
+    // URL curta (15) sobe para 23; a do CTA (retrospectiva.diar.ia.br/2609, 29) fica no literal.
+    assert.equal(xWeightedLength("apoia.se/diaria"), 23);
+    assert.equal(xWeightedLength(RETROSPECTIVA_PUBLIC_CTA_CURTO), RETROSPECTIVA_PUBLIC_CTA_CURTO.length);
+    assert.deepEqual(retrospectivaSocialPostProblems("x", corpo(280 - cta.length) + cta, CICLO), []);
+    assert.match(retrospectivaSocialPostProblems("x", corpo(281 - cta.length) + cta, CICLO).join(), /ponderado/);
   });
   it("Instagram acima de 2200 reprova (recusa, nunca trunca o CTA); markdown e vazio reprovam", () => {
-    assert.match(retrospectivaSocialPostProblems("instagram", `${"b".repeat(2200)}\n\n${RETROSPECTIVA_PUBLIC_CTA}`).join(), /2200/);
-    assert.match(retrospectivaSocialPostProblems("facebook", `Um **destaque**.\n\n${RETROSPECTIVA_PUBLIC_CTA}`).join(), /markdown/);
-    assert.deepEqual(retrospectivaSocialPostProblems("x", "  \n"), ["texto vazio"]);
+    assert.match(retrospectivaSocialPostProblems("instagram", `${"b".repeat(2200)}\n\n${RETROSPECTIVA_PUBLIC_CTA}`, CICLO).join(), /2200/);
+    assert.match(retrospectivaSocialPostProblems("facebook", `Um **destaque**.\n\n${RETROSPECTIVA_PUBLIC_CTA}`, CICLO).join(), /markdown/);
+    assert.deepEqual(retrospectivaSocialPostProblems("x", "  \n", CICLO), ["texto vazio"]);
   });
 });
 
@@ -214,14 +228,14 @@ describe("check-retrospectiva-divulgacao cobre as 3 histórias", () => {
   }
   it("tudo certo: 6 arquivos sem problema (perfil pulado)", () => {
     setup();
-    const r = checkRetrospectivaDivulgacaoTexts(tmp, undefined);
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, CICLO, undefined);
     assert.equal(r.filter((c) => /d\d(-curto)?\.md$/.test(c.file)).length, 6);
     const semPerfil = r.filter((c) => !c.file.endsWith("linkedin-perfil.md"));
     assert.ok(semPerfil.every((c) => c.problems.length === 0), JSON.stringify(semPerfil));
   });
   it("d2 com 2 parágrafos e d3-curto acima de 280 reprovam, nomeando a rede", () => {
     setup({ "d2.md": `${P1}\n\n${P2}`, "d3-curto.md": `${"c".repeat(300)}\n${RETROSPECTIVA_PUBLIC_CTA_CURTO}` });
-    const r = checkRetrospectivaDivulgacaoTexts(tmp, undefined);
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, CICLO, undefined);
     const by = (end: string) => r.find((c) => c.file.replace(/\\/g, "/").endsWith(end))!;
     assert.match(by("divulgacao/d2.md").problems.join(), /exatamente 3/);
     assert.match(by("d3-curto.md").problems.join(), /threads: .*280[\s\S]*x: /);
@@ -229,10 +243,10 @@ describe("check-retrospectiva-divulgacao cobre as 3 histórias", () => {
   });
   it("--skip de todas as redes de uma história não checa os arquivos dela; título que não cabe na capa reprova", () => {
     setup();
-    const r = checkRetrospectivaDivulgacaoTexts(tmp, "linkedin,facebook:d3,instagram:d3,threads:d3,x:d3");
+    const r = checkRetrospectivaDivulgacaoTexts(tmp, CICLO, "linkedin,facebook:d3,instagram:d3,threads:d3,x:d3");
     assert.ok(!r.some((c) => /d3(-curto)?\.md$/.test(c.file)));
     writeFileSync(join(tmp, "draft.md"), `**DESTAQUE 1 | X**\n\n${"Supercalifragilisticoexpialidoso ".repeat(5)}\n`);
-    const r2 = checkRetrospectivaDivulgacaoTexts(tmp, "linkedin,facebook:d2,instagram:d2,threads:d2,x:d2,facebook:d3,instagram:d3,threads:d3,x:d3");
+    const r2 = checkRetrospectivaDivulgacaoTexts(tmp, CICLO, "linkedin,facebook:d2,instagram:d2,threads:d2,x:d2,facebook:d3,instagram:d3,threads:d3,x:d3");
     assert.match(r2.find((c) => c.file.includes("DESTAQUE 1"))!.problems.join(), /não cabe na capa/);
   });
 });
@@ -303,13 +317,13 @@ describe("retrospectiva-cards: as 5 imagens da história (render real)", () => {
       Object.values(paths).map((p) => p.replace(/\\/g, "/").split("/").slice(-2).join("/")),
       ["divulgacao/04-d2-4x5.jpg", "divulgacao/04-d2-carousel-p1-4x5.jpg", "divulgacao/04-d2-carousel-p2-4x5.jpg", "divulgacao/04-d2-carousel-p3-4x5.jpg", "divulgacao/04-d2-carousel-cta-4x5.jpg"],
     );
-    const out = await renderRetrospectivaCards({ cycleDir: tmp, historia: "d2", title: TITLES.d2, corpo: CORPO, kicker: "Retrospectiva de Setembro", fontSize: 72 });
+    const out = await renderRetrospectivaCards({ cycleDir: tmp, cycle: CICLO, historia: "d2", title: TITLES.d2, corpo: CORPO, kicker: "Retrospectiva de Setembro", fontSize: 72 });
     for (const p of Object.values(out)) {
       const m = await sharp(p).metadata();
       assert.deepEqual([m.width, m.height], [1080, 1350], p);
     }
     await assert.rejects(
-      renderRetrospectivaCards({ cycleDir: tmp, historia: "d3", title: TITLES.d3, corpo: CORPO, kicker: "k", fontSize: 72 }),
+      renderRetrospectivaCards({ cycleDir: tmp, cycle: CICLO, historia: "d3", title: TITLES.d3, corpo: CORPO, kicker: "k", fontSize: 72 }),
       /04-d3-2x1\.jpg ausente/,
     );
   });

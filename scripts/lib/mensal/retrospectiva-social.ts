@@ -3,9 +3,10 @@
  *
  * Regras puras dos posts PÚBLICOS de chamada da Retrospectiva do Mês
  * (`/diaria-mensal-apoiadores`) — LinkedIn página, Facebook, Instagram,
- * Threads e X. Mesma regra de CTA dos posts de LinkedIn (#9474): apontam pro
- * `apoia.se/diaria`, NUNCA pra URL direta da retrospectiva paywalled; texto
- * de chamada, não recorte.
+ * Threads e X. Mesma regra de CTA dos posts de LinkedIn (#9474): desde o
+ * #11802 (decisão do editor, 01/11/2026) apontam para a página da
+ * retrospectiva do ciclo (`retrospectiva.diar.ia.br/{AAMM}`, trecho aberto +
+ * paywall), não mais para o apoia.se; texto de chamada, não recorte.
  *
  * ## #9508: um post por história, no formato dos destaques diários
  *
@@ -33,17 +34,19 @@
  * ## Duas linhas de CTA
  *
  * LinkedIn, Facebook e Instagram levam a linha longa
- * (`RETROSPECTIVA_PUBLIC_CTA`). X e Threads têm 280 caracteres: aceitam a
- * longa ou a curta `RETROSPECTIVA_PUBLIC_CTA_CURTO` — adaptação da frase do
- * editor que mantém o "Apoie" (o pedido de conversão) e corta o resto
+ * (`retrospectivaPublicCta(ciclo)`). X e Threads têm 280 caracteres: aceitam a
+ * longa ou a curta `retrospectivaPublicCtaCurto(ciclo)` — adaptação da frase
+ * do editor que mantém o "Apoie" (o pedido de conversão) e corta o resto
  * (premissa do #9500; não reescrever, não passar por Clarice/humanizador). O
- * slide de CTA do carrossel diz a linha longa (`RETROSPECTIVA_CAROUSEL_CTA`).
+ * slide de CTA do carrossel diz a linha longa (`retrospectivaCarouselCta`).
+ * As três são função do ciclo desde o #11802: a URL da página muda por mês.
  */
 
 import {
-  RETROSPECTIVA_PUBLIC_CTA,
   citesPaywalledRetrospectiva,
   publicPostCtaProblems,
+  retrospectivaCtaUrl,
+  retrospectivaPublicCta,
   RETROSPECTIVA_POST_CHANNELS,
   type RetrospectivaHistoria,
   type RetrospectivaPostChannel,
@@ -55,8 +58,13 @@ import type { CarouselCtaOverride } from "../instagram-test-override.ts";
 export { RETROSPECTIVA_POST_CHANNELS as RETROSPECTIVA_SOCIAL_CHANNELS };
 export type RetrospectivaSocialChannel = RetrospectivaPostChannel;
 
-/** Linha curta de CTA pra X/Threads (54 caracteres) — ver docstring do módulo. */
-export const RETROSPECTIVA_PUBLIC_CTA_CURTO = "Apoie e leia a retrospectiva completa: apoia.se/diaria";
+/**
+ * Pura: linha curta de CTA pra X/Threads — ver docstring do módulo. 39
+ * caracteres + a URL, que o X conta como 23 (`xWeightedLength`).
+ */
+export function retrospectivaPublicCtaCurto(cycle: string): string {
+  return `Apoie e leia a retrospectiva completa: ${retrospectivaCtaUrl(cycle)}`;
+}
 
 /** Arquivos de texto de uma história em `data/monthly/{ciclo}/divulgacao/`. */
 export function retrospectivaHistoriaFiles(h: RetrospectivaHistoria): { corpo: string; curto: string } {
@@ -111,25 +119,24 @@ export const RETROSPECTIVA_MAX_HASHTAGS = 5;
 export const RETROSPECTIVA_PARAGRAPH_MAX_CHARS = DAILY_CAROUSEL_PARAGRAPH_CHAR_TARGET;
 
 /**
- * Slide final (CTA) do carrossel: a linha longa de CTA, com uma faixa que
- * substitui o "Assine grátis" da diária (aqui o pedido é apoio, não
- * assinatura). Reusa o override de slide CTA do #8681 — nenhum render novo.
+ * Pura: slide final (CTA) do carrossel — a linha longa de CTA do ciclo, com
+ * uma faixa que substitui o "Assine grátis" da diária (aqui o pedido é apoio,
+ * não assinatura). Reusa o override de slide CTA do #8681 — nenhum render novo.
  */
-export const RETROSPECTIVA_CAROUSEL_CTA: CarouselCtaOverride = {
-  kicker: "Exclusivo para apoiadores",
-  title: RETROSPECTIVA_PUBLIC_CTA,
-};
+export function retrospectivaCarouselCta(cycle: string): CarouselCtaOverride {
+  return { kicker: "Exclusivo para apoiadores", title: retrospectivaPublicCta(cycle) };
+}
 
 const URL_WEIGHT = 23;
-/** `http(s)://…` e domínio nu (`apoia.se/diaria`, que o X também linka e conta como 23). */
+/** `http(s)://…` e domínio nu (`retrospectiva.diar.ia.br/2610`, que o X também linka e conta como 23). */
 const X_LINK_RE = /https?:\/\/\S+|\b(?:[a-z0-9-]+\.)+(?:se|br|com|ai|io|net|org)(?:\/\S*)?/gi;
 
 /**
  * Pura: comprimento ponderado do X, conservador — conta toda URL e todo
  * domínio nu com TLD comum como 23 (t.co), e nunca menos que o comprimento
  * literal. `computeTwitterWeightedLength` (`prep-twitter-posts.ts`) só pesa
- * `http(s)://`; aqui o CTA é `apoia.se/diaria`, que o X linka mesmo sem
- * esquema — contar 15 deixaria passar um texto que a rede recusa.
+ * `http(s)://`; aqui o CTA é `retrospectiva.diar.ia.br/{AAMM}`, que o X linka mesmo sem
+ * esquema — contar o literal deixaria passar um texto que a rede recusa.
  */
 export function xWeightedLength(text: string): number {
   let delta = 0;
@@ -144,11 +151,12 @@ export function xWeightedLength(text: string): number {
  * dessas redes renderiza `**`, #6862 — o editor aprova no gate o que vai ao
  * ar). Medido sobre o texto como vai ao ar.
  */
-export function retrospectivaSocialPostProblems(channel: RetrospectivaSocialChannel, text: string): string[] {
+export function retrospectivaSocialPostProblems(channel: RetrospectivaSocialChannel, text: string, cycle: string): string[] {
   const body = text.replace(/\r\n/g, "\n").trim();
   if (!body) return ["texto vazio"];
   const short = isShortChannel(channel);
-  const problems = publicPostCtaProblems(body, short ? [RETROSPECTIVA_PUBLIC_CTA_CURTO, RETROSPECTIVA_PUBLIC_CTA] : [RETROSPECTIVA_PUBLIC_CTA]);
+  const longCta = retrospectivaPublicCta(cycle);
+  const problems = publicPostCtaProblems(body, cycle, short ? [retrospectivaPublicCtaCurto(cycle), longCta] : [longCta]);
   const max = RETROSPECTIVA_SOCIAL_MAX_CHARS[channel];
   const len = channel === "x" ? xWeightedLength(body) : body.length;
   if (len > max) {
@@ -158,15 +166,19 @@ export function retrospectivaSocialPostProblems(channel: RetrospectivaSocialChan
   return problems;
 }
 
-/** Pura: legenda de LinkedIn/Facebook/Instagram = `d{N}.md` + linha longa de CTA. */
-export function composeRetrospectivaLongCaption(corpo: string): string {
-  return `${corpo.replace(/\r\n/g, "\n").trim()}\n\n${RETROSPECTIVA_PUBLIC_CTA}`;
+/** Pura: legenda de LinkedIn/Facebook/Instagram = `d{N}.md` + linha longa de CTA do ciclo. */
+export function composeRetrospectivaLongCaption(corpo: string, cycle: string): string {
+  return `${corpo.replace(/\r\n/g, "\n").trim()}\n\n${retrospectivaPublicCta(cycle)}`;
 }
 
 /** Pura: texto que vai ao ar numa rede, a partir dos dois arquivos da história. */
-export function retrospectivaPostText(ch: RetrospectivaSocialChannel, texts: { corpo?: string; curto?: string }): string | undefined {
+export function retrospectivaPostText(
+  ch: RetrospectivaSocialChannel,
+  texts: { corpo?: string; curto?: string },
+  cycle: string,
+): string | undefined {
   if (isShortChannel(ch)) return texts.curto?.replace(/\r\n/g, "\n").trim();
-  return texts.corpo === undefined ? undefined : composeRetrospectivaLongCaption(texts.corpo);
+  return texts.corpo === undefined ? undefined : composeRetrospectivaLongCaption(texts.corpo, cycle);
 }
 
 /** Pura: parágrafos do corpo (sem a linha final de hashtags), como os slides os veem. */
@@ -189,18 +201,20 @@ export function retrospectivaParagraphs(corpo: string): { paragraphs: string[]; 
  *   - nenhum slide transborda o card em 62px (`findOverflowingCarouselSlides`,
  *     o mesmo guard do invariante `carousel-text-overflow` da diária) — quem
  *     não cabe é REESCRITO, nunca encolhido nem truncado (#6078);
- *   - sem CTA (o script acrescenta), sem URL paywalled, sem markdown, até 5
- *     hashtags.
+ *   - sem CTA (o script acrescenta), sem URL da retrospectiva nem apoia.se,
+ *     sem markdown, até 5 hashtags.
+ *
+ * `cycle` (#11802): o slide de CTA medido no overflow é o do ciclo.
  */
-export function retrospectivaHistoriaBodyProblems(corpo: string): string[] {
+export function retrospectivaHistoriaBodyProblems(corpo: string, cycle: string): string[] {
   const text = corpo.replace(/\r\n/g, "\n").trim();
   if (!text) return ["texto vazio"];
   const problems: string[] = [];
   if (citesPaywalledRetrospectiva(text)) {
-    problems.push("o texto cita a URL da retrospectiva paywalled (retrospectiva./artigo.diar.ia.br) — post público aponta só pro apoia.se");
+    problems.push("não inclua a URL da retrospectiva no corpo — o script soma a linha de CTA (com a URL) à legenda e o slide final já é o CTA");
   }
   if (/apoia\.se\/diaria/i.test(text)) {
-    problems.push("não inclua o CTA nem apoia.se/diaria no corpo — o script soma a linha de CTA à legenda e o slide final já é o CTA");
+    problems.push("não inclua apoia.se/diaria no corpo — desde o #11802 o post aponta para a página da retrospectiva, e o script soma a linha de CTA");
   }
   if (/\*\*|__/.test(text)) problems.push("markdown de ênfase (** ou __) — a legenda não renderiza; escreva texto puro");
   const { paragraphs, tags } = retrospectivaParagraphs(text);
@@ -215,7 +229,7 @@ export function retrospectivaHistoriaBodyProblems(corpo: string): string[] {
   const nTags = tags ? tags.split(/\s+/).filter(Boolean).length : 0;
   if (nTags > RETROSPECTIVA_MAX_HASHTAGS) problems.push(`${nTags} hashtags — no máximo ${RETROSPECTIVA_MAX_HASHTAGS}`);
   if (paragraphs.length === 3) {
-    for (const o of findOverflowingCarouselSlides(text, RETROSPECTIVA_CAROUSEL_CTA)) {
+    for (const o of findOverflowingCarouselSlides(text, retrospectivaCarouselCta(cycle))) {
       problems.push(`slide ${o.slot} não cabe no card (${o.chars} caracteres → ${o.lines} linhas, ${o.excessPx}px além) — REESCREVA o parágrafo`);
     }
   }

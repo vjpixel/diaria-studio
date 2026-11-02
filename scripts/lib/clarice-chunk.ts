@@ -32,6 +32,7 @@
  */
 
 import { countOccurrences } from "../clarice-apply.ts";
+import { classifyClariceNoise } from "./clarice-suggestion-guard.ts";
 import type { ClariceSuggestion } from "./schemas/clarice-suggestions.ts";
 
 export interface TextChunk {
@@ -85,6 +86,17 @@ export interface ApplyResult {
  * request, só não é mais o motivo pelo qual os timeouts recorrentes aconteciam.
  */
 export const CLARICE_CHUNK_THRESHOLD = 4_500;
+
+/**
+ * Teto de chars por bloco no caminho MCP (`mcp__clarice__correct_text`) da
+ * mensal (#11812). O cliente MCP corta a chamada em 30s; em 01/11/2026 o
+ * draft mensal inteiro (e blocos longos dele) estourou esse teto repetidas
+ * vezes, enquanto blocos menores passaram. O REST tem retry e fallback por
+ * parágrafo (#5082) e pode ficar nos 4.500 de `CLARICE_CHUNK_THRESHOLD`; o
+ * MCP não tem nenhum dos dois, então o bloco fica menor. Usado por
+ * `scripts/clarice-mcp-chunks.ts`.
+ */
+export const CLARICE_MCP_CHUNK_MAX_CHARS = 2_500;
 
 /**
  * Divide o texto em chunks de no máximo `maxChars` chars, em fronteiras seguras:
@@ -194,6 +206,15 @@ export function applyChunkSuggestions(
     // Guarda whitespace-only além de vazio (paridade com clarice-apply.ts).
     if (!from || !from.trim() || from === to) {
       skipped.push({ ...suggestion, reason: "sugestão vazia ou no-op" });
+      continue;
+    }
+
+    // Ruído do servidor (#11798): só whitespace, ou `to` injetando quebra de
+    // linha/caractere de código. Paridade com clarice-apply.ts.
+    const noise = classifyClariceNoise(from, to);
+    if (noise) {
+      log(`[clarice-chunk] SKIP: ${JSON.stringify(from)} → ${JSON.stringify(to)} (${noise})`);
+      skipped.push({ ...suggestion, reason: noise });
       continue;
     }
 

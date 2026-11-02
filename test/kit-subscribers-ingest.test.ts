@@ -534,3 +534,32 @@ describe("ingestKitRoster — atributos (#7202)", () => {
     db.close();
   });
 });
+
+describe("detectKitConfirmations / ingestKitConfirmations (#11846)", () => {
+  const emails = new Map([[1, "A@x.com"], [2, "b@x.com"], [3, "c@x.com"], [4, "d@x.com"]]);
+  const transitions = [
+    { id: 1, from: "inactive", to: "active", created_at: "2026-01-01T00:00:00Z" },
+    { id: 2, from: "cancelled", to: "active", created_at: "2026-01-01T00:00:00Z" },
+    { id: 3, from: null, to: "active", created_at: "2026-01-01T00:00:00Z" },
+    { id: 4, from: "active", to: "cancelled", created_at: "2026-01-01T00:00:00Z" },
+    { id: 9, from: "inactive", to: "active", created_at: "2026-01-01T00:00:00Z" }, // sem e-mail
+  ];
+
+  it("só inactive->active com e-mail conta; ts é o dia do snapshot", async () => {
+    const { detectKitConfirmations } = await import("../scripts/lib/kit-subscribers-ingest.ts");
+    const r = detectKitConfirmations(transitions, emails, "2026-11-02");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].externalEventId, "a@x.com:confirm:2026-11-02");
+    assert.equal(r[0].ts, "2026-11-02T12:00:00.000Z");
+  });
+
+  it("grava evento confirm e é idempotente", async () => {
+    const { ingestKitConfirmations } = await import("../scripts/lib/kit-subscribers-ingest.ts");
+    const db = openDiariaSubscribersDb(":memory:");
+    assert.deepEqual(ingestKitConfirmations(db, transitions, emails, "2026-11-02"), { newEvents: 1, alreadyKnown: 0 });
+    assert.deepEqual(ingestKitConfirmations(db, transitions, emails, "2026-11-02"), { newEvents: 0, alreadyKnown: 1 });
+    const id = findSubscriberIdsByEmail(db, "a@x.com")[0];
+    const tl = getSubscriberTimeline(db, id);
+    assert.equal(tl.filter((e) => e.type === "confirm").length, 1);
+  });
+});

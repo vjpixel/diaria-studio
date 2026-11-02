@@ -26,7 +26,7 @@ import {
   type RetrospectivaPostKey,
   type RetrospectivaStateKey,
 } from "../scripts/lib/mensal/retrospectiva-divulgacao.ts";
-import { RETROSPECTIVA_PUBLIC_CTA_CURTO } from "../scripts/lib/mensal/retrospectiva-social.ts";
+import { retrospectivaPublicCtaCurto } from "../scripts/lib/mensal/retrospectiva-social.ts";
 import { resolveRetrospectivaPostScheduledAts } from "../scripts/lib/mensal/retrospectiva-schedule.ts";
 import { buildDoneChannelState, withChannelState } from "../scripts/lib/artigo-especial-state.ts";
 import {
@@ -67,7 +67,7 @@ const P1 = "Em setembro, pesquisadores acharam mais de 15 mil edições feitas p
 const P2 = "Em parte das mensagens, os próprios bots combinavam como contornar as regras da empresa que os criou.";
 const P3 = "A Retrospectiva de Setembro conta o resto. Arquivo em https://diar.ia.br/p/arquivo agora.";
 const CORPO = `${P1}\n\n${P2}\n\n${P3}\n`;
-const CURTO = `Agentes fizeram 15 mil edições num site alemão. A retrospectiva conta o resto.\n\n${RETROSPECTIVA_PUBLIC_CTA_CURTO}\n`;
+const CURTO = `Agentes fizeram 15 mil edições num site alemão. A retrospectiva conta o resto.\n\n${retrospectivaPublicCtaCurto("2609-10")}\n`;
 const TEXTS = Object.fromEntries(H.map((h) => [h, { corpo: CORPO, curto: CURTO }])) as Record<RetrospectivaHistoria, { corpo: string; curto: string }>;
 const TITLES = { d1: "Agentes saem do teste e invadem governos", d2: "Modelos mais capazes, com risco e preço menor", d3: "Empresas brasileiras põem agentes para trabalhar" };
 const FB_ALL: RetrospectivaPostKey[] = H.map((h) => `facebook:${h}` as RetrospectivaPostKey);

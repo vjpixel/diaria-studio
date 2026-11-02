@@ -64,8 +64,64 @@ describe("fetchActiveBeehiivEmails — paginação (#11225, comportamento preser
   });
 });
 
+describe("fetchActiveBeehiivEmails — falhas (#11225)", () => {
+  async function withFetch<T>(handler: typeof fetch, fn: () => Promise<T>): Promise<T> {
+    const orig = globalThis.fetch;
+    globalThis.fetch = handler;
+    try {
+      return await fn();
+    } finally {
+      globalThis.fetch = orig;
+    }
+  }
+  const noSleep = async () => {};
+
+  it("429 persistente falha depois de MAX_RETRIES, sem laço infinito", async () => {
+    let calls = 0;
+    await withFetch(
+      (async () => {
+        calls++;
+        return new Response("x", { status: 429 });
+      }) as typeof fetch,
+      () => assert.rejects(fetchActiveBeehiivEmails("k", "pub", { sleepFn: noSleep }), /429.*3 retentativas/),
+    );
+    assert.equal(calls, 4);
+  });
+
+  it("429 passageiro segue e devolve a lista", async () => {
+    let calls = 0;
+    const emails = await withFetch(
+      (async () => (++calls === 1 ? new Response("x", { status: 429 }) : new Response(JSON.stringify({ data: [{ email: "a@x.com" }], total_results: 1, limit: 100 })))) as typeof fetch,
+      () => fetchActiveBeehiivEmails("k", "pub", { sleepFn: noSleep }),
+    );
+    assert.deepEqual(emails, ["a@x.com"]);
+  });
+
+  it("página final vazia antes de bater total_results rejeita a leitura truncada", async () => {
+    const pages = [{ data: [{ email: "a@x.com" }, { email: "b@x.com" }], total_results: 5, limit: 2 }, { data: [], total_results: 5, limit: 2 }];
+    let i = 0;
+    await withFetch(
+      (async () => new Response(JSON.stringify(pages[i++]))) as typeof fetch,
+      () => assert.rejects(fetchActiveBeehiivEmails("k", "pub"), /terminou cedo: coletado 2 de 5/),
+    );
+  });
+
+  it("falha na página 2 rejeita, nunca vira fim de lista", async () => {
+    let i = 0;
+    await withFetch(
+      (async () => (i++ === 0 ? new Response(JSON.stringify({ data: [{ email: "a@x.com" }], total_results: 2, limit: 1 })) : new Response("x", { status: 403 }))) as typeof fetch,
+      () => assert.rejects(fetchActiveBeehiivEmails("k", "pub"), /403.*página 2/),
+    );
+  });
+});
+
 describe("aposentadoria dos CLIs de envio Beehiiv (#11225)", () => {
-  for (const retired of ["scripts/reconcile-beehiiv-kit.ts", "scripts/fetch-beehiiv-poll-stats.ts"]) {
+  for (const retired of [
+    "scripts/reconcile-beehiiv-kit.ts",
+    "scripts/fetch-beehiiv-poll-stats.ts",
+    // #11775: media a partição Beehiiv×Kit, que não existe mais.
+    "scripts/audit-kit-diaria-exclusivity.ts",
+  ]) {
     it(`${retired} não existe mais`, () => {
       assert.equal(existsSync(resolve(ROOT, retired)), false, `${retired} voltou — foi aposentado no #11225`);
     });
@@ -73,8 +129,8 @@ describe("aposentadoria dos CLIs de envio Beehiiv (#11225)", () => {
 
   for (const consumer of [
     "scripts/reconcile-send-audiences.ts",
-    "scripts/audit-kit-diaria-exclusivity.ts",
     "scripts/kit-gmail-warmup-ramp.ts",
+    "scripts/kit-ramp-cohort.ts",
   ]) {
     it(`${consumer} importa fetchActiveBeehiivEmails da lib`, () => {
       const src = readFileSync(resolve(ROOT, consumer), "utf8");

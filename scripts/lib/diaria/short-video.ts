@@ -582,7 +582,8 @@ export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
 export interface ShortTime {
   /** HH:MM em BRT, no dia da edição. */
   hhmm: string;
-  source: "rotation" | "default";
+  /** `explicit` (#11795): corte avulso com `--at`, fora do teste do #10831. */
+  source: "rotation" | "default" | "explicit";
   /** Explicação curta pra premissa do plano. */
   reason: string;
 }
@@ -616,7 +617,8 @@ export interface ShortSlot {
   hhmm: string;
   /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
   /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
-  rule: "test-schedule" | "timer-300" | SlotRule;
+  /** `explicit` (#11795): horário do corte avulso (`--at`), mantido em todos os destinos como o do teste. */
+  rule: "test-schedule" | "timer-300" | "explicit" | SlotRule;
   premise: string;
   warning?: string;
 }
@@ -733,7 +735,10 @@ export function planShortSlots(input: {
     .filter((x): x is { dest: ShortDestination; account: string; also: string[] } => x.account !== null);
   const withAlso = (also: string[]) => (also.length ? { alsoAccounts: also } : {});
 
-  if (input.time.source === "rotation") {
+  if (input.time.source === "rotation" || input.time.source === "explicit") {
+    // #11795: o horário explícito do corte avulso é mantido como o do teste (o
+    // editor escolheu), mas nunca leva o rótulo nem a premissa do teste.
+    const explicit = input.time.source === "explicit";
     const t = Date.parse(input.timeAt);
     return api.map(({ dest, account, also }) => {
       const mine = new Set([account, ...also]);
@@ -746,13 +751,15 @@ export function planShortSlots(input: {
         ...withAlso(also),
         at: new Date(t).toISOString(),
         hhmm: input.time.hhmm,
-        rule: "test-schedule",
-        premise: `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
+        rule: explicit ? "explicit" : "test-schedule",
+        premise: explicit
+          ? "horário explícito do corte avulso (--at, #11795) tem precedência sobre a grade (#10819)"
+          : `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
       };
       if (close.length) {
         slot.warning =
-          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
-          `(${[...new Set(close)].join(", ")} BRT) — mantido por causa do teste; mova à mão se não quiser colado`;
+          `${dest.id}: o horário ${explicit ? "do corte" : "do teste"} (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
+          `(${[...new Set(close)].join(", ")} BRT) — mantido ${explicit ? "porque o horário do corte é explícito" : "por causa do teste"}; mova à mão se não quiser colado`;
       }
       return slot;
     });
@@ -864,23 +871,23 @@ export type WorkerInstagramAccount = "diaria" | "vjpixel";
 export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
 
 /**
- * #11390: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
- * Chrome ou app), a que o editor usa: @vjpixel é o AUTOR e a @diar.ia.br entra
- * como colaboradora. É o inverso da rota da API (autora @diar.ia.br com a
- * @vjpixel em collab, #11223, `instagram_author_page`/`instagram_collaborators`).
- * Enquanto o convite de collab está pendente, o post só aparece no perfil do
- * autor, então o `--confirm-instagram` procura também nele (`authorPage` = slug
- * de `publishing.social.facebook.pages` cuja conta vinculada é a @vjpixel).
+ * #11390/#11794: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
+ * Chrome ou app). Decisão do editor (02/11/2026, #11794): a @diar.ia.br é a
+ * AUTORA e a @vjpixel entra em collab, igual à rota da API (#11223). `authorPage`
+ * = slug de `publishing.social.facebook.pages` da conta autora; com
+ * `instagram_author_page: null` (a conta do env) ela é a própria conta da API
+ * (`instagramAccountKey`), e o post à mão aparece nela depois do processamento
+ * (30 a 60 s depois do Share).
  */
 export const INSTAGRAM_CHROME_ROUTE = {
-  authorUsername: "vjpixel",
-  authorPage: "vjpixel",
-  collaboratorUsername: "diar.ia.br",
+  authorUsername: "diar.ia.br",
+  authorPage: INSTAGRAM_ENV_ACCOUNT_KEY,
+  collaboratorUsername: "vjpixel",
 } as const;
 
-/** #11390: a rota do B3b em texto, pros avisos e alarmes (nunca "como a autora"). */
+/** #11390/#11794: a rota do B3b em texto, pros avisos e alarmes. */
 export function instagramChromeRouteText(): string {
-  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autor), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} como colaboradora`;
+  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autora), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} em collab`;
 }
 
 /**

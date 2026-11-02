@@ -133,12 +133,14 @@ describe("#11476 prepare-instagram-guided", () => {
     assert.equal(r.exitCode, 2);
   });
 
-  it("corte dentro do teto da API: nada a preparar (o timer publica), sem compressão", async () => {
+  it("#11774 corte dentro do teto da API: gera o plano B (o Reels pode falhar pela API), nunca fits-api", async () => {
     const { deps, calls } = fakeDeps({ duration: 20 });
     const r = await runPrepareInstagramGuided(deps, { aammdd: AAMMDD, dir });
     assert.equal(r.exitCode, 0);
-    assert.equal(r.output.action, "fits-api");
-    assert.equal(calls.compress.length, 0);
+    assert.equal(r.output.action, "guided");
+    if (r.output.action !== "guided") return;
+    assert.equal(calls.compress.length, 1);
+    assert.match(r.output.detail, /plano B.*cabe no teto.*conferindo antes/);
   });
 
   it("#11355 conta sem teto: vertical de 75 s gera o upload do plano B, sem publicar", async () => {

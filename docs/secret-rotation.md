@@ -1,6 +1,6 @@
 # Rotação de credenciais e playbook de emergência
 
-Este doc é o ponto único de consulta quando alguma credencial expira, é revogada, ou precisa rotação proativa. Cobre todas as 7 credenciais usadas pela pipeline da diar.ia.br.
+Este doc é o ponto único de consulta quando alguma credencial expira, é revogada, ou precisa rotação proativa. Cobre as credenciais usadas pela pipeline da diar.ia.br.
 
 > As 3 credenciais desta tabela que moram em env var (`CLARICE_API_KEY`, `GEMINI_API_KEY`, `CLOUDFLARE_API_TOKEN`) agora sincronizam entre máquinas via Doppler — ao rotacionar, atualizar o valor no vault e rodar `npm run sync-env` em cada máquina em vez de editar `.env` à mão em cada uma. Google OAuth e Facebook Page token são arquivos de credencial (`data/.credentials.json`, `data/.fb-credentials.json`), não `.env` vars — continuam fora do Doppler de propósito. Detalhes: `docs/doppler-env-sync.md` (#5149).
 
@@ -17,6 +17,7 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 | Login Codex (ChatGPT) | `~/.codex/auth.json` por máquina | Sessão pode expirar | preflight do Stage 0 (`codex login status`, #9093) marca `expired`; `codex-image.js` falha e o fallback assume |
 | Google OAuth (`refresh_token`) | `data/.credentials.json` | Raramente expira (revogação manual ou 6 meses sem uso) | `google-auth.ts` retorna `invalid_grant` |
 | Facebook Page token | `data/.fb-credentials.json` (`page_access_token`) | 60 dias se short-lived; nunca se long-lived com renew | `publish-facebook.ts` retorna 190 (`OAuthException`) |
+| `INSTAGRAM_ACCESS_TOKEN` | Doppler + `.env` (Neo e 300) + secret do Worker `diaria-linkedin-cron` | Sem expiração (token de usuário do sistema) | Itens `channel="instagram"` vão pra DLQ no Worker; `publish-instagram.ts` retorna 190 (`OAuthException`) |
 | `CLOUDFLARE_API_TOKEN` | env var (`.env`) | Sem expiração nativa (até revogação) | `cloudflare-image.js` retorna 401 / `Authentication error` |
 | Beehiiv MCP OAuth | `claude.ai/settings/connectors` | Desconhecido (gerenciado pela claude.ai) | Subagentes que usam Beehiiv MCP retornam erro de auth |
 | Gmail MCP OAuth | `claude.ai/settings/connectors` | Desconhecido (gerenciado pela claude.ai) | `review-test-email` (Etapas 5/6) falha com erro de auth do Gmail MCP |
@@ -106,6 +107,30 @@ Este doc é o ponto único de consulta quando alguma credencial expira, é revog
 - **Downtime esperado:** 5-10 minutos (Graph API Explorer + token exchange manual).
 - **Cadência sugerida:** mesmo com long-lived, rotacionar **a cada 90 dias** por higiene + verificar permissões da app.
 
+### `INSTAGRAM_ACCESS_TOKEN` (usuário do sistema) (#11804)
+
+- **Para que serve:** publicação no Instagram da @diar.ia.br pela Graph API — agendada pelo Worker `diaria-linkedin-cron` (Stage 5, carrossel/Reels e o 1º comentário do 4º post) e direta por `scripts/publish-instagram.ts` sem `--schedule`. `scripts/social-followers-collect.ts` e `scripts/probe-instagram-comment-scope.ts --source local` também leem do `.env`.
+- **Qual token é o de produção:** token de **usuário do sistema** (`SYSTEM_USER`), usuário `vjpixel`, app **Vigil.ia.br**, **sem expiração**. Conferido na renovação da #11731 (02/11/2026).
+- **Onde NÃO gerar:** no Graph API Explorer. O Explorer devolve token de usuário comum, que expira em horas — o Instagram para de publicar no dia seguinte, sem aviso antes do disparo.
+- **Onde gerar:**
+  1. [Meta Business Settings](https://business.facebook.com/settings) → **Usuários** → **Usuários do sistema** → `vjpixel`.
+  2. **Gerar novo token** → app **Vigil.ia.br** → expiração **Nunca**.
+  3. Permissões: `instagram_basic`, `instagram_content_publish` e `instagram_manage_comments` (sem esta o 1º comentário do 4º post não sai e o post usa a linha da bio, #11731). Antes de gerar, colar o token atual no [Access Token Debugger](https://developers.facebook.com/tools/debug/accesstoken/) e marcar no novo pelo menos os mesmos escopos que ele lista (os `pages_*` que vierem junto são o caminho do token até a conta do Instagram, pela Página vinculada).
+  4. Conferir que o usuário do sistema tem a Página da diar.ia.br e a conta do Instagram atribuídas como ativos (mesma tela, **Atribuir ativos**); sem isso o token sai válido mas sem acesso à conta.
+- **Onde atualizar (os 3 destinos, sempre juntos):**
+  1. **Doppler** — `INSTAGRAM_ACCESS_TOKEN` no vault, depois `npm run sync-env` em cada máquina (`docs/doppler-env-sync.md`).
+  2. **`.env` do Neo e do 300** — confirmar que o `sync-env` levou o valor novo às duas máquinas (o `.env` atrasa em relação ao vault quando o sync não roda).
+  3. **Secret do Worker** — `cd workers/linkedin-cron && npx wrangler secret put INSTAGRAM_ACCESS_TOKEN`. O Worker não lê o `.env`: esquecer este passo deixa o agendamento (o caminho padrão do Stage 5) com o token velho.
+- **Como testar (só leitura, não publica nada):**
+  ```bash
+  npx tsx scripts/probe-instagram-comment-scope.ts --edition-dir data/editions/{AAMMDD}/ --source local   # token do .env
+  npx tsx scripts/probe-instagram-comment-scope.ts --edition-dir data/editions/{AAMMDD}/ --source worker  # token do Worker
+  ```
+  esperado: `granted: true` nas duas origens em `_internal/instagram-comment-scope.json`. Para conferir tipo e expiração, colar o token no [Access Token Debugger](https://developers.facebook.com/tools/debug/accesstoken/): `Type: System User` e `Expires: Never`.
+- **Sinais de expiração/token errado:** DLQ do Worker com `OAuthException`/`code: 190` em itens `channel="instagram"`; `granted: false` no probe do Stage 4.
+- **Downtime esperado:** 5-10 minutos (gerar + Doppler + `wrangler secret put`).
+- **Cadência sugerida:** sem rotação ativa (token não expira); rotacionar se houver vazamento, se a app mudar ou se o usuário do sistema perder um ativo.
+
 ### `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`
 
 - **Para que serve:** alternativa gratuita ao Codex/Gemini pra geração de imagens (Stage 3) quando `platform.config.json > image_generator = "cloudflare"`.
@@ -157,6 +182,7 @@ Tabela de mapeamento erro → credencial:
 | Mensagem de erro | Credencial provável | Ação |
 |---|---|---|
 | `OAuthException` ou `code: 190` | Facebook Page token | Rotação seção FB acima |
+| `OAuthException`/`code: 190` em item `channel="instagram"` (DLQ do Worker) ou em `publish-instagram.ts` | `INSTAGRAM_ACCESS_TOKEN` | Rotação seção Instagram acima (usuário do sistema, nunca Graph Explorer) |
 | `invalid_grant` | Google OAuth refresh_token | Re-rodar `oauth-setup.ts` |
 | `Gmail API error (401)` ou `reason: "auth_expired"` no inbox drain | Google OAuth refresh_token | `npx tsx scripts/check-google-token.ts`; re-rodar `oauth-setup.ts` |
 | `reason: "local_error"` (legado `gmail_mcp_error`) no inbox drain | Nenhuma — falha local (config, gravação de `data/inbox.md`/cursor) | Ler o campo `error` e corrigir a causa local |
@@ -211,6 +237,7 @@ Calendário sugerido — colar no calendário do editor:
 | 6 meses | Clarice API key | Sem expiração nativa, mas higiene |
 | 6 meses | Cloudflare API token | Idem |
 | Sem cadência | Google OAuth refresh_token | Não rotaciona ativamente; só após revogação |
+| Sem cadência | `INSTAGRAM_ACCESS_TOKEN` (usuário do sistema) | Não expira; só após vazamento ou mudança de app/ativos |
 | Sem cadência | Beehiiv / Gmail MCP OAuth | Gerenciado pela claude.ai |
 
 ---

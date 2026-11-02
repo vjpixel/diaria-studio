@@ -5,7 +5,7 @@
  * const de módulo avaliada no import. Uma const capturaria `BEEHIIV_API_URL`
  * antes de scripts que carregam env via chamada de função `loadProjectEnv()`
  * (não `import "dotenv/config"` como side-effect) terem a chance de povoar
- * `process.env` — override silenciosamente ignorado (ver fix-post-slug.ts,
+ * `process.env` — override silenciosamente ignorado (ver fix-post-slug.ts, removido no #11775,
  * verify-scheduled-post.ts, prep-manual-publish.ts).
  *
  * Este teste simula exatamente esse cenário: importa o módulo primeiro (como

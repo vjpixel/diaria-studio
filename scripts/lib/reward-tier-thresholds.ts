@@ -22,7 +22,20 @@
  * limiar ≤ valor pago no mês; Patrono é o teto (não há nível acima).
  */
 
+import type { ApoioNivel } from "./shared/apoio-nivel-types.ts";
+
 export const REWARD_TIER_AMIGO_MIN = 5;
 export const REWARD_TIER_APOIADOR_MIN = 10;
 export const REWARD_TIER_MANTENEDOR_MIN = 25;
 export const REWARD_TIER_PATRONO_MIN = 50;
+
+/** Maior faixa cujo limiar é menor ou igual ao valor pago no mês; `null` abaixo
+ * do piso ou sem valor. `computeRewardGroup` do painel delega para cá (#11225). */
+export function computeRewardGroup(thisMonthPaidValue: number | undefined): ApoioNivel | null {
+  if (typeof thisMonthPaidValue !== "number" || !Number.isFinite(thisMonthPaidValue)) return null;
+  if (thisMonthPaidValue < REWARD_TIER_AMIGO_MIN) return null;
+  if (thisMonthPaidValue < REWARD_TIER_APOIADOR_MIN) return "amigo";
+  if (thisMonthPaidValue < REWARD_TIER_MANTENEDOR_MIN) return "apoiador";
+  if (thisMonthPaidValue < REWARD_TIER_PATRONO_MIN) return "mantenedor";
+  return "patrono";
+}

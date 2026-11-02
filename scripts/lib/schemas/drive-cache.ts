@@ -14,6 +14,9 @@ export const FileEntrySchema = z.object({
   last_pushed_mtime: z.number(),
   push_count: z.number().int().min(0),
   drive_mimeType: z.string().optional(),
+  /** #11786: sha256 do export `text/markdown` do Doc logo após o push. Pull
+   * com export idêntico = Doc não editado → não reescreve o local. */
+  export_sha256: z.string().optional(),
 });
 
 export type FileEntry = z.infer<typeof FileEntrySchema>;

@@ -187,7 +187,7 @@ describe("#11389: teto conhecido da API vira lembrete único, nunca late", () =>
       assert.equal(first.scripts.length, 0);
       assert.equal(first.notify.issues.length, 1);
       assert.match(first.notify.issues[0].body, /às 08:00 BRT/);
-      assert.match(first.notify.issues[0].body, /como @vjpixel \(autor\), com a @diar\.ia\.br como colaboradora/);
+      assert.match(first.notify.issues[0].body, /como @diar\.ia\.br \(autora\), com a @vjpixel em collab/);
       const second = runDeps(at(-2 * H), { [cut]: 50 }, first.notify);
       assert.equal(await runInstagramTimer(AAMMDD, dir, false, second.deps), 0);
       assert.equal(second.reads.length, 0, "lembrete já entregue: não lê o vídeo de novo");
@@ -234,6 +234,7 @@ describe("#11389: teto conhecido da API vira lembrete único, nunca late", () =>
     assert.match(body, /uma vez por edição/);
     assert.doesNotMatch(body, /--publish/);
     assert.doesNotMatch(body, /como a autora/);
+    assert.doesNotMatch(body, /convite de collab está pendente/);
   });
 });
 
@@ -244,16 +245,17 @@ const reel = (id: string, caption: string, timestamp = "2026-10-27T11:05:00+0000
 const decideFrom = (data: unknown[]) => async (): Promise<InstagramConfirmDecision> =>
   decideInstagramConfirm({ published: EMPTY, media: { data }, sinceIso: "2026-10-27T03:00:00.000Z", markers: MARKERS, nowIso: "2026-10-27T20:00:00.000Z", expectedAtIso: AT });
 
-describe("#11390: --confirm-instagram acha o Reels do collab pendente no perfil do autor", () => {
+describe("#11390: --confirm-instagram acha o Reels no perfil do autor, quando ele é outra conta", () => {
   const caption = buildReelsCaption({ platform: "instagram", d1: D1 });
 
-  it("rota do Chrome: @vjpixel autor, @diar.ia.br colaboradora (o inverso da rota da API)", () => {
-    assert.equal(INSTAGRAM_CHROME_ROUTE.authorUsername, "vjpixel");
-    assert.equal(INSTAGRAM_CHROME_ROUTE.collaboratorUsername, "diar.ia.br");
-    assert.equal(instagramChromeRouteText(), "como @vjpixel (autor), com a @diar.ia.br como colaboradora");
+  it("#11794: rota do Chrome: @diar.ia.br autora, @vjpixel em collab (a mesma autoria da API)", () => {
+    assert.equal(INSTAGRAM_CHROME_ROUTE.authorUsername, "diar.ia.br");
+    assert.equal(INSTAGRAM_CHROME_ROUTE.authorPage, "diaria");
+    assert.equal(INSTAGRAM_CHROME_ROUTE.collaboratorUsername, "vjpixel");
+    assert.equal(instagramChromeRouteText(), "como @diar.ia.br (autora), com a @vjpixel em collab");
   });
 
-  it("cenário de 261027: nada na conta da diar.ia.br, o Reels no perfil do @vjpixel → registra pelo perfil do autor", async () => {
+  it("com outra conta da API: nada nela, o Reels no perfil do autor da rota → registra por esse perfil", async () => {
     const r = await decideInstagramConfirmAcrossAccounts({ primary: decideFrom([]), chromeAuthor: decideFrom([reel("R1", caption)]) });
     assert.equal(r.account, "chrome-author");
     assert.equal(r.decision.kind, "register");
@@ -335,7 +337,7 @@ describe("#11388: legenda do Reels com o texto final do editor", () => {
 describe("fix do review do PR #11395: nenhum Reels duplicado pela API", () => {
   const caption = buildReelsCaption({ platform: "instagram", d1: D1 });
 
-  it("P2 (1): gate do timer — nada na @diar.ia.br, o Reels à mão no perfil do @vjpixel (collab pendente) → registra e NÃO publica", async () => {
+  it("P2 (1): gate do timer — nada na conta da API, o Reels à mão no perfil do autor (outra conta) → registra e NÃO publica", async () => {
     const persisted: unknown[] = [];
     let published = 0;
     const step = await instagramTimerPublishStep({
