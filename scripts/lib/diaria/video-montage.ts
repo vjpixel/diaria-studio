@@ -28,7 +28,7 @@
  *   - autorrevisão (`reviewPreview`): diff de palavras prévia × roteiro.
  */
 
-import { videoTargetOf } from "./drive-video-source.ts";
+import { corteSuffixOf, videoTargetOf } from "./drive-video-source.ts";
 
 // ── Tipos básicos ─────────────────────────────────────────────────────────
 
@@ -1025,6 +1025,28 @@ export interface SequenceSpec {
   order: BlockKey[];
   /** Escala (%) alternada nos cortes (clipes contíguos fundidos antes, #11503): [base, punch-in]. */
   scales: [number, number];
+  /**
+   * Vertical extra, fora do fluxo da edição (261103: a 2ª vertical, sobre IA
+   * soberana); o editor publica com `publish-shorts.ts --corte {slug} --video …`.
+   * O nome é o da vertical normal com `-{corte}` no fim
+   * (`Diaria comentada_Vertical_V1-soberana`), que `videoTargetOf` lê como
+   * `null`: o fetch da edição nunca a confunde com a vertical do dia. O
+   * `target` é só a chave interna (único por plano, `instagram` ou
+   * `outras-redes`), e os `targets`/`skip` dos itens usam essa chave.
+   */
+  corte?: string;
+  /**
+   * Só no corte (#11900): o título na tela DESTA vertical, que sobrepõe o
+   * `screenTitle` do arquivo e o título do D1 (o corte tem outro roteiro; sem
+   * isto ele saía com o título da notícia). Também é o `--title` da publicação
+   * (`video-extra-verticals.ts`). "" = sem título na tela.
+   */
+  screenTitle?: string;
+  /**
+   * Só no corte (#11900): o gancho da publicação (`--hook` do modo corte).
+   * Ausente = o texto do `resumo_curto` (ou do `resumo`) que entra nesta vertical.
+   */
+  hook?: string;
 }
 
 /** O bruto, como o `transcribe` mediu (`source.json`, a fonte única). */
@@ -1088,6 +1110,11 @@ export interface BlocksFile {
   holdBlocks?: BlockKey[];
   /** Duração-alvo da vertical nesta edição, em segundos (#11757); ausente = `VERTICAL_TARGET_S` (85). */
   verticalTargetS?: number;
+  /**
+   * Título em texto na abertura das verticais (#11756): sobrepõe o título do D1
+   * (`02-reviewed.md`), para a versão curta que cabe na tela. "" = sem título.
+   */
+  screenTitle?: string;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -1166,6 +1193,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
     }
   }
   if (raw.verticalTargetS !== undefined && !(isNum(raw.verticalTargetS) && raw.verticalTargetS > 0)) errors.push("verticalTargetS precisa ser um número de segundos maior que 0");
+  if (raw.screenTitle !== undefined && typeof raw.screenTitle !== "string") errors.push('screenTitle precisa ser texto ("" = sem título na vertical)');
   if (raw.holdBlocks !== undefined) {
     if (!Array.isArray(raw.holdBlocks) || raw.holdBlocks.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push("holdBlocks precisa listar blocos conhecidos");
   }
@@ -1182,8 +1210,19 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         if (typeof s.target !== "string" || !SEQUENCE_TARGETS.includes(s.target as SequenceTarget)) errors.push(`${label}: target fora de ${SEQUENCE_TARGETS.join("/")}`);
         else if (seen.has(s.target)) errors.push(`${label}: target ${s.target} repetido`);
         else seen.add(s.target);
+        if (s.corte !== undefined && (typeof s.corte !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s.corte))) errors.push(`${label}: corte precisa ser um slug (minúsculas, dígitos e hífen)`);
+        for (const k of ["screenTitle", "hook"] as const) {
+          if (s[k] === undefined) continue;
+          if (typeof s[k] !== "string") errors.push(`${label}: ${k} precisa ser texto`);
+          else if (s.corte === undefined) errors.push(`${label}: ${k} só vale numa sequência de corte (a vertical da edição usa o screenTitle do arquivo e o D1)`);
+        }
+        if (typeof s.hook === "string" && !s.hook.trim()) errors.push(`${label}: hook vazio (omita para usar o resumo_curto)`);
         if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
-        else if (videoTargetOf(s.name) !== s.target) {
+        else if (typeof s.corte === "string") {
+          if (corteSuffixOf(s.name) !== s.corte) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em _V{n}-${s.corte}`);
+          if (s.target === "youtube") errors.push(`${label}: corte é vertical; target instagram ou outras-redes`);
+          if (Number.isInteger(s.width) && Number.isInteger(s.height) && (s.height as number) <= (s.width as number)) errors.push(`${label}: corte é vertical (height > width)`);
+        } else if (videoTargetOf(s.name) !== s.target) {
           errors.push(`${label}: o nome "${s.name}" não indica o destino ${s.target} (export cairia no destino errado da pasta Final/)`);
         }
         if (!Number.isInteger(s.width) || !Number.isInteger(s.height) || (s.width as number) <= 0 || (s.height as number) <= 0) errors.push(`${label}: width/height inteiros positivos`);
@@ -1793,6 +1832,152 @@ function motionFilter(scale: number, center: { horiz: number; vert: number }): s
   );
 }
 
+// ── Ganho de áudio (#11755) ───────────────────────────────────────────────
+
+/** Alvo da fala no XML: o mesmo do `review-final` (-14 LUFS ±1). */
+export const AUDIO_GAIN_TARGET_LUFS = -14;
+/** Teto do true peak depois do ganho. */
+export const AUDIO_GAIN_TP_CEILING_DBTP = -1;
+/** `valuemax` do Audio Levels do FCP7 (3.98109 linear = +12 dB). */
+export const AUDIO_LEVELS_MAX_DB = 12;
+
+export interface AudioGain {
+  /** Ganho em dB (negativo = baixa). */
+  db: number;
+  /** O mesmo ganho em amplitude linear, o valor que o Audio Levels do FCP7 grava (1 = 0 dB). */
+  linear: number;
+  /** O que limitou o ganho: o alvo de loudness, o teto de true peak ou o máximo do Audio Levels. */
+  limitedBy: "target" | "true-peak" | "max";
+}
+
+/**
+ * Ganho único de todos os clipes de áudio (#11755): leva o loudness integrado
+ * do bruto (`loudness.json`) a `AUDIO_GAIN_TARGET_LUFS` sem passar o true peak
+ * de `AUDIO_GAIN_TP_CEILING_DBTP`. Bruto de 261028 (-9,87 LUFS, TP +0,68):
+ * -4,13 dB. Sem medida, sem ganho (null). Sem true peak medido, só atenua: sem
+ * o pico não dá para saber se um ganho positivo clipa. O loudness é do bruto
+ * inteiro (com pausas e tomadas descartadas), não da fala montada: o limiter,
+ * se o editor usar, continua no Premiere.
+ */
+export function audioGainFor(m: LoudnessMeasure | null): AudioGain | null {
+  if (!m || !Number.isFinite(m.inputI)) return null;
+  let db = AUDIO_GAIN_TARGET_LUFS - m.inputI;
+  let limitedBy: AudioGain["limitedBy"] = "target";
+  if (Number.isFinite(m.inputTp)) {
+    const tpCap = AUDIO_GAIN_TP_CEILING_DBTP - m.inputTp;
+    if (tpCap < db) {
+      db = tpCap;
+      limitedBy = "true-peak";
+    }
+  } else if (db > 0) return null;
+  if (db > AUDIO_LEVELS_MAX_DB) {
+    db = AUDIO_LEVELS_MAX_DB;
+    limitedBy = "max";
+  }
+  db = Math.round(db * 100) / 100 || 0;
+  return { db, linear: Math.round(10 ** (db / 20) * 1e6) / 1e6, limitedBy };
+}
+
+function audioLevelsFilter(linear: number): string {
+  return (
+    `<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effectcategory>audiolevels</effectcategory><effecttype>audiolevels</effecttype><mediatype>audio</mediatype>\n` +
+    `<parameter><parameterid>level</parameterid><name>Level</name><valuemin>0</valuemin><valuemax>3.98109</valuemax><value>${linear}</value></parameter></effect></filter>\n`
+  );
+}
+
+// ── Título na vertical (#11756) ───────────────────────────────────────────
+
+/** Sequência vertical (mais alta que larga): onde vai o título em texto. */
+export function isVerticalSpec(spec: Pick<SequenceSpec, "width" | "height">): boolean {
+  return spec.height > spec.width;
+}
+
+/** Estilo do título: serifada, branca, negrito, centrada no topo (o lettering das verticais 261028-261030). */
+export const SCREEN_TITLE_STYLE = {
+  font: "Georgia",
+  sizePx: 80,
+  /** Máximo de caracteres por linha (Georgia negrito a 80 px cabe ~20 em 1080 px com margem). */
+  maxLineChars: 20,
+  /** Centro do bloco de texto: fração da altura a partir do centro (negativo = acima); -0,35 = 15% do topo. */
+  originVert: -0.35,
+} as const;
+
+/** Quebra o título em linhas de até `maxChars` (palavra maior que isso fica inteira na linha). */
+export function wrapScreenTitle(text: string, maxChars: number = SCREEN_TITLE_STYLE.maxLineChars): string[] {
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean)) {
+    if (cur && cur.length + 1 + w.length > maxChars) {
+      lines.push(cur);
+      cur = w;
+    } else cur = cur ? `${cur} ${w}` : w;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+/**
+ * Trecho da sequência que leva o título, em frames: os clipes do bloco
+ * `titulo`; sem ele (gravação sem bloco de título, 261029), os clipes do 1º
+ * bloco da sequência (o gancho). Sequência vazia = null.
+ */
+export function screenTitleSpan(plan: Pick<SequencePlan, "clips">): { start: number; end: number; block: BlockKey } | null {
+  if (plan.clips.length === 0) return null;
+  const block: BlockKey = plan.clips.some((c) => c.block === "titulo") ? "titulo" : plan.clips[0].block;
+  const mine = plan.clips.filter((c) => c.block === block);
+  return { start: Math.min(...mine.map((c) => c.seqStart)), end: Math.max(...mine.map((c) => c.seqEnd)), block };
+}
+
+/** A 1ª vertical que leva título: o tamanho do PNG do fallback e quem define o `<file>` dele no XML. */
+export function firstTitledVertical(plans: SequencePlan[]): SequencePlan | null {
+  return plans.find((p) => isVerticalSpec(p.spec) && (screenTitleSpan(p)?.end ?? 0) > (screenTitleSpan(p)?.start ?? 0)) ?? null;
+}
+
+/**
+ * Título em texto na faixa V2 das verticais (#11756). `text` = gerador de
+ * texto do FCP7 (`generatoritem` "Text"); `png` = o PNG transparente do
+ * tamanho da sequência (`pngPath`, já no caminho que o Premiere vai abrir)
+ * como clipe, fallback se o Premiere recusar o gerador.
+ */
+export type ScreenTitleXml = { text: string; mode: "text" } | { text: string; mode: "png"; pngPath: string };
+
+function textGenerator(id: string, lines: string[], len: number, start: number, rate: string): string {
+  const st = SCREEN_TITLE_STYLE;
+  const p = (pid: string, name: string, body: string) => `<parameter><parameterid>${pid}</parameterid><name>${name}</name>${body}</parameter>\n`;
+  return (
+    `<generatoritem id="${id}"><name>titulo-tela</name><enabled>TRUE</enabled><duration>${len}</duration>\n` +
+    `${rate}<start>${start}</start><end>${start + len}</end><in>0</in><out>${len}</out><anamorphic>FALSE</anamorphic><alphatype>black</alphatype>\n` +
+    `<effect><name>Text</name><effectid>Text</effectid><effectcategory>Text</effectcategory><effecttype>generator</effecttype><mediatype>video</mediatype>\n` +
+    p("str", "Text", `<value>${lines.map(escapeXml).join("&#13;")}</value>`) +
+    p("fontname", "Font", `<value>${st.font}</value>`) +
+    p("fontsize", "Size", `<valuemin>0</valuemin><valuemax>1000</valuemax><value>${st.sizePx}</value>`) +
+    p("fontstyle", "Style", `<valuemin>1</valuemin><valuemax>4</valuemax><value>2</value>`) +
+    p("fontalign", "Alignment", `<valuemin>1</valuemin><valuemax>3</valuemax><value>2</value>`) +
+    p("fontcolor", "Font Color", `<value><alpha>255</alpha><red>255</red><green>255</green><blue>255</blue></value>`) +
+    p("origin", "Origin", `<value><horiz>0</horiz><vert>${st.originVert}</vert></value>`) +
+    `</effect></generatoritem>`
+  );
+}
+
+/**
+ * SVG transparente com o título (fallback PNG, #11756): mesmo estilo do
+ * gerador, linhas centradas em torno de `originVert`. Sem fundo: o
+ * rasterizador (sharp) grava o PNG com alfa. Fonte: Georgia, com fallback
+ * serif onde ela não existe (o raster é por máquina).
+ */
+export function screenTitleSvg(text: string, width: number, height: number): string {
+  const st = SCREEN_TITLE_STYLE;
+  const lines = wrapScreenTitle(text);
+  const lineH = Math.round(st.sizePx * 1.2);
+  const centerY = height / 2 + st.originVert * height;
+  const firstBaseline = centerY - ((lines.length - 1) * lineH) / 2 + st.sizePx * 0.35;
+  const tspans = lines.map((l, i) => `<text x="${width / 2}" y="${Math.round(firstBaseline + i * lineH)}">${escapeXml(l)}</text>`).join("\n  ");
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
+    `<g font-family="${st.font}, 'DejaVu Serif', serif" font-size="${st.sizePx}" font-weight="700" fill="#FFFFFF" text-anchor="middle">\n  ${tspans}\n</g>\n</svg>\n`
+  );
+}
+
 /**
  * XML FCP7 (xmeml v4) com uma sequência por plano, importável no Premiere
  * (estrutura da 261027, que importou). Um `<file>` só (o bruto), definido no
@@ -1802,8 +1987,23 @@ function motionFilter(scale: number, center: { horiz: number; vert: number }): s
  * `framingFor` (o mesmo da prévia). O XML nunca leva o desespelhamento: o
  * Premiere ignora o filtro "Flop" do FCP7 no import (#11358), então o
  * Horizontal Flip é aplicado à mão.
+ *
+ * `audioGain` (#11755): o Audio Levels em cada clipe de áudio. `screenTitle`
+ * (#11756): faixa V2 com o título nas sequências verticais, no trecho de
+ * `screenTitleSpan`. Os dois são premissas a conferir no 1º import.
  */
-export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: Framing, opts: { mediaPath?: string } = {}): string {
+export function buildXmeml(
+  plans: SequencePlan[],
+  source: SourceInfo,
+  framing: Framing,
+  opts: {
+    mediaPath?: string;
+    audioGain?: AudioGain | null;
+    screenTitle?: ScreenTitleXml | null;
+    /** #11900: título próprio de cada corte (chave = `spec.corte`); `null` = corte sem título. Ausente = o `screenTitle` geral. */
+    screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
+  } = {},
+): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
   const mediaPath = opts.mediaPath ?? source.path;
   const fps = source.fps;
@@ -1819,6 +2019,34 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
       `${rate}<duration>${total}</duration>\n` +
       `<media><video><samplecharacteristics><width>${source.width}</width><height>${source.height}</height></samplecharacteristics></video>\n` +
       `<audio><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics><channelcount>2</channelcount></audio></media></file>`
+    );
+  };
+  const gain = opts.audioGain ? audioLevelsFilter(opts.audioGain.linear) : "";
+  const usable = (t: ScreenTitleXml | null | undefined): ScreenTitleXml | null => (t && t.text.trim() ? t : null);
+  const byCorte = opts.screenTitleByCorte ?? {};
+  const titleOf = (spec: SequenceSpec): ScreenTitleXml | null =>
+    spec.corte !== undefined && Object.prototype.hasOwnProperty.call(byCorte, spec.corte) ? usable(byCorte[spec.corte]) : usable(opts.screenTitle);
+  // Um `<file>` por PNG: definido no 1º uso, referenciado depois (o geral e o de cada corte são arquivos diferentes).
+  const pngFileIds = new Map<string, string>();
+  const screenTitleTrack = (plan: SequencePlan, si: number): string => {
+    const title = titleOf(plan.spec);
+    if (!title || !isVerticalSpec(plan.spec)) return "";
+    const span = screenTitleSpan(plan);
+    if (!span || span.end <= span.start) return "";
+    const len = span.end - span.start;
+    const id = `titulo-${si + 1}`;
+    if (title.mode === "text") return `\n<track>${textGenerator(id, wrapScreenTitle(title.text), len, span.start, rate)}</track>`;
+    // PNG parado: duração do arquivo longa (a do bruto), recortada pelo in/out do clipe.
+    const known = pngFileIds.get(title.pngPath);
+    const fileId = known ?? (pngFileIds.size === 0 ? "file-titulo" : `file-titulo-${pngFileIds.size + 1}`);
+    const fileRef = known
+      ? `<file id="${fileId}"/>`
+      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(pathUrl(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
+        `<media><video><samplecharacteristics><width>${plan.spec.width}</width><height>${plan.spec.height}</height></samplecharacteristics></video></media></file>`;
+    pngFileIds.set(title.pngPath, fileId);
+    return (
+      `\n<track><clipitem id="${id}"><name>titulo-tela</name><enabled>TRUE</enabled><duration>${total}</duration>\n` +
+      `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${len}</out>\n${fileRef}</clipitem></track>`
     );
   };
   const out = ['<?xml version="1.0" encoding="UTF-8"?>', "<!DOCTYPE xmeml>", '<xmeml version="4">'];
@@ -1837,14 +2065,15 @@ export function buildXmeml(plans: SequencePlan[], source: SourceInfo, framing: F
         `${rate}<start>${c.seqStart}</start><end>${c.seqEnd}</end><in>${c.frameIn}</in><out>${c.frameOut}</out>\n`;
       v.push(`<clipitem id="v${cid}">${head}${fileEl()}${motionFilter(fr.scalePct, fr.center)}\n${links}</clipitem>`);
       a.push(
-        `<clipitem id="a${cid}">${head}<file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${links}</clipitem>`,
+        `<clipitem id="a${cid}">${head}<file id="file-1"/><sourcetrack><mediatype>audio</mediatype><trackindex>1</trackindex></sourcetrack>\n${gain}${links}</clipitem>`,
       );
     });
+    const titleTrack = screenTitleTrack(plan, si);
     out.push(
       `<sequence id="seq-${si + 1}-${escapeXml(spec.target)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
-        `<track>${v.join("\n")}</track></video>\n` +
+        `<track>${v.join("\n")}</track>${titleTrack}</video>\n` +
         `<audio><numOutputChannels>2</numOutputChannels><format><samplecharacteristics><depth>16</depth><samplerate>48000</samplerate></samplecharacteristics></format><track>${a.join("\n")}</track></audio></media></sequence>`,
     );
   });

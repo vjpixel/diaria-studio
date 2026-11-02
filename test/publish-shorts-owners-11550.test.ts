@@ -72,7 +72,7 @@ describe("#11550 threads_profile", () => {
     const o = ownerOf(p, "threads_profile")!;
     assert.equal(o.by, "agent-scheduled-task");
     assert.equal(o.at, item.scheduledAt);
-    assert.equal(o.command, "npx tsx scripts/publish-shorts.ts 261022 --only threads_profile --publish");
+    assert.equal(o.command, "npx tsx scripts/publish-shorts.ts 261022 --only threads_profile --publish --confirm-publish 261022");
     assert.match(o.note, /Diaria-Shorts-Threads-Profile/);
   });
 
@@ -84,7 +84,7 @@ describe("#11550 threads_profile", () => {
     assert.ok(!p.warnings.some((w) => editorStep.test(w)), p.warnings.join("\n"));
     const o = ownerOf(p, "threads_profile")!;
     assert.equal(o.by, "agent");
-    assert.match(o.command ?? "", /--only threads_profile --publish --now$/);
+    assert.match(o.command ?? "", /--only threads_profile --publish --now --confirm-publish \d{6}$/);
   });
 });
 

@@ -253,7 +253,10 @@ describe("#9496 — o CLI pluga os insumos do e-mail nas duas chamadas", () => {
     try {
       writeFileSync(join(dir, "01-eia.md"), `---\neia_answer:\n  A: ia\n---\n\n**É IA?**\n\n${EIA_CREDIT}\n`);
       const opts = articleBuildOptionsForCycle(dir);
-      assert.match(opts.eiaCredit ?? "", /Resultado da última edição: 61%/);
+      assert.match(opts.eiaCredit ?? "", /Reservatório de Bab Louta/);
+      // #11790: a linha "Resultado da última edição" da diária é descartada na
+      // leitura do 01-eia.md (contradiz o resultado do ciclo, injetado à parte).
+      assert.doesNotMatch(opts.eiaCredit ?? "", /Resultado da última edição/);
       // Sem `_internal/raw-destaques.json` o relink avisa e devolve o HTML intacto.
       assert.equal(opts.postProcessEmailHtml?.("<p>x</p>"), "<p>x</p>");
       assert.match(buildArticleHtml(DRAFT, CICLO, opts).html, /Reservatório de Bab Louta/);

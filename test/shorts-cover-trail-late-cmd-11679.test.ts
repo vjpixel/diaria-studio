@@ -143,6 +143,6 @@ Por que isso importa: porque sim.
     assert.equal(item.action, "skip_late");
     assert.match(item.detail, /--only linkedin_profile --publish --linkedin-timer --now/);
     assert.ok(p.warnings.some((w) => w.includes("--linkedin-timer --now")), p.warnings.join("\n"));
-    assert.match(p.owners.find((o) => o.destination === "linkedin_profile")?.command ?? "", /--linkedin-timer --now$/);
+    assert.match(p.owners.find((o) => o.destination === "linkedin_profile")?.command ?? "", /--linkedin-timer --now --confirm-publish \d{6}$/);
   });
 });

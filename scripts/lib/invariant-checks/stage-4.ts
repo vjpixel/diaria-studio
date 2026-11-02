@@ -1,6 +1,8 @@
 import { findFactRecurrences, findIntraEditionFactRecurrences, type IntraEditionItem } from "../fact-recurrence.ts";
 import { findStoryTwice, type PastStoryItem } from "../story-twice-in-edition.ts"; // #11496
 import { recentEditionDirs } from "../past-editions-extract.ts"; // #11496
+import { findStudySourceRecurrences, formatStudySourceWarning, STUDY_RECURRENCE_WINDOW_DAYS } from "../study-source-recurrence.ts"; // #11763
+import { findStoryContinuations, formatStoryContinuationWarning, STORY_CONTINUATION_WINDOW_DAYS } from "../story-continuation.ts"; // #11897
 import { contentJaccard, REPEAT_THEME_WARN_THRESHOLD } from "../repeat-theme-check.ts"; // #11517
 import { enumerateEditionDirs } from "../find-current-edition.ts"; // #11496
 /**
@@ -2080,11 +2082,12 @@ export function readPastStoryItems(
   editionsRoot: string,
   currentAammdd: string,
   window: number = STORY_TWICE_PAST_WINDOW,
+  withinDays?: number, // #11763: janela por data (dias) em vez de contagem
 ): PastStoryItem[] {
   if (!existsSync(editionsRoot)) return [];
   const dirs = enumerateEditionDirs(editionsRoot);
   const out: PastStoryItem[] = [];
-  for (const aammdd of recentEditionDirs(editionsRoot, window, currentAammdd)) {
+  for (const aammdd of recentEditionDirs(editionsRoot, window, currentAammdd, withinDays)) {
     const dir = dirs.get(aammdd);
     if (!dir) continue;
     const file = resolve(dir, "02-reviewed.md");
@@ -2205,6 +2208,60 @@ export function checkThemeCrossSourceRepeat(editionDir: string): InvariantViolat
     });
   }
   return out;
+}
+
+/**
+ * #11763: item do `02-reviewed.md` final (destaque ou pool) que é cobertura
+ * secundária (imprensa) de um estudo/relatório já publicado nos últimos
+ * `STUDY_RECURRENCE_WINDOW_DAYS` dias, com URL e redação novas (caso 261103:
+ * CNN "IA trabalha seis vezes mais que humanos" × D1 de 261020 sobre o
+ * relatório da Anthropic). Roda sobre o arquivo FINAL, então também pega o
+ * item que voltou por swap/promote no gate. Severity "warning": o editor
+ * decide no gate; nunca remove nada.
+ */
+export function checkStudySourceRecurrence(
+  editionDir: string,
+  editionsRoot: string = resolve(ROOT, "data/editions"),
+): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const { highlights, pool } = readIntraEditionItems(readFileSync(file, "utf8"));
+  const past = readPastStoryItems(editionsRoot, basename(editionDir), 0, STUDY_RECURRENCE_WINDOW_DAYS);
+  return findStudySourceRecurrences([...highlights, ...pool], past).map(w => ({
+    rule: "study-source-recurrence", source_issue: "#11763", severity: "warning" as const, file,
+    message: formatStudySourceWarning(w),
+  }));
+}
+
+/**
+ * #11897: DESTAQUE do `02-reviewed.md` final que continua uma história já
+ * publicada nos últimos `STORY_CONTINUATION_WINDOW_DAYS` dias (mesmo
+ * produto+versão no lead, ou URL que continua a outra no mesmo host). Caso
+ * 261103: D1 sobre os pesos abertos do Mistral Large 4 × D3 de 261007 sobre o
+ * anúncio. Informativo, não pede corte: o texto pode citar a edição anterior.
+ * Destaque que o `story-twice-in-edition` já acusa contra as últimas 3 edições
+ * fica de fora (um aviso por item).
+ */
+export function checkStoryContinuation(
+  editionDir: string,
+  editionsRoot: string = resolve(ROOT, "data/editions"),
+): InvariantViolation[] {
+  const file = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(file)) return [];
+  const { highlights, pool } = readIntraEditionItems(readFileSync(file, "utf8"));
+  if (highlights.length === 0) return [];
+  const aammdd = basename(editionDir);
+  const alreadyWarned = new Set(
+    findStoryTwice(highlights, pool, readPastStoryItems(editionsRoot, aammdd))
+      .filter(w => w.scope === "past")
+      .map(w => canonicalize(w.item_url)),
+  );
+  const past = readPastStoryItems(editionsRoot, aammdd, 0, STORY_CONTINUATION_WINDOW_DAYS);
+  return findStoryContinuations(highlights.filter(h => !alreadyWarned.has(canonicalize(h.url))), past)
+    .map(w => ({
+      rule: "story-continuation", source_issue: "#11897", severity: "warning" as const, file,
+      message: formatStoryContinuationWarning(w),
+    }));
 }
 
 export interface DuplicateUrlMatch {
@@ -4109,6 +4166,16 @@ export const STAGE_4_RULES: InvariantRule[] = [
     id: "theme-cross-source-repeat",
     description: "Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only)",
     source_issue: "#11496", stage: 4, run: checkThemeCrossSourceRepeat,
+  },
+  {
+    id: "study-source-recurrence",
+    description: "Item que é cobertura secundária de estudo/relatório já publicado nos últimos 30 dias (mesmo publicador + documento + número-chave; heurístico, warning-only)",
+    source_issue: "#11763", stage: 4, run: (dir: string) => checkStudySourceRecurrence(dir),
+  },
+  {
+    id: "story-continuation",
+    description: "Destaque que continua história publicada nos últimos 30 dias (produto+versão no lead ou URL que continua a anterior; informativo, warning-only)",
+    source_issue: "#11897", stage: 4, run: (dir: string) => checkStoryContinuation(dir),
   },
   {
     id: "no-duplicate-urls-vs-past-editions",

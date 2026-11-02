@@ -135,15 +135,28 @@ export function isEditedFolderName(name: string): boolean {
 /**
  * Destino pelo nome: `_Youtube_`, `_Vertical_V{n}`/`_Vertical_FINAL`, `_Instagram_`, `_Outras redes_` (separador
  * `_`, `-`, espaço ou `.`; sem diferenciar maiúsculas). Mais de um destino no
- * mesmo nome, ou nenhum, é `null`.
+ * mesmo nome, ou nenhum, é `null`. Nome de corte (`…_V1-soberana`, ver
+ * `corteSuffixOf`) também é `null`: é uma 2ª vertical que sai pelo modo corte,
+ * nunca a vertical da edição.
  */
 export function videoTargetOf(name: string): VideoTarget | null {
+  if (corteSuffixOf(name)) return null;
   const n = ` ${name.normalize("NFC").toLowerCase().replace(/[_.\-]+/g, " ").replace(/\s+/g, " ")} `;
   const found: VideoTarget[] = [];
   if (/ you ?tube /.test(n)) found.push("youtube");
   if (/ instagram /.test(n)) found.push("instagram");
   if (/ outras redes | vertical (?:v\d+|final) /.test(n)) found.push("outras-redes");
   return found.length === 1 ? found[0] : null;
+}
+
+/**
+ * O slug do corte no fim do nome (`Diaria comentada_Vertical_V1-soberana.mp4`
+ * → `soberana`), ou `null`. Corte = sequência extra da montagem com `corte` no
+ * `blocks.json` (261103): o nome é o da vertical normal + `-{slug}`.
+ */
+export function corteSuffixOf(name: string): string | null {
+  const m = /_v\d+-([a-z0-9]+(?:-[a-z0-9]+)*)(?:\.[a-z0-9]+)?$/i.exec(name.normalize("NFC"));
+  return m ? m[1].toLowerCase() : null;
 }
 
 /** Janela default para arquivos soltos na raiz da pasta (decisão de 25/10). */
@@ -422,6 +435,50 @@ export function selectDriveVideo(files: DriveVideoFile[], opts: SelectDriveVideo
       ? `sem subpasta da edição e nenhum .mp4 com "final" no nome na raiz (${videos} .mp4 listado(s))`
       : `sem subpasta da edição e nenhum .mp4 ${opts.orientation} com "final" no nome na raiz nas últimas ${windowHours}h`;
   return { kind: "none", orientation: opts.orientation, reason };
+}
+
+export type CorteExportSelection =
+  | { kind: "found"; corte: string; file: DriveVideoFile; premise?: string }
+  | { kind: "none"; corte: string; reason: string }
+  | { kind: "ambiguous"; corte: string; candidates: DriveVideoFile[] };
+
+/**
+ * O export de uma vertical extra (corte, #11898/#11900) em `{AAMMDD}/Final/`:
+ * `.mp4` cujo nome termina em `_V{n}-{corte}` (`corteSuffixOf`). Mesmas regras
+ * da vertical da edição, só que pelo slug do corte em vez do destino:
+ * - em `Final/`, 1 arquivo = o export; 2+ = `ambiguous` (o editor escolhe);
+ * - sem nenhum em `Final/` (ou só a cópia que o fetch promoveu, #11577), vale
+ *   `Editados/` com a versão mais alta (`pickHighestVersion`, #11556);
+ * - proporção conhecida e não vertical exclui o arquivo; desconhecida passa
+ *   (o sufixo já diz que é o corte, o Drive pode ainda não ter processado).
+ * Recebe os arquivos já listados com `scope: "final-folder"` (e `editedFolder`
+ * nos de `Editados/`); os demais escopos são ignorados.
+ */
+export function selectCorteExport(files: DriveVideoFile[], corte: string): CorteExportSelection {
+  const promotedSources = new Set(files.filter(isPromotedCopy).map((f) => f.appProperties?.[PROMOTED_FROM_PROPERTY]));
+  const pool = files.filter((f) => {
+    if (f.scope !== "final-folder" || !isMp4VideoFile(f) || corteSuffixOf(f.name) !== corte) return false;
+    if (f.editedFolder && promotedSources.has(f.id)) return false;
+    const o = classifyOrientation(f);
+    return o === null || o === "vertical";
+  });
+  const inFinal = pool.filter((f) => !f.editedFolder);
+  const editorPicked = inFinal.filter((f) => !isPromotedCopy(f));
+  if (editorPicked.length === 1) return { kind: "found", corte, file: editorPicked[0] };
+  if (editorPicked.length > 1) return { kind: "ambiguous", corte, candidates: editorPicked };
+  const versions = [...inFinal, ...pool.filter((f) => f.editedFolder)];
+  if (versions.length === 0) {
+    return { kind: "none", corte, reason: `nenhum .mp4 terminado em _V{n}-${corte} em Final/ nem em Editados/` };
+  }
+  if (versions.length === 1) {
+    const only = versions[0];
+    return only.editedFolder
+      ? { kind: "found", corte, file: only, premise: `${only.name} veio de Editados/ (sem export do corte em Final/)` }
+      : { kind: "found", corte, file: only };
+  }
+  const highest = pickHighestVersion(versions);
+  if (highest) return { kind: "found", corte, file: highest.file, premise: highest.premise };
+  return { kind: "ambiguous", corte, candidates: versions };
 }
 
 /** #11542: Premiere Export Frame; vertical stills serve todos os verticais. */

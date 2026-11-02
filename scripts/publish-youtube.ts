@@ -10,8 +10,14 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * Uso:
  *   npx tsx scripts/publish-youtube.ts AAMMDD --dry-run
  *     [--keep-video] [--edition-dir DIR] [--video PATH] [--episode N]
- *     [--edition-url URL] [--publish-at ISO]
- *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force | --accept-period-match VIDEO_ID]
+ *     [--edition-url URL] [--publish-at ISO] [--title "TÍTULO"]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --confirm-publish AAMMDD [mesmas flags] [--force]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --accept-period-match VIDEO_ID
+ *
+ * `--upload` exige `--confirm-publish AAMMDD` (a mesma edição), dada só depois
+ * do "pode publicar" explícito do editor; sem ela sai exit 2 sem enviar nada
+ * (#11741, `scripts/lib/diaria/publish-confirm.ts`). O `--accept-period-match`
+ * não envia vídeo e dispensa a flag.
  *
  * ## `--dry-run` (default seguro)
  *
@@ -72,6 +78,14 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  * exit 1 sem enviar nada.
  * Capa: `{editionDir}/04-youtube-thumb.jpg` (1280x720), opcional.
  *
+ * Título (#11739): derivado do D1; `--title "..."` (dry-run e upload) troca pelo
+ * título que o editor escolheu para o YouTube. O título efetivo vai para o
+ * registro (`title`, com `title_source: "flag"` e o `d1_title` derivado), e a
+ * detecção do vídeo já no canal casa por qualquer um dos dois. Trocar o título
+ * DEPOIS do upload (`videos.update`) exige o escopo `youtube.force-ssl`, que o
+ * `youtube-oauth-setup.ts` já pede desde #11384: token anterior a isso (403
+ * `ACCESS_TOKEN_SCOPE_INSUFFICIENT`) se resolve rodando o setup de novo.
+ *
  * Vídeo da edição já no canal (#11080): sem `--force`, o `--upload` confere
  * os uploads recentes antes de enviar. Reconhecido por AAMMDD/`utm_campaign`
  * ou pelo título do D1 → não envia, grava o registro e o link do D1 (exit 0).
@@ -90,6 +104,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
@@ -97,6 +112,7 @@ import {
   YOUTUBE_THUMBNAIL_ENDPOINT,
   YOUTUBE_THUMB_FILE,
   buildYouTubeInsertRequest,
+  buildYouTubeTitle,
   buildYouTubeMetadata,
   deriveEpisodeNumber,
   resolveEffectiveVisibility,
@@ -144,6 +160,12 @@ export interface YouTubePublishPlanInput {
   episode?: number;
   editionUrl?: string;
   publishAt?: string;
+  /**
+   * `--title` (#11739): título do YouTube escolhido pelo editor, diferente do
+   * D1 (ex.: melhor para busca). Passa pelo mesmo saneamento do título derivado
+   * (markdown, `<`/`>`, 100 caracteres). Ausente = título do D1.
+   */
+  title?: string;
   video: { path: string; exists: boolean; sizeBytes: number | null };
   thumb: { path: string; exists: boolean };
   /** Legenda SRT do horizontal (#11384). Ausente = sem legenda no plano. */
@@ -158,6 +180,13 @@ export interface YouTubePublishPlan {
   aammdd: string;
   episode: number;
   metadata: YouTubeMetadata;
+  /**
+   * Título derivado do D1 (#11739). Igual a `metadata.title` sem `--title`; com
+   * ele, segue valendo como 2º título na detecção do vídeo já no canal (#11080).
+   */
+  d1Title: string;
+  /** De onde veio `metadata.title`: o D1 ou o `--title` do editor (#11739). */
+  titleSource: "d1" | "flag";
   schedule: YouTubeScheduleDecision;
   /** O que o vídeo de fato fica — difere de `schedule` sem a auditoria do GCP. */
   effective: YouTubeEffectiveVisibility;
@@ -190,12 +219,26 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     premises.push(`link da edição derivado do slug do título do D1: ${editionUrl} (passe --edition-url se o slug publicado divergir)`);
   }
 
-  const metadata = buildYouTubeMetadata({
+  const derived = buildYouTubeMetadata({
     aammdd: input.aammdd,
     episode,
     editionUrl,
     d1: { title: d1.title, body: d1.body, url: d1.url, category: d1.category },
   });
+  let metadata = derived;
+  let titleSource: YouTubePublishPlan["titleSource"] = "d1";
+  if (input.title !== undefined) {
+    const custom = buildYouTubeTitle(input.title);
+    if (!custom) throw new Error(`--title vazio depois do saneamento: ${JSON.stringify(input.title)}`);
+    if (custom !== derived.title) {
+      metadata = { ...derived, title: custom };
+      titleSource = "flag";
+      premises.push(`título do YouTube vindo de --title: "${custom}" (o do D1 seria "${derived.title}", #11739)`);
+    }
+    if (Array.from(input.title.trim()).length > Array.from(custom).length) {
+      warnings.push(`--title passou de 100 caracteres e foi cortado para "${custom}"`);
+    }
+  }
   const schedule = resolveYouTubeSchedule(input.aammdd, input.now, input.publishAt ?? null);
   premises.push(schedule.premise);
   const effective = resolveEffectiveVisibility(schedule, input.projectAudited ?? YOUTUBE_API_PROJECT_AUDITED);
@@ -232,6 +275,8 @@ export function planYouTubePublish(input: YouTubePublishPlanInput): YouTubePubli
     aammdd: input.aammdd,
     episode,
     metadata,
+    d1Title: derived.title,
+    titleSource,
     schedule,
     effective,
     request,
@@ -262,6 +307,12 @@ export interface YouTubePublishedRecord extends YouTubeUploadResult {
   thumbnail_path: string | null;
   /** O plano previa o rebaixamento pra private (projeto GCP sem auditoria). */
   audit_blocked: boolean;
+  /**
+   * #11739: o `title` veio de `--title` (≠ D1). Ausente = título do D1. O
+   * título derivado do D1 fica em `d1_title` para conferência.
+   */
+  title_source?: "flag";
+  d1_title?: string;
   /** Registros substituídos por `--force` (mais antigo primeiro). */
   previous_uploads?: PreviousUploadEntry[];
   /**
@@ -419,6 +470,11 @@ export function readPublishedRecord(path: string, aammdd: string): PublishedReco
   }
   if (typeof rec.videoId !== "string" || !rec.videoId) throw refuse("sem videoId");
   return { kind: "done", record: rec as unknown as YouTubePublishedRecord };
+}
+
+/** Origem do título no registro (#11739): só aparece quando veio de `--title`. */
+function titleProvenance(plan: YouTubePublishPlan): Pick<YouTubePublishedRecord, "title_source" | "d1_title"> {
+  return plan.titleSource === "flag" ? { title_source: "flag", d1_title: plan.d1Title } : {};
 }
 
 /** Histórico a carregar no próximo registro, a partir do que está no disco. */
@@ -601,7 +657,17 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
       contentType: "video/mp4",
       thumbnail,
       // #11080: --force sobe de novo de propósito; sem ele, confere o canal antes.
-      ...(input.force ? {} : { existingVideoCheck: { aammdd: plan.aammdd, title: plan.metadata.title, acceptedPeriodVideoId: typeof input.acceptPeriodMatch === "string" ? input.acceptPeriodMatch : undefined } }),
+      ...(input.force
+        ? {}
+        : {
+            existingVideoCheck: {
+              aammdd: plan.aammdd,
+              title: plan.metadata.title,
+              // #11739: com --title, o título do D1 também reconhece o vídeo (upload manual com o título padrão).
+              ...(plan.titleSource === "flag" ? { altTitles: [plan.d1Title] } : {}),
+              acceptedPeriodVideoId: typeof input.acceptPeriodMatch === "string" ? input.acceptPeriodMatch : undefined,
+            },
+          }),
       beforeVideoBytes: () => writeSentinel({ status: "in_progress", at: deps.now().toISOString() }),
       ...(srt
         ? {
@@ -647,6 +713,7 @@ export async function runYouTubeUpload(deps: YouTubeUploadDeps, input: RunUpload
     aammdd: plan.aammdd,
     episode: plan.episode,
     title: plan.metadata.title,
+    ...titleProvenance(plan),
     video_path: plan.video.path,
     thumbnail_path: plan.thumbnail?.path ?? null,
     audit_blocked: plan.effective.auditBlocked,
@@ -797,7 +864,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match VIDEO_ID] | --captions-only [--force]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO] [--title TÍTULO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -828,6 +895,23 @@ async function main(): Promise<number> {
     console.error("publish-youtube: --accept-period-match exige VIDEO_ID e só vale com --upload e sem --force (o --force pula a conferência do canal).");
     console.error(USAGE);
     return 2;
+  }
+  // #11739: `--title` sem valor (ou seguido de outra flag) cai em `flags`, não
+  // em `values` — sem esta recusa o plano usaria o título do D1 em silêncio.
+  if (flags.has("title") || values["title"] === "") {
+    console.error("publish-youtube: --title exige o TÍTULO (ex.: --title \"Meu título\").");
+    console.error(USAGE);
+    return 2;
+  }
+  // #11741: o upload tem efeito público — só com a confirmação explícita da
+  // edição, checada antes de credencial, vídeo ou rede. O `--accept-period-match`
+  // não envia nada (registra um vídeo que já está no canal) e fica de fora.
+  if (upload && values["accept-period-match"] === undefined) {
+    const confirmErr = publishConfirmationError({ script: "publish-youtube", mode: "--upload", aammdd, flags, values });
+    if (confirmErr) {
+      console.error(confirmErr);
+      return 2;
+    }
   }
 
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
@@ -866,6 +950,7 @@ async function main(): Promise<number> {
     episode: parseEpisode(values["episode"]),
     editionUrl: values["edition-url"],
     publishAt: values["publish-at"],
+    title: values["title"],
     video: { path: videoPath, exists: videoExists, sizeBytes: videoExists ? statSync(videoPath).size : null },
     thumb: { path: thumbPath, exists: existsSync(thumbPath) },
     ...(flags.has("no-captions") ? {} : { captions: { path: captionsPath, exists: existsSync(captionsPath) } }),

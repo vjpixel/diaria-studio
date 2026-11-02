@@ -244,7 +244,7 @@ describe("#11618 runLinkedinTimer: vertical ausente no disco e no Drive", () => 
       const gh = fakeGh();
       const d = deps(new Date(Date.parse(AT) + 2 * 3_600_000), JSON.stringify({ action: "print-id", file: { id: "abcdefghijk", name: "v.mp4" } }), gh.notify);
       assert.equal(await runLinkedinTimer(AAMMDD, dir, false, d), 0);
-      assert.deepEqual(d.scripts.at(-1), ["scripts/publish-shorts.ts", AAMMDD, "--only", "linkedin_profile", "--publish", "--linkedin-timer", "--from-drive", "abcdefghijk"]);
+      assert.deepEqual(d.scripts.at(-1), ["scripts/publish-shorts.ts", AAMMDD, "--only", "linkedin_profile", "--publish", "--linkedin-timer", "--confirm-publish", AAMMDD, "--from-drive", "abcdefghijk"]);
       assert.equal(gh.issues.length, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -51,7 +51,11 @@ prévia, envio).
   pulou. Nunca parar para confirmar a data. Como a skill
   roda no fim de semana, antes do envio de segunda 06:00 (#11778), o caso
   normal é cair na próxima segunda (a semana anterior já saiu pela task); na
-  própria segunda antes do envio, cai na data de hoje. O publicador, chamado
+  própria segunda antes das 06:00, cai na data de hoje. Na segunda a partir
+  das 06:00 e de terça a quinta, o JSON vem com `scheduledRunPast: true`
+  (#11877): a task deste ciclo já rodou e não roda de novo, então o Passo 6
+  não se aplica (o `--approve` recusa) e o ciclo só sai com `--publish`;
+  sem a flag, a skill termina na prévia do Passo 5 e diz isso ao editor. O publicador, chamado
   sem `--publish-monday`, segue com a regra antiga: o catch-up do timer
   depende dela.
 - `--publish` — depois da prévia e da confirmação do editor (Passo 7), envia
@@ -112,7 +116,8 @@ Na ordem da diária. `{C}` = o `circle-stack-copy.json`.
    Skill("humanizador", "Leia {C}, humanize SÓ os campos opening e notes[].stackNote (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar cycle nem url. Tetos: opening curta, alvo ~200 e no máximo 280 caracteres, uma ideia por frase e sem aposto longo; cada stackNote 240 caracteres e no máximo 2 frases. Sem markdown, sem URL, sem emoji, sem seta.")
    ```
 2. Clarice: `mcp__clarice__correct_text` sobre a abertura e sobre cada
-   `stackNote`, uma chamada por vez (serial, #4952). Aplicar as sugestões
+   `stackNote`, uma chamada por vez (serial, #4952). Filtrar as sugestões com
+   `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` (ruído do MCP, #11798) e aplicar as filtradas
    (aceitar as sugestões da Clarice é o padrão do projeto) e regravar `{C}`.
    Clarice indisponível = halt banner (#738), nunca seguir em silêncio.
 
@@ -154,12 +159,18 @@ uma linha (título e estado do ciclo), nunca o post inteiro.
      rascunho.
 2. **Publicar**, na ordem: ler `data/weekly/{cycle}/_internal/circle-stack-artifact.txt`
    ANTES de criar qualquer coisa (é o que vale em sessão nova ou rerrodada).
-   Com URL gravada e não vazia, atualizar esse artefato:
-   `Artifact(file_path: "{caminho absoluto do HTML}", title: "Stack {cycle}", description: "Prévia do post semanal da Stack", favicon: "📰")`
-   apontando para o mesmo artefato. Sem arquivo, com URL vazia, ou se a
-   atualização falhar (artefato apagado ou inacessível), criar um novo e
-   sobrescrever o `.txt` com a URL retornada. Nunca deixar dois artefatos
-   vivos para o mesmo ciclo quando o primeiro ainda atualiza.
+   - **Com URL gravada e não vazia (#11878):** ler o artefato primeiro,
+     `Artifact(action: "read", url: "{URL do .txt}")` (publicar num artefato
+     que a sessão não leu é recusado), e então republicar no mesmo endereço:
+     `Artifact(file_path: "{caminho absoluto do HTML}", url: "{URL do .txt}", description: "Prévia do post semanal da Stack")`,
+     sem `icon` (o artefato mantém o que já tem).
+   - **Sem arquivo, com URL vazia, ou se a LEITURA falhar** (artefato apagado
+     ou inacessível): criar um novo,
+     `Artifact(file_path: "{caminho absoluto do HTML}", title: "Stack {cycle}", description: "Prévia do post semanal da Stack", icon: "news")`,
+     e sobrescrever o `.txt` com a URL retornada.
+   - **Leitura ok e republicação falhando:** não criar outro artefato (o
+     primeiro ainda existe e ficariam dois vivos para o mesmo ciclo); seguir o
+     fallback do item 3.
 3. **Fallback:** `Artifact` indisponível ou falhando (inclusive em sessão sem a
    ferramenta) é warning-only: avisar o editor, mostrar a prévia no chat (caminho
    do `.md` e o post inteiro) e seguir para o Passo 6 (ou 7). A confirmação continua
@@ -182,8 +193,12 @@ npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday {AA
 
 Grava `data/weekly/{cycle}/_internal/circle-stack-approval.json` com o sha256
 da seleção atual. Recusa seleção com link fora das regras do canal ou título
-sem sinal de português não revisado, ciclo já publicado e segunda que já
-passou (#11868: a task nunca a enviaria). Editar a seleção
+sem sinal de português não revisado, ciclo já publicado, segunda que já
+passou (#11868: a task nunca a enviaria) e a segunda de hoje a partir das
+06:00 (#11877: a execução do dia já saiu e o timer não roda de novo). Com
+`scheduledRunPast: true` na data resolvida, pular este passo: dizer ao editor
+que o envio agendado já passou e que o ciclo só sai com `/diaria-stack
+{AAMMDD} --publish`. Editar a seleção
 depois da aprovação a invalida (a task não envia e manda "Não enviado"):
 aprovar de novo. Desfazer: `--revoke --publish-monday {AAMMDD}`.
 

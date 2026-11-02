@@ -67,9 +67,19 @@ const TARGET_LABELS: Readonly<Record<SequenceTarget, string>> = {
   "outras-redes": "Vertical",
 };
 
+/**
+ * Nome da versão no Doc: o do destino, ou, no corte, "Vertical {slug}" (#11900).
+ * O `target` do corte é só a chave interna (`instagram`/`outras-redes`) e o
+ * rótulo do destino ("Vertical Instagram") dizia ao editor uma rede que o corte
+ * não é: ele sai em todas, como a vertical da edição.
+ */
+export function targetLabel(spec: Pick<SequenceSpec, "target" | "corte">): string {
+  return spec.corte !== undefined ? `Vertical ${spec.corte}` : TARGET_LABELS[spec.target];
+}
+
 /** "Horizontal YouTube 1920x1080" etc. */
 export function versionLabel(spec: SequenceSpec): string {
-  return `${TARGET_LABELS[spec.target]} ${spec.width}x${spec.height}`;
+  return `${targetLabel(spec)} ${spec.width}x${spec.height}`;
 }
 
 /** Célula de tabela Markdown: sem `|` cru nem quebra de linha. */
@@ -607,7 +617,7 @@ export function versionsDiffParagraph(specs: SequenceSpec[]): string {
   const parts = [`Comum às ${specs.length} versões: ${common.length ? common.map((k) => BLOCK_LABELS[k]).join(", ") : "nenhum bloco"}.`];
   for (const s of specs) {
     const own = s.order.filter((k) => !common.includes(k));
-    if (own.length) parts.push(`${TARGET_LABELS[s.target]} leva ainda ${own.map((k) => BLOCK_LABELS[k]).join(", ")}.`);
+    if (own.length) parts.push(`${targetLabel(s)} leva ainda ${own.map((k) => BLOCK_LABELS[k]).join(", ")}.`);
   }
   return parts.join(" ");
 }

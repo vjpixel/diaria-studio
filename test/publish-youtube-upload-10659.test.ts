@@ -530,7 +530,7 @@ describe("CLI --upload", () => {
   it("--upload sem vídeo no disco: exit 1 antes de qualquer envio, sem stack trace", () => {
     // Sem vídeo o CLI para antes da rede, com ou sem credencial no ambiente da máquina.
     writeFileSync(join(dir, "02-reviewed.md"), REVIEWED_MD);
-    const r = cli(["--upload"]);
+    const r = cli(["--upload", "--confirm-publish", "261022"]);
     assert.equal(r.status, 1, r.stderr);
     assert.equal(r.stdout, "");
     assert.match(r.stderr, /Nada foi enviado|nada foi enviado/);

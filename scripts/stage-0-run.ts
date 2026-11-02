@@ -58,6 +58,11 @@
  *       dos 311 recusados pelo Gmail (#6504) esgotou na migração do #7386.
  *       Fail-soft em cada ponto (sem edição anterior com Kit, broadcast sem
  *       métrica) — nunca bloqueia, nunca lê ausência de dado como "ok".
+ *   0p. check-raffle-month.ts (#11896) — `raffle.sorteio_do_mes` contra a
+ *       data da edição. Nos últimos dias do mês, sem o mês seguinte
+ *       configurado → nota + warn. Na 1ª edição do mês com o mês velho
+ *       (condição em que o Stage 3 para) → `pendingHumanDecision` pedindo o
+ *       dia do sorteio. Fail-soft: nunca aborta o Stage 0.
  *   0z. check-invariants.ts --stage 0 (abort duro se exit 1) + mark stage 0
  *       done + capture-stage-usage.ts.
  *
@@ -1145,6 +1150,29 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
     }
   }
 
+
+  // --- 0p: mês do sorteio antes da virada (#11896) ---
+  // O dia do sorteio é escolha do editor a cada mês (#4583), então não dá pra
+  // derivá-lo; dá pra avisar antes. Roda depois do 0d (refresh-dedup), que
+  // deixa `past-editions-raw.json` fresco para o gate "1ª edição do mês".
+  const raffleStep = softStep(deps, report, "check-raffle-month (0p)", "scripts/check-raffle-month.ts", ["--edition", opts.edition]);
+  const raffleJson = parseStepJson<{ kind?: string; message?: string | null; editionMes?: string; nextMes?: string }>(raffleStep.result.stdout);
+  if (raffleStep.result.code === 0 && raffleJson?.kind === "current-month-stale") {
+    pendingHumanDecision.push({
+      step: "0p",
+      detail: raffleJson.message ?? `raffle.sorteio_do_mes desatualizado para ${raffleJson.editionMes ?? "o mês da edição"}`,
+      prompt: `qual o dia do sorteio de ${raffleJson.editionMes ?? "este mês"}? (atualizar platform.config.json → raffle.sorteio_do_mes antes do Stage 3)`,
+      options: [
+        `N = dia do sorteio (grava { "mes": "${raffleJson.editionMes ?? "AAAA-MM"}", "dia": N })`,
+        "s = seguir sem atualizar (o Stage 3 para no inject-champions-callout)",
+      ],
+    });
+    logEvent(deps, opts.edition, "warn", "0p: raffle.sorteio_do_mes desatualizado na 1ª edição do mês — Stage 3 vai parar", { details: raffleJson });
+    report.note(`⚠️  0p — ${raffleJson.message ?? "raffle.sorteio_do_mes desatualizado"}`);
+  } else if (raffleStep.result.code === 0 && raffleJson?.kind === "upcoming-month-stale") {
+    logEvent(deps, opts.edition, "warn", `0p: virada de mês próxima — raffle.sorteio_do_mes ainda sem ${raffleJson.nextMes ?? "o mês seguinte"}`, { details: raffleJson });
+    report.note(`⚠️  0p — ${raffleJson.message ?? "atualizar raffle.sorteio_do_mes antes da virada de mês"}`);
+  }
 
   // --- 0z: invariantes globais + fechar Stage 0 ---
   const invariantsResult = deps.exec("scripts/check-invariants.ts", ["--stage", "0"]);

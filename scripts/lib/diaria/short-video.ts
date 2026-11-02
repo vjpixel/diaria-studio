@@ -189,6 +189,28 @@ export function buildReelsCaption(input: { platform: ReelsPlatform; d1: ShortD1I
   return caption;
 }
 
+/** #11515: teto da legenda do TikTok (2.200 caracteres). */
+export const TIKTOK_CAPTION_MAX_CHARS = 2200;
+/** #11515: teto do `metadata.tiktok.title` que a Buffer repassa ao TikTok. */
+export const TIKTOK_TITLE_MAX_CHARS = 90;
+
+/**
+ * #11515: legenda e título do vertical no TikTok. A legenda segue a do Reels
+ * do Facebook (título, gancho, a frase da newsletter e as hashtags), sem link:
+ * a legenda do TikTok não tem link clicável e o link da bio ainda não existe
+ * (conta pessoal, sem o campo Site). Sem `#Shorts`, que é só do YouTube.
+ */
+export function buildTikTokPost(input: { d1: ShortD1Input }): { caption: string; title: string } {
+  const title = stripInlineMarkdown(input.d1.title).replace(/\s+/g, " ").trim();
+  if (!title) throw new Error("D1 sem título");
+  const hook = firstSentence(input.d1.body);
+  const caption = [title, hook, REELS_NEWSLETTER_SENTENCE, SHORTS_HASHTAGS.join(" ")].filter(Boolean).join("\n\n");
+  if (Array.from(caption).length > TIKTOK_CAPTION_MAX_CHARS) throw new Error(`legenda do TikTok passou de ${TIKTOK_CAPTION_MAX_CHARS} caracteres`);
+  const chars = Array.from(title);
+  const shortTitle = chars.length <= TIKTOK_TITLE_MAX_CHARS ? title : `${chars.slice(0, TIKTOK_TITLE_MAX_CHARS - 1).join("").trimEnd()}…`;
+  return { caption, title: shortTitle };
+}
+
 /** Plataformas do vertical NATIVO no feed (#10772): LinkedIn pessoal, X e Threads pessoal. */
 export type ShortLinkPlatform = "linkedin" | "x" | "threads";
 
@@ -312,6 +334,24 @@ export interface ShortsConfig {
    * durante a viagem, sem o Neo.
    */
   facebookProfile: boolean;
+  /**
+   * #11515: vertical no TikTok @diar.ia.br pela Buffer (MCP, passo da skill,
+   * como o X), com o vídeo por URL pública (R2). Decisão do editor de
+   * 28/10/2026: Buffer em vez da Content Posting API própria (posts públicos
+   * desde o 1º dia, sem auditoria de app). `false` no código; o
+   * `platform.config.json` liga.
+   */
+  tiktok: boolean;
+  /** #11515: canal TikTok na Buffer (`list_channels`, org "My Organization"). Obrigatório com `tiktok: true`. */
+  tiktokBufferChannelId: string | null;
+  /**
+   * #11795: os destinos do corte avulso que a API não agenda (`linkedin_profile`,
+   * `threads_profile`, `instagram`) saem pelo timer do 300
+   * (`Diaria-Shorts-Cortes`, `scripts/shorts-corte-timer.ts`), que também avisa
+   * o editor quando um destino falha. `false` volta à task agendada one-shot da
+   * skill (#11550).
+   */
+  corteViaTimer: boolean;
 }
 
 /** Limite de collaborators por mídia na Graph API do Instagram. */
@@ -340,6 +380,11 @@ export const DEFAULT_SHORTS_CONFIG: Readonly<ShortsConfig> = Object.freeze({
   instagramBackend: "timer-300",
   // #11223: ligado no código; o platform.config.json pausa durante a viagem.
   facebookProfile: true,
+  // #11515: desligado no código; o platform.config.json liga com o canal da Buffer.
+  tiktok: false,
+  tiktokBufferChannelId: null,
+  // #11795: desligado no código; o platform.config.json liga junto com o arme da task no 300.
+  corteViaTimer: false,
 });
 
 function defaultShortsConfig(): ShortsConfig {
@@ -357,6 +402,9 @@ function defaultShortsConfig(): ShortsConfig {
     threadsProfileViaTimer: DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer,
     instagramBackend: DEFAULT_SHORTS_CONFIG.instagramBackend,
     facebookProfile: DEFAULT_SHORTS_CONFIG.facebookProfile,
+    tiktok: DEFAULT_SHORTS_CONFIG.tiktok,
+    tiktokBufferChannelId: DEFAULT_SHORTS_CONFIG.tiktokBufferChannelId,
+    corteViaTimer: DEFAULT_SHORTS_CONFIG.corteViaTimer,
   };
 }
 
@@ -401,6 +449,14 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
   if (linkedinPageRepost && !linkedinProfile) {
     throw new Error("[shorts] publishing.shorts.linkedin_page_repost exige linkedin_profile: o repost é do vídeo do perfil (#10772).");
   }
+  const tiktok = optionalBool(raw, "tiktok", DEFAULT_SHORTS_CONFIG.tiktok);
+  const tiktokChannel = raw.tiktok_buffer_channel_id ?? null;
+  if (tiktokChannel !== null && (typeof tiktokChannel !== "string" || !/^[A-Za-z0-9]{6,64}$/.test(tiktokChannel))) {
+    throw new Error("[shorts] publishing.shorts.tiktok_buffer_channel_id precisa ser o id do canal na Buffer ou null (#11515).");
+  }
+  if (tiktok && tiktokChannel === null) {
+    throw new Error("[shorts] publishing.shorts.tiktok exige tiktok_buffer_channel_id (o canal TikTok na Buffer, list_channels) (#11515).");
+  }
   return {
     facebookPages: [...pages],
     instagram: raw.instagram,
@@ -415,6 +471,9 @@ export function loadShortsConfig(config: unknown): ShortsConfig {
     threadsProfileViaTimer: optionalBool(raw, "threads_profile_via_timer", DEFAULT_SHORTS_CONFIG.threadsProfileViaTimer),
     instagramBackend: backend,
     facebookProfile: optionalBool(raw, "facebook_profile", DEFAULT_SHORTS_CONFIG.facebookProfile),
+    tiktok,
+    tiktokBufferChannelId: tiktokChannel,
+    corteViaTimer: optionalBool(raw, "corte_via_timer", DEFAULT_SHORTS_CONFIG.corteViaTimer),
   };
 }
 
@@ -430,6 +489,8 @@ export type ShortDestination =
   | { id: "linkedin_page_repost"; kind: "linkedin_page_repost"; mode: "guided" }
   /** #10772: Buffer só é alcançável pela skill (MCP); o script prepara texto, horário e URL do vídeo. */
   | { id: "x"; kind: "x"; mode: "guided" }
+  /** #11515: TikTok pela Buffer, mesmo caminho do X (a skill chama a MCP; o script prepara texto, horário e URL). */
+  | { id: "tiktok"; kind: "tiktok"; mode: "guided" }
   /** #11122: Threads API no perfil pessoal (não agenda — publica na hora, como o LinkedIn). */
   | { id: "threads_profile"; kind: "threads_profile"; mode: "api" };
 
@@ -447,6 +508,7 @@ export function listShortDestinations(cfg: ShortsConfig): ShortDestination[] {
   if (cfg.linkedinProfile) out.push({ id: "linkedin_profile", kind: "linkedin_profile", mode: "api" });
   if (cfg.linkedinProfile && cfg.linkedinPageRepost) out.push({ id: "linkedin_page_repost", kind: "linkedin_page_repost", mode: "guided" });
   if (cfg.x) out.push({ id: "x", kind: "x", mode: "guided" });
+  if (cfg.tiktok) out.push({ id: "tiktok", kind: "tiktok", mode: "guided" });
   if (cfg.threadsProfile) out.push({ id: "threads_profile", kind: "threads_profile", mode: "api" });
   if (cfg.facebookProfile) out.push({ id: "facebook_profile", kind: "facebook_profile", mode: "guided" });
   return out;
@@ -473,6 +535,8 @@ export interface ShortPublishedEntry {
   at: string;
   /** #11547: a capa (Still) foi aplicada neste destino? Ausente = nenhuma tentativa. */
   cover?: ShortCoverRecord;
+  /** #11795: última troca de texto/capa do post já agendado (`--update-scheduled`). */
+  updated_at?: string;
 }
 
 export interface ShortsPublishedFile {
@@ -630,6 +694,8 @@ export function shortDestinationAccount(dest: ShortDestination, cfg: Pick<Shorts
   if (dest.kind === "linkedin_profile") return LINKEDIN_PERSONAL_ACCOUNT;
   // X sai pela skill (Buffer), mas o horário (`dueAt`) vem da grade como os destinos de API.
   if (dest.kind === "x") return socialAccountKey("twitter", "diaria");
+  // #11515: idem pro TikTok (Buffer).
+  if (dest.kind === "tiktok") return socialAccountKey("tiktok", "diaria");
   if (dest.kind === "threads_profile") return THREADS_PERSONAL_ACCOUNT;
   // O repost tem regra própria (`planLinkedInRepostSlot`); os outros guiados seguem `shortTime`.
   return null;

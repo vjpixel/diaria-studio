@@ -1,11 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { checkSessionClose } from "../scripts/session-close-check.ts";
 import type { SessionRecord } from "../scripts/lib/session-registry.ts";
+import { captureDirtySnapshot } from "../.claude/hooks/lib/session-dirty-snapshot.mjs";
 
 const session: SessionRecord = {
   sessionId: "own", kind: "interactive", machineTag: "test",
@@ -139,11 +140,105 @@ describe("session closure evidence", () => {
     const mtimes: Record<string, number> = {
       "/repo/own/old.ts": started - 1000, "/repo/own/new.ts": started + 1000, "/repo/own/mod-old.ts": started - 1,
     };
-    const result = checkSessionClose("/repo", session, [], run, abs => mtimes[abs]);
-    assert.equal(result.ignored.length, 2);
+    const result = checkSessionClose("/repo", session, [], run, abs => mtimes[abs], () => null);
+    // old.ts by mtime (preExisting); mod-old.ts has no content diff in this mock, so it is EOL-only (ignored).
+    assert.equal(result.preExisting.length, 1);
+    assert.equal(result.ignored.length, 1);
+    // #11785: without a snapshot the report says hash attribution was not possible.
+    assert.equal(result.attribution.length, 1);
+    assert.match(result.attribution[0], /sem foto do início da sessão/);
     const pending = result.pending.join("\n");
     assert.ok(pending.includes("new.ts") && pending.includes("unknown.ts") && pending.includes("dir/"));
     assert.ok(!/\?\? old\.ts/.test(pending) && !pending.includes("mod-old.ts"));
     assert.equal(result.canClose, false);
+  });
+  describe("start-of-session snapshot (#11785)", () => {
+    const setup = () => {
+      const dir = mkdtempSync(join(tmpdir(), "session-close-snap-"));
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+      git("init", "-b", "feature/own");
+      git("config", "user.email", "test@example.test"); git("config", "user.name", "Test");
+      git("config", "core.autocrlf", "false");
+      writeFileSync(join(dir, "tracked.ts"), "base\n");
+      writeFileSync(join(dir, "other.ts"), "base\n");
+      git("add", "."); git("commit", "-m", "base");
+      git("branch", "base"); git("branch", "--set-upstream-to=base");
+      // Dirt left by someone else before the session starts: a modified file, an untracked file inside an
+      // untracked directory (`?? scratch/` in normal mode) and a deleted file.
+      writeFileSync(join(dir, "tracked.ts"), "peer edit\n");
+      mkdirSync(join(dir, "scratch"));
+      writeFileSync(join(dir, "scratch", "_tmp_dl.ts"), "orphan\n");
+      rmSync(join(dir, "other.ts"));
+      const snapshot = captureDirtySnapshot(dir);
+      assert.ok(snapshot);
+      const run = (cmd: string, args: string[]) => cmd === "gh" ? "[]" : git(...args);
+      // Session started after the dirt: the mtime fallback alone would also say "pre-existing" here, so the
+      // cases below prove the snapshot path, not the mtime one (mtime is forced to "after start").
+      const check = (snap: typeof snapshot | null = snapshot) => checkSessionClose(dir,
+        { ...session, worktrees: [{ path: dir }] }, [], run, () => Date.parse(session.startedAt) + 1, () => snap);
+      return { dir, git, snapshot, check };
+    };
+    it("session without edits in a dirty checkout can close, with preExisting listed", () => {
+      const { dir, check } = setup();
+      try {
+        const result = check();
+        assert.deepEqual(result.errors, []);
+        assert.deepEqual(result.pending, []);
+        assert.equal(result.canClose, true);
+        assert.equal(result.preExisting.length, 3);
+        const listed = result.preExisting.join("\n");
+        assert.ok(listed.includes("tracked.ts") && listed.includes("scratch/_tmp_dl.ts") && listed.includes("other.ts"));
+        assert.match(result.attribution[0], /foto do início da sessão/);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+    it("a touched mtime without content change is still pre-existing (hash, not mtime)", () => {
+      const { dir, check } = setup();
+      try {
+        const future = new Date(Date.now() + 60_000);
+        utimesSync(join(dir, "tracked.ts"), future, future);
+        assert.equal(check().canClose, true);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+    it("editing a file that was already dirty blocks", () => {
+      const { dir, check } = setup();
+      try {
+        writeFileSync(join(dir, "tracked.ts"), "peer edit\nsession edit\n");
+        const result = check();
+        assert.equal(result.canClose, false);
+        assert.ok(result.pending.some(p => p.includes("tracked.ts")));
+        assert.equal(result.preExisting.length, 2);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+    it("a new file (even inside an already-untracked directory) blocks", () => {
+      const { dir, check } = setup();
+      try {
+        writeFileSync(join(dir, "scratch", "mine.ts"), "new\n");
+        writeFileSync(join(dir, "fresh.ts"), "new\n");
+        const result = check();
+        assert.equal(result.canClose, false);
+        const pending = result.pending.join("\n");
+        assert.ok(pending.includes("scratch/mine.ts") && pending.includes("fresh.ts"));
+        assert.ok(!pending.includes("_tmp_dl.ts"));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+    it("staging a pre-existing file changes its status code and blocks", () => {
+      const { dir, git, check } = setup();
+      try {
+        git("add", "tracked.ts");
+        const result = check();
+        assert.equal(result.canClose, false);
+        assert.ok(result.pending.some(p => p.includes("tracked.ts")));
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+    it("without a snapshot falls back to mtime and says attribution was not possible", () => {
+      const { dir, check } = setup();
+      try {
+        const result = check(null);
+        // mtime forced to after the start: everything blocks, as before #11785.
+        assert.equal(result.canClose, false);
+        assert.deepEqual(result.preExisting, []);
+        assert.match(result.attribution[0], /sem foto do início da sessão/);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
   });
 });

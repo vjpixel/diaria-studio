@@ -80,6 +80,7 @@ import {
 } from "./lib/diaria/vertical-download-guard.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
+import { publishConfirmArgs, publishConfirmSuffix } from "./lib/diaria/publish-confirm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const TIMER_LOCK_FILE = SHORTS_LINKEDIN_TIMER_LOCK_FILE;
@@ -383,7 +384,7 @@ export function buildLinkedinTimerAlarm(input: {
   // #11651: com `linkedin_profile_via_timer` (o único caso em que o timer roda),
   // só a rodada `--linkedin-timer` publica o destino; o `/diaria-publica-video`
   // e o comando sem a flag caem em skip_delegated. `--now` passa do teto de 3 h.
-  const publishNow = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only linkedin_profile --publish --linkedin-timer --now\``;
+  const publishNow = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only linkedin_profile --publish --linkedin-timer --now ${publishConfirmSuffix(aammdd)}\``;
   const lines = [
     "Achado automático da task `Diaria-Shorts-LinkedIn-Profile`",
     "(`scripts/shorts-linkedin-profile-timer.ts`, #10982/#11618/#11631).",
@@ -527,7 +528,7 @@ export async function runLinkedinTimer(aammdd: string, dir: string, dryRun: bool
       console.log(`[shorts-linkedin-timer] ${aammdd}: alarme "${maybePublished}" — confira o perfil e registre o post antes de publicar novamente; sai sem publicar`);
       return 0;
     }
-    const publishArgs = ["scripts/publish-shorts.ts", aammdd, "--only", "linkedin_profile", "--publish", "--linkedin-timer"];
+    const publishArgs = ["scripts/publish-shorts.ts", aammdd, "--only", "linkedin_profile", "--publish", "--linkedin-timer", ...publishConfirmArgs(aammdd)]; // #11741: a autorização do timer é a decisão do editor que o ligou (config), não uma pergunta por execução.
     if (decision.fromDrive) {
       const busy = linkedinVerticalDownloadBusy(dir, videoPath);
       if (busy) {

@@ -54,7 +54,7 @@ A única IA criada por brasileiros para brasileiros. A Clarice foi treinada para
 
 Use a Clarice para revisar, refinar e humanizar seus textos. Publique com mais segurança, sem perder sua voz.
 
-Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto.
+Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 63% de desconto.
 
 → [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)
 
@@ -118,10 +118,7 @@ Dicas como essas saem todos os dias na edição diária. Para receber, [cadastre
 
 **É IA? — DESTAQUE**
 
-[Recap de UM É IA? do mês — preferir a edição cujo poll ficou mais próximo de 50% de acerto
-(mais ambígua para os leitores). Se poll não disponível, escolher a mais visualmente difícil.
-Inserir: edição de origem, % de acerto (se disponível), breve análise do que tornou aquela
-imagem boa/difícil. 1-2 parágrafos curtos.]
+[Card do É IA? montado pelo render a partir do 01-eia.md.]
 
 ---
 
@@ -213,7 +210,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 ## Regras de preenchimento
 
 - **APRESENTAÇÃO (#2913): boilerplate fixo, NUNCA editorial.** Preâmbulo Clarice × diar.ia.br + CTA de prioridade + linha de descadastro — o texto é sempre o mesmo, mês a mês (só o merge tag `{{ unsubscribe }}` varia por envio). Emitir literalmente o texto do bloco acima, sem parafrasear. Links fixos: `[Clarice](https://clarice.ai/?via=diaria)` (2×), `[aqui](https://diar.ia.br/?utm_source=clarice)` (cadastro gratuito — `diar.ia.br` é o href canônico desde 260723, redirect no Cloudflare preserva a query string, #2613/#3971), `[descadastrar aqui]({{ unsubscribe }})`. `diar.ia.br` aparece em **texto plano** (não como link markdown) na primeira frase — o render aplica o wordmark da marca automaticamente (`applyBrandWordmark`); virar link markdown quebra o wordmark. **O wordmark não é clicável** (decisão do editor 260727): aparecia 4× por edição apontando pra raiz do site, não convertia, e somado ao "aqui" e ao botão dava 7 âncoras pro mesmo destino — densidade promocional no eixo que o CTA-01 apontou como gatilho de spam. Nome de marca no meio da prosa é reconhecimento, não call-to-action; quem converte é o "aqui" e o botão do encerramento. Gramática: "na Clarice" (não "em Clarice"). Faltou na edição 2606-07 (reinserida manualmente) — daí morar no template.
-- **CLARICE — DIVULGAÇÃO (#11788): texto FIXO.** Idêntico nos ciclos 2607-08, 2608-09, 2609-10 e 2610-11 — emitir literalmente o bloco acima (título, 3 parágrafos, cupons NEWS25/NEWS50 e o CTA para `clarice.ai/precos-planos?via=diaria`), sem parafrasear. Mudar o texto é decisão do editor e se faz aqui E no passo 5 do `writer-monthly` (as duas cópias andam juntas, `test/monthly-clarice-divulgacao-fixa-11788.test.ts`). **CLARICE — TUTORIAL** é a única seção Clarice que muda a cada ciclo: fonte é o Doc "Laboratório Clarice" no Drive (id `1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY`, 8 tutoriais em sequência); já saíram #2 (2605-06), #3 (2606-07), #4 (2607-08), #5 (2608-09), "Simplificar", fora da lista (2609-10), e #6 (2610-11). Segue placeholder até o writer conseguir ler o Doc.
+- **CLARICE — DIVULGAÇÃO (#11788): texto FIXO.** Idêntico desde o ciclo 2607-08 (até 2610-11 dizia "até 67%"; 63% desde 2611-12, #11810) — emitir literalmente o bloco acima (título, 3 parágrafos, cupons NEWS25/NEWS50 e o CTA para `clarice.ai/precos-planos?via=diaria`), sem parafrasear. Mudar o texto é decisão do editor e se faz aqui E no passo 5 do `writer-monthly` (as duas cópias andam juntas, `test/monthly-clarice-divulgacao-fixa-11788.test.ts`). **CLARICE — TUTORIAL** é a única seção Clarice que muda a cada ciclo: fonte é o Doc "Laboratório Clarice" no Drive (id `1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY`, 8 tutoriais em sequência); já saíram #2 (2605-06), #3 (2606-07), #4 (2607-08), #5 (2608-09), "Simplificar", fora da lista (2609-10), e #6 (2610-11). Segue placeholder até o writer conseguir ler o Doc.
 - **Tema dos destaques**: cobertura específica do mês — Brasil, empresa (Anthropic, OpenAI, Google, DeepSeek), área (regulação, agentes, open source, benchmarks). **Brasil é sempre um dos 3** (regra editorial do `analyst-monthly`).
 - **Título narrativo**: descreve o arco do tema, não um artigo isolado. Exemplos: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes", "Open source ganha terreno em modelos de raciocínio".
 - **Conexão entre artigos**: cada destaque tem N artigos de suporte (de edições diferentes do mês). O texto narra o tema como sequência — use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.
@@ -223,7 +220,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 
 - **UTM: o render injeta, o template quase nunca escreve.** `withClariceUtm` (#2975) sobrescreve `utm_source`/`utm_medium`/`utm_campaign` a cada render e codifica a POSIÇÃO do link no `utm_campaign` (#4040) — `cta`, `pill`, `titulo`, `inline` e, desde este CTA, `use-melhor`. Não adicionar `utm_*` à mão nos links da APRESENTAÇÃO nem do PARA ENCERRAR: eles são pinados por invariante (#3971/#2913) e o teste quebra. Exceção (#9589): botão CTA (`→ [texto](url)`) que já traz `utm_campaign` explícito — caso da caixa DIVULGAÇÃO da imersão (`utm_campaign=agente-ia`, removida do template em 16/10/2026, #8895) — mantém essa campanha; `utm_source`/`utm_medium` continuam vindo do render. Pills e links inline/título seguem sempre reescritos.
 - **Radar**: 7 links mais clicados do mês, fora dos já cobertos nos Destaques e no Use Melhor (#1901). Vem pronto de `## Radar` em `prioritized.md`. Formato: `Título URL` + descrição de 1–2 frases abaixo. (Ex-"Outras Notícias", 10 itens por relevância editorial.)
-- **É IA? recap**: preferir a edição com poll mais próximo de 50% de acerto (mais ambígua). Se poll não disponível (ver issue #419), escolher a mais visualmente difícil.
+- **É IA?**: só o label + a linha-placeholder, sem texto (#11790, decisão do editor 02/11/2026). A edição é escolhida pelo orchestrator (`select-eia-edition.ts`: poll mais próximo de 50% de acerto) e o render monta o card com a legenda do `01-eia.md`; o writer não seleciona nem comenta.
 - **Boxes de divulgação mid-body (colados manualmente entre destaques, isolados por `---` — não auto-inseridos pelo pipeline, decisão do editor 260716):** (a) **recomendação da edição DIÁRIA pra base da Clarice** — fonte única `data/snippets/diaria-recomendacao-clarice.md`. Audiência = base INATIVA da Clarice que JÁ recebe esta mensal; o box recomenda a diária como upgrade de frequência (cadastro no site), NÃO re-anuncia a parceria (que é a própria mensal) nem presume uso ativo da ferramenta Clarice. CTA "Assinar a edição diária" com `utm_source=clarice`; (b) **box livro** — label de seção `**LIVRO**`, que vira o kicker de CATEGORIA "Livro do mês", seguido de uma **linha de título** (`Recomendação de leitura`), do título do livro em negrito-com-link e de 2 parágrafos impessoais (autor / livro). Instâncias de referência no formato atual: `data/snippets/monge-iogue-faquir-clarice.md` e `historia-ia-para-quem-tem-pressa-clarice.md`. (260727 reverteu o #3581: kicker e título voltaram a existir juntos porque passaram a dizer coisas diferentes — categoria vs. natureza do box. `data/snippets/recomendacao-leitura-mensal.md` ainda está no formato antigo, sem a linha de título; o render tolera e renderiza sem título interno, mas prefira os do formato atual. Label longo `LIVRO DO MÊS` segue aceito na detecção.) **Não** usar o `livros-divulgacao.md` genérico do diário (kicker "Livros" + imagem promo) nem o `recomendacao-leitura.md` (1ª pessoa, exclusivo do diário). Substituem os boxes improvisados "Um recado rápido da equipe da Clarice" e "LIVROS/Curadoria de livros" da edição 2606-07.
 
 ## Diferenças vs template diário (`newsletter.md`)
@@ -233,7 +230,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - **Sem bloco "Para aprofundar"** (diferente de versões anteriores do template).
 - Use Melhor e Radar têm **descrição** após título+URL (igual ao diário, diferente de versões anteriores).
 - Sem LANÇAMENTOS / PESQUISAS — toda categoria vira tema ou Radar.
-- É IA? é recap de uma do mês, não comparação nova.
+- É IA? reaproveita o card de uma edição do mês, sem texto do writer (#11790).
 - Limites de caracteres por destaque (D1: 1.500, D2/D3: 1.200).
 
 ## Não fazer (no output gerado)

@@ -90,3 +90,16 @@ describe("#11810 — checkDiscountConsistency", () => {
     assert.deepEqual(checkDiscountConsistency("nada aqui"), { ok: true, percents: [] });
   });
 });
+
+describe("#11810 — número unificado em 63% (decisão do editor, 02/11/2026)", () => {
+  const CTA = "→ [Assine agora e ganhe até 63% de desconto](https://clarice.ai/precos-planos?via=diaria)";
+
+  for (const [nome, texto] of [["template", TEMPLATE], ["writer-monthly", WRITER]] as const) {
+    it(`${nome}: DIVULGAÇÃO diz 63% e não diverge do CTA do TUTORIAL`, () => {
+      assert.ok(texto.includes("acumulando até 63% de desconto."));
+      assert.ok(!/acumulando até 67%/.test(texto));
+      const divulgacao = texto.split("\n").find((l) => l.includes("acumulando até"))!;
+      assert.deepEqual(checkDiscountConsistency(`${divulgacao}\n\n${CTA}`), { ok: true, percents: [63] });
+    });
+  }
+});

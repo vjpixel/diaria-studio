@@ -41,7 +41,7 @@
  *   frame AAMMDD --at S    frame do bruto (desespelhado conforme o `mirrored` efetivo, com grade)
  *   roteiro AAMMDD          resolve o `blocks.json` (tomadas) e escreve o roteiro (gate 2, uma tabela
  *                           por versão; as "alternativa" da decupagem viram opções B/C; sempre refaz)
- *   build AAMMDD [--allow-missing] [--no-audio-refine]
+ *   build AAMMDD [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
  *       XML FCP7 (xmeml v4) + `plan.json` (com o hash do blocks.json, do source.json e do silences.json).
  *       Clipes contíguos no bruto viram um só e o zoom alterna só nos cortes (#11503). Os cortes
  *       são refinados pelo áudio do bruto (#11500, `lib/diaria/video-cut-refine.ts`): vale de
@@ -52,6 +52,12 @@
  *       Bloco faltando ou item/palavra que some no corte = erro, salvo --allow-missing.
  *       Vertical montada acima de 3:00 (Shorts) sai como [aviso] com quanto passa (#11377); o
  *       corte só na vertical é um item com "skip"/"targets" no blocks.json.
+ *       Ganho de áudio (#11755): Audio Levels em cada clipe de áudio, do `loudness.json`, para
+ *       -14 LUFS com teto -1 dBTP (`audioGainFor`); --no-audio-gain tira. Título nas verticais
+ *       (#11756): faixa V2 no bloco `titulo` (sem ele, no 1º bloco) com o `screenTitle` do
+ *       blocks.json ou o título do D1 (`02-reviewed.md`); --title-mode text (default, gerador
+ *       de texto do FCP7, e o PNG transparente sai junto como reserva), png (o PNG como clipe na
+ *       V2) ou off. Os dois aguardam a conferência no 1º import do Premiere.
  *   srt AAMMDD [--seq instagram|outras-redes] [--from-raw] [--force]
  *       legendas das verticais. Retranscreve o áudio montado (cache por trechos +
  *       identidade do áudio); --from-raw remapeia o transcript do bruto.
@@ -114,6 +120,8 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import {
+  AUDIO_GAIN_TARGET_LUFS,
+  AUDIO_GAIN_TP_CEILING_DBTP,
   LOUDNORM_TARGET,
   PREVIEW_SUBTITLE_STYLE,
   SILENCE_DETECT,
@@ -121,6 +129,7 @@ import {
   alignPunctuationToScript,
   applyVocabularyToWords,
   assembleClips,
+  audioGainFor,
   buildSequencePlan,
   buildXmeml,
   clockTime,
@@ -132,11 +141,13 @@ import {
   effectiveFormat,
   effectiveFraming,
   effectiveSource,
+  firstTitledVertical,
   framingFor,
   loudnessWarning,
   makeMatcher,
   mapWordsToSequence,
   trimWordsToSilences,
+  isVerticalSpec,
   offsetTranscript,
   parseBlocksFile,
   retranscribeWindow,
@@ -148,19 +159,23 @@ import {
   previewClipArgs,
   resolveBlocks,
   reviewPreview,
+  screenTitleSvg,
   segmentCues,
   sequenceSourceRanges,
   silenceNoiseDb,
   transcriptWords,
   validateVocabRules,
+  type AudioGain,
   type BlocksFile,
   type CutAdjustment,
   type Framing,
   type Interval,
   type PlannedClip,
   type RawClip,
+  type ScreenTitleXml,
   type Segment,
   type SequencePlan,
+  type SequenceSpec,
   type SequenceTarget,
   type SourceInfo,
   type Transcript,
@@ -199,7 +214,7 @@ import {
   parsePeakWindows,
   type FinalReviewFinding,
 } from "./lib/diaria/video-final-review.ts";
-import { VIDEO_TARGETS, type VideoTarget } from "./lib/diaria/drive-video-source.ts";
+import { corteSuffixOf, VIDEO_TARGETS, type VideoTarget } from "./lib/diaria/drive-video-source.ts";
 import {
   edgeWindowsFor,
   energyEnvelope,
@@ -238,6 +253,9 @@ import {
 } from "./lib/diaria/video-montage-drive.ts";
 export { driveCacheDir, driveModeFor, workDirDefault };
 import { resolveVideoPython } from "./lib/diaria/video-montage-env.ts";
+import { parseDestaques } from "./extract-destaques.ts";
+import { stripInlineMarkdown } from "./lib/diaria/youtube-video.ts";
+import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PY_HELPER = join(ROOT, "scripts", "video", "transcribe_words.py");
@@ -950,8 +968,9 @@ export function xmlFileName(edition: string): string {
 export function srtFileName(seqName: string): string {
   return `${seqName} - legendas.srt`;
 }
-export function previewFileName(edition: string, target: SequenceTarget): string {
-  return `${edition} - previa ${target}.mp4`;
+/** `label` = o destino, ou o slug do corte (`previa soberana`, não `previa instagram`). */
+export function previewFileName(edition: string, label: SequenceTarget | string): string {
+  return `${edition} - previa ${label}.mp4`;
 }
 
 /** O que o refino por áudio fez neste build (#11500), gravado no `plan.json`. */
@@ -1070,7 +1089,56 @@ export function adjustmentLine(a: CutAdjustment): string {
   return `   ajuste ${a.block} ${edge}: ${a.from.toFixed(2)} → ${a.to.toFixed(2)} s (${a.reason})`;
 }
 
-function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
+/** `--title-mode` do build (#11756): gerador de texto (default), PNG na V2, ou sem título. */
+export type TitleMode = "text" | "png" | "off";
+
+export function parseTitleModeArg(v: string | undefined): TitleMode {
+  if (v === undefined) return "text";
+  if (v === "text" || v === "png" || v === "off") return v;
+  throw new Error(`--title-mode precisa ser text, png ou off (veio "${v}")`);
+}
+
+/**
+ * Texto do título da vertical (#11756): o `screenTitle` do blocks.json vence
+ * ("" desliga, decisão do editor); sem ele, o título do D1 da edição, sem
+ * markdown. Nenhum dos dois = sem título, com aviso no build.
+ */
+export function resolveScreenTitle(input: { blocksTitle?: string; d1Title?: string | null }): { text: string | null; how: "blocks" | "blocks-off" | "d1" | "missing" } {
+  if (input.blocksTitle !== undefined) {
+    const t = input.blocksTitle.replace(/\s+/g, " ").trim();
+    return t ? { text: t, how: "blocks" } : { text: null, how: "blocks-off" };
+  }
+  const d1 = input.d1Title ? stripInlineMarkdown(input.d1Title).replace(/\s+/g, " ").trim() : "";
+  return d1 ? { text: d1, how: "d1" } : { text: null, how: "missing" };
+}
+
+/** PNG do título (fallback do gerador de texto, #11756): sai no out dir, ao lado do XML. */
+export function titlePngFileName(edition: string, corte?: string): string {
+  return corte ? `${edition}_titulo_vertical-${corte}.png` : `${edition}_titulo_vertical.png`;
+}
+
+/** Caminho do PNG no XML: a mesma pasta do bruto no XML (a pasta da edição, para onde o out dir sobe). `corte` = o PNG do título daquele corte (#11900). */
+export function titlePngXmlPath(mediaPath: string, edition: string, corte?: string): string {
+  const p = mediaPath.replace(/\\/g, "/");
+  return `${p.slice(0, p.lastIndexOf("/") + 1)}${titlePngFileName(edition, corte)}`;
+}
+
+/** Título do D1 em `02-reviewed.md` da edição; ausente ou sem D1 = null. */
+function readD1Title(edition: string): string | null {
+  const path = join(editionDirFor(edition), "02-reviewed.md");
+  if (!existsSync(path)) return null;
+  return parseDestaques(readFileSync(path, "utf8")).find((d) => d.n === 1)?.title ?? null;
+}
+
+/** Relato do ganho de áudio do XML (#11755). */
+export function audioGainLine(g: AudioGain | null, inputI?: number, inputTp?: number): string {
+  if (!g) return "[aviso] sem ganho de áudio no XML: loudness do bruto não medido (ou sem true peak para um ganho positivo); nível à mão no Premiere";
+  const why = g.limitedBy === "target" ? `alvo ${AUDIO_GAIN_TARGET_LUFS} LUFS` : g.limitedBy === "true-peak" ? `teto de ${AUDIO_GAIN_TP_CEILING_DBTP} dBTP` : "máximo do Audio Levels (+12 dB)";
+  const from = inputI !== undefined ? ` (bruto ${inputI.toFixed(2)} LUFS, TP ${inputTp !== undefined && Number.isFinite(inputTp) ? inputTp.toFixed(2) : "?"} dBTP)` : "";
+  return `[premissa] ganho de áudio no XML: ${g.db > 0 ? "+" : ""}${g.db.toFixed(2)} dB em cada clipe (Audio Levels, limitado pelo ${why})${from}; conferir no 1º import se o Premiere aplicou (#11755); --no-audio-gain tira`;
+}
+
+async function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true, audioGain = true, titleMode: TitleMode = "text"): Promise<number> {
   const { file, source, plans: ps0, hash, resolved } = plans(ctx);
   const refined = refineCuts(ctx, ps0, source, audioRefine);
   const ps = refined.plans;
@@ -1099,8 +1167,53 @@ function cmdBuild(ctx: Ctx, allowMissing: boolean, audioRefine = true): number {
   const mediaPath = media.path;
   if (media.how === "api-guess") console.error(`[premissa] bruto lido de ${source.path} (fora do cache do Drive): o XML aponta ${mediaPath} no Neo; outro caminho: --xml-media-root (#11641)`);
   else if (mediaPath !== source.path) console.error(`[video-montagem] XML aponta o bruto em ${mediaPath} (lido de ${source.path}, #11641)`);
-  const xml = buildXmeml(ps, source, framing, { mediaPath });
+  // #11755: ganho do loudness.json (o mesmo que o transcribe mediu).
+  let gain: AudioGain | null = null;
+  if (audioGain) {
+    const loudPath = f(ctx, "loudness.json");
+    const loud = existsSync(loudPath) ? readJson<ReturnType<typeof parseLoudnormJson>>(loudPath, "loudness.json") : null;
+    gain = audioGainFor(loud);
+    console.error(audioGainLine(gain, loud?.inputI, loud?.inputTp));
+  }
+  // #11756: título na V2 das verticais.
   mkdirSync(ctx.outDir, { recursive: true });
+  let screenTitle: ScreenTitleXml | null = null;
+  const titled = titleMode === "off" ? null : firstTitledVertical(ps);
+  if (titled) {
+    const t = resolveScreenTitle({ blocksTitle: file.screenTitle, d1Title: readD1Title(ctx.edition) });
+    if (t.text) {
+      const png = join(ctx.outDir, titlePngFileName(ctx.edition));
+      await sharp(Buffer.from(screenTitleSvg(t.text, titled.spec.width, titled.spec.height))).png().toFile(png);
+      screenTitle = titleMode === "png" ? { text: t.text, mode: "png", pngPath: titlePngXmlPath(mediaPath, ctx.edition) } : { text: t.text, mode: "text" };
+      console.error(
+        `[premissa] título na vertical (${t.how === "blocks" ? "screenTitle do blocks.json" : "título do D1; screenTitle no blocks.json sobrepõe"}): "${t.text}", ` +
+          (titleMode === "png" ? `PNG ${png} na V2` : `gerador de texto do FCP7 na V2 (reserva: ${png}; --title-mode png se o Premiere recusar o gerador)`) +
+          "; conferir no 1º import (#11756)",
+      );
+    } else if (t.how === "missing") console.error("[aviso] vertical sem título: sem screenTitle no blocks.json e sem D1 em 02-reviewed.md (#11756)");
+  }
+  // #11900: o corte (2ª vertical, outro roteiro) leva o título dele, nunca o da notícia.
+  const screenTitleByCorte: Record<string, ScreenTitleXml | null> = {};
+  if (titleMode !== "off") {
+    for (const p of ps) {
+      const corte = p.spec.corte;
+      if (corte === undefined || !isVerticalSpec(p.spec)) continue;
+      if (p.spec.screenTitle === undefined) {
+        console.error(`[aviso] corte "${corte}" sem screenTitle na sequência: sai com o título da vertical da edição; informe "screenTitle" na sequência do corte (#11900)`);
+        continue;
+      }
+      const t = resolveScreenTitle({ blocksTitle: p.spec.screenTitle });
+      if (!t.text) {
+        screenTitleByCorte[corte] = null;
+        continue;
+      }
+      const png = join(ctx.outDir, titlePngFileName(ctx.edition, corte));
+      await sharp(Buffer.from(screenTitleSvg(t.text, p.spec.width, p.spec.height))).png().toFile(png);
+      screenTitleByCorte[corte] = titleMode === "png" ? { text: t.text, mode: "png", pngPath: titlePngXmlPath(mediaPath, ctx.edition, corte) } : { text: t.text, mode: "text" };
+      console.error(`[premissa] título do corte "${corte}" (screenTitle da sequência): "${t.text}" (#11900)`);
+    }
+  }
+  const xml = buildXmeml(ps, source, framing, { mediaPath, audioGain: gain, screenTitle, screenTitleByCorte });
   const xmlPath = join(ctx.outDir, xmlFileName(ctx.edition));
   writeFileAtomic(xmlPath, xml);
   const pf: PlanFile = { edition: ctx.edition, hash, source, framing, framingAssumed: assumed, plans: ps, cutRefine: refined.info };
@@ -1181,7 +1294,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
     vf.push("-vf", `subtitles=leg.srt:force_style='${PREVIEW_SUBTITLE_STYLE}'`);
   } else console.error(`[aviso] sem ${srt}: a prévia sai sem legenda (rode srt antes)`);
   mkdirSync(ctx.outDir, { recursive: true });
-  const out = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.target));
+  const out = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.corte ?? plan.spec.target));
   run("ffmpeg", [
     "-y", "-v", "error", "-i", "joined.mp4", ...vf, "-af", LOUDNORM_TARGET,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "previa.mp4",
@@ -1198,7 +1311,7 @@ function cmdPreview(ctx: Ctx, target: string | undefined): number {
 function cmdReview(ctx: Ctx, target: string | undefined): number {
   const pf = loadPlan(ctx);
   const [plan] = pickPlan(pf.plans, target ?? "outras-redes", true);
-  const preview = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.target));
+  const preview = join(ctx.outDir, previewFileName(ctx.edition, plan.spec.corte ?? plan.spec.target));
   if (!existsSync(preview)) throw new Error(`prévia ausente: ${preview} (rode preview)`);
   if (mtime(preview) < mtime(f(ctx, "plan.json"))) throw new Error(`${preview} é mais velha que o plan.json: rode preview de novo`);
   mkdirSync(ctx.workDir, { recursive: true });
@@ -1219,11 +1332,21 @@ function cmdReview(ctx: Ctx, target: string | undefined): number {
   return 0;
 }
 
-/** Destino do `review-final`: `--seq` explícito ou o sufixo do nome do export. */
-export function reviewFinalTarget(file: string, seq: string | undefined): VideoTarget {
+/**
+ * Destino do `review-final`: `--seq` explícito ou o sufixo do nome do export.
+ * Export de corte (`…_V1-soberana.mp4`) vai para a sequência com esse `corte`
+ * no plano; sem ela, erro (nunca a vertical da edição, que tem outro roteiro).
+ */
+export function reviewFinalTarget(file: string, seq: string | undefined, specs: Array<Pick<SequenceSpec, "target" | "corte">> = []): VideoTarget {
   if (seq !== undefined) {
     if (!(VIDEO_TARGETS as readonly string[]).includes(seq)) throw new Error(`--seq deve ser ${VIDEO_TARGETS.join(", ")} (veio ${seq})`);
     return seq as VideoTarget;
+  }
+  const corte = corteSuffixOf(basename(file));
+  if (corte) {
+    const hit = specs.find((s) => s.corte === corte);
+    if (!hit) throw new Error(`${basename(file)} é o corte "${corte}", sem sequência com esse corte no plan.json: rode build ou passe --seq`);
+    return hit.target;
   }
   const t = exportTarget(basename(file));
   if (!t) throw new Error(`destino não reconhecido no nome ${basename(file)} (_Youtube_, _Instagram_, _Outras redes_): passe --seq`);
@@ -1234,7 +1357,13 @@ function cmdReviewFinal(ctx: Ctx, file: string | undefined, seq: string | undefi
   if (!file) throw new Error("review-final exige --file PATH (o export do Premiere)");
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`export não encontrado: ${path}`);
-  const target = reviewFinalTarget(path, seq);
+  let planSpecs: SequenceSpec[] = [];
+  try {
+    planSpecs = loadPlan(ctx).plans.map((p) => p.spec);
+  } catch {
+    // sem plano válido: o aviso sai abaixo, onde o plano é lido de novo
+  }
+  const target = reviewFinalTarget(path, seq, planSpecs);
   const findings: FinalReviewFinding[] = [];
 
   const probeJson = JSON.parse(run("ffprobe", ["-v", "error", "-show_streams", "-show_format", "-of", "json", path]).stdout) as {
@@ -1619,7 +1748,7 @@ async function runCommand(
         console.error("[erro] --xml-flop foi removida: o Premiere ignora o filtro Flop no import (#11358). Aplicar Horizontal Flip à mão.");
         return 2;
       }
-      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"));
+      return cmdBuild(ctx, flags.has("allow-missing"), !flags.has("no-audio-refine"), !flags.has("no-audio-gain"), parseTitleModeArg(values["title-mode"] ?? (flags.has("title-mode") ? "" : undefined)));
     case "srt":
       return cmdSrt(ctx, seq, flags.has("from-raw"));
     case "preview":
