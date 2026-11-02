@@ -582,7 +582,8 @@ export function loadShortScheduleConfig(config: unknown): ShortScheduleConfig {
 export interface ShortTime {
   /** HH:MM em BRT, no dia da edição. */
   hhmm: string;
-  source: "rotation" | "default";
+  /** `explicit` (#11795): corte avulso com `--at`, fora do teste do #10831. */
+  source: "rotation" | "default" | "explicit";
   /** Explicação curta pra premissa do plano. */
   reason: string;
 }
@@ -616,7 +617,8 @@ export interface ShortSlot {
   hhmm: string;
   /** `test-schedule` = horário do teste do #10831 mantido; o resto vem do planner. */
   /** `timer-300` (#11265): Instagram pelo timer do 300, sempre no horário do vertical, fora da grade. */
-  rule: "test-schedule" | "timer-300" | SlotRule;
+  /** `explicit` (#11795): horário do corte avulso (`--at`), mantido em todos os destinos como o do teste. */
+  rule: "test-schedule" | "timer-300" | "explicit" | SlotRule;
   premise: string;
   warning?: string;
 }
@@ -733,7 +735,10 @@ export function planShortSlots(input: {
     .filter((x): x is { dest: ShortDestination; account: string; also: string[] } => x.account !== null);
   const withAlso = (also: string[]) => (also.length ? { alsoAccounts: also } : {});
 
-  if (input.time.source === "rotation") {
+  if (input.time.source === "rotation" || input.time.source === "explicit") {
+    // #11795: o horário explícito do corte avulso é mantido como o do teste (o
+    // editor escolheu), mas nunca leva o rótulo nem a premissa do teste.
+    const explicit = input.time.source === "explicit";
     const t = Date.parse(input.timeAt);
     return api.map(({ dest, account, also }) => {
       const mine = new Set([account, ...also]);
@@ -746,13 +751,15 @@ export function planShortSlots(input: {
         ...withAlso(also),
         at: new Date(t).toISOString(),
         hhmm: input.time.hhmm,
-        rule: "test-schedule",
-        premise: `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
+        rule: explicit ? "explicit" : "test-schedule",
+        premise: explicit
+          ? "horário explícito do corte avulso (--at, #11795) tem precedência sobre a grade (#10819)"
+          : `teste de horário do vertical (#10831) tem precedência sobre a grade (#10819)`,
       };
       if (close.length) {
         slot.warning =
-          `${dest.id}: o horário do teste (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
-          `(${[...new Set(close)].join(", ")} BRT) — mantido por causa do teste; mova à mão se não quiser colado`;
+          `${dest.id}: o horário ${explicit ? "do corte" : "do teste"} (${input.time.hhmm} BRT) fica a menos de ${DEFAULT_MIN_GAP_MINUTES} min de post da mesma conta${also.length ? ` (ou de ${also.join(", ")}, em collab)` : ""} ` +
+          `(${[...new Set(close)].join(", ")} BRT) — mantido ${explicit ? "porque o horário do corte é explícito" : "por causa do teste"}; mova à mão se não quiser colado`;
       }
       return slot;
     });

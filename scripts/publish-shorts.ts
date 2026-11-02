@@ -22,6 +22,13 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *                                                           # registra o Reels postado no Chrome (lê /media, #10915;
  *                                                           # #11390: procura também no perfil do @vjpixel, autor da
  *                                                           # rota do Chrome, e aceita o permalink com --url)
+ *   npx tsx scripts/publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H
+ *     (--video PATH | --from-drive FILE_ID) [--cover JPG] [--publish] [--only ...] [--now]
+ *                                                           # corte AVULSO, fora de edição (#11795): título e gancho
+ *                                                           # explícitos, registro em data/cortes/SLUG/ (corte.json +
+ *                                                           # 06-shorts-published.json), R2 em shorts/cortes/, horário
+ *                                                           # explícito fora do teste do #10831, sem timers do 300.
+ *                                                           # Re-execução e --mark só com --corte SLUG.
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -161,7 +168,7 @@ loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -170,6 +177,18 @@ import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
+import {
+  CORTE_SPEC_FILE,
+  corteBaseCommand,
+  corteR2Key,
+  corteRelDir,
+  corteShortTime,
+  corteTextInput,
+  corteVideoFileName,
+  mergeCorteSpec,
+  parseCorteSpec,
+  type CorteSpec,
+} from "./lib/diaria/short-corte.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/facebook-pages.ts";
 import {
@@ -292,6 +311,8 @@ import {
 } from "./lib/diaria/instagram-chrome-upload.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/** #11795: link de referência do corte avulso (nenhum texto do vertical leva link, #11617). */
+export const DIARIA_HOME_URL = "https://diar.ia.br";
 const GRAPH = "https://graph.facebook.com";
 const GRAPH_VIDEO = "https://graph-video.facebook.com";
 const RUPLOAD = "https://rupload.facebook.com";
@@ -473,9 +494,16 @@ const OWNER_SCHEDULE_MIN_LEAD_MS = 10 * 60_000;
  */
 export function assignShortsDestinationOwners(
   items: readonly ShortsPlanItem[],
-  ctx: { aammdd: string; now: Date; instagramViaTimer: boolean; writer?: ShortsRegistryWriter },
+  ctx: {
+    aammdd: string;
+    now: Date;
+    instagramViaTimer: boolean;
+    writer?: ShortsRegistryWriter;
+    /** #11795: comando base do corte avulso (`--corte SLUG`); os passos guiados re-executam por ele, sem a skill da edição. */
+    baseCommand?: string;
+  },
 ): ShortsDestinationOwner[] {
-  const base = `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
+  const base = ctx.baseCommand ?? `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
   const owners: ShortsDestinationOwner[] = [];
   for (const item of items) {
     const { destination, action } = item;
@@ -515,7 +543,7 @@ export function assignShortsDestinationOwners(
               action,
               by: "agent-scheduled-task",
               at,
-              command: `/diaria-publica-video ${ctx.aammdd} --so vertical`,
+              command: ctx.baseCommand ?? `/diaria-publica-video ${ctx.aammdd} --so vertical`,
               note: `passo guiado da skill (Chrome) às ${at}: a skill agenda a própria re-execução para esse horário`,
             }
           : { destination, action, by: "agent", note: "passo guiado da skill (Chrome), executado pelo agente nesta rodada" },
@@ -601,17 +629,28 @@ export interface ShortsPlanInput {
    * + `06-shorts-published.json`. Ausente = grade vazia.
    */
   grid?: ScheduledSlot[];
+  /**
+   * #11795: corte avulso (`--corte SLUG`). Título e gancho explícitos no lugar
+   * do D1 (`reviewedMd` é ignorado), horário explícito fora do teste do
+   * #10831, sem delegar aos timers do 300 (eles não enxergam a pasta do corte)
+   * e re-execuções pelo comando do corte.
+   */
+  corte?: { slug: string; hhmm: string; title: string; hook: string };
 }
 
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
 export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const premises: string[] = [];
   const warnings: string[] = [];
-  const d1 = parseDestaques(input.reviewedMd).find((d) => d.n === 1);
+  const corte = input.corte;
+  const d1 = corte ? { n: 1, ...corteTextInput(corte) } : parseDestaques(input.reviewedMd).find((d) => d.n === 1);
   if (!d1) throw new Error("02-reviewed.md sem DESTAQUE 1 — nada para derivar o vídeo curto");
 
-  const editionUrl: string = input.editionUrl ?? deriveEditionUrl(d1.title);
-  if (input.editionUrl) {
+  const editionUrl: string = input.editionUrl ?? (corte ? DIARIA_HOME_URL : deriveEditionUrl(d1.title));
+  if (corte) {
+    // #11795: o corte não é de edição — nenhum texto do vertical leva link (#11617), então o link é só referência do plano.
+    premises.push(`corte avulso "${corte.slug}": título e gancho explícitos (sem D1); link de referência ${editionUrl}${input.editionUrl ? ` (${input.editionUrlSource ?? "--edition-url"})` : ""}`);
+  } else if (input.editionUrl) {
     premises.push(`link da edição: ${editionUrl} (${input.editionUrlSource ?? "--edition-url"})`);
   } else {
     // #10943 item 3: no fluxo novo o vertical sai ANTES da Etapa 5, então
@@ -624,7 +663,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   const youtube = buildYouTubeShortMetadata({ d1: d1In });
 
   // #10831: o vertical tem horário próprio (nunca as 06:00 do horizontal).
-  const time = resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
+  const time = corte ? corteShortTime(corte.hhmm) : resolveShortTime(loadShortScheduleConfig(input.config), input.aammdd);
   const shortTime = { ...time, at: resolveEditionScheduledAt(input.aammdd, time.hhmm) };
   premises.push(`horário do vertical: ${time.hhmm} BRT (${time.reason})`);
   if (input.forceNow) premises.push("--now: publica na hora");
@@ -679,7 +718,8 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // grade, fora da rotação os dois divergiam (261117: shortTime 12:00, slot
   // 19:30) e o Reels nunca saía. Ele entra na grade como post fixo, pros
   // outros destinos se espaçarem em volta dele.
-  const instagramViaTimer = cfg.instagramBackend === "timer-300";
+  // #11795: o corte avulso nunca delega aos timers do 300 (eles procuram a pasta da edição).
+  const instagramViaTimer = cfg.instagramBackend === "timer-300" && !corte;
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
   const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
@@ -702,7 +742,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   ];
   const slotOf = new Map(slots.map((s) => [s.destination, s]));
   for (const s of slots) {
-    if (s.rule === "timer-300") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
+    if (s.rule === "timer-300" || s.rule === "explicit") premises.push(`${s.destination}: ${s.hhmm} BRT (${s.premise})`);
     else if (s.rule !== "test-schedule") premises.push(`${s.destination}: ${s.hhmm} BRT (grade #10819: ${s.premise})`);
     if (s.warning) warnings.push(s.warning);
   }
@@ -738,9 +778,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   };
   const profileLate = lateFor("linkedin_profile");
   // #10982: com o timer do 300 dono do vídeo do perfil, a rodada da skill não o publica.
-  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer";
+  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer" && !corte;
   // #11410: idem pro Threads pessoal.
-  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer";
+  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer" && !corte;
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -1070,7 +1110,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // #11547: o que cada destino faz com a capa (Still) — ver scripts/lib/diaria/short-cover.ts.
   const coverCtx = { coverPath: input.coverPath ?? null, coverUploadReady: input.coverUploadReady === true, bufferOffsetMs: input.coverBufferOffsetMs ?? null };
   const cover = { path: input.coverPath ?? null, destinations: Object.fromEntries(items.map((i) => [i.destination, planCoverDestination(i, coverCtx)])) };
-  const owners = assignShortsDestinationOwners(items, { aammdd: input.aammdd, now: input.now, instagramViaTimer, writer: input.writer });
+  const owners = assignShortsDestinationOwners(items, {
+    aammdd: input.aammdd,
+    now: input.now,
+    instagramViaTimer,
+    writer: input.writer,
+    ...(corte ? { baseCommand: corteBaseCommand(corte.slug) } : {}),
+  });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
 
@@ -1542,8 +1588,16 @@ export type InstagramReelRouteChoice =
   | { route: "video_url"; key: string; genericKey: string | null };
 
 /** Pure (#11355): a ligação entre a autora, o arquivo e a rota, fora do `main()` para ter teste. */
-export function instagramReelRouteChoice(input: { authorPage: string | null; aammdd: string; videoPath: string; file: Buffer }): InstagramReelRouteChoice {
+export function instagramReelRouteChoice(input: {
+  authorPage: string | null;
+  aammdd: string;
+  videoPath: string;
+  file: Buffer;
+  /** #11795: corte avulso — o Reels usa o mesmo objeto do corte que X e Threads (`corteR2Key`), nunca a chave da edição. */
+  corteVideoKey?: string;
+}): InstagramReelRouteChoice {
   if (instagramReelUploadRoute(input.authorPage) === "rupload") return { route: "rupload" };
+  if (input.corteVideoKey) return { route: "video_url", key: input.corteVideoKey, genericKey: null };
   const key = instagramR2VideoKey(input.aammdd, input.videoPath, input.file);
   const generic = `shorts/${shortVideoFileName(input.aammdd)}`;
   return { route: "video_url", key, genericKey: key === generic ? null : generic };
@@ -2655,6 +2709,11 @@ export async function publishYouTubeShort(input: {
   onBeforeBytes?: (entry: ShortPublishedEntry) => void;
   /** #11547: capa (JPEG) — `thumbnails.set` depois do insert; falha não desfaz o Short. */
   cover?: Buffer | null;
+  /**
+   * #11795: corte avulso — só o título conta como "já está no canal". A marca
+   * da edição e o dia acusariam o Short da EDIÇÃO do mesmo dia.
+   */
+  matchTitleOnly?: boolean;
 }): Promise<PublishOutcome> {
   const missing = missingYouTubeCredentials(input.env);
   if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
@@ -2683,7 +2742,7 @@ export async function publishYouTubeShort(input: {
       video: input.file,
       contentType: "video/mp4",
       thumbnail: input.cover ?? null,
-      ...(input.force ? {} : { existingVideoCheck: { aammdd: input.aammdd, title: input.title, kind: "short" as const } }),
+      ...(input.force ? {} : { existingVideoCheck: { aammdd: input.aammdd, title: input.title, kind: "short" as const, ...(input.matchTitleOnly ? { titleOnly: true } : {}) } }),
       ...(input.onBeforeBytes ? { beforeVideoBytes: () => input.onBeforeBytes!(unknownEntry()) } : {}),
     });
   } catch (e) {
@@ -2810,6 +2869,28 @@ export function loadScheduledGrid(
 ): ScheduledSlot[] {
   const local = loadEditionGrid(dir, published, instagramAccount, warn, opts.instagramCollaborators ?? []);
   return opts.workerQueue === undefined ? local : mergeGrids(local, gridFromWorkerQueue(opts.workerQueue));
+}
+
+/**
+ * #11795: grade da edição do dia, vista pelo corte avulso. Só leitura e
+ * fail-soft: pasta ausente = grade vazia; registro ilegível = aviso.
+ */
+export function loadEditionDayGrid(
+  editionDir: string,
+  aammdd: string,
+  instagramAccount: string | null,
+  instagramCollaborators: readonly string[],
+  warn: (m: string) => void,
+): ScheduledSlot[] {
+  if (!existsSync(editionDir)) return [];
+  let published: ShortsPublishedFile;
+  try {
+    published = readShortsRegistry(editionDir, aammdd);
+  } catch (e) {
+    warn(`registro do vertical da edição ${aammdd} ilegível (${(e as Error).message}) — a grade do corte segue sem ele`);
+    published = { aammdd, entries: [] };
+  }
+  return loadEditionGrid(editionDir, published, instagramAccount, warn, instagramCollaborators);
 }
 
 function loadEditionGrid(
@@ -3048,7 +3129,9 @@ const USAGE =
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
   "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO] [--thumbnail-offset MS]\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br e perfil do @vjpixel, #11390)\n" +
-  "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)";
+  "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel (collab pendente, #11390)\n" +
+  "     publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H (--video PATH | --from-drive ID) [--cover JPG] [--publish] [--only ...] [--now]\n" +
+  "                                                                                 # corte avulso fora de edição (#11795): registro em data/cortes/SLUG/, re-execução só com --corte SLUG";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
 export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video"] as const;
@@ -3081,6 +3164,8 @@ export function parseShortsCliArgs(argv: string[]):
   const candidates = [...new Set([values["edition"], ...positionalOut].filter((x): x is string => typeof x === "string"))];
   if (candidates.length > 1) return { ok: false, error: `edição ambígua: ${candidates.join(", ")}` };
   const aammdd = candidates[0];
+  // #11795: no corte avulso a data vem de --date (ou do corte.json); o AAMMDD posicional é opcional.
+  if (!aammdd && values["corte"] !== undefined) return { ok: true, aammdd: "", flags, values, positional: positionalOut };
   if (!aammdd || !/^\d{6}$/.test(aammdd)) return { ok: false, error: "AAMMDD ausente ou inválido" };
   return { ok: true, aammdd, flags, values, positional: positionalOut };
 }
@@ -3109,6 +3194,52 @@ function configuredInstagramBackend(): InstagramBackend | "unreadable" {
   }
 }
 
+/** #11795: flags que não valem no corte avulso (timers do 300 e conferência do Instagram são da edição). */
+export const CORTE_FORBIDDEN_FLAGS = ["linkedin-timer", "instagram-timer", "threads-timer", "confirm-instagram"] as const;
+
+/**
+ * #11795: prepara a rodada do corte avulso — lê `data/cortes/{slug}/corte.json`,
+ * aplica as flags desta rodada, grava a spec se mudou e copia a capa
+ * (`--cover`) pra pasta do corte. Lança em spec ilegível ou incompleta.
+ */
+export function prepareCorteRun(input: {
+  slug: string;
+  dir: string;
+  values: Record<string, string>;
+  positionalDate: string;
+  log: (line: string) => void;
+}): CorteSpec {
+  const specPath = join(input.dir, CORTE_SPEC_FILE);
+  const existing = existsSync(specPath) ? parseCorteSpec(readFileSync(specPath, "utf8"), specPath) : null;
+  const { values } = input;
+  const video = values["video"] !== undefined
+    ? resolve(values["video"])
+    : values["from-drive"] !== undefined && !existing
+      ? join(input.dir, corteVideoFileName(input.slug))
+      : undefined;
+  const merged = mergeCorteSpec(input.slug, existing, {
+    date: values["date"] ?? (input.positionalDate || undefined),
+    at: values["at"],
+    title: values["title"],
+    hook: values["hook"],
+    video,
+  });
+  if (!merged.ok) throw new Error(merged.error);
+  if (merged.changed.length) {
+    mkdirSync(input.dir, { recursive: true });
+    writeFileAtomic(specPath, JSON.stringify(merged.spec, null, 2) + "\n");
+    input.log(`[ok] corte "${input.slug}": ${existing ? `atualizado (${merged.changed.join(", ")})` : "registrado"} em ${specPath}`);
+  }
+  if (values["cover"] !== undefined) {
+    const src = resolve(values["cover"]);
+    if (!existsSync(src)) throw new Error(`--cover: ${src} não existe`);
+    mkdirSync(input.dir, { recursive: true });
+    copyFileSync(src, join(input.dir, SHORT_COVER_FILE));
+    input.log(`[ok] corte "${input.slug}": capa copiada para ${join(input.dir, SHORT_COVER_FILE)}`);
+  }
+  return merged.spec;
+}
+
 async function main(): Promise<number> {
   const parsed = parseShortsCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -3116,8 +3247,32 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
-  const { flags, values, aammdd } = parsed;
-  const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
+  const { flags, values } = parsed;
+  let aammdd = parsed.aammdd;
+  // #11795: corte avulso — pasta, registro, data, título e gancho próprios, fora de data/editions/.
+  const corteSlug = values["corte"];
+  let corte: CorteSpec | null = null;
+  if (corteSlug !== undefined) {
+    const forbidden = CORTE_FORBIDDEN_FLAGS.filter((f) => flags.has(f));
+    if (forbidden.length) {
+      console.error(`publish-shorts: --corte não combina com ${forbidden.map((f) => `--${f}`).join(", ")} (timers e conferência do Instagram são da edição; registre à mão com --mark)`);
+      return 2;
+    }
+    if (values["edition"] !== undefined) {
+      console.error("publish-shorts: --corte usa --date AAMMDD, não --edition");
+      return 2;
+    }
+    const corteDir = resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corteSlug)));
+    try {
+      corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l) });
+    } catch (e) {
+      console.error(`publish-shorts: ${(e as Error).message}`);
+      return 2;
+    }
+    aammdd = corte.date;
+    console.error(`[premissa] corte avulso "${corte.slug}": ${corte.date} às ${corte.hhmm} BRT, vídeo ${corte.video}, registro em ${corteDir}`);
+  }
+  const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
   const linkedinTimer = flags.has("linkedin-timer");
@@ -3134,9 +3289,13 @@ async function main(): Promise<number> {
   const writer = shortsRegistryWriterFor(linkedinTimer, instagramTimer, threadsTimer);
   const publishedPath = shortsRegistryPath(dir, writer);
   let published = readShortsRegistry(dir, aammdd);
-  const cleanup = () => cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
-    config: () => loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))),
-    keepVideo: flags.has("keep-video"), log: console.error });
+  // #11795: o vídeo do corte é do editor (ou da pasta de cortes) — a limpeza do vertical da edição nunca o apaga.
+  const cleanup = () => {
+    if (corte) return;
+    cleanupPublishedVideo({ dir, edition: aammdd, kind: "vertical",
+      config: () => loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))),
+      keepVideo: flags.has("keep-video"), log: console.error });
+  };
   const persist = (entry: ShortPublishedEntry): ShortsPublishedFile => persistShortEntry(dir, aammdd, writer, entry);
 
   if (values["mark"]) {
@@ -3192,11 +3351,11 @@ async function main(): Promise<number> {
   }
 
   const reviewedPath = join(dir, "02-reviewed.md");
-  if (!existsSync(reviewedPath)) {
+  if (!corte && !existsSync(reviewedPath)) {
     console.error(`publish-shorts: ${reviewedPath} não existe`);
     return 1;
   }
-  const videoPath = resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
+  const videoPath = corte ? corte.video : resolve(values["video"] ?? join(dir, shortVideoFileName(aammdd)));
   if (values["from-drive"] && !existsSync(videoPath) && shortsVideoTerminal(dir, aammdd,
     loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))))) {
     cleanup();
@@ -3296,7 +3455,8 @@ async function main(): Promise<number> {
       coverPath: shortCover.path,
       coverUploadReady: r2.ready,
       coverBufferOffsetMs: bufferOffsetMs,
-      reviewedMd: readFileSync(reviewedPath, "utf8"),
+      reviewedMd: corte ? "" : readFileSync(reviewedPath, "utf8"),
+      ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook } } : {}),
       now: new Date(),
       config,
       pages,
@@ -3316,10 +3476,14 @@ async function main(): Promise<number> {
       editionUrlSource: editionUrlIn.source,
       forceNow: flags.has("now"),
       only: onlyList,
-      grid: loadScheduledGrid(dir, published, shortsCfg.instagramAuthorPage, warnGrid, {
-        instagramCollaborators: shortsCfg.instagramCollaborators,
-        workerQueue,
-      }),
+      grid: [
+        ...loadScheduledGrid(dir, published, shortsCfg.instagramAuthorPage, warnGrid, {
+          instagramCollaborators: shortsCfg.instagramCollaborators,
+          workerQueue,
+        }),
+        // #11795: o corte disputa as contas com a edição do mesmo dia (só leitura, fail-soft).
+        ...(corte ? loadEditionDayGrid(editionDirFor(aammdd), aammdd, shortsCfg.instagramAuthorPage, shortsCfg.instagramCollaborators, warnGrid) : []),
+      ],
     });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
@@ -3371,7 +3535,7 @@ async function main(): Promise<number> {
     }
     return uploaded;
   };
-  const uploadVideo = () => uploadVideoAt(`shorts/${shortVideoFileName(aammdd)}`);
+  const uploadVideo = () => uploadVideoAt(corte ? corteR2Key(corte.slug, "video") : `shorts/${shortVideoFileName(aammdd)}`);
   let uploadedCover: Promise<ReelCoverUpload> | undefined;
   const uploadCover = async (): Promise<ReelCoverUpload> => {
     if (!plan.cover.path) return undefined;
@@ -3380,7 +3544,7 @@ async function main(): Promise<number> {
     const coverPath = plan.cover.path;
     uploadedCover ??= uploadCoverOrFallback(
       () => reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
-        `shorts/${aammdd}-cover.jpg`, readFileSync(coverPath), "image/jpeg").then((r) => r.url),
+        corte ? corteR2Key(corte.slug, "cover") : `shorts/${aammdd}-cover.jpg`, readFileSync(coverPath), "image/jpeg").then((r) => r.url),
       (line) => console.error(line),
     );
     return uploadedCover;
@@ -3446,6 +3610,7 @@ async function main(): Promise<number> {
           file,
           cover: shortCover.bytes,
           force: flags.has("force-youtube"),
+          matchTitleOnly: corte !== null,
           // Grava send_unknown antes do PUT: um processo morto no upload não duplica o Short.
           onBeforeBytes: (marker) => {
             published = persist(marker);
@@ -3487,7 +3652,13 @@ async function main(): Promise<number> {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         const author = igAuthor;
         const publishReel = async () => {
-          const choice = instagramReelRouteChoice({ authorPage: shortsCfg.instagramAuthorPage, aammdd, videoPath, file });
+          const choice = instagramReelRouteChoice({
+            authorPage: shortsCfg.instagramAuthorPage,
+            aammdd,
+            videoPath,
+            file,
+            ...(corte ? { corteVideoKey: corteR2Key(corte.slug, "video") } : {}),
+          });
           const { source, cover } = await resolveInstagramReelInputs({
             route: choice.route,
             file,
@@ -3622,7 +3793,16 @@ async function main(): Promise<number> {
     for (const w of attached.warnings) console.error(`[aviso] ${w}`);
   }
   // #11550: os itens podem ter mudado depois do plano (repost bloqueado, upload do Chrome) — os donos acompanham.
-  plan = { ...plan, owners: assignShortsDestinationOwners(plan.items, { aammdd, now: new Date(), instagramViaTimer: shortsCfg.instagramBackend === "timer-300", writer }) };
+  plan = {
+    ...plan,
+    owners: assignShortsDestinationOwners(plan.items, {
+      aammdd,
+      now: new Date(),
+      instagramViaTimer: shortsCfg.instagramBackend === "timer-300" && !corte,
+      writer,
+      ...(corte ? { baseCommand: corteBaseCommand(corte.slug) } : {}),
+    }),
+  };
   const summary = {
     published: results.filter((r) => r.ok && r.entry?.status === "published").length,
     scheduled: results.filter((r) => r.ok && r.entry?.status === "scheduled").length,
