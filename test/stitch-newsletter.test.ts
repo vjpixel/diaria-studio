@@ -73,7 +73,7 @@ const SNIPPETS_FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "stitch-snippets-fixtur
     "<!--\nnome: Clarice\ncategoria: Divulgação\n-->\n\n" +
       "**Escreva melhor em português com a Clarice\n\n" +
       "A única IA criada por brasileiros para brasileiros.\n\n" +
-      "Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto.\n\n" +
+      "Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 63% de desconto.\n\n" +
       "→ [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)**\n",
   );
   writeFileSync(
