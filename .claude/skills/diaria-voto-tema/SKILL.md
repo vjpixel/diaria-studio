@@ -53,7 +53,7 @@ e regravar o broadcast (foi o que aconteceu no ciclo 2611):
    e no `titulo`/`descricao` de cada opção de `ballot.json`, aplicando o que ele
    apontar.
 2. Passar `mcp__clarice__correct_text(...)` no mesmo texto, aceitando as
-   sugestões (#4514). Preservar `n`, `prazo` e `proponente`.
+   sugestões, depois de salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor) (#4514). Preservar `n`, `prazo` e `proponente`.
 3. Gravar o resultado em `ballot.json` e marcar a revisão:
    `npx tsx scripts/voto-tema-marcar-revisado.ts --ciclo AAMM --humanizador --clarice`.
    O marcador guarda o hash do texto: qualquer edição posterior da cédula o
@@ -120,7 +120,7 @@ no `enviar`, publicar a caixa após o disparo confirmado, inclusive em resume.
 1. Gerar a proposta sem escritas editoriais:
    `npx tsx scripts/update-voto-tema-box.ts --ciclo AAMM --dry-run`.
 2. Passar o CORPO por `Skill("humanizador", ...)` e
-   `mcp__clarice__correct_text(...)`, aplicando as sugestões (#4514).
+   `mcp__clarice__correct_text(...)`, aplicando as sugestões, depois de salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor) (#4514).
    Preservar títulos das opções, prazo e URL UTM. Salvar a copy revisada em
    `data/artigo-especial/votacao/{AAMM}/divulgacao-revisada.md`.
 3. Publicar no arquivo único `data/snippets/voto-tema-divulgacao.md`:

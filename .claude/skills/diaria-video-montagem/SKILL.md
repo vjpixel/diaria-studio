@@ -114,8 +114,12 @@ Legado: `cta_ig`/`cta_out` continuam válidos com `sequences` explícitas. Sem e
 ## Passo 4 — XML para o Premiere
 
 ```bash
-npx tsx scripts/video-montagem.ts build {AAMMDD} [--allow-missing] [--no-audio-refine]
+npx tsx scripts/video-montagem.ts build {AAMMDD} [--allow-missing] [--no-audio-refine] [--no-audio-gain] [--title-mode text|png|off]
 ```
+
+**Ganho de áudio (#11755, decisão do editor 02/11/2026):** cada clipe de áudio leva o filtro Audio Levels do FCP7 com um ganho único calculado do `loudness.json`: leva o bruto a -14 LUFS (o alvo do `review-final`) sem passar o true peak de -1 dBTP, no máximo +12 dB (o teto do Audio Levels). Bruto de 261028 (-9,87 LUFS, TP +0,68): -4,13 dB. Sem loudness medido, sem ganho (`[aviso]`). O limiter, se o editor usar, continua no Premiere. `--no-audio-gain` tira. `[premissa]` até o 1º import confirmar que o Premiere aplica o Audio Levels do xmeml.
+
+**Título nas verticais (#11756, decisão do editor 02/11/2026):** as sequências verticais ganham uma faixa V2 com o título em texto (Georgia, branco, negrito, centrado no topo) na duração do bloco `titulo` (sem ele, do 1º bloco, o gancho). O texto é o `screenTitle` do `blocks.json` (a versão curta que cabe na tela; `""` desliga) ou, sem ele, o título do D1 em `02-reviewed.md`. Default `--title-mode text`: gerador de texto do FCP7 (`generatoritem`), e o PNG transparente do tamanho da vertical sai junto na pasta da edição como reserva (`{AAMMDD}_titulo_vertical.png`). Se o Premiere recusar o gerador, `--title-mode png` põe o PNG como clipe na V2; `off` tira. `[premissa]` até o 1º import.
 
 Grava `{AAMMDD} - montagem (importar no Premiere).xml` na pasta da edição (xmeml v4, um arquivo de mídia, vídeo e áudio linkados) e `plan.json`. Em cada bloco as pausas de 0,35 s ou mais saem, com 0,07 s de respiro de cada lado (sobra ~0,14 s, o que o editor deixa; #11753, antes 0,8 s e 0,2 s, e as pausas de 0,3–0,8 s dentro do clipe ficavam para o editor tirar à mão); pedaço com menos de 0,6 s separado do vizinho por pausa curta (abaixo de 0,8 s) não é cortado, volta ao vizinho; clipes com menos de 0,6 s isolados por pausa longa são descartados; o fecho segura 0,5 s depois da ÚLTIMA PALAVRA, sem passar do começo da palavra seguinte do bruto; cada clipe leva o Center calculado do rosto (olhos a ~40% da altura). O stderr lista clipes e duração por sequência.
 
@@ -160,7 +164,7 @@ Corrigir no `blocks.json` (outra tomada, intervalo explícito) e repetir os Pass
 
 Uma mensagem: links dos dois Docs, caminho do XML, dos SRTs e das prévias, a folha de frames, a duração de cada versão, o loudness do bruto e os achados que sobraram da revisão. Depois, o que fica com o editor:
 
-1. Importar o XML no Premiere (File > Import). Aplicar **Horizontal Flip** nos clipes das 2 sequências (se o bruto estiver espelhado).
+1. Importar o XML no Premiere (File > Import). Aplicar **Horizontal Flip** nos clipes das 2 sequências (se o bruto estiver espelhado). Enquanto o 1º import não confirmar, conferir que o Audio Levels dos clipes de áudio veio com o ganho do relato (#11755) e que o título apareceu na V2 da vertical (#11756; sem ele, rodar o `build` com `--title-mode png` ou arrastar o PNG de reserva para a V2).
 2. Importar o SRT de cada vertical na sequência dela.
 3. Edição fina; logo no início se quiser (a 261023 tinha; não entra na montagem, ver Premissas).
 4. Exportar para **`{AAMMDD}/Final/`** com o destino no nome: `Diaria comentada_Youtube_V{n}.mp4`, `Diaria comentada_Vertical_V{n}.mp4`. O Premiere sugere o nome da sequência, que já segue esse padrão (`videoTargetOf` em `scripts/lib/diaria/drive-video-source.ts`; o `blocks.json` recusa sequência cujo nome indique outro destino).

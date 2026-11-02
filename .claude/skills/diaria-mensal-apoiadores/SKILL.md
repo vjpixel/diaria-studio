@@ -297,7 +297,7 @@ Agent(subagent_type="adhoc-opus-low", prompt=<
 
 Depois, pros arquivos 1-2 e 4-5: `Skill("humanizador", ...)` e
 `mcp__clarice__correct_text(...)`, aplicando as sugestões da Clarice
-incondicionalmente (#4514), **exceto na linha literal de CTA** (frase do
+incondicionalmente (#4514), depois de salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor), **exceto na linha literal de CTA** (frase do
 editor — remover antes, recolocar depois) e em marca/identificador técnico.
 Pular a geração dos canais em `--skip`. O e-mail não tem texto novo: é o
 render Kit do próprio `draft.md`.

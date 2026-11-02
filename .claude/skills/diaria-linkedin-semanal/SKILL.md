@@ -427,7 +427,7 @@ mcp__clarice__correct_text(<texto humanizado>)
 ```
 
 Aplique **todas** as sugestões da Clarice, incondicionalmente (texto curto
-— não precisa de `clarice-apply.ts`) — nunca apresente as sugestões como
+— não precisa de `clarice-apply.ts`. Antes de aplicar, salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor). Nunca apresente as sugestões como
 menu de escolha ao editor, relate o que mudou depois de aplicar, não
 negocie antes (#4514). **Única exceção:** sugestão que corrompa
 identificador técnico ou nome de marca (ex: `diar.ia` → `diária` quebraria
@@ -712,7 +712,7 @@ texto do post de feed é redação nova a cada ciclo. Antes de entregá-lo:
 1. `Skill("humanizador", ...)` no processo completo de 9 passos (mesma
    chamada do Passo 5);
 2. `mcp__clarice__correct_text` sobre o resultado, aplicando **todas** as
-   sugestões (mesma regra do Passo 5, #4514; exceção só pra marca ou
+   sugestões legítimas (filtradas por `clarice-filter.ts`, #11798; mesma regra do Passo 5, #4514; exceção só pra marca ou
    identificador técnico, sinalizada ao editor);
 3. conferir que o texto final tem **zero travessões** (nem `—` nem `–`).
 
