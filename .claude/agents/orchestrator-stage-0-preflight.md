@@ -65,10 +65,15 @@ Design de 2 fases (o script é um processo Node puro — não alcança MCP):
   próprio script) — parar mesmo com `auto_approve`, mesma regra do 0d.bis
   original (nunca bypassa).
 - `pendingAgentDispatch[]` (`0h.4`) → `0h.4` (#10710): `Agent(subagent_type: "beehiiv-exit-history-drain", prompt: "retome do manifest")`, fail-soft (warn); some quando o manifest fica `complete` — conferir no disco (#573). **Leitura opcional do arquivo histórico da Beehiiv (#11225):** se o conector Beehiiv não responder, o agent falha, loga warn e o Stage 0 segue — nunca halt, nunca pergunta. (O `0h.2`, dispatch do `beehiiv-clicks-enricher`, foi aposentado no #11225.)
-- `pendingHumanDecision[]` (hoje `0g` freshness stale e `0j` drafts
-  pendentes) → apresentar `detail`/`prompt`/`options` ao editor exatamente
+- `pendingHumanDecision[]` (hoje `0g` freshness stale, `0j` drafts
+  pendentes e `0p` mês do sorteio desatualizado na 1ª edição do mês, #11896)
+  → apresentar `detail`/`prompt`/`options` ao editor exatamente
   como as subseções correspondentes abaixo descrevem, e agir conforme a
   resposta (inclusive o dispatch do agent `auto-reporter` no caso `s` do 0j).
+  No `0p`, com o dia informado, gravar `platform.config.json` →
+  `raffle.sorteio_do_mes` `{ "mes": "{AAAA-MM}", "dia": N }` (Edit cirúrgico)
+  antes do Stage 3; com `--no-gates`/sem resposta, seguir — o Stage 3 para no
+  `inject-champions-callout.ts` como antes (#4583, nunca publicar o dia velho).
 - `delegatedSteps[]` — lista informativa dos passos que o script nunca
   tenta (0n, 0-replies) — rodar essas seções normalmente, como sempre (ver
   abaixo, inalteradas).

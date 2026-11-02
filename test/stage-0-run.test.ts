@@ -612,6 +612,67 @@ describe("runStage0 --phase continue — caminho feliz", () => {
     assert.match(result.pendingHumanDecision[0].detail, /260422/);
   });
 
+  // #11896: virada de mês com raffle.sorteio_do_mes velho travava o Stage 3
+  // da 261103 no meio da edição. O 0p antecipa a pergunta para o Stage 0.
+  it("0p — 1ª edição do mês com sorteio_do_mes velho vira pendingHumanDecision (#11896)", async () => {
+    const calls: Array<{ script: string; args: string[] }> = [];
+    const handlers = happyExecHandlers({
+      "check-raffle-month.ts": (args) => {
+        calls.push({ script: "check-raffle-month.ts", args });
+        return ok(JSON.stringify({ kind: "current-month-stale", configuredMes: "2026-10", editionMes: "2026-11", message: "msg-current" }));
+      },
+    });
+    const { exec } = makeFakeExec(handlers);
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
+
+    const result = await runStage0(
+      ["--edition", "261103", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0, "nunca aborta o Stage 0");
+    assert.deepEqual(calls[0]?.args, ["--edition", "261103"]);
+    const decision = result.pendingHumanDecision.find((d) => d.step === "0p");
+    assert.ok(decision, "esperava pendingHumanDecision 0p");
+    assert.equal(decision.detail, "msg-current");
+    assert.match(decision.prompt ?? "", /2026-11/);
+  });
+
+  it("0p — últimos dias do mês sem o mês seguinte configurado vira nota, sem decisão pendente (#11896)", async () => {
+    const { exec } = makeFakeExec(
+      happyExecHandlers({
+        "check-raffle-month.ts": () =>
+          ok(JSON.stringify({ kind: "upcoming-month-stale", configuredMes: "2026-10", editionMes: "2026-10", nextMes: "2026-11", daysUntilNextMonth: 2, message: "msg-upcoming" })),
+      }),
+    );
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
+
+    const result = await runStage0(
+      ["--edition", "261030", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    assert.equal(result.pendingHumanDecision.filter((d) => d.step === "0p").length, 0);
+    assert.ok(result.notes.some((n) => n.includes("0p") && n.includes("msg-upcoming")));
+  });
+
+  it("0p — check-raffle-month falhando é fail-soft (#11896)", async () => {
+    const { exec } = makeFakeExec(happyExecHandlers({ "check-raffle-month.ts": () => fail(2, "boom") }));
+    const { execAsync } = makeFakeExecAsync(happyExecAsyncHandlers());
+    const deps = baseDeps({ exec, execAsync });
+
+    const result = await runStage0(
+      ["--edition", "261103", "--phase", "continue", "--mcp-chrome", "true", "--mcp-gmail", "true"],
+      deps,
+    );
+
+    assert.equal(result.code, 0);
+    assert.equal(result.pendingHumanDecision.filter((d) => d.step === "0p").length, 0);
+  });
+
   it("0k — verify-twitter-posts roda sempre (sem gate por env), independente de BUFFER_ACCESS_TOKEN (#6152)", async () => {
     // #6152: o gate por `hasEnv("BUFFER_ACCESS_TOKEN")` foi removido —
     // verify-twitter-posts.ts agora carrega o próprio `.env` e decide
