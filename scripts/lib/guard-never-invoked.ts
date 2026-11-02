@@ -222,6 +222,11 @@ export const KNOWN_INDIRECT_INVOCATIONS: Record<string, string> = {
     "§1w-quint-b (código real) — stage-1-run.ts por sua vez é invocado por " +
     ".claude/agents/orchestrator-stage-1-research.md (`npx tsx scripts/stage-1-run.ts ...`, Etapa 1 do " +
     "orchestrator).",
+  "check-raffle-month":
+    "[cadeia indireta] scripts/stage-0-run.ts chama `scripts/check-raffle-month.ts` no passo 0p " +
+    "(#11896, código real) — stage-0-run.ts por sua vez é invocado por " +
+    ".claude/agents/orchestrator-stage-0-preflight.md (`npx tsx scripts/stage-0-run.ts ...`, Etapa 0 do " +
+    "orchestrator).",
   "ads-kill-switch-alarm":
     "[decisão deliberada] docstring do próprio script (#5239): NÃO wired de propósito até o editor " +
     "decidir armar (bloqueado por marcador `aguardando-ate` na issue de origem, os 3 canais pagos ainda " +
