@@ -311,7 +311,7 @@ arquivos já existentes em vez de insistir na geração). Só cai pra
 — ciclo antigo arquivado sem essas imagens, ou edge-case do
 `select-eia-edition.ts`.
 ```bash
-DAILY_EIA_DIR="data/editions/$EAI_EDITION"
+DAILY_EIA_DIR="data/editions/${EAI_EDITION:0:4}/$EAI_EDITION"  # layout nested {AAMM}/{AAMMDD}
 if [ -f "$DAILY_EIA_DIR/01-eia.md" ] && [ -f "$DAILY_EIA_DIR/01-eia-A.jpg" ] && [ -f "$DAILY_EIA_DIR/01-eia-B.jpg" ]; then
   echo "[etapa-3] Reusando É IA? já aprovado da edição diária $EAI_EDITION (evita gerar imagem nova)."
   npx tsx scripts/lib/mensal/monthly-eia-copy.ts "$DAILY_EIA_DIR/01-eia.md" "data/monthly/$CYCLE/01-eia.md"  # #11790: remove "Resultado da última edição" da diária

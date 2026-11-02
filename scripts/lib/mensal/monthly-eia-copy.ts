@@ -11,10 +11,10 @@ import { fileURLToPath } from "node:url";
 
 /** Pure: remove as linhas "Resultado da última edição: ..." do 01-eia.md. */
 export function stripPrevResultLine(eiaMd: string): string {
-  return eiaMd
-    .split(/\r?\n/)
-    .filter((l) => !/^\s*Resultado da última edição:/i.test(l))
-    .join("\n");
+  const re = /^\s*Resultado da última edição:/i;
+  const lines = eiaMd.split(/(?<=\n)/);
+  if (!lines.some((l) => re.test(l))) return eiaMd; // preserva CRLF/bytes
+  return lines.filter((l) => !re.test(l)).join("");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
