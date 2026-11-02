@@ -493,8 +493,13 @@ export async function fetchVideoStatus(
 export interface EditionVideoCriteria {
   acceptedPeriodVideoId?: string;
   aammdd: string;
-  /** Título que o upload usaria (o do D1). */
+  /** Título que o upload usaria (o do D1, ou o do `--title`, #11739). */
   title: string;
+  /**
+   * #11739: outros títulos que também reconhecem o vídeo como "title" — com
+   * `--title`, o derivado do D1 (upload manual com o título padrão).
+   */
+  altTitles?: string[];
   /**
    * #11070: `short` procura o Short (vertical) da edição, não o horizontal: só
    * vídeos marcados `#Shorts` contam, e o `utm_campaign` da descrição deixa de
@@ -568,7 +573,8 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
   const { aammdd } = criteria;
   const token = new RegExp(`(?<!\\d)${aammdd}(?!\\d)`);
   const campaignRe = /utm_campaign=(\d{6})(?!\d)/g;
-  const want = normalizeTitle(criteria.title);
+  const wanted = new Set([criteria.title, ...(criteria.altTitles ?? [])].map(normalizeTitle).filter(Boolean));
+  const titleMatches = (t: string): boolean => wanted.has(normalizeTitle(t));
   const { startMs, endMs } = editionDayWindowMs(aammdd);
   const inDay = (iso?: string | null): boolean => {
     if (!iso) return false;
@@ -588,9 +594,9 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
       if (!isShort) continue;
       let matchedBy: EditionVideoMatch | null = null;
       if (criteria.titleOnly) {
-        if (want && normalizeTitle(title) === want) matchedBy = "title";
+        if (titleMatches(title)) matchedBy = "title";
       } else if (token.test(title) || tags.some((t) => token.test(t))) matchedBy = "edition-tag";
-      else if (want && normalizeTitle(title) === want) matchedBy = "title";
+      else if (titleMatches(title)) matchedBy = "title";
       else if (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt)) matchedBy = "period";
       if (matchedBy) {
         found.push({ videoId: v.id, url: `https://youtu.be/${v.id}`, title, matchedBy, publishedAt: v.snippet?.publishedAt ?? null, status: v.status ?? null });
@@ -604,7 +610,7 @@ export function matchEditionVideo(videos: VideoListItem[], criteria: EditionVide
       matchedBy = "edition-tag";
     } else if (otherEdition) {
       matchedBy = null;
-    } else if (want && normalizeTitle(title) === want) {
+    } else if (titleMatches(title)) {
       matchedBy = "title";
     } else if (!isShort && (inDay(v.status?.publishAt) || inDay(v.snippet?.publishedAt))) {
       matchedBy = "period";
