@@ -8,16 +8,17 @@
  * dado pessoal que não pode ficar versionado no git; `data/` é gitignored e
  * sincroniza entre máquinas via OneDrive, mesmo padrão do #5227 pras caixas
  * de divulgação em `data/snippets/`), consumido por
- * `scripts/sync-apoio-nivel-kit.ts` e `scripts/lib/apoio-nivel-sync.ts` —
+ * `resolveDesiredApoioLevels` (`scripts/lib/apoio-nivel-sync.ts`), usado pelo sync
+ * do Kit e pelo alarme diário —
  * mesmo shape genérico plataforma-agnóstico que o resto do módulo de apoio
  * (`ApoioNivel` de `./shared/apoio-nivel-types.ts`). Formato/exemplo (sem
  * dado real) continua versionado em `context/apoio-overrides.example.json`.
  *
  * ## Por que existe
  *
- * Hoje `apoio_nivel` (Kit/Beehiiv) é derivado 100% da base do apoia.se
+ * Hoje `apoio_nivel` no Kit é derivado 100% da base do apoia.se
  * (`computeDesiredApoioLevels` em `lib/apoio-nivel-sync.ts`) — não existe
- * camada de override, então um valor editado à mão direto no Kit/Beehiiv é
+ * camada de override, então um valor editado à mão direto no Kit é
  * sobrescrito no próximo `--push`. O pedido original (#8820): fixar
  * manualmente que uma pessoa específica (ex: Bruna Quevedo) é de um
  * determinado nível, independente do que o apoia.se reporta — porque o

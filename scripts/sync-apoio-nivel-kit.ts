@@ -46,12 +46,8 @@
  *
  * ## Guard de publicação / gate consistente com o resto da migração
  *
- * Este é um script STANDALONE, novo, nunca invocado por `/diaria-edicao` nem
- * por nenhuma skill do pipeline — mesmo padrão de `sync-beehiiv-subscribers
- * -kit.ts` (#6091) e `sync-apoio-nivel-brevo.ts` (#4572): existir no repo não
- * muda nenhum comportamento de produção, só fica disponível pro editor rodar
- * manualmente quando o cutover real (#463/#464) acontecer. Dry-run por
- * padrão (só `--push` grava).
+ * Script standalone, fora de `/diaria-edicao`: roda pela `/diaria-apoios-sync` e
+ * pelas skills de envio a apoiadores. Dry-run por padrão (só `--push` grava).
  *
  * **ATUALIZAÇÃO 02/09/2026 (#6925):** o `--push` real JÁ RODOU uma vez, com
  * autorização explícita do editor numa sessão `/diaria-develop` — 3
@@ -75,14 +71,15 @@ import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
-import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
+import { loadApoioOverrides } from "./lib/apoio-overrides.ts";
 import {
   buildApoiosData,
   readPastMonthSnapshots,
   type MonthSnapshot,
 } from "./studio-ui/studio-apoios.ts";
 import {
-  computeDesiredApoioLevels,
+  resolveDesiredApoioLevels,
+  planPushMutations,
   diffApoioTags,
   shouldBlockRemovals,
   isPreviousMonthSnapshotMissing,
@@ -119,13 +116,20 @@ export function extractApoioNivelValueKit(fields: Record<string, string> | undef
  */
 export async function fetchCurrentKitState(config?: KitConfig): Promise<ApoioLevelSnapshot[]> {
   const subs = await listAllKitSubscribers(config);
-  return subs
+  const active = subs
     .filter((s) => s.state === "active")
     .map((s) => ({
       subscriptionId: String(s.id),
       email: s.email_address.trim().toLowerCase(),
       apoioNivel: extractApoioNivelValueKit(s.fields),
     }));
+  // A conta tem base ativa desde #7386: vazio é falha de leitura, nunca "ninguém
+  // assina". Devolver [] classificaria todo apoiador como não assinante e faria o
+  // painel gravar cache vazio.
+  if (active.length === 0) {
+    throw new Error("Kit devolveu 0 assinantes ativos — leitura tratada como falha, nada foi calculado.");
+  }
+  return active;
 }
 
 // ── aplicação (I/O — escrita + verificação por releitura) ──────────────────
@@ -233,14 +237,13 @@ async function main(): Promise<void> {
     );
   }
 
-  let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
 
   // #8820: override manual (data/apoio-overrides.json) vence o valor
   // derivado do apoia.se — aplicado antes do diff, ver docblock de
   // lib/apoio-overrides.ts.
   const overrides = loadApoioOverrides(ROOT);
+  const desired = resolveDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth, overrides);
   if (overrides.length > 0) {
-    desired = applyApoioOverrides(desired, overrides);
     process.stderr.write(
       `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de data/apoio-overrides.json: ` +
         `${overrides.map((o) => `${o.email}→${o.nivel}`).join(", ")}\n`,
@@ -274,7 +277,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (blastGuard.blocked) {
+  const plan = planPushMutations(diff, { blastRadiusBlocked: blastGuard.blocked, removalsBlocked: removalsBlockedByPartialData });
+  if (plan.aborted) {
     process.stderr.write(
       `${LOG_PREFIX} RECUSANDO o --push inteiro (guard de blast radius acima) — nenhuma mutação foi ` +
         "aplicada, nem adições nem remoções. Confira se é uma virada de mês/instabilidade da apoia.se " +
@@ -291,7 +295,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const toApplyNow = [...diff.toApply, ...(removalsBlockedByPartialData ? [] : diff.toRemove)];
+  const toApplyNow = plan.entries;
   process.stderr.write(`${LOG_PREFIX} --push: aplicando ${toApplyNow.length} mutação(ões)…\n`);
 
   let applied = 0;

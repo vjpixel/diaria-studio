@@ -280,6 +280,30 @@ const BEEHIIV_CONFIG = { apiKey: "beehiiv_test_key", publicationId: "pub_123" };
 const TAG_ID = 999;
 
 describe("applyCohortWave", () => {
+  it("e-mail com maiúscula na Beehiiv conta como ativo: ação é deactivate (#11225)", async () => {
+    const results = await withMockFetch(
+      (async (url: string) => {
+        if (url.includes("/subscribers?email_address=")) {
+          return jsonResponse(200, { subscribers: [{ id: 1, email_address: "a@x.com", state: "active" }] });
+        }
+        if (url.includes("/subscribers/1/tags")) return jsonResponse(200, { tags: [{ id: TAG_ID, name: "t" }] });
+        throw new Error(`chamada inesperada: ${url}`);
+      }) as typeof fetch,
+      () =>
+        applyCohortWave({
+          emails: ["a@x.com"],
+          push: false,
+          kitConfig: KIT_CONFIG,
+          tagId: TAG_ID,
+          activeBeehiivEmails: new Set(["A@X.com"]),
+          beehiivConfig: BEEHIIV_CONFIG,
+          fetchImpl: (async () => jsonResponse(200, {})) as typeof fetch,
+        }),
+    );
+    assert.equal(results[0].beehiivWasActive, true);
+    assert.equal(results[0].beehiivAction, "deactivate");
+  });
+
   it("dry-run: NUNCA chama mutação (nem Kit POST, nem Beehiiv PUT) — só leitura", async () => {
     const beehiivCalls: string[] = [];
     const beehiivFetchImpl = (async (url: string, init?: RequestInit) => {

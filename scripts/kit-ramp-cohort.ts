@@ -97,7 +97,7 @@ import { createOrUpdateSubscriber, type KitSubscriberSummary } from "./lib/kit-s
 import { tagSubscriber, findTagIdByName } from "./lib/kit-broadcasts.ts";
 import { resolveAudienceTagId } from "./lib/kit-diaria-audience.ts";
 import { fetchActiveBeehiivEmails } from "./lib/beehiiv-active-subscriptions.ts";
-import { toNormalizedEmailSet, maskEmail } from "./lib/beehiiv-kit-reconcile.ts";
+import { toNormalizedEmailSet, normalizeEmail, maskEmail } from "./lib/beehiiv-kit-reconcile.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[kit-ramp-cohort]";
@@ -522,6 +522,9 @@ export async function applyCohortWave(input: ApplyCohortWaveInput): Promise<Coho
   const fetchImpl = input.fetchImpl ?? fetch;
   const log = input.log ?? (() => {});
   const sleepFn = input.sleepFn ?? sleep;
+  // fetchActiveBeehiivEmails devolve o e-mail cru: sem normalizar, maiúscula na
+  // Beehiiv passaria por inativo e o assinante nunca seria desativado.
+  const normalizedActive = toNormalizedEmailSet([...activeBeehiivEmails]);
 
   interface KitOutcome {
     email: string;
@@ -599,7 +602,7 @@ export async function applyCohortWave(input: ApplyCohortWaveInput): Promise<Coho
 
   // Fase B — Beehiiv: só desativa quem teve o Kit CONFIRMADO na Fase A.
   for (const ko of kitOutcomes) {
-    const beehiivWasActive = activeBeehiivEmails.has(ko.email);
+    const beehiivWasActive = normalizedActive.has(normalizeEmail(ko.email));
     const action = decideBeehiivDeactivateAction({ kitTagConfirmed: ko.confirmed, beehiivActive: beehiivWasActive });
 
     let beehiivApplied = false;
@@ -830,8 +833,7 @@ async function main(): Promise<void> {
     push,
     kitConfig: kitResolved.config,
     tagId,
-    // fetchActiveBeehiivEmails devolve o e-mail como a API manda; a Fase B compara normalizado.
-    activeBeehiivEmails: toNormalizedEmailSet(activeBeehiivEmails),
+    activeBeehiivEmails: new Set(activeBeehiivEmails),
     beehiivConfig: beehiivResolved.ok
       ? beehiivResolved.config
       : ({ apiKey: "", publicationId: "" } as BeehiivConfig), // sem credencial: Fase B nunca chega a "deactivate" de verdade sem beehiivWasActive=true (set vazio acima)

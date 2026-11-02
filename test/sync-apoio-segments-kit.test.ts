@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { segmentsForNivel, buildSegmentsCache, buildVinculoCache } from "../scripts/sync-apoio-segments-kit.ts";
+import { segmentsForNivel, buildSegmentsCache, buildVinculoCache, buildPanelCaches } from "../scripts/sync-apoio-segments-kit.ts";
 import type { ApoioSubscriberSnapshot } from "../scripts/lib/apoio-nivel-sync.ts";
 
 function sub(overrides: Partial<ApoioSubscriberSnapshot> = {}): ApoioSubscriberSnapshot {
@@ -14,52 +14,47 @@ function sub(overrides: Partial<ApoioSubscriberSnapshot> = {}): ApoioSubscriberS
 }
 
 describe("segmentsForNivel (#4437, espelha scripts/lib/apoio-segments-canonical-kit.ts)", () => {
-  it("'amigo' -> ['Apoio — Amigo', 'Apoio — Todos']", () => {
-    assert.deepEqual(segmentsForNivel("amigo"), ["Apoio — Amigo", "Apoio — Todos"]);
+  it("'amigo' -> ['Apoio — Todos', 'Apoio — Amigo']", () => {
+    assert.deepEqual(segmentsForNivel("amigo"), ["Apoio — Todos", "Apoio — Amigo"]);
   });
 
-  it("'apoiador' -> ['Apoio — Apoiador', 'Apoio — Todos']", () => {
-    assert.deepEqual(segmentsForNivel("apoiador"), ["Apoio — Apoiador", "Apoio — Todos"]);
+  it("'apoiador' -> ['Apoio — Todos', 'Apoio — Apoiador']", () => {
+    assert.deepEqual(segmentsForNivel("apoiador"), ["Apoio — Todos", "Apoio — Apoiador"]);
   });
 
-  it("'mantenedor' -> ['Apoio — Mantenedor', 'Apoio — Todos']", () => {
-    assert.deepEqual(segmentsForNivel("mantenedor"), ["Apoio — Mantenedor", "Apoio — Todos"]);
+  it("'mantenedor' -> ['Apoio — Todos', 'Apoio — Mantenedor']", () => {
+    assert.deepEqual(segmentsForNivel("mantenedor"), ["Apoio — Todos", "Apoio — Mantenedor"]);
   });
 
-  it("'patrono' -> ['Apoio — Patrono', 'Apoio — Todos']", () => {
-    assert.deepEqual(segmentsForNivel("patrono"), ["Apoio — Patrono", "Apoio — Todos"]);
+  it("'patrono' -> ['Apoio — Todos', 'Apoio — Patrono']", () => {
+    assert.deepEqual(segmentsForNivel("patrono"), ["Apoio — Todos", "Apoio — Patrono"]);
   });
 
   it("'' (vazio) -> ['Apoio — Nenhum'] só", () => {
     assert.deepEqual(segmentsForNivel(""), ["Apoio — Nenhum"]);
   });
 
-  it("valor desconhecido (nunca deveria ocorrer, mas defensivo) -> ['Apoio — Nenhum']", () => {
-    assert.deepEqual(segmentsForNivel("valor-invalido"), ["Apoio — Nenhum"]);
+  it("valor fora das 4 faixas: campo preenchido casa só com Todos, como a condição canônica", () => {
+    assert.deepEqual(segmentsForNivel("valor-invalido"), ["Apoio — Todos"]);
   });
 
-  it("regressão (self-review #4437): valor de nome de propriedade do Object.prototype ('toString'/'constructor') NUNCA casa como nível válido", () => {
-    // apoio_nivel vem de um custom field EXTERNO (editável na UI do Kit) —
-    // um `in` ingênuo contra um objeto literal enxergaria a cadeia de
-    // protótipo e devolveria uma função em vez de string. Deve cair no
-    // fallback "Apoio — Nenhum", nunca produzir um segmento não-string.
-    assert.deepEqual(segmentsForNivel("toString"), ["Apoio — Nenhum"]);
-    assert.deepEqual(segmentsForNivel("constructor"), ["Apoio — Nenhum"]);
-    assert.deepEqual(segmentsForNivel("hasOwnProperty"), ["Apoio — Nenhum"]);
-    assert.deepEqual(segmentsForNivel("__proto__"), ["Apoio — Nenhum"]);
+  it("regressão (self-review #4437): nome de propriedade do Object.prototype nunca devolve função", () => {
+    for (const v of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+      assert.deepEqual(segmentsForNivel(v), ["Apoio — Todos"]);
+    }
   });
 });
 
 describe("buildSegmentsCache (#4437)", () => {
   const FIXED_NOW = new Date("2026-08-01T12:00:00Z");
 
-  it("monta 1 entrada por assinante, chaveada por email (já normalizado por fetchCurrentBeehiivState)", () => {
+  it("monta 1 entrada por assinante, chaveada por email (já normalizado por fetchCurrentKitState)", () => {
     const subscriptions: ApoioSubscriberSnapshot[] = [
       sub({ email: "amigo@x.com", apoioNivel: "amigo" }),
       sub({ email: "sem-nivel@x.com", apoioNivel: "" }),
     ];
     const cache = buildSegmentsCache(subscriptions, FIXED_NOW);
-    assert.deepEqual(cache["amigo@x.com"].segments, ["Apoio — Amigo", "Apoio — Todos"]);
+    assert.deepEqual(cache["amigo@x.com"].segments, ["Apoio — Todos", "Apoio — Amigo"]);
     assert.equal(cache["amigo@x.com"].apoioNivel, "amigo");
     assert.equal(cache["amigo@x.com"].checkedAt, FIXED_NOW.toISOString());
     assert.deepEqual(cache["sem-nivel@x.com"].segments, ["Apoio — Nenhum"]);
@@ -92,5 +87,27 @@ describe("buildVinculoCache (#11225)", () => {
   it("assinante do Kit que não é contato de apoio não entra no cache", () => {
     const cache = buildVinculoCache(["ativa@x.com"], [sub({ email: "ativa@x.com" }), sub({ email: "outra@x.com" })], now);
     assert.deepEqual(Object.keys(cache), ["ativa@x.com"]);
+  });
+});
+
+describe("buildPanelCaches (#11225)", () => {
+  const now = new Date("2026-11-02T12:00:00.000Z");
+
+  it("filtra pelos contatos; contato fora da base entra como consultado", () => {
+    const { segments, vinculo } = buildPanelCaches(
+      ["Ativa@x.com", "fora@x.com"],
+      [sub({ email: "ativa@x.com", apoioNivel: "amigo" }), sub({ email: "outra@x.com", apoioNivel: "patrono" })],
+      now,
+    );
+    assert.deepEqual(Object.keys(segments).sort(), ["ativa@x.com", "fora@x.com"]);
+    assert.deepEqual(segments["fora@x.com"], { segments: [], apoioNivel: "", checkedAt: now.toISOString() });
+    assert.equal(segments["ativa@x.com"].apoioNivel, "amigo");
+    assert.equal(vinculo["fora@x.com"].hasVinculo, false);
+    assert.equal(vinculo["ativa@x.com"].hasVinculo, true);
+  });
+
+  it("lista vazia de contatos ou de assinantes lança, sem produzir cache", () => {
+    assert.throws(() => buildPanelCaches([], [sub()], now), /nenhum contato/);
+    assert.throws(() => buildPanelCaches(["a@x.com"], [], now), /nenhum assinante/);
   });
 });

@@ -7,7 +7,7 @@
  * da Beehiiv no #11225) — reusando `scripts/lib/apoio-nivel-sync.ts`, sem
  * reimplementar a lógica — e, se houver diff pendente (adições/trocas/remoções), envia um
  * e-mail de alarme ao editor via Gmail API. **NUNCA aplica `--push`** — o
- * gate humano de `/diaria-apoios-sync` (Passo 3) continua sendo a única
+ * gate humano de `/diaria-apoios-sync` (Passo 2) continua sendo a única
  * forma de gravar de verdade no Kit.
  *
  * Idempotente por FINGERPRINT do diff (`scripts/lib/apoios-diff-alarm.ts`) —
@@ -57,13 +57,11 @@ import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
+import { loadApoioOverrides } from "./lib/apoio-overrides.ts";
 import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
 import {
-  computeDesiredApoioLevels,
-  diffApoioTags,
-  shouldBlockRemovals,
-  isPreviousMonthSnapshotMissing,
-  evaluateBlastRadiusGuard,
+  resolveDesiredApoioLevels,
+  computeAlarmDiffInput,
 } from "./lib/apoio-nivel-sync.ts";
 import { fetchCurrentKitState } from "./sync-apoio-nivel-kit.ts";
 import {
@@ -75,7 +73,6 @@ import {
   maskEmailForIssue,
   type ApoiosDiffAlarmState,
   type DiffAlarmInput,
-  type DiffAlarmGuardWarnings,
 } from "./lib/apoios-diff-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -153,8 +150,8 @@ export function toAlarmFinding(input: DiffAlarmInput): AlarmFinding {
     lines.push("");
   }
   lines.push(
-    "Rode /diaria-apoios-sync (revisa o diff antes) ou",
-    "npx tsx scripts/sync-apoio-nivel-kit.ts --push pra aplicar.",
+    "Rode /diaria-apoios-sync: revisa o diff, grava o nível e atualiza as tags de",
+    "audiência, que o --push direto de sync-apoio-nivel-kit.ts não atualiza.",
     "",
     "Esta issue é criada automaticamente pelo alarme (#5339) e será",
     "comentada/fechada sozinha quando o diff deixar de reproduzir por",
@@ -266,14 +263,10 @@ async function main(): Promise<void> {
     console.error(`${LOG_PREFIX} aviso: não foi possível ler snapshots de meses anteriores: ${(e as Error).message}`);
   }
 
-  const desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
+  // #8820: mesmo override do sync, senão o alarme acusaria diff que o sync não aplica.
+  const desired = resolveDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth, loadApoioOverrides(ROOT));
   const current = await fetchCurrentKitState(kitConfig.config);
-  const diff = diffApoioTags(desired, current);
-
-  const input: DiffAlarmInput = {
-    toApply: diff.toApply.map((e) => ({ email: e.email, contactName: e.contactName, fromLevel: e.fromLevel, toLevel: e.toLevel })),
-    toRemove: diff.toRemove.map((e) => ({ email: e.email, contactName: e.contactName, fromLevel: e.fromLevel, toLevel: e.toLevel })),
-  };
+  const { input, guardWarnings } = computeAlarmDiffInput({ desired, current, pastSnapshots, currentMonth, dataError: data.error ?? null });
 
   const state = loadState();
   console.log(
@@ -314,26 +307,6 @@ async function main(): Promise<void> {
   }
 
   if (hasPendingDiff(input)) {
-    // Self-review finding 5 (PR #4503): informa no e-mail quais remoções um
-    // `--push` real recusaria — avaliado SEM os escape hatches
-    // (`--allow-partial`/`--force-blast-radius`), o pior caso, já que este
-    // script nunca sabe se o editor vai usá-los.
-    //
-    // #7195: precisa passar `previousMonthSnapshotMissing` junto, senão a
-    // promessa de "pior caso" acima deixa de valer — o sync real bloqueia
-    // remoções quando o snapshot de M-1 falta, e este alarme reportaria
-    // `partialDataBlocksRemovals: false` exatamente nesse cenário,
-    // SUBESTIMANDO o risco no e-mail que vai pro editor.
-    const partialDataBlocksRemovals =
-      shouldBlockRemovals(data.error, diff, false, {
-        previousMonthSnapshotMissing: isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth),
-      }) && diff.toRemove.length > 0;
-    const blastGuard = evaluateBlastRadiusGuard(diff.toRemove.length, current, false);
-    const guardWarnings: DiffAlarmGuardWarnings = {
-      partialDataBlocksRemovals,
-      blastRadiusBlocked: blastGuard.blocked,
-      blastRadiusRatioPct: Math.round(blastGuard.ratio * 1000) / 10,
-    };
     if (isDryRun) {
       const { subject, body } = buildApoiosDiffAlarmEmail(input, guardWarnings, issueRef);
       const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);

@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { buildApoiosDiffAlarmEmail } from "../scripts/lib/apoios-diff-alarm.ts";
+import { toAlarmFinding } from "../scripts/apoios-diff-alarm.ts";
+import { segmentsCachePath, vinculoCachePath } from "../scripts/studio-ui/studio-apoios.ts";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");
@@ -26,18 +28,46 @@ describe("sync de apoio sem Beehiiv (#11225)", () => {
     assert.doesNotMatch(src, /loadBeehiivConfig|beehiiv-config|fetchCurrentBeehiiv/);
   });
 
-  it("kit-ramp-cohort normaliza os ativos da Beehiiv antes de comparar (a lib não normaliza)", () => {
-    assert.match(read("scripts/kit-ramp-cohort.ts"), /activeBeehiivEmails: toNormalizedEmailSet\(activeBeehiivEmails\)/);
-  });
-
-  it("o e-mail do alarme manda aplicar pelo sync do Kit", () => {
+  it("o e-mail do alarme manda aplicar pela skill, que também atualiza as tags", () => {
     const { body } = buildApoiosDiffAlarmEmail({
       toApply: [{ email: "a@x.com", contactName: "A", fromLevel: null, toLevel: "amigo" }],
       toRemove: [],
     });
-    assert.match(body, /sync-apoio-nivel-kit\.ts --push/);
+    assert.match(body, /Rode \/diaria-apoios-sync/);
+    assert.match(body, /não atualiza/);
     assert.match(body, /apoio_nivel no Kit/);
     assert.doesNotMatch(body, /Beehiiv|beehiiv/);
+  });
+
+  it("o corpo da issue do alarme também manda pela skill, com e-mail mascarado", () => {
+    const { body } = toAlarmFinding({
+      toApply: [{ email: "fulano@x.com", contactName: "F", fromLevel: null, toLevel: "amigo" }],
+      toRemove: [],
+    });
+    assert.match(body, /Rode \/diaria-apoios-sync/);
+    assert.doesNotMatch(body, /fulano@x\.com|Beehiiv|beehiiv/);
+  });
+
+  it("os caches do painel têm os caminhos do Kit", () => {
+    assert.match(segmentsCachePath("/r").replaceAll("\\", "/"), /data\/apoia-se\/kit-segments\.json$/);
+    assert.match(vinculoCachePath("/r").replaceAll("\\", "/"), /data\/apoia-se\/kit-vinculo\.json$/);
+  });
+
+  it("a skill grava o nível, espera convergir, projeta as tags e só depois atualiza o painel", () => {
+    const skill = read(".claude/skills/diaria-apoios-sync/SKILL.md");
+    const nivel = skill.indexOf("sync-apoio-nivel-kit.ts --push");
+    const converge = skill.indexOf("## Passo 3");
+    const tags = skill.indexOf("sync-apoio-mensal-tag-kit.ts");
+    const painel = skill.indexOf("npx tsx scripts/sync-apoio-segments-kit.ts");
+    assert.ok(nivel > 0 && nivel < converge && converge < tags && tags < painel);
+    assert.match(skill.slice(converge, tags), /repetir o dry-run/i);
+    assert.match(skill, /Não aplicar\*\* → pular para o Passo 5/);
+    assert.match(skill, /recusa o `--push` inteiro/);
+  });
+
+  it("o resumo do painel separa não consultados de não assinantes", () => {
+    const js = read("scripts/studio-ui/public/apoios.js");
+    assert.match(js, /não são assinantes ativos no Kit, \$\{naoConsultados\} não consultados/);
   });
 
   it("a skill /diaria-apoios-sync grava no Kit e não pede navegador nem MCP da Beehiiv", () => {

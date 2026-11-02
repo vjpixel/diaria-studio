@@ -203,7 +203,10 @@ removeu `sync-beehiiv-subscribers-kit.ts` (com a task
 `test/evaluate-brevo-diaria-self-confirm-kit-11225.test.ts`) e o
 `beehiiv-clicks-enricher` (Stage 0h.2, passo 1b de `diaria-linkedin-semanal`
 e `diaria-retro-semanal`, `verify-clicks-enrichment.ts`, `apply-mcp-clicks.ts`). A 4ª
-removeu os `sync-apoio-*-beehiiv.ts` e `apoio-segments-canonical.ts`.
+removeu os `sync-apoio-*-beehiiv.ts` e `apoio-segments-canonical.ts`: a lógica
+de nível foi para `scripts/lib/apoio-nivel-sync.ts`, o alarme, a
+`/diaria-apoios-sync` e o painel Apoios passaram para o Kit, e o
+`kit-ramp-cohort.ts` ficou, lendo os ativos por `fetchActiveBeehiivEmails`.
 
 Fora das fatias já feitas: plano/assinatura da conta (item 6, ação do
 editor depois de um export completo). O ramo

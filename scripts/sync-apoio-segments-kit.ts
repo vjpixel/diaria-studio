@@ -11,12 +11,14 @@
  *   lista membros de segmento (`lib/apoio-segments-canonical-kit.ts`).
  * - `data/apoia-se/kit-vinculo.json`: se o e-mail é assinante ativo no Kit.
  *
+ * Leitura vazia sai não-zero sem sobrescrever os caches.
+ *
  * Só LÊ do Kit. Os caches antigos `beehiiv-segments.json` e
  * `beehiiv-vinculo.json` ficam no disco, sem uso.
  *
  * O endpoint de lista do Kit serve `fields` defasado por um tempo depois de um
- * PATCH: logo após `sync-apoio-nivel-kit.ts --push`, o painel pode mostrar o
- * nível antigo até a próxima rodada deste script.
+ * PATCH: rodar logo após `sync-apoio-nivel-kit.ts --push` grava o nível antigo.
+ * Rodar depois que o dry-run do nível convergir.
  *
  * Uso:
  *   npx tsx scripts/sync-apoio-segments-kit.ts
@@ -28,7 +30,7 @@ import { resolveKitConfig } from "./lib/kit-config.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadContacts } from "./lib/apoio-contacts-store.ts";
-import { type ApoioNivel, isApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
+import { expectedKitSegmentsFor } from "./lib/apoio-segments-canonical-kit.ts";
 import type { ApoioSubscriberSnapshot } from "./lib/apoio-nivel-sync.ts";
 import { fetchCurrentKitState } from "./sync-apoio-nivel-kit.ts";
 import { segmentsCachePath, vinculoCachePath, type SegmentsCache, type VinculoCache } from "./studio-ui/studio-apoios.ts";
@@ -36,30 +38,12 @@ import { segmentsCachePath, vinculoCachePath, type SegmentsCache, type VinculoCa
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[sync-apoio-segments-kit]";
 
-const NIVEL_TO_SEGMENT_NAME: Record<ApoioNivel, string> = {
-  amigo: "Apoio — Amigo",
-  apoiador: "Apoio — Apoiador",
-  mantenedor: "Apoio — Mantenedor",
-  patrono: "Apoio — Patrono",
-};
-
-const SEGMENT_NAME_TODOS = "Apoio — Todos";
-const SEGMENT_NAME_NENHUM = "Apoio — Nenhum";
-
-/**
- * Pure: segmentos `Apoio — *` de um valor de `apoio_nivel`. Nível setado casa
- * com a faixa + "Todos"; vazio ou desconhecido casa só com "Nenhum".
- * `isApoioNivel` compara valores, então um campo externo como "toString" nunca
- * casa pela cadeia de protótipo do objeto acima (self-review #4437).
- */
+/** Segmentos `Apoio — *` de um valor de `apoio_nivel`, pela condição canônica. */
 export function segmentsForNivel(apoioNivel: string): string[] {
-  if (isApoioNivel(apoioNivel)) {
-    return [NIVEL_TO_SEGMENT_NAME[apoioNivel], SEGMENT_NAME_TODOS];
-  }
-  return [SEGMENT_NAME_NENHUM];
+  return expectedKitSegmentsFor(apoioNivel);
 }
 
-/** Pure: cache `email normalizado → SegmentsInfo` a partir do snapshot lido. */
+/** Pure: cache `email normalizado → SegmentsInfo`, uma entrada por assinante. */
 export function buildSegmentsCache(
   subscriptions: readonly ApoioSubscriberSnapshot[],
   now: Date = new Date(),
@@ -100,6 +84,27 @@ export function buildVinculoCache(
   return cache;
 }
 
+/**
+ * Pure: os dois caches do painel, só com e-mails de contatos. Contato fora da
+ * base ativa ganha entrada mesmo assim (`segments: []`, `hasVinculo: false`):
+ * foi consultado, e o painel distingue isso de "nunca consultado". Lista vazia
+ * lança, para uma leitura ruim nunca sobrescrever o cache anterior.
+ */
+export function buildPanelCaches(
+  contactEmails: readonly string[],
+  subscriptions: readonly ApoioSubscriberSnapshot[],
+  now: Date = new Date(),
+): { segments: SegmentsCache; vinculo: VinculoCache } {
+  const wanted = new Set(contactEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
+  if (wanted.size === 0) throw new Error("nenhum contato de apoio carregado; caches não foram sobrescritos.");
+  if (subscriptions.length === 0) throw new Error("nenhum assinante ativo lido do Kit; caches não foram sobrescritos.");
+  const segments = buildSegmentsCache(subscriptions.filter((s) => wanted.has(s.email)), now);
+  for (const email of wanted) {
+    segments[email] ??= { segments: [], apoioNivel: "", checkedAt: now.toISOString() };
+  }
+  return { segments, vinculo: buildVinculoCache([...wanted], subscriptions, now) };
+}
+
 async function main(): Promise<void> {
   loadProjectEnv(ROOT);
   const kitConfig = resolveKitConfig();
@@ -110,14 +115,12 @@ async function main(): Promise<void> {
   }
 
   const contactEmails = loadContacts(ROOT).flatMap((c) => c.emails);
-  const wanted = new Set(contactEmails.map((e) => e.trim().toLowerCase()));
 
   process.stderr.write(`${LOG_PREFIX} buscando estado atual no Kit…\n`);
   const subscriptions = await fetchCurrentKitState(kitConfig.config);
   process.stderr.write(`${LOG_PREFIX} ${subscriptions.length} assinante(s) ativo(s) no Kit.\n`);
 
-  const segments = buildSegmentsCache(subscriptions.filter((s) => wanted.has(s.email)));
-  const vinculo = buildVinculoCache(contactEmails, subscriptions);
+  const { segments, vinculo } = buildPanelCaches(contactEmails, subscriptions);
   writeFileAtomic(segmentsCachePath(ROOT), JSON.stringify(segments, null, 2));
   writeFileAtomic(vinculoCachePath(ROOT), JSON.stringify(vinculo, null, 2));
   process.stderr.write(

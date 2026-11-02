@@ -175,7 +175,7 @@ function vinculoBadge(vinculo) {
   if (vinculo.hasVinculo) {
     return '<span class="vinculo-badge vinculo-ok" title="assinante Kit confirmado">✅ assinante Kit</span>';
   }
-  return '<span class="vinculo-badge vinculo-falta" title="não encontrado como assinante Kit">❌ não é assinante Kit</span>';
+  return '<span class="vinculo-badge vinculo-falta" title="consultado: este e-mail não é assinante ativo no Kit">❌ não é assinante ativo</span>';
 }
 
 // #4437 Entrega 2: valor de apoio explícito no card, campo PRÓPRIO (além do
@@ -215,7 +215,7 @@ function segmentsBadge(segments) {
     return '<span class="segments-badge segments-sem-dados" title="nenhum email deste contato foi consultado ainda (sync scripts/sync-apoio-segments-kit.ts pode não ter rodado)">segmentos Kit: não consultado</span>';
   }
   if (segments.segments.length === 0) {
-    return '<span class="segments-badge segments-vazio" title="consultado — nenhum segmento Apoio — * encontrado">segmentos Kit: nenhum</span>';
+    return '<span class="segments-badge segments-vazio" title="consultado: não é assinante ativo no Kit">segmentos Kit: não é assinante ativo</span>';
   }
   const title = `apoio_nivel no Kit: ${escapeHtml(segments.apoioNivel || "(vazio)")}`;
   return `<span class="segments-badge segments-ok" title="${title}">${escapeHtml(segments.segments.join(", "))}</span>`;
@@ -238,21 +238,20 @@ function renderTiles() {
   renderVinculoSummary();
 }
 
-// #4273 parte 3: contador agregado "N de M apoiadores sem vínculo Kit" —
+// #4273 parte 3: contador agregado de apoiadores sem vínculo Kit —
 // calculado client-side sobre o snapshot já carregado (nenhuma agregação nova
 // do servidor). M = apoiadores confirmados este mês ("apoiando"); N = os que
-// NÃO têm vínculo Kit confirmado (vinculo === null, ainda não consultado,
-// OU hasVinculo === false, consultado e sem vínculo — os dois contam como
-// "não confirmado" pro propósito de checar se a recompensa está sendo
-// entregue). M === 0 não mostra nada (nada pra reportar ainda).
+// separa vinculo === null (ainda não consultado) de hasVinculo === false
+// (consultado, não é assinante ativo). M === 0 não mostra nada (nada pra reportar ainda).
 function renderVinculoSummary() {
   const apoiadores = data.contacts.filter((c) => c.status?.label === "apoiando");
-  const semVinculo = apoiadores.filter((c) => !c.vinculo?.hasVinculo);
+  const naoConsultados = apoiadores.filter((c) => !c.vinculo).length;
+  const semVinculo = apoiadores.filter((c) => c.vinculo && !c.vinculo.hasVinculo).length;
   if (apoiadores.length === 0) {
     el.vinculoSummary.textContent = "";
     return;
   }
-  el.vinculoSummary.textContent = `${semVinculo.length} de ${apoiadores.length} apoiadores sem vínculo Kit confirmado.`;
+  el.vinculoSummary.textContent = `De ${apoiadores.length} apoiadores: ${semVinculo} não são assinantes ativos no Kit, ${naoConsultados} não consultados.`;
 }
 
 // #3844 parte 2: renderiza a visão por grupo/nível de recompensa do mês

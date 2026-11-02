@@ -39,9 +39,11 @@ Apresentar ao editor o diff impresso em stderr:
 assinantes reais, sem staging reversível equivalente a rascunho.** Perguntar ao
 editor se aplica. Opções:
 - **Aplicar** → rodar com `--push`.
-- **Não aplicar** → parar aqui, nada foi escrito.
-- Guard de blast radius "EXCEDIDO": avisar que só há remoção em massa com
-  `--force-blast-radius`, e perguntar se é isso mesmo.
+- **Não aplicar** → pular para o Passo 5, que ainda atualiza o painel; nada foi
+  escrito no Kit.
+- Guard de blast radius "EXCEDIDO": avisar que ele recusa o `--push` inteiro,
+  adições inclusive, e que só `--force-blast-radius` passa. Perguntar se é isso
+  mesmo.
 - `sem_dados` bloqueando remoções: avisar que `--allow-partial` as força, e que
   sem a flag as adições e trocas são aplicadas e só as remoções ficam pendentes.
 
@@ -51,10 +53,20 @@ npx tsx scripts/sync-apoio-nivel-kit.ts --push [--allow-partial] [--force-blast-
 
 Nunca rodar `--push` sem o editor ter visto o diff do Passo 1.
 
-## Passo 3 — projetar as tags
+## Passo 3 — esperar o nível convergir
 
-As tags de audiência são projeção de `apoio_nivel`. Rodar sempre depois do Passo
-2, nessa ordem, em dry-run primeiro e com `--push` depois de mostrar o diff:
+A releitura de `--push` confere cada escrita pelo GET singular, mas o endpoint de
+lista do Kit serve `fields` defasado por um tempo, e os syncs de tag leem essa
+lista. Projetar antes de convergir usa o nível antigo.
+
+Repetir o dry-run do Passo 1 até os e-mails gravados saírem do diff. Enquanto
+não saem, não reaplicar: esperar minutos e rodar de novo. Pulado se nada foi
+gravado.
+
+## Passo 4 — projetar as tags
+
+As tags de audiência são projeção de `apoio_nivel`. Em dry-run primeiro, com
+`--push` depois de mostrar o diff:
 
 ```
 npx tsx scripts/sync-apoio-mensal-tag-kit.ts [--push]
@@ -62,22 +74,18 @@ npx tsx scripts/sync-apoio-especial-tag-kit.ts [--push]
 npx tsx scripts/sync-apoio-voto-tema-tag-kit.ts [--push]
 ```
 
-**A releitura de `sync-apoio-nivel-kit.ts --push` já confere cada escrita pelo
-GET singular.** O endpoint de lista do Kit serve `fields` defasado por um tempo:
-dry-run logo depois do push (deste sync ou das tags) ainda pode mostrar o mesmo
-diff. Não reaplicar por isso; conferir de novo minutos depois.
+## Passo 5 — atualizar o painel Apoios
 
-## Passo 4 — atualizar o painel Apoios
+Roda sempre, também no ramo "Não aplicar", e depois da convergência:
 
 ```
 npx tsx scripts/sync-apoio-segments-kit.ts
 ```
 
 Só lê do Kit e grava `data/apoia-se/kit-segments.json` e
-`data/apoia-se/kit-vinculo.json`. Pela mesma defasagem da lista, rodar depois de
-um push pode ainda trazer o nível antigo.
+`data/apoia-se/kit-vinculo.json`. Leitura vazia sai não-zero sem sobrescrever.
 
-## Passo 5 — relatório final
+## Passo 6 — relatório final
 
 Apresentar ao editor:
 - Quantas mutações foram aplicadas e quantas falharam, em cada sync.

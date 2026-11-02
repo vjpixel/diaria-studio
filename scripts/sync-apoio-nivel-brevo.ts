@@ -574,7 +574,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // Mesma sequência de lib/apoio-nivel-sync.ts::main() (extraída pra
+  // Mesma sequência de sync-apoio-nivel-kit.ts::main() (extraída pra
   // runApoioReconciliationCycle, também duplicada em apoios-diff-alarm.ts —
   // precedente já estabelecido nesse arquivo pra este exato bloco): drena
   // Gmail (apoia.se) → importa notificações de PAGAMENTO CONFIRMADO como
@@ -664,7 +664,7 @@ async function main(): Promise<void> {
   // bloqueia mais (blocked sempre false) — `--force-blast-radius` ficou sem
   // efeito e foi removido da CLI (era o escape hatch de um guard que não
   // existe mais). `force: false` fixo aqui só preserva a assinatura da
-  // função pura (mantida pra paridade com lib/apoio-nivel-sync.ts e
+  // função pura (mantida pra paridade com `evaluateBlastRadiusGuard` e
   // testabilidade histórica).
   const blastGuard = evaluateBrevoBlastRadiusGuard(diff.toRemove.length, current.length, false);
 

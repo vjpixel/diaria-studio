@@ -20,13 +20,14 @@
  * `DISPLAY`/`WAYLAND_DISPLAY`, sem `google-chrome`/`chromium` instalado.
  * `detectExecMode() === 'local'` nunca deveria ter sido lido como "logo,
  * Claude in Chrome funciona aqui" — os dois sinais respondem perguntas
- * diferentes e precisam ser checados separadamente (ver #5209, que consome
- * este helper no preflight de `/diaria-artigo-especial`).
+ * diferentes e precisam ser checados separadamente (ver #5209, que criou
+ * o preflight para a `/diaria-apoios-sync`, hoje sem navegador desde o #11225; o
+ * consumidor atual é `/diaria-artigo-especial`).
  *
  * Sinal, por plataforma (a checagem de `DISPLAY`/`WAYLAND_DISPLAY` é um
  * conceito X11/Wayland — **só faz sentido em Linux**; aplicá-la também no
  * Windows daria falso-negativo permanente em `neo`, a MÁQUINA que #5209
- * designa pra rodar `/diaria-artigo-especial` — Windows não usa essas env vars
+ * designou para as skills com Chrome — Windows não usa essas env vars
  * pra sinalizar sessão gráfica, então checá-las lá sempre resultaria em
  * `'unavailable'` mesmo com o editor logado numa sessão desktop normal):
  *   - **Linux**: `DISPLAY` OU `WAYLAND_DISPLAY` não-vazio (há display gráfico
@@ -62,7 +63,7 @@
  *   ```
  *
  * @see scripts/lib/exec-mode.ts (eixo irmão — recursos locais / ExecMode)
- * @see .claude/skills/diaria-artigo-especial/SKILL.md § Passo 0 (#5209)
+ * @see .claude/skills/diaria-artigo-especial/SKILL.md § Passo 0 (padrão do #5209)
  */
 
 import { existsSync } from "node:fs";

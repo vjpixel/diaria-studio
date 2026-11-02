@@ -42,7 +42,11 @@ import {
   previousMonthKey,
   levelFromSnapshot,
   evaluateBlastRadiusGuard,
+  resolveDesiredApoioLevels,
+  computeAlarmDiffInput,
+  planPushMutations,
   type ApoioSubscriberSnapshot,
+  type ApoioTagDiffEntry,
 } from "../scripts/lib/apoio-nivel-sync.ts";
 import { reconcilePendingPromises } from "../scripts/lib/apoio-reconciliation-cycle.ts";
 import type { ContactWithStatus, MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
@@ -292,7 +296,7 @@ describe("computeDesiredApoioLevels — carência de 1 mês (#4436, corpo da iss
 });
 
 describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () => {
-  it("gera 1 entrada de diff por e-mail casado na Beehiiv", () => {
+  it("gera 1 entrada de diff por e-mail casado na plataforma", () => {
     const desired = computeDesiredApoioLevels(
       [
         contact("c1", ["principal@x.com", "secundario@x.com"], {
@@ -317,7 +321,7 @@ describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () 
     for (const e of diff.toApply) assert.equal(e.toLevel, "apoiador");
   });
 
-  it("só o e-mail que TEM subscription Beehiiv gera diff — o outro fica de fora, sem erro", () => {
+  it("só o e-mail que TEM assinatura gera diff — o outro fica de fora, sem erro", () => {
     const desired = computeDesiredApoioLevels(
       [
         contact("c1", ["principal@x.com", "naobeehiiv@x.com"], {
@@ -338,7 +342,7 @@ describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () 
 });
 
 describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#4273)", () => {
-  it("contato sem_dados TAGGEADO na Beehiiv → nenhuma ação, vai pra skippedUnresolved", () => {
+  it("contato sem_dados TAGGEADO na plataforma → nenhuma ação, vai pra skippedUnresolved", () => {
     const desired = computeDesiredApoioLevels([contact("c1", ["semdados@x.com"], { label: "sem_dados" })], [], NO_HISTORY_MONTH);
     const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "semdados@x.com", "apoiador")];
     const diff = diffApoioTags(desired, current);
@@ -441,7 +445,7 @@ describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#427
     assert.equal(diff.toApply.length, 0);
   });
 
-  it("apoiou_e_parou (histórico antigo, fora da carência) também gera toRemove se ainda tem valor na Beehiiv", () => {
+  it("apoiou_e_parou (histórico antigo, fora da carência) também gera toRemove se ainda tem valor na plataforma", () => {
     const desired = computeDesiredApoioLevels(
       [contact("c1", ["exapoiador@x.com"], { label: "apoiou_e_parou", lastPaidMonth: "2026-03", matchedEmail: "exapoiador@x.com" })],
       [],
@@ -462,7 +466,7 @@ describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#427
   });
 });
 
-describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#4273)", () => {
+describe("diffApoioTags — caso 5: apoiador que não é assinante (#4273)", () => {
   it("nenhum e-mail do contato casa com nenhuma subscription → notSubscribed, sem erro", () => {
     const desired = computeDesiredApoioLevels(
       [contact("c1", ["naotemconta@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "naotemconta@x.com" })],
@@ -477,7 +481,7 @@ describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#
     assert.equal(diff.toRemove.length, 0);
   });
 
-  it("estado da Beehiiv vazio (nenhum assinante) → todos os desejados caem em notSubscribed", () => {
+  it("estado da plataforma vazio (nenhum assinante) → todos os desejados caem em notSubscribed", () => {
     const desired = computeDesiredApoioLevels(
       [
         contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "a@x.com" }),
@@ -493,7 +497,7 @@ describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#
   });
 
   // #4490 causa 3: candidatos heurísticos quando não casa por e-mail exato.
-  it("gera candidato heurístico (local-part normalizado) quando o e-mail Beehiiv difere só por pontuação", () => {
+  it("gera candidato heurístico (local-part normalizado) quando o e-mail assinante difere só por pontuação", () => {
     const c = contact("murilo", ["murilo.sarno@online.uscs.edu.br"], {
       label: "apoiando",
       monthlyValue: 20,
@@ -771,5 +775,77 @@ describe("reconcilePendingPromises (#4490 causa 4)", () => {
     assert.deepEqual(result.promoted.map((p) => p.email).sort(), ["confirmada@x.com"]);
     assert.deepEqual(result.remainingPromises.map((p) => p.email).sort(), ["erro@x.com", "pendente@x.com"]);
     assert.equal(result.contacts.length, 1);
+  });
+});
+
+describe("resolveDesiredApoioLevels (#8820, #11225)", () => {
+  const override = [{ email: "a@x.com", nivel: "patrono" as const, motivo: "teste", desde: "2026-01-01" }];
+
+  it("override vence o valor derivado; sem override, igual ao cálculo puro", () => {
+    const c = [contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 5 })];
+    assert.equal(resolveDesiredApoioLevels(c, [], NO_HISTORY_MONTH, override)[0].level, "patrono");
+    assert.equal(resolveDesiredApoioLevels(c, [], NO_HISTORY_MONTH, [])[0].level, "amigo");
+  });
+
+  it("alarme com override não acusa diff que o sync não aplicaria", () => {
+    const c = [contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 5 })];
+    const desired = resolveDesiredApoioLevels(c, [monthSnapshot("2026-07", {})], NO_HISTORY_MONTH, override);
+    const { input } = computeAlarmDiffInput({
+      desired,
+      current: [sub("s1", "a@x.com", "patrono")],
+      pastSnapshots: [monthSnapshot("2026-07", {})],
+      currentMonth: NO_HISTORY_MONTH,
+      dataError: null,
+    });
+    assert.deepEqual(input, { toApply: [], toRemove: [] });
+  });
+});
+
+describe("computeAlarmDiffInput (#11225)", () => {
+  const removal = () => computeDesiredApoioLevels([contact("c1", ["a@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
+
+  it("snapshot do mês anterior ausente avisa que as remoções seriam recusadas (#7195)", () => {
+    const { input, guardWarnings } = computeAlarmDiffInput({
+      desired: removal(),
+      current: [sub("s1", "a@x.com", "amigo")],
+      pastSnapshots: [],
+      currentMonth: NO_HISTORY_MONTH,
+      dataError: null,
+    });
+    assert.equal(input.toRemove.length, 1);
+    assert.equal(guardWarnings.partialDataBlocksRemovals, true);
+  });
+
+  it("com snapshot presente e sem erro, não há aviso de dado parcial; blast radius é reportado", () => {
+    const { guardWarnings } = computeAlarmDiffInput({
+      desired: removal(),
+      current: [sub("s1", "a@x.com", "amigo")],
+      pastSnapshots: [monthSnapshot("2026-07", {})],
+      currentMonth: NO_HISTORY_MONTH,
+      dataError: null,
+    });
+    assert.equal(guardWarnings.partialDataBlocksRemovals, false);
+    assert.equal(guardWarnings.blastRadiusBlocked, true);
+    assert.equal(guardWarnings.blastRadiusRatioPct, 100);
+  });
+});
+
+describe("planPushMutations (#11225)", () => {
+  const entry = (email: string): ApoioTagDiffEntry => ({ contactId: "c", contactName: "C", email, subscriptionId: "1", fromLevel: null, toLevel: "amigo" });
+  const diff = { toApply: [entry("add@x.com")], toRemove: [entry("rm@x.com")] };
+
+  it("blast radius aborta tudo, adições inclusive", () => {
+    assert.deepEqual(planPushMutations(diff, { blastRadiusBlocked: true, removalsBlocked: false }), { aborted: true, entries: [] });
+  });
+
+  it("dados parciais tiram só as remoções", () => {
+    const plan = planPushMutations(diff, { blastRadiusBlocked: false, removalsBlocked: true });
+    assert.equal(plan.aborted, false);
+    assert.deepEqual(plan.entries.map((e) => e.email), ["add@x.com"]);
+  });
+
+  it("sem bloqueio, aplica adições e remoções", () => {
+    const plan = planPushMutations(diff, { blastRadiusBlocked: false, removalsBlocked: false });
+    assert.deepEqual(plan.entries.map((e) => e.email), ["add@x.com", "rm@x.com"]);
   });
 });

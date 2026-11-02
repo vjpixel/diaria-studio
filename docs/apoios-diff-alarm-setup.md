@@ -10,7 +10,7 @@ ninguém notar.
 ## O que ele faz
 
 Task `Diaria-Apoios-Diff-Alarm` (`scripts/lib/scheduled-tasks.ts`) → `scripts/apoios-diff-alarm.ts`, rodando
-diariamente às 09:45 via systemd (o antigo wrapper `.ps1` do Windows foi removido no #5115, cutover final). Computa o MESMO diff do dry-run de
+diariamente às 09:45 via systemd (o antigo wrapper `.ps1` do Windows foi removido no #5115, cutover final). Computa o MESMO diff do dry-run, com os overrides de `data/apoio-overrides.json`, de
 `scripts/sync-apoio-nivel-kit.ts` (apoia.se × custom field `apoio_nivel`
 no Kit) — se houver diff pendente (adições/trocas/remoções), alarma o
 editor por e-mail (Gmail).

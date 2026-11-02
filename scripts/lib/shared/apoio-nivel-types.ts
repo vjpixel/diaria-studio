@@ -2,7 +2,7 @@
  * apoio-nivel-types.ts (#7030 hotfix)
  *
  * `ApoioNivel` (a união de 4 literais amigo/apoiador/mantenedor/patrono) +
- * `isApoioNivel` extraídos de `scripts/sync-apoio-nivel-beehiiv.ts` pra um
+ * `isApoioNivel` extraídos de `scripts/sync-apoio-nivel-beehiiv.ts` (aposentado no #11225) pra um
  * módulo PURO em `lib/shared/` — zero imports, zero `fileURLToPath`.
  *
  * Por quê: `scripts/lib/shared/apoio-level-verify.ts` (consumido por

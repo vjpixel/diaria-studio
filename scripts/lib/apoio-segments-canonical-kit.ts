@@ -38,7 +38,7 @@
  * ## Correspondência valor-em-R$ ↔ nível (canônica, #7030)
  *
  * As 4 faixas de valor mensal pago no apoia.se, fonte única
- * `computeRewardGroup` em `scripts/studio-ui/studio-apoios.ts`
+ * `computeRewardGroup` em `scripts/lib/reward-tier-thresholds.ts`
  * (`REWARD_TIER_*_MIN`) — é o que decide `nivel` acima e o custom field
  * `apoio_nivel` sincronizado pelo `sync-apoio-nivel-kit.ts`:
  *

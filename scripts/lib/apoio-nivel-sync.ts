@@ -43,6 +43,8 @@ import { type ApoioNivel, isApoioNivel } from "./shared/apoio-nivel-types.ts";
 import { previousMonthKey } from "./apoio-month-key.ts";
 import { findEmailMatchCandidates, type EmailMatchCandidate } from "./apoio-email-heuristics.ts";
 import { computeRewardGroup } from "./reward-tier-thresholds.ts";
+import { applyApoioOverrides, type ApoioOverrideEntry } from "./apoio-overrides.ts";
+import type { DiffAlarmGuardWarnings, DiffAlarmInput } from "./apoios-diff-alarm.ts";
 
 export { previousMonthKey };
 
@@ -165,6 +167,21 @@ export function computeDesiredApoioLevels(
       unresolved: false,
     };
   });
+}
+
+/**
+ * Pure: estado desejado com os overrides manuais (#8820) aplicados. É o ponto
+ * único para o sync e o alarme calcularem o mesmo diff: sem o override, o alarme
+ * reportaria como pendente uma diferença que o sync nunca aplicaria.
+ */
+export function resolveDesiredApoioLevels(
+  contacts: readonly ApoioLevelContact[],
+  pastSnapshots: readonly ApoioMonthSnapshot[],
+  currentMonth: string,
+  overrides: readonly ApoioOverrideEntry[],
+): DesiredApoioLevel[] {
+  const desired = computeDesiredApoioLevels(contacts, pastSnapshots, currentMonth);
+  return overrides.length > 0 ? applyApoioOverrides(desired, overrides) : desired;
 }
 
 // ── estado ATUAL (forma comum a qualquer plataforma) ───────────────────────
@@ -437,4 +454,56 @@ export function logBlastRadiusGuard(guard: BlastRadiusGuardResult, logPrefix = D
       `com nível hoje (${pct}%, limiar ${(BLAST_RADIUS_THRESHOLD * 100).toFixed(0)}%)` +
       (guard.blocked ? " — EXCEDIDO." : "."),
   );
+}
+
+// ── plano do --push e entrada do alarme (puros) ─────────────────────────
+
+export interface PushMutationPlan {
+  /** `true` = o guard de blast radius recusou o `--push` inteiro. */
+  aborted: boolean;
+  entries: ApoioTagDiffEntry[];
+}
+
+/**
+ * Pure: o que um `--push` aplica. Blast radius excedido aborta tudo, adições
+ * inclusive; dados parciais tiram só as remoções.
+ */
+export function planPushMutations(
+  diff: Pick<ApoioTagDiffResult, "toApply" | "toRemove">,
+  guards: { blastRadiusBlocked: boolean; removalsBlocked: boolean },
+): PushMutationPlan {
+  if (guards.blastRadiusBlocked) return { aborted: true, entries: [] };
+  return {
+    aborted: false,
+    entries: [...diff.toApply, ...(guards.removalsBlocked ? [] : diff.toRemove)],
+  };
+}
+
+/**
+ * Pure: diff, entrada do alarme e avisos dos guards. Os avisos são avaliados sem
+ * os escape hatches, o pior caso de um `--push` real, inclusive o snapshot do mês
+ * anterior ausente (#7195), para o e-mail não subestimar o risco.
+ */
+export function computeAlarmDiffInput(args: {
+  desired: DesiredApoioLevel[];
+  current: readonly ApoioSubscriberSnapshot[];
+  pastSnapshots: readonly ApoioMonthSnapshot[];
+  currentMonth: string;
+  dataError: string | null;
+}): { diff: ApoioTagDiffResult; input: DiffAlarmInput; guardWarnings: DiffAlarmGuardWarnings } {
+  const diff = diffApoioTags(args.desired, [...args.current]);
+  const summarize = (e: ApoioTagDiffEntry) => ({ email: e.email, contactName: e.contactName, fromLevel: e.fromLevel, toLevel: e.toLevel });
+  const blast = evaluateBlastRadiusGuard(diff.toRemove.length, args.current, false);
+  const partial = shouldBlockRemovals(args.dataError, diff, false, {
+    previousMonthSnapshotMissing: isPreviousMonthSnapshotMissing(args.pastSnapshots, args.currentMonth),
+  });
+  return {
+    diff,
+    input: { toApply: diff.toApply.map(summarize), toRemove: diff.toRemove.map(summarize) },
+    guardWarnings: {
+      partialDataBlocksRemovals: partial && diff.toRemove.length > 0,
+      blastRadiusBlocked: blast.blocked,
+      blastRadiusRatioPct: Math.round(blast.ratio * 1000) / 10,
+    },
+  };
 }

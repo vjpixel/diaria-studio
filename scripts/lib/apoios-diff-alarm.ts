@@ -176,8 +176,8 @@ export function buildApoiosDiffAlarmEmail(
   }
 
   lines.push(
-    "Rode /diaria-apoios-sync (revisa o diff antes) ou",
-    "npx tsx scripts/sync-apoio-nivel-kit.ts --push pra aplicar.",
+    "Rode /diaria-apoios-sync: revisa o diff, grava o nível e atualiza as tags de",
+    "audiência, que o --push direto de sync-apoio-nivel-kit.ts não atualiza.",
     "",
     "Este alarme NUNCA aplica --push sozinho — só avisa que há diff pendente.",
   );

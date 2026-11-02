@@ -32,7 +32,7 @@
  */
 import { sha256Hex } from "./subscriber-verify.ts";
 // #7030 hotfix (master vermelho c8fcdc9b): `import type` de
-// `../../lib/apoio-nivel-sync.ts` É apagado na compilação (runtime nunca
+// `../../sync-apoio-nivel-beehiiv.ts` (aposentado no #11225) É apagado na compilação (runtime nunca
 // puxa o módulo pesado Node-only, `env-loader.ts`/`apoia-se.ts`/etc.), mas o
 // guard estático `test/worker-bundle-node-only-imports.test.ts` (#4318) faz
 // scan de TEXTO — não distingue `import type` de `import` comum, e segue a
@@ -50,7 +50,7 @@ export type { ApoioNivel };
  * lógica — o custo de duplicar é menor que o de puxar o módulo pesado. */
 const LEVEL_RANK: Record<ApoioNivel, number> = { amigo: 1, apoiador: 2, mantenedor: 3, patrono: 4 };
 
-/** Duplicata pequena e estável de `isApoioNivel` (`lib/apoio-nivel-sync.ts`)
+/** Duplicata pequena e estável de `isApoioNivel` (`shared/apoio-nivel-types.ts`)
  * pelo mesmo motivo — evita puxar o módulo pesado pro bundle do Worker só
  * por esta checagem de 4 literais. */
 export function isApoioNivelValue(v: string): v is ApoioNivel {
