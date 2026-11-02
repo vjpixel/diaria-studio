@@ -185,7 +185,7 @@ loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -551,9 +551,12 @@ export function assignShortsDestinationOwners(
     baseCommand?: string;
     /** #11795: corte avulso com `publishing.shorts.corte_via_timer` — o timer do 300 é o dono dos destinos que a API não agenda. */
     corteTimer?: boolean;
+    /** #11911: `--edition-dir` fora da pasta canônica — vai em todo comando de re-execução da edição. */
+    editionDirOverride?: string;
   },
 ): ShortsDestinationOwner[] {
-  const base = ctx.baseCommand ?? `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
+  const dirArg = ctx.editionDirOverride !== undefined ? ` --edition-dir ${JSON.stringify(ctx.editionDirOverride)}` : "";
+  const base = ctx.baseCommand ?? `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}${dirArg}`;
   const owners: ShortsDestinationOwner[] = [];
   for (const item of items) {
     const { destination, action } = item;
@@ -710,6 +713,31 @@ export interface ShortsPlanInput {
    * e re-execuções pelo comando do corte.
    */
   corte?: { slug: string; hhmm: string; title: string; hook: string };
+  /**
+   * #11911: `--edition-dir` fora de `data/editions/{AAMMDD}` (fora do corte).
+   * Os timers do 300 só procuram a pasta canônica da edição: delegar a eles um
+   * destino desta pasta deixa o destino sem dono, e o timer pula em silêncio
+   * ("dia sem edição"). Presente = nada é delegado aos timers, e os comandos
+   * de re-execução levam o `--edition-dir`.
+   */
+  editionDirOverride?: string;
+}
+
+/**
+ * Puro (#11911): `--edition-dir` aponta para fora da pasta canônica da edição?
+ * Devolve o caminho a passar ao plano (`editionDirOverride`), ou `undefined`.
+ */
+export function nonCanonicalEditionDir(dir: string, canonicalDir: string, realpath: (p: string) => string = safeRealpath): string | undefined {
+  // Compara pelo caminho real: `data/` é symlink pro OneDrive, e o mesmo diretório por outro caminho não é "fora".
+  return realpath(resolve(dir)) === realpath(resolve(canonicalDir)) ? undefined : resolve(dir);
+}
+
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /** Miolo puro: o que cada destino faria, sem I/O. Lança em config/`--only` inconsistentes. */
@@ -795,7 +823,22 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // 19:30) e o Reels nunca saía. Ele entra na grade como post fixo, pros
   // outros destinos se espaçarem em volta dele.
   // #11795: o corte avulso nunca delega aos timers do 300 (eles procuram a pasta da edição).
-  const instagramViaTimer = cfg.instagramBackend === "timer-300" && !corte;
+  // #11911: nem uma pasta fora de data/editions/{AAMMDD} (`--edition-dir`): o timer não a
+  // enxerga e pula em silêncio ("dia sem edição") — foi assim que o Reels do corte de 02/11 sumiu.
+  const timersBlind = Boolean(corte) || input.editionDirOverride !== undefined;
+  if (input.editionDirOverride !== undefined && !corte) {
+    const delegable = [
+      cfg.instagram && cfg.instagramBackend === "timer-300" ? "instagram" : null,
+      cfg.linkedinProfile && cfg.linkedinProfileViaTimer ? "linkedin_profile" : null,
+      cfg.threadsProfile && cfg.threadsProfileViaTimer ? "threads_profile" : null,
+    ].filter((d): d is string => d !== null && (!only || only.has(d)));
+    if (delegable.length) {
+      warnings.push(
+        `--edition-dir ${input.editionDirOverride} fica fora de data/editions/${input.aammdd}: os timers do 300 não enxergam esta pasta, então ${delegable.join(", ")} não é delegado a eles e o dono é esta rodada (re-execução com o mesmo --edition-dir). Para um corte fora de edição, use --corte SLUG (#11795, #11911)`,
+      );
+    }
+  }
+  const instagramViaTimer = cfg.instagramBackend === "timer-300" && !timersBlind;
   // #11795: quem roda de novo depois do horário um destino cuja API não agenda.
   const pendingRunner = (hhmm: string): string =>
     corte && cfg.corteViaTimer
@@ -859,9 +902,9 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   };
   const profileLate = lateFor("linkedin_profile");
   // #10982: com o timer do 300 dono do vídeo do perfil, a rodada da skill não o publica.
-  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer" && !corte;
+  const profileDelegated = cfg.linkedinProfileViaTimer && input.writer !== "linkedin-timer" && !timersBlind;
   // #11410: idem pro Threads pessoal.
-  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer" && !corte;
+  const threadsDelegated = cfg.threadsProfileViaTimer && input.writer !== "threads-timer" && !timersBlind;
 
   // #10772 F1: o repost da página só existe se o vídeo do perfil já está
   // registrado ou sai nesta rodada (publish/pending_schedule). Sem isso a skill
@@ -1229,6 +1272,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     instagramViaTimer,
     writer: input.writer,
     ...(corte ? { baseCommand: corteBaseCommand(corte.slug), corteTimer: cfg.corteViaTimer } : {}),
+    ...(!corte && input.editionDirOverride !== undefined ? { editionDirOverride: input.editionDirOverride } : {}),
   });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
@@ -3772,6 +3816,8 @@ async function main(): Promise<number> {
     }
   }
   const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? editionDirFor(aammdd));
+  // #11911: `--edition-dir` fora de data/editions/{AAMMDD}: nada é delegado aos timers do 300.
+  const editionDirOverride = corte ? undefined : nonCanonicalEditionDir(dir, editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.
   const linkedinTimer = flags.has("linkedin-timer");
@@ -3964,6 +4010,8 @@ async function main(): Promise<number> {
       coverBufferOffsetMs: bufferOffsetMs,
       reviewedMd: corte ? "" : readFileSync(reviewedPath, "utf8"),
       ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook } } : {}),
+      // #11911: pasta fora de data/editions/{AAMMDD} — os timers do 300 não a enxergam.
+      ...(editionDirOverride !== undefined ? { editionDirOverride } : {}),
       now: new Date(),
       config,
       pages,

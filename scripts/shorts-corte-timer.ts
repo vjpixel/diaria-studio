@@ -54,8 +54,9 @@ import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/editor-notify.ts";
 import { MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { loadShortsConfig, parseShortsPublishedFile } from "./lib/diaria/short-video.ts";
-import { CORTE_SPEC_FILE, CORTE_TIMER_DESTINATIONS, CORTE_TIMER_TASK, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
+import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, CORTES_REL_DIR, corteBaseCommand, parseCorteSpec, resolveCorteVideo, type CorteSpec } from "./lib/diaria/short-corte.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
+import { corteUnscheduledDestinations } from "./lib/diaria/corte-owner-watch.ts";
 import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
 import { alarmDelivery, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 import { publishConfirmArgs, publishConfirmSuffix } from "./lib/diaria/publish-confirm.ts";
@@ -64,7 +65,7 @@ import type { ShortsPlanItem } from "./publish-shorts.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[shorts-corte-timer]";
-export const CORTES_REL_DIR = "data/cortes";
+export { CORTES_REL_DIR };
 export const CORTE_TIMER_LOCK_FILE = "_internal/.shorts-corte-timer.lock";
 export const CORTE_TIMER_ALARM_STATE_FILE = "_internal/.shorts-corte-timer-alarm.json";
 /** Depois disto o corte não é mais olhado (nem pra alarmar): o `late` já saiu dentro da janela. */
@@ -99,12 +100,8 @@ export function corteAlarmSeverity(key: CorteTimerAlarmKey): NotifySeverity {
   return MAYBE_PUBLISHED_KEYS.has(key) ? "acao" : "urgente";
 }
 
-/** Destinos do timer que o config liga. */
-export function corteTimerDestinations(config: unknown): string[] {
-  const cfg = loadShortsConfig(config);
-  const enabled: Record<string, boolean> = { linkedin_profile: cfg.linkedinProfile, threads_profile: cfg.threadsProfile, instagram: cfg.instagram };
-  return CORTE_TIMER_DESTINATIONS.filter((d) => enabled[d] === true);
-}
+/** Destinos do timer que o config liga (#11911: a mesma lista que a vigia dos timers da edição usa). */
+export const corteTimerDestinations = corteUnscheduledDestinations;
 
 export type CorteTimerDecision =
   | { kind: "skip"; reason: string }

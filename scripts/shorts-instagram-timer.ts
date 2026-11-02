@@ -108,6 +108,8 @@ import {
   shortVideoFileName,
 } from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
+import { watchCortesWithoutOwner } from "./lib/diaria/corte-owner-watch.ts";
+import { CORTES_REL_DIR } from "./lib/diaria/short-corte.ts";
 import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
@@ -821,6 +823,12 @@ export interface InstagramTimerRunDeps {
   notify: NotifyEditorDeps;
   /** #11389: duração (s) de um MP4 do disco; null = ilegível. Ausente = lê o arquivo (`mp4DurationSeconds`). */
   videoDurationSeconds?: (path: string) => number | null;
+  /**
+   * #11911: `data/cortes` do repo. Presente = toda execução também vigia os
+   * cortes avulsos sem dono deste destino (`watchCortesWithoutOwner`). Ausente
+   * (testes que não a exercitam) = sem vigia.
+   */
+  cortesDir?: string;
 }
 
 function readMp4Duration(path: string): number | null {
@@ -843,10 +851,24 @@ function defaultRunDeps(aammdd: string, dir: string): InstagramTimerRunDeps {
     lookupGenericVertical: lookup([]),
     runScript: runTsx,
     notify: { cwd: ROOT },
+    cortesDir: join(ROOT, CORTES_REL_DIR),
   };
 }
 
+/**
+ * Uma execução do timer: a vigia dos cortes avulsos sem dono (#11911) e o
+ * Reels da edição do dia. A vigia roda antes e em todo dia, com ou sem edição:
+ * o "dia sem edição" não pode mais esconder um corte cujo Reels não saiu.
+ */
 export async function runInstagramTimer(aammdd: string, dir: string, dryRun: boolean, deps: InstagramTimerRunDeps = defaultRunDeps(aammdd, dir)): Promise<number> {
+  const watchOk = deps.cortesDir
+    ? await watchCortesWithoutOwner("instagram", dryRun, { config: deps.config, now: deps.now, cortesDir: deps.cortesDir, notify: deps.notify, checkTask: "Diaria-Shorts-Instagram" })
+    : true;
+  const code = await runInstagramTimerEdition(aammdd, dir, dryRun, deps);
+  return watchOk ? code : Math.max(code, 1);
+}
+
+async function runInstagramTimerEdition(aammdd: string, dir: string, dryRun: boolean, deps: InstagramTimerRunDeps): Promise<number> {
   const { config, now } = deps;
   const instagramCutPath = join(dir, shortInstagramVideoFileName(aammdd));
   const genericPath = join(dir, shortVideoFileName(aammdd));

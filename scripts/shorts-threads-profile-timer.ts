@@ -67,6 +67,8 @@ import { notifyEditor, type NotifyEditorDeps, type NotifySeverity } from "./lib/
 import { aammddBrt, MAX_FIRE_LATENESS_MS } from "./lib/linkedin-personal.ts";
 import { loadShortScheduleConfig, loadShortsConfig, parseShortsPublishedFile, resolveShortTime, shortVideoFileName } from "./lib/diaria/short-video.ts";
 import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
+import { watchCortesWithoutOwner } from "./lib/diaria/corte-owner-watch.ts";
+import { CORTES_REL_DIR } from "./lib/diaria/short-corte.ts";
 import { TIMER_LOCK_FILE as LINKEDIN_TIMER_LOCK_FILE, acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
 import { DOWNLOAD_PART_FRESH_MS, SHORTS_THREADS_TIMER_LOCK_FILE, verticalDownloadBusy } from "./lib/diaria/vertical-download-guard.ts";
 import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
@@ -382,6 +384,12 @@ export interface ThreadsTimerRunDeps {
   /** Roda `npx tsx <args>` (o publish-shorts). */
   runScript: (args: string[]) => { status: number | null; stdout: string; stderr: string };
   notify: NotifyEditorDeps;
+  /**
+   * #11911: `data/cortes` do repo. Presente = toda execução também vigia os
+   * cortes avulsos sem dono deste destino (`watchCortesWithoutOwner`). Ausente
+   * (testes que não a exercitam) = sem vigia.
+   */
+  cortesDir?: string;
 }
 
 function runTsx(args: string[]): { status: number | null; stdout: string; stderr: string } {
@@ -409,10 +417,20 @@ function defaultRunDeps(aammdd: string, dir: string): ThreadsTimerRunDeps {
     },
     runScript: runTsx,
     notify: { cwd: ROOT },
+    cortesDir: join(ROOT, CORTES_REL_DIR),
   };
 }
 
+/** Uma execução: a vigia dos cortes avulsos sem dono (#11911, todo dia) e o vertical da edição do dia. */
 export async function runThreadsTimer(aammdd: string, dir: string, dryRun: boolean, deps: ThreadsTimerRunDeps = defaultRunDeps(aammdd, dir)): Promise<number> {
+  const watchOk = deps.cortesDir
+    ? await watchCortesWithoutOwner("threads_profile", dryRun, { config: deps.config, now: deps.now, cortesDir: deps.cortesDir, notify: deps.notify, checkTask: "Diaria-Shorts-Threads-Profile" })
+    : true;
+  const code = await runThreadsTimerEdition(aammdd, dir, dryRun, deps);
+  return watchOk ? code : Math.max(code, 1);
+}
+
+async function runThreadsTimerEdition(aammdd: string, dir: string, dryRun: boolean, deps: ThreadsTimerRunDeps): Promise<number> {
   const { config, now } = deps;
   const videoPath = join(dir, shortVideoFileName(aammdd));
   const registryRaws = readShortsRegistryRaws(dir);
