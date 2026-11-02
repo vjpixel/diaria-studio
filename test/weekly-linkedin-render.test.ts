@@ -18,6 +18,7 @@ import {
   renderLinkedinWeeklyHtml,
   otherWeeklyHighlights,
   OTHER_HIGHLIGHTS_HEADING,
+  CTA_ABERTURA_LABEL,
   buildLinkedinWeeklyUrl,
   linkedinWeeklyCampaign,
   endsInBareDomainLabel,
@@ -364,10 +365,13 @@ describe("renderLinkedinWeeklyHtml — abertura e fecho quebram em parágrafos (
     const idxPrimeiraManchete = html.indexOf("<h2>");
     assert.ok(idxCtaAbertura >= 0, "CTA da abertura deve existir");
     assert.ok(idxCtaAbertura < idxPrimeiraManchete, "CTA da abertura deve vir ANTES da 1ª manchete");
-    // Aprendizado do CTA-01: acima da dobra a âncora é a mais sóbria das três
-    // (infinitivo, sem "grátis", sem seta). Os empurrões pesados ficam no meio/fim.
+    // #11776 (decisão do editor, 01/11/2026): rótulo exato "Assinar a edição
+    // diária grátis" — infinitivo, sem seta. O "grátis" saiu do texto da
+    // abertura e entrou aqui.
     const anchor = html.match(/<a[^>]*utm_content=cta-abertura[^>]*>([^<]+)<\/a>/)?.[1] ?? "";
-    assert.ok(!/grátis|gratis|→/.test(anchor), `âncora acima da dobra deve ser sóbria: ${anchor}`);
+    assert.equal(anchor, "Assinar a edição diária grátis");
+    assert.equal(CTA_ABERTURA_LABEL, "Assinar a edição diária grátis");
+    assert.ok(!/→/.test(anchor), `âncora acima da dobra sem seta: ${anchor}`);
   });
 
   it("#8819: a 1ª menção ao wordmark vira link com UTM ancorando SÓ o wordmark — continuação fica como texto puro fora da âncora", () => {

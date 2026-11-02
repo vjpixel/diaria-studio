@@ -595,23 +595,23 @@ describe("proposeNextVolume", () => {
 
 describe("shouldSunsetNonOpener (#4430)", () => {
   it("2 envios e 0 aberturas => sunset", () => {
-    assert.equal(shouldSunsetNonOpener({ sendsCount: 2, opensCount: 0 }), true);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 2, opensCount: 0, clicksCount: 0 }), true);
   });
 
   it("2 envios e 1 abertura => fica", () => {
-    assert.equal(shouldSunsetNonOpener({ sendsCount: 2, opensCount: 1 }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 2, opensCount: 1, clicksCount: 0 }), false);
   });
 
   it("1 envio e 0 aberturas => fica (ainda não teve 2 chances)", () => {
-    assert.equal(shouldSunsetNonOpener({ sendsCount: 1, opensCount: 0 }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 1, opensCount: 0, clicksCount: 0 }), false);
   });
 
   it("0 envios => fica", () => {
-    assert.equal(shouldSunsetNonOpener({ sendsCount: 0, opensCount: 0 }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 0, opensCount: 0, clicksCount: 0 }), false);
   });
 
   it("muitos envios e nenhuma abertura => sunset", () => {
-    assert.equal(shouldSunsetNonOpener({ sendsCount: 17, opensCount: 0 }), true);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 17, opensCount: 0, clicksCount: 0 }), true);
   });
 
   it("Finding 3 (silent-failure-hunter): opensCount corrompido (NaN) NUNCA decide sunset — sunset é permanente, dado ruim tem que ficar seguro", () => {
@@ -620,9 +620,22 @@ describe("shouldSunsetNonOpener (#4430)", () => {
     // "não sei quantas aberturas teve" virando "confirmado que nunca abriu".
     // Sunset corta de vez (#4430); o único lado seguro pra dado corrompido é
     // NUNCA cortar, nos dois campos.
-    assert.equal(shouldSunsetNonOpener({ sendsCount: 5, opensCount: Number.NaN }), false);
-    assert.equal(shouldSunsetNonOpener({ sendsCount: Number.NaN, opensCount: 5 }), false);
-    assert.equal(shouldSunsetNonOpener({ sendsCount: Number.NaN, opensCount: Number.NaN }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 5, opensCount: Number.NaN, clicksCount: 0 }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: Number.NaN, opensCount: 5, clicksCount: 0 }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: Number.NaN, opensCount: Number.NaN, clicksCount: 0 }), false);
+  });
+
+  it("#11793: clicou sem abertura registrada => fica (clique prova leitura)", () => {
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 2, opensCount: 0, clicksCount: 1 }), false);
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 17, opensCount: 0, clicksCount: 3 }), false);
+  });
+
+  it("#11793: clicksCount corrompido (NaN/infinito) NUNCA decide sunset", () => {
+    assert.equal(shouldSunsetNonOpener({ sendsCount: 5, opensCount: 0, clicksCount: Number.NaN }), false);
+    assert.equal(
+      shouldSunsetNonOpener({ sendsCount: 5, opensCount: 0, clicksCount: Number.POSITIVE_INFINITY }),
+      false,
+    );
   });
 });
 

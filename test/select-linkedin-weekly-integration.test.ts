@@ -410,6 +410,125 @@ describe("#4492: candidato USE MELHOR com maior clique da semana não vira manch
   });
 });
 
+describe("#11777: --use-melhor-url troca o Use Melhor e a troca sobrevive a re-rodar a seleção", () => {
+  let root: string;
+  const selectionPath = () => join(root, "data/weekly/26w33/_internal/ln-selection.json");
+  const readSel = () => JSON.parse(readFileSync(selectionPath(), "utf8"));
+  const run = (...extra: string[]) => {
+    process.argv = ["node", "select-linkedin-weekly.ts", "--publish-monday", "260817", ...extra];
+    selectMain(root);
+  };
+
+  before(() => {
+    root = mkTmpRoot();
+    writeEdition(
+      root,
+      "260810",
+      [
+        "**DESTAQUE 1 | 💼 MERCADO**",
+        "",
+        "**[Matéria A](https://exemplo.com/materia-a)**",
+        "",
+        "Corpo da matéria A.",
+        "",
+        "Por que isso importa:",
+        "",
+        "Explicação.",
+        "",
+        "---",
+        "",
+        "**🛠️ USE MELHOR**",
+        "",
+        "**[Salvei minhas finanças com o Claude](https://exemplo.com/financas)**",
+        "Tutorial mais clicado da semana.",
+        "",
+        "**[Tutorial alternativo](https://exemplo.com/alternativo)**",
+        "Tutorial que o editor prefere.",
+        "",
+      ].join("\n"),
+    );
+    writeCachePost(root, "post_810", {
+      id: "post_810",
+      status: "confirmed",
+      publish_date: epochFor("260810"),
+      stats: {
+        email: { clicks: 60, unique_opens: 200 },
+        clicks: [
+          { url: "https://exemplo.com/materia-a", base_url: "https://exemplo.com/materia-a", email: { unique_verified_clicks: 1 } },
+          { url: "https://exemplo.com/financas", base_url: "https://exemplo.com/financas", email: { unique_verified_clicks: 50 } },
+          { url: "https://exemplo.com/alternativo", base_url: "https://exemplo.com/alternativo", email: { unique_verified_clicks: 2 } },
+        ],
+      },
+    });
+  });
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("sem flag: automático escolhe o de maior taxa e useMelhorOverride sai null", () => {
+    run();
+    const sel = readSel();
+    assert.equal(sel.useMelhor?.title, "Salvei minhas finanças com o Claude");
+    assert.equal(sel.useMelhorOverride, null);
+  });
+
+  it("--use-melhor-url aponta pro candidato escolhido e grava useMelhorOverride", () => {
+    run("--use-melhor-url", "https://exemplo.com/alternativo");
+    const sel = readSel();
+    assert.equal(sel.useMelhor?.title, "Tutorial alternativo");
+    assert.equal(sel.useMelhorOverride, "https://exemplo.com/alternativo");
+  });
+
+  it("regressão: re-rodar a seleção SEM a flag mantém a troca manual (antes desfazia em silêncio)", () => {
+    run();
+    const sel = readSel();
+    assert.equal(sel.useMelhor?.title, "Tutorial alternativo");
+    assert.equal(sel.useMelhorOverride, "https://exemplo.com/alternativo");
+  });
+
+  it("--use-melhor-url fora dos candidatos aborta com exit 2 sem reescrever o output", () => {
+    const before = readFileSync(selectionPath(), "utf8");
+    mockProcessExit();
+    try {
+      assert.throws(() => run("--use-melhor-url", "https://exemplo.com/materia-a"), /__mocked_exit__/);
+      assert.equal(exitCode, 2);
+    } finally {
+      restoreProcessExit();
+    }
+    assert.equal(readFileSync(selectionPath(), "utf8"), before, "output em disco intacto");
+  });
+
+  it("--use-melhor-url e --use-melhor-auto juntos abortam com exit 2", () => {
+    mockProcessExit();
+    try {
+      assert.throws(() => run("--use-melhor-url", "https://exemplo.com/alternativo", "--use-melhor-auto"), /__mocked_exit__/);
+      assert.equal(exitCode, 2);
+    } finally {
+      restoreProcessExit();
+    }
+  });
+
+  it("override gravado que deixou de ser candidato faz a re-rodada falhar (exit 2), nunca volta ao automático em silêncio", () => {
+    const sel = readSel();
+    writeFileSync(selectionPath(), JSON.stringify({ ...sel, useMelhorOverride: "https://exemplo.com/sumiu" }), "utf8");
+    mockProcessExit();
+    try {
+      assert.throws(() => run(), /__mocked_exit__/);
+      assert.equal(exitCode, 2);
+    } finally {
+      restoreProcessExit();
+    }
+  });
+
+  it("--use-melhor-auto descarta a escolha gravada e volta ao de maior taxa", () => {
+    run("--use-melhor-auto");
+    const sel = readSel();
+    assert.equal(sel.useMelhor?.title, "Salvei minhas finanças com o Claude");
+    assert.equal(sel.useMelhorOverride, null);
+    run();
+    assert.equal(readSel().useMelhor?.title, "Salvei minhas finanças com o Claude", "automático persiste depois do --use-melhor-auto");
+  });
+});
+
 describe("#5109: --picks resolve o pendingGroup fim-a-fim", () => {
   let root: string;
 

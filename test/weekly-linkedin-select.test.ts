@@ -25,6 +25,7 @@ import {
   computeHeadlineCap,
   selectHeadlines,
   selectUseMelhor,
+  resolveUseMelhorOverride,
   dedupeCandidatesByUrl,
   applyPendingPicks,
   type WeeklyRankedCandidate,
@@ -421,6 +422,30 @@ describe("selectUseMelhor", () => {
   it("retorna undefined quando não há candidato use_melhor elegível", () => {
     const radar = ranked({ kind: "section", section: "radar", url: "https://exemplo.com/radar", clicks: 5, opens: 100 });
     assert.equal(selectUseMelhor([radar], new Set()), undefined);
+  });
+});
+
+describe("resolveUseMelhorOverride (#11777)", () => {
+  const um1 = ranked({ kind: "section", section: "use_melhor", title: "Mais clicado", url: "https://exemplo.com/tutorial-a", clicks: 8, opens: 200 });
+  const um2 = ranked({ kind: "section", section: "use_melhor", title: "Escolha do editor", url: "https://exemplo.com/tutorial-b", clicks: 3, opens: 200 });
+  const umExcl = ranked({ kind: "section", section: "use_melhor", title: "Comercial", url: "https://exemplo.com/patrocinado", clicks: 9, opens: 200, excluded: true });
+  const radar = ranked({ kind: "section", section: "radar", title: "Radar", url: "https://exemplo.com/radar", clicks: 5, opens: 200 });
+
+  it("devolve o candidato pedido mesmo não sendo o de maior taxa (comparação por URL normalizada)", () => {
+    const r = resolveUseMelhorOverride([um1, um2], new Set(), "https://exemplo.com/tutorial-b?utm_source=x");
+    assert.equal(r.error, null);
+    assert.equal(r.selected?.title, "Escolha do editor");
+  });
+
+  it("erro explícito para URL fora do pool: item de outra seção, excluído ou já manchete", () => {
+    for (const url of [radar.url, umExcl.url, "https://exemplo.com/inexistente"]) {
+      const r = resolveUseMelhorOverride([um1, um2, umExcl, radar], new Set(), url);
+      assert.equal(r.selected, undefined, url);
+      assert.match(r.error ?? "", /não é candidato de Use Melhor/, url);
+      assert.match(r.error ?? "", /tutorial-a/, "lista os candidatos elegíveis");
+    }
+    const asHeadline = resolveUseMelhorOverride([um1, um2], new Set([normalizeUrl(um2.url)]), um2.url);
+    assert.ok(asHeadline.error);
   });
 });
 

@@ -340,17 +340,31 @@ export function findContactByEmail(
 //
 // Aditivo (não corte duro): um optin que ignora 4 emails decai pra 0
 // (40 − 10×4) — comportamento confirmado pelo editor.
+//
+// #11793: clique prova leitura. Contato com clique e nenhuma abertura
+// registrada (pixel bloqueado) conta como 1 abertura — deixa de ser tratado
+// como não abridor. Com abertura registrada, o clique não soma nada: nenhuma
+// pontuação nova por clique, só o piso de 1 abertura.
 // ---------------------------------------------------------------------------
 
 export interface PriorityInput {
   priority_optin: boolean;
   opens_count: number;
   sends_count: number;
+  /** #11793: opcional — omitido ou não-finito conta como 0 (sem clique). */
+  clicks_count?: number;
+}
+
+/** #11793: aberturas efetivas — clique sem abertura registrada vale 1 abertura. */
+export function effectiveOpensCount(opens: number, clicks: number | undefined): number {
+  const clicked = clicks !== undefined && Number.isFinite(clicks) && clicks > 0;
+  return opens <= 0 && clicked ? 1 : opens;
 }
 
 export function computePriorityPoints(i: PriorityInput): number {
-  const notOpened = Math.max(0, i.sends_count - i.opens_count);
-  return (i.priority_optin ? 40 : 0) + 20 * i.opens_count - 10 * notOpened;
+  const opens = effectiveOpensCount(i.opens_count, i.clicks_count);
+  const notOpened = Math.max(0, i.sends_count - opens);
+  return (i.priority_optin ? 40 : 0) + 20 * opens - 10 * notOpened;
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +507,11 @@ export interface EligibilityInput {
   sends_count?: number;
   opens_count?: number;
   brevo_modified_at?: string | null;
+  /**
+   * #11793: clique prova leitura — `clicks_count > 0` impede o sunset mesmo
+   * sem abertura registrada. Omitido conta como 0 (comportamento anterior).
+   */
+  clicks_count?: number;
 }
 
 export function classifyEligibility(i: EligibilityInput): {
@@ -563,7 +582,11 @@ export function classifyEligibility(i: EligibilityInput): {
     !engaged &&
     !mvExempt &&
     hasMeasuredOpens({ brevo_modified_at: i.brevo_modified_at ?? null }) &&
-    shouldSunsetNonOpener({ sendsCount: i.sends_count ?? 0, opensCount: i.opens_count ?? 0 })
+    shouldSunsetNonOpener({
+      sendsCount: i.sends_count ?? 0,
+      opensCount: i.opens_count ?? 0,
+      clicksCount: i.clicks_count ?? 0,
+    })
   )
     return { send_eligible: false, ineligible_reason: "sunset_non_opener" };
   if (i.mv_bucket === "rejected" && !engaged && !mvExempt)
@@ -938,6 +961,7 @@ export function resolveMailboxCoherence(
           sends_count: r.sends_count,
           opens_count: r.opens_count,
           brevo_modified_at: r.brevo_modified_at,
+          clicks_count: r.clicks_count,
         }),
       );
     }
@@ -1071,7 +1095,7 @@ export function recomputeDerived(
     .prepare(
       `SELECT email, opens_count, sends_count, soft_bounce_count, dispute_losses,
               mv_bucket, email_blacklisted, unsubscribed, hard_bounced, complained, created, tier, cohort, stripe_ids,
-              brevo_modified_at
+              brevo_modified_at, clicks_count
        FROM clarice_users`,
     )
     .all() as Array<{
@@ -1092,6 +1116,9 @@ export function recomputeDerived(
     // #5041: só pro guard `hasMeasuredOpens` do corte de sunset — ver
     // EligibilityInput/classifyEligibility acima.
     brevo_modified_at: string | null;
+    // #11793: clique sem abertura registrada impede o sunset e conta como
+    // abertura no priority_points.
+    clicks_count: number | null;
   }>;
 
   const update = db.prepare(
@@ -1116,6 +1143,7 @@ export function recomputeDerived(
         priority_optin: isOptin,
         opens_count: r.opens_count ?? 0,
         sends_count: r.sends_count ?? 0,
+        clicks_count: r.clicks_count ?? 0,
       });
       // #2857 fase C: preserva um cohort já reconhecido (escrito fresco por
       // ingestStripe a partir do merge); backfill via computeCohort (fallback
@@ -1152,6 +1180,7 @@ export function recomputeDerived(
         soft_bounce_count: r.soft_bounce_count ?? 0,
         // #5041: só pro guard `hasMeasuredOpens` do corte de sunset.
         brevo_modified_at: r.brevo_modified_at,
+        clicks_count: r.clicks_count ?? 0,
         isOptin,
       });
     }

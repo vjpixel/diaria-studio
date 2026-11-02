@@ -49,6 +49,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMainModule } from "./lib/cli-args.ts";
+import { classifyClariceNoise, type ClariceNoiseReason } from "./lib/clarice-suggestion-guard.ts";
 
 export interface ClariceSuggestion {
   from: string;
@@ -58,7 +59,7 @@ export interface ClariceSuggestion {
 }
 
 export interface SkippedSuggestion extends ClariceSuggestion {
-  reason: "ambiguous" | "not_found" | "empty_from" | "duplicate" | "invalid_shape";
+  reason: "ambiguous" | "not_found" | "empty_from" | "duplicate" | "invalid_shape" | ClariceNoiseReason;
   count: number;
 }
 
@@ -93,6 +94,8 @@ export function countOccurrences(haystack: string, needle: string): number {
  *   - empty_from: from vazio/whitespace-only (sugestão malformada)
  *   - not_found:  count === 0 (from não aparece no texto)
  *   - ambiguous:  count > 1 (from aparece múltiplas vezes)
+ *   - whitespace_only / structural_injection: ruído do servidor MCP (#11798),
+ *     ver scripts/lib/clarice-suggestion-guard.ts
  */
 export function applyClariceSuggestions(
   text: string,
@@ -119,6 +122,14 @@ export function applyClariceSuggestions(
 
     if (!s.from || !s.from.trim()) {
       skipped.push({ ...s, reason: "empty_from", count: 0 });
+      continue;
+    }
+
+    // Ruído do servidor MCP (#11798): só whitespace, ou `to` injetando quebra
+    // de linha/caractere de código. Nunca é correção de texto — recusar.
+    const noise = classifyClariceNoise(s.from, s.to);
+    if (noise) {
+      skipped.push({ ...s, reason: noise, count: 0 });
       continue;
     }
 

@@ -20,9 +20,9 @@ precisa alcançar quem abandona antes do 3º headline, ainda que não leve
 mais CTA próprio desde #8025):
 
 ```
-[Abertura — prosa nova, 1 parágrafo curto: identidade + promessa + cadência]
+[Abertura — 2 parágrafos curtos: identidade + promessa / cadência (#11776, sem "Assine grátis." no fim)]
 
-[CTA de assinatura #1 — "Assinar a edição diária"]
+[CTA de assinatura #1 — "Assinar a edição diária grátis" (#11776)]
 
 ---
 
@@ -154,7 +154,7 @@ guard determinístico: se o RÓTULO de um link termina exatamente no domínio
 nu (ex: "assine em diar.ia.br"), o auto-linkificador do LinkedIn **parte o
 link em dois** e a parte clicável perde o `href`/UTM original. Por isso
 todo rótulo gerado por este template é um rótulo de AÇÃO, nunca o domínio
-cru — "Assinar a edição diária", "Assine grátis, é rapidinho". A menção
+cru — "Assinar a edição diária grátis", "Assine grátis, é rapidinho". A menção
 automática ao wordmark em prosa (`linkifyWordmark`) é a ÚNICA exceção
 deliberada a essa regra — ancora exatamente "diar.ia.br" (sem estender além
 do domínio desde #8819, que reverte a extensão de 3 palavras: estender só

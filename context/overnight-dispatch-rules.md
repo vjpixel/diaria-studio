@@ -44,7 +44,8 @@ cleanup de fim de rodada usa pra deletar a branch remota corretamente.
 ## 3. Bootstrap do worktree
 
 Primeiro passo é **`npm ci`** — worktree novo não tem `node_modules/` nem a
-junction `data/`.
+junction `data/`. Escrita que a unidade precise fazer em `data/` volta ao
+coordenador, declarada no corpo da PR (item 35).
 
 **`npm ci`/`npm install` só dentro do worktree, NUNCA no checkout principal
 compartilhado (#5571).** O checkout principal é usado concorrentemente por
@@ -1344,3 +1345,52 @@ classifica `develop`, com a mesma precedência de `windows`.
 
 O roteamento é por label, nunca por heurística sobre o corpo: citar
 `.claude/skills/...` como contexto não quer dizer que o fix mora lá.
+
+## 35. Escrita em `data/` a partir do worktree: volta ao coordenador, declarada no corpo da PR (#11780)
+
+**Sintoma (rodada 261101b, PR #11745):** o implementador da #11663 precisava
+atualizar `data/hubs/prose-review-state.json` e não conseguiu gravar. O
+worktree não tem `data/` (item 3: worktree novo não traz a junction), e o
+caminho absoluto do `data/` real (`{checkout principal}/data/...`, symlink
+para o OneDrive) fica fora do diretório de trabalho do subagente. O harness
+pede aprovação para escrita fora do diretório de trabalho; no overnight
+agendado (`acceptEdits`, sem TTY) a pergunta vira negação, e numa rodada
+assistida ela só sai com o editor aprovando. A causa é do harness, fora deste
+repo, e nada aqui a remove. O coordenador acabou gravando à mão, num passo que
+não constava de lugar nenhum além da prosa do corpo da PR.
+
+**Regra para o implementador:**
+- Não criar `data/` dentro do worktree (nem junction/symlink para o `data/`
+  real, que só o coordenador cria, e só para eval: item 33) e não contornar a
+  negação por `Bash` (`>`, `tee`, `cp`, `node -e` gravando no caminho
+  absoluto). Gravar no `data/` real a partir do subagente é escrever em
+  estado compartilhado por OneDrive entre máquinas, sem o diff passar pelo
+  review do coordenador.
+- Entregar o que é versionado (código, prosa, teste) e declarar a escrita
+  pendente no corpo da PR, numa seção com este título literal, uma linha por
+  arquivo:
+
+  ```
+  ## Escrita pendente em `data/` (#11780)
+
+  - `data/hubs/prose-review-state.json`: `openai-chatgpt.proseReviewedDate` de `2026-09-17` para `2026-11-01`
+  ```
+
+  Caminho relativo à raiz do repo, chave exata, valor antigo e novo (ou o
+  conteúdo inteiro, se o arquivo é novo). O coordenador aplica sem precisar
+  reler a issue.
+- Citar a pendência também no retorno ao coordenador (junto do número da PR e
+  da linha `self-review: N findings`).
+- A issue fecha normalmente (`Closes #N`) quando o resto do escopo está no
+  diff: a escrita declarada faz parte do merge, não é resíduo. Se a mudança em
+  `data/` for o escopo inteiro da issue (sem nada versionado), não abrir PR
+  vazia: devolver ao coordenador a escrita pronta para aplicar.
+
+**Regra para o coordenador:** antes de declarar a unidade concluída, ler o
+corpo da PR mergeada (`gh pr view N --json body`) e aplicar cada linha da
+seção `Escrita pendente em data/`, no checkout principal, com o Edit
+(cirúrgico, #495), depois do merge e nunca antes: a escrita pertence ao estado
+pós-merge. Registrar a aplicação no relatório da rodada (`report.md`, coluna
+de nota da unidade). Pendência que o coordenador também não consegue gravar
+(máquina sem `data/`, item 23) entra no relatório como pendente, com o texto
+da linha, para o editor ou a próxima rodada.
