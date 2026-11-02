@@ -2,32 +2,21 @@
 /**
  * scripts/sync-apoio-nivel-kit.ts (#6049 — migração Beehiiv → Kit, #461)
  *
- * Espelho de `scripts/sync-apoio-nivel-beehiiv.ts` (#4436) pro Kit: sincroniza
+ * Sincroniza (nasceu como espelho do sync da Beehiiv, #4436, aposentado no #11225)
  * o nível de recompensa de apoio (Amigo/Apoiador/Mantenedor/Patrono) do CRM
  * apoia.se pro custom field `apoio_nivel` no Kit — o mesmo campo que os 6
  * segmentos `Apoio — {Amigo,Apoiador,Mantenedor,Patrono,Todos,Nenhum}`
  * (`scripts/lib/apoio-segments-canonical-kit.ts`, #6049 achado 260824)
  * condicionam.
  *
- * ## O que é REUSADO da Beehiiv, e por quê
+ * ## Divisão pura/I/O
  *
- * Toda a lógica PURA de negócio (carência de 1 mês, guard de blast radius de
- * 30%, fail-closed em leitura parcial, diff desejado×atual, formatação de
- * log) já existe em `sync-apoio-nivel-beehiiv.ts` e é plataforma-agnóstica —
- * opera sobre um shape genérico `{subscriptionId, email, apoioNivel}`
- * (`BeehiivSubscriptionSnapshot`, nome histórico mas sem nada específico da
- * Beehiiv na forma), não sobre nada específico da API Beehiiv:
+ * A lógica de negócio (carência de 1 mês, guard de blast radius de 30%,
+ * fail-closed em leitura parcial, diff desejado×atual, log) vive em
+ * `scripts/lib/apoio-nivel-sync.ts`. Este arquivo só tem o I/O do Kit
+ * (`fetchCurrentKitState`, `applyApoioTagEntryKit`).
  *
- *   - `computeDesiredApoioLevels`/`maxLevel`/`previousMonthKey` — carência.
- *   - `diffApoioTags` — diff desejado×atual (casamento por e-mail).
- *   - `shouldBlockRemovals`/`evaluateBlastRadiusGuard` — os dois guards.
- *   - `logDiff`/`logBlastRadiusGuard` — formatação do relatório dry-run/push.
- *
- * Este arquivo reusa tudo isso via import direto — SÓ reimplementa a camada
- * de I/O específica do Kit (`fetchCurrentKitState`, `applyApoioTagEntryKit`),
- * mesma divisão pura/I/O do arquivo original.
- *
- * ## O que é DIFERENTE da Beehiiv
+ * ## Particularidades do Kit
  *
  * - **Leitura do estado atual não é paginada por página numerada** — o Kit
  *   usa cursor (`after`/`end_cursor`), já encapsulado em
@@ -57,14 +46,8 @@
  *
  * ## Guard de publicação / gate consistente com o resto da migração
  *
- * Este é um script STANDALONE, novo, nunca invocado por `/diaria-edicao` nem
- * por nenhuma skill do pipeline — mesmo padrão de `sync-beehiiv-subscribers
- * -kit.ts` (#6091) e `sync-apoio-nivel-brevo.ts` (#4572): existir no repo não
- * muda nenhum comportamento de produção, só fica disponível pro editor rodar
- * manualmente quando o cutover real (#463/#464) acontecer. Dry-run por
- * padrão (só `--push` grava). `sync-apoio-nivel-beehiiv.ts` continua sendo o
- * script que RODA de verdade até o cutover — nenhum caminho automático
- * decide entre os dois.
+ * Script standalone, fora de `/diaria-edicao`: roda pela `/diaria-apoios-sync` e
+ * pelas skills de envio a apoiadores. Dry-run por padrão (só `--push` grava).
  *
  * **ATUALIZAÇÃO 02/09/2026 (#6925):** o `--push` real JÁ RODOU uma vez, com
  * autorização explícita do editor numa sessão `/diaria-develop` — 3
@@ -88,14 +71,15 @@ import { KIT_APOIO_NIVEL_FIELD_KEY } from "./lib/apoio-segments-canonical-kit.ts
 import { hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
-import { loadApoioOverrides, applyApoioOverrides } from "./lib/apoio-overrides.ts";
+import { loadApoioOverrides } from "./lib/apoio-overrides.ts";
 import {
   buildApoiosData,
   readPastMonthSnapshots,
   type MonthSnapshot,
 } from "./studio-ui/studio-apoios.ts";
 import {
-  computeDesiredApoioLevels,
+  resolveDesiredApoioLevels,
+  planPushMutations,
   diffApoioTags,
   shouldBlockRemovals,
   isPreviousMonthSnapshotMissing,
@@ -104,22 +88,20 @@ import {
   logDiff,
   logBlastRadiusGuard,
   type ApoioTagDiffEntry,
-  type BeehiivSubscriptionSnapshot as ApoioLevelSnapshot,
-} from "./sync-apoio-nivel-beehiiv.ts";
+  type ApoioSubscriberSnapshot as ApoioLevelSnapshot,
+} from "./lib/apoio-nivel-sync.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 const LOG_PREFIX = "[sync-apoio-nivel-kit]";
 
-/** Reexportado pra quem quiser referenciar o mesmo shape genérico sem
- *  importar do arquivo Beehiiv diretamente. */
+/** Reexportado pra quem quiser referenciar o mesmo shape sem importar a lib. */
 export type { ApoioLevelSnapshot };
 
 // ── estado ATUAL (I/O — leitura via Kit) ────────────────────────────────
 
 /** Pure: extrai o valor do custom field `apoio_nivel` de um `fields` cru do
- *  Kit. `""` quando ausente/malformado — mesma semântica de
- *  `extractApoioNivelValue` na Beehiiv. */
+ *  Kit. `""` quando ausente/malformado. */
 export function extractApoioNivelValueKit(fields: Record<string, string> | undefined): string {
   if (!fields || typeof fields !== "object") return "";
   const v = fields[KIT_APOIO_NIVEL_FIELD_KEY];
@@ -128,27 +110,33 @@ export function extractApoioNivelValueKit(fields: Record<string, string> | undef
 
 /**
  * I/O: lista todos os assinantes Kit (`listAllKitSubscribers`, #6091 —
- * cursor, sem filtro server-side por `state`) e converte pro shape genérico
- * reusado da Beehiiv, filtrando só `state === "active"` (client-side, mesmo
+ * cursor, sem filtro server-side por `state`) e converte pro shape comum da
+ * lib, filtrando só `state === "active"` (client-side, mesmo
  * padrão de `sync-beehiiv-subscribers-kit.ts` (aposentado no #11225)).
  */
 export async function fetchCurrentKitState(config?: KitConfig): Promise<ApoioLevelSnapshot[]> {
   const subs = await listAllKitSubscribers(config);
-  return subs
+  const active = subs
     .filter((s) => s.state === "active")
     .map((s) => ({
       subscriptionId: String(s.id),
       email: s.email_address.trim().toLowerCase(),
       apoioNivel: extractApoioNivelValueKit(s.fields),
     }));
+  // A conta tem base ativa desde #7386: vazio é falha de leitura, nunca "ninguém
+  // assina". Devolver [] classificaria todo apoiador como não assinante e faria o
+  // painel gravar cache vazio.
+  if (active.length === 0) {
+    throw new Error("Kit devolveu 0 assinantes ativos — leitura tratada como falha, nada foi calculado.");
+  }
+  return active;
 }
 
 // ── aplicação (I/O — escrita + verificação por releitura) ──────────────────
 
 /**
  * Aplica UMA entrada de diff via `PATCH /subscribers/{id}` e verifica por
- * RELEITURA (`GET /subscribers/{id}`) — mesma disciplina de
- * `applyApoioTagEntry` na Beehiiv (nunca confia só no status 2xx). Lança se
+ * RELEITURA (`GET /subscribers/{id}`) — nunca confia só no status 2xx. Lança se
  * a releitura não confirmar o valor esperado.
  */
 export async function applyApoioTagEntryKit(
@@ -186,9 +174,8 @@ async function main(): Promise<void> {
   }
   const kitConfig = kitConfigResult.config;
 
-  // Mesma sequência de reconciliação de promessas pendentes (Gmail → apoia.se)
-  // que `sync-apoio-nivel-beehiiv.ts` roda — reusa `runApoioReconciliationCycle`
-  // (#4503/#4506), plataforma-agnóstica (não toca Beehiiv nem Kit, só o CRM
+  // Reconciliação de promessas pendentes (Gmail → apoia.se) via
+  // `runApoioReconciliationCycle` (#4503/#4506), plataforma-agnóstica (só o CRM
   // apoia.se + o store local de promessas).
   const cycle = await runApoioReconciliationCycle(ROOT);
   if (cycle.drainSkipped) {
@@ -250,14 +237,13 @@ async function main(): Promise<void> {
     );
   }
 
-  let desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
 
   // #8820: override manual (data/apoio-overrides.json) vence o valor
-  // derivado do apoia.se — mesmo ponto de aplicação (antes do diff) do
-  // sync Beehiiv, ver docblock de lib/apoio-overrides.ts.
+  // derivado do apoia.se — aplicado antes do diff, ver docblock de
+  // lib/apoio-overrides.ts.
   const overrides = loadApoioOverrides(ROOT);
+  const desired = resolveDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth, overrides);
   if (overrides.length > 0) {
-    desired = applyApoioOverrides(desired, overrides);
     process.stderr.write(
       `${LOG_PREFIX} ${overrides.length} override(s) manual(is) aplicado(s) de data/apoio-overrides.json: ` +
         `${overrides.map((o) => `${o.email}→${o.nivel}`).join(", ")}\n`,
@@ -283,15 +269,16 @@ async function main(): Promise<void> {
   const forceBlastRadius = hasFlag(argv, "force-blast-radius");
   const blastGuard = evaluateBlastRadiusGuard(diff.toRemove.length, current, forceBlastRadius);
 
-  logDiff(diff, removalsBlockedByPartialData);
-  logBlastRadiusGuard(blastGuard);
+  logDiff(diff, removalsBlockedByPartialData, LOG_PREFIX);
+  logBlastRadiusGuard(blastGuard, LOG_PREFIX);
 
   if (!hasFlag(argv, "push")) {
     process.stderr.write(`${LOG_PREFIX} dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.\n`);
     return;
   }
 
-  if (blastGuard.blocked) {
+  const plan = planPushMutations(diff, { blastRadiusBlocked: blastGuard.blocked, removalsBlocked: removalsBlockedByPartialData });
+  if (plan.aborted) {
     process.stderr.write(
       `${LOG_PREFIX} RECUSANDO o --push inteiro (guard de blast radius acima) — nenhuma mutação foi ` +
         "aplicada, nem adições nem remoções. Confira se é uma virada de mês/instabilidade da apoia.se " +
@@ -308,7 +295,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const toApplyNow = [...diff.toApply, ...(removalsBlockedByPartialData ? [] : diff.toRemove)];
+  const toApplyNow = plan.entries;
   process.stderr.write(`${LOG_PREFIX} --push: aplicando ${toApplyNow.length} mutação(ões)…\n`);
 
   let applied = 0;

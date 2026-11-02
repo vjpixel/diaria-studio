@@ -48,9 +48,15 @@ O fio condutor:
 
 **CLARICE — DIVULGAÇÃO**
 
-[Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link (`→ [texto](url)`, vira botão — ver formato do CTA logo abaixo).]
+Escreva melhor em português com a Clarice
 
-→ [texto do CTA](https://clarice.ai/?via=diaria)
+A única IA criada por brasileiros para brasileiros. A Clarice foi treinada para entender as nuances da língua portuguesa e identificar problemas de correção e estilo em qualquer texto, seja ele seu ou gerado por IAs generalistas (ChatGPT, Claude e similares).
+
+Use a Clarice para revisar, refinar e humanizar seus textos. Publique com mais segurança, sem perder sua voz.
+
+Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto.
+
+→ [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)
 
 ---
 
@@ -78,7 +84,7 @@ A diar.ia.br mantém uma curadoria de livros sobre IA, cada título com nota da 
 
 **CLARICE — TUTORIAL**
 
-[Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais (`→ [texto](url)`, vira botão — mesmo formato do CTA acima).]
+[Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais (`→ [texto](url)`, vira botão — mesmo formato do CTA acima). Muda a cada ciclo. Se o CTA citar desconto, usar o mesmo "até N%" do CLARICE — DIVULGAÇÃO, nunca um segundo número no mesmo e-mail (#11810).]
 
 → [texto do CTA](https://clarice.ai/?via=diaria)
 
@@ -184,7 +190,7 @@ Da diar.ia.br:
    LinkedIn/Facebook/Instagram/Threads/X" livre que existia antes desta
    redação):
 
-Siga a **diar.ia.br**: [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) [Instagram](https://www.instagram.com/diar.ia.br) [Threads](https://www.threads.net/@diar.ia.br) [Facebook](https://www.facebook.com/diar.ia.br) [X](https://x.com/diariabr) [YouTube](https://www.youtube.com/@diariabr)
+Siga a **diar.ia.br**: [YouTube](https://www.youtube.com/@diariabr) [Instagram](https://www.instagram.com/diar.ia.br) [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) [Threads](https://www.threads.net/@diar.ia.br) [Facebook](https://www.facebook.com/diar.ia.br) [X](https://x.com/diariabr)
 ```
 
 **Exemplo negativo (NÃO fazer) — #2794:**
@@ -207,6 +213,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 ## Regras de preenchimento
 
 - **APRESENTAÇÃO (#2913): boilerplate fixo, NUNCA editorial.** Preâmbulo Clarice × diar.ia.br + CTA de prioridade + linha de descadastro — o texto é sempre o mesmo, mês a mês (só o merge tag `{{ unsubscribe }}` varia por envio). Emitir literalmente o texto do bloco acima, sem parafrasear. Links fixos: `[Clarice](https://clarice.ai/?via=diaria)` (2×), `[aqui](https://diar.ia.br/?utm_source=clarice)` (cadastro gratuito — `diar.ia.br` é o href canônico desde 260723, redirect no Cloudflare preserva a query string, #2613/#3971), `[descadastrar aqui]({{ unsubscribe }})`. `diar.ia.br` aparece em **texto plano** (não como link markdown) na primeira frase — o render aplica o wordmark da marca automaticamente (`applyBrandWordmark`); virar link markdown quebra o wordmark. **O wordmark não é clicável** (decisão do editor 260727): aparecia 4× por edição apontando pra raiz do site, não convertia, e somado ao "aqui" e ao botão dava 7 âncoras pro mesmo destino — densidade promocional no eixo que o CTA-01 apontou como gatilho de spam. Nome de marca no meio da prosa é reconhecimento, não call-to-action; quem converte é o "aqui" e o botão do encerramento. Gramática: "na Clarice" (não "em Clarice"). Faltou na edição 2606-07 (reinserida manualmente) — daí morar no template.
+- **CLARICE — DIVULGAÇÃO (#11788): texto FIXO.** Idêntico nos ciclos 2607-08, 2608-09, 2609-10 e 2610-11 — emitir literalmente o bloco acima (título, 3 parágrafos, cupons NEWS25/NEWS50 e o CTA para `clarice.ai/precos-planos?via=diaria`), sem parafrasear. Mudar o texto é decisão do editor e se faz aqui E no passo 5 do `writer-monthly` (as duas cópias andam juntas, `test/monthly-clarice-divulgacao-fixa-11788.test.ts`). **CLARICE — TUTORIAL** é a única seção Clarice que muda a cada ciclo: fonte é o Doc "Laboratório Clarice" no Drive (id `1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY`, 8 tutoriais em sequência); já saíram #2 (2605-06), #3 (2606-07), #4 (2607-08), #5 (2608-09), "Simplificar", fora da lista (2609-10), e #6 (2610-11). Segue placeholder até o writer conseguir ler o Doc.
 - **Tema dos destaques**: cobertura específica do mês — Brasil, empresa (Anthropic, OpenAI, Google, DeepSeek), área (regulação, agentes, open source, benchmarks). **Brasil é sempre um dos 3** (regra editorial do `analyst-monthly`).
 - **Título narrativo**: descreve o arco do tema, não um artigo isolado. Exemplos: "Brasil acelera regulação de IA em abril", "Anthropic dobra aposta em agentes", "Open source ganha terreno em modelos de raciocínio".
 - **Conexão entre artigos**: cada destaque tem N artigos de suporte (de edições diferentes do mês). O texto narra o tema como sequência — use no máximo 2–3 referências temporais por destaque ("no início do mês", "meados de abril", "no final do mês"). Não abra cada frase com "Em X de [mês]". Agrupe eventos por tema, não por cronologia.

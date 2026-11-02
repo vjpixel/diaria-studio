@@ -11,6 +11,9 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { convertBeehiivHtmlToMarkdown, htmlToLines } from "../scripts/lib/shared/edition-html-convert.ts";
 import { parsePost, type MonthlyDestaque } from "../scripts/collect-monthly.ts";
 
@@ -56,6 +59,71 @@ describe("htmlToLines", () => {
   it("decodifica entidades HTML comuns", () => {
     const lines = htmlToLines("<p>A &amp; B &mdash; C</p>");
     assert.equal(lines[0], "A & B — C");
+  });
+
+  it("decodifica entidades numéricas decimais e hexadecimais (#11817)", () => {
+    const lines = htmlToLines("<p>&#9679; A</p><p>&#x25CF; B</p><p>&#39;c&#39;</p><p>&#99999999; fica</p>");
+    assert.deepEqual(lines, ["● A", "● B", "'c'", "&#99999999; fica"]);
+  });
+});
+
+// Recorte REAL do HTML de um broadcast do Kit (edição 261001, raw-post do ciclo
+// 2610-11, linhas 1-159: cabeçalho, intro, D1, caixa de Divulgação, D2, caixa
+// do Artigo Especial, D3 e o início do USE MELHOR). Duas diferenças do HTML do
+// Beehiiv que zeravam a conversão (#11817): o marcador ● vem como `&#9679;`, e
+// o porquê é seguido do botão de WhatsApp, de "● Aprofunde" e de caixas com
+// label em caixa mista, que o porquê engolia até o próximo destaque.
+const KIT_HTML = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/kit-broadcast-261001-excerpt.html"),
+  "utf8",
+);
+
+describe("convertBeehiivHtmlToMarkdown — HTML do Kit (#11817)", () => {
+  it("acha os 3 destaques do broadcast real", () => {
+    const result = convertBeehiivHtmlToMarkdown(KIT_HTML, "post_26179209_261001.txt");
+    assert.equal(result.destaquesFound, 3, JSON.stringify(result.warnings));
+    assert.ok(!result.markdown.includes("&#9679;"), "entidade do marcador não pode vazar");
+  });
+
+  it("o porquê para antes do botão de WhatsApp, do Aprofunde e das caixas", () => {
+    const result = convertBeehiivHtmlToMarkdown(KIT_HTML, "post_26179209_261001.txt");
+    for (const leak of ["Compartilhar no WhatsApp", "Aprofunde", "Divulgação", "Artigo Especial", "ensaio"]) {
+      assert.ok(!result.markdown.includes(leak), `"${leak}" vazou para o markdown`);
+    }
+  });
+
+  it("round-trip com parsePost: categoria, título, url e porquê de cada destaque", () => {
+    const result = convertBeehiivHtmlToMarkdown(KIT_HTML, "post_26179209_261001.txt");
+    const file = {
+      path: "data/monthly/2610-11/raw-posts/post_26179209_261001.txt",
+      filename: "post_26179209_261001.txt",
+      beehiiv_post_id: "26179209",
+      edition: "261001",
+    };
+    const dest = parsePost(file, result.markdown, []);
+    assert.equal(dest.length, 3);
+    assert.deepEqual(
+      dest.map((d) => [d.category, d.title, d.url]),
+      [
+        [
+          "LANÇAMENTO",
+          "Seu próximo modelo de código pode ser o Argon?",
+          "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-argon/",
+        ],
+        ["LANÇAMENTO", "GPT-6.1 Sol encosta no Astra por um quinto do preço", "https://openai.com/index/introducing-gpt-6-1-sol/"],
+        [
+          "LANÇAMENTO",
+          "Gemini aposenta os Gems e aposta nas skills",
+          "https://blog.google/products-and-platforms/products/gemini/automate-tasks-with-skills/",
+        ],
+      ],
+    );
+    assert.equal(
+      dest[0].why,
+      "O preço de lançamento (US$ 2 e US$ 10) vale só no período inicial e depois dobra, então quem compra IA de código ganha testando enquanto ele vale. Os primeiros a receber o modelo foram defensores cibernéticos de confiança.",
+    );
+    assert.match(dest[1].why, /^Agentes que reaproveitam contexto/);
+    assert.match(dest[2].why, /^Quem já montou Gems não perde o trabalho/);
   });
 });
 

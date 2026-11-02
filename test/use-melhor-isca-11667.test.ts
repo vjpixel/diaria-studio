@@ -70,6 +70,28 @@ describe("#11667 — lintUseMelhorIsca", () => {
     assert.match(p, /sem a chamada datada/);
   });
 
+  // #11824: sem a flag `u`, o `\b` final não existe depois de "amanhã" (ã não
+  // é caractere de palavra) e a grafia correta escapava. Frases da issue.
+  for (const frase of ["na edição de amanhã.", "na edição de amanhã tem", "na edição de amanhã"]) {
+    it(`#11824: "${frase}" com acento é acusada como chamada relativa`, () => {
+      const t = UM_OK.replace("na edição de 30/10.", frase);
+      assert.match(lintUseMelhorIsca(t, { format: "prosa", editionId: "261030" }).join(" | "), /chamada relativa "edição de amanhã"/);
+    });
+  }
+
+  it("#11824: chamada relativa com acento é acusada mesmo com data válida em outra frase", () => {
+    const t = UM_OK.replace(P2, "Veja também na edição de amanhã. " + P2);
+    const p = lintUseMelhorIsca(t, { format: "prosa", editionId: "261030" });
+    assert.match(p.join(" | "), /chamada relativa "edição de amanhã"/);
+  });
+
+  it("#11824: sem acento continua casando; palavra que continua ('hojereis') não casa", () => {
+    const sem = UM_OK.replace("na edição de 30/10.", "na edição de amanha.");
+    assert.match(lintUseMelhorIsca(sem, { format: "prosa", editionId: "261030" }).join(" | "), /chamada relativa "edição de amanha"/);
+    const cont = UM_OK.replace(P2, "A edição de hojereis não existe. " + P2);
+    assert.doesNotMatch(lintUseMelhorIsca(cont, { format: "prosa", editionId: "261030" }).join(" | "), /chamada relativa/);
+  });
+
   it("data da chamada diferente da edição é acusada", () => {
     const p = lintUseMelhorIsca(UM_OK, { format: "prosa", editionId: "261031" }).join(" | ");
     assert.match(p, /edição de 30\/10, mas esta edição é de 31\/10/);

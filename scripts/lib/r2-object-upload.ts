@@ -189,6 +189,14 @@ export interface R2UploadDeps {
  */
 export const R2_RETENTION_POLICIES: readonly { prefix: string; maxAgeDays: number }[] = [{ prefix: "shorts/", maxAgeDays: 7 }];
 
+/**
+ * #11774: teto de cada request ao R2. Sem ele, um PUT/HEAD travado segurava o
+ * lock do timer do Instagram até a idade de lock velho (90 min). O PUT leva o
+ * vertical inteiro (~275 MB); HEAD, LIST e DELETE são pequenos.
+ */
+export const R2_PUT_TIMEOUT_MS = 15 * 60_000;
+export const R2_REQUEST_TIMEOUT_MS = 60_000;
+
 function s3Host(config: R2UploadConfig): string {
   return `${config.accountId}.r2.cloudflarestorage.com`;
 }
@@ -216,7 +224,7 @@ async function signedFetch(
     now: deps.now(),
   });
   const qs = canonicalQuery(query);
-  return deps.fetch(`https://${host}${encodePath(path)}${qs ? `?${qs}` : ""}`, { method, headers });
+  return deps.fetch(`https://${host}${encodePath(path)}${qs ? `?${qs}` : ""}`, { method, headers, signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS) });
 }
 
 const decodeXml = (s: string) =>
@@ -307,7 +315,8 @@ export async function uploadToR2(
   key: string,
   body: Buffer,
   contentType: string,
-  opts: { cacheControl?: string } = {},
+  /** `keep` (#11774): outras chaves que a poda de retenção não pode apagar (ex.: a capa reaproveitada da mesma rodada). */
+  opts: { cacheControl?: string; keep?: readonly string[] } = {},
 ): Promise<string> {
   const host = `${config.accountId}.r2.cloudflarestorage.com`;
   const path = `/${config.bucket}/${key}`;
@@ -327,11 +336,11 @@ export async function uploadToR2(
     secretAccessKey: config.secretAccessKey,
     now: deps.now(),
   });
-  const res = await deps.fetch(`https://${host}${encodePath(path)}`, { method: "PUT", headers, body: new Uint8Array(body) });
+  const res = await deps.fetch(`https://${host}${encodePath(path)}`, { method: "PUT", headers, body: new Uint8Array(body), signal: AbortSignal.timeout(R2_PUT_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`R2 PUT ${key}: HTTP ${res.status} ${(await res.text().catch(() => "")).slice(0, 300)}`);
 
   const url = r2PublicUrl(config, key);
-  const head = await deps.fetch(url, { method: "HEAD" });
+  const head = await deps.fetch(url, { method: "HEAD", signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS) });
   if (!head.ok) throw new Error(`R2: ${url} não está público (HEAD ${head.status}) — confira o acesso público do bucket (R2_PUBLIC_BASE/SHORTS_R2_PUBLIC_BASE)`);
   const len = head.headers.get("content-length");
   if (len !== null && Number(len) !== body.length) {
@@ -345,7 +354,7 @@ export async function uploadToR2(
   const policy = R2_RETENTION_POLICIES.find((p) => key.startsWith(p.prefix));
   if (policy) {
     const warn = deps.warn ?? ((m: string) => console.warn(m));
-    const pruned = await pruneR2Prefix(deps, config, { prefix: policy.prefix, maxAgeDays: policy.maxAgeDays, keep: [key] });
+    const pruned = await pruneR2Prefix(deps, config, { prefix: policy.prefix, maxAgeDays: policy.maxAgeDays, keep: [key, ...(opts.keep ?? [])] });
     if (pruned.deleted.length) warn(`[r2] retenção ${policy.maxAgeDays}d (#10923): apagados ${pruned.deleted.length} objeto(s) de ${policy.prefix}`);
     for (const e of pruned.errors) warn(`[r2] limpeza de retenção falhou (#10923, não bloqueia o upload): ${e}`);
   }
@@ -383,7 +392,7 @@ export function etagConflictsBody(etag: string | null, body: Buffer): boolean {
  */
 export async function r2ObjectHasBody(deps: R2UploadDeps, config: R2UploadConfig, key: string, body: Buffer): Promise<boolean> {
   try {
-    const head = await deps.fetch(r2PublicUrl(config, key), { method: "HEAD" });
+    const head = await deps.fetch(r2PublicUrl(config, key), { method: "HEAD", signal: AbortSignal.timeout(R2_REQUEST_TIMEOUT_MS) });
     const len = head.headers.get("content-length");
     return head.ok && len !== null && Number(len) === body.length && etagMatchesBody(head.headers.get("etag"), body);
   } catch {
@@ -408,7 +417,8 @@ export async function reuseOrUploadToR2(
   key: string,
   body: Buffer,
   contentType: string,
+  opts: { keep?: readonly string[] } = {},
 ): Promise<{ url: string; reused: boolean }> {
   if (await r2ObjectHasBody(deps, config, key, body)) return { url: r2PublicUrl(config, key), reused: true };
-  return { url: await uploadToR2(deps, config, key, body, contentType), reused: false };
+  return { url: await uploadToR2(deps, config, key, body, contentType, opts.keep ? { keep: opts.keep } : {}), reused: false };
 }

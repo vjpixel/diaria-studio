@@ -99,7 +99,7 @@ import { findTagIdByName, tagSubscriber, listSubscriberTags } from "./lib/kit-br
 import { resolveKitConfig } from "./lib/kit-config.ts";
 import { listAllSubscribersForTag, findKitSubscriberByEmail, fetchSubscriberTagIds } from "./kit-ramp-cohort.ts";
 import { createOrUpdateSubscriber, listAllKitSubscribers } from "./lib/kit-subscribers.ts";
-import { isApoioNivel, type ApoioNivel } from "./sync-apoio-nivel-beehiiv.ts";
+import { isApoioNivel, type ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { resolveBeehiivConfig } from "./lib/beehiiv-config.ts";
 import { fetchActiveBeehiivEmails } from "./lib/beehiiv-active-subscriptions.ts";
 import {

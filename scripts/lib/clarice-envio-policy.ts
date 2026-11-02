@@ -28,8 +28,8 @@
  *   4. SEM teto absoluto de volume — desde #6793/#6888 (freio nunca mais
  *      trava, passo é fixo) os únicos limitadores reais que sobram são a
  *      fila e o crédito Brevo.
- *   5. SUNSET de não-abridores (`shouldSunsetNonOpener`): ≥2 envios e 0 aberturas
- *      vira inelegível, cortando o laço que alimenta spam.
+ *   5. SUNSET de não-abridores (`shouldSunsetNonOpener`): ≥2 envios, 0 aberturas
+ *      e 0 cliques vira inelegível, cortando o laço que alimenta spam.
  *
  * TUDO AQUI É PURO: sem rede, sem disco, sem `new Date()` interno (todo `now` é
  * parâmetro injetado — mesma disciplina de `clarice-wave-plan.ts` e
@@ -685,12 +685,27 @@ export function proposeNextVolume(input: NextVolumeInput): NextVolumeDecision {
  * `sendsCount ≥ 2` — lado ERRADO: "não sei quantas aberturas teve" virava
  * "confirmado que nunca abriu", cortando de vez um assinante real por dado
  * ruim). Sunset é permanente ("cortar de vez", não um hold reversível) — o
- * único lado seguro pra dado corrompido é NUNCA cortar. */
-export function shouldSunsetNonOpener(c: { sendsCount: number; opensCount: number }): boolean {
-  if (!Number.isFinite(c.sendsCount) || !Number.isFinite(c.opensCount)) return false;
-  const sends = c.sendsCount;
-  const opens = c.opensCount;
-  return sends >= 2 && opens <= 0;
+ * único lado seguro pra dado corrompido é NUNCA cortar.
+ *
+ * Clique prova leitura (#11793): quem tem `clicksCount > 0` leu o e-mail
+ * mesmo sem abertura registrada (pixel bloqueado, imagens desligadas), então
+ * nunca sai por sunset. Antes do fix, 2 dos 296.710 contatos em
+ * `sunset_non_opener` tinham clique e nenhuma abertura. `clicksCount` é
+ * obrigatório de propósito: esquecer de passá-lo no call site voltaria a
+ * cortar quem clicou, sem erro nenhum. Corrompido segue a mesma regra dos
+ * outros dois contadores: nunca corta. */
+export function shouldSunsetNonOpener(c: {
+  sendsCount: number;
+  opensCount: number;
+  clicksCount: number;
+}): boolean {
+  if (
+    !Number.isFinite(c.sendsCount) ||
+    !Number.isFinite(c.opensCount) ||
+    !Number.isFinite(c.clicksCount)
+  )
+    return false;
+  return c.sendsCount >= 2 && c.opensCount <= 0 && c.clicksCount <= 0;
 }
 
 // ---------------------------------------------------------------------------

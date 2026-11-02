@@ -18,6 +18,7 @@ import { basename, resolve } from "node:path";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
 import { editionLockUnreadable, readEditionLock } from "./lib/edition-lock.ts";
 import { sentinelExists } from "./lib/pipeline-state.ts";
+import { findNewestFile, formatNewestFileEvidence } from "./lib/sentinel-absence-hint.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { assessStaleEdition, describeSignals } from "./lib/stale-edition-guard.ts";
 
@@ -80,8 +81,11 @@ export function runStaleEditionGuard(argv: string[], opts: GuardCliOpts = {}): n
     return 0;
   }
   if (!verdict.ok) {
+    // #11729: a idade do arquivo mais recente da edição aqui ajuda o editor a
+    // decidir entre "o sync não chegou" e "a outra sessão morreu".
+    const evidence = formatNewestFileEvidence(findNewestFile(dir), opts.now ?? Date.now());
     console.error(
-      `[stale-edition-guard] data/ possivelmente defasado — outra máquina parece estar à frente (${describeSignals(verdict.signals)}). Aguardar o sync do OneDrive e tentar de novo; não re-rodar o stage. Se a outra sessão morreu (trava órfã), ou o tombstone de aprovação ficou para trás porque o sentinel/outputs foram removidos de propósito, o editor confirma e re-roda o guard com --force.`,
+      `[stale-edition-guard] data/ possivelmente defasado — outra máquina parece estar à frente (${describeSignals(verdict.signals)}). ${evidence} Aguardar o sync do OneDrive e tentar de novo; não re-rodar o stage. Se a outra sessão morreu (trava órfã), ou o tombstone de aprovação ficou para trás porque o sentinel/outputs foram removidos de propósito, o editor confirma e re-roda o guard com --force.`,
     );
     return 4;
   }

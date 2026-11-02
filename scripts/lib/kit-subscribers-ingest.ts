@@ -64,6 +64,7 @@ import {
   type EventType,
 } from "./diaria-subscribers-db.ts";
 import type { KitSubscriberSummary } from "./kit-subscribers.ts";
+import type { SubscriberStateTransition } from "./subscriber-state-snapshot.ts";
 import { REATIVACAO_UTM_SOURCES } from "./metrics/acquisition-class.ts"; // #8235
 import { normalizeKey } from "./shared/attribution-keys.ts"; // #8235
 
@@ -527,4 +528,79 @@ export function ingestKitRoster(
     unsubEvents: { newEvents: unsubNew, alreadyKnown: unsubKnown },
     attributesWritten,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Evento `confirm` (#11846, resíduo da #8543/#8552) — produtor a partir da
+// comparação de 2 snapshots diários de estado (`subscriber-state-snapshot.ts`).
+// ---------------------------------------------------------------------------
+
+export interface KitConfirmation {
+  subscriberId: number;
+  platform: "kit";
+  externalEventId: string;
+  ts: string;
+}
+
+/**
+ * Transições `inactive -> active` entre 2 snapshots viram confirmação de
+ * double opt-in. Só essa direção conta: `cancelled`/`bounced`/`complained ->
+ * active` é reativação (outro evento) e `from: null` é cadastro novo, sem
+ * estado anterior pra provar que esteve `inactive`.
+ *
+ * `ts` = dia do snapshot em que a transição APARECEU (`snapshotDate`,
+ * `AAAA-MM-DD`, 00:00Z) — aproximação com erro de no máximo 1 dia; o
+ * `created_at` do cadastro NÃO serve (é o instante da inscrição, não da
+ * confirmação). Chave natural `${email}:confirm:${snapshotDate}`, idempotente
+ * com o `INSERT OR IGNORE` de `recordEvent`. Sem e-mail resolvido em
+ * `emailById`, o id é pulado (a chave precisa dele). Pura, não escreve.
+ */
+export function detectKitConfirmations(
+  transitions: readonly SubscriberStateTransition[],
+  emailById: ReadonlyMap<number, string>,
+  snapshotDate: string,
+): Array<KitConfirmation & { email: string }> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) {
+    throw new Error(`detectKitConfirmations: snapshotDate inválido (${snapshotDate}), esperado AAAA-MM-DD`);
+  }
+  const out: Array<KitConfirmation & { email: string }> = [];
+  for (const t of transitions) {
+    if (t.from !== "inactive" || t.to !== "active") continue;
+    const email = emailById.get(t.id)?.trim().toLowerCase();
+    if (!email) continue;
+    out.push({
+      subscriberId: t.id,
+      email,
+      platform: "kit",
+      externalEventId: `${email}:confirm:${snapshotDate}`,
+      ts: `${snapshotDate}T12:00:00.000Z`,
+    });
+  }
+  return out;
+}
+
+/** Grava os eventos `confirm` de `detectKitConfirmations` no store.
+ *  Idempotente: reexecutar o mesmo dia não duplica. */
+export function ingestKitConfirmations(
+  db: DatabaseSync,
+  transitions: readonly SubscriberStateTransition[],
+  emailById: ReadonlyMap<number, string>,
+  snapshotDate: string,
+  now: string = new Date().toISOString(),
+): { newEvents: number; alreadyKnown: number } {
+  let newEvents = 0;
+  let alreadyKnown = 0;
+  for (const c of detectKitConfirmations(transitions, emailById, snapshotDate)) {
+    const subscriberId = ensureSubscriber(db, "kit", String(c.subscriberId), c.email, now);
+    const { inserted } = recordEvent(db, {
+      subscriberId,
+      platform: "kit",
+      type: "confirm",
+      externalEventId: c.externalEventId,
+      ts: c.ts,
+    });
+    if (inserted) newEvents++;
+    else alreadyKnown++;
+  }
+  return { newEvents, alreadyKnown };
 }

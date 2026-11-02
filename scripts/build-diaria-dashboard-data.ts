@@ -25,9 +25,8 @@
  *   5. Scorer x CTR   -- data/scorer-ctr-history.jsonl (issue #1619, deferido)
  *   6. Assinantes     -- Beehiiv API live (futuro; #6051 -- nenhum call site real
  *                        existe ainda, so este comentario. Quando implementar,
- *                        checar publishing.newsletter.backend em platform.config.json
- *                        antes de decidir Beehiiv vs Kit -- backend real de
- *                        assinatura ja migrou pro Kit desde o #6339)
+ *                        ler do Kit -- backend real de assinatura migrou pro
+ *                        Kit no #6339 e a Beehiiv e so arquivo desde o #11225)
  *
  * Uso:
  *   npx tsx scripts/build-diaria-dashboard-data.ts [--dry-run] [--push] [--kv-namespace-id ID]

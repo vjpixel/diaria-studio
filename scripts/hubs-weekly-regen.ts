@@ -257,6 +257,9 @@ function proseAlarmFinding(slug: string): AlarmFinding {
       `Revisar scripts/lib/hubs/${slug}.ts manualmente e, depois de reconciliar`,
       "a prosa, atualizar a entrada correspondente em",
       "`data/hubs/prose-review-state.json` com a data da revisão.",
+      "Numa rodada autônoma (worktree), essa escrita em `data/` é do coordenador:",
+      "o implementador a declara no corpo da PR (item 35 de",
+      "`context/overnight-dispatch-rules.md`, #11780).",
     ].join("\n"),
   );
 }

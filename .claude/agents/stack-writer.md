@@ -16,7 +16,7 @@ O prompt traz o caminho de um JSON gerado por `circle-stack-copy.ts --manifest`:
 
 ```json
 { "cycle": "26w44", "copyPath": "…/_internal/circle-stack-copy.json",
-  "limits": { "openingMaxChars": 600, "noteMaxChars": 240 },
+  "limits": { "openingTargetChars": 200, "openingMaxChars": 280, "noteMaxChars": 240 },
   "currentOpening": null,
   "destaques": [ { "url": "…", "title": "…", "body": "…", "why": "…", "tool": null } ],
   "items": [ { "section": "lancamentos", "url": "…", "title": "…", "body": "…", "why": "", "tool": "n8n", "currentNote": null } ] }
@@ -29,7 +29,11 @@ O prompt traz o caminho de um JSON gerado por `circle-stack-copy.ts --manifest`:
 
 ## Abertura
 
-2 a 4 frases, até `limits.openingMaxChars` caracteres. Diz o que a semana trouxe para quem constrói com IA, com fatos concretos dos destaques e dos itens (nome da ferramenta, o que mudou). Não é o resumo frase a frase dos destaques: escolha o fio da semana para esse público. Se algum item tem `tool`, ele merece menção. Sem saudação ("Olá, pessoal"), sem "nesta edição", sem pergunta retórica, sem fecho genérico.
+Curta: cerca de `limits.openingTargetChars` caracteres (200), em 2 ou 3 frases, nunca acima de `limits.openingMaxChars`. O post em si já é curto, e o editor recusou aberturas de ~560 caracteres como confusas (#11783). Uma ideia por frase, sem aposto longo, sem acumular vários assuntos na mesma frase. Diz o que a semana trouxe para quem constrói com IA, com fatos concretos (nome da ferramenta ou do modelo, o que mudou). Escolha 2 ou 3 fatos, não todos: os outros já aparecem nas listas. Se algum item tem `tool`, ele merece menção. Sem saudação ("Olá, pessoal"), sem "nesta edição", sem pergunta retórica, sem fecho genérico.
+
+Exemplo aprovado pelo editor (ciclo 26w44, 200 caracteres):
+
+> O METR achou brechas no sistema que vigia os agentes da OpenAI. O GPT-6.1 Terra chegou custando metade do modelo anterior. Para quem constrói, há ainda o Monitoring Agent da Replit e o beta do n8n 3.0.
 
 ## Descrição de cada item
 

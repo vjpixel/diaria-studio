@@ -389,7 +389,7 @@ describe("loadOpenRateCache (#3612)", () => {
   });
 });
 
-// ─── confirmação de vínculo Beehiiv (#4273 parte 3) ─────────────────────
+// ─── confirmação de vínculo Kit (#4273 parte 3) ─────────────────────
 
 function makeVinculoInfo(overrides: Partial<VinculoInfo> = {}): VinculoInfo {
   return {
@@ -520,7 +520,7 @@ describe("loadVinculoCache (#4273 parte 3)", () => {
   });
 });
 
-// ─── segmentos Beehiiv (#4437 Entrega 2) ────────────────────────────────
+// ─── segmentos Kit (#4437 Entrega 2) ────────────────────────────────
 
 function makeSegmentsInfo(overrides: Partial<SegmentsInfo> = {}): SegmentsInfo {
   return {
@@ -565,6 +565,36 @@ describe("deriveSegments (#4437 Entrega 2)", () => {
     const result = deriveSegments(contact, cache);
     assert.notEqual(result, null);
     assert.deepEqual(result?.segments, []);
+  });
+
+  it("contato com vários emails, inativo listado antes do ativo -> vence o ativo (#11832)", () => {
+    const contact = makeContact({ emails: ["antigo@x.com", "ativo@x.com"] });
+    const cache: SegmentsCache = {
+      "antigo@x.com": makeSegmentsInfo({ segments: [], apoioNivel: "" }),
+      "ativo@x.com": makeSegmentsInfo({ segments: ["Apoio — Patrono"], apoioNivel: "patrono" }),
+    };
+    const result = deriveSegments(contact, cache);
+    assert.deepEqual(result?.segments, ["Apoio — Patrono"]);
+    assert.equal(result?.apoioNivel, "patrono");
+  });
+
+  it("sem segmento em nenhum email, prefere o que tem apoioNivel preenchido (#11832)", () => {
+    const contact = makeContact({ emails: ["antigo@x.com", "ativo@x.com"] });
+    const cache: SegmentsCache = {
+      "antigo@x.com": makeSegmentsInfo({ segments: [], apoioNivel: "" }),
+      "ativo@x.com": makeSegmentsInfo({ segments: [], apoioNivel: "amigo" }),
+    };
+    assert.equal(deriveSegments(contact, cache)?.apoioNivel, "amigo");
+  });
+
+  it("todos os emails sem segmento nem nível -> primeira entrada (consultado, nenhum segmento)", () => {
+    const contact = makeContact({ emails: ["a@x.com", "b@x.com"] });
+    const first = makeSegmentsInfo({ segments: [], apoioNivel: "", checkedAt: "2026-11-01T00:00:00.000Z" });
+    const cache: SegmentsCache = {
+      "a@x.com": first,
+      "b@x.com": makeSegmentsInfo({ segments: [], apoioNivel: "" }),
+    };
+    assert.equal(deriveSegments(contact, cache), first);
   });
 });
 
@@ -1147,7 +1177,7 @@ describe("buildApoiosData (#3602)", () => {
     }
   });
 
-  // ── #4273 parte 3: confirmação de vínculo Beehiiv é ortogonal ao status de
+  // ── #4273 parte 3: confirmação de vínculo Kit é ortogonal ao status de
   // apoio e à taxa de abertura — mesma disciplina de injeção via
   // `vinculoCache` + fail-soft, cobrindo os mesmos 2 caminhos de retorno.
 

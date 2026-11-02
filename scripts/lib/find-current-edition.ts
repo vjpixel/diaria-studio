@@ -31,11 +31,15 @@
  * CLI:
  *   npx tsx scripts/lib/find-current-edition.ts --stage 2
  *   → {"stage":2,"candidates":["260505","260506"]}
+ * Com zero candidatos, o stderr ganha uma linha `[aviso]` com "possível
+ * defasagem de sync do OneDrive" e a idade do arquivo mais recente da edição
+ * (#11729, `describeNoCandidates`).
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { parseArgsSimple as parseArgs, isMainModule } from "./cli-args.ts";
+import { describeSentinelAbsence } from "./sentinel-absence-hint.ts";
 
 export type Stage = 2 | 3 | 4 | 5 | 6;
 
@@ -238,6 +242,38 @@ export function findEditionsInProgress(
 }
 
 /**
+ * Zero candidatos para o stage (#11729): no `300`, o motivo mais comum é o
+ * prereq (ex.: `.step-4-done.json` aprovado no Neo) ainda não ter chegado pelo
+ * OneDrive, e não a etapa anterior não ter rodado. Devolve a dica de
+ * "possível defasagem de sync do OneDrive" com a idade do arquivo mais
+ * recente da edição mais nova ainda não concluída para este stage, ou `null`
+ * se nenhuma edição desta máquina tem prereq faltando. Só lê o disco; nunca
+ * lança. Sai no stderr do CLI — o stdout continua sendo só o JSON.
+ */
+export function describeNoCandidates(
+  stage: Stage,
+  rootDir: string = process.cwd(),
+  nowMs: number = Date.now(),
+): string | null {
+  const editionsRoot = resolve(rootDir, EDITIONS_DIR);
+  if (!existsSync(editionsRoot)) return null;
+  const reqs = STAGE_REQUIREMENTS[stage];
+  const byAammdd = enumerateEditionDirs(editionsRoot);
+  const ordered = [...byAammdd.keys()].sort().reverse();
+  for (const aammdd of ordered) {
+    const editionDir = byAammdd.get(aammdd)!;
+    if (reqs.output.every((f) => existsSync(join(editionDir, f)))) continue;
+    const missing = reqs.prereq.filter((f) => !existsSync(join(editionDir, f)));
+    if (missing.length === 0) continue;
+    return (
+      `Nenhuma edição em curso para o Stage ${stage} nesta máquina. ` +
+      describeSentinelAbsence(editionDir, aammdd, missing, nowMs, rootDir)
+    );
+  }
+  return null;
+}
+
+/**
  * Resolve o path RELATIVO real de uma edição a partir do AAMMDD (#3024).
  *
  * Usado por SKILL.md prose (`/diaria-2-escrita` a `/diaria-6-agendamento`)
@@ -290,6 +326,10 @@ function main(): void {
   }
   const candidates = findEditionsInProgress(stageNum as Stage);
   process.stdout.write(JSON.stringify({ stage: stageNum, candidates }) + "\n");
+  if (candidates.length === 0) {
+    const hint = describeNoCandidates(stageNum as Stage);
+    if (hint) console.error(`[aviso] ${hint}`);
+  }
 }
 
 if (isMainModule(import.meta.url)) {

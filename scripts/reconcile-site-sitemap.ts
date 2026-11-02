@@ -29,10 +29,10 @@
  * ## A armadilha: `gen-archive-pages.ts` APAGA página que não conhece
  *
  * `gen-archive-pages.ts` faz `rmSync(outDir)` no `public/p/` inteiro e depois
- * reescreve só o que está na fonte dele — o cache Beehiiv (o caminho Kit é
- * gated por `read_backend`, ainda `"beehiiv"`). Desde 04/09/2026
- * (`publishing.newsletter.backend = "kit"`, #7388) as edições novas não
- * passam mais pela Beehiiv.
+ * reescreve só o que está na fonte dele — o cache Beehiiv (o caminho Kit
+ * depende de `data/kit-cache/broadcasts/` populado, ver docstring de
+ * `gen-archive-pages.ts`). Desde 04/09/2026 (envio Kit, #7388; só Kit desde o
+ * #11225) as edições novas não passam mais pela Beehiiv.
  *
  * Ou seja: rodá-lo **apagaria do DISCO** as páginas publicadas pelo Kit, não
  * só as tiraria do sitemap. **Este script NÃO recupera isso** — ele só

@@ -41,7 +41,8 @@
  *         aposentado no #11225; clicks/stats do Kit são REST comum buscados
  *         no próprio kit-sync)
  *   0i. update-audience.ts + snapshot-audience-profile.ts (sequencial, após
- *       o batch).
+ *       o batch) + commit-audience-snapshot.ts (#11733: abre/atualiza a PR
+ *       do snapshot a partir de um worktree temporário, fail-soft).
  *   0j. find-pending-issue-drafts.ts (script). Se vazio, no-op. Se não-vazio,
  *       NUNCA dispara o subagent `auto-reporter` sozinho — isso exige decisão
  *       humana (s/n/d) — vira `pendingHumanDecision`.
@@ -1032,6 +1033,10 @@ async function runContinue(deps: Stage0RunDeps, opts: Stage0RunOptions, report: 
   // --- 0i: audience refresh (sequencial, depende de 0h) ---
   softStep(deps, report, "update-audience (0i)", "scripts/update-audience.ts", []);
   softStep(deps, report, "snapshot-audience-profile (0i)", "scripts/snapshot-audience-profile.ts", ["--edition-dir", editionDir]);
+  // #11733: o 0i regrava context/audience-profile.md e docs/audience-history/
+  // no checkout e ninguém commitava. A PR sai de um worktree temporário (o
+  // checkout não recebe add/commit), uma por vez; nunca mergeia.
+  softStep(deps, report, "commit-audience-snapshot (0i)", "scripts/commit-audience-snapshot.ts", []);
 
   // --- 0j: pending issue drafts (script detecta; decisão s/n/d é humana) ---
   const draftsResult = deps.exec("scripts/find-pending-issue-drafts.ts", ["--current", opts.edition, "--window", "3"]);

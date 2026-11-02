@@ -3,12 +3,12 @@
  * apoios-diff-alarm.ts (#4485 item 2)
  *
  * Task diária: computa o MESMO diff do dry-run de
- * `scripts/sync-apoio-nivel-beehiiv.ts` (desejado × estado atual da Beehiiv)
- * — reusando as mesmas funções puras exportadas de lá, sem reimplementar a
- * lógica — e, se houver diff pendente (adições/trocas/remoções), envia um
+ * `scripts/sync-apoio-nivel-kit.ts` (desejado × estado atual no Kit; migrado
+ * da Beehiiv no #11225) — reusando `scripts/lib/apoio-nivel-sync.ts`, sem
+ * reimplementar a lógica — e, se houver diff pendente (adições/trocas/remoções), envia um
  * e-mail de alarme ao editor via Gmail API. **NUNCA aplica `--push`** — o
- * gate humano de `/diaria-apoios-sync` (Passo 3) continua sendo a única
- * forma de gravar de verdade na Beehiiv.
+ * gate humano de `/diaria-apoios-sync` (Passo 2) continua sendo a única
+ * forma de gravar de verdade no Kit.
  *
  * Idempotente por FINGERPRINT do diff (`scripts/lib/apoios-diff-alarm.ts`) —
  * o mesmo diff pendente não gera um novo e-mail a cada rodada diária; só
@@ -18,7 +18,7 @@
  * **Reconciliação de promessas pendentes (#4490 causa 4; extraída pra
  * `runApoioReconciliationCycle` no self-review consolidado do PR #4503):**
  * antes de computar o diff, roda a MESMA sequência de
- * `scripts/sync-apoio-nivel-beehiiv.ts::main()` (`scripts/lib/apoio-reconciliation-cycle.ts`)
+ * `scripts/sync-apoio-nivel-kit.ts::main()` (`scripts/lib/apoio-reconciliation-cycle.ts`)
  * — drena Gmail, importa notificações de PAGAMENTO CONFIRMADO como contato
  * (achado crítico 1), e reconsulta `reconcilePendingPromises` pra cada
  * promessa pendente do store; se confirmar pagamento, promove a contato
@@ -39,8 +39,8 @@
  *              colateral (mesmo contrato de `cursos-error-alarm.ts`).
  *   --to       override do destinatário (default: resolveEditorEmail).
  *
- * Env: mesmas credenciais do `sync-apoio-nivel-beehiiv.ts` dry-run
- * (BEEHIIV_API_KEY/BEEHIIV_PUBLICATION_ID, APOIA_SE_API_KEY/APOIA_SE_API_SECRET/APOIA_SE_CAMPAIGN)
+ * Env: mesmas credenciais do `sync-apoio-nivel-kit.ts` dry-run
+ * (Kit via `resolveKitConfig`, APOIA_SE_API_KEY/APOIA_SE_API_SECRET/APOIA_SE_CAMPAIGN)
  * + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito de
  * `clarice-guardrail-alarm.ts`/`cursos-error-alarm.ts`) + o junction `data/`
  * (OneDrive) pra `contacts.jsonl` e o cache apoia.se.
@@ -51,21 +51,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
-import { loadBeehiivConfig } from "./lib/beehiiv-config.ts";
+import { resolveKitConfig } from "./lib/kit-config.ts";
 import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { notifyEditorForOutcomes } from "./lib/editor-notify.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
 import { readApoiaSeEnv, defaultCacheDir, competenceMonth } from "./lib/apoia-se.ts";
 import { runApoioReconciliationCycle } from "./lib/apoio-reconciliation-cycle.ts";
+import { loadApoioOverrides } from "./lib/apoio-overrides.ts";
 import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
 import {
-  computeDesiredApoioLevels,
-  diffApoioTags,
-  fetchCurrentBeehiivState,
-  shouldBlockRemovals,
-  isPreviousMonthSnapshotMissing,
-  evaluateBlastRadiusGuard,
-} from "./sync-apoio-nivel-beehiiv.ts";
+  resolveDesiredApoioLevels,
+  computeAlarmDiffInput,
+} from "./lib/apoio-nivel-sync.ts";
+import { fetchCurrentKitState } from "./sync-apoio-nivel-kit.ts";
 import {
   emptyApoiosDiffAlarmState,
   advanceState,
@@ -75,7 +73,6 @@ import {
   maskEmailForIssue,
   type ApoiosDiffAlarmState,
   type DiffAlarmInput,
-  type DiffAlarmGuardWarnings,
 } from "./lib/apoios-diff-alarm.ts";
 import {
   planAlarmReconciliation,
@@ -153,8 +150,8 @@ export function toAlarmFinding(input: DiffAlarmInput): AlarmFinding {
     lines.push("");
   }
   lines.push(
-    "Rode /diaria-apoios-sync (revisa o diff + Passo 1 de drift check antes) ou",
-    "npx tsx scripts/sync-apoio-nivel-beehiiv.ts --push pra aplicar.",
+    "Rode /diaria-apoios-sync: revisa o diff, grava o nível e atualiza as tags de",
+    "audiência, que o --push direto de sync-apoio-nivel-kit.ts não atualiza.",
     "",
     "Esta issue é criada automaticamente pelo alarme (#5339) e será",
     "comentada/fechada sozinha quando o diff deixar de reproduzir por",
@@ -180,7 +177,11 @@ async function main(): Promise<void> {
   const isDryRun = hasFlag(argv, "dry-run");
   const toOverride = getArg(argv, "to");
 
-  const { apiKey, publicationId } = loadBeehiivConfig(LOG_PREFIX);
+  const kitConfig = resolveKitConfig();
+  if (!kitConfig.ok) {
+    console.error(`${LOG_PREFIX} ${kitConfig.reason}`);
+    process.exit(1);
+  }
 
   // #4490 causa 4 / self-review consolidado do PR #4503: esta é a task diária
   // PRETENDIDA pelo #4485 item 2 (`Diaria-Apoios-Diff-Alarm`) — o registro
@@ -190,7 +191,7 @@ async function main(): Promise<void> {
   // reconciliação, uma promessa que confirma pagamento só é promovida a
   // contato se alguém rodar `/diaria-apoios-sync` manualmente, o que
   // reintroduz a dependência de "alguém lembrar" que a causa 4 deveria
-  // eliminar. Mesma sequência de `sync-apoio-nivel-beehiiv.ts::main()`
+  // eliminar. Mesma sequência de `sync-apoio-nivel-kit.ts::main()`
   // (extraída pra `runApoioReconciliationCycle` — achado alto de duplicação
   // do self-review) — drena Gmail, importa notificações CONFIRMADAS (achado
   // crítico 1) e reconcilia promessas pendentes (achado crítico 2) ANTES do
@@ -262,14 +263,10 @@ async function main(): Promise<void> {
     console.error(`${LOG_PREFIX} aviso: não foi possível ler snapshots de meses anteriores: ${(e as Error).message}`);
   }
 
-  const desired = computeDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth);
-  const current = await fetchCurrentBeehiivState(publicationId, apiKey);
-  const diff = diffApoioTags(desired, current);
-
-  const input: DiffAlarmInput = {
-    toApply: diff.toApply.map((e) => ({ email: e.email, contactName: e.contactName, fromLevel: e.fromLevel, toLevel: e.toLevel })),
-    toRemove: diff.toRemove.map((e) => ({ email: e.email, contactName: e.contactName, fromLevel: e.fromLevel, toLevel: e.toLevel })),
-  };
+  // #8820: mesmo override do sync, senão o alarme acusaria diff que o sync não aplica.
+  const desired = resolveDesiredApoioLevels(data.contacts, pastSnapshots, currentMonth, loadApoioOverrides(ROOT));
+  const current = await fetchCurrentKitState(kitConfig.config);
+  const { input, guardWarnings } = computeAlarmDiffInput({ desired, current, pastSnapshots, currentMonth, dataError: data.error ?? null });
 
   const state = loadState();
   console.log(
@@ -310,26 +307,6 @@ async function main(): Promise<void> {
   }
 
   if (hasPendingDiff(input)) {
-    // Self-review finding 5 (PR #4503): informa no e-mail quais remoções um
-    // `--push` real recusaria — avaliado SEM os escape hatches
-    // (`--allow-partial`/`--force-blast-radius`), o pior caso, já que este
-    // script nunca sabe se o editor vai usá-los.
-    //
-    // #7195: precisa passar `previousMonthSnapshotMissing` junto, senão a
-    // promessa de "pior caso" acima deixa de valer — o sync real bloqueia
-    // remoções quando o snapshot de M-1 falta, e este alarme reportaria
-    // `partialDataBlocksRemovals: false` exatamente nesse cenário,
-    // SUBESTIMANDO o risco no e-mail que vai pro editor.
-    const partialDataBlocksRemovals =
-      shouldBlockRemovals(data.error, diff, false, {
-        previousMonthSnapshotMissing: isPreviousMonthSnapshotMissing(pastSnapshots, currentMonth),
-      }) && diff.toRemove.length > 0;
-    const blastGuard = evaluateBlastRadiusGuard(diff.toRemove.length, current, false);
-    const guardWarnings: DiffAlarmGuardWarnings = {
-      partialDataBlocksRemovals,
-      blastRadiusBlocked: blastGuard.blocked,
-      blastRadiusRatioPct: Math.round(blastGuard.ratio * 1000) / 10,
-    };
     if (isDryRun) {
       const { subject, body } = buildApoiosDiffAlarmEmail(input, guardWarnings, issueRef);
       const to = toOverride || resolveEditorEmail(PLATFORM_CONFIG_PATH);

@@ -1,5 +1,7 @@
 # Playbook: Beehiiv (Etapa 5 — newsletter daily)
 
+> **ARQUIVO HISTÓRICO — nenhuma etapa roda este playbook desde o #11225 (27/10/2026).** O envio da diária é só Kit (`scripts/publish-newsletter-kit.ts`, `.claude/agents/orchestrator-stage-5.md`); a Beehiiv guarda posts, site e estatísticas antigos e não envia. O texto abaixo fica como registro do processo e das armadilhas da plataforma (algumas regras do `review-test-email` ainda o citam). Não seguir como instrução de produção (#11775).
+
 Playbook semântico+operacional pra criar a newsletter diar.ia.br no Beehiiv como **rascunho** usando o template configurado, e enviar um email de teste. Não publica nem agenda — o editor revisa e dispara manualmente do dashboard.
 
 ## TLDR (#1327)
@@ -1099,9 +1101,9 @@ Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não 
 
 **⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a (#1989). O Schedule é automatizado desde #6098 (fallback manual) — depois que o clique confirmar, verificar e corrigir o slug. O mangling independe de quem clicou.
 
-**#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (dentro do D1 desde #5152) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. Desde o #11225 nada bloqueia por isso depois do Stage 4: a Etapa 6 só agenda pelo Kit e não roda `scripts/check-whatsapp-slug-guard.ts` (wrapper de `checkWhatsappSlugMatch`, `scripts/lib/whatsapp-slug-guard.ts`), que sobra como comparação avulsa. Os passos 1-3 abaixo são o mecanismo manual de verificação/correção num post da Beehiiv.
+**#4570 — não é mais só "corrija se puder":** o bloco encaminhável por WhatsApp (dentro do D1 desde #5152) tem a URL `https://diar.ia.br/p/{seoSlug(título_d1)}` baked in no HTML já enviado — se o slug real divergir, esse link 404 pra sempre pra quem já recebeu o e-mail. Desde o #11225 nada bloqueia por isso depois do Stage 4: a Etapa 6 só agenda pelo Kit. O guard `check-whatsapp-slug-guard.ts` e o `fix-post-slug.ts` saíram no #11775 (sem chamador; o PATCH de slug é plan-gated, #3449). Os passos 1-3 abaixo são o mecanismo manual de verificação/correção num post da Beehiiv.
 
-**⚠️ #3449 (confirmado 260714, edição real): a correção via API está permanentemente bloqueada no plano atual.** `fix-post-slug.ts --execute` retornou `403 SEND_API_NOT_ENTERPRISE_PLAN` — o mesmo gate de plano que já bloqueava `edit_post` via MCP (#1705) cobre o PATCH direto de `web_settings.slug` também. **Não é transitório** — não vale a pena re-tentar via API em edições futuras até um eventual upgrade de plano (ver #2501 pra decisão de custo). O caminho viável é a correção manual via UI (passo 3 abaixo), direto — sem passar pela tentativa de API primeiro.
+**⚠️ #3449 (confirmado 260714, edição real): a correção via API está permanentemente bloqueada no plano atual.** `fix-post-slug.ts --execute` (removido no #11775) retornou `403 SEND_API_NOT_ENTERPRISE_PLAN` — o mesmo gate de plano que já bloqueava `edit_post` via MCP (#1705) cobre o PATCH direto de `web_settings.slug` também. **Não é transitório** — não vale a pena re-tentar via API em edições futuras até um eventual upgrade de plano (ver #2501 pra decisão de custo). O caminho viável é a correção manual via UI (passo 3 abaixo), direto — sem passar pela tentativa de API primeiro.
 
 **Trigger**: após receber confirmação do editor que agendou (ou ao montar o relatório final), verificar o slug via MCP e corrigir se necessário.
 
@@ -1117,20 +1119,7 @@ npx tsx -e "
 "
 ```
 
-Se os slugs divergirem, ir direto para a correção manual (passo 3) — não gastar
-uma tentativa de `fix-post-slug.ts --execute` sabendo que vai retornar `exit 3`
-(plan-gated, #3449). Se quiser confirmar o estado formalmente antes (ex: pra
-registrar no log), o script ainda pode ser chamado — ele detecta o 403 e já
-imprime as instruções de correção manual no stderr (não precisa reconstruí-las):
-
-```bash
-npx tsx scripts/fix-post-slug.ts \
-  --post-id {post_id} \
-  --slug {slug_correto} \
-  --execute
-# exit 3 esperado (#3449) — stderr já traz as instruções manuais formatadas
-# via formatManualSlugFixInstructions() (scripts/lib/slug.ts)
-```
+Se os slugs divergirem, ir direto para a correção manual (passo 3): a correção via API é plan-gated (#3449).
 
 **Correção manual (passo 3 — caminho primário desde #3449):** aba visível com o post já agendado (step=web), clicar no campo `#text-input-slug` (Settings → SEO/URL slug), selecionar tudo, digitar o slug correto via teclado real (validado em 260610 que keystrokes reais persistem mesmo com status `scheduled` — `scheduled_at` não é alterado pela edição do slug).
 

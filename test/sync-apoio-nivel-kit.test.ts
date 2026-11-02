@@ -5,7 +5,7 @@
  * `extractApoioNivelValueKit`, `fetchCurrentKitState`, `applyApoioTagEntryKit`.
  * A lógica pura reusada (`computeDesiredApoioLevels`, `diffApoioTags`,
  * `evaluateBlastRadiusGuard`, etc.) já está travada em
- * `test/sync-apoio-nivel-beehiiv.test.ts` — reimportar e re-testar aqui
+ * `test/apoio-nivel-sync.test.ts` — reimportar e re-testar aqui
  * seria duplicação sem sinal novo (o shape que ela consome é genérico, não
  * muda por ser alimentado pelo Kit).
  *
@@ -19,7 +19,7 @@ import {
   fetchCurrentKitState,
   applyApoioTagEntryKit,
 } from "../scripts/sync-apoio-nivel-kit.ts";
-import type { ApoioTagDiffEntry } from "../scripts/sync-apoio-nivel-beehiiv.ts";
+import type { ApoioTagDiffEntry } from "../scripts/lib/apoio-nivel-sync.ts";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -76,12 +76,14 @@ describe("fetchCurrentKitState (#6049)", () => {
     assert.deepEqual(result[1], { subscriptionId: "3", email: "sem-campo@exemplo.com", apoioNivel: "" });
   });
 
-  it("lista vazia → array vazio, sem lançar", async () => {
-    const result = await withMockFetch(
-      (async () => jsonResponse(200, { subscribers: [], pagination: emptyPagination })) as typeof fetch,
-      () => fetchCurrentKitState(TEST_CONFIG),
+  it("lista vazia → lança: leitura vazia nunca vira 'ninguém assina' (#11225)", async () => {
+    await assert.rejects(
+      withMockFetch(
+        (async () => jsonResponse(200, { subscribers: [], pagination: emptyPagination })) as typeof fetch,
+        () => fetchCurrentKitState(TEST_CONFIG),
+      ),
+      /0 assinantes ativos/,
     );
-    assert.deepEqual(result, []);
   });
 });
 
@@ -97,7 +99,7 @@ function makeEntry(overrides: Partial<ApoioTagDiffEntry> = {}): ApoioTagDiffEntr
   };
 }
 
-describe("applyApoioTagEntryKit (#6049 — PATCH + releitura, mesma disciplina da Beehiiv)", () => {
+describe("applyApoioTagEntryKit (#6049 — PATCH + releitura)", () => {
   it("PATCH seguido de GET que confirma o valor esperado — não lança", async () => {
     let calls: string[] = [];
     const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -145,6 +147,47 @@ describe("applyApoioTagEntryKit (#6049 — PATCH + releitura, mesma disciplina d
       withMockFetch(fetchImpl, () => applyApoioTagEntryKit(makeEntry({ toLevel: "mantenedor" }), TEST_CONFIG)),
       /NÃO confere.*mutação NÃO confirmada/,
     );
+  });
+
+  it("adição: corpo do PATCH leva o nível em fields.apoio_nivel (#11225)", async () => {
+    let patchBody: { fields?: Record<string, string> } = {};
+    const sub = { id: 42, email_address: "fulano@exemplo.com", state: "active", created_at: "x" };
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH") {
+        patchBody = JSON.parse(init.body as string);
+        return jsonResponse(200, { subscriber: sub });
+      }
+      return jsonResponse(200, { subscriber: { ...sub, fields: { apoio_nivel: "mantenedor" } } });
+    }) as typeof fetch;
+    await withMockFetch(fetchImpl, () => applyApoioTagEntryKit(makeEntry({ toLevel: "mantenedor" }), TEST_CONFIG));
+    assert.deepEqual(patchBody.fields, { apoio_nivel: "mantenedor" });
+  });
+
+  it("remoção que não pegou: releitura ainda traz o nível → lança (#11225)", async () => {
+    const sub = { id: 42, email_address: "fulano@exemplo.com", state: "active", created_at: "x", fields: { apoio_nivel: "amigo" } };
+    const fetchImpl = (async () => jsonResponse(200, { subscriber: sub })) as typeof fetch;
+    await assert.rejects(
+      withMockFetch(fetchImpl, () => applyApoioTagEntryKit(makeEntry({ fromLevel: "amigo", toLevel: null }), TEST_CONFIG)),
+      /NÃO confere/,
+    );
+  });
+
+  it("PATCH não-ok lança e não relê (#11225)", async () => {
+    const methods: string[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      methods.push(init?.method ?? "GET");
+      return jsonResponse(422, { errors: ["inválido"] });
+    }) as typeof fetch;
+    await assert.rejects(withMockFetch(fetchImpl, () => applyApoioTagEntryKit(makeEntry(), TEST_CONFIG)));
+    assert.deepEqual(methods, ["PATCH"]);
+  });
+
+  it("GET falhando depois de PATCH ok lança: escrita não confirmada (#11225)", async () => {
+    const fetchImpl = (async (_url: string, init?: RequestInit) =>
+      init?.method === "PATCH"
+        ? jsonResponse(200, { subscriber: { id: 42, email_address: "fulano@exemplo.com", state: "active", created_at: "x" } })
+        : jsonResponse(404, { errors: ["não encontrado"] })) as typeof fetch;
+    await assert.rejects(withMockFetch(fetchImpl, () => applyApoioTagEntryKit(makeEntry(), TEST_CONFIG)));
   });
 
   it("subscriptionId não numérico (dado malformado) lança antes de qualquer chamada de rede", async () => {

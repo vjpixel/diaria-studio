@@ -24,7 +24,8 @@
  *   2. o plano: `planShortsPublish` só com o `instagram` e a duração desse
  *      vídeo. Acima do teto da API ele vira `guided`, com a legenda e o horário
  *      (`at`) que o `publish-shorts.ts` daria. Na conta sem teto (`null`, #11355)
- *      o arquivo sai sempre: é o plano B de quando o Reels falhar pela API;
+ *      ou com o vertical dentro do teto (#11774) o arquivo sai sempre: é o
+ *      plano B de quando o Reels falhar pela API;
  *   3. a compressão: a mesma do `--publish` (`prepareInstagramChromeUpload`,
  *      ffmpeg 2-pass 720x1280 mirando 9,5 MB) em
  *      `_internal/diaria-comentada-{AAMMDD}-short-instagram-chrome.mp4`.
@@ -141,6 +142,21 @@ export function confirmInstagramCommand(aammdd: string): string {
   return `npx tsx scripts/publish-shorts.ts ${aammdd} --confirm-instagram`;
 }
 
+/** #11774: o `detail` do plano B na conta com teto, quando o vertical cabe nele (o Reels pode falhar pela API mesmo assim). */
+const BELOW_CAP_FALLBACK_REASON =
+  "plano B: o vertical cabe no teto da API desta conta e quem publica é o timer do 300; use só se o Reels falhou pela API, conferindo antes que ele não está na conta";
+
+/**
+ * Pure (#11774): o motivo do plano B a passar ao plano, ou null quando o
+ * vertical passa do teto (aí o plano já dá `guided` pela duração). Conta sem
+ * teto (#11355) e vertical dentro do teto têm plano B: o Reels pode falhar pela
+ * API em qualquer duração, e responder `fits-api` deixava o editor sem arquivo.
+ */
+export function guidedFallbackReason(maxSeconds: number | null, durationSeconds: number): string | null {
+  if (maxSeconds === null) return NO_CAP_FALLBACK_REASON;
+  return durationSeconds <= maxSeconds ? BELOW_CAP_FALLBACK_REASON : null;
+}
+
 function sizeOf(path: string): number | null {
   try {
     return statSync(path).size;
@@ -230,6 +246,7 @@ export async function runPrepareInstagramGuided(
   const duration = deps.videoDurationSeconds(videoPath);
   if (duration === null) return stop(1, "error", `duração ilegível em ${videoPath} — confira o MP4`, { video });
   const editionUrlIn = resolveEditionUrlInput(dir, input.editionUrl);
+  const fallback = guidedFallbackReason(loadInstagramApiMaxSeconds(deps.config, cfg.instagramAuthorPage), duration);
   let plan: ReturnType<typeof planShortsPublish>;
   try {
     plan = planShortsPublish({
@@ -241,7 +258,7 @@ export async function runPrepareInstagramGuided(
       // Este comando nunca publica: a credencial da API não é conferida.
       instagramReady: false,
       instagramNotReadyReason: "não conferida (preparo do passo guiado, #11476)",
-      ...(loadInstagramApiMaxSeconds(deps.config, cfg.instagramAuthorPage) === null ? { instagramGuidedFallback: NO_CAP_FALLBACK_REASON } : {}),
+      ...(fallback ? { instagramGuidedFallback: fallback } : {}),
       published,
       // Com o timer do 300 dono do Instagram, a rodada normal veria `skip_delegated`;
       // o passo guiado é o que a rodada do timer mostraria.

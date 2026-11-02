@@ -218,7 +218,7 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.equal(contact.openRate.openRatePct, 75);
   });
 
-  it("GET /api/apoios reflete o cache de segmentos Beehiiv quando presente (#4437 Entrega 2, fixture mockada — nunca o arquivo real de data/)", async () => {
+  it("GET /api/apoios reflete o cache de segmentos Kit quando presente (#4437 Entrega 2, fixture mockada — nunca o arquivo real de data/)", async () => {
     mkdirSync(join(root, "data", "apoia-se"), { recursive: true });
     writeFileSync(
       segmentsCachePath(root),

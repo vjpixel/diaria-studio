@@ -50,8 +50,7 @@ describe("buildArticleHtml (#3940)", () => {
 
   it("sem imagens (destaqueImageUrls omitido) → renderiza sem crashar, sem <img> do destaque", () => {
     const page = buildArticleHtml(FIXTURE_DRAFT, "2604-05");
-    // Sanidade: o pipeline não requer imagens geradas pra funcionar (#3940
-    // escopo — imagens reais são fast-follow, ver docstring do módulo).
+    // Sanidade: o pipeline não requer imagens geradas pra funcionar.
     assert.doesNotThrow(() => page.html.length);
   });
 });

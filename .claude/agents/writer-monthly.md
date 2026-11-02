@@ -65,8 +65,17 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    ```
    **CLARICE — DIVULGAÇÃO**
 
-   [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link. CTA no formato `→ [texto](url)` — vira botão no render (renderCtaButton), um `[texto](url)` sem o `→` sai como link de texto comum.]
+   Escreva melhor em português com a Clarice
+
+   A única IA criada por brasileiros para brasileiros. A Clarice foi treinada para entender as nuances da língua portuguesa e identificar problemas de correção e estilo em qualquer texto, seja ele seu ou gerado por IAs generalistas (ChatGPT, Claude e similares).
+
+   Use a Clarice para revisar, refinar e humanizar seus textos. Publique com mais segurança, sem perder sua voz.
+
+   Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto.
+
+   → [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)
    ```
+   CLARICE — DIVULGAÇÃO é texto FIXO (#11788 — idêntico nos ciclos 2607-08 a 2610-11): emitir literalmente como acima, sem parafrasear. O `→` faz o CTA virar botão no render (`renderCtaButton`).
    Após D2 e antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
    ```
    **LIVROS**
@@ -81,9 +90,9 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    ```
    **CLARICE — TUTORIAL**
 
-   [Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais. CTA no formato `→ [texto](url)`, mesmo motivo acima.]
+   [Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais. CTA no formato `→ [texto](url)`, vira botão no render. Muda a cada ciclo.]
    ```
-   O conteúdo das seções CLARICE (placeholders) é preenchido manualmente pelo editor antes da publicação — não inventar texto para elas. LIVROS é texto FIXO: emitir literalmente como acima, sem parafrasear.
+   CLARICE — TUTORIAL é a única seção Clarice que segue placeholder: o tutorial muda a cada ciclo e vem do Doc citado (você não tem acesso ao Drive), preenchido pelo editor antes da publicação — não inventar texto para ela. LIVROS e CLARICE — DIVULGAÇÃO são texto FIXO: emitir literalmente como acima, sem parafrasear. Desconto citado em qualquer outro ponto do draft (ex.: CTA do TUTORIAL) usa o mesmo "até 67%" do DIVULGAÇÃO — nunca um segundo número no mesmo e-mail (#11810; `lint-monthly-draft.ts` avisa quando aparecem percentuais "até N% de desconto" diferentes).
 
 6. **Use Melhor + Radar.** Duas seções compactas, na ordem do `prioritized.md`:
 
@@ -97,7 +106,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
 
 7. **Prompts de imagem D1/D2/D3 (#1916).** Gerar **um prompt por destaque** — `_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` — cada um com cena Van Gogh impasto derivada do tema do SEU destaque: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Cada cena deve refletir o tema do destaque correspondente (não repetir a mesma cena). Gravar os 3 com `Write`.
 
-8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE**` — #3581 removeu o sufixo "do mês", redundante pro leitor; `**PARA ENCERRAR**` — #2794, renomeado de `ENCERRAMENTO` em #3219). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Para Encerrar (não depois do Radar).
+8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE**` — #3581 removeu o sufixo "do mês", redundante pro leitor; `**PARA ENCERRAR**` — #2794, renomeado de `ENCERRAMENTO` em #3219). **Ordem das seções (#6881, #11811):** a seção `É IA?` vem **depois do `RADAR` e antes do `PARA ENCERRAR`** — ou seja: …CLARICE — TUTORIAL → Use Melhor → Radar → É IA? → Para Encerrar, a mesma ordem do template (`context/templates/newsletter-monthly.md`) e do checklist do passo 9. (A regra antiga do #1920, "É IA? antes do Use Melhor", foi revogada pelo #6881; todos os drafts publicados desde 2607-08 seguem a ordem nova.)
 
    **Seleção (#2869/#2904 — fonte autoritativa; NUNCA `eia-used.json`/`poll_id` — esse campo nunca existe lá, instrução legada que causou o bug do ciclo 2606-07):** ler `eia_selection_path` (se fornecido pelo orchestrator). É o `EiaSelectionResult` de `scripts/select-eia-edition.ts`, já resolvido ANTES desta invocação: `{ edition, selection: "criterion"|"fallback_last", pct_correct, total_votes, reason }`.
    - **`eia_selection_path` ausente, OU `selection == "fallback_last"` sem `edition` utilizável:** emitir o placeholder — `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`.
@@ -123,7 +132,7 @@ Da diar.ia.br:
 ```
    3. O convite social — texto FIXO, idêntico ao diário, nunca parafrasear (#4413, decisão do editor 260801, constante `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`):
 
-      `Siga a **diar.ia.br**: [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) [Instagram](https://www.instagram.com/diar.ia.br) [Threads](https://www.threads.net/@diar.ia.br) [Facebook](https://www.facebook.com/diar.ia.br) [X](https://x.com/diariabr) [YouTube](https://www.youtube.com/@diariabr)`
+      `Siga a **diar.ia.br**: [YouTube](https://www.youtube.com/@diariabr) [Instagram](https://www.instagram.com/diar.ia.br) [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) [Threads](https://www.threads.net/@diar.ia.br) [Facebook](https://www.facebook.com/diar.ia.br) [X](https://x.com/diariabr)`
 
       O render troca cada link pelo ícone da rede (#11483): escrever os links separados só por espaço, sem vírgula nem "ou", senão o convite sai em texto corrido.
 
