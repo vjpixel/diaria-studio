@@ -30,8 +30,14 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *                                                           # corte AVULSO, fora de edição (#11795): título e gancho
  *                                                           # explícitos, registro em data/cortes/SLUG/ (corte.json +
  *                                                           # 06-shorts-published.json), R2 em shorts/cortes/, horário
- *                                                           # explícito fora do teste do #10831, sem timers do 300.
+ *                                                           # explícito fora do teste do #10831, sem os timers da edição
+ *                                                           # (com publishing.shorts.corte_via_timer, o timer próprio do
+ *                                                           # corte no 300, Diaria-Shorts-Cortes, publica e alarma).
  *                                                           # Re-execução e --mark só com --corte SLUG.
+ *   npx tsx scripts/publish-shorts.ts (AAMMDD | --corte SLUG) --update-scheduled [--publish --confirm-publish AAMMDD]
+ *                                                           # #11795: troca texto e capa de post JÁ AGENDADO (YouTube
+ *                                                           # videos.update + thumbnails.set; Facebook POST /{video-id}
+ *                                                           # + /thumbnails); X/TikTok voltam como edit_post da Buffer.
  *
  * Destinos (config `publishing.shorts`, default = decisão do editor):
  *   - `facebook:{slug}` (API) — cada slug de `publishing.shorts.facebook_pages`,
@@ -77,6 +83,11 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *     PENDENTE (#11478/#11498): o `-short.mp4` fica no disco e uma máquina com
  *     os secrets publica; à mão só registrando com `--mark`, senão sai
  *     duplicado. Registro com `--mark x=buffer:{id} --scheduled-at {dueAt}`.
+ *   - `tiktok` (guiado, #11515) — TikTok @diar.ia.br pela Buffer (MCP, só a
+ *     skill alcança), mesmo caminho do X: texto (`buildTikTokPost`, sem link),
+ *     `dueAt` e, no `--publish`, `results[].buffer` com `videoUrl`, `channelId`
+ *     (`publishing.shorts.tiktok_buffer_channel_id`) e `metadata.tiktok`
+ *     (`title`, `isAiGenerated: false`). Registro com `--mark tiktok=buffer:{id}`.
  *   - `threads_profile` (API, #11122) — vertical no Threads PESSOAL do editor
  *     (`scripts/lib/threads-personal-video.ts`, `THREADS_PERSONAL_*`), com o
  *     vertical por URL pública (R2) e o texto de `buildShortSocialText`
@@ -183,6 +194,8 @@ import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
 import {
   CORTE_SPEC_FILE,
+  CORTE_TIMER_DESTINATIONS,
+  CORTE_TIMER_TASK,
   corteBaseCommand,
   corteR2Key,
   corteRelDir,
@@ -196,6 +209,7 @@ import {
   parseCorteSpec,
   type CorteSpec,
 } from "./lib/diaria/short-corte.ts";
+import { planScheduledUpdates, type ScheduledUpdateItem } from "./lib/diaria/short-scheduled-update.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/facebook-pages.ts";
 import {
@@ -226,6 +240,7 @@ import {
   resolveReelsSchedule,
   resolveShortTime,
   buildShortSocialText,
+  buildTikTokPost,
   planLinkedInRepostSlot,
   shortVideoFileName,
   type ShortDestination,
@@ -266,6 +281,7 @@ import {
   failedUploadStatus,
   isIndeterminateUploadFailure,
   missingYouTubeCredentials,
+  updateScheduledVideo,
   uploadYouTubeVideo,
   type YouTubeUploadDeps,
 } from "./lib/diaria/youtube-upload.ts";
@@ -383,8 +399,11 @@ export function publicVideoUnavailableCause(backend: InstagramBackend, r2Missing
     : `falta ${r2Missing.join(", ")}`;
 }
 
-/** Destinos que só o skill faz (Chrome; o X pela Buffer MCP, #10772). */
-export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile", "linkedin_page_repost", "x"]);
+/** Destinos que só o skill faz (Chrome; o X e o TikTok pela Buffer MCP, #10772/#11515). */
+export const GUIDED_DESTINATIONS = new Set(["youtube_shorts", "facebook_profile", "linkedin_page_repost", "x", "tiktok"]);
+
+/** #11515: destinos que saem pela Buffer (`--mark {destino}=buffer:{id}`). */
+export const BUFFER_DESTINATIONS = new Set(["x", "tiktok"]);
 
 /**
  * Destinos que `--mark` aceita: os guiados + o `instagram`, que vira passo
@@ -424,7 +443,24 @@ export type ShortsPlanItem =
    * já. A URL pública do vídeo só existe no `--publish` (sobe pro R2): vem em
    * `results[].buffer`.
    */
-  | { destination: string; mode: "guided"; action: "buffer"; caption: string; scheduledAt: string | null; detail: string };
+  | {
+      destination: string;
+      mode: "guided";
+      action: "buffer";
+      caption: string;
+      scheduledAt: string | null;
+      detail: string;
+      /** #11515: canal da Buffer quando o destino não é o X (o do X vem de `publishing.social.twitter`). */
+      channelId?: string;
+      /** #11515: `metadata.tiktok` do `create_post` (título e a declaração de conteúdo de IA). */
+      tiktok?: TikTokBufferMetadata;
+    };
+
+/** #11515: `metadata.tiktok` da Buffer. `isAiGenerated: false`: o vídeo é o Pixel gravado (decisão do editor, 28/10/2026). */
+export interface TikTokBufferMetadata {
+  title: string;
+  isAiGenerated: boolean;
+}
 
 export interface ShortsPlan {
   aammdd: string;
@@ -510,6 +546,8 @@ export function assignShortsDestinationOwners(
     writer?: ShortsRegistryWriter;
     /** #11795: comando base do corte avulso (`--corte SLUG`); os passos guiados re-executam por ele, sem a skill da edição. */
     baseCommand?: string;
+    /** #11795: corte avulso com `publishing.shorts.corte_via_timer` — o timer do 300 é o dono dos destinos que a API não agenda. */
+    corteTimer?: boolean;
   },
 ): ShortsDestinationOwner[] {
   const base = ctx.baseCommand ?? `npx tsx scripts/publish-shorts.ts ${ctx.aammdd}`;
@@ -520,7 +558,16 @@ export function assignShortsDestinationOwners(
       const task = SHORTS_TIMER_TASKS[destination];
       owners.push({ destination, action, by: "timer-300", ...(task ? { task } : {}), note: `o timer do 300${task ? ` (${task})` : ""} publica no horário do vertical e alarma se não sair` });
     } else if (action === "pending_schedule") {
-      if (destination === "instagram" && ctx.instagramViaTimer) {
+      if (ctx.corteTimer && CORTE_TIMER_DESTINATIONS.includes(destination)) {
+        owners.push({
+          destination,
+          action,
+          by: "timer-300",
+          task: CORTE_TIMER_TASK,
+          at: item.scheduledAt,
+          note: `o timer do 300 (${CORTE_TIMER_TASK}, de hora em hora) publica na 1ª execução depois de ${item.scheduledAt}, até 3 h, e alarma o editor se o destino falhar`,
+        });
+      } else if (destination === "instagram" && ctx.instagramViaTimer) {
         owners.push({ destination, action, by: "timer-300", task: SHORTS_TIMER_TASKS.instagram, at: item.scheduledAt, note: "rodada do timer do 300: ele mesmo publica depois do horário" });
       } else {
         owners.push({
@@ -729,7 +776,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     if (d.kind === "facebook_page") return !input.pages.find((p) => p.slug === d.slug)!.missing.length;
     if (d.kind === "instagram") return input.instagramReady && igFit.fits;
     if (d.kind === "linkedin_profile") return input.linkedinPersonal?.ready === true;
-    if (d.kind === "x") return input.publicVideo?.ready === true;
+    if (d.kind === "x" || d.kind === "tiktok") return input.publicVideo?.ready === true;
     if (d.kind === "threads_profile") return input.threadsPersonal?.ready === true && input.publicVideo?.ready === true;
     return false;
   }
@@ -746,6 +793,11 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
   // outros destinos se espaçarem em volta dele.
   // #11795: o corte avulso nunca delega aos timers do 300 (eles procuram a pasta da edição).
   const instagramViaTimer = cfg.instagramBackend === "timer-300" && !corte;
+  // #11795: quem roda de novo depois do horário um destino cuja API não agenda.
+  const pendingRunner = (hhmm: string): string =>
+    corte && cfg.corteViaTimer
+      ? `o timer do 300 (${CORTE_TIMER_TASK}) publica na 1ª execução depois das ${hhmm} BRT e alarma se falhar (owners, #11795)`
+      : `a skill agenda a re-execução para depois das ${hhmm} BRT (owners, #11550)`;
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
   const slotDestinations = destinations.filter((d) => !isDestinationDone(input.published, d.id) && (publishable(d) || manualInstagram(d)));
   const fixedInstagram = instagramViaTimer ? slotDestinations.find((d) => d.kind === "instagram") : undefined;
@@ -908,7 +960,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           action: "pending_schedule",
           caption: text,
           scheduledAt: schedule.at,
-          detail: `a Posts API do LinkedIn não agenda — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550)`,
+          detail: `a Posts API do LinkedIn não agenda — ${pendingRunner(slot.hhmm)}`,
         };
       }
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null, title };
@@ -958,6 +1010,38 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           "registre com --mark x=buffer:{id do post} --scheduled-at {dueAt} (+ --thumbnail-offset {ms} se passou o offset)",
       };
     }
+    if (dest.kind === "tiktok") {
+      // #11515: TikTok pela Buffer (decisão do editor de 28/10/2026), mesmo caminho do X:
+      // o --publish sobe o vertical pro R2 e a skill chama o create_post.
+      if (input.publicVideo?.ready !== true) {
+        const reason = `o TikTok (Buffer) recebe o vídeo por URL pública, indisponível nesta rodada (${input.publicVideo?.ready === false ? input.publicVideo.reason : "não conferido"})`;
+        warnings.push(`tiktok: ${reason}`);
+        return { destination: dest.id, mode: "guided", action: "skip_missing_credentials", detail: reason, cause: "public_video" };
+      }
+      let post: { caption: string; title: string };
+      try {
+        post = buildTikTokPost({ d1: d1In });
+      } catch (e) {
+        warnings.push(`tiktok: ${(e as Error).message}`);
+        return { destination: dest.id, mode: "guided", action: "skip_invalid", detail: (e as Error).message };
+      }
+      const slot = slotOf.get(dest.id)!;
+      const schedule = scheduleFor(slot);
+      const channelId = cfg.tiktokBufferChannelId!; // loadShortsConfig exige o canal com tiktok ligado
+      return {
+        destination: dest.id,
+        mode: "guided",
+        action: "buffer",
+        caption: post.caption,
+        scheduledAt: schedule.mode === "scheduled" ? schedule.at : null,
+        channelId,
+        tiktok: { title: post.title, isAiGenerated: false },
+        detail:
+          `Buffer create_post no canal TikTok ${channelId} com o vídeo de results[].buffer.videoUrl (o --publish sobe o vertical pro R2), ` +
+          "metadata.tiktok de results[].buffer.metadata.tiktok (title, isAiGenerated: false); " +
+          "registre com --mark tiktok=buffer:{id do post} --scheduled-at {dueAt} (+ --thumbnail-offset {ms} se passou o offset)",
+      };
+    }
     if (dest.kind === "threads_profile") {
       // #11122: vertical no Threads pessoal. Mesmo contrato do linkedin_profile:
       // sem credencial é fail-soft, a API não agenda (pending antes do horário,
@@ -999,7 +1083,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
           action: "pending_schedule",
           caption: text,
           scheduledAt: schedule.at,
-          detail: `a Threads API não agenda — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550)`,
+          detail: `a Threads API não agenda — ${pendingRunner(slot.hhmm)}`,
         };
       }
       return { destination: dest.id, mode: "api", action: "publish", caption: text, scheduledAt: null };
@@ -1127,7 +1211,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         action: "pending_schedule",
         caption,
         scheduledAt: schedule.at,
-        detail: `o Instagram não agenda Reels pela API — a skill agenda a re-execução para depois das ${slot.hhmm} BRT (owners, #11550).${why}`,
+        detail: `o Instagram não agenda Reels pela API — ${pendingRunner(slot.hhmm)}.${why}`,
       };
     }
     return publishOrBlocked(caption);
@@ -1141,7 +1225,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     now: input.now,
     instagramViaTimer,
     writer: input.writer,
-    ...(corte ? { baseCommand: corteBaseCommand(corte.slug) } : {}),
+    ...(corte ? { baseCommand: corteBaseCommand(corte.slug), corteTimer: cfg.corteViaTimer } : {}),
   });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
 }
@@ -1504,6 +1588,25 @@ export async function setFacebookVideoThumbnail(
   } catch (e) {
     return { method: "thumbnail_upload", ok: false, error: `POST ${videoId}/thumbnails: ${(e as Error).message}` };
   }
+}
+
+/**
+ * #11795: troca a descrição (e a capa) de um vídeo AGENDADO numa Página.
+ * Reconfere antes que ele não foi ao ar (`published: false`): vídeo no ar não é
+ * tocado. Capa é opcional e nunca derruba a troca do texto.
+ */
+export async function updateFacebookScheduledVideo(
+  deps: GraphDeps,
+  page: ResolvedFacebookPage,
+  apiVersion: string,
+  videoId: string,
+  description: string,
+  cover: Buffer | null,
+): Promise<{ cover: ShortCoverRecord | null }> {
+  const cur = await graphGet(deps, videoId, { fields: "published,scheduled_publish_time", access_token: page.token }, apiVersion);
+  if (cur?.published === true) throw new Error(`o vídeo ${videoId} já está publicado na página — nada alterado; troque no Meta Business Suite`);
+  await graphPost(deps, videoId, { description, access_token: page.token }, apiVersion);
+  return { cover: cover ? await setFacebookVideoThumbnail(deps, videoId, page.token, apiVersion, cover) : null };
 }
 
 /**
@@ -3203,8 +3306,9 @@ export async function loadWorkerQueueForGrid(
  * Buffer ainda não tem URL.
  */
 export function parseMarkArg(raw: string): { destination: string; url: string | null; bufferId?: string } {
-  const buf = raw.match(/^x=buffer:([A-Za-z0-9_-]+)$/);
-  if (buf) return { destination: "x", url: null, bufferId: buf[1] };
+  // #11515: o TikTok também sai pela Buffer (`tiktok=buffer:{id}`).
+  const buf = raw.match(/^([a-z_]+)=buffer:([A-Za-z0-9_-]+)$/);
+  if (buf && BUFFER_DESTINATIONS.has(buf[1])) return { destination: buf[1], url: null, bufferId: buf[2] };
   const m = raw.match(/^([a-z_]+)=(https?:\/\/\S+)$/);
   if (!m) throw new Error(`--mark espera DESTINO=URL (http/https), recebido ${JSON.stringify(raw)}`);
   if (!MARKABLE_DESTINATIONS.has(m[1])) {
@@ -3229,13 +3333,13 @@ export function buildMarkEntry(
   bufferThumbnailOffset: number | null = null,
 ): { ok: true; entry: ShortPublishedEntry } | { ok: false; error: string } {
   if (scheduledAt !== undefined && (!mark.bufferId || Number.isNaN(Date.parse(scheduledAt)))) {
-    return { ok: false, error: "--scheduled-at só vale com --mark x=buffer:{id} e precisa ser ISO 8601" };
+    return { ok: false, error: "--scheduled-at só vale com --mark x=buffer:{id} (ou tiktok=buffer:{id}) e precisa ser ISO 8601" };
   }
   if (mark.bufferId) {
     return {
       ok: true,
       entry: withCoverRecord(
-        { destination: "x", status: "scheduled", id: `buffer:${mark.bufferId}`, scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null, at },
+        { destination: mark.destination, status: "scheduled", id: `buffer:${mark.bufferId}`, scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null, at },
         bufferThumbnailOffset === null ? null : { method: "thumbnail_offset", ok: true, offset_ms: bufferThumbnailOffset },
       ),
     };
@@ -3249,7 +3353,7 @@ export function buildMarkEntry(
  */
 export function parseThumbnailOffsetArg(raw: string | undefined, isBufferMark: boolean): { ok: true; value: number | null } | { ok: false; error: string } {
   if (raw === undefined) return { ok: true, value: null };
-  if (!isBufferMark) return { ok: false, error: "--thumbnail-offset só vale com --mark x=buffer:{id}" };
+  if (!isBufferMark) return { ok: false, error: "--thumbnail-offset só vale com --mark x=buffer:{id} (ou tiktok=buffer:{id})" };
   if (!/^\d+$/.test(raw)) return { ok: false, error: `--thumbnail-offset espera milissegundos (inteiro ≥ 0), recebido ${JSON.stringify(raw)}` };
   return { ok: true, value: Number(raw) };
 }
@@ -3272,6 +3376,10 @@ export interface BufferPostInput {
   dueAt: string | null;
   videoUrl: string;
   thumbnailOffset?: number;
+  /** #11515: canal da Buffer (o TikTok); ausente no X, que usa `publishing.social.twitter.buffer_channel_id`. */
+  channelId?: string;
+  /** #11515: `metadata` do `create_post` (`{ tiktok: { title, isAiGenerated } }`). */
+  metadata?: { tiktok: TikTokBufferMetadata };
 }
 
 /**
@@ -3289,11 +3397,77 @@ export async function prepareBufferItem(
     return {
       destination: item.destination,
       ok: true,
-      buffer: { text: item.caption, dueAt: item.scheduledAt, videoUrl, ...(thumbnailOffsetMs === null ? {} : { thumbnailOffset: thumbnailOffsetMs }) },
+      buffer: {
+        text: item.caption,
+        dueAt: item.scheduledAt,
+        videoUrl,
+        ...(thumbnailOffsetMs === null ? {} : { thumbnailOffset: thumbnailOffsetMs }),
+        ...(item.channelId ? { channelId: item.channelId } : {}),
+        ...(item.tiktok ? { metadata: { tiktok: item.tiktok } } : {}),
+      },
     };
   } catch (e) {
     return { destination: item.destination, ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** #11795: I/O do `--update-scheduled`, injetável nos testes. */
+export interface UpdateScheduledDeps {
+  youtube: (videoId: string, input: { title: string; description: string; thumbnail: Buffer | null }) => Promise<{ thumbnail: { attempted: boolean; ok: boolean; error: string | null } }>;
+  facebook: (slug: string, videoId: string, description: string, cover: Buffer | null) => Promise<{ cover: ShortCoverRecord | null }>;
+  persist: (entry: ShortPublishedEntry) => void;
+  now: () => Date;
+}
+
+export interface UpdateScheduledResult {
+  destination: string;
+  ok: boolean;
+  error?: string;
+  warnings?: string[];
+  /** Buffer (X/TikTok): o que a skill passa pro `edit_post` (nada foi alterado pelo script). */
+  buffer?: { bufferId: string; text: string; tiktokTitle?: string };
+}
+
+/**
+ * #11795: aplica o plano do `--update-scheduled`. YouTube e Facebook trocam
+ * pela API e gravam `updated_at` (e a capa nova) no registro; Buffer só volta
+ * em `results[].buffer` para a skill. Falha de um destino não para os outros.
+ */
+export async function executeScheduledUpdates(
+  items: readonly ScheduledUpdateItem[],
+  entries: readonly ShortPublishedEntry[],
+  cover: Buffer | null,
+  deps: UpdateScheduledDeps,
+): Promise<UpdateScheduledResult[]> {
+  const results: UpdateScheduledResult[] = [];
+  for (const item of items) {
+    if (item.action === "skip") continue;
+    if (item.action === "buffer_edit") {
+      results.push({ destination: item.destination, ok: true, buffer: { bufferId: item.bufferId, text: item.text, ...(item.tiktokTitle ? { tiktokTitle: item.tiktokTitle } : {}) } });
+      continue;
+    }
+    const entry = entries.find((e) => e.destination === item.destination);
+    if (!entry) continue; // o plano sai das entradas: inalcançável
+    try {
+      let coverRecord: ShortCoverRecord | null = null;
+      if (item.action === "update_youtube") {
+        const r = await deps.youtube(item.videoId, { title: item.title, description: item.description, thumbnail: item.cover ? cover : null });
+        if (r.thumbnail.attempted) coverRecord = r.thumbnail.ok ? { method: "thumbnails_set", ok: true } : { method: "thumbnails_set", ok: false, error: r.thumbnail.error ?? "sem detalhe" };
+      } else {
+        coverRecord = (await deps.facebook(item.slug, item.videoId, item.description, item.cover ? cover : null)).cover;
+      }
+      const warnings = coverRecord && !coverRecord.ok ? [`capa não trocada (${coverRecord.error}) — o texto foi trocado`] : [];
+      try {
+        deps.persist({ ...withCoverRecord(entry, coverRecord), updated_at: deps.now().toISOString() });
+      } catch (e) {
+        warnings.push(`texto trocado, mas o registro não gravou o updated_at: ${(e as Error).message}`);
+      }
+      results.push({ destination: item.destination, ok: true, ...(warnings.length ? { warnings } : {}) });
+    } catch (e) {
+      results.push({ destination: item.destination, ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return results;
 }
 
 /**
@@ -3337,7 +3511,9 @@ const USAGE =
   "                       [--linkedin-timer | --instagram-timer | --threads-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
-  "     publish-shorts.ts AAMMDD --mark x=buffer:ID [--scheduled-at ISO] [--thumbnail-offset MS]\n" +
+  "     publish-shorts.ts AAMMDD --mark x=buffer:ID | tiktok=buffer:ID [--scheduled-at ISO] [--thumbnail-offset MS]\n" +
+  "     publish-shorts.ts (AAMMDD | --corte SLUG) --update-scheduled [--only ...] [--publish --confirm-publish AAMMDD]\n" +
+  "                                                                                 # troca texto e capa dos posts JÁ AGENDADOS (YouTube, Facebook; Buffer via skill), #11795\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram [--since ISO] [--media-id ID]   # registra o Reels postado no Chrome/app (lê a API: conta da diar.ia.br, #11794)\n" +
   "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel, sem conferir na API (#11390)\n" +
   "     publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H (--video PATH | --from-drive ID) [--cover JPG] [--publish] [--only ...] [--now]\n" +
@@ -3345,7 +3521,7 @@ const USAGE =
   "                                                                                 # (o dry-run também grava data/cortes/SLUG/corte.json: registra o corte; --from-drive baixa sempre para essa pasta)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -3457,6 +3633,83 @@ export function prepareCorteRun(input: {
     input.log(`[ok] corte "${input.slug}": capa copiada para ${join(input.dir, SHORT_COVER_FILE)}`);
   }
   return merged.spec;
+}
+
+/**
+ * #11795: `--update-scheduled` — troca texto e capa dos destinos já
+ * AGENDADOS com o título/gancho atuais (D1 da edição, ou `corte.json`) e a capa
+ * da pasta. Sem `--publish`, só o plano; com ele (e `--confirm-publish`,
+ * checado em `main`), aplica no YouTube e no Facebook e devolve o `edit_post`
+ * da Buffer pra skill.
+ */
+async function runUpdateScheduled(input: {
+  dir: string;
+  aammdd: string;
+  corte: CorteSpec | null;
+  publish: boolean;
+  only: string[] | null;
+  published: ShortsPublishedFile;
+  persist: (entry: ShortPublishedEntry) => ShortsPublishedFile;
+}): Promise<number> {
+  const { dir, aammdd, corte } = input;
+  let d1: { title: string; body: string } | undefined;
+  if (corte) {
+    d1 = corteTextInput(corte);
+  } else {
+    const reviewedPath = join(dir, "02-reviewed.md");
+    if (!existsSync(reviewedPath)) {
+      console.error(`publish-shorts: ${reviewedPath} não existe`);
+      return 1;
+    }
+    d1 = parseDestaques(readFileSync(reviewedPath, "utf8")).find((d) => d.n === 1);
+    if (!d1) {
+      console.error("publish-shorts: 02-reviewed.md sem DESTAQUE 1");
+      return 1;
+    }
+  }
+  const cover = readShortCover(dir, (l) => console.error(l));
+  let items: ScheduledUpdateItem[];
+  try {
+    items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, only: input.only });
+  } catch (e) {
+    console.error(`publish-shorts: ${(e as Error).message}`);
+    return 2;
+  }
+  for (const i of items) if (i.action === "skip") console.error(`[aviso] ${i.destination}: ${i.reason}`);
+  if (!input.publish) {
+    console.log(JSON.stringify({ dry_run: true, update_scheduled: true, aammdd, items }, null, 2));
+    return 0;
+  }
+  const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
+  const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
+  const results = await executeScheduledUpdates(items, input.published.entries, cover.bytes, {
+    youtube: (videoId, u) => {
+      const missing = missingYouTubeCredentials(process.env);
+      if (missing.length) throw new Error(`faltam ${missing.join(", ")} no ambiente (rode scripts/youtube-oauth-setup.ts)`);
+      return updateScheduledVideo(defaultYouTubeUploadDeps, {
+        clientId: (process.env.GOOGLE_CLIENT_ID ?? "").trim(),
+        clientSecret: (process.env.GOOGLE_CLIENT_SECRET ?? "").trim(),
+        refreshToken: (process.env.YOUTUBE_REFRESH_TOKEN ?? "").trim(),
+        channelId: (process.env.YOUTUBE_CHANNEL_ID ?? "").trim(),
+      }, videoId, u);
+    },
+    facebook: async (slug, videoId, description, coverBytes) => {
+      const page = pages.find((p) => p.slug === slug);
+      if (!page || page.missing.length) throw new Error(`página ${slug} sem credencial (${page ? page.missing.join(", ") : "fora de publishing.social.facebook.pages"})`);
+      return updateFacebookScheduledVideo(defaultGraphDeps, page, apiVersion, videoId, description, coverBytes);
+    },
+    persist: (entry) => {
+      input.persist(entry);
+    },
+    now: () => new Date(),
+  });
+  for (const r of results) {
+    if (r.buffer) console.error(`[ok] ${r.destination}: falta o edit_post na Buffer (skill), post ${r.buffer.bufferId}`);
+    else console.error(r.ok ? `[ok] ${r.destination}: texto${cover.bytes ? " e capa" : ""} do post agendado trocados` : `[erro] ${r.destination}: ${r.error}`);
+    for (const w of r.warnings ?? []) console.error(`[aviso] ${r.destination}: ${w}`);
+  }
+  console.log(JSON.stringify({ dry_run: false, update_scheduled: true, aammdd, items, results }, null, 2));
+  return results.some((r) => !r.ok) ? 1 : 0;
 }
 
 async function main(): Promise<number> {
@@ -3573,6 +3826,14 @@ async function main(): Promise<number> {
   if (scopeErr) {
     console.error(`publish-shorts: ${scopeErr}`);
     return 2;
+  }
+
+  if (flags.has("update-scheduled")) {
+    if (linkedinTimer || instagramTimer || threadsTimer || flags.has("confirm-instagram")) {
+      console.error("publish-shorts: --update-scheduled não combina com os timers nem com --confirm-instagram");
+      return 2;
+    }
+    return runUpdateScheduled({ dir, aammdd, corte, publish: flags.has("publish"), only: onlyList, published, persist });
   }
 
   if (flags.has("confirm-instagram")) {
@@ -4100,7 +4361,7 @@ async function main(): Promise<number> {
       now: new Date(),
       instagramViaTimer: shortsCfg.instagramBackend === "timer-300" && !corte,
       writer,
-      ...(corte ? { baseCommand: corteBaseCommand(corte.slug) } : {}),
+      ...(corte ? { baseCommand: corteBaseCommand(corte.slug), corteTimer: shortsCfg.corteViaTimer } : {}),
     }),
   };
   const summary = {

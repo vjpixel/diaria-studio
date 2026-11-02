@@ -2159,6 +2159,22 @@ export const EXTERNAL_UTM_SURFACES: readonly ExternalUtmSurface[] = [
     appliedAt: "2026-08-03",
   },
   {
+    id: "perfil-tiktok",
+    label: "TikTok — campo Site do perfil",
+    source: "tiktok",
+    medium: EXTERNAL_SURFACE_MEDIUM,
+    campaign: buildExternalSurfaceCampaign("tiktok"),
+    panelUrl: "https://www.tiktok.com/@diar.ia.br",
+    field: "app → Editar perfil → Site (só em conta Empresa)",
+    description:
+      "Único link clicável do TikTok: a legenda do vídeo não tem link (#11515). " +
+      "O campo Site só aparece depois de virar conta Empresa no app — pendente " +
+      "do editor em 02/11/2026, por isso sem `appliedAt` (ausência de conversão " +
+      "é esperada até aplicar). Valor: " +
+      "`https://diar.ia.br/?utm_source=tiktok&utm_medium=bio&utm_campaign=perfil-tiktok`.",
+    status: "ativo",
+  },
+  {
     id: "perfil-twitter",
     label: "X — campo Website do perfil",
     source: "twitter",

@@ -345,7 +345,7 @@ describe("#10772 registro e estado", () => {
   it("F6: --mark x=buffer sem --scheduled-at grava scheduled_at null; --scheduled-at inválido ou fora do buffer é recusado", () => {
     const sem = buildMarkEntry(parseMarkArg("x=buffer:abc"), undefined, "2026-10-22T03:00:00.000Z");
     assert.equal(sem.ok && sem.entry.scheduled_at, null);
-    assert.deepEqual(buildMarkEntry(parseMarkArg("x=buffer:abc"), "amanhã", "t"), { ok: false, error: "--scheduled-at só vale com --mark x=buffer:{id} e precisa ser ISO 8601" });
+    assert.deepEqual(buildMarkEntry(parseMarkArg("x=buffer:abc"), "amanhã", "t"), { ok: false, error: "--scheduled-at só vale com --mark x=buffer:{id} (ou tiktok=buffer:{id}) e precisa ser ISO 8601" });
     assert.equal(buildMarkEntry(parseMarkArg("youtube_shorts=https://youtu.be/x"), "2026-10-22T15:00:00Z", "t").ok, false);
     const url = buildMarkEntry(parseMarkArg("youtube_shorts=https://youtu.be/x"), undefined, "t");
     assert.deepEqual(url, { ok: true, entry: { destination: "youtube_shorts", status: "published", id: "https://youtu.be/x", url: "https://youtu.be/x", at: "t" } });
