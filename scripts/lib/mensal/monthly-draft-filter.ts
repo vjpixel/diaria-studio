@@ -143,6 +143,27 @@ export function isClariceOnlySection(label: string): boolean {
 }
 
 /**
+ * #11806 (decisão do editor, 01/11/2026, ciclo 2610-11): `true` quando o
+ * LABEL normalizado é um box de divulgação/curadoria que o canal dos
+ * APOIADORES não leva — `DIVULGAÇÃO` (box de divulgação/afiliado) e `LIVROS`
+ * (box da curadoria de livros). Eles pagam pela retrospectiva, e o espaço não
+ * leva anúncio. Vale para a página (`build-article-page.ts`) e para o e-mail
+ * Kit (`monthly-apoiadores-kit-render.ts`), que passam os dois por
+ * `filterDraftForApoiadores`; o envio Clarice usa `draftToEmail` direto e
+ * continua com os dois boxes.
+ *
+ * Fora daqui, de propósito: `LIVRO`/`LIVRO DO MÊS` (indicação editorial de UM
+ * livro, não o box da página de curadoria) e as pílulas de curadoria do
+ * rodapé (Cursos, Livros, Equipamentos), cuja retirada a issue deixou para
+ * decidir à parte. Casamento exato, o mesmo de `classifySection`
+ * (`monthly-render.ts`): o label que o render reconhece como box é o label
+ * que este filtro corta. @pure
+ */
+export function isApoiadoresExcludedBox(label: string): boolean {
+  return label === "DIVULGAÇÃO" || label === "LIVROS";
+}
+
+/**
  * #4510: quantos parágrafos APÓS o título ainda contam como "dentro do
  * bloco" antes de desistir de achar o CTA. O bloco real tem 2 (corpo + CTA
  * `→ [...]`) — a folga de 4 tolera um corpo dividido em mais de 1 parágrafo
@@ -209,7 +230,8 @@ export function stripRecomendacaoDiariaBlock(sectionBody: string): string {
 /**
  * Preprocessa `draft.md` (o MESMO arquivo usado pelo envio Clarice) pra
  * variante Beehiiv (#4482, decisão 3): remove por inteiro as seções
- * `APRESENTAÇÃO`/`CLARICE — *` (sem substituição) e o box "Recomendação da
+ * `APRESENTAÇÃO`/`CLARICE — *` (sem substituição), os boxes `DIVULGAÇÃO` e
+ * `LIVROS` (#11806, `isApoiadoresExcludedBox`) e o box "Recomendação da
  * equipe da Clarice" quando colado dentro de outra seção (ex.: entre
  * destaques). Reusa `splitByLabels`/`normalizeLabel` de `monthly-render.ts`
  * — mesmo parser que `draftToEmail` usa internamente, então o resultado
@@ -228,6 +250,7 @@ export function filterDraftForApoiadores(draft: string): string {
     const firstLine = chunk.split("\n")[0]?.trim() ?? "";
     const label = normalizeLabel(firstLine);
     if (isClariceOnlySection(label)) continue;
+    if (isApoiadoresExcludedBox(label)) continue; // #11806
 
     const body = chunk.split("\n").slice(1).join("\n");
     const cleanedBody = stripRecomendacaoDiariaBlock(body).trim();

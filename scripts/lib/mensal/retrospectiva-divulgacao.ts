@@ -313,34 +313,80 @@ export function contentMonthLabel(cycle: string): string {
 // ── CTA dos posts PÚBLICOS (LinkedIn) ──────────────────────────────────
 
 /**
- * Linha literal de CTA dos posts públicos (LinkedIn página + perfil) — adaptação
- * da frase do editor no Artigo Especial (#5979: "Apoie nosso trabalho e leia o
- * artigo completo em: apoia.se/diaria"). Não reescrever, não passar por
- * Clarice/humanizador.
+ * #11802 (decisão do editor, 01/11/2026, ciclo 2610-11 — reverte a de
+ * 02/10/2026): os posts públicos apontam para a PÁGINA da retrospectiva do
+ * ciclo (`retrospectiva.diar.ia.br/{AAMM}`, trecho aberto + paywall), não mais
+ * para o apoia.se. A URL varia por ciclo, então o CTA é função do ciclo.
+ *
+ * Pura: a URL do CTA SEM esquema, como o editor escreve e como as redes
+ * linkam um domínio nu (`retrospectiva.diar.ia.br/2610`). Lança em ciclo
+ * malformado (via `retrospectivaUrl`).
  */
-export const RETROSPECTIVA_PUBLIC_CTA = "Apoie nosso trabalho e leia a retrospectiva completa em: apoia.se/diaria";
+export function retrospectivaCtaUrl(cycle: string): string {
+  return retrospectivaUrl(cycle).replace(/^https?:\/\//, "");
+}
 
-/** Hosts que servem a Retrospectiva paga — o canônico e o legado (301, #7658). */
-const PAYWALLED_HOSTS_RE = /\b(?:retrospectiva|artigo)\.diar\.ia\.br\b/i;
+/**
+ * Pura: linha literal de CTA dos posts públicos de LinkedIn (página e perfil),
+ * Facebook e Instagram — a frase que o editor usou no ciclo 2610-11 ("Apoie
+ * nosso trabalho e leia a retrospectiva completa em: retrospectiva.diar.ia.br/2610").
+ * Não reescrever, não passar por Clarice/humanizador.
+ */
+export function retrospectivaPublicCta(cycle: string): string {
+  return `Apoie nosso trabalho e leia a retrospectiva completa em: ${retrospectivaCtaUrl(cycle)}`;
+}
 
-/** Pura: o texto cita a URL da retrospectiva paywalled? (#9508: também usado no corpo dos slides) */
+/**
+ * Hosts que servem a Retrospectiva paga — o canônico e o legado (301, #7658),
+ * com o path opcional. `g` porque `publicPostCtaProblems` confere CADA URL.
+ */
+const RETROSPECTIVA_URL_RE = /\b(?:https?:\/\/)?(retrospectiva|artigo)\.diar\.ia\.br(\/[^\s)\]>"']*)?/gi;
+
+/**
+ * Pura: o texto cita alguma URL da retrospectiva? (#9508: usado no corpo dos
+ * slides, `d{N}.md`, que vai SEM o CTA — o script soma a linha de CTA à
+ * legenda e o slide final já é o CTA.)
+ */
 export function citesPaywalledRetrospectiva(text: string): boolean {
-  return PAYWALLED_HOSTS_RE.test(text);
+  return new RegExp(RETROSPECTIVA_URL_RE.source, "i").test(text);
+}
+
+/**
+ * Pura: URLs da retrospectiva citadas no texto que NÃO são a página do ciclo
+ * (#11802) — outro mês, o host legado `artigo.` ou o host sem o path. Pontuação
+ * final colada à URL (`.`, `,`, `;`, `:`, `!`, `?`) não conta como path.
+ */
+export function foreignRetrospectivaUrls(text: string, cycle: string): string[] {
+  const expected = retrospectivaCtaUrl(cycle).toLowerCase();
+  const out: string[] = [];
+  for (const m of text.matchAll(RETROSPECTIVA_URL_RE)) {
+    const path = (m[2] ?? "").replace(/[.,;:!?]+$/, "").replace(/\/$/, "");
+    const got = `${m[1].toLowerCase()}.diar.ia.br${path.toLowerCase()}`;
+    if (got !== expected) out.push(m[0]);
+  }
+  return out;
 }
 
 /**
  * Pura: problemas de um texto de post PÚBLICO da Retrospectiva (lista vazia =
- * ok). Regra herdada do Artigo Especial (decisão do editor no #9474): o CTA
- * aponta pro apoia.se, NUNCA pra URL direta da retrospectiva paywalled — é no
- * apoia.se que a conversão acontece.
+ * ok). Desde o #11802 o CTA aponta para a página do ciclo
+ * (`retrospectivaPublicCta`); qualquer outra URL da retrospectiva no texto (de
+ * outro mês, do host legado) é erro, porque mandaria o leitor ao lugar errado.
  *
- * `acceptedCtas` (#9500): linhas de CTA aceitas — default só a longa. X e
- * Threads (≤280) aceitam também a curta (`retrospectiva-social.ts`).
+ * `acceptedCtas` (#9500): linhas de CTA aceitas — default só a longa do ciclo.
+ * X e Threads (≤280) aceitam também a curta (`retrospectiva-social.ts`).
  */
-export function publicPostCtaProblems(text: string, acceptedCtas: readonly string[] = [RETROSPECTIVA_PUBLIC_CTA]): string[] {
+export function publicPostCtaProblems(
+  text: string,
+  cycle: string,
+  acceptedCtas: readonly string[] = [retrospectivaPublicCta(cycle)],
+): string[] {
   const problems: string[] = [];
-  if (citesPaywalledRetrospectiva(text)) {
-    problems.push("o texto cita a URL da retrospectiva paywalled (retrospectiva./artigo.diar.ia.br) — post público aponta só pro apoia.se");
+  const foreign = foreignRetrospectivaUrls(text, cycle);
+  if (foreign.length > 0) {
+    problems.push(
+      `o texto cita URL de retrospectiva que não é a página do ciclo (${foreign.join(", ")}) — o post aponta para ${retrospectivaCtaUrl(cycle)}`,
+    );
   }
   const lines = text.replace(/\r\n/g, "\n").split("\n").map((l) => l.trim());
   if (!acceptedCtas.some((cta) => lines.includes(cta))) {
