@@ -36,6 +36,10 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *                                                           # o que o --publish --confirm-publish gravou no corte.json
  *                                                           # como "pode publicar": destinos e sha256, #11912).
  *                                                           # Re-execução e --mark só com --corte SLUG.
+ *                                                           # #11911: --edition-dir fora de data/cortes/SLUG/ (caminho
+ *                                                           # real) é RECUSADO: o timer e o vigia de cortes sem dono só
+ *                                                           # leem data/cortes/. Escape: --allow-outside-cortes (avisa
+ *                                                           # que nenhum alarme de destino faltante cobre o corte).
  *   npx tsx scripts/publish-shorts.ts (AAMMDD | --corte SLUG) --update-scheduled [--publish --confirm-publish AAMMDD]
  *                                                           # #11795: troca texto e capa de post JÁ AGENDADO (YouTube
  *                                                           # videos.update + thumbnails.set; Facebook POST /{video-id}
@@ -201,6 +205,9 @@ import {
   CORTE_SPEC_FILE,
   CORTE_TIMER_DESTINATIONS,
   CORTE_TIMER_TASK,
+  ALLOW_OUTSIDE_CORTES_FLAG,
+  CORTES_REL_DIR,
+  checkCorteDir,
   corteBaseCommand,
   corteR2Key,
   corteRelDir,
@@ -733,6 +740,13 @@ export interface ShortsPlanInput {
    * de re-execução levam o `--edition-dir`.
    */
   editionDirOverride?: string;
+  /**
+   * #11911: corte rodado fora de `data/cortes/{slug}/` com `--allow-outside-cortes`.
+   * O timer do corte e o vigia de cortes sem dono não enxergam a pasta: nada é
+   * dono do timer, o aviso entra em `warnings` e os comandos de re-execução
+   * levam a mesma pasta.
+   */
+  corteOutside?: { dir: string; warning: string };
 }
 
 /**
@@ -851,9 +865,13 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     }
   }
   const instagramViaTimer = cfg.instagramBackend === "timer-300" && !timersBlind;
+  // #11911: corte fora de data/cortes/ — o timer do corte não o enxerga.
+  const corteOutside = corte ? input.corteOutside : undefined;
+  if (corteOutside) warnings.push(corteOutside.warning);
+  const corteTimer = Boolean(corte) && cfg.corteViaTimer && !corteOutside;
   // #11795: quem roda de novo depois do horário um destino cuja API não agenda.
   const pendingRunner = (hhmm: string): string =>
-    corte && cfg.corteViaTimer
+    corteTimer
       ? `o timer do 300 (${CORTE_TIMER_TASK}) publica na 1ª execução depois das ${hhmm} BRT e alarma se falhar, só com o --publish confirmado (owners, #11795, #11912)`
       : `a skill agenda a re-execução para depois das ${hhmm} BRT (owners, #11550)`;
   const instagramDelegated = instagramViaTimer && input.writer !== "instagram-timer";
@@ -1283,7 +1301,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
     now: input.now,
     instagramViaTimer,
     writer: input.writer,
-    ...(corte ? { baseCommand: corteBaseCommand(corte.slug), corteTimer: cfg.corteViaTimer } : {}),
+    ...(corte ? { baseCommand: corteBaseCommand(corte.slug, corteOutside?.dir), corteTimer } : {}),
     ...(!corte && input.editionDirOverride !== undefined ? { editionDirOverride: input.editionDirOverride } : {}),
   });
   return { aammdd: input.aammdd, editionUrl, video: input.video, cover, longVideo: youtubeVideoFileName(input.aammdd), youtube, shortTime, slots, items, owners, premises, warnings };
@@ -3588,10 +3606,11 @@ const USAGE =
   "     publish-shorts.ts AAMMDD --confirm-instagram --url URL                       # registra pelo permalink do Reel, sem conferir na API (#11390)\n" +
   "     publish-shorts.ts --corte SLUG --date AAMMDD --at HH:MM --title T --hook H (--video PATH | --from-drive ID) [--cover JPG] [--publish] [--only ...] [--now]\n" +
   "                                                                                 # corte avulso fora de edição (#11795): registro em data/cortes/SLUG/, re-execução só com --corte SLUG\n" +
-  "                                                                                 # (o dry-run também grava data/cortes/SLUG/corte.json: registra o corte; --from-drive baixa sempre para essa pasta)";
+  "                                                                                 # (o dry-run também grava data/cortes/SLUG/corte.json: registra o corte; --from-drive baixa sempre para essa pasta)\n" +
+  "                                                                                 # --edition-dir fora de data/cortes/SLUG/ é recusado; --allow-outside-cortes roda sem alarme de destino faltante (#11911)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "require-corte-authorization"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "require-corte-authorization", "allow-outside-cortes"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -4028,6 +4047,12 @@ async function main(): Promise<number> {
   // #11795: corte avulso — pasta, registro, data, título e gancho próprios, fora de data/editions/.
   const corteSlug = values["corte"];
   let corte: CorteSpec | null = null;
+  // #11911: corte fora de data/cortes/ aceito por --allow-outside-cortes (sem alarme de destino faltante).
+  let corteOutside: { dir: string; warning: string } | undefined;
+  if (corteSlug === undefined && flags.has(ALLOW_OUTSIDE_CORTES_FLAG)) {
+    console.error(`publish-shorts: --${ALLOW_OUTSIDE_CORTES_FLAG} só vale com --corte SLUG`);
+    return 2;
+  }
   // #11912: derrubadas do "pode publicar" nesta rodada — saem no JSON, não só no stderr.
   const corteRevocations: CorteRevocation[] = [];
   const revokedOut = () => (corteRevocations.length ? { corte_authorization_revoked: corteRevocations } : {});
@@ -4049,6 +4074,17 @@ async function main(): Promise<number> {
       return 2;
     }
     const corteDir = resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corteSlug)));
+    // #11911: só data/cortes/{slug}/ é vista pelo timer do corte e pelo vigia de cortes sem dono.
+    // Conferido antes de qualquer gravação (o prepareCorteRun já grava o corte.json).
+    const dirCheck = checkCorteDir({ slug: corteSlug, dir: corteDir, cortesRoot: join(ROOT, CORTES_REL_DIR), allowOutside: flags.has(ALLOW_OUTSIDE_CORTES_FLAG) });
+    if (!dirCheck.ok) {
+      console.error(`publish-shorts: ${dirCheck.error}`);
+      return 2;
+    }
+    if (dirCheck.outside) {
+      corteOutside = { dir: dirCheck.dir, warning: dirCheck.warning };
+      console.error(`[aviso] ${dirCheck.warning}`);
+    }
     try {
       corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r), readOnly: requireCorteAuth });
     } catch (e) {
@@ -4269,6 +4305,7 @@ async function main(): Promise<number> {
       ...(corte ? { corte: { slug: corte.slug, hhmm: corte.hhmm, title: corte.title, hook: corte.hook } } : {}),
       // #11911: pasta fora de data/editions/{AAMMDD} — os timers do 300 não a enxergam.
       ...(editionDirOverride !== undefined ? { editionDirOverride } : {}),
+      ...(corteOutside ? { corteOutside } : {}),
       now: new Date(),
       config,
       pages,
@@ -4609,7 +4646,7 @@ async function main(): Promise<number> {
               persist: (entry) => {
                 published = persist(entry);
               },
-              ...(corte ? { registerHint: () => `${corteBaseCommand(corte.slug)} --mark instagram=URL` } : {}),
+              ...(corte ? { registerHint: () => `${corteBaseCommand(corte.slug, corteOutside?.dir)} --mark instagram=URL` } : {}),
             });
           // #11870: o gate re-rodado antes do media_publish também pode achar o Reels; guarda o matchedBy dele.
           const recheck: { hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch } | null } = { hit: null };
@@ -4726,9 +4763,10 @@ async function main(): Promise<number> {
     owners: assignShortsDestinationOwners(plan.items, {
       aammdd,
       now: new Date(),
-      instagramViaTimer: shortsCfg.instagramBackend === "timer-300" && !corte,
+      instagramViaTimer: shortsCfg.instagramBackend === "timer-300" && !corte && editionDirOverride === undefined,
       writer,
-      ...(corte ? { baseCommand: corteBaseCommand(corte.slug), corteTimer: shortsCfg.corteViaTimer } : {}),
+      ...(corte ? { baseCommand: corteBaseCommand(corte.slug, corteOutside?.dir), corteTimer: shortsCfg.corteViaTimer && !corteOutside } : {}),
+      ...(!corte && editionDirOverride !== undefined ? { editionDirOverride } : {}),
     }),
   };
   const summary = {

@@ -27,7 +27,8 @@
  *     vídeo e da capa), nunca da simples existência do arquivo.
  */
 
-import { isAbsolute, join, relative, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ShortTime } from "./short-video.ts";
 
 /** Especificação do corte, gravada em `data/cortes/{slug}/corte.json`. */
@@ -114,6 +115,80 @@ export function corteRelDir(slug: string): string {
   return `data/cortes/${slug}`;
 }
 
+/** #11911: escape explícito para rodar o corte de uma pasta fora de `data/cortes/{slug}/`. */
+export const ALLOW_OUTSIDE_CORTES_FLAG = "allow-outside-cortes";
+
+/**
+ * #11911: caminho real de `p` mesmo que ele (ou o fim dele) ainda não exista —
+ * resolve o maior ancestral existente e reanexa o resto. `data/` é symlink pro
+ * OneDrive e a pasta do corte nasce na 1ª rodada, então `realpath` puro falharia
+ * justamente no caso comum.
+ */
+export function realpathLenient(p: string, realpath: (p: string) => string = realpathSync): string {
+  const abs = resolve(p);
+  const rest: string[] = [];
+  let cur = abs;
+  for (;;) {
+    try {
+      return join(realpath(cur), ...rest);
+    } catch {
+      const parent = dirname(cur);
+      if (parent === cur) return abs;
+      rest.unshift(basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/** #11911: desfecho da conferência da pasta do corte (`checkCorteDir`). */
+export type CorteDirCheck =
+  | { ok: true; outside: false }
+  | { ok: true; outside: true; dir: string; warning: string }
+  | { ok: false; error: string };
+
+/**
+ * Puro (#11911): a pasta do corte (`--edition-dir`, ou a canônica) é
+ * `data/cortes/{slug}/` do repo? Só ela é vista pelo timer do 300
+ * (`Diaria-Shorts-Cortes`) e pelo vigia de cortes sem dono
+ * (`corte-owner-watch.ts`): em 02/11/2026 um corte rodado de
+ * `~/diaria-cortes/...` ficou fora dos dois e o Reels sumiu sem alarme.
+ * A comparação é pelo caminho REAL (symlink e `..` resolvidos), nunca pelo texto.
+ * Fora dela: recusa, a menos do escape `--allow-outside-cortes`, que devolve o
+ * aviso de que nenhum alarme de destino faltante cobre o corte.
+ */
+export function checkCorteDir(input: {
+  slug: string;
+  dir: string;
+  /** `data/cortes` do repo. */
+  cortesRoot: string;
+  allowOutside: boolean;
+  realpath?: (p: string) => string;
+}): CorteDirCheck {
+  const real = (p: string) => realpathLenient(p, input.realpath);
+  const actual = real(input.dir);
+  const canonical = real(join(input.cortesRoot, input.slug));
+  if (actual === canonical) return { ok: true, outside: false };
+  const dir = resolve(input.dir);
+  const where = actual === dir ? dir : `${dir} (caminho real ${actual})`;
+  if (!input.allowOutside) {
+    return {
+      ok: false,
+      error:
+        `a pasta do corte ${where} fica fora de ${corteRelDir(input.slug)}/: o timer do 300 (${CORTE_TIMER_TASK}) e o vigia de cortes sem dono só leem ${CORTES_REL_DIR}/, então nenhum destino que faltar deste corte gera alarme. ` +
+        `Mova ou registre o corte em ${corteRelDir(input.slug)}/ (rode sem --edition-dir; o --video pode apontar para o arquivo onde ele estiver). ` +
+        `Para rodar mesmo assim, sem alarme, passe --${ALLOW_OUTSIDE_CORTES_FLAG} (#11911)`,
+    };
+  }
+  return {
+    ok: true,
+    outside: true,
+    dir,
+    warning:
+      `corte "${input.slug}" fora de ${CORTES_REL_DIR}/ (${where}) por --${ALLOW_OUTSIDE_CORTES_FLAG}: nenhum alarme de destino faltante cobre este corte ` +
+      `(o timer ${CORTE_TIMER_TASK} e o vigia de cortes sem dono só leem ${CORTES_REL_DIR}/); confira cada destino à mão (#11911)`,
+  };
+}
+
 /** Nome do vertical baixado na pasta do corte (`--from-drive` sem `--video`). */
 export function corteVideoFileName(slug: string): string {
   return `corte-${slug}.mp4`;
@@ -169,8 +244,10 @@ export const CORTE_TIMER_TASK = "Diaria-Shorts-Cortes";
 export const CORTE_TIMER_DESTINATIONS: readonly string[] = ["linkedin_profile", "threads_profile", "instagram"];
 
 /** Comando base das re-execuções (`owners` do plano): o resto vem do `corte.json`. */
-export function corteBaseCommand(slug: string): string {
-  return `npx tsx scripts/publish-shorts.ts --corte ${slug}`;
+export function corteBaseCommand(slug: string, outsideDir?: string): string {
+  // #11911: corte fora de data/cortes/ (--allow-outside-cortes): a re-execução volta à mesma pasta.
+  const outside = outsideDir !== undefined ? ` --edition-dir ${JSON.stringify(outsideDir)} --${ALLOW_OUTSIDE_CORTES_FLAG}` : "";
+  return `npx tsx scripts/publish-shorts.ts --corte ${slug}${outside}`;
 }
 
 /** Título e gancho no formato que os montadores de texto do vertical leem (`{ title, body }`). */
