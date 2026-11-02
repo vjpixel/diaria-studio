@@ -26,6 +26,10 @@ describe("sync de apoio sem Beehiiv (#11225)", () => {
     assert.doesNotMatch(src, /loadBeehiivConfig|beehiiv-config|fetchCurrentBeehiiv/);
   });
 
+  it("kit-ramp-cohort normaliza os ativos da Beehiiv antes de comparar (a lib não normaliza)", () => {
+    assert.match(read("scripts/kit-ramp-cohort.ts"), /activeBeehiivEmails: toNormalizedEmailSet\(activeBeehiivEmails\)/);
+  });
+
   it("o e-mail do alarme manda aplicar pelo sync do Kit", () => {
     const { body } = buildApoiosDiffAlarmEmail({
       toApply: [{ email: "a@x.com", contactName: "A", fromLevel: null, toLevel: "amigo" }],

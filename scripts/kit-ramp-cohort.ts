@@ -830,7 +830,8 @@ async function main(): Promise<void> {
     push,
     kitConfig: kitResolved.config,
     tagId,
-    activeBeehiivEmails: new Set(activeBeehiivEmails),
+    // fetchActiveBeehiivEmails devolve o e-mail como a API manda; a Fase B compara normalizado.
+    activeBeehiivEmails: toNormalizedEmailSet(activeBeehiivEmails),
     beehiivConfig: beehiivResolved.ok
       ? beehiivResolved.config
       : ({ apiKey: "", publicationId: "" } as BeehiivConfig), // sem credencial: Fase B nunca chega a "deactivate" de verdade sem beehiivWasActive=true (set vazio acima)
