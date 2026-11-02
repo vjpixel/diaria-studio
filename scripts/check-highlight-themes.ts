@@ -123,6 +123,8 @@ import type { PastDestaqueTitle } from "./lib/past-editions-extract.ts";
 // #9100: gatilho "MESMO FATO" (produto+versão em comum com destaque recente),
 // aplicado a candidatos a destaque E ao pool secundário.
 import { findSameFactMatches, findSameFactNumberMatches } from "./lib/same-fact-check.ts";
+import { findStudySourceRecurrences, formatStudySourceWarning, STUDY_RECURRENCE_WINDOW_DAYS } from "./lib/study-source-recurrence.ts"; // #11763
+import { readPastStoryItems } from "./lib/invariant-checks/stage-4.ts"; // #11763: itens publicados (02-reviewed.md)
 // #2716 item 1: importa a lista canônica de buckets secundários em vez de
 // hardcodar uma cópia local — SECONDARY_BUCKETS de check-secondary-themes.ts é a
 // fonte única (dedup-intra-edition.ts já a consome do mesmo lugar). Ver nota
@@ -1589,6 +1591,23 @@ async function main(): Promise<void> {
     );
   }
 
+  // #11763: MESMO ESTUDO/RELATÓRIO — item novo (destaque ou pool) que cobre,
+  // via imprensa, um estudo já publicado nos últimos 30 dias (mesmo
+  // publicador + documento + número-chave; caso 261103 CNN × D1 261020).
+  // Compara contra o TEXTO publicado (02-reviewed.md), onde estão os números
+  // do relatório — título sozinho não carrega. Só sinaliza; o gate 4 repete o
+  // aviso pela invariante `study-source-recurrence` sobre o arquivo final.
+  const studySourceWarnings = currentEdition
+    ? findStudySourceRecurrences(
+      [
+        ...candidates.map((c) => ({ label: `Candidato a destaque #${c.rank}`, title: c.title, url: c.url, summary: c.summary })),
+        ...secondaryItems.map((s) => ({ label: s.bucket, title: s.title, url: s.url, summary: s.summary })),
+      ],
+      readPastStoryItems(editionsDir, currentEdition, 0, STUDY_RECURRENCE_WINDOW_DAYS),
+    )
+    : [];
+  for (const w of studySourceWarnings) console.error(`[check-highlight-themes] ${formatStudySourceWarning(w)}`);
+
   // #4262: full-body cross-edition check — candidato a destaque vs CORPO
   // INTEIRO (destaques + secundários) das edições passadas.
   const pastFullBody = readPastFullBodyItems(editionsDir, fullBodyWindow, currentEdition);
@@ -1611,6 +1630,8 @@ async function main(): Promise<void> {
     warnings: highlightResult.warnings,
     // #9100: sinal de alta precisão — apresentar ANTES dos demais no gate.
     same_fact_warnings: sameFactWarnings,
+    // #11763: cobertura secundária de estudo/relatório já publicado (warn-only).
+    study_source_warnings: studySourceWarnings,
     fact_recurrence_warnings: findFactRecurrences([
       ...candidates.map(c => ({ ...c, kind: "highlight" })),
       ...secondaryItems.map(s => ({ ...s, kind: s.bucket })),
