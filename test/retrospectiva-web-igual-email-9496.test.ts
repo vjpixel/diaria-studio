@@ -376,6 +376,17 @@ describe("página da retrospectiva leva as imagens dos destaques", () => {
     }
   });
 
+  it("crédito só com sidecar do ciclo, nunca pelo gerador atual do config", () => {
+    const dir = mk({ images: { d1: { url: URL_D1 } } });
+    try {
+      assert.equal(articleBuildOptionsForCycle(dir).destaqueImageCaption, undefined);
+      writeFileSync(join(dir, "_internal", "04-d1-generator.json"), JSON.stringify({ generator: "gemini" }));
+      assert.match(articleBuildOptionsForCycle(dir).destaqueImageCaption ?? "", /Gemini/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("imagem no disco sem URL no manifest aborta", () => {
     const dir = mk({ images: {} });
     try {

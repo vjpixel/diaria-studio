@@ -39,7 +39,7 @@ import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-name
 import { mensalPathFromCycle } from "./lib/shared/retrospectiva-path.ts";
 import { readApoiadoresEiaCredit, relinkApoiadoresKitHtml } from "./render-monthly-apoiadores-kit.ts";
 import { captionForGenerator } from "./lib/mensal/monthly-render.ts";
-import { resolveEditionImageGenerator } from "./lib/shared/image-generator-sidecar.ts";
+import { readImageGeneratorSidecar } from "./lib/shared/image-generator-sidecar.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -94,11 +94,14 @@ export function articleTeaserKvKey(cycle: string): string {
   return `${articleKvKey(cycle)}:teaser`;
 }
 
-/** Gerador de imagem do config, o mesmo default do render do e-mail. */
-function configuredImageGenerator(): string {
-  const configPath = resolve(REPO_ROOT, "platform.config.json");
-  if (!existsSync(configPath)) return "gemini";
-  return (JSON.parse(readFileSync(configPath, "utf8")) as { image_generator?: string }).image_generator ?? "gemini";
+/**
+ * Crédito da imagem só com o gerador registrado no ciclo (sidecar do D1, #9095).
+ * Sem ele, cair no `image_generator` atual daria crédito errado a ciclos antigos
+ * ao republicar, então a legenda fica de fora.
+ */
+function destaqueCaptionFromSidecar(monthlyDirPath: string): string | undefined {
+  const generator = readImageGeneratorSidecar(monthlyDirPath, "d1");
+  return generator ? captionForGenerator(generator) : undefined;
 }
 
 /**
@@ -163,7 +166,7 @@ export function articleBuildOptionsForCycle(monthlyDirPath: string, logLabel = "
     eiaImageUrlA,
     eiaImageUrlB,
     destaqueImageUrls: readDestaqueImageUrls(monthlyDirPath),
-    destaqueImageCaption: captionForGenerator(resolveEditionImageGenerator(monthlyDirPath, configuredImageGenerator())),
+    destaqueImageCaption: destaqueCaptionFromSidecar(monthlyDirPath),
     eiaCredit: readApoiadoresEiaCredit(monthlyDirPath),
     postProcessEmailHtml: (html: string) => relinkApoiadoresKitHtml(html, monthlyDirPath, logLabel),
   };
