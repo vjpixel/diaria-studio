@@ -50,6 +50,17 @@ Arquivo modificado só no fim de linha (CRLF/LF, sem diferença de conteúdo com
 (`context/audience-profile.md`, `docs/audience-history/*.md`) saem em `ignored`,
 sem bloquear `canClose` (#11733): são sujeira pré-existente de terceiros, não
 pendência da sessão. Cite-os no resumo, mas não os limpe.
+Sujeira que já estava no checkout quando a sessão começou sai em `preExisting`,
+sem bloquear `canClose` (#11785). A atribuição vem da foto que o hook
+`session-start-dirty-snapshot.mjs` tira no início da sessão (caminho, código de
+status e hash de cada entrada suja): só bloqueia o que apareceu ou mudou de hash
+depois dela, inclusive edição num arquivo que já estava sujo e `git add` num
+arquivo alheio. Sem foto (sessão anterior ao hook, `resume` depois de reboot,
+hook que falhou), o script usa o mtime e diz isso em `attribution`; repasse essa
+limitação no resumo. Arquivo novo de outra sessão ativa no mesmo checkout
+continua bloqueando: confirme a autoria pelo histórico antes de tratá-lo como
+alheio. Liste o `preExisting` numa linha do resumo (sujeira órfã não pode sumir
+de vista), sem limpar nada.
 
 Confira explicitamente as `manualChecks`: tasks e agents disparados pela sessão
 nas ferramentas do runtime (não pelo PID efêmero do registry), promessas feitas,

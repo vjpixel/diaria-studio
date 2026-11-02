@@ -4,6 +4,9 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { listActiveSessions, resolveRepoRoot, type SessionRecord } from "./lib/session-registry.ts";
 import { isMainModule, parseArgs } from "./lib/cli-args.ts";
+import {
+  hashPath, isUnchangedSinceSnapshot, readSnapshot, snapshotFilePath, type DirtySnapshot,
+} from "../.claude/hooks/lib/session-dirty-snapshot.mjs";
 
 type Run = (command: string, args: string[], cwd: string) => string;
 const runCommand: Run = (command, args, cwd) => execFileSync(command, args, {
@@ -18,7 +21,18 @@ export interface CloseReport {
   manualChecks: string[];
   /** Dirty entries that do not block closure (#11733): line-ending-only diffs and routine audience snapshots. */
   ignored: string[];
+  /** Dirt that was already in the checkout when the session started (#11785): never affects canClose, stays visible. */
+  preExisting: string[];
+  /** How preExisting was attributed per checked worktree (#11785): start-of-session snapshot, or mtime fallback. */
+  attribution: string[];
 }
+
+/** Loads the start-of-session dirty snapshot (`.claude/hooks/session-start-dirty-snapshot.mjs`) of a checkout. */
+export type SnapshotLoader = (sessionId: string, checkout: string) => DirtySnapshot | null;
+const loadSnapshotFromTmp: SnapshotLoader = (sessionId, checkout) => {
+  const path = snapshotFilePath(sessionId, checkout);
+  return path ? readSnapshot(path) : null;
+};
 
 /** Routine Stage 0 audience snapshots, committed by `chore: snapshot de audiência`, never by the session (#11733). */
 export function isRoutineAudienceSnapshot(path: string): boolean {
@@ -48,9 +62,11 @@ const fileMtimeMs = (abs: string): number | undefined => {
 /** Does not infer process liveness from registry.pid (an ephemeral beacon PID). */
 export function checkSessionClose(root: string, session: SessionRecord | undefined,
   extraWorktrees: string[] = [], run: Run = runCommand,
-  mtimeMs: (abs: string) => number | undefined = fileMtimeMs): CloseReport {
+  mtimeMs: (abs: string) => number | undefined = fileMtimeMs,
+  loadSnapshot: SnapshotLoader = loadSnapshotFromTmp,
+  hash: (abs: string) => string | null = hashPath): CloseReport {
   const report: CloseReport = { canClose: false, pending: [], errors: [], checkedWorktrees: [], ignored: [],
-    manualChecks: ["tasks/agents em segundo plano", "promessas e follow-ups no transcript"] };
+    preExisting: [], attribution: [], manualChecks: ["tasks/agents em segundo plano", "promessas e follow-ups no transcript"] };
   if (!session) {
     report.errors.push("Sessão não encontrada no registry; confirme a identidade antes de encerrar.");
     return report;
@@ -73,7 +89,9 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
   if (!paths.size) report.errors.push("Nenhum worktree atribuído; informe --worktree pelo histórico da sessão.");
   for (const path of paths) {
     report.checkedWorktrees.push(path);
-    const status = query("git", ["status", "--porcelain=v1", "--untracked-files=normal"], path);
+    const snapshot = loadSnapshot(session.sessionId, path);
+    // With a snapshot, untracked files are listed one by one (as in the snapshot), so each is matched by hash.
+    const status = query("git", ["status", "--porcelain=v1", `--untracked-files=${snapshot ? "all" : "normal"}`], path);
     if (status?.trim()) {
       const entries = parsePorcelainStatus(status);
       // Content diff ignoring CR at EOL: a CRLF-only working copy (core.autocrlf, Windows editor) has
@@ -83,12 +101,16 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
         const names = query("git", ["diff", "--ignore-space-at-eol", "--name-only", "HEAD"], path);
         if (names !== undefined) contentChanged = new Set(names.split("\n").filter(Boolean));
       }
-      // Initial-state signal (#11733): a file last written BEFORE the session started is very unlikely to have been
-      // touched by it (best-effort: mtime/ctime), so it is third-party/pre-existing dirt. Unknown mtime, directories, quoted paths
-      // and deletions stay blocking; nothing is restored or removed.
+      // Initial-state signal. Preferred (#11785): the start-of-session snapshot. Dirt that was there with the same
+      // status code and content hash is pre-existing; a new file, a changed hash (even on a file that was already
+      // dirty) or a changed code blocks. Fallback without a snapshot (#11733): a file last written BEFORE the session
+      // started is very unlikely to have been touched by it (best-effort: mtime/ctime). Unknown mtime, directories,
+      // quoted paths and deletions stay blocking; nothing is restored or removed.
       const startedMs = Date.parse(session.startedAt);
       const preExisting = (e: StatusEntry): boolean => {
-        if (!Number.isFinite(startedMs) || e.path.startsWith("\"") || e.path.endsWith("/")) return false;
+        if (e.path.startsWith("\"")) return false;
+        if (snapshot) return isUnchangedSinceSnapshot(snapshot, path, e, hash);
+        if (!Number.isFinite(startedMs) || e.path.endsWith("/")) return false;
         if (!(e.code === "??" || e.code === " M")) return false; // staged entries are a session action
         const m = mtimeMs(resolve(path, e.path));
         return m !== undefined && m < startedMs;
@@ -101,10 +123,13 @@ export function checkSessionClose(root: string, session: SessionRecord | undefin
           && !contentChanged.has(entry.path)) {
           report.ignored.push(`só fim de linha (CRLF/LF, não bloqueia): ${path}: ${entry.line}`);
         } else if (preExisting(entry)) {
-          report.ignored.push(`sujeira pré-existente, modificada antes do início da sessão (não bloqueia): ${path}: ${entry.line}`);
+          report.preExisting.push(`${path}: ${entry.line}`);
         } else blocking.push(entry.line);
       }
       if (blocking.length) report.pending.push(`mudanças não commitadas: ${path}\n${blocking.join("\n")}`);
+      report.attribution.push(snapshot
+        ? `${path}: foto do início da sessão (${snapshot.capturedAt}), por código de status e hash`
+        : `${path}: sem foto do início da sessão, atribuição por hash impossível; usado o mtime (best-effort)`);
     }
     const branch = query("git", ["branch", "--show-current"], path)?.trim();
     if (branch) branches.add(branch);
