@@ -256,7 +256,8 @@ export function checkSwapCooldown(
   // `blocoMaisRecente` deliberadamente NÃO é repassado: um
   // `bloqueio-execucao` novo reabre a PERGUNTA no fluxo de desbloqueio, mas
   // é um motivo a mais para não executar — nunca pode desarmar o cooldown.
-  const active = isAcaoAdiadaAtiva(adiada, { now });
+  // #11916 — `ate` (cooldown curto do desbloqueia) nunca encurta a janela de segurança de 7 dias da mutação.
+  const active = isAcaoAdiadaAtiva({ ...adiada, ate: undefined }, { now });
   return { active, pedidoEm: adiada.pedido_em, motivo: adiada.motivo };
 }
 

@@ -571,7 +571,10 @@ export function isAcaoAdiadaAtiva(
   if (pedidoEm > now) return false;
   // #11916 — `ate` parseável vale no lugar do cooldown default; ilegível cai no default.
   const ate = adiada.ate ? new Date(adiada.ate).getTime() : Number.NaN;
-  if (!Number.isNaN(ate)) return now < ate;
+  // `ate` <= pedido_em ou além do teto (cooldown default) é dado podre → default.
+  if (!Number.isNaN(ate) && ate > pedidoEm && ate - pedidoEm <= ACAO_ADIADA_COOLDOWN_DAYS * 86_400_000) {
+    return now < ate;
+  }
   const idadeDias = (now - pedidoEm) / 86_400_000;
   return idadeDias < ACAO_ADIADA_COOLDOWN_DAYS;
 }

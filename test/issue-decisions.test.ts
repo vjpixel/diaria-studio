@@ -484,6 +484,14 @@ describe("#7708 isAcaoAdiadaAtiva — o cooldown", () => {
     assert.equal("marker" in cli && parseAcaoAdiadaMarkers([cli.marker])[0].ate, ate);
   });
 
+  it("#11916 — `ate` anterior ao pedido ou acima do teto cai no default de 7 dias", () => {
+    const pedido = new Date("2026-09-09T12:00:00Z");
+    const now = new Date(pedido.getTime() + 24 * 3_600_000);
+    const base: AcaoAdiada = { pedido_em: pedido.toISOString(), acao: "x", motivo: "", sessao: "develop" };
+    assert.equal(isAcaoAdiadaAtiva({ ...base, ate: "2026-09-01T00:00:00Z" }, { now }), true);
+    assert.equal(isAcaoAdiadaAtiva({ ...base, ate: "2036-01-01T00:00:00Z" }, { now: new Date(pedido.getTime() + 8 * 86_400_000) }), false);
+  });
+
   it("exatamente no limite do cooldown já NÃO suprime (janela é aberta em cima)", () => {
     assert.equal(isAcaoAdiadaAtiva(adiada(ACAO_ADIADA_COOLDOWN_DAYS), { now: agora }), false);
   });
