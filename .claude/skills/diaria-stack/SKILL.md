@@ -35,10 +35,16 @@ prévia, envio).
 ## Argumentos
 
 - `AAMMDD` (opcional) — a **segunda-feira de publicação** (a semana de
-  conteúdo é a de segunda a sexta anteriores). Omitido: assumir a segunda de
-  hoje ou a anterior, a mesma regra do publicador, e imprimir o banner
-  `Data não informada — assumindo {AAMMDD} (segunda de publicação). Passe AAMMDD explicitamente para outra semana.`
-  Nunca parar para confirmar a data.
+  conteúdo é a de segunda a sexta anteriores). Omitido: resolver com
+  `npx tsx scripts/publish-circle-stack.ts --resolve-skill-default-monday`
+  (só lê o state local, não grava nada) e usar o `publishMonday` do JSON. A
+  regra parte da segunda de hoje ou da anterior, como o publicador; se esse
+  ciclo já está `published` na Stack e a semana de conteúdo da segunda
+  seguinte já fechou ou está perto disso (de sexta a domingo), assume a
+  segunda seguinte (#11784). Imprimir o `banner` do JSON, que diz quando
+  pulou o ciclo publicado. Nunca parar para confirmar a data. O publicador,
+  chamado sem `--publish-monday`, segue com a regra antiga: o catch-up do
+  timer depende dela.
 - `--publish` — depois da prévia e da confirmação do editor (Passo 6), envia
   o post. Sem a flag, a skill para na prévia e imprime o comando de envio.
 - `--reselect` — refaz a seleção da semana do zero (repassado ao Passo 1).
@@ -90,7 +96,7 @@ Na ordem da diária. `{C}` = o `circle-stack-copy.json`.
 
 1. Humanizador, passe completo, sobre os textos:
    ```
-   Skill("humanizador", "Leia {C}, humanize SÓ os campos opening e notes[].stackNote (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar cycle nem url. Tetos: opening 600 caracteres, cada stackNote 240 caracteres e no máximo 2 frases. Sem markdown, sem URL, sem emoji, sem seta.")
+   Skill("humanizador", "Leia {C}, humanize SÓ os campos opening e notes[].stackNote (passe completo), calibrando a voz com data/past-editions-recent.md, e salve no mesmo arquivo sem tocar cycle nem url. Tetos: opening curta, alvo ~200 e no máximo 280 caracteres, uma ideia por frase e sem aposto longo; cada stackNote 240 caracteres e no máximo 2 frases. Sem markdown, sem URL, sem emoji, sem seta.")
    ```
 2. Clarice: `mcp__clarice__correct_text` sobre a abertura e sobre cada
    `stackNote`, uma chamada por vez (serial, #4952). Aplicar as sugestões
