@@ -33,7 +33,10 @@
  *
  * Edição cirúrgica (#495): num arquivo PRÉ-EXISTENTE só 3 linhas são trocadas
  * (título, parágrafo dos temas, URL do CTA); header de comentário e bloco do
- * tier ficam intocados. **Migração:** um arquivo ainda no formato anterior
+ * tier ficam intocados — exceto a lista de benefícios gravada até 261101
+ * (`Quem apoia a partir de R$25/mês recebe:` + itens `- ...`), que vira o
+ * `TIER_BLOCK` atual (#11796; caso real: snippet restaurado de `_arquivo`
+ * na edição 261103). **Migração:** um arquivo ainda no formato anterior
  * (#9474 — parágrafo `A Retrospectiva de {Mês} é: **"{título}"**. {gancho}.`
  * + tier de uma linha) é aceito e convertido: o parágrafo do título vira o dos
  * temas, o tier de uma linha vira o `TIER_BLOCK` e o header literal gravado
@@ -104,7 +107,8 @@ próximo ciclo sobrescreve (o texto geral dos apoiadores segue estável). Format
  * Bloco do tier (#9845, encurtado a pedido do editor em 261101: um parágrafo
  * geral, sem valor e sem lista de benefícios) para os níveis que recebem a
  * Retrospectiva (Conselho/Núcleo). Estável entre ciclos — o script só o escreve no
- * seed e na migração do formato antigo; num arquivo já no formato novo ele
+ * seed, na migração do formato antigo e no lugar da lista de benefícios
+ * anterior a 261101 (#11796); fora isso, num arquivo já no formato novo ele
  * fica intocado (o editor pode ajustá-lo à mão).
  */
 export const TIER_BLOCK =
@@ -119,6 +123,20 @@ const CTA_LINE_RE = /^\[Ler a Retrospectiva\]\([^)\n]+\)$/m;
 // Formato anterior (#9474) — só pra migração.
 const LEGACY_QUOTE_PARAGRAPH_RE = /^A Retrospectiva de [^:\n]+ é:.*$/m;
 const LEGACY_TIER_PARAGRAPH_RE = /^Quem apoia a partir de R\$25\/mês recebe [^\r\n]+$/m;
+/**
+ * Lista de benefícios que o `TIER_BLOCK` do #9845 gravava até 261101 (#11796):
+ * `Quem apoia a partir de R$25/mês recebe:` + linha em branco + itens `- ...`.
+ * Num snippet no formato novo com essa lista (ex.: restaurado de `_arquivo`),
+ * o bloco inteiro vira o `TIER_BLOCK` atual. O último item não consome o fim
+ * de linha, para a linha em branco antes do CTA ficar onde estava.
+ */
+const LEGACY_TIER_LIST_RE =
+  /^Quem apoia a partir de R\$\d+\/mês recebe:[ \t]*\r?\n(?:[ \t]*\r?\n)*- [^\r\n]*(?:\r?\n- [^\r\n]*)*/m;
+
+/** Pura: o conteúdo ainda traz a lista antiga de benefícios (#11796)? */
+export function hasLegacyTierList(content: string): boolean {
+  return LEGACY_TIER_LIST_RE.test(content);
+}
 /**
  * Header que o script do #9474 gravava — trocado pelo atual quando aparece
  * LITERAL no topo (formato novo ou migração). Header com qualquer edição à mão
@@ -245,7 +263,10 @@ export function applyRetrospectivaBoxUpdate(content: string, input: Retrospectiv
   // substituição `$&`, `$'` etc. seriam interpretados como padrões.
   let next = content.replace(TITLE_LINE_RE, () => buildTitleLine(input.mesLabel));
   next = isNew
-    ? next.replace(TEMAS_PARAGRAPH_RE, () => temasParagraph)
+    ? next
+        .replace(TEMAS_PARAGRAPH_RE, () => temasParagraph)
+        // Lista de benefícios anterior a 261101 (#11796) vira o texto geral.
+        .replace(LEGACY_TIER_LIST_RE, () => TIER_BLOCK)
     : next
         .replace(LEGACY_QUOTE_PARAGRAPH_RE, () => temasParagraph)
         .replace(LEGACY_TIER_PARAGRAPH_RE, () => withEol(TIER_BLOCK));
@@ -310,6 +331,9 @@ export function runUpdateRetrospectivaBox(o: RunRetrospectivaBoxOptions): RunRet
   let nextSnippet: string | null = null;
   if (!o.unpin) {
     const existing = existsSync(o.snippetsFile) ? readFileSync(o.snippetsFile, "utf8") : null;
+    if (existing !== null && hasLegacyTierList(existing)) {
+      console.log("[box] lista antiga de benefícios encontrada — convertida para o texto geral dos apoiadores (#11796).");
+    }
     try {
       nextSnippet = renderRetrospectivaBox(existing, {
         mesLabel: contentMonthLabel(o.cycle!),

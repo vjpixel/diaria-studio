@@ -65,8 +65,17 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    ```
    **CLARICE — DIVULGAÇÃO**
 
-   [Placeholder — inserir aqui a seção de divulgação da Clarice: apresentação do produto, proposta de valor, call to action com link. CTA no formato `→ [texto](url)` — vira botão no render (renderCtaButton), um `[texto](url)` sem o `→` sai como link de texto comum.]
+   Escreva melhor em português com a Clarice
+
+   A única IA criada por brasileiros para brasileiros. A Clarice foi treinada para entender as nuances da língua portuguesa e identificar problemas de correção e estilo em qualquer texto, seja ele seu ou gerado por IAs generalistas (ChatGPT, Claude e similares).
+
+   Use a Clarice para revisar, refinar e humanizar seus textos. Publique com mais segurança, sem perder sua voz.
+
+   Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto.
+
+   → [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)
    ```
+   CLARICE — DIVULGAÇÃO é texto FIXO (#11788 — idêntico nos ciclos 2607-08 a 2610-11): emitir literalmente como acima, sem parafrasear. O `→` faz o CTA virar botão no render (`renderCtaButton`).
    Após D2 e antes de D3, emitir **LIVROS** — curadoria GERAL de livros sobre IA, texto FIXO (não é "Livro do mês"/resenha de 1 título — isso é outro box, label `LIVRO`, mid-body, opcional, ver seção "Boxes de divulgação mid-body" do template):
    ```
    **LIVROS**
@@ -81,9 +90,9 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    ```
    **CLARICE — TUTORIAL**
 
-   [Placeholder — inserir aqui um tutorial prático de uso da Clarice: dica, caso de uso ou passo a passo curto com link para saber mais. CTA no formato `→ [texto](url)`, mesmo motivo acima.]
+   [Placeholder — inserir aqui o próximo tutorial da sequência do Doc "Laboratório Clarice" no Drive (id 1KiuwIGyUP3JDhxoCPxV_EgWINWc-osIsSZ_Y1ZCjIIY): título e passos curtos, com link para saber mais. CTA no formato `→ [texto](url)`, vira botão no render. Muda a cada ciclo.]
    ```
-   O conteúdo das seções CLARICE (placeholders) é preenchido manualmente pelo editor antes da publicação — não inventar texto para elas. LIVROS é texto FIXO: emitir literalmente como acima, sem parafrasear.
+   CLARICE — TUTORIAL é a única seção Clarice que segue placeholder: o tutorial muda a cada ciclo e vem do Doc citado (você não tem acesso ao Drive), preenchido pelo editor antes da publicação — não inventar texto para ela. LIVROS e CLARICE — DIVULGAÇÃO são texto FIXO: emitir literalmente como acima, sem parafrasear.
 
 6. **Use Melhor + Radar.** Duas seções compactas, na ordem do `prioritized.md`:
 
