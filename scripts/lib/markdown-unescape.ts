@@ -30,8 +30,11 @@
  * Char class inclui ` * _ { } [ ] ( ) # + - . ! | > (CommonMark + observação
  * empírica do Drive export). Note: `]` é escapado como `\]` e `-` como `\-`
  * dentro do char class pra evitar fim prematuro / range interpretation.
+ *
+ * #11786: `$` (o export escapa `US$ 2 bi` como `US\$ 2 bi`, e o `\$` ia parar
+ * no HTML do e-mail mensal) e `~` (tachado GFM) entraram na classe.
  */
-const UNESCAPE_RE = /\\([`*_{}[\]()#+\-.!|>])/g;
+const UNESCAPE_RE = /\\([`*_{}[\]()#+\-.!|>$~])/g;
 
 /**
  * Regex autolink: `[text](url)` onde text === url. Drive Docs export converte

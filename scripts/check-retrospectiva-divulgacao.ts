@@ -8,12 +8,13 @@
  *   - valida `--skip` (`parseRetrospectivaSkip` — token desconhecido é erro,
  *     nunca "não pulou nada");
  *   - roda `publicPostCtaProblems` no post do PERFIL LinkedIn
- *     (`divulgacao/linkedin-perfil.md`, 1 post só): a linha literal de CTA pro
- *     apoia.se tem que estar lá, e a URL da retrospectiva paywalled nunca. É
- *     colado à mão, então esta é a única barreira mecânica dele;
+ *     (`divulgacao/linkedin-perfil.md`, 1 post só): a linha literal de CTA com
+ *     a página da retrospectiva do ciclo tem que estar lá (#11802), e URL de
+ *     retrospectiva de outro ciclo nunca. É colado à mão, então esta é a única
+ *     barreira mecânica dele;
  *   - #9508: por história com algum post pedido, `divulgacao/d{N}.md`
  *     (`retrospectivaHistoriaBodyProblems` — exatamente 3 parágrafos, ≤260
- *     cada, nenhum slide transbordando o card, sem CTA/URL paywalled/markdown
+ *     cada, nenhum slide transbordando o card, sem CTA/URL da retrospectiva/markdown
  *     — mais a legenda composta de LinkedIn/Facebook/Instagram), o título da
  *     capa (`draft.md`, cabe a 62px) e `divulgacao/d{N}-curto.md` (Threads/X:
  *     CTA curto + teto de 280) — pra que o gate só mostre texto que
@@ -51,8 +52,11 @@ export interface DivulgacaoTextCheck {
   problems: string[];
 }
 
-/** Corpo testável: problemas por arquivo de post público não pulado. */
-export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: string | undefined): DivulgacaoTextCheck[] {
+/**
+ * Corpo testável: problemas por arquivo de post público não pulado. `cycle`
+ * (#11802) dá a URL da página que o CTA tem que levar.
+ */
+export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, cycle: string, skipArg: string | undefined): DivulgacaoTextCheck[] {
   const skip = parseRetrospectivaSkip(skipArg);
   const out: DivulgacaoTextCheck[] = [];
   const read = (file: string): string | undefined => {
@@ -66,7 +70,7 @@ export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: str
 
   if (!skip.has("linkedin_perfil")) {
     const t = read("linkedin-perfil.md");
-    out.push(t === undefined ? absent("linkedin-perfil.md") : { file: resolve(cycleDir, "divulgacao", "linkedin-perfil.md"), problems: publicPostCtaProblems(t) });
+    out.push(t === undefined ? absent("linkedin-perfil.md") : { file: resolve(cycleDir, "divulgacao", "linkedin-perfil.md"), problems: publicPostCtaProblems(t, cycle) });
   }
 
   const draftPath = resolve(cycleDir, "draft.md");
@@ -88,9 +92,9 @@ export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: str
     const corpo = read(files.corpo);
     if (corpo === undefined) out.push(absent(files.corpo));
     else {
-      const problems = retrospectivaHistoriaBodyProblems(corpo);
+      const problems = retrospectivaHistoriaBodyProblems(corpo, cycle);
       for (const ch of channels.filter((c) => !isShortChannel(c))) {
-        for (const p of retrospectivaSocialPostProblems(ch, retrospectivaPostText(ch, { corpo })!)) problems.push(`${ch}: ${p}`);
+        for (const p of retrospectivaSocialPostProblems(ch, retrospectivaPostText(ch, { corpo }, cycle)!, cycle)) problems.push(`${ch}: ${p}`);
       }
       out.push({ file: resolve(cycleDir, "divulgacao", files.corpo), problems });
     }
@@ -102,7 +106,7 @@ export function checkRetrospectivaDivulgacaoTexts(cycleDir: string, skipArg: str
       else
         out.push({
           file: resolve(cycleDir, "divulgacao", files.curto),
-          problems: short.flatMap((ch) => retrospectivaSocialPostProblems(ch, curto).map((p) => `${ch}: ${p}`)),
+          problems: short.flatMap((ch) => retrospectivaSocialPostProblems(ch, curto, cycle).map((p) => `${ch}: ${p}`)),
         });
     }
   });
@@ -120,7 +124,7 @@ function main(): void {
     process.exit(2);
   }
   // Só o --skip inválido é erro de uso (exit 2); I/O e bug propagam (exit 1).
-  const checks = checkRetrospectivaDivulgacaoTexts(monthlyDir(cycle), skipArg);
+  const checks = checkRetrospectivaDivulgacaoTexts(monthlyDir(cycle), cycle, skipArg);
   let bad = 0;
   for (const c of checks) {
     if (c.problems.length === 0) {

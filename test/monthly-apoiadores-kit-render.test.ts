@@ -24,7 +24,7 @@ import {
   APOIADORES_KIT_UTM_PROFILE,
 } from "../scripts/lib/mensal/monthly-apoiadores-kit-render.ts";
 import { APOIADORES_BREVO_UTM_PROFILE } from "../scripts/lib/mensal/monthly-apoiadores-brevo-render.ts";
-import { CLARICE_UTM_PROFILE } from "../scripts/lib/mensal/monthly-render.ts";
+import { CLARICE_UTM_PROFILE, draftToEmail } from "../scripts/lib/mensal/monthly-render.ts";
 import {
   MENSAL_APOIADORES_KIT_UTM_SOURCE,
   MENSAL_APOIADORES_KIT_UTM_MEDIUM,
@@ -163,6 +163,9 @@ describe("#7633 — draftToEmailApoiadoresKit", () => {
     assert.equal(APOIADORES_KIT_UTM_PROFILE.pollBrand, "mensal-apoiadores-kit");
   });
 
+  // #11806: o canal dos apoiadores não leva mais a caixa DIVULGAÇÃO
+  // (`filterDraftForApoiadores` a corta), então a regra de UTM do #9589 é
+  // testada no render com o perfil do Kit, e o canal real confere a ausência.
   it("#9589: caixa DIVULGAÇÃO (CTA com utm_campaign próprio) mantém a campanha mas o utm_source segue o do Kit", () => {
     const draft = FULL_DRAFT.replace(
       "**É IA?**",
@@ -176,10 +179,15 @@ describe("#7633 — draftToEmailApoiadoresKit", () => {
         "**É IA?**",
       ].join("\n"),
     );
-    const { html } = draftToEmailApoiadoresKit(draft, "Assunto", "2607");
+    const kit = draftToEmailApoiadoresKit(draft, "Assunto", "2607").html;
+    assert.doesNotMatch(kit, /evento\/agente-ia/, "#11806: caixa DIVULGAÇÃO não sai no e-mail dos apoiadores");
+    const { html } = draftToEmail(
+      draft, "Assunto", "2607", undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      APOIADORES_KIT_UTM_PROFILE,
+    );
     const plain = html.replace(/&amp;/g, "&");
     const m = plain.match(/href="(https:\/\/diar\.ia\.br\/evento\/agente-ia\?[^"]+)"/);
-    assert.ok(m, "caixa DIVULGAÇÃO sumiu do e-mail dos apoiadores");
+    assert.ok(m, "caixa DIVULGAÇÃO sumiu do render");
     const p = new URL(m[1]).searchParams;
     assert.equal(p.get("utm_source"), MENSAL_APOIADORES_KIT_UTM_SOURCE);
     assert.equal(p.get("utm_medium"), MENSAL_APOIADORES_KIT_UTM_MEDIUM);

@@ -92,11 +92,13 @@ export function offsetTranscript(t: Transcript, offsetS: number): Transcript {
 // ── Silêncios e fala ──────────────────────────────────────────────────────
 
 /**
- * Parâmetros do `silencedetect` da 261027 (#11208). `noiseDb` é o limiar
- * quando o loudness do bruto não foi medido, e o PISO do limiar relativo
- * (`silenceNoiseDb`, #11351).
+ * Parâmetros do `silencedetect` (#11208). `noiseDb` é o limiar quando o
+ * loudness do bruto não foi medido, e o PISO do limiar relativo
+ * (`silenceNoiseDb`, #11351). `minDurationS` acompanha o `minGapS` de
+ * `SPEECH_DEFAULTS` (#11753): pausa mais curta que a detecção nunca chega ao
+ * corte (era 0,45 s com o corte em 0,8 s).
  */
-export const SILENCE_DETECT = { noiseDb: -45, minDurationS: 0.45 } as const;
+export const SILENCE_DETECT = { noiseDb: -45, minDurationS: 0.35 } as const;
 
 /**
  * Limiar relativo do silêncio (#11351): o loudness integrado do bruto menos
@@ -142,23 +144,47 @@ export function parseSilenceDetect(stderr: string, durationS?: number): Interval
   return out;
 }
 
-/** Corte de silêncio da montagem (#11208): ≥0,8 s sai, 0,2 s de respiro, clipe <0,6 s descartado. */
-export const SPEECH_DEFAULTS = { minGapS: 0.8, padS: 0.2, minClipS: 0.6 } as const;
+/**
+ * Corte de silêncio da montagem. #11753 (decisão do editor, 02/11/2026): a
+ * pausa de 0,35 s ou mais sai, com 0,07 s de respiro de cada lado (sobra
+ * ~0,14 s, o que o editor deixa no Premiere; antes era ≥0,8 s com 0,2 s, e as
+ * pausas de 0,3–0,8 s iam inteiras para o XML). Clipe <0,6 s isolado por pausa
+ * longa é descartado. `longGapS` separa a pausa longa (≥0,8 s, o corte de
+ * antes) da curta: a curta não deixa pedaço abaixo de `minClipS` (o pedaço
+ * volta a se juntar ao vizinho) e não troca o zoom (`assembleClips`).
+ */
+export const SPEECH_DEFAULTS = { minGapS: 0.35, padS: 0.07, minClipS: 0.6, longGapS: 0.8 } as const;
+
+/** Opções do corte de silêncio (`speechParts`, `buildSequencePlan`). */
+export interface SpeechOptions {
+  minGapS?: number;
+  padS?: number;
+  minClipS?: number;
+  /** Pausa a partir da qual o corte é "longo" (#11753). */
+  longGapS?: number;
+  /** Pedaço abaixo disso, separado do vizinho só por pausa curta, volta a se juntar a ele. Default: `minClipS`. */
+  fragmentS?: number;
+}
 
 /**
  * Trechos de fala dentro de `[a, b]`: remove os silêncios de `minGapS` ou mais,
- * mantendo `padS` de respiro de cada lado, e descarta trechos com menos de
- * `minClipS`. Nunca sai de `[a, b]`. Porta do `speech()` de `build_xml.py`.
+ * mantendo `padS` de respiro de cada lado. Pedaço com menos de `fragmentS`
+ * separado do vizinho por pausa CURTA (abaixo de `longGapS`) não é cortado: o
+ * corte daquela pausa é desfeito e o pedaço volta ao vizinho (com o corte em
+ * 0,35 s, uma palavra solta entre duas pausas curtas é fala, não ruído,
+ * #11753). Sobra de pedaço isolado por pausa longa, com menos de `minClipS`, é
+ * descartada como antes; pedaço que encosta em UMA ponta de `[a, b]` sem
+ * silêncio ali fica (a fala continua no item vizinho, e o `assembleClips`
+ * emenda os dois: com o respiro de 0,07 s, a sobra de um item que termina no
+ * meio da fala passou a ficar abaixo de `minClipS`). Nunca sai de `[a, b]`.
+ * Porta do `speech()` de `build_xml.py`.
  */
-export function speechParts(
-  a: number,
-  b: number,
-  silences: Interval[],
-  opts: { minGapS?: number; padS?: number; minClipS?: number } = {},
-): Interval[] {
+export function speechParts(a: number, b: number, silences: Interval[], opts: SpeechOptions = {}): Interval[] {
   const minGap = opts.minGapS ?? SPEECH_DEFAULTS.minGapS;
   const pad = opts.padS ?? SPEECH_DEFAULTS.padS;
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
+  const longGap = opts.longGapS ?? SPEECH_DEFAULTS.longGapS;
+  const fragment = opts.fragmentS ?? minClip;
   if (!(b > a)) return [];
   const parts: Interval[] = [];
   let cur = a;
@@ -168,7 +194,47 @@ export function speechParts(
     cur = Math.max(cur, s.end - pad);
   }
   if (cur < b) parts.push({ start: cur, end: b });
-  return parts.filter((p) => p.end - p.start >= minClip - 1e-9).map((p) => ({ start: round3(p.start), end: round3(p.end) }));
+  // A pausa removida entre dois pedaços (o vão no bruto mais os dois respiros).
+  const removed = (i: number) => parts[i + 1].start - parts[i].end + 2 * pad;
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].end - parts[i].start >= fragment - 1e-9) continue;
+      const left = i > 0 ? removed(i - 1) : Number.POSITIVE_INFINITY;
+      const right = i + 1 < parts.length ? removed(i) : Number.POSITIVE_INFINITY;
+      if (!(Math.min(left, right) < longGap - 1e-9)) continue;
+      if (left <= right) parts.splice(i - 1, 2, { start: parts[i - 1].start, end: parts[i].end });
+      else parts.splice(i, 2, { start: parts[i].start, end: parts[i + 1].end });
+      changed = true;
+      break;
+    }
+  }
+  return parts.filter((p) => p.end - p.start >= minClip - 1e-9 || touchesEdge(p, a, b)).map((p) => ({ start: round3(p.start), end: round3(p.end) }));
+}
+
+/**
+ * O pedaço encosta em UMA ponta de `[a, b]` (sem silêncio cortado ali): a fala
+ * segue no item vizinho (#11753). O item inteiro curto (as duas pontas) não
+ * conta: continua sumindo no corte (regressão F do #11208).
+ */
+function touchesEdge(p: Interval, a: number, b: number): boolean {
+  const atA = p.start <= a + 1e-6;
+  const atB = p.end >= b - 1e-6;
+  return atA !== atB;
+}
+
+/**
+ * Os pedaços de `speechParts` em que o corte ANTES deles removeu só uma pausa
+ * curta (abaixo de `longGapS`): o índice de cada um. Esses cortes não trocam o
+ * zoom (#11753): o editor tira a pausa no Premiere dentro do mesmo clipe, com a
+ * mesma escala; os cortes longos, de item e de tomada continuam trocando (#11503).
+ */
+export function shortPauseCuts(parts: Interval[], opts: Pick<SpeechOptions, "padS" | "longGapS"> = {}): Set<number> {
+  const pad = opts.padS ?? SPEECH_DEFAULTS.padS;
+  const longGap = opts.longGapS ?? SPEECH_DEFAULTS.longGapS;
+  const out = new Set<number>();
+  for (let i = 1; i < parts.length; i++) if (parts[i].start - parts[i - 1].end + 2 * pad < longGap - 1e-9) out.add(i);
+  return out;
 }
 
 /** O fecho segura 0,5 s depois da última palavra (#11208). */
@@ -569,6 +635,128 @@ export function chooseTake(words: Word[], phrase: string, opts: TakeMatchOptions
   };
 }
 
+// ── Tomada colapsada (#11754) ─────────────────────────────────────────────
+
+/**
+ * Tomada colapsada (#11754): quando a frase foi regravada logo em seguida, o
+ * Whisper às vezes registra UMA tomada só, com as palavras esticadas por cima
+ * das outras (261030: "dos@294,29 médicos@298,45", 3 tomadas em 289–309 s). O
+ * sinal é som sem palavra: mais de `gapS` entre duas palavras seguidas, ou
+ * dentro de uma palavra, fora dos silêncios detectados (pausa de verdade, como
+ * a fala pausada do #11505, não conta). Decisão do editor (02/11/2026): 1,5 s.
+ */
+export const COLLAPSED_TAKE = { gapS: 1.5, marginS: 0.5 } as const;
+
+export interface CollapsedTakeSuspect {
+  kind: "intervalo" | "palavra-longa";
+  /** Onde, no bruto: o fim da palavra antes do vão (ou o começo da palavra longa). */
+  at: number;
+  /** Segundos de som sem palavra (fora dos silêncios). */
+  audibleS: number;
+  before: string;
+  after?: string;
+  /** Janela sugerida para o `retranscribe` (as palavras do trecho com margem, no máximo `RETRANSCRIBE_MAX_S`). */
+  window: Interval;
+}
+
+/** Segundos de `[a, b]` fora dos silêncios. */
+function audibleSeconds(a: number, b: number, silences: Interval[]): number {
+  if (!(b > a)) return 0;
+  let covered = 0;
+  let cur = a;
+  for (const s of [...silences].sort((x, y) => x.start - y.start)) {
+    const lo = Math.max(cur, s.start);
+    const hi = Math.min(b, s.end);
+    if (hi > lo) {
+      covered += hi - lo;
+      cur = hi;
+    }
+  }
+  return b - a - covered;
+}
+
+/**
+ * Suspeitas de tomada colapsada nas palavras de UM trecho (um segmento do
+ * Whisper ou as palavras de um item do roteiro). Sem silêncios, conta o vão
+ * inteiro.
+ */
+export function collapsedTakeSuspects(words: Word[], silences: Interval[] = [], opts: { gapS?: number; durationS?: number } = {}): CollapsedTakeSuspect[] {
+  const gap = opts.gapS ?? COLLAPSED_TAKE.gapS;
+  const ws = words.filter((w) => w.text.trim() !== "");
+  if (ws.length === 0) return [];
+  const lo = Math.max(0, ws[0].start - COLLAPSED_TAKE.marginS);
+  const hiRaw = ws[ws.length - 1].end + COLLAPSED_TAKE.marginS;
+  const hi = opts.durationS !== undefined ? Math.min(opts.durationS, hiRaw) : hiRaw;
+  const windowAround = (t: number): Interval => {
+    if (hi - lo <= RETRANSCRIBE_MAX_S) return { start: round3(lo), end: round3(hi) };
+    const start = Math.max(lo, Math.min(t - RETRANSCRIBE_MAX_S / 2, hi - RETRANSCRIBE_MAX_S));
+    return { start: round3(start), end: round3(Math.min(hi, start + RETRANSCRIBE_MAX_S)) };
+  };
+  const out: CollapsedTakeSuspect[] = [];
+  ws.forEach((w, i) => {
+    const inWord = audibleSeconds(w.start, w.end, silences);
+    if (inWord > gap) out.push({ kind: "palavra-longa", at: round3(w.start), audibleS: round3(inWord), before: w.text.trim(), window: windowAround(w.start) });
+    const n = ws[i + 1];
+    if (!n) return;
+    const between = audibleSeconds(w.end, n.start, silences);
+    if (between > gap) out.push({ kind: "intervalo", at: round3(w.end), audibleS: round3(between), before: w.text.trim(), after: n.text.trim(), window: windowAround(w.end) });
+  });
+  return out;
+}
+
+/** Uma linha legível da suspeita ("4,2 s de som sem palavra entre "dos" e "médicos""). */
+export function describeCollapsedSuspect(s: CollapsedTakeSuspect): string {
+  const secs = `${s.audibleS.toFixed(1).replace(".", ",")} s`;
+  return s.kind === "intervalo" ? `${secs} de som sem palavra entre "${s.before}" e "${s.after}"` : `"${s.before}" esticada por ${secs} de som`;
+}
+
+export type CollapsedPick =
+  | { ok: true; take: Take; takeNumber: number; completeTakes: number; interval: Interval; words: Word[]; why: string }
+  | { ok: false; completeTakes: number; reason: string };
+
+/**
+ * A tomada a usar quando a retranscrição da janela separou as tomadas
+ * (#11754): por padrão a ÚLTIMA completa (o critério do editor nas 261028 e
+ * 261030), salvo comentário da direção no trecho retranscrito: "aprova" vale
+ * para a tomada logo antes dele, "aprova-primeira" para a 1ª, "prefere-anterior"
+ * para a de antes da última antes do comentário, e "rejeita" tira a tomada
+ * logo antes da escolha. Menos de 2 tomadas completas = a retranscrição não
+ * separou nada (`ok: false`). `words` já com o vocabulário aplicado.
+ */
+export function pickCollapsedTake(words: Word[], segments: Segment[], phrase: string, opts: TakeMatchOptions = {}): CollapsedPick {
+  const complete = findTakes(words, phrase, opts).filter((t) => t.complete);
+  if (complete.length < 2) return { ok: false, completeTakes: complete.length, reason: complete.length ? "a retranscrição achou uma tomada só" : "nenhuma tomada completa na retranscrição" };
+  const endOf = (t: Take) => words[t.lastWord].end;
+  const rejected = new Set<number>();
+  let approved: { idx: number; why: string } | null = null;
+  for (const cue of directionCues(segments)) {
+    const at = segments[cue.segment].start;
+    const before = complete.map((t, i) => [t, i] as const).filter(([t]) => endOf(t) <= at + 1e-6).map(([, i]) => i);
+    const idx = before.length ? before[before.length - 1] : -1;
+    if (cue.kind === "aprova" && idx >= 0) approved = { idx, why: `aprovada pela direção: "${cue.text}"` };
+    else if (cue.kind === "aprova-primeira") approved = { idx: 0, why: `aprovada pela direção: "${cue.text}"` };
+    else if (cue.kind === "prefere-anterior" && idx >= 1) approved = { idx: idx - 1, why: `a direção preferiu a anterior: "${cue.text}"` };
+    else if (cue.kind === "rejeita" && idx >= 0) rejected.add(idx);
+  }
+  let pick = approved?.idx;
+  let why = approved?.why;
+  if (pick === undefined) {
+    const free = complete.map((_, i) => i).filter((i) => !rejected.has(i));
+    pick = free.length ? free[free.length - 1] : complete.length - 1;
+    why = pick === complete.length - 1 ? "a última tomada" : "a última tomada que a direção não recusou";
+  }
+  const take = complete[pick];
+  return {
+    ok: true,
+    take,
+    takeNumber: pick + 1,
+    completeTakes: complete.length,
+    interval: takeInterval(words, take),
+    words: words.slice(take.firstWord, take.lastWord + 1),
+    why: why!,
+  };
+}
+
 // ── Decupagem (gate 1) ────────────────────────────────────────────────────
 
 export interface TakeGroup {
@@ -898,6 +1086,8 @@ export interface BlocksFile {
   vocabulary?: VocabRule[];
   /** Blocos que seguram `FECHO_HOLD_S` depois da última palavra. Default ["fecho"]. */
   holdBlocks?: BlockKey[];
+  /** Duração-alvo da vertical nesta edição, em segundos (#11757); ausente = `VERTICAL_TARGET_S` (85). */
+  verticalTargetS?: number;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -975,6 +1165,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
       });
     }
   }
+  if (raw.verticalTargetS !== undefined && !(isNum(raw.verticalTargetS) && raw.verticalTargetS > 0)) errors.push("verticalTargetS precisa ser um número de segundos maior que 0");
   if (raw.holdBlocks !== undefined) {
     if (!Array.isArray(raw.holdBlocks) || raw.holdBlocks.some((k) => typeof k !== "string" || !isBlockKey(k))) errors.push("holdBlocks precisa listar blocos conhecidos");
   }
@@ -1109,6 +1300,18 @@ export type ResolvedItem = {
   lastWordEnd: number | null;
   /** Até onde um respiro pode ir sem pegar a palavra seguinte do bruto (`next.start - guardS`, ou a duração). */
   holdLimit: number;
+  /**
+   * Tomada colapsada no trecho (#11754): as suspeitas e, quando uma
+   * retranscrição da janela separou as tomadas, a escolhida (o `interval` e as
+   * `words` já são os dela). Sem `picked`, o trecho segue inteiro e o roteiro
+   * pede a retranscrição.
+   */
+  collapsed?: {
+    suspects: CollapsedTakeSuspect[];
+    picked?: { takeNumber: number; completeTakes: number; why: string; from: Interval };
+    /** Retranscrição da janela existe mas não separou as tomadas. */
+    unresolved?: string;
+  };
 } & ItemScope &
   ({ how: "take"; take: number; completeTakes: number } | { how: "explicit" });
 
@@ -1121,6 +1324,12 @@ export interface ResolveOptions {
   /** Vocabulário aplicado às palavras do bruto antes de casar as frases. */
   rules?: VocabRule[];
   aliases?: VocabAlias[];
+  /**
+   * Retranscrições de janela já no tempo do bruto (`retranscribe-*.json`,
+   * #11754): o trecho com tomada colapsada que uma delas cobre usa a tomada
+   * que ela separou (`pickCollapsedTake`).
+   */
+  retranscribed?: Transcript[];
 }
 
 /** Apara só as bordas dentro de silêncio; preserva palavras sem núcleo audível. */
@@ -1162,6 +1371,53 @@ export function resolveBlocks(
     warnings.push(`${label}: a fala ouvida difere do texto pedido: "${heard}" (pedido: "${wanted.trim()}")`);
     return heard;
   };
+  // Tomada colapsada (#11754): suspeita no trecho → a retranscrição que o cobre decide a tomada.
+  const firstWordAfter = (t: number) => words.findIndex((w) => w.start >= t - 1e-6);
+  const limitAfterTime = (t: number) => {
+    const idx = firstWordAfter(t);
+    return idx < 0 ? opts.durationS : limitAfter(idx);
+  };
+  const patches = (opts.retranscribed ?? [])
+    .map((t) => {
+      const ws = applyVocabularyToWords(trimWordsToSilences(transcriptWords(t), opts.silences ?? []), [...(opts.rules ?? []), ...(file.vocabulary ?? [])]);
+      return ws.length ? { segments: t.segments, words: ws, start: ws[0].start, end: ws[ws.length - 1].end } : null;
+    })
+    .filter((p): p is NonNullable<typeof p> => p !== null);
+  const collapse = (
+    label: string,
+    span: Interval,
+    text: string | undefined,
+    ws: Word[],
+    mayPick: boolean,
+  ): { info?: NonNullable<ResolvedItem["collapsed"]>; picked?: { interval: Interval; words: Word[] } } => {
+    const suspects = collapsedTakeSuspects(ws, opts.silences ?? [], { durationS: opts.durationS });
+    if (suspects.length === 0) return {};
+    const what = describeCollapsedSuspect(suspects[0]);
+    const win = suspects[0].window;
+    const tol = COLLAPSED_TAKE.marginS;
+    // A retranscrição que cobre as palavras do trecho; a mais recente na lista vence.
+    const lo = ws[0].start;
+    const hi = ws[ws.length - 1].end;
+    const patch = [...patches].reverse().find((p) => p.start <= lo + tol + 1 && p.end >= hi - tol - 1);
+    if (!patch || text === undefined || !mayPick) {
+      const why = !mayPick ? "take explícito no blocks.json: tomada mantida" : text === undefined ? "intervalo sem text: não dá para separar as tomadas" : `retranscrever ${win.start.toFixed(1)}–${win.end.toFixed(1)} s e rodar de novo`;
+      warnings.push(`${label}: possível tomada colapsada (${what}): ${why} (#11754)`);
+      return { info: { suspects } };
+    }
+    const inside = patch.words.filter((w) => (w.start + w.end) / 2 >= span.start - tol && (w.start + w.end) / 2 <= span.end + tol);
+    const pick = pickCollapsedTake(inside, patch.segments, text, { match });
+    if (!pick.ok) {
+      warnings.push(`${label}: possível tomada colapsada (${what}); a retranscrição não separou as tomadas (${pick.reason}): o trecho segue inteiro, conferir no áudio (#11754)`);
+      return { info: { suspects, unresolved: pick.reason } };
+    }
+    warnings.push(
+      `${label}: tomada colapsada (${what}): a retranscrição separou ${pick.completeTakes} tomadas; usando a ${pick.takeNumber}ª (${pick.why}), ${pick.interval.start.toFixed(2)}–${pick.interval.end.toFixed(2)} s (#11754)`,
+    );
+    return {
+      info: { suspects, picked: { takeNumber: pick.takeNumber, completeTakes: pick.completeTakes, why: pick.why, from: span } },
+      picked: { interval: pick.interval, words: pick.words },
+    };
+  };
   for (const [key, items] of Object.entries(file.blocks) as Array<[BlockKey, BlockItem[]]>) {
     const out: ResolvedItem[] = [];
     blocks[key] = out;
@@ -1173,14 +1429,18 @@ export function resolveBlocks(
         const inside = idx.map(([w]) => w);
         const lastIdx = idx.length ? idx[idx.length - 1][1] : -1;
         const nextIdx = lastIdx >= 0 ? lastIdx + 1 : words.findIndex((w) => w.start >= it.end);
-        const heard = heardIfDiffers(label, it.text, inside);
+        const col = collapse(label, { start: it.start, end: it.end }, it.text, inside, true);
+        const ws = col.picked ? col.picked.words : inside;
+        const heard = heardIfDiffers(label, it.text, ws);
+        const holdIdx = col.picked ? firstWordAfter(col.picked.interval.end) : nextIdx;
         out.push({
-          interval: { start: it.start, end: it.end },
+          interval: col.picked ? col.picked.interval : { start: it.start, end: it.end },
           text: it.text ?? joinWordTexts(inside.map((w) => w.text)),
           ...(heard !== undefined ? { heard } : {}),
-          words: inside,
-          lastWordEnd: inside.length ? inside[inside.length - 1].end : null,
-          holdLimit: round3(Math.min(opts.durationS, nextIdx < 0 ? opts.durationS : limitAfter(nextIdx))),
+          words: ws,
+          lastWordEnd: ws.length ? ws[ws.length - 1].end : null,
+          holdLimit: round3(Math.min(opts.durationS, holdIdx < 0 ? opts.durationS : limitAfter(holdIdx))),
+          ...(col.info ? { collapsed: col.info } : {}),
           ...scopeOf(it),
           how: "explicit",
         });
@@ -1189,14 +1449,18 @@ export function resolveBlocks(
       const c = chooseTake(words, it.text, { take: it.take, match });
       if (!c.ok) return void errors.push(`${label}: ${c.reason}`);
       const takeWords = words.slice(c.take.firstWord, c.take.lastWord + 1);
-      const heard = heardIfDiffers(label, it.text, takeWords);
+      // `take` explícito no blocks.json é decisão: a suspeita só é avisada, nunca troca a tomada.
+      const col = collapse(label, c.interval, it.text, takeWords, it.take === undefined);
+      const ws = col.picked ? col.picked.words : takeWords;
+      const heard = heardIfDiffers(label, it.text, ws);
       out.push({
-        interval: c.interval,
+        interval: col.picked ? col.picked.interval : c.interval,
         text: it.text.trim(),
         ...(heard !== undefined ? { heard } : {}),
-        words: takeWords,
-        lastWordEnd: words[c.take.lastWord].end,
-        holdLimit: round3(Math.min(opts.durationS, limitAfter(c.take.lastWord + 1))),
+        words: ws,
+        lastWordEnd: ws[ws.length - 1].end,
+        holdLimit: round3(Math.min(opts.durationS, col.picked ? limitAfterTime(col.picked.interval.end) : limitAfter(c.take.lastWord + 1))),
+        ...(col.info ? { collapsed: col.info } : {}),
         ...scopeOf(it),
         how: "take",
         take: c.takeNumber,
@@ -1223,6 +1487,8 @@ export interface PlannedClip {
   script?: string;
   /** Clipe fundido de trechos de blocos DIFERENTES: o pedaço de cada bloco (a duração por bloco do roteiro sai daqui). */
   parts?: Array<{ block: BlockKey; srcIn: number; srcOut: number }>;
+  /** O corte antes deste clipe tirou só uma pausa curta dentro do item: mantém a escala do anterior (#11753). */
+  keepScale?: true;
 }
 
 /** Trecho do bruto antes de virar clipe (sem frames, sem posição na sequência, sem escala). */
@@ -1232,6 +1498,7 @@ export interface RawClip {
   srcOut: number;
   script?: string;
   parts?: PlannedClip["parts"];
+  keepScale?: true;
 }
 
 /** Segundos do clipe que são do bloco `key` (clipe fundido de blocos diferentes conta só o pedaço do bloco). */
@@ -1264,9 +1531,13 @@ export interface CutAdjustment {
  *      dele) ou por cima dele (sobreposição: o áudio sairia repetido) se funde
  *      com o anterior num clipe só, que vai do começo do 1º ao fim mais tardio.
  *      Fala contínua no bruto nunca vira dois clipes;
- *   2. a escala alterna base/punch-in a cada clipe JÁ fundido.
+ *   2. a escala alterna base/punch-in a cada clipe JÁ fundido, menos no clipe
+ *      marcado `keepScale` (o corte antes dele tirou só uma pausa curta dentro
+ *      do item, #11753), que fica com a escala do anterior.
  * Resultado, as duas regras do zoom (decisão do editor, 28/10/2026): todo corte
- * muda o zoom, e nenhuma mudança de zoom acontece sem corte. Trecho que volta
+ * de pausa longa, de item ou de tomada muda o zoom, e nenhuma mudança de zoom
+ * acontece sem corte. O corte de pausa curta (#11753) é o que o editor faz no
+ * Premiere dentro do mesmo clipe, sem trocar a escala. Trecho que volta
  * no bruto (começa antes do começo do anterior) é corte de verdade, não funde.
  * Clipe fundido de dois blocos leva o nome do 1º e guarda o pedaço de cada um
  * em `parts` (`clipSecondsOfBlock`).
@@ -1302,11 +1573,13 @@ export function assembleClips(
   }
   const clips: PlannedClip[] = [];
   let t = 0;
+  let zoom = 0;
   for (const r of merged) {
     const frameIn = Math.round(r.srcIn * fps);
     const frameOut = Math.round(r.srcOut * fps);
     if (frameOut <= frameIn) continue;
-    const scale = spec.scales[clips.length % 2];
+    if (clips.length > 0 && !r.keepScale) zoom++;
+    const scale = spec.scales[zoom % 2];
     clips.push({
       block: r.block,
       srcIn: round3(r.srcIn),
@@ -1318,6 +1591,7 @@ export function assembleClips(
       scale,
       ...(r.script ? { script: r.script } : {}),
       ...(r.parts ? { parts: r.parts } : {}),
+      ...(r.keepScale && clips.length > 0 ? { keepScale: true as const } : {}),
     });
     t += frameOut - frameIn;
   }
@@ -1368,7 +1642,8 @@ export function wordCoveredBySilence(w: Interval, parts: Interval[], silences: I
  * Clipes de uma sequência: cada item do bloco vira os trechos de fala dele
  * (`speechParts`); trechos contíguos no bruto (itens do roteiro escritos frase a
  * frase sobre uma fala contínua) se fundem e a escala alterna base/punch-in a
- * cada clipe fundido, ou seja, exatamente nos cortes (`assembleClips`, #11503). No bloco de
+ * cada clipe fundido, ou seja, exatamente nos cortes (`assembleClips`, #11503),
+ * menos no corte de pausa curta dentro do item (`shortPauseCuts`, #11753). No bloco de
  * fecho, o último trecho termina `FECHO_HOLD_S` depois da ÚLTIMA PALAVRA, preso
  * antes da palavra seguinte do bruto (`holdLimit`), e o descarte de clipe curto
  * vem depois desse respiro. Item que some no corte, ou palavra que fica de
@@ -1381,7 +1656,7 @@ export function buildSequencePlan(
   resolved: Partial<Record<BlockKey, ResolvedItem[]>>,
   silences: Interval[],
   source: Pick<SourceInfo, "fps" | "durationS">,
-  opts: { holdBlocks?: BlockKey[]; minGapS?: number; padS?: number; minClipS?: number } = {},
+  opts: { holdBlocks?: BlockKey[] } & SpeechOptions = {},
 ): SequencePlan {
   const hold = new Set<BlockKey>(opts.holdBlocks ?? ["fecho"]);
   const minClip = opts.minClipS ?? SPEECH_DEFAULTS.minClipS;
@@ -1402,20 +1677,25 @@ export function buildSequencePlan(
     const mine = items.map((it, idx) => ({ it, idx })).filter(({ it }) => itemInTarget(it, spec.target));
     mine.forEach(({ it, idx }, n) => {
       scriptParts.push(it.text);
-      let parts = speechParts(it.interval.start, it.interval.end, silences, { ...opts, minClipS: 0 });
+      // O descarte do clipe curto vem depois do respiro do fecho; o pedaço curto entre pausas curtas já volta ao vizinho aqui (#11753).
+      const parts = speechParts(it.interval.start, it.interval.end, silences, { ...opts, minClipS: 0, fragmentS: opts.fragmentS ?? minClip });
+      // Corte de pausa curta dentro do item não troca o zoom (#11753).
+      const keep = shortPauseCuts(parts, opts);
       if (holding && n === mine.length - 1 && parts.length) {
         const lastPart = parts[parts.length - 1];
         const target = it.lastWordEnd !== null ? it.lastWordEnd + FECHO_HOLD_S : lastPart.end + FECHO_HOLD_S;
         const floor = it.lastWordEnd ?? lastPart.start;
         lastPart.end = round3(Math.max(floor, Math.min(it.holdLimit, source.durationS, target)));
       }
-      parts = parts.filter((p) => p.end - p.start >= minClip - 1e-9);
-      if (parts.length === 0) {
+      // Pedaço curto na ponta do item, sem silêncio ali, fica: emenda no item vizinho (#11753). O do fecho é medido depois do respiro.
+      const edge = parts.map((p, k) => !(holding && k === parts.length - 1) && touchesEdge(p, it.interval.start, it.interval.end));
+      const kept = parts.map((p, k) => ({ ...p, keepScale: keep.has(k), edge: edge[k] })).filter((p) => p.end - p.start >= minClip - 1e-9 || p.edge);
+      if (kept.length === 0) {
         dropped.push(`${key}[${idx}]: some no corte (fala abaixo de ${minClip} s depois de tirar os silêncios)`);
         return;
       }
       wordChecks.push({ label: `${key}[${idx}]`, words: trimWordsToSilences(it.words, silences) });
-      for (const p of parts) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text });
+      for (const p of kept) raws.push({ block: key, srcIn: p.start, srcOut: p.end, script: it.text, ...(p.keepScale ? { keepScale: true as const } : {}) });
     });
   }
   // Contíguos no bruto viram um clipe só antes de alternar a escala (#11503).

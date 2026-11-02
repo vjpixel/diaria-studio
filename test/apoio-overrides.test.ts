@@ -4,7 +4,7 @@
  * Testa `scripts/lib/apoio-overrides.ts` — override manual de nível de apoio
  * (`data/apoio-overrides.json`, #8863 — movido de `context/apoio-overrides.json`
  * porque a lista contém e-mail, dado pessoal) consumido por
- * `sync-apoio-nivel-beehiiv.ts` e `sync-apoio-nivel-kit.ts`. Casos obrigatórios
+ * `lib/apoio-nivel-sync.ts` e `sync-apoio-nivel-kit.ts`. Casos obrigatórios
  * da issue:
  *
  *   (a) override adiciona nível pra quem NÃO está no apoia.se.
@@ -15,7 +15,7 @@
  * Mais: `loadApoioOverrides` fail-soft na ausência do arquivo, fail-loud em
  * conteúdo malformado; `applyApoioOverrides` nunca produz `level: null`
  * (garantia que sustenta "override não conta como remoção" nos guards de
- * `sync-apoio-nivel-beehiiv.ts`).
+ * `lib/apoio-nivel-sync.ts`).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";

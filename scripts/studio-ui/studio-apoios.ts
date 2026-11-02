@@ -123,17 +123,17 @@
  * `computeRewardGroups` ganhou um 5º grupo, `nao_pagou_ainda`: contato
  * "apoiou_e_parou" cujo `lastPaidMonth` seja EXATAMENTE o mês anterior ao
  * corrente (carência de 1 mês — reusa `previousMonthKey` de
- * `sync-apoio-nivel-beehiiv.ts`/#4436, sem reimplementar a lógica de
+ * `lib/apoio-nivel-sync.ts`/#4436, sem reimplementar a lógica de
  * virada de ano). `deriveContactStatus` agora propaga `lastPaidValue`/
  * `lastPaidLevel` (valor + nível do último pagamento) pra esse grupo poder
  * mostrar "o nível que a pessoa tinha", sem chamada de rede nova (o valor já
  * está no snapshot lido por `readPastMonthSnapshots`). Cada
  * `ContactWithStatus` também ganhou `rewardLevel` (nível vigente pra badge no
  * card de Contatos, via `computeContactRewardLevel` — mesmo critério do
- * grupo, mas por contato) e `segments` (segmentos Beehiiv `Apoio — *`, lidos
- * fail-soft de `data/apoia-se/beehiiv-segments.json` via `deriveSegments` —
- * MESMO padrão dos outros 2 caches Beehiiv deste módulo, populado por
- * `scripts/sync-apoio-segments-beehiiv.ts`). `segments: null` = "nunca
+ * grupo, mas por contato) e `segments` (segmentos Kit `Apoio — *`, lidos
+ * fail-soft de `data/apoia-se/kit-segments.json` via `deriveSegments`,
+ * populado por
+ * `scripts/sync-apoio-segments-kit.ts`). `segments: null` = "nunca
  * consultado" (cache ausente/sem match), distinto de `{ segments: [], ... }`
  * = "consultado, nenhum segmento" — nunca confundir com "fora da base".
  */
@@ -196,6 +196,7 @@ import {
   REWARD_TIER_APOIADOR_MIN,
   REWARD_TIER_MANTENEDOR_MIN,
   REWARD_TIER_PATRONO_MIN,
+  computeRewardGroup as rewardGroupFromLib,
 } from "../lib/reward-tier-thresholds.ts";
 import {
   drainApoiaSeNotifications,
@@ -251,9 +252,9 @@ export interface OpenRateInfo {
  * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. */
 export type OpenRateCache = Record<string, OpenRateInfo>;
 
-/** Confirmação de vínculo Beehiiv (#4273 parte 3 — a pessoa é assinante
- * Beehiiv ou não). `status` reflete o `status` da subscription na Beehiiv
- * (`active`/`pending`/etc), `null` quando `hasVinculo: false`. */
+/** Confirmação de vínculo (#4273 parte 3, fonte Kit desde o #11225): a pessoa
+ * é assinante ativa no Kit ou não. `status` é `active` quando há vínculo,
+ * `null` quando `hasVinculo: false`. */
 export interface VinculoInfo {
   hasVinculo: boolean;
   subscriptionId: string | null;
@@ -261,23 +262,23 @@ export interface VinculoInfo {
   fetchedAt: string;
 }
 
-/** Cache lido de `data/apoia-se/beehiiv-vinculo.json` — chaves normalizadas
- * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. Populado
- * manualmente por uma sessão top-level com MCP Beehiiv conectado (mesmo
- * mecanismo do `OpenRateCache` acima, #3612) — o painel só LÊ, nunca chama a
- * API Beehiiv ao vivo. */
+/** Cache lido de `data/apoia-se/kit-vinculo.json` — chaves normalizadas
+ * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. Populado por
+ * `scripts/sync-apoio-segments-kit.ts` — o painel só LÊ, nunca chama a API do
+ * Kit ao vivo. `beehiiv-vinculo.json`, de antes do #11225, fica no disco e não
+ * é mais lido. */
 export type VinculoCache = Record<string, VinculoInfo>;
 
-/** Segmentos Beehiiv `Apoio — *` em que um assinante está (#4437 Entrega 2).
+/** Segmentos Kit `Apoio — *` em que um assinante está (#4437 Entrega 2).
  * Derivado do custom field `apoio_nivel` (mesmo campo de
- * `sync-apoio-nivel-beehiiv.ts`) — não há endpoint de membership dedicado,
- * ver `scripts/sync-apoio-segments-beehiiv.ts`, que popula o cache. */
+ * `lib/apoio-nivel-sync.ts`) — não há endpoint de membership dedicado,
+ * ver `scripts/sync-apoio-segments-kit.ts`, que popula o cache. */
 export interface SegmentsInfo {
   /** Nomes dos segmentos `Apoio — *` casados (0 ou mais). Array vazio =
    * "consultado, mas em nenhum segmento" — distinto de `segments: null` no
    * `ContactWithStatus` (que significa "nunca consultado"). */
   segments: string[];
-  /** Valor do custom field `apoio_nivel` na Beehiiv no momento da consulta —
+  /** Valor do custom field `apoio_nivel` no Kit no momento da consulta —
    * `""` quando ausente/vazio. Exposto pra o editor comparar contra o nível
    * calculado localmente (apoia.se) e notar divergência (sync #4436 nunca
    * rodou `--push` ao vivo, por exemplo). */
@@ -285,10 +286,10 @@ export interface SegmentsInfo {
   checkedAt: string;
 }
 
-/** Cache lido de `data/apoia-se/beehiiv-segments.json` — chaves normalizadas
+/** Cache lido de `data/apoia-se/kit-segments.json` — chaves normalizadas
  * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. Populado por
- * `scripts/sync-apoio-segments-beehiiv.ts` (leitura paginada de
- * `/subscriptions`, nunca escreve na Beehiiv) — o painel só LÊ. */
+ * `scripts/sync-apoio-segments-kit.ts` (nunca escreve no Kit) — o painel
+ * só LÊ. */
 export type SegmentsCache = Record<string, SegmentsInfo>;
 
 export interface ContactWithStatus extends ApoioContact {
@@ -296,7 +297,7 @@ export interface ContactWithStatus extends ApoioContact {
   /** `null` sempre que o cache está ausente/corrompido ou nenhum email do
    * contato tem entrada nele — independente do status de apoio (#3612). */
   openRate: OpenRateInfo | null;
-  /** Confirmação de vínculo Beehiiv (#4273 parte 3). `null` quando NENHUM
+  /** Confirmação de vínculo Kit (#4273 parte 3). `null` quando NENHUM
    * email do contato aparece no cache (nunca consultado — não confundir com
    * `{ hasVinculo: false, ... }`, que significa "consultado, sem vínculo"). */
   vinculo: VinculoInfo | null;
@@ -307,7 +308,7 @@ export interface ContactWithStatus extends ApoioContact {
    * (nao_apoia/sem_dados/apoiou_e_parou fora da carência) — nunca um badge
    * inventado. */
   rewardLevel: RewardGroup | null;
-  /** #4437 Entrega 2: segmentos Beehiiv do contato. `null` = "nunca
+  /** #4437 Entrega 2: segmentos Kit do contato. `null` = "nunca
    * consultado" (cache ausente ou nenhum email do contato no cache) —
    * visualmente distinto de `{ segments: [], ... }` = "consultado, nenhum
    * segmento". Ver `deriveSegments`. */
@@ -446,7 +447,7 @@ export function deriveOpenRate(contact: ApoioContact, cache: OpenRateCache): Ope
 }
 
 /**
- * Deriva a confirmação de vínculo Beehiiv de um contato cruzando TODOS os
+ * Deriva a confirmação de vínculo Kit de um contato cruzando TODOS os
  * seus emails contra o cache (#4273 parte 3). Diferente de `deriveOpenRate`
  * (que escolhe o email de MAIOR `totalDelivered` em caso de múltiplos hits),
  * aqui basta 1 email do contato ter `hasVinculo: true` no cache — a pessoa
@@ -467,7 +468,7 @@ export function deriveVinculo(contact: ApoioContact, cache: VinculoCache): Vincu
 }
 
 /**
- * Deriva os segmentos Beehiiv de um contato cruzando TODOS os seus emails
+ * Deriva os segmentos Kit de um contato cruzando TODOS os seus emails
  * contra o cache (#4437 Entrega 2). Mais simples que `deriveVinculo`/
  * `deriveOpenRate` (que têm critério de desempate entre múltiplos hits) — não
  * há um "melhor" match aqui, o primeiro email do contato encontrado no cache
@@ -537,12 +538,7 @@ export type RewardGroup = ApoioNivel;
  * defensivamente) → `null`, sem nenhum grupo pago.
  */
 export function computeRewardGroup(thisMonthPaidValue: number | undefined): RewardGroup | null {
-  if (typeof thisMonthPaidValue !== "number" || !Number.isFinite(thisMonthPaidValue)) return null;
-  if (thisMonthPaidValue < REWARD_TIER_AMIGO_MIN) return null;
-  if (thisMonthPaidValue < REWARD_TIER_APOIADOR_MIN) return "amigo";
-  if (thisMonthPaidValue < REWARD_TIER_MANTENEDOR_MIN) return "apoiador";
-  if (thisMonthPaidValue < REWARD_TIER_PATRONO_MIN) return "mantenedor";
-  return "patrono";
+  return rewardGroupFromLib(thisMonthPaidValue);
 }
 
 export interface RewardGroupsView {
@@ -552,7 +548,7 @@ export interface RewardGroupsView {
   patrono: ContactWithStatus[];
   /** #4437 Entrega 1: "ainda não pagou esse mês" — contato cujo ÚLTIMO
    * pagamento foi o mês IMEDIATAMENTE anterior ao corrente (carência de 1
-   * mês, mesmo `previousMonthKey` de `sync-apoio-nivel-beehiiv.ts`/#4436).
+   * mês, mesmo `previousMonthKey` de `lib/apoio-nivel-sync.ts`/#4436).
    * Distinto de churn real (2+ meses sem pagar, que fica de fora de todo
    * grupo, igual antes desta issue). NÃO é uma faixa de valor — é um estado
    * de cobrança, por isso é um array só (não particionado por nível); o
@@ -722,10 +718,10 @@ export function loadOpenRateCache(rootDir: string): OpenRateCache {
   return cache;
 }
 
-// ── I/O: cache de vínculo Beehiiv (leitura fail-soft, #4273 parte 3) ────
+// ── I/O: cache de vínculo Kit (leitura fail-soft, #4273 parte 3) ────
 
 export function vinculoCachePath(rootDir: string): string {
-  return resolve(rootDir, "data", "apoia-se", "beehiiv-vinculo.json");
+  return resolve(rootDir, "data", "apoia-se", "kit-vinculo.json");
 }
 
 /** Valida o shape de 1 entrada crua do cache — descarta silenciosamente
@@ -751,10 +747,8 @@ function sanitizeVinculoEntry(raw: unknown): VinculoInfo | null {
 }
 
 /**
- * Lê `data/apoia-se/beehiiv-vinculo.json` (#4273 parte 3) — arquivo LOCAL,
- * gitignored, populado manualmente por uma sessão com MCP Beehiiv conectado
- * (consulta `list_subscriptions` por email, mesmo mecanismo do
- * `beehiiv-open-rate.json`, #3612). Fail-soft total: arquivo ausente, JSON
+ * Lê `data/apoia-se/kit-vinculo.json` (#4273 parte 3) — arquivo LOCAL,
+ * gitignored, populado por `scripts/sync-apoio-segments-kit.ts`. Fail-soft total: arquivo ausente, JSON
  * corrompido, shape inesperado, ou entrada individual malformada → nunca
  * lança, na pior hipótese devolve `{}` (todo contato aparece com
  * `vinculo: null`). Chaves normalizadas (lowercase/trim) pra casar direto
@@ -780,16 +774,16 @@ export function loadVinculoCache(rootDir: string): VinculoCache {
   return cache;
 }
 
-// ── I/O: cache de segmentos Beehiiv (leitura fail-soft, #4437 Entrega 2) ─
+// ── I/O: cache de segmentos Kit (leitura fail-soft, #4437 Entrega 2) ─
 
 export function segmentsCachePath(rootDir: string): string {
-  return resolve(rootDir, "data", "apoia-se", "beehiiv-segments.json");
+  return resolve(rootDir, "data", "apoia-se", "kit-segments.json");
 }
 
 /** Valida o shape de 1 entrada crua do cache — descarta silenciosamente
  * entradas malformadas (mesmo tratamento defensivo de `sanitizeVinculoEntry`,
  * o arquivo é populado por um script externo, ver
- * `scripts/sync-apoio-segments-beehiiv.ts`). */
+ * `scripts/sync-apoio-segments-kit.ts`). */
 function sanitizeSegmentsEntry(raw: unknown): SegmentsInfo | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -809,11 +803,10 @@ function sanitizeSegmentsEntry(raw: unknown): SegmentsInfo | null {
 }
 
 /**
- * Lê `data/apoia-se/beehiiv-segments.json` (#4437 Entrega 2) — arquivo
- * LOCAL, gitignored, populado por `scripts/sync-apoio-segments-beehiiv.ts`
- * (leitura paginada de `/subscriptions`, deriva a pertinência aos 6
- * segmentos `Apoio — *` a partir do custom field `apoio_nivel` — mesmo
- * mecanismo dos outros 2 caches Beehiiv deste módulo, #3612/#4273 parte 3).
+ * Lê `data/apoia-se/kit-segments.json` (#4437 Entrega 2) — arquivo
+ * LOCAL, gitignored, populado por `scripts/sync-apoio-segments-kit.ts`
+ * (deriva a pertinência aos 6 segmentos `Apoio — *` a partir do custom
+ * field `apoio_nivel`).
  * Fail-soft total: arquivo ausente, JSON corrompido, shape inesperado, ou
  * entrada individual malformada → nunca lança, na pior hipótese devolve
  * `{}` (todo contato aparece com `segments: null`). Chaves normalizadas
@@ -892,10 +885,10 @@ export interface BuildApoiosDataOptions {
   /** Injetável pra testes — evita I/O de `beehiiv-open-rate.json` real
    * (#3612). Default: `loadOpenRateCache(rootDir)`. */
   openRateCache?: OpenRateCache;
-  /** Injetável pra testes — evita I/O de `beehiiv-vinculo.json` real
+  /** Injetável pra testes — evita I/O de `kit-vinculo.json` real
    * (#4273 parte 3). Default: `loadVinculoCache(rootDir)`. */
   vinculoCache?: VinculoCache;
-  /** Injetável pra testes — evita I/O de `beehiiv-segments.json` real
+  /** Injetável pra testes — evita I/O de `kit-segments.json` real
    * (#4437 Entrega 2). Default: `loadSegmentsCache(rootDir)`. */
   segmentsCache?: SegmentsCache;
 }
@@ -946,8 +939,8 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     return { contacts: [], campaign: emptyCampaignSummary(), rewardGroups: emptyRewardGroupsView(), error: (e as Error).message, generatedAt };
   }
 
-  // Taxa de abertura Beehiiv (#3612), confirmação de vínculo Beehiiv (#4273
-  // parte 3) e segmentos Beehiiv (#4437 Entrega 2) são sinais INDEPENDENTES
+  // Taxa de abertura histórica da Beehiiv (#3612), vínculo Kit (#4273
+  // parte 3) e segmentos Kit (#4437 Entrega 2) são sinais INDEPENDENTES
   // do status de apoio apoia.se — carregados cedo, antes do gate de
   // credenciais abaixo, pra aparecerem em TODOS os caminhos de retorno
   // (inclusive quando as credenciais apoia.se estão ausentes).

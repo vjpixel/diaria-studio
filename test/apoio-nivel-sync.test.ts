@@ -1,14 +1,14 @@
 /**
- * test/sync-apoio-nivel-beehiiv.test.ts (#4273 parte 2, carência/guard #4436)
+ * test/apoio-nivel-sync.test.ts (#4273 parte 2, carência/guard #4436, movido no #11225)
  *
- * Testa as funções PURAS de `scripts/sync-apoio-nivel-beehiiv.ts`:
+ * Testa as funções PURAS de `scripts/lib/apoio-nivel-sync.ts`:
  * `computeDesiredApoioLevels` (contatos + histórico → nível desejado, com
- * carência de 1 mês), `diffApoioTags` (desejado × estado atual da Beehiiv →
+ * carência de 1 mês), `diffApoioTags` (desejado × estado atual da plataforma →
  * entra/sai/muda de faixa), `shouldBlockRemovals` (guard fail-closed de
  * dados parciais) e `evaluateBlastRadiusGuard` (guard de magnitude de
  * remoções, #4436). Nenhum teste bate na API real — `current` é sempre uma
- * fixture `BeehiivSubscriptionSnapshot[]` construída à mão, nunca vem de
- * `fetchCurrentBeehiivState`; `pastSnapshots` é sempre uma fixture
+ * fixture `ApoioSubscriberSnapshot[]` construída à mão, nunca vem de
+ * uma API; `pastSnapshots` é sempre uma fixture
  * `MonthSnapshot[]`, nunca vem de `readPastMonthSnapshots` real.
  *
  * Casos obrigatórios (#4273, corpo da issue):
@@ -16,7 +16,7 @@
  *   2. Contato "sem_dados" (não pode gerar remoção).
  *   3. Mudança de faixa (troca de valor, nunca acumula duas).
  *   4. Assinante taggeado que parou de apoiar (perde o valor).
- *   5. Apoiador que não é assinante da Beehiiv (ignorado/reportado, sem erro).
+ *   5. Apoiador que não é assinante (ignorado/reportado, sem erro).
  *
  * Casos obrigatórios de carência + guard (#4436, corpo da issue):
  *   6. Pagou no mês corrente-1, não pagou no corrente → MANTÉM (carência).
@@ -28,13 +28,6 @@
  *  10. `sem_dados` nunca gera ação, mesmo com carência disponível.
  *  11. Guard (b): limiar de remoções atingido → push recusado; no limiar
  *      EXATO (30%) não bloqueia (só acima).
- *
- * Também testa `applyApoioTagEntry` (achado #2 do review da PR #4307) — a
- * função de escrita+releitura, com `fetchImpl` mockado (nunca rede real). É o
- * mecanismo de segurança central do módulo (a lição documentada no cabeçalho
- * do arquivo: nunca confiar só no status code, sempre reler — exatamente a
- * armadilha que a issue #4273 documentou pra `tags`), então precisa de
- * cobertura direta, não só inferida via `diffApoioTags`.
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -44,18 +37,18 @@ import { join } from "node:path";
 import {
   computeDesiredApoioLevels,
   diffApoioTags,
-  extractApoioNivelValue,
   shouldBlockRemovals,
-  applyApoioTagEntry,
-  fetchCurrentBeehiivState,
   maxLevel,
   previousMonthKey,
   levelFromSnapshot,
   evaluateBlastRadiusGuard,
-  reconcilePendingPromises,
+  resolveDesiredApoioLevels,
+  computeAlarmDiffInput,
+  planPushMutations,
+  type ApoioSubscriberSnapshot,
   type ApoioTagDiffEntry,
-  type BeehiivSubscriptionSnapshot,
-} from "../scripts/sync-apoio-nivel-beehiiv.ts";
+} from "../scripts/lib/apoio-nivel-sync.ts";
+import { reconcilePendingPromises } from "../scripts/lib/apoio-reconciliation-cycle.ts";
 import type { ContactWithStatus, MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
 import type { PendingPromise } from "../scripts/lib/apoio-promise-store.ts";
 import { RateLimiter, ApoiaSeAuthError } from "../scripts/lib/apoia-se.ts";
@@ -107,7 +100,7 @@ function contact(
   };
 }
 
-function sub(subscriptionId: string, email: string, apoioNivel = ""): BeehiivSubscriptionSnapshot {
+function sub(subscriptionId: string, email: string, apoioNivel = ""): ApoioSubscriberSnapshot {
   return { subscriptionId, email, apoioNivel };
 }
 
@@ -303,7 +296,7 @@ describe("computeDesiredApoioLevels — carência de 1 mês (#4436, corpo da iss
 });
 
 describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () => {
-  it("gera 1 entrada de diff por e-mail casado na Beehiiv", () => {
+  it("gera 1 entrada de diff por e-mail casado na plataforma", () => {
     const desired = computeDesiredApoioLevels(
       [
         contact("c1", ["principal@x.com", "secundario@x.com"], {
@@ -315,7 +308,7 @@ describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () 
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [
+    const current: ApoioSubscriberSnapshot[] = [
       sub("sub-1", "principal@x.com", ""),
       sub("sub-2", "secundario@x.com", ""),
     ];
@@ -328,7 +321,7 @@ describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () 
     for (const e of diff.toApply) assert.equal(e.toLevel, "apoiador");
   });
 
-  it("só o e-mail que TEM subscription Beehiiv gera diff — o outro fica de fora, sem erro", () => {
+  it("só o e-mail que TEM assinatura gera diff — o outro fica de fora, sem erro", () => {
     const desired = computeDesiredApoioLevels(
       [
         contact("c1", ["principal@x.com", "naobeehiiv@x.com"], {
@@ -340,18 +333,18 @@ describe("diffApoioTags — caso 1: contato com múltiplos e-mails (#4273)", () 
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "principal@x.com", "")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "principal@x.com", "")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toApply.length, 1);
     assert.equal(diff.toApply[0].email, "principal@x.com");
-    assert.equal(diff.notBeehiivSubscriber.length, 0); // pelo menos 1 email casou — não conta como "não assinante"
+    assert.equal(diff.notSubscribed.length, 0); // pelo menos 1 email casou — não conta como "não assinante"
   });
 });
 
 describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#4273)", () => {
-  it("contato sem_dados TAGGEADO na Beehiiv → nenhuma ação, vai pra skippedUnresolved", () => {
+  it("contato sem_dados TAGGEADO na plataforma → nenhuma ação, vai pra skippedUnresolved", () => {
     const desired = computeDesiredApoioLevels([contact("c1", ["semdados@x.com"], { label: "sem_dados" })], [], NO_HISTORY_MONTH);
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "semdados@x.com", "apoiador")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "semdados@x.com", "apoiador")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 0);
     assert.equal(diff.toApply.length, 0);
@@ -368,7 +361,7 @@ describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#427
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [
+    const current: ApoioSubscriberSnapshot[] = [
       sub("sub-1", "ok@x.com", "apoiador"),
       sub("sub-2", "semdados@x.com", "mantenedor"),
     ];
@@ -379,7 +372,7 @@ describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#427
 
   it("shouldBlockRemovals: true quando data.error setado, mesmo sem sem_dados algum", () => {
     const desired = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "x@x.com", "amigo")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "x@x.com", "amigo")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.skippedUnresolved.length, 0);
     assert.equal(shouldBlockRemovals("apoia.se: 401", diff, false), true);
@@ -387,7 +380,7 @@ describe("diffApoioTags — caso 2: contato sem_dados nunca gera remoção (#427
 
   it("shouldBlockRemovals: false quando tudo resolvido e sem erro", () => {
     const desired = computeDesiredApoioLevels([contact("c1", ["x@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "x@x.com", "amigo")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "x@x.com", "amigo")];
     const diff = diffApoioTags(desired, current);
     assert.equal(shouldBlockRemovals(null, diff, false), false);
   });
@@ -400,7 +393,7 @@ describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "sobe@x.com", "apoiador")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "sobe@x.com", "apoiador")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toApply.length, 1);
     assert.equal(diff.toApply[0].fromLevel, "apoiador");
@@ -415,7 +408,7 @@ describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "estavel@x.com", "apoiador")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "estavel@x.com", "apoiador")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toApply.length, 0);
     assert.equal(diff.toRemove.length, 0);
@@ -428,12 +421,12 @@ describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "x@x.com", "")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "x@x.com", "")];
     const diff1 = diffApoioTags(desired, current);
     const diff2 = diffApoioTags(desired, current);
     assert.deepEqual(diff1.toApply, diff2.toApply);
     // Simula o estado PÓS-push (convergido) — 2ª rodada não reaplica nada.
-    const converged: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "x@x.com", "patrono")];
+    const converged: ApoioSubscriberSnapshot[] = [sub("sub-1", "x@x.com", "patrono")];
     const diff3 = diffApoioTags(desired, converged);
     assert.equal(diff3.toApply.length, 0);
     assert.equal(diff3.toRemove.length, 0);
@@ -444,7 +437,7 @@ describe("diffApoioTags — caso 3: mudança de faixa (troca, nunca acumula) (#4
 describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#4273)", () => {
   it("tinha valor 'patrono', agora nao_apoia (sem histórico) → toRemove", () => {
     const desired = computeDesiredApoioLevels([contact("c1", ["parou@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "parou@x.com", "patrono")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "parou@x.com", "patrono")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 1);
     assert.equal(diff.toRemove[0].fromLevel, "patrono");
@@ -452,13 +445,13 @@ describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#427
     assert.equal(diff.toApply.length, 0);
   });
 
-  it("apoiou_e_parou (histórico antigo, fora da carência) também gera toRemove se ainda tem valor na Beehiiv", () => {
+  it("apoiou_e_parou (histórico antigo, fora da carência) também gera toRemove se ainda tem valor na plataforma", () => {
     const desired = computeDesiredApoioLevels(
       [contact("c1", ["exapoiador@x.com"], { label: "apoiou_e_parou", lastPaidMonth: "2026-03", matchedEmail: "exapoiador@x.com" })],
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "exapoiador@x.com", "amigo")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "exapoiador@x.com", "amigo")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 1);
     assert.equal(diff.toRemove[0].fromLevel, "amigo");
@@ -466,29 +459,29 @@ describe("diffApoioTags — caso 4: assinante taggeado que parou de apoiar (#427
 
   it("já sem valor + não apoia → unchanged (nada a remover)", () => {
     const desired = computeDesiredApoioLevels([contact("c1", ["semvalor@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "semvalor@x.com", "")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "semvalor@x.com", "")];
     const diff = diffApoioTags(desired, current);
     assert.equal(diff.toRemove.length, 0);
     assert.equal(diff.unchanged.length, 1);
   });
 });
 
-describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#4273)", () => {
-  it("nenhum e-mail do contato casa com nenhuma subscription → notBeehiivSubscriber, sem erro", () => {
+describe("diffApoioTags — caso 5: apoiador que não é assinante (#4273)", () => {
+  it("nenhum e-mail do contato casa com nenhuma subscription → notSubscribed, sem erro", () => {
     const desired = computeDesiredApoioLevels(
       [contact("c1", ["naotemconta@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "naotemconta@x.com" })],
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "outrapessoa@x.com", "")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "outrapessoa@x.com", "")];
     const diff = diffApoioTags(desired, current);
-    assert.equal(diff.notBeehiivSubscriber.length, 1);
-    assert.equal(diff.notBeehiivSubscriber[0].contactId, "c1");
+    assert.equal(diff.notSubscribed.length, 1);
+    assert.equal(diff.notSubscribed[0].contactId, "c1");
     assert.equal(diff.toApply.length, 0);
     assert.equal(diff.toRemove.length, 0);
   });
 
-  it("estado da Beehiiv vazio (nenhum assinante) → todos os desejados caem em notBeehiivSubscriber", () => {
+  it("estado da plataforma vazio (nenhum assinante) → todos os desejados caem em notSubscribed", () => {
     const desired = computeDesiredApoioLevels(
       [
         contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "a@x.com" }),
@@ -498,13 +491,13 @@ describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#
       NO_HISTORY_MONTH,
     );
     const diff = diffApoioTags(desired, []);
-    assert.equal(diff.notBeehiivSubscriber.length, 2);
+    assert.equal(diff.notSubscribed.length, 2);
     assert.equal(diff.toApply.length, 0);
     assert.equal(diff.toRemove.length, 0);
   });
 
   // #4490 causa 3: candidatos heurísticos quando não casa por e-mail exato.
-  it("gera candidato heurístico (local-part normalizado) quando o e-mail Beehiiv difere só por pontuação", () => {
+  it("gera candidato heurístico (local-part normalizado) quando o e-mail assinante difere só por pontuação", () => {
     const c = contact("murilo", ["murilo.sarno@online.uscs.edu.br"], {
       label: "apoiando",
       monthlyValue: 20,
@@ -512,11 +505,11 @@ describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#
     });
     c.name = "Murilo";
     const desired = computeDesiredApoioLevels([c], [], NO_HISTORY_MONTH);
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "murilosarno@gmail.com", "")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "murilosarno@gmail.com", "")];
     const diff = diffApoioTags(desired, current);
-    assert.equal(diff.notBeehiivSubscriber.length, 1);
-    assert.equal(diff.notBeehiivSubscriber[0].candidates.length, 1);
-    assert.equal(diff.notBeehiivSubscriber[0].candidates[0].email, "murilosarno@gmail.com");
+    assert.equal(diff.notSubscribed.length, 1);
+    assert.equal(diff.notSubscribed[0].candidates.length, 1);
+    assert.equal(diff.notSubscribed[0].candidates[0].email, "murilosarno@gmail.com");
     // Nunca vira ação automática — só reportado.
     assert.equal(diff.toApply.length, 0);
   });
@@ -525,31 +518,10 @@ describe("diffApoioTags — caso 5: apoiador que não é assinante da Beehiiv (#
     const c = contact("zeca", ["zeca@x.com"], { label: "apoiando", monthlyValue: 20, matchedEmail: "zeca@x.com" });
     c.name = "Zeca";
     const desired = computeDesiredApoioLevels([c], [], NO_HISTORY_MONTH);
-    const current: BeehiivSubscriptionSnapshot[] = [sub("sub-1", "completamentediferente@outro.com", "")];
+    const current: ApoioSubscriberSnapshot[] = [sub("sub-1", "completamentediferente@outro.com", "")];
     const diff = diffApoioTags(desired, current);
-    assert.equal(diff.notBeehiivSubscriber.length, 1);
-    assert.deepEqual(diff.notBeehiivSubscriber[0].candidates, []);
-  });
-});
-
-describe("extractApoioNivelValue", () => {
-  it("array ausente → ''", () => {
-    assert.equal(extractApoioNivelValue(undefined), "");
-  });
-
-  it("campo apoio_nivel presente → valor", () => {
-    assert.equal(
-      extractApoioNivelValue([{ name: "apoio_nivel", value: "mantenedor" }, { name: "nps", value: 9 }]),
-      "mantenedor",
-    );
-  });
-
-  it("campo apoio_nivel ausente entre outros custom fields → ''", () => {
-    assert.equal(extractApoioNivelValue([{ name: "setor", value: "tech" }]), "");
-  });
-
-  it("valor não-string (defensivo) → '' (nunca lança)", () => {
-    assert.equal(extractApoioNivelValue([{ name: "apoio_nivel", value: 123 }]), "");
+    assert.equal(diff.notSubscribed.length, 1);
+    assert.deepEqual(diff.notSubscribed[0].candidates, []);
   });
 });
 
@@ -566,7 +538,7 @@ describe("diffApoioTags — mistura completa (regressão de composição)", () =
       [],
       NO_HISTORY_MONTH,
     );
-    const current: BeehiivSubscriptionSnapshot[] = [
+    const current: ApoioSubscriberSnapshot[] = [
       sub("s-novo", "novo@x.com", ""),
       sub("s-parou", "parou@x.com", "apoiador"),
       sub("s-sobe", "sobe@x.com", "apoiador"),
@@ -577,7 +549,7 @@ describe("diffApoioTags — mistura completa (regressão de composição)", () =
     assert.equal(diff.toApply.length, 2); // novo (amigo) + sobe (mantenedor→patrono)
     assert.equal(diff.toRemove.length, 1); // parou
     assert.equal(diff.skippedUnresolved.length, 1); // semdados
-    assert.equal(diff.notBeehiivSubscriber.length, 1); // naobeehiiv
+    assert.equal(diff.notSubscribed.length, 1); // naobeehiiv
 
     const novoEntry = diff.toApply.find((e) => e.email === "novo@x.com");
     assert.equal(novoEntry?.toLevel, "amigo");
@@ -591,7 +563,7 @@ describe("diffApoioTags — mistura completa (regressão de composição)", () =
 
 describe("evaluateBlastRadiusGuard (#4436)", () => {
   it("abaixo do limiar (20% de 10) → não bloqueia", () => {
-    const current: BeehiivSubscriptionSnapshot[] = [
+    const current: ApoioSubscriberSnapshot[] = [
       sub("s1", "a@x.com", "amigo"),
       sub("s2", "b@x.com", "apoiador"),
       sub("s3", "c@x.com", "mantenedor"),
@@ -610,7 +582,7 @@ describe("evaluateBlastRadiusGuard (#4436)", () => {
   });
 
   it("no limiar EXATO (30% de 10 = 3) → NÃO bloqueia ('passar de' é estrito)", () => {
-    const current: BeehiivSubscriptionSnapshot[] = Array.from({ length: 10 }, (_, i) =>
+    const current: ApoioSubscriberSnapshot[] = Array.from({ length: 10 }, (_, i) =>
       sub(`s${i}`, `u${i}@x.com`, "amigo"),
     );
     const guard = evaluateBlastRadiusGuard(3, current, false);
@@ -619,7 +591,7 @@ describe("evaluateBlastRadiusGuard (#4436)", () => {
   });
 
   it("acima do limiar (40% de 10 = 4) → bloqueia", () => {
-    const current: BeehiivSubscriptionSnapshot[] = Array.from({ length: 10 }, (_, i) =>
+    const current: ApoioSubscriberSnapshot[] = Array.from({ length: 10 }, (_, i) =>
       sub(`s${i}`, `u${i}@x.com`, "amigo"),
     );
     const guard = evaluateBlastRadiusGuard(4, current, false);
@@ -628,7 +600,7 @@ describe("evaluateBlastRadiusGuard (#4436)", () => {
   });
 
   it("acima do limiar mas com force=true → não bloqueia (escape hatch explícito)", () => {
-    const current: BeehiivSubscriptionSnapshot[] = Array.from({ length: 10 }, (_, i) =>
+    const current: ApoioSubscriberSnapshot[] = Array.from({ length: 10 }, (_, i) =>
       sub(`s${i}`, `u${i}@x.com`, "amigo"),
     );
     const guard = evaluateBlastRadiusGuard(4, current, true);
@@ -636,7 +608,7 @@ describe("evaluateBlastRadiusGuard (#4436)", () => {
   });
 
   it("ninguém com nível hoje (denominador 0) → ratio 0, nunca bloqueia por divisão por zero", () => {
-    const current: BeehiivSubscriptionSnapshot[] = [sub("s1", "a@x.com", "")];
+    const current: ApoioSubscriberSnapshot[] = [sub("s1", "a@x.com", "")];
     const guard = evaluateBlastRadiusGuard(0, current, false);
     assert.equal(guard.currentWithLevelCount, 0);
     assert.equal(guard.ratio, 0);
@@ -644,199 +616,6 @@ describe("evaluateBlastRadiusGuard (#4436)", () => {
   });
 });
 
-// ── applyApoioTagEntry (escrita + releitura, I/O mockado, #4307 achado 2) ──
-
-interface RecordedCall {
-  url: string;
-  method: string;
-  body: unknown;
-}
-
-/** Mock sequencial de `typeof fetch`: a N-ésima chamada recebe a N-ésima
- * resposta da lista (a última se a lista acabar). Grava todas as chamadas
- * (`calls`) pra assert de método/body — nunca faz rede real. */
-function mockFetchSeq(responses: Array<{ status: number; body?: unknown }>): {
-  fetchImpl: typeof fetch;
-  calls: RecordedCall[];
-} {
-  const calls: RecordedCall[] = [];
-  let i = 0;
-  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
-    const method = init?.method ?? "GET";
-    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
-    calls.push({ url: String(url), method, body });
-    const r = responses[Math.min(i, responses.length - 1)];
-    i++;
-    return {
-      ok: r.status >= 200 && r.status < 300,
-      status: r.status,
-      headers: { get: () => null },
-      text: async () => (r.body !== undefined ? JSON.stringify(r.body) : ""),
-    } as unknown as Response;
-  }) as typeof fetch;
-  return { fetchImpl, calls };
-}
-
-function diffEntry(overrides: Partial<ApoioTagDiffEntry>): ApoioTagDiffEntry {
-  return {
-    contactId: "c1",
-    contactName: "Fulano",
-    email: "fulano@x.com",
-    subscriptionId: "sub-1",
-    fromLevel: null,
-    toLevel: "amigo",
-    ...overrides,
-  };
-}
-
-function subscriptionBody(email: string, customFields: Array<{ name: string; value: unknown }>) {
-  return { data: { id: "sub-1", email, status: "active", custom_fields: customFields } };
-}
-
-describe("applyApoioTagEntry (#4307 achado 2 — write+reread nunca testado)", () => {
-  it("(a) PUT ok + GET confirma o valor esperado → resolve limpo", async () => {
-    const entry = diffEntry({ email: "confirma@x.com", toLevel: "mantenedor" });
-    const { fetchImpl, calls } = mockFetchSeq([
-      { status: 200, body: { data: { id: "sub-1" } } },
-      { status: 200, body: subscriptionBody("confirma@x.com", [{ name: "apoio_nivel", value: "mantenedor" }]) },
-    ]);
-    await assert.doesNotReject(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl));
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].method, "PUT");
-    assert.equal(calls[1].method, "GET");
-  });
-
-  it("(a.1) body do PUT — add/troca usa {name, value} (nunca delete)", async () => {
-    const entry = diffEntry({ email: "add@x.com", fromLevel: null, toLevel: "amigo" });
-    const { fetchImpl, calls } = mockFetchSeq([
-      { status: 200, body: {} },
-      { status: 200, body: subscriptionBody("add@x.com", [{ name: "apoio_nivel", value: "amigo" }]) },
-    ]);
-    await applyApoioTagEntry(entry, "pub-1", "key", fetchImpl);
-    assert.deepEqual(calls[0].body, { custom_fields: [{ name: "apoio_nivel", value: "amigo" }] });
-  });
-
-  it("(e) remoção (toLevel null) — body usa {name, delete:true}, releitura confirma ausência", async () => {
-    const entry = diffEntry({ email: "parou@x.com", fromLevel: "patrono", toLevel: null });
-    const { fetchImpl, calls } = mockFetchSeq([
-      { status: 200, body: {} },
-      { status: 200, body: subscriptionBody("parou@x.com", []) },
-    ]);
-    await assert.doesNotReject(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl));
-    assert.deepEqual(calls[0].body, { custom_fields: [{ name: "apoio_nivel", delete: true }] });
-  });
-
-  it("(b) PUT retorna não-ok → lança erro com email e nível alvo na mensagem", async () => {
-    const entry = diffEntry({ email: "putfalha@x.com", toLevel: "apoiador" });
-    const { fetchImpl } = mockFetchSeq([{ status: 500 }]);
-    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /putfalha@x\.com/);
-      assert.match(err.message, /apoiador/);
-      return true;
-    });
-  });
-
-  it("(c) GET pós-escrita falha → lança erro DISTINTO (releitura, não PUT)", async () => {
-    const entry = diffEntry({ email: "getfalha@x.com", toLevel: "mantenedor" });
-    const { fetchImpl } = mockFetchSeq([
-      { status: 200, body: {} }, // PUT ok
-      { status: 500 }, // GET falha
-    ]);
-    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /releitura pós-escrita falhou/);
-      return true;
-    });
-  });
-
-  it("(d) GET ok mas valor relido ≠ esperado → lança erro com valor esperado E valor real", async () => {
-    // Cenário exato documentado pela issue #4273 pra `tags`: PUT responde 200
-    // mas a mutação não pegou — a releitura devolve o valor ANTIGO.
-    const entry = diffEntry({ email: "diverge@x.com", fromLevel: "apoiador", toLevel: "patrono" });
-    const { fetchImpl } = mockFetchSeq([
-      { status: 200, body: {} },
-      { status: 200, body: subscriptionBody("diverge@x.com", [{ name: "apoio_nivel", value: "apoiador" }]) },
-    ]);
-    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /"patrono"/); // esperado
-      assert.match(err.message, /"apoiador"/); // encontrado
-      assert.match(err.message, /NÃO confere/);
-      return true;
-    });
-  });
-
-  it("(d.1) remoção esperada mas releitura ainda mostra valor antigo → lança erro", async () => {
-    const entry = diffEntry({ email: "removeFalha@x.com", fromLevel: "amigo", toLevel: null });
-    const { fetchImpl } = mockFetchSeq([
-      { status: 200, body: {} },
-      { status: 200, body: subscriptionBody("removeFalha@x.com", [{ name: "apoio_nivel", value: "amigo" }]) },
-    ]);
-    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /NÃO confere/);
-      return true;
-    });
-  });
-});
-
-// ── fetchCurrentBeehiivState (#4317 — fail-loud da paginação + reconciliação
-// anti-truncamento, lógica já corrigida no commit 66a042bf/#4307 mas nunca
-// exercitada diretamente por teste) ──
-
-function pageBody(items: Array<{ id: string; email: string }>, totalResults?: number) {
-  return {
-    data: items.map((i) => ({ id: i.id, email: i.email, status: "active", custom_fields: [] })),
-    total_results: totalResults,
-  };
-}
-
-describe("fetchCurrentBeehiivState (#4317)", () => {
-  it("página no meio da paginação retorna 403 (não-ok) → rejeita, nunca trata como fim-de-lista silencioso", async () => {
-    // total_results=5 com só 2 itens na página 1 força uma 2ª página (hasMorePages:
-    // collected(2) < totalResults(5) → true) — é nessa 2ª chamada que a API "cai".
-    const { fetchImpl } = mockFetchSeq([
-      { status: 200, body: pageBody([{ id: "sub-1", email: "a@x.com" }, { id: "sub-2", email: "b@x.com" }], 5) },
-      { status: 403 },
-    ]);
-    await assert.rejects(fetchCurrentBeehiivState("pub-1", "key", fetchImpl), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /403/);
-      assert.match(err.message, /página 2/);
-      return true;
-    });
-  });
-
-  it("total_results declarado (5) maior que o efetivamente coletado (página final vazia antes de bater o total) → rejeita, mensagem cita truncamento", async () => {
-    const { fetchImpl } = mockFetchSeq([
-      { status: 200, body: pageBody([{ id: "sub-1", email: "a@x.com" }, { id: "sub-2", email: "b@x.com" }], 5) },
-      // Página seguinte vem VAZIA (gotLength=0 → hasMorePages para o loop) antes
-      // de coletar os 5 anunciados — truncamento silencioso, exatamente o risco
-      // de remoção fantasma que a reconciliação pós-loop existe pra barrar.
-      { status: 200, body: pageBody([], 5) },
-    ]);
-    await assert.rejects(fetchCurrentBeehiivState("pub-1", "key", fetchImpl), (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /truncad|terminou cedo/);
-      assert.match(err.message, /2/); // coletado
-      assert.match(err.message, /5/); // total declarado
-      return true;
-    });
-  });
-
-  it("caso feliz: paginação completa (total_results bate com coletado) → resolve com o snapshot esperado", async () => {
-    const { fetchImpl } = mockFetchSeq([
-      { status: 200, body: pageBody([{ id: "sub-1", email: "a@x.com" }, { id: "sub-2", email: "b@x.com" }], 2) },
-    ]);
-    const result = await fetchCurrentBeehiivState("pub-1", "key", fetchImpl);
-    assert.equal(result.length, 2);
-    assert.deepEqual(
-      result.map((r) => r.email).sort(),
-      ["a@x.com", "b@x.com"],
-    );
-  });
-});
 
 // ── reconcilePendingPromises (#4490 causa 4) ─────────────────────────────
 //
@@ -996,5 +775,77 @@ describe("reconcilePendingPromises (#4490 causa 4)", () => {
     assert.deepEqual(result.promoted.map((p) => p.email).sort(), ["confirmada@x.com"]);
     assert.deepEqual(result.remainingPromises.map((p) => p.email).sort(), ["erro@x.com", "pendente@x.com"]);
     assert.equal(result.contacts.length, 1);
+  });
+});
+
+describe("resolveDesiredApoioLevels (#8820, #11225)", () => {
+  const override = [{ email: "a@x.com", nivel: "patrono" as const, motivo: "teste", desde: "2026-01-01" }];
+
+  it("override vence o valor derivado; sem override, igual ao cálculo puro", () => {
+    const c = [contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 5 })];
+    assert.equal(resolveDesiredApoioLevels(c, [], NO_HISTORY_MONTH, override)[0].level, "patrono");
+    assert.equal(resolveDesiredApoioLevels(c, [], NO_HISTORY_MONTH, [])[0].level, "amigo");
+  });
+
+  it("alarme com override não acusa diff que o sync não aplicaria", () => {
+    const c = [contact("c1", ["a@x.com"], { label: "apoiando", monthlyValue: 5 })];
+    const desired = resolveDesiredApoioLevels(c, [monthSnapshot("2026-07", {})], NO_HISTORY_MONTH, override);
+    const { input } = computeAlarmDiffInput({
+      desired,
+      current: [sub("s1", "a@x.com", "patrono")],
+      pastSnapshots: [monthSnapshot("2026-07", {})],
+      currentMonth: NO_HISTORY_MONTH,
+      dataError: null,
+    });
+    assert.deepEqual(input, { toApply: [], toRemove: [] });
+  });
+});
+
+describe("computeAlarmDiffInput (#11225)", () => {
+  const removal = () => computeDesiredApoioLevels([contact("c1", ["a@x.com"], { label: "nao_apoia" })], [], NO_HISTORY_MONTH);
+
+  it("snapshot do mês anterior ausente avisa que as remoções seriam recusadas (#7195)", () => {
+    const { input, guardWarnings } = computeAlarmDiffInput({
+      desired: removal(),
+      current: [sub("s1", "a@x.com", "amigo")],
+      pastSnapshots: [],
+      currentMonth: NO_HISTORY_MONTH,
+      dataError: null,
+    });
+    assert.equal(input.toRemove.length, 1);
+    assert.equal(guardWarnings.partialDataBlocksRemovals, true);
+  });
+
+  it("com snapshot presente e sem erro, não há aviso de dado parcial; blast radius é reportado", () => {
+    const { guardWarnings } = computeAlarmDiffInput({
+      desired: removal(),
+      current: [sub("s1", "a@x.com", "amigo")],
+      pastSnapshots: [monthSnapshot("2026-07", {})],
+      currentMonth: NO_HISTORY_MONTH,
+      dataError: null,
+    });
+    assert.equal(guardWarnings.partialDataBlocksRemovals, false);
+    assert.equal(guardWarnings.blastRadiusBlocked, true);
+    assert.equal(guardWarnings.blastRadiusRatioPct, 100);
+  });
+});
+
+describe("planPushMutations (#11225)", () => {
+  const entry = (email: string): ApoioTagDiffEntry => ({ contactId: "c", contactName: "C", email, subscriptionId: "1", fromLevel: null, toLevel: "amigo" });
+  const diff = { toApply: [entry("add@x.com")], toRemove: [entry("rm@x.com")] };
+
+  it("blast radius aborta tudo, adições inclusive", () => {
+    assert.deepEqual(planPushMutations(diff, { blastRadiusBlocked: true, removalsBlocked: false }), { aborted: true, entries: [] });
+  });
+
+  it("dados parciais tiram só as remoções", () => {
+    const plan = planPushMutations(diff, { blastRadiusBlocked: false, removalsBlocked: true });
+    assert.equal(plan.aborted, false);
+    assert.deepEqual(plan.entries.map((e) => e.email), ["add@x.com"]);
+  });
+
+  it("sem bloqueio, aplica adições e remoções", () => {
+    const plan = planPushMutations(diff, { blastRadiusBlocked: false, removalsBlocked: false });
+    assert.deepEqual(plan.entries.map((e) => e.email), ["add@x.com", "rm@x.com"]);
   });
 });

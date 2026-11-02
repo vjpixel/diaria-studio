@@ -43,12 +43,9 @@
  * recebe quando é reconstruído e re-enviado (`build-article-page.ts --push`).
  * O caminho de e-mail não passa por nenhuma delas.
  *
- * Só as fotos do É IA? (#9864) entram; destaqueImageUrls seguem de fora — o
- * render web tolera `undefined` (sai sem `<figure>`).
- * Plugar as imagens reais do ciclo é fast-follow explícito (ver PR #3940) —
- * o dado (URLs já hospedadas no KV do worker `poll`/`draft` por
- * `monthly-image-upload.ts`) existe, só não foi plugado nesta unidade por
- * escopo.
+ * As fotos do É IA? (#9864) e as imagens dos destaques entram pelo manifest do
+ * ciclo (`_internal/public-images.json`). Sem URL, o render web sai sem
+ * `<figure>`.
  */
 import { cycleToYymm, isValidMonthlyCycle } from "./monthly-paths.ts";
 import { APOIADORES_KIT_UTM_PROFILE, deriveApoiadoresKitSubject, extractDestaqueTitle } from "./monthly-apoiadores-kit-render.ts";
@@ -340,6 +337,10 @@ export interface ArticleBuildOptions {
    * `public-images.json`, #9864). Sem elas o bloco sai com "Imagem A/B". */
   eiaImageUrlA?: string;
   eiaImageUrlB?: string;
+  /** URLs públicas das imagens dos destaques (`d1`..`d3` do `public-images.json`). */
+  destaqueImageUrls?: Record<number, string>;
+  /** Crédito da imagem, o mesmo do e-mail (`captionForGenerator`). */
+  destaqueImageCaption?: string;
 }
 
 /**
@@ -373,6 +374,8 @@ export function buildArticleHtml(draftMd: string, cycle: string, opts: ArticleBu
     leaderboardBrand: WEB_LEADERBOARD_BRAND,
     eiaImageUrlA: opts.eiaImageUrlA,
     eiaImageUrlB: opts.eiaImageUrlB,
+    destaqueImageUrls: opts.destaqueImageUrls,
+    destaqueImageCaption: opts.destaqueImageCaption,
     eiaCredit: opts.eiaCredit,
   });
   const relinked = opts.postProcessEmailHtml ? opts.postProcessEmailHtml(bodyHtml) : bodyHtml;

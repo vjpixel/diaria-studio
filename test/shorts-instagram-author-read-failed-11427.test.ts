@@ -1,11 +1,14 @@
 /**
- * #11427: timer do Reels com a credencial da página `vjpixel` presente, mas a
- * Graph API respondendo 5xx ao ler a conta do Instagram vinculada. Antes do
+ * #11427: timer do Reels com a credencial da página da autora à mão presente, mas
+ * a Graph API respondendo 5xx ao ler a conta do Instagram vinculada. Antes do
  * fix, `resolveChromeAuthorReader` devolvia só `unavailable` e o gate lançava
- * `author-unchecked` ("forneça a credencial da página vjpixel no 300"), alarme
+ * `author-unchecked` ("forneça a credencial da página X no 300"), alarme
  * `acao` falso que ainda suprimia o `late` da edição. Agora a leitura que falha
  * vira `read-failed` (urgente, com nova tentativa); `author-unchecked` fica só
- * para credencial ausente de verdade.
+ * para credencial ausente de verdade. Desde #11794 a autora à mão é a @diar.ia.br
+ * (página `diaria`), então estes cenários usam uma conta de API em OUTRA página
+ * (`vjpixel`); na produção (`null`) é a mesma conta, coberto em
+ * `test/shorts-instagram-manual-route-author-11794.test.ts`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -34,8 +37,8 @@ const decideEmpty = async (): Promise<InstagramConfirmDecision> =>
     expectedAtIso: AT,
   });
 
-const vjpixel: ResolvedFacebookPage = { slug: "vjpixel", enabled: false, pageId: "937", token: "tok", missing: [], utmContent: "page-vjpixel" };
-const semCredencial: ResolvedFacebookPage = { ...vjpixel, pageId: "", token: "", missing: ["FACEBOOK_VJPIXEL_PAGE_ID", "FACEBOOK_VJPIXEL_PAGE_TOKEN"] };
+const diaria: ResolvedFacebookPage = { slug: "diaria", enabled: true, pageId: "937", token: "tok", missing: [], utmContent: "page-diaria" };
+const semCredencial: ResolvedFacebookPage = { ...diaria, pageId: "", token: "", missing: ["FACEBOOK_DIARIA_PAGE_ID", "FACEBOOK_DIARIA_PAGE_TOKEN"] };
 
 /** Fake da Graph: cada chamada consome a próxima resposta da fila. */
 function graphFake(seq: Array<{ json: unknown; status: number }>): { deps: Pick<GraphDeps, "fetch">; calls: string[] } {
@@ -53,11 +56,11 @@ function graphFake(seq: Array<{ json: unknown; status: number }>): { deps: Pick<
   };
 }
 const fail5xx = { json: { error: { message: "An unexpected error has occurred.", code: 2 } }, status: 500 };
-const linked = { json: { instagram_business_account: { id: "1784", username: "vjpixel" } }, status: 200 };
+const linked = { json: { instagram_business_account: { id: "1784", username: "diar.ia.br" } }, status: 200 };
 
 /** O gate do timer como o `--publish` o monta: conta da API vazia + perfil do autor resolvido. */
 async function runGate(chromeDeps: Pick<GraphDeps, "fetch">, pages: ResolvedFacebookPage[]): Promise<{ published: number; error: unknown }> {
-  const chrome = await resolveChromeAuthorReader("diaria", pages, "v25.0", chromeDeps);
+  const chrome = await resolveChromeAuthorReader("vjpixel", pages, "v25.0", chromeDeps);
   let published = 0;
   let error: unknown = null;
   try {
@@ -78,15 +81,15 @@ async function runGate(chromeDeps: Pick<GraphDeps, "fetch">, pages: ResolvedFace
   return { published, error };
 }
 
-describe("#11427: leitura da conta do @vjpixel que falha não é credencial ausente", () => {
+describe("#11427: leitura da conta da autora à mão que falha não é credencial ausente", () => {
   it("resolveChromeAuthorReader: 5xx com credencial presente → readFailed; sem credencial → sem readFailed, sem chamar a Graph", async () => {
-    const r = await resolveChromeAuthorReader("diaria", [vjpixel], "v25.0", graphFake([fail5xx]).deps);
+    const r = await resolveChromeAuthorReader("vjpixel", [diaria], "v25.0", graphFake([fail5xx]).deps);
     assert.equal(r.reader, null);
     assert.equal(r.readFailed, true);
-    assert.match(r.unavailable ?? "", /não foi possível ler a conta do Instagram vinculada à página vjpixel/);
+    assert.match(r.unavailable ?? "", /não foi possível ler a conta do Instagram vinculada à página diaria/);
 
     const g = graphFake([]);
-    const s = await resolveChromeAuthorReader("diaria", [semCredencial], "v25.0", g.deps);
+    const s = await resolveChromeAuthorReader("vjpixel", [semCredencial], "v25.0", g.deps);
     assert.equal(s.reader, null);
     assert.equal(s.readFailed, undefined);
     assert.match(s.unavailable ?? "", /sem credencial/);
@@ -94,7 +97,7 @@ describe("#11427: leitura da conta do @vjpixel que falha não é credencial ause
   });
 
   it("falha transitória (5xx) → gate read-failed, não author-unchecked; nada publicado", async () => {
-    const { published, error } = await runGate(graphFake([fail5xx]).deps, [vjpixel]);
+    const { published, error } = await runGate(graphFake([fail5xx]).deps, [diaria]);
     assert.equal(published, 0);
     assert.equal((error as { name?: string }).name, "InstagramTimerGateError");
     assert.equal((error as { failure?: string }).failure, "read-failed");
@@ -105,11 +108,11 @@ describe("#11427: leitura da conta do @vjpixel que falha não é credencial ause
     const { published, error } = await runGate(graphFake([]).deps, [semCredencial]);
     assert.equal(published, 0);
     assert.equal((error as { failure?: string }).failure, "author-unchecked");
-    assert.match((error as Error).message, /forneça a credencial da página vjpixel/);
+    assert.match((error as Error).message, /forneça a credencial da página diaria/);
   });
 
   it("rodada seguinte com a Graph de volta → lê o perfil e publica", async () => {
-    const { published, error } = await runGate(graphFake([linked]).deps, [vjpixel]);
+    const { published, error } = await runGate(graphFake([linked]).deps, [diaria]);
     assert.equal(error, null);
     assert.equal(published, 1);
   });
