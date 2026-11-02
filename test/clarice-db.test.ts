@@ -412,6 +412,27 @@ test("priority_points: optin que ignora 5 emails fica negativo (−10)", () => {
   );
 });
 
+test("priority_points #11793: clicou sem abertura registrada conta como 1 abertura (2 envios → 20 − 10 = 10)", () => {
+  assert.equal(
+    computePriorityPoints({ priority_optin: false, opens_count: 0, sends_count: 2, clicks_count: 1 }),
+    10,
+  );
+});
+
+test("priority_points #11793: com abertura registrada, o clique não soma nada", () => {
+  assert.equal(
+    computePriorityPoints({ priority_optin: false, opens_count: 2, sends_count: 3, clicks_count: 5 }),
+    computePriorityPoints({ priority_optin: false, opens_count: 2, sends_count: 3 }),
+  );
+});
+
+test("priority_points #11793: clicks_count NaN conta como sem clique (nunca NaN no score)", () => {
+  assert.equal(
+    computePriorityPoints({ priority_optin: false, opens_count: 0, sends_count: 2, clicks_count: Number.NaN }),
+    -20,
+  );
+});
+
 test("priority_points: recebeu 1 e não abriu → −10", () => {
   assert.equal(
     computePriorityPoints({ priority_optin: false, opens_count: 0, sends_count: 1 }),
@@ -730,6 +751,44 @@ test("eligibility #5041: sends>=2 e opens<=0, JÁ medido → sunset_non_opener",
   });
   assert.equal(r.send_eligible, false);
   assert.equal(r.ineligible_reason, "sunset_non_opener");
+});
+
+test("eligibility #11793: sends>=2, opens=0 mas clicks>0, JÁ medido → NÃO sunseta (clique prova leitura)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    sends_count: 2,
+    opens_count: 0,
+    clicks_count: 1,
+    brevo_modified_at: "2026-08-01T09:00:00Z",
+  });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("recomputeDerived #11793: contato com clique e nenhuma abertura sai elegível e com priority_points > 0", () => {
+  const db = openClariceDb(":memory:");
+  const insert = db.prepare(
+    `INSERT INTO clarice_users (email, sends_count, opens_count, clicks_count, mv_bucket, brevo_modified_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  insert.run("clicou@x.com", 2, 0, 1, "verified", "2026-10-01T09:00:00Z");
+  insert.run("nunca.leu@x.com", 2, 0, 0, "verified", "2026-10-01T09:00:00Z");
+
+  recomputeDerived(db);
+
+  const get = (email: string) =>
+    db
+      .prepare("SELECT send_eligible, ineligible_reason, priority_points FROM clarice_users WHERE email = ?")
+      .get(email) as { send_eligible: number; ineligible_reason: string | null; priority_points: number };
+  const clicou = get("clicou@x.com");
+  assert.equal(clicou.send_eligible, 1);
+  assert.equal(clicou.ineligible_reason, null);
+  assert.equal(clicou.priority_points, 10);
+  // controle: mesmo perfil sem clique segue cortado (zero regressão do #5041)
+  const nuncaLeu = get("nunca.leu@x.com");
+  assert.equal(nuncaLeu.send_eligible, 0);
+  assert.equal(nuncaLeu.ineligible_reason, "sunset_non_opener");
+  db.close();
 });
 
 test("eligibility #5041: sends=1 (só 1 envio) → NÃO sunseta, mesmo já medido e opens=0", () => {
