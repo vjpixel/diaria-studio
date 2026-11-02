@@ -85,12 +85,14 @@ describe("silêncios e fala (#11208)", () => {
   });
 
   it("speechParts remove silêncio ≥0,8 s com 0,2 s de respiro e descarta clipe <0,6 s", () => {
+    // Os parâmetros da #11208, explícitos: os defaults mudaram no #11753 (teste próprio em video-montage-pauses-11753).
+    const old = { minGapS: 0.8, padS: 0.2 };
     const sil = [
       { start: 3, end: 5 }, // 2 s: sai
       { start: 6, end: 6.5 }, // 0,5 s: fica
       { start: 9.2, end: 9.9 }, // 0,7 s: fica
     ];
-    assert.deepEqual(speechParts(0, 10, sil), [
+    assert.deepEqual(speechParts(0, 10, sil, old), [
       { start: 0, end: 3.2 },
       { start: 4.8, end: 10 },
     ]);
@@ -99,7 +101,7 @@ describe("silêncios e fala (#11208)", () => {
       { start: 1, end: 2 },
       { start: 2.15, end: 4 },
     ];
-    assert.deepEqual(speechParts(0, 5, sil2), [
+    assert.deepEqual(speechParts(0, 5, sil2, old), [
       { start: 0, end: 1.2 },
       { start: 3.8, end: 5 },
     ]);
