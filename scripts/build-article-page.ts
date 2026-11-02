@@ -38,6 +38,8 @@ import { DIARIA_RETROSPECTIVA_URL } from "./lib/canonical-urls.ts";
 import { readRetrospectivaNamespaceId } from "./lib/shared/retrospectiva-kv-namespaces.ts";
 import { mensalPathFromCycle } from "./lib/shared/retrospectiva-path.ts";
 import { readApoiadoresEiaCredit, relinkApoiadoresKitHtml } from "./render-monthly-apoiadores-kit.ts";
+import { captionForGenerator } from "./lib/mensal/monthly-render.ts";
+import { resolveEditionImageGenerator } from "./lib/shared/image-generator-sidecar.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -92,6 +94,13 @@ export function articleTeaserKvKey(cycle: string): string {
   return `${articleKvKey(cycle)}:teaser`;
 }
 
+/** Gerador de imagem do config, o mesmo default do render do e-mail. */
+function configuredImageGenerator(): string {
+  const configPath = resolve(REPO_ROOT, "platform.config.json");
+  if (!existsSync(configPath)) return "gemini";
+  return (JSON.parse(readFileSync(configPath, "utf8")) as { image_generator?: string }).image_generator ?? "gemini";
+}
+
 /**
  * #9864: URLs públicas do par A/B do É IA? em `_internal/public-images.json`.
  * Guard: ciclo com `01-eia-A.jpg` (ou o legado `01-eai-A.jpg`) no disco mas sem
@@ -118,6 +127,31 @@ export function readEiaImageUrls(monthlyDirPath: string): { eiaImageUrlA?: strin
 }
 
 /**
+ * URLs públicas das imagens dos destaques em `_internal/public-images.json`.
+ * Guard: ciclo com `04-d{N}-2x1.jpg` no disco mas sem `d{N}` no manifest lança,
+ * senão a página sairia sem a imagem que o e-mail mostra.
+ */
+export function readDestaqueImageUrls(monthlyDirPath: string): Record<number, string> {
+  const manifestPath = resolve(monthlyDirPath, "_internal", "public-images.json");
+  let images: Record<string, { url?: string }> = {};
+  if (existsSync(manifestPath)) {
+    images = (JSON.parse(readFileSync(manifestPath, "utf-8")) as { images?: typeof images }).images ?? {};
+  }
+  const urls: Record<number, string> = {};
+  for (const n of [1, 2, 3]) {
+    const url = images[`d${n}`]?.url;
+    if (url) urls[n] = url;
+    else if (existsSync(resolve(monthlyDirPath, `04-d${n}-2x1.jpg`))) {
+      throw new Error(
+        `build-article-page: ${monthlyDirPath} tem 04-d${n}-2x1.jpg mas _internal/public-images.json não tem d${n} com url. ` +
+          "Rode a Etapa 3/4 do /diaria-mensal (upload das imagens) antes.",
+      );
+    }
+  }
+  return urls;
+}
+
+/**
  * #9496: os insumos de I/O do e-mail dos apoiadores, lidos pelas MESMAS
  * funções do render do e-mail (legenda do É IA? do `01-eia.md` + relink das
  * diárias) — a página é a versão web daquele e-mail, não do envio Clarice.
@@ -128,6 +162,8 @@ export function articleBuildOptionsForCycle(monthlyDirPath: string, logLabel = "
   return {
     eiaImageUrlA,
     eiaImageUrlB,
+    destaqueImageUrls: readDestaqueImageUrls(monthlyDirPath),
+    destaqueImageCaption: captionForGenerator(resolveEditionImageGenerator(monthlyDirPath, configuredImageGenerator())),
     eiaCredit: readApoiadoresEiaCredit(monthlyDirPath),
     postProcessEmailHtml: (html: string) => relinkApoiadoresKitHtml(html, monthlyDirPath, logLabel),
   };
