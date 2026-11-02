@@ -184,3 +184,30 @@ export function classifyClariceNoise(from: string, to: string): ClariceNoiseReas
 
   return null;
 }
+
+export interface FilteredClariceSuggestions<T> {
+  kept: T[];
+  dropped: Array<{ suggestion: T; reason: ClariceNoiseReason | "invalid_shape" }>;
+}
+
+/**
+ * Separa as sugestões legítimas do ruído (#11798, fluxos manuais). Os fluxos em
+ * que o LLM aplica "todas as sugestões" à mão (post semanal, artigo especial,
+ * stack, voto-tema, apoiadores) não passam por `clarice-apply.ts`; o CLI
+ * `scripts/clarice-filter.ts` usa isto pra que eles recusem o mesmo ruído.
+ */
+export function filterClariceSuggestions<T>(suggestions: T[]): FilteredClariceSuggestions<T> {
+  const kept: T[] = [];
+  const dropped: FilteredClariceSuggestions<T>["dropped"] = [];
+  for (const s of suggestions) {
+    const o = s as { from?: unknown; to?: unknown } | null;
+    if (!o || typeof o !== "object" || typeof o.from !== "string" || typeof o.to !== "string") {
+      dropped.push({ suggestion: s, reason: "invalid_shape" });
+      continue;
+    }
+    const reason = classifyClariceNoise(o.from, o.to);
+    if (reason) dropped.push({ suggestion: s, reason });
+    else kept.push(s);
+  }
+  return { kept, dropped };
+}
