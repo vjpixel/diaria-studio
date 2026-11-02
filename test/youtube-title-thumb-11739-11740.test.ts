@@ -18,6 +18,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
+import { spawnSync } from "node:child_process";
 import { matchEditionVideo, YOUTUBE_PUBLISHED_FILE, type YouTubeUploadDeps } from "../scripts/lib/diaria/youtube-upload.ts";
 import { planYouTubePublish, runYouTubeUpload } from "../scripts/publish-youtube.ts";
 import {
@@ -265,4 +266,17 @@ describe("gancho em duas linhas (#11740)", () => {
     assert.equal(meta.width, YOUTUBE_THUMB_W);
     assert.equal(meta.height, YOUTUBE_THUMB_H);
   });
+});
+
+describe("#11739 — CLI: --title sem valor sai exit 2 (self-review da PR #11902)", () => {
+  const run = (args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", "scripts/publish-youtube.ts", "261030", "--dry-run", ...args], { encoding: "utf8" });
+
+  for (const args of [["--title"], ["--title", "--no-captions"], ["--title="]]) {
+    it(`recusa ${JSON.stringify(args)} em vez de cair no título do D1`, () => {
+      const r = run(args);
+      assert.equal(r.status, 2, r.stderr);
+      assert.ok(r.stderr.includes("--title exige o TÍTULO"), r.stderr);
+    });
+  }
 });

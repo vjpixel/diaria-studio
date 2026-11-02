@@ -896,6 +896,13 @@ async function main(): Promise<number> {
     console.error(USAGE);
     return 2;
   }
+  // #11739: `--title` sem valor (ou seguido de outra flag) cai em `flags`, não
+  // em `values` — sem esta recusa o plano usaria o título do D1 em silêncio.
+  if (flags.has("title") || values["title"] === "") {
+    console.error("publish-youtube: --title exige o TÍTULO (ex.: --title \"Meu título\").");
+    console.error(USAGE);
+    return 2;
+  }
   // #11741: o upload tem efeito público — só com a confirmação explícita da
   // edição, checada antes de credencial, vídeo ou rede. O `--accept-period-match`
   // não envia nada (registra um vídeo que já está no canal) e fica de fora.
