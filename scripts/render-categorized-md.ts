@@ -137,7 +137,7 @@ export const BR_TIER1_RE =
  * falso positivo com palavras comuns ou siglas não-BR.
  */
 export const BR_TIER2_RE =
-  /\b(ita[úu]|bradesco|nubank|ifood|mercado\s+livre|magalu|magazine\s+luiza|pagseguro|picpay|xp\s+inc|btg\s+pactual|banco\s+inter|c6\s+bank|embraer|gerdau|ambev|braskem|suzano|natura\s*&\s*co|localiza|vtex|totvs|movile|creditas|hotmart)\b/gi;
+  /\b(ita[úu]|bradesco|nubank|ifood|mercado\s+livre|magalu|magazine\s+luiza|pagseguro|picpay|xp\s+inc|btg\s+pactual|banco\s+inter|c6\s+bank|embraer|gerdau|ambev|braskem|suzano|natura\s*&\s*co|localiza|vtex|totvs|movile|creditas|hotmart)(?![\p{L}\p{N}_])/giu;
 
 /**
  * Remove sufixos de atribuição de fonte do título antes de testar BR tier.

@@ -19,6 +19,7 @@ import {
   renderDestaquesFromApproved,
   formatCoverageLineUnknownTotal,
   renderStoryGroupDiscarded,
+  BR_TIER2_RE,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -1176,5 +1177,15 @@ describe("mergeScores (#9454)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("BR_TIER2_RE — fim de palavra acentuada (#11855)", () => {
+  it("casa 'Itaú' isolado (\\b não funciona depois de ú sem flag u)", () => {
+    assert.match("Itaú lança IA", new RegExp(BR_TIER2_RE.source, BR_TIER2_RE.flags));
+  });
+
+  it("não casa 'Itaúzinho' (continuação de letra)", () => {
+    assert.doesNotMatch("Itaúzinho", new RegExp(BR_TIER2_RE.source, BR_TIER2_RE.flags));
   });
 });

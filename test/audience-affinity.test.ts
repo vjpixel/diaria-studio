@@ -932,3 +932,12 @@ describe("detectHandsOnShort — regressões pass2 (#2143 pass2)", () => {
       "'2 hours' deve detectar time_estimate");
   });
 });
+
+describe("RE_CLOSED_SCOPE — fim de palavra acentuada (#11855)", () => {
+  for (const title of ["Introdução", "Um tutorial prático", "Exercício de IA"]) {
+    it(`detecta closed_scope em '${title}'`, () => {
+      const { signals } = detectHandsOnShort({ title });
+      assert.ok(signals.includes("closed_scope"));
+    });
+  }
+});
