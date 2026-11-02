@@ -92,12 +92,12 @@ describe("#11795 conferência da conta do Instagram no corte", () => {
 });
 
 describe("#11742 threadsProfilePreflightInput", () => {
-  it("edição: utm_campaign + título da 1ª linha, sem ids ignorados", () => {
-    const i = threadsProfilePreflightInput({ aammdd: "261102", caption: "Título do D1\n\nGancho.", corte: false, editionDayIds: ["X"] });
-    assert.deepEqual(i, { sinceIso: resolveEditionScheduledAt("261102", "00:00"), markers: ["utm_campaign=261102", "Título do D1"], ignoreIds: [] });
+  it("edição: utm_campaign + título da 1ª linha; os ids dos cortes do dia não contam (#11913)", () => {
+    const i = threadsProfilePreflightInput({ aammdd: "261102", caption: "Título do D1\n\nGancho.", corte: false, sameDayOtherIds: ["X"] });
+    assert.deepEqual(i, { sinceIso: resolveEditionScheduledAt("261102", "00:00"), markers: ["utm_campaign=261102", "Título do D1"], ignoreIds: ["X"] });
   });
   it("corte: só o título, e o vídeo da edição do dia não conta", () => {
-    const i = threadsProfilePreflightInput({ aammdd: SPEC.date, caption: `${SPEC.title}\n\nGancho.`, corte: true, editionDayIds: ["E1"] });
+    const i = threadsProfilePreflightInput({ aammdd: SPEC.date, caption: `${SPEC.title}\n\nGancho.`, corte: true, sameDayOtherIds: ["E1"] });
     assert.deepEqual(i.markers, [SPEC.title]);
     assert.deepEqual(i.ignoreIds, ["E1"]);
   });
@@ -110,7 +110,7 @@ describe("#11742 conferência do perfil do Threads fora do timer", () => {
   it("o post do timer já no perfil vira registro, não um segundo post (a corrida do #11742)", async () => {
     const pre = await threadsProfilePreflight({
       creds: CREDS,
-      ...threadsProfilePreflightInput({ aammdd: "261102", caption: "Título do D1\n\nGancho.", corte: false, editionDayIds: [] }),
+      ...threadsProfilePreflightInput({ aammdd: "261102", caption: "Título do D1\n\nGancho.", corte: false, sameDayOtherIds: [] }),
       now: () => new Date("2026-11-02T11:05:00Z"),
       fetch: async () => jsonRes({ data: [video("9", "Título do D1\n\nGancho.")] }),
     });

@@ -185,7 +185,7 @@ loadProjectEnv();
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
@@ -4211,7 +4211,7 @@ async function main(): Promise<number> {
               // 1ª linha do texto = o título do D1 (ou do corte) como o post o leva (cortado com … se não coube).
               caption: item.caption,
               corte: corte !== null,
-              editionDayIds: corte ? editionDayRegisteredIds(editionDirFor(aammdd), aammdd, THREADS_PROFILE_DESTINATION, (m) => console.error(`[aviso] ${m}`)) : [],
+              sameDayOtherIds: sameDayOtherRegisteredIds(corte !== null, aammdd, THREADS_PROFILE_DESTINATION),
             }),
             now: () => new Date(),
           });
@@ -4281,7 +4281,8 @@ async function main(): Promise<number> {
           // #11795: o corte avulso também (o Reels do corte postado à mão), com o
           // título e o gancho do corte e sem contar o Reels da edição do dia.
           const ctx = corte ? corteInstagramConfirmContext(corte) : instagramConfirmContext(dir, aammdd, config, values["edition-url"]);
-          const ignoreIds = corte ? editionDayRegisteredIds(editionDirFor(aammdd), aammdd, "instagram", (m) => console.error(`[aviso] ${m}`)) : [];
+          // #11913: na edição, o Reels dos cortes do dia (a extra) também não conta.
+          const ignoreIds = sameDayOtherRegisteredIds(corte !== null, aammdd, "instagram");
           // Fix do review do PR #11395: o gate olha também o perfil do autor à mão, se for outra conta (#11794: na produção, é a mesma).
           const chrome = await resolveChromeAuthorReader(shortsCfg.instagramAuthorPage, pages, igApiVersion);
           // #11421: sem a credencial da página do autor, o gate não publica (fail-closed) se a conta da API não tiver o Reels.
@@ -4492,21 +4493,23 @@ function withoutEditionUtmMarker(markers: string[]): string[] {
  * skill, a task one-shot do app desktop (que com o config em `false` num
  * checkout defasado corria com o timer do 300 no mesmo minuto) e o corte
  * avulso. Marcadores: o título como a 1ª linha do texto o leva (+ o
- * `utm_campaign` só na edição). No corte, o vídeo da edição do dia já
- * registrado (`editionDayIds`) não conta: sem isso todo corte num dia com
- * vertical publicado bloquearia.
+ * `utm_campaign` só na edição). O vídeo do OUTRO lado do mesmo dia, já
+ * registrado (`sameDayOtherIds`), não conta: no corte, o da edição do dia
+ * (`editionDayRegisteredIds`); na edição, o dos cortes do dia
+ * (`sameDayCorteRegisteredIds`, #11913 — a extra das 06:30 bloqueava a
+ * principal das 12:00). Sem isso um lado bloquearia o outro.
  */
 export function threadsProfilePreflightInput(input: {
   aammdd: string;
   caption: string;
   corte: boolean;
-  editionDayIds: readonly string[];
+  sameDayOtherIds: readonly string[];
 }): { sinceIso: string; markers: string[]; ignoreIds: string[] } {
   const markers = threadsEditionMarkers(input.aammdd, input.caption.split("\n")[0] ?? "");
   return {
     sinceIso: resolveEditionScheduledAt(input.aammdd, "00:00"),
     markers: input.corte ? withoutEditionUtmMarker(markers) : markers,
-    ignoreIds: input.corte ? [...input.editionDayIds] : [],
+    ignoreIds: [...input.sameDayOtherIds],
   };
 }
 
@@ -4557,6 +4560,60 @@ export function editionDayRegisteredIds(
     warn(`registro do vertical da edição ${aammdd} ilegível (${(e as Error).message}) — a conferência da conta do corte não o desconta`);
     return [];
   }
+}
+
+/**
+ * #11913: o espelho de `editionDayRegisteredIds` para a rodada da EDIÇÃO — os
+ * ids que os cortes avulsos do mesmo dia (`data/cortes/{slug}/`, inclusive a
+ * vertical extra, #11898) já registraram para o destino. O post do corte não
+ * leva link nem `utm_campaign`, então sem descontá-lo a conferência da edição
+ * o lê como "vídeo do dia sem marcador" e bloqueia. Corte com `corte.json` ou
+ * registro ilegível → aviso e pula só aquele corte (a conferência fica mais
+ * restritiva, nunca menos).
+ */
+export function sameDayCorteRegisteredIds(
+  cortesDir: string,
+  aammdd: string,
+  destination: string,
+  warn: (m: string) => void,
+  read: (dir: string, aammdd: string) => ShortsPublishedFile = readShortsRegistry,
+): string[] {
+  if (!existsSync(cortesDir)) return [];
+  let names: string[];
+  try {
+    names = readdirSync(cortesDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  } catch (e) {
+    warn(`pasta dos cortes ${cortesDir} ilegível (${(e as Error).message}) — a conferência da edição não desconta os cortes do dia`);
+    return [];
+  }
+  const ids: string[] = [];
+  for (const name of names) {
+    const dir = join(cortesDir, name);
+    const specPath = join(dir, CORTE_SPEC_FILE);
+    if (!existsSync(specPath)) continue;
+    try {
+      const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+      if (spec.date !== aammdd) continue;
+      for (const e of read(dir, spec.date).entries) {
+        if (e.destination === destination && typeof e.id === "string" && e.id.length > 0) ids.push(e.id);
+      }
+    } catch (e) {
+      warn(`corte ${name} ilegível (${(e as Error).message}) — a conferência da edição ${aammdd} não o desconta`);
+    }
+  }
+  return ids;
+}
+
+/**
+ * #11742/#11795/#11913: os ids do mesmo dia que a conferência da conta de UM
+ * lado desconta — no corte, os da edição do dia; na edição, os dos cortes do
+ * dia.
+ */
+function sameDayOtherRegisteredIds(corte: boolean, aammdd: string, destination: string): string[] {
+  const warn = (m: string) => console.error(`[aviso] ${m}`);
+  return corte
+    ? editionDayRegisteredIds(editionDirFor(aammdd), aammdd, destination, warn)
+    : sameDayCorteRegisteredIds(join(ROOT, "data", "cortes"), aammdd, destination, warn);
 }
 
 /**
