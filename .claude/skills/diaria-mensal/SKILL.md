@@ -23,11 +23,10 @@ Produz uma edição **mensal** da diar.ia.br consolidando os destaques publicado
 
 Espelha o papel do Stage 0 da diária (setup + checks pré-edição, #2795) — sem gate, sem checkpoint (roda sempre, não é skippável por natureza).
 
-- Beehiiv MCP funcional (conector nativo do Claude Code).
-- `platform.config.json → beehiiv.publicationId` populado.
+- `KIT_API_KEY` disponível (env/Doppler): a coleta (`fetch-monthly-posts.ts`) e os cliques (`kit-clicks-enrich.ts`) leem o Kit pela API REST. O backend de leitura é `platform.config.json → publishing.newsletter.read_backend` (default `"kit"` desde o #11225); a Beehiiv é só arquivo histórico e não entra no preflight (#11787).
 - `context/audience-profile.md`, `context/editorial-rules.md`, `context/templates/newsletter-monthly.md` existem e não são placeholders.
 
-**Não há dependência de `data/editions/{AAMMDD}/` local.** O digest puxa direto do Beehiiv, funcionando em qualquer máquina.
+**`data/editions/{AAMMDD}/` local é preferido, não obrigatório.** `collect-monthly.ts` parseia o `02-reviewed.md` de cada edição presente em disco (modo local, #2791) e cai pro raw-post só nas edições que faltarem.
 
 ## Resume check global (checkpoints unificados com a diária, #2795)
 
@@ -60,7 +59,7 @@ npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step N --dir "data
 
 ## Etapa 1 — Coleta e Análise
 
-### 1a. Coleta via Beehiiv MCP
+### 1a. Coleta (Kit, `fetch-monthly-posts.ts`)
 
 **Resume check (#400):**
 ```bash
@@ -74,11 +73,15 @@ RAW_DESTAQUES=$(test -f data/monthly/$CYCLE/_internal/raw-destaques.json && echo
 - `RAW_POSTS > 0` e `RAW_DESTAQUES = no` → pular 1a, executar 1b.
 - `RAW_POSTS = 0` → executar 1a e 1b (mesmo que `_internal/raw-destaques.json` exista — pode ser de run anterior via fallback local, #400).
 
-**Coleta (inline — não via subagente, #403):** Chamar os MCPs Beehiiv **diretamente** neste contexto:
-1. `mcp__claude_ai_Beehiiv__list_posts` — `publication_id`, `status="confirmed"`, `per_page=50`. Paginar e filtrar client-side pela janela do mês `[${CYCLE:0:4}]` (mês do conteúdo = YYMM).
-2. Para cada post: derivar `AAMMDD` do `published_at`, `id_prefix` (8 chars sem `post_`). Path: `data/monthly/$CYCLE/raw-posts/post_{id_prefix}_{AAMMDD}.txt`. Pular se já existe (resume). Caso contrário: `mcp__claude_ai_Beehiiv__get_post_content` → gravar `markdown` (preferido) ou `html` (fallback).
+**Coleta (script, #403/#11787):** a coleta é REST pelo backend de leitura (`publishing.newsletter.read_backend`, Kit desde o #11225), sem MCP:
+```bash
+npx tsx scripts/fetch-monthly-posts.ts --cycle $CYCLE
+```
+Grava `data/monthly/$CYCLE/raw-posts/post_{id8}_{AAMMDD}.txt` por broadcast do mês (pula os que já existem, resume). Os raw-posts são obrigatórios mesmo quando `collect-monthly.ts` parseia tudo em modo local: é deles que `kit-clicks-enrich.ts` tira a lista de broadcasts e que `monthly-click-sections.ts` (1d) tira as edições do mês. Sem raw-posts, o enrich devolve lista vazia e a 1d aborta, com o parse OK.
 
-Se `posts_found = 0`, abortar.
+Se `posts_found = 0`, abortar. `posts_with_html_fallback` alto é esperado no Kit: o conversor não acha os destaques no HTML do Kit e grava o HTML bruto (#11817). Isso não trava nada enquanto as edições estiverem em `data/editions/` (o parse vem do `02-reviewed.md`, modo local); só a edição sem pasta local depende do raw-post e pode sair com 0 destaques (warning do `collect-monthly.ts`).
+
+**Cliques (antes da 1d):** `npx tsx scripts/kit-clicks-enrich.ts --cycle $CYCLE` (lista derivada dos raw-posts).
 
 **Parse:**
 ```bash

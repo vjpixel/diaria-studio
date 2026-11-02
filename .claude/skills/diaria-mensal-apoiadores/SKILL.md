@@ -333,6 +333,20 @@ Grava `divulgacao/04-d{N}-4x5.jpg` (capa) e
 os textos finais (já com o CTA) e, se houver post único legado da página,
 `legacy_linkedin.action: "would-cancel"`.
 
+O mesmo dry-run grava o preview do gate (#11800) em
+`_internal/social-preview.html` (campo `preview_html` do JSON): o artefato
+Social Preview das edições diárias (`buildRetrospectivaSocialHtml` em
+`scripts/render-social-html.ts`), com as imagens já embutidas em base64. Por
+história, mostra o título, a galeria do carrossel e um bloco por texto com as
+redes que o publicam e, por rede, o horário efetivo do planner e a imagem que
+leva (capa 4:5, carrossel de 5, ou capa + 3 slides no X); no fim, o post
+manual do perfil LinkedIn. Não mostra o aviso do 4º post USE MELHOR nem as
+linhas `publish-additions` da diária (este publicador não injeta linha de
+canal). Pulados, falhas e avisos do pré-voo saem no topo. Publicar com a
+Artifact tool (`file_path` = o `preview_html`, ícone `share`) antes do gate,
+sem montar md nem pós-processar; `preview_error` preenchido = o preview não
+saiu, mostrar os textos no gate e seguir.
+
 ## Passo 2 — gate humano único
 
 Critério 1 de "Perguntar é exceção" (`CLAUDE.md`): o post do apoia.se publica
@@ -353,7 +367,8 @@ Apoia.se (restrito R$25+, publica AGORA se aprovado):
 LinkedIn perfil (MANUAL, 1 post só, agenda {perfil}):
 {linkedin-perfil.md}
 
-Posts por história (3 × 5 = 15, dia {D+1}, slots da diária, 5 redes no mesmo horário; slides em divulgacao/04-d{N}-*.jpg):
+Posts públicos (preview com textos, horários por rede e imagens): {link do artefato Social Preview, #11800}
+Posts por história (3 × 5 = 15, dia {D+1}, horários do planner por rede; slides em divulgacao/04-d{N}-*.jpg):
   Edição diária em {D+1}: {nenhuma (fim de semana) | aviso de warnings}
   História 1 — {título do DESTAQUE 1} — 09:45:
     LinkedIn página + Facebook (capa) + Instagram (carrossel 5):
@@ -672,6 +687,7 @@ data/monthly/{ciclo}/
     divulgacao-social-d{N}-published.json  detalhe do dispatch da história N (worker_queue_key, fb_post_id, buffer_post_id)
     divulgacao-linkedin-published.json legado: post único da página (#9474) — `deleted` depois do --replace-linkedin-single
     apoiadores-kit-preview.html        HTML do broadcast (UTM mensal-apoiadores-kit)
+    social-preview.html                preview do gate dos posts públicos, imagens embutidas (Passo 1 dry-run, #11800)
     beehiiv-apoiadores-state.json      idempotência do e-mail (draft_prepared|sent, kitBroadcastId, kitAudienceVerified, brevoCampaignId legado)
 data/snippets/retrospectiva-apoiadores.md   box (Passo 7)
 platform.config.json                        boxes_divulgacao.slot2 + pinned_slots (Passo 7, via PR)
