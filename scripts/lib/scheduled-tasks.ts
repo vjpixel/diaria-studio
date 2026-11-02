@@ -1293,14 +1293,13 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
     // fora da hora cheia? Ajustar aqui —
     // `test/shorts-threads-profile-timer-11410.test.ts` trava o par.
     //
-    // REGISTRADA, NÃO ARMADA (`enabled: false`, decisão da rodada #11410:
-    // armar é do editor). Sem isso o `Diaria-Remediate-Never-Armed-Tasks`
-    // (#8153) armaria no 300 depois do merge. Mesmo armada, o script só age
-    // com `publishing.shorts.threads_profile_via_timer: true`. Para armar:
-    // tirar o `enabled: false` desta e da `-Catchup`, ligar o config e, no
-    // 300, `setup-systemd-timers.ts --task` + `arm-systemd-timers.ts --task`
-    // para cada uma (passo a passo em docs/scheduled-tasks-registry.md).
-    enabled: false,
+    // LIGADA desde o #11635 (decisão do editor de 01/11/2026): nasceu com
+    // `enabled: false` no #11410, até o editor autorizar o arme. Sem o
+    // `enabled: false`, o `Diaria-Remediate-Never-Armed-Tasks` (#8153) arma
+    // no 300 depois do merge; à mão, `setup-systemd-timers.ts --task` +
+    // `arm-systemd-timers.ts --task` para cada uma (passo a passo em
+    // docs/scheduled-tasks-registry.md). O script só age com
+    // `publishing.shorts.threads_profile_via_timer: true`, ligado no mesmo PR.
     schedule: { kind: "daily", hour: 6, minute: 33 },
     guard: {
       requiredFile: "editions",
@@ -1315,8 +1314,7 @@ export const SCHEDULED_TASKS: ScheduledTaskDefinition[] = [
       "de hora em hora: publica o vertical no Threads PESSOAL quando o horário do dia é hora cheia (08:00/12:00), baixa o vertical do Drive se ele ainda não está no 300 e avisa o editor quando o post não saiu (#11410)",
     steps: [{ key: "post", script: "scripts/shorts-threads-profile-timer.ts" }],
     logPath: "shorts/.threads-profile-timer-catchup.log",
-    // REGISTRADA, NÃO ARMADA (#11410): mesmo racional da diária acima.
-    enabled: false,
+    // LIGADA desde o #11635: mesmo racional da diária acima.
     schedule: { kind: "interval", hours: 1 },
     guard: {
       requiredFile: "editions",
