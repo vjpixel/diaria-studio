@@ -550,7 +550,7 @@ describe("detectKitConfirmations / ingestKitConfirmations (#11846)", () => {
     const r = detectKitConfirmations(transitions, emails, "2026-11-02");
     assert.equal(r.length, 1);
     assert.equal(r[0].externalEventId, "a@x.com:confirm:2026-11-02");
-    assert.equal(r[0].ts, "2026-11-02T00:00:00.000Z");
+    assert.equal(r[0].ts, "2026-11-02T12:00:00.000Z");
   });
 
   it("grava evento confirm e é idempotente", async () => {

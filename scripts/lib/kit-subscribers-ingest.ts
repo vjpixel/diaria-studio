@@ -560,6 +560,9 @@ export function detectKitConfirmations(
   emailById: ReadonlyMap<number, string>,
   snapshotDate: string,
 ): Array<KitConfirmation & { email: string }> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDate)) {
+    throw new Error(`detectKitConfirmations: snapshotDate inválido (${snapshotDate}), esperado AAAA-MM-DD`);
+  }
   const out: Array<KitConfirmation & { email: string }> = [];
   for (const t of transitions) {
     if (t.from !== "inactive" || t.to !== "active") continue;
@@ -570,7 +573,7 @@ export function detectKitConfirmations(
       email,
       platform: "kit",
       externalEventId: `${email}:confirm:${snapshotDate}`,
-      ts: `${snapshotDate}T00:00:00.000Z`,
+      ts: `${snapshotDate}T12:00:00.000Z`,
     });
   }
   return out;
