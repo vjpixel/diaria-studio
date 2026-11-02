@@ -27,11 +27,14 @@
  *
  * Lock O_EXCL por corte em `_internal/.shorts-corte-timer.lock`.
  *
- * Limite conhecido (review do PR #11894): o Instagram do corte NÃO passa pela
- * conferência da conta do timer da edição (`instagramTimerGate`, #11265), que
- * depende dos marcadores da edição e do writer `instagram-timer`. Só o registro
- * local conta: Reels do corte postado à mão sem `--mark instagram=URL` sai
- * duplicado.
+ * Conferência da conta antes de publicar (#11795, fecha o limite do review do
+ * PR #11894): o `publish-shorts --corte` passa o Instagram pela mesma
+ * conferência do timer da edição (`instagramTimerGate`, #11265), com o título
+ * e o gancho do corte como marcadores e sem contar o Reels da edição do dia; o
+ * Threads pessoal, pela conferência do perfil (`threadsProfilePreflight`,
+ * #11742). Achado na conta → registra e não publica; ambíguo → alarme
+ * `account-check` (`acao`, nunca manda postar de novo); leitura que falha →
+ * `account-read-failed` (tenta de novo na próxima hora).
  *
  * Uso: npx tsx scripts/shorts-corte-timer.ts [--corte SLUG] [--dry-run]
  *   --dry-run: decide e imprime os comandos, sem publicar e sem alarme.
@@ -79,14 +82,18 @@ export type CorteTimerAlarmKey =
   | "send-unknown"
   /** O post saiu, mas o registro não foi gravado. */
   | "published-unregistered"
+  /** #11795/#11742: a conta pode já ter o vídeo do corte (postado à mão, ou ambíguo): a conferência não deixou publicar. */
+  | "account-check"
+  /** #11795/#11742: a leitura da conta antes de publicar falhou (fail-closed). */
+  | "account-read-failed"
   | "no-output"
   | "crash";
 
 /** O post pode estar (ou está) no ar: `acao`, e o corpo nunca manda publicar de novo. */
-const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered"]);
+const MAYBE_PUBLISHED_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["send-unknown", "published-unregistered", "account-check"]);
 
 /** Motivos em que a próxima execução (até 3 h depois do horário) tenta de novo sozinha. */
-const RETRY_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["missing-video", "credentials", "public-video", "publish-failed", "no-output", "crash"]);
+const RETRY_KEYS: ReadonlySet<CorteTimerAlarmKey> = new Set(["missing-video", "credentials", "public-video", "publish-failed", "account-read-failed", "no-output", "crash"]);
 
 export function corteAlarmSeverity(key: CorteTimerAlarmKey): NotifySeverity {
   return MAYBE_PUBLISHED_KEYS.has(key) ? "acao" : "urgente";
@@ -168,6 +175,12 @@ export function interpretCorteTimerOutput(exitCode: number | null, stdout: strin
         return { destination, kind: "done", detail: `${result.alreadyRegistered ? "já registrado" : "publicado"}: ${e.status} ${where}` };
       }
       if (e) return { destination, kind: "alarm", key: "published-unregistered", detail: `o post SAIU (${where}), mas o registro não foi gravado: ${result.error ?? "?"}` };
+      // #11795/#11742: a conferência da conta (Instagram) ou do perfil (Threads) não deixou publicar.
+      if (result.cause === "preflight") {
+        return result.preflight === "read-failed"
+          ? { destination, kind: "alarm", key: "account-read-failed", detail: `a conferência da conta antes de publicar falhou: ${result.error ?? "?"}` }
+          : { destination, kind: "alarm", key: "account-check", detail: `a conta pode já ter o vídeo do corte: ${result.error ?? "?"}` };
+      }
       return { destination, kind: "alarm", key: "publish-failed", detail: String(result.error ?? "falha sem mensagem") };
     }
     const item = Array.isArray(out?.items) ? out.items.find((i: any) => i?.destination === destination) : undefined;
@@ -221,6 +234,9 @@ export function buildCorteTimerAlarm(input: { spec: CorteSpec; destination: stri
       `- Se o vídeo do corte está lá: registre com ${mark}.`,
       `- Se não está: publique com ${manual} (no 300) e confira.`,
     );
+    if (key === "account-check") {
+      lines.push(`- Se o vídeo que a conferência acusou é de outra edição ou outro corte, a publicação pelo script vai parar no mesmo ponto: poste à mão e registre com ${mark}.`);
+    }
     subject = `[diar.ia.br] Corte "${spec.slug}" no ${destination}: conferir a conta (${key})`;
   } else {
     if (key === "late") lines.push("Passadas 3 h do horário do corte o timer NÃO publica mais sozinho.");

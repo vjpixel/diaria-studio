@@ -25,7 +25,9 @@
  * #11410: a rodada do timer do 300 (`--threads-timer`) confere o perfil antes
  * de publicar (`threadsProfilePreflight`): o vídeo da edição já no perfil
  * (postado à mão depois de um `skip_late`, ou por uma rodada cujo registro não
- * sincronizou) vira registro em vez de um segundo post.
+ * sincronizou) vira registro em vez de um segundo post. Desde o #11742 toda
+ * rodada que publica `threads_profile` confere (a da skill, a task one-shot do
+ * app desktop e o corte avulso), não só a do timer.
  *
  * Ainda SEM validação real: o token pessoal não existe (comentários de 23/10 e
  * 25/10/2026 na #10772). Consumidor: `publish-shorts.ts`, destino
@@ -227,10 +229,23 @@ export type ThreadsProfileDuplicateDecision =
  * o editor confere e registra com `--mark`). Timestamp ilegível conta como
  * do dia (nunca exclui um candidato por falta de dado).
  */
-export function decideThreadsProfileDuplicate(posts: readonly ThreadsProfilePost[], opts: { sinceIso: string; markers: readonly string[] }): ThreadsProfileDuplicateDecision {
+export function decideThreadsProfileDuplicate(
+  posts: readonly ThreadsProfilePost[],
+  opts: {
+    sinceIso: string;
+    markers: readonly string[];
+    /**
+     * #11742: ids de posts já registrados por OUTRO vertical do mesmo dia (o
+     * corte avulso ignora o vídeo da edição do dia, que já está no registro
+     * dela). Não contam nem como achado nem como bloqueio.
+     */
+    ignoreIds?: readonly string[];
+  },
+): ThreadsProfileDuplicateDecision {
   const sinceMs = Date.parse(opts.sinceIso);
   const markers = opts.markers.map((m) => m.trim().toLowerCase()).filter((m) => m.length >= 4);
-  const videos = posts.filter((p) => p.mediaType === "VIDEO" && (p.timestamp === null || Date.parse(p.timestamp) >= sinceMs));
+  const ignore = new Set(opts.ignoreIds ?? []);
+  const videos = posts.filter((p) => p.mediaType === "VIDEO" && !ignore.has(p.id) && (p.timestamp === null || Date.parse(p.timestamp) >= sinceMs));
   const marked = videos.filter((p) => markers.some((m) => p.text.toLowerCase().includes(m)));
   if (marked.length > 0) return { kind: "found", post: marked[0] };
   if (videos.length > 0) {
@@ -268,6 +283,8 @@ export async function threadsProfilePreflight(args: {
   creds: ThreadsPersonalCreds;
   sinceIso: string;
   markers: readonly string[];
+  /** #11742: ver `decideThreadsProfileDuplicate`. */
+  ignoreIds?: readonly string[];
   fetch?: ThreadsFetch;
   now: () => Date;
 }): Promise<{ kind: "publish" } | { kind: "already"; entry: ShortPublishedEntry }> {
@@ -277,7 +294,7 @@ export async function threadsProfilePreflight(args: {
   } catch (e) {
     throw new ThreadsTimerGateError(`não deu pra ler o perfil do Threads antes de publicar: ${(e as Error).message}`, "read-failed");
   }
-  const d = decideThreadsProfileDuplicate(posts, { sinceIso: args.sinceIso, markers: args.markers });
+  const d = decideThreadsProfileDuplicate(posts, { sinceIso: args.sinceIso, markers: args.markers, ignoreIds: args.ignoreIds });
   if (d.kind === "blocked") throw new ThreadsTimerGateError(d.reason, "blocked");
   if (d.kind === "none") return { kind: "publish" };
   return {
