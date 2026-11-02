@@ -459,6 +459,12 @@ npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --draft
 # de data (decisão do editor): o script não checa colisão com a diária.
 npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --schedule "2026-10-03T06:00:00-03:00"
 
+# #11813: CORRIGIR o broadcast já criado (rascunho ou agendado) sem criar outro — PATCH no
+# kitBroadcastId do state, horário atual preservado (--schedule/--draft sobrepõem), relê
+# filtro/horário/conteúdo. Recusa se o broadcast já saiu. Nunca use --force pra corrigir:
+# ele cria um 2º e deixa o 1º agendado (envio duplo).
+npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle $CYCLE --update
+
 # Projeta o resultado no state por canal (done / failed com o motivo).
 npx tsx scripts/mark-retrospectiva-channel.ts --cycle $CYCLE --sync-email
 ```

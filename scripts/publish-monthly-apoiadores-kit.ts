@@ -79,6 +79,18 @@
  * aborta (exit 2). `--force` ignora os dois. Depois de criar, grava o id de
  * volta. `--dry-run` nunca lê nem grava o state.
  *
+ * ## `--update`: corrigir sem criar outro (#11813)
+ *
+ * `--force` cria um broadcast NOVO e deixa o anterior órfão — agendado, se já
+ * estava, com risco de envio duplo (01/11/2026: tirar os boxes do broadcast
+ * 26741332 exigiu PATCH manual por isso). `--update` faz `PATCH` no
+ * `kitBroadcastId` já registrado: relê antes (só draft/scheduled), manda
+ * conteúdo + filtro + `send_at` explícito (editar broadcast agendado zera o
+ * `send_at`, armadilha 4 de `kit-client.ts`) e relê depois conferindo filtro,
+ * horário e conteúdo (`updateApoiadoresKitBroadcast`). O horário padrão é o
+ * atual do broadcast; `--schedule`/`--draft` sobrepõem. `--update` + `--force`
+ * é erro.
+ *
  * Exit codes: 1 uso/erro fatal · 2 guard de config/audiência/idempotência.
  *
  * Uso:
@@ -87,6 +99,7 @@
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --force
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --schedule "2026-09-15T10:00:00-03:00"
  *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --draft
+ *   npx tsx scripts/publish-monthly-apoiadores-kit.ts --cycle 2607-08 --update
  */
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -98,10 +111,12 @@ import { APOIO_EXCLUSIVE_PREVIEW_TEXT } from "./lib/shared/apoio-preview-text.ts
 import { resolveKitConfig, type KitConfig } from "./lib/kit-config.ts";
 import {
   createBroadcast,
+  updateBroadcast,
   findTagIdByName,
   countKitTagMembers,
   buildTagFilter,
   type CreateBroadcastInput,
+  type UpdateBroadcastInput,
   type KitSubscriberFilter,
 } from "./lib/kit-broadcasts.ts";
 import { getBroadcast } from "./lib/kit-client.ts";
@@ -193,7 +208,12 @@ export interface ApoiadoresKitDeps {
    * risco. Tipado como `{ subscriber_filter?: unknown }` de propósito: só
    * este campo importa aqui, e a API pode não ecoá-lo.
    */
-  getBroadcast: (id: number, config?: KitConfig) => Promise<{ subscriber_filter?: unknown }>;
+  getBroadcast: (id: number, config?: KitConfig) => Promise<RereadBroadcast>;
+  /**
+   * `PATCH /v4/broadcasts/{id}` — só o modo `--update` (#11813) chama. O
+   * caminho de criação nunca atualiza nada.
+   */
+  updateBroadcast: (id: number, input: UpdateBroadcastInput, config?: KitConfig) => Promise<unknown>;
   /** Relógio injetável (#9473) — a regra de envio compara contra "agora". */
   now?: () => Date;
 }
@@ -282,6 +302,7 @@ const defaultDeps: ApoiadoresKitDeps = {
   countTagMembers: countKitTagMembers,
   createBroadcast,
   getBroadcast,
+  updateBroadcast,
 };
 
 export type AudienceVerification =
@@ -319,14 +340,453 @@ export function verifyAudienceFilter(rereadFilter: unknown, expected: KitSubscri
   };
 }
 
+// ── modo --update (#11813) ─────────────────────────────────────────────────
+
+/**
+ * Shape da releitura (`GET /v4/broadcasts/{id}`) que este script usa. Todos
+ * opcionais: o caminho de criação só lê `subscriber_filter`, e a API não
+ * garante ecoar cada campo.
+ */
+export interface RereadBroadcast {
+  subscriber_filter?: unknown;
+  send_at?: string | null;
+  status?: string;
+  subject?: string;
+  content?: string | null;
+}
+
+/** Status do Kit em que o broadcast ainda pode ser editado sem reenviar nada. */
+const UPDATABLE_STATUSES = new Set(["draft", "scheduled"]);
+
+/**
+ * Pura (#11813): decide se o state permite `--update`. O bloqueio é só a
+ * AUSÊNCIA de `kitBroadcastId`: `status: "sent"` no state não bloqueia aqui,
+ * porque o próprio script grava "sent" ao AGENDAR (#7867 item 1) e corrigir um
+ * broadcast agendado é justamente o caso da issue. Quem decide se o envio já
+ * saiu é a releitura ao vivo (`checkLiveBroadcastUpdatable`), nunca o state.
+ */
+export function decideUpdateKitAction(
+  state: ApoiadoresState | null,
+): { action: "update"; broadcastId: number } | { action: "blocked"; reason: string } {
+  if (state?.kitBroadcastId == null) {
+    return {
+      action: "blocked",
+      reason:
+        "--update precisa de um broadcast Kit já registrado no state do ciclo (kitBroadcastId), e não há nenhum. " +
+        "Rode sem --update para criar o broadcast.",
+    };
+  }
+  return { action: "update", broadcastId: state.kitBroadcastId };
+}
+
+/**
+ * Pura (#11813): o broadcast relido ainda aceita edição? Só `draft` e
+ * `scheduled`. Status ausente na releitura recusa (fail-safe): sem saber se o
+ * envio já saiu, editar às cegas pode "corrigir" um e-mail já entregue e
+ * deixar o state dizendo o contrário. Agendado com `send_at` já no passado
+ * também recusa: o Kit pode estar disparando.
+ */
+export function checkLiveBroadcastUpdatable(
+  live: RereadBroadcast,
+  broadcastId: number,
+  now: Date,
+): { ok: true } | { ok: false; reason: string } {
+  if (live.status === undefined || !UPDATABLE_STATUSES.has(live.status)) {
+    return {
+      ok: false,
+      reason:
+        `o broadcast Kit id=${broadcastId} está com status ${live.status === undefined ? "desconhecido (a releitura não trouxe o campo)" : `"${live.status}"`} — ` +
+        "só draft/scheduled podem ser atualizados. Se ele já foi enviado, a correção é outro broadcast (--force).",
+    };
+  }
+  if (live.status === "scheduled" && typeof live.send_at === "string") {
+    const sendAtMs = Date.parse(live.send_at);
+    if (!Number.isNaN(sendAtMs) && sendAtMs <= now.getTime()) {
+      return {
+        ok: false,
+        reason:
+          `o broadcast Kit id=${broadcastId} estava agendado para ${live.send_at}, que já passou — o Kit pode estar ` +
+          "disparando. Confira o painel antes de qualquer correção.",
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** De onde veio o `send_at` do PATCH no modo `--update`. */
+export type ApoiadoresUpdateSendAt =
+  | { source: "explicit"; scheduleAt: string }
+  | { source: "draft_flag"; scheduleAt: null }
+  | { source: "preserve"; scheduleAt: string | null };
+
+/**
+ * Pura (#11813): no `--update`, o padrão é PRESERVAR o horário que o
+ * broadcast tem ao vivo — corrigir o conteúdo não pode mudar quando ele sai.
+ * A regra do 1º sábado (#9473) não se aplica: ela decide a criação, e
+ * reaplicá-la numa correção poderia mover um envio que o editor ajustou à
+ * mão. `--schedule`/`--draft` continuam valendo como override explícito.
+ */
+export function resolveApoiadoresUpdateSendAt(opts: {
+  scheduleRaw: string | undefined;
+  draft: boolean;
+  liveSendAt: string | null | undefined;
+}): ApoiadoresUpdateSendAt {
+  if (opts.scheduleRaw !== undefined && opts.draft) {
+    throw new Error("--schedule e --draft são mutuamente exclusivos — passe só um.");
+  }
+  if (opts.scheduleRaw !== undefined) {
+    if (Number.isNaN(Date.parse(opts.scheduleRaw))) {
+      throw new Error(
+        `--schedule "${opts.scheduleRaw}" não é uma data/hora ISO 8601 válida (ex: 2026-09-15T10:00:00-03:00).`,
+      );
+    }
+    return { source: "explicit", scheduleAt: opts.scheduleRaw };
+  }
+  if (opts.draft) return { source: "draft_flag", scheduleAt: null };
+  return { source: "preserve", scheduleAt: opts.liveSendAt ?? null };
+}
+
+/** Pura: mesmo instante? O Kit pode devolver o ISO normalizado (UTC, `Z`). */
+export function sameInstant(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  const ma = Date.parse(a);
+  const mb = Date.parse(b);
+  if (Number.isNaN(ma) || Number.isNaN(mb)) return a === b;
+  return ma === mb;
+}
+
+export type ContentVerification =
+  | { verified: true }
+  | { verified: false; reason: string }
+  | { verified: null; reason: string };
+
+/**
+ * Pura (#11813): o conteúdo relido bate com o enviado? Só informa: o Kit pode
+ * normalizar o HTML ao salvar, então divergência vira AVISO, não aborto. O
+ * que aborta é audiência e horário, os dois erros que mandam e-mail errado.
+ */
+export function verifyUpdatedContent(
+  reread: RereadBroadcast,
+  expected: { subject: string; html: string },
+): ContentVerification {
+  if (reread.subject === undefined && (reread.content === undefined || reread.content === null)) {
+    return { verified: null, reason: "a releitura não trouxe subject nem content — conteúdo NÃO confirmado." };
+  }
+  const problems: string[] = [];
+  if (reread.subject !== undefined && reread.subject !== expected.subject) {
+    problems.push(`subject relido "${reread.subject}" ≠ enviado "${expected.subject}"`);
+  }
+  if (typeof reread.content === "string" && reread.content !== expected.html) {
+    problems.push(
+      `content relido (${reread.content.length} chars) ≠ enviado (${expected.html.length} chars; o Kit pode normalizar o HTML)`,
+    );
+  }
+  if (problems.length > 0) return { verified: false, reason: problems.join("; ") };
+  return { verified: true };
+}
+
+export type UpdateApoiadoresKitResult =
+  | {
+      ok: true;
+      broadcastId: number;
+      sendAt: string | null;
+      sendAtSource: ApoiadoresUpdateSendAt["source"];
+      audience: AudienceVerification;
+      content: ContentVerification;
+      sendAtRescued: boolean;
+    }
+  | {
+      ok: false;
+      broadcastId: number;
+      /** `true` = nada foi alterado no Kit (recusa antes do PATCH). */
+      untouched: boolean;
+      /** Audiência relida (só quando o PATCH aconteceu). */
+      audience?: AudienceVerification;
+      reason: string;
+    };
+
+/**
+ * Rede (deps injetados, #11813): atualiza o broadcast JÁ registrado em vez de
+ * criar outro. Antes, corrigir um broadcast agendado exigia `--force`, que
+ * cria um 2º e deixa o 1º órfão e AGENDADO: envio duplo se ninguém apagar à
+ * mão (caso real do broadcast 26741332, 01/11/2026, corrigido por PATCH manual).
+ *
+ * Passos, cada um relido ao vivo (2xx não prova efeito, #573):
+ *   1. Relê o broadcast e recusa se não estiver em draft/scheduled.
+ *   2. PATCH com conteúdo + `subscriber_filter` + `public: false` + `send_at`
+ *      SEMPRE explícito: editar um broadcast agendado zera o `send_at` em
+ *      silêncio (armadilha 4 de `kit-client.ts`, #8208).
+ *   3. Relê de novo e confere filtro, horário e conteúdo. `send_at` que voltou
+ *      `null` com alvo agendado é reagendado uma vez e conferido; continuando
+ *      errado, falha com instrução manual.
+ *   4. Filtro DIVERGENTE num broadcast agendado: desagenda (`send_at: null`)
+ *      antes de devolver a falha — o pior caso é a base inteira receber a
+ *      recompensa de apoiador.
+ */
+export async function updateApoiadoresKitBroadcast(opts: {
+  broadcastId: number;
+  content: ApoiadoresKitEmailContent;
+  cycle: string;
+  audience: ResolvedAudienceTag;
+  scheduleRaw: string | undefined;
+  draft: boolean;
+  now: Date;
+  deps: Pick<ApoiadoresKitDeps, "getBroadcast" | "updateBroadcast">;
+  kitConfig?: KitConfig;
+  log: (msg: string) => void;
+}): Promise<UpdateApoiadoresKitResult> {
+  const { broadcastId, deps, kitConfig, log } = opts;
+
+  let live: RereadBroadcast;
+  try {
+    live = await deps.getBroadcast(broadcastId, kitConfig);
+  } catch (e) {
+    return {
+      ok: false,
+      broadcastId,
+      untouched: true,
+      reason: `a releitura do broadcast id=${broadcastId} ANTES do update falhou (${(e as Error).message}) — nada foi alterado.`,
+    };
+  }
+  const updatable = checkLiveBroadcastUpdatable(live, broadcastId, opts.now);
+  if (!updatable.ok) return { ok: false, broadcastId, untouched: true, reason: updatable.reason };
+
+  const target = resolveApoiadoresUpdateSendAt({
+    scheduleRaw: opts.scheduleRaw,
+    draft: opts.draft,
+    liveSendAt: live.send_at,
+  });
+  const expectedFilter = buildTagFilter(opts.audience.tagId);
+  const base = buildApoiadoresKitBroadcastInput(opts.content, opts.cycle, opts.audience, target.scheduleAt);
+  const patch: UpdateBroadcastInput = {
+    subject: base.subject,
+    content: base.content,
+    preview_text: base.preview_text,
+    description: base.description,
+    subscriber_filter: base.subscriber_filter,
+    public: base.public,
+    send_at: target.scheduleAt,
+  };
+
+  try {
+    await deps.updateBroadcast(broadcastId, patch, kitConfig);
+  } catch (e) {
+    return {
+      ok: false,
+      broadcastId,
+      untouched: false,
+      reason:
+        `PATCH /broadcasts/${broadcastId} falhou (${(e as Error).message}). O estado no Kit é incerto — confira ` +
+        "no painel se o conteúdo e o agendamento ficaram como antes.",
+    };
+  }
+
+  let reread: RereadBroadcast;
+  try {
+    reread = await deps.getBroadcast(broadcastId, kitConfig);
+  } catch (e) {
+    return {
+      ok: false,
+      broadcastId,
+      untouched: false,
+      reason:
+        `o PATCH foi aceito, mas a releitura falhou (${(e as Error).message}) — audiência e horário NÃO ` +
+        `conferidos. Confira o broadcast id=${broadcastId} no painel do Kit antes do envio.`,
+    };
+  }
+
+  const audience = verifyAudienceFilter(reread.subscriber_filter, expectedFilter);
+  if (audience.verified === false) {
+    // Desagendar é o que impede o disparo com audiência errada.
+    let unscheduleNote: string;
+    if (reread.send_at) {
+      try {
+        await deps.updateBroadcast(broadcastId, { send_at: null }, kitConfig);
+        const after = await deps.getBroadcast(broadcastId, kitConfig);
+        unscheduleNote = after.send_at
+          ? ` A tentativa de desagendar NÃO pegou (send_at=${after.send_at}) — DESAGENDE À MÃO no Kit AGORA.`
+          : " O broadcast foi DESAGENDADO (send_at: null, confirmado por releitura).";
+      } catch (e) {
+        unscheduleNote = ` A tentativa de desagendar FALHOU (${(e as Error).message}) — DESAGENDE À MÃO no Kit AGORA.`;
+      }
+    } else {
+      unscheduleNote = " O broadcast está como rascunho — NÃO dispare sem conferir a audiência.";
+    }
+    return { ok: false, broadcastId, untouched: false, audience, reason: `${audience.reason}${unscheduleNote}` };
+  }
+
+  let sendAtRescued = false;
+  let finalSendAt: string | null | undefined = reread.send_at;
+  if (!sameInstant(finalSendAt ?? null, target.scheduleAt)) {
+    log(
+      `AVISO: a releitura mostra send_at=${String(finalSendAt)}, esperado ${String(target.scheduleAt)} ` +
+        "(editar broadcast agendado zera o send_at, #8208) — reaplicando o horário.",
+    );
+    try {
+      await deps.updateBroadcast(broadcastId, { send_at: target.scheduleAt }, kitConfig);
+      finalSendAt = (await deps.getBroadcast(broadcastId, kitConfig)).send_at;
+    } catch (e) {
+      return {
+        ok: false,
+        broadcastId,
+        untouched: false,
+        audience,
+        reason:
+          `o horário ficou errado depois do PATCH e a correção falhou (${(e as Error).message}). Esperado ` +
+          `send_at=${String(target.scheduleAt)} — ajuste à mão no painel do Kit.`,
+      };
+    }
+    if (!sameInstant(finalSendAt ?? null, target.scheduleAt)) {
+      return {
+        ok: false,
+        broadcastId,
+        untouched: false,
+        audience,
+        reason:
+          `send_at continua ${String(finalSendAt)} depois da correção, esperado ${String(target.scheduleAt)} — ` +
+          "ajuste à mão no painel do Kit.",
+      };
+    }
+    sendAtRescued = true;
+  }
+
+  return {
+    ok: true,
+    broadcastId,
+    sendAt: target.scheduleAt,
+    sendAtSource: target.source,
+    audience,
+    content: verifyUpdatedContent(reread, { subject: opts.content.subject, html: opts.content.html }),
+    sendAtRescued,
+  };
+}
+
+/**
+ * Orquestra o `--update` (#11813) a partir do `main()`: chama
+ * `updateApoiadoresKitBroadcast` e grava o state. Mesmo id de broadcast,
+ * nunca um novo. Recusa antes do PATCH sai com exit 2 sem tocar o state;
+ * falha depois do PATCH grava `draft_prepared` (o state não pode continuar
+ * dizendo "agendado/sent" quando o horário ou a audiência ficaram incertos) e
+ * lança.
+ */
+async function runUpdate(opts: {
+  broadcastId: number;
+  cycle: string;
+  dir: string;
+  content: ApoiadoresKitEmailContent;
+  htmlPath: string;
+  audience: ResolvedAudienceTag;
+  scheduleRaw: string | undefined;
+  draft: boolean;
+  existingState: ApoiadoresState | null;
+  deps: ApoiadoresKitDeps;
+  kitConfig: KitConfig;
+  log: (msg: string) => void;
+}): Promise<void> {
+  const { broadcastId, cycle, dir, content, deps, log } = opts;
+  const result = await updateApoiadoresKitBroadcast({
+    broadcastId,
+    content,
+    cycle,
+    audience: opts.audience,
+    scheduleRaw: opts.scheduleRaw,
+    draft: opts.draft,
+    now: (deps.now ?? (() => new Date()))(),
+    deps,
+    kitConfig: opts.kitConfig,
+    log,
+  });
+
+  if (!result.ok && result.untouched) {
+    log(`ERRO: ${result.reason}`);
+    process.exit(2);
+    return;
+  }
+
+  // Mesma checagem de corrida do caminho de criação: outra invocação trocou o
+  // id registrado enquanto esta atualizava? Não sobrescreve o registro dela.
+  const freshState = deps.readState(dir);
+  if (freshState?.kitBroadcastId != null && freshState.kitBroadcastId !== broadcastId) {
+    throw new Error(
+      `race de idempotência: esta invocação atualizou o broadcast Kit id=${broadcastId}, mas o state do ciclo ` +
+        `${cycle} agora registra o id=${freshState.kitBroadcastId} — NÃO sobrescrevendo. Confira o painel do Kit.`,
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  if (!result.ok) {
+    try {
+      deps.writeState(
+        dir,
+        buildApoiadoresKitPublishedState(
+          opts.existingState,
+          cycle,
+          nowIso,
+          opts.htmlPath,
+          content.subject,
+          broadcastId,
+          result.audience?.verified ?? null,
+        ),
+      );
+    } catch (e) {
+      log(`AVISO: o state não pôde ser gravado depois da falha (${(e as Error).message}).`);
+    }
+    throw new Error(`--update do broadcast Kit id=${broadcastId} NÃO confere: ${result.reason}`);
+  }
+
+  if (result.audience.verified !== true) log(`AVISO: ${result.audience.reason}`);
+  if (result.content.verified !== true) log(`AVISO: conteúdo — ${result.content.reason}`);
+  if (result.sendAtRescued) log(`horário reaplicado e confirmado: send_at=${String(result.sendAt)}`);
+
+  const markSent = result.sendAt !== null && result.audience.verified === true;
+  if (result.sendAt !== null && !markSent) {
+    log(
+      `AVISO: broadcast AGENDADO para ${result.sendAt}, mas a audiência não pôde ser CONFIRMADA — o state fica em ` +
+        "draft_prepared; confira no painel e rode 'send-monthly-apoiadores.ts --mark-sent' depois.",
+    );
+  }
+  const state = markSent
+    ? buildApoiadoresKitScheduledState(
+        opts.existingState,
+        cycle,
+        nowIso,
+        opts.htmlPath,
+        content.subject,
+        broadcastId,
+        result.sendAt as string,
+        result.audience.verified,
+      )
+    : buildApoiadoresKitPublishedState(
+        opts.existingState,
+        cycle,
+        nowIso,
+        opts.htmlPath,
+        content.subject,
+        broadcastId,
+        result.audience.verified,
+      );
+  deps.writeState(dir, state);
+  log(
+    `broadcast ATUALIZADO: id=${broadcastId} (nenhum broadcast novo criado), ` +
+      `${result.sendAt ? `agendado para ${result.sendAt}` : "rascunho"} ` +
+      `[horário: ${result.sendAtSource === "preserve" ? "preservado" : result.sendAtSource === "explicit" ? "--schedule" : "--draft"}].`,
+  );
+}
+
 export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = defaultDeps): Promise<void> {
   const rootDir = rootDirOverride ?? ROOT;
   loadProjectEnv(rootDir);
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, "dry-run");
   const force = hasFlag(argv, "force");
+  const update = hasFlag(argv, "update");
   const cycle = requireMonthlyCycleArg(argv);
   const log = (msg: string) => process.stderr.write(`${LOG_PREFIX} ${msg}\n`);
+  if (update && force) {
+    log("ERRO: --update e --force são mutuamente exclusivos — --update corrige o broadcast existente, --force cria outro.");
+    process.exit(1);
+    return;
+  }
 
   // #9473: o horário de envio vem da REGRA (1º sábado do mês de envio, 06:00
   // BRT — `platform.config.json` → `monthly_send_schedule`) por padrão.
@@ -352,24 +812,48 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
       })
     : {};
 
-  let sendAtResolution: ApoiadoresSendAtResolution;
-  try {
-    sendAtResolution = resolveApoiadoresSendAt({
-      cycle,
-      scheduleRaw,
-      draft: draftFlag,
-      now: (deps.now ?? (() => new Date()))(),
-      // #9485: thunk — só resolvido sem --schedule/--draft.
-      rule: () => resolveMonthlySendSchedule(platformConfig.monthly_send_schedule),
-    });
-  } catch (e) {
-    log(`ERRO: ${(e as Error).message}`);
-    process.exit(1);
-    return;
+  // #11813: no --update o horário padrão é o do broadcast AO VIVO (preservado),
+  // então a regra não entra; aqui só se valida --schedule/--draft antes de
+  // qualquer render. O alvo final é resolvido depois da releitura.
+  if (update) {
+    try {
+      const pre = resolveApoiadoresUpdateSendAt({ scheduleRaw, draft: draftFlag, liveSendAt: undefined });
+      log(
+        `horário de envio (--update): ${
+          pre.source === "explicit"
+            ? `${pre.scheduleAt} (--schedule explícito)`
+            : pre.source === "draft_flag"
+              ? "rascunho (--draft)"
+              : "o atual do broadcast (preservado)"
+        }`,
+      );
+    } catch (e) {
+      log(`ERRO: ${(e as Error).message}`);
+      process.exit(1);
+      return;
+    }
   }
-  if (sendAtResolution.warning) log(`AVISO: ${sendAtResolution.warning}`);
-  const scheduleAt = sendAtResolution.scheduleAt;
-  log(`horário de envio: ${describeSendAtResolution(sendAtResolution)}`);
+
+  let sendAtResolution: ApoiadoresSendAtResolution | null = null;
+  if (!update) {
+    try {
+      sendAtResolution = resolveApoiadoresSendAt({
+        cycle,
+        scheduleRaw,
+        draft: draftFlag,
+        now: (deps.now ?? (() => new Date()))(),
+        // #9485: thunk — só resolvido sem --schedule/--draft.
+        rule: () => resolveMonthlySendSchedule(platformConfig.monthly_send_schedule),
+      });
+    } catch (e) {
+      log(`ERRO: ${(e as Error).message}`);
+      process.exit(1);
+      return;
+    }
+  }
+  if (sendAtResolution?.warning) log(`AVISO: ${sendAtResolution.warning}`);
+  const scheduleAt = sendAtResolution?.scheduleAt ?? null;
+  if (sendAtResolution) log(`horário de envio: ${describeSendAtResolution(sendAtResolution)}`);
   const tagNameResolution = resolveApoiadoresTagName(platformConfig.kit_apoiadores);
   if (!tagNameResolution.ok) {
     // Vale inclusive em --dry-run: sem nome de tag não há audiência possível,
@@ -384,7 +868,16 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   // seguro de repetir e nunca toca o state).
   const dir = monthlyDir(cycle);
   const existingState = dryRun ? null : deps.readState(dir);
-  if (!dryRun) {
+  let updateBroadcastId: number | null = null;
+  if (!dryRun && update) {
+    const decision = decideUpdateKitAction(existingState);
+    if (decision.action === "blocked") {
+      log(`ERRO: ${decision.reason}`);
+      process.exit(2);
+      return;
+    }
+    updateBroadcastId = decision.broadcastId;
+  } else if (!dryRun) {
     const decision = decidePublishKitAction(existingState, force);
     if (decision.action === "blocked") {
       log(`ERRO: ${decision.reason}`);
@@ -395,7 +888,8 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
       log(
         `AVISO: --force ignorando idempotência — broadcast anterior id=${existingState.kitBroadcastId} ` +
           `(criado em ${existingState.preparedAt}) NÃO será excluído automaticamente e ficará órfão como ` +
-          "rascunho no Kit. Confira o painel (Broadcasts → Drafts) e exclua manualmente se não for mais necessário.",
+          "rascunho no Kit (ou AGENDADO, com risco de envio duplo). Confira o painel (Broadcasts) e exclua " +
+          "manualmente se não for mais necessário. Para CORRIGIR o broadcast existente, use --update (#11813).",
       );
     }
   }
@@ -414,6 +908,13 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
     log(`[DRY RUN] HTML já escrito em ${rendered.htmlPath}`);
     log(`  Assunto: ${content.subject}`);
     log(`  Preview: ${content.previewText}`);
+    if (update) {
+      log(
+        `  Broadcast que SERIA atualizado: o kitBroadcastId registrado no state do ciclo (dry-run não lê o ` +
+          `state), tag de audiência="${tagName}", public: false, horário conforme acima.`,
+      );
+      return;
+    }
     log(
       `  Broadcast que SERIA criado: tag de audiência="${tagName}", ` +
         `${scheduleAt ? `AGENDADO para ${scheduleAt}` : "rascunho (send_at: null)"}, public: false.`,
@@ -451,6 +952,24 @@ export async function main(rootDirOverride?: string, deps: ApoiadoresKitDeps = d
   if (!audience) {
     log("ERRO: audiência não resolvida — os guards de tag/membros não passaram.");
     process.exit(2);
+    return;
+  }
+
+  if (update) {
+    await runUpdate({
+      broadcastId: updateBroadcastId as number, // decideUpdateKitAction garantiu acima (fora de dry-run)
+      cycle,
+      dir,
+      content,
+      htmlPath: rendered.htmlPath,
+      audience,
+      scheduleRaw,
+      draft: draftFlag,
+      existingState,
+      deps,
+      kitConfig,
+      log,
+    });
     return;
   }
 

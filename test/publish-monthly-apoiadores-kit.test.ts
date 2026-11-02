@@ -35,12 +35,18 @@ import {
   main,
   resolveApoiadoresSendAt,
   verifyAudienceFilter,
+  checkLiveBroadcastUpdatable,
+  decideUpdateKitAction,
+  resolveApoiadoresUpdateSendAt,
+  sameInstant,
+  verifyUpdatedContent,
   type ApoiadoresKitDeps,
+  type RereadBroadcast,
   type ApoiadoresKitEmailContent,
 } from "../scripts/publish-monthly-apoiadores-kit.ts";
 import type { RenderedMonthlyApoiadoresKitEmail } from "../scripts/render-monthly-apoiadores-kit.ts";
 import type { ApoiadoresState } from "../scripts/lib/mensal/monthly-apoiadores-state.ts";
-import { buildTagFilter, type CreateBroadcastInput } from "../scripts/lib/kit-broadcasts.ts";
+import { buildTagFilter, type CreateBroadcastInput, type UpdateBroadcastInput } from "../scripts/lib/kit-broadcasts.ts";
 import { resolveApoiadoresAudience } from "../scripts/lib/mensal/apoiadores-kit-channel.ts";
 import { DEFAULT_MONTHLY_SEND_SCHEDULE } from "../scripts/lib/mensal/monthly-send-schedule.ts";
 
@@ -157,6 +163,10 @@ function makeSpy(overrides: Partial<ApoiadoresKitDeps> = {}, existing: Apoiadore
     },
     // Default do caminho feliz: a releitura ecoa exatamente o filtro enviado.
     getBroadcast: async () => ({ subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }] }),
+    // #11813: o caminho de criação nunca atualiza — falha alto se chamado.
+    updateBroadcast: async () => {
+      throw new Error("updateBroadcast não deveria ser chamado fora do --update");
+    },
     // #9473: relógio FIXO bem depois do 1º sábado de ago/2026 (envio do ciclo
     // 2607-08 pela regra) — sem --schedule/--draft, a regra cai pra RASCUNHO
     // por "já passou", que é o que os testes pré-#9473 abaixo assumem.
@@ -956,5 +966,276 @@ describe("#9485 — regra só é resolvida sem --schedule/--draft", () => {
     assert.equal(calls, 0);
     assert.throws(() => resolveApoiadoresSendAt({ cycle: "2610-11", scheduleRaw: undefined, draft: false, now, rule }), /regra inválida/);
     assert.equal(calls, 1);
+  });
+});
+
+// ── #11813 — --update: corrigir o broadcast existente sem criar outro ────────
+
+describe("#11813 — helpers puros do --update", () => {
+  const baseState: ApoiadoresState = {
+    cycle: "2607-08",
+    status: "sent",
+    preparedAt: "2026-08-01T10:00:00.000Z",
+    sentAt: "2030-02-02T09:00:00.000Z",
+    htmlPath: "/x/y.html",
+    subject: "Assunto",
+    segments: [],
+    brevoCampaignId: null,
+    kitBroadcastId: 555,
+    kitAudienceVerified: true,
+  };
+
+  it("decideUpdateKitAction: sem kitBroadcastId bloqueia; status 'sent' (agendado) NÃO bloqueia", () => {
+    assert.equal(decideUpdateKitAction(null).action, "blocked");
+    assert.equal(decideUpdateKitAction({ ...baseState, kitBroadcastId: null }).action, "blocked");
+    assert.deepEqual(decideUpdateKitAction(baseState), { action: "update", broadcastId: 555 });
+  });
+
+  it("checkLiveBroadcastUpdatable: só draft/scheduled futuro; status ausente recusa", () => {
+    const now = new Date("2030-01-01T00:00:00Z");
+    assert.equal(checkLiveBroadcastUpdatable({ status: "draft", send_at: null }, 1, now).ok, true);
+    assert.equal(checkLiveBroadcastUpdatable({ status: "scheduled", send_at: "2030-02-02T09:00:00Z" }, 1, now).ok, true);
+    assert.equal(checkLiveBroadcastUpdatable({ status: "scheduled", send_at: "2029-12-31T09:00:00Z" }, 1, now).ok, false);
+    for (const status of ["completed", "sending", "aborted"]) {
+      assert.equal(checkLiveBroadcastUpdatable({ status }, 1, now).ok, false, status);
+    }
+    assert.equal(checkLiveBroadcastUpdatable({}, 1, now).ok, false);
+  });
+
+  it("resolveApoiadoresUpdateSendAt: preserva o horário ao vivo por padrão; --schedule/--draft sobrepõem", () => {
+    assert.deepEqual(
+      resolveApoiadoresUpdateSendAt({ scheduleRaw: undefined, draft: false, liveSendAt: "2030-02-02T09:00:00Z" }),
+      { source: "preserve", scheduleAt: "2030-02-02T09:00:00Z" },
+    );
+    assert.deepEqual(resolveApoiadoresUpdateSendAt({ scheduleRaw: undefined, draft: false, liveSendAt: null }), {
+      source: "preserve",
+      scheduleAt: null,
+    });
+    assert.deepEqual(
+      resolveApoiadoresUpdateSendAt({ scheduleRaw: undefined, draft: true, liveSendAt: "2030-02-02T09:00:00Z" }),
+      { source: "draft_flag", scheduleAt: null },
+    );
+    assert.equal(
+      resolveApoiadoresUpdateSendAt({ scheduleRaw: "2030-03-01T06:00:00-03:00", draft: false, liveSendAt: null }).scheduleAt,
+      "2030-03-01T06:00:00-03:00",
+    );
+    assert.throws(() => resolveApoiadoresUpdateSendAt({ scheduleRaw: "x", draft: true, liveSendAt: null }), /mutuamente/);
+    assert.throws(() => resolveApoiadoresUpdateSendAt({ scheduleRaw: "não-data", draft: false, liveSendAt: null }), /ISO/);
+  });
+
+  it("sameInstant: compara instante, não string (o Kit normaliza para UTC)", () => {
+    assert.equal(sameInstant("2030-02-02T06:00:00-03:00", "2030-02-02T09:00:00.000Z"), true);
+    assert.equal(sameInstant(null, null), true);
+    assert.equal(sameInstant(null, "2030-02-02T09:00:00Z"), false);
+    assert.equal(sameInstant("2030-02-02T09:00:00Z", "2030-02-02T09:01:00Z"), false);
+  });
+
+  it("verifyUpdatedContent: igual -> true; divergente -> false; campos ausentes -> null", () => {
+    const exp = { subject: "S", html: "<p>x</p>" };
+    assert.equal(verifyUpdatedContent({ subject: "S", content: "<p>x</p>" }, exp).verified, true);
+    assert.equal(verifyUpdatedContent({ subject: "S", content: "<p>y</p>" }, exp).verified, false);
+    assert.equal(verifyUpdatedContent({ subject: "T" }, exp).verified, false);
+    assert.equal(verifyUpdatedContent({}, exp).verified, null);
+  });
+});
+
+/**
+ * Kit falso com um broadcast vivo. `zeroSendAtOnContentPatch` reproduz a
+ * armadilha 4 de `kit-client.ts` (#8208): PATCH de conteúdo zera o `send_at`
+ * mesmo quando o corpo o traz; um PATCH só de `send_at` pega.
+ */
+function makeFakeKit(
+  initial: RereadBroadcast,
+  opts: { zeroSendAtOnContentPatch?: boolean; sendAtNeverSticks?: boolean; filterOverride?: unknown } = {},
+) {
+  const live: RereadBroadcast = { ...initial };
+  const patches: { id: number; input: UpdateBroadcastInput }[] = [];
+  const overrides: Partial<ApoiadoresKitDeps> = {
+    getBroadcast: async () => ({ ...live }),
+    updateBroadcast: async (id, input) => {
+      patches.push({ id, input });
+      if (input.subject !== undefined) live.subject = input.subject;
+      if (input.content !== undefined) live.content = input.content;
+      if (input.subscriber_filter !== undefined) {
+        live.subscriber_filter = opts.filterOverride !== undefined ? opts.filterOverride : input.subscriber_filter;
+      }
+      if ("send_at" in input) {
+        const isContentPatch = input.content !== undefined;
+        if (opts.sendAtNeverSticks && input.send_at !== null) live.send_at = null;
+        else if (isContentPatch && opts.zeroSendAtOnContentPatch) live.send_at = null;
+        else live.send_at = input.send_at ?? null;
+        live.status = live.send_at ? "scheduled" : "draft";
+      }
+      return { id };
+    },
+  };
+  return { live, patches, overrides };
+}
+
+const SCHEDULED_STATE: ApoiadoresState = {
+  cycle: "2607-08",
+  status: "sent",
+  preparedAt: "2026-08-01T10:00:00.000Z",
+  sentAt: "2030-02-02T09:00:00.000Z",
+  htmlPath: "/x/y.html",
+  subject: "Assunto velho",
+  segments: [],
+  brevoCampaignId: null,
+  kitBroadcastId: 555,
+  kitAudienceVerified: true,
+};
+
+const LIVE_SCHEDULED: RereadBroadcast = {
+  status: "scheduled",
+  send_at: "2030-02-02T09:00:00.000Z",
+  subject: "Assunto velho",
+  content: "<html>com boxes</html>",
+  subscriber_filter: [{ all: [{ type: "tag", ids: [42] }] }],
+};
+
+describe("#11813 — main() --update", () => {
+  afterEach(() => {
+    process.exit = originalExit;
+    process.argv = originalArgv;
+    delete process.env.KIT_API_KEY;
+  });
+
+  async function runUpdate(
+    extraArgs: string[],
+    existing: ApoiadoresState | null,
+    kit: ReturnType<typeof makeFakeKit>,
+  ): Promise<{ spy: Spy; error: unknown }> {
+    const root = mkTmpRoot();
+    const restore = silenceStderr();
+    try {
+      writePlatformConfig(root, "apoio-mensal");
+      process.env.KIT_API_KEY = "fake_key";
+      process.argv = ["node", "publish-monthly-apoiadores-kit.ts", "--cycle", "2607-08", "--update", ...extraArgs];
+      mockProcessExit();
+      const spy = makeSpy(kit.overrides, existing);
+      let error: unknown = null;
+      try {
+        await main(root, spy.deps);
+      } catch (e) {
+        error = e;
+      }
+      return { spy, error };
+    } finally {
+      restore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("regressão: corrige o broadcast AGENDADO registrado, sem criar outro, preservando o horário", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED);
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.equal(error, null);
+    assert.equal(exitCode, null);
+    assert.equal(spy.created.length, 0, "--update NUNCA cria um 2º broadcast (era o bug do --force)");
+    assert.equal(kit.patches.length, 1);
+    assert.equal(kit.patches[0].id, 555);
+    assert.equal(kit.patches[0].input.content, FAKE_RENDERED.html);
+    assert.equal(kit.patches[0].input.send_at, "2030-02-02T09:00:00.000Z", "send_at sempre explícito no PATCH");
+    assert.deepEqual(kit.patches[0].input.subscriber_filter, [{ all: [{ type: "tag", ids: [42] }] }]);
+    assert.equal(kit.patches[0].input.public, false);
+    assert.equal(kit.live.send_at, "2030-02-02T09:00:00.000Z");
+    assert.equal(spy.written.length, 1);
+    assert.equal(spy.written[0].state.kitBroadcastId, 555);
+    assert.equal(spy.written[0].state.status, "sent");
+    assert.equal(spy.written[0].state.sentAt, "2030-02-02T09:00:00.000Z");
+    assert.equal(spy.written[0].state.kitAudienceVerified, true);
+  });
+
+  it("PATCH que zera o send_at (#8208): reaplica o horário e confirma por releitura", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED, { zeroSendAtOnContentPatch: true });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.equal(error, null);
+    assert.equal(kit.patches.length, 2);
+    assert.deepEqual(kit.patches[1].input, { send_at: "2030-02-02T09:00:00.000Z" });
+    assert.equal(kit.live.send_at, "2030-02-02T09:00:00.000Z");
+    assert.equal(spy.written[0].state.status, "sent");
+  });
+
+  it("send_at que não pega nem depois da correção: lança e o state sai de 'sent'", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED, { sendAtNeverSticks: true });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.match(String(error), /send_at continua/);
+    assert.equal(spy.created.length, 0);
+    assert.equal(spy.written.length, 1);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+    assert.equal(spy.written[0].state.kitBroadcastId, 555);
+  });
+
+  it("filtro relido DIVERGENTE num agendado: desagenda, grava kitAudienceVerified:false e lança", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED, { filterOverride: [] });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.match(String(error), /DIVERGENTE/);
+    assert.match(String(error), /DESAGENDADO/);
+    assert.deepEqual(kit.patches.at(-1)?.input, { send_at: null });
+    assert.equal(kit.live.send_at, null);
+    assert.equal(spy.written[0].state.kitAudienceVerified, false);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+  });
+
+  it("broadcast já ENVIADO (completed): exit 2, nenhum PATCH, state intocado", async () => {
+    const kit = makeFakeKit({ ...LIVE_SCHEDULED, status: "completed" });
+    const { spy, error } = await runUpdate([], SCHEDULED_STATE, kit);
+    assert.match(String(error), /__mocked_exit__/);
+    assert.equal(exitCode, 2);
+    assert.equal(kit.patches.length, 0);
+    assert.equal(spy.written.length, 0);
+    assert.equal(spy.created.length, 0);
+  });
+
+  it("agendado com send_at já no passado: exit 2, nenhum PATCH", async () => {
+    const kit = makeFakeKit({ ...LIVE_SCHEDULED, send_at: "2029-12-31T09:00:00.000Z" });
+    await runUpdate([], SCHEDULED_STATE, kit);
+    assert.equal(exitCode, 2);
+    assert.equal(kit.patches.length, 0);
+  });
+
+  it("sem kitBroadcastId no state: exit 2 antes do render, sem criar nem atualizar", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED);
+    const { spy } = await runUpdate([], { ...SCHEDULED_STATE, kitBroadcastId: null }, kit);
+    assert.equal(exitCode, 2);
+    assert.deepEqual(spy.renderCalls, []);
+    assert.equal(kit.patches.length, 0);
+    assert.equal(spy.created.length, 0);
+  });
+
+  it("--update + --force: exit 1 (contraditório), nada tocado", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED);
+    const { spy } = await runUpdate(["--force"], SCHEDULED_STATE, kit);
+    assert.equal(exitCode, 1);
+    assert.equal(kit.patches.length, 0);
+    assert.equal(spy.created.length, 0);
+    assert.equal(spy.written.length, 0);
+  });
+
+  it("--update --draft: desagenda (send_at null) e grava draft_prepared", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED);
+    const { spy, error } = await runUpdate(["--draft"], SCHEDULED_STATE, kit);
+    assert.equal(error, null);
+    assert.equal(kit.patches[0].input.send_at, null);
+    assert.equal(kit.live.send_at, null);
+    assert.equal(spy.written[0].state.status, "draft_prepared");
+  });
+
+  it("--update --schedule: troca o horário pelo explícito", async () => {
+    const kit = makeFakeKit({ ...LIVE_SCHEDULED, status: "draft", send_at: null });
+    const { spy, error } = await runUpdate(["--schedule", "2030-03-01T06:00:00-03:00"], SCHEDULED_STATE, kit);
+    assert.equal(error, null);
+    assert.equal(kit.patches[0].input.send_at, "2030-03-01T06:00:00-03:00");
+    assert.equal(spy.written[0].state.status, "sent");
+    assert.equal(spy.written[0].state.sentAt, "2030-03-01T06:00:00-03:00");
+  });
+
+  it("--update --dry-run: não lê state nem toca o Kit", async () => {
+    const kit = makeFakeKit(LIVE_SCHEDULED);
+    const { spy, error } = await runUpdate(["--dry-run"], SCHEDULED_STATE, kit);
+    assert.equal(error, null);
+    assert.equal(kit.patches.length, 0);
+    assert.equal(spy.written.length, 0);
+    assert.equal(spy.created.length, 0);
   });
 });
