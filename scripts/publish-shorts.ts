@@ -212,7 +212,13 @@ import {
   parseCorteSpec,
   type CorteSpec,
 } from "./lib/diaria/short-corte.ts";
-import { corteAuthorizedDestinations, withCortePublishAuthorization } from "./lib/diaria/short-corte.ts";
+import {
+  corteAuthorizedDestinations,
+  corteContentMismatch,
+  withCortePublishAuthorization,
+  withoutCortePublishAuthorization,
+} from "./lib/diaria/short-corte.ts";
+import { corteContentFingerprint } from "./lib/diaria/corte-content.ts";
 import { planScheduledUpdates, type ScheduledUpdateItem } from "./lib/diaria/short-scheduled-update.ts";
 import { resolveEditionScheduledAt } from "./lib/edition-scheduled-at.ts";
 import { loadResolvedFacebookPages, type ResolvedFacebookPage } from "./lib/facebook-pages.ts";
@@ -3580,7 +3586,7 @@ const USAGE =
   "                                                                                 # (o dry-run também grava data/cortes/SLUG/corte.json: registra o corte; --from-drive baixa sempre para essa pasta)";
 
 /** Flags booleanas do `publish-shorts.ts` (não levam valor). */
-export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled"] as const;
+export const SHORTS_BOOLEAN_FLAGS = ["publish", "now", "confirm-instagram", "linkedin-timer", "instagram-timer", "threads-timer", "force-youtube", "keep-video", "update-scheduled", "require-corte-authorization"] as const;
 
 /**
  * Pure (#10978): `parseArgs` + a edição. O parser genérico lê
@@ -3643,10 +3649,22 @@ function configuredInstagramBackend(): InstagramBackend | "unreadable" {
 /** #11795: flags que não valem no corte avulso (timers do 300 e conferência do Instagram são da edição). */
 export const CORTE_FORBIDDEN_FLAGS = ["linkedin-timer", "instagram-timer", "threads-timer", "confirm-instagram"] as const;
 
+/** #11912: uma autorização ("pode publicar") do corte que caiu nesta rodada; vai no JSON de saída. */
+export interface CorteRevocation {
+  at: string;
+  destinations: "all" | string[];
+  reason: string;
+}
+
 /**
  * #11795: prepara a rodada do corte avulso — lê `data/cortes/{slug}/corte.json`,
  * aplica as flags desta rodada, grava a spec se mudou e copia a capa
  * (`--cover`) pra pasta do corte. Lança em spec ilegível ou incompleta.
+ *
+ * #11912: plano novo (título, gancho, horário, data, vídeo) ou conteúdo novo
+ * (vídeo/capa com outra impressão digital, ex.: `--cover` com outra imagem)
+ * derruba o "pode publicar" e registra `publish_revoked_*`; cada derrubada vai
+ * para `onRevoked` (o `main` põe no JSON da rodada). Devolve a spec gravada.
  */
 export function prepareCorteRun(input: {
   slug: string;
@@ -3654,6 +3672,8 @@ export function prepareCorteRun(input: {
   values: Record<string, string>;
   positionalDate: string;
   log: (line: string) => void;
+  now?: () => Date;
+  onRevoked?: (r: CorteRevocation) => void;
 }): CorteSpec {
   const specPath = join(input.dir, CORTE_SPEC_FILE);
   const existing = existsSync(specPath) ? parseCorteSpec(readFileSync(specPath, "utf8"), specPath) : null;
@@ -3679,23 +3699,63 @@ export function prepareCorteRun(input: {
     video,
   });
   if (!merged.ok) throw new Error(merged.error);
+  const coverSrc = values["cover"] !== undefined ? resolve(values["cover"]) : null;
+  if (coverSrc !== null && !existsSync(coverSrc)) throw new Error(`--cover: ${coverSrc} não existe`);
+  const nowIso = (input.now ?? (() => new Date()))().toISOString();
+  // A spec do arquivo (com a autorização) por baixo, o plano desta rodada por cima.
+  let spec: CorteSpec = existing ? { ...existing, ...merged.spec } : merged.spec;
+  if (existing && merged.changed.length) {
+    spec = revokeCorteAuthorization(spec, nowIso, `o plano do corte mudou (${merged.changed.join(", ")})`, input);
+  }
   if (merged.changed.length) {
     mkdirSync(input.dir, { recursive: true });
-    writeFileAtomic(specPath, JSON.stringify(merged.spec, null, 2) + "\n");
+    writeFileAtomic(specPath, JSON.stringify(spec, null, 2) + "\n");
     input.log(`[ok] corte "${input.slug}": ${existing ? `atualizado (${merged.changed.join(", ")})` : "registrado"} em ${specPath}`);
-    // #11912: o plano mudou, então o "pode publicar" anterior (sobre o plano antigo) não vale mais.
-    if (existing && corteAuthorizedDestinations(existing)) {
-      input.log(`[aviso] corte "${input.slug}": a autorização de publicação anterior caiu (o plano mudou); o timer do 300 só publica depois de um novo --publish --confirm-publish`);
-    }
   }
-  if (values["cover"] !== undefined) {
-    const src = resolve(values["cover"]);
-    if (!existsSync(src)) throw new Error(`--cover: ${src} não existe`);
+  if (coverSrc !== null) {
     mkdirSync(input.dir, { recursive: true });
-    copyFileSync(src, join(input.dir, SHORT_COVER_FILE));
+    copyFileSync(coverSrc, join(input.dir, SHORT_COVER_FILE));
     input.log(`[ok] corte "${input.slug}": capa copiada para ${join(input.dir, SHORT_COVER_FILE)}`);
   }
-  return merged.spec;
+  // #11912: capa (ou vídeo re-exportado no mesmo caminho) com outro conteúdo não herda o "pode publicar".
+  return syncCorteAuthorizationWithContent(input.dir, nowIso, input);
+}
+
+function revokeCorteAuthorization(
+  spec: CorteSpec,
+  nowIso: string,
+  reason: string,
+  io: { log: (line: string) => void; onRevoked?: (r: CorteRevocation) => void },
+): CorteSpec {
+  const r = withoutCortePublishAuthorization(spec, nowIso);
+  if (!r.revoked) return spec;
+  const dests = r.revoked === "all" ? "todos" : r.revoked.join(", ");
+  io.log(`[aviso] corte "${spec.slug}": o "pode publicar" caiu (${reason}); os destinos que estavam autorizados (${dests}) só saem pelo timer do 300 depois de um novo --publish --confirm-publish, e o timer alarma (revoked) se o horário chegar antes`);
+  io.onRevoked?.({ at: nowIso, destinations: r.revoked, reason });
+  return r.spec;
+}
+
+/**
+ * #11912: confere o vídeo e a capa da pasta do corte contra a impressão
+ * digital do "pode publicar". Diferente (re-export, outro `--from-drive`,
+ * outra `--cover`) → derruba a autorização e grava. Vídeo ausente nesta
+ * máquina não derruba (o timer alarma `missing-video`). Devolve a spec atual.
+ */
+export function syncCorteAuthorizationWithContent(
+  dir: string,
+  nowIso: string,
+  io: { log: (line: string) => void; onRevoked?: (r: CorteRevocation) => void },
+): CorteSpec {
+  const specPath = join(dir, CORTE_SPEC_FILE);
+  const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+  if (!corteAuthorizedDestinations(spec)) return spec;
+  const content = corteContentFingerprint(dir, spec);
+  if (content.video_sha256 === null) return spec;
+  const mismatch = corteContentMismatch(spec.publish_confirmed_content, content);
+  if (!mismatch) return spec;
+  const next = revokeCorteAuthorization(spec, nowIso, mismatch, io);
+  writeFileAtomic(specPath, JSON.stringify(next, null, 2) + "\n");
+  return next;
 }
 
 /**
@@ -3704,9 +3764,11 @@ export function prepareCorteRun(input: {
  * (confirmação, escopo dos timers, plano com o `--only`, vídeo presente) e
  * antes do 1º envio: um `--publish` que sai com exit 2 não deixa o corte
  * autorizado. `onlyRaw` é o `--only` da rodada; `known` são os destinos
- * válidos da config (`knownDestinationIds`). Destino desconhecido lança antes
- * de ler ou gravar qualquer coisa: nome errado no marcador faria o timer
- * ignorar o destino certo em silêncio, sem alarme `late`.
+ * válidos da config (`knownDestinationIds`) e, sem `--only`, viram a lista
+ * gravada (nunca `"all"`: destino ligado depois não herda a autorização).
+ * Destino desconhecido lança antes de ler ou gravar qualquer coisa: nome
+ * errado no marcador faria o timer ignorar o destino certo em silêncio. A
+ * impressão digital do vídeo e da capa vai junto; vídeo ausente lança.
  */
 export function recordCortePublishAuthorization(
   dir: string,
@@ -3722,11 +3784,55 @@ export function recordCortePublishAuthorization(
   }
   const specPath = join(dir, CORTE_SPEC_FILE);
   const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
-  const next = withCortePublishAuthorization(spec, only, nowIso);
+  const content = corteContentFingerprint(dir, spec);
+  if (content.video_sha256 === null) throw new Error(`"pode publicar" não gravado: vídeo do corte ausente (${resolveCorteVideo(dir, spec.video)})`);
+  const next = withCortePublishAuthorization(spec, only ?? [...known], content, nowIso);
   if (!next.changed) return;
   writeFileAtomic(specPath, JSON.stringify(next.spec, null, 2) + "\n");
-  const dests = next.spec.publish_confirmed_destinations;
-  log(`[ok] corte "${spec.slug}": "pode publicar" gravado em ${specPath} (destinos: ${dests === "all" ? "todos" : (dests ?? []).join(", ")})`);
+  log(`[ok] corte "${spec.slug}": "pode publicar" gravado em ${specPath} (destinos: ${(next.spec.publish_confirmed_destinations as string[]).join(", ")})`);
+}
+
+/**
+ * #11912: `--require-corte-authorization` (o filho do timer do 300). Confere,
+ * sem gravar nada, que a autorização atual do `corte.json` cobre esta rodada:
+ * existe, cobre todo o `--only` (obrigatório) e o vídeo/capa batem com a
+ * impressão digital. `null` = pode publicar; senão o motivo da recusa.
+ */
+export function corteRunAuthorizationError(spec: CorteSpec, only: readonly string[] | null, content: { video_sha256: string | null; cover_sha256: string | null }): string | null {
+  const authorized = corteAuthorizedDestinations(spec);
+  if (!authorized) return `corte "${spec.slug}" sem o "pode publicar" no corte.json${spec.publish_revoked_at ? ` (caiu em ${spec.publish_revoked_at})` : ""}`;
+  if (!only || !only.length) return "--require-corte-authorization exige --only (os destinos que o timer vai publicar)";
+  const outside = authorized === "all" ? [] : only.filter((d) => !authorized.includes(d));
+  if (outside.length) return `destinos fora do "pode publicar" do corte "${spec.slug}": ${outside.join(", ")} (autorizados: ${(authorized as string[]).join(", ")})`;
+  const mismatch = corteContentMismatch(spec.publish_confirmed_content, content);
+  return mismatch ? `corte "${spec.slug}": ${mismatch}` : null;
+}
+
+/**
+ * #11912: `--update-scheduled --publish --confirm-publish` do corte. Corrigir
+ * título/gancho/capa derruba a autorização (o plano mudou); a confirmação
+ * desta rodada é o "pode publicar" do plano novo, então ele volta para os
+ * destinos que estavam autorizados, com o conteúdo atual. Sem registro de
+ * derrubada, ou já autorizado, nada a fazer. Vídeo ausente: não grava e diz.
+ */
+export function restoreCorteAuthorizationAfterUpdate(dir: string, nowIso: string, known: ReadonlySet<string>, log: (line: string) => void):
+  | { restored: true; destinations: string[] }
+  | { restored: false; reason: string } {
+  const specPath = join(dir, CORTE_SPEC_FILE);
+  const spec = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+  if (corteAuthorizedDestinations(spec)) return { restored: false, reason: "a autorização continua valendo" };
+  const revoked = spec.publish_revoked_destinations;
+  if (!spec.publish_revoked_at || revoked === undefined) return { restored: false, reason: "o corte nunca teve \"pode publicar\"" };
+  const dests = revoked === "all" ? [...known] : revoked.filter((d) => known.has(d));
+  if (!dests.length) return { restored: false, reason: "nenhum dos destinos autorizados antes existe na config atual" };
+  const content = corteContentFingerprint(dir, spec);
+  if (content.video_sha256 === null) {
+    return { restored: false, reason: `vídeo do corte ausente nesta máquina (${resolveCorteVideo(dir, spec.video)}): rode --publish --confirm-publish onde o vídeo está` };
+  }
+  const next = withCortePublishAuthorization(spec, dests, content, nowIso);
+  writeFileAtomic(specPath, JSON.stringify(next.spec, null, 2) + "\n");
+  log(`[ok] corte "${spec.slug}": "pode publicar" regravado com o plano corrigido (destinos: ${dests.join(", ")})`);
+  return { restored: true, destinations: dests };
 }
 
 /**
@@ -3744,8 +3850,11 @@ async function runUpdateScheduled(input: {
   only: string[] | null;
   published: ShortsPublishedFile;
   persist: (entry: ShortPublishedEntry) => ShortsPublishedFile;
+  /** #11912: autorizações do corte que caíram nesta rodada (vão no JSON). */
+  corteRevocations?: readonly CorteRevocation[];
 }): Promise<number> {
   const { dir, aammdd, corte } = input;
+  const revokedOut = input.corteRevocations?.length ? { corte_authorization_revoked: input.corteRevocations } : {};
   let d1: { title: string; body: string } | undefined;
   if (corte) {
     d1 = corteTextInput(corte);
@@ -3763,8 +3872,9 @@ async function runUpdateScheduled(input: {
   }
   const cover = readShortCover(dir, (l) => console.error(l));
   let items: ScheduledUpdateItem[];
+  let known: Set<string>;
   try {
-    const known = knownDestinationIds(loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))));
+    known = knownDestinationIds(loadShortsConfig(JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"))));
     items = planScheduledUpdates({ entries: input.published.entries, d1, now: new Date(), coverPresent: cover.bytes !== null, only: input.only, known });
   } catch (e) {
     console.error(`publish-shorts: ${(e as Error).message}`);
@@ -3772,9 +3882,13 @@ async function runUpdateScheduled(input: {
   }
   for (const i of items) if (i.action === "skip") console.error(`[aviso] ${i.destination}: ${i.reason}`);
   if (!input.publish) {
-    console.log(JSON.stringify({ dry_run: true, update_scheduled: true, aammdd, items }, null, 2));
+    console.log(JSON.stringify({ dry_run: true, update_scheduled: true, aammdd, items, ...revokedOut }, null, 2));
     return 0;
   }
+  // #11912: a confirmação desta rodada é o "pode publicar" do plano corrigido: volta para os
+  // destinos que estavam autorizados (senão Instagram/LinkedIn pessoal/Threads do corte nunca saem).
+  const corteAuthorization = corte ? restoreCorteAuthorizationAfterUpdate(dir, new Date().toISOString(), known, (l) => console.error(l)) : null;
+  if (corteAuthorization && !corteAuthorization.restored) console.error(`[aviso] corte "${corte!.slug}": "pode publicar" não regravado — ${corteAuthorization.reason}`);
   const config = JSON.parse(readFileSync(join(ROOT, "platform.config.json"), "utf8"));
   const { pages, apiVersion } = loadResolvedFacebookPages(ROOT, config);
   const results = await executeScheduledUpdates(items, input.published.entries, cover.bytes, {
@@ -3803,7 +3917,7 @@ async function runUpdateScheduled(input: {
     else console.error(r.ok ? `[ok] ${r.destination}: texto${cover.bytes ? " e capa" : ""} do post agendado trocados` : `[erro] ${r.destination}: ${r.error}`);
     for (const w of r.warnings ?? []) console.error(`[aviso] ${r.destination}: ${w}`);
   }
-  console.log(JSON.stringify({ dry_run: false, update_scheduled: true, aammdd, items, results }, null, 2));
+  console.log(JSON.stringify({ dry_run: false, update_scheduled: true, aammdd, items, results, ...revokedOut, ...(corteAuthorization ? { corte_authorization: corteAuthorization } : {}) }, null, 2));
   return results.some((r) => !r.ok) ? 1 : 0;
 }
 
@@ -3819,6 +3933,14 @@ async function main(): Promise<number> {
   // #11795: corte avulso — pasta, registro, data, título e gancho próprios, fora de data/editions/.
   const corteSlug = values["corte"];
   let corte: CorteSpec | null = null;
+  // #11912: derrubadas do "pode publicar" nesta rodada — saem no JSON, não só no stderr.
+  const corteRevocations: CorteRevocation[] = [];
+  const revokedOut = () => (corteRevocations.length ? { corte_authorization_revoked: corteRevocations } : {});
+  const requireCorteAuth = flags.has("require-corte-authorization");
+  if (requireCorteAuth && corteSlug === undefined) {
+    console.error("publish-shorts: --require-corte-authorization só vale com --corte");
+    return 2;
+  }
   if (corteSlug !== undefined) {
     const forbidden = CORTE_FORBIDDEN_FLAGS.filter((f) => flags.has(f));
     if (forbidden.length) {
@@ -3830,8 +3952,16 @@ async function main(): Promise<number> {
       return 2;
     }
     const corteDir = resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corteSlug)));
+    // #11912: o filho do timer só CONFERE a autorização; nunca muda o plano nem grava "pode publicar".
+    if (requireCorteAuth) {
+      const planFlags = ["date", "at", "title", "hook", "video", "from-drive", "cover", "mark"].filter((k) => values[k] !== undefined);
+      if (!flags.has("publish") || flags.has("update-scheduled") || planFlags.length) {
+        console.error(`publish-shorts: --require-corte-authorization só vale com --publish e sem mudar o corte${planFlags.length ? ` (recebeu ${planFlags.map((k) => `--${k}`).join(", ")})` : ""}`);
+        return 2;
+      }
+    }
     try {
-      corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l) });
+      corte = prepareCorteRun({ slug: corteSlug, dir: corteDir, values, positionalDate: aammdd, log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r) });
     } catch (e) {
       console.error(`publish-shorts: ${(e as Error).message}`);
       return 2;
@@ -3930,7 +4060,7 @@ async function main(): Promise<number> {
       console.error("publish-shorts: --update-scheduled não combina com os timers nem com --confirm-instagram");
       return 2;
     }
-    return runUpdateScheduled({ dir, aammdd, corte, publish: flags.has("publish"), only: onlyList, published, persist });
+    return runUpdateScheduled({ dir, aammdd, corte, publish: flags.has("publish"), only: onlyList, published, persist, corteRevocations });
   }
 
   if (flags.has("confirm-instagram")) {
@@ -3973,6 +4103,8 @@ async function main(): Promise<number> {
       console.error(`publish-shorts: ${(e as Error).message}`);
       return 1;
     }
+    // #11912: outro arquivo no lugar do vídeo aprovado não herda o "pode publicar".
+    if (corte) corte = syncCorteAuthorizationWithContent(dir, new Date().toISOString(), { log: (l) => console.error(l), onRevoked: (r) => corteRevocations.push(r) });
   }
   const videoExists = existsSync(videoPath);
   // #10893: a duração decide já no plano (dry-run incluso) se o Instagram vai pela API ou vira passo guiado.
@@ -4084,7 +4216,7 @@ async function main(): Promise<number> {
   for (const w of plan.warnings) console.error(`[aviso] ${w}`);
 
   if (!flags.has("publish")) {
-    console.log(JSON.stringify({ dry_run: true, ...plan }, null, 2));
+    console.log(JSON.stringify({ dry_run: true, ...plan, ...revokedOut() }, null, 2));
     return 0;
   }
   if (!file) {
@@ -4095,7 +4227,21 @@ async function main(): Promise<number> {
   // corte.json; o timer do 300 não publica sem ele. Dry-run, --mark e --update-scheduled já
   // saíram acima. Fica DEPOIS de todas as validações que abortam (confirmação, escopo dos
   // timers, plano com o --only, vídeo) e ANTES do 1º envio.
-  if (corte) {
+  if (corte && requireCorteAuth) {
+    // #11912: o filho do timer só confere (autorização presente, cobre o --only, vídeo/capa iguais aos aprovados).
+    const specPath = join(dir, CORTE_SPEC_FILE);
+    let authErr: string | null;
+    try {
+      const fresh = parseCorteSpec(readFileSync(specPath, "utf8"), specPath);
+      authErr = corteRunAuthorizationError(fresh, onlyList, corteContentFingerprint(dir, fresh));
+    } catch (e) {
+      authErr = (e as Error).message;
+    }
+    if (authErr) {
+      console.error(`publish-shorts: --require-corte-authorization: ${authErr} — nada publicado`);
+      return 2;
+    }
+  } else if (corte) {
     try {
       recordCortePublishAuthorization(dir, values["only"], knownDestinationIds(shortsCfg), new Date().toISOString(), (l) => console.error(l));
     } catch (e) {
@@ -4497,7 +4643,7 @@ async function main(): Promise<number> {
     skipped: plan.items.filter((i) => i.action.startsWith("skip_") && i.action !== "skip_done").length,
     guided: plan.items.filter((i) => i.action === "guided").length,
   };
-  console.log(JSON.stringify({ dry_run: false, ...plan, results, summary }, null, 2));
+  console.log(JSON.stringify({ dry_run: false, ...plan, results, summary, ...revokedOut() }, null, 2));
   // #11240: pulo por credencial é terminal pra limpeza (decisão do editor). Só a
   // rodada principal grava; as dos timers do 300 só planejam o próprio destino.
   if (writer === "main") {

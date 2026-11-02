@@ -45,8 +45,29 @@ export interface CorteSpec {
    * ele, o timer do 300 (`Diaria-Shorts-Cortes`) não publica nada.
    */
   publish_confirmed_at?: string;
-  /** #11912: destinos que o `--publish` confirmado autorizou (o `--only` usado; `"all"` = sem `--only`). */
+  /**
+   * #11912: destinos que o `--publish` confirmado autorizou: o `--only` usado,
+   * ou, sem `--only`, a lista concreta dos destinos da config naquele momento
+   * (destino ligado depois não entra). `"all"` só é lido (formato da 1ª versão
+   * do #11912), nunca mais gravado.
+   */
   publish_confirmed_destinations?: "all" | string[];
+  /**
+   * #11912: impressão digital (sha256) do vídeo e da capa aprovados. Trocar o
+   * arquivo depois do "pode publicar" (re-export no mesmo `--video`, outro
+   * `--from-drive`, outra `--cover`) não herda a autorização.
+   */
+  publish_confirmed_content?: CorteContentFingerprint;
+  /** #11912: quando uma autorização existente caiu (plano ou conteúdo mudou). Some no próximo "pode publicar". */
+  publish_revoked_at?: string;
+  /** #11912: os destinos que estavam autorizados quando a autorização caiu (o timer alarma se ficarem pendentes). */
+  publish_revoked_destinations?: "all" | string[];
+}
+
+/** #11912: sha256 (hex) do vídeo e da capa do corte; `null` = arquivo ausente. */
+export interface CorteContentFingerprint {
+  video_sha256: string | null;
+  cover_sha256: string | null;
 }
 
 export const CORTE_SPEC_FILE = "corte.json";
@@ -54,6 +75,7 @@ export const CORTE_SPEC_FILE = "corte.json";
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const DATE_RE = /^\d{6}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 
 /** Slug do corte: minúsculas, dígitos e hífen (vira nome de pasta e chave de R2). */
 export function validateCorteSlug(slug: string): string | null {
@@ -165,6 +187,22 @@ function corteSpecProblems(data: unknown): string[] {
   if (dests !== undefined && dests !== "all" && !(Array.isArray(dests) && dests.length > 0 && dests.every((x) => typeof x === "string" && x.trim()))) {
     problems.push('publish_confirmed_destinations precisa ser "all" ou lista de destinos');
   }
+  const content = d["publish_confirmed_content"];
+  if (content !== undefined) {
+    if (at === undefined) problems.push("publish_confirmed_content sem publish_confirmed_at");
+    const c = content as Record<string, unknown> | null;
+    const hash = (v: unknown) => v === null || (typeof v === "string" && SHA256_RE.test(v));
+    if (!c || typeof c !== "object" || !hash(c["video_sha256"]) || !hash(c["cover_sha256"])) {
+      problems.push("publish_confirmed_content precisa de video_sha256 e cover_sha256 (sha256 hex ou null)");
+    }
+  }
+  const revokedAt = d["publish_revoked_at"];
+  const revokedDests = d["publish_revoked_destinations"];
+  if ((revokedAt === undefined) !== (revokedDests === undefined)) problems.push("publish_revoked_at e publish_revoked_destinations andam juntos");
+  if (revokedAt !== undefined && (typeof revokedAt !== "string" || Number.isNaN(Date.parse(revokedAt)))) problems.push("publish_revoked_at precisa ser data ISO");
+  if (revokedDests !== undefined && revokedDests !== "all" && !(Array.isArray(revokedDests) && revokedDests.every((x) => typeof x === "string" && x.trim()))) {
+    problems.push('publish_revoked_destinations precisa ser "all" ou lista de destinos');
+  }
   return problems;
 }
 
@@ -226,19 +264,58 @@ export function corteAuthorizedDestinations(spec: CorteSpec): "all" | string[] |
 
 /**
  * Pure (#11912): grava a autorização do `--publish --confirm-publish` do
- * corte. `only` é o `--only` da rodada (`null` = sem `--only`, todos os
- * destinos). Soma à autorização que o arquivo já tem (o "pode publicar"
- * anterior, sobre o mesmo plano, segue valendo); `changed` só quando o
- * conjunto cresce, então a re-execução do timer (o `--only` dele é sempre um
- * subconjunto do autorizado) não regrava o arquivo.
+ * corte. `only` é a lista CONCRETA de destinos da rodada (o `--only`, ou os
+ * destinos da config quando não há `--only`; nunca `"all"`), `content` é a
+ * impressão digital do vídeo e da capa naquele momento.
+ *
+ * Mesmo conteúdo já autorizado: soma destinos (o "pode publicar" anterior,
+ * sobre o mesmo plano e o mesmo arquivo, segue valendo); `changed` só quando o
+ * conjunto cresce. Conteúdo diferente: a autorização antiga não se estende ao
+ * arquivo novo, então os destinos são só os desta rodada. Toda gravação apaga
+ * o registro de autorização derrubada (`publish_revoked_*`).
  */
-export function withCortePublishAuthorization(spec: CorteSpec, only: readonly string[] | null, nowIso: string): { spec: CorteSpec; changed: boolean } {
-  if (only !== null && only.length === 0) return { spec, changed: false };
+export function withCortePublishAuthorization(
+  spec: CorteSpec,
+  only: readonly string[],
+  content: CorteContentFingerprint,
+  nowIso: string,
+): { spec: CorteSpec; changed: boolean } {
+  if (only.length === 0) return { spec, changed: false };
   const current = corteAuthorizedDestinations(spec);
-  let next: "all" | string[];
-  if (current === "all" || only === null) next = "all";
-  else next = [...(current ?? []), ...only.filter((d) => !(current ?? []).includes(d))];
-  const same = current !== null && (next === "all" ? current === "all" : current !== "all" && next.length === current.length);
-  if (same) return { spec, changed: false };
-  return { spec: { ...spec, publish_confirmed_at: nowIso, publish_confirmed_destinations: next }, changed: true };
+  const sameContent = current !== null && corteContentMismatch(spec.publish_confirmed_content, content) === null;
+  if (sameContent && current === "all") return { spec, changed: false }; // leitura legada: já cobre tudo
+  const base = sameContent && current !== "all" ? current ?? [] : [];
+  const next = [...base, ...only.filter((d) => !base.includes(d))];
+  if (sameContent && next.length === base.length) return { spec, changed: false };
+  const { publish_revoked_at: _a, publish_revoked_destinations: _d, ...rest } = spec;
+  return {
+    spec: { ...rest, publish_confirmed_at: nowIso, publish_confirmed_destinations: next, publish_confirmed_content: { video_sha256: content.video_sha256, cover_sha256: content.cover_sha256 } },
+    changed: true,
+  };
+}
+
+/**
+ * Pure (#11912): derruba a autorização do corte (plano ou conteúdo mudou) e
+ * guarda quando e quais destinos estavam autorizados (`publish_revoked_*`),
+ * para o timer alarmar em vez de pular em silêncio. Sem autorização, devolve
+ * a spec como está (`revoked: null`), preservando um registro anterior.
+ */
+export function withoutCortePublishAuthorization(spec: CorteSpec, nowIso: string): { spec: CorteSpec; revoked: "all" | string[] | null } {
+  const current = corteAuthorizedDestinations(spec);
+  if (!current) return { spec, revoked: null };
+  const { publish_confirmed_at: _a, publish_confirmed_destinations: _d, publish_confirmed_content: _c, ...rest } = spec;
+  return { spec: { ...rest, publish_revoked_at: nowIso, publish_revoked_destinations: current }, revoked: current };
+}
+
+/**
+ * Pure (#11912): o conteúdo atual bate com o aprovado? `null` = bate; senão o
+ * motivo, em português, para o alarme e para a recusa do `publish-shorts`.
+ */
+export function corteContentMismatch(approved: CorteContentFingerprint | undefined, current: CorteContentFingerprint): string | null {
+  if (!approved) return 'a autorização não tem a impressão digital do vídeo e da capa: dê o "pode publicar" de novo';
+  if (current.video_sha256 === null) return "vídeo do corte ausente nesta máquina";
+  const changed: string[] = [];
+  if (approved.video_sha256 !== current.video_sha256) changed.push("o vídeo");
+  if (approved.cover_sha256 !== current.cover_sha256) changed.push(current.cover_sha256 === null ? "a capa (sumiu)" : "a capa");
+  return changed.length ? `${changed.join(" e ")} do corte mudou depois do "pode publicar"` : null;
 }
