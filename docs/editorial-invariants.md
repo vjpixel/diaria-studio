@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 128 invariants.
+**Total**: 129 invariants.
 
 ## Static (estrutura do repo)
 
@@ -116,6 +116,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `social-invite-drift` | convite social do PARA ENCERRAR diverge do SOCIAL_INVITE atual — não reconhecido (sai sem a borda de box) ou com texto desatualizado (#10835, warning-only) | #10835 |
 | `social-not-behind-reviewed` | 03-social.md não ficou atrás de 02-reviewed.md — destaque reescrito no gate sem cascata do social (#9820) | #9820 |
 | `sponsored-source-marker` | página-fonte de item com marcador de publieditorial (/publicidade/, conteúdo de marca, patrocinado, Pré-MBA) — warning-only, decisão fica no gate (#10169) | #10169 |
+| `story-continuation` | Destaque que continua história publicada nos últimos 30 dias (produto+versão no lead ou URL que continua a anterior; informativo, warning-only) | #11897 |
 | `story-twice-in-edition` | Mesma história duas vezes na edição final (destaque × destaque, pool × destaque) ou repetindo item publicado nas últimas 3 edições por produto+versão (heurístico, warning-only) | #11496 |
 | `study-source-recurrence` | Item que é cobertura secundária de estudo/relatório já publicado nos últimos 30 dias (mesmo publicador + documento + número-chave; heurístico, warning-only) | #11763 |
 | `theme-cross-source-repeat` | Candidato a destaque com aviso cross-source do passe de tema do Stage 1 (repete tema de destaque recente) que segue no 02-reviewed.md final (warning-only) | #11496 |
