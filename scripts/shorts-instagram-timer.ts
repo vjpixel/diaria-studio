@@ -680,14 +680,29 @@ export function instagramPublishArgs(aammdd: string, choice: Extract<InstagramVi
   return args;
 }
 
+/**
+ * #11774: teto de cada filho (download do Drive, publish-shorts). Fica abaixo da
+ * idade de lock velho (`SHORTS_TIMER_LOCK_STALE_MS`, 90 min): sem ele, um filho
+ * travado segurava o lock e, passados os 90 min, outra rodada tomava o lock e
+ * podia publicar junto com ele.
+ */
+export const INSTAGRAM_TIMER_CHILD_TIMEOUT_MS = 75 * 60_000;
+
 function runTsx(args: string[]): { status: number | null; stdout: string; stderr: string } {
   const r = spawnSync(process.execPath, ["--import", "tsx", ...args], {
     cwd: ROOT,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 16 * 1024 * 1024,
+    timeout: INSTAGRAM_TIMER_CHILD_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
-  if (r.error) throw r.error;
+  if (r.error) {
+    if ((r.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+      throw new Error(`${args[0]} passou de ${INSTAGRAM_TIMER_CHILD_TIMEOUT_MS / 60_000} min e foi encerrado (#11774) — confira a conta antes de rodar o publish de novo`);
+    }
+    throw r.error;
+  }
   if (r.stderr) process.stderr.write(r.stderr);
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }

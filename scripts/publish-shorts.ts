@@ -542,7 +542,7 @@ export interface ShortsPlanInput {
   /** Por que o Instagram não está pronto (vira o aviso do plano). */
   instagramNotReadyReason?: string;
   /**
-   * Plano B na conta sem teto (#11355): trata o Instagram como passo guiado com
+   * Plano B na conta sem teto (#11355) ou com o vertical dentro do teto (#11774): trata o Instagram como passo guiado com
    * este motivo, sem olhar a duração. Só o `prepare-instagram-guided.ts` passa,
    * e ele nunca publica; a rodada que publica segue pela API.
    */
@@ -1208,17 +1208,51 @@ async function readJson(res: Response): Promise<any> {
   return res.json().catch(() => ({}));
 }
 
+/**
+ * #11774: teto de cada chamada à Graph (`graphPost`/`graphGet`). Sem ele, uma
+ * conexão travada segurava o lock do timer até a idade de lock velho (90 min,
+ * `SHORTS_TIMER_LOCK_STALE_MS`), e aí outra rodada podia publicar junto.
+ */
+export const GRAPH_REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * #11774: a Graph RESPONDEU com erro (HTTP não-ok, `error` no JSON ou resposta
+ * sem o campo esperado). Falha de transporte (timeout, conexão) não vira esta
+ * classe: ela não prova o que aconteceu do outro lado.
+ */
+export class GraphResponseError extends Error {
+  readonly status: number;
+  /** `error.code` da Graph (190 = token inválido ou revogado). */
+  readonly code: number | null;
+  constructor(message: string, status: number, code: number | null) {
+    super(message);
+    this.name = "GraphResponseError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/** Token inválido/revogado (OAuthException 190): repetir a consulta não adianta. */
+export function isGraphAuthError(e: unknown): boolean {
+  return e instanceof GraphResponseError && e.code === 190;
+}
+
+function graphError(method: string, path: string, res: Response, json: any): GraphResponseError {
+  const code = typeof json?.error?.code === "number" ? json.error.code : null;
+  return new GraphResponseError(`${method} ${path}: ${res.status} ${JSON.stringify(json?.error ?? json)}`, res.status, code);
+}
+
 async function graphPost(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string, base = GRAPH): Promise<any> {
-  const res = await deps.fetch(`${base}/${apiVersion}/${path}`, { method: "POST", body: new URLSearchParams(params) });
+  const res = await deps.fetch(`${base}/${apiVersion}/${path}`, { method: "POST", body: new URLSearchParams(params), signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS) });
   const json = await readJson(res);
-  if (!res.ok || json.error) throw new Error(`POST ${path}: ${res.status} ${JSON.stringify(json.error ?? json)}`);
+  if (!res.ok || json.error) throw graphError("POST", path, res, json);
   return json;
 }
 
 async function graphGet(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string): Promise<any> {
-  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${path}?${new URLSearchParams(params)}`);
+  const res = await deps.fetch(`${GRAPH}/${apiVersion}/${path}?${new URLSearchParams(params)}`, { signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS) });
   const json = await readJson(res);
-  if (!res.ok || json.error) throw new Error(`GET ${path}: ${res.status} ${JSON.stringify(json.error ?? json)}`);
+  if (!res.ok || json.error) throw graphError("GET", path, res, json);
   return json;
 }
 
@@ -1587,14 +1621,25 @@ export function instagramPublishRecheck(
  * depois de uma falha no `media_publish`. Timeout ou 5xx não provam que o Reels
  * não saiu. `unknown` = a consulta falhou ou não trouxe o estado.
  */
-async function instagramContainerPublishState(deps: GraphDeps, containerId: string, token: string, apiVersion: string): Promise<"published" | "not_published" | "unknown"> {
+async function instagramContainerPublishState(deps: GraphDeps, containerId: string, token: string, apiVersion: string): Promise<"published" | "finished" | "not_published" | "unknown"> {
   try {
     const code = (await graphGet(deps, containerId, { fields: "status_code", access_token: token }, apiVersion)).status_code;
     if (typeof code !== "string" || !code) return "unknown";
+    if (code === "FINISHED") return "finished"; // #11774: pronto, e o publish pode estar em andamento
     return code === "PUBLISHED" ? "published" : "not_published";
   } catch {
     return "unknown";
   }
+}
+
+/**
+ * #11774: a falha do `media_publish` prova que a Meta recusou? Só uma resposta
+ * da Graph abaixo de 500 prova (4xx, ou 200 sem o id da mídia). Timeout, conexão caída ou 5xx deixam o publish possivelmente
+ * em andamento: o container ainda aparece FINISHED (não PUBLISHED) e relançar
+ * faria a próxima rodada depender só do gate do `/media`.
+ */
+export function mediaPublishFailureIsDefinitive(e: unknown): boolean {
+  return e instanceof GraphResponseError && e.status < 500;
 }
 
 /**
@@ -1631,7 +1676,7 @@ export async function publishInstagramReel(
   collaborators: string[] = [],
   cover?: ReelCoverUpload,
   /** `beforePublish`: devolve o registro de outro processo (não publica) ou null; lançar também não publica. */
-  opts: { beforePublish?: () => ShortPublishedEntry | null } = {},
+  opts: { beforePublish?: () => ShortPublishedEntry | null | Promise<ShortPublishedEntry | null> } = {},
 ): Promise<PublishOutcome> {
   const coverUrl = reelCoverUrl(cover);
   const file = Buffer.isBuffer(source) ? source : null;
@@ -1671,13 +1716,16 @@ export async function publishInstagramReel(
     try {
       st = await graphGet(deps, containerId, { fields: "status_code,status", access_token: token }, apiVersion);
     } catch (e) {
+      // #11774: token revogado (190) não melhora com o tempo — falha já, sem 10 min de poll.
+      if (isGraphAuthError(e)) throw new Error(`container ${containerId}: token do Instagram recusado (${(e as Error).message}) — renove o token da página autora`);
       // Falha transitória na consulta não joga fora o upload — tenta de novo até o teto.
       last = (e as Error).message;
       deps.log(`[aviso] instagram: status do container falhou (${last}) — tentando de novo`);
       await deps.sleep(10_000);
       continue;
     }
-    last = st.status_code;
+    // #11774: o `status` (texto da Meta) acompanha o código no erro de tempo esgotado.
+    last = [st.status_code, st.status].filter((x) => typeof x === "string" && x).join(" ");
     if (st.status_code === "FINISHED") break;
     if (st.status_code === "ERROR" || st.status_code === "EXPIRED") {
       // #11355: o Reels não saiu; a rota à mão segue valendo.
@@ -1686,15 +1734,18 @@ export async function publishInstagramReel(
     }
     await deps.sleep(10_000);
   }
-  const registered = opts.beforePublish?.() ?? null;
+  const registered = (await opts.beforePublish?.()) ?? null;
   if (registered) return { entry: registered, alreadyRegistered: true };
   let pub: any;
   try {
     pub = await graphPost(deps, `${igUserId}/media_publish`, { creation_id: containerId, access_token: token }, apiVersion);
-    if (!pub.id) throw new Error(`media_publish sem id: ${JSON.stringify(pub)}`);
+    // Resposta 200 sem id: a Graph respondeu, o publish não está em andamento (#11774).
+    if (!pub.id) throw new GraphResponseError(`media_publish sem id: ${JSON.stringify(pub)}`, 200, null);
   } catch (e) {
     const failure = (e as Error).message;
-    const state = await instagramContainerPublishState(deps, containerId, token, apiVersion);
+    const container = await instagramContainerPublishState(deps, containerId, token, apiVersion);
+    // #11774: container FINISHED depois de timeout/5xx não prova que o publish não segue em andamento.
+    const state = container === "finished" ? (mediaPublishFailureIsDefinitive(e) ? "not_published" : "unknown") : container;
     if (state === "not_published") throw e;
     const at = deps.now().toISOString();
     if (state === "published") {
@@ -2307,6 +2358,26 @@ export async function instagramTimerPublishStep<T>(deps: {
   const gate = await deps.gate();
   if (gate.kind === "already") return gate;
   return { kind: "published", outcome: await deps.publish() };
+}
+
+/**
+ * #11774: a reconferência logo antes do `media_publish` na rodada do timer. O
+ * gate da conta roda antes do upload no R2; o upload e o processamento levam
+ * minutos, e um Share feito por fora nesse meio tempo não está no registro
+ * local. Por isso, depois do registro local (sem custo de rede), o gate da conta
+ * roda de novo: Reels achado → grava e não publica; gate que lança → não publica
+ * (o erro segue como `cause: "preflight"`).
+ */
+export function instagramTimerBeforePublish(deps: {
+  local: () => ShortPublishedEntry | null;
+  gate: () => ReturnType<typeof instagramTimerGate>;
+}): () => Promise<ShortPublishedEntry | null> {
+  return async () => {
+    const local = deps.local();
+    if (local) return local;
+    const gate = await deps.gate();
+    return gate.kind === "already" ? gate.entry : null;
+  };
 }
 
 /**
@@ -3396,11 +3467,15 @@ async function main(): Promise<number> {
   // #11410/#11432: objeto do dia já no bucket com o mesmo conteúdo (tamanho e ETag) é reaproveitado (sem novo PUT).
   // #11355: memo por chave, porque o corte do Instagram tem objeto próprio.
   const uploadedByKey = new Map<string, Promise<string>>();
+  // #11774: chaves do R2 que esta rodada usa (capa e vertical); a poda de retenção
+  // de `shorts/` no upload seguinte não as apaga, mesmo de edição com mais de 7 dias.
+  const r2KeysInUse = new Set<string>();
   const uploadVideoAt = (key: string) => {
     if (!r2.ready) throw new Error(`R2 não configurado (${r2.missing.join(", ")})`);
     let uploaded = uploadedByKey.get(key);
     if (!uploaded) {
-      uploaded = reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file, "video/mp4").then((r) => {
+      r2KeysInUse.add(key);
+      uploaded = reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file, "video/mp4", { keep: [...r2KeysInUse] }).then((r) => {
         console.error(`[ok] vertical no R2 ${r.reused ? "reaproveitado (mesmo conteúdo, sem novo upload)" : "enviado"}: ${r.url}`);
         return r.url;
       });
@@ -3415,9 +3490,11 @@ async function main(): Promise<number> {
     // #11679: capa local presente e R2 indisponível também fica no registro (`cover.ok: false`).
     if (!r2.ready) return { error: `capa não enviada ao R2: R2 não configurado (${r2.missing.join(", ")})` };
     const coverPath = plan.cover.path;
+    const coverKey = `shorts/${aammdd}-cover.jpg`;
+    r2KeysInUse.add(coverKey);
     uploadedCover ??= uploadCoverOrFallback(
       () => reuseOrUploadToR2({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config,
-        `shorts/${aammdd}-cover.jpg`, readFileSync(coverPath), "image/jpeg").then((r) => r.url),
+        coverKey, readFileSync(coverPath), "image/jpeg", { keep: [...r2KeysInUse] }).then((r) => r.url),
       (line) => console.error(line),
     );
     return uploadedCover;
@@ -3523,7 +3600,7 @@ async function main(): Promise<number> {
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         const author = igAuthor;
-        const publishReel = async () => {
+        const publishReel = async (accountGate?: () => ReturnType<typeof instagramTimerGate>) => {
           const choice = instagramReelRouteChoice({ authorPage: shortsCfg.instagramAuthorPage, aammdd, videoPath, file });
           const { source, cover } = await resolveInstagramReelInputs({
             route: choice.route,
@@ -3535,16 +3612,20 @@ async function main(): Promise<number> {
                 urlIfSameContent: async (key) => {
                   if (!r2.ready) return null;
                   const same = await r2ObjectHasBody({ fetch: (u, i) => fetch(u, i), now: () => new Date() }, r2.config, key, file);
-                  if (same) console.error(`[ok] corte do Instagram igual ao vertical genérico: reaproveita ${key}`);
+                  if (same) {
+                    r2KeysInUse.add(key); // #11774: o reaproveitado também fica fora da poda
+                    console.error(`[ok] corte do Instagram igual ao vertical genérico: reaproveita ${key}`);
+                  }
                   return same ? r2PublicUrl(r2.config, key) : null;
                 },
                 upload: uploadVideoAt,
               });
             },
           });
-          const beforePublish = instagramPublishRecheck(dir, aammdd, (fresh) => {
+          const localRecheck = instagramPublishRecheck(dir, aammdd, (fresh) => {
             published = fresh;
           });
+          const beforePublish = accountGate ? instagramTimerBeforePublish({ local: localRecheck, gate: accountGate }) : localRecheck;
           return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover, { beforePublish });
         };
         if (writer === "instagram-timer") {
@@ -3567,19 +3648,21 @@ async function main(): Promise<number> {
               nowIso: new Date().toISOString(),
               expectedAtIso: ctx.expectedAtIso,
             });
+          const accountGate = () =>
+            instagramTimerGate({
+              decide: () =>
+                decideInstagramTimerAcrossAccounts({
+                  primary: readFor(author.igUserId, author.token),
+                  ...timerChromeAuthorDeps(chrome, readFor),
+                }),
+              persist: (entry) => {
+                published = persist(entry);
+              },
+            });
           const step = await instagramTimerPublishStep({
-            gate: () =>
-              instagramTimerGate({
-                decide: () =>
-                  decideInstagramTimerAcrossAccounts({
-                    primary: readFor(author.igUserId, author.token),
-                    ...timerChromeAuthorDeps(chrome, readFor),
-                  }),
-                persist: (entry) => {
-                  published = persist(entry);
-                },
-              }),
-            publish: publishReel,
+            gate: accountGate,
+            // #11774: o mesmo gate roda de novo logo antes do media_publish.
+            publish: () => publishReel(accountGate),
           });
           if (step.kind === "already") {
             results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy });
@@ -3588,7 +3671,7 @@ async function main(): Promise<number> {
           }
           outcome = step.outcome;
         } else {
-          outcome = await publishReel();
+          outcome = await publishReel(); // sem gate da conta fora do timer (o registro local segue valendo)
         }
       } else {
         const page = pages.find((p) => facebookDestinationId(p.slug) === item.destination)!;
