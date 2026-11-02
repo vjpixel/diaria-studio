@@ -637,11 +637,6 @@ export interface KitAffiliateConfig {
 }
 
 export interface PlatformConfig {
-  publishing?: {
-    newsletter?: {
-      backend?: string;
-    };
-  };
   /** #6195 — crédito de plataforma no rodapé das edições Kit.
    *  #10437 — `diaria_exclusion_segment`: audiência por segmento (flag). */
   kit?: KitAffiliateConfig & { diaria_exclusion_segment?: DiariaExclusionSegmentConfig };

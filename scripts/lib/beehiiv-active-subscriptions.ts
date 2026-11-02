@@ -6,11 +6,11 @@
  * (#11225: a Beehiiv virou só arquivo histórico; o guard de pré-switchover
  * do #6269 já tinha cumprido o papel em 04/09/2026, "só na Beehiiv: 0").
  *
- * A função continua com 4 consumidores vivos, por isso mora aqui e não foi
- * apagada junto com o CLI: `reconcile-send-audiences.ts` (ramo legado
- * `backend = "beehiiv"`), `audit-kit-diaria-exclusivity.ts` e
- * `kit-gmail-warmup-ramp.ts` e `kit-ramp-cohort.ts`. Devolve o e-mail como a API
- * manda, sem normalizar.
+ * A função continua com 3 consumidores vivos, por isso mora aqui e não foi
+ * apagada junto com o CLI: `reconcile-send-audiences.ts` (ativo residual da
+ * Beehiiv entra na conta de órfãos), `kit-gmail-warmup-ramp.ts` e
+ * `kit-ramp-cohort.ts` (`audit-kit-diaria-exclusivity.ts` saiu no #11775).
+ * Devolve o e-mail como a API manda, sem normalizar.
  */
 
 import { beehiivApiBase } from "./beehiiv-config.ts";

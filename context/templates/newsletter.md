@@ -173,7 +173,7 @@ Bloco fixo, gerado deterministicamente (TS puro, sem LLM/gate — `renderWhatsap
 
 **Efeito colateral no inventário de divulgação (#5152):** a lacuna D1/D2 não é mais reservada pro WhatsApp — `assignDivulgacaoGaps` (`scripts/lib/newsletter-render-html.ts`) libera essa lacuna pra qualquer caixa de divulgação configurada no slot 1 (`boxes_divulgacao.slot1`), que volta a renderizar na sua posição de origem (antes ficava deslocada pra D2/D3 pelo #4624). As 3 caixas (slot1/2/3) agora cabem simultaneamente numa edição de 3 destaques — o drop `divulgacao_box_dropped_no_gap` não dispara mais em edições bem-formadas.
 
-**Dependência dura do slug do post (#4570):** a URL prevê `seoSlug(título do D1)` — se o slug REAL do post na Beehiiv divergir (a auto-derivação mangla acentos PT-BR, #1989, e não pode ser corrigida via API em plano não-Enterprise, #3449), o link do bloco já enviado no e-mail aponta pra 404. Ver `scripts/check-whatsapp-slug-guard.ts` (guard que bloqueia o Stage 6 até o editor corrigir o slug manualmente) e `context/publishers/beehiiv-playbook.md` §4a-bis/§9.
+**Dependência dura do slug do post (#4570):** a URL prevê `seoSlug(título do D1)` — se o slug REAL do post na Beehiiv divergir (a auto-derivação mangla acentos PT-BR, #1989, e não pode ser corrigida via API em plano não-Enterprise, #3449), o link do bloco já enviado no e-mail aponta pra 404. Vale só para post da Beehiiv (arquivo histórico desde o #11225): no Kit a URL da edição sai do mesmo `seoSlug` do D1. O guard de slug da Beehiiv (`check-whatsapp-slug-guard.ts`) e o `fix-post-slug.ts` saíram no #11775; histórico em `context/publishers/beehiiv-playbook.md` §4a-bis/§9.
 
 ## Auditoria de encaminhamento — classificação de blocos (#4487)
 

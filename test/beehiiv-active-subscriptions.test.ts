@@ -116,7 +116,12 @@ describe("fetchActiveBeehiivEmails — falhas (#11225)", () => {
 });
 
 describe("aposentadoria dos CLIs de envio Beehiiv (#11225)", () => {
-  for (const retired of ["scripts/reconcile-beehiiv-kit.ts", "scripts/fetch-beehiiv-poll-stats.ts"]) {
+  for (const retired of [
+    "scripts/reconcile-beehiiv-kit.ts",
+    "scripts/fetch-beehiiv-poll-stats.ts",
+    // #11775: media a partição Beehiiv×Kit, que não existe mais.
+    "scripts/audit-kit-diaria-exclusivity.ts",
+  ]) {
     it(`${retired} não existe mais`, () => {
       assert.equal(existsSync(resolve(ROOT, retired)), false, `${retired} voltou — foi aposentado no #11225`);
     });
@@ -124,7 +129,6 @@ describe("aposentadoria dos CLIs de envio Beehiiv (#11225)", () => {
 
   for (const consumer of [
     "scripts/reconcile-send-audiences.ts",
-    "scripts/audit-kit-diaria-exclusivity.ts",
     "scripts/kit-gmail-warmup-ramp.ts",
     "scripts/kit-ramp-cohort.ts",
   ]) {

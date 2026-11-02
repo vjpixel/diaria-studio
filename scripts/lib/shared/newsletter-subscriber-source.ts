@@ -14,7 +14,7 @@
  *
  * ## Terceira chave de flag, dedicada (mesmo racional do `read_backend`)
  *
- * `publishing.newsletter.backend` controla o backend de ENVIO;
+ * O envio é só Kit desde o #11225 (a chave `publishing.newsletter.backend` saiu);
  * `publishing.newsletter.read_backend` controla LEITURA DE POSTS (dedup,
  * digest mensal). Nenhuma das duas é a pergunta certa pra "onde estão os
  * assinantes pra fins de leitura/agregação" — a prontidão desse eixo é

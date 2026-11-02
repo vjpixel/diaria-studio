@@ -2107,9 +2107,9 @@ export function buildWhatsappShareBlock(d1Title: string, editionUrl: string): st
  *
  * Depende DURAMENTE do slug real do post bater com `seoSlug(d1Title)` — a
  * Beehiiv não permite setar `web_settings.slug` via API em plano não-Enterprise
- * (#3449) e a auto-derivação mangla acentos PT-BR (#1989). Ver
- * `scripts/check-whatsapp-slug-guard.ts` (#4570), que desde o #11225 não roda em
- * nenhum passo: nada bloqueia o agendamento por isso.
+ * (#3449) e a auto-derivação mangla acentos PT-BR (#1989). O guard de slug
+ * da Beehiiv (`check-whatsapp-slug-guard.ts`, #4570) saiu no #11775: desde o
+ * #11225 a edição sai pelo Kit, cuja URL vem do mesmo `seoSlug` do D1.
  */
 export function buildWhatsappEditionUrl(edition: string, d1Title: string): string {
   const base = deriveEditionUrl(d1Title);

@@ -3,7 +3,7 @@
  *
  * Substitui o subagente `collect-monthly-runner` por script determinístico
  * que usa a API REST (Beehiiv ou Kit — `platform.config.json` →
- * `publishing.newsletter.backend`, via `scripts/lib/shared/newsletter-read-source.ts`)
+ * `publishing.newsletter.read_backend`, via `scripts/lib/shared/newsletter-read-source.ts`)
  * diretamente. Elimina dependência de MCP em subagente (MCPs nativos do
  * Claude.ai não são repassados a subagentes).
  *
@@ -18,7 +18,7 @@
  *
  * Variáveis de ambiente (dotenv carregado automaticamente):
  *   BEEHIIV_API_KEY (backend "beehiiv") ou KIT_API_KEY (backend "kit") —
- *   obrigatória, conforme `publishing.newsletter.backend`.
+ *   obrigatória, conforme `publishing.newsletter.read_backend`.
  *
  * Nota (#6184): `convertBeehiivHtmlToMarkdown` (nome do arquivo original)
  * roda igual para conteúdo Kit — não foi verificado ao vivo que o parser

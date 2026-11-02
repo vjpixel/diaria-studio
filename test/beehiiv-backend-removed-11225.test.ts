@@ -93,7 +93,7 @@ describe("#11225 canal Kit diária e ramo Beehiiv aposentados", () => {
   it("nada promete mais o bloqueio do guard de slug do WhatsApp depois do Stage 4", () => {
     assert.doesNotMatch(read(".claude/agents/orchestrator-stage-4.md"), /o guard que de fato BLOQUEIA/);
     assert.doesNotMatch(read("context/publishers/beehiiv-playbook.md"), /GATE-BLOCKING/);
-    assert.doesNotMatch(read("scripts/check-whatsapp-slug-guard.ts"), /GATE-BLOCKING/);
+    assert.equal(existsSync(resolve(ROOT, "scripts/check-whatsapp-slug-guard.ts")), false, "removido no #11775");
     assert.doesNotMatch(read(".claude/skills/diaria-5-publicacao/SKILL.md"), /guard de slug do bloco WhatsApp/);
   });
 });

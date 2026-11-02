@@ -19,9 +19,9 @@
  *
  * ## Dois backends, DUAS chaves de flag, prontidões diferentes (item 1, #6362)
  *
- * `publishing.newsletter.backend` (`platform.config.json`) controla o
- * backend de **ENVIO** — migrou pra `"kit"` no switchover do #6114
- * (26/08/2026). Este módulo controla o backend de **LEITURA**, sob a chave
+ * Histórico: `publishing.newsletter.backend` (`platform.config.json`)
+ * controlava o backend de **ENVIO** — migrou pra `"kit"` no switchover do
+ * #6114 (26/08/2026) e saiu no #11225 (envio só Kit). Este módulo controla o backend de **LEITURA**, sob a chave
  * PRÓPRIA `publishing.newsletter.read_backend` (default `"kit"` desde o #11225) — as
  * duas prontidões são independentes: o envio já tem confiança pra rodar em
  * produção no Kit, mas a LEITURA (dedup incremental, digest mensal) só pode
@@ -151,8 +151,9 @@ export type NewsletterBackend = "beehiiv" | "kit";
 
 /**
  * Lê `platform.config.json` → `publishing.newsletter.read_backend` (item 1,
- * #6362 — chave DEDICADA de leitura, separada de `publishing.newsletter.backend`,
- * que é o backend de ENVIO; ver docstring do módulo). Distingue (item 6,
+ * #6362 — chave DEDICADA de leitura, separada da antiga
+ * `publishing.newsletter.backend`, que era o backend de ENVIO e saiu no
+ * #11225; ver docstring do módulo). Distingue (item 6,
  * #6362) arquivo AUSENTE (default silencioso correto — projeto nunca
  * configurou a chave) de arquivo PRESENTE mas ilegível (JSON corrompido —
  * `ok: false`, o caller decide como reagir, nunca mascarado como
