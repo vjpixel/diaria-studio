@@ -68,6 +68,8 @@
  *   npx tsx scripts/publish-circle-stack.ts --hello   (post de teste "Olá, mundo")
  *   npx tsx scripts/publish-circle-stack.ts --notify   (task semanal: dry-run + aviso ao editor;
  *                                                       ignorado junto com --publish)
+ *   npx tsx scripts/publish-circle-stack.ts --resolve-skill-default-monday
+ *       (data padrão do /diaria-stack sem AAMMDD, em JSON; pula ciclo já publicado, #11784)
  *   (opcionais: --reselect, --opening-file <path>, --closing-file <path>, --force, --data-root <dir>)
  *   --closing-file: a ÚLTIMA linha do arquivo vira a cauda de "[Assine a diar.ia.br](url). {linha}";
  *   linhas anteriores saem como parágrafos antes dela.
@@ -81,7 +83,9 @@ import { getStringArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import {
   currentOrPreviousMondayAAMMDD,
+  formatAAMMDD,
   isValidWeeklyCycle,
+  parseAAMMDD,
   resolveWeeklyLinkedinCycle,
   weeklyLinkedinRelDir,
 } from "./lib/weekly-linkedin-cycle.ts";
@@ -698,6 +702,66 @@ export function circleStackCycleStateFromDisk(dataRoot: string, cycle: string): 
   return resolveCircleStackState(readCircleStackPublishedState(join(cycleDir, "_internal", "circle-stack-published.json")), cycle);
 }
 
+export interface SkillDefaultMonday {
+  publishMonday: string;
+  cycle: string;
+  /** Ciclo da regra base (segunda de hoje ou a anterior) e o estado dele. */
+  baseMonday: string;
+  baseCycle: string;
+  baseState: PublishState;
+  /** true = a base estava publicada e a skill passou para a segunda seguinte. */
+  advanced: boolean;
+  banner: string;
+}
+
+/**
+ * Pure (#11784): data padrão do `/diaria-stack` sem `AAMMDD`. Parte da mesma
+ * regra do publicador (segunda de hoje ou a anterior); se esse ciclo já está
+ * "published" e a semana de conteúdo da segunda seguinte já fechou ou está
+ * perto disso (hoje é sexta, sábado ou domingo), assume a segunda seguinte.
+ * Caso de origem: domingo 01/11/2026 sem data caiu em 261026, publicado desde
+ * 26/10. O publicador sem `--publish-monday` NÃO usa isto: o catch-up do timer
+ * (Persistent=true) precisa da regra antiga.
+ */
+export function resolveSkillDefaultMonday(now: Date, stateOf: (cycle: string) => PublishState): SkillDefaultMonday {
+  const baseMonday = currentOrPreviousMondayAAMMDD(now);
+  const base = resolveWeeklyLinkedinCycle(baseMonday);
+  if (!base) throw new Error(`segunda base inválida: ${baseMonday}`);
+  const baseState = stateOf(base.cycle);
+  const dayNum = (now.getDay() + 6) % 7; // segunda=0 .. domingo=6
+  const nextWeekNearlyClosed = dayNum >= 4;
+  if (baseState === "published" && nextWeekNearlyClosed) {
+    const d = parseAAMMDD(baseMonday) as Date;
+    const nextMonday = formatAAMMDD(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7));
+    const next = resolveWeeklyLinkedinCycle(nextMonday);
+    if (!next) throw new Error(`segunda seguinte inválida: ${nextMonday}`);
+    return {
+      publishMonday: nextMonday,
+      cycle: next.cycle,
+      baseMonday,
+      baseCycle: base.cycle,
+      baseState,
+      advanced: true,
+      banner:
+        `Data não informada — assumindo ${nextMonday} (segunda de publicação; o ciclo ${base.cycle} de ${baseMonday} ` +
+        "já está publicado na Stack). Passe AAMMDD explicitamente para outra semana.",
+    };
+  }
+  const note =
+    baseState === "published"
+      ? ` O ciclo ${base.cycle} já está publicado na Stack, e a semana seguinte ainda não fechou.`
+      : "";
+  return {
+    publishMonday: baseMonday,
+    cycle: base.cycle,
+    baseMonday,
+    baseCycle: base.cycle,
+    baseState,
+    advanced: false,
+    banner: `Data não informada — assumindo ${baseMonday} (segunda de publicação).${note} Passe AAMMDD explicitamente para outra semana.`,
+  };
+}
+
 function readTextArg(argv: string[], key: string): string | undefined {
   const p = getStringArg(argv, key, { example: "caminho/arquivo.txt" });
   return p ? readFileSync(resolve(p), "utf8") : undefined;
@@ -736,6 +800,14 @@ export async function runCircleStack(argv: string[], deps: RunCircleStackDeps): 
       send: () => sendPost(webhookUrl, key, helloPayload),
     });
     console.log(`Post de teste publicado no Radar de Notícias Stack: "${HELLO_POST.titulo}"`);
+    return;
+  }
+
+  if (hasFlag(argv, "resolve-skill-default-monday")) {
+    // #11784: só lê o state local e imprime JSON; nada é gravado nem enviado.
+    const dataRootRead = resolve(getStringArg(argv, "data-root") ?? ROOT);
+    const r = resolveSkillDefaultMonday(new Date(), (c) => circleStackCycleStateFromDisk(dataRootRead, c));
+    console.log(JSON.stringify(r, null, 2));
     return;
   }
 
