@@ -864,23 +864,23 @@ export type WorkerInstagramAccount = "diaria" | "vjpixel";
 export const INSTAGRAM_ENV_ACCOUNT_KEY: WorkerInstagramAccount = "diaria";
 
 /**
- * #11390: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
- * Chrome ou app), a que o editor usa: @vjpixel é o AUTOR e a @diar.ia.br entra
- * como colaboradora. É o inverso da rota da API (autora @diar.ia.br com a
- * @vjpixel em collab, #11223, `instagram_author_page`/`instagram_collaborators`).
- * Enquanto o convite de collab está pendente, o post só aparece no perfil do
- * autor, então o `--confirm-instagram` procura também nele (`authorPage` = slug
- * de `publishing.social.facebook.pages` cuja conta vinculada é a @vjpixel).
+ * #11390/#11794: rota do Reels postado à mão (Passo B3b do `/diaria-publica-video`,
+ * Chrome ou app). Decisão do editor (02/11/2026, #11794): a @diar.ia.br é a
+ * AUTORA e a @vjpixel entra em collab, igual à rota da API (#11223). `authorPage`
+ * = slug de `publishing.social.facebook.pages` da conta autora; com
+ * `instagram_author_page: null` (a conta do env) ela é a própria conta da API
+ * (`instagramAccountKey`), e o post à mão aparece nela depois do processamento
+ * (30 a 60 s depois do Share).
  */
 export const INSTAGRAM_CHROME_ROUTE = {
-  authorUsername: "vjpixel",
-  authorPage: "vjpixel",
-  collaboratorUsername: "diar.ia.br",
+  authorUsername: "diar.ia.br",
+  authorPage: INSTAGRAM_ENV_ACCOUNT_KEY,
+  collaboratorUsername: "vjpixel",
 } as const;
 
-/** #11390: a rota do B3b em texto, pros avisos e alarmes (nunca "como a autora"). */
+/** #11390/#11794: a rota do B3b em texto, pros avisos e alarmes. */
 export function instagramChromeRouteText(): string {
-  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autor), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} como colaboradora`;
+  return `como @${INSTAGRAM_CHROME_ROUTE.authorUsername} (autora), com a @${INSTAGRAM_CHROME_ROUTE.collaboratorUsername} em collab`;
 }
 
 /**
