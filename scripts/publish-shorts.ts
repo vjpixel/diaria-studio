@@ -10,7 +10,10 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *
  * Uso:
  *   npx tsx scripts/publish-shorts.ts AAMMDD                # plano (dry-run), não publica nada
- *   npx tsx scripts/publish-shorts.ts AAMMDD --publish      # publica os destinos de API
+ *   npx tsx scripts/publish-shorts.ts AAMMDD --publish --confirm-publish AAMMDD
+ *                                                           # publica os destinos de API (a confirmação é a
+ *                                                           # mesma edição, dada só depois do "pode publicar"
+ *                                                           # do editor; sem ela, exit 2 sem nada, #11741)
  *     [--only facebook:diaria,instagram] [--now] [--video PATH]
  *     [--edition-dir DIR] [--edition-url URL]
  *     [--linkedin-timer | --instagram-timer | --threads-timer] # rodada de um timer do 300 (só o destino dele, #10982/#11265/#11410)
@@ -166,6 +169,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { publishConfirmSuffix, publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
@@ -302,7 +306,7 @@ const RUPLOAD = "https://rupload.facebook.com";
  */
 export const LINKEDIN_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, publishing.shorts.linkedin_profile_via_timer) no horário do vertical; " +
-  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer --publish " +
+  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer --publish --confirm-publish AAMMDD " +
   "(confira antes que o 300 não publicou; o --linkedin-timer recusa qualquer outro destino)";
 
 /**
@@ -314,7 +318,7 @@ export const INSTAGRAM_TIMER_DETAIL =
   "com o vertical único do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
   "e, se ainda assim o Reels não sair (acima do teto da API, credencial, falha), abre um alarme para o editor. " +
   "Para publicar pela API mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor: o lock do timer não cruza máquina e o Reels sai duplicado) " +
-  "só esse destino com --only instagram --instagram-timer --publish " +
+  "só esse destino com --only instagram --instagram-timer --publish --confirm-publish AAMMDD " +
   "(confira antes que o 300 não publicou; o --instagram-timer recusa qualquer outro destino)";
 
 /**
@@ -325,7 +329,7 @@ export const THREADS_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-Threads-Profile, publishing.shorts.threads_profile_via_timer) no horário do vertical, " +
   "até 3 h depois dele; se não sair, o timer abre um alarme para o editor. " +
   "Para publicar mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor e o post pode sair duplicado) " +
-  "só esse destino com --only threads_profile --threads-timer --publish " +
+  "só esse destino com --only threads_profile --threads-timer --publish --confirm-publish AAMMDD " +
   "(confira antes que o vídeo não está no perfil; o --threads-timer recusa qualquer outro destino)";
 
 /**
@@ -491,7 +495,7 @@ export function assignShortsDestinationOwners(
           action,
           by: "agent-scheduled-task",
           at: item.scheduledAt,
-          command: `${base} --only ${destination} --publish`,
+          command: `${base} --only ${destination} --publish ${publishConfirmSuffix(ctx.aammdd)}`,
           note:
             `a API não agenda: a skill cria uma task agendada one-shot para ${item.scheduledAt} com este comando` +
             (SHORTS_TIMER_TASKS[destination] ? ` (dono permanente: ligar o timer ${SHORTS_TIMER_TASKS[destination]} no 300)` : ""),
@@ -502,7 +506,7 @@ export function assignShortsDestinationOwners(
         destination,
         action,
         by: "agent",
-        command: `${base} ${lateNowArgs(destination, ctx.writer)}`,
+        command: `${base} ${lateNowArgs(destination, ctx.writer)} ${publishConfirmSuffix(ctx.aammdd)}`,
         note: "horário passou do teto: o agente publica nesta rodada com --now (ou registra com --mark se já saiu); nunca volta ao editor",
       });
     } else if (action === "guided") {
@@ -818,7 +822,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
       if (profileLate) {
-        const nowCmd = lateNowArgs(dest.id, input.writer);
+        const nowCmd = `${lateNowArgs(dest.id, input.writer)} ${publishConfirmSuffix(input.aammdd)}`;
         const detail =
           `${profileLate} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
           `O agente publica com ${nowCmd} (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
@@ -913,7 +917,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (late) {
         const detail =
           `${late} — fora do horário do teste (#10831), esta rodada não publica sozinha. ` +
-          `O agente publica com ${lateNowArgs(dest.id, input.writer)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
+          `O agente publica com ${lateNowArgs(dest.id, input.writer)} ${publishConfirmSuffix(input.aammdd)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`threads_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -3042,7 +3046,7 @@ export function resolveEditionUrlInput(dir: string, flag: string | undefined): {
 }
 
 const USAGE =
-  "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
+  "uso: publish-shorts.ts AAMMDD [--publish --confirm-publish AAMMDD] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
   "                       [--linkedin-timer | --instagram-timer | --threads-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
@@ -3117,6 +3121,15 @@ async function main(): Promise<number> {
     return 2;
   }
   const { flags, values, aammdd } = parsed;
+  // #11741: `--publish` tem efeito público — só com a confirmação explícita da
+  // edição, checada antes de qualquer download, credencial, API ou gravação.
+  if (flags.has("publish")) {
+    const confirmErr = publishConfirmationError({ script: "publish-shorts", mode: "--publish", aammdd, flags, values });
+    if (confirmErr) {
+      console.error(confirmErr);
+      return 2;
+    }
+  }
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
   // toda gravação relê do disco e troca só a própria entrada, sob lock.

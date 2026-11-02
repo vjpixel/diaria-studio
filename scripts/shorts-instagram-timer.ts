@@ -111,6 +111,7 @@ import { readShortsRegistryRaws } from "./lib/diaria/shorts-published-store.ts";
 import { acquireTimerLock } from "./shorts-linkedin-profile-timer.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
+import { publishConfirmArgs, publishConfirmSuffix } from "./lib/diaria/publish-confirm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[shorts-instagram-timer]";
@@ -524,7 +525,7 @@ export function buildInstagramTimerAlarm(input: {
   ];
   const confirm = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --confirm-instagram\``;
   const manual = videoArg
-    ? `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only instagram --instagram-timer --publish --now --video ${videoArg}${driveFileId ? ` --from-drive ${driveFileId}` : ""}\``
+    ? `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only instagram --instagram-timer --publish --now --video ${videoArg}${driveFileId ? ` --from-drive ${driveFileId}` : ""} ${publishConfirmSuffix(aammdd)}\``
     : null;
   let subject: string;
   if (key === "guided") {
@@ -671,7 +672,7 @@ export function driveVerticalCheck(instagram: InstagramCutLookup, generic: () =>
 export function instagramPublishArgs(aammdd: string, choice: Extract<InstagramVideoChoice, { kind: "use-local" | "download" }>): string[] {
   // `--now` (#11368): o timer já decidiu publicar dentro da janela; o publish-shorts
   // não recalcula o teto de 3 h depois do download (a 2h58 viraria skip_late).
-  const args = ["scripts/publish-shorts.ts", aammdd, "--only", "instagram", "--publish", "--instagram-timer", "--now", "--video", choice.path];
+  const args = ["scripts/publish-shorts.ts", aammdd, "--only", "instagram", "--publish", "--instagram-timer", "--now", ...publishConfirmArgs(aammdd), "--video", choice.path]; // #11741: a autorização do timer é a decisão do editor que o ligou (config), não uma pergunta por execução.
   if (choice.kind === "download") args.push("--from-drive", choice.fileId);
   return args;
 }
