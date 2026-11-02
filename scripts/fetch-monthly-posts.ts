@@ -20,13 +20,18 @@
  *   BEEHIIV_API_KEY (backend "beehiiv") ou KIT_API_KEY (backend "kit") —
  *   obrigatória, conforme `publishing.newsletter.read_backend`.
  *
- * Nota (#6184): `convertBeehiivHtmlToMarkdown` (nome do arquivo original)
- * roda igual para conteúdo Kit — não foi verificado ao vivo que o parser
- * lida bem com o HTML do Kit (shape pode diferir do Beehiiv); o fallback de
- * gravar HTML bruto (#2794) cobre a lacuna sem falhar silenciosamente.
+ * Nota (#6184, verificado em #11817): `convertBeehiivHtmlToMarkdown` (nome do
+ * arquivo original) roda igual para conteúdo Kit. O HTML dos broadcasts do Kit
+ * serializa o marcador ● como `&#9679;` e fecha o porquê com o botão de
+ * WhatsApp e "● Aprofunde"; o conversor trata os dois desde o #11817 (fixture
+ * real em `test/fixtures/kit-broadcast-261001-excerpt.html`). O fallback de
+ * gravar HTML bruto (#2794) segue para o post que não converter.
  *
  * Output (stdout): JSON { yymm, cycle, posts_found, downloaded, skipped_existing,
  *                         posts_with_html_fallback, out_dir, warnings }
+ * `posts_with_html_fallback` conta só os posts gravados como HTML BRUTO (a
+ * conversão não achou destaque). Até o #11817 contava todo post que passava
+ * pela conversão, convertesse ou não, e por isso nunca caía a 0.
  */
 
 import "dotenv/config";
@@ -69,6 +74,30 @@ function toAammddFromIso(iso: string): string {
     String(d.getUTCMonth() + 1).padStart(2, "0") +
     String(d.getUTCDate()).padStart(2, "0")
   );
+}
+
+export interface PreparedRawPost {
+  text: string;
+  /** true quando a conversão não achou destaque e o HTML bruto foi mantido. */
+  rawHtmlFallback: boolean;
+  warnings: string[];
+}
+
+/**
+ * Decide o texto gravado no raw-post a partir do HTML publicado (puro, #11817).
+ * #2791: converte o HTML pro pseudo-markdown que collect-monthly.ts
+ * (parsePost/splitSections) já sabe parsear. Conservador (#2794): se a
+ * conversão não achou nada limpo, mantém o HTML bruto, com warning explícito
+ * pro editor investigar, em vez de falhar em silêncio.
+ */
+export function prepareRawPostText(html: string, filename: string): PreparedRawPost {
+  const converted = convertBeehiivHtmlToMarkdown(html, filename);
+  const warnings = [...converted.warnings];
+  if (converted.destaquesFound > 0) {
+    return { text: converted.markdown, rawHtmlFallback: false, warnings };
+  }
+  warnings.push(`${filename}: gravado HTML bruto (fallback da conversão) — parser provavelmente zera destaques`);
+  return { text: html, rawHtmlFallback: true, warnings };
 }
 
 export async function main() {
@@ -130,29 +159,15 @@ export async function main() {
     process.stderr.write(`  ↓ ${filename}\n`);
     const content = await fetchNewsletterPostContent(readConfig, post.id);
 
-    let text: string;
-    if (content.html) {
-      // #2791: sem markdown, converte o HTML pro pseudo-markdown que
-      // collect-monthly.ts (parsePost/splitSections) já sabe parsear —
-      // em vez de gravar HTML bruto, que o parser não entende (0 destaques).
-      htmlFallback++;
-      const converted = convertBeehiivHtmlToMarkdown(content.html, filename);
-      warnings.push(...converted.warnings);
-      if (converted.destaquesFound > 0) {
-        text = converted.markdown;
-      } else {
-        // Conservador (#2794): nunca falha silenciosa — se a conversão não
-        // achou nada limpo, grava o HTML bruto mesmo (comportamento antigo)
-        // e deixa o warning acima explícito pro editor investigar.
-        text = content.html;
-        warnings.push(`${filename}: gravado HTML bruto (fallback da conversão) — parser provavelmente zera destaques`);
-      }
-    } else {
+    if (!content.html) {
       warnings.push(`${filename}: sem conteúdo — pulado`);
       continue;
     }
+    const prepared = prepareRawPostText(content.html, filename);
+    warnings.push(...prepared.warnings);
+    if (prepared.rawHtmlFallback) htmlFallback++;
 
-    writeFileSync(filepath, text, "utf8");
+    writeFileSync(filepath, prepared.text, "utf8");
     downloaded++;
   }
 
