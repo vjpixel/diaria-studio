@@ -42,11 +42,13 @@ prévia, envio).
   conteúdo é a de segunda a sexta anteriores). Omitido: resolver com
   `npx tsx scripts/publish-circle-stack.ts --resolve-skill-default-monday`
   (só lê o state local, não grava nada) e usar o `publishMonday` do JSON. A
-  regra parte da segunda de hoje ou da anterior, como o publicador; se esse
-  ciclo já está `published` na Stack e a semana de conteúdo da segunda
-  seguinte já fechou ou está perto disso (de sexta a domingo), assume a
-  segunda seguinte (#11784). Imprimir o `banner` do JSON, que diz quando
-  pulou o ciclo publicado. Nunca parar para confirmar a data. Como a skill
+  regra parte da segunda de hoje ou da anterior, como o publicador (de
+  segunda a quinta); de sexta a domingo assume sempre a segunda seguinte,
+  publicado ou não o ciclo anterior (#11784, #11868): a task de segunda só
+  envia o ciclo da própria segunda, então aprovar a segunda vencida não
+  serviria para nada. Envio atrasado do ciclo anterior só com `AAMMDD`
+  explícito e `--publish`. Imprimir o `banner` do JSON, que diz por que
+  pulou. Nunca parar para confirmar a data. Como a skill
   roda no fim de semana, antes do envio de segunda 06:00 (#11778), o caso
   normal é cair na próxima segunda (a semana anterior já saiu pela task); na
   própria segunda antes do envio, cai na data de hoje. O publicador, chamado
@@ -154,7 +156,8 @@ npx tsx scripts/publish-circle-stack-scheduled.ts --approve --publish-monday {AA
 
 Grava `data/weekly/{cycle}/_internal/circle-stack-approval.json` com o sha256
 da seleção atual. Recusa seleção com link fora das regras do canal ou título
-sem sinal de português não revisado, e ciclo já publicado. Editar a seleção
+sem sinal de português não revisado, ciclo já publicado e segunda que já
+passou (#11868: a task nunca a enviaria). Editar a seleção
 depois da aprovação a invalida (a task não envia e manda "Não enviado"):
 aprovar de novo. Desfazer: `--revoke --publish-monday {AAMMDD}`.
 

@@ -732,19 +732,22 @@ export interface SkillDefaultMonday {
   baseMonday: string;
   baseCycle: string;
   baseState: PublishState;
-  /** true = a base estava publicada e a skill passou para a segunda seguinte. */
+  /** true = a skill passou para a segunda seguinte (sexta a domingo, #11868). */
   advanced: boolean;
   banner: string;
 }
 
 /**
- * Pure (#11784): data padrão do `/diaria-stack` sem `AAMMDD`. Parte da mesma
- * regra do publicador (segunda de hoje ou a anterior); se esse ciclo já está
- * "published" e a semana de conteúdo da segunda seguinte já fechou ou está
- * perto disso (hoje é sexta, sábado ou domingo), assume a segunda seguinte.
- * Caso de origem: domingo 01/11/2026 sem data caiu em 261026, publicado desde
- * 26/10. O publicador sem `--publish-monday` NÃO usa isto: o catch-up do timer
- * (Persistent=true) precisa da regra antiga.
+ * Pure (#11784, #11868): data padrão do `/diaria-stack` sem `AAMMDD`. De
+ * segunda a quinta usa a regra do publicador (segunda de hoje ou a anterior).
+ * De sexta a domingo assume SEMPRE a segunda seguinte, qualquer que seja o
+ * estado do ciclo base: a task de segunda 06:00 só envia o ciclo da própria
+ * segunda, então aprovar o ciclo base (já vencido) no fim de semana gravaria
+ * uma aprovação que nada consome (#11868 — o editor acha que aprovou e o
+ * post não sai). Caso de origem do #11784: domingo 01/11/2026 sem data caiu
+ * em 261026, publicado desde 26/10. Envio atrasado do ciclo base continua
+ * possível passando `AAMMDD` explícito. O publicador sem `--publish-monday`
+ * NÃO usa isto: o catch-up do timer (Persistent=true) precisa da regra antiga.
  */
 export function resolveSkillDefaultMonday(now: Date, stateOf: (cycle: string) => PublishState): SkillDefaultMonday {
   const baseMonday = currentOrPreviousMondayAAMMDD(now);
@@ -753,11 +756,15 @@ export function resolveSkillDefaultMonday(now: Date, stateOf: (cycle: string) =>
   const baseState = stateOf(base.cycle);
   const dayNum = (now.getDay() + 6) % 7; // segunda=0 .. domingo=6
   const nextWeekNearlyClosed = dayNum >= 4;
-  if (baseState === "published" && nextWeekNearlyClosed) {
+  if (nextWeekNearlyClosed) {
     const d = parseAAMMDD(baseMonday) as Date;
     const nextMonday = formatAAMMDD(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7));
     const next = resolveWeeklyLinkedinCycle(nextMonday);
     if (!next) throw new Error(`segunda seguinte inválida: ${nextMonday}`);
+    const why =
+      baseState === "published"
+        ? `o ciclo ${base.cycle} de ${baseMonday} já está publicado na Stack`
+        : `o ciclo ${base.cycle} de ${baseMonday} está ${baseState === "unknown" ? "com state ambíguo" : "não publicado"} e a task de segunda só envia o ciclo da própria segunda; envio atrasado dele só com AAMMDD explícito`;
     return {
       publishMonday: nextMonday,
       cycle: next.cycle,
@@ -765,9 +772,7 @@ export function resolveSkillDefaultMonday(now: Date, stateOf: (cycle: string) =>
       baseCycle: base.cycle,
       baseState,
       advanced: true,
-      banner:
-        `Data não informada — assumindo ${nextMonday} (segunda de publicação; o ciclo ${base.cycle} de ${baseMonday} ` +
-        "já está publicado na Stack). Passe AAMMDD explicitamente para outra semana.",
+      banner: `Data não informada — assumindo ${nextMonday} (segunda de publicação; ${why}). Passe AAMMDD explicitamente para outra semana.`,
     };
   }
   const note =
