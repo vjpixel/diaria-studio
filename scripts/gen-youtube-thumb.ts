@@ -15,7 +15,9 @@
  *     [--enhance-portrait]            (contraste +25%, nitidez, saturação leve, alfa preservado, #11228)
  *     [--out PATH] [--edition-dir DIR]
  *   Gancho de 2 a 4 palavras no canto SUPERIOR direito (#11220), encolhido
- *   para não invadir a cabeça do retrato (#11228).
+ *   para não invadir a cabeça do retrato (#11228). Gancho em 2 linhas
+ *   alinhadas à direita (#11740): quebra explícita com `|` (ou `\n`), até 4
+ *   palavras por linha — `--hook "Confiou no chatbot|e morreu"`.
  *
  * Opções de retrato a partir do BRUTO 4K no Drive (#11228), sem baixar o vídeo:
  *   npx tsx scripts/gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--count 5 | --times 12,30.5,48]
@@ -79,7 +81,7 @@ import {
 } from "./lib/diaria/youtube-thumb-frames.ts";
 
 const USAGE =
-  "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" --portrait PNG [--background IMG] [--enhance-portrait] [--out PATH] [--edition-dir DIR]\n" +
+  "uso: gen-youtube-thumb.ts AAMMDD --hook \"IA ladra?\" (2 linhas: \"Confiou no chatbot|e morreu\") --portrait PNG [--background IMG] [--enhance-portrait] [--out PATH] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --frames-from-drive FILE_ID [--from-final] [--count N | --times T1,T2,...] [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --pick-frame N [--mirrored | --no-mirrored] [--edition-dir DIR]\n" +
   "     gen-youtube-thumb.ts AAMMDD --short-cover --at SEGUNDOS [--video MP4] [--out PATH] [--edition-dir DIR]";
