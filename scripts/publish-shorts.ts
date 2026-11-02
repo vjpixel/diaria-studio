@@ -1374,6 +1374,40 @@ export interface PublishOutcome {
   alreadyRegistered?: true;
 }
 
+/**
+ * #11869: o `finish` do Facebook (`/videos` ou `video_reels`) falhou sem resposta
+ * definitiva da Graph — timeout de 60 s (`GRAPH_REQUEST_TIMEOUT_MS`), queda de
+ * conexão ou 5xx. A Meta pode ter processado o `finish` e agendado (ou
+ * publicado) o vídeo. Tratar como falha comum fazia a próxima rodada subir o
+ * vídeo de novo e criar um 2º Reel na página pública; `publishFacebookReel`
+ * converte este erro num registro `send_unknown` (conta como feito, nunca
+ * re-posta), como o `media_publish` do Instagram (#11774).
+ */
+export class FacebookFinishUncertainError extends Error {
+  readonly videoId: string;
+  constructor(message: string, videoId: string) {
+    super(message);
+    this.name = "FacebookFinishUncertainError";
+    this.videoId = videoId;
+  }
+}
+
+/**
+ * #11869: o `finish` do upload do Facebook. Resposta da Graph com erro 4xx (ou
+ * 200 sem `success: true`) prova que o `finish` não valeu e lança o erro comum;
+ * falha de transporte ou 5xx lança `FacebookFinishUncertainError`.
+ */
+async function facebookFinish(deps: GraphDeps, path: string, params: Record<string, string>, apiVersion: string, base: string, videoId: string): Promise<void> {
+  let done: any;
+  try {
+    done = await graphPost(deps, path, params, apiVersion, base);
+  } catch (e) {
+    if (mediaPublishFailureIsDefinitive(e)) throw e;
+    throw new FacebookFinishUncertainError(`POST ${path} (finish) sem resposta definitiva: ${(e as Error).message}`, videoId);
+  }
+  if (done.success !== true) throw new Error(`POST ${path} (finish) sem success: ${JSON.stringify(done)}`);
+}
+
 /** Teto de blocos do upload resumable — só existe pra nunca virar loop infinito (o servidor dita o tamanho do bloco). */
 const FACEBOOK_RESUMABLE_MAX_CHUNKS = 10_000;
 /** Tentativas por bloco no `transfer` (falha transitória não joga fora o que já subiu). */
@@ -1434,8 +1468,7 @@ export async function uploadFacebookVideoResumable(
     finish.published = "false";
     finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
   }
-  const done = await graphPost(deps, path, finish, apiVersion, GRAPH_VIDEO);
-  if (done.success !== true) throw new Error(`POST ${path} (finish) sem success: ${JSON.stringify(done)}`);
+  await facebookFinish(deps, path, finish, apiVersion, GRAPH_VIDEO, videoId); // #11869
   return videoId;
 }
 
@@ -1471,6 +1504,8 @@ export async function setFacebookVideoThumbnail(
 /**
  * Reels numa Página. ≤90 s: `video_reels` (start → rupload → finish). >90 s: `/videos` resumable (#10815).
  * #11547: com `cover`, aplica a capa logo depois do upload (as duas rotas).
+ * #11869: `finish` sem resposta definitiva (timeout, conexão, 5xx) devolve o
+ * registro `send_unknown` com o `video_id`, sem esperar processamento nem capa.
  */
 export async function publishFacebookReel(
   deps: GraphDeps,
@@ -1486,22 +1521,40 @@ export async function publishFacebookReel(
   const route = facebookUploadRoute(mp4DurationSeconds(file));
   let videoId: string;
 
-  if (route === "video_reels") {
-    const start = await graphPost(deps, `${page.pageId}/video_reels`, { upload_phase: "start", access_token: page.token }, apiVersion);
-    videoId = start.video_id;
-    if (!videoId) throw new Error(`video_reels start sem video_id: ${JSON.stringify(start)}`);
-    await ruploadBinary(deps, start.upload_url ?? `${RUPLOAD}/video-upload/${apiVersion}/${videoId}`, page.token, file);
-    const finish: Record<string, string> = { upload_phase: "finish", video_id: videoId, description: caption, access_token: page.token };
-    if (scheduledAt) {
-      finish.video_state = "SCHEDULED";
-      finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
+  try {
+    if (route === "video_reels") {
+      const start = await graphPost(deps, `${page.pageId}/video_reels`, { upload_phase: "start", access_token: page.token }, apiVersion);
+      videoId = start.video_id;
+      if (!videoId) throw new Error(`video_reels start sem video_id: ${JSON.stringify(start)}`);
+      await ruploadBinary(deps, start.upload_url ?? `${RUPLOAD}/video-upload/${apiVersion}/${videoId}`, page.token, file);
+      const finish: Record<string, string> = { upload_phase: "finish", video_id: videoId, description: caption, access_token: page.token };
+      if (scheduledAt) {
+        finish.video_state = "SCHEDULED";
+        finish.scheduled_publish_time = String(Math.floor(Date.parse(scheduledAt) / 1000));
+      } else {
+        finish.video_state = "PUBLISHED";
+      }
+      await facebookFinish(deps, `${page.pageId}/video_reels`, finish, apiVersion, GRAPH, videoId); // #11869
     } else {
-      finish.video_state = "PUBLISHED";
+      videoId = await uploadFacebookVideoResumable(deps, page, apiVersion, file, caption, scheduledAt);
     }
-    const done = await graphPost(deps, `${page.pageId}/video_reels`, finish, apiVersion);
-    if (done.success !== true) throw new Error(`video_reels finish sem success: ${JSON.stringify(done)}`);
-  } else {
-    videoId = await uploadFacebookVideoResumable(deps, page, apiVersion, file, caption, scheduledAt);
+  } catch (e) {
+    if (!(e instanceof FacebookFinishUncertainError)) throw e;
+    // #11869: o finish pode ter valido do lado da Meta — registra estado incerto, nunca re-posta sozinho.
+    const at = deps.now().toISOString();
+    return {
+      entry: {
+        destination: facebookDestinationId(page.slug),
+        status: "send_unknown",
+        id: e.videoId,
+        scheduled_at: scheduledAt,
+        at,
+      },
+      warnings: [
+        `${e.message}: o vídeo ${e.videoId} PODE estar ${scheduledAt ? "agendado" : "no ar"} na página — confira no Meta Business Suite antes de repostar; ` +
+          `se não estiver, apague a entrada de ${facebookDestinationId(page.slug)} do registro e rode de novo`,
+      ],
+    };
   }
 
   const confirmed = await waitFacebookProcessing(deps, videoId, page.token, apiVersion);
@@ -2460,12 +2513,21 @@ export async function instagramTimerAlreadyCollabWarnings(
 export function instagramTimerBeforePublish(deps: {
   local: () => ShortPublishedEntry | null;
   gate: () => ReturnType<typeof instagramTimerGate>;
+  /**
+   * #11870: o gate da conta achou o Reels nesta reconferência (e gravou). Leva o
+   * `matchedBy` ao chamador, que relê os collabs como no passo `already` do
+   * início da rodada (#11828). O achado no registro local não chama: nada foi
+   * gravado por esta rodada.
+   */
+  onAlready?: (hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }) => void;
 }): () => Promise<ShortPublishedEntry | null> {
   return async () => {
     const local = deps.local();
     if (local) return local;
     const gate = await deps.gate();
-    return gate.kind === "already" ? gate.entry : null;
+    if (gate.kind !== "already") return null;
+    deps.onAlready?.({ entry: gate.entry, matchedBy: gate.matchedBy });
+    return gate.entry;
   };
 }
 
@@ -3811,7 +3873,10 @@ async function main(): Promise<number> {
       } else if (item.destination === "instagram") {
         if (!igAuthor.ready) throw new Error(igAuthor.reason); // o plano não marca publish sem autora pronta
         const author = igAuthor;
-        const publishReel = async (accountGate?: () => ReturnType<typeof instagramTimerGate>) => {
+        const publishReel = async (
+          accountGate?: () => ReturnType<typeof instagramTimerGate>,
+          onRecheckAlready?: (hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch }) => void, // #11870
+        ) => {
           const choice = instagramReelRouteChoice({
             authorPage: shortsCfg.instagramAuthorPage,
             aammdd,
@@ -3842,7 +3907,7 @@ async function main(): Promise<number> {
           const localRecheck = instagramPublishRecheck(dir, aammdd, (fresh) => {
             published = fresh;
           });
-          const beforePublish = accountGate ? instagramTimerBeforePublish({ local: localRecheck, gate: accountGate }) : localRecheck;
+          const beforePublish = accountGate ? instagramTimerBeforePublish({ local: localRecheck, gate: accountGate, onAlready: onRecheckAlready }) : localRecheck;
           return publishInstagramReel(deps, author.igUserId, author.token, igApiVersion, source, item.caption, shortsCfg.instagramCollaborators, cover, { beforePublish });
         };
         if (writer === "instagram-timer") {
@@ -3883,25 +3948,37 @@ async function main(): Promise<number> {
                 published = persist(entry);
               },
             });
+          // #11870: o gate re-rodado antes do media_publish também pode achar o Reels; guarda o matchedBy dele.
+          const recheck: { hit: { entry: ShortPublishedEntry; matchedBy: InstagramTimerAlreadyMatch } | null } = { hit: null };
           const step = await instagramTimerPublishStep({
             gate: accountGate,
             // #11774: o mesmo gate roda de novo logo antes do media_publish.
-            publish: () => publishReel(accountGate),
+            publish: () =>
+              publishReel(accountGate, (hit) => {
+                recheck.hit = hit;
+              }),
           });
-          if (step.kind === "already") {
-            // #11828: o Reels feito à mão pode ter saído sem o convite da @vjpixel; avisa sem bloquear o registro.
+          const already =
+            step.kind === "already"
+              ? { entry: step.entry, matchedBy: step.matchedBy, when: "" }
+              : step.outcome.alreadyRegistered && recheck.hit
+                ? { entry: recheck.hit.entry, matchedBy: recheck.hit.matchedBy, when: " na reconferência antes do publish" }
+                : null;
+          if (already) {
+            // #11828/#11870: o Reels feito à mão pode ter saído sem o convite da @vjpixel; avisa sem bloquear o registro.
             const collabWarnings = await instagramTimerAlreadyCollabWarnings(deps, {
-              matchedBy: step.matchedBy,
-              mediaId: step.entry.id,
+              matchedBy: already.matchedBy,
+              mediaId: already.entry.id,
               token: foundIn.token,
               apiVersion: igApiVersion,
               expected: instagramConfirmExpectedCollabs({ account: foundIn.account, sameAccount: chrome.sameAccount === true, configCollaborators: shortsCfg.instagramCollaborators }),
             });
-            results.push({ destination: item.destination, ok: true, entry: step.entry, alreadyRegistered: true, matchedBy: step.matchedBy, ...(collabWarnings.length ? { warnings: collabWarnings } : {}) });
-            console.error(`[aviso] instagram: o Reels da edição já está na conta (${step.matchedBy}, ${step.entry.url ?? step.entry.id}) — registrado, não publica de novo`);
+            results.push({ destination: item.destination, ok: true, entry: already.entry, alreadyRegistered: true, matchedBy: already.matchedBy, ...(collabWarnings.length ? { warnings: collabWarnings } : {}) });
+            console.error(`[aviso] instagram: o Reels da edição já está na conta${already.when} (${already.matchedBy}, ${already.entry.url ?? already.entry.id}) — registrado, não publica de novo`);
             for (const w of collabWarnings) console.error(`[aviso] instagram: ${w}`);
             continue;
           }
+          if (step.kind !== "published") continue; // inalcançável: `already` acima cobre esse caso
           outcome = step.outcome;
         } else {
           outcome = await publishReel(); // sem gate da conta fora do timer (o registro local segue valendo)
