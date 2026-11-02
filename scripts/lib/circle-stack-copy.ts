@@ -31,8 +31,13 @@
 
 import type { CircleStackItem, CircleStackSelection } from "./circle-stack-render.ts";
 
-/** Teto da abertura: 2 a 4 frases curtas. */
-export const STACK_COPY_OPENING_MAX_CHARS = 600;
+/**
+ * Teto da abertura (#11783): o alvo é ~200 caracteres em 2 ou 3 frases curtas.
+ * No ciclo 26w44 o editor recusou duas aberturas de ~560 caracteres como
+ * confusas e aprovou uma de 200; o teto deixa folga sobre o alvo, não o repete.
+ */
+export const STACK_COPY_OPENING_TARGET_CHARS = 200;
+export const STACK_COPY_OPENING_MAX_CHARS = 280;
 /** Teto da descrição de cada item de lista: 1 ou 2 frases. */
 export const STACK_COPY_NOTE_MAX_CHARS = 240;
 
@@ -94,7 +99,7 @@ export interface StackWriterInput {
   cycle: string;
   /** Onde o agente grava a resposta. */
   copyPath: string;
-  limits: { openingMaxChars: number; noteMaxChars: number };
+  limits: { openingTargetChars: number; openingMaxChars: number; noteMaxChars: number };
   currentOpening: string | null;
   destaques: StackWriterDestaque[];
   items: StackWriterItem[];
@@ -122,7 +127,11 @@ export function buildStackWriterInput(sel: CircleStackSelection, copyPath: strin
   return {
     cycle: sel.cycle,
     copyPath,
-    limits: { openingMaxChars: STACK_COPY_OPENING_MAX_CHARS, noteMaxChars: STACK_COPY_NOTE_MAX_CHARS },
+    limits: {
+      openingTargetChars: STACK_COPY_OPENING_TARGET_CHARS,
+      openingMaxChars: STACK_COPY_OPENING_MAX_CHARS,
+      noteMaxChars: STACK_COPY_NOTE_MAX_CHARS,
+    },
     currentOpening: typeof sel.opening === "string" && sel.opening.trim() ? sel.opening.trim() : null,
     destaques: sel.destaques.map((d) => ({ url: d.url, title: d.title, body: d.body, why: d.why, tool: stackCourseTool(d.url) })),
     items,
