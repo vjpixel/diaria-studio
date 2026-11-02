@@ -67,7 +67,7 @@
  *   --schedule         agenda a campanha (PUT scheduledAt + GET-verify).
  *                      REQUER `scheduledAt` (criada com --schedule-at) e o
  *                      gabarito É IA? setado antes via
- *                        npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {AAMMDD} [--answer A|B]
+ *                        npx tsx scripts/close-poll.ts --brand clarice --cycle {cycle} --edition {cycle} --answer A|B
  *                      --skip-eia-guard pula essa verificação (não recomendado).
  *                      Este caminho NÃO MUDA (#4347) — outros fluxos dependem dele.
  *                      Pula (idempotente) se a campanha JÁ está scheduled/sent
@@ -178,7 +178,7 @@
  *   npx tsx scripts/clarice-schedule-group.ts --cycle 2606-07 --group ramp-warm \
  *     --subject "Assunto da campanha" --schedule-at 2026-07-15T09:00:00Z --create
  *   npx tsx scripts/clarice-schedule-group.ts --cycle 2606-07 --group ramp-warm --send-test
- *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2606-07 --edition 260714 --answer A
+ *   npx tsx scripts/close-poll.ts --brand clarice --cycle 2606-07 --edition 2606-07 --answer A
  *   npx tsx scripts/clarice-schedule-group.ts --cycle 2606-07 --group ramp-warm --schedule
  *
  * Corrigir o horário de uma campanha JÁ agendada (#4668 — nunca PUT manual):
