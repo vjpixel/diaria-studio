@@ -30,9 +30,8 @@ import {
 import { CORTE_SPEC_FILE, CORTE_TIMER_TASK, type CorteSpec } from "../scripts/lib/diaria/short-corte.ts";
 import { assignShortsDestinationOwners, executeScheduledUpdates, planShortsPublish } from "../scripts/publish-shorts.ts";
 import { planScheduledUpdates } from "../scripts/lib/diaria/short-scheduled-update.ts";
-import { getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 import { updateScheduledVideo } from "../scripts/lib/diaria/youtube-upload.ts";
-import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
+import { SCHEDULED_TASKS, getScheduledTaskByName } from "../scripts/lib/scheduled-tasks.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
@@ -330,7 +329,7 @@ describe("review do PR #11894", () => {
     if (real.publishing.shorts.corte_via_timer === true) {
       const task = getScheduledTaskByName(CORTE_TIMER_TASK);
       assert.ok(task, `${CORTE_TIMER_TASK} precisa estar declarada em SCHEDULED_TASKS`);
-      assert.notEqual((task as { enabled?: boolean }).enabled, false, `${CORTE_TIMER_TASK} não pode estar desativada com a flag ligada`);
+      assert.notEqual(task.enabled, false, `${CORTE_TIMER_TASK} não pode estar desativada com a flag ligada`);
     } else {
       assert.equal(real.publishing.shorts.corte_via_timer, false);
     }
