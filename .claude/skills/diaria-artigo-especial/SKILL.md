@@ -227,7 +227,7 @@ quando o tema é sobre a diar.ia.br, como no `o-jev`), gravada em
    inteiro do `draft.md` — `Skill("humanizador", ...)`, passada completa
    (todos os padrões, não amostra), preservando o frontmatter e as linhas
    `## ` como estão. Depois `mcp__clarice__correct_text` parágrafo a
-   parágrafo, aceitando as sugestões depois de filtrá-las com `npx tsx scripts/clarice-filter.ts` (ruído do MCP, #11798; mesma disciplina do Stage 2, #4514),
+   parágrafo, aceitando as sugestões depois de salvar as sugestões em `{S}.json` (array `[{from,to,...}]`), rodar `npx tsx scripts/clarice-filter.ts --suggestions {S}.json --out {S}-filtrado.json` e aplicar só o filtrado (ruído do MCP, #11798; exit ≠ 0 = não aplicar, avisar o editor); mesma disciplina do Stage 2, #4514),
    exceto as que quebram marca, nome próprio ou a sintaxe do draft.
 
 3. **Iteração no chat.** Mostrar o texto ao editor e iterar como uma edição
