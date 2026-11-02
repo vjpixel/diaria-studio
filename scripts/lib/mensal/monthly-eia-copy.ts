@@ -8,14 +8,11 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { stripPrevResultLine } from "./monthly-render.ts";
 
-/** Pure: remove as linhas "Resultado da última edição: ..." do 01-eia.md. */
-export function stripPrevResultLine(eiaMd: string): string {
-  const re = /^\s*Resultado da última edição:/i;
-  const lines = eiaMd.split(/(?<=\n)/);
-  if (!lines.some((l) => re.test(l))) return eiaMd; // preserva CRLF/bytes
-  return lines.filter((l) => !re.test(l)).join("");
-}
+// A função pura mora em monthly-render.ts (sem node:*), que também a aplica em
+// `parseEiaLegend` como defesa para cópia manual. Re-exportada aqui por compat.
+export { stripPrevResultLine };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [src, dest] = process.argv.slice(2);

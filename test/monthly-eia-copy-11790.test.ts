@@ -31,6 +31,27 @@ describe("stripPrevResultLine: CRLF (#11790)", () => {
   });
 });
 
+describe("parseEiaLegend descarta o resultado da diária mesmo sem a cópia (#11790)", () => {
+  // Cópia manual (`trocar-eia`, ciclo antigo) não passa por monthly-eia-copy.ts:
+  // o render não pode mostrar o resultado da edição anterior à escolhida.
+  it("01-eia.md cru da diária gera legenda sem a linha", () => {
+    const raw = "---\neia_answer:\n  A: real\n  B: ia\n---\n\n**É IA?**\n\nFoto de fulano.\n\nResultado da última edição: 68% das pessoas acertaram.\n";
+    assert.equal(parseEiaLegend(raw), "Foto de fulano.");
+  });
+  it("CRLF também", () => {
+    const raw = "**É IA?**\r\n\r\nFoto.\r\n\r\nResultado da última edição: 61% das pessoas acertaram.\r\n";
+    assert.equal(parseEiaLegend(raw), "Foto.");
+  });
+});
+
+describe("template mensal sem instrução de recap do É IA? (#11790)", () => {
+  const template = readFileSync("context/templates/newsletter-monthly.md", "utf8");
+  it("não manda o writer escolher nem recapitular a edição", () => {
+    assert.doesNotMatch(template, /\*\*É IA\? recap\*\*/);
+    assert.doesNotMatch(template, /É IA\? é recap de uma do mês/);
+  });
+});
+
 describe("SKILL.md diaria-mensal Etapa 3 (#11790)", () => {
   const skill = readFileSync(".claude/skills/diaria-mensal/SKILL.md", "utf8");
   it("usa o layout nested {AAMM}/{AAMMDD}", () => {

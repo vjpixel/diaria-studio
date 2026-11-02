@@ -1177,13 +1177,26 @@ export function eiaEditionFromYymm(yymm: string): string {
   return `${yymm}-${String(sendMonth).padStart(2, "0")}`;
 }
 
+/** Pure (#11790): remove as linhas "Resultado da última edição: ..." do 01-eia.md. */
+export function stripPrevResultLine(eiaMd: string): string {
+  const re = /^\s*Resultado da última edição:/i;
+  const lines = eiaMd.split(/(?<=\n)/);
+  if (!lines.some((l) => re.test(l))) return eiaMd; // preserva CRLF/bytes
+  return lines.filter((l) => !re.test(l)).join("");
+}
+
 /**
  * Pure (#1914): extrai a legenda/crédito do `01-eia.md` (o corpo após o header
  * `**É IA?**`, sem o frontmatter `eia_answer`). É essa legenda que vira o crédito
  * da imagem no card do É IA? mensal. Retorna "" se não achar corpo.
+ *
+ * #11790: descarta a linha "Resultado da última edição: X%" da diária, que é o
+ * resultado da edição anterior à escolhida e contradiz o resultado do ciclo
+ * (injetado à parte, #2709). A cópia da Etapa 3 já remove a linha
+ * (`monthly-eia-copy.ts`); isto cobre cópia manual (`trocar-eia`, ciclo antigo).
  */
 export function parseEiaLegend(eiaMd: string): string {
-  const noFront = eiaMd.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*\r?\n/, "");
+  const noFront = stripPrevResultLine(eiaMd).replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*\r?\n/, "");
   // Remove a linha de header (`**É IA?**` ou `É IA?`), pega o resto. Sem `\b`:
   // o boundary ASCII não casa antes de `É` nem depois de `*` (#1914 review).
   const lines = noFront.split(/\r?\n/);
