@@ -164,10 +164,12 @@ export function isPlatform(value: unknown): value is Platform {
  * ausência como dependência dura, nunca gravada). Ver
  * `scripts/lib/subscriber-state-snapshot.ts` pro mecanismo que hoje deriva
  * confirmação por comparação de snapshots diários (o Kit não expõe um
- * webhook/evento de confirmação nativo) — nenhum ingestor grava `confirm`
- * neste `event` ainda; o tipo existe primeiro pra desbloquear os
- * consumidores que já esperam por ele (`isEventType`, o registry de
- * métricas), a gravação em si é passo seguinte, fora do escopo desta fatia.
+ * webhook/evento de confirmação nativo). O produtor é
+ * `ingestKitConfirmations` (`kit-subscribers-ingest.ts`, #11846): grava
+ * `confirm` na transição `inactive -> active` entre 2 snapshots, com `ts` =
+ * dia do snapshot (aproximação de até 1 dia). O tipo existiu primeiro pra
+ * desbloquear os consumidores (`isEventType`, o registry de métricas); a
+ * ligação do ingestor ao CLI diário fica como passo seguinte.
  */
 export const EVENT_TYPES = [
   "sent",
