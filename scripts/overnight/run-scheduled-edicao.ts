@@ -60,6 +60,7 @@ import { assertSentinel } from "../lib/pipeline-state.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { STAGE_PLAN as STAGE_PLAN_IMPL, runEditionStages } from "../lib/edition-stage-runner.ts";
 import { runTsx } from "../lib/run-tsx.ts";
+import { checkClaudeAuth, EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION, type ClaudeAuthResult } from "../lib/claude-auth-guard.ts";
 import {
   EXIT_WORKSPACE_UNTRUSTED,
   checkWorkspaceTrust,
@@ -248,6 +249,10 @@ export function main(
   // Preflight de confiança do workspace (#11383). Injetável: o default lê o
   // `~/.claude.json` real (HOME/CLAUDE_CONFIG_DIR do processo).
   checkTrustFn: (repoRootAbs: string) => WorkspaceTrustResult = (root) => checkWorkspaceTrust(root, { env: process.env }),
+  // Preflight de auth (#11887). Opcional: ausente, não roda (harness de teste
+  // antigo, mesmo desenho do `checkWorkspaceTrust` da cadeia noturna); o
+  // entrypoint CLI sempre passa o check real.
+  checkAuthFn?: (claudeBin: string) => ClaudeAuthResult,
 ): number {
   const dataDir = join(repoRootAbs, "data");
   const aammdd = aammddOverride ?? nextEditionDate();
@@ -337,6 +342,33 @@ export function main(
       JSON.stringify({ edition: aammdd, exit_code: EXIT_WORKSPACE_UNTRUSTED, reason: `workspace-${trust.status}`, config_path: trust.configPath }),
     );
     return EXIT_WORKSPACE_UNTRUSTED;
+  }
+
+  // -------------------------------------------------------------------
+  // Preflight de auth (#11887): `authMethod` tem de ser claude.ai, senão a
+  // rodada pagaria por token e perderia os conectores (#5608). Falha fechado,
+  // antes de qualquer spawn de stage.
+  // -------------------------------------------------------------------
+  if (checkAuthFn) {
+    let auth: ClaudeAuthResult;
+    try {
+      auth = checkAuthFn(resolveClaudeBinFn());
+    } catch (e) {
+      auth = { status: "unverifiable", message: `auth do claude: NÃO VERIFICÁVEL — ${(e as Error).message}` };
+    }
+    if (auth.status !== "subscription") {
+      console.error(`[${nowIso()}] ${auth.message}`);
+      log(
+        repoRootAbs,
+        dataDir,
+        aammdd,
+        `FAIL  edition=${aammdd} reason=auth-${auth.status} exit=${EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION} end=${nowIso()} detail=${auth.message}`,
+        "error",
+        `scheduled-edicao: auth do claude não é assinatura (${auth.status}) — nenhum stage disparado`,
+        JSON.stringify({ edition: aammdd, exit_code: EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION, reason: `auth-${auth.status}` }),
+      );
+      return EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION;
+    }
   }
 
   // -------------------------------------------------------------------
@@ -448,5 +480,15 @@ export function main(
 
 if (isMainModule(import.meta.url)) {
   const repoRootAbs = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-  process.exit(main(repoRootAbs));
+  process.exit(
+    main(
+      repoRootAbs,
+      execFileSync,
+      undefined,
+      resolveClaudeBin,
+      assertSentinel,
+      (root) => checkWorkspaceTrust(root, { env: process.env }),
+      (bin) => checkClaudeAuth(bin, { env: claudeCliEnv(process.env) }),
+    ),
+  );
 }

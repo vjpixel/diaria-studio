@@ -77,6 +77,8 @@ import {
 } from "../lib/claude-workspace-trust.ts";
 
 export { EXIT_WORKSPACE_UNTRUSTED } from "../lib/claude-workspace-trust.ts";
+import { checkClaudeAuth, EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION, type ClaudeAuthResult } from "../lib/claude-auth-guard.ts";
+export { EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION } from "../lib/claude-auth-guard.ts";
 
 /** Script do review, relativo à raiz do repo. */
 export const DAILY_REVIEW_SCRIPT = "hermes/scripts/opus-daily-diff-review.sh";
@@ -125,7 +127,9 @@ export type OvernightStatus =
   | "rodada-incompleta"
   | "skipped-active-session"
   /** Repo sem `hasTrustDialogAccepted` em `~/.claude.json`, ou o CLI disse isso no stderr (#11383). */
-  | "untrusted-workspace";
+  | "untrusted-workspace"
+  /** `claude auth status` != claude.ai (#11887). */
+  | "auth-not-subscription";
 
 export interface ReviewOutcome {
   status: ReviewStatus;
@@ -390,6 +394,8 @@ export function chainExitCode(review: ReviewStatus, overnight: OvernightOutcome)
   // Workspace sem confiança vence tudo: é a causa raiz de qualquer outra
   // falha da mesma run (allowlist inteira ignorada, #11383).
   if (overnight.status === "untrusted-workspace") return EXIT_WORKSPACE_UNTRUSTED;
+  // Auth fora da assinatura (#11887): rodada pay-per-token/sem conectores (#5608).
+  if (overnight.status === "auth-not-subscription") return EXIT_CLAUDE_AUTH_NOT_SUBSCRIPTION;
   if (overnight.status === "failed") return EXIT_OVERNIGHT_FAILED;
   if (overnight.status === "no-trace") return EXIT_OVERNIGHT_NO_TRACE;
   if (overnight.status === "rodada-incompleta") return EXIT_OVERNIGHT_INCOMPLETE;
@@ -425,6 +431,12 @@ export interface NightlyChainDeps {
    * `DEFAULT_DEPS` sempre liga.
    */
   checkWorkspaceTrust?: (repoRootAbs: string, env: NodeJS.ProcessEnv) => WorkspaceTrustResult;
+  /**
+   * Preflight de auth (#11887): `authMethod` tem de ser claude.ai antes de
+   * subir o overnight. Recebe o binário e o env JÁ filtrado do dispatch.
+   * Opcional: ausente, não roda; o `DEFAULT_DEPS` sempre liga.
+   */
+  checkClaudeAuth?: (claudeBin: string, env: NodeJS.ProcessEnv) => ClaudeAuthResult;
 }
 
 /** Nome da task no registro (`scripts/lib/scheduled-tasks.ts`) que dispara este runner. */
@@ -575,6 +587,7 @@ export const DEFAULT_DEPS: NightlyChainDeps = {
   readReviewSummary,
   findRoundTrace: findRoundTraceSince,
   checkWorkspaceTrust: (root, env) => checkWorkspaceTrust(root, { env }),
+  checkClaudeAuth: (bin, env) => checkClaudeAuth(bin, { env }),
 };
 
 export function runReview(repoRootAbs: string, claudeBin: string, deps: NightlyChainDeps): ReviewOutcome {
@@ -699,6 +712,28 @@ function preflightUntrusted(repoRootAbs: string, deps: NightlyChainDeps): boolea
   return true;
 }
 
+/**
+ * Preflight de auth (#11887). true = NÃO subir o overnight. Exceção no check
+ * conta como não verificável (nunca fail-soft). O log traz só a mensagem
+ * sanitizada do guard.
+ */
+function preflightAuthBlocked(claudeBin: string, deps: NightlyChainDeps): boolean {
+  if (!deps.checkClaudeAuth) return false;
+  let auth: ClaudeAuthResult;
+  try {
+    auth = deps.checkClaudeAuth(claudeBin, buildOvernightEnv(deps.env));
+  } catch (e) {
+    deps.log(`overnight: PULADO — auth do claude: erro no preflight (${(e as Error).name}); tratado como não verificável (#11887)`);
+    return true;
+  }
+  if (auth.status === "subscription") {
+    deps.log(`overnight: ${auth.message}`);
+    return false;
+  }
+  deps.log(`overnight: PULADO — ${auth.message}`);
+  return true;
+}
+
 export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_DEPS): number {
   // Toda linha vai pro `log` (stdout → log final do task-runner) E, na hora,
   // pro log incremental (#10672) — inclusive as que `runOvernight` emite.
@@ -743,6 +778,8 @@ export function main(repoRootAbs: string, baseDeps: NightlyChainDeps = DEFAULT_D
     overnight = { status: "skipped-active-session", exitCode: null };
   } else if (preflightUntrusted(repoRootAbs, deps)) {
     overnight = { status: "untrusted-workspace", exitCode: null };
+  } else if (preflightAuthBlocked(claudeBin, deps)) {
+    overnight = { status: "auth-not-subscription", exitCode: null };
   } else {
     deps.log(`overnight: claude --print /diaria-overnight ${AGENDADO_FLAG} (${NIGHTLY_OVERNIGHT_MODEL}/${NIGHTLY_OVERNIGHT_EFFORT})`);
     try {
