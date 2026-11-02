@@ -256,8 +256,9 @@ const UP_TO_DISCOUNT_RE = /\bat[ée]\s+(\d{1,3}(?:[.,]\d+)?)\s*%\s+de\s+desconto
  * #11810: nos ciclos 2607-08 a 2610-11 o CLARICE — DIVULGAÇÃO dizia
  * "acumulando até 67% de desconto" e o CTA do CLARICE — TUTORIAL (preenchido
  * à mão a partir do Doc "Laboratório Clarice") dizia "até 63% de desconto" —
- * dois números no mesmo e-mail. Qual é o certo depende da Clarice (não está
- * no repo), então o check não escolhe: só aponta a divergência. Advisory, não
+ * dois números no mesmo e-mail. O editor decidiu 63% em 02/11/2026 e a
+ * DIVULGAÇÃO fixa passou a dizer 63%; o check segue sem fixar o número (o CTA
+ * do TUTORIAL ainda vem do Doc) e só aponta a divergência. Advisory, não
  * FATAL — copy de parceiro não deve travar a Etapa 2; o aviso chega ao gate
  * da Etapa 4.
  */
