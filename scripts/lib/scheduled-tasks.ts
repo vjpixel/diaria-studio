@@ -3570,7 +3570,9 @@ export function listDisabledScheduledTaskNames(): string[] {
 // `Diaria-Task-Never-Armed-Alarm` alarmar "nunca armada". O registro aqui é a
 // definição versionada (nome, cron, prompt) que o coordenador usa pra criar ou
 // recriar a task; o prompt é um PONTEIRO pro roteiro no repo, nunca a cópia
-// (padrão do `relatorio-diario-teste-2608`, #8246).
+// (padrão do `relatorio-diario-teste-2608`, #8246). Desde #11779 (todo
+// agendamento no `300`, decisão do editor de 01/11/2026) cada entrada carrega
+// `serverException`: o motivo de não rodar no `300` e quando foi reconferido.
 // ---------------------------------------------------------------------------
 
 export interface DesktopScheduledTaskDefinition {
@@ -3592,6 +3594,20 @@ export interface DesktopScheduledTaskDefinition {
    */
   readonly prompt: string;
   readonly issue: string;
+  /**
+   * Por que esta task NÃO roda no `300` (#11779). Desde 01/11/2026 todo
+   * agendamento acontece no `300`, decisão do editor; task local do app só
+   * existe como exceção justificada, com a decisão que a manteve e a data da
+   * última vez que alguém conferiu se o motivo ainda vale.
+   */
+  readonly serverException: {
+    /** O que o `300` não tem (ex.: Chrome logado) e por que não há caminho sem ele. */
+    readonly reason: string;
+    /** Issue onde o editor decidiu manter a exceção. */
+    readonly decidedIn: string;
+    /** Data (AAAA-MM-DD) da última reconferência do motivo. */
+    readonly reviewedOn: string;
+  };
 }
 
 export const DESKTOP_SCHEDULED_TASKS: readonly DesktopScheduledTaskDefinition[] = [
@@ -3614,12 +3630,29 @@ export const DESKTOP_SCHEDULED_TASKS: readonly DesktopScheduledTaskDefinition[] 
       "Regras: a edição é a de hoje em BRT (o script calcula sozinho, não passe data); rode o script do plano pela ferramenta Bash com timeout de 600000 ms; só clique no Studio quando o plano disser action=link; nunca altere outro campo do vídeo nem digite senha; nunca pergunte nada (ninguém está olhando): na dúvida, registre failed e alerte. Termine com um resumo de uma linha: edição, ação final e IDs.",
     ].join("\n"),
     issue: "#10811",
+    serverException: {
+      reason:
+        "O vínculo do vídeo relacionado só existe no YouTube Studio: a YouTube Data API v3 não tem campo nem endpoint de escrita para ele (reconferido em 02/11/2026, docs/youtube-short-related-video.md). Sem API, o clique é do Claude in Chrome logado no @diariabr, que o 300 não tem.",
+      decidedIn: "#11779",
+      reviewedOn: "2026-11-02",
+    },
   },
 ];
 
 /** Linhas da listagem `--desktop` (uma por task, separadas por tab). */
 export function renderDesktopScheduledTasksTable(tasks: readonly DesktopScheduledTaskDefinition[] = DESKTOP_SCHEDULED_TASKS): string {
-  return tasks.map((t) => [t.taskId, t.machine, t.cronExpression, t.playbook, t.issue].join("\t")).join("\n");
+  return tasks
+    .map((t) =>
+      [
+        t.taskId,
+        t.machine,
+        t.cronExpression,
+        t.playbook,
+        t.issue,
+        `exceção ao 300: ${t.serverException.decidedIn}, revisada em ${t.serverException.reviewedOn}`,
+      ].join("\t"),
+    )
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------
