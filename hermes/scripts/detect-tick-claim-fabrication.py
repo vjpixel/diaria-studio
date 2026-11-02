@@ -1227,6 +1227,55 @@ def ended_continuo_events_in_window(
     return out
 
 
+def other_kind_claims_in_window(
+    lifecycle_log_path: Path,
+    window_start: dt.datetime,
+    window_end: dt.datetime,
+) -> set[int | str]:
+    """#11922: claims de sessoes `ended` de OUTRO kind (overnight/develop)
+    sobrepostas a janela do tick. O relatorio do continuo cita legitimamente
+    issue reivindicada por uma sessao concorrente ("pulada, reivindicada pelo
+    overnight"); a claim e real (passou por `claimIssueCheckAndSet`), so nao e
+    do continuo. Evento sem `claimed_issues_ever` e ignorado (nunca afirma
+    ausencia). Fail-soft, nunca lanca."""
+    out: set[int | str] = set()
+    try:
+        raw = lifecycle_log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in raw.splitlines():
+        try:
+            event = json.loads(line.strip())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("event") != "ended" or event.get("kind") in (None, "continuo"):
+            continue
+        started = _parse_iso(event.get("startedAt"))
+        heartbeat = _parse_iso(event.get("lastHeartbeat")) or started
+        if started is None or heartbeat is None:
+            continue
+        if not (window_start <= heartbeat and started <= window_end):
+            continue
+        ever = event.get("claimed_issues_ever")
+        if not isinstance(ever, list):
+            continue
+        for n in list(ever) + list(event.get("claimed_issues") or []):
+            try:
+                out.add(int(n))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _with_other_kind_claims(
+    snapshot: set[int | str] | None, other: set[int | str]
+) -> set[int | str] | None:
+    """#11922: None (indeterminado) permanece None; senao une as claims."""
+    return None if snapshot is None else snapshot | other
+
+
 def _snapshot_from_events(events: list[dict]) -> set[int | str] | None:
     """#8521: UNIAO do historico de claims (`claimed_issues_ever`, que inclui
     claims liberadas por unclaim antes do `end`) de todos os eventos. Se
@@ -1684,7 +1733,12 @@ def run(
             report_text, claimed_in_registry, sessions_dir.is_dir(),
             session_correlated=any_session_in_window,
             ended_session_in_window=bool(ended_events),
-            ended_claimed_snapshot=_snapshot_from_events(ended_events),
+            ended_claimed_snapshot=_with_other_kind_claims(
+                _snapshot_from_events(ended_events),
+                other_kind_claims_in_window(
+                    resolved_lifecycle_log, tick_window_start, tick_window_end
+                ),
+            ),
         ),
     ]
 

@@ -1584,6 +1584,21 @@ def main() -> int:
             )
             assert_true(f"{label} -> {want} (got {chk['status']})", chk["status"] == want)
 
+        # #11922: claim de sessao OVERNIGHT sobreposta (outro kind) cobre a issue
+        lc22 = td / "lc22" / "data" / "session-lifecycle.jsonl"
+        _write_lifecycle_event(lc22, "c1", tick_start14, tick_end14, claimed_issues=[], claimed_issues_ever=[])
+        _write_lifecycle_event(lc22, "o1", tick_start14, tick_end14, kind="overnight",
+                               claimed_issues=[], claimed_issues_ever=[8515])
+        w0, w1 = tick_start14 - timedelta(minutes=45), tick_end14 + timedelta(minutes=45)
+        evs22 = mod.ended_continuo_events_in_window(lc22, w0, w1)
+        snap22 = mod._with_other_kind_claims(
+            mod._snapshot_from_events(evs22), mod.other_kind_claims_in_window(lc22, w0, w1))
+        chk22 = mod.check_claimed_issues(
+            report_text_14, set(), True, session_correlated=True,
+            ended_session_in_window=bool(evs22), ended_claimed_snapshot=snap22)
+        assert_true(f"22a overnight claim -> ok (got {chk22['status']})", chk22["status"] == "ok")
+        assert_true("22b legado continuo segue None", mod._with_other_kind_claims(None, {8515}) is None)
+
         # snapshot contem #8515 -> ok
         _run16("16a-contem", [("s1", dict(claimed_issues=[8515], claimed_issues_ever=[8515]))], "ok")
         # ausente do snapshot e do historico, end real -> fabricacao
