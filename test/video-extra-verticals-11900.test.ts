@@ -76,7 +76,7 @@ describe("#11900: título na tela do corte é o dele, não o da notícia", () =>
   it("modo text: cada vertical com o seu título; sem o mapa, o corte herda o geral (comportamento antigo)", () => {
     const geral = { text: "Pais acusam ChatGPT", mode: "text" as const };
     const xml = buildXmeml([plan(OUT), plan(SOBERANA)], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: geral, screenTitleByCorte: { soberana: { text: "IA soberana", mode: "text" } } });
-    assert.deepEqual(titleTexts(xml), [{ seq: "outras-redes", title: "Pais acusam ChatGPT" }, { seq: "instagram", title: "IA soberana" }]);
+    assert.deepEqual(titleTexts(xml), [{ seq: "outras-redes", title: "Pais acusam ChatGPT" }, { seq: "soberana", title: "IA soberana" }]);
     const legado = buildXmeml([plan(OUT), plan(SOBERANA)], SOURCE, { faceX: 0.5, eyeY: 0.5 }, { screenTitle: geral });
     assert.deepEqual(titleTexts(legado).map((t) => t.title), ["Pais acusam ChatGPT", "Pais acusam ChatGPT"]);
   });

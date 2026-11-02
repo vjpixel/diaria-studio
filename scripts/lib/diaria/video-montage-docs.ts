@@ -30,6 +30,8 @@ import {
   describeCollapsedSuspect,
   isBlockKey,
   itemInTarget,
+  sequenceInList,
+  sequenceKey,
   speechParts,
   tokenize,
   tokensMatch,
@@ -39,6 +41,7 @@ import {
   type ResolvedItem,
   type Segment,
   type SequencePlan,
+  type SequenceRef,
   type SequenceSpec,
   type SequenceTarget,
   type VocabRule,
@@ -69,9 +72,9 @@ const TARGET_LABELS: Readonly<Record<SequenceTarget, string>> = {
 
 /**
  * Nome da versão no Doc: o do destino, ou, no corte, "Vertical {slug}" (#11900).
- * O `target` do corte é só a chave interna (`instagram`/`outras-redes`) e o
- * rótulo do destino ("Vertical Instagram") dizia ao editor uma rede que o corte
- * não é: ele sai em todas, como a vertical da edição.
+ * O `target` do corte só diz o formato (`instagram`/`outras-redes`, pode
+ * repetir entre cortes) e o rótulo do destino ("Vertical Instagram") dizia ao
+ * editor uma rede que o corte não é: ele sai em todas, como a vertical da edição.
  */
 export function targetLabel(spec: Pick<SequenceSpec, "target" | "corte">): string {
   return spec.corte !== undefined ? `Vertical ${spec.corte}` : TARGET_LABELS[spec.target];
@@ -88,10 +91,10 @@ export const mdCell = (s: string): string => s.replace(/\|/g, "\\|").replace(/\s
 const span = (start: number, end: number) => `${clockTime(start)}–${clockTime(end)}`;
 
 /** Vocabulário aplicado a um texto de exibição (regra a regra, como nas legendas; aqui o número de palavras pode mudar). */
-export function applyVocabularyToText(text: string, rules: VocabRule[], target?: SequenceTarget): string {
+export function applyVocabularyToText(text: string, rules: VocabRule[], target?: SequenceTarget | SequenceRef): string {
   let out = text;
   for (const r of rules) {
-    if (r.targets && (!target || !r.targets.includes(target))) continue;
+    if (r.targets && (!target || !sequenceInList(r.targets, target))) continue;
     out = out.replace(new RegExp(r.pattern, r.flags ?? "g"), r.replacement);
   }
   return out;
@@ -537,9 +540,9 @@ export function verticalTargetCheck(
   const totalS = plan.durationFrames / fps;
   const overS = totalS - targetS;
   if (overS <= 1e-9) return null;
-  const inThis = (k: BlockKey) => (plan.spec.order.includes(k) ? (resolved[k] ?? []).filter((it) => itemInTarget(it, plan.spec.target)) : []);
+  const inThis = (k: BlockKey) => (plan.spec.order.includes(k) ? (resolved[k] ?? []).filter((it) => itemInTarget(it, plan.spec)) : []);
   const summary = [...inThis("resumo"), ...inThis("resumo_curto"), ...(resolved.resumo ?? [])].flatMap((it) => tokenize(it.text));
-  const comment = (resolved.comentario ?? []).map((it, index) => ({ it, index })).filter(({ it }) => plan.spec.order.includes("comentario") && itemInTarget(it, plan.spec.target));
+  const comment = (resolved.comentario ?? []).map((it, index) => ({ it, index })).filter(({ it }) => plan.spec.order.includes("comentario") && itemInTarget(it, plan.spec));
   const secondsOf = (it: ResolvedItem) =>
     opts.silences ? speechParts(it.interval.start, it.interval.end, opts.silences).reduce((a, p) => a + (p.end - p.start), 0) : it.interval.end - it.interval.start;
   const candidates = comment.slice(comment.length > 1 ? 1 : 0).map(({ it, index }, k, all) => {
@@ -658,14 +661,14 @@ export function roteiroMarkdown(
     // Duração-alvo da vertical (#11757): aviso + as frases sugeridas, para o editor decidir aqui e não no Premiere.
     const target = verticalTargetCheck(p, resolved, fps, { targetS: opts.verticalTargetS, silences: opts.silences });
     if (target) {
-      lines.push(`**[aviso] ${sec(target.totalS)}, ${sec(target.overS)} acima do alvo da vertical (${target.targetS} s).** Sugestão de corte (só na vertical: \`"skip": ["${p.spec.target}"]\` no item do comentário):`, "");
+      lines.push(`**[aviso] ${sec(target.totalS)}, ${sec(target.overS)} acima do alvo da vertical (${target.targetS} s).** Sugestão de corte (só na vertical: \`"skip": ["${sequenceKey(p.spec)}"]\` no item do comentário):`, "");
       for (const c of target.cuts) lines.push(`- Comentário [${c.index}] (${sec(c.seconds)}, ${c.reason}): "${mdCell(c.text)}"`);
       if (target.coveredS < target.overS - 1e-9) lines.push(`- As sugestões tiram ~${sec(target.coveredS)}; o resto (~${sec(target.overS - target.coveredS)}) sai de outro bloco ou fica acima do alvo.`);
       lines.push("");
     }
     lines.push("| Bloco | Fala | Bruto |", "|---|---|---|");
     // Só os itens desta versão (`targets`/`skip`, #11377).
-    const forThis = (key: BlockKey) => (resolved[key] ?? []).filter((it) => itemInTarget(it, p.spec.target));
+    const forThis = (key: BlockKey) => (resolved[key] ?? []).filter((it) => itemInTarget(it, p.spec));
     for (const key of p.spec.order) {
       const all = resolved[key];
       const items = forThis(key);
@@ -692,14 +695,14 @@ export function roteiroMarkdown(
     // A fala ouvida que difere do texto pedido aparece no Gate 2 (#11362).
     const differs = p.spec.order.flatMap((key) =>
       (resolved[key] ?? []).flatMap((it, i) =>
-        it.heard === undefined || !itemInTarget(it, p.spec.target) ? [] : [`- **fala difere** ${BLOCK_LABELS[key]} [${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`],
+        it.heard === undefined || !itemInTarget(it, p.spec) ? [] : [`- **fala difere** ${BLOCK_LABELS[key]} [${i}], ouvido: "${it.heard}" (pedido: "${it.text}")`],
       ),
     );
     if (differs.length) lines.push("", ...differs);
     // Tomada colapsada (#11754): a escolhida pela retranscrição, ou o pedido de retranscrever.
     const collapsed = p.spec.order.flatMap((key) =>
       (resolved[key] ?? []).flatMap((it, i) => {
-        if (!it.collapsed || !itemInTarget(it, p.spec.target)) return [];
+        if (!it.collapsed || !itemInTarget(it, p.spec)) return [];
         const c = it.collapsed;
         const what = describeCollapsedSuspect(c.suspects[0]);
         if (c.picked) {

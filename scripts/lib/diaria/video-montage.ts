@@ -990,25 +990,54 @@ export const SEQUENCE_TARGETS: readonly SequenceTarget[] = ["youtube", "instagra
  * (passaram de 3:00 do Shorts) sem duplicar o bloco.
  */
 export interface ItemScope {
-  targets?: SequenceTarget[];
-  skip?: SequenceTarget[];
+  /** Destinos (`youtube`/`instagram`/`outras-redes`) ou slugs de corte (#11900). */
+  targets?: SequenceKey[];
+  skip?: SequenceKey[];
 }
 
-/** O item entra na versão `target`? */
-export function itemInTarget(scope: ItemScope, target: SequenceTarget): boolean {
-  if (scope.targets && !scope.targets.includes(target)) return false;
-  if (scope.skip && scope.skip.includes(target)) return false;
+/**
+ * Identidade de uma sequência no plano (#11900): o slug do corte, ou o destino
+ * na sequência sem corte. Única por plano (a validação recusa repetida). É a
+ * chave dos arquivos de trabalho (`seq-{key}.wav`, `previa-{key}`,
+ * `review-{key}.json`), do `--seq` do CLI e dos `targets`/`skip` dos itens.
+ * Sem corte ela é o próprio destino, então o `blocks.json` sem corte e os
+ * arquivos de trabalho dele não mudam.
+ */
+export type SequenceKey = string;
+export type SequenceRef = { target: SequenceTarget; corte?: string };
+
+export function sequenceKey(spec: SequenceRef): SequenceKey {
+  return spec.corte ?? spec.target;
+}
+
+/**
+ * A lista (`targets`/`skip` de item, `targets` de regra de vocabulário) cita
+ * esta sequência? Cita pelo slug do corte ou pelo destino. Um corte também
+ * casa pelo destino interno dele (compatível com o `blocks.json` de 1 extra,
+ * em que `"targets": ["instagram"]` mirava o corte de target `instagram`); para
+ * mirar um corte só, use o slug.
+ */
+export function sequenceInList(list: readonly string[], seq: SequenceTarget | SequenceRef): boolean {
+  const ref: SequenceRef = typeof seq === "string" ? { target: seq } : seq;
+  return list.includes(ref.target) || (ref.corte !== undefined && list.includes(ref.corte));
+}
+
+/** O item entra na versão `seq` (destino, ou a sequência com o corte)? */
+export function itemInTarget(scope: ItemScope, seq: SequenceTarget | SequenceRef): boolean {
+  if (scope.targets && !sequenceInList(scope.targets, seq)) return false;
+  if (scope.skip && sequenceInList(scope.skip, seq)) return false;
   return true;
 }
 
-/** Erros de `targets`/`skip` de um item (lista não vazia de versões conhecidas, sem os dois juntos). */
-function validateItemScope(it: Record<string, unknown>, label: string): string[] {
+/** Erros de `targets`/`skip` de um item (lista não vazia de destinos ou cortes do plano, sem os dois juntos). */
+function validateItemScope(it: Record<string, unknown>, label: string, cortes: readonly string[] = []): string[] {
   const errors: string[] = [];
+  const known: readonly string[] = [...SEQUENCE_TARGETS, ...cortes];
   for (const field of ["targets", "skip"] as const) {
     const v = it[field];
     if (v === undefined) continue;
-    if (!Array.isArray(v) || v.length === 0 || v.some((t) => !SEQUENCE_TARGETS.includes(t as SequenceTarget))) {
-      errors.push(`${label}: ${field} precisa ser uma lista não vazia de ${SEQUENCE_TARGETS.join("/")}`);
+    if (!Array.isArray(v) || v.length === 0 || v.some((t) => !known.includes(t as string))) {
+      errors.push(`${label}: ${field} precisa ser uma lista não vazia de ${known.join("/")}`);
     }
   }
   if (it.targets !== undefined && it.skip !== undefined) errors.push(`${label}: targets e skip juntos; usar só um`);
@@ -1030,9 +1059,11 @@ export interface SequenceSpec {
    * soberana); o editor publica com `publish-shorts.ts --corte {slug} --video …`.
    * O nome é o da vertical normal com `-{corte}` no fim
    * (`Diaria comentada_Vertical_V1-soberana`), que `videoTargetOf` lê como
-   * `null`: o fetch da edição nunca a confunde com a vertical do dia. O
-   * `target` é só a chave interna (único por plano, `instagram` ou
-   * `outras-redes`), e os `targets`/`skip` dos itens usam essa chave.
+   * `null`: o fetch da edição nunca a confunde com a vertical do dia. A
+   * sequência é identificada pelo slug (`sequenceKey`, #11900): pode haver
+   * várias, e o `target` delas (`instagram`/`outras-redes`) só diz o formato e
+   * pode repetir. Os `targets`/`skip` dos itens miram o corte pelo slug (ou
+   * pelo destino, que pega todas as sequências daquele destino).
    */
   corte?: string;
   /**
@@ -1083,8 +1114,8 @@ export interface VocabRule {
   replacement: string;
   /** Flags da regex; default "g". */
   flags?: string;
-  /** Só nestas versões; ausente = todas. */
-  targets?: SequenceTarget[];
+  /** Só nestas versões (destino, ou slug de corte no `blocks.json`, #11900); ausente = todas. */
+  targets?: SequenceKey[];
   note?: string;
 }
 
@@ -1117,6 +1148,9 @@ export interface BlocksFile {
   screenTitle?: string;
 }
 
+/** Slug de corte: minúsculas, dígitos e hífen (`soberana`, `ia-soberana`). */
+const CORTE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 
@@ -1131,17 +1165,18 @@ function validRegex(pattern: unknown, flags: unknown): string | null {
 }
 
 /** Confere as regras de vocabulário (de `vocabulario.json` ou do `blocks.json`). */
-export function validateVocabRules(raw: unknown, where: string): string[] {
+export function validateVocabRules(raw: unknown, where: string, cortes: readonly string[] = []): string[] {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) return [`${where}: precisa ser uma lista`];
   const errors: string[] = [];
+  const known: readonly string[] = [...SEQUENCE_TARGETS, ...cortes];
   raw.forEach((r, i) => {
     if (!isObj(r)) return void errors.push(`${where}[${i}]: precisa ser objeto`);
     const bad = validRegex(r.pattern, r.flags);
     if (bad) errors.push(`${where}[${i}]: regex inválida (${bad})`);
     if (typeof r.replacement !== "string") errors.push(`${where}[${i}]: replacement precisa ser string`);
-    if (r.targets !== undefined && (!Array.isArray(r.targets) || r.targets.some((t) => !SEQUENCE_TARGETS.includes(t as SequenceTarget)))) {
-      errors.push(`${where}[${i}]: targets fora de ${SEQUENCE_TARGETS.join("/")}`);
+    if (r.targets !== undefined && (!Array.isArray(r.targets) || r.targets.some((t) => !known.includes(t as string)))) {
+      errors.push(`${where}[${i}]: targets fora de ${known.join("/")}`);
     }
   });
   return errors;
@@ -1155,6 +1190,10 @@ export function validateVocabRules(raw: unknown, where: string): string[] {
 export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | { ok: false; errors: string[] } {
   const errors: string[] = [];
   if (!isObj(raw)) return { ok: false, errors: ["blocks.json precisa ser um objeto"] };
+  // Os cortes do plano (#11900): os `targets`/`skip` dos itens e do vocabulário podem citá-los pelo slug.
+  const cortes = Array.isArray(raw.sequences)
+    ? raw.sequences.flatMap((s) => (isObj(s) && typeof s.corte === "string" && CORTE_SLUG_RE.test(s.corte) ? [s.corte] : []))
+    : [];
   if (typeof raw.edition !== "string" || !/^\d{6}$/.test(raw.edition)) errors.push("edition precisa ser AAMMDD");
   if (raw.mirrored !== undefined && typeof raw.mirrored !== "boolean") errors.push("mirrored precisa ser true/false");
   if (raw.format !== undefined && !VIDEO_FORMATS.includes(raw.format as VideoFormat)) errors.push(`format precisa ser ${VIDEO_FORMATS.join(" ou ")}`);
@@ -1188,7 +1227,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
           if (typeof it.text !== "string" || !it.text.trim()) errors.push(`${label}: sem texto nem intervalo`);
           if (it.take !== undefined && !(Number.isInteger(it.take) && (it.take as number) >= 1)) errors.push(`${label}: take precisa ser inteiro ≥ 1`);
         }
-        errors.push(...validateItemScope(it, label));
+        errors.push(...validateItemScope(it, label, cortes));
       });
     }
   }
@@ -1207,10 +1246,21 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
       raw.sequences.forEach((s, i) => {
         const label = `sequences[${i}]`;
         if (!isObj(s)) return void errors.push(`${label}: precisa ser objeto`);
+        // Identidade única por plano (#11900): o slug do corte, ou o destino na sequência sem corte.
+        // Cortes podem repetir o destino (várias verticais extras); só a chave não repete.
+        const corteOk = typeof s.corte === "string" && CORTE_SLUG_RE.test(s.corte);
         if (typeof s.target !== "string" || !SEQUENCE_TARGETS.includes(s.target as SequenceTarget)) errors.push(`${label}: target fora de ${SEQUENCE_TARGETS.join("/")}`);
-        else if (seen.has(s.target)) errors.push(`${label}: target ${s.target} repetido`);
-        else seen.add(s.target);
-        if (s.corte !== undefined && (typeof s.corte !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s.corte))) errors.push(`${label}: corte precisa ser um slug (minúsculas, dígitos e hífen)`);
+        else if (s.corte === undefined) {
+          if (seen.has(s.target)) errors.push(`${label}: target ${s.target} repetido`);
+          else seen.add(s.target);
+        }
+        if (s.corte !== undefined && !corteOk) errors.push(`${label}: corte precisa ser um slug (minúsculas, dígitos e hífen)`);
+        else if (corteOk) {
+          const c = s.corte as string;
+          if ((SEQUENCE_TARGETS as readonly string[]).includes(c)) errors.push(`${label}: corte "${c}" é nome de destino; use outro slug`);
+          else if (seen.has(`corte:${c}`)) errors.push(`${label}: corte ${c} repetido`);
+          else seen.add(`corte:${c}`);
+        }
         for (const k of ["screenTitle", "hook"] as const) {
           if (s[k] === undefined) continue;
           if (typeof s[k] !== "string") errors.push(`${label}: ${k} precisa ser texto`);
@@ -1231,7 +1281,7 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
       });
     }
   }
-  errors.push(...validateVocabRules(raw.vocabulary, "vocabulary"));
+  errors.push(...validateVocabRules(raw.vocabulary, "vocabulary", cortes));
   if (errors.length) return { ok: false, errors };
   return { ok: true, file: raw as unknown as BlocksFile };
 }
@@ -1713,7 +1763,7 @@ export function buildSequencePlan(
     }
     const holding = hold.has(key);
     // Só os itens desta versão (`targets`/`skip`, #11377); o rótulo guarda o índice do blocks.json.
-    const mine = items.map((it, idx) => ({ it, idx })).filter(({ it }) => itemInTarget(it, spec.target));
+    const mine = items.map((it, idx) => ({ it, idx })).filter(({ it }) => itemInTarget(it, spec));
     mine.forEach(({ it, idx }, n) => {
       scriptParts.push(it.text);
       // O descarte do clipe curto vem depois do respiro do fecho; o pedaço curto entre pausas curtas já volta ao vizinho aqui (#11753).
@@ -2070,7 +2120,7 @@ export function buildXmeml(
     });
     const titleTrack = screenTitleTrack(plan, si);
     out.push(
-      `<sequence id="seq-${si + 1}-${escapeXml(spec.target)}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
+      `<sequence id="seq-${si + 1}-${escapeXml(sequenceKey(spec))}"><name>${escapeXml(spec.name)}</name><duration>${plan.durationFrames}</duration>\n` +
         `${rate}\n` +
         `<media><video><format><samplecharacteristics>${rate}<width>${spec.width}</width><height>${spec.height}</height><pixelaspectratio>square</pixelaspectratio><fielddominance>none</fielddominance></samplecharacteristics></format>\n` +
         `<track>${v.join("\n")}</track>${titleTrack}</video>\n` +
@@ -2093,10 +2143,10 @@ export function buildXmeml(
  * regra que APAGARIA palavras (substituição vazia) é pulada, com aviso, sem
  * derrubar as outras: sem palavra não há onde pôr o tempo.
  */
-export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target?: SequenceTarget, warn?: (msg: string) => void): Word[] {
+export function applyVocabularyToWords(words: Word[], rules: VocabRule[], target?: SequenceTarget | SequenceRef, warn?: (msg: string) => void): Word[] {
   let cur = words.map((w) => ({ ...w, text: w.text.trim() }));
   for (const r of rules) {
-    if (r.targets && (!target || !r.targets.includes(target))) continue;
+    if (r.targets && (!target || !sequenceInList(r.targets, target))) continue;
     const next = applyRuleToWords(cur, r);
     if (next === null) {
       warn?.(`regra de vocabulário /${r.pattern}/ apagaria palavras; pulada`);
