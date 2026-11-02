@@ -112,10 +112,7 @@ Dicas como essas saem todos os dias na edição diária. Para receber, [cadastre
 
 **É IA? — DESTAQUE**
 
-[Recap de UM É IA? do mês — preferir a edição cujo poll ficou mais próximo de 50% de acerto
-(mais ambígua para os leitores). Se poll não disponível, escolher a mais visualmente difícil.
-Inserir: edição de origem, % de acerto (se disponível), breve análise do que tornou aquela
-imagem boa/difícil. 1-2 parágrafos curtos.]
+[Card do É IA? montado pelo render a partir do 01-eia.md.]
 
 ---
 
