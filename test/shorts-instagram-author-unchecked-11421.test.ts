@@ -1,7 +1,7 @@
 /**
- * #11421: timer do Reels sem a credencial da página `vjpixel` — o perfil do
- * autor da rota do Chrome (onde fica o Reels postado à mão com collab
- * pendente) não é consultável. Antes, o gate seguia a conta da API e
+ * #11421: timer do Reels sem a credencial da página da autora da rota do Chrome,
+ * sendo outra conta (desde #11794, só com `instagram_author_page` em outra
+ * página): o perfil onde fica o Reels à mão não é consultável. Antes, o gate seguia a conta da API e
  * publicava: Reels duplicado em conta pública. Agora é fail-closed: não
  * publica e alarma `acao` uma vez por edição.
  */
@@ -39,14 +39,14 @@ const decideFrom = (data: unknown[]) => async (): Promise<InstagramConfirmDecisi
   decideInstagramConfirm({ published: EMPTY, media: { data }, sinceIso: "2026-10-27T03:00:00.000Z", markers: MARKERS, nowIso: "2026-10-27T20:00:00.000Z", expectedAtIso: AT });
 const caption = buildReelsCaption({ platform: "instagram", d1: D1 });
 
-describe("#11421: gate do timer sem a credencial da página vjpixel", () => {
-  it("nada na conta da API e o perfil do @vjpixel não consultável (sem credencial) → NÃO publica, falha author-unchecked", async () => {
+describe("#11421: gate do timer sem a credencial da página da autora à mão, sendo outra conta", () => {
+  it("nada na conta da API e o perfil da autora à mão não consultável (sem credencial) → NÃO publica, falha author-unchecked", async () => {
     let published = 0;
     await assert.rejects(
       instagramTimerPublishStep({
         gate: () =>
           instagramTimerGate({
-            decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), chromeAuthor: null, chromeAuthorUnavailable: "página vjpixel sem token" }),
+            decide: () => decideInstagramTimerAcrossAccounts({ primary: decideFrom([]), chromeAuthor: null, chromeAuthorUnavailable: "página diaria sem token" }),
             persist: () => {},
           }),
         publish: async () => {
@@ -55,7 +55,7 @@ describe("#11421: gate do timer sem a credencial da página vjpixel", () => {
         },
       }),
       (e: { name?: string; failure?: string; message?: string }) =>
-        e.name === "InstagramTimerGateError" && e.failure === "author-unchecked" && /página vjpixel sem token/.test(e.message ?? ""),
+        e.name === "InstagramTimerGateError" && e.failure === "author-unchecked" && /página diaria sem token/.test(e.message ?? ""),
     );
     assert.equal(published, 0);
   });
@@ -83,7 +83,7 @@ describe("#11421: gate do timer sem a credencial da página vjpixel", () => {
 
 describe("#11421: o timer lê author-unchecked como alarme acao, nunca 'publique'", () => {
   const out = (o: object) => JSON.stringify({ dry_run: false, items: [], ...o });
-  const result = { destination: "instagram", ok: false, cause: "preflight", preflight: "author-unchecked", error: "o perfil do @vjpixel não foi conferido (sem token)" };
+  const result = { destination: "instagram", ok: false, cause: "preflight", preflight: "author-unchecked", error: "o perfil do @diar.ia.br não foi conferido (sem token)" };
 
   it("preflight author-unchecked → chave author-unchecked, severidade acao", () => {
     const r = interpretInstagramTimerOutput(1, out({ results: [result] }));
@@ -95,7 +95,7 @@ describe("#11421: o timer lê author-unchecked como alarme acao, nunca 'publique
   it("corpo: postar pelo Chrome (collab) ou fornecer a credencial; nunca --publish", () => {
     const b = buildInstagramTimerAlarm({ aammdd: AAMMDD, key: "author-unchecked", reason: "sem token", videoArg: "x.mp4", deadlineHhmm: "11:00" });
     assert.match(b.body, /Chrome/);
-    assert.match(b.body, /credencial da página vjpixel/);
+    assert.match(b.body, /credencial da página diaria/);
     assert.match(b.body, /--confirm-instagram/);
     assert.doesNotMatch(b.body, /--publish/);
   });

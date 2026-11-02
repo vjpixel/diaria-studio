@@ -73,8 +73,9 @@ describe("#10893 teto de duração do Reels pela API do Instagram", () => {
     const g = ig as { caption?: string; detail: string };
     assert.match(g.detail, /113\.9 s/);
     assert.match(g.detail, /--mark instagram=URL/);
-    // #11390: o passo à mão segue a rota do editor (@vjpixel autor, @diar.ia.br colaboradora), não a da API.
-    assert.match(g.detail, /como @vjpixel \(autor\), com a @diar\.ia\.br como colaboradora/);
+    // #11794: o passo à mão tem a mesma autoria da API (@diar.ia.br autora, @vjpixel em collab).
+    assert.match(g.detail, /como @diar\.ia\.br \(autora\), com a @vjpixel em collab/);
+    assert.doesNotMatch(g.detail, /enquanto o collab/);
     assert.doesNotMatch(g.detail, /como a autora/);
     assert.match(g.caption ?? "", /link da bio/);
     // #10933: o post manual também ocupa o horário da conta — reserva o slot na grade.
