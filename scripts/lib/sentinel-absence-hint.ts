@@ -67,6 +67,21 @@ export function formatAgeMs(ms: number): string {
 }
 
 /**
+ * Pura: a frase com a idade do arquivo mais recente da edição nesta máquina
+ * (ou o aviso de pasta ausente/vazia). Reusada pela mensagem de sentinel
+ * ausente, pelo `find-current-edition.ts` sem candidatos e pelo exit 4 do
+ * `stale-edition-guard.ts` (#11729).
+ */
+export function formatNewestFileEvidence(newest: NewestFile | null, nowMs: number): string {
+  if (newest === null) {
+    return `Pasta da edição ausente ou vazia nesta máquina: ou a edição não começou, ou o sync ainda não trouxe nada dela.`;
+  }
+  const age = formatAgeMs(nowMs - newest.mtimeMs);
+  const iso = new Date(newest.mtimeMs).toISOString();
+  return `Arquivo mais recente da edição aqui: ${newest.relPath}, modificado há ${age} (${iso}).`;
+}
+
+/**
  * Pura: mensagem para sentinel/arquivo esperado ausente. Nunca afirma
  * "etapa não aprovada"; diz que pode ser defasagem de sync e dá a idade do
  * arquivo mais recente da edição nesta máquina.
@@ -77,14 +92,7 @@ export function buildSentinelAbsenceHint(input: SentinelAbsenceHintInput): strin
     `${missingList} ausente nesta máquina para a edição ${input.editionId} (${input.editionDirLabel}). ` +
     `Isso não prova que a etapa não foi aprovada: ${SYNC_LAG_PHRASE} ` +
     `(a etapa pode ter rodado em outra máquina e o data/ ainda não ter chegado aqui).`;
-  let evidence: string;
-  if (input.newest === null) {
-    evidence = `Pasta da edição ausente ou vazia nesta máquina: ou a edição não começou, ou o sync ainda não trouxe nada dela.`;
-  } else {
-    const age = formatAgeMs(input.nowMs - input.newest.mtimeMs);
-    const iso = new Date(input.newest.mtimeMs).toISOString();
-    evidence = `Arquivo mais recente da edição aqui: ${input.newest.relPath}, modificado há ${age} (${iso}).`;
-  }
+  const evidence = formatNewestFileEvidence(input.newest, input.nowMs);
   const action =
     `Se a etapa foi aprovada em outra máquina depois disso, espere o sync (ou confira o sentinel lá) e rode de novo; ` +
     `se não foi, rode a etapa.`;

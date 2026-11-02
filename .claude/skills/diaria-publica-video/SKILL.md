@@ -307,6 +307,10 @@ Atalho aceitável: compartilhar no perfil o Reels já publicado na página diar.
 
 **Repost da página:** só é oferecido quando `linkedin_profile` já está registrado ou sai nesta rodada; se o perfil foi pulado ou falhou, o item vem `skip_invalid` com o motivo (#10772 F1). O `linkedin_profile` que passou mais de 3 h do horário vem `skip_late` (#10772 F4): o agente publica com o `command` do `owners[]` (`--now`), ou registra com `--mark linkedin_profile={URL}` se já saiu; nunca devolve ao editor (#11550). Depois que `linkedin_profile` saiu, no horário `at` do item `linkedin_page_repost` (com `at` no futuro, o `owners[]` traz `agent-scheduled-task`: a skill agenda a própria re-execução para esse horário), abrir o post do perfil no Chrome com a identidade da página diar.ia.br, "Repostar" e registrar com `--mark linkedin_page_repost={URL}`.
 
+### Corte avulso, fora de edição (#11795)
+
+Vertical que não é de edição (ex.: um corte de `Mentoria Fluxo VTSD/Cortes para as redes`) sai pelo modo corte do mesmo script, nunca com `02-reviewed.md` sintético, nome de arquivo de edição ou `--edition-url` só pra satisfazer o plano: `npx tsx scripts/publish-shorts.ts --corte {slug} --date {AAMMDD} --at {HH:MM} --title "{título}" --hook "{gancho}" --video {arquivo} [--cover {jpg}]` (dry-run; `--publish` publica; `--from-drive {id}` no lugar de `--video` baixa para `data/cortes/{slug}/`). A 1ª rodada grava `data/cortes/{slug}/corte.json`; as seguintes (re-execução dos `owners[]`, `--mark`) só precisam de `--corte {slug}`. O registro, a pasta e as chaves de R2 (`shorts/cortes/`) são do corte, o horário é o `--at` (fora do teste do #10831) e os timers do 300 não entram: `linkedin_profile`, `threads_profile` e `instagram` ficam `pending_schedule` com dono `agent-scheduled-task` e o `command` do corte. Mudar `--title`/`--hook`/`--cover` vale só para destinos ainda não publicados.
+
 ## Relato único
 
 Uma mensagem só, com os dois vídeos:

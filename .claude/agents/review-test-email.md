@@ -762,7 +762,7 @@ Checar os seguintes itens no conteúdo do email:
 
 2. **Seções principais presentes.** O email deve conter as 3 seções DESTAQUE (DESTAQUE 1, DESTAQUE 2, DESTAQUE 3 ou referência a "DESTAQUE"). Se alguma ausente: `"email:section_missing: seção 'DESTAQUE {N}' não encontrada no email"`.
 
-3. **Seções Clarice presentes (como placeholders).** Devem aparecer duas seções de divulgação da Clarice (com texto de placeholder). Se ausentes — indica que o HTML não foi renderizado corretamente: `"email:clarice_section_missing: seções CLARICE não encontradas — verificar HTML da campanha"`.
+3. **Seções Clarice presentes.** Devem aparecer as duas seções da Clarice: a divulgação (texto fixo com os cupons NEWS25/NEWS50, #11788) e o tutorial (placeholder ou o tutorial do ciclo já preenchido). Se ausentes — indica que o HTML não foi renderizado corretamente: `"email:clarice_section_missing: seções CLARICE não encontradas — verificar HTML da campanha"`.
 
 4. **OUTRAS NOTÍCIAS presentes.** Deve haver referência a "Outras Notícias" no email. Se ausente: `"email:section_missing: seção 'Outras Notícias' não encontrada"`.
 

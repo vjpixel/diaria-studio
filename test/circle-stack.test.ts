@@ -347,9 +347,9 @@ describe("aviso semanal ao editor (#10904)", () => {
 describe("task semanal Diaria-Circle-Stack-Weekly-Preview (#10904)", () => {
   const task = getScheduledTaskByName("Diaria-Circle-Stack-Weekly-Preview");
 
-  it("segunda 07:30 BRT, rodando o publisher", () => {
+  it("sábado 09:25 BRT (antes do envio de segunda 06:00, #11778), rodando o publisher", () => {
     assert.ok(task);
-    assert.deepEqual(task.schedule, { kind: "weekly", dayOfWeek: "Monday", hour: 7, minute: 30 });
+    assert.deepEqual(task.schedule, { kind: "weekly", dayOfWeek: "Saturday", hour: 9, minute: 25 });
     assert.equal(task.steps[0].script, "scripts/publish-circle-stack.ts");
   });
 
