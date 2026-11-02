@@ -73,7 +73,7 @@
  *       (transcreve o export; `--no-text` pula). Destino pelo nome do arquivo
  *       (`_Youtube_`/`_Instagram_`/`_Outras redes_`) ou `--seq`. Saída: tabela
  *       (#, tempo no export, tempo no bruto, o que está, correção) no stdout e em
- *       `review-final-{destino}.md`/`.json` no state dir. Só lê o export.
+ *       `review-final-{destino ou corte}.md`/`.json` no state dir. Só lê o export.
  * srt, preview e review recusam um `plan.json` defasado (blocks.json ou
  * source.json mudaram depois do build); preview recusa um SRT mais velho que o
  * plano; review recusa uma prévia mais velha que o plano.
@@ -499,7 +499,7 @@ export function pickPlans<P extends { spec: Pick<SequenceSpec, "target" | "corte
   if (hit.length === 0) {
     throw new Error(`--seq ${seq}: nenhuma sequência${kind} com esse destino ou corte (há: ${pool.map((p) => sequenceKey(p.spec)).join(", ") || "nenhuma"})`);
   }
-  if (single && hit.length > 1) throw new Error(`--seq ${seq}: ${hit.length} sequências${kind} com esse destino; escolha pelo corte (${hit.map((p) => sequenceKey(p.spec)).join(", ")})`);
+  if (single && hit.length > 1) throw new Error(`--seq ${seq}: ${hit.length} sequências${verticalOnly ? " verticais" : ""} com esse destino; escolha pelo corte (${hit.map((p) => sequenceKey(p.spec)).join(", ")})`);
   return hit;
 }
 

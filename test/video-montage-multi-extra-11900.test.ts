@@ -179,7 +179,7 @@ describe("CLI: --seq e arquivos por sequência", () => {
   });
 
   it("destino que casa 2 cortes é ambíguo na prévia, mas o srt pega os dois", () => {
-    assert.throws(() => pickPlans(plans, "instagram", true, true), /2 sequências vertical com esse destino; escolha pelo corte \(soberana, chips\)/);
+    assert.throws(() => pickPlans(plans, "instagram", true, true), /2 sequências verticais com esse destino; escolha pelo corte \(soberana, chips\)/);
     assert.equal(pickPlans(plans, "instagram", true).length, 2);
   });
 
