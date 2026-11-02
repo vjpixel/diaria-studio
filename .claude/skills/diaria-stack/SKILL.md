@@ -66,9 +66,11 @@ prévia, envio).
   comunidade de terceiro e não há como apagar pela API, e a aprovação do
   Passo 6 autoriza esse envio na segunda. Rodadas autônomas podem mexer no
   código desta skill, nunca aprovar nem executar o envio.
-- Os Passos 1 a 5 só leem e gravam arquivos locais do ciclo
+- Os Passos 1 a 4 só leem e gravam arquivos locais do ciclo
   (`data/weekly/{cycle}/`); o dry-run do publicador não chama a rede além do
-  agente de tradução de títulos (#11005).
+  agente de tradução de títulos (#11005). O Passo 5 publica um Artifact, que é
+  rede: só a sessão top-level tem a ferramenta, e rodada autônoma sem ela segue
+  o fallback do Passo 5. O Artifact nunca envia nada à Stack.
 
 ## Passo 1 — Seleção e prévia de partida (dry-run)
 
@@ -125,19 +127,43 @@ lista os problemas e não aplica nada: corrigir `{C}` (à mão para ajuste
 pontual, ou de volta ao Passo 2 com os problemas no prompt do agente) e
 rodar de novo. Nunca editar a seleção direto para contornar a validação.
 
-## Passo 5 — Prévia final
+## Passo 5 — Prévia final em Artifact (#11769)
 
 ```bash
 npx tsx scripts/publish-circle-stack.ts --publish-monday {AAMMDD}
 ```
 
-Re-renderiza com o texto novo (a seleção é reusada). Mostrar ao editor:
+Re-renderiza com o texto novo (a seleção é reusada). A prévia vai SEMPRE para
+um Artifact, com ou sem `--publish`; o chat leva só o link e um resumo de
+uma linha (título e estado do ciclo), nunca o post inteiro.
 
-- o caminho de `data/weekly/{cycle}/circle-stack-{cycle}.md` e o post inteiro;
-- o título que vai ao webhook (`payload.titulo` em
-  `_internal/circle-stack-payload.json`; a prévia já usa esse título, #11237);
-- os avisos da seleção (títulos traduzidos, link fora das regras, edição
-  faltando) e o estado do ciclo na Stack (`draft`/`published`/`unknown`).
+1. **HTML** em `data/weekly/{cycle}/_internal/circle-stack-preview.html`
+   (arquivo local, regravado a cada rodada), página estática com o conteúdo
+   de `circle-stack-{cycle}.md` e dos arquivos do ciclo, sem texto novo:
+   - o post inteiro, com os links, e o texto escrito para a Stack (abertura e
+     `stackNote`) em destaque visual;
+   - o título que vai ao webhook (`payload.titulo` em
+     `_internal/circle-stack-payload.json`; a prévia já usa esse título, #11237)
+     e o estado do ciclo na Stack (`draft`/`published`/`unknown`);
+   - os avisos da seleção: títulos traduzidos com o original ao lado
+     (`titleOriginal`), título sem sinal de português não revisado (bloqueia o
+     `--publish`), link fora das regras, edição faltando;
+   - o comando de envio e o aviso de que `--publish` publica o post NA HORA, sem
+     rascunho.
+2. **Publicar**, na ordem: ler `data/weekly/{cycle}/_internal/circle-stack-artifact.txt`
+   ANTES de criar qualquer coisa (é o que vale em sessão nova ou rerrodada).
+   Com URL gravada e não vazia, atualizar esse artefato:
+   `Artifact(file_path: "{caminho absoluto do HTML}", title: "Stack {cycle}", description: "Prévia do post semanal da Stack", favicon: "📰")`
+   apontando para o mesmo artefato. Sem arquivo, com URL vazia, ou se a
+   atualização falhar (artefato apagado ou inacessível), criar um novo e
+   sobrescrever o `.txt` com a URL retornada. Nunca deixar dois artefatos
+   vivos para o mesmo ciclo quando o primeiro ainda atualiza.
+3. **Fallback:** `Artifact` indisponível ou falhando (inclusive em sessão sem a
+   ferramenta) é warning-only: avisar o editor, mostrar a prévia no chat (caminho
+   do `.md` e o post inteiro) e seguir para o Passo 6 (ou 7). A confirmação continua
+   sendo do editor, nunca é pulada.
+4. Apresentar o link do artefato ao editor ANTES do Passo 6 e do Passo 7.
+   Rodar a skill sem `--publish` termina, depois do Passo 6, com esse link.
 
 ## Passo 6 — Aprovação para o envio de segunda 06:00 (#11778)
 
