@@ -37,6 +37,7 @@ import { youtubeUploadEnabled, type PublishConsent } from "./lib/publish-consent
 import { logEvent } from "./lib/run-log.ts";
 import { D1_VIDEO_URL_FILE } from "./lib/diaria/d1-video-link.ts";
 import { readD1VideoUrl } from "./lib/diaria/d1-video-link-file.ts";
+import { publishConfirmArgs } from "./lib/diaria/publish-confirm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const YOUTUBE_STEP_FILE = "_internal/05-youtube-step.json";
@@ -194,7 +195,9 @@ async function main(): Promise<number> {
   const allowFinalUpload = flags.has("upload-from-final");
   const fetchArgs = ["scripts/fetch-drive-video.ts", "--edition", aammdd, "--orientation", "horizontal", "--edition-dir", dir];
   const upload = (fetchAction: string, fetchExit: number | null): Omit<YouTubeStepRecord, "d1_link"> => {
-    const up = runTsx(["scripts/publish-youtube.ts", aammdd, "--upload", "--edition-dir", dir]);
+    // #11741: o upload exige confirmação explícita; aqui ela é o consent da Etapa 5
+    // (gate acima), decidido pelo editor no gate 4 — o passo não pergunta de novo.
+    const up = runTsx(["scripts/publish-youtube.ts", aammdd, "--upload", "--edition-dir", dir, ...publishConfirmArgs(aammdd)]);
     const parsed = parseUploadStdout(up.stdout);
     return {
       ...base,

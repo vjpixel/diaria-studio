@@ -7,6 +7,6 @@ description: Alias de `/diaria-publica-video AAMMDD --so vertical` (#11209) — 
 
 Desde o #11209 (27/10/2026) os dois vídeos da edição saem por **`/diaria-publica-video`**. Esta skill continua existindo só como atalho para a **Parte B** (vertical, #10769).
 
-Ao ser invocada: ler `.claude/skills/diaria-publica-video/SKILL.md` e executar o fluxo dela com `--so vertical` (repassando `AAMMDD`) — Passo 0 (pré-condição do Stage 4) e Parte B inteira, com o relato da Parte B. Não rodar a Parte A, e não encadear em nenhuma outra skill (#5578). Invocar é o pedido de publicação, como na skill completa.
+Ao ser invocada: ler `.claude/skills/diaria-publica-video/SKILL.md` e executar o fluxo dela com `--so vertical` (repassando `AAMMDD`) — Passo 0 (pré-condição do Stage 4) e Parte B inteira, com o relato da Parte B. Não rodar a Parte A, e não encadear em nenhuma outra skill (#5578). Invocar não é o pedido de publicação: o `--publish` só sai com o "pode publicar" explícito do editor sobre o plano e, depois de qualquer interrupção, o registro é relido antes de seguir (seção "Confirmação explícita e interrupção" da skill completa, #11741).
 
 Não duplicar o fluxo aqui: qualquer mudança vai no `SKILL.md` da `/diaria-publica-video`.

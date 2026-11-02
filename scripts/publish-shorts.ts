@@ -10,7 +10,10 @@ import { cleanupPublishedVideo, recordCredentialSkips, shortsVideoTerminal } fro
  *
  * Uso:
  *   npx tsx scripts/publish-shorts.ts AAMMDD                # plano (dry-run), não publica nada
- *   npx tsx scripts/publish-shorts.ts AAMMDD --publish      # publica os destinos de API
+ *   npx tsx scripts/publish-shorts.ts AAMMDD --publish --confirm-publish AAMMDD
+ *                                                           # publica os destinos de API (a confirmação é a
+ *                                                           # mesma edição, dada só depois do "pode publicar"
+ *                                                           # do editor; sem ela, exit 2 sem nada, #11741)
  *     [--only facebook:diaria,instagram] [--now] [--video PATH]
  *     [--edition-dir DIR] [--edition-url URL]
  *     [--linkedin-timer | --instagram-timer | --threads-timer] # rodada de um timer do 300 (só o destino dele, #10982/#11265/#11410)
@@ -173,6 +176,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { publishConfirmSuffix, publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
@@ -246,6 +250,7 @@ import {
   shortsRegistryWriterFor,
   type ShortsRegistryWriter,
 } from "./lib/diaria/shorts-published-store.ts";
+import { clearShortSending, markShortSending } from "./lib/diaria/shorts-sending-marker.ts";
 import {
   buildYouTubeInsertRequest,
   buildYouTubeTags,
@@ -327,7 +332,7 @@ const RUPLOAD = "https://rupload.facebook.com";
  */
 export const LINKEDIN_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-LinkedIn-Profile, publishing.shorts.linkedin_profile_via_timer) no horário do vertical; " +
-  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer --publish " +
+  "para publicar desta máquina mesmo assim, rode só esse destino com --only linkedin_profile --linkedin-timer --publish --confirm-publish AAMMDD " +
   "(confira antes que o 300 não publicou; o --linkedin-timer recusa qualquer outro destino)";
 
 /**
@@ -339,7 +344,7 @@ export const INSTAGRAM_TIMER_DETAIL =
   "com o vertical único do Drive pela API; se não conseguir, volta a tentar sozinho de hora em hora até 3 h depois do horário do vertical " +
   "e, se ainda assim o Reels não sair (acima do teto da API, credencial, falha), abre um alarme para o editor. " +
   "Para publicar pela API mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor: o lock do timer não cruza máquina e o Reels sai duplicado) " +
-  "só esse destino com --only instagram --instagram-timer --publish " +
+  "só esse destino com --only instagram --instagram-timer --publish --confirm-publish AAMMDD " +
   "(confira antes que o 300 não publicou; o --instagram-timer recusa qualquer outro destino)";
 
 /**
@@ -350,7 +355,7 @@ export const THREADS_TIMER_DETAIL =
   "sai pelo timer do 300 (Diaria-Shorts-Threads-Profile, publishing.shorts.threads_profile_via_timer) no horário do vertical, " +
   "até 3 h depois dele; se não sair, o timer abre um alarme para o editor. " +
   "Para publicar mesmo assim, rode NO 300 (de outra máquina vira um segundo escritor e o post pode sair duplicado) " +
-  "só esse destino com --only threads_profile --threads-timer --publish " +
+  "só esse destino com --only threads_profile --threads-timer --publish --confirm-publish AAMMDD " +
   "(confira antes que o vídeo não está no perfil; o --threads-timer recusa qualquer outro destino)";
 
 /**
@@ -523,7 +528,7 @@ export function assignShortsDestinationOwners(
           action,
           by: "agent-scheduled-task",
           at: item.scheduledAt,
-          command: `${base} --only ${destination} --publish`,
+          command: `${base} --only ${destination} --publish ${publishConfirmSuffix(ctx.aammdd)}`,
           note:
             `a API não agenda: a skill cria uma task agendada one-shot para ${item.scheduledAt} com este comando` +
             (SHORTS_TIMER_TASKS[destination] ? ` (dono permanente: ligar o timer ${SHORTS_TIMER_TASKS[destination]} no 300)` : ""),
@@ -534,7 +539,7 @@ export function assignShortsDestinationOwners(
         destination,
         action,
         by: "agent",
-        command: `${base} ${lateNowArgs(destination, ctx.writer)}`,
+        command: `${base} ${lateNowArgs(destination, ctx.writer)} ${publishConfirmSuffix(ctx.aammdd)}`,
         note: "horário passou do teto: o agente publica nesta rodada com --now (ou registra com --mark se já saiu); nunca volta ao editor",
       });
     } else if (action === "guided") {
@@ -879,7 +884,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
         return { destination: dest.id, mode: "api", action: "skip_missing_credentials", detail: reason };
       }
       if (profileLate) {
-        const nowCmd = lateNowArgs(dest.id, input.writer);
+        const nowCmd = `${lateNowArgs(dest.id, input.writer)} ${publishConfirmSuffix(input.aammdd)}`;
         const detail =
           `${profileLate} — ${lateReason}, esta rodada não publica sozinha. ` +
           `O agente publica com ${nowCmd} (ou registra com --mark linkedin_profile=URL se já saiu); nunca volta ao editor (#11550)`;
@@ -974,7 +979,7 @@ export function planShortsPublish(input: ShortsPlanInput): ShortsPlan {
       if (late) {
         const detail =
           `${late} — ${lateReason}, esta rodada não publica sozinha. ` +
-          `O agente publica com ${lateNowArgs(dest.id, input.writer)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
+          `O agente publica com ${lateNowArgs(dest.id, input.writer)} ${publishConfirmSuffix(input.aammdd)} (ou registra com --mark threads_profile=URL se já saiu); nunca volta ao editor (#11550)`;
         warnings.push(`threads_profile: ${detail}`);
         return { destination: dest.id, mode: "api", action: "skip_late", detail };
       }
@@ -3328,7 +3333,7 @@ export function resolveEditionUrlInput(dir: string, flag: string | undefined): {
 }
 
 const USAGE =
-  "uso: publish-shorts.ts AAMMDD [--publish] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
+  "uso: publish-shorts.ts AAMMDD [--publish --confirm-publish AAMMDD] [--only dest1,dest2] [--now] [--video PATH | --from-drive FILE_ID]\n" +
   "                       [--linkedin-timer | --instagram-timer | --threads-timer] [--force-youtube] [--keep-video]\n" +
   "                       [--edition-dir DIR] [--edition-url URL] [--edition AAMMDD]\n" +
   "     publish-shorts.ts AAMMDD --mark youtube_shorts=URL | facebook_profile=URL | linkedin_page_repost=URL | linkedin_profile=URL | threads_profile=URL\n" +
@@ -3487,6 +3492,16 @@ async function main(): Promise<number> {
     console.error(`[premissa] corte avulso "${corte.slug}": ${corte.date} às ${corte.hhmm} BRT, vídeo ${resolveCorteVideo(corteDir, corte.video)}, registro em ${corteDir}`);
     const portability = corteVideoPortabilityWarning(resolveCorteVideo(corteDir, corte.video), join(ROOT, "data"));
     if (portability) console.error(`[aviso] ${portability}`);
+  }
+  // #11741: `--publish` tem efeito público — só com a confirmação explícita da
+  // edição (no corte avulso, a data do corte), checada antes de qualquer
+  // download, credencial, API ou gravação de registro.
+  if (flags.has("publish")) {
+    const confirmErr = publishConfirmationError({ script: "publish-shorts", mode: "--publish", aammdd, flags, values });
+    if (confirmErr) {
+      console.error(confirmErr);
+      return 2;
+    }
   }
   const dir = corte ? resolve(values["edition-dir"] ?? join(ROOT, corteRelDir(corte.slug))) : resolve(values["edition-dir"] ?? editionDirFor(aammdd));
   // #11157: cada escritor grava no próprio arquivo (o timer do 300 no dele) e
@@ -3797,6 +3812,25 @@ async function main(): Promise<number> {
       continue;
     }
     if (item.action !== "publish" && item.action !== "enqueue") continue;
+    // #11741 (finding P2 da PR #11827): marca "envio em curso" ANTES de publicar.
+    // O registro só recebe o destino depois do aceite; sem a marca, a releitura
+    // logo após uma interrupção (processo ainda vivo) sairia `nothing-since`.
+    // A marca só fica quando o processo morre no meio ou o aceite não foi registrado.
+    try {
+      markShortSending(dir, aammdd, writer, { destination: item.destination, started_at: new Date().toISOString(), pid: process.pid });
+    } catch (e) {
+      const msg = `marcador de envio não gravado (${(e as Error).message}) — não publica sem ele`;
+      results.push({ destination: item.destination, ok: false, error: msg });
+      console.error(`[erro] ${item.destination}: ${msg}`);
+      continue;
+    }
+    const clearSending = () => {
+      try {
+        clearShortSending(dir, aammdd, writer, item.destination);
+      } catch (e) {
+        console.error(`[aviso] ${item.destination}: marcador de envio não apagado (${(e as Error).message}) — a releitura vai acusá-lo como "pode ter saído"`);
+      }
+    };
     let outcome: PublishOutcome;
     try {
       if (item.action === "enqueue") {
@@ -3857,8 +3891,9 @@ async function main(): Promise<number> {
             } catch (e) {
               results.push({ destination: item.destination, ok: false, entry: pre.entry, error: `registro não gravado: ${(e as Error).message}`, cause: "preflight" });
               console.error(`[erro] threads_profile: o vídeo JÁ ESTÁ no perfil (${pre.entry.url ?? pre.entry.id}) mas o registro não foi gravado: ${(e as Error).message}`);
-              continue;
+              continue; // marca de envio fica: o vídeo está no perfil e o registro não diz
             }
+            clearSending();
             results.push({ destination: item.destination, ok: true, entry: pre.entry, alreadyRegistered: true });
             console.error(`[aviso] threads_profile: o vídeo da edição já está no perfil (${pre.entry.url ?? pre.entry.id}) — registrado, não publica de novo`);
             continue;
@@ -3965,6 +4000,7 @@ async function main(): Promise<number> {
                 ? { entry: recheck.hit.entry, matchedBy: recheck.hit.matchedBy, when: " na reconferência antes do publish" }
                 : null;
           if (already) {
+            clearSending();
             // #11828/#11870: o Reels feito à mão pode ter saído sem o convite da @vjpixel; avisa sem bloquear o registro.
             const collabWarnings = await instagramTimerAlreadyCollabWarnings(deps, {
               matchedBy: already.matchedBy,
@@ -3978,7 +4014,7 @@ async function main(): Promise<number> {
             for (const w of collabWarnings) console.error(`[aviso] instagram: ${w}`);
             continue;
           }
-          if (step.kind !== "published") continue; // inalcançável: `already` acima cobre esse caso
+          if (step.kind !== "published") { clearSending(); continue; } // inalcançável: `already` acima cobre esse caso
           outcome = step.outcome;
         } else {
           outcome = await publishReel(); // sem gate da conta fora do timer (o registro local segue valendo)
@@ -3988,6 +4024,9 @@ async function main(): Promise<number> {
         outcome = await publishFacebookReel(deps, page, apiVersion, file, item.caption, item.scheduledAt, shortCover.bytes);
       }
     } catch (e) {
+      // Recusa da plataforma/gate: o destino não saiu por esta rodada (envio
+      // ambíguo vira `send_unknown` no registro, não exceção).
+      clearSending();
       const msg = e instanceof Error ? e.message : String(e);
       if (e instanceof InstagramTimerGateError) {
         // #11265: o gate não deixou publicar — o timer não pode tratar isso como "o publish falhou".
@@ -4002,6 +4041,7 @@ async function main(): Promise<number> {
       continue;
     }
     if (outcome.alreadyRegistered) {
+      clearSending();
       results.push({ destination: item.destination, ok: true, entry: outcome.entry, alreadyRegistered: true });
       console.error(`[aviso] ${item.destination}: registrado por outro processo antes do publish (${outcome.entry.status}${outcome.entry.url ? `, ${outcome.entry.url}` : ""}) — não publica de novo`);
       continue;
@@ -4019,8 +4059,9 @@ async function main(): Promise<number> {
           `NÃO rode --publish de novo para este destino sem antes registrá-lo em ${publishedPath}.`,
       );
       results.push({ destination: item.destination, ok: false, entry, error: `registro não gravado: ${(e as Error).message}` });
-      continue;
+      continue; // marca de envio fica: a plataforma aceitou e o registro não diz
     }
+    clearSending();
     results.push({ destination: item.destination, ok: true, entry, unconfirmed, ...(outcome.warnings?.length ? { warnings: outcome.warnings } : {}) });
     const where = item.action === "enqueue" ? `na fila do Worker para ${entry.scheduled_at} (key ${entry.id})` : (entry.url ?? entry.id);
     console.error(`[ok] ${item.destination}: ${entry.status} (estado ${state}) ${where}${unconfirmed ? " (processamento não confirmado em 5 min — confira)" : ""}`);
