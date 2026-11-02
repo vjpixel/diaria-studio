@@ -115,8 +115,12 @@ export function corteRelDir(slug: string): string {
   return `data/cortes/${slug}`;
 }
 
-/** #11911: escape explícito para rodar o corte de uma pasta fora de `data/cortes/{slug}/`. */
-export const ALLOW_OUTSIDE_CORTES_FLAG = "allow-outside-cortes";
+/**
+ * #11911: escape explícito do `publish-shorts.ts` para rodar de uma pasta que
+ * nenhum timer nem vigia enxerga — no modo corte, fora de `data/cortes/{slug}/`;
+ * no modo edição, fora de `data/editions/{AAMMDD}/`.
+ */
+export const ALLOW_UNWATCHED_DIR_FLAG = "allow-unwatched-dir";
 
 /**
  * #11911: caminho real de `p` mesmo que ele (ou o fim dele) ainda não exista —
@@ -153,7 +157,7 @@ export type CorteDirCheck =
  * (`corte-owner-watch.ts`): em 02/11/2026 um corte rodado de
  * `~/diaria-cortes/...` ficou fora dos dois e o Reels sumiu sem alarme.
  * A comparação é pelo caminho REAL (symlink e `..` resolvidos), nunca pelo texto.
- * Fora dela: recusa, a menos do escape `--allow-outside-cortes`, que devolve o
+ * Fora dela: recusa, a menos do escape `--allow-unwatched-dir`, que devolve o
  * aviso de que nenhum alarme de destino faltante cobre o corte.
  */
 export function checkCorteDir(input: {
@@ -161,7 +165,7 @@ export function checkCorteDir(input: {
   dir: string;
   /** `data/cortes` do repo. */
   cortesRoot: string;
-  allowOutside: boolean;
+  allowUnwatched: boolean;
   realpath?: (p: string) => string;
 }): CorteDirCheck {
   const real = (p: string) => realpathLenient(p, input.realpath);
@@ -170,13 +174,13 @@ export function checkCorteDir(input: {
   if (actual === canonical) return { ok: true, outside: false };
   const dir = resolve(input.dir);
   const where = actual === dir ? dir : `${dir} (caminho real ${actual})`;
-  if (!input.allowOutside) {
+  if (!input.allowUnwatched) {
     return {
       ok: false,
       error:
         `a pasta do corte ${where} fica fora de ${corteRelDir(input.slug)}/: o timer do 300 (${CORTE_TIMER_TASK}) e o vigia de cortes sem dono só leem ${CORTES_REL_DIR}/, então nenhum destino que faltar deste corte gera alarme. ` +
         `Mova ou registre o corte em ${corteRelDir(input.slug)}/ (rode sem --edition-dir; o --video pode apontar para o arquivo onde ele estiver). ` +
-        `Para rodar mesmo assim, sem alarme, passe --${ALLOW_OUTSIDE_CORTES_FLAG} (#11911)`,
+        `Para rodar mesmo assim, sem alarme, passe --${ALLOW_UNWATCHED_DIR_FLAG} (#11911)`,
     };
   }
   return {
@@ -184,7 +188,7 @@ export function checkCorteDir(input: {
     outside: true,
     dir,
     warning:
-      `corte "${input.slug}" fora de ${CORTES_REL_DIR}/ (${where}) por --${ALLOW_OUTSIDE_CORTES_FLAG}: nenhum alarme de destino faltante cobre este corte ` +
+      `corte "${input.slug}" fora de ${CORTES_REL_DIR}/ (${where}) por --${ALLOW_UNWATCHED_DIR_FLAG}: nenhum alarme de destino faltante cobre este corte ` +
       `(o timer ${CORTE_TIMER_TASK} e o vigia de cortes sem dono só leem ${CORTES_REL_DIR}/); confira cada destino à mão (#11911)`,
   };
 }
@@ -245,8 +249,8 @@ export const CORTE_TIMER_DESTINATIONS: readonly string[] = ["linkedin_profile", 
 
 /** Comando base das re-execuções (`owners` do plano): o resto vem do `corte.json`. */
 export function corteBaseCommand(slug: string, outsideDir?: string): string {
-  // #11911: corte fora de data/cortes/ (--allow-outside-cortes): a re-execução volta à mesma pasta.
-  const outside = outsideDir !== undefined ? ` --edition-dir ${JSON.stringify(outsideDir)} --${ALLOW_OUTSIDE_CORTES_FLAG}` : "";
+  // #11911: corte fora de data/cortes/ (--allow-unwatched-dir): a re-execução volta à mesma pasta.
+  const outside = outsideDir !== undefined ? ` --edition-dir ${JSON.stringify(outsideDir)} --${ALLOW_UNWATCHED_DIR_FLAG}` : "";
   return `npx tsx scripts/publish-shorts.ts --corte ${slug}${outside}`;
 }
 
