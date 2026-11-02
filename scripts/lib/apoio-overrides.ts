@@ -8,16 +8,17 @@
  * dado pessoal que não pode ficar versionado no git; `data/` é gitignored e
  * sincroniza entre máquinas via OneDrive, mesmo padrão do #5227 pras caixas
  * de divulgação em `data/snippets/`), consumido por
- * `scripts/sync-apoio-nivel-kit.ts` e `scripts/sync-apoio-nivel-beehiiv.ts` —
+ * `resolveDesiredApoioLevels` (`scripts/lib/apoio-nivel-sync.ts`), usado pelo sync
+ * do Kit e pelo alarme diário —
  * mesmo shape genérico plataforma-agnóstico que o resto do módulo de apoio
  * (`ApoioNivel` de `./shared/apoio-nivel-types.ts`). Formato/exemplo (sem
  * dado real) continua versionado em `context/apoio-overrides.example.json`.
  *
  * ## Por que existe
  *
- * Hoje `apoio_nivel` (Kit/Beehiiv) é derivado 100% da base do apoia.se
- * (`computeDesiredApoioLevels` em `sync-apoio-nivel-beehiiv.ts`) — não existe
- * camada de override, então um valor editado à mão direto no Kit/Beehiiv é
+ * Hoje `apoio_nivel` no Kit é derivado 100% da base do apoia.se
+ * (`computeDesiredApoioLevels` em `lib/apoio-nivel-sync.ts`) — não existe
+ * camada de override, então um valor editado à mão direto no Kit é
  * sobrescrito no próximo `--push`. O pedido original (#8820): fixar
  * manualmente que uma pessoa específica (ex: Bruna Quevedo) é de um
  * determinado nível, independente do que o apoia.se reporta — porque o
@@ -36,7 +37,7 @@
  * ## Guard de blast radius — por que override nunca conta como remoção
  *
  * `evaluateBlastRadiusGuard`/`shouldBlockRemovals` (em
- * `sync-apoio-nivel-beehiiv.ts`) operam sobre `diff.toRemove` — entradas cujo
+ * `lib/apoio-nivel-sync.ts`) operam sobre `diff.toRemove` — entradas cujo
  * `toLevel` é `null`. Um override sempre atribui um `ApoioNivel` concreto
  * (o schema não aceita `nivel: null`), então `applyApoioOverrides` nunca
  * produz uma entrada com `level: null` — logo nunca entra em `toRemove`, e
@@ -77,7 +78,7 @@ export interface ApoioOverrideEntry {
 }
 
 /** Shape mínimo que `applyApoioOverrides` precisa de uma entrada "desejada" —
- *  casa estruturalmente com `DesiredApoioLevel` de `sync-apoio-nivel-beehiiv.ts`
+ *  casa estruturalmente com `DesiredApoioLevel` de `lib/apoio-nivel-sync.ts`
  *  sem importar de lá (evita ciclo de módulos ES; ver o mesmo padrão de
  *  reexport documentado naquele arquivo). */
 export interface DesiredLevelLike {

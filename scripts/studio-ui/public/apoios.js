@@ -149,7 +149,7 @@ function statusBadge(status) {
   return `<span class="status-badge status-${status.label}">${escapeHtml(label)}${extra}</span>`;
 }
 
-// #3612: taxa de abertura Beehiiv — sinal independente do status de apoio,
+// #3612: taxa de abertura histórica da Beehiiv (arquivo, sem atualização) — sinal independente do status de apoio,
 // vem de um cache separado (data/apoia-se/beehiiv-open-rate.json) populado
 // manualmente. `openRate` é `null` quando o cache está ausente/sem match
 // pro contato — mostra "sem dados" (nunca quebra a UI, mesmo padrão do
@@ -162,20 +162,20 @@ function openRateBadge(openRate) {
   return `<span class="open-rate-badge open-rate-ok" title="${escapeHtml(String(openRate.totalUniqueOpened))}/${escapeHtml(String(openRate.totalDelivered))} aberturas · click ${escapeHtml(String(Math.round(openRate.clickRatePct)))}%">abertura: ${pct}%</span>`;
 }
 
-// #4273 parte 3: confirmação de vínculo Beehiiv — sinal independente do
-// status de apoio, vem de um cache separado (data/apoia-se/beehiiv-vinculo.json)
-// populado manualmente. `vinculo === null` significa "nenhum email do contato
+// #4273 parte 3: confirmação de vínculo Kit — sinal independente do
+// status de apoio, vem de um cache separado (data/apoia-se/kit-vinculo.json)
+// populado por scripts/sync-apoio-segments-kit.ts. `vinculo === null` significa "nenhum email do contato
 // foi consultado ainda" (cache pode estar desatualizado) — diferente de
 // `hasVinculo: false` (consultado, sem vínculo confirmado). Os 3 estados têm
 // badges visualmente distintos, nenhum deles é silencioso.
 function vinculoBadge(vinculo) {
   if (!vinculo) {
-    return '<span class="vinculo-badge vinculo-sem-dados" title="nenhum email deste contato foi consultado ainda">vínculo Beehiiv: —</span>';
+    return '<span class="vinculo-badge vinculo-sem-dados" title="nenhum email deste contato foi consultado ainda">vínculo Kit: —</span>';
   }
   if (vinculo.hasVinculo) {
-    return '<span class="vinculo-badge vinculo-ok" title="assinante Beehiiv confirmado">✅ assinante Beehiiv</span>';
+    return '<span class="vinculo-badge vinculo-ok" title="assinante Kit confirmado">✅ assinante Kit</span>';
   }
-  return '<span class="vinculo-badge vinculo-falta" title="não encontrado como assinante Beehiiv">❌ não é assinante Beehiiv</span>';
+  return '<span class="vinculo-badge vinculo-falta" title="consultado: este e-mail não é assinante ativo no Kit">❌ não é assinante ativo</span>';
 }
 
 // #4437 Entrega 2: valor de apoio explícito no card, campo PRÓPRIO (além do
@@ -205,19 +205,19 @@ function rewardLevelBadge(rewardLevel) {
   return `<span class="reward-level-badge reward-level-${escapeHtml(rewardLevel)}">${escapeHtml(name)}</span>`;
 }
 
-// #4437 Entrega 2: segmentos Beehiiv em que o contato está. `segments ===
+// #4437 Entrega 2: segmentos Kit em que o contato está. `segments ===
 // null` significa "nunca consultado" (cache ausente ou nenhum email do
-// contato no cache — pode ser porque scripts/sync-apoio-segments-beehiiv.ts
+// contato no cache — pode ser porque scripts/sync-apoio-segments-kit.ts
 // nunca rodou, NÃO que o contato está fora da base) — visualmente distinto de
 // `{ segments: [], ... }` = "consultado, nenhum segmento encontrado".
 function segmentsBadge(segments) {
   if (!segments) {
-    return '<span class="segments-badge segments-sem-dados" title="nenhum email deste contato foi consultado ainda (sync scripts/sync-apoio-segments-beehiiv.ts pode não ter rodado)">segmentos Beehiiv: não consultado</span>';
+    return '<span class="segments-badge segments-sem-dados" title="nenhum email deste contato foi consultado ainda (sync scripts/sync-apoio-segments-kit.ts pode não ter rodado)">segmentos Kit: não consultado</span>';
   }
   if (segments.segments.length === 0) {
-    return '<span class="segments-badge segments-vazio" title="consultado — nenhum segmento Apoio — * encontrado">segmentos Beehiiv: nenhum</span>';
+    return '<span class="segments-badge segments-vazio" title="consultado: não é assinante ativo no Kit">segmentos Kit: não é assinante ativo</span>';
   }
-  const title = `apoio_nivel na Beehiiv: ${escapeHtml(segments.apoioNivel || "(vazio)")}`;
+  const title = `apoio_nivel no Kit: ${escapeHtml(segments.apoioNivel || "(vazio)")}`;
   return `<span class="segments-badge segments-ok" title="${title}">${escapeHtml(segments.segments.join(", "))}</span>`;
 }
 
@@ -238,21 +238,20 @@ function renderTiles() {
   renderVinculoSummary();
 }
 
-// #4273 parte 3: contador agregado "N de M apoiadores sem vínculo Beehiiv" —
+// #4273 parte 3: contador agregado de apoiadores sem vínculo Kit —
 // calculado client-side sobre o snapshot já carregado (nenhuma agregação nova
 // do servidor). M = apoiadores confirmados este mês ("apoiando"); N = os que
-// NÃO têm vínculo Beehiiv confirmado (vinculo === null, ainda não consultado,
-// OU hasVinculo === false, consultado e sem vínculo — os dois contam como
-// "não confirmado" pro propósito de checar se a recompensa está sendo
-// entregue). M === 0 não mostra nada (nada pra reportar ainda).
+// separa vinculo === null (ainda não consultado) de hasVinculo === false
+// (consultado, não é assinante ativo). M === 0 não mostra nada (nada pra reportar ainda).
 function renderVinculoSummary() {
   const apoiadores = data.contacts.filter((c) => c.status?.label === "apoiando");
-  const semVinculo = apoiadores.filter((c) => !c.vinculo?.hasVinculo);
+  const naoConsultados = apoiadores.filter((c) => !c.vinculo).length;
+  const semVinculo = apoiadores.filter((c) => c.vinculo && !c.vinculo.hasVinculo).length;
   if (apoiadores.length === 0) {
     el.vinculoSummary.textContent = "";
     return;
   }
-  el.vinculoSummary.textContent = `${semVinculo.length} de ${apoiadores.length} apoiadores sem vínculo Beehiiv confirmado.`;
+  el.vinculoSummary.textContent = `De ${apoiadores.length} apoiadores: ${semVinculo} não são assinantes ativos no Kit, ${naoConsultados} não consultados.`;
 }
 
 // #3844 parte 2: renderiza a visão por grupo/nível de recompensa do mês
@@ -337,7 +336,7 @@ function renderContacts() {
     const card = document.createElement("div");
     card.className = "contact-card";
     // #4437 Entrega 2: valor explícito + badge de nível de recompensa +
-    // segmentos Beehiiv, além do status/abertura/vínculo já existentes.
+    // segmentos Kit, além do status/abertura/vínculo já existentes.
     const valueField = apoioValueField(c.status);
     card.innerHTML = `
       <div class="contact-card-head">

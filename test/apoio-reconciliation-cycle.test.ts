@@ -3,7 +3,7 @@
  *
  * Testa `runApoioReconciliationCycle` (`scripts/lib/apoio-reconciliation-cycle.ts`)
  * — a orquestração extraída do bloco de ~40 linhas antes DUPLICADO entre
- * `scripts/sync-apoio-nivel-beehiiv.ts::main()` e
+ * `scripts/sync-apoio-nivel-kit.ts::main()` e
  * `scripts/apoios-diff-alarm.ts::main()`. Cobre os 2 achados críticos do
  * fleet review pré-merge:
  *

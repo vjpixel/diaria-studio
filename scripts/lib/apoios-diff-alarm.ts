@@ -7,7 +7,7 @@
  * do diff atual, compara contra o último alarme já disparado (idempotência —
  * nunca realarma o MESMO diff 2x enquanto o editor não age), monta o corpo
  * do e-mail. O script `scripts/apoios-diff-alarm.ts` é quem faz o I/O (roda
- * o MESMO cálculo de diff do dry-run de `sync-apoio-nivel-beehiiv.ts`, envia
+ * o MESMO cálculo de diff do dry-run de `sync-apoio-nivel-kit.ts`, envia
  * e-mail via Gmail) e usa este módulo pra decidir SE/O-QUE alarmar.
  *
  * Contexto (#4485 item 2, corpo da issue): `/diaria-apoios-sync` é invocação
@@ -43,7 +43,7 @@ export interface DiffAlarmInput {
 }
 
 /** Pure: há diff pendente que exigiria uma ação de `--push`? Ignora
- * `skippedUnresolved`/`notBeehiivSubscriber` de propósito — nenhum dos dois
+ * `skippedUnresolved`/`notSubscribed` de propósito — nenhum dos dois
  * é resolvido por um `--push` (são "sem dado" / "sem vínculo"), então não
  * contam como "trabalho pendente" pra este alarme. */
 export function hasPendingDiff(input: DiffAlarmInput): boolean {
@@ -103,7 +103,7 @@ export function shouldAlarm(state: ApoiosDiffAlarmState, input: DiffAlarmInput):
 }
 
 /** Self-review finding 5 do PR #4503: o alarme diário calcula `toRemove` sem
- * checar os 2 guards que um `--push` real (`sync-apoio-nivel-beehiiv.ts`)
+ * checar os 2 guards que um `--push` real (`sync-apoio-nivel-kit.ts`)
  * aplicaria — `shouldBlockRemovals` (dados parciais/`sem_dados`) e
  * `evaluateBlastRadiusGuard` (>30% de remoções). Sem isso, o e-mail pode
  * relatar N remoções "pendentes" que na prática seriam recusadas. Avaliado
@@ -143,7 +143,7 @@ export function buildApoiosDiffAlarmEmail(
 
   const lines: string[] = [
     "O dry-run diário de /diaria-apoios-sync encontrou diff pendente entre",
-    "apoia.se e o custom field apoio_nivel na Beehiiv.",
+    "apoia.se e o custom field apoio_nivel no Kit.",
     "",
   ];
 
@@ -176,8 +176,8 @@ export function buildApoiosDiffAlarmEmail(
   }
 
   lines.push(
-    "Rode /diaria-apoios-sync (revisa o diff + Passo 1 de drift check antes) ou",
-    "npx tsx scripts/sync-apoio-nivel-beehiiv.ts --push pra aplicar.",
+    "Rode /diaria-apoios-sync: revisa o diff, grava o nível e atualiza as tags de",
+    "audiência, que o --push direto de sync-apoio-nivel-kit.ts não atualiza.",
     "",
     "Este alarme NUNCA aplica --push sozinho — só avisa que há diff pendente.",
   );

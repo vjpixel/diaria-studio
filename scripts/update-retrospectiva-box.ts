@@ -19,21 +19,17 @@
  *
  *   **Retrospectiva de {Mês}**
  *
- *   Três temas marcaram o mês: {tema 1}, {tema 2} e {tema 3}. A Retrospectiva liga esses pontos e mostra as tendências por trás deles.
+ *   Três temas marcaram o mês: **{tema 1}**, **{tema 2}** e **{tema 3}**. A Retrospectiva liga esses pontos e mostra as tendências por trás deles.
  *
- *   Quem apoia a partir de R$25/mês recebe:
- *
- *   - a Retrospectiva do Mês por e-mail, com a edição completa na web
- *   - o Artigo Especial mensal
- *   - voto no tema do próximo Artigo Especial
- *   - nome na página "Apoiadores(as)" (opcional)
+ *   Apoiadores do Conselho e do Núcleo recebem a Retrospectiva por e-mail e outras recompensas exclusivas.
  *
  *   [Ler a Retrospectiva](https://retrospectiva.diar.ia.br/{AAMM})
  *
  * Regras do editor (#9845): o TÍTULO da retrospectiva não entra no box; entram
  * os 3 temas principais do ciclo (frases curtas, minúsculas, sem ponto final —
- * `--temas "a|b|c"`), a frase sobre ligar os pontos e as tendências, e a lista
- * completa de benefícios de R$25 (`TIER_BLOCK`, estável entre ciclos).
+ * `--temas "a|b|c"`, gravados em negrito), a frase sobre ligar os pontos e as
+ * tendências, e o texto geral dos apoiadores (`TIER_BLOCK`, sem valor e sem lista
+ * de benefícios, estável entre ciclos).
  *
  * Edição cirúrgica (#495): num arquivo PRÉ-EXISTENTE só 3 linhas são trocadas
  * (título, parágrafo dos temas, URL do CTA); header de comentário e bloco do
@@ -97,29 +93,22 @@ export const RETROSPECTIVA_BOX_HEADER = `<!--
 nome: Retrospectiva do Mês
 categoria: Retrospectiva
 retrospectiva-apoiadores.md — box de divulgação da Retrospectiva do Mês
-(recompensa Conselho/Núcleo, R$25+). Slot 2, ALTERNANDO com
+(recompensa Conselho/Núcleo). Slot 2, ALTERNANDO com
 artigo-especial-apoiadores.md (quem publica por último ocupa o slot, #9474).
 Reescrito por scripts/update-retrospectiva-box.ts (/diaria-mensal-apoiadores)
 a cada ciclo — não editar título/parágrafo dos temas/URL do CTA à mão aqui, o
-próximo ciclo sobrescreve (o bloco do tier, parágrafo + lista de benefícios,
-segue estável). Formato: context/snippets/README.md.
+próximo ciclo sobrescreve (o texto geral dos apoiadores segue estável). Formato: context/snippets/README.md.
 -->`;
 
 /**
- * Bloco do tier (#9845): parágrafo + lista completa de benefícios de quem
- * apoia a partir de R$25 (Conselho = tudo dos planos anteriores, mais a
- * Retrospectiva e a votação). Estável entre ciclos — o script só o escreve no
+ * Bloco do tier (#9845, encurtado a pedido do editor em 261101: um parágrafo
+ * geral, sem valor e sem lista de benefícios) para os níveis que recebem a
+ * Retrospectiva (Conselho/Núcleo). Estável entre ciclos — o script só o escreve no
  * seed e na migração do formato antigo; num arquivo já no formato novo ele
  * fica intocado (o editor pode ajustá-lo à mão).
  */
-export const TIER_BLOCK = [
-  "Quem apoia a partir de R$25/mês recebe:",
-  "",
-  "- a Retrospectiva do Mês por e-mail, com a edição completa na web",
-  "- o Artigo Especial mensal",
-  "- voto no tema do próximo Artigo Especial",
-  '- nome na página "Apoiadores(as)" (opcional)',
-].join("\n");
+export const TIER_BLOCK =
+  "Apoiadores do Conselho e do Núcleo recebem a Retrospectiva por e-mail e outras recompensas exclusivas.";
 
 /** Frase fixa que fecha o parágrafo dos temas (texto aprovado, #9845). */
 const TEMAS_CLOSING = "A Retrospectiva liga esses pontos e mostra as tendências por trás deles.";
@@ -192,7 +181,7 @@ function buildTitleLine(mesLabel: string): string {
 }
 function buildTemasParagraph(temas: readonly string[]): string {
   const [t1, t2, t3] = normalizeTemas(temas);
-  return `Três temas marcaram o mês: ${t1}, ${t2} e ${t3}. ${TEMAS_CLOSING}`;
+  return `Três temas marcaram o mês: **${t1}**, **${t2}** e **${t3}**. ${TEMAS_CLOSING}`;
 }
 function buildCtaLine(url: string): string {
   return `[Ler a Retrospectiva](${url})`;

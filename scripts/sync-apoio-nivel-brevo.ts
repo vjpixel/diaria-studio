@@ -2,13 +2,13 @@
 /**
  * scripts/sync-apoio-nivel-brevo.ts (#4572)
  *
- * Paridade BREVO de `scripts/sync-apoio-nivel-beehiiv.ts` (#4436) — sync
+ * Paridade BREVO do sync de `apoio_nivel` (#4436) — sync
  * simétrico, decisão do editor (comentário 260804 da issue #4572): "mesma
  * lógica/gate humano do script existente, só trocando o alvo". A fonte de
  * verdade sobre QUEM é apoiador Mantenedor/Patrono é IDÊNTICA e não é
  * reimplementada aqui — `computeDesiredApoioLevels`/`DesiredApoioLevel`/
  * `ApoioNivel`/`shouldBlockRemovals` são importados DIRETO de
- * `sync-apoio-nivel-beehiiv.ts` (já exportados de lá): mesma carência de 1
+ * `lib/apoio-nivel-sync.ts`: mesma carência de 1
  * mês (#4436), mesmo tratamento fail-closed de contatos "sem_dados", mesmo
  * guard de dados parciais. Nenhuma segunda cópia da regra de negócio "o que
  * é Mantenedor" existe neste arquivo.
@@ -27,7 +27,7 @@
  * ## Por que LISTA, não custom field (diferença deliberada do espelho Beehiiv)
  *
  * A Beehiiv resolve audiência por CONDIÇÃO sobre um custom field (segmento
- * dinâmico, `scripts/lib/apoio-segments-canonical.ts`, #4436). A Brevo, pelo
+ * dinâmico, `apoio-segments-canonical`, removido no #11225, #4436). A Brevo, pelo
  * mecanismo já usado neste repo pra campanhas (`publish-daily-brevo.ts`,
  * `scripts/lib/brevo-client.ts` — `recipients: {listIds:[...]}`), resolve
  * audiência por LISTA, não por condição de atributo dinâmica no momento do
@@ -54,8 +54,8 @@
  *
  * ## Guard de blast radius — reimplementado, não reusado (diferença de tipo)
  *
- * `evaluateBlastRadiusGuard` (sync-apoio-nivel-beehiiv.ts) espera
- * `BeehiivSubscriptionSnapshot[]` (snapshot POR ASSINATURA, com campo
+ * `evaluateBlastRadiusGuard` (lib/apoio-nivel-sync.ts) espera
+ * `ApoioSubscriberSnapshot[]` (snapshot POR ASSINATURA, com campo
  * `apoioNivel`) — incompatível com o modelo de estado atual daqui (membresia
  * de LISTA; o nível vive num atributo escrito à parte, não no "estado atual"
  * usado pelo denominador do guard). `evaluateBrevoBlastRadiusGuard` abaixo
@@ -98,8 +98,8 @@ import {
   isPreviousMonthSnapshotMissing,
   previousMonthKey,
   type DesiredApoioLevel,
-  type ApoioNivel,
-} from "./sync-apoio-nivel-beehiiv.ts";
+} from "./lib/apoio-nivel-sync.ts";
+import type { ApoioNivel } from "./lib/shared/apoio-nivel-types.ts";
 import { buildApoiosData, readPastMonthSnapshots, type MonthSnapshot } from "./studio-ui/studio-apoios.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -167,8 +167,8 @@ interface BrevoContactsListPage {
  * `iterateListContacts` em `inject-poll-token-brevo.ts`, mas lendo TAMBÉM o
  * atributo `APOIO_NIVEL` de cada contato, não só o e-mail). `brevoGet` já
  * falha alto em `429`/`5xx` (retry com backoff) e em qualquer outro erro
- * HTTP — este é o recurso PRINCIPAL do diff (mesma disciplina de
- * `fetchCurrentBeehiivState`: uma leitura truncada geraria remoção fantasma
+ * HTTP — este é o recurso PRINCIPAL do diff (mesma disciplina do antigo
+ * `fetchCurrentBeehiivState`, aposentado no #11225: uma leitura truncada geraria remoção fantasma
  * ou adição duplicada). Paginação por tamanho de página (`contacts.length <
  * limit` encerra) — sem o ponto de ambiguidade de `total_results`/`limit`
  * efetivo que motivou a reconciliação extra em `fetchCurrentBeehiivState`
@@ -320,7 +320,7 @@ export interface BrevoBlastRadiusGuardResult {
  * de blast radius REMOVIDO — `blocked` é sempre `false`, `--push` nunca é
  * recusado por magnitude de remoção. Antes disso, recusava quando `ratio`
  * excedia `BLAST_RADIUS_THRESHOLD` (30%, mesmo racional/limiar de
- * `evaluateBlastRadiusGuard`, sync-apoio-nivel-beehiiv.ts, #4436) — o
+ * `evaluateBlastRadiusGuard`, lib/apoio-nivel-sync.ts, #4436) — o
  * cálculo do `ratio` continua aqui só pra o caller logar a magnitude real
  * de cada `--push`, nunca pra bloquear.
  * `force`/`BLAST_RADIUS_THRESHOLD` seguem existindo (assinatura/constante
@@ -574,7 +574,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // Mesma sequência de sync-apoio-nivel-beehiiv.ts::main() (extraída pra
+  // Mesma sequência de sync-apoio-nivel-kit.ts::main() (extraída pra
   // runApoioReconciliationCycle, também duplicada em apoios-diff-alarm.ts —
   // precedente já estabelecido nesse arquivo pra este exato bloco): drena
   // Gmail (apoia.se) → importa notificações de PAGAMENTO CONFIRMADO como
@@ -664,7 +664,7 @@ async function main(): Promise<void> {
   // bloqueia mais (blocked sempre false) — `--force-blast-radius` ficou sem
   // efeito e foi removido da CLI (era o escape hatch de um guard que não
   // existe mais). `force: false` fixo aqui só preserva a assinatura da
-  // função pura (mantida pra paridade com sync-apoio-nivel-beehiiv.ts e
+  // função pura (mantida pra paridade com `evaluateBlastRadiusGuard` e
   // testabilidade histórica).
   const blastGuard = evaluateBrevoBlastRadiusGuard(diff.toRemove.length, current.length, false);
 

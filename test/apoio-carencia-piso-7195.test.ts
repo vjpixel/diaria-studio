@@ -45,7 +45,7 @@ import {
   shouldBlockRemovals,
   isPreviousMonthSnapshotMissing,
   previousMonthKey,
-} from "../scripts/sync-apoio-nivel-beehiiv.ts";
+} from "../scripts/lib/apoio-nivel-sync.ts";
 import type { MonthSnapshot } from "../scripts/studio-ui/studio-apoios.ts";
 import type { ContactWithStatus } from "../scripts/studio-ui/studio-apoios.ts";
 

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   SOCIAL_INVITE,
+  SOCIAL_INVITE_ICONS_ORDER_LEGACY,
   SOCIAL_INVITE_PREFIX,
   detectSocialInviteDrift,
 } from "../scripts/lib/shared/encerramento-snippet.ts";
@@ -27,6 +28,9 @@ describe("#10835 detectSocialInviteDrift", () => {
   });
   it("versão anterior da constante (sem YouTube) → outdated", () => {
     assert.equal(detectSocialInviteDrift(wrap(PREVIOUS))?.kind, "outdated");
+  });
+  it("ícones na ordem anterior (LinkedIn primeiro, até 261101) → aceito sem aviso", () => {
+    assert.equal(detectSocialInviteDrift(wrap(SOCIAL_INVITE_ICONS_ORDER_LEGACY)), null);
   });
   it("prefixo editado (renderer não reconhece) → unrecognized", () => {
     assert.equal(detectSocialInviteDrift(wrap(EDITED))?.kind, "unrecognized");

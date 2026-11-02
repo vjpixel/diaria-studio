@@ -2,7 +2,7 @@
  * apoio-reconciliation-cycle.ts (extraído no self-review consolidado do PR #4503)
  *
  * `scripts/apoios-diff-alarm.ts::main()` e
- * `scripts/sync-apoio-nivel-beehiiv.ts::main()` tinham um bloco de ~40 linhas
+ * `scripts/sync-apoio-nivel-beehiiv.ts::main()` (aposentado no #11225) tinham um bloco de ~40 linhas
  * DUPLICADO quase byte-a-byte (drena Gmail → reconcilia promessas pendentes →
  * salva) — a duplicação já causou uma divergência real (um fixer round
  * anterior teve que portar o bloco manualmente pro segundo arquivo). Este
@@ -32,7 +32,7 @@
  * contra o contato recém-criado.
  *
  * **Achado crítico 2 — `catch {}` vazio engolia `ApoiaSeAuthError`.**
- * `reconcilePendingPromises` (abaixo, movido de `sync-apoio-nivel-beehiiv.ts`)
+ * `reconcilePendingPromises` (abaixo, movido de `sync-apoio-nivel-beehiiv.ts`, aposentado no #11225)
  * tinha um `catch {}` vazio que engolia TUDO — incluindo chave apoia.se
  * expirada/rotacionada. Se a credencial morre, toda promessa pendente falhava
  * silenciosamente pra sempre, sem NENHUM log, indistinguível de "ainda não
@@ -90,7 +90,7 @@ function isStalePromise(promise: PendingPromise, now: Date): boolean {
   return now.getTime() - receivedMs > STALE_PROMISE_THRESHOLD_DAYS * 24 * 60 * 60 * 1000;
 }
 
-// ── reconcilePendingPromises (movido de sync-apoio-nivel-beehiiv.ts, achado crítico 2) ──
+// ── reconcilePendingPromises (movido do sync da Beehiiv, achado crítico 2) ──
 
 export interface ReconcilePromisesResult {
   contacts: ApoioContact[];
@@ -232,7 +232,7 @@ export interface ApoioReconciliationCycleResult {
  * importa notificações CONFIRMADAS como contato (achado crítico 1) → funde +
  * reconcilia promessas pendentes (achado crítico 2, error handling correto)
  * → persiste contacts/pending-promises conforme mutação. Chamado por
- * `sync-apoio-nivel-beehiiv.ts::main()` e `apoios-diff-alarm.ts::main()` —
+ * `sync-apoio-nivel-kit.ts::main()`, `sync-apoio-nivel-brevo.ts::main()` e `apoios-diff-alarm.ts::main()` —
  * ambos rodavam essa mesma sequência DUPLICADA antes desta extração.
  *
  * Fail-soft pra tudo, EXCETO `ApoiaSeAuthError` (ver `authError` no retorno)

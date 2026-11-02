@@ -69,6 +69,36 @@ export const SECTION_BONUS: Readonly<Record<WeeklyRawCandidate["section"], numbe
   outro: 0,
 };
 
+/**
+ * Importância da notícia para quem constrói (#11782), somada só a DESTAQUES
+ * diários, por cima dos termos de interesse. Sem isto a seleção contava só
+ * palavras: no ciclo 26w44 o GPT-6.1 Terra (D1 de 28/10, modelo novo pela
+ * metade do preço) perdeu o 3º destaque para "Hackers usam Claude e Grok
+ * contra bancos", que somou pontos por citar o Cursor e "código de ataque".
+ *
+ * Medição nos ciclos gravados (26w42-26w44, 9 vagas de destaque): a seleção
+ * automática coincidia com a do editor em 6 de 9 antes e coincide em 6 de 9
+ * depois; o 26w44 passa a bater inteiro (Terra entra no lugar de "Hackers") e
+ * o 26w43 perde a única vaga que batia (o editor escolheu ali itens que não
+ * pontuam em termo nenhum, como "Salário em tecnologia").
+ *
+ * Fica fora de `circle_stack.interests` de propósito: o config troca o perfil
+ * de interesse do público, não o que torna uma notícia importante.
+ */
+export const STACK_IMPORTANCE_TERMS: readonly Readonly<InterestTerm>[] = [
+  {
+    label: "modelo novo",
+    pattern: "modelos?|llms?|gpt-?[\\d.]+\\p{L}*|claude (?:opus|sonnet|haiku)|gemini [\\d.]+|llama|kimi|mistral|deepseek|qwen",
+    // Peso 1 (título: +2): com 2, "GPT-6 Astra achou duas falhas" tirava do
+    // 26w42 o "Google Play roda o app que você criou", que o editor manteve.
+    weight: 1,
+  },
+  { label: "custo/preço", pattern: "pre[çc]os?|custos?|custa\\p{L}*|mais barat\\p{L}*|barate\\p{L}*", weight: 3 },
+];
+
+/** Bônus pela posição na edição diária (#11782): o D1 é a notícia que o editor pôs no topo. */
+export const DESTAQUE_POSITION_BONUS: Readonly<Record<1 | 2 | 3, number>> = { 1: 2, 2: 1, 3: 0 };
+
 export interface StackScoredCandidate extends WeeklyRawCandidate {
   score: number;
   matchedTerms: string[];
@@ -94,7 +124,11 @@ function compileTerm(t: InterestTerm): RegExp {
   return new RegExp(`(?<![\\p{L}\\d])(?:${t.pattern})(?![\\p{L}\\d])`, "iu");
 }
 
-/** Pure: pontua um candidato contra o perfil. Título conta em dobro. */
+/**
+ * Pure: pontua um candidato contra o perfil. Título conta em dobro. Destaque
+ * diário soma ainda a importância (#11782): `DESTAQUE_POSITION_BONUS` e
+ * `STACK_IMPORTANCE_TERMS`, estes só quando casam no título (peso em dobro).
+ */
 export function scoreCandidate(c: WeeklyRawCandidate, profile: readonly InterestTerm[] = STACK_INTEREST_PROFILE): StackScoredCandidate {
   let score = SECTION_BONUS[c.section] ?? 0;
   const matched: string[] = [];
@@ -106,6 +140,16 @@ export function scoreCandidate(c: WeeklyRawCandidate, profile: readonly Interest
     if (!inTitle && !inRest) continue;
     score += t.weight * (inTitle ? 2 : 1);
     matched.push(t.label);
+  }
+  if (c.kind === "destaque") {
+    if (c.destaqueN !== undefined) score += DESTAQUE_POSITION_BONUS[c.destaqueN] ?? 0;
+    // Só no título: "modelo" e "custo" aparecem de passagem em quase todo corpo
+    // (medido nos ciclos 26w42-26w44); no título, a notícia É sobre isso.
+    for (const t of STACK_IMPORTANCE_TERMS) {
+      if (!compileTerm(t).test(c.title)) continue;
+      score += t.weight * 2;
+      matched.push(t.label);
+    }
   }
   return { ...c, score, matchedTerms: matched };
 }
@@ -207,9 +251,16 @@ export function parseInterestProfile(raw: unknown): InterestTerm[] | null {
  * ("Introducing Mercury 3", "How to use X") quase sempre tem.
  */
 const ENGLISH_FUNCTION_WORDS = /(?<![\p{L}\d])(?:the|of|and|to|with|introducing|your|for|how|is|are|what|from)(?![\p{L}\d])/iu;
-/** Palavras funcionais do português que não existem como palavra em inglês. */
+/**
+ * Palavras funcionais do português que não existem como palavra em inglês.
+ * #11781: "o", "ainda", "agora", "como" e vizinhas entraram depois de
+ * "Apagou a conversa? O Android ainda guarda" (título da diária, sem acento e
+ * sem nenhuma das palavras da lista original) ser acusado como sem português.
+ * Ficam de fora de propósito as que também são palavra em inglês: "a", "do",
+ * "no", "as" ("a new model", "no-code", "AI as a service").
+ */
 const PORTUGUESE_FUNCTION_WORDS =
-  /(?<![\p{L}\d])(?:de|da|das|dos|em|na|nas|nos|para|pra|com|que|um|uma|ao|aos|e|os|pelo|pela|sem|mais|seu|sua)(?![\p{L}\d])/iu;
+  /(?<![\p{L}\d])(?:de|da|das|dos|em|na|nas|nos|para|pra|com|que|um|uma|ao|aos|e|o|os|pelo|pela|sem|mais|seu|sua|seus|suas|ainda|agora|como|quem|onde|isso|esse|essa|este|esta|nao|vai|foi|ser|tem)(?![\p{L}\d])/iu;
 const ACCENTED = /[áàâãéêíóôõúüç]/i;
 
 /**

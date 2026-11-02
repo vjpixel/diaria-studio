@@ -43,7 +43,8 @@ import {
   escapeDriveQueryString,
 } from "./lib/drive-helpers.ts"; // #1308 itens 2, 4
 import { logEvent } from "./lib/run-log.ts"; // #612
-import { unescapeMarkdown } from "./lib/markdown-unescape.ts"; // #1188
+import { normalizeDocExportMarkdown } from "./lib/doc-export-normalize.ts"; // #1188, #11786
+import { createHash } from "node:crypto";
 import type { DriveCache, FileEntry, EditionCache } from "./lib/schemas/drive-cache.ts";
 // #2833: extraído pra scripts/lib/drive-sync-core.ts (movimentação pura) —
 // re-exportado abaixo pra manter compat com importadores existentes.
@@ -105,6 +106,36 @@ export type { DriveCache, FileEntry, EditionCache };
 // ---------------------------------------------------------------------------
 
 export type ConflictMode = "warn" | "pull-merge" | "force";
+
+function sha256Hex(buf: Buffer): string {
+  return createHash("sha256").update(buf).digest("hex");
+}
+
+/**
+ * #11786: grava no cache o sha256 do export `text/markdown` do Doc logo após o
+ * push. O pull compara o export do momento com este baseline: idêntico = Doc
+ * não editado, e o local não é reescrito com o ruído do round-trip.
+ * Best-effort: falha no export só deixa o arquivo sem baseline (o pull cai na
+ * normalização), nunca derruba o push — exceto token expirado, que sobe para
+ * o alerta único do #2318.
+ */
+async function recordDocExportBaseline(
+  entry: FileEntry,
+  filename: string,
+  result: SyncResult,
+): Promise<void> {
+  try {
+    const exported = await driveExportFile(entry.drive_file_id, "text/markdown");
+    entry.export_sha256 = sha256Hex(exported);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (classifyOAuthError(msg) === "invalid_grant") throw err;
+    result.warnings.push({
+      file: filename,
+      error_message: `export_baseline_failed (#11786): ${msg} — o próximo pull deste Doc normaliza o export em vez de pular`,
+    });
+  }
+}
 
 export interface PushFileOpts {
   /** #963: comportamento em caso de CONFLICT (Drive modified após último push).
@@ -303,6 +334,9 @@ export async function pushFile(
         push_count: pushCount + 1,
         drive_mimeType: driveMimeType,
       };
+      if (driveMimeType === GOOGLE_DOC_MIME) {
+        await recordDocExportBaseline(edCache.files[filename], filename, result);
+      }
       result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: canonicalTitle + " (updated in-place)" });
       // #963: snapshot pre-push pra próxima detecção de conflito usar como base 3-way.
       savePrePushSnapshot(editionDir, filename, bytes);
@@ -358,6 +392,9 @@ export async function pushFile(
     push_count: pushCount + 1,
     drive_mimeType: driveMimeType,
   };
+  if (driveMimeType === GOOGLE_DOC_MIME) {
+    await recordDocExportBaseline(edCache.files[filename], filename, result);
+  }
 
   result.uploaded.push({ file: filename, drive_file_id: driveFileId, title_used: canonicalTitle });
   // #963: snapshot pre-push pra próxima detecção de conflito usar como base 3-way.
@@ -428,6 +465,20 @@ export async function pullFile(
     ? await driveExportFile(fileCache.drive_file_id, "text/markdown")
     : await driveDownloadFile(fileCache.drive_file_id);
 
+  // #11786: o export idêntico ao de logo após o push = ninguém editou o Doc;
+  // o modifiedTime mais novo é ruído do round-trip. Não reescreve o local (o
+  // export devolveria escapes, espaços e imagens embutidas que o local não tem).
+  if (isGoogleDoc && fileCache.export_sha256 && sha256Hex(bytes) === fileCache.export_sha256) {
+    cache.editions[yymmdd].files[filename] = { ...fileCache, drive_modifiedTime: driveModified };
+    result.pulled.push({
+      file: filename,
+      drive_file_id: fileCache.drive_file_id,
+      drive_modifiedTime: driveModified,
+      overwrote_local: false,
+    });
+    return;
+  }
+
   const dir = resolve(ROOT, editionDir);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
@@ -435,11 +486,25 @@ export async function pullFile(
   // adicionados pelo Drive (\#, \_, [url](url), etc). Sanitizar antes de
   // sobrescrever local. Apenas pra CONVERT_TO_DOC + mime markdown — outros
   // (imagens, JSON, etc) ficam intactos.
+  // #11786: além dos escapes, normaliza espaço no fim de linha, a linha em
+  // branco entre rótulo `X:` e sua lista, e imagem remota que voltou como
+  // data URI embutida (restaurada a partir do local de antes do pull).
   const pathBase = pathBasename(filename);
   if (isGoogleDoc && CONVERT_TO_DOC.has(pathBase)) {
     const text = bytes.toString("utf8");
-    const sanitized = unescapeMarkdown(text);
-    writeFileSync(localPath, sanitized, "utf8");
+    const localBefore = existsSync(localPath) ? readFileSync(localPath, "utf8") : undefined;
+    const normalized = normalizeDocExportMarkdown(text, localBefore);
+    if (normalized.unresolvedInlineImages > 0) {
+      result.warnings.push({
+        file: filename,
+        error_message:
+          `export do Doc trouxe ${normalized.unresolvedInlineImages} imagem(ns) embutida(s) em base64 que não deu para ` +
+          `restaurar para a URL remota do local (#11786) — pull NÃO sobrescreveu, para a imagem não ir inline no e-mail. ` +
+          `Copie a edição do Doc para o local à mão, mantendo as imagens como ![alt](https://...).`,
+      });
+      return;
+    }
+    writeFileSync(localPath, normalized.text, "utf8");
   } else {
     writeFileSync(localPath, bytes);
   }
