@@ -106,6 +106,16 @@ export function resolveCyclePaths(dataRoot: string, publishMonday: string): Cycl
 
 /** `--approve`: grava a aprovação do ciclo sobre a seleção atual. Lança se a seleção não pode sair. */
 export function approveCircleStackCycle(paths: CyclePaths, now: Date): { approvalPath: string; sha256: string } {
+  // #11868: a task só envia o ciclo da própria segunda; aprovar uma segunda já
+  // passada grava uma aprovação que nada consome e o editor acha que o post sai.
+  const earliest = nextMondayAAMMDD(now);
+  if (paths.publishMonday < earliest) {
+    throw new Error(
+      `Segunda ${paths.publishMonday} (ciclo ${paths.cycle}) já passou — a task de segunda 06:00 só envia o ciclo da própria segunda, ` +
+        `então esta aprovação nunca seria usada. Aprove a próxima segunda (${earliest}) ou publique o ciclo atrasado à mão ` +
+        `(publish-circle-stack.ts --publish-monday ${paths.publishMonday} --publish).`,
+    );
+  }
   const raw = readIfExists(paths.selectionPath);
   if (raw === null) {
     throw new Error(`Seleção do ciclo ${paths.cycle} não existe (${paths.selectionPath}) — rode /diaria-stack antes de aprovar.`);

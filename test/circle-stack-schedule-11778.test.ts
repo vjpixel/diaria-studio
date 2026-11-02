@@ -316,14 +316,14 @@ describe("--approve / --revoke (#11778)", () => {
       lancamentos: [{ editionDate: "261103", url: "https://www.theverge.com/x", title: "Lançamento novo da empresa", body: "b", why: "w" }],
     });
     const { paths } = setup({ selection: bad });
-    assert.throws(() => approveCircleStackCycle(paths, new Date()), /não pode ser aprovada/);
+    assert.throws(() => approveCircleStackCycle(paths, mondayAt6()), /não pode ser aprovada/);
     assert.equal(existsSync(paths.approvalPath), false);
   });
 
   it("--approve recusa ciclo já publicado", () => {
     const { paths } = setup();
     writeState(paths.statePath, { cycle: CYCLE, attempted_at: "2026-11-09T09:00:00Z", published_at: "2026-11-09T09:00:01Z" });
-    assert.throws(() => approveCircleStackCycle(paths, new Date()), /já publicado/);
+    assert.throws(() => approveCircleStackCycle(paths, mondayAt6()), /já publicado/);
   });
 
   it("--revoke apaga a aprovação", async () => {
