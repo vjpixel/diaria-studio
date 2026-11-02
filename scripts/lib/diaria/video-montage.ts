@@ -1035,6 +1035,18 @@ export interface SequenceSpec {
    * `outras-redes`), e os `targets`/`skip` dos itens usam essa chave.
    */
   corte?: string;
+  /**
+   * Só no corte (#11900): o título na tela DESTA vertical, que sobrepõe o
+   * `screenTitle` do arquivo e o título do D1 (o corte tem outro roteiro; sem
+   * isto ele saía com o título da notícia). Também é o `--title` da publicação
+   * (`video-extra-verticals.ts`). "" = sem título na tela.
+   */
+  screenTitle?: string;
+  /**
+   * Só no corte (#11900): o gancho da publicação (`--hook` do modo corte).
+   * Ausente = o texto do `resumo_curto` (ou do `resumo`) que entra nesta vertical.
+   */
+  hook?: string;
 }
 
 /** O bruto, como o `transcribe` mediu (`source.json`, a fonte única). */
@@ -1199,6 +1211,12 @@ export function parseBlocksFile(raw: unknown): { ok: true; file: BlocksFile } | 
         else if (seen.has(s.target)) errors.push(`${label}: target ${s.target} repetido`);
         else seen.add(s.target);
         if (s.corte !== undefined && (typeof s.corte !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(s.corte))) errors.push(`${label}: corte precisa ser um slug (minúsculas, dígitos e hífen)`);
+        for (const k of ["screenTitle", "hook"] as const) {
+          if (s[k] === undefined) continue;
+          if (typeof s[k] !== "string") errors.push(`${label}: ${k} precisa ser texto`);
+          else if (s.corte === undefined) errors.push(`${label}: ${k} só vale numa sequência de corte (a vertical da edição usa o screenTitle do arquivo e o D1)`);
+        }
+        if (typeof s.hook === "string" && !s.hook.trim()) errors.push(`${label}: hook vazio (omita para usar o resumo_curto)`);
         if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${label}: sem name`);
         else if (typeof s.corte === "string") {
           if (corteSuffixOf(s.name) !== s.corte) errors.push(`${label}: o nome "${s.name}" de um corte precisa terminar em _V{n}-${s.corte}`);
@@ -1978,7 +1996,13 @@ export function buildXmeml(
   plans: SequencePlan[],
   source: SourceInfo,
   framing: Framing,
-  opts: { mediaPath?: string; audioGain?: AudioGain | null; screenTitle?: ScreenTitleXml | null } = {},
+  opts: {
+    mediaPath?: string;
+    audioGain?: AudioGain | null;
+    screenTitle?: ScreenTitleXml | null;
+    /** #11900: título próprio de cada corte (chave = `spec.corte`); `null` = corte sem título. Ausente = o `screenTitle` geral. */
+    screenTitleByCorte?: Readonly<Record<string, ScreenTitleXml | null>>;
+  } = {},
 ): string {
   // #11641: o caminho gravado no XML pode diferir do de leitura (bruto em cache local fora do Neo).
   const mediaPath = opts.mediaPath ?? source.path;
@@ -1998,9 +2022,14 @@ export function buildXmeml(
     );
   };
   const gain = opts.audioGain ? audioLevelsFilter(opts.audioGain.linear) : "";
-  const title = opts.screenTitle && opts.screenTitle.text.trim() ? opts.screenTitle : null;
-  let titleFileDefined = false;
+  const usable = (t: ScreenTitleXml | null | undefined): ScreenTitleXml | null => (t && t.text.trim() ? t : null);
+  const byCorte = opts.screenTitleByCorte ?? {};
+  const titleOf = (spec: SequenceSpec): ScreenTitleXml | null =>
+    spec.corte !== undefined && Object.prototype.hasOwnProperty.call(byCorte, spec.corte) ? usable(byCorte[spec.corte]) : usable(opts.screenTitle);
+  // Um `<file>` por PNG: definido no 1º uso, referenciado depois (o geral e o de cada corte são arquivos diferentes).
+  const pngFileIds = new Map<string, string>();
   const screenTitleTrack = (plan: SequencePlan, si: number): string => {
+    const title = titleOf(plan.spec);
     if (!title || !isVerticalSpec(plan.spec)) return "";
     const span = screenTitleSpan(plan);
     if (!span || span.end <= span.start) return "";
@@ -2008,11 +2037,13 @@ export function buildXmeml(
     const id = `titulo-${si + 1}`;
     if (title.mode === "text") return `\n<track>${textGenerator(id, wrapScreenTitle(title.text), len, span.start, rate)}</track>`;
     // PNG parado: duração do arquivo longa (a do bruto), recortada pelo in/out do clipe.
-    const fileRef = titleFileDefined
-      ? '<file id="file-titulo"/>'
-      : `<file id="file-titulo"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(pathUrl(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
+    const known = pngFileIds.get(title.pngPath);
+    const fileId = known ?? (pngFileIds.size === 0 ? "file-titulo" : `file-titulo-${pngFileIds.size + 1}`);
+    const fileRef = known
+      ? `<file id="${fileId}"/>`
+      : `<file id="${fileId}"><name>${escapeXml(baseName(title.pngPath))}</name><pathurl>${escapeXml(pathUrl(title.pngPath))}</pathurl>\n${rate}<duration>${total}</duration>\n` +
         `<media><video><samplecharacteristics><width>${plan.spec.width}</width><height>${plan.spec.height}</height></samplecharacteristics></video></media></file>`;
-    titleFileDefined = true;
+    pngFileIds.set(title.pngPath, fileId);
     return (
       `\n<track><clipitem id="${id}"><name>titulo-tela</name><enabled>TRUE</enabled><duration>${total}</duration>\n` +
       `${rate}<start>${span.start}</start><end>${span.end}</end><in>0</in><out>${len}</out>\n${fileRef}</clipitem></track>`
