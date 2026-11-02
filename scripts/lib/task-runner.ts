@@ -232,7 +232,40 @@ export interface RunScheduledTaskOptions {
   /** Destino do resumo de passo falho (#10063). Default: `console.error`
    * (stderr → journal do systemd). Testes injetam pra capturar. */
   reportFailure?: (message: string) => void;
+  /** Injeção do sleep síncrono usado no retry/espera do sync (testes, #11914).
+   * Default: `sleepSync` real (`Atomics.wait`). */
+  sleep?: (ms: number) => void;
+  /** Ajuste da espera pelo dono do lock de sync (testes, #11914). Default:
+   * `SYNC_CONTENTION_POLL_MS` / `SYNC_CONTENTION_MAX_WAIT_MS`. */
+  syncContention?: { pollMs?: number; maxWaitMs?: number };
 }
+
+/**
+ * #11914 — espera pelo dono do lock de sync em vez de desistir.
+ *
+ * Nas horas cheias vários timers `*-catchup` e alarmes do 300 disparam juntos:
+ * um pega `.git/diaria-sync.lock` e os outros recebiam `sync_in_progress`.
+ * Com só 3 tentativas curtas (2s/5s, #6800), ~35% das rodadas (953 de 2.699,
+ * 30/10–02/11) desistiam sem confirmar o checkout em dia. O sync do dono leva
+ * mais que 7s (o `git fetch` sozinho pode passar disso), então o retry curto
+ * vencia antes do lock ser liberado.
+ *
+ * Agora `sync_in_progress` não gasta as 3 tentativas de falha: o runner
+ * espera o dono terminar (sondando o lock a cada `SYNC_CONTENTION_POLL_MS`,
+ * com jitter pra não reacender a disputa todos no mesmo instante) e roda o
+ * próprio sync em seguida. O checkout é o mesmo, então depois que o dono
+ * sincronizou o sync deste processo costuma sair `already_up_to_date` em
+ * poucos segundos (só fetch + comparação). Cada sondagem é um `acquire()`
+ * (mkdir + stat), sem comando git enquanto o lock está com outro processo
+ * (invariante do #3423 preservado).
+ *
+ * Teto de espera finito (`SYNC_CONTENTION_MAX_WAIT_MS`): esgotado, a task segue
+ * com o código local, como sempre (fail-soft invariável, #2686), e o log ganha
+ * a linha `[git-sync] WARN: sync_in_progress esgotado` — greppável, para o
+ * resíduo não voltar a ficar silencioso.
+ */
+export const SYNC_CONTENTION_POLL_MS = 3_000;
+export const SYNC_CONTENTION_MAX_WAIT_MS = 180_000;
 
 /** Assinatura injetável de UMA tentativa de anexar `content` a `logPath` —
  * default `defaultAppendLog`. Lança em caso de falha (o chamador decide
@@ -391,11 +424,33 @@ export function runScheduledTask(
     let syncAttempt = 0;
     const SYNC_MAX_ATTEMPTS = 3;
     const SYNC_BACKOFF_MS = [2000, 5000];
+    // #11914: espera pelo dono do lock (ver docstring de SYNC_CONTENTION_POLL_MS).
+    const sleep = opts.sleep ?? sleepSync;
+    const contentionPollMs = opts.syncContention?.pollMs ?? SYNC_CONTENTION_POLL_MS;
+    const contentionMaxWaitMs = opts.syncContention?.maxWaitMs ?? SYNC_CONTENTION_MAX_WAIT_MS;
+    let contentionWaitedMs = 0;
+    let contentionExhausted = false;
     while (syncAttempt < SYNC_MAX_ATTEMPTS) {
       try {
         const result = syncCode();
         syncResult = result;
         if (SYNC_SUCCESS_OUTCOMES.has(result.outcome)) break;
+        if (result.outcome === "sync_in_progress") {
+          if (contentionWaitedMs < contentionMaxWaitMs) {
+            if (contentionWaitedMs === 0) {
+              appendTemp(
+                `AVISO: sync-code.ts outcome=sync_in_progress — outro processo está sincronizando este checkout; ` +
+                  `aguardando ele terminar (até ${Math.round(contentionMaxWaitMs / 1000)}s, #11914)`,
+              );
+            }
+            const waitMs = contentionPollMs + Math.floor(Math.random() * (contentionPollMs / 3));
+            sleep(waitMs);
+            contentionWaitedMs += waitMs;
+            continue; // espera pelo lock não gasta tentativa de falha
+          }
+          contentionExhausted = true;
+          break; // esperar mais não muda nada: o dono segue com o lock
+        }
         appendTemp(
           `AVISO: sync-code.ts outcome=${result.outcome} (tentativa ${syncAttempt + 1}/${SYNC_MAX_ATTEMPTS}) — não é sucesso, retentando`,
         );
@@ -404,8 +459,17 @@ export function runScheduledTask(
       }
       syncAttempt++;
       if (syncAttempt < SYNC_MAX_ATTEMPTS) {
-        sleepSync(SYNC_BACKOFF_MS[syncAttempt - 1] ?? 2000);
+        sleep(SYNC_BACKOFF_MS[syncAttempt - 1] ?? 2000);
       }
+    }
+    if (contentionWaitedMs > 0 && !contentionExhausted && syncResult && SYNC_SUCCESS_OUTCOMES.has(syncResult.outcome)) {
+      appendTemp(`[git-sync] aguardou ${Math.round(contentionWaitedMs / 1000)}s pelo sync concorrente antes de sincronizar (#11914)`);
+    }
+    if (contentionExhausted) {
+      appendTemp(
+        `[git-sync] WARN: sync_in_progress esgotado — o lock seguiu com outro processo por ` +
+          `${Math.round(contentionWaitedMs / 1000)}s; prosseguindo com código local (#11914)`,
+      );
     }
     if (syncResult) {
       appendTemp(`[git-sync] outcome=${syncResult.outcome} up_to_date=${syncResult.up_to_date} commits_behind=${syncResult.commits_behind}`);

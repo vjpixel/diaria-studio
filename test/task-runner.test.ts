@@ -596,13 +596,15 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
         calls++;
         return calls === 1 ? inProgress : success;
       },
+      sleep: () => {},
       execStep: () => ({ code: 0, output: "ok" }),
     });
 
     assert.equal(calls, 2, "deve retentar após outcome=sync_in_progress (não é exceção, mas também não é sucesso)");
     assert.equal(result.code, 0);
     const content = readFileSync(logPathOverride, "utf8");
-    assert.match(content, /AVISO: sync-code\.ts outcome=sync_in_progress \(tentativa 1\/3\) — não é sucesso, retentando/);
+    // #11914: sync_in_progress virou espera pelo dono do lock, não tentativa de falha.
+    assert.match(content, /AVISO: sync-code\.ts outcome=sync_in_progress — outro processo está sincronizando/);
     assert.match(content, /\[git-sync\] outcome=synced /, "o outcome FINAL logado deve ser o do sucesso da 2ª tentativa, não da 1ª");
   });
 
@@ -643,6 +645,100 @@ describe("runScheduledTask — sync de código antes dos passos (#6431)", () => 
     // (stash_failed, não um sucesso) ainda é logado via [git-sync] outcome=,
     // porque syncResult guarda o ÚLTIMO resultado mesmo sem ser sucesso.
     assert.match(content, /\[git-sync\] outcome=stash_failed /);
+  });
+
+  // #11914: nas horas cheias o dono do lock leva mais que os 7s do retry curto
+  // (2s/5s) e ~35% das rodadas desistiam com sync_in_progress nas 3 tentativas.
+  // Antes do fix, este cenário parava em 3 chamadas e logava outcome=sync_in_progress.
+  const inProgress11914: GitSyncResult = {
+    outcome: "sync_in_progress",
+    message: "outro syncCode() já rodando",
+    branch_before: "unknown",
+    warnings: ["lock presente"],
+    proceed: true,
+    up_to_date: false,
+    commits_behind: -1,
+    preserved_stash: null,
+    stale_autostash_count: -1,
+  };
+
+  it("#11914: lock com outro processo por 5 sondagens → espera o dono e sincroniza (não esgota as 3 tentativas)", () => {
+    const logPathOverride = join(workDir, "sync-contention-wait-final.log");
+    let calls = 0;
+    const sleeps: number[] = [];
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: join(workDir, "sync-contention-wait-temp.log"),
+      syncCode: () => {
+        calls++;
+        return calls <= 5 ? inProgress11914 : { ...NOOP_SYNC_RESULT, outcome: "already_up_to_date" };
+      },
+      sleep: (ms) => sleeps.push(ms),
+      syncContention: { pollMs: 3_000, maxWaitMs: 180_000 },
+      execStep: () => ({ code: 0, output: "ok" }),
+    });
+
+    assert.equal(calls, 6, "5 sondagens com o lock ocupado + o sync próprio depois que o dono liberou");
+    assert.equal(sleeps.length, 5);
+    for (const ms of sleeps) assert.ok(ms >= 3_000 && ms < 4_000, `sondagem com jitter limitado (${ms}ms)`);
+    assert.equal(result.code, 0);
+    const content = readFileSync(logPathOverride, "utf8");
+    assert.match(content, /\[git-sync\] outcome=already_up_to_date /);
+    assert.match(content, /\[git-sync\] aguardou \d+s pelo sync concorrente/);
+    assert.doesNotMatch(content, /tentativa \d\/3/, "espera pelo lock não conta como tentativa de falha");
+    assert.doesNotMatch(content, /sync_in_progress esgotado/);
+  });
+
+  it("#11914: lock nunca liberado → espera finita, linha 'sync_in_progress esgotado' e a task roda (fail-soft)", () => {
+    const logPathOverride = join(workDir, "sync-contention-exhaust-final.log");
+    let calls = 0;
+    let waited = 0;
+    let stepRan = false;
+    const result = runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride,
+      tempLogPathOverride: join(workDir, "sync-contention-exhaust-temp.log"),
+      syncCode: () => {
+        calls++;
+        return inProgress11914;
+      },
+      sleep: (ms) => {
+        waited += ms;
+      },
+      syncContention: { pollMs: 3_000, maxWaitMs: 30_000 },
+      execStep: () => {
+        stepRan = true;
+        return { code: 0, output: "ok" };
+      },
+    });
+
+    // 30s / (3s..4s por sondagem) → entre 8 e 10 sondagens, mais a chamada final.
+    assert.ok(calls >= 9 && calls <= 11, `número de chamadas limitado pelo teto de espera (${calls})`);
+    assert.ok(waited >= 30_000 && waited < 34_000, `espera total respeita o teto (${waited}ms)`);
+    assert.equal(stepRan, true, "fail-soft: a task roda mesmo sem sync (#2686)");
+    assert.equal(result.code, 0);
+    const content = readFileSync(logPathOverride, "utf8");
+    assert.match(content, /\[git-sync\] WARN: sync_in_progress esgotado/);
+    assert.match(content, /\[git-sync\] outcome=sync_in_progress /);
+  });
+
+  it("#11914: falha que não é contenção (stash_failed) continua com 3 tentativas e backoff 2s/5s", () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    runScheduledTask(baseDef(), {
+      rootDir: ROOT,
+      logPathOverride: join(workDir, "sync-contention-other-final.log"),
+      tempLogPathOverride: join(workDir, "sync-contention-other-temp.log"),
+      syncCode: () => {
+        calls++;
+        return { ...inProgress11914, outcome: "stash_failed" };
+      },
+      sleep: (ms) => sleeps.push(ms),
+      execStep: () => ({ code: 0, output: "ok" }),
+    });
+    assert.equal(calls, 3);
+    assert.deepEqual(sleeps, [2000, 5000]);
   });
 
   it("syncCode com warnings loga cada warning individualmente", () => {
