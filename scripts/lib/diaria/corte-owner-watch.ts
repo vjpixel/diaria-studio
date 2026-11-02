@@ -16,7 +16,10 @@
  * 48 h) vira alarme ao editor, uma vez por corte e destino.
  *
  * Com `corte_via_timer: true` o dono é o `Diaria-Shorts-Cortes`, que já alarma
- * `late` sozinho: aqui não alarma (seriam dois avisos do mesmo atraso).
+ * `late` sozinho: aqui não alarma (seriam dois avisos do mesmo atraso). Esse
+ * timer só publica (e só alarma `late`) o corte com o "pode publicar" do
+ * editor gravado no `corte.json` (#11912); esta vigia ainda não olha o
+ * marcador e alarma também o corte que só passou pelo dry-run.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";

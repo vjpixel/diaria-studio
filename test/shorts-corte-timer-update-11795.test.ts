@@ -14,6 +14,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -34,7 +35,14 @@ import { SCHEDULED_TASKS } from "../scripts/lib/scheduled-tasks.ts";
 import type { ShortPublishedEntry } from "../scripts/lib/diaria/short-video.ts";
 import type { ResolvedFacebookPage } from "../scripts/lib/facebook-pages.ts";
 
-const SPEC: CorteSpec = { slug: "tratar-ia-como-humano", date: "261102", hhmm: "08:00", title: "Tratar IA como humano", hook: "Por que dar nome ao chatbot muda o jeito que você usa.", video: "corte-tratar-ia-como-humano.mp4" };
+// #11912: com o "pode publicar" gravado (o timer não age sem ele; o caso sem autorização está em
+// shorts-corte-timer-authorization-11912), com a impressão digital do vídeo "mp4" que corteDir grava, sem capa.
+const SPEC: CorteSpec = {
+  slug: "tratar-ia-como-humano", date: "261102", hhmm: "08:00", title: "Tratar IA como humano", hook: "Por que dar nome ao chatbot muda o jeito que você usa.", video: "corte-tratar-ia-como-humano.mp4",
+  publish_confirmed_at: "2026-11-01T20:00:00.000Z",
+  publish_confirmed_destinations: ["youtube_shorts", "facebook:diaria", "instagram", "linkedin_profile", "threads_profile"],
+  publish_confirmed_content: { video_sha256: createHash("sha256").update("mp4").digest("hex"), cover_sha256: null },
+};
 const AT = "2026-11-02T11:00:00.000Z"; // 08:00 BRT
 const shorts = {
   facebook_pages: ["diaria"],
@@ -75,9 +83,9 @@ describe("#11795 decideCorteTimerRun", () => {
     assert.throws(() => decideCorteTimerRun({ config: CONFIG, spec: SPEC, registryRaws: [{ path: "/x.json", raw: "{" }], now: at(60_000) }));
   });
 
-  it("args: --corte, --only com os pendentes, --publish --now e a confirmação com a data do corte (#11741)", () => {
+  it("args: --corte, --only com os pendentes, --publish --now e a confirmação com a data do corte (#11741), e o filho só confere o 'pode publicar' (#11912)", () => {
     assert.deepEqual(cortePublishArgs(SPEC, ["linkedin_profile", "instagram"]), [
-      "scripts/publish-shorts.ts", "--corte", SPEC.slug, "--only", "linkedin_profile,instagram", "--publish", "--now", "--confirm-publish", "261102",
+      "scripts/publish-shorts.ts", "--corte", SPEC.slug, "--only", "linkedin_profile,instagram", "--publish", "--now", "--confirm-publish", "261102", "--require-corte-authorization",
     ]);
   });
 });

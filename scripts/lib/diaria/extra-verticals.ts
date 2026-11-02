@@ -7,9 +7,13 @@
  *
  * Decisões do editor (02/11/2026, comentário na #11900):
  *   - mais de uma vertical por edição vira o padrão;
- *   - a extra sai em todos os destinos da principal, automaticamente (o modo
- *     corte do `publish-shorts.ts` + o timer do 300, `Diaria-Shorts-Cortes`,
- *     com `publishing.shorts.corte_via_timer`);
+ *   - a extra sai nos destinos da principal pelo modo corte do
+ *     `publish-shorts.ts` + o timer do 300 (`Diaria-Shorts-Cortes`, com
+ *     `publishing.shorts.corte_via_timer`), mas SÓ depois do "pode publicar"
+ *     do editor: o `--publish --confirm-publish` grava a autorização e o
+ *     `--only` usado no `corte.json`, e o timer publica só esses destinos. O
+ *     dry-run do plano nunca vira post (#11912, decisão do editor de
+ *     02/11/2026, que revoga o "automaticamente, em todos os destinos" daqui);
  *   - em DIAS diferentes: a principal no dia da edição e a k-ésima extra no
  *     k-ésimo dia útil seguinte (edições só seg–sex), no horário da grade
  *     daquele dia;

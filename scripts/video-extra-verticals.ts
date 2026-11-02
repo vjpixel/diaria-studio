@@ -16,7 +16,9 @@
  * esse comando com `--publish --confirm-publish {data}`, depois do "pode
  * publicar" do editor (`/diaria-publica-video`). Com
  * `publishing.shorts.corte_via_timer`, Instagram, perfil do LinkedIn e
- * Threads do corte saem pelo timer do 300 (`Diaria-Shorts-Cortes`).
+ * Threads do corte saem pelo timer do 300 (`Diaria-Shorts-Cortes`), só
+ * depois desse `--publish` confirmado e só nos destinos do `--only` dele
+ * (#11912): o dry-run nunca autoriza o timer.
  *
  * Uso: npx tsx scripts/video-extra-verticals.ts AAMMDD [--blocks PATH] [--drive-ids corte=ID,...] [--video-dir DIR]
  *   --blocks:    default `{edição}/_internal/video-montagem/blocks.json`
