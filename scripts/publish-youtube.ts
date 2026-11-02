@@ -11,7 +11,13 @@ import { cleanupPublishedVideo } from "./lib/diaria/published-video-cleanup.ts";
  *   npx tsx scripts/publish-youtube.ts AAMMDD --dry-run
  *     [--keep-video] [--edition-dir DIR] [--video PATH] [--episode N]
  *     [--edition-url URL] [--publish-at ISO]
- *   npx tsx scripts/publish-youtube.ts AAMMDD --upload [mesmas flags] [--force | --accept-period-match VIDEO_ID]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --confirm-publish AAMMDD [mesmas flags] [--force]
+ *   npx tsx scripts/publish-youtube.ts AAMMDD --upload --accept-period-match VIDEO_ID
+ *
+ * `--upload` exige `--confirm-publish AAMMDD` (a mesma edição), dada só depois
+ * do "pode publicar" explícito do editor; sem ela sai exit 2 sem enviar nada
+ * (#11741, `scripts/lib/diaria/publish-confirm.ts`). O `--accept-period-match`
+ * não envia vídeo e dispensa a flag.
  *
  * ## `--dry-run` (default seguro)
  *
@@ -90,6 +96,7 @@ import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { publishConfirmationError } from "./lib/diaria/publish-confirm.ts";
 import { runCli } from "./lib/cli-exit.ts";
 import { editionDir as editionDirFor } from "./lib/edition-paths.ts";
 import { deriveEditionUrl } from "./lib/edition-url.ts";
@@ -797,7 +804,7 @@ function loadD1SlotAt(aammdd: string): Date | null {
 }
 
 const USAGE =
-  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload [--force | --accept-period-match VIDEO_ID] | --captions-only [--force]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO]";
+  "uso: publish-youtube.ts AAMMDD (--dry-run | --upload --confirm-publish AAMMDD [--force] | --upload --accept-period-match VIDEO_ID | --captions-only [--force]) [--keep-video] [--edition-dir DIR] [--video PATH] [--captions PATH | --no-captions] [--episode N] [--edition-url URL] [--publish-at ISO]";
 
 async function main(): Promise<number> {
   const { flags, values, positional } = parseArgs(process.argv.slice(2));
@@ -828,6 +835,16 @@ async function main(): Promise<number> {
     console.error("publish-youtube: --accept-period-match exige VIDEO_ID e só vale com --upload e sem --force (o --force pula a conferência do canal).");
     console.error(USAGE);
     return 2;
+  }
+  // #11741: o upload tem efeito público — só com a confirmação explícita da
+  // edição, checada antes de credencial, vídeo ou rede. O `--accept-period-match`
+  // não envia nada (registra um vídeo que já está no canal) e fica de fora.
+  if (upload && values["accept-period-match"] === undefined) {
+    const confirmErr = publishConfirmationError({ script: "publish-youtube", mode: "--upload", aammdd, flags, values });
+    if (confirmErr) {
+      console.error(confirmErr);
+      return 2;
+    }
   }
 
   const dir = resolve(values["edition-dir"] ?? editionDirFor(aammdd));

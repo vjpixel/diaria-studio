@@ -72,6 +72,7 @@ import { DOWNLOAD_PART_FRESH_MS, SHORTS_THREADS_TIMER_LOCK_FILE, verticalDownloa
 import { alarmDelivery, alreadyAlarmed, emailPending, nextAlarmState, parseAlarmState } from "./lib/diaria/shorts-timer-alarm-state.ts";
 // Só tipo: importar o publish-shorts em runtime carregaria o .env no import.
 import type { ShortsPlanItem } from "./publish-shorts.ts";
+import { publishConfirmArgs, publishConfirmSuffix } from "./lib/diaria/publish-confirm.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const LOG_PREFIX = "[shorts-threads-timer]";
@@ -224,7 +225,7 @@ export function interpretThreadsVerticalLookup(exitCode: number | null, stdout: 
 
 /** Puro: argumentos do publish-shorts da rodada do timer. */
 export function threadsPublishArgs(aammdd: string, fromDriveId: string | null): string[] {
-  const args = ["scripts/publish-shorts.ts", aammdd, "--only", DESTINATION, "--publish", "--threads-timer", "--now"];
+  const args = ["scripts/publish-shorts.ts", aammdd, "--only", DESTINATION, "--publish", "--threads-timer", "--now", ...publishConfirmArgs(aammdd)]; // #11741: a autorização do timer é a decisão do editor que o ligou (config), não uma pergunta por execução.
   if (fromDriveId) args.push("--from-drive", fromDriveId);
   return args;
 }
@@ -305,7 +306,7 @@ export function buildThreadsTimerAlarm(input: { aammdd: string; key: ThreadsTime
   const { aammdd, key, reason, at } = input;
   const deadline = at ? hhmmBrt(Date.parse(at) + MAX_FIRE_LATENESS_MS) : null;
   const mark = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --mark threads_profile=URL\``;
-  const manual = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only threads_profile --threads-timer --publish --now\``;
+  const manual = `\`npx tsx scripts/publish-shorts.ts ${aammdd} --only threads_profile --threads-timer --publish --now ${publishConfirmSuffix(aammdd)}\``;
   const lines = ["Achado automático da task `Diaria-Shorts-Threads-Profile`", "(`scripts/shorts-threads-profile-timer.ts`, #11410).", "", `Motivo (${key}): ${reason}`, ""];
   let subject: string;
   if (MAYBE_PUBLISHED_KEYS.has(key)) {

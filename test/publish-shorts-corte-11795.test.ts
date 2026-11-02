@@ -107,7 +107,7 @@ describe("#11795 planShortsPublish com corte avulso", () => {
       assert.equal(item.action, "pending_schedule", d);
       const owner = p.owners.find((o) => o.destination === d)!;
       assert.equal(owner.by, "agent-scheduled-task", d);
-      assert.equal(owner.command, `npx tsx scripts/publish-shorts.ts --corte ${CORTE.slug} --only ${d} --publish`);
+      assert.equal(owner.command, `npx tsx scripts/publish-shorts.ts --corte ${CORTE.slug} --only ${d} --publish --confirm-publish 261102`); // #11741: data do corte
     }
   });
 

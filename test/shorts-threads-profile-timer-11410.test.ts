@@ -216,8 +216,8 @@ describe("#11410 leituras puras do timer", () => {
     assert.equal(interpretThreadsVerticalLookup(0, JSON.stringify({ action: "exists" })).kind, "exists");
     assert.equal(interpretThreadsVerticalLookup(1, "boom").kind, "error");
   });
-  it("argumentos do publish: só o destino, --threads-timer e --now", () => {
-    assert.deepEqual(threadsPublishArgs(AAMMDD, null), ["scripts/publish-shorts.ts", AAMMDD, "--only", "threads_profile", "--publish", "--threads-timer", "--now"]);
+  it("argumentos do publish: só o destino, --threads-timer, --now e a confirmação (#11741)", () => {
+    assert.deepEqual(threadsPublishArgs(AAMMDD, null), ["scripts/publish-shorts.ts", AAMMDD, "--only", "threads_profile", "--publish", "--threads-timer", "--now", "--confirm-publish", AAMMDD]);
     assert.deepEqual(threadsPublishArgs(AAMMDD, "abcdefghijk").slice(-2), ["--from-drive", "abcdefghijk"]);
   });
   it("marcadores da edição: utm_campaign e o título sem reticências", () => {
